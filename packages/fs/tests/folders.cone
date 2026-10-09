@@ -19,32 +19,33 @@ import testing use *;
 import collections use *;
 import libc;
 import posix;
-import path;
+import path use Path;
 import fs;
 
 // The test's folder: TEMP's absolute path and the name, after checking
 // that it is that and nothing shorter
-fn makeRoot(name &Array[u8]) String {
+fn makeRoot(name &str) Path {
   imm temp = libc.getenv("TEMP");
   require(temp != null, "TEMP is set");
-  mut root = String.empty();
-  match fs.absolute(cstr.fromPtr(temp).view()) {
-    case imm t Ok { root = path.join(t.value.view(), name); }
+  imm tempPath = Path.from(cstr.fromPtr(temp).view());
+  mut root = Path.from("");
+  match fs.absolute(&tempPath) {
+    case imm t Ok { root = t.value.join(name); }
     case is Error { require(false, "TEMP has an absolute path"); }
   }
-  imm up = path.parent(root.view());
-  imm safe = path.isAbsolute(root.view()) and root.endsWith(name as &str) and up.len() > 3usize;
+  imm up = root.parent();
+  imm safe = root.isAbsolute() and root.view().endsWith(name) and up.view().len() > 3usize;
   require(safe, "the test's folder is under TEMP");
   root;
 }
 
-fn shown(root &Array[u8], text &Array[u8]) String {
+fn shown(root &Path, text &Array[u8]) String {
   mut out = String.fromBytes(text);
-  if root.len > 0usize { out.replace(root as &str, "<root>" as &str); }
+  if not root.isEmpty() { out.replace(root.view(), "<root>" as &str); }
   out;
 }
 
-fn messageOf[T](root &Array[u8], r Result[T, fs.FsError]) String {
+fn messageOf[T](root &Path, r Result[T, fs.FsError]) String {
   match r {
     case imm e Error { imm m = e.value.message(); shown(root, m.view()); }
     case is Ok { String.from("<succeeded>"); }
@@ -56,14 +57,14 @@ fn ok[T](r Result[T, fs.FsError], label &Array[u8]) bool {
   expectStr(m.view(), "<succeeded>", label);
 }
 
-fn failsWith[T](root &Array[u8], r Result[T, fs.FsError], want &Array[u8], label &Array[u8]) bool {
+fn failsWith[T](root &Path, r Result[T, fs.FsError], want &Array[u8], label &Array[u8]) bool {
   imm m = messageOf(root, r);
   expectStr(m.view(), want, label);
 }
 
 // A listing shown on one line: each entry's path (the root as '<root>'),
 // then '/' for a folder, '@' for a link, nothing for a file, then ' '
-fn showEntries(root &Array[u8], entries &List[fs.DirEntry]) String {
+fn showEntries(root &Path, entries &List[fs.DirEntry]) String {
   mut out = String.empty();
   mut i = 0usize;
   while i < entries.len() {
@@ -79,7 +80,7 @@ fn showEntries(root &Array[u8], entries &List[fs.DirEntry]) String {
   out;
 }
 
-fn listingIs(root &Array[u8], dir &Array[u8], want &Array[u8], label &Array[u8]) {
+fn listingIs(root &Path, dir &Path, want &Array[u8], label &Array[u8]) {
   match fs.readDir(dir) {
     case imm l Ok { imm s = showEntries(root, &l.value); expectStr(s.view(), want, label); }
     case imm e Error {
@@ -90,7 +91,7 @@ fn listingIs(root &Array[u8], dir &Array[u8], want &Array[u8], label &Array[u8])
   }
 }
 
-fn walkIs(root &Array[u8], dir &Array[u8], want &Array[u8], label &Array[u8]) {
+fn walkIs(root &Path, dir &Path, want &Array[u8], label &Array[u8]) {
   match fs.walk(dir) {
     case imm l Ok { imm s = showEntries(root, &l.value); expectStr(s.view(), want, label); }
     case imm e Error {
@@ -101,108 +102,108 @@ fn walkIs(root &Array[u8], dir &Array[u8], want &Array[u8], label &Array[u8]) {
   }
 }
 
-fn touch(p &Array[u8]) { ok(fs.writeFile(p, "x"), "write a file"); }
+fn touch(p &Path) { ok(fs.writeFile(p, "x"), "write a file"); }
 
-fn making(root &Array[u8]) {
-  imm one = path.join(root, "one");
-  ok(fs.makeDir(one.view()), "makeDir");
-  expect(fs.isDir(one.view()), "made a folder");
-  failsWith(root, fs.makeDir(one.view()), "makeDir <root>/one: File exists", "makeDir again");
-  match fs.makeDir(one.view()) {
+fn making(root &Path) {
+  imm one = root.join("one");
+  ok(fs.makeDir(&one), "makeDir");
+  expect(fs.isDir(&one), "made a folder");
+  failsWith(root, fs.makeDir(&one), "makeDir <root>/one: File exists", "makeDir again");
+  match fs.makeDir(&one) {
     case imm e Error { expect(e.value.alreadyExists(), "makeDir again is alreadyExists"); }
     case is Ok { expect(false, "makeDir again fails"); }
   }
-  imm deep = path.join(root, "two/three/four");
-  failsWith(root, fs.makeDir(deep.view()), "makeDir <root>/two/three/four: No such file or directory",
+  imm deep = root.join("two/three/four");
+  failsWith(root, fs.makeDir(&deep), "makeDir <root>/two/three/four: No such file or directory",
     "makeDir without its parent");
-  ok(fs.makeDirAll(deep.view()), "makeDirAll");
-  expect(fs.isDir(deep.view()), "made with its parents");
-  ok(fs.makeDirAll(deep.view()), "makeDirAll of a folder there is success");
-  imm trailing = path.join(root, "five\\six\\");
-  ok(fs.makeDirAll(trailing.view()), "makeDirAll with a trailing separator");
-  imm six = path.join(root, "five/six");
-  expect(fs.isDir(six.view()), "made through a trailing separator");
+  ok(fs.makeDirAll(&deep), "makeDirAll");
+  expect(fs.isDir(&deep), "made with its parents");
+  ok(fs.makeDirAll(&deep), "makeDirAll of a folder there is success");
+  imm trailing = root.join("five\\six\\");
+  ok(fs.makeDirAll(&trailing), "makeDirAll with a trailing separator");
+  imm six = root.join("five/six");
+  expect(fs.isDir(&six), "made through a trailing separator");
 
   // A file in the way
-  imm file = path.join(root, "one/file");
-  touch(file.view());
-  imm under = path.join(root, "one/file/sub");
-  failsWith(root, fs.makeDirAll(under.view()), "makeDirAll <root>/one/file: Not a directory",
+  imm file = root.join("one/file");
+  touch(&file);
+  imm under = root.join("one/file/sub");
+  failsWith(root, fs.makeDirAll(&under), "makeDirAll <root>/one/file: Not a directory",
     "makeDirAll through a file");
-  failsWith(root, fs.makeDirAll(file.view()), "makeDirAll <root>/one/file: Not a directory",
+  failsWith(root, fs.makeDirAll(&file), "makeDirAll <root>/one/file: Not a directory",
     "makeDirAll over a file");
 
   // Removing: an empty folder, not one with something in it
-  imm two = path.join(root, "two");
-  failsWith(root, fs.removeDir(two.view()), "removeDir <root>/two: Directory not empty", "removeDir of a full folder");
-  ok(fs.removeDir(deep.view()), "removeDir of an empty folder");
-  expect(not fs.exists(deep.view()), "removed");
-  failsWith(root, fs.removeDir(deep.view()), "removeDir <root>/two/three/four: No such file or directory",
+  imm two = root.join("two");
+  failsWith(root, fs.removeDir(&two), "removeDir <root>/two: Directory not empty", "removeDir of a full folder");
+  ok(fs.removeDir(&deep), "removeDir of an empty folder");
+  expect(not fs.exists(&deep), "removed");
+  failsWith(root, fs.removeDir(&deep), "removeDir <root>/two/three/four: No such file or directory",
     "removeDir of a folder not there");
-  ok(fs.removeAll(two.view()), "removeAll of a tree");
-  expect(not fs.exists(two.view()), "the tree is gone");
-  imm five = path.join(root, "five");
-  ok(fs.removeAll(five.view()), "removeAll of another");
-  ok(fs.removeAll(five.view()), "removeAll of nothing there is success");
-  ok(fs.removeAll(file.view()), "removeAll of a file");
-  expect(not fs.exists(file.view()), "the file is gone");
-  ok(fs.removeDir(one.view()), "one is empty again");
+  ok(fs.removeAll(&two), "removeAll of a tree");
+  expect(not fs.exists(&two), "the tree is gone");
+  imm five = root.join("five");
+  ok(fs.removeAll(&five), "removeAll of another");
+  ok(fs.removeAll(&five), "removeAll of nothing there is success");
+  ok(fs.removeAll(&file), "removeAll of a file");
+  expect(not fs.exists(&file), "the file is gone");
+  ok(fs.removeDir(&one), "one is empty again");
 }
 
-fn listing(root &Array[u8]) {
-  imm list = path.join(root, "list");
-  ok(fs.makeDir(list.view()), "make list");
+fn listing(root &Path) {
+  imm list = root.join("list");
+  ok(fs.makeDir(&list), "make list");
   // Made in an order that is not the listing's
   imm names = new List[String] <- String.from("日本"), String.from("b"), String.from("Big"),
     String.from("a.txt"), String.from("é"), String.from("a"), String.from("Z.txt");
   mut i = 0usize;
   while i < names.len() {
-    imm p = path.join(list.view(), names[i].view());
-    if names[i].endsWith(".txt") { touch(p.view()); } else { ok(fs.makeDir(p.view()), "make a folder to list"); }
+    imm p = list.join(names[i].view());
+    if names[i].endsWith(".txt") { touch(&p); } else { ok(fs.makeDir(&p), "make a folder to list"); }
     i = i + 1usize;
   }
-  imm inner = path.join(list.view(), "a/inner.txt");
-  touch(inner.view());
-  imm deeper = path.join(list.view(), "é/日本/deep.txt");
-  imm nested = path.join(list.view(), "é/日本");
-  ok(fs.makeDir(nested.view()), "make é/日本");
-  touch(deeper.view());
+  imm inner = list.join("a/inner.txt");
+  touch(&inner);
+  imm deeper = list.join("é/日本/deep.txt");
+  imm nested = list.join("é/日本");
+  ok(fs.makeDir(&nested), "make é/日本");
+  touch(&deeper);
 
   // Windows: names are one name whatever their ASCII case
-  imm capitalB = path.join(list.view(), "B");
-  failsWith(root, fs.makeDir(capitalB.view()), "makeDir <root>/list/B: File exists",
+  imm capitalB = list.join("B");
+  failsWith(root, fs.makeDir(&capitalB), "makeDir <root>/list/B: File exists",
     "Windows: 'B' is the folder 'b'");
 
   // Byte order: capitals before small letters, UTF-8 after ASCII
-  listingIs(root, list.view(),
+  listingIs(root, &list,
     "<root>/list/Big/ <root>/list/Z.txt <root>/list/a/ <root>/list/a.txt <root>/list/b/ <root>/list/é/ <root>/list/日本/ ",
     "readDir, sorted by bytes");
-  imm empty = path.join(list.view(), "b");
-  listingIs(root, empty.view(), "", "readDir of an empty folder");
-  imm aTxt = path.join(list.view(), "a.txt");
-  listingIs(root, aTxt.view(), "readDir <root>/list/a.txt: Not a directory", "readDir of a file");
-  imm none = path.join(list.view(), "none");
-  listingIs(root, none.view(), "readDir <root>/list/none: No such file or directory", "readDir of nothing");
+  imm empty = list.join("b");
+  listingIs(root, &empty, "", "readDir of an empty folder");
+  imm aTxt = list.join("a.txt");
+  listingIs(root, &aTxt, "readDir <root>/list/a.txt: Not a directory", "readDir of a file");
+  imm none = list.join("none");
+  listingIs(root, &none, "readDir <root>/list/none: No such file or directory", "readDir of nothing");
   // A trailing separator, and '\'
-  imm slashed = path.join(list.view(), "a\\");
-  listingIs(root, slashed.view(), "<root>/list/a\\inner.txt ", "readDir with a trailing '\\'");
+  imm slashed = list.join("a\\");
+  listingIs(root, &slashed, "<root>/list/a\\inner.txt ", "readDir with a trailing '\\'");
 
-  walkIs(root, list.view(),
+  walkIs(root, &list,
     "<root>/list/Big/ <root>/list/Z.txt <root>/list/a/ <root>/list/a/inner.txt <root>/list/a.txt <root>/list/b/ <root>/list/é/ <root>/list/é/日本/ <root>/list/é/日本/deep.txt <root>/list/日本/ ",
     "walk, depth first, each folder sorted");
-  walkIs(root, empty.view(), "", "walk of an empty folder");
-  walkIs(root, none.view(), "walk <root>/list/none: No such file or directory", "walk of nothing");
+  walkIs(root, &empty, "", "walk of an empty folder");
+  walkIs(root, &none, "walk <root>/list/none: No such file or directory", "walk of nothing");
 
-  ok(fs.removeAll(list.view()), "removeAll of the listed tree, UTF-8 names among it");
-  expect(not fs.exists(list.view()), "listed tree gone");
+  ok(fs.removeAll(&list), "removeAll of the listed tree, UTF-8 names among it");
+  expect(not fs.exists(&list), "listed tree gone");
 }
 
 // A junction, Windows' link to a folder, made by cmd. Both paths are inside
 // the test's folder, and quoted, since TEMP may hold a space
-fn junction(link &Array[u8], target &Array[u8]) bool {
-  mut paths = String.fromBytes(link);
+fn junction(link &Path, target &Path) bool {
+  mut paths = String.from(link.view());
   paths.append("\" \"");
-  paths.appendBytes(target);
+  paths.append(target.view());
   paths.replaceByte('/', '\\');
   mut command = String.from("mklink /J \"");
   command.append(paths.view());
@@ -210,38 +211,38 @@ fn junction(link &Array[u8], target &Array[u8]) bool {
   libc.system(command.cstr()) == 0i32;
 }
 
-fn links(root &Array[u8]) {
-  imm target = path.join(root, "target");
-  imm kept = path.join(root, "target/kept.txt");
-  imm tree = path.join(root, "tree");
-  imm link = path.join(root, "tree/link");
-  ok(fs.makeDir(target.view()), "make target");
-  touch(kept.view());
-  ok(fs.makeDir(tree.view()), "make tree");
-  require(junction(link.view(), target.view()), "mklink /J made a junction");
+fn links(root &Path) {
+  imm target = root.join("target");
+  imm kept = root.join("target/kept.txt");
+  imm tree = root.join("tree");
+  imm link = root.join("tree/link");
+  ok(fs.makeDir(&target), "make target");
+  touch(&kept);
+  ok(fs.makeDir(&tree), "make tree");
+  require(junction(&link, &target), "mklink /J made a junction");
 
-  listingIs(root, tree.view(), "<root>/tree/link@ ", "a junction is listed as a link");
-  walkIs(root, tree.view(), "<root>/tree/link@ ", "walk does not go into a junction");
+  listingIs(root, &tree, "<root>/tree/link@ ", "a junction is listed as a link");
+  walkIs(root, &tree, "<root>/tree/link@ ", "walk does not go into a junction");
   // stat follows it
-  expect(fs.isDir(link.view()), "stat follows a junction to its folder");
-  imm through = path.join(root, "tree/link/kept.txt");
-  expect(fs.isFile(through.view()), "a file through a junction");
+  expect(fs.isDir(&link), "stat follows a junction to its folder");
+  imm through = root.join("tree/link/kept.txt");
+  expect(fs.isFile(&through), "a file through a junction");
 
-  ok(fs.removeAll(tree.view()), "removeAll of a tree holding a junction");
-  expect(not fs.exists(tree.view()), "the tree is gone");
-  expect(fs.isFile(kept.view()), "what the junction led to is kept");
+  ok(fs.removeAll(&tree), "removeAll of a tree holding a junction");
+  expect(not fs.exists(&tree), "the tree is gone");
+  expect(fs.isFile(&kept), "what the junction led to is kept");
 
   // A junction given to removeAll itself: the link goes, its folder stays
-  ok(fs.makeDir(tree.view()), "make tree again");
-  require(junction(link.view(), target.view()), "mklink /J again");
-  ok(fs.removeAll(link.view()), "removeAll of a junction");
-  expect(not fs.exists(link.view()), "the junction is gone");
-  expect(fs.isFile(kept.view()), "what it led to is still kept");
-  ok(fs.removeAll(tree.view()), "remove tree");
-  ok(fs.removeAll(target.view()), "remove target");
+  ok(fs.makeDir(&tree), "make tree again");
+  require(junction(&link, &target), "mklink /J again");
+  ok(fs.removeAll(&link), "removeAll of a junction");
+  expect(not fs.exists(&link), "the junction is gone");
+  expect(fs.isFile(&kept), "what it led to is still kept");
+  ok(fs.removeAll(&tree), "remove tree");
+  ok(fs.removeAll(&target), "remove target");
 }
 
-fn guards(root &Array[u8]) {
+fn guards(root &Path) {
   failsWith(root, fs.removeAll(""), "removeAll: Invalid argument", "removeAll of an empty path");
   failsWith(root, fs.removeAll("."), "removeAll .: Invalid argument", "removeAll of '.'");
   failsWith(root, fs.removeAll(".."), "removeAll ..: Invalid argument", "removeAll of '..'");
@@ -252,37 +253,37 @@ fn guards(root &Array[u8]) {
   failsWith(root, fs.removeAll("/"), "removeAll /: Invalid argument", "removeAll of a root");
   failsWith(root, fs.removeAll("\\\\server\\share"), "removeAll \\\\server\\share: Invalid argument",
     "removeAll of a share");
-  imm withDot = path.join(root, "x/.");
-  failsWith(root, fs.removeAll(withDot.view()), "removeAll <root>/x/.: Invalid argument", "removeAll ending in '.'");
+  imm withDot = root.join("x/.");
+  failsWith(root, fs.removeAll(&withDot), "removeAll <root>/x/.: Invalid argument", "removeAll ending in '.'");
 }
 
-fn currentFolder(root &Array[u8]) {
-  mut before = String.empty();
+fn currentFolder(root &Path) {
+  mut before = Path.from("");
   match fs.currentDir() {
     case mut c Ok { before <=> c.value; }
     case is Error { require(false, "currentDir"); }
   }
-  expect(path.isAbsolute(before.view()), "currentDir is absolute");
-  expect(not before.contains("\\"), "currentDir is normalized");
+  expect(before.isAbsolute(), "currentDir is absolute");
+  expect(not before.view().contains("\\"), "currentDir is normalized");
 
-  imm here = path.join(root, "here é");
-  ok(fs.makeDir(here.view()), "make 'here é'");
-  ok(fs.setCurrentDir(here.view()), "setCurrentDir");
+  imm here = root.join("here é");
+  ok(fs.makeDir(&here), "make 'here é'");
+  ok(fs.setCurrentDir(&here), "setCurrentDir");
   match fs.currentDir() {
     case imm c Ok {
-      imm want = path.normalize(here.view());
+      imm want = here.normalize();
       expectStr(c.value.view(), want.view(), "currentDir is where it was set");
     }
     case is Error { expect(false, "currentDir after setCurrentDir"); }
   }
   // Relative paths read from it
   ok(fs.writeFile("rel.txt", "relative"), "write a relative path");
-  imm rel = path.join(here.view(), "rel.txt");
-  expect(fs.isFile(rel.view()), "a relative path lands in the current folder");
+  imm rel = here.join("rel.txt");
+  expect(fs.isFile(&rel), "a relative path lands in the current folder");
 
   // absolute: the current folder's normalized path, then the name, '..' read
-  imm norm = path.normalize(here.view());
-  mut wantRel = norm.copy();
+  imm norm = here.normalize();
+  mut wantRel = String.from(norm.view());
   wantRel.append("/rel.txt");
   match fs.absolute("rel.txt") {
     case imm a Ok { expectStr(a.value.view(), wantRel.view(), "absolute of a name"); }
@@ -294,7 +295,7 @@ fn currentFolder(root &Array[u8]) {
   }
   match fs.absolute("not-there.txt") {
     case imm a Ok {
-      imm want = path.join(norm.view(), "not-there.txt");
+      imm want = norm.join("not-there.txt");
       expectStr(a.value.view(), want.view(), "absolute of a name not there");
     }
     case is Error { expect(false, "absolute of a name not there"); }
@@ -305,7 +306,7 @@ fn currentFolder(root &Array[u8]) {
   }
   match fs.absolute("..") {
     case imm a Ok {
-      imm want = path.normalize(root);
+      imm want = root.normalize();
       expectStr(a.value.view(), want.view(), "absolute of '..'");
     }
     case is Error { expect(false, "absolute of '..'"); }
@@ -314,33 +315,32 @@ fn currentFolder(root &Array[u8]) {
     case imm a Ok { expectStr(a.value.view(), "C:/Where", "absolute of an absolute path"); }
     case is Error { expect(false, "absolute of an absolute path"); }
   }
-  imm missing = path.join(root, "missing");
-  failsWith(root, fs.setCurrentDir(missing.view()), "setCurrentDir <root>/missing: No such file or directory",
+  imm missing = root.join("missing");
+  failsWith(root, fs.setCurrentDir(&missing), "setCurrentDir <root>/missing: No such file or directory",
     "setCurrentDir to nothing");
 
   // Back where it started
-  ok(fs.setCurrentDir(before.view()), "setCurrentDir back");
+  ok(fs.setCurrentDir(&before), "setCurrentDir back");
   match fs.currentDir() {
     case imm c Ok { expectStr(c.value.view(), before.view(), "currentDir restored"); }
     case is Error { expect(false, "currentDir restored"); }
   }
-  ok(fs.removeAll(here.view()), "remove 'here é'");
+  ok(fs.removeAll(&here), "remove 'here é'");
 }
 
 fn main() i32 {
   imm root = makeRoot("cone-fs-test-folders");
-  imm r = root.view();
-  require(fs.removeAll(r) is Ok, "clear what an earlier run left");
-  require(fs.makeDir(r) is Ok, "make the test's folder");
+  require(fs.removeAll(&root) is Ok, "clear what an earlier run left");
+  require(fs.makeDir(&root) is Ok, "make the test's folder");
 
-  making(r);
-  listing(r);
-  links(r);
-  guards(r);
-  currentFolder(r);
+  making(&root);
+  listing(&root);
+  links(&root);
+  guards(&root);
+  currentFolder(&root);
 
-  listingIs(r, r, "", "the test's folder is empty again");
-  ok(fs.removeAll(r), "remove the test's folder");
-  expect(not fs.exists(r), "the test's folder is gone");
+  listingIs(&root, &root, "", "the test's folder is empty again");
+  ok(fs.removeAll(&root), "remove the test's folder");
+  expect(not fs.exists(&root), "the test's folder is gone");
   done();
 }

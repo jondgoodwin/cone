@@ -58,7 +58,7 @@ struct Listing {
 
 fn coneFiles(folder &Array[u8]) Listing {
   mut entries = List[fs.DirEntry].empty();
-  match fs.readDir(folder) {
+  match fs.readDir(&asPath(folder)) {
     case mut ok Ok { entries <=> ok.value; }
     case imm e Error {
       fail(e.value.message());
@@ -70,8 +70,8 @@ fn coneFiles(folder &Array[u8]) Listing {
     imm entry = entries[i];
     imm full = joined(folder, entry.name.view());
     // A link is what it leads to, as Path.is_file and is_dir follow it
-    imm isFile = if entry.isLink {fs.isFile(full.view());} else {entry.isFile;};
-    imm isDir = if entry.isLink {fs.isDir(full.view());} else {entry.isDir;};
+    imm isFile = if entry.isLink {fs.isFile(&asPath(full.view()));} else {entry.isFile;};
+    imm isDir = if entry.isLink {fs.isDir(&asPath(full.view()));} else {entry.isDir;};
     imm ext = path.extension(entry.name.view());
     if isFile and ext.equals(".cone") { out.files.push(full.copy()); }
     if isDir { out.folders.push(full); }
@@ -159,7 +159,7 @@ fn scanFolderModule(mods &mut List[Module], name &Array[u8], folder &Array[u8], 
     if not subName.equals("build") {
       imm innerName = cat(subName.view(), ".cone");
       imm inner = joined(sub, innerName.view());
-      if fs.isFile(inner.view()) {
+      if fs.isFile(&asPath(inner.view())) {
         imm fault = nameFault(subName.view());
         if not fault.isEmpty() {
           return Error[usize, String][cat(inner.view(), ": a module folder names its module: '", subName.view(), "' ", fault.view(),
@@ -210,7 +210,7 @@ fn scanOrganisational(mods &mut List[Module], m usize, folder &Array[u8]) Result
     imm subName = path.name(sub);
     imm innerName = cat(subName.view(), ".cone");
     imm inner = joined(sub, innerName.view());
-    if fs.isFile(inner.view()) {
+    if fs.isFile(&asPath(inner.view())) {
       return Error[void, String][cat(inner.view(), ": a module must sit directly in its parent module's folder, not in the organisational folder ", folder)];
     }
     match scanOrganisational(mods, m, sub) {
@@ -228,7 +228,7 @@ fn scanOrganisational(mods &mut List[Module], m usize, folder &Array[u8]) Result
 // 'name'. Congo lists the files, so the compiler never sweeps. A lone file is
 // a module of its own and nothing beside it joins.
 fn scanPackage(pkg &Package) Result[List[Module], String] {
-  if not fs.isFile(pkg.src.view()) {
+  if not fs.isFile(&asPath(pkg.src.view())) {
     imm place = shown(pkg.src.view());
     return Error[List[Module], String][cat("package ", pkg.name.view(), " has no ", place.view(),
       ": a package's root module is src/<name>.cone, named as its manifest names it")];
@@ -248,7 +248,7 @@ fn scanPackage(pkg &Package) Result[List[Module], String] {
     case imm e Error { return Error[List[Module], String][e.value.copy()]; }
   }
   imm gpuFolder = joined(pkg.root.view(), "gpu");
-  if fs.isDir(gpuFolder.view()) {
+  if fs.isDir(&asPath(gpuFolder.view())) {
     match scanGpuFolder(pkg, &mut mods, gpuFolder.view()) {
       case is Ok {}
       case imm e Error { return Error[List[Module], String][e.value.copy()]; }
@@ -309,7 +309,7 @@ fn scanGpuFolder(pkg &Package, mods &mut List[Module], folder &Array[u8]) Result
     imm subName = path.name(sub);
     imm innerName = cat(subName.view(), ".cone");
     imm inner = joined(sub, innerName.view());
-    if not fs.isFile(inner.view()) {
+    if not fs.isFile(&asPath(inner.view())) {
       return Error[void, String][cat(sub, ": a folder in gpu/ is a module folder, holding its designated file, ", innerName.view(),
         ": gpu/ holds the package's GPU modules, and a folder with none would be part of no module")];
     }

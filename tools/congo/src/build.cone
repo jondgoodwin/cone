@@ -158,7 +158,7 @@ fn loneBuildRoot(file &Array[u8]) String {
 fn lonePackage(given &Array[u8]) Result[Package, String] {
   imm p = winPath(given);
   imm file = resolved(p.view());
-  if not fs.isFile(file.view()) { return Error[Package, String][cat("no file ", file.view())]; }
+  if not fs.isFile(&asPath(file.view())) { return Error[Package, String][cat("no file ", file.view())]; }
   mut header = noHeader();
   match scanHeader(file.view()) {
     case mut ok Ok { header <=> ok.value; }
@@ -196,7 +196,7 @@ fn compileUnit(conec &Array[u8], reg &Registry, plan &Plan, u usize, out &Array[
   imm desc = joined(out, descName.view());
   imm packages = closure(plan, reg, u);
   imm text = description(reg, unit, mode, output.view(), includes, &packages);
-  match fs.writeFile(desc.view(), text.view()) {
+  match fs.writeFile(&asPath(desc.view()), text.view()) {
     case is Ok {}
     case imm e Error {
       fail(e.value.message());
@@ -205,7 +205,7 @@ fn compileUnit(conec &Array[u8], reg &Registry, plan &Plan, u usize, out &Array[
   // A library's include file is written afresh, so one left by an earlier
   // build never stands in for it
   imm incl = includeFor(pkg, out);
-  match fs.removeFile(incl.view()) {
+  match fs.removeFile(&asPath(incl.view())) {
     case is Ok {}
     case imm e Error {
       if not e.value.notFound() {
@@ -223,8 +223,8 @@ fn compileUnit(conec &Array[u8], reg &Registry, plan &Plan, u usize, out &Array[
   }
   imm objName = cat(pkg.name.view(), ".obj");
   imm obj = joined(out, objName.view());
-  if not fs.isFile(obj.view()) { return Error[String, String][cat("conec wrote no object at ", obj.view())]; }
-  if output.equals("library") and not fs.isFile(incl.view()) {
+  if not fs.isFile(&asPath(obj.view())) { return Error[String, String][cat("conec wrote no object at ", obj.view())]; }
+  if output.equals("library") and not fs.isFile(&asPath(incl.view())) {
     return Error[String, String][cat("conec wrote no include file for ", pkg.name.view(), " at ", incl.view())];
   }
   Ok[String, String][obj];
@@ -277,7 +277,7 @@ fn runConec(conec &Array[u8], defines &List[String], rest List[String]) bool {
 }
 
 fn makeFolder(folder &Array[u8]) {
-  match fs.makeDirAll(folder) {
+  match fs.makeDirAll(&asPath(folder)) {
     case is Ok {}
     case imm e Error {
       fail(e.value.message());
@@ -321,7 +321,7 @@ fn compile(s &mut Session, plan &Plan, top usize, topOut &Array[u8], announce bo
   while i < plan.order.len() {
     imm pkg = s.reg.packages[plan.units[*plan.order[i]].pkg];
     imm hand = pkg.handInclude();
-    if not pkg.lone and fs.isFile(hand.view()) and not holdsName(&s.warned, pkg.name.view()) {
+    if not pkg.lone and fs.isFile(&asPath(hand.view())) and not holdsName(&s.warned, pkg.name.view()) {
       s.warned.push(pkg.name.copy());
       warn(cat("warning: ", hand.view(), " is not used: a package's importers compile against the include file its own compile generates, build/<mode>/",
         pkg.name.view(), ".cone"));
@@ -424,7 +424,7 @@ fn holdsPath(list &List[String], p &Array[u8]) bool {
 // the running Congo is moved aside, to <exe>.old (one left by a build before
 // removed first), and the new one is linked where any build links it.
 fn moveAsideIfRunning(exe &Array[u8]) {
-  mut running = String.empty();
+  mut running = asPath("");
   match process.currentExe() {
     case mut ok Ok { running <=> ok.value; }
     case is Error { return; }
@@ -432,7 +432,7 @@ fn moveAsideIfRunning(exe &Array[u8]) {
   imm spelled = winPath(running.view());
   if not samePath(spelled.view(), exe) { return; }
   imm old = cat(exe, ".old");
-  match fs.removeFile(old.view()) {
+  match fs.removeFile(&asPath(old.view())) {
     case is Ok {}
     case imm e Error {
       if not e.value.notFound() {
@@ -440,7 +440,7 @@ fn moveAsideIfRunning(exe &Array[u8]) {
       }
     }
   }
-  match fs.rename(exe, old.view()) {
+  match fs.rename(&asPath(exe), &asPath(old.view())) {
     case is Ok {}
     case imm e Error {
       fail(e.value.message());
@@ -486,15 +486,15 @@ fn envFolders(name &Array[u8], out &mut List[String]) {
 fn runtimeFolders(repo &Array[u8], paths &List[String]) List[String] {
   mut folders = copyStrings(paths);
   imm deps = depsFolder(repo);
-  if fs.isDir(deps.view()) {
+  if fs.isDir(&asPath(deps.view())) {
     mut entries = List[fs.DirEntry].empty();
-    match fs.readDir(deps.view()) {
+    match fs.readDir(&asPath(deps.view())) {
       case mut ok Ok { entries <=> ok.value; }
       case is Error {}
     }
     mut i = 0usize;
     while i < entries.len() {
-      if fs.isDir(entries[i].path.view()) { folders.push(entries[i].path.copy()); }
+      if fs.isDir(&entries[i].path) { folders.push(String.from(entries[i].path.view())); }
       i = i + 1usize;
     }
   }
@@ -510,7 +510,7 @@ fn findRuntime(repo &Array[u8], name &Array[u8], pkgName &Array[u8], folders &Li
   mut i = 0usize;
   while i < folders.len() {
     imm candidate = joined(folders[i].view(), file.view());
-    if fs.isFile(candidate.view()) { return Ok[String, String][candidate]; }
+    if fs.isFile(&asPath(candidate.view())) { return Ok[String, String][candidate]; }
     i = i + 1usize;
   }
   mut listed = String.from("none");
@@ -533,22 +533,22 @@ fn copyRuntime(source &Array[u8], folder &Array[u8], name &Array[u8]) Result[boo
 // whether it copied
 fn copyIfChanged(source &Array[u8], target &Array[u8]) Result[bool, String] {
   mut data = String.empty();
-  match fs.readFile(source) {
+  match fs.readFile(&asPath(source)) {
     case mut ok Ok { data <=> ok.value; }
     case imm e Error {
       imm why = e.value.message();
       return Error[bool, String][cat("cannot copy ", source, " to ", target, ": ", why.view())];
     }
   }
-  if fs.isFile(target) {
+  if fs.isFile(&asPath(target)) {
     mut there = String.empty();
-    match fs.readFile(target) {
+    match fs.readFile(&asPath(target)) {
       case mut ok Ok { there <=> ok.value; }
       case is Error {}
     }
     if there.len() == data.len() and there.equals(data.view()) { return Ok[bool, String][false]; }
   }
-  match fs.writeFile(target, data.view()) {
+  match fs.writeFile(&asPath(target), data.view()) {
     case is Ok {}
     case imm e Error {
       imm why = e.value.message();
@@ -628,7 +628,7 @@ fn link(s &mut Session, plan &Plan, objs &List[String], exe &Array[u8], announce
         match findRuntime(s.repo.view(), name, pkg.name.view(), &folders, &paths) {
           case imm ok Ok { runtimeFiles.push(ok.value.copy()); }
           case imm e Error {
-            fs.removeFile(exe);
+            fs.removeFile(&asPath(exe));
             return Error[void, String][e.value.copy()];
           }
         }
@@ -668,7 +668,7 @@ fn link(s &mut Session, plan &Plan, objs &List[String], exe &Array[u8], announce
     say("Linking", place.view());
   }
   moveAsideIfRunning(exe);
-  match fs.removeFile(exe) {
+  match fs.removeFile(&asPath(exe)) {
     case is Ok {}
     case imm e Error {
       if not e.value.notFound() {

@@ -5,17 +5,17 @@
 // The nearest congo.toml in the current folder or one above it; "" when
 // there is none
 fn findManifest() String {
-  mut folder = String.empty();
+  mut here = asPath("");
   match fs.currentDir() {
-    case mut ok Ok { folder <=> ok.value; }
+    case mut ok Ok { here <=> ok.value; }
     case imm e Error {
       fail(e.value.message());
     }
   }
-  folder = winPath(folder.view());
+  mut folder = winPath(here.view());
   while true {
     imm candidate = joined(folder.view(), "congo.toml");
-    if fs.isFile(candidate.view()) { return candidate; }
+    if fs.isFile(&asPath(candidate.view())) { return candidate; }
     imm up = parentOf(folder.view());
     if up.equals(folder.view()) { return String.empty(); }
     folder = up;
@@ -53,7 +53,7 @@ fn currentPackage() Package {
 fn writeLines(file &Array[u8], text &Array[u8]) {
   mut s = String.fromBytes(text);
   s.replace("\n", "\r\n");
-  match fs.writeFile(file, s.view()) {
+  match fs.writeFile(&asPath(file), s.view()) {
     case is Ok {}
     case imm e Error {
       fail(e.value.message());
@@ -80,7 +80,7 @@ fn cmdNew(name &Array[u8], folder &Array[u8], lib bool) i32 {
   if not fault.isEmpty() { fail(cat("'", name, "' ", fault.view())); }
   imm given = winPath(if folder.len > 0usize {folder;} else {name;});
   imm root = resolved(given.view());
-  if fs.exists(root.view()) { fail(cat(root.view(), " already exists")); }
+  if fs.exists(&asPath(root.view())) { fail(cat(root.view(), " already exists")); }
   mut output &Array[u8] = "executable";
   if lib { output = "library"; }
   imm src = joined(root.view(), "src");
@@ -161,8 +161,8 @@ fn cmdClean(file &Array[u8], hasFile bool) i32 {
     imm pkg = currentPackage();
     target = joined(pkg.root.view(), "build");
   }
-  if fs.exists(target.view()) {
-    match fs.removeAll(target.view()) {
+  if fs.exists(&asPath(target.view())) {
+    match fs.removeAll(&asPath(target.view())) {
       case is Ok {}
       case imm e Error {
         fail(e.value.message());

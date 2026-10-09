@@ -21,11 +21,15 @@
 // another character can be mistaken for one. Validating a path against a
 // platform's rules is not done: any text is a Path.
 //
+// 'fs' and 'process' take a '&Path' (a string literal where one is wanted is
+// made one), and answer a 'Path' where they answer a path.
+//
 // The functions of this package that take a '&Array[u8]' and answer a String
 // ('join', 'parent', 'name', 'stem', 'extension', 'parts', 'normalize',
 // 'volume', 'isAbsolute') are what the 'Path' methods were before 'Path'; they
-// remain, as wrappers over the same code, for callers that still hold a path as
-// bytes ('fs', 'process', the Cone Congo), and go when those take a 'Path'.
+// remain, as wrappers over the same code, for the one caller that still holds
+// its paths as bytes, the Cone Congo (tools/congo/src), and go when it holds
+// 'Path's. Nothing else uses them: a new caller uses the methods.
 //
 // **Windows' rules.** The paths read here are Windows' paths, as the rest of
 // the OS layer is Windows' for now; a POSIX version of this package would
@@ -289,9 +293,9 @@ fn normalizeOf(p &Array[u8]) String {
 //
 // Before 'Path' these were the package's whole interface, over a '&Array[u8]'
 // and answering a String. They remain as one-line wrappers over the same code
-// the 'Path' methods use, so that a caller still holding a byte path (fs,
-// process, the Cone Congo) keeps working until it holds a 'Path'; a new caller
-// uses the methods.
+// the 'Path' methods use, so that the Cone Congo, which still holds its paths
+// as bytes, keeps working until it holds a 'Path'; a new caller uses the
+// methods.
 
 pub fn isAbsolute(p &Array[u8]) bool { absoluteOf(p); }
 pub fn volume(p &Array[u8]) String { volumeOf(p); }
@@ -377,9 +381,10 @@ pub struct Path is Hash {
 
   // This path then another; see 'path.join'. An absolute other wins. The
   // other may be text, read as a path, so a literal goes here as well:
-  // 'dir.join("src/main.cone")'. (A literal is made a Path only where a Path
-  // is wanted by value, not where one is borrowed, so the text form is an
-  // overload of its own.)
+  // 'dir.join("src/main.cone")'. (A literal given to a '&Path' is lent as a
+  // temporary Path, but only where no candidate takes it as it is; the text
+  // form takes it as the '&str' it is, so no Path is made for it, and any
+  // other text, a String's view, is joined without being made a Path first.)
   pub fn joinPath overload join(self &, other &Path) Path { Path.fromString(joinOf(text.view(), other.view())); }
   pub fn joinText overload join(self &, other &str) Path { Path.fromString(joinOf(text.view(), other)); }
 

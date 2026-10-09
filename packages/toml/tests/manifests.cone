@@ -20,7 +20,7 @@ import testing use *;
 import collections use *;
 import stdio use *;
 import fs;
-import path;
+import path use Path;
 import toml;
 
 fn parsed(text &Array[u8], label &Array[u8]) toml.Document {
@@ -68,7 +68,7 @@ fn oneOf(s &Array[u8], a &Array[u8], b &Array[u8]) bool { s == a or s == b; }
 
 // What is wrong with the manifest at file, read as Congo reads it, for the
 // package in the folder named folder: "" when nothing is
-fn checkManifest(file &Array[u8], folder &str) String {
+fn checkManifest(file &Path, folder &str) String {
   mut text = String.empty();
   match fs.readFile(file) {
     case mut ok Ok { text <=> ok.value; }
@@ -139,7 +139,7 @@ fn checkManifest(file &Array[u8], folder &str) String {
 }
 
 // Check every folder of registry holding a congo.toml; how many there were
-fn checkFolder(registry &Array[u8], label &Array[u8]) usize {
+fn checkFolder(registry &Path, label &Array[u8]) usize {
   mut entries = List[fs.DirEntry].empty();
   match fs.readDir(registry) {
     case mut ok Ok { entries <=> ok.value; }
@@ -154,10 +154,10 @@ fn checkFolder(registry &Array[u8], label &Array[u8]) usize {
   mut i = 0usize;
   while i < entries.len() {
     if entries[i].isDir {
-      imm file = path.join(entries[i].path.view(), "congo.toml");
-      if fs.isFile(file.view()) {
+      imm file = entries[i].path.join("congo.toml");
+      if fs.isFile(&file) {
         count = count + 1usize;
-        imm wrong = checkManifest(file.view(), entries[i].name.view());
+        imm wrong = checkManifest(&file, entries[i].name.view());
         if not wrong.isEmpty() {
           bad = bad + 1usize;
           printStr(file.view());
@@ -175,28 +175,28 @@ fn checkFolder(registry &Array[u8], label &Array[u8]) usize {
 
 // The packages folder: the parent of the nearest folder above this test's
 // whose congo.toml names the toml package
-fn packagesFolder() String {
-  mut here = String.empty();
+fn packagesFolder() Path {
+  mut here = Path.from("");
   match fs.currentDir() {
     case mut ok Ok { here <=> ok.value; }
-    case is Error { return String.empty(); }
+    case is Error { return Path.from(""); }
   }
   while not here.isEmpty() {
-    imm file = path.join(here.view(), "congo.toml");
-    if fs.isFile(file.view()) {
-      match fs.readFile(file.view()) {
+    imm file = here.join("congo.toml");
+    if fs.isFile(&file) {
+      match fs.readFile(&file) {
         case imm t Ok {
           imm doc = parsed(t.value.view(), "a congo.toml above the test");
           if doc.has("package") {
             imm name = strValue(doc["package"], "name");
-            if name.equals("toml") { return path.parent(here.view()); }
+            if name.equals("toml") { return here.parent(); }
           }
         }
         case is Error {}
       }
     }
-    imm up = path.parent(here.view());
-    if up.equals(here.view()) { return String.empty(); }
+    imm up = here.parent();
+    if up.view() == here.view() { return Path.from(""); }
     here = up;
   }
   here;
@@ -205,38 +205,38 @@ fn packagesFolder() String {
 fn repository() {
   imm packages = packagesFolder();
   require(not packages.isEmpty(), "the packages folder found");
-  imm n = checkFolder(packages.view(), "every package's manifest reads as Congo reads it");
+  imm n = checkFolder(&packages, "every package's manifest reads as Congo reads it");
   expect(n >= 31usize, "at least the 31 packages there are today");
-  imm repo = path.parent(packages.view());
-  imm samples = path.join(repo.view(), "samples");
-  if fs.isDir(samples.view()) {
-    checkFolder(samples.view(), "every sample's manifest reads as Congo reads it");
+  imm repo = packages.parent();
+  imm samples = repo.join("samples");
+  if fs.isDir(&samples) {
+    checkFolder(&samples, "every sample's manifest reads as Congo reads it");
   }
   else {
     expect(true, "no samples beside this packages folder");
   }
 
   // Spot checks, through the files themselves
-  imm sdl = readPackage(packages.view(), "sdl");
+  imm sdl = readPackage(&packages, "sdl");
   isList(sdl["link"], "libraries", "SDL3", "sdl links SDL3");
   isList(sdl["link"], "runtime", "SDL3", "sdl has SDL3.dll copied beside its programs");
   isStr(sdl["package"], "output", "library", "sdl is a library");
-  imm process = readPackage(packages.view(), "process");
+  imm process = readPackage(&packages, "process");
   isList(process["link"], "libraries", "shell32", "process links shell32");
-  imm sync = readPackage(packages.view(), "sync");
+  imm sync = readPackage(&packages, "sync");
   isList(sync["link"], "libraries", "synchronization", "sync links synchronization");
-  imm geomath = readPackage(packages.view(), "geomath");
+  imm geomath = readPackage(&packages, "geomath");
   isList(geomath["package"], "targets", "native|gpu", "geomath is marked for the GPU");
-  imm own = readPackage(packages.view(), "toml");
+  imm own = readPackage(&packages, "toml");
   isStr(own["package"], "version", "0.1.0", "this package's version");
   expect(not own.has("link"), "this package links nothing");
 }
 
-fn readPackage(packages &Array[u8], name &Array[u8]) toml.Document {
-  imm folder = path.join(packages, name);
-  imm file = path.join(folder.view(), "congo.toml");
+fn readPackage(packages &Path, name &str) toml.Document {
+  imm folder = packages.join(name);
+  imm file = folder.join("congo.toml");
   mut doc = new toml.Document();
-  match fs.readFile(file.view()) {
+  match fs.readFile(&file) {
     case imm t Ok { doc = parsed(t.value.view(), name); }
     case imm e Error {
       imm m = e.value.message();

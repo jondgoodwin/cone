@@ -120,7 +120,7 @@ fn withSuffix(file &Array[u8], suffix &Array[u8]) String {
 // A file's whole text, or Congo stops, as congo.py stops at a file it cannot
 // read
 fn readAll(file &Array[u8]) String {
-  match fs.readFile(file) {
+  match fs.readFile(&asPath(file)) {
     case mut ok Ok {
       mut text = String.empty();
       text <=> ok.value;
@@ -132,7 +132,7 @@ fn readAll(file &Array[u8]) String {
 
 // A file written as bytes, or Congo stops
 fn writeAll(file &Array[u8], text &Array[u8]) {
-  match fs.writeFile(file, text) {
+  match fs.writeFile(&asPath(file), text) {
     case is Ok {}
     case imm e Error { fail(e.value.message()); }
   }
@@ -215,7 +215,7 @@ fn pyRepr(text &Array[u8]) String {
 // Answered in decimal, as Python writes the integer back
 fn expectedExit(program &Array[u8]) Result[String, String] {
   imm file = withSuffix(program, ".exit");
-  if not fs.isFile(file.view()) { return Ok[String, String][String.from("0")]; }
+  if not fs.isFile(&asPath(file.view())) { return Ok[String, String][String.from("0")]; }
   imm raw = readAll(file.view());
   imm text = stripped(raw.view());
   imm value = pyInt(text.view());
@@ -231,7 +231,7 @@ fn expectedExit(program &Array[u8]) Result[String, String] {
 // nothing to say in a release build. A release test skips it
 fn debugOnly(program &Array[u8]) bool {
   imm marker = withSuffix(program, ".debug");
-  fs.isFile(marker.view());
+  fs.isFile(&asPath(marker.view()));
 }
 
 // Folder paths in the order congo.py's sorted() puts Windows paths: by
@@ -248,9 +248,9 @@ fn byFoldedPath(a &String, b &String) i32 {
 // those whose name contains the filter where one is given
 fn programs(folder &Array[u8], filter &Array[u8], hasFilter bool) List[String] {
   mut found = List[String].empty();
-  if not fs.isDir(folder) { return found; }
+  if not fs.isDir(&asPath(folder)) { return found; }
   mut entries = List[fs.DirEntry].empty();
-  match fs.readDir(folder) {
+  match fs.readDir(&asPath(folder)) {
     case mut ok Ok { entries <=> ok.value; }
     case imm e Error { fail(e.value.message()); }
   }
@@ -259,7 +259,7 @@ fn programs(folder &Array[u8], filter &Array[u8], hasFilter bool) List[String] {
     imm entry = entries[i];
     imm full = joined(folder, entry.name.view());
     imm ext = path.extension(entry.name.view());
-    if fs.isFile(full.view()) and ext.equals(".cone") {
+    if fs.isFile(&asPath(full.view())) and ext.equals(".cone") {
       imm stem = path.stem(entry.name.view());
       if not hasFilter or stem.contains(filter as &str) { found.push(full); }
     }
@@ -294,8 +294,8 @@ fn runTest(s &mut Session, file &Array[u8], bless bool) Verdict {
   mut stderr = String.empty();
   // A crash, a panic's above all, ends at once, not held while Windows
   // reports it (the process package's "A crash")
-  match process.run(args.view(), new process.Options(dir: dest.view(),
-      timeout: time.Duration.fromSeconds(testTimeoutSeconds), crashReport: false)) {
+  match process.run(args.view(), new process.Options(
+      timeout: time.Duration.fromSeconds(testTimeoutSeconds), crashReport: false), &asPath(dest.view())) {
     case imm ok Ok {
       if ok.value.timedOut {
         // What it wrote to stderr says how far it got: a panic's line, say,
@@ -319,7 +319,7 @@ fn runTest(s &mut Session, file &Array[u8], bless bool) Verdict {
   imm notStarted = dllNote(code, exe.view());
   if notStarted.len() > 0usize { return new Verdict(false, notStarted); }
   imm expectedPath = withSuffix(file, ".out");
-  if not fs.isFile(expectedPath.view()) {
+  if not fs.isFile(&asPath(expectedPath.view())) {
     imm expectedShown = shown(expectedPath.view());
     if not bless {
       return new Verdict(false, cat("no expected output, ", expectedShown.view(), ": write it by hand, or run 'congo test ",
@@ -371,7 +371,7 @@ fn runTest(s &mut Session, file &Array[u8], bless bool) Verdict {
   // stderr, where it writes there on purpose: a panic's line. Without one,
   // stderr is not compared
   imm errPath = withSuffix(file, ".err");
-  imm errChecked = fs.isFile(errPath.view());
+  imm errChecked = fs.isFile(&asPath(errPath.view()));
   if errChecked {
     imm errText = readAll(errPath.view());
     imm expectedErr = normalizedLines(errText.view());
@@ -481,7 +481,7 @@ fn testPackage(repo &Array[u8], pkg Package, mode &Array[u8], filter &Array[u8],
       }
     }
   }
-  if not fs.isDir(testsFolder.view()) {
+  if not fs.isDir(&asPath(testsFolder.view())) {
     imm none = cat("none: ", name.view(), " has no tests folder");
     say("Tests", none.view());
   }
@@ -561,7 +561,7 @@ fn testPackage(repo &Array[u8], pkg Package, mode &Array[u8], filter &Array[u8],
 fn packageManifests(folder &Array[u8]) List[String] {
   mut found = List[String].empty();
   mut entries = List[fs.DirEntry].empty();
-  match fs.readDir(folder) {
+  match fs.readDir(&asPath(folder)) {
     case mut ok Ok { entries <=> ok.value; }
     case imm e Error { fail(e.value.message()); }
   }
@@ -569,7 +569,7 @@ fn packageManifests(folder &Array[u8]) List[String] {
   while i < entries.len() {
     imm sub = joined(folder, entries[i].name.view());
     imm manifest = joined(sub.view(), "congo.toml");
-    if fs.isFile(manifest.view()) { found.push(manifest); }
+    if fs.isFile(&asPath(manifest.view())) { found.push(manifest); }
     i = i + 1usize;
   }
   found;
@@ -581,15 +581,15 @@ fn cmdTest(filter &Array[u8], hasFilter bool, release bool, bless bool, defines 
   mut mode &Array[u8] = "debug";
   if release { mode = "release"; }
   imm repo = findRepo();
-  mut here = String.empty();
+  mut cwd = asPath("");
   match fs.currentDir() {
-    case mut ok Ok { here <=> ok.value; }
+    case mut ok Ok { cwd <=> ok.value; }
     case imm e Error { fail(e.value.message()); }
   }
-  here = winPath(here.view());
+  imm here = winPath(cwd.view());
   imm own = joined(here.view(), "congo.toml");
   mut manifests = List[String].empty();
-  if not fs.isFile(own.view()) { manifests = packageManifests(here.view()); }
+  if not fs.isFile(&asPath(own.view())) { manifests = packageManifests(here.view()); }
   if manifests.len() == 0usize { manifests.push(currentManifest()); }
   mut total = emptyTally();
   mut i = 0usize;
