@@ -1502,6 +1502,65 @@ drop function.
 The pending table is not traced: a record that would hold a traced reference
 is refused before generation ([Flow](flow.md), "A seam").
 
+### A generator
+
+A generator ([Parse](parse.md), "It generates a generator's declarations") is a
+struct holding its parameters as fields, and a method `next` whose body is the
+author's (`genlyield.c`). Its seams are `await`'s, cut differently: `next` is
+generated **whole, once**, entered through a switch on the struct's state field
+(`GenInfo.state`) which `genlGenBegin` builds at the function's entry:
+
+- state 0, the default: the body from its start, the generator just made;
+- state *k*: just after the *k*-th `yield` in the order written
+  (`YieldNode.yieldno`, numbered once the function is walked);
+- `GenDone`: the body has ended, and `next` hands back None (`walk.none`)
+  and runs nothing.
+
+A `yield` (`genlYield`) makes the result `next` gives, ends its statement's
+temporaries, stores its number in the state and returns the result. What follows
+it is generated into a block of its own, which no path in this call reaches; its
+seam adds a case to the entry switch, whose block (a stub) stores
+`DropFlagEmpty` into the flag of every local in scope that the frame does not
+keep, and goes to it. Every `return`, and the body's end, store `GenDone` first
+(`genlGenReturn`, from `genlReturn`). Nothing is moved into a record: the
+variables that must live across a seam are not in the function's frame of
+allocas, but in the generator's.
+
+**The frame** is hidden storage after the struct's fields, one more element of
+its LLVM type (`genlGenFrameType`, from `genlStructFields`), so that every
+generator of the kind is as large as its parameters and its frame. It holds each
+local the loan walk noted, at any seam, as holding its value and either used
+after the seam or finalized as it dies (`SeamLive`, `SeamDies`; `genlGenPlan`,
+once for all seams), with its drop flag where it has one. A frame local is
+generated where it is declared (`genlLocalVar`) but takes its storage, found by
+a `getelementptr` of the frame at the function's entry (so that it dominates every
+path that resumes the body), instead of an `alloca` (`genlGenFrameVar`), and a
+drop flag in the frame is stored as any is (`genlDropFlagBegin`). A match
+binding in the matched variable's storage (`flowMatchInPlace`) takes none of its
+own, and the matched variable is kept in its place. The frame is not zeroed or
+filled by the construction (the struct literal leaves it undefined); nothing in it
+is read before the body's declaration made it.
+
+**A generator that would hold itself** -- a local whose type is the generator's own
+kind, as the sub-generator of `yield each walk(t.left)` is in `walk`, or one that
+holds it in its frame -- has that local's storage on the heap (`GenFrameBoxed`,
+`genlGenSelfHolding`): the frame holds its address, made by `malloc` at the first
+call (state 0) before the switch, loaded at the entry as the local's storage, and
+freed when the generator dies. Mutual recursion boxes the local that closes the
+cycle. A generator that holds another of a different kind holds it inline.
+
+**Dying** is the generator's `final`, an empty method the parser wrote, whose body
+`genlGenBegin` begins with `genlGenDrop`: a generator not yet run holds nothing in
+its frame, a finished one has finalized its locals as their scopes ended, and one
+left at a seam finalizes what the frame holds there, newest first, a local with a
+drop flag only if the flag says it holds its whole value (as `genlSeamDrop`
+does); then the boxes are freed. The parameters, fields of the struct, die after,
+with the struct's own drop. The deepest sub-generator therefore finalizes first.
+
+Not built: a generator in a library's include file (it would have to carry the
+body whole for an importer to make the struct again; `ErrorGenForm`). Not tried:
+a GPU or WebAssembly target (a box is a C `malloc`).
+
 ## 7. Output, and what does not work
 
 `--llvmir` writes **two** files: `.preir` before the pass manager and `.ir`
@@ -2078,6 +2137,8 @@ variables.
 | | `genlReleaseOwning`, `genlDealiasNodes` | releasing one owner of an owning reference or of each a tuple value carries, and replaying flow's lists |
 | | `genlTempKeep`, `genlTempsEnd`, `genlTempsJump`, `genlTempRelease` | a temporary kept in its slot; those a part made finalized at its end, or before a jump ("Temporaries"); a lock's guard in a split method only where its flag says it holds its lock ("A split method") |
 | `genllvm/genlawait.c` | `genlAwait`, `genlSeamLayout`, `genlSeamGiveBack`, `genlSeamRecord` | a seam of a split method: what is awaited, the record laid out (once) and its second half and resume function declared, the locks given back, the record built and parked, the return; what follows in a `resume` block ("A split method") |
+| `genllvm/genlyield.c` | `genlGenBegin`, `genlGenEnd`, `genlYield`, `genlGenReturn` | a generator's `next` ("A generator"): the frame found and the first call's boxes made at the entry, the entry switch on the state, a `yield`'s state store, return and resume stub, the done block, a return's `GenDone` |
+| | `genlGenPlan`, `genlGenFrameType`, `genlGenFrameVar`, `genlGenFrameFlag`, `genlGenSelfHolding`, `genlGenDrop` | the frame: which locals, in what kind of storage, its LLVM type after the struct's fields, a local's storage and drop flag found there, the generator's death |
 | | `genlSplitHalves`, `genlSplitHalf`, `genlSeamEntry` | each second half: the method generated again, its entry moving the record's values back and branching to the seam's `resume` block |
 | | `genlAwaitReply`, `genlSeamReply`, `genlSeamResume` | a message seam's envelope, the seam laid out and its record's slot reserved where it is passed (an operation's seam makes its envelope at the seam and starts the operation with it); the seam's resume function, which takes the record out of the pending table, calls the second half and answers ("A message's reply") |
 | | `genlSeamDrop` | a parked record's drop function, which its pending table calls if the actor dies with it parked ("A message's reply", "An abandoned record") |

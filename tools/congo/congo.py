@@ -148,10 +148,10 @@ GPU_FOLDER = "gpu"
 KEYWORDS = frozenset((
     "include import extern pub static macro fn overload const alias typedef struct mod"
     " actor trait extends mixin use but enum return with if elif else case match"
-    " while each in by break continue not or and as is into inline where new trynew await selfactor async do"
+    " while each in by break continue not or and as is into inline where new trynew await yield selfactor async do"
     " void nil null true false undef").split())
 RESERVED = frozenset((
-    "baseurl context local selfmethod using wait yield throw catch spawn"
+    "baseurl context local selfmethod using wait throw catch spawn"
     ).split())
 PERMISSIONS = frozenset("uni mut imm ro mut1 opaq".split())
 

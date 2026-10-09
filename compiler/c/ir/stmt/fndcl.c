@@ -622,9 +622,12 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
     // A function holding an 'await' is walked for both, whatever the gates
     // say: the seam's rules are the loan walk's, and whether a variable still
     // holds its value there is drop flags' state (flowpath.c, pwSeam)
+    // A generator holding a 'yield' is walked for both too: its seams' rules
+    // are the loan walk's as well (flowpath.c, pwYield)
     int seams = fstate.awaits != NULL;
-    if ((fstate.gate || fstate.dropgate || flowGpu || seams) && errors == errorsOnEntry) {
-        int loans = fstate.gate != 0 || flowGpu || seams;
+    int yields = fstate.yields != NULL;
+    if ((fstate.gate || fstate.dropgate || flowGpu || seams || yields) && errors == errorsOnEntry) {
+        int loans = fstate.gate != 0 || flowGpu || seams || yields;
         // A borrow of a shape-changing value freezes what it was reached
         // through, and which types those are is read from their methods, which
         // may still be waiting to be checked. A walk that needs one of them is
@@ -635,17 +638,17 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
             // Checking those methods is analysis, not flow
             if (timerFine)
                 timerBegin(svTimer);
-            walknow = shapeWalkReady(fnnode, !seams && !initmod);
+            walknow = shapeWalkReady(fnnode, !seams && !yields && !initmod);
             // A call made while such a borrow is held could reshape it through
             // another name: which calls do is read from the bodies of the functions
             // called, so those never asked for are checked first (reshape.h)
-            if ((fstate.gate & FlowGateShape) || seams)
+            if ((fstate.gate & FlowGateShape) || seams || yields)
                 shapeDemandCallees(fnnode);
             if (timerFine)
                 timerBegin(FlowTimer);
         }
         if (walknow) {
-            flowPathWalk(fnnode, loans, fstate.dropgate || seams, seams);
+            flowPathWalk(fnnode, loans, fstate.dropgate || seams || yields, seams);
             // A call the walk could not judge, for a body not checked yet: made
             // again at the end of type check, for that verdict alone
             if (flowShapeRetry && errors == errorsOnEntry)
@@ -659,6 +662,13 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
     // yet where it stands, with what its continuation would carry
     if (seams && errors == errorsOnEntry)
         awaitSplitOrReport(fnnode, fstate.awaits);
+    // A generator's seams, numbered and kept for generation (the walk noted
+    // what each variable does at each)
+    if (yieldAny() && errors == errorsOnEntry) {
+        GenInfo *geninfo = yieldGenOf(fnnode);
+        if (geninfo)
+            yieldSplitRegister(geninfo, fstate.yields);
+    }
     if (timerFine)
         timerBegin(svTimer);
     flowGateCount(&fstate);
