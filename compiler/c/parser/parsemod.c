@@ -1998,6 +1998,7 @@ Nodes *parseIncludeCheck(ProgramNode *pgm, BuildDesc *desc, char *text, char *ur
     parse.build = NULL;
     parse.generated = incFileIsGenerated(text);
     parse.blockmods = newNodes(4);
+    parse.hdrendp = parse.isendp = NULL;
     parse.bodyp = parse.bodyendp = parse.nameendp = NULL;
     parse.typed = 0;
     parse.typep = parse.typeendp = NULL;
@@ -2079,6 +2080,7 @@ ProgramNode *parsePgm(ConeOptions *opt, BuildDesc *desc) {
     parse.build = NULL;
     parse.generated = 0;
     parse.blockmods = NULL;
+    parse.hdrendp = parse.isendp = NULL;
     parse.bodyp = parse.bodyendp = parse.nameendp = NULL;
     parse.typed = 0;
     parse.typep = parse.typeendp = NULL;

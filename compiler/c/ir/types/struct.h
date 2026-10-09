@@ -52,7 +52,8 @@ typedef struct StructNode {
     uint8_t carriesborrow;  // itypeCarriesBorrow's remembered answer (CarriesBorrow*), once the type is checked
     uint8_t holdstraced;    // itypeHoldsTraced's remembered answer (HoldsTraced*), once the type is checked
     uint8_t lends;          // What its element borrows cost it (StructLends), from its 'is' list at name resolution
-    uint8_t holdsatomic;    // itypeHoldsAtomic's remembered answer (HoldsTraced*, read as "holds an atomic value"), once the type is checked
+    uint8_t shapeinf;       // Whether the compiler finds it shape-changing (ShapeInfer), for a type that declares none of the three (shapeinfer.h)
+    uint8_t holdsatomic;   // itypeHoldsAtomic's remembered answer (HoldsTraced*, read as "holds an atomic value"), once the type is checked
     uint8_t tagstate;       // Whether 'tagnbr' is settled yet, and whether it is below zero (TagState)
     uint8_t threadbound;    // itypeThreadBound's remembered answer (CarriesBorrow*, read as "bound to its thread"), once the type is checked
 } StructNode;
@@ -62,14 +63,26 @@ typedef struct StructNode {
 // type declaring none keeps its receiver loaned while the borrow is used, the
 // Rust way (the loan walk's pwCall). A no-loan kind keeps only its lifetime:
 // it may not be moved, replaced or ended while the borrow is used, and nothing
-// else is frozen. 'ShapeChanging' marks the containers whose element borrow,
-// reached through a shared path, freezes that path (loanFreezeShared); a
-// change through another name is not seen yet (corelib.c says why).
+// else is frozen. A type is shape-changing when it declares 'ShapeChanging' or
+// the compiler finds it so (shapeinfer.h); a borrow of one, reached through a
+// shared path, freezes that path (loanFreezeShared). A change through another
+// name is not seen yet (corelib.c says why).
 enum StructLends {
     LendsLoaned,            // declares none of them
     LendsShapeChanging,     // 'ShapeChanging': its elements may move
     LendsNoLoanMut,         // 'NoLoanMut': any borrow it returns loans nothing (an arena)
     LendsNoLoanRead         // 'NoLoanRead': a read-only borrow it returns loans nothing
+};
+
+// What the compiler found of whether a type that declares none of the three is
+// shape-changing (StructNode.shapeinf; shapeinfer.h): not settled yet, being
+// settled (a method of the type, checked on the way, asked again), or the
+// answer
+enum ShapeInfer {
+    ShapeUnknown,
+    ShapeAsking,
+    ShapeNo,
+    ShapeYes
 };
 
 // What StructNode.holdstraced remembers of whether a value of the type holds a
@@ -227,6 +240,8 @@ void structArrayWait(TypeCheckState *pstate, INode *array);
 // type's members are checked.
 void structLayoutEnter(void);
 void structLayoutExit(void);
+// Is a layout in flight, so that no member may be checked yet?
+int structLayoutInFlight(void);
 
 // The layout of a struct, an array or a tuple begins or ends: counted as above,
 // and kept on the stack a by-value cycle is named from (structLayoutCycle)

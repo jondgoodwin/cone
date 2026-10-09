@@ -544,6 +544,9 @@ enum ErrorCode {
     // Literals
     ErrorLitBorrowWrite = 1337, // A string literal where a borrow that writes ('&mut T') is wanted, of a type declaring 'fromLiteral': a literal is lent as a temporary only to a read-only borrow, since a write to it is lost
 
+    // Shape-changing types (ir/shapeinfer.c)
+    ErrorShapeMark = 1338,      // A type declaring 'ShapeChanging' that the compiler does not find so from its methods: none writes storage the type owns and lends a borrow. A declaration may only assert what is found
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

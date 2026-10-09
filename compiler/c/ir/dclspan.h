@@ -39,6 +39,10 @@ typedef struct DclSpan {
                         // '='; NULL where it has none
     char *bodyend;      // Just past that body or value's last token
     char *nameend;      // A global: just past its name, where an inferred type is written
+    char *hdrend;       // A struct: just past its name and generic parameters, where an 'is'
+                        // list is written if it has none (the include file records
+                        // ShapeChanging there)
+    char *isend;        // A struct: just past the last entry of its 'is' list; NULL where it has none
     char *end;          // Just past its last token, its ';' or '}' included
     uint16_t kind;      // DclSpanKind
     uint16_t typed;     // A global: its type is written

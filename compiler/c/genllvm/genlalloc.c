@@ -1335,6 +1335,7 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
     int fat = refIsFat(reftype);
     INode *elemtype = fat ? itypeLenBodyElem(reftype->vtexp) : NULL;
     LLVMValueRef count = NULL;
+    unsigned long long spare = 0;    // the byte kept after a fat body's elements, if any
 
     // The arguments first, in every region: a declared init's (filled in place
     // below), or the value itself, the implicit init's literal or a finished
@@ -1358,7 +1359,7 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
         // its bytes. An 'Array[T]' keeps nothing there, so it takes only what
         // its elements take, except that an empty one with no header (a 'So')
         // would ask its region for no memory at all
-        unsigned long long spare = itypeIsArrayBody(reftype->vtexp) && header > 0 ? 0 : 1;
+        spare = itypeIsArrayBody(reftype->vtexp) && header > 0 ? 0 : 1;
         sizeval = LLVMBuildAdd(gen->builder, LLVMConstInt(usize, header + spare, 0),
             LLVMBuildMul(gen->builder, count, LLVMConstInt(usize, elemsize, 0), "bytes"), "allocsize");
     }
@@ -1458,11 +1459,16 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
             LLVMConstInt(genlType(gen, (INode*)usizeType), LLVMABISizeOfType(gen->datalayout, valuetypllvm), 0), "bytes");
         unsigned align = LLVMABIAlignmentOfType(gen->datalayout, valuetypllvm);
         LLVMBuildMemCpy(gen->builder, valuep, align, LLVMBuildExtractValue(gen->builder, value, 0, "source"), align, bytes);
-        // The NUL after the bytes, which a C string needs and the count leaves out
-        LLVMValueRef bytesptr = LLVMBuildBitCast(gen->builder, valuep,
-            LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0), "");
-        LLVMValueRef nulptr = LLVMBuildGEP2(gen->builder, LLVMInt8TypeInContext(gen->context), bytesptr, &bytes, 1, "nul");
-        LLVMBuildStore(gen->builder, LLVMConstInt(LLVMInt8TypeInContext(gen->context), 0, 0), nulptr);
+        // The NUL after the bytes, which a C string needs and the count leaves out:
+        // stored only where the allocation above made room for it. An 'Array[T]'
+        // with a header asked for no spare byte, and one stored there would be
+        // past the block, on top of the next block's heap header
+        if (spare) {
+            LLVMValueRef bytesptr = LLVMBuildBitCast(gen->builder, valuep,
+                LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0), "");
+            LLVMValueRef nulptr = LLVMBuildGEP2(gen->builder, LLVMInt8TypeInContext(gen->context), bytesptr, &bytes, 1, "nul");
+            LLVMBuildStore(gen->builder, LLVMConstInt(LLVMInt8TypeInContext(gen->context), 0, 0), nulptr);
+        }
     }
     else if (declinit)
         genlNewFill(gen, declinit, initargs, valuep);
