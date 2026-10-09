@@ -12,6 +12,7 @@
 mod bakebench;
 
 import stdio use *;
+import actors;
 import collections use *;
 import geomath use *;
 import time use Instant;
@@ -162,23 +163,34 @@ fn argAt(argv **u8, a i32) *u8 { *(argv + usize.from(a)); }
 fn main(argc i32, argv **u8) i32 {
   mut runs = 5;
   mut skipHash = false;
+  mut workers = 0u32;
   mut a = 1;
   while a < argc {
     imm s = argAt(argv, a);
     if *(s + 2usize) == 'r' and a + 1 < argc {
       runs = parseCount(argAt(argv, a + 1));
       a = a + 1;
+    } elif *(s + 2usize) == 'w' and a + 1 < argc {
+      workers = u32.from(parseCount(argAt(argv, a + 1)));
+      a = a + 1;
+    } elif *(s + 2usize) == 'b' and a + 1 < argc {
+      a = a;
+      a = a + 1;
     } elif *(s + 2usize) == 'n' {
       skipHash = true;
     }
     a = a + 1;
   }
+  if workers > 0u32 { actors.configure(new actors.Options(workers: workers)); }
   mut times = List[f64].empty();
   mut totals = List[f64].empty();
   mut f = 0;
   // one warm-up pass (also the one whose maps are hashed)
   while f < FAMILIES {
+    imm c0 = Instant.now();
     imm t = bakeFamily(f);
+    imm cold = c0.elapsed().secondsF64() * 1000.;
+    print <- "COLD "; print <- familyName(f); print <- " "; print <- cold; print <- "\n";
     if !skipHash { printHashes(familyName(f), &t); }
     f = f + 1;
   }
