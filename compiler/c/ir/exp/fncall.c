@@ -1113,10 +1113,25 @@ static FnDclNode *fnCallHashNumber(FnCallNode *callnode, FnDclNode *selected) {
     return (FnDclNode*)write;
 }
 
-// The body 'Array[T]' of an array's or a slice's element type T, an instance of
-// the generic struct core declares, whose methods (core.cone) an array, a
-// reference to one and a slice call. NULL where the receiver is none of those or
-// the body has no method of this name.
+// The body 'Array[T]' of an element type T: an instance of the generic struct
+// core declares, whose methods (core.cone) an array, a reference to one and a
+// slice call. NULL if core has not declared it or it could not be made.
+INode *fnCallArrayBody(TypeCheckState *pstate, INode *errnode, INode *elem) {
+    if (arrayTypeDcl->genericinfo == NULL)
+        return NULL;
+    FnCallNode *body = newFnCallNode(newNameUseFromDclNode((INode*)arrayTypeDcl, errnode), 1);
+    inodeLexCopy((INode*)body, errnode);
+    body->flags |= FlagIndex;
+    nodesAdd(&body->args, elem);
+    INode *bodytype = (INode*)body;
+    if (!itypeTypeCheck(pstate, &bodytype))
+        return NULL;
+    INode *dcl = itypeGetTypeDcl(bodytype);
+    return isMethodType(dcl) ? dcl : NULL;
+}
+
+// The body of an array's or a slice's element type, if it has a method of this
+// name. NULL where the receiver is none of those or the body has none.
 static INode *fnCallSliceBodyOf(TypeCheckState *pstate, FnCallNode *callnode) {
     if (callnode->methfld == NULL || !isNameUseNode(callnode->methfld) || arrayTypeDcl->genericinfo == NULL)
         return NULL;
@@ -1132,15 +1147,8 @@ static INode *fnCallSliceBodyOf(TypeCheckState *pstate, FnCallNode *callnode) {
     }
     else
         return NULL;
-    FnCallNode *body = newFnCallNode(newNameUseFromDclNode((INode*)arrayTypeDcl, (INode*)callnode), 1);
-    inodeLexCopy((INode*)body, (INode*)callnode);
-    body->flags |= FlagIndex;
-    nodesAdd(&body->args, elem);
-    INode *bodytype = (INode*)body;
-    if (!itypeTypeCheck(pstate, &bodytype))
-        return NULL;
-    INode *dcl = itypeGetTypeDcl(bodytype);
-    if (!isMethodType(dcl))
+    INode *dcl = fnCallArrayBody(pstate, (INode*)callnode, elem);
+    if (dcl == NULL)
         return NULL;
     INode *found = iNsTypeFindFnField((INsTypeNode*)dcl, ((NameUseNode*)callnode->methfld)->namesym);
     return found != NULL && found->tag != StructTag && (found->flags & FlagMethFld) ? dcl : NULL;
