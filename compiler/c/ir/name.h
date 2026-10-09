@@ -44,6 +44,8 @@ extern Name *finalName; // "final": a type's finalizer method, and a module's ow
 // so it collides with no method a variant declares and no name reaches it.
 extern Name *enumFinalName;
 extern Name *initName;  // "init": a module's initializer
+extern Name *yieldsName; // "yields": after a function's parameters, it makes the function a generator (a contextual word)
+extern Name *nextName;  // "next": the method a cursor, and a generator, is walked by
 
 // "tag" -- the discriminant's type. Recognized where a field's type is written
 // and nowhere else, so 'pub tag i32' still declares a field named 'tag'. An

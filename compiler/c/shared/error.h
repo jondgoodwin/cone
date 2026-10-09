@@ -548,6 +548,12 @@ enum ErrorCode {
     ErrorShapeMark = 1338,      // A type declaring 'ShapeChanging' that the compiler does not find so from its methods: none writes storage the type owns and lends a borrow. A declaration may only assert what is found
     ErrorShapeReshape = 1339,   // A call that could change the shape of a shape-changing value (a list, a string) while a borrow into it, reached through a path other references share, is still to be used: the change could come through another name for the same value
 
+    // Generators (ir/exp/yield.c, parser/parsegen.c)
+    ErrorYieldPlace = 1350,     // 'yield' outside the body of a function declared with 'yields'
+    ErrorYieldReturn = 1351,    // A 'return' with a value in a generator, which gives its caller values only by 'yield'
+    ErrorGenForm = 1352,        // A generator of a form not built: generic, a method, with 'inline' or a 'where' clause
+    ErrorGenFrame = 1353,       // A local a 'yield' would keep in the generator's frame that the frame cannot hold: a lock's guard, or a value holding a traced reference
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

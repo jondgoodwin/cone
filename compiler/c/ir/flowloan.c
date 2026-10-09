@@ -678,6 +678,38 @@ uint32_t loanSeamPending(INode *seam, uint32_t loan, uint32_t holder) {
     return loanPending(seam, AccessSeam, loan, holder);
 }
 
+// A borrow the generator owns the ground of: of one of its locals, or into the
+// generator itself, the storage its parameters held by value are in, reached
+// through its own 'self' without crossing another reference. The generator is a
+// value that moves between the calls that resume it, so neither stays put
+// across a seam. A reborrow through a reference it holds -- a parameter
+// '&Tree', whose referent is not the generator's -- does, and so does what the
+// caller lent through 'self'.
+int loanIsGenOwn(uint32_t id) {
+    Loan *loan = &loans[id];
+    if (loan->kind == LoanCaller)
+        return 0;
+    if (loanIsLocal(id))
+        return 1;
+    return loan->place.deref && !loan->place.far && pathVars[loan->place.var].var->namesym == selfName;
+}
+
+uint32_t loanGenOwnIn(PathSet *set) {
+    if (set == NULL)
+        return 0;
+    uint32_t n = set == &pathSetAll ? nloans : set->cnt;
+    for (uint32_t i = set == &pathSetAll ? 1 : 0; i < n; ++i) {
+        uint32_t id = set == &pathSetAll ? i : loanOf(set->ids[i]);
+        if (loanIsGenOwn(id))
+            return id;
+    }
+    return 0;
+}
+
+uint32_t loanYieldPending(INode *seam, uint32_t loan, uint32_t holder) {
+    return loanPending(seam, AccessYield, loan, holder);
+}
+
 // Keyed by the seam, the holder, and a middle number no loan's id reaches:
 // apart from a pending conflict's key, a report's (node, 0, 1), a caller
 // loan's and a choice's (bit 30)
@@ -945,6 +977,17 @@ static void loanReport(Pending *pend, INode *usenode) {
     else
         snprintf(used, sizeof(used), "at %u:%u", usenode->linenbr, loanColumn(usenode));
     char *mutably = loan->writes ? " mutably" : "";
+    // A generator's seam keeps what the generator was lent and not its own
+    // ground: a borrow of one of its locals, or of the parameters it holds by
+    // value, ends there
+    if (pend->kind == AccessYield) {
+        char of[200];
+        errorMsgNode(pend->access, ErrorFrozen,
+            "The borrow '%s' holds %s (made %s) cannot last across this 'yield': a generator's own local, and a parameter it holds by value, are in the generator, which moves between the calls that resume it. Borrow what the generator was lent, a reference it takes, or copy the value; '%s' is used again %s.",
+            &holder->namesym->namestr, loanSeamOf(pend->loan, of, sizeof(of)), where,
+            &holder->namesym->namestr, used);
+        return;
+    }
     // A seam ends the borrow itself, whatever its source, as a scope's end
     // ends the borrows of what it declared: the ordinary diagnostic, at the
     // seam as where the borrow ended

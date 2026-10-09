@@ -279,6 +279,8 @@ int siVisit(INode *node, SiVisitFn fn, void *ctx) {
         return siVisit(((LogicNode *)node)->lexp, fn, ctx) || siVisit(((LogicNode *)node)->rexp, fn, ctx);
     case AwaitTag:
         return siVisit(((AwaitNode *)node)->exp, fn, ctx);
+    case YieldTag:
+        return siVisit(((YieldNode *)node)->exp, fn, ctx);
     case NamedValTag:
         return siVisit(((NamedValNode *)node)->val, fn, ctx);
     case OfEntryTag:

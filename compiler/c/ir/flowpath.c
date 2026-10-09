@@ -2369,22 +2369,33 @@ static int pwIsParm(VarDclNode *var) {
 
 // Note what a seam found of a variable, joining what an earlier walk of a
 // loop's body found there
-static void pwSeamNote(AwaitNode *node, VarDclNode *var, uint8_t flags) {
-    for (uint32_t i = 0; i < node->nseamvars; ++i) {
-        if (node->seamvars[i].var == var) {
-            node->seamvars[i].flags |= flags;
+static void pwSeamNoteIn(SeamVar **seamvars, uint32_t *nseamvars, uint32_t *seamcap, VarDclNode *var, uint8_t flags) {
+    for (uint32_t i = 0; i < *nseamvars; ++i) {
+        if ((*seamvars)[i].var == var) {
+            (*seamvars)[i].flags |= flags;
             return;
         }
     }
-    if (node->nseamvars == node->seamcap)
-        node->seamvars = (SeamVar *)pathGrow(node->seamvars, &node->seamcap, sizeof(SeamVar));
-    node->seamvars[node->nseamvars].var = var;
-    node->seamvars[node->nseamvars].flags = flags;
-    ++node->nseamvars;
+    if (*nseamvars == *seamcap)
+        *seamvars = (SeamVar *)pathGrow(*seamvars, seamcap, sizeof(SeamVar));
+    (*seamvars)[*nseamvars].var = var;
+    (*seamvars)[*nseamvars].flags = flags;
+    ++*nseamvars;
+}
+
+static void pwSeamNote(AwaitNode *node, VarDclNode *var, uint8_t flags) {
+    pwSeamNoteIn(&node->seamvars, &node->nseamvars, &node->seamcap, var, flags);
+}
+
+static void pwYieldNote(YieldNode *node, VarDclNode *var, uint8_t flags) {
+    pwSeamNoteIn(&node->seamvars, &node->nseamvars, &node->seamcap, var, flags);
 }
 
 void pathSeamLive(INode *seam, uint32_t var) {
-    pwSeamNote((AwaitNode *)seam, pathVars[var].var, SeamLive);
+    if (seam->tag == YieldTag)
+        pwYieldNote((YieldNode *)seam, pathVars[var].var, SeamLive);
+    else
+        pwSeamNote((AwaitNode *)seam, pathVars[var].var, SeamLive);
 }
 
 // Is this variable a lock's guard: the owner a borrow through a lock
@@ -2483,6 +2494,76 @@ static PathSet *pwSeam(AwaitNode *node, int move) {
     // The value waited for arrives after the seam: a borrow it would carry
     // ended there
     return pwGlobalOnly(carried);
+}
+
+// A loan set without the loans of the generator's own ground
+static PathSet *pwGenKept(PathSet *set) {
+    if (set == NULL || set == &pathSetAll)
+        return set;
+    PathSet *kept = set;
+    for (uint32_t i = 0; i < set->cnt; ++i) {
+        if (loanIsGenOwn(loanOf(set->ids[i])))
+            kept = pathSetWithout(kept, set->ids[i]);
+    }
+    return kept;
+}
+
+// One variable in scope at a generator's seam. What it does there is noted on
+// the 'yield': whether it holds its value, is used after the seam, does
+// something as it dies, or holds a borrow of the generator's own ground, which
+// ends there (the 'await''s rule, with 'global' meaning the ground the
+// generator does not own: pwSeamVar)
+static void pwYieldVar(YieldNode *node, uint32_t index, int isparm) {
+    PathVar *pv = &pathVars[index];
+    VarDclNode *var = pv->var;
+    uint8_t flags = (isparm ? SeamParm : 0) | (pv->temp ? SeamTemp : 0);
+    // The generator is the 'self' a call of its 'next' lends: it stays where it
+    // is across the seam, and holds the parameters
+    if (isparm && var->namesym == selfName) {
+        pwYieldNote(node, var, flags | SeamOpen);
+        return;
+    }
+    if (!pv->initing && (!pv->tracked || (pv->state & (DropWhole | DropHollow))))
+        flags |= SeamOpen;
+    if (var->vtype && !flowNoDeath(var->vtype) && itypeNeedsFinal(var->vtype))
+        flags |= SeamDies;
+    if (pwIsGuard(var))
+        flags |= SeamGuard;
+    if (pv->holder) {
+        uint32_t ended = loanGenOwnIn(pv->holds);
+        if (ended) {
+            flags |= SeamEnds;
+            pathSetFacts(index, pwGenKept(pv->holds),
+                pathSetAdd(pv->pending, loanYieldPending((INode *)node, ended, index)));
+        }
+    }
+    if (!pv->temp)
+        pathSetFacts(index, pv->holds, pathSetAdd(pv->pending, loanSeamLive((INode *)node, index)));
+    pwYieldNote(node, var, flags);
+}
+
+// A generator's seam, 'yield': the result 'next' gives is made, and the body is
+// left there to be resumed. What it hands the caller carries no borrow of the
+// generator's own ground, as a 'return''s carries none of the function's; then
+// each variable in scope is noted (pwYieldVar)
+static PathSet *pwYield(YieldNode *node) {
+    PathSet *carried = pwValue(&node->exp, 1);
+    node->walked = 1;
+    uint32_t own = loanGenOwnIn(carried);
+    if (own)
+        loanEscape(node->exp, own, LoanEscapeReturn);
+    else
+        pwBoundHolds(node->exp, pwSig->rettype, carried);
+    // The statement's own temporaries end with it, before the seam
+    if (!pathDrops) {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(pwParms, cnt, nodesp))
+            pwYieldVar(node, pathVar((VarDclNode *)*nodesp), 1);
+    }
+    for (uint32_t i = 0; i < ndecls; ++i)
+        pwYieldVar(node, decls[i], pwIsParm(pathVars[decls[i]].var));
+    return NULL;
 }
 
 // Walk an expression as a value, returning the loans it may carry. 'move'
@@ -2603,6 +2684,8 @@ static PathSet *pwValue(INode **nodep, int move) {
         return pwValue(&((TempNode *)node)->exp, move);
     case AwaitTag:
         return pwSeam((AwaitNode *)node, move);
+    case YieldTag:
+        return pwYield((YieldNode *)node);
     case AwaitReplyTag:
     case SizeofTag:
     case NilLitTag:

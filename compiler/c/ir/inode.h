@@ -154,6 +154,7 @@ enum NodeTags {
     PairEntryTag,   // 'k: v', an entry on the right of '<-' (EntryNode, lowered at type check)
     AwaitTag,       // 'await x': a seam in an actor's method, where it waits for x (AwaitNode)
     AwaitReplyTag,  // (injected) the envelope of a request an 'await' sends, made where the seam's id is (AwaitReplyNode)
+    YieldTag,       // 'yield x': a generator's seam, where its body hands the caller a value and waits to be resumed (YieldNode)
     SelfActorTag,   // 'selfactor': the actor's own handle, lowered at type check (SelfActorNode)
     AbsenceTag,    // unique, unclonable node for absence of info
 

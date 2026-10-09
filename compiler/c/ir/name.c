@@ -29,6 +29,8 @@ Name *typeDropName;
 Name *finalName;
 Name *enumFinalName;
 Name *initName;
+Name *yieldsName;
+Name *nextName;
 Name *tagName;
 Name *plusEqName;
 Name *minusEqName;

@@ -1221,6 +1221,10 @@ void flowTempEscape(INode *node, int out) {
     case AwaitTag:
         flowTempEscape(((AwaitNode *)node)->exp, flowTempOut(out, ((AwaitNode *)node)->vtype));
         return;
+    // The result a yield hands the caller goes out, as a return's does
+    case YieldTag:
+        flowTempEscape(((YieldNode *)node)->exp, TempOutBorrow);
+        return;
     case HollowTag:
         if (((HollowNode *)node)->exp)
             flowTempEscape(((HollowNode *)node)->exp, out);
@@ -1399,6 +1403,18 @@ void flowLoadValue(FlowState *fstate, INode **nodep) {
         if (fstate->awaits == NULL)
             fstate->awaits = newNodes(4);
         nodesAdd(&fstate->awaits, (INode *)await);
+        break;
+    }
+    // A generator's seam: the result 'next' gives is made, as a return's value
+    // is, and the loan walk applies the seam's rules (flowpath.c, pwYield)
+    case YieldTag:
+    {
+        YieldNode *yield = (YieldNode *)*nodep;
+        flowLoadValue(fstate, &yield->exp);
+        flowHandleMoveOrCopy(&yield->exp);
+        if (fstate->yields == NULL)
+            fstate->yields = newNodes(4);
+        nodesAdd(&fstate->yields, (INode *)yield);
         break;
     }
     case NotLogicTag:
@@ -1836,6 +1852,7 @@ void flowStateInit(FlowState *fstate, FnSigNode *fnsig) {
     fstate->dropgate = 0;
     fstate->jumped = 0;
     fstate->awaits = NULL;
+    fstate->yields = NULL;
     fstate->shapelend = 0;
     fstate->shapewrite = 0;
 }

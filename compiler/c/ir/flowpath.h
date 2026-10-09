@@ -91,6 +91,7 @@ enum PathAccess {
     AccessReplace,      // the whole root stored over, its old value released or finalized
     AccessEnd,          // the root leaves its scope
     AccessSeam,         // a seam ('await'): every borrow that is not global ends there
+    AccessYield,        // a generator's seam ('yield'): every borrow of its own ground ends there
 };
 
 // What a variable the drop-flag client tracks may hold on the paths reaching a

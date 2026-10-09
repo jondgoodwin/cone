@@ -146,6 +146,14 @@ typedef struct GenState {
     uint32_t awaitflights;
     LLVMValueRef awaitid;
 
+    // A generator's 'next' (genlyield.c): the generator, which holds the
+    // function's frame; the switch at the function's entry, which each seam
+    // adds its case to; and the block that hands back None once the body is done
+    GenInfo *genstep;
+    LLVMValueRef genself;
+    LLVMValueRef genswitch;
+    LLVMBasicBlockRef gendone;
+
     // The type records this object has built (genlTypeRecord): each value type,
     // and its record's constant, in the same order
     INode **tyrectypes;
@@ -502,5 +510,28 @@ int genlHasSeam(GenState *gen, INode *node);
 // genlDropFlagEnd
 LLVMValueRef genlHeldBegin(GenState *gen);
 LLVMBasicBlockRef genlHeldIf(GenState *gen, LLVMValueRef held);
+
+// genlyield.c: a generator, a function declared 'yields'
+// The LLVM type of a generator's frame, which follows the struct's fields, or
+// NULL for a struct that is no generator's or has no frame
+LLVMTypeRef genlGenFrameType(GenState *gen, StructNode *strnode);
+// The generator's 'next' about to be generated: the frame's locals found where
+// they are, the first call's boxes made, and the entry that resumes the body
+void genlGenBegin(GenState *gen, FnDclNode *fnnode);
+// The body generated: the block that hands back None once it is done
+void genlGenEnd(GenState *gen);
+// A 'yield': the result is made, the body is left, and what follows it is
+// generated into the block the next call resumes at
+LLVMValueRef genlYield(GenState *gen, YieldNode *node);
+// A return from the generator's body ends the walk: its state says done
+void genlGenReturn(GenState *gen);
+// Is this local one the generator keeps in its frame? Its storage and drop
+// flag were found at the function's entry
+int genlGenFrameVar(GenState *gen, VarDclNode *var);
+// Is this local's drop flag one the generator keeps in its frame?
+int genlGenFrameFlag(GenState *gen, VarDclNode *var);
+// The generator's death, in place: what its frame holds at the seam it was left
+// at is finalized, newest first, and its boxes freed; 'self' points at it
+void genlGenDrop(GenState *gen, StructNode *strnode, LLVMValueRef self);
 
 #endif

@@ -177,6 +177,8 @@ void nametblInit() {
     finalName = nametblFind("final", 5);
     enumFinalName = nametblFind("-final", 6);
     initName = nametblFind("init", 4);
+    yieldsName = nametblFind("yields", 6);
+    nextName = nametblFind("next", 4);
     tagName = nametblFind("tag", 3);
 
     plusEqName = nametblFind("+=", 2);

@@ -2003,6 +2003,9 @@ Nodes *parseIncludeCheck(ProgramNode *pgm, BuildDesc *desc, char *text, char *ur
     parse.typed = 0;
     parse.typep = parse.typeendp = NULL;
     parse.dcltexts = NULL;
+    parse.isgen = 0;
+    memset(&parse.gensig, 0, sizeof(parse.gensig));
+    parse.genctx = NULL;
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(root->imports, cnt, nodesp)) {
@@ -2085,6 +2088,9 @@ ProgramNode *parsePgm(ConeOptions *opt, BuildDesc *desc) {
     parse.typed = 0;
     parse.typep = parse.typeendp = NULL;
     parse.dcltexts = NULL;
+    parse.isgen = 0;
+    memset(&parse.gensig, 0, sizeof(parse.gensig));
+    parse.genctx = NULL;
 
     // Create module node and set up for parsing main source file.
     // The root's file is registered like any other, so an import loop back to
