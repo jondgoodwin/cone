@@ -21,6 +21,11 @@ INode *parseEach(ParseState *parse, Name *lifesym, int stmtflag);
 // The most variables an 'each' unpacks a tuple item into
 #define EachMaxVars 8
 
+// Where the next 'if' read may leave its condition, instead of reading a block
+// after it, when the statement ends there: the trailing 'if' of a 'break' or
+// 'return' with no value (parseJumpValue). Cleared as parseIf starts.
+static INode **parseTrailingIfOut = NULL;
+
 // A use of the counter a range loop steps, which no name reaches: its uses are
 // bound to its declaration, as a match's hidden variable's are, so a copy of the
 // step carried into an inner loop by a labelled 'continue' still reaches this
@@ -29,6 +34,18 @@ static INode *parseEachCounterUse(VarDclNode *counter, INode *lexnode) {
     NameUseNode *use = newNameUseFromLex(anonName, lexnode);
     use->dclnode = (INode*)counter;
     return (INode*)use;
+}
+
+// 'done = true', setting the flag of a range loop that is to leave through its
+// 'else' at the start of the next pass
+static INode *parseEachSetDone(VarDclNode *done, INode *lexnode) {
+    // (the target is the flag's own name: an assignment to the anonymous name
+    // discards its value)
+    NameUseNode *target = newNameUseFromLex(done->namesym, lexnode);
+    target->dclnode = (INode*)done;
+    AssignNode *set = newAssignNode(NormalAssign, (INode*)target, (INode*)newULitNode(1, (INode*)boolType));
+    inodeLexCopy((INode*)set, lexnode);
+    return (INode*)set;
 }
 
 // Build 'if condexp {break}', or 'if !condexp {break}' when 'unless' is set.
@@ -58,9 +75,108 @@ static IfNode *parseBreakIf(INode *condexp, int unless, Name *lifesym) {
     return ifnode;
 }
 
-// This helper routine inserts 'break if !condexp' at beginning of block
-void parseInsertWhileBreak(INode *blk, INode *condexp) {
-    nodesInsert(&((BlockNode*)blk)->stmts, (INode*)parseBreakIf(condexp, 1, NULL), 0);
+// Build 'if cond {jump}', or 'if !cond {jump}' when 'unless' is set, for a
+// jump (a break, continue or return) that is the block's only statement
+static IfNode *parseJumpIf(INode *condexp, int unless, INode *jump) {
+    BlockNode *ifblk = newBlockNode();
+    inodeLexCopy((INode*)ifblk, condexp);
+    nodesAdd(&ifblk->stmts, jump);
+    INode *cond = condexp;
+    if (unless) {
+        LogicNode *notiter = newLogicNode(NotLogicTag);
+        inodeLexCopy((INode*)notiter, condexp);
+        notiter->lexp = condexp;
+        cond = (INode*)notiter;
+    }
+    IfNode *ifnode = newIfNode();
+    inodeLexCopy((INode*)ifnode, condexp);
+    nodesAdd(&ifnode->condblk, cond);
+    nodesAdd(&ifnode->condblk, (INode *)ifblk);
+    return ifnode;
+}
+
+// This helper routine inserts 'break if !condexp' at beginning of block.
+// Given the loop's 'else' (parseLoopElse), the loop leaves through that instead:
+// 'if !condexp {...else...}', ending in the break that carries the value out.
+void parseInsertWhileBreak(INode *blk, INode *condexp, BlockNode *elseblk) {
+    BlockNode *loop = (BlockNode*)blk;
+    if (elseblk == NULL) {
+        nodesInsert(&loop->stmts, (INode*)parseBreakIf(condexp, 1, NULL), 0);
+        return;
+    }
+    LogicNode *notcond = newLogicNode(NotLogicTag);
+    inodeLexCopy((INode*)notcond, condexp);
+    notcond->lexp = condexp;
+    IfNode *ifnode = newIfNode();
+    inodeLexCopy((INode*)ifnode, condexp);
+    nodesAdd(&ifnode->condblk, (INode*)notcond);
+    nodesAdd(&ifnode->condblk, (INode*)blockElseFinish(elseblk, loop, condexp));
+    nodesInsert(&loop->stmts, (INode*)ifnode, 0);
+}
+
+// A loop's 'else', after its body: the block that says what the loop gives when it
+// runs out. NULL where the loop has none. The block is finished (blockElseFinish)
+// when the loop's exit is built.
+static BlockNode *parseLoopElse(ParseState *parse) {
+    if (!lexIsToken(ElseToken))
+        return NULL;
+    lexNextToken();
+    return (BlockNode*)parseExprBlock(parse, 0);
+}
+
+// A header's filter, 'if cond', after the source of an 'each' (or the loop in
+// '<- each'): the condition, or NULL where there is none. Items for which it does
+// not hold are skipped.
+INode *parseEachFilter(ParseState *parse) {
+    if (!lexIsToken(IfToken))
+        return NULL;
+    lexNextToken();
+    return parseSimpleExpr(parse);
+}
+
+// The filter as the statement that runs first in every pass of the loop's body:
+// 'if !cond {continue}'. 'lifesym' is the loop's label, if it has one.
+INode *parseEachFilterStmt(INode *condexp, Name *lifesym) {
+    BreakRetNode *contnode = newContinueNode();
+    inodeLexCopy((INode*)contnode, condexp);
+    if (lifesym)
+        contnode->life = (INode*)newNameUseFromLex(lifesym, condexp);
+    return (INode*)parseJumpIf(condexp, 1, (INode*)contnode);
+}
+
+// The value of a 'break' or 'return': nil where there is none, the expression
+// otherwise. Where an 'if' stands right after the word, it is a value only if its
+// condition is followed by a block ('return if c {1} else {2};'); followed by the
+// end of the statement ('return if done;') it is the statement's trailing 'if',
+// and the condition is left in *trailingp (parseIf reads it so).
+// [Ruling: a value that is an 'if' expression must be parenthesized. Refusing the
+// bare one would break ~40 existing sites; it is read as the 'if' it is, both ways
+// being unambiguous from what follows the condition.]
+static INode *parseJumpValue(ParseState *parse, INode **trailingp) {
+    *trailingp = NULL;
+    if (parseIsEndOfStatement())
+        return (INode*)newNilLitNode();
+    if (!lexIsToken(IfToken))
+        return parseAnyExpr(parse);
+    parseTrailingIfOut = trailingp;
+    INode *value = parseAnyExpr(parse);
+    parseTrailingIfOut = NULL;
+    return *trailingp ? (INode*)newNilLitNode() : value;
+}
+
+// The end of a 'break', 'continue' or 'return': an 'if' after what it says makes
+// it conditional, 'continue if n % 2 == 0;' being 'if n % 2 == 0 {continue}'.
+// Nothing but these three takes one. 'trailing' is the condition where
+// parseJumpValue found it.
+static INode *parseJumpEnd(ParseState *parse, BreakRetNode *jump, INode *trailing) {
+    if (trailing == NULL && lexIsToken(IfToken)) {
+        lexNextToken();
+        trailing = parseSimpleExpr(parse);
+    }
+    parseEndOfStatement();
+    if (trailing == NULL)
+        return (INode*)jump;
+    return (INode*)parseJumpIf(trailing, 0, (INode*)jump);
 }
 
 // Parse an expression statement within a function
@@ -74,9 +190,9 @@ INode *parseExpStmt(ParseState *parse) {
 INode *parseReturn(ParseState *parse) {
     BreakRetNode *stmtnode = newReturnNode();
     lexNextToken(); // Skip past 'return'
-    stmtnode->exp = parseIsEndOfStatement()? (INode*)newNilLitNode() : parseAnyExpr(parse);
-    parseEndOfStatement();
-    return (INode*)stmtnode;
+    INode *trailing;
+    stmtnode->exp = parseJumpValue(parse, &trailing);
+    return parseJumpEnd(parse, stmtnode, trailing);
 }
 
 // Parses a variable bound to a pattern match on a value
@@ -168,6 +284,8 @@ void parseBoundMatch(ParseState *parse, IfNode *ifnode, NameUseNode *expnamenode
 INode *parseIf(ParseState *parse) {
     IfNode *ifnode = newIfNode();
     INode *retnode = (INode*)ifnode;
+    INode **trailingp = parseTrailingIfOut;
+    parseTrailingIfOut = NULL;
     lexNextToken();
     // To handle bound pattern match, we need to de-sugar:
     // - 'if' is wrapped in a block, where we first capture the value in a variable
@@ -184,7 +302,13 @@ INode *parseIf(ParseState *parse) {
         parseBoundMatch(parse, ifnode, valnamenode, valnode);
     }
     else {
-        nodesAdd(&ifnode->condblk, parseSimpleExpr(parse));
+        INode *cond = parseSimpleExpr(parse);
+        // 'return if done;': the 'if' is the statement's, with nothing to run
+        if (trailingp != NULL && cond != NULL && parseIsEndOfStatement()) {
+            *trailingp = cond;
+            return retnode;
+        }
+        nodesAdd(&ifnode->condblk, cond);
         nodesAdd(&ifnode->condblk, parseExprBlock(parse, 0));
     }
     while (1) {
@@ -353,22 +477,25 @@ INode *parseMatch(ParseState *parse) {
 INode *parseWhile(ParseState *parse, Name *lifesym, int stmtflag) {
     lexNextToken();
     INode *condexp = NULL;
-    if (!parseHasBlock()) {
-        if (!stmtflag)
-            errorMsg(ErrorNoLoop, "while with condition expression may not be used as an expression");
+    if (!parseHasBlock())
         condexp = parseSimpleExpr(parse);
-    }
     BlockNode *loopnode = (BlockNode*)parseExprBlock(parse, 1);
     loopnode->lifesym = lifesym;
-    if (condexp)
-        parseInsertWhileBreak((INode*)loopnode, condexp);
+    BlockNode *elseblk = parseLoopElse(parse);
+    if (condexp) {
+        // A loop with a condition has an exit that gives no value, which is the
+        // 'else' it needs to be used as one
+        if (!stmtflag && elseblk == NULL)
+            errorMsgNode((INode*)loopnode, ErrorNoLoop, "while with condition expression may not be used as an expression unless it has an 'else'");
+        parseInsertWhileBreak((INode*)loopnode, condexp, elseblk);
+    }
+    else if (elseblk)
+        errorMsgNode((INode*)elseblk, ErrorLoopElse, "A 'while' with no condition never runs out, so it takes no 'else': every 'break' gives its value");
     return (INode *)loopnode;
 }
 
 // Parse each block
 INode *parseEach(ParseState *parse, Name *lifesym, int stmtflag) {
-    if (!stmtflag)
-        errorMsg(ErrorNoLoop, "each may not be used as an expression");
     BlockNode *outerblk = newBlockNode();   // surrounding block scope for isolating 'each' vars
 
     // Obtain all the parsed pieces
@@ -418,8 +545,14 @@ INode *parseEach(ParseState *parse, Name *lifesym, int stmtflag) {
         lexNextToken();
         step = parseSimpleExpr(parse);
     }
+    INode *filter = parseEachFilter(parse);
     BlockNode *loopnode = (BlockNode*)parseExprBlock(parse, 1);
     loopnode->lifesym = lifesym;
+    // An 'else' says what the loop gives when it runs out, so that the loop can be
+    // used as a value. Without one a loop gives none, and is a statement.
+    BlockNode *elseblk = parseLoopElse(parse);
+    if (!stmtflag && elseblk == NULL)
+        errorMsgNode((INode*)loopnode, ErrorNoLoop, "each may not be used as an expression unless it has an 'else'");
 
     // Assemble logic for a range (with optional step), e.g.:
     // { mut counter = initial; while counter <= iterend { imm elemname = counter; ... ; counter += step}}
@@ -442,6 +575,18 @@ INode *parseEach(ParseState *parse, Name *lifesym, int stmtflag) {
         elemdcl->value = itercmp->objfn;
         nodesAdd(&((BlockNode*)outerblk)->stmts, (INode*)elemdcl);
         itercmp->objfn = parseEachCounterUse(elemdcl, iter);
+        // A range that gives a value when it runs out has several places it runs
+        // out at (the guard, and the steps that stop a counter wrapping or
+        // reaching its bound), but one 'else': so they only say it has, in a flag
+        // that the guard looks at first in the next pass
+        VarDclNode *donedcl = NULL;
+        if (elseblk) {
+            // (a name of its own, since the counter already holds the anonymous name in this block)
+            donedcl = newVarDclFull(nametblFind("-done", 5), VarDclTag, unknownType, (INode*)mutPerm,
+                (INode*)newULitNode(0, (INode*)boolType));
+            inodeLexCopy((INode*)donedcl, iter);
+            nodesAdd(&outerblk->stmts, (INode*)donedcl);
+        }
         if (step) {
             FnCallNode *pluseq = newFnCallOpnameLower(iter, parseEachCounterUse(elemdcl, iter), plusEqName, 1);
             pluseq->flags |= FlagOpAssgn | FlagLvalOp;
@@ -471,7 +616,10 @@ INode *parseEach(ParseState *parse, Name *lifesym, int stmtflag) {
             inodeLexCopy((INode*)stepblk, iter);
             nodesAdd(&stepblk->stmts, (INode*)prevdcl);
             nodesAdd(&stepblk->stmts, (INode*)pluseq);
-            nodesAdd(&stepblk->stmts, (INode*)parseBreakIf((INode*)wrapped, 0, lifesym));
+            if (donedcl)
+                nodesAdd(&stepblk->stmts, (INode*)parseJumpIf((INode*)wrapped, 0, parseEachSetDone(donedcl, iter)));
+            else
+                nodesAdd(&stepblk->stmts, (INode*)parseBreakIf((INode*)wrapped, 0, lifesym));
             nodesAdd(&loopnode->stmts, (INode*)stepblk);
         }
         else {
@@ -498,8 +646,20 @@ INode *parseEach(ParseState *parse, Name *lifesym, int stmtflag) {
                 nodesAdd(&atbound->args, cloneNode(&cstate, nodesGet(itercmp->args, 0)));
                 BlockNode *stepblk = newBlockNode();
                 inodeLexCopy((INode*)stepblk, iter);
-                nodesAdd(&stepblk->stmts, (INode*)parseBreakIf((INode*)atbound, 0, lifesym));
-                nodesAdd(&stepblk->stmts, incr);
+                if (donedcl) {
+                    // '{ if x == bound {done = true} else {x++} }'
+                    IfNode *atend = parseJumpIf((INode*)atbound, 0, parseEachSetDone(donedcl, iter));
+                    BlockNode *stepon = newBlockNode();
+                    inodeLexCopy((INode*)stepon, iter);
+                    nodesAdd(&stepon->stmts, incr);
+                    nodesAdd(&atend->condblk, elseCond);
+                    nodesAdd(&atend->condblk, (INode*)stepon);
+                    nodesAdd(&stepblk->stmts, (INode*)atend);
+                }
+                else {
+                    nodesAdd(&stepblk->stmts, (INode*)parseBreakIf((INode*)atbound, 0, lifesym));
+                    nodesAdd(&stepblk->stmts, incr);
+                }
                 incr = (INode*)stepblk;
             }
             nodesAdd(&loopnode->stmts, incr);
@@ -509,10 +669,28 @@ INode *parseEach(ParseState *parse, Name *lifesym, int stmtflag) {
         // loop block, and blockFlow runs later. Saying so is what lets name
         // resolution find the step to copy ahead of a 'continue'.
         loopnode->flags |= FlagLoopStep;
-        parseInsertWhileBreak((INode*)loopnode, iter);
+        if (donedcl) {
+            // 'if done or !(counter < bound) {...else...}'
+            LogicNode *notiter = newLogicNode(NotLogicTag);
+            inodeLexCopy((INode*)notiter, iter);
+            notiter->lexp = iter;
+            LogicNode *either = newLogicNode(OrLogicTag);
+            inodeLexCopy((INode*)either, iter);
+            either->lexp = parseEachCounterUse(donedcl, iter);
+            either->rexp = (INode*)notiter;
+            IfNode *leave = newIfNode();
+            inodeLexCopy((INode*)leave, iter);
+            nodesAdd(&leave->condblk, (INode*)either);
+            nodesAdd(&leave->condblk, (INode*)blockElseFinish(elseblk, loopnode, iter));
+            nodesInsert(&loopnode->stmts, (INode*)leave, 0);
+        }
+        else
+            parseInsertWhileBreak((INode*)loopnode, iter, NULL);
         // The pass's variable, taken from the counter after the guard has let the pass run
         elemvars[0]->value = parseEachCounterUse(elemdcl, iter);
         nodesInsert(&loopnode->stmts, (INode*)elemvars[0], 1);
+        if (filter)
+            nodesInsert(&loopnode->stmts, parseEachFilterStmt(filter, lifesym), 2);
         nodesAdd(&outerblk->stmts, (INode*)loopnode);
     }
     else {
@@ -527,6 +705,13 @@ INode *parseEach(ParseState *parse, Name *lifesym, int stmtflag) {
         nodesAdd(&outerblk->stmts, (INode*)srcdcl);
         for (uint32_t i = nelems; i > 0; --i)
             nodesInsert(&loopnode->stmts, (INode*)elemvars[i - 1], 0);
+        // The filter follows the variables (which hold the pass's item by then);
+        // the 'else' stands ahead of them, where it cannot name them (eachLower
+        // takes it out to make the loop's exit)
+        if (filter)
+            nodesInsert(&loopnode->stmts, parseEachFilterStmt(filter, lifesym), nelems);
+        if (elseblk)
+            nodesInsert(&loopnode->stmts, (INode*)blockElseFinish(elseblk, loopnode, iter), 0);
         nodesAdd(&outerblk->stmts, (INode*)loopnode);
     }
     return (INode *)outerblk;
@@ -638,9 +823,9 @@ INode *parseExprBlock(ParseState *parse, int isloop) {
                 node->life = (INode*)newNameUseNode(lex->val.ident);
                 lexNextToken();
             }
-            node->exp = parseIsEndOfStatement()? (INode*)newNilLitNode() : parseAnyExpr(parse);
-            parseEndOfStatement();
-            nodesAdd(&blk->stmts, (INode*)node);
+            INode *trailing;
+            node->exp = parseJumpValue(parse, &trailing);
+            nodesAdd(&blk->stmts, parseJumpEnd(parse, node, trailing));
             break;
         }
 
@@ -652,8 +837,7 @@ INode *parseExprBlock(ParseState *parse, int isloop) {
                 node->life = (INode*)newNameUseNode(lex->val.ident);
                 lexNextToken();
             }
-            parseEndOfStatement();
-            nodesAdd(&blk->stmts, (INode*)node);
+            nodesAdd(&blk->stmts, parseJumpEnd(parse, node, NULL));
             break;
         }
 

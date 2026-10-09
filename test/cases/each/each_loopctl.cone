@@ -1,0 +1,480 @@
+// Loop control: a header filter, a trailing 'if', and a loop that gives a value.
+//
+// Every value printed is worked out by hand from the values put in.
+//
+// - header filter: 'each p in parts if cond { ... }' skips the items for which the
+//   condition is false, over a range (with and without 'by'), an array, a list, a
+//   cursor and the pairs of a dictionary;
+// - trailing 'if': 'continue if c;', 'break if c;', 'break v if c;', 'return x if c;'
+//   and 'return if c;' are 'if c { ... }' around the jump; the value of a 'break'
+//   or 'return' that is an 'if' expression is told from them by the block that
+//   follows its condition, parenthesized or not;
+// - loop values: 'each ... else { v }' and 'while c { ... } else { v }' give a
+//   'break'`s value or the 'else', over a range (the type's extremes too), a list and
+//   a cursor; an 'else' may end in a 'return', and its own 'break' and 'continue'
+//   belong to the loop around.
+
+mod each_loopctl;
+
+import stdio use *;
+import collections use *;
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+// A cursor that gives values: n, n - 1, ... 1
+struct Countdown {
+  n i64;
+
+  pub fn next(self &mut) Option[i64] {
+    if n <= 0i64 { return None[i64][]; }
+    imm v = n;
+    n = n - 1i64;
+    Some[i64][v];
+  }
+}
+
+fn makeList(n i64) List[i64] {
+  mut l = new List[i64];
+  mut i = 1i64;
+  while i <= n {
+    l.push(i);
+    i = i + 1i64;
+  }
+  l;
+}
+
+// -------- header filter --------
+
+fn filters() {
+  mut ev = 0i64;
+  each i in 0i64 < 10i64 if i % 2i64 == 0i64 {
+    ev = ev + i;
+  }
+  show("range-filter", ev);               // 0 + 2 + 4 + 6 + 8
+
+  mut stepped = 0i64;
+  each i in 0i64 < 10i64 by 3i64 if i != 3i64 {
+    stepped = stepped + i;
+  }
+  show("range-by-filter", stepped);       // 0, 3, 6, 9 without 3
+
+  mut down = 0i64;
+  each i in 5i64 >= 1i64 if i != 3i64 {
+    down = down * 10i64 + i;
+  }
+  show("range-down-filter", down);        // 5, 4, 2, 1
+
+  imm l = makeList(6i64);
+  mut od = 0i64;
+  each x in l if *x % 2i64 == 1i64 {
+    od = od + *x;
+  }
+  show("list-filter", od);                // 1 + 3 + 5
+
+  imm a = [3i64, 8i64, 5i64, 10i64];
+  mut big = 0i64;
+  each x in a if *x > 4i64 {
+    big = big * 100i64 + *x;
+  }
+  show("array-filter", big);              // 8, 5, 10
+
+  mut none = 0i64;
+  each x in l if *x > 100i64 {
+    none = none + 1i64;
+  }
+  show("filter-passes-none", none);
+
+  mut cd = 0i64;
+  each v in new Countdown(7i64) if v % 3i64 != 0i64 {
+    cd = cd * 10i64 + v;
+  }
+  show("cursor-filter", cd);              // 7, 5, 4, 2, 1
+
+  mut d = new Dict[i64, i64];
+  d.insert(1i64, 10i64);
+  d.insert(2i64, 20i64);
+  d.insert(3i64, 30i64);
+  mut pairs = 0i64;
+  each k, v in d if *v > 10i64 {
+    pairs = pairs + *k * *v;
+  }
+  show("dict-filter", pairs);             // 2 * 20 + 3 * 30
+
+  // the filter and a body that also continues and breaks
+  mut mix = 0i64;
+  each i in 0i64 < 100i64 if i % 2i64 == 0i64 {
+    if i == 6i64 { continue; }
+    if i == 12i64 { break; }
+    mix = mix + i;
+  }
+  show("filter-continue-break", mix);     // 0 + 2 + 4 + 8 + 10
+
+  // a labelled loop whose filter skips on the outer pass
+  mut lab = 0i64;
+  'outer: each i in 0i64 < 4i64 if i != 1i64 {
+    each j in 0i64 < 4i64 if j != 2i64 {
+      if j == 3i64 { continue 'outer; }
+      lab = lab + 10i64 * i + j;
+    }
+  }
+  show("labelled-filter", lab);           // i = 0: j = 0, 1; i = 2: 20, 21; i = 3: 30, 31
+}
+
+// -------- trailing 'if' --------
+
+fn firstOver(l &List[i64], limit i64) i64 {
+  each x in l {
+    return *x if *x > limit;
+  }
+  -1i64;
+}
+
+fn firstOverRange(limit i64) i64 {
+  each i in 0i64 < 100i64 {
+    return i * i if i * i > limit;
+  }
+  -1i64;
+}
+
+fn bump(n &mut i64, amount i64) {
+  return if amount == 0i64;
+  *n = *n + amount;
+}
+
+fn pick(c bool) i64 {
+  return (if c { 1i64; } else { 2i64; });
+}
+
+// An 'if' expression as the value, written without parentheses, is still read as
+// the value: what follows its condition (a block, not the end of the statement)
+// tells it from a trailing 'if'
+fn pickBare(c bool) i64 {
+  return if c { 1i64; } else { 2i64; };
+}
+
+fn bareBreakValue(limit i64) i64 {
+  mut n = 0i64;
+  while n < 10i64 {
+    n = n + 1i64;
+    if n > limit { break if n > 6i64 { 60i64; } else { 30i64; }; }
+  } else {
+    -1i64;
+  }
+}
+
+fn trailing() {
+  mut odd = 0i64;
+  each i in 0i64 < 10i64 {
+    continue if i % 2i64 == 0i64;
+    odd = odd + i;
+  }
+  show("continue-if", odd);               // 1 + 3 + 5 + 7 + 9
+
+  mut upto = 0i64;
+  each i in 0i64 < 10i64 {
+    break if i == 4i64;
+    upto = upto + i;
+  }
+  show("break-if", upto);                 // 0 + 1 + 2 + 3
+
+  mut w = 0i64;
+  while w < 10i64 {
+    w = w + 3i64;
+    continue if w == 6i64;
+    break if w > 8i64;
+  }
+  show("while-if", w);                    // 3, 6, 9
+
+  mut l = makeList(8i64);
+  show("return-if", firstOver(&l, 5i64));  // 6
+  show("return-if-none", firstOver(&l, 50i64));
+  show("return-if-range", firstOverRange(30i64));   // 36
+
+  mut n = 5i64;
+  bump(&mut n, 0i64);
+  bump(&mut n, 4i64);
+  show("return-if-void", n);              // 9
+  show("parenthesized-if", pick(true) * 10i64 + pick(false)); // 12
+  show("bare-if-value", pickBare(true) * 10i64 + pickBare(false)); // 12
+  show("bare-break-value-low", bareBreakValue(2i64));  // n = 3: 30
+  show("bare-break-value-high", bareBreakValue(6i64)); // n = 7: 60
+  show("bare-break-none", bareBreakValue(50i64));      // runs out: -1
+
+  mut found = 0i64;
+  'outer: each i in 0i64 < 5i64 {
+    each j in 0i64 < 5i64 {
+      continue 'outer if j > i;
+      found = found + 1i64;
+    }
+  }
+  show("labelled-continue-if", found);    // 1 + 2 + 3 + 4 + 5
+
+  mut k = 0i64;
+  imm v = while {
+    k = k + 1i64;
+    break k * 10i64 if k > 2i64;
+  };
+  show("break-value-if", v);              // 30
+}
+
+// -------- loops that give a value --------
+
+fn firstBig(l &List[i64], limit i64) i64 {
+  each x in l {
+    if *x > limit { break *x; }
+  } else {
+    -1i64;
+  }
+}
+
+fn firstSquareOver(limit i64) i64 {
+  each i in 1i64 <= 100i64 {
+    if i * i > limit { break i; }
+  } else {
+    0i64;
+  }
+}
+
+fn countdownFirst(from i64, wanted i64) i64 {
+  each v in new Countdown(from) {
+    if v == wanted { break v * 100i64; }
+  } else {
+    -7i64;
+  }
+}
+
+fn searchWhile(limit i64) i64 {
+  mut i = 0i64;
+  while i < 10i64 {
+    if i * i > limit { break i; }
+    i = i + 1i64;
+  } else {
+    -2i64;
+  }
+}
+
+// an 'else' that does more than give a value
+fn elseWithWork(l &List[i64]) i64 {
+  mut tries = 0i64;
+  imm r = each x in l {
+    tries = tries + 1i64;
+    if *x > 100i64 { break *x; }
+  } else {
+    imm total = tries * 10i64;
+    total + 1i64;
+  };
+  r + tries;
+}
+
+// an 'else' that returns
+fn mustFind(l &List[i64], want i64) i64 {
+  imm got = each x in l {
+    if *x == want { break *x * 2i64; }
+  } else {
+    return -100i64;
+  };
+  got + 1i64;
+}
+
+// a loop used as a statement, its 'else' run for what it does
+fn statementElse(l &List[i64], want i64) i64 {
+  mut hits = 0i64;
+  each x in l {
+    if *x == want { hits = 1i64; break; }
+  } else {
+    hits = 2i64;
+  }
+  hits;
+}
+
+// the 'else' of the inner loop breaks and continues the loop around
+fn elseLeavesOuter() {
+  mut log = 0i64;
+  each i in 0i64 < 5i64 {
+    each j in 0i64 < 3i64 {
+      if i == 1i64 { break; }
+    } else {
+      if i == 3i64 { break; }
+      continue;
+    }
+    log = log * 10i64 + i;
+  }
+  show("else-breaks-outer", log);         // i = 0 runs out: continue, so no log; 1 breaks inner: logs 1; 2 continues; 3 breaks outer
+}
+
+fn whileElseLeavesOuter() {
+  mut log = 0i64;
+  mut i = 0i64;
+  while i < 6i64 {
+    i = i + 1i64;
+    mut j = 0i64;
+    while j < 2i64 {
+      j = j + 1i64;
+      if i == 2i64 { break; }
+    } else {
+      if i == 5i64 { break; }
+      continue;
+    }
+    log = log * 10i64 + i;
+  }
+  show("while-else-breaks-outer", log);   // only i = 2 breaks the inner loop: logs 2; at 5 the outer loop breaks
+}
+
+fn nested() i64 {
+  imm l = makeList(4i64);
+  imm r = each x in l {
+    imm inner = each y in l {
+      if *x * *y == 6i64 { break *y; }
+    } else {
+      0i64;
+    };
+    if inner != 0i64 { break *x * 10i64 + inner; }
+  } else {
+    -1i64;
+  };
+  r;
+}
+
+// a range that reaches its type's extreme runs out through the 'else' too
+fn extremes() {
+  mut n = 0i64;
+  imm top = each i in 250u8 <= 255u8 {
+    n = n + 1i64;
+  } else {
+    n * 10i64;
+  };
+  show("max-bound-else", top);            // 6 passes, then 60
+
+  mut m = 0i64;
+  imm wrapped = each i in 0u8 <= 255u8 by 100u8 {
+    m = m + 1i64;
+  } else {
+    m * 10i64;
+  };
+  show("wrapping-step-else", wrapped);    // 0, 100, 200, then 300 wraps: 3 passes, then 30
+
+  mut c = 0i64;
+  imm counted = each i in 0i64 < 10i64 by 4i64 {
+    c = c + 1i64;
+    if i == 4i64 { continue; }
+  } else {
+    c;
+  };
+  show("continue-then-else", counted);    // 0, 4, 8: 3 passes
+
+  imm early = each i in 0i64 < 10i64 {
+    if i == 3i64 { break i * 5i64; }
+  } else {
+    -1i64;
+  };
+  show("range-break-value", early);       // 15
+
+  imm never = each i in 5i64 < 5i64 {
+    break 1i64;
+  } else {
+    42i64;
+  };
+  show("empty-range-else", never);        // 42
+
+  imm down = each i in 4i64 >= 0i64 {
+    if i == 100i64 { break i; }
+  } else {
+    n = 5i64;
+    n;
+  };
+  show("descending-else", down);          // 5
+}
+
+fn values() {
+  mut l = makeList(6i64);
+  show("list-found", firstBig(&l, 3i64));          // 4
+  show("list-not-found", firstBig(&l, 30i64));     // the else: -1
+  show("range-found", firstSquareOver(20i64));    // 5
+  show("range-not-found", firstSquareOver(50000i64));   // 0
+  show("cursor-found", countdownFirst(5i64, 2i64));     // 200
+  show("cursor-not-found", countdownFirst(5i64, 9i64)); // -7
+  show("while-found", searchWhile(30i64));        // 6
+  show("while-not-found", searchWhile(500i64));   // -2
+  show("else-with-work", elseWithWork(&l));        // six passes, 61, plus the tries
+  show("must-find-found", mustFind(&l, 4i64));     // 9
+  show("must-find-missing", mustFind(&l, 40i64));  // -100
+  show("statement-else-found", statementElse(&l, 2i64));   // 1
+  show("statement-else-missing", statementElse(&l, 20i64)); // 2
+  elseLeavesOuter();
+  whileElseLeavesOuter();
+  show("nested", nested());               // x = 2, y = 3
+  extremes();
+}
+
+// -------- values that own something, and a generic function --------
+
+struct Fin {
+  pub id i64;
+  fn final(self &uni) {
+    printStr("fin");
+    printInt(id);
+    printStr(" ");
+  }
+}
+
+fn finLoop(stop i64) Fin {
+  each i in 0i64 < 3i64 {
+    imm f = new Fin(i * 10i64);
+    if i == stop { break new Fin(100i64 + i); }
+  } else {
+    imm unused = new Fin(50i64);
+    new Fin(77i64);
+  }
+}
+
+fn finList(l &List[i64], stop i64) Fin {
+  each x in l {
+    imm f = new Fin(*x);
+    if *x == stop { break new Fin(1000i64 + *x); }
+  } else {
+    new Fin(2000i64);
+  }
+}
+
+fn drops() {
+  imm a = finLoop(1i64);
+  printStr("| ");
+  imm b = finLoop(9i64);
+  printStr("| ");
+  mut l = makeList(3i64);
+  imm c = finList(&l, 2i64);
+  imm d = finList(&l, 9i64);
+  printStr("| ");
+}
+
+fn twice[T](l &List[T]) i64 {
+  mut n = 0i64;
+  each x in l {
+    n = n + 1i64;
+  } else {
+    n * 2i64;
+  }
+}
+
+fn generic() {
+  mut a = makeList(5i64);
+  show("generic-ints", twice(&a));        // 10
+  mut s = new List[String];
+  s.push("one"); s.push("two");
+  show("generic-strings", twice(&s));     // 4
+}
+
+fn main() i32 {
+  filters();
+  trailing();
+  values();
+  drops();
+  printStr("\n");
+  generic();
+  0i32;
+}

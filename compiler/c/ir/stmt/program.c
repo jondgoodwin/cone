@@ -308,6 +308,7 @@ void pgmNameResAlone(ProgramNode *pgm, Nodes *mods) {
     nstate.mod = NULL;
     nstate.typenode = NULL;
     nstate.loopblock = NULL;
+    nstate.outerloop = NULL;
     nstate.macromethod = NULL;
     nstate.expander = NULL;
     nstate.sigfn = NULL;

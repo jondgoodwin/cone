@@ -29,6 +29,7 @@ caused, were measured.*
 | `FlagLoopStep` | the last statement is `each`'s synthesized step |
 | `FlagKeepTemps` | an operator's rewrite (`fnCallOpAssgn`, `contentsLower`): its statements' temporaries die at its end, not each statement's ([Flow](../phases/flow.md), "Temporaries") |
 | `FlagEach` | the outer block of an `each` over a source that is not a numeric range: `blockTypeCheck` checks its first statement, the hidden variable holding the source, then builds the loop (`eachLower`, `ir/exp/each.c`) and clears the flag |
+| `FlagLoopElse` | the block a loop leaves through when it has run out: the statements of its `else`, ending in the `break` that carries the loop's value (`blockElseFinish`). Name resolution reads it with the loop *around* the loop it stands in as the innermost one (below) |
 
 ## Parse
 
@@ -66,6 +67,31 @@ the variables, the body and every `break`/`continue` in it resolve as for a
 `while`. The scopes it counts are the ones the finished loop has, which is why
 the loop keeps the body's statements where they are and adds only to its head.
 
+**A header `if`, and the loop's `else`.** A filter, `each p in src if cond {…}`
+(`parseEachFilter`, which a later `<- each` header reads with the same call),
+becomes `if not cond { continue }` as the first statement of the body after the
+pass's variables, built by `parseEachFilterStmt`; for a range the `continue`
+carries the step like any other. A trailing `if` on `break`, `continue` or
+`return` is the same jump inside an `if` arm (`parseJumpEnd`). The `if` after
+a `break` or `return` with no value is the statement's when its condition is
+followed by the end of the statement, and an `if` expression's when a block
+follows, which `parseIf` decides when `parseJumpValue` has told it to leave the
+condition.
+
+An `else` after a loop (`parseLoopElse`) is a block of statements that is
+moved into the loop as the arm taken when the loop runs out, and the loop is
+then an expression: `blockElseFinish` flags the block `FlagLoopElse` and ends
+it with a `break` carrying its last expression (or nil, or nothing when it ends
+in a `return`, `break` or `continue`), aimed at the loop it leaves
+(`FlagBreakAimed`, which `breakNameRes` keeps). `while cond {…} else {…}` puts it
+where `if not cond { break }` goes. An `each` over anything but a range puts it
+first among the loop's statements, ahead of the reader's variables so that it
+cannot name them, and `eachLower` takes it out to make the exit of the counted
+loop or of the cursor's `None` arm. A range has several places it runs out
+(the guard, and the steps that stop a counter wrapping or reaching its bound),
+and one `else`: they set a hidden flag instead of breaking, and the guard
+`if flag or not (c < b) {…else…}` leaves at the top of the next pass.
+
 ## Name resolution
 
 `blockNameRes`: save `loopblock` and make this block the innermost loop target
@@ -73,6 +99,14 @@ if it is one — that is what an unlabelled `break`/`continue` binds to. Push a
 scope and a hook table. Hook `lifesym` if it is free; **if it is already bound,
 report the duplicate and do not hook**, so an inner `break 'x` silently reaches
 the outer block.
+
+**A loop's `else` is read as outside the loop.** An `else` is written after the
+loop, so its `break` and `continue` are the enclosing loop's, though it stands
+inside the loop it is the exit of. `blockNameRes` keeps `outerloop`, the loop
+around the innermost, and walks a `FlagLoopElse` block with it as the innermost
+(`loopblock`). Its variables are in the loop's scope depth, which is what the
+borrow-lifetime checks count, and it is placed ahead of the pass's variables, so
+the pass's variables are not in view.
 
 **Placement rule.** `return` may only be last; `break` and `continue` may be
 last, or one before last when `FlagLoopStep` allows for the step. `return` gets
@@ -119,6 +153,13 @@ a variable of the pass's own, `imm -item = ...; imm k = -item.0; imm v =
 -item.1`. An item that moves is refused before the loop is built
 (`ErrorEachItem`): `flowRefuseMoveField` would refuse the payload's move out of
 the Option the loop holds, as it does for a hand-written `match`.
+
+A loop's `else` (`FlagLoopElse`, first among the loop's statements) is taken
+out first and becomes the block the loop leaves through: the `if i >= len`
+arm of a counted loop, the `None` arm of a cursor's match (`eachLeave`). A
+cursor's arm is one block deeper than where name resolution counted the block's
+variables; the difference makes them look shallower, not deeper, to the
+borrow-lifetime checks.
 
 A source is checked once, as the initializer of the hidden variable. Checking an
 expression a second time is not idempotent for a call, which type check lowers,

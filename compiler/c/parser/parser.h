@@ -178,6 +178,13 @@ INode *parseIsCondition(ParseState *parse);
 INode *parseIf(ParseState *parse);
 INode *parseMatch(ParseState *parse);
 INode *parseWhile(ParseState *parse, Name *lifesym, int stmtflag);
+INode *parseEach(ParseState *parse, Name *lifesym, int stmtflag);
+// The filter of a loop header, 'if cond', after the source: the condition, or
+// NULL where the lexer is not on an 'if'. A header that takes one reads it with
+// this, then builds the statement that skips the items it rejects with
+// parseEachFilterStmt, which goes first in the body, after the pass's variables.
+INode *parseEachFilter(ParseState *parse);
+INode *parseEachFilterStmt(INode *condexp, Name *lifesym);
 // Parse an expression block
 INode *parseExprBlock(ParseState *parse, int isloop);
 INode *parseLifetime(ParseState *parse, int stmtflag);

@@ -551,6 +551,10 @@ enum ErrorCode {
     // 'each' over cursors (ir/exp/each.c)
     ErrorEachItem = 1340,       // What an 'each' takes out of its cursor cannot be given to its variables: a 'next' that does not answer an Option, an 'iter' giving something with no 'next', variables that do not unpack the tuple item, or an item that moves
 
+    // Loop control: a header 'if', a trailing 'if', a loop's 'else' (parser/parsefnflow.c)
+    ErrorLoopElse = 1350,       // An 'else' on a loop that cannot run out: a 'while' with no condition
+    ErrorTrailingIf = 1351,     // A trailing 'if' after a statement that takes none: only 'break', 'continue' and 'return' end with one
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name
