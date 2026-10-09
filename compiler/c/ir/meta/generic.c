@@ -247,6 +247,7 @@ static int genericInferType(FnCallNode *inferredgencall, Nodes *genparms, INode 
 // match the signature's parameters from 'firstparm' on: 1 for a method called
 // on a receiver, whose 'self' is not among the arguments yet, else 0.
 static void genericInferFromBounds(Nodes *genparms, Nodes *where, FnCallNode *inferredgencall);
+static FnSigNode *genericFnTypeSig(INode *type);
 
 // An unsuffixed integer literal passed for a parameter that is a bare type
 // parameter, 'v T': it is whichever number type is wanted, and only defaults to
@@ -514,8 +515,8 @@ static void genericInferFromBounds(Nodes *genparms, Nodes *where, FnCallNode *in
         // function, or its '()', has them as
         if (clause->typ->tag == FnSigTag) {
             FnSigNode *bound = (FnSigNode*)clause->typ;
-            if (sdcl->tag == FnSigTag)
-                genericInferType(inferredgencall, genparms, (INode*)bound, sdcl);
+            if (genericFnTypeSig(sarg))
+                genericInferType(inferredgencall, genparms, (INode*)bound, (INode*)genericFnTypeSig(sarg));
             else if (sdcl->tag == StructTag) {
                 FnDclNode *meth = genericMatchMethodArity(
                     namespaceFind(&((StructNode*)sdcl)->namespace, parensName), bound->parms->used + 1);
@@ -1030,11 +1031,25 @@ static FnDclNode *genericParensMethod(StructNode *strnode, FnSigNode *sig) {
     return NULL;
 }
 
+// The signature of a function type, or of a function reference type: what a
+// plain function referenced as '&byName' is the argument as ('&F' reaching
+// the function type) or, taken by value, the reference itself. NULL for any
+// other type.
+static FnSigNode *genericFnTypeSig(INode *type) {
+    INode *dcl = itypeGetTypeDcl(type);
+    if (dcl->tag == RefTag) {
+        INode *target = ((RefNode*)dcl)->vtexp;
+        dcl = target && isTypeNode(target) ? itypeGetTypeDcl(target) : NULL;
+    }
+    return dcl && dcl->tag == FnSigTag ? (FnSigNode*)dcl : NULL;
+}
+
 // Does this type meet the signature, a checked one?
 static int genericSigMeets(INode *type, FnSigNode *sig) {
+    FnSigNode *fnsig = genericFnTypeSig(type);
+    if (fnsig)
+        return fnSigEqual(sig, fnsig);
     INode *dcl = itypeGetTypeDcl(type);
-    if (dcl->tag == FnSigTag)
-        return fnSigEqual(sig, (FnSigNode*)dcl);
     if (dcl->tag != StructTag)
         return 0;
     return genericParensMethod((StructNode*)dcl, sig) != NULL;
@@ -1073,9 +1088,10 @@ static void genericSigMeetWhy(char *buf, size_t size, INode *type, FnSigNode *si
     INode *dcl = itypeGetTypeDcl(type);
     char wanted[256] = "";
     genericFnSigCat(wanted, sizeof(wanted), sig);
-    if (dcl->tag == FnSigTag) {
+    FnSigNode *fnsig = genericFnTypeSig(type);
+    if (fnsig) {
         char have[256] = "";
-        genericFnSigCat(have, sizeof(have), (FnSigNode*)dcl);
+        genericFnSigCat(have, sizeof(have), fnsig);
         snprintf(buf, size, " A function must be exactly %s; this one is %s.", wanted, have);
         return;
     }
@@ -1675,8 +1691,8 @@ static int genericRequirementsMetIn(FnCallNode *srcgencall, INode *generic, Gene
         INode *sigtype = genericClauseCloneChecked((CastNode*)cond, parms, srcgencall->args);
         FnSigNode *sig = (FnSigNode*)itypeGetTypeDcl(sigtype);
         char argname[256] = "";
-        if (itypeGetTypeDcl(arg)->tag == FnSigTag)
-            genericFnSigCat(argname, sizeof(argname), (FnSigNode*)itypeGetTypeDcl(arg));
+        if (genericFnTypeSig(arg))
+            genericFnSigCat(argname, sizeof(argname), genericFnTypeSig(arg));
         else
             genericTypeNameCat(argname, sizeof(argname), arg, 0);
         char isname[256] = "";

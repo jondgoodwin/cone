@@ -656,8 +656,9 @@ vetted by `genericConditionNameRes` (refused in a condition on an `is` entry,
 `ErrorUnbuiltIsCond`). At the arguments `genericConditionValue` makes the
 signature as an instance written out is made (`genericClauseCloneChecked`: the
 parameters substituted, the copy checked) and asks `genericSigMeets`: a function
-type is met by a signature `fnSigEqual` to it (what a referenced plain function
-is the argument as), a struct by a `pub` `()` method that is not generic and
+type, or a reference to one (`genericFnTypeSig`: what a plain function referenced
+is the argument as through `&F`, and by value), is met by a signature `fnSigEqual`
+to it, a struct by a `pub` `()` method that is not generic and
 whose parameters after the receiver, and whose return type, are `itypeIsSame` to
 the signature's (`genericParensMethod`, `genericMethodTakesSig`). Nothing else
 meets it, and the receiver's permission is not asked: the generic's body does
