@@ -1345,7 +1345,9 @@ static char *lifeSigPromises(FnSigNode *sig, int anon, int detail, char **kinds)
     LifePromises out = { promises, kinds ? (*kinds = memAllocStr(NULL, size)) : NULL };
     for (uint32_t i = 0; i < nparms; ++i) {
         INode *parmtype = ((IExpNode *)nodesGet(sig->parms, i))->vtype;
-        int stores = lifeParmStores(parmtype);
+        // A call can store only what another parameter lends, so a lone
+        // parameter, a cursor's 'self &mut', is never stored through
+        int stores = nparms > 1 && lifeParmStores(parmtype);
         lifePromiseParts(&out, sig, parmtype, sig->rettype, anon,
             (!anon && lifeIsStatic(parmtype) ? 2 : 0) + (stores ? 4 : 0), LifePromiseParm, detail);
         if (!stores)

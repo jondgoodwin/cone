@@ -1,0 +1,131 @@
+// A cursor declaring a lifetime, whose 'next(self &mut)' returns a borrow of
+// the lifetime it declares ('Option[&'a R]'), meets a trait whose 'next' names no
+// lifetime: as a static bound, decided where the function is called, and through
+// a virtual reference. Core's Iterator[T] is such a trait, and so is the
+// Source[T] written here; a cursor that gives plain values meets both too.
+//
+// Verdict: accept; prints 6, 6, 12, 12, 6 and 6 (the numbers 1 + 2 + 3, twice that, and six ones).
+// Basis: an implementation meets a requirement when it promises what the
+// requirement does (lifetime_band_struct_meets_trait): its result holds no part
+// the requirement's may not. Its receiver is a '&mut' to a struct that holds a
+// borrow, which a call could store into only from another parameter; 'next'
+// has none, so there is nothing to store and the two agree.
+
+mod lifetime_band_struct_cursor_meets_trait;
+
+import stdio use *;
+
+struct R { pub n i64; }
+
+trait Source[T] {
+  pub fn next(self &mut) Option[T];
+}
+
+struct Cursor['a] {
+  items &'a Array[R];
+  pos usize;
+  pub fn next(self &mut) Option[&'a R] {
+    if pos >= items.len { return None[&R][]; }
+    imm i = pos;
+    pos = i + 1usize;
+    Some[&R][&items[i]];
+  }
+}
+
+struct Ones {
+  left i64;
+  pub fn next(self &mut) Option[i64] {
+    if left <= 0i64 { return None[i64][]; }
+    left = left - 1i64;
+    Some[i64][1i64];
+  }
+}
+
+fn sumBound[S Source[&R]](s &mut S) i64 {
+  mut total = 0i64;
+  while true {
+    match s.next() {
+      case imm v Some {total = total + v.value.n;}
+      case is None {break;}
+    }
+  }
+  total;
+}
+
+fn sumVirtual(s &<mut Source[&R]) i64 {
+  mut total = 0i64;
+  while true {
+    match s.next() {
+      case imm v Some {total = total + v.value.n;}
+      case is None {break;}
+    }
+  }
+  total;
+}
+
+fn sumIterator[S Iterator[&R]](s &mut S) i64 {
+  mut total = 0i64;
+  while true {
+    match s.next() {
+      case imm v Some {total = total + v.value.n;}
+      case is None {break;}
+    }
+  }
+  total;
+}
+
+fn sumIteratorVirtual(s &<mut Iterator[&R]) i64 {
+  mut total = 0i64;
+  while true {
+    match s.next() {
+      case imm v Some {total = total + v.value.n;}
+      case is None {break;}
+    }
+  }
+  total;
+}
+
+fn countOnes[S Source[i64]](s &mut S) i64 {
+  mut n = 0i64;
+  while true {
+    match s.next() {
+      case imm v Some {n = n + v.value;}
+      case is None {break;}
+    }
+  }
+  n;
+}
+
+fn countOnesVirtual(s &<mut Iterator[i64]) i64 {
+  mut n = 0i64;
+  while true {
+    match s.next() {
+      case imm v Some {n = n + v.value;}
+      case is None {break;}
+    }
+  }
+  n;
+}
+
+fn main() {
+  imm a Array[R, 3] = [new R(1), new R(2), new R(3)];
+  mut c1 = new Cursor(&[]a, 0usize);
+  printInt(sumBound(&mut c1));
+  printStr("\n");
+  mut c2 = new Cursor(&[]a, 0usize);
+  printInt(sumVirtual(&mut c2));
+  printStr("\n");
+  mut c3 = new Cursor(&[]a, 0usize);
+  printInt(sumIterator(&mut c3) * 2i64);
+  printStr("\n");
+  mut c4 = new Cursor(&[]a, 0usize);
+  printInt(sumIteratorVirtual(&mut c4) * 2i64);
+  printStr("\n");
+  mut o1 = new Ones(6i64);
+  printInt(countOnes(&mut o1));
+  printStr("\n");
+  mut o2 = new Ones(6i64);
+  printInt(countOnesVirtual(&mut o2));
+  printStr("\n");
+}
+

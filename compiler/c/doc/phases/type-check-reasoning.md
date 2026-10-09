@@ -245,7 +245,10 @@ requirement does (`lifeSigMeets`), digit by digit of the same promises: its
 result, and what it may store through a writable parameter, holds no part
 the requirement's may not; a parameter is `'static` only where the
 requirement's is; a struct's slots are named apart wherever the requirement's
-are. So a method may return `'static`, or a longer lifetime, where the trait's
+are. A parameter is stored through only where another parameter could lend
+something to store, so a lone `self &mut` is not (`lifeSigPromises`): a
+cursor's `next(self &mut) Option[&'a T]` meets `Iterator[&T]`'s `next`, which
+names no lifetime and whose `Self` holds no borrow. So a method may return `'static`, or a longer lifetime, where the trait's
 result may hold its receiver, and take any borrow where the trait asks for a
 `'static` one, as Rust's more general impl may. What a signature promises is read part by part of each
 parameter -- its own reference's lifetime, and what that holds, by slot for a

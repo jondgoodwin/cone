@@ -53,7 +53,9 @@ Visual Studio projects stay at the root.
   and `bool`), and `Hasher`, the algorithm: foldhash's multiply and fold per
   word and wyhash for bytes, seeded by `processSeed()` (random once per
   process, conestd's) or by `Hasher.withSeed`, over the `mem.mulFold`
-  intrinsic; and `panic`, `assert`, `unreachable`, `todo` and `setPanicHook`, whose
+  intrinsic; `Iterator[T]` (`next`) and `Iterable[T, I]` (`iter`, giving an `I` that is an
+  `Iterator[T]`), the shapes a cursor and what gives one are walked by, met by the methods
+  alone (`str`'s cursors and the collections' are `Iterator`s undeclared); and `panic`, `assert`, `unreachable`, `todo` and `setPanicHook`, whose
   work is conestd's, with `srcFile` and `srcLine`, intrinsics outside `mem`,
   which as a parameter's default give a caller's location; and the macros
   `assertDebug` and `assertDebugMsg`, checked in a debug build only, through
