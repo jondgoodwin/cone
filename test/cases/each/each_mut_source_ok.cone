@@ -1,0 +1,111 @@
+// What stays allowed beside the refused '&mut src' source (each_mut_source):
+// 'each x in &src' reads the items as a plain 'each x in src' does, and
+// 'each x in src.mutItems()' changes them in place, for a list, an array and a
+// slice, in a statement, in a 'parallel each' and in an entry of '<-'.
+// A '&mut' parameter that is itself the source is not a written borrow, and is
+// walked (read) as it always was.
+
+mod each_mut_source_ok;
+
+import stdio use *;
+import collections use *;
+
+fn sumRef(l &List[i32]) i32 {
+  mut total = 0i32;
+  each x in &*l {
+    total += x;
+  }
+  total;
+}
+
+fn sumLocalBorrow() i32 {
+  mut l = new List[i32];
+  l.push(1i32);
+  l.push(2i32);
+  l.push(3i32);
+  mut total = 0i32;
+  each x in &l {                  // a borrow of the list: read
+    total += x;
+  }
+  total;
+}
+
+fn sumArrayBorrow() i32 {
+  imm a = [10i32, 20i32, 30i32];
+  mut total = 0i32;
+  each x in &a {
+    total += x;
+  }
+  total;
+}
+
+fn doubleList() i32 {
+  mut l = new List[i32];
+  l.push(1i32);
+  l.push(2i32);
+  l.push(3i32);
+  each x in l.mutItems() {        // changed in place
+    *x = *x * 2i32;
+  }
+  mut total = 0i32;
+  each x in l {
+    total += x;
+  }
+  total;
+}
+
+fn doubleArray() i32 {
+  mut a = [1i32, 2i32, 3i32];
+  each x in a.mutItems() {
+    *x = *x + 10i32;
+  }
+  a[0usize] + a[1usize] + a[2usize];
+}
+
+fn doubleSlice(s &mut Array[i32]) i32 {
+  each x in s.mutItems() {
+    *x = *x * 3i32;
+  }
+  mut total = 0i32;
+  each x in s {                   // a '&mut' parameter as the source: read
+    total += x;
+  }
+  total;
+}
+
+fn builderCopy() i32 {
+  mut l = new List[i32];
+  l.push(4i32);
+  l.push(5i32);
+  mut out = new List[i32];
+  out <- each &l;
+  out <- each x in &l yield x + 100i32;
+  mut total = 0i32;
+  each x in out {
+    total += x;
+  }
+  total;
+}
+
+fn show(label &str, n i32) {
+  printStr(label);
+  printStr(" = ");
+  printInt(i64.from(n));
+  printStr("\n");
+}
+
+fn main() i32 {
+  mut l = new List[i32];
+  l.push(1i32);
+  l.push(2i32);
+  l.push(3i32);
+  show("list borrowed", sumRef(&l));              // 1 + 2 + 3 = 6
+  show("local list borrowed", sumLocalBorrow());  // 6
+  show("array borrowed", sumArrayBorrow());       // 10 + 20 + 30 = 60
+  show("list mutItems", doubleList());            // 2 + 4 + 6 = 12
+  show("array mutItems", doubleArray());          // 11 + 12 + 13 = 36
+  mut arr = [1i32, 2i32, 3i32];
+  show("slice mutItems", doubleSlice(&mut arr));  // 3 + 6 + 9 = 18
+  show("builder", builderCopy());                 // (4 + 5) + (104 + 105) = 218
+  0i32;
+}

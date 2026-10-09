@@ -150,6 +150,11 @@ statements; the loop below then checks them as built. By the source's type:
   an Option each pass, whose null test on a pointer the optimizer cannot know is
   not null blocks the loop's vectorization. A slice that is mutable (what
   `mutItems()` answers) lends each element as `&mut s[i]`; any other as `&s[i]`.
+  A source *written* `&mut src` (a borrow expression with the `mut` permission,
+  in `each`, `parallel each` and `<- each` alike) never gets this far: the parser
+  refuses it (`parseEachMutSource`, `ErrorEachMutSource`) naming `src.mutItems()`.
+  A `&mut` variable or parameter that is itself the source is no written borrow
+  and is walked as the reference it is, a read.
 - **core's `ArrayIter` or `ArrayIndexed`, a value made for the loop** (not a
   place, not behind a reference; `iter()` with one variable, `indexed()` with
   two, `eachIsCore`): the same counted loop, over the slice the cursor holds and
