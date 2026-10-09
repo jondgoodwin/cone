@@ -24,7 +24,8 @@ typedef struct {
     LLVMValueRef *phis;
     LLVMBasicBlockRef *blocksFrom;
     uint32_t phiCnt;
-    uint32_t tempmark;      // How many temporaries were waiting as the block began: a jump to it finalizes the rest
+    LLVMValueRef slot;      // Where a small aggregate result is left instead of a phi (genlMergeSlot), else NULL
+    uint32_t tempmark;     // How many temporaries were waiting as the block began: a jump to it finalizes the rest
 } GenBlockState;
 
 // A temporary made and not yet finalized (TempNode): the slot its value was
@@ -392,6 +393,12 @@ void genlTraceAt(GenState *gen, LLVMValueRef valptr, INode *vtype, LLVMValueRef 
 void genlBarrierAt(GenState *gen, LLVMValueRef valptr, INode *vtype);
 // Create an alloca (will be pushed to the entry point of the function.
 LLVMValueRef genlAlloca(GenState *gen, LLVMTypeRef type, const char *name);
+// Where paths that merge on a value of type 'vtype' leave it for the join to
+// load, or NULL when they merge it in a phi: a small struct or array (not on a
+// GPU target) goes through a slot, because LLVM never splits a phi of an
+// aggregate, and one it carries so keeps a loop it is carried round from being
+// vectorized, where mem2reg and SROA split a slot into one phi a scalar
+LLVMValueRef genlMergeSlot(GenState *gen, INode *vtype);
 
 // genllvm.c: roots, the shadow stack
 // A stack slot of the function being generated is a root when its type holds a

@@ -91,9 +91,11 @@ LLVMValueRef genlIf(GenState *gen, IfNode *ifnode) {
     count = ifnode->condblk->used / 2;
     i = phicnt = 0;
     int hasval = vtype != unknownType && vtype->tag != VoidTag;
+    LLVMValueRef mergeslot = NULL;
     if (hasval) {
         blkvals = memAllocBlk(count * sizeof(LLVMValueRef));
         blks = memAllocBlk(count * sizeof(LLVMBasicBlockRef));
+        mergeslot = genlMergeSlot(gen, vtype);
     }
 
     endif = genlInsertBlock(gen, "endif");
@@ -136,6 +138,8 @@ LLVMValueRef genlIf(GenState *gen, IfNode *ifnode) {
         LLVMValueRef blkval = genlBlock(gen, (BlockNode*)*(nodesp + 1));
         uint16_t lastStmttype = nodesLast(((BlockNode*)*(nodesp + 1))->stmts)->tag;
         if (lastStmttype != ReturnTag && lastStmttype != BreakTag && lastStmttype != ContinueTag) {
+            if (mergeslot && blkval)
+                LLVMBuildStore(gen->builder, blkval, mergeslot);
             LLVMBuildBr(gen->builder, endif);
             // Remember value and block if needed for phi merge
             if (hasval) {
@@ -157,6 +161,8 @@ LLVMValueRef genlIf(GenState *gen, IfNode *ifnode) {
     }
 
     // Merge point at end of if. Create merged phi value if needed.
+    if (phicnt && mergeslot)
+        return LLVMBuildLoad2(gen->builder, genlType(gen, vtype), mergeslot, "ifval");
     if (phicnt) {
         LLVMValueRef phi = LLVMBuildPhi(gen->builder, genlType(gen, vtype), "ifval");
         LLVMAddIncoming(phi, blkvals, blks, phicnt);

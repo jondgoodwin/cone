@@ -457,16 +457,29 @@ Three shapes, the first two chosen in `genlSetupTaggedTrait`:
   the strictest alignment of any variant's field, or a byte-aligned largest
   variant would leave a stricter one padded past it. Reading a `%Shape` as a
   `%Circle` is safe only because they are the same size.
-  - **The enum's own body is its own fields, then bytes** out to that size, then
-    a zero-length array of the most strictly aligned field type where the bytes
-    alone would under-align it: `%Shape = { i8, i32, [8 x i8] }`,
-    `%Message = { i8, i32, [8 x i8], [0 x i64] }`. **It is never a copy of one
+  - **The enum's own body is its own fields, then its payload** out to that
+    size, then a zero-length array of the most strictly aligned field type where
+    the members alone would under-align it. **It is never a copy of one
     variant's layout**, because an enum value is loaded, stored and passed as a
     first-class aggregate, and LLVM does not carry an aggregate's padding bytes:
     a smaller variant's field in a hole of the largest's layout — a `bool` at
     byte 1 beside an `i32` at byte 4 — was lost in the copy. The enum's own
     fields are the discriminant and any common fields, which begin every variant
     at the same offsets, so a common field or the tag is still read by index.
+  - **The payload is a scalar wherever every variant that has anything in those
+    bytes has the same integer, float or pointer there, and bytes everywhere
+    else** (`genlEnumPayload`), the members explicit through to the size so no
+    padding is left that a variant uses. `Option[i64]` is `{ i8, [7 x i8], i64 }`;
+    `%Shape = { i8, i32, i32, i32 }`, where `Circle` and `Rect` agree on an `i32`
+    at byte 8; `%Solid = { i8, i32, [8 x i8], i64, i64 }`, where `Cube`'s first
+    `i64` lies over their `i32`s, so those are bytes, and its other two are
+    alone. An array, a vector or any other type is bytes, and past 64 leaves
+    between the variants the whole payload is bytes, as `{ i8, [15 x i8], [0 x i64] }`
+    for an `i64` beside an `f64`. **Why:** bytes are all that scalar replacement
+    cannot see through. A payload of fifteen bytes was broken into eight byte
+    values at every load of an `i64` and put together at every use, and a loop
+    over `Option[i64]`s did not vectorize (measured 8 October 2026; with the
+    `i64` named, it does). The GPU keeps the bytes and integers below.
   - **On a GPU target the padding carries the alignment itself**: bytes out to
     the strictest alignment, then integers of that size (`Option[f32]` is
     `{ i8, [3 x i8], [1 x i32] }`), since a zero-length array is a runtime
@@ -1098,6 +1111,20 @@ starts its own base and leaves the stack as it found it.
 
 **A `break`'s phi edge is recorded after its releases**, from the block the
 jump leaves: a release (`dealiasRef`'s test) splits the block.
+
+**A small aggregate is merged through a slot, not a phi** (`genlMergeSlot`).
+Where a phi block (`genlBlock`, `genlBreak`) or an `if` (`genlIf`) converges on
+a struct or array of at most `GenlAggCopyMin` bytes, each path stores its value
+into an `alloca` made in the entry block (`%merge`) and the join loads it. LLVM
+never splits a phi of an aggregate into one per scalar, so a loop carrying one
+(an inlined function returning an `{ok, v}` struct or an `Option[i64]`) stayed
+scalar, while mem2reg and SROA turn the slot into a phi per scalar. Measured
+8 October 2026 on a cursor summing a `&Array[i64]`: the optimized loop was
+scalar before and the same vector loop as a counted `while` after. A large
+aggregate keeps its phi, because the memory pass below gives that a slot of its
+own, and a GPU target keeps it too, where an aggregate is carried as its leaves.
+A pointer, including the nullable-pointer `Option[&T]`, is not an aggregate and
+keeps its phi.
 
 ### Large aggregates
 

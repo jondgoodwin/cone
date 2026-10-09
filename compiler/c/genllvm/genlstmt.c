@@ -71,6 +71,8 @@ void genlBreak(GenState *gen, BlockNode* block, INode* exp, Nodes* dealias) {
     if (brkval && blockstate->phis) {
         blockstate->phis[blockstate->phiCnt] = brkval;
         blockstate->blocksFrom[blockstate->phiCnt++] = LLVMGetInsertBlock(gen->builder);
+        if (blockstate->slot)
+            LLVMBuildStore(gen->builder, brkval, blockstate->slot);
     }
     LLVMBuildBr(gen->builder, blockstate->blockend);
 }
@@ -133,10 +135,12 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
         if (blk->vtype->tag != VoidTag && blk->vtype->tag != UnknownTag) {
             blkstate->phis = (LLVMValueRef*)memAllocBlk(sizeof(LLVMValueRef) * blk->breaks->used);
             blkstate->blocksFrom = (LLVMBasicBlockRef*)memAllocBlk(sizeof(LLVMBasicBlockRef) * blk->breaks->used);
+            blkstate->slot = genlMergeSlot(gen, blk->vtype);
         }
         else {
             blkstate->phis = NULL;
             blkstate->blocksFrom = NULL;
+            blkstate->slot = NULL;
         }
         blkstate->phiCnt = 0;
         blkstate->tempmark = gen->tempcnt;
@@ -229,6 +233,8 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
         LLVMPositionBuilderAtEnd(gen->builder, blockend);
 
         --gen->blockstackcnt;
+        if (blkstate->phis && blkstate->slot)
+            return LLVMBuildLoad2(gen->builder, genlType(gen, blk->vtype), blkstate->slot, "mergeval");
         if (blkstate->phis) {
             LLVMValueRef phi = LLVMBuildPhi(gen->builder, genlType(gen, blk->vtype), "phival");
             LLVMAddIncoming(phi, blkstate->phis, blkstate->blocksFrom, blkstate->phiCnt);

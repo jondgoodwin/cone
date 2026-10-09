@@ -335,6 +335,129 @@ void genlSetupTaggedTrait(GenState *gen, StructNode *base) {
     }
 }
 
+// A scalar a variant keeps at a byte offset of its own layout: what the enum's
+// type may name there if no other variant keeps something else in those bytes
+typedef struct {
+    unsigned long long off;
+    unsigned long long size;
+    LLVMTypeRef type;       // the scalar, or NULL for bytes the enum must keep as bytes
+} GenlEnumLeaf;
+
+// The most leaves an enum's variants may have between them for the enum to
+// be laid out in scalars; past this it stays bytes
+#define GenlEnumMaxLeaves 64
+
+// Add the scalars of a variant's type (nested structs flattened) to a list,
+// each at its offset. An array, or any scalar but an integer, float or pointer,
+// is kept as bytes. Returns 0 when the list is full.
+static int genlEnumLeaves(GenState *gen, LLVMTypeRef type, unsigned long long base,
+        GenlEnumLeaf *leaves, uint32_t *count) {
+    if (!LLVMTypeIsSized(type))
+        return 0;
+    unsigned long long size = LLVMStoreSizeOfType(gen->datalayout, type);
+    if (size == 0)
+        return 1;
+    LLVMTypeKind kind = LLVMGetTypeKind(type);
+    if (kind == LLVMStructTypeKind) {
+        unsigned fldcnt = LLVMCountStructElementTypes(type);
+        for (unsigned fld = 0; fld < fldcnt; ++fld) {
+            if (!genlEnumLeaves(gen, LLVMStructGetTypeAtIndex(type, fld),
+                base + LLVMOffsetOfElement(gen->datalayout, type, fld), leaves, count))
+                return 0;
+        }
+        return 1;
+    }
+    if (*count >= GenlEnumMaxLeaves)
+        return 0;
+    int scalar = kind == LLVMIntegerTypeKind || kind == LLVMFloatTypeKind
+        || kind == LLVMDoubleTypeKind || kind == LLVMPointerTypeKind;
+    leaves[*count].off = base;
+    leaves[*count].size = size;
+    leaves[*count].type = scalar ? type : NULL;
+    ++*count;
+    return 1;
+}
+
+// The members that lay out an enum's payload, from 'ownend' to 'maxsize': a
+// scalar where every variant that has anything in those bytes has that same
+// scalar there, and bytes everywhere else. The members are explicit through
+// to the end, with no padding between them that a variant uses, because
+// copying a first-class aggregate drops its type's padding.
+//
+// Bytes alone are what scalar replacement cannot see through: `Option[i64]`
+// as fifteen bytes is broken into eight byte values and put back together at
+// every copy, and a loop over such values is not vectorized. With the scalar
+// named, `[7 x i8], i64`, it travels as the one `i64`.
+//
+// Returns the number of members written to 'out', or 0 if the payload stays
+// bytes (no scalar is agreed, or the variants have too many to compare).
+static uint32_t genlEnumPayload(GenState *gen, LLVMTypeRef *variants, uint32_t nvariants,
+        unsigned long long ownend, unsigned long long maxsize, LLVMTypeRef *out) {
+    GenlEnumLeaf leaves[GenlEnumMaxLeaves];
+    uint32_t first[256], count = 0;
+    if (nvariants >= 256)
+        return 0;
+    for (uint32_t v = 0; v < nvariants; ++v) {
+        first[v] = count;
+        if (!genlEnumLeaves(gen, variants[v], 0, leaves, &count))
+            return 0;
+    }
+    // A leaf is clean when no other variant keeps different bytes where it lies
+    LLVMTypeRef types[GenlEnumMaxLeaves];
+    unsigned long long offs[GenlEnumMaxLeaves], sizes[GenlEnumMaxLeaves];
+    uint32_t nclean = 0;
+    for (uint32_t v = 0; v < nvariants; ++v) {
+        uint32_t end = v + 1 < nvariants ? first[v + 1] : count;
+        for (uint32_t l = first[v]; l < end; ++l) {
+            GenlEnumLeaf *leaf = &leaves[l];
+            if (leaf->type == NULL || leaf->off < ownend)
+                continue;
+            int clean = 1;
+            for (uint32_t m = 0; m < count && clean; ++m) {
+                GenlEnumLeaf *other = &leaves[m];
+                if (m >= first[v] && m < end)
+                    continue;
+                if (other->off < leaf->off + leaf->size && leaf->off < other->off + other->size
+                    && (other->off != leaf->off || other->size != leaf->size || other->type != leaf->type))
+                    clean = 0;
+            }
+            if (!clean)
+                continue;
+            int seen = 0;
+            for (uint32_t c = 0; c < nclean; ++c)
+                seen |= offs[c] == leaf->off;
+            if (!seen) {
+                offs[nclean] = leaf->off;
+                sizes[nclean] = leaf->size;
+                types[nclean++] = leaf->type;
+            }
+        }
+    }
+    if (nclean == 0)
+        return 0;
+
+    // In offset order, with the bytes between
+    uint32_t added = 0;
+    unsigned long long cursor = ownend;
+    for (;;) {
+        uint32_t next = nclean;
+        for (uint32_t c = 0; c < nclean; ++c) {
+            if (offs[c] != (unsigned long long)-1 && offs[c] >= cursor && (next == nclean || offs[c] < offs[next]))
+                next = c;
+        }
+        if (next == nclean)
+            break;
+        if (offs[next] > cursor)
+            out[added++] = LLVMArrayType(LLVMInt8TypeInContext(gen->context), (unsigned int)(offs[next] - cursor));
+        out[added++] = types[next];
+        cursor = offs[next] + sizes[next];
+        offs[next] = (unsigned long long)-1;
+    }
+    if (maxsize > cursor)
+        out[added++] = LLVMArrayType(LLVMInt8TypeInContext(gen->context), (unsigned int)(maxsize - cursor));
+    return added;
+}
+
 // Generate samesize trait and all its concrete types, padding as needed. Every
 // variant is in exactly one enum's list -- an extension's are copies of its base's
 // -- so each is padded to its own enum's largest, and an extension's added variant
@@ -360,10 +483,13 @@ void genlSameSizeTrait(GenState *gen, StructNode *base) {
     LLVMTypeRef maxaligntype = NULL;
     unsigned long long *sizes = (unsigned long long *)memAllocBlk(base->derived->used * sizeof(unsigned long long));
     unsigned long long *sizesp = sizes;
+    LLVMTypeRef *throwaways = (LLVMTypeRef *)memAllocBlk(base->derived->used * sizeof(LLVMTypeRef));
+    LLVMTypeRef *throwp = throwaways;
     for (nodesFor(base->derived, cnt, nodesp)) {
         StructNode *strnode = (StructNode *)*nodesp;
         LLVMTypeRef structype = LLVMStructCreateNamed(gen->context, "Throwaway");
         genlStructFields(gen, structype, strnode, 0);
+        *throwp++ = structype;
         unsigned long long size = LLVMStoreSizeOfType(gen->datalayout, structype);
         *sizesp++ = size;
         if (size > maxsize)
@@ -409,7 +535,7 @@ void genlSameSizeTrait(GenState *gen, StructNode *base) {
     // no holes, and they reinterpret nothing, where another variant's scalar
     // types would.
     uint32_t ownfields = base->fields.used;
-    LLVMTypeRef *basetypes = (LLVMTypeRef *)memAllocBlk((ownfields + 2) * sizeof(LLVMTypeRef));
+    LLVMTypeRef *basetypes = (LLVMTypeRef *)memAllocBlk((ownfields + 2 * GenlEnumMaxLeaves + 4) * sizeof(LLVMTypeRef));
     uint32_t basecnt = 0;
     for (nodelistFor(&base->fields, cnt, nodesp))
         basetypes[basecnt++] = genlType(gen, ((FieldDclNode *)*nodesp)->vtype);
@@ -429,8 +555,14 @@ void genlSameSizeTrait(GenState *gen, StructNode *base) {
             basetypes[basecnt++] = LLVMArrayType(LLVMInt8TypeInContext(gen->context), (unsigned int)(wordstart - ownend));
         basetypes[basecnt++] = LLVMArrayType(LLVMIntTypeInContext(gen->context, maxalign * 8), (unsigned int)((maxsize - wordstart) / maxalign));
     }
-    else if (maxsize > ownend)
-        basetypes[basecnt++] = LLVMArrayType(LLVMInt8TypeInContext(gen->context), (unsigned int)(maxsize - ownend));
+    else if (maxsize > ownend) {
+        // The payload, in the scalars every variant agrees on where there are any, else bytes
+        uint32_t paycnt = genlEnumPayload(gen, throwaways, base->derived->used, ownend, maxsize, &basetypes[basecnt]);
+        if (paycnt > 0)
+            basecnt += paycnt;
+        else
+            basetypes[basecnt++] = LLVMArrayType(LLVMInt8TypeInContext(gen->context), (unsigned int)(maxsize - ownend));
+    }
     LLVMTypeRef sofar = LLVMStructTypeInContext(gen->context, basetypes, basecnt, 0);
     if (maxaligntype && LLVMABIAlignmentOfType(gen->datalayout, sofar) < maxalign)
         basetypes[basecnt++] = LLVMArrayType(maxaligntype, 0);
