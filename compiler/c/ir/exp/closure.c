@@ -519,6 +519,87 @@ static StructNode *closureBuild(TypeCheckState *pstate, ClosureNode *clo, Closur
     return st;
 }
 
+// A plain function given where a callable owner is made: the reference to it is held
+// by a struct of the compiler's, whose '()' calls it, so that an owner of the struct
+// is the owner of a callable as any closure's is. The struct holds the one field,
+// the reference, and its '()' takes the signature's parameters after a 'self &'.
+// Answers the struct, laid out; the caller makes a value of it from the reference.
+StructNode *closureFnHolder(TypeCheckState *pstate, FnSigNode *sig, INode *reftype, INode *lexnode) {
+    ModuleNode *mod = dclInfoGetModule((INode*)pstate->fn);
+    char buf[48];
+    snprintf(buf, sizeof(buf), "closure#%u", ++closureSerial);
+    StructNode *st = newStructNode(nametblFind(buf, strlen(buf)));
+    inodeLexCopy((INode*)st, lexnode);
+    dclInfoJoin((INode*)st, (INode*)mod);
+
+    ClosureInfo *info = memAllocBlk(sizeof(ClosureInfo));
+    info->strct = st;
+    info->caps = memAllocBlk(sizeof(ClosureCap));
+    info->ncaps = 0;
+    info->outerself = NULL;
+    info->retinfer = 0;
+    info->retset = 0;
+    info->method = parensName;
+    info->errbase = errors;
+    info->expanded = (pstate->fn->flags & FlagInline) || dclIsInstance((INode*)pstate->fn);
+    info->lit = NULL;
+
+    FieldDclNode *fld = newFieldDclNode(nametblFind("f", 1), (INode*)newPermUseNode(immPerm));
+    inodeLexCopy((INode*)fld, lexnode);
+    fld->vtype = reftype;
+    fld->flags |= FlagMethFld;
+    fld->index = 0;
+    structAddField(st, fld);
+
+    FnSigNode *msig = newFnSigNode();
+    inodeLexCopy((INode*)msig, lexnode);
+    VarDclNode *self = newVarDclNode(selfName, VarDclTag, (INode*)immPerm);
+    inodeLexCopy((INode*)self, lexnode);
+    self->vtype = (INode*)newRefNodeFull(RefTag, lexnode, borrowRef,
+        (INode*)newPermUseNode(roPerm), newNameUseFromDclNode((INode*)st, lexnode));
+    self->scope = 1;
+    self->index = 0;
+    self->flowtempflags |= VarInitialized;
+    info->selfparm = self;
+    nodesAdd(&msig->parms, (INode*)self);
+    FnCallNode *call = newFnCallNode(closureFieldAccess(info, fld, lexnode), sig->parms->used);
+    inodeLexCopy((INode*)call, lexnode);
+    INode **nodesp;
+    uint32_t cnt;
+    uint16_t parmnbr = 1;
+    for (nodesFor(sig->parms, cnt, nodesp)) {
+        VarDclNode *orig = (VarDclNode*)*nodesp;
+        char pname[16];
+        snprintf(pname, sizeof(pname), "a%u", (unsigned)parmnbr);
+        VarDclNode *parm = newVarDclNode(nametblFind(pname, strlen(pname)), VarDclTag, orig->perm);
+        inodeLexCopy((INode*)parm, lexnode);
+        parm->vtype = orig->vtype;
+        parm->scope = 1;
+        parm->index = parmnbr++;
+        parm->flowtempflags |= VarInitialized;
+        nodesAdd(&msig->parms, (INode*)parm);
+        NameUseNode *use = newNameUseNode(parm->namesym);
+        inodeLexCopy((INode*)use, lexnode);
+        use->dclnode = (INode*)parm;
+        use->vtype = parm->vtype;
+        nodesAdd(&call->args, (INode*)use);
+    }
+    msig->rettype = sig->rettype;
+    BlockNode *body = newBlockNode();
+    inodeLexCopy((INode*)body, lexnode);
+    body->stmts = newNodes(2);
+    nodesAdd(&body->stmts, (INode*)call);
+    FnDclNode *fn = newFnDclNode(parensName, FlagMethFld | FlagPub, (INode*)msig, (INode*)body);
+    inodeLexCopy((INode*)fn, lexnode);
+    fn->closure = info;
+    iNsTypeAddFn((INsTypeNode*)st, fn);
+
+    nodesAdd(&mod->nodes, (INode*)st);
+    INode *stnode = (INode*)st;
+    inodeTypeCheckAny(pstate, &stnode);
+    return st;
+}
+
 // Does the closure, under this guess, check? Tried on a copy of the literal,
 // its diagnostics unprinted and uncounted.
 static int closureTry(TypeCheckState *pstate, ClosureNode *tmpl, ClosurePlan *plan, INode **statetypes,

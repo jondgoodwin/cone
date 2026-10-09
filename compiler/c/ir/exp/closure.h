@@ -69,6 +69,11 @@ ClosureInfo *closureOfDcl(INode *dcl);
 // rewritten to the access of its field. Answers whether it was.
 int closureUse(TypeCheckState *pstate, NameUseNode **namep);
 
+// The struct that holds a reference to a plain function and calls it, so that an
+// owner of a callable can own a function (the caller makes its value from the
+// reference, whose type is 'reftype')
+StructNode *closureFnHolder(TypeCheckState *pstate, FnSigNode *sig, INode *reftype, INode *lexnode);
+
 // The 'self' a bare member name inside a closure is reached through: the
 // method the closure is written in has the receiver, not the closure's '()'
 INode *closureSelfParm(FnDclNode *fn);

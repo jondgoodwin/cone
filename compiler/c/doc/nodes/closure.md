@@ -203,9 +203,14 @@ trait that already exists.
   literal anywhere else is not lent: to keep one it is moved into an owner.
 - **An owner.** `new So[fn(sig)](c)` (`typeLitNewCallable`) takes one value, checks
   it against the signature's hint if it is a literal, allocates that value's own
-  type and converts the owner to the callable's. A callable that holds nothing
-  (a zero-field struct) has no allocation to own and is refused
-  (`ErrorCallableUse`). Whether the closure may be kept is the loan walk's, as for
+  type and converts the owner to the callable's. **A callable that holds nothing**
+  (a zero-size struct) is allocated as any other: the allocation of a value with no
+  size asks the region for one byte (`genlallocref`; `allocateZeroSizeOk` lets the
+  value check pass only here), and it is freed as any block is, with nothing
+  special at its death. **A plain function** (`new So[fn(sig)](&f)`) is held by a
+  struct of the compiler's, `closureFnHolder`: one field, the function reference,
+  and a `()` that calls it, made as a closure's struct is and owned like it; a
+  function of another signature is `ErrorCallableUse`. Whether the closure may be kept is the loan walk's, as for
   any owning virtual reference: one that borrows a local is refused by the rule
   that such an owner holds only global borrows.
 - **A callable field.** `t.profile(3.)` where `profile` is a field is rewritten
