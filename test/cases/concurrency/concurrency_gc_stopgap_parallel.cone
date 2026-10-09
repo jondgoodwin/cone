@@ -1,0 +1,74 @@
+// A 'Gc' may not be made or held in a 'parallel each', for now: the passes run
+// at the same time on the actors' workers, and the collector's heap and its one
+// chain of roots are process globals without locks. Copying one in from outside
+// the loop is ErrorParCopy (concurrency_parallel_each_copies); this is the rest,
+// ErrorGcStopgap, until the collector is per actor (the regions work):
+//
+//   - an allocation, 'new Gc[...]', and a struct holding one, in the body
+//   - the same in a parallel builder's header, filter and 'yield'
+//   - a call that returns one
+//
+// Beside them, a copy from outside is still ErrorParCopy, and a 'parallel each'
+// that touches no 'Gc' is untouched.
+
+mod concurrency_gc_stopgap_parallel;
+
+import collections use *;
+import collector;
+import actors;
+import libc;
+
+struct Node { pub v u64; }
+struct Wrap { pub g Gc[mut, Node]; pub n u64; }
+
+// A traced region of the program's own is refused the same: the rule is judged
+// by what a region declares ('is RegionRef, Traced'), not by its name
+struct Mine is RegionRef, Traced {
+  pub id i64;
+  fn alloc(size usize) *u8 {
+    imm p = malloc(size);
+    mem.writeRaw(p as *Mine, new Mine(1));
+    p;
+  }
+  fn mark(self &uni Mine) {}
+}
+
+fn ownRegion() {
+  parallel each i in 0usize < 4usize {
+    imm m = new Mine[mut, Node](new Node(1u64));   //~ ErrorGcStopgap "this makes a Mine[mut, Node]"
+  }
+}
+
+fn make() Gc[mut, Node] {
+  new Gc[mut, Node](new Node(1u64));
+}
+
+fn bodies() {
+  parallel each i in 0usize < 4usize {
+    imm g = new Gc[mut, Node](new Node(1u64));     //~ ErrorGcStopgap "GC per actor is coming"
+  }
+  parallel each i in 0usize < 4usize {
+    imm w = new Wrap(new Gc[mut, Node](new Node(2u64)), 3u64);   //~ ErrorGcStopgap "this produces a Wrap, which a collector traces, inside a 'parallel each' body"
+  }
+  parallel each i in 0usize < 4usize {
+    imm g = make();                                //~ ErrorGcStopgap "this produces a Gc[mut, Node]"
+  }
+}
+
+fn builders(xs &List[u64]) {
+  imm a = new List[u64] <- parallel each x in xs yield (new Gc[mut, Node](new Node(*x))).v;   //~ ErrorGcStopgap "inside a 'parallel each' body"
+  imm b = new List[u64] <- parallel each x in xs if (new Gc[mut, Node](new Node(*x))).v > 0u64 yield *x;   //~ ErrorGcStopgap "inside a 'parallel each' body"
+}
+
+// A copy from outside is the copy rule's, once
+fn copied(g Gc[imm, u64]) {
+  parallel each i in 0usize < 4usize {
+    imm c = g;                                     //~ ErrorParCopy "may not copy a value of type"
+  }
+}
+
+// A loop touching no Gc is as it was
+fn plain(xs &List[u64]) u64 {
+  imm ys = new List[u64] <- parallel each x in xs yield *x + 1u64;
+  u64.from(ys.len());
+}

@@ -392,7 +392,12 @@ initializer's parameter, or a behaviour's returned type, that cannot cross
 threads is `ErrorNotSendable`, the thread check's code, whatever finds it --
 the parser, for a borrow or the state itself, or `actorCheckAll` after type
 check -- and the state's field or synchronous method reached through the
-handle is `ErrorNotPublic`, as any private member is.
+handle is `ErrorNotPublic`, as any private member is. A traced (`Gc`)
+reference made or held inside an actor -- a state field, a synchronous method's
+parameter, an allocation, call or literal in any method's body, `init` and
+`final` included -- is `ErrorGcStopgap` (`actorRefuseGc`, from `actorCheckAll`),
+as is one made in a `parallel each` (`parallelEachCheckBody`), until the
+collector is per actor.
 
 `await` has five error codes and a warning. Where it may not stand -- anywhere
 but a behaviour -- is `ErrorAwaitPlace`; on a behaviour that returns nothing,

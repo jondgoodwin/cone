@@ -19,18 +19,17 @@
 // - An 'await' on a behaviour that returns nothing, ErrorAwaitVoid, beside
 //   one awaiting a behaviour that answers with a status.
 // - An 'await' on a function's call, which waits for no answer,
-//   ErrorAwaitNotFuture; and what is not built yet, each ErrorUnbuiltAwait: an
-//   'await' in both places a swap exchanges, and one whose continuation would
-//   hold a traced reference.
+//   ErrorAwaitNotFuture; and what is not built yet, ErrorUnbuiltAwait: an
+//   'await' in both places a swap exchanges. (One whose continuation would
+//   hold a traced reference is pinned by concurrency_await_message; a Gc in an
+//   actor is refused first, concurrency_gc_stopgap_actor.)
 
 mod concurrency_await_manual_refused;
 
 import actors;
-import collector;
 import sync use Arc, Mutex;
 
 struct Count {pub n u64;}
-struct Cell {pub n u64;}
 
 actor Clock {
   pub async do now(self) u64 {42u64;}
@@ -47,7 +46,7 @@ actor Meter {
 
   pub async do stale(self) {
     imm r = &reading;
-    imm t = await clock.now();  //~ ErrorFrozen "The borrow 'r' holds of '*self' (made at 49:13) ends at this 'await', where the method returns to its actor's dispatcher to wait, and 'r' is used again at 51:16"
+    imm t = await clock.now();  //~ ErrorFrozen "The borrow 'r' holds of '*self' (made at 48:13) ends at this 'await', where the method returns to its actor's dispatcher to wait, and 'r' is used again at 50:16"
     reading = *r + t;
   }
 
@@ -77,7 +76,7 @@ actor Tally {
 
   pub async do held(self) {
     imm c = &mut *count;          // takes the lock
-    imm t = await clock.now();    //~ ErrorFrozen "The borrow 'c' holds through the lock taken at 79:19 (made at 79:13) ends at this 'await', where the method returns to its actor's dispatcher to wait, and 'c' is used again at 81:5"
+    imm t = await clock.now();    //~ ErrorFrozen "The borrow 'c' holds through the lock taken at 78:19 (made at 78:13) ends at this 'await', where the method returns to its actor's dispatcher to wait, and 'c' is used again at 80:5"
     c.n += t;
   }
 }
@@ -133,12 +132,6 @@ actor Waiter {
     mut items = [1u64, 2u64, 3u64];
     items[await clock.now()] <=> items[await clock.now()];  //~ ErrorUnbuiltAwait "it stands in both places a swap exchanges"
                                                             //~^ ErrorUnbuiltAwait "it stands in both places a swap exchanges"
-  }
-
-  pub async do traced(self) {
-    imm g = new Gc[mut, Cell](1u64);
-    imm t = await clock.now();    //~ ErrorUnbuiltAwait "'await' whose continuation holds a traced reference is not built"
-    last = t + g.n;
   }
 }
 // manual: end
