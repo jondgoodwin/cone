@@ -594,7 +594,7 @@ actor Echo {
 		message. Quiescence assumes that once the finalizer has begun every message comes from an
 		actor: another thread that goes on sending is joined first.
 		<span class="pre">actors.stats()</span> answers what the workers have done so far
-		(<span class="pre">Stats</span>: workers, messages handled, turns, steals), without
+		(<span class="pre">Stats</span>: workers, messages handled, turns, steals, loop pieces stolen), without
 		stopping them, and the run's totals once they have stopped.
 		<span class="pre">actors.workerIndex()</span> is the index of the worker running the
 		caller, or <span class="pre">actors.noWorker</span>.</p>
@@ -614,6 +614,40 @@ actor Echo {
 		another worker's queue. An idle worker parks on the <a href="refconc.html#futex">futex</a>,
 		and is woken, one at a time, as work arrives. Quiescence is found by counting the
 		activations each worker begins and ends, and reading the counts twice.</p>
+	<p><b>A parallel loop</b> runs on the same workers, called as a library function (the
+		low-level form the language's <span class="pre">parallel each</span> will be written over;
+		that form does not exist yet):</p>
+<pre>
+import actors;
+
+struct Job {
+  pub out *u64;
+}
+fn square(data *u8, lo usize, hi usize) {      // the body: a sub-range [lo, hi)
+  imm j = data as *Job;
+  mut i = lo;
+  while i &lt; hi {*((*j).out + i) = u64.from(i) * u64.from(i); i = i + 1usize;}
+}
+actors.parallelRange(0usize, 100000usize, 256usize, &amp;square, &amp;mut job as *Job as *u8);
+</pre>
+	<p><span class="pre">actors.parallelRange(lo, hi, grain, body, data)</span> calls
+		<span class="pre">body(data, a, b)</span> over pieces of <span class="pre">[lo, hi)</span> of
+		at most <span class="pre">grain</span> items, on any worker and at once, and returns when
+		every piece has finished. The loop starts as one task for the whole range; whoever runs a
+		task splits it in half while it is longer than the grain, puts one half on top of its
+		worker's queue of tasks, and works the other, and an idle worker steals the oldest, largest
+		half, so uneven work spreads itself and nothing is divided ahead of time. A worker takes its
+		own tasks before its actors, and a worker that steals prefers tasks to actors. The caller
+		works on its own loop while it waits, so the loop may be called from
+		<span class="pre">main</span> (it starts the workers if no actor has), from any thread, from
+		inside the body of another loop, and from inside an actor's behaviour: there the actor is not
+		run again until the loop has finished, while its mailbox goes on accepting messages, which
+		are handled afterwards in order. <b>It trusts its caller:</b> the body must write only
+		its own sub-range's items, must not <span class="pre">await</span>, and must not wait on
+		another piece; nothing checks it. <span class="pre">actors.parallelRangeThen(lo, hi, grain,
+		body, data, onDone, doneArg)</span> starts the same loop and returns at once, and the piece
+		that finishes last calls <span class="pre">onDone(doneArg)</span> on whichever thread it
+		runs.</p>
 
 	<p>Any particular channel's messages are all the same type, but might very well be some sort of variant type,
 		allowing different kinds of messages to be sent. Cone makes it easier to support this kind of message-passing

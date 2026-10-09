@@ -1,0 +1,146 @@
+// A parallel loop on a single worker, the case with nobody to steal: from
+// main (the worker and main share the pieces) and from inside an actor's
+// behaviour (the worker running the behaviour does every piece itself, and
+// the nested loop of a piece too). A loop begun with parallelRangeThen inside
+// the behaviour returns at once; its pieces wait on top of the worker's own
+// queue, the behaviour returns, and the worker then runs them: the last calls
+// onDone, which the program waits for before finalAll().
+
+mod parallelone;
+
+import testing use *;
+import libc;
+import thread;
+import time;
+import actors;
+
+struct Fill {
+  pub out *u64;
+  pub rows usize;
+  pub cols usize;
+}
+
+// Item i of a row-major grid: row * 1000 + col + 1
+fn bodyCols(data *u8, lo usize, hi usize) {
+  imm f = data as *Fill;
+  mut c = lo;
+  while c < hi {
+    *((*f).out + (*f).rows * (*f).cols + c) = u64.from((*f).rows) * 1000u64 + u64.from(c) + 1u64;
+    c = c + 1usize;
+  }
+}
+
+// Each piece of the outer loop gets a row at a time, and fills it with an
+// inner loop of its own: here rows is the current row number
+struct Grid {
+  pub out *u64;
+  pub cols usize;
+}
+
+fn bodyRows(data *u8, lo usize, hi usize) {
+  imm g = data as *Grid;
+  mut r = lo;
+  while r < hi {
+    mut f = new Fill((*g).out, r, (*g).cols);
+    actors.parallelRange(0usize, (*g).cols, 8usize, &bodyCols, &mut f as *Fill as *u8);
+    r = r + 1usize;
+  }
+}
+
+fn gridCorrect(out *u64, rows usize, cols usize) bool {
+  mut r = 0usize;
+  while r < rows {
+    mut c = 0usize;
+    while c < cols {
+      if *(out + r * cols + c) != u64.from(r) * 1000u64 + u64.from(c) + 1u64 {
+        return false;
+      }
+      c = c + 1usize;
+    }
+    r = r + 1usize;
+  }
+  true;
+}
+
+struct Done {
+  pub flag Atomic[u64];
+  pub calls Atomic[u64];
+  pub marked Atomic[u64];      // items run
+}
+
+fn done1(arg *u8) {
+  imm d = arg as *Done;
+  (*d).calls.add(1u64);
+  (*d).flag.store(1u64);
+}
+
+fn bodyMark(data *u8, lo usize, hi usize) {
+  imm d = data as *Done;
+  (*d).marked.add(u64.from(hi - lo));
+}
+
+struct Outcome {
+  pub gridOk Atomic[u64];
+  pub thenReturnedFirst Atomic[u64];
+  pub workerIndex Atomic[u64];
+}
+
+imm outcome Outcome;
+imm finish Done;
+
+fn @initpure init() {
+  outcome = new Outcome(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(99u64));
+  finish = new Done(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+actor Looper {
+  pub async do go(self) {
+    outcome.workerIndex.store(u64.from(actors.workerIndex()));
+    imm rows = 40usize;
+    imm cols = 100usize;
+    imm out = libc.calloc(rows * cols, 8usize) as *u64;
+    mut g = new Grid(out, cols);
+    actors.parallelRange(0usize, rows, 1usize, &bodyRows, &mut g as *Grid as *u8);
+    if gridCorrect(out, rows, cols) {
+      outcome.gridOk.store(1u64);
+    }
+    libc.free(out as *u8);
+
+    // Begun, not finished: only the behaviour's return lets the worker run it
+    actors.parallelRangeThen(0usize, 5000usize, 16usize, &bodyMark, &finish as *Done as *u8, &done1, &finish as *Done as *u8);
+    if finish.calls.load() == 0u64 {
+      outcome.thenReturnedFirst.store(1u64);
+    }
+  }
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(new actors.Options(workers: 1u32));
+
+  // from main: main and the one worker
+  imm rows = 40usize;
+  imm cols = 100usize;
+  imm out = libc.calloc(rows * cols, 8usize) as *u64;
+  mut g = new Grid(out, cols);
+  actors.parallelRange(0usize, rows, 1usize, &bodyRows, &mut g as *Grid as *u8);
+  expect(gridCorrect(out, rows, cols), "a nested loop from main on one worker: every cell right");
+  expectUInt(u64.from(actors.stats().workers), 1u64, "one worker");
+  libc.free(out as *u8);
+
+  // from inside an actor
+  {
+    imm l = new Looper();
+    l.go();
+  }
+  while finish.flag.load() == 0u64 {
+    thread.sleep(time.Duration.fromMillis(1));
+  }
+  expectUInt(outcome.workerIndex.load(), 0u64, "the behaviour ran on the one worker");
+  expectUInt(outcome.gridOk.load(), 1u64, "a nested loop inside a behaviour: every cell right");
+  expectUInt(outcome.thenReturnedFirst.load(), 1u64, "parallelRangeThen returned before its onDone was called");
+  expectUInt(finish.marked.load(), 5000u64, "its 5000 items all ran");
+  expectUInt(finish.calls.load(), 1u64, "onDone was called once");
+  finalAll();
+  done();
+}
