@@ -93,5 +93,28 @@ fn main() i32 {
   expectBool(climbN > 100. and diveN > 100., true, "birds both climb and dive");
   expectBool(climbRate / climbN > diveRate / diveN + 2., true, "wings beat faster climbing than diving");
   expectBool(glideN / (glideN + flapN) > 0.1 and glideN / (glideN + flapN) < 0.7, true, "they glide between a tenth and 7 tenths of the time");
+
+  // The ground is any callable: a closure that carries the hill's height gives the very same flight as the
+  // function does, bit for bit (a flock stepped 300 times each way)
+  imm tall = 30.;
+  mut byFn = Flock.make(40usize, params, 7u32, &hillGround);
+  mut byClosure = Flock.make(40usize, params, 7u32,
+    (x, z) => tall * libc.expf(-((x - 70.) * (x - 70.) + (z - 10.) * (z - 10.)) / (2. * 35. * 35.)) + 2. * sin(x * 0.05) * cos(z * 0.07));
+  mut same = true;
+  mut s = 0;
+  while s < 300 {
+    byFn.step(dt, &hillGround);
+    byClosure.step(dt,
+      (x, z) => tall * libc.expf(-((x - 70.) * (x - 70.) + (z - 10.) * (z - 10.)) / (2. * 35. * 35.)) + 2. * sin(x * 0.05) * cos(z * 0.07));
+    s = s + 1;
+  }
+  mut k = 0usize;
+  while k < byFn.birds.len() {
+    imm p = (*byFn.birds[k]).pos;
+    imm q = (*byClosure.birds[k]).pos;
+    if p.x != q.x or p.y != q.y or p.z != q.z { same = false; }
+    k = k + 1usize;
+  }
+  expectBool(same, true, "a closure for the ground flies the flock exactly as the function does");
   done();
 }
