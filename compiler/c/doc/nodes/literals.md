@@ -293,11 +293,12 @@ the literal's own business but each decided from its tag:
   knows a type: `Path`, `String` and `cstr` are `T` alike. The borrow needs
   the type check state (its scope, the extension), which a coercion does not
   carry, so it is made one level up, by `iexpCoerceIn`, where the state is at
-  hand: a call's arguments (`fnCallFinalizeArgs`) and `iexpTypeCheckCoerce`'s
-  places (initializer, assignment, ...), and only in a function's body (scope 2
+  hand: a call's arguments (`fnCallFinalizeArgs`), an init's arguments in
+  `new T(...)` (`typeLitInitArgs`) and `iexpTypeCheckCoerce`'s places
+  (initializer, assignment, ...), and only in a function's body (scope 2
   and up). A bare `iexpCoerce` meets it as no match (`iexpCoerceShape`), so every
   other place -- a global, a constant, a field's or a parameter's default, a
-  returned value, a construction's argument, an `if` arm -- keeps the
+  returned value, a value for the implicit init's field, an `if` arm -- keeps the
   ordinary mismatch. Only a permission that cannot write is lent: `&mut T`,
   `&uni T` and a lock's are refused by `slitBorrowRefused` with
   `ErrorLitBorrowWrite`, since a write to a temporary is lost. **Overloads:**
@@ -306,9 +307,11 @@ the literal's own business but each decided from its tag:
   `slitBorrowOffered`) only when no candidate took the arguments and one is a
   literal, so a candidate that takes the literal as the `&str` it is is never
   ambiguous with a `&T` one (a dictionary's `&K` and `&str` indexes). Two
-  candidates that need the conversion are ambiguous as any two are. The other
-  selections (`new`'s inits, the compiler-declared operators on pointers) do
-  not offer it.
+  candidates that need the conversion are ambiguous as any two are. The
+  selection of a declared init in `new T(...)` falls back the same way
+  (`typeLitNewChecked`: only when neither a declared init nor the implicit one
+  took the arguments), with the same refusals. The implicit init and the
+  compiler-declared operators on pointers do not offer it.
 - A written borrow of a literal, `&"text"` or `&[]"text"`, retypes the literal as
   the array (`borrowTypeCheck`), so the borrow is a reference to it as before:
   `&"text"` the array behind the text (no NUL counted), which `&"text" as *u8`
