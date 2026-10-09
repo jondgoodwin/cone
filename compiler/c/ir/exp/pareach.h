@@ -34,11 +34,12 @@
 // loop uses from outside are therefore read in place, borrowed for the loop;
 // that nothing writes them is checked here (parallelEachCheckBody).
 //
-// A source that is core's ArrayChunks or ArrayMutChunks (chunks(n), mutChunks(n))
-// is held whole in 's'/'sm', the range is [0, s.len()) and the item s.at(k): a
-// slice of the run, which no other pass reaches. A source that is a call of core's
-// 'indexed' is replaced by what it was called on, and the loop has two variables,
-// 'imm i = k' (the position, global) and the item.
+// A source that is one of core's cursors (ArrayChunks, ArrayMutChunks, ArrayMutItems
+// and the ones their 'indexed()' and an array's give: parCursorOf) is held whole in
+// 's'/'sm', the range is [0, s.len()) and the item s.at(k): for a chunk a slice of
+// the run, which no other pass reaches. What is lent, '&' or '&mut', is what the
+// cursor's own types say. An indexed cursor's 'at' gives the position and the item
+// as a tuple, which the loop's two variables unpack ('pair'').
 //
 // The hidden variables carry names no source can spell, so generation finds
 // the parts of the loop by name, whatever statements are hoisted between them.
@@ -62,12 +63,6 @@ extern FnDclNode *parallelEachFn;
 // the second takes the first's type once the first is checked
 uint32_t parallelEachBoundsFirst(BlockNode *outer);
 void parallelEachBoundType(BlockNode *outer, uint32_t first);
-
-// If this checked expression is a call of the 'indexed' method that core gives an
-// array, a slice (and so a list), or the cursors 'chunks' and 'mutChunks' give,
-// the receiver it was called on; else NULL. 'each' and 'parallel each' walk that
-// receiver themselves, counting positions, when they can
-INode *parIndexedReceiver(INode *src);
 
 // Build the loop, once the source (and a range's bounds) have been checked.
 // Written directly in an actor's behaviour (not in the body of another parallel

@@ -250,9 +250,10 @@ pub struct @opaque Array[T] {
   // a borrow of the element, and 'each i, x in a.indexed()' unpacks it
   pub fn indexed(self &) ArrayIndexed[T] { new ArrayIndexed[T](self, 0usize); }
 
-  // The elements for changing in place: the slice itself, so 'each x in
-  // a.mutItems()' gives 'x' as a '&mut' of each element
-  pub fn mutItems(self &mut) &mut Array[T] { self; }
+  // The elements for changing in place: a cursor whose 'next' gives a '&mut' of each
+  // element, so 'each x in a.mutItems()' gives 'x' as a '&mut'. Its 'indexed()' gives
+  // the position with the '&mut' item; a bare 'a.indexed()' lends '&' on any slice
+  pub fn mutItems(self &mut) ArrayMutItems[T] { new ArrayMutItems[T](self, 0usize); }
 
   // The elements in runs of 'n', for reading: each item is a slice of 'n' elements,
   // the last of what is left if 'n' does not divide the count. A panic if 'n' is 0.
@@ -340,6 +341,11 @@ pub struct ChunksIndexed['a, T] {
       case is None { return None[(usize, &Array[T])][]; }
     }
   }
+
+  // How many runs are left, and run number k of them with its number
+  pub fn len(self &) usize { chunks.len(); }
+
+  pub fn at(self &, k usize) (usize, &'a Array[T]) { (index + k, chunks.at(k)); }
 }
 
 // The same for changing: 'mutChunks' gives it, and each run is a '&mut' slice
@@ -397,6 +403,10 @@ pub struct MutChunksIndexed['a, T] {
       case is None { return None[(usize, &mut Array[T])][]; }
     }
   }
+
+  pub fn len(self &) usize { chunks.len(); }
+
+  pub fn at(self &, k usize) (usize, &'a mut Array[T]) { (index + k, chunks.at(k)); }
 }
 
 // A cursor over a slice's elements, which 'iter' gives: 'next' gives a borrow of
@@ -426,6 +436,59 @@ pub struct ArrayIndexed['a, T] {
     imm i = pos;
     pos = i + 1usize;
     Some[(usize, &T)][(i, &items[i])];
+  }
+
+  // How many elements are left, and element number k of them with its position
+  // (what 'parallel each' walks by)
+  pub fn len(self &) usize { items.len - pos; }
+
+  pub fn at(self &, k usize) (usize, &'a T) {
+    imm i = pos + k;
+    (i, &items[i]);
+  }
+}
+
+// A cursor over a slice's elements for changing them, which 'mutItems' gives: 'next'
+// gives a '&mut' of each in turn. ('each' reads its two fields to walk the slice as
+// a counted loop; 'parallel each' walks it by 'len' and 'at'.)
+pub struct ArrayMutItems['a, T] {
+  pub items &'a mut Array[T];
+  pub pos usize;
+
+  pub fn next(self &mut) Option[&'a mut T] {
+    if pos >= items.len { return None[&mut T][]; }
+    imm i = pos;
+    pos = i + 1usize;
+    Some[&mut T][&mut items[i]];
+  }
+
+  pub fn len(self &) usize { items.len - pos; }
+
+  pub fn at(self &, k usize) &'a mut T { &mut items[pos + k]; }
+
+  // The same with the positions: the item is a '&mut' too
+  pub fn indexed(self) MutItemsIndexed['a, T] { new MutItemsIndexed[T](items, pos); }
+}
+
+// A cursor over a slice's elements and their positions for changing the elements,
+// which a mutable cursor's 'indexed' gives: 'next' gives the position and a '&mut'
+// of the element, as a tuple
+pub struct MutItemsIndexed['a, T] {
+  pub items &'a mut Array[T];
+  pub pos usize;
+
+  pub fn next(self &mut) Option[(usize, &'a mut T)] {
+    if pos >= items.len { return None[(usize, &mut T)][]; }
+    imm i = pos;
+    pos = i + 1usize;
+    Some[(usize, &mut T)][(i, &mut items[i])];
+  }
+
+  pub fn len(self &) usize { items.len - pos; }
+
+  pub fn at(self &, k usize) (usize, &'a mut T) {
+    imm i = pos + k;
+    (i, &mut items[i]);
   }
 }
 

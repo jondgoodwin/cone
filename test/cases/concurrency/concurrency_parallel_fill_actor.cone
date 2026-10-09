@@ -2,9 +2,9 @@
 // 'mutChunks(n)' over the actor's own fields, through 'self' (concurrency_
 // parallel_each_actor: the behaviour is cut where the loop ends, and the pieces
 // borrow the actor's fields directly). What a loop there may walk is as it is for
-// any other source: a list or an array in a field, a list in a local (its block
-// is on the heap) for 'indexed()', and not a chunk or a slice of a local, which
-// lies in the behaviour's frame (concurrency_parallel_fill_actor_refused).
+// any other source: a list or an array in a field, and not a cursor over a list or
+// an array in a local, which lies in the behaviour's frame
+// (concurrency_parallel_fill_actor_refused).
 //
 // Every number is worked out by hand:
 //
@@ -16,7 +16,6 @@
 //     plus 1000 times its chunk's number: 150 + 2000 = 2150
 //   - 'readOnly': the sum of the positions of the list, 0 + ... + 4999 =
 //     12,497,500; and the chunks of 100 numbered, 100 * (0 + ... + 49) = 122,500
-//   - 'localList': a list in a local, 600 long: the sum of the positions, 179,700
 
 mod concurrency_parallel_fill_actor;
 
@@ -97,20 +96,6 @@ actor Baker {
     total.load();
   }
 
-  pub async do localList(self) u64 {
-    mut l = new List[u64];
-    mut i = 0usize;
-    while i < 600usize {
-      l.push(0u64);
-      i = i + 1usize;
-    }
-    total.store(0u64);
-    parallel each i, x in l.indexed() {
-      total.add(u64.from(i));
-    }
-    say("local list positions", total.load());
-    total.load();
-  }
 }
 
 actor Driver {
@@ -119,8 +104,7 @@ actor Driver {
     imm c = await b.perElement();
     imm d = await b.fieldArray();
     imm e = await b.readOnly();
-    imm f = await b.localList();
-    a + c + d + e + f;
+    a + c + d + e;
   }
 }
 

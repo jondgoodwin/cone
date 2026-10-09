@@ -162,13 +162,14 @@ statements; the loop below then checks them as built. By the source's type:
   is no cursor in the code. With `indexed()` the first variable is a copy of `i`
   and the second the element's borrow. A cursor kept in a variable, or taken
   whole by one variable of `indexed()`, is walked through its `next`.
-- **`indexed()` called on a mutable slice** (`mutItems()`, or any `&mut` slice;
-  two variables; `parIndexedReceiver` finds the call of core's `Array.indexed`):
-  `ArrayIndexed` holds a read-only slice, so the loop is built over the slice the
-  call was made on instead, as for `each p in s.mutItems()`, the first variable a
-  copy of `i` and the second `&mut s[i]`. `chunks(n)` and `mutChunks(n)` give core's
-  `ArrayChunks` and `ArrayMutChunks` (and `ChunksIndexed`, `MutChunksIndexed` from
-  their `indexed()`), cursors with a `next`, so `each` walks them through it.
+- **core's `ArrayMutItems` or `MutItemsIndexed`, a value made for the loop**
+  (`mutItems()` with one variable, its `indexed()` with two): the same counted
+  loop as `ArrayIter` and `ArrayIndexed`, lending `&mut s[i]` where those lend
+  `&s[i]`. What is lent is what the cursor's own `next` lends, and a bare
+  `indexed()` lends `&` on any slice, a `&mut` one too: the meaning comes from the
+  library's types, the loop only being faster. `chunks(n)` and `mutChunks(n)` give
+  `ArrayChunks` and `ArrayMutChunks` (and `ChunksIndexed`, `MutChunksIndexed`
+  from their `indexed()`), cursors with a `next`, which `each` walks through it.
 - **a type with `next`**: the cursor is the source as it is. A place named
   again without evaluating anything (`eachStablePlace`: a variable, a field of
   one, a dereference of one) is advanced where it stands, so a cursor left part
@@ -262,25 +263,25 @@ variable and the fields named from it, through references and a method's receive
 and any place that is that place, or inside it, or holds it) as well
 (`ErrorParWrite`).
 
-**`indexed()` and chunks in a `parallel each`.** A source that is a call of core's
-`indexed` on an array, a slice, a list or the chunk cursors (`parIndexedReceiver`)
-is replaced by the receiver it was called on, and takes two variables (any other
-source one, `ErrorParSource` otherwise): the first is a copy of `k'`, the index
-the piece counts, which is the position in the whole source, so global whichever
-piece runs it; the second is the item. The loop becomes
-`{ if k' >= hi' {break}; imm i = k'; imm x = ...; k'++; ...body }`. A list's `indexed`
-is Array's called on the slice the list lends, so `parUnlend` takes the list
-itself back, and the loop walks it as `parallel each x in list` does (a list in a
-local of a behaviour is allowed). `chunks(n)` and `mutChunks(n)` are not cut into
-index ranges of elements but of runs: the cursor is held in the hidden variable
-(named `s'`, or `sm'` for `mutChunks`, so that the alias check below applies), the
-range is `[0, c.len())` and the item `c.at(k')`, a slice of its run that no other
-pass reaches. A write through the pass's own run or item is its own; naming the
-buffer the runs come from is refused as for `mutItems()`. A cursor kept in a
-variable is held by copy and walked the same way; its runs count from the first it
-has yet to give. A header `if` needs nothing of its own: it is `eachLower`'s
-`continue` statement after the pass's variable, ahead of which the loop's step is
-inserted.
+**Cursors in a `parallel each`** (`parCursorOf`). A source of core's cursor types
+(`ArrayChunks`, `ArrayMutChunks`, `ArrayMutItems`, and the `ArrayIndexed`,
+`ChunksIndexed`, `MutChunksIndexed`, `MutItemsIndexed` their `indexed()` and an
+array's give) is not cut into index ranges of elements: the cursor is held in the
+hidden variable (named `s'`, or `sm'` for the ones that lend `&mut`, so that the
+alias check above applies), the range is `[0, c.len())` and the item `c.at(k')`
+(for a chunk a slice of its run that no other pass reaches). The compiler never
+recognises a method by name: what is lent, `&` or `&mut`, is what the cursor's own
+types say, so a bare `indexed()` lends `&` on any slice and `mutItems().indexed()`
+`&mut`. An indexed cursor takes two variables (any other source one,
+`ErrorParSource` otherwise) and its `at(k)` gives the position and the item as a
+tuple, which the loop unpacks: `imm pair' = c.at(k'); imm i = pair'.0; imm x =
+pair'.1; k'++`. The position is the cursor's own count plus `k'`, so it is global
+whichever piece runs it. A write through the pass's own run or item is its own;
+naming the buffer the cursor comes from is refused as for `mutItems()`. A cursor
+kept in a variable is held by copy and walked the same way; its items count from
+the first it has yet to give. A header `if` needs nothing of its own: it is
+`eachLower`'s `continue` statement after the pass's variable, ahead of which the
+loop's step is inserted.
 
 **The parallel builder**, `xs <- parallel each x in src [if c] yield v`, is an
 each entry of `<-` (`parseParallelEachEntry` sets the flag `parseEachLoop` reads

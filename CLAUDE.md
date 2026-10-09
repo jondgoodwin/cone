@@ -39,9 +39,11 @@ Visual Studio projects stay at the root.
   `&Array[T]`, a generic struct the compiler's `Array`
   becomes when core declares it, whose `len`, `iter`, `indexed`, `mutItems`,
   `chunks` and `mutChunks` are written there (an array and a slice call them, and a
-  list folds them in; `chunks(n)` and `mutChunks(n)` give `ArrayChunks` and
+  list folds them in; `mutItems()` gives `ArrayMutItems`, a cursor whose `next` and
+  `indexed()` lend `&mut` (a bare `indexed()` lends `&` on any slice);
+  `chunks(n)` and `mutChunks(n)` give `ArrayChunks` and
   `ArrayMutChunks`, cursors over runs of `n` elements, each a slice or a `&mut`
-  one, which `parallel each` cuts between runs), with `zip`, which walks two sources with an `iter` side by side, and
+  one; `parallel each` walks these cursors by their `len` and `at(k)`), with `zip`, which walks two sources with an `iter` side by side, and
   `cstr`, C's `const char *`, a one-pointer struct the compiler makes
   too so that the C-named modules can declare their strings with it, whose
   field and methods are core's, the `So` and `Rc` regions, `Rwcell`, the

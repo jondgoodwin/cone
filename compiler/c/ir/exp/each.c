@@ -341,25 +341,6 @@ void eachLower(TypeCheckState *pstate, BlockNode *outer) {
     if (type == errorType || type == unknownType)
         return;
 
-    // 'each i, x in s.indexed()' over a mutable slice (what 'mutItems' gives, or any
-    // '&mut' slice) lends each element mutably, as 'each x in s' does. The cursor
-    // 'indexed' gives holds a read-only slice, so the loop walks the slice it was
-    // called on, counting from 0 itself, which is all that cursor would do.
-    int mutindexed = 0;
-    if (nvars == 2) {
-        INode *recv = parIndexedReceiver(src);
-        if (recv != NULL && isExpNode(recv)) {
-            INode *rtype = iexpGetTypeDcl(recv);
-            if (rtype->tag == ArrayRefTag && permMatches((INode*)mutPerm, ((RefNode*)rtype)->perm)) {
-                srcdcl->value = recv;
-                srcdcl->vtype = ((IExpNode*)recv)->vtype;
-                src = recv;
-                type = rtype;
-                mutindexed = 1;
-            }
-        }
-    }
-
     // What kind of source: the type itself, or what a reference to it points at
     int isref = type->tag == RefTag || type->tag == VirtRefTag;
     INode *base = isref ? itypeGetTypeDcl(((RefNode*)type)->vtexp) : type;
@@ -383,22 +364,28 @@ void eachLower(TypeCheckState *pstate, BlockNode *outer) {
             itypeName(type));
         return;
     }
-    if ((isslice || isarray || islent) && nvars != (mutindexed ? 2u : 1u)) {
+    if ((isslice || isarray || islent) && nvars != 1) {
         errorMsgNode(nodesGet(loop->stmts, 0), ErrorNotIterable,
             "An array, a slice or a list gives one variable, a borrow of each element.");
         return;
     }
     int place = eachRecheckable(src);
 
-    // The cursor a slice gives (core's ArrayIter, ArrayIndexed), made for this
-    // loop, is the slice and a count it starts from: walked as the slice is, by
-    // a counted loop, rather than through its Option each pass
+    // The cursor a slice gives (core's ArrayIter, ArrayIndexed, and ArrayMutItems,
+    // MutItemsIndexed which lend '&mut'), made for this loop, is the slice and a count
+    // it starts from: walked as the slice is, by a counted loop, rather than through
+    // its Option each pass. What is lent is what the cursor's own 'next' lends: '&'
+    // for the first two, '&mut' for the last two
     int itemskind = 0;
     if (hasnext && !isref && !place) {
         if (nvars == 1 && eachIsCore(base, "ArrayIter", 9))
             itemskind = 1;
         else if (nvars == 2 && eachIsCore(base, "ArrayIndexed", 12))
             itemskind = 2;
+        else if (nvars == 1 && eachIsCore(base, "ArrayMutItems", 13))
+            itemskind = 3;
+        else if (nvars == 2 && eachIsCore(base, "MutItemsIndexed", 15))
+            itemskind = 4;
     }
 
     // The cursor the loop walks, and what it gives, are checked before the loop
@@ -472,10 +459,10 @@ void eachLower(TypeCheckState *pstate, BlockNode *outer) {
         // A slice that is mutable (what 'mutItems' gives) lends each element
         // mutably; any other lends it to be read
         INode *elemperm = unknownType;
-        if (isslice && permMatches((INode*)mutPerm, ((RefNode*)type)->perm))
+        if ((isslice && permMatches((INode*)mutPerm, ((RefNode*)type)->perm)) || itemskind >= 3)
             elemperm = (INode*)mutPerm;
         RefNode *borrow = newRefNodeFull(BorrowTag, lexnode, borrowRef, elemperm, (INode*)elem);
-        if (itemskind == 2 || mutindexed) {
+        if (itemskind == 2 || itemskind == 4) {
             // The position is a copy of the count, the second variable the element's borrow
             ((VarDclNode*)nodesGet(loop->stmts, 0))->value = eachUse(index, lexnode);
             ((VarDclNode*)nodesGet(loop->stmts, 1))->value = (INode*)borrow;

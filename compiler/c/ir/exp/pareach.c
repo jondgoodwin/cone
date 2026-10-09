@@ -22,6 +22,7 @@ Name *parLastName = NULL;
 Name *parSliceName = NULL;
 Name *parSliceMutName = NULL;
 Name *parBagName = NULL;
+Name *parPairName = NULL;
 Name *parPieceName = NULL;
 Name *parListName = NULL;
 FnDclNode *parallelEachFn = NULL;
@@ -31,6 +32,7 @@ void parallelEachNames() {
         return;
     parListName = nametblPrivate("list'", 5);
     parBagName = nametblPrivate("bag'", 4);
+    parPairName = nametblPrivate("pair'", 5);
     parPieceName = nametblPrivate("piece'", 6);
     parLoName = nametblPrivate("lo'", 3);
     parHiName = nametblPrivate("hi'", 3);
@@ -100,43 +102,27 @@ static int parIsCore(INode *type, char *name, size_t len) {
     return mod != NULL && mod->namesym == nametblFind("core", 4);
 }
 
-INode *parIndexedReceiver(INode *src) {
-    if (src == NULL || src->tag != FnCallTag)
-        return NULL;
-    FnCallNode *call = (FnCallNode*)src;
-    if (call->objfn == NULL || !isNameUseNode(call->objfn) || call->args == NULL || call->args->used != 1)
-        return NULL;
-    INode *dcl = ((NameUseNode*)call->objfn)->dclnode;
-    if (dcl == NULL || dcl->tag != FnDclTag || ((FnDclNode*)dcl)->namesym != nametblFind("indexed", 7))
-        return NULL;
-    INode *owner = inodeGetOwner(dcl);
-    if (!parIsCore(owner, "Array", 5) && !parIsCore(owner, "ArrayChunks", 11) && !parIsCore(owner, "ArrayMutChunks", 14))
-        return NULL;
-    return nodesGet(call->args, 0);
-}
+// The cursors core gives that a parallel each walks by their 'len' and 'at' (the
+// items are the passes; a cursor 'indexed' gives has a tuple of the position and
+// the item for each): which this type is, and whether it lends '&mut' and takes
+// two variables. What each lends is what the cursor's own 'next' lends.
+typedef struct {
+    int cursor;     // one of them
+    int mut;        // lends '&mut' (a chunk, or an item)
+    int indexed;    // gives the position and the item: two variables
+    int chunks;     // an item is a run, not an element
+} ParCursor;
 
-// A list's 'indexed' is Array's, called on the slice the list lends ('view'): the
-// receiver given is that call. The loop walks the list itself, as 'parallel each
-// x in list' does (a list in a local of a behaviour is fine, its block being on
-// the heap), so this answers the list it was lent from; any other receiver as it is
-static INode *parUnlend(INode *recv) {
-    if (recv->tag != FnCallTag)
-        return recv;
-    FnCallNode *call = (FnCallNode*)recv;
-    if (call->objfn == NULL || !isNameUseNode(call->objfn) || call->args == NULL || call->args->used != 1)
-        return recv;
-    INode *dcl = ((NameUseNode*)call->objfn)->dclnode;
-    INode *arg = nodesGet(call->args, 0);
-    if (dcl == NULL || dcl->tag != FnDclTag || !isExpNode(arg))
-        return recv;
-    INode *type = iexpGetTypeDcl(arg);
-    INode *base = type->tag == RefTag || type->tag == VirtRefTag ? itypeGetTypeDcl(((RefNode*)type)->vtexp) : type;
-    if (base == NULL || base->tag != StructTag)
-        return recv;
-    StructNode *lentbody = structLentBody((StructNode*)base);
-    if (lentbody == NULL || !itypeIsArrayBody((INode*)lentbody) || structLentVia((StructNode*)base) != ((FnDclNode*)dcl)->namesym)
-        return recv;
-    return arg;
+static ParCursor parCursorOf(INode *type) {
+    ParCursor c = { 0, 0, 0, 0 };
+    if (parIsCore(type, "ArrayChunks", 11)) { c.cursor = 1; c.chunks = 1; }
+    else if (parIsCore(type, "ArrayMutChunks", 14)) { c.cursor = 1; c.chunks = 1; c.mut = 1; }
+    else if (parIsCore(type, "ChunksIndexed", 13)) { c.cursor = 1; c.chunks = 1; c.indexed = 1; }
+    else if (parIsCore(type, "MutChunksIndexed", 16)) { c.cursor = 1; c.chunks = 1; c.mut = 1; c.indexed = 1; }
+    else if (parIsCore(type, "ArrayMutItems", 13)) { c.cursor = 1; c.mut = 1; }
+    else if (parIsCore(type, "MutItemsIndexed", 15)) { c.cursor = 1; c.mut = 1; c.indexed = 1; }
+    else if (parIsCore(type, "ArrayIndexed", 12)) { c.cursor = 1; c.indexed = 1; }
+    return c;
 }
 
 // A place that checking a second time leaves as it is (each.c, eachRecheckable)
@@ -1193,36 +1179,23 @@ void parallelEachLower(TypeCheckState *pstate, BlockNode *outer) {
         if (type == errorType || type == unknownType)
             return;
 
-        // 'indexed()' on an array, slice, list or chunks gives the position and the
-        // item: the loop walks what it was called on, and the position is the
-        // pass's own index, counted in the whole source, so it is global
-        int indexed = 0;
-        INode *recv = parIndexedReceiver(src);
-        if (recv != NULL && isExpNode(recv)) {
-            recv = parUnlend(recv);
-            INode *rtype = iexpGetTypeDcl(recv);
-            if (rtype == errorType || rtype == unknownType)
-                return;
-            srcdcl->value = recv;
-            srcdcl->vtype = ((IExpNode*)recv)->vtype;
-            src = recv;
-            type = rtype;
-            indexed = 1;
-        }
-        if (nvars != (indexed ? 2u : 1u)) {
-            errorMsgNode(nodesGet(loop->stmts, 0), ErrorParSource, indexed
-                ? "A 'parallel each' over indexed() gives two variables, the position and the item."
-                : "A 'parallel each' gives one variable, a borrow of each element (or each number of a range); two come from indexed(), the position and the item.");
-            return;
-        }
-
         int isref = type->tag == RefTag || type->tag == VirtRefTag;
         INode *base = isref ? itypeGetTypeDcl(((RefNode*)type)->vtexp) : type;
         int isslice = type->tag == ArrayRefTag;
         int isarray = base->tag == ArrayTag;
-        // 'chunks(n)' and 'mutChunks(n)': the cursors core gives, cut between
-        // chunks (each pass is given a chunk, a slice no other pass can reach)
-        int ischunks = !isref && (parIsCore(type, "ArrayChunks", 11) || parIsCore(type, "ArrayMutChunks", 14));
+        // The cursors core gives (parCursorOf): 'chunks(n)', 'mutChunks(n)', 'mutItems()'
+        // and the ones 'indexed()' gives. The passes are their items, walked by 'len' and
+        // 'at(k)', and what is lent is what the cursor's own types say. A chunk is a
+        // slice no other pass can reach. An indexed one gives two variables, the
+        // position (its own, so global) and the item
+        ParCursor cursor = parCursorOf(isref ? NULL : type);
+        int ischunks = cursor.cursor;
+        if (nvars != (cursor.indexed ? 2u : 1u)) {
+            errorMsgNode(nodesGet(loop->stmts, 0), ErrorParSource, cursor.indexed
+                ? "A 'parallel each' over indexed() gives two variables, the position and the item."
+                : "A 'parallel each' gives one variable, a borrow of each element (or each number of a range); two come from indexed(), the position and the item.");
+            return;
+        }
         Name *lentvia = NULL;
         if (!isslice && !isarray && !ischunks && base->tag == StructTag) {
             StructNode *lentbody = structLentBody((StructNode*)base);
@@ -1242,14 +1215,13 @@ void parallelEachLower(TypeCheckState *pstate, BlockNode *outer) {
         if (seam && !islent && ((isarray && !isref && !place) || parMayBeFrame(src))) {
             errorMsgNode(src, ErrorParFrame,
                 "This 'parallel each' is in a behaviour, which returns to its actor's dispatcher while the pieces run, and the %s it walks lies in the behaviour's own frame, which is gone by then. Walk a list, or an array or slice in one of the actor's fields (named through 'self'), or one lent from one.",
-                ischunks ? "chunks" : isslice ? "slice" : "array");
+                ischunks ? (cursor.chunks ? "chunks" : "items") : isslice ? "slice" : "array");
             return;
         }
 
-        // A slice that is mutable (what 'mutItems' gives, or a '&mut' slice) lends
-        // each item mutably, as 'each' does; any other lends it to be read. Chunks
-        // of a mutable slice (mutChunks) lend each chunk mutably
-        int mutlend = ischunks ? parIsCore(type, "ArrayMutChunks", 14)
+        // A mutable slice as the source itself lends each item mutably, as 'each'
+        // does; any other lends it to be read. A cursor lends what its type says
+        int mutlend = ischunks ? cursor.mut
             : isslice && permMatches((INode*)mutPerm, ((RefNode*)type)->perm);
         Name *slicename = mutlend ? parSliceMutName : parSliceName;
 
@@ -1292,7 +1264,8 @@ void parallelEachLower(TypeCheckState *pstate, BlockNode *outer) {
         nodesAdd(&outer->stmts, (INode*)k);
 
         if (ischunks) {
-            // imm x = s.at(k): chunk number k, a slice of its own
+            // imm x = s.at(k): item number k (a chunk is a slice of its own); over
+            // an indexed cursor, the tuple of its position and the item
             FnCallNode *chunk = parCall(parUse(slicedcl, lexnode), nametblFind("at", 2), lexnode);
             nodesAdd(&chunk->args, parUse(k, lexnode));
             elem = (INode*)chunk;
@@ -1305,20 +1278,29 @@ void parallelEachLower(TypeCheckState *pstate, BlockNode *outer) {
             elem = (INode*)newRefNodeFull(BorrowTag, lexnode, borrowRef, mutlend ? (INode*)mutPerm : unknownType, (INode*)at);
         }
         outer->flags |= FlagParallel;
-        elemindexed = indexed;
+        elemindexed = cursor.indexed;
     }
 
     // loop { if k >= hi {break}; imm x = ...; k++; ...body... }
-    // (over indexed(): imm i = k; imm x = ...; k++)
+    // (over an indexed cursor: imm -pair = s.at(k); imm i = -pair.0; imm x = -pair.1; k++)
+    uint32_t stepat = nvars;
     if (elemindexed) {
-        ((VarDclNode*)nodesGet(loop->stmts, 0))->value = parUse(k, lexnode);
-        ((VarDclNode*)nodesGet(loop->stmts, 1))->value = elem;
+        VarDclNode *pair = parVar(parPairName, immPerm, elem, (uint16_t)(scope + 1), lexnode);
+        nodesInsert(&loop->stmts, (INode*)pair, 0);
+        for (uint32_t i = 0; i < nvars; ++i) {
+            VarDclNode *var = (VarDclNode*)nodesGet(loop->stmts, i + 1);
+            FnCallNode *part = newFnCallLower((INode*)var, parUse(pair, lexnode), 0);
+            part->methfld = (INode*)newULitNode(i, (INode*)usizeType);
+            inodeLexCopy(part->methfld, lexnode);
+            var->value = (INode*)part;
+        }
+        stepat = nvars + 1;
     }
     else
         ((VarDclNode*)nodesGet(loop->stmts, 0))->value = elem;
     FnCallNode *step = newFnCallOpnameLower(lexnode, parUse(k, lexnode), incrPostName, 0);
     step->flags |= FlagLvalOp;
-    nodesInsert(&loop->stmts, (INode*)step, nvars);
+    nodesInsert(&loop->stmts, (INode*)step, stepat);
     FnCallNode *done = newFnCallOpnameLower(lexnode, parUse(k, lexnode), geName, 1);
     nodesAdd(&done->args, parUse(hi, lexnode));
     nodesInsert(&loop->stmts, parBreakIf((INode*)done, loop, lexnode), 0);
