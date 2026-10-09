@@ -1,0 +1,243 @@
+// The floor under the grain of a 'parallel each': a piece is not split below
+// 128 items (the ruled floor, minEachGrain in parallel.cone), so a loop of
+// fewer items runs as fewer pieces, down to one, and a bigger one still splits
+// into many.
+//
+//   - pieces counted: actors.parallelEach calls its body once a piece, so a
+//     body that counts its calls counts the pieces. The cuts are fixed by the
+//     length and the grain (halve while longer than the grain), whoever steals
+//     what: on four workers a loop of 128 items or fewer is one piece, 129 and
+//     256 are two, 257 is three, 2000 is sixteen (without the floor the grain
+//     would be 62), and a million is thirty-two (a grain of 31,250)
+//   - every item runs exactly once, in each of those loops
+//   - 'parallel each' from main over a list of fewer than 128 items gives the
+//     plain loop's answer
+//   - 'parallel each' in an actor's behaviour (the form cut at the loop's end,
+//     which has its own grain computation) over fewer than 128 items of costly
+//     work gives the right answer and runs whole on the one worker that ran the
+//     behaviour; a bigger loop of the same work spreads over more than one
+//
+// The actors' numbers are read after finalAll(), which waits until they are quiet.
+
+mod parallelgrain;
+
+import testing use *;
+import collections use *;
+import libc;
+import thread;
+import time;
+import actors;
+
+// ---- pieces, counted through the library form ----
+
+struct Tally {
+  pub marks *u8;               // item i's count: a piece writes only its own items
+  pub pieces Atomic[u64];
+}
+
+fn bodyCount(data *u8, lo usize, hi usize) {
+  imm t = data as *Tally;
+  (*t).pieces.add(1u64);
+  mut i = lo;
+  while i < hi {
+    *((*t).marks + i) = *((*t).marks + i) + 1u8;
+    i = i + 1usize;
+  }
+}
+
+// Run actors.parallelEach over [0, n), check that every item was run once, and
+// answer the number of pieces it was cut into
+fn piecesOf(n usize, what &str) u64 {
+  imm marks = libc.calloc(n, 1usize) as *u8;
+  mut t = new Tally(marks, Atomic[u64].of(0u64));
+  actors.parallelEach(0usize, n, &bodyCount, &mut t as *Tally as *u8);
+  mut once = true;
+  mut i = 0usize;
+  while i < n {
+    if *(marks + i) != 1u8 {
+      once = false;
+    }
+    i = i + 1usize;
+  }
+  expect(once, what);
+  libc.free(marks);
+  t.pieces.load();
+}
+
+// ---- 'parallel each' from main ----
+
+fn weigh(i u64) u64 {
+  mut x = i + 1u64;
+  mut k = 0u64;
+  while k < (i * i) % 53u64 * 20u64 {
+    x = x * 6364136223846793005u64 + k;
+    k = k + 1u64;
+  }
+  x;
+}
+
+fn listLoopIsRight(n u64) bool {
+  mut l = new List[u64];
+  mut i = 0u64;
+  while i < n {
+    l.push(i);
+    i = i + 1u64;
+  }
+  parallel each v in l.mutItems() {
+    *v = weigh(*v) + 1u64;
+  }
+  mut right = u64.from(l.len) == n;
+  i = 0u64;
+  each v in l {
+    if *v != weigh(i) + 1u64 {
+      right = false;
+    }
+    i = i + 1u64;
+  }
+  right;
+}
+
+// ---- 'parallel each' in an actor's behaviour ----
+
+fn bits(v u64) u64 {
+  mut n = 0u64;
+  mut x = v;
+  while x != 0u64 {
+    n = n + (x & 1u64);
+    x = x >> 1u64;
+  }
+  n;
+}
+
+// Costly enough that, with the floor gone, a worker looking for work would
+// steal a piece of 100 items long before the first worker had finished them
+fn cost(i u64) u64 {
+  mut x = i + 1u64;
+  mut k = 0u64;
+  while k < 3000u64 {
+    x = x * 6364136223846793005u64 + k;
+    k = k + 1u64;
+  }
+  x;
+}
+
+struct Outcome {
+  pub smallRuns Atomic[u64];       // loops of fewer than 128 items finished
+  pub smallWrong Atomic[u64];      // their items wrong
+  pub smallSpread Atomic[u64];     // of them, how many ran on more than one worker
+  pub bigRuns Atomic[u64];
+  pub bigWrong Atomic[u64];
+  pub bigWorkers Atomic[u64];      // workers that ran a pass of the bigger loop
+}
+
+imm outcome Outcome;
+
+fn @initpure init() {
+  outcome = new Outcome(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+actor Looper {
+  vals List[u64];
+  ran Atomic[u64];       // bit i: worker i ran a pass
+
+  fn init(self &new, n u64) {
+    mut l = new List[u64];
+    mut i = 0u64;
+    while i < n {
+      l.push(i);
+      i = i + 1u64;
+    }
+    *self = new Self(vals: l, ran: Atomic[u64].of(0u64));
+  }
+
+  // big: the pass of item 0 waits until a second worker has run a pass, or
+  // three seconds go by
+  pub async do run(self, big bool) u64 {
+    parallel each v in vals.mutItems() {
+      ran.bitOr(1u64 << u64.from(actors.workerIndex()));
+      if big and *v == 0u64 {
+        mut waited = 0u64;
+        while bits(ran.load()) < 2u64 and waited < 3000u64 {
+          thread.sleep(time.Duration.fromMillis(1));
+          waited = waited + 1u64;
+        }
+      }
+      *v = cost(*v);
+    }
+    mut wrong = 0u64;
+    mut i = 0u64;
+    each v in vals {
+      if *v != cost(i) {
+        wrong = wrong + 1u64;
+      }
+      i = i + 1u64;
+    }
+    imm used = bits(ran.load());
+    if big {
+      outcome.bigRuns.add(1u64);
+      outcome.bigWrong.add(wrong);
+      outcome.bigWorkers.store(used);
+    } else {
+      outcome.smallRuns.add(1u64);
+      outcome.smallWrong.add(wrong);
+      if used > 1u64 {
+        outcome.smallSpread.add(1u64);
+      }
+    }
+    used;
+  }
+}
+
+actor Driver {
+  pub async do go(self) {
+    imm a = new Looper(1u64);
+    imm b = new Looper(50u64);
+    imm c = new Looper(100u64);
+    imm d = new Looper(127u64);
+    imm e = new Looper(128u64);
+    imm f = new Looper(4000u64);
+    await a.run(false);
+    await b.run(false);
+    await c.run(false);
+    await d.run(false);
+    await e.run(false);
+    await f.run(true);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(new actors.Options(workers: 4u32));
+
+  // The pieces: four workers, so the grain is a thirty-second of the length,
+  // and never below 128
+  expectUInt(piecesOf(1usize, "1 item"), 1u64, "1 item: one piece");
+  expectUInt(piecesOf(50usize, "50 items"), 1u64, "50 items: one piece");
+  expectUInt(piecesOf(127usize, "127 items"), 1u64, "127 items: one piece");
+  expectUInt(piecesOf(128usize, "128 items"), 1u64, "128 items: one piece");
+  expectUInt(piecesOf(129usize, "129 items"), 2u64, "129 items: two pieces");
+  expectUInt(piecesOf(256usize, "256 items"), 2u64, "256 items: two pieces");
+  expectUInt(piecesOf(257usize, "257 items"), 3u64, "257 items: three pieces");
+  expectUInt(piecesOf(2000usize, "2000 items"), 16u64, "2000 items: sixteen pieces, not thirty-two");
+  expectUInt(piecesOf(1000000usize, "a million items"), 32u64, "a million items: thirty-two pieces");
+
+  // From main, over a list of fewer than 128 items
+  expect(listLoopIsRight(1u64), "a list of 1 from main");
+  expect(listLoopIsRight(100u64), "a list of 100 from main");
+  expect(listLoopIsRight(127u64), "a list of 127 from main");
+
+  // In an actor's behaviour
+  {
+    imm dr = new Driver();
+    dr.go();
+  }
+  finalAll();
+  expectUInt(outcome.smallRuns.load(), 5u64, "five loops of 128 items or fewer finished in a behaviour");
+  expectUInt(outcome.smallWrong.load(), 0u64, "and every item of them was right");
+  expectUInt(outcome.smallSpread.load(), 0u64, "and each ran whole on the one worker that ran the behaviour");
+  expectUInt(outcome.bigRuns.load(), 1u64, "the bigger loop finished in a behaviour");
+  expectUInt(outcome.bigWrong.load(), 0u64, "and every item of it was right");
+  expect(outcome.bigWorkers.load() > 1u64, "and it spread over more than one worker");
+  done();
+}
