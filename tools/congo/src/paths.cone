@@ -43,14 +43,20 @@ fn winPath(given &Array[u8]) String {
   out;
 }
 
+// A path held as text, as a Path, for fs and process, which take only that.
+// Congo holds its paths as text throughout; each call into either makes a Path
+// of the text for the call (until Congo holds Paths of its own).
+fn asPath(p &Array[u8]) path.Path { path.Path.from(p as &str); }
+
 // The absolute path, '..' read off and every separator '\' (Path.resolve()
 // without following links)
 fn resolved(p &Array[u8]) String {
-  mut full = String.empty();
-  match fs.absolute(p) {
-    case mut ok Ok { full <=> ok.value; }
-    case is Error { full = String.fromBytes(p); }
+  mut abs = asPath("");
+  match fs.absolute(&asPath(p)) {
+    case mut ok Ok { abs <=> ok.value; }
+    case is Error { abs = asPath(p); }
   }
+  mut full = String.from(abs.view());
   full.replaceByte('/', '\\');
   full;
 }
@@ -78,7 +84,7 @@ fn samePath(a &Array[u8], b &Array[u8]) bool {
 // below it (Path.relative_to, case ignored as Windows ignores it), else as it is
 fn shown(p &Array[u8]) String {
   if not path.isAbsolute(p) { return String.fromBytes(p); }
-  mut here = String.empty();
+  mut here = asPath("");
   match fs.currentDir() {
     case mut ok Ok { here <=> ok.value; }
     case is Error { return String.fromBytes(p); }
@@ -327,7 +333,7 @@ fn whichIn(cmd &Array[u8], folderList &Array[u8], file &Array[u8]) String {
       mut f = 0usize;
       while f < files.len() {
         imm candidate = ntJoin(dir, files[f].view());
-        if fs.exists(candidate.view()) and not fs.isDir(candidate.view()) { return candidate; }
+        if fs.exists(&asPath(candidate.view())) and not fs.isDir(&asPath(candidate.view())) { return candidate; }
         f = f + 1usize;
       }
     }

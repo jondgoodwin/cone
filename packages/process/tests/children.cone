@@ -11,7 +11,8 @@
 // limit as without the option; a child that sleeps, stopped by
 // its time limit, and one whose own child sleeps, both stopped (the
 // grandchild's death checked by its process id); the working folder, a
-// UTF-8 one among them; standard input read from NUL; a variable set
+// UTF-8 one among them, given as a literal and as a Path variable (which the
+// run leaves as it was: it is used again); standard input read from NUL; a variable set
 // before the run inherited, beyond ASCII, as Windows holds it and as the
 // env package reads it; arguments round-tripped through the child's
 // parsers (every string of up to four of 'a', space, tab, '"' and '\', and
@@ -31,7 +32,7 @@ import testing use *;
 import collections use *;
 import stdio;
 import libc;
-import path;
+import path use Path;
 import fs;
 import env;
 import process;
@@ -171,7 +172,8 @@ fn child(a &List[String], argc i32, argv **u8) i32 {
     // Says who it is, then sleeps
     mut id = String.empty();
     id.appendUInt(u64.from(GetCurrentProcessId()));
-    fs.writeFile(a[3usize].view(), id.view());
+    imm idPath = Path.from(a[3usize].view());
+    fs.writeFile(&idPath, id.view());
     Sleep(u32.from(number(a[4usize])));
     return 0i32;
   }
@@ -250,16 +252,17 @@ fn child(a &List[String], argc i32, argv **u8) i32 {
 
 // The test's folder: TEMP's absolute path and the name, after checking
 // that it is that and nothing shorter
-fn makeRoot(name &str) String {
+fn makeRoot(name &str) Path {
   imm temp = libc.getenv("TEMP");
   require(temp != null, "TEMP is set");
-  mut root = String.empty();
-  match fs.absolute(cstr.fromPtr(temp).view()) {
-    case imm t Ok { root = path.join(t.value.view(), name); }
+  imm tempPath = Path.from(cstr.fromPtr(temp).view());
+  mut root = Path.from("");
+  match fs.absolute(&tempPath) {
+    case imm t Ok { root = t.value.join(name); }
     case is Error { require(false, "TEMP has an absolute path"); }
   }
-  imm up = path.parent(root.view());
-  imm safe = path.isAbsolute(root.view()) and root.endsWith(name) and up.len() > 3usize;
+  imm up = root.parent();
+  imm safe = root.isAbsolute() and root.view().endsWith(name) and up.view().len() > 3usize;
   require(safe, "the test's folder is under TEMP");
   root;
 }
@@ -448,10 +451,10 @@ fn timesOut(exe &str) {
 
 // A child that starts a grandchild and waits for it: the time limit stops
 // both, and the grandchild's process is gone after
-fn treeStopped(exe &str, root &Array[u8]) {
-  imm idFile = path.join(root, "grandchild.txt");
+fn treeStopped(exe &str, root &Path) {
+  imm idFile = root.join("grandchild.txt");
   mut c = childCommand(exe, "tree");
-  c.push(idFile.copy());
+  c.push(String.from(idFile.view()));
   c.push(String.from("20000"));
   imm began = Instant.now();
   imm o = ran(process.run(c.view(), new process.Options(timeout: Duration.fromMillis(1500))), "tree");
@@ -460,7 +463,7 @@ fn treeStopped(exe &str, root &Array[u8]) {
   expectBool(took < Duration.fromSeconds(8), true, "stopped well before the grandchild would wake");
   expectStr(o.stdout.view(), "", "the child never saw its grandchild end");
   mut id = 0u64;
-  match fs.readFile(idFile.view()) {
+  match fs.readFile(&idFile) {
     case imm t Ok { id = number(&t.value); }
     case is Error {}
   }
@@ -474,32 +477,59 @@ fn treeStopped(exe &str, root &Array[u8]) {
   expectBool(gone, true, "the grandchild stopped with it");
 }
 
-fn workingFolder(exe &str, root &str) {
+fn workingFolder(exe &str, root &Path) {
   imm c = childCommand(exe, "cwd");
-  imm o = ran(process.run(c.view(), new process.Options(dir: root)), "cwd");
-  expectStr(o.stdout.view(), root, "started in the folder given");
+  // A Path variable, lent: the same one is given again below
+  imm o = ran(process.run(c.view(), new process.Options(), root), "cwd");
+  expectStr(o.stdout.view(), root.view(), "started in the folder given");
+
+  // A string literal where the folder is wanted is made a Path: 'C:\Windows'
+  // exists on every Windows, and the child reads its folder back normalized
+  imm w = ran(process.run(c.view(), new process.Options(), "C:\\Windows"), "cwd from a literal");
+  expectStr(w.stdout.view(), "C:/Windows", "started in a folder given as a literal");
+  // And '.' is this program's own folder
+  imm dot = ran(process.run(c.view(), new process.Options(), "."), "cwd from '.'");
+  match fs.currentDir() {
+    case imm d Ok { expectStr(dot.stdout.view(), d.value.view(), "a literal '.' is this program's folder"); }
+    case is Error { expect(false, "this program's folder"); }
+  }
 
   // The same folder written with '\'
-  mut back = String.from(root);
+  mut back = String.from(root.view());
   back.replaceByte('/', '\\');
-  imm b = ran(process.run(c.view(), new process.Options(dir: back.view())), "cwd with backslashes");
-  expectStr(b.stdout.view(), root, "a folder written with '\\'");
+  imm backPath = Path.from(back.view());
+  imm b = ran(process.run(c.view(), new process.Options(), &backPath), "cwd with backslashes");
+  expectStr(b.stdout.view(), root.view(), "a folder written with '\\'");
 
   // A UTF-8 name
-  imm utf = path.join(root, "dossier é 日本");
-  fs.makeDir(utf.view());
-  imm u = ran(process.run(c.view(), new process.Options(dir: utf.view())), "cwd UTF-8");
+  imm utf = root.join("dossier é 日本");
+  fs.makeDir(&utf);
+  imm u = ran(process.run(c.view(), new process.Options(), &utf), "cwd UTF-8");
   expectStr(u.stdout.view(), utf.view(), "a folder named in UTF-8");
 
   // A relative program is found from this program's folder, not the
   // child's ('congo test' runs a test in the folder its executable is in),
   // and a name with no extension gains '.exe'
   mut rel = childCommand(".\\children.exe", "cwd");
-  imm r = ran(process.run(rel.view(), new process.Options(dir: root)), "relative program");
-  expectStr(r.stdout.view(), root, "a relative program, read from this program's folder");
+  imm r = ran(process.run(rel.view(), new process.Options(), root), "relative program");
+  expectStr(r.stdout.view(), root.view(), "a relative program, read from this program's folder");
   mut bare = childCommand("children", "cwd");
-  imm n = ran(process.run(bare.view(), new process.Options(dir: root)), "program with no extension");
-  expectStr(n.stdout.view(), root, "a program named with no '.exe'");
+  imm n = ran(process.run(bare.view(), new process.Options(), root), "program with no extension");
+  expectStr(n.stdout.view(), root.view(), "a program named with no '.exe'");
+
+  // 'runLine' takes the folder the same way
+  mut line = String.from("\"");
+  line.append(exe);
+  line.append("\" --child cwd");
+  imm rl = ran(process.runLine(line.view(), new process.Options(), root), "runLine in a folder");
+  expectStr(rl.stdout.view(), root.view(), "runLine started in the Path given");
+  imm rlw = ran(process.runLine(line.view(), new process.Options(), "C:\\Windows"), "runLine in a literal folder");
+  expectStr(rlw.stdout.view(), "C:/Windows", "runLine started in a literal folder");
+
+  // None of the Paths was consumed by the runs that took it
+  expect(utf.view().endsWith("/dossier é 日本"), "the Path variable is unchanged");
+  expectStr(backPath.view(), back.view(), "the other Path variable is unchanged");
+  expect(root.isAbsolute(), "root is unchanged after four runs");
 
   // None given: this program's own
   imm here = ran(process.run(c.view()), "cwd inherited");
@@ -654,7 +684,7 @@ fn inherited(exe &str) {
   expectStr(o.stderr.view(), "", "nothing captured from stderr when inherited");
 }
 
-fn failures(exe &str, root &str) {
+fn failures(exe &str, root &Path) {
   mut none = List[String].empty();
   none.push(String.from("cone-process-test-no-such-program"));
   imm r = process.run(none.view());
@@ -665,10 +695,26 @@ fn failures(exe &str, root &str) {
     case is Ok { expect(false, "notFound"); }
   }
 
-  imm missing = path.join(root, "missing");
+  imm missing = root.join("missing");
   imm c = childCommand(exe, "hello");
-  failedWith(process.run(c.view(), new process.Options(dir: missing.view())), exe, root, 267u32,
+  failedWith(process.run(c.view(), new process.Options(), &missing), exe, root.view(), 267u32,
     "run <exe> in <root>/missing: The directory name is invalid", "no such folder");
+  // The error holds the folder as a Path, and the variable it was made from is as it was
+  match process.run(c.view(), new process.Options(), &missing) {
+    case imm e Error {
+      expectStr(e.value.dir.view(), missing.view(), "the error holds the working folder given");
+      expect(e.value.dir.isAbsolute(), "and it is a Path");
+    }
+    case is Ok { expect(false, "no such folder fails"); }
+  }
+  // A literal folder that is not there, too
+  match process.run(c.view(), new process.Options(), "C:\\cone-process-test-no-such-folder") {
+    case imm e Error {
+      expectStr(e.value.dir.view(), "C:\\cone-process-test-no-such-folder", "a literal folder held by the error");
+      expectUInt(u64.from(e.value.code), 267u64, "a literal folder not there");
+    }
+    case is Ok { expect(false, "a literal folder not there fails"); }
+  }
 
   mut empty = List[String].empty();
   failedWith(process.run(empty.view()), "", "", 87u32, "run: The parameter is incorrect", "no arguments");
@@ -688,10 +734,10 @@ fn failures(exe &str, root &str) {
     "run a\"b: The filename, directory name, or volume label syntax is incorrect", "a quote in the program");
 }
 
-fn me(exe &Array[u8]) {
-  expectBool(path.isAbsolute(exe), true, "currentExe is absolute");
-  imm name = path.name(exe);
-  expectStr(name.view(), "children.exe", "currentExe names this test");
+fn me(exe &Path) {
+  expectBool(exe.isAbsolute(), true, "currentExe is absolute");
+  expectStr(exe.name(), "children.exe", "currentExe names this test");
+  expect(not exe.view().contains("\\"), "currentExe is normalized");
   imm a = process.args();
   expectBool(a.len() == 1usize, true, "this test is run with no arguments");
 }
@@ -700,32 +746,32 @@ fn main(argc i32, argv **u8) i32 {
   imm a = process.args();
   if a.len() >= 3usize and a[1usize].equals("--child") { return child(&a, argc, argv); }
 
-  mut exe = String.empty();
+  mut exe = Path.from("");
   match process.currentExe() {
     case mut e Ok { exe <=> e.value; }
     case is Error { require(false, "currentExe"); }
   }
   imm root = makeRoot("cone-process-test");
-  if fs.exists(root.view()) { fs.removeAll(root.view()); }
-  require(fs.makeDir(root.view()) is Ok, "the test's folder made");
+  if fs.exists(&root) { fs.removeAll(&root); }
+  require(fs.makeDir(&root) is Ok, "the test's folder made");
 
-  me(exe.view());
+  me(&exe);
   captured(exe.view());
   exitCodes(exe.view());
   panics(exe.view());
   crashesUnreported(exe.view());
   bigStreams(exe.view());
   timesOut(exe.view());
-  treeStopped(exe.view(), root.view());
-  workingFolder(exe.view(), root.view());
+  treeStopped(exe.view(), &root);
+  workingFolder(exe.view(), &root);
   standardInput(exe.view());
   environment(exe.view());
   arguments(exe.view());
   rawLine(exe.view());
   inherited(exe.view());
-  failures(exe.view(), root.view());
+  failures(exe.view(), &root);
 
-  imm removed = fs.removeAll(root.view());
+  imm removed = fs.removeAll(&root);
   expect(removed is Ok, "the test's folder removed");
   done();
 }

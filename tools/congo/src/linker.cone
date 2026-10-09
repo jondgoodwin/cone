@@ -9,11 +9,11 @@ fn findConec(repo &Array[u8]) Result[String, String] {
   imm named = envOr("CONEC", "");
   if not named.isEmpty() {
     imm p = winPath(named.view());
-    if not fs.isFile(p.view()) { return Error[String, String][cat("CONEC names ", p.view(), ", which does not exist")]; }
+    if not fs.isFile(&asPath(p.view())) { return Error[String, String][cat("CONEC names ", p.view(), ", which does not exist")]; }
     return Ok[String, String][p];
   }
   imm build = joined(repo, "build\\x64-release\\conec.exe");
-  if repo.len > 0usize and fs.isFile(build.view()) {
+  if repo.len > 0usize and fs.isFile(&asPath(build.view())) {
     warnIfStale(repo, build.view());
     return Ok[String, String][build];
   }
@@ -28,13 +28,13 @@ fn findConec(repo &Array[u8]) Result[String, String] {
 // test runner checks it.
 fn warnIfStale(repo &Array[u8], conec &Array[u8]) {
   mut stamp = new time.Timestamp();
-  match fs.stat(conec) {
+  match fs.stat(&asPath(conec)) {
     case imm s Ok { stamp = s.value.modified; }
     case is Error { return; }
   }
   imm sources = joined(repo, "compiler\\c");
   mut entries = List[fs.DirEntry].empty();
-  match fs.walk(sources.view()) {
+  match fs.walk(&asPath(sources.view())) {
     case mut ok Ok { entries <=> ok.value; }
     case is Error { return; }
   }
@@ -43,7 +43,7 @@ fn warnIfStale(repo &Array[u8], conec &Array[u8]) {
     imm entry = entries[i];
     imm ext = path.extension(entry.name.view());
     if ext.equals(".c") or ext.equals(".h") {
-      match fs.stat(entry.path.view()) {
+      match fs.stat(&entry.path) {
         case imm s Ok {
           if s.value.modified > stamp {
             // The file relative to the repository, as Path.relative_to gives it
@@ -70,7 +70,7 @@ fn findConestd(conec &Array[u8]) Result[String, String] {
     imm folder = parentOf(conec);
     lib = joined(folder.view(), "conestd.lib");
   }
-  if not fs.isFile(lib.view()) {
+  if not fs.isFile(&asPath(lib.view())) {
     return Error[String, String][cat("no conestd library at ", lib.view(), "; build it with conec, or set CONESTD")];
   }
   Ok[String, String][lib];
@@ -98,7 +98,7 @@ fn findVcvars() String {
   imm programs = envOr("ProgramFiles(x86)", "C:\\Program Files (x86)");
   imm pf = winPath(programs.view());
   imm vswhere = joined(pf.view(), "Microsoft Visual Studio\\Installer\\vswhere.exe");
-  if fs.exists(vswhere.view()) {
+  if fs.exists(&asPath(vswhere.view())) {
     imm args = argList(vswhere.view(), "-latest", "-products", "*",
       "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", "-property", "installationPath",
       "-utf8");
@@ -110,7 +110,7 @@ fn findVcvars() String {
         if roots.len() > 0usize {
           imm root = winPath(roots[0usize].view());
           imm candidate = joined(root.view(), "VC\\Auxiliary\\Build\\vcvars64.bat");
-          if fs.exists(candidate.view()) { return candidate; }
+          if fs.exists(&asPath(candidate.view())) { return candidate; }
         }
       }
       case is Error {}
@@ -121,7 +121,7 @@ fn findVcvars() String {
   while i < editions.len() {
     imm folder = joined("C:\\Program Files\\Microsoft Visual Studio\\2022", editions[i].view());
     imm candidate = joined(folder.view(), "VC\\Auxiliary\\Build\\vcvars64.bat");
-    if fs.exists(candidate.view()) { return candidate; }
+    if fs.exists(&asPath(candidate.view())) { return candidate; }
     i = i + 1usize;
   }
   String.empty();

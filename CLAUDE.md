@@ -333,23 +333,26 @@ Visual Studio projects stay at the root.
   `fs`, `path` and `env` are the synchronous OS layer over `libc` and
   `posix`: `fs` is files and folders (whole files read, written and
   appended, `stat`, folders made, listed in name order, walked and removed,
-  the current folder and absolute paths), each failure a core `Result`
-  holding an `FsError` (what, which path, the errno); `path` is `Path`, a
+  the current folder and absolute paths; every function that opens or names a
+  file takes a `&Path` and nothing else, and a path it answers is a `Path`),
+  each failure a core `Result` holding an `FsError` (what, which `Path`, the
+  errno); `path` is `Path`, a
   file path as owned text, Windows' syntax (a literal becomes one where a
   `Path` is wanted by value, through `fromLiteral`, and a temporary one where
   a `&Path` is; methods `parent`, `join`,
   `normalize`, `name`, `stem`, `extension`, `volume`, `parts`, `isAbsolute`,
   `==` and `Hash`; `/` out), with the older functions over bytes kept beside it
-  until `fs` and `process` take a `Path`; `env` is environment variables (get, set, unset);
+  until the Cone Congo, the last caller of them, holds `Path`s; `env` is environment variables (get, set, unset);
   what is Windows-only beneath them is `posix`'s mapping onto the C runtime
   and its `opendir`, `readdir` and `lstat`, written over `_findfirst64`;
-  `process` runs a program and waits for it (`run`: a list of arguments, a
-  working folder, a time limit that stops the child and everything it
+  `process` runs a program and waits for it (`run`: a list of arguments, an
+  optional working folder, a `&Path` (a longer overload of `run` and
+  `runLine`), a time limit that stops the child and everything it
   started; an `Output` of the full 32-bit exit code, a value and not an
   error, and standard output and error captured apart, or shared with
   `inherit`; `crashReport: false`, a crash ended at once and unreported,
   as test runners run their programs; `runLine` for a line written by
-  hand, `commandLine`, `args` and `currentExe`), a failure to start a
+  hand, `commandLine`, `args` and `currentExe`, a `Path`), a failure to start a
   `ProcessError`; its interface is no OS's, its insides Windows only
   (`kernel32`'s `CreateProcessW`, overlapped pipes, a job object and the
   debugging functions, `shell32`'s `CommandLineToArgvW`), a

@@ -1,0 +1,192 @@
+// Every function of fs that takes a path, given a string literal and then a
+// 'Path' held in a variable. A literal where a '&Path' is wanted is lent as a
+// temporary Path for the call; a variable is lent as it is, so it is still
+// there, unchanged, after the call and is used again. Both forms are checked
+// to do the same work.
+//
+// It works in a folder of its own under TEMP, 'cone-fs-test-literals', which
+// it clears if an interrupted run left it, makes, makes the current folder
+// (so the relative literals land in it), and, at the end, leaves and removes.
+// Nothing is removed until the folder's path has been checked to be TEMP's,
+// absolute, with that name after it.
+//
+// The expected values come from the calls' own rules: 'onetwo' is 'one' and
+// then 'two' appended, six bytes; a folder 'd' holding 'b.txt' and a folder
+// 'e' lists as 'd/b.txt' and 'd/e' (name order, joined by '/'); 'walk' also
+// gives 'd/e/f', one below 'e'.
+
+mod literals;
+
+import testing use *;
+import collections use *;
+import libc;
+import path use Path;
+import fs;
+
+fn makeRoot(name &str) Path {
+  imm temp = libc.getenv("TEMP");
+  require(temp != null, "TEMP is set");
+  imm tempPath = Path.from(cstr.fromPtr(temp).view());
+  mut root = Path.from("");
+  match fs.absolute(&tempPath) {
+    case imm t Ok { root = t.value.join(name); }
+    case is Error { require(false, "TEMP has an absolute path"); }
+  }
+  imm up = root.parent();
+  imm safe = root.isAbsolute() and root.view().endsWith(name) and up.view().len() > 3usize;
+  require(safe, "the test's folder is under TEMP");
+  root;
+}
+
+fn ok[T](r Result[T, fs.FsError], label &Array[u8]) bool { expect(r is Ok, label); }
+
+fn contents(r Result[String, fs.FsError]) String {
+  match r {
+    case mut got Ok { mut s = String.empty(); s <=> got.value; s; }
+    case is Error { String.from("<error>"); }
+  }
+}
+
+fn listed(r Result[List[fs.DirEntry], fs.FsError]) String {
+  mut out = String.empty();
+  match r {
+    case imm l Ok {
+      imm entries = &l.value;
+      mut i = 0usize;
+      while i < entries.len() {
+        imm e = entries[i];
+        out.append(e.path.view());
+        out.append(" ");
+        i = i + 1usize;
+      }
+    }
+    case is Error { out.append("<error>"); }
+  }
+  out;
+}
+
+// Each function, given literals
+fn withLiterals(root &Path) {
+  ok(fs.makeDir("d"), "literal: makeDir");
+  ok(fs.makeDirAll("d/e/f"), "literal: makeDirAll");
+  ok(fs.writeFile("d/a.txt", "one"), "literal: writeFile");
+  ok(fs.appendFile("d/a.txt", "two"), "literal: appendFile");
+  imm back = contents(fs.readFile("d/a.txt"));
+  expectStr(back.view(), "onetwo", "literal: readFile");
+  match fs.stat("d/a.txt") {
+    case imm s Ok { expectInt(s.value.size, 6, "literal: stat size"); expect(s.value.isFile, "literal: stat isFile"); }
+    case is Error { expect(false, "literal: stat"); }
+  }
+  expect(fs.exists("d/a.txt"), "literal: exists");
+  expect(fs.isFile("d/a.txt"), "literal: isFile");
+  expect(fs.isDir("d/e"), "literal: isDir");
+  expect(not fs.isDir("d/a.txt"), "literal: isDir of a file");
+  ok(fs.rename("d/a.txt", "d/b.txt"), "literal: rename");
+  expect(not fs.exists("d/a.txt"), "literal: renamed away");
+  imm names = listed(fs.readDir("d"));
+  expectStr(names.view(), "d/b.txt d/e ", "literal: readDir");
+  imm walked = listed(fs.walk("d"));
+  expectStr(walked.view(), "d/b.txt d/e d/e/f ", "literal: walk");
+  match fs.absolute("d/b.txt") {
+    case imm a Ok {
+      imm want = root.normalize().join("d/b.txt");
+      expectStr(a.value.view(), want.view(), "literal: absolute");
+    }
+    case is Error { expect(false, "literal: absolute"); }
+  }
+  ok(fs.setCurrentDir("d"), "literal: setCurrentDir");
+  match fs.currentDir() {
+    case imm c Ok {
+      imm want = root.normalize().join("d");
+      expectStr(c.value.view(), want.view(), "literal: currentDir after setCurrentDir");
+    }
+    case is Error { expect(false, "literal: currentDir"); }
+  }
+  ok(fs.setCurrentDir(".."), "literal: setCurrentDir back");
+  ok(fs.removeFile("d/b.txt"), "literal: removeFile");
+  ok(fs.removeDir("d/e/f"), "literal: removeDir");
+  ok(fs.removeAll("d"), "literal: removeAll");
+  expect(not fs.exists("d"), "literal: all gone");
+}
+
+// Each function, given the same paths held in variables: used again after
+// every call, and equal at the end to what they were made as
+fn withVariables(root &Path) {
+  imm d = Path.from("v");
+  imm e = d.join("e");
+  imm f = e.join("f");
+  imm a = d.join("a.txt");
+  imm b = d.join("b.txt");
+  ok(fs.makeDir(&d), "variable: makeDir");
+  ok(fs.makeDirAll(&f), "variable: makeDirAll");
+  ok(fs.writeFile(&a, "one"), "variable: writeFile");
+  ok(fs.appendFile(&a, "two"), "variable: appendFile");
+  imm back = contents(fs.readFile(&a));
+  expectStr(back.view(), "onetwo", "variable: readFile");
+  match fs.stat(&a) {
+    case imm s Ok { expectInt(s.value.size, 6, "variable: stat size"); expect(s.value.isFile, "variable: stat isFile"); }
+    case is Error { expect(false, "variable: stat"); }
+  }
+  expect(fs.exists(&a), "variable: exists");
+  expect(fs.isFile(&a), "variable: isFile");
+  expect(fs.isDir(&e), "variable: isDir");
+  expect(not fs.isDir(&a), "variable: isDir of a file");
+  ok(fs.rename(&a, &b), "variable: rename");
+  expect(not fs.exists(&a), "variable: renamed away");
+  expect(fs.exists(&b), "variable: renamed to");
+  imm names = listed(fs.readDir(&d));
+  expectStr(names.view(), "v/b.txt v/e ", "variable: readDir");
+  imm walked = listed(fs.walk(&d));
+  expectStr(walked.view(), "v/b.txt v/e v/e/f ", "variable: walk");
+  match fs.absolute(&b) {
+    case imm x Ok {
+      imm want = root.normalize().join("v/b.txt");
+      expectStr(x.value.view(), want.view(), "variable: absolute");
+    }
+    case is Error { expect(false, "variable: absolute"); }
+  }
+  ok(fs.setCurrentDir(&d), "variable: setCurrentDir");
+  imm up = Path.from("..");
+  ok(fs.setCurrentDir(&up), "variable: setCurrentDir back");
+  ok(fs.removeFile(&b), "variable: removeFile");
+  ok(fs.removeDir(&f), "variable: removeDir");
+  ok(fs.removeAll(&d), "variable: removeAll");
+  expect(not fs.exists(&d), "variable: all gone");
+
+  // None was consumed: each still holds the text it was made with
+  expectStr(d.view(), "v", "variable: d unchanged");
+  expectStr(e.view(), "v/e", "variable: e unchanged");
+  expectStr(f.view(), "v/e/f", "variable: f unchanged");
+  expectStr(a.view(), "v/a.txt", "variable: a unchanged");
+  expectStr(b.view(), "v/b.txt", "variable: b unchanged");
+  expectStr(up.view(), "..", "variable: up unchanged");
+
+  // And used again, here as a failure's path, held by the error
+  match fs.stat(&a) {
+    case imm err Error {
+      expectStr(err.value.path.view(), "v/a.txt", "variable: the error holds a copy of the path");
+      expectStr(a.view(), "v/a.txt", "variable: a still there after the error");
+    }
+    case is Ok { expect(false, "variable: stat of a removed file"); }
+  }
+}
+
+fn main() i32 {
+  imm root = makeRoot("cone-fs-test-literals");
+  require(fs.removeAll(&root) is Ok, "clear what an earlier run left");
+  require(fs.makeDir(&root) is Ok, "make the test's folder");
+  mut before = Path.from("");
+  match fs.currentDir() {
+    case mut c Ok { before <=> c.value; }
+    case is Error { require(false, "currentDir"); }
+  }
+  require(fs.setCurrentDir(&root) is Ok, "enter the test's folder");
+
+  withLiterals(&root);
+  withVariables(&root);
+
+  require(fs.setCurrentDir(&before) is Ok, "leave the test's folder");
+  ok(fs.removeAll(&root), "remove the test's folder");
+  expect(not fs.exists(&root), "the test's folder is gone");
+  done();
+}
