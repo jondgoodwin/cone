@@ -548,6 +548,12 @@ pub struct Zip[A, B, I Iterator[A], J Iterator[B]] {
   // what each source gives
   pub fn indexed(self) ZipIndexed[A, B, I, J] { new ZipIndexed[A, B, I, J](self, 0usize); }
 
+  // A third source walked beside the two: a Zip3, whose items are flat triples (not a
+  // pair and a third), so that three variables unpack them. It ends with the shortest
+  pub fn zip[C, K Iterator[C]](self, other K) Zip3[A, B, C, I, J, K] {
+    new Zip3[A, B, C, I, J, K](self.first, self.second, other);
+  }
+
   // When BOTH sources can be walked by position (RandomAccess) and cut
   // (ParallelIterable), so can the zip, as Rayon's: its length is the shorter's, it
   // is cut at the same place in both, and the pair at k is what each gives at k. A
@@ -593,6 +599,89 @@ pub struct ZipIndexed[A, B, I Iterator[A], J Iterator[B]] {
   pub fn at(self &, k usize) (usize, A, B) where I is RandomAccess[A] and J is RandomAccess[B] {
     imm pair = zip.at(k);
     (index + k, pair.0, pair.1);
+  }
+}
+
+// Three sources walked side by side, which a zip's own 'zip' gives: 'next' gives a
+// flat tuple of what each gives, and answers None as soon as any runs out. As a Zip
+// is, it is RandomAccess and ParallelIterable when ALL THREE sources are: its length
+// is the shortest's and it is cut at the same place in all three.
+pub struct Zip3[A, B, C, I Iterator[A], J Iterator[B], K Iterator[C]] {
+  first I;
+  second J;
+  third K;
+
+  pub fn next(self &mut) Option[(A, B, C)] {
+    match first.next() {
+      case imm x Some {
+        imm a = x.value;
+        match second.next() {
+          case imm y Some {
+            imm b = y.value;
+            match third.next() {
+              case imm z Some { return Some[(A, B, C)][(a, b, z.value)]; }
+              case is None { return None[(A, B, C)][]; }
+            }
+          }
+          case is None { return None[(A, B, C)][]; }
+        }
+      }
+      case is None { return None[(A, B, C)][]; }
+    }
+  }
+
+  // The triples with their numbers, counted from 0: a flat tuple of the number and
+  // what each source gives
+  pub fn indexed(self) Zip3Indexed[A, B, C, I, J, K] { new Zip3Indexed[A, B, C, I, J, K](self, 0usize); }
+
+  pub fn len(self &) usize
+      where I is RandomAccess[A] and J is RandomAccess[B] and K is RandomAccess[C] {
+    imm a = first.len();
+    imm b = second.len();
+    imm c = third.len();
+    imm ab = if a < b { a; } else { b; };
+    if ab < c { ab; } else { c; };
+  }
+
+  pub fn at(self &, k usize) (A, B, C)
+      where I is RandomAccess[A] and J is RandomAccess[B] and K is RandomAccess[C] {
+    (first.at(k), second.at(k), third.at(k));
+  }
+
+  pub fn split(self &, at usize) (Zip3[A, B, C, I, J, K], Zip3[A, B, C, I, J, K])
+      where I is ParallelIterable[A, I] and J is ParallelIterable[B, J] and K is ParallelIterable[C, K] {
+    imm f = first.split(at);
+    imm s = second.split(at);
+    imm t = third.split(at);
+    (new Zip3[A, B, C, I, J, K](f.0, s.0, t.0), new Zip3[A, B, C, I, J, K](f.1, s.1, t.1));
+  }
+}
+
+// A three-way zip with the triples numbered, which its 'indexed' gives: 'next' gives
+// a flat tuple of the number and what each of the three gives
+pub struct Zip3Indexed[A, B, C, I Iterator[A], J Iterator[B], K Iterator[C]] {
+  pub zip Zip3[A, B, C, I, J, K];
+  pub index usize;
+
+  pub fn next(self &mut) Option[(usize, A, B, C)] {
+    match zip.next() {
+      case imm p Some {
+        imm i = index;
+        index = i + 1usize;
+        imm triple = p.value;
+        return Some[(usize, A, B, C)][(i, triple.0, triple.1, triple.2)];
+      }
+      case is None { return None[(usize, A, B, C)][]; }
+    }
+  }
+
+  pub fn len(self &) usize
+      where I is RandomAccess[A] and J is RandomAccess[B] and K is RandomAccess[C] { zip.len(); }
+
+  pub fn at(self &, k usize) (usize, A, B, C)
+      where I is RandomAccess[A] and J is RandomAccess[B] and K is RandomAccess[C] {
+    imm triple = zip.at(k);
+    (index + k, triple.0, triple.1, triple.2);
   }
 }
 

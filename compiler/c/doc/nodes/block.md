@@ -309,9 +309,13 @@ the first it has yet to give. A header `if` needs nothing of its own: it is
 `eachLower`'s `continue` statement after the pass's variable, ahead of which the
 loop's step is inserted.
 
-A **zip** of cursors (core's `Zip` and, from its `indexed()`, `ZipIndexed`) is one
-of these cursors: it takes two variables (three for `ZipIndexed`, the position
-first), unpacked from the tuple its `at` gives. It has `len` (the shorter's), `at`
+A **zip** of cursors (core's `Zip` and, from its `indexed()`, `ZipIndexed`; with a
+third source from `Zip`'s own `zip`, the flat-triple `Zip3` and its `Zip3Indexed`) is
+one of these cursors: it takes two variables (three for `ZipIndexed` and `Zip3`, four
+for `Zip3Indexed`, the position first), unpacked from the tuple its `at` gives. The
+three-way zip is a struct of its own, not a `Zip` of a `Zip`, so that its item is
+one flat tuple that three variables unpack; its `len` is the shortest's and its
+`split` cuts all three at one place. It has `len` (the shorter's), `at`
 and `split` only where both sources do (`where I is RandomAccess[A] and J is
 RandomAccess[B]`; the core traits `RandomAccess` and `ParallelIterable`, met by
 the methods), so a zip with a source that cannot be cut or walked by position has

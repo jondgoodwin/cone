@@ -1,0 +1,62 @@
+// A three-way zip: a zip's own 'zip(other)' takes a third cursor, and the items are
+// flat triples, three variables for 'each' (four with 'indexed()', the position
+// first). It ends with the shortest; when all three sources can be cut and walked by
+// position it has 'len' (the shortest's), 'at' and 'split' (at the same place in all
+// three). Each case prints what it saw; the numbers are worked out in the comments.
+
+mod each_zip3_cursors;
+
+import stdio use *;
+import collections use *;
+
+fn show(label &str, n u64) {
+  printStr(label);
+  printStr(" = ");
+  printUInt(n);
+  printStr("\n");
+}
+
+fn main() {
+  mut a = new List[u32];
+  mut b = new List[u32];
+  mut c = new List[u32];
+  each i in 0usize < 10usize { a.push(0u32); }
+  each i in 0usize < 30usize { b.push(0u32); }
+  each i in 0usize < 20usize { c.push(0u32); }
+
+  // chunks of 2 (5), of 6 (5) and of 4 (5): three outputs in one loop
+  each ra, rb, rc in a.mutChunks(2usize).zip(b.mutChunks(6usize)).zip(c.mutChunks(4usize)) {
+    ra[0usize] = 1u32;
+    rb[0usize] = 2u32;
+    rc[0usize] = 3u32;
+  }
+  show("a, b, c marks", u64.from(*a[8usize] + *b[24usize] + *c[16usize]));      // 1 + 2 + 3 = 6
+
+  // numbered, four variables
+  each y, ra, rb, rc in a.mutChunks(2usize).zip(b.mutChunks(6usize)).zip(c.mutChunks(4usize)).indexed() {
+    ra[1usize] = u32.from(y);
+    rb[1usize] = u32.from(y) * 10u32;
+    rc[1usize] = u32.from(y) * 100u32;
+  }
+  show("a numbers", u64.from(*a[1usize] + *a[3usize] + *a[9usize]));             // 0 + 1 + 4 = 5
+  show("b numbers", u64.from(*b[7usize] + *b[25usize]));                         // 10 + 40 = 50
+  show("c numbers", u64.from(*c[5usize] + *c[17usize]));                         // 100 + 400 = 500
+
+  // the shortest ends it: chunks of 4 of 10 (3), of 2 of 30 (15), of 5 of 20 (4)
+  mut passes = 0u64;
+  each x, y, z in a.chunks(4usize).zip(b.chunks(2usize)).zip(c.chunks(5usize)) {
+    passes = passes + 1u64;
+  }
+  show("passes", passes);                                                         // 3
+
+  // len, at and split of the zip itself
+  imm z = a.chunks(2usize).zip(b.chunks(4usize)).zip(c.chunks(3usize));    // 5, 8 and 7 chunks: 5
+  show("length", u64.from(z.len()));                                              // 5
+  imm triple = z.at(3usize);
+  show("chunk of a", u64.from(triple.0.len));                                     // 2
+  show("chunk of b", u64.from(triple.1.len));                                     // 4
+  show("chunk of c", u64.from(triple.2.len));                                     // 3
+  imm cut = z.split(2usize);
+  show("left piece", u64.from(cut.0.len()));                                      // 2
+  show("right piece", u64.from(cut.1.len()));                                     // 3
+}
