@@ -277,12 +277,20 @@ the `parCheckAlias` of the place the items are lent from is). What is written is
 from the source's cursor types (`parWrittenElems`: the one type argument of core's
 `ArrayMutChunks`, `ArrayMutItems`, `MutItemsIndexed`, through `MutChunksIndexed`, the
 zips and their `indexed()`, or a `&mut` slice itself), never a method's name. The set
-is the element and what it holds inline (`parInlineTypes`). A variable's type reaches it
-(`parReachesWritten`) when, behind a reference (the pointee of one, or an element or
-type argument of what one points at), a type of the set appears; a field held inline is
-another object, so a struct reached through a reference is not searched for it, though a
-reference in one of its fields is. Raw pointers are not followed. A place
-`parCheckAlias` refused is skipped (no double report).
+is the element and what it holds inline (`parInlineTypes`). The check is **by the path
+read**: `parCheckOuterAlias` takes the outermost place node (field, index, dereference,
+borrow of one; `parPlaceChain`) rooted at an outside variable and `parPlaceReaches`
+walks it from the root. A reference crossed (an object whose type is a reference, auto
+dereferenced or not) makes the rest *behind*, and refuses if what it points at (a struct,
+the item) is a type of the set; an index refuses when it is behind and the element's type
+is in the set; a raw pointer ends the walk, trusted. What the place finally holds is
+judged whole (`parReachesWritten`): a type of the set as the pointee of a reference or an
+element or type argument of a collection reached behind one (`elemlike`), searching fields
+and variants for more, and not counting a type argument the struct also holds by value
+(an `Atomic`'s). A scalar field read (`self.scale`) is neither a container nor an
+element, so is free. A bare name, or a variable named inside a call in the chain, is a path
+of one, judged whole. A place `parCheckAlias` refused, or any part of one, is skipped (no
+double report).
 
 A **traced reference made** in the loop is refused whole (`ErrorGcStopgap`,
 `gcRefuseVisit`, over the block with the loop's source, filter and `yield`): an
