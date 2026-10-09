@@ -46,6 +46,8 @@ typedef struct ClosureInfo {
     uint8_t retset;             // ... and one has set it
     uint8_t expanded;           // Written in a body an importer expands (an inline function, a generic's instance): every object that makes the closure defines it
     ClosureNode *lit;           // The literal, for messages
+    Name *method;               // The name of its one method: '()', or the trait's method it was given to fill
+    int errbase;                // The error count when its struct began to be checked: a failure since is its body's, reported there
 } ClosureInfo;
 
 ClosureNode *newClosureNode();
@@ -67,6 +69,11 @@ ClosureInfo *closureOfDcl(INode *dcl);
 // rewritten to the access of its field. Answers whether it was.
 int closureUse(TypeCheckState *pstate, NameUseNode **namep);
 
+// The struct that holds a reference to a plain function and calls it, so that an
+// owner of a callable can own a function (the caller makes its value from the
+// reference, whose type is 'reftype')
+StructNode *closureFnHolder(TypeCheckState *pstate, FnSigNode *sig, INode *reftype, INode *lexnode);
+
 // The 'self' a bare member name inside a closure is reached through: the
 // method the closure is written in has the receiver, not the closure's '()'
 INode *closureSelfParm(FnDclNode *fn);
@@ -79,6 +86,18 @@ void closureReturnTypeCheck(TypeCheckState *tstate, BreakRetNode *retnode);
 // knows it (a parameter of function-reference type, a generic parameter bound
 // by a signature); NULL elsewhere
 extern FnSigNode *closureHint;
+
+// With the hint, the name of the trait method the literal fills when it is given
+// where a trait with one method is wanted; NULL for '()'
+extern Name *closureMethod;
+
+// What a literal given where 'trait' is wanted must be: the signature of the
+// trait's one method and its name; NULL when the trait is not one with exactly
+// one method and no field ('*count' says how many it has)
+FnSigNode *closureTraitSig(StructNode *trait, Name **method, uint32_t *count);
+
+// Whether a closure's one method takes 'self &mut'
+int closureMethodMutates(ClosureInfo *info);
 
 // Set while the return type of a closure is being read off its paths, so that
 // the 'if' that finds its branches disagree says so in the closure's words

@@ -32,7 +32,52 @@
 #include <string.h>
 
 FnSigNode *closureHint = NULL;
+Name *closureMethod = NULL;
 int closureInferring = 0;
+
+// What a literal given where the trait 'trait' is wanted must be: the signature
+// of the trait's one method, without its receiver, and that method's name. NULL
+// when the trait is not one a literal fills: '*count' says how many methods and
+// fields it requires, and '*method' the name of the first method.
+FnSigNode *closureTraitSig(StructNode *trait, Name **method, uint32_t *count) {
+    *count = trait->fields.used;
+    *method = NULL;
+    FnDclNode *only = NULL;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&trait->nodelist, cnt, nodesp)) {
+        // A private method counts too: a generic bound requires it (a reference to the
+        // trait has no slot for it, which its own use says)
+        if ((*nodesp)->tag != FnDclTag || !((*nodesp)->flags & FlagMethFld))
+            continue;
+        if (only == NULL)
+            only = (FnDclNode*)*nodesp;
+        ++*count;
+    }
+    if (only)
+        *method = only->namesym;
+    if (*count != 1 || only == NULL || only->genericinfo)
+        return NULL;
+    FnSigNode *msig = (FnSigNode*)itypeGetTypeDcl(only->vtype);
+    if (msig->tag != FnSigTag || msig->parms->used == 0)
+        return NULL;
+    FnSigNode *sig = newFnSigNode();
+    inodeLexCopy((INode*)sig, (INode*)only);
+    for (uint32_t i = 1; i < msig->parms->used; ++i)
+        nodesAdd(&sig->parms, nodesGet(msig->parms, i));
+    sig->rettype = msig->rettype;
+    return sig;
+}
+
+// Whether the method the closure struct holds takes 'self &mut'
+int closureMethodMutates(ClosureInfo *info) {
+    INode *meth = info->method ? namespaceFind(&info->strct->namespace, info->method) : NULL;
+    if (meth == NULL || meth->tag != FnDclTag)
+        return 0;
+    FnSigNode *sig = (FnSigNode*)itypeGetTypeDcl(((FnDclNode*)meth)->vtype);
+    INode *selftype = sig->tag == FnSigTag && sig->parms->used ? iexpGetTypeDcl(nodesGet(sig->parms, 0)) : NULL;
+    return selftype && selftype->tag == RefTag && itypeGetTypeDcl(((RefNode*)selftype)->perm) == (INode*)mutPerm;
+}
 
 ClosureNode *newClosureNode() {
     ClosureNode *node;
@@ -210,6 +255,7 @@ void closureNoteUse(NameResState *pstate, NameUseNode *name) {
 typedef struct ClosurePlan {
     uint8_t selfmut;
     uint8_t *capmut;
+    Name *method;           // The name of the one method: '()', or the trait's method a literal fills
 } ClosurePlan;
 
 static uint32_t closureSerial = 0;
@@ -391,6 +437,8 @@ static StructNode *closureBuild(TypeCheckState *pstate, ClosureNode *clo, Closur
     info->outerself = clo->outerself;
     info->retinfer = 0;
     info->retset = 0;
+    info->method = plan->method;
+    info->errbase = errors;
     info->expanded = (pstate->fn->flags & FlagInline) || dclIsInstance((INode*)pstate->fn);
     info->lit = clo;
 
@@ -459,13 +507,94 @@ static StructNode *closureBuild(TypeCheckState *pstate, ClosureNode *clo, Closur
     uint16_t parmnbr = 0;
     for (nodesFor(sig->parms, cnt, nodesp))
         ((VarDclNode*)*nodesp)->index = parmnbr++;
-    FnDclNode *fn = newFnDclNode(parensName, FlagMethFld | FlagPub, (INode*)sig, clo->body);
+    FnDclNode *fn = newFnDclNode(plan->method, FlagMethFld | FlagPub, (INode*)sig, clo->body);
     inodeLexCopy((INode*)fn, (INode*)clo);
     fn->closure = info;
     iNsTypeAddFn((INsTypeNode*)st, fn);
 
     if (final)
         nodesAdd(&mod->nodes, (INode*)st);
+    INode *stnode = (INode*)st;
+    inodeTypeCheckAny(pstate, &stnode);
+    return st;
+}
+
+// A plain function given where a callable owner is made: the reference to it is held
+// by a struct of the compiler's, whose '()' calls it, so that an owner of the struct
+// is the owner of a callable as any closure's is. The struct holds the one field,
+// the reference, and its '()' takes the signature's parameters after a 'self &'.
+// Answers the struct, laid out; the caller makes a value of it from the reference.
+StructNode *closureFnHolder(TypeCheckState *pstate, FnSigNode *sig, INode *reftype, INode *lexnode) {
+    ModuleNode *mod = dclInfoGetModule((INode*)pstate->fn);
+    char buf[48];
+    snprintf(buf, sizeof(buf), "closure#%u", ++closureSerial);
+    StructNode *st = newStructNode(nametblFind(buf, strlen(buf)));
+    inodeLexCopy((INode*)st, lexnode);
+    dclInfoJoin((INode*)st, (INode*)mod);
+
+    ClosureInfo *info = memAllocBlk(sizeof(ClosureInfo));
+    info->strct = st;
+    info->caps = memAllocBlk(sizeof(ClosureCap));
+    info->ncaps = 0;
+    info->outerself = NULL;
+    info->retinfer = 0;
+    info->retset = 0;
+    info->method = parensName;
+    info->errbase = errors;
+    info->expanded = (pstate->fn->flags & FlagInline) || dclIsInstance((INode*)pstate->fn);
+    info->lit = NULL;
+
+    FieldDclNode *fld = newFieldDclNode(nametblFind("f", 1), (INode*)newPermUseNode(immPerm));
+    inodeLexCopy((INode*)fld, lexnode);
+    fld->vtype = reftype;
+    fld->flags |= FlagMethFld;
+    fld->index = 0;
+    structAddField(st, fld);
+
+    FnSigNode *msig = newFnSigNode();
+    inodeLexCopy((INode*)msig, lexnode);
+    VarDclNode *self = newVarDclNode(selfName, VarDclTag, (INode*)immPerm);
+    inodeLexCopy((INode*)self, lexnode);
+    self->vtype = (INode*)newRefNodeFull(RefTag, lexnode, borrowRef,
+        (INode*)newPermUseNode(roPerm), newNameUseFromDclNode((INode*)st, lexnode));
+    self->scope = 1;
+    self->index = 0;
+    self->flowtempflags |= VarInitialized;
+    info->selfparm = self;
+    nodesAdd(&msig->parms, (INode*)self);
+    FnCallNode *call = newFnCallNode(closureFieldAccess(info, fld, lexnode), sig->parms->used);
+    inodeLexCopy((INode*)call, lexnode);
+    INode **nodesp;
+    uint32_t cnt;
+    uint16_t parmnbr = 1;
+    for (nodesFor(sig->parms, cnt, nodesp)) {
+        VarDclNode *orig = (VarDclNode*)*nodesp;
+        char pname[16];
+        snprintf(pname, sizeof(pname), "a%u", (unsigned)parmnbr);
+        VarDclNode *parm = newVarDclNode(nametblFind(pname, strlen(pname)), VarDclTag, orig->perm);
+        inodeLexCopy((INode*)parm, lexnode);
+        parm->vtype = orig->vtype;
+        parm->scope = 1;
+        parm->index = parmnbr++;
+        parm->flowtempflags |= VarInitialized;
+        nodesAdd(&msig->parms, (INode*)parm);
+        NameUseNode *use = newNameUseNode(parm->namesym);
+        inodeLexCopy((INode*)use, lexnode);
+        use->dclnode = (INode*)parm;
+        use->vtype = parm->vtype;
+        nodesAdd(&call->args, (INode*)use);
+    }
+    msig->rettype = sig->rettype;
+    BlockNode *body = newBlockNode();
+    inodeLexCopy((INode*)body, lexnode);
+    body->stmts = newNodes(2);
+    nodesAdd(&body->stmts, (INode*)call);
+    FnDclNode *fn = newFnDclNode(parensName, FlagMethFld | FlagPub, (INode*)msig, (INode*)body);
+    inodeLexCopy((INode*)fn, lexnode);
+    fn->closure = info;
+    iNsTypeAddFn((INsTypeNode*)st, fn);
+
+    nodesAdd(&mod->nodes, (INode*)st);
     INode *stnode = (INode*)st;
     inodeTypeCheckAny(pstate, &stnode);
     return st;
@@ -532,19 +661,35 @@ void closureTypeCheck(TypeCheckState *pstate, ClosureNode **nodep, INode *expect
         return;
     }
     int isref;
+    // The method of a trait this literal fills, when it was given where one is wanted
+    Name *method = closureHint ? closureMethod : NULL;
+    closureMethod = NULL;
     FnSigNode *exsig = closureExpectedSig(expected, &isref);
+    char methtext[300] = "";
+    if (method && method != parensName)
+        snprintf(methtext, sizeof(methtext), "the trait's `%s`", &method->namestr);
 
     // The parameters take their types from the signature wanted where they are not written
     if (exsig && exsig->parms->used != clo->sig->parms->used) {
         errorMsgNode((INode*)clo, ErrorClosureParm,
-            "This closure takes %u parameter%s, and the signature it is given to takes %u.",
-            clo->sig->parms->used, clo->sig->parms->used == 1 ? "" : "s", exsig->parms->used);
+            "This closure takes %u parameter%s, and %s takes %u.",
+            clo->sig->parms->used, clo->sig->parms->used == 1 ? "" : "s",
+            methtext[0] ? methtext : "the signature it is given to", exsig->parms->used);
         *nodep = (ClosureNode*)newErrorNode((INode*)clo);
         return;
     }
     uint32_t pi = 0;
     for (nodesFor(clo->sig->parms, cnt, nodesp)) {
         VarDclNode *parm = (VarDclNode*)*nodesp;
+        // A type written for a trait's method is the method's, exactly
+        if (parm->vtype != unknownType && methtext[0] && exsig
+            && !itypeIsSame(parm->vtype, ((VarDclNode*)nodesGet(exsig->parms, pi))->vtype)) {
+            errorMsgNode((INode*)parm, ErrorClosureParm,
+                "%s takes %s there, and this closure writes another type for %s.",
+                methtext, itypeName(((VarDclNode*)nodesGet(exsig->parms, pi))->vtype), &parm->namesym->namestr);
+            *nodep = (ClosureNode*)newErrorNode((INode*)clo);
+            return;
+        }
         if (parm->vtype == unknownType) {
             if (exsig)
                 parm->vtype = ((VarDclNode*)nodesGet(exsig->parms, pi))->vtype;
@@ -557,6 +702,12 @@ void closureTypeCheck(TypeCheckState *pstate, ClosureNode **nodep, INode *expect
             }
         }
         ++pi;
+    }
+    if (methtext[0] && exsig && clo->sig->rettype != unknownType && !itypeIsSame(clo->sig->rettype, exsig->rettype)) {
+        errorMsgNode((INode*)clo, ErrorClosureParm,
+            "%s returns %s, and this closure is written to return another type.", methtext, itypeName(exsig->rettype));
+        *nodep = (ClosureNode*)newErrorNode((INode*)clo);
+        return;
     }
 
     // On a GPU a function reference is a pointer to code, which it has none of;
@@ -644,6 +795,7 @@ void closureTypeCheck(TypeCheckState *pstate, ClosureNode **nodep, INode *expect
     // What the body does with what it names decides the permissions
     uint32_t ncap = clo->captures->used;
     ClosurePlan plan;
+    plan.method = method ? method : parensName;
     plan.selfmut = 0;
     plan.capmut = memAllocBlk((ncap ? ncap : 1) * sizeof(uint8_t));
     memset(plan.capmut, 0, ncap ? ncap : 1);

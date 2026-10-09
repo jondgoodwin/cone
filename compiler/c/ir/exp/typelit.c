@@ -11,6 +11,7 @@
 */
 
 #include "../ir.h"
+#include <stdio.h>
 
 INode *typeLitSelfFill = NULL;
 
@@ -488,7 +489,12 @@ static void typeLitNewCallable(TypeCheckState *pstate, FnCallNode **nodep, RefNo
     FnCallNode *node = *nodep;
     StructNode *trait = (StructNode*)itypeGetTypeDcl(reftype->vtexp);
     char sig[300] = "";
-    genericFnSigCat(sig, sizeof(sig), trait->callsig);
+    FnSigNode *csig = trait->callsig;
+    Name *method = NULL;
+    if (csig)
+        genericFnSigCat(sig, sizeof(sig), csig);
+    else
+        snprintf(sig, sizeof(sig), "%s", &trait->namesym->namestr);
     INode *region = itypeGetTypeDcl(reftype->region);
     char *regname = region->tag == StructTag ? &((StructNode*)region)->namesym->namestr : "So";
     if (node->args == NULL || node->args->used != 1 || nodesGet(node->args, 0)->tag == NamedValTag) {
@@ -498,32 +504,63 @@ static void typeLitNewCallable(TypeCheckState *pstate, FnCallNode **nodep, RefNo
         return;
     }
     INode **argp = &nodesGet(node->args, 0);
-    if ((*argp)->tag == ClosureTag)
-        closureHint = trait->callsig;
+    // A closure literal given for a trait with one method fills that method
+    if (csig == NULL) {
+        uint32_t count;
+        csig = closureTraitSig(trait, &method, &count);
+        if (csig == NULL) {
+            fnCallClosureTraitRefused(*argp, trait);
+            *((INode**)nodep) = newErrorNode((INode*)node);
+            return;
+        }
+    }
+    if ((*argp)->tag == ClosureTag) {
+        closureHint = csig;
+        closureMethod = method;
+    }
     inodeTypeCheck(pstate, argp, unknownType);
     closureHint = NULL;
+    closureMethod = NULL;
     if (!isExpNode(*argp) || inodeIsError(*argp))
         return;
     INode *vtype = ((IExpNode*)*argp)->vtype;
     INode *vdcl = itypeGetTypeDcl(vtype);
+    // A plain function: the reference to it is held by a struct that calls it
+    if (vdcl->tag == RefTag && itypeGetTypeDcl(((RefNode*)vdcl)->vtexp)->tag == FnSigTag
+        && itypeGetTypeDcl(((RefNode*)vdcl)->region) == (INode*)borrowRef) {
+        FnSigNode *fsig = (FnSigNode*)itypeGetTypeDcl(((RefNode*)vdcl)->vtexp);
+        if (trait->callsig == NULL || !fnSigEqual(trait->callsig, fsig)) {
+            errorMsgNode(*argp, ErrorCallableUse,
+                "%s[%s] is made from a callable of that signature, and this function is another.", regname, sig);
+            return;
+        }
+        StructNode *holder = closureFnHolder(pstate, trait->callsig, vtype, *argp);
+        FnCallNode *make = newFnCallNode(newNameUseFromDclNode((INode*)holder, *argp), 1);
+        inodeLexCopy((INode*)make, *argp);
+        make->flags |= FlagNew;
+        nodesAdd(&make->args, *argp);
+        INode *made = (INode*)make;
+        typeLitNewArgsChecked(pstate, (FnCallNode**)&made);
+        *argp = made;
+        if (!isExpNode(*argp) || inodeIsError(*argp))
+            return;
+        vtype = ((IExpNode*)*argp)->vtype;
+        vdcl = itypeGetTypeDcl(vtype);
+    }
     if (vdcl->tag != StructTag || (vdcl->flags & TraitType)) {
         errorMsgNode(*argp, ErrorCallableUse,
-            "%s[%s] is made from a closure or a struct with a pub `()` of that signature, and %s is neither.",
+            "%s[%s] is made from a closure, a function or a struct with a pub `()` of that signature, and %s is none of them.",
             regname, sig, itypeName(vtype));
-        return;
-    }
-    // An owner owns something: a value with no size has no allocation to own
-    if (((StructNode*)vdcl)->fields.used == 0) {
-        errorMsgNode(*argp, ErrorCallableUse,
-            "%s[%s] owns what its callable holds, and %s holds nothing, so there is no allocation to own. A callable that holds and borrows nothing is a plain function: pass it as a function reference, `&fn(...)`, or lend it as `&<fn(...)`.",
-            regname, sig, closureOfStruct(vdcl) ? "this closure" : itypeName(vtype));
         return;
     }
     // The owner of the value itself, then that viewed as the callable
     INode *owner =(INode*)newRefNodeFull(RefTag, (INode*)node, reftype->region, reftype->perm, vtype);
     if (!itypeTypeCheck(pstate, &owner))
         return;
+    // A callable that holds nothing has no size: its allocation is the smallest block
+    allocateZeroSizeOk = 1;
     typeLitNewAllocate(pstate, nodep, (RefNode*)owner, option, *argp);
+    allocateZeroSizeOk = 0;
     if ((*nodep)->tag != AllocateTag)
         return;
     INode *made = (INode*)*nodep;
@@ -557,7 +594,8 @@ static void typeLitNewAllocate(TypeCheckState *pstate, FnCallNode **nodep, RefNo
     }
     if (reftype->tag == VirtRefTag) {
         StructNode *calltrait = (StructNode*)itypeGetTypeDcl(reftype->vtexp);
-        if (calltrait->tag == StructTag && calltrait->callsig && value == NULL) {
+        INode *only = node->args && node->args->used == 1 ? nodesGet(node->args, 0) : NULL;
+        if (calltrait->tag == StructTag && value == NULL && (calltrait->callsig || (only && only->tag == ClosureTag))) {
             typeLitNewCallable(pstate, nodep, reftype, option);
             return;
         }

@@ -162,14 +162,15 @@ which say what its signature is, then `fnCallClosureArgs` checks it.
 pub `()` of that signature. The signature is **a trait the compiler writes**
 (`fnSigCallTrait`, `ir/types/fnsig.c`): a `StructNode` flagged `TraitType` whose
 `callsig` is the signature and whose one method is a `()` of it, with a `self` of
-`&` or `&mut`. It exists once per signature and kind (`callmut`), found by
-`fnSigEqual`, and it is in no module: it is named for the symbol spelling of its
-signature (`fnR<nameType>` and `fnM<nameType>`, a long one by its hash), which is
-what lets two objects' vtables for one signature be one symbol. Everything after
-it is the virtual reference of a trait that already exists.
+`&` or `&mut` (`callmut`). It is the compiler's own detail, never named in a
+message: the language has one `&<fn(sig)`. It exists once per signature and `self`,
+found by `fnSigEqual`, and it is in no module: it is named for the symbol spelling
+of its signature (a long one by its hash), which is what lets two objects' vtables
+for one signature be one symbol. Everything after it is the virtual reference of a
+trait that already exists.
 
 - **Where it is made.** `refvirtTypeCheck` replaces a signature target by the
-  trait, choosing the kind from the reference's permission: one that may write
+  trait, choosing its `self` from the reference's permission: one that may write
   (`&<mut`, `So`, `Rc[mut, ...]`) is the `self &mut` trait, any other
   (`&<`, `So[imm, ...]`) the `self &` one. `fnCallLowerManagedRef` makes
   `So[fn(sig)]` a virtual reference as it does for a trait. The signature is
@@ -179,10 +180,10 @@ it is the virtual reference of a trait that already exists.
   with a field `f F`) is `ErrorNoSize`, a function signature being no value;
   `So[F]` and `&<F` with it as the argument are the callable references.
 - **What meets it.** `structMapVtableImpl` maps a struct's `()` as it does any slot
-  and, for a callable trait, asks `fnSigCallSelfFits`: a read-only trait takes a
-  `self &` (or `imm`, `opaq`) and a state-changing one also a `self &mut`; a `self`
-  by value or `&uni` fits neither (call once is later). The kinds are two types:
-  a `&<mut fn` is not lent as a `&<fn`, because the callable behind it may change.
+  and, for a callable trait, asks `fnSigCallSelfFits`: a reference that only reads
+  takes a `self &` (or `imm`, `opaq`) and one that may write also a `self &mut`; a
+  `self` by value or `&uni` fits neither (call once is later). A `&<mut fn` is not
+  lent as a `&<fn`, because the callable behind it may change.
   `fnSigCallRefusal` says which of these refused a coercion, in the author's
   words (`ErrorCallablePerm`), at an argument (`fnCallTypeCheck`), an
   initializer (`varDclTypeCheck`) and an owner's making.
@@ -202,9 +203,14 @@ it is the virtual reference of a trait that already exists.
   literal anywhere else is not lent: to keep one it is moved into an owner.
 - **An owner.** `new So[fn(sig)](c)` (`typeLitNewCallable`) takes one value, checks
   it against the signature's hint if it is a literal, allocates that value's own
-  type and converts the owner to the callable's. A callable that holds nothing
-  (a zero-field struct) has no allocation to own and is refused
-  (`ErrorCallableUse`). Whether the closure may be kept is the loan walk's, as for
+  type and converts the owner to the callable's. **A callable that holds nothing**
+  (a zero-size struct) is allocated as any other: the allocation of a value with no
+  size asks the region for one byte (`genlallocref`; `allocateZeroSizeOk` lets the
+  value check pass only here), and it is freed as any block is, with nothing
+  special at its death. **A plain function** (`new So[fn(sig)](&f)`) is held by a
+  struct of the compiler's, `closureFnHolder`: one field, the function reference,
+  and a `()` that calls it, made as a closure's struct is and owned like it; a
+  function of another signature is `ErrorCallableUse`. Whether the closure may be kept is the loan walk's, as for
   any owning virtual reference: one that borrows a local is refused by the rule
   that such an owner holds only global borrows.
 - **A callable field.** `t.profile(3.)` where `profile` is a field is rewritten
@@ -218,6 +224,40 @@ it is the virtual reference of a trait that already exists.
 
 The call is the ordinary virtual dispatch: `f(x)` on a callable reference reaches the
 trait's `()` (`fnCallTypeCheck`, `VirtRefTag`) through the vtable.
+
+## A literal meets a trait with one method
+
+A closure literal given where a trait is wanted fills the trait's method when the
+trait has exactly one method (private ones count: a generic bound requires them)
+and no field (`closureTraitSig`). Only a literal, at the point the trait is
+expected, so no struct of the author's meets anything differently. The literal is
+checked as one given to a signature: the signature is the method's without its
+receiver, and `closureMethod` (beside `closureHint`) says the hidden struct's one
+method is named for the trait's method, not `()` (`ClosurePlan.method`,
+`ClosureInfo.method`). The places a trait is wanted:
+
+- **A generic bound by the trait** (`[S Shape](shape &S)`): `fnCallClosureArgs`
+  asks `genericClosureSig` (a signature bound) and then `genericParmTraitBound`.
+  The instance's `S` is the hidden struct, which meets the bound structurally.
+- **A borrowed reference to the trait** (`&<Shape`, `&<mut Shape`): lent as a
+  temporary, as a callable reference is (`fnCallLendParm`).
+- **An owner** (`new So[Shape](literal)`): `typeLitNewCallable`, the callable's
+  making, for any trait when the one argument is a literal.
+
+A trait with other than one method is `ErrorClosureTrait`, naming what it has
+(`fnCallClosureTraitRefused`). A parameter count, a written parameter type or a
+written return type that is not the method's is `ErrorClosureParm`, naming the
+method. **The method's `self` follows the body**, as `()`'s does: a literal whose
+body changes state has `self &mut`, and behind a reference that only reads it is
+refused (`ErrorCallablePerm`: `refvirtMatchesRef` for `&<Shape`, `genericCallablePermCheck`
+for `&S`). The trait's own `self` is not what decides it: a vtable match does not
+compare receivers, so for a closure the check is made against the reference.
+
+**A closure that fails stops its call.** A literal that failed to type check as an
+argument of a generic call leaves the call nothing to infer from; `fnCallClosureArgs`
+gives the call up (the failed literal's lent borrow, left behind, reached
+generic substitution as a node with no name). A closure whose body already failed
+reports no return mismatch of its own (`ClosureInfo.errbase`, `returnTypeCheck`).
 
 ## In GPU code
 
@@ -287,7 +327,10 @@ says so, and the object defines the hidden struct's methods, internally
 | `ir/meta/generic.c` | `genericParmBound`, `genericClosureSig` | the signature a generic's bound gives a closure (or a `&<fn` parameter writes) |
 | | `genericCallablePermCheck` | a callable that changes, given to `&F`, refused at the argument |
 | `ir/types/fnsig.c` | `fnSigCallTrait`, `fnSigOfCallTrait` | the trait that stands for a signature behind a virtual reference |
-| | `fnSigCallSelfFits`, `fnSigCallRefusal` | which `()` a kind of callable reference holds; why a coercion was refused |
+| | `fnSigCallSelfFits`, `fnSigCallRefusal` | which `()` a callable reference holds; why a coercion was refused (a closure's method behind a reference that only reads too) |
+| `ir/exp/closure.c` | `closureTraitSig`, `closureMethodMutates` | the one method of a trait a literal fills; whether a closure's method takes `self &mut` |
+| `ir/exp/fncall.c` | `fnCallLendParm`, `fnCallClosureTraitRefused` | `&<Shape` takes a lent literal; a trait with not exactly one method refuses it |
+| `ir/meta/generic.c` | `genericParmTraitBound` | the plain trait that bounds a parameter a literal is given to |
 | `ir/exp/typelit.c` | `typeLitNewCallable` | `new So[fn(sig)](c)` |
 | `genllvm/genltype.c` | `genlFnStubVtable` | the vtable of a plain function's reference |
 | `shared/error.c` | `errorSilent` | diagnostics counted and not printed |

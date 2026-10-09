@@ -70,6 +70,10 @@ int genericIsInstanceOf(INode *fn, FnDclNode *generic);
 // generic function or method is to fit (closure.h); see generic.c
 FnSigNode *genericParmBound(FnDclNode *generic, uint32_t pos, INode **refperm);
 
+// The plain trait that bounds the type parameter parameter 'pos' is (or is a
+// reference to), where a closure literal given there fills the trait's one method
+StructNode *genericParmTraitBound(FnDclNode *generic, uint32_t pos, INode **refperm);
+
 // Refuse, at the caller's argument, a callable whose '()' changes its state given
 // to a generic parameter taken as '&F'. 0 once reported.
 int genericCallablePermCheck(FnDclNode *generic, Nodes *valueargs, uint32_t firstparm);

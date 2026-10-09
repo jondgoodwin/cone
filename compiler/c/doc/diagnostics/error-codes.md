@@ -421,12 +421,15 @@ virtual reference, is `ErrorGpuClosureRef`. What else a GPU has none of, written
 in GPU code, is one code, `ErrorGpuUnavailable`: a borrow of a function, a
 reference made a virtual reference, and an allocation.
 
-A callable behind a reference or an owner has two more: a callable refused for the
+A callable behind a reference or an owner has three more: a callable refused for the
 permission its `()` takes or the borrow lent (a `()` taking `self &mut` given to a
-`&<fn`, a read-only borrow given to a `&<mut fn`, one kind lent as the other, and a
-generic's `&F` given one that changes) is `ErrorCallablePerm`; and an owner
-`So[fn(sig)]` made of nothing it can own (a callable that holds nothing, or a value
-with no `()` of the signature) is `ErrorCallableUse`.
+`&<fn`, a read-only borrow given to a `&<mut fn`, a `&<mut fn` lent as a `&<fn`, a
+generic's `&F` given one that changes, and a closure literal that fills a trait's
+method with `self &mut` behind a reference that only reads) is `ErrorCallablePerm`;
+an owner `So[fn(sig)]` made of a value that is no callable of its signature (no `()`
+of it, or a function of another signature) is `ErrorCallableUse`; and a closure literal
+given where a trait is wanted that has not exactly one method and no field is
+`ErrorClosureTrait`.
 
 `await` has five error codes and a warning. Where it may not stand -- anywhere
 but a behaviour -- is `ErrorAwaitPlace`; on a behaviour that returns nothing,

@@ -88,6 +88,8 @@ void allocateTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     allocateValueCheck(pstate, nodep);
 }
 
+int allocateZeroSizeOk = 0;
+
 // Type check an allocation whose value is checked: the value a region can
 // hold, and the reference's type
 void allocateValueCheck(TypeCheckState *pstate, RefNode **nodep) {
@@ -110,7 +112,7 @@ void allocateValueCheck(TypeCheckState *pstate, RefNode **nodep) {
         node->perm = immperm ? immperm : newPermUseNode(uniPerm);
     }
 
-    if (!itypeIsConcrete(vtype) || itypeIsZeroSize(vtype)) {
+    if (!itypeIsConcrete(vtype) || (itypeIsZeroSize(vtype) && !allocateZeroSizeOk)) {
         errorMsgNode(node->vtexp, ErrorInvType, "May not allocate a value of abstract or zero-size type");
     }
 

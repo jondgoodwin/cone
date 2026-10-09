@@ -1,0 +1,58 @@
+// A closure literal as sdf's Shape. 'surfaceNet' is generic over a Shape, a trait
+// with one method, 'distance'; a closure literal given there fills that method,
+// so a shape is written where it is used: 'p => p.length() - 1.'. The mesh a
+// closure gives is the mesh the same distance written as a struct gives, bit
+// for bit (the same hash), dense and sparse, and a closure that borrows a
+// variable (a radius) is the struct holding that radius.
+//
+// - the unit ball, in cells of 0.25 relaxed once, as a struct and as a closure:
+//   the same hash, the same vertices and the same quads;
+// - the same sparse, and the closure asked for the same number of distances;
+// - a ball of radius 0.5 held in a variable the closure borrows, against the
+//   struct holding 0.5: the same hash.
+// Checks are counted; only a failure prints.
+
+mod closure;
+
+import testing use *;
+import geomath use *;
+import mesh;
+import sdf use *;
+import sdfmesh use *;
+
+struct UnitBall {
+  pub fn distance(self &, p Vec3) f32 { p.length() - 1.; }
+}
+
+struct Ball {
+  pub r f32;
+  pub fn distance(self &, p Vec3) f32 { p.length() - r; }
+}
+
+fn netHash(net &SurfaceNet) u32 {
+  imm m = net.toMesh();
+  mesh.meshHash(&m);
+}
+
+fn main() i32 {
+  imm box = new Aabb3(new Vec3(-1., -1., -1.), new Vec3(1., 1., 1.));
+  imm unit = new UnitBall();
+  imm byStruct = surfaceNet(&unit, box, 0.25, 1u32, false);
+  imm byClosure = surfaceNet(p => p.length() - 1., box, 0.25, 1u32, false);
+  expectInt(i64.from(netHash(&byClosure)), i64.from(netHash(&byStruct)), "the unit ball's hash");
+  expectInt(i64.from(byClosure.positions.len()), i64.from(byStruct.positions.len()), "its vertices");
+  expectInt(i64.from(byClosure.quads.len()), i64.from(byStruct.quads.len()), "its quads");
+  expectInt(i64.from(byStruct.positions.len() > 0usize), 1, "a mesh was made");
+
+  imm sparseStruct = surfaceNet(&unit, box, 0.25, 1u32, true);
+  imm sparseClosure = surfaceNet(p => p.length() - 1., box, 0.25, 1u32, true);
+  expectInt(i64.from(netHash(&sparseClosure)), i64.from(netHash(&sparseStruct)), "sparse, the same hash");
+  expectInt(i64.from(sparseClosure.evaluations), i64.from(sparseStruct.evaluations), "sparse, the same distances asked");
+
+  imm r = 0.5;
+  imm half = new Ball(0.5);
+  imm halfStruct = surfaceNet(&half, box, 0.25, 0u32, false);
+  imm halfClosure = surfaceNet(p => p.length() - r, box, 0.25, 0u32, false);
+  expectInt(i64.from(netHash(&halfClosure)), i64.from(netHash(&halfStruct)), "a ball whose radius the closure borrows");
+  done();
+}

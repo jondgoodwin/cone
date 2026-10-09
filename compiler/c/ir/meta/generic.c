@@ -2624,6 +2624,40 @@ FnSigNode *genericParmBound(FnDclNode *generic, uint32_t pos, INode **refperm) {
     return bound;
 }
 
+// The trait that bounds the type parameter parameter 'pos' of a generic function
+// is, or is a reference to (the permission of that reference in '*refperm', NULL
+// by value), when the bound is a plain trait: where a closure literal given to
+// that parameter fills the trait's one method. NULL otherwise.
+StructNode *genericParmTraitBound(FnDclNode *generic, uint32_t pos, INode **refperm) {
+    *refperm = NULL;
+    FnSigNode *gsig = (FnSigNode*)itypeGetTypeDcl(generic->vtype);
+    if (generic->genericinfo == NULL || pos >= gsig->parms->used || generic->where == NULL)
+        return NULL;
+    INode *ptype = ((VarDclNode*)nodesGet(gsig->parms, pos))->vtype;
+    while (ptype && (ptype->tag == RefTag || ptype->tag == BorrowTag)) {
+        if (*refperm == NULL)
+            *refperm = ((RefNode*)ptype)->perm;
+        ptype = ((RefNode*)ptype)->vtexp;
+    }
+    if (!nameUseNames(ptype, GenVarDclTag))
+        return NULL;
+    INode *parmdcl = nameUseGetDcl((NameUseNode*)ptype);
+    INode **condp;
+    uint32_t cnt;
+    for (nodesFor(generic->where, cnt, condp)) {
+        if ((*condp)->tag != IsTag)
+            continue;
+        CastNode *clause = (CastNode*)*condp;
+        if (!isNameUseNode(clause->exp) || ((NameUseNode*)clause->exp)->dclnode != parmdcl || !isNameUseNode(clause->typ))
+            continue;
+        INode *dcl = nameUseGetDcl((NameUseNode*)clause->typ);
+        if (dcl && dcl->tag == StructTag && (dcl->flags & TraitType) && !(dcl->flags & EnumType)
+            && ((StructNode*)dcl)->genericinfo == NULL)
+            return (StructNode*)dcl;
+    }
+    return NULL;
+}
+
 // A callable given to a generic parameter taken as '&F' may only be read:
 // the instance calls it through a borrow that grants no change. One whose '()'
 // takes 'self &mut' is refused here, at the caller's argument and in the
@@ -2636,7 +2670,15 @@ int genericCallablePermCheck(FnDclNode *generic, Nodes *valueargs, uint32_t firs
         if (pos >= gsig->parms->used)
             break;
         INode *refperm;
-        if (genericParmBound(generic, pos, &refperm) == NULL || refperm == NULL)
+        // Bound by a trait with a method, only a closure literal's struct is judged here:
+        // a struct of the author's meets the trait as it always did
+        int bytrait = 0;
+        if (genericParmBound(generic, pos, &refperm) == NULL) {
+            if (genericParmTraitBound(generic, pos, &refperm) == NULL)
+                continue;
+            bytrait = 1;
+        }
+        if (refperm == NULL)
             continue;
         // A '&<fn(...)' parameter is judged by its own conversion, in its own words
         if (((VarDclNode*)nodesGet(gsig->parms, pos))->vtype->tag == VirtRefTag)
@@ -2652,7 +2694,11 @@ int genericCallablePermCheck(FnDclNode *generic, Nodes *valueargs, uint32_t firs
             argtype = itypeGetTypeDcl(((RefNode*)argtype)->vtexp);
         if (argtype->tag != StructTag)
             continue;
-        INode *binding = namespaceFind(&((StructNode*)argtype)->namespace, parensName);
+        ClosureInfo *clinfo = closureOfStruct(argtype);
+        if (bytrait && clinfo == NULL)
+            continue;
+        Name *methname = clinfo && clinfo->method ? clinfo->method : parensName;
+        INode *binding = namespaceFind(&((StructNode*)argtype)->namespace, methname);
         if (binding == NULL || binding->tag != FnDclTag)
             continue;
         FnSigNode *csig = (FnSigNode*)itypeGetTypeDcl(((FnDclNode*)binding)->vtype);
@@ -2666,9 +2712,9 @@ int genericCallablePermCheck(FnDclNode *generic, Nodes *valueargs, uint32_t firs
             written = ((RefNode*)written)->vtexp;
         char *fname = isNameUseNode(written) ? &((NameUseNode*)written)->namesym->namestr : "F";
         errorMsgNode(arg, ErrorCallablePerm,
-            "%s takes `%s` as `&%s`, so the callable may only read its state; %s changes it (its `()` takes `self &mut`). Take `%s` as `&mut %s` to let it change, or pass a callable that only reads.",
+            "%s takes `%s` as `&%s`, so the callable may only read its state; %s changes it (its `%s` takes `self &mut`). Take `%s` as `&mut %s` to let it change, or pass a callable that only reads.",
             &generic->namesym->namestr, &parm->namesym->namestr, fname,
-            closureOfStruct(argtype) ? "this closure" : "this one", &parm->namesym->namestr, fname);
+            clinfo ? "this closure" : "this one", &methname->namestr, &parm->namesym->namestr, fname);
         return 0;
     }
     return 1;
