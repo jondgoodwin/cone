@@ -1,0 +1,75 @@
+// A closure literal given to a generic whose parameter is bound by a signature,
+// '[F fn(a &T, b &T) i32]': the signature, with the type parameters the call's
+// other arguments name read off them, is what the literal's parameters and
+// return type are, so the short form and a parameter written without its type
+// both work. A parameter taking '&F' or '&mut F' is lent the literal as a
+// temporary of the statement; F taken by value is given it. A closure is also
+// passed by naming it: '&c', '&mut c'. Every value is worked out by hand.
+
+mod closure_bound;
+
+import stdio use *;
+
+// Insertion sort; order(a, b) is negative when a goes before b
+fn sortBy[T, F fn(a &T, b &T) i32](xs &mut Array[T], order &F) {
+  mut i = 1usize;
+  while i < xs.len() {
+    mut j = i;
+    while j > 0usize and order(&xs[j], &xs[j - 1usize]) < 0i32 {
+      imm t = xs[j];
+      xs[j] = xs[j - 1usize];
+      xs[j - 1usize] = t;
+      j = j - 1usize;
+    }
+    i = i + 1usize;
+  }
+}
+
+fn show(xs &Array[i32, 5]) {
+  print <- xs[0usize], " ", xs[1usize], " ", xs[2usize], " ", xs[3usize], " ", xs[4usize], "\n";
+}
+
+fn applyTwice[F fn(x i32) i32](f &F, v i32) i32 { f(f(v)); }
+fn once[F fn(x i32) i32](f F, v i32) i32 { f(v); }
+
+// Calls three times, with 10, 11 and 12, handing back the last answer
+fn three[F fn(x i32) i32](f &mut F) i32 {
+  f(10);
+  f(11);
+  f(12);
+}
+
+// A hand-written struct with a '()' meets the same bound
+struct Adder {
+  pub k i32;
+  pub fn `()`(self &, x i32) i32 { x + k; }
+}
+
+fn main() {
+  mut a = new Array[i32, 5] <- 5, -3, 2, -9, 1;
+
+  // The full form with its types, then the short form, T read off 'a': smallest first, largest first
+  sortBy(&mut a, fn(p &i32, q &i32) i32 { *p - *q; });
+  show(&a);                          // -9 -3 1 2 5
+  sortBy(&mut a, (p, q) => *q - *p);
+  show(&a);                          // 5 2 1 -3 -9
+  // Size, ignoring sign, by a parameter written without its type
+  sortBy(&mut a, fn(p, q) i32 { *p * *p - *q * *q; });
+  show(&a);                          // 1 2 -3 5 -9
+
+  // Lent as a temporary, borrowing k: 5 * 2 + 3 = 13, 13 * 2 + 3 = 29
+  mut k = 3;
+  print <- applyTwice(fn(x i32) i32 { x * 2 + k; }, 5), "\n";   // 29
+  // Named, and lent by '&': the same closure used twice. 1 * 2 + 3 = 5, 5 * 2 + 3 = 13; 29 again
+  imm named = fn(x i32) i32 { x * 2 + k; };
+  print <- applyTwice(&named, 1), " ", applyTwice(&named, 5), "\n";   // 13 29
+  // By value
+  print <- once(x => x * 100, 5), "\n";       // 500
+  print <- applyTwice(&new Adder(10), 1), "\n";    // 21
+
+  // State that changes: the temporary is lent '&mut'. 10 + 1, 11 + 2, 12 + 3: the last is 15
+  print <- three(fn(x i32) [mut calls = 0] i32 { calls += 1; x + calls; }), "\n";   // 15
+  // The same named: its state is the closure's own, kept between the generic's calls and ours
+  mut c = fn(x i32) [mut calls = 0] i32 { calls += 1; x + calls; };
+  print <- three(&mut c), " ", c(0), "\n";       // 15 4
+}

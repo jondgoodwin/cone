@@ -552,6 +552,13 @@ void typeLitNewCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     typeLitNewChecked(pstate, nodep, 0);
 }
 
+// The same for a construction whose arguments are already checked (a closure's
+// hidden struct is made from the values of its state list and borrows of the
+// variables it names, closure.c)
+void typeLitNewArgsChecked(TypeCheckState *pstate, FnCallNode **nodep) {
+    typeLitNewChecked(pstate, nodep, 1);
+}
+
 // 'new Rc[mut, Array[i32, 4]] <- fill 0': the allocation, of the reference
 // type 'reftype' the construction names (already checked), whose value is the
 // array literal of its contents, 'lit' (contentsLowerAlloc). The allocation

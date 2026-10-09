@@ -2567,6 +2567,154 @@ static void fnCallLowerManagedRef(TypeCheckState *pstate, FnCallNode **nodep) {
     inodeTypeCheckAny(pstate, (INode**)nodep);
 }
 
+// The signature of the callable a candidate takes at parameter 'pos' (counting
+// a method's self): the function reference's, or the signature bound of the
+// type parameter it is (or is a reference to). NULL where the parameter is not
+// callable.
+static FnSigNode *fnCallCallableParm(FnDclNode *cand, uint32_t pos) {
+    FnSigNode *sig = (FnSigNode*)itypeGetTypeDcl(cand->vtype);
+    if (pos >= sig->parms->used)
+        return NULL;
+    if (cand->genericinfo) {
+        INode *refperm;
+        return genericParmBound(cand, pos, &refperm);
+    }
+    INode *ptype = iexpGetTypeDcl(nodesGet(sig->parms, pos));
+    if (ptype->tag == RefTag) {
+        INode *target = itypeGetTypeDcl(((RefNode*)ptype)->vtexp);
+        if (target->tag == FnSigTag)
+            return (FnSigNode*)target;
+    }
+    return NULL;
+}
+
+// The overload a closure literal written as argument 'argi' calls for. It is
+// considered against the overloads whose parameter there is callable, so a
+// number's overload never takes it; among those, the one taking as many
+// parameters as the literal writes; and where several remain, the literal
+// written with its parameters' types picks the one with exactly them. Its body
+// is checked against none of them. NULL once the refusal is reported.
+static FnDclNode *fnCallClosureOverload(TypeCheckState *pstate, FnCallNode *node, INode *binding,
+        uint32_t firstparm, uint32_t argi) {
+    ClosureNode *clo = (ClosureNode*)nodesGet(node->args, argi);
+    fnCallDemandCandidates(binding);
+    INode **candp;
+    uint32_t ncand;
+    if (binding->tag == FnDclTag) {
+        candp = &binding;
+        ncand = 1;
+    }
+    else {
+        candp = &nodesGet(((FnOverloadDclNode*)binding)->overloads, 0);
+        ncand = ((FnOverloadDclNode*)binding)->overloads->used;
+    }
+    Name *written = binding->tag == FnDclTag ? ((FnDclNode*)binding)->namesym : ((FnOverloadDclNode*)binding)->namesym;
+    uint32_t nclo = closureParmCount(clo);
+    FnDclNode *viable[32];
+    uint32_t nviable = 0;
+    uint32_t j;
+    for (; ncand-- ; ++candp) {
+        FnDclNode *cand = (FnDclNode*)*candp;
+        FnSigNode *sig = (FnSigNode*)itypeGetTypeDcl(cand->vtype);
+        if (node->args->used + firstparm > sig->parms->used)
+            continue;
+        FnSigNode *callable = fnCallCallableParm(cand, firstparm + argi);
+        if (callable == NULL || callable->parms->used != nclo)
+            continue;
+        int fits = 1;
+        for (j = 0; j < node->args->used && !cand->genericinfo; ++j) {
+            INode **argp = &nodesGet(node->args, j);
+            if (j == argi || (*argp)->tag == ClosureTag || !isExpNode(*argp))
+                continue;
+            if (iexpMatches(argp, ((VarDclNode*)nodesGet(sig->parms, firstparm + j))->vtype, Coercion) == NoMatch)
+                fits = 0;
+        }
+        if (fits && nviable < 32)
+            viable[nviable++] = cand;
+    }
+    // Written in the full form, its parameters' types pick exactly
+    if (nviable > 1 && !closureNeedsSig(clo)) {
+        INode **parmp;
+        uint32_t cnt;
+        for (nodesFor(clo->sig->parms, cnt, parmp))
+            itypeTypeCheck(pstate, &((VarDclNode*)*parmp)->vtype);
+        uint32_t kept = 0;
+        for (uint32_t i = 0; i < nviable; ++i) {
+            FnSigNode *callable = fnCallCallableParm(viable[i], firstparm + argi);
+            int same = 1;
+            for (j = 0; j < nclo && same; ++j)
+                if (!itypeIsSame(iexpGetTypeDcl(nodesGet(clo->sig->parms, j)), iexpGetTypeDcl(nodesGet(callable->parms, j))))
+                    same = 0;
+            if (same)
+                viable[kept++] = viable[i];
+        }
+        nviable = kept;
+    }
+    if (nviable == 1)
+        return viable[0];
+    if (nviable == 0) {
+        errorMsgNode((INode*)clo, ErrorClosureOverload,
+            "No overload of %s takes a closure of %u parameter%s here: one of them needs a callable parameter, taking that many parameters, at this position.",
+            &written->namestr, nclo, nclo == 1 ? "" : "s");
+        return NULL;
+    }
+    char names[300] = "";
+    for (uint32_t i = 0; i < nviable; ++i) {
+        size_t used = strlen(names);
+        snprintf(names + used, sizeof(names) - used, "%s%s", i ? ", " : "", &viable[i]->namesym->namestr);
+    }
+    errorMsgNode((INode*)clo, ErrorClosureOverload,
+        "This closure could be given to more than one overload of %s (%s). Write the parameter's types, as in 'fn (p Vec3) { ... }', to say which.",
+        &written->namestr, names);
+    return NULL;
+}
+
+// Check the closure literals among a call's arguments, once the others are
+// checked: each takes its signature from the parameter it fills in the
+// generic's bound, or from the overload its parameter count and types pick.
+// A closure given to a parameter taking a reference to the callable ('f &F')
+// is lent as a temporary, as a borrow of it would be. Answers 0 once refused.
+static int fnCallClosureArgs(TypeCheckState *pstate, FnCallNode *node, FnDclNode *gengeneric, INode *overloadset,
+        uint32_t firstparm) {
+    uint32_t argi = 0;
+    INode **argsp;
+    uint32_t cnt;
+    for (nodesFor(node->args, cnt, argsp)) {
+        if ((*argsp)->tag != ClosureTag) {
+            ++argi;
+            continue;
+        }
+        FnDclNode *pick = NULL;
+        if (overloadset) {
+            pick = fnCallClosureOverload(pstate, node, overloadset, firstparm, argi);
+            if (pick == NULL) {
+                *argsp = newErrorNode(*argsp);
+                return 0;
+            }
+        }
+        FnDclNode *generic = gengeneric ? gengeneric : (pick && pick->genericinfo ? pick : NULL);
+        if (generic) {
+            INode *refperm;
+            FnSigNode *sig = genericClosureSig(pstate, generic, node->args, firstparm, argi, &refperm);
+            if (refperm) {
+                INode *lit = *argsp;
+                *argsp = (INode*)newRefNodeFull(BorrowTag, lit, borrowRef, refperm, lit);
+            }
+            closureHint = sig;
+            inodeTypeCheck(pstate, argsp, unknownType);
+            closureHint = NULL;
+        }
+        else if (pick) {
+            FnSigNode *sig = (FnSigNode*)itypeGetTypeDcl(pick->vtype);
+            inodeTypeCheck(pstate, argsp, ((VarDclNode*)nodesGet(sig->parms, firstparm + argi))->vtype);
+        }
+        else
+            inodeTypeCheck(pstate, argsp, unknownType);
+        ++argi;
+    }
+    return 1;
+}
+
 // Perform type check on function/method call node
 // This should only be run once on a node, as it mutably lowers the node to another form:
 // - If a generic/macro, it instantiates, then type checks instantiated nodes
@@ -2668,6 +2816,13 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     // first written argument fills
     FnSigNode *argsig = NULL;
     uint32_t firstparm = 0;
+    // Where the callee is a generic, or an overload set, a closure literal
+    // among the arguments takes its signature from the parameter it fills once
+    // the other arguments are checked (closure.c)
+    FnDclNode *gengeneric = NULL;
+    INode *overloadset = NULL;
+    if (calleeIsOverload && node->methfld == NULL && !(node->flags & FlagIndex))
+        overloadset = nameUseGetDcl((NameUseNode*)node->objfn);
     if (node->methfld && isNameUseNode(node->methfld)
         && !(node->flags & FlagOperator) && !calleeIsOverload) {
         inodeTypeCheckAny(pstate, &node->objfn);
@@ -2721,6 +2876,14 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
                     argsig = (FnSigNode*)((FnDclNode*)found)->vtype;
                     firstparm = 1;
                 }
+                else if (found && found->tag == FnDclTag && (found->flags & FlagMethFld)) {
+                    gengeneric = (FnDclNode*)found;
+                    firstparm = 1;
+                }
+                else if (found && found->tag == FnOverloadDclTag && (found->flags & FlagMethFld)) {
+                    overloadset = found;
+                    firstparm = 1;
+                }
             }
         }
     }
@@ -2738,6 +2901,10 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
                 argsig = (FnSigNode*)sig;
                 firstparm = (dcl->flags & FlagMethFld) && !(node->objfn->flags & FlagQualified) ? 1 : 0;
             }
+        }
+        else if (dcl->tag == FnDclTag) {
+            gengeneric = (FnDclNode*)dcl;
+            firstparm = (dcl->flags & FlagMethFld) && !(node->objfn->flags & FlagQualified) ? 1 : 0;
         }
     }
     // A struct's literal, the struct named directly and not generic: its
@@ -2772,8 +2939,20 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
                 if (field)
                     expect = field->vtype;
             }
+            // A closure literal given to a generic or an overload set waits for
+            // the other arguments, which say what its signature is
+            if ((*argsp)->tag == ClosureTag && (gengeneric || overloadset)) {
+                ++argi;
+                continue;
+            }
             inodeTypeCheck(pstate, argsp, expect);
             ++argi;
+        }
+        if (gengeneric || overloadset) {
+            if (!fnCallClosureArgs(pstate, node, gengeneric, overloadset, firstparm)) {
+                node->vtype = errorType;
+                return;
+            }
         }
     }
 
@@ -2865,19 +3044,25 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         // nameUseTypeCheck. A member's name hides a module of the same name
         // inside its type, so 'mesh.Mesh' in the signature of a method named
         // 'mesh' arrives here.
-        if (pstate->fn == NULL || !(pstate->fn->flags & FlagMethFld)) {
+        // (A closure's '()' reaches it through the self of the method the
+        // closure is written in.)
+        if (pstate->fn == NULL || !(pstate->fn->flags & FlagMethFld)
+            || (pstate->fn->closure && pstate->fn->closure->outerself == NULL)) {
             nameUseNoSelf(pstate, (NameUseNode*)node->objfn);
             node->vtype = errorType;
             return;
         }
         // Build a resolved 'self' node
         NameUseNode *selfnode = newNameUseNode(selfName);
-        selfnode->dclnode = nodesGet(((FnSigNode*)pstate->fn->vtype)->parms, 0);
+        selfnode->dclnode = closureSelfParm(pstate->fn);
         selfnode->vtype = ((VarDclNode*)selfnode->dclnode)->vtype;
         // Reuse existing fncallnode if we can
         if (node->methfld == NULL) {
             node->methfld = node->objfn;
             node->objfn = (INode*)selfnode;
+            // The self a closure reaches a member through is a variable it borrows
+            if (pstate->fn->closure)
+                inodeTypeCheckAny(pstate, &node->objfn);
         }
         else {
             // Re-purpose objfn as self.method

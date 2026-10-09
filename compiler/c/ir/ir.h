@@ -110,6 +110,7 @@ typedef struct DclSpans DclSpans;        // dclspan.h
 #include "exp/vtuple.h"
 #include "exp/await.h"
 #include "exp/yield.h"
+#include "exp/closure.h"
 
 #include "export.h"
 
@@ -164,6 +165,8 @@ typedef struct NameResState {
                             // a parameter's default value is evaluated where the function
                             // is called, an importer included, so it is expanded there
     uint16_t scope;         // The current block scope (0=global, 1=fnsig, 2+=blocks)
+    struct ClosureNode *closure;  // The innermost closure literal whose body is being resolved (or NULL)
+    Name *declaring;        // The name of the local whose initializer is being resolved (or NULL)
 } NameResState;
 
 // Context used for the type check pass

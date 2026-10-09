@@ -2533,6 +2533,124 @@ FnDclNode *genericMethodInstance(TypeCheckState *pstate, FnCallNode *callnode, F
     return (FnDclNode*)nameUseGetDcl((NameUseNode*)instance);
 }
 
+// Does every type parameter this type names have its argument?
+static int genericTypeArgsKnown(INode *type, Nodes *parms, Nodes *args) {
+    if (type == NULL)
+        return 1;
+    if (isNameUseNode(type)) {
+        INode *dcl = ((NameUseNode*)type)->dclnode;
+        if (dcl && dcl->tag == GenVarDclTag) {
+            for (uint32_t j = 0; j < parms->used; ++j)
+                if (nodesGet(parms, j) == dcl)
+                    return nodesGet(args, j) != NULL;
+        }
+        return 1;
+    }
+    INode **nodesp;
+    uint32_t cnt;
+    switch (type->tag) {
+    case RefTag: case BorrowTag: case ArrayRefTag: case ArrayBorrowTag: case VirtRefTag: case AllocateTag:
+        return genericTypeArgsKnown(((RefNode*)type)->vtexp, parms, args);
+    case PtrTag: case DerefTag:
+        return genericTypeArgsKnown(((StarNode*)type)->vtexp, parms, args);
+    case FnSigTag:
+        for (nodesFor(((FnSigNode*)type)->parms, cnt, nodesp))
+            if (!genericTypeArgsKnown(((VarDclNode*)*nodesp)->vtype, parms, args))
+                return 0;
+        return genericTypeArgsKnown(((FnSigNode*)type)->rettype, parms, args);
+    case FnCallTag:
+        if (!genericTypeArgsKnown(((FnCallNode*)type)->objfn, parms, args))
+            return 0;
+        if (((FnCallNode*)type)->args)
+            for (nodesFor(((FnCallNode*)type)->args, cnt, nodesp))
+                if (!genericTypeArgsKnown(*nodesp, parms, args))
+                    return 0;
+        return 1;
+    default:
+        return 1;
+    }
+}
+
+// The signature bound of the type parameter that parameter 'pos' of a generic
+// function (a method's self counted) is, or is a reference to, and the
+// permission of that reference ('*refperm', NULL for a parameter taken by
+// value); NULL when it is no type parameter or has no signature bound. The
+// bound is as written, in terms of the generic's parameters.
+FnSigNode *genericParmBound(FnDclNode *generic, uint32_t pos, INode **refperm) {
+    *refperm = NULL;
+    FnSigNode *gsig = (FnSigNode*)itypeGetTypeDcl(generic->vtype);
+    if (generic->genericinfo == NULL || pos >= gsig->parms->used)
+        return NULL;
+    INode *ptype = ((VarDclNode*)nodesGet(gsig->parms, pos))->vtype;
+    while (ptype && (ptype->tag == RefTag || ptype->tag == BorrowTag)) {
+        if (*refperm == NULL)
+            *refperm = ((RefNode*)ptype)->perm;
+        ptype = ((RefNode*)ptype)->vtexp;
+    }
+    if (!nameUseNames(ptype, GenVarDclTag))
+        return NULL;
+    INode *parmdcl = nameUseGetDcl((NameUseNode*)ptype);
+    FnSigNode *bound = NULL;
+    if (generic->where) {
+        INode **condp;
+        uint32_t cnt;
+        for (nodesFor(generic->where, cnt, condp)) {
+            if ((*condp)->tag != IsTag)
+                continue;
+            CastNode *clause = (CastNode*)*condp;
+            if (clause->typ->tag == FnSigTag && isNameUseNode(clause->exp)
+                && ((NameUseNode*)clause->exp)->dclnode == parmdcl)
+                bound = (FnSigNode*)clause->typ;
+        }
+    }
+    return bound;
+}
+
+// The signature a closure literal written as argument 'argi' of a call of
+// generic function or method 'generic' is to fit: the signature bound of the
+// type parameter the argument's parameter is (or is a reference to), with the
+// type parameters the call's other arguments name read off them. 'args' are
+// the call's arguments, the others checked; 'firstparm' is 1 for a method
+// called on a receiver. NULL when the parameter has no signature bound, or
+// the types the signature names are not known yet. '*refperm' is the
+// permission of the reference the parameter takes the closure through, or NULL
+// when it takes it by value.
+FnSigNode *genericClosureSig(TypeCheckState *pstate, FnDclNode *generic, Nodes *args, uint32_t firstparm,
+        uint32_t argi, INode **refperm) {
+    GenericInfo *info = generic->genericinfo;
+    FnSigNode *gsig = (FnSigNode*)itypeGetTypeDcl(generic->vtype);
+    INode *bound = (INode*)genericParmBound(generic, firstparm + argi, refperm);
+    if (bound == NULL)
+        return NULL;
+
+    // What the other arguments say of the type parameters
+    FnCallNode *known = newFnCallNode((INode*)newNameUseNode(anonName), info->parms->used);
+    for (uint32_t j = 0; j < info->parms->used; ++j)
+        nodesAdd(&known->args, (INode*)NULL);
+    for (uint32_t j = 0; j < args->used; ++j) {
+        INode *arg = nodesGet(args, j);
+        if (j == argi || arg->tag == ClosureTag || !isExpNode(arg) || firstparm + j >= gsig->parms->used)
+            continue;
+        INode *argtype = ((IExpNode*)arg)->vtype;
+        if (argtype == unknownType || argtype == NULL)
+            continue;
+        genericInferType(known, info->parms, ((VarDclNode*)nodesGet(gsig->parms, firstparm + j))->vtype, argtype);
+    }
+    if (!genericTypeArgsKnown(bound, info->parms, known->args))
+        return NULL;
+
+    CloneState cstate;
+    uint32_t dclpos = cloneDclPush();
+    clonePushState(&cstate, bound, NULL, 0, info->parms, known->args);
+    INode *copy = cloneNode(&cstate, bound);
+    clonePopState();
+    cloneDclPop(dclpos);
+    inodeTypeCheckAny(pstate, &copy);
+    if (inodeIsError(copy) || itypeGetTypeDcl(copy)->tag != FnSigTag)
+        return NULL;
+    return (FnSigNode*)itypeGetTypeDcl(copy);
+}
+
 // Is 'fn' an instance of generic function or method 'generic'?
 int genericIsInstanceOf(INode *fn, FnDclNode *generic) {
     Nodes *memonodes = generic->genericinfo->memonodes;
