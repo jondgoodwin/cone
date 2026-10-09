@@ -541,7 +541,9 @@ Visual Studio projects stay at the root.
   `freeze()`; `each` walks it as the slice it lends, a counted loop, while its
   `iter()` is the cursor for code generic over cursors; `mutItems()` lends the
   slice mutably and `drain()` moves the values out one at a time, leaving the list
-  empty), an owned `String` (always a NUL after
+  empty; `pieceBag`, `emptyPiece`, `depositPiece` and `joinPieces` are what a
+  `<- parallel each x in src yield v` builds the list with, a list a piece, joined
+  in the order of the passes), an owned `String` (always a NUL after
   its bytes, lending a `&str` whose methods it folds in with `use str via view`,
   frozen into a `So[str]` by `freeze()`) and `Dict[K, V]`, a
   SwissTable (control bytes probed eight at a time, up to 7/8 full) over any

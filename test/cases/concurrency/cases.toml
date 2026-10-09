@@ -807,3 +807,28 @@ diagnostics = 10
 category = "run"
 description = "Reading through an Rc in a parallel each body works (dereferenced, lent to a function, inside a struct, the Rcs of a list through the pass's borrow); an Arc is copied in the body, and an Rc the pass makes is copied there too"
 tags = ["typecheck", "flow", "genllvm", "runtime"]
+
+# -------- the parallel builder --------
+#
+# 'new List[T] <- parallel each x in src [if c] yield v': each piece of the loop
+# appends to a list of its own, and the lists are joined in the order of the
+# passes after the loop (List's pieceBag, newPiece and joinPieces, which the
+# compiler calls). The body's rules are the parallel each's.
+
+[scenario.concurrency_parallel_builder_refused]
+category = "reject"
+description = "What the parallel builder refuses: a receiver that is not a List (a dictionary with 'yield k: v', a deque) and a pair appended to a List; a yield or a header 'if' that lends something outside the loop for writing, or copies an Rc from outside it; a source that cannot be split; a break or a return in the yield's value; a list read from and built into at once; and a builder inside an actor's method or a generator"
+tags = ["parse", "typecheck", "flow"]
+diagnostics = 12
+
+[scenario.concurrency_parallel_builder]
+category = "run"
+description = "The parallel builder on four workers started for it, each result checked element by element against a plain '<- each' (and its order on its own): number ranges ('<', '<=', signed, ending at the type's maximum, empty, reversed, one pass), arrays, a slice, a part of one, a literal array, lists, structs, an empty list, fewer passes than workers, uneven work; the header 'if' over a list, an array and a range, never and always true; Strings and structs holding them made in the body; the drain form, other entries, a list that already holds values, two builders in one list; yielding from mutItems; a generic function, a method, a builder inside a builder's pass; outside variables read in the header and the yield; and work spread over more than one thread"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+[[scenario.concurrency_parallel_builder.run]]
+name = "release"
+
+[[scenario.concurrency_parallel_builder.run]]
+name = "debug"
+options = ["--debug"]
