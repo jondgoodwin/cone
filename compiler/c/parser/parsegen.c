@@ -250,6 +250,17 @@ FnDclNode *parseGenFinish(ParseState *parse, FnDclNode *fn, GenSig *sig, GenCtx 
     char *url = lex->url;
     ModuleNode *mod = parse->mod;
 
+    // The parameters are fields of the struct that has the methods 'next' and
+    // 'final', and is a method's 'self'
+    for (uint32_t i = 0; i < nparms; ++i) {
+        if (parms[i].name == nextName || parms[i].name == finalName || parms[i].name == selfName) {
+            errorMsgNode((INode *)fn, ErrorGenForm,
+                "A generator's parameter cannot be named '%s': the parameters are held in the value the generator is, which has the methods 'next' and 'final' and is 'self' in its body. Name it otherwise.",
+                &parms[i].name->namestr);
+            return fn;
+        }
+    }
+
     // The names no source spells
     char genname[300];
     snprintf(genname, sizeof(genname), "%s.Gen", &fn->namesym->namestr);
@@ -342,19 +353,15 @@ FnDclNode *parseGenFinish(ParseState *parse, FnDclNode *fn, GenSig *sig, GenCtx 
     gen->genat = (INode *)fn;
     gen->gennames = names;
     gen->ngennames = GenSlots;
-    uint32_t firstnode = mod->nodes->used;
     lexPush(gen);
     StructNode *state = (StructNode *)parseStruct(parse, 0);
     modAddNode(mod, state->namesym, (INode *)state);
-    FnDclNode *yieldfn = (FnDclNode *)parseFnOrVar(parse, 0);
+    parseFnOrVar(parse, 0);     // What a 'yield' hands the caller
     FnDclNode *nonefn = (FnDclNode *)parseFnOrVar(parse, 0);
     FnDclNode *ctor = (FnDclNode *)parseFn(parse, ParseMayName | ParseMayImpl);
     if (!lexIsToken(EofToken))
         errorMsgLex(ErrorNoEof, "The declarations generated for generator %s did not parse whole.", &fn->namesym->namestr);
     lexPop();
-    (void)yieldfn;
-
-    (void)firstnode;
 
     // 'next' takes the author's body
     FnDclNode *step = (FnDclNode *)parseGenMember(state, nextName, FnDclTag);
@@ -384,7 +391,7 @@ FnDclNode *parseGenFinish(ParseState *parse, FnDclNode *fn, GenSig *sig, GenCtx 
 // frame across the seams, so that a generator whose sub-generator is its own
 // kind is a type of unknowable size, where it is held on the heap instead (the
 // frame, genlyield.c)
-static INode *parseYieldEach(ParseState *parse, GenCtx *ctx, INode *src, YieldNode *at) {
+static INode *parseYieldEach(ParseState *parse, INode *src, YieldNode *at) {
     // Names no source can spell: the local, the source's placeholder, the match's binding
     static Name *names[GenSlots];
     if (names[GenSub] == NULL) {
@@ -458,7 +465,7 @@ INode *parseYield(ParseState *parse) {
     INode *exp = parseAnyExpr(parse);
     parseEndOfStatement();
     if (each)
-        return parseYieldEach(parse, ctx, exp, node);
+        return parseYieldEach(parse, exp, node);
     ++ctx->yields;
     if (parse->genraw) {
         node->exp = exp;
