@@ -8,7 +8,7 @@ struct Import {
   pub hasName bool;
   pub name String;      // "" for a quoted path
   pub written String;   // as written, for messages
-  pub file String;
+  pub file Path;
   pub line u32;
 
   pub fn copy(self &) Import {
@@ -17,14 +17,14 @@ struct Import {
 
   // 'file:line', for messages
   pub fn location(self &) String {
-    mut s = shown(file.view());
+    mut s = shown(&file);
     s <- ":";
     s.appendUInt(u64.from(line));
     s;
   }
 }
 
-fn noImport() Import { new Import(false, String.empty(), String.empty(), String.empty(), 0u32); }
+fn noImport() Import { new Import(false, String.empty(), String.empty(), Path.from(""), 0u32); }
 
 // A file's header
 struct Header {
@@ -41,11 +41,11 @@ fn noHeader() Header { new Header(false, String.empty(), List[Import].empty(), f
 // -------- names --------
 
 // Whether word is one of the space-separated words
-fn inWords(word &Array[u8], words &Array[u8]) bool {
+fn inWords(word &str, words &str) bool {
   mut start = 0usize;
   mut i = 0usize;
-  while i <= words.len {
-    if i == words.len or words[i] == ' ' {
+  while i <= words.len() {
+    if i == words.len() or words[i] == ' ' {
       if i > start and &words[start..i] == word { return true; }
       start = i + 1usize;
     }
@@ -59,22 +59,22 @@ fn inWords(word &Array[u8], words &Array[u8]) bool {
 // keywordInit), and the permissions (compiler/c/corelib/corelib.c), as
 // congo.py lists them; test_congo.py checks congo.py's lists against the
 // compiler's own
-fn isKeyword(w &Array[u8]) bool {
+fn isKeyword(w &str) bool {
   inWords(w, "include import extern pub static macro fn overload const alias typedef struct mod actor trait extends mixin use but enum return with if elif else case match while each in by break continue not or and as is into inline where new trynew await selfactor async do void nil null true false undef");
 }
-fn isReserved(w &Array[u8]) bool {
+fn isReserved(w &str) bool {
   inWords(w, "baseurl context local selfmethod using wait yield throw catch spawn");
 }
-fn isPermission(w &Array[u8]) bool { inWords(w, "uni mut imm ro mut1 opaq"); }
+fn isPermission(w &str) bool { inWords(w, "uni mut imm ro mut1 opaq"); }
 
 fn isNameStart(b u8) bool { (b >= 'a' and b <= 'z') or (b >= 'A' and b <= 'Z') or b == '_'; }
 fn isNameByte(b u8) bool { isNameStart(b) or (b >= '0' and b <= '9'); }
 
 // A Cone name: a letter or '_', then letters, digits or '_' (NAME_RE)
-fn isConeName(w &Array[u8]) bool {
-  if w.len == 0usize or not isNameStart(w[0usize]) { return false; }
+fn isConeName(w &str) bool {
+  if w.len() == 0usize or not isNameStart(w[0usize]) { return false; }
   mut i = 1usize;
-  while i < w.len {
+  while i < w.len() {
     if not isNameByte(w[i]) { return false; }
     i = i + 1usize;
   }
@@ -82,7 +82,7 @@ fn isConeName(w &Array[u8]) bool {
 }
 
 // Why a word cannot name a package or a module, or "" where it can
-fn nameFault(name &Array[u8]) String {
+fn nameFault(name &str) String {
   if not isConeName(name) {
     return String.from("is not a Cone name: a letter or '_', then letters, digits or '_'");
   }
@@ -124,10 +124,16 @@ struct Toks {
 
   pub fn at(self &, i usize) u8 { text[i]; }
 
-  pub fn startsAt(self &, i usize, s &Array[u8]) bool {
-    if i + s.len > text.len() { return false; }
-    imm t = text.view();
-    &t[i..i + s.len] == s;
+  // Whether the bytes from i are those of s: byte by byte, since i may be
+  // inside a character, where a slice of the text would not begin
+  pub fn startsAt(self &, i usize, s &str) bool {
+    if i + s.len() > text.len() { return false; }
+    mut k = 0usize;
+    while k < s.len() {
+      if text[i + k] != s[k] { return false; }
+      k = k + 1usize;
+    }
+    true;
   }
 
   pub fn skip(self &mut) {
@@ -216,16 +222,16 @@ struct Toks {
     ahead[head + k].line;
   }
 
-  pub fn isTok(self &mut, k usize, kind u8, value &Array[u8]) bool {
+  pub fn isTok(self &mut, k usize, kind u8, value &str) bool {
     self.fill(k);
     imm t = ahead[head + k];
     t.kind == kind and t.value.view() == value;
   }
 
-  pub fn isName(self &mut, word &Array[u8], k usize) bool { self.isTok(k, tokName, word); }
+  pub fn isName(self &mut, word &str, k usize) bool { self.isTok(k, tokName, word); }
 
   // Pass over the next token, answering whether it was the punctuation p
-  pub fn nextIs(self &mut, kind u8, value &Array[u8]) bool {
+  pub fn nextIs(self &mut, kind u8, value &str) bool {
     imm was = self.isTok(0usize, kind, value);
     head = head + 1usize;
     was;
@@ -252,7 +258,7 @@ struct Toks {
   }
 
   // Pass over tokens up to and including the punctuation p, or to the end
-  pub fn passTo(self &mut, p &Array[u8]) {
+  pub fn passTo(self &mut, p &str) {
     while self.kindAt(0usize) != tokEof and not self.nextIs(tokPunct, p) {}
   }
 }
@@ -261,11 +267,11 @@ struct Toks {
 fn withoutBom(text String) String {
   mut start = 0usize;
   imm t = text.view();
-  while start + 3usize <= t.len and t[start] == 0xEFu8 and t[start + 1usize] == 0xBBu8 and t[start + 2usize] == 0xBFu8 {
+  while start + 3usize <= t.len() and t[start] == 0xEFu8 and t[start + 1usize] == 0xBBu8 and t[start + 2usize] == 0xBFu8 {
     start = start + 3usize;
   }
   if start == 0usize { return text; }
-  text.sub(start, t.len);
+  text.sub(start, t.len());
 }
 
 // A source file's header: comments, then its 'mod' line, then its 'import'
@@ -277,13 +283,14 @@ fn withoutBom(text String) String {
 // 'mod' line. An 'import' is 'import name' or 'import "path"', optionally with
 // 'pub', and whatever 'as' and 'use' clause follow: the name read is the
 // package's, whatever name 'as' binds it under.
-fn scanHeader(file &Array[u8]) Result[Header, String] {
+fn scanHeader(file &Path) Result[Header, String] {
   mut text = String.empty();
-  match fs.readFile(&asPath(file)) {
+  match fs.readFile(file) {
     case mut ok Ok { text <=> ok.value; }
     case imm e Error {
-      imm m = e.value.message();
-      return Error[Header, String][cat("cannot read ", file, ": ", m.view())];
+      imm place = native(file);
+      imm m = fsMessage(&e.value);
+      return Error[Header, String][cat("cannot read ", place.view(), ": ", m.view())];
     }
   }
   mut toks = new Toks(withoutBom(text), 0usize, 1u32, List[Tok].empty(), 0usize);
@@ -312,7 +319,7 @@ fn scanHeader(file &Array[u8]) Result[Header, String] {
         if toks.kindAt(0usize) == tokName {
           imm v = toks.valueAt(0usize);
           header.hasExtends = true;
-          header.extended = new Import(true, v.copy(), v.copy(), String.fromBytes(file), toks.lineAt(0usize));
+          header.extended = new Import(true, v.copy(), v.copy(), file.copy(), toks.lineAt(0usize));
         }
       }
     }
@@ -330,10 +337,10 @@ fn scanHeader(file &Array[u8]) Result[Header, String] {
     imm v = toks.valueAt(0usize);
     imm line = toks.lineAt(0usize);
     if kind == tokName {
-      header.imports.push(new Import(true, v.copy(), v.copy(), String.fromBytes(file), line));
+      header.imports.push(new Import(true, v.copy(), v.copy(), file.copy(), line));
     }
     elif kind == tokString {
-      header.imports.push(new Import(false, String.empty(), cat("\"", v.view(), "\""), String.fromBytes(file), line));
+      header.imports.push(new Import(false, String.empty(), cat("\"", v.view(), "\""), file.copy(), line));
     }
     toks.skipStatement();
   }
@@ -343,13 +350,14 @@ fn scanHeader(file &Array[u8]) Result[Header, String] {
 // Whether a source file declares a compute entry point, 'fn @compute' (congo.py's
 // holds_kernel): read to its end with the header scan's tokens, so that one
 // written in a comment or a string does not count
-fn holdsKernel(file &Array[u8]) Result[bool, String] {
+fn holdsKernel(file &Path) Result[bool, String] {
   mut text = String.empty();
-  match fs.readFile(&asPath(file)) {
+  match fs.readFile(file) {
     case mut ok Ok { text <=> ok.value; }
     case imm e Error {
-      imm m = e.value.message();
-      return Error[bool, String][cat("cannot read ", file, ": ", m.view())];
+      imm place = native(file);
+      imm m = fsMessage(&e.value);
+      return Error[bool, String][cat("cannot read ", place.view(), ": ", m.view())];
     }
   }
   mut toks = new Toks(withoutBom(text), 0usize, 1u32, List[Tok].empty(), 0usize);
