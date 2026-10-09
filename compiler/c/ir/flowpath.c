@@ -1669,8 +1669,23 @@ static PathSet *pwCall(FnCallNode *call) {
         else
             loanReturnedBy(recvloan, ((NameUseNode *)call->objfn)->namesym);
     }
-    if (meth)
-        result = pathSetUnion(result, pwArgCarries(sig, 0, rettype, recvholds));
+    if (meth) {
+        PathSet *fromrecv = pwArgCarries(sig, 0, rettype, recvholds);
+        // A container declaring 'ShapeChanging' (a list, a string) may move its
+        // elements when it changes. A borrow or cursor its method returns
+        // carries the receiver's loan, and that loan freezes the place the
+        // receiver was reached through while the result is used, as a local is
+        // frozen though the path is shared: the same path may not be changed.
+        // Another reference to the same value is not seen (the full rule waits
+        // on 'uni' reborrowing).
+        if (recvloan && pathSetHasLoan(fromrecv, recvloan)) {
+            INode *recvtype = iexpGetTypeDcl(nodesGet(call->args, 0));
+            INode *container = recvtype->tag == RefTag ? itypeGetTypeDcl(((RefNode *)recvtype)->vtexp) : NULL;
+            if (container && container->tag == StructTag && ((StructNode *)container)->lends == LendsShapeChanging)
+                loanFreezeShared(recvloan);
+        }
+        result = pathSetUnion(result, fromrecv);
+    }
     // What the result's borrows point at may be anything its arguments reach
     // ('h.r' returned from '&h'): every loan both near and far, and of no
     // struct's slot

@@ -960,8 +960,9 @@ or ended while the result is used — and a second `a.alloc(v)` is no conflict.
 A borrow of a `NoLoanMut` container itself is held as one through a shared
 path is (`pwLend`): it keeps the container alive and promises no more, so two
 `&mut a` may live at once and `a.alloc(new Spawner(2, &mut a))` is one call. The
-third marker, `ShapeChanging` (`List`, `String`, `Dict`, `Pool`), is read by
-nothing yet: see "What is not held".
+third marker, `ShapeChanging` (`List`, `Deque`, `String`, `Dict`, `Pool`), makes a
+borrow its method returns freeze a shared receiver path too (`loanFreezeShared`,
+called from `pwCall`): see "What is not held".
 
 **In flight.** A call's arguments are walked in order (where an `await` cuts
 them, in the order "A seam" gives), each one's loans pushed
@@ -1119,16 +1120,32 @@ its loan (`pwVarDcl` keeps it on the temporary, `pwLend` reads it), so
 borrow a
 call returns carries its receiver's loan as the receiver was reached: through a
 shared path (`l &mut List`, a field of `self`, a `Rc[mut, T]` owner) that loan
-only keeps the source alive, so `imm e = l[0usize]; m.push(p); e.x` compiles
-when `m` is another reference to the same list, and `e` dangles. Jon's rule
-refuses such an element borrow of a container that changes shape (it declares
-`ShapeChanging`); the check is not built, because it would refuse ordinary
-code — reading a `List[String]` element through a `&List` parameter, a
-method reading its own `self` list field — until `uni` reborrowing makes the
-alternatives writable (lending a `&uni` as a `&` or `&mut` is built; lending
-it to another `&uni` is not). `collection_flow_freeze`'s header and `refborref.html`
-pin each shape. Copies of one `&mut` reach one place two ways unchecked, and a
-global a callee changes is invisible.
+only keeps the source alive (`LoanAlias`), so `imm e = l[0usize]; m.push(p); e.x`
+compiles when `m` is another reference to the same list, and `e` dangles. For
+a container that changes shape (it declares `ShapeChanging`) the loan the
+returned borrow carries is made a `LoanShared` or `LoanExcl` one instead, as a
+local's is (`pwCall`, `loanFreezeShared`): the same path, `l` or `self.items`,
+is frozen while the borrow is used, so `imm e = l[0usize]; l.push(p); e.x` and
+a cursor `mut it = dq.items(); dq.push(9); it.next()` are refused, and a call
+that returns nothing the receiver lent (`self.fill(self.roomFor(h), …)`)
+freezes nothing. That is part (a) of the rule for a shape-changing container —
+a borrow into it through a shared path is allowed, and refused only if something
+could reshape it while the borrow is used: a change through the same name. Part
+(b), a change through another name or a call that might make one, is not
+built: a different reference to the same container is not seen, and two
+different `&mut` references to one list stay open. Refusing every element
+borrow through a shared path would refuse ordinary code — reading a
+`List[String]` element through a `&List` parameter, a method reading its own
+`self` list field — and (b) waits on `uni` reborrowing making the
+alternatives writable (lending a `&uni` as a `&` or `&mut` is built; lending it
+to another `&uni` is not). `collection_flow_freeze_shared` and
+`collection_freeze_shared_success` pin the frozen path and what stays open,
+and `refborref.html` each shape. A
+borrow of the container itself that is not a method's returned borrow
+(`imm r = &mut *l`) is not frozen, and needs no freeze: it points at the
+container's header, which a push through `l` updates in place, not into the
+storage block a push may move. Copies of one `&mut` reach one place two ways
+unchecked, and a global a callee changes is invisible.
 
 **Its state** is file-static, as the variable stack is, and safe for the same
 reason: flow never runs re-entrantly (`flowPathWalk` refuses to). The buffers
@@ -1396,7 +1413,7 @@ filled `self`'s fields is an ordinary store.
 | --- | --- | --- | --- |
 | **Move / ownership** | yes | `ErrorMove` on use of a moved-out or uninitialized variable, and on a borrow of a moved-out one; move out of a field, or of a global, or out through a borrowed or a shared owning reference, refused; a use some path reaching it moved, hollowed or never gave a value (a loop's earlier pass included), by the path walk | element granularity — moving `a[0]` deactivates all of `a` |
 | **Escape / lifetime** | representation in type check, enforcement here and in the loan walk | storing a bare borrow into a global or through a reference into a longer-lived place, by assignment or by either direction of a swap; any value — bare borrow, struct, `Option`, `Rc` owner, call result, a variable that was given a local's borrow — returned, or stored where it may outlive the function (a global, what a parameter or a copy of one points at, an `Rc`'s referent), or handed to a call that may store it so, while it holds a loan of the function's own storage (the loan walk); returning a borrow of a local, or a local initialized with one, its type declared or not; returning or storing outward a borrow of a by-value parameter, of `self` by value or through an owner passed by value; storing a borrowed parameter's borrow into a global, bare, read through a `&mut &T` parameter, held by a by-value parameter or carried inside a value; a returned `if`, `match` or block, arm by arm, and one used as a value carrying its shortest arm's lifetime; an owner handed back, or stored, as a borrow; a borrow through a borrowed reference held in a local, which has that reference's lifetime; a borrow arriving through a call's result, singly or as one of several values destructured into lvals, each carrying the narrowest argument borrow's scope; a `&mut` or `&uni` argument (a method's receiver included) to a place that can hold a borrow — `&T` itself, a struct with a borrow field, an `Option` or `List` of borrows, a slice of them — where that place would outlive another borrow passed with it; a borrow coerced to another reference type, whether widened to a base trait's reference or made a virtual reference; with lifetimes named on a signature or a struct, a caller's borrow returned, or stored where a parameter points, as a lifetime its part does not flow to by the `where` clause's order, a struct's field by field, and a borrow not global handed to a `'static` parameter; a type parameter's lifetime bound, by the order an instance's signature carries, a `'static` one's argument checked global; what a virtual reference bounded by `'a` points at holding a borrow not known to last `'a`, returned or stored through `*p`; a value holding a borrow not known to be global made an owning virtual reference, which is bounded by `'static` | a borrow captured; a lifetime bound on a generic type's parameter, or of a lifetime but `'static` on an owning virtual reference, and invariant lifetimes; a struct's tags are dropped wherever a value leaves it, and after a call that may move a borrow between its slots, so what it holds is then kept as one; a store through a reference a call returned, or one read through another, to a local struct of a self-similar type (a list node) holding the caller's borrows is refused |
-| **Freezing** | the loan walk, on a gated function | a borrow held in a local, bare or inside a struct, enum, `Option`, array or list, and its copies, freeze the source until the last use (a finalizer that may read it, at the holder's death, included), and so do a borrow a call returns, of every argument, and one a call or a store through a reference puts into a local (from a `NoLoanMut` or `NoLoanRead` container, only its life): `ErrorFrozen` at a change, a move, a conflicting borrow, the source's end, and, under a mutable borrow, a read — for a source reached as `uni`; for one reached through a shared path, only its owner's move, replacement or end, a change or mutable borrow of the owner where it is held, and an `&uni` or `&imm` borrow | an element borrow through a shared path (the language's rule refuses it for a `ShapeChanging` container; not built); two copies of one `&mut`; a global a callee changes |
+| **Freezing** | the loan walk, on a gated function | a borrow held in a local, bare or inside a struct, enum, `Option`, array or list, and its copies, freeze the source until the last use (a finalizer that may read it, at the holder's death, included), and so do a borrow a call returns, of every argument, and one a call or a store through a reference puts into a local (from a `NoLoanMut` or `NoLoanRead` container, only its life): `ErrorFrozen` at a change, a move, a conflicting borrow, the source's end, and, under a mutable borrow, a read — for a source reached as `uni`; for one reached through a shared path, only its owner's move, replacement or end, a change or mutable borrow of the owner where it is held, and an `&uni` or `&imm` borrow, but for a borrow a method of a `ShapeChanging` container returns, which freezes the path it was reached through as a local's does | an element borrow of a `ShapeChanging` container through a shared path, when the change comes through another name or a call that might make one (part (b) of the rule; not built); two copies of one `&mut`; a global a callee changes |
 | **De-aliasing / drops** | flow decides, generation executes | scope-exit release of owning refs, of drop-fn structs and enums, and of tuples and arrays holding what finalizes or owns, from a jump down to the block it names; the previous value's release at a store over a variable, a part of one, or a place reached through a reference; each on the paths that hold the value, by a drop flag where they differ; a temporary's at the end of its statement, condition or operand, newest first, hollow where a value moved out through it | an array an element was moved out of leaks the rest; a value stored into a field of a variable holding nothing leaks; a temporary a borrow or a pointer made from it may outlive is kept, and leaks — see Hazards |
 | **Permission** | `MayWrite` and `MayRead` | `ErrorNoMut` on assignment and swap; `ErrorNoRead` on a read through a reference — a dereference, an index, or a field of a virtual reference | `MayAliasWrite` and `IsLockless` are populated and read nowhere; `RaceSafe` is read by the thread check, a type check question (`refThreadBinds`) |
 | **Initialization** | yes | `ErrorMove` "has not been initialized"; for a variable that moves or has anything to do as it dies, "may not have been given a value" where some path did not (the path walk) | for any other type, "initialized on one branch" reads as initialized everywhere; a variable never initialized may be borrowed, so a method taking it `&mut` can fill it, and nothing then stops a field it left unset being read through the borrow; the unused-variable warning in `flow.h`'s header does not exist |
