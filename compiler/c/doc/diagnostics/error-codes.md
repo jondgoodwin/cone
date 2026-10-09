@@ -411,7 +411,11 @@ where it cannot be built (a global), in a form it does not take (the short form
 with something other than names), or given where a function reference is wanted
 while it holds or borrows something is `ErrorClosureForm`; and a literal given to
 overloads that cannot choose between it, or none that takes it, is
-`ErrorClosureOverload`.
+`ErrorClosureOverload`. On a GPU target two more: a closure in GPU code that
+holds, as listed state or as a variable it borrows, a value of a type with an
+owning reference, a function reference, a virtual reference or a raw pointer is
+`ErrorGpuClosureData`; and one made a function reference, or converted to a
+virtual reference, is `ErrorGpuClosureRef`.
 
 `await` has five error codes and a warning. Where it may not stand -- anywhere
 but a behaviour -- is `ErrorAwaitPlace`; on a behaviour that returns nothing,

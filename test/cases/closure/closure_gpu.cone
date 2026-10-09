@@ -1,0 +1,51 @@
+// A closure literal written in GPU code and given to a generic bound by a
+// signature, '[F fn(x f32) f32]', is the static form: the generic is instanced
+// for the closure's struct, every call is inlined into the kernel, and the
+// closure dissolves into the kernel's locals, so none of it is left to run: no
+// call, no stack slot, no table. What it holds is what a GPU has: numbers, and
+// borrows of memory the GPU has, a local or a buffer's slice ('radii' below is
+// the second, a borrow of a slice that is itself a borrow of a buffer), listed
+// state that changes between calls, and a hand-written struct with '()'
+// through the same generic. The
+// kernels run on a GPU in packages/gpusample's 'closures' test, compared with
+// the CPU bit for bit.
+
+mod closure_gpu;
+
+fn scaled[F fn(x f32) f32](f &F, x f32) f32 { f(x) * 2. + 1.; }
+fn twice[F fn(x f32) f32](f &mut F, x f32) f32 { f(x) + f(x); }
+
+struct Offset {
+  pub offs f32;
+  pub fn `()`(self &, x f32) f32 { x + offs; }
+}
+
+fn @compute(64) localVar(inv Invocation, xs &Array[f32], out &mut Array[f32]) {
+  imm i = usize.from(inv.globalId[0]);
+  if i < out.len and i < xs.len {
+    imm k = xs[i];
+    out[i] = scaled(x => x * k, 3.);
+  }
+}
+
+fn @compute(64) buffer(inv Invocation, xs &Array[f32], radii &Array[f32], out &mut Array[f32]) {
+  imm i = usize.from(inv.globalId[0]);
+  if i < out.len and i < xs.len and i < radii.len {
+    out[i] = scaled(fn(x f32) f32 { x * radii[i] - xs[i]; }, 3.);
+  }
+}
+
+fn @compute(64) state(inv Invocation, xs &Array[f32], out &mut Array[f32]) {
+  imm i = usize.from(inv.globalId[0]);
+  if i < out.len and i < xs.len {
+    out[i] = twice(fn(x f32) [mut calls = 0., base = xs[i]] f32 { calls += 1.; x * calls + base; }, 3.);
+  }
+}
+
+fn @compute(64) handWritten(inv Invocation, xs &Array[f32], out &mut Array[f32]) {
+  imm i = usize.from(inv.globalId[0]);
+  if i < out.len and i < xs.len {
+    imm off = new Offset(xs[i]);
+    out[i] = scaled(&off, 3.);
+  }
+}

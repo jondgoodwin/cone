@@ -494,6 +494,10 @@ enum ErrorCode {
     ErrorWorkgroupData = 1268,  // What a '@workgroup' global holds: anything but 32-bit numbers, their atomics, and structs and fixed arrays of them
     ErrorGpuAtomicPlace = 1269, // In a kernel, an atomic operation on memory invocations do not share: a local, or a global not '@workgroup'
 
+    // Closures in GPU code, the static form only (ir/exp/closure.c, ir/iexp.c)
+    ErrorGpuClosureData = 1298, // A closure literal in GPU code holding what a GPU has none of: a variable it borrows, or a state entry, whose type holds an owning reference, a function or virtual reference, or a raw pointer
+    ErrorGpuClosureRef = 1299,  // A closure in GPU code made a function reference, '&fn(...)', or a virtual reference ('&<Trait', an owner of a trait): only a generic bound by a signature takes one there, inlined
+
     // 'await' in an actor's behaviour (ir/exp/await.c; its seam, ir/flowpath.c)
     ErrorAwaitPlace = 1270,     // 'await' outside an actor's behaviour: in a function, a method of another type, or an actor's 'fn' -- its 'init', its 'final' or a synchronous helper -- which no dispatcher runs as a message
     ErrorUnbuiltAwait = 1271,   // An 'await' every seam rule accepted, where its continuation is not built: one not on a behaviour, one whose record holds a traced reference

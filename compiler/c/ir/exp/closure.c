@@ -276,6 +276,100 @@ INode *closureSelfParm(FnDclNode *fn) {
     return nodesGet(((FnSigNode*)fn->vtype)->parms, 0);
 }
 
+// ---------------------------------------------------------------------------
+// Closures in GPU code
+
+// Why 'type' may not be held by a closure in GPU code, or NULL when it may. The
+// closure is inlined into its kernel and dissolves there into locals, so what it
+// holds must be what a GPU has: numbers, structs and arrays of them, and borrows
+// of memory the GPU has (a local, a buffer's slice), which are as safe as the
+// type they point at. A GPU has no allocator, so no owning reference; no code
+// pointer, so no function reference and no virtual reference; and no address
+// that means anything outside the kernel, so no raw pointer. 'depth' bounds the
+// walk of a type that names itself.
+static const char *closureGpuWhy(INode *type, int depth) {
+    if (type == NULL || !isTypeNode(type) || depth > 8)
+        return NULL;
+    INode *dcl = itypeGetTypeDcl(type);
+    switch (dcl->tag) {
+    case ArrayTag:
+        return closureGpuWhy(arrayElemType(dcl), depth + 1);
+    case StructTag: {
+        StructNode *strnode = (StructNode*)dcl;
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodelistFor(&strnode->fields, cnt, nodesp)) {
+            FieldDclNode *field = (FieldDclNode*)*nodesp;
+            if (field->tag != FieldDclTag || field->namesym == NULL)
+                continue;
+            const char *why = closureGpuWhy(field->vtype, depth + 1);
+            if (why)
+                return why;
+        }
+        return NULL;
+    }
+    case RefTag:
+    case ArrayRefTag: {
+        RefNode *ref = (RefNode*)dcl;
+        if (ref->vtexp && isTypeNode(ref->vtexp) && itypeGetTypeDcl(ref->vtexp)->tag == FnSigTag)
+            return "a function reference, a pointer to code, which a GPU has none of";
+        if (ref->region == NULL || itypeGetTypeDcl(ref->region) != borrowRef)
+            return "an owning reference (So, Rc, Arc, Gc), which needs an allocator a GPU has none of";
+        return closureGpuWhy(ref->vtexp, depth + 1);
+    }
+    case VirtRefTag:
+        return "a virtual reference, which dispatches through a table of code pointers a GPU has none of";
+    case PtrTag:
+        return "a raw pointer, whose address means nothing on a GPU";
+    default:
+        return NULL;
+    }
+}
+
+// Refuse a closure in GPU code that holds what a GPU has none of. Answers
+// whether it holds only what a GPU has.
+static int closureGpuCheck(ClosureNode *clo, INode **statetypes) {
+    uint32_t k = 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(clo->state, cnt, nodesp)) {
+        VarDclNode *ent = (VarDclNode*)*nodesp;
+        const char *why = closureGpuWhy(statetypes[k++], 0);
+        if (why) {
+            errorMsgNode((INode*)ent, ErrorGpuClosureData,
+                "This closure, written in GPU code, holds %s as its own state, and its type %s is %s. In GPU code a closure holds numbers, structs and arrays of them, and borrows of memory the GPU has.",
+                &ent->namesym->namestr, itypeName(statetypes[k - 1]), why);
+            return 0;
+        }
+    }
+    for (nodesFor(clo->captures, cnt, nodesp)) {
+        VarDclNode *var = (VarDclNode*)*nodesp;
+        const char *why = closureGpuWhy(var->vtype, 0);
+        if (why) {
+            errorMsgNode((INode*)clo, ErrorGpuClosureData,
+                "This closure, written in GPU code, borrows %s, and its type %s is %s. In GPU code a closure holds numbers, structs and arrays of them, and borrows of memory the GPU has.",
+                &var->namesym->namestr, itypeName(var->vtype), why);
+            return 0;
+        }
+    }
+    return 1;
+}
+
+// Whether 'from' is a reference to a closure's hidden struct, and 'totype' a
+// virtual reference (a '&<Trait', or an owner of a trait): the closure would be
+// called through a table of code pointers. Refused in GPU code, where the
+// closure is taken by a generic bound by a signature and inlined.
+int closureGpuVirtRefused(INode *from, INode *totypedcl) {
+    if (!flowGpu || totypedcl->tag != VirtRefTag || !isExpNode(from))
+        return 0;
+    INode *fromtype = iexpGetTypeDcl(from);
+    if (fromtype->tag != RefTag || closureOfStruct(itypeGetTypeDcl(((RefNode*)fromtype)->vtexp)) == NULL)
+        return 0;
+    errorMsgNode(from, ErrorGpuClosureRef,
+        "A closure in GPU code cannot be made a virtual reference: it would be called through a table of code pointers, which a GPU has none of. Give it to a function generic over its signature, '[F fn(...)]', which is inlined.");
+    return 1;
+}
+
 // Make the hidden struct for a literal under a guess at its permissions, and
 // check it. 'statetypes' are the state entries' types, from their values.
 // Answers the struct, whose '()' is checked by the time it returns unless a
@@ -465,6 +559,15 @@ void closureTypeCheck(TypeCheckState *pstate, ClosureNode **nodep, INode *expect
         ++pi;
     }
 
+    // On a GPU a function reference is a pointer to code, which it has none of;
+    // the closure is taken by a generic bound by its signature instead
+    if (isref && flowGpu) {
+        errorMsgNode((INode*)clo, ErrorGpuClosureRef,
+            "A closure in GPU code cannot be made a function reference, '&fn(...)': a GPU has no pointers to code. Give it to a function generic over its signature, '[F fn(...)]', which is inlined.");
+        *nodep = (ClosureNode*)newErrorNode((INode*)clo);
+        return;
+    }
+
     // A closure that holds or borrows something is not a function
     if (isref && (clo->state->used || clo->captures->used)) {
         if (clo->captures->used)
@@ -532,6 +635,11 @@ void closureTypeCheck(TypeCheckState *pstate, ClosureNode **nodep, INode *expect
             return;
         }
     }
+
+    // In GPU code a closure holds only what a GPU has. Refused here, and built
+    // all the same: the closure's value is one the rest of the call can use
+    if (flowGpu)
+        closureGpuCheck(clo, statetypes);
 
     // What the body does with what it names decides the permissions
     uint32_t ncap = clo->captures->used;

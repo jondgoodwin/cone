@@ -1,0 +1,162 @@
+// gpusample's closure kernels (src/closures.cone) run end to end: a closure
+// literal written in GPU code and given to a generic with a '[F fn(p Vec3)
+// f32]' bound (the static form: the generic is instanced for the closure and
+// inlined into the kernel), over a local, a buffer's slice, listed state, a
+// changed variable of the kernel, and a hand-written struct with '()' through
+// the same generic.
+//
+// Each kernel is run twice over 100 invocations (two workgroups, the second
+// only partly in bounds). Once through gpuwork's checkParity, the GPU against
+// the CPU, where the same generic is instanced for the same closure: every
+// word compared bit for bit. And once more, reading back what the GPU wrote and
+// comparing each word with a value worked out here by plain arithmetic, in the
+// order the kernel adds it (so a pair that agree on a wrong value, a closure
+// that borrowed the wrong variable, would not pass).
+//
+// Only a failure prints. It needs a GPU driver with Vulkan 1.3 and
+// SDL3.dll; with the Vulkan SDK, the validation layers are on, and must say
+// nothing.
+
+mod closures;
+
+import testing use *;
+import stdio use *;
+import collections use List;
+import gpu use *;
+import gpuwork use *;
+import gpusample use *;
+
+const COUNT = 100u32;
+
+fn bits(f f32) u32 { f as u32; }
+
+// Point i: x, y, z all exact in binary
+fn px(i u32) f32 { f32.from(i % 7u32) * 0.5 - 1.5; }
+fn py(i u32) f32 { f32.from(i % 5u32) - 2.; }
+fn pz(i u32) f32 { f32.from(i % 3u32) * 0.25; }
+fn radiusOf(i u32) f32 { f32.from(i % 4u32) * 0.5 + 0.5; }
+
+// |p|^2, in the order Vec3.dot adds it
+fn dotOf(i u32) f32 { px(i) * px(i) + py(i) * py(i) + pz(i) * pz(i); }
+
+// The word each kernel writes for invocation i, worked out from the source
+// of src/closures.cone
+fn expected(name &str, i u32) f32 {
+  imm d = dotOf(i);
+  imm r = radiusOf(i);
+  if name == "closureLocal" or name == "closureBuffer" or name == "structCall" {
+    // shadeWith: f(p) * 2 + 1, where f(p) = |p|^2 - r^2
+    (d - r * r) * 2. + 1.;
+  }
+  else if name == "closureNested" {
+    // shadeWith around pairWith: f(y) + f(y + 1) with f(x) = x * r + r + px, the point's y
+    imm a = (py(i) * r + r) + px(i);
+    imm b = ((py(i) + 1.) * r + r) + px(i);
+    (a + b) * 2. + 1.;
+  }
+  else if name == "closureState" {
+    // shadeTwice: f(p) + f(p), the first call with calls = 1, the second with 2
+    (d * 1. - r * r) + (d * 2. - r * r);
+  }
+  else {
+    // closureMutLocal: f(p) = |p|^2 - r, twice, and 'seen' has gained x twice
+    ((d - r) + (d - r)) + (px(i) + px(i));
+  };
+}
+
+// Run one kernel on the GPU and on the CPU, every word the same; then its
+// words on the GPU against the values worked out by hand
+fn check(device &mut Device, spirv &List[u32], name &str,
+    f &fn(Invocation, &Array[f32], &Array[f32], &mut Array[f32])) {
+  mut kernel = Kernel.make(device, spirv.view(), name, &[READ, READ, READ_WRITE]);
+  require(kernel.isValid(), name);
+  kernel.setTwin3(f);
+
+  mut pts = List[u32].empty();
+  mut radii = List[u32].empty();
+  mut out = List[u32].empty();
+  mut i = 0u32;
+  while i < COUNT {
+    pts.push(bits(px(i)));
+    pts.push(bits(py(i)));
+    pts.push(bits(pz(i)));
+    radii.push(bits(radiusOf(i)));
+    out.push(0u32);
+    i = i + 1u32;
+  }
+
+  // The GPU against the CPU's instance of the same generic
+  mut buffers = List[List[u32]].empty();
+  buffers.push(pts);
+  buffers.push(radii);
+  buffers.push(out);
+  imm p = checkParity(device, &kernel, &buffers, (COUNT + 63u32) / 64u32);
+  expectBool(p.ran, true, name);
+  expectUInt(p.compared, u64.from(COUNT), name);
+  if !expect(p.exact(), name) {
+    printStr("  mismatched ");
+    printUInt(p.mismatched);
+    printStr(", first at word ");
+    printUInt(p.firstIndex);
+    printStr(": GPU ");
+    print <- f64.from(p.gpuWord as f32);
+    printStr(", CPU ");
+    print <- f64.from(p.cpuWord as f32);
+    printStr("\n");
+  }
+
+  // The GPU's words against the values worked out here
+  mut works = Works.make();
+  mut job = Job.make(device);
+  imm ptsSlot = job.give(upload(device, buffers[0usize].view()));
+  imm radiiSlot = job.give(upload(device, buffers[1usize].view()));
+  imm outSlot = job.give(zeroed(device, usize.from(COUNT)));
+  require(job.dispatch(device, &kernel, &[ptsSlot, radiiSlot, outSlot], (COUNT + 63u32) / 64u32), name);
+  imm outBack = job.readback(device, outSlot);
+  imm ticket = works.submit(device, job, Target.Here[0u64]);
+  mut answers = List[Completion].empty();
+  works.waitFor(device, ticket, &mut answers);
+  require(answers.len() == 1usize and answers[0usize].ok, name);
+  expectUInt(u64.from(answers[0usize].failures.len()), 0u64, name);
+  imm w = answers[0usize].words(outBack);
+  expectUInt(u64.from(w.len()), u64.from(COUNT), name);
+  mut wrong = 0u64;
+  i = 0u32;
+  while i < COUNT and usize.from(i) < w.len() {
+    imm want = expected(name, i);
+    if *w[usize.from(i)] != bits(want) {
+      wrong = wrong + 1u64;
+      if wrong == 1u64 {
+        printStr("  "); printStr(name); printStr(" i = "); printUInt(u64.from(i));
+        printStr(": GPU "); print <- f64.from(*w[usize.from(i)] as f32);
+        printStr(", worked out "); print <- f64.from(want); printStr("\n");
+      }
+    }
+    i = i + 1u32;
+  }
+  expectUInt(wrong, 0u64, name);
+}
+
+fn main() i32 {
+  mut instance = Instance.create("gpusample closures");
+  require(instance.isValid(), "a Vulkan 1.3 instance");
+  mut none = Surface.none();
+  mut adapter = instance.requestAdapter(&none, POWER_PREFERENCE_HIGH_PERFORMANCE);
+  require(adapter.isValid(), "an adapter");
+  mut device = adapter.requestDevice();
+  require(device.isValid(), "a device");
+  imm spirv = readSpirv("gpusample.spv");
+  require(spirv.len() > 5usize, "gpusample.spv beside the program");
+
+  check(&mut device, &spirv, "closureLocal", &closureLocal);
+  check(&mut device, &spirv, "closureBuffer", &closureBuffer);
+  check(&mut device, &spirv, "closureState", &closureState);
+  check(&mut device, &spirv, "closureMutLocal", &closureMutLocal);
+  check(&mut device, &spirv, "closureNested", &closureNested);
+  check(&mut device, &spirv, "structCall", &structCall);
+
+  expectUInt(u64.from(refusals()), 0u64, "nothing refused");
+  expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
+  expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
+  done();
+}
