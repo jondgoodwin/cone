@@ -184,6 +184,10 @@ void returnTypeCheck(TypeCheckState *tstate, BreakRetNode *retnode) {
                 errorMsgNode((INode*)retnode, ErrorNeverReturns,
                     "This function returns Never, so it must not return: end it in a call that does not return, such as 'panic(...)'.");
         }
+        // A closure's value that already failed is reported where it failed: it
+        // does not also mismatch the signature the closure was given to
+        else if (tstate->fn && tstate->fn->closure && errors > tstate->fn->closure->errbase)
+            ;
         else if (!iexpCheckedCoerce(fnsig->rettype, &retnode->exp)) {
             errorMsgNode((INode*)retnode, ErrorInvType, "Return expression type does not match return type on function");
             errorMsgNode((INode*)fnsig->rettype, ErrorInvType, "This is the declared function's return type");

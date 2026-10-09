@@ -599,6 +599,7 @@ enum ErrorCode {
     // Callable references (ir/types/fnsig.c, ir/exp/fncall.c)
     ErrorCallablePerm = 1397,   // A callable given where a '&<fn(sig)' or 'So[fn(sig)]' is wanted, refused because of the permission its '()' takes or the borrow lent
     ErrorCallableUse = 1398,    // A value made into a 'So[fn(sig)]' or 'Rc[fn(sig)]' that has no pub '()' of that signature
+    ErrorClosureTrait = 1399,   // A closure literal given where a trait is wanted that does not have exactly one method (and no field) for it to fill
 
     // Warnings
     WarnCode = 3000,

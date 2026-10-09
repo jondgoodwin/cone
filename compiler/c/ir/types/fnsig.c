@@ -498,9 +498,35 @@ char *fnSigCallRefusal(INode *from, INode *to) {
         return NULL;
     RefNode *toref = (RefNode*)todcl;
     StructNode *trait = (StructNode*)itypeGetTypeDcl(toref->vtexp);
-    if (trait->tag != StructTag || trait->callsig == NULL)
+    if (trait->tag != StructTag)
         return NULL;
     INode *fromdcl = itypeGetTypeDcl(from);
+    // A closure literal that fills a trait's method and changes state, behind a
+    // reference that only reads
+    if (trait->callsig == NULL) {
+        if (fromdcl->tag != RefTag || permGetFlags(toref->perm) & MayWrite)
+            return NULL;
+        ClosureInfo *info = closureOfStruct(itypeGetTypeDcl(((RefNode*)fromdcl)->vtexp));
+        if (info == NULL || !closureMethodMutates(info))
+            return NULL;
+        static char tmsg[700];
+        INode *region = itypeGetTypeDcl(toref->region);
+        char spelled[200], flipped[200];
+        char *name = &trait->namesym->namestr;
+        if (region == (INode*)borrowRef) {
+            snprintf(spelled, sizeof(spelled), "&<%s", name);
+            snprintf(flipped, sizeof(flipped), "&<mut %s", name);
+        }
+        else {
+            char *regname = region->tag == StructTag ? &((StructNode*)region)->namesym->namestr : "So";
+            snprintf(spelled, sizeof(spelled), "%s[imm, %s]", regname, name);
+            snprintf(flipped, sizeof(flipped), "%s[%s]", regname, name);
+        }
+        snprintf(tmsg, sizeof(tmsg),
+            "`%s` may only call a method that reads its state; this closure changes it (its `%s` takes `self &mut`). To let it change, the type is `%s`.",
+            spelled, &info->method->namestr, flipped);
+        return tmsg;
+    }
     // A callable that may change, where one that only reads is wanted
     if (fromdcl->tag == VirtRefTag) {
         StructNode *fromtrait = (StructNode*)itypeGetTypeDcl(((RefNode*)fromdcl)->vtexp);
@@ -512,10 +538,10 @@ char *fnSigCallRefusal(INode *from, INode *to) {
         fnCallSpell(wanted, sizeof(wanted), toref, trait);
         if (fromtrait->callmut)
             snprintf(vmsg, sizeof(vmsg),
-                "This callable may change its state, and `%s` only reads, so it cannot be lent as one.", wanted);
+                "`%s` may only call a callable that reads its state; this one may change it.", wanted);
         else
             snprintf(vmsg, sizeof(vmsg),
-                "This callable only reads, and `%s` is the reference that may change what it points at: a read-only one cannot be lent as one that may change.",
+                "`%s` may change what it points at, and this one is a read-only reference to a callable: lend it as a `&<mut`, which needs a `&mut` borrow of the callable.",
                 wanted);
         return vmsg;
     }
@@ -543,8 +569,8 @@ char *fnSigCallRefusal(INode *from, INode *to) {
             flipped.callmut = 1;
             fnCallSpell(other, sizeof(other), toref, &flipped);
             snprintf(msg, sizeof(msg),
-                "%s changes its state (its `()` takes `self &mut`), and `%s` only reads: it may not be given one that changes. To let a callable change, the type is `%s`.",
-                isclosure ? "This closure" : what, wanted, other);
+                "`%s` may only call a callable that reads its state; %s changes it (its `()` takes `self &mut`). To let it change, the type is `%s`.",
+                wanted, isclosure ? "this closure" : what, other);
         }
         else
             snprintf(msg, sizeof(msg),

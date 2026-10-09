@@ -1,0 +1,75 @@
+// A closure literal meets a trait that requires exactly one method, where that
+// trait is wanted: its hidden struct gets the method's name, with the trait's
+// parameters, and fills it. sdf's Shape is the case ('distance(self &, p Vec3)'),
+// copied here so the test needs no package: in the static form ('[S Shape]'), the
+// dynamic ('&<Shape' and '&<mut Shape') and as an owner ('So[Shape]'). The
+// method's 'self' follows the closure's body as '()' does: a body that only reads
+// fills 'self &', and one that changes something is accepted behind '&<mut' and
+// refused behind '&<' (closure_typecheck_trait). A struct of the author's meets
+// the same traits as ever. Every value is worked out by hand.
+
+mod closure_trait;
+
+import stdio use *;
+
+struct V { pub x f32; pub y f32; }
+
+pub trait Shape {
+  pub fn distance(self &, p V) f32;
+}
+
+// A trait whose one method is not '()', and changes state
+pub trait Counter {
+  pub fn bump(self &mut, step i32) i32;
+}
+
+// A struct of the author's, as before
+struct Disc {
+  pub r f32;
+  pub fn distance(self &, p V) f32 { p.x * p.x + p.y * p.y - r; }
+}
+
+struct Ticker {
+  pub n i32;
+  pub fn bump(self &mut, step i32) i32 { n = n + step; n; }
+}
+
+fn depth[S Shape](shape &S, p V) f32 { shape.distance(p) * 2.; }
+fn byValue[S Shape](shape S, p V) f32 { shape.distance(p) + 1.; }
+fn viaRef(shape &<Shape, p V) f32 { shape.distance(p) + 100.; }
+fn viaMut(shape &<mut Shape, p V) f32 { shape.distance(p) + 1000.; }
+fn bumpTwice(c &<mut Counter) i32 { c.bump(1); c.bump(10); }
+
+fn main() {
+  imm p = new V(3., 4.);
+
+  // The static form: a struct as always, then a literal
+  imm d = new Disc(5.);
+  print <- depth(&d, p), "\n";                                // (9 + 16 - 5) * 2: 40
+  print <- depth(q => q.x * q.x + q.y * q.y - 5., p), "\n";   // 40
+  imm k = 10.;
+  print <- depth(fn(q V) f32 { q.x + k; }, p), "\n";          // (3 + 10) * 2: 26
+  print <- byValue(q => q.y, p), "\n";                        // 4 + 1: 5
+
+  // The dynamic form
+  print <- viaRef(&d, p), "\n";                               // 20 + 100: 120
+  print <- viaRef(q => q.x + q.y, p), "\n";                   // 7 + 100: 107
+  print <- viaMut(q => q.x - q.y, p), "\n";                   // -1 + 1000: 999
+  mut seen = 0.;
+  print <- viaMut(q => { seen += q.x; seen; }, p), "\n";      // a literal that changes a variable: 3 + 1000
+  print <- viaMut(q => { seen += q.y; seen; }, p), "\n";      // 7 + 1000
+  print <- seen, "\n";                                        // 7
+
+  // A method that takes 'self &mut', filled by a literal with state of its own
+  mut t = new Ticker(0);
+  print <- bumpTwice(&mut t), "\n";                           // 1, then 11
+  print <- bumpTwice(step => 7), "\n";                        // a literal: 7 then 7: 7
+  print <- bumpTwice(fn(step i32) [mut total = 100] i32 { total += step; total; }), "\n";  // 101, then 111
+
+  // As an owner
+  imm own = new So[Shape](fn(q V) [off = k] f32 { q.x + off; });
+  print <- own.distance(p), "\n";                             // 13
+  mut counted = new So[Counter](fn(step i32) [mut n = 5] i32 { n += step; n; });
+  print <- counted.bump(2), "\n";                             // 7
+  print <- counted.bump(3), "\n";                             // 10
+}

@@ -488,7 +488,12 @@ static void typeLitNewCallable(TypeCheckState *pstate, FnCallNode **nodep, RefNo
     FnCallNode *node = *nodep;
     StructNode *trait = (StructNode*)itypeGetTypeDcl(reftype->vtexp);
     char sig[300] = "";
-    genericFnSigCat(sig, sizeof(sig), trait->callsig);
+    FnSigNode *csig = trait->callsig;
+    Name *method = NULL;
+    if (csig)
+        genericFnSigCat(sig, sizeof(sig), csig);
+    else
+        snprintf(sig, sizeof(sig), "%s", &trait->namesym->namestr);
     INode *region = itypeGetTypeDcl(reftype->region);
     char *regname = region->tag == StructTag ? &((StructNode*)region)->namesym->namestr : "So";
     if (node->args == NULL || node->args->used != 1 || nodesGet(node->args, 0)->tag == NamedValTag) {
@@ -498,10 +503,23 @@ static void typeLitNewCallable(TypeCheckState *pstate, FnCallNode **nodep, RefNo
         return;
     }
     INode **argp = &nodesGet(node->args, 0);
-    if ((*argp)->tag == ClosureTag)
-        closureHint = trait->callsig;
+    // A closure literal given for a trait with one method fills that method
+    if (csig == NULL) {
+        uint32_t count;
+        csig = closureTraitSig(trait, &method, &count);
+        if (csig == NULL) {
+            fnCallClosureTraitRefused(*argp, trait);
+            *((INode**)nodep) = newErrorNode((INode*)node);
+            return;
+        }
+    }
+    if ((*argp)->tag == ClosureTag) {
+        closureHint = csig;
+        closureMethod = method;
+    }
     inodeTypeCheck(pstate, argp, unknownType);
     closureHint = NULL;
+    closureMethod = NULL;
     if (!isExpNode(*argp) || inodeIsError(*argp))
         return;
     INode *vtype = ((IExpNode*)*argp)->vtype;
@@ -557,7 +575,8 @@ static void typeLitNewAllocate(TypeCheckState *pstate, FnCallNode **nodep, RefNo
     }
     if (reftype->tag == VirtRefTag) {
         StructNode *calltrait = (StructNode*)itypeGetTypeDcl(reftype->vtexp);
-        if (calltrait->tag == StructTag && calltrait->callsig && value == NULL) {
+        INode *only = node->args && node->args->used == 1 ? nodesGet(node->args, 0) : NULL;
+        if (calltrait->tag == StructTag && value == NULL && (calltrait->callsig || (only && only->tag == ClosureTag))) {
             typeLitNewCallable(pstate, nodep, reftype, option);
             return;
         }

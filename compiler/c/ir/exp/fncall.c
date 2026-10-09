@@ -2585,7 +2585,14 @@ static FnSigNode *fnCallCallableParm(FnDclNode *cand, uint32_t pos) {
         return NULL;
     if (cand->genericinfo) {
         INode *refperm;
-        return genericParmBound(cand, pos, &refperm);
+        FnSigNode *bound = genericParmBound(cand, pos, &refperm);
+        if (bound == NULL) {
+            Name *method;
+            uint32_t count;
+            StructNode *trait = genericParmTraitBound(cand, pos, &refperm);
+            bound = trait ? closureTraitSig(trait, &method, &count) : NULL;
+        }
+        return bound;
     }
     INode *ptype = iexpGetTypeDcl(nodesGet(sig->parms, pos));
     if (ptype->tag == RefTag) {
@@ -2593,8 +2600,12 @@ static FnSigNode *fnCallCallableParm(FnDclNode *cand, uint32_t pos) {
         if (target->tag == FnSigTag)
             return (FnSigNode*)target;
     }
-    if (ptype->tag == VirtRefTag)
-        return fnSigOfCallTrait(((RefNode*)ptype)->vtexp);
+    if (ptype->tag == VirtRefTag) {
+        INode *target = itypeGetTypeDcl(((RefNode*)ptype)->vtexp);
+        Name *method;
+        uint32_t count;
+        return target->tag == StructTag ? closureTraitSig((StructNode*)target, &method, &count) : NULL;
+    }
     return NULL;
 }
 
@@ -2639,17 +2650,47 @@ static int fnCallFieldCall(TypeCheckState *pstate, FnCallNode *node, FieldDclNod
 
 // A parameter that takes a borrowed callable, '&<fn(x i32) i32' or '&<mut fn(...)':
 // the signature a closure literal given to it is to fit, and the permission it
-// is lent with. NULL for any other parameter.
-static FnSigNode *fnCallLendParm(INode *ptype, INode **lendperm) {
+// is lent with. A parameter that takes a borrowed trait with one method,
+// '&<Shape', is the same: the literal fills the method, whose name is in
+// '*method'. NULL for any other parameter; '*bad' is the trait of a borrowed
+// virtual reference a literal cannot fill (it has not exactly one method).
+static FnSigNode *fnCallLendParm(INode *ptype, INode **lendperm, Name **method, StructNode **bad) {
+    *method = NULL;
+    *bad = NULL;
     if (ptype == NULL || ptype == unknownType || !isTypeNode(ptype))
         return NULL;
     INode *dcl = itypeGetTypeDcl(ptype);
     if (dcl->tag != VirtRefTag || itypeGetTypeDcl(((RefNode*)dcl)->region) != (INode*)borrowRef)
         return NULL;
     FnSigNode *sig = fnSigOfCallTrait(((RefNode*)dcl)->vtexp);
-    if (sig)
-        *lendperm = (INode*)newPermUseNode((PermNode*)itypeGetTypeDcl(((RefNode*)dcl)->perm));
+    if (sig == NULL) {
+        StructNode *trait = (StructNode*)itypeGetTypeDcl(((RefNode*)dcl)->vtexp);
+        uint32_t count;
+        if (trait->tag != StructTag || !(trait->flags & TraitType))
+            return NULL;
+        sig = closureTraitSig(trait, method, &count);
+        if (sig == NULL) {
+            *bad = trait;
+            return NULL;
+        }
+    }
+    *lendperm = (INode*)newPermUseNode((PermNode*)itypeGetTypeDcl(((RefNode*)dcl)->perm));
     return sig;
+}
+
+// A closure literal wanted where 'trait' is, which has not exactly one method for
+// it to fill: refused, naming what the trait has
+void fnCallClosureTraitRefused(INode *lit, StructNode *trait) {
+    Name *method;
+    uint32_t count;
+    closureTraitSig(trait, &method, &count);
+    if (count == 0)
+        errorMsgNode(lit, ErrorClosureTrait,
+            "A closure fills a trait that has one method, and %s has none.", &trait->namesym->namestr);
+    else
+        errorMsgNode(lit, ErrorClosureTrait,
+            "A closure fills a trait that has exactly one method and no field, and %s has %u methods and fields (the first method is `%s`): write a struct that implements it.",
+            &trait->namesym->namestr, count, method ? &method->namestr : "...");
 }
 
 // Check a closure literal given as an argument to a parameter of type 'ptype'.
@@ -2657,7 +2698,14 @@ static FnSigNode *fnCallLendParm(INode *ptype, INode **lendperm) {
 // a temporary of the statement, as a borrow of it would be.
 static void fnCallCheckClosureArg(TypeCheckState *pstate, INode **argp, INode *ptype) {
     INode *lendperm;
-    FnSigNode *sig = fnCallLendParm(ptype, &lendperm);
+    Name *method;
+    StructNode *bad;
+    FnSigNode *sig = fnCallLendParm(ptype, &lendperm, &method, &bad);
+    if (bad) {
+        fnCallClosureTraitRefused(*argp, bad);
+        *argp = newErrorNode(*argp);
+        return;
+    }
     if (sig == NULL) {
         inodeTypeCheck(pstate, argp, ptype);
         return;
@@ -2665,8 +2713,13 @@ static void fnCallCheckClosureArg(TypeCheckState *pstate, INode **argp, INode *p
     INode *lit = *argp;
     *argp = (INode*)newRefNodeFull(BorrowTag, lit, borrowRef, lendperm, lit);
     closureHint = sig;
+    closureMethod = method;
     inodeTypeCheck(pstate, argp, unknownType);
     closureHint = NULL;
+    closureMethod = NULL;
+    // A literal that failed is reported once; the lent borrow of it is no argument to coerce
+    if ((*argp)->tag == BorrowTag && inodeIsError(((RefNode*)*argp)->vtexp))
+        *argp = newErrorNode(*argp);
 }
 
 // The overload a closure literal written as argument 'argi' calls for. It is
@@ -2776,14 +2829,32 @@ static int fnCallClosureArgs(TypeCheckState *pstate, FnCallNode *node, FnDclNode
         FnDclNode *generic = gengeneric ? gengeneric : (pick && pick->genericinfo ? pick : NULL);
         if (generic) {
             INode *refperm;
+            Name *method = NULL;
             FnSigNode *sig = genericClosureSig(pstate, generic, node->args, firstparm, argi, &refperm);
+            // A parameter bound by a trait with one method: the literal fills that method
+            if (sig == NULL) {
+                INode *traitperm;
+                StructNode *trait = genericParmTraitBound(generic, firstparm + argi, &traitperm);
+                if (trait) {
+                    uint32_t count;
+                    sig = closureTraitSig(trait, &method, &count);
+                    if (sig == NULL) {
+                        fnCallClosureTraitRefused(*argsp, trait);
+                        *argsp = newErrorNode(*argsp);
+                        return 0;
+                    }
+                    refperm = traitperm;
+                }
+            }
             if (refperm) {
                 INode *lit = *argsp;
                 *argsp = (INode*)newRefNodeFull(BorrowTag, lit, borrowRef, refperm, lit);
             }
             closureHint = sig;
+            closureMethod = method;
             inodeTypeCheck(pstate, argsp, unknownType);
             closureHint = NULL;
+            closureMethod = NULL;
         }
         else if (pick) {
             FnSigNode *sig = (FnSigNode*)itypeGetTypeDcl(pick->vtype);
@@ -2791,6 +2862,12 @@ static int fnCallClosureArgs(TypeCheckState *pstate, FnCallNode *node, FnDclNode
         }
         else
             inodeTypeCheck(pstate, argsp, unknownType);
+        // A closure that failed leaves the call nothing to infer from: the cause is
+        // reported, and the call is given up without a second report
+        if (inodeIsError(*argsp) || ((*argsp)->tag == BorrowTag && inodeIsError(((RefNode*)*argsp)->vtexp))) {
+            *argsp = newErrorNode(*argsp);
+            return 0;
+        }
         ++argi;
     }
     return 1;
