@@ -346,13 +346,18 @@ Identity is selected by `iNsTypeFindPtrMethod`, which wants the two operands of
 the same type, permission included, so `&i32 === &mut i32` is refused as no
 candidate. `fnCallLowerRefCompare`:
 
-- **Both operands must be references.** One side a reference and the other a
-  value is `ErrorRefCompareMixed`, rather than read through on one side only, so
-  `r == v` never says something `*r == v` does not. The mirror, a value on the
-  left and a reference on the right, reaches the value's own operator and is
-  refused there as no candidate. A reference to an array with a slice on the
-  right is the exception: it is compared as the slice it converts to
-  (`fnCallArrayAsSlice`).
+- **One side a reference and the other a value** is read through only for a
+  borrow of a value that copies freely (`fnCallBorrowTypeReadsThrough`: below),
+  so `x > 1` and `x == v` compare the value the borrow lends, as `*x > 1`
+  does. For any other referent it is `ErrorRefCompareMixed`, rather than read
+  through on one side only, so `r == v` never says something `*r == v` does not
+  (and a value is never moved out of a borrow to compare it). The mirror, a
+  value on the left and a reference on the right, reaches the value's own
+  operator, where the argument is read through by the same rule
+  (`fnCallLowerMethod`) and otherwise refused as no candidate. A reference to
+  an array with a slice on the right is the exception: it is compared as the
+  slice it converts to (`fnCallArrayAsSlice`). A derived `!=` follows the same
+  line (`fnCallNeFromEq`).
 - **A referent that is a pointer, a reference or a slice is read through** on
   both sides, and the result compared as it would be by value: a pointer by its
   own operators, a reference by this same function again, a slice by
@@ -520,7 +525,19 @@ Three adjustments, two of them asymmetric on purpose:
 - **The deref retry.** A receiver held through a reference still satisfies a
   method declaring `self` by value: `derefInject`, then select again. It runs
   *only* when no candidate matched at all, so a real ambiguity is still an
-  ambiguity.
+  ambiguity. **An operator's one argument is read through the same way**, when
+  it is a borrow of a value that copies freely (`fnCallBorrowReadsThrough`: a
+  `RefTag` whose region is the borrow region, not a key, not a lock
+  permission, not fat, and whose referent is not `MoveType` and is a method
+  type, other than a trait that is not an enum). The attempts, each only after
+  the one before found no candidate: the receiver read through; receiver and
+  argument both; the argument alone, which an operator-assign needs, its
+  receiver being the `&mut` it takes; so `total + x`, `x + y`, `sum += x` and
+  `3 <= x` select the value's operator. A candidate declared for references
+  matches the operands as written before any of this, and a type that moves is
+  never read through, so a borrowed `String` is refused where it was. An
+  argument that is not a borrow of such a value, and an index (`FlagIndex`,
+  which is not an operator), are left alone.
 - **The borrow retry** (`fnCallBorrowReceiver`). A receiver held as a value
   reaches a method declaring `self &` or `self &mut`: it is probed as a `ro`
   borrow, then (for a receiver whose type declares `Immutable`, whose `self &`
@@ -536,10 +553,10 @@ Three adjustments, two of them asymmetric on purpose:
   An ambiguity among the probed candidates is reported as one.
 - **An operator on a pointer does not reach through.** `p + 2` offsets the
   pointer; `p * 2` is an error rather than becoming `(*p) * 2`. `FlagOperator`
-  on a pointer receiver is what skips the retry. A reference's comparison is
-  the other way round, reading through both operands, which the retry cannot
-  do because it dereferences only the receiver — `fnCallLowerRefCompare` does
-  it before `fnCallLowerMethod` is reached.
+  on a pointer receiver is what skips the retry, argument included. A
+  reference's comparison is the other way round, reading through both
+  operands, which `fnCallLowerRefCompare` does before `fnCallLowerMethod` is
+  reached.
 
 **An index in set position.** `x[i] = v`, `x[i].f = v` and an operator
 changing `x[i]` or a field of it in place write to the element, so where
