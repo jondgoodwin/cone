@@ -397,7 +397,10 @@ reference made or held inside an actor -- a state field, a synchronous method's
 parameter, an allocation, call or literal in any method's body, `init` and
 `final` included -- is `ErrorGcStopgap` (`actorRefuseGc`, from `actorCheckAll`),
 as is one made in a `parallel each` (`parallelEachCheckBody`), until the
-collector is per actor.
+collector is per actor. A `parallel each` body (or a builder's filter or
+`yield`) that names a value from outside, or its item, whose type is not safe to
+share across the passes (it holds an `Rc`-like owner or a traced reference) is
+`ErrorParReach` (`parCheckReach`); copying one stays `ErrorParCopy`.
 
 `await` has five error codes and a warning. Where it may not stand -- anywhere
 but a behaviour -- is `ErrorAwaitPlace`; on a behaviour that returns nothing,

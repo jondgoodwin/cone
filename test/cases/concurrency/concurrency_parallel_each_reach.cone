@@ -1,0 +1,151 @@
+// What a 'parallel each' body may reach. A value from outside the loop whose type
+// is not safe to share across the passes (it holds an aliasable owner of a region
+// that does not declare ThreadSafe, an Rc, or a traced reference) may not be named
+// in the body, its parallel builder's header, filter or yield at all, ErrorParReach:
+// not copied (that stays ErrorParCopy, concurrency_parallel_each_copies), and not
+// read through, lent, or passed to a function, since a callee could copy what it is
+// handed. Reaching it through a field, an element or a borrow counts. The way
+// through is to borrow the contents before the loop ('imm n = &*shared;') and use the
+// borrow, which is a number's: concurrency_parallel_each_counted runs that.
+//
+//   - 3D Web's probe d1: a helper copying an Rc it was lent, which compiled and ran
+//   - a field beside the Rc, an element of an array of them, a borrow of a struct
+//     holding one, the pass's own item when the source's items hold one
+//   - a program's own counted region (refused) and one declaring ThreadSafe
+//     (allowed): the rule reads what a region declares, never a name
+//   - a traced reference, Gc or a program's own traced region
+//   - a parallel builder's header, filter and yield
+//   - allowed beside them: an Arc, an Atomic, numbers, the contents borrowed
+//     before the loop, an Rc the pass makes itself
+
+mod concurrency_parallel_each_reach;
+
+import collections use *;
+import sync use *;
+import actors;
+import collector;
+import libc;
+
+struct Holder {
+  shared Rc[imm, u64];
+  n u64;
+}
+
+struct Leaf { pub n u64; }
+
+// A region counting its owners without atomic operations, and one that says it may
+struct Counted is RegionRef {
+  cnt usize;
+  fn alloc(size usize) *u8 inline { malloc(size); }
+  fn init(self &new) inline { *self = new Counted(1usize); }
+  fn aliasRef(self &uni Counted) inline { cnt = cnt + 1usize; }
+  fn dealiasRef(self &uni Counted) bool inline { cnt = cnt - 1usize; cnt == 0usize; }
+}
+
+struct Safe is RegionRef, ThreadSafe {
+  cnt usize;
+  fn alloc(size usize) *u8 inline { malloc(size); }
+  fn init(self &new) inline { *self = new Safe(1usize); }
+  fn aliasRef(self &uni Safe) inline { mem.atomicAdd[usize](self as *usize, 1usize, MemOrder.Relaxed[]); }
+  fn dealiasRef(self &uni Safe) bool inline {
+    mem.atomicSub[usize](self as *usize, 1usize, MemOrder.AcqRel[]) == 1usize;
+  }
+}
+
+// A traced region of the program's own
+struct Mine is RegionRef, Traced {
+  pub id i64;
+  fn alloc(size usize) *u8 {
+    imm p = malloc(size);
+    mem.writeRaw(p as *Mine, new Mine(1));
+    p;
+  }
+  fn mark(self &uni Mine) {}
+}
+
+// 3D Web's probe d1: a helper that copies an Rc it was lent
+fn grab(r &Rc[imm, u64]) u64 {
+  imm c = *r;
+  *c;
+}
+
+fn probe() {
+  imm shared = new Rc[imm, u64](7u64);
+  imm total = Atomic[u64].of(0u64);
+  parallel each i in 0usize < 1000usize {
+    total.add(grab(&shared));                      //~ ErrorParReach "reaches 'shared'"
+  }
+}
+
+// Read through, and lent, are reaching too
+fn reads(shared Rc[imm, u64]) {
+  imm total = Atomic[u64].of(0u64);
+  parallel each i in 0usize < 1000usize {
+    total.add(*shared);                            //~ ErrorParReach "reaches 'shared'"
+  }
+}
+
+// A field beside the Rc, in a struct made here and in one lent
+fn fields(h &Holder) {
+  imm holder = new Holder(new Rc[imm, u64](3u64), 10u64);
+  imm total = Atomic[u64].of(0u64);
+  parallel each i in 0usize < 1000usize {
+    total.add(holder.n);                           //~ ErrorParReach "reaches 'holder'"
+    total.add(h.n);                                //~ ErrorParReach "reaches 'h'"
+  }
+}
+
+// An element of an array of them, and the pass's item when the items hold one
+fn elements(arr &Array[Rc[imm, u64], 2]) {
+  imm total = Atomic[u64].of(0u64);
+  parallel each i in 0usize < 1000usize {
+    total.add(*arr[1usize]);                     //~ ErrorParReach "reaches 'arr'"
+  }
+  parallel each r in arr {
+    total.add(**r);                                //~ ErrorParReach "reaches its item 'r'"
+  }
+}
+
+// A region of the program's own: counted without atomics is refused; one declaring
+// ThreadSafe is allowed
+fn regions() {
+  imm counted = new Counted[imm, Leaf](5u64);
+  imm safe = new Safe[imm, Leaf](5u64);
+  imm total = Atomic[u64].of(0u64);
+  parallel each i in 0usize < 1000usize {
+    total.add(counted.n);                          //~ ErrorParReach "reaches 'counted'"
+  }
+  parallel each i in 0usize < 1000usize {
+    total.add(safe.n);
+  }
+}
+
+// Traced references: Gc, and a region of the program's own
+fn traced(g Gc[imm, u64], m Mine[imm, Leaf]) {
+  imm total = Atomic[u64].of(0u64);
+  parallel each i in 0usize < 1000usize {
+    total.add(*g);                                 //~ ErrorParReach "reaches 'g'"
+    total.add(m.n);                                //~ ErrorParReach "reaches 'm'"
+  }
+}
+
+// The parallel builder keeps the rule in its header, filter and yield
+fn builders(xs &List[u64], shared Rc[imm, u64]) {
+  imm a = new List[u64] <- parallel each x in xs yield *shared;              //~ ErrorParReach "reaches 'shared'"
+  imm b = new List[u64] <- parallel each x in xs if *shared > 3u64 yield *x;  //~ ErrorParReach "reaches 'shared'"
+}
+
+// Allowed: the contents borrowed before the loop, an Arc, an Atomic, a number, an
+// Rc the pass makes, a borrow of a list of numbers
+fn allowed(shared Rc[imm, u64], xs &List[u64]) {
+  imm sv = &*shared;
+  imm arc = new Arc[imm, u64](5u64);
+  imm count = Atomic[u64].of(0u64);
+  imm k = 4u64;
+  parallel each x in xs {
+    imm made = new Rc[imm, u64](*x);
+    imm again = made;
+    count.add(*sv + *arc + k + *again);
+  }
+  imm ys = new List[u64] <- parallel each x in xs yield *x + *sv;
+}
