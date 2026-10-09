@@ -13,7 +13,10 @@
 //   - a range that does not begin at 0 touches only its own items
 //   - a body that itself calls parallelRange, over the rows of a grid
 //   - work really is spread: pieces wait until a second thread has run one
-//     (or three seconds pass), and the threads that ran them are counted
+//     (or three seconds pass), and the threads that ran them are counted; a
+//     loop begun off the workers has its first worker hold its first piece
+//     until another thread runs one, which only a steal from that worker's
+//     queue can supply, so a steal is counted, whatever the machine's load
 //   - the scheduled form returns at once, and the last piece calls onDone
 //     exactly once; for a range no longer than the grain, onDone is called
 //     before parallelRangeThen returns
@@ -254,7 +257,27 @@ fn main() {
     actors.parallelRange(0usize, 64usize, 1usize, &bodySpread, &mut sp as *Spread as *u8);
     report("spread: every item run", sp.items.load() == 64u64);
     report("spread: more than one thread ran pieces", bits(sp.ran.load()) > 1u64);
-    report("spread: pieces were taken from another queue", actors.stats().taskSteals > 0u64);
+
+    // A steal, forced. A loop begun with parallelRangeThen from main has one task
+    // on the shared deque, which a worker takes (that is not a steal) and splits:
+    // the halves go on the top of that worker's own deque, and it runs the first
+    // piece, which bodySpread holds until a second thread has run one. The only
+    // way a second thread can get a piece is to take it from that worker's deque,
+    // which is a steal. Counting the steals of the whole run instead, as this
+    // once did, is not enough: a worker taking from the shared deque is not
+    // counted, and a loaded machine can run every piece without one worker
+    // stealing from another (it failed 16 in 1000 runs with 24 runs at once).
+    imm stolenBefore = actors.stats().taskSteals;
+    mut held = new Spread(Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+    mut fin = new Finish(Atomic[u64].of(0u64), Atomic[u64].of(0u64), newJob(1usize));
+    actors.parallelRangeThen(0usize, 64usize, 1usize, &bodySpread, &mut held as *Spread as *u8,
+      &finished, &mut fin as *Finish as *u8);
+    while fin.flag.load() == 0u64 {
+      thread.sleep(time.Duration.fromMillis(1));
+    }
+    report("spread: a loop begun off the workers: every item run", held.items.load() == 64u64 and fin.calls.load() == 1u64);
+    report("spread: a piece waiting on a busy worker was stolen by another",
+      actors.stats().taskSteals > stolenBefore and bits(held.ran.load()) > 1u64 and held.ran.load() < (1u64 << 63u64));
     report("spread: four workers", actors.stats().workers == 4u32);
   }
 
