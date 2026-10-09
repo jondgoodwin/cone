@@ -443,6 +443,11 @@ static int parRuntime(TypeCheckState *pstate, INode *lexnode) {
             &mod->namesym->namestr);
         return 0;
     }
+    if (yieldAny() && yieldGenOf(fn) != NULL) {
+        errorMsgNode(lexnode, ErrorParRuntime,
+            "A 'parallel each' inside a generator is not built: a generator's body is run a step at a time by whoever calls 'next', and its passes would have to finish within one step. Run the loop in a function the generator calls.");
+        return 0;
+    }
     if (actorOfState(inodeGetOwner((INode*)fn)) != NULL) {
         errorMsgNode(lexnode, ErrorParRuntime,
             "A 'parallel each' inside an actor's method is not built yet: the method must keep its actor from running again until the loop has finished, and the loop must borrow the actor's fields, which the language form does not do yet. Write it in a function outside actors for now.");

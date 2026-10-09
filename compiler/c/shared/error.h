@@ -561,7 +561,7 @@ enum ErrorCode {
     ErrorParSource = 1360,      // A 'parallel each' over a source that cannot be split into independent pieces and report its size (a cursor, a generator, a file, a channel), or whose pieces the compiler cannot yet walk
     ErrorParControl = 1361,     // A 'break', 'return' or 'await', or a 'continue' of an outer loop, in a 'parallel each' body
     ErrorParWrite = 1362,       // A 'parallel each' body writes something declared outside the loop (or lends it for writing), which its pieces would do at the same time
-    ErrorParRuntime = 1363,     // A 'parallel each' in a module that does not import the actors package its pieces run on, or in an actor's method (not built yet)
+    ErrorParRuntime = 1363,     // A 'parallel each' in a module that does not import the actors package its pieces run on, or in an actor's method or a generator (not built)
 
     // Warnings
     WarnCode = 3000,
