@@ -234,3 +234,120 @@ pub fn curveDeform(m &PolyMesh, path &Path, along Vec3, up Vec3, origin Vec3) Po
   }
   withPositions(m, out);
 }
+
+// ======== Deformers fed by a function ========
+//
+// Each takes the rule as a function, written at the call as a closure
+// ('p => p * 2.', or the full form when it needs state of its own) or named
+// as a plain function ('&ease'). The function is a generic parameter, so each
+// distinct one is compiled into its own copy of the loop and the call is
+// inlined: the rule is asked once per vertex at no more than the cost of
+// writing it by hand. The number-taking deformers above stay beside them.
+// A closure borrows what its body names, so a dial is simply a variable in
+// scope, and it may read the very mesh it deforms (the mesh is only read
+// while the deformer runs, and the result is a new one). The rule is a pure
+// function of its argument: it is asked in vertex order, but nothing may
+// depend on that. These are CPU-only.
+//
+// For the three that work along an axis, a vertex's place is u, the fraction
+// of the mesh's own extent along the axis: its t = (p - origin) . along as a
+// fraction between the least t (u = 0) and the greatest (u = 1) over the mesh,
+// so u needs no origin, and a mesh with no extent along the axis has u = 0
+// throughout.
+
+// A general deformer (Blender's Set Position): every vertex goes to f(p), p
+// its position. A noise displacement, a wave, a cast to a sphere, a domain
+// warp are each a choice of f.
+pub fn deform[F fn(p Vec3) Vec3](m &PolyMesh, f &F) PolyMesh {
+  imm n = m.positions.len();
+  mut out = List[Vec3].withCapacity(n);
+  mut i = 0usize;
+  while i < n {
+    out.push(f(*m.positions[i]));
+    i = i + 1usize;
+  }
+  withPositions(m, out);
+}
+
+// A deformer whose rule is a function of the place along an axis: every
+// vertex is moved by the offset f(u) (a shear, a sway, a swell off to one
+// side; for a scale or a turn about the axis, 'taperBy' and 'twistBy'). The
+// axis 'along' is made unit.
+pub fn deformAlong[F fn(u f32) Vec3](m &PolyMesh, along Vec3, f &F) PolyMesh {
+  imm d = unit(along);
+  imm ext = extentAlong(m, new Vec3(0., 0., 0.), d);
+  imm span = ext.y - ext.x;
+  imm n = m.positions.len();
+  mut out = List[Vec3].withCapacity(n);
+  mut i = 0usize;
+  while i < n {
+    imm p = *m.positions[i];
+    imm u = if span > 0. {(p.dot(d) - ext.x) / span;} else {0.;};
+    out.push(p + f(u));
+    i = i + 1usize;
+  }
+  withPositions(m, out);
+}
+
+// A taper (see 'taper') whose scale is any function of the place along the
+// axis: each vertex's offset from the line through origin along 'along' is
+// scaled by scaleAt(u), its t unchanged. 'taper' by a factor is
+// scaleAt = u => 1 + factor u when the origin is at the mesh's least t.
+pub fn taperBy[F fn(u f32) f32](m &PolyMesh, along Vec3, origin Vec3, scaleAt &F) PolyMesh {
+  imm d = unit(along);
+  imm ext = extentAlong(m, origin, d);
+  imm span = ext.y - ext.x;
+  imm n = m.positions.len();
+  mut out = List[Vec3].withCapacity(n);
+  mut i = 0usize;
+  while i < n {
+    imm p = *m.positions[i];
+    imm q = p - origin;
+    imm t = q.dot(d);
+    imm u = if span > 0. {(t - ext.x) / span;} else {0.;};
+    out.push(origin + d * t + (q - d * t) * scaleAt(u));
+    i = i + 1usize;
+  }
+  withPositions(m, out);
+}
+
+// A twist (see 'twist') whose turn is any function of the place along the
+// axis: each vertex is turned about the line through origin along 'along' by
+// angleAt(u) radians, counterclockwise seen from the tip of 'along'.
+pub fn twistBy[F fn(u f32) f32](m &PolyMesh, along Vec3, origin Vec3, angleAt &F) PolyMesh {
+  imm d = unit(along);
+  imm ext = extentAlong(m, origin, d);
+  imm span = ext.y - ext.x;
+  imm n = m.positions.len();
+  mut out = List[Vec3].withCapacity(n);
+  mut i = 0usize;
+  while i < n {
+    imm p = *m.positions[i];
+    imm q = p - origin;
+    imm t = q.dot(d);
+    imm u = if span > 0. {(t - ext.x) / span;} else {0.;};
+    imm rot = Quat.angleAxis(angleAt(u), d);
+    out.push(origin + d * t + rot * (q - d * t));
+    i = i + 1usize;
+  }
+  withPositions(m, out);
+}
+
+// A displacement along the normals (see 'displaceAlongNormal') whose amount
+// is a function of the vertex, in place of a channel the caller filled first:
+// each vertex moves along its unit normal by amountAt(k), k its index. The
+// function reads whatever it likes of vertex k, by capturing the mesh: its
+// position ('m.positions'), a channel ('m.float(ch, k)'), or a dial in
+// scope. The normals are those of the mesh as given, all found before any
+// vertex moves. An isolated vertex has no normal and stays.
+pub fn displaceAlongNormalBy[F fn(k u32) f32](m &PolyMesh, amountAt &F) PolyMesh {
+  imm normals = m.vertexNormals();
+  imm n = m.positions.len();
+  mut out = List[Vec3].withCapacity(n);
+  mut i = 0usize;
+  while i < n {
+    out.push(*m.positions[i] + *normals[i] * amountAt(u32.from(i)));
+    i = i + 1usize;
+  }
+  withPositions(m, out);
+}
