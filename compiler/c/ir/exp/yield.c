@@ -80,6 +80,8 @@ void yieldGenCloned(StructNode *template, StructNode *copy) {
     if (step == NULL || none == NULL)
         return;
     GenInfo *info = yieldGenNew(step, copy, none);
+    info->recv = orig->recv;
+    info->recvtype = orig->recvtype;
     for (nodelistFor(&copy->fields, cnt, nodesp)) {
         if (((FieldDclNode *)*nodesp)->namesym == orig->state->namesym)
             info->state = (FieldDclNode *)*nodesp;

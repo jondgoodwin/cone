@@ -262,6 +262,8 @@ int assignlvalrtype(INode *lval, INode *rtype, HollowNode **hollowrel) {
         (!lvalIsName || ((VarDclNode*)lvalvar)->flowtempflags & VarInitialized)) {
         if (permIsLock(lvalperm))
             permLockRefused(lval, lvalperm, "write");
+        else if (lvalvar && lvalvar->tag == VarDclTag && (lvalvar->flags & FlagEachVar))
+            errorMsgNode(lval, ErrorNoMut, "You do not have permission to modify lval: the variable of an 'each' is a new one every pass that nothing can change. To change the items in place, walk src.mutItems()");
         else
             errorMsgNode(lval, ErrorNoMut, "You do not have permission to modify lval");
         return 0;

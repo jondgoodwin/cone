@@ -1632,9 +1632,17 @@ of its own (`yieldGenCloned`): its own `GenInfo`, so its own plan of the frame,
 seams and boxes. A recursive one is boxed in each instance, the sub-generator's
 type being the instance itself.
 
-Not built: a generator in a library's include file (it would have to carry the
-body whole for an importer to make the struct again; `ErrorGenForm`). Not tried:
-a GPU or WebAssembly target (a box is a C `malloc`).
+**A generator's struct belongs to every object that uses it**, as a generic's
+instance does (`dclIsInstance`): its members are defined in the object of the
+package that declares the generator and again in each importer's, from the text
+of the declaration the include file carries, shared in a described build
+(`GenlShared`) and never exported. The importer's module is not one it generates,
+so `genlImportedInstances` generates the struct's methods, `next` and the rest,
+as it does a generic's instances. The function that makes the generator is the
+package's, exported as any `pub` function is; the importer calls it, and the
+layouts agree because both objects made the frame from the same text.
+
+Not tried: a GPU or WebAssembly target (a box is a C `malloc`).
 
 ## 7. Output, and what does not work
 
