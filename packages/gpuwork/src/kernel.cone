@@ -29,12 +29,6 @@ const SHAPE_UNKNOWN = 0u32;
 const SHAPE_STRUCT = 1u32;
 const SHAPE_SLICE = 2u32;
 
-// What a kernel's twin is until it is given one
-struct NoTwin {
-  placeholder bool;
-  pub fn `()`(self &, inv Invocation, buffers &Array[Words]) {}
-}
-
 // A kernel's twin as it is kept: one owned callable over a dispatch's buffers
 // as words. A Words adapter is kept as it is; a kernel's own function is
 // kept inside a closure that reads each binding as the function's parameter
@@ -118,7 +112,7 @@ pub struct Kernel {
     mut layout = device.createPipelineLayout(&groupLayouts, 0u32);
     imm desc = new ComputePipelineDescriptor(layout: &layout, module: &shader, entryPoint: entryPoint);
     mut pipeline = device.createComputePipeline(&desc);
-    new Kernel(shader, groupLayout, layout, pipeline, acc, u32.from(access.len), size, new So[TwinFn](new NoTwin(false)), false, isCone,
+    new Kernel(shader, groupLayout, layout, pipeline, acc, u32.from(access.len), size, new So[TwinFn](fn(inv Invocation, buffers &Array[Words]) {}), false, isCone,
       String.from(entryPoint), fileIds, fileNames, shapes, strides, false,
       new Array[u32, 8] <- fill 0u32, ok and hasBarriers(spirv, entryPoint));
   }
@@ -129,7 +123,7 @@ pub struct Kernel {
   // dispatch, with the dispatch's buffers as words, in the same order as the
   // kernel's bindings
   pub fn setTwin(self &mut, f &fn(Invocation, &Array[Words])) {
-    twin = new So[TwinFn](fn(inv Invocation, w &Array[Words]) [f] { f(inv, w); });
+    twin = new So[TwinFn](f);
     hasTwin = true;
     hasDirect = false;
   }
