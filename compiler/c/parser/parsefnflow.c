@@ -192,14 +192,13 @@ INode *parseReturn(ParseState *parse) {
     lexNextToken(); // Skip past 'return'
     // In a generator it ends the walk: the caller is handed None from then on
     if (parse->genctx) {
-        if (!parseIsEndOfStatement()) {
+        if (!parseIsEndOfStatement() && !lexIsToken(IfToken)) {
             errorMsgLex(ErrorYieldReturn,
                 "A generator hands its caller values with 'yield', so its 'return' takes none: it ends the walk.");
             parseAnyExpr(parse);
         }
         stmtnode->exp = parseGenNone(parse);
-        parseEndOfStatement();
-        return (INode*)stmtnode;
+        return parseJumpEnd(parse, stmtnode, NULL);
     }
     INode *trailing;
     stmtnode->exp = parseJumpValue(parse, &trailing);
