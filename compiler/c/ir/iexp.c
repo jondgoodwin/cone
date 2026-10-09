@@ -350,6 +350,9 @@ static int iexpCoerceShape(INode **from, INode *totype) {
         // require one ask for, and so does a named constant's use
         if (litWidenFloat(from, totypedcl) || litWidenConst(from, totypedcl))
             return 1;
+        // Refused in GPU code; the conversion is built anyway, so what uses the
+        // value says nothing more
+        closureGpuVirtRefused(*from, totypedcl);
         INode *newfrom = (INode*)newConvCastNode(*from, iexpCoerceType(*from, totypedcl));
         inodeLexCopy(newfrom, *from);
         *from = newfrom;

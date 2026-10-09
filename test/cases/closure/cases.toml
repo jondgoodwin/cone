@@ -147,3 +147,43 @@ category = "reject"
 description = "Closure literals refused: a return type the paths disagree on, a parameter with no type, the wrong parameter count, a global, a change not allowed, overloads that cannot be chosen between"
 tags = ["typecheck"]
 diagnostics = 7
+
+# -------- GPU code --------
+
+# A closure in a kernel, given to a generic bound by a signature: the static
+# form. Everything inlines into the kernel and the closure dissolves into its
+# locals, a borrow of a slice included.
+[scenario.closure_gpu]
+category = "compile"
+description = "On a SPIR-V target a closure literal given to a '[F fn(sig)]' generic compiles, capturing a local, a buffer's slice and listed state that changes, beside a hand-written struct with '()'; the generic is inlined and the closure leaves no stack slot, call or table"
+tags = ["typecheck", "genllvm"]
+
+[[scenario.closure_gpu.run]]
+name = "vulkan"
+options = ["--triple=spirv1.6-unknown-vulkan1.3", "--verify"]
+
+[[scenario.closure_gpu.run]]
+name = "vulkan-debug"
+options = ["--triple=spirv1.6-unknown-vulkan1.3", "--verify", "--debug"]
+
+[[scenario.closure_gpu.check]]
+name = "the-closures-dissolve-into-the-kernels"
+target = "llvmir"
+contains = [
+  "define void @localVar()",
+  "define void @buffer()",
+  "define void @state()",
+  "define void @handWritten()",
+]
+excludes = ["alloca", "define internal", "closure#", "call float"]
+
+# What a closure in GPU code may not hold, nor be made
+[scenario.closure_gpu_reject]
+category = "reject"
+description = "On a SPIR-V target a closure holding an owning reference or a function reference, made a function reference, or made a virtual reference, is refused"
+tags = ["typecheck"]
+diagnostics = 6
+
+[[scenario.closure_gpu_reject.run]]
+name = "vulkan"
+options = ["--triple=spirv1.6-unknown-vulkan1.3"]
