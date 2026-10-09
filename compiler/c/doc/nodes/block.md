@@ -250,8 +250,15 @@ object of a further access) whose type holds a counted owner whose region is not
 variants, tuples and arrays; an `Arc` and a move owner do not count) and that is
 not the pass's own (`parPlaceIsOwn`: a variable declared in the loop, or a part
 of one held inline, not reached through a reference or an index). A copy inside
-a function the body calls is not seen, and neither is a traced local the pass
-declares (its frame is linked into the collector's one chain).
+a function the body calls is not seen.
+
+A **traced reference made** in the loop is refused whole (`ErrorGcStopgap`,
+`gcRefuseVisit`, over the block with the loop's source, filter and `yield`): an
+allocation, a call or a type literal whose type `itypeHoldsTraced` says holds one
+(a traced reference, or a tuple, array, struct or enum holding one inline; it
+does not look behind a borrow, another owner or a pointer). A copy of a place is
+not a new reference, so one from outside is only `ErrorParCopy` and one the pass
+made is refused where it was made. A stopgap until the collector is per actor.
 
 A mutable slice as the source (what `mutItems()` gives, or a `&mut` slice) lends
 each item mutably, as `eachLower` does, so a pass changes its own item through its

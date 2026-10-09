@@ -1,0 +1,178 @@
+mod corout_methods;
+
+// Generator methods: a method declared 'yields', called as any method is. 'self'
+// in its body is the receiver, exactly as in any method; the generator holds it
+// as it holds a parameter (the generator's own struct is never named), so a
+// borrowed receiver stays borrowed for as long as the generator lives, and a
+// receiver taken by value is moved into the generator. Every value printed is
+// worked out by hand from the values put in.
+
+import stdio use *;
+
+struct Node {
+  pub val i64;
+  pub left i64;
+  pub right i64;
+}
+
+// A tree held in an array, a node's children numbered by position
+struct Tree {
+  pub nodes Array[Node, 7];
+
+  // Every node in order. The receiver is borrowed by the generator
+  fn walk(self &Tree) yields &Node {
+    yield each self.from(0usize);
+  }
+
+  // The recursion is a method with a parameter of its own besides the receiver
+  fn from(self &, at usize) yields &Node {
+    imm n = &self.nodes[at];
+    if n.left >= 0i64 { yield each self.from(usize.from(n.left)); }
+    yield n;
+    if n.right >= 0i64 { yield each self.from(usize.from(n.right)); }
+  }
+
+  // The values only, owned items, and the receiver named through 'Self'
+  fn vals(self &) yields i64 {
+    each n in Self.walk(self) { yield n.val; }
+  }
+}
+
+// A receiver borrowed mutably: the generator changes what it was lent
+struct Counter {
+  pub n i64;
+
+  fn up(self &mut, k i64) yields i64 {
+    mut i = 0i64;
+    while i < k {
+      self.n = self.n + 1i64;
+      yield self.n;
+      i = i + 1i64;
+    }
+  }
+}
+
+// A receiver taken by value: moved into the generator, which writes to it
+struct Acc {
+  pub total i64;
+
+  fn running(mut self, step i64) yields i64 {
+    yield self.total;
+    self.total = self.total + step;
+    yield self.total;
+    self.total = self.total + step;
+    yield self.total;
+  }
+}
+
+// A receiver lent mutably, and mutable borrows handed out: each item is a
+// borrow of a slot of the receiver, to write through
+struct Slots {
+  pub vals Array[i64, 3];
+
+  fn slots(self &mut) yields &mut i64 {
+    mut i = 0usize;
+    while i < 3usize {
+      yield &mut self.vals[i];
+      i = i + 1usize;
+    }
+  }
+}
+
+// A generator that answers to 'iter' makes the type something 'each' walks
+// itself, here by the overload name a method may also answer to
+struct Trio {
+  pub a i64;
+  pub b i64;
+  pub c i64;
+
+  fn forward overload iter(self &) yields i64 {
+    yield self.a;
+    yield self.b;
+    yield self.c;
+  }
+
+  fn backward(self &) yields i64 {
+    yield self.c;
+    yield self.b;
+    yield self.a;
+  }
+}
+
+// A type's function with no receiver is a generator too
+struct Span {
+  pub lo i64;
+
+  fn range(from i64, to i64) yields i64 {
+    mut i = from;
+    while i < to {
+      yield i;
+      i = i + 1i64;
+    }
+  }
+}
+
+fn main() {
+  imm tree = new Tree([
+    new Node(40i64, 1i64, 2i64),
+    new Node(20i64, 3i64, 4i64),
+    new Node(60i64, 5i64, 6i64),
+    new Node(10i64, -1i64, -1i64),
+    new Node(30i64, -1i64, -1i64),
+    new Node(50i64, -1i64, -1i64),
+    new Node(70i64, -1i64, -1i64)]);
+
+  // The call is a method call; each walk is a new generator over the same tree
+  each n in tree.walk() { printInt(n.val); printStr(" "); }
+  printStr("\n");
+  each n in tree.walk() {
+    if n.val == 40i64 { break; }
+    printInt(n.val); printStr(" ");
+  }
+  printStr("\n");
+
+  // Two generators over one receiver at once: both borrow it, neither writes
+  mut g1 = tree.walk();
+  mut g2 = tree.vals();
+  mut k = 0;
+  while k < 3 {
+    match g1.next() { case imm v Some { printInt(v.value.val); } case is None { printStr("-"); } }
+    printStr("/");
+    match g2.next() { case imm v Some { printInt(v.value); } case is None { printStr("-"); } }
+    printStr(" ");
+    k = k + 1;
+  }
+  printStr("\n");
+
+  // A mutable receiver: the counter is written through, and is its own
+  // again once the generator is gone
+  mut c = new Counter(10i64);
+  each v in c.up(3i64) { printInt(v); printStr(" "); }
+  printInt(c.n);
+  printStr("\n");
+  each v in c.up(2i64) { printInt(v); printStr(" "); }
+  printInt(c.n);
+  printStr("\n");
+
+  // A receiver by value: a copy of it is walked, and the original is untouched
+  imm acc = new Acc(100i64);
+  each v in acc.running(5i64) { printInt(v); printStr(" "); }
+  printInt(acc.total);
+  printStr("\n");
+
+  each v in Span.range(3i64, 7i64) { printInt(v); printStr(" "); }
+  printStr("\n");
+
+  // 'each' walks a value whose type has the generator 'iter'; the methods by name
+  imm trio = new Trio(7i64, 8i64, 9i64);
+  each v in trio { printInt(v); printStr(" "); }
+  each v in trio.backward() { printInt(v); printStr(" "); }
+  each v in trio.forward() { printInt(v); printStr(" "); }
+  printStr("\n");
+
+  // Writing through each item borrowed from the receiver
+  mut slots = new Slots([1i64, 2i64, 3i64]);
+  each p in slots.slots() { *p = *p * 10i64; }
+  printInt(slots.vals[0]); printStr(" "); printInt(slots.vals[1]); printStr(" "); printInt(slots.vals[2]);
+  printStr("\n");
+}

@@ -58,6 +58,34 @@ GenInfo *yieldGenOfCtor(FnDclNode *ctor) {
     return NULL;
 }
 
+// The template's step and none are found in the copy by name, and its state by
+// the field of that name. The copy's shells exist when this is called, and a
+// body is not needed to know which they are
+void yieldGenCloned(StructNode *template, StructNode *copy) {
+    GenInfo *orig = yieldGenOfStruct((INode *)template);
+    if (orig == NULL || orig->step == NULL || orig->none == NULL || orig->state == NULL)
+        return;
+    FnDclNode *step = NULL, *none = NULL;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&copy->nodelist, cnt, nodesp)) {
+        if ((*nodesp)->tag != FnDclTag)
+            continue;
+        Name *name = ((FnDclNode *)*nodesp)->namesym;
+        if (name == orig->step->namesym)
+            step = (FnDclNode *)*nodesp;
+        else if (name == orig->none->namesym)
+            none = (FnDclNode *)*nodesp;
+    }
+    if (step == NULL || none == NULL)
+        return;
+    GenInfo *info = yieldGenNew(step, copy, none);
+    for (nodelistFor(&copy->fields, cnt, nodesp)) {
+        if (((FieldDclNode *)*nodesp)->namesym == orig->state->namesym)
+            info->state = (FieldDclNode *)*nodesp;
+    }
+}
+
 void yieldSplitRegister(GenInfo *info, Nodes *yields) {
     info->yields = yields;
     uint32_t no = 0;

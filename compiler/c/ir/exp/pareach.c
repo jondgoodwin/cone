@@ -568,7 +568,7 @@ static int parCheckAlias(INode *node, void *ctxp) {
 // of frames (conestd's roots.cone, single threaded), written without atomics.
 // A move owner (So) cannot be copied. (Only what the body itself copies is
 // seen: a function it calls that copies a borrow it was handed is that
-// function's; and a traced local the pass declares itself is not refused.)
+// function's. A traced reference the pass makes itself is refused too, below.)
 
 // Does a copy of a reference of this kind write shared state without atomics?
 static int parRefCountsPlain(RefNode *ref) {
@@ -707,6 +707,58 @@ static int parCheckCopies(INode *node, void *ctxp) {
     return 0;
 }
 
+// ---- A Gc in an actor or in a parallel each: refused, for now -------------------
+//
+// The collector keeps its heap and its one chain of roots in process globals,
+// without locks, and a 'Gc' held in an actor's state is on no stack between
+// messages, so a traced reference made, held or copied by an actor, or by the
+// passes of a parallel each, corrupts it. Until the collector is per actor, they
+// are refused. What counts is what itypeHoldsTraced does (a traced reference,
+// or a tuple, array, struct or enum holding one inline; not what a borrow or a
+// raw pointer reaches). A copy of a place is not a new Gc: one made outside the
+// loop is parCheckCopies's refusal, one made inside is refused where it was made.
+
+static ParSet gcReported;
+
+// Refuse a node of a type holding a traced reference, once
+static void gcRefuse(INode *node, INode *type, const char *what, const char *where) {
+    if (parSetHas(&gcReported, node))
+        return;
+    parSetAdd(&gcReported, node);
+    char typename[256] = "";
+    itypeSpellCat(typename, sizeof(typename), type, 0);
+    errorMsgNode(node, ErrorGcStopgap,
+        "A traced reference (a Gc, for example) cannot be used inside an actor or a parallel each yet: this %s a %s, which a collector traces, inside %s. GC per actor is coming; until it lands, the collector's one chain of roots and its heap are not safe on the threads an actor or a parallel each runs on. Use Gc only in code that runs on a single thread.",
+        what, typename, where);
+}
+
+static int gcRefuseVisit(INode *node, void *where) {
+    switch (node->tag) {
+    case AllocateTag:
+    case FnCallTag:
+    case TypeLitTag: {
+        INode *type = isExpNode(node) ? ((IExpNode *)node)->vtype : NULL;
+        if (type != NULL && itypeHoldsTraced(type)) {
+            gcRefuse(node, type, node->tag == AllocateTag ? "makes" : "produces", (const char *)where);
+            return 0;
+        }
+        break;
+    }
+    default:
+        break;
+    }
+    return 1;
+}
+
+void gcStopgapCheckBody(INode *body, const char *where) {
+    parWalk(body, gcRefuseVisit, (void *)where);
+}
+
+void gcStopgapCheckDcl(INode *node, INode *type, const char *where) {
+    if (type != NULL && itypeHoldsTraced(type))
+        gcRefuse(node, type, "holds", where);
+}
+
 // ---- What a loop cut at its end reads from the behaviour's frame --------------
 //
 // The pieces read copies of the variables the body names, taken as the behaviour
@@ -772,6 +824,9 @@ void parallelEachCheckBody(TypeCheckState *pstate, BlockNode *outer) {
     memset(&copies, 0, sizeof(copies));
     copies.inside = ctx.inside;
     parWalk((INode*)loop, parCheckCopies, &copies);
+
+    // Nor makes a Gc, in its header, its filter, its body or its yield (for now)
+    parWalk((INode*)outer, gcRefuseVisit, (void *)"a 'parallel each' body");
 
     // A loop cut at its end reads no borrow held in the behaviour's frame
     if (parHasSeam(outer)) {

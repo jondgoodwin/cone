@@ -392,7 +392,12 @@ initializer's parameter, or a behaviour's returned type, that cannot cross
 threads is `ErrorNotSendable`, the thread check's code, whatever finds it --
 the parser, for a borrow or the state itself, or `actorCheckAll` after type
 check -- and the state's field or synchronous method reached through the
-handle is `ErrorNotPublic`, as any private member is.
+handle is `ErrorNotPublic`, as any private member is. A traced (`Gc`)
+reference made or held inside an actor -- a state field, a synchronous method's
+parameter, an allocation, call or literal in any method's body, `init` and
+`final` included -- is `ErrorGcStopgap` (`actorRefuseGc`, from `actorCheckAll`),
+as is one made in a `parallel each` (`parallelEachCheckBody`), until the
+collector is per actor.
 
 `await` has five error codes and a warning. Where it may not stand -- anywhere
 but a behaviour -- is `ErrorAwaitPlace`; on a behaviour that returns nothing,
@@ -420,8 +425,9 @@ A generator (a function declared `yields`) has four codes, 1350 to 1353. A
 `yield` that stands outside a generator's body, or inside an expression, where a
 value made before it would have to be kept across the seam, is `ErrorYieldPlace`;
 a generator's `return` that takes a value, `ErrorYieldReturn`; a generator of a
-form not built -- generic, a method, `inline`, with a `where` clause, without a
-body, anonymous, or `pub` in a library -- `ErrorGenForm`, its message saying
+form not built -- `inline`, with a `where` clause, without a body, anonymous, with
+type parameters that name lifetimes, a method of a trait, of an enum, of an actor
+or of a type that declares lifetimes, or `pub` in a library -- `ErrorGenForm`, its message saying
 which; a lock's guard or a traced reference that would stay in its frame across a
 `yield`, or a `yield` standing where a temporary of an enclosing statement is
 still to be dropped, `ErrorGenFrame`. A borrow of the generator's own ground held
