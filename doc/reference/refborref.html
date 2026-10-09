@@ -69,10 +69,17 @@
 			still to be used, or is being handed to a call, whether the call could reshape the
 			collection, and it never goes by a method's name. A call could, when
 			(1) it is a method taking the collection writable whose body, or anything its body calls,
-			writes a field of the collection (<span class="pre">clear</span>, <span class="pre">pop</span>
-			and <span class="pre">truncate</span> each write the length; writing an element in place,
-			<span class="pre">set</span> or <span class="pre">l[i] = v</span>, writes no field and reshapes
-			nothing); (2) it is handed a value that can reach a collection of that type (as a field, an
+			(a) writes a field of the collection (<span class="pre">clear</span>, <span class="pre">pop</span>
+			and <span class="pre">truncate</span> each write the length), (b) runs a finalizer of an
+			element, which frees what the element owns (<span class="pre">set</span> on a
+			<span class="pre">List[String]</span> finalizes the String it replaces, so a view of that
+			String's bytes held through another name dangles; on a <span class="pre">List[i64]</span>, whose
+			element has no finalizer, it reshapes nothing), or (c) moves an element that owns something out
+			of the storage and does not put it back. Moving elements about within the storage
+			(<span class="pre">swap</span>, <span class="pre">sortBy</span>) destroys none and moves none
+			out, and the bytes a String element owns stay where they are, so a view of them stays good;
+			writing an element that has no finalizer in place, <span class="pre">l[i] = v</span> on
+			numbers, reshapes nothing; (2) it is handed a value that can reach a collection of that type (as a field, an
 			element, a variant, a pointer, a reference or an owner) by a path it may write, and its body,
 			or what it calls, reshapes one; or (3) it is handed nothing that reaches one and reshapes
 			one through a global. A function whose body the compiler cannot read (an
@@ -102,7 +109,8 @@
 			<span class="pre">&amp;uni</span> is borrowed from, so a method taking
 			<span class="pre">self &amp;uni</span> may be called twice); or copy what is needed out first.
 			What is not followed: a borrow handed out by a free function, which is no method of the
-			collection; two values of one type are not told apart, so a function handed a
+			collection; an element that owns something replaced by an assignment through another name
+			(<span class="pre">m[0usize] = s</span> finalizes the old String, and is no call); two values of one type are not told apart, so a function handed a
 			<span class="pre">List[Pt]</span> that reshapes one is taken to reshape the one borrowed from;
 			and a global that a function whose body is not visible changes while it is handed nothing
 			that reaches the collection.

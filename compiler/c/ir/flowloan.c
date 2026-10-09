@@ -1359,7 +1359,7 @@ static char *loanShapeReason(ShapeNote *note, char *cont, char *buf, size_t size
     const char *name = note->callee ? &note->callee->namestr : "this call";
     switch (note->why) {
     case ReshapeReceiver:
-        snprintf(buf, size, "'%s' writes a field of the %s it is called on, so it could change its shape", name, cont);
+        snprintf(buf, size, "'%s' reshapes the %s it is called on: it writes a field of it, runs a finalizer of an element, or moves an element out", name, cont);
         break;
     case ReshapeReceiverUnseen:
         snprintf(buf, size, "'%s' may change the %s it is called on, and its body is not visible here, so it is assumed to change its shape", name, cont);

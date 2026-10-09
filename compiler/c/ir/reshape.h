@@ -10,8 +10,10 @@
  *
  * A call could reshape a collection of type 'cont' when:
  * - it is a method whose writable 'self' is a 'cont', and the method (in its body,
- *   or what it calls) writes any field of the collection, the header of storage
- *   (layer 2; layer 1, for a method whose body is not visible: assumed to). The
+ *   or what it calls) writes any field of the collection, the header of storage,
+ *   runs a finalizer of an element that has one (frees what it owns), or moves
+ *   such an element out of the storage and does not put it back (layer 2; layer 1,
+ *   for a method whose body is not visible: assumed to). The
  *   receiver's own place is not the shared one when nothing else reaches it: a
  *   local the function owns, or reached through 'uni' references only;
  * - or an argument can reach a value of the type 'cont' (by containment, a field,
@@ -23,8 +25,11 @@
  * - or, handed nothing that reaches the type, it is a callee that reshapes one
  *   through a global.
  *
- * Element writes ('l[i] = v', set, swap) reshape nothing: no header field is
- * written. 'clear', 'pop' and 'truncate' each write the length.
+ * 'clear', 'pop' and 'truncate' each write the length; 'set' of a String finalizes
+ * the String it replaces, and 'set' of a number runs nothing. Moving elements about
+ * within the storage ('swap', a sort) destroys none and moves none out, and what an
+ * element owns stays where it is. An assignment through another name that finalizes
+ * an element ('m[0] = s') is no call and is not seen.
  *
  * @file
  *

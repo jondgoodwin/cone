@@ -297,6 +297,23 @@ int reshapeCall(FnCallNode *call, FnDclNode *meth, int recvunique, INode *cont, 
     int visible = !(call->flags & FlagVDisp) && siVisible(callee);
     uint32_t first = 0;
 
+    // A call handed nothing it could write through (a read-only reference, a number)
+    // can reshape only through a global: most calls, dismissed at once
+    int capable = 0;
+    for (uint32_t k = 0; k < nargs && !capable; ++k) {
+        INode *t = iexpGetTypeDcl(nodesGet(call->args, k));
+        capable = ((t->tag == RefTag || t->tag == ArrayRefTag) && (permGetFlags(((RefNode *)t)->perm) & MayWrite))
+            || (t->tag == StructTag && ((StructNode *)t)->carriesborrow != CarriesBorrowNo)
+            || t->tag == PtrTag || t->tag == VirtRefTag;
+    }
+    if (!capable) {
+        if (visible && reshapeGlobalsReach(cont) && shapeTypeReshapes(callee, cont, 0)) {
+            verdict->why = ReshapeGlobal;
+            return 1;
+        }
+        return 0;
+    }
+
     // The receiver, a method on the collection itself: layer 2 reads its body
     // (layer 1, assuming a method it cannot read reshapes), and a read-only
     // 'self' or a receiver nothing else reaches is no danger

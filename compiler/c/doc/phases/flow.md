@@ -1242,10 +1242,20 @@ answered once per type per call):
   and its place is reached through a shared path (`recvunique` is false: a local,
   or a place reached through `uni` references only, has no other name): layer 2
   reads the method's body (`shapeParamReshapes`, `SiModeField` of `siAsk`), which
-  reshapes when it, or anything it calls, writes any field of what `self` points at
+  reshapes when it, or anything it calls, (a) writes any field of what `self` points at
   (the same engine as the inference of a shape-changing type, asked for any field
-  and not only a place that holds storage). `clear`, `pop` and `truncate` write the
-  length; `set`, `swap` and `viewMut` write no field. A method whose body is not
+  and not only a place that holds storage), (b) calls `mem.finalize` on a pointer
+  read from it, of an element type that needs a finalizer (`itypeNeedsFinal`), or
+  (c) calls `mem.readRaw` on one, of such a type, and does not write the value back
+  into the storage (`siElementCall`; a value read into a local that is only handed to
+  `mem.writeRaw` is put back, as `swap` does; `mem.moveRaw` is a move within the
+  storage). `clear`, `pop` and `truncate` write the length; `set` on a `List[String]`
+  finalizes the String it replaces, on a `List[i64]` runs nothing; `swap`, `sortBy`
+  and `viewMut` write no field, destroy no element and move none out, and the bytes
+  an element owns stay put, so a view of them is good after a swap or a sort. An
+  element replaced by an assignment through another name (`m[0] = s`, which finalizes
+  the old value) is no call and is not seen. A read-only reference handed to code
+  that cannot be read cannot free what it points at (`siReadOnlyRef`). A method whose body is not
   visible (`siVisible`: another package's non-generic, non-inline function, a trait
   call, `extern`) is assumed to (layer 1). A read-only `self` never reshapes.
 - **The other arguments**: one that can reach the type (`reshapeReach`: by

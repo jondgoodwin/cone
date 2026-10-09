@@ -15,13 +15,14 @@
 mod collection_flow_reshape;
 
 import collections use *;
+import libc;
 
 struct Pt { pub x i64; pub y i64; }
 
 // Another reference pushes
 fn twoNames(l &mut List[Pt], m &mut List[Pt], p Pt) i64 {
   imm e = l[0usize];
-  m.push(p);                    //~ ErrorShapeReshape:4 "'push' writes a field of the 'List' it is called on"
+  m.push(p);                    //~ ErrorShapeReshape:4 "'push' reshapes the 'List' it is called on"
   e.x;
 }
 
@@ -29,20 +30,43 @@ fn twoNames(l &mut List[Pt], m &mut List[Pt], p Pt) i64 {
 // elements end
 fn clearOther(l &mut List[Pt], m &mut List[Pt]) i64 {
   imm e = l[0usize];
-  m.clear();                    //~ ErrorShapeReshape:4 "'clear' writes a field of the 'List' it is called on"
+  m.clear();                    //~ ErrorShapeReshape:4 "'clear' reshapes the 'List' it is called on"
   e.x;
 }
 
 fn popOther(l &mut List[Pt], m &mut List[Pt]) i64 {
   imm e = l[0usize];
-  m.pop();                      //~ ErrorShapeReshape:4 "'pop' writes a field of the 'List' it is called on"
+  m.pop();                      //~ ErrorShapeReshape:4 "'pop' reshapes the 'List' it is called on"
   e.x;
 }
 
 fn truncateOther(l &mut List[Pt], m &mut List[Pt]) i64 {
   imm e = l[0usize];
-  m.truncate(0usize);           //~ ErrorShapeReshape:4 "'truncate' writes a field of the 'List' it is called on"
+  m.truncate(0usize);           //~ ErrorShapeReshape:4 "'truncate' reshapes the 'List' it is called on"
   e.x;
+}
+
+// A held view of a String element's bytes, and another name replaces that element:
+// 'set' writes no field, but it finalizes the old String and frees its block
+fn setString(l &mut List[String], m &mut List[String], s String) usize {
+  imm t = l[0usize].view();
+  m.set(0usize, s);             //~ ErrorShapeReshape:4 "'set' reshapes the 'List'"
+  t.len;
+}
+
+// An element moved out by a method that writes no field of the block it is in
+struct Block {
+  ptr *String;
+
+  fn first(self &) &String { ptr as &String; }
+  fn take(self &mut) String { mem.readRaw(ptr); }
+  fn grow(self &mut) { ptr = libc.realloc(ptr as *u8, 64usize) as *String; }
+}
+
+fn takeOther(a &mut Block, b &mut Block) usize {
+  imm e = a.first();
+  imm taken = b.take();         //~ ErrorShapeReshape:16 "'take' reshapes the 'Block'"
+  e.len() + taken.len();
 }
 
 // A call handed the other reference, whose body pushes
@@ -110,7 +134,7 @@ struct Bag {
 
 fn twoBags(a &mut Bag, b &mut Bag, p Pt) i64 {
   imm e = a.first();
-  b.add(p);                     //~ ErrorShapeReshape:4 "'add' writes a field of the 'Bag' it is called on"
+  b.add(p);                     //~ ErrorShapeReshape:4 "'add' reshapes the 'Bag' it is called on"
   e.x;
 }
 
@@ -118,7 +142,7 @@ fn twoBags(a &mut Bag, b &mut Bag, p Pt) i64 {
 // another reference to the whole
 fn fieldAndOther(a &mut Bag, b &mut Bag, p Pt) i64 {
   imm e = a.items[0usize];
-  b.items.push(p);              //~ ErrorShapeReshape:10 "'push' writes a field of the 'List' it is called on"
+  b.items.push(p);              //~ ErrorShapeReshape:10 "'push' reshapes the 'List' it is called on"
   e.x;
 }
 
@@ -142,7 +166,7 @@ fn viaExtern(l &mut List[Pt], m &mut List[Pt]) i64 {
 // The String methods: the body of 'appendByte' is read, and writes the length
 fn invisibleMethod(s &mut String, t &mut String) usize {
   imm v = s.view();
-  t.appendByte('c');            //~ ErrorShapeReshape:4 "'appendByte' writes a field of the 'String' it is called on"
+  t.appendByte('c');            //~ ErrorShapeReshape:4 "'appendByte' reshapes the 'String' it is called on"
   v.len;
 }
 
@@ -186,14 +210,14 @@ fn pickText(target &str) &str {
 
 fn growAfterPick(out &mut String, x &String) usize {
   imm t = pickText(x.view());
-  out.append("!");              //~ ErrorShapeReshape:6 "'append' writes a field of the 'String' it is called on"
+  out.append("!");              //~ ErrorShapeReshape:6 "'append' reshapes the 'String' it is called on"
   t.len;
 }
 
 // A String's view appended to another String, both reached through references
 // a caller may have made one
 fn appendView(out &mut String, x &String) {
-  out.append(x.view());         //~ ErrorShapeReshape:6 "'append' writes a field of the 'String' it is called on"
+  out.append(x.view());         //~ ErrorShapeReshape:6 "'append' reshapes the 'String' it is called on"
 }
 
 fn main() {}

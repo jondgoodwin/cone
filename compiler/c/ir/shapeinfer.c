@@ -124,6 +124,7 @@ VarDclNode *siNamedVar(INode *node) {
 
 #define SiTaintMax 16
 #define SiAliasMax 8
+#define SiHeldMax 4
 
 // What is asked of one function's body, in one of four modes. The first is
 // whether it writes storage through parameter 'parm' (what it points at, when it
@@ -151,6 +152,14 @@ typedef struct {
     int ntaint;
     VarDclNode *alias[SiAliasMax];  // locals holding a reference to a place of the parameter's pointee
     int nalias;
+    // SiModeField: an element read out of the storage (readRaw) into a local, which
+    // leaves it unless the local is only written back (writeRaw), as a swap does
+    VarDclNode *held[SiHeldMax];
+    int heldwrites[SiHeldMax];
+    int helduses[SiHeldMax];
+    int nheld;
+    INode *consumed[SiHeldMax];     // readRaw calls whose result is written back in place
+    int nconsumed;
 } SiCtx;
 
 // Is this variable the parameter, or a local that holds a reference to a place of
@@ -447,6 +456,118 @@ static int siParmWritable(FnDclNode *callee, uint32_t k, INode *arg) {
 // for. A callee the compiler cannot read is taken to write.
 static int siAsk(FnDclNode *fn, uint32_t k, int mode, INode *cont);
 
+// ---- Elements that end or leave: SiModeField's other two tests ------------------
+// A method reshapes a collection when it writes a field of it, when it runs a
+// finalizer of an element (the storage then holds a value that is dead, and what the
+// element owned is freed: a borrow into a String element's bytes dangles), or when
+// it moves an element out of the storage. Writing an element in place, and moving
+// elements about within the storage (a swap, a sort), end none and move none out.
+
+// Which of the compiler's declared intrinsics (mem.finalize, mem.readRaw, ...) a
+// function is, or -1; its type argument comes back too
+static int siIntrinsicOf(FnDclNode *callee, INode **typearg) {
+    if (callee == NULL || callee->value == NULL || callee->value->tag != IntrinsicTag)
+        return -1;
+    *typearg = ((IntrinsicNode *)callee->value)->typearg;
+    return ((IntrinsicNode *)callee->value)->intrinsicFn;
+}
+
+static INode *siStripCasts(INode *e) {
+    while (e->tag == CastTag && !(e->flags & FlagConvert))
+        e = ((CastNode *)e)->exp;
+    return e;
+}
+
+// 'e' is a call of mem.readRaw on storage read from the parameter's pointee, of a
+// type that owns something (a plain number or struct moved out leaves nothing a
+// borrow could be of: no finalizer will run for it, and its bytes stay where they are)
+static FnCallNode *siReadRawCall(INode *e, SiCtx *c) {
+    e = siStripCasts(e);
+    if (e->tag != FnCallTag)
+        return NULL;
+    FnCallNode *call = (FnCallNode *)e;
+    if (!isNameUseNode(call->objfn))
+        return NULL;
+    INode *dcl = ((NameUseNode *)call->objfn)->dclnode;
+    INode *typearg = NULL;
+    if (dcl == NULL || dcl->tag != FnDclTag || siIntrinsicOf((FnDclNode *)dcl, &typearg) != ReadRawIntrinsic)
+        return NULL;
+    if (typearg != NULL && !itypeNeedsFinal(typearg))
+        return NULL;
+    return call->args && call->args->used > 0 && siReadsStorage(nodesGet(call->args, 0), c) ? call : NULL;
+}
+
+// A call of mem.finalize, mem.readRaw or mem.writeRaw in SiModeField. Returns 1
+// when the call is one of them (so it is judged here)
+static int siElementCall(FnCallNode *call, FnDclNode *callee, SiCtx *c) {
+    INode *typearg = NULL;
+    int which = siIntrinsicOf(callee, &typearg);
+    uint32_t nargs = call->args ? call->args->used : 0;
+    if (which == FinalizeIntrinsic) {
+        // Of an element: a pointer into the storage. An element type with nothing to run
+        // when it dies (a number, a struct of numbers) finalizes nothing
+        if (nargs > 0 && siReadsStorage(nodesGet(call->args, 0), c) && (typearg == NULL || itypeNeedsFinal(typearg)))
+            c->hit = 1;
+        return 1;
+    }
+    if (which == WriteRawIntrinsic) {
+        if (nargs > 1) {
+            INode *value = siStripCasts(nodesGet(call->args, 1));
+            FnCallNode *read = siReadRawCall(value, c);
+            VarDclNode *var = siNamedVar(value);
+            if (read && c->nconsumed < SiHeldMax)
+                c->consumed[c->nconsumed++] = (INode *)read;       // read and written back in one
+            for (int i = 0; var && i < c->nheld; ++i) {
+                if (c->held[i] == var)
+                    ++c->heldwrites[i];
+            }
+        }
+        return 1;
+    }
+    if (which == ReadRawIntrinsic) {
+        for (int i = 0; i < c->nconsumed; ++i) {
+            if (c->consumed[i] == (INode *)call)
+                return 1;
+        }
+        // Read out of the storage and not put back: it leaves
+        if (siReadRawCall((INode *)call, c))
+            c->hit = 1;
+        return 1;
+    }
+    return 0;
+}
+
+// A read-only reference (an element lent to a comparison, say): what it is handed
+// to cannot free or move what it points at
+static int siReadOnlyRef(INode *arg) {
+    INode *t = iexpGetTypeDcl(arg);
+    return t != NULL && t->tag == RefTag && !(permGetFlags(((RefNode *)t)->perm) & MayWrite);
+}
+
+// An element read into a local: it leaves unless that local is only written back
+static void siHoldElement(VarDclNode *var, INode *value, SiCtx *c) {
+    FnCallNode *read = siReadRawCall(value, c);
+    if (read == NULL)
+        return;
+    if (c->nheld >= SiHeldMax || c->nconsumed >= SiHeldMax) {
+        c->hit = 1;
+        return;
+    }
+    c->held[c->nheld] = var;
+    c->heldwrites[c->nheld] = 0;
+    c->helduses[c->nheld++] = 0;
+    c->consumed[c->nconsumed++] = (INode *)read;
+}
+
+// A held local used, or the end of the body: one used otherwise than written back left
+static void siCountHeldUse(INode *node, SiCtx *c) {
+    VarDclNode *var = siNamedVar(node);
+    for (int i = 0; var && i < c->nheld; ++i) {
+        if (c->held[i] == var)
+            ++c->helduses[i];
+    }
+}
+
 // A call, in a type mode (SiModeType, SiModeOut). Every argument that can reach
 // a value of the collection's type, other than a value the function owns whole, is
 // either that value lent to be written (the callee is asked about that parameter)
@@ -526,6 +647,8 @@ static void siCall(FnCallNode *call, SiCtx *c) {
         c->hit = 1;
         return;
     }
+    if (c->mode == SiModeField && siElementCall(call, callee, c) && c->hit)
+        return;
     int intrinsic = callee && ((callee->dclinfo.facts & DclIntrinsic) || (callee->value && callee->value->tag == IntrinsicTag));
     int visible = !(call->flags & FlagVDisp) && siVisible(callee);
     for (uint32_t k = 0; k < nargs && !c->hit; ++k) {
@@ -542,7 +665,8 @@ static void siCall(FnCallNode *call, SiCtx *c) {
             }
             by = 1;
         }
-        else if (!intrinsic && siReadsStorage(arg, c))
+        else if (!intrinsic && siReadsStorage(arg, c)
+                && !(c->mode == SiModeField && siReadOnlyRef(arg)))
             by = 1;     // storage handed on by value: a free or a realloc, in a callee
         if (!by)
             continue;
@@ -578,6 +702,8 @@ static int siWalkNode(INode *node, void *vc) {
     int types = c->mode >= SiModeType;
     // What a local holds a reference to is followed to a parameter's pointee, and to a global
     int notes = !types || c->mode == SiModeOut;
+    if (c->nheld > 0 && isNameUseNode(node) && isExpNode(node))
+        siCountHeldUse(node, c);
     switch (node->tag) {
     case AssignTag:
         if (types ? siTypeWriteHits(((AssignNode *)node)->lval, c) : siWriteHits(((AssignNode *)node)->lval, c))
@@ -591,6 +717,8 @@ static int siWalkNode(INode *node, void *vc) {
             c->hit = 1;
         break;
     case VarDclTag:
+        if (c->mode == SiModeField && ((VarDclNode *)node)->value)
+            siHoldElement((VarDclNode *)node, ((VarDclNode *)node)->value, c);
         if (notes)
             siNote((VarDclNode *)node, ((VarDclNode *)node)->value, c);
         break;
@@ -700,6 +828,11 @@ static int siAsk(FnDclNode *fn, uint32_t k, int mode, INode *cont) {
         ctx.isref = ptype != NULL && ptype->tag == RefTag;
     }
     siVisit(fn->value, siWalkNode, &ctx);
+    // An element read into a local that is used otherwise than written back left
+    for (int i = 0; i < ctx.nheld && !ctx.hit; ++i) {
+        if (ctx.helduses[i] != ctx.heldwrites[i])
+            ctx.hit = 1;
+    }
     int answer = ctx.hit ? SiYes : ctx.pending ? SiPending : SiNo;
 
     --siDepth;
