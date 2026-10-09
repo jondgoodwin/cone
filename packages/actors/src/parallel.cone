@@ -41,7 +41,7 @@
 //   actors.RangeBody       &fn(data *u8, lo usize, hi usize)
 //   actors.parallelEach(lo, hi, body, data)
 //                          what a 'parallel each' becomes: parallelRange with a
-//                          grain chosen from the workers, and the messages the
+//                          grain chosen from the workers (at least 128), and the messages the
 //                          pieces send to actors gathered and sent after the
 //                          loop in iteration order (SENDS GATHERED)
 //
@@ -329,6 +329,22 @@ fn grainOf(g usize) usize {
   if g == 0usize {1usize;} else {g;}
 }
 
+// The floor under the grain of a 'parallel each': a piece is not split below
+// this many items, so a loop of fewer runs as fewer pieces, down to one (and a
+// loop of this many or fewer is run at once on the caller's thread). 128 is the
+// ruled floor (Jon, 9 Oct 2026), measured on a 1,000-item loop of cheap items
+// (25 us to 2.2 us with 24 workers; big loops unchanged). It is the same for
+// every loop: the runtime cannot know what one pass costs
+const minEachGrain = 128usize;
+
+// The grain 'parallel each' splits to, in the blocking form (parallelEach) and
+// in the form cut at the loop's end (startHeld): about an eighth of an even
+// share of the range for each worker, and never below minEachGrain
+fn eachGrain(len usize, workers usize) usize {
+  imm g = len / (workers * 8usize);
+  if g < minEachGrain {minEachGrain;} else {g;}
+}
+
 // Run body over the range [lo, hi) of indexes, in pieces of at least grain
 // items (a range no longer than grain is one call, made at once on the
 // caller's thread, with nothing else started) on the workers of the actors'
@@ -361,10 +377,11 @@ pub fn parallelRange(lo usize, hi usize, grain usize, body RangeBody, data *u8) 
 
 // The loop a 'parallel each' becomes (the compiler outlines the loop's body
 // into a function, whose first parameter is a record of the variables it uses):
-// parallelRange over [lo, hi) with the grain chosen here, about an eighth of an
-// even share of the range for each worker, so that the pieces are smaller than a
-// worker's share and a worker that finishes early takes more, and the work
-// stays in pieces large enough not to be lost in the splitting. The workers are
+// parallelRange over [lo, hi) with the grain chosen here (eachGrain): about an
+// eighth of an even share of the range for each worker, so that the pieces are
+// smaller than a worker's share and a worker that finishes early takes more, and
+// never below minEachGrain, so that the work stays in pieces large enough not to
+// be lost in the splitting. The workers are
 // started if no actor has started them. The body's rules are the language's:
 // the compiler has checked them. Unlike parallelRange, it gathers the messages
 // the pieces send to actors and sends them after the loop, in iteration order
@@ -375,10 +392,7 @@ pub fn parallelEach(lo usize, hi usize, body RangeBody, data *u8) {
   }
   ensureRunning();
   imm s = running as *Sched;
-  mut grain = (hi - lo) / (usize.from((*s).nworkers) * 8usize);
-  if grain == 0usize {
-    grain = 1usize;
-  }
+  imm grain = eachGrain(hi - lo, usize.from((*s).nworkers));
   mut job = new EachLoop(body, data, 0usize);
   parallelRange(lo, hi, grain, &gatherPiece, &mut job as *EachLoop as *u8);
   sendGathered(&mut job as *EachLoop);
@@ -666,10 +680,7 @@ fn startHeld(w *Worker, h *Header) {
   imm p = (*h).par;
   (*h).par = nullPar();
   imm s = (*w).sched;
-  mut grain = ((*p).hi - (*p).lo) / (usize.from((*s).nworkers) * 8usize);
-  if grain == 0usize {
-    grain = 1usize;
-  }
+  imm grain = eachGrain((*p).hi - (*p).lo, usize.from((*s).nworkers));
   imm job = libc.malloc(mem.sizeof[EachLoop]()) as *EachLoop;
   if job as usize == 0usize {
     die("actors: out of memory for a parallel loop");
