@@ -34,6 +34,13 @@
 // loop uses from outside are therefore read in place, borrowed for the loop;
 // that nothing writes them is checked here (parallelEachCheckBody).
 //
+// A source that is one of core's cursors (ArrayChunks, ArrayMutChunks, ArrayMutItems
+// and the ones their 'indexed()' and an array's give: parCursorOf) is held whole in
+// 's'/'sm', the range is [0, s.len()) and the item s.at(k): for a chunk a slice of
+// the run, which no other pass reaches. What is lent, '&' or '&mut', is what the
+// cursor's own types say. An indexed cursor's 'at' gives the position and the item
+// as a tuple, which the loop's two variables unpack ('pair'').
+//
 // The hidden variables carry names no source can spell, so generation finds
 // the parts of the loop by name, whatever statements are hoisted between them.
 extern Name *parLoName;     // lo
