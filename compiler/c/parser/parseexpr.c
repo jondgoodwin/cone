@@ -26,6 +26,10 @@ INode *parseNameUse(ParseState *parse) {
     if (lexIsToken(IdentToken)) {
         nameuse->namesym = lex->val.ident;
         lexNextToken();
+        // In a generator method's body 'self' and 'Self' mean the receiver and
+        // the type, which the generator's struct holds and is not
+        if (parse->genctx && (parse->genctx->recv || parse->genctx->type))
+            return parseGenName(parse, nameuse);
     }
     else
         errorMsgLex(ErrorNoVar, "Missing variable name");

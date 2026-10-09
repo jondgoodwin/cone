@@ -4,12 +4,47 @@ mod corout_parse;
 // they are read. 'yield' stands in the body of a function declared 'yields',
 // as a statement, and a generator's 'return' ends its walk, taking no value.
 // The generator is a struct made for its parameters, with a method made of its
-// body, so it is a function with a name and a body, not generic, not a method,
-// not 'inline', and without a 'where' clause; these are refused by name.
+// body, so it is a function or a method with a name and a body, not 'inline',
+// and without a 'where' clause; a method of a trait or an enum is copied into
+// each implementer or variant, and the type parameters and lifetimes the struct
+// copies are those a struct may declare; these are refused by name. (A method
+// and a generic generator are built: corout_methods and corout_generic.)
 
-struct Holder {
+import actors;
+
+actor Counter {
   n i64;
-  fn items(self &) yields i64 {           //~ ErrorGenForm:3 "A method cannot be a generator yet"
+  fn up(self &) yields i64 {              //~ ErrorGenForm:3 "An actor's method cannot be a generator yet"
+    yield 1i64;
+  }
+}
+
+trait Walks {
+  fn all(self &) yields i64 {             //~ ErrorGenForm:3 "A trait's or an enum's method cannot be a generator yet"
+    yield 1i64;
+  }
+  fn bodiless(self &) yields i64;         //~ ErrorGenForm:3 "A generator is its body"
+}
+
+enum Shape {
+  struct Round {}
+  struct Square {}
+
+  fn all(self &) yields i64 {             //~ ErrorGenForm:3 "A trait's or an enum's method cannot be a generator yet"
+    yield 1i64;
+  }
+}
+
+struct Lent['a] {
+  s &'a i64;
+  fn get(self &) yields i64 {             //~ ErrorGenForm:3 "A method of a type that declares lifetimes cannot be a generator yet"
+    yield *s;
+  }
+}
+
+struct Plain {
+  n i64;
+  fn inlined(self &) yields i64 inline {  //~ ErrorGenForm:3 "A generator cannot be 'inline'"
     yield 1i64;
   }
 }
@@ -18,7 +53,11 @@ fn outside() {
   yield 1i64;                             //~ ErrorYieldPlace:3 "'yield' stands only in the body of a function declared with 'yields'"
 }
 
-fn generic[T](x T) yields T {             //~ ErrorGenForm:1 "A generic function cannot be a generator yet"
+fn picky[X](x X) yields X where X is Move {   //~ ErrorGenForm:1 "A generator cannot have a 'where' clause yet"
+  yield x;
+}
+
+fn bounded[T + 'a](x &'a T) yields &'a T {   //~ ErrorGenForm:1 "A generator's type parameters cannot name lifetimes yet"
   yield x;
 }
 
@@ -55,4 +94,10 @@ fn noValue() yields i64 {
 
 fn noSource() yields i64 {
   yield each;                             //~ ErrorBadTerm:13 "'yield each' needs the sub-generator"
+}
+
+// A parameter of a free generator cannot be named 'self': only a method's
+// receiver is, and it is held under a name of the generator's own
+fn selfNamed(self i64) yields i64 {       //~ ErrorGenForm:1 "A generator's parameter cannot be named 'self'"
+  yield 1i64;
 }
