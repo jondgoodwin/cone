@@ -30,7 +30,9 @@
 // Borrowed references, for now: a collection lends out borrows only for brief
 // reading. 'list[i]' and 'dict[key]' give a '&' to one element, and 'view()'
 // a slice of the whole, to read at once and let go of; '&mut list[i]' and
-// 'viewMut()' lend the same for changing in place, and while one is used the
+// 'viewMut()' lend the same for changing in place ('each x in list.mutItems()'
+// walks the same slice, 'x' a '&mut' of each; 'each x in list.drain()' moves
+// the values out one by one and leaves the list empty), and while one is used the
 // collection may not be touched any other way. Nothing here stores a
 // borrow, and nothing a collection returns should be kept across a change to
 // it: a push can move the whole block. The compiler catches that for a
@@ -99,7 +101,7 @@ pub struct List[T] is ShapeChanging, Sendable {
 
   // The methods of 'Array[T]', the body 'view' lends, are the list's too, as
   // 'str''s are a String's: its 'len', written once on the body
-  use Array[T] via view;
+  use Array[T] via view but iter, mutItems;
 
   // An empty list, 'new List[i32]': no block until the first value arrives
   pub fn initEmpty overload init(self &new) { *self = new List(null, 0usize, 0usize); }
@@ -255,6 +257,22 @@ pub struct List[T] is ShapeChanging, Sendable {
   // may read or change it until the slice's last use
   pub fn viewMut(self &mut) &mut Array[T] { mem.sliceFromPartsMut(ptr, used); }
 
+  // The values for changing in place, which 'each x in list.mutItems()' walks:
+  // 'x' is a '&mut' of each. It is the same mutable slice as 'viewMut' (so the
+  // loop is a counted one, as for any slice), and the list may not be read or
+  // changed otherwise while the loop runs
+  pub fn mutItems(self &mut) &mut Array[T] { mem.sliceFromPartsMut(ptr, used); }
+
+  // The values moved out one at a time, which 'each x in list.drain()' walks: 'x'
+  // is the value itself, not a borrow of it. The list is left empty at once (its
+  // block kept for reuse), and a value the loop does not reach, because it ends
+  // early, is finalized with the cursor
+  pub fn drain(self &mut) ListDrain[T] {
+    imm n = used;
+    used = 0usize;
+    new ListDrain[T](self, ptr, n, 0usize);
+  }
+
   // The list is consumed: its values stay where they are, in the block it
   // owned, which becomes a So[Array[T]]'s. The block is shrunk to hold them,
   // never copied, and what the owner's death finalizes is each of them. A list
@@ -346,6 +364,31 @@ pub struct ListIter['a, T] {
     imm i = pos;
     pos = i + 1usize;
     Some[&T][(ptr + i) as &T];
+  }
+}
+
+// A cursor over the values a list gave up, front to back: 'next' moves each out
+// in turn. It borrows the list mutably, which may not be touched while the cursor
+// is used (a push could write over a value not yet moved out). Its death
+// finalizes the values not moved out.
+pub struct ListDrain['a, T] {
+  list &'a mut List[T];
+  ptr *T;
+  end usize;
+  pos usize;
+
+  pub fn next(self &mut) Option[T] {
+    if pos >= end { return None[T][]; }
+    imm i = pos;
+    pos = i + 1usize;
+    Some[T][mem.readRaw(ptr + i)];
+  }
+
+  fn final(self &uni) {
+    if mem.needsFinal[T]() {
+      mut i = pos;
+      while i < end { mem.finalize(ptr + i); i = i + 1usize; }
+    }
   }
 }
 
