@@ -1,0 +1,71 @@
+// What one call may be handed together. A '&uni' is unique: while a call uses it,
+// nothing else reaches what it borrows, so no other argument of that call may
+// borrow the same place or part of it (ref_flow_unicall refuses those). What this
+// file runs is everything that stays allowed beside that rule: two '&uni' of
+// distinct fields of one struct, or of two different references; the same element
+// '&uni' in two calls one after the other; and two '&mut' (or two '&') of the same
+// element in one call, because a '&mut' is shared mutable by design and a '&' only
+// reads (refborref.html, "Reference Handling").
+
+mod ref_unicall;
+
+import stdio use *;
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+struct P {
+  pub a i64;
+  pub b i64;
+}
+
+fn setBoth(x &uni i64, y &uni i64) { *x = 1; *y = 2; }
+fn setOne(x &uni i64, v i64) { *x = v; }
+fn addBoth(x &mut i64, y &mut i64) { *x = *x + 10; *y = *y + 100; }
+fn sumTwo(x &i64, y &i64) i64 { *x + *y; }
+
+// {0, 0} -> {1, 2}: 12
+fn fields(p &uni P) i64 {
+  setBoth(&uni p.a, &uni p.b);
+  p.a * 10 + p.b;
+}
+
+// [0, ...] and [0, ...] -> [1, ...] and [2, ...]: 12
+fn apart(s &uni Array[i64], t &uni Array[i64]) i64 {
+  setBoth(&uni s[0usize], &uni t[0usize]);
+  s[0usize] * 10 + t[0usize];
+}
+
+// the same element in two calls: 3, then 4
+fn oneAfter(s &uni Array[i64]) i64 {
+  setOne(&uni s[0usize], 3);
+  setOne(&uni s[0usize], 4);
+  s[0usize];
+}
+
+// 4 -> 14 -> 114: the second '&mut' sees the first one's write
+fn mutPair(s &mut Array[i64]) i64 {
+  addBoth(&mut s[0usize], &mut s[0usize]);
+  s[0usize];
+}
+
+// 114 + 114
+fn readPair(s &uni Array[i64]) i64 {
+  sumTwo(&s[0usize], &s[0usize]);
+}
+
+fn main() {
+  imm p = new So[P](0, 0);
+  show("fields", fields(p));
+  imm a = new So[Array[i64, 4]]([0, 0, 0, 0]);
+  imm b = new So[Array[i64, 4]]([0, 0, 0, 0]);
+  show("apart", apart(a, b));
+  show("oneAfter", oneAfter(a));
+  show("mutPair", mutPair(a));
+  show("readPair", readPair(a));
+  show("end", 0);
+}

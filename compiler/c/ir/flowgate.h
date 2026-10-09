@@ -115,7 +115,8 @@ static inline void flowGateShape(FlowState *fstate, FnCallNode *call) {
 // An operand of a call or a literal was just walked: while the rest are, a
 // borrow it made waits, and the variable it borrows is remembered
 static inline void flowGateOperand(FlowState *fstate, INode *operand) {
-    if ((operand->tag == BorrowTag || operand->tag == ArrayBorrowTag || operand->tag == CastTag)
+    if ((operand->tag == BorrowTag || operand->tag == ArrayBorrowTag || operand->tag == CastTag
+            || operand->tag == ArrIndexTag)
         && flowGateOpen(fstate, FlowGateInCall))
         flowGateOperandAsk(fstate, operand);
 }

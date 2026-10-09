@@ -1,0 +1,71 @@
+// A sub-slice or an element of a '&uni' slice borrowed '&uni' ('&uni s[a..b]',
+// '&uni s[i]'), or of an owner of an array, borrows part of what it reaches, so
+// what a '&uni' borrow forbids is forbidden of the whole while the borrow is
+// used, as for '&uni *s' (ref_flow_uniborrow): the slice may not be read,
+// changed or lent again until its last use, a second '&uni' sub-slice may not
+// overlap one still in use, and nothing borrowed from a local may outlive it.
+// A '&uni' cannot be had from a '&' or a '&mut'. Each is one function so that
+// one conflict cannot stand in for another (ref_unislice runs what is allowed).
+
+mod ref_flow_unislice;
+
+fn bump(s &uni Array[i64]) { s[0usize] = s[0usize] + 1; }
+
+fn frozenRead(s &uni Array[i64]) i64 {
+  imm h = &uni s[0usize..2usize];
+  imm x = s[3usize];               //~ ErrorFrozen:12 "may not be read"
+  h[0usize] + x;
+}
+
+fn frozenWrite(s &uni Array[i64]) i64 {
+  imm h = &uni s[0usize..2usize];
+  s[3usize] = 1;                   //~ ErrorFrozen:4 "may not be changed"
+  h[0usize];
+}
+
+fn overlap(s &uni Array[i64]) i64 {
+  imm h = &uni s[0usize..2usize];
+  imm k = &uni s[1usize..3usize];  //~ ErrorFrozen:11 "may not be borrowed"
+  h[0usize] + k[0usize];
+}
+
+fn lentAgain(s &uni Array[i64]) i64 {
+  imm h = &uni s[0usize..2usize];
+  bump(s);                         //~ ErrorFrozen:8 "may not be borrowed"
+  h[0usize];
+}
+
+fn elementFrozen(s &uni Array[i64]) i64 {
+  imm e = &uni s[1usize];
+  bump(s);                         //~ ErrorFrozen:8 "may not be borrowed"
+  *e;
+}
+
+fn returnLocal() &uni Array[i64] {
+  imm a = new So[Array[i64, 4]]([1, 2, 3, 4]);
+  &uni a[0usize..2usize];          //~ ErrorEscape:9 "outlives"
+}
+
+fn returnLocalElement() &uni i64 {
+  imm a = new So[Array[i64, 4]]([1, 2, 3, 4]);
+  &uni a[1usize];                  //~ ErrorEscape:9 "outlives"
+}
+
+fn returnThroughLocal() &uni Array[i64] {
+  imm a = new So[Array[i64, 4]]([1, 2, 3, 4]);
+  imm h = &uni a[0usize..2usize];
+  h;                               //~ ErrorEscape:3 "outlives"
+}
+
+fn fromShared(s &Array[i64]) i64 {
+  imm h = &uni s[0usize..2usize];  //~ ErrorBadPerm:11 "cannot obtain this permission"
+  h[0usize];
+}
+
+fn fromMut(s &mut Array[i64]) i64 {
+  imm h = &uni s[0usize..2usize];  //~ ErrorBadPerm:11 "cannot obtain this permission"
+  h[0usize];
+}
+
+fn main() {
+}

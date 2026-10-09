@@ -204,7 +204,11 @@ Every coercion site gets it: an argument and a method's receiver
 (`fnCallFinalizeArgs`), a declaration or an assignment, a branch's value, a
 return. A local with no declared type, whose initializer is such a reference,
 gets it too (`varDclTypeCheck`: there is no coercion to ask, the type being the
-initializer's own).
+initializer's own). So does the receiver of a slice's own method (`len`,
+`maxlen`, declared on `arrayRefType`), which `fnCallLowerPtrMethod` selects
+without a coercion: it makes the rewrite itself, to the read-only slice the
+method's `self` is, so `s.len()` borrows from a `&uni` slice `s` and does not
+move it.
 
 An owning reference that is its value's only holder (`borrowOwnerLendsUni`: a
 move-typed owner, a `So` or a `Rc` still `uni`, held in a place), wanted as a

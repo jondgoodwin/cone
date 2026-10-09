@@ -597,7 +597,9 @@ if ref1 === &amp;a {    // true
 		<span class="pre">self &amp;uni</span>, <span class="pre">self &amp;</span> and
 		<span class="pre">self &amp;mut</span> methods, one after another, and then read its fields.
 		A <span class="pre">&amp;uni</span> slice is borrowed from the same way, whether it is passed to a
-		<span class="pre">&amp;uni</span>, <span class="pre">&amp;mut</span> or <span class="pre">&amp;</span> slice:</p>
+		<span class="pre">&amp;uni</span>, <span class="pre">&amp;mut</span> or <span class="pre">&amp;</span> slice,
+		or is the receiver of one of its own methods, so <span class="pre">s.len() + s.len()</span>
+		and <span class="pre">while i &lt; s.len()</span> work on a <span class="pre">&amp;uni</span> slice:</p>
 <pre>
 fn fill(q &amp;uni Point) { q.x = q.x + 10; }
 fn twice(p &amp;uni Point) {
@@ -606,6 +608,41 @@ fn twice(p &amp;uni Point) {
   imm q &amp;uni Point = p;   // a &amp;uni local borrows from p
   q.x = 0;
   p.y = 1;       // allowed: q's last use is behind us
+}
+</pre>
+	<p>A part of a <span class="pre">&amp;uni</span> slice is borrowed from in the same way:
+		<span class="pre">&amp;uni s[a..b]</span>, <span class="pre">&amp;uni s[a..]</span> and
+		<span class="pre">&amp;uni s[i]</span> are loans of part of what <span class="pre">s</span> reaches, so
+		<span class="pre">s</span> is frozen while the sub-slice or element is used.
+		A local holding a <span class="pre">&amp;uni</span> that the function was lent, such as a cursor
+		(<span class="pre">mut cur = p</span>, reassigned as it walks along),
+		can be handed back, and so can a borrow from it:
+		it holds the caller's reference, so what is borrowed from it lasts as long as that does.
+		A borrow of the function's own value, however it came to be held in the local, cannot be handed back.</p>
+	<p>A slice's elements are not told apart, so two parts of one slice are two borrows of the same
+		place. One call may not be handed a <span class="pre">&amp;uni</span> of an element or sub-slice
+		beside any other borrow of the same slice (a second element, a sub-slice, the whole slice,
+		a <span class="pre">&amp;</span>, <span class="pre">&amp;mut</span> or <span class="pre">&amp;imm</span>),
+		even when the indexes or ranges differ, because the call would reach the part through two paths
+		while a unique reference promises there is one. Distinct fields of a struct are apart. A
+		<span class="pre">&amp;mut</span> or <span class="pre">&amp;</span> slice, whose references may alias
+		anyway, may be handed two <span class="pre">&amp;mut</span> or two <span class="pre">&amp;</span>
+		of one element. The parts of an owner's array or of a <span class="pre">&amp;uni</span> slice are reached
+		uniquely, and two <span class="pre">&amp;mut</span> of one element are refused there, as two of one field are.</p>
+<pre>
+fn two(a &amp;uni i64, b &amp;uni i64) {}
+fn byIndex(s &amp;uni Array[i64]) { two(&amp;uni s[0usize], &amp;uni s[1usize]); }  // Error: the elements are not told apart
+fn byField(p &amp;uni Pair) { two(&amp;uni p.a, &amp;uni p.b); }        // Ok: distinct fields
+</pre>
+<pre>
+fn walk(p &amp;uni Array[i64], k i64) &amp;uni Array[i64] {
+  mut cur = p;
+  mut i i64 = 0;
+  while i &lt; k {
+    cur = &amp;uni cur[1..];   // a sub-slice, borrowed from the cursor
+    i = i + 1;
+  }
+  cur;                      // the caller's slice, narrowed: allowed
 }
 </pre>
 		<p>

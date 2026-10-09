@@ -1,0 +1,101 @@
+// A mutable local holding a '&uni' reference the function was lent may be handed
+// back (ref_unicursor), but it may have been given a borrow of the function's
+// own value since, and then it may not: the loan walk follows what the local
+// holds at the return, however it got there (a borrow written, an owner lent,
+// a call's result, a branch or a loop's assignment), and refuses the value
+// returned or stored past what it was borrowed from. A local that never held the
+// caller's reference is refused by its own type. One function per case.
+
+mod ref_flow_unicursor;
+
+struct R { pub n i64; }
+struct H { pub r &uni R; }
+
+fn same(q &uni R) &uni R { q; }
+fn keep(h &mut H, q &uni R) { h.r = q; }
+
+fn writtenBorrow(a &uni R) &uni R {
+  imm o = new So[R](1);
+  mut p = a;
+  p = &uni *o;
+  p;                              //~ ErrorEscape:3 "which it would outlive"
+}
+
+fn writtenBorrowAgain(a &uni R) &uni R {
+  imm o = new So[R](1);
+  mut p = a;
+  p = &uni *o;
+  &uni *p;                        //~ ErrorEscape:3 "which it would outlive"
+}
+
+fn ownerLent(a &uni R) &uni R {
+  imm o = new So[R](1);
+  mut p = a;
+  p = o;
+  p;                              //~ ErrorEscape:3 "which it would outlive"
+}
+
+fn field(a &uni R) &uni i64 {
+  imm o = new So[R](1);
+  mut p = a;
+  p = o;
+  &uni p.n;                       //~ ErrorEscape:3 "which it would outlive"
+}
+
+fn throughCall(a &uni R) &uni R {
+  imm o = new So[R](1);
+  mut p = a;
+  p = same(o);
+  p;                              //~ ErrorEscape:3 "which it would outlive"
+}
+
+fn onOneBranch(a &uni R, c bool) &uni R {
+  imm o = new So[R](1);
+  mut p = a;
+  if c {
+    p = o;
+  }
+  p;                              //~ ErrorEscape:3 "which it would outlive"
+}
+
+fn inLoop(a &uni R, c bool) &uni R {
+  imm o = new So[R](1);
+  mut p = a;
+  while c {
+    p = &uni *o;
+  }
+  p;                              //~ ErrorEscape:3 "which it would outlive"
+}
+
+fn fromOtherLocal(a &uni R) &uni R {
+  imm o = new So[R](1);
+  imm q = &uni *o;
+  mut p = a;
+  p = q;
+  p;                              //~ ErrorEscape:3 "which it would outlive"
+}
+
+// the local never held the caller's reference
+fn ownValue() &uni R {
+  imm o = new So[R](1);
+  mut c = &uni *o;
+  c;                              //~ ErrorEscape:3 "outlives the local value"
+}
+
+// stored past the function, not returned
+fn stored(a &uni R, h &mut H) {
+  imm o = new So[R](1);
+  mut p = a;
+  p = o;
+  h.r = p;                        //~ ErrorEscape:4 "Stored where it may outlive"
+}
+
+fn storedByCall(a &uni R, h &mut H) {
+  imm o = new So[R](1);
+  mut p = a;
+  p = o;
+  keep(h, p);                     //~ ErrorCallEscape:7 "Call could store"
+}
+
+fn main() {
+}

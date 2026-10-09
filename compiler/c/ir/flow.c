@@ -523,6 +523,11 @@ static void flowMoveSource(INode *node, Nodes **moved, INode *top, MoveParts *pa
     // dereference -- is read through that reference.
     case ArrIndexTag:
     {
+        // A borrow of an element or of a range, '&uni a[i]' or '&uni s[a..b]',
+        // is the new reference it makes, as a borrow of a field is (the
+        // default arm): nothing is moved out of the place it borrows from
+        if (((FnCallNode*)node)->flags & FlagBorrow)
+            break;
         INode *objfn = ((FnCallNode*)node)->objfn;
         if (flowRefuseMoveThrough(node, objfn))
             return;
@@ -1917,6 +1922,10 @@ void flowGateOperandAsk(FlowState *fstate, INode *operand) {
     // A borrow written or built as if written ('&mut *o'), or an owner lent
     // implicitly by a recast: either way a borrow waiting for its call
     INode *place = NULL;
+    // An element of a slice borrowed, '&uni s[i]', is the index of a borrow of
+    // the slice (borrowRefIndexDispatches): the borrow waiting is that one
+    if (operand->tag == ArrIndexTag)
+        operand = ((FnCallNode *)operand)->objfn;
     while (operand->tag == CastTag) {
         if (flowGateIsOwnedLent((CastNode *)operand)) {
             place = ((CastNode *)operand)->exp;

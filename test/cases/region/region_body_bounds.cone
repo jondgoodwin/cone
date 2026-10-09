@@ -1,0 +1,93 @@
+// A body whose length the reference carries is allocated by asking its region's
+// 'alloc' for the header and the elements, and the elements are copied in.
+// Text ('str') asks for one byte more, the NUL a C string needs after its
+// bytes; an 'Array[T]' with a header asks for none and keeps nothing there, so
+// the copy must write nothing past its elements. It once stored that NUL
+// anyway, one byte past the block the region had handed out: with the C
+// library's heap, a neighbouring block's header, so the program died now and
+// then at some later 'free' with 0xC0000374 (heap corruption).
+//
+// 'Guard' makes that visible without the heap's help. Its 'alloc' takes 16 bytes
+// more than asked for, fills every byte of the block with 0xAB, and remembers the
+// size asked for; its 'free' checks that those 16 bytes after the size are
+// still 0xAB, and prints what it found. The sizes below are worked out by hand
+// (the header is one u64, 8 bytes):
+//
+// - Array[i64] of 8 numbers: 8 + 8 * 8 = 72, nothing after the elements.
+// - Array[u8] of 5 bytes ("hello"): 8 + 5 = 13, nothing after.
+// - str "hello world", 11 bytes: 8 + 11 + 1 = 20, the last of them the NUL, so
+//   it is inside the block, and the 16 bytes after are untouched.
+//
+// Each block's elements are read back before it is freed: 1 through 8 sum to 36.
+
+mod region_body_bounds;
+
+import stdio use *;
+import libc;
+
+fn line(label &str, n usize) {
+  printStr(label);
+  printInt(i64.from(n));
+  printStr("\n");
+}
+
+mut askedFor usize = 0usize;
+
+struct Guard is RegionRef, Move {
+  tag u64;
+  fn alloc(size usize) *u8 inline {
+    askedFor = size;
+    line("alloc ", size);
+    imm block = libc.malloc(size + 16usize);
+    libc.memset(block, 171i32, size + 16usize);
+    block;
+  }
+  fn init(self &new) inline { *self = new Guard(7u64); }
+  fn free(self &uni Guard) inline {
+    imm block = self as *u8;
+    mut intact = 0usize;
+    mut i = 0usize;
+    while i < 16usize {
+      imm at = block + (askedFor + i);
+      if *at == 171u8 { intact = intact + 1usize; }
+      i = i + 1usize;
+    }
+    line("free, bytes after the block still 0xAB: ", intact);
+    libc.free(block);
+  }
+}
+
+fn sum(m &Array[i64]) i64 {
+  mut total = 0i64;
+  mut i = 0usize;
+  while i < m.len {
+    total = total + m[i];
+    i = i + 1usize;
+  }
+  total;
+}
+
+fn main() i32 {
+  printStr("-- eight numbers\n");
+  {
+    imm numbers = new Array[i64, 8] <- 1i64, 2i64, 3i64, 4i64, 5i64, 6i64, 7i64, 8i64;
+    imm g = new Guard[Array[i64]](&numbers);
+    line("len ", g.len);
+    printInt(sum(g));
+    printStr("\n");
+  }
+  printStr("-- five bytes\n");
+  {
+    imm bytes = new Array[u8, 5] <- 104u8, 101u8, 108u8, 108u8, 111u8;
+    imm g = new Guard[Array[u8]](&bytes);
+    line("len ", g.len);
+  }
+  printStr("-- text\n");
+  {
+    imm g = new Guard[str]("hello world");
+    printStr(g as &str);
+    printStr("\n");
+  }
+  printStr("-- end\n");
+  0i32;
+}

@@ -197,7 +197,7 @@ one bit per trigger:
 | `FlowGateHolder` | `varDclFlow`, `assignFlow`, `swapFlow` | a local declared, or a place assigned or swapped, whose type carries a borrow (a local assigned by name is not asked again: its declaration was). The temporary an operator changing its operand in place borrows it through (`x += 1`, `v <- (a, b)`; named `tempName`) is not asked: it is the operator's, as a method's receiver is, and the loan walk holds nothing in it |
 | `FlowGateResult` | `blockFlow` | a `return`, `break` or block end hands out a value carrying a borrow, a bare borrowed reference too: its scope number does not follow a borrow through a variable, a value holding it, or a call's by-value argument |
 | `FlowGateStore` | `fnCallFlow` | a call with a `&mut X` argument, `X` carrying a borrow, or a struct argument holding such a writable borrow (`itypeWritableBorrowDepth`), beside another argument carrying one; or any call with arguments to a signature bounding a lifetime by `'static` (`FnSigNode.lifestatic`: a type parameter's `T + 'static`, a parameter `&<Trait + 'static`), whose arguments' loans `pwStaticArgs` checks though no type of them shows it, asked only once the parser has read a `'static` bound (`lifeStaticBoundSeen`) |
-| `FlowGateInCall` | `nameuseFlow`, `nameuseFlowBorrowed` | a variable named while a borrow of it made by an earlier operand of the same call, struct or array literal or value tuple is still waiting for it (`v.add(v.len())`) |
+| `FlowGateInCall` | `nameuseFlow`, `nameuseFlowBorrowed` | a variable named while a borrow of it made by an earlier operand of the same call, struct or array literal or value tuple is still waiting for it (`v.add(v.len())`); `&uni s[i]` and `&s[a..b]` on a slice are an index applied to a borrow of the slice (`borrowRefIndexDispatches`), so an operand that is an index is asked as that borrow (`flowGateOperandAsk`) |
 | `FlowGateBoxed` | `flowLoadValue` | a value whose type carries a borrow converted to an owning virtual reference (`So[Trait]` from a `So[H]`), whose loans the loan walk checks are global (section 6, "Named lifetimes") |
 | `FlowGateShape` | `fnCallFlow` (`flowGateShape`, `flowGateShapeAsk`) | a method call returning a borrow, on a receiver of a type that may change shape (`ShapeChanging`, or one whose answer `shapeinf` has not ruled out), reached through a reference, a field of `self` or a global rather than a plain local's own place. A borrow that never reaches a variable (`out.append(x.view())`, `two(l[0], bump(m))`) is otherwise no trigger at all, and a call made beside it could reshape what it lends. Asked even once another bit is set, for the bit also says the callees' bodies are to be checked before the walk (`shapeDemandCallees`) |
 
@@ -311,7 +311,9 @@ reads out freely.
 **Only a sole owner may be moved out of.** The same inward walk refuses three
 more sources. A global has no scope in which a deactivated state could be recovered.
 A place reached through a **borrowed reference** — a dereference of one, or an
-element read straight through one, as a slice's element is — belongs
+element read straight through one, as a slice's element is (not a borrow of
+one, `&uni s[i]` or `&uni s[a..b]`, which makes a new reference and moves nothing
+out) — belongs
 to whatever was borrowed, which releases or finalizes it at the end of its own
 scope, so a move out of it would make a second owner (`ErrorMoveOut`). The
 borrow's permission does not matter: a `&uni` is the only path to its value
@@ -982,7 +984,12 @@ them, in the order "A seam" gives), each one's loans pushed
 or array literal's elements until it is built. That value is certainly used,
 so an access conflicting with a loan in flight is reported at once
 (`loanFlightAccess`), not left pending: `f(&mut v, v.len())` is refused at
-`v`. A method receiver's mutable borrow is **two-phase** (Rust's RFC 2025):
+`v`. A slice's elements are not told apart (every index is one step,
+`PlaceStepElem`, whatever its value), so a `&uni` of an element or a sub-slice
+beside any other borrow of the same slice in one call is refused, `f(&uni s[0],
+&uni s[1])` and two ranges that do not overlap included; only distinct fields
+are apart (`placeOverlaps`). Two `&mut`, two `&`, are not refused: a `&mut` of a
+shared path is an alias loan, which meets no `&mut`. A method receiver's mutable borrow is **two-phase** (Rust's RFC 2025):
 *reserved* while the arguments are walked, it accesses its place as a
 read-only borrow would and meets their accesses as one, so `v.push(v.len())`
 compiles and `v.push(takeLast(&mut v))` does not; then *activated* at the

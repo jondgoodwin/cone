@@ -1,0 +1,88 @@
+// One call handed a '&uni' of an element or sub-slice and another borrow of the
+// same slice. A '&uni' is unique for the call, so no other argument may borrow
+// what it borrows, or part of it. The slice's elements are not told apart: two
+// indexes, even two literal ones, may name the same element, and so may two
+// ranges, so every pair below is refused, whatever its indexes say (ref_unicall
+// runs what stays allowed: distinct fields, different references, one element
+// in two calls, and two '&mut' or two '&' of one element, which are shared by
+// design). Each is one function so that one conflict cannot stand in for another.
+
+mod ref_flow_unicall;
+
+fn two(a &uni i64, b &uni i64) {}
+fn twoSlices(a &uni Array[i64], b &uni Array[i64]) {}
+fn elementAndSlice(a &uni i64, b &uni Array[i64]) {}
+fn uniAndRead(a &uni i64, b &i64) {}
+fn uniAndMut(a &uni i64, b &mut i64) {}
+fn uniAndImm(a &uni i64, b &imm i64) {}
+fn readAndUni(a &i64, b &uni i64) {}
+
+fn sameElement(s &uni Array[i64]) {
+  two(&uni s[0usize], &uni s[0usize]);          //~ ErrorFrozen:23 "may not be borrowed as 'uni'"
+}
+
+fn otherIndexes(s &uni Array[i64], i usize, j usize) {
+  two(&uni s[i], &uni s[j]);                    //~ ErrorFrozen:18 "may not be borrowed as 'uni'"
+}
+
+fn otherLiterals(s &uni Array[i64]) {
+  two(&uni s[0usize], &uni s[1usize]);          //~ ErrorFrozen:23 "may not be borrowed as 'uni'"
+}
+
+fn apartRanges(s &uni Array[i64]) {
+  twoSlices(&uni s[0usize..2usize], &uni s[2usize..]);  //~ ErrorFrozen:37 "may not be borrowed as 'uni'"
+}
+
+fn overlappingRanges(s &uni Array[i64]) {
+  twoSlices(&uni s[0usize..3usize], &uni s[2usize..]);  //~ ErrorFrozen:37 "may not be borrowed as 'uni'"
+}
+
+fn elementAndWhole(s &uni Array[i64]) {
+  elementAndSlice(&uni s[0usize], &uni s[0usize..]);    //~ ErrorFrozen:35 "may not be borrowed as 'uni'"
+}
+
+fn wholeTwice(s &uni Array[i64]) {
+  twoSlices(&uni s[0usize..], &uni s[0usize..]);        //~ ErrorFrozen:31 "may not be borrowed as 'uni'"
+}
+
+fn uniThenRead(s &uni Array[i64]) {
+  uniAndRead(&uni s[0usize], &s[0usize]);       //~ ErrorFrozen:30 "may not be borrowed"
+}
+
+fn uniThenReadElsewhere(s &uni Array[i64]) {
+  uniAndRead(&uni s[0usize], &s[1usize]);       //~ ErrorFrozen:30 "may not be borrowed"
+}
+
+fn readThenUni(s &uni Array[i64]) {
+  readAndUni(&s[0usize], &uni s[0usize]);       //~ ErrorFrozen:26 "may not be borrowed as 'uni'"
+}
+
+fn uniThenMut(s &uni Array[i64]) {
+  uniAndMut(&uni s[0usize], &mut s[0usize]);    //~ ErrorFrozen:29 "may not be borrowed mutably"
+}
+
+fn uniThenImm(s &uni Array[i64]) {
+  uniAndImm(&uni s[0usize], &imm s[0usize]);    //~ ErrorFrozen:29 "may not be borrowed"
+}
+
+fn owner() {
+  imm a = new So[Array[i64, 4]]([0, 0, 0, 0]);
+  two(&uni a[0usize], &uni a[0usize]);          //~ ErrorFrozen:23 "may not be borrowed as 'uni'"
+}
+
+// A '&mut' of a place reached uniquely (through a '&uni', or from an owner) is
+// as exclusive as it is for a whole variable or a field (ref_flow_unireborrow);
+// only through a '&mut' or '&' slice, which may alias, are two of them allowed
+fn mutPairFromUni(s &uni Array[i64]) {
+  mutPair(&mut s[0usize], &mut s[0usize]);   //~ ErrorFrozen:27 "may not be borrowed mutably"
+}
+
+fn mutPairFromOwner() {
+  imm a = new So[Array[i64, 4]]([0, 0, 0, 0]);
+  mutPair(&mut a[0usize], &mut a[0usize]);   //~ ErrorFrozen:27 "may not be borrowed mutably"
+}
+
+fn mutPair(a &mut i64, b &mut i64) {}
+
+fn main() {
+}
