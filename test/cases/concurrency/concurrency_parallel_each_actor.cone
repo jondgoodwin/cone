@@ -1,0 +1,323 @@
+// A 'parallel each' written in an actor's behaviour. The behaviour is cut where
+// the loop ends, as an 'await' cuts it: it returns to its actor's dispatcher
+// while the pieces run on the workers, and the rest of it runs after the last
+// piece has finished. What the rulings ask, observed here:
+//
+//   - the actor is not run again until the loop, join included, has finished: a
+//     message sent meanwhile waits in the mailbox, and is handled after the
+//     whole behaviour ('mark' sees 'inLoop' at 0 every time, over a slow loop)
+//   - the pieces borrow the actor's fields directly: 'scale' is read through
+//     'self' by every piece, and 'vals' is the list the pieces change, each its
+//     own item, which the rest of the behaviour then reads
+//   - what the behaviour holds across the loop is carried as across an 'await':
+//     the parameter 'add', the local 'k', and the droppable 'tag', which the
+//     pieces read and which is dropped at the behaviour's end, not before
+//   - the messages the body sends are gathered, and sent after the loop in
+//     iteration order, ahead of the messages the rest of the behaviour sends
+//   - a behaviour returning a value answers it from after the loop
+//   - a loop in a loop of the behaviour, and two loops one after another, are a
+//     seam each; a loop in a piece's body runs inside the piece
+//   - a loop over a range, an empty one, and one shorter than a piece's grain
+//   - a loop in a synchronous method of the actor (a 'fn'), which cannot be cut,
+//     runs where it stands, the worker running pieces meanwhile
+//
+// Driver.go runs one chain, each step awaited, so what the actors print comes
+// in the same order on every run. Every number is worked out by hand or checked
+// against a plain loop.
+
+mod concurrency_parallel_each_actor;
+
+import stdio use *;
+import collections use *;
+import thread;
+import time;
+import actors;
+
+fn bits(v u64) u64 {
+  mut n = 0u64;
+  mut x = v;
+  while x != 0u64 {
+    n = n + (x & 1u64);
+    x = x >> 1u64;
+  }
+  n;
+}
+
+fn say(s &str, n u64) {printStr(s); printStr(" "); printUInt(n); printStr("\n");}
+
+struct Tag {
+  pub n u64;
+  fn final(self &uni) {say("  drop tag", n);}
+}
+
+fn mix(i u64, n u64) u64 {
+  mut x = i + 1u64;
+  mut k = 0u64;
+  while k < n {
+    x = x * 6364136223846793005u64 + k;
+    k = k + 1u64;
+  }
+  x;
+}
+
+// What one pass makes of its item: costly, and the same on every run
+fn cell(i u64, scale u64, k u64, t u64) u64 {
+  mix(i, 400u64 + (i % 7u64) * 300u64) % 1000u64 + i * scale + k + t;
+}
+
+actor Log {
+  seen List[u64];
+
+  fn init(self &new) {
+    *self = new Self(seen: new List[u64]);
+  }
+
+  pub async do note(self, n u64) {
+    seen.push(n);
+  }
+
+  // The first 'loops' numbers in order, then the two sent after the loop
+  pub async do report(self, loops u64) u64 {
+    mut ok = true;
+    mut k = 0u64;
+    each n in seen {
+      imm want = if k < loops {k;} else {1000000u64 + (k - loops);};
+      if *n != want {
+        ok = false;
+      }
+      k = k + 1u64;
+    }
+    say("  log saw", u64.from(seen.len));
+    printStr(if ok {"  log in order: yes\n";} else {"  log in order: NO\n";});
+    0u64;
+  }
+}
+
+actor Scaler {
+  vals List[u64];
+  scale u64;
+  grid Array[u64, 4];
+  hits Atomic[u64];
+  ran Atomic[u64];    // bit i: worker i ran a pass of 'wide'
+  inLoop u64;         // 1 between a 'run' beginning its loop and the loop's end
+  marks u64;
+
+  fn init(self &new, n u64, scale u64) {
+    mut l = new List[u64];
+    mut i = 0u64;
+    while i < n {
+      l.push(i);
+      i = i + 1u64;
+    }
+    *self = new Self(vals: l, scale: scale, grid: [1u64, 2u64, 3u64, 4u64], hits: Atomic[u64].of(0u64),
+      ran: Atomic[u64].of(0u64), inLoop: 0u64, marks: 0u64);
+  }
+
+  // The worked example: 'add', 'k' and 'tag' are read by the pieces and used
+  // after the loop; 'scale' is the actor's own field, read through 'self'
+  pub async do run(self, add u64) u64 {
+    say("run", add);
+    imm k = add * 2u64;
+    imm tag = new Tag(7u64);
+    inLoop = 1u64;
+    parallel each v in vals.mutItems() {
+      *v = cell(*v, scale, k, tag.n);
+    }
+    inLoop = 0u64;
+    mut bad = 0u64;
+    mut i = 0u64;
+    each v in vals {
+      if *v != cell(i, scale, k, tag.n) {
+        bad = bad + 1u64;
+      }
+      i = i + 1u64;
+    }
+    say("  run: items wrong", bad);
+    say("  run: tag still", tag.n);
+    bad;
+  }
+
+  // The pieces really run on more than one worker: the first pass waits until
+  // a second worker has run a pass, or three seconds go by
+  pub async do wide(self) u64 {
+    ran.store(0u64);
+    parallel each i in 0usize < 3000usize {
+      ran.bitOr(1u64 << u64.from(actors.workerIndex()));
+      if i == 0usize {
+        mut waited = 0u64;
+        while bits(ran.load()) < 2u64 and waited < 3000u64 {
+          thread.sleep(time.Duration.fromMillis(1));
+          waited = waited + 1u64;
+        }
+      }
+    }
+    imm n = bits(ran.load());
+    printStr(if n > 1u64 {"  wide: pieces ran on several workers: yes\n";} else {"  wide: pieces ran on several workers: NO\n";});
+    n;
+  }
+
+  pub async do mark(self) {
+    marks = marks + 1u64;
+    if inLoop != 0u64 {
+      say("  mark ran inside a loop", marks);
+    }
+  }
+
+  pub async do marksSeen(self) u64 {marks;}
+
+  // A value returned from after the loop: the pieces count in an Atomic
+  pub async do count(self, n u64) u64 {
+    hits.store(0u64);
+    parallel each i in 0usize < usize.from(n) {
+      hits.add(1u64);
+    }
+    hits.load();
+  }
+
+  // The body's messages are gathered, and sent after the loop in order
+  pub async do spread(self, log Log, n u64) u64 {
+    parallel each i in 0usize < usize.from(n) {
+      imm w = mix(u64.from(i), (u64.from(i) * u64.from(i)) % 97u64 * 20u64);
+      if w == 1u64 {
+        hits.add(1u64);
+      }
+      log.note(u64.from(i));
+    }
+    log.note(1000000u64);
+    log.note(1000001u64);
+    await log.report(n);
+  }
+
+  // Two loops one after another, and a loop in a loop of the behaviour
+  pub async do rounds(self) u64 {
+    hits.store(0u64);
+    parallel each i in 0usize < 100usize {
+      hits.add(1u64);
+    }
+    say("  first", hits.load());
+    parallel each i in 0usize < 50usize {
+      hits.add(2u64);
+    }
+    say("  second", hits.load());
+    mut round = 0u64;
+    while round < 3u64 {
+      parallel each i in 0usize < 10usize {
+        hits.add(100u64);
+      }
+      round = round + 1u64;
+      say("  round", round);
+    }
+    say("  after rounds", hits.load());
+    hits.load();
+  }
+
+  // A range from a parameter, an empty one, one shorter than the grain, and a
+  // loop in a piece's body
+  pub async do ranges(self, n usize) u64 {
+    hits.store(0u64);
+    parallel each i in 0usize < n {
+      hits.add(u64.from(i));
+    }
+    say("  range", hits.load());
+    parallel each i in 5usize < 5usize {
+      hits.add(1000000u64);
+    }
+    say("  empty", hits.load());
+    parallel each i in 0usize <= 2usize {
+      hits.add(10000u64);
+    }
+    say("  short", hits.load());
+    hits.store(0u64);
+    parallel each i in 0usize < 8usize {
+      parallel each j in 0usize < 100usize {
+        hits.add(1u64);
+      }
+    }
+    say("  nested", hits.load());
+    hits.load();
+  }
+
+  // What a loop may walk: an array in a field (through 'self', also lent '&mut'),
+  // a list in a local, whose block is on the heap; and read: a number in a local
+  pub async do shapes(self, n u64) u64 {
+    imm k = n + 1u64;
+    hits.store(0u64);
+    parallel each x in grid {
+      hits.add(*x + k);
+    }
+    say("  field array", hits.load());
+    hits.store(0u64);
+    mut l = new List[u64];
+    l.push(10u64);
+    l.push(20u64);
+    l.push(30u64);
+    parallel each x in l {
+      hits.add(*x + k);
+    }
+    say("  local list", hits.load());
+    hits.store(0u64);
+    parallel each x in &mut grid {
+      hits.add(*x);
+    }
+    say("  field array lent", hits.load());
+    hits.load();
+  }
+
+  // A synchronous method: it cannot be cut, so its loop runs where it stands
+  fn helper(self &) u64 {
+    hits.store(0u64);
+    parallel each i in 0usize < 200usize {
+      hits.add(1u64);
+    }
+    hits.load();
+  }
+
+  pub async do viaHelper(self) u64 {
+    say("helper", helper());
+    say("  and after", 1u64);
+    1u64;
+  }
+}
+
+actor Client {
+  pub async do ask(self, s Scaler, n u64) u64 {
+    imm got = await s.count(n);
+    say("count came back", got);
+    got;
+  }
+}
+
+actor Driver {
+  pub async do go(self, s Scaler, log Log, c Client) u64 {
+    // Sent while the loop of 'run' is under way, or about to be
+    imm f = s.run(5u64);
+    s.mark();
+    s.mark();
+    s.mark();
+    imm bad = await f;
+    imm m = await s.marksSeen();
+    say("marks", m);
+    imm w = await s.wide();
+    imm a = await s.spread(log, 400u64);
+    imm b = await c.ask(s, 777u64);
+    imm d = await s.rounds();
+    imm e = await s.ranges(1000usize);
+    imm f2 = await s.shapes(4u64);
+    imm g = await s.viaHelper();
+    say("done", bad);
+    bad;
+  }
+}
+
+fn main() {
+  initAll();
+  actors.configure(new actors.Options(workers: 4u32));
+  {
+    imm s = new Scaler(3000u64, 3u64);
+    imm log = new Log();
+    imm c = new Client();
+    imm d = new Driver();
+    d.go(s, log, c);
+  }
+  finalAll();
+}

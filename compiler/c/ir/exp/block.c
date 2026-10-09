@@ -258,6 +258,7 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
     INode **laststmtp = NULL;
     INode **lastexp = NULL;
     Nodes *hoists = NULL;
+    int parentered = 0;     // A parallel each built, whose body is checked below
 
     // Save and adjust pstate for block
     // This includes block stack, used for gathering all breaks that might belong to some block
@@ -277,6 +278,11 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
                 blockStmtTypeCheck(pstate, &nodesGet(blk->stmts, 1 - first), &hoists);
             }
             parallelEachLower(pstate, blk);
+            // (what a loop built makes a body of the statements below)
+            if (blk->flags & FlagParallel) {
+                parentered = 1;
+                parallelEachEnter(pstate);
+            }
         }
         else {
             blockStmtTypeCheck(pstate, &nodesGet(blk->stmts, 0), &hoists);
@@ -372,6 +378,8 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
     // that its statements have their types
     if (blk->flags & FlagParallel)
         parallelEachCheckBody(pstate, blk);
+    if (parentered)
+        parallelEachLeave();
 
     // Do inference on all registered breaks to ensure they all return the expected type
     // Note: Iterate differently because list may grow while iterating

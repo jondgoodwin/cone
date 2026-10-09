@@ -571,6 +571,11 @@ static BlockNode *parseEachYield(ParseState *parse, int build, INode *lexnode) {
 static INode *parseEachLoop(ParseState *parse, Name *lifesym, int stmtflag, int build) {
     int parallel = parseEachParallel;
     parseEachParallel = 0;
+    // In an actor's body, a 'parallel each' may be cut like an 'await' (a seam,
+    // pareach.c), so the method holding one is noted as holding one: its actor
+    // is given a pending table and the rest a seam needs (parseactor.c)
+    if (parallel && parse->dcltexts)
+        ++parse->dcltexts->awaits;
     BlockNode *outerblk = newBlockNode();   // surrounding block scope for isolating 'each' vars
 
     // Obtain all the parsed pieces

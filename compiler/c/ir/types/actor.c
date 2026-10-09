@@ -17,7 +17,7 @@ static uint32_t actorMax = 0;
 FnDclNode *actorRuntime[ActorRtCount];
 char *actorRuntimeNames[ActorRtCount] = {
     "parkReserve", "parked", "unpark", "recordFree", "answerTo", "answered", "startAwait",
-    "futureReady", "futureRegister", "futureOpen", "futureTaken"
+    "futureReady", "futureRegister", "futureOpen", "futureTaken", "parBlock", "parSeam"
 };
 
 StructNode *actorAwaitable = NULL;

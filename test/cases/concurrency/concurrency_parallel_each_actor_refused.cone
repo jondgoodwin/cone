@@ -1,0 +1,89 @@
+// What a 'parallel each' in an actor's behaviour refuses beyond what any
+// 'parallel each' does (concurrency_parallel_each_refused). The behaviour is cut
+// where the loop ends and returns to its actor's dispatcher while the pieces
+// run, so its frame is gone when they read: what they read of the behaviour's
+// variables is copied as the behaviour returns, and a copy of a borrow, or of an
+// array held in the frame, would point into that frame. Refused:
+//
+//   - a source array in a local, or made for the loop, and a slice or reference
+//     held in a variable (a slice of the actor's own field, named through
+//     'self', is fine, and so is a list, whose block is on the heap)
+//   - a variable holding a borrow, read in the body ('self' is the one borrow the
+//     pieces may read; a local holding one is copied as a pointer)
+//
+// What is allowed beside them is here too: a field array walked through 'self', a
+// list in a local, a number in a local, and a loop in a synchronous method of the
+// actor, which is not cut and so may use its frame as any other function does.
+
+mod concurrency_parallel_each_actor_refused;
+
+import collections use *;
+import actors;
+
+actor Holder {
+  items List[u64];
+  grid Array[u64, 4];
+  total Atomic[u64];
+
+  fn init(self &new) {
+    *self = new Self(items: new List[u64], grid: [1u64, 2u64, 3u64, 4u64], total: Atomic[u64].of(0u64));
+  }
+
+  // An array in a local
+  pub async do localArray(self) {
+    imm xs = [1u64, 2u64, 3u64];
+    parallel each x in xs {                        //~ ErrorParFrame "the array it walks lies in the behaviour's own frame"
+      total.add(*x);
+    }
+  }
+
+  // An array made for the loop
+  pub async do madeArray(self) {
+    parallel each x in [4u64, 5u64] {              //~ ErrorParFrame "the array it walks lies in the behaviour's own frame"
+      total.add(*x);
+    }
+  }
+
+  // A slice held in a variable
+  pub async do heldSlice(self) {
+    imm s = &grid[0usize..2usize];
+    parallel each x in s {                         //~ ErrorParFrame "the slice it walks lies in the behaviour's own frame"
+      total.add(*x);
+    }
+  }
+
+  // A borrow held in a variable, read in the body
+  pub async do heldBorrow(self) {
+    imm t = &total;
+    parallel each x in 0usize < 4usize {
+      t.add(1u64);                                 //~ ErrorParFrame "t holds a borrow"
+    }
+  }
+
+  // Allowed: a field array through 'self', a list in a local, a number in a local
+  pub async do fine(self, n u64) {
+    imm k = n + 1u64;
+    parallel each x in grid {
+      total.add(*x + k);
+    }
+    mut l = new List[u64];
+    l.push(1u64);
+    l.push(2u64);
+    parallel each x in l {
+      total.add(*x + k);
+    }
+    parallel each x in &mut grid {
+      total.add(*x);
+    }
+  }
+
+  // A synchronous method is not cut: its frame outlives the loop
+  fn sync(self &) u64 {
+    imm xs = [1u64, 2u64, 3u64];
+    imm t = &total;
+    parallel each x in xs {
+      t.add(*x);
+    }
+    total.load();
+  }
+}

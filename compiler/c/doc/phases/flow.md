@@ -1447,7 +1447,10 @@ each awaits a behaviour of an actor that returns a value
 (`AwaitNode.message`, which type check set, sending it awaited), an
 operation, an `actors.Awaitable[R]` started at the seam (`AwaitNode.awaitable`,
 an I/O operation), or a future, an `actors.Future[T]` (`AwaitNode.future`),
-whose answer calls the second half (`awaitParks`). The 'await' takes its
+whose answer calls the second half (`awaitParks`); or it is the end of a
+`parallel each` written in the behaviour (`AwaitNode.par`, a statement following
+the loop, [Block](../nodes/block.md), "Type check"), whose last piece resumes the
+second half. The 'await' takes its
 operand as a call takes an argument, so a future that copies is copied
 (counted) and one that moves is moved. Under `--await-direct`, which is for tests, a seam
 awaiting anything else is split too, handing its record straight to its

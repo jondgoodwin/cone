@@ -198,8 +198,15 @@ untyped literal, so that the other takes its type, `parallelEachBoundType`). The
 source must be a number range of whole numbers no wider than a usize, an array,
 a slice or a type that lends an array; anything else (a cursor, a type with its
 own `len` and `split`) is refused with the reason (`ErrorParSource`), as is a
-module that does not import `actors`, whose `parallelEach` runs the loop, and an
-actor's method (`ErrorParRuntime`). The control rules (`break`, `return`, `await`,
+module that does not import `actors`, whose `parallelEach` runs the loop, and a
+generator (`ErrorParRuntime`). Written directly in an actor's behaviour (and not in
+another parallel each's body: `parInBody`, per function), the loop is followed by
+a statement cutting the behaviour there, an `AwaitNode` with `par` set
+(`awaitParNew`), and the body may read no borrow held in a variable but `self`, nor
+the loop walk an array lying in the frame (`ErrorParFrame`, `parCheckFrame`,
+`parMayBeFrame`); the parser notes a method holding a `parallel each` as holding an
+`await`, so its actor has a pending table. A synchronous method of an actor runs
+the loop where it stands. The control rules (`break`, `return`, `await`,
 a `continue` of an outer loop: `ErrorParControl`) are checked on the body as
 written, before it is built, by a walk (`parWalk`). The loop built is `each`'s counted loop over an index
 range, the statements

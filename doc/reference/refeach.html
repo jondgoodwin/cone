@@ -19,7 +19,7 @@
 			change its items in place (<span class="pre">mutItems</span>), consume it (<span class="pre">drain</span>) or number them
 			(<span class="pre">indexed</span>), and <span class="pre">zip</span>; <span class="pre">each</span> as an entry of the append operator's list
 			(<a href="#builder">below</a>); and <a href="#parallel">parallel each</a> over a number range, an
-			array, a slice or a list, outside actors, and <a href="#parallelbuilder">the parallel builder</a> that builds a list from it. Not built yet: <a href="#closure">closure iterators</a>, the adapters (<span class="pre">map</span>,
+			array, a slice or a list, in a function or an actor's method, and <a href="#parallelbuilder">the parallel builder</a> that builds a list from it. Not built yet: <a href="#closure">closure iterators</a>, the adapters (<span class="pre">map</span>,
 			<span class="pre">filter</span>, <span class="pre">fold</span>) and a source that runs its own loop, all of which wait for closures. An enum's variant is constructed with its values in square brackets, as written here: that is the current spelling, and how a variant is constructed is an open design question (<a href="refenum.html#init">Enums</a>).</i></p>
 
 	<p><span class="pre">each</span> makes it easier than <span class="pre">while</span>
@@ -351,9 +351,9 @@ each x in |{cnt = 12}| if cnt &gt; 0 {Some[cnt /= 2]} else {None} {
 	</ul>
 
 	<h2 id="parallel">parallel each</h2>
-	<p style="margin-left: 40px;"><i>Note: Built in a function that is not an actor's method: over a number range, an
-			array, a slice or a list, with the header <span class="pre">if</span> and <span class="pre">mutItems()</span>, and <a href="#parallelbuilder">the parallel builder</a> (<span class="pre">new List[T] &lt;- parallel each &hellip; yield</span>).
-			Not built yet: inside an actor's method or a generator; a source of your own that is a
+	<p style="margin-left: 40px;"><i>Note: Built in a function and in an actor's methods (<a href="#parallelactor">below</a>): over a number range, an
+			array, a slice or a list, with the header <span class="pre">if</span> and <span class="pre">mutItems()</span>, and, in a function that is not an actor's method, <a href="#parallelbuilder">the parallel builder</a> (<span class="pre">new List[T] &lt;- parallel each &hellip; yield</span>).
+			Not built yet: inside a generator; a source of your own that is a
 			<span class="pre">ParallelIterable</span>; and
 			the reductions that come with closures. A parallel each takes no
 			<span class="pre">else</span> and is a statement.</i></p>
@@ -420,6 +420,45 @@ fn total(xs &amp;Array[u64]) u64 {
 		<li>A <b>message sent to an actor</b> is allowed, and is not sent where it is written: the passes' messages are kept and
 			sent after the loop, by the code that wrote it, in iteration order &mdash; the first pass's, then the second's &mdash; so
 			an actor sees the same order every run. A loop inside a pass's body is gathered into that pass in the same way.</li>
+	</ul>
+
+	<h3 id="parallelactor">In an actor's method</h3>
+	<p>A <span class="pre">parallel each</span> written directly in a behaviour (a method declared <span class="pre">async do</span>)
+		cuts the behaviour where the loop ends, as an <span class="pre">await</span> does. The behaviour returns to the actor's
+		dispatcher while the passes run on the workers, and the rest of it runs when the last pass has finished:</p>
+<pre>
+actor Scaler {
+  vals List[u64];
+  scale u64;
+
+  pub async do run(self, add u64) {
+    imm k = add * 2u64;
+    parallel each v in vals.mutItems() {
+      *v = *v * scale + k;      // the actor's fields are read through self; k and add are carried
+    }
+    // here the loop has finished, and this is the same behaviour, the same call
+  }
+}
+</pre>
+	<ul>
+		<li>The actor is <b>not run again until the loop has finished</b>, the rest of the behaviour included. Its mailbox goes on
+			accepting messages, and they are handled after the behaviour, in order. A message sent after the behaviour began is
+			handled after all its parallel work.</li>
+		<li>The passes <b>borrow the actor's fields</b> directly, through <span class="pre">self</span>, for the loop: nothing is moved out or
+			copied, and no update is lost. This is the one borrow a behaviour holds across the cut; nothing else runs the actor, and a
+			pass can neither <span class="pre">await</span> nor receive, so the loop always finishes.</li>
+		<li>What the behaviour holds across the cut is carried as it is across an <span class="pre">await</span>: the parameters and locals it
+			uses afterwards, and every droppable value, which dies where it would have died had the method not been cut. What the passes read of
+			the behaviour's variables is copied as the behaviour returns, so a pass may not read a <b>borrow held in a variable</b>
+			(<span class="pre">imm t = &amp;total</span>; read <span class="pre">total</span> through <span class="pre">self</span> instead),
+			and the array or slice the loop walks may not lie in the behaviour's own frame (an array in a local, or made for the loop; walk a list,
+			or an array in a field).</li>
+		<li>The messages the passes send are sent when the last pass has finished, before the rest of the behaviour runs, in iteration order.</li>
+		<li>A behaviour that returns a value answers it from after the loop. A loop in a loop of the behaviour, and several loops, are a cut each.
+			A loop inside a pass's body runs inside that pass.</li>
+		<li>A synchronous <span class="pre">fn</span> of an actor cannot be cut. A loop there runs where it stands, the worker
+			running passes meanwhile, so its actor is not run again until the method that called it has returned.</li>
+		<li>The parallel builder is not built inside an actor's method yet.</li>
 	</ul>
 
 	<h3 id="parallelbuilder">The parallel builder</h3>

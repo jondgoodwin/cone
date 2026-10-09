@@ -587,3 +587,120 @@ pub fn parallelRangeThen(lo usize, hi usize, grain usize, body RangeBody, data *
   }
   notify(s);
 }
+
+// ---------------------------------------------------------------------------
+// A PARALLEL EACH IN A BEHAVIOUR. A 'parallel each' written directly in an
+// actor's behaviour is a seam, cut as an 'await' is (compiler/c/genllvm/
+// genlawait.c): the behaviour's first half moves what it still holds into a
+// record in the actor's pending table, copies what the loop's body reads into a
+// block of its own (parBlock; the pieces read those copies, and the actor's
+// fields through the 'self' among them), and calls parSeam, which only notes
+// the loop in the actor's Header (par) and returns. The behaviour then returns
+// to the dispatcher, which runs nothing more of this actor: runBatch stops
+// at a loop noted, and runActor, finding it, begins the loop (startHeld) on
+// its own worker with parallelRangeThen, so no piece can finish before the
+// behaviour has returned. The actor is neither queued again nor marked idle
+// while it waits: its mailbox goes on taking messages, which are handled only
+// after the whole behaviour.
+//
+// The piece that finishes the loop last calls parSeamDone, on whichever
+// thread that is. It sends the messages the pieces gathered (SENDS GATHERED),
+// as the thread that finished, not as a piece; frees the loop's blocks; and
+// makes the actor runnable with the rest of the behaviour ahead of its
+// mailbox (Header.ready): on the finishing worker's own queue, so that it
+// usually runs it itself, or, from a thread that is no worker's, on the
+// inject queue. It is the actor already running, so it counts no new
+// activation. The worker that takes it up finds ready at the head of its
+// runBatch and runs the seam's second half first (runReady), then the
+// messages.
+// ---------------------------------------------------------------------------
+
+// The actor whose behaviour this worker is running: its Header, else 0
+mut @threadlocal curActor usize = 0usize;
+
+// A loop a behaviour began, and how to go on when it has finished
+struct ParPending {
+  pub h *Header;
+  pub lo usize;
+  pub hi usize;
+  pub body RangeBody;          // the compiler's piece, handed 'caps'
+  pub caps *u8;                // the block of copies the pieces read, or 0 (freed when the loop ends)
+  pub resume *u8;              // the seam's resume function
+  pub id u64;                  // the record's slot in the pending table
+  pub hasId bool;              // false where the record is empty
+  pub job *EachLoop;           // the loop's gathering of sends, once it has begun
+}
+
+fn nullPar() *ParPending {null;}
+
+// A block of 'size' bytes for the copies a loop's pieces read, kept by the
+// compiler's code until parSeam hands it over
+pub fn parBlock(size usize) *u8 {
+  imm b = libc.malloc(size);
+  if b as usize == 0usize {
+    die("actors: out of memory for a parallel loop");
+  }
+  b;
+}
+
+// A behaviour's 'parallel each' over [lo, hi), cut at the loop's end: note it in
+// the actor whose behaviour is running, to begin once the behaviour has
+// returned. 'resume' is the seam's resume function and 'id' its record's slot
+// in the pending table (hasId false: no record)
+pub fn parSeam(lo usize, hi usize, body RangeBody, caps *u8, resume *u8, id u64, hasId bool) {
+  imm h = curActor as *Header;
+  if h as usize == 0usize {
+    die("actors: a parallel each cut at its end, outside an actor's behaviour");
+  }
+  imm p = libc.malloc(mem.sizeof[ParPending]()) as *ParPending;
+  if p as usize == 0usize {
+    die("actors: out of memory for a parallel loop");
+  }
+  mem.writeRaw[ParPending](p, new ParPending(h, lo, hi, body, caps, resume, id, hasId, null));
+  (*h).par = p;
+}
+
+// Begin the loop h's behaviour noted, on worker w, now that the behaviour has
+// returned: the first task goes on top of w's queue, and w takes it from there
+fn startHeld(w *Worker, h *Header) {
+  imm p = (*h).par;
+  (*h).par = nullPar();
+  imm s = (*w).sched;
+  mut grain = ((*p).hi - (*p).lo) / (usize.from((*s).nworkers) * 8usize);
+  if grain == 0usize {
+    grain = 1usize;
+  }
+  imm job = libc.malloc(mem.sizeof[EachLoop]()) as *EachLoop;
+  if job as usize == 0usize {
+    die("actors: out of memory for a parallel loop");
+  }
+  mem.writeRaw[EachLoop](job, new EachLoop((*p).body, (*p).caps, 0usize));
+  (*p).job = job;
+  parallelRangeThen((*p).lo, (*p).hi, grain, &gatherPiece, job as *u8, &parSeamDone, p as *u8);
+}
+
+// The loop has finished, on whichever thread ran its last piece: send what its
+// pieces gathered, free what it held, and make the actor runnable with the rest
+// of its behaviour ahead of its mailbox
+fn parSeamDone(arg *u8) {
+  imm p = arg as *ParPending;
+  imm h = (*p).h;
+  // The thread may be inside a piece of another loop; these sends are its own
+  imm saved = curPiece;
+  curPiece = 0usize;
+  sendGathered((*p).job);
+  curPiece = saved;
+  libc.free((*p).job as *u8);
+  if (*p).caps as usize != 0usize {
+    libc.free((*p).caps);
+  }
+  (*h).ready = p;
+  imm s = running as *Sched;
+  imm w = me as *Worker;
+  if w as usize != 0usize and (*w).sched as usize == s as usize {
+    localPush(w, h);
+  } else {
+    (*h).link = nullHeader();
+    injectPush(s, h, h, 1u64);
+  }
+}

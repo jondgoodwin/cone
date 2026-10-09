@@ -103,6 +103,17 @@ typedef struct GenParBody {
     uint32_t maxcaps;
 } GenParBody;
 
+// What a behaviour's parallel each hands its seam (AwaitNode.par, genlpar.c and
+// genlawait.c): the range of passes, the piece function, and the block of
+// copies the pieces read. Made where the loop is generated, used by the seam
+// that follows it in the same function
+typedef struct GenParSeam {
+    LLVMValueRef lo;
+    LLVMValueRef hi;
+    LLVMValueRef piece;     // The piece's function
+    LLVMValueRef caps;      // The block, or NULL when the piece uses nothing from outside
+} GenParSeam;
+
 // The roots of the function being generated: each stack slot holding a value
 // whose type holds a traced reference -- a local's, a parameter's, a birth's --
 // and that type, in slot order. What its frame and root map are built from

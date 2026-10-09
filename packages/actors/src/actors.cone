@@ -387,7 +387,13 @@
 // before actors. Called from a behaviour, the worker runs tasks until the
 // loop is done, and its actor is not run again before that. It is the
 // low-level form: it trusts its caller that the body writes only its own
-// items and never waits.
+// items and never waits. The language's 'parallel each' written directly in a
+// behaviour does not wait: the behaviour is cut at the loop's end like an
+// 'await' (parSeam, parBlock: called by the compiler's code), the loop begins
+// when the behaviour has returned, the actor is neither queued nor marked idle
+// meanwhile (its Header's par and ready), and the last piece makes it runnable
+// with the rest of the behaviour ahead of its mailbox (parallel.cone, A
+// PARALLEL EACH IN A BEHAVIOUR).
 //
 // IDLE WORKERS park on the futex. A worker that finds no work looks again,
 // yielding its processor between looks, 64 times; then it counts itself
@@ -553,6 +559,8 @@ struct Header {
   pub release &fn(h *Header);            // releaseHold[M]
   pub finalize &fn(h *Header);           // finalizeState[S, M]
   pub dispatch *u8;                      // the actor's dispatch function
+  pub par *ParPending = null;            // a behaviour's 'parallel each' to begin once it has returned (parallel.cone, A PARALLEL EACH IN A BEHAVIOUR)
+  pub ready *ParPending = null;          // ... finished: the rest of the behaviour, to run ahead of the mailbox
 }
 
 // What an actor's handle owns, 'Arc[opaq, T]': the runtime's part of an actor
@@ -706,16 +714,43 @@ fn runBatch[S, M Sendable](h *Header, limit u32) u32 {
   mut slot = (*h).dispatch;
   imm f = mem.readRaw[&fn(s &mut S, m *M)](&mut slot as *(&fn(s &mut S, m *M)));
   imm st = stateOf[S, M](h);
+  curActor = h as usize;
   mut n = 0u32;
-  while n < limit {
+  // A 'parallel each' this actor's behaviour left has finished: the rest of the
+  // behaviour runs first, ahead of whatever the mailbox holds
+  imm ready = (*h).ready;
+  if ready as usize != 0usize {
+    (*h).ready = nullPar();
+    runReady[S](st, ready);
+  }
+  // A behaviour that begins a 'parallel each' returns, and the actor then runs
+  // nothing more until the loop has finished: runActor begins it
+  while n < limit and (*h).par as usize == 0usize {
     imm node = mailPop(h);
     if node as usize == 0usize {
+      curActor = 0usize;
       return n;
     }
     f(&mut *st, &(*(node as *Node[M])).msg as *M);
     n = n + 1u32;
   }
+  curActor = 0usize;
   n;
+}
+
+// The rest of a behaviour cut at its 'parallel each', run as a reply's dispatch
+// runs a second half (resume, resumeId): the seam's resume function, with the
+// record's id where the record is not empty, and no value
+fn runReady[S](st *S, p *ParPending) {
+  imm run = (*p).resume;
+  imm id = (*p).id;
+  imm hasId = (*p).hasId;
+  libc.free(p as *u8);
+  if hasId {
+    resumeId[S](&mut *st, run, id, null);
+  } else {
+    resume[S](&mut *st, run, null);
+  }
 }
 
 // The scheduler takes its owner: an owner remade from the address, uncounted,
@@ -1481,6 +1516,13 @@ fn runActor(w *Worker, h *Header) {
   imm n = run(h, (*s).batch);
   tally(&(*w).messages as *u64, u64.from(n));
   tally(&(*w).activations as *u64, 1u64);
+  // The last behaviour began a 'parallel each' and has returned: the actor is
+  // neither queued again nor marked idle, but waits for its loop, its mailbox
+  // taking messages meanwhile; the loop begins now, on this worker
+  if (*h).par as usize != 0usize {
+    startHeld(w, h);
+    return;
+  }
   if n < (*s).batch and mailMarkIdle(h) {
     imm release = (*h).release;
     release(h);

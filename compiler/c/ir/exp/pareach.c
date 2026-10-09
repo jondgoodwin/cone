@@ -131,6 +131,8 @@ typedef int (*ParVisit)(INode *node, void *ctx);
 
 static void parWalk(INode *node, ParVisit visit, void *ctx);
 
+static int parHasSeam(BlockNode *outer);
+
 static void parWalkNodes(Nodes *nodes, ParVisit visit, void *ctx) {
     if (nodes == NULL)
         return;
@@ -672,6 +674,37 @@ static int parCheckCopies(INode *node, void *ctxp) {
     return 0;
 }
 
+// ---- What a loop cut at its end reads from the behaviour's frame --------------
+//
+// The pieces read copies of the variables the body names, taken as the behaviour
+// returns. A copy of a value is as good as the value; a copy of a borrow points
+// into the behaviour's frame (or wherever the borrow did), which is gone. Only
+// 'self', the actor's own state, is a borrow the pieces may read.
+
+typedef struct {
+    ParSet inside;
+    ParSet reported;
+} ParFrame;
+
+static int parCheckFrame(INode *node, void *ctxp) {
+    ParFrame *ctx = (ParFrame *)ctxp;
+    if (!isNameUseNode(node))
+        return 1;
+    INode *dcl = ((NameUseNode*)node)->dclnode;
+    if (dcl == NULL || dcl->tag != VarDclTag || parSetHas(&ctx->inside, dcl))
+        return 1;
+    VarDclNode *var = (VarDclNode *)dcl;
+    if (var->namesym == selfName || var->scope == 0 || var->vtype == NULL)
+        return 1;
+    if (itypeCarriesBorrow(itypeGetTypeDcl(var->vtype)) && !parSetHas(&ctx->reported, dcl)) {
+        parSetAdd(&ctx->reported, dcl);
+        errorMsgNode(node, ErrorParFrame,
+            "This 'parallel each' is in a behaviour, which returns to its actor's dispatcher while the pieces run, and %s holds a borrow, which points into the behaviour's own frame, gone by then. Read the actor's fields through 'self' instead, or copy the value the borrow reaches into a variable of the behaviour's.",
+            &var->namesym->namestr);
+    }
+    return 1;
+}
+
 // The loop of a built parallel each, its last loop block
 static BlockNode *parLoopOf(BlockNode *outer) {
     for (uint32_t i = outer->stmts->used; i > 0; --i) {
@@ -706,6 +739,14 @@ void parallelEachCheckBody(TypeCheckState *pstate, BlockNode *outer) {
     memset(&copies, 0, sizeof(copies));
     copies.inside = ctx.inside;
     parWalk((INode*)loop, parCheckCopies, &copies);
+
+    // A loop cut at its end reads no borrow held in the behaviour's frame
+    if (parHasSeam(outer)) {
+        ParFrame frame;
+        memset(&frame, 0, sizeof(frame));
+        frame.inside = ctx.inside;
+        parWalk((INode*)loop, parCheckFrame, &frame);
+    }
 
     // A loop that lends its items to be changed: the body names none of the
     // place they are lent from
@@ -752,10 +793,123 @@ static ModuleNode *parFindImport(Nodes *imports, char *name) {
     return NULL;
 }
 
+// ---- A loop in an actor's behaviour: the seam ----------------------------------
+//
+// Written directly in a behaviour (not inside another parallel each's body, whose
+// inner loop finishes inside its pass), a parallel each is cut where its loop
+// ends, as an 'await' is: the behaviour returns to its actor's dispatcher while the
+// pieces run, and the rest of it runs when the last has finished. A statement
+// following the loop, an AwaitNode with 'par' set, is the cut. The pieces read
+// what the loop uses from outside in copies of those variables' values made as the
+// behaviour returns (genlpar.c), and the actor's fields through 'self', so a copy
+// must not hold a pointer into the behaviour's own frame, which is gone by then.
+// What may: values, owners (their blocks are on the heap), and 'self'. What
+// may not: a borrow held in a variable, and an array in a local that the loop
+// walks or lends. Nothing is lost by it: the pieces' own variables are their own.
+
+// The functions whose parallel each bodies are being checked, outermost first (a
+// function checked in the middle of one, called from its body, is another's)
+#define ParBodyMax 64
+static FnDclNode *parBodyFns[ParBodyMax];
+static uint32_t parBodyDepth = 0;
+
+void parallelEachEnter(TypeCheckState *pstate) {
+    if (parBodyDepth < ParBodyMax)
+        parBodyFns[parBodyDepth] = pstate->fn;
+    ++parBodyDepth;
+}
+
+void parallelEachLeave() {
+    --parBodyDepth;
+}
+
+// Is a parallel each's body being checked in this function?
+static int parInBody(FnDclNode *fn) {
+    for (uint32_t i = 0; i < parBodyDepth && i < ParBodyMax; ++i) {
+        if (parBodyFns[i] == fn)
+            return 1;
+    }
+    return 0;
+}
+
+// Is this the end-of-loop seam of a parallel each, the statement after its loop?
+static int parIsSeam(INode *node) {
+    return node->tag == AwaitTag && ((AwaitNode *)node)->par;
+}
+
+// Whether the block (a parallel each as built) is cut at its loop's end
+static int parHasSeam(BlockNode *outer) {
+    if (outer->stmts->used == 0)
+        return 0;
+    INode *last = nodesGet(outer->stmts, outer->stmts->used - 1);
+    // (type check makes the last statement the block's value)
+    if (last->tag == BlockRetTag)
+        last = ((BreakRetNode*)last)->exp;
+    return parIsSeam(last);
+}
+
+// Does this place, or the slice or array a call lends of one, lie where the
+// method's frame is, or may it? The actor's own fields, reached through 'self',
+// lie in the actor. A variable of the method holding its value inline lies in
+// the frame; one holding a borrow or a pointer points where it points, which is
+// not known here, so it counts as the frame. A value made for the loop does.
+static int parMayBeFrame(INode *node) {
+    while (node != NULL) {
+        if (isNameUseNode(node)) {
+            INode *dcl = ((NameUseNode*)node)->dclnode;
+            if (dcl == NULL || dcl->tag != VarDclTag)
+                return 0;       // a global's place is nobody's frame
+            return 1;
+        }
+        switch (node->tag) {
+        case FldAccessTag:
+        case ArrIndexTag: {
+            INode *obj = ((FnCallNode*)node)->objfn;
+            INode *objtype = isExpNode(obj) ? iexpGetTypeDcl(obj) : NULL;
+            // Through a reference: it lies where the reference points
+            if (objtype != NULL && (objtype->tag == RefTag || objtype->tag == VirtRefTag
+                || objtype->tag == ArrayRefTag || objtype->tag == PtrTag)) {
+                if (isNameUseNode(obj) && ((NameUseNode*)obj)->namesym == selfName)
+                    return 0;
+                return parMayBeFrame(obj);
+            }
+            node = obj;
+            break;
+        }
+        case DerefTag:
+            node = ((StarNode*)node)->vtexp;
+            if (node != NULL && isNameUseNode(node) && ((NameUseNode*)node)->namesym == selfName)
+                return 0;
+            break;
+        case BorrowTag:
+        case ArrayBorrowTag:
+            node = ((RefNode*)node)->vtexp;
+            break;
+        case CastTag:
+            node = ((CastNode*)node)->exp;
+            break;
+        case FnCallTag: {
+            // A method lending a slice of its receiver: the receiver's place
+            Nodes *args = ((FnCallNode*)node)->args;
+            if (args == NULL || args->used < 1)
+                return 1;
+            node = nodesGet(args, 0);
+            break;
+        }
+        default:
+            return 1;
+        }
+    }
+    return 1;
+}
+
 // Whether the loop can run where it is written, and the runtime function it is
-// run by found: the module imports the actors package, and the function is not
-// an actor's method (a loop there waits for D3's seam: not built)
-static int parRuntime(TypeCheckState *pstate, INode *lexnode) {
+// run by found: the module imports the actors package. '*seam' says the loop is
+// cut at its end: it is written in a behaviour, and not in the body of another
+// parallel each. (Any other actor method runs the loop where it stands, the
+// worker running pieces meanwhile, so its actor is not run again until it returns.)
+static int parRuntime(TypeCheckState *pstate, INode *lexnode, int *seam) {
+    *seam = 0;
     FnDclNode *fn = pstate->fn;
     ModuleNode *mod = fn ? dclInfoGetModule((INode*)fn) : NULL;
     if (mod == NULL) {
@@ -775,12 +929,8 @@ static int parRuntime(TypeCheckState *pstate, INode *lexnode) {
             "A 'parallel each' inside a generator is not built: a generator's body is run a step at a time by whoever calls 'next', and its passes would have to finish within one step. Run the loop in a function the generator calls.");
         return 0;
     }
-    if (actorOfState(inodeGetOwner((INode*)fn)) != NULL) {
-        errorMsgNode(lexnode, ErrorParRuntime,
-            "A 'parallel each' inside an actor's method is not built yet: the method must keep its actor from running again until the loop has finished, and the loop must borrow the actor's fields, which the language form does not do yet. Write it in a function outside actors for now.");
-        return 0;
-    }
     parallelEachFn = (FnDclNode *)run;
+    *seam = !parInBody(fn) && actorOfBehaviour(fn) != NULL;
     return 1;
 }
 
@@ -930,7 +1080,8 @@ void parallelEachLower(TypeCheckState *pstate, BlockNode *outer) {
     outer->flags &= 0xFFFF - FlagParallel;
 
     parControlRules(loop);
-    if (!parRuntime(pstate, lexnode))
+    int seam = 0;
+    if (!parRuntime(pstate, lexnode, &seam))
         return;
 
     if (nvars != 1) {
@@ -1009,6 +1160,16 @@ void parallelEachLower(TypeCheckState *pstate, BlockNode *outer) {
         }
         int place = parRecheckable(src);
 
+        // Cut at its end, the pieces walk the source after the behaviour has
+        // returned: an array or slice must lie in the actor or on the heap, not in
+        // the behaviour's own frame (a list's block is on the heap)
+        if (seam && !islent && ((isarray && !isref && !place) || parMayBeFrame(src))) {
+            errorMsgNode(src, ErrorParFrame,
+                "This 'parallel each' is in a behaviour, which returns to its actor's dispatcher while the pieces run, and the %s it walks lies in the behaviour's own frame, which is gone by then. Walk a list, or an array or slice in one of the actor's fields (named through 'self'), or one lent from one.",
+                isslice ? "slice" : "array");
+            return;
+        }
+
         // A slice that is mutable (what 'mutItems' gives, or a '&mut' slice) lends
         // each item mutably, as 'each' does; any other lends it to be read
         int mutlend = isslice && permMatches((INode*)mutPerm, ((RefNode*)type)->perm);
@@ -1070,4 +1231,16 @@ void parallelEachLower(TypeCheckState *pstate, BlockNode *outer) {
         parBuilderLower(outer, loop, yield, lo, k, scope, lexnode);
     else
         nodesAdd(&outer->stmts, (INode*)loop);
+
+    // In a behaviour the behaviour is cut where the loop ends: the seam follows it
+    // (the parallel builder is refused in an actor's method, parRuntime)
+    if (seam) {
+        AwaitNode *cut = awaitParNew(pstate, lexnode);
+        if (cut == NULL) {
+            outer->stmts->used = 0;
+            outer->flags &= 0xFFFF - FlagParallel;
+            return;
+        }
+        nodesAdd(&outer->stmts, (INode*)cut);
+    }
 }

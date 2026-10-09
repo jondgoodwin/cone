@@ -740,9 +740,9 @@ options = ["--debug"]
 
 [scenario.concurrency_parallel_each_refused]
 category = "reject"
-description = "What a parallel each refuses: a source that cannot be split (a cursor, a deque's items, a number that is no range, two variables, a float range, a type with its own len and split); break, return and await in the body and a continue of a loop around it, beside a break and continue of a loop inside it; writing what is outside the loop by assignment, an assigning operator, a field, an element, a swap, a method that changes it, a borrow that may write, or through a '&mut' parameter, beside a pass's own variables; naming the place a loop that changes its items lends them from (the list, the slice, a struct holding it), beside reading another field; and a loop inside an actor's method or a generator"
+description = "What a parallel each refuses: a source that cannot be split (a cursor, a deque's items, a number that is no range, two variables, a float range, a type with its own len and split); break, return and await in the body and a continue of a loop around it, beside a break and continue of a loop inside it; writing what is outside the loop by assignment, an assigning operator, a field, an element, a swap, a method that changes it, a borrow that may write, or through a '&mut' parameter, beside a pass's own variables; naming the place a loop that changes its items lends them from (the list, the slice, a struct holding it), beside reading another field; and a loop inside a generator (an 'await' in the body of one in an actor's behaviour is refused as in any other)"
 tags = ["parse", "typecheck"]
-diagnostics = 25
+diagnostics = 24
 
 [scenario.concurrency_parallel_each_parse]
 category = "reject"
@@ -807,6 +807,44 @@ diagnostics = 10
 category = "run"
 description = "Reading through an Rc in a parallel each body works (dereferenced, lent to a function, inside a struct, the Rcs of a list through the pass's borrow); an Arc is copied in the body, and an Rc the pass makes is copied there too"
 tags = ["typecheck", "flow", "genllvm", "runtime"]
+
+# -------- 'parallel each' in an actor's behaviour --------
+#
+# The behaviour is cut where the loop ends, as an 'await' cuts it (a seam,
+# ir/exp/pareach.c, genllvm/genlpar.c and genlawait.c); the actors package
+# begins the loop when the behaviour has returned and resumes the rest ahead of
+# the mailbox when the last piece is done (packages/actors/src/parallel.cone,
+# "A PARALLEL EACH IN A BEHAVIOUR").
+
+[scenario.concurrency_parallel_each_actor]
+category = "run"
+description = "A parallel each in an actor's behaviour is a seam at the loop's end: the actor is not run again until the loop and the rest of the behaviour have finished (messages sent meanwhile see it outside the loop), the pieces borrow the actor's fields through self and change the items of a field, a parameter, a local and a droppable the pieces read are carried across and the droppable dies at the behaviour's end, the body's sends arrive in iteration order ahead of the sends after the loop, a returned value is answered from after the loop, loops in a while and one after another are a seam each, a range from a parameter, an empty one and a short one, a loop in a piece's body, pieces on more than one worker, and a loop in an actor's synchronous fn, which runs where it stands"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+[[scenario.concurrency_parallel_each_actor.run]]
+name = "release"
+
+[[scenario.concurrency_parallel_each_actor.run]]
+name = "debug"
+options = ["--debug"]
+
+[scenario.concurrency_parallel_each_actor_stress]
+category = "run"
+description = "Eight actors on four workers each run twenty steps of two parallel eaches in a behaviour, one that changes the actor's items and one over a range of 0 to 300 passes sending a message at every fiftieth, while main runs a hundred blocking loops of its own that take their pieces too: results as the plain loop's, no behaviour begun inside another's loop, every gathered message handled"
+tags = ["typecheck", "flow", "genllvm", "runtime"]
+
+[[scenario.concurrency_parallel_each_actor_stress.run]]
+name = "release"
+
+[[scenario.concurrency_parallel_each_actor_stress.run]]
+name = "debug"
+options = ["--debug"]
+
+[scenario.concurrency_parallel_each_actor_refused]
+category = "reject"
+description = "What a parallel each in a behaviour refuses because the behaviour is cut at its end and its frame is gone while the pieces run: an array in a local or made for the loop, a slice held in a variable, a variable holding a borrow read in the body; beside what is allowed (a field array through self and lent '&mut', a list in a local, a number in a local, and a loop in a synchronous method of the actor, which is not cut)"
+tags = ["typecheck"]
+diagnostics = 4
 
 # -------- the parallel builder --------
 #

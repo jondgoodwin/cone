@@ -1,0 +1,197 @@
+// 'parallel each' in behaviours, stressed on four workers: eight actors each
+// handle twenty 'step's, and every step runs two loops of its own, one that
+// changes the actor's 400 items (each pass its own item) and one over a number
+// range of 0 to 300 passes, so loops are begun from every worker at once, are
+// split and stolen between them, and many are tiny enough to run at once inside
+// the worker that begins them. Meanwhile main runs a hundred blocking loops of
+// its own (actors.parallelRange), which take pieces of the actors' loops too: a
+// piece finished by main's thread, not a worker, sends the gathered messages and
+// hands its actor to the shared queue.
+//
+// Each step checks its own results against the plain loop, and that no behaviour
+// began while another of the same actor was inside a loop. The program prints the
+// failures counted and the steps run.
+
+mod concurrency_parallel_each_actor_stress;
+
+import stdio use *;
+import collections use *;
+import libc;
+import thread;
+import time;
+import actors;
+
+struct Probe {
+  pub steps Atomic[u64];
+  pub overlaps Atomic[u64];
+  pub wrong Atomic[u64];
+  pub notes Atomic[u64];
+  pub mains Atomic[u64];
+}
+
+imm probe Probe;
+
+fn @initpure init() {
+  probe = new Probe(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+fn mix(i u64, n u64) u64 {
+  mut x = i + 1u64;
+  mut k = 0u64;
+  while k < n {
+    x = x * 6364136223846793005u64 + k;
+    k = k + 1u64;
+  }
+  x;
+}
+
+actor Sink {
+  got u64;
+
+  fn init(self &new) {
+    *self = new Self(got: 0u64);
+  }
+
+  pub async do note(self, n u64) {
+    got = got + 1u64;
+    probe.notes.add(1u64);
+  }
+}
+
+actor Looper {
+  items List[u64];
+  inLoop u64;
+  hits Atomic[u64];
+  acc Atomic[u64];
+  steps u64;
+  sink Sink;
+
+  fn init(self &new, sink Sink) {
+    mut l = new List[u64];
+    mut i = 0u64;
+    while i < 400u64 {
+      l.push(i);
+      i = i + 1u64;
+    }
+    *self = new Self(items: l, inLoop: 0u64, hits: Atomic[u64].of(0u64), acc: Atomic[u64].of(0u64),
+      steps: 0u64, sink: sink);
+  }
+
+  pub async do step(self, n u64) {
+    if inLoop != 0u64 {
+      probe.overlaps.add(1u64);
+    }
+    inLoop = 1u64;
+    steps = steps + 1u64;
+    imm before = acc.load();
+    parallel each v in items.mutItems() {
+      *v = *v + 1000u64;
+      acc.add(mix(*v, 40u64) & 1u64);
+    }
+    hits.store(0u64);
+    parallel each i in 0usize < usize.from(n) {
+      hits.add(1u64);
+      if i % 50usize == 0usize {
+        sink.note(u64.from(i));
+      }
+    }
+    inLoop = 0u64;
+    // against the plain loop
+    mut ok = hits.load() == n;
+    mut want = 0u64;
+    mut i = 0u64;
+    each v in items {
+      if *v != i + 1000u64 * steps {
+        ok = false;
+      }
+      want = want + (mix(*v, 40u64) & 1u64);
+      i = i + 1u64;
+    }
+    if acc.load() - before != want {
+      ok = false;
+    }
+    if !ok {
+      probe.wrong.add(1u64);
+    }
+    probe.steps.add(1u64);
+  }
+}
+
+struct Fill {
+  pub out *u64;
+}
+
+fn bodyFill(data *u8, lo usize, hi usize) {
+  imm f = data as *Fill;
+  mut i = lo;
+  while i < hi {
+    *((*f).out + i) = mix(u64.from(i), 20u64);
+    i = i + 1usize;
+  }
+}
+
+const loopers = 8u64;
+const stepsEach = 20u64;
+
+fn main() {
+  initAll();
+  actors.configure(new actors.Options(workers: 4u32));
+  {
+    imm sink = new Sink();
+    imm a = new Looper(sink);
+    imm b = new Looper(sink);
+    imm c = new Looper(sink);
+    imm d = new Looper(sink);
+    imm e = new Looper(sink);
+    imm f = new Looper(sink);
+    imm g = new Looper(sink);
+    imm h = new Looper(sink);
+    mut s = 0u64;
+    while s < stepsEach {
+      imm n = (s * 37u64) % 301u64;
+      a.step(n);
+      b.step(n);
+      c.step(n + 1u64);
+      d.step(300u64 - n);
+      e.step(n);
+      f.step(0u64);
+      g.step(5u64);
+      h.step(n);
+      s = s + 1u64;
+    }
+    // main's own loops, blocking, while the actors' run
+    mut round = 0u64;
+    while round < 100u64 {
+      imm len = usize.from(10u64 + (round * 53u64) % 700u64);
+      imm out = libc.calloc(len, 8usize) as *u64;
+      mut fill = new Fill(out);
+      actors.parallelRange(0usize, len, 4usize, &bodyFill, &mut fill as *Fill as *u8);
+      mut i = 0usize;
+      mut good = true;
+      while i < len {
+        if *(out + i) != mix(u64.from(i), 20u64) {
+          good = false;
+        }
+        i = i + 1usize;
+      }
+      if !good {
+        probe.wrong.add(1u64);
+      }
+      libc.free(out as *u8);
+      probe.mains.add(1u64);
+      round = round + 1u64;
+    }
+  }
+  while probe.steps.load() < loopers * stepsEach {
+    thread.sleep(time.Duration.fromMillis(1));
+  }
+  printStr("steps run "); printUInt(probe.steps.load()); printStr("\n");
+  printStr("main's loops "); printUInt(probe.mains.load()); printStr("\n");
+  printStr("no behaviour began inside another's loop: "); printStr(if probe.overlaps.load() == 0u64 {"ok";} else {"FAILED";}); printStr("\n");
+  printStr("results as the plain loop's: "); printStr(if probe.wrong.load() == 0u64 {"ok";} else {"FAILED";}); printStr("\n");
+  finalAll();
+  // every gathered message was sent and handled: each step with n passes sends
+  // one at each multiple of 50 below n
+  printStr("messages handled "); printUInt(probe.notes.load()); printStr("\n");
+}

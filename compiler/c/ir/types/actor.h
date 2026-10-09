@@ -69,6 +69,8 @@ enum ActorRuntimeFn {
     ActorRtFutureRegister,  // futureRegister(fut *u8, rp Reply) bool: park on it, unless it has
     ActorRtFutureOpen,      // futureOpen(fut *u8, file &Array[u8], line u32) *u8: where its value is
     ActorRtFutureTaken,     // futureTaken(fut *u8): a move value read out of it
+    ActorRtParBlock,        // parBlock(size usize) *u8: room for the copies a parallel each's pieces read
+    ActorRtParSeam,         // parSeam(lo, hi, body, caps, resume, id, hasId): a behaviour's parallel each, cut at its end
     ActorRtCount
 };
 extern FnDclNode *actorRuntime[ActorRtCount];
