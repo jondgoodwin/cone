@@ -717,3 +717,93 @@ name = "release"
 [[scenario.concurrency_future_abandoned_parked.run]]
 name = "debug"
 options = ["--debug"]
+
+# -------- 'parallel each' outside actors --------
+#
+# The language form over actors.parallelEach (D1's parallelRange with a grain
+# chosen for the workers): the body
+# is outlined into a function the workers run, finding what it reads outside
+# the loop through a record of pointers to those variables. The chapter is
+# doc/reference/refeach.html; what the body may do is concurrency_parallel_each_refused's.
+
+[scenario.concurrency_parallel_each]
+category = "run"
+description = "parallel each from main on four workers started for it, each case's sum or count checked against a plain 'each': number ranges ('<', '<=', empty, reversed, signed, untyped literals, ending at the type's maximum), arrays, a slice, a part of one, a literal array, lists, a list of structs, an empty list, uneven work, 'continue', a pass's own locals and loops, outside variables read in the body, a parallel each inside one, 'parallel' as a name, and work spread over more than one thread"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+[[scenario.concurrency_parallel_each.run]]
+name = "release"
+
+[[scenario.concurrency_parallel_each.run]]
+name = "debug"
+options = ["--debug"]
+
+[scenario.concurrency_parallel_each_refused]
+category = "reject"
+description = "What a parallel each refuses: a source that cannot be split (a cursor, a deque's items, a number that is no range, two variables, a float range, a type with its own len and split); break, return and await in the body and a continue of a loop around it, beside a break and continue of a loop inside it; writing what is outside the loop by assignment, an assigning operator, a field, an element, a swap, a method that changes it, a borrow that may write, or through a '&mut' parameter, beside a pass's own variables; naming the place a loop that changes its items lends them from (the list, the slice, a struct holding it), beside reading another field; and a loop inside an actor's method or a generator"
+tags = ["parse", "typecheck"]
+diagnostics = 25
+
+[scenario.concurrency_parallel_each_parse]
+category = "reject"
+description = "A parallel each over a number range that does not count up by one is refused at parse, its message saying what is offered: a count down, '>' and '>=', and a 'by' step, '<' and '<='; a range with two variables; an 'else'"
+tags = ["parse"]
+diagnostics = 6
+
+[scenario.concurrency_parallel_iterable]
+category = "run"
+description = "ParallelIterable[T, P], met by shape: the len and split a list folds in from Array cut it in two, a function bounded by ParallelIterable takes a list and a struct of one's own and halves each, cuts at the ends, and the pieces are the two sides of the same elements"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.concurrency_parallel_each_runtime]
+category = "reject"
+description = "A parallel each in a module that does not import the actors package its passes run on is refused where it is written, the message saying to write 'import actors;'"
+tags = ["typecheck"]
+diagnostics = 1
+
+[scenario.concurrency_parallel_each_places]
+category = "run"
+description = "Where a parallel each may be written and what its body finds around it: a method (self's fields named bare, a list in a field), a generic function, an inline one expanded twice, an enclosing while's variable, the arms of an if, a loop variable shadowing a parameter, bounds that are expressions, a value made for the loop and a '&mut' list, and a raw pointer's pointee written"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+[[scenario.concurrency_parallel_each_places.run]]
+name = "release"
+
+[[scenario.concurrency_parallel_each_places.run]]
+name = "debug"
+options = ["--debug"]
+
+[scenario.concurrency_parallel_each_sends]
+category = "run"
+description = "Messages a parallel each body sends to actors are gathered and sent after the loop in iteration order, over passes of very uneven cost on four workers: one message a pass (none handled while the loop ran), two to two actors one of them from a function the body calls, a loop inside a loop, a pass that sends nothing and a loop that sends none; each actor reports what it saw, and every mailbox is released (finalAll returns)"
+tags = ["typecheck", "flow", "genllvm", "runtime"]
+
+[[scenario.concurrency_parallel_each_sends.run]]
+name = "release"
+
+[[scenario.concurrency_parallel_each_sends.run]]
+name = "debug"
+options = ["--debug"]
+
+[scenario.concurrency_parallel_each_items]
+category = "run"
+description = "A parallel each that changes its items and one with a filter: mutItems on a list, an array and a slice and a mutable slice as the source, each pass changing only its own item; a list of structs with a field changed and a field of self read; an empty list; the header 'if' over an array, a number range and a list, and a filter never true; each checked against a plain loop"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+[[scenario.concurrency_parallel_each_items.run]]
+name = "release"
+
+[[scenario.concurrency_parallel_each_items.run]]
+name = "debug"
+options = ["--debug"]
+
+[scenario.concurrency_parallel_each_copies]
+category = "reject"
+description = "A parallel each body may not copy a counted owner whose count is not atomic (an Rc) that is not the pass's own: a local, a field of a struct, the struct copied whole, an element of a list through a borrow and by index, a tuple's element, an array's, an enum's payload, one passed by value to a function, and a traced Gc reference"
+tags = ["typecheck"]
+diagnostics = 10
+
+[scenario.concurrency_parallel_each_counted]
+category = "run"
+description = "Reading through an Rc in a parallel each body works (dereferenced, lent to a function, inside a struct, the Rcs of a list through the pass's borrow); an Arc is copied in the body, and an Rc the pass makes is copied there too"
+tags = ["typecheck", "flow", "genllvm", "runtime"]

@@ -232,6 +232,17 @@ pub struct @opaque Array[T] {
   // a trait's slot with it (a slot points at a function that exists)
   pub fn len(self &) usize { self.len; }
 
+  // The elements before index 'at' and those from it on, as two slices of the same
+  // elements (a panic if 'at' is past the end). With 'len', this is what makes a
+  // list, which folds both in, a ParallelIterable
+  pub fn split(self &, at usize) (&Array[T], &Array[T]) {
+    if at > self.len {
+      panic("Array.split: the index is past the end");
+    }
+    imm p = self as *T;
+    (mem.sliceFromParts[T](p, at), mem.sliceFromParts[T](p + at, self.len - at));
+  }
+
   // A cursor over the elements, front to back: 'next' gives a borrow of each
   pub fn iter(self &) ArrayIter[T] { new ArrayIter[T](self, 0usize); }
 
@@ -517,6 +528,27 @@ pub trait Iterator[T] {
 // Something that gives a cursor over what it holds, without being consumed
 pub trait Iterable[T, I] where I is Iterator[T] {
   pub fn iter(self &) I;
+}
+
+// PARALLEL ITERATION: what a 'parallel each' walks. A type is a
+// 'ParallelIterable[T, P]' by having 'len', how many items it holds, and 'split',
+// which cuts it at an index into two pieces of type P, the items before it and
+// those from it on, each a ParallelIterable of its own that can be walked at
+// the same time as the other. None declares it: a list is one by the 'len' and
+// 'split' it folds in from Array (whose pieces are slices), and a type of one's
+// own is by having the two. P is a parameter for the reason Iterable's I is: a
+// trait cannot name a type its implementer chooses.
+//
+// A source with neither, a cursor, a generator, a file or a channel, hands its
+// items out one after another and cannot be cut, so 'parallel each' refuses it.
+// Today 'parallel each' walks number ranges, arrays, slices and lists, which the
+// compiler cuts into index ranges itself (an array or a slice has no methods to
+// cut with), and does not yet call 'split' of a type of one's own.
+pub trait ParallelIterable[T, P] {
+  // How many items it holds
+  pub fn len(self &) usize;
+  // The items before index 'at', and the items from it on
+  pub fn split(self &, at usize) (P, P);
 }
 
 // A panic ends the program where something that must not happen has: an index

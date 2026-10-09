@@ -152,6 +152,9 @@ void genlFn(GenState *gen, FnDclNode *fnnode) {
     gen->seams = awaitSplitOf(fnnode);
     gen->resumeat = NULL;
     gen->flightbase = gen->flightcnt;
+    // A function generated inside a parallel each's piece is not part of it
+    GenParBody *svparbody = gen->parbody;
+    gen->parbody = NULL;
     // A generator's 'next' (genlyield.c) is generated whole, entered through a
     // switch on its state; set aside around any function generated within it
     GenInfo *svgenstep = gen->genstep;
@@ -221,6 +224,7 @@ void genlFn(GenState *gen, FnDclNode *fnnode) {
     gen->gendone = svgendone;
     gen->flightcnt = gen->flightbase;
     gen->flightbase = svflightbase;
+    gen->parbody = svparbody;
 
     // A split method's second halves, one for each seam
     if (split)
@@ -2287,6 +2291,7 @@ void genSetup(GenState *gen, ConeOptions *opt) {
     gen->flightbase = 0;
     gen->awaitflights = 0;
     gen->awaitid = NULL;
+    gen->parbody = NULL;
     gen->genstep = NULL;
     gen->genself = NULL;
     gen->genswitch = NULL;

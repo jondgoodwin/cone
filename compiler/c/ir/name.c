@@ -81,6 +81,8 @@ Name *lenName;
 Name *capacityName;
 Name *nextName;
 Name *iterName;
+Name *parallelName;
+Name *splitName;
 Name *someName;
 Name *noneName;
 Name *allocMethodName;

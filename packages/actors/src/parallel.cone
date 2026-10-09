@@ -1,8 +1,9 @@
 // Parallel loops: a range of work spread over the actors' workers (the
 // package's header, PARALLEL LOOPS). This is the LOW-LEVEL form: a function
 // reference, a pointer to shared data and an index range, called as a
-// library. The language's 'parallel each' will be written over it, and the
-// rules it will check at compile time (below) are for now the caller's.
+// library. The language's 'parallel each' is written over it (parallelEach,
+// below), and checks the rules of its body at compile time; for a caller of
+// parallelRange they are its own.
 //
 //   import actors;
 //
@@ -38,6 +39,11 @@
 //                          thread that is. This is the form a loop inside an
 //                          actor's behaviour will end at.
 //   actors.RangeBody       &fn(data *u8, lo usize, hi usize)
+//   actors.parallelEach(lo, hi, body, data)
+//                          what a 'parallel each' becomes: parallelRange with a
+//                          grain chosen from the workers, and the messages the
+//                          pieces send to actors gathered and sent after the
+//                          loop in iteration order (SENDS GATHERED)
 //
 // WHAT THE BODY MAY DO. This form TRUSTS ITS CALLER. The body is called with
 // the caller's 'data' pointer and a sub-range [lo, hi) of the loop's range,
@@ -48,9 +54,9 @@
 // the loop's caller must do (a piece is run to completion on the worker's
 // stack, and a loop that waited could not finish). It may call
 // parallelRange itself: the inner loop finishes inside the piece that began
-// it. It may send messages (their order across pieces is not defined). A
-// body that breaks these rules races: nothing here checks it, and 'parallel
-// each' will refuse such a body where it is written.
+// it. It may send messages (their order across pieces is not defined; a
+// parallelEach's are gathered). A body that breaks these rules races: nothing
+// here checks it, and 'parallel each' refuses such a body where it is written.
 //
 // SPLIT ON DEMAND (Cilk, TBB, Rayon). The loop starts as ONE task, the whole
 // range [lo, hi), which the caller runs itself. Whoever runs a task splits it
@@ -351,6 +357,202 @@ pub fn parallelRange(lo usize, hi usize, grain usize, body RangeBody, data *u8) 
   imm p = &mut rec as *LoopRec;
   runTask(s, new Task(p, lo, hi));
   helpUntilDone(s, p);
+}
+
+// The loop a 'parallel each' becomes (the compiler outlines the loop's body
+// into a function, whose first parameter is a record of the variables it uses):
+// parallelRange over [lo, hi) with the grain chosen here, about an eighth of an
+// even share of the range for each worker, so that the pieces are smaller than a
+// worker's share and a worker that finishes early takes more, and the work
+// stays in pieces large enough not to be lost in the splitting. The workers are
+// started if no actor has started them. The body's rules are the language's:
+// the compiler has checked them. Unlike parallelRange, it gathers the messages
+// the pieces send to actors and sends them after the loop, in iteration order
+// (SENDS GATHERED, below).
+pub fn parallelEach(lo usize, hi usize, body RangeBody, data *u8) {
+  if hi <= lo {
+    return;
+  }
+  ensureRunning();
+  imm s = running as *Sched;
+  mut grain = (hi - lo) / (usize.from((*s).nworkers) * 8usize);
+  if grain == 0usize {
+    grain = 1usize;
+  }
+  mut job = new EachLoop(body, data, 0usize);
+  parallelRange(lo, hi, grain, &gatherPiece, &mut job as *EachLoop as *u8);
+  sendGathered(&mut job as *EachLoop);
+}
+
+// ---------------------------------------------------------------------------
+// SENDS GATHERED. A message a 'parallel each' body sends to an actor is not
+// sent where it is sent: the loop's pieces run at the same time, so sending
+// at once would deliver in no defined order, and a receiver would see a
+// different order from run to run. It is kept instead, and sent after the
+// loop, by the thread that began it, in iteration order: the pieces' messages
+// by where each piece began, and within a piece in the order it sent them.
+//
+// parallelEach runs its pieces through gatherPiece, which makes a Piece on its
+// stack and puts it in curPiece, a thread-local, for as long as it calls the
+// body. 'send' (actors.cone) looks at curPiece: set, it keeps the message
+// (gatherSend) in the piece's record, made when it sends its first. When the
+// piece ends, its record, if it has one, is pushed on the loop's list; when
+// the loop has ended, sendGathered puts the records in order and sends. A
+// piece that runs another loop's pieces while it waits (helpUntilDone) saves
+// and restores curPiece, so a thread's pieces nest. A loop inside a piece's body
+// is gathered by its own pieces and sent, in its order, by the thread that
+// began it, which is inside the outer piece: so they are gathered again into
+// the outer piece's record, and the outer loop's order holds.
+//
+// Only 'send' gathers: the messages of a reply, and the I/O an actor awaits,
+// are not sent from a loop's body.
+// ---------------------------------------------------------------------------
+
+// The thread-local: the Piece this thread is running, else 0
+mut @threadlocal curPiece usize = 0usize;
+
+// What parallelEach hands the pieces: the compiler's body and its data, and
+// the pieces that sent something, a stack of records pushed as the pieces end
+// (the head's address, atomic)
+struct EachLoop {
+  pub body RangeBody;
+  pub data *u8;
+  pub records usize;
+}
+
+// What a piece is while it runs: on the stack of gatherPiece
+struct Piece {
+  pub owner *EachLoop;
+  pub lo usize;
+  pub rec *PieceRec;       // its messages, once it has sent one
+  pub prev usize;          // the piece this thread was running when it began
+}
+
+// The messages one piece sent, in the order it sent them
+struct PieceRec {
+  pub next *PieceRec;      // the loop's stack
+  pub lo usize;
+  pub first *Sent;
+  pub last *Sent;
+}
+
+// A message kept: its link, the actor's mailbox, and what delivers it (the
+// message type is known to the function alone)
+struct Sent {
+  pub next *Sent;
+  pub h *Header;
+  pub deliver &fn(e *Sent);
+}
+
+// A kept message of type M, laid out as a Sent followed by the message
+struct SentMsg[M Sendable] {
+  pub next *Sent;
+  pub h *Header;
+  pub deliver &fn(e *Sent);
+  pub msg M;
+}
+
+fn nullSent() *Sent {null;}
+
+fn nullPieceRec() *PieceRec {null;}
+
+// The body of every piece of a parallelEach: it makes a Piece for the thread
+// to be running while the compiler's body runs, and passes on the records
+fn gatherPiece(data *u8, lo usize, hi usize) {
+  imm job = data as *EachLoop;
+  mut piece = new Piece(job, lo, nullPieceRec(), curPiece);
+  curPiece = &mut piece as *Piece as usize;
+  imm body = (*job).body;
+  body((*job).data, lo, hi);
+  curPiece = piece.prev;
+  if piece.rec as usize != 0usize {
+    imm headp = &(*job).records as *usize;
+    mut seen = 0usize;
+    mut pushed = false;
+    while !pushed {
+      imm head = mem.atomicLoad[usize](headp, MemOrder.Acquire[]);
+      (*piece.rec).next = head as *PieceRec;
+      seen, pushed = mem.atomicCompareSwap[usize](headp, head, piece.rec as usize,
+        MemOrder.AcqRel[], MemOrder.Relaxed[]);
+    }
+  }
+}
+
+// Keep a message sent from the piece this thread is running. The mailbox is
+// held (as the scheduler holds one with a message in it) until it is sent, so
+// that an actor made inside the body cannot die first.
+fn gatherSend[M Sendable](h *Header, msg M) {
+  imm piece = curPiece as *Piece;
+  if (*piece).rec as usize == 0usize {
+    imm rec = libc.calloc(1usize, mem.sizeof[PieceRec]()) as *PieceRec;
+    if rec as usize == 0usize {
+      die("actors: out of memory for a message");
+    }
+    (*rec).lo = (*piece).lo;
+    (*piece).rec = rec;
+  }
+  imm e = libc.malloc(mem.sizeof[SentMsg[M]]()) as *SentMsg[M];
+  if e as usize == 0usize {
+    die("actors: out of memory for a message");
+  }
+  (*e).next = nullSent();
+  (*e).h = h;
+  (*e).deliver = &sendKept[M];
+  mem.writeRaw[M](&(*e).msg as *M, msg);
+  holdArc[M](h);
+  imm rec = (*piece).rec;
+  if (*rec).last as usize == 0usize {
+    (*rec).first = e as *Sent;
+  } else {
+    (*(*rec).last).next = e as *Sent;
+  }
+  (*rec).last = e as *Sent;
+}
+
+// Send a kept message on, as 'send' would, and let go of the hold: from inside a
+// piece of an outer loop (a loop in its body) it is kept again, in that piece
+fn sendKept[M Sendable](e *Sent) {
+  imm k = e as *SentMsg[M];
+  imm h = (*k).h;
+  imm msg = mem.readRaw[M](&(*k).msg as *M);
+  libc.free(e as *u8);
+  sendTo[M](h, msg);
+  releaseHold[M](h);
+}
+
+// After the loop: the records the pieces pushed, in order of where each piece
+// began, each one's messages in the order sent
+fn sendGathered(job *EachLoop) {
+  mut pending = (*job).records as *PieceRec;
+  mut sorted = nullPieceRec();
+  // Insertion by where the piece began: the stack comes in no order
+  while pending as usize != 0usize {
+    imm rec = pending;
+    pending = (*rec).next;
+    if sorted as usize == 0usize or (*rec).lo < (*sorted).lo {
+      (*rec).next = sorted;
+      sorted = rec;
+    } else {
+      mut at = sorted;
+      while (*at).next as usize != 0usize and (*(*at).next).lo < (*rec).lo {
+        at = (*at).next;
+      }
+      (*rec).next = (*at).next;
+      (*at).next = rec;
+    }
+  }
+  while sorted as usize != 0usize {
+    imm rec = sorted;
+    sorted = (*rec).next;
+    mut e = (*rec).first;
+    while e as usize != 0usize {
+      imm next = (*e).next;
+      imm deliver = (*e).deliver;
+      deliver(e);
+      e = next;
+    }
+    libc.free(rec as *u8);
+  }
 }
 
 // The same loop, started and left: it returns at once, and the piece that

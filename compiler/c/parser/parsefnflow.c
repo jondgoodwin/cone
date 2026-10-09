@@ -507,6 +507,11 @@ INode *parseWhile(ParseState *parse, Name *lifesym, int stmtflag) {
     return (INode *)loopnode;
 }
 
+// Set while parseExprBlock hands a 'parallel each' to parseEach, which reads and
+// clears it before it parses anything else, so that an 'each' in the body is
+// not taken for a parallel one
+static int parseEachParallel = 0;
+
 // The variable of a drain, '<- each src', which no name reaches
 static Name *parseDrainName() {
     static Name *name = NULL;
@@ -564,6 +569,8 @@ static BlockNode *parseEachYield(ParseState *parse, int build, INode *lexnode) {
 // and for an entry of '<-' EachBuildVars ('each x in src [if c] yield v') or
 // EachBuildDrain ('each src'), whose body is the yield (parseEachYield).
 static INode *parseEachLoop(ParseState *parse, Name *lifesym, int stmtflag, int build) {
+    int parallel = parseEachParallel;
+    parseEachParallel = 0;
     BlockNode *outerblk = newBlockNode();   // surrounding block scope for isolating 'each' vars
 
     // Obtain all the parsed pieces
@@ -636,6 +643,45 @@ static INode *parseEachLoop(ParseState *parse, Name *lifesym, int stmtflag, int 
         elseblk = parseLoopElse(parse);
         if (!stmtflag && elseblk == NULL)
             errorMsgNode((INode*)loopnode, ErrorNoLoop, "each may not be used as an expression unless it has an 'else'");
+    }
+
+    // The passes of a parallel each run at the same time and give no value, so
+    // there is no 'else' for it to run out into
+    if (parallel && elseblk) {
+        errorMsgNode((INode*)elseblk, ErrorParElse,
+            "A 'parallel each' takes no 'else': its passes run at the same time and give no value, so there is no running out for it to say what happens at.");
+        return (INode *)outerblk;
+    }
+
+    // A parallel range counts up by one from the first bound to the second,
+    // each pass a number; the hidden variables hold the bounds, type check
+    // builds the loop (parallelEachLower) once it knows their type
+    if (parallel && isrange) {
+        if (nelems != 1) {
+            errorMsgNode(iter, ErrorBadTok, "A numeric range gives one variable, the number.");
+            return (INode *)outerblk;
+        }
+        if (isrange < 0 || step) {
+            errorMsgNode(iter, ErrorParSource,
+                "A 'parallel each' over a number range counts up by one ('parallel each i in 0 < n', or '<='): which pass runs first is not defined in parallel, so a count down or a step is not offered.");
+            return (INode *)outerblk;
+        }
+        FnCallNode *bounds = (FnCallNode *)iter;
+        parallelEachNames();
+        VarDclNode *firstdcl = newVarDclFull(parFirstName, VarDclTag, unknownType, (INode*)immPerm, bounds->objfn);
+        inodeLexCopy((INode*)firstdcl, iter);
+        VarDclNode *lastdcl = newVarDclFull(parLastName, VarDclTag, unknownType, (INode*)immPerm, nodesGet(bounds->args, 0));
+        inodeLexCopy((INode*)lastdcl, iter);
+        outerblk->flags |= FlagEach | FlagParallel;
+        if (((NameUseNode*)bounds->methfld)->namesym == leName)
+            outerblk->flags |= FlagParIncl;
+        nodesAdd(&outerblk->stmts, (INode*)firstdcl);
+        nodesAdd(&outerblk->stmts, (INode*)lastdcl);
+        nodesInsert(&loopnode->stmts, (INode*)elemvars[0], 0);
+        if (filter)
+            nodesInsert(&loopnode->stmts, parseEachFilterStmt(filter, lifesym), 1);
+        nodesAdd(&outerblk->stmts, (INode*)loopnode);
+        return (INode *)outerblk;
     }
 
     // Assemble logic for a range (with optional step), e.g.:
@@ -784,6 +830,8 @@ static INode *parseEachLoop(ParseState *parse, Name *lifesym, int stmtflag, int 
         // block, and the reader's variables are declared, with no value yet, at
         // the head of the loop.
         outerblk->flags |= FlagEach;
+        if (parallel)
+            outerblk->flags |= FlagParallel;
         VarDclNode *srcdcl = newVarDclFull(anonName, VarDclTag, unknownType, (INode*)mutPerm, iter);
         inodeLexCopy((INode*)srcdcl, iter);
         nodesAdd(&outerblk->stmts, (INode*)srcdcl);
@@ -910,6 +958,18 @@ INode *parseExprBlock(ParseState *parse, int isloop) {
 
         case EachToken:
             nodesAdd(&blk->stmts, parseEach(parse, NULL, 1));
+            break;
+
+        // 'parallel' is a word only directly before 'each'; anywhere else it is
+        // a name like any other
+        case IdentToken:
+            if (lex->val.ident == parallelName && lexNextIsWord("each")) {
+                lexNextToken();
+                parseEachParallel = 1;
+                nodesAdd(&blk->stmts, parseEach(parse, NULL, 1));
+                break;
+            }
+            nodesAdd(&blk->stmts, parseExpStmt(parse));
             break;
 
         case LifetimeToken:

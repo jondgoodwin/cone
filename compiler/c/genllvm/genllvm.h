@@ -83,6 +83,26 @@ typedef struct GenSeam {
     uint32_t nflights;
 } GenSeam;
 
+// A variable a parallel each's piece uses from outside the loop (genlpar.c):
+// where it lives in the function the loop is written in, which the piece's
+// record points at
+typedef struct GenCapture {
+    VarDclNode *var;
+    LLVMValueRef home;      // The variable's llvmvar in the function the loop is written in
+} GenCapture;
+
+// The piece of a parallel each being generated as a function of its own: the
+// record of pointers it was handed and the variables found so far that it
+// uses from outside, each taken from the record where it is first used
+typedef struct GenParBody {
+    struct GenParBody *enclosing;   // The piece this one is written in, for a loop inside a loop's body
+    LLVMValueRef fn;
+    LLVMValueRef record;            // The function's first parameter
+    GenCapture *caps;
+    uint32_t ncaps;
+    uint32_t maxcaps;
+} GenParBody;
+
 // The roots of the function being generated: each stack slot holding a value
 // whose type holds a traced reference -- a local's, a parameter's, a birth's --
 // and that type, in slot order. What its frame and root map are built from
@@ -163,6 +183,8 @@ typedef struct GenState {
     LLVMValueRef tyrecnothing; // The shared do-nothing finalizer a record's empty finalize slot points at
     LLVMValueRef tyrecuntraced; // The shared do-nothing trace a record of a type holding no traced reference points at
 
+    GenParBody *parbody;    // The piece of a parallel each being generated, else NULL (genlpar.c)
+
     GenRoots roots;         // The function being generated's roots, set aside around a nested one
     uint32_t rootmaps;      // How many root maps this object has built, which numbers them
 
@@ -237,6 +259,15 @@ int genlIsVoidMain(FnDclNode *fnnode, const char *symbol);
 // declared on the first call that asks for it; its body is built once every
 // module is generated (genlStitch)
 LLVMValueRef genlStitchFn(GenState *gen, int16_t intrinsic);
+
+// genlpar.c: a parallel each. Generating its statements from 'kdcl', the index
+// the pieces count with, to its loop: the pieces are outlined into a function of
+// its own, which the actors' parallelEach runs over the loop's range. Answers
+// the loop, the last statement generated here.
+INode *genlParallelRun(GenState *gen, BlockNode *blk, INode *kdcl);
+// A variable a piece uses from outside its function is read where it lives in
+// the caller's frame, through the piece's record
+void genlParCapture(GenState *gen, VarDclNode *var);
 
 // genlstmt.c
 LLVMBasicBlockRef genlInsertBlock(GenState *gen, char *name);

@@ -1502,6 +1502,50 @@ drop function.
 The pending table is not traced: a record that would hold a traced reference
 is refused before generation ([Flow](flow.md), "A seam").
 
+### A parallel each
+
+A `parallel each` ([Block](../nodes/block.md), "Type check") stays one loop in
+the IR, which flow checks as it checks any loop, and is generated in two places
+(`genlpar.c`). Its outer block is `FlagParallel`; `genlBlock` generates the
+statements before the index `k'` where they stand (the source made ready, the
+range `lo'` and `hi'`), and at `k'` calls `genlParallelRun`, which generates `k'`
+and the loop into **a function of its own**, `<fn>.parallel(record *u8, lo
+usize, hi usize)`, internal and with a debug subprogram in a debug build, and
+puts a call of the actors package's `parallelEach` over `[lo', hi')` in their
+place. The function is generated in the middle of its caller as `genlFn` is (the
+caller's builder, alloca point, roots, temporaries and block stack are set aside
+and restored), with `lo'` and `hi'` redirected to allocas of the piece's own
+holding the parameters, so the loop counts the piece's range.
+
+**What the loop uses from outside is found as it is generated, not before.**
+No closure exists, and a pass is run by whichever worker takes it, so the piece
+cannot use the caller's frame directly. `genlVarSym`, where every use of a
+local reaches its slot, asks `genlParCapture` while a piece is being generated
+(`GenState.parbody`): a variable whose slot is an instruction of another
+function (`LLVMGetBasicBlockParent` differs from `gen->fn`) is *captured*: its
+address is taken from the record at the function's entry, ahead of the allocas
+(element `i` of the record, an array of pointers), and stands for the variable
+from then on (`var->llvmvar` redirected). The first use fixes the variable's
+place in the record. After the piece, each captured variable's slot is put
+back, and the caller makes the record, an `alloca` of `[n x ptr]` holding the
+slot of each, and passes it. So a variable is read in place, where it lives in
+the caller's frame, for as long as the loop runs: that is why an outside
+variable is read-only in a body (pareach.c checks it), and why the loop's end is a
+join. A loop inside a piece's body is a piece of a piece: its captures are
+taken from the outer piece's record in turn (the record is made inside the outer
+piece, and `genlParCapture` captures there what the inner found), and the inner
+loop is a different `parbody` with its own list.
+
+**A number range's count is worked out here**: `genlParCount` widens the two
+bounds to usize (sign-extending a signed type), takes their difference
+(wrapping, which is exact as an unsigned count whatever the signs), adds one for
+`<=`, and is zero where the last is below the first; the pass variable is the
+first bound plus `T.from(k')`, wrapping, which cannot pass the last bound.
+
+`genlFn` clears `parbody` for the functions it generates in the middle of a
+piece (a drop a death asks for). A split method's second halves would each
+generate the piece again; a parallel each is not built inside an actor's method.
+
 ### A generator
 
 A generator ([Parse](parse.md), "It generates a generator's declarations") is a
@@ -2146,6 +2190,7 @@ variables.
 | | `genlExprsAcross`, `genlHasSeam` | operands in order (`awaitOrder`'s, where a seam cuts them), each made before a later one's seam kept in flight across it (`GenFlight`), a receiver or a borrow of a plain path made after it |
 | | `genlKeepAcross`, `genlKeptAcross` | one value kept in flight across a seam to come, and read back after it: an assignment's value while its place, holding the seam, is reached |
 | | `genlHeldBegin`, `genlHeldIf` | a temporary lock guard's flag, and code run while it holds its lock |
+| `genllvm/genlpar.c` | `genlParallelRun`, `genlParCapture`, `genlParCount` | a parallel each: the index and loop generated as a function of their own, a variable of the caller's found through the function's record, the call of `actors.parallelEach`, a number range's count ("A parallel each") |
 | | `genlFinalizeAt`, `genlCallDrop`, `genlEachElem` | a value's death in place, whatever its type: a local's, a field's, a region value's before its `free`, and the `finalize` intrinsic |
 | | `genlTypeDrop`, `genlStructDrop`, `genlEnumDrop` | the body of a drop the compiler gave a type: a struct's `final` calls, its fields' deaths, its owners' release; an enum's tag dispatching to its variant's |
 | | `genlAliasHeld` | a copied struct, enum, tuple or array: `aliasRef` on each counted reference its death releases |
