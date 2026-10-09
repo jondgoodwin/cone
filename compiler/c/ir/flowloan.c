@@ -266,6 +266,10 @@ int loanThrough(uint32_t loan) {
     return loans[loan].place.deref;
 }
 
+int loanNamesThrough(uint32_t loan, uint32_t var) {
+    return loans[loan].kind != LoanCaller && loans[loan].place.deref && loans[loan].place.var == var;
+}
+
 int loanWhole(uint32_t loan) {
     return loans[loan].place.nsteps == 0 && !loans[loan].place.far;
 }
