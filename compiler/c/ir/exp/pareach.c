@@ -108,20 +108,43 @@ static int parIsCore(INode *type, char *name, size_t len) {
 // two variables. What each lends is what the cursor's own 'next' lends.
 typedef struct {
     int cursor;     // one of them
-    int mut;        // lends '&mut' (a chunk, or an item)
-    int indexed;    // gives the position and the item: two variables
+    int mut;        // lends '&mut' (a chunk, or an item), in either source of a zip
+    int vars;       // how many variables it gives: one, or the elements of the tuple 'at' answers
     int chunks;     // an item is a run, not an element
 } ParCursor;
 
+// The type of a field of a struct type, or NULL
+static INode *parFieldType(INode *type, char *name) {
+    if (!isMethodType(type))
+        return NULL;
+    INode *field = iNsTypeFindFnField((INsTypeNode*)type, nametblFind(name, (uint32_t)strlen(name)));
+    if (field == NULL || field->tag != FieldDclTag)
+        return NULL;
+    return itypeGetTypeDcl(((FieldDclNode*)field)->vtype);
+}
+
 static ParCursor parCursorOf(INode *type) {
-    ParCursor c = { 0, 0, 0, 0 };
+    ParCursor c = { 0, 0, 1, 0 };
     if (parIsCore(type, "ArrayChunks", 11)) { c.cursor = 1; c.chunks = 1; }
     else if (parIsCore(type, "ArrayMutChunks", 14)) { c.cursor = 1; c.chunks = 1; c.mut = 1; }
-    else if (parIsCore(type, "ChunksIndexed", 13)) { c.cursor = 1; c.chunks = 1; c.indexed = 1; }
-    else if (parIsCore(type, "MutChunksIndexed", 16)) { c.cursor = 1; c.chunks = 1; c.mut = 1; c.indexed = 1; }
+    else if (parIsCore(type, "ChunksIndexed", 13)) { c.cursor = 1; c.chunks = 1; c.vars = 2; }
+    else if (parIsCore(type, "MutChunksIndexed", 16)) { c.cursor = 1; c.chunks = 1; c.mut = 1; c.vars = 2; }
     else if (parIsCore(type, "ArrayMutItems", 13)) { c.cursor = 1; c.mut = 1; }
-    else if (parIsCore(type, "MutItemsIndexed", 15)) { c.cursor = 1; c.mut = 1; c.indexed = 1; }
-    else if (parIsCore(type, "ArrayIndexed", 12)) { c.cursor = 1; c.indexed = 1; }
+    else if (parIsCore(type, "MutItemsIndexed", 15)) { c.cursor = 1; c.mut = 1; c.vars = 2; }
+    else if (parIsCore(type, "ArrayIndexed", 12)) { c.cursor = 1; c.vars = 2; }
+    else if (parIsCore(type, "Zip", 3)) {
+        // a pair, one variable from each source, when it can be walked by position at
+        // all (both sources can: else it has no 'len' and 'at'); it lends '&mut' if
+        // either source does
+        c.cursor = 1;
+        c.vars = 2;
+        c.mut = parCursorOf(parFieldType(type, "first")).mut || parCursorOf(parFieldType(type, "second")).mut;
+    }
+    else if (parIsCore(type, "ZipIndexed", 10)) {
+        c.cursor = 1;
+        c.vars = 3;
+        c.mut = parCursorOf(parFieldType(type, "zip")).mut;
+    }
     return c;
 }
 
@@ -505,10 +528,70 @@ static int parPathsOverlap(ParPath *a, ParPath *b) {
     return 1;
 }
 
+#define ParLentMax 8
+
 typedef struct {
-    ParPath lent;           // The place the items are lent from
+    ParPath lent[ParLentMax];   // The places the items are lent from: those of each source of a zip
+    uint32_t nlent;
     ParSet reported;
 } ParAlias;
+
+// Can this expression name or lend from a place of the caller's: a name, a field, an
+// element, a dereference, a call made of such, or a borrow of one? Not a literal, nor
+// an argument the compiler defaulted ('srcFile()', the borrow of a file name)
+static int parNamesAPlace(INode *node) {
+    if (node == NULL)
+        return 0;
+    switch (node->tag) {
+    case BorrowTag:
+    case ArrayBorrowTag:
+        return parNamesAPlace(((RefNode*)node)->vtexp);
+    case CastTag:
+        return parNamesAPlace(((CastNode*)node)->exp);
+    case DerefTag:
+        return parNamesAPlace(((StarNode*)node)->vtexp);
+    case FldAccessTag:
+    case ArrIndexTag:
+        return 1;
+    case FnCallTag:
+        return ((FnCallNode*)node)->args != NULL && ((FnCallNode*)node)->args->used > 0;
+    default:
+        return isNameUseNode(node);
+    }
+}
+
+// Does this argument of a call hold a borrow of a place, which the call's result may lend from?
+static int parArgLends(INode *arg) {
+    if (arg == NULL || !isExpNode(arg) || !parNamesAPlace(arg))
+        return 0;
+    INode *type = iexpGetTypeDcl(arg);
+    return type != NULL && itypeCarriesBorrow(type);
+}
+
+// The places a source lends from: for a call, those of every argument that holds a
+// borrow (a zip is given two cursors, not one), else the path of the place named.
+// Nothing here reads a function's name: what a call lends from is what it is given
+static void parLentPaths(INode *node, ParAlias *alias) {
+    while (node != NULL && (node->tag == BorrowTag || node->tag == ArrayBorrowTag))
+        node = ((RefNode*)node)->vtexp;
+    if (node == NULL)
+        return;
+    if (node->tag == FnCallTag) {
+        INode *fn = ((FnCallNode*)node)->objfn;
+        Nodes *args = ((FnCallNode*)node)->args;
+        if (fn != NULL && isNameUseNode(fn) && ((NameUseNode*)fn)->dclnode != NULL
+            && ((NameUseNode*)fn)->dclnode->tag == FnDclTag && args != NULL) {
+            for (uint32_t i = 0; i < args->used; ++i) {
+                if (parArgLends(nodesGet(args, i)))
+                    parLentPaths(nodesGet(args, i), alias);
+            }
+        }
+        return;
+    }
+    ParPath path;
+    if (parPathOf(node, &path) && alias->nlent < ParLentMax)
+        alias->lent[alias->nlent++] = path;
+}
 
 // Walk the arguments of the indexes a place goes through: they are uses too
 static void parWalkIndexArgs(INode *node, ParVisit visit, void *ctx) {
@@ -542,7 +625,12 @@ static int parCheckAlias(INode *node, void *ctxp) {
     ParPath path;
     if (!parPathOf(node, &path))
         return 1;
-    if (path.root == ctx->lent.root && parPathsOverlap(&path, &ctx->lent) && !parSetHas(&ctx->reported, node)) {
+    int overlaps = 0;
+    for (uint32_t i = 0; i < ctx->nlent; ++i) {
+        if (path.root == ctx->lent[i].root && parPathsOverlap(&path, &ctx->lent[i]))
+            overlaps = 1;
+    }
+    if (overlaps && !parSetHas(&ctx->reported, node)) {
         parSetAdd(&ctx->reported, node);
         char *name = path.root->namesym == anonName ? "a value made outside the loop" : &path.root->namesym->namestr;
         errorMsgNode(node, ErrorParWrite,
@@ -1007,7 +1095,9 @@ void parallelEachCheckBody(TypeCheckState *pstate, BlockNode *outer) {
         if (stmt->tag == VarDclTag && ((VarDclNode*)stmt)->namesym == parSliceMutName) {
             ParAlias alias;
             memset(&alias, 0, sizeof(alias));
-            if (((VarDclNode*)stmt)->value != NULL && parPathOf(((VarDclNode*)stmt)->value, &alias.lent))
+            if (((VarDclNode*)stmt)->value != NULL)
+                parLentPaths(((VarDclNode*)stmt)->value, &alias);
+            if (alias.nlent > 0)
                 parWalk((INode*)loop, parCheckAlias, &alias);
             break;
         }
@@ -1145,6 +1235,18 @@ static int parMayBeFrame(INode *node) {
             Nodes *args = ((FnCallNode*)node)->args;
             if (args == NULL || args->used < 1)
                 return 1;
+            // A call lends from each argument that holds a borrow (a zip is given
+            // two cursors): if one may be the frame, so may the result
+            int seen = 0;
+            for (uint32_t i = 0; i < args->used; ++i) {
+                if (parArgLends(nodesGet(args, i))) {
+                    seen = 1;
+                    if (parMayBeFrame(nodesGet(args, i)))
+                        return 1;
+                }
+            }
+            if (seen)
+                return 0;
             node = nodesGet(args, 0);
             break;
         }
@@ -1409,10 +1511,24 @@ void parallelEachLower(TypeCheckState *pstate, BlockNode *outer) {
         // position (its own, so global) and the item
         ParCursor cursor = parCursorOf(isref ? NULL : type);
         int ischunks = cursor.cursor;
-        if (nvars != (cursor.indexed ? 2u : 1u)) {
-            errorMsgNode(nodesGet(loop->stmts, 0), ErrorParSource, cursor.indexed
-                ? "A 'parallel each' over indexed() gives two variables, the position and the item."
-                : "A 'parallel each' gives one variable, a borrow of each element (or each number of a range); two come from indexed(), the position and the item.");
+        // A zip is walked by position only when both its sources can be (they are
+        // RandomAccess and ParallelIterable): else its 'len' and 'at' are not there
+        if (ischunks && !(parHasMethod(type, lenName) && parHasMethod(type, nametblFind("at", 2)))) {
+            errorMsgNode(src, ErrorParSource,
+                "A 'parallel each' over %s needs every source of the zip to report its size and give its items by position, and one of them does not: a generator, a Deque's cursor, a file or a channel hands out its items one after another and cannot be split. Collect it into a list first, and zip the list. (The cursors of arrays, slices and lists, mutItems(), chunks(n) and mutChunks(n) can.)",
+                itypeName(type));
+            return;
+        }
+        if (nvars != (uint32_t)cursor.vars) {
+            const char *why =
+                "A 'parallel each' gives one variable, a borrow of each element (or each number of a range); two come from indexed(), the position and the item, or from a zip, one item from each source.";
+            if (cursor.vars == 3)
+                why = "A 'parallel each' over a zip's indexed() gives three variables, the position and one item from each source.";
+            else if (cursor.vars == 2 && parIsCore(type, "Zip", 3))
+                why = "A 'parallel each' over a zip gives two variables, one item from each source (its indexed() adds the position first, three variables).";
+            else if (cursor.vars == 2)
+                why = "A 'parallel each' over indexed() gives two variables, the position and the item.";
+            errorMsgNode(nodesGet(loop->stmts, 0), ErrorParSource, "%s", why);
             return;
         }
         Name *lentvia = NULL;
@@ -1497,7 +1613,7 @@ void parallelEachLower(TypeCheckState *pstate, BlockNode *outer) {
             elem = (INode*)newRefNodeFull(BorrowTag, lexnode, borrowRef, mutlend ? (INode*)mutPerm : unknownType, (INode*)at);
         }
         outer->flags |= FlagParallel;
-        elemindexed = cursor.indexed;
+        elemindexed = cursor.vars >= 2;
     }
 
     // loop { if k >= hi {break}; imm x = ...; k++; ...body... }
