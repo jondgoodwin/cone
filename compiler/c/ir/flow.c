@@ -385,6 +385,36 @@ VarDclNode *flowOwningLocal(INode *ref) {
 
 static void flowMoveSource(INode *node, Nodes **moved, INode *top, MoveParts *parts);
 
+// Is this field access the payload of a match's binding of a variant that has
+// that one field and nothing else, where what the match took apart is held in a
+// variable of the match's own (the one `match f()` makes for a temporary, or a
+// loop over a cursor)? Nothing else names that variable, and the variant has no
+// finalizer of its own, so the payload moving out leaves nothing behind to
+// finalize or to read: the move is the matched value's, whole (flowMatchBound).
+static int flowTakesSoleField(FnCallNode *fld) {
+    INode *obj = fld->objfn;
+    if (!(isNameUseNode(obj) && isExpNode(obj)) || !isNameUseNode(fld->methfld))
+        return 0;
+    INode *bound = ((NameUseNode *)obj)->dclnode;
+    INode *matched = flowMatchBound(bound);
+    if (matched == NULL)
+        return 0;
+    INode *holder = ((NameUseNode *)matched)->dclnode;
+    if (holder->tag != VarDclTag || ((VarDclNode *)holder)->namesym != anonName)
+        return 0;
+    INode *variant = itypeGetTypeDcl(((VarDclNode *)bound)->vtype);
+    if (variant->tag != StructTag)
+        return 0;
+    StructNode *vstruct = (StructNode *)variant;
+    StructNode *enumdcl = structBaseTraitDcl(vstruct);
+    if (enumdcl == NULL || !(enumdcl->flags & EnumType))
+        return 0;
+    if (iNsTypeFindFnField((INsTypeNode *)variant, finalName) != NULL)
+        return 0;
+    // (An enum's own fields, its tag, lead the variant's: one more is the payload)
+    return vstruct->fields.used == enumdcl->fields.used + 1;
+}
+
 // Refuse a move out of a field, 'fld' being the field access on the chain
 // walked inwards from 'top', the value moving. Whether the value is the
 // field's own or one reached through it -- an element of an array field, what
@@ -515,6 +545,13 @@ static void flowMoveSource(INode *node, Nodes **moved, INode *top, MoveParts *pa
     }
     switch (node->tag) {
     case FldAccessTag:
+        // The one field of a variant a match took apart, out of a matched value
+        // nobody can name again: the field is the whole value, so it moves with
+        // the matched value, which is then not finalized
+        if (flowTakesSoleField((FnCallNode *)node)) {
+            flowMoveSource(((FnCallNode *)node)->objfn, moved, top, parts);
+            return;
+        }
         flowRefuseMoveField((FnCallNode *)node, top);
         return;
 

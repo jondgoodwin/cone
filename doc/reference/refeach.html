@@ -15,8 +15,9 @@
 
 	<p style="margin-left: 40px;"><i>Note: Built: number ranges with &lt;, &le;, &gt;, &ge; and by; arrays, slices and lists; and
 			anything with a <span class="pre">next</span> method (a cursor) or an <span class="pre">iter</span> method (something
-			that gives one), with one variable or several that unpack a pair. Not built yet: closure iterators, and the ways to
-			walk a list that change its items in place, consume it, or number them. An enum's variant is constructed with its values in square brackets, as written here: that is the current spelling, and how a variant is constructed is an open design question (<a href="refenum.html#init">Enums</a>).</i></p>
+			that gives one), with one variable or several that unpack a pair; and the ways to walk a list, an array or a slice that
+			change its items in place (<span class="pre">mutItems</span>), consume it (<span class="pre">drain</span>) or number them
+			(<span class="pre">indexed</span>), and <span class="pre">zip</span>. Not built yet: closure iterators. An enum's variant is constructed with its values in square brackets, as written here: that is the current spelling, and how a variant is constructed is an open design question (<a href="refenum.html#init">Enums</a>).</i></p>
 
 	<p><span class="pre">each</span> makes it easier than <span class="pre">while</span>
 		to iterate over a sequence of values.
@@ -112,6 +113,57 @@ each name in names {      // a List[String]: name is a &amp;String
 		the one a <span class="pre">while</span> over the indexes would be. While the loop runs the list
 		may not be changed, since the borrows it hands out would not survive a change.</p>
 
+	<h4 id="mutitems">Changing items in place: <span class="pre">mutItems</span></h4>
+	<p>A plain <span class="pre">each</span> only reads. To change the items of a list, an array or a slice
+		where they are, walk <span class="pre">mutItems()</span>, which lends each item as a
+		<span class="pre">&amp;mut</span>:</p>
+<pre>
+each x in list.mutItems() {
+  *x = *x * 2;       // x is a &amp;mut of the item
+}
+</pre>
+	<p>It is the same counted loop as a plain <span class="pre">each</span> over a slice. The list stays
+		borrowed mutably while the loop runs, so nothing else may read or change it until the loop is over.
+		A list, an array or a slice that is only read has no <span class="pre">mutItems</span> to take
+		(an <span class="pre">imm</span> list, or a <span class="pre">&amp;Array[T]</span> parameter).</p>
+
+	<h4 id="drain">Taking items out: <span class="pre">drain</span></h4>
+	<p><span class="pre">list.drain()</span> gives the values up one at a time, <b>moving</b> each out of the list
+		into the loop's variable, which then holds the value itself (not a borrow of it), so it works for
+		items such as a <span class="pre">String</span> that cannot be copied:</p>
+<pre>
+each name in names.drain() {   // name is a String, moved out of names
+  joined.append(name.view());
+}
+// names is now empty (its block is kept for reuse)
+</pre>
+	<p>The list is left empty as soon as <span class="pre">drain</span> is called, and may not be used while
+		the loop runs. Each pass's value is finalized as the pass ends. A loop left early, by
+		<span class="pre">break</span> or <span class="pre">return</span>, finalizes the values it did not reach.</p>
+
+	<h4 id="indexed">Positions: <span class="pre">indexed</span></h4>
+	<p><span class="pre">indexed()</span> of a list, an array or a slice gives each position with a borrow of
+		its item, a pair that two variables unpack. Walked directly by <span class="pre">each</span>, it is a
+		counted loop, as a plain <span class="pre">each</span> is:</p>
+<pre>
+each i, name in names.indexed() {   // i is a usize, name a borrow of the item
+  print(i, name);
+}
+</pre>
+
+	<h4 id="zip">Two together: <span class="pre">zip</span></h4>
+	<p><span class="pre">zip(&amp;xs, &amp;ys)</span> walks two lists (or deques, sets, dictionaries, or
+		anything else with an <span class="pre">iter</span> method) side by side, giving a pair of what each
+		gives, and ends when the shorter does:</p>
+<pre>
+each x, y in zip(&amp;xs, &amp;ys) {
+  ...
+}
+</pre>
+	<p>An array and a slice have an <span class="pre">iter()</span> too (<span class="pre">each x in a.iter()</span>
+		is the loop <span class="pre">each x in a</span> is), though <span class="pre">zip</span> does not yet take
+		them: it asks for something whose type declares <span class="pre">iter</span>.</p>
+
 	<h3>Cursor Iterators</h3>
 	<p>A <b>cursor</b> is anything with a <span class="pre">next</span> method that answers an
 		<a href="refoption.html">optional value</a>, <span class="pre">Some</span> with the next item or
@@ -139,8 +191,9 @@ each n in countdown {     // iterates: 3 2 1
 		<span class="pre">break</span> can be followed by another that carries on from where it stopped.
 		A cursor that lends (a deque's <span class="pre">items()</span>, say) gives borrows
 		of its items, as an array does; one that gives values gives the values themselves.
-		The items must be values that copy, or borrows: an item that moves (a <span class="pre">String</span>
-		the cursor hands out) cannot yet be taken out of the optional value, and is refused.</p>
+		An item that moves (a <span class="pre">String</span> the cursor hands out) is taken out of the
+		optional value by the one variable, and is the variable's from then on; several variables, which would
+		take the elements of a moving pair out one by one, are refused.</p>
 
 	<h4>Something that gives a cursor</h4>
 	<p>A value with no <span class="pre">next</span> but an <span class="pre">iter</span> method,

@@ -975,7 +975,7 @@ static FnDclNode *fnCallBorrowReceiver(TypeCheckState *pstate, FnCallNode *calln
         enum OverloadMatch *status) {
     INode *obj = callnode->objfn;
     INode *objtype = iexpGetTypeDcl(obj);
-    if (fnCallIsRefReceiver(objtype) || objtype->tag == PtrTag || !isMethodType(objtype))
+    if (fnCallIsRefReceiver(objtype) || objtype->tag == PtrTag || !(isMethodType(objtype) || objtype->tag == ArrayTag))
         return NULL;
     // '(*p).push(x)' written on a pointer is the pointer's own business: the
     // borrow would be '&mut *p', a reference made from a pointer
@@ -1113,9 +1113,60 @@ static FnDclNode *fnCallHashNumber(FnCallNode *callnode, FnDclNode *selected) {
     return (FnDclNode*)write;
 }
 
+// The body 'Array[T]' of an array's or a slice's element type T, an instance of
+// the generic struct core declares, whose methods (core.cone) an array, a
+// reference to one and a slice call. NULL where the receiver is none of those or
+// the body has no method of this name.
+static INode *fnCallSliceBodyOf(TypeCheckState *pstate, FnCallNode *callnode) {
+    if (callnode->methfld == NULL || !isNameUseNode(callnode->methfld) || arrayTypeDcl->genericinfo == NULL)
+        return NULL;
+    INode *type = iexpGetDerefTypeDcl(callnode->objfn);
+    INode *elem;
+    if (type->tag == ArrayRefTag)
+        elem = ((RefNode*)type)->vtexp;
+    else if (type->tag == ArrayTag) {
+        // An array's length is its type's, not a member of the value: 'len' stays a slice's
+        if (((NameUseNode*)callnode->methfld)->namesym == lenName)
+            return NULL;
+        elem = arrayElemType(type);
+    }
+    else
+        return NULL;
+    FnCallNode *body = newFnCallNode(newNameUseFromDclNode((INode*)arrayTypeDcl, (INode*)callnode), 1);
+    inodeLexCopy((INode*)body, (INode*)callnode);
+    body->flags |= FlagIndex;
+    nodesAdd(&body->args, elem);
+    INode *bodytype = (INode*)body;
+    if (!itypeTypeCheck(pstate, &bodytype))
+        return NULL;
+    INode *dcl = itypeGetTypeDcl(bodytype);
+    if (!isMethodType(dcl))
+        return NULL;
+    INode *found = iNsTypeFindFnField((INsTypeNode*)dcl, ((NameUseNode*)callnode->methfld)->namesym);
+    return found != NULL && found->tag != StructTag && (found->flags & FlagMethFld) ? dcl : NULL;
+}
+
+static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INode *bodytype);
+
+// A method called on an array, a reference to one or a slice, lowered against
+// core's 'Array[T]' for its element type. Answers 0, changing nothing, where
+// the body has no such method.
+static int fnCallLowerSliceMethod(TypeCheckState *pstate, FnCallNode *callnode) {
+    INode *bodytype = fnCallSliceBodyOf(pstate, callnode);
+    if (bodytype == NULL)
+        return 0;
+    return fnCallLowerMethodOn(pstate, callnode, bodytype);
+}
+
 // Returns 1 when lowered, 0 when the receiver's type supports no methods at all
 // (so the caller may try another way), and -1 when a diagnostic was reported.
 int fnCallLowerMethod(TypeCheckState *pstate, FnCallNode *callnode) {
+    return fnCallLowerMethodOn(pstate, callnode, NULL);
+}
+
+// The same, finding the method in 'bodytype' where that is not NULL, the type
+// whose methods a receiver that has none of its own (an array) reaches
+static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INode *bodytype) {
     INode *obj = callnode->objfn;
     // An ASCII character literal beside a byte is that byte, whichever side it is on
     if (callnode->flags & FlagOperator)
@@ -1124,7 +1175,7 @@ int fnCallLowerMethod(TypeCheckState *pstate, FnCallNode *callnode) {
     NameUseNode *methfld = (NameUseNode*)callnode->methfld;
     Name *methsym = methfld->namesym;
 
-    INode *objdereftype = iexpGetDerefTypeDcl(obj);
+    INode *objdereftype = bodytype ? bodytype : iexpGetDerefTypeDcl(obj);
     if (!isMethodType(objdereftype)) {
         return 0;
     }
@@ -2907,6 +2958,8 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
             fnCallArrIndex(node);  // indexing or borrowed ref to index
         else if (fnCallIsValueCompare(opname) && fnCallArrayAsSlice(pstate, node))
             ;
+        else if (fnCallLowerSliceMethod(pstate, node))
+            ;
         else
             errorMsgNode((INode*)node, ErrorNoMeth, "Invalid operation on an array.");
         break;
@@ -2918,6 +2971,8 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         else if (fnCallIsValueCompare(opname))
             fnCallLowerSliceCompare(pstate, node);
         else if (node->methfld && fnCallLowerPtrMethod(node, arrayRefType))
+            ;
+        else if (fnCallLowerSliceMethod(pstate, node))
             ;
         else
             errorMsgNode((INode*)node, ErrorNoMeth, "Invalid operation on an array ref.");
@@ -2966,6 +3021,8 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
                 }
                 else if (objdereftype->tag == PtrTag)
                     fnCallLowerPtrMethod(node, ptrType);
+                else if (objdereftype->tag == ArrayTag && fnCallLowerSliceMethod(pstate, node))
+                    ;
                 else
                     errorMsgNode((INode*)node, ErrorNoMeth, "Invalid operation on a reference.");
             }

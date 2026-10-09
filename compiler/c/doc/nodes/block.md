@@ -102,7 +102,15 @@ statements; the loop below then checks them as built. By the source's type:
   result (`list.view()`). No cursor is made, and the loop is the one a `while` over the
   list's indexes optimizes to. A list's `iter()` is not called: its cursor gives
   an Option each pass, whose null test on a pointer the optimizer cannot know is
-  not null blocks the loop's vectorization.
+  not null blocks the loop's vectorization. A slice that is mutable (what
+  `mutItems()` answers) lends each element as `&mut s[i]`; any other as `&s[i]`.
+- **core's `ArrayIter` or `ArrayIndexed`, a value made for the loop** (not a
+  place, not behind a reference; `iter()` with one variable, `indexed()` with
+  two, `eachIsCore`): the same counted loop, over the slice the cursor holds and
+  from the position it holds (`mut i = cursor.pos`), so a cursor made by the loop
+  is no cursor in the code. With `indexed()` the first variable is a copy of `i`
+  and the second the element's borrow. A cursor kept in a variable, or taken
+  whole by one variable of `indexed()`, is walked through its `next`.
 - **a type with `next`**: the cursor is the source as it is. A place named
   again without evaluating anything (`eachStablePlace`: a variable, a field of
   one, a dereference of one) is advanced where it stands, so a cursor left part
@@ -116,9 +124,13 @@ Each pass of a cursor loop declares its variable from the item:
 break; } }`, built as `match` is desugared (`eachNextItem`), the `break`
 joined to the loop as it is built. Two or more variables take the item through
 a variable of the pass's own, `imm -item = ...; imm k = -item.0; imm v =
--item.1`. An item that moves is refused before the loop is built
-(`ErrorEachItem`): `flowRefuseMoveField` would refuse the payload's move out of
-the Option the loop holds, as it does for a hand-written `match`.
+-item.1`. The pass's binding of the `Some` has a name no reader can write
+(`-some`), so that a move out of it is marked at the move as a named binding's
+is. An item that moves is taken whole by one variable, `s.value` moving the
+Option the loop holds with it (`flowTakesSoleField`, [Flow](../phases/flow.md),
+"Moves and counting"); with several variables it would move the elements of a
+tuple out one by one, which is refused before the loop is built
+(`ErrorEachItem`).
 
 A source is checked once, as the initializer of the hidden variable. Checking an
 expression a second time is not idempotent for a call, which type check lowers,
