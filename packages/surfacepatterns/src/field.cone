@@ -30,21 +30,45 @@ pub struct PatternField {
   pub rough List[f32];
   pub cavity List[f32];
 
+  // A field of 'size' squared zero texels, to be filled through its 'sink'
   pub fn empty(size i32, tileMetres f32, relief f32) PatternField {
     imm n = usize.from(size * size);
-    new PatternField(size, tileMetres, relief, ScalarMap.zeros(size), List[f32].withCapacity(n * 3usize),
-      List[f32].withCapacity(n), List[f32].withCapacity(n));
+    mut colour = List[f32].withCapacity(n * 3usize);
+    colour.resize(n * 3usize, 0.);
+    mut rough = List[f32].withCapacity(n);
+    rough.resize(n, 0.);
+    mut cavity = List[f32].withCapacity(n);
+    cavity.resize(n, 0.);
+    new PatternField(size, tileMetres, relief, ScalarMap.zeros(size), colour, rough, cavity);
   }
 
-  // Add the next texel, in row-major order from the bottom left (the
-  // height map is written in place)
-  pub fn put(self &mut, x i32, y i32, t PatternTexel) {
-    height.set(x, y, t.height);
-    colour.push(t.colour.red);
-    colour.push(t.colour.green);
-    colour.push(t.colour.blue);
-    rough.push(t.rough);
-    cavity.push(t.cavity);
+  // The place to put texels, which several rows of a parallel loop may fill
+  // at once: each texel writes only its own slots
+  pub fn sink(self &mut) FieldSink {
+    new FieldSink(size, height.values.viewMut() as *f32, colour.viewMut() as *f32,
+      rough.viewMut() as *f32, cavity.viewMut() as *f32);
+  }
+}
+
+// The buffers of a PatternField as raw pointers, so that a 'parallel each' body
+// can fill the texels of its own rows: the loop trusts a write through a raw
+// pointer. The field must outlive the sink and not be resized meanwhile.
+pub struct FieldSink {
+  pub size i32;
+  height *f32;
+  colour *f32;
+  rough *f32;
+  cavity *f32;
+
+  // Set texel (x, y): row-major from the bottom left
+  pub fn put(self &, x i32, y i32, t PatternTexel) {
+    imm i = usize.from(y * size + x);
+    *(height + i) = t.height;
+    *(colour + i * 3usize) = t.colour.red;
+    *(colour + i * 3usize + 1usize) = t.colour.green;
+    *(colour + i * 3usize + 2usize) = t.colour.blue;
+    *(rough + i) = t.rough;
+    *(cavity + i) = t.cavity;
   }
 }
 
@@ -63,32 +87,44 @@ pub fn finishField(f &mut PatternField, occlusionRadius f32, occlusionSteps i32)
   mut heightMap = TexelMap.withCapacity(size, size, 1);
   mut wearMask = TexelMap.withCapacity(size, size, 1);
   mut grimeMask = TexelMap.withCapacity(size, size, 1);
-  mut y = 0;
-  while y < size {
+  imm cells = usize.from(size * size);
+  baseColor.pixels.resize(cells * 3usize, 0u8);
+  orm.pixels.resize(cells * 3usize, 0u8);
+  normal.pixels.resize(cells * 3usize, 0u8);
+  heightMap.pixels.resize(cells, 0u8);
+  wearMask.pixels.resize(cells, 0u8);
+  grimeMask.pixels.resize(cells, 0u8);
+  // each row of the loop writes only its own texels of the maps, through raw
+  // pointers (the loop trusts them); wear and grime stay zero
+  imm bcOut = baseColor.pixels.viewMut() as *u8;
+  imm ormOut = orm.pixels.viewMut() as *u8;
+  imm normalOut = normal.pixels.viewMut() as *u8;
+  imm heightOut = heightMap.pixels.viewMut() as *u8;
+  imm field = &f.height;
+  imm colourIn = f.colour.view() as *f32;
+  imm roughIn = f.rough.view() as *f32;
+  imm cavityIn = f.cavity.view() as *f32;
+  parallel each y in 0 < size {
     mut x = 0;
     while x < size {
       imm i = usize.from(y * size + x);
-      imm n = normalTexel(&f.height, x, y, depth);
+      imm n = normalTexel(field, x, y, depth);
       mut ao = 1.;
       if occlusionSteps > 0 {
-        ao = occlusionTexel(&f.height, x, y, occlusionRadius, occlusionSteps, depth);
+        ao = occlusionTexel(field, x, y, occlusionRadius, occlusionSteps, depth);
       }
-      ao = ao * *f.cavity[i];
-      baseColor.pixels.push(unitByte(srgbEncode(*f.colour[i * 3usize])));
-      baseColor.pixels.push(unitByte(srgbEncode(*f.colour[i * 3usize + 1usize])));
-      baseColor.pixels.push(unitByte(srgbEncode(*f.colour[i * 3usize + 2usize])));
-      orm.pixels.push(unitByte(ao));
-      orm.pixels.push(unitByte(*f.rough[i]));
-      orm.pixels.push(0u8);
-      normal.pixels.push(unitByte(n.x * 0.5 + 0.5));
-      normal.pixels.push(unitByte(n.y * 0.5 + 0.5));
-      normal.pixels.push(unitByte(n.z * 0.5 + 0.5));
-      heightMap.pixels.push(unitByte(f.height.at(x, y)));
-      wearMask.pixels.push(0u8);
-      grimeMask.pixels.push(0u8);
+      ao = ao * *(cavityIn + i);
+      *(bcOut + i * 3usize) = unitByte(srgbEncode(*(colourIn + i * 3usize)));
+      *(bcOut + i * 3usize + 1usize) = unitByte(srgbEncode(*(colourIn + i * 3usize + 1usize)));
+      *(bcOut + i * 3usize + 2usize) = unitByte(srgbEncode(*(colourIn + i * 3usize + 2usize)));
+      *(ormOut + i * 3usize) = unitByte(ao);
+      *(ormOut + i * 3usize + 1usize) = unitByte(*(roughIn + i));
+      *(normalOut + i * 3usize) = unitByte(n.x * 0.5 + 0.5);
+      *(normalOut + i * 3usize + 1usize) = unitByte(n.y * 0.5 + 0.5);
+      *(normalOut + i * 3usize + 2usize) = unitByte(n.z * 0.5 + 0.5);
+      *(heightOut + i) = unitByte(field.at(x, y));
       x = x + 1;
     }
-    y = y + 1;
   }
   // the height field moves into the set, leaving the field's empty
   mut height = ScalarMap.zeros(1);

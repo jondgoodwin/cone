@@ -1,0 +1,225 @@
+// bakebench: bakes the families of the 3-D web's cottage scene with the scene's
+// own parameters (cottage.cone's boards, shingles, deck and stone; vegetation.cone's
+// maple and pine bark, rock and edging stones), times each, and prints a hash of
+// every map of every family, so two builds of the bakers can be compared byte for
+// byte.
+//
+//   congo run --release packages/surfacepatterns/examples/bakebench.cone -- --runs 7
+//
+// Output: 'HASH family map hash' lines (identical for identical maps), then
+// 'MS family median min' and 'TOTAL median min' lines (milliseconds).
+
+mod bakebench;
+
+import stdio use *;
+import actors;
+import collections use *;
+import geomath use *;
+import time use Instant;
+import pbrmaterial use *;
+import surfacepatterns use *;
+
+fn parseCount(s *u8) i32 {
+  if (s as usize) == 0usize or *s == 0u8 { return -1; }
+  mut n = 0;
+  mut i = 0usize;
+  while *(s + i) != 0u8 {
+    imm c = *(s + i);
+    if c < 48u8 or c > 57u8 { return -1; }
+    n = n * 10 + i32.from(c - 48u8);
+    i = i + 1usize;
+  }
+  n;
+}
+
+fn bakeBoards() TextureSet {
+  mut p = PlankParams.siding(512, 1928u32);
+  p.tileMetres = 1.8;
+  p.boardWidth = 0.3;
+  p.battenWidth = 0.;
+  p.battenRaise = 0.;
+  p.colorA = rgb255(72., 86., 66.);
+  p.colorB = rgb255(48., 60., 46.);
+  p.variation = 0.14;
+  p.weather = 0.08;
+  bakePlanks(&p);
+}
+
+fn bakeShingleTile() TextureSet {
+  mut p = ShingleParams.cedar(256, 1929u32);
+  p.tileMetres = 1.12;
+  p.colorA = rgb255(112., 114., 116.);
+  p.colorB = rgb255(58., 60., 64.);
+  p.weather = 0.35;
+  bakeShingles(&p);
+}
+
+fn bakeDeckTile() TextureSet {
+  mut p = PlankParams.decking(256, 1930u32);
+  p.tileMetres = 1.68;
+  p.colorA = rgb255(150., 112., 76.);
+  p.colorB = rgb255(104., 76., 52.);
+  p.weather = 0.35;
+  bakePlanks(&p);
+}
+
+fn bakeStoneTile() TextureSet {
+  mut p = FlagstoneParams.garden(512, 1931u32);
+  p.tileMetres = 2.;
+  p.growth = 0.25;
+  bakeFlagstones(&p);
+}
+
+fn bakeMaple() TextureSet {
+  mut p = BarkParams.redMaple(512, 4101u32);
+  bakeBark(&p);
+}
+
+fn bakePineBark() TextureSet {
+  mut p = BarkParams.pine(512, 4202u32);
+  bakeBark(&p);
+}
+
+fn bakeGranite() TextureSet {
+  mut p = RockParams.granite(512, 6101u32);
+  bakeRock(&p);
+}
+
+fn bakeEdging() TextureSet {
+  mut p = RockParams.granite(512, 6202u32);
+  p.colorA = rgb255(148., 142., 130.);
+  p.colorB = rgb255(92., 84., 76.);
+  p.lichenAmount = 0.4;
+  bakeRock(&p);
+}
+
+const FAMILIES = 8;
+
+fn bakeFamily(i i32) TextureSet {
+  if i == 0 { bakeBoards(); } elif i == 1 { bakeShingleTile(); } elif i == 2 { bakeDeckTile(); }
+  elif i == 3 { bakeStoneTile(); } elif i == 4 { bakeMaple(); } elif i == 5 { bakePineBark(); }
+  elif i == 6 { bakeGranite(); } else { bakeEdging(); };
+}
+
+fn familyName(i i32) &str {
+  if i == 0 { "boards"; } elif i == 1 { "shingles"; } elif i == 2 { "deck"; }
+  elif i == 3 { "flagstones"; } elif i == 4 { "maple"; } elif i == 5 { "pine"; }
+  elif i == 6 { "rock"; } else { "edging"; };
+}
+
+// FNV-1a over a height field's float bits
+fn scalarHash(m &ScalarMap) u64 {
+  mut h = 14695981039346656037u64;
+  imm n = m.values.len();
+  imm p = (m.values.view() as *f32) as *u32;
+  mut i = 0usize;
+  while i < n {
+    imm w = *(p + i);
+    mut k = 0u32;
+    while k < 4u32 {
+      h = (h ^ u64.from((w >> (k * 8u32)) & 0xFFu32)) * 1099511628211u64;
+      k = k + 1u32;
+    }
+    i = i + 1usize;
+  }
+  h;
+}
+
+fn printHashes(name &str, t &TextureSet) {
+  print <- "HASH "; print <- name; print <- " baseColor "; print <- mapHash(&t.baseColor); print <- "\n";
+  print <- "HASH "; print <- name; print <- " orm "; print <- mapHash(&t.orm); print <- "\n";
+  print <- "HASH "; print <- name; print <- " normal "; print <- mapHash(&t.normal); print <- "\n";
+  print <- "HASH "; print <- name; print <- " heightMap "; print <- mapHash(&t.heightMap); print <- "\n";
+  print <- "HASH "; print <- name; print <- " wear "; print <- mapHash(&t.wearMask); print <- "\n";
+  print <- "HASH "; print <- name; print <- " grime "; print <- mapHash(&t.grimeMask); print <- "\n";
+  print <- "HASH "; print <- name; print <- " height "; print <- scalarHash(&t.height); print <- "\n";
+}
+
+fn median(v &mut List[f64]) f64 {
+  mut i = 1usize;
+  while i < v.len() {
+    mut j = i;
+    while j > 0usize and *v[j - 1usize] > *v[j] {
+      v.swap(j - 1usize, j);
+      j = j - 1usize;
+    }
+    i = i + 1usize;
+  }
+  *v[v.len() / 2usize];
+}
+
+fn minOf(v &List[f64]) f64 {
+  mut m = *v[0usize];
+  mut i = 1usize;
+  while i < v.len() {
+    if *v[i] < m { m = *v[i]; }
+    i = i + 1usize;
+  }
+  m;
+}
+
+fn argAt(argv **u8, a i32) *u8 { *(argv + usize.from(a)); }
+
+fn main(argc i32, argv **u8) i32 {
+  mut runs = 5;
+  mut skipHash = false;
+  mut workers = 0u32;
+  mut a = 1;
+  while a < argc {
+    imm s = argAt(argv, a);
+    if *(s + 2usize) == 'r' and a + 1 < argc {
+      runs = parseCount(argAt(argv, a + 1));
+      a = a + 1;
+    } elif *(s + 2usize) == 'w' and a + 1 < argc {
+      workers = u32.from(parseCount(argAt(argv, a + 1)));
+      a = a + 1;
+    } elif *(s + 2usize) == 'b' and a + 1 < argc {
+      a = a;
+      a = a + 1;
+    } elif *(s + 2usize) == 'n' {
+      skipHash = true;
+    }
+    a = a + 1;
+  }
+  if workers > 0u32 { actors.configure(new actors.Options(workers: workers)); }
+  mut times = List[f64].empty();
+  mut totals = List[f64].empty();
+  mut f = 0;
+  // one warm-up pass (also the one whose maps are hashed)
+  while f < FAMILIES {
+    imm c0 = Instant.now();
+    imm t = bakeFamily(f);
+    imm cold = c0.elapsed().secondsF64() * 1000.;
+    print <- "COLD "; print <- familyName(f); print <- " "; print <- cold; print <- "\n";
+    if !skipHash { printHashes(familyName(f), &t); }
+    f = f + 1;
+  }
+  mut r = 0;
+  while r < runs {
+    mut total f64 = 0.;
+    f = 0;
+    while f < FAMILIES {
+      imm t0 = Instant.now();
+      imm t = bakeFamily(f);
+      imm ms = t0.elapsed().secondsF64() * 1000.;
+      times.push(ms);
+      total = total + ms;
+      f = f + 1;
+    }
+    totals.push(total);
+    r = r + 1;
+  }
+  f = 0;
+  while f < FAMILIES {
+    mut v = List[f64].empty();
+    r = 0;
+    while r < runs {
+      v.push(*times[usize.from(r * FAMILIES + f)]);
+      r = r + 1;
+    }
+    print <- "MS "; print <- familyName(f); print <- " "; print <- median(&mut v); print <- " "; print <- minOf(&v); print <- "\n";
+    f = f + 1;
+  }
+  print <- "TOTAL "; print <- median(&mut totals); print <- " "; print <- minOf(&totals); print <- "\n";
+  0;
+}
