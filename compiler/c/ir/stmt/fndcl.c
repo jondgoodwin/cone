@@ -630,10 +630,19 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
         // may still be waiting to be checked. A walk that needs one of them is
         // made when they are, at the end of type check, unless it cannot wait
         // (shapeinfer.h)
-        if (loans && !shapeWalkReady(fnnode, !seams && !initmod))
-            shapeWalkDefer(fnnode, fstate.dropgate != 0);
-        else
+        int walknow = 1;
+        if (loans) {
+            // Checking those methods is analysis, not flow
+            if (timerFine)
+                timerBegin(svTimer);
+            walknow = shapeWalkReady(fnnode, !seams && !initmod);
+            if (timerFine)
+                timerBegin(FlowTimer);
+        }
+        if (walknow)
             flowPathWalk(fnnode, loans, fstate.dropgate || seams, seams);
+        else
+            shapeWalkDefer(fnnode, fstate.dropgate != 0);
     }
     // The seams every rule accepted: a message's are split, where the split is
     // built (generation makes its halves); any other is reported not built

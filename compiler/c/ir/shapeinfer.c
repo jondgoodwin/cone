@@ -25,6 +25,7 @@
 */
 
 #include "ir.h"
+#include "../shared/timer.h"
 
 #include <string.h>
 
@@ -745,7 +746,12 @@ void shapeWalkDeferred(void) {
         FnDclNode *fn = siQueue[i].fn;
         int drops = siQueue[i].drops;
         shapeWalkReady(fn, 0);
+        size_t svTimer = timerCurrent;
+        if (timerFine)
+            timerBegin(FlowTimer);
         flowPathWalk(fn, 1, drops, 0);
+        if (timerFine)
+            timerBegin(svTimer);
     }
     siQueueUsed = 0;
 }
