@@ -962,6 +962,366 @@ static int parCheckReach(INode *node, void *ctxp) {
     return 1;
 }
 
+// ---- An outside reference that could point at what the loop writes --------------
+//
+// A loop that writes through its source (a cursor lending '&mut': mutChunks,
+// mutItems, a zip of them, or a '&mut' slice) writes the elements one pass at a
+// time. The body may not name the place they are lent from (parCheckAlias), but a
+// borrow taken before the loop and passed in, a parameter or a field of a struct, can
+// point at the same element, and reading it while a pass writes races (flow
+// analysis sees only a local). So the body may not read, from an outside variable,
+// a place that could be one of the written items, judged by the PATH read
+// (parPlaceReaches): a struct reached through a reference that is a written type, an
+// element of that type indexed behind a reference, a reference to one; the place's
+// own type, a bare name and a call in the chain are judged whole (parReachesWritten,
+// not through a raw pointer). A scalar field beside the buffer (self.scale), and a
+// value copied out before the loop, reach none. What is written is read from the
+// cursor types (parCursorOf), never from a method's name.
+
+#define ParAliasMax 24
+
+typedef struct {
+    ParSet inside;              // The variables declared in the body, and the loop's own
+    ParSet *aliased;            // The places parCheckAlias already refused
+    INode *set[ParAliasMax];    // The written element, and what it holds inline
+    uint32_t nset;
+    INode *elset[ParAliasMax];  // The written element, and the elements of arrays it holds inline: what a collection's element can be
+    uint32_t nelset;
+    INode *elem;                // The first written element, for the message
+    char *source;               // The place they are lent from, for the message
+} ParAliasOuter;
+
+// The element types a cursor lends '&mut', from the cursor's own types
+static void parWrittenElems(INode *type, INode **elems, uint32_t *n) {
+    type = type ? itypeGetTypeDcl(type) : NULL;
+    if (type == NULL)
+        return;
+    if (type->tag == ArrayRefTag || type->tag == RefTag) {
+        // A '&mut' slice as the source itself
+        RefNode *ref = (RefNode *)type;
+        if (permMatches((INode*)mutPerm, ref->perm) && *n < ParAliasMax) {
+            INode *elem = itypeLenBodyElem(ref->vtexp);
+            elems[(*n)++] = elem != NULL ? elem : ref->vtexp;
+        }
+        return;
+    }
+    if (parIsCore(type, "ArrayMutChunks", 14) || parIsCore(type, "ArrayMutItems", 13)
+        || parIsCore(type, "MutItemsIndexed", 15)) {
+        // The cursor is an instance of core's ['a, T]: the element is its one type
+        // argument (the lifetime is not a type)
+        Nodes *args = itypeInstanceTypeArgs(type);
+        if (args != NULL && args->used == 1 && *n < ParAliasMax)
+            elems[(*n)++] = nodesGet(args, 0);
+    }
+    else if (parIsCore(type, "MutChunksIndexed", 16))
+        parWrittenElems(parFieldType(type, "chunks"), elems, n);
+    else if (parIsCore(type, "Zip", 3) || parIsCore(type, "Zip3", 4)) {
+        parWrittenElems(parFieldType(type, "first"), elems, n);
+        parWrittenElems(parFieldType(type, "second"), elems, n);
+        if (parIsCore(type, "Zip3", 4))
+            parWrittenElems(parFieldType(type, "third"), elems, n);
+    }
+    else if (parIsCore(type, "ZipIndexed", 10) || parIsCore(type, "Zip3Indexed", 11))
+        parWrittenElems(parFieldType(type, "zip"), elems, n);
+}
+
+// The type, and the types it holds inline (a field, a tuple's or array's element): a
+// borrow of any of them can point into a written element
+static void parAddElemType(INode *type, ParAliasOuter *ctx) {
+    type = type ? itypeGetTypeDcl(type) : NULL;
+    if (type == NULL || ctx->nelset >= ParAliasMax)
+        return;
+    for (uint32_t i = 0; i < ctx->nelset; ++i) {
+        if (itypeIsSame(ctx->elset[i], type))
+            return;
+    }
+    ctx->elset[ctx->nelset++] = type;
+}
+
+static void parInlineTypes(INode *type, ParAliasOuter *ctx, int depth) {
+    type = type ? itypeGetTypeDcl(type) : NULL;
+    if (type == NULL || depth > 6 || ctx->nset >= ParAliasMax)
+        return;
+    if (depth == 0)
+        parAddElemType(type, ctx);      // (a collection of the written type holds the items themselves)
+    for (uint32_t i = 0; i < ctx->nset; ++i) {
+        if (itypeIsSame(ctx->set[i], type))
+            return;
+    }
+    ctx->set[ctx->nset++] = type;
+    INode **nodesp;
+    uint32_t cnt;
+    switch (type->tag) {
+    case ArrayTag:
+        parAddElemType(arrayElemType(type), ctx);   // (so does a slice of an array inline in it)
+        parInlineTypes(arrayElemType(type), ctx, depth + 1);
+        break;
+    case TTupleTag:
+        for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp))
+            parInlineTypes(*nodesp, ctx, depth + 1);
+        break;
+    case StructTag:
+        for (nodelistFor(&((StructNode *)type)->fields, cnt, nodesp))
+            parInlineTypes(((IExpNode *)*nodesp)->vtype, ctx, depth + 1);
+        break;
+    default:
+        break;
+    }
+}
+
+// Does a value of this type reach, behind a reference, owner or type argument, a
+// type of the written set? (A raw pointer is trusted: nothing is followed behind one.)
+//
+// 'behind' says the value was reached through a reference somewhere above, so a
+// collection in it may be the one the loop writes; 'elemlike' says this type is
+// itself an object that may be a written element: the pointee of a reference, or an
+// element or type argument of a collection reached behind one. A field held inline
+// is a part of its struct, not an element, so it is compared only when the struct is
+// (and searched for the references and collections it holds). A type argument the
+// struct also holds by value (an Atomic's, an Option's) is a value, not elements.
+static int parInWritten(INode *type, ParAliasOuter *ctx) {
+    for (uint32_t i = 0; i < ctx->nset; ++i) {
+        if (itypeIsSame(type, ctx->set[i]))
+            return 1;
+    }
+    return 0;
+}
+
+// ... and an element of a collection or array: only the written element itself, or
+// the element of an array it holds inline, is one (a List of a part it holds is a
+// separate buffer)
+static int parInElems(INode *type, ParAliasOuter *ctx) {
+    for (uint32_t i = 0; i < ctx->nelset; ++i) {
+        if (itypeIsSame(type, ctx->elset[i]))
+            return 1;
+    }
+    return 0;
+}
+
+// Does this struct (or one of its variants) hold a value of this type in a field?
+static int parHoldsByValue(StructNode *strnode, INode *arg) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&strnode->fields, cnt, nodesp)) {
+        INode *ftype = ((IExpNode *)*nodesp)->vtype;
+        if (ftype != NULL && itypeIsSame(ftype, arg))
+            return 1;
+    }
+    if (strnode->derived) {
+        for (nodesFor(strnode->derived, cnt, nodesp)) {
+            if ((*nodesp)->tag == StructTag && parHoldsByValue((StructNode *)*nodesp, arg))
+                return 1;
+        }
+    }
+    return 0;
+}
+
+static int parReachesWritten(INode *type, int behind, int elemlike, ParAliasOuter *ctx, INode **seen, uint32_t *nseen) {
+    if (type == NULL || *nseen > 60)
+        return 0;
+    switch (type->tag) {
+    case NameUseTag:
+        return isTypeNode(type) ? parReachesWritten(itypeGetTypeDcl(type), behind, elemlike, ctx, seen, nseen) : 0;
+    case AliasDclTag:
+        return parReachesWritten(((AliasDclNode *)type)->target, behind, elemlike, ctx, seen, nseen);
+    default:
+        break;
+    }
+    // (1: the pointee of a reference, which may be a part of a written item; 2: an
+    // element of a collection or array, which is the item or not)
+    if ((elemlike == 1 && parInWritten(type, ctx)) || (elemlike == 2 && parInElems(type, ctx)))
+        return 1;
+    switch (type->tag) {
+    case RefTag:
+    case ArrayRefTag:
+    case VirtRefTag:
+        return parReachesWritten(((RefNode *)type)->vtexp, 1, 1, ctx, seen, nseen);
+    case ArrayTag:
+        return parReachesWritten(arrayElemType(type), behind, behind ? 2 : 0, ctx, seen, nseen);
+    case TTupleTag: {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp)) {
+            if (parReachesWritten(*nodesp, behind, 0, ctx, seen, nseen))
+                return 1;
+        }
+        return 0;
+    }
+    case StructTag: {
+        for (uint32_t i = 0; i < *nseen; ++i) {
+            if (seen[i] == type)
+                return 0;
+        }
+        seen[(*nseen)++] = type;
+        StructNode *strnode = (StructNode *)type;
+        INode **nodesp;
+        uint32_t cnt;
+        Nodes *args = itypeInstanceTypeArgs(type);
+        if (args != NULL) {
+            for (nodesFor(args, cnt, nodesp)) {
+                if (parReachesWritten(*nodesp, behind, behind && !parHoldsByValue(strnode, *nodesp) ? 2 : 0, ctx, seen, nseen))
+                    return 1;
+            }
+        }
+        for (nodelistFor(&strnode->fields, cnt, nodesp)) {
+            if (parReachesWritten(((IExpNode *)*nodesp)->vtype, behind, 0, ctx, seen, nseen))
+                return 1;
+        }
+        if (strnode->derived) {
+            for (nodesFor(strnode->derived, cnt, nodesp)) {
+                if (parReachesWritten(*nodesp, behind, 0, ctx, seen, nseen))
+                    return 1;
+            }
+        }
+        return 0;
+    }
+    default:
+        return 0;
+    }
+}
+
+// The place a node reads, from the node outward to the variable at its root, through
+// fields, elements, dereferences and borrows (a borrow of a place reads it). 0 where
+// the chain is not a plain place (a call, a cast): such a use is judged where its own
+// variables are named, as a whole.
+#define ParChainMax 16
+
+static int parPlaceChain(INode *node, INode **chain, uint32_t *n) {
+    *n = 0;
+    while (node != NULL && *n < ParChainMax) {
+        chain[(*n)++] = node;
+        switch (node->tag) {
+        case FldAccessTag:
+        case ArrIndexTag:
+            node = ((FnCallNode*)node)->objfn;
+            break;
+        case DerefTag:
+            node = ((StarNode*)node)->vtexp;
+            break;
+        case BorrowTag:
+        case ArrayBorrowTag:
+            node = ((RefNode*)node)->vtexp;
+            break;
+        default:
+            return isNameUseNode(node);
+        }
+    }
+    return 0;
+}
+
+static INode *parPeelRef(INode *type, int *crossed) {
+    type = type ? itypeGetTypeDcl(type) : NULL;
+    if (type != NULL && (type->tag == RefTag || type->tag == ArrayRefTag || type->tag == VirtRefTag)) {
+        *crossed = 1;
+        return itypeGetTypeDcl(((RefNode *)type)->vtexp);
+    }
+    return type;
+}
+
+// Is what this place reads one a pass may be writing? Judged by the PATH read: each
+// struct reached through a reference may itself be a written element, an element
+// indexed behind a reference is one if its type is written, a pointer is trusted, and
+// what the place finally holds is judged whole. A scalar field beside the buffer
+// (self.scale) reaches none of these.
+static int parPlaceReaches(INode **chain, uint32_t n, ParAliasOuter *ctx) {
+    int behind = 0;
+    for (uint32_t i = n - 1; i > 0; --i) {
+        INode *node = chain[i - 1];
+        if (node->tag == BorrowTag || node->tag == ArrayBorrowTag)
+            continue;
+        INode *obj = chain[i];
+        while (obj->tag == BorrowTag || obj->tag == ArrayBorrowTag) {
+            // (an object that is a borrow expression: its place is the one read)
+            obj = ((RefNode*)obj)->vtexp;
+        }
+        INode *objtype = isExpNode(obj) ? iexpGetTypeDcl(obj) : NULL;
+        if (objtype == NULL)
+            return 0;
+        if (objtype->tag == PtrTag)
+            return 0;               // trusted: nothing is followed behind a raw pointer
+        int crossed = 0;
+        INode *pointee = parPeelRef(objtype, &crossed);
+        if (node->tag == DerefTag && !crossed)
+            return 0;
+        if (crossed) {
+            behind = 1;
+            if (pointee != NULL && parInWritten(pointee, ctx))
+                return 1;           // the struct, or the item, it points at may be a written element
+        }
+        if (node->tag == ArrIndexTag) {
+            int ignore = 0;
+            INode *elem = parPeelRef(isExpNode(node) ? iexpGetTypeDcl(node) : NULL, &ignore);
+            if (behind && elem != NULL && parInElems(elem, ctx))
+                return 1;
+        }
+    }
+    uint32_t top = 0;
+    while (top + 1 < n && (chain[top]->tag == BorrowTag || chain[top]->tag == ArrayBorrowTag))
+        ++top;
+    INode *finaltype = isExpNode(chain[top]) ? iexpGetTypeDcl(chain[top]) : NULL;
+    if (chain[top]->tag == ArrIndexTag) {
+        // (an index gives a borrow of the element: it is the element that is read)
+        int ignore = 0;
+        finaltype = parPeelRef(finaltype, &ignore);
+    }
+    INode *seen[64];
+    uint32_t nseen = 0;
+    return parReachesWritten(finaltype, behind, 0, ctx, seen, &nseen);
+}
+
+static ParSet parOuterReported;
+
+static int parCheckOuterAlias(INode *node, void *ctxp) {
+    ParAliasOuter *ctx = (ParAliasOuter *)ctxp;
+    if (parSetHas(ctx->aliased, node))
+        return 0;           // refused as naming the place the items are lent from
+    // The outermost plain place rooted at a variable is judged by its path; a bare
+    // name is a path of one (judged whole); a call in the chain is not a plain place,
+    // and the variables named inside it are judged as bare names
+    switch (node->tag) {
+    case FldAccessTag:
+    case ArrIndexTag:
+    case DerefTag:
+    case BorrowTag:
+    case ArrayBorrowTag:
+    case NameUseTag:
+        break;
+    default:
+        return 1;
+    }
+    INode *chain[ParChainMax];
+    uint32_t n;
+    if (!parPlaceChain(node, chain, &n)) {
+        // (the place's own variable is met further in, and the indexes in it are walked)
+        return 1;
+    }
+    for (uint32_t i = 0; i < n; ++i) {
+        if (parSetHas(ctx->aliased, chain[i]))
+            return 0;       // a part of it was refused as naming the place the items are lent from
+    }
+    INode *root = chain[n - 1];
+    INode *dcl = ((NameUseNode*)root)->dclnode;
+    if (dcl == NULL || dcl->tag != VarDclTag)
+        return 1;
+    VarDclNode *var = (VarDclNode *)dcl;
+    if (var->vtype == NULL || var->vtype == unknownType || parHiddenVar(var) || parSetHas(&ctx->inside, dcl))
+        return 1;
+    if (!parPlaceReaches(chain, n, ctx) || parSetHas(&parOuterReported, node)) {
+        // The place is taken whole: only the indexes inside it are uses of their own
+        parWalkIndexArgs(node, parCheckOuterAlias, ctx);
+        return 0;
+    }
+    parSetAdd(&parOuterReported, node);
+    char elemname[256] = "";
+    itypeSpellCat(elemname, sizeof(elemname), ctx->elem, 0);
+    char *name = &var->namesym->namestr;
+    errorMsgNode(node, ErrorParAlias,
+        "This 'parallel each' writes the items of %s (%s), and what this reads through '%s' could be one of them: reading it while a pass writes would race. Copy what you need before the loop ('imm f = *%s;', 'imm n = %s.n;') and use the copy in the body.",
+        ctx->source, elemname, name, name, name);
+    parWalkIndexArgs(node, parCheckOuterAlias, ctx);
+    return 0;
+}
+
 // ---- A Gc in an actor or in a parallel each: refused, for now -------------------
 //
 // The collector keeps its heap and its one chain of roots in process globals,
@@ -1111,6 +1471,24 @@ void parallelEachCheckBody(TypeCheckState *pstate, BlockNode *outer) {
                 parLentPaths(((VarDclNode*)stmt)->value, &alias);
             if (alias.nlent > 0)
                 parWalk((INode*)loop, parCheckAlias, &alias);
+
+            // Nor an outside reference that could point at what the loop writes
+            ParAliasOuter outer_alias;
+            memset(&outer_alias, 0, sizeof(outer_alias));
+            INode *written[ParAliasMax];
+            uint32_t nwritten = 0;
+            parWrittenElems(((VarDclNode*)stmt)->vtype, written, &nwritten);
+            if (nwritten > 0) {
+                for (uint32_t w = 0; w < nwritten; ++w)
+                    parInlineTypes(written[w], &outer_alias, 0);
+                outer_alias.inside = ctx.inside;
+                outer_alias.aliased = &alias.reported;
+                outer_alias.elem = written[0];
+                outer_alias.source = "its sources";
+                if (alias.nlent == 1 && alias.lent[0].root->namesym != anonName)
+                    outer_alias.source = &alias.lent[0].root->namesym->namestr;
+                parWalk((INode*)loop, parCheckOuterAlias, &outer_alias);
+            }
             break;
         }
     }
