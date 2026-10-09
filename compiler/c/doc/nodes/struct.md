@@ -1802,11 +1802,15 @@ Three shapes, the first two chosen in `genlSetupTaggedTrait`:
   extension is tagged.
 - **Same size** — every variant re-emitted with `[N x i8]` trailing padding to
   the largest, rounded up to the strictest variant alignment; the enum's body is
-  its own fields (tag and common fields) and then bytes to that size, never a
-  copy of one variant's layout, whose padding a first-class load or store would
-  drop along with any other variant's field that sits in it.
+  its own fields (tag and common fields) and then its payload to that size, never
+  a copy of one variant's layout, whose padding a first-class load or store would
+  drop along with any other variant's field that sits in it. The payload is a
+  scalar (`genlEnumPayload`) wherever every variant with anything in those bytes
+  has the same integer, float or pointer there, and bytes elsewhere, so that
+  `Option[i64]` travels as one `i64` and not as fifteen bytes.
   Measured: `%Circle = { i8, i32, i32, [4 x i8] }` beside
-  `%Rect = { i8, i32, i32, i32 }` and `%Shape = { i8, i32, [8 x i8] }`.
+  `%Rect = { i8, i32, i32, i32 }` and `%Shape = { i8, i32, i32, i32 }`;
+  `Option[i64]` is `{ i8, [7 x i8], i64 }`.
 - **Unpadded** — each variant emitted at its own size, the tag still first.
   Measured, for an `@unsized` enum of an empty variant and one holding three
   `i64`s: `%Ping = { i8, i32 }` beside `%Payload = { i8, i32, i64, i64, i64 }`.

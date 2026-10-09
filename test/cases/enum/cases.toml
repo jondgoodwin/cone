@@ -133,11 +133,17 @@ contains = ["%Ping = type { i8, i32 }", "%Payload = type { i8, i32, i64, i64, i6
 # every variant is padded to is rounded up to the strictest variant alignment:
 # Tally, the largest at ten bytes, is byte-aligned and Count is not, so all three
 # are twelve. The run prints the fields back; this pins the layout that keeps them.
+# Where every variant with something in some bytes has the same scalar there, the
+# enum's type names that scalar and not bytes (enum_payload_scalars says why).
+# Cell's, by byte: 1 is Flag's bool beside Tally's u8, so bytes; 2 is Flag's u8
+# and Tally's u8, so an i8; 3 is Tally's alone, an i8; 4 to 7 are Count's i32
+# over four of Tally's u8s, so bytes; 8 and 9 are Tally's alone, two i8s; 10 and
+# 11 are padding.
 [[scenario.enum_success.check]]
 name = "an-enum-type-has-no-padding-a-variant-uses"
 target = "preir"
 contains = [
-  "%Cell = type { i8, [11 x i8], [0 x i32] }",
+  "%Cell = type { i8, [1 x i8], i8, i8, [4 x i8], i8, i8, [2 x i8], [0 x i32] }",
   "%Flag = type { i8, i1, i8, [9 x i8] }",
   "%Count = type { i8, i32, [4 x i8] }",
   "%Tally = type { i8, i8, i8, i8, i8, i8, i8, i8, i8, i8, [2 x i8] }",
@@ -197,6 +203,77 @@ category = "run"
 description = "An enum instance laid out whole when its variant holds a struct reaching the enum back through an owning reference: Option[A], A holding 'So[AState]', AState holding Option[A]"
 tags = ["genllvm", "runtime"]
 
+# An enum's payload is laid out in the scalars its variants agree on, bytes where
+# they do not, and a run cannot tell the two apart. Wide's variants agree on an
+# i64 at byte 8 and Two has a second at byte 16; Num's One and Two put an i64 and
+# an f64 in the same bytes, so those stay bytes (with the zero-length array for
+# the 8-byte alignment); Mixed's variants agree on an i32 at byte 4 and put an i32
+# and an f32 at byte 8, an i32 and then four bytes; Option[i64] is a tag, seven
+# bytes and an i64 where it was fifteen bytes.
+[scenario.enum_payload_scalars]
+category = "run"
+description = "An enum payload laid out in the scalars its variants agree on and bytes elsewhere: every variant's value read back after a copy, a call and a return from a branch, for variants that agree, variants that share bytes with a different type, and Option of an i64, a bool and an Option; and a struct and an Option returned from an inlined function and carried round a loop"
+tags = ["genllvm", "runtime"]
+
+[[scenario.enum_payload_scalars.check]]
+name = "a-payload-is-the-scalars-its-variants-agree-on"
+target = "preir"
+contains = [
+  "%Wide = type { i8, [7 x i8], i64, i64 }",
+  "%Num = type { i8, [15 x i8], [0 x i64] }",
+  "%Mixed = type { i8, [3 x i8], i32, [4 x i8] }",
+  "= type { i8, [7 x i8], i64 }",
+  "= type { i8, [7 x i8], i8, [7 x i8], i64 }",
+]
+excludes = ["%Wide = type { i8, [15 x i8]", "%Mixed = type { i8, [11 x i8]"]
+
+# The optimizer sees each loop's trips whole as well: a value returned from an
+# inlined function that is merged through a slot and not an aggregate phi.
+[[scenario.enum_payload_scalars.check]]
+name = "an-inlined-result-is-not-merged-in-an-aggregate-phi"
+target = "preir"
+contains = ["%merge = alloca %Got", "%merge = alloca %Option"]
+excludes = ["phi %Got", "phi %Option"]
+
+[scenario.enum_payload_loop_option]
+category = "compile"
+description = "A loop over the Option of a value that an inlined function returns is vectorized as a counted loop is"
+tags = ["genllvm"]
+
+# Compiled as a library, so that its public functions are exported: in a
+# program they are internal, and the optimizer deletes what main never calls
+[[scenario.enum_payload_loop_option.run]]
+name = "library"
+options = ["--library"]
+
+# The loaded i64 was broken into eight bytes, put into the Option's payload of
+# fifteen bytes and taken out again on every trip, and the two paths out of the
+# inlined function merged in a phi of the whole Option, which LLVM does not
+# split: the loop stayed scalar. The payload is an i64 now, merged in a slot that
+# becomes a phi of the i64 alone.
+[[scenario.enum_payload_loop_option.check]]
+name = "the-loop-is-vectorized-and-holds-no-aggregate"
+target = "llvmir"
+contains = ["define i64 @sumVal(", "vector.body", "<2 x i64>"]
+excludes = ["phi %Option", "insertvalue %Option", "[15 x i8]"]
+
+[scenario.enum_payload_loop_struct]
+category = "compile"
+description = "A loop over the plain struct that an inlined function returns is vectorized as a counted loop is"
+tags = ["genllvm"]
+
+[[scenario.enum_payload_loop_struct.run]]
+name = "library"
+options = ["--library"]
+
+# The two paths out of the inlined function merged in a phi of the whole struct
+# of a flag and an i64, which LLVM does not split: the loop stayed scalar
+[[scenario.enum_payload_loop_struct.check]]
+name = "the-loop-is-vectorized-and-holds-no-aggregate"
+target = "llvmir"
+contains = ["define i64 @sumPair(", "vector.body", "<2 x i64>"]
+excludes = ["phi %Got", "insertvalue %Got"]
+
 [scenario.enum_final]
 category = "run"
 description = "A value typed as an enum is finalized once, as its variant: every place it lives, the order with an enum's own 'final', an extension's, and matching by value, whichever arm runs"
@@ -230,9 +307,13 @@ tags = ["nameres", "typecheck", "genllvm", "runtime"]
 # either: every reference is the same 'ptr'. Shape is still padded to its own largest, Rect, while Solid is the
 # size of the Cube it adds. Framed is padded although the Message it extends
 # declined the padding. An enum's own type is its discriminant and common fields,
-# then bytes out to its padded size, then a zero-length array for the strictest
-# alignment among its variants: Shape is 16 bytes, Solid 32, Framed 24, and
-# MaybeMore 16, pointer-aligned. The copies' own struct names are not asserted:
+# then its payload out to its padded size, in the scalars every variant agrees on
+# and bytes elsewhere (enum_payload_scalars), with a zero-length array for the
+# strictest alignment among its variants where no scalar carries it: Shape is 16
+# bytes, two i32s where Circle and Rect agree; Solid 32, bytes over the i32s that
+# Cube's first i64 overlaps and then Cube's last two i64s; Framed 24, bytes over
+# Text's i32 and Blob's first i64 and then Blob's second i64; and MaybeMore 16,
+# bytes and Just's pointer. The copies' own struct names are not asserted:
 # LLVM numbers a second struct of one name, and which is first follows generation
 # order.
 [[scenario.enum_extends.check]]
@@ -241,11 +322,11 @@ target = "preir"
 contains = [
   "%base = alloca ptr, align 8",
   "%ext = alloca %MaybeMore, align 8",
-  "%MaybeMore = type { i8, [15 x i8], [0 x ptr] }",
-  "%Shape = type { i8, i32, [8 x i8] }",
-  "%Solid = type { i8, i32, [24 x i8], [0 x i64] }",
+  "%MaybeMore = type { i8, [7 x i8], ptr }",
+  "%Shape = type { i8, i32, i32, i32 }",
+  "%Solid = type { i8, i32, [8 x i8], i64, i64 }",
   "%Cube = type { i8, i32, i64, i64, i64 }",
-  "%Framed = type { i8, i32, [16 x i8], [0 x i64] }",
+  "%Framed = type { i8, i32, [8 x i8], i64 }",
 ]
 excludes = ["%Maybe = type"]
 

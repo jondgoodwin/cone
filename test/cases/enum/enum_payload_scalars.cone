@@ -1,0 +1,231 @@
+// An enum's payload is laid out in the scalars its variants agree on, and in
+// bytes where they do not. An enum value is loaded, stored and passed whole, and
+// its type may not have padding a variant uses, so the bytes between two scalars
+// are explicit; what this program claims is that every value comes back whatever
+// variant it was, through a copy, a call and a return:
+//
+//  - Wide's variants agree on an i64 at byte 8, and Two has another at byte 16;
+//  - Num's One and Two hold an i64 and an f64 at the same byte, which is bytes;
+//  - Mixed's variants agree on an i32 at byte 4 and disagree at byte 8, an i32
+//    against an f32, so it is an i32 and then bytes;
+//  - Option[i64], Option[Option[i64]] and Option[bool] are the generic shapes.
+//
+// The layouts are asserted in cases.toml, since a run cannot see them: a payload
+// kept as bytes would print the same lines. The loop that a payload kept as bytes
+// kept from being vectorized is enum_payload_loop.
+
+mod enum_payload_scalars;
+
+import stdio use *;
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+enum Wide {
+  struct One { pub a i64; }
+  struct Two { pub a i64; pub b i64; }
+}
+use Wide;
+
+enum Num {
+  struct Whole { pub v i64; }
+  struct Real { pub v f64; }
+}
+use Num;
+
+enum Mixed {
+  struct Ints { pub x i32; pub y i32; }
+  struct Floaty { pub x i32; pub y f32; }
+}
+use Mixed;
+
+fn wideSum(w &imm Wide) i64 {
+  match w {
+    case imm o &One {o.a;}
+    case imm t &Two {t.a * 100 + t.b;}
+  }
+}
+
+fn numValue(n &imm Num) i64 {
+  match n {
+    case imm w &Whole {w.v;}
+    case imm r &Real {i64.from(r.v * 4.0);}
+  }
+}
+
+fn mixedValue(m &imm Mixed) i64 {
+  match m {
+    case imm i &Ints {i64.from(i.x) * 1000 + i64.from(i.y);}
+    case imm f &Floaty {i64.from(f.x) * 1000 + i64.from(f.y * 2.0f32);}
+  }
+}
+
+// Each of these passes its enum by value and gives one back, which copies the
+// whole of it, in a call that is not inlined
+fn passWide(w Wide) Wide { w; }
+fn passNum(n Num) Num { n; }
+fn passMixed(m Mixed) Mixed { m; }
+
+fn pick(which i32) Wide {
+  if which == 0 { return One[7]; }
+  if which == 1 { return Two[3, 4]; }
+  Two[-5, 6];
+}
+
+fn maybe(n i64) Option[i64] {
+  if n < 0 { return None[i64][]; }
+  Some[i64][n];
+}
+
+fn maybeBool(n i64) Option[bool] {
+  if n < 0 { return None[bool][]; }
+  Some[bool][n > 5];
+}
+
+fn nested(n i64) Option[Option[i64]] {
+  if n < 0 { return None[Option[i64]][]; }
+  if n == 0 { return Some[Option[i64]][None[i64][]]; }
+  Some[Option[i64]][Some[i64][n]];
+}
+
+fn optValue(o &imm Option[i64]) i64 {
+  match o {
+    case imm s &Some[i64] {s.value;}
+    else {-1;}
+  }
+}
+
+fn boolValue(o &imm Option[bool]) i64 {
+  match o {
+    case imm s &Some[bool] {if s.value {1;} else {0;};}
+    else {-1;}
+  }
+}
+
+fn nestedValue(o &imm Option[Option[i64]]) i64 {
+  match o {
+    case imm s &Some[Option[i64]] {
+      match s.value {
+        case imm i Some[i64] {i.value;}
+        else {-2;}
+      }
+    }
+    else {-1;}
+  }
+}
+
+// A plain struct returned from an inlined function and carried round a loop
+pub struct Got {
+  pub ok bool;
+  pub v i64;
+}
+pub struct Cursor['a] {
+  arr &'a Array[i64];
+  pos usize;
+  pub fn next(self &mut) Got inline {
+    if pos >= arr.len { return new Got(false, 0i64); }
+    imm v = arr[pos];
+    pos = pos + 1;
+    new Got(true, v);
+  }
+}
+
+fn sumGot(a &Array[i64]) i64 {
+  mut c = new Cursor(a, 0usize);
+  mut s = 0i64;
+  while true {
+    imm g = c.next();
+    if !g.ok { break; }
+    s = s + g.v;
+  }
+  s;
+}
+
+// The same through an Option of a value
+pub struct ValCursor['a] {
+  arr &'a Array[i64];
+  pos usize;
+  pub fn next(self &mut) Option[i64] inline {
+    if pos >= arr.len { return None[i64][]; }
+    imm v = arr[pos];
+    pos = pos + 1;
+    Some[i64][v];
+  }
+}
+
+fn sumOption(a &Array[i64]) i64 {
+  mut c = new ValCursor(a, 0usize);
+  mut s = 0i64;
+  while true {
+    match c.next() {
+      case imm e Some {s = s + e.value;}
+      case is None {break;}
+    }
+  }
+  s;
+}
+
+fn main() i32 {
+  imm one Wide = One[9000000000];
+  imm two Wide = Two[-3, 4000000000];
+  show("wide-one", wideSum(&imm one));
+  show("wide-two", wideSum(&imm two));
+  imm oneBack = passWide(one);
+  imm twoBack = passWide(two);
+  show("wide-one-copied", wideSum(&imm oneBack));
+  show("wide-two-copied", wideSum(&imm twoBack));
+  show("wide-returned-from-branch-0", wideSum(&imm pick(0)));
+  show("wide-returned-from-branch-1", wideSum(&imm pick(1)));
+  show("wide-returned-from-branch-2", wideSum(&imm pick(2)));
+
+  imm whole Num = Whole[-123456789012];
+  imm real Num = Real[2.75];
+  show("num-whole", numValue(&imm whole));
+  show("num-real", numValue(&imm real));
+  imm wholeBack = passNum(whole);
+  imm realBack = passNum(real);
+  show("num-whole-copied", numValue(&imm wholeBack));
+  show("num-real-copied", numValue(&imm realBack));
+
+  imm ints Mixed = Ints[12, -3];
+  imm floaty Mixed = Floaty[21, 2.5f32];
+  show("mixed-ints", mixedValue(&imm ints));
+  show("mixed-floaty", mixedValue(&imm floaty));
+  imm intsBack = passMixed(ints);
+  imm floatyBack = passMixed(floaty);
+  show("mixed-ints-copied", mixedValue(&imm intsBack));
+  show("mixed-floaty-copied", mixedValue(&imm floatyBack));
+
+  imm some = maybe(41);
+  imm none = maybe(-1);
+  show("option-some", optValue(&imm some));
+  show("option-none", optValue(&imm none));
+  imm big = maybe(5000000000);
+  show("option-big", optValue(&imm big));
+
+  imm yes = maybeBool(9);
+  imm no = maybeBool(2);
+  imm nothing = maybeBool(-1);
+  show("option-bool-yes", boolValue(&imm yes));
+  show("option-bool-no", boolValue(&imm no));
+  show("option-bool-none", boolValue(&imm nothing));
+
+  imm inner = nested(8);
+  imm hollow = nested(0);
+  imm gone = nested(-1);
+  show("nested-inner", nestedValue(&imm inner));
+  show("nested-hollow", nestedValue(&imm hollow));
+  show("nested-gone", nestedValue(&imm gone));
+
+  imm data Array[i64, 6] = [10, 200, 3000, 40000, 500000, 6000000];
+  show("struct-cursor-sum", sumGot(&data));
+  show("option-cursor-sum", sumOption(&data));
+  imm single Array[i64, 1] = [77];
+  show("struct-cursor-single", sumGot(&single));
+  show("option-cursor-single", sumOption(&single));
+  0;
+}

@@ -172,7 +172,10 @@ After each arm, if its last statement is not a jump, branch to `endif` and
 record a phi incoming — using `LLVMGetInsertBlock`, not `ifblk`, because the arm
 may have split the block. The phi is built only when something was recorded;
 where a value-producing `if` recorded nothing — every arm jumped away — its
-value is `undef`, which no path reaches.
+value is `undef`, which no path reaches. A value that is a small struct or array
+is stored into a `%merge` slot by each arm and loaded at `endif` instead of
+phi-ed (`genlMergeSlot`; [Generation](../phases/generation.md), "A small
+aggregate is merged through a slot").
 
 ## Hazards
 
