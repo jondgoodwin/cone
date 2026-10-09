@@ -220,6 +220,16 @@ through a raw pointer (the loop trusts its writer). The loop is the block's last
 statement, so type check has made it the value of a `blockret` (`parLoopOf`
 looks through it).
 
+It also refuses a **copy** that writes shared state without atomics
+(`ErrorParCopy`, `parCheckCopies`): a place read as a value (not lent, not the
+object of a further access) whose type holds a counted owner whose region is not
+`ThreadSafe` (`Rc`) or a traced reference (`parHoldsPlainCount`, through fields,
+variants, tuples and arrays; an `Arc` and a move owner do not count) and that is
+not the pass's own (`parPlaceIsOwn`: a variable declared in the loop, or a part
+of one held inline, not reached through a reference or an index). A copy inside
+a function the body calls is not seen, and neither is a traced local the pass
+declares (its frame is linked into the collector's one chain).
+
 A mutable slice as the source (what `mutItems()` gives, or a `&mut` slice) lends
 each item mutably, as `eachLower` does, so a pass changes its own item through its
 variable, and the items are disjoint. `&mut` is shared in Cone, so nothing else
