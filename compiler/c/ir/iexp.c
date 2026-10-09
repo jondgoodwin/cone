@@ -563,18 +563,22 @@ int iexpIsLvalError(INode *lval) {
 // says what it holds: a parameter's type carries the caller band, and nothing
 // shorter may be stored into it; an immutable local's carries its initializer's
 // (varDclTypeCheck). A mutable local may since have been given a borrow its type
-// does not record, and one held in a field or an element carries no lifetime of
-// its own (the field's declared type is shared), so the place keeps the scope of
-// the variable holding it. A place reached through an owning reference lives as
-// long as the owner's holder.
-static void iexpScopeThroughRef(INode *refexp, INode *lvalvar, RefNode *reftype, uint16_t *scope) {
+// does not record, so a store through one keeps the scope of the variable holding
+// it, and so does a place reached through one held in a field or an element,
+// which carries no lifetime of its own (the field's declared type is shared). A
+// borrow of a place reached through a mutable local reads the lifetime its type
+// records, as the local itself does when it is returned or handed on: a
+// borrow it was later given is followed by the loan walk (flowloan.c), which
+// refuses it returned past what it was borrowed from. A place reached through
+// an owning reference lives as long as the owner's holder.
+static void iexpScopeThroughRef(INode *refexp, INode *lvalvar, RefNode *reftype, uint16_t *scope, int stored) {
     if (reftype->region != borrowRef)
         return;
     if (lvalvar == NULL)
         *scope = reftype->scope;
     else if (isNameUseNode(refexp) && lvalvar->tag == VarDclTag) {
         VarDclNode *var = (VarDclNode *)lvalvar;
-        if (var->scope == 1 || !(permGetFlags(var->perm) & MayWrite))
+        if (var->scope == 1 || !(permGetFlags(var->perm) & MayWrite) || (!stored && reftype->scope > 0))
             *scope = reftype->scope;
     }
 }
@@ -615,7 +619,7 @@ static INode *iexpLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope, int s
         RefNode *vtype = (RefNode*)iexpGetTypeDcl(refexp);
         if (vtype->tag == RefTag || vtype->tag == ArrayRefTag) {
             *lvalperm = vtype->perm;
-            iexpScopeThroughRef(refexp, lvalvar, vtype, scope);
+            iexpScopeThroughRef(refexp, lvalvar, vtype, scope, stored);
         }
         else if (vtype->tag == PtrTag)
             *lvalperm = (INode*)mutPerm;
@@ -637,7 +641,7 @@ static INode *iexpLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope, int s
         // parameter was refused while '(*v)[0] = x' was allowed.
         if (objtype->tag == ArrayRefTag || objtype->tag == RefTag) {
             *lvalperm = ((RefNode*)objtype)->perm;
-            iexpScopeThroughRef(element->objfn, lvalvar, (RefNode*)objtype, scope);
+            iexpScopeThroughRef(element->objfn, lvalvar, (RefNode*)objtype, scope, stored);
         }
         else if (objtype->tag == PtrTag)
             *lvalperm = (INode*)mutPerm;
@@ -661,7 +665,7 @@ static INode *iexpLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope, int s
         RefNode *objtype = (RefNode*)iexpGetTypeDcl(element->objfn);
         if (objtype->tag == VirtRefTag) {
             *lvalperm = objtype->perm;
-            iexpScopeThroughRef(element->objfn, lvalvar, objtype, scope);
+            iexpScopeThroughRef(element->objfn, lvalvar, objtype, scope, stored);
         }
         // Downgrade overall static permission if the field may not be written.
         // Ask the permission for its flags rather than comparing node pointers:

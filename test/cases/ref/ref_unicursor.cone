@@ -1,0 +1,137 @@
+// A mutable local holding a '&uni' reference a function was lent (a cursor)
+// can be handed back, as an immutable one can: the reference was the caller's,
+// and a borrow from the local carries the lifetime the local's type records
+// (the caller's), not the local's own. So 'mut cur = p; cur' returns, and so do
+// a cursor walked along by reassigning it, its field or element borrowed '&uni',
+// and the cursor handed back as a '&mut' or a '&'. What may not be returned is
+// ref_flow_unicursor: a borrow of the function's own value, held in the local
+// however it got there.
+
+mod ref_unicursor;
+
+import stdio use *;
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+struct Counter {
+  pub n i64;
+}
+
+fn same(q &uni Counter) &uni Counter { q; }
+
+fn viaMut(p &uni Counter) &uni Counter {
+  mut cur = p;
+  cur;
+}
+
+fn viaImm(p &uni Counter) &uni Counter {
+  imm cur = p;
+  cur;
+}
+
+fn viaDeclared(p &uni Counter) &uni Counter {
+  mut cur &uni Counter = p;
+  cur;
+}
+
+// the cursor is changed through, reassigned from a call on itself, and handed back
+fn viaCalls(p &uni Counter, k i64) &uni Counter {
+  mut cur = p;
+  mut i i64 = 0;
+  while i < k {
+    cur.n = cur.n + 1;
+    cur = same(cur);
+    i = i + 1;
+  }
+  cur;
+}
+
+// handed back by one of two branches, one of them a second reference lent
+fn chosen(p &uni Counter, q &uni Counter) &uni Counter {
+  mut cur = p;
+  if cur.n > 100 {
+    cur = q;
+  }
+  cur;
+}
+
+fn fieldOf(p &uni Counter) &uni i64 {
+  mut cur = p;
+  &uni cur.n;
+}
+
+fn asMut(p &uni Counter) &mut Counter {
+  mut cur = p;
+  cur;
+}
+
+fn asShared(p &uni Counter) &Counter {
+  mut cur = p;
+  cur;
+}
+
+// a cursor walked along a slice, k elements in
+fn walk(p &uni Array[i64], k i64) &uni Array[i64] {
+  mut cur = p;
+  mut i i64 = 0;
+  while i < k {
+    cur = &uni cur[1usize..];
+    i = i + 1;
+  }
+  cur;
+}
+
+fn elemAt(p &uni Array[i64], k i64) &uni i64 {
+  mut cur = walk(p, k);
+  &uni cur[0usize];
+}
+
+fn main() {
+  imm c = new So[Counter](5);
+  {
+    imm r = viaMut(c);
+    show("viaMut", r.n);
+    r.n = 7;
+  }
+  show("c", c.n);
+  {
+    imm r = viaImm(c);
+    r.n = r.n + 1;
+  }
+  show("viaImm", c.n);
+  {
+    imm r = viaDeclared(c);
+    r.n = r.n + 1;
+  }
+  show("viaDeclared", c.n);
+  {
+    imm r = viaCalls(c, 3);
+    show("viaCalls", r.n);
+  }
+  *fieldOf(c) = 20;
+  show("fieldOf", c.n);
+  asMut(c).n = 21;
+  show("asMut", c.n);
+  show("asShared", asShared(c).n);
+  imm d = new So[Counter](200);
+  show("chosen low", chosen(c, d).n);
+  c.n = 150;
+  show("chosen high", chosen(c, d).n);
+
+  imm arr = new So[Array[i64, 5]]([1, 2, 3, 4, 5]);
+  {
+    imm w = walk(arr, 2);
+    w[0usize] = 30;
+    w[1usize] = 40;
+  }
+  show("walk", arr[2usize] * 100 + arr[3usize]);
+  *elemAt(arr, 4) = 50;
+  show("elemAt", arr[4usize]);
+  show("arr", arr[0usize] * 10 + arr[1usize]);
+  show("end", 0);
+}

@@ -634,9 +634,14 @@ the arm that would dangle.
   it is reached — through an immutable local copy of it too, whose type carries
   its initializer's lifetime. A mutable local may since have been given a
   borrow its type does not record (a variable's lifetime does not yet follow
-  what it holds), and a reference held in a field or an element carries no
-  lifetime of its own (the declared field type is shared), so a place reached
-  through either keeps the holding variable's scope;
+  what it holds), so a **store** through one keeps the holding variable's
+  scope (`stored`), while a **borrow** of a place reached through one reads
+  the lifetime its type records, as returning or handing on the local itself
+  does; what it was later given is followed by the loan walk, which refuses it
+  returned or stored past what it was borrowed from (`ref_flow_unicursor`).
+  A reference held in a field or an element carries no lifetime of its own
+  (the declared field type is shared), so a place reached through one keeps
+  the holding variable's scope;
 - a place reached through an owning reference lives as long as the owner's
   holder, so an owner lent as a borrowed reference — `iexpCoerceType` on the
   recast `iexpCoerce` injects — carries the lifetime of a borrow through it: a
