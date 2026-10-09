@@ -545,7 +545,21 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
     // Type check the initialization value
     else {
         // Verify that declared type and initial value type match
-        int matches = iexpTypeCheckCoerce(pstate, name->vtype, &name->value);
+        // A parameter's default that is a string literal for a type declaring
+        // 'fromLiteral' ('&Path', or 'Path') stays the literal: each call that
+        // takes the default makes the temporary, or the value, itself, as it does
+        // for a literal written as the argument (fnCallFinalizeArgs). A default
+        // is a constant, and a temporary has no statement of its own here.
+        int matches;
+        int deferred = 0;
+        if (name->scope == 1 && !(name->flags & FlagStatic) && name->value->tag == StringLitTag
+            && name->vtype != unknownType) {
+            inodeTypeCheck(pstate, &name->value, name->vtype);
+            deferred = slitDefaultDeferred(name->value, name->vtype);
+            matches = deferred ? 1 : iexpCheckedCoerceIn(pstate, name->vtype, &name->value);
+        }
+        else
+            matches = iexpTypeCheckCoerce(pstate, name->vtype, &name->value);
         // A temporary the initializer extends becomes a hidden local of the block
         if (matches && pstate->extend && pstate->extend->var == name && !(name->flags & FlagStatic))
             varDclExtend(pstate->extend, &name->value);
@@ -557,7 +571,7 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
         // lifetime, so the variable takes a copy of it scoped as its initializer
         // is, as an undeclared one takes the initializer's own scoped type:
         // returning or storing it is then judged by what it was borrowed from
-        else if (isExpNode(name->value)) {
+        else if (!deferred && isExpNode(name->value)) {
             INode *vtypedcl = itypeGetTypeDcl(name->vtype);
             INode *scoped = iexpCoerceType(name->value, vtypedcl);
             if (scoped != vtypedcl)

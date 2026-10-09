@@ -712,6 +712,13 @@ int slitBorrowCoerce(TypeCheckState *pstate, INode **nodep, INode *totype) {
     return iexpCoerce(nodep, totype);
 }
 
+int slitDefaultDeferred(INode *node, INode *totype) {
+    if (totype == unknownType || totype == noCareType || !slitIsText(node))
+        return 0;
+    INode *totypedcl = itypeGetTypeDcl(totype);
+    return slitBorrowMatches(node, totypedcl) || slitFromLiteralFn(totypedcl) != NULL;
+}
+
 // A reinterpretation ('as') of a constant number to a number or pointer type is
 // a constant: '4096usize as *u8' is a fixed address, known before anything runs.
 // The operand is a number literal, a 'null', a named constant, or another such

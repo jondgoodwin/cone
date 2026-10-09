@@ -693,6 +693,16 @@ void fnCallFinalizeArgs(TypeCheckState *pstate, FnCallNode *node) {
                 INode *dflt = ((VarDclNode*)*parmp)->value;
                 if (intrinsicIsSrcDefault(dflt))
                     dflt = intrinsicSrcCallAt(dflt, (INode*)node);
+                // A string literal for a type declaring 'fromLiteral' is made
+                // here, a copy of it coerced as a literal written as this
+                // call's argument is: the temporary of its own, dropped with
+                // this call's statement (or the value, by value)
+                else if (slitDefaultDeferred(dflt, ((IExpNode*)*parmp)->vtype)) {
+                    dflt = cloneSLitNode((SLitNode*)dflt);
+                    if (!iexpCoerceIn(pstate, &dflt, ((IExpNode*)*parmp)->vtype))
+                        errorMsgNode((INode*)node, ErrorInvType,
+                            "This parameter's default is a string literal, made into the wanted type where the call is, which needs a function's body: a global's initializer or a constant has no statement for the temporary.");
+                }
                 nodesAdd(&node->args, dflt);
                 parmp++;
             }
