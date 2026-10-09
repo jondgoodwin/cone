@@ -785,8 +785,13 @@ what it owns, `*u`, so `u` may not be moved while `b` is used
 (`pwOwnedLent`). One coerced to a `&uni` or `&mut1` arrives already rewritten
 by type check to the borrow `&uni *u`, since a recast to a move type would be a
 move of `u`. A holder's declaration, or an assignment to the whole of it,
-*replaces* what it holds with what the value carries; moving it away whole
-leaves it holding nothing.
+*replaces* what it holds with what the value carries, but for the loans of a
+place reached through the holder itself (`pathSetWithoutThrough`,
+`loanNamesThrough`): storing over `cur` makes the name `*cur` say another
+place, so in `cur = next(cur)` the borrow of the old `*cur` is not held by the
+new `cur` (a caller loan, which stands for what the caller lent, stays; so do
+the loans the old `cur` held, which the borrow carried along, and any loan held
+through another variable); moving it away whole leaves it holding nothing.
 
 **Near and far.** A value's loans are of two kinds, kept apart in its one set
 (`LoanFar`, a bit on the loan's id there): a *near* loan is of a place the
