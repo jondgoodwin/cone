@@ -1,0 +1,111 @@
+// A fillGrid-shaped generic, as surfacepatterns' (field.cone) writes it: a 'parallel each'
+// over 'out.mutChunks(width)' calling a closure 'f' for each item's column and row, with
+// the output a List of f32. The closure may hold values of its own, which are free to
+// read while the passes write: a captured value copied in by the state list
+// ('[scale]', '[s = scale]'), a hand-written struct with an f32 value field and a '()',
+// a struct of values copied in. What it may NOT hold is a borrow of a variable of
+// the caller's of the written type (a default capture of an f32, '(x, y) => scale * ...'),
+// which could point at an item: concurrency_parallel_each_closure_alias refuses that.
+//
+// Every closure computes 'scale * x + y' with scale 0.5, over 64 columns and 64 rows:
+//   sum over x of 0.5 * x = 0.5 * 2016 = 1008, for each of 64 rows = 64512;
+//   sum over y of y = 2016, for each of 64 columns = 129024;
+//   total 193536, exact in f32 (every value is a multiple of one half).
+// Each result is checked against a serial loop over the same closure, and so is the
+// list item by item.
+
+mod concurrency_parallel_each_closure_fill;
+
+import stdio use *;
+import collections use *;
+import actors;
+
+pub fn fillGrid[T, F fn(x i32, y i32) T](out &mut List[T], width usize, f &F) {
+  parallel each y, row in out.mutChunks(width).indexed() {
+    each x, t in row.mutItems().indexed() {
+      *t = f(i32.from(x), i32.from(y));
+    }
+  }
+}
+
+// The same fill, serially
+pub fn fillSerial[T, F fn(x i32, y i32) T](out &mut List[T], width usize, f &F) {
+  each y, row in out.mutChunks(width).indexed() {
+    each x, t in row.mutItems().indexed() {
+      *t = f(i32.from(x), i32.from(y));
+    }
+  }
+}
+
+struct Scaler {
+  scale f32;
+  pub fn `()`(self &, x i32, y i32) f32 { scale * f32.from(x) + f32.from(y); }
+}
+
+struct Params { scale f32; bias f32; }
+
+fn report(name &str, ok bool) {
+  printStr(name);
+  printStr(if ok {": ok\n";} else {": FAILED\n";});
+}
+
+fn total(out &List[f32]) f32 {
+  mut sum = 0.;
+  each v in out { sum = sum + *v; }
+  sum;
+}
+
+fn same(a &List[f32], b &List[f32]) bool {
+  mut ok = a.len() == b.len();
+  mut i = 0usize;
+  while i < a.len() { if *a[i] != *b[i] { ok = false; } i = i + 1usize; }
+  ok;
+}
+
+fn blank() List[f32] {
+  mut l = new List[f32];
+  mut k = 0usize;
+  while k < 4096usize { l.push(0.); k = k + 1usize; }
+  l;
+}
+
+fn main() {
+  initAll();
+  actors.configure(new actors.Options(workers: 4u32));
+  imm scale = 0.5;
+
+  // The reference: a serial fill by a closure that holds its own copy
+  mut want = blank();
+  fillSerial(&mut want, 64usize, fn(x i32, y i32) [scale] f32 { scale * f32.from(x) + f32.from(y); });
+  report("serial fill sums to 193536", total(&want) == 193536.);
+
+  // (b) the state list copies the captured f32
+  mut b = blank();
+  fillGrid(&mut b, 64usize, fn(x i32, y i32) [scale] f32 { scale * f32.from(x) + f32.from(y); });
+  report("state list [scale]", same(&b, &want));
+
+  // ... under a name of its own
+  mut b2 = blank();
+  fillGrid(&mut b2, 64usize, fn(x i32, y i32) [s = scale] f32 { s * f32.from(x) + f32.from(y); });
+  report("state list [s = scale]", same(&b2, &want));
+
+  // ... a struct of values copied in
+  imm params = new Params(0.5, 0.);
+  mut b3 = blank();
+  fillGrid(&mut b3, 64usize, fn(x i32, y i32) [params] f32 { params.scale * f32.from(x) + f32.from(y) + params.bias; });
+  report("state list [params]", same(&b3, &want));
+
+  // (d) a hand-written struct with an f32 value field and a '()'
+  imm scaler = new Scaler(0.5);
+  mut d = blank();
+  fillGrid(&mut d, 64usize, &scaler);
+  report("a struct with an f32 field", same(&d, &want));
+
+  // a default capture of a value that is not the written type
+  imm shift = 0;
+  mut f = blank();
+  fillGrid(&mut f, 64usize, (x, y) => 0.5 * f32.from(x + shift) + f32.from(y));
+  report("a borrowed i32", same(&f, &want));
+
+  finalAll();
+}

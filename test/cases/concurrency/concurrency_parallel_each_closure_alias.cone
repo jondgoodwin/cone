@@ -1,0 +1,66 @@
+// A closure given to a fillGrid-shaped generic (a 'parallel each' over 'out.mutChunks(width)'
+// calling 'f' for each item) is read by every pass while the passes write the items of
+// 'out'. A closure that BORROWS a variable of the caller's of the written type (a
+// default capture of an f32 while the output is a List of f32) holds an '&f32' that could
+// point at one of the items: ErrorParAlias, reported where the generic reads 'f', with
+// "as instantiated" naming the caller's closure, and a message that names the borrowed
+// variable and the fix, to copy it into the closure by the state list:
+//     (x, y) => scale * ...        becomes        fn(x i32, y i32) [scale] f32 { scale * ... }
+// (concurrency_parallel_each_closure_fill runs the copied forms.)
+//
+// Refused here: an f32 borrowed into an f32 output, the same for an output struct holding
+// an f32, a captured f32 local that is not a parameter, and a separate captured
+// List[f32] (its elements are the same type as the items, and it could be the very list
+// written: a borrowed list cannot be copied by the state list, so the message says to hand the
+// closure a copy made before the loop). A borrowed f32 into an output with no f32 in it, and a
+// borrowed i32, a struct of f32 values and a separate list of another type are free.
+
+mod concurrency_parallel_each_closure_alias;
+
+import collections use *;
+import actors;
+
+struct Rgb { pub r f32; pub g f32; }
+struct Texel { pub h f32; pub c Rgb; }
+struct Params { scale f32; bias f32; }
+
+pub fn fillGrid[T, F fn(x i32, y i32) T](out &mut List[T], width usize, f &F) {
+  parallel each y, row in out.mutChunks(width).indexed() {
+    each x, t in row.mutItems().indexed() {
+      *t = f(i32.from(x), i32.from(y));       //~ ErrorParAlias "borrows 'scale' (&ro f32), which could point at one of them"
+                                              //~^ ErrorParAlias "borrows 'table' (&ro &ro List), which could be the very list"
+                                              //~^^ ErrorParAlias "writes the items of out (Texel), and the closure passed as 'f' borrows 'scale'"
+                                              //~^^^ ErrorParAlias "borrows 'depth' (&ro f32), which could point at one of them"
+    }
+  }
+}
+
+// A default capture of the f32 parameter, borrowed
+fn caseA(out &mut List[f32], scale f32) {
+  fillGrid(out, 4usize, (x, y) => scale * f32.from(x));
+}
+
+// A separate List[f32], captured by default and read by index
+fn caseC(out &mut List[f32], table &List[f32]) {
+  fillGrid(out, 4usize, (x, y) => *table[usize.from(x)]);
+}
+
+// An output struct holding an f32, and an f32 borrowed
+fn caseTexel(out &mut List[Texel], scale f32) {
+  fillGrid(out, 4usize, (x, y) => new Texel(scale * f32.from(x), new Rgb(0., 0.)));
+}
+
+// A local, not a parameter
+fn caseLocal(out &mut List[f32]) {
+  imm depth = 2.;
+  fillGrid(out, 4usize, (x, y) => depth * f32.from(x));
+}
+
+// Free: a borrowed i32, a borrowed struct of f32 values, a copy by the state list, and
+// a separate list of another type
+fn caseFree(out &mut List[f32], n i32, p &Params, scale f32, ids &List[u32]) {
+  fillGrid(out, 4usize, (x, y) => f32.from(n + x));
+  fillGrid(out, 4usize, (x, y) => p.scale * f32.from(x));
+  fillGrid(out, 4usize, fn(x i32, y i32) [scale] f32 { scale * f32.from(x); });
+  fillGrid(out, 4usize, (x, y) => f32.from(*ids[usize.from(x)]));
+}

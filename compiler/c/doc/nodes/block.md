@@ -292,6 +292,14 @@ element, so is free. A bare name, or a variable named inside a call in the chain
 of one, judged whole. A place `parCheckAlias` refused, or any part of one, is skipped (no
 double report).
 
+When the variable is a closure passed to a generic that runs the loop (its type, or the
+pointee, is a hidden struct `closureOfStruct` knows), the message names the closure's
+borrowed capture that reaches a written type (`ClosureCap`, `!state`) and the fix: a value
+copies in by the state list (`[scale]`); a captured reference or collection that could be the
+buffer written cannot be copied that way, so it is told to be handed as a value made before the
+loop. The closure's state entries are values of its own and reach nothing; a hand-written
+struct with a value field is the same.
+
 A **traced reference made** in the loop is refused whole (`ErrorGcStopgap`,
 `gcRefuseVisit`, over the block with the loop's source, filter and `yield`): an
 allocation, a call or a type literal whose type `itypeHoldsTraced` says holds one
