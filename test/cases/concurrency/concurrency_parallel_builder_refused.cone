@@ -1,0 +1,98 @@
+// What the parallel builder, 'xs <- parallel each x in src yield v', refuses. It
+// keeps every rule of a 'parallel each' body for its header and its 'yield', and
+// builds only a List: a dictionary or any other collection is built from a list
+// after the loop, since the pieces' results are joined in the order of the
+// passes by appending list to list.
+//
+//   - a receiver that is not a List (a dictionary with 'yield k: v', a deque)
+//   - a 'yield' or a header 'if' that writes what is outside the loop (a method
+//     that changes it) or copies an Rc from outside it
+//   - a source that cannot be split (a cursor)
+//   - a 'break' or a 'return' in the yield's value
+//   - a receiver the source is read from (the shape-changing rule)
+//   - a pair 'yield k: v' appended to a List
+//   - a builder inside an actor's method or a generator
+
+mod concurrency_parallel_builder_refused;
+
+import collections use *;
+import sync use *;
+import actors;
+
+struct Counter {
+  n u64;
+
+  pub fn bump(self &mut) u64 {
+    n = n + 1u64;
+    n;
+  }
+}
+
+struct Countdown {
+  n u64;
+
+  pub fn next(self &mut) Option[u64] {
+    if n == 0u64 { return None[u64][]; }
+    n = n - 1u64;
+    Some[u64][n];
+  }
+}
+
+// ---- the receiver ----
+
+fn receivers(xs &List[u64]) {
+  imm d = new Dict[u64, u64] <- parallel each x in xs yield *x: *x;      //~ ErrorParBuilder "appends to a List"
+  imm q = new Deque[u64] <- parallel each x in xs yield *x;              //~ ErrorParBuilder "is not one"
+  imm p = new List[u64] <- parallel each x in xs yield *x: *x;           //~ ErrorPairAppend "declares none"
+}
+
+// ---- the body's rules reach the header and the yield ----
+
+fn rules(xs &List[u64], mine Rc[imm, u64]) {
+  mut counter = new Counter(0u64);
+  imm a = new List[u64] <- parallel each x in xs yield counter.bump();   //~ ErrorParWrite "may not lend for writing counter"
+  imm b = new List[u64] <- parallel each x in xs if counter.bump() > 3u64 yield *x;   //~ ErrorParWrite "may not lend for writing counter"
+  imm c = new List[Rc[imm, u64]] <- parallel each x in xs yield mine;    //~ ErrorParCopy "may not copy a value of type"
+}
+
+// ---- the source ----
+
+fn sources() {
+  imm c = new List[u64] <- parallel each x in new Countdown(5u64) yield x;   //~ ErrorParSource "hands out its items one after another"
+}
+
+// ---- control ----
+
+fn control(xs &List[u64]) {
+  imm a = new List[u64] <- parallel each x in xs yield (if *x > 5u64 { break; } else { 1u64; });   //~ ErrorParControl "'break' is not allowed"
+  imm b = new List[u64] <- parallel each x in xs yield (if *x > 5u64 { return; } else { 1u64; });  //~ ErrorParControl "'return' is not allowed"
+}
+
+// ---- the receiver the source is read from ----
+
+fn shape() {
+  mut xs = new List[u64];
+  xs <- 1u64, 2u64;
+  xs <- parallel each x in xs yield *x;                                  //~ ErrorFrozen "borrowed mutably"
+}
+
+// ---- where it is written ----
+
+actor Inside {
+  total u64;
+
+  fn init(self &new) {
+    *self = new Self(total: 0u64);
+  }
+
+  pub async do run(self) {
+    imm xs = new List[u64] <- 1u64, 2u64;
+    imm ys = new List[u64] <- parallel each x in xs yield *x;     //~ ErrorParRuntime "inside an actor's method is not built yet"
+  }
+}
+
+// A generator's body is run a step at a time by whoever calls 'next'
+fn walk(xs &List[u64]) yields u64 {
+  imm ys = new List[u64] <- parallel each x in xs yield *x;       //~ ErrorParRuntime "inside a generator is not built"
+  yield 1u64;
+}

@@ -100,7 +100,9 @@ a variable, a function or a field. A number range is not rewritten to a counter,
 `each`'s is: its two bounds are held in two hidden variables (`first'`, `last'`),
 the block has three statements, and `FlagParIncl` says `<=`. A count down, a
 `by` step and an `else` are refused here (`ErrorParSource`, `ErrorParElse`); a
-header `if` is the same `continue` statement after the pass's variable.
+header `if` is the same `continue` statement after the pass's variable. As an
+entry of `<-` it is read by `parseEntry` the same way (`parseParallelEachEntry`),
+and the loop ends in a `yield` ("Type check", the parallel builder).
 
 ## Name resolution
 
@@ -241,6 +243,41 @@ and any place that is that place, or inside it, or holds it) as well
 (`ErrorParWrite`). A header `if` needs nothing of its own: it is `eachLower`'s
 `continue` statement after the pass's variable, ahead of which the loop's step is
 inserted.
+
+**The parallel builder**, `xs <- parallel each x in src [if c] yield v`, is an
+each entry of `<-` (`parseParallelEachEntry` sets the flag `parseEachLoop` reads
+for a statement) whose loop ends in the `YieldEntryTag` entry; `contentsEach`
+gives that yield the receiver (`-recv`) as for any each entry. `parallelEachLower`
+finds it (`parBuilderYield`: a yield with a receiver among the loop's own
+statements, so one in a nested loop is that loop's) and, after checking that the
+receiver's type declares `pieceBag`, `emptyPiece`, `depositPiece` and `joinPieces`
+(a `List` does: anything else is `ErrorParBuilder`, which is also how a dictionary
+is refused) and that the function is not an actor's method (`ErrorParRuntime`),
+builds the statements around the loop (`parBuilderLower`):
+
+```
+mut bag' = (*recv).pieceBag();                       // before k': the caller's
+mut k' = lo';                                        // from here, the piece's
+mut list' = (*recv).emptyPiece();                    //   the piece's own list, a local
+imm piece' = &mut list';                             //   what the yield appends through
+loop { if k' >= hi' { (*recv).depositPiece(&mut bag', lo', list'); break }; ... *piece' <- v }
+(*recv).joinPieces(&mut bag')                        // after the loop: the caller's
+```
+
+The yield's receiver is switched to `piece'` before the loop is checked, so
+`yieldEntryLower` appends to the piece's list. The list is a local of the piece, not
+a borrow got from a call, because the shape-changing check refuses an append through
+a reference it cannot tell from the reference the source is read through (a
+parameter's list) while that borrow lives; a local and a borrow of it, as a plain
+each entry's receiver is, it can. The piece gives the list up by moving it into
+`depositPiece` at the loop's one exit, so the caller's block end, which would
+otherwise release a variable that lives in another function, has nothing to
+release (flow sees it moved). The bag is a stack pushed with an atomic
+compare-and-swap; `joinPieces` sorts it by where each piece began (`lo'`),
+moves each list's values onto the end of the receiver and frees the nodes. The
+bag, the list and the borrow carry names no source can spell (`bag'`, `list'`,
+`piece'`). The walk of the control rules (`parWalk`) reads a yield's value and
+key, so a `break`, `return` or `await` in them is refused as in a body.
 
 Every statement but the last is checked with `noCareType`. A nested plain block
 may not end in `break`/`continue` (`blockNoBreak`) — `if` arms are exempt,

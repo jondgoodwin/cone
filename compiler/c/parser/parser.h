@@ -224,6 +224,9 @@ INode *parseEach(ParseState *parse, Name *lifesym, int stmtflag);
 // draining a source, or 'each x in src [if cond] yield v', the loop's own header
 // and the value each pass appends. An EachEntryTag holding the loop.
 INode *parseEachEntry(ParseState *parse);
+// The same entry with 'parallel' before its 'each' (the lexer on the 'each'): the
+// parallel builder, 'new List[T] <- parallel each x in src [if c] yield v'
+INode *parseParallelEachEntry(ParseState *parse);
 // The filter of a loop header, 'if cond', after the source: the condition, or
 // NULL where the lexer is not on an 'if'. A header that takes one reads it with
 // this, then builds the statement that skips the items it rejects with

@@ -861,6 +861,14 @@ INode *parseEachEntry(ParseState *parse) {
     return (INode*)entry;
 }
 
+// The same entry with 'parallel' in front of its 'each' (the lexer on the 'each'):
+// the loop's passes run at the same time and the values they yield are joined in
+// the order of the passes (the parallel builder, pareach.c)
+INode *parseParallelEachEntry(ParseState *parse) {
+    parseEachParallel = 1;
+    return parseEachEntry(parse);
+}
+
 // Parse a lifetime variable, followed by colon and then a loop
 // 'stmtflag' indicates it is a statement vs. an expression (loop)
 INode *parseLifetime(ParseState *parse, int stmtflag) {

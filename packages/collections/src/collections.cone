@@ -289,6 +289,74 @@ pub struct List[T] is ShapeChanging, Sendable {
     mem.sliceFromParts(p, n) as So[Array[T]];
   }
 
+  // THE PARALLEL BUILDER. 'new List[T] <- parallel each x in src yield v' is built
+  // from these three, which the compiler calls and a program does not. Each piece
+  // of the loop (a run of consecutive passes, on whichever worker) appends to a
+  // list of its own, an 'emptyPiece' (the pieces never touch each other's), and
+  // gives it up when it has finished, 'depositPiece', to a PieceBag; when every
+  // piece has, 'joinPieces' moves the pieces' values onto the end of this list in
+  // the order of the passes that made them, by where each piece began, and gives
+  // the pieces' blocks back. The bag is made first, 'pieceBag'.
+  pub fn pieceBag(self &) PieceBag { new PieceBag(0usize); }
+
+  pub fn emptyPiece(self &) List[T] { new List[T](null, 0usize, 0usize); }
+
+  // The list of the piece that began at pass 'lo', kept in the bag (a piece that
+  // appended nothing is not kept). The bag's stack is pushed atomically: the
+  // pieces end at the same time.
+  pub fn depositPiece(self &, bag &mut PieceBag, lo usize, piece List[T]) {
+    if piece.used == 0usize { return; }
+    imm node = libc.malloc(mem.sizeof[PieceNode[T]]()) as *PieceNode[T];
+    mem.writeRaw(node, new PieceNode[T](0usize, lo, piece));
+    imm headp = &mut bag.head as *usize;
+    mut seen = 0usize;
+    mut pushed = false;
+    while !pushed {
+      imm head = mem.atomicLoad[usize](headp, MemOrder.Acquire[]);
+      (*node).next = head;
+      seen, pushed = mem.atomicCompareSwap[usize](headp, head, node as usize,
+        MemOrder.AcqRel[], MemOrder.Relaxed[]);
+    }
+  }
+
+  // After the loop: the values of the bag's pieces, first piece first, appended to
+  // this list; the bag is left empty
+  pub fn joinPieces(self &mut, bag &mut PieceBag) {
+    mut pending = bag.head;
+    bag.head = 0usize;
+    // The stack comes in no order: insert each piece by where it began
+    mut sorted = 0usize;
+    while pending != 0usize {
+      imm rec = pending as *PieceNode[T];
+      pending = (*rec).next;
+      if sorted == 0usize or (*rec).lo < (*(sorted as *PieceNode[T])).lo {
+        (*rec).next = sorted;
+        sorted = rec as usize;
+      }
+      else {
+        mut at = sorted as *PieceNode[T];
+        while (*at).next != 0usize and (*((*at).next as *PieceNode[T])).lo < (*rec).lo {
+          at = (*at).next as *PieceNode[T];
+        }
+        (*rec).next = (*at).next;
+        (*at).next = rec as usize;
+      }
+    }
+    while sorted != 0usize {
+      imm rec = sorted as *PieceNode[T];
+      sorted = (*rec).next;
+      imm n = (*rec).list.used;
+      if n > 0usize {
+        self.reserve(n);
+        mem.moveRaw(ptr + used, (*rec).list.ptr, n);
+        used = used + n;
+        (*rec).list.used = 0usize;
+      }
+      mem.finalize[List[T]](&mut (*rec).list as *List[T]);
+      libc.free(rec as *u8);
+    }
+  }
+
   // Put its values in order: 'order(a, b)' is negative when a goes before b,
   // positive when after, and 0 when either may go first, as 'compare' and
   // 'bytesCompare' answer. The sort is stable: values that order calls equal
@@ -347,6 +415,20 @@ pub struct List[T] is ShapeChanging, Sendable {
     self.finalizeAll();
     libc.free(ptr as *u8);
   }
+}
+
+// The pieces of a parallel builder, as List's 'pieceBag', 'depositPiece' and
+// 'joinPieces' keep them: a stack of nodes, each a piece's list and where the
+// piece began, whose top's address is 'head' (0 when there is none), pushed
+// atomically as the pieces end
+pub struct PieceBag {
+  head usize;
+}
+
+struct PieceNode[T] {
+  next usize;      // the node below it in the stack, as an address
+  lo usize;        // the pass the piece began at
+  list List[T];
 }
 
 // A cursor over a list's values, front to back: 'next' gives a borrow of each in

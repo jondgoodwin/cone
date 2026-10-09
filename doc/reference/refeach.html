@@ -19,7 +19,7 @@
 			change its items in place (<span class="pre">mutItems</span>), consume it (<span class="pre">drain</span>) or number them
 			(<span class="pre">indexed</span>), and <span class="pre">zip</span>; <span class="pre">each</span> as an entry of the append operator's list
 			(<a href="#builder">below</a>); and <a href="#parallel">parallel each</a> over a number range, an
-			array, a slice or a list, outside actors. Not built yet: <a href="#closure">closure iterators</a>, the adapters (<span class="pre">map</span>,
+			array, a slice or a list, outside actors, and <a href="#parallelbuilder">the parallel builder</a> that builds a list from it. Not built yet: <a href="#closure">closure iterators</a>, the adapters (<span class="pre">map</span>,
 			<span class="pre">filter</span>, <span class="pre">fold</span>) and a source that runs its own loop, all of which wait for closures. An enum's variant is constructed with its values in square brackets, as written here: that is the current spelling, and how a variant is constructed is an open design question (<a href="refenum.html#init">Enums</a>).</i></p>
 
 	<p><span class="pre">each</span> makes it easier than <span class="pre">while</span>
@@ -352,10 +352,10 @@ each x in |{cnt = 12}| if cnt &gt; 0 {Some[cnt /= 2]} else {None} {
 
 	<h2 id="parallel">parallel each</h2>
 	<p style="margin-left: 40px;"><i>Note: Built in a function that is not an actor's method: over a number range, an
-			array, a slice or a list, with the header <span class="pre">if</span> and <span class="pre">mutItems()</span>.
+			array, a slice or a list, with the header <span class="pre">if</span> and <span class="pre">mutItems()</span>, and <a href="#parallelbuilder">the parallel builder</a> (<span class="pre">new List[T] &lt;- parallel each &hellip; yield</span>).
 			Not built yet: inside an actor's method or a generator; a source of your own that is a
-			<span class="pre">ParallelIterable</span>; the parallel builder (<span class="pre">new List[T] &lt;- parallel each
-			&hellip; yield</span>); and the reductions that come with closures. A parallel each takes no
+			<span class="pre">ParallelIterable</span>; and
+			the reductions that come with closures. A parallel each takes no
 			<span class="pre">else</span> and is a statement.</i></p>
 	<p>Writing <span class="pre">parallel</span> in front of an <span class="pre">each</span> runs the loop's passes at
 		the same time, on the <a href="refconccomm.html#actors">actors package's</a> workers, one for each CPU:</p>
@@ -407,9 +407,7 @@ fn total(xs &amp;Array[u64]) u64 {
 			<span class="pre">Gc</span> reference, whose roots are the collector's one chain) that is not its own. Reading it is
 			free: dereferenced, lent with <span class="pre">&amp;</span>, a field that is a number. An <span class="pre">Arc</span>
 			counts atomically and may be copied. What a function the body calls copies is that function's.</li>
-		<li>Results come back through something that is changed by its methods, an <span class="pre">Atomic</span>, until
-			the loop that builds a list (the parallel builder) is built.</li>
-		<li>A pass may <b>change its own item</b>: <span class="pre">parallel each x in list.mutItems()</span> (or an
+		<li>Results come back through something that is changed by its methods, an <span class="pre">Atomic</span>, or as the list <a href="#parallelbuilder">the parallel builder</a> builds.</li>		<li>A pass may <b>change its own item</b>: <span class="pre">parallel each x in list.mutItems()</span> (or an
 			array's or a slice's, or a mutable slice as the source itself) gives <span class="pre">x</span> as a
 			<span class="pre">&amp;mut</span> of the pass's item, and the items are disjoint. Then the body may not name
 			the list (or slice, or the struct holding it, or what is inside the place the items are lent from) as well:
@@ -423,6 +421,36 @@ fn total(xs &amp;Array[u64]) u64 {
 			sent after the loop, by the code that wrote it, in iteration order &mdash; the first pass's, then the second's &mdash; so
 			an actor sees the same order every run. A loop inside a pass's body is gathered into that pass in the same way.</li>
 	</ul>
+
+	<h3 id="parallelbuilder">The parallel builder</h3>
+	<p>A list is built by a parallel each as it is by an <a href="#builder">each inside &lt;-</a>: put
+		<span class="pre">parallel</span> in front of the <span class="pre">each</span> in the list of entries, and give the value each pass
+		appends with <span class="pre">yield</span>:</p>
+<pre>
+imm weights = new List[u64] &lt;- parallel each x in xs yield weigh(*x);
+imm keep = new List[u64] &lt;- parallel each x in xs if *x &gt; 9 yield weigh(*x);
+imm squares = new List[i32] &lt;- parallel each i in 0 &lt; n yield i * i;     // n an i32
+xs &lt;- 0, parallel each x in other yield *x + 1, 99;     // in the middle of a list
+</pre>
+	<p>The list holds the values in the order of the passes, the order a plain <span class="pre">each</span> would
+		give them, however the passes were spread over the workers; with a filter, the values of the passes that kept
+		their items, in order. The loop has finished, and the list is whole, when control reaches the statement after
+		it. The body's rules above hold for the header, the filter and the <span class="pre">yield</span>: nothing outside the
+		loop is written, an <span class="pre">Rc</span> from outside is not copied, and there is no
+		<span class="pre">break</span>, <span class="pre">return</span> or <span class="pre">await</span>. The items of a
+		collection come as borrows, as in a loop, so the <span class="pre">yield</span> writes its own <span class="pre">*</span>; a
+		value that moves (a <span class="pre">String</span> made in the body) is handed to the list. With only a source,
+		<span class="pre">new List[T] &lt;- parallel each src</span>, every item is appended as a copy.</p>
+	<p>Only a <span class="pre">List</span> is built this way. A dictionary or any other collection is built from a
+		list of pairs after the loop: a receiver that is not a <span class="pre">List</span> is refused, and so is
+		<span class="pre">yield k: v</span> into a list. A builder inside an actor's method or a generator is refused as a
+		parallel each is, and the list being appended to cannot be the one the loop reads, as for
+		<span class="pre">each</span>.</p>
+	<p>Underneath, each piece of the loop (a run of consecutive passes) appends to a list of its own, and when the
+		loop has finished the pieces' lists are joined onto the end of the list being built in the order of where each
+		piece began. <span class="pre">List</span> has four methods the compiler calls for this,
+		<span class="pre">pieceBag</span>, <span class="pre">emptyPiece</span>, <span class="pre">depositPiece</span> and
+		<span class="pre">joinPieces</span>: they are not for a program to call.</p>
 
 	<p style="text-align: right; margin-top: 2em;">
 		<a href="refexcept.html"><img alt="_" src="next.png" /></a>
