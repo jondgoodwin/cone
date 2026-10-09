@@ -47,7 +47,7 @@ Visual Studio projects stay at the root.
   cursor zips with another by its own `zip` method; the `Zip` it gives, and the
   `ZipIndexed` of its `indexed()`, have `len`, `at` and `split` where both sources do
   — `RandomAccess` and `ParallelIterable` — so `parallel each` walks it, one item from each
-  source), and
+  source; a `Zip`'s own `zip` takes a third, a flat-triple `Zip3` with its `Zip3Indexed`), and
   `cstr`, C's `const char *`, a one-pointer struct the compiler makes
   too so that the C-named modules can declare their strings with it, whose
   field and methods are core's, the `So` and `Rc` regions, `Rwcell`, the
