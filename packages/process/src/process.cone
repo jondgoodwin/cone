@@ -28,10 +28,9 @@
 //
 // What it has:
 //
-//   process.run(args, opts)       run args[0] with the rest as its arguments;
-//   process.run(args, opts, dir)  or in the folder 'dir', a Path
-//   process.runLine(line, opts)   run a command line written out by hand;
-//   process.runLine(line, opts, dir)  or in a folder
+//   process.run(args, opts, dir)  run args[0] with the rest as its arguments, in
+//                                 the folder 'dir' (a Path; none: the current one)
+//   process.runLine(line, opts, dir)  run a command line written out by hand
 //   process.Options               timeout, inherit, crashReport; each has a default
 //   process.Output                exitCode, timedOut, stdout, stderr, success()
 //   process.ProcessError          op, program, dir, code, message(), notFound()
@@ -40,13 +39,12 @@
 //   process.currentExe()          this program's executable, a Path
 //
 // **Paths.** A folder is a 'path' package 'Path': the working folder is the
-// last parameter of the longer 'run' and 'runLine' ('process.run(args, new
-// Options(), "build")': a string literal there is made a Path for the call, and
-// a Path in a variable is lent, not given away); the shorter ones start in this
-// program's own folder. It is a parameter, not a field of Options, and a
-// second function, not a default, since Options' fields and a function's
-// defaults must be constants and a Path cannot be one. The ProcessError holds
-// the 'Path' it was given. The program and its arguments
+// last parameter of 'run' and 'runLine', a '&Path' that defaults to "", the
+// current folder ('process.run(args, new Options(), "build")': a string literal
+// there is made a Path for the call, and a Path in a variable is lent, not given
+// away). It is a parameter, not a field of Options, since a field's default
+// must be a constant and a Path cannot be one (a parameter's default literal is
+// made at the call). The ProcessError holds the 'Path' it was given. The program and its arguments
 // are text, not paths: 'args' is a list of Strings, 'run' takes its program as
 // 'args[0]', which may be a bare name Windows finds (see "Finding the
 // program"), and 'runLine' takes the line as a '&str'.
@@ -558,18 +556,10 @@ pub struct Output {
 
 // Run a program and wait for it: args[0] is the program, the rest its
 // arguments. Its exit code is in the Output, whatever it is; an Error is a
-// program that could not be started. It starts in this program's current
-// folder, or, with a 'dir', in that folder: a Path lent, or a string literal,
-// which is made one for the call.
-pub fn runHere overload run(args &Array[String], opts Options = new Options()) Result[Output, ProcessError] {
-  runIn(args, opts, "");
-}
-
-pub fn runInDir overload run(args &Array[String], opts Options, dir &Path) Result[Output, ProcessError] {
-  runIn(args, opts, dir);
-}
-
-fn runIn(args &Array[String], opts Options, dir &Path) Result[Output, ProcessError] {
+// program that could not be started. It starts in 'dir', a Path lent or a
+// string literal (made one for the call), or in this program's current folder
+// when 'dir' is left out or empty.
+pub fn run(args &Array[String], opts Options = new Options(), dir &Path = "") Result[Output, ProcessError] {
   if args.len == 0usize {
     return Error[Output, ProcessError][failure("run", "", dir, errorInvalidParameter)];
   }
@@ -590,15 +580,7 @@ fn runIn(args &Array[String], opts Options, dir &Path) Result[Output, ProcessErr
 
 // Run a command line as it is, for a program that reads its own line by
 // rules of its own, as 'cmd /c' does; otherwise as 'run'
-pub fn runLineHere overload runLine(line &str, opts Options = new Options()) Result[Output, ProcessError] {
-  runLineIn(line, opts, "");
-}
-
-pub fn runLineInDir overload runLine(line &str, opts Options, dir &Path) Result[Output, ProcessError] {
-  runLineIn(line, opts, dir);
-}
-
-fn runLineIn(line &str, opts Options, dir &Path) Result[Output, ProcessError] {
+pub fn runLine(line &str, opts Options = new Options(), dir &Path = "") Result[Output, ProcessError] {
   if hasByte(line, 0u8) {
     return Error[Output, ProcessError][failure("runLine", line, dir, errorInvalidParameter)];
   }

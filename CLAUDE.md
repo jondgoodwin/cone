@@ -346,8 +346,8 @@ Visual Studio projects stay at the root.
   what is Windows-only beneath them is `posix`'s mapping onto the C runtime
   and its `opendir`, `readdir` and `lstat`, written over `_findfirst64`;
   `process` runs a program and waits for it (`run`: a list of arguments, an
-  optional working folder, a `&Path` (a longer overload of `run` and
-  `runLine`), a time limit that stops the child and everything it
+  working folder, a `&Path` defaulting to "", the current folder (a
+  parameter of `run` and `runLine`, not a field of `Options`), a time limit that stops the child and everything it
   started; an `Output` of the full 32-bit exit code, a value and not an
   error, and standard output and error captured apart, or shared with
   `inherit`; `crashReport: false`, a crash ended at once and unreported,
