@@ -14,6 +14,20 @@ import libc;
 import collections use *;
 import geomath use *;
 import mesh use *;
+import path use Path;
+
+// What a file holds, read back with the C library
+fn fileText(name cstr) String {
+  mut out = String.empty();
+  mut buf = new Array[u8, 4096] <- fill 0u8;
+  imm f = libc.fopen(name, "rb");
+  if f {
+    imm n = libc.fread(&mut buf[0], 1usize, 4096usize, f);
+    libc.fclose(f);
+    out.appendBytes(&buf[..n]);
+  }
+  out;
+}
 
 fn tri() Mesh {
   mut m = Mesh.empty();
@@ -50,6 +64,17 @@ fn triangle() {
   }
   expectStr(&buf[0usize..n], text.view(), "the file holds the text");
   expectBool(writeObj(&m, "no such folder/triangle.obj"), false, "a file that cannot be made");
+
+  // A Path in a variable is lent, not given away: it is as it was after the call
+  imm named = Path.from("triangle-path.obj");
+  expect(writeObj(&m, &named), "a Path variable names the file");
+  expectStr(named.view(), "triangle-path.obj", "and is unchanged by the write");
+  imm back = fileText("triangle-path.obj");
+  expectStr(back.view(), text.view(), "the file holds the text");
+  libc.remove("triangle-path.obj");
+  imm missing = Path.from("no such folder/triangle-path.obj");
+  expectBool(writeObj(&m, &missing), false, "a Path to a file that cannot be made");
+  expectStr(missing.view(), "no such folder/triangle-path.obj", "and is unchanged by the failure");
 }
 
 fn numbers() {
@@ -122,6 +147,18 @@ fn polygons() {
   expectStr(withUv.view(),
     "v 0.000000 0.000000 0.000000\nv 1.000000 0.000000 0.000000\nv 2.000000 0.000000 0.000000\nv 0.000000 1.000000 0.000000\nv 1.000000 1.000000 0.000000\nv 2.000000 1.000000 0.000000\nvt 0.000000 0.000000\nvt 0.500000 0.000000\nvt 0.500000 1.000000\nvt 0.000000 1.000000\nvt 0.500000 0.000000\nvt 1.000000 0.000000\nvt 1.000000 1.000000\nvt 0.500000 1.000000\nf 1/1 2/2 5/3 4/4\nf 2/5 3/6 6/7 5/8\n",
     "polygons with corner uvs");
+
+  // A PolyMesh is written by a literal and by a Path variable alike
+  expect(writeObj(&p, "polygons-literal.obj"), "a polygon mesh written to a literal's path");
+  imm fromLiteral = fileText("polygons-literal.obj");
+  expectStr(fromLiteral.view(), withUv.view(), "the file holds the polygons' text");
+  libc.remove("polygons-literal.obj");
+  imm named = Path.from("polygons-path.obj");
+  expect(writeObj(&p, &named), "a polygon mesh written to a Path variable's file");
+  expectStr(named.view(), "polygons-path.obj", "and the Path is unchanged by the write");
+  imm fromPath = fileText("polygons-path.obj");
+  expectStr(fromPath.view(), withUv.view(), "the file holds the polygons' text");
+  libc.remove("polygons-path.obj");
 }
 
 fn main() i32 {

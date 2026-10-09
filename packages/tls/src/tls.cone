@@ -83,7 +83,8 @@
 // blocking pool's lane the OS's verifier runs on ('verifyLane'), and
 // 'offline' (the OS's verifier fetches nothing over the network: no
 // intermediates, no revocation data, no root updates). A Server is made from
-// a ServerConfig: its certificate chain and key, from PEM files, and the
+// a ServerConfig: its certificate chain and key, from PEM files named by
+// '&Path's (a string literal where one is wanted is made one), and the
 // protocols it accepts by ALPN, in its order of preference; a client offering
 // none of them is refused with no_application_protocol. A Client and a
 // Server are handles: copied to share, between threads too.
@@ -187,6 +188,7 @@ import collections use List, String;
 import sync use Arc, Mutex, Once;
 import time use Instant, Duration;
 import iobuf use IoBuf, Pool, Chain;
+import path use Path;
 import iocore use Op, Completion, Outcome, Lane, LaneConfig, IoError, addLane;
 
 fn @initpure init() {
@@ -308,17 +310,17 @@ pub struct ClientConfig {
 
 // How a Server is made (see the package's header, CONFIGURATION)
 pub struct ServerConfig {
-  pub certFile String;          // PEM: its certificate, then the chain it sends
-  pub keyFile String;           // PEM: its private key
+  pub certFile Path;            // PEM: its certificate, then the chain it sends
+  pub keyFile Path;             // PEM: its private key
   pub alpn List[String];        // accepted, in its order of preference
   pub minVersion TlsVersion;
   pub maxVersion TlsVersion;
   pub backend Backend;
 
-  pub fn make(certFile &Array[u8], keyFile &Array[u8]) ServerConfig {
+  pub fn make(certFile &Path, keyFile &Path) ServerConfig {
     mut alpn = List[String].empty();
     alpn.push(String.from("http/1.1"));
-    new ServerConfig(certFile: String.fromBytes(certFile), keyFile: String.fromBytes(keyFile), alpn: alpn,
+    new ServerConfig(certFile: certFile.copy(), keyFile: keyFile.copy(), alpn: alpn,
       minVersion: TlsVersion.Tls12[], maxVersion: TlsVersion.Tls13[], backend: Backend.Auto[]);
   }
 }
