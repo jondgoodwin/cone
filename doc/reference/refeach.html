@@ -64,7 +64,7 @@ each x in 0 &lt; 10 if x % 2 == 0 {       // 0 2 4 6 8
 }
 each name in names if name.len &gt; 3 {   // a List[String]
 }
-each key, value in ages if *value &gt; 18 {
+each key, value in ages if value &gt; 18 {
 }
 each x in 100 &gt;= 0 by 10 if x != 50 {
 }
@@ -78,7 +78,7 @@ each x in 100 &gt;= 0 by 10 if x != 50 {
 <pre>
 fn firstBig(list &amp;List[i32], limit i32) i32 {
   each x in list {
-    if *x &gt; limit { break *x; }
+    if x &gt; limit { break *x; }
   } else {
     -1;              // nothing was big enough
   }
@@ -110,10 +110,10 @@ imm total = each x in 1 &lt;= 100 {
 		and a <span class="pre">yield</span> in the place of a block says what each pass appends:</p>
 <pre>
 imm copy = new List[i32] &lt;- each other;                     // every item of other
-imm big = new List[i32] &lt;- each x in other if *x &gt; 9 yield *x;
+imm big = new List[i32] &lt;- each x in other if x &gt; 9 yield *x;
 imm squares = new List[i32] &lt;- each i in 1 &lt;= 5 yield i * i;  // 1 4 9 16 25
 imm index = new Dict[i32, str] &lt;- each p in people yield p.id: p.name;
-xs &lt;- 0, each x in other yield *x + 1, 99;                // in the middle of a list
+xs &lt;- 0, each x in other yield x + 1, 99;               // in the middle of a list
 </pre>
 	<p>This <span class="pre">yield</span> belongs to the entry: it is not a generator's, which is a
 		statement of its own, so a generator may build a list this way and then hand values to
@@ -173,15 +173,22 @@ each x in 250u8 &lt;= 255 by 2 {  // iterates: 250, 252, 254
 	<h3 id="array">Array, Slice and List Iterators</h3>
 	<p><span class="pre">each</span> can be used to iterate through
 		every element of an array, a slice or a list, one at a time. The variable is a
-		<b>borrow</b> of the element, read through <span class="pre">*</span>
+		<b>borrow</b> of the element
 		(the elements themselves stay where they are, and the list is still whole afterwards).
-		A borrowed number needs no <span class="pre">*</span> as the left operand of arithmetic
-		(<span class="pre">x + total</span>), but does as the right one (<span class="pre">total + *x</span>) and in a
-		comparison (<span class="pre">*x &gt; 1</span>):</p>
+		A borrowed number needs no <span class="pre">*</span> in an expression: it is read through on either side of
+		an operator (<span class="pre">x + total</span>, <span class="pre">total + x</span>), on the right of a
+		compound assignment (<span class="pre">sum += x</span>) and in a comparison
+		(<span class="pre">x &gt; 1</span>, or <span class="pre">x == y</span> for two borrows, which compares the values),
+		and so is any value that copies freely: a <span class="pre">bool</span>, a <span class="pre">char</span>,
+		a plain struct
+		(<a href="refborref.html#implicit">Implicit De-referencing</a>). The <span class="pre">*</span> is
+		written where the value itself is wanted: a copy of the item
+		(<span class="pre">imm y = *x</span>), a value handed to a function, a <span class="pre">break</span>
+		or <span class="pre">yield</span>, or a store through a <span class="pre">&amp;mut</span>:</p>
 <pre>
 mut sum = 0;
 each x in [4, 3, 8, 2] {
-  sum += *x;
+  sum += x;
 }
 
 mut chars = 0usize;
@@ -302,7 +309,7 @@ each x in collection {  // equivalent to: each x in collection.iter()
 <pre>
 mut both = 0;
 each key, value in ages {   // a Dict[i64, i64]
-  both += *key * *value;
+  both += key * value;
 }
 </pre>
 	<p>and one variable would take the pair whole (<span class="pre">pair.0</span> and
@@ -467,9 +474,9 @@ actor Scaler {
 		appends with <span class="pre">yield</span>:</p>
 <pre>
 imm weights = new List[u64] &lt;- parallel each x in xs yield weigh(*x);
-imm keep = new List[u64] &lt;- parallel each x in xs if *x &gt; 9 yield weigh(*x);
+imm keep = new List[u64] &lt;- parallel each x in xs if x &gt; 9 yield weigh(*x);
 imm squares = new List[i32] &lt;- parallel each i in 0 &lt; n yield i * i;     // n an i32
-xs &lt;- 0, parallel each x in other yield *x + 1, 99;     // in the middle of a list
+xs &lt;- 0, parallel each x in other yield x + 1, 99;    // in the middle of a list
 </pre>
 	<p>The list holds the values in the order of the passes, the order a plain <span class="pre">each</span> would
 		give them, however the passes were spread over the workers; with a filter, the values of the passes that kept

@@ -1,0 +1,297 @@
+// A borrow is read through on both sides of an operator.
+//
+// 'each x in xs' gives 'x' as a borrow of each item. Where an operator wants the
+// value and the item copies freely (a number, a bool, a plain struct), the value
+// is read through the borrow whichever side the borrow is on, with no '*':
+// 'total + x', 'x + total', 'sum += x', 'x > 1', 'x == y' for two borrows. A method
+// the type declares for references still takes the borrows as they are. Nothing
+// is ever moved out of a borrow: each_operand_readthrough_typecheck refuses a
+// String or anything that moves where it was refused before.
+//
+// Every value printed is worked out by hand from the values put in.
+//
+// - numbers: sums, differences, products and remainders with the borrow on the
+//   left, the right, or both sides; compound assignment with a borrow on the
+//   right; comparisons against a value on either side and between two borrows,
+//   which compare the values and not the addresses ('===' still asks that);
+// - a '&mut' borrow (the items 'mutItems' lends) read through the same way,
+//   and written through where a '*' is meant;
+// - a plain struct with operators of its own, read through on either side;
+// - a struct whose operator is declared for references takes the borrows as
+//   they are.
+
+mod each_operand_readthrough;
+
+import stdio use *;
+import collections use *;
+
+fn show(label &str, n i32) {
+  printStr(label);
+  printStr(" = ");
+  printInt(i64.from(n));
+  printStr("\n");
+}
+
+fn showBool(label &str, b bool) {
+  printStr(label);
+  printStr(" = ");
+  if b { printStr("true"); } else { printStr("false"); }
+  printStr("\n");
+}
+
+fn make(a i32, b i32, c i32) List[i32] {
+  mut l = new List[i32];
+  l.push(a);
+  l.push(b);
+  l.push(c);
+  l;
+}
+
+// -------- numbers, one borrow --------
+
+fn oneBorrow() {
+  mut xs = make(1i32, 2i32, 3i32);
+  xs.push(4i32);                           // 1 2 3 4
+
+  mut total = 0i32;
+  each x in xs {
+    total = total + x;                     // the borrow on the right
+  }
+  show("right-sum", total);                // 1 + 2 + 3 + 4
+
+  mut flipped = 0i32;
+  each x in xs {
+    flipped = x + flipped;                 // the borrow on the left
+  }
+  show("left-sum", flipped);               // 10
+
+  mut sum = 0i32;
+  each x in xs {
+    sum += x;                              // compound assignment, borrow on the right
+  }
+  show("add-assign", sum);                 // 10
+
+  mut diff = 100i32;
+  each x in xs {
+    diff -= x;
+  }
+  show("sub-assign", diff);                // 100 - 10
+
+  mut prod = 1i32;
+  each x in xs {
+    prod *= x;
+  }
+  show("mul-assign", prod);                // 1 * 2 * 3 * 4
+
+  mut rem = 0i32;
+  each x in xs {
+    rem = rem + 10i32 % x;                 // a value on the left of '%', the borrow on the right
+  }
+  show("rem-right", rem);                  // 10%1 + 10%2 + 10%3 + 10%4 = 0 + 0 + 1 + 2
+
+  mut shifted = 0i32;
+  each x in xs {
+    shifted = shifted + (x + 1i32) * 2i32; // a borrow inside a larger expression
+  }
+  show("nested", shifted);                 // 4 + 6 + 8 + 10
+
+  mut ones = 0i32;
+  each x in xs {
+    continue if x > 1i32;
+    ones += 1i32;
+  }
+  show("continue-if", ones);               // only 1 is not above 1
+
+  mut below = 0i32;
+  mut atleast = 0i32;
+  mut exactly = 0i32;
+  mut notthree = 0i32;
+  each x in xs {
+    if x < 3i32 { below += 1i32; }         // borrow on the left of a comparison
+    if 3i32 <= x { atleast += 1i32; }      // and on the right
+    if x == 2i32 { exactly += 1i32; }
+    if 2i32 == x { exactly += 10i32; }
+    if x != 3i32 { notthree += 1i32; }
+  }
+  show("below-3", below);                  // 1 and 2
+  show("atleast-3", atleast);              // 3 and 4
+  show("equals-2", exactly);               // one item, matched on both sides: 1 + 10
+  show("not-3", notthree);                 // 1, 2, 4
+
+  // The list is untouched
+  show("len", i32.from(xs.len()));         // 4
+}
+
+// -------- numbers, two borrows --------
+
+fn twoBorrows() {
+  imm xs = make(1i32, 2i32, 3i32);
+  imm ys = make(3i32, 2i32, 1i32);
+
+  mut products = 0i32;
+  mut weighed = 0i32;
+  mut same = 0i32;
+  mut differ = 0i32;
+  mut under = 0i32;
+  mut atmost = 0i32;
+  each x in xs {
+    each y in ys {
+      products = products + x * y;         // both operands borrowed
+      weighed = weighed + (x * 10i32 - y);
+      if x == y { same += 1i32; }          // values, not addresses
+      if x != y { differ += 1i32; }
+      if x < y { under += 1i32; }
+      if x >= y { atmost += 1i32; }
+    }
+  }
+  show("products", products);              // (1 + 2 + 3) * (3 + 2 + 1)
+  show("weighed", weighed);                // 10 * 6 * 3 - 6 * 3
+  show("same", same);                      // (1,1) (2,2) (3,3)
+  show("differ", differ);                  // 9 - 3
+  show("under", under);                    // (1,2) (1,3) (2,3)
+  show("not-under", atmost);               // 9 - 3
+
+  // Two borrows of the same value in two lists are equal and are not the same place
+  imm ls = make(7i32, 8i32, 9i32);
+  imm rs = make(7i32, 8i32, 9i32);
+  mut equalvalues = 0i32;
+  mut samespot = 0i32;
+  each a in ls {
+    each b in rs {
+      if a == b { equalvalues += 1i32; }
+      if a === b { samespot += 1i32; }
+    }
+    each c in ls {
+      if a === c { samespot += 10i32; }    // the same list: an item is its own place only
+    }
+  }
+  show("equal-values", equalvalues);       // 7, 8 and 9 each meet their twin
+  show("same-place", samespot);            // two lists share no place; a list with itself, 3 items * 10
+}
+
+// -------- a '&mut' borrow --------
+
+fn mutBorrows() {
+  mut ys = make(1i32, 2i32, 3i32);
+  mut run = 0i32;
+  mut big = 0i32;
+  each x in ys.mutItems() {
+    run = run + x;                         // read through a '&mut' on the right
+    if x > 1i32 { big += 1i32; }           // and compared
+    *x = run;                              // a store through the borrow keeps its '*'
+  }
+  show("running", run);                    // 1 + 2 + 3
+  show("big", big);                        // 2 and 3 (read before each is overwritten)
+  each y in ys {
+    show("item", y + 0i32);                // 1, 3, 6: the running totals (read on the left)
+  }
+
+  mut sum = 0i32;
+  each x in ys.mutItems() {
+    sum += x;
+  }
+  show("mut-add-assign", sum);             // 1 + 3 + 6
+}
+
+// -------- a plain struct --------
+
+struct Money {
+  pub cents i32;
+
+  pub fn `+`(self, other Money) Money {
+    new Money(cents + other.cents);
+  }
+
+  pub fn `==`(self, other Money) bool {
+    cents == other.cents;
+  }
+
+  pub fn `<`(self, other Money) bool {
+    cents < other.cents;
+  }
+}
+
+fn purses() {
+  mut ms = new List[Money];
+  ms.push(new Money(100i32));
+  ms.push(new Money(250i32));
+  ms.push(new Money(50i32));
+
+  mut total = new Money(0i32);
+  each m in ms {
+    total = total + m;                     // a borrowed struct on the right
+  }
+  show("purse-total", total.cents);        // 100 + 250 + 50
+
+  mut again = new Money(0i32);
+  each m in ms {
+    again = m + again;                     // and on the left
+  }
+  show("purse-left", again.cents);         // 400
+
+  mut added = new Money(0i32);
+  each m in ms {
+    added += m;                            // compound assignment through the struct's '+'
+  }
+  show("purse-add-assign", added.cents);   // 400
+
+  imm target = new Money(250i32);
+  imm limit = new Money(200i32);
+  mut hits = 0i32;
+  mut cheap = 0i32;
+  mut dear = 0i32;
+  mut others = 0i32;
+  each m in ms {
+    if m == target { hits += 1i32; }
+    if target == m { hits += 10i32; }
+    if m != target { others += 1i32; }     // Money declares '==' only: '!=' is derived from it
+    if target != m { others += 10i32; }
+    if m < limit { cheap += 1i32; }
+    if limit < m { dear += 1i32; }
+  }
+  show("equals-target", hits);             // 250 matched on both sides: 1 + 10
+  show("not-target", others);              // 100 and 50, each matched on both sides: 2 + 20
+  show("under-limit", cheap);              // 100 and 50
+  show("over-limit", dear);                // 250
+
+  mut pairs = 0i32;
+  each m in ms {
+    each n in ms {
+      if m == n { pairs += 1i32; }         // two borrowed structs
+    }
+  }
+  show("equal-pairs", pairs);              // each purse equals itself only
+}
+
+// -------- an operator declared for references --------
+
+struct Tally {
+  pub n i32;
+
+  // Declared for references: two borrows are taken as they are
+  pub fn `+`(self &, other &Tally) i32 {
+    n * 100i32 + other.n;
+  }
+}
+
+fn tallies() {
+  mut ts = new List[Tally];
+  ts.push(new Tally(1i32));
+  ts.push(new Tally(2i32));
+  ts.push(new Tally(3i32));
+  mut all = 0i32;
+  each a in ts {
+    each b in ts {
+      all = all + (a + b);
+    }
+  }
+  show("tallies", all);                    // 100 * (1 + 2 + 3) * 3 + (1 + 2 + 3) * 3 = 1800 + 18
+}
+
+fn main() {
+  oneBorrow();
+  twoBorrows();
+  mutBorrows();
+  purses();
+  tallies();
+}

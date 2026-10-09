@@ -1158,6 +1158,34 @@ static int fnCallLowerSliceMethod(TypeCheckState *pstate, FnCallNode *callnode) 
     return fnCallLowerMethodOn(pstate, callnode, bodytype);
 }
 
+// Does a value of this type copy freely: a number, bool, char, or a plain struct
+// or enum with no finalizer and no owner? Reading one through a borrow is a copy
+// and moves nothing, which is what lets an operator take the value of a borrow
+// without a '*'. A type that moves (a String, a list, anything with a 'final'),
+// a trait other than an enum, and text are never read through that way.
+static int fnCallCopiesFreely(INode *type) {
+    INode *dcl = itypeGetTypeDcl(type);
+    if (!isMethodType(dcl) || itypeIsMove(dcl))
+        return 0;
+    return !((dcl->flags & TraitType) && !(dcl->flags & EnumType));
+}
+
+// Is this type a borrow of a value that copies freely, so that an operator
+// wanting the value may read through an operand of it? Only a borrow: an owner
+// (So, Rc), a key and a lock-managed reference reach their value in ways of their own.
+static int fnCallBorrowTypeReadsThrough(INode *type) {
+    if (type->tag != RefTag)
+        return 0;
+    RefNode *ref = (RefNode*)type;
+    if (itypeGetTypeDcl(ref->region) != borrowRef || permIsLock(ref->perm) || lifeIsKey(type) || refIsFat(ref))
+        return 0;
+    return fnCallCopiesFreely(ref->vtexp);
+}
+
+static int fnCallBorrowReadsThrough(INode *operand) {
+    return fnCallBorrowTypeReadsThrough(iexpGetTypeDcl(operand));
+}
+
 // Returns 1 when lowered, 0 when the receiver's type supports no methods at all
 // (so the caller may try another way), and -1 when a diagnostic was reported.
 int fnCallLowerMethod(TypeCheckState *pstate, FnCallNode *callnode) {
@@ -1318,8 +1346,34 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
     // reaching the value's is by design, and so is its comparison, which
     // fnCallLowerRefCompare reads through on both sides before arriving here.
     int opOnPointer = (callnode->flags & FlagOperator) && iexpGetTypeDcl(obj)->tag == PtrTag;
-    if (selected == NULL && status == OverloadNone && !opOnPointer && derefInject(&callnode->objfn)) {
-        selected = iNsTypeFindMethod(foundnode, &callnode->objfn, callnode->args, &status);
+    //
+    // An operator reads through its other operand just the same: 'total + x' and
+    // 'total += x' with 'x' a borrow of a number, 'x > 1', 'a == b' for plain
+    // structs, take the value the borrow lends, as the receiver does. The
+    // argument is read through only where it is a borrow of a value that copies
+    // freely (fnCallBorrowReadsThrough), so nothing is ever moved out of a borrow,
+    // and only after the operands as written found no candidate, so an operator
+    // declared for references still takes them as they are. The receiver is
+    // tried read through first, then both, then the argument alone, which is what
+    // an operator-assign on a number needs: its receiver is the '&mut' it takes.
+    if (selected == NULL && status == OverloadNone && !opOnPointer) {
+        INode **argp = (callnode->flags & FlagOperator) && callnode->args && callnode->args->used == 1
+            && fnCallBorrowReadsThrough(nodesGet(callnode->args, 0))
+            ? &nodesGet(callnode->args, 0) : NULL;
+        INode *arg = argp ? *argp : NULL;
+        int objread = derefInject(&callnode->objfn);
+        if (objread)
+            selected = iNsTypeFindMethod(foundnode, &callnode->objfn, callnode->args, &status);
+        if (selected == NULL && status == OverloadNone && argp) {
+            derefInject(argp);
+            selected = iNsTypeFindMethod(foundnode, &callnode->objfn, callnode->args, &status);
+            if (selected == NULL && status == OverloadNone && objread) {
+                callnode->objfn = obj;
+                selected = iNsTypeFindMethod(foundnode, &callnode->objfn, callnode->args, &status);
+            }
+            if (selected == NULL)
+                *argp = arg;
+        }
         if (selected == NULL)
             callnode->objfn = obj;  // a failed retry leaves the call as it was found
     }
@@ -1681,9 +1735,10 @@ static int fnCallArrayAsSlice(TypeCheckState *pstate, FnCallNode *node) {
 // place, and refType declares only that. A raw pointer is the exception, whose
 // operators are on the pointer (the retry in fnCallLowerMethod says why).
 //
-// Both operands must be references. A reference compared with a value is refused
-// rather than read through on one side only, so 'r == v' never says something
-// '*r == v' does not.
+// A reference compared with a value is read through only where it is a borrow of
+// a value that copies freely (fnCallBorrowReadsThrough), as an operator reads any
+// such borrow through. Any other is refused rather than read through on one
+// side only, so 'r == v' never says something '*r == v' does not.
 //
 // A referent type that declares the operator for references ('self &', 'other &T')
 // takes the operands as they are. Otherwise both are dereferenced and the value's
@@ -1699,11 +1754,16 @@ static void fnCallLowerRefCompare(TypeCheckState *pstate, FnCallNode *node) {
         if ((itypeGetTypeDcl(reftype->vtexp)->tag == ArrayTag || refIsFat(reftype))
             && fnCallArrayAsSlice(pstate, node))
             return;
-        errorMsgNode((INode*)node, ErrorRefCompareMixed,
-            "`%s` on a reference compares the value it refers to, so the other side must be a reference too. Dereference the reference (`*r`) to compare it with a value.",
-            &op->namestr);
-        node->vtype = errorType;
-        return;
+        // A borrow of a value that copies freely is read through against a value
+        // too: 'x > 1', 'x == y' with 'y' a plain value. Any other referent is
+        // refused rather than read through on one side only.
+        if (!fnCallBorrowReadsThrough(node->objfn)) {
+            errorMsgNode((INode*)node, ErrorRefCompareMixed,
+                "`%s` on a reference compares the value it refers to, so the other side must be a reference too. Dereference the reference (`*r`) to compare it with a value.",
+                &op->namestr);
+            node->vtype = errorType;
+            return;
+        }
     }
 
     INode *referent = itypeGetTypeDcl(reftype->vtexp);
@@ -1758,7 +1818,8 @@ static void fnCallLowerRefCompare(TypeCheckState *pstate, FnCallNode *node) {
     enum OverloadMatch status;
     if (iNsTypeFindMethod(found, &node->objfn, node->args, &status) == NULL && status == OverloadNone) {
         fnCallDerefOperand(&node->objfn, node);
-        fnCallDerefOperand(argp, node);
+        if (iexpGetTypeDcl(*argp)->tag == RefTag)
+            fnCallDerefOperand(argp, node);
     }
     fnCallLowerMethod(pstate, node);
 }
@@ -2102,8 +2163,9 @@ static int fnCallNeFromEq(FnCallNode *node, INode *objtype) {
         && itypeGetTypeDcl(((RefNode*)objtype)->vtexp) == (INode*)strTypeDcl)
         return 1;
     // A reference against a value is refused under the '!=' that was written,
-    // not under a derived '=='
-    if (objtype->tag == RefTag && argtype && argtype->tag != RefTag)
+    // not under a derived '==', unless it is a borrow that is read through
+    // against a value (fnCallBorrowTypeReadsThrough)
+    if (objtype->tag == RefTag && argtype && argtype->tag != RefTag && !fnCallBorrowTypeReadsThrough(objtype))
         return 0;
     while (objtype->tag == RefTag)
         objtype = itypeGetTypeDcl(((RefNode*)objtype)->vtexp);
