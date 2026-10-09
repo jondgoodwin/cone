@@ -448,9 +448,20 @@ fn total(xs &amp;Array[u64]) u64 {
 		<li>A <b>copy</b> of a value from outside is a write when it counts: copying an <span class="pre">Rc</span> adds to its count, which
 			passes running at the same time cannot do without atomic operations. So a body may not copy an
 			<span class="pre">Rc</span> (or a struct, tuple, array, enum or list element that holds one, or a traced
-			<span class="pre">Gc</span> reference, whose roots are the collector's one chain) that is not its own. Reading it is
-			free: dereferenced, lent with <span class="pre">&amp;</span>, a field that is a number. An <span class="pre">Arc</span>
-			counts atomically and may be copied. What a function the body calls copies is that function's.</li>
+			<span class="pre">Gc</span> reference, whose roots are the collector's one chain) that is not its own. An
+			<span class="pre">Arc</span> counts atomically and may be copied.</li>
+		<li>Nor may the body <b>reach</b> such a value at all. A function the body hands it to could copy what it was lent,
+			and so could any code reached through a field, an element or a borrow, so a value declared outside the loop
+			(or the pass's own item) whose type holds an <span class="pre">Rc</span> or a traced reference may not be named in the
+			body: not copied, not read, not lent, not passed. This is the rule Rust calls <i>Sync</i>, safe to share a borrow of across threads, and like
+			<span class="pre">Sendable</span> it is worked out from what a type holds, with nothing to write: it holds one when,
+			through a field, a variant, an element, a borrow or what an owner points at, there is an owner that may be copied
+			of a region that does not declare <span class="pre">ThreadSafe</span> (an <span class="pre">Rc</span>, or a region of
+			your own that counts without atomic operations), or a reference into a traced region. A raw pointer is trusted, and
+			nothing behind one is followed (a <span class="pre">List</span> keeps its items behind one); an
+			<span class="pre">Arc</span>, an <span class="pre">Atomic</span>, a number and a region that declares
+			<span class="pre">ThreadSafe</span> are free. The way through is to <b>borrow the contents before the loop</b>:
+			<span class="pre">imm mesh = &amp;*shared;</span>, then use <span class="pre">mesh</span> in the body.</li>
 		<li>A <span class="pre">Gc</span> may not be <b>made or held</b> in the loop, for now: the collector's heap and its one chain of
 			roots are not safe on the workers the passes run on. An allocation (<span class="pre">new Gc[...]</span>), a call that
 			returns one, or a literal holding one (a struct, tuple, array or enum holding a traced reference counts) is refused
@@ -545,7 +556,7 @@ xs &lt;- 0, parallel each x in other yield x + 1, 99;    // in the middle of a l
 		give them, however the passes were spread over the workers; with a filter, the values of the passes that kept
 		their items, in order. The loop has finished, and the list is whole, when control reaches the statement after
 		it. The body's rules above hold for the header, the filter and the <span class="pre">yield</span>: nothing outside the
-		loop is written, an <span class="pre">Rc</span> from outside is not copied, and there is no
+		loop is written, an <span class="pre">Rc</span> from outside is not reached, and there is no
 		<span class="pre">break</span>, <span class="pre">return</span> or <span class="pre">await</span>. The items of a
 		collection come as borrows, as in a loop, so the <span class="pre">yield</span> writes its own <span class="pre">*</span>; a
 		value that moves (a <span class="pre">String</span> made in the body) is handed to the list. With only a source,

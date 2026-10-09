@@ -250,7 +250,23 @@ object of a further access) whose type holds a counted owner whose region is not
 variants, tuples and arrays; an `Arc` and a move owner do not count) and that is
 not the pass's own (`parPlaceIsOwn`: a variable declared in the loop, or a part
 of one held inline, not reached through a reference or an index). A copy inside
-a function the body calls is not seen.
+a function the body calls is not seen, which is why the body may not hand it
+anything that could be copied:
+
+A body may not **reach** a value that is not safe to share (`ErrorParReach`,
+`parCheckReach`, over the loop: its source's item variable, filter, body and
+`yield`). The property is the sibling of `Sendable`, Rust's `Sync`, inferred
+(`parNotSync`): a type is not safe when a field, variant, element, borrow's or
+owner's pointee reaches a reference `parRefCountsPlain` says counts without
+atomics (an aliasable owner of a region not declaring `ThreadSafe`, or a traced
+region), by a region's declarations and never a name. Any name use of a
+variable declared outside the loop, a global or a parameter of that type is
+refused, except the places `parCheckCopies` already refused (no double report)
+and the lowering's hidden variables; a variable the loop declares is its own,
+except the item, a borrow into the source (`nodesGet(loop->stmts, 1)`). A raw
+pointer is trusted and nothing behind it is followed, so a `List[Rc[...]]`, which
+keeps its block behind one, is not found by its type; its items are, through the
+item variable and `parCheckCopies`.
 
 A **traced reference made** in the loop is refused whole (`ErrorGcStopgap`,
 `gcRefuseVisit`, over the block with the loop's source, filter and `yield`): an

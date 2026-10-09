@@ -579,6 +579,9 @@ enum ErrorCode {
     // The stopgap until the collector is per actor (ir/exp/pareach.c, ir/types/actor.c)
     ErrorGcStopgap = 1389,      // A 'Gc' (a value holding a traced reference) made or held inside an actor (state field, parameter, allocation, call, literal) or a 'parallel each' (body, header, filter, yield)
 
+    // What a 'parallel each' body may reach (ir/exp/pareach.c)
+    ErrorParReach = 1390,       // A 'parallel each' body, header, filter or yield names a value declared outside the loop (or its item) whose type is not safe to share across the passes: it holds, through a field, element, borrow or pointee, an aliasable owner of a region not declaring ThreadSafe (an Rc) or a traced reference
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name
