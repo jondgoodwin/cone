@@ -72,6 +72,8 @@ typedef struct GenInfo {
     FnDclNode *ctor;        // The function that makes the generator: the one the author wrote, 'walk'
     Nodes *yields;          // Each seam (YieldNode) the loan walk reached, numbered from 1 in the order written
     FieldDclNode *state;    // The field holding where the body resumes: 0 unstarted, a seam's number, GenDone
+    Name *recv;             // A method's receiver, as the struct names the field that holds it; else NULL
+    StructNode *recvtype;   // The type the method belongs to, whose fields a bare name in the body may name
     // Generation (genlyield.c): the locals the frame keeps, in the order first
     // met at a seam, and for each how it is kept: GenFrameInline, in the
     // frame; GenFrameBoxed, on the heap, its address in the frame, where a

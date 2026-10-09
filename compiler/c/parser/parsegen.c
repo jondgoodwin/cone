@@ -520,6 +520,8 @@ FnDclNode *parseGenFinish(ParseState *parse, FnDclNode *fn, GenSig *sig, GenCtx 
     inodeLexCopy((INode *)step, (INode *)fn);
     GenInfo *info = yieldGenNew(step, state, nonefn);
     info->ctor = ctor;
+    info->recv = ctx->recv;
+    info->recvtype = (StructNode *)ctx->type;
     INode **nodesp;
     uint32_t cnt;
     for (nodelistFor(&state->fields, cnt, nodesp)) {

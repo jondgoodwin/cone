@@ -334,6 +334,11 @@ Visual Studio projects stay at the root.
   hard-landing crouch (`Walker.update`, `Walker.impact`);
   `testing` is the checks a package's tests call (`expectInt`, `require…`,
   `done`), ordinary library code the compiler knows nothing of;
+  `genwalk` and `genuser` are the samples of generators across packages: `pub`
+  generators (a function, one using a private type and function, a generic one,
+  methods of a plain and of a generic type, one writing through its receiver, one
+  in a submodule), which the include file carries whole and an importer makes
+  again, and `genuser`'s, which hand on to `genwalk`'s;
   `textdiff` is the line diff of two lists of lines or two texts: the edit
   as spans (a minimal one, by Myers' algorithm) and the unified diff that
   shows it, in `difflib.unified_diff`'s format and `diff -u`'s;

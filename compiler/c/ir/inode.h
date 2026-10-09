@@ -214,6 +214,10 @@ enum NodeTags {
 // flag changes is that a local's storage is not an alloca and is not released
 // when its block ends. 0x0400 is free as 0x0200 is.
 #define FlagStatic    0x0400        // VarDcl: one copy shared across the enclosing thing's instances
+// The variable of an 'each' over anything but a number range, a new one every pass that
+// nothing can change; the refusal of a write to it says how to change the items instead.
+// 0x0800 is free on a variable as 0x0200 and 0x0400 are.
+#define FlagEachVar   0x0800        // VarDcl: a variable of an 'each' pass over a source (not a range)
 
 #define FlagGenMod    0x0001        // Module: Generate code for the module, if true
 #define FlagModDcl    0x0002        // Module: a 'mod' declaration named it, rather than its filename

@@ -886,8 +886,10 @@ static INode *parseEachLoop(ParseState *parse, Name *lifesym, int stmtflag, int 
         VarDclNode *srcdcl = newVarDclFull(anonName, VarDclTag, unknownType, (INode*)mutPerm, iter);
         inodeLexCopy((INode*)srcdcl, iter);
         nodesAdd(&outerblk->stmts, (INode*)srcdcl);
-        for (uint32_t i = nelems; i > 0; --i)
+        for (uint32_t i = nelems; i > 0; --i) {
+            elemvars[i - 1]->flags |= FlagEachVar;
             nodesInsert(&loopnode->stmts, (INode*)elemvars[i - 1], 0);
+        }
         // The filter follows the variables (which hold the pass's item by then);
         // the 'else' stands ahead of them, where it cannot name them (eachLower
         // takes it out to make the loop's exit)
@@ -1797,9 +1799,13 @@ INode *parseFn(ParseState *parse, uint16_t mayflags) {
         parse->genoperand = svgenoperand;
         bodyendp = lex->prevend;
         if (genctx && errors == errorsAtSig) {
+            // The declarations the generator stands for are read from text of
+            // their own, which leaves where they are written in the parse state;
+            // the span the caller records is the author's declaration
+            FnDclNode *ctor = parseGenFinish(parse, fnnode, &gensig, genctx, (BlockNode*)fnnode->value);
             parse->bodyp = bodyp;
             parse->bodyendp = bodyendp;
-            return (INode*)parseGenFinish(parse, fnnode, &gensig, genctx, (BlockNode*)fnnode->value);
+            return (INode*)ctor;
         }
         // In an actor's body, a method holding an 'await' is noted: its
         // dispatch and its actor's state are generated for its seams

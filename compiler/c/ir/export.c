@@ -20,6 +20,11 @@ int dclIsInstance(INode *dclnode) {
     for (INode *node = dclnode; node; node = inodeGetOwner(node)) {
         if (node->tag == ModuleTag)
             return ((ModuleNode*)node)->generic != NULL;
+        // A generator's struct, and its members, are made again by every object
+        // that uses the generator, from the text of its declaration: they are not
+        // the package's to export, as a generic's instance is not
+        if (node->tag == StructTag && yieldAny() && yieldGenOfStruct(node))
+            return 1;
         if (itypeInstanceTypeArgs(node) != NULL)
             return 1;
     }
@@ -43,7 +48,8 @@ int typeHoldsExpanded(INode *type) {
     for (nodelistFor(&strnode->nodelist, cnt, nodesp)) {
         INode *node = *nodesp;
         if (node->tag == MacroDclTag
-            || (node->tag == FnDclTag && ((node->flags & FlagInline) || ((FnDclNode*)node)->genericinfo)))
+            || (node->tag == FnDclTag && ((node->flags & FlagInline) || ((FnDclNode*)node)->genericinfo
+                || (yieldAny() && yieldGenOfCtor((FnDclNode*)node)))))
             return 1;
     }
     return 0;

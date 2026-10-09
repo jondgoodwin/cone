@@ -167,10 +167,15 @@ void fnOverloadDclPrint(FnOverloadDclNode *node) {
 // or fallback body, is expanded at each call), a trait's default (cloned
 // into each implementer), a module trait's default (cloned into each conforming
 // module), and any method of a generic type (cloned into each instance).
+// A generator is expanded too: the function that makes one, and the 'next' that
+// holds its body, are generated again from the include file's text by an importer,
+// which makes the generator's struct and its frame from the body (parsegen.c).
 // 'typenode' is the type or module trait whose braces declare it, or NULL.
 int fnDclIsExpanded(FnDclNode *fndclnode, INode *typenode) {
     if ((fndclnode->flags & FlagInline) || fndclnode->genericinfo
         || (fndclnode->dclinfo.facts & DclIntrinsic))
+        return 1;
+    if (yieldAny() && (yieldGenOfCtor(fndclnode) || yieldGenOf(fndclnode)))
         return 1;
     if (typenode && typenode->tag == ModTraitTag)
         return 1;

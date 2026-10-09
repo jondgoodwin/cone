@@ -85,7 +85,10 @@ void borrowMutRef(INode **nodep, INode* type, INode *perm) {
         refused = 1;
     }
     if (!refused && !permMatches(perm, lvalperm)) {
-        if (lvalvar && lvalvar->tag == VarDclTag)
+        if (lvalvar && lvalvar->tag == VarDclTag && (lvalvar->flags & FlagEachVar))
+            errorMsgNode((INode *)node, ErrorBadPerm, "Cannot borrow a mutable reference to `%s`, which is not mutable: the variable of an 'each' is a new one every pass that nothing can change. To change the items in place, walk src.mutItems()",
+                &((VarDclNode *)lvalvar)->namesym->namestr);
+        else if (lvalvar && lvalvar->tag == VarDclTag)
             errorMsgNode((INode *)node, ErrorBadPerm, "Cannot borrow a mutable reference to `%s`, which is not mutable",
                 &((VarDclNode *)lvalvar)->namesym->namestr);
         else

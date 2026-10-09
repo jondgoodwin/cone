@@ -99,6 +99,29 @@ struct Trio {
   }
 }
 
+// A bare field name in the body is the receiver's, as in any method (the body
+// runs in the generator's struct, but 'lo' is read and written through the
+// receiver); a parameter named like a field shadows it, as it does anywhere
+struct Gauge {
+  pub lo i64;
+  pub hi i64;
+  pub step i64;
+
+  fn sweep(self &, step i64) yields i64 {
+    mut i = lo;
+    while i <= hi {
+      yield i;
+      i = i + step;
+    }
+  }
+
+  fn ticks(self &mut) yields i64 {
+    lo = lo + step;
+    yield lo;
+    yield hi - lo;
+  }
+}
+
 // A type's function with no receiver is a generator too
 struct Span {
   pub lo i64;
@@ -174,5 +197,14 @@ fn main() {
   mut slots = new Slots([1i64, 2i64, 3i64]);
   each p in slots.slots() { *p = *p * 10i64; }
   printInt(slots.vals[0]); printStr(" "); printInt(slots.vals[1]); printStr(" "); printInt(slots.vals[2]);
+  printStr("\n");
+
+  // Bare field names: the parameter 'step' (3) shadows the field (4) in sweep, so
+  // 2 5 8 (11 is past 10); ticks reads the field, 2 + 4 = 6, writes it, and hands
+  // out 6 and 10 - 6 = 4, leaving 6 in the gauge
+  mut gauge = new Gauge(2i64, 10i64, 4i64);
+  each v in gauge.sweep(3i64) { printInt(v); printStr(" "); }
+  each v in gauge.ticks() { printInt(v); printStr(" "); }
+  printInt(gauge.lo);
   printStr("\n");
 }

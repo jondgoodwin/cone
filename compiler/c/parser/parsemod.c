@@ -710,12 +710,6 @@ INode *parseFnOrVar(ParseState *parse, uint16_t flags) {
         FnDclNode *node = (FnDclNode*)parseFn(parse, (flags&FlagExtern)? (ParseMayName | ParseMaySig) : (ParseMayName | ParseMayImpl));
         node->flags |= flags;
         parseExternFnCheck(node);
-        // A generator is a struct and a method made from its body, which a
-        // package's include file would have to carry whole for an importer to
-        // make again: not built
-        if (parse->library && (flags & FlagPub) && yieldAny() && yieldGenOfCtor(node))
-            errorMsgNode((INode*)node, ErrorGenForm,
-                "A generator cannot be 'pub' in a library yet: its value is a struct made from its body, and a package's include file does not carry that for an importer. Write a 'pub' function that gathers what it yields into a collection, or wraps the generator in a type of your own.");
         // A bare '@c' in a module that already gives its functions C names says
         // nothing: the name is C already [Penny 23 Sep, delegated by Jon]. The
         // string form is the override and says something; so does '@c(system)'

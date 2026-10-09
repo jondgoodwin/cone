@@ -750,10 +750,9 @@ value and hands back a call of `walk.none`. A `yield` met as a term's operand
 a seam is in flight across it. An `inline`, `where`, anonymous or bodiless
 generator, one whose type parameters name lifetimes, and a method of a trait, of
 an enum, of an actor (`ParseState.dcltexts`) or of a type that declares lifetimes,
-are refused (`ErrorGenForm`), as is a
-`pub` one in a library (`ParseState.library`; in `parseFnOrVar` for a function and
-in `parseStruct` for a method): its include file does not carry what an importer
-would need to make the struct again. Then `parseGenFinish` re-reads the parameter
+are refused (`ErrorGenForm`). A `pub` one in a library is not: its include file
+carries the declaration whole (see "It generates a generator's declarations,
+across packages", below). Then `parseGenFinish` re-reads the parameter
 list from its text (`parseGenParms`), and writes as Cone source, parsed from a
 lexer of its own with private names (`Lexer.gennames`, as an actor's):
 
@@ -771,6 +770,16 @@ them as a method names its fields, and a diagnostic names the value `walk.Gen`.
 `yield` and `none` are functions of the struct so that each instance of a generic
 generator has its own; the body names them bare, as any method names its type's
 functions.
+Where the parameters hold borrows and none names a lifetime or is written some
+way a lifetime cannot follow, each `&` of the fields and of the yielded type is
+given the one lifetime `'a` (`parseGenAnnotate`), so that `next` hands out borrows
+of what the generator was lent, not of the generator. `final` is an empty method
+that makes the struct need finalizing; generation hangs the frame's drop on it.
+`yield each src` is written as text too (`parseYieldEach`): a block holding
+`mut sub = src;` and a loop of `match sub.next()` that `yield`s each `Some`
+whole (`ParseState.genraw`: its `YieldNode`'s value is the sub-generator's own
+result, not wrapped again). What the compiler needs later is recorded in a
+`GenInfo` (`ir/exp/yield.h`).
 
 **A method is a generator the same way.** The struct is named for both
 (`Tree.walk.Gen`), made beside the type, and the method that makes it is returned
@@ -780,9 +789,15 @@ a private name that reads `self` (`GenCtx.recv`), and `parseNameUse`, while the
 body is read, makes `self` name it (`parseGenName`) and `Self` name the type
 (written with its own parameters: `Tree[T]`), since in `next` both would mean the
 struct. Where the receiver's type was left to be inferred (`self`, `self &`,
-`self &mut`) its field has the type written out. A field of the receiver is
-reached as `self.name`: a bare name finds the generator's own fields, the
-parameters, and the type's fields are not in the scope of `next`.
+`self &mut`) its field has the type written out. A bare field name of the
+receiver's type is read as it is in any method, `self.name`, though `next` is in
+the generator's struct, whose scope holds the parameters and not the type's
+fields: `nameUseNameRes` (`nameUseGenMember`) rewrites a bare name that no
+parameter or local of the generator takes, and that the receiver's type
+(`GenInfo.recvtype`) has as a field, into a member access on the receiver
+(`GenInfo.recv`), found by its name when the use is type checked, so an instance
+of a generic type finds its own. A bare *method* name is refused
+(`ErrorBareMbr`), since it would need the receiver named.
 
 **A generic generator** copies the type parameters as they are written, the type's
 (`ParseState.tparms`, recorded by `parseStruct`) and then the function's (`GenSig`),
@@ -794,16 +809,21 @@ An instance of the struct is cloned from this template like any generic type's
 instance is looked up by its struct (`yieldGenOfStruct`) and its step
 (`yieldGenOf`) and not through the template. Each instance's `next` is checked
 and generated when it is used, as a generic type's methods are.
-Where the parameters hold borrows and none names a lifetime or is written some
-way a lifetime cannot follow, each `&` of the fields and of the yielded type is
-given the one lifetime `'a` (`parseGenAnnotate`), so that `next` hands out borrows
-of what the generator was lent, not of the generator. `final` is an empty method
-that makes the struct need finalizing; generation hangs the frame's drop on it.
-`yield each src` is written as text too (`parseYieldEach`): a block holding
-`mut sub = src;` and a loop of `match sub.next()` that `yield`s each `Some`
-whole (`ParseState.genraw`: its `YieldNode`'s value is the sub-generator's own
-result, not wrapped again). What the compiler needs later is recorded in a
-`GenInfo` (`ir/exp/yield.h`).
+
+**Across packages** (`pub` in a library). A generator is declared once in the
+source and made again from that text wherever the declaration is read, so the
+include file carries it as it carries an `inline` function: whole, with the
+private declarations its body names (`incfile.c`). `fnDclIsExpanded` says so for
+every generator's constructor and `next` (`yieldGenOfCtor`, `yieldGenOf`), which
+keeps the declaration out of the cut to `extern` (`incCut`) a bodiless generator
+could not be read from, marks what the body names as reached by an expander
+(`nameUseMarkExpandReached`: exported, and declared in the file), and has the
+include-file walk follow the body through the struct, which the constructor's
+result type names. The span the caller records for the declaration is the
+author's text, not the generated text read last (`parseFn` restores
+`ParseState.bodyp`). The struct and its members are not the package's to export
+(`dclIsInstance`); each object that uses a generator defines them
+(generation.md, "A generator").
 
 **It binds module-level names.** `modAddNode`, `modAddNamedNode` and `modAddFn`
 run *during* parsing, so by the time a module's parse finishes its namespace is
