@@ -29,7 +29,8 @@
 			<span class="pre">where T + 'a</span> or <span class="pre">where T is Trait + 'a</span>,
 			and a condition on one entry of a generic struct's or enum's <span class="pre">is</span>
 			list, <span class="pre">is Move if T is Move</span>, and a generic trait's
-				instance as a constraint, <span class="pre">[T, S Stack[T]]</span>.
+				instance as a constraint, <span class="pre">[T, S Stack[T]]</span>, and a function
+				signature as one, <span class="pre">[F fn(a &amp;T, b &amp;T) i32]</span>.
 			Not yet: a condition on an <span class="pre">is</span> entry of a trait or of an
 			enum's variant, a lifetime bound on a generic type's parameter, a clause relating two
 			parameters other than by a generic trait's instance, or constraining a type expression, not, constraints on a generic
@@ -422,6 +423,46 @@ drain[i64, WrongParm](&amp;mut wp);
 		parameter of the declaration, written before it or after:
 		<span class="pre">[T, S Stack[T]]</span> and <span class="pre">[S Stack[T], T]</span>
 		say the same.</p>
+
+	<h3 id="sigbound">A function signature as a constraint</h3>
+	<p>A function signature written bare, <span class="pre">fn(a &amp;T, b &amp;T) i32</span>,
+		is a constraint too, one that needs no trait declared: the type has a
+		<span class="pre">pub</span> <span class="pre">()</span> method whose parameters after
+		its receiver, and whose return type, are exactly those (the parameters' names do not
+		matter, and a parameter may be written as its type alone,
+		<span class="pre">fn(&amp;T, &amp;T) i32</span>). It is written in the square brackets or in a
+		<span class="pre">where</span> clause, and joins other constraints with
+		<span class="pre">+</span> or <span class="pre">and</span>. The generic's body calls the
+		parameter directly, <span class="pre">order(x, y)</span>, in each instance, and the
+		permission it takes the parameter by decides what that call may do: <span class="pre">&amp;F</span>
+		reaches a <span class="pre">()</span> that takes <span class="pre">self &amp;</span>,
+		<span class="pre">&amp;mut F</span> one that takes <span class="pre">self &amp;mut</span> too, and keeps what
+		it changed, and <span class="pre">F</span> by value one that takes <span class="pre">self &amp;</span>.</p>
+<pre>
+fn sortBy[T, F fn(a &amp;T, b &amp;T) i32](xs &amp;mut Array[T], order &amp;F) {...}
+fn counted[T, F](xs &amp;mut Array[T], order &amp;mut F) where F is fn(a &amp;T, b &amp;T) i32 {...}
+fn spawn[F fn() + Sendable](work &amp;mut F) {...}
+
+fn byName(a &amp;Person, b &amp;Person) i32 {...}
+struct Descending { pub fn `()`(self &amp;, a &amp;Person, b &amp;Person) i32 {...} }
+
+sortBy(&amp;mut people, &amp;byName);        // a plain function, referenced, meets it as it is (F is its type)
+sortBy(&amp;mut people, &amp;descending);    // so does a struct with that '()'
+</pre>
+	<p>A type parameter that only the signature names is read off the argument's function or
+		<span class="pre">()</span>, as a generic trait's is: <span class="pre">fn make[T, F fn() T](f &amp;F) T</span>
+		given <span class="pre">&amp;seven</span> finds the <span class="pre">T</span> that <span class="pre">seven</span> returns.
+		A type that does not meet the signature is refused where the generic is used, naming the signature as
+		written and as it comes to at those arguments, and what the argument has instead: a function of another
+		signature, no <span class="pre">()</span>, one that is not <span class="pre">pub</span>, or one
+		with other parameters or another return type. The constraint is no
+		<span class="pre">&amp;fn(sig)</span> pointer: that stays the one-word address of a function,
+		and a function referenced meets the constraint by its signature alone: through <span class="pre">&amp;F</span>
+		<span class="pre">F</span> is the function's type, and taken by value (<span class="pre">f F</span>) it is the
+		reference itself, <span class="pre">&amp;fn(i32) i32</span>. A plain function has no state to change,
+		so <span class="pre">&amp;mut F</span> is for a struct. A signature is not a constraint on a
+		macro's or a generic module's parameter, nor in a condition on an <span class="pre">is</span>
+		entry.</p>
 
 	<h3 id="where">Where clause</h3>
 	<p>The same constraints may instead be written as a

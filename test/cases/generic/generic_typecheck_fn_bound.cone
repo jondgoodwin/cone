@@ -1,0 +1,102 @@
+// A function signature as a generic bound, refused where an argument does not
+// meet it (doc/reference/refgeneric.html). The message names the generic, the
+// parameter, the signature as it was written and as it comes to at these
+// arguments, and what the argument has instead: a function of another
+// signature, no '()', a '()' that is not pub, or a '()' taking other parameters
+// after its receiver. A parameter's name does not matter, so 'a' and 'b' here
+// refuse nothing; the types and the arity do.
+
+mod generic_typecheck_fn_bound;
+
+struct Person {
+  pub age i32;
+}
+
+fn byAge(a &Person, b &Person) i32 { a.age - b.age; }
+fn otherNames(x &Person, y &Person) i32 { x.age - y.age; }
+fn wrongParm(a &Person, b &i32) i32 { 0; }
+fn wrongRet(a &Person, b &Person) i64 { 0; }
+fn wrongArity(a &Person) i32 { 0; }
+
+// Meets the bound
+struct Good {
+  pub k i32;
+  pub fn `()`(self &, a &Person, b &Person) i32 { a.age - b.age + k; }
+}
+
+// The right '()', but not pub
+struct Hidden {
+  fn `()`(self &, a &Person, b &Person) i32 { 0; }
+}
+
+// A '()' taking one parameter, not two
+struct Short {
+  pub fn `()`(self &, a &Person) i32 { 0; }
+}
+
+// A '()' returning another type
+struct Wide {
+  pub fn `()`(self &, a &Person, b &Person) i64 { 0; }
+}
+
+struct Plain {
+  pub n i32;
+}
+
+fn order[T, F fn(a &T, b &T) i32](x &T, y &T, f &F) {}
+
+fn orderWhere[T, F](x &T, y &T, f &F) where F is fn(a &T, b &T) i32 {}
+
+// A signature joined to another bound: each is checked
+fn send[F fn(x i32) + Sendable](f &F) {}
+
+// Meets the signature, holds a borrow that may not leave its thread
+struct Borrows {
+  pub v &mut i32;
+  pub fn `()`(self &, x i32) {}
+}
+
+// Is Sendable, does not meet the signature
+struct Idle {
+  pub n i32;
+}
+
+struct Quiet {
+  pub n i32;
+  pub fn `()`(self &, x i32) {}
+}
+
+fn main() {
+  imm p = new Person(30);
+  imm q = new Person(25);
+  imm good = new Good(0);
+  imm hidden = new Hidden();
+  imm short = new Short();
+  imm wide = new Wide();
+  imm plain = new Plain(1);
+
+  order(&p, &q, &byAge);
+  order(&p, &q, &otherNames);
+  order(&p, &q, &good);
+  orderWhere(&p, &q, &byAge);
+
+  // A function of another signature
+  order(&p, &q, &wrongParm);       //~ ErrorWhereUnmet:8 "order requires F is fn(a &T, b &T) i32, here fn(&Person, &Person) i32, and fn(&Person, &i32) i32 is not. A function must be exactly fn(&Person, &Person) i32"
+  order(&p, &q, &wrongRet);        //~ ErrorWhereUnmet:8 "this one is fn(&Person, &Person) i64"
+  orderWhere(&p, &q, &wrongArity); //~ ErrorWhereUnmet:13 "orderWhere requires F is fn(a &T, b &T) i32"
+
+  // A struct with no '()', with one that is not pub, and with others
+  order(&p, &q, &plain);           //~ ErrorWhereUnmet:8 "Plain has no '()' method, and fn(&Person, &Person) i32 needs a pub one"
+  order(&p, &q, &hidden);          //~ ErrorWhereUnmet:8 "Hidden has a '()' method of that signature, but it is not pub"
+  order(&p, &q, &short);           //~ ErrorWhereUnmet:8 "Short has ()(self &, a &Person) i32"
+  orderWhere(&p, &q, &wide);       //~ ErrorWhereUnmet:13 "Wide has ()(self &, a &Person, b &Person) i64"
+
+  // Both bounds are asked: the signature, then Sendable
+  mut count = 0;
+  imm quiet = new Quiet(1);
+  imm idle = new Idle(1);
+  imm borrows = new Borrows(&mut count);
+  send(&quiet);
+  send(&idle);                     //~ ErrorWhereUnmet:7 "send requires F is fn(x i32), here fn(i32), and Idle is not"
+  send(&borrows);                  //~ ErrorNotSendable:7 "Borrows.v is &mut i32"
+}

@@ -19,6 +19,7 @@ FnSigNode *newFnSigNode() {
     sig->lifeorder = NULL;
     sig->lifechecked = 0;
     sig->lifestatic = 0;
+    sig->spelled = NULL;
     return sig;
 }
 
