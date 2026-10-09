@@ -264,9 +264,12 @@ variable declared outside the loop, a global or a parameter of that type is
 refused, except the places `parCheckCopies` already refused (no double report)
 and the lowering's hidden variables; a variable the loop declares is its own,
 except the item, a borrow into the source (`nodesGet(loop->stmts, 1)`). A raw
-pointer is trusted and nothing behind it is followed, so a `List[Rc[...]]`, which
-keeps its block behind one, is not found by its type; its items are, through the
-item variable and `parCheckCopies`.
+pointer of a type that is not generic is trusted and nothing behind it is
+followed; an instance of a generic type is not safe when any type argument is not
+(`itypeInstanceTypeArgs`, in `parNotSync`), so `List[Rc[...]]`, which keeps its
+block behind a pointer, is found by its argument. The message differs for a root
+that is a counted or traced owner itself (`parIsCountedItself`: borrow its contents
+before the loop) and one that holds it (copy what the loop needs into a local).
 
 A **traced reference made** in the loop is refused whole (`ErrorGcStopgap`,
 `gcRefuseVisit`, over the block with the loop's source, filter and `yield`): an
