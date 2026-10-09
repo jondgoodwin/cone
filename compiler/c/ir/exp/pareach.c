@@ -145,6 +145,18 @@ static ParCursor parCursorOf(INode *type) {
         c.vars = 3;
         c.mut = parCursorOf(parFieldType(type, "zip")).mut;
     }
+    else if (parIsCore(type, "Zip3", 4)) {
+        // three, a flat triple: one variable from each source
+        c.cursor = 1;
+        c.vars = 3;
+        c.mut = parCursorOf(parFieldType(type, "first")).mut || parCursorOf(parFieldType(type, "second")).mut
+            || parCursorOf(parFieldType(type, "third")).mut;
+    }
+    else if (parIsCore(type, "Zip3Indexed", 11)) {
+        c.cursor = 1;
+        c.vars = 4;
+        c.mut = parCursorOf(parFieldType(type, "zip")).mut;
+    }
     return c;
 }
 
@@ -1522,7 +1534,11 @@ void parallelEachLower(TypeCheckState *pstate, BlockNode *outer) {
         if (nvars != (uint32_t)cursor.vars) {
             const char *why =
                 "A 'parallel each' gives one variable, a borrow of each element (or each number of a range); two come from indexed(), the position and the item, or from a zip, one item from each source.";
-            if (cursor.vars == 3)
+            if (cursor.vars == 4)
+                why = "A 'parallel each' over a three-way zip's indexed() gives four variables, the position and one item from each of the three sources.";
+            else if (cursor.vars == 3 && parIsCore(type, "Zip3", 4))
+                why = "A 'parallel each' over a three-way zip gives three variables, one item from each source (its indexed() adds the position first, four variables).";
+            else if (cursor.vars == 3)
                 why = "A 'parallel each' over a zip's indexed() gives three variables, the position and one item from each source.";
             else if (cursor.vars == 2 && parIsCore(type, "Zip", 3))
                 why = "A 'parallel each' over a zip gives two variables, one item from each source (its indexed() adds the position first, three variables).";
