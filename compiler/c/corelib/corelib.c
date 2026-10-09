@@ -298,13 +298,15 @@ void stdlibInit(int ptrsize) {
     // they are used; a container declaring 'NoLoanMut' is also borrowed
     // itself for its life only. Trusted: the compiler cannot check the
     // promise. 'ShapeChanging' says the container may move its elements (a
-    // list's push reallocates). It has NO EFFECT YET: Jon's rule refuses an
-    // element borrow of such a container reached through a shared path (a
-    // '&mut' or '&' of unseen origin, a 'self' field, a 'Rc[mut, T]' owner),
-    // but refusing it today breaks common collection code -- reading a
-    // 'List[String]' element through a '&List' parameter -- that 'uni'
-    // reborrowing is to make writable. Until then that is a documented hole
-    // (refborref.html), and the marker waits for the check that reads it.
+    // list's push reallocates). A borrow its method returns, out of a
+    // container reached through a shared path, freezes that same path while
+    // it is used (pwCall, loanFreezeShared): a change through the same name.
+    // A change through another name (a '&mut' or '&' of unseen origin, a
+    // 'self' field, a 'Rc[mut, T]' owner) or a call that might make one is
+    // not seen: refusing every element borrow through a shared path would
+    // break common collection code -- reading a 'List[String]' element
+    // through a '&List' parameter -- that 'uni' reborrowing is to make
+    // writable. Until then that is a documented hole (refborref.html).
     shapeChangingTrait = newBuiltinTrait(shapeChangingTraitName);
     noLoanMutTrait = newBuiltinTrait(noLoanMutTraitName);
     noLoanReadTrait = newBuiltinTrait(noLoanReadTraitName);

@@ -1,0 +1,97 @@
+// A borrow a method returns out of a container that may move its elements
+// when it changes (it declares 'ShapeChanging': List, Deque, String, Dict,
+// Pool) freezes the path the container was reached through, as it freezes a
+// local, though the path is shared (collection_flow_freeze): through a
+// '&mut' parameter, or through a field of 'self'. The same path may not be
+// changed while the borrow is still to be used. A read-only borrow still lets
+// the path be read; one that may write lets nothing touch it.
+//
+// THE HOLE THAT REMAINS (collection_freeze_shared_success pins it): another,
+// different reference to the same container is not seen -- two '&mut'
+// parameters that the caller made one list, or a copy of a '&mut' -- and a
+// push through it leaves the element dangling. Refusing that, a change
+// through another name, waits on 'uni' reborrowing.
+
+mod collection_flow_freeze_shared;
+
+import collections use *;
+import pool use *;
+
+struct Pt { pub x i64; pub y i64; }
+
+// An element borrowed through a '&mut' parameter, then the list pushed onto
+fn elementThenPush(l &mut List[Pt], p Pt) i64 {
+  imm e = l[0usize];
+  l.push(p);                    //~ ErrorFrozen:3 "may not be borrowed mutably"
+  e.x;
+}
+
+// A mutable element borrow, then any use of the list
+fn mutElementThenRead(l &mut List[Pt]) i64 {
+  imm e = &mut l[0usize];
+  imm n = l.len();              //~ ErrorFrozen:11 "may not be borrowed"
+  e.x = 5;
+  i64.from(n);
+}
+
+// A cursor over a deque, then the deque pushed onto: the iterator's block moves
+fn cursorThenPush(dq &mut Deque[i64]) {
+  mut it = dq.items();
+  dq.push(9);                   //~ ErrorFrozen:3 "may not be borrowed mutably"
+  it.next();
+}
+
+// The slice 'viewMut' lends, then the list lent again
+fn viewMutTwice(l &mut List[i64]) {
+  imm s = l.viewMut();
+  imm t = l.viewMut();          //~ ErrorFrozen:11 "may not be borrowed"
+  s[0usize] = 1;
+  t[0usize] = 2;
+}
+
+// A String's view, then the String grown
+fn viewThenAppend(s &mut String) usize {
+  imm v = s.view();
+  s.appendByte('c');            //~ ErrorFrozen:3 "may not be borrowed mutably"
+  v.len;
+}
+
+// A pool's value borrowed, then removed
+fn borrowThenRemove(p &mut Pool[Pt], id Ref[Pt]) i64 {
+  imm e = p[id];
+  p.remove(id);                 //~ ErrorFrozen:3 "may not be borrowed mutably"
+  e.x;
+}
+
+// Through a shared owner, by the same name
+fn ownerThenPush(p Pt) i64 {
+  imm l = new Rc[mut, List[Pt]](List[Pt].empty());
+  imm e = l[0usize];
+  l.push(p);                    //~ ErrorFrozen:3 "may not be borrowed mutably"
+  e.x;
+}
+
+// Through a field of 'self'
+struct Bag {
+  pub items List[Pt];
+  pub text String;
+
+  fn growWhileHeld(self &mut, p Pt) i64 {
+    imm e = items[0usize];
+    items.push(p);              //~ ErrorFrozen:5 "may not be borrowed mutably"
+    e.x;
+  }
+
+  fn viewWhileGrowing(self &mut) usize {
+    imm v = text.view();
+    text.appendByte('c');       //~ ErrorFrozen:5 "may not be borrowed mutably"
+    v.len;
+  }
+
+  // The borrow a method on 'self' returns, its own field changed meanwhile
+  fn firstThenPush(self &mut, p Pt) i64 {
+    imm e = self.items[0usize];
+    self.items.push(p);         //~ ErrorFrozen:9 "may not be borrowed mutably"
+    e.x;
+  }
+}

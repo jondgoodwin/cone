@@ -206,6 +206,11 @@ void loanHeldBy(uint32_t var, PathSet *holds);
 // A method's returned borrow carries this loan: name the method in a message
 void loanReturnedBy(uint32_t loan, Name *method);
 
+// The borrow a call returned carries this loan of a place reached through a
+// shared path, and the place's container may move what it lent when it
+// changes: the loan freezes the place, as a local's would
+void loanFreezeShared(uint32_t loan);
+
 // Loans in flight: what the walked operands of a call or literal carry, until
 // the call is made. A mark to pop back to, and one operand's loans pushed;
 // 'reserved' is a two-phase receiver's own loan among them (0 for none).
