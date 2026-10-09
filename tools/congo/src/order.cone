@@ -103,7 +103,7 @@ fn resolveImports(reg &Registry, p usize, scanned List[Module]) Result[Unit, Str
     if pkg.gpu or mods[m].gpu {
       mut f = 0usize;
       while f < mods[m].files.len() and not kernels {
-        match holdsKernel(mods[m].files[f].view()) {
+        match holdsKernel(mods[m].files[f]) {
           case imm ok Ok { kernels = ok.value; }
           case imm e Error { return Error[Unit, String][e.value.copy()]; }
         }
@@ -133,10 +133,10 @@ fn resolveImports(reg &Registry, p usize, scanned List[Module]) Result[Unit, Str
 
 // The refusal of a gpu/ module's import or extends of src/: a sister there,
 // or a name of the root module, whose designated file is in src/
-fn gpuUsesSrc(pkg &Package, imp &Import, verb &Array[u8], mods &List[Module], isSister bool, sister usize) String {
+fn gpuUsesSrc(pkg &Package, imp &Import, verb &str, mods &List[Module], isSister bool, sister usize) String {
   mut what = String.empty();
   if isSister {
-    imm place = shown(mods[sister].files[0usize].view());
+    imm place = shown(mods[sister].files[0usize]);
     what <- mods[sister].name.view(), " is a module of ", pkg.name.view(), "'s src/ (", place.view(), ")";
   }
   else {
@@ -158,28 +158,28 @@ fn importsOf(m &Module) List[Import] {
 }
 
 // An import line for name, replacing one already there
-fn addLine(m &mut Module, name &Array[u8], pkg usize) {
+fn addLine(m &mut Module, name &str, pkg usize) {
   mut i = 0usize;
   while i < m.lines.len() {
-    if m.lines[i].name.equals(name as &str) {
-      m.lines.set(i, new Line(String.fromBytes(name), pkg));
+    if m.lines[i].name.equals(name) {
+      m.lines.set(i, new Line(String.from(name), pkg));
       return;
     }
     i = i + 1usize;
   }
-  m.lines.push(new Line(String.fromBytes(name), pkg));
+  m.lines.push(new Line(String.from(name), pkg));
 }
 
 // The first import of name in the package, in walk order; of its gpu/
 // folder only, where asked
-fn firstImport(unit &Unit, name &Array[u8], gpuOnly bool = false) Import {
+fn firstImport(unit &Unit, name &str, gpuOnly bool = false) Import {
   imm order = walkOrder(&unit.mods);
   mut w = 0usize;
   while w < order.len() {
     imm m = *order[w];
     mut i = 0usize;
     while i < unit.mods[m].imports.len() and (unit.mods[m].gpu or not gpuOnly) {
-      if unit.mods[m].imports[i].name.equals(name as &str) { return unit.mods[m].imports[i].copy(); }
+      if unit.mods[m].imports[i].name.equals(name) { return unit.mods[m].imports[i].copy(); }
       i = i + 1usize;
     }
     w = w + 1usize;
@@ -196,11 +196,11 @@ struct Plan {
   pub stack List[usize];
 
   // The unit of the package named name, in the order
-  pub fn unitNamed(self &, reg &Registry, name &Array[u8], found &mut usize) bool {
+  pub fn unitNamed(self &, reg &Registry, name &str, found &mut usize) bool {
     mut i = 0usize;
     while i < order.len() {
       imm u = *order[i];
-      if reg.packages[units[u].pkg].name.equals(name as &str) {
+      if reg.packages[units[u].pkg].name.equals(name) {
         *found = u;
         return true;
       }
@@ -384,16 +384,16 @@ fn closureOf(plan &Plan, reg &Registry, u usize, seen &mut List[usize]) {
 // its object. Every package of a build is compiled into that one folder,
 // each before what imports it, so the file is there, and current, when an
 // importer's compile reads it.
-fn includeFor(pkg &Package, out &Array[u8]) String {
+fn includeFor(pkg &Package, out &Path) Path {
   imm file = cat(pkg.name.view(), ".cone");
-  joined(out, file.view());
+  out.join(file.view());
 }
 
 // A path as a build description writes it: absolute, with '/', since the
 // description is read as Cone source and a backslash begins an escape
-fn conePath(p &Array[u8]) String {
-  mut s = resolved(p);
-  s.replaceByte('\\', '/');
+fn conePath(p &Path) String {
+  imm abs = resolved(p);
+  mut s = String.from(abs.view());
   s.replace("\"", "\\\"");
   s;
 }
@@ -401,15 +401,15 @@ fn conePath(p &Array[u8]) String {
 // The build description of one package; 'out' is the folder the include
 // files of the packages it imports are in. Its lines end as Python's
 // write_text ends them on Windows, in '\r\n'.
-fn description(reg &Registry, unit &Unit, mode &Array[u8], output &Array[u8], out &Array[u8], packages &List[usize]) String {
+fn description(reg &Registry, unit &Unit, mode &str, output &str, out &Path, packages &List[usize]) String {
   imm pkg = reg.packages[unit.pkg];
   imm label = pkg.label();
   mut text = String.empty();
   text <- "// The build description of ", label.view(), ", written by Congo for conec;\r\n";
   text <- "// rewritten on every build, so edit the source, not this.\r\n";
   text <- "\r\n";
-  text <- "build: "; text.appendBytes(mode); text <- "\r\n";
-  text <- "output: "; text.appendBytes(output); text <- "\r\n";
+  text <- "build: "; text.append(mode); text <- "\r\n";
+  text <- "output: "; text.append(output); text <- "\r\n";
   text <- "\r\n";
   // The package lines: where each package of the closure is found, for an
   // include file's own imports and, for core, for the prelude. Each is the
@@ -419,7 +419,7 @@ fn description(reg &Registry, unit &Unit, mode &Array[u8], output &Array[u8], ou
   while i < packages.len() {
     imm dep = reg.packages[*packages[i]];
     imm incl = includeFor(dep, out);
-    imm place = conePath(incl.view());
+    imm place = conePath(&incl);
     text <- "import ", dep.name.view(), ": \"", place.view(), "\"\r\n";
     i = i + 1usize;
   }
@@ -428,7 +428,7 @@ fn description(reg &Registry, unit &Unit, mode &Array[u8], output &Array[u8], ou
   text;
 }
 
-fn emit(reg &Registry, unit &Unit, m usize, depth usize, out &Array[u8], text &mut String) {
+fn emit(reg &Registry, unit &Unit, m usize, depth usize, out &Path, text &mut String) {
   mut pad = String.empty();
   mut d = 0usize;
   while d < depth {
@@ -439,7 +439,7 @@ fn emit(reg &Registry, unit &Unit, m usize, depth usize, out &Array[u8], text &m
   text <- pad.view(), module.name.view(), ": {\r\n";
   mut i = 0usize;
   while i < module.files.len() {
-    imm place = conePath(module.files[i].view());
+    imm place = conePath(module.files[i]);
     text <- pad.view(), "    \"", place.view(), "\"\r\n";
     i = i + 1usize;
   }
@@ -447,7 +447,7 @@ fn emit(reg &Registry, unit &Unit, m usize, depth usize, out &Array[u8], text &m
   while i < module.lines.len() {
     imm line = module.lines[i];
     imm incl = includeFor(reg.packages[line.pkg], out);
-    imm place = conePath(incl.view());
+    imm place = conePath(&incl);
     text <- pad.view(), "    import ", line.name.view(), ": \"", place.view(), "\"\r\n";
     i = i + 1usize;
   }

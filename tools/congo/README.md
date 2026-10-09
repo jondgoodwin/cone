@@ -948,6 +948,10 @@ Where it differs from `congo.py`:
   junction or short (8.3) name in it is kept as written, where `Path.resolve()`
   follows it; and a source file's time is in whole seconds when Congo asks
   whether `conec` is stale.
+- A path from `CONEC`, `CONESTD`, `CONGO_HOME`, `LIB` or `PATH` is read as a
+  `Path`: `..` is read off it, as `Path.normalize` does, and a `PATH` folder
+  written with `/` is shown with `\` before a tool's name, where `congo.py` keeps
+  both as written.
 - Where `congo.py` stops with a Python traceback (a folder or file it cannot
   make, write, read or remove, a test program it cannot start), it says
   `congo: error:` and why, and exits 1.

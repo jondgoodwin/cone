@@ -24,13 +24,6 @@
 // 'fs' and 'process' take a '&Path' (a string literal where one is wanted is
 // made one), and answer a 'Path' where they answer a path.
 //
-// The functions of this package that take a '&Array[u8]' and answer a String
-// ('join', 'parent', 'name', 'stem', 'extension', 'parts', 'normalize',
-// 'volume', 'isAbsolute') are what the 'Path' methods were before 'Path'; they
-// remain, as wrappers over the same code, for the one caller that still holds
-// its paths as bytes, the Cone Congo (tools/congo/src), and go when it holds
-// 'Path's. Nothing else uses them: a new caller uses the methods.
-//
 // **Windows' rules.** The paths read here are Windows' paths, as the rest of
 // the OS layer is Windows' for now; a POSIX version of this package would
 // read only '/' as a separator and have no drive letters or shares.
@@ -114,12 +107,6 @@ fn absoluteOf(p &Array[u8]) bool {
   isShare(p, &pre) or (pre.volume == 2usize and pre.whole == 3usize);
 }
 
-// The volume a path starts with, 'C:' or '\\server\share' as written, or ""
-fn volumeOf(p &Array[u8]) String {
-  imm pre = prefixOf(p);
-  String.fromBytes(&p[..pre.volume]);
-}
-
 // Where a path's names end once the separators after its last are left
 // off, never cutting into its volume and root
 fn trimmedEnd(p &Array[u8], pre &Prefix) usize {
@@ -172,14 +159,6 @@ fn parentOf(p &Array[u8]) String {
   String.fromBytes(&p[..i]);
 }
 
-// A path's last name: 'c.txt' of 'a/b/c.txt', 'b' of 'a/b/', and "" of a
-// path that is only a volume and a root ('C:/', '/')
-pub fn name(p &Array[u8]) String {
-  imm pre = prefixOf(p);
-  imm end = trimmedEnd(p, &pre);
-  String.fromBytes(&p[lastNameStart(p, &pre, end)..end]);
-}
-
 // Where the extension of a name starts: at its last dot, unless that is its
 // first byte; at its end when it has none, as '..' has none
 fn extensionStart(n &Array[u8]) usize {
@@ -190,21 +169,6 @@ fn extensionStart(n &Array[u8]) usize {
     if n[i] == '.' { return i; }
   }
   n.len;
-}
-
-// A path's last name without its extension: 'b.tar' of 'a/b.tar.gz'
-pub fn stem(p &Array[u8]) String {
-  imm n = name(p);
-  imm v = n.view();
-  String.from(&v[..extensionStart(v)]);
-}
-
-// The extension of a path's last name, from its last dot, the dot included:
-// '.gz' of 'a/b.tar.gz', '.' of 'b.', and "" of 'b' and '.profile'
-pub fn extension(p &Array[u8]) String {
-  imm n = name(p);
-  imm v = n.view();
-  String.from(&v[extensionStart(v)..]);
 }
 
 // A path's pieces: its volume and root, as written, when it has either
@@ -289,21 +253,6 @@ fn normalizeOf(p &Array[u8]) String {
   out;
 }
 
-// -------- The old functions over bytes --------
-//
-// Before 'Path' these were the package's whole interface, over a '&Array[u8]'
-// and answering a String. They remain as one-line wrappers over the same code
-// the 'Path' methods use, so that the Cone Congo, which still holds its paths
-// as bytes, keeps working until it holds a 'Path'; a new caller uses the
-// methods.
-
-pub fn isAbsolute(p &Array[u8]) bool { absoluteOf(p); }
-pub fn volume(p &Array[u8]) String { volumeOf(p); }
-pub fn join(a &Array[u8], b &Array[u8]) String { joinOf(a, b); }
-pub fn parent(p &Array[u8]) String { parentOf(p); }
-pub fn parts(p &Array[u8]) List[String] { partsOf(p); }
-pub fn normalize(p &Array[u8]) String { normalizeOf(p); }
-
 // -------- Path --------
 
 // A file path: text, Windows' syntax (see the top of this file), owned. It
@@ -348,10 +297,11 @@ pub struct Path is Hash {
     &b[..pre.volume] as &str;
   }
 
-  // The folder it is in; see 'path.parent'
+  // The folder it is in; see 'parentOf' above for the rules
   pub fn parent(self &) Path { Path.fromString(parentOf(text.view())); }
 
-  // Its last name: 'c.txt' of 'a/b/c.txt'
+  // Its last name: 'c.txt' of 'a/b/c.txt', 'b' of 'a/b/', and "" of a path
+  // that is only a volume and a root ('C:/', '/')
   pub fn name(self &) &str {
     imm b &Array[u8] = text.view();
     imm pre = prefixOf(b);
@@ -369,7 +319,8 @@ pub struct Path is Hash {
     &n[..extensionStart(n)] as &str;
   }
 
-  // The extension of its last name, the dot included: '.gz' of 'a/b.tar.gz'
+  // The extension of its last name, from its last dot, the dot included: '.gz'
+  // of 'a/b.tar.gz', '.' of 'b.', and "" of 'b' and '.profile'
   pub fn extension(self &) &str {
     imm b &Array[u8] = text.view();
     imm pre = prefixOf(b);
@@ -379,20 +330,20 @@ pub struct Path is Hash {
     &n[extensionStart(n)..] as &str;
   }
 
-  // This path then another; see 'path.join'. An absolute other wins. The
-  // other may be text, read as a path, so a literal goes here as well:
-  // 'dir.join("src/main.cone")'. (A literal given to a '&Path' is lent as a
-  // temporary Path, but only where no candidate takes it as it is; the text
-  // form takes it as the '&str' it is, so no Path is made for it, and any
-  // other text, a String's view, is joined without being made a Path first.)
+  // This path then another; see 'joinOf' above for the rules. An absolute
+  // other wins. The other is a Path, or text read as one: 'dir.join("src/main.cone")',
+  // a String's view, any '&str'. A literal could be lent to the '&Path' form as
+  // a temporary Path, but the text form takes it as the '&str' it is, so no
+  // Path is made for it, and any other text is joined without being made a
+  // Path first.
   pub fn joinPath overload join(self &, other &Path) Path { Path.fromString(joinOf(text.view(), other.view())); }
   pub fn joinText overload join(self &, other &str) Path { Path.fromString(joinOf(text.view(), other)); }
 
   // Its pieces in order: the volume and root as written when it has either,
-  // then each name; see 'path.parts'
+  // then each name; see 'partsOf' above for the rules
   pub fn parts(self &) List[String] { partsOf(text.view()); }
 
-  // The same path spelled one way; see 'path.normalize'
+  // The same path spelled one way; see 'normalizeOf' above for the rules
   pub fn normalize(self &) Path { Path.fromString(normalizeOf(text.view())); }
 
   // The same bytes, as another Path or as text

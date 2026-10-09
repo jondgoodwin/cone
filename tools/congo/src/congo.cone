@@ -47,7 +47,7 @@ import stdio use *;
 import collections use *;
 import libc;
 import fs;
-import path;
+import path use Path;
 import env;
 import process;
 import time;
@@ -55,25 +55,24 @@ import toml;
 import textdiff;
 
 // The Cone repository this Congo belongs to: the nearest folder above its
-// executable holding packages/core, as conec finds its packages folder; ""
-// when there is none
-fn findRepo() String {
-  mut exe = asPath("");
+// executable holding packages/core, as conec finds its packages folder; the
+// empty path when there is none
+fn findRepo() Path {
+  mut exe Path = "";
   match process.currentExe() {
     case mut ok Ok { exe <=> ok.value; }
-    case is Error { return String.empty(); }
+    case is Error { return Path.from(""); }
   }
-  imm start = winPath(exe.view());
-  mut folder = parentOf(start.view());
+  mut folder = exe.parent();
   while true {
-    imm core = joined(folder.view(), "packages\\core\\src\\core.cone");
-    imm designated = joined(folder.view(), "packages\\core\\core.cone");
-    if fs.isFile(&asPath(core.view())) or fs.isFile(&asPath(designated.view())) { return folder; }
-    imm up = parentOf(folder.view());
-    if up.equals(folder.view()) { return String.empty(); }
+    imm core = folder.join("packages/core/src/core.cone");
+    imm designated = folder.join("packages/core/core.cone");
+    if fs.isFile(&core) or fs.isFile(&designated) { return folder; }
+    imm up = folder.parent();
+    if up.view() == folder.view() { return Path.from(""); }
     folder = up;
   }
-  String.empty();
+  Path.from("");
 }
 
 // -------- the command line, as congo.py's argparse reads it --------
@@ -87,7 +86,7 @@ fn usageError(msg String) i32 {
 }
 
 // A command's own usage line
-fn commandUsage(command &Array[u8]) String {
+fn commandUsage(command &str) String {
   mut usage = cat("usage: congo ", command, " [-h]");
   if command == "new" { usage <- " [--lib] name [path]"; }
   elif command == "build" { usage <- " [--release] [-D NAME[=INT]]"; }
@@ -98,12 +97,12 @@ fn commandUsage(command &Array[u8]) String {
 }
 
 // An error the command's own parser reports, under its usage line
-fn commandError(command &Array[u8], msg String) i32 {
+fn commandError(command &str, msg String) i32 {
   printFlush();
   imm usage = commandUsage(command);
   eprintStr(usage.view());
   eprintStr("\ncongo ");
-  eprintStr(command as &str);
+  eprintStr(command);
   eprintStr(": error: ");
   eprintStr(msg.view());
   eprintStr("\n");
@@ -111,19 +110,19 @@ fn commandError(command &Array[u8], msg String) i32 {
 }
 
 // Whether arg is '--name', or a long option abbreviated to a prefix of it
-fn isOption(arg &Array[u8], name &Array[u8]) bool {
-  if arg.len < 3usize or arg.len > name.len { return false; }
-  &name[..arg.len] == arg;
+fn isOption(arg &str, name &str) bool {
+  if arg.len() < 3usize or arg.len() > name.len() { return false; }
+  &name[..arg.len()] == arg;
 }
 
-fn isHelp(arg &Array[u8]) bool { arg == "-h" or isOption(arg, "--help"); }
+fn isHelp(arg &str) bool { arg == "-h" or isOption(arg, "--help"); }
 
 // Whether argparse reads arg as an option: a '-' and more, but not a
 // negative number
-fn looksLikeOption(arg &Array[u8]) bool {
-  if arg.len < 2usize or arg[0usize] != '-' { return false; }
+fn looksLikeOption(arg &str) bool {
+  if arg.len() < 2usize or arg[0usize] != '-' { return false; }
   mut i = 1usize;
-  while i < arg.len {
+  while i < arg.len() {
     if not ((arg[i] >= '0' and arg[i] <= '9') or arg[i] == '.') { return true; }
     i = i + 1usize;
   }
@@ -150,7 +149,7 @@ fn releaseAndDefineHelp() {
   printStr("                        definedInt in every compile of the build (provisional)\n");
 }
 
-fn commandHelp(command &Array[u8]) i32 {
+fn commandHelp(command &str) i32 {
   imm usage = commandUsage(command);
   printStr(usage.view());
   printStr("\n\n");
@@ -241,20 +240,20 @@ fn main() i32 {
       i = i + 2usize;
       continue;
     }
-    if hasRelease and arg.len > 2usize and arg[0usize] == '-' and arg[1usize] == 'D' {
+    if hasRelease and arg.len() > 2usize and arg[0usize] == '-' and arg[1usize] == 'D' {
       mut from = 2usize;
       if arg[2usize] == '=' { from = 3usize; }
       defines.push(String.from(&arg[from..]));
       i = i + 1usize;
       continue;
     }
-    if hasRelease and eq < arg.len and isOption(&arg[..eq], "--define") {
+    if hasRelease and eq < arg.len() and isOption(&arg[..eq], "--define") {
       defines.push(String.from(&arg[eq + 1usize..]));
       i = i + 1usize;
       continue;
     }
-    mut explicit &Array[u8] = "";
-    if arg.len >= 2usize and arg[0usize] == '-' and eq < arg.len {
+    mut explicit &str = "";
+    if arg.len() >= 2usize and arg[0usize] == '-' and eq < arg.len() {
       // '--flag=value': a flag takes no value
       imm opt = &arg[..eq];
       if opt == "-h" or isOption(opt, "--help") { explicit = "-h/--help"; }
@@ -262,7 +261,7 @@ fn main() i32 {
       elif command == "new" and isOption(opt, "--lib") { explicit = "--lib"; }
       elif command == "test" and isOption(opt, "--bless") { explicit = "--bless"; }
     }
-    if explicit.len > 0usize {
+    if explicit.len() > 0usize {
       return commandError(command, cat("argument ", explicit, ": ignored explicit argument '", &arg[eq + 1usize..], "'"));
     }
     if hasRelease and isOption(arg, "--release") { release = true; }

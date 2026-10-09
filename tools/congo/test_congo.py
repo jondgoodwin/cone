@@ -111,7 +111,7 @@ class NotNames(unittest.TestCase):
         # The Cone Congo keeps the same three lists, in src/header.cone
         header = (HERE / "src" / "header.cone").read_text(encoding="utf-8")
         lists = {name: set(words.split()) for name, words in
-                 re.findall(r'fn (is\w+)\(w &Array\[u8\]\) bool \{\s*inWords\(w, "([^"]*)"\)', header)}
+                 re.findall(r'fn (is\w+)\(w &str\) bool \{\s*inWords\(w, "([^"]*)"\)', header)}
         self.assertEqual(lists, {"isKeyword": congo.KEYWORDS, "isReserved": congo.RESERVED,
                                  "isPermission": congo.PERMISSIONS})
         self.assertIsNone(congo.name_fault("usecheck"))
