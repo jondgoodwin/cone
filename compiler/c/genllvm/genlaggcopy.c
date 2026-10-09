@@ -163,6 +163,25 @@ static unsigned genlAggAlignOf(GenState *gen, LLVMTypeRef type) {
     return LLVMABIAlignmentOfType(gen->datalayout, type);
 }
 
+// The slot a join of paths that each make a value of this type loads it from,
+// the paths storing it there, or NULL where it is a phi's instead. A small
+// aggregate is a slot's: LLVM never splits a phi of an aggregate into one per
+// scalar, so one carried round a loop that way stops the loop from being
+// vectorized (an inlined function that returns a small struct or an Option),
+// where mem2reg and SROA turn the slot into a phi per scalar. A large one is
+// not, because it is copied in memory already (a phi gets a slot, above), and
+// on a GPU target an aggregate is carried as its leaves.
+LLVMValueRef genlMergeSlot(GenState *gen, INode *vtype) {
+    if (gen->opt->gpu)
+        return NULL;
+    LLVMTypeRef type = genlType(gen, vtype);
+    LLVMTypeKind kind = LLVMGetTypeKind(type);
+    if ((kind != LLVMStructTypeKind && kind != LLVMArrayTypeKind) || !LLVMTypeIsSized(type)
+        || LLVMStoreSizeOfType(gen->datalayout, type) == 0 || genlAggIsLarge(gen, type))
+        return NULL;
+    return genlAlloca(gen, type, "merge");
+}
+
 // ---- How a result returns -------------------------------------------------------
 
 // The scalars an aggregate holds, all its parts' parts: how many (counting

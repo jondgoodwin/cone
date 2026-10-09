@@ -155,7 +155,12 @@ gets `blockend` and a `GenBlockState` on a fixed 256-deep stack.
 **A phi is built only where the block converges on a value**, and one condition
 answers that — `vtype` is neither `VoidTag` nor `UnknownTag` — read once to
 allocate the arrays and once to build the phi. `genlBreak` guards on those arrays
-existing, while still generating its value for the effects.
+existing, while still generating its value for the effects. **Where the value is
+a small struct or array, the "phi" is a slot** (`GenBlockState.slot`, from
+`genlMergeSlot`): `genlBreak` stores the value into it and the block's end loads
+it, because LLVM never splits a phi of an aggregate and a loop carrying one stays
+scalar ([Generation](../phases/generation.md), "A small aggregate is merged
+through a slot").
 
 A `terminated` flag stops emission after a jump, because an instruction after a
 terminator is invalid IR — reachable only in an `each` block, where the step
