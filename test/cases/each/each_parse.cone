@@ -1,10 +1,12 @@
-// 'each' headers the parser cannot turn into a loop.
+// 'each' headers the parser cannot read.
 //
-// All of 'each' is parse-stage work: the parser rewrites the loop into a
-// variable declaration and a 'while', so the header has to be well formed
-// before there is anything for a later stage to look at. Each case sits in its
-// own function, because the parser abandons the whole 'each' statement at the
-// first thing it cannot read and re-reads what follows as a statement of its
+// The parser reads the whole header: the variables, 'in', the source and a
+// range's 'by'. A numeric range it rewrites into a variable declaration and a
+// 'while' there and then; anything else it leaves to type check, which builds
+// the loop once it knows what the source is. So the header has to be well
+// formed before there is anything for a later stage to look at. Each case sits
+// in its own function, because the parser abandons the whole 'each' statement at
+// the first thing it cannot read and re-reads what follows as a statement of its
 // own.
 
 mod each_parse;
@@ -25,24 +27,26 @@ fn noIn() {
   }
 }
 
-// Only the numeric range operators are rewritten into a loop. Everything else
-// refeach.html documents -- a collection, a slice, a closure iterator -- has no
-// iteration protocol behind it yet, so the loop and its body are dropped. That
-// has to be said: dropping them in silence makes 'each' a statement that
-// compiles and does nothing.
-fn notARange() {
-  each x in 7 {          //~ ErrorNotIterable:13 "only iterate over a numeric range"
+// A comma after the variable asks for another one
+fn missingSecondVariable() {
+  each k, in 5 {         //~ ErrorNoVar:11 "Missing variable name"
+                         //~^ ErrorBadTerm:11 follow-on
+                         //~^^ ErrorNoSemi:13 follow-on
+                         //~^^^ ErrorNoSemi:15 follow-on
   }
-  each y in [1, 2] {     //~ ErrorNotIterable:13 "only iterate over a numeric range"
+}
+
+// A numeric range gives one variable, the number: two would unpack a tuple
+fn rangeWithTwoVariables() {
+  each i, j in 0 < 3 {   //~ ErrorBadTok:18 "one variable"
   }
 }
 
 // 'by' is recognized only after a range comparison. '5' is not one, so 'by' is
 // never consumed and the parser is still looking for the body's '{' when it
-// reaches it -- and the iterator is then reported as the non-range it is.
+// reaches it.
 fn stepWithoutRange() {
   each i in 5 by 1 {     //~ ErrorNoLCurly:15
-                         //~^ ErrorNotIterable:13 "only iterate over a numeric range"
   }
 }
 

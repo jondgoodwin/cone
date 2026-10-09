@@ -18,6 +18,19 @@
 
 INode *parseEach(ParseState *parse, Name *lifesym, int stmtflag);
 
+// The most variables an 'each' unpacks a tuple item into
+#define EachMaxVars 8
+
+// A use of the counter a range loop steps, which no name reaches: its uses are
+// bound to its declaration, as a match's hidden variable's are, so a copy of the
+// step carried into an inner loop by a labelled 'continue' still reaches this
+// loop's counter
+static INode *parseEachCounterUse(VarDclNode *counter, INode *lexnode) {
+    NameUseNode *use = newNameUseFromLex(anonName, lexnode);
+    use->dclnode = (INode*)counter;
+    return (INode*)use;
+}
+
 // Build 'if condexp {break}', or 'if !condexp {break}' when 'unless' is set.
 // The break names the loop's lifetime when it has one, so that a copy of it
 // carried into an inner loop -- ahead of a labelled 'continue' -- still leaves
@@ -364,8 +377,26 @@ INode *parseEach(ParseState *parse, Name *lifesym, int stmtflag) {
         errorMsgLex(ErrorNoVar, "Missing variable name");
         return (INode *)outerblk;
     }
-    Name* elemname = lex->val.ident;
-    lexNextToken();
+    // One variable, or several that unpack a tuple item: 'each k, v in dict'
+    // Each is a fresh variable of every pass that nothing can change; a pass's
+    // value is given it once the loop is built
+    VarDclNode *elemvars[EachMaxVars];
+    uint32_t nelems = 0;
+    while (1) {
+        if (nelems == EachMaxVars) {
+            errorMsgLex(ErrorBadTok, "An 'each' unpacks at most %d variables", EachMaxVars);
+            return (INode *)outerblk;
+        }
+        elemvars[nelems++] = newVarDclNode(lex->val.ident, VarDclTag, (INode*)immPerm);
+        lexNextToken();
+        if (!lexIsToken(CommaToken))
+            break;
+        lexNextToken();
+        if (!lexIsToken(IdentToken)) {
+            errorMsgLex(ErrorNoVar, "Missing variable name");
+            return (INode *)outerblk;
+        }
+    }
     if (!lexIsToken(InToken)) {
         errorMsgLex(ErrorBadTok, "Missing 'in'");
         return (INode *)outerblk;
@@ -391,21 +422,28 @@ INode *parseEach(ParseState *parse, Name *lifesym, int stmtflag) {
     loopnode->lifesym = lifesym;
 
     // Assemble logic for a range (with optional step), e.g.:
-    // { mut elemname = initial; while elemname <= iterend { ... ; elemname += step}}
+    // { mut counter = initial; while counter <= iterend { imm elemname = counter; ... ; counter += step}}
+    // The loop's variable is a new one on every pass, which the body cannot
+    // change: counting by hand is a 'while'. The counter is the loop's own, a
+    // variable no name reaches, its uses bound here.
     if (isrange) {
         FnCallNode *itercmp = (FnCallNode *)iter;
+        if (nelems != 1) {
+            errorMsgNode(iter, ErrorBadTok, "A numeric range gives one variable, the number.");
+            return (INode *)outerblk;
+        }
         // Every node below is built after parseExprBlock has consumed the whole
         // loop body, so the lexer sits on the token following the body's '}' --
         // which is usually the enclosing function's. Position them on the range
         // expression instead, since that is what the reader wrote and what the
         // diagnostic is really about.
-        VarDclNode *elemdcl = newVarDclNode(elemname, VarDclTag, (INode*)mutPerm);
+        VarDclNode *elemdcl = newVarDclNode(anonName, VarDclTag, (INode*)mutPerm);
         inodeLexCopy((INode*)elemdcl, iter);
         elemdcl->value = itercmp->objfn;
         nodesAdd(&((BlockNode*)outerblk)->stmts, (INode*)elemdcl);
-        itercmp->objfn = (INode*)newNameUseFromLex(elemname, iter);
+        itercmp->objfn = parseEachCounterUse(elemdcl, iter);
         if (step) {
-            FnCallNode *pluseq = newFnCallOpnameLower(iter, (INode*)newNameUseFromLex(elemname, iter), plusEqName, 1);
+            FnCallNode *pluseq = newFnCallOpnameLower(iter, parseEachCounterUse(elemdcl, iter), plusEqName, 1);
             pluseq->flags |= FlagOpAssgn | FlagLvalOp;
             nodesAdd(&pluseq->args, step);
             // A step of more than one need never land on the bound, so nothing
@@ -422,11 +460,11 @@ INode *parseEach(ParseState *parse, Name *lifesym, int stmtflag) {
             // carries a copy of, and 'prev' is a phantom variable the copy
             // re-points at its own declaration.
             VarDclNode *prevdcl = newVarDclFull(anonName, VarDclTag, unknownType, (INode*)immPerm,
-                (INode*)newNameUseFromLex(elemname, iter));
+                parseEachCounterUse(elemdcl, iter));
             inodeLexCopy((INode*)prevdcl, iter);
             NameUseNode *prevuse = newNameUseFromLex(anonName, iter);
             prevuse->dclnode = (INode*)prevdcl;
-            FnCallNode *wrapped = newFnCallOpnameLower(iter, (INode*)newNameUseFromLex(elemname, iter),
+            FnCallNode *wrapped = newFnCallOpnameLower(iter, parseEachCounterUse(elemdcl, iter),
                 isrange > 0 ? ltName : gtName, 1);
             nodesAdd(&wrapped->args, (INode*)prevuse);
             BlockNode *stepblk = newBlockNode();
@@ -437,7 +475,7 @@ INode *parseEach(ParseState *parse, Name *lifesym, int stmtflag) {
             nodesAdd(&loopnode->stmts, (INode*)stepblk);
         }
         else {
-            INode *incr = (INode *)newFnCallOpnameLower(iter, (INode *)newNameUseFromLex(elemname, iter),
+            INode *incr = (INode *)newFnCallOpnameLower(iter, parseEachCounterUse(elemdcl, iter),
                 isrange > 0 ? incrPostName : decrPostName, 0);
             incr->flags |= FlagLvalOp;
             Name *cmpname = ((NameUseNode*)itercmp->methfld)->namesym;
@@ -456,7 +494,7 @@ INode *parseEach(ParseState *parse, Name *lifesym, int stmtflag) {
                 cstate.selftype = NULL;
                 cstate.selfparm = NULL;
                 cstate.scope = 0;
-                FnCallNode *atbound = newFnCallOpnameLower(iter, (INode*)newNameUseFromLex(elemname, iter), eqName, 1);
+                FnCallNode *atbound = newFnCallOpnameLower(iter, parseEachCounterUse(elemdcl, iter), eqName, 1);
                 nodesAdd(&atbound->args, cloneNode(&cstate, nodesGet(itercmp->args, 0)));
                 BlockNode *stepblk = newBlockNode();
                 inodeLexCopy((INode*)stepblk, iter);
@@ -472,16 +510,24 @@ INode *parseEach(ParseState *parse, Name *lifesym, int stmtflag) {
         // resolution find the step to copy ahead of a 'continue'.
         loopnode->flags |= FlagLoopStep;
         parseInsertWhileBreak((INode*)loopnode, iter);
+        // The pass's variable, taken from the counter after the guard has let the pass run
+        elemvars[0]->value = parseEachCounterUse(elemdcl, iter);
+        nodesInsert(&loopnode->stmts, (INode*)elemvars[0], 1);
         nodesAdd(&outerblk->stmts, (INode*)loopnode);
     }
     else {
-        // Only the numeric range operators are rewritten into a loop. Anything
-        // else -- a collection, a slice, a closure iterator -- has no iteration
-        // protocol behind it yet, so the loop and its body are dropped. Saying
-        // so is the difference between an unimplemented feature and a statement
-        // that silently does nothing.
-        errorMsgNode(iter, ErrorNotIterable,
-            "'each' can only iterate over a numeric range, such as 'each x in 0 < n'.");
+        // Anything but a range is walked as its type says: type check builds the
+        // loop (eachLower) once it knows whether the source is an array or slice,
+        // a cursor, or gives one. The source waits in a hidden variable of the
+        // block, and the reader's variables are declared, with no value yet, at
+        // the head of the loop.
+        outerblk->flags |= FlagEach;
+        VarDclNode *srcdcl = newVarDclFull(anonName, VarDclTag, unknownType, (INode*)mutPerm, iter);
+        inodeLexCopy((INode*)srcdcl, iter);
+        nodesAdd(&outerblk->stmts, (INode*)srcdcl);
+        for (uint32_t i = nelems; i > 0; --i)
+            nodesInsert(&loopnode->stmts, (INode*)elemvars[i - 1], 0);
+        nodesAdd(&outerblk->stmts, (INode*)loopnode);
     }
     return (INode *)outerblk;
 }

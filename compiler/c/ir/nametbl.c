@@ -231,6 +231,10 @@ void nametblInit() {
     fillName = nametblFind("fill", 4);
     lenName = nametblFind("len", 3);
     capacityName = nametblFind("capacity", 8);
+    nextName = nametblFind("next", 4);
+    iterName = nametblFind("iter", 4);
+    someName = nametblFind("Some", 4);
+    noneName = nametblFind("None", 4);
 
     allocMethodName = nametblFind("alloc", 5);
     initMethodName = nametblFind("init", 4);

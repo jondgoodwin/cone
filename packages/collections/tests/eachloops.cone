@@ -1,0 +1,142 @@
+// 'each' over the collections, and the cursors their 'iter' gives. A list is
+// walked as the slice it lends, a counted loop, so its 'iter' is walked here
+// by a function generic over cursors; the deque, the set and the two
+// dictionaries are walked through the cursor their 'iter' gives, a
+// dictionary's a pair of borrows that two variables unpack. Every expected
+// value is worked out by hand from the entries inserted:
+// - the list holds 1, 2, 3, 4: ten in all, whose 'iter' counts four;
+// - the strings are "ab", "cde" and "f": six bytes in all, still there afterwards;
+// - the deque holds 10, 20, 30 and the set 7, 8, 9: sixty and twenty-four;
+// - the dictionaries map 1 to 10, 2 to 20 and 3 to 30: key times value over the
+//   pairs is 10 + 40 + 90 = 140, the keys sum to 6, and the ordered one, which
+//   visits in insertion order (3, 1, 2), reads its keys as the digits 312.
+
+mod eachloops;
+
+import testing use *;
+import collections use *;
+
+// A function generic over cursors, whatever the item is
+fn countItems[T, S Iterator[T]](s &mut S) usize {
+  mut n = 0usize;
+  each x in s {
+    n = n + 1usize;
+  }
+  n;
+}
+
+// One generic over what gives a cursor
+fn countOf[T, I, C Iterable[T, I]](c &C) usize where I is Iterator[T] {
+  mut n = 0usize;
+  each x in c {
+    n = n + 1usize;
+  }
+  n;
+}
+
+// A pair's key times its value, over any cursor of pairs
+fn productOf[S Iterator[(&u64, &i64)]](s &mut S) i64 {
+  mut total = 0i64;
+  each k, v in s {
+    total = total + i64.from(*k) * *v;
+  }
+  total;
+}
+
+fn lists() {
+  imm l = new List[i64] <- 1, 2, 3, 4;
+  mut sum = 0i64;
+  each x in l {
+    sum = sum + *x;
+  }
+  expectInt(sum, 10, "a list, each variable a borrow of an element");
+  expectUInt(u64.from(l.len), 4, "and the list is still whole");
+
+  mut cur = l.iter();
+  expectUInt(u64.from(countItems(&mut cur)), 4, "its iter is a cursor of borrows, counted by a bound");
+  expectUInt(u64.from(countOf(&l)), 4, "and a list is an Iterable");
+
+  mut names = new List[String];
+  names.push(String.from("ab"));
+  names.push(String.from("cde"));
+  names.push(String.from("f"));
+  mut bytes = 0usize;
+  each s in names {
+    bytes = bytes + s.len;
+  }
+  expectUInt(u64.from(bytes), 6, "a list of owned strings is read through borrows");
+  expectUInt(u64.from(names.len), 3, "and none is moved out");
+
+  mut nothing = 0usize;
+  each x in new List[i64] {
+    nothing = nothing + 1usize;
+  }
+  expectUInt(u64.from(nothing), 0, "an empty list is walked by no pass");
+}
+
+fn queues() {
+  mut d = new Deque[i64];
+  d.push(10i64);
+  d.push(20i64);
+  d.push(30i64);
+  mut sum = 0i64;
+  each x in d {
+    sum = sum + *x;
+  }
+  expectInt(sum, 60, "a deque is walked through its iter");
+  expectUInt(u64.from(countOf(&d)), 3, "and is an Iterable");
+
+  mut s = new Set[i64];
+  s.insert(7i64);
+  s.insert(8i64);
+  s.insert(9i64);
+  mut total = 0i64;
+  each x in s {
+    total = total + *x;
+  }
+  expectInt(total, 24, "a set is walked through its iter");
+}
+
+fn dictionaries() {
+  mut d = new Dict[u64, i64];
+  d.insert(1u64, 10i64);
+  d.insert(2u64, 20i64);
+  d.insert(3u64, 30i64);
+  mut products = 0i64;
+  each k, v in d {
+    products = products + i64.from(*k) * *v;
+  }
+  expectInt(products, 140, "a dictionary's pairs, unpacked into a key and a value");
+
+  mut keys = 0u64;
+  each pair in d {
+    keys = keys + *pair.0;
+  }
+  expectUInt(keys, 6, "or taken whole, as a tuple");
+
+  mut pairs = d.iter();
+  expectInt(productOf(&mut pairs), 140, "its iter is an Iterator of pairs of borrows");
+  expectUInt(u64.from(countOf(&d)), 3, "and a dictionary is an Iterable");
+
+  mut o = new OrderedDict[u64, i64];
+  o.insert(3u64, 30i64);
+  o.insert(1u64, 10i64);
+  o.insert(2u64, 20i64);
+  mut order = 0u64;
+  mut valuesum = 0i64;
+  each k, v in o {
+    order = order * 10u64 + *k;
+    valuesum = valuesum + *v;
+  }
+  expectUInt(order, 312, "an ordered dictionary's pairs, in insertion order");
+  expectInt(valuesum, 60, "with their values");
+  mut opairs = o.iter();
+  expectInt(productOf(&mut opairs), 140, "and its iter an Iterator of pairs too");
+}
+
+fn main() i32 {
+  lists();
+  queues();
+  dictionaries();
+  done();
+}

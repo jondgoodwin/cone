@@ -13,8 +13,10 @@
 
     <div class="text">
 
-	<p style="margin-left: 40px;"><i>Note: Only numeric range iterators with &lt;, &le;, &gt;, &ge; and by have been
-			implemented. An enum's variant is constructed with its values in square brackets, as written here: that is the current spelling, and how a variant is constructed is an open design question (<a href="refenum.html#init">Enums</a>).</i></p>
+	<p style="margin-left: 40px;"><i>Note: Built: number ranges with &lt;, &le;, &gt;, &ge; and by; arrays, slices and lists; and
+			anything with a <span class="pre">next</span> method (a cursor) or an <span class="pre">iter</span> method (something
+			that gives one), with one variable or several that unpack a pair. Not built yet: closure iterators, and the ways to
+			walk a list that change its items in place, consume it, or number them. An enum's variant is constructed with its values in square brackets, as written here: that is the current spelling, and how a variant is constructed is an open design question (<a href="refenum.html#init">Enums</a>).</i></p>
 
 	<p><span class="pre">each</span> makes it easier than <span class="pre">while</span>
 		to iterate over a sequence of values.
@@ -22,7 +24,7 @@
 <pre>
 fn fact(n i32) i32 {
   mut result = 1;
-  each x in 2 ... n {
+  each x in 2 &lt;= n {
     result *= x;
   }
   result;
@@ -33,41 +35,45 @@ fn fact(n i32) i32 {
 		<p>As this example shows, the <span class="pre">each</span> statement has a simple structure:</p>
 		<ul>
 			<li>One or more variables to be bound to values produced by the iterator.
-				These variables are local to the <span class="pre">each</span> block and cannot be accessed outside that scope.</li>
+				These variables are local to the <span class="pre">each</span> block and cannot be accessed outside that scope.
+				Every pass binds new ones, and the block cannot change them: counting by hand is a
+				<span class="pre">while</span>.</li>
 			<li>An iterator that produces different value(s) on each iteration of the loop.
 				The iterator follows <span class="pre">in</span>.</li>
 			<li>A block containing the logic to be performed on each iteration.</li>
 		</ul>
-	
+
 	<h2>break and continue</h2>
-	<p><span class="pre">break</span> and <span class="pre">continue</span> statements may be used within an 
-		<span class="pre">each</span> block to stop or re-start the loop.</p>
+	<p><span class="pre">break</span> and <span class="pre">continue</span> statements may be used within an
+		<span class="pre">each</span> block to stop or re-start the loop. Either may name a loop's
+		label, to leave or re-start an outer one, and <span class="pre">return</span> leaves the function.</p>
 
 	<h2>Iterators</h2>
 	<p><span class="pre">each</span> supports several ways to iterate over a sequence of values:</p>
 	<ul>
 		<li><b>Number range</b>, for simple arithmetic progressions.</li>
-		<li><b>Collection</b>, to work with individual elements within a collection.</li>
-		<li><b>Closure</b>, to deal with algorithmically-generated values.</li>
+		<li><b>Array, slice or list</b>, to work with individual elements.</li>
+		<li><b>Cursor</b>, something with a <span class="pre">next</span> method, and anything that gives one.</li>
+		<li><b>Closure</b>, to deal with algorithmically-generated values (not built yet).</li>
 	</ul>
 
 	<h3>Number Range Iterator</h3>
-	<p>As the above example shows, the <span class="pre">...</span> or <span class="pre">..</span>
-		range operator can be used to iterate successively over integers or floating point numbers.
+	<p>As the above example shows, a range is written as a comparison, <span class="pre">&lt;</span>
+		or <span class="pre">&lt;=</span>, and iterates successively over integers or floating point numbers.
 		Iteration begins with the first number and then increments by 1 until it
-		reaches (..) or passes (...) the second number.
+		reaches (<span class="pre">&lt;</span>) or passes (<span class="pre">&lt;=</span>) the second number.
 		Expressions may be used in place of literal numbers, if desired.</p>
 	<p>To iterate <b>backwards</b> (decrementing the iterated number), use the
 			<span class="pre">&gt;</span> or <span class="pre">&gt;=</span> operators instead.</p>
 <pre>
-each x in 6 &gt; 1;  // iterates:  6 5 4 3 2
+each x in 6 &gt; 1 {  // iterates:  6 5 4 3 2
+}
 </pre>
-	</p>
 	<p>A <b>step value</b> may be specified after <span class="pre">by</span>.
 		Instead of incrementing or decrementing by 1, the step value specifies how much to increase the iterated number each time:</p>
 <pre>
 mut sum = 0;
-each x in 0 ... 10 by 2 { // iterates: 0, 2, 4, 6, 8, 10
+each x in 0 &lt;= 10 by 2 { // iterates: 0, 2, 4, 6, 8, 10
   sum += x;
 }
 </pre>
@@ -76,34 +82,100 @@ each x in 0 ... 10 by 2 { // iterates: 0, 2, 4, 6, 8, 10
 		which is also what a step past the largest (or smallest) value the number's type can hold
 		amounts to:</p>
 <pre>
-each x in 10 &gt;= 0 by -2;      // iterates: 10, 8, 6, 4, 2, 0
-each x in 250u8 &lt;= 255 by 2;  // iterates: 250, 252, 254
+each x in 10 &gt;= 0 by -2 {      // iterates: 10, 8, 6, 4, 2, 0
+}
+each x in 250u8 &lt;= 255 by 2 {  // iterates: 250, 252, 254
+}
 </pre>
+	<p>A range gives one variable. The loop steps a counter of its own and each pass's
+		variable holds the number, so writing to the variable is refused. A loop that steers its count by hand
+		is a <span class="pre">while</span>.</p>
 
-	<h3 id="array">Collection Iterator</h3>
-	<p><span class="pre">each</span> can be used to iterate through 
-		every element in a collection,	one at a time. For example:</p>
+	<h3 id="array">Array, Slice and List Iterators</h3>
+	<p><span class="pre">each</span> can be used to iterate through
+		every element of an array, a slice or a list, one at a time. The variable is a
+		<b>borrow</b> of the element, read through <span class="pre">*</span>
+		(the elements themselves stay where they are, and the list is still whole afterwards):</p>
 <pre>
 mut sum = 0;
 each x in [4, 3, 8, 2] {
-  sum += x;
+  sum += *x;
+}
+
+mut chars = 0usize;
+each name in names {      // a List[String]: name is a &amp;String
+  chars += name.len;
 }
 </pre>
-	<p>Iteration can also capture the index or key for each element value:</p>
+	<p>An array or a slice is walked by a counted loop over its length, and so is a list, which lends its
+		elements as a slice: none of them makes an iterator object, and the loop is
+		the one a <span class="pre">while</span> over the indexes would be. While the loop runs the list
+		may not be changed, since the borrows it hands out would not survive a change.</p>
+
+	<h3>Cursor Iterators</h3>
+	<p>A <b>cursor</b> is anything with a <span class="pre">next</span> method that answers an
+		<a href="refoption.html">optional value</a>, <span class="pre">Some</span> with the next item or
+		<span class="pre">None</span> when there are no more. A type needs no declaration to be one,
+		only the method (it is met by shape, as <span class="pre">Iterator</span> in the core library names):</p>
 <pre>
-each i, x in intslice {
-  newslice[i] = x;
+struct Countdown {
+  n i32;
+
+  pub fn next(self &amp;mut) Option[i32] {
+    if n &lt;= 0 { return None[i32][]; }
+    imm v = n;
+    n = n - 1;
+    Some[i32][v];
+  }
+}
+
+mut countdown = new Countdown(3);
+mut digits = 0;
+each n in countdown {     // iterates: 3 2 1
+  digits = digits * 10 + n;
 }
 </pre>
-	
+	<p>The cursor is used as it is: a cursor in a variable is advanced there, so a loop left with
+		<span class="pre">break</span> can be followed by another that carries on from where it stopped.
+		A cursor that lends (a deque's <span class="pre">items()</span>, say) gives borrows
+		of its items, as an array does; one that gives values gives the values themselves.
+		The items must be values that copy, or borrows: an item that moves (a <span class="pre">String</span>
+		the cursor hands out) cannot yet be taken out of the optional value, and is refused.</p>
+
+	<h4>Something that gives a cursor</h4>
+	<p>A value with no <span class="pre">next</span> but an <span class="pre">iter</span> method,
+		which gives a cursor, is walked through the cursor it gives, as if the loop had called
+		<span class="pre">iter</span> itself:</p>
+<pre>
+each x in collection {  // equivalent to: each x in collection.iter()
+}
+</pre>
+	<p>The collections give cursors in this way: a deque's, a set's and the dictionaries'.
+		Calling <span class="pre">iter</span> only reads the collection: it is borrowed and not consumed,
+		and may not be changed while the loop runs.</p>
+
+	<h4>Two variables</h4>
+	<p>Two or more variables unpack an item that is a tuple. A dictionary's cursor gives its
+		pairs, a borrow of the key and a borrow of the value, so</p>
+<pre>
+mut both = 0;
+each key, value in ages {   // a Dict[i64, i64]
+  both += *key * *value;
+}
+</pre>
+	<p>and one variable would take the pair whole (<span class="pre">pair.0</span> and
+		<span class="pre">pair.1</span>). A number of variables that does not match the tuple, and
+		any number but one for an array, a slice or a list, are refused.</p>
+
 	<h3>Closure Iterator</h3>
-	<p>Look to closures for iterator versatility.
+	<p><i>Not built yet.</i> Look to closures for iterator versatility.
 			Using closure iterators, one can scan through elements in a complex collection,
 			retrieve values from a streaming resource, algorithmically calculate a sequence of values, etc.
 		Because closures are stateful, they can generate a new value on every call.</p>
 	<p>In order for a closure to be suitable as an iterator, it must be able to signal when it is done producing values.
 		 It typically does this by returning an <a href="refoption.html">optional value</a>,
-		 with the value of <span class="pre">None</span> signalling when it is done.</p>
+		 with the value of <span class="pre">None</span> signalling when it is done, just as a cursor's
+		 <span class="pre">next</span> does.</p>
 	<p>In the following example, imagine a closure that starts off
 	holding the value 12, and halves (and returns) its value on each call. When the value gets to 0,
 	it returns <span class="pre">None</span> instead:</p>
@@ -115,27 +187,10 @@ each x in |{cnt = 12}| if cnt &gt; 0 {Some[cnt /= 2]} else {None} {
 </pre>
 		<p>The value of sum at the end will be 10, as each successive call to the closure returns 6, 3, and 1.
 			After 1, it returns <span class="pre">None</span>, which stops iteration.</p>
-		<p>Because it is stateful, a closure is typically single use. It is created before it is needed, used to produce values lazily, 
-			and then discarded afterward. 
+		<p>Because it is stateful, a closure is typically single use. It is created before it is needed, used to produce values lazily,
+			and then discarded afterward.
 			This is because, unless its state can be independently reset, it will only ever afterward say it is out of values.</p>
-		
-		<h4>Automatic Closure Creation</h4>
-		<p>Not uncommonly, we simply want to specify some resource,
-			and have <span class="pre">each</span>
-			automatically create a closure for iterating over the collection.
-			For this reason, when a value is specified on <span class="pre">each</span> 
-			that is not already an iterator,
-			a call to the <span class="pre">iter</span> method is implicitly made.
-			<span class="pre">iter</span> is expected to return a closure iterator:</p>
-<pre>
-each x in collection;  // equivalent to: each x in collection.iter
-</pre>
-		<p>Similarly, if an iterator is expected to return two values,
-			the <span class="pre">kviter</span> method is implicitly invoked instead:</p>
-<pre>
-each key, value in dictionary;
-</pre>
-	
+
 	<p style="text-align: right; margin-top: 2em;">
 		<a href="refexcept.html"><img alt="_" src="next.png" /></a>
 	</p>
