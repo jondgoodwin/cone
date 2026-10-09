@@ -371,15 +371,21 @@ void eachLower(TypeCheckState *pstate, BlockNode *outer) {
     }
     int place = eachRecheckable(src);
 
-    // The cursor a slice gives (core's ArrayIter, ArrayIndexed), made for this
-    // loop, is the slice and a count it starts from: walked as the slice is, by
-    // a counted loop, rather than through its Option each pass
+    // The cursor a slice gives (core's ArrayIter, ArrayIndexed, and ArrayMutItems,
+    // MutItemsIndexed which lend '&mut'), made for this loop, is the slice and a count
+    // it starts from: walked as the slice is, by a counted loop, rather than through
+    // its Option each pass. What is lent is what the cursor's own 'next' lends: '&'
+    // for the first two, '&mut' for the last two
     int itemskind = 0;
     if (hasnext && !isref && !place) {
         if (nvars == 1 && eachIsCore(base, "ArrayIter", 9))
             itemskind = 1;
         else if (nvars == 2 && eachIsCore(base, "ArrayIndexed", 12))
             itemskind = 2;
+        else if (nvars == 1 && eachIsCore(base, "ArrayMutItems", 13))
+            itemskind = 3;
+        else if (nvars == 2 && eachIsCore(base, "MutItemsIndexed", 15))
+            itemskind = 4;
     }
 
     // The cursor the loop walks, and what it gives, are checked before the loop
@@ -453,10 +459,10 @@ void eachLower(TypeCheckState *pstate, BlockNode *outer) {
         // A slice that is mutable (what 'mutItems' gives) lends each element
         // mutably; any other lends it to be read
         INode *elemperm = unknownType;
-        if (isslice && permMatches((INode*)mutPerm, ((RefNode*)type)->perm))
+        if ((isslice && permMatches((INode*)mutPerm, ((RefNode*)type)->perm)) || itemskind >= 3)
             elemperm = (INode*)mutPerm;
         RefNode *borrow = newRefNodeFull(BorrowTag, lexnode, borrowRef, elemperm, (INode*)elem);
-        if (itemskind == 2) {
+        if (itemskind == 2 || itemskind == 4) {
             // The position is a copy of the count, the second variable the element's borrow
             ((VarDclNode*)nodesGet(loop->stmts, 0))->value = eachUse(index, lexnode);
             ((VarDclNode*)nodesGet(loop->stmts, 1))->value = (INode*)borrow;
