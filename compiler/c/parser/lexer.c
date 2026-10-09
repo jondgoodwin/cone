@@ -744,6 +744,11 @@ void lexScanNumber(char *srcp) {
 
     lex->tokp = srcbeg = srcp;
 
+    // A number right after '.' names a tuple field, so it is an integer only:
+    // a following '.' starts the next member access ('t.1.0' is field 0 of
+    // field 1, not the float 1.0) and no exponent is read
+    char afterDot = lex->toktype == DotToken;
+
     // A leading zero may indicate a non-base 10 number
     base = 10;
     if (*srcp=='0' && (*(srcp+1)=='x' || *(srcp+1)=='X')) {
@@ -758,7 +763,7 @@ void lexScanNumber(char *srcp) {
     while (1) {
         // Only one exponent allowed. In a hex literal 'e' and 'E' are digits,
         // so only 'p' or 'P' can begin its exponent
-        if (isFloat!='e' && ((base==10 && (*srcp=='e' || *srcp=='E')) || *srcp=='p' || *srcp=='P')) {
+        if (!afterDot && isFloat!='e' && ((base==10 && (*srcp=='e' || *srcp=='E')) || *srcp=='p' || *srcp=='P')) {
             isFloat = 'e';
             if (*++srcp == '-' || *srcp == '+')
                 srcp++;
@@ -767,6 +772,8 @@ void lexScanNumber(char *srcp) {
         // Handle characters in a suspected integer
         // Decimal point means it is floating point after all
         if (*srcp=='.') {
+            if (afterDot)
+                break;
             // However, double periods is not floating point, but that subsequent token is range op
             if (*(srcp+1)=='.')
                 break;

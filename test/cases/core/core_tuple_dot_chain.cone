@@ -1,0 +1,76 @@
+// A tuple element picked by number can be followed by a further member:
+// 'y.0.len()', 'p.0.x', and in a nested tuple 't.1.0', which is element 0 of
+// element 1. The lexer read the number after a '.' as the start of a float
+// literal, so '0.len' was the float '0.' and an identifier, and 't.1.0' was the
+// float '1.0'. A number straight after a '.' is an integer only; a float literal
+// anywhere else is unchanged.
+//
+// What each case shows, the printed value checked by hand against the source:
+// a method called on a list held as element 0 of a tuple of borrows (two pushes
+// through '.0.push', so 2, then the list's own length 2); a struct's field
+// through element 0 (7) and element 1 (9); a nested tuple's element 0 of
+// element 1 (8) and element 1 of element 1 (9), and three deep (3); the
+// element of a tuple returned by a call (4); then float literals that must
+// still read as floats: 1.0, 1.5e3 = 1500, 0.5 added to 2.0 is 2.5, 2.25d, and 1.0 divided by 4.0 is 0.25 (an integer division would give 0).
+
+mod core_tuple_dot_chain;
+
+import stdio use *;
+import collections use List;
+
+struct Point {
+  pub x i64;
+  pub y i64;
+}
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn showF(label &str, n f64) {
+  printStr(label);
+  printStr(" = ");
+  printFloat(n);
+  printStr("\n");
+}
+
+fn pair() (i64, i64), i64 {
+  (4i64, 5i64), 6i64;
+}
+
+fn main() {
+  // A method called on element 0 of a tuple of a borrow and a number
+  mut xs = new List[i64];
+  imm y = (&mut xs, 6i64);
+  y.0.push(10);
+  y.0.push(20);
+  show("method-push", i64.from(y.0.len()));
+  show("list-len", i64.from(xs.len()));
+
+  // A struct's field through an element of a tuple
+  imm pt = new Point(7, 9);
+  imm p = (&pt, &pt);
+  show("field-0-x", p.0.x);
+  show("field-1-y", p.1.y);
+
+  // A nested tuple: 't.1.0' is element 0 of element 1, not a float
+  imm t = (1i64, (8i64, 9i64), ((3i64, 2i64), 1i64));
+  show("nested-1-0", t.1.0);
+  show("nested-1-1", t.1.1);
+  show("nested-2-0-0", t.2.0.0);
+
+  // An element of a tuple returned by a call
+  show("call-0-0", pair().0.0);
+
+  // Float literals are still floats
+  showF("float-1.0", 1.0);
+  showF("float-1.5e3", 1.5e3);
+  imm two = 2.0;
+  showF("float-add", two + 0.5);
+  showF("float-d", 2.25d);
+  imm one = 1.0;
+  showF("float-div", one / 4.0);
+}
