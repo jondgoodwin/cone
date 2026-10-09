@@ -15,7 +15,8 @@
 
 	<p style="margin-left: 40px;"><i>Note: Built: number ranges with &lt;, &le;, &gt;, &ge; and by; arrays, slices and lists; and
 			anything with a <span class="pre">next</span> method (a cursor) or an <span class="pre">iter</span> method (something
-			that gives one), with one variable or several that unpack a pair. Not built yet: closure iterators, and the ways to
+			that gives one), with one variable or several that unpack a pair; and <a href="#parallel">parallel each</a> over a
+				number range, an array, a slice or a list, outside actors. Not built yet: closure iterators, and the ways to
 			walk a list that change its items in place, consume it, or number them. An enum's variant is constructed with its values in square brackets, as written here: that is the current spelling, and how a variant is constructed is an open design question (<a href="refenum.html#init">Enums</a>).</i></p>
 
 	<p><span class="pre">each</span> makes it easier than <span class="pre">while</span>
@@ -190,6 +191,64 @@ each x in |{cnt = 12}| if cnt &gt; 0 {Some[cnt /= 2]} else {None} {
 		<p>Because it is stateful, a closure is typically single use. It is created before it is needed, used to produce values lazily,
 			and then discarded afterward.
 			This is because, unless its state can be independently reset, it will only ever afterward say it is out of values.</p>
+
+	<h2 id="parallel">parallel each</h2>
+	<p style="margin-left: 40px;"><i>Note: Built in a function that is not an actor's method: over a number range, an
+			array, a slice or a list. Not built yet: inside an actor's method; a source of your own that is a
+			<span class="pre">ParallelIterable</span>; the parallel builder (<span class="pre">new List[T] &lt;- parallel each
+			&hellip; yield</span>); a header <span class="pre">if</span>; changing the current item
+			(<span class="pre">mutItems()</span>); and the reductions that come with closures.</i></p>
+	<p>Writing <span class="pre">parallel</span> in front of an <span class="pre">each</span> runs the loop's passes at
+		the same time, on the <a href="refconccomm.html#actors">actors package's</a> workers, one for each CPU:</p>
+<pre>
+import actors;
+
+fn total(xs &amp;Array[u64]) u64 {
+  imm sum = Atomic[u64].of(0u64);
+  parallel each x in xs {
+    sum.add(weigh(*x));
+  }
+  sum.load();               // every pass has finished
+}
+</pre>
+	<p>The loop has finished when control reaches the statement after it. It starts as one task for the
+		whole range of passes; whoever runs a task splits it in half while it is bigger than a small share of the
+		range, queues one half and works the other, and an idle worker takes the oldest, largest half. So uneven
+		passes spread themselves, and the code that wrote the loop works on pieces of its own loop while it waits.
+		A module that writes one imports <span class="pre">actors</span>.</p>
+	<p><span class="pre">parallel</span> is a word only directly before <span class="pre">each</span>: anywhere else
+		it is a name like any other (a variable, a function, a field).</p>
+
+	<h3>What it can walk</h3>
+	<p>The source must be something that can be split into independent pieces and says how big it is:
+		a <span class="pre">ParallelIterable</span>, met by its methods alone, with no declaration, as
+		<span class="pre">Iterator</span> is (<span class="pre">len</span>, and <span class="pre">split(at)</span> giving
+		the items before <span class="pre">at</span> and the items from it on). Today the loop walks a number range counting
+		up by one (<span class="pre">parallel each i in 0 &lt; n</span>, or <span class="pre">&lt;=</span>; a count down
+		or a <span class="pre">by</span> step is refused, since which pass runs first is not defined in parallel), an array,
+		a slice and a list, which it cuts into ranges of positions itself. A cursor, a generator, a file or a
+		channel hands out its items one after another and cannot be split: collect it into a list first, and walk the list.
+		As in the loops above, the variable is a new one on every pass, and is a borrow of the item for an array,
+		a slice or a list.</p>
+
+	<h3>What the body may do</h3>
+	<p>The passes run at the same time, so the body keeps rules an ordinary <span class="pre">each</span> does not:</p>
+	<ul>
+		<li>What is declared <b>outside</b> the loop is <b>read-only</b> in it, borrowed for as long as the loop runs. Writing
+			it is refused: an assignment, an operator that assigns, a field, an element, a swap, a method that changes it, or a
+			borrow that may write, and a write through a <span class="pre">&amp;mut</span> reference declared outside.
+			What the pass declares itself is its own to change. A write through a raw pointer is not checked: the loop
+			trusts its writer.</li>
+		<li>Results come back through something that is changed by its methods, an <span class="pre">Atomic</span>, until
+			the loop that builds a list (the parallel builder), and changing the items in place, are built.</li>
+		<li><span class="pre">continue</span> skips the rest of a pass. A <span class="pre">break</span> or
+			<span class="pre">continue</span> of a loop <i>inside</i> the body is the pass's own. A
+			<span class="pre">break</span> and a <span class="pre">return</span> are refused (which items had run by then would vary
+			from run to run), and so is an <span class="pre">await</span> (a pass runs to completion and has no mailbox).</li>
+		<li>A <b>message sent to an actor</b> is allowed, and is not sent where it is written: the passes' messages are kept and
+			sent after the loop, by the code that wrote it, in iteration order &mdash; the first pass's, then the second's &mdash; so
+			an actor sees the same order every run. A loop inside a pass's body is gathered into that pass in the same way.</li>
+	</ul>
 
 	<p style="text-align: right; margin-top: 2em;">
 		<a href="refexcept.html"><img alt="_" src="next.png" /></a>

@@ -56,7 +56,11 @@ Visual Studio projects stay at the root.
   intrinsic; `Iterator[T]` (`next`) and `Iterable[T, I]` (`iter`, giving an `I` that is an
   `Iterator[T]`), the shapes a cursor and what gives one are walked by (by `each` too, which
   uses a source with a `next` as it is and otherwise one `iter` gives), met by the methods
-  alone (`str`'s cursors and the collections' are `Iterator`s undeclared); and `panic`, `assert`, `unreachable`, `todo` and `setPanicHook`, whose
+  alone (`str`'s cursors and the collections' are `Iterator`s undeclared); `ParallelIterable[T, P]`
+  (`len`, and `split(at)` giving two `P`s), the shape a `parallel each` walks, met the same
+  way (a list's through the `len` and `split` it folds in from `Array`'s; the compiler cuts
+  arrays, slices, lists and number ranges into index ranges itself and does not call a
+  type's own `split` yet); and `panic`, `assert`, `unreachable`, `todo` and `setPanicHook`, whose
   work is conestd's, with `srcFile` and `srcLine`, intrinsics outside `mem`,
   which as a parameter's default give a caller's location; and the macros
   `assertDebug` and `assertDebugMsg`, checked in a debug build only, through
@@ -591,7 +595,10 @@ Visual Studio projects stay at the root.
   work-stealing scheduler of worker threads that start with the first actor,
   actors counted through `Arc` and finalized once when their last handle and
   message have gone, and quiescence, which its module's finalizer waits for
-  before stopping the workers (`configure`, `stats`), its header the shape of
+  before stopping the workers (`configure`, `stats`), parallel loops on the same workers
+  (`parallelRange`, `parallelRangeThen`: split on demand, a task queue above the actors' messages;
+  `parallelEach`, which a `parallel each` runs through, gathering the messages its pieces send
+  and sending them after the loop in iteration order), its header the shape of
   what the compiler generates for an actor and its example `pingpong.cone` the
   timed benchmark, and `Awaitable[R]`, an operation a behaviour may `await`,
   started at the seam with the reply's envelope its answer, an `R`, goes back
