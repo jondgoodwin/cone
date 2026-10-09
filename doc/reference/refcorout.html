@@ -14,8 +14,10 @@
     <div class="text">
 
 	<p style="margin-left: 40px;"><i>Note: Generators are built: a function declared <span class="pre">yields</span>,
-		with <span class="pre">yield</span> and <span class="pre">yield each</span>, among a module's functions. A generator
-		may not be generic, a method, <span class="pre">inline</span>, or <span class="pre">pub</span> in a library. <span class="pre">each</span>
+		with <span class="pre">yield</span> and <span class="pre">yield each</span>, among a module's functions or
+		as a method of a struct, generic or not. A generator may not be <span class="pre">inline</span>, have a
+		<span class="pre">where</span> clause, be a method of a trait, an enum, an actor or a type that declares lifetimes,
+		or be <span class="pre">pub</span> in a library. <span class="pre">each</span>
 		walks one, as it walks any value with a <span class="pre">next</span>. Two-way
 		<span class="pre">yield</span> (the last section) is an idea that is not built.</i></p>
 
@@ -93,6 +95,67 @@ fn inorder(nodes &amp;Array[Node], at usize) yields &amp;Node {
 		walk begins and freed when the generator dies. A value handed on is the sub-generator's own
 		<span class="pre">Some(value)</span>: it is moved up, not copied. Each value costs a step through every generator
 		that hands it on.</p>
+
+	<h2>Generator methods</h2>
+	<p>A method may be a generator, called as any method is. In its body <span class="pre">self</span> is the receiver,
+		exactly as in any method. The generator holds the receiver as it holds a parameter, so what the receiver was lent
+		as keeps it lent for as long as the generator lives:</p>
+<pre>
+struct Tree {
+  nodes Array[Node, 7];
+
+  fn walk(self &amp;) yields &amp;Node {            // in order
+    yield each self.from(0);
+  }
+
+  fn from(self &amp;, at usize) yields &amp;Node {
+    imm n = &amp;self.nodes[at];
+    if n.left &gt;= 0 { yield each self.from(usize.from(n.left)); }
+    yield n;
+    if n.right &gt;= 0 { yield each self.from(usize.from(n.right)); }
+  }
+}
+
+each n in tree.walk() { printInt(n.val); }
+</pre>
+	<ul>
+		<li>A receiver borrowed with <span class="pre">self &amp;</span> may be read, not changed, while the generator may still
+			be resumed; one borrowed with <span class="pre">self &amp;mut</span> may be neither read nor changed. The generator
+			may change what it was lent, and may hand out borrows of it, <span class="pre">yields &amp;mut i64</span> among them.
+			The borrow lasts until the generator dies, not until it is last called: a block around the generator ends it.</li>
+		<li>A receiver taken by value, <span class="pre">fn run(self) yields i64</span>, moves into the generator and dies
+			with it, after its locals. As with any parameter, the body may borrow or copy it (and change it, if declared
+			<span class="pre">mut self</span>), not move it out.</li>
+		<li><span class="pre">Self</span> in the body is the type the method belongs to.</li>
+		<li>A name that is a field of the receiver is reached as <span class="pre">self.name</span>: a bare
+			<span class="pre">name</span> in a generator's body names a local or a parameter only.</li>
+		<li>A function of a type with no receiver, <span class="pre">fn range(from i64, to i64) yields i64</span>, is a
+			generator too, called as <span class="pre">Span.range(3, 7)</span>.</li>
+	</ul>
+	<p>The method that makes the generator is the one written; the struct that is the generator is made beside the type and
+		has no name in source (a message spells it <span class="pre">Tree.walk.Gen</span>). A method of a trait or of an enum
+		cannot be a generator, since a trait's methods are copied into each type that implements it and an enum's into each
+		of its variants; nor can an actor's, or a method of a type that declares lifetimes. Write a function that takes what the method would.</p>
+
+	<h2>Generic generators</h2>
+	<p>A generator may be generic, a function over a type or a method of a generic type or both. The struct that is the
+		generator takes the type parameters, with their bounds as written, so each use is a generator of its own kind, made
+		for the types it was called with, and checked as any generic is, where it is used:</p>
+<pre>
+fn items[T](l &amp;List[T]) yields &amp;T { ... }
+
+struct Bag[T] {
+  all List[T];
+  fn backward(self &amp;) yields &amp;T { ... }
+}
+
+each x in items(&amp;ints) { ... }      // a generator over i64
+each p in items(&amp;points) { ... }    // another, over Point
+each p in bag.backward() { ... }
+</pre>
+	<p>A generic generator may hand on another, itself included, with <span class="pre">yield each</span>, and a
+		recursive one keeps its sub-generator on the heap in each instance as a plain one does. A type parameter of a generator
+		does not name lifetimes (<span class="pre">[T + 'a]</span>) yet.</p>
 
 	<h2>Borrows across a yield</h2>
 	<p>A <span class="pre">yield</span> leaves the body, and the generator, a value, may be moved by its caller before it is

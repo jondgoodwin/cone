@@ -1545,6 +1545,7 @@ static int parseComputeAttr(FnDclNode *fnnode) {
 INode *parseFn(ParseState *parse, uint16_t mayflags) {
     FnDclNode *fnnode = newFnDclNode(NULL, 0, NULL, NULL);
     LifeOrder *bounds = NULL;   // its type parameters' lifetime bounds, '[T + 'a]'
+    char *fntparms = NULL, *fntparmsend = NULL;     // where its type parameters are written
 
     // Skip past the 'fn'.
     lexNextToken();
@@ -1609,8 +1610,12 @@ INode *parseFn(ParseState *parse, uint16_t mayflags) {
         }
         lexNextToken();
         if (lexIsToken(LBracketToken)) {
+            // Where its type parameters are written, which a generator copies (parsegen.c)
+            char *tparms = lex->tokp + 1;
             fnnode->genericinfo = newGenericInfo();
             fnnode->genericinfo->parms = parseGenericParms(parse, 1, NULL, &bounds);
+            fntparms = tparms;
+            fntparmsend = lex->prevend - 1;
         }
     }
     else {
@@ -1652,6 +1657,9 @@ INode *parseFn(ParseState *parse, uint16_t mayflags) {
     // the parameters and the yielded type are written in
     int isgen = !reftype && parse->isgen;
     GenSig gensig = parse->gensig;
+    gensig.tparms = fntparms;
+    gensig.tparmsend = fntparmsend;
+    gensig.tnames = fnnode->genericinfo ? fnnode->genericinfo->parms : NULL;
 
     // Its type parameters' lifetime bounds join the order among its
     // signature's lifetimes, as a 'where' clause's do
@@ -1714,10 +1722,14 @@ INode *parseFn(ParseState *parse, uint16_t mayflags) {
             const char *why = NULL;
             if (fnnode->namesym == NULL)
                 why = "An anonymous function cannot be a generator: a generator is a function with a name, which makes a value that is walked.";
-            else if (fnnode->genericinfo)
-                why = "A generic function cannot be a generator yet: the generator is a struct of its own, made for the function's parameters, and a generic one is not built.";
-            else if (parse->typenode)
-                why = "A method cannot be a generator yet: the generator is a struct of its own that holds the method's parameters, 'self' among them, and a method's is not built. Write a function that takes what the method would.";
+            else if (fntparms && memchr(fntparms, '\'', fntparmsend - fntparms))
+                why = "A generator's type parameters cannot name lifetimes yet: the generator is a struct of its own that copies them.";
+            else if (parse->typenode && (((INode*)parse->typenode)->flags & (TraitType | EnumType)))
+                why = "A trait's or an enum's method cannot be a generator yet: the generator is a struct of its own that holds the method's parameters, 'self' among them, and a trait's method is copied into each implementer. Write a function that takes what the method would.";
+            else if (parse->dcltexts)
+                why = "An actor's method cannot be a generator yet: the actor's body is read to generate its mailbox and its state, and a generator's struct is not one of them. Write a function that takes what the method would.";
+            else if (parse->typenode && ((INode*)parse->typenode)->tag == StructTag && ((StructNode*)parse->typenode)->lifeparms)
+                why = "A method of a type that declares lifetimes cannot be a generator yet: the generator is a struct of its own that holds the receiver, and does not declare the type's lifetimes.";
             else if (fnnode->flags & FlagInline)
                 why = "A generator cannot be 'inline': it is a struct and a method, not code expanded where it is called.";
             else if (fnnode->where)

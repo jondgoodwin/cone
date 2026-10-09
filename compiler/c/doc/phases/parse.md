@@ -743,24 +743,53 @@ generator's `walk.yield`, which makes `Some(value)`) and a `return` takes no
 value and hands back a call of `walk.none`. A `yield` met as a term's operand
 (an `if`, `match`, loop or block written inside an expression,
 `ParseState.genoperand`) is refused (`ErrorYieldPlace`), so no value made before
-a seam is in flight across it. A generic, method, `inline`, `where`, anonymous or
-bodiless generator is refused (`ErrorGenForm`), as is a `pub` one in a library
-(`ParseState.library`): its include file does not carry what an importer would
-need to make the struct again. Then `parseGenFinish` re-reads the parameter list
-from its text (`parseGenParms`), and writes as Cone source, parsed from a lexer of
-its own with private names (`Lexer.gennames`, as an actor's):
+a seam is in flight across it. An `inline`, `where`, anonymous or bodiless
+generator, one whose type parameters name lifetimes, and a method of a trait, of
+an enum, of an actor (`ParseState.dcltexts`) or of a type that declares lifetimes,
+are refused (`ErrorGenForm`), as is a
+`pub` one in a library (`ParseState.library`; in `parseFnOrVar` for a function and
+in `parseStruct` for a method): its include file does not carry what an importer
+would need to make the struct again. Then `parseGenFinish` re-reads the parameter
+list from its text (`parseGenParms`), and writes as Cone source, parsed from a
+lexer of its own with private names (`Lexer.gennames`, as an actor's):
 
 ```
 struct walk.Gen { imm t &'a Tree; state' u32;
-                  pub fn next(self &mut) Option[&'a Node] {}  fn final(self &uni) {} }
-fn walk.yield(v &Node) Option[&Node] inline {Some[&Node][v];}
-fn walk.none() Option[&Node] {None[&Node][];}
+                  pub fn next(self &mut) Option[&'a Node] {}  fn final(self &uni) {}
+                  fn walk.yield(v &Node) Option[&Node] inline {Some[&Node][v];}
+                  fn walk.none() Option[&Node] {None[&Node][];} }
 fn walk(t &Tree) walk.Gen {new walk.Gen(t, 0u32);}
 ```
 
 and gives `next` the author's body, ended with a call of `walk.none` unless it
 ends in a `return`. The parameters are the struct's fields, so the body names
 them as a method names its fields, and a diagnostic names the value `walk.Gen`.
+`yield` and `none` are functions of the struct so that each instance of a generic
+generator has its own; the body names them bare, as any method names its type's
+functions.
+
+**A method is a generator the same way.** The struct is named for both
+(`Tree.walk.Gen`), made beside the type, and the method that makes it is returned
+in the author's place, into the type's own member list by `parseStruct`. A
+receiver (`ParseState.typenode`'s `self` parameter, first) is held as a field under
+a private name that reads `self` (`GenCtx.recv`), and `parseNameUse`, while the
+body is read, makes `self` name it (`parseGenName`) and `Self` name the type
+(written with its own parameters: `Tree[T]`), since in `next` both would mean the
+struct. Where the receiver's type was left to be inferred (`self`, `self &`,
+`self &mut`) its field has the type written out. A field of the receiver is
+reached as `self.name`: a bare name finds the generator's own fields, the
+parameters, and the type's fields are not in the scope of `next`.
+
+**A generic generator** copies the type parameters as they are written, the type's
+(`ParseState.tparms`, recorded by `parseStruct`) and then the function's (`GenSig`),
+onto the struct, and passes them by name where the struct is written: the
+constructor is `fn walk[T](l &List[T]) walk.Gen[T]` and makes `new walk.Gen[T](l, 0u32)`.
+An instance of the struct is cloned from this template like any generic type's
+(`cloneStructNode`), and `yieldGenCloned` gives the clone its own `GenInfo`, its
+`next`, `none` and state found in the clone by name, which is why a generator
+instance is looked up by its struct (`yieldGenOfStruct`) and its step
+(`yieldGenOf`) and not through the template. Each instance's `next` is checked
+and generated when it is used, as a generic type's methods are.
 Where the parameters hold borrows and none names a lifetime or is written some
 way a lifetime cannot follow, each `&` of the fields and of the yielded type is
 given the one lifetime `'a` (`parseGenAnnotate`), so that `next` hands out borrows

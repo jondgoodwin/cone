@@ -7,9 +7,11 @@
 # What is built is the one-way generator of refcorout.html: 'yield' hands a
 # value out and waits to be resumed, 'yield each' hands on a sub-generator's,
 # the value a call gives is walked by its 'next' and complies with core's
-# Iterator[T] by having it. Two-way yield ('yieldenum'), a generator that is a
-# method, a generic one, and one 'pub' in a library are not built, and the parse
-# scenario pins the first two's refusals. 'each' walks a generator as it walks
+# Iterator[T] by having it. A generator may be a method and may be generic. A
+# two-way yield ('yieldenum') and a generator 'pub' in a library are not built,
+# and a generator that is 'inline', has a 'where' clause or no body, or is a
+# method of a trait or an enum, is refused; the parse scenario pins the
+# refusals. 'each' walks a generator as it walks
 # any cursor; the success and drop programs end with it.
 #
 # Not here, on purpose:
@@ -36,26 +38,53 @@ category = "run"
 description = "A generator dying: finished, left at each seam, never run; locals, a flagged local, a parameter, owned values yielded, a sub-generator at every level"
 tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
 
+[scenario.corout_methods]
+category = "run"
+description = "Generator methods: 'self' the receiver held by the generator, borrowed, mutably borrowed or by value, a recursive walk of a tree through 'yield each', 'Self', a type's function with no receiver"
+tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.corout_generic]
+category = "run"
+description = "Generic generators: a function generic over a type, used at two types, handed on by 'yield each' and recursive; the methods of a generic type at two arguments; a method with a type parameter of its own"
+tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.corout_drop_methods]
+category = "run"
+description = "A generator method or a generic generator dying: finished, left at a seam, never run; a parameter of a generic type, a receiver taken by value, a generic type's recursive method with its sub-generators on the heap"
+tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
+
 # -------- parse stage --------
 
 [scenario.corout_parse]
 category = "reject"
 description = "Declarations a generator may not be, and a 'yield' where none stands, refused as they are read"
 tags = ["parse"]
-diagnostics = 11
+diagnostics = 18
+
+[scenario.corout_library]
+category = "reject"
+description = "A generator 'pub' in a library, a function, a generic one and a method, refused; one that is not 'pub' compiles"
+tags = ["parse"]
+diagnostics = 3
 
 # -------- type check stage --------
 
 [scenario.corout_typecheck]
 category = "reject"
-description = "A value yielded of another type than the generator's, a generator asked to be an Iterator of another type, its value used as another"
+description = "A value yielded of another type than the generator's, in a function, a method and an instance of a generic one, a generator asked to be an Iterator of another type, its value used as another, or returned under a declared type"
 tags = ["typecheck"]
-diagnostics = 5
+diagnostics = 9
 
 # -------- flow stage --------
 
 [scenario.corout_flow]
 category = "reject"
 description = "A borrow of the body's own ground across a yield, a local's borrow handed out, a held parameter moved out, a generator used after it moved"
+tags = ["flow"]
+diagnostics = 5
+
+[scenario.corout_methods_flow]
+category = "reject"
+description = "A generator method's receiver stays lent while the generator lives: changed or read while lent mutably, the receiver dying first, a receiver taken by value moved out"
 tags = ["flow"]
 diagnostics = 5

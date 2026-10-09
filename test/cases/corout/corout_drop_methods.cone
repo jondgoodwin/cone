@@ -1,0 +1,104 @@
+mod corout_drop_methods;
+
+// What a generator method or a generic generator holds dies when it does, as
+// a generator's (corout_drop) does: its locals that live across a 'yield' at
+// the seam it was left at, newest first, then its parameters, a method's
+// receiver taken by value among them, with the value. Every value here prints
+// as it is finalized, "[drop n]", so the order is the output.
+
+import stdio use *;
+
+struct Fin {
+  pub n i64;
+  fn final(self &uni) { printStr("[drop "); printInt(n); printStr("]"); }
+}
+
+fn show[S Iterator[i64]](s &mut S) {
+  while true {
+    match s.next() {
+      case imm v Some { printInt(v.value); printStr(" "); }
+      case is None { break; }
+    }
+  }
+  printStr("\n");
+}
+
+// Walk 'count' values, no further, then let the generator die
+fn take[S Iterator[i64]](s &mut S, count i64) {
+  mut k = 0i64;
+  while k < count {
+    match s.next() {
+      case imm v Some { printInt(v.value); printStr(" "); }
+      case is None { break; }
+    }
+    k = k + 1i64;
+  }
+}
+
+// A generic generator: its parameter of type T dies with it, whatever T is
+// (here a type with a finalizer), and so do the locals it makes
+fn hold[T](x T, n i64) yields i64 {
+  imm a = new Fin(n * 10i64);
+  yield 1i64;
+  imm b = new Fin(n * 10i64 + 1i64);
+  yield 2i64;
+}
+
+// A generic type's method, recursive: every level's local lives, and a
+// sub-generator of the method's own kind is on the heap in the instance
+struct Cell[T] {
+  pub v T;
+
+  fn deep(self &, n i64) yields i64 {
+    imm f = new Fin(n);
+    if n > 0i64 { yield each self.deep(n - 1i64); }
+    yield n + 100i64;
+  }
+}
+
+// A receiver taken by value, a type with a finalizer: it moves into the
+// generator and dies with it
+struct Owner {
+  pub f Fin;
+
+  fn run(self, n i64) yields i64 {
+    imm tmp = new Fin(self.f.n + 1i64);
+    yield self.f.n;
+    yield n;
+  }
+}
+
+fn main() {
+  printStr("-- generic, run to the end: ");
+  { mut g = hold(new Fin(5i64), 3i64); show(&mut g); }
+  printStr("\n-- generic, left at the first seam: ");
+  { mut g = hold(new Fin(6i64), 3i64); take(&mut g, 1i64); }
+  printStr("\n-- generic, never run: ");
+  { mut g = hold(new Fin(7i64), 3i64); }
+  printStr("\n");
+
+  printStr("-- the same generator at another T: ");
+  { mut g = hold(8i64, 4i64); show(&mut g); }
+  printStr("-- a generic type's method, at Fin: ");
+  {
+    imm cell = new Cell[Fin](new Fin(50i64));
+    { mut g = cell.deep(3i64); show(&mut g); }
+    { mut g = cell.deep(3i64); take(&mut g, 1i64); }
+    printStr("\n");
+  }
+  printStr("\n-- and at i64: ");
+  {
+    imm cell = new Cell[i64](60i64);
+    { mut g = cell.deep(2i64); show(&mut g); }
+    { mut g = cell.deep(2i64); take(&mut g, 2i64); }
+    printStr("\n");
+  }
+
+  printStr("-- a receiver by value, run to the end: ");
+  { mut g = new Owner(new Fin(40i64)).run(9i64); show(&mut g); }
+  printStr("\n-- left at the first seam: ");
+  { mut g = new Owner(new Fin(30i64)).run(9i64); take(&mut g, 1i64); }
+  printStr("\n-- never run: ");
+  { mut g = new Owner(new Fin(20i64)).run(9i64); }
+  printStr("\n");
+}

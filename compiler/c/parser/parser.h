@@ -46,6 +46,8 @@ typedef struct BuildDesc {
 typedef struct GenSig {
     char *parms, *parmsend;     // The parameter list: its '(' to just past its ')'
     char *ytype, *ytypeend;     // The type after 'yields'
+    char *tparms, *tparmsend;   // The function's own type parameters, between its '[' and ']'; NULL where none
+    Nodes *tnames;              // Their names (GenVarDclNode)
 } GenSig;
 
 // The generator whose body is being read: the names of the functions that make
@@ -54,6 +56,8 @@ typedef struct GenCtx {
     Name *some;             // Makes 'Some(value)', what a 'yield' hands the caller
     Name *none;             // Makes 'None', what the body's end and a 'return' hand it
     Name *name;             // The generator's own name, for a message
+    Name *recv;             // A method's receiver as the generator holds it, which 'self' in its body names; else NULL
+    INsTypeNode *type;      // The type whose method it is, which 'Self' in its body names; else NULL
     int yields;             // How many 'yield's the body holds so far
 } GenCtx;
 
@@ -120,6 +124,9 @@ typedef struct ParseState {
     int genraw;             // The 'yield' being read hands on a result already made (a 'yield each')
     int library;            // The package is being compiled as a library, whose include file declares what it exports
     int genoperand;         // How many 'if', 'match', loop or block terms enclose what is being read: expression operands
+    // The struct being read: where its type parameters are written, between its
+    // '[' and ']', which a generator method copies (parsegen.c); NULL where none
+    char *tparms, *tparmsend;
 } ParseState;
 
 // Record where a field's or a parameter's type and value are written, when an
@@ -145,6 +152,9 @@ int parseBehaviourWords(char *where);
 // the function that makes the generator, in place of the one parseFn read
 GenCtx *parseGenBegin(ParseState *parse, FnDclNode *fn);
 FnDclNode *parseGenFinish(ParseState *parse, FnDclNode *fn, GenSig *sig, GenCtx *ctx, BlockNode *body);
+// In a generator's body, 'self' is its method's receiver and 'Self' the type it is a method of,
+// where the generator is a struct of its own: the name use as it is to be read (parsegen.c)
+INode *parseGenName(ParseState *parse, NameUseNode *use);
 // A 'yield' statement, with the lexer on 'yield': 'yield e;' or 'yield each src;'
 INode *parseYield(ParseState *parse);
 // The call giving a generator's 'None', which its 'return' and the end of its body hand the caller

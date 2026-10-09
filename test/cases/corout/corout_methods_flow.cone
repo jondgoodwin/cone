@@ -1,0 +1,102 @@
+mod corout_methods_flow;
+
+// What a generator method keeps of its receiver. The generator holds the
+// receiver as it holds a parameter, so a receiver lent to it stays lent for as
+// long as the generator lives, as it would for a function taking the same
+// borrow: a receiver lent mutably (`self &mut`) may not be read or changed
+// while the generator may still be resumed, one lent for reading may not be
+// changed, and the receiver may not die first. A receiver taken by value is a
+// field of the generator, and is borrowed or copied from it, not moved out.
+
+struct Node {
+  pub val i64;
+}
+
+struct Fin {
+  pub n i64;
+  fn final(self &uni) { }
+}
+
+struct Counter {
+  pub n i64;
+
+  fn up(self &mut, k i64) yields i64 {
+    mut i = 0i64;
+    while i < k {
+      self.n = self.n + 1i64;
+      yield self.n;
+      i = i + 1i64;
+    }
+  }
+}
+
+struct Tree {
+  pub nodes Array[Node, 2];
+
+  fn walk(self &) yields &Node {
+    yield &self.nodes[0];
+    yield &self.nodes[1];
+  }
+}
+
+struct Holder {
+  pub f Fin;
+
+  fn eat(self) yields i64 {
+    imm other = self;                     //~ ErrorMoveField:17 "May not move 'self' out of the generator"
+    yield other.f.n;
+  }
+
+  fn read(self) yields i64 {
+    yield self.f.n;
+  }
+}
+
+fn writesWhileBorrowed() {
+  mut c = new Counter(1i64);
+  mut g = c.up(2i64);
+  c.n = 5i64;                             //~ ErrorFrozen:4 "It may not be changed until after that last use"
+  g.next();
+}
+
+fn readsWhileMutablyBorrowed() {
+  mut c = new Counter(1i64);
+  mut g = c.up(2i64);
+  imm x = c.n;                            //~ ErrorFrozen:12 "It may not be read until after that last use"
+  g.next();
+}
+
+fn writesTreeWhileWalked() {
+  mut t = new Tree([new Node(1i64), new Node(2i64)]);
+  mut g = t.walk();
+  t.nodes[0].val = 3i64;                  //~ ErrorFrozen:13 "It may not be changed until after that last use"
+  g.next();
+}
+
+fn receiverDiesFirst() {
+  mut outer = new Tree([new Node(1i64), new Node(2i64)]);
+  mut g = outer.walk();
+  {
+    mut t = new Tree([new Node(1i64), new Node(2i64)]);   //~ ErrorFrozen:9 "goes out of scope while 'g' still holds a borrow of it"
+    g = t.walk();
+  }
+  g.next();
+}
+
+// Reading a receiver lent for reading is fine, and so is using it once the
+// generator is gone (a generator holds what it was lent until it dies)
+fn mayRead() {
+  mut t = new Tree([new Node(1i64), new Node(2i64)]);
+  {
+    mut g = t.walk();
+    imm x = t.nodes[0].val;
+    g.next();
+  }
+  t.nodes[1].val = 9i64;
+  mut c = new Counter(1i64);
+  {
+    mut h = c.up(1i64);
+    h.next();
+  }
+  c.n = 7i64;
+}
