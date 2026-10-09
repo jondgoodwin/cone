@@ -575,6 +575,9 @@ enum ErrorCode {
     ErrorParBuilder = 1386,     // A parallel builder, 'xs <- parallel each ... yield v', whose receiver is not a List (a dictionary is built from a list of pairs after the loop)
     ErrorParFrame = 1388,       // A 'parallel each' in an actor's behaviour, which the behaviour is cut at, walks or reads a borrow or an array held in the behaviour's own frame, which is gone while the pieces run
 
+    // The stopgap until the collector is per actor (ir/exp/pareach.c, ir/types/actor.c)
+    ErrorGcStopgap = 1389,      // A 'Gc' (a value holding a traced reference) made or held inside an actor (state field, parameter, allocation, call, literal) or a 'parallel each' (body, header, filter, yield)
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

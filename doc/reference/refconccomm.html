@@ -567,9 +567,13 @@ actor Echo {
 		workers orders what the first did before anything the next does. Three things differ from a
 		plain thread:</p>
 	<ul>
-	<li><span class="pre">Gc</span> is <b>not supported</b> inside an actor. The collector is
+	<li><span class="pre">Gc</span> is <b>not supported</b> inside an actor, for now. The collector is
 		single-threaded, and an actor runs on every worker in turn; a traced reference made, held,
-		reached or dropped by an actor corrupts it. Nothing refuses one yet.</li>
+		reached or dropped by an actor corrupts it. So the compiler refuses one made or held in an
+		actor &mdash; a field of its state, a synchronous method's parameter, an allocation, a call that
+		returns one or a literal holding one in any method's body, <span class="pre">init</span> and
+		<span class="pre">final</span> included, a struct, tuple, array or enum holding one as well &mdash;
+		saying that GC per actor is coming. The refusal lifts when the collector is per actor.</li>
 	<li>A thread-local global seen from an actor's method is the current <i>worker's</i> copy,
 		not the actor's: its next message may run on another worker.</li>
 	<li>A method that blocks holds its worker while it does. Actors wait by being sent a
@@ -1275,8 +1279,9 @@ actor Sizes {
 		statement of its own first, each <span class="pre">await</span> is built.</li>
 	<li><b>A traced reference waiting for a reply.</b> An <span class="pre">await</span> at which
 		the behaviour holds a <span class="pre">Gc</span> reference it would keep is refused: the
-		collector does not see a paused behaviour's values. (<span class="pre">Gc</span> is not
-		supported inside an actor at all yet, "Inside an actor", above.)</li>
+		collector does not see a paused behaviour's values. (<span class="pre">Gc</span> is refused
+		inside an actor altogether for now, "Inside an actor", above, so the reference itself is
+		reported first.)</li>
 	<li><b>Timeouts and cancellation.</b> A paused behaviour waits until its reply comes. There
 		is no time limit on the wait, and no way to cancel a paused behaviour. Only the program's
 		end ends one early: a behaviour paused on I/O is abandoned then, the rest of it never run,
@@ -1291,9 +1296,8 @@ actor Sizes {
 		future and panics if its value never arrives. There is no way yet to ask whether it
 		arrived, or to handle an abandoned one, without the panic.</li>
 	</ul>
-	<p>Two of them, beside an <span class="pre">await</span> refused for what it awaits, where
-		<span class="pre">compute</span> is a plain function and <span class="pre">Cell</span> a
-		struct:</p>
+	<p>One of them, beside an <span class="pre">await</span> refused for what it awaits, where
+		<span class="pre">compute</span> is a plain function:</p>
 <pre>
 actor Waiter {
   clock Clock;
@@ -1306,12 +1310,6 @@ actor Waiter {
   pub async do swapped(self) {
     mut items = [1u64, 2u64, 3u64];
     items[await clock.now()] &lt;=&gt; items[await clock.now()];  // not built: in both places
-  }
-
-  pub async do traced(self) {
-    imm g = new Gc[mut, Cell](1u64);
-    imm t = await clock.now();    // not built: g would wait for the reply
-    last = t + g.n;
   }
 }
 </pre>

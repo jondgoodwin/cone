@@ -75,4 +75,12 @@ void parallelEachLeave();
 // nothing declared outside the loop is written or lent for writing
 void parallelEachCheckBody(TypeCheckState *pstate, BlockNode *outer);
 
+// The stopgap that keeps a 'Gc' out of actors and parallel loops until the
+// collector is per actor (ErrorGcStopgap). The body's allocations, calls and
+// literals of a type holding a traced reference are refused; so is a
+// declaration of one (an actor's state field, a method's parameter). 'where'
+// says which: "an actor", "a 'parallel each' body".
+void gcStopgapCheckBody(INode *body, const char *where);
+void gcStopgapCheckDcl(INode *node, INode *type, const char *where);
+
 #endif

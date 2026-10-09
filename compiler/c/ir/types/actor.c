@@ -107,6 +107,49 @@ static void actorCheckReturn(ActorInfo *info, FnDclNode *fn) {
         &info->handle->namesym->namestr, &fn->namesym->namestr, typename, what, reason);
 }
 
+// Is this parameter one whose argument crosses to the actor (so the thread
+// check has judged it)?
+static int actorParmCrosses(ActorInfo *info, VarDclNode *parm) {
+    for (uint32_t j = 0; j + 1 < info->crossing->used; j += 2) {
+        if (nodesGet(info->crossing, j + 1) == (INode *)parm)
+            return 1;
+    }
+    return 0;
+}
+
+// A stopgap until the collector is per actor (the regions work): an actor makes,
+// holds or copies no traced ('Gc') reference, whatever the thread it is run on.
+// Its state's fields, its methods' parameters and everything its methods' bodies
+// make are asked, behaviours, synchronous methods, 'init' and 'final' alike.
+// (A behaviour's or initializer's parameter, that crosses, is the thread check's.)
+static void actorRefuseGc(ActorInfo *info) {
+    StructNode *state = info->state;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&state->fields, cnt, nodesp)) {
+        if ((*nodesp)->tag == FieldDclTag)
+            gcStopgapCheckDcl(*nodesp, ((IExpNode *)*nodesp)->vtype, "an actor's state");
+    }
+    for (nodelistFor(&state->nodelist, cnt, nodesp)) {
+        if ((*nodesp)->tag != FnDclTag)
+            continue;
+        FnDclNode *fn = (FnDclNode *)*nodesp;
+        if (fn->genericinfo != NULL || fn->vtype == NULL || fn->vtype->tag != FnSigTag)
+            continue;
+        INode **parmp;
+        uint32_t pcnt;
+        Nodes *parms = ((FnSigNode *)fn->vtype)->parms;
+        if (parms) {
+            for (nodesFor(parms, pcnt, parmp)) {
+                if ((*parmp)->tag == VarDclTag && !actorParmCrosses(info, (VarDclNode *)*parmp))
+                    gcStopgapCheckDcl(*parmp, ((IExpNode *)*parmp)->vtype, "an actor's method");
+            }
+        }
+        if (fn->value != NULL && fn->value->tag == BlockTag)
+            gcStopgapCheckBody(fn->value, "an actor's method");
+    }
+}
+
 // A message carries its arguments to whichever worker thread runs the actor,
 // and an initializer's arguments become the state, which the workers then run
 // on: so each must be Sendable, as a channel's element or a thread's start
@@ -142,6 +185,7 @@ void actorCheckAll() {
         }
         for (uint32_t j = 0; j < info->nmsgs; ++j)
             actorCheckReturn(info, info->msgs[j].method);
+        actorRefuseGc(info);
     }
 }
 
