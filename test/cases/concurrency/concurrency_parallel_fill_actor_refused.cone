@@ -1,0 +1,54 @@
+// What a 'parallel each' over chunks and 'indexed()' refuses in an actor's
+// behaviour, by the rules a parallel each there already keeps
+// (concurrency_parallel_each_actor_refused): the behaviour returns to its
+// actor's dispatcher while the pieces run, so a slice, chunks or an array that
+// lies in its own frame is gone by then. The chunks of a list in a local are a
+// slice into its block, held in a variable of the frame; those of a field,
+// reached through 'self', are the actor's own. (A list's 'indexed()' walks the
+// list itself, and is allowed in a local: concurrency_parallel_fill_actor.)
+
+mod concurrency_parallel_fill_actor_refused;
+
+import collections use *;
+import actors;
+
+actor Holder {
+  items List[u64];
+  grid Array[u64, 4];
+  total Atomic[u64];
+
+  fn init(self &new) {
+    *self = new Self(items: new List[u64], grid: [1u64, 2u64, 3u64, 4u64], total: Atomic[u64].of(0u64));
+  }
+
+  // Chunks of a list in a local
+  pub async do localChunks(self) {
+    mut l = new List[u64];
+    l.push(1u64);
+    l.push(2u64);
+    parallel each c in l.mutChunks(1usize) {            //~ ErrorParFrame "the chunks it walks lies in the behaviour's own frame"
+      total.add(c[0usize]);
+    }
+  }
+
+  // An array in a local, numbered
+  pub async do localArray(self) {
+    imm xs = [1u64, 2u64, 3u64];
+    parallel each i, x in xs.indexed() {                //~ ErrorParFrame "the slice it walks lies in the behaviour's own frame"
+      total.add(*x);
+    }
+  }
+
+  // Allowed: the actor's own fields, through 'self'
+  pub async do fine(self) {
+    parallel each y, c in items.mutChunks(2usize).indexed() {
+      total.add(u64.from(y));
+    }
+    parallel each i, x in grid.indexed() {
+      total.add(*x);
+    }
+    parallel each c in grid.chunks(2usize) {
+      total.add(u64.from(c.len));
+    }
+  }
+}

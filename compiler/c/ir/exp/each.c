@@ -341,6 +341,25 @@ void eachLower(TypeCheckState *pstate, BlockNode *outer) {
     if (type == errorType || type == unknownType)
         return;
 
+    // 'each i, x in s.indexed()' over a mutable slice (what 'mutItems' gives, or any
+    // '&mut' slice) lends each element mutably, as 'each x in s' does. The cursor
+    // 'indexed' gives holds a read-only slice, so the loop walks the slice it was
+    // called on, counting from 0 itself, which is all that cursor would do.
+    int mutindexed = 0;
+    if (nvars == 2) {
+        INode *recv = parIndexedReceiver(src);
+        if (recv != NULL && isExpNode(recv)) {
+            INode *rtype = iexpGetTypeDcl(recv);
+            if (rtype->tag == ArrayRefTag && permMatches((INode*)mutPerm, ((RefNode*)rtype)->perm)) {
+                srcdcl->value = recv;
+                srcdcl->vtype = ((IExpNode*)recv)->vtype;
+                src = recv;
+                type = rtype;
+                mutindexed = 1;
+            }
+        }
+    }
+
     // What kind of source: the type itself, or what a reference to it points at
     int isref = type->tag == RefTag || type->tag == VirtRefTag;
     INode *base = isref ? itypeGetTypeDcl(((RefNode*)type)->vtexp) : type;
@@ -364,7 +383,7 @@ void eachLower(TypeCheckState *pstate, BlockNode *outer) {
             itypeName(type));
         return;
     }
-    if ((isslice || isarray || islent) && nvars != 1) {
+    if ((isslice || isarray || islent) && nvars != (mutindexed ? 2u : 1u)) {
         errorMsgNode(nodesGet(loop->stmts, 0), ErrorNotIterable,
             "An array, a slice or a list gives one variable, a borrow of each element.");
         return;
@@ -456,7 +475,7 @@ void eachLower(TypeCheckState *pstate, BlockNode *outer) {
         if (isslice && permMatches((INode*)mutPerm, ((RefNode*)type)->perm))
             elemperm = (INode*)mutPerm;
         RefNode *borrow = newRefNodeFull(BorrowTag, lexnode, borrowRef, elemperm, (INode*)elem);
-        if (itemskind == 2) {
+        if (itemskind == 2 || mutindexed) {
             // The position is a copy of the count, the second variable the element's borrow
             ((VarDclNode*)nodesGet(loop->stmts, 0))->value = eachUse(index, lexnode);
             ((VarDclNode*)nodesGet(loop->stmts, 1))->value = (INode*)borrow;

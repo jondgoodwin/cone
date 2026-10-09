@@ -1,0 +1,136 @@
+// Filling a buffer from a 'parallel each' in an actor's behaviour: 'indexed()' and
+// 'mutChunks(n)' over the actor's own fields, through 'self' (concurrency_
+// parallel_each_actor: the behaviour is cut where the loop ends, and the pieces
+// borrow the actor's fields directly). What a loop there may walk is as it is for
+// any other source: a list or an array in a field, a list in a local (its block
+// is on the heap) for 'indexed()', and not a chunk or a slice of a local, which
+// lies in the behaviour's frame (concurrency_parallel_fill_actor_refused).
+//
+// Every number is worked out by hand:
+//
+//   - 'bake': 5000 pixels in rows of 64 (78 rows and one of 8), pixel (y, x) =
+//     3 (64 y + x) + 1, the sum 3 * (0 + ... + 4999) + 5000 = 37,497,500
+//   - 'perElement': element k is 2k, the sum 2 * 12,497,500 = 24,995,000
+//   - 'fieldArray': a six-element array in a field set to 10 k (sum 150), then
+//     cut in fours: chunk 0 is elements 0 to 3, chunk 1 is 4 and 5, each element
+//     plus 1000 times its chunk's number: 150 + 2000 = 2150
+//   - 'readOnly': the sum of the positions of the list, 0 + ... + 4999 =
+//     12,497,500; and the chunks of 100 numbered, 100 * (0 + ... + 49) = 122,500
+//   - 'localList': a list in a local, 600 long: the sum of the positions, 179,700
+
+mod concurrency_parallel_fill_actor;
+
+import stdio use *;
+import collections use *;
+import actors;
+
+fn say(s &str, n u64) {printStr(s); printStr(" = "); printUInt(n); printStr("\n");}
+
+fn place(x usize, y usize) u32 {
+  u32.from((y * 64usize + x) * 3usize + 1usize);
+}
+
+actor Baker {
+  pixels List[u32];
+  grid Array[u64, 6];
+  total Atomic[u64];
+
+  fn init(self &new, n usize) {
+    mut l = new List[u32];
+    mut i = 0usize;
+    while i < n {
+      l.push(0u32);
+      i = i + 1usize;
+    }
+    *self = new Self(pixels: l, grid: [0u64, 0u64, 0u64, 0u64, 0u64, 0u64], total: Atomic[u64].of(0u64));
+  }
+
+  fn sum(self &) u64 {
+    mut s = 0u64;
+    each p in pixels { s = s + u64.from(*p); }
+    s;
+  }
+
+  pub async do bake(self) u64 {
+    parallel each y, row in pixels.mutChunks(64usize).indexed() {
+      each x, p in row.mutItems().indexed() { *p = place(x, y); }
+    }
+    say("bake", sum());
+    sum();
+  }
+
+  pub async do perElement(self) u64 {
+    parallel each i, p in pixels.mutItems().indexed() {
+      *p = u32.from(i) * 2u32;
+    }
+    say("perElement", sum());
+    sum();
+  }
+
+  pub async do fieldArray(self) u64 {
+    parallel each i, p in grid.mutItems().indexed() {
+      *p = u64.from(i) * 10u64;
+    }
+    mut first = 0u64;
+    each p in grid { first = first + *p; }
+    say("array of tens", first);
+    parallel each y, c in grid.mutChunks(4usize).indexed() {
+      each p in c.mutItems() { *p = *p + u64.from(y) * 1000u64; }
+    }
+    mut second = 0u64;
+    each p in grid { second = second + *p; }
+    say("array in chunks", second);
+    second;
+  }
+
+  pub async do readOnly(self) u64 {
+    total.store(0u64);
+    parallel each i, x in pixels.indexed() {
+      total.add(u64.from(i));
+    }
+    say("positions", total.load());
+    total.store(0u64);
+    parallel each y, c in pixels.chunks(100usize).indexed() {
+      total.add(u64.from(y) * u64.from(c.len));
+    }
+    say("chunk numbers", total.load());
+    total.load();
+  }
+
+  pub async do localList(self) u64 {
+    mut l = new List[u64];
+    mut i = 0usize;
+    while i < 600usize {
+      l.push(0u64);
+      i = i + 1usize;
+    }
+    total.store(0u64);
+    parallel each i, x in l.indexed() {
+      total.add(u64.from(i));
+    }
+    say("local list positions", total.load());
+    total.load();
+  }
+}
+
+actor Driver {
+  pub async do go(self, b Baker) u64 {
+    imm a = await b.bake();
+    imm c = await b.perElement();
+    imm d = await b.fieldArray();
+    imm e = await b.readOnly();
+    imm f = await b.localList();
+    a + c + d + e + f;
+  }
+}
+
+fn main() {
+  initAll();
+  actors.configure(new actors.Options(workers: 4u32));
+  {
+    imm b = new Baker(5000usize);
+    imm d = new Driver();
+    d.go(b);
+  }
+  finalAll();
+}

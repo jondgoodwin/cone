@@ -253,6 +253,150 @@ pub struct @opaque Array[T] {
   // The elements for changing in place: the slice itself, so 'each x in
   // a.mutItems()' gives 'x' as a '&mut' of each element
   pub fn mutItems(self &mut) &mut Array[T] { self; }
+
+  // The elements in runs of 'n', for reading: each item is a slice of 'n' elements,
+  // the last of what is left if 'n' does not divide the count. A panic if 'n' is 0.
+  // 'each c in a.chunks(4)' walks them; 'parallel each' cuts them between chunks
+  pub fn chunks(self &, n usize, file &Array[u8] = srcFile(), line u32 = srcLine()) ArrayChunks[T] {
+    if n == 0usize {
+      panic("chunks: the chunk size is 0", file, line);
+    }
+    new ArrayChunks[T](self, n, 0usize);
+  }
+
+  // The elements in runs of 'n', for changing in place: each item is a '&mut' slice
+  // of 'n' elements (the last may be shorter), which no other chunk reaches, so a
+  // 'parallel each' may give each pass one. A panic if 'n' is 0
+  pub fn mutChunks(self &mut, n usize, file &Array[u8] = srcFile(), line u32 = srcLine()) ArrayMutChunks[T] {
+    if n == 0usize {
+      panic("mutChunks: the chunk size is 0", file, line);
+    }
+    new ArrayMutChunks[T](self, n, 0usize);
+  }
+}
+
+// A cursor over a slice's elements in runs of 'size', which 'chunks' gives: 'next'
+// gives each run as a slice until it answers None. 'pos' is the element the next
+// run starts at. With 'len' and 'split' (which cuts between runs, 'at' counted in
+// runs) it is a ParallelIterable, and 'parallel each' walks it with 'at'.
+pub struct ArrayChunks['a, T] {
+  pub items &'a Array[T];
+  pub size usize;
+  pub pos usize;
+
+  // How many runs it has yet to give
+  pub fn len(self &) usize {
+    imm left = items.len - pos;
+    left / size + if left % size == 0usize { 0usize; } else { 1usize; };
+  }
+
+  // Run number 'k' of those it has yet to give (a panic past the last)
+  pub fn at(self &, k usize) &'a Array[T] {
+    if k >= self.len() {
+      panic("ArrayChunks.at: the chunk is past the end");
+    }
+    imm from = pos + k * size;
+    imm left = items.len - from;
+    imm count = if left < size { left; } else { size; };
+    mem.sliceFromParts[T]((items as *T) + from, count);
+  }
+
+  pub fn next(self &mut) Option[&'a Array[T]] {
+    if pos >= items.len { return None[&Array[T]][]; }
+    imm c = self.at(0usize);
+    pos = pos + c.len;
+    Some[&Array[T]][c];
+  }
+
+  // The runs before run number 'at' and those from it on, as two cursors over the
+  // same elements (a panic if 'at' is past the end)
+  pub fn split(self &, at usize) (ArrayChunks['a, T], ArrayChunks['a, T]) {
+    if at > self.len() {
+      panic("ArrayChunks.split: the index is past the end");
+    }
+    imm cut = if at == self.len() { items.len; } else { pos + at * size; };
+    imm p = items as *T;
+    (new ArrayChunks[T](mem.sliceFromParts[T](p, cut), size, pos),
+      new ArrayChunks[T](mem.sliceFromParts[T](p + cut, items.len - cut), size, 0usize));
+  }
+
+  // The runs with their numbers, counted from 0 as the runs it gives are
+  pub fn indexed(self) ChunksIndexed['a, T] { new ChunksIndexed[T](self, 0usize); }
+}
+
+// A cursor over runs and their numbers, which 'indexed' gives: 'next' gives a tuple
+// of the run's number and the run
+pub struct ChunksIndexed['a, T] {
+  pub chunks ArrayChunks['a, T];
+  pub index usize;
+
+  pub fn next(self &mut) Option[(usize, &'a Array[T])] {
+    match chunks.next() {
+      case imm c Some {
+        imm i = index;
+        index = i + 1usize;
+        return Some[(usize, &Array[T])][(i, c.value)];
+      }
+      case is None { return None[(usize, &Array[T])][]; }
+    }
+  }
+}
+
+// The same for changing: 'mutChunks' gives it, and each run is a '&mut' slice
+pub struct ArrayMutChunks['a, T] {
+  pub items &'a mut Array[T];
+  pub size usize;
+  pub pos usize;
+
+  pub fn len(self &) usize {
+    imm left = items.len - pos;
+    left / size + if left % size == 0usize { 0usize; } else { 1usize; };
+  }
+
+  pub fn at(self &, k usize) &'a mut Array[T] {
+    if k >= self.len() {
+      panic("ArrayMutChunks.at: the chunk is past the end");
+    }
+    imm from = pos + k * size;
+    imm left = items.len - from;
+    imm count = if left < size { left; } else { size; };
+    mem.sliceFromPartsMut[T]((items as *T) + from, count);
+  }
+
+  pub fn next(self &mut) Option[&'a mut Array[T]] {
+    if pos >= items.len { return None[&mut Array[T]][]; }
+    imm c = self.at(0usize);
+    pos = pos + c.len;
+    Some[&mut Array[T]][c];
+  }
+
+  pub fn split(self &, at usize) (ArrayMutChunks['a, T], ArrayMutChunks['a, T]) {
+    if at > self.len() {
+      panic("ArrayMutChunks.split: the index is past the end");
+    }
+    imm cut = if at == self.len() { items.len; } else { pos + at * size; };
+    imm p = items as *T;
+    (new ArrayMutChunks[T](mem.sliceFromPartsMut[T](p, cut), size, pos),
+      new ArrayMutChunks[T](mem.sliceFromPartsMut[T](p + cut, items.len - cut), size, 0usize));
+  }
+
+  pub fn indexed(self) MutChunksIndexed['a, T] { new MutChunksIndexed[T](self, 0usize); }
+}
+
+pub struct MutChunksIndexed['a, T] {
+  pub chunks ArrayMutChunks['a, T];
+  pub index usize;
+
+  pub fn next(self &mut) Option[(usize, &'a mut Array[T])] {
+    match chunks.next() {
+      case imm c Some {
+        imm i = index;
+        index = i + 1usize;
+        return Some[(usize, &mut Array[T])][(i, c.value)];
+      }
+      case is None { return None[(usize, &mut Array[T])][]; }
+    }
+  }
 }
 
 // A cursor over a slice's elements, which 'iter' gives: 'next' gives a borrow of
@@ -543,7 +687,8 @@ pub trait Iterable[T, I] where I is Iterator[T] {
 // items out one after another and cannot be cut, so 'parallel each' refuses it.
 // Today 'parallel each' walks number ranges, arrays, slices and lists, which the
 // compiler cuts into index ranges itself (an array or a slice has no methods to
-// cut with), and does not yet call 'split' of a type of one's own.
+// cut with), and the runs 'chunks' and 'mutChunks' give, which it cuts between runs
+// through their 'len' and 'at'; it does not yet call 'split' of a type of one's own.
 pub trait ParallelIterable[T, P] {
   // How many items it holds
   pub fn len(self &) usize;

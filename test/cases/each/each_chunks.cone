@@ -1,0 +1,165 @@
+// 'chunks(n)' and 'mutChunks(n)' on an array, a slice and a list, and 'indexed()'
+// over a slice that may be changed.
+//
+// 'chunks(n)' hands out the elements in runs of 'n', each a read-only slice;
+// 'mutChunks(n)' hands each out as a '&mut' slice. The last run is what is left,
+// so it is shorter when 'n' does not divide the count. 'each' walks them (the
+// cursor's 'next'); 'indexed()' adds the run's number, counted from 0. The
+// cursors also have 'len' (how many runs are left) and 'split' (the runs before a
+// run number and those from it on), so they are ParallelIterables.
+//
+// 'each i, p in s.mutItems().indexed()' gives 'p' as a '&mut' of each element,
+// as 'each p in s.mutItems()' does; 'indexed()' on a read-only slice, an array
+// or a list still gives '&' items.
+//
+// Each case prints what it saw; the numbers are worked out in the comments.
+
+mod each_chunks;
+
+import stdio use *;
+import collections use *;
+
+fn show(label &str, n u64) {
+  printStr(label);
+  printStr(" = ");
+  printUInt(n);
+  printStr("\n");
+}
+
+// The lengths of the chunks of a slice, in order, as digits ("442" for 4, 4, 2),
+// and how many there are
+fn lengths(s &Array[u64], n usize) {
+  mut count = 0u64;
+  each c in s.chunks(n) {
+    printUInt(u64.from(c.len));
+    printStr(" ");
+    count = count + 1u64;
+  }
+  printStr("| ");
+  printUInt(count);
+  printStr(" chunks\n");
+}
+
+// The sum of every element, taken chunk by chunk
+fn chunkSum(s &Array[u64], n usize) u64 {
+  mut total = 0u64;
+  each c in s.chunks(n) {
+    each x in c {
+      total = total + *x;
+    }
+  }
+  total;
+}
+
+fn bump(s &mut Array[u64], n usize) {
+  each c in s.mutChunks(n) {
+    each x in c.mutItems() {
+      *x = *x + 1000u64;
+    }
+  }
+}
+
+fn halves[T, P, C ParallelIterable[T, P]](c &C) (P, P) {
+  c.split(c.len() / 2usize);
+}
+
+fn main() {
+  mut l = new List[u64];
+  each i in 0usize < 10usize { l.push(u64.from(i)); }       // 0 1 2 ... 9
+
+  // A list: 10 elements in runs of 4 are 4, 4, 2 (the last shorter)
+  lengths(l.view(), 4usize);
+  show("sum by 4s", chunkSum(l.view(), 4usize));            // 0+...+9 = 45
+
+  // n divides the count exactly: 10 in runs of 5 or 10, and of 1
+  lengths(l.view(), 5usize);
+  lengths(l.view(), 10usize);
+  lengths(l.view(), 1usize);
+  // n larger than the count: one run of all 10
+  lengths(l.view(), 25usize);
+  // nothing to cut: no run at all
+  imm empty = new List[u64];
+  lengths(empty.view(), 3usize);
+
+  // An array and a slice of it
+  imm arr = [5u64, 6u64, 7u64, 8u64, 9u64, 10u64, 11u64];
+  lengths(&arr, 3usize);                                    // 3 3 1
+  show("array sum by 3s", chunkSum(&arr, 3usize));          // 5+...+11 = 56
+  lengths(&arr[2usize..6usize], 3usize);                    // 7 8 9 10: 3 1
+
+  // chunks and their numbers
+  each y, c in l.chunks(4usize).indexed() {
+    printUInt(u64.from(y));
+    printStr(":");
+    printUInt(c[0usize]);
+    printStr("..");
+    printUInt(c[c.len - 1usize]);
+    printStr(" ");
+  }
+  printStr("\n");                                           // 0:0..3 1:4..7 2:8..9
+
+  // mutChunks changes the elements in place; a list, and a slice
+  each c in l.mutChunks(3usize) {
+    each x in c.mutItems() {
+      *x = *x * 2u64;
+    }
+  }
+  show("list doubled", *l[9usize] + *l[0usize] + *l[5usize]);  // 18 + 0 + 10 = 28
+  bump(l.viewMut(), 4usize);
+  show("list bumped", *l[0usize] + *l[9usize]);             // 1000 + 1018 = 2018
+
+  // The number of each run, written into the first element of the run
+  each y, c in l.mutChunks(4usize).indexed() {
+    c[0usize] = u64.from(y) + 7u64;
+  }
+  show("first of run 0", *l[0usize]);                       // 7
+  show("first of run 1", *l[4usize]);                       // 8
+  show("first of run 2", *l[8usize]);                       // 9
+  show("an element between", *l[1usize]);                   // 1002
+
+  // An array's mutChunks
+  mut grid = [1u64, 2u64, 3u64, 4u64, 5u64];
+  each c in grid.mutChunks(2usize) {
+    each x in c.mutItems() {
+      *x = *x + 10u64;
+    }
+  }
+  show("array chunks changed", grid[0usize] + grid[4usize]); // 11 + 15 = 26
+
+  // len and split: a ParallelIterable cut between runs
+  imm cs = l.chunks(4usize);                                // 3 runs
+  show("runs", u64.from(cs.len()));                         // 3
+  imm cut = halves[&Array[u64], ArrayChunks[u64], ArrayChunks[u64]](&cs);                                 // 1 run, then 2
+  mut left = cut.0;
+  mut right = cut.1;
+  show("left runs", u64.from(left.len()));                  // 1
+  show("right runs", u64.from(right.len()));                // 2
+  mut leftTotal = 0u64;
+  each c in left {
+    each x in c { leftTotal = leftTotal + *x; }
+  }
+  show("left sum", leftTotal);                              // 7+1002+1004+1006 = 3019
+  mut rightLast = 0u64;
+  each c in right {
+    rightLast = u64.from(c.len);
+  }
+  show("right last run", rightLast);                        // 2
+  imm second = cs.at(1usize);
+  show("run 1 of 3", second[0usize]);                       // 8
+
+  // indexed() over a slice that may be changed: the item is a '&mut'
+  mut nums = new List[u64];
+  each i in 0usize < 6usize { nums.push(100u64); }
+  each i, p in nums.mutItems().indexed() {
+    *p = *p + u64.from(i);
+  }
+  show("list indexed item i", *nums[0usize] + *nums[5usize]); // 100 + 105 = 205
+  mut fixed = [7u64, 7u64, 7u64];
+  each i, p in fixed.mutItems().indexed() {
+    *p = *p * u64.from(i + 1usize);
+  }
+  show("array indexed", fixed[0usize] + fixed[1usize] + fixed[2usize]); // 7 + 14 + 21 = 42
+  each i, p in nums.indexed() {                               // reads, '&' items
+    if i == 3usize { show("read through indexed", *p); }       // 103
+  }
+}

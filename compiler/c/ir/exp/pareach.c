@@ -92,6 +92,53 @@ static int parHasMethod(INode *type, Name *name) {
     return isMethodType(type) && iNsTypeFindFnField((INsTypeNode*)type, name) != NULL;
 }
 
+// Is this type an instance of the struct of this name that core declares?
+static int parIsCore(INode *type, char *name, size_t len) {
+    if (type == NULL || type->tag != StructTag || ((StructNode*)type)->namesym != nametblFind(name, (uint32_t)len))
+        return 0;
+    ModuleNode *mod = dclInfoGetModule(type);
+    return mod != NULL && mod->namesym == nametblFind("core", 4);
+}
+
+INode *parIndexedReceiver(INode *src) {
+    if (src == NULL || src->tag != FnCallTag)
+        return NULL;
+    FnCallNode *call = (FnCallNode*)src;
+    if (call->objfn == NULL || !isNameUseNode(call->objfn) || call->args == NULL || call->args->used != 1)
+        return NULL;
+    INode *dcl = ((NameUseNode*)call->objfn)->dclnode;
+    if (dcl == NULL || dcl->tag != FnDclTag || ((FnDclNode*)dcl)->namesym != nametblFind("indexed", 7))
+        return NULL;
+    INode *owner = inodeGetOwner(dcl);
+    if (!parIsCore(owner, "Array", 5) && !parIsCore(owner, "ArrayChunks", 11) && !parIsCore(owner, "ArrayMutChunks", 14))
+        return NULL;
+    return nodesGet(call->args, 0);
+}
+
+// A list's 'indexed' is Array's, called on the slice the list lends ('view'): the
+// receiver given is that call. The loop walks the list itself, as 'parallel each
+// x in list' does (a list in a local of a behaviour is fine, its block being on
+// the heap), so this answers the list it was lent from; any other receiver as it is
+static INode *parUnlend(INode *recv) {
+    if (recv->tag != FnCallTag)
+        return recv;
+    FnCallNode *call = (FnCallNode*)recv;
+    if (call->objfn == NULL || !isNameUseNode(call->objfn) || call->args == NULL || call->args->used != 1)
+        return recv;
+    INode *dcl = ((NameUseNode*)call->objfn)->dclnode;
+    INode *arg = nodesGet(call->args, 0);
+    if (dcl == NULL || dcl->tag != FnDclTag || !isExpNode(arg))
+        return recv;
+    INode *type = iexpGetTypeDcl(arg);
+    INode *base = type->tag == RefTag || type->tag == VirtRefTag ? itypeGetTypeDcl(((RefNode*)type)->vtexp) : type;
+    if (base == NULL || base->tag != StructTag)
+        return recv;
+    StructNode *lentbody = structLentBody((StructNode*)base);
+    if (lentbody == NULL || !itypeIsArrayBody((INode*)lentbody) || structLentVia((StructNode*)base) != ((FnDclNode*)dcl)->namesym)
+        return recv;
+    return arg;
+}
+
 // A place that checking a second time leaves as it is (each.c, eachRecheckable)
 static int parRecheckable(INode *node) {
     if (!iexpIsLval(node))
@@ -948,7 +995,7 @@ static void parSourceError(INode *src, INode *type) {
     int cursor = isMethodType(type) && (parHasMethod(type, nextName) || parHasMethod(type, iterName));
     if (isMethodType(type) && parHasMethod(type, lenName) && parHasMethod(type, splitName))
         errorMsgNode(src, ErrorParSource,
-            "A 'parallel each' over %s, which has 'len' and 'split' and so is a ParallelIterable, is not built yet: it walks arrays, slices, lists and number ranges.",
+            "A 'parallel each' over %s, which has 'len' and 'split' and so is a ParallelIterable, is not built yet: it walks arrays, slices, lists, number ranges and the runs of 'chunks' and 'mutChunks'.",
             itypeName(type));
     else if (cursor)
         errorMsgNode(src, ErrorParSource,
@@ -1084,9 +1131,10 @@ void parallelEachLower(TypeCheckState *pstate, BlockNode *outer) {
     if (!parRuntime(pstate, lexnode, &seam))
         return;
 
-    if (nvars != 1) {
+    // (a source that is 'indexed()' gives two, checked with the source below)
+    if (isrange && nvars != 1) {
         errorMsgNode(nodesGet(loop->stmts, 0), ErrorParSource,
-            "A 'parallel each' gives one variable, a borrow of each element (or each number of a range).");
+            "A 'parallel each' gives one variable, a borrow of each element (or each number of a range); two come from indexed(), the position and the item.");
         return;
     }
     // A builder's loop holds the yield that appends to the receiver
@@ -1096,6 +1144,7 @@ void parallelEachLower(TypeCheckState *pstate, BlockNode *outer) {
 
     VarDclNode *lo, *hi, *k;
     INode *elem;
+    int elemindexed = 0;    // 'indexed()': the first variable is the position, the second the item
 
     if (isrange) {
         // The bounds were checked as the initializers of their variables
@@ -1143,18 +1192,45 @@ void parallelEachLower(TypeCheckState *pstate, BlockNode *outer) {
         INode *type = iexpGetTypeDcl(src);
         if (type == errorType || type == unknownType)
             return;
+
+        // 'indexed()' on an array, slice, list or chunks gives the position and the
+        // item: the loop walks what it was called on, and the position is the
+        // pass's own index, counted in the whole source, so it is global
+        int indexed = 0;
+        INode *recv = parIndexedReceiver(src);
+        if (recv != NULL && isExpNode(recv)) {
+            recv = parUnlend(recv);
+            INode *rtype = iexpGetTypeDcl(recv);
+            if (rtype == errorType || rtype == unknownType)
+                return;
+            srcdcl->value = recv;
+            srcdcl->vtype = ((IExpNode*)recv)->vtype;
+            src = recv;
+            type = rtype;
+            indexed = 1;
+        }
+        if (nvars != (indexed ? 2u : 1u)) {
+            errorMsgNode(nodesGet(loop->stmts, 0), ErrorParSource, indexed
+                ? "A 'parallel each' over indexed() gives two variables, the position and the item."
+                : "A 'parallel each' gives one variable, a borrow of each element (or each number of a range); two come from indexed(), the position and the item.");
+            return;
+        }
+
         int isref = type->tag == RefTag || type->tag == VirtRefTag;
         INode *base = isref ? itypeGetTypeDcl(((RefNode*)type)->vtexp) : type;
         int isslice = type->tag == ArrayRefTag;
         int isarray = base->tag == ArrayTag;
+        // 'chunks(n)' and 'mutChunks(n)': the cursors core gives, cut between
+        // chunks (each pass is given a chunk, a slice no other pass can reach)
+        int ischunks = !isref && (parIsCore(type, "ArrayChunks", 11) || parIsCore(type, "ArrayMutChunks", 14));
         Name *lentvia = NULL;
-        if (!isslice && !isarray && base->tag == StructTag) {
+        if (!isslice && !isarray && !ischunks && base->tag == StructTag) {
             StructNode *lentbody = structLentBody((StructNode*)base);
             if (lentbody != NULL && itypeIsArrayBody((INode*)lentbody))
                 lentvia = structLentVia((StructNode*)base);
         }
         int islent = lentvia != NULL;
-        if (!isslice && !isarray && !islent) {
+        if (!isslice && !isarray && !islent && !ischunks) {
             parSourceError(src, type);
             return;
         }
@@ -1166,18 +1242,20 @@ void parallelEachLower(TypeCheckState *pstate, BlockNode *outer) {
         if (seam && !islent && ((isarray && !isref && !place) || parMayBeFrame(src))) {
             errorMsgNode(src, ErrorParFrame,
                 "This 'parallel each' is in a behaviour, which returns to its actor's dispatcher while the pieces run, and the %s it walks lies in the behaviour's own frame, which is gone by then. Walk a list, or an array or slice in one of the actor's fields (named through 'self'), or one lent from one.",
-                isslice ? "slice" : "array");
+                ischunks ? "chunks" : isslice ? "slice" : "array");
             return;
         }
 
         // A slice that is mutable (what 'mutItems' gives, or a '&mut' slice) lends
-        // each item mutably, as 'each' does; any other lends it to be read
-        int mutlend = isslice && permMatches((INode*)mutPerm, ((RefNode*)type)->perm);
+        // each item mutably, as 'each' does; any other lends it to be read. Chunks
+        // of a mutable slice (mutChunks) lend each chunk mutably
+        int mutlend = ischunks ? parIsCore(type, "ArrayMutChunks", 14)
+            : isslice && permMatches((INode*)mutPerm, ((RefNode*)type)->perm);
         Name *slicename = mutlend ? parSliceMutName : parSliceName;
 
         // imm s = [the slice]
         VarDclNode *slicedcl = srcdcl;
-        if (isslice)
+        if (isslice || ischunks)
             slicedcl->namesym = slicename;
         if (islent) {
             // The slice the type lends: its place's, or a value held first
@@ -1205,25 +1283,42 @@ void parallelEachLower(TypeCheckState *pstate, BlockNode *outer) {
         }
         nodesAdd(&outer->stmts, (INode*)slicedcl);
         lo = parVar(parLoName, immPerm, (INode*)newULitNodeTC(0, (INode*)usizeType), scope, lexnode);
-        hi = parVar(parHiName, immPerm, (INode*)parField(parUse(slicedcl, lexnode), lenName, lexnode), scope, lexnode);
+        // (chunks: the number of chunks, 's.len()')
+        hi = parVar(parHiName, immPerm, ischunks ? (INode*)parCall(parUse(slicedcl, lexnode), lenName, lexnode)
+            : (INode*)parField(parUse(slicedcl, lexnode), lenName, lexnode), scope, lexnode);
         k = parVar(parKName, mutPerm, parUse(lo, lexnode), scope, lexnode);
         nodesAdd(&outer->stmts, (INode*)lo);
         nodesAdd(&outer->stmts, (INode*)hi);
         nodesAdd(&outer->stmts, (INode*)k);
 
-        // imm x = &s[k]
-        FnCallNode *at = newFnCallLower(lexnode, parUse(slicedcl, lexnode), 1);
-        at->flags |= FlagIndex;
-        nodesAdd(&at->args, parUse(k, lexnode));
-        elem = (INode*)newRefNodeFull(BorrowTag, lexnode, borrowRef, mutlend ? (INode*)mutPerm : unknownType, (INode*)at);
+        if (ischunks) {
+            // imm x = s.at(k): chunk number k, a slice of its own
+            FnCallNode *chunk = parCall(parUse(slicedcl, lexnode), nametblFind("at", 2), lexnode);
+            nodesAdd(&chunk->args, parUse(k, lexnode));
+            elem = (INode*)chunk;
+        }
+        else {
+            // imm x = &s[k]
+            FnCallNode *at = newFnCallLower(lexnode, parUse(slicedcl, lexnode), 1);
+            at->flags |= FlagIndex;
+            nodesAdd(&at->args, parUse(k, lexnode));
+            elem = (INode*)newRefNodeFull(BorrowTag, lexnode, borrowRef, mutlend ? (INode*)mutPerm : unknownType, (INode*)at);
+        }
         outer->flags |= FlagParallel;
+        elemindexed = indexed;
     }
 
     // loop { if k >= hi {break}; imm x = ...; k++; ...body... }
-    ((VarDclNode*)nodesGet(loop->stmts, 0))->value = elem;
+    // (over indexed(): imm i = k; imm x = ...; k++)
+    if (elemindexed) {
+        ((VarDclNode*)nodesGet(loop->stmts, 0))->value = parUse(k, lexnode);
+        ((VarDclNode*)nodesGet(loop->stmts, 1))->value = elem;
+    }
+    else
+        ((VarDclNode*)nodesGet(loop->stmts, 0))->value = elem;
     FnCallNode *step = newFnCallOpnameLower(lexnode, parUse(k, lexnode), incrPostName, 0);
     step->flags |= FlagLvalOp;
-    nodesInsert(&loop->stmts, (INode*)step, 1);
+    nodesInsert(&loop->stmts, (INode*)step, nvars);
     FnCallNode *done = newFnCallOpnameLower(lexnode, parUse(k, lexnode), geName, 1);
     nodesAdd(&done->args, parUse(hi, lexnode));
     nodesInsert(&loop->stmts, parBreakIf((INode*)done, loop, lexnode), 0);

@@ -1,0 +1,66 @@
+// What a 'parallel each' over chunks and 'indexed()' refuses. A pass writes
+// through the chunk or the item it is given, which no other pass reaches; it may
+// not write the buffer the chunks come from by its own name (the passes run at
+// the same time, and it could be a chunk another pass is writing), nor read it
+// while the loop changes it, so the rules for items (concurrency_parallel_each_
+// refused, concurrency_parallel_each_items) hold for chunks too. A chunk
+// 'chunks(n)' gives is read-only. 'indexed()' gives two variables and nothing
+// else does.
+
+mod concurrency_parallel_fill_refused;
+
+import collections use *;
+import actors;
+
+// Writing a chunk other than its own, through the buffer's name, by an element
+fn writeOuterElement(pixels &mut List[u32], size usize) {
+  parallel each y, row in pixels.mutChunks(size).indexed() {
+    pixels.set(y * size, 7u32);              //~ ErrorParWrite "may not name pixels"
+    row[0usize] = 1u32;
+  }
+}
+
+// ... or through an array's
+fn writeOuterArray(cells &mut Array[u32]) {
+  parallel each y, row in cells.mutChunks(4usize).indexed() {
+    cells[0usize] = 9u32;                    //~ ErrorParWrite "may not name cells"
+                                             //~^ ErrorParWrite "may not write cells"
+  }
+}
+
+// Reading the buffer by its name while the passes change its chunks
+fn readOuter(pixels &mut List[u32], size usize) {
+  parallel each y, row in pixels.mutChunks(size).indexed() {
+    row[0usize] = *pixels[0usize];           //~ ErrorParWrite "may not name pixels"
+  }
+}
+
+// ... and the same for the items of 'indexed()' over 'mutItems'
+fn readOuterItems(pixels &mut List[u32]) {
+  parallel each i, p in pixels.mutItems().indexed() {
+    *p = *pixels[0usize];                    //~ ErrorParWrite "may not name pixels"
+  }
+}
+
+// A chunk 'chunks' gives is read-only
+fn writeRead(pixels &List[u32]) {
+  parallel each c in pixels.chunks(8usize) {
+    c[0usize] = 1u32;                        //~ ErrorNoMut
+  }
+}
+
+// 'indexed()' gives the position and the item
+fn oneVariable(pixels &mut List[u32]) {
+  parallel each p in pixels.mutItems().indexed() {   //~ ErrorParSource "indexed() gives two variables"
+  }
+}
+
+fn twoWithoutIndexed(pixels &mut List[u32]) {
+  parallel each i, p in pixels.mutItems() {          //~ ErrorParSource "two come from indexed()"
+  }
+}
+
+fn chunksOneVariable(pixels &List[u32]) {
+  parallel each c in pixels.chunks(8usize).indexed() {   //~ ErrorParSource "indexed() gives two variables"
+  }
+}
