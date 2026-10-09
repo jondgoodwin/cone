@@ -611,7 +611,7 @@ static void fnCallLendVirtOwner(INode **selfp, INode *parmtype) {
 // and ensure that all arguments are specified and coerced to the right types
 static INode *fnCallBrandPathTake(FnCallNode *call);
 
-void fnCallFinalizeArgs(FnCallNode *node) {
+void fnCallFinalizeArgs(TypeCheckState *pstate, FnCallNode *node) {
     FnSigNode *fnsig = (FnSigNode*)iexpGetDerefTypeDcl(node->objfn);
     assert(fnsig->tag == FnSigTag);
 
@@ -660,7 +660,9 @@ void fnCallFinalizeArgs(FnCallNode *node) {
             fnCallLendVirtOwner(argsp, ((IExpNode*)*parmp)->vtype);
         // Make sure the type matches (and coerce as needed)
         // (but not for vref as self)
-        if (!iexpCoerce(argsp, ((IExpNode*)*parmp)->vtype)
+        // (A string literal wanted as a read-only borrow of a type declaring
+        // 'fromLiteral' is lent as a temporary of it: iexpCoerceIn.)
+        if (!iexpCoerceIn(pstate, argsp, ((IExpNode*)*parmp)->vtype)
             && !(cnt == node->args->used && (node->flags & FlagVDisp))) {
             // A lock-managed reference lends nothing but through a borrow
             INode *argtype = iexpGetTypeDcl(*argsp);
@@ -737,7 +739,7 @@ void fnCallFnSigTypeCheck(TypeCheckState *pstate, FnCallNode *node) {
         errorMsgNode((INode*)node->objfn, ErrorNoMeth, "A function may not be called using indexing or a method.");
         return;
     }
-    fnCallFinalizeArgs(node);
+    fnCallFinalizeArgs(pstate, node);
 }
 
 Name *fnCallOpEqMethod(Name *opeqname) {
@@ -1349,7 +1351,7 @@ int fnCallLowerMethod(TypeCheckState *pstate, FnCallNode *callnode) {
     callnode->vtype = ((FnSigNode*)selected->vtype)->rettype;
 
     // Handle copying of value arguments and default arguments
-    fnCallFinalizeArgs(callnode);
+    fnCallFinalizeArgs(pstate, callnode);
     return 1;
 }
 
@@ -1577,7 +1579,7 @@ static void fnCallLowerSliceCompare(TypeCheckState *pstate, FnCallNode *node) {
     node->objfn = (INode*)newNameUseFromDclNode((INode*)instance, (INode*)node);
     node->methfld = NULL;
     node->vtype = ((FnSigNode*)instance->vtype)->rettype;
-    fnCallFinalizeArgs(node);
+    fnCallFinalizeArgs(pstate, node);
 }
 
 // An array, a reference to one, or a '&str' (a string literal is one), compared
@@ -1882,7 +1884,7 @@ int fnCallLowerTraitMethod(TypeCheckState *pstate, FnCallNode *callnode, INode *
 
 // objfn names an overload set. Select the one candidate that accepts the call's
 // arguments, rewrite the call to that concrete function, then finalize its arguments.
-void fnCallLowerOverloadFn(FnCallNode *node) {
+void fnCallLowerOverloadFn(TypeCheckState *pstate, FnCallNode *node) {
     NameUseNode *fnuse = (NameUseNode*)node->objfn;
     // Through the alias where a fold is what bound the name here. The visibility
     // already checked was the alias's own, and the overload set is its target's
@@ -1915,7 +1917,7 @@ void fnCallLowerOverloadFn(FnCallNode *node) {
     fnuse->namesym = selected->namesym;
     fnuse->dclnode = (INode*)selected;
     fnuse->vtype = selected->vtype;
-    fnCallFinalizeArgs(node);
+    fnCallFinalizeArgs(pstate, node);
 }
 
 // Lower opassign method for method-based types
@@ -2748,7 +2750,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
 
     // A call whose callee names an overload set selects its one viable candidate
     if (nameUseNames(node->objfn, FnOverloadDclTag)) {
-        fnCallLowerOverloadFn(node);
+        fnCallLowerOverloadFn(pstate, node);
         return;
     }
 

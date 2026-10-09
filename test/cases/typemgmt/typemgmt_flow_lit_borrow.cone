@@ -1,0 +1,35 @@
+// A string literal lent as a temporary (typemgmt_lit_borrow) is the temporary
+// the borrow written out, '&W.fromLiteral(lit)', would be: it ends with its
+// statement, and a borrow of it that is used after that is refused by the
+// same checks, with the same words. Only a local's own initializer extends it:
+// 'imm r &W = "hi"' is fine (typemgmt_lit_borrow), but a call's result that
+// borrows from it, kept past the statement, is not.
+//
+// Flow stage.
+
+mod typemgmt_flow_lit_borrow;
+
+struct W {
+  pub n i32;
+  pub fn fromLiteral(s &str) W { new W(i32.from(s.len)); }
+  pub fn get(self &) i32 { self.n; }
+}
+
+fn id(w &W) &W { w; }
+
+// Kept in a local, used on a later line
+fn held() i32 {
+  imm r = id("lit");                   //~ ErrorFrozen:14 "ends with its statement"
+  r.get();
+}
+
+// Kept in a variable declared before the statement
+fn reassigned() i32 {
+  imm first = W.fromLiteral("a");
+  mut keep &W = &first;
+  keep = id("b");                      //~ ErrorFrozen:13 "ends with its statement"
+  keep.get();
+}
+
+// Handed back to the caller
+fn returned() &W { id("r"); }          //~ ErrorEscape:22 "outlives the local value it points to"

@@ -1,0 +1,96 @@
+// A string literal given to an init's parameter that wants a read-only borrow
+// of a type declaring 'fromLiteral' is lent as a temporary, as a call's
+// argument is (typemgmt_lit_borrow): 'new Boxed("hello")' for
+// 'init(self &new, w &W)'. W prints when it is made and when it is dropped, so
+// the output is the whole assertion.
+//
+// - The temporary is the construction's, not the new value's: it is made when
+//   the arguments are, lent to the init, and dropped at the end of the
+//   statement, before the next statement runs ('-> 5' follows '[drop 5]').
+// - Selection among the inits falls back to the conversion as a call's does:
+//   when one init takes the literal as the '&str' it is, that one runs and
+//   nothing is made; when only a '&W' init could, it runs on a temporary.
+// - The struct's implicit init is preferred, as before, where it takes the
+//   arguments by position (the field is a W by value here: made and moved in).
+//
+// Refused: typemgmt_typecheck_lit_borrow ('&mut W' inits).
+//
+// Each printed value was checked by hand against the source.
+
+mod typemgmt_lit_borrow_init;
+
+import stdio use *;
+
+struct W {
+  pub n i32;
+  pub fn fromLiteral(s &str) W {
+    printStr("[make ");
+    printInt(i64.from(s.len));
+    printStr("] ");
+    new W(i32.from(s.len));
+  }
+  fn final(self &uni) {
+    printStr("[drop ");
+    printInt(i64.from(self.n));
+    printStr("] ");
+  }
+  pub fn get(self &) i32 { self.n; }
+}
+
+// Its one init takes a borrowed W
+struct Boxed {
+  pub n i32;
+  pub fn init(self &new, w &W) { *self = new Boxed(w.get()); }
+}
+
+// One init takes the literal as it is, the other would need the temporary
+struct Pick {
+  pub n i32;
+  pub fn initText overload init(self &new, s &str) { *self = new Pick(100); }
+  pub fn initW overload init(self &new, w &W) { *self = new Pick(200); }
+}
+
+// Two borrowed parameters
+struct Both {
+  pub n i32;
+  pub fn init(self &new, a &W, b &W) { *self = new Both(a.get() * 10 + b.get()); }
+}
+
+// A W by value is a field: the implicit init takes the literal, made and moved in
+struct Owns {
+  pub w W;
+}
+
+fn say(n i64) {
+  printStr("-> ");
+  printInt(n);
+  printStr(" ");
+}
+
+fn line(label &str) {
+  printStr("| ");
+  printStr(label);
+  printStr("\n");
+}
+
+fn one() { imm s = new Boxed("hello"); say(i64.from(s.n)); }
+fn two() { imm b = new Both("ab", "c"); say(i64.from(b.n)); }
+fn preferText() { imm p = new Pick("x"); say(i64.from(p.n)); }
+fn byValue() { imm o = new Owns("four"); say(i64.from(o.w.get())); }
+fn inLoop() {
+  mut i = 0;
+  while i < 2 {
+    imm s = new Boxed("ab");
+    say(i64.from(s.n));
+    i = i + 1;
+  }
+}
+
+fn main() i32 {
+  one(); line("an init's borrowed parameter");
+  two(); line("two parameters: made in order, dropped newest first, at the statement's end");
+  preferText(); line("an init taking the literal as it is wins; nothing is made");
+  byValue(); line("the implicit init moves a W in; it lives with its owner");
+  inLoop(); line("each pass of a loop");
+  0;
+}

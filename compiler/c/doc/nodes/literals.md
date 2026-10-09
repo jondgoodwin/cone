@@ -252,7 +252,7 @@ crosses threads under the static-borrow rule. It is a value, a fat `{ptr, usize}
 built from the address of its constant and `strlen`; see "A literal and its
 neighbours" below for what it converts to.
 
-**A literal and its neighbours.** Five conversions meet a literal, none of them
+**A literal and its neighbours.** Six conversions meet a literal, none of them
 the literal's own business but each decided from its tag:
 
 - `&str` to `&Array[u8]`, any `&str` and not only a literal: `arrayRefMatchesRef` answers
@@ -283,6 +283,35 @@ the literal's own business but each decided from its tag:
   the pointer it holds is the literal's own global, whose NUL the type does not
   count. A `&str` that is not a literal is not taken (`ErrorCPtrConv`: it promises
   no NUL).
+- A literal wanted as a read-only borrow, `&T`, of such a struct (`slitBorrowMatches`)
+  is lent as a temporary: the node becomes the borrow `&T.fromLiteral(lit)`, built
+  and checked as that borrow written out is (`slitBorrowCoerce`: the call
+  unchecked under a `BorrowTag` node, then `borrowTypeCheck`). So the temporary is
+  a temporary of the statement or, in a local's initializer, extended to the
+  block's end (`varDclExtendTemp`), is finalized there, and a borrow of it kept
+  longer is refused by the loan walk as the written borrow's is. Nothing in it
+  knows a type: `Path`, `String` and `cstr` are `T` alike. The borrow needs
+  the type check state (its scope, the extension), which a coercion does not
+  carry, so it is made one level up, by `iexpCoerceIn`, where the state is at
+  hand: a call's arguments (`fnCallFinalizeArgs`), an init's arguments in
+  `new T(...)` (`typeLitInitArgs`) and `iexpTypeCheckCoerce`'s places
+  (initializer, assignment, ...), and only in a function's body (scope 2
+  and up). A bare `iexpCoerce` meets it as no match (`iexpCoerceShape`), so every
+  other place -- a global, a constant, a field's or a parameter's default, a
+  returned value, a value for the implicit init's field, an `if` arm -- keeps the
+  ordinary mismatch. Only a permission that cannot write is lent: `&mut T`,
+  `&uni T` and a lock's are refused by `slitBorrowRefused` with
+  `ErrorLitBorrowWrite`, since a write to a temporary is lost. **Overloads:**
+  selection counts this conversion only as a fallback. `iNsTypeFindMethod`
+  asks the call once without it, and again with it (`slitBorrowFallback`,
+  `slitBorrowOffered`) only when no candidate took the arguments and one is a
+  literal, so a candidate that takes the literal as the `&str` it is is never
+  ambiguous with a `&T` one (a dictionary's `&K` and `&str` indexes). Two
+  candidates that need the conversion are ambiguous as any two are. The
+  selection of a declared init in `new T(...)` falls back the same way
+  (`typeLitNewChecked`: only when neither a declared init nor the implicit one
+  took the arguments), with the same refusals. The implicit init and the
+  compiler-declared operators on pointers do not offer it.
 - A written borrow of a literal, `&"text"` or `&[]"text"`, retypes the literal as
   the array (`borrowTypeCheck`), so the borrow is a reference to it as before:
   `&"text"` the array behind the text (no NUL counted), which `&"text" as *u8`

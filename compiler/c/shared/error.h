@@ -541,6 +541,9 @@ enum ErrorCode {
     // Slices
     ErrorSliceSpelling = 1336,  // The retired spelling of a slice type, '&[]T': a slice is the borrow of the body of a run-time length, '&Array[T]' ('&[]mut T' is '&mut Array[T]', '&[]'a T' is '&'a Array[T]')
 
+    // Literals
+    ErrorLitBorrowWrite = 1337, // A string literal where a borrow that writes ('&mut T') is wanted, of a type declaring 'fromLiteral': a literal is lent as a temporary only to a read-only borrow, since a write to it is lost
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

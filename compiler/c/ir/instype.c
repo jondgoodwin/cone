@@ -139,7 +139,7 @@ INode *iNsTypeNumberParm(INode *binding, uint32_t argi) {
 // No candidate wins for being an exact rather than a coercible match, for needing
 // fewer coercions, or for being declared first: the caller resolves an ambiguity
 // by using a concrete name or by converting its arguments.
-FnDclNode *iNsTypeFindMethod(INode *binding, INode **self, Nodes *args, enum OverloadMatch *status) {
+static FnDclNode *iNsTypeFindMethodPass(INode *binding, INode **self, Nodes *args, enum OverloadMatch *status) {
     INode **candidatep;
     uint32_t cnt = iNsTypeCandidates(&binding, &candidatep);
 
@@ -156,6 +156,20 @@ FnDclNode *iNsTypeFindMethod(INode *binding, INode **self, Nodes *args, enum Ove
         found = methnode;
         *status = OverloadUnique;
     }
+    return found;
+}
+
+// A call that no candidate takes is asked again with a string literal also
+// lent as a temporary to a '&T' where T declares 'fromLiteral'
+// (slitBorrowFallback): the conversion never competes with a candidate that
+// takes the literal as it is.
+FnDclNode *iNsTypeFindMethod(INode *binding, INode **self, Nodes *args, enum OverloadMatch *status) {
+    FnDclNode *found = iNsTypeFindMethodPass(binding, self, args, status);
+    if (found || *status != OverloadNone || !slitAnyText(self, args))
+        return found;
+    slitBorrowFallback(1);
+    found = iNsTypeFindMethodPass(binding, self, args, status);
+    slitBorrowFallback(0);
     return found;
 }
 

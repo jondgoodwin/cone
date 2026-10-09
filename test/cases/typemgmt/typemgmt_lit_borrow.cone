@@ -1,0 +1,133 @@
+// A string literal where a read-only borrow of a type that declares
+// 'fromLiteral' is wanted is the borrow of a temporary, '&W.fromLiteral(lit)':
+// built where the literal is written, lent to the call, and finalized at the
+// end of the statement, as the borrow written out would be. The rule is the
+// compiler's, not any type's: W here is a test struct that prints when it is
+// made and when it is dropped, so the output is the whole assertion -- each
+// temporary is made once, used, and dropped once, at the statement's end,
+// newest first. (A literal where W is wanted by value is the same call, with
+// no borrow; typemgmt_cstr and struct_use_lend run that.)
+//
+// - A call's argument, a method's argument, a call whose result borrows from
+//   it (read within the statement) and each pass of a loop all end it with
+//   their statement.
+// - A local's initializer extends it to the end of the block, as the written
+//   borrow does ('imm r &W = "hi"'): it is dropped after the locals declared
+//   later.
+// - A candidate that takes the literal as the '&str' it is wins over the
+//   conversion: the temporary is the fallback, for a call no candidate
+//   otherwise takes. A type that lends 'str' (Name) is no different.
+// - 'cstr', a type that declares 'fromLiteral' too, is borrowed the same way.
+//
+// Refused: typemgmt_typecheck_lit_borrow. A temporary held past its
+// statement: typemgmt_flow_lit_borrow.
+//
+// Each printed value was checked by hand against the source.
+
+mod typemgmt_lit_borrow;
+
+import stdio use *;
+import collections use String;
+
+struct W {
+  pub n i32;
+  pub fn fromLiteral(s &str) W {
+    printStr("[make ");
+    printInt(i64.from(s.len));
+    printStr("] ");
+    new W(i32.from(s.len));
+  }
+  fn final(self &uni) {
+    printStr("[drop ");
+    printInt(i64.from(self.n));
+    printStr("] ");
+  }
+  pub fn get(self &) i32 { self.n; }
+  pub fn plus(self &, other &W) i32 { self.n + other.n; }
+}
+
+// A type that lends the text it holds, and accepts a literal
+struct Name {
+  pub text &str;
+  pub fn view(self &) &str { text; }
+  pub fn fromLiteral(s &str) Name { printStr("[make name] "); new Name(s); }
+  fn final(self &uni) { printStr("[drop name] "); }
+  use str via view;
+}
+
+fn say(n i64) {
+  printStr("-> ");
+  printInt(n);
+  printStr(" ");
+}
+
+fn line(label &str) {
+  printStr("| ");
+  printStr(label);
+  printStr("\n");
+}
+
+fn takeW(w &W) i32 { w.get(); }
+fn takeImm(w &imm W) i32 { w.get(); }
+fn takeTwo(a &W, b &W) i32 { a.get() + b.get(); }
+fn id(w &W) &W { w; }
+fn takeCStr(c &cstr) usize { c.view().len; }
+fn takeString(s &String) usize { s.len(); }
+fn takeName(n &Name) i32 { if n.startsWith("he") {1;} else {0;}; }
+
+// A candidate that takes the literal as the '&str' it is wins
+fn pickText overload pick(s &str) i32 { 1; }
+fn pickW overload pick(w &W) i32 { 2; }
+fn pickName overload describe(n &Name) i32 { 3; }
+fn describeText overload describe(s &str) i32 { 4; }
+
+// No candidate takes the literal as it is, so the conversion is the fallback
+fn fallW overload fall(w &W) i32 { 5; }
+fn fallInt overload fall(n i32) i32 { 6; }
+
+fn argument() { say(i64.from(takeW("hello"))); }
+fn argumentImm() { say(i64.from(takeImm("hello"))); }
+fn twoArguments() { say(i64.from(takeTwo("ab", "cde"))); }
+fn methodArgument() { imm w = new W(10); say(i64.from(w.plus("seven"))); }
+fn throughResult() { say(i64.from(id("four").get())); }
+fn writtenOut() { say(i64.from(takeW(&W.fromLiteral("hello")))); }
+fn extended() {
+  imm r &W = "hi";
+  say(i64.from(r.get()));
+  say(7);
+}
+fn extendedBeforeLater() {
+  imm r &W = "a";
+  imm s &W = "bb";
+  say(i64.from(r.plus(s)));
+}
+fn loopBody() {
+  mut i = 0;
+  while i < 3 {
+    say(i64.from(takeW("ab")));
+    i = i + 1;
+  }
+}
+fn textWins() { say(i64.from(pick("x"))); say(i64.from(describe("x"))); }
+fn fallback() { say(i64.from(fall("xy"))); }
+fn lends() { say(i64.from(takeName("hello"))); }
+fn cstrBorrow() { say(i64.from(takeCStr("text"))); }
+fn stringBorrow() { say(i64.from(takeString("hello"))); }
+
+fn main() i32 {
+  argument(); line("a call's argument");
+  argumentImm(); line("a &imm parameter");
+  twoArguments(); line("two arguments, newest dropped first");
+  methodArgument(); line("a method's argument; the receiver outlives it");
+  throughResult(); line("a result that borrows from it, read in the statement");
+  writtenOut(); line("the borrow written out is the same");
+  extended(); line("a local's initializer extends it to the block's end");
+  extendedBeforeLater(); line("extended temporaries end newest first");
+  loopBody(); line("each pass of a loop");
+  textWins(); line("a candidate taking the literal as it is wins; nothing is made");
+  fallback(); line("a call no candidate takes otherwise falls back");
+  lends(); line("a type that lends str is no different");
+  cstrBorrow(); line("a cstr");
+  stringBorrow(); line("a String");
+  0;
+}

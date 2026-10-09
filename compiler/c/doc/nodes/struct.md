@@ -1492,7 +1492,8 @@ of such a type is the call of `slice`, `sliceFrom` or `sliceThrough`
 (`fnCallLowerStrRange`, which drops the borrow the parser put around the
 receiver; fncall.md says how a temporary it hid is taken); and a literal wanted as a struct that declares a
 static `fromLiteral(&str)` is the call of it (`slitFromLiteralFn`, in
-`slitMatches` and `slitCoerce`).
+`slitMatches` and `slitCoerce`), or, wanted as a read-only borrow of the struct,
+the borrow of a temporary of it (`slitBorrowCoerce`; literals.md).
 
 **`str` itself is declared in core.** Its struct is the compiler's own
 (`strTypeDcl`, made in `stdlibInit` with its `Immutable` marker); core's source

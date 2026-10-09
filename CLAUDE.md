@@ -336,7 +336,8 @@ Visual Studio projects stay at the root.
   the current folder and absolute paths), each failure a core `Result`
   holding an `FsError` (what, which path, the errno); `path` is `Path`, a
   file path as owned text, Windows' syntax (a literal becomes one where a
-  `Path` is wanted by value, through `fromLiteral`; methods `parent`, `join`,
+  `Path` is wanted by value, through `fromLiteral`, and a temporary one where
+  a `&Path` is; methods `parent`, `join`,
   `normalize`, `name`, `stem`, `extension`, `volume`, `parts`, `isAbsolute`,
   `==` and `Hash`; `/` out), with the older functions over bytes kept beside it
   until `fs` and `process` take a `Path`; `env` is environment variables (get, set, unset);
