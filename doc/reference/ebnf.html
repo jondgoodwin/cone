@@ -43,7 +43,7 @@
 		/* a fold clause only on a module's global, an 'extern' one included: a local, a parameter and a type's static have no namespace to fold into */
 	fn_stmt ::= fn_type block
 	block ::= '{' stmt* '}'
-	stmt ::= if_stmt | match_stmt | block | while_stmt | break_stmt | cont_stmt | each_stmt | par_each_stmt | return_stmt | exp_stmt | ';'
+	stmt ::= if_stmt | match_stmt | block | while_stmt | break_stmt | cont_stmt | each_stmt | par_each_stmt | return_stmt | yield_stmt | exp_stmt | ';'
 	if_stmt ::= 'if' logic_exp block ( 'elif' logic_exp block )* ( 'else' block )?
 	match_stmt ::= 'match' exp ('using' exp)? ('into' var_list)? ('with' exp ('into' var_list)? block)+ ('else' block)?
 	while_stmt ::= (lifetime_token ':')? 'while' logic_exp? block ('else' block)?
@@ -51,8 +51,11 @@
 		   whose block (outside the loop) gives the value when the condition fails */
 	each_stmt  ::= (lifetime_token ':')? 'each' ident_token (',' ident_token)* 'in' exp ('by' exp)? ('if' logic_exp)? block ('else' block)?
 		/* 'by' follows a numeric range, an exp that is a comparison, &lt;, &lt;=, &gt; or &gt;=; a range gives one variable, and the other sources
-		   (an array, a slice, a list, a cursor, something that gives one) one, or several that unpack a tuple item;
+		   (an array, a slice, a list) one as well; a cursor, or something that gives one, one or several that unpack a tuple item;
 		   'if' skips the items for which its condition is false; the loop is an expression only when it has an 'else' */
+	yield_stmt ::= 'yield' 'each'? exp ';'
+		/* only in the body of a function declared 'yields' (a generator), and a statement of its own, never part of an expression;
+		   'yield exp' hands the caller a value, 'yield each src' hands on every value of another generator or of anything with a 'next' */
 	par_each_stmt ::= 'parallel' 'each' ident_token 'in' exp ('if' logic_exp)? block
 		/* 'parallel' is a word only directly before 'each', and a name anywhere else; the exp is a number range counting up by one,
 		   an exp that is a comparison, &lt; or &lt;= (no 'by'), or an array, a slice or a list; one variable; no 'else', and a statement only */
@@ -85,7 +88,9 @@
 	perm_ident ::= 'uni' | 'mut' | 'imm' | 'ro' | 'mut1' | 'opaq' | ident_token
 		/* a static permission, or the name of a lock permission */
 	region_type ::= ident_token
-	fntype ::= 'fn' (ident_token genparms?)? '(' fnparm (',' fnparm)* ')' (type (',' type)*)? 'inline'? whereclause?
+	fntype ::= 'fn' (ident_token genparms?)? '(' fnparm (',' fnparm)* ')' ((type (',' type)*) | ('yields' type))? 'inline'? whereclause?
+		/* 'yields' is a word only here, after the parameters: it declares a generator, and the type is what it hands its caller
+		   one at a time. A generator has a body, is not generic or 'inline', and takes no other return type */
 		/* a comma after a return type adds another only outside every list: a function's own return types,
 		   a field's type, a variable's type. Inside a parenthesised or bracketed list (a parameter list,
 		   a function type's own parameter list, arguments, a tuple, type arguments) the comma continues
