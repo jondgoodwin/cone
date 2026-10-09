@@ -341,8 +341,7 @@ Visual Studio projects stay at the root.
   `Path` is wanted by value, through `fromLiteral`, and a temporary one where
   a `&Path` is; methods `parent`, `join`,
   `normalize`, `name`, `stem`, `extension`, `volume`, `parts`, `isAbsolute`,
-  `==` and `Hash`; `/` out), with the older functions over bytes kept beside it
-  until the Cone Congo, the last caller of them, holds `Path`s; `env` is environment variables (get, set, unset);
+  `==` and `Hash`; `/` out); `env` is environment variables (get, set, unset);
   what is Windows-only beneath them is `posix`'s mapping onto the C runtime
   and its `opendir`, `readdir` and `lstat`, written over `_findfirst64`;
   `process` runs a program and waits for it (`run`: a list of arguments, an

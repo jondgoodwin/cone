@@ -2,28 +2,27 @@
 // the current package: the one whose manifest is in the current folder or
 // the nearest folder above it.
 
-// The nearest congo.toml in the current folder or one above it; "" when
-// there is none
-fn findManifest() String {
-  mut here = asPath("");
+// The nearest congo.toml in the current folder or one above it; the empty
+// path when there is none
+fn findManifest() Path {
+  mut folder Path = "";
   match fs.currentDir() {
-    case mut ok Ok { here <=> ok.value; }
+    case mut ok Ok { folder <=> ok.value; }
     case imm e Error {
-      fail(e.value.message());
+      fail(fsMessage(&e.value));
     }
   }
-  mut folder = winPath(here.view());
   while true {
-    imm candidate = joined(folder.view(), "congo.toml");
-    if fs.isFile(&asPath(candidate.view())) { return candidate; }
-    imm up = parentOf(folder.view());
-    if up.equals(folder.view()) { return String.empty(); }
+    imm candidate = folder.join("congo.toml");
+    if fs.isFile(&candidate) { return candidate; }
+    imm up = folder.parent();
+    if up.view() == folder.view() { return Path.from(""); }
     folder = up;
   }
-  String.empty();
+  Path.from("");
 }
 
-fn currentManifest() String {
+fn currentManifest() Path {
   imm manifest = findManifest();
   if manifest.isEmpty() {
     fail(String.from("no congo.toml in this folder or any above it; 'congo new <name>' makes a package, and 'congo run <file.cone>' runs a lone file"));
@@ -34,7 +33,7 @@ fn currentManifest() String {
 // The package the current folder is in, read from its manifest
 fn currentPackage() Package {
   imm manifest = currentManifest();
-  match readManifest(manifest.view()) {
+  match readManifest(&manifest) {
     case mut ok Ok {
       mut pkg = emptyPackage();
       pkg <=> ok.value;
@@ -50,51 +49,54 @@ fn currentPackage() Package {
 
 // A file's text with every '\n' written '\r\n', as Python's write_text
 // writes text on Windows
-fn writeLines(file &Array[u8], text &Array[u8]) {
-  mut s = String.fromBytes(text);
+fn writeLines(file &Path, text &str) {
+  mut s = String.from(text);
   s.replace("\n", "\r\n");
-  match fs.writeFile(&asPath(file), s.view()) {
+  match fs.writeFile(file, s.view()) {
     case is Ok {}
     case imm e Error {
-      fail(e.value.message());
+      fail(fsMessage(&e.value));
     }
   }
 }
 
 // What 'congo new' writes as a program's root file
-fn programTemplate(name &Array[u8]) String {
+fn programTemplate(name &str) String {
   cat("// ", name, ": a program. 'congo run' builds it and runs it.\n\nmod ", name,
     ";\n\nimport stdio;\n\nfn main() i32 {\n  stdio.print <- \"Hello, world!\\n\";\n  0i32;\n}\n");
 }
 
 // What 'congo new --lib' writes as a library's root file
-fn libraryTemplate(name &Array[u8]) String {
+fn libraryTemplate(name &str) String {
   cat("// ", name, ": a library package. A program imports it by name, and is compiled\n// against its include file, which compiling ",
     name, " generates from this source:\n// build/<mode>/", name,
     ".cone, beside its object.\n\nmod ", name, ";\n\npub fn answer() i64 {\n  42i64;\n}\n");
 }
 
 // Make a package folder: its manifest, src/<name>.cone and an empty tests/
-fn cmdNew(name &Array[u8], folder &Array[u8], lib bool) i32 {
+fn cmdNew(name &str, folder &str, lib bool) i32 {
   imm fault = nameFault(name);
   if not fault.isEmpty() { fail(cat("'", name, "' ", fault.view())); }
-  imm given = winPath(if folder.len > 0usize {folder;} else {name;});
-  imm root = resolved(given.view());
-  if fs.exists(&asPath(root.view())) { fail(cat(root.view(), " already exists")); }
-  mut output &Array[u8] = "executable";
+  imm given = Path.from(if folder.len() > 0usize {folder;} else {name;});
+  imm root = resolved(&given);
+  if fs.exists(&root) {
+    imm place = native(&root);
+    fail(cat(place.view(), " already exists"));
+  }
+  mut output &str = "executable";
   if lib { output = "library"; }
-  imm src = joined(root.view(), "src");
-  makeFolder(src.view());
-  imm tests = joined(root.view(), "tests");
-  makeFolder(tests.view());
-  imm manifest = joined(root.view(), "congo.toml");
+  imm src = root.join("src");
+  makeFolder(&src);
+  imm tests = root.join("tests");
+  makeFolder(&tests);
+  imm manifest = root.join("congo.toml");
   imm manifestText = cat("[package]\nname = \"", name, "\"\nversion = \"0.1.0\"\noutput = \"", output, "\"\n");
-  writeLines(manifest.view(), manifestText.view());
+  writeLines(&manifest, manifestText.view());
   imm fileName = cat(name, ".cone");
-  imm file = joined(src.view(), fileName.view());
+  imm file = src.join(fileName.view());
   imm template = if lib {libraryTemplate(name);} else {programTemplate(name);};
-  writeLines(file.view(), template.view());
-  imm place = shown(root.view());
+  writeLines(&file, template.view());
+  imm place = shown(&root);
   imm created = cat(output, " package ", name, " (", place.view(), ")");
   say("Created", created.view());
   0i32;
@@ -103,20 +105,21 @@ fn cmdNew(name &Array[u8], folder &Array[u8], lib bool) i32 {
 // Build the current package
 fn cmdBuild(release bool, defines &List[String]) i32 {
   imm pkg = currentPackage();
-  mut mode &Array[u8] = "debug";
+  mut mode &str = "debug";
   if release { mode = "release"; }
   imm repo = findRepo();
-  buildPackage(repo.view(), pkg, mode, defines);
+  buildPackage(&repo, pkg, mode, defines);
   0i32;
 }
 
 // Build the current package, or a lone file, and run it, passing on its
 // exit code
-fn cmdRun(file &Array[u8], hasFile bool, release bool, defines &List[String], programArgs &List[String]) i32 {
+fn cmdRun(file &str, hasFile bool, release bool, defines &List[String], programArgs &List[String]) i32 {
   imm repo = findRepo();
   mut pkg = emptyPackage();
   if hasFile {
-    match lonePackage(file) {
+    imm given = Path.from(file);
+    match lonePackage(&given) {
       case mut ok Ok { pkg <=> ok.value; }
       case imm e Error { fail(e.value.copy()); }
     }
@@ -125,13 +128,13 @@ fn cmdRun(file &Array[u8], hasFile bool, release bool, defines &List[String], pr
   if not pkg.output.equals("executable") {
     fail(cat(pkg.name.view(), " is a library, which has nothing to run; 'congo build' builds it"));
   }
-  mut mode &Array[u8] = "debug";
+  mut mode &str = "debug";
   if release { mode = "release"; }
-  imm exe = buildPackage(repo.view(), pkg, mode, defines);
-  imm place = shown(exe.view());
+  imm exe = buildPackage(&repo, pkg, mode, defines);
+  imm place = shown(&exe);
   say("Running", place.view());
   mut args = List[String].empty();
-  args.push(exe.copy());
+  args.push(native(&exe));
   mut i = 0usize;
   while i < programArgs.len() {
     args.push(programArgs[i].copy());
@@ -139,7 +142,7 @@ fn cmdRun(file &Array[u8], hasFile bool, release bool, defines &List[String], pr
   }
   match process.run(args.view(), new process.Options(inherit: true)) {
     case imm ok Ok {
-      imm dll = dllNote(ok.value.exitCode, exe.view());
+      imm dll = dllNote(ok.value.exitCode, &exe);
       if dll.len() > 0usize { warn(dll.copy()); }
       ok.value.exitCode as i32;
     }
@@ -151,24 +154,24 @@ fn cmdRun(file &Array[u8], hasFile bool, release bool, defines &List[String], pr
 
 // Delete what a build wrote: a lone file's build, or the current package's
 // build folder
-fn cmdClean(file &Array[u8], hasFile bool) i32 {
-  mut target = String.empty();
+fn cmdClean(file &str, hasFile bool) i32 {
+  mut target Path = "";
   if hasFile {
-    imm p = winPath(file);
-    target = loneBuildRoot(p.view());
+    imm given = Path.from(file);
+    target = loneBuildRoot(&given);
   }
   else {
     imm pkg = currentPackage();
-    target = joined(pkg.root.view(), "build");
+    target = pkg.root.join("build");
   }
-  if fs.exists(&asPath(target.view())) {
-    match fs.removeAll(&asPath(target.view())) {
+  if fs.exists(&target) {
+    match fs.removeAll(&target) {
       case is Ok {}
       case imm e Error {
-        fail(e.value.message());
+        fail(fsMessage(&e.value));
       }
     }
-    imm place = shown(target.view());
+    imm place = shown(&target);
     say("Removed", place.view());
   }
   0i32;
