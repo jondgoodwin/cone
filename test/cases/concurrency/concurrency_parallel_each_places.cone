@@ -1,0 +1,171 @@
+// Where a 'parallel each' may be written, and what its body finds around it:
+// the loop's body is outlined into a function of its own and reads the
+// function it is written in through pointers to its variables, so each of
+// these is a different thing for it to find.
+//
+//   - a method: the fields of 'self', named bare, are read; a list of strings
+//     in a field is walked
+//   - a generic function, instantiated; an 'inline' one, expanded twice
+//   - an enclosing 'while', whose variable the body reads
+//   - the two arms of an 'if', and two loops one after another
+//   - a loop variable that shadows a parameter
+//   - bounds that are expressions, evaluated once
+//   - a source that is a value made for the loop (a call's list) and a '&mut' list
+//   - a raw pointer's pointee written, which the loop trusts its writer on
+//
+// Every number is worked out by hand from the numbers put in.
+
+mod concurrency_parallel_each_places;
+
+import stdio use *;
+import collections use *;
+import libc;
+import actors;
+
+fn report(name &str, ok bool) {
+  printStr(name);
+  printStr(if ok {": ok\n";} else {": FAILED\n";});
+}
+
+struct Acc {
+  factor u64;
+  total Atomic[u64];
+  names List[String];
+
+  pub fn run(self &, n usize) u64 {
+    parallel each i in 0usize < n {
+      total.add(u64.from(i) * factor);        // fields of self, none written
+    }
+    total.load();
+  }
+
+  pub fn lens(self &) u64 {
+    imm out = Atomic[u64].of(0u64);
+    parallel each s in names {
+      out.add(u64.from(s.len));
+    }
+    out.load();
+  }
+}
+
+fn generic[T](xs &Array[T], base u64) u64 {
+  imm out = Atomic[u64].of(0u64);
+  parallel each x in xs {
+    out.add(base + 1u64);
+  }
+  out.load();
+}
+
+fn sumInline(xs &Array[u64]) u64 inline {
+  imm out = Atomic[u64].of(0u64);
+  parallel each x in xs {
+    out.add(*x);
+  }
+  out.load();
+}
+
+fn inLoops() u64 {
+  imm out = Atomic[u64].of(0u64);
+  mut round = 0u64;
+  while round < 3u64 {
+    parallel each i in 0usize < 100usize {
+      out.add(round * 1000u64 + u64.from(i));      // the enclosing loop's variable, read
+    }
+    round = round + 1u64;
+  }
+  out.load();
+}
+
+fn shadow(x u64) u64 {
+  imm out = Atomic[u64].of(0u64);
+  parallel each x in [1u64, 2u64, 3u64] {          // shadows the parameter
+    out.add(*x);
+  }
+  out.load() + x;
+}
+
+fn branches(flag bool) u64 {
+  imm out = Atomic[u64].of(0u64);
+  if flag {
+    parallel each i in 0usize < 10usize {
+      out.add(1u64);
+    }
+  } else {
+    parallel each i in 0usize < 20usize {
+      out.add(1u64);
+    }
+  }
+  parallel each i in 0usize < 5usize {
+    out.add(100u64);
+  }
+  out.load();
+}
+
+fn exprBounds(a usize, b usize) u64 {
+  imm out = Atomic[u64].of(0u64);
+  parallel each i in a * 2usize < b + 3usize {
+    out.add(1u64);
+  }
+  out.load();
+}
+
+fn makeList(n u64) List[u64] {
+  mut l = new List[u64];
+  mut i = 0u64;
+  while i < n {
+    l.push(i);
+    i = i + 1u64;
+  }
+  l;
+}
+
+fn owned() u64 {
+  imm out = Atomic[u64].of(0u64);
+  parallel each x in makeList(100u64) {            // a value, held for the loop
+    out.add(*x);
+  }
+  mut l = makeList(10u64);
+  parallel each x in &mut l {
+    out.add(*x);
+  }
+  out.load();
+}
+
+fn rawWrites(n usize) u64 {
+  imm buf = libc.calloc(n, 8usize) as *u64;
+  parallel each i in 0usize < n {
+    *(buf + i) = u64.from(i) * 2u64;               // through a raw pointer: the loop trusts its writer
+  }
+  mut sum = 0u64;
+  each i in 0usize < n {
+    sum = sum + *(buf + i);
+  }
+  libc.free(buf as *u8);
+  sum;
+}
+
+fn main() {
+  initAll();
+  actors.configure(new actors.Options(workers: 4u32));
+
+  mut names = new List[String];
+  names.push(String.from("ab"));
+  names.push(String.from("cde"));
+  imm acc = new Acc(3u64, Atomic[u64].of(0u64), names);
+  report("a method reads self's fields", acc.run(10usize) == 3u64 * 45u64);
+  report("a method walks a list in a field", acc.lens() == 5u64);
+
+  imm bytes = [1u8, 2u8, 3u8];
+  report("a generic function", generic[u8](&bytes, 9u64) == 30u64);
+  imm arr = [1u64, 2u64, 3u64, 4u64];
+  report("an inline function", sumInline(&arr) == 10u64);
+  report("an inline function twice in one expression", sumInline(&arr) + sumInline(&arr) == 20u64);
+  report("an enclosing while's variable", inLoops() == 3u64 * 4950u64 + 100u64 * 3000u64);
+  report("a loop variable shadowing a parameter", shadow(100u64) == 106u64);
+  report("the arms of an if, and a loop after", branches(true) == 510u64 and branches(false) == 520u64);
+  report("bounds that are expressions", exprBounds(2usize, 9usize) == 8u64);
+  report("a value made for the loop, and a &mut list", owned() == 4950u64 + 45u64);
+  report("a raw pointer's pointee written", rawWrites(1000usize) == 2u64 * 499500u64);
+
+  finalAll();
+}

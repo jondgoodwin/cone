@@ -530,6 +530,12 @@ void parallelEachLower(TypeCheckState *pstate, BlockNode *outer) {
                 "A 'parallel each' counts through a range of whole numbers, and %s is not one.", itypeName(type));
             return;
         }
+        // The passes are counted in a usize, so the numbers may be no wider
+        if (((NbrNode*)typedcl)->bits > ((NbrNode*)usizeType)->bits) {
+            errorMsgNode(srcdcl->value, ErrorParSource,
+                "A 'parallel each' counts its passes in a usize, and %s is wider than one.", itypeName(type));
+            return;
+        }
         nodesAdd(&outer->stmts, (INode*)srcdcl);
         nodesAdd(&outer->stmts, (INode*)lastdcl);
         lo = parVar(parLoName, immPerm, (INode*)newULitNodeTC(0, (INode*)usizeType), scope, lexnode);
