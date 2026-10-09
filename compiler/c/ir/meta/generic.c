@@ -247,6 +247,7 @@ static int genericInferType(FnCallNode *inferredgencall, Nodes *genparms, INode 
 // match the signature's parameters from 'firstparm' on: 1 for a method called
 // on a receiver, whose 'self' is not among the arguments yet, else 0.
 static void genericInferFromBounds(Nodes *genparms, Nodes *where, FnCallNode *inferredgencall);
+static FnSigNode *genericFnTypeSig(INode *type);
 
 // An unsuffixed integer literal passed for a parameter that is a bare type
 // parameter, 'v T': it is whichever number type is wanted, and only defaults to
@@ -437,7 +438,13 @@ static int genericTraitInstanceVet(INode *node) {
 // The one candidate of this name, in the type that has it, taking as many
 // parameters as the trait's method: the one a trait's signature is matched
 // against. NULL where the type has none, or has several, which say nothing.
+static FnDclNode *genericMatchMethodArity(INode *binding, uint32_t wanted);
 static FnDclNode *genericMatchMethod(INode *binding, FnDclNode *traitmeth) {
+    return genericMatchMethodArity(binding, ((FnSigNode*)itypeGetTypeDcl(traitmeth->vtype))->parms->used);
+}
+
+// The one candidate of this name taking this many parameters (a receiver among them)
+static FnDclNode *genericMatchMethodArity(INode *binding, uint32_t wanted) {
     if (binding == NULL)
         return NULL;
     fnCallDemandCandidates(binding);
@@ -453,7 +460,6 @@ static FnDclNode *genericMatchMethod(INode *binding, FnDclNode *traitmeth) {
     }
     else
         return NULL;
-    uint32_t wanted = ((FnSigNode*)itypeGetTypeDcl(traitmeth->vtype))->parms->used;
     FnDclNode *found = NULL;
     while (cnt--) {
         FnDclNode *cand = (FnDclNode*)*candp++;
@@ -493,7 +499,7 @@ static void genericInferFromBounds(Nodes *genparms, Nodes *where, FnCallNode *in
             continue;
         CastNode *clause = (CastNode*)*condp;
         StructNode *trait = genericNamedGenericTrait(clause->typ);
-        if (trait == NULL || !isNameUseNode(clause->exp))
+        if ((trait == NULL && clause->typ->tag != FnSigTag) || !isNameUseNode(clause->exp))
             continue;
         // The bounded parameter must have its argument already
         INode *subjdcl = ((NameUseNode*)clause->exp)->dclnode;
@@ -505,6 +511,25 @@ static void genericInferFromBounds(Nodes *genparms, Nodes *where, FnCallNode *in
         if (sarg == NULL || !isTypeNode(sarg))
             continue;
         INode *sdcl = itypeGetTypeDcl(sarg);
+        // A signature: what its parameters and return are is what the argument's
+        // function, or its '()', has them as
+        if (clause->typ->tag == FnSigTag) {
+            FnSigNode *bound = (FnSigNode*)clause->typ;
+            if (genericFnTypeSig(sarg))
+                genericInferType(inferredgencall, genparms, (INode*)bound, (INode*)genericFnTypeSig(sarg));
+            else if (sdcl->tag == StructTag) {
+                FnDclNode *meth = genericMatchMethodArity(
+                    namespaceFind(&((StructNode*)sdcl)->namespace, parensName), bound->parms->used + 1);
+                if (meth && meth->vtype) {
+                    FnSigNode *msig = (FnSigNode*)itypeGetTypeDcl(meth->vtype);
+                    for (uint32_t j = 0; j < bound->parms->used; ++j)
+                        genericInferType(inferredgencall, genparms, ((VarDclNode*)nodesGet(bound->parms, j))->vtype,
+                            ((VarDclNode*)nodesGet(msig->parms, j + 1))->vtype);
+                    genericInferType(inferredgencall, genparms, bound->rettype, msig->rettype);
+                }
+            }
+            continue;
+        }
         FnCallNode *boundcall = (FnCallNode*)clause->typ;
         Nodes *tparms = trait->genericinfo->parms;
         if (sdcl->tag != StructTag || tparms == NULL || boundcall->args == NULL
@@ -575,7 +600,13 @@ static void genericTypeNameCat(char *buf, size_t size, INode *type, int depth);
 static void genericTemplateNameCat(char *buf, size_t size, INode *node, int depth);
 static void genericClauseNameCat(char *buf, size_t size, CastNode *clause, StructNode *inst) {
     StructNode *trait = genericNamedTrait(clause->typ);
-    if (trait) {
+    // A signature, as it was written
+    if (clause->typ->tag == FnSigTag) {
+        size_t used = strlen(buf);
+        Name *spelled = ((FnSigNode*)clause->typ)->spelled;
+        snprintf(buf + used, size - used, "%s", spelled ? &spelled->namestr : "fn(...)");
+    }
+    else if (trait) {
         size_t used = strlen(buf);
         snprintf(buf + used, size - used, "%s", &trait->namesym->namestr);
     }
@@ -645,9 +676,18 @@ static int genericConditionNameRes(NameResState *pstate, INode *cond, Nodes *own
             &subject->namesym->namestr);
         ok = 0;
     }
+    // A function signature, 'F is fn(a &T) i32', is a constraint's to name; in a
+    // condition on an 'is' entry it is not built
+    if (clause->typ->tag == FnSigTag) {
+        if (ownparms) {
+            errorMsgNode(clause->typ, ErrorUnbuiltIsCond,
+                "A condition on an 'is' entry asks whether a type parameter is a trait or a type; a function signature, 'fn(...)', is not built there yet.");
+            ok = 0;
+        }
+    }
     // A generic trait's instance, 'Stack[T]', is a constraint's to name; in a
     // condition on an 'is' entry it is not built
-    if (ownparms == NULL && genericNamedGenericTrait(clause->typ)) {
+    else if (ownparms == NULL && genericNamedGenericTrait(clause->typ)) {
         if (!genericTraitInstanceVet(clause->typ))
             ok = 0;
     }
@@ -691,7 +731,10 @@ void genericConstraintsNameRes(NameResState *pstate, Nodes *parms, Nodes **where
             INode **annotp;
             uint32_t annotcnt;
             for (nodesFor(parm->annot, annotcnt, annotp)) {
-                if (genericNamedGenericTrait(*annotp)) {
+                if ((*annotp)->tag == FnSigTag) {
+                    // A signature bound, decided by evaluation (genericSigMeets)
+                }
+                else if (genericNamedGenericTrait(*annotp)) {
                     if (!genericTraitInstanceVet(*annotp))
                         continue;
                 }
@@ -938,6 +981,155 @@ static INode *genericClauseType(CastNode *clause, Nodes *parms, Nodes *args, Gen
     return isTypeNode(subject) ? subject : NULL;
 }
 
+// ---------------------------------------------------------------------------
+// A function signature as a bound, 'F fn(a &T, b &T) i32'. It names an ad hoc
+// structural trait: a type meets it by having a pub '()' method whose
+// parameters after the receiver, and whose return type, are exactly the
+// signature's (parameter names do not matter), and a function type, as a
+// plain function referenced is, by being exactly that signature.
+
+static void genericSigCat(char *buf, size_t size, FnDclNode *fn);
+
+// Does this method take the signature's parameters after its receiver, exactly,
+// and return its type?
+static int genericMethodTakesSig(FnDclNode *meth, FnSigNode *sig) {
+    if (meth->vtype == NULL || meth->genericinfo || !(meth->flags & FlagMethFld))
+        return 0;
+    FnSigNode *msig = (FnSigNode*)itypeGetTypeDcl(meth->vtype);
+    if (msig->parms->used != sig->parms->used + 1 || !itypeIsSame(msig->rettype, sig->rettype))
+        return 0;
+    for (uint32_t j = 0; j < sig->parms->used; ++j) {
+        if (!itypeIsSame(iexpGetTypeDcl(nodesGet(msig->parms, j + 1)), iexpGetTypeDcl(nodesGet(sig->parms, j))))
+            return 0;
+    }
+    return 1;
+}
+
+// The candidates for '()' a type has, one FnDclNode at a time: candidate 'i' of
+// the binding, or NULL past the last
+static FnDclNode *genericParensCandidate(INode *binding, uint32_t i) {
+    if (binding->tag == FnDclTag)
+        return i == 0 ? (FnDclNode*)binding : NULL;
+    if (binding->tag == FnOverloadDclTag) {
+        Nodes *overloads = ((FnOverloadDclNode*)binding)->overloads;
+        return i < overloads->used ? (FnDclNode*)nodesGet(overloads, i) : NULL;
+    }
+    return NULL;
+}
+
+// The pub '()' method a struct has for this signature, or NULL
+static FnDclNode *genericParensMethod(StructNode *strnode, FnSigNode *sig) {
+    INode *binding = namespaceFind(&strnode->namespace, parensName);
+    if (binding == NULL)
+        return NULL;
+    fnCallDemandCandidates(binding);
+    FnDclNode *cand;
+    for (uint32_t i = 0; (cand = genericParensCandidate(binding, i)) != NULL; ++i) {
+        if ((cand->flags & FlagPub) && genericMethodTakesSig(cand, sig))
+            return cand;
+    }
+    return NULL;
+}
+
+// The signature of a function type, or of a function reference type: what a
+// plain function referenced as '&byName' is the argument as ('&F' reaching
+// the function type) or, taken by value, the reference itself. NULL for any
+// other type.
+static FnSigNode *genericFnTypeSig(INode *type) {
+    INode *dcl = itypeGetTypeDcl(type);
+    if (dcl->tag == RefTag) {
+        INode *target = ((RefNode*)dcl)->vtexp;
+        dcl = target && isTypeNode(target) ? itypeGetTypeDcl(target) : NULL;
+    }
+    return dcl && dcl->tag == FnSigTag ? (FnSigNode*)dcl : NULL;
+}
+
+// Does this type meet the signature, a checked one?
+static int genericSigMeets(INode *type, FnSigNode *sig) {
+    FnSigNode *fnsig = genericFnTypeSig(type);
+    if (fnsig)
+        return fnSigEqual(sig, fnsig);
+    INode *dcl = itypeGetTypeDcl(type);
+    if (dcl->tag != StructTag)
+        return 0;
+    return genericParensMethod((StructNode*)dcl, sig) != NULL;
+}
+
+// A permission that is the default is not written in a signature the message
+// names: '&ro Person' is '&Person'
+static void genericDropRo(char *buf) {
+    char *at;
+    while ((at = strstr(buf, "&ro ")) != NULL)
+        memmove(at + 1, at + 4, strlen(at + 4) + 1);
+}
+
+// Append a checked signature as it comes to: 'fn(&Person, &Person) i32'
+static void genericFnSigCat(char *buf, size_t size, FnSigNode *sig) {
+    size_t used = strlen(buf);
+    snprintf(buf + used, size - used, "fn(");
+    for (uint32_t j = 0; j < sig->parms->used; ++j) {
+        used = strlen(buf);
+        snprintf(buf + used, size - used, j ? ", " : "");
+        genericTypeNameCat(buf, size, iexpGetTypeDcl(nodesGet(sig->parms, j)), 0);
+    }
+    used = strlen(buf);
+    snprintf(buf + used, size - used, ")");
+    if (sig->rettype && sig->rettype->tag != VoidTag) {
+        used = strlen(buf);
+        snprintf(buf + used, size - used, " ");
+        genericTypeNameCat(buf, size, sig->rettype, 0);
+    }
+    genericDropRo(buf);
+}
+
+// Why a type does not meet the signature, into 'buf': what it has instead
+static void genericSigMeetWhy(char *buf, size_t size, INode *type, FnSigNode *sig) {
+    buf[0] = '\0';
+    INode *dcl = itypeGetTypeDcl(type);
+    char wanted[256] = "";
+    genericFnSigCat(wanted, sizeof(wanted), sig);
+    FnSigNode *fnsig = genericFnTypeSig(type);
+    if (fnsig) {
+        char have[256] = "";
+        genericFnSigCat(have, sizeof(have), fnsig);
+        snprintf(buf, size, " A function must be exactly %s; this one is %s.", wanted, have);
+        return;
+    }
+    char typename[256] = "";
+    genericTypeNameCat(typename, sizeof(typename), type, 0);
+    if (dcl->tag != StructTag) {
+        snprintf(buf, size, " %s is neither a function nor a struct with a '()' method.", typename);
+        return;
+    }
+    INode *binding = namespaceFind(&((StructNode*)dcl)->namespace, parensName);
+    FnDclNode *cand = binding ? genericParensCandidate(binding, 0) : NULL;
+    if (cand == NULL) {
+        snprintf(buf, size, " %s has no '()' method, and %s needs a pub one taking those parameters after its receiver.",
+            typename, wanted);
+        return;
+    }
+    fnCallDemandCandidates(binding);
+    char found[256] = "";
+    for (uint32_t i = 0; (cand = genericParensCandidate(binding, i)) != NULL; ++i) {
+        if (cand->genericinfo || !(cand->flags & FlagMethFld))
+            continue;
+        if (genericMethodTakesSig(cand, sig) && !(cand->flags & FlagPub)) {
+            snprintf(buf, size, " %s has a '()' method of that signature, but it is not pub.", typename);
+            return;
+        }
+        size_t used = strlen(found);
+        if (found[0])
+            snprintf(found + used, sizeof(found) - used, " and ");
+        genericSigCat(found, sizeof(found), cand);
+    }
+    genericDropRo(found);
+    if (found[0] == '\0')
+        snprintf(buf, size, " %s has '()' only as a generic method, which does not meet a signature bound.", typename);
+    else
+        snprintf(buf, size, " %s has %s, but %s needs a pub '()' taking those parameters after its receiver and returning that type exactly.",
+            typename, found, wanted);
+}
+
 // Evaluate a condition at these arguments, 'or' and 'and' as in an expression,
 // the right side only where the left does not decide it. A lone clause is
 // decided only where its subject is one of 'parms': a clause over a parameter
@@ -956,6 +1148,16 @@ static WhereValue genericConditionValue(INode *cond, Nodes *parms, Nodes *args, 
     }
     GenVarDclNode *parm;
     INode *type = genericClauseType((CastNode*)cond, parms, args, &parm);
+    // A signature is made at these arguments, as an instance written out is,
+    // and met by a function of it or a struct with a '()' of it
+    if (((CastNode*)cond)->typ->tag == FnSigTag) {
+        if (type == NULL || (parm == NULL && !nested))
+            return WhereUnknown;
+        INode *sig = genericClauseCloneChecked((CastNode*)cond, parms, args);
+        if (sig == NULL)
+            return WhereUnknown;
+        return genericSigMeets(type, (FnSigNode*)itypeGetTypeDcl(sig)) ? WhereTrue : WhereFalse;
+    }
     StructNode *trait = genericNamedTrait(((CastNode*)cond)->typ);
     // An instance of a generic trait is made at these arguments, once the
     // clause is known to be decided here
@@ -1484,6 +1686,26 @@ static int genericRequirementsMetIn(FnCallNode *srcgencall, INode *generic, Gene
     }
     GenVarDclNode *parm;
     INode *arg = genericClauseType((CastNode*)cond, parms, srcgencall->args, &parm);
+    // A signature: say what it comes to here, and what the argument has instead
+    if (((CastNode*)cond)->typ->tag == FnSigTag) {
+        INode *sigtype = genericClauseCloneChecked((CastNode*)cond, parms, srcgencall->args);
+        FnSigNode *sig = (FnSigNode*)itypeGetTypeDcl(sigtype);
+        char argname[256] = "";
+        if (genericFnTypeSig(arg))
+            genericFnSigCat(argname, sizeof(argname), genericFnTypeSig(arg));
+        else
+            genericTypeNameCat(argname, sizeof(argname), arg, 0);
+        char isname[256] = "";
+        genericClauseNameCat(isname, sizeof(isname), (CastNode*)cond, NULL);
+        char here[256] = "";
+        genericFnSigCat(here, sizeof(here), sig);
+        char why[640] = "";
+        genericSigMeetWhy(why, sizeof(why), arg, sig);
+        errorMsgNode((INode*)srcgencall, ErrorWhereUnmet,
+            "%s requires %s is %s, here %s, and %s is not.%s",
+            &name->namestr, &parm->namesym->namestr, isname, here, argname, why);
+        return 0;
+    }
     StructNode *trait = genericNamedTrait(((CastNode*)cond)->typ);
     if (trait == sendableTrait) {
         genericWhereOwner = generic;

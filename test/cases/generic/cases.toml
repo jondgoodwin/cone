@@ -269,6 +269,25 @@ contains = [
   "define internal Holder[i64,IntSlot].take comdat nodeduplicate",
 ]
 
+[scenario.generic_fn_bound]
+category = "run"
+description = "A function signature as a generic bound, 'F fn(a &T, b &T) i32' inline, 'F fn(i32) i32' with an unnamed parameter, and 'where F is fn(x i32) i32' on a function and on a member of a generic type: one sort given a plain function and a struct with a pub '()', a '&mut F' whose '()' changes the struct and keeps a count, F by value (a '()' taking 'self', and a 'mut' one taking 'self &mut'), the signature before and after another bound, on a generic type's own parameter, a type parameter only the signature names read off the function or the '()', no parameters and nothing returned joined with '+ Sendable'"
+tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
+
+# One instance per set of arguments: the plain function's type is the argument
+# for F beside the struct's
+[[scenario.generic_fn_bound.check]]
+name = "the-function-and-the-struct-are-two-instances"
+target = "symbols"
+contains = [
+  "define internal sortBy[i32,fn(&ro i32,&ro i32) i32] comdat nodeduplicate",
+  "define internal sortBy[i32,Descending] comdat nodeduplicate",
+  "define internal twice[fn(i32) i32] comdat nodeduplicate",
+  "define internal twice[Adder] comdat nodeduplicate",
+  "define internal once[&opaq fn(i32) i32] comdat nodeduplicate",
+  "define internal tick3[Ticker] comdat nodeduplicate",
+]
+
 [scenario.generic_infer_literal]
 category = "run"
 description = "An unsuffixed integer literal passed for a bare type parameter takes the type another argument or a bound gives, and only a literal left alone defaults to i32: a stack of i64, u8 and f64 filled with 8, 200 and 3, in a function, with a 'where' clause and in a method, and a literal beside an i64 in either order"
@@ -364,6 +383,11 @@ category = "reject"
 description = "Conditions on an 'is' entry grouped, joined and followed by another entry and a trailing 'where', which parse; conditions of a form not built -- 'not', a relation between parameters, no trait, an 'or' with nothing after it, an unclosed parenthesis -- and a lifetime comparison, which decides nothing for an instance"
 tags = ["parse"]
 diagnostics = 6
+[scenario.generic_parse_fn_bound]
+category = "reject"
+description = "A function signature as the bound of a macro's parameter, whose own commas do not end the parameter: refused with the other macro and module parameters' annotations"
+tags = ["parse"]
+diagnostics = 1
 
 # -------- name resolution stage --------
 
@@ -382,6 +406,21 @@ category = "reject"
 description = "A generic trait as a constraint without type arguments, inline and in a 'where' clause, with too few and too many, and as an instance in a condition on an 'is' entry"
 tags = ["nameres"]
 diagnostics = 5
+[scenario.generic_nameres_fn_bound]
+category = "reject"
+description = "A function signature as a bound naming a type that does not exist, inline and in a 'where' clause, and as the condition on a type's 'is' entry, which is not built"
+tags = ["nameres"]
+diagnostics = 3
+[scenario.generic_typecheck_fn_bound]
+category = "reject"
+description = "A type not meeting a function signature bound: functions of another parameter type, return type and arity, a struct with no '()', with one that is not pub, with one taking fewer parameters and with one returning another type, each message naming the signature as written and as it comes to at the arguments; and the signature joined to Sendable, each asked"
+tags = ["typecheck"]
+diagnostics = 9
+[scenario.generic_typecheck_fn_bound_receiver]
+category = "reject"
+description = "A signature bound leaves a '()' that takes 'self &mut' to the generic's permission: reached through '&F' it is refused in the instance's body, reached through '&mut F' it is not, and a '()' taking 'self &' is reached by both"
+tags = ["typecheck"]
+diagnostics = 1
 [scenario.generic_typecheck_trait_bound]
 category = "reject"
 description = "A type not fitting a generic trait's instance: a missing method, a parameter and a return of another type once the trait's argument is substituted, the trait at other arguments, a concrete argument in the bound, and a type argument inferred from the first method that says"

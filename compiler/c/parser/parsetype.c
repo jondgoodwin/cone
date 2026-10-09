@@ -1307,6 +1307,38 @@ static void parseParmInferSelf(ParseState *parse, VarDclNode *parm, INode *at) {
         inodeLexCopy(*typep, at);
 }
 
+// Set while parseFnBound reads a signature, for the parseFnSig it calls
+static int parseInFnBound = 0;
+
+// Parse a function signature written bare, with the lexer on its 'fn': what a
+// generic bound or a 'where' clause says a type parameter has, 'F fn(a &T, b &T) i32'.
+// It is read as the type after '&fn' is, a signature with no body, whose
+// parameters may be named or only typed. Inside the brackets or the clause a
+// comma after its return type ends the signature, as in a parameter list, and a
+// '+' after it joins the next bound. The text it was written as is kept, for
+// the messages that name it.
+INode *parseFnBound(ParseState *parse) {
+    char *startp = lex->tokp;
+    lexNextToken();
+    if (lexIsToken(IdentToken)) {
+        errorMsgLex(WarnName, "Unnecessary function name is ignored");
+        lexNextToken();
+    }
+    int svinlist = parse->inlist;
+    int svisgen = parse->isgen;
+    GenSig svgensig = parse->gensig;
+    parse->inlist = 1;
+    parseInFnBound = 1;
+    INode *sig = parseFnSig(parse, 1);
+    parseInFnBound = 0;
+    parseFnSigSettle(parse, (FnSigNode*)sig, 1);
+    parse->inlist = svinlist;
+    parse->isgen = svisgen;
+    parse->gensig = svgensig;
+    ((FnSigNode*)sig)->spelled = nametblFind(startp, (size_t)(lex->prevend - startp));
+    return sig;
+}
+
 // Parse a function's type signature.
 //
 // 'reftype' is set for the signature after '&fn', which is a function-reference
@@ -1325,6 +1357,12 @@ INode *parseFnSig(ParseState *parse, int reftype) {
     FnSigNode *fnsig;
     uint16_t parmnbr = 0;
     uint16_t parseflags = ParseMaySig | ParseMayImpl | ParseInList;
+
+    // A signature written bare as a generic bound (parseFnBound) ends before a
+    // '+' that joins the next bound; a '+' is not the start of its return type.
+    // Only this signature is read so: those in its parameters are not.
+    int atbound = parseInFnBound;
+    parseInFnBound = 0;
 
     // Set up memory block for the function's type signature
     fnsig = newFnSigNode();
@@ -1410,7 +1448,7 @@ INode *parseFnSig(ParseState *parse, int reftype) {
         else
             isgen = 1;
     }
-    else if ((fnsig->rettype = parseType(parse)) != unknownType) {
+    else if (!(atbound && lexIsToken(PlusToken)) && (fnsig->rettype = parseType(parse)) != unknownType) {
         // Handle multiple return types: 'fn ceil(x i32) i32, i32'. Inside a
         // list -- a parameter list, a tuple, arguments -- the comma continues
         // the list instead, so a signature there returning several values

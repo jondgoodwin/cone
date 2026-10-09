@@ -21,6 +21,7 @@ typedef struct FnSigNode {
     uint8_t lifenamed;     // A lifetime is named on one of its types (lifetime.h)
     uint8_t lifechecked;   // lifeSigCheck has settled 'lifenamed' and 'lifeorder'
     uint8_t lifestatic;    // Its order bounds a lifetime by ''static': a type parameter's bound (lifetime.h)
+    Name *spelled;         // A signature written bare as a generic bound: the text it was written as, for messages; else NULL
 } FnSigNode;
 
 FnSigNode *newFnSigNode();

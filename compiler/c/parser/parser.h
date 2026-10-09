@@ -293,6 +293,9 @@ INode *parseFnSig(ParseState *parse, int reftype);
 // Settle a '&fn' signature's parameters once it is known whether it is a type
 // ('istype': no body follows) or an anonymous function's
 void parseFnSigSettle(ParseState *parse, FnSigNode *sig, int istype);
+// Parse a signature written bare, with the lexer on its 'fn', as a generic
+// bound or a 'where' clause's: 'F fn(a &T, b &T) i32'
+INode *parseFnBound(ParseState *parse);
 INode *parseStruct(ParseState *parse, uint16_t flags);
 INode *parseType(ParseState *parse);
 // Is the lexer on a token that may begin a type expression?
