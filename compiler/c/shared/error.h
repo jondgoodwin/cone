@@ -572,6 +572,7 @@ enum ErrorCode {
     ErrorParRuntime = 1383,     // A 'parallel each' in a module that does not import the actors package its pieces run on, or in a generator (not built)
     ErrorParElse = 1384,        // A 'parallel each' with an 'else': its passes run at the same time and give no value
     ErrorParCopy = 1385,        // A 'parallel each' body copies a value that is not the pass's own and holds a counted owner whose count is not atomic (an Rc): the copy would write a count the passes share
+    ErrorParBuilder = 1386,     // A parallel builder, 'xs <- parallel each ... yield v', whose receiver is not a List (a dictionary is built from a list of pairs after the loop)
     ErrorParFrame = 1388,       // A 'parallel each' in an actor's behaviour, which the behaviour is cut at, walks or reads a borrow or an array held in the behaviour's own frame, which is gone while the pieces run
 
     // Warnings

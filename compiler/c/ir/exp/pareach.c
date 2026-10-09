@@ -21,11 +21,17 @@ Name *parFirstName = NULL;
 Name *parLastName = NULL;
 Name *parSliceName = NULL;
 Name *parSliceMutName = NULL;
+Name *parBagName = NULL;
+Name *parPieceName = NULL;
+Name *parListName = NULL;
 FnDclNode *parallelEachFn = NULL;
 
 void parallelEachNames() {
     if (parLoName != NULL)
         return;
+    parListName = nametblPrivate("list'", 5);
+    parBagName = nametblPrivate("bag'", 4);
+    parPieceName = nametblPrivate("piece'", 6);
     parLoName = nametblPrivate("lo'", 3);
     parHiName = nametblPrivate("hi'", 3);
     parKName = nametblPrivate("k'", 2);
@@ -192,7 +198,7 @@ static void parWalk(INode *node, ParVisit visit, void *ctx) {
         parWalk(((AwaitNode*)node)->exp, visit, ctx); break;
     case NamedValTag:
         parWalk(((NamedValNode*)node)->val, visit, ctx); break;
-    case OfEntryTag: case FillEntryTag: case PairEntryTag:
+    case OfEntryTag: case FillEntryTag: case PairEntryTag: case YieldEntryTag:
         parWalk(((EntryNode*)node)->first, visit, ctx);
         parWalk(((EntryNode*)node)->val, visit, ctx);
         break;
@@ -954,6 +960,110 @@ static void parSourceError(INode *src, INode *type) {
             itypeName(type));
 }
 
+// ---- The parallel builder ------------------------------------------------------
+//
+// 'xs <- parallel each x in src [if c] yield v' is the entry of a '<-' whose loop
+// is a parallel each (parseEachLoop) and whose last statement is the yield
+// (contents.c), with the receiver the '<-' holds in a hidden variable. The
+// pieces cannot append to that one list at the same time, so each gets a list of
+// its own, and the lists are joined in the order of the passes after the loop:
+//
+//   mut bag = (*recv).pieceBag();                    // the caller's, before k
+//   mut k = lo;                                      // from here, the piece's:
+//   mut list = (*recv).emptyPiece();                 //   a list of its own
+//   imm piece = &mut list;                           //   which the yield appends through
+//   loop { if k >= hi { (*recv).depositPiece(&mut bag, lo, list); break }; ...; *piece <- v }
+//   (*recv).joinPieces(&mut bag)                     // after the loop, the caller's
+//
+// The methods are the receiver's own (a List's: collections.cone), so the
+// compiler needs to name no type. The list is a local of the piece (not a borrow
+// a call returns): flow's shape-changing check cannot tell a borrow got from a
+// call from the one the source is read through. It is moved into depositPiece at
+// the loop's one exit, so nothing is left for the caller's block end to release.
+
+// The yield of a builder's loop: the entry that is a statement of it
+static EntryNode *parBuilderYield(BlockNode *loop) {
+    INode **stmtp;
+    uint32_t cnt;
+    for (nodesFor(loop->stmts, cnt, stmtp)) {
+        if ((*stmtp)->tag == YieldEntryTag && ((EntryNode*)*stmtp)->recv != NULL)
+            return (EntryNode*)*stmtp;
+    }
+    return NULL;
+}
+
+// The type of the list a builder appends to, when it can be built in parallel
+static int parBuilderCheck(TypeCheckState *pstate, EntryNode *yield, INode *lexnode) {
+    VarDclNode *recv = (VarDclNode*)yield->recv;
+    INode *recvtype = iexpGetTypeDcl((INode*)recv);
+    if (recvtype == errorType || recvtype == unknownType)
+        return 0;
+    INode *colltype = recvtype->tag == RefTag ? itypeGetTypeDcl(((RefNode*)recvtype)->vtexp) : recvtype;
+    if (!parHasMethod(colltype, nametblFind("pieceBag", 8)) || !parHasMethod(colltype, nametblFind("emptyPiece", 10))
+        || !parHasMethod(colltype, nametblFind("depositPiece", 12)) || !parHasMethod(colltype, nametblFind("joinPieces", 10))) {
+        errorMsgNode(lexnode, ErrorParBuilder,
+            "A parallel builder appends to a List, whose pieces it joins in the order of the passes, and %s is not one. Build a List with 'parallel each', and make the %s from it after the loop.",
+            itypeName(colltype), yield->first != NULL ? "dictionary" : "collection");
+        return 0;
+    }
+    if (actorOfState(inodeGetOwner((INode*)pstate->fn)) != NULL) {
+        errorMsgNode(lexnode, ErrorParRuntime,
+            "A parallel builder inside an actor's method is not built yet: it must join its pieces' lists after the loop, and the loop cannot yet be left and resumed in a method. Build the list in a function outside actors for now.");
+        return 0;
+    }
+    return 1;
+}
+
+static INode *parRecvPlace(VarDclNode *recv, INode *lexnode) {
+    StarNode *deref = newStarNode(DerefTag);
+    inodeLexCopy((INode*)deref, lexnode);
+    deref->vtexp = parUse(recv, lexnode);
+    return (INode*)deref;
+}
+
+// '&mut bag'
+static INode *parBorrowMut(VarDclNode *bag, INode *lexnode) {
+    return (INode*)newRefNodeFull(BorrowTag, lexnode, borrowRef, (INode*)mutPerm, parUse(bag, lexnode));
+}
+
+// The statements of the builder around the loop (see above): the bag before the
+// index the pieces count with, the piece's list before the loop, the join after
+static void parBuilderLower(BlockNode *outer, BlockNode *loop, EntryNode *yield, VarDclNode *lo, VarDclNode *k,
+    uint16_t scope, INode *lexnode) {
+    VarDclNode *recv = (VarDclNode*)yield->recv;
+    VarDclNode *bag = parVar(parBagName, mutPerm, (INode*)parCall(parRecvPlace(recv, lexnode),
+        nametblFind("pieceBag", 8), lexnode), scope, lexnode);
+    uint32_t kat = 0;
+    while (nodesGet(outer->stmts, kat) != (INode*)k)
+        ++kat;
+    nodesInsert(&outer->stmts, (INode*)bag, kat);
+
+    // The piece's own list, a local of the piece, and the borrow the yield appends
+    // through (as the receiver of an ordinary '<-' each is a borrow of the list)
+    VarDclNode *list = parVar(parListName, mutPerm, (INode*)parCall(parRecvPlace(recv, lexnode),
+        nametblFind("emptyPiece", 10), lexnode), scope, lexnode);
+    VarDclNode *piece = parVar(parPieceName, immPerm, (INode*)newRefNodeFull(BorrowTag, lexnode, borrowRef,
+        (INode*)mutPerm, parUse(list, lexnode)), scope, lexnode);
+    yield->recv = (INode*)piece;
+    nodesAdd(&outer->stmts, (INode*)list);
+    nodesAdd(&outer->stmts, (INode*)piece);
+    nodesAdd(&outer->stmts, (INode*)loop);
+
+    // The piece gives its list up where it leaves the loop: the guard's 'break'
+    // is ahead of 'break' in its block
+    IfNode *guard = (IfNode*)nodesGet(loop->stmts, 0);
+    BlockNode *leave = (BlockNode*)nodesGet(guard->condblk, 1);
+    FnCallNode *deposit = parCall(parRecvPlace(recv, lexnode), nametblFind("depositPiece", 12), lexnode);
+    nodesAdd(&deposit->args, parBorrowMut(bag, lexnode));
+    nodesAdd(&deposit->args, parUse(lo, lexnode));
+    nodesAdd(&deposit->args, parUse(list, lexnode));
+    nodesInsert(&leave->stmts, (INode*)deposit, 0);
+
+    FnCallNode *join = parCall(parRecvPlace(recv, lexnode), nametblFind("joinPieces", 10), lexnode);
+    nodesAdd(&join->args, parBorrowMut(bag, lexnode));
+    nodesAdd(&outer->stmts, (INode*)join);
+}
+
 void parallelEachLower(TypeCheckState *pstate, BlockNode *outer) {
     parallelEachNames();
     outer->flags &= 0xFFFF - FlagEach;
@@ -979,6 +1089,10 @@ void parallelEachLower(TypeCheckState *pstate, BlockNode *outer) {
             "A 'parallel each' gives one variable, a borrow of each element (or each number of a range).");
         return;
     }
+    // A builder's loop holds the yield that appends to the receiver
+    EntryNode *yield = parBuilderYield(loop);
+    if (yield && !parBuilderCheck(pstate, yield, lexnode))
+        return;
 
     VarDclNode *lo, *hi, *k;
     INode *elem;
@@ -1113,9 +1227,13 @@ void parallelEachLower(TypeCheckState *pstate, BlockNode *outer) {
     FnCallNode *done = newFnCallOpnameLower(lexnode, parUse(k, lexnode), geName, 1);
     nodesAdd(&done->args, parUse(hi, lexnode));
     nodesInsert(&loop->stmts, parBreakIf((INode*)done, loop, lexnode), 0);
-    nodesAdd(&outer->stmts, (INode*)loop);
+    if (yield)
+        parBuilderLower(outer, loop, yield, lo, k, scope, lexnode);
+    else
+        nodesAdd(&outer->stmts, (INode*)loop);
 
     // In a behaviour the behaviour is cut where the loop ends: the seam follows it
+    // (the parallel builder is refused in an actor's method, parRuntime)
     if (seam) {
         AwaitNode *cut = awaitParNew(pstate, lexnode);
         if (cut == NULL) {

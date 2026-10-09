@@ -1122,6 +1122,11 @@ static INode *parseEntryValue(ParseState *parse) {
 static INode *parseEntry(ParseState *parse) {
     if (lexIsToken(EachToken))
         return parseEachEntry(parse);
+    // 'parallel' is a word only directly before 'each' (as parseExprBlock reads it)
+    if (lexIsToken(IdentToken) && lex->val.ident == parallelName && lexNextIsWord("each")) {
+        lexNextToken();
+        return parseParallelEachEntry(parse);
+    }
     if (lexIsToken(IdentToken) && lex->val.ident == fillName && lexNextOpensValue()) {
         EntryNode *fill = newEntryNode(FillEntryTag, NULL);
         lexNextToken();

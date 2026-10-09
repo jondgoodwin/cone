@@ -1542,6 +1542,11 @@ bounds to usize (sign-extending a signed type), takes their difference
 `<=`, and is zero where the last is below the first; the pass variable is the
 first bound plus `T.from(k')`, wrapping, which cannot pass the last bound.
 
+A parallel builder ([Block](../nodes/block.md), "Type check") needs nothing more of
+generation: its piece's list is a local declared after `k'`, so it is generated
+in the function with the loop, and the bag before `k'` and the join after the
+loop are the caller's.
+
 `genlFn` clears `parbody` for the functions it generates in the middle of a
 piece (a drop a death asks for). A split method's second halves would each
 generate the piece again; a parallel each is not built inside an actor's method.
