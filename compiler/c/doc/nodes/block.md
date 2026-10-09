@@ -309,6 +309,20 @@ the first it has yet to give. A header `if` needs nothing of its own: it is
 `eachLower`'s `continue` statement after the pass's variable, ahead of which the
 loop's step is inserted.
 
+A **zip** of cursors (core's `Zip` and, from its `indexed()`, `ZipIndexed`) is one
+of these cursors: it takes two variables (three for `ZipIndexed`, the position
+first), unpacked from the tuple its `at` gives. It has `len` (the shorter's), `at`
+and `split` only where both sources do (`where I is RandomAccess[A] and J is
+RandomAccess[B]`; the core traits `RandomAccess` and `ParallelIterable`, met by
+the methods), so a zip with a source that cannot be cut or walked by position has
+no `len` or `at`, and `parallelEachLower` refuses it with that reason
+(`ErrorParSource`). The zip lends `&mut` if either source does (`parCursorOf` reads
+its field types, never a method's name), and the checks that look at where the items
+are lent from look at every source: for a call, the alias check takes the path of
+each argument that holds a borrow (`parLentPaths`, `itypeCarriesBorrow`, never a
+function's name), and the behaviour's frame check refuses a local in any
+(`parMayBeFrame`).
+
 **The parallel builder**, `xs <- parallel each x in src [if c] yield v`, is an
 each entry of `<-` (`parseParallelEachEntry` sets the flag `parseEachLoop` reads
 for a statement) whose loop ends in the `YieldEntryTag` entry; `contentsEach`

@@ -1,0 +1,24 @@
+// A zip of two cursors over the SAME buffer would give two passes overlapping parts
+// of it, written at the same time. Flow analysis refuses it as it does any second
+// borrow of what is mutably borrowed while the first is used: the zip's second
+// source is made while the first still holds the buffer.
+
+mod concurrency_parallel_zip_flow_refused;
+
+import collections use *;
+import actors;
+
+fn sameParameter(a &mut List[u32]) {
+  parallel each ra, rb in a.mutChunks(2usize).zip(a.mutChunks(3usize)) {   //~ ErrorFrozen
+    ra[0usize] = 1u32;
+    rb[0usize] = 2u32;
+  }
+}
+
+fn sameLocal() {
+  mut a = new List[u32];
+  a.push(1u32);
+  parallel each ra, rb in a.mutChunks(2usize).zip(a.chunks(3usize)) {       //~ ErrorFrozen
+    ra[0usize] = 1u32;
+  }
+}

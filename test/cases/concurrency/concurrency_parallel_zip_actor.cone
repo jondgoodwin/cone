@@ -1,0 +1,94 @@
+// A 'parallel each' over a zip in an actor's behaviour, the actor's own fields
+// through 'self' (concurrency_parallel_each_actor: the behaviour is cut where the
+// loop ends, and the pieces borrow the actor's fields). Two lists of the actor are
+// filled in one pass with unequal chunks, and two others read side by side. What the
+// zip may walk is as for any source there: fields, not a list or array in a local
+// (concurrency_parallel_zip_actor_refused).
+//
+// Worked out by hand:
+//
+//   - 'fill': a (3000 elements) in chunks of 3 and b (6000) in chunks of 6, 1000
+//     passes; pass y writes y into the three of a and 2y into the six of b: a sums
+//     to 3 * (0 + ... + 999) = 1,498,500 and b to 6 * 2 * 499,500 = 5,994,000
+//   - 'read': the two lists side by side, the sum of x * y over positions: a is
+//     0 ... 9 and b is ten tens, 10 * 45 = 450; the positions summed, 45
+
+mod concurrency_parallel_zip_actor;
+
+import stdio use *;
+import collections use *;
+import actors;
+
+fn say(s &str, n u64) {printStr(s); printStr(" = "); printUInt(n); printStr("\n");}
+
+actor Painter {
+  a List[u64];
+  b List[u64];
+  small List[u64];
+  tens List[u64];
+  total Atomic[u64];
+
+  fn init(self &new) {
+    mut a = new List[u64];
+    mut b = new List[u64];
+    mut small = new List[u64];
+    mut tens = new List[u64];
+    mut i = 0usize;
+    while i < 6000usize {
+      if i < 3000usize { a.push(0u64); }
+      b.push(0u64);
+      if i < 10usize { small.push(u64.from(i)); tens.push(10u64); }
+      i = i + 1usize;
+    }
+    *self = new Self(a: a, b: b, small: small, tens: tens, total: Atomic[u64].of(0u64));
+  }
+
+  fn sum(self &, l &List[u64]) u64 {
+    mut s = 0u64;
+    each p in l { s = s + *p; }
+    s;
+  }
+
+  pub async do fill(self) u64 {
+    parallel each y, ra, rb in a.mutChunks(3usize).zip(b.mutChunks(6usize)).indexed() {
+      each p in ra.mutItems() { *p = u64.from(y); }
+      each q in rb.mutItems() { *q = u64.from(y) * 2u64; }
+    }
+    say("a", sum(&a));
+    say("b", sum(&b));
+    sum(&a) + sum(&b);
+  }
+
+  pub async do read(self) u64 {
+    total.store(0u64);
+    parallel each x, y in zip(&small, &tens) {
+      total.add(*x * *y);
+    }
+    say("products", total.load());
+    total.store(0u64);
+    parallel each i, x, y in zip(&small, &tens).indexed() {
+      total.add(u64.from(i));
+    }
+    say("positions", total.load());
+    total.load();
+  }
+}
+
+actor Driver {
+  pub async do go(self, p Painter) u64 {
+    imm f = await p.fill();
+    imm r = await p.read();
+    f + r;
+  }
+}
+
+fn main() {
+  initAll();
+  actors.configure(new actors.Options(workers: 4u32));
+  {
+    imm p = new Painter();
+    imm d = new Driver();
+    d.go(p);
+  }
+  finalAll();
+}
