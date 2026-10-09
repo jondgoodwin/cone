@@ -405,6 +405,14 @@ static void flowRefuseMoveField(FnCallNode *fld, INode *top) {
         return;
     }
     char *name = isNameUseNode(methfld) ? &((NameUseNode *)methfld)->namesym->namestr : "?";
+    // A generator's parameters are fields of the value it is, which its body
+    // reaches by their names: it may borrow or copy one, not move it out
+    if (yieldAny() && (INode *)fld == whole && yieldGenOfStruct(iexpGetDerefTypeDcl(fld->objfn))) {
+        errorMsgNode(top, ErrorMoveField,
+            "May not move '%s' out of the generator that holds it: a generator keeps its parameters in the value it is, so its body may borrow or copy one, or swap a value in with '<=>', but not move it out.",
+            name);
+        return;
+    }
     errorMsgNode(top, ErrorMoveField,
         (INode *)fld == whole ? "May not move field '%s' out of the struct that holds it. Swap a value in with '<=>', or move the whole struct."
             : "May not move a value out through field '%s', which would leave a hole in the struct that holds it. Swap a value in with '<=>', or move the whole struct.",

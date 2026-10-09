@@ -69,6 +69,7 @@ typedef struct GenInfo {
     FnDclNode *step;        // The generator's 'next'
     StructNode *gen;        // The hidden struct
     FnDclNode *none;        // The function giving 'None', the result when the body ends
+    FnDclNode *ctor;        // The function that makes the generator: the one the author wrote, 'walk'
     Nodes *yields;          // Each seam (YieldNode) the loan walk reached, numbered from 1 in the order written
     FieldDclNode *state;    // The field holding where the body resumes: 0 unstarted, a seam's number, GenDone
     // Generation (genlyield.c): the locals the frame keeps, in the order first
@@ -101,6 +102,7 @@ enum GenFrameKind {
 GenInfo *yieldGenNew(FnDclNode *step, StructNode *gen, FnDclNode *none);
 GenInfo *yieldGenOf(FnDclNode *step);
 GenInfo *yieldGenOfStruct(INode *type);
+GenInfo *yieldGenOfCtor(FnDclNode *ctor);
 
 // A generator's seams, once its step is checked and walked
 void yieldSplitRegister(GenInfo *info, Nodes *yields);

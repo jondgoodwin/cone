@@ -2539,6 +2539,22 @@ static void pwYieldVar(YieldNode *node, uint32_t index, int isparm) {
     }
     if (!pv->temp)
         pathSetFacts(index, pv->holds, pathSetAdd(pv->pending, loanSeamLive((INode *)node, index)));
+    // What the generator's frame keeps it holds in its own storage: not a lock
+    // taken (its borrow would have to last across the seam), nor a traced
+    // reference (the collector finds a frame by the stack, not by the struct).
+    // Reported once at the seam, however many times a loop's body is walked
+    if ((flags & SeamOpen) && (flags & (SeamLive | SeamDies)) && !(flags & SeamTemp)
+        && ((flags & SeamGuard) || (var->vtype && itypeHoldsTraced(var->vtype)))) {
+        int seen = 0;
+        for (uint32_t i = 0; i < node->nseamvars; ++i)
+            seen |= node->seamvars[i].var == var;
+        if (!seen)
+            errorMsgNode((INode *)node, ErrorGenFrame,
+                (flags & SeamGuard)
+                    ? "'%s' holds a lock, and the lock would stay held across this 'yield', while the generator waits to be resumed. Let the guard end before it, or take the lock again after."
+                    : "'%s' holds a traced reference, which this generator's frame cannot keep across a 'yield': the collector finds a traced reference on the stack, and a frame lives in the generator's value. Keep it in a variable of the caller's, or yield what it points to.",
+                &var->namesym->namestr);
+    }
     pwYieldNote(node, var, flags);
 }
 

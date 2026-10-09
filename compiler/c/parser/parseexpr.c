@@ -213,16 +213,27 @@ INode *parseTerm(ParseState *parse) {
     case NewToken:
     case TrynewToken:
         return parseNew(parse);
+    // An 'if', a 'match', a loop or a block met as a term is an operand of an
+    // expression, which a generator's 'yield' may not stand in: a value made
+    // before it would have to be kept across the seam (parsegen.c)
     case IfToken:
-        return parseIf(parse);
     case MatchToken:
-        return parseMatch(parse);
     case WhileToken:
-        return parseWhile(parse, NULL, 0);
     case LifetimeToken:
-        return parseLifetime(parse, 0);
     case LCurlyToken:
-        return parseExprBlock(parse, 0);
+    {
+        INode *node;
+        ++parse->genoperand;
+        switch (lex->toktype) {
+        case IfToken: node = parseIf(parse); break;
+        case MatchToken: node = parseMatch(parse); break;
+        case WhileToken: node = parseWhile(parse, NULL, 0); break;
+        case LifetimeToken: node = parseLifetime(parse, 0); break;
+        default: node = parseExprBlock(parse, 0); break;
+        }
+        --parse->genoperand;
+        return node;
+    }
     // 'async do' declares an actor's behaviour, in an actor's body: reported,
     // with either word alone, and the declaration passed over
     case AsyncToken:

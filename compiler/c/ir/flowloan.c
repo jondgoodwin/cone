@@ -982,9 +982,16 @@ static void loanReport(Pending *pend, INode *usenode) {
     // value, ends there
     if (pend->kind == AccessYield) {
         char of[200];
+        // A parameter held by value is a field of the generator, reached through 'self'
+        Place *place = &loan->place;
+        if (!place->far && place->deref && place->nsteps > 0 && !(place->steps[0] & 3)
+            && pathVars[place->var].var->namesym == selfName)
+            snprintf(of, sizeof(of), "of the parameter '%s'", &((Name *)place->steps[0])->namestr);
+        else
+            loanSeamOf(pend->loan, of, sizeof(of));
         errorMsgNode(pend->access, ErrorFrozen,
             "The borrow '%s' holds %s (made %s) cannot last across this 'yield': a generator's own local, and a parameter it holds by value, are in the generator, which moves between the calls that resume it. Borrow what the generator was lent, a reference it takes, or copy the value; '%s' is used again %s.",
-            &holder->namesym->namestr, loanSeamOf(pend->loan, of, sizeof(of)), where,
+            &holder->namesym->namestr, of, where,
             &holder->namesym->namestr, used);
         return;
     }

@@ -117,6 +117,9 @@ typedef struct ParseState {
     int isgen;
     GenSig gensig;
     GenCtx *genctx;
+    int genraw;             // The 'yield' being read hands on a result already made (a 'yield each')
+    int library;            // The package is being compiled as a library, whose include file declares what it exports
+    int genoperand;         // How many 'if', 'match', loop or block terms enclose what is being read: expression operands
 } ParseState;
 
 // Record where a field's or a parameter's type and value are written, when an

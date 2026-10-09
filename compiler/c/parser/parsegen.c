@@ -201,9 +201,10 @@ static uint32_t parseGenParms(ParseState *parse, GenSig *sig, GenParm **parmsp) 
 GenCtx *parseGenBegin(ParseState *parse, FnDclNode *fn) {
     GenCtx *ctx = (GenCtx *)memAllocBlk(sizeof(GenCtx));
     char buf[300];
-    snprintf(buf, sizeof(buf), "%s.yield", &fn->namesym->namestr);
+    const char *name = fn->namesym ? &fn->namesym->namestr : "";
+    snprintf(buf, sizeof(buf), "%s.yield", name);
     ctx->some = nametblPrivate(buf, strlen(buf));
-    snprintf(buf, sizeof(buf), "%s.none", &fn->namesym->namestr);
+    snprintf(buf, sizeof(buf), "%s.none", name);
     ctx->none = nametblPrivate(buf, strlen(buf));
     ctx->name = fn->namesym;
     ctx->yields = 0;
@@ -339,7 +340,7 @@ FnDclNode *parseGenFinish(ParseState *parse, FnDclNode *fn, GenSig *sig, GenCtx 
     gen->ngennames = GenSlots;
     uint32_t firstnode = mod->nodes->used;
     lexPush(gen);
-    StructNode *state = (StructNode *)parseStruct(parse, FlagPub);
+    StructNode *state = (StructNode *)parseStruct(parse, 0);
     modAddNode(mod, state->namesym, (INode *)state);
     FnDclNode *yieldfn = (FnDclNode *)parseFnOrVar(parse, 0);
     FnDclNode *nonefn = (FnDclNode *)parseFnOrVar(parse, 0);
@@ -361,6 +362,7 @@ FnDclNode *parseGenFinish(ParseState *parse, FnDclNode *fn, GenSig *sig, GenCtx 
     step->value = (INode *)body;
     inodeLexCopy((INode *)step, (INode *)fn);
     GenInfo *info = yieldGenNew(step, state, nonefn);
+    info->ctor = ctor;
     INode **nodesp;
     uint32_t cnt;
     for (nodelistFor(&state->fields, cnt, nodesp)) {
@@ -397,13 +399,18 @@ static INode *parseYieldEach(ParseState *parse, GenCtx *ctx, INode *src, YieldNo
     genSlot(&g, GenItem);
     genPuts(&g, " Some { yield ");
     genSlot(&g, GenItem);
-    genPuts(&g, ".value; } case is None { break; } } } }");
+    genPuts(&g, "; } case is None { break; } } } }");
     Lexer *gen = lexNew(g.text, lex->url);
     gen->genat = (INode *)at;
     gen->gennames = names;
     gen->ngennames = GenSlots;
     lexPush(gen);
+    // The sub-generator's result is already what this one hands the caller:
+    // 'Some(value)', whole, the value moved with it and not out of it
+    int svraw = parse->genraw;
+    parse->genraw = 1;
     BlockNode *blk = (BlockNode *)parseExprBlock(parse, 0);
+    parse->genraw = svraw;
     lexPop();
     VarDclNode *sub = (VarDclNode *)nodesGet(blk->stmts, 0);
     sub->value = src;
@@ -429,6 +436,15 @@ INode *parseYield(ParseState *parse) {
         node->exp = (INode *)newNilLitNode();
         return (INode *)node;
     }
+    if (parse->genoperand > 0) {
+        errorMsgNode((INode *)node, ErrorYieldPlace,
+            "A 'yield' is a statement of its own, not part of an expression: it stands in a block or in the arms of an 'if' or 'match' written as statements, since a value made before it in the same expression would have to be kept across the seam. Compute the value into a variable first.");
+        if (!parseIsEndOfStatement())
+            parseAnyExpr(parse);
+        parseEndOfStatement();
+        node->exp = (INode *)newNilLitNode();
+        return (INode *)node;
+    }
     if (parseIsEndOfStatement()) {
         errorMsgLex(ErrorBadTerm, each ? "'yield each' needs the sub-generator whose values it hands on." : "'yield' needs the value to hand the caller.");
         node->exp = (INode *)newNilLitNode();
@@ -440,6 +456,10 @@ INode *parseYield(ParseState *parse) {
     if (each)
         return parseYieldEach(parse, ctx, exp, node);
     ++ctx->yields;
+    if (parse->genraw) {
+        node->exp = exp;
+        return (INode *)node;
+    }
     FnCallNode *some = newFnCallNode((INode *)newNameUseNode(ctx->some), 1);
     nodesAdd(&some->args, exp);
     inodeLexCopy((INode *)some, exp);

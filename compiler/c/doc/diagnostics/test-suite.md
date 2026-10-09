@@ -70,6 +70,7 @@ as that group's own subject requires.
 | 2 | `trait` | Traits, virtual references and the dispatch through them, closure references |
 | 2 | `collection` | Collection types, array references and slices |
 | 2 | `each` | `each` and iteration |
+| 2 | `corout` | Co-routines, as built: generators, functions declared `yields` that hand their caller values with `yield` and `yield each`, walked by the `next` of the value they give |
 | 2 | `typemgmt` | Conversion and coercion, alias and extend |
 | 2 | `generic` | Generics, macros |
 | 2 | `module` | Modules, namespaces, `import`/`extern` |

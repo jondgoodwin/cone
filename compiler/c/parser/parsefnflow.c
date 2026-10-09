@@ -1335,16 +1335,19 @@ INode *parseFn(ParseState *parse, uint16_t mayflags) {
                 why = "A generator cannot have a 'where' clause yet.";
             else if (hasc || compute || intrinsic)
                 why = "A generator is a struct and a method, so it has no symbol for '@c' to name, cannot be an '@intrinsic', and is no '@compute' entry point.";
-            if (why) {
+            // Refused, but its body is still read as a generator's, so that
+            // its 'yield' is not reported as well
+            if (why)
                 errorMsgNode((INode*)fnnode, ErrorGenForm, "%s", why);
-                isgen = 0;
-            }
         }
         GenCtx *genctx = isgen ? parseGenBegin(parse, fnnode) : NULL;
         GenCtx *svgenctx = parse->genctx;
+        int svgenoperand = parse->genoperand;
         parse->genctx = genctx;
+        parse->genoperand = 0;
         fnnode->value = parseExprBlock(parse, 0);
         parse->genctx = svgenctx;
+        parse->genoperand = svgenoperand;
         bodyendp = lex->prevend;
         if (genctx && errors == errorsAtSig) {
             parse->bodyp = bodyp;

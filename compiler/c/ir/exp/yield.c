@@ -50,6 +50,14 @@ GenInfo *yieldGenOfStruct(INode *type) {
     return NULL;
 }
 
+GenInfo *yieldGenOfCtor(FnDclNode *ctor) {
+    for (uint32_t i = 0; i < gencnt; ++i) {
+        if (gens[i]->ctor == ctor)
+            return gens[i];
+    }
+    return NULL;
+}
+
 void yieldSplitRegister(GenInfo *info, Nodes *yields) {
     info->yields = yields;
     uint32_t no = 0;
