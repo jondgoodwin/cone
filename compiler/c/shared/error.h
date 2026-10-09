@@ -561,13 +561,17 @@ enum ErrorCode {
     ErrorLoopElse = 1360,       // An 'else' on a loop that cannot run out: a 'while' with no condition
     ErrorTrailingIf = 1361,     // A trailing 'if' after a statement that takes none: only 'break', 'continue' and 'return' end with one
 
+    // 'each' inside '<-' (parser/parseexpr.c, ir/exp/contents.c)
+    ErrorEachEntry = 1370,      // An 'each' entry of '<-' written wrongly: with variables and no 'yield', a body in braces, or a 'yield' of nothing
+    ErrorDrainItem = 1371,      // 'xs <- each src' over a source whose items come borrowed and move: a borrow cannot be copied out of
+
     // 'parallel each' (ir/exp/pareach.c)
-    ErrorParSource = 1370,      // A 'parallel each' over a source that cannot be split into independent pieces and report its size (a cursor, a generator, a file, a channel), or whose pieces the compiler cannot yet walk
-    ErrorParControl = 1371,     // A 'break', 'return' or 'await', or a 'continue' of an outer loop, in a 'parallel each' body
-    ErrorParWrite = 1372,       // A 'parallel each' body writes something declared outside the loop (or lends it for writing), which its pieces would do at the same time
-    ErrorParRuntime = 1373,     // A 'parallel each' in a module that does not import the actors package its pieces run on, or in an actor's method or a generator (not built)
-    ErrorParElse = 1374,        // A 'parallel each' with an 'else': its passes run at the same time and give no value
-    ErrorParCopy = 1375,        // A 'parallel each' body copies a value that is not the pass's own and holds a counted owner whose count is not atomic (an Rc): the copy would write a count the passes share
+    ErrorParSource = 1380,      // A 'parallel each' over a source that cannot be split into independent pieces and report its size (a cursor, a generator, a file, a channel), or whose pieces the compiler cannot yet walk
+    ErrorParControl = 1381,     // A 'break', 'return' or 'await', or a 'continue' of an outer loop, in a 'parallel each' body
+    ErrorParWrite = 1382,       // A 'parallel each' body writes something declared outside the loop (or lends it for writing), which its pieces would do at the same time
+    ErrorParRuntime = 1383,     // A 'parallel each' in a module that does not import the actors package its pieces run on, or in an actor's method or a generator (not built)
+    ErrorParElse = 1384,        // A 'parallel each' with an 'else': its passes run at the same time and give no value
+    ErrorParCopy = 1385,        // A 'parallel each' body copies a value that is not the pass's own and holds a counted owner whose count is not atomic (an Rc): the copy would write a count the passes share
 
     // Warnings
     WarnCode = 3000,

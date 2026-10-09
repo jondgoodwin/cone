@@ -21,6 +21,9 @@ INode *parseEach(ParseState *parse, Name *lifesym, int stmtflag);
 // The most variables an 'each' unpacks a tuple item into
 #define EachMaxVars 8
 
+// Which each is being parsed: one with a body, or an entry of '<-' (parseEachLoop)
+enum { EachBuildNone, EachBuildVars, EachBuildDrain };
+
 // Where the next 'if' read may leave its condition, instead of reading a block
 // after it, when the statement ends there: the trailing 'if' of a 'break' or
 // 'return' with no value (parseJumpValue). Cleared as parseIf starts.
@@ -509,14 +512,75 @@ INode *parseWhile(ParseState *parse, Name *lifesym, int stmtflag) {
 // not taken for a parallel one
 static int parseEachParallel = 0;
 
-// Parse each block
-INode *parseEach(ParseState *parse, Name *lifesym, int stmtflag) {
+// The variable of a drain, '<- each src', which no name reaches
+static Name *parseDrainName() {
+    static Name *name = NULL;
+    if (name == NULL)
+        name = nametblFind("-item", 5);
+    return name;
+}
+
+// What the loop of an each entry of '<-' appends each pass, in place of a body
+// in braces (EachBuild says which entry it is):
+// - 'yield v' or 'yield k: v', after the header, for 'each x in src [if c] yield v';
+// - the pass variable itself, for a drain, 'each src'
+// The loop's last statement is the entry that lowers to the append (yieldEntryLower).
+static BlockNode *parseEachYield(ParseState *parse, int build, INode *lexnode) {
+    BlockNode *loopnode = newLoopBlockNode();
+    if (loopnode->stmts == NULL)
+        loopnode->stmts = newNodes(8);
+    EntryNode *entry = newEntryNode(YieldEntryTag, NULL);
+    inodeLexCopy((INode*)entry, lexnode);
+    if (build == EachBuildDrain) {
+        NameUseNode *item = newNameUseNode(parseDrainName());
+        inodeLexCopy((INode*)item, lexnode);
+        entry->val = (INode*)item;
+        entry->drain = 1;
+    }
+    else {
+        if (!lexIsToken(YieldToken)) {
+            errorMsgLex(ErrorEachEntry, "An 'each' with variables inside '<-' gives the value to append with 'yield', after its source and any 'if': 'xs <- each x in ys if *x > 0 yield *x'.");
+            if (lexIsToken(LCurlyToken))    // a body written out is read and dropped, so that it is not reported again
+                parseExprBlock(parse, 1);
+            return NULL;
+        }
+        lexNextToken();
+        if (parseIsEndOfStatement() || lexIsToken(CommaToken) || lexIsToken(RParenToken)) {
+            errorMsgLex(ErrorEachEntry, "'yield' needs the value to append.");
+            return NULL;
+        }
+        INode *val = parseSimpleExpr(parse);
+        if (val == NULL)
+            return NULL;
+        if (lexIsToken(ColonToken)) {
+            lexNextToken();
+            entry->first = val;
+            val = parseSimpleExpr(parse);
+            if (val == NULL)
+                return NULL;
+        }
+        entry->val = val;
+    }
+    nodesAdd(&loopnode->stmts, (INode*)entry);
+    return loopnode;
+}
+
+// Parse each block. 'build' is EachBuildNone for an each statement or expression,
+// and for an entry of '<-' EachBuildVars ('each x in src [if c] yield v') or
+// EachBuildDrain ('each src'), whose body is the yield (parseEachYield).
+static INode *parseEachLoop(ParseState *parse, Name *lifesym, int stmtflag, int build) {
     int parallel = parseEachParallel;
     parseEachParallel = 0;
     BlockNode *outerblk = newBlockNode();   // surrounding block scope for isolating 'each' vars
 
     // Obtain all the parsed pieces
     lexNextToken();
+    VarDclNode *elemvars[EachMaxVars];
+    uint32_t nelems = 0;
+    if (build == EachBuildDrain) {
+        elemvars[nelems++] = newVarDclNode(parseDrainName(), VarDclTag, (INode*)immPerm);
+    }
+    else {
     if (!lexIsToken(IdentToken)) {
         errorMsgLex(ErrorNoVar, "Missing variable name");
         return (INode *)outerblk;
@@ -524,8 +588,6 @@ INode *parseEach(ParseState *parse, Name *lifesym, int stmtflag) {
     // One variable, or several that unpack a tuple item: 'each k, v in dict'
     // Each is a fresh variable of every pass that nothing can change; a pass's
     // value is given it once the loop is built
-    VarDclNode *elemvars[EachMaxVars];
-    uint32_t nelems = 0;
     while (1) {
         if (nelems == EachMaxVars) {
             errorMsgLex(ErrorBadTok, "An 'each' unpacks at most %d variables", EachMaxVars);
@@ -546,6 +608,7 @@ INode *parseEach(ParseState *parse, Name *lifesym, int stmtflag) {
         return (INode *)outerblk;
     }
     lexNextToken();
+    }
     INode *iter = parseSimpleExpr(parse);
     if (iter == NULL)       // Not a term, and already reported as such
         return (INode *)outerblk;
@@ -562,14 +625,25 @@ INode *parseEach(ParseState *parse, Name *lifesym, int stmtflag) {
         lexNextToken();
         step = parseSimpleExpr(parse);
     }
-    INode *filter = parseEachFilter(parse);
-    BlockNode *loopnode = (BlockNode*)parseExprBlock(parse, 1);
-    loopnode->lifesym = lifesym;
-    // An 'else' says what the loop gives when it runs out, so that the loop can be
-    // used as a value. Without one a loop gives none, and is a statement.
-    BlockNode *elseblk = parseLoopElse(parse);
-    if (!stmtflag && elseblk == NULL)
-        errorMsgNode((INode*)loopnode, ErrorNoLoop, "each may not be used as an expression unless it has an 'else'");
+    INode *filter = build == EachBuildDrain ? NULL : parseEachFilter(parse);
+    BlockNode *loopnode;
+    BlockNode *elseblk = NULL;
+    if (build != EachBuildNone) {
+        // An entry's loop appends what it yields and gives no value of its own
+        loopnode = parseEachYield(parse, build, iter);
+        if (loopnode == NULL)
+            return (INode *)outerblk;
+        loopnode->lifesym = lifesym;
+    }
+    else {
+        loopnode = (BlockNode*)parseExprBlock(parse, 1);
+        loopnode->lifesym = lifesym;
+        // An 'else' says what the loop gives when it runs out, so that the loop can be
+        // used as a value. Without one a loop gives none, and is a statement.
+        elseblk = parseLoopElse(parse);
+        if (!stmtflag && elseblk == NULL)
+            errorMsgNode((INode*)loopnode, ErrorNoLoop, "each may not be used as an expression unless it has an 'else'");
+    }
 
     // The passes of a parallel each run at the same time and give no value, so
     // there is no 'else' for it to run out into
@@ -773,6 +847,18 @@ INode *parseEach(ParseState *parse, Name *lifesym, int stmtflag) {
         nodesAdd(&outerblk->stmts, (INode*)loopnode);
     }
     return (INode *)outerblk;
+}
+
+INode *parseEach(ParseState *parse, Name *lifesym, int stmtflag) {
+    return parseEachLoop(parse, lifesym, stmtflag, EachBuildNone);
+}
+
+// An entry of '<-' that begins with 'each': a loop whose body is the append of
+// what it yields (an EachEntryTag holding it, lowered by the '<-', contentsLower)
+INode *parseEachEntry(ParseState *parse) {
+    EntryNode *entry = newEntryNode(EachEntryTag, NULL);
+    entry->first = parseEachLoop(parse, NULL, 1, lexEachHasVars() ? EachBuildVars : EachBuildDrain);
+    return (INode*)entry;
 }
 
 // Parse a lifetime variable, followed by colon and then a loop

@@ -1120,6 +1120,8 @@ static INode *parseEntryValue(ParseState *parse) {
 // (parseTerm), which is how a construction's contents are written inside
 // another comma list: 'draw(new List[i32] <- (1, 2), x)'.
 static INode *parseEntry(ParseState *parse) {
+    if (lexIsToken(EachToken))
+        return parseEachEntry(parse);
     if (lexIsToken(IdentToken) && lex->val.ident == fillName && lexNextOpensValue()) {
         EntryNode *fill = newEntryNode(FillEntryTag, NULL);
         lexNextToken();
@@ -1162,6 +1164,23 @@ static INode *parseEntries(ParseState *parse) {
     return (INode*)tuple;
 }
 
+// The each entries among the entries of a '<-' are lowered into blocks of the
+// receiver's making, which hold their loops (contentsLower): two of them after a
+// construction, which is first held in a variable, and one otherwise. Name
+// resolution numbers the scopes of an each's variables as if inside those blocks.
+static void parseEntryNest(INode *entries, uint16_t nest) {
+    if (entries->tag == EachEntryTag)
+        ((EntryNode*)entries)->nest = nest;
+    else if (entries->tag == VTupleTag) {
+        INode **elemp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode*)entries)->elems, cnt, elemp)) {
+            if ((*elemp)->tag == EachEntryTag)
+                ((EntryNode*)*elemp)->nest = nest;
+        }
+    }
+}
+
 // After a construction inside a comma list -- an argument, a named value, an
 // array literal's element, an entry -- '<-' takes one entry, since the comma
 // after it belongs to the list: 'draw(new List[i32] <- (1, 2), x)' parenthesizes
@@ -1173,7 +1192,9 @@ static INode *parseContentsAfter(ParseState *parse, INode *node) {
     FnCallNode *append = newFnCallOpname(node, lessDashName, 2);
     append->flags |= FlagOpAssgn | FlagLvalOp;
     lexNextToken();
-    nodesAdd(&append->args, parseEntry(parse));
+    INode *entry = parseEntry(parse);
+    parseEntryNest(entry, 2);
+    nodesAdd(&append->args, entry);
     return (INode*)append;
 }
 
@@ -1183,7 +1204,9 @@ INode *parseAppend(ParseState *parse, INode *lval) {
     FnCallNode *node = newFnCallOpname(lval, lessDashName, 2);
     node->flags |= FlagOpAssgn | FlagLvalOp;
     lexNextToken();
-    nodesAdd(&node->args, parseEntries(parse));  // A list of entries is lowered at type check (contentsLower)
+    INode *entries = parseEntries(parse);
+    parseEntryNest(entries, parseIsConstruction(lval) ? 2 : 1);
+    nodesAdd(&node->args, entries);  // A list of entries is lowered at type check (contentsLower)
     return (INode*)node;
 }
 

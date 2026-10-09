@@ -69,7 +69,7 @@ the variables, the body and every `break`/`continue` in it resolve as for a
 the loop keeps the body's statements where they are and adds only to its head.
 
 **A header `if`, and the loop's `else`.** A filter, `each p in src if cond {…}`
-(`parseEachFilter`, which a later `<- each` header reads with the same call),
+(`parseEachFilter`, which the header of an `each` entry of `<-` reads with the same call),
 becomes `if not cond { continue }` as the first statement of the body after the
 pass's variables, built by `parseEachFilterStmt`; for a range the `continue`
 carries the step like any other. A trailing `if` on `break`, `continue` or

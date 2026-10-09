@@ -180,7 +180,7 @@ void inodePrintNode(INode *node) {
         voidPrint((VoidTypeNode *)node); break;
     case NamedValTag:
         namedValPrint((NamedValNode *)node); break;
-    case OfEntryTag: case FillEntryTag: case PairEntryTag:
+    case OfEntryTag: case FillEntryTag: case PairEntryTag: case EachEntryTag: case YieldEntryTag:
         entryPrint((EntryNode *)node); break;
     case RefCountTag:
     {
@@ -311,7 +311,7 @@ void inodeNameRes(NameResState *pstate, INode **node) {
         break;
     case NamedValTag:
         namedValNameRes(pstate, (NamedValNode *)*node); break;
-    case OfEntryTag: case FillEntryTag: case PairEntryTag:
+    case OfEntryTag: case FillEntryTag: case PairEntryTag: case EachEntryTag: case YieldEntryTag:
         entryNameRes(pstate, (EntryNode *)*node); break;
     // A 'null' names nothing, and its type is not written
     case NullLitTag:
@@ -532,8 +532,8 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
         break;
     case NamedValTag:
         namedValTypeCheck(pstate, (NamedValNode *)*node, expectType); break;
-    case OfEntryTag: case FillEntryTag: case PairEntryTag:
-        entryTypeCheck(pstate, (EntryNode *)*node); break;
+    case OfEntryTag: case FillEntryTag: case PairEntryTag: case EachEntryTag: case YieldEntryTag:
+        entryTypeCheck(pstate, node); break;
     case NullLitTag:
         nullLitTypeCheck(pstate, (NullLitNode *)*node, expectType); break;
     case NilLitTag:
@@ -803,6 +803,8 @@ static NodeTagFacts nodeTagFacts[NodeTagCount] = {
     [OfEntryTag] = {ExpGroup, 0, 0},
     [FillEntryTag] = {ExpGroup, 0, 0},
     [PairEntryTag] = {ExpGroup, 0, 0},
+    [EachEntryTag] = {ExpGroup, 0, 0},
+    [YieldEntryTag] = {ExpGroup, 0, 0},
     [AwaitTag] = {ExpGroup, 0, 0},
     [YieldTag] = {ExpGroup, 0, 0},
     [AwaitReplyTag] = {ExpGroup, 0, 0},

@@ -1507,6 +1507,26 @@ int lexNextOpensValue() {
     }
 }
 
+// With the lexer on the 'each' that begins an entry after '<-', does the entry
+// give loop variables, 'each x in src' and 'each k, v in pairs', rather than
+// just a source, 'each src'? It does when what follows is names separated by
+// commas and then 'in'. Read off the text as lexNextIsWord is.
+int lexEachHasVars() {
+    char *srcp = lexSkipTrivia(lex->srcp);
+    while (1) {
+        if (!(isalpha((unsigned char)*srcp) || *srcp == '_' || (*srcp & 0x80)))
+            return 0;
+        while (isalnum((unsigned char)*srcp) || *srcp == '_' || (*srcp & 0x80))
+            ++srcp;
+        srcp = lexSkipTrivia(srcp);
+        if (lexIsWordAt(srcp, "in"))
+            return 1;
+        if (*srcp != ',')
+            return 0;
+        srcp = lexSkipTrivia(srcp + 1);
+    }
+}
+
 // With the lexer on a name in a function-reference type's parameter list, is
 // the name the start of a type -- a parameter written as its type alone -- rather
 // than a parameter's own name? It is when what follows could not begin a
