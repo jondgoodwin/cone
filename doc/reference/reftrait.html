@@ -294,6 +294,56 @@ imm number = h.finish();
 		it from a seed of your own, and then the same keys give the same numbers on every run and
 		build, for a table whose order must be reproducible.</p>
 
+	<h3 id="iterator"><span class="pre">Iterator</span> and <span class="pre">Iterable</span></h3>
+
+	<p>Two more of core's traits name the shapes a sequence of values is walked by, for code that
+		is generic over them. A type is an <span class="pre">Iterator[T]</span> by having
+		<span class="pre">next</span>, and an <span class="pre">Iterable[T, I]</span> by having
+		<span class="pre">iter</span>. Neither is declared: a type with the method complies, as the
+		cursors of <span class="pre">str</span> and of every collection do, and so does a struct of your own.</p>
+<pre>
+pub trait Iterator[T] {
+  pub fn next(self &amp;mut) Option[T];     // the next value, None once there are no more
+}
+
+pub trait Iterable[T, I] where I is Iterator[T] {
+  pub fn iter(self &amp;) I;                // a cursor over what it holds, without consuming it
+}
+</pre>
+	<p>A function asks for one as a <a href="refgeneric.html#constraints">bound</a>, decided where it is
+		called and compiled for the type's own methods, or as a
+		<a href="refvirtref.html">virtual reference</a> (<span class="pre">&amp;&lt;mut Iterator[i64]</span>),
+		which takes any cursor through one compiled function:</p>
+<pre>
+fn count[T, S Iterator[T]](it &amp;mut S) usize {
+  mut n = 0usize;
+  while true {
+    match it.next() {
+      case imm v Some {n = n + 1usize;}
+      case is None {break;}
+    }
+  }
+  n;
+}
+
+fn total[S Iterator[&amp;i64]](it &amp;mut S) i64 { ... }   // a cursor that lends numbers
+fn walk[T, I, C Iterable[T, I]](c &amp;C) where I is Iterator[T] { ... c.iter() ... }
+</pre>
+	<p><span class="pre">T</span> is what <span class="pre">next</span> gives, so a cursor that
+		lends its values (a <span class="pre">Deque</span>'s <span class="pre">items()</span>, a
+		<span class="pre">Dict</span>'s <span class="pre">keys()</span>) is an
+		<span class="pre">Iterator[&amp;V]</span>. The <span class="pre">&amp;V</span> of a bound names no
+		lifetime, and a cursor whose <span class="pre">next</span> returns the lifetime its own struct
+		declares (<span class="pre">Option[&amp;'a V]</span>) meets it, as a method with no other parameter has
+		nothing to store through its receiver. The cursor's own signature is what a bound's call reads,
+		so borrows given by two calls of <span class="pre">next</span> may be held together;
+		through a virtual reference the trait's signature is read, which ties a result to the whole
+		cursor. <span class="pre">Iterable</span> takes its cursor's type as a second argument,
+		<span class="pre">I</span>, because a trait cannot yet name a type its implementer
+		chooses; both arguments are found from the type passed. A type with no
+		<span class="pre">next</span> (or <span class="pre">iter</span>), or with one that gives another type,
+		is refused where the function is called.</p>
+
 	<h3 id="self"><span class="pre">Self</span> in a trait</h3>
 
 	<p>Inside a trait, <span class="pre">Self</span> stands for the type complying with it. A

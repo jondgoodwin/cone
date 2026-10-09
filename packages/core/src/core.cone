@@ -417,6 +417,39 @@ pub struct StrCharIndices['a] {
   }
 }
 
+// ITERATION: the two shapes an iteration walks, named for the code that is
+// generic over them. A type is an 'Iterator[T]' by having 'next', and an
+// 'Iterable[T, I]' by having 'iter'; none declares either, as no type declares
+// that it is Stack (collections), so 'StrChars' and every cursor of the
+// collections are iterators already, and a user's own struct with the method is.
+// A function asks for one as a static bound, decided where it is called and
+// compiled for the type's own methods:
+//
+//   fn count[T, S Iterator[T]](it &mut S) usize { ... it.next() ... }
+//
+// 'T' is what 'next' gives, so a cursor that lends its values is an 'Iterator[&V]'
+// and 'count' above takes it with T = '&V'. The '&V' of a bound is written with no
+// lifetime, and is met by a cursor whose 'next' returns the lifetime its own
+// struct declares ('Option[&'a V]', as DequeItems has). The same bound as a
+// virtual reference, '&<mut Iterator[&V]', takes it through one compiled
+// function; a call through the trait reads the trait's signature, which ties a
+// result to the whole cursor.
+//
+// 'iter' gives the cursor a collection walks itself with. The trait names the
+// cursor's type as a second argument, 'I', because a trait cannot yet name a type
+// its implementer chooses (there are no associated types): 'fn count[T, I,
+// C Iterable[T, I]](c &C) where I is Iterator[T]'. Both are inferred from the
+// argument.
+pub trait Iterator[T] {
+  // The next value, and None once there are no more
+  pub fn next(self &mut) Option[T];
+}
+
+// Something that gives a cursor over what it holds, without being consumed
+pub trait Iterable[T, I] where I is Iterator[T] {
+  pub fn iter(self &) I;
+}
+
 // A panic ends the program where something that must not happen has: an index
 // out of bounds, memory exhausted, an invariant broken. It is a bug report, not
 // error handling, which is Option's and Result's. The runtime does the work

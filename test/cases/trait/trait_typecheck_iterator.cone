@@ -1,0 +1,74 @@
+// Core's Iterator[T] and Iterable[T, I] asked of types that do not fit: a type
+// with no 'next', a 'next' that gives another type than the bound's, a 'next'
+// that takes an argument, and, for Iterable, a type with no 'iter' and one whose
+// 'iter' gives something that is no Iterator.
+//
+// Verdict: refuse, each at the call that asks: ErrorWhereUnmet where the bound
+// names its item, ErrorInvType (type arguments that cannot be inferred) where
+// the item is to be found from the type.
+// Basis: a type is an Iterator by having 'next(self &mut) Option[T]' and an
+// Iterable by having 'iter(self &)' that gives an Iterator of the same T; the
+// bound is decided where the function is called.
+
+mod trait_typecheck_iterator;
+
+fn countAll[T, S Iterator[T]](s &mut S) usize {
+  mut n = 0usize;
+  while true {
+    match s.next() {
+      case imm v Some {n = n + 1usize;}
+      case is None {break;}
+    }
+  }
+  n;
+}
+
+fn countChars[S Iterator[char]](s &mut S) usize {
+  mut n = 0usize;
+  while true {
+    match s.next() {
+      case imm v Some {n = n + 1usize;}
+      case is None {break;}
+    }
+  }
+  n;
+}
+
+fn countOf[T, I, C Iterable[T, I]](c &C) usize where I is Iterator[T] {
+  mut it = c.iter();
+  countAll(&mut it);
+}
+
+struct NoNext {
+  n i64;
+}
+
+struct Numbers {
+  pub fn next(self &mut) Option[i64] { None[i64][]; }
+}
+
+struct WithArg {
+  pub fn next(self &mut, skip usize) Option[char] { None[char][]; }
+}
+
+struct NoIter {
+  n i64;
+}
+
+struct NumberIter {
+  pub fn iter(self &) i64 { 3i64; }
+}
+
+fn main() {
+  mut a = new NoNext(1i64);
+  countAll(&mut a);          //~ ErrorInvType
+  mut b = new Numbers;
+  countChars(&mut b);        //~ ErrorWhereUnmet "countChars requires S is Iterator[char], and Numbers is not Iterator[char]"
+  mut d = new WithArg;
+  countChars(&mut d);        //~ ErrorWhereUnmet "countChars requires S is Iterator[char], and WithArg is not Iterator[char]"
+  imm e = new NoIter(1i64);
+  countOf(&e);               //~ ErrorInvType
+  imm f = new NumberIter;
+  countOf(&f);               //~ ErrorInvType
+}
+

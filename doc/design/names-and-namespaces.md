@@ -782,7 +782,8 @@ dimensions is an array of arrays, one `A` per dimension and the extents
 innermost first: `AAx3_2_` is `Array[i64, 2, 3]`. A signature whose named
 lifetimes promise other than it would unannotated spells the promises after
 its `F`, where v0 puts a signature's lifetimes: `G`, a digit per parameter (1
-the result may hold what it lends, 2 is `'static`, 4 may be stored through),
+the result may hold what it lends, 2 is `'static`, 4 may be stored through,
+which a signature of one parameter never is),
 and after it, for a parameter lending several parts -- its own reference and
 what that holds, or a struct's lifetimes one by one -- a digit per part (1 the
 result may hold it); then, for each parameter that may be stored through, the

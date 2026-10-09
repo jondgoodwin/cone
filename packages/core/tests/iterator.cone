@@ -1,0 +1,153 @@
+// core's Iterator and Iterable as every program meets them: declared in core's
+// generated include file, which Congo compiles this test against, since core is
+// the prelude. A type is an Iterator by having 'next' and an Iterable by having
+// 'iter'; core's own cursors, StrChars and StrCharIndices, declare nothing and
+// fit, as do the types written below. The generic functions loop on 'next()'.
+// Each number was worked out apart:
+// - "aé€" is a (97), é (233: C3 A9) and € (8364: E2 82 AC), summing to 8694,
+//   beginning at bytes 0, 1 and 3 (offsets summing to 4), 6 bytes in all;
+// - a Countdown from 4 gives 4, 3, 2, 1: read as digits 4321, summing to 10;
+// - a Pair's cursor lends its two numbers, 20 and 22, summing to 42.
+
+mod iterator;
+
+import stdio use *;
+
+fn show(label &str, n u64) {
+  printStr(label);
+  printStr(" ");
+  printUInt(n);
+  printStr("\n");
+}
+
+// How many values a cursor gives
+fn countAll[T, S Iterator[T]](s &mut S) u64 {
+  mut n = 0u64;
+  while true {
+    match s.next() {
+      case imm v Some {n = n + 1u64;}
+      case is None {break;}
+    }
+  }
+  n;
+}
+
+fn sumChars[S Iterator[char]](s &mut S) u64 {
+  mut total = 0u64;
+  while true {
+    match s.next() {
+      case imm c Some {total = total + u64.from(c.value);}
+      case is None {break;}
+    }
+  }
+  total;
+}
+
+fn sumOffsets[S Iterator[StrCharIndex]](s &mut S) u64 {
+  mut total = 0u64;
+  while true {
+    match s.next() {
+      case imm c Some {total = total + u64.from(c.value.offset);}
+      case is None {break;}
+    }
+  }
+  total;
+}
+
+fn digits(s &<mut Iterator[i64]) u64 {
+  mut n = 0u64;
+  while true {
+    match s.next() {
+      case imm v Some {n = n * 10u64 + u64.from(v.value);}
+      case is None {break;}
+    }
+  }
+  n;
+}
+
+fn sumBorrowed[S Iterator[&i64]](s &mut S) u64 {
+  mut total = 0u64;
+  while true {
+    match s.next() {
+      case imm v Some {total = total + u64.from(*v.value);}
+      case is None {break;}
+    }
+  }
+  total;
+}
+
+fn sumBorrowedDyn(s &<mut Iterator[&i64]) u64 {
+  mut total = 0u64;
+  while true {
+    match s.next() {
+      case imm v Some {total = total + u64.from(*v.value);}
+      case is None {break;}
+    }
+  }
+  total;
+}
+
+fn sumOf[I, C Iterable[&i64, I]](c &C) u64 where I is Iterator[&i64] {
+  mut it = c.iter();
+  mut total = 0u64;
+  while true {
+    match it.next() {
+      case imm v Some {total = total + u64.from(*v.value);}
+      case is None {break;}
+    }
+  }
+  total;
+}
+
+struct Countdown {
+  left i64;
+  pub fn next(self &mut) Option[i64] {
+    if left <= 0i64 { return None[i64][]; }
+    imm now = left;
+    left = now - 1i64;
+    Some[i64][now];
+  }
+}
+
+struct Pair {
+  a i64;
+  b i64;
+  pub fn iter(self &) PairItems { new PairItems(self, 0usize); }
+}
+
+// Lends the numbers of a Pair, and names its lifetime
+struct PairItems['a] {
+  pair &'a Pair;
+  pos usize;
+  pub fn next(self &mut) Option[&'a i64] {
+    imm i = pos;
+    pos = i + 1usize;
+    if i == 0usize { return Some[&i64][&pair.a]; }
+    if i == 1usize { return Some[&i64][&pair.b]; }
+    None[&i64][];
+  }
+}
+
+fn main() {
+  imm text = "aé€";
+  mut cs = text.chars();
+  show("chars", countAll(&mut cs));
+  mut cs2 = text.chars();
+  show("sum", sumChars(&mut cs2));
+  mut cis = text.charIndices();
+  show("offsets", sumOffsets(&mut cis));
+  mut cis2 = text.charIndices();
+  show("indices", countAll(&mut cis2));
+
+  mut cd = new Countdown(4i64);
+  show("digits", digits(&mut cd));
+  mut cd2 = new Countdown(4i64);
+  show("counted", countAll(&mut cd2));
+
+  imm p = new Pair(20i64, 22i64);
+  mut it = p.iter();
+  show("borrowed", sumBorrowed(&mut it));
+  mut it2 = p.iter();
+  show("dynamic", sumBorrowedDyn(&mut it2));
+  show("iterable", sumOf(&p));
+}
