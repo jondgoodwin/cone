@@ -15,10 +15,12 @@
 
 	<p style="margin-left: 40px;"><i>Note: Built: number ranges with &lt;, &le;, &gt;, &ge; and by; arrays, slices and lists; and
 			anything with a <span class="pre">next</span> method (a cursor) or an <span class="pre">iter</span> method (something
-			that gives one), with one variable or several that unpack a pair; a filter after the source (<span class="pre">if</span>); an <span class="pre">else</span> that makes the loop a value; and the ways to walk a list, an array or a slice that
+			that gives one), a <a href="refcorout.html">generator</a> among them, with one variable or several that unpack a pair; a filter after the source (<span class="pre">if</span>); an <span class="pre">else</span> that makes the loop a value; the ways to walk a list, an array or a slice that
 			change its items in place (<span class="pre">mutItems</span>), consume it (<span class="pre">drain</span>) or number them
-			(<span class="pre">indexed</span>), and <span class="pre">zip</span>; and <a href="#parallel">parallel each</a> over a number range, an
-			array, a slice or a list, outside actors, and <a href="#parallelbuilder">the parallel builder</a> that builds a list from it. Not built yet: closure iterators. An enum's variant is constructed with its values in square brackets, as written here: that is the current spelling, and how a variant is constructed is an open design question (<a href="refenum.html#init">Enums</a>).</i></p>
+			(<span class="pre">indexed</span>), and <span class="pre">zip</span>; <span class="pre">each</span> as an entry of the append operator's list
+			(<a href="#builder">below</a>); and <a href="#parallel">parallel each</a> over a number range, an
+			array, a slice or a list, outside actors. Not built yet: <a href="#closure">closure iterators</a>, the adapters (<span class="pre">map</span>,
+			<span class="pre">filter</span>, <span class="pre">fold</span>) and a source that runs its own loop, all of which wait for closures. An enum's variant is constructed with its values in square brackets, as written here: that is the current spelling, and how a variant is constructed is an open design question (<a href="refenum.html#init">Enums</a>).</i></p>
 
 	<p><span class="pre">each</span> makes it easier than <span class="pre">while</span>
 		to iterate over a sequence of values.
@@ -129,7 +131,8 @@ xs &lt;- 0, each x in other yield *x + 1, 99;                // in the middle of
 	<ul>
 		<li><b>Number range</b>, for simple arithmetic progressions.</li>
 		<li><b>Array, slice or list</b>, to work with individual elements.</li>
-		<li><b>Cursor</b>, something with a <span class="pre">next</span> method, and anything that gives one.</li>
+		<li><b>Cursor</b>, something with a <span class="pre">next</span> method, and anything that gives one.
+			A <a href="refcorout.html">generator</a> is a cursor.</li>
 		<li><b>Closure</b>, to deal with algorithmically-generated values (not built yet).</li>
 	</ul>
 
@@ -171,7 +174,10 @@ each x in 250u8 &lt;= 255 by 2 {  // iterates: 250, 252, 254
 	<p><span class="pre">each</span> can be used to iterate through
 		every element of an array, a slice or a list, one at a time. The variable is a
 		<b>borrow</b> of the element, read through <span class="pre">*</span>
-		(the elements themselves stay where they are, and the list is still whole afterwards):</p>
+		(the elements themselves stay where they are, and the list is still whole afterwards).
+		A borrowed number needs no <span class="pre">*</span> as the left operand of arithmetic
+		(<span class="pre">x + total</span>), but does as the right one (<span class="pre">total + *x</span>) and in a
+		comparison (<span class="pre">*x &gt; 1</span>):</p>
 <pre>
 mut sum = 0;
 each x in [4, 3, 8, 2] {
@@ -186,7 +192,10 @@ each name in names {      // a List[String]: name is a &amp;String
 	<p>An array or a slice is walked by a counted loop over its length, and so is a list, which lends its
 		elements as a slice: none of them makes an iterator object, and the loop is
 		the one a <span class="pre">while</span> over the indexes would be. While the loop runs the list
-		may not be changed, since the borrows it hands out would not survive a change.</p>
+		may not be changed, since the borrows it hands out would not survive a change.
+			For the same reason an <span class="pre">await</span> in the body is refused over an array or a list,
+			whose borrow would have to last across it; over a number range it is fine
+			(<a href="refconccomm.html">Concurrency</a>).</p>
 
 	<h4 id="mutitems">Changing items in place: <span class="pre">mutItems</span></h4>
 	<p>A plain <span class="pre">each</span> only reads. To change the items of a list, an array or a slice
@@ -243,7 +252,8 @@ each x, y in zip(&amp;xs, &amp;ys) {
 	<p>A <b>cursor</b> is anything with a <span class="pre">next</span> method that answers an
 		<a href="refoption.html">optional value</a>, <span class="pre">Some</span> with the next item or
 		<span class="pre">None</span> when there are no more. A type needs no declaration to be one,
-		only the method (it is met by shape, as <span class="pre">Iterator</span> in the core library names):</p>
+		only the method (it is met by shape, as <a href="reftrait.html#iterator"><span class="pre">Iterator</span></a>
+			in the core library names, which is what generic code asks for):</p>
 <pre>
 struct Countdown {
   n i32;
@@ -280,7 +290,11 @@ each x in collection {  // equivalent to: each x in collection.iter()
 </pre>
 	<p>The collections give cursors in this way: a deque's, a set's and the dictionaries'.
 		Calling <span class="pre">iter</span> only reads the collection: it is borrowed and not consumed,
-		and may not be changed while the loop runs.</p>
+		and may not be changed while the loop runs.
+			Other views of a collection are ordinary methods that answer a cursor, walked the same way:
+			<span class="pre">each k in dict.keys()</span>, <span class="pre">dict.values()</span>,
+			<span class="pre">deque.items()</span>, <span class="pre">text.chars()</span>
+			(<a href="reftypecoll.html#iteration">Collection Types</a>).</p>
 
 	<h4>Two variables</h4>
 	<p>Two or more variables unpack an item that is a tuple. A dictionary's cursor gives its
@@ -295,8 +309,9 @@ each key, value in ages {   // a Dict[i64, i64]
 		<span class="pre">pair.1</span>). A number of variables that does not match the tuple, and
 		any number but one for an array, a slice or a list, are refused.</p>
 
-	<h3>Closure Iterator</h3>
-	<p><i>Not built yet.</i> Look to closures for iterator versatility.
+	<h3 id="closure">Closure Iterator</h3>
+	<p><i>Not built yet: this section waits for closures, none of which are built (<a href="refclosure.html">Closures</a>).
+			The closure spelling below is a sketch.</i> Look to closures for iterator versatility.
 			Using closure iterators, one can scan through elements in a complex collection,
 			retrieve values from a streaming resource, algorithmically calculate a sequence of values, etc.
 		Because closures are stateful, they can generate a new value on every call.</p>
@@ -318,6 +333,22 @@ each x in |{cnt = 12}| if cnt &gt; 0 {Some[cnt /= 2]} else {None} {
 		<p>Because it is stateful, a closure is typically single use. It is created before it is needed, used to produce values lazily,
 			and then discarded afterward.
 			This is because, unless its state can be independently reset, it will only ever afterward say it is out of values.</p>
+
+	<h4 id="adapters">Adapters and sources that run their own loop</h4>
+	<p><i>Not built yet.</i> Two more uses of closures with <span class="pre">each</span> are planned, both after closures:</p>
+	<ul>
+		<li><b>Adapters.</b> <span class="pre">map</span>, <span class="pre">filter</span>, <span class="pre">fold</span> and the like
+			are to be methods every <span class="pre">Iterator</span> shares, generic over the closure's own type, so that a
+			chain such as <span class="pre">items.filter(...).map(...)</span> is compiled into one loop with no call through
+			a pointer for each item. Such a chain could then feed an <span class="pre">each</span> loop or the entries of
+			<a href="#builder">a collection being built</a>.</li>
+		<li><b>A source that runs its own loop.</b> A source may offer an optional method that runs the loop itself,
+			taking the body as a closure, for a source that cannot hand out its items one by one (a line reader that
+			lends each line from its own buffer, say). <span class="pre">each</span> would use it when the source has it,
+			and otherwise use <span class="pre">next</span>; <span class="pre">break</span>, <span class="pre">continue</span> and
+			<span class="pre">return</span> in the body would reach the source as signals, and an <span class="pre">await</span>
+			in such a body may be refused.</li>
+	</ul>
 
 	<h2 id="parallel">parallel each</h2>
 	<p style="margin-left: 40px;"><i>Note: Built in a function that is not an actor's method: over a number range, an
