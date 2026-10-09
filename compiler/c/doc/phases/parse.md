@@ -89,6 +89,12 @@ written) and the end unless the range runs to it, `FlagRangeIncl` marking an end
 written with `...`; `x[a...]` is `ErrorBadIndex`. A number stops scanning at a
 `..`, so `0..3` is two integers and a range, not the float `0.`.
 
+**A number straight after a `.` is an integer only.** `lexScanNumber` looks at
+the token before it: after a `DotToken` the number names a tuple element, so it
+stops at a `.` and reads no exponent, and `t.1.0` is element 0 of element 1 and
+`y.0.len()` a method call on element 0, not the floats `1.0` and `0.`.
+`core_tuple_dot_chain` holds it, with the float literals it leaves alone.
+
 **One `Lexer` per source, on a linked list.** `lexPush` pushes, `lexPop`
 restores. **Blocks are never recycled**, deliberately: every IR node stores the
 `Lexer` current when it was built and reads `url` from it whenever a diagnostic
