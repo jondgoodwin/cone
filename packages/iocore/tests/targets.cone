@@ -26,6 +26,7 @@ import time use Instant, Duration;
 import iobuf use *;
 import iocore use *;
 import diag;
+import path use Path;
 
 fn waitFor(lp &mut Loop, out &mut List[Completion], n usize) {
   imm limit = Instant.now() + Duration.fromSeconds(5i64);
@@ -60,7 +61,7 @@ fn consume(rx Receiver[Completion]) Got {
 
 // A synchronous call: the path to read, and where the answer goes
 struct Call {
-  pub path String;
+  pub path Path;
   pub reply OneshotSender[Completion];
 }
 
@@ -74,7 +75,7 @@ fn caller(c Caller) String {
   mut otx OneshotSender[Completion];
   mut orx OneshotReceiver[Completion];
   otx, orx = Oneshot[Completion].make();
-  c.calls.send(new Call(String.from("targets.tmp"), otx));
+  c.calls.send(new Call(Path.from("targets.tmp"), otx));
   c.wake.wake();
   mut text = String.empty();
   match orx.recv() {
@@ -217,7 +218,7 @@ fn main() i32 {
             // The caller's one-shot moves into the target: swapped out of
             // the call, as Cone moves nothing out of a field
             reply <=> s.value.reply;
-            lp.submit(readFileOp(s.value.path.view(), 2u64, Lane.general(), pool.mustTake(64usize)),
+            lp.submit(readFileOp(&s.value.path, 2u64, Lane.general(), pool.mustTake(64usize)),
               Target.Once[1u64, reply]);
             served = true;
           }

@@ -23,17 +23,16 @@ import tls;
 
 // A file of the certificates' folder, tests/certs: congo test runs a test
 // in build/<mode>/tests/<name>/, four folders below the package's
-fn certs(name &str) String {
+fn certs(name &str) Path {
   mut p = String.from("../../../../tests/certs/");
   p.append(name);
-  p;
+  Path.fromString(p);
 }
 
 fn readText(name &str) String {
   imm p = certs(name);
   mut out = String.empty();
-  imm file = Path.from(p.view());
-  match fs.readFile(&file) {
+  match fs.readFile(&p) {
     case mut r Ok {
       out <=> r.value;
       return out;
@@ -65,7 +64,9 @@ fn clientWith(cfg tls.ClientConfig) tls.Client {
 }
 
 fn server(cert &str, key &str) tls.Server {
-  imm cfg = tls.ServerConfig.make(certs(cert).view(), certs(key).view());
+  imm certFile = certs(cert);
+  imm keyFile = certs(key);
+  imm cfg = tls.ServerConfig.make(&certFile, &keyFile);
   serverWith(cfg);
 }
 
@@ -409,7 +410,9 @@ fn main() i32 {
   v13.verify = roots();
   v13.minVersion = tls.TlsVersion.Tls13[];
   imm cl13 = clientWith(v13);
-  mut s12cfg = tls.ServerConfig.make(certs("server.pem").view(), certs("server.key").view());
+  imm serverPem = certs("server.pem");
+  imm serverKey = certs("server.key");
+  mut s12cfg = tls.ServerConfig.make(&serverPem, &serverKey);
   s12cfg.maxVersion = tls.TlsVersion.Tls12[];
   imm srv12 = serverWith(s12cfg);
   c = cl13.session("localhost");
@@ -447,17 +450,29 @@ fn main() i32 {
   expect(c.isFailed() and c.error().kind == tls.TlsErrorKind.Protocol[], "the end during the handshake");
 
   // Contexts that cannot be made
-  match tls.Server.make(tls.ServerConfig.make(certs("missing.pem").view(), certs("server.key").view())) {
+  imm missingPem = certs("missing.pem");
+  match tls.Server.make(tls.ServerConfig.make(&missingPem, &serverKey)) {
     case imm r Ok {expect(false, "a missing certificate file is refused");}
     case imm e Error {expect(e.value.kind == tls.TlsErrorKind.Config[], "a missing certificate file is refused");}
   }
-  match tls.Server.make(tls.ServerConfig.make(certs("server.pem").view(), certs("expired.key").view())) {
+  imm expiredKey = certs("expired.key");
+  match tls.Server.make(tls.ServerConfig.make(&serverPem, &expiredKey)) {
     case imm r Ok {expect(false, "a key that is not the certificate's is refused");}
     case imm e Error {
       printStr(e.value.message().view());
       printStr("\n");
       expect(e.value.kind == tls.TlsErrorKind.Config[], "a key that is not the certificate's is refused");
     }
+  }
+  // The Paths lent to the configurations above are as they were
+  expectStr(serverPem.view(), "../../../../tests/certs/server.pem", "ServerConfig.make lends the certificate path");
+  expectStr(serverKey.view(), "../../../../tests/certs/server.key", "ServerConfig.make lends the key path");
+  // String literals where paths are wanted are made Paths
+  imm literalCfg = tls.ServerConfig.make("../../../../tests/certs/server.pem", "../../../../tests/certs/server.key");
+  expectStr(literalCfg.certFile.view(), "../../../../tests/certs/server.pem", "the configuration holds the literal's path");
+  match tls.Server.make(literalCfg) {
+    case imm r Ok {expect(true, "a server made from literal paths");}
+    case imm e Error {expect(false, "a server made from literal paths");}
   }
   mut empty = tls.ClientConfig.make();
   empty.verify = tls.Verifier.roots("no certificates here");

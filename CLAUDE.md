@@ -162,7 +162,7 @@ Visual Studio projects stay at the root.
   editable half-edge mesh of n-gons, pmp-library conventions, attribute
   channels, `validate`, `triangulate` into a `Mesh`), the sphere, plane,
   cube and cube-cage generators, `triangulatePolygon` (ear clipping),
-  `.obj` export, and `meshHash` (a mesh's bits hashed by `noise`'s PCG, the
+  `.obj` export (`writeObj` takes a `&Path`), and `meshHash` (a mesh's bits hashed by `noise`'s PCG, the
   same on every run and build); `sculpt` is procedural
   modelling over `mesh` (and `sdf`, whose frames it makes): 2-D profiles
   (polygons, rounded rectangles, hulls by `convexHull`, Beziers sampled by
@@ -429,7 +429,7 @@ Visual Studio projects stay at the root.
   kernel lets it go; the blocking pool (`Op.Call[lane, work, arg, buf]`, a
   plain function run on a lane's threads, lanes bounded and sized apart so
   a slow resolver never delays the disk; `resolveOp` over `GetAddrInfoW`,
-  `statOp`, `readFileOp`); the thread targets `Target.Chan` (a sync
+  `statOp`, `readFileOp`; these and `Loop.openFile` take a `&Path`); the thread targets `Target.Chan` (a sync
   channel, held and retried when full), `Target.Once` (a sync one-shot)
   and `Target.Status` (a `StatusArray` slot looked at without waiting);
   `Target.Hook`, an answer handed to another runtime's code, a `Sink`
@@ -489,7 +489,8 @@ Visual Studio projects stay at the root.
   memory BIOs, client and server: a `Client` or `Server` context, a
   `Session` (bytes in and out, SNI, ALPN offering `http/1.1`, resumption,
   close_notify both ways, one `TlsError` with the back end's or the OS's
-  own code), and a `Stream`, the session as `httpconn`'s Layer; the
+  own code), and a `Stream`, the session as `httpconn`'s Layer; a server's
+  PEM files are named by two `&Path`s (`ServerConfig.make`); the
   server's certificate is checked by `Verifier.platform()`, Windows' chain
   engine and SSL policy (crypt32), run on the blocking pool while OpenSSL
   waits (`SSL_set_retry_verify`), or for development by `roots`,
@@ -656,7 +657,7 @@ Visual Studio projects stay at the root.
   physically based pipelines, the bones found through each instance's
   bone base; its test `skinning.cone`, a bent two-bone tube checked
   against the CPU's `Skin.skinPoint`), and `Image` (BMP read
-  and written); its tests need a GPU driver but no window, and its examples
+  and written, `load` and `save` taking a `&Path`); its tests need a GPU driver but no window, and its examples
   are `pipevk.cone`, the pipe demo: `sculpt`'s bent, subdivided pipe, the
   cage and three levels side by side, lit, on Vulkan, checked by pixels
   read back, its camera steered by `controls` (orbit and fly), with a

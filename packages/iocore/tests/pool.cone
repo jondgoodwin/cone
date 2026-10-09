@@ -25,6 +25,7 @@ import time use Instant, Duration;
 import iobuf use *;
 import iocore use *;
 import diag;
+import path use Path;
 
 fn waitFor(lp &mut Loop, out &mut List[Completion], n usize) {
   imm limit = Instant.now() + Duration.fromSeconds(10i64);
@@ -38,11 +39,11 @@ fn slowWork(arg u64, buf &mut IoBuf) Outcome {
   Outcome.Done[0usize];
 }
 
-fn fileName(i u64) String {
+fn fileName(i u64) Path {
   mut s = String.from("pool");
   s.appendUInt(i);
   s.append(".tmp");
-  s;
+  Path.fromString(s);
 }
 
 fn main() i32 {
@@ -86,7 +87,8 @@ fn main() i32 {
     // the letter 'a' + i
     mut f = 0u64;
     while f < 8u64 {
-      match lp.openFile(fileName(f).view(), Access.Create[]) {
+      imm named = fileName(f);
+      match lp.openFile(&named, Access.Create[]) {
         case imm r Ok {
           mut b = pool.mustTake(4096usize);
           {
@@ -110,7 +112,11 @@ fn main() i32 {
 
     // 2. Metadata
     {
-      lp.submit(statOp("pool3.tmp", Lane.general(), pool.mustTake(4096usize)), Target.Here[1u64]);
+      // A Path variable is lent, and is as it was after the call
+      imm third = fileName(3u64);
+      lp.submit(statOp(&third, Lane.general(), pool.mustTake(4096usize)), Target.Here[1u64]);
+      expectStr(third.view(), "pool3.tmp", "statOp lends its path");
+      // A literal where a path is wanted is made one
       lp.submit(statOp(".", Lane.general(), pool.mustTake(4096usize)), Target.Here[2u64]);
       lp.submit(statOp("no such file.tmp", Lane.general(), pool.mustTake(4096usize)), Target.Here[3u64]);
       waitFor(&mut lp, &mut out, 3usize);
@@ -139,7 +145,8 @@ fn main() i32 {
     {
       mut i = 0u64;
       while i < 1000u64 {
-        lp.submit(readFileOp(fileName(i % 8u64).view(), (i % 4u64) * 1024u64, Lane.general(),
+        imm named = fileName(i % 8u64);
+        lp.submit(readFileOp(&named, (i % 4u64) * 1024u64, Lane.general(),
           pool.mustTake(1024usize)), Target.Here[1000u64 + i]);
         i = i + 1u64;
       }
@@ -176,7 +183,8 @@ fn main() i32 {
       }
       i = 0u64;
       while i < 200u64 {
-        lp.submit(readFileOp(fileName(i % 8u64).view(), 0u64, Lane.general(), pool.mustTake(4096usize)),
+        imm named = fileName(i % 8u64);
+        lp.submit(readFileOp(&named, 0u64, Lane.general(), pool.mustTake(4096usize)),
           Target.Here[2u64]);
         i = i + 1u64;
       }
