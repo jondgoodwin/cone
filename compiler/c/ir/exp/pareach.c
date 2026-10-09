@@ -534,8 +534,9 @@ static int parCheckAlias(INode *node, void *ctxp) {
 // held in a local is a root the function links into the collector's one chain
 // of frames (conestd's roots.cone, single threaded), written without atomics.
 // A move owner (So) cannot be copied. (Only what the body itself copies is
-// seen: a function it calls that copies a borrow it was handed is that
-// function's. A traced reference the pass makes itself is refused too, below.)
+// seen: a function it calls that copies a borrow it was handed is kept out by
+// the reach rule below, which refuses the body naming what it could copy.
+// A traced reference the pass makes itself is refused too, below.)
 
 // Does a copy of a reference of this kind write shared state without atomics?
 static int parRefCountsPlain(RefNode *ref) {
@@ -667,11 +668,127 @@ static int parCheckCopies(INode *node, void *ctxp) {
         && !parSetHas(&ctx->reported, node)) {
         parSetAdd(&ctx->reported, node);
         errorMsgNode(node, ErrorParCopy,
-            "A 'parallel each' body may not copy a value of type %s, which is not the pass's own: its passes run at the same time, and a copy writes state that every copy shares without an atomic operation (an Rc's count, or the roots of the collector's traced references), which two passes cannot do together. Read it through a borrow ('&x', or a method that takes one), or use an Arc, whose count is atomic.",
+            "A 'parallel each' body may not copy a value of type %s, which is not the pass's own: its passes run at the same time, and a copy writes state that every copy shares without an atomic operation (an Rc's count, or the roots of the collector's traced references), which two passes cannot do together. Borrow its contents before the loop ('imm mesh = &*shared;') and use the borrow, or use an Arc, whose count is atomic.",
             itypeName(type));
     }
     parWalkIndexArgs(node, parCheckCopies, ctx);
     return 0;
+}
+
+// ---- What a body may reach: values safe to share a borrow of ---------------------
+//
+// A copy is not the only way a pass touches a count it shares. A helper handed a
+// borrow of an Rc may copy it, and so may anything reached through a field, an
+// element or a reference: the call is not seen into. So a value declared outside
+// the loop whose type is not SAFE TO SHARE across the passes (Rust's Sync, the
+// sibling of Sendable, inferred from the type's contents, no annotation) may not
+// be named in the body at all: not read, not lent, not passed. It is not safe
+// when it holds, through a field, a variant, a tuple or array element, a borrow
+// or an owner's pointee, either an aliasable owner of a region that does not
+// declare ThreadSafe, or a traced reference: exactly parRefCountsPlain's test of
+// each reference met. Raw pointers are trusted (nothing is followed behind one),
+// and an Arc, an atomic and a number are free. What the pass declares itself is
+// its own, and so is nothing it was lent: the variable holding the item.
+
+typedef struct {
+    ParSet inside;      // The variables declared in the body, and the loop's own
+    ParSet *copied;     // The places parCheckCopies already refused
+    VarDclNode *item;   // The pass's item: a borrow of the source's element
+} ParReach;
+
+static ParSet parReachReported;
+
+// Does a value of this type hold, where a borrow of it can reach, a reference
+// that is not safe for passes to share?
+static int parNotSync(INode *type, INode **seen, uint32_t *nseen) {
+    if (type == NULL || *nseen > 60)
+        return 0;
+    switch (type->tag) {
+    case NameUseTag:
+        return isTypeNode(type) ? parNotSync(itypeGetTypeDcl(type), seen, nseen) : 0;
+    case AliasDclTag:
+        return parNotSync(((AliasDclNode *)type)->target, seen, nseen);
+    case RefTag:
+    case ArrayRefTag:
+    case VirtRefTag:
+        if (parRefCountsPlain((RefNode *)type))
+            return 1;
+        return parNotSync(((RefNode *)type)->vtexp, seen, nseen);
+    case ArrayTag:
+        return parNotSync(arrayElemType(type), seen, nseen);
+    case TTupleTag: {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp)) {
+            if (parNotSync(*nodesp, seen, nseen))
+                return 1;
+        }
+        return 0;
+    }
+    case StructTag: {
+        for (uint32_t i = 0; i < *nseen; ++i) {
+            if (seen[i] == type)
+                return 0;       // (found where it was first asked)
+        }
+        seen[(*nseen)++] = type;
+        StructNode *strnode = (StructNode *)type;
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodelistFor(&strnode->fields, cnt, nodesp)) {
+            if (parNotSync(((IExpNode *)*nodesp)->vtype, seen, nseen))
+                return 1;
+        }
+        if (strnode->derived) {
+            for (nodesFor(strnode->derived, cnt, nodesp)) {
+                if (parNotSync(*nodesp, seen, nseen))
+                    return 1;
+            }
+        }
+        return 0;
+    }
+    default:
+        return 0;
+    }
+}
+
+// A variable the lowering made for the loop, which no source can name
+static int parHiddenVar(VarDclNode *var) {
+    Name *name = var->namesym;
+    return name == anonName || name == parListName || name == parBagName || name == parPieceName
+        || name == parLoName || name == parHiName || name == parKName || name == parFirstName
+        || name == parLastName || name == parSliceName || name == parSliceMutName
+        || name == nametblFind("-recv", 5);
+}
+
+static int parCheckReach(INode *node, void *ctxp) {
+    ParReach *ctx = (ParReach *)ctxp;
+    if (parSetHas(ctx->copied, node))
+        return 0;           // refused as a copy
+    if (!isNameUseNode(node))
+        return 1;
+    INode *dcl = ((NameUseNode*)node)->dclnode;
+    if (dcl == NULL || dcl->tag != VarDclTag)
+        return 1;
+    VarDclNode *var = (VarDclNode *)dcl;
+    if (var->vtype == NULL || var->vtype == unknownType || parHiddenVar(var)
+        || (parSetHas(&ctx->inside, dcl) && var != ctx->item))
+        return 1;
+    INode *seen[64];
+    uint32_t nseen = 0;
+    if (!parNotSync(var->vtype, seen, &nseen) || parSetHas(&parReachReported, node))
+        return 1;
+    parSetAdd(&parReachReported, node);
+    char typename[256] = "";
+    itypeSpellCat(typename, sizeof(typename), var->vtype, 0);
+    if (var == ctx->item)
+        errorMsgNode(node, ErrorParReach,
+            "This 'parallel each' reaches its item '%s', a %s, and the source's items hold a counted owner whose count is not atomic (an Rc, for example) or a traced reference (a Gc, for example): its passes run at the same time, and a copy made anywhere they can reach it, in this body or in a function it hands the item to, would write a count or a root that every pass shares without an atomic operation. Walk a source whose items are safe to share (numbers, structs of them, Arcs), or its indexes and look the data up from a borrow taken before the loop.",
+            &var->namesym->namestr, typename);
+    else
+        errorMsgNode(node, ErrorParReach,
+            "This 'parallel each' reaches '%s', a %s declared outside the loop, which is or holds a counted owner whose count is not atomic (an Rc, for example) or a traced reference (a Gc, for example): its passes run at the same time, and a copy made anywhere they can reach it, in this body or in a function it hands it to, would write a count or a root that every pass shares without an atomic operation. Reading through it, lending it and passing it count too. Borrow what the body needs before the loop ('imm mesh = &*%s;') and use 'mesh' in the body, or hold it in an Arc.",
+            &var->namesym->namestr, typename, &var->namesym->namestr);
+    return 1;
 }
 
 // ---- A Gc in an actor or in a parallel each: refused, for now -------------------
@@ -791,6 +908,15 @@ void parallelEachCheckBody(TypeCheckState *pstate, BlockNode *outer) {
     memset(&copies, 0, sizeof(copies));
     copies.inside = ctx.inside;
     parWalk((INode*)loop, parCheckCopies, &copies);
+
+    // Nor names anything outside that is not safe to share across the passes
+    ParReach reach;
+    memset(&reach, 0, sizeof(reach));
+    reach.inside = ctx.inside;
+    reach.copied = &copies.reported;
+    if (loop->stmts->used > 1 && nodesGet(loop->stmts, 1)->tag == VarDclTag)
+        reach.item = (VarDclNode *)nodesGet(loop->stmts, 1);
+    parWalk((INode*)loop, parCheckReach, &reach);
 
     // Nor makes a Gc, in its header, its filter, its body or its yield (for now)
     parWalk((INode*)outer, gcRefuseVisit, (void *)"a 'parallel each' body");
