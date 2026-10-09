@@ -296,6 +296,7 @@ void pgmNameRes(NameResState *pstate, ProgramNode *pgm) {
     for (nodesFor(pgm->modules, cnt, nodesp)) {
         inodeNameRes(pstate, nodesp);
     }
+    exportGenReach();
 }
 
 // Resolve the names of modules parsed after the program was analysed: the
@@ -322,6 +323,7 @@ void pgmNameResAlone(ProgramNode *pgm, Nodes *mods) {
         modTraitConform(&nstate, (ModuleNode*)*nodesp, 1);
     for (nodesFor(mods, cnt, nodesp))
         inodeNameRes(&nstate, nodesp);
+    exportGenReach();
 }
 
 // Where a module sits in the init order, or -1 where it has no place yet
