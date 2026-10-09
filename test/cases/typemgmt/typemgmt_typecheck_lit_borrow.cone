@@ -1,0 +1,56 @@
+// A string literal is lent as a temporary only where a function's body wants a
+// read-only borrow of a type that declares 'fromLiteral' (typemgmt_lit_borrow).
+// Everything else a literal might be asked to be is refused:
+//
+// - A borrow that writes, '&mut T', '&uni T': what is written to a temporary is
+//   lost with it, so the literal is refused with its own code and a message
+//   saying what to write instead.
+// - A value that is not the literal itself: a variable of type '&str', the
+//   arms of an 'if'. They are '&str', which is no '&W'.
+// - A place with no statement to end a temporary: a global, a constant, a
+//   field's or a parameter's default, a returned value. A temporary a
+//   construction would hold is refused as any value of the wrong type is.
+//   (A temporary held past its statement is typemgmt_flow_lit_borrow's.)
+//
+// Type-check stage only.
+
+mod typemgmt_typecheck_lit_borrow;
+
+import collections use String;
+
+struct W {
+  pub n i32;
+  pub fn fromLiteral(s &str) W { new W(i32.from(s.len)); }
+  pub fn get(self &) i32 { self.n; }
+  pub fn set(self &mut, n i32) { self.n = n; }
+}
+
+struct Holder { pub w &W; }
+struct WithDefault { pub w &W = "x"; }  //~ ErrorInvType:33 "does not match variable's declared type"
+
+const K &W = "k";                       //~ ErrorInvType:14 "does not match named constant's declared type"
+imm G &W = "g";                         //~ ErrorInvType:12 "does not match variable's declared type"
+
+fn takeW(w &W) i32 { w.get(); }
+fn takeMut(w &mut W) i32 { w.set(3); w.get(); }
+fn takeUni(w &uni W) i32 { w.get(); }
+fn takeMutString(s &mut String) usize { s.len(); }
+fn withDefault(w &W = "d") i32 { w.get(); }   //~ ErrorInvType:23 "does not match variable's declared type"
+fn returned() &W { "r"; }               //~ ErrorInvType:20 "Return expression type does not match return type on function"
+                                        //~^ ErrorInvType:15 "This is the declared function's return type" follow-on
+
+fn writes() {
+  takeMut("m");                        //~ ErrorLitBorrowWrite:11 "read-only borrow, '&W'"
+  takeUni("m");                        //~ ErrorLitBorrowWrite:11 "read-only borrow, '&W'"
+  takeMutString("s");                  //~ ErrorLitBorrowWrite:17 "read-only borrow, '&String'"
+}
+
+fn notTheLiteral(t &str, b bool) {
+  takeW(t);                            //~ ErrorInvType:9 "does not match declared parameter"
+  takeW(if b {"a";} else {"b";});      //~ ErrorInvType:15 "Expression does not match expected type"
+                                       //~^ ErrorInvType:27 "Expression does not match expected type"
+}
+
+fn construction() {
+  imm h = new Holder("held");          //~ ErrorBadArray:22 "does not match expected field's type"
+}

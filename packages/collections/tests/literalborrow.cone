@@ -1,0 +1,41 @@
+// A string literal given where a 'String' is wanted borrowed, '&String', is
+// lent as a temporary 'String.fromLiteral(lit)' that lasts to the end of the
+// statement (a local's initializer extends it to the end of the block), as a
+// literal given where a String is wanted by value is copied into one
+// (strings.cone). Every expected value is worked out by hand from the text:
+// - 'hello' is five bytes and starts with 'he'; 'world' does not;
+// - what is read from the lent String is the literal's bytes, and the NUL kept
+//   after them is not counted;
+// - two literals lent to one call are two Strings, each holding its own text;
+// - a candidate that takes the literal as '&str' keeps it: the dictionary's
+//   index by text answers, and does not lend a String.
+
+mod literalborrow;
+
+import testing use *;
+import collections use *;
+
+fn lenOf(s &String) usize { s.len(); }
+fn startsHe(s &String) bool { s.startsWith("he"); }
+fn sameText(a &String, b &String) bool { a.view() == b.view(); }
+fn textOf(s &String) &str { s.view(); }
+
+fn main() i32 {
+  expectUInt(u64.from(lenOf("hello")), 5, "a literal lent as a &String");
+  expectBool(startsHe("hello"), true, "hello starts with he");
+  expectBool(startsHe("world"), false, "world does not");
+  expectStr(textOf("kept in the statement"), "kept in the statement", "the lent String's bytes");
+  expectBool(sameText("abc", "abc"), true, "two temporaries of the same text");
+  expectBool(sameText("abc", "abd"), false, "and of different text");
+  expectUInt(u64.from(lenOf("")), 0, "an empty literal lends an empty String");
+
+  imm kept &String = "kept";
+  expectUInt(u64.from(kept.len()), 4, "a local &String is the temporary to the block's end");
+  expectStr(kept.view(), "kept", "and its bytes");
+
+  mut d = new Dict[String, i64];
+  d.insert(String.from("a"), 7);
+  expectInt(*d["a"], 7, "a dictionary indexed by a literal takes the text index");
+
+  done();
+}
