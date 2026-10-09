@@ -162,10 +162,10 @@ function walked.
 
 **The check of a change through another name** ([Flow](../phases/flow.md), "A
 change through another name"), on master `62e538e2` against the change that added
-it, 9 October 2026 (min of 5 runs per file): flow +18.8% on the packages (56.7 to
-67.3 ms over 62 compiles; the functions walked for loans went from 4,022 to about
-4,640), +7.4% on the suite, +5.6% to +7.7% on the stress
-files; total compile +0.9% on the packages, +0.2% on the suite, +2% to +4% on the
+it, 9 October 2026 (min of 5 runs per file): flow +17.4% on the packages (56.7 to
+66.5 ms over 62 compiles; the functions walked for loans went from 4,022 to about
+4,640), +6.9% on the suite, +3.0% to +7.3% on the stress
+files; total compile +0.5% on the packages, +0.1% on the suite, up to +3% on the
 stress files. The flow budget is over on the packages and within on the suite. Where it goes: the
 functions now walked (`FlowGateShape`: a function that lends a borrow of a value that may
 change shape through a reference and also makes a call with a writable
