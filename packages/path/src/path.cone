@@ -7,17 +7,25 @@
 //   import path;
 //
 //   fn main() {
-//     imm p = path.join("C:\\work", "src/main.cone");   // "C:\work/src/main.cone"
-//     imm n = path.normalize(p.view());                  // "C:/work/src/main.cone"
-//     imm dir = path.parent(n.view());                   // "C:/work/src"
-//     imm stem = path.stem(n.view());                    // "main"
-//     imm ext = path.extension(n.view());                // ".cone"
+//     imm work Path = "C:\\work";                    // a literal is made a Path
+//     imm p = work.join("src/main.cone");            // "C:\work/src/main.cone"
+//     imm n = p.normalize();                         // "C:/work/src/main.cone"
+//     imm dir = n.parent();                          // "C:/work/src"
+//     imm stem = n.stem();                           // "main", a '&str' of n
+//     imm ext = n.extension();                       // ".cone"
 //   }
 //
-// A path is bytes, a '&Array[u8]' in and a collections 'String' out, and a name in
-// it is whatever bytes the file system was given, UTF-8 by Cone's convention.
-// Nothing here looks beyond ASCII: a separator, a dot and a drive letter are
-// all ASCII, and no UTF-8 byte of another character can be mistaken for one.
+// A path is text, UTF-8 by Cone's convention, held by a 'Path': a type of its
+// own whose methods are the operations below. Nothing here looks beyond ASCII:
+// a separator, a dot and a drive letter are all ASCII, and no UTF-8 byte of
+// another character can be mistaken for one. Validating a path against a
+// platform's rules is not done: any text is a Path.
+//
+// The functions of this package that take a '&Array[u8]' and answer a String
+// ('join', 'parent', 'name', 'stem', 'extension', 'parts', 'normalize',
+// 'volume', 'isAbsolute') are what the 'Path' methods were before 'Path'; they
+// remain, as wrappers over the same code, for callers that still hold a path as
+// bytes ('fs', 'process', the Cone Congo), and go when those take a 'Path'.
 //
 // **Windows' rules.** The paths read here are Windows' paths, as the rest of
 // the OS layer is Windows' for now; a POSIX version of this package would
@@ -97,13 +105,13 @@ fn isShare(p &Array[u8], pre &Prefix) bool { pre.volume > 2usize; }
 
 // Whether a path is absolute: a drive and a root ('C:\x'), or a share
 // ('\\server\share\x')
-pub fn isAbsolute(p &Array[u8]) bool {
+fn absoluteOf(p &Array[u8]) bool {
   imm pre = prefixOf(p);
   isShare(p, &pre) or (pre.volume == 2usize and pre.whole == 3usize);
 }
 
 // The volume a path starts with, 'C:' or '\\server\share' as written, or ""
-pub fn volume(p &Array[u8]) String {
+fn volumeOf(p &Array[u8]) String {
   imm pre = prefixOf(p);
   String.fromBytes(&p[..pre.volume]);
 }
@@ -129,7 +137,7 @@ fn lastNameStart(p &Array[u8], pre &Prefix, end usize) usize {
 // b itself, and b with a root but no volume ('\x') is a's volume and then b.
 // An empty a gives b, and an empty b gives a. Nothing is normalized: 'a/'
 // and '../b' join to 'a/../b'.
-pub fn join(a &Array[u8], b &Array[u8]) String {
+fn joinOf(a &Array[u8], b &Array[u8]) String {
   if b.len == 0usize { return String.fromBytes(a); }
   imm bpre = prefixOf(b);
   if a.len == 0usize or bpre.volume > 0usize { return String.fromBytes(b); }
@@ -152,7 +160,7 @@ pub fn join(a &Array[u8], b &Array[u8]) String {
 // "", the current folder. A path that is only a volume and a root is its own
 // parent: 'C:/' is in 'C:/'. Separators after the last name are left off
 // first, so 'a/b/' is in 'a'. Nothing is normalized: 'a/..' is in 'a'.
-pub fn parent(p &Array[u8]) String {
+fn parentOf(p &Array[u8]) String {
   imm pre = prefixOf(p);
   imm end = trimmedEnd(p, &pre);
   mut i = lastNameStart(p, &pre, end);
@@ -199,7 +207,7 @@ pub fn extension(p &Array[u8]) String {
 // ('C:\', '/', '\\server\share\', 'C:'), then each name, as written, '.' and
 // '..' included, with no separators. Empty names, between two separators
 // or after the last, are left out. "" has no pieces.
-pub fn parts(p &Array[u8]) List[String] {
+fn partsOf(p &Array[u8]) List[String] {
   imm pre = prefixOf(p);
   mut out = List[String].empty();
   if pre.whole > 0usize { out.push(String.fromBytes(&p[..pre.whole])); }
@@ -229,7 +237,7 @@ pub fn parts(p &Array[u8]) List[String] {
 // The drive letter is kept as written. A '..' after a symbolic link is
 // dropped with the link, which on the disk may not be where the link's
 // folder is: this reads text, not the file system.
-pub fn normalize(p &Array[u8]) String {
+fn normalizeOf(p &Array[u8]) String {
   imm pre = prefixOf(p);
   mut out = String.fromBytes(&p[..pre.whole]);
   out.replaceByte('\\', '/');
@@ -275,4 +283,115 @@ pub fn normalize(p &Array[u8]) String {
   }
   if out.len() == 0usize { out.appendByte('.'); }
   out;
+}
+
+// -------- The old functions over bytes --------
+//
+// Before 'Path' these were the package's whole interface, over a '&Array[u8]'
+// and answering a String. They remain as one-line wrappers over the same code
+// the 'Path' methods use, so that a caller still holding a byte path (fs,
+// process, the Cone Congo) keeps working until it holds a 'Path'; a new caller
+// uses the methods.
+
+pub fn isAbsolute(p &Array[u8]) bool { absoluteOf(p); }
+pub fn volume(p &Array[u8]) String { volumeOf(p); }
+pub fn join(a &Array[u8], b &Array[u8]) String { joinOf(a, b); }
+pub fn parent(p &Array[u8]) String { parentOf(p); }
+pub fn parts(p &Array[u8]) List[String] { partsOf(p); }
+pub fn normalize(p &Array[u8]) String { normalizeOf(p); }
+
+// -------- Path --------
+
+// A file path: text, Windows' syntax (see the top of this file), owned. It
+// holds the text as written and never asks the file system anything. Where a
+// 'Path' is wanted by value a string literal is made one ('fromLiteral'), so
+// 'imm dir Path = "C:\\work"' and a function taking a 'Path' is given
+// '"a/b.txt"'; any other text is copied in with 'Path.from(s)'.
+//
+// The methods that take it apart answer without copying where the answer is a
+// piece of its text, a '&str' into the path ('name', 'stem', 'extension',
+// 'volume', 'view'), and a new 'Path' where the answer is itself a path
+// ('parent', 'join', 'normalize'). Two paths are equal when their text is the
+// same bytes: 'C:\a' and 'C:/a' are not, until both are normalized.
+pub struct Path is Hash {
+  text String;
+
+  // A Path holding a copy of this text, whatever it is
+  pub fn from(s &str) Path { new Path(String.from(s)); }
+
+  // A Path holding this String, which it takes
+  pub fn fromString(s String) Path { new Path(s); }
+
+  // What a literal becomes where a Path is wanted
+  pub fn fromLiteral(s &str) Path { Path.from(s); }
+
+  // A copy of this one
+  pub fn copy(self &) Path { Path.from(self.view()); }
+
+  // Its text, as written
+  pub fn view(self &) &str { text.view(); }
+
+  pub fn isEmpty(self &) bool { text.len() == 0usize; }
+
+  // Whether it is absolute: a drive and a root ('C:\x'), or a share
+  pub fn isAbsolute(self &) bool { absoluteOf(text.view()); }
+
+  // The volume it starts with, 'C:' or '\\server\share' as written, or ""
+  pub fn volume(self &) &str {
+    imm b &Array[u8] = text.view();
+    imm pre = prefixOf(b);
+    &b[..pre.volume] as &str;
+  }
+
+  // The folder it is in; see 'path.parent'
+  pub fn parent(self &) Path { Path.fromString(parentOf(text.view())); }
+
+  // Its last name: 'c.txt' of 'a/b/c.txt'
+  pub fn name(self &) &str {
+    imm b &Array[u8] = text.view();
+    imm pre = prefixOf(b);
+    imm end = trimmedEnd(b, &pre);
+    &b[lastNameStart(b, &pre, end)..end] as &str;
+  }
+
+  // Its last name without its extension: 'b.tar' of 'a/b.tar.gz'
+  pub fn stem(self &) &str {
+    imm b &Array[u8] = text.view();
+    imm pre = prefixOf(b);
+    imm end = trimmedEnd(b, &pre);
+    imm start = lastNameStart(b, &pre, end);
+    imm n = &b[start..end];
+    &n[..extensionStart(n)] as &str;
+  }
+
+  // The extension of its last name, the dot included: '.gz' of 'a/b.tar.gz'
+  pub fn extension(self &) &str {
+    imm b &Array[u8] = text.view();
+    imm pre = prefixOf(b);
+    imm end = trimmedEnd(b, &pre);
+    imm start = lastNameStart(b, &pre, end);
+    imm n = &b[start..end];
+    &n[extensionStart(n)..] as &str;
+  }
+
+  // This path then another; see 'path.join'. An absolute other wins. The
+  // other may be text, read as a path, so a literal goes here as well:
+  // 'dir.join("src/main.cone")'. (A literal is made a Path only where a Path
+  // is wanted by value, not where one is borrowed, so the text form is an
+  // overload of its own.)
+  pub fn joinPath overload join(self &, other &Path) Path { Path.fromString(joinOf(text.view(), other.view())); }
+  pub fn joinText overload join(self &, other &str) Path { Path.fromString(joinOf(text.view(), other)); }
+
+  // Its pieces in order: the volume and root as written when it has either,
+  // then each name; see 'path.parts'
+  pub fn parts(self &) List[String] { partsOf(text.view()); }
+
+  // The same path spelled one way; see 'path.normalize'
+  pub fn normalize(self &) Path { Path.fromString(normalizeOf(text.view())); }
+
+  // The same bytes, as another Path or as text
+  pub fn eqPath overload `==`(self &, o &Path) bool { text.view() == o.view(); }
+  pub fn eqText overload `==`(self &, o &str) bool { text.view() == o; }
+
+  pub fn hash(self &, h &mut Hasher) { text.view().hash(h); }
 }

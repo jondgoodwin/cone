@@ -334,9 +334,12 @@ Visual Studio projects stay at the root.
   `posix`: `fs` is files and folders (whole files read, written and
   appended, `stat`, folders made, listed in name order, walked and removed,
   the current folder and absolute paths), each failure a core `Result`
-  holding an `FsError` (what, which path, the errno); `path` is paths as
-  text, Windows' syntax (join, parent, name, stem, extension, parts,
-  normalize, `/` out); `env` is environment variables (get, set, unset);
+  holding an `FsError` (what, which path, the errno); `path` is `Path`, a
+  file path as owned text, Windows' syntax (a literal becomes one where a
+  `Path` is wanted by value, through `fromLiteral`; methods `parent`, `join`,
+  `normalize`, `name`, `stem`, `extension`, `volume`, `parts`, `isAbsolute`,
+  `==` and `Hash`; `/` out), with the older functions over bytes kept beside it
+  until `fs` and `process` take a `Path`; `env` is environment variables (get, set, unset);
   what is Windows-only beneath them is `posix`'s mapping onto the C runtime
   and its `opendir`, `readdir` and `lstat`, written over `_findfirst64`;
   `process` runs a program and waits for it (`run`: a list of arguments, a
