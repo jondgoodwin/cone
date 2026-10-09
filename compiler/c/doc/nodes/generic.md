@@ -661,9 +661,13 @@ is the argument as through `&F`, and by value), is met by a signature `fnSigEqua
 to it, a struct by a `pub` `()` method that is not generic and
 whose parameters after the receiver, and whose return type, are `itypeIsSame` to
 the signature's (`genericParensMethod`, `genericMethodTakesSig`). Nothing else
-meets it, and the receiver's permission is not asked: the generic's body does
-that, in each instance, when it calls the parameter (`&F` through a `self &mut`
-`()` is the usual `ErrorNoCandidate` there). A closure literal given to such a
+meets it, and the receiver's permission is not asked there: where the generic takes
+the parameter as `&F`, the call asks (`genericCallablePermCheck`, after the type
+arguments are inferred and before the instance is made), and a `()` taking `self
+&mut` is refused at the caller's argument, in the author's words
+(`ErrorCallablePerm`); a `&mut F` meets both, and the instance's own body does the
+rest when it calls the parameter. A parameter written `&<fn(sig)` names the
+signature itself, and `genericParmBound` answers it too. A closure literal given to such a
 parameter takes its parameter types from the bound instead: `genericClosureSig`
 finds the bound (`genericParmBound`: the clause whose subject is the parameter
 the argument's parameter is, or is a reference to), reads the other type

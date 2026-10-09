@@ -670,8 +670,13 @@ void fnCallFinalizeArgs(TypeCheckState *pstate, FnCallNode *node) {
             if (argtype->tag == RefTag && permIsLock(((RefNode*)argtype)->perm)
                 && parmtype->tag == RefTag && ((RefNode*)parmtype)->region == borrowRef)
                 permLockRefused(*argsp, ((RefNode*)argtype)->perm, "lend the value");
-            else
-                errorMsgNode(*argsp, ErrorInvType, "Expression's type does not match declared parameter");
+            else {
+                char *why = fnSigCallRefusal(argtype, parmtype);
+                if (why)
+                    errorMsgNode(*argsp, ErrorCallablePerm, "%s", why);
+                else
+                    errorMsgNode(*argsp, ErrorInvType, "Expression's type does not match declared parameter");
+            }
         }
         parmp++;
     }
@@ -2551,6 +2556,9 @@ static void fnCallLowerManagedRef(TypeCheckState *pstate, FnCallNode **nodep) {
         INode *vdcl = itypeGetTypeDcl(vtype);
         if (vdcl->tag == StructTag && (vdcl->flags & TraitType) && !(vdcl->flags & HasTagField))
             tag = VirtRefTag;
+        // 'So[fn(i32) i32]': an owner of anything callable with that signature
+        else if (vdcl->tag == FnSigTag)
+            tag = VirtRefTag;
     }
     else {
         // Reported where the value type was written; the type stands as the error
@@ -2568,9 +2576,9 @@ static void fnCallLowerManagedRef(TypeCheckState *pstate, FnCallNode **nodep) {
 }
 
 // The signature of the callable a candidate takes at parameter 'pos' (counting
-// a method's self): the function reference's, or the signature bound of the
-// type parameter it is (or is a reference to). NULL where the parameter is not
-// callable.
+// a method's self): the function reference's, a callable reference's, or the
+// signature bound of the type parameter it is (or is a reference to). NULL
+// where the parameter is not callable.
 static FnSigNode *fnCallCallableParm(FnDclNode *cand, uint32_t pos) {
     FnSigNode *sig = (FnSigNode*)itypeGetTypeDcl(cand->vtype);
     if (pos >= sig->parms->used)
@@ -2585,7 +2593,80 @@ static FnSigNode *fnCallCallableParm(FnDclNode *cand, uint32_t pos) {
         if (target->tag == FnSigTag)
             return (FnSigNode*)target;
     }
+    if (ptype->tag == VirtRefTag)
+        return fnSigOfCallTrait(((RefNode*)ptype)->vtexp);
     return NULL;
+}
+
+// Can a value of this type be called: a function reference, a reference or owner
+// of a callable ('&<fn(...)', 'So[fn(...)]'), or a struct with a '()'?
+static int fnCallTypeCallable(INode *type) {
+    if (type == NULL || type == unknownType || !isTypeNode(type))
+        return 1;
+    INode *dcl = itypeGetTypeDcl(type);
+    if (dcl->tag == VirtRefTag)
+        return 1;
+    if (dcl->tag == RefTag)
+        dcl = itypeGetTypeDcl(((RefNode*)dcl)->vtexp);
+    if (dcl->tag == FnSigTag)
+        return 1;
+    if (dcl->tag != StructTag)
+        return 0;
+    INode *call = iNsTypeFindFnField((INsTypeNode*)dcl, parensName);
+    return call != NULL && (call->tag == FnDclTag || call->tag == FnOverloadDclTag || call->tag == AliasDclTag);
+}
+
+// 't.profile(3.)', where 'profile' is a field of the receiver: the call is of what
+// the field holds, as '(t.profile)(3.)' is. The call's receiver becomes the field's
+// access. Answers 0, having reported it, when the field holds nothing callable.
+static int fnCallFieldCall(TypeCheckState *pstate, FnCallNode *node, FieldDclNode *fld, INode *rcvtype) {
+    if (!fnCallTypeCallable(fld->vtype)) {
+        char held[200] = "";
+        itypeSpellCat(held, sizeof(held), fld->vtype, 0);
+        errorMsgNode((INode*)node, ErrorFldArgs,
+            "`%s` is a field of %s holding %s, which is not callable, so it takes no arguments. A field is called when it holds a function reference, a `&<fn(...)`, a `So[fn(...)]` or `Rc[fn(...)]`, or a struct with a `()` method.",
+            &fld->namesym->namestr, itypeName(rcvtype), held);
+        node->vtype = errorType;
+        return 0;
+    }
+    FnCallNode *access = newFnCallNode(node->objfn, 0);
+    inodeLexCopy((INode*)access, (INode*)node);
+    access->methfld = node->methfld;
+    node->objfn = (INode*)access;
+    node->methfld = NULL;
+    return 1;
+}
+
+// A parameter that takes a borrowed callable, '&<fn(x i32) i32' or '&<mut fn(...)':
+// the signature a closure literal given to it is to fit, and the permission it
+// is lent with. NULL for any other parameter.
+static FnSigNode *fnCallLendParm(INode *ptype, INode **lendperm) {
+    if (ptype == NULL || ptype == unknownType || !isTypeNode(ptype))
+        return NULL;
+    INode *dcl = itypeGetTypeDcl(ptype);
+    if (dcl->tag != VirtRefTag || itypeGetTypeDcl(((RefNode*)dcl)->region) != (INode*)borrowRef)
+        return NULL;
+    FnSigNode *sig = fnSigOfCallTrait(((RefNode*)dcl)->vtexp);
+    if (sig)
+        *lendperm = (INode*)newPermUseNode((PermNode*)itypeGetTypeDcl(((RefNode*)dcl)->perm));
+    return sig;
+}
+
+// Check a closure literal given as an argument to a parameter of type 'ptype'.
+// Where that parameter takes a borrowed callable, the literal is lent to it as
+// a temporary of the statement, as a borrow of it would be.
+static void fnCallCheckClosureArg(TypeCheckState *pstate, INode **argp, INode *ptype) {
+    INode *lendperm;
+    FnSigNode *sig = fnCallLendParm(ptype, &lendperm);
+    if (sig == NULL) {
+        inodeTypeCheck(pstate, argp, ptype);
+        return;
+    }
+    INode *lit = *argp;
+    *argp = (INode*)newRefNodeFull(BorrowTag, lit, borrowRef, lendperm, lit);
+    closureHint = sig;
+    inodeTypeCheck(pstate, argp, unknownType);
+    closureHint = NULL;
 }
 
 // The overload a closure literal written as argument 'argi' calls for. It is
@@ -2706,7 +2787,7 @@ static int fnCallClosureArgs(TypeCheckState *pstate, FnCallNode *node, FnDclNode
         }
         else if (pick) {
             FnSigNode *sig = (FnSigNode*)itypeGetTypeDcl(pick->vtype);
-            inodeTypeCheck(pstate, argsp, ((VarDclNode*)nodesGet(sig->parms, firstparm + argi))->vtype);
+            fnCallCheckClosureArg(pstate, argsp, ((VarDclNode*)nodesGet(sig->parms, firstparm + argi))->vtype);
         }
         else
             inodeTypeCheck(pstate, argsp, unknownType);
@@ -2860,6 +2941,18 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
                 int folded = found && found->tag == AliasDclTag;
                 if (folded)
                     found = aliasDclResolve(found);
+                // 't.profile(3.)' with a field of that name calls what the field
+                // holds, as '(t.profile)(3.)' does. A field and a method never share
+                // a name, so it cannot be a method's call.
+                if (found && found->tag == FieldDclTag && node->args != NULL && (found->flags & FlagMethFld)
+                    && !(node->flags & (FlagIndex | FlagOperator))) {
+                    if (!fnCallFieldCall(pstate, node, (FieldDclNode*)found, rcvtype)) {
+                        *((INode**)nodep) = newErrorNode((INode*)node);
+                        return;
+                    }
+                    objfnChecked = 0;
+                    found = NULL;
+                }
                 if (found && found->tag == MacroDclTag && (found->flags & FlagMethFld)) {
                     // A folded macro method expands with the field it was
                     // folded through as its self, as a folded method runs with it
@@ -2945,7 +3038,10 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
                 ++argi;
                 continue;
             }
-            inodeTypeCheck(pstate, argsp, expect);
+            if ((*argsp)->tag == ClosureTag)
+                fnCallCheckClosureArg(pstate, argsp, expect);
+            else
+                inodeTypeCheck(pstate, argsp, expect);
             ++argi;
         }
         if (gengeneric || overloadset) {

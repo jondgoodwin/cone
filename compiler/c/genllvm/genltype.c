@@ -167,6 +167,54 @@ void genlVtableImpl(GenState *gen, Vtable *vtable, VtableImpl *impl, LLVMTypeRef
     LLVMSetInitializer(impl->llvmvtablep, implRef);
 }
 
+// The vtable a plain function's reference converts through to a callable
+// trait's virtual reference. The reference's data pointer is the function
+// itself, and the vtable's one slot a stub of the slot's type that calls it:
+// the receiver arrives erased, is the code pointer, and the other arguments go
+// on to it as they came. Built once per trait and object.
+LLVMValueRef genlFnStubVtable(GenState *gen, Vtable *vtable) {
+    if (vtable->llvmfnvtable)
+        return vtable->llvmfnvtable;
+    StructNode *trait = (StructNode*)vtable->trait;
+    FnDclNode *slot = (FnDclNode*)nodesGet(vtable->methfld, 0);
+    LLVMTypeRef slottype = genlVtableSlotFnType(gen, slot);
+    char symbol[2048];
+    LLVMValueRef stub = LLVMAddFunction(gen->module, nameVtableStub(symbol, vtable->trait, 0), slottype);
+    genlLinkage(stub, NULL, GenlDefined);
+    genlComdat(gen, stub);
+
+    LLVMBuilderRef svbuilder = gen->builder;
+    gen->builder = LLVMCreateBuilderInContext(gen->context);
+    LLVMPositionBuilderAtEnd(gen->builder, LLVMAppendBasicBlockInContext(gen->context, stub, "entry"));
+    unsigned int argcnt = LLVMCountParams(stub);
+    LLVMValueRef *args = (LLVMValueRef *)memAllocBlk(argcnt * sizeof(LLVMValueRef));
+    unsigned int argi;
+    for (argi = 1; argi < argcnt; ++argi)
+        args[argi - 1] = LLVMGetParam(stub, argi);
+    LLVMValueRef call = LLVMBuildCall2(gen->builder, genlType(gen, (INode*)trait->callsig),
+        LLVMGetParam(stub, 0), args, argcnt - 1, "");
+    LLVMSetTailCall(call, 1);
+    if (LLVMGetTypeKind(LLVMGetReturnType(slottype)) == LLVMVoidTypeKind)
+        LLVMBuildRetVoid(gen->builder);
+    else
+        LLVMBuildRet(gen->builder, call);
+    LLVMDisposeBuilder(gen->builder);
+    gen->builder = svbuilder;
+
+    // The vtable: the stub, and no type record, which only an owner reads
+    LLVMTypeRef vtableRef = vtable->llvmvtable;
+    LLVMValueRef entry = LLVMGetUndef(vtableRef);
+    entry = LLVMBuildInsertValue(gen->builder, entry, stub, 0, "stub");
+    entry = LLVMBuildInsertValue(gen->builder, entry,
+        LLVMConstNull(LLVMStructGetTypeAtIndex(vtableRef, 1)), 1, "norecord");
+    vtable->llvmfnvtable = LLVMAddGlobal(gen->module, vtableRef, nameVtableStub(symbol, vtable->trait, 1));
+    LLVMSetGlobalConstant(vtable->llvmfnvtable, 1);
+    genlLinkage(vtable->llvmfnvtable, NULL, genlVtableDefinition(gen));
+    genlComdat(gen, vtable->llvmfnvtable);
+    LLVMSetInitializer(vtable->llvmfnvtable, entry);
+    return vtable->llvmfnvtable;
+}
+
 // The function type of the vtable slot a method fills. A self parameter that
 // is a reference is re-cast into *u8, so the one slot takes every implementer.
 LLVMTypeRef genlVtableSlotFnType(GenState *gen, FnDclNode *meth) {

@@ -7,6 +7,8 @@
 
 #include "../ir.h"
 #include <memory.h>
+#include <stdio.h>
+#include <string.h>
 
 // Create a new function signature node
 FnSigNode *newFnSigNode() {
@@ -357,4 +359,206 @@ int fnSigViableCall(FnSigNode *to, INode **self, Nodes *args) {
     }
 
     return 1;
+}
+
+// ---------------------------------------------------------------------------
+// The signature as a trait: '&<fn(sig)', 'So[fn(sig)]'
+
+// The callable traits made so far, one per signature and kind of 'self'
+static Nodes *fnCallTraits = NULL;
+
+// The trait standing for 'fn(sig)' behind a virtual reference: a trait with the
+// one method '()' of that signature, which anything with a pub '()' of exactly
+// those parameter and return types meets (a closure's hidden struct, a
+// hand-written struct, a plain function through its stub). The reference's
+// permission is the call's kind: a reference that may write ('&<mut', an owner)
+// is to the trait whose '()' takes 'self &mut', any other to the one taking
+// 'self &', so a state-changing '()' is not met behind a read-only reference.
+// One trait per signature and kind, so two spellings of one signature are one type.
+StructNode *fnSigCallTrait(TypeCheckState *pstate, FnSigNode *sig, int mutself, INode *lexnode) {
+    if (fnCallTraits == NULL)
+        fnCallTraits = newNodes(8);
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(fnCallTraits, cnt, nodesp)) {
+        StructNode *found = (StructNode*)*nodesp;
+        if (found->callmut == mutself && fnSigEqual(found->callsig, sig))
+            return found;
+    }
+
+    // Named by its signature's symbol spelling, so that two compiles of one
+    // signature name one vtable; a long one by its hash
+    char spell[2048];
+    char *end = nameType(spell, (INode*)sig);
+    *end = '\0';
+    char name[320];
+    if (end - spell < 240)
+        snprintf(name, sizeof(name), "fn%c%s", mutself ? 'M' : 'R', spell);
+    else {
+        uint64_t hash = 14695981039346656037ull;
+        for (char *p = spell; *p; ++p)
+            hash = (hash ^ (uint8_t)*p) * 1099511628211ull;
+        snprintf(name, sizeof(name), "fn%c#%016llx", mutself ? 'M' : 'R', (unsigned long long)hash);
+    }
+    StructNode *st = newStructNode(nametblFind(name, strlen(name)));
+    inodeLexCopy((INode*)st, lexnode);
+    st->flags |= TraitType | FlagPub;
+    st->callsig = sig;
+    st->callmut = (uint8_t)mutself;
+    dclInfoJoin((INode*)st, NULL);
+
+    FnSigNode *msig = newFnSigNode();
+    inodeLexCopy((INode*)msig, lexnode);
+    VarDclNode *self = newVarDclNode(selfName, VarDclTag, (INode*)immPerm);
+    inodeLexCopy((INode*)self, lexnode);
+    self->vtype = (INode*)newRefNodeFull(RefTag, lexnode, borrowRef,
+        (INode*)newPermUseNode(mutself ? mutPerm : roPerm), newNameUseFromDclNode((INode*)st, lexnode));
+    self->scope = 1;
+    self->flowtempflags |= VarInitialized;
+    nodesAdd(&msig->parms, (INode*)self);
+    uint16_t parmnbr = 1;
+    for (nodesFor(sig->parms, cnt, nodesp)) {
+        VarDclNode *orig = (VarDclNode*)*nodesp;
+        VarDclNode *parm = newVarDclNode(orig->namesym, VarDclTag, orig->perm);
+        inodeLexCopy((INode*)parm, (INode*)orig);
+        parm->vtype = orig->vtype;
+        parm->scope = 1;
+        parm->index = parmnbr++;
+        parm->flowtempflags |= VarInitialized;
+        nodesAdd(&msig->parms, (INode*)parm);
+    }
+    msig->rettype = sig->rettype;
+    msig->lifeorder = sig->lifeorder;
+    msig->lifenamed = sig->lifenamed;
+    msig->lifechecked = sig->lifechecked;
+    msig->lifestatic = sig->lifestatic;
+    FnDclNode *fn = newFnDclNode(parensName, FlagMethFld | FlagPub, (INode*)msig, NULL);
+    inodeLexCopy((INode*)fn, lexnode);
+    iNsTypeAddFn((INsTypeNode*)st, fn);
+
+    nodesAdd(&fnCallTraits, (INode*)st);
+    INode *stnode = (INode*)st;
+    inodeTypeCheckAny(pstate, &stnode);
+    return st;
+}
+
+// The signature a type is a callable trait for, or NULL
+FnSigNode *fnSigOfCallTrait(INode *type) {
+    if (type == NULL || !isTypeNode(type))
+        return NULL;
+    INode *dcl = itypeGetTypeDcl(type);
+    return dcl->tag == StructTag ? ((StructNode*)dcl)->callsig : NULL;
+}
+
+// Whether a struct's '()' method, found for a callable trait, takes the
+// receiver the trait's kind allows: 'self &' (a read-only borrow) for either
+// kind, 'self &mut' for the kind that may write
+int fnSigCallSelfFits(StructNode *trait, FnDclNode *meth) {
+    FnSigNode *msig = (FnSigNode*)itypeGetTypeDcl(meth->vtype);
+    if (msig->tag != FnSigTag || msig->parms->used == 0)
+        return 0;
+    INode *selftype = iexpGetTypeDcl(nodesGet(msig->parms, 0));
+    if (selftype->tag != RefTag || itypeGetTypeDcl(((RefNode*)selftype)->region) != (INode*)borrowRef)
+        return 0;
+    INode *perm = itypeGetTypeDcl(((RefNode*)selftype)->perm);
+    if (perm == (INode*)mutPerm)
+        return trait->callmut;
+    return perm != (INode*)uniPerm && perm != (INode*)mut1Perm && perm->tag == PermTag
+        && !(permGetFlags(perm) & MayWrite);
+}
+
+// A callable reference or owner as it is written, for a message: '&<fn(i32) i32',
+// '&<mut fn(i32) i32', 'So[imm, fn(i32) i32]'. 'ref' says the region and the
+// permission it was written with, 'trait' the signature and the kind.
+static void fnCallSpell(char *buf, size_t size, RefNode *ref, StructNode *trait) {
+    char sig[300] = "";
+    genericFnSigCat(sig, sizeof(sig), trait->callsig);
+    INode *region = itypeGetTypeDcl(ref->region);
+    if (region == (INode*)borrowRef) {
+        snprintf(buf, size, "&<%s%s", trait->callmut ? "mut " : "", sig);
+        return;
+    }
+    char *regname = region->tag == StructTag ? &((StructNode*)region)->namesym->namestr : "So";
+    INode *perm = itypeGetTypeDcl(ref->perm);
+    int permwrites = perm->tag == PermTag && (permGetFlags(perm) & MayWrite);
+    if (trait->callmut && (!permwrites || perm == (INode*)uniPerm))
+        snprintf(buf, size, "%s[%s]", regname, sig);
+    else if (trait->callmut || permwrites)
+        snprintf(buf, size, "%s[%s, %s]", regname, trait->callmut ? &inodeGetName(perm)->namestr : "imm", sig);
+    else
+        snprintf(buf, size, "%s[%s, %s]", regname, &inodeGetName(perm)->namestr, sig);
+}
+
+// Why a value of type 'from' is refused where the callable type 'to' is wanted,
+// when that is the permission its '()' or the borrow needs; NULL when it is not
+// that. The message leads with the cause in the author's words.
+char *fnSigCallRefusal(INode *from, INode *to) {
+    INode *todcl = itypeGetTypeDcl(to);
+    if (todcl->tag != VirtRefTag)
+        return NULL;
+    RefNode *toref = (RefNode*)todcl;
+    StructNode *trait = (StructNode*)itypeGetTypeDcl(toref->vtexp);
+    if (trait->tag != StructTag || trait->callsig == NULL)
+        return NULL;
+    INode *fromdcl = itypeGetTypeDcl(from);
+    // A callable that may change, where one that only reads is wanted
+    if (fromdcl->tag == VirtRefTag) {
+        StructNode *fromtrait = (StructNode*)itypeGetTypeDcl(((RefNode*)fromdcl)->vtexp);
+        if (fromtrait->tag != StructTag || fromtrait->callsig == NULL || fromtrait->callmut == trait->callmut
+            || !fnSigEqual(fromtrait->callsig, trait->callsig))
+            return NULL;
+        static char vmsg[700];
+        char wanted[300];
+        fnCallSpell(wanted, sizeof(wanted), toref, trait);
+        if (fromtrait->callmut)
+            snprintf(vmsg, sizeof(vmsg),
+                "This callable may change its state, and `%s` only reads, so it cannot be lent as one.", wanted);
+        else
+            snprintf(vmsg, sizeof(vmsg),
+                "This callable only reads, and `%s` is the reference that may change what it points at: a read-only one cannot be lent as one that may change.",
+                wanted);
+        return vmsg;
+    }
+    if (fromdcl->tag != RefTag)
+        return NULL;
+    INode *target = itypeGetTypeDcl(((RefNode*)fromdcl)->vtexp);
+    if (target->tag != StructTag || (target->flags & TraitType))
+        return NULL;
+    FnDclNode *want = (FnDclNode*)namespaceFind(&trait->namespace, parensName);
+    INode *binding = namespaceFind(&((StructNode*)target)->namespace, parensName);
+    FnDclNode *meth = want && binding ? iNsTypeFindVrefMethod(binding, want, NULL) : NULL;
+    if (meth == NULL)
+        return NULL;
+    static char msg[900];
+    int isclosure = closureOfStruct(target) != NULL;
+    char *what = isclosure ? "this closure" : itypeName(target);
+    char wanted[300], other[300];
+    fnCallSpell(wanted, sizeof(wanted), toref, trait);
+    if (!fnSigCallSelfFits(trait, meth)) {
+        FnSigNode *msig = (FnSigNode*)itypeGetTypeDcl(meth->vtype);
+        INode *selftype = msig->tag == FnSigTag && msig->parms->used ? iexpGetTypeDcl(nodesGet(msig->parms, 0)) : NULL;
+        INode *perm = selftype && selftype->tag == RefTag ? itypeGetTypeDcl(((RefNode*)selftype)->perm) : NULL;
+        if (perm == (INode*)mutPerm && !trait->callmut) {
+            StructNode flipped = *trait;
+            flipped.callmut = 1;
+            fnCallSpell(other, sizeof(other), toref, &flipped);
+            snprintf(msg, sizeof(msg),
+                "%s changes its state (its `()` takes `self &mut`), and `%s` only reads: it may not be given one that changes. To let a callable change, the type is `%s`.",
+                isclosure ? "This closure" : what, wanted, other);
+        }
+        else
+            snprintf(msg, sizeof(msg),
+                "The `()` of %s takes `self` %s, and `%s` calls it without that: it lends `self &%s`.",
+                what, perm == (INode*)uniPerm ? "uniquely, so it is called once" : "by value",
+                wanted, trait->callmut ? "mut" : "");
+        return msg;
+    }
+    // '()' fits; the borrow lent is what is too weak
+    if (trait->callmut && !(permGetFlags(((RefNode*)fromdcl)->perm) & MayWrite)) {
+        snprintf(msg, sizeof(msg),
+            "`%s` may change what it points at, and this is a read-only borrow of %s. Lend it with `&mut`.",
+            wanted, what);
+        return msg;
+    }
+    return NULL;
 }

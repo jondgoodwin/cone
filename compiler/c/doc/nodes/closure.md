@@ -156,6 +156,69 @@ which say what its signature is, then `fnCallClosureArgs` checks it.
   parameter's types; none is `ErrorClosureOverload`. The body is checked against
   none of them.
 
+## A callable used dynamically
+
+`&<fn(sig)`, `&<mut fn(sig)`, `So[fn(sig)]` and `Rc[fn(sig)]` take anything with a
+pub `()` of that signature. The signature is **a trait the compiler writes**
+(`fnSigCallTrait`, `ir/types/fnsig.c`): a `StructNode` flagged `TraitType` whose
+`callsig` is the signature and whose one method is a `()` of it, with a `self` of
+`&` or `&mut`. It exists once per signature and kind (`callmut`), found by
+`fnSigEqual`, and it is in no module: it is named for the symbol spelling of its
+signature (`fnR<nameType>` and `fnM<nameType>`, a long one by its hash), which is
+what lets two objects' vtables for one signature be one symbol. Everything after
+it is the virtual reference of a trait that already exists.
+
+- **Where it is made.** `refvirtTypeCheck` replaces a signature target by the
+  trait, choosing the kind from the reference's permission: one that may write
+  (`&<mut`, `So`, `Rc[mut, ...]`) is the `self &mut` trait, any other
+  (`&<`, `So[imm, ...]`) the `self &` one. `fnCallLowerManagedRef` makes
+  `So[fn(sig)]` a virtual reference as it does for a trait. The signature is
+  written bare in a type argument or an index (`parseIndexArg`, `parseFnBound`), as
+  a term where a type is expected (`parseTerm` with `intype`), and as an alias's
+  target (`parseAlias`). A bare signature held by value (`Applied[fn(i32) i32]`
+  with a field `f F`) is `ErrorNoSize`, a function signature being no value;
+  `So[F]` and `&<F` with it as the argument are the callable references.
+- **What meets it.** `structMapVtableImpl` maps a struct's `()` as it does any slot
+  and, for a callable trait, asks `fnSigCallSelfFits`: a read-only trait takes a
+  `self &` (or `imm`, `opaq`) and a state-changing one also a `self &mut`; a `self`
+  by value or `&uni` fits neither (call once is later). The kinds are two types:
+  a `&<mut fn` is not lent as a `&<fn`, because the callable behind it may change.
+  `fnSigCallRefusal` says which of these refused a coercion, in the author's
+  words (`ErrorCallablePerm`), at an argument (`fnCallTypeCheck`), an
+  initializer (`varDclTypeCheck`) and an owner's making.
+- **A plain function.** `refvirtMatchesRef` accepts a reference to a function
+  whose signature `fnSigEqual`s the trait's. Generation (`genlConvert`) makes the
+  data pointer the function's own code pointer and the vtable (`genlFnStubVtable`,
+  once per trait and object, `Vtable.llvmfnvtable`) a one-slot table holding a stub
+  of the slot's type that calls its first argument as the function with the rest.
+  It carries no type record, which only an owner reads, and an owner is never
+  made of a function.
+- **A literal.** A closure literal given as an argument to a parameter of type
+  `&<fn(sig)` is lent as a temporary of the statement (`fnCallCheckClosureArg`,
+  also for the overload a literal picks and, through `genericParmBound`, for a
+  generic's parameter that names a type parameter in the signature); the borrow
+  carries the parameter's permission, so a literal that changes a variable is a
+  `self &mut` struct behind a `&` and is refused by the callable's own message. A
+  literal anywhere else is not lent: to keep one it is moved into an owner.
+- **An owner.** `new So[fn(sig)](c)` (`typeLitNewCallable`) takes one value, checks
+  it against the signature's hint if it is a literal, allocates that value's own
+  type and converts the owner to the callable's. A callable that holds nothing
+  (a zero-field struct) has no allocation to own and is refused
+  (`ErrorCallableUse`). Whether the closure may be kept is the loan walk's, as for
+  any owning virtual reference: one that borrows a local is refused by the rule
+  that such an owner holds only global borrows.
+- **A callable field.** `t.profile(3.)` where `profile` is a field is rewritten
+  to the call of the field's access (`fnCallFieldCall`), as `(t.profile)(3.)`,
+  after checking that the field's type can be called (`fnCallTypeCallable`); one
+  that cannot is `ErrorFldArgs`, saying what the field holds. A field and a method
+  never share a name, so there is nothing to choose between.
+- **A generic taking `&F`.** A callable whose `()` takes `self &mut`, given to a
+  parameter taken as `&F`, is refused at the caller's argument before an instance is
+  made (`genericCallablePermCheck`, `ErrorCallablePerm`).
+
+The call is the ordinary virtual dispatch: `f(x)` on a callable reference reaches the
+trait's `()` (`fnCallTypeCheck`, `VirtRefTag`) through the vtable.
+
 ## Across objects
 
 A closure written in a body an importer expands (an `inline` function, a generic's
@@ -189,5 +252,12 @@ says so, and the object defines the hidden struct's methods, internally
 | | `closureImplicitReturn`, `closureReturnTypeCheck` | the return type read off the paths |
 | | `cloneClosureNode` | a copy of a literal, for a generic's instance and for the attempts |
 | `ir/exp/fncall.c` | `fnCallClosureArgs`, `fnCallClosureOverload`, `fnCallCallableParm` | closure arguments of a generic or an overload set |
-| `ir/meta/generic.c` | `genericParmBound`, `genericClosureSig` | the signature a generic's bound gives a closure |
+| | `fnCallCheckClosureArg`, `fnCallLendParm` | a literal given to a `&<fn` parameter, lent as a temporary |
+| | `fnCallFieldCall`, `fnCallTypeCallable` | `t.profile(3.)`: a callable field's call |
+| `ir/meta/generic.c` | `genericParmBound`, `genericClosureSig` | the signature a generic's bound gives a closure (or a `&<fn` parameter writes) |
+| | `genericCallablePermCheck` | a callable that changes, given to `&F`, refused at the argument |
+| `ir/types/fnsig.c` | `fnSigCallTrait`, `fnSigOfCallTrait` | the trait that stands for a signature behind a virtual reference |
+| | `fnSigCallSelfFits`, `fnSigCallRefusal` | which `()` a kind of callable reference holds; why a coercion was refused |
+| `ir/exp/typelit.c` | `typeLitNewCallable` | `new So[fn(sig)](c)` |
+| `genllvm/genltype.c` | `genlFnStubVtable` | the vtable of a plain function's reference |
 | `shared/error.c` | `errorSilent` | diagnostics counted and not printed |

@@ -516,6 +516,15 @@ constant` per implementing struct, plus one internal list per trait, prewired in
 `derived` order for the enum-to-virtref coercion. `nameVtable`, `nameVtableImpl`
 and `nameVtableList` spell the three from the trait and implementing type nodes.
 
+**A plain function has a vtable of its own for a callable trait** (`fnSigCallTrait`,
+[closure](../nodes/closure.md), "A callable used dynamically"). A reference to a
+function converts to `&<fn(sig)` with the function's code pointer as the data
+pointer, and `genlFnStubVtable` builds, once per trait and object (`Vtable.llvmfnvtable`,
+`nameVtableStub`), the vtable of its one slot: a stub of the slot's type that calls its
+erased first argument, as the function type `genlType` gives the signature, with the
+remaining arguments, and a null type record. A callable trait is in no module's nodes,
+and no struct is registered as its implementer for a function.
+
 **A vtable may contain itself**, through a slot whose method takes or returns a
 virtual reference to the same trait (`fn cmp(self &, o &<Self)`). So `genlVtable`
 creates the vtable struct and the fat-pointer struct as named types and stores
@@ -2091,9 +2100,9 @@ What does not work yet:
 - A program with a `main` compiled for the Vulkan form crashes LLVM's SPIR-V
   backend ("No unique definition is found for the virtual register").
 
-Also absent: closures with an environment — an anonymous `fn` is lifted to
-module scope and a `&fn` value is a bare function pointer with no capture
-struct. No exception handling or unwinding. No debug info for types or
+Also absent: a `&fn` value is a bare function pointer with no capture struct (a
+closure that holds something is the struct type check makes of it,
+[closure](../nodes/closure.md)). No exception handling or unwinding. No debug info for types or
 variables.
 
 ## 8. Hazards

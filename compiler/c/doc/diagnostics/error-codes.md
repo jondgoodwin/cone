@@ -413,6 +413,13 @@ while it holds or borrows something is `ErrorClosureForm`; and a literal given t
 overloads that cannot choose between it, or none that takes it, is
 `ErrorClosureOverload`.
 
+A callable behind a reference or an owner has two more: a callable refused for the
+permission its `()` takes or the borrow lent (a `()` taking `self &mut` given to a
+`&<fn`, a read-only borrow given to a `&<mut fn`, one kind lent as the other, and a
+generic's `&F` given one that changes) is `ErrorCallablePerm`; and an owner
+`So[fn(sig)]` made of nothing it can own (a callable that holds nothing, or a value
+with no `()` of the signature) is `ErrorCallableUse`.
+
 `await` has five error codes and a warning. Where it may not stand -- anywhere
 but a behaviour -- is `ErrorAwaitPlace`; on a behaviour that returns nothing,
 which sends no reply, it is `ErrorAwaitVoid`, a rule rather than a gap; a

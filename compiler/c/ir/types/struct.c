@@ -40,6 +40,8 @@ StructNode *newStructNode(Name *namesym) {
     snode->shapeinf = ShapeUnknown;
     snode->holdsatomic = HoldsTracedUnknown;
     snode->threadbound = CarriesBorrowUnknown;
+    snode->callmut = 0;
+    snode->callsig = NULL;
     return snode;
 }
 
@@ -3966,6 +3968,10 @@ static VtableImpl *structMapVtableImpl(StructNode *basenode, StructNode *strnode
             FnDclNode *strmeth = iNsTypeFindVrefMethod(strbinding, meth, NULL);
             if (strmeth == NULL)
                 return 0;
+            // A callable trait's kind says what its '()' may do to the state: a
+            // read-only reference is met only by a '()' that reads
+            if (basenode->callsig && !fnSigCallSelfFits(basenode, strmeth))
+                return NULL;
             // it matches, add the method to the implementation. A method the
             // type holds by folding satisfies the slot too, and the fields its
             // receiver is reached through are recorded for the slot's thunk
@@ -4031,6 +4037,7 @@ void structMakeVtable(StructNode *node) {
     vtable->trait = (INode*)node;
     vtable->llvmreftype = NULL;
     vtable->llvmvtable = NULL;
+    vtable->llvmfnvtable = NULL;
     vtable->impl = newNodes(4);
 
     // Populate methfld with all public methods and then fields in trait

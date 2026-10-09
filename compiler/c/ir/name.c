@@ -578,3 +578,16 @@ char *nameVtableList(char *buf, INode *trait) {
     *bufp = '\0';
     return buf;
 }
+
+// Spell the symbol of the stub and the vtable a callable trait supplies for a
+// plain function into buf, which is returned: '_CZ<trait-path>' and '_CW<trait-path>'.
+// One each per trait per object, and shared like any vtable.
+char *nameVtableStub(char *buf, INode *trait, int vtable) {
+    char *bufp = buf;
+    *bufp++ = '_';
+    *bufp++ = 'C';
+    *bufp++ = vtable ? 'W' : 'Z';
+    bufp = namePath(bufp, trait);
+    *bufp = '\0';
+    return buf;
+}

@@ -1,0 +1,68 @@
+// What a callable reference refuses. '&<fn(sig)' reads: it is met by a '()' that
+// takes 'self &', and a '()' taking 'self &mut' is refused with the cause in the
+// author's words (a closure that changes a variable or its own state is one).
+// '&<mut fn(sig)' may change what it points at, so it needs a '&mut' borrow, and
+// the two kinds are not interchangeable: a callable that may change is not
+// lent as one that only reads. An owner is made from one callable that holds
+// something. A generic taking its callable as '&F' says so at the argument.
+// A callable field's call stays an error where the field holds nothing callable.
+
+mod closure_typecheck_dynamic;
+
+struct Tally {
+  pub n i32;
+  pub fn `()`(self &mut, x i32) i32 { n = n + x; n; }
+}
+
+struct Plain {
+  pub n i32;
+  pub fn `()`(self &, x i32) i32 { n + x; }
+}
+
+fn wrong(x f32) f32 { x; }
+
+fn apply(f &<fn(x i32) i32, x i32) i32 { f(x); }
+fn applyMut(f &<mut fn(x i32) i32, x i32) i32 { f(x); }
+fn viaRead[F fn(x i32) i32](f &F, x i32) i32 { f(x); }
+
+fn lendRead(f &<mut fn(x i32) i32, x i32) i32 {
+  apply(f, x);          //~ ErrorCallablePerm:9 "This callable may change its state, and `&<fn(i32) i32` only reads, so it cannot be lent as one"
+}
+
+struct Button {
+  pub tag i32;
+}
+
+fn main() {
+  mut tally = new Tally(0);
+  imm fixed = new Tally(0);
+  imm plain = new Plain(1);
+  mut total = 0;
+
+  // A '()' that changes, to a reader
+  apply(&tally, 1);        //~ ErrorCallablePerm:9 "Tally changes its state (its `()` takes `self &mut`), and `&<fn(i32) i32` only reads"
+  apply(&mut tally, 1);    //~ ErrorCallablePerm:9 "Tally changes its state (its `()` takes `self &mut`), and `&<fn(i32) i32` only reads"
+  imm bump = fn(x i32) i32 { total += x; total; };
+  apply(&bump, 1);         //~ ErrorCallablePerm:9 "This closure changes its state (its `()` takes `self &mut`), and `&<fn(i32) i32` only reads"
+  apply(fn(x i32) i32 { total += x; total; }, 1);   //~ ErrorCallablePerm:9 "This closure changes its state (its `()` takes `self &mut`), and `&<fn(i32) i32` only reads"
+  viaRead(fn(x i32) i32 { total += x; total; }, 1); //~ ErrorCallablePerm:11 "viaRead takes `f` as `&F`, so the callable may only read its state; this closure changes it (its `()` takes `self &mut`)"
+
+  // A mutable reference needs a mutable borrow
+  applyMut(&fixed, 1);     //~ ErrorCallablePerm:12 "`&<mut fn(i32) i32` may change what it points at, and this is a read-only borrow of Tally"
+  applyMut(&plain, 1);     //~ ErrorCallablePerm:12 "`&<mut fn(i32) i32` may change what it points at, and this is a read-only borrow of Plain"
+
+  // Not a callable of this signature
+  apply(&wrong, 1);        //~ ErrorInvType:9 "Expression's type does not match declared parameter"
+  apply(&plain, 1.5);      //~ ErrorInvType:17 "Expression's type does not match declared parameter"
+
+  // An owner is made from a callable that holds something
+  imm none = new So[fn(x i32) i32](fn(x i32) i32 { x; });    //~ ErrorCallableUse:36 "So[fn(i32) i32] owns what its callable holds, and this closure holds nothing"
+  imm five = new So[fn(x i32) i32](5);                         //~ ErrorCallableUse:36 "So[fn(i32) i32] is made from a closure or a struct with a pub `()` of that signature, and i32 is neither"
+  imm bare = new So[fn(x i32) i32]();                          //~ ErrorCallableUse:14 "So[fn(i32) i32] is made from one callable value"
+  imm miss = new So[fn(x i32) i32](new Button(1));             //~ ErrorCallableUse:14 "That value has no pub `()` of the signature the owner is of"
+  imm held So[imm, fn(x i32) i32] = new So[imm, fn(x i32) i32](new Tally(0));   //~ ErrorCallablePerm:37 "Tally changes its state (its `()` takes `self &mut`), and `So[imm, fn(i32) i32]` only reads"
+
+  // A field that holds nothing callable
+  imm b = new Button(3);
+  imm n = b.tag(5);        //~ ErrorFldArgs:12 "`tag` is a field of Button holding i32, which is not callable, so it takes no arguments"
+}
