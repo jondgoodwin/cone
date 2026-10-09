@@ -75,25 +75,25 @@ struct Tally {
 fn emptyTally() Tally { new Tally(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, List[String].empty()); }
 
 // '1 test', '2 tests'
-fn counted(n u64, word &Array[u8]) String {
+fn counted(n u64, word &str) String {
   mut text = String.empty();
   text <- n;
-  text <- " "; text.appendBytes(word);
+  text <- " "; text.append(word);
   if n != 1u64 { text <- "s"; }
   text;
 }
 
 // Text with each line after a pad, as congo.py's indent writes it: the line
 // ends at its end dropped first
-fn indent(text &Array[u8], pad &Array[u8]) String {
-  mut end = text.len;
+fn indent(text &str, pad &str) String {
+  mut end = text.len();
   while end > 0usize and text[end - 1usize] == '\n' { end = end - 1usize; }
   imm lines = splitText(&text[..end], '\n');
   mut out = String.empty();
   mut i = 0usize;
   while i < lines.len() {
     if i > 0usize { out <- "\n"; }
-    out.appendBytes(pad); out <- lines[i].view();
+    out.append(pad); out <- lines[i].view();
     i = i + 1usize;
   }
   out;
@@ -102,7 +102,7 @@ fn indent(text &Array[u8], pad &Array[u8]) String {
 // Output as it is compared: line ends made '\n' (git may check an expected
 // file out with CRLF), and trailing blank lines dropped, as the compiler's
 // suite compares a run's output
-fn normalizedLines(text &Array[u8]) List[String] {
+fn normalizedLines(text &str) List[String] {
   imm unix = newlines(text);
   mut lines = unix.split('\n');
   while lines.len() > 0usize and isBlank(lines[lines.len() - 1usize].view()) { lines.pop(); }
@@ -110,31 +110,30 @@ fn normalizedLines(text &Array[u8]) List[String] {
 }
 
 // A path with its extension changed: tests/a.cone to tests/a.out
-fn withSuffix(file &Array[u8], suffix &Array[u8]) String {
-  imm folder = parentOf(file);
-  imm stem = path.stem(file);
-  imm name = cat(stem.view(), suffix);
-  joined(folder.view(), name.view());
+fn withSuffix(file &Path, suffix &str) Path {
+  imm folder = file.parent();
+  imm name = cat(file.stem(), suffix);
+  folder.join(name.view());
 }
 
 // A file's whole text, or Congo stops, as congo.py stops at a file it cannot
 // read
-fn readAll(file &Array[u8]) String {
-  match fs.readFile(&asPath(file)) {
+fn readAll(file &Path) String {
+  match fs.readFile(file) {
     case mut ok Ok {
       mut text = String.empty();
       text <=> ok.value;
       text;
     }
-    case imm e Error { fail(e.value.message()); }
+    case imm e Error { fail(fsMessage(&e.value)); }
   }
 }
 
 // A file written as bytes, or Congo stops
-fn writeAll(file &Array[u8], text &Array[u8]) {
-  match fs.writeFile(&asPath(file), text) {
+fn writeAll(file &Path, text &str) {
+  match fs.writeFile(file, text) {
     case is Ok {}
-    case imm e Error { fail(e.value.message()); }
+    case imm e Error { fail(fsMessage(&e.value)); }
   }
 }
 
@@ -144,12 +143,12 @@ fn isStripped(b u8) bool {
 }
 
 // The text without what Python's str.strip() strips at either end
-fn stripped(text &Array[u8]) String {
+fn stripped(text &str) String {
   mut a = 0usize;
-  mut b = text.len;
+  mut b = text.len();
   while a < b and isStripped(text[a]) { a = a + 1usize; }
   while b > a and isStripped(text[b - 1usize]) { b = b - 1usize; }
-  String.fromBytes(&text[a..b]);
+  String.from(&text[a..b]);
 }
 
 // The integer a text spells as Python's int() reads one -- a sign or none,
@@ -157,20 +156,20 @@ fn stripped(text &Array[u8]) String {
 // Python's str() writes it back: no '+', no leading zeros, no '_', and no
 // '-' before 0. Of any size, as Python's integers are; "" for a text that
 // spells none.
-fn pyInt(text &Array[u8]) String {
+fn pyInt(text &str) String {
   mut negative = false;
   mut start = 0usize;
-  if text.len > 0usize and (text[0usize] == '-' or text[0usize] == '+') {
+  if text.len() > 0usize and (text[0usize] == '-' or text[0usize] == '+') {
     negative = text[0usize] == '-';
     start = 1usize;
   }
-  if start == text.len { return String.empty(); }
+  if start == text.len() { return String.empty(); }
   mut digits = String.empty();
   mut i = start;
-  while i < text.len {
+  while i < text.len() {
     imm b = text[i];
     if b == '_' {
-      if i == start or i + 1usize == text.len or text[i - 1usize] == '_' { return String.empty(); }
+      if i == start or i + 1usize == text.len() or text[i - 1usize] == '_' { return String.empty(); }
     }
     elif b >= '0' and b <= '9' {
       if not (b == '0' and digits.isEmpty()) { digits.appendByte(b); }
@@ -186,13 +185,13 @@ fn pyInt(text &Array[u8]) String {
 // A text as Python's repr() writes a str: in single quotes, or double when
 // it holds a single quote and no double; a backslash, the quote, and each
 // control character escaped
-fn pyRepr(text &Array[u8]) String {
+fn pyRepr(text &str) String {
   mut quote u8 = '\'';
-  if findByte(text, '\'', 0usize) < text.len and findByte(text, '"', 0usize) == text.len { quote = '"'; }
+  if findByte(text, '\'', 0usize) < text.len() and findByte(text, '"', 0usize) == text.len() { quote = '"'; }
   mut out = String.empty();
   out.appendByte(quote);
   mut i = 0usize;
-  while i < text.len {
+  while i < text.len() {
     imm b = text[i];
     if b == '\\' { out <- "\\\\"; }
     elif b == quote { out.appendByte('\\'); out.appendByte(b); }
@@ -213,14 +212,14 @@ fn pyRepr(text &Array[u8]) String {
 // tests/<name>.exit holds the exit status the program must end with, where
 // it is not 0: one integer, as the compiler suite's 'program_exit' is.
 // Answered in decimal, as Python writes the integer back
-fn expectedExit(program &Array[u8]) Result[String, String] {
+fn expectedExit(program &Path) Result[String, String] {
   imm file = withSuffix(program, ".exit");
-  if not fs.isFile(&asPath(file.view())) { return Ok[String, String][String.from("0")]; }
-  imm raw = readAll(file.view());
+  if not fs.isFile(&file) { return Ok[String, String][String.from("0")]; }
+  imm raw = readAll(&file);
   imm text = stripped(raw.view());
   imm value = pyInt(text.view());
   if not value.isEmpty() { return Ok[String, String][value]; }
-  imm place = shown(file.view());
+  imm place = shown(&file);
   imm written = pyRepr(text.view());
   Error[String, String][cat(place.view(), " must hold one integer, the exit status the test ends with; it holds ",
     written.view())];
@@ -229,39 +228,36 @@ fn expectedExit(program &Array[u8]) Result[String, String] {
 // tests/<name>.debug, whatever it holds, marks a test debug-only: a test of a
 // check made in a debug build alone (assertDebug, assertDebugMsg), which has
 // nothing to say in a release build. A release test skips it
-fn debugOnly(program &Array[u8]) bool {
+fn debugOnly(program &Path) bool {
   imm marker = withSuffix(program, ".debug");
-  fs.isFile(&asPath(marker.view()));
+  fs.isFile(&marker);
 }
 
-// Folder paths in the order congo.py's sorted() puts Windows paths: by
-// their lower-cased spelling
-fn byFoldedPath(a &String, b &String) i32 {
-  mut x = a.copy();
+// Paths in the order congo.py's sorted() puts Windows paths: by their
+// lower-cased spelling, as pathlib writes it
+fn byFoldedPath(a &Path, b &Path) i32 {
+  mut x = native(a);
   x.lowerAscii();
-  mut y = b.copy();
+  mut y = native(b);
   y.lowerAscii();
   x.compare(y.view());
 }
 
 // The .cone programs directly in a tests/ or examples/ folder, by name,
 // those whose name contains the filter where one is given
-fn programs(folder &Array[u8], filter &Array[u8], hasFilter bool) List[String] {
-  mut found = List[String].empty();
-  if not fs.isDir(&asPath(folder)) { return found; }
+fn programs(folder &Path, filter &str, hasFilter bool) List[Path] {
+  mut found = List[Path].empty();
+  if not fs.isDir(folder) { return found; }
   mut entries = List[fs.DirEntry].empty();
-  match fs.readDir(&asPath(folder)) {
+  match fs.readDir(folder) {
     case mut ok Ok { entries <=> ok.value; }
-    case imm e Error { fail(e.value.message()); }
+    case imm e Error { fail(fsMessage(&e.value)); }
   }
   mut i = 0usize;
   while i < entries.len() {
     imm entry = entries[i];
-    imm full = joined(folder, entry.name.view());
-    imm ext = path.extension(entry.name.view());
-    if fs.isFile(&asPath(full.view())) and ext.equals(".cone") {
-      imm stem = path.stem(entry.name.view());
-      if not hasFilter or stem.contains(filter as &str) { found.push(full); }
+    if fs.isFile(&entry.path) and entry.path.extension() == ".cone" {
+      if not hasFilter or entry.path.stem().contains(filter) { found.push(entry.path.copy()); }
     }
     i = i + 1usize;
   }
@@ -276,26 +272,26 @@ struct Verdict {
 }
 
 // Build, run and compare one test program
-fn runTest(s &mut Session, file &Array[u8], bless bool) Verdict {
-  imm stem = path.stem(file);
-  imm tests = joined(s.out.view(), "tests");
-  imm dest = joined(tests.view(), stem.view());
-  mut exe = String.empty();
-  match buildProgram(s, file, dest.view()) {
+fn runTest(s &mut Session, file &Path, bless bool) Verdict {
+  imm stem = file.stem();
+  imm tests = s.out.join("tests");
+  imm dest = tests.join(stem);
+  mut exe Path = "";
+  match buildProgram(s, file, &dest) {
     case mut ok Ok { exe <=> ok.value; }
     case imm e Error { return new Verdict(false, e.value.copy()); }
   }
   // Run in its own build folder, so a file it writes by a relative name
   // lands there and not in the package's source
   mut args = List[String].empty();
-  args.push(exe.copy());
+  args.push(native(&exe));
   mut code = 0u32;
   mut stdout = String.empty();
   mut stderr = String.empty();
   // A crash, a panic's above all, ends at once, not held while Windows
   // reports it (the process package's "A crash")
   match process.run(args.view(), new process.Options(
-      timeout: time.Duration.fromSeconds(testTimeoutSeconds), crashReport: false), &asPath(dest.view())) {
+      timeout: time.Duration.fromSeconds(testTimeoutSeconds), crashReport: false), &dest) {
     case imm ok Ok {
       if ok.value.timedOut {
         // What it wrote to stderr says how far it got: a panic's line, say,
@@ -312,18 +308,18 @@ fn runTest(s &mut Session, file &Array[u8], bless bool) Verdict {
       stdout = utf8Decode(ok.value.stdout.view());
       stderr = utf8Decode(ok.value.stderr.view());
     }
-    case imm e Error { fail(e.value.message()); }
+    case imm e Error { fail(processMessage(&e.value)); }
   }
   // A program that could not start has nothing to compare, and this line is
   // how a person learns why (no dialog says so)
-  imm notStarted = dllNote(code, exe.view());
+  imm notStarted = dllNote(code, &exe);
   if notStarted.len() > 0usize { return new Verdict(false, notStarted); }
   imm expectedPath = withSuffix(file, ".out");
-  if not fs.isFile(&asPath(expectedPath.view())) {
-    imm expectedShown = shown(expectedPath.view());
+  if not fs.isFile(&expectedPath) {
+    imm expectedShown = shown(&expectedPath);
     if not bless {
       return new Verdict(false, cat("no expected output, ", expectedShown.view(), ": write it by hand, or run 'congo test ",
-        stem.view(), " --bless' and check what it writes against the source"));
+        stem, " --bless' and check what it writes against the source"));
     }
     // Blessed only where there is nothing yet: an expected file is written
     // by hand, or blessed once and then checked by hand, and never
@@ -331,15 +327,15 @@ fn runTest(s &mut Session, file &Array[u8], bless bool) Verdict {
     imm lines = normalizedLines(stdout.view());
     mut text = String.join(lines.view(), "\n");
     text <- "\n";
-    writeAll(expectedPath.view(), text.view());
+    writeAll(&expectedPath, text.view());
     mut note = cat("blessed ", expectedShown.view());
     if code != 0u32 {
       imm exitPath = withSuffix(file, ".exit");
       mut status = String.empty();
       status <- u64.from(code);
       imm statusLine = cat(status.view(), "\n");
-      writeAll(exitPath.view(), statusLine.view());
-      imm exitShown = shown(exitPath.view());
+      writeAll(&exitPath, statusLine.view());
+      imm exitShown = shown(&exitPath);
       note <- " and ", exitShown.view(), " (", status.view(), ")";
     }
     note <- ": check it by hand against the source";
@@ -358,11 +354,11 @@ fn runTest(s &mut Session, file &Array[u8], bless bool) Verdict {
   if not got.equals(want.view()) {
     problems.push(cat("exited ", got.view(), ", expected ", want.view()));
   }
-  imm expectedText = readAll(expectedPath.view());
+  imm expectedText = readAll(&expectedPath);
   imm expected = normalizedLines(expectedText.view());
   imm actual = normalizedLines(stdout.view());
   if not sameLines(&expected, &actual) {
-    imm expectedShown = shown(expectedPath.view());
+    imm expectedShown = shown(&expectedPath);
     imm diff = textdiff.unified(expected.view(), actual.view(), expectedShown.view(), "actual", 2usize);
     imm shownDiff = indent(diff.view(), "  ");
     problems.push(cat("output differs:\n", shownDiff.view()));
@@ -371,13 +367,13 @@ fn runTest(s &mut Session, file &Array[u8], bless bool) Verdict {
   // stderr, where it writes there on purpose: a panic's line. Without one,
   // stderr is not compared
   imm errPath = withSuffix(file, ".err");
-  imm errChecked = fs.isFile(&asPath(errPath.view()));
+  imm errChecked = fs.isFile(&errPath);
   if errChecked {
-    imm errText = readAll(errPath.view());
+    imm errText = readAll(&errPath);
     imm expectedErr = normalizedLines(errText.view());
     imm actualErr = normalizedLines(stderr.view());
     if not sameLines(&expectedErr, &actualErr) {
-      imm errShown = shown(errPath.view());
+      imm errShown = shown(&errPath);
       imm diff = textdiff.unified(expectedErr.view(), actualErr.view(), errShown.view(), "actual", 2usize);
       imm shownDiff = indent(diff.view(), "  ");
       problems.push(cat("stderr differs:\n", shownDiff.view()));
@@ -392,9 +388,9 @@ fn runTest(s &mut Session, file &Array[u8], bless bool) Verdict {
 }
 
 // Whether Python's str.strip() leaves nothing of a text
-fn isStrippedAway(text &Array[u8]) bool {
+fn isStrippedAway(text &str) bool {
   mut i = 0usize;
-  while i < text.len {
+  while i < text.len() {
     if not isStripped(text[i]) { return false; }
     i = i + 1usize;
   }
@@ -412,10 +408,10 @@ fn sameLines(a &List[String], b &List[String]) bool {
 }
 
 // One line of the report, and what to show under it
-fn report(line &Array[u8], detail &Array[u8]) {
-  printStr(line as &str);
+fn report(line &str, detail &str) {
+  printStr(line);
   printStr("\n");
-  if detail.len > 0usize {
+  if detail.len() > 0usize {
     imm shownDetail = indent(detail, "        ");
     printStr(shownDetail.view());
     printStr("\n");
@@ -424,26 +420,27 @@ fn report(line &Array[u8], detail &Array[u8]) {
 }
 
 // Build the package, then run each test and build each example
-fn testPackage(repo &Array[u8], pkg Package, mode &Array[u8], filter &Array[u8], hasFilter bool, bless bool,
+fn testPackage(repo &Path, pkg Package, mode &str, filter &str, hasFilter bool, bless bool,
     defines &List[String]) Tally {
   mut tally = emptyTally();
   imm label = pkg.label();
-  imm testing = cat(label.view(), " (", pkg.root.view(), ")");
+  imm rootPlace = native(&pkg.root);
+  imm testing = cat(label.view(), " (", rootPlace.view(), ")");
   say("Testing", testing.view());
   // The package under test is found first, under its own name, so a test
   // imports this copy -- whether or not it is in a registry, and whatever
   // else a registry holds of that name
   imm folders = registryFolders(repo);
   imm out = buildFolder(&pkg, mode);
-  mut s = newSession(repo, readRegistry(folders), out.view(), mode, defines);
+  mut s = newSession(repo, readRegistry(folders), &out, mode, defines);
   imm name = pkg.name.copy();
   imm isLibrary = pkg.output.equals("library");
-  imm testsFolder = joined(pkg.root.view(), "tests");
-  imm examplesFolder = joined(pkg.root.view(), "examples");
+  imm testsFolder = pkg.root.join("tests");
+  imm examplesFolder = pkg.root.join("examples");
   imm top = s.reg.add(pkg);
   s.reg.byName.insert(name.copy(), top);
-  mut tests = programs(testsFolder.view(), filter, hasFilter);
-  imm examples = programs(examplesFolder.view(), filter, hasFilter);
+  mut tests = programs(&testsFolder, filter, hasFilter);
+  imm examples = programs(&examplesFolder, filter, hasFilter);
   match build(&mut s, top) {
     case is Ok {}
     case imm e Error {
@@ -460,16 +457,16 @@ fn testPackage(repo &Array[u8], pkg Package, mode &Array[u8], filter &Array[u8],
   // only built, and that is said
   if s.spvs.contains(name.view()) and not hasFilter {
     imm spv = s.spvs[name.view()].copy();
-    imm spvName = path.name(spv.view());
-    imm v = validateKernels(spv.view());
+    imm spvName = spv.name();
+    imm v = validateKernels(&spv);
     if not v.ran {
-      imm line = cat("     kernels ", spvName.view(), " ... built, not validated: spirv-val, the Vulkan SDK's, is not on PATH");
+      imm line = cat("     kernels ", spvName, " ... built, not validated: spirv-val, the Vulkan SDK's, is not on PATH");
       report(line.view(), "");
     }
     else {
-      mut outcome &Array[u8] = "valid";
+      mut outcome &str = "valid";
       if not v.valid { outcome = "FAILED"; }
-      imm line = cat("     kernels ", spvName.view(), " ... ", outcome);
+      imm line = cat("     kernels ", spvName, " ... ", outcome);
       if v.valid {
         report(line.view(), "");
         tally.passed = tally.passed + 1u64;
@@ -477,11 +474,11 @@ fn testPackage(repo &Array[u8], pkg Package, mode &Array[u8], filter &Array[u8],
       else {
         report(line.view(), v.said.view());
         tally.failed = tally.failed + 1u64;
-        tally.failures.push(cat(name.view(), ": kernels ", spvName.view()));
+        tally.failures.push(cat(name.view(), ": kernels ", spvName));
       }
     }
   }
-  if not fs.isDir(&asPath(testsFolder.view())) {
+  if not fs.isDir(&testsFolder) {
     imm none = cat("none: ", name.view(), " has no tests folder");
     say("Tests", none.view());
   }
@@ -490,8 +487,7 @@ fn testPackage(repo &Array[u8], pkg Package, mode &Array[u8], filter &Array[u8],
     tally.failed = tally.failed + u64.from(tests.len());
     mut i = 0usize;
     while i < tests.len() {
-      imm stem = path.stem(tests[i].view());
-      tally.failures.push(cat(name.view(), ": test ", stem.view()));
+      tally.failures.push(cat(name.view(), ": test ", tests[i].stem()));
       i = i + 1usize;
     }
     tests.clear();
@@ -502,51 +498,51 @@ fn testPackage(repo &Array[u8], pkg Package, mode &Array[u8], filter &Array[u8],
   }
   mut i = 0usize;
   while i < tests.len() {
-    imm file = tests[i].view();
-    imm stem = path.stem(file);
+    imm file = tests[i];
+    imm stem = file.stem();
     // Not built or run, so nothing is blessed for it either
     if mode == "release" and debugOnly(file) {
-      imm skippedLine = cat("        test ", stem.view(), " ... skipped (debug only)");
+      imm skippedLine = cat("        test ", stem, " ... skipped (debug only)");
       report(skippedLine.view(), "");
       tally.skipped = tally.skipped + 1u64;
       i = i + 1usize;
       continue;
     }
     imm verdict = runTest(&mut s, file, bless);
-    mut outcome &Array[u8] = "ok";
+    mut outcome &str = "ok";
     if not verdict.passed { outcome = "FAILED"; }
-    imm line = cat("        test ", stem.view(), " ... ", outcome);
+    imm line = cat("        test ", stem, " ... ", outcome);
     report(line.view(), verdict.detail.view());
     if verdict.passed { tally.passed = tally.passed + 1u64; }
     else {
       tally.failed = tally.failed + 1u64;
-      tally.failures.push(cat(name.view(), ": test ", stem.view()));
+      tally.failures.push(cat(name.view(), ": test ", stem));
     }
     i = i + 1usize;
   }
   i = 0usize;
   while i < examples.len() {
-    imm file = examples[i].view();
-    imm stem = path.stem(file);
-    imm examplesOut = joined(s.out.view(), "examples");
-    imm dest = joined(examplesOut.view(), stem.view());
+    imm file = examples[i];
+    imm stem = file.stem();
+    imm examplesOut = s.out.join("examples");
+    imm dest = examplesOut.join(stem);
     mut passed = true;
     mut detail = String.empty();
-    match buildProgram(&mut s, file, dest.view()) {
+    match buildProgram(&mut s, file, &dest) {
       case is Ok {}
       case imm e Error {
         passed = false;
         detail = e.value.copy();
       }
     }
-    mut outcome &Array[u8] = "built";
+    mut outcome &str = "built";
     if not passed { outcome = "FAILED to build"; }
-    imm line = cat("     example ", stem.view(), " ... ", outcome);
+    imm line = cat("     example ", stem, " ... ", outcome);
     report(line.view(), detail.view());
     if passed { tally.built = tally.built + 1u64; }
     else {
       tally.unbuilt = tally.unbuilt + 1u64;
-      tally.failures.push(cat(name.view(), ": example ", stem.view()));
+      tally.failures.push(cat(name.view(), ": example ", stem));
     }
     i = i + 1usize;
   }
@@ -558,18 +554,17 @@ fn testPackage(repo &Array[u8], pkg Package, mode &Array[u8], filter &Array[u8],
 
 // The manifests of a folder of packages, a registry folder such as
 // packages/: each subfolder's, by name
-fn packageManifests(folder &Array[u8]) List[String] {
-  mut found = List[String].empty();
+fn packageManifests(folder &Path) List[Path] {
+  mut found = List[Path].empty();
   mut entries = List[fs.DirEntry].empty();
-  match fs.readDir(&asPath(folder)) {
+  match fs.readDir(folder) {
     case mut ok Ok { entries <=> ok.value; }
-    case imm e Error { fail(e.value.message()); }
+    case imm e Error { fail(fsMessage(&e.value)); }
   }
   mut i = 0usize;
   while i < entries.len() {
-    imm sub = joined(folder, entries[i].name.view());
-    imm manifest = joined(sub.view(), "congo.toml");
-    if fs.isFile(&asPath(manifest.view())) { found.push(manifest); }
+    imm manifest = entries[i].path.join("congo.toml");
+    if fs.isFile(&manifest) { found.push(manifest); }
     i = i + 1usize;
   }
   found;
@@ -577,29 +572,28 @@ fn packageManifests(folder &Array[u8]) List[String] {
 
 // Test the current package; or, in a folder of packages that is not a
 // package itself (a registry folder such as packages/), each package in it
-fn cmdTest(filter &Array[u8], hasFilter bool, release bool, bless bool, defines &List[String]) i32 {
-  mut mode &Array[u8] = "debug";
+fn cmdTest(filter &str, hasFilter bool, release bool, bless bool, defines &List[String]) i32 {
+  mut mode &str = "debug";
   if release { mode = "release"; }
   imm repo = findRepo();
-  mut cwd = asPath("");
+  mut here Path = "";
   match fs.currentDir() {
-    case mut ok Ok { cwd <=> ok.value; }
-    case imm e Error { fail(e.value.message()); }
+    case mut ok Ok { here <=> ok.value; }
+    case imm e Error { fail(fsMessage(&e.value)); }
   }
-  imm here = winPath(cwd.view());
-  imm own = joined(here.view(), "congo.toml");
-  mut manifests = List[String].empty();
-  if not fs.isFile(&asPath(own.view())) { manifests = packageManifests(here.view()); }
+  imm own = here.join("congo.toml");
+  mut manifests = List[Path].empty();
+  if not fs.isFile(&own) { manifests = packageManifests(&here); }
   if manifests.len() == 0usize { manifests.push(currentManifest()); }
   mut total = emptyTally();
   mut i = 0usize;
   while i < manifests.len() {
     mut pkg = emptyPackage();
-    match readManifest(manifests[i].view()) {
+    match readManifest(manifests[i]) {
       case mut ok Ok { pkg <=> ok.value; }
       case imm e Error { fail(e.value.copy()); }
     }
-    imm tally = testPackage(repo.view(), pkg, mode, filter, hasFilter, bless, defines);
+    imm tally = testPackage(&repo, pkg, mode, filter, hasFilter, bless, defines);
     total.add(&tally);
     i = i + 1usize;
   }

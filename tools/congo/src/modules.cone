@@ -12,7 +12,7 @@ struct Line {
 
 struct Module {
   pub name String;
-  pub files List[String];
+  pub files List[Path];
   pub children List[usize];
   pub hasParent bool;
   pub parent usize;
@@ -23,10 +23,10 @@ struct Module {
   pub gpu bool;            // in the package's gpu/ folder, at any depth: compiled for the GPU too
 }
 
-fn newModule(name &Array[u8], file &Array[u8], hasParent bool, parent usize) Module {
-  mut files = List[String].empty();
-  files.push(String.fromBytes(file));
-  new Module(String.fromBytes(name), files, List[usize].empty(), hasParent, parent,
+fn newModule(name &str, file &Path, hasParent bool, parent usize) Module {
+  mut files = List[Path].empty();
+  files.push(file.copy());
+  new Module(String.from(name), files, List[usize].empty(), hasParent, parent,
     List[Import].empty(), false, noImport(), List[Line].empty(), false);
 }
 
@@ -52,29 +52,27 @@ fn addImports(m &mut Module, header &Header) {
 
 // A folder's .cone files and its subfolders, each by name
 struct Listing {
-  pub files List[String];
-  pub folders List[String];
+  pub files List[Path];
+  pub folders List[Path];
 }
 
-fn coneFiles(folder &Array[u8]) Listing {
+fn coneFiles(folder &Path) Listing {
   mut entries = List[fs.DirEntry].empty();
-  match fs.readDir(&asPath(folder)) {
+  match fs.readDir(folder) {
     case mut ok Ok { entries <=> ok.value; }
     case imm e Error {
-      fail(e.value.message());
+      fail(fsMessage(&e.value));
     }
   }
-  mut out = new Listing(List[String].empty(), List[String].empty());
+  mut out = new Listing(List[Path].empty(), List[Path].empty());
   mut i = 0usize;
   while i < entries.len() {
     imm entry = entries[i];
-    imm full = joined(folder, entry.name.view());
     // A link is what it leads to, as Path.is_file and is_dir follow it
-    imm isFile = if entry.isLink {fs.isFile(&asPath(full.view()));} else {entry.isFile;};
-    imm isDir = if entry.isLink {fs.isDir(&asPath(full.view()));} else {entry.isDir;};
-    imm ext = path.extension(entry.name.view());
-    if isFile and ext.equals(".cone") { out.files.push(full.copy()); }
-    if isDir { out.folders.push(full); }
+    imm isFile = if entry.isLink {fs.isFile(&entry.path);} else {entry.isFile;};
+    imm isDir = if entry.isLink {fs.isDir(&entry.path);} else {entry.isDir;};
+    if isFile and entry.path.extension() == ".cone" { out.files.push(entry.path.copy()); }
+    if isDir { out.folders.push(entry.path.copy()); }
     i = i + 1usize;
   }
   out;
@@ -112,7 +110,7 @@ fn setChildren(mods &mut List[Module], m usize, kids &List[usize]) {
 // subfolder's files at any depth. A file that opens with its own 'mod' line
 // is a one-file submodule, and a subfolder holding its designated file is a
 // submodule. Answers the module's place in mods.
-fn scanFolderModule(mods &mut List[Module], name &Array[u8], folder &Array[u8], designated &Array[u8],
+fn scanFolderModule(mods &mut List[Module], name &str, folder &Path, designated &Path,
     hasParent bool, parent usize) Result[usize, String] {
   imm me = mods.len();
   mods.push(newModule(name, designated, hasParent, parent));
@@ -124,7 +122,7 @@ fn scanFolderModule(mods &mut List[Module], name &Array[u8], folder &Array[u8], 
   imm listing = coneFiles(folder);
   mut i = 0usize;
   while i < listing.files.len() {
-    imm file = listing.files[i].view();
+    imm file = listing.files[i];
     if not samePath(file, designated) {
       mut header = noHeader();
       match scanHeader(file) {
@@ -132,14 +130,15 @@ fn scanFolderModule(mods &mut List[Module], name &Array[u8], folder &Array[u8], 
         case imm e Error { return Error[usize, String][e.value.copy()]; }
       }
       if header.hasMod {
-        imm stem = path.stem(file);
-        imm fault = nameFault(stem.view());
+        imm stem = file.stem();
+        imm fault = nameFault(stem);
         if not fault.isEmpty() {
-          return Error[usize, String][cat(file, ": a one-file module is named by its file: '", stem.view(), "' ", fault.view(),
+          imm place = native(file);
+          return Error[usize, String][cat(place.view(), ": a one-file module is named by its file: '", stem, "' ", fault.view(),
             "; rename the file and its 'mod' line")];
         }
         imm child = mods.len();
-        mods.push(newModule(stem.view(), file, true, me));
+        mods.push(newModule(stem, file, true, me));
         addImports(&mut mods[child], &header);
         kids.push(child);
       }
@@ -147,25 +146,26 @@ fn scanFolderModule(mods &mut List[Module], name &Array[u8], folder &Array[u8], 
         // No 'mod' line, so no imports: a module's imports are all in its
         // designated file, and the compiler refuses any here
         imm here = &mut mods[me];
-        here.files.push(String.from(file));
+        here.files.push(file.copy());
       }
     }
     i = i + 1usize;
   }
   i = 0usize;
   while i < listing.folders.len() {
-    imm sub = listing.folders[i].view();
-    imm subName = path.name(sub);
-    if not subName.equals("build") {
-      imm innerName = cat(subName.view(), ".cone");
-      imm inner = joined(sub, innerName.view());
-      if fs.isFile(&asPath(inner.view())) {
-        imm fault = nameFault(subName.view());
+    imm sub = listing.folders[i];
+    imm subName = sub.name();
+    if subName != "build" {
+      imm innerName = cat(subName, ".cone");
+      imm inner = sub.join(innerName.view());
+      if fs.isFile(&inner) {
+        imm fault = nameFault(subName);
         if not fault.isEmpty() {
-          return Error[usize, String][cat(inner.view(), ": a module folder names its module: '", subName.view(), "' ", fault.view(),
+          imm place = native(&inner);
+          return Error[usize, String][cat(place.view(), ": a module folder names its module: '", subName, "' ", fault.view(),
             "; rename the folder, its designated file and its 'mod' line")];
         }
-        match scanFolderModule(mods, subName.view(), sub, inner.view(), true, me) {
+        match scanFolderModule(mods, subName, sub, &inner, true, me) {
           case imm k Ok { kids.push(k.value); }
           case imm e Error { return Error[usize, String][e.value.copy()]; }
         }
@@ -186,32 +186,34 @@ fn scanFolderModule(mods &mut List[Module], name &Array[u8], folder &Array[u8], 
 // An organisational folder's files join the module around it, at any
 // depth. A module cannot sit there, since a module sits directly in its
 // parent's folder.
-fn scanOrganisational(mods &mut List[Module], m usize, folder &Array[u8]) Result[void, String] {
+fn scanOrganisational(mods &mut List[Module], m usize, folder &Path) Result[void, String] {
   imm listing = coneFiles(folder);
+  imm folderPlace = native(folder);
   mut i = 0usize;
   while i < listing.files.len() {
-    imm file = listing.files[i].view();
+    imm file = listing.files[i];
     mut hasMod = false;
     match scanHeader(file) {
       case imm h Ok { hasMod = h.value.hasMod; }
       case imm e Error { return Error[void, String][e.value.copy()]; }
     }
     if hasMod {
-      return Error[void, String][cat(file, ": a file opening with 'mod' is a module, and a module must sit directly in its parent module's folder, not in the organisational folder ", folder)];
+      imm place = native(file);
+      return Error[void, String][cat(place.view(), ": a file opening with 'mod' is a module, and a module must sit directly in its parent module's folder, not in the organisational folder ", folderPlace.view())];
     }
     // Like any file of the module but its designated one, it has no imports
     imm here = &mut mods[m];
-    here.files.push(String.from(file));
+    here.files.push(file.copy());
     i = i + 1usize;
   }
   i = 0usize;
   while i < listing.folders.len() {
-    imm sub = listing.folders[i].view();
-    imm subName = path.name(sub);
-    imm innerName = cat(subName.view(), ".cone");
-    imm inner = joined(sub, innerName.view());
-    if fs.isFile(&asPath(inner.view())) {
-      return Error[void, String][cat(inner.view(), ": a module must sit directly in its parent module's folder, not in the organisational folder ", folder)];
+    imm sub = listing.folders[i];
+    imm innerName = cat(sub.name(), ".cone");
+    imm inner = sub.join(innerName.view());
+    if fs.isFile(&inner) {
+      imm place = native(&inner);
+      return Error[void, String][cat(place.view(), ": a module must sit directly in its parent module's folder, not in the organisational folder ", folderPlace.view())];
     }
     match scanOrganisational(mods, m, sub) {
       case is Ok {}
@@ -228,28 +230,28 @@ fn scanOrganisational(mods &mut List[Module], m usize, folder &Array[u8]) Result
 // 'name'. Congo lists the files, so the compiler never sweeps. A lone file is
 // a module of its own and nothing beside it joins.
 fn scanPackage(pkg &Package) Result[List[Module], String] {
-  if not fs.isFile(&asPath(pkg.src.view())) {
-    imm place = shown(pkg.src.view());
+  if not fs.isFile(&pkg.src) {
+    imm place = shown(&pkg.src);
     return Error[List[Module], String][cat("package ", pkg.name.view(), " has no ", place.view(),
       ": a package's root module is src/<name>.cone, named as its manifest names it")];
   }
   mut mods = List[Module].empty();
   if pkg.lone {
-    mods.push(newModule(pkg.name.view(), pkg.src.view(), false, 0usize));
-    match scanHeader(pkg.src.view()) {
+    mods.push(newModule(pkg.name.view(), &pkg.src, false, 0usize));
+    match scanHeader(&pkg.src) {
       case imm h Ok { addImports(&mut mods[0usize], &h.value); }
       case imm e Error { return Error[List[Module], String][e.value.copy()]; }
     }
     return Ok[List[Module], String][mods];
   }
-  imm folder = parentOf(pkg.src.view());
-  match scanFolderModule(&mut mods, pkg.name.view(), folder.view(), pkg.src.view(), false, 0usize) {
+  imm folder = pkg.src.parent();
+  match scanFolderModule(&mut mods, pkg.name.view(), &folder, &pkg.src, false, 0usize) {
     case is Ok {}
     case imm e Error { return Error[List[Module], String][e.value.copy()]; }
   }
-  imm gpuFolder = joined(pkg.root.view(), "gpu");
-  if fs.isDir(&asPath(gpuFolder.view())) {
-    match scanGpuFolder(pkg, &mut mods, gpuFolder.view()) {
+  imm gpuFolder = pkg.root.join("gpu");
+  if fs.isDir(&gpuFolder) {
+    match scanGpuFolder(pkg, &mut mods, &gpuFolder) {
       case is Ok {}
       case imm e Error { return Error[List[Module], String][e.value.copy()]; }
     }
@@ -267,9 +269,10 @@ fn scanPackage(pkg &Package) Result[List[Module], String] {
 // GPU, without src/, into the package's one .spv. A file with no 'mod' line
 // would join no module there, and a folder with no designated file would
 // organise nothing, so each is refused.
-fn scanGpuFolder(pkg &Package, mods &mut List[Module], folder &Array[u8]) Result[void, String] {
+fn scanGpuFolder(pkg &Package, mods &mut List[Module], folder &Path) Result[void, String] {
   if pkg.gpu {
-    return Error[void, String][cat(folder, ": ", pkg.name.view(),
+    imm place = native(folder);
+    return Error[void, String][cat(place.view(), ": ", pkg.name.view(),
       " is marked for the GPU (targets = [\"native\", \"gpu\"]), so all of it is compiled for the GPU already; a gpu/ folder is for a package that is not: move gpu/'s modules into src/, or take \"gpu\" out of targets")];
   }
   mut inSrc = List[usize].empty();
@@ -282,43 +285,47 @@ fn scanGpuFolder(pkg &Package, mods &mut List[Module], folder &Array[u8]) Result
   imm listing = coneFiles(folder);
   i = 0usize;
   while i < listing.files.len() {
-    imm file = listing.files[i].view();
+    imm file = listing.files[i];
     mut header = noHeader();
     match scanHeader(file) {
       case mut h Ok { header <=> h.value; }
       case imm e Error { return Error[void, String][e.value.copy()]; }
     }
     if not header.hasMod {
-      return Error[void, String][cat(file, ": a file in gpu/ opens with its own 'mod' line, as a module of one file named for the file: gpu/ holds the package's GPU modules, and a file with no 'mod' line would join none")];
+      imm place = native(file);
+      return Error[void, String][cat(place.view(), ": a file in gpu/ opens with its own 'mod' line, as a module of one file named for the file: gpu/ holds the package's GPU modules, and a file with no 'mod' line would join none")];
     }
-    imm stem = path.stem(file);
-    imm fault = nameFault(stem.view());
+    imm stem = file.stem();
+    imm fault = nameFault(stem);
     if not fault.isEmpty() {
-      return Error[void, String][cat(file, ": a one-file module is named by its file: '", stem.view(), "' ", fault.view(),
+      imm place = native(file);
+      return Error[void, String][cat(place.view(), ": a one-file module is named by its file: '", stem, "' ", fault.view(),
         "; rename the file and its 'mod' line")];
     }
     imm child = mods.len();
-    mods.push(newModule(stem.view(), file, true, 0usize));
+    mods.push(newModule(stem, file, true, 0usize));
     addImports(&mut mods[child], &header);
     found.push(child);
     i = i + 1usize;
   }
   i = 0usize;
   while i < listing.folders.len() {
-    imm sub = listing.folders[i].view();
-    imm subName = path.name(sub);
-    imm innerName = cat(subName.view(), ".cone");
-    imm inner = joined(sub, innerName.view());
-    if not fs.isFile(&asPath(inner.view())) {
-      return Error[void, String][cat(sub, ": a folder in gpu/ is a module folder, holding its designated file, ", innerName.view(),
+    imm sub = listing.folders[i];
+    imm subName = sub.name();
+    imm innerName = cat(subName, ".cone");
+    imm inner = sub.join(innerName.view());
+    if not fs.isFile(&inner) {
+      imm place = native(sub);
+      return Error[void, String][cat(place.view(), ": a folder in gpu/ is a module folder, holding its designated file, ", innerName.view(),
         ": gpu/ holds the package's GPU modules, and a folder with none would be part of no module")];
     }
-    imm fault = nameFault(subName.view());
+    imm fault = nameFault(subName);
     if not fault.isEmpty() {
-      return Error[void, String][cat(inner.view(), ": a module folder names its module: '", subName.view(), "' ", fault.view(),
+      imm place = native(&inner);
+      return Error[void, String][cat(place.view(), ": a module folder names its module: '", subName, "' ", fault.view(),
         "; rename the folder, its designated file and its 'mod' line")];
     }
-    match scanFolderModule(mods, subName.view(), sub, inner.view(), true, 0usize) {
+    match scanFolderModule(mods, subName, sub, &inner, true, 0usize) {
       case imm k Ok { found.push(k.value); }
       case imm e Error { return Error[void, String][e.value.copy()]; }
     }
@@ -337,8 +344,10 @@ fn scanGpuFolder(pkg &Package, mods &mut List[Module], folder &Array[u8]) Result
     while j < inSrc.len() {
       imm clash = *inSrc[j];
       if mods[clash].name.equals(mods[m].name.view()) {
-        return Error[void, String][cat(mods[m].files[0usize].view(), ": ", pkg.name.view(), " has two submodules named '", mods[m].name.view(),
-          "', this one in gpu/ and ", mods[clash].files[0usize].view(), " in src/; rename one")];
+        imm here = native(mods[m].files[0usize]);
+        imm there = native(mods[clash].files[0usize]);
+        return Error[void, String][cat(here.view(), ": ", pkg.name.view(), " has two submodules named '", mods[m].name.view(),
+          "', this one in gpu/ and ", there.view(), " in src/; rename one")];
       }
       j = j + 1usize;
     }
@@ -383,14 +392,14 @@ fn walkFrom(mods &List[Module], m usize, out &mut List[usize]) {
 
 // The child of parent named name, the last of that name as a dictionary of
 // them keeps it; answers whether there is one
-fn sisterNamed(mods &List[Module], m usize, name &Array[u8], found &mut usize) bool {
+fn sisterNamed(mods &List[Module], m usize, name &str, found &mut usize) bool {
   if not mods[m].hasParent { return false; }
   imm parent = mods[m].parent;
   mut any = false;
   mut i = 0usize;
   while i < mods[parent].children.len() {
     imm c = *mods[parent].children[i];
-    if mods[c].name.equals(name as &str) {
+    if mods[c].name.equals(name) {
       *found = c;
       any = true;
     }
@@ -510,7 +519,7 @@ fn visitModule(pkg &Package, mods &List[Module], reg &Registry, m usize,
       }
       imm last = qualified(mods, to);
       chain <- last.view();
-      mut hint &Array[u8] = "";
+      mut hint &str = "";
       if contains { hint = " A module may not depend on a module that contains it: move what they share into a sister both import."; }
       return Error[void, String][cat("import loop between modules of package ", pkg.name.view(), ": ", chain.view(),
         ". Imports between modules must not loop (", text.view(), ").", hint)];

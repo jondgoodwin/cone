@@ -2,20 +2,20 @@
 // and the text a child program prints, read as congo.py reads it.
 
 // Text put together from up to nine pieces
-fn cat(a &Array[u8], b &Array[u8] = "", c &Array[u8] = "", d &Array[u8] = "", e &Array[u8] = "", f &Array[u8] = "",
-    g &Array[u8] = "", h &Array[u8] = "", i &Array[u8] = "") String {
-  mut s = String.fromBytes(a);
-  s.appendBytes(b); s.appendBytes(c); s.appendBytes(d); s.appendBytes(e); s.appendBytes(f); s.appendBytes(g); s.appendBytes(h); s.appendBytes(i);
+fn cat(a &str, b &str = "", c &str = "", d &str = "", e &str = "", f &str = "",
+    g &str = "", h &str = "", i &str = "") String {
+  mut s = String.from(a);
+  s.append(b); s.append(c); s.append(d); s.append(e); s.append(f); s.append(g); s.append(h); s.append(i);
   s;
 }
 
 // One progress line, Cargo's shape: a right-aligned verb, then what
-fn say(verb &Array[u8], rest &Array[u8]) {
-  mut v = String.fromBytes(verb);
+fn say(verb &str, rest &str) {
+  mut v = String.from(verb);
   v.padStart(12usize);
   printStr(v.view());
   printStr(" ");
-  printStr(rest as &str);
+  printStr(rest);
   printStr("\n");
   printFlush();
 }
@@ -65,14 +65,14 @@ fn appendUtf8(s &mut String, cp u32) {
 
 // Text with every line end made '\n', as Python's universal newlines make
 // '\r\n' and a lone '\r'
-fn newlines(text &Array[u8]) String {
-  mut out = String.withCapacity(text.len);
+fn newlines(text &str) String {
+  mut out = String.withCapacity(text.len());
   mut i = 0usize;
-  while i < text.len {
+  while i < text.len() {
     imm b = text[i];
     if b == '\r' {
       out.appendByte('\n');
-      if i + 1usize < text.len and text[i + 1usize] == '\n' { i = i + 1usize; }
+      if i + 1usize < text.len() and text[i + 1usize] == '\n' { i = i + 1usize; }
     }
     else { out.appendByte(b); }
     i = i + 1usize;
@@ -165,10 +165,11 @@ fn hardErrorsToStatus() {
 // DLL it needs was not found, if it ended with STATUS_DLL_NOT_FOUND; empty
 // for any other status. With the loader's dialog gone, this line is how a
 // person learns of it
-fn dllNote(code u32, exe &Array[u8]) String {
+fn dllNote(code u32, exe &Path) String {
   if code == 0xC0000135u32 {
     imm full = resolved(exe);
-    return cat(full.view(), " could not start: a DLL it needs was not found (0xC0000135)");
+    imm place = native(&full);
+    return cat(place.view(), " could not start: a DLL it needs was not found (0xC0000135)");
   }
   String.empty();
 }
@@ -225,32 +226,32 @@ fn utf16Text(bytes &Array[u8]) String {
 // The lines of a text, as Python's splitlines() breaks them: at '\n', '\r',
 // '\r\n', and the vertical tab, form feed and file, group and record
 // separators; no line for an end after the last
-fn splitLines(text &Array[u8]) List[String] {
+fn splitLines(text &str) List[String] {
   mut out = List[String].empty();
   mut start = 0usize;
   mut i = 0usize;
-  while i < text.len {
+  while i < text.len() {
     imm b = text[i];
     if b == '\n' or b == '\r' or b == 0x0Bu8 or b == 0x0Cu8 or b == 0x1Cu8 or b == 0x1Du8 or b == 0x1Eu8 {
-      out.push(String.fromBytes(&text[start..i]));
-      if b == '\r' and i + 1usize < text.len and text[i + 1usize] == '\n' { i = i + 1usize; }
+      out.push(String.from(&text[start..i]));
+      if b == '\r' and i + 1usize < text.len() and text[i + 1usize] == '\n' { i = i + 1usize; }
       start = i + 1usize;
     }
     i = i + 1usize;
   }
-  if start < text.len { out.push(String.fromBytes(&text[start..])); }
+  if start < text.len() { out.push(String.from(&text[start..])); }
   out;
 }
 
 // The pieces of a text between each sep
-fn splitText(s &Array[u8], sep u8) List[String] {
-  imm t = String.fromBytes(s);
+fn splitText(s &str, sep u8) List[String] {
+  imm t = String.from(s);
   t.split(sep);
 }
 
-fn isBlank(s &Array[u8]) bool {
+fn isBlank(s &str) bool {
   mut i = 0usize;
-  while i < s.len {
+  while i < s.len() {
     if not (isSpace(s[i]) or s[i] == 0x0Bu8 or s[i] == 0x0Cu8) { return false; }
     i = i + 1usize;
   }
@@ -265,16 +266,16 @@ struct EnvChanges {
   pub values List[String];
 
   // Set name to value, remembering what it was the first time
-  pub fn set(self &mut, name &Array[u8], value &Array[u8]) {
+  pub fn set(self &mut, name &str, value &str) {
     mut seen = false;
     mut i = 0usize;
     while i < names.len() {
-      if names[i].equalsIgnoreAsciiCase(name as &str) { seen = true; }
+      if names[i].equalsIgnoreAsciiCase(name) { seen = true; }
       i = i + 1usize;
     }
     if not seen {
-      names.push(String.fromBytes(name));
-      match env.get(name as &str) {
+      names.push(String.from(name));
+      match env.get(name) {
         case mut v Some {
           mut old = String.empty();
           old <=> v.value;
@@ -287,7 +288,7 @@ struct EnvChanges {
         }
       }
     }
-    env.set(name as &str, value as &str);
+    env.set(name, value);
   }
 
   // Put back what was there before, last change first
