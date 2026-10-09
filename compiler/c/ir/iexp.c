@@ -352,7 +352,11 @@ static int iexpCoerceShape(INode **from, INode *totype) {
             return 1;
         // Refused in GPU code; the conversion is built anyway, so what uses the
         // value says nothing more
-        closureGpuVirtRefused(*from, totypedcl);
+        if (!closureGpuVirtRefused(*from, totypedcl) && flowGpu && totypedcl->tag == VirtRefTag
+            && isExpNode(*from) && iexpGetTypeDcl(*from)->tag == RefTag)
+            errorMsgNode(*from, ErrorGpuUnavailable,
+                "In GPU code a reference to %s cannot be made a virtual reference to %s: it would be called through a table of code pointers, which a GPU has none of. Give the value to a function generic over a trait, '[S Shape]', which is inlined.",
+                itypeName(((RefNode*)iexpGetTypeDcl(*from))->vtexp), itypeName(((RefNode*)totypedcl)->vtexp));
         INode *newfrom = (INode*)newConvCastNode(*from, iexpCoerceType(*from, totypedcl));
         inodeLexCopy(newfrom, *from);
         *from = newfrom;

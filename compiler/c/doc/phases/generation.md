@@ -1745,6 +1745,18 @@ holding references indexed at run time (`ErrorGpuRefIndexed`) by the loan walk
 (`ErrorGpuRefGlobal`, `genlGloVar`) and a function calling itself, which no
 inliner removes (`ErrorGpuRecursion`, `genlGpuCalls`), here.
 
+**What a GPU has none of is refused where it is written**, in type check, as
+`ErrorGpuUnavailable` (the closure forms of the first two, `ErrorGpuClosureRef`,
+are in [closure](../nodes/closure.md)): a borrow of a function, `&name`
+(`borrowTypeCheck`), since the calls are inlined and a pointer to code would be an
+indirect call; a reference converted to a virtual reference (`iexpCoerceShape`,
+the `ConvSubtype` case), whose table of code pointers LLVM's SPIR-V backend
+crashes on (its `SPIRV legalize pointer cast pass`); and an allocation, `new` or
+`trynew` of an owner (`allocateValueCheck`), whose allocator call becomes an
+import the Vulkan form does not allow (`Capability Linkage`). An owner or a
+function reference can still arrive as a parameter of a function and be passed
+about; nothing can make one.
+
 **LLVM 23's SPIR-V backend takes only some shapes of IR**, and on the rest it
 crashes, in its own passes, or emits a module the validator refuses. With
 opaque pointers it types a pointer by the address computations made from it,

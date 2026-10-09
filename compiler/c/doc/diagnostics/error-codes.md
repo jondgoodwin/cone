@@ -417,7 +417,9 @@ overloads that cannot choose between it, or none that takes it, is
 holds, as listed state or as a variable it borrows, a value of a type with an
 owning reference, a function reference, a virtual reference or a raw pointer is
 `ErrorGpuClosureData`; and one made a function reference, or converted to a
-virtual reference, is `ErrorGpuClosureRef`.
+virtual reference, is `ErrorGpuClosureRef`. What else a GPU has none of, written
+in GPU code, is one code, `ErrorGpuUnavailable`: a borrow of a function, a
+reference made a virtual reference, and an allocation.
 
 A callable behind a reference or an owner has three more: a callable refused for the
 permission its `()` takes or the borrow lent (a `()` taking `self &mut` given to a

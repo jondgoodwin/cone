@@ -601,6 +601,9 @@ enum ErrorCode {
     ErrorCallableUse = 1398,    // A value made into a 'So[fn(sig)]' or 'Rc[fn(sig)]' that has no pub '()' of that signature
     ErrorClosureTrait = 1399,   // A closure literal given where a trait is wanted that does not have exactly one method (and no field) for it to fill
 
+    // What a GPU has none of, refused where it is written (ir/exp/borrow.c, ir/exp/allocate.c, ir/iexp.c)
+    ErrorGpuUnavailable = 1400, // In GPU code, a function reference ('&name'), a virtual reference made from a reference, or an allocation ('new So[T]', 'new Rc[T]', ...): a GPU has no pointers to code, no tables of them and no allocator
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name
