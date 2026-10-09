@@ -78,8 +78,8 @@ all build this node.
 
 `<-` is an operator application too, its one argument what follows it: one
 entry, or a `TupleNode` of several (`parseAppend`, `parseEntries`). An entry
-is a value, or an `EntryNode` for the three forms read nowhere else, `n of x`,
-`fill x` and `k: v` (`parseEntry`; [Parse](../phases/parse.md), "The list
+is a value, or an `EntryNode` for the forms read nowhere else, `n of x`,
+`fill x`, `k: v` and an `each` (`parseEntry`; [Parse](../phases/parse.md), "The list
 after `<-`"). After a construction inside a comma list -- an argument, a named
 value, an array literal's element, an entry -- `<-` takes one entry
 (`parseContentsAfter`), so the comma stays the list's.
@@ -576,10 +576,12 @@ tuple of entries or an `EntryNode`, or whose receiver is a construction,
 `new` or `trynew` (`contentsIsAppend`). A construction's type is checked
 first, unless it is a generic struct named bare, whose arguments infer it
 (`contentsBuiltType`), since an array, an allocation of one, or anything else
-lowers differently. `EntryNode` is one struct for the three entry forms, the
+lowers differently. `EntryNode` is one struct for the entry forms, the
 tag telling them apart: `first` holds `n` or `k` (NULL for `fill`), `val` the
 value. Its `first` is an expression resolved like any other, which a
-`NamedValNode`'s name is not, so it is not that node.
+`NamedValNode`'s name is not, so it is not that node. An `each` entry
+(`EachEntryTag`) holds in `first` the loop `parseEach` built (below), and a
+`YieldEntryTag` entry is that loop's last statement.
 
 - **On a value**, the receiver is checked, borrowed `&mut` once (held as it is
   when it is already a reference) into a temporary, and each entry becomes
@@ -594,6 +596,29 @@ value. Its `first` is an expression resolved like any other, which a
   `break` is joined to its loop here, and their variables carry the scope the
   block will give them. A tuple value appended is split again by the same
   path, so a tuple is never one value of a `<-` list.
+  An `each` entry (`contentsEach`) becomes the loop's block itself, a statement
+  beside the others. Its loop is the ordinary `each` of the parser
+  (`parseEachLoop`): the source in a hidden variable, the pass variables, any
+  `if` filter, and for a body the one statement, a `YieldEntryTag` entry whose
+  `val` is the `yield`ed expression (`first` its key, for `yield k: v`) or, for a
+  drain `each src`, a use of the pass variable a hidden name (`-item`) gives, with
+  `drain` set. `eachLower` builds the loop as it does any other. The entry is
+  lowered when the loop's body is checked, in `yieldEntryLower`, which finds
+  the receiver (`recv`, set by `contentsEach`) and the pass variables' types:
+  `*recv <- v`, `*recv <- (k, v)` for a pair (`ErrorPairAppend` when the
+  collection's `<-` takes no pair), and for a drain `*recv <- *item` when the
+  item is a borrow (a type that moves is `ErrorDrainItem`: a source that hands
+  its items over, `drain()`, gives owned items, which are appended as they are).
+  The receiver of a list holding an `each` is a variable like any other
+  (`-recv`) rather than the operator's temporary, because flow holds a borrow
+  across a loop's passes only in a variable that is a holder (`flowpath.c`,
+  `pv->holder`); that is what refuses `xs <- each xs` (`ErrorFrozen`) as it does
+  `each x in xs { xs.push(*x) }`. Name resolution numbers the loop's
+  variables as if the blocks the lowering adds were already there
+  (`EntryNode.nest`, set by `parseEntryNest`: 1, or 2 after a construction,
+  which is first held in a variable of its own), so the scopes of the loop's
+  variables agree with the ones `eachLower` gives. An array's contents refuse
+  an `each` (`ErrorArrayContents`), whose count is not known.
 - **After a construction**, the construction becomes a variable the contents
   are appended to, and the block's value: `{ mut built = new T(...); built <-
   contents; built }`, so the construction fills the variable in place. An
@@ -640,7 +665,8 @@ value. Its `first` is an expression resolved like any other, which a
   (`contentsRefuseTryNew`).
 
 An `EntryNode` reached by `entryTypeCheck` sat where no `<-` took it apart,
-only possible inside a tuple used as a value: `ErrorEntryPlace`.
+only possible inside a tuple used as a value: `ErrorEntryPlace`. (A yield is the
+exception: it is reached as its loop's statement and lowers there.)
 
 ### Construction
 

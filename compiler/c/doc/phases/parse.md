@@ -469,10 +469,19 @@ arguments, conditions and array elements use.
 **The list after `<-`** is read by `parseEntries` rather than `parseTuple`: one
 entry or a `TupleNode` of several, running until no comma follows, so to the
 statement's `;` across lines. An entry (`parseEntry`) is a value, or one of
-three forms built as an `EntryNode` and read nowhere else: `fill x` when
+four forms built as an `EntryNode` and read nowhere else: `fill x` when
 `fill` comes first and `lexNextOpensValue` says a value follows; `n of x` when
 the name `of` follows the first expression, where no name could otherwise
-follow one; and `k: v` when a `:` does. `of` and `fill` stay names everywhere
+follow one; `k: v` when a `:` does; and an `each` when the keyword comes first
+(`parseEachEntry`). The `each` entry is the loop's own parse
+(`parseEachLoop`), with a `yield` in the place of a body: `each x in src
+[if cond] yield v`, or `yield k: v`, where `lexEachHasVars` (names, commas, then
+`in`, read off the text) says the entry gives variables; with none, `each src` is
+a drain, whose pass variable is a hidden one and whose appended value is that
+variable. `yield` here is the entry's own and never a generator's
+(`parseYield`), so a generator's body may hold both. The loop's last statement
+is a `YieldEntryTag` entry; the header `if` is `parseEachFilter`'s. The entry
+records how many blocks the lowering will put around the loop (`parseEntryNest`). `of` and `fill` stay names everywhere
 else, which is what keeps `Atomic[u32].of(v)`, a parameter named `fill` and a
 variable named `of` meaning what they did. An entry that begins with `(` is a
 parenthesized list of entries (`ParseState.entryparen`, set for the entry's
@@ -905,6 +914,7 @@ numbers.
 | | `lexOpensWithMod` | whether a source's first statement begins `mod` or `pub mod`, and not `mod trait`, read off its text past white space and comments with nothing lexed: the folder sweep's probe for a one-file module |
 | | `lexIdentOpensType` | whether the name the lexer is on, in a `&fn` signature's parameter list, begins a type (followed by `.`, or by type arguments told from an array type by the absence of a `;`), read off the text with nothing lexed (section 2) |
 | | `lexNextOpensValue` | whether white space and a value follow the name the lexer is on, which makes `fill` the word in an entry after `<-` (section 2) |
+| | `lexEachHasVars` | whether the `each` the lexer is on, an entry after `<-`, names loop variables and `in` (`each x in src`) or only a source (`each src`) |
 | `parser/parsemod.c` | `parseInit`, `parsePgm`, `parseLoadCore` | **entry point** — `parseInit` sets up the name table and the lexer, ahead of generation's setup since a build description is read with them; `parsePgm` the type tables, program, main module (a source file's, or the one a build description names), the `core` package from the search path, main file |
 | `parser/parsebuild.c` | `parseIsBuildDesc`, `parseBuildDesc`, `parseBuildFindImport`, `parseBuildImportModule` | the build description: told apart by its `.conebuild` extension, read by the lexer into a tree of `BuildModule`s — settings, the package lines, each module's files, child modules and import lines, each malformed line `ErrorBuildDesc` — the import line a described module writes for a name, and the entry for an include file an import line loads, whose imports are the package lines |
 | `parser/parsemod.c` | `parseBuildModuleTree`, `parseBuildSubmoduleDraw`, `parseBuildFiles`, `parseLoadBuildImport` | a described build's module tree: each module named and filled as the description says, nothing swept, and the file an import line names loaded as a declared module under the import's name. `ParseState.build` is the current module's entry, which `parseModuleDcl` checks the `mod` line against (`ErrorBuildModName`) and `parseImport` answers names from (`ErrorBuildImport`) |
@@ -950,6 +960,7 @@ numbers.
 | | `parseIf`, `parseMatch`, `parseBoundMatch` | `if`/`elif`/`else` and the `match`-to-`if` desugaring; every pattern's root name is marked (`castPatternMark`) to be looked up in the matched value's enum at type check, as `parseCmp` marks an `is` test's |
 | | `parseMatchPattern`, `parseMatchRange` | one pattern of a case — `is`, a comparison, a range, a value alone — lowered to the condition that tests the captured value, a value alone to the undecided test `newMatchValueNode` builds; a condition (`not b`, `n > 3`), at the start of a case or after an `or`, is `ErrorPatBare` |
 | | `parseWhile`, `parseEach`, `parseWith`, `parseLifetime` | loop and scope desugaring |
+| | `parseEachEntry`, `parseEachLoop`, `parseEachYield` | an `each` as an entry of `<-`: the same loop parse as `parseEach`, its body the `yield` (or the pass variable, for a drain) as a `YieldEntryTag` entry |
 | `parser/parsehelper.c` | `parseSpan` | record the statement just parsed as a span (`ir/dclspan.c`, `dclSpanAdd`), taking a function's body or a global's value from where `parseFn` and `parseVarDcl` left it on `ParseState` (`bodyp`, `bodyendp`, `nameendp`, `typed`) |
 | `parser/parsemod.c` | `parseIncludeCheck` | the include-file generator's self-check: a generated include file's text parsed as the package's module, beside the root and outside the program's modules, its imports answered by the root's import lines |
 | `ir/stmt/module.c` | `modAddNode`, `modAddNamedNode`, `modAddFn`, `modHook` | parse-time namespace population and hook-stack swapping |

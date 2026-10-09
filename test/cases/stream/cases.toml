@@ -1,0 +1,52 @@
+# stream - values drained or built from a source inside a '<-' list. Tier 2.
+#
+# Key reference: compiler/c/doc/diagnostics/test-suite.md, "cases.toml keys".
+# The group directory supplies the feature tag, so tags carry pipeline phases.
+#
+# What is here is 'each' as an entry of the list after '<-' (`xs <- each src`
+# and `xs <- each x in src if cond yield v`). The list itself, its other
+# entries and the collections' own '<-' are collection's, and the loop's header
+# (variables, sources, the `if` filter) is each's; what this group owns is the
+# entry that joins the two.
+#
+# Left uncovered on purpose: iterator methods feeding the entry ('.filter(...)
+# .map(...)'), and the parallel form ('<- parallel each'); both wait for later
+# lanes, and a closure is not built.
+
+support = []
+
+# -------- success --------
+
+[scenario.stream_success]
+category = "run"
+description = "'each' inside '<-': a source drained into a list (a list, an array, a slice, a cursor of values, a range), and the loop's own header with a filter and 'yield' (two variables, ranges, calls), beside other entries, after a construction and in an argument"
+tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.stream_sources]
+category = "run"
+description = "What an 'each' inside '<-' draws from and builds: pairs into a dictionary ('yield k: v'), items that move ('each xs.drain()'), a new value made from each item, sets, deques and chars, and a generator whose header 'yield' is not its own"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+# -------- parse stage --------
+
+[scenario.stream_parse]
+category = "reject"
+description = "An 'each' entry the parser refuses: variables with no 'yield', a body in braces, a 'yield' of nothing"
+tags = ["parse"]
+diagnostics = 3
+
+# -------- type check stage --------
+
+[scenario.stream_typecheck]
+category = "reject"
+description = "An 'each' entry where nothing is appended to (a tuple), in an array's contents, a pair into a list, items or yields of the wrong type, a source that cannot be walked, and a drain of borrowed items that move"
+tags = ["typecheck"]
+diagnostics = 7
+
+# -------- flow stage --------
+
+[scenario.stream_flow]
+category = "reject"
+description = "The list an 'each' entry reads may not be the list it appends to: a drain or a yield from itself, and a slice of it through a shared reference"
+tags = ["flow"]
+diagnostics = 3

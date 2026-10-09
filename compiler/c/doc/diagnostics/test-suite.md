@@ -71,6 +71,7 @@ as that group's own subject requires.
 | 2 | `collection` | Collection types, array references and slices |
 | 2 | `each` | `each` and iteration |
 | 2 | `corout` | Co-routines, as built: generators, functions declared `yields` that hand their caller values with `yield` and `yield each`, walked by the `next` of the value they give |
+| 2 | `stream` | `each` inside `<-`: a source drained into a collection, and a loop's header with `yield` building one |
 | 2 | `typemgmt` | Conversion and coercion, alias and extend |
 | 2 | `generic` | Generics, macros |
 | 2 | `module` | Modules, namespaces, `import`/`extern` |
@@ -78,11 +79,11 @@ as that group's own subject requires.
 | 2 | `concurrency`, `safety`, `meta` | Concurrency; trust and raw pointers; metaprogramming |
 | 2 | `intrinsic` | Intrinsics: `@intrinsic` declarations, the registry's checks, each intrinsic's meaning, lowered and through its fallback body |
 
-One row is reserved rather than built. **`stream` will own whatever iteration
-protocol arrives with collections**, and `each` drawing from a source inside a
-`<-` list with it. The `<-` list itself -- its entries, a collection's
-contents after a construction -- is `collection`'s, beside the manual's
-collection chapter, and an array's contents are `array`'s.
+`stream` is `each` drawing from a source inside a `<-` list: `xs <- each src`
+and `xs <- each x in src if cond yield v`. The `<-` list itself -- its other
+entries, a collection's contents after a construction -- is `collection`'s,
+beside the manual's collection chapter, an array's contents are `array`'s, and
+the loop header the entry reads is `each`'s.
 
 Two of the rows above have no group directory, and the reasons differ.
 `exception` is unimplemented down to the keyword table — a real chapter, a real

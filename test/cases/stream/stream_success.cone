@@ -1,0 +1,127 @@
+// 'each' inside '<-': a list built from a source, as the entries of the list are.
+//
+// - 'xs <- each src' drains a source: every item is appended, a copy of an item that
+//   comes borrowed (a list's, an array's), the item itself where the source hands
+//   values (a countdown's);
+// - 'xs <- each x in src if cond yield v' is the loop's own header, and what 'yield'
+//   gives is appended each pass;
+// - the entry stands beside the others in a list, after a construction, in an
+//   argument, over a numeric range, and in a generic function.
+//
+// Every value printed is worked out by hand from the values put in.
+
+mod stream_success;
+
+import stdio use *;
+import collections use *;
+
+// A list written out: [1, 2, 3]
+fn shows(label &str, xs &List[i64]) {
+  printStr(label);
+  printStr(" =");
+  each x in xs {
+    printStr(" ");
+    printInt(*x);
+  }
+  printStr("\n");
+}
+
+// A cursor that gives values, not borrows: n, n - 1, ... 1
+struct Countdown {
+  n i64;
+
+  pub fn next(self &mut) Option[i64] {
+    if n <= 0i64 { return None[i64][]; }
+    imm v = n;
+    n = n - 1i64;
+    Some[i64][v];
+  }
+}
+
+fn total(xs List[i64]) i64 {
+  mut sum = 0i64;
+  each x in xs { sum = sum + *x; }
+  sum;
+}
+
+// A generic's body holds the entry too, copied into each instance
+fn copyOf[T](xs &List[T]) List[T] where T is Copy { new List[T] <- each xs; }
+
+fn drains() {
+  mut src = new List[i64];
+  src <- 1, 2, 3;
+
+  // A new list from a list: the items are borrowed, and appended as copies
+  imm copy = new List[i64] <- each src;
+  shows("drain-list", &copy);                          // 1 2 3
+  shows("source-intact", &src);                        // 1 2 3
+
+  // Beside other entries, in order
+  imm around = new List[i64] <- 9, each src, 8;
+  shows("drain-beside", &around);                      // 9 1 2 3 8
+
+  // Into a list that already holds values
+  mut more = new List[i64];
+  more <- 7;
+  more <- each src;
+  more <- each src;
+  shows("drain-existing", &more);                      // 7 1 2 3 1 2 3
+
+  // An array, a slice, a cursor that gives values, a range
+  imm arr = [4i64, 5i64];
+  imm fromarr = new List[i64] <- each arr;
+  shows("drain-array", &fromarr);                      // 4 5
+  imm fromslice = new List[i64] <- each src.view();
+  shows("drain-slice", &fromslice);                    // 1 2 3
+  imm fromcursor = new List[i64] <- each new Countdown(3i64);
+  shows("drain-cursor", &fromcursor);                  // 3 2 1
+  imm fromrange = new List[i64] <- each 5i64 < 8i64;
+  shows("drain-range", &fromrange);                    // 5 6 7
+
+  // An empty source appends nothing
+  imm none = new List[i64];
+  imm nothing = new List[i64] <- 6, each none;
+  shows("drain-empty", &nothing);                      // 6
+
+  // In an argument, and in a generic function
+  printStr("drain-argument = ");
+  printInt(total(new List[i64] <- each src));          // 6
+  printStr("\n");
+  imm generic = copyOf(&src);
+  shows("drain-generic", &generic);                    // 1 2 3
+}
+
+fn builders() {
+  mut src = new List[i64];
+  src <- 1, 2, 3, 4, 5, 6;
+
+  imm doubled = new List[i64] <- each x in src yield *x * 2i64;
+  shows("yield-doubled", &doubled);                    // 2 4 6 8 10 12
+
+  imm evens = new List[i64] <- each x in src if *x % 2i64 == 0i64 yield *x;
+  shows("yield-filtered", &evens);                     // 2 4 6
+
+  // Over a range, with a step and a filter
+  imm squares = new List[i64] <- each i in 1i64 <= 9i64 by 2i64 yield i * i;
+  shows("yield-range", &squares);                      // 1 9 25 49 81
+  imm filtered = new List[i64] <- each i in 0i64 < 10i64 if i % 3i64 == 0i64 yield i;
+  shows("yield-range-filter", &filtered);              // 0 3 6 9
+
+  // Beside other entries, and in an existing list
+  mut mixed = new List[i64];
+  mixed <- 1, each x in src if *x > 4i64 yield *x, 2;
+  shows("yield-beside", &mixed);                       // 1 5 6 2
+
+  // From a cursor of values
+  imm lowered = new List[i64] <- each n in new Countdown(4i64) yield n - 1i64;
+  shows("yield-cursor", &lowered);                     // 3 2 1 0
+
+  // The yield can be any expression, a call too
+  imm viafn = new List[i64] <- each x in src if *x < 3i64 yield total(new List[i64] <- (7, *x));
+  shows("yield-call", &viafn);                         // 8 9
+}
+
+fn main() {
+  drains();
+  builders();
+}

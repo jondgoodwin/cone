@@ -1,0 +1,30 @@
+// What an 'each' entry of '<-' keeps borrowed while it appends.
+//
+// The loop reads its source through a borrow it holds for every pass, and appends
+// through a borrow of the receiver it holds for the same passes. So the list
+// that is read may not be the list that is appended to: 'xs <- each xs' would
+// read a list that grows, and move what it reads, as 'each x in xs { xs.push(*x) }'
+// does, and is refused the same way. A list that is reached through a reference
+// other code shares is refused by the shape-changing rule.
+
+mod stream_flow;
+
+import collections use *;
+
+fn drainsItself() {
+  mut xs = new List[i64];
+  xs <- 1i64, 2i64;
+  xs <- each xs;                             //~ ErrorFrozen:14 "borrowed mutably"
+}
+
+fn yieldsFromItself() {
+  mut xs = new List[i64];
+  xs <- 1i64, 2i64;
+  xs <- each x in xs yield *x + 1i64;        //~ ErrorFrozen:19 "borrowed mutably"
+}
+
+fn throughASlice(xs &mut List[i64]) {
+  xs <- each xs.view();                      //~ ErrorShapeReshape:16 "could change the shape of a 'List'"
+}
+
+fn main() i32 { 0i32; }

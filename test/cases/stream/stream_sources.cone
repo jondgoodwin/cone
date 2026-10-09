@@ -1,0 +1,149 @@
+// What an 'each' inside '<-' draws from and what it builds, beyond lists of numbers.
+//
+// - pairs: 'yield k: v' appends a pair to a collection whose '<-' takes a key and a
+//   value, from a dictionary's pairs unpacked into two variables and from a list;
+// - items that move: 'each other.drain()' hands the owned Strings over, so a new
+//   list holds them and the source is empty; a yield may also make a new value from
+//   a borrowed item;
+// - sets, deques and a text's chars as sources;
+// - a generator, where 'yield' inside the header gives the value appended, and a
+//   'yield' statement of the generator's own still hands a value to its caller.
+//
+// Every value printed is worked out by hand from the values put in.
+
+mod stream_sources;
+
+import stdio use *;
+import collections use *;
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+// A list written out
+fn shows(label &str, xs &List[i64]) {
+  printStr(label);
+  printStr(" =");
+  each x in xs {
+    printStr(" ");
+    printInt(*x);
+  }
+  printStr("\n");
+}
+
+struct Pt {
+  x i64;
+  y i64;
+}
+
+fn pairs() {
+  mut dict = new Dict[i64, i64];
+  dict.insert(1i64, 10i64);
+  dict.insert(2i64, 20i64);
+  dict.insert(3i64, 30i64);
+
+  // A dictionary from a dictionary: two variables unpack each pair
+  imm doubled = new Dict[i64, i64] <- each k, v in dict yield *k: *v * 2i64;
+  show("dict-size", i64.from(doubled.len));            // 3
+  mut sum = 0i64;
+  each k, v in doubled {
+    sum = sum + *k * *v;
+  }
+  show("dict-doubled", sum);                           // 1*20 + 2*40 + 3*60 = 280
+
+  // Keys by position from a list, the insertion order kept by an OrderedDict
+  mut names = new List[i64];
+  names <- 50, 40, 60;
+  mut ordered = new OrderedDict[i64, i64];
+  ordered <- each i in 0usize < names.len yield i64.from(i): names[i] * 2i64;
+  mut order = 0i64;
+  mut valuesum = 0i64;
+  each k, v in ordered {
+    order = order * 10i64 + *k;
+    valuesum = valuesum + *v;
+  }
+  show("ordered-keys", order);                         // 0, 1, 2 -> 12
+  show("ordered-values", valuesum);                    // 100 + 80 + 120
+
+  // A list from a dictionary's pairs, filtered
+  imm big = new List[i64] <- each k, v in dict if *v > 15i64 yield *k;
+  mut keys = 0i64;
+  each k in big { keys = keys + *k; }
+  show("pairs-filtered", keys);                        // keys 2 and 3 in some order: 5
+}
+
+fn moving() {
+  mut names = new List[String];
+  names.push(String.from("ab"));
+  names.push(String.from("cde"));
+
+  // The Strings are moved out of the source into the new list
+  imm taken = new List[String] <- each names.drain();
+  show("moved-source-left", i64.from(names.len));      // 0
+  show("moved-count", i64.from(taken.len));            // 2
+  mut joined = String.from("");
+  each s in taken {
+    joined.append(s.view());
+  }
+  printStr(joined.view());
+  printStr("\n");                                      // abcde
+
+  // A new value made from each borrowed item
+  mut words = new List[String];
+  words.push(String.from("x"));
+  words.push(String.from("yz"));
+  imm lengths = new List[i64] <- each w in words yield i64.from(w.len);
+  shows("lengths", &lengths);                          // 1 2
+  show("words-intact", i64.from(words.len));           // 2
+
+  // Structs copied through their borrow
+  mut pts = new List[Pt];
+  pts.push(new Pt(1i64, 2i64));
+  pts.push(new Pt(10i64, 20i64));
+  imm xs = new List[i64] <- each p in pts yield p.x + p.y;
+  shows("fields", &xs);                                // 3 30
+}
+
+fn others() {
+  mut s = new Set[i64];
+  s.insert(7i64);
+  imm fromset = new List[i64] <- each s;
+  shows("set", &fromset);                              // 7
+
+  mut dq = new Deque[i64];
+  dq.push(1i64); dq.push(2i64); dq.pushFront(0i64);
+  imm fromdq = new List[i64] <- each dq;
+  shows("deque", &fromdq);                             // 0 1 2
+
+  imm codes = new List[i64] <- each c in "aé".chars() yield i64.from(u64.from(c));
+  shows("chars", &codes);                              // 97 233
+}
+
+// A generator that builds a list with 'yield' in the header, and hands the list's
+// values to its caller with a 'yield' of its own
+fn evens(limit i64) yields i64 {
+  imm built = new List[i64] <- each i in 0i64 < limit if i % 2i64 == 0i64 yield i * 10i64;
+  yield 5i64;
+  mut sum = 0i64;
+  each b in built {
+    sum = sum + *b;
+  }
+  yield sum;
+  yield i64.from(built.len);
+}
+
+fn generators() {
+  mut got = new List[i64];
+  each v in evens(6i64) { got <- v; }
+  shows("generator", &got);                            // 5, then 0 + 20 + 40 = 60, then 3
+}
+
+fn main() {
+  pairs();
+  moving();
+  others();
+  generators();
+}

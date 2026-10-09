@@ -316,6 +316,101 @@ static INode *contentsPair(VarDclNode *recv, INode *colltype, EntryNode *entry) 
     return (INode*)append;
 }
 
+// The yield that is the body's value in the loop of an each entry: the loop is
+// the last statement of the block parseEach made, and the yield stands among its
+// statements (a filter and the pass variables before it, a range's step after)
+static EntryNode *contentsFindYield(BlockNode *outer) {
+    if (outer->tag != BlockTag || outer->stmts->used == 0)
+        return NULL;
+    INode *loop = nodesLast(outer->stmts);
+    if (loop->tag != BlockTag)
+        return NULL;
+    INode **stmtp;
+    uint32_t cnt;
+    for (nodesFor(((BlockNode*)loop)->stmts, cnt, stmtp)) {
+        if ((*stmtp)->tag == YieldEntryTag)
+            return (EntryNode*)*stmtp;
+    }
+    return NULL;
+}
+
+// 'each src' and 'each x in src ... yield v': the each's loop is a statement of
+// the block holding recv, and its yield appends against that borrow as the
+// other entries do; the yield lowers when the loop's body is checked
+// (yieldEntryLower), where the pass variables are known. Answers NULL for a loop
+// the parser could not build, which it reported.
+static INode *contentsEach(VarDclNode *recv, EntryNode *entry) {
+    EntryNode *yield = contentsFindYield((BlockNode*)entry->first);
+    if (yield == NULL)
+        return NULL;
+    yield->recv = (INode*)recv;
+    return entry->first;
+}
+
+// A yield, checked as the last statement of its loop's body: '*recv <- v' (or
+// '*recv <- (k, v)' for 'yield k: v'), the one application of the receiver's '<-'
+// that every pass makes. A drain ('<- each src') appends a copy of an item that
+// comes borrowed, for 'each' gives a borrow of the items of a collection and a
+// collection is not appended borrows.
+static void yieldEntryLower(TypeCheckState *pstate, INode **nodep) {
+    EntryNode *yield = (EntryNode*)*nodep;
+    VarDclNode *recv = (VarDclNode*)yield->recv;
+    if (recv == NULL || iexpGetTypeDcl((INode*)recv) == errorType || iexpGetTypeDcl((INode*)recv) == unknownType) {
+        *nodep = newErrorNode((INode*)yield);
+        return;
+    }
+    INode *recvtype = iexpGetTypeDcl((INode*)recv);
+    INode *colltype = recvtype->tag == RefTag ? itypeGetTypeDcl(((RefNode*)recvtype)->vtexp) : recvtype;
+    INode *value = yield->val;
+    if (yield->drain) {
+        inodeTypeCheckAny(pstate, &yield->val);
+        value = yield->val;
+        INode *itemtype = isExpNode(value) ? iexpGetTypeDcl(value) : errorType;
+        if (itemtype == errorType || itemtype == unknownType) {
+            *nodep = newErrorNode((INode*)yield);
+            return;
+        }
+        if (itemtype->tag == RefTag && itypeGetTypeDcl(((RefNode*)itemtype)->region) == borrowRef) {
+            INode *pointee = itypeGetTypeDcl(((RefNode*)itemtype)->vtexp);
+            if (itypeIsMove(pointee)) {
+                errorMsgNode((INode*)yield, ErrorDrainItem,
+                    "'each' gives a borrow of each item of this source, and %s, a type that moves, cannot be copied out of one: drain a source that hands its items over ('xs <- each other.drain()'), or append a value made from each item ('xs <- each x in other yield make(x)').",
+                    itypeName(pointee));
+                *nodep = newErrorNode((INode*)yield);
+                return;
+            }
+            StarNode *deref = newStarNode(DerefTag);
+            inodeLexCopy((INode*)deref, value);
+            deref->vtexp = value;
+            value = (INode*)deref;
+        }
+    }
+    FnCallNode *append;
+    if (yield->first != NULL) {
+        if (!contentsHasPairAppend(colltype)) {
+            errorMsgNode((INode*)yield, ErrorPairAppend,
+                "A pair 'yield k: v' is appended by a '<-' method taking a key and a value, and %s declares none.",
+                itypeName(colltype));
+            *nodep = newErrorNode((INode*)yield);
+            return;
+        }
+        append = contentsAppend(recv, yield->first);
+        nodesAdd(&append->args, value);
+    }
+    else
+        append = contentsAppend(recv, value);
+    *nodep = (INode*)append;
+    inodeTypeCheck(pstate, nodep, noCareType);
+}
+
+// A name only the lowering writes, for the receiver a list with an each holds
+static Name *contentsRecvName() {
+    static Name *name = NULL;
+    if (name == NULL)
+        name = nametblFind("-recv", 5);
+    return name;
+}
+
 // The entries a '<-' holds, as one list: the elements of a tuple, or its one argument
 static INode **contentsEntries(FnCallNode *node, uint32_t *nentries) {
     INode **argp = &nodesGet(node->args, 0);
@@ -356,12 +451,21 @@ static void contentsLowerEntries(TypeCheckState *pstate, FnCallNode **nodep) {
     BlockNode *blk = newBlockNode();
     inodeLexCopy((INode*)blk, (INode*)node);
     blk->flags |= FlagKeepTemps;
-    VarDclNode *recv = contentsVar(tempName, unknownType, immPerm, lval, (uint16_t)(pstate->scope + 1), (INode*)node);
+    // An operator's temporary holds no borrow past the statement (flowpath.c), and
+    // that is all the other entries need. A loop appends across its passes while
+    // it reads its source, and the receiver's borrow must be held through them for
+    // 'xs <- each xs' to be refused as 'each x in xs { xs.push(*x); }' is, so the
+    // receiver of a list with an each is a variable like any other.
+    uint32_t nentries;
+    INode **entryp = contentsEntries(node, &nentries);
+    int haseach = 0;
+    for (uint32_t i = 0; i < nentries; ++i)
+        haseach |= entryp[i]->tag == EachEntryTag;
+    VarDclNode *recv = contentsVar(haseach ? contentsRecvName() : tempName, unknownType, immPerm, lval,
+        (uint16_t)(pstate->scope + 1), (INode*)node);
     nodesAdd(&blk->stmts, (INode*)recv);
 
     int bad = 0;
-    uint32_t nentries;
-    INode **entryp = contentsEntries(node, &nentries);
     while (nentries--) {
         INode *entry = *entryp++;
         INode *stmt;
@@ -372,6 +476,8 @@ static void contentsLowerEntries(TypeCheckState *pstate, FnCallNode **nodep) {
             stmt = contentsFill(recv, colltype, (EntryNode*)entry); break;
         case PairEntryTag:
             stmt = contentsPair(recv, colltype, (EntryNode*)entry); break;
+        case EachEntryTag:
+            stmt = contentsEach(recv, (EntryNode*)entry); break;
         default:
             stmt = (INode*)contentsAppend(recv, entry); break;
         }
@@ -550,6 +656,11 @@ static INode *contentsArrayLit(TypeCheckState *pstate, FnCallNode *node, INode *
             break;
         case PairEntryTag:
             errorMsgNode(entry, ErrorPairAppend, "An array's contents are values, not pairs 'k: v'.");
+            bad = 1;
+            break;
+        case EachEntryTag:
+            errorMsgNode(entry, ErrorArrayContents,
+                "An array's size is fixed, so its contents are a count known at compile time, and an 'each' gives as many values as its source holds: build a List with 'each', or fill the array in a loop.");
             bad = 1;
             break;
         default:

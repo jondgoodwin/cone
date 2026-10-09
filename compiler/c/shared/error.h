@@ -561,6 +561,10 @@ enum ErrorCode {
     ErrorLoopElse = 1360,       // An 'else' on a loop that cannot run out: a 'while' with no condition
     ErrorTrailingIf = 1361,     // A trailing 'if' after a statement that takes none: only 'break', 'continue' and 'return' end with one
 
+    // 'each' inside '<-' (parser/parseexpr.c, ir/exp/contents.c)
+    ErrorEachEntry = 1370,      // An 'each' entry of '<-' written wrongly: with variables and no 'yield', a body in braces, or a 'yield' of nothing
+    ErrorDrainItem = 1371,      // 'xs <- each src' over a source whose items come borrowed and move: a borrow cannot be copied out of
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name
