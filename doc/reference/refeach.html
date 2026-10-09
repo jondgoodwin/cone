@@ -483,6 +483,19 @@ fn total(xs &amp;Array[u64]) u64 {
 			<b>copy what the loop needs into a local before it</b> (<span class="pre">imm n = self.n;</span>). For an
 			<span class="pre">Rc</span> itself, <b>borrow the contents before the loop</b>:
 			<span class="pre">imm mesh = &amp;*shared;</span>, then use <span class="pre">mesh</span> in the body.</li>
+		<li>A loop that <b>writes through its source</b> (<span class="pre">mutChunks</span>, <span class="pre">mutItems</span>,
+			a zip of them, or a <span class="pre">&amp;mut</span> slice) may not name, in its body, filter or
+			<span class="pre">yield</span>, a place from outside that could be one of the items it writes. It is judged by the
+			<b>path</b> the body reads: <span class="pre">first</span> where <span class="pre">first</span> is a reference to the item's type; a
+			struct reached through a reference that is itself of the item's type; an index into a collection or array reached
+			through a reference whose elements are of the item's type (<span class="pre">hr.cells[0]</span>, <span class="pre">s.items[0]</span> after
+			<span class="pre">imm s = &amp;*self;</span>). A scalar field beside the buffer (<span class="pre">self.scale</span>) reads none of them. A
+			name used whole, or reached through a call, is judged by its whole type: a reference to the item's type, or a struct or
+			collection holding one or elements of that type, reached through a reference. A raw pointer is trusted. Another pass is
+			writing that item, so reading it would race, and flow analysis sees only a local, not a parameter, a reborrow or a struct's
+			field. <b>Copy what you need before the loop</b>: <span class="pre">imm f = *first;</span>, then use <span class="pre">f</span>. A value
+			already copied, a reference to another type, and every outside reference when nothing is written
+			(<span class="pre">chunks</span>) are free.</li>
 		<li>A <span class="pre">Gc</span> may not be <b>made or held</b> in the loop, for now: the collector's heap and its one chain of
 			roots are not safe on the workers the passes run on. An allocation (<span class="pre">new Gc[...]</span>), a call that
 			returns one, or a literal holding one (a struct, tuple, array or enum holding a traced reference counts) is refused
