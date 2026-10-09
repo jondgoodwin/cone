@@ -297,9 +297,20 @@ the literal's own business but each decided from its tag:
   `new T(...)` (`typeLitInitArgs`) and `iexpTypeCheckCoerce`'s places
   (initializer, assignment, ...), and only in a function's body (scope 2
   and up). A bare `iexpCoerce` meets it as no match (`iexpCoerceShape`), so every
-  other place -- a global, a constant, a field's or a parameter's default, a
+  other place -- a global, a constant, a field's default, a
   returned value, a value for the implicit init's field, an `if` arm -- keeps the
-  ordinary mismatch. Only a permission that cannot write is lent: `&mut T`,
+  ordinary mismatch. **A parameter's default is the exception, made at the
+  call:** `varDclTypeCheck` leaves a string-literal default as the literal when
+  `slitDefaultDeferred` says the parameter wants a read-only `&T`, or a `T` by
+  value, with `T` declaring `fromLiteral` (the default is still a constant, the
+  literal), and `fnCallFinalizeArgs`, appending the defaults of the arguments a
+  call omits, clones the literal (`cloneSLitNode`) and coerces the clone with
+  `iexpCoerceIn` as it does an argument written there. So each call that takes
+  the default has a temporary of its own, finalized at its statement's end
+  (or the value, given to the callee), and a call that gives the argument
+  makes none. A call made where no statement exists (a global's initializer)
+  is refused, with the reason. A default that writes (`&mut T`) is refused as
+  any literal is. Only a permission that cannot write is lent: `&mut T`,
   `&uni T` and a lock's are refused by `slitBorrowRefused` with
   `ErrorLitBorrowWrite`, since a write to a temporary is lost. **Overloads:**
   selection counts this conversion only as a fallback. `iNsTypeFindMethod`

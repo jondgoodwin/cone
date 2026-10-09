@@ -153,6 +153,14 @@ int slitAnyText(INode **self, Nodes *args);
 
 int slitBorrowCoerce(TypeCheckState *pstate, INode **nodep, INode *totype);
 
+// Is this string literal, the default of a parameter of the wanted type, made
+// where each call that omits the argument is made: a read-only borrow of a type
+// that declares 'fromLiteral' (a temporary at the call's statement) or that type
+// by value? Such a default stays the literal it is written as; every call that
+// takes it clones it and coerces the clone as an explicit literal argument is
+// (fnCallFinalizeArgs). A borrow that writes is not one: refused as any default is.
+int slitDefaultDeferred(INode *node, INode *totype);
+
 // A string literal wanted as a borrow that writes, of a type that declares
 // 'fromLiteral': reports it (ErrorLitBorrowWrite) and answers 1; 0, saying
 // nothing, for any other pair
