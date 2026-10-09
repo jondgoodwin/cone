@@ -1,0 +1,71 @@
+// A match that takes a variant's one field out of the value it holds moves the
+// whole of that value (move_match_payload). Where the variant has more than the
+// field, or a finalizer of its own, the move would leave the rest behind with a
+// hole in it, and it is refused as any move out of a field is; and a value
+// taken once is gone.
+
+mod move_flow_matchfield;
+
+import stdio use *;
+
+struct Fin {
+  pub id i32;
+  fn final(self &uni) {}
+}
+
+enum Pair {
+  struct Both { pub a Fin; pub b Fin; }
+  struct Neither {}
+}
+use Pair;
+
+enum Guarded {
+  struct One {
+    pub f Fin;
+    fn final(self &uni) { printStr("one "); }
+  }
+  struct Zero {}
+}
+use Guarded;
+
+fn makePair() Pair { Both[new Fin(1i32), new Fin(2i32)]; }
+fn makeGuarded() Guarded { One[new Fin(3i32)]; }
+
+// Two fields: taking one would leave the other behind
+fn twoFields() {
+  match makePair() {
+    case mut p Both { imm x = p.a; }       //~ ErrorMoveField
+    case is Neither {}
+  }
+}
+
+// A variant with a finalizer of its own: it would run on a value with a hole
+fn ownFinalizer() {
+  match makeGuarded() {
+    case mut g One { imm x = g.f; }        //~ ErrorMoveField
+    case is Zero {}
+  }
+}
+
+// The payload is the matched value, and it moves once
+fn takenTwice(r Result[Fin, i32]) {
+  match r {
+    case mut ok Ok {
+      imm a = ok.value;
+      imm b = ok.value;                    //~ ErrorMove
+    }
+    case mut bad Error {}
+  }
+}
+
+// The matched value is gone after the match, whichever arm ran
+fn usedAfter(r Result[Fin, i32]) {
+  match r {
+    case mut ok Ok { imm a = ok.value; }
+    case mut bad Error {}
+  }
+  match r {                                //~ ErrorMove
+    case mut ok Ok {}
+    case mut bad Error {}
+  }
+}

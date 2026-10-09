@@ -308,6 +308,17 @@ nothing. Swap and left-assignment take a value out of a field, and moving the
 whole struct takes every field with it. A copy-typed field is never walked, so it
 reads out freely.
 
+The one exception is a variant's only field, read through a match's binding
+whose matched value sits in a variable of the match's own (`_`: the value a
+`match f()` holds, one a by-value `match` consumes, the Option an `each` over a
+cursor holds), where the variant declares no `final` and has no field but that
+one (`flowTakesSoleField`). The field is then the whole of the matched value
+under another name, so the move is the move of the binding, which moves the
+matched value (`flowMatchBound`): nothing is left with a hole, the matched
+value's drop flag says it no longer holds its payload, and the value cannot be
+used or taken again (`ErrorMove`). A variant with two fields, or a finalizer of
+its own, is refused as before.
+
 **Only a sole owner may be moved out of.** The same inward walk refuses three
 more sources. A global has no scope in which a deactivated state could be recovered.
 A place reached through a **borrowed reference** — a dereference of one, or an

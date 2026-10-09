@@ -303,11 +303,21 @@ by value, an array and a function go on to the table's own rows.
 | `FnSigTag` | `fnCallFnSigTypeCheck` — a plain call |
 | struct, number | fill in `()`/`[]`/`&[]` as `methfld` if absent, then `fnCallLowerMethod`; an index in set position on a type declaring `&[]` (`fnCallSetIndex`) takes `&[]` |
 | `TTupleTag` | `fnCallLowerIntField` — element by literal index, its type read from the resolved tuple, since the receiver's `vtype` may be an alias naming it |
-| `ArrayTag` | `fnCallArrIndex` under `FlagIndex`; a comparison with a slice to `fnCallArrayAsSlice` |
-| `ArrayRefTag` | index; `==`, `!=` or an ordering to `fnCallLowerSliceCompare`; else `fnCallLowerPtrMethod` against `arrayRefType` |
-| `RefTag` | a key (`lifeIsKey`) refused for anything but `===` and `!==` (`ErrorKeyAccess`); else function-by-ref, array index, a comparison to `fnCallLowerRefCompare`, or `fnCallLowerPtrMethod`, then `fnCallLowerTraitMethod` and failing that `fnCallLowerMethod` |
+| `ArrayTag` | `fnCallArrIndex` under `FlagIndex`; a comparison with a slice to `fnCallArrayAsSlice`; else a method of core's `Array[T]` (`fnCallLowerSliceMethod`, below), `len` excepted |
+| `ArrayRefTag` | index; `==`, `!=` or an ordering to `fnCallLowerSliceCompare`; else `fnCallLowerPtrMethod` against `arrayRefType`, else a method of core's `Array[T]` |
+| `RefTag` | a key (`lifeIsKey`) refused for anything but `===` and `!==` (`ErrorKeyAccess`); else function-by-ref, array index, a comparison to `fnCallLowerRefCompare`, or `fnCallLowerPtrMethod`, then `fnCallLowerTraitMethod` and failing that `fnCallLowerMethod` (a reference to an array: a method of core's `Array[T]`) |
 | `VirtRefTag` | fill in `()` as `methfld` if absent and not indexing, so `f(u)` calls the trait's `()` as ``f.`()`(u)`` does; `==`, `!=` or an ordering is `ErrorRefNoCompare`; else `fnCallLowerPtrMethod`, else set `FlagVDisp` and `fnCallLowerMethod`, whose selection (`fnSigViableCall`) takes only a method whose `self` permission the receiver's grants, and where `fnCallFinalizeArgs` lends an owning receiver as a borrowed virtual reference (`fnCallLendVirtOwner`) |
 | `PtrTag` | the pointer's own operators first, then the value's fields and named methods |
+
+**An array or a slice calls the methods core writes on `Array[T]`.** Neither
+type declares methods (a slice's `len`, `maxlen`, `===` and `!==` are the
+compiler's own, `arrayRefType`). A name those do not answer is looked up on the
+instance of core's `Array[T]` for the element type (`fnCallSliceBodyOf`: a
+`FnCallNode` for `Array[elem]`, type checked), and the call is lowered against
+that struct (`fnCallLowerMethodOn`) with the array or slice as the receiver, as
+the methods a list folds in from its `view()` are called. An array's `len` is
+its type's, not a member of the value, and stays refused. A `self &mut` method
+on an array borrows it mutably (`fnCallBorrowReceiver` takes an array).
 
 **Text has three lowerings of its own, ahead of that dispatch.** `fnCallTextOf` asks
 whether a receiver's type, through any references and owners, is `str` or a

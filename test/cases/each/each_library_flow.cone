@@ -1,0 +1,45 @@
+// What the library's walks keep borrowed, and what a value moved out of an
+// Option may not be used for afterwards.
+//
+// - 'mutItems' and 'drain' hold their list mutably for as long as the loop (or
+//   the cursor in a variable) is used, so nothing else may touch the list then;
+// - a match that takes the value out of the Option a call answers has taken the
+//   whole of it, so the value cannot be taken twice.
+
+mod each_library_flow;
+
+import collections use *;
+
+struct Fin {
+  pub id i32;
+  fn final(self &uni) {}
+}
+
+fn pushWhileDraining(l &mut List[i64]) {
+  each x in l.drain() {
+    l.push(x);                       //~ ErrorFrozen
+  }
+}
+
+fn pushWhileChanging(l &mut List[i64]) {
+  each x in l.mutItems() {
+    l.push(*x);                      //~ ErrorFrozen
+  }
+}
+
+fn useWhileACursorWaits(l &mut List[i64]) {
+  mut c = l.drain();
+  l.push(1i64);                      //~ ErrorFrozen
+  each x in c {
+  }
+}
+
+fn takenTwice(l &mut List[Fin]) {
+  match l.pop() {
+    case mut s Some {
+      imm a = s.value;
+      imm b = s.value;               //~ ErrorMove
+    }
+    case is None[Fin] {}
+  }
+}
