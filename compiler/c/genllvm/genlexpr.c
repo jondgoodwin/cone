@@ -1355,7 +1355,11 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
             genlVtable(gen, vtable);
 
         LLVMValueRef vtablep = NULL;
-        if (!(strnode->flags & TraitType)) {
+        // A plain function: its code pointer is the data, and the vtable's one
+        // slot a stub that calls it
+        if (strnode->tag == FnSigTag)
+            vtablep = genlFnStubVtable(gen, vtable);
+        else if (!(strnode->flags & TraitType)) {
             VtableImpl *impl;
             INode **nodesp;
             uint32_t cnt;

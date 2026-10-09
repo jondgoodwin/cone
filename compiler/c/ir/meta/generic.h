@@ -69,6 +69,13 @@ int genericIsInstanceOf(INode *fn, FnDclNode *generic);
 // The signature a closure literal given as argument 'argi' of a call of this
 // generic function or method is to fit (closure.h); see generic.c
 FnSigNode *genericParmBound(FnDclNode *generic, uint32_t pos, INode **refperm);
+
+// Refuse, at the caller's argument, a callable whose '()' changes its state given
+// to a generic parameter taken as '&F'. 0 once reported.
+int genericCallablePermCheck(FnDclNode *generic, Nodes *valueargs, uint32_t firstparm);
+
+// Append a checked signature as a message spells it: 'fn(&Person, &Person) i32'
+void genericFnSigCat(char *buf, size_t size, FnSigNode *sig);
 FnSigNode *genericClosureSig(TypeCheckState *pstate, FnDclNode *generic, Nodes *args, uint32_t firstparm,
         uint32_t argi, INode **refperm);
 

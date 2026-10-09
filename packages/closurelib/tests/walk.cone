@@ -6,12 +6,25 @@
 // - sumOf with i * i + off, off 5, over 1..4: 6 + 9 + 14 + 21 = 50;
 // - sumOf with a closure of the importer's own state, [mut seen = 0] counting
 //   its calls and adding them in, over 1..3: (1 + 1) + (2 + 2) + (3 + 3) = 12.
+// A callable given by reference, the vtable built in this object:
+// - applyTo with the importer's closure x * off, off 5, at 4: 20; with its own
+//   struct Triple, 3 * 4: 12; with the plain function succ, 4 + 1: 5;
+// - applyMut with a closure counting into a variable, at 4 then 6: 4, then 10;
+// - applyPlus, expanded here, naming the library's private 100: succ at 4, 105;
+// - counter(10) called with 5 then 7: 15, then 22; a Hook of it fired with 1: 23.
 
 mod walk;
 
 import stdio use *;
 import testing use *;
 import closurelib use *;
+
+struct Triple {
+  pub k i64;
+  pub fn `()`(self &, x i64) i64 { x * k; }
+}
+
+fn succ(x i64) i64 { x + 1i64; }
 
 fn main() i32 {
   expectInt(scaled(2i64, 3i64), 106i64, "scaled");
@@ -20,5 +33,21 @@ fn main() i32 {
   imm off = 5i64;
   expectInt(sumOf(i => i * i + off, 4i64), 50i64, "a closure over a local");
   expectInt(sumOf(fn(i i64) [mut seen = 0i64] i64 { seen += 1i64; i + seen; }, 3i64), 12i64, "a closure with state");
+  expectInt(applyTo(x => x * off, 4i64), 20i64, "a closure lent");
+  imm tri = new Triple(3i64);
+  expectInt(applyTo(&tri, 4i64), 12i64, "a struct lent");
+  expectInt(applyTo(&succ, 4i64), 5i64, "a plain function lent");
+  mut seen = 0i64;
+  imm count = fn(x i64) i64 { seen += x; seen; };
+  mut counting = count;
+  expectInt(applyMut(&mut counting, 4i64), 4i64, "a counting closure, first");
+  expectInt(applyMut(&mut counting, 6i64), 10i64, "a counting closure, second");
+  expectInt(applyPlus(&succ, 4i64), 105i64, "expanded here");
+  mut c = counter(10i64);
+  expectInt(c(5i64), 15i64, "an owner made in the library");
+  expectInt(c(7i64), 22i64, "the same owner again");
+  mut hook = new Hook(counter(20i64));
+  expectInt(hook.fire(3i64), 23i64, "a callable in a field");
+  expectInt(hook.run(4i64), 27i64, "a callable field called by name");
   done();
 }

@@ -564,7 +564,11 @@ value, with no `&`: `fn (u f32) [ribs, mut n = 0] f32 { ... }`, read by
 `parseTerm` where a term begins with `fn`, and the short form `x => x * 2` (and
 `(a, b) => ...`, `() => ...`), read where a name or a parenthesised list is
 followed by `=>` (`FatArrowToken`). Both build a `ClosureNode`
-([closure](../nodes/closure.md)), which `&fn(...) { ... }` does not.
+([closure](../nodes/closure.md)), which `&fn(...) { ... }` does not. **A bare `fn(sig)`
+where a type is written** is a signature, read as a generic bound is
+(`parseFnBound`): as an argument inside brackets (`parseIndexArg`: `So[fn(i32) i32]`,
+`Applied[fn(i32) i32]`, since nothing indexes by a closure), as a term while
+`ParseState.intype` is set, and as an alias's target (`parseAlias`).
 
 ## 5. Adding an operator: the six edits
 
