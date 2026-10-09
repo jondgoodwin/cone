@@ -554,7 +554,12 @@ imm val = *ref;  // val is now 3
 		(a number's, an enum's, or one a struct <a href="refmethop.html#compare">declares</a>).
 		The ordering operators (<span class="pre">&lt;</span>, <span class="pre">&lt;=</span>,
 		<span class="pre">&gt;</span>, <span class="pre">&gt;=</span>) compare the values too.
-		Both sides must be references; to compare a reference with a value, de-reference it:</p>
+		A reference may also be compared with a value, on either side, when the value copies freely
+		(a number, a <span class="pre">bool</span>, a <span class="pre">char</span>, a plain struct): the
+		borrow is read through, as it is for any operator
+		(<a href="#implicit">Implicit De-referencing</a>). A reference to a type that moves,
+		such as a <span class="pre">String</span> or a struct with a finalizer, is not read through against a value,
+		since that would take the value out of the borrow:</p>
 <pre>
 mut a = 5;
 mut b = 5;
@@ -563,7 +568,9 @@ imm ref2 = &amp;b;
 if ref1 == ref2 {   // true: both refer to a 5
 		// do some stuff
 }
-if *ref1 == 5 {     // a reference against a value is de-referenced explicitly
+if ref1 == 5 {     // true: a reference against a value is read through
+}
+if 4 &lt; ref2 {       // and so is a value against a reference
 }
 </pre>
 	<p>A value type that offers no <span class="pre">==</span> (or no ordering operator)
@@ -684,7 +691,7 @@ struct Point {
 }
 </pre>
 
-	<h3>Implicit De-referencing</h3>
+	<h3 id="implicit">Implicit De-referencing</h3>
 	<p>Since a reference is generally understood to be a stand-in for the value it references,
 		de-referencing often happens implicitly.
 	  For example, when the dot operator is applied to a reference to access a field, 
@@ -702,6 +709,23 @@ imm sum = ref + 4.;   // sum is 0. Equivalent to *ref + 4.
 		depends on what is supported by implemented methods.
 		If an existing method can accept the reference as a reference, it is used.
 		If not, the reference is de-referenced before applying the method.</p>
+	<p>An operator's other operand is read through the same way. A reference on either side of an
+		operator, or on the right of a compound assignment, gives the operator the value it refers to,
+		so a variable that borrows a number takes part in arithmetic and comparison like the number:</p>
+<pre>
+imm total = sum + ref;     // equivalent to: sum + *ref
+sum += ref;                // equivalent to: sum += *ref
+imm bigger = ref &gt; 3;      // equivalent to: *ref &gt; 3
+imm same = ref == other;   // two references: the values are compared, not the places
+</pre>
+	<p>This is a copy of a value that copies freely: a number, a <span class="pre">bool</span>, a
+		<span class="pre">char</span>, or a plain struct with no finalizer. It never moves a value out of a
+		borrow, so a borrowed <span class="pre">String</span> (or any type that moves) is not read through
+		this way, and keeps whatever its own operators accept. As with a method, an operator that
+		accepts the reference itself is used as it is before any reading through is tried.
+		The <span class="pre">*</span> stays wherever it means something more than reading: an explicit copy
+		(<span class="pre">imm y = *x</span>), a store through the reference (<span class="pre">*x = 4</span>),
+		or a function's argument.</p>
 				
 	<h3>Nullable References</h3>
 	<p>References only ever point to valid values.
