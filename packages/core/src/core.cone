@@ -274,6 +274,37 @@ pub struct @opaque Array[T] {
     }
     new ArrayMutChunks[T](self, n, 0usize);
   }
+
+  // The elements as rows of 'N': 'a.asArrays[3]()' is the same memory seen as a slice of
+  // 'Array[T, 3]', so 'rows[i][k]' is element 'i * 3 + k' and nothing is copied. 'N' is
+  // written in brackets (nothing in the arguments says it). A panic if the count is not a
+  // multiple of 'N' (reported at the caller's line); 'N' of 0 is a panic too
+  pub fn asArrays[N usize](self &, file &Array[u8] = srcFile(), line u32 = srcLine()) &Array[Array[T, N]] {
+    if N == 0usize {
+      panic("asArrays: the row length is 0", file, line);
+    }
+    if self.len % N != 0usize {
+      panic("asArrays: the count is not a multiple of the row length", file, line);
+    }
+    imm p = self as *T;
+    imm q = p as *Array[T, N];
+    mem.sliceFromParts[Array[T, N]](q, self.len / N);
+  }
+
+  // 'asArrays' for changing in place, a '&mut' slice (a method cannot be told apart by its
+  // receiver's permission, so it has a name of its own, as 'mutChunks' has beside 'chunks'):
+  // writing through 'rows[i][k]' changes element 'i * N + k' of the original
+  pub fn asMutArrays[N usize](self &mut, file &Array[u8] = srcFile(), line u32 = srcLine()) &mut Array[Array[T, N]] {
+    if N == 0usize {
+      panic("asMutArrays: the row length is 0", file, line);
+    }
+    if self.len % N != 0usize {
+      panic("asMutArrays: the count is not a multiple of the row length", file, line);
+    }
+    imm p = self as *T;
+    imm q = p as *Array[T, N];
+    mem.sliceFromPartsMut[Array[T, N]](q, self.len / N);
+  }
 }
 
 // A cursor over a slice's elements in runs of 'size', which 'chunks' gives: 'next'

@@ -1,0 +1,156 @@
+// A picture of bytes, three to a pixel, written a row to a pass through 'asMutArrays[3]()': the
+// loop 3D Web wants,
+//
+//   parallel each y, line in pixels.asMutArrays[3]().mutChunks(width).indexed() {
+//     each x in 0usize < width { line[x][0] = ...; line[x][1] = ...; line[x][2] = ...; }
+//   }
+//
+// must leave exactly the bytes the same loop leaves when it indexes the flat buffer with
+// 'x * 3 + k' (the first form is the view of the second's memory, so nothing is copied). Both are
+// compared byte for byte, over a list's block, an array's slice and a zip of two pictures'
+// rows (the shape of surfacepatterns' three-buffer pass), against the serial walk too.
+//
+// Pixel (x, y), channel k is 3x + 5y + k, in 5 columns and 7 rows. The sum:
+//
+//   3 * (0 + ... + 4) * 7 * 3  = 3 * 10 * 21 =  630
+//   5 * (0 + ... + 6) * 5 * 3  = 5 * 21 * 15 = 1575
+//   (0 + 1 + 2) * 35           = 3 * 35      =  105
+//                                        total = 2310
+//
+// and pixel (4, 6)'s channel 2 is 12 + 30 + 2 = 44 (values are taken modulo 251 to stay a byte;
+// none of these reaches it). The wide picture (64 x 48) is checked for mismatches, and its last
+// pixel's channel 0, (3 * 63 + 5 * 47) mod 251 = 424 - 251 = 173; the second picture of the zip is the first's channels reversed
+// (channel 2 - k), so its sum is also 2310 and its pixel (4, 6) channel 0 is 44 too.
+
+mod concurrency_parallel_as_arrays;
+
+import stdio use *;
+import collections use *;
+import actors;
+
+fn show(label &str, n u64) {
+  printStr(label);
+  printStr(" = ");
+  printUInt(n);
+  printStr("\n");
+}
+
+fn channel(x usize, y usize, k usize) u8 {
+  u8.from((x * 3usize + y * 5usize + k) % 251usize);
+}
+
+// The picture through the view, a row to a pass
+fn bakeView(pixels &mut Array[u8], width usize) {
+  parallel each y, line in pixels.asMutArrays[3]().mutChunks(width).indexed() {
+    each x in 0usize < width {
+      line[x][0] = channel(x, y, 0usize);
+      line[x][1] = channel(x, y, 1usize);
+      line[x][2] = channel(x, y, 2usize);
+    }
+  }
+}
+
+// The picture through the flat buffer, a row to a pass
+fn bakeFlat(pixels &mut Array[u8], width usize) {
+  parallel each y, line in pixels.mutChunks(width * 3usize).indexed() {
+    each x in 0usize < width {
+      line[x * 3usize] = channel(x, y, 0usize);
+      line[x * 3usize + 1usize] = channel(x, y, 1usize);
+      line[x * 3usize + 2usize] = channel(x, y, 2usize);
+    }
+  }
+}
+
+// The serial walk through the view
+fn bakeSerial(pixels &mut Array[u8], width usize) {
+  each y, line in pixels.asMutArrays[3]().mutChunks(width).indexed() {
+    each x in 0usize < width {
+      line[x][0] = channel(x, y, 0usize);
+      line[x][1] = channel(x, y, 1usize);
+      line[x][2] = channel(x, y, 2usize);
+    }
+  }
+}
+
+// Two pictures in one pass, as surfacepatterns bakes its maps: the second has the channels reversed
+fn bakeZip(a &mut Array[u8], b &mut Array[u8], width usize) {
+  parallel each y, la, lb in a.asMutArrays[3]().mutChunks(width).zip(b.asMutArrays[3]().mutChunks(width)).indexed() {
+    each x in 0usize < width {
+      each k in 0usize < 3usize {
+        la[x][k] = channel(x, y, k);
+        lb[x][k] = channel(x, y, 2usize - k);
+      }
+    }
+  }
+}
+
+fn total(pixels &Array[u8]) u64 {
+  mut sum = 0u64;
+  each i in 0usize < pixels.len { sum = sum + u64.from(pixels[i]); }
+  sum;
+}
+
+fn mismatches(a &Array[u8], b &Array[u8]) u64 {
+  mut bad = 0u64;
+  if a.len != b.len { bad = 1000000u64; }
+  each i in 0usize < a.len {
+    if a[i] != b[i] { bad = bad + 1u64; }
+  }
+  bad;
+}
+
+fn main() {
+  initAll();
+  actors.configure(new actors.Options(workers: 4u32));
+
+  // ---- a list's block, 5 x 7 ----
+  mut viewList = new List[u8];
+  mut flatList = new List[u8];
+  mut serialList = new List[u8];
+  each i in 0usize < 105usize {
+    viewList.push(0u8);
+    flatList.push(0u8);
+    serialList.push(0u8);
+  }
+  bakeView(viewList.viewMut(), 5usize);
+  bakeFlat(flatList.viewMut(), 5usize);
+  bakeSerial(serialList.viewMut(), 5usize);
+  show("view sum", total(viewList.view()));
+  show("flat sum", total(flatList.view()));
+  show("view against flat", mismatches(viewList.view(), flatList.view()));
+  show("view against serial", mismatches(viewList.view(), serialList.view()));
+  show("view pixel (4, 6) channel 2", u64.from(*viewList[104usize]));
+
+  // ---- a list asked directly, the call 3D Web writes on its pixels ----
+  mut direct = new List[u8];
+  each i in 0usize < 105usize { direct.push(0u8); }
+  parallel each y, line in direct.asMutArrays[3]().mutChunks(5usize).indexed() {
+    each x in 0usize < 5usize {
+      line[x][0] = channel(x, y, 0usize);
+      line[x][1] = channel(x, y, 1usize);
+      line[x][2] = channel(x, y, 2usize);
+    }
+  }
+  show("direct against flat", mismatches(direct.view(), flatList.view()));
+
+  // ---- an array's slice, wide, 64 x 48 ----
+  mut wideView Array[u8, 9216];
+  mut wideFlat Array[u8, 9216];
+  mut wv &mut Array[u8] = &mut wideView;
+  mut wf &mut Array[u8] = &mut wideFlat;
+  bakeView(wv, 64usize);
+  bakeFlat(wf, 64usize);
+  show("wide view against flat", mismatches(wv, wf));
+  show("wide pixel (63, 47) channel 0", u64.from(wv[9213usize]));
+
+  // ---- two pictures zipped, a row of each to a pass ----
+  mut za Array[u8, 105];
+  mut zb Array[u8, 105];
+  mut sa &mut Array[u8] = &mut za;
+  mut sb &mut Array[u8] = &mut zb;
+  bakeZip(sa, sb, 5usize);
+  show("zip first sum", total(sa));
+  show("zip second sum", total(sb));
+  show("zip first against flat", mismatches(sa, flatList.view()));
+  show("zip second pixel (4, 6) channel 0", u64.from(sb[102usize]));
+}
