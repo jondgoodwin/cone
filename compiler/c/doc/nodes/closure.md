@@ -339,7 +339,9 @@ it is left to run. Three refusals keep it so:
 
 A function reference to a named function, a virtual reference to a hand-written
 struct and an allocation are refused by `ErrorGpuUnavailable`, not by this check;
-they are no closures ([generation](../phases/generation.md), section 7).
+they are no closures ([generation](../phases/generation.md), section 7). So is an
+owning reference type written in a signature, a field or a local, which no closure can
+therefore hold: this check's owning-reference case is a second line of defence.
 
 ## Across objects
 

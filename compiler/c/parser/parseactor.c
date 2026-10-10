@@ -627,6 +627,13 @@ static void parseActorBind(ModuleNode *mod, Name *name, INode *dcl, uint16_t fla
 // actors share is the generated text's first declaration
 static int parseActorRuntime(ParseState *parse, StructNode *at, Name *actorname, GenText *g) {
     ModuleNode *mod = parse->mod;
+    // A GPU has no threads, and an actor is mailboxes that worker threads run
+    if (flowGpu) {
+        errorMsgNode((INode *)at, ErrorGpuUnavailable,
+            "In GPU code no actor is declared, '%s': an actor is run by worker threads, which a GPU has none of. A kernel is one function that thousands of invocations run at once.",
+            &actorname->namestr);
+        return 0;
+    }
     if (genShared[GenActors] == NULL) {
         genShared[GenActors] = nametblPrivate("actors", 6);
         genShared[GenSync] = nametblPrivate("sync", 4);
