@@ -46,9 +46,11 @@ enum IntrinsicFn {
     TagEqIntrinsic,
     TagNeIntrinsic,
 
-    // An enum whose variants carry fields declares its comparison and refuses
-    // the call, so the author is told why rather than left to read the absence
-    // of '==' as an oversight. Never generated: type check stops the call.
+    // An enum whose variants carry fields declares its '==' so that selection
+    // finds it; type check then turns the call into one of the comparison the
+    // compiler gave the enum (structSetEnumEqFn), or refuses it, naming the variant
+    // that declares no '==' of its own for that comparison to call. Never
+    // generated: type check replaces the call.
     NoEqIntrinsic,
 
     // An integer's or bool's 'hash': what core's Hash requires of every type that

@@ -1977,11 +1977,13 @@ static int structEnumIsTagOnly(StructNode *node) {
 // not a magnitude. Reading the discriminant answers it whole for the payload-free
 // form, where the value IS the tag.
 //
-// Where a variant carries fields, comparing two values would have to compare
-// those fields, and Cone has no structural comparison for a struct of any kind.
-// So '==' is declared there too and refused when it is called, which is what
-// tells the author to use 'match' instead of leaving them to read '=='s absence
-// as an oversight.
+// Where a variant carries fields, comparing two values compares the tags and
+// then calls the variant's own '==' (structSetEnumEqFn builds that comparison,
+// and fnCallLowerEnumEq lowers the call to it). Here only the declaration is
+// made, as the intrinsic NoEqIntrinsic, which selection finds so that the call
+// reaches that lowering; an enum with a variant that carries fields and declares
+// no '==' is refused there, naming the variant. Its '!=' is not declared: it is
+// derived from the '==', as any type's is (fnCallNeFromEq).
 //
 // Entered in the namespace and not in 'nodelist', because this is the enum's own
 // comparison and not a requirement on its variants: a vtable slot, a conformance
@@ -1996,12 +1998,14 @@ static void structEnumAddEquality(StructNode *node) {
     nodesAdd(&cmpsig->parms, (INode*)newVarDclFull(anonName, VarDclTag, (INode*)node, newPermUseNode(immPerm), NULL));
     FnDclNode *eqfn = newFnDclNode(eqName, FlagMethFld | FlagPub, (INode*)cmpsig,
         (INode*)newIntrinsicNode(tagonly ? TagEqIntrinsic : NoEqIntrinsic));
-    FnDclNode *nefn = newFnDclNode(neName, FlagMethFld | FlagPub, (INode*)cmpsig,
-        (INode*)newIntrinsicNode(tagonly ? TagNeIntrinsic : NoEqIntrinsic));
     inodeLexCopy((INode*)eqfn, (INode*)node);
-    inodeLexCopy((INode*)nefn, (INode*)node);
     namespaceAdd(&node->namespace, eqName, (INode*)eqfn);
-    namespaceAdd(&node->namespace, neName, (INode*)nefn);
+    if (tagonly) {
+        FnDclNode *nefn = newFnDclNode(neName, FlagMethFld | FlagPub, (INode*)cmpsig,
+            (INode*)newIntrinsicNode(TagNeIntrinsic));
+        inodeLexCopy((INode*)nefn, (INode*)node);
+        namespaceAdd(&node->namespace, neName, (INode*)nefn);
+    }
 }
 
 // The enum a variant is written inside, or NULL for any other type. A variant is
@@ -2893,6 +2897,166 @@ void structSetEnumDropFn(StructNode *node) {
     node->dropfn = (INode*)dropfn;
 }
 
+// Does this variant hold anything beyond its discriminant: fields of its own,
+// or the fields its enum has in common? Such a variant is the payload an enum's
+// '==' has to compare, and a variant holding nothing else is equal to another of
+// its kind by its tag alone.
+int structVariantCarriesFields(StructNode *variant) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&variant->fields, cnt, nodesp)) {
+        if (!((*nodesp)->flags & (IsTagField | IsMixin)))
+            return 1;
+    }
+    return 0;
+}
+
+// The '==' a variant declares for itself, or NULL. Only the variant's own
+// namespace is asked: its enum's '==' is the refusal or the generated comparison
+// this finds the pieces of, and a variant never inherits it.
+static INode *structVariantEq(StructNode *variant) {
+    INode *eq = namespaceFind(&variant->namespace, eqName);
+    if (eq && eq->tag == AliasDclTag)
+        eq = aliasDclResolve(eq);
+    if (eq && (eq->tag == FnDclTag || eq->tag == FnOverloadDclTag) && (eq->flags & FlagMethFld))
+        return eq;
+    return NULL;
+}
+
+// The first variant of an enum that carries fields and declares no '==', or NULL
+// when every one that carries fields has the '==' the enum's comparison calls.
+// Asked of an enum whose variants are laid out.
+StructNode *structEnumVariantWithoutEq(StructNode *node) {
+    INode **nodesp;
+    uint32_t cnt;
+    if (node->derived == NULL)
+        return NULL;
+    for (nodesFor(node->derived, cnt, nodesp)) {
+        StructNode *variant = (StructNode*)*nodesp;
+        if (structVariantCarriesFields(variant) && structVariantEq(variant) == NULL)
+            return variant;
+    }
+    return NULL;
+}
+
+// A reference type to a variant, '&Circle', for the tests and recasts the
+// generated comparison is made of. A fresh node each time: type check may bind
+// or replace what a type node holds, so two uses never share one.
+static INode *structEnumEqVariantRef(StructNode *variant, INode *lex) {
+    INode *named = newNameUseFromDclNode((INode*)variant, lex);
+    RefNode *ref = newRefNodeFull(RefTag, lex, (INode*)borrowRef, newPermUseNode(roPerm), named);
+    return (INode*)ref;
+}
+
+// Give an enum whose variants carry fields the comparison its '==' calls, once
+// its variants are laid out: a static function '-eq' of two read-only references
+// to the enum, built the way a program would write it,
+//
+//     if l is &Circle { return r is &Circle and (l as &Circle) == (r as &Circle); }
+//     if l is &Dot { return r is &Dot; }
+//     return false;
+//
+// so it compares the tags first, then calls the variant's own '==' on the two
+// narrowed references, and a variant carrying nothing is equal by its tag alone.
+// The recast is the narrowing: a read-only reference cannot be narrowed by a
+// pattern, which has to promise that nothing changes the variant while the
+// narrowed reference is used, and nothing can here, the function holding nothing
+// but reads. References, so that a value which moves (an enum holding an owner) is
+// compared where it lies and not moved into the comparison.
+//
+// Made only for an enum whose every variant that carries fields declares a '==',
+// so the body is sound by construction; for any other the call is refused where
+// it is written (fnCallLowerEnumEq), which asks the same question. Idempotent.
+void structSetEnumEqFn(StructNode *node) {
+    if (!(node->flags & EnumType) || node->genericinfo || node->derived == NULL
+        || namespaceFind(&node->namespace, enumEqName) != NULL)
+        return;
+    INode *declared = namespaceFind(&node->namespace, eqName);
+    if (declared == NULL || declared->tag != FnDclTag || ((FnDclNode*)declared)->value == NULL
+        || ((FnDclNode*)declared)->value->tag != IntrinsicTag
+        || ((IntrinsicNode*)((FnDclNode*)declared)->value)->intrinsicFn != NoEqIntrinsic
+        || structEnumVariantWithoutEq(node) != NULL)
+        return;
+
+    INode *lex = (INode*)node;
+    INode *selftype = newNameUseFromDclNode((INode*)node, lex);
+    INode *refselftype = (INode*)newRefNodeFull(RefTag, lex, (INode*)borrowRef, newPermUseNode(roPerm), selftype);
+    VarDclNode *ldcl = newVarDclFull(selfName, VarDclTag, refselftype, (INode*)immPerm, NULL);
+    INode *refothertype = (INode*)newRefNodeFull(RefTag, lex, (INode*)borrowRef, newPermUseNode(roPerm),
+        newNameUseFromDclNode((INode*)node, lex));
+    VarDclNode *rdcl = newVarDclFull(anonName, VarDclTag, refothertype, (INode*)immPerm, NULL);
+    inodeLexCopy((INode*)ldcl, lex);
+    inodeLexCopy((INode*)rdcl, lex);
+    // Parameters, as the parser leaves them: in the function's own scope, numbered,
+    // and holding a value from the start
+    ldcl->flowtempflags |= VarInitialized;
+    ldcl->scope = 1;
+    ldcl->index = 0;
+    rdcl->flowtempflags |= VarInitialized;
+    rdcl->scope = 1;
+    rdcl->index = 1;
+    FnSigNode *fnsig = newFnSigNode();
+    inodeLexCopy((INode*)fnsig, lex);
+    nodesAdd(&fnsig->parms, (INode*)ldcl);
+    nodesAdd(&fnsig->parms, (INode*)rdcl);
+    fnsig->rettype = (INode*)boolType;
+
+    BlockNode *body = newBlockNode();
+    inodeLexCopy((INode*)body, lex);
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(node->derived, cnt, nodesp)) {
+        StructNode *variant = (StructNode*)*nodesp;
+        CastNode *ltest = newIsNode(newNameUseFromDclNode((INode*)ldcl, lex), structEnumEqVariantRef(variant, lex));
+        inodeLexCopy((INode*)ltest, lex);
+        CastNode *rtest = newIsNode(newNameUseFromDclNode((INode*)rdcl, lex), structEnumEqVariantRef(variant, lex));
+        inodeLexCopy((INode*)rtest, lex);
+        INode *result = (INode*)rtest;
+        if (structVariantCarriesFields(variant)) {
+            CastNode *lnarrow = newRecastNode(newNameUseFromDclNode((INode*)ldcl, lex), structEnumEqVariantRef(variant, lex));
+            inodeLexCopy((INode*)lnarrow, lex);
+            CastNode *rnarrow = newRecastNode(newNameUseFromDclNode((INode*)rdcl, lex), structEnumEqVariantRef(variant, lex));
+            inodeLexCopy((INode*)rnarrow, lex);
+            // Positioned on the variant's '==', so that a '==' which does not take
+            // another of its variant is reported where it is declared
+            FnCallNode *cmp = newFnCallOpnameLower(structVariantEq(variant), (INode*)lnarrow, eqName, 1);
+            nodesAdd(&cmp->args, (INode*)rnarrow);
+            LogicNode *both = newLogicNode(AndLogicTag);
+            inodeLexCopy((INode*)both, lex);
+            both->lexp = (INode*)rtest;
+            both->rexp = (INode*)cmp;
+            result = (INode*)both;
+        }
+        BlockNode *arm = newBlockNode();
+        inodeLexCopy((INode*)arm, lex);
+        BreakRetNode *ret = newReturnNodeExp(result);
+        inodeLexCopy((INode*)ret, lex);
+        nodesAdd(&arm->stmts, (INode*)ret);
+        IfNode *test = newIfNode();
+        inodeLexCopy((INode*)test, lex);
+        nodesAdd(&test->condblk, (INode*)ltest);
+        nodesAdd(&test->condblk, (INode*)arm);
+        nodesAdd(&body->stmts, (INode*)test);
+    }
+    BreakRetNode *none = newReturnNodeExp((INode*)newULitNodeTC(0, (INode*)boolType));
+    inodeLexCopy((INode*)none, lex);
+    inodeLexCopy(none->exp, lex);
+    nodesAdd(&body->stmts, (INode*)none);
+
+    // Pub, as an enum's drop is: another object's comparison of this enum calls it
+    FnDclNode *eqfn = newFnDclNode(enumEqName, FlagPub, (INode*)fnsig, (INode*)body);
+    inodeLexCopy((INode*)eqfn, lex);
+    nodelistAdd(&node->nodelist, (INode*)eqfn);
+    namespaceAdd(&node->namespace, enumEqName, (INode*)eqfn);
+    dclInfoJoin((INode*)eqfn, (INode*)node);
+}
+
+// The comparison structSetEnumEqFn gave an enum, or NULL
+FnDclNode *structEnumEqFn(StructNode *node) {
+    INode *eqfn = namespaceFind(&node->namespace, enumEqName);
+    return eqfn && eqfn->tag == FnDclTag ? (FnDclNode*)eqfn : NULL;
+}
+
 // Is this a drop the compiler gave a type -- an enum's (structSetEnumDropFn) or
 // a struct's (structSetDropFn) -- whose body generation builds from the layout,
 // rather than a type's own 'final' standing as its drop?
@@ -3321,6 +3485,7 @@ static void structLayoutVariants(TypeCheckState *pstate, StructNode *node) {
     for (pos = 0; pos < node->derived->used; ++pos)
         inodeTypeCheckAny(pstate, &nodesGet(node->derived, pos));
     structSetEnumDropFn(node);
+    structSetEnumEqFn(node);
 }
 
 // A type declaring 'AtomicValue' is a struct of exactly one field, which an
@@ -3673,6 +3838,12 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     // Ensure traits keep a list of derived structs/traits
     if ((node->flags & TraitType) && node->derived == NULL)
         node->derived = newNodes(2);
+
+    // An instance of a generic enum is cloned from its template, and the
+    // template's comparison, entered in its namespace alone, is not among what is
+    // cloned: the instance declares its own, from the variants it was made with
+    if ((node->flags & EnumType) && node->instnode && node->derived)
+        structEnumAddEquality(node);
 
     // An 'extends' base name resolution could not take -- this type is an
     // instance of a generic, or the base is, so one of them was not a declaration

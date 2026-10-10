@@ -37,6 +37,9 @@ extern Name *dropName;  // "drop": the finalizer the compiler gives a module
 // structSetEnumDropFn). 'drop' is an ordinary method name, so the generated one
 // takes a name no plainly written method has, and the two never share a symbol.
 extern Name *typeDropName;
+// "-eq": the comparison the compiler gives an enum whose variants carry fields
+// (structSetEnumEqFn). No source can spell it, so it collides with no name.
+extern Name *enumEqName;
 extern Name *cloneName; // "clone" method
 extern Name *finalName; // "final": a type's finalizer method, and a module's own finalizer
 // "-final": an enum's 'final' as cloned into a variant that declares its own,
