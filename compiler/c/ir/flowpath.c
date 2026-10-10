@@ -1172,8 +1172,12 @@ static int pwReserved(int access) {
 // &mut List' reborrows '*r', with the permission the method declared for
 // 'self'). Its place, its loan and its access come back through 'pl', 'loan'
 // and 'access'; 'loan' is 0 when the receiver is no place the walk tracks.
-static PathSet *pwReceiver(FnCallNode *call, FnDclNode *meth, Place *pl, uint32_t *loan, int *access) {
-    INode **recvp = &nodesGet(call->args, 0);
+//
+// The same lending is made of an argument of a free function whose result may
+// hold a borrow of it (pwLentArg): 'reserve' is then 0, for such an argument is
+// no two-phase borrow, and 'selftype' is its parameter's type.
+static PathSet *pwLendRef(INode **recvp, INode *selftype, int lvalop, int reserve, Place *pl, uint32_t *loan,
+        int *access) {
     INode *recv = *recvp;
     PathSet *base;
     *loan = 0;
@@ -1183,8 +1187,8 @@ static PathSet *pwReceiver(FnCallNode *call, FnDclNode *meth, Place *pl, uint32_
             return base;
         INode *perm = ((RefNode *)iexpGetTypeDcl(recv))->perm;
         // An operator changing its operand in place writes it ('v <- x')
-        *access = (call->flags & FlagLvalOp) ? AccessWrite : loanBorrowAccess(perm);
-        return pwLend(recv, pl, perm, pwReserved(*access), loan);
+        *access = lvalop ? AccessWrite : loanBorrowAccess(perm);
+        return pwLend(recv, pl, perm, reserve ? pwReserved(*access) : *access, loan);
     }
     // An owner lent as the receiver ('a.bump()', 'a' a 'So[R]' or a
     // 'So[App]'): a borrow of what it owns, as pwOwnedLent reads any other lent
@@ -1195,16 +1199,46 @@ static PathSet *pwReceiver(FnCallNode *call, FnDclNode *meth, Place *pl, uint32_
             return base;
         INode *perm = ((RefNode *)iexpGetTypeDcl(recv))->perm;
         *access = loanBorrowAccess(perm);
-        return pwLend(recv, pl, perm, pwReserved(*access), loan);
+        return pwLend(recv, pl, perm, reserve ? pwReserved(*access) : *access, loan);
     }
-    INode *selftype = iexpGetTypeDcl(nodesGet(((FnSigNode *)meth->vtype)->parms, 0));
     if (!pwIsBorrowed(iexpGetTypeDcl(recv)) || selftype->tag != RefTag)
         return pwValue(recvp, 1);
     if (!pwThrough(recvp, pl, &base))
         return base;
     INode *perm = ((RefNode *)selftype)->perm;
     *access = loanBorrowAccess(perm);
-    return pwLend(recv, pl, perm, pwReserved(*access), loan);
+    return pwLend(recv, pl, perm, reserve ? pwReserved(*access) : *access, loan);
+}
+
+static PathSet *pwReceiver(FnCallNode *call, FnDclNode *meth, Place *pl, uint32_t *loan, int *access) {
+    return pwLendRef(&nodesGet(call->args, 0), iexpGetTypeDcl(nodesGet(((FnSigNode *)meth->vtype)->parms, 0)),
+        (call->flags & FlagLvalOp) != 0, 1, pl, loan, access);
+}
+
+// The container a free function's argument lends to its result: the argument at
+// 'i' is a reference to a type that changes shape (shapeinfer.h), and the call's
+// result may hold a borrow. A method's receiver is lent this way always
+// (pwReceiver); a free function's argument was only followed where it was a
+// borrow written in the call, a local's. NULL where it is not one.
+static StructNode *pwLentArg(FnCallNode *call, uint32_t i, INode **parmtype) {
+    if ((call->flags & FlagLvalOp) || i >= 8)
+        return NULL;
+    INode *fnn = call->objfn;
+    if (!isNameUseNode(fnn) || ((NameUseNode *)fnn)->dclnode == NULL || ((NameUseNode *)fnn)->dclnode->tag != FnDclTag)
+        return NULL;
+    FnSigNode *callsig = (FnSigNode *)((FnDclNode *)((NameUseNode *)fnn)->dclnode)->vtype;
+    if (callsig == NULL || callsig->tag != FnSigTag || i >= callsig->parms->used)
+        return NULL;
+    // The parameter's type decides what is lent: a '&' parameter lends for reading
+    // whatever the reference passed to it may write
+    INode *argtype = iexpGetTypeDcl(nodesGet(callsig->parms, i));
+    if (argtype->tag != RefTag)
+        return NULL;
+    *parmtype = argtype;
+    INode *container = itypeGetTypeDcl(((RefNode *)argtype)->vtexp);
+    if (container->tag != StructTag || !shapeChanging((StructNode *)container))
+        return NULL;
+    return (StructNode *)container;
 }
 
 // A holder's value dies -- at its scope's end, or stored over whole: if its
@@ -1824,6 +1858,13 @@ static PathSet *pwCall(FnCallNode *call) {
     PathSet *localsets[8];
     uint32_t nargs = call->args == NULL ? 0 : call->args->used;
     PathSet **argsets = nargs <= 8 ? localsets : (PathSet **)memAllocBlk(nargs * sizeof(PathSet *));
+    // The arguments of a free function lent to its result as a receiver is
+    // (pwLentArg): the place, the loan and the container of each
+    Place lentpl[8];
+    uint32_t lentloan[8];
+    StructNode *lentcnt[8];
+    memset(lentloan, 0, sizeof(lentloan));
+    memset(lentcnt, 0, sizeof(lentcnt));
     // In the order generation makes them: a receiver or a borrow of a plain
     // path before a seam another argument holds is made after it (awaitOrder)
     uint32_t localorder[8];
@@ -1840,7 +1881,17 @@ static PathSet *pwCall(FnCallNode *call) {
             argsets[argi] = carried;
             continue;
         }
-        carried = pwValue(argsp, 1);
+        INode *parmtype = NULL;
+        StructNode *lentcont = carries && !meth && pathLoans ? pwLentArg(call, argi, &parmtype) : NULL;
+        if (lentcont) {
+            // A reference to a collection that changes shape, which the result may
+            // hold a borrow into: lent as a method's receiver is
+            int access;
+            carried = pwLendRef(argsp, parmtype, 0, 0, &lentpl[argi], &lentloan[argi], &access);
+            lentcnt[argi] = lentcont;
+        }
+        else
+            carried = pwValue(argsp, 1);
         loanFlightPushOf(carried, 0, *argsp);
         if (carries)
             result = pathSetUnion(result, pwArgCarries(sig, argi, rettype, carried));
@@ -1904,6 +1955,18 @@ static PathSet *pwCall(FnCallNode *call) {
             }
         }
         result = pathSetUnion(result, fromrecv);
+    }
+    // The same for a reference a free function was handed, where its result may
+    // hold a borrow into what that reference points at (shapeinfer.h): the path
+    // it was reached through is frozen while the result is used, and a change
+    // through another name is asked of every call made meanwhile
+    for (uint32_t i = 0; i < nargs && i < 8; ++i) {
+        if (lentloan[i] && argsets[i] != &pathSetAll
+                && pathSetHasLoan(pwArgCarries(sig, i, rettype, argsets[i]), lentloan[i])) {
+            loanFreezeShared(lentloan[i]);
+            if (lentpl[i].shwrite)
+                pwShapeBorrow(&lentpl[i], lentloan[i], (INode *)lentcnt[i]);
+        }
     }
     // What the result's borrows point at may be anything its arguments reach
     // ('h.r' returned from '&h'): every loan both near and far, and of no

@@ -1,0 +1,59 @@
+mod corout_yield_borrow_free_ok;
+
+// What a generator may still do once the rule of corout_yield_borrow_free holds,
+// with a free function making its borrows: hand out borrows of a list it only
+// reads (the caller keeps them), hand out copies of an element it then grows the
+// list under, and hand on a sub-generator's borrows of a list neither changes.
+// Every value printed is worked out by hand from the values put in.
+
+import stdio use *;
+import collections use *;
+
+fn first(xs &List[i64]) &i64 { xs[0usize]; }
+
+// The same borrow handed out twice from a list only read
+fn twice(xs &List[i64]) yields &i64 {
+  yield first(xs);
+  yield first(xs);
+}
+
+// A copy of the first element, the list grown, another copy and the new length
+fn copies(xs &mut List[i64]) yields i64 {
+  yield *first(xs);
+  xs.push(1i64);
+  yield *first(xs) + i64.from(xs.len());
+}
+
+fn child(xs &List[i64]) yields &i64 {
+  yield xs[0usize];
+  yield xs[1usize];
+}
+
+fn both(xs &List[i64]) yields &i64 {
+  yield each child(xs);
+}
+
+fn main() {
+  mut xs = List[i64].empty();
+  xs.push(7i64);
+  xs.push(5i64);
+
+  // twice: 7 7, both kept past the loop
+  mut kept = List[&i64].empty();
+  each e in twice(&xs) { kept.push(e); }
+  each k in kept { printInt(**k); printStr(" "); }
+  printStr("\n");
+
+  // copies: 7, then 7 + 3 = 10, the list ends with three elements
+  mut got = List[i64].empty();
+  each v in copies(&mut xs) { got.push(v); }
+  each c in got { printInt(*c); printStr(" "); }
+  printInt(i64.from(xs.len()));
+  printStr("\n");
+
+  // both: 7 5, kept
+  mut handed = List[&i64].empty();
+  each h in both(&xs) { handed.push(h); }
+  each k in handed { printInt(**k); printStr(" "); }
+  printStr("\n");
+}

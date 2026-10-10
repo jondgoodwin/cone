@@ -911,6 +911,85 @@ static void siMethod(FnDclNode *fn, int *lender, int *writer, int *sigpending, i
         *bodypending = 1;
 }
 
+// ---- The free functions of the type's own module ------------------------------
+// A type's methods are not the only code that lends from it or changes it: a free
+// function of its module (a function beside it, taking it by reference) may too.
+// Other modules reach a type only through its public methods, which are read here,
+// and its public fields, which a store through another name covers (shapeinfer.h).
+// The search is bound to the type's own module: a function there that names the
+// type as the target of a parameter's reference. Generic functions and generic
+// types are not read (their bodies are only checked when instantiated).
+
+// Does this parameter's type, written or checked, make a reference to 'st'?
+static int siParmRefersTo(VarDclNode *parm, StructNode *st) {
+    INode *t = parm->vtype;
+    if (t == NULL || t->tag != RefTag)
+        return 0;
+    t = ((RefNode *)t)->vtexp;
+    return t != NULL && isTypeNode(t) && itypeGetTypeDcl(t) == (INode *)st;
+}
+
+// Call 'fn' on each free function of the module 'st' is declared in that takes it by reference
+static void siEachFree(StructNode *st, void (*fn)(FnDclNode *, void *), void *ctx) {
+    INode *owner = inodeGetOwner((INode *)st);
+    if (owner == NULL || owner->tag != ModuleTag || st->genericinfo != NULL || dclIsInstance((INode *)st))
+        return;
+    Nodes *nodes = ((ModuleNode *)owner)->nodes;
+    if (nodes == NULL)
+        return;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(nodes, cnt, nodesp)) {
+        if ((*nodesp)->tag != FnDclTag)
+            continue;
+        FnDclNode *f = (FnDclNode *)*nodesp;
+        if ((f->flags & FlagMethFld) || f->genericinfo != NULL || f->vtype == NULL || f->vtype->tag != FnSigTag)
+            continue;
+        Nodes *parms = ((FnSigNode *)f->vtype)->parms;
+        for (uint32_t k = 0; parms && k < parms->used; ++k) {
+            if (siParmRefersTo((VarDclNode *)nodesGet(parms, k), st)) {
+                fn(f, ctx);
+                break;
+            }
+        }
+    }
+}
+
+typedef struct {
+    StructNode *st;
+    int *lender, *writer, *sigpending, *bodypending;
+} SiFreeCtx;
+
+static void siFreeFn(FnDclNode *fn, void *vc) {
+    SiFreeCtx *c = (SiFreeCtx *)vc;
+    // Its signature is checked once the declaration is under way
+    if (!(fn->flags & (TypeChecked | TypeChecking))) {
+        *c->sigpending = 1;
+        return;
+    }
+    FnSigNode *sig = (FnSigNode *)fn->vtype;
+    if (sig->rettype && itypeCarriesBorrow(sig->rettype))
+        *c->lender = 1;
+    if (!siVisible(fn))
+        return;
+    for (uint32_t k = 0; k < sig->parms->used; ++k) {
+        INode *pt = iexpGetTypeDcl(nodesGet(sig->parms, k));
+        if (pt == NULL || pt->tag != RefTag || itypeGetTypeDcl(((RefNode *)pt)->vtexp) != (INode *)c->st
+                || !(permGetFlags(((RefNode *)pt)->perm) & MayWrite))
+            continue;
+        int answer = siParamWrites(fn, k);
+        if (answer == SiYes)
+            *c->writer = 1;
+        else if (answer == SiPending)
+            *c->bodypending = 1;
+    }
+}
+
+static void siDemandFree(FnDclNode *fn, void *vc) {
+    (void)vc;
+    fnCallDemandCandidates((INode *)fn);
+}
+
 static int siInferStruct(StructNode *st) {
     int lender = 0, writer = 0, sigpending = 0, bodypending = 0;
     INode **nodesp;
@@ -927,6 +1006,10 @@ static int siInferStruct(StructNode *st) {
                     siMethod((FnDclNode *)*op, &lender, &writer, &sigpending, &bodypending);
             }
         }
+    }
+    if (!(lender && writer)) {
+        SiFreeCtx fc = { st, &lender, &writer, &sigpending, &bodypending };
+        siEachFree(st, siFreeFn, &fc);
     }
     if (lender && writer)
         return SiYes;
@@ -947,6 +1030,7 @@ static void siDemandMethods(StructNode *st) {
         if ((*nodesp)->tag == FnDclTag || (*nodesp)->tag == FnOverloadDclTag)
             fnCallDemandCandidates(*nodesp);
     }
+    siEachFree(st, siDemandFree, NULL);
 }
 
 // A type of a package whose include file is read here, and not generic: its
@@ -998,6 +1082,18 @@ typedef struct {
 
 // A call of a method that returns a borrow, on a type that declares nothing
 // about its shape: the loan walk asks (pwCall) whether it is shape-changing
+static void siNeedAdd(SiNeeds *needs, INode *recvtype) {
+    INode *container = recvtype->tag == RefTag ? itypeGetTypeDcl(((RefNode *)recvtype)->vtexp) : NULL;
+    if (container == NULL || container->tag != StructTag || ((StructNode *)container)->lends != LendsLoaned)
+        return;
+    for (int i = 0; i < needs->nneed; ++i) {
+        if (needs->need[i] == (StructNode *)container)
+            return;
+    }
+    if (needs->nneed < SiNeedMax)
+        needs->need[needs->nneed++] = (StructNode *)container;
+}
+
 static int siNeedNode(INode *node, void *vc) {
     if (node->tag != FnCallTag)
         return 0;
@@ -1006,23 +1102,21 @@ static int siNeedNode(INode *node, void *vc) {
     if (call->args == NULL || call->args->used == 0 || !isNameUseNode(call->objfn))
         return 0;
     INode *fn = ((NameUseNode *)call->objfn)->dclnode;
-    if (fn == NULL || fn->tag != FnDclTag || !(fn->flags & FlagMethFld) || ((FnDclNode *)fn)->vtype == NULL
+    if (fn == NULL || fn->tag != FnDclTag || ((FnDclNode *)fn)->vtype == NULL
         || ((FnDclNode *)fn)->vtype->tag != FnSigTag)
         return 0;
     FnSigNode *sig = (FnSigNode *)((FnDclNode *)fn)->vtype;
-    if (sig->parms->used == 0 || ((VarDclNode *)nodesGet(sig->parms, 0))->namesym != selfName
-        || sig->rettype == NULL || !itypeCarriesBorrow(sig->rettype))
+    if (sig->rettype == NULL || !itypeCarriesBorrow(sig->rettype))
         return 0;
-    INode *recvtype = iexpGetTypeDcl(nodesGet(call->args, 0));
-    INode *container = recvtype->tag == RefTag ? itypeGetTypeDcl(((RefNode *)recvtype)->vtexp) : NULL;
-    if (container == NULL || container->tag != StructTag || ((StructNode *)container)->lends != LendsLoaned)
-        return 0;
-    for (int i = 0; i < needs->nneed; ++i) {
-        if (needs->need[i] == (StructNode *)container)
+    if (fn->flags & FlagMethFld) {
+        if (sig->parms->used == 0 || ((VarDclNode *)nodesGet(sig->parms, 0))->namesym != selfName)
             return 0;
+        siNeedAdd(needs, iexpGetTypeDcl(nodesGet(call->args, 0)));
+        return 0;
     }
-    if (needs->nneed < SiNeedMax)
-        needs->need[needs->nneed++] = (StructNode *)container;
+    // A free function lends from each reference it is handed (flowpath.c, pwLentArg)
+    for (uint32_t i = 0; i < call->args->used; ++i)
+        siNeedAdd(needs, iexpGetTypeDcl(nodesGet(call->args, i)));
     return 0;
 }
 
