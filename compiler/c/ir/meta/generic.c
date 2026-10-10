@@ -2673,10 +2673,26 @@ int genericCallablePermCheck(FnDclNode *generic, Nodes *valueargs, uint32_t firs
         // Bound by a trait with a method, only a closure literal's struct is judged here:
         // a struct of the author's meets the trait as it always did
         int bytrait = 0;
+        StructNode *boundtrait = NULL;
         if (genericParmBound(generic, pos, &refperm) == NULL) {
-            if (genericParmTraitBound(generic, pos, &refperm) == NULL)
+            boundtrait = genericParmTraitBound(generic, pos, &refperm);
+            if (boundtrait == NULL)
                 continue;
             bytrait = 1;
+        }
+        // A closure literal whose method needs a stronger 'self' than the trait's
+        // does not meet the trait, however the parameter holds it
+        if (bytrait && isExpNode(nodesGet(valueargs, j)) && !inodeIsError(nodesGet(valueargs, j))) {
+            INode *carg = nodesGet(valueargs, j);
+            INode *ctype = iexpGetTypeDcl(carg);
+            if (ctype->tag == RefTag)
+                ctype = itypeGetTypeDcl(((RefNode*)ctype)->vtexp);
+            ClosureInfo *cinfo = closureOfStruct(ctype);
+            char *selfwhy = cinfo && closureMethodMutates(cinfo) ? fnSigVrefSelfRefusal(boundtrait, (StructNode*)ctype) : NULL;
+            if (selfwhy) {
+                errorMsgNode(carg, ErrorVtableSelf, "%s", selfwhy);
+                return 0;
+            }
         }
         if (refperm == NULL)
             continue;

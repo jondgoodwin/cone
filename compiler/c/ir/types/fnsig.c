@@ -469,7 +469,7 @@ int fnSigCallSelfFits(StructNode *trait, FnDclNode *meth) {
 
 // The permission a method's 'self' borrows with, or NULL when 'self' is not a
 // borrow ('self So[T]', a by-value self, a static function)
-static INode *fnSigSelfBorrowPerm(FnDclNode *meth) {
+INode *fnSigSelfBorrowPerm(FnDclNode *meth) {
     FnSigNode *msig = (FnSigNode*)itypeGetTypeDcl(meth->vtype);
     if (msig->tag != FnSigTag || msig->parms->used == 0)
         return NULL;
@@ -506,8 +506,9 @@ static char *fnSigSelfSpell(FnDclNode *meth, char *buf, size_t size) {
 // method declares; NULL when it is not that
 char *fnSigVrefSelfRefusal(StructNode *trait, StructNode *impl) {
     if (trait->tag != StructTag || impl->tag != StructTag || trait->callsig || !(trait->flags & TraitType)
-        || (impl->flags & TraitType) || closureOfStruct((INode*)impl))
+        || (impl->flags & TraitType))
         return NULL;
+    ClosureInfo *closure = closureOfStruct((INode*)impl);
     INode **nodesp;
     uint32_t cnt;
     for (nodelistFor(&trait->nodelist, cnt, nodesp)) {
@@ -524,11 +525,16 @@ char *fnSigVrefSelfRefusal(StructNode *trait, StructNode *impl) {
         char wanted[40], has[40];
         fnSigSelfSpell(meth, wanted, sizeof(wanted));
         fnSigSelfSpell(implmeth, has, sizeof(has));
-        snprintf(msg, sizeof(msg),
-            "%s's `%s` takes `%s`, but %s's `%s` takes `%s`: a call through the trait lends only what the trait declares, so %s would have more of the value than the caller allowed. Declare `%s` with `%s`, or the trait's with `%s`.",
-            &impl->namesym->namestr, &meth->namesym->namestr, has,
-            &trait->namesym->namestr, &meth->namesym->namestr, wanted,
-            &impl->namesym->namestr, &meth->namesym->namestr, wanted, has);
+        if (closure)
+            snprintf(msg, sizeof(msg),
+                "This closure's `%s` needs `%s` (it changes state it holds or borrows), but %s's `%s` takes `%s`: a call through the trait lends only what the trait declares, so the closure would have more of the value than the caller allowed. Declare the method `%s` in the trait, or don't change that state.",
+                &meth->namesym->namestr, has, &trait->namesym->namestr, &meth->namesym->namestr, wanted, has);
+        else
+            snprintf(msg, sizeof(msg),
+                "%s's `%s` takes `%s`, but %s's `%s` takes `%s`: a call through the trait lends only what the trait declares, so %s would have more of the value than the caller allowed. Declare `%s` with `%s`, or the trait's with `%s`.",
+                &impl->namesym->namestr, &meth->namesym->namestr, has,
+                &trait->namesym->namestr, &meth->namesym->namestr, wanted,
+                &impl->namesym->namestr, &meth->namesym->namestr, wanted, has);
         return msg;
     }
     return NULL;
@@ -569,37 +575,16 @@ char *fnSigCallRefusal(INode *from, INode *to, int *code) {
     if (trait->tag != StructTag)
         return NULL;
     INode *fromdcl = itypeGetTypeDcl(from);
-    // A closure literal that fills a trait's method and changes state, behind a
-    // reference that only reads
+    // A struct (a closure's included) whose method asks for a stronger 'self' than
+    // the trait's
     if (trait->callsig == NULL) {
         if (fromdcl->tag != RefTag)
             return NULL;
         INode *target = itypeGetTypeDcl(((RefNode*)fromdcl)->vtexp);
-        ClosureInfo *info = closureOfStruct(target);
-        if (info == NULL || !closureMethodMutates(info) || permGetFlags(toref->perm) & MayWrite) {
-            // A method that asks for a stronger 'self' than the trait's
-            char *selfwhy = target->tag == StructTag ? fnSigVrefSelfRefusal(trait, (StructNode*)target) : NULL;
-            if (selfwhy)
-                *code = ErrorVtableSelf;
-            return selfwhy;
-        }
-        static char tmsg[700];
-        INode *region = itypeGetTypeDcl(toref->region);
-        char spelled[200], flipped[200];
-        char *name = &trait->namesym->namestr;
-        if (region == (INode*)borrowRef) {
-            snprintf(spelled, sizeof(spelled), "&<%s", name);
-            snprintf(flipped, sizeof(flipped), "&<mut %s", name);
-        }
-        else {
-            char *regname = region->tag == StructTag ? &((StructNode*)region)->namesym->namestr : "So";
-            snprintf(spelled, sizeof(spelled), "%s[imm, %s]", regname, name);
-            snprintf(flipped, sizeof(flipped), "%s[%s]", regname, name);
-        }
-        snprintf(tmsg, sizeof(tmsg),
-            "`%s` may only call a method that reads its state; this closure changes it (its `%s` takes `self &mut`). To let it change, the type is `%s`.",
-            spelled, &info->method->namestr, flipped);
-        return tmsg;
+        char *selfwhy = target->tag == StructTag ? fnSigVrefSelfRefusal(trait, (StructNode*)target) : NULL;
+        if (selfwhy)
+            *code = ErrorVtableSelf;
+        return selfwhy;
     }
     // A callable that may change, where one that only reads is wanted
     if (fromdcl->tag == VirtRefTag) {

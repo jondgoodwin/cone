@@ -390,8 +390,9 @@ runs.
 change what it was lent to read. `structMapVtableImpl` asks `fnSigVrefSelfFits`:
 the trait's borrow permission must `permMatches` the implementer's (a `self &mut`
 method meets `&`, `&uni` meets `&mut`, `&imm` meets nothing but `&imm`), and a
-`self` that is not a borrow is not compared. A closure's method is exempt, as it
-takes the `self` its body needs and is met behind `&<mut` as it is
+`self` that is not a borrow is not compared. A closure's method is held to it
+too: it takes the `self` its body needs, so a literal that changes state is
+refused where the trait says `self &`, under every holder
 ([closure](closure.md)). `fnSigCallRefusal` says why a coercion was refused
 (`fnSigVrefSelfRefusal`, `ErrorVtableSelf`), at an argument, an initializer and
 an owner's making; other positions report the generic type mismatch.

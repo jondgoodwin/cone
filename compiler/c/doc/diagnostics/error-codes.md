@@ -424,16 +424,18 @@ reference made a virtual reference, and an allocation.
 A callable behind a reference or an owner has three more: a callable refused for the
 permission its `()` takes or the borrow lent (a `()` taking `self &mut` given to a
 `&<fn`, a read-only borrow given to a `&<mut fn`, a `&<mut fn` lent as a `&<fn`, a
-generic's `&F` given one that changes, and a closure literal that fills a trait's
-method with `self &mut` behind a reference that only reads) is `ErrorCallablePerm`;
+generic's `&F` given one that changes) is `ErrorCallablePerm`;
 an owner `So[fn(sig)]` made of a value that is no callable of its signature (no `()`
 of it, or a function of another signature) is `ErrorCallableUse`; and a closure literal
-given where a trait is wanted that has not exactly one method and no field is
+given where a trait is wanted that has not exactly one required method (a method
+with a body is a default, and comes with the literal) and no field is
 `ErrorClosureTrait`.
 
 A struct viewed as a trait behind a virtual reference (`&<Trait`, `So[Trait]`) whose
 method takes a stronger `self` than the trait's method declares (`self &mut` for
-`self &`, `self &uni` for `self &mut`) is `ErrorVtableSelf`. An owner held in a
+`self &`, `self &uni` for `self &mut`) is `ErrorVtableSelf`; so is a closure literal
+that changes state, which needs `self &mut`, given where a trait is wanted whose
+method says `self &` (under any holder, a generic's `[S Trait]` included). An owner held in a
 place reached through a reference that only reads, lent as a `&mut` or `&uni`
 (a receiver, an argument, an initializer, a `So[fn]` called), is `ErrorBadPerm`,
 as a written `&mut` of the same place is.

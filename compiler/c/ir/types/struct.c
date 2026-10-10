@@ -386,6 +386,26 @@ static void structInheritTrait(StructNode *node, uint32_t fldpos, StructNode *tr
     nodesAdd(&node->traits, (INode*)trait);
 }
 
+// The default methods of 'trait' cloned into 'node' as structInheritTrait does, for a
+// type that does not declare the trait and so is not held to its requirements (a
+// closure literal's hidden struct: it fills the one required method itself, and its
+// 'self' is the body's). The clones arrive bound; a required method has no body and
+// is not cloned.
+void structInheritDefaults(StructNode *node, StructNode *trait) {
+    CloneState cstate;
+    clonePushState(&cstate, (INode*)node, (INode*)node, 0, NULL, NULL);
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&trait->nodelist, cnt, nodesp)) {
+        if ((*nodesp)->tag != FnDclTag || !((*nodesp)->flags & FlagMethFld) || ((FnDclNode*)*nodesp)->value == NULL)
+            continue;
+        FnDclNode *traitmeth = (FnDclNode*)*nodesp;
+        if (iNsTypeFindFnField((INsTypeNode *)node, traitmeth->namesym) == NULL)
+            iNsTypeAddFn((INsTypeNode *)node, (FnDclNode*)cloneNode(&cstate, (INode*)traitmeth));
+    }
+    clonePopState();
+}
+
 // The trait declaration a base or placeholder type expression names, or NULL when it
 // names something else: a generic instantiation, which is a call node until type
 // check instantiates it; a type that is not a trait, which type check reports; or
@@ -3970,11 +3990,11 @@ static VtableImpl *structMapVtableImpl(StructNode *basenode, StructNode *strnode
                 return 0;
             // A callable trait's kind says what its '()' may do to the state: a
             // read-only reference is met only by a '()' that reads
-            // and any other trait's method is met by no stronger 'self' than its own.
-            // A closure's method takes the 'self' its body needs, and a literal
-            // that changes state is met behind '&<mut' as it is (closure.md).
+            // and any other trait's method is met by no stronger 'self' than its own,
+            // a closure's included: its 'self' is what its body needs, and a literal
+            // that changes state does not meet a trait whose method says 'self &'.
             if (basenode->callsig ? !fnSigCallSelfFits(basenode, strmeth)
-                : !closureOfStruct((INode*)strnode) && !fnSigVrefSelfFits(meth, strmeth))
+                : !fnSigVrefSelfFits(meth, strmeth))
                 return NULL;
             // it matches, add the method to the implementation. A method the
             // type holds by folding satisfies the slot too, and the fields its

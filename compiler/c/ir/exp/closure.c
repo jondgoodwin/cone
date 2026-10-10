@@ -33,12 +33,15 @@
 
 FnSigNode *closureHint = NULL;
 Name *closureMethod = NULL;
+StructNode *closureTrait = NULL;
 int closureInferring = 0;
 
 // What a literal given where the trait 'trait' is wanted must be: the signature
-// of the trait's one method, without its receiver, and that method's name. NULL
-// when the trait is not one a literal fills: '*count' says how many methods and
-// fields it requires, and '*method' the name of the first method.
+// of the trait's one required method, without its receiver, and that method's
+// name. NULL when the trait is not one a literal fills: '*count' says how many
+// required methods and fields it has, and '*method' the name of the first
+// required method. A method with a body is a default, which the literal's struct
+// inherits as any implementer does (structInheritDefaults), and is not counted.
 FnSigNode *closureTraitSig(StructNode *trait, Name **method, uint32_t *count) {
     *count = trait->fields.used;
     *method = NULL;
@@ -48,7 +51,7 @@ FnSigNode *closureTraitSig(StructNode *trait, Name **method, uint32_t *count) {
     for (nodelistFor(&trait->nodelist, cnt, nodesp)) {
         // A private method counts too: a generic bound requires it (a reference to the
         // trait has no slot for it, which its own use says)
-        if ((*nodesp)->tag != FnDclTag || !((*nodesp)->flags & FlagMethFld))
+        if ((*nodesp)->tag != FnDclTag || !((*nodesp)->flags & FlagMethFld) || ((FnDclNode*)*nodesp)->value != NULL)
             continue;
         if (only == NULL)
             only = (FnDclNode*)*nodesp;
@@ -256,6 +259,7 @@ typedef struct ClosurePlan {
     uint8_t selfmut;
     uint8_t *capmut;
     Name *method;           // The name of the one method: '()', or the trait's method a literal fills
+    StructNode *trait;      // The trait a literal fills, whose default methods the struct inherits; or NULL
 } ClosurePlan;
 
 static uint32_t closureSerial = 0;
@@ -511,6 +515,17 @@ static StructNode *closureBuild(TypeCheckState *pstate, ClosureNode *clo, Closur
     inodeLexCopy((INode*)fn, (INode*)clo);
     fn->closure = info;
     iNsTypeAddFn((INsTypeNode*)st, fn);
+    // The default methods of the trait it fills, which any implementer inherits.
+    // Not when the body needs a 'self &mut' the trait's method does not give: the
+    // literal is refused for that (ErrorVtableSelf), and defaults that read through
+    // the trait's 'self &' would only add their own failures to it
+    if (plan->trait) {
+        INode *traitmeth = namespaceFind(&plan->trait->namespace, plan->method);
+        INode *tperm = traitmeth && traitmeth->tag == FnDclTag ? fnSigSelfBorrowPerm((FnDclNode*)traitmeth) : NULL;
+        int stronger = plan->selfmut && tperm && tperm->tag == PermTag && !(permGetFlags(tperm) & MayWrite);
+        if (!stronger)
+            structInheritDefaults(st, plan->trait);
+    }
 
     if (final)
         nodesAdd(&mod->nodes, (INode*)st);
@@ -663,7 +678,9 @@ void closureTypeCheck(TypeCheckState *pstate, ClosureNode **nodep, INode *expect
     int isref;
     // The method of a trait this literal fills, when it was given where one is wanted
     Name *method = closureHint ? closureMethod : NULL;
+    StructNode *filltrait = closureHint ? closureTrait : NULL;
     closureMethod = NULL;
+    closureTrait = NULL;
     FnSigNode *exsig = closureExpectedSig(expected, &isref);
     char methtext[300] = "";
     if (method && method != parensName)
@@ -796,6 +813,7 @@ void closureTypeCheck(TypeCheckState *pstate, ClosureNode **nodep, INode *expect
     uint32_t ncap = clo->captures->used;
     ClosurePlan plan;
     plan.method = method ? method : parensName;
+    plan.trait = method ? filltrait : NULL;
     plan.selfmut = 0;
     plan.capmut = memAllocBlk((ncap ? ncap : 1) * sizeof(uint8_t));
     memset(plan.capmut, 0, ncap ? ncap : 1);
