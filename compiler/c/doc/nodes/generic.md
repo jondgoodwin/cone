@@ -537,10 +537,12 @@ the one copy that is not generic — the instance itself — and clears it there
 A trait's generic default is inherited by a type that declares the trait, and
 `structCheckTraitReqs` does not compare the copy, which shares the default's
 type parameters and so is told from a method the type declares itself.
-A generic method the type declares itself under a generic default's name replaces
-the default (the default is not copied in where the name is declared), and
-`structCheckTraitReqs` accepts it whatever its signature: no slot holds a generic
-default and nothing reads its signature through the trait. `Zip.zip` is one (it
+A method (generic or not) the type declares itself under the name of a default
+that fills no vtable slot (generic, with `where`, or `inline`) replaces the default
+(the default is not copied in where the name is declared), and
+`structCheckTraitReqs` accepts it whatever its signature: nothing reads that
+signature through the trait. A call, direct or inside a generic function (made for
+the type it is given), finds the type's own. `Zip.zip` is one (it
 gives a flat `Zip3`, where `Iterator`'s `zip` would nest the pair); `ArrayChunks`,
 `ArrayMutChunks` and `ArrayMutItems` keep theirs. A *field* named like a generic
 default is still refused (1013), as `IterSkip`'s was: `ZipIndexed` and `Zip3Indexed`
