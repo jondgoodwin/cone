@@ -1458,11 +1458,12 @@ second half. Otherwise -- an `await` on anything else, which waits for no
 answer -- each is refused (`ErrorAwaitNotFuture`, `awaitReportSeams`), the
 message saying what its seam would carry. A behaviour's `await` standing where the split is not
 built yet is reported so too, at the `await` (`awaitWalk`): in the index of a
-place whose base holds a seam too, in both places a swap exchanges, in a
-slice's bounds, in a parallel assignment's places or one storing its place's
-old value, and in an array's contents filled in memory; and among the entries
-one `<-` appends (`pwSeamVar`), whose receiver the rewrite borrows once, into
-a temporary that is no holder, for all of them. So is a seam whose record
+place whose base is an expression holding a seam of its own (a seam in an
+index of the chain is built, below), in the places of a compound assignment
+storing its place's old value, and in an array's contents filled in memory;
+and among the entries one `<-` appends that repeat, fill or loop
+(`pwSeamVar`), whose receiver the rewrite borrows once, into a temporary that
+is no holder, for all of them. So is a seam whose record
 would hold a traced reference (`awaitRecordTraced`): the record waits in its
 actor's pending table, off the stack, which the collector does not trace.
 
@@ -1481,9 +1482,19 @@ path or a receiver before the last operand holding a seam walked just after it
 (`awaitReReached`); an index holding a seam before the place it indexes
 (`pwPlace`); a swap's side holding a seam before the other (`pwSwap`); and an
 assignment's value, made first, in flight while its place is walked when the
-place holds a seam (`pwAssign`). A compound assignment whose operand holds an
+place holds a seam (`pwAssign`). A place indexed more than once, a slice's
+bounds, both sides of a swap and a parallel assignment's places make all their
+indexes first, one list in the order written: the arguments of every index of
+the chain from the innermost holding a seam outward (`awaitChainLevels`), a
+swap's left side's before its right's, a parallel assignment's value before
+them all; `pwPreBegin` walks them, notes those indexes, and the walk of each
+place (`pwPlace`) then leaves their arguments out, and the arrays are walked
+after the last seam, so a local array read or written there is used after
+every seam (`SeamLive`) and travels. A compound assignment whose operand holds an
 `await` makes the operand first, into a local of its rewrite, before it
-borrows the place (`fnCallOpAssgn`). What a call made cannot be made again:
+borrows the place (`fnCallOpAssgn`); so does a `<-` whose entries hold one: every
+entry written up to the last holding it is made first into a local
+(`contentsLowerEntries`), and the receiver is borrowed after them. What a call made cannot be made again:
 a borrow or a place's base to the left of an `await`, made by a call or a
 temporary, is `ErrorAwaitLeftCall` -- an operand in flight across a seam
 that is no plain path (`loanSeamFlight`, from what `loanFlightPushOf` noted
@@ -1646,7 +1657,7 @@ Everything else about permissions is type check's: `permMatches` in
 | `ErrorMoveField` | `flowRefuseMoveField` | among the rest, a move out of a generator's parameter, a field of the value it is |
 | `ErrorAwaitLeftCall` | `loanSeamFlight`; `awaitWalk`, from `awaitSplitOrReport` | a borrow, or a place's base or a swap's other side, written to the left of an `await` in its statement and used after it, made by a call or a temporary: only a plain path is reached again after the seam |
 | `ErrorAwaitNotFuture` | `awaitReportSeams`, from `awaitSplitOrReport` | an `await` every seam rule accepted, in a behaviour flow found no error in, on something that waits for no answer -- not a behaviour's reply, a future or an operation (without `--await-direct`): refused, the message naming what its seam would end, give back, carry and leave |
-| `ErrorUnbuiltAwait` | `awaitReportUnbuilt`, `awaitReportIn` and `awaitRecordTraced`, from `awaitSplitOrReport`; `pwSeamVar` | in a behaviour that is split, an `await` standing where the split is not built (an index whose place's base holds a seam too, both places of a swap, a slice's bounds, a parallel assignment's places, the entries of one `<-`, an array's contents filled in memory), or a seam whose record would hold a traced reference |
+| `ErrorUnbuiltAwait` | `awaitReportUnbuilt`, `awaitReportIn` and `awaitRecordTraced`, from `awaitSplitOrReport`; `pwSeamVar` | in a behaviour that is split, an `await` standing where the split is not built (an index whose place's base is an expression holding a seam, the entries of one `<-` that repeat or fill a value, an array's contents filled in memory), or a seam whose record would hold a traced reference |
 
 A value an array's contents or `n of x` repeat is evaluated once per element,
 so the ordinary move rule judges it: the loop `n of x` lowers to is walked as
@@ -1762,6 +1773,7 @@ droppable noted as holding nothing is never finalized.
 | | `pwSeam`, `pwSeamVar`, `pwSeamNote`, `pathSeamLive`, `pwGlobalOnly`, `pwIsGuard` | a seam ("A seam"): what is awaited, the loans in flight across it, and each variable in scope -- its borrows ended, its live mark set, what it would do noted on the `AwaitNode` |
 | | `pwYield`, `pwYieldVar`, `pwYieldNote`, `pwGenKept` | a generator's seam ("A yield"): the result handed out, and each variable in scope -- the borrows of its own ground that end, its live mark, what it does there noted on the `YieldNode` |
 | | `pwOrder`, `pwSeams` | in a function holding an `await`, an operand list in the order generation makes it, a plain path before a seam made after it (`awaitOrder`) |
+| | `pwPreBegin`, `pwPreHas` | the arguments of the indexes of places holding a seam in an index (`awaitChainLevels`) walked first, those indexes noted so the walk of each place leaves them out |
 | | `pwGpuOneValue`, `pwIsLitIndex`, `pathGpuChoices`, `pwRetFirst` | GPU targets: an `if`'s or a block's value, and a function's returns, against each other (`pathJoin` compares a holder's paths); a literal index |
 | `ir/flowdrop.c` | `dropMove`, `dropUse`, `dropRefuse` | a marked move's new state; a use some path left without its value, refused once |
 | | `dropStore`, `dropPartStore`, `dropExit` | what each variable a release releases may hold there, gathered over every walk |
@@ -1774,7 +1786,7 @@ droppable noted as holding nothing is never finalized.
 | | `loanIsGlobal`, `loanSeamEnds`, `loanSeamPending`, `loanSeamLive`, `loanSeamFlight`, `loanSeamOf` | a seam: whether a loan is global; the loan a holder holds that ends there, the borrow it was given where that can be told; the pending conflict and the live mark; what is in flight across it; what an ended borrow was of, for the message |
 | | `loanIsGenOwn`, `loanGenOwnIn`, `loanYieldPending` | a generator's seam: whether a loan is of the generator's own ground (a local, or its parameters held by value); the first such in a set; the pending conflict of the seam ending it |
 | `ir/exp/yield.c` | `yieldGenNew`, `yieldGenOf`, `yieldSplitRegister`, `yieldTypeCheck` | the generators made, each with its `next`, its struct and its seams, numbered once the function is walked; a `yield` type checked against what `next` gives |
-| `ir/exp/await.c` | `awaitIsPath`, `awaitReReached`, `awaitOrder`, `awaitLeftCallMsg` | where a seam cuts inside a statement ("A seam"): what is a plain path, reached again after the seam; which operands that makes after the last one holding a seam; the refusal of what a call made |
+| `ir/exp/await.c` | `awaitIsPath`, `awaitReReached`, `awaitOrder`, `awaitChainLevels`, `awaitLeftCallMsg` | where a seam cuts inside a statement ("A seam"): what is a plain path, reached again after the seam; which operands that makes after the last one holding a seam; the refusal of what a call made |
 | | `awaitSplitOrReport`, `awaitReportUnbuilt`, `awaitRecordTraced` | the seams of a function flow accepted: a behaviour's split where each awaits a behaviour returning a value, or under `--await-direct` (numbered, each lock's guard marked `VarSeamHeld`, the function recorded for generation, `awaitSplitOf`), unless one stands where the split is not built (`awaitWalk`, `awaitReportIn`) or a seam's record would hold a traced reference; otherwise each reported not built with what it would end, give back, carry (in the order it would die) and leave |
 | | `loanNearApart`, `loanChosen`, `loanChosenPending`, `loanIndexedRefs`, `loanOrigin`, `loanMemory` | GPU targets: whether two paths' values point at different places; a choice reported at once, or pending on a holder; a run-time index of references refused; where each choice points, for the message |
 | `ir/stmt/module.c` | `modInitOf`, `modInitFlowBegin`, `modInitFlowEnd` | round a module's `init` only: its module's globals without a value start the pass uninitialized, as locals, so `init` assigns each once and reads none first; one never assigned is `ErrorGlobalUninit`. [module](../nodes/module.md), "Init and final" |

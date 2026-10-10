@@ -1391,11 +1391,19 @@ before the place it indexes (`genlAddr`, its values handed to
 `genlArrayIndex`); a swap's side holding a seam reaches its place before the
 other side does; and an assignment's value, made first, is kept in flight
 (`genlKeepAcross`, `genlKeptAcross`) while a place holding a seam is reached,
-then stored (`genlStoreTo`). An `await` whose construct still holds an address
-or memory being filled across it -- an index whose place's base holds a seam
-too, both places of a swap, a slice's bounds, a parallel assignment's places,
-an array's contents filled in memory -- is not split ([Flow](flow.md), "A
-seam").
+then stored (`genlStoreTo`). A place indexed through more than one seam, both
+places of a swap, a slice's bounds and a parallel assignment's places make
+their indexes first (`genlPlacePre`): the arguments of every index in the
+chain, from the innermost holding a seam outward (`awaitChainLevels`), and of
+a swap's two sides or a parallel assignment's places in turn, are one operand
+list for `genlExprsAcross`, so each value made before a later seam is in flight
+across it; the values are noted for the indexes (`GenPre`, `genlPreOf`) until
+the places are reached, and `genlAddr` and `genlSubslice` take an index's
+values from there rather than making them, the arrays and slices reached after
+the last seam. An `await` whose construct still holds an address or memory
+being filled across it -- an index whose place's base is an expression holding
+a seam, an array's contents filled in memory -- is not split
+([Flow](flow.md), "A seam").
 
 ### A message's reply
 
@@ -2254,6 +2262,7 @@ variables.
 | | `genlAwaitFuture`, `genlFutureOpen` | a seam awaiting a future: gone on from where it stands when the future has its ending, else parked on it; the value opened out of the future on either path and in the resume function ("A message's reply", "A future") |
 | | `genlExprsAcross`, `genlHasSeam` | operands in order (`awaitOrder`'s, where a seam cuts them), each made before a later one's seam kept in flight across it (`GenFlight`), a receiver or a borrow of a plain path made after it |
 | | `genlKeepAcross`, `genlKeptAcross` | one value kept in flight across a seam to come, and read back after it: an assignment's value while its place, holding the seam, is reached |
+| | `genlPlacePre`, `genlPlacePreEnd`, `genlPreOf`, `genlNeedsPre` | the indexes of places holding a seam in an index made first, in the order written (`awaitChainLevels`), and noted for `genlAddr` and `genlSubslice` to take: a place indexed more than once, both sides of a swap, a slice's bounds, a parallel assignment's places |
 | | `genlHeldBegin`, `genlHeldIf` | a temporary lock guard's flag, and code run while it holds its lock |
 | `genllvm/genlpar.c` | `genlParallelRun`, `genlParCapture`, `genlParCount` | a parallel each: the index and loop generated as a function of their own, a variable of the caller's found through the function's record, the call of `actors.parallelEach`, a number range's count ("A parallel each") |
 | | `genlFinalizeAt`, `genlCallDrop`, `genlEachElem` | a value's death in place, whatever its type: a local's, a field's, a region value's before its `free`, and the `finalize` intrinsic |

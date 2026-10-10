@@ -1067,6 +1067,37 @@ or a temporary, and is used after the 'await'. The rest of the statement runs af
 element at a plain index -- is reached again there, never what a call made. Bind what
 the call makes to a local first, and use the local here.
 </pre>
+	<p>More than one <span class="pre">await</span> may stand in a place, in both places a swap
+		exchanges, in a slice's bounds, in the places of a parallel assignment and among the entries
+		a <span class="pre">&lt;-</span> appends. Each is worked out first, from left to right,
+		every <span class="pre">await</span> once: the indexes of the place, those of the second
+		side of a swap after those of the first, and a parallel assignment's value before its
+		places. An index worked out waits with the method while the ones after it are awaited,
+		and the arrays and slices they index are reached after the last reply, as they are
+		with one <span class="pre">await</span>. The entries of a <span class="pre">&lt;-</span>
+		written before the last one that holds an <span class="pre">await</span> are made
+		before the list is borrowed, in the order written, and appended after it:</p>
+<pre>
+actor Lane {
+  pub async do pick(self, n u64) u64 {n;}
+}
+
+actor Board {
+  lane Lane;
+  cells Array[Array[u64, 3], 2];
+  marks List[u64];
+
+  pub async do fill(self) u64 {
+    cells[await lane.pick(1u64)][await lane.pick(2u64)] = 5u64;                 // cells[1][2]
+    cells[await lane.pick(0u64)][0u64] &lt;=&gt; cells[await lane.pick(1u64)][2u64];  // both sides
+    (cells[0][1], cells[await lane.pick(1u64)][await lane.pick(1u64)]) = (7u64, 8u64);
+    marks &lt;- (cells[1][2], await lane.pick(9u64), 3u64);
+    imm row = &amp;cells[await lane.pick(1u64)][await lane.pick(0u64)..await lane.pick(2u64)];
+    row.len() * 100u64 + cells[0][0] * 10u64 + *marks[1];
+  }
+}
+</pre>
+	<p><span class="pre">await board.fill()</span> is <span class="pre">259</span>.</p>
 
 	<h4><span class="pre">self</span> and <span class="pre">selfactor</span></h4>
 	<p>An actor has two selves. <span class="pre">self</span> is its <i>state</i>, lent to the
@@ -1331,11 +1362,10 @@ actor Sizes {
 	<p>Each of these is reported where it is written, as not built:</p>
 	<ul>
 	<li><b>A few places an <span class="pre">await</span> may not cut yet</b>: in the index of
-		a place whose base holds an <span class="pre">await</span> of its own
-		(<span class="pre">m[await f()][await g()]</span>), in both places a swap exchanges, in a
-		slice's bounds (<span class="pre">&amp;items[await f()..3]</span>), in the places of a
-		parallel assignment, among the entries one <span class="pre">&lt;-</span> appends
-		(<span class="pre">v &lt;- (1, await f())</span>), and in an array's contents that repeat
+		a place whose base is itself an expression holding an <span class="pre">await</span>
+		(<span class="pre">(await f()).items[await g()]</span>), among the entries one
+		<span class="pre">&lt;-</span> appends that repeat or fill a value
+		(<span class="pre">v &lt;- 3 of await f()</span>), and in an array's contents that repeat
 		a value more than 16 times (<span class="pre">&lt;- fill await f()</span>). Written as a
 		statement of its own first, each <span class="pre">await</span> is built.</li>
 	<li><b>A traced reference waiting for a reply.</b> An <span class="pre">await</span> at which
@@ -1368,9 +1398,9 @@ actor Waiter {
     last = await compute();       // refused: compute's u64 is no future
   }
 
-  pub async do swapped(self) {
-    mut items = [1u64, 2u64, 3u64];
-    items[await clock.now()] &lt;=&gt; items[await clock.now()];  // not built: in both places
+  pub async do repeated(self) {
+    mut v = List[u64].empty();
+    v &lt;- 3 of await clock.now();  // not built: among the entries a '&lt;-' appends
   }
 }
 </pre>

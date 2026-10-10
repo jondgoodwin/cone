@@ -1,0 +1,96 @@
+// The forms of concurrency_await_places awaiting behaviours of another actor,
+// so that each seam parks a record in the pending table and another message
+// changes the state while it waits. Helper.get sends Page a 'poke' before it
+// answers, so poke runs while Page waits, and adds 1000 to every element of
+// Page's arrays: what Page reads of its arrays after its last seam it reads
+// after every poke, while the indexes it made before a later seam (the reply
+// of the first 'get') travel in the record and are not read again.
+//
+// - chain: 'grid[await ...][await ...]', two seams; the first index waits in
+//   the record across the second;
+// - swapped: both sides each hold a seam, four 'poke's, then both places read
+//   and stored;
+// - sliced: the bounds of a slice taken of an array, then read;
+// - parallel: the values made first, two seams, then the stores;
+// - listed: an entry made before the receiver is borrowed, a droppable among
+//   them that travels in the record.
+
+mod concurrency_await_places_reply;
+
+import stdio use *;
+import actors;
+import collections use List;
+
+struct Fin {
+  pub n u64;
+  fn final(self &uni) {printStr("  drop "); printUInt(n); printStr("\n");}
+}
+
+fn say(s &str, n u64) {printStr("  "); printStr(s); printStr(" "); printUInt(n); printStr("\n");}
+fn head(s &str) {printStr(s); printStr("\n");}
+fn mk(n u64) u64 {say("mk", n); n;}
+fn make(n u64) Fin {say("make", n); new Fin(n);}
+
+actor Helper {
+  pub async do get(self, p Page, n u64) u64 {
+    say("get", n);
+    p.poke();
+    n;
+  }
+}
+
+actor Page {
+  h Helper;
+  body u64;
+  items Array[u64, 4];
+  grid Array[Array[u64, 3], 2];
+
+  pub async do poke(self) {
+    say("poke", 0u64);
+    items[0] = items[0] + 1000u64;
+    items[1] = items[1] + 1000u64;
+    items[2] = items[2] + 1000u64;
+    items[3] = items[3] + 1000u64;
+    grid[1][2] = grid[1][2] + 1000u64;
+    grid[1][1] = grid[1][1] + 1000u64;
+  }
+
+  pub async do run(self) {
+    items[0] = 10u64; items[1] = 20u64; items[2] = 30u64; items[3] = 40u64;
+    grid[1][1] = 111u64; grid[1][2] = 112u64;
+
+    head("chain");
+    imm g = new Fin(64u64);
+    body = grid[await h.get(selfactor, 1u64)][await h.get(selfactor, 2u64)];
+    say("body", body);
+
+    head("swapped");
+    items[await h.get(selfactor, 0u64)] <=> items[await h.get(selfactor, 3u64)];
+    say("items0", items[0]);
+    say("items3", items[3]);
+
+    head("sliced");
+    imm s = &items[await h.get(selfactor, 1u64)..await h.get(selfactor, 3u64)];
+    say("len", s.len());
+    say("first", s[0]);
+
+    head("parallel");
+    (items[await h.get(selfactor, 1u64)], grid[1][await h.get(selfactor, 1u64)]) = (mk(5u64), mk(6u64));
+    say("items1", items[1]);
+    say("grid11", grid[1][1]);
+
+    head("listed");
+    mut v = List[Fin].empty();
+    v <- (make(7u64), new Fin(await h.get(selfactor, 8u64)), make(9u64));
+    say("len", v.len());
+  }
+}
+
+fn main() {
+  initAll();
+  {
+    imm p = new Page(new Helper(), 0u64, [0u64, 0u64, 0u64, 0u64], [[0u64, 0u64, 0u64], [0u64, 0u64, 0u64]]);
+    p.run();
+  }
+  finalAll();
+}

@@ -617,21 +617,35 @@ static int awaitWalk(INode *node, int check, uint32_t *bad) {
         return awaitWalk(((BreakRetNode *)node)->exp, check, bad);
     // The value is made first, then the place's address is taken, after any
     // seam in the place, the value in flight across it. Only a simple
-    // assignment's place is split
+    // assignment's places are split, a parallel assignment's among them
     case AssignTag:
     {
         AssignNode *assign = (AssignNode *)node;
         int found = awaitWalk(assign->rval, check, bad);
         if (assign->assignType == NormalAssign && assign->lval->tag != VTupleTag)
             found |= awaitWalk(assign->lval, check, bad);
+        // A parallel assignment's places are reached after the value, each of
+        // them as an assignment's is
+        else if (assign->assignType == NormalAssign) {
+            INode **elemp;
+            uint32_t ecnt;
+            for (nodesFor(((TupleNode *)assign->lval)->elems, ecnt, elemp)) {
+                int rootseam;
+                // A place whose seam is not in an index is no early one
+                if (awaitWithin(*elemp) && (awaitChainLevels(*elemp, &rootseam) == NULL || rootseam))
+                    found |= awaitWalkUnsplit(*elemp, check, bad, "in the places a parallel assignment stores into");
+                else
+                    found |= awaitWalk(*elemp, check, bad);
+            }
+        }
         else
             found |= awaitWalkUnsplit(assign->lval, check, bad,
-                assign->lval->tag == VTupleTag ? "in the places a parallel assignment stores into"
-                : "in the place an assignment stores into whose old value is its value");
+                "in the place an assignment stores into whose old value is its value");
         return found;
     }
     // The side holding a seam reaches its place first; the other, after the
-    // seam, must be reached again there
+    // seam, must be reached again there. Where both hold one, the indexes of
+    // both are made first, the left side's before the right's
     case SwapTag:
     {
         SwapNode *swap = (SwapNode *)node;
@@ -639,8 +653,17 @@ static int awaitWalk(INode *node, int check, uint32_t *bad) {
         int inr = awaitWalk(swap->rval, 0, bad);
         if (inl && inr) {
             if (check) {
-                awaitReportIn(swap->lval, "in both places a swap exchanges", bad);
-                awaitReportIn(swap->rval, "in both places a swap exchanges", bad);
+                int rootl, rootr;
+                Nodes *levelsl = awaitChainLevels(swap->lval, &rootl);
+                Nodes *levelsr = awaitChainLevels(swap->rval, &rootr);
+                if (levelsl == NULL || levelsr == NULL || rootl || rootr) {
+                    awaitReportIn(swap->lval, "in both places a swap exchanges", bad);
+                    awaitReportIn(swap->rval, "in both places a swap exchanges", bad);
+                }
+                else {
+                    awaitWalk(swap->lval, check, bad);
+                    awaitWalk(swap->rval, check, bad);
+                }
             }
             return 1;
         }
@@ -691,15 +714,18 @@ static int awaitWalk(INode *node, int check, uint32_t *bad) {
         if (!awaitWalkNodes(call->args, 0, bad))
             return inbase;
         if (check) {
-            if (node->flags & FlagRange)
-                awaitReportNodes(call->args, "in the bounds of a slice taken of an array or a slice", bad);
-            else if (inbase)
-                awaitReportNodes(call->args, "in the index of a place whose base holds an 'await' too", bad);
-            else {
-                awaitWalkNodes(call->args, check, bad);
-                if (!awaitIsPath(call->objfn))
-                    awaitLeftCall(call->objfn, "This place's base", bad);
+            awaitWalkNodes(call->args, check, bad);
+            if (inbase) {
+                // The seams of an index inside are made first (awaitChainLevels),
+                // each kept in flight across the ones after it; only one in the
+                // place's root, which no index makes, would come after this one
+                int rootseam;
+                awaitChainLevels(node, &rootseam);
+                if (rootseam)
+                    awaitReportNodes(call->args, "in the index of a place whose base holds an 'await' too", bad);
             }
+            else if (!awaitIsPath(call->objfn))
+                awaitLeftCall(call->objfn, "This place's base", bad);
         }
         return 1;
     }
@@ -830,6 +856,67 @@ static void awaitReportIn(INode *node, char *why, uint32_t *bad) {
 int awaitWithin(INode *node) {
     uint32_t bad = 0;
     return awaitWalk(node, 0, &bad);
+}
+
+static int awaitAnyWithin(Nodes *nodes) {
+    INode **nodesp;
+    uint32_t cnt;
+    if (nodes == NULL)
+        return 0;
+    for (nodesFor(nodes, cnt, nodesp)) {
+        if (awaitWithin(*nodesp))
+            return 1;
+    }
+    return 0;
+}
+
+// The place a chain of indexes, fields, dereferences, casts and borrows goes
+// through next, inward; NULL at its root
+static INode *awaitChainNext(INode *node) {
+    switch (node->tag) {
+    case ArrIndexTag:
+    case FldAccessTag:
+        return ((FnCallNode *)node)->objfn;
+    case DerefTag:
+        return ((StarNode *)node)->vtexp;
+    case BorrowTag:
+    case ArrayBorrowTag:
+        return ((RefNode *)node)->vtexp;
+    case CastTag:
+        return (node->flags & FlagConvert) ? NULL : ((CastNode *)node)->exp;
+    default:
+        return NULL;
+    }
+}
+
+Nodes *awaitChainLevels(INode *place, int *rootseam) {
+    *rootseam = 0;
+    // The indexes outward first as the chain is walked inward; the innermost
+    // one holding a seam in its arguments is where the early part begins
+    Nodes *outward = NULL;
+    INode *node = place;
+    INode *next;
+    uint32_t lowest = 0;    // One past the innermost index holding a seam, in 'outward'
+    while (1) {
+        if (node->tag == ArrIndexTag) {
+            if (outward == NULL)
+                outward = newNodes(4);
+            nodesAdd(&outward, node);
+            if (awaitAnyWithin(((FnCallNode *)node)->args))
+                lowest = outward->used;
+        }
+        next = awaitChainNext(node);
+        if (next == NULL)
+            break;
+        node = next;
+    }
+    *rootseam = awaitWithin(node);
+    if (lowest == 0)
+        return NULL;
+    Nodes *levels = newNodes(lowest);
+    for (uint32_t i = lowest; i > 0; --i)
+        nodesAdd(&levels, nodesGet(outward, i - 1));
+    return levels;
 }
 
 // *********************

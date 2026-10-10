@@ -625,6 +625,48 @@ static PathSet *pwLend(INode *site, Place *pl, INode *perm, int access, uint32_t
 static void pwHolderDies(uint32_t var);
 static PathSet *pwPlaceSlots(Place *pl, PathSet *holds);
 
+// The indexes of places holding a seam in an index (awaitChainLevels), whose
+// arguments were walked first, in the order generation makes them (genlPlacePre):
+// the walk of the place itself leaves them out
+static INode **pwPreIdx = NULL;
+static uint32_t pwPreCnt = 0;
+static uint32_t pwPreCap = 0;
+
+static int pwPreHas(INode *index) {
+    for (uint32_t i = pwPreCnt; i > 0; --i) {
+        if (pwPreIdx[i - 1] == index)
+            return 1;
+    }
+    return 0;
+}
+
+// Walk the arguments of the indexes of each of 'places', innermost first from
+// the first holding a seam, and note the indexes. Answers the mark to end at
+static uint32_t pwPreBegin(Nodes *places) {
+    uint32_t mark = pwPreCnt;
+    INode **placep;
+    uint32_t pcnt;
+    for (nodesFor(places, pcnt, placep)) {
+        int rootseam;
+        Nodes *chain = awaitChainLevels(*placep, &rootseam);
+        if (chain == NULL || rootseam)
+            continue;
+        INode **levelp;
+        uint32_t lcnt;
+        for (nodesFor(chain, lcnt, levelp)) {
+            FnCallNode *level = (FnCallNode *)*levelp;
+            INode **argp;
+            uint32_t acnt;
+            for (nodesFor(level->args, acnt, argp))
+                pwValue(argp, 0);
+            if (pwPreCnt == pwPreCap)
+                pwPreIdx = (INode **)pathGrow(pwPreIdx, &pwPreCap, sizeof(INode *));
+            pwPreIdx[pwPreCnt++] = *levelp;
+        }
+    }
+    return mark;
+}
+
 // An access to a place, asked of borrow freezing only when some loan is rooted
 // at the place's variable: what kind of access it is is not worked out otherwise
 #define pwAccess(pl, access, node) \
@@ -922,13 +964,15 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
         // indexes reached after the seam, as generation does (genlAddr)
         FnCallNode *index = (FnCallNode *)node;
         uint16_t objtag = iexpGetTypeDcl(index->objfn)->tag;
-        int seamfirst = pwSeams && awaitWithin((INode *)index) && !awaitWithin(index->objfn);
-        if (seamfirst) {
-            INode **argsp;
-            uint32_t cnt;
-            for (nodesFor(index->args, cnt, argsp))
-                pwValue(argsp, 0);
+        // (a place indexed more than once, a seam in several of its indexes,
+        // makes every index first, the innermost's first: awaitChainLevels)
+        uint32_t premark = pwPreCnt;
+        if (pwSeams && awaitWithin((INode *)index) && !pwPreHas(node)) {
+            Nodes *one = newNodes(1);
+            nodesAdd(&one, node);
+            premark = pwPreBegin(one);
         }
+        int seamfirst = pwPreHas(node);
         int found = objtag == RefTag || objtag == ArrayRefTag || objtag == PtrTag
             ? pwThrough(&index->objfn, pl, base) : pwPlace(&index->objfn, pl, base);
         // On a GPU target, elements holding references are picked only by a
@@ -951,6 +995,7 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
         }
         if (found)
             pwStep(pl, PlaceStepElem);
+        pwPreCnt = premark;
         return found;
     }
     case DerefTag:
@@ -1879,10 +1924,23 @@ static PathSet *pwAssign(AssignNode *node) {
         uint32_t index = 0;
         // A parallel assignment stores each value in its own slot
         Nodes *rvals = node->rval->tag == VTupleTag ? ((TupleNode *)node->rval)->elems : NULL;
+        // A seam in the places comes after the value is made, which is in
+        // flight across it, and the indexes of every place are made next
+        // (genlTerm, AssignTag)
+        uint32_t mark = loanFlightMark();
+        uint32_t premark = pwPreCnt;
+        int early = pwSeams && awaitWithin(node->lval);
+        if (early) {
+            loanFlightPushOf(holds, 0, node->rval);
+            premark = pwPreBegin(((TupleNode *)node->lval)->elems);
+        }
         for (nodesFor(((TupleNode *)node->lval)->elems, cnt, lvalp)) {
             pwStore(lvalp, holds, rvals && index < rvals->used ? &nodesGet(rvals, index) : NULL);
             ++index;
         }
+        pwPreCnt = premark;
+        if (early)
+            loanFlightPop(mark);
     }
     else {
         // A seam in the place comes after the value is made, which is in
@@ -1906,6 +1964,15 @@ static void pwSwap(SwapNode *node) {
     // A side holding a seam reaches its place first, the other after the
     // seam, as generation does (genlTerm, SwapTag)
     int first = pwSeams && awaitWithin(node->rval) && !awaitWithin(node->lval) ? 1 : 0;
+    // Both holding one, the indexes of both are walked first, the left side's
+    // before the right's
+    uint32_t premark = pwPreCnt;
+    if (pwSeams && awaitWithin(node->lval) && awaitWithin(node->rval)) {
+        Nodes *both = newNodes(2);
+        nodesAdd(&both, node->lval);
+        nodesAdd(&both, node->rval);
+        premark = pwPreBegin(both);
+    }
     for (int k = 0; k < 2; ++k) {
         int i = k ^ first;
         VarDclNode *var = pwNamedVar(*sides[i]);
@@ -1942,6 +2009,7 @@ static void pwSwap(SwapNode *node) {
             found[i] = 1;
         }
     }
+    pwPreCnt = premark;
     // Each side is a store of the other's value. A side that is part of a
     // holder ('h.r', 'a[1]', 'g.h.r') is stored into as pwStore stores into
     // one: the holder there holds the other side's loans from here on, so
