@@ -1,0 +1,45 @@
+// What an iterator chain feeding an 'each' entry of '<-' keeps borrowed while it appends.
+//
+// The chain starts at a borrow of the list it reads, and the entry appends through a
+// borrow of the receiver, both held for every pass. So a chain that starts at the
+// list being appended to is refused as 'xs <- each xs' is, whatever adapters follow
+// ('.drain()' too); a chain whose closure reads the list being built is refused for
+// the same reason (the closure holds a borrow of it while it grows); and a chain that
+// starts at a list reached through a reference other code shares is refused by the
+// shape-changing rule.
+
+mod stream_chains_flow;
+
+import collections use *;
+
+fn mapsItself() {
+  mut xs = new List[i64];
+  xs <- 1i64, 2i64;
+  xs <- each xs.iter().map(x => *x * 2i64);                 //~ ErrorFrozen:14 "borrowed mutably"
+}
+
+fn filtersItself() {
+  mut xs = new List[i64];
+  xs <- 1i64, 2i64;
+  xs <- each xs.iter().filter(x => *x > 1i64).map(x => *x); //~ ErrorFrozen:14 "borrowed mutably"
+}
+
+fn drainsItself() {
+  mut xs = new List[i64];
+  xs <- 1i64, 2i64;
+  xs <- each xs.drain().map(x => x * 2i64);                 //~ ErrorFrozen:14 "borrowed mutably"
+}
+
+fn readsItself() {
+  mut xs = new List[i64];
+  mut other = new List[i64];
+  xs <- 1i64, 2i64;
+  other <- 10i64, 20i64;
+  xs <- each other.iter().map(x => i64.from(xs.len) + *x);  //~ ErrorFrozen:31 "borrowed mutably"
+}
+
+fn throughAReference(out &mut List[i64], src &List[i64]) {
+  out <- each src.iter().map(x => *x);                      //~ ErrorShapeReshape:25 "could change the shape of a 'List'"
+}
+
+fn main() i32 { 0i32; }

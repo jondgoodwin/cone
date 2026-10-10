@@ -46,9 +46,11 @@ enum IntrinsicFn {
     TagEqIntrinsic,
     TagNeIntrinsic,
 
-    // An enum whose variants carry fields declares its comparison and refuses
-    // the call, so the author is told why rather than left to read the absence
-    // of '==' as an oversight. Never generated: type check stops the call.
+    // An enum whose variants carry fields declares its '==' so that selection
+    // finds it; type check then turns the call into one of the comparison the
+    // compiler gave the enum (structSetEnumEqFn), or refuses it, naming the variant
+    // that declares no '==' of its own for that comparison to call. Never
+    // generated: type check replaces the call.
     NoEqIntrinsic,
 
     // An integer's or bool's 'hash': what core's Hash requires of every type that
@@ -211,6 +213,11 @@ int invocationIsCore(INode *type);
 // gives them their 'hash' (nbrAddHashMethods) and supplies the 'hash' of a
 // struct that declares Hash and writes none (structSupplyHash)
 int coreIsHashTrait(INode *dcl);
+// Core's Iterator trait, known by its name and its package; the compiler keeps the
+// declaration it met (coreIteratorTrait) to say, of a type that has a `next` and
+// does not declare it, that the shared methods come with the declaration
+int coreIsIteratorTrait(INode *dcl);
+extern INode *coreIteratorTrait;
 int coreIsHasher(INode *dcl);
 
 // Core's TypeRecord struct, once the core package's declaration of

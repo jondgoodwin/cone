@@ -1034,6 +1034,64 @@ static FnDclNode *fnCallBorrowReceiver(TypeCheckState *pstate, FnCallNode *calln
     return NULL;
 }
 
+// An operand of an enum's '==' is lent to the comparison, read-only, where it
+// lies: a value is borrowed (a temporary, to the end of its statement), and a
+// reference is passed as it is. Nothing is copied or moved into the comparison,
+// so an enum that moves is compared as one that copies is.
+static void fnCallLendEnumOperand(TypeCheckState *pstate, INode **operandp) {
+    INode *type = iexpGetTypeDcl(*operandp);
+    if (fnCallIsRefReceiver(type) || type->tag == PtrTag)
+        return;
+    INode *perm = newPermUseNode(roPerm);
+    if (iexpIsLval(*operandp))
+        borrowMutRef(operandp, type, perm);
+    else
+        borrowTempRef(operandp, type, perm, borrowTempScope(pstate));
+}
+
+// '==' on an enum where a variant carries fields: tags first, then the variant's
+// own '==' on the two payloads (doc/reference/refenum.html, "Comparing"). The
+// comparison is a function the compiler gave the enum (structSetEnumEqFn), made
+// when every variant that carries fields declares a '==', and the call becomes a
+// call of it on the two operands lent. Where one does not, the call is refused
+// here, naming the first variant that has none and what it carries.
+static void fnCallLowerEnumEq(TypeCheckState *pstate, FnCallNode *callnode, StructNode *enumnode) {
+    FnDclNode *eqfn = structEnumEqFn(enumnode);
+    if (eqfn == NULL) {
+        StructNode *lacking = structEnumVariantWithoutEq(enumnode);
+        if (lacking == NULL) {
+            errorUnreachable((INode*)callnode, "an enum's '==' with no variant lacking one and no comparison made");
+            callnode->vtype = errorType;
+            return;
+        }
+        char carries[200] = "";
+        size_t used = 0;
+        INode **fldp;
+        uint32_t cnt;
+        for (nodelistFor(&lacking->fields, cnt, fldp)) {
+            FieldDclNode *field = (FieldDclNode*)*fldp;
+            if (field->flags & (IsTagField | IsMixin) || used + 40 >= sizeof(carries))
+                continue;
+            used += snprintf(carries + used, sizeof(carries) - used, "%s%s %s", used ? ", " : "",
+                &field->namesym->namestr, itypeName(field->vtype));
+        }
+        errorMsgNode((INode*)callnode, ErrorEnumEquality,
+            "`==` and `!=` on %s compare the variants' own `==`, and %s carries a payload (%s) and declares none. Give %s a `==` taking another %s, or use 'match' to recover the variant.",
+            &enumnode->namesym->namestr, &lacking->namesym->namestr, carries,
+            &lacking->namesym->namestr, &lacking->namesym->namestr);
+        callnode->vtype = errorType;
+        return;
+    }
+    fnCallDemandCandidates((INode*)eqfn);
+    fnCallLendEnumOperand(pstate, &callnode->objfn);
+    fnCallLendEnumOperand(pstate, &nodesGet(callnode->args, 0));
+    nodesInsert(&callnode->args, callnode->objfn, 0);
+    callnode->objfn = newNameUseFromDclNode((INode*)eqfn, (INode*)callnode);
+    callnode->methfld = NULL;
+    callnode->vtype = unknownType;
+    fnCallFinalizeArgs(pstate, callnode);
+}
+
 // The receiver of 'x[i].m()' is the element 'x[i]' lent by the type's '[]',
 // a read-only borrow. Where no 'm' takes that, and the type declares '&[]'
 // and 'x' may be borrowed mutably, the index is lowered again as '&mut x[i]'
@@ -1303,6 +1361,33 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
                     &methsym->namestr, &actorname->namestr);
             return -1;
         }
+        // A method every Iterator shares, asked of a type that has a 'next' and does
+        // not declare it is one: fitting the trait gives a bound its cursor, and the
+        // shared methods come only with the declaration
+        if (foundnode == NULL && objdereftype->tag == StructTag && !(objdereftype->flags & TraitType)
+            && iNsTypeFindFnField((INsTypeNode*)objdereftype, nametblFind("next", 4)) != NULL && pstate->fn) {
+            INode *shared = coreIteratorTrait ? iNsTypeFindFnField((INsTypeNode*)coreIteratorTrait, methsym) : NULL;
+            if (shared && shared->tag == FnDclTag && ((FnDclNode*)shared)->value != NULL) {
+                Name *tname = ((StructNode*)objdereftype)->namesym;
+                int declared = 0;
+                StructNode *tnode = (StructNode*)objdereftype;
+                INode **tp;
+                uint32_t tcnt;
+                if (tnode->traits)
+                    for (nodesFor(tnode->traits, tcnt, tp))
+                        if ((*tp)->tag == StructTag && ((StructNode*)*tp)->namesym == iteratorTraitName)
+                            declared = 1;
+                if (declared)
+                    errorMsgNode((INode*)callnode, ErrorNoMbr,
+                        "`%s` is a method of Iterator that %s's items do not qualify for: it is there only where its `where` clause holds of the items (`sum`, `min` and `max` want numbers, integers, f32 or f64), so a cursor that lends is mapped to values first, `map(x => *x)`.",
+                        &methsym->namestr, &tname->namestr);
+                else
+                    errorMsgNode((INode*)callnode, ErrorNoMbr,
+                        "`%s` is a method every Iterator shares, and %s has a `next` but does not declare itself one. Declare it to get the shared methods: `struct %s is Iterator[T]`, T being what `next` gives.",
+                        &methsym->namestr, &tname->namestr, &tname->namestr);
+                return -1;
+            }
+        }
         errorMsgNode((INode*)callnode, ErrorNoMbr, "Method or field `%s` not found.", &methsym->namestr);
         return -1;
     }
@@ -1458,17 +1543,12 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
     }
 
     // An enum's equality reads its discriminant, which is the whole of the value
-    // only where every variant is empty. Where a variant carries fields, those
-    // fields would have to be compared too, and Cone has no structural comparison
-    // for a struct of any kind. The comparison is declared and refused here, so
-    // that the author is told why rather than reading the absence of '==' as an
-    // oversight.
+    // only where every variant is empty. Where a variant carries fields, the call
+    // is the comparison the compiler gave the enum, or a refusal naming the
+    // variant that has no '==' of its own for it to call.
     if (selected->value && selected->value->tag == IntrinsicTag
         && ((IntrinsicNode*)selected->value)->intrinsicFn == NoEqIntrinsic) {
-        errorMsgNode((INode*)callnode, ErrorEnumEquality,
-            "An enum whose variants carry fields has no `%s`: that would have to compare the fields too. Use 'match' to recover the variant.",
-            &methsym->namestr);
-        callnode->vtype = errorType;
+        fnCallLowerEnumEq(pstate, callnode, (StructNode*)objdereftype);
         return 1;
     }
 
@@ -1681,8 +1761,13 @@ static char *fnCallSliceElemNoEq(INode *elemtype, char *buf, size_t size) {
     FnDclNode *eqdcl = (FnDclNode*)found;
     if (found->tag == FnDclTag && eqdcl->value && eqdcl->value->tag == IntrinsicTag
         && ((IntrinsicNode*)eqdcl->value)->intrinsicFn == NoEqIntrinsic) {
-        snprintf(buf, size, "%s, an enum whose variants carry fields, has no `==`",
-            typename ? &typename->namestr : "their element type");
+        // Compared by the comparison the compiler gave it, where it has one
+        if (structEnumEqFn((StructNode*)type) != NULL)
+            return NULL;
+        StructNode *lacking = structEnumVariantWithoutEq((StructNode*)type);
+        snprintf(buf, size, "%s is an enum whose variant %s carries fields and declares no `==`",
+            typename ? &typename->namestr : "their element type",
+            lacking ? &lacking->namesym->namestr : "of them");
         return buf;
     }
     return NULL;

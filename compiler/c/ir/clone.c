@@ -31,10 +31,19 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
         && ((NameUseNode*)nodep)->dclnode->tag == GenVarDclTag) {
         INode *hooked = ((NameUseNode*)nodep)->namesym->node;
         if (!(hooked && hooked->tag == GenVarDclTag)) {
+            // A type argument is the use's own source, resolved where the use is: a
+            // 'Self' in it (a trait's default naming 'Wrap[Self]') is the type the
+            // default was taken into, and is not repointed at the type being
+            // instantiated or taken in here
+            INode *svself = cstate->selftype;
+            cstate->selftype = NULL;
             // A generic's type argument loses an array's written shape, which
             // its shared instance cannot keep (arrayTypeUnshaped)
-            if (cstate->srcsite == NULL)
-                return arrayTypeUnshaped(cstate, cloneNode(cstate, hooked));
+            if (cstate->srcsite == NULL) {
+                INode *argcopy = arrayTypeUnshaped(cstate, cloneNode(cstate, hooked));
+                cstate->selftype = svself;
+                return argcopy;
+            }
             // A macro's argument is the use's own source, not the macro's: it
             // keeps its own place, where 'srcLine()' in it answers, and is not
             // marked as instantiated by the use, so a macro used in it is known
@@ -46,6 +55,7 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
             INode *arg = cloneNode(cstate, hooked);
             cstate->srcsite = srcsite;
             cstate->instnode = instnode;
+            cstate->selftype = svself;
             return arg;
         }
         node = cloneNameUseNode(cstate, (NameUseNode *)nodep);
