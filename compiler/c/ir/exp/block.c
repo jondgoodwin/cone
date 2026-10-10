@@ -361,9 +361,12 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
             if (laststmtp)
                 blockStmtTypeCheck(pstate, laststmtp, &hoists);
             // Add 'blockret nil' to end of empty block, or block ending without expression/break/cont/return
+            // The 'nil' stands where the statement that gave no value is (the block,
+            // when it is empty), which is where a diagnostic about the value wanted belongs
             BreakRetNode *retnode = newReturnNode();
             retnode->tag = BlockRetTag;
             retnode->exp = (INode*)newNilLitNode();
+            inodeLexCopy(retnode->exp, laststmtp ? *laststmtp : (INode*)blk);
             nodesAdd(&blk->stmts, (INode*)retnode);
             match = iexpMultiCoerceInfer(pstate, expectType, &inferredType, &retnode->exp, match);
         }
