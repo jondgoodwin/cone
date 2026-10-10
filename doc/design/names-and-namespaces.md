@@ -806,7 +806,8 @@ demangler in `test/run.py`:
 
 | Cone declaration | Symbol | Read as |
 | --- | --- | --- |
-| `fn plainPub()` in the root, `fn main`, root `mut pubGlobal` | `@plainPub` `@main` `@pubGlobal` | bare: nothing to encode (D2) |
+| `fn plainPub()` in the root, root `mut pubGlobal` | `@plainPub` `@pubGlobal` | bare: nothing to encode (D2) |
+| an executable's `fn main` | `@cone.main` | the program's own `main`, internal; the C `main` is the entry the compiler builds round it |
 | `fn subFn()` in file module `sub` | `_CNvC3sub5subFn` | `sub.subFn` |
 | `mut subGlobal` in module `sub` | `_CNvC3sub9subGlobal` | `sub.subGlobal` |
 | `struct Pt { fn get(self) }` in the root | `_CNvNt2Pt3get` | `Pt.get` — the root contributes nothing |
@@ -1037,7 +1038,7 @@ which is where the `symbols` check target reads them.
 | Kind | Spelling today | Linkage · COMDAT |
 | --- | --- | --- |
 | root `fn`, public or private | `define internal i64 @plainPub(i64 %0) comdat {` · `define internal i64 @_plainPriv(i64 %0) comdat {` — bare, nothing to encode | internal · `nodeduplicate` |
-| `fn main` | `define i32 @main() comdat {` — the one definition `genlLinkage` leaves external, by its bare name | external · `nodeduplicate` |
+| the C entry | `define i32 @main(i32 %0, ptr %1) comdat {` — the one definition `genlLinkage` leaves external, by its bare name, built by `genlEntry` round the program's `fn main`, which is `define internal i32 @cone.main() comdat {` | external · `nodeduplicate` |
 | root global: `mut`, `imm`, private | `@pubGlobal = internal global i64 5, comdat` · `@constGlobal = internal constant i64 7, comdat` · `@_privGlobal = internal global i64 6, comdat` | internal · `nodeduplicate` |
 | struct method, static fn, private method | `@_CNvNt2Pt3get` · `@_CNvNt2Pt4make` · `define internal i32 @_CNvNt2Pt4__hid(%Pt* %0) comdat {` — `Pt.get`, `Pt.make`, `Pt._hid` | internal · `nodeduplicate` |
 | imported module's `fn` | `declare i64 @_CNvC3sub5subFn(i64)` — `sub.subFn`; a private top-level `fn` or global leaves no symbol unless a public inline body reaches it, and is then declared the same way | external · none |

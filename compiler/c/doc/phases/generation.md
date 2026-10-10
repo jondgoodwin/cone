@@ -82,13 +82,29 @@ a global would then fold to a stride the backend does not use.
    generic's body may make one), and the symbol pass skipped it, so it is named
    here.
 
-Then, **the program's stitched init and final** (`genlStitch`), where a call to
-`initAll()` or `finalAll()` asked for one (`genlStitchFn`, from the intrinsic's
-case in `genlFnCallInternal`): `cone.initAll` calls each module's `initfn` in
+Then, **the program's entry** (`genlEntry`) and **its stitched init and final**
+(`genlStitch`), which the entry or a call to `initAll()` or `finalAll()` asked
+for (`genlStitchFn`, from the entry and from the intrinsic's case in
+`genlFnCallInternal`): `cone.initAll` calls each module's `initfn` in
 `pgm->initorder`, and `cone.finalAll` each module's `finalfn` in the reverse,
 declaring the symbol of one this object does not define. They are built last
-because they call what the passes above named. Both are internal; the entry glue
-that will call them is unbuilt. [module](../nodes/module.md), "Init and final".
+because they call what the passes above named. Both are internal, and share a
+flag, `cone.live`, swapped atomically as each one's first act: the init runs only
+on a program not live and the final only on one that is, so two calls in a row
+(the entry's and a program's own) run the modules once, and a program that
+finalizes and initializes again runs both again. A final with no init in the
+object runs always.
+**The entry** is the C `main`, `define i32 @main(i32 %argc, ptr %argv)`: it calls
+`cone.initAll`, the program's own `main`, then `cone.finalAll`, and returns the
+`main`'s result (an integer cast to i32; anything else is 0). The program's own
+`main` — the bare, Cone-named `main` of an executable's root (`genlIsEntryMain`:
+not a library, WebAssembly or GPU compile; not a function with a C name; with no
+parameters or two) — is therefore declared under the internal symbol
+`cone.main` (`genlGloFnName`), and is called with `argc` and `argv` if it takes
+them. `genlIsVoidMain` treats `cone.main` as it does `main`: a `main` returning
+nothing is generated returning `i32 0`. A panic ends the process through
+`abort`, and a call to C's `exit` leaves it, so neither reaches the final.
+[module](../nodes/module.md), "Init and final".
 
 **An `imm` global is an LLVM constant only where this object gives it its value
 and nothing writes it** (`genlGloVarIsConstant`): it has an initial value, is
@@ -308,9 +324,11 @@ status to whatever the return register held. So `genlGloFnName` declares such a
 `main` with an `i32` return, `genlFn` sets `gen->exitzero` for its body, and
 `genlReturn` returns 0 at every return; `genlFnSym` hands a call or a reference
 to it the function bitcast to the type its signature declares, so the IR stays
-well typed. The test is the symbol `main` itself, as `genlLinkage`'s is, so a
-C-named entry, `fn @c("main") start()`, is treated alike. A `main` that declares a
-return type returns what it returns.
+well typed. The test is the symbol `main` or `cone.main` (the program's own
+`main` behind the entry, below), as `genlLinkage`'s is for `main`, so a C-named
+entry, `fn @c("main") start()`, is treated alike. A `main` that declares a
+return type returns what it returns, and the entry the compiler builds hands it
+on as the exit status.
 
 `genlFn` per function: entry block, a dummy `allocaPoint` alloca, an alloca and
 store for **every** parameter, then `genlBlock` on the body, then, where the
@@ -1391,11 +1409,19 @@ before the place it indexes (`genlAddr`, its values handed to
 `genlArrayIndex`); a swap's side holding a seam reaches its place before the
 other side does; and an assignment's value, made first, is kept in flight
 (`genlKeepAcross`, `genlKeptAcross`) while a place holding a seam is reached,
-then stored (`genlStoreTo`). An `await` whose construct still holds an address
-or memory being filled across it -- an index whose place's base holds a seam
-too, both places of a swap, a slice's bounds, a parallel assignment's places,
-an array's contents filled in memory -- is not split ([Flow](flow.md), "A
-seam").
+then stored (`genlStoreTo`). A place indexed through more than one seam, both
+places of a swap, a slice's bounds and a parallel assignment's places make
+their indexes first (`genlPlacePre`): the arguments of every index in the
+chain, from the innermost holding a seam outward (`awaitChainLevels`), and of
+a swap's two sides or a parallel assignment's places in turn, are one operand
+list for `genlExprsAcross`, so each value made before a later seam is in flight
+across it; the values are noted for the indexes (`GenPre`, `genlPreOf`) until
+the places are reached, and `genlAddr` and `genlSubslice` take an index's
+values from there rather than making them, the arrays and slices reached after
+the last seam. An `await` whose construct still holds an address or memory
+being filled across it -- an index whose place's base is an expression holding
+a seam, an array's contents filled in memory -- is not split
+([Flow](flow.md), "A seam").
 
 ### A message's reply
 
@@ -1660,7 +1686,11 @@ after. `--ir` is not an LLVM option at all — it dumps the Cone IR/AST.
 `--asm` adds a `.wat`, `.spvasm` or `.asm`. `--verify` runs `LLVMVerifyModule` and is off
 by default. `--debug` emits DWARF and drops optimization — it is the only
 switch here, with release as the default. Debug info covers only files,
-subprograms and each instruction's line and column, and the file name is hardcoded. A subprogram is attached only to a
+subprograms and each instruction's line and column. A subprogram is in the file its
+function was written in (`genlDiFile`: the lexer's url, one `DIFile` for each, the
+compile's main file for a node with no lexer), so a sibling file of a folder module,
+a submodule and an imported package that is compiled in each have their own.
+A subprogram is attached only to a
 function this object defines: an imported module's function has a body in the
 IR but is a declaration here, and the verifier rejects a declaration carrying
 one. Every `genlExpr` sets the builder's debug location to its node's line and
@@ -2192,8 +2222,9 @@ variables.
 | | `genlGpuAggregates`, `genlGpuAggregatesFn`, `genlAggLeaves` | on a GPU target, after optimization, each struct or array value carried as its scalar leaves (section 7) |
 | | `genlGpuRetypeFn`, `genlGpuPointee` | on a GPU target, after optimization, a first field's address computed from its struct's type again (for a load, a store, an address computation or an atomic), and an array's from its first element's (section 7) |
 | | `genlGpuGepChainsFn` | on a GPU target, after optimization, an address computed from another in one step, or beside it (section 7) |
-| | `genlProgram` | create the module with the target's triple and data layout, the two-pass symbols-then-implementations walk, then the stitched pair |
-| | `genlStitchFn`, `genlStitch` | the program's stitched init and final: declared on the first call to `initAll()` or `finalAll()`, built last, every module's `init` in the module order and every finalizer in the reverse |
+| | `genlProgram` | create the module with the target's triple and data layout, the two-pass symbols-then-implementations walk, then the entry and the stitched pair |
+| | `genlIsEntryMain`, `genlEntry` | the program's own `main` (renamed `cone.main`), and the C `main` built round it: stitched init, `cone.main`, stitched final, its result the exit status |
+| | `genlStitchFn`, `genlStitch` | the program's stitched init and final: declared by the entry or on the first call to `initAll()` or `finalAll()`, built last, every module's `init` in the module order and every finalizer in the reverse, each guarded by the `cone.live` flag |
 | | `genlGlobalSyms`, `genlGlobalImpl` | declare a node's symbol; emit its body |
 | | `genlImportedInstances` | emit the bodies of the instances this compile made of a module it does not generate |
 | | `genlFn`, `genlParmVar`, `genlAlloca` | function body (a split method's first half, then its second halves), parameter allocas, entry-block alloca placement |
@@ -2272,6 +2303,7 @@ variables.
 | | `genlAwaitFuture`, `genlFutureOpen` | a seam awaiting a future: gone on from where it stands when the future has its ending, else parked on it; the value opened out of the future on either path and in the resume function ("A message's reply", "A future") |
 | | `genlExprsAcross`, `genlHasSeam` | operands in order (`awaitOrder`'s, where a seam cuts them), each made before a later one's seam kept in flight across it (`GenFlight`), a receiver or a borrow of a plain path made after it |
 | | `genlKeepAcross`, `genlKeptAcross` | one value kept in flight across a seam to come, and read back after it: an assignment's value while its place, holding the seam, is reached |
+| | `genlPlacePre`, `genlPlacePreEnd`, `genlPreOf`, `genlNeedsPre` | the indexes of places holding a seam in an index made first, in the order written (`awaitChainLevels`), and noted for `genlAddr` and `genlSubslice` to take: a place indexed more than once, both sides of a swap, a slice's bounds, a parallel assignment's places |
 | | `genlHeldBegin`, `genlHeldIf` | a temporary lock guard's flag, and code run while it holds its lock |
 | `genllvm/genlpar.c` | `genlParallelRun`, `genlParCapture`, `genlParCount` | a parallel each: the index and loop generated as a function of their own, a variable of the caller's found through the function's record, the call of `actors.parallelEach`, a number range's count ("A parallel each") |
 | | `genlFinalizeAt`, `genlCallDrop`, `genlEachElem` | a value's death in place, whatever its type: a local's, a field's, a region value's before its `free`, and the `finalize` intrinsic |

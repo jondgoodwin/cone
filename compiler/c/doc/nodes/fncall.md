@@ -382,7 +382,8 @@ candidate. `fnCallLowerRefCompare`:
   operands dereferenced (`derefInject`, positioned on the comparison) and the
   value's operator selected by `fnCallLowerMethod`, as for `*a == *b`. An
   enum's compiler-declared `==` is reached that way, and so is its refusal,
-  `ErrorEnumEquality`, for one whose variants carry fields.
+  `ErrorEnumEquality`, for one with a variant that carries fields and declares
+  no `==`.
 - **Anything else is `ErrorRefNoCompare`**, whose message names `===` for `==`
   and `!=`: a referent with no such operator, a referent with no methods at all
   (an array, a function), and a trait other than an enum, whose comparison would
@@ -408,7 +409,7 @@ The body compares each pair as `&a[i] == &b[i]`, which is a comparison of
 references, so every element type gets the `==` this function already selects:
 a number's or a `bool`'s built-in one (a float's IEEE `==`, so a NaN is unequal
 to everything and -0.0 equals 0.0), a pointer's on the address, one a struct
-declares on the value or on references, a payload-free enum's, and through a
+declares on the value or on references, an enum's, and through a
 reference or a nested slice, what it refers to. Nothing is copied. A body in
 Cone rather than a loop generated of its own is what reuses that selection; it
 is generated once per element type in each module that compares, an ordinary
@@ -420,9 +421,22 @@ byte), and one loop serves them all.
 Whether the elements can be compared is decided where the slices are, by
 `fnCallSliceElemNoEq`, which asks what `fnCallLowerRefCompare` would of the
 pair, so a refusal is `ErrorRefNoCompare` naming the element type rather than
-an error reported inside core: a struct declaring no `==`, an enum whose
-variants carry fields, an array (whose comparison is not built), a trait, a
-virtual reference.
+an error reported inside core: a struct declaring no `==`, an enum with a
+variant that carries fields and declares none, an array (whose comparison is not
+built), a trait, a virtual reference.
+
+**`==` on an enum with a variant that carries fields is a call of the enum's
+`-eq`** (`fnCallLowerEnumEq`, reached from `fnCallLowerMethod` where the selected
+`==` is the enum's `NoEqIntrinsic`): the tags are compared and then the variant's
+own `==` ([struct](struct.md), step 8a, for how `-eq` is made). Each operand is
+lent to it read-only where it lies (`fnCallLendEnumOperand`: a place is borrowed,
+a temporary borrowed to the end of its statement, a reference passed as it is),
+so an enum that moves is compared as one that copies is and nothing is moved into
+the comparison; the node becomes a call of `-eq` with those two arguments. `!=`
+is `not (a == b)`, as for any type declaring only `==` (`fnCallNeFromEq`). Where
+no `-eq` was made, because a variant carries fields and declares no `==`, the
+call is refused with `ErrorEnumEquality`, naming the first such variant and its
+fields.
 
 The permission a reference carries is enforced on the dereference, by flow, so
 `==` through an `opaq` reference is `ErrorNoRead` while `===` on it is allowed.
@@ -752,7 +766,9 @@ looking at a bug.
 
 Three entry points, by what the node became:
 
-- `fnCallFlow` — for each argument: `flowLoadValue`, then
+- `fnCallFlow` — first, when `objfn` names a variable (a function reference
+  called through), `nameuseFlow` on it, so one never given a value is refused;
+  then for each argument: `flowLoadValue`, then
   `flowHandleMoveOrCopy`. Arguments are moved or copied into the callee. A
   method's receiver that is an init's `self &new` is walked as a use through
   it (`flowNewSelfThrough`; [Flow](../phases/flow.md), "An init's self"). A
@@ -770,9 +786,6 @@ Three entry points, by what the node became:
 passed its function's flow gate, because what failed was reported elsewhere —
 a field of a value returned by a function whose signature failed — but type
 check gave up on it unlowered, so a field access still has no arguments.
-
-**`fnCallFlow` does not flow `objfn`**, so a call through an uninitialized
-function-reference variable goes unreported. See Hazards.
 
 ## Generation
 
@@ -841,8 +854,6 @@ when the range runs to the end, and one past what was written for `...`).
 - **One dispatch arm skips resolving the callee** — the overload-set path — so
   the invariant "objfn is type checked by stage 3" holds in most of the function
   and not all of it.
-- **`fnCallFlow` ignores `objfn`.** An uninitialized `&fn` variable called
-  through is not diagnosed.
 - **`fnCallLowerMethod` returns three values** — 1 lowered, 0 receiver has no
   methods so try another way, −1 already reported. Treating it as a boolean
   produces a duplicate diagnostic.

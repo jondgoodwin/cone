@@ -1372,7 +1372,11 @@ agrees, there is no flag, and the release is what it is, or nothing.
 **The gate** (`FlowState.dropgate`) is set by the main walk at O(1) per state
 change: a *tracked* variable — a local or a parameter whose value moves or has
 anything to do as it dies (`flowDropTracked`; a match's binding stands for the
-matched value's variable, `flowDropOwner`) — moved, hollowed or stored over
+matched value's variable, `flowDropOwner`), or a local declared without a value
+whatever its type (`flowDropTrackUninit`, from `varDclFlow`: a number, a
+struct of plain data, a borrowed reference, a raw pointer, which could only ever
+be uninitialized, never moved, and are otherwise untracked, as a local given its
+value where it is declared is) — moved, hollowed or stored over
 deeper in the conditional structure than it was declared (`flowDepth`: an
 `if`'s arms and its later conditions, the right operand of `and` and `or`, a
 loop's body; `flowDropNote`), or moved or hollowed by only some of the values a
@@ -1402,7 +1406,15 @@ local held. Loop walks gather into one record (`DropSite`), the union.
 it moved, hollowed or never gave a value (a borrow: moved or hollowed only) is
 `ErrorMove` "may have been moved out" / "may not have been given a value"
 (`dropRefuse`), once per site: a loop moving a variable declared outside it,
-a read in a pass after one that moved it. The main walk refuses what one walk
+a read in a pass after one that moved it. This holds for every type: a number
+given a value in one arm of an `if`, a borrowed reference or raw pointer
+dereferenced after one (`pwThrough` checks the variable the reference is read
+from, which `pwDropUse` skips for a place reached through a dereference), a
+struct's field, a variable a `match` arm or a loop that may not run left
+unset. A `while` with a condition, `while true` included, keeps the condition's
+exit; only a `while` with none is left by its `break` alone. A variable given
+a value only after a read in source order is the main walk's ("has not been
+initialized"). The main walk refuses what one walk
 in source order sees.
 
 **What it decides** (`dropWalkEnd`, once the walk reported no error). A
@@ -1458,11 +1470,12 @@ second half. Otherwise -- an `await` on anything else, which waits for no
 answer -- each is refused (`ErrorAwaitNotFuture`, `awaitReportSeams`), the
 message saying what its seam would carry. A behaviour's `await` standing where the split is not
 built yet is reported so too, at the `await` (`awaitWalk`): in the index of a
-place whose base holds a seam too, in both places a swap exchanges, in a
-slice's bounds, in a parallel assignment's places or one storing its place's
-old value, and in an array's contents filled in memory; and among the entries
-one `<-` appends (`pwSeamVar`), whose receiver the rewrite borrows once, into
-a temporary that is no holder, for all of them. So is a seam whose record
+place whose base is an expression holding a seam of its own (a seam in an
+index of the chain is built, below), in the places of a compound assignment
+storing its place's old value, and in an array's contents filled in memory;
+and among the entries one `<-` appends that repeat, fill or loop
+(`pwSeamVar`), whose receiver the rewrite borrows once, into a temporary that
+is no holder, for all of them. So is a seam whose record
 would hold a traced reference (`awaitRecordTraced`): the record waits in its
 actor's pending table, off the stack, which the collector does not trace.
 
@@ -1481,9 +1494,19 @@ path or a receiver before the last operand holding a seam walked just after it
 (`awaitReReached`); an index holding a seam before the place it indexes
 (`pwPlace`); a swap's side holding a seam before the other (`pwSwap`); and an
 assignment's value, made first, in flight while its place is walked when the
-place holds a seam (`pwAssign`). A compound assignment whose operand holds an
+place holds a seam (`pwAssign`). A place indexed more than once, a slice's
+bounds, both sides of a swap and a parallel assignment's places make all their
+indexes first, one list in the order written: the arguments of every index of
+the chain from the innermost holding a seam outward (`awaitChainLevels`), a
+swap's left side's before its right's, a parallel assignment's value before
+them all; `pwPreBegin` walks them, notes those indexes, and the walk of each
+place (`pwPlace`) then leaves their arguments out, and the arrays are walked
+after the last seam, so a local array read or written there is used after
+every seam (`SeamLive`) and travels. A compound assignment whose operand holds an
 `await` makes the operand first, into a local of its rewrite, before it
-borrows the place (`fnCallOpAssgn`). What a call made cannot be made again:
+borrows the place (`fnCallOpAssgn`); so does a `<-` whose entries hold one: every
+entry written up to the last holding it is made first into a local
+(`contentsLowerEntries`), and the receiver is borrowed after them. What a call made cannot be made again:
 a borrow or a place's base to the left of an `await`, made by a call or a
 temporary, is `ErrorAwaitLeftCall` -- an operand in flight across a seam
 that is no plain path (`loanSeamFlight`, from what `loanFlightPushOf` noted
@@ -1615,7 +1638,7 @@ filled `self`'s fields is an ordinary store.
 | **Freezing** | the loan walk, on a gated function | a borrow held in a local, bare or inside a struct, enum, `Option`, array or list, and its copies, freeze the source until the last use (a finalizer that may read it, at the holder's death, included), and so do a borrow a call returns, of every argument, and one a call or a store through a reference puts into a local (from a `NoLoanMut` or `NoLoanRead` container, only its life): `ErrorFrozen` at a change, a move, a conflicting borrow, the source's end, and, under a mutable borrow, a read — for a source reached as `uni`; for one reached through a shared path, only its owner's move, replacement or end, a change or mutable borrow of the owner where it is held, and an `&uni` or `&imm` borrow, but for a borrow a method of a container that changes shape (`ShapeChanging`, declared or found) returns, which freezes the path it was reached through as a local's does | an element borrow of a container that changes shape through a shared path, when the change comes through another name or a call that might make one (part (b) of the rule; not built); two copies of one `&mut`; a global a callee changes |
 | **De-aliasing / drops** | flow decides, generation executes | scope-exit release of owning refs, of drop-fn structs and enums, and of tuples and arrays holding what finalizes or owns, from a jump down to the block it names; the previous value's release at a store over a variable, a part of one, or a place reached through a reference; each on the paths that hold the value, by a drop flag where they differ; a temporary's at the end of its statement, condition or operand, newest first, hollow where a value moved out through it | an array an element was moved out of leaks the rest; a value stored into a field of a variable holding nothing leaks; a temporary a borrow or a pointer made from it may outlive is kept, and leaks — see Hazards |
 | **Permission** | `MayWrite` and `MayRead` | `ErrorNoMut` on assignment and swap; `ErrorNoRead` on a read through a reference — a dereference, an index, or a field of a virtual reference | `MayAliasWrite` and `IsLockless` are populated and read nowhere; `RaceSafe` is read by the thread check, a type check question (`refThreadBinds`) |
-| **Initialization** | yes | `ErrorMove` "has not been initialized"; for a variable that moves or has anything to do as it dies, "may not have been given a value" where some path did not (the path walk) | for any other type, "initialized on one branch" reads as initialized everywhere; a variable never initialized may be borrowed, so a method taking it `&mut` can fill it, and nothing then stops a field it left unset being read through the borrow; the unused-variable warning in `flow.h`'s header does not exist |
+| **Initialization** | yes | `ErrorMove` "has not been initialized"; for any local declared without a value, of any type, "may not have been given a value" where some path did not (the path walk) | a variable never initialized may be borrowed, so a method taking it `&mut` can fill it, and nothing then stops a field it left unset being read through the borrow; the unused-variable warning in `flow.h`'s header does not exist |
 
 Everything else about permissions is type check's: `permMatches` in
 `borrowTypeCheck`, and variance in the reference matchers.
@@ -1646,7 +1669,7 @@ Everything else about permissions is type check's: `permMatches` in
 | `ErrorMoveField` | `flowRefuseMoveField` | among the rest, a move out of a generator's parameter, a field of the value it is |
 | `ErrorAwaitLeftCall` | `loanSeamFlight`; `awaitWalk`, from `awaitSplitOrReport` | a borrow, or a place's base or a swap's other side, written to the left of an `await` in its statement and used after it, made by a call or a temporary: only a plain path is reached again after the seam |
 | `ErrorAwaitNotFuture` | `awaitReportSeams`, from `awaitSplitOrReport` | an `await` every seam rule accepted, in a behaviour flow found no error in, on something that waits for no answer -- not a behaviour's reply, a future or an operation (without `--await-direct`): refused, the message naming what its seam would end, give back, carry and leave |
-| `ErrorUnbuiltAwait` | `awaitReportUnbuilt`, `awaitReportIn` and `awaitRecordTraced`, from `awaitSplitOrReport`; `pwSeamVar` | in a behaviour that is split, an `await` standing where the split is not built (an index whose place's base holds a seam too, both places of a swap, a slice's bounds, a parallel assignment's places, the entries of one `<-`, an array's contents filled in memory), or a seam whose record would hold a traced reference |
+| `ErrorUnbuiltAwait` | `awaitReportUnbuilt`, `awaitReportIn` and `awaitRecordTraced`, from `awaitSplitOrReport`; `pwSeamVar` | in a behaviour that is split, an `await` standing where the split is not built (an index whose place's base is an expression holding a seam, the entries of one `<-` that repeat or fill a value, an array's contents filled in memory), or a seam whose record would hold a traced reference |
 
 A value an array's contents or `n of x` repeat is evaluated once per element,
 so the ordinary move rule judges it: the loop `n of x` lowers to is walked as
@@ -1736,8 +1759,9 @@ droppable noted as holding nothing is never finalized.
   value is taken must not, or it is finalized under its new holder.
 - **`flowIsLvalRead` is not `iexpIsLval`.** They disagree on recursion into
   `objfn` and on string literals. Do not substitute one for the other.
-- **`fnCallFlow` does not flow `objfn`**, so a call through an uninitialized
-  function-reference variable is not reported.
+- **`fnCallFlow` flows `objfn` only when it names a variable** (`nameuseFlow`),
+  which is how a call through an uninitialized function-reference variable is
+  reported. A callee reached any other way is not walked here.
 - **`flowLoadValue`'s `default:` arm reports `ErrorUnreachable` and stops.** An
   unhandled tag therefore fails the compile rather than passing through it —
   passing through would mean no move check, no alias injection and no
@@ -1762,6 +1786,7 @@ droppable noted as holding nothing is never finalized.
 | | `pwSeam`, `pwSeamVar`, `pwSeamNote`, `pathSeamLive`, `pwGlobalOnly`, `pwIsGuard` | a seam ("A seam"): what is awaited, the loans in flight across it, and each variable in scope -- its borrows ended, its live mark set, what it would do noted on the `AwaitNode` |
 | | `pwYield`, `pwYieldVar`, `pwYieldNote`, `pwGenKept` | a generator's seam ("A yield"): the result handed out, and each variable in scope -- the borrows of its own ground that end, its live mark, what it does there noted on the `YieldNode` |
 | | `pwOrder`, `pwSeams` | in a function holding an `await`, an operand list in the order generation makes it, a plain path before a seam made after it (`awaitOrder`) |
+| | `pwPreBegin`, `pwPreHas` | the arguments of the indexes of places holding a seam in an index (`awaitChainLevels`) walked first, those indexes noted so the walk of each place leaves them out |
 | | `pwGpuOneValue`, `pwIsLitIndex`, `pathGpuChoices`, `pwRetFirst` | GPU targets: an `if`'s or a block's value, and a function's returns, against each other (`pathJoin` compares a holder's paths); a literal index |
 | `ir/flowdrop.c` | `dropMove`, `dropUse`, `dropRefuse` | a marked move's new state; a use some path left without its value, refused once |
 | | `dropStore`, `dropPartStore`, `dropExit` | what each variable a release releases may hold there, gathered over every walk |
@@ -1774,7 +1799,7 @@ droppable noted as holding nothing is never finalized.
 | | `loanIsGlobal`, `loanSeamEnds`, `loanSeamPending`, `loanSeamLive`, `loanSeamFlight`, `loanSeamOf` | a seam: whether a loan is global; the loan a holder holds that ends there, the borrow it was given where that can be told; the pending conflict and the live mark; what is in flight across it; what an ended borrow was of, for the message |
 | | `loanIsGenOwn`, `loanGenOwnIn`, `loanYieldPending` | a generator's seam: whether a loan is of the generator's own ground (a local, or its parameters held by value); the first such in a set; the pending conflict of the seam ending it |
 | `ir/exp/yield.c` | `yieldGenNew`, `yieldGenOf`, `yieldSplitRegister`, `yieldTypeCheck` | the generators made, each with its `next`, its struct and its seams, numbered once the function is walked; a `yield` type checked against what `next` gives |
-| `ir/exp/await.c` | `awaitIsPath`, `awaitReReached`, `awaitOrder`, `awaitLeftCallMsg` | where a seam cuts inside a statement ("A seam"): what is a plain path, reached again after the seam; which operands that makes after the last one holding a seam; the refusal of what a call made |
+| `ir/exp/await.c` | `awaitIsPath`, `awaitReReached`, `awaitOrder`, `awaitChainLevels`, `awaitLeftCallMsg` | where a seam cuts inside a statement ("A seam"): what is a plain path, reached again after the seam; which operands that makes after the last one holding a seam; the refusal of what a call made |
 | | `awaitSplitOrReport`, `awaitReportUnbuilt`, `awaitRecordTraced` | the seams of a function flow accepted: a behaviour's split where each awaits a behaviour returning a value, or under `--await-direct` (numbered, each lock's guard marked `VarSeamHeld`, the function recorded for generation, `awaitSplitOf`), unless one stands where the split is not built (`awaitWalk`, `awaitReportIn`) or a seam's record would hold a traced reference; otherwise each reported not built with what it would end, give back, carry (in the order it would die) and leave |
 | | `loanNearApart`, `loanChosen`, `loanChosenPending`, `loanIndexedRefs`, `loanOrigin`, `loanMemory` | GPU targets: whether two paths' values point at different places; a choice reported at once, or pending on a holder; a run-time index of references refused; where each choice points, for the message |
 | `ir/stmt/module.c` | `modInitOf`, `modInitFlowBegin`, `modInitFlowEnd` | round a module's `init` only: its module's globals without a value start the pass uninitialized, as locals, so `init` assigns each once and reads none first; one never assigned is `ErrorGlobalUninit`. [module](../nodes/module.md), "Init and final" |
@@ -1804,7 +1829,7 @@ droppable noted as holding nothing is never finalized.
 | | `flowLendNote`, `flowLendWritable` | a borrow of a variable's own storage, or a raw pointer made of one, noted on it for generation's lending (`VarFlowLend`); whether a borrow's permission may write |
 | | `flowScopeDealias`, `flowVarRelease`, `flowScopeHandsBack` | build a scope's release list; skip an uninitialized, moved-out or handed-back variable; release a hollowed one hollow; one variable's release, whole or hollow, in a `DropFlagNode` where asked; whether a scope hands one of its variables back whole |
 | | `flowVarSetFlags`, `flowVarLogMark`, `flowVarPathTake`, `flowVarRollback`, `flowVarJoin` | the main walk's variable flags, logged so that an `if`'s arms are walked from one state and joined |
-| | `flowDropTracked`, `flowDropNote`, `flowDropOwner`, `flowLvalRootVar` | the drop gate: a tracked variable changed deeper than its declaration; the variable owning a binding's value; the local a store's target is part of |
+| | `flowDropTracked`, `flowDropTrackUninit`, `flowDropNote`, `flowDropOwner`, `flowLvalRootVar` | the drop gate: a tracked variable (any local declared without a value included) changed deeper than its declaration; the variable owning a binding's value; the local a store's target is part of |
 | | `flowStateInit`, `flowGateResultAsk`, `flowGateCallAsk`, `flowGateOperandAsk`, `flowGateIsOwnedLent`, `flowGateBoxedAsk`, `flowGateUse`, `flowGateCount`, `flowGatePrint` | the gate (§3, "The gate"): the questions its triggers ask out of line, the waiting operands' borrows, written or an owner's implicit lend, the `-V 2` tallies |
 | `ir/flowgate.h` | `flowGateHolder`, `flowGateAssigned`, `flowGateResult`, `flowGateCall`, `flowGateOperand` | the gate's triggers as inline tests, dismissing what cannot carry a borrow without a call |
 | `ir/itype.c` | `itypeCarriesBorrow` | may a value of this type hold a borrowed reference; a struct's answer remembered in `StructNode.carriesborrow` |

@@ -322,7 +322,7 @@ pub struct @opaque Array[T] {
 // gives each run as a slice until it answers None. 'pos' is the element the next
 // run starts at. With 'len' and 'split' (which cuts between runs, 'at' counted in
 // runs) it is a ParallelIterable, and 'parallel each' walks it with 'at'.
-pub struct ArrayChunks['a, T] {
+pub struct ArrayChunks['a, T] is Iterator[&Array[T]] {
   pub items &'a Array[T];
   pub size usize;
   pub pos usize;
@@ -346,8 +346,10 @@ pub struct ArrayChunks['a, T] {
 
   pub fn next(self &mut) Option[&'a Array[T]] {
     if pos >= items.len { return None[&Array[T]][]; }
-    imm c = self.at(0usize);
-    pos = pos + c.len;
+    imm left = items.len - pos;
+    imm count = if left < size { left; } else { size; };
+    imm c = mem.sliceFromParts[T]((items as *T) + pos, count);
+    pos = pos + count;
     Some[&Array[T]][c];
   }
 
@@ -376,7 +378,7 @@ pub struct ArrayChunks['a, T] {
 
 // A cursor over runs and their numbers, which 'indexed' gives: 'next' gives a tuple
 // of the run's number and the run
-pub struct ChunksIndexed['a, T] {
+pub struct ChunksIndexed['a, T] is Iterator[(usize, &Array[T])] {
   pub chunks ArrayChunks['a, T];
   pub index usize;
 
@@ -398,7 +400,7 @@ pub struct ChunksIndexed['a, T] {
 }
 
 // The same for changing: 'mutChunks' gives it, and each run is a '&mut' slice
-pub struct ArrayMutChunks['a, T] {
+pub struct ArrayMutChunks['a, T] is Iterator[&mut Array[T]] {
   pub items &'a mut Array[T];
   pub size usize;
   pub pos usize;
@@ -420,8 +422,10 @@ pub struct ArrayMutChunks['a, T] {
 
   pub fn next(self &mut) Option[&'a mut Array[T]] {
     if pos >= items.len { return None[&mut Array[T]][]; }
-    imm c = self.at(0usize);
-    pos = pos + c.len;
+    imm left = items.len - pos;
+    imm count = if left < size { left; } else { size; };
+    imm c = mem.sliceFromPartsMut[T]((items as *T) + pos, count);
+    pos = pos + count;
     Some[&mut Array[T]][c];
   }
 
@@ -442,7 +446,7 @@ pub struct ArrayMutChunks['a, T] {
   }
 }
 
-pub struct MutChunksIndexed['a, T] {
+pub struct MutChunksIndexed['a, T] is Iterator[(usize, &mut Array[T])] {
   pub chunks ArrayMutChunks['a, T];
   pub index usize;
 
@@ -465,7 +469,7 @@ pub struct MutChunksIndexed['a, T] {
 // A cursor over a slice's elements, which 'iter' gives: 'next' gives a borrow of
 // each in turn until it answers None. The elements may not change while it is used.
 // ('each' reads its two fields to walk the slice as a counted loop.)
-pub struct ArrayIter['a, T] {
+pub struct ArrayIter['a, T] is Iterator[&T] {
   pub items &'a Array[T];
   pub pos usize;
 
@@ -497,7 +501,7 @@ pub struct ArrayIter['a, T] {
 // A cursor over a slice's elements and their positions, which 'indexed' gives:
 // 'next' gives the position and a borrow of the element, as a tuple
 // ('each' reads its two fields to walk the slice as a counted loop.)
-pub struct ArrayIndexed['a, T] {
+pub struct ArrayIndexed['a, T] is Iterator[(usize, &T)] {
   pub items &'a Array[T];
   pub pos usize;
 
@@ -521,7 +525,7 @@ pub struct ArrayIndexed['a, T] {
 // A cursor over a slice's elements for changing them, which 'mutItems' gives: 'next'
 // gives a '&mut' of each in turn. ('each' reads its two fields to walk the slice as
 // a counted loop; 'parallel each' walks it by 'len' and 'at'.)
-pub struct ArrayMutItems['a, T] {
+pub struct ArrayMutItems['a, T] is Iterator[&mut T] {
   pub items &'a mut Array[T];
   pub pos usize;
 
@@ -547,7 +551,7 @@ pub struct ArrayMutItems['a, T] {
 // A cursor over a slice's elements and their positions for changing the elements,
 // which a mutable cursor's 'indexed' gives: 'next' gives the position and a '&mut'
 // of the element, as a tuple
-pub struct MutItemsIndexed['a, T] {
+pub struct MutItemsIndexed['a, T] is Iterator[(usize, &mut T)] {
   pub items &'a mut Array[T];
   pub pos usize;
 
@@ -569,7 +573,7 @@ pub struct MutItemsIndexed['a, T] {
 // Two sources walked side by side, which 'zip' gives: 'next' gives a tuple of
 // what each cursor gives, and answers None as soon as either runs out. When the
 // second runs out after the first has given a value, that value is dropped.
-pub struct Zip[A, B, I Iterator[A], J Iterator[B]] {
+pub struct Zip[A, B, I Iterator[A], J Iterator[B]] is Iterator[(A, B)] {
   first I;
   second J;
 
@@ -620,7 +624,7 @@ pub struct Zip[A, B, I Iterator[A], J Iterator[B]] {
 
 // A zip with the pairs numbered, which a zip's 'indexed' gives: 'next' gives a
 // tuple of the number and what each source gives
-pub struct ZipIndexed[A, B, I Iterator[A], J Iterator[B]] {
+pub struct ZipIndexed[A, B, I Iterator[A], J Iterator[B]] is Iterator[(usize, A, B)] {
   pub zip Zip[A, B, I, J];
   pub index usize;
 
@@ -648,7 +652,7 @@ pub struct ZipIndexed[A, B, I Iterator[A], J Iterator[B]] {
 // flat tuple of what each gives, and answers None as soon as any runs out. As a Zip
 // is, it is RandomAccess and ParallelIterable when ALL THREE sources are: its length
 // is the shortest's and it is cut at the same place in all three.
-pub struct Zip3[A, B, C, I Iterator[A], J Iterator[B], K Iterator[C]] {
+pub struct Zip3[A, B, C, I Iterator[A], J Iterator[B], K Iterator[C]] is Iterator[(A, B, C)] {
   first I;
   second J;
   third K;
@@ -701,7 +705,7 @@ pub struct Zip3[A, B, C, I Iterator[A], J Iterator[B], K Iterator[C]] {
 
 // A three-way zip with the triples numbered, which its 'indexed' gives: 'next' gives
 // a flat tuple of the number and what each of the three gives
-pub struct Zip3Indexed[A, B, C, I Iterator[A], J Iterator[B], K Iterator[C]] {
+pub struct Zip3Indexed[A, B, C, I Iterator[A], J Iterator[B], K Iterator[C]] is Iterator[(usize, A, B, C)] {
   pub zip Zip3[A, B, C, I, J, K];
   pub index usize;
 
@@ -882,7 +886,7 @@ fn strCharValue(b &Array[u8], i usize, width usize) char inline {
 // None past the last. A byte that is not part of well-formed UTF-8 reads as
 // U+FFFD, so every char it gives is valid. It borrows the text, which may not
 // change while the cursor is used.
-pub struct StrChars['a] {
+pub struct StrChars['a] is Iterator[char] {
   text &'a str;
   pos usize;
 
@@ -905,7 +909,7 @@ pub struct StrCharIndex {
 // A cursor over a text's code points, each with the byte index it starts at: the
 // positions a lexer reports, and a slice may begin or end at. Otherwise as
 // StrChars is.
-pub struct StrCharIndices['a] {
+pub struct StrCharIndices['a] is Iterator[StrCharIndex] {
   text &'a str;
   pos usize;
 
@@ -945,6 +949,231 @@ pub struct StrCharIndices['a] {
 pub trait Iterator[T] {
   // The next value, and None once there are no more
   pub fn next(self &mut) Option[T];
+
+  // THE ADAPTERS: the steps that work on a whole sequence, shared by every cursor
+  // that declares 'is Iterator[T]' (the collections' cursors, 'zip', a generator, and
+  // a struct of one's own that says so): 'xs.iter().map(x => *x * k).filter(y => *y > 9).sum()'.
+  // A step returns a cursor again and does no work until a terminal method walks the
+  // chain once and consumes it. Each step is a generic instance holding the cursor it
+  // wraps and a closure of its own type ('F fn(x T) U'), so a chain compiles to one
+  // loop with the closures' bodies inline and no call through a pointer for any item.
+  // A type that has 'next' but does not declare 'is Iterator[T]' still meets an
+  // Iterator bound, as it always did, and gets none of these.
+  //
+  // An item is whatever the cursor gives, so a cursor that lends ('xs.iter()', whose
+  // items are '&V') gives closures borrows: 'map(x => *x * 2)', 'filter(y => *y > 3)'
+  // (a filter's closure is given a borrow of the item, as a find's is: a borrow of a
+  // borrow here, which an operator reads through). A step that needs a number, 'sum',
+  // 'min' and 'max', is there where the items are numbers, so a lending cursor is
+  // mapped to values first: 'map(x => *x).sum()'. So is 'find' on one, which hands an
+  // item back: each step's 'next' has a signature that names no lifetime, so a borrow
+  // it answers is held to lend from the step, and cannot leave the function that
+  // walks the chain.
+
+  // The items through 'f': the closure is typed from the item and its result is the
+  // new item's type, 'xs.iter().map(x => *x * k)'
+  pub fn map[U, F fn(x T) U](self, f F) IterMap[T, U, Self, F] inline {
+    new IterMap[T, U, Self, F](self, f);
+  }
+
+  // The items 'f' answers true for. 'f' is given a borrow of the item
+  pub fn filter[F fn(x &T) bool](self, f F) IterFilter[T, Self, F] inline {
+    new IterFilter[T, Self, F](self, f);
+  }
+
+  // At most the first n items. n is any integer, a literal included. The method is
+  // generic in n's type so that a cursor declaring the trait does not need, to be
+  // made, the cursor of a cursor of a cursor without end: a generic method is made
+  // when called
+  pub fn take[N Integer](self, n N) IterTake[T, Self] inline {
+    new IterTake[T, Self](self, usize.from(n));
+  }
+
+  // The items after the first n (none when there are not more than n)
+  pub fn skip[N Integer](self, n N) IterSkip[T, Self] inline {
+    new IterSkip[T, Self](self, usize.from(n));
+  }
+
+  // The terminal methods walk the chain once, from where the cursor is, and leave it
+  // advanced (a cursor held in a variable carries on from there, as 'each' leaves it)
+
+  // 'init', then 'f' given the result so far and each item in turn
+  pub fn fold[A, F fn(acc A, x T) A](self &mut, init A, f F) A inline {
+    mut g = f;
+    mut acc = init;
+    while true {
+      match self.next() {
+        case imm e Some { acc = g(acc, e.value); }
+        case is None { break; }
+      }
+    }
+    acc;
+  }
+
+  // Whether 'f' is true of some item (false for none), stopping at the first
+  pub fn any[F fn(x T) bool](self &mut, f F) bool inline {
+    mut g = f;
+    while true {
+      match self.next() {
+        case imm e Some { if g(e.value) { return true; } }
+        case is None { break; }
+      }
+    }
+    false;
+  }
+
+  // Whether 'f' is true of every item (true for none), stopping at the first it is false of
+  pub fn all[F fn(x T) bool](self &mut, f F) bool inline {
+    mut g = f;
+    while true {
+      match self.next() {
+        case imm e Some { if !g(e.value) { return false; } }
+        case is None { break; }
+      }
+    }
+    true;
+  }
+
+  // How many items there are
+  pub fn count(self &mut) usize inline {
+    mut n = 0usize;
+    while true {
+      match self.next() {
+        case imm e Some { n = n + 1usize; }
+        case is None { break; }
+      }
+    }
+    n;
+  }
+
+  // The first item 'f' answers true for, or None. 'f' is given a borrow of the item
+  pub fn find[F fn(x &T) bool](self &mut, f F) Option[T] inline {
+    mut g = f;
+    while true {
+      match self.next() {
+        case imm e Some {
+          imm v = e.value;
+          if g(&v) { return Some[T][v]; }
+        }
+        case is None { break; }
+      }
+    }
+    None[T][];
+  }
+
+  // The total of number items (0 for none)
+  pub fn sum(self &mut) T inline where T is Integer or T is f32 or T is f64 {
+    mut s = T.from(0i32);
+    while true {
+      match self.next() {
+        case imm e Some { s = s + e.value; }
+        case is None { break; }
+      }
+    }
+    s;
+  }
+
+  // The smallest number item (the first of equals), or None for no items
+  pub fn min(self &mut) Option[T] inline where T is Integer or T is f32 or T is f64 {
+    match self.next() {
+      case is None { return None[T][]; }
+      case imm first Some {
+        mut best = first.value;
+        while true {
+          match self.next() {
+            case imm e Some {
+              imm v = e.value;
+              if v < best { best = v; }
+            }
+            case is None { break; }
+          }
+        }
+        return Some[T][best];
+      }
+    }
+  }
+
+  // The largest number item (the first of equals), or None for no items
+  pub fn max(self &mut) Option[T] inline where T is Integer or T is f32 or T is f64 {
+    match self.next() {
+      case is None { return None[T][]; }
+      case imm first Some {
+        mut best = first.value;
+        while true {
+          match self.next() {
+            case imm e Some {
+              imm v = e.value;
+              if v > best { best = v; }
+            }
+            case is None { break; }
+          }
+        }
+        return Some[T][best];
+      }
+    }
+  }
+}
+
+// The steps the adapters make: each holds the cursor it wraps and gives the Option
+// of what comes out, and is itself an Iterator, so a chain goes on. Not named in a
+// program.
+pub struct IterMap[T, U, I Iterator[T], F fn(x T) U] is Iterator[U] {
+  pub src I;
+  pub f F;
+
+  pub fn next(self &mut) Option[U] inline {
+    match src.next() {
+      case imm e Some { return Some[U][f(e.value)]; }
+      case is None { return None[U][]; }
+    }
+  }
+}
+
+pub struct IterFilter[T, I Iterator[T], F fn(x &T) bool] is Iterator[T] {
+  pub src I;
+  pub f F;
+
+  pub fn next(self &mut) Option[T] inline {
+    while true {
+      match src.next() {
+        case imm e Some {
+          imm v = e.value;
+          if f(&v) { return Some[T][v]; }
+        }
+        case is None { return None[T][]; }
+      }
+    }
+    None[T][];
+  }
+}
+
+// The first 'left' items, then None
+pub struct IterTake[T, I Iterator[T]] is Iterator[T] {
+  pub src I;
+  pub left usize;
+
+  pub fn next(self &mut) Option[T] inline {
+    if left == 0usize { return None[T][]; }
+    left = left - 1usize;
+    src.next();
+  }
+}
+
+// All but the first 'toSkip' items: the skipped are taken (and dropped) on the first call
+pub struct IterSkip[T, I Iterator[T]] is Iterator[T] {
+  pub src I;
+  pub toSkip usize;
+
+  pub fn next(self &mut) Option[T] inline {
+    while toSkip > 0usize {
+      toSkip = toSkip - 1usize;
+      match src.next() {
+        case imm e Some { }
+        case is None { toSkip = 0usize; return None[T][]; }
+      }
+    }
+    src.next();
+  }
 }
 
 // Something that gives a cursor over what it holds, without being consumed

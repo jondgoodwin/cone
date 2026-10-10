@@ -219,8 +219,9 @@ joined after it: a move in one arm of an `if` is not seen by the other, and
 counts as a move after the `if`; "initialized on one branch" reads as
 initialized after it. What the walk in source order cannot see — a loop's
 earlier pass, and a variable given a value on one branch only — the path walk
-refuses for a variable that moves or has anything to do as it dies, where it
-runs ([Flow Analysis](../phases/flow.md), "Drop flags").
+refuses for a variable that moves or has anything to do as it dies, and for
+any local declared without a value (a number, a borrowed reference, a raw
+pointer), where it runs ([Flow Analysis](../phases/flow.md), "Drop flags").
 
 A name use a value moves out of, or out through, carries `FlagMoveOut` or
 `FlagHollowOut`, set by `flowMoveSource`: generation updates the variable's

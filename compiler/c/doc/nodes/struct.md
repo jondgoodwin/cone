@@ -358,7 +358,16 @@ pins it.
 
 ⚠ **A generic method costs a trait its virtual reference, and `structMakeVtable`
 is where that is said.** A vtable slot holds one machine signature and a generic
-method has one per instantiation, so no slot can be filled from it. The slot is
+method has one per instantiation, so no slot can be filled from it. This is a
+generic method that is *required*: a generic **default** (one with a body), a default
+with a `where` clause and an `inline` default are no slot (`structMakeVtable` passes
+them by), since each is cloned into the types that declare the trait and reached
+through them, and none has a symbol for a slot to point at or exists for every
+implementer. A trait's own check passes a generic default by too (`structCheckMembers`):
+its signature, which may name `Self` in a type held by value (`Step[T, Self]`), is made
+for each type that declares the trait, where `Self` is that type and no longer the trait;
+the structural fit of a bound passes the defaults by (`structMatches`), so a type with
+the required methods fits and gets the defaults only with `is`. The slot is
 counted anyway, which leaves a requirement no type satisfies and every coercion
 to `&<Trait` refused: `structMapVtableImpl` fails on it without comparing
 signatures, which are written in type parameters rather than types; `ErrorGenericVtable` names the method at its declaration in
@@ -629,7 +638,8 @@ inherited member bare, exactly as it names the type's own.
 1. Return at once if the type is already resolved or under way — it may have
    been reached by demand before the module's walk got to it — and mark it
    `NameResolving`.
-1a. **An enum gets its `==` and `!=`** (`structEnumAddEquality`). Entered in the
+1a. **An enum gets its `==`, and its `!=` where every variant is empty**
+   (`structEnumAddEquality`). Entered in the
    namespace and *not* in `nodelist`, because this is the enum's own comparison and
    not a requirement on its variants: a vtable slot, a conformance requirement and a
    default cloned into every variant are all read off `nodelist`. Added here rather
@@ -962,6 +972,28 @@ members", is the mechanism.
    value is laid out before this: a type holding it while one of its variants
    is in flight is refused as a cycle (`ErrorNoSize`), so every holder's own
    drop sees the enum's.
+   **So is its `==`, where its variants carry fields** (`structSetEnumEqFn`, right
+   after the drop). A variant *carries fields* when it holds anything beyond the
+   discriminant, the fields its enum has in common included
+   (`structVariantCarriesFields`). The enum is given `-eq` when its namespace's
+   `==` is the declared-and-refused one (`NoEqIntrinsic`, step 1a) and every variant
+   that carries fields declares a `==` in its own namespace
+   (`structEnumVariantWithoutEq` finds the first that does not, which is why there is
+   none). `-eq` is a static function of two read-only references to the enum, public
+   and owned by it, as `-drop` is, and its body is built in IR, already resolved,
+   the way a program would write it: for each variant in order, `if l is &V { return
+   r is &V and (l as &V) == (r as &V); }`, the comparison left out for a variant that
+   carries nothing, and `return false` last. The narrowing is a recast and not a
+   pattern, because a pattern refuses to narrow a `ro` reference (`castSumInterior`:
+   another reference might change the variant while the narrowed one is used), and
+   nothing can here, the body holding nothing but reads. References, so that an
+   enum which moves is compared where it lies. The variant's `==` is called through
+   the ordinary comparison of references, so a `==` taking its operands by value
+   and one taking them by reference are both found, and one of the wrong shape is
+   reported on the variant's own `==`, where the call is positioned.
+   Unlike `-drop` it is *type checked as any function is* (no `TypeChecked` from
+   birth), by the members walk of the enum, or on demand by the first call
+   (`fnCallDemandCandidates`).
 
 Steps 9 to 11 are `structCheckMembers`, run from the members queue:
 
@@ -1969,11 +2001,17 @@ and `extractvalue`, and `vtblidx` for vtable slots.
 - **`structAddField` drops a duplicate-named field from `fields`** while the
   parser has already assigned indices, so positional literals shift.
 - **An enum's equality is declared even where it cannot be given.** Where a variant
-  carries fields, comparing two values would have to compare those fields, and Cone
-  has no structural comparison for a struct of any kind. The method is entered
-  anyway, carrying `NoEqIntrinsic`, and `fnCallLowerMethod` refuses the call with
-  `ErrorEnumEquality` — so the author is told why instead of reading the absence of
-  `==` as an oversight. Nothing generates that intrinsic.
+  carries fields, the comparison is the tags and then the variant's own `==`, and an
+  enum with a variant that carries fields and declares none cannot be compared. Its
+  `==` is entered anyway, carrying `NoEqIntrinsic`, and `fnCallLowerMethod` hands
+  the call to `fnCallLowerEnumEq`, which makes it a call of the enum's `-eq`
+  (`structSetEnumEqFn`) or refuses it with `ErrorEnumEquality` naming the first
+  variant with no `==` and what it carries — so the author is told why instead of
+  reading the absence of `==` as an oversight. Nothing generates that intrinsic.
+  Only the `==` is declared there: the `!=` is derived from it, as any type's is
+  (`fnCallNeFromEq`), where a payload-free enum declares both. An instance of a
+  generic enum is cloned without the template's `==`, which sits in the namespace
+  alone, so it declares its own as it is type checked (`structTypeCheck`).
 
 ## What lives elsewhere
 

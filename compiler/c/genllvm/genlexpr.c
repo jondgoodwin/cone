@@ -2028,8 +2028,10 @@ static LLVMValueRef genlSubslice(GenState *gen, FnCallNode *fncall) {
         base = LLVMBuildExtractValue(gen->builder, arrref, 0, "sliceptr");
         elemtype = genlPointeeType(gen, objtype);
     }
-    LLVMValueRef start = genlExpr(gen, nodesGet(fncall->args, 0));
-    LLVMValueRef end = fncall->args->used > 1 ? genlExpr(gen, nodesGet(fncall->args, 1)) : count;
+    // The bounds were made first where one holds a seam (genlPlacePre)
+    LLVMValueRef *pre = gen->seams ? genlPreOf(gen, (INode *)fncall) : NULL;
+    LLVMValueRef start = pre ? pre[0] : genlExpr(gen, nodesGet(fncall->args, 0));
+    LLVMValueRef end = fncall->args->used > 1 ? (pre ? pre[1] : genlExpr(gen, nodesGet(fncall->args, 1))) : count;
     if (fncall->flags & FlagRangeIncl)
         end = LLVMBuildAdd(gen->builder, end, LLVMConstInt(genlUsize(gen), 1, 0), "rangeend");
 
@@ -2087,7 +2089,23 @@ static int genlIsNullablePtrField(FnCallNode *fncall) {
 }
 
 // Generate an lval-ish pointer to the value (vs. load)
+static LLVMValueRef genlAddrIn(GenState *gen, INode *lval);
+
 LLVMValueRef genlAddr(GenState *gen, INode *lval) {
+    // A place indexed through a seam: its indexes are made first, across the
+    // seams, and the place is reached after them (genlPlacePre)
+    if (genlNeedsPre(gen, lval)) {
+        Nodes *places = newNodes(1);
+        nodesAdd(&places, lval);
+        uint32_t mark = genlPlacePre(gen, places);
+        LLVMValueRef addr = genlAddrIn(gen, lval);
+        genlPlacePreEnd(gen, mark);
+        return addr;
+    }
+    return genlAddrIn(gen, lval);
+}
+
+static LLVMValueRef genlAddrIn(GenState *gen, INode *lval) {
     // A name may refer to a variable's storage or to a generated function.
     // There is no FnDclTag case below. A name bound to a function is a name use
     // of the FnDclNode (nameUseNameRes), and an anonymous function is lifted to
@@ -2119,18 +2137,7 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
         // An index holding a seam is made first, and the place it indexes,
         // a plain path, is reached after the seam (awaitIsPath; flow's
         // pwPlace walks it in this order)
-        LLVMValueRef *pre = NULL;
-        if (gen->seams) {
-            INode **argp;
-            uint32_t cnt;
-            for (nodesFor(fncall->args, cnt, argp)) {
-                if (awaitWithin(*argp)) {
-                    pre = (LLVMValueRef *)memAllocBlk(fncall->args->used * sizeof(LLVMValueRef));
-                    genlExprsAcross(gen, fncall->args, pre);
-                    break;
-                }
-            }
-        }
+        LLVMValueRef *pre = gen->seams ? genlPreOf(gen, lval) : NULL;
         switch (objtype->tag) {
         case ArrayTag: {
             return genlArrayIndex(gen, fncall, (ArrayNode*)objtype, genlAddr(gen, fncall->objfn), pre);
@@ -2728,8 +2735,18 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
         FnCallNode *fncall = (FnCallNode *)termnode;
         if (fncall->objfn->tag == BorrowTag)
             fncall->objfn = ((RefNode *)fncall->objfn)->vtexp;
-        if (termnode->flags & FlagRange)
+        if (termnode->flags & FlagRange) {
+            // Its bounds holding a seam are made before the array or slice is reached
+            if (genlNeedsPre(gen, termnode)) {
+                Nodes *places = newNodes(1);
+                nodesAdd(&places, termnode);
+                uint32_t mark = genlPlacePre(gen, places);
+                LLVMValueRef slice = genlSubslice(gen, fncall);
+                genlPlacePreEnd(gen, mark);
+                return slice;
+            }
             return genlSubslice(gen, fncall);
+        }
         return genlAddr(gen, termnode);
     }
     case FldAccessTag:
@@ -2783,7 +2800,18 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
         // The right side holding a seam reaches its place first, and the
         // left, a plain path, after the seam (awaitWalk; flow's pwSwap)
         LLVMValueRef lvalptr, rvalptr;
-        if (gen->seams && awaitWithin(rval) && !awaitWithin(lval)) {
+        // Both holding one, the indexes of both are made first, the left
+        // side's before the right's, and then both places are reached
+        if (gen->seams && awaitWithin(rval) && awaitWithin(lval)) {
+            Nodes *sides = newNodes(2);
+            nodesAdd(&sides, lval);
+            nodesAdd(&sides, rval);
+            uint32_t mark = genlPlacePre(gen, sides);
+            lvalptr = genlAddr(gen, lval);
+            rvalptr = genlAddr(gen, rval);
+            genlPlacePreEnd(gen, mark);
+        }
+        else if (gen->seams && awaitWithin(rval) && !awaitWithin(lval)) {
             rvalptr = genlAddr(gen, rval);
             lvalptr = genlAddr(gen, lval);
         }
@@ -2850,9 +2878,23 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
             INode **nodesp;
             uint32_t cnt;
             int index = 0;
+            // A seam in the places: the value is made first and waits in flight
+            // across them, the indexes of every place are made next, in the
+            // order written, and the places are reached after the last seam
+            uint32_t flightmark = gen->flightcnt;
+            LLVMValueRef kept = NULL;
+            uint32_t premark = gen->precnt;
+            int early = gen->seams && awaitWithin(lval);
+            if (early) {
+                kept = genlKeepAcross(gen, rval, ((IExpNode *)rval)->vtype, valueref);
+                premark = genlPlacePre(gen, ltuple->elems);
+                valueref = genlKeptAcross(gen, kept, valueref, flightmark);
+            }
             for (nodesFor(ltuple->elems, cnt, nodesp)) {
                 genlStore(gen, *nodesp, LLVMBuildExtractValue(gen->builder, valueref, index++, ""));
             }
+            if (early)
+                genlPlacePreEnd(gen, premark);
         }
         return valueref;
     }

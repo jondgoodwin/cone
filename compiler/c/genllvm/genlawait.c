@@ -136,6 +136,78 @@ LLVMValueRef genlKeptAcross(GenState *gen, LLVMValueRef slot, LLVMValueRef val, 
     return slot ? LLVMBuildLoad2(gen->builder, LLVMGetAllocatedType(slot), slot, "inflight") : val;
 }
 
+// ---- The indexes of a place, made before the place is reached ---------------
+
+typedef struct GenPre {
+    INode *index;           // An ArrIndex node
+    LLVMValueRef *vals;     // The values of its arguments
+} GenPre;
+
+LLVMValueRef *genlPreOf(GenState *gen, INode *index) {
+    for (uint32_t i = gen->precnt; i > 0; --i) {
+        if (gen->pres[i - 1].index == index)
+            return gen->pres[i - 1].vals;
+    }
+    return NULL;
+}
+
+int genlNeedsPre(GenState *gen, INode *place) {
+    if (gen->seams == NULL || place->tag != ArrIndexTag || genlPreOf(gen, place))
+        return 0;
+    int rootseam;
+    return awaitChainLevels(place, &rootseam) != NULL && !rootseam;
+}
+
+uint32_t genlPlacePre(GenState *gen, Nodes *places) {
+    uint32_t mark = gen->precnt;
+    // Every argument of the indexes concerned, one list, in the order written
+    // and made as a call's arguments are
+    Nodes *flat = newNodes(8);
+    Nodes *levels = newNodes(8);
+    INode **placep;
+    uint32_t pcnt;
+    for (nodesFor(places, pcnt, placep)) {
+        int rootseam;
+        Nodes *chain = awaitChainLevels(*placep, &rootseam);
+        if (chain == NULL || rootseam)
+            continue;
+        INode **levelp;
+        uint32_t lcnt;
+        for (nodesFor(chain, lcnt, levelp)) {
+            nodesAdd(&levels, *levelp);
+            INode **argp;
+            uint32_t acnt;
+            for (nodesFor(((FnCallNode *)*levelp)->args, acnt, argp))
+                nodesAdd(&flat, *argp);
+        }
+    }
+    if (flat->used == 0)
+        return mark;
+    LLVMValueRef *vals = (LLVMValueRef *)memAllocBlk(flat->used * sizeof(LLVMValueRef));
+    genlExprsAcross(gen, flat, vals);
+    uint32_t at = 0;
+    INode **levelp;
+    uint32_t lcnt;
+    for (nodesFor(levels, lcnt, levelp)) {
+        if (gen->precnt == gen->premax) {
+            uint32_t newmax = gen->premax ? gen->premax * 2 : 16;
+            GenPre *grown = (GenPre *)memAllocBlk(newmax * sizeof(GenPre));
+            if (gen->precnt)
+                memcpy(grown, gen->pres, gen->precnt * sizeof(GenPre));
+            gen->pres = grown;
+            gen->premax = newmax;
+        }
+        gen->pres[gen->precnt].index = *levelp;
+        gen->pres[gen->precnt++].vals = &vals[at];
+        at += ((FnCallNode *)*levelp)->args->used;
+    }
+    return mark;
+}
+
+void genlPlacePreEnd(GenState *gen, uint32_t mark) {
+    gen->precnt = mark;
+}
+
 // ---- Lock guards a seam gives back -------------------------------------------
 
 LLVMValueRef genlHeldBegin(GenState *gen) {
@@ -260,10 +332,11 @@ static LLVMValueRef genlSeamFn(GenState *gen, char *symbol, LLVMTypeRef fntype, 
     genlComdat(gen, fn);
     if (!gen->opt->release) {
         char *fnname = &gen->fndcl->namesym->namestr;
-        LLVMMetadataRef ditype = LLVMDIBuilderCreateSubroutineType(gen->dibuilder, gen->difile, NULL, 0, 0);
-        LLVMMetadataRef sp = LLVMDIBuilderCreateFunction(gen->dibuilder, gen->difile,
+        LLVMMetadataRef difile = genlDiFile(gen, (INode*)node);
+        LLVMMetadataRef ditype = LLVMDIBuilderCreateSubroutineType(gen->dibuilder, difile, NULL, 0, 0);
+        LLVMMetadataRef sp = LLVMDIBuilderCreateFunction(gen->dibuilder, difile,
             fnname, strlen(fnname), symbol, strlen(symbol),
-            gen->difile, node->linenbr, ditype, 1, 1, node->linenbr, LLVMDIFlagPrivate, 0);
+            difile, node->linenbr, ditype, 1, 1, node->linenbr, LLVMDIFlagPrivate, 0);
         LLVMSetSubprogram(fn, sp);
     }
     return fn;

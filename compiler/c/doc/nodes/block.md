@@ -211,7 +211,10 @@ untyped literal, so that the other takes its type, `parallelEachBoundType`). The
 source must be a number range of whole numbers no wider than a usize, an array,
 a slice, a type that lends an array, or core's `ArrayChunks` / `ArrayMutChunks`
 (below); anything else (a cursor, a type with its
-own `len` and `split`) is refused with the reason (`ErrorParSource`), as is a
+own `len` and `split`) is refused with the reason (`ErrorParSource`; an adapter
+step of core's, `IterMap`, `IterFilter`, `IterTake` or `IterSkip`, gets a message that
+names the chain and says to move its work into the loop's header and `yield`,
+`parSourceError`), as is a
 module that does not import `actors`, whose `parallelEach` runs the loop, and a
 generator (`ErrorParRuntime`). Written directly in an actor's behaviour (and not in
 another parallel each's body: `parInBody`, per function), the loop is followed by
@@ -426,8 +429,10 @@ The last statement splits:
   knows a path ends at a `return`, and generation ends this one with
   `unreachable` ([return](return.md)).
 - **Regular block ending in a jump**: checked, nothing injected.
-- **Anything else** (empty, or ending in a declaration): `blockret nil` is
-  appended, and it is a value path.
+- **Anything else** (empty, or ending in a declaration or a type name): `blockret
+  nil` is appended, and it is a value path. The `nil` takes the position of the
+  last statement (of the block, when it is empty), so a refusal of the value it
+  stands for points at the source.
 
 Then every registered break is folded in — except for the function's own body
 block, where `returnTypeCheck` already coerced returns against the signature.

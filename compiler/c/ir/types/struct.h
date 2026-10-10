@@ -307,6 +307,18 @@ void structSetTagWidth(StructNode *node);
 void structSetEnumDropFn(StructNode *node);
 int structIsGeneratedDropFn(INode *fn);
 
+// Give an enum whose variants are laid out and carry fields the comparison its
+// '==' calls, when each of those variants declares a '==': a static function of
+// two references to the enum, comparing the tags and then the variant's own '=='.
+// structEnumEqFn is that function, or NULL; structEnumVariantWithoutEq is the
+// first variant that carries fields and declares no '==' (which is why there is
+// none), or NULL; structVariantCarriesFields says whether a variant holds
+// anything beyond its discriminant
+void structSetEnumEqFn(StructNode *node);
+FnDclNode *structEnumEqFn(StructNode *node);
+StructNode *structEnumVariantWithoutEq(StructNode *node);
+int structVariantCarriesFields(StructNode *variant);
+
 // Type check an instance of a generic enum whose variants are already listed,
 // leaving its discriminant's width to the caller
 void structTypeCheckEnumInstance(TypeCheckState *pstate, StructNode *instance);

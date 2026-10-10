@@ -3,15 +3,15 @@
 // at the 'await'. (An 'await' in a synchronous 'fn' of the actor is refused
 // where it stands, at type check: concurrency_await_place.) Where an 'await'
 // cuts inside an expression the rest of the statement runs after the seam
-// (concurrency_await_expr), with these left:
+// (concurrency_await_expr, and concurrency_await_places for a place indexed
+// more than once, both sides of a swap, a slice's bounds, a parallel
+// assignment's places and the entries of a '<-'), with these left:
 //
 // - an 'await' in the index of a place whose base holds an 'await' of its
-//   own: the index is made first, and the base's seam would come after it;
-// - an 'await' in both places a swap exchanges;
-// - an 'await' in a slice's bounds, '&items[await f()..3]';
-// - an 'await' in the places of a parallel assignment;
-// - an 'await' among the entries one '<-' appends: the receiver is borrowed
-//   once for all of them, and that borrow would be held across the seam;
+//   own that no index made: the base is an expression, made after the index;
+// - an 'await' among the entries one '<-' appends that repeat a value, fill or
+//   loop: the receiver is borrowed once for all of them, and the value is made
+//   again for each, past the seam;
 // - an 'await' in an array's contents that repeat a value past the copies
 //   written out (ArrayRepeatUnroll, 16), which are filled in memory in a loop,
 //   the value made once for each element. (Sixteen or fewer are each a copy
@@ -25,7 +25,12 @@ mod concurrency_await_unsplit;
 import actors;
 import collections use List;
 
+struct Box {
+  pub items Array[u64, 4];
+}
+
 fn give() u64 {1u64;}
+fn box() Box {new Box([1u64, 2u64, 3u64, 4u64]);}
 
 actor Page {
   body u64;
@@ -34,31 +39,17 @@ actor Page {
   pub async do message(self) {
     body = await give() + 1u64;
     items[await give()] = 7u64;
+    body = items[await give()] + items[await give()];
+    items[await give()] <=> items[await give()];
   }
 
-  pub async do twice(self) {
-    imm m = [[1u64, 2u64], [3u64, 4u64]];
-    body = m[await give()][await give()];  //~ ErrorUnbuiltAwait "it stands in the index of a place whose base holds an 'await' too"
+  pub async do based(self) {
+    body = (await box()).items[await give()];  //~ ErrorUnbuiltAwait "it stands in the index of a place whose base holds an 'await' too"
   }
 
-  pub async do swapped(self) {
-    items[await give()] <=> items[await give()];  //~ ErrorUnbuiltAwait "it stands in both places a swap exchanges"
-                                                  //~^ ErrorUnbuiltAwait "it stands in both places a swap exchanges"
-  }
-
-  pub async do sliced(self) {
-    imm s = &items[await give()..3u64];  //~ ErrorUnbuiltAwait "it stands in the bounds of a slice taken of an array or a slice"
-    body = s[0];
-  }
-
-  pub async do parallel(self) {
-    mut a = 0u64;
-    (a, items[await give()]) = (1u64, 2u64);  //~ ErrorUnbuiltAwait "it stands in the places a parallel assignment stores into"
-  }
-
-  pub async do appended(self) {
+  pub async do repeated(self) {
     mut v = List[u64].empty();
-    v <- (1u64, await give(), 3u64);  //~ ErrorUnbuiltAwait "it stands among the entries a '<-' appends"
+    v <- 3 of await give();  //~ ErrorUnbuiltAwait "it stands among the entries a '<-' appends, whose receiver is borrowed once for all of them and would be held across the seam"
     body = v.len();
   }
 

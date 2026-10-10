@@ -1,0 +1,274 @@
+// '==' and '!=' on an enum whose variants carry fields. Two values are equal
+// when they hold the same variant and that variant's own '==' says their payloads
+// are equal; a variant carrying nothing is equal to another of its kind by its
+// tag alone. '!=' is the negation of that.
+//
+// Everything is printed, because a comparison that compiles is not a comparison
+// that asked the right question. Each value below is checked by hand against
+// enum_payload_equality.out, which says which of the four questions a
+// comparison asked: same variant and same payload, same variant and a payload
+// that differs, a different variant, and a variant with no payload.
+//
+// A value of the enum, not of a variant, is what is compared, so each enum has
+// functions that build one as the enum.
+//
+// That an enum with a variant that declares no '==' refuses the comparison is in
+// enum_typecheck_payload_eq.
+
+mod enum_payload_equality;
+
+import stdio use *;
+
+fn show(label &str, b bool) {
+  printStr(label);
+  printStr(" = ");
+  printInt(if b {1;} else {0;});
+  printStr("\n");
+}
+
+// A variant's '==' is written as any struct's is: taking its operands by value,
+// or by reference. Both are called with the narrowed references.
+enum Shape {
+  pub struct Circle {
+    pub radius i32;
+    pub fn `==`(self, other Circle) bool { radius == other.radius; }
+  }
+  pub struct Rect {
+    pub w i32;
+    pub h i32;
+    pub fn `==`(self &, other &Rect) bool { w == other.w and h == other.h; }
+  }
+  pub struct Dot {}
+}
+
+fn circle(r i32) Shape { Shape.Circle[r]; }
+fn rect(w i32, h i32) Shape { Shape.Rect[w, h]; }
+fn dot() Shape { Shape.Dot[]; }
+
+// One variant carries nothing and the other does: the empty one is equal by its
+// tag, and the other needs a '==' of its own
+enum Mixed {
+  struct Empty {}
+  struct Full {
+    pub a i32;
+    pub fn `==`(self, other Full) bool { a == other.a; }
+  }
+}
+
+fn empty() Mixed { Mixed.Empty[]; }
+fn full(a i32) Mixed { Mixed.Full[a]; }
+
+// A payload that is itself an enum: Wrap's '==' compares its two inner shapes
+// with the enum's own '=='
+enum Holder {
+  pub struct Wrap {
+    pub inner Shape;
+    pub fn `==`(self &, other &Wrap) bool { inner == other.inner; }
+  }
+  pub struct Bare {}
+}
+
+fn wrap(s Shape) Holder { Holder.Wrap[s]; }
+fn bare() Holder { Holder.Bare[]; }
+
+// A field every variant has is part of the value, so every variant carries
+// fields, even one that declares none of its own: Tick is equal to another Tick
+// only if its '==' says so, and compares the time
+enum Event {
+  pub time i32;
+  pub struct Tick {
+    pub fn `==`(self &, other &Tick) bool { time == other.time; }
+  }
+  pub struct Key {
+    pub code i32;
+    pub fn `==`(self &, other &Key) bool { time == other.time and code == other.code; }
+  }
+}
+
+fn tick(t i32) Event { Event.Tick[t]; }
+fn key(t i32, c i32) Event { Event.Key[t, c]; }
+
+// A generic enum: its instance compares as any other does
+enum Maybe[T] {
+  struct Nothing {}
+  struct Just {
+    pub v T;
+    pub fn `==`(self &, other &Just) bool { v == other.v; }
+  }
+}
+
+fn just(v i32) Maybe[i32] { Maybe.Just[v]; }
+fn nothing() Maybe[i32] { Maybe.Nothing[i32][]; }
+
+// A variant with a finalizer moves, and so does its enum. Comparing two of them
+// borrows them where they lie, so both are still there afterwards
+enum Handle {
+  struct Open {
+    pub id i32;
+    pub fn `==`(self &, other &Open) bool { id == other.id; }
+    fn final(self &uni) { }
+  }
+  struct Shut {}
+}
+
+fn open(id i32) Handle { Handle.Open[id]; }
+fn shut() Handle { Handle.Shut[]; }
+
+// A layout without a tag: the one variant holds a reference and the other nothing,
+// so a null reference is the empty variant. The tests that tell the variants apart
+// are the layout's, and the comparison is written the same
+enum Slot {
+  struct Vacant {}
+  struct Held {
+    pub p &i32;
+    pub fn `==`(self, other Held) bool { *p == *other.p; }
+  }
+}
+
+fn held(p &i32) Slot { Slot.Held[p]; }
+fn vacant() Slot { Slot.Vacant[]; }
+
+// A '==' that is not pub is the module's: the comparison is written in the module
+// that declares the enum, so it reaches it
+enum Private {
+  struct Yes {
+    pub x i32;
+    fn `==`(self, other Yes) bool { x == other.x; }
+  }
+  struct No {}
+}
+
+fn yes(x i32) Private { Private.Yes[x]; }
+
+// An extension has copies of its base's variants, and its own comparison over
+// them and the variants it adds. A copy's '==' names its own type as 'Self',
+// since a bare variant name in a method means the base's
+enum Base {
+  struct Pa {
+    pub x i32;
+    pub fn `==`(self, other Self) bool { x == other.x; }
+  }
+  struct Qa {}
+}
+
+enum Extended extends Base {
+  struct Ra {
+    pub y i32;
+    pub fn `==`(self, other Ra) bool { y == other.y; }
+  }
+}
+
+fn pa(x i32) Extended { Extended.Pa[x]; }
+fn ra(y i32) Extended { Extended.Ra[y]; }
+fn qa() Extended { Extended.Qa[]; }
+
+fn sameShape(a Shape, b Shape) bool { a == b; }
+
+fn main() {
+  // -------- one enum, every kind of pair --------
+
+  // Same variant, equal payloads
+  show("circle-same-payload", circle(3) == circle(3));
+  show("rect-same-payload", rect(2, 5) == rect(2, 5));
+  // Same variant, a payload that differs: in the first field, and in the second
+  show("circle-other-payload", circle(3) == circle(4));
+  show("rect-other-first", rect(2, 5) == rect(3, 5));
+  show("rect-other-second", rect(2, 5) == rect(2, 6));
+  // Different variants, in both orders, and against the empty one
+  show("circle-vs-rect", circle(3) == rect(3, 3));
+  show("rect-vs-circle", rect(3, 3) == circle(3));
+  show("dot-vs-circle", dot() == circle(0));
+  show("circle-vs-dot", circle(0) == dot());
+  // The empty variant is equal to itself by its tag
+  show("dot-same", dot() == dot());
+  // '!=' is the negation of each
+  show("circle-same-ne", circle(3) != circle(3));
+  show("circle-other-ne", circle(3) != circle(4));
+  show("circle-vs-rect-ne", circle(3) != rect(3, 3));
+  show("dot-same-ne", dot() != dot());
+  show("dot-vs-rect-ne", dot() != rect(1, 1));
+
+  // -------- operands: variables, calls and references --------
+
+  imm a Shape = circle(7);
+  mut b Shape = circle(7);
+  show("variables-equal", a == b);
+  b = rect(7, 7);
+  show("variable-assigned-unequal", a == b);
+  show("variable-assigned-ne", a != b);
+  show("parameters", sameShape(circle(1), circle(1)));
+  show("parameters-unequal", sameShape(circle(1), dot()));
+  show("compared-twice", a == a and a == circle(7));
+  imm refa &Shape = &a;
+  imm refb &Shape = &b;
+  show("references-unequal", refa == refb);
+  show("references-equal", refa == refa);
+  show("references-ne", refa != refb);
+
+  // -------- a mix of variants that carry fields and one that does not --------
+
+  show("mixed-empty", empty() == empty());
+  show("mixed-full-same", full(4) == full(4));
+  show("mixed-full-other", full(4) == full(5));
+  show("mixed-empty-vs-full", empty() == full(0));
+
+  // -------- a payload that is itself an enum --------
+
+  show("nested-same", wrap(circle(2)) == wrap(circle(2)));
+  show("nested-other-payload", wrap(circle(2)) == wrap(circle(3)));
+  show("nested-other-variant", wrap(circle(2)) == wrap(dot()));
+  show("nested-bare", bare() == bare());
+  show("nested-vs-bare", wrap(dot()) == bare());
+
+  // -------- a field the enum's variants have in common --------
+
+  show("event-tick-same-time", tick(9) == tick(9));
+  show("event-tick-other-time", tick(9) == tick(10));
+  show("event-key-same", key(1, 65) == key(1, 65));
+  show("event-key-other-code", key(1, 65) == key(1, 66));
+  show("event-key-other-time", key(1, 65) == key(2, 65));
+  show("event-tick-vs-key", tick(1) == key(1, 1));
+
+  // -------- a generic enum --------
+
+  show("maybe-same", just(5) == just(5));
+  show("maybe-other", just(5) == just(6));
+  show("maybe-nothing", nothing() == nothing());
+  show("maybe-nothing-vs-just", nothing() != just(5));
+
+  // -------- an enum that moves --------
+
+  imm h1 Handle = open(3);
+  imm h2 Handle = open(3);
+  imm h3 Handle = shut();
+  show("move-equal", h1 == h2);
+  show("move-unequal", h1 == h3);
+  show("move-still-there", h1 == h2 and h2 != h3);
+
+  // -------- a layout with no tag, a private '==', an extension --------
+
+  imm n = 5;
+  imm m = 5;
+  imm o = 6;
+  show("tagless-same", held(&n) == held(&m));
+  show("tagless-other", held(&n) == held(&o));
+  show("tagless-vacant", vacant() == vacant());
+  show("tagless-vacant-vs-held", vacant() == held(&n));
+  show("private-same", yes(1) == yes(1));
+  show("private-other-ne", yes(1) != yes(2));
+  show("extended-copy-same", pa(1) == pa(1));
+  show("extended-copy-other", pa(1) == pa(2));
+  show("extended-added-same", ra(1) == ra(1));
+  show("extended-added-other", ra(1) == ra(2));
+  show("extended-copy-empty", qa() == qa());
+  show("extended-copy-vs-added", pa(1) == ra(1));
+
+  // -------- slices: each element by the enum's '==' --------
+
+  imm xs Array[Shape, 2] = [circle(1), dot()];
+  imm ys Array[Shape, 2] = [circle(1), dot()];
+  imm zs Array[Shape, 2] = [circle(1), circle(2)];
+  show("slices-equal", &[]xs == &[]ys);
+  show("slices-unequal", &[]xs == &[]zs);
+  show("slices-ne", &[]xs != &[]zs);
+}
