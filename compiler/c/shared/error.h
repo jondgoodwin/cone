@@ -620,9 +620,12 @@ enum ErrorCode {
     // A string literal where a cstr is wanted (ir/exp/literal.c)
     ErrorCStrNul = 1408,        // A string literal holding a NUL byte ('"ab\x00cd"') where a cstr is wanted: C would read it as 'ab', cutting the text short
 
+    // A value stored in itself (ir/flowpath.c, pwStoreEscapes)
+    ErrorSelfStore = 1409,      // A borrow of part of a value stored into that same value through a reference (a method's 'self', a '&mut' parameter): the value would hold a borrow of its own storage, which its owner may change or move
+
     // The range notation (parser/parsefnflow.c, parser/parseexpr.c): '..' runs through its end, '..<' stops before it
-    ErrorRangeEllipsis = 1409,  // A range written '...', retired: 'a .. b' runs through b, 'a ..< b' stops before it
-    ErrorEachCompare = 1410,    // An 'each' over a comparison, 'each i in 0 < n', retired for the range notation ('0 ..< n', '0 .. n', 'by -1' to count down)
+    ErrorRangeEllipsis = 1410,  // A range written '...', retired: 'a .. b' runs through b, 'a ..< b' stops before it
+    ErrorEachCompare = 1411,    // An 'each' over a comparison, 'each i in 0 < n', retired for the range notation ('0 ..< n', '0 .. n', 'by -1' to count down)
 
     // Warnings
     WarnCode = 3000,

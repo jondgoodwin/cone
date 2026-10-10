@@ -126,6 +126,7 @@ typedef struct {
     uint8_t dies;       // drop-flag client: it has something to do as it dies (itypeNeedsFinal)
     uint8_t flagged;    // drop-flag client: its state differs by path at a release
     uint8_t initing;    // its initializer is being walked: it holds no value yet
+    VarDclNode *guardname; // a lock's hidden guard: the variable the writer named that held a borrow through it
 } PathVar;
 
 // The variables the current walk has met, by index; index 0 is unused

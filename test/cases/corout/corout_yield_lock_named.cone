@@ -1,0 +1,38 @@
+mod corout_yield_lock_named;
+
+// A lock a borrow holds, when a 'yield' comes while the borrow is still to be
+// used, is refused (ErrorGenFrame), and the message names the variable the
+// writer gave the borrow, never the compiler's hidden temporary ('-temp') that
+// holds the lock.
+//
+// Verdict: refuse, naming 'g' and 'h' (the first also by ErrorFrozen, as
+// before). The rule is unchanged; only the name in the message is.
+// Master 03de4a12: the message named '-temp'.
+
+import stdio use *;
+
+struct Point {
+  pub x i32;
+  pub y i32;
+}
+alias Cell = Rc[Rwcell, Point];
+
+// A named borrow, used after the 'yield'
+fn named(p Cell) yields i32 {
+  imm g = &mut *p;
+  g.x += 1;
+  yield 1i32;                    //~ ErrorGenFrame "'g' holds a lock"
+                                 //~^ ErrorFrozen "cannot last across this 'yield'"
+  g.x += 1;
+}
+
+// A named read-only borrow, held across two 'yield's
+fn twice(p Cell) yields i32 {
+  imm h = &*p;
+  yield h.x;                     //~ ErrorGenFrame "'h' holds a lock"
+                                 //~^ ErrorFrozen "cannot last across this 'yield'"
+  yield h.y;                    //~ ErrorGenFrame "'h' holds a lock"
+}
+
+fn main() {
+}
