@@ -29,14 +29,18 @@
 //   among the places stored into, and two places each holding a seam, the
 //   values (calls) made before either;
 // - lists: 'v <- (mk(1), await give(2), mk(3))', a droppable among the entries
-//   that travels across the seam, a pair into a dictionary-like list, and
-//   two seams among the entries.
+//   that travels across the seam, and two seams among the entries; pairs into
+//   a dictionary, 'd <- mk(1): await give(2), await give(3): mk(4)';
+// - locals and loops: the same places in a local array, and in a loop whose
+//   second halves run the next pass to the seams again;
+// - twice: a local made by an 'await' used in several indexes, each 'await'
+//   called once.
 
 mod concurrency_await_places;
 
 import stdio use *;
 import actors;
-import collections use List;
+import collections use List, Dict;
 
 struct Fin {
   pub n u64;
@@ -50,6 +54,7 @@ struct Row {
 fn give(n u64) u64 {printStr("  give "); printUInt(n); printStr("\n"); n;}
 fn mk(n u64) u64 {printStr("  mk "); printUInt(n); printStr("\n"); n;}
 fn make(n u64) Fin {printStr("  make "); printUInt(n); printStr("\n"); new Fin(n);}
+fn yes(b bool) u64 {if b {1u64;} else {0u64;}}
 fn say(s &str, n u64) {printStr("  "); printStr(s); printStr(" "); printUInt(n); printStr("\n");}
 fn head(s &str) {printStr(s); printStr("\n");}
 
@@ -270,6 +275,40 @@ actor Page {
     say("items3", items[3]);
   }
 
+  pub async do twice(self) {
+    head("twice");
+    fill();
+    imm k = await give(1u64);
+    body = grid[k][await give(k + 1u64)] + grid[k][k] + items[await give(k + 2u64)];
+    say("body", body);
+  }
+  pub async do twicePlain(self) {
+    head("twice plain");
+    fill();
+    imm k = give(1u64);
+    body = grid[k][give(k + 1u64)] + grid[k][k] + items[give(k + 2u64)];
+    say("body", body);
+  }
+
+  pub async do pairs(self) {
+    head("pairs");
+    mut d = new Dict[u64, u64];
+    d <- mk(1u64): await give(2u64), await give(3u64): mk(4u64), mk(5u64): mk(6u64);
+    say("dlen", d.len());
+    say("has1", yes(d.contains(&1u64)));
+    say("has3", yes(d.contains(&3u64)));
+    say("has5", yes(d.contains(&5u64)));
+  }
+  pub async do pairsPlain(self) {
+    head("pairs plain");
+    mut d = new Dict[u64, u64];
+    d <- mk(1u64): give(2u64), give(3u64): mk(4u64), mk(5u64): mk(6u64);
+    say("dlen", d.len());
+    say("has1", yes(d.contains(&1u64)));
+    say("has3", yes(d.contains(&3u64)));
+    say("has5", yes(d.contains(&5u64)));
+  }
+
   pub async do lists(self) {
     head("lists");
     mut v = List[u64].empty();
@@ -324,6 +363,10 @@ fn main() {
     p.localsPlain();
     p.loops();
     p.loopsPlain();
+    p.twice();
+    p.twicePlain();
+    p.pairs();
+    p.pairsPlain();
     p.lists();
     p.listsPlain();
   }
