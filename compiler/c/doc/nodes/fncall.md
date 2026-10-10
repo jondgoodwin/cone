@@ -345,6 +345,34 @@ by value, an array and a function go on to the table's own rows.
 | `VirtRefTag` | fill in `()` as `methfld` if absent and not indexing, so `f(u)` calls the trait's `()` as ``f.`()`(u)`` does; `==`, `!=` or an ordering is `ErrorRefNoCompare`; else `fnCallLowerPtrMethod`, else set `FlagVDisp` and `fnCallLowerMethod`, whose selection (`fnSigViableCall`) takes only a method whose `self` permission the receiver's grants, and where `fnCallFinalizeArgs` lends an owning receiver as a borrowed virtual reference (`fnCallLendVirtOwner`) |
 | `PtrTag` | the pointer's own operators first, then the value's fields and named methods |
 
+**A name or an index reaches through every level of reference, before the
+dispatch.** `fnCallReadThroughRefs` runs on the receiver as soon as it is
+checked (twice in `fnCallTypeCheck`: after a member's receiver is checked, for
+the parameters its arguments are wanted as, and after the callee is checked;
+and in `fnCallMethodTypeArgs`). While the receiver is a `RefTag` (a borrow or an
+owner) whose referent is a `RefTag`, `ArrayRefTag` or `VirtRefTag`, it injects a
+dereference (`derefInject`), so `r.x`, `r.len()`, `r[i]` and `r.pick[T](v)` on a
+`&&Pt`, `&&&Pt`, `&mut &Pt` or `&So[Pt]` see a receiver of one reference level,
+exactly as the explicit `(**r).x` would. Not done for an operator (`FlagOperator`),
+a call with no member name, or a borrowed or ranged index, whose receiver is the
+borrow the parser put round it; and it stops at a key (`lifeIsKey`), a
+lock-managed reference and a raw pointer, which keep the refusals they had. The
+outermost level winning a name is that order: the only names a reference
+declares are `refType`'s `===` and `!==`, operators, which this does not touch
+and which `fnCallLowerPtrMethod(node, refType)` takes first; a struct's own
+method is found on the struct before anything it holds (a fold cannot repeat a
+name). **What it permits is what the explicit dereferences permit**: a borrow
+read out of another keeps its own permission (`iexpLvalInfo` takes the last
+step's), so `r.x = 9` through a `& &mut Pt` is allowed as `(**r).x = 9` is, and
+refused through a `&mut &Pt` because the inner level is read-only. Only an owner
+is held to the steps above it (a `&` lends only `&` of an owner,
+`borrowOwnerLendRefused`): from the first step whose permission cannot write,
+the dereference that reaches an owner is typed as a copy of the owner's type
+with that permission (`clamp`), so a field stored or a `self &mut` candidate
+through it is refused by the checks that already read the type. The `RefTag` branch's
+`ownerread` retry remains for what this skips: an operator, or a call, on a
+borrow of an owner.
+
 **An array or a slice calls the methods core writes on `Array[T]`.** Neither
 type declares methods (a slice's `len`, `maxlen`, `===` and `!==` are the
 compiler's own, `arrayRefType`). A name those do not answer is looked up on the
@@ -630,8 +658,9 @@ Three adjustments, two of them asymmetric on purpose:
   `fnDclTypeCheck` allows it: a method's `self` is its type, a reference to it,
   or a borrow of an owner of it. Inside such a method `self` is a borrow of an
   owner, a reference to a reference, and a field or method named on it is
-  read through to the value: the RefTag branch of `fnCallTypeCheck` dereferences
-  a borrow of an owner once (`ownerread`) and dispatches again on the owner.
+  read through to the value: `fnCallReadThroughRefs` dereferences it before the
+  dispatch (a name), and the RefTag branch of `fnCallTypeCheck` once
+  (`ownerread`) for an operator.
   Pinned by `typemgmt_owner_self` and `typemgmt_typecheck_owner_self`.
 - **An operator on a pointer does not reach through.** `p + 2` offsets the
   pointer; `p * 2` is an error rather than becoming `(*p) * 2`. `FlagOperator`
