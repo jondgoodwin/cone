@@ -292,6 +292,10 @@ void fnCallNameRes(NameResState *pstate, FnCallNode **nodep) {
     INode **argsp;
     uint32_t cnt;
 
+    // 'xs.parallel().sum()': a reduction called on a parallel view is a call of the
+    // actors package's function, made once its parts are resolved (pareach.c)
+    int reduction = parallelReduceIs(node);
+
     // Name resolve objfn so we know what it is to vary subsequent processing
     inodeNameRes(pstate, &node->objfn);
 
@@ -304,6 +308,16 @@ void fnCallNameRes(NameResState *pstate, FnCallNode **nodep) {
     if (node->args) {
         for (nodesFor(node->args, cnt, argsp))
             inodeNameRes(pstate, argsp);
+    }
+
+    if (reduction) {
+        parallelReduceNameRes(pstate, nodep);
+        return;
+    }
+    // '(lo < hi).parallel()': a number range has no view yet, and is refused with the reason
+    if (parallelRangeIs(node)) {
+        parallelRangeNameRes(pstate, nodep);
+        return;
     }
 
     // 'Array[f32, 3]' is the array type, lowered here rather than at type check
@@ -352,12 +366,12 @@ void fnCallArrIndex(FnCallNode *node) {
         return;
     }
 
-    // A range, 'x[a..b]', is a slice of part of the array only when borrowed.
+    // A range, 'x[a..<b]', is a slice of part of the array only when borrowed.
     // Unborrowed it would copy or fill a segment (refarrayref.html, "Copy or
     // Fill Elements"), which is not implemented.
     if ((node->flags & FlagRange) && !(node->flags & FlagBorrow)) {
         errorMsgNode((INode *)node, ErrorBadIndex,
-            "A range makes a slice when borrowed, as &x[a..b]; copying or filling a segment of an array is not implemented");
+            "A range makes a slice when borrowed, as &x[a..<b]; copying or filling a segment of an array is not implemented");
         node->vtype = errorType;
         return;
     }
@@ -1394,6 +1408,8 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
                 return -1;
             }
         }
+        if (foundnode == NULL && parallelViewNotFound(callnode, objdereftype, methsym))
+            return -1;
         errorMsgNode((INode*)callnode, ErrorNoMbr, "Method or field `%s` not found.", &methsym->namestr);
         return -1;
     }
@@ -1958,7 +1974,7 @@ static void fnCallLowerRefCompare(TypeCheckState *pstate, FnCallNode *node) {
     fnCallLowerMethod(pstate, node);
 }
 
-// An owner of 'Array[T]' indexed, 'o[i]', '&o[a..b]' or '&o[i]', is indexed as
+// An owner of 'Array[T]' indexed, 'o[i]', '&o[a..<b]' or '&o[i]', is indexed as
 // the slice it lends: the receiver is coerced to '&Array[T]' (the slice, read
 // only unless the borrow written is writable, or an element is assigned), and
 // the index goes on as a slice's. A range borrowed has the borrow the parser
@@ -2030,7 +2046,7 @@ static StructNode *fnCallTextOf(INode *objtype) {
     return NULL;
 }
 
-// A range borrowed from text, '&s[a..b]', '&s[a..]' or '&s[a...b]', is a call
+// A range borrowed from text, '&s[a..<b]', '&s[a..]' or '&s[a...b]', is a call
 // of the text's 'slice', 'sliceFrom' or 'sliceThrough' on what is being
 // indexed: the method checks the bounds fall between characters and gives a
 // '&str' that keeps the text borrowed, as any method's borrow does. Answers 0,
@@ -3151,6 +3167,13 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         return;
     }
 
+    // The step of a numeric range 'each', which the parser built before its counter's
+    // type was known: a float counter is assigned, any other stepped by the operator
+    if (node->methfld && isNameUseNode(node->methfld) && node->args
+        && ((NameUseNode*)node->methfld)->namesym == eachRangeStepName
+        && eachRangeStepLower(pstate, nodep))
+        return;
+
     // A callee a global's 'use' clause folded into this module is reached through
     // that global, so the call is rewritten to 'global.name(...)' before anything
     // below reads the callee. Ahead of every other test here deliberately: from
@@ -3590,7 +3613,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     if (lent)
         objtype = iexpGetTypeDcl(node->objfn);
 
-    // A range borrowed from text, '&s[a..b]', is a call of the text's 'slice'
+    // A range borrowed from text, '&s[a..<b]', is a call of the text's 'slice'
     if ((node->flags & FlagRange) && fnCallLowerStrRange(pstate, node))
         return;
 
@@ -3606,7 +3629,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
             iexpGetTypeDcl(held)->tag == PtrTag
                 ? "A slice of part of what a pointer points at is not implemented; mem.sliceFromParts makes one"
                 : fnCallTextOf(iexpGetTypeDcl(held)) != NULL
-                ? "A range of text makes a part of it only when borrowed, as &s[a..b]: the text itself has no size to hold by value"
+                ? "A range of text makes a part of it only when borrowed, as &s[a..<b]: the text itself has no size to hold by value"
                 : "A range may only index an array or a slice");
         node->vtype = errorType;
         return;

@@ -58,7 +58,7 @@ fn report(name &str, ok bool) {
 
 fn plainRange(n usize) u64 {
   mut total = 0u64;
-  each i in 0usize < n {
+  each i in 0usize ..< n {
     total = total + weigh(u64.from(i));
   }
   total;
@@ -66,7 +66,7 @@ fn plainRange(n usize) u64 {
 
 fn parRange(n usize) u64 {
   imm total = Atomic[u64].of(0u64);
-  parallel each i in 0usize < n {
+  parallel each i in 0usize ..< n {
     total.add(weigh(u64.from(i)));
   }
   total.load();
@@ -74,7 +74,7 @@ fn parRange(n usize) u64 {
 
 fn plainInclusive(lo usize, hi usize) u64 {
   mut total = 0u64;
-  each i in lo <= hi {
+  each i in lo .. hi {
     total = total + weigh(u64.from(i));
   }
   total;
@@ -82,7 +82,7 @@ fn plainInclusive(lo usize, hi usize) u64 {
 
 fn parInclusive(lo usize, hi usize) u64 {
   imm total = Atomic[u64].of(0u64);
-  parallel each i in lo <= hi {
+  parallel each i in lo .. hi {
     total.add(weigh(u64.from(i)));
   }
   total.load();
@@ -92,11 +92,11 @@ fn parInclusive(lo usize, hi usize) u64 {
 fn parCount(lo usize, hi usize, inclusive bool) u64 {
   imm n = Atomic[u64].of(0u64);
   if inclusive {
-    parallel each i in lo <= hi {
+    parallel each i in lo .. hi {
       n.add(1u64);
     }
   } else {
-    parallel each i in lo < hi {
+    parallel each i in lo ..< hi {
       n.add(1u64);
     }
   }
@@ -106,11 +106,11 @@ fn parCount(lo usize, hi usize, inclusive bool) u64 {
 fn signedRange() bool {
   // -20 .. 29, 50 numbers: the sum of 3 * i - 7, which is negative for some
   imm par = Atomic[i64].of(0i64);
-  parallel each i in -20i64 < 30i64 {
+  parallel each i in -20i64 ..< 30i64 {
     par.add(i * 3i64 - 7i64);
   }
   mut plain = 0i64;
-  each i in -20i64 < 30i64 {
+  each i in -20i64 ..< 30i64 {
     plain = plain + (i * 3i64 - 7i64);
   }
   par.load() == plain and plain == 3i64 * (-20i64 + 29i64) * 50i64 / 2i64 - 7i64 * 50i64;
@@ -119,7 +119,7 @@ fn signedRange() bool {
 fn defaultTypedRange() bool {
   // The untyped literals take i32, as an ordinary range's do
   imm par = Atomic[i64].of(0i64);
-  parallel each i in 1 <= 100 {
+  parallel each i in 1 .. 100 {
     par.add(i64.from(i));
   }
   par.load() == 5050i64;
@@ -129,7 +129,7 @@ fn rangeToTheMaximum() bool {
   // 250 ..= 255 is six numbers, the last the type's maximum: no wrapping past it
   imm count = Atomic[u64].of(0u64);
   imm sum = Atomic[u64].of(0u64);
-  parallel each i in 250u8 <= 255u8 {
+  parallel each i in 250u8 .. 255u8 {
     count.add(1u64);
     sum.add(u64.from(i));
   }
@@ -180,8 +180,8 @@ fn arrays() {
   report("an array: the plain loop's sum", total.load() == plain);
   report("an array behind a reference", parArrayRef(&a) == 3u64 * (3u64 + 4u64 + 5u64 + 6u64 + 7u64 + 8u64 + 9u64 + 10u64));
   report("a slice of the whole array", parSlice(&a) == plainSlice(&a));
-  report("a part of an array", parSlice(&a[2usize..6usize]) == plainSlice(&a[2usize..6usize]));
-  report("an empty part of an array", parSlice(&a[3usize..3usize]) == 0u64);
+  report("a part of an array", parSlice(&a[2usize..<6usize]) == plainSlice(&a[2usize..<6usize]));
+  report("an empty part of an array", parSlice(&a[3usize..<3usize]) == 0u64);
 
   // A literal array is held for the loop
   imm lit = Atomic[u64].of(0u64);
@@ -234,7 +234,7 @@ struct Plan {
 
 fn scaled(plan &Plan, n usize) u64 {
   imm total = Atomic[u64].of(0u64);
-  parallel each i in 0usize < n {
+  parallel each i in 0usize ..< n {
     total.add(u64.from(i) * plan.scale + plan.bias);       // a field through a reference
   }
   total.load();
@@ -246,11 +246,11 @@ fn outsideVariables(base u64) bool {
   mut step = 3u64;                                  // changed before the loop, read in it
   step = step + 1u64;
   imm total = Atomic[u64].of(0u64);
-  parallel each i in 0usize < 200usize {
+  parallel each i in 0usize ..< 200usize {
     total.add(u64.from(i) * step + base + offset);  // a parameter, a mut variable, a constant
   }
   mut plain = 0u64;
-  each i in 0usize < 200usize {
+  each i in 0usize ..< 200usize {
     plain = plain + u64.from(i) * step + base + offset;
   }
   total.load() == plain;
@@ -259,14 +259,14 @@ fn outsideVariables(base u64) bool {
 fn controlInBody() bool {
   // 'continue' skips the rest of a pass: only the even numbers are added
   imm evens = Atomic[u64].of(0u64);
-  parallel each i in 0usize < 1000usize {
+  parallel each i in 0usize ..< 1000usize {
     if i % 2usize == 1usize {
       continue;
     }
     evens.add(u64.from(i));
   }
   mut plain = 0u64;
-  each i in 0usize < 1000usize {
+  each i in 0usize ..< 1000usize {
     if i % 2usize == 0usize {
       plain = plain + u64.from(i);
     }
@@ -274,7 +274,7 @@ fn controlInBody() bool {
 
   // The pass's own locals, its own loops, and a 'break' that leaves them
   imm found = Atomic[u64].of(0u64);
-  parallel each i in 0usize < 300usize {
+  parallel each i in 0usize ..< 300usize {
     mut j = 0usize;
     mut first = 0usize;
     while j < 50usize {
@@ -295,7 +295,7 @@ fn controlInBody() bool {
     found.add(u64.from(first) + sum);
   }
   mut plainfound = 0u64;
-  each i in 0usize < 300usize {
+  each i in 0usize ..< 300usize {
     mut j = 0usize;
     mut first = 0usize;
     while j < 50usize {
@@ -313,14 +313,14 @@ fn controlInBody() bool {
 fn nested() bool {
   // 40 rows of 30 cells, each cell (r, c) worth weigh(r * 100 + c)
   imm total = Atomic[u64].of(0u64);
-  parallel each r in 0usize < 40usize {
-    parallel each c in 0usize < 30usize {
+  parallel each r in 0usize ..< 40usize {
+    parallel each c in 0usize ..< 30usize {
       total.add(weigh(u64.from(r) * 100u64 + u64.from(c)));      // r is the outer pass's
     }
   }
   mut plain = 0u64;
-  each r in 0usize < 40usize {
-    each c in 0usize < 30usize {
+  each r in 0usize ..< 40usize {
+    each c in 0usize ..< 30usize {
       plain = plain + weigh(u64.from(r) * 100u64 + u64.from(c));
     }
   }
@@ -368,7 +368,7 @@ fn bits(v u64) u64 {
 fn spread() {
   imm ran = Atomic[u64].of(0u64);          // bit i: worker i ran a pass; bit 63: a thread that is no worker
   imm items = Atomic[u64].of(0u64);
-  parallel each i in 0usize < 400usize {
+  parallel each i in 0usize ..< 400usize {
     imm w = actors.workerIndex();
     imm bit = if w == actors.noWorker {1u64 << 63u64;} else {1u64 << u64.from(w);};
     ran.bitOr(bit);

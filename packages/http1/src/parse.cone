@@ -48,11 +48,11 @@ fn versionOf(v &Array[u8]) u32 {
 fn parseRequestLine(line &Array[u8], head &mut RequestHead, err &mut HttpError) bool {
   imm sp1 = indexOf(line, ' ', 0usize);
   if sp1 == line.len {return bad(err, ErrorKind.Malformed[], 400u16, "the request line has no spaces");}
-  imm method = &line[0usize .. sp1];
+  imm method = &line[0usize ..< sp1];
   if not isToken(method) {return bad(err, ErrorKind.Malformed[], 400u16, "the method is not a token");}
   imm sp2 = indexOf(line, ' ', sp1 + 1usize);
   if sp2 == line.len {return bad(err, ErrorKind.Malformed[], 400u16, "the request line has one space, not two");}
-  imm target = &line[sp1 + 1usize .. sp2];
+  imm target = &line[sp1 + 1usize ..< sp2];
   if target.len == 0usize {return bad(err, ErrorKind.Malformed[], 400u16, "the request target is empty (two spaces together)");}
   mut i = 0usize;
   while i < target.len {
@@ -62,7 +62,7 @@ fn parseRequestLine(line &Array[u8], head &mut RequestHead, err &mut HttpError) 
     }
     i = i + 1usize;
   }
-  imm ver = versionOf(&line[sp2 + 1usize .. line.len]);
+  imm ver = versionOf(&line[sp2 + 1usize ..< line.len]);
   if ver == 1u32 {return bad(err, ErrorKind.Malformed[], 400u16, "the request line does not end in an HTTP version");}
   if ver == 0u32 {return bad(err, ErrorKind.Unsupported[], 505u16, "the request's major version is not 1");}
   *head = RequestHead.make(method as &str, target as &str, "");
@@ -75,7 +75,7 @@ fn parseRequestLine(line &Array[u8], head &mut RequestHead, err &mut HttpError) 
 // checked and dropped
 fn parseStatusLine(line &Array[u8], head &mut ResponseHead, err &mut HttpError) bool {
   if line.len < 12usize or line[8usize] != ' ' {return bad(err, ErrorKind.Malformed[], 0u16, "the status line is not 'HTTP/1.x' and a code");}
-  imm ver = versionOf(&line[0usize .. 8usize]);
+  imm ver = versionOf(&line[0usize ..< 8usize]);
   if ver == 1u32 {return bad(err, ErrorKind.Malformed[], 0u16, "the status line does not start with an HTTP version");}
   if ver == 0u32 {return bad(err, ErrorKind.Unsupported[], 0u16, "the response's major version is not 1");}
   mut code = 0u16;
@@ -125,7 +125,7 @@ fn parseFields(h &Array[u8], from usize, cfg &Config, request bool, takeHost boo
   while true {
     imm end = lineEnd(h, at);
     if end == at {break;}                     // the empty line
-    imm line = &h[at .. end];
+    imm line = &h[at ..< end];
     if line.len > cfg.maxLineBytes {return bad(err, ErrorKind.TooLarge[], status, "a field line is longer than maxLineBytes");}
     if isOws(line[0usize]) {
       if request {return bad(err, ErrorKind.Malformed[], malformed, "a field line starts with a space or a tab (obs-fold)");}
@@ -134,7 +134,7 @@ fn parseFields(h &Array[u8], from usize, cfg &Config, request bool, takeHost boo
       imm whyMore = checkFieldValue(more);
       if not whyMore.isEmpty() {return bad(err, ErrorKind.Malformed[], malformed, whyMore);}
       if not folded {
-        unfolded = String.fromBytes(&h[valueAt .. valueEnd]);
+        unfolded = String.fromBytes(&h[valueAt ..< valueEnd]);
         folded = true;
       }
       if more.len > 0usize {
@@ -145,16 +145,16 @@ fn parseFields(h &Array[u8], from usize, cfg &Config, request bool, takeHost boo
       continue;
     }
     if pending {
-      addField(&h[nameAt .. nameEnd] as &str, if folded {unfolded.view();} else {&h[valueAt .. valueEnd];},
+      addField(&h[nameAt ..< nameEnd] as &str, if folded {unfolded.view();} else {&h[valueAt ..< valueEnd];},
         takeHost, headers, host, hostCount);
       folded = false;
     }
     imm colon = indexOf(line, ':', 0usize);
     if colon == line.len {return bad(err, ErrorKind.Malformed[], malformed, "a field line has no colon");}
-    imm name = &line[0usize .. colon] as &str;
+    imm name = &line[0usize ..< colon] as &str;
     imm whyName = checkFieldName(name);
     if not whyName.isEmpty() {return bad(err, ErrorKind.Malformed[], malformed, whyName);}
-    imm value = trimOws(&line[colon + 1usize .. line.len]);
+    imm value = trimOws(&line[colon + 1usize ..< line.len]);
     imm whyValue = checkFieldValue(value);
     if not whyValue.isEmpty() {return bad(err, ErrorKind.Malformed[], malformed, whyValue);}
     n = n + 1usize;
@@ -169,7 +169,7 @@ fn parseFields(h &Array[u8], from usize, cfg &Config, request bool, takeHost boo
     at = lineNext(h, end);
   }
   if pending {
-    addField(&h[nameAt .. nameEnd] as &str, if folded {unfolded.view();} else {&h[valueAt .. valueEnd];},
+    addField(&h[nameAt ..< nameEnd] as &str, if folded {unfolded.view();} else {&h[valueAt ..< valueEnd];},
       takeHost, headers, host, hostCount);
   }
   true;
@@ -203,7 +203,7 @@ fn contentLength(headers &Headers, n &mut u64, err &mut HttpError, malformed u16
       mut start = 0usize;
       while start <= v.len {
         imm end = indexOf(v, ',', start);
-        imm m = trimOws(&v[start .. end]);
+        imm m = trimOws(&v[start ..< end]);
         if m.len == 0usize {return bad(err, ErrorKind.Malformed[], malformed, "a Content-Length is empty");}
         if m.len > 19usize {return bad(err, ErrorKind.Malformed[], malformed, "a Content-Length has more than 19 digits");}
         mut k = 0u64;
@@ -243,7 +243,7 @@ fn framingOf(headers &Headers, request bool, http10 bool, mode &mut u32, n &mut 
     mut start = 0usize;
     while start <= v.len {
       imm end = indexOf(v, ',', start);
-      imm m = trimOws(&v[start .. end]);
+      imm m = trimOws(&v[start ..< end]);
       if m.len == 0usize {return bad(err, ErrorKind.Malformed[], malformed, "a Transfer-Encoding member is empty");}
       if eqIgnoreCase(m, "chunked") {
         chunked = chunked + 1u32;

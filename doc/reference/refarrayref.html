@@ -19,7 +19,7 @@
         Borrowing a slice from an array, from a slice, or from a
         collection that lends one (<span class="pre">List</span>'s <span class="pre">view()</span>),
         indexing it, subslices of an array or a slice using <span class="pre">..</span> or
-        <span class="pre">...</span>, with either end left out, and comparing two slices
+        <span class="pre">..&lt;</span>, with either end left out, and comparing two slices
         with <span class="pre">===</span> or <span class="pre">==</span> are implemented.
         A subslice's count form (<span class="pre">,</span>), an index relative to the end
         (<span class="pre">$-</span>), a slice made from a reference or a pointer, and copying and filling
@@ -77,7 +77,7 @@ imm made = new Rc[mut, Array[i32, 4]](new Array[i32, 4] &lt;- 1, 2, 3, 4);
         <span class="pre">str</span> is, so only where the elements copy; a list's
         <span class="pre">freeze()</span> moves its own into one instead, any element included. The owner has
         <span class="pre">len</span>, indexes (<span class="pre">o[i]</span>) and takes a borrowed range
-        (<span class="pre">&amp;o[a..b]</span>) as a slice does, and is lent as the slice wherever a
+        (<span class="pre">&amp;o[a..&lt;b]</span>) as a slice does, and is lent as the slice wherever a
         <span class="pre">&amp;Array[T]</span> is wanted, a generic's element type inferred from it. Which of the
         <a href="reftypecoll.html">three kinds of list</a> it is comes from its permission: held writable
         (<span class="pre">So[Array[T]]</span>, <span class="pre">Rc[mut, Array[T]]</span>) its elements change but
@@ -128,23 +128,28 @@ print("abc");    // equivalent to print(&amp;"abc")
         thereby ensuring the original array cannot be moved or resized while the slice is active.
     </p>
 
-    <h3>Subslices</h3>
+    <h3 id="subslices">Subslices</h3>
     <p>It is also possible to create a new slice that points
         to some subset of the elements in some array or slice.
         This is accomplished by indexing using a range operator
         between two unsigned integers:</p>
     <ul>
-    <li><span class="pre">..</span> excludes the last specified element.</li>
-    <li><span class="pre">...</span> includes the last specified element.</li>
+    <li><span class="pre">..</span> includes the last specified element.</li>
+    <li><span class="pre">..&lt;</span> stops before the last specified element.</li>
     <li><span class="pre">,</span> specifies how many elements are in the slice.</li>
     </ul>
-    <p>For example:</p>
+    <p>The two range operators are the ones a number range of
+        <a href="refeach.html#range">each</a> and a
+        <a href="refmatch.html#ranges">range pattern</a> use. For example:</p>
 <pre>
-imm x = &amp;"Abcd"[1..3];    // a slice pointing to "bc"
-imm y = &amp;"Abcd"[1...3];   // a slice pointing to "bcd"
+imm x = &amp;"Abcd"[1..&lt;3];   // a slice pointing to "bc"
+imm y = &amp;"Abcd"[1..3];    // a slice pointing to "bcd"
 imm z = &amp;"Abcd"[2, 1];  // a slice pointing to "c"
 </pre>
-    <p>If either index integer is unspecified, 0 and end are assumed.
+    <p>If either index integer is unspecified, 0 and end are assumed
+        (so <span class="pre">[..3]</span> is the elements 0 through 3,
+        <span class="pre">[..&lt;3]</span> the first three, and
+        <span class="pre">[1..]</span> everything from 1 on).
         A range is checked against the length of what it is taken from, as an index is:
         its start may not come after its end, nor its end after the last element.
         The subslice has the permission and lifetime a borrowed reference to one of those
@@ -160,7 +165,7 @@ imm r = &amp;y[$-2..];      // a slice pointing to "cd"
     <p>A slice may also be created from a regular reference or a pointer:</p>
 <pre>
 imm slice1 = &amp;ref[..];      // Slice count from reference is always 1
-imm slice2 = &amp;ptr[0...5];
+imm slice2 = &amp;ptr[0..5];
 </pre>
 
     <h2>Operations</h2>
@@ -182,7 +187,7 @@ c_array[3] = c_array[2];    // the 4th element is now the same as the third
 </pre>
     <p>Indexing is automatically bounds-checked by its known size. An index out of
         bounds is a <a href="refexcept.html#panic">panic</a> naming the index, the size and
-        the line; so is a range, <span class="pre">&amp;s[a..b]</span>, that starts after it
+        the line; so is a range, <span class="pre">&amp;s[a..&lt;b]</span>, that starts after it
         ends or ends past the size.</p>
 
     <h3>Borrowed Reference to an Element</h3>
@@ -205,7 +210,7 @@ greetings[n by 5] = "Kevin";
 </pre>
     <p>Similarly, a single value can be repeatedly filled into a slice's elements:</p>
 <pre>
-arrref[1 .. 3] = 2;
+arrref[1 ..&lt; 3] = 2;
 </pre>
 
     <h3>Iteration</h3>
@@ -265,7 +270,7 @@ pixels.mutArrays[3]()[0][1] = 9u8; // changes pixels[1]
         loop leaves when it computes <span class="pre">x * 3 + k</span> itself:</p>
 <pre>
 parallel each y, line in pixels.mutArrays[3]().mutChunks(width).indexed() {
-    each x in 0usize &lt; width {
+    each x in 0usize ..&lt; width {
         line[x][0] = red(x, y);
         line[x][1] = green(x, y);
         line[x][2] = blue(x, y);

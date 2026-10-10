@@ -623,6 +623,13 @@ enum ErrorCode {
     // A value stored in itself (ir/flowpath.c, pwStoreEscapes)
     ErrorSelfStore = 1409,      // A borrow of part of a value stored into that same value through a reference (a method's 'self', a '&mut' parameter): the value would hold a borrow of its own storage, which its owner may change or move
 
+    // Parallel reductions: 'xs.parallel().sum()' (ir/exp/pareach.c, ir/exp/fncall.c)
+    ErrorParReduce = 1410,      // A reduction ('sum', 'fold', 'findFirst') in a module that does not import the actors package its blocks run on; 'parallel()' asked of a source that cannot be cut (an iterator chain, a generator, a file, a channel) or of a number range; or a reduction asked of a parallel view held in a variable
+
+    // The range notation (parser/parsefnflow.c, parser/parseexpr.c): '..' runs through its end, '..<' stops before it
+    ErrorRangeEllipsis = 1411,  // A range written '...', retired: 'a .. b' runs through b, 'a ..< b' stops before it
+    ErrorEachCompare = 1412,    // An 'each' over a comparison, 'each i in 0 < n', retired for the range notation ('0 ..< n', '0 .. n', 'by -1' to count down)
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

@@ -13,13 +13,13 @@
 
     <div class="text">
 
-	<p style="margin-left: 40px;"><i>Note: Built: number ranges with &lt;, &le;, &gt;, &ge; and by; arrays, slices and lists; and
+	<p style="margin-left: 40px;"><i>Note: Built: number ranges, <span class="pre">a .. b</span> and <span class="pre">a ..&lt; b</span>, with <span class="pre">by</span>; arrays, slices and lists; and
 			anything with a <span class="pre">next</span> method (a cursor) or an <span class="pre">iter</span> method (something
 			that gives one), a <a href="refcorout.html">generator</a> among them, with one variable or several that unpack a pair; a filter after the source (<span class="pre">if</span>); an <span class="pre">else</span> that makes the loop a value; the ways to walk a list, an array or a slice that
 			change its items in place (<span class="pre">mutItems</span>), consume it (<span class="pre">drain</span>), number them
 			(<span class="pre">indexed</span>) or cut it into runs (<span class="pre">chunks</span>, <span class="pre">mutChunks</span>), and <span class="pre">zip</span>; <span class="pre">each</span> as an entry of the append operator's list
 			(<a href="#builder">below</a>); and <a href="#parallel">parallel each</a> over a number range, an
-			array, a slice or a list, or the runs of one, with <span class="pre">indexed</span> giving the position, in a function or an actor's method, and <a href="#parallelbuilder">the parallel builder</a> that builds a list from it. The <a href="#adapters">adapters</a> of a cursor that declares itself an <span class="pre">Iterator</span>, <span class="pre">xs.iter().map(f).filter(g).sum()</span>, and a chain of them as the source of a <span class="pre">&lt;- each</span> list (<a href="#builder">below</a>). Not built yet: <a href="#closure">closure iterators</a>, the parallel reductions and a source that runs its own loop, all of which build on <a href="refclosure.html">closures</a>, which are built. An enum's variant is constructed with its values in square brackets, as written here: that is the current spelling, and how a variant is constructed is an open design question (<a href="refenum.html#init">Enums</a>).</i></p>
+			array, a slice or a list, or the runs of one, with <span class="pre">indexed</span> giving the position, in a function or an actor's method, and <a href="#parallelbuilder">the parallel builder</a> that builds a list from it. The <a href="#adapters">adapters</a> of a cursor that declares itself an <span class="pre">Iterator</span>, <span class="pre">xs.iter().map(f).filter(g).sum()</span>, and a chain of them as the source of a <span class="pre">&lt;- each</span> list (<a href="#builder">below</a>); and the <a href="#parallelreduce">parallel reductions</a>, <span class="pre">xs.parallel().sum()</span>, <span class="pre">fold</span> and <span class="pre">findFirst</span>. Not built yet: <a href="#closure">closure iterators</a> and a source that runs its own loop, both of which build on <a href="refclosure.html">closures</a>, which are built. An enum's variant is constructed with its values in square brackets, as written here: that is the current spelling, and how a variant is constructed is an open design question (<a href="refenum.html#init">Enums</a>).</i></p>
 
 	<p><span class="pre">each</span> makes it easier than <span class="pre">while</span>
 		to iterate over a sequence of values.
@@ -27,14 +27,14 @@
 <pre>
 fn fact(n i32) i32 {
   mut result = 1;
-  each x in 2 &lt;= n {
+  each x in 2 .. n {
     result *= x;
   }
   result;
 }
 </pre>
 	<p>Effectively this <span class="pre">each</span> statement binds the variable x to each iterated value
-		from 2 up to n inclusively, each time performing the loop's inner block.</p>
+		from 2 through n, each time performing the loop's inner block.</p>
 		<p>As this example shows, the <span class="pre">each</span> statement has a simple structure:</p>
 		<ul>
 			<li>One or more variables to be bound to values produced by the iterator.
@@ -60,13 +60,13 @@ fn fact(n i32) i32 {
 		is false are skipped, as if the block began with <span class="pre">if !cond { continue; }</span>.
 		It reads the loop's variables, and works for every kind of source below, ranges included:</p>
 <pre>
-each x in 0 &lt; 10 if x % 2 == 0 {       // 0 2 4 6 8
+each x in 0 ..&lt; 10 if x % 2 == 0 {      // 0 2 4 6 8
 }
 each name in names if name.len &gt; 3 {   // a List[String]
 }
 each key, value in ages if value &gt; 18 {
 }
-each x in 100 &gt;= 0 by 10 if x != 50 {
+each x in 100 .. 0 by -10 if x != 50 {
 }
 </pre>
 
@@ -84,7 +84,7 @@ fn firstBig(list &amp;List[i32], limit i32) i32 {
   }
 }
 
-imm total = each x in 1 &lt;= 100 {
+imm total = each x in 1 .. 100 {
   if x * x &gt; 500 { break x; }
 } else {
   0;
@@ -111,7 +111,7 @@ imm total = each x in 1 &lt;= 100 {
 <pre>
 imm copy = new List[i32] &lt;- each other;                     // every item of other
 imm big = new List[i32] &lt;- each x in other if x &gt; 9 yield *x;
-imm squares = new List[i32] &lt;- each i in 1 &lt;= 5 yield i * i;  // 1 4 9 16 25
+imm squares = new List[i32] &lt;- each i in 1 .. 5 yield i * i;    // 1 4 9 16 25
 imm index = new Dict[i32, str] &lt;- each p in people yield p.id: p.name;
 xs &lt;- 0, each x in other yield x + 1, 99;               // in the middle of a list
 imm tens = new List[i32] &lt;- each other.iter().filter(x =&gt; *x &gt; 2).map(x =&gt; *x * 10);   // a chain
@@ -153,36 +153,51 @@ imm squares = new Dict[i32, i32] &lt;- each k, v in xs.iter().map(x =&gt; (*x, *
 		<li><b>Closure</b>, to deal with algorithmically-generated values (not built yet).</li>
 	</ul>
 
-	<h3>Number Range Iterator</h3>
-	<p>As the above example shows, a range is written as a comparison, <span class="pre">&lt;</span>
-		or <span class="pre">&lt;=</span>, and iterates successively over integers or floating point numbers.
-		Iteration begins with the first number and then increments by 1 until it
-		reaches (<span class="pre">&lt;</span>) or passes (<span class="pre">&lt;=</span>) the second number.
-		Expressions may be used in place of literal numbers, if desired.</p>
-	<p>To iterate <b>backwards</b> (decrementing the iterated number), use the
-			<span class="pre">&gt;</span> or <span class="pre">&gt;=</span> operators instead.</p>
+	<h3 id="range">Number Range Iterator</h3>
+	<p>As the above example shows, a range is written with a range operator between its first and last
+		numbers, and iterates successively over integers or floating point numbers. <span class="pre">a .. b</span>
+		runs <b>through</b> <span class="pre">b</span>: it includes it. <span class="pre">a ..&lt; b</span> stops
+		<b>before</b> <span class="pre">b</span>. Iteration begins with the first number and then increments by 1.
+		Expressions may be used in place of literal numbers, if desired. The same two operators make a
+		<a href="refmatch.html#ranges">range pattern</a> and a <a href="refarrayref.html#slice">subslice</a>.</p>
 <pre>
-each x in 6 &gt; 1 {  // iterates:  6 5 4 3 2
+each x in 3 .. 7 {      // iterates:  3 4 5 6 7
+}
+each x in 3 ..&lt; 7 {     // iterates:  3 4 5 6
+}
+</pre>
+	<p>A range never guesses a direction: one that starts past its end is empty, so <span class="pre">6 .. 2</span>
+		runs no pass. To iterate <b>backwards</b>, count by a negative step:</p>
+<pre>
+each x in 6 ..&lt; 1 by -1 {  // iterates:  6 5 4 3 2
 }
 </pre>
 	<p>A <b>step value</b> may be specified after <span class="pre">by</span>.
-		Instead of incrementing or decrementing by 1, the step value specifies how much to increase the iterated number each time:</p>
+		Instead of incrementing by 1, the step value specifies how much to add to the iterated number each time,
+		and its sign says which way the range runs. A step of zero runs no pass:</p>
 <pre>
 mut sum = 0;
-each x in 0 &lt;= 10 by 2 { // iterates: 0, 2, 4, 6, 8, 10
+each x in 0 .. 10 by 2 { // iterates: 0, 2, 4, 6, 8, 10
   sum += x;
 }
 </pre>
 	<p>A range counting down takes a negative step value.
-		Iteration stops as soon as a step moves the number away from the bound rather than toward it,
+		Iteration stops as soon as a step moves the number away from the end rather than toward it,
 		which is also what a step past the largest (or smallest) value the number's type can hold
 		amounts to:</p>
 <pre>
-each x in 10 &gt;= 0 by -2 {      // iterates: 10, 8, 6, 4, 2, 0
+each x in 10 .. 0 by -2 {      // iterates: 10, 8, 6, 4, 2, 0
 }
-each x in 250u8 &lt;= 255 by 2 {  // iterates: 250, 252, 254
+each x in 250u8 .. 255 by 2 {  // iterates: 250, 252, 254
 }
 </pre>
+	<p>The end is read once, before the first pass, so an end that changes inside the body (<span class="pre">0 ..&lt; n</span>
+		while the body adds to <span class="pre">n</span>) does not move the range; a loop that needs the end read afresh
+		is a <span class="pre">while</span>. A step that is not a literal (<span class="pre">by dx</span>) is read once too,
+		and the sign it has then decides whether the range counts up or down.
+		A <b>fractional</b> step is not added up: the number of a pass is the first value plus the count of
+		steps taken times the step, so no rounding builds up in it. <span class="pre">0.0 .. 1.0 by 0.1</span> takes
+		eleven passes, the last of them exactly 1.0, in <span class="pre">f32</span> and <span class="pre">f64</span> alike.</p>
 	<p>A range gives one variable. The loop steps a counter of its own and each pass's
 		variable holds the number, so writing to the variable is refused. A loop that steers its count by hand
 		is a <span class="pre">while</span>.</p>
@@ -476,15 +491,15 @@ struct Countdown is Iterator[i64] {         // declared: it has map, filter, sum
 		as a closure, for a source that cannot hand out its items one by one (a line reader that lends each line from its own
 		buffer, say). <span class="pre">each</span> would use it when the source has it, and otherwise use <span class="pre">next</span>;
 		<span class="pre">break</span>, <span class="pre">continue</span> and <span class="pre">return</span> in the body would reach the source as
-		signals, and an <span class="pre">await</span> in such a body may be refused. The parallel reductions are to follow.
+		signals, and an <span class="pre">await</span> in such a body may be refused. The parallel reductions are <a href="#parallelreduce">below</a>.
 		A chain feeding the entries of <a href="#builderchain">a collection being built</a> (<span class="pre">&lt;- each</span>) is built.</p>
 
 	<h2 id="parallel">parallel each</h2>
 	<p style="margin-left: 40px;"><i>Note: Built in a function and in an actor's methods (<a href="#parallelactor">below</a>): over a number range, an
 			array, a slice or a list, with the header <span class="pre">if</span>, <span class="pre">mutItems()</span>, <span class="pre">indexed()</span> and the runs of <span class="pre">chunks(n)</span> and <span class="pre">mutChunks(n)</span>, a <a href="#parallelzip">zip</a> of such cursors, and, in a function that is not an actor's method, <a href="#parallelbuilder">the parallel builder</a> (<span class="pre">new List[T] &lt;- parallel each &hellip; yield</span>).
-			Not built yet: inside a generator; a source of your own that is a
-			<span class="pre">ParallelIterable</span>; and
-			the reductions that come with closures. A parallel each takes no
+			The reductions, <span class="pre">xs.parallel().sum()</span>, are <a href="#parallelreduce">below</a>.
+			Not built yet: inside a generator; and a source of your own that is a
+			<span class="pre">ParallelIterable</span>. A parallel each takes no
 			<span class="pre">else</span> and is a statement.</i></p>
 	<p>Writing <span class="pre">parallel</span> in front of an <span class="pre">each</span> runs the loop's passes at
 		the same time, on the <a href="refconccomm.html#actors">actors package's</a> workers, one for each CPU:</p>
@@ -515,7 +530,7 @@ fn total(xs &amp;Array[u64]) u64 {
 		a <span class="pre">ParallelIterable</span>, met by its methods alone, with no declaration, as
 		<span class="pre">Iterator</span> is (<span class="pre">len</span>, and <span class="pre">split(at)</span> giving
 		the items before <span class="pre">at</span> and the items from it on). Today the loop walks a number range counting
-		up by one (<span class="pre">parallel each i in 0 &lt; n</span>, or <span class="pre">&lt;=</span>; a count down
+		up by one (<span class="pre">parallel each i in 0 ..&lt; n</span>, or <span class="pre">..</span> to include <span class="pre">n</span>; a count down
 		or a <span class="pre">by</span> step is refused, since which pass runs first is not defined in parallel), an array,
 		a slice and a list, which it cuts into ranges of positions itself, and the runs
 		<span class="pre">chunks(n)</span> and <span class="pre">mutChunks(n)</span> give, which it cuts between runs
@@ -697,7 +712,7 @@ actor Scaler {
 <pre>
 imm weights = new List[u64] &lt;- parallel each x in xs yield weigh(*x);
 imm keep = new List[u64] &lt;- parallel each x in xs if x &gt; 9 yield weigh(*x);
-imm squares = new List[i32] &lt;- parallel each i in 0 &lt; n yield i * i;     // n an i32
+imm squares = new List[i32] &lt;- parallel each i in 0 ..&lt; n yield i * i;   // n an i32
 xs &lt;- 0, parallel each x in other yield x + 1, 99;    // in the middle of a list
 </pre>
 	<p>The list holds the values in the order of the passes, the order a plain <span class="pre">each</span> would
@@ -719,6 +734,56 @@ xs &lt;- 0, parallel each x in other yield x + 1, 99;    // in the middle of a l
 		piece began. <span class="pre">List</span> has four methods the compiler calls for this,
 		<span class="pre">pieceBag</span>, <span class="pre">emptyPiece</span>, <span class="pre">depositPiece</span> and
 		<span class="pre">joinPieces</span>: they are not for a program to call.</p>
+
+	<h3 id="parallelreduce">Reductions: parallel().sum()</h3>
+	<p style="margin-left: 40px;"><i>Note: Built: a view of a list, an array or a slice, of the runs of
+			<span class="pre">chunks(n)</span>, of <span class="pre">iter()</span>, <span class="pre">indexed()</span> and a
+			<span class="pre">zip</span> of those;
+			<span class="pre">sum</span>, <span class="pre">fold</span> and <span class="pre">findFirst</span>. A view of
+			<span class="pre">mutItems()</span> or <span class="pre">mutChunks(n)</span> has none (a reduction reads). Not built yet: a view of a number range, which comes with the new range syntax.</i></p>
+	<p>A loop cannot hand a result back: a parallel each may not write a variable outside it, since which pass wrote
+		last would vary from run to run. A result is a <b>reduction</b>, and is written as a method called on
+		<span class="pre">parallel()</span>, a view of any source that can be cut into pieces:</p>
+<pre>
+import actors;
+
+fn stats(xs &amp;List[f64]) {
+  imm total = xs.parallel().sum();                 // the total of the numbers (0 for none)
+  imm top = xs.parallel().fold(0.0d, (m, x) =&gt; if *x &gt; m { *x; } else { m; },
+                               (a, b) =&gt; if b &gt; a { b; } else { a; });
+  imm hit = xs.parallel().findFirst(x =&gt; **x &gt; 100.0d);   // an Option of the item
+}
+</pre>
+	<p>Each piece of the source keeps a result of its own, and the results of neighbouring pieces are joined
+		pairwise up the tree the loop's splitting makes, on the workers, so that only the final value reaches the
+		code after the call. A module that calls one imports <span class="pre">actors</span>, as one that writes a
+		parallel each does. The reduction is called directly on <span class="pre">parallel()</span>: a view held in a
+		variable has no methods of its own, and a source that cannot be cut (a chain of adapters, a generator, a
+		file or a channel) has no <span class="pre">parallel()</span>; collect it into a list first.</p>
+	<ul>
+		<li><span class="pre">sum()</span> is the total of a view of numbers (integers, <span class="pre">f32</span>,
+			<span class="pre">f64</span>), or of borrows of them, as a list's items are.</li>
+		<li><span class="pre">fold(init, step, combine)</span>: <span class="pre">step(acc, item)</span> folds a run of items,
+			front to back, into an accumulator that starts as a copy of <span class="pre">init</span>, and
+			<span class="pre">combine(a, b)</span> joins the accumulators of two neighbouring runs, <span class="pre">a</span>
+			the earlier. <span class="pre">combine</span> must be associative, and need not be commutative (it may join
+			text or multiply matrices in order); <span class="pre">init</span> must be its identity, since each run begins
+			from a copy of it, so it may not have a finalizer (a number, a plain struct: a bounds, a total; a
+			<span class="pre">List</span> or <span class="pre">String</span> is a panic, and one is built in parallel by the
+			<a href="#parallelbuilder">builder</a>). The closures give each item as the view does: a borrow for a
+			list's, a tuple for a zip's.</li>
+		<li><span class="pre">findFirst(pred)</span> is the earliest item <i>by position</i> that
+			<span class="pre">pred</span> (given a borrow of the item) is true of, as an <span class="pre">Option</span>, though
+			a later piece may find a match first. The pieces after a match are not scanned, and a piece under way stops
+			at its next look.</li>
+	</ul>
+	<p>The closures run on several workers at once, so each must be <b>Shareable</b>, as a parallel each's body must:
+		one that borrows a variable it changes, or holds an <span class="pre">Rc</span>, is refused.</p>
+	<p><b>The result is the same on every run, with any number of workers</b>, a float sum included: the items are
+		cut into runs by their count alone (at least 128 items to a run, and at most 256 runs; a view of 128 or
+		fewer is one run, folded at once on the caller's thread), each run is folded front to back, and the runs are
+		joined by halving. So a float sum is not the plain loop's last bits, and is identical from one run, and one
+		machine, to the next.</p>
 
 	<p style="text-align: right; margin-top: 2em;">
 		<a href="refexcept.html"><img alt="_" src="next.png" /></a>

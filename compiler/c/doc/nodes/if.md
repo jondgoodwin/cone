@@ -48,7 +48,7 @@ returns the wrapping block, not the `IfNode`.**
 
 `parseMatch` lowers the whole construct into a block plus one `IfNode`:
 `case is T` → an `is` node, `case == v` (or any comparison operator) → that
-operator's call with the scrutinee on the left, `case a .. b` → `>= a and < b`
+operator's call with the scrutinee on the left, `case a ..< b` → `>= a and < b` (`case a .. b` → `>= a and <= b`)
 (`<=` for `...`), `case imm x T` → a bound pattern, `case v` (a value alone) →
 an `is` node flagged `FlagMatchValue` that type check turns into `v`'s variant
 test or `== v` ([cast](cast.md)), `else` → `elseCond`. Patterns joined by `or` → a logical `or` of
@@ -58,7 +58,7 @@ the matched value, so a range's two calls and every `or` alternative hold it too
 
 **A pattern's first operand decides between a range, a value and a refusal.**
 A pattern beginning with neither `is` nor a comparison operator reads one
-operand (`parseOr`); a following `..` or `...` makes it a range. A comparison
+operand (`parseOr`); a following `..` or `..<` makes it a range. A comparison
 operator, `is` or `and` after it makes it a condition (`case n > 3`), and so does
 a leading `not` (`case not b`). A condition is refused, `ErrorPatBare`: as a
 value alone it would be compared with the matched value, and whether it should

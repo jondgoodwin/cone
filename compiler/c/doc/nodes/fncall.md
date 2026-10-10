@@ -125,6 +125,33 @@ chain falls out of that for free: `mymod.Gadget.make(2)` parses innermost
 first, so the inner hop has left a resolved type name in `objfn` before the
 outer hop looks at it.
 
+### The parallel reductions
+
+**`xs.parallel().sum()`, `fold(...)` and `findFirst(...)` are rewritten here, by
+shape**, ahead of the receiver's resolution: a method named `sum`, `fold` or
+`findFirst` called directly on a `.parallel()` with no arguments
+(`parallelReduceIs`, `ir/exp/pareach.c`). `parallel()` is an ordinary method of
+core's `Array` and cursors, giving a view (`ParallelSlice`, or
+the cursor itself where it has `len` and `at`); the reductions
+run on the actors' workers, which core cannot reach, so they are the actors
+package's `parSum`, `parFold` and `parFindFirst` (`reduce.cone`) and, once the
+receiver and arguments are resolved, the node becomes the call
+`actors.parSum(view, ...)` (`parallelReduceNameRes`: the function found in the
+namespace of the actors package the module imports, bound and stamped
+`FlagQualified` as a path's member is, the view first among the arguments). A
+module that does not import `actors` is `ErrorParReduce`, as `parallel each`'s
+`ErrorParRuntime`. After the rewrite it is a call of a generic function like any
+other, which is why the closures take their parameter types from the bounds
+(`genericClosureSig`, [generic](generic.md)). By shape alone, so a reduction on a
+view held in a variable (`imm v = xs.parallel(); v.sum()`) is not rewritten and is
+refused at type check, in `fnCallLowerMethodOn`'s method-not-found message
+(`parallelViewNotFound`), as is `parallel()` of a type that has none (a chain of
+iterator adapters, a deque's cursor): `ErrorParReduce`, saying what has one. A
+number range has no view yet: `(lo < hi).parallel()` and `(lo <= hi).parallel()`
+(an operator application of `<` or `<=` directly under a `.parallel()`) are refused
+with the reason, `ErrorParReduce` (`parallelRangeNameRes`); ranges get one with the
+new range syntax.
+
 **Privacy is checked here**, against `dclInfoGetModule` of the base — so
 `modulesyms.Gadget.make` is judged against `modulesyms`, one hop back, which is
 the module that owns the type.
@@ -362,7 +389,7 @@ struct that lends it (`structLentBody`). Then: (1) `==`, `!=` and the orderings
 between two texts of different kinds replace each operand that lends by the call
 of its lending method (`fnCallLentOperands`, `structLendView`), so the comparison
 is `str`'s own operator on two borrows, and `String == So[str]` needs no operator
-of either; (2) a borrowed range of text, `&s[a..b]`, `&s[a..]`, `&s[a...b]`, is a
+of either; (2) a borrowed range of text, `&s[a..<b]`, `&s[a..]`, `&s[a..b]`, is a
 call of the `slice`, `sliceFrom` or `sliceThrough` method (`fnCallLowerStrRange`,
 asked once the receiver is checked, as the dispatch's first test of a range). The
 receiver is the borrow `borrowReassocIndex` put around what is indexed; it is
@@ -868,7 +895,7 @@ and `fnCallArrIndex` refuses it unborrowed, where it would copy or fill a
 segment. Borrowed, its type is an `ArrayRefTag` slice with the permission and
 scope an element's borrow gets, and `genlSubslice` builds `{&x[start], end -
 start}` after checking `start <= end <= count` at run time (`end` is the count
-when the range runs to the end, and one past what was written for `...`).
+when the range runs to the end, and one past what was written for `..`).
 
 ## Hazards
 

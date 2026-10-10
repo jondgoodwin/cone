@@ -551,12 +551,18 @@ static int parseLifeNamed(ParseState *parse, Name *name, INode *at) {
     return 0;
 }
 
+// '...' is no range operator. Said at the token, with the two that are; the
+// caller goes on reading it as '..', so the rest of the range is checked too.
+void parseRangeEllipsis(void) {
+    errorMsgLex(ErrorRangeEllipsis, "'...' is not a range operator. 'a .. b' runs through b, and 'a ..< b' stops before b.");
+}
+
 // Parse the arguments of an index, 'x[...]': a list of expressions, or one range
 // that a borrow makes a slice of part of an array (doc/reference/
-// refarrayref.html, "Subslices"). 'a..b' excludes b and 'a...b' includes it; a
+// refarrayref.html, "Subslices"). 'a..b' includes b and 'a..<b' stops before it; a
 // missing start is 0, and a missing end, 'a..', is the array's end. A range is
 // held on the index as FlagRange, its arguments the start and, unless it runs
-// to the end, the end; FlagRangeIncl says the end was written with '...'.
+// to the end, the end; FlagRangeIncl says the end was written with '..'.
 //
 // The lifetimes a type's use names, 'Cursor['a]', 'Parser['s, 'r]', or
 // 'Cursor['a, T]' beside its type arguments, are taken out of the arguments
@@ -611,13 +617,13 @@ static Nodes *parseIndexArgsIn(ParseState *parse, FnCallNode *fncall) {
     lexNextToken();
     Nodes *args = newNodes(2);
     INode *start = NULL;
-    if (!lexIsToken(DotDotToken) && !lexIsToken(EllipsisToken)) {
+    if (!lexIsRangeOp()) {
         if (lexIsToken(RBracketToken)) {
             lexNextToken();
             return args;
         }
         start = parseIndexArg(parse);
-        if (!lexIsToken(DotDotToken) && !lexIsToken(EllipsisToken)) {
+        if (!lexIsRangeOp()) {
             nodesAdd(&args, start);
             while (lexIsToken(CommaToken)) {
                 lexNextToken();
@@ -628,18 +634,23 @@ static Nodes *parseIndexArgsIn(ParseState *parse, FnCallNode *fncall) {
         }
     }
 
-    // A range
+    // A range. '..' runs through its end and '..<' stops before it; a range
+    // with no end runs to the array's end, which '..' and '..<' would both reach
     fncall->flags |= FlagRange;
+    int stopsbefore = lexIsToken(DotDotLessToken);
     if (lexIsToken(EllipsisToken))
-        fncall->flags |= FlagRangeIncl;
+        parseRangeEllipsis();
     lexNextToken();
     if (start == NULL)
         start = (INode*)newULitNode(0, (INode*)usizeType);
     nodesAdd(&args, start);
-    if (!lexIsToken(RBracketToken))
+    if (!lexIsToken(RBracketToken)) {
         nodesAdd(&args, parseSimpleExpr(parse));
-    else if (fncall->flags & FlagRangeIncl)
-        errorMsgLex(ErrorBadIndex, "A range that includes its end, '...', must say where it ends");
+        if (!stopsbefore)
+            fncall->flags |= FlagRangeIncl;
+    }
+    else if (stopsbefore)
+        errorMsgLex(ErrorBadIndex, "A range that stops before its end, '..<', must say where it ends; 'a..' runs to the end");
     parseCloseTok(RBracketToken);
     return args;
 }

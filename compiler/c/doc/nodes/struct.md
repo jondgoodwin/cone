@@ -1548,7 +1548,7 @@ type is not an implementer.
 which answers whether a type is `str` or lends it, through any references:
 `==` and the orderings between two kinds of text replace a lending operand by its
 view (`fnCallLentOperands`, before the dispatch), so `String == So[str]` is
-`str`'s `==` on two borrows whichever side is which; a borrowed range `&x[a..b]`
+`str`'s `==` on two borrows whichever side is which; a borrowed range `&x[a..<b]`
 of such a type is the call of `slice`, `sliceFrom` or `sliceThrough`
 (`fnCallLowerStrRange`, which drops the borrow the parser put around the
 receiver; fncall.md says how a temporary it hid is taken); and a literal wanted as a struct that declares a

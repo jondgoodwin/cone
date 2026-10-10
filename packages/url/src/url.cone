@@ -336,7 +336,7 @@ fn trimEnds(text &Array[u8]) &Array[u8] {
   mut b = text.len;
   while a < b and text[a] <= 0x20u8 {a = a + 1usize;}
   while b > a and text[b - 1usize] <= 0x20u8 {b = b - 1usize;}
-  &text[a .. b];
+  &text[a ..< b];
 }
 
 // Whether s is a scheme: a letter, then letters, digits, '+', '-', '.'
@@ -373,7 +373,7 @@ fn parseInto(t &Array[u8], u &mut Url) UrlError {
   while i < t.len and t[i] != ':' and t[i] != '/' and t[i] != '?' and t[i] != '#' {i = i + 1usize;}
   mut pos = 0usize;
   if i < t.len and t[i] == ':' {
-    imm s = &t[0usize .. i];
+    imm s = &t[0usize ..< i];
     if not isScheme(s) {return UrlError.make(0usize, "a scheme is a letter, then letters, digits, '+', '-' and '.'");}
     mut k = 0usize;
     while k < s.len {
@@ -388,14 +388,14 @@ fn parseInto(t &Array[u8], u &mut Url) UrlError {
     imm start = pos + 2usize;
     mut end = start;
     while end < t.len and t[end] != '/' and t[end] != '?' and t[end] != '#' {end = end + 1usize;}
-    imm e = parseAuthority(&t[start .. end], start, u);
+    imm e = parseAuthority(&t[start ..< end], start, u);
     if not e.isNone() {return e;}
     pos = end;
   }
   // The path, up to '?' or '#'
   mut end = pos;
   while end < t.len and t[end] != '?' and t[end] != '#' {end = end + 1usize;}
-  imm pe = tidy(&t[pos .. end], pos, &mut u.path);
+  imm pe = tidy(&t[pos ..< end], pos, &mut u.path);
   if not pe.isNone() {return pe;}
   pos = end;
   // The query, up to '#'
@@ -403,7 +403,7 @@ fn parseInto(t &Array[u8], u &mut Url) UrlError {
     u.hasQuery = true;
     end = pos + 1usize;
     while end < t.len and t[end] != '#' {end = end + 1usize;}
-    imm qe = tidy(&t[pos + 1usize .. end], pos + 1usize, &mut u.query);
+    imm qe = tidy(&t[pos + 1usize ..< end], pos + 1usize, &mut u.query);
     if not qe.isNone() {return qe;}
     pos = end;
   }
@@ -427,7 +427,7 @@ fn parseAuthority(a &Array[u8], base usize, u &mut Url) UrlError {
   }
   mut hostStart = 0usize;
   if at < a.len {
-    imm ui = &a[0usize .. at];
+    imm ui = &a[0usize ..< at];
     k = 0usize;
     while k < ui.len {
       if isControl(ui[k]) {return UrlError.make(base + k, "a URL holds a control character");}
@@ -444,7 +444,7 @@ fn parseAuthority(a &Array[u8], base usize, u &mut Url) UrlError {
     mut close = 1usize;
     while close < hp.len and hp[close] != ']' {close = close + 1usize;}
     if close == hp.len {return UrlError.make(hb, "an IPv6 address in a URL ends with ']'");}
-    imm v6 = &hp[1usize .. close];
+    imm v6 = &hp[1usize ..< close];
     if v6.len > 0usize and (v6[0usize] == 'v' or v6[0usize] == 'V') {
       return UrlError.make(hb + 1usize, "an IPvFuture address ('[v1.x]') is not read yet");
     }
@@ -464,7 +464,7 @@ fn parseAuthority(a &Array[u8], base usize, u &mut Url) UrlError {
     if hostEnd < hp.len and hp[hostEnd] != ':' {return UrlError.make(hb + hostEnd, "an IPv6 address in brackets is followed by ':' and its port, or nothing");}
   } else {
     while hostEnd < hp.len and hp[hostEnd] != ':' {hostEnd = hostEnd + 1usize;}
-    imm h = &hp[0usize .. hostEnd];
+    imm h = &hp[0usize ..< hostEnd];
     k = 0usize;
     while k < h.len {
       imm c = h[k];
@@ -581,16 +581,16 @@ pub fn removeDotSegments(text &str) String {
   imm n = path.len;
   while i < n {
     imm rest = &path[i ..];
-    if rest.len >= 3usize and &rest[0usize .. 3usize] == "../" {
+    if rest.len >= 3usize and &rest[0usize ..< 3usize] == "../" {
       i = i + 3usize;                                     // A
-    } elif rest.len >= 2usize and &rest[0usize .. 2usize] == "./" {
+    } elif rest.len >= 2usize and &rest[0usize ..< 2usize] == "./" {
       i = i + 2usize;                                     // A
-    } elif rest.len >= 3usize and &rest[0usize .. 3usize] == "/./" {
+    } elif rest.len >= 3usize and &rest[0usize ..< 3usize] == "/./" {
       i = i + 2usize;                                     // B: '/./' becomes '/'
     } elif rest == "/." {
       out.append("/");                                    // B: '/.' becomes '/'
       i = n;
-    } elif rest.len >= 4usize and &rest[0usize .. 4usize] == "/../" {
+    } elif rest.len >= 4usize and &rest[0usize ..< 4usize] == "/../" {
       out = dropLastSegment(&out);                        // C
       i = i + 3usize;
     } elif rest == "/.." {
@@ -603,7 +603,7 @@ pub fn removeDotSegments(text &str) String {
       // E: the first segment, with its '/', moves to the output
       mut j = i + 1usize;
       while j < n and path[j] != '/' {j = j + 1usize;}
-      out.appendBytes(&path[i .. j]);
+      out.appendBytes(&path[i ..< j]);
       i = j;
     }
   }
@@ -616,7 +616,7 @@ fn dropLastSegment(s &String) String {
   mut k = v.len;
   while k > 0usize {
     k = k - 1usize;
-    if v[k] == '/' {return String.from(&v[0usize .. k]);}
+    if v[k] == '/' {return String.from(&v[0usize ..< k]);}
   }
   String.empty();
 }
@@ -631,7 +631,7 @@ fn merge(base &Url, rel &str) String {
   imm v = base.path.view();
   mut k = v.len;
   while k > 0usize and v[k - 1usize] != '/' {k = k - 1usize;}
-  mut out = String.from(&v[0usize .. k]);
+  mut out = String.from(&v[0usize ..< k]);
   out.append(rel);
   out;
 }

@@ -1,0 +1,403 @@
+// What the range notation promises, beyond each_success's mechanics: 'a .. b'
+// runs through b and 'a ..< b' stops before it; a range with no 'by' counts up and is
+// empty when it starts past its end (a direction is never guessed); the step's sign
+// says which way it runs, however the step is written; and a fractional step is
+// computed as the first value plus the count of steps times the step, never by adding
+// the step up, so no rounding builds up in the counter.
+//
+// Every printed value was checked by hand against the source. The counts of a float
+// range are the ones that tell the two ways apart: in f32 ten additions of 0.1 reach
+// 1.0000001, which is past 1.0, so a range that adds up its step visits ten values and
+// not eleven; in f64 they reach 0.9999999999999999, which is short of 1.0, so a range
+// stopping before 1.0 visits eleven values and not ten. Whole-number and
+// binary-fraction steps are exact either way and are here for the shape of the run.
+//
+// Doubles written 'f64' are given their type by a suffix: an unmarked 0.1 is an f32.
+
+mod each_ranges;
+
+import stdio use *;
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn showF(label &str, n f64) {
+  printStr(label);
+  printStr(" = ");
+  printFloat(n);
+  printStr("\n");
+}
+
+fn showB(label &str, b bool) {
+  printStr(label);
+  printStr(" = ");
+  if b { printStr("yes"); } else { printStr("no"); }
+  printStr("\n");
+}
+
+// -------- through, and before --------
+
+// 3 through 7 is five numbers summing to 25; 3 before 7 is four, summing to 18. A
+// range of one number through itself visits it once, before itself never.
+fn bounds() {
+  mut sum = 0;
+  mut count = 0;
+  each i in 3 .. 7 {
+    sum += i;
+    count += 1;
+  }
+  show("through-sum", sum);
+  show("through-count", count);
+
+  mut sum2 = 0;
+  mut count2 = 0;
+  each i in 3 ..< 7 {
+    sum2 += i;
+    count2 += 1;
+  }
+  show("before-sum", sum2);
+  show("before-count", count2);
+
+  mut same = 0;
+  each i in 4 .. 4 {
+    same += 1;
+  }
+  show("one-through-itself", same);
+
+  mut none = 0;
+  each i in 4 ..< 4 {
+    none += 1;
+  }
+  show("none-before-itself", none);
+}
+
+// -------- empty, never reversed --------
+
+// A range that starts past its end runs no pass: without a 'by' it counts up, so
+// '6 .. 2' is empty, and a step that points away from the end is empty too.
+fn empty() {
+  mut count = 0;
+  each i in 6 .. 2 {
+    count += 1;
+  }
+  each i in 6 ..< 2 {
+    count += 1;
+  }
+  each i in 2 .. 6 by -1 {
+    count += 1;
+  }
+  each i in 2 ..< 6 by -1 {
+    count += 1;
+  }
+  each i in 6 .. 2 by 1 {
+    count += 1;
+  }
+  each i in 6 ..< 2 by 3 {
+    count += 1;
+  }
+  show("empty-count", count);
+}
+
+// -------- counting down --------
+
+// A negative step counts down: 6 through 2 is 6 5 4 3 2 (sum 20, five numbers), and 6
+// before 2 is 6 5 4 3 (sum 18, four). Steps of more than one land where they land:
+// 10 through 1 by -3 is 10 7 4 1 (22), and 10 before 1 by -3 is 10 7 4 (21).
+fn down() {
+  mut first = -1;
+  mut last = -1;
+  mut sum = 0;
+  mut count = 0;
+  each i in 6 .. 2 by -1 {
+    if count == 0 {
+      first = i;
+    }
+    last = i;
+    sum += i;
+    count += 1;
+  }
+  show("down-first", first);
+  show("down-last", last);
+  show("down-sum", sum);
+  show("down-count", count);
+
+  mut sum2 = 0;
+  mut count2 = 0;
+  each i in 6 ..< 2 by -1 {
+    sum2 += i;
+    count2 += 1;
+  }
+  show("down-before-sum", sum2);
+  show("down-before-count", count2);
+
+  mut sum3 = 0;
+  each i in 10 .. 1 by -3 {
+    sum3 += i;
+  }
+  show("down-by-three-through", sum3);
+
+  mut sum4 = 0;
+  each i in 10 ..< 1 by -3 {
+    sum4 += i;
+  }
+  show("down-by-three-before", sum4);
+}
+
+// -------- the step's sign, known only when the loop runs --------
+
+// A step that is not a literal is evaluated once, before the first pass, and its
+// sign says which way the range runs: the same range is a count up, a count down or
+// empty by the step it is given. A step of 0 runs no pass (it would never move).
+fn walk(from i32, to i32, step i32) i32 {
+  mut sum = 0;
+  each i in from .. to by step {
+    sum += i;
+  }
+  sum;
+}
+
+fn walkBefore(from i32, to i32, step i32) i32 {
+  mut sum = 0;
+  each i in from ..< to by step {
+    sum += i;
+  }
+  sum;
+}
+
+// A held step that carries the counter past its type's extreme wraps it, and the loop
+// sees the wrap as the counter moving against the range's direction: 250 through 255
+// by 2 is 250 252 254, and the step after 254 (256) is out of a u8; -120 through -128
+// by -4 is -120 -124 -128, and the step after -128 is out of an i8
+fn countU8(from u8, to u8, step u8) i64 {
+  mut count = 0i64;
+  each x in from .. to by step {
+    count += 1i64;
+  }
+  count;
+}
+
+fn countI8(from i8, to i8, step i8) i64 {
+  mut count = 0i64;
+  each x in from .. to by step {
+    count += 1i64;
+  }
+  count;
+}
+
+fn signs() {
+  show("held-step-at-the-u8-extreme", countU8(250u8, 255u8, 2u8));
+  show("held-step-at-the-i8-extreme", countI8(-120i8, -128i8, -4i8));
+  // 0 5 10
+  show("held-up", i64.from(walk(0, 10, 5)));
+  // 10 5 0
+  show("held-down", i64.from(walk(10, 0, -5)));
+  // 0 5, the end not reached
+  show("held-up-before", i64.from(walkBefore(0, 10, 5)));
+  // 10 5
+  show("held-down-before", i64.from(walkBefore(10, 0, -5)));
+  // pointing away from the end, and a step of 0: nothing
+  show("held-wrong-way-up", i64.from(walk(0, 10, -5)));
+  show("held-wrong-way-down", i64.from(walk(10, 0, 5)));
+  show("held-zero-step", i64.from(walk(0, 10, 0)));
+  // a literal step of 0 is the same
+  mut count = 0;
+  each i in 0 .. 10 by 0 {
+    count += 1;
+  }
+  show("literal-zero-step", count);
+}
+
+// -------- a fractional step: first + count * step --------
+
+fn fractions() {
+  // f32: 0 .. 1 by 0.1 is eleven numbers, the last 10 * 0.1 = 1.0 exactly in f32. Adding
+  // 0.1 up ten times reaches 1.0000001, and would have visited ten
+  mut count = 0;
+  mut last = -1.0f32;
+  each x in 0.0f32 .. 1.0f32 by 0.1f32 {
+    count += 1;
+    last = x;
+  }
+  show("f32-through-count", count);
+  showB("f32-through-last-is-one", last == 1.0f32);
+
+  // f64: 0 before 1 by 0.1 is ten numbers, the last 9 * 0.1 (0.9); adding up would reach
+  // 0.9999999999999999 after ten steps, which is before 1.0, and visit eleven
+  mut count2 = 0;
+  mut last2 = -1.0f64;
+  each x in 0.0f64 ..< 1.0f64 by 0.1f64 {
+    count2 += 1;
+    last2 = x;
+  }
+  show("f64-before-count", count2);
+  showB("f64-before-last-is-nine-tenths", last2 == 0.9f64);
+
+  // f64 through: eleven, the last exactly 1.0
+  mut count3 = 0;
+  mut last3 = -1.0f64;
+  each x in 0.0f64 .. 1.0f64 by 0.1f64 {
+    count3 += 1;
+    last3 = x;
+  }
+  show("f64-through-count", count3);
+  showB("f64-through-last-is-one", last3 == 1.0f64);
+
+  // A start that is not zero: 1000000.0 before 1000001.0 by 0.25 is four numbers
+  mut count4 = 0;
+  mut sum4 = 0.0f64;
+  each x in 1000000.0f64 ..< 1000001.0f64 by 0.25f64 {
+    count4 += 1;
+    sum4 += x;
+  }
+  show("offset-count", count4);
+  // 4 * 1000000 + (0 + 0.25 + 0.5 + 0.75) = 4000001.5
+  showB("offset-sum-is-4000001.5", sum4 == 4000001.5f64);
+
+  // Counting down: 1.0 through 0.0 by -0.25 is 1 0.75 0.5 0.25 0, sum 2.5
+  mut count5 = 0;
+  mut sum5 = 0.0f64;
+  each x in 1.0f64 .. 0.0f64 by -0.25f64 {
+    count5 += 1;
+    sum5 += x;
+  }
+  show("fraction-down-count", count5);
+  showF("fraction-down-sum", sum5);
+
+  // No 'by': a float range counts up by 1.0 from the first value, 0.5 1.5 2.5 (3.5 is
+  // past 3.0)
+  mut count6 = 0;
+  mut sum6 = 0.0f64;
+  each x in 0.5f64 .. 3.0f64 {
+    count6 += 1;
+    sum6 += x;
+  }
+  show("float-no-by-count", count6);
+  showF("float-no-by-sum", sum6);
+
+  // Empty in either direction
+  mut count7 = 0;
+  each x in 1.0f64 .. 0.0f64 {
+    count7 += 1;
+  }
+  each x in 0.0f64 .. 1.0f64 by -0.1f64 {
+    count7 += 1;
+  }
+  show("float-empty", count7);
+}
+
+// A fractional step held in a variable, which is how a step comes in code that does
+// not know it: its sign is read once and the count is the same
+fn fractionHeld(dx f64) i64 {
+  mut count = 0;
+  each x in 0.0f64 .. 1.0f64 by dx {
+    count += 1;
+  }
+  count;
+}
+
+fn heldFraction() {
+  show("held-fraction-up", fractionHeld(0.1f64));
+  show("held-fraction-zero", fractionHeld(0.0f64));
+  show("held-fraction-wrong-way", fractionHeld(-0.1f64));
+}
+
+// -------- the rest of the loop around a stepped range --------
+
+// 'break', 'continue' and 'else' behave as they do over any range: a continue does
+// not skip the count, so the later values are the ones a loop without it reaches
+fn controls() {
+  mut sum = 0.0f64;
+  each x in 0.0f64 .. 1.0f64 by 0.25f64 {
+    if x == 0.5f64 {
+      continue;
+    }
+    sum += x;
+  }
+  // 0 + 0.25 + 0.75 + 1 = 2
+  showF("continue-skips-one", sum);
+
+  mut seen = 0;
+  each x in 0.0f64 .. 1.0f64 by 0.25f64 {
+    seen += 1;
+    if seen == 3 {
+      break;
+    }
+  }
+  show("break-after-three", seen);
+
+  show("else-of-an-empty-range", emptyElse());
+  show("found-counting-down", foundDown(4i64));
+  show("not-found-counting-down", foundDown(5i64));
+  show("found-fraction", foundFraction());
+}
+
+// An empty range runs out at once, into its 'else'
+fn emptyElse() i64 {
+  each x in 3i64 ..< 3i64 {
+    break 7i64;
+  } else {
+    -1i64;
+  }
+}
+
+// Counting down by 2 from 10 reaches the even numbers only
+fn foundDown(wanted i64) i64 {
+  each x in 10i64 .. 0i64 by -2i64 {
+    if x == wanted {
+      break x;
+    }
+  } else {
+    -1i64;
+  }
+}
+
+// The first multiple of 0.1 (in f64, counted from zero) that is above 0.5 is the sixth,
+// 6 * 0.1 = 0.6000000000000001; its number is what the loop gives
+fn foundFraction() i64 {
+  mut n = 0i64;
+  each x in 0.0f64 .. 1.0f64 by 0.1f64 {
+    if x > 0.5f64 {
+      break n;
+    }
+    n += 1i64;
+  } else {
+    -1i64;
+  }
+}
+
+// The end is a value of the range, read once before the first pass: an end that the
+// body changes does not move the range (a loop that needs that is a 'while')
+fn endReadOnce() {
+  mut n = 3;
+  mut count = 0;
+  each i in 0 ..< n {
+    n += 1;
+    count += 1;
+  }
+  show("end-read-once-passes", count);
+  show("end-read-once-n-after", n);
+
+  mut m = 3;
+  mut count2 = 0;
+  each i in 0 .. m {
+    m += 1;
+    count2 += 1;
+  }
+  show("end-read-once-through-passes", count2);
+}
+
+fn main() i32 {
+  bounds();
+  empty();
+  down();
+  signs();
+  fractions();
+  heldFraction();
+  controls();
+  endReadOnce();
+  0i32;
+}

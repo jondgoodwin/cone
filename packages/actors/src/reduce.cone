@@ -1,0 +1,250 @@
+// Parallel reductions: 'xs.parallel().sum()', 'fold' and 'findFirst', run on the
+// actors' workers (the package's header, PARALLEL LOOPS, and parallel.cone). The
+// view 'parallel()' gives is core's (ParallelSlice for a slice, an array or a list,
+// and for the runs 'chunks' gives and the cursors 'indexed' and 'zip' give, the cursor
+// itself, which has 'len' and 'at'; a number range has none until the new range syntax); these are
+// the functions the compiler calls for the three methods, written as a call on the
+// view ('v.sum()' is 'actors.parSum(v)'), so a module that calls one imports actors,
+// as one that writes a 'parallel each' does.
+//
+//   imm total = xs.parallel().sum();                         // a list of numbers
+//   imm top = xs.parallel().fold(0.0, (m, x) => max(m, *x), (a, b) => max(a, b));
+//   imm hit = xs.parallel().findFirst(x => **x > 100);       // an Option of the item
+//
+//   sum()                      the total of the items (0 for none), for a view of
+//                              numbers (integers, f32, f64) or of borrows of them
+//   fold(init, step, combine)  'step(acc, item)' folds a block of items into an
+//                              accumulator that starts as a copy of 'init', and
+//                              'combine(a, b)' joins the accumulators of two
+//                              neighbouring blocks, a before b
+//   findFirst(pred)            the EARLIEST item, by position, that 'pred' (given a
+//                              borrow of the item) answers true for; None if none
+//
+// THE RESULT IS THE SAME ON EVERY RUN AND WITH ANY NUMBER OF WORKERS, a float sum
+// included. The items are cut into blocks by their count alone (reduceBlocks),
+// never by the workers or by who steals what; a block is folded front to back
+// from a copy of 'init'; and the blocks' accumulators are joined by a tree whose
+// shape is fixed by the block count: the left half of the blocks and the right
+// half are each reduced to one accumulator, in parallel, and 'combine' joins the
+// two, the left one first. That is the split tree of the loop, combined pairwise
+// up the tree on the workers, and only the final value reaches the caller. So
+// 'combine' need only be ASSOCIATIVE, not commutative (it may join text, or
+// matrices, in order); and 'init' must be an IDENTITY of 'combine' (joining it to
+// an accumulator changes nothing), since each block begins from a copy of it.
+// A float sum is therefore not the serial sum's last bits, and is the same bits
+// whatever the workers.
+//
+// THE CLOSURES run on several workers at once: each must be Shareable, as a
+// 'parallel each' body is (one that changes a variable it borrows, or holds an Rc,
+// is refused), and are called with the accumulator by value and the item as the
+// view gives it. 'init' is copied for each block, so its type must have no
+// finalizer: a number, a plain struct (a sum, a box, a bounds); to build a list
+// or text in parallel, use '<- parallel each ... yield'.
+//
+// findFirst's later blocks are given up early: a block that begins after a
+// block already found a match is skipped, and one under way stops at its next
+// look (every 32 items). Only blocks after the earliest match are given up, so
+// the answer is the same.
+//
+// A view of fewer than 128 items is one block, folded at once on the caller's
+// thread with no worker started; a bigger one is cut into blocks of at least
+// 128 items, at most 256 of them.
+
+// The fewest items a block has (the floor a 'parallel each' piece has), and the
+// most blocks a view is cut into
+const reduceMinBlock = 128usize;
+const reduceMaxBlocks = 256usize;
+
+// How many items a block holds when n are cut: n / blocks, rounded up, where the
+// blocks are n / 128 rounded up, at most 256. A function of n alone
+fn blockLen(n usize) usize {
+  mut blocks = (n + reduceMinBlock - 1usize) / reduceMinBlock;
+  if blocks > reduceMaxBlocks {
+    blocks = reduceMaxBlocks;
+  }
+  (n + blocks - 1usize) / blocks;
+}
+
+// What the tree of blocks shares: the callables (lent from the caller's frame,
+// held as addresses), how many items there are, and the length of a block
+struct TreeCtx {
+  pub leaf *u8;
+  pub combine *u8;
+  pub n usize;
+  pub blk usize;
+}
+
+// The two halves of a node, run as a loop of two: the left (item 0) and the
+// right (item 1) each write their accumulator into a slot of the node's own
+struct Halves {
+  pub ctx *TreeCtx;
+  pub b0 usize;
+  pub mid usize;
+  pub b1 usize;
+  pub slots *u8;
+}
+
+// The blocks b0 to b1 (exclusive) reduced to one accumulator. One block is the
+// leaf's; more are halved at the middle, the halves reduced at the same time (the
+// caller works on one while a worker may take the other) and joined, left first
+fn reduceNode[A, L fn(lo usize, hi usize) A + Shareable, M fn(a A, b A) A + Shareable](
+    ctx *TreeCtx, b0 usize, b1 usize) A {
+  if b1 - b0 == 1usize {
+    imm lo = b0 * (*ctx).blk;
+    imm end = lo + (*ctx).blk;
+    imm hi = if end < (*ctx).n { end; } else { (*ctx).n; };
+    imm leaf = (*ctx).leaf as &L;
+    return leaf(lo, hi);
+  }
+  imm mid = b0 + (b1 - b0) / 2usize;
+  imm slots = libc.malloc(2usize * mem.sizeof[A]());
+  if slots as usize == 0usize {
+    die("actors: out of memory for a parallel reduction");
+  }
+  mut halves = new Halves(ctx, b0, mid, b1, slots);
+  rangeRun(0usize, 2usize, 1usize, &halvesPiece[A, L, M], &mut halves as *Halves as *u8);
+  imm left = mem.readRaw[A](slots as *A);
+  imm right = mem.readRaw[A]((slots as *A) + 1usize);
+  libc.free(slots);
+  imm combine = (*ctx).combine as &M;
+  combine(left, right);
+}
+
+fn halvesPiece[A, L fn(lo usize, hi usize) A + Shareable, M fn(a A, b A) A + Shareable](
+    data *u8, lo usize, hi usize) {
+  imm h = data as *Halves;
+  mut i = lo;
+  while i < hi {
+    if i == 0usize {
+      mem.writeRaw[A]((*h).slots as *A, reduceNode[A, L, M]((*h).ctx, (*h).b0, (*h).mid));
+    } else {
+      mem.writeRaw[A](((*h).slots as *A) + 1usize, reduceNode[A, L, M]((*h).ctx, (*h).mid, (*h).b1));
+    }
+    i = i + 1usize;
+  }
+}
+
+// n items (n > 0) reduced: 'leaf(lo, hi)' folds the items lo up to hi into a fresh
+// accumulator, and 'combine' joins two neighbours. The same result for any workers
+fn reduceBlocks[A, L fn(lo usize, hi usize) A + Shareable, M fn(a A, b A) A + Shareable](
+    n usize, leaf &L, combine &M) A {
+  imm blk = blockLen(n);
+  imm blocks = (n + blk - 1usize) / blk;
+  mut ctx = new TreeCtx(leaf as *L as *u8, combine as *M as *u8, n, blk);
+  reduceNode[A, L, M](&mut ctx as *TreeCtx, 0usize, blocks);
+}
+
+// The accumulator a fold starts each block from: a copy of init, which is only
+// right for a type with no finalizer (an owner copied would be freed twice;
+// parFold has refused one)
+fn identityOf[A](init &A) A {
+  mem.readRaw[A](init as *A);
+}
+
+// The total of the numbers a view reads (0 for none)
+pub fn parSum[N, V ParallelNumberAt[N]](v V) N where N is Integer or N is f32 or N is f64 {
+  imm n = v.len();
+  if n == 0usize {
+    return N.from(0i32);
+  }
+  imm leaf = fn(lo usize, hi usize) N {
+    mut s = N.from(0i32);
+    mut k = lo;
+    while k < hi {
+      s = s + v.numberAt(k);
+      k = k + 1usize;
+    }
+    s;
+  };
+  imm combine = fn(a N, b N) N { a + b; };
+  reduceBlocks(n, &leaf, &combine);
+}
+
+// 'init', then 'step' given the accumulator so far and each item, a block at a
+// time; the blocks' accumulators joined by 'combine'
+pub fn parFold[Item, A, V RandomAccess[Item], S fn(acc A, x Item) A + Shareable, M fn(a A, b A) A + Shareable](
+    v V, init A, step S, combine M, file &Array[u8] = srcFile(), line u32 = srcLine()) A {
+  imm n = v.len();
+  if n == 0usize {
+    return init;
+  }
+  if mem.needsFinal[A]() {
+    panic("fold: the identity is copied for each block, so its type must have no finalizer; build a list or text with '<- parallel each ... yield'", file, line);
+  }
+  imm leaf = fn(lo usize, hi usize) A {
+    mut acc = identityOf[A](&init);
+    mut k = lo;
+    while k < hi {
+      acc = step(acc, v.at(k));
+      k = k + 1usize;
+    }
+    acc;
+  };
+  reduceBlocks(n, &leaf, &combine);
+}
+
+// What the blocks of a findFirst share: the lowest position any block has found a
+// match at (atomic; 'n' while none has) and the scan of one block
+struct FirstCtx {
+  pub best usize;
+  pub scan *u8;
+}
+
+// Run the blocks of a findFirst, one a piece, and wait
+fn runFirst[Q fn(b usize, best *usize) + Shareable](blocks usize, scan &Q, ctx *FirstCtx) {
+  (*ctx).scan = scan as *Q as *u8;
+  if blocks == 1usize {
+    firstPiece[Q](ctx as *u8, 0usize, 1usize);
+  } else {
+    rangeRun(0usize, blocks, 1usize, &firstPiece[Q], ctx as *u8);
+  }
+}
+
+// Blocks lo to hi of a findFirst, each scanned
+fn firstPiece[Q fn(b usize, best *usize) + Shareable](data *u8, lo usize, hi usize) {
+  imm c = data as *FirstCtx;
+  imm scan = (*c).scan as &Q;
+  mut b = lo;
+  while b < hi {
+    scan(b, &(*c).best as *usize);
+    b = b + 1usize;
+  }
+}
+
+// The first item, by position, that 'pred' is true of (given a borrow of it).
+// A block scans its items front to back and records the position of its first
+// match in 'best' (the lowest of any block's); it stops, and a block that has not
+// begun is not scanned, once 'best' is before the place it is at, since no match
+// it could find would be earlier. A look at 'best' is every 32 items. The
+// answer is the lowest position any block found, so it does not depend on which
+// block finished first
+pub fn parFindFirst[Item, V RandomAccess[Item], P fn(x &Item) bool + Shareable](v V, pred P) Option[Item] {
+  imm n = v.len();
+  if n == 0usize {
+    return None[Item][];
+  }
+  imm blk = blockLen(n);
+  imm blocks = (n + blk - 1usize) / blk;
+  imm scan = fn(b usize, best *usize) {
+    mut k = b * blk;
+    imm end = if k + blk < n { k + blk; } else { n; };
+    while k < end {
+      if (k & 31usize) == 0usize and mem.atomicLoad[usize](best, MemOrder.Acquire[]) < k {
+        return;
+      }
+      imm item = v.at(k);
+      if pred(&item) {
+        mem.atomicMin[usize](best, k, MemOrder.AcqRel[]);
+        return;
+      }
+      k = k + 1usize;
+    }
+  };
+  mut ctx = new FirstCtx(n, null);
+  runFirst(blocks, &scan, &mut ctx as *FirstCtx);
+  imm at = mem.atomicLoad[usize](&ctx.best as *usize, MemOrder.Acquire[]);
+  if at >= n {
+    return None[Item][];
+  }
+  Some[Item][v.at(at)];
+}
