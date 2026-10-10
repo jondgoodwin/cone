@@ -159,6 +159,29 @@ name = "sparse-tags-select-a-vtable-by-comparison"
 target = "preir"
 contains = ["icmp eq i32 %tag, 8192", "%vtablefortag = select i1"]
 
+[scenario.enum_variant_forms]
+category = "run"
+description = "A variant declared as a type ('Number(i64);') beside a struct variant and a bare name in one enum, each arm's binding following its own variant's declaration; bound through a value, a borrow and a bound 'if', with a guard, as a copy, a move that finalizes once and a borrow of a reference; in a generic enum, an extension and with a pinned tag; and core's Option and Result"
+tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
+
+[[scenario.enum_variant_forms.run]]
+name = "release"
+options = []
+
+[[scenario.enum_variant_forms.run]]
+name = "debug"
+options = ["--debug"]
+
+# A variant declared as a type is laid out as a struct variant of one field is,
+# so the nullable-pointer optimization sees it too: 'Held', an empty variant and
+# one holding a reference, is the bare pointer (runtime cannot see that), with no
+# struct emitted for the enum or either variant
+[[scenario.enum_variant_forms.check]]
+name = "type-variant-nullable-ptr-has-no-tag-and-no-struct"
+target = "preir"
+contains = ["%h = alloca ptr, align 8"]
+excludes = ["%Held", "%Some1", "%Nothing"]
+
 [scenario.enum_nullable_ptr]
 category = "run"
 description = "The untagged nullable-pointer layout, the Option[&T] shape, and every use of it"
@@ -416,6 +439,18 @@ tags = ["typecheck", "runtime"]
 category = "reject"
 description = "An enum declaration's head: 'enum trait', '@unsized' where nothing pads, an empty enum, and variants inside a trait"
 tags = ["parse"]
+
+[scenario.enum_parse_variant_forms]
+category = "reject"
+description = "A variant declared as a type in an enum that has fields every variant shares, wherever the field is written; the same variant, with every form of variant beside it, accepted where there is none; and a name with a type, in either case or with a tuple type, always a field"
+tags = ["parse"]
+diagnostics = 2
+
+[scenario.enum_typecheck_variant_forms]
+category = "reject"
+description = "Reading the contents of a variant declared as a type by a field name it does not have, and binding them through a managed reference, which cannot lend them yet"
+tags = ["typecheck"]
+diagnostics = 2
 
 [scenario.enum_parse_blocks]
 category = "reject"

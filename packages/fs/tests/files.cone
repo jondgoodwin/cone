@@ -33,7 +33,7 @@ fn makeRoot(name &str) Path {
   imm tempPath = Path.from(cstr.fromPtr(temp).view());
   mut root = Path.from("");
   match fs.absolute(&tempPath) {
-    case imm t Ok { root = t.value.join(name); }
+    case imm t Ok { root = t.join(name); }
     case is Error { require(false, "TEMP has an absolute path"); }
   }
   imm up = root.parent();
@@ -52,7 +52,7 @@ fn shown(root &Path, message &String) String {
 // The message of a Result that must have failed, or "<succeeded>"
 fn messageOf[T](root &Path, r Result[T, fs.FsError]) String {
   match r {
-    case imm e Error { imm m = e.value.message(); shown(root, &m); }
+    case imm e Error { imm m = e.message(); shown(root, &m); }
     case is Ok { String.from("<succeeded>"); }
   }
 }
@@ -70,7 +70,7 @@ fn failsWith[T](root &Path, r Result[T, fs.FsError], want &Array[u8], label &Arr
 // What a file holds, or "<error>"
 fn contents(p &Path) String {
   match fs.readFile(p) {
-    case mut got Ok { mut s = String.empty(); s <=> got.value; s; }
+    case mut got Ok { mut s = String.empty(); s <=> got; s; }
     case is Error { String.from("<error>"); }
   }
 }
@@ -103,7 +103,7 @@ fn wholeFiles(root &Path) {
   roundTrip(root, "large.bin", large.view(), "ten megabytes");
   imm largePath = root.join("large.bin");
   match fs.stat(&largePath) {
-    case imm s Ok { expectInt(s.value.size, 10485760, "stat size of ten megabytes"); }
+    case imm s Ok { expectInt(s.size, 10485760, "stat size of ten megabytes"); }
     case is Error { expect(false, "stat of ten megabytes"); }
   }
 
@@ -134,12 +134,12 @@ fn failures(root &Path) {
     "readFile <root>/missing.txt: No such file or directory", "read a file not there");
   match fs.readFile(&missing) {
     case imm e Error {
-      expect(e.value.notFound(), "not there is notFound");
-      expectInt(i64.from(e.value.code), i64.from(posix.ENOENT), "not there is ENOENT");
-      expectStr(e.value.op.view(), "readFile", "op");
-      expect(e.value.path.view() == missing.view(), "the error holds the path it was given");
-      expect(e.value.other.isEmpty(), "and no second path");
-      expect(not e.value.alreadyExists(), "not there is not alreadyExists");
+      expect(e.notFound(), "not there is notFound");
+      expectInt(i64.from(e.code), i64.from(posix.ENOENT), "not there is ENOENT");
+      expectStr(e.op.view(), "readFile", "op");
+      expect(e.path.view() == missing.view(), "the error holds the path it was given");
+      expect(e.other.isEmpty(), "and no second path");
+      expect(not e.alreadyExists(), "not there is not alreadyExists");
     }
     case is Ok { expect(false, "read a file not there fails"); }
   }
@@ -162,20 +162,20 @@ fn status(root &Path) {
   ok(fs.writeFile(&p, "12345"), "write for stat");
   match fs.stat(&p) {
     case imm s Ok {
-      expectInt(s.value.size, 5, "stat size");
-      expect(s.value.isFile, "stat isFile");
-      expect(not s.value.isDir, "stat file is not isDir");
+      expectInt(s.size, 5, "stat size");
+      expect(s.isFile, "stat isFile");
+      expect(not s.isDir, "stat file is not isDir");
       // Whole seconds, rounded down, and the clock is read before: within a minute
-      imm late = s.value.modified - before;
+      imm late = s.modified - before;
       expect(late > Duration.fromSeconds(-2) and late <= Duration.fromSeconds(60), "modified is now");
-      expectInt(s.value.modified.unixNanos() % 1000000000, 0, "modified is whole seconds");
+      expectInt(s.modified.unixNanos() % 1000000000, 0, "modified is whole seconds");
     }
     case is Error { expect(false, "stat of a file"); }
   }
   match fs.stat(root) {
     case imm s Ok {
-      expect(s.value.isDir, "stat folder isDir");
-      expect(not s.value.isFile, "stat folder is not isFile");
+      expect(s.isDir, "stat folder isDir");
+      expect(not s.isFile, "stat folder is not isFile");
     }
     case is Error { expect(false, "stat of a folder"); }
   }
@@ -206,8 +206,8 @@ fn renaming(root &Path) {
     "rename <root>/b.txt to <root>/c.txt: File exists", "Windows: rename onto a file refused");
   match fs.rename(&b, &c) {
     case imm e Error {
-      expect(e.value.alreadyExists(), "rename onto a file is alreadyExists");
-      expect(e.value.path.view() == b.view() and e.value.other.view() == c.view(), "the error holds both paths");
+      expect(e.alreadyExists(), "rename onto a file is alreadyExists");
+      expect(e.path.view() == b.view() and e.other.view() == c.view(), "the error holds both paths");
     }
     case is Ok { expect(false, "rename onto a file fails"); }
   }

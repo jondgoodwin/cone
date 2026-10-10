@@ -56,7 +56,7 @@ fn order(d &OrderedDict[String, i64]) String {
       case imm k Some {
         if not first { out.append(" "); }
         first = false;
-        out.append(k.value.view());
+        out.append(k.view());
       }
       case is None {break;}
     }
@@ -74,7 +74,7 @@ fn valueOrder(d &OrderedDict[String, i64]) String {
       case imm v Some {
         if not first { out.append(" "); }
         first = false;
-        out.appendUInt(u64.from(*v.value));
+        out.appendUInt(u64.from(*v));
       }
       case is None {break;}
     }
@@ -92,9 +92,9 @@ fn pairs(d &OrderedDict[String, i64]) String {
       case imm e Some {
         if not first { out.append(" "); }
         first = false;
-        out.append(e.value.key.view());
+        out.append(e.key.view());
         out.append("=");
-        out.appendUInt(u64.from(e.value.value));
+        out.appendUInt(u64.from(e.value));
       }
       case is None {break;}
     }
@@ -125,14 +125,14 @@ fn words() {
   expectStr(valueOrder(&d).view(), "1 20 3", "with the new value");
   expectUInt(u64.from(d.len()), 3, "overwriting adds nothing");
   match d.insert(String.from("a"), 21) {
-    case imm old Some {expectInt(old.value, 20, "an overwrite answers the old value");}
+    case imm old Some {expectInt(old, 20, "an overwrite answers the old value");}
     case is None {expect(false, "an overwrite answers the old value");}
   }
   d.insert(String.from("a"), 20);
 
   // Removing from the front: the others close up
   match d.remove("c") {
-    case imm v Some {expectInt(v.value, 1, "the removed value");}
+    case imm v Some {expectInt(v, 1, "the removed value");}
     case is None {expect(false, "c was held");}
   }
   expectStr(order(&d).view(), "a b", "front removed");
@@ -164,7 +164,7 @@ fn words() {
   *d.getOrInsert(String.from("a"), 0) += 1;
   expectStr(pairs(&d).view(), "a=21 d=4 e=8", "and changes a held value where it stands");
   match d.getMut("d") {
-    case mut v Some {*v.value = 9;}
+    case mut v Some {*v = 9;}
     case is None {expect(false, "getMut finds d");}
   }
   *&mut d["e"] += 1;
@@ -199,7 +199,7 @@ fn mismatches(d &OrderedDict[u64, u64], model &List[u64]) i64 {
   while true {
     match c.next() {
       case imm k Some {
-        if i >= model.len() or *k.value != *model[i] { wrong = wrong + 1i64; }
+        if i >= model.len() or *k != *model[i] { wrong = wrong + 1i64; }
         i = i + 1usize;
       }
       case is None {break;}
@@ -209,7 +209,7 @@ fn mismatches(d &OrderedDict[u64, u64], model &List[u64]) i64 {
   i = 0usize;
   while i < model.len() {
     match d.get(model[i]) {
-      case imm v Some {if *v.value != *model[i] * 3u64 { wrong = wrong + 1i64; }}
+      case imm v Some {if *v != *model[i] * 3u64 { wrong = wrong + 1i64; }}
       case is None {wrong = wrong + 1i64;}
     }
     i = i + 1usize;
@@ -316,7 +316,7 @@ fn manyRemovals() {
   while i < 3000u64 {
     if i % 10u64 != 0u64 {
       match d.remove(&i) {
-        case imm v Some {if v.value != i * 3u64 { wrong = wrong + 1i64; }}
+        case imm v Some {if v != i * 3u64 { wrong = wrong + 1i64; }}
         case is None {wrong = wrong + 1i64;}
       }
     }
@@ -356,7 +356,7 @@ fn orderOf(d &OrderedDict[u64, i64]) String {
       case imm k Some {
         if not first { out.append(" "); }
         first = false;
-        out.appendUInt(*k.value);
+        out.appendUInt(*k);
       }
       case is None {break;}
     }
@@ -375,7 +375,7 @@ fn swapping() {
   }
   expectStr(orderOf(&d).view(), "1 2 3 4 5", "five in order");
   match d.swapRemove(&2u64) {
-    case imm v Some {expectInt(v.value, 20, "2's value");}
+    case imm v Some {expectInt(v, 20, "2's value");}
     case is None {expect(false, "2 was held");}
   }
   expectStr(orderOf(&d).view(), "1 5 3 4", "5 took 2's place");
@@ -410,7 +410,7 @@ fn ids() {
   while true {
     match c.next() {
       case imm e Some {
-        if e.value.key.slot != 199u32 - i or e.value.value != i64.from(i) { wrong = wrong + 1i64; }
+        if e.key.slot != 199u32 - i or e.value != i64.from(i) { wrong = wrong + 1i64; }
         i = i + 1u32;
       }
       case is None {break;}
@@ -436,7 +436,7 @@ fn ids() {
   while true {
     match c.next() {
       case imm e Some {
-        if e.value.key.slot != 199u32 - i or e.value.value != i64.from(i) { wrong = wrong + 1i64; }
+        if e.key.slot != 199u32 - i or e.value != i64.from(i) { wrong = wrong + 1i64; }
         i = i + 2u32;
       }
       case is None {break;}
@@ -458,22 +458,22 @@ fn bytesBridge() {
   expectBool(d.contains(libc.view()), true, "by a view");
   expectBool(d.contains(&libc), true, "by a String");
   match d.get("libc") {
-    case imm v Some {expectInt(*v.value, 3, "get, by bytes");}
+    case imm v Some {expectInt(*v, 3, "get, by bytes");}
     case is None {expect(false, "get, by bytes");}
   }
   match d.getCopy("core") {
-    case imm v Some {expectInt(v.value, 1, "a copy of the value");}
+    case imm v Some {expectInt(v, 1, "a copy of the value");}
     case is None {expect(false, "a copy of the value");}
   }
   match d.getMut("stdio") {
-    case mut v Some {*v.value = 20;}
+    case mut v Some {*v = 20;}
     case is None {expect(false, "getMut finds stdio");}
   }
   expectInt(*d["stdio"], 20, "changed through getMut");
   *&mut d["core"] += 10;
   expectStr(pairs(&d).view(), "core=11 stdio=20 libc=3", "in order, changed in place");
   match d.remove("stdio") {
-    case imm v Some {expectInt(v.value, 20, "removed by bytes");}
+    case imm v Some {expectInt(v, 20, "removed by bytes");}
     case is None {expect(false, "removed by bytes");}
   }
   expectStr(order(&d).view(), "core libc", "the others close up");
@@ -493,7 +493,7 @@ fn shared() {
   expectUInt(u64.from(a.len()), 2, "both owners see two entries");
   expectBool(a.contains(&two), true, "contains through a shared owner");
   match a.getCopy(&one) {
-    case imm v Some {expectInt(v.value, 10, "a copy of a value through a shared owner");}
+    case imm v Some {expectInt(v, 10, "a copy of a value through a shared owner");}
     case is None {expect(false, "a copy of a value through a shared owner");}
   }
   match b.getCopy(&nine) {

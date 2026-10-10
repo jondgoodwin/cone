@@ -58,7 +58,7 @@ fn err(s &Array[u8]) { libc.fwrite(s as *u8, 1usize, s.len, libc.stderr()); }
 
 fn number(s &String) u64 {
   match parseUInt(s.view()) {
-    case imm n Some { n.value; }
+    case imm n Some { n; }
     case is None { 0u64; }
   }
 }
@@ -191,7 +191,7 @@ fn child(a &List[String], argc i32, argv **u8) i32 {
   }
   if mode.equals("cwd") {
     match fs.currentDir() {
-      case imm d Ok { out(d.value.view()); }
+      case imm d Ok { out(d.view()); }
       case is Error { out("<error>"); }
     }
     return 0i32;
@@ -239,7 +239,7 @@ fn child(a &List[String], argc i32, argv **u8) i32 {
   if mode.equals("envget") {
     // The same variable as the env package reads it, its UTF-8 in hex
     match env.get(a[3usize].view()) {
-      case imm v Some { imm h = hexOf(v.value.view()); out(h.view()); }
+      case imm v Some { imm h = hexOf(v.view()); out(h.view()); }
       case is None { out("<none>"); }
     }
     return 0i32;
@@ -258,7 +258,7 @@ fn makeRoot(name &str) Path {
   imm tempPath = Path.from(cstr.fromPtr(temp).view());
   mut root = Path.from("");
   match fs.absolute(&tempPath) {
-    case imm t Ok { root = t.value.join(name); }
+    case imm t Ok { root = t.join(name); }
     case is Error { require(false, "TEMP has an absolute path"); }
   }
   imm up = root.parent();
@@ -284,9 +284,9 @@ fn emptyOutput() process.Output {
 fn ran(r Result[process.Output, process.ProcessError], label &Array[u8]) process.Output {
   mut o = emptyOutput();
   match r {
-    case mut ok Ok { o <=> ok.value; }
+    case mut ok Ok { o <=> ok; }
     case imm e Error {
-      imm m = e.value.message();
+      imm m = e.message();
       expectStr(m.view(), "<started>", label);
     }
   }
@@ -298,11 +298,11 @@ fn ran(r Result[process.Output, process.ProcessError], label &Array[u8]) process
 fn failedWith(r Result[process.Output, process.ProcessError], exe &str, root &str, code u32, want &Array[u8], label &Array[u8]) {
   match r {
     case imm e Error {
-      mut m = e.value.message();
+      mut m = e.message();
       if root.len > 0usize { m.replace(root, "<root>" as &str); }
       if exe.len > 0usize { m.replace(exe, "<exe>" as &str); }
       expectStr(m.view(), want, label);
-      expectUInt(u64.from(e.value.code), u64.from(code), label);
+      expectUInt(u64.from(e.code), u64.from(code), label);
     }
     case is Ok { expectStr("<started>", want, label); }
   }
@@ -464,7 +464,7 @@ fn treeStopped(exe &str, root &Path) {
   expectStr(o.stdout.view(), "", "the child never saw its grandchild end");
   mut id = 0u64;
   match fs.readFile(&idFile) {
-    case imm t Ok { id = number(&t.value); }
+    case imm t Ok { id = number(&t); }
     case is Error {}
   }
   require(id != 0u64, "the grandchild said who it was");
@@ -490,7 +490,7 @@ fn workingFolder(exe &str, root &Path) {
   // And '.' is this program's own folder
   imm dot = ran(process.run(c.view(), new process.Options(), "."), "cwd from '.'");
   match fs.currentDir() {
-    case imm d Ok { expectStr(dot.stdout.view(), d.value.view(), "a literal '.' is this program's folder"); }
+    case imm d Ok { expectStr(dot.stdout.view(), d.view(), "a literal '.' is this program's folder"); }
     case is Error { expect(false, "this program's folder"); }
   }
 
@@ -534,7 +534,7 @@ fn workingFolder(exe &str, root &Path) {
   // None given: this program's own
   imm here = ran(process.run(c.view()), "cwd inherited");
   match fs.currentDir() {
-    case imm d Ok { expectStr(here.stdout.view(), d.value.view(), "this program's folder by default"); }
+    case imm d Ok { expectStr(here.stdout.view(), d.view(), "this program's folder by default"); }
     case is Error { expect(false, "this program's folder"); }
   }
   // An empty Path, given, is the same as none given
@@ -695,7 +695,7 @@ fn failures(exe &str, root &Path) {
   failedWith(r, "", "", 2u32,
     "run cone-process-test-no-such-program: The system cannot find the file specified", "no such program");
   match process.run(none.view()) {
-    case imm e Error { expectBool(e.value.notFound(), true, "notFound"); }
+    case imm e Error { expectBool(e.notFound(), true, "notFound"); }
     case is Ok { expect(false, "notFound"); }
   }
 
@@ -706,16 +706,16 @@ fn failures(exe &str, root &Path) {
   // The error holds the folder as a Path, and the variable it was made from is as it was
   match process.run(c.view(), new process.Options(), &missing) {
     case imm e Error {
-      expectStr(e.value.dir.view(), missing.view(), "the error holds the working folder given");
-      expect(e.value.dir.isAbsolute(), "and it is a Path");
+      expectStr(e.dir.view(), missing.view(), "the error holds the working folder given");
+      expect(e.dir.isAbsolute(), "and it is a Path");
     }
     case is Ok { expect(false, "no such folder fails"); }
   }
   // A literal folder that is not there, too
   match process.run(c.view(), new process.Options(), "C:\\cone-process-test-no-such-folder") {
     case imm e Error {
-      expectStr(e.value.dir.view(), "C:\\cone-process-test-no-such-folder", "a literal folder held by the error");
-      expectUInt(u64.from(e.value.code), 267u64, "a literal folder not there");
+      expectStr(e.dir.view(), "C:\\cone-process-test-no-such-folder", "a literal folder held by the error");
+      expectUInt(u64.from(e.code), 267u64, "a literal folder not there");
     }
     case is Ok { expect(false, "a literal folder not there fails"); }
   }
@@ -752,7 +752,7 @@ fn main(argc i32, argv **u8) i32 {
 
   mut exe = Path.from("");
   match process.currentExe() {
-    case mut e Ok { exe <=> e.value; }
+    case mut e Ok { exe <=> e; }
     case is Error { require(false, "currentExe"); }
   }
   imm root = makeRoot("cone-process-test");

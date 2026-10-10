@@ -2,9 +2,9 @@
 // the Option: 'Some[Tr[mut, Leaf]]' is laid out as its enum is, only the
 // reference, with no tag before it. Its trace hands that reference to 'mark'.
 //
-// This compile used to crash: reading 't.value' through 't &Some[Tr[mut,
+// This compile used to crash: holding a variant through 't &Some[Tr[mut,
 // Leaf]]' -- what every match on a borrowed 'Option' of a traced reference
-// does -- makes '*t' a birth, whose slot's record traced the variant as a
+// bound -- makes '*t' a birth, whose slot's record traced the variant as a
 // struct of a tag and a field, a GEP into what is only a pointer, which LLVM
 // rejected. The record's trace now reads the reference where it is, and so
 // does 'mem.trace' of the variant.
@@ -35,25 +35,39 @@ struct Tr is RegionRef, Traced {
 
 struct Leaf { pub n i64; }
 
-// Reads through the borrowed variant, whose dereference is a birth. The
-// roots here are read's two -- 'l', and that birth, the variant, whose trace
-// is the one that crashed -- and main's two: 'o', and the birth of the
-// allocation it wrapped in a Some. All four reach Leaf 7.
-//   roots: 1 1 1 1
+// Reads what the borrowed Some holds, lent by the match (a Some is declared as a
+// type, and binds what it holds). The roots here are read's one -- 'l' -- and
+// main's two: 'o', and the birth of the allocation it wrapped in a Some. All
+// three reach Leaf 7.
+//   roots: 1 1 1
 //   read 7
-fn read(t &Some[Tr[mut, Leaf]]) i64 {
-  imm l = t.value;
+fn read(t &Tr[mut, Leaf]) i64 {
+  imm l = *t;
   printStr("roots:");
   mem.traceRoots(0u32);
   printStr("\n");
   l.n;
 }
 
+// Reads the borrowed variant itself, whose dereference is a birth: a Some,
+// held as itself, whose trace is the one that crashed. The roots here are the
+// birth, and main's two as above. All three reach Leaf 7.
+//   variant roots: 1 1 1
+fn births(t &Some[Tr[mut, Leaf]]) {
+  imm v = *t;
+  printStr("variant roots:");
+  mem.traceRoots(0u32);
+  printStr("\n");
+}
+
 // '&imm', since the binding is a reference into the Option and a parameter's
 // reference may be one of several (main's own match borrows a local, and may)
 fn get(o &imm Option[Tr[mut, Leaf]]) i64 {
   match o {
-    case imm s &Some[Tr[mut, Leaf]] { read(s); }
+    case imm s &Some[Tr[mut, Leaf]] {
+      births(s as &Some[Tr[mut, Leaf]]);
+      read(s);
+    }
     else { 0; }
   }
 }

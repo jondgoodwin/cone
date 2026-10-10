@@ -12,13 +12,13 @@ import url use *;
 fn reads(text &str, want &Array[u8], origin &Array[u8], authority &Array[u8], target &Array[u8]) {
   match Url.parse(text) {
     case imm r Ok {
-      expectStr(r.value.text().view(), want, text);
-      expectStr(r.value.origin().view(), origin, "...its origin");
-      expectStr(r.value.authority().view(), authority, "...its authority");
-      expectStr(r.value.target().view(), target, "...its target");
+      expectStr(r.text().view(), want, text);
+      expectStr(r.origin().view(), origin, "...its origin");
+      expectStr(r.authority().view(), authority, "...its authority");
+      expectStr(r.target().view(), target, "...its target");
     }
     case imm e Error {
-      expectStr(e.value.message().view(), want, text);
+      expectStr(e.message().view(), want, text);
     }
   }
 }
@@ -26,8 +26,8 @@ fn reads(text &str, want &Array[u8], origin &Array[u8], authority &Array[u8], ta
 // text refused, the message as given
 fn refused(text &str, want &Array[u8]) {
   match Url.parse(text) {
-    case imm r Ok {expectStr(r.value.text().view(), want, text);}
-    case imm e Error {expectStr(e.value.message().view(), want, text);}
+    case imm r Ok {expectStr(r.text().view(), want, text);}
+    case imm e Error {expectStr(e.message().view(), want, text);}
   }
 }
 
@@ -65,7 +65,7 @@ fn main() i32 {
   // The parts themselves
   match Url.parse("https://u@[::1]:9/p?q#f") {
     case imm r Ok {
-      imm u = &r.value;
+      imm u = &r;
       expectStr(u.scheme.view(), "https", "scheme");
       expectStr(u.userinfo.view(), "u", "userinfo");
       expectStr(u.host.view(), "::1", "host, without its brackets");
@@ -82,18 +82,18 @@ fn main() i32 {
   }
   match Url.parse("http://example.org/") {
     case imm r Ok {
-      expect(r.value.hostKind == HostKind.Name[], "a name");
-      expectUInt(u64.from(r.value.effectivePort()), 80u64, "http's default port");
-      expect(not r.value.hasPort, "no port written");
+      expect(r.hostKind == HostKind.Name[], "a name");
+      expectUInt(u64.from(r.effectivePort()), 80u64, "http's default port");
+      expect(not r.hasPort, "no port written");
     }
     case imm e Error {expect(false, "a name");}
   }
   match Url.parse("http://10.0.0.1/") {
-    case imm r Ok {expect(r.value.hostKind == HostKind.Ipv4[], "an IPv4 address");}
+    case imm r Ok {expect(r.hostKind == HostKind.Ipv4[], "an IPv4 address");}
     case imm e Error {expect(false, "an IPv4 address");}
   }
   match Url.parse("http://10.0.0.256/") {
-    case imm r Ok {expect(r.value.hostKind == HostKind.Name[], "256: a name, not an address");}
+    case imm r Ok {expect(r.hostKind == HostKind.Name[], "256: a name, not an address");}
     case imm e Error {expect(false, "10.0.0.256");}
   }
 
@@ -101,15 +101,15 @@ fn main() i32 {
   match Url.parse("http://a:80/x") {
     case imm r Ok {
       match Url.parse("http://A/y") {
-        case imm s Ok {expect(r.value.sameOrigin(&s.value), "the default port written or not: one origin");}
+        case imm s Ok {expect(r.sameOrigin(&s), "the default port written or not: one origin");}
         case imm e Error {expect(false, "origin");}
       }
       match Url.parse("https://a/y") {
-        case imm s Ok {expect(not r.value.sameOrigin(&s.value), "another scheme: another origin");}
+        case imm s Ok {expect(not r.sameOrigin(&s), "another scheme: another origin");}
         case imm e Error {expect(false, "origin");}
       }
       match Url.parse("http://a:81/y") {
-        case imm s Ok {expect(not r.value.sameOrigin(&s.value), "another port: another origin");}
+        case imm s Ok {expect(not r.sameOrigin(&s), "another port: another origin");}
         case imm e Error {expect(false, "origin");}
       }
     }
@@ -140,7 +140,7 @@ fn main() i32 {
   // The helpers
   expectStr(encodeComponent("a b&c/d~").view(), "a%20b%26c%2Fd~", "encodeComponent");
   match decode("a%20b%2fc") {
-    case imm s Some {expectStr(s.value.view(), "a b/c", "decode");}
+    case imm s Some {expectStr(s.view(), "a b/c", "decode");}
     case is None[String] {expect(false, "decode");}
   }
   match decode("%2") {
@@ -163,9 +163,9 @@ fn main() i32 {
   built <- ":81/x y";
   match Url.parse(built.view()) {
     case imm r Ok {
-      expectStr(r.value.text().view(), "http://host:81/x%20y", "parse of a String's view");
-      expectUInt(u64.from(defaultPort(r.value.scheme.view())), 80u64, "defaultPort of a scheme's view");
-      expectStr(encodeComponent(r.value.host.view()).view(), "host", "encodeComponent of a host's view");
+      expectStr(r.text().view(), "http://host:81/x%20y", "parse of a String's view");
+      expectUInt(u64.from(defaultPort(r.scheme.view())), 80u64, "defaultPort of a scheme's view");
+      expectStr(encodeComponent(r.host.view()).view(), "host", "encodeComponent of a host's view");
     }
     case imm e Error {expect(false, "parse of a String's view");}
   }

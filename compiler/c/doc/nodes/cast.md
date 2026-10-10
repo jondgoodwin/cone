@@ -44,6 +44,21 @@ pattern, whose `is` test checks the variant first.
 clone copies `typ` once per holder and a third copy would be left unbound (see
 "Type check").
 
+**A bound pattern to a variant declared as a type binds its contents.**
+`castBindProject`, which `varDclTypeCheck` calls for a variable initialized by a
+`FlagMatchBind` conversion, checks the conversion once (`FlagMatchChecked`: a
+second check would find the reference conversion already made and read it as a
+reinterpretation) and looks at what it narrows to. For a variant declared as a
+type it declares a hidden local, `-bound` (`matchAliasName`), initialized by the
+conversion, before the variable (`varDclHoistBefore`, the temporaries' hoist, so
+`blockHoist` puts it ahead of the statement), and gives the variable the
+contents: the local's payload field, or, where the conversion narrowed a borrowed
+reference, a borrow of that field with the reference's permission. The local is a
+match binding like any other (`flowMatchBound`), the matched value under the
+variant's name, so the payload moves out of it by the sole-field rule
+(`flowTakesSoleField`). A reference into a managed value is refused
+(`ErrorTypeVariant`): its contents cannot be lent as a binding yet.
+
 An injected cast over a **borrowed reference** is typed with a copy of the
 target reference type carrying the source borrow's scope, not with the declared
 type node itself, which is interned and shared and holds no lifetime. That is

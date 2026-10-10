@@ -29,7 +29,7 @@
 // A cursor's 'next' answers an Option, and every pass takes it apart in the
 // initializer of the pass's variable, which leaves the loop when there is none:
 //
-//   imm x = match cursor.next() { case imm s Some { s.value; } case is None { break; } };
+//   imm x = match cursor.next() { case imm s Some { s; } case is None { break; } };
 //
 // A pass's variable is a new, unchangeable variable (not one that the loop
 // steps): two or more of them unpack a tuple item, 'imm -item = ...; imm k =

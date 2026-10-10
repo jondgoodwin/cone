@@ -50,8 +50,8 @@ fn consume(rx Receiver[Completion]) Got {
     match r.recv() {
       case imm s Some {
         g.n = g.n + 1u64;
-        if s.value.buf.capacity() == 4096usize {g.withBuf = g.withBuf + 1u64;}
-        g.tokens = g.tokens + s.value.token;
+        if s.buf.capacity() == 4096usize {g.withBuf = g.withBuf + 1u64;}
+        g.tokens = g.tokens + s.token;
       }
       case is None[Completion] {more = false;}
     }
@@ -80,7 +80,7 @@ fn caller(c Caller) String {
   mut text = String.empty();
   match orx.recv() {
     case imm s Some {
-      if s.value.isDone() {text.appendBytes(s.value.buf.view());}
+      if s.isDone() {text.appendBytes(s.buf.view());}
     }
     case is None[Completion] {}
   }
@@ -98,7 +98,7 @@ fn reader(r Reader) u64 {
   mut out = List[Completion].empty();
   mut fh = Handle.none();
   match lp.openFile("targets.tmp", Access.Read[]) {
-    case imm o Ok {fh = o.value;}
+    case imm o Ok {fh = o;}
     case imm e Error {return 0u64;}
   }
   mut i = 0u32;
@@ -122,10 +122,10 @@ fn main() i32 {
       case imm r Ok {
         mut b = pool.mustTake(64usize);
         b.append("abcdefghij");
-        lp.submit(Op.WriteAt[r.value, 0u64, b], Target.Here[0u64]);
+        lp.submit(Op.WriteAt[r, 0u64, b], Target.Here[0u64]);
         waitFor(&mut lp, &mut out, 1usize);
         out.clear();
-        lp.close(r.value);
+        lp.close(r);
       }
       case imm e Error {}
     }
@@ -175,7 +175,7 @@ fn main() i32 {
         match rx.tryRecv() {
           case imm s Some {
             n = n + 1u64;
-            sum = sum + s.value.token;
+            sum = sum + s.token;
           }
           case is None[Completion] {lp.poll(Instant.now() + Duration.fromMillis(2i64), &mut out);}
         }
@@ -217,8 +217,8 @@ fn main() i32 {
             reply, orx = Oneshot[Completion].make();
             // The caller's one-shot moves into the target: swapped out of
             // the call, as Cone moves nothing out of a field
-            reply <=> s.value.reply;
-            lp.submit(readFileOp(&s.value.path, 2u64, Lane.general(), pool.mustTake(64usize)),
+            reply <=> s.reply;
+            lp.submit(readFileOp(&s.path, 2u64, Lane.general(), pool.mustTake(64usize)),
               Target.Once[1u64, reply]);
             served = true;
           }

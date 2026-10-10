@@ -32,6 +32,10 @@ struct NameUseNode;
 // value, holding the lock its type's permission names (permHeld), taken as it
 // is made and given back at its death. Always with FlagConvert.
 #define FlagLockAcquire 0x0004  // Cast: takes a lock-managed reference's lock, making its guard
+// A bound pattern's conversion that castBindProject has type checked, as the
+// variable it initializes was about to; if the pattern named a variant declared
+// as a type, it is now the value of a hidden local, not of the variable
+#define FlagMatchChecked 0x0008  // Cast: a bound pattern's conversion, already type checked
 
 // Create node for recasting to a new type without conversion
 CastNode *newRecastNode(INode *exp, INode *type);
@@ -59,6 +63,15 @@ void castPatternMark(INode *typ);
 int castPatternPending(INode *typ);
 
 void castPrint(CastNode *node);
+
+// A variable initialized by a bound pattern's conversion, about to be type
+// checked: if the pattern names a variant declared as a type, the variable gets
+// that variant's contents and not the variant. The conversion moves to a hidden
+// local declared just before the variable (the matched value under the
+// variant's name), and the variable's initializer reads the contents out of it:
+// a field of the local, or a borrow of the field where the conversion narrowed
+// a reference. Returns 1 when the pattern was one.
+int castBindProject(TypeCheckState *pstate, VarDclNode *var);
 
 // Name resolution of cast node
 void castNameRes(NameResState *pstate, CastNode *node);

@@ -290,6 +290,16 @@ INode *varDclTempValue(TypeCheckState *pstate, INode *node) {
     return temp ? temp->var->value : node;
 }
 
+int varDclHoistBefore(TypeCheckState *pstate, VarDclNode *var, VarDclNode *hidden) {
+    VarDclExtend *ext = pstate->extend;
+    if (ext == NULL || ext->var != var)
+        return 0;
+    if (ext->hoisted == NULL)
+        ext->hoisted = newNodes(4);
+    nodesAdd(&ext->hoisted, (INode *)hidden);
+    return 1;
+}
+
 static void varDclExtendExp(VarDclExtend *ext, INode **nodep);
 
 // A hidden local extended: first what its own value extends. What its value
@@ -544,6 +554,13 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
     // signature does
     if (name->scope >= 2 && name->vtype != unknownType)
         lifeBrandKnown(name->vtype, (INode*)name);
+
+    // A pattern that binds a variant declared as a type binds its contents: the
+    // matched value goes into a local declared before this one, which this one
+    // reads them from. A binding that could not be made leaves no value and the
+    // error type, the pattern's own report being the only one.
+    if (name->value && name->value->tag == CastTag && (name->value->flags & FlagMatchBind))
+        castBindProject(pstate, name);
 
     // An initializer need not be specified, but if not, it must have a declared type
     if (name->value == NULL) {
