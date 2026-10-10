@@ -356,13 +356,6 @@ pub struct ArrayChunks['a, T] is Iterator[&Array[T]] {
 
   // The runs with their numbers, counted from 0 as the runs it gives are
   pub fn indexed(self) ChunksIndexed['a, T] { new ChunksIndexed[T](self, 0usize); }
-
-  // Walked side by side with another cursor, as 'zip' does two collections: the
-  // pairs of a run and what the other gives, ending with the shorter. When the other
-  // is one that can be cut and walked by position too, so is the zip (a Zip)
-  pub fn zip[B, J Iterator[B]](self, other J) Zip[&'a Array[T], B, ArrayChunks['a, T], J] {
-    new Zip[&Array[T], B, ArrayChunks[T], J](self, other);
-  }
 }
 
 // A cursor over runs and their numbers, which 'indexed' gives: 'next' gives a tuple
@@ -429,10 +422,6 @@ pub struct ArrayMutChunks['a, T] is Iterator[&mut Array[T]] {
   }
 
   pub fn indexed(self) MutChunksIndexed['a, T] { new MutChunksIndexed[T](self, 0usize); }
-
-  pub fn zip[B, J Iterator[B]](self, other J) Zip[&'a mut Array[T], B, ArrayMutChunks['a, T], J] {
-    new Zip[&mut Array[T], B, ArrayMutChunks[T], J](self, other);
-  }
 }
 
 pub struct MutChunksIndexed['a, T] is Iterator[(usize, &mut Array[T])] {
@@ -531,10 +520,6 @@ pub struct ArrayMutItems['a, T] is Iterator[&mut T] {
 
   // The same with the positions: the item is a '&mut' too
   pub fn indexed(self) MutItemsIndexed['a, T] { new MutItemsIndexed[T](items, pos); }
-
-  pub fn zip[B, J Iterator[B]](self, other J) Zip[&'a mut T, B, ArrayMutItems['a, T], J] {
-    new Zip[&mut T, B, ArrayMutItems[T], J](self, other);
-  }
 }
 
 // A cursor over a slice's elements and their positions for changing the elements,
@@ -582,12 +567,6 @@ pub struct Zip[A, B, I Iterator[A], J Iterator[B]] is Iterator[(A, B)] {
   // The pairs with their numbers, counted from 0: a tuple of the number and
   // what each source gives
   pub fn indexed(self) ZipIndexed[A, B, I, J] { new ZipIndexed[A, B, I, J](self, 0usize); }
-
-  // A third source walked beside the two: a Zip3, whose items are flat triples (not a
-  // pair and a third), so that three variables unpack them. It ends with the shortest
-  pub fn zip[C, K Iterator[C]](self, other K) Zip3[A, B, C, I, J, K] {
-    new Zip3[A, B, C, I, J, K](self.first, self.second, other);
-  }
 
   // When BOTH sources can be walked by position (RandomAccess) and cut
   // (ParallelIterable), so can the zip, as Rayon's: its length is the shorter's, it
@@ -637,7 +616,7 @@ pub struct ZipIndexed[A, B, I Iterator[A], J Iterator[B]] is Iterator[(usize, A,
   }
 }
 
-// Three sources walked side by side, which a zip's own 'zip' gives: 'next' gives a
+// Three sources walked side by side, which 'zip3' gives: 'next' gives a
 // flat tuple of what each gives, and answers None as soon as any runs out. As a Zip
 // is, it is RandomAccess and ParallelIterable when ALL THREE sources are: its length
 // is the shortest's and it is cut at the same place in all three.
@@ -725,6 +704,16 @@ pub struct Zip3Indexed[A, B, C, I Iterator[A], J Iterator[B], K Iterator[C]] is 
 pub fn zip[A, I, C Iterable[A, I], B, J, D Iterable[B, J]](xs &C, ys &D) Zip[A, B, I, J]
     where I is Iterator[A] and J is Iterator[B] {
   new Zip[A, B, I, J](xs.iter(), ys.iter());
+}
+
+// Walk three cursors side by side: 'each x, y, z in zip3(a.mutChunks(n), b.mutChunks(m),
+// c.mutChunks(k))' gives each flat triple of what they give (three variables), and ends
+// with the shortest. A three-way zip is this function, not '.zip(..).zip(..)', which
+// would nest the pair, ((x, y), z). A Zip3 is RandomAccess and ParallelIterable when all
+// three are, as a Zip is
+pub fn zip3[A, B, C, I Iterator[A], J Iterator[B], K Iterator[C]](first I, second J, third K)
+    Zip3[A, B, C, I, J, K] {
+  new Zip3[A, B, C, I, J, K](first, second, third);
 }
 
 // 'cstr', a borrowed C string: one pointer to bytes that end in a NUL, which is
