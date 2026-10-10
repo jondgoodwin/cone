@@ -607,8 +607,8 @@ looks into a returned `if`, `match` (an `if` once desugared) or block and checks
 each arm's or the block's last value where it is written, so the refusal names
 the arm that would dangle.
 
-**An owner reached through a borrow that does not hold it alone lends only what
-it lets.** `iexpGetLvalInfo` takes the permission of a dereference from the
+**An owner reached through a borrow, or a shared owner, that does not hold it
+alone lends only what it lets.** `iexpGetLvalInfo` takes the permission of a dereference from the
 reference dereferenced, which for an owner (`So`, `Rc`) is its own, `uni` for a
 `So`. Held in a field of a `&Holder`, the owner would lend `&mut` and change what
 the borrow was lent to read; held in a field of a `&mut Holder`, it would lend
@@ -616,19 +616,20 @@ the borrow was lent to read; held in a field of a `&mut Holder`, it would lend
 the owner ([refborref](../../../../doc/reference/refborref.html), "Freezing access
 to the source of a borrow"). Viewpoint adaptation
 ([refperm](../../../../doc/reference/refperm.html)) is the intersection. So where
-the owner's place is reached through a borrow (`iexpPathThroughBorrow`) whose
-permission is not `uni`, and the owner's permission may write, the place keeps the
-borrow's: `ro` or `imm` lend no `&mut`, `mut` lends `&mut` and `&` and no `&uni`
+the owner's place is reached through a borrow, or through an owner whose own
+permission is shared and writable (`Rc[mut, T]`, `Arc[mut, T]`; a lock permission
+is not one), (`iexpPathThroughBorrow`) whose permission is not `uni`, and the
+owner's permission may write, the place keeps that holder's: `ro` or `imm` lend no `&mut`, `mut` lends `&mut` and `&` and no `&uni`
 or `&imm`. An owner whose own permission cannot write (`So[imm, T]`,
 `Rc[imm, T]`) lends `&imm` through any of them. The refusal is `ErrorBadPerm`,
 reported by `borrowTypeCheck` for a written `&mut *h.app` or `&uni *h.app` and by
 `borrowOwnerLendRefused` for an owner lent implicitly: a method's receiver
 (`borrowMutRef`), an argument or an initializer (`iexpCoerce`), a `So[fn]`
 called. A local, a field of one held by value, or a field reached through a
-`&uni` holder is not held to this and lends as before. An owner reached through
-an `Rc[mut, T]` owner held by name, not through a borrow, is not either.
-`ref_typecheck_owner_field` and `ref_typecheck_owner_field_shared` pin the
-refusals; `ref_owner_field` and `ref_owner_field_shared` what runs.
+`&uni` holder is not held to this and lends as before.
+`ref_typecheck_owner_field`, `ref_typecheck_owner_field_shared` and
+`ref_typecheck_owner_field_rc` pin the refusals; `ref_owner_field`,
+`ref_owner_field_shared` and `ref_owner_field_rc` what runs.
 
 **The lifetime of a borrow is that of the place borrowed**, which
 `iexpGetLvalInfo` computes for every borrow, written or injected

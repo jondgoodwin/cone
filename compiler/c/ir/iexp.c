@@ -600,7 +600,11 @@ static void iexpScopeThroughRef(INode *refexp, INode *lvalvar, RefNode *reftype,
 
 // Is this place reached through a borrowed reference, a slice or a virtual
 // reference: the value it holds is where a loan points, and what is lent of it
-// is held to that loan's permission?
+// is held to that loan's permission? An owner whose own permission is shared
+// and writable ('Rc[mut, T]', 'Arc[mut, T]') is a shared path as well
+// (refborref.html, "Freezing access to the source of a borrow"): another name
+// for the owner reaches the same value. A lock permission is not one: its value
+// is reached only through the lock's guard.
 int iexpPathThroughBorrow(INode *lval) {
     for (;;) {
         INode *obj;
@@ -616,6 +620,12 @@ int iexpPathThroughBorrow(INode *lval) {
         if (((objtype->tag == RefTag || objtype->tag == ArrayRefTag) && itypeGetTypeDcl(((RefNode*)objtype)->region) == (INode*)borrowRef)
             || objtype->tag == VirtRefTag)
             return 1;
+        if (objtype->tag == RefTag && itypeGetTypeDcl(((RefNode*)objtype)->region) != (INode*)borrowRef) {
+            INode *ownerperm = itypeGetTypeDcl(((RefNode*)objtype)->perm);
+            if (ownerperm->tag == PermTag && !permIsLock(ownerperm) && (permGetFlags(ownerperm) & MayWrite)
+                && ownerperm != (INode*)uniPerm && ownerperm != (INode*)newPerm)
+                return 1;
+        }
         lval = obj;
     }
 }
