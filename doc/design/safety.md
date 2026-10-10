@@ -43,7 +43,7 @@ most consequential thing this note settles.
 
 | Property | Checked? | Where, or why not |
 | --- | --- | --- |
-| use of an uninitialized variable | **yes** | `nameuseFlow`, on the state along the walk in source order, the arms of an `if` joined: "initialized on one branch" reads as initialized after it, except for a variable that moves or has anything to do as it dies, which the path walk refuses where some path gave it no value. An assignment's target is read only for the parts of it that are values — its index and its dereference — never for the base of a partial write |
+| use of an uninitialized variable | **yes** | `nameuseFlow`, on the state along the walk in source order, the arms of an `if` joined: "initialized on one branch" reads as initialized after it, but the path walk then refuses a local declared without a value, of any type, where some path reaching a read gave it none. An assignment's target is read only for the parts of it that are values — its index and its dereference — never for the base of a partial write |
 | use after move | **yes** | `nameuseFlow`, a move on any arm of an `if` counting after it; a use some path reaching it moved out — a loop's earlier pass — by the path walk (`dropRefuse`) |
 | move out of a global | **yes** | `flowHandleMove`, and `flowResultMove` for a returned value |
 | move out through a borrowed reference, any permission | **yes** | `flowHandleMove`, and `flowResultMove` for a returned value |

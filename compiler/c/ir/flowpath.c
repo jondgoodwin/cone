@@ -804,7 +804,9 @@ static int pwThrough(INode **refp, Place *pl, PathSet **base) {
     if (!pwPlace(refp, &refpl, base))
         return 0;
     if (pwIsBorrowed(reftype)) {
-        // The reference itself is read
+        // The reference itself is read: a variable it is read from that some
+        // path reaching here did not give a value is refused
+        pwDropUse(&refpl, *refp, 0);
         pwAccess(&refpl, AccessRead, *refp);
         pl->var = refpl.var;
         pl->use = refpl.use;

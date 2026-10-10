@@ -266,6 +266,17 @@ int flowDropTracked(VarDclNode *var) {
     return var->flowtracked == 2;
 }
 
+// A local declared without a value is tracked whatever its type, so that the
+// path walk can refuse a use some path reaching it did not give a value to: a
+// number or a borrowed reference given one in one arm of an 'if' is as unsafe
+// to read as an owner is. One declared with a value holds it on every path (a
+// type with nothing to move or finalize is never moved out), so it stays
+// untracked and costs the path walk nothing.
+void flowDropTrackUninit(VarDclNode *var) {
+    if (var->scope > 0 && !(var->flags & FlagStatic) && var->vtype)
+        var->flowtracked = 2;
+}
+
 void flowDropNote(FlowState *fstate, VarDclNode *var) {
     if (fstate == NULL || fstate->dropgate)
         return;
