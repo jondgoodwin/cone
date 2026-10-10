@@ -1,0 +1,141 @@
+// 'zip' as a method of every cursor that declares 'is Iterator[T]': 'xs.iter().zip(ys.iter())'
+// walks two cursors side by side, giving a pair of what each gives, and ends with the
+// shorter. It is the one a chain uses ('.zip(..).map(..)'); for two collections the function
+// 'zip(&xs, &ys)' stays (each_zip_arrays). The pair is a tuple, which 'each x, y' unpacks.
+//
+// Each case prints what it saw; the numbers are worked out in the comments.
+// xs is 1 2 3 4 5 and ys is 10 20 30.
+
+mod each_zip_method;
+
+import stdio use *;
+import collections use *;
+
+fn nl() {
+  printStr("\n");
+}
+
+fn num(n i64) {
+  printInt(n);
+  printStr(" ");
+}
+
+// A cursor of one's own that declares it
+struct Countdown is Iterator[i64] {
+  n i64;
+
+  pub fn next(self &mut) Option[i64] {
+    if n <= 0i64 { return None[i64][]; }
+    imm v = n;
+    n = n - 1i64;
+    Some[i64][v];
+  }
+}
+
+fn evens(limit i64) yields i64 {
+  mut i = 0i64;
+  while i < limit {
+    yield i;
+    i = i + 2i64;
+  }
+}
+
+fn main() {
+  mut xs = new List[i64];
+  xs.push(1i64); xs.push(2i64); xs.push(3i64); xs.push(4i64); xs.push(5i64);
+  mut ys = new List[i64];
+  ys.push(10i64); ys.push(20i64); ys.push(30i64);
+
+  // the shorter ends it: (1,10) (2,20) (3,30), the products 10 + 40 + 90 = 140
+  mut dot = 0i64;
+  each a, b in xs.iter().zip(ys.iter()) {
+    dot = dot + *a * *b;
+  }
+  num(dot); nl();
+
+  // the other way round: the same pairs flipped, still three of them
+  mut seen = 0i64;
+  each b, a in ys.iter().zip(xs.iter()) {
+    seen = seen + 1i64;
+    num(*b - *a);
+  }
+  num(seen); nl();
+
+  // one pair variable: a tuple, read by position. 1+10, 2+20, 3+30 = 11 22 33
+  each p in xs.iter().zip(ys.iter()) {
+    num(*p.0 + *p.1);
+  }
+  nl();
+
+  // numbered: indexed() of a zip is (position, a, b): 0 1 10, 1 2 20, 2 3 30
+  each i, a, b in xs.iter().zip(ys.iter()).indexed() {
+    num(i64.from(i)); num(*a); num(*b);
+  }
+  nl();
+
+  // a chain: map over the pairs (a closure given the tuple), then a terminal. 10 + 40 + 90
+  imm total = xs.iter().zip(ys.iter()).map(p => *p.0 * *p.1).sum();
+  num(total); nl();
+
+  // count and filter on pairs: a filter is given a borrow of the pair. The products are 10 40 90,
+  // so two are over 15
+  imm kept = xs.iter().zip(ys.iter()).filter(p => *p.0 * *p.1 > 15i64).count();
+  num(i64.from(kept)); nl();
+
+  // a zip's source can be a chain: doubled xs (2 4 6 8 10) beside ys without its first (20 30)
+  // gives (2,20) (4,30): 40 + 120 = 160
+  mut chained = 0i64;
+  each a, b in xs.iter().map(x => *x * 2i64).zip(ys.iter().skip(1)) {
+    chained = chained + a * *b;
+  }
+  num(chained); nl();
+
+  // arrays: .iter() of an array zips with a list's. 1*10 + 2*20 + 3*30 = 140
+  imm arr = [1i64, 2i64, 3i64];
+  mut ar = 0i64;
+  each a, b in arr.iter().zip(ys.iter()) {
+    ar = ar + *a * *b;
+  }
+  num(ar); nl();
+
+  // a cursor of one's own and a generator: Countdown 5 4 3 2 1 beside evens 0 2 4 6: (5,0) (4,2) (3,4) (2,6)
+  // gives 0 + 8 + 12 + 12 = 32
+  mut gz = 0i64;
+  each c, e in new Countdown(5i64).zip(evens(8i64)) {
+    gz = gz + c * e;
+  }
+  num(gz); nl();
+
+  // into a list: <- each of a chain over a zip. 11 22 33
+  mut sums = new List[i64];
+  sums <- each xs.iter().zip(ys.iter()).map(p => *p.0 + *p.1);
+  each s in sums { num(*s); }
+  nl();
+
+  // an empty side ends it at once
+  mut none = new List[i64];
+  mut n = 0i64;
+  each a, b in xs.iter().zip(none.iter()) {
+    n = n + 1i64;
+  }
+  each a, b in none.iter().zip(xs.iter()) {
+    n = n + 1i64;
+  }
+  num(n); nl();
+
+  // a mutItems cursor keeps its own zip (it lends &mut); a plain cursor's zips with it
+  // by the method too. Adding ys to the first three of xs: 11 22 33 4 5
+  each x, y in xs.mutItems().zip(ys.iter()) {
+    *x = *x + *y;
+  }
+  each x in xs { num(*x); }
+  nl();
+
+  // zip of a zip is a flat triple (Zip's own zip), unchanged: 11+10+1, 22+20+2, 33+30+3
+  mut zs = new List[i64];
+  zs.push(1i64); zs.push(2i64); zs.push(3i64);
+  each a, b, c in xs.iter().zip(ys.iter()).zip(zs.iter()) {
+    num(*a + *b + *c);
+  }
+  nl();
+}
