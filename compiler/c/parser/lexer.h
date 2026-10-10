@@ -93,9 +93,9 @@ enum TokenTypes {
     RParenToken,       // ')'
     CommaToken,        // ','
     DotToken,          // '.'
-    DotDotToken,       // '..' range, excluding its end
+    DotDotToken,       // '..' range, including its end
     DotDotLessToken,   // '..<' range, excluding its end
-    EllipsisToken,     // '...' range, including its end
+    EllipsisToken,     // '...', no range operator: lexed to be refused
     PlusToken,         // '+'
     PlusArrayRefToken, // '+[]', lexed only to be refused (parsePlus)
     PlusVirtRefToken,  // '+<'

@@ -3167,6 +3167,13 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         return;
     }
 
+    // The step of a numeric range 'each', which the parser built before its counter's
+    // type was known: a float counter is assigned, any other stepped by the operator
+    if (node->methfld && isNameUseNode(node->methfld) && node->args
+        && ((NameUseNode*)node->methfld)->namesym == eachRangeStepName
+        && eachRangeStepLower(pstate, nodep))
+        return;
+
     // A callee a global's 'use' clause folded into this module is reached through
     // that global, so the call is rewritten to 'global.name(...)' before anything
     // below reads the callee. Ahead of every other test here deliberately: from
