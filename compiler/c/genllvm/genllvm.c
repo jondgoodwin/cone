@@ -113,12 +113,33 @@ static void genlNameAnonFn(GenState *gen, LLVMValueRef fn) {
     LLVMSetLinkage(fn, LLVMInternalLinkage);
 }
 
+// The symbol the program's own 'main' has once the compiler builds the C entry
+// (genlEntry) that is called 'main' and calls it
+#define EntryMainSymbol "cone.main"
+
 // Whether a function is a 'main' returning nothing. The C runtime that calls
 // 'main' takes its return as the process's exit status, so such a 'main' is
-// generated returning i32, and each of its returns returns 0 (genlReturn).
+// generated returning i32, and each of its returns returns 0 (genlReturn). The
+// program's own 'main' behind the constructed entry is the same, under its
+// other symbol.
 int genlIsVoidMain(FnDclNode *fnnode, const char *symbol) {
-    return strcmp(symbol, "main") == 0
+    return (strcmp(symbol, "main") == 0 || strcmp(symbol, EntryMainSymbol) == 0)
         && itypeGetTypeDcl(((FnSigNode*)fnnode->vtype)->rettype)->tag == VoidTag;
+}
+
+// Whether a function is the program's own 'main', the one the constructed entry
+// calls: the bare 'main' of an executable's root, taking nothing or the two
+// arguments C's does. A C-named 'main' is its own entry, a library has no entry
+// of ours, and a WebAssembly or GPU module's entries are exports.
+static int genlIsEntryMain(GenState *gen, FnDclNode *fnnode, const char *symbol) {
+    if (strcmp(symbol, "main") != 0 || gen->opt->library || gen->opt->wasm || gen->opt->gpu)
+        return 0;
+    if (inodeGetDclInfo((INode*)fnnode)->facts & DclCName)
+        return 0;
+    if (fnnode->value == NULL || fnnode->value->tag != BlockTag || fnnode->vtype->tag != FnSigTag)
+        return 0;
+    uint32_t parmcnt = ((FnSigNode*)fnnode->vtype)->parms->used;
+    return parmcnt == 0 || parmcnt == 2;
 }
 
 // Generate a function
@@ -804,6 +825,12 @@ void genlGloFnName(GenState *gen, FnDclNode *glofn) {
             return;
         char symbol[2048];
         nameSymbol(symbol, (INode*)glofn);
+        // The program's own 'main' is called by the entry the compiler builds,
+        // which is the one named 'main' (genlEntry)
+        if (genlIsEntryMain(gen, glofn, symbol)) {
+            strcpy(symbol, EntryMainSymbol);
+            gen->entrymain = glofn;
+        }
         if (genlIsVoidMain(glofn, symbol)) {
             unsigned parmcnt = LLVMCountParamTypes(fntype);
             LLVMTypeRef *parmtypes = memAllocBlk((parmcnt ? parmcnt : 1) * sizeof(LLVMTypeRef));
@@ -1108,8 +1135,12 @@ static void genlImportedInstances(GenState *gen, INode *node) {
 // module this object does not generate -- another package, reached through its
 // include file -- is called by its symbol, which its own object exports
 // (dclIsExported). The functions are this object's own, internal, and made
-// only when a call asks for one: 'initAll()' and 'finalAll()' today, the entry
-// glue once it is built.
+// only when a call asks for one: the program's entry (genlEntry), and any
+// 'initAll()' or 'finalAll()' a program still writes itself. The two share a
+// flag, "live": the init runs only on a program that is not live, the final
+// only on one that is, and each flips it as its first act. So the entry and a
+// program that calls them too do not run anything twice, while a program that
+// finalizes and initializes again runs both again.
 LLVMValueRef genlStitchFn(GenState *gen, int16_t intrinsic) {
     int which = intrinsic == InitAllIntrinsic ? 0 : 1;
     if (gen->stitch[which] == NULL) {
@@ -1126,7 +1157,32 @@ static void genlStitch(GenState *gen, int which) {
         return;
     genlComdat(gen, fn);
     LLVMBuilderRef builder = LLVMCreateBuilderInContext(gen->context);
-    LLVMPositionBuilderAtEnd(builder, LLVMAppendBasicBlockInContext(gen->context, fn, "entry"));
+    LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(gen->context, fn, "entry");
+    LLVMPositionBuilderAtEnd(builder, entry);
+    // The program is live between its init and its final. A call that finds it
+    // already in the state it asks for returns at once: the swap of the flag
+    // is the call's first instruction, so the second of two calls (the entry's
+    // and the program's own, or two threads') does nothing, and a program that
+    // finalizes and initializes again still runs both. A final with no init in
+    // this object to set the flag always runs.
+    if (which == 0 || gen->stitch[0] != NULL) {
+        LLVMTypeRef flagtype = LLVMInt8TypeInContext(gen->context);
+        LLVMValueRef flag = LLVMGetNamedGlobal(gen->module, "cone.live");
+        if (flag == NULL) {
+            flag = LLVMAddGlobal(gen->module, flagtype, "cone.live");
+            LLVMSetInitializer(flag, LLVMConstInt(flagtype, 0, 0));
+            LLVMSetLinkage(flag, LLVMInternalLinkage);
+        }
+        LLVMBasicBlockRef run = LLVMAppendBasicBlockInContext(gen->context, fn, "run");
+        LLVMBasicBlockRef done = LLVMAppendBasicBlockInContext(gen->context, fn, "done");
+        LLVMValueRef before = LLVMBuildAtomicRMW(builder, LLVMAtomicRMWBinOpXchg, flag,
+            LLVMConstInt(flagtype, which == 0 ? 1 : 0, 0), LLVMAtomicOrderingSequentiallyConsistent, 0);
+        LLVMBuildCondBr(builder, LLVMBuildICmp(builder, LLVMIntEQ, before,
+            LLVMConstInt(flagtype, which == 0 ? 0 : 1, 0), ""), run, done);
+        LLVMPositionBuilderAtEnd(builder, done);
+        LLVMBuildRetVoid(builder);
+        LLVMPositionBuilderAtEnd(builder, run);
+    }
     Nodes *order = gen->pgm->initorder;
     uint32_t count = order->used;
     uint32_t pos;
@@ -1140,6 +1196,46 @@ static void genlStitch(GenState *gen, int which) {
         LLVMBuildCall2(builder, genlType(gen, lifefn->vtype), lifefn->llvmvar, NULL, 0, "");
     }
     LLVMBuildRetVoid(builder);
+    LLVMDisposeBuilder(builder);
+}
+
+// The program's entry [Jon 23 Sep]: the C 'main' the runtime calls, built by the
+// compiler round the program's own 'main' (which has another symbol,
+// EntryMainSymbol). It runs the stitched init, so every module's 'init' has run
+// in dependency order before the program's code, calls the program's 'main'
+// with the arguments C gave it, runs the stitched final, and returns what
+// 'main' returned as the exit status. A panic, or a call to C's 'exit', ends
+// the process without reaching the final.
+static void genlEntry(GenState *gen) {
+    FnDclNode *mainfn = gen->entrymain;
+    if (mainfn == NULL || mainfn->llvmvar == NULL || LLVMGetNamedFunction(gen->module, "main"))
+        return;
+    LLVMContextRef context = gen->context;
+    LLVMTypeRef i32type = LLVMInt32TypeInContext(context);
+    LLVMTypeRef cparms[2] = { i32type, LLVMPointerTypeInContext(context, 0) };
+    LLVMValueRef entry = LLVMAddFunction(gen->module, "main", LLVMFunctionType(i32type, cparms, 2, 0));
+    genlComdat(gen, entry);
+    LLVMBuilderRef builder = LLVMCreateBuilderInContext(context);
+    LLVMPositionBuilderAtEnd(builder, LLVMAppendBasicBlockInContext(context, entry, "entry"));
+
+    LLVMValueRef initfn = genlStitchFn(gen, InitAllIntrinsic);
+    LLVMValueRef finalfn = genlStitchFn(gen, FinalAllIntrinsic);
+    LLVMBuildCall2(builder, LLVMGlobalGetValueType(initfn), initfn, NULL, 0, "");
+
+    // 'main' takes nothing, or C's argc and argv; a 'main' returning nothing is
+    // generated returning 0 (genlIsVoidMain)
+    LLVMTypeRef maintype = LLVMGlobalGetValueType(mainfn->llvmvar);
+    LLVMValueRef args[2] = { LLVMGetParam(entry, 0), LLVMGetParam(entry, 1) };
+    unsigned argcnt = LLVMCountParamTypes(maintype);
+    LLVMValueRef result = LLVMBuildCall2(builder, maintype, mainfn->llvmvar, args, argcnt, "");
+    LLVMTypeRef rettype = LLVMGetReturnType(maintype);
+    if (LLVMGetTypeKind(rettype) == LLVMIntegerTypeKind)
+        result = LLVMBuildIntCast2(builder, result, i32type, 0, "");
+    else
+        result = LLVMConstInt(i32type, 0, 0);
+
+    LLVMBuildCall2(builder, LLVMGlobalGetValueType(finalfn), finalfn, NULL, 0, "");
+    LLVMBuildRet(builder, result);
     LLVMDisposeBuilder(builder);
 }
 
@@ -1168,6 +1264,7 @@ void genlProgram(GenState *gen, ProgramNode *pgm) {
     gen->libroot = gen->opt->library ? (ModuleNode*)nodesGet(pgm->modules, 0) : NULL;
     gen->pgm = pgm;
     gen->stitch[0] = gen->stitch[1] = NULL;
+    gen->entrymain = NULL;
     gen->symnodes = newNodes(64);
     gen->tyrectypes = NULL;
     gen->tyrecs = NULL;
@@ -1219,8 +1316,10 @@ void genlProgram(GenState *gen, ProgramNode *pgm) {
         }
     }
 
-    // Last, the stitched init and final a call asked for, once every module's
-    // lifecycle functions have their symbols
+    // Last, the entry round the program's 'main', and the stitched init and
+    // final it and any call asked for, once every module's lifecycle functions
+    // have their symbols
+    genlEntry(gen);
     genlStitch(gen, 0);
     genlStitch(gen, 1);
 

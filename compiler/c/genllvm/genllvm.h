@@ -143,6 +143,7 @@ typedef struct GenState {
     ModuleNode *libroot;    // The package's root module in a library compile, else NULL
     ProgramNode *pgm;       // The program being generated, whose module order genlStitch reads
     LLVMValueRef stitch[2]; // The stitched init and final, once a call asks for one (genlStitchFn); else NULL
+    FnDclNode *entrymain;   // The program's own 'main' when this object builds the entry that calls it (genlEntry), else NULL
     int comdats;            // enum ComdatSupport, from the target's object format
     Nodes *symnodes;        // Every declaration given a global, which genlClaimSymbol searches for a clash
     INode *fnblock;
