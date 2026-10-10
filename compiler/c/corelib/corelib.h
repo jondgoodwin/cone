@@ -91,8 +91,9 @@ extern StructNode *cstrTypeDcl;
 // field and its methods. The struct is handed back empty.
 StructNode *stdlibAdoptCStr(Name *name, ModuleNode *mod);
 
-// The two functions a program calls to run its stitched init and final
-// (genlStitch): 'initAll()' and 'finalAll()', names every module reaches as it
+// The two functions that run a program's stitched init and final (genlStitch),
+// which the entry the compiler builds (genlEntry) calls and a program may call
+// again: 'initAll()' and 'finalAll()', names every module reaches as it
 // reaches 'i64', and which a declaration of its own hides
 extern FnDclNode *initAllFn;
 extern FnDclNode *finalAllFn;
