@@ -571,7 +571,17 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
         int selfisbody = selfdcl->tag == ArrayRefTag && pstate->typenode->tag == StructTag
             && itypeIsArrayBody((INode*)pstate->typenode)
             && itypeIsSame(((RefNode*)selfdcl)->vtexp, itypeLenBodyElem((INode*)pstate->typenode));
-        if (!selfisbody && iexpGetDerefTypeDcl(selfparm) != pstate->typenode)
+        // A method may ask for the owner of its type, as Rust's 'self: &Rc<Self>'
+        // does: 'self &So[str]' is a borrow of an owner of 'str', and a receiver
+        // that is not an owner (a plain '&str') has no such method
+        int selfisowner = 0;
+        if (selfdcl->tag == RefTag && itypeGetTypeDcl(((RefNode*)selfdcl)->region) == borrowRef) {
+            INode *ownerdcl = itypeGetTypeDcl(((RefNode*)selfdcl)->vtexp);
+            selfisowner = ownerdcl->tag == RefTag
+                && itypeGetTypeDcl(((RefNode*)ownerdcl)->region) != borrowRef
+                && itypeGetDerefTypeDcl(ownerdcl) == pstate->typenode;
+        }
+        if (!selfisbody && !selfisowner && iexpGetDerefTypeDcl(selfparm) != pstate->typenode)
             errorMsgNode((INode*)fnnode, ErrorInvType, "self parameter for a method must match, or be a reference to, its type");
     }
 

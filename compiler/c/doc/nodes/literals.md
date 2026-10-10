@@ -282,7 +282,13 @@ the literal's own business but each decided from its tag:
   literal is a C string wherever one is wanted: the node is the inline call, and
   the pointer it holds is the literal's own global, whose NUL the type does not
   count. A `&str` that is not a literal is not taken (`ErrorCPtrConv`: it promises
-  no NUL).
+  no NUL). A literal that holds a NUL byte inside is refused as a `cstr`
+  (`ErrorCStrNul`, `slitCStrCheck`, called from `slitCoerce` and `slitBorrowCoerce`,
+  at the literal): C reads a string up to its first NUL, so it would see only the
+  text before it. The check is on the conversion, so it knows one type, `cstr`
+  (`cstrTypeDcl`); the same literal as a `&str`, a `String` or an owner of text
+  is taken as it is, and an explicit `cstr.fromLiteral(lit)` or `cstr.fromPtr(p)`
+  is a call with a `&str` or a pointer, not a conversion, and says nothing.
 - A literal wanted as a read-only borrow, `&T`, of such a struct (`slitBorrowMatches`)
   is lent as a temporary: the node becomes the borrow `&T.fromLiteral(lit)`, built
   and checked as that borrow written out is (`slitBorrowCoerce`: the call
@@ -678,7 +684,8 @@ reads to it.
 `&str` into a region (`genlAllocate`, a body whose reference carries its length)
 asks the region for the header, the bytes and one more byte, and stores a zero
 there after the copy, in every region, so `So[str]`, `Rc[str]` and the rest are as
-much a C string as the literal they may have been copied from (`cstr.fromOwned`).
+much a C string as the literal they may have been copied from (`s.cstr()` on a
+`So[str]`, which calls `cstr.fromOwned`).
 The count leaves the byte out. A `String` keeps its own (collections), and
 `freeze` carries it into the `So[str]` it makes.
 

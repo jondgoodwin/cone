@@ -37,7 +37,9 @@ rather than describe.**
    number as a `char` (`ErrorCharNotNbr`), and a slice, text or `cstr` wanted as
    a raw pointer, or a pointer, text or slice as a `cstr` (`ErrorCPtrConv`,
    `iexpCPtrMismatch`, which names `xs as *u8`, `cstr.fromPtr` or `c.ptr()`).
-   For the last four it answers 1, so the caller says nothing more.
+   For the last four it answers 1, so the caller says nothing more. (A string
+   literal holding a NUL byte wanted as a `cstr` is refused too, `ErrorCStrNul`,
+   in `slitCoerce`; the coercion still goes ahead.)
 4. **Overload selection filters, it does not rank.** Exactly one viable
    candidate is a match; two are an ambiguity. There is no best-match score and
    no preference order to memorize.

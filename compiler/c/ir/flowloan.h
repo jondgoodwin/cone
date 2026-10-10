@@ -201,6 +201,20 @@ uint32_t loanYieldPending(INode *seam, uint32_t loan, uint32_t holder);
 // and reports nothing. Any variable may carry one, not only a holder.
 uint32_t loanSeamLive(INode *seam, uint32_t var);
 
+// Where a lock's guard gives its lock back (flowpath.c, pwLockPoint). The live
+// mark of the guard 'guard' at a point after the statement 'site' (kind 0) or
+// at the start of the block 'site' (kind 1): a pending entry a use of any
+// holder of the guard's borrow fires, on any path from there. A point whose
+// mark is never fired has no use of the borrow after it on any path, and is
+// where the lock goes back (loanLockStillLive says it was fired).
+uint32_t loanLockLive(INode *site, int kind, uint32_t guard);
+int loanLockStillLive(uint32_t id);
+
+// Does a loan set hold a loan rooted at the variable 'root'? A set of every
+// loan does. Does an operand in flight carry one?
+int loanSetRootedAt(PathSet *set, uint32_t root);
+int loanFlightRootedAt(uint32_t root);
+
 // The loans in flight across a seam -- an operand already walked whose call
 // or value is made after it -- are used after it: one that is not global is
 // reported at once, at the operand when it was made by a call or a temporary

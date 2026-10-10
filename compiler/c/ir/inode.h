@@ -342,6 +342,8 @@ enum NodeTags {
 
 #define FlagSuffix    0x0001        // Borrow: part of a borrow chain
 
+#define FlagLockGive  0x0001        // DropFlag: a statement giving a lock's guard back at its borrow's last use
+
 #define FlagQues      0x0001        // Alloc:  Does it return Option[T]?
 // An allocation whose value is an array's contents, 'new Rc[mut, Array[i32, 4]]
 // <- fill 0': the array literal is not made before 'alloc' and stored, but

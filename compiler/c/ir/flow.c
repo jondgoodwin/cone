@@ -1763,6 +1763,13 @@ static INode *flowDropFlagTest(VarDclNode *var, INode *release, uint8_t state) {
     return (INode *)test;
 }
 
+INode *flowLockGive(VarDclNode *guard, INode *at) {
+    INode *give = flowDropFlagTest(guard, NULL, DropFlagWhole);
+    give->flags |= FlagLockGive;
+    inodeLexCopy(give, at);
+    return give;
+}
+
 static void flowListAdd(Nodes **varlist, INode *node) {
     if (*varlist == NULL)
         *varlist = newNodes(4);
