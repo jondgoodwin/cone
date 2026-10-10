@@ -1,0 +1,158 @@
+// A field or a method called on a reference to a reference reaches through every
+// level: '&&Pt', '&&&Pt', '&mut &Pt', an owner held behind a borrow, a slice or a
+// virtual reference behind one. 'r.x' is '(**r).x' however many references deep
+// 'r' is, and the permission is the intersection of every step: a '&mut' reached
+// through a '&mut' writes, one reached through a '&' only reads
+// (ref_typecheck_autoderef holds the writes it refuses).
+//
+// The outermost level wins a name: a reference's own '===' is asked of the
+// reference as written, before the receiver is read through, so two '&&Pt' that
+// point at different '&Pt' are different places though both reach one Pt; and a
+// struct that holds a reference has its own 'len' called, never the held
+// value's. Pt has two numbers, so 'len' is x + y; the numbers are worked out in
+// the comments.
+
+mod ref_autoderef;
+
+import stdio use *;
+import collections use *;
+
+struct Pt {
+  pub x i32;
+  pub y i32;
+  pub fn len(self &) i32 { x + y; }
+  pub fn bump(self &mut) { x = x + 1; }
+  pub fn add(self &, f &fn(i32) i32) i32 { f(x); }
+  pub fn pick[T](self &, v T) T { v; }
+}
+
+// Holds a reference and has a 'len' of its own
+struct Holder {
+  pub held &Pt;
+  pub fn len(self &) i32 { 100; }
+}
+
+trait Shape {
+  pub fn area(self &) i64;
+}
+struct Sq is Shape {
+  pub s i64;
+  pub fn area(self &) i64 { s * s; }
+}
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn viaTwo(r &&Pt) i32 { r.x + r.len(); }
+fn viaThree(r &&&Pt) i32 { r.x + r.len(); }
+fn viaMutRo(r &mut &Pt) i32 { r.x + r.len(); }
+fn viaRoMut(r & &mut Pt) i32 { r.x + r.len(); }
+fn writeTwo(r &mut &mut Pt) { r.x = 9; r.bump(); }
+fn writeThree(r &mut &mut &mut Pt) { r.x = 20; r.bump(); }
+fn opAssign(r &mut &mut Pt) { r.x += 5; r.x++; }
+fn lendX(r &&Pt) i32 { imm q = &r.x; *q; }
+fn lendMutX(r &mut &mut Pt) i32 { imm q = &mut r.x; *q = 7; r.x; }
+fn viaOwner(r &So[Pt]) i32 { r.x + r.len(); }
+fn viaOwnerTwo(r &&So[Pt]) i32 { r.x + r.len(); }
+fn writeOwner(r &mut So[Pt]) { r.x = 5; r.bump(); }
+fn writeOwnerTwo(r &mut &mut So[Pt]) { r.x = 50; r.bump(); }
+fn viaHolder(r &&Holder) i32 { r.len(); }
+fn viaHolderField(r &&Holder) i32 { r.held.len(); }
+fn sameInner(a &&Pt, b &&Pt) i64 { if a === b { 1i64; } else { 0i64; } }
+fn sameInnerRead(a &&Pt, b &&Pt) i64 { if *a === *b { 1i64; } else { 0i64; } }
+fn sliceTwo(r &&Array[i32]) i32 { r[1] + i32.from(r.len()); }
+fn sliceWrite(r &mut &mut Array[i32]) { r[0] = 42; }
+fn withClosure(r &&Pt) i32 { r.add(n => n + 100); }
+fn generic(r &&Pt) i64 { r.pick[i64](7) + r.pick(8i64); }
+fn pushTwo(l &mut &mut List[i64]) { l.push(5); l.push(6); }
+fn lenTwo(l &&List[i64]) i64 { i64.from(l.len()); }
+fn virt(r &&<Shape) i64 { r.area(); }
+
+fn main() {
+  mut pts = new List[Pt];
+  pts.push(new Pt(3, 4));
+  pts.push(new Pt(6, 1));
+  pts.push(new Pt(8, 2));
+  // the closure of a filter is given a '&&Pt': the items are borrowed, and so is each
+  show("filter x", i64.from(pts.iter().filter(p => p.x > 5).count()));        // 6 and 8: 2
+  show("filter len", i64.from(pts.iter().filter(p => p.len() > 7).count()));  // 7, 7, 10: 1
+
+  mut p = new Pt(3, 4);
+  imm a = &p;
+  imm b = &a;
+  imm c = &b;
+  show("two", i64.from(viaTwo(b)));        // 3 + 7 = 10
+  show("three", i64.from(viaThree(c)));    // 10
+  mut mp = &p;
+  show("mut over ro", i64.from(viaMutRo(&mut mp)));   // 10
+  mut z = new Pt(3, 4);
+  imm mz = &mut z;
+  show("ro over mut", i64.from(viaRoMut(&mz)));       // 10
+
+  // writes through every level that allows them
+  mut w1 = new Pt(1, 1);
+  mut m1 = &mut w1;
+  writeTwo(&mut m1);
+  show("write two", i64.from(w1.x));       // 9, then bumped: 10
+  mut w2 = new Pt(1, 1);
+  mut m2 = &mut w2;
+  mut m22 = &mut m2;
+  writeThree(&mut m22);
+  show("write three", i64.from(w2.x));     // 20, then bumped: 21
+  mut w3 = new Pt(21, 1);
+  mut m3 = &mut w3;
+  opAssign(&mut m3);
+  show("op-assign", i64.from(w3.x));       // 21 + 5 = 26, then ++: 27
+  mut w4 = new Pt(1, 1);
+  mut m4 = &mut w4;
+  show("lend mut", i64.from(lendMutX(&mut m4)));   // 7
+  show("lend", i64.from(lendX(&mp)));      // 3
+
+  // an owner behind a borrow
+  mut own = new So[Pt](new Pt(1, 2));
+  show("owner", i64.from(viaOwner(&own)));          // 1 + 3 = 4
+  imm ownRef = &own;
+  show("owner two", i64.from(viaOwnerTwo(&ownRef)));  // 4
+  writeOwner(&mut own);
+  show("write owner", i64.from(own.x));    // 5, then bumped: 6
+  mut ownMut = &mut own;
+  writeOwnerTwo(&mut ownMut);
+  show("write owner two", i64.from(own.x));   // 50, then bumped: 51
+
+  // a struct holding a reference: its own len, then the held value's through its field
+  imm h = new Holder(&p);
+  imm hr = &h;
+  show("holder len", i64.from(viaHolder(&hr)));        // 100, not the held Pt's 7
+  show("holder field", i64.from(viaHolderField(&hr)));  // 7
+
+  // the outermost reference answers its own operator: '===' asks about the reference
+  // as written (the place the '&Pt' is held at), '*a === *b' about the place it points at
+  imm a2 = &p;
+  show("same outer", sameInner(&a, &a));           // 1
+  show("different outer", sameInner(&a, &a2));     // 0: two '&Pt' held apart
+  show("same inner", sameInnerRead(&a, &a2));      // 1: both point at p
+
+  mut arr = [10, 20, 30];
+  imm sl &Array[i32] = &arr;
+  show("slice two", i64.from(sliceTwo(&sl)));      // 20 + 3 = 23
+  mut msl &mut Array[i32] = &mut arr;
+  sliceWrite(&mut msl);
+  show("slice write", i64.from(arr[0]));           // 42
+
+  show("closure argument", i64.from(withClosure(&a)));   // 3 + 100
+  show("generic method", generic(&a));             // 7 + 8
+
+  mut l = new List[i64];
+  mut ml = &mut l;
+  pushTwo(&mut ml);
+  imm rl = &l;
+  show("list len", lenTwo(&rl));                   // 2
+
+  imm sq = new Sq(4);
+  imm v &<Shape = &sq;
+  show("virtual", virt(&v));                       // 16
+}
