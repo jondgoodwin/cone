@@ -3166,6 +3166,10 @@ FnSigNode *genericClosureSig(TypeCheckState *pstate, FnDclNode *generic, Nodes *
             continue;
         genericInferType(known, info->parms, ((VarDclNode*)nodesGet(gsig->parms, firstparm + j))->vtype, argtype);
     }
+    // A parameter named only in the bound of another the arguments settled, 'T' in
+    // '[T, V RandomAccess[T], F fn(x &T) bool]', is read off that argument's methods
+    // as the call's own inference will read it
+    genericInferFromBounds(info->parms, generic->where, known);
     if (!genericTypeArgsKnown(bound, info->parms, known->args)) {
         // A return type that names a parameter nothing else has settled ('U' in
         // 'F fn(x T) U', which a map's closure gives) waits for the closure's body:
