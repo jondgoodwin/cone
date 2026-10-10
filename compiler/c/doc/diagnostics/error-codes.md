@@ -425,7 +425,9 @@ owning reference, a function reference, a virtual reference or a raw pointer is
 `ErrorGpuClosureData`; and one made a function reference, or converted to a
 virtual reference, is `ErrorGpuClosureRef`. What else a GPU has none of, written
 in GPU code, is one code, `ErrorGpuUnavailable`: a borrow of a function, a
-reference made a virtual reference, and an allocation.
+reference made a virtual reference, an allocation, an owning reference type
+written, an actor, a `parallel each`, an `await`, and a call of a function
+defined elsewhere that is not the C library's math.
 
 A callable behind a reference or an owner has three more: a callable refused for the
 permission its `()` takes or the borrow lent (a `()` taking `self &mut` given to a
