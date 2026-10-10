@@ -826,7 +826,11 @@ static int fnCallLowerRefIntField(FnCallNode *callnode, INode *objtype) {
 // Report why the name the caller used selected no single candidate.
 // 'kind' names what the name declares, for a call ("function") or a method call ("method").
 static void fnCallNoCandidate(INode *callnode, enum OverloadMatch status, Name *namesym, char *kind) {
-    if (status == OverloadAmbiguous)
+    if (status == OverloadAmbiguous && iNsTypeAmbiguous[0] && iNsTypeAmbiguous[1])
+        errorMsgNode(callnode, ErrorAmbigCandidate,
+            "More than one %s declared by `%s` accepts these arguments (`%s` and `%s`). Call a concrete name or convert the arguments.",
+            kind, &namesym->namestr, &iNsTypeAmbiguous[0]->namesym->namestr, &iNsTypeAmbiguous[1]->namesym->namestr);
+    else if (status == OverloadAmbiguous)
         errorMsgNode(callnode, ErrorAmbigCandidate,
             "More than one %s declared by `%s` accepts these arguments. Call a concrete name or convert the arguments.",
             kind, &namesym->namestr);
@@ -1416,6 +1420,17 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
             && !fnCallBoolOperandWantsNumber(callnode, foundnode, status))
             fnCallNoCandidate((INode*)callnode, status, methsym, "method");
         return -1;
+    }
+
+    // A generic that joined the set, bound only by function signatures, was
+    // selected by its arguments' types: its instance for them is what is called,
+    // as a generic method named alone is
+    if (selected->genericinfo) {
+        selected = genericMethodInstance(pstate, callnode, selected, NULL);
+        if (selected == NULL) {
+            callnode->vtype = errorType;
+            return -1;
+        }
     }
 
     fnCallPrivateVtable(callnode, (INode*)selected, objdereftype, notpublic);
@@ -2029,7 +2044,8 @@ int fnCallLowerTraitMethod(TypeCheckState *pstate, FnCallNode *callnode, INode *
 
 // objfn names an overload set. Select the one candidate that accepts the call's
 // arguments, rewrite the call to that concrete function, then finalize its arguments.
-void fnCallLowerOverloadFn(TypeCheckState *pstate, FnCallNode *node) {
+int fnCallLowerOverloadFn(TypeCheckState *pstate, FnCallNode **nodep) {
+    FnCallNode *node = *nodep;
     NameUseNode *fnuse = (NameUseNode*)node->objfn;
     // Through the alias where a fold is what bound the name here. The visibility
     // already checked was the alias's own, and the overload set is its target's
@@ -2037,14 +2053,14 @@ void fnCallLowerOverloadFn(TypeCheckState *pstate, FnCallNode *node) {
 
     if ((node->flags & FlagIndex) || node->methfld != NULL) {
         errorMsgNode((INode*)node->objfn, ErrorNoMeth, "A function may not be called using indexing or a method.");
-        return;
+        return 1;
     }
 
     // A generic type's own overload name, reached from outside it, names
     // candidates that only its instances have
     if (nameUseTemplateMember(fnuse, nodesGet(overloadnode->overloads, 0))) {
         node->vtype = errorType;
-        return;
+        return 1;
     }
 
     // Test every candidate the overload name declares, without altering the call,
@@ -2054,7 +2070,7 @@ void fnCallLowerOverloadFn(TypeCheckState *pstate, FnCallNode *node) {
     FnDclNode *selected = iNsTypeFindMethod((INode*)overloadnode, NULL, node->args, &status);
     if (selected == NULL) {
         fnCallNoCandidate((INode*)node, status, overloadnode->namesym, "function");
-        return;
+        return 1;
     }
 
     // Rewrite the callee to the selected concrete declaration, so nothing downstream
@@ -2062,7 +2078,13 @@ void fnCallLowerOverloadFn(TypeCheckState *pstate, FnCallNode *node) {
     fnuse->namesym = selected->namesym;
     fnuse->dclnode = (INode*)selected;
     fnuse->vtype = selected->vtype;
+    // A generic is called as one named directly is: its type arguments are
+    // inferred from the arguments, which are all checked, and the instance
+    // becomes the callee (genericSubstitute)
+    if (selected->genericinfo)
+        return genericSubstitute(pstate, nodep);
     fnCallFinalizeArgs(pstate, node);
+    return 1;
 }
 
 // Lower opassign method for method-based types
@@ -2755,7 +2777,8 @@ static FnDclNode *fnCallClosureOverload(TypeCheckState *pstate, FnCallNode *node
         FnSigNode *callable = fnCallCallableParm(cand, firstparm + argi);
         if (callable == NULL || callable->parms->used != nclo)
             continue;
-        int fits = 1;
+        // A generic is judged by what its other arguments give its type parameters
+        int fits = !cand->genericinfo || genericOverloadViable(cand, NULL, node->args, firstparm);
         for (j = 0; j < node->args->used && !cand->genericinfo; ++j) {
             INode **argp = &nodesGet(node->args, j);
             if (j == argi || (*argp)->tag == ClosureTag || !isExpNode(*argp))
@@ -3249,8 +3272,19 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
 
     // A call whose callee names an overload set selects its one viable candidate
     if (nameUseNames(node->objfn, FnOverloadDclTag)) {
-        fnCallLowerOverloadFn(pstate, node);
-        return;
+        if (fnCallLowerOverloadFn(pstate, nodep))
+            return;
+        // The candidate was a generic, and its instance is now the callee
+        inodeTypeCheckAny(pstate, &node->objfn);
+        if (inodeIsError(node->objfn)) {
+            node->vtype = errorType;
+            return;
+        }
+        if (!isExpNode(node->objfn)) {
+            errorMsgNode(node->objfn, ErrorNotTyped, "Expected a typed expression.");
+            node->vtype = errorType;
+            return;
+        }
     }
 
     // A 'null' compared with a pointer, on either side, is that pointer's type

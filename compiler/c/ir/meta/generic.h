@@ -66,6 +66,14 @@ FnDclNode *genericMethodInstance(TypeCheckState *pstate, FnCallNode *callnode, F
 // Is 'fn' one of the instances made of generic function or method 'generic'?
 int genericIsInstanceOf(INode *fn, FnDclNode *generic);
 
+// Can a call passing 'self' (NULL if none) and 'args' call generic 'generic', a
+// candidate of an overload set, whose every type parameter is bound to a
+// function signature? 'args' fill the signature's parameters from 'firstparm'
+// on when there is no 'self' (1 for a method's call whose receiver is not among
+// them); a closure literal among them, not yet checked, is taken to fit its
+// parameter. Nothing is inserted into the call.
+int genericOverloadViable(FnDclNode *generic, INode **self, Nodes *args, uint32_t firstparm);
+
 // The signature a closure literal given as argument 'argi' of a call of this
 // generic function or method is to fit (closure.h); see generic.c
 FnSigNode *genericParmBound(FnDclNode *generic, uint32_t pos, INode **refperm);
