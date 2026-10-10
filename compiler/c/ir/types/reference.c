@@ -382,6 +382,23 @@ static void refRefusePlusType(RefNode *node) {
 // '&new' may be written: an init's reference to memory not yet filled
 int refAllowNewPerm = 0;
 
+// Set by typeLitNewChecked while it checks the type a 'new' names, whose
+// allocation is refused in GPU code as an allocation, so that the type is not
+// refused again
+int refNewTypeWritten = 0;
+
+// An owning reference type written in GPU code, 'So[T]', 'Rc[T]', 'Arc[imm, T]',
+// is refused: a GPU has no allocator, so nothing could own memory, and a kernel
+// has only its locals and the buffers it is bound. A borrow, whose region is
+// the borrow's own, is what a GPU has.
+static void refGpuOwnerCheck(RefNode *node, int newtype) {
+    if (!flowGpuRefuses((INode*)node) || newtype || itypeGetTypeDcl(node->region) == (INode*)borrowRef)
+        return;
+    errorMsgNode((INode*)node, ErrorGpuUnavailable,
+        "In GPU code an owning reference cannot be written, '%s[...]': a GPU has no allocator, so nothing could own the memory. Keep the value in a local, or in a buffer the kernel is bound, and pass a borrow of it.",
+        itypeName(node->region));
+}
+
 // Check what a reference, pointer or slice points at. A reference's size is its
 // kind's, never its target's, so while a layout is in flight the target is
 // resolved -- a name to its declaration, a generic's instance made -- and not
@@ -420,6 +437,8 @@ static void refVtableBuild(TypeCheckState *pstate, INode *trait, void *extra) {
 void refTypeCheck(TypeCheckState *pstate, RefNode *node) {
     int allownew = refAllowNewPerm;
     refAllowNewPerm = 0;
+    int newtype = refNewTypeWritten;
+    refNewTypeWritten = 0;
     // No permission written: the default, which rule one of Immutable replaces
     // below once the target is known
     int permunwritten = node->perm == unknownType;
@@ -429,6 +448,7 @@ void refTypeCheck(TypeCheckState *pstate, RefNode *node) {
     refRefusePlusType(node);
     itypeTypeCheck(pstate, &node->region);
     refRegionCheck(&node->region);
+    refGpuOwnerCheck(node, newtype);
     itypeTypeCheck(pstate, (INode**)&node->perm);
     refLockCheck(node);
     // A type checked once is not checked again, so this is said once
@@ -491,9 +511,12 @@ void refTypeCheck(TypeCheckState *pstate, RefNode *node) {
 void refvirtTypeCheck(TypeCheckState *pstate, RefNode *node) {
     if (node->perm == unknownType)
         node->perm = newPermUseNode(node->region == borrowRef ? roPerm : uniPerm);
+    int newtype = refNewTypeWritten;
+    refNewTypeWritten = 0;
     refRefusePlusType(node);
     itypeTypeCheck(pstate, &node->region);
     refRegionCheck(&node->region);
+    refGpuOwnerCheck(node, newtype);
     itypeTypeCheck(pstate, (INode**)&node->perm);
     refLockCheck(node);
     int waiting;

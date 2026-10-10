@@ -131,6 +131,22 @@ extern int flowGateCountAll;
 // walk refuses those shapes (flowloan.h, "GPU targets")
 extern int flowGpu;
 
+// Whether a node is in GPU code the refusal of what a GPU lacks reads: any
+// code of a GPU compile except core's own source, which is written with the
+// owners and the allocator a kernel is refused
+int flowGpuRefuses(INode *node);
+
+// Whether a call of this function, taking this many arguments, is to code a
+// GPU has none of: a function defined elsewhere ('extern') that is neither
+// core's own nor the C library's math. The message names the function ('%s')
+int flowGpuExternRefused(FnDclNode *callee, unsigned nargs);
+extern const char *flowGpuExternMsg;
+
+// Whether a C symbol taking this many arguments is a C library math function
+// a GPU lowers to its own instruction (the generator's table, genllvm/genlgpu.c).
+// A call of any other function defined elsewhere is refused in GPU code
+int genlGpuIsMathSymbol(const char *symbol, unsigned nargs);
+
 // A value a return, break or block end hands out has this type
 void flowGateResultAsk(FlowState *fstate, INode *type);
 // A call of two or more arguments has one that is a borrowed reference
