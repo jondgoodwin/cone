@@ -44,13 +44,14 @@
 		is used, each instance with its own globals; a generic module may not yet
 		hold submodules. A module may declare its own
 		<a href="#dyninit">initializer and finalizer</a>, and every global
-		without an initial value must be assigned by its initializer; a program
-		runs every module's by calling <span class="pre">initAll()</span> and
-		<span class="pre">finalAll()</span>. A global may be
+		without an initial value must be assigned by its initializer; the entry
+		the compiler builds for a program runs every module's initializer before
+		the program's <span class="pre">main</span> and every finalizer after it
+		(<a href="#initall">below</a>). A global may be
 		<a href="#threadlocal">thread-local</a>, one copy per thread. The purity rules of
 		<span class="pre">initpure</span> are not checked. The
-		framework traits a program plugs into, and the entry they would supply,
-		which would call those two itself, are not implemented.</i></p>
+		framework traits a program plugs into, whose entries would be configurable,
+		are not implemented.</i></p>
 
 	<p>Many things are given names: variables, functions, types, fields, methods, etc.
 		The collection of all names defined for a scope is called a namespace.
@@ -1002,26 +1003,40 @@ fn final() {
 		<a href="#dag">depend on each other</a>: each module's runs after the initializers of every
 		module it depends on, and the program's own module's runs last. Every module's finalizer runs
 		in exactly the reverse order, the program's own first. A module with neither is left out.</p>
-	<p>A program runs the two by calling <span class="pre">initAll()</span> and
-		<span class="pre">finalAll()</span>, names every module can use:</p>
+	<p>A program does not start them. The compiler builds the program's entry, the
+		C <span class="pre">main</span> the system calls, round the program's own
+		<span class="pre">main</span>: the entry runs every module's initializer, calls
+		<span class="pre">main</span> (with the command line's <span class="pre">argc</span> and
+		<span class="pre">argv</span> if it takes them), runs every module's finalizer, and exits
+		with the value <span class="pre">main</span> returned (0 if it returns nothing).
+		Everything has been initialized when <span class="pre">main</span> begins, and a program that
+		opened files in an initializer has them closed by a finalizer when
+		<span class="pre">main</span> returns. The program's <span class="pre">main</span> is a
+		function of the module that is the program, taking nothing, or an
+		<span class="pre">i32</span> and a <span class="pre">**u8</span>, and returning an integer or
+		nothing:</p>
 <pre>
 fn main() i32 {
-  initAll();
   run();
-  finalAll();
   0;
 }
 </pre>
-	<p><i>These two calls stand in for the entry a program's framework will supply, which will
-		run them round the program's <span class="pre">main</span> itself; until it exists, nothing
-		calls them but the program. A program that does not call <span class="pre">finalAll()</span>
-		ends when <span class="pre">main</span> returns without running any module's finalizer. For
-		a program using the <a href="refconccomm.html#actors">actors</a> runtime that means its
-		workers are not waited for: messages still in flight are silently dropped, and no actor
-		still alive is finalized. A library compiled on its own keeps its initializer and
+	<p>The names <span class="pre">initAll()</span> and <span class="pre">finalAll()</span>, which
+		every module can use, run the same two stitched sequences, and each runs its modules once:
+		a program that calls them itself, as programs did before the entry was built, finds nothing
+		left to run at <span class="pre">initAll()</span>, and runs the finalizers at its first
+		<span class="pre">finalAll()</span> (so it may finalize early) and not again when
+		<span class="pre">main</span> returns.</p>
+	<p><i>A program ends without running any finalizer when it panics, or calls the C
+		library's <span class="pre">exit</span> or <span class="pre">abort</span>: the
+		entry's final runs only when <span class="pre">main</span> returns. A library compiled on
+		its own has no entry of its own and keeps its initializer and
 		finalizer for the program that imports it, whose include file for the library declares
 		them, with <span class="pre">extern</span>, and declares the globals its finalizer
-		finalizes.</i></p>
+		finalizes. A C program that calls such a library is on its own for setting it up. A
+		<span class="pre">main</span> that takes any other parameters, a function with a C name
+		that is the program's own C entry, and a WebAssembly or GPU module, get no
+		entry from the compiler.</i></p>
 
 	<h2 id="typens">Types as Namespaces</h2>
 	<p>Declarations for struct and enum types are also namespaces.

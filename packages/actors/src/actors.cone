@@ -20,14 +20,10 @@
 //   }
 //
 //   fn main() {
-//     initAll();
-//     {
-//       imm c = new Counter(0u64);       // the first actor starts the workers
-//       c.add(5u64);                     // a message: queued, run later
-//       c.add(7u64);                     // run after the first
-//     }
-//     finalAll();                        // waits until all is quiet
-//   }
+//     imm c = new Counter(0u64);         // the first actor starts the workers
+//     c.add(5u64);                       // a message: queued, run later
+//     c.add(7u64);                       // run after the first
+//   }                                    // then the program's final waits until all is quiet
 //
 // An actor is declared with 'actor' (the reference manual, "Actors"), and a
 // module declaring one imports this package. What it has:
@@ -312,23 +308,24 @@
 // It is not synchronized with a first start on another thread: configure
 // first.
 //
-// The module's finalizer, run by finalAll(), stops them. It waits until the
-// runtime is QUIESCENT -- no actor is queued or running, so no message is in
-// any mailbox -- then stops the workers and joins them. finalAll()
-// finalizes the program's own module first, so the handles its globals hold
-// are let go before the wait; handles in main's locals are let go at the
-// end of their block, so a program puts the actors it starts in a block
-// that ends before finalAll(), as above. The runtime is not started again:
-// starting an actor or sending a message after the finalizer has stopped
-// the workers is a panic, since nothing would ever run the message. So is
-// finalAll() on one of the workers, which would wait for itself.
+// The module's finalizer, run by the program's final, stops them. It waits
+// until the runtime is QUIESCENT -- no actor is queued or running, so no
+// message is in any mailbox -- then stops the workers and joins them. The
+// final finalizes the program's own module first, so the handles its globals
+// hold are let go before the wait; handles in main's locals are let go when
+// main returns, before the final begins. (A program that calls finalAll()
+// itself, as programs did before the entry was built, waits at that call and
+// puts the actors it starts in a block that ends before it.) The runtime is
+// not started again: starting an actor or sending a message after the
+// finalizer has stopped the workers is a panic, since nothing would ever run
+// the message. So is finalAll() on one of the workers, which would wait for
+// itself.
 //
-// UNTIL THE ENTRY TRAIT EXISTS a program calls initAll() and finalAll()
-// itself (the reference manual, "Running every module's initializer and
-// finalizer"). A program that does not call finalAll() ends when main
-// returns, whatever the actors are doing: messages still in flight are
-// dropped silently, and no actor still alive is finalized. The entry will
-// run finalAll() round main, and this caveat will go.
+// The final is run by the entry the compiler builds round main (the
+// reference manual, "Running every module's initializer and finalizer"),
+// when main returns. A program that panics or calls C's exit ends whatever
+// the actors are doing: messages still in flight are dropped silently, and no
+// actor still alive is finalized.
 //
 // Quiescence is judged on the assumption that, once the finalizer has begun,
 // every message is sent by an actor: a thread other than main that goes on
