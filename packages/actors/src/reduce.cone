@@ -1,15 +1,15 @@
 // Parallel reductions: 'xs.parallel().sum()', 'fold' and 'findFirst', run on the
 // actors' workers (the package's header, PARALLEL LOOPS, and parallel.cone). The
-// view 'parallel()' gives is core's (ParSlice for a slice, an array or a list,
-// ParView for any other source with 'len' and 'at': the runs 'chunks' gives, the
-// cursors 'indexed' and 'zip' give, a number range); these are the functions
-// the compiler calls for the three methods, written as a call on the view
-// ('v.sum()' is 'actors.parSum(v)'), so a module that calls one imports actors,
+// view 'parallel()' gives is core's (ParallelSlice for a slice, an array or a list,
+// ParallelNumbers for a number range, and for the runs 'chunks' gives and the cursors
+// 'indexed' and 'zip' give, the cursor itself, which has 'len' and 'at'); these are
+// the functions the compiler calls for the three methods, written as a call on the
+// view ('v.sum()' is 'actors.parSum(v)'), so a module that calls one imports actors,
 // as one that writes a 'parallel each' does.
 //
 //   imm total = xs.parallel().sum();                         // a list of numbers
 //   imm top = xs.parallel().fold(0.0, (m, x) => max(m, *x), (a, b) => max(a, b));
-//   imm hit = xs.parallel().findFirst(x => *x > 100);        // an Option of the item
+//   imm hit = xs.parallel().findFirst(x => **x > 100);       // an Option of the item
 //   imm n = (0 < 1000).parallel().sum();                      // a number range
 //
 //   sum()                      the total of the items (0 for none), for a view of
@@ -136,16 +136,14 @@ fn reduceBlocks[A, L fn(lo usize, hi usize) A + Shareable, M fn(a A, b A) A + Sh
 }
 
 // The accumulator a fold starts each block from: a copy of init, which is only
-// right for a type with no finalizer (an owner copied would be freed twice)
+// right for a type with no finalizer (an owner copied would be freed twice;
+// parFold has refused one)
 fn identityOf[A](init &A) A {
-  if mem.needsFinal[A]() {
-    panic("fold: the identity is copied for each block, so its type must have no finalizer; build a list or text with '<- parallel each ... yield'");
-  }
   mem.readRaw[A](init as *A);
 }
 
 // The total of the numbers a view reads (0 for none)
-pub fn parSum[N, V NumberAt[N]](v V) N where N is Integer or N is f32 or N is f64 {
+pub fn parSum[N, V ParallelNumberAt[N]](v V) N where N is Integer or N is f32 or N is f64 {
   imm n = v.len();
   if n == 0usize {
     return N.from(0i32);
@@ -166,10 +164,13 @@ pub fn parSum[N, V NumberAt[N]](v V) N where N is Integer or N is f32 or N is f6
 // 'init', then 'step' given the accumulator so far and each item, a block at a
 // time; the blocks' accumulators joined by 'combine'
 pub fn parFold[Item, A, V RandomAccess[Item], S fn(acc A, x Item) A + Shareable, M fn(a A, b A) A + Shareable](
-    v V, init A, step S, combine M) A {
+    v V, init A, step S, combine M, file &Array[u8] = srcFile(), line u32 = srcLine()) A {
   imm n = v.len();
   if n == 0usize {
-    return identityOf[A](&init);
+    return init;
+  }
+  if mem.needsFinal[A]() {
+    panic("fold: the identity is copied for each block, so its type must have no finalizer; build a list or text with '<- parallel each ... yield'", file, line);
   }
   imm leaf = fn(lo usize, hi usize) A {
     mut acc = identityOf[A](&init);

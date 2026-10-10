@@ -1,0 +1,70 @@
+// Parallel reductions ('xs.parallel().sum()', 'fold', 'findFirst') with the actors
+// package built as a library of its own, as a program uses it, on a SINGLE worker
+// (main and the worker share every block). The compiler's suite runs the same
+// reductions on four workers; a float sum's bits are pinned in both places
+// (4622995765255421869 for the harmonic sum of 100,000 items), so the result is
+// shown to be the same whatever the number of workers: the blocks are cut by the
+// item count alone and joined by a tree fixed by the block count.
+
+mod parallelreduce;
+
+import testing use *;
+import collections use *;
+import actors;
+
+fn counting(n usize) List[i64] {
+  mut l = new List[i64]();
+  mut i = 0i64;
+  while i < i64.from(n) {
+    l.push(i);
+    i = i + 1i64;
+  }
+  l;
+}
+
+fn bitsOf(x f64) u64 {
+  mut c = x;
+  mem.readRaw[u64](&mut c as *f64 as *u64);
+}
+
+fn main() i32 {
+  actors.configure(new actors.Options(workers: 1u32));
+
+  // An integer sum, the sizes around the block boundaries
+  expectInt(counting(0usize).parallel().sum(), 0i64, "sum of none");
+  expectInt(counting(127usize).parallel().sum(), 8001i64, "sum of 127, one block");
+  expectInt(counting(129usize).parallel().sum(), 8256i64, "sum of 129, two blocks");
+  expectInt(counting(100000usize).parallel().sum(), 4999950000i64, "sum of 100000");
+
+  // The harmonic sum's bits, the same as on four workers
+  mut h = new List[f64]();
+  mut k = 0usize;
+  while k < 100000usize {
+    h.push(1.0d / (f64.from(k) + 1.0d));
+    k = k + 1usize;
+  }
+  expectUInt(bitsOf(h.parallel().sum()), 4622995765255421869u64, "harmonic sum bits");
+
+  // A fold with a combine that is not commutative: the sequence's polynomial hash
+  // as (h, p), joined (h1 * p2 + h2, p1 * p2) and so by position (5000 items: 858949)
+  imm l = counting(5000usize);
+  imm hash = l.parallel().fold((0u64, 1u64),
+    (acc, x) => ((acc.0 * 31u64 + u64.from(*x) + 1u64) % 1000003u64, (acc.1 * 31u64) % 1000003u64),
+    (p, q) => ((p.0 * q.1 + q.0) % 1000003u64, (p.1 * q.1) % 1000003u64));
+  expectUInt(hash.0, 858949u64, "in-order hash of 5000 items");
+
+  // findFirst: the earliest by position, none, and a range
+  match l.parallel().findFirst(x => **x % 1000i64 == 123i64) {
+    case imm s Some { expectInt(*s.value, 123i64, "earliest of many"); }
+    case is None { expect(false, "earliest of many found"); }
+  }
+  match l.parallel().findFirst(x => **x < 0i64) {
+    case imm s Some { expect(false, "none found"); }
+    case is None { expect(true, "none found"); }
+  }
+  match (100 < 5000).parallel().findFirst(x => *x % 977 == 0) {
+    case imm s Some { expectInt(i64.from(s.value), 977i64, "range"); }
+    case is None { expect(false, "range found"); }
+  }
+  done();
+}

@@ -620,6 +620,9 @@ enum ErrorCode {
     // A string literal where a cstr is wanted (ir/exp/literal.c)
     ErrorCStrNul = 1408,        // A string literal holding a NUL byte ('"ab\x00cd"') where a cstr is wanted: C would read it as 'ab', cutting the text short
 
+    // Parallel reductions: 'xs.parallel().sum()' (ir/exp/pareach.c, ir/exp/fncall.c)
+    ErrorParReduce = 1409,      // A reduction ('sum', 'fold', 'findFirst') in a module that does not import the actors package its blocks run on; 'parallel()' asked of a source that cannot be cut (an iterator chain, a generator, a file, a channel); or a reduction asked of a parallel view held in a variable
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

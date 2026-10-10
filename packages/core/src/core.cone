@@ -260,7 +260,7 @@ pub struct @opaque Array[T] {
   // A parallel view of the elements, for the reductions that run on the actors'
   // workers: 'xs.parallel().sum()', 'fold' and 'findFirst' (the actors package
   // runs them; the module imports it). Its items are borrows, as 'iter' gives
-  pub fn parallel(self &) ParSlice[T] { new ParSlice[T](self); }
+  pub fn parallel(self &) ParallelSlice[T] { new ParallelSlice[T](self); }
 
   // The elements with their positions: 'next' gives a tuple of the position and
   // a borrow of the element, and 'each i, x in a.indexed()' unpacks it
@@ -373,10 +373,9 @@ pub struct ArrayChunks['a, T] is Iterator[&Array[T]] {
   // The runs with their numbers, counted from 0 as the runs it gives are
   pub fn indexed(self) ChunksIndexed['a, T] { new ChunksIndexed[T](self, 0usize); }
 
-  // The runs left, as a parallel view (see Array's 'parallel'): a reduction over runs
-  pub fn parallel(self) ParView[&'a Array[T], ArrayChunks['a, T]] {
-    new ParView[&Array[T], ArrayChunks[T]](self);
-  }
+  // The runs left, as a parallel view (see Array's 'parallel'): the cursor itself, whose
+  // 'len' and 'at' the reductions cut it by
+  pub fn parallel(self) ArrayChunks['a, T] { self; }
 
   // Walked side by side with another cursor, as 'zip' does two collections: the
   // pairs of a run and what the other gives, ending with the shorter. When the other
@@ -409,9 +408,7 @@ pub struct ChunksIndexed['a, T] is Iterator[(usize, &Array[T])] {
   pub fn at(self &, k usize) (usize, &'a Array[T]) { (index + k, chunks.at(k)); }
 
   // The numbered runs left, as a parallel view (see Array's 'parallel')
-  pub fn parallel(self) ParView[(usize, &'a Array[T]), ChunksIndexed['a, T]] {
-    new ParView[(usize, &Array[T]), ChunksIndexed[T]](self);
-  }
+  pub fn parallel(self) ChunksIndexed['a, T] { self; }
 }
 
 // The same for changing: 'mutChunks' gives it, and each run is a '&mut' slice
@@ -503,7 +500,9 @@ pub struct ArrayIter['a, T] is Iterator[&T] {
   pub fn at(self &, k usize) &'a T { &items[pos + k]; }
 
   // The elements left, as a parallel view (see Array's 'parallel')
-  pub fn parallel(self) ParView[&'a T, ArrayIter['a, T]] { new ParView[&T, ArrayIter[T]](self); }
+  pub fn parallel(self) ParallelSlice['a, T] {
+    new ParallelSlice[T](mem.sliceFromParts[T]((items as *T) + pos, items.len - pos));
+  }
 
   pub fn split(self &, at usize) (ArrayIter['a, T], ArrayIter['a, T]) {
     if at > self.len() {
@@ -540,9 +539,7 @@ pub struct ArrayIndexed['a, T] is Iterator[(usize, &T)] {
   }
 
   // The positions and elements left, as a parallel view (see Array's 'parallel')
-  pub fn parallel(self) ParView[(usize, &'a T), ArrayIndexed['a, T]] {
-    new ParView[(usize, &T), ArrayIndexed[T]](self);
-  }
+  pub fn parallel(self) ArrayIndexed['a, T] { self; }
 }
 
 // A cursor over a slice's elements for changing them, which 'mutItems' gives: 'next'
@@ -638,9 +635,7 @@ pub struct Zip[A, B, I Iterator[A], J Iterator[B]] is Iterator[(A, B)] {
   }
 
   // The pairs, as a parallel view (see Array's 'parallel'), when both sources can be walked by position
-  pub fn parallel(self) ParView[(A, B), Zip[A, B, I, J]] where I is RandomAccess[A] and J is RandomAccess[B] {
-    new ParView[(A, B), Zip[A, B, I, J]](self);
-  }
+  pub fn parallel(self) Zip[A, B, I, J] where I is RandomAccess[A] and J is RandomAccess[B] { self; }
 
   pub fn split(self &, at usize) (Zip[A, B, I, J], Zip[A, B, I, J])
       where I is ParallelIterable[A, I] and J is ParallelIterable[B, J] {
@@ -675,10 +670,8 @@ pub struct ZipIndexed[A, B, I Iterator[A], J Iterator[B]] is Iterator[(usize, A,
     (index + k, pair.0, pair.1);
   }
 
-  pub fn parallel(self) ParView[(usize, A, B), ZipIndexed[A, B, I, J]]
-      where I is RandomAccess[A] and J is RandomAccess[B] {
-    new ParView[(usize, A, B), ZipIndexed[A, B, I, J]](self);
-  }
+  pub fn parallel(self) ZipIndexed[A, B, I, J]
+      where I is RandomAccess[A] and J is RandomAccess[B] { self; }
 }
 
 // Three sources walked side by side, which a zip's own 'zip' gives: 'next' gives a
@@ -727,10 +720,8 @@ pub struct Zip3[A, B, C, I Iterator[A], J Iterator[B], K Iterator[C]] is Iterato
     (first.at(k), second.at(k), third.at(k));
   }
 
-  pub fn parallel(self) ParView[(A, B, C), Zip3[A, B, C, I, J, K]]
-      where I is RandomAccess[A] and J is RandomAccess[B] and K is RandomAccess[C] {
-    new ParView[(A, B, C), Zip3[A, B, C, I, J, K]](self);
-  }
+  pub fn parallel(self) Zip3[A, B, C, I, J, K]
+      where I is RandomAccess[A] and J is RandomAccess[B] and K is RandomAccess[C] { self; }
 
   pub fn split(self &, at usize) (Zip3[A, B, C, I, J, K], Zip3[A, B, C, I, J, K])
       where I is ParallelIterable[A, I] and J is ParallelIterable[B, J] and K is ParallelIterable[C, K] {
@@ -768,10 +759,8 @@ pub struct Zip3Indexed[A, B, C, I Iterator[A], J Iterator[B], K Iterator[C]] is 
     (index + k, triple.0, triple.1, triple.2);
   }
 
-  pub fn parallel(self) ParView[(usize, A, B, C), Zip3Indexed[A, B, C, I, J, K]]
-      where I is RandomAccess[A] and J is RandomAccess[B] and K is RandomAccess[C] {
-    new ParView[(usize, A, B, C), Zip3Indexed[A, B, C, I, J, K]](self);
-  }
+  pub fn parallel(self) Zip3Indexed[A, B, C, I, J, K]
+      where I is RandomAccess[A] and J is RandomAccess[B] and K is RandomAccess[C] { self; }
 }
 
 // Walk two sources side by side: 'each x, y in zip(xs, ys)' gives each pair of
@@ -1259,7 +1248,7 @@ pub trait RandomAccess[T] {
 // What a parallel 'sum' needs of a view: how many items, and the number at k (a
 // copy, whether the view's items are numbers or borrows of them). The views of
 // numbers have both, met by the methods alone as the other shapes are
-pub trait NumberAt[N] {
+pub trait ParallelNumberAt[N] {
   pub fn len(self &) usize;
   pub fn numberAt(self &, k usize) N;
 }
@@ -1268,10 +1257,12 @@ pub trait NumberAt[N] {
 // for the reductions that run on the actors' workers. Plain data: 'sum', 'fold' and
 // 'findFirst' are the actors package's, and are called on the view as it is made
 // ('xs.parallel().sum()'). Every view is RandomAccess, whose 'len' and 'at' the
-// reductions cut it by.
+// reductions cut it by. The views are these two and the cursors themselves: the runs
+// of 'chunks', the cursors 'indexed' and 'zip' give, which have 'len' and 'at'
+// already (their 'parallel' answers the cursor).
 //
 // A slice's (a list's, an array's): the items are borrows, as 'iter' gives
-pub struct ParSlice['a, T] {
+pub struct ParallelSlice['a, T] {
   pub items &'a Array[T];
 
   pub fn len(self &) usize { items.len; }
@@ -1281,21 +1272,9 @@ pub struct ParSlice['a, T] {
   pub fn numberAt(self &, k usize) T where T is Integer or T is f32 or T is f64 { items[k]; }
 }
 
-// Any other source with 'len' and 'at', T the item 'at' gives: the runs 'chunks'
-// gives, a cursor 'indexed' gives, a zip of sources, a number range
-pub struct ParView[T, C RandomAccess[T]] {
-  pub src C;
-
-  pub fn len(self &) usize { src.len(); }
-
-  pub fn at(self &, k usize) T { src.at(k); }
-
-  pub fn numberAt(self &, k usize) T where T is Integer or T is f32 or T is f64 { src.at(k); }
-}
-
 // A number range as a source: the numbers lo, lo + 1 and so on, 'count' of them.
 // '(0 < n).parallel()' makes one
-pub struct NumRange[T] {
+pub struct ParallelNumbers[T] {
   pub lo T;
   pub count usize;
 
@@ -1303,20 +1282,22 @@ pub struct NumRange[T] {
 
   pub fn at(self &, k usize) T {
     if k >= count {
-      panic("NumRange.at: the number is past the end");
+      panic("ParallelNumbers.at: the number is past the end");
     }
     lo + T.from(k);
   }
+
+  pub fn numberAt(self &, k usize) T { self.at(k); }
 }
 
-// The range of a '(lo < hi).parallel()' and a '(lo <= hi).parallel()' (the compiler
-// calls these): the numbers from lo up to hi, or through it. None if hi is not past lo
-pub fn parRange[T Integer](lo T, hi T) ParView[T, NumRange[T]] {
-  new ParView[T, NumRange[T]](new NumRange[T](lo, if hi > lo { usize.from(hi - lo); } else { 0usize; }));
+// The view of a '(lo < hi).parallel()' and of a '(lo <= hi).parallel()' (the compiler
+// calls these): the numbers from lo up to hi, or through it; none if hi is not past lo
+pub fn parallelNumbers[T Integer](lo T, hi T) ParallelNumbers[T] {
+  new ParallelNumbers[T](lo, if hi > lo { usize.from(hi - lo); } else { 0usize; });
 }
 
-pub fn parRangeIncl[T Integer](lo T, hi T) ParView[T, NumRange[T]] {
-  new ParView[T, NumRange[T]](new NumRange[T](lo, if hi >= lo { usize.from(hi - lo) + 1usize; } else { 0usize; }));
+pub fn parallelNumbersThrough[T Integer](lo T, hi T) ParallelNumbers[T] {
+  new ParallelNumbers[T](lo, if hi >= lo { usize.from(hi - lo) + 1usize; } else { 0usize; });
 }
 
 // A panic ends the program where something that must not happen has: an index

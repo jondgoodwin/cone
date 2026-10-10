@@ -449,6 +449,12 @@ marking a reference to a type that is known, is `ErrorMarkUse`
 A string literal holding a NUL byte (`"ab\x00cd"`) wanted as a `cstr`, which C
 would read up to the NUL, is `ErrorCStrNul` ([literals](../nodes/literals.md)).
 
+A parallel reduction (`xs.parallel().sum()`, `fold`, `findFirst`) in a module that
+does not import `actors`, `parallel()` asked of a source that cannot be cut (a
+chain of iterator adapters, a deque's cursor), and a reduction asked of a parallel
+view held in a variable are `ErrorParReduce` ([fncall](../nodes/fncall.md), "The
+parallel reductions").
+
 A struct viewed as a trait behind a virtual reference (`&<Trait`, `So[Trait]`) whose
 method takes a stronger `self` than the trait's method declares (`self &mut` for
 `self &`, `self &uni` for `self &mut`) is `ErrorVtableSelf`; so is a closure literal

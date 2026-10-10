@@ -125,6 +125,33 @@ chain falls out of that for free: `mymod.Gadget.make(2)` parses innermost
 first, so the inner hop has left a resolved type name in `objfn` before the
 outer hop looks at it.
 
+### The parallel reductions
+
+**`xs.parallel().sum()`, `fold(...)` and `findFirst(...)` are rewritten here, by
+shape**, ahead of the receiver's resolution: a method named `sum`, `fold` or
+`findFirst` called directly on a `.parallel()` with no arguments
+(`parallelReduceIs`, `ir/exp/pareach.c`). `parallel()` is an ordinary method of
+core's `Array` and cursors, giving a view (`ParallelSlice`, `ParallelNumbers`, or
+the cursor itself where it has `len` and `at`); the reductions
+run on the actors' workers, which core cannot reach, so they are the actors
+package's `parSum`, `parFold` and `parFindFirst` (`reduce.cone`) and, once the
+receiver and arguments are resolved, the node becomes the call
+`actors.parSum(view, ...)` (`parallelReduceNameRes`: the function found in the
+namespace of the actors package the module imports, bound and stamped
+`FlagQualified` as a path's member is, the view first among the arguments). A
+module that does not import `actors` is `ErrorParReduce`, as `parallel each`'s
+`ErrorParRuntime`. After the rewrite it is a call of a generic function like any
+other, which is why the closures take their parameter types from the bounds
+(`genericClosureSig`, [generic](generic.md)). By shape alone, so a reduction on a
+view held in a variable (`imm v = xs.parallel(); v.sum()`) is not rewritten and is
+refused at type check, in `fnCallLowerMethodOn`'s method-not-found message
+(`parallelViewNotFound`), as is `parallel()` of a type that has none (a chain of
+iterator adapters, a deque's cursor): `ErrorParReduce`, saying what has one. A
+number range is no value, so `(lo < hi).parallel()` and `(lo <= hi).parallel()`
+(an operator application of `<` or `<=` directly under a `.parallel()`) become the
+call of core's `parallelNumbers(lo, hi)` or `parallelNumbersThrough`
+(`parallelRangeNameRes`).
+
 **Privacy is checked here**, against `dclInfoGetModule` of the base — so
 `modulesyms.Gadget.make` is judged against `modulesyms`, one hop back, which is
 the module that owns the type.
