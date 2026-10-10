@@ -124,7 +124,7 @@ pub fn bend(m &PolyMesh, angle f32, axis Vec3, along Vec3, origin Vec3) PolyMesh
 // t clamped to the span and S the span's length, counterclockwise seen from
 // the tip of 'along'. Over the whole span the turn changes by 'angle'; the
 // cross-section at the origin does not turn.
-pub fn twist(m &PolyMesh, angle f32, along Vec3, origin Vec3) PolyMesh {
+pub fn twistAngle overload twist(m &PolyMesh, angle f32, along Vec3, origin Vec3) PolyMesh {
   imm d = unit(along);
   imm ext = extentAlong(m, origin, d);
   imm span = ext.y - ext.x;
@@ -153,7 +153,7 @@ pub fn twist(m &PolyMesh, angle f32, along Vec3, origin Vec3) PolyMesh {
 // its t is unchanged. Over the whole span the scale changes by 'factor': a
 // mesh along from its origin with factor 1 ends twice as wide, and with
 // factor -1 comes to a point.
-pub fn taper(m &PolyMesh, factor f32, along Vec3, origin Vec3) PolyMesh {
+pub fn taperFactor overload taper(m &PolyMesh, factor f32, along Vec3, origin Vec3) PolyMesh {
   imm d = unit(along);
   imm ext = extentAlong(m, origin, d);
   imm span = ext.y - ext.x;
@@ -186,7 +186,7 @@ pub fn taper(m &PolyMesh, factor f32, along Vec3, origin Vec3) PolyMesh {
 // channel the mesh does not have, counts 1 for every vertex: every vertex
 // moves by 'amount' (Blender's Shrink/Fatten), as smoothing's weight does.
 // An isolated vertex has no normal and stays.
-pub fn displaceAlongNormal(m &PolyMesh, channelName &str, amount f32) PolyMesh {
+pub fn displaceByChannel overload displaceAlongNormal(m &PolyMesh, channelName &str, amount f32) PolyMesh {
   imm ch = if channelName.len() > 0usize {m.findFloatChannel(VertexDomain, channelName);} else {NoIndex;};
   imm normals = m.vertexNormals();
   imm n = m.positions.len();
@@ -271,7 +271,8 @@ pub fn deform[F fn(p Vec3) Vec3](m &PolyMesh, f &F) PolyMesh {
 
 // A deformer whose rule is a function of the place along an axis: every
 // vertex is moved by the offset f(u) (a shear, a sway, a swell off to one
-// side; for a scale or a turn about the axis, 'taperBy' and 'twistBy'). The
+// side; for a scale or a turn about the axis, 'taper' and 'twist' given a
+// function). The
 // axis 'along' is made unit.
 pub fn deformAlong[F fn(u f32) Vec3](m &PolyMesh, along Vec3, f &F) PolyMesh {
   imm d = unit(along);
@@ -289,11 +290,11 @@ pub fn deformAlong[F fn(u f32) Vec3](m &PolyMesh, along Vec3, f &F) PolyMesh {
   withPositions(m, out);
 }
 
-// A taper (see 'taper') whose scale is any function of the place along the
-// axis: each vertex's offset from the line through origin along 'along' is
-// scaled by scaleAt(u), its t unchanged. 'taper' by a factor is
+// A taper whose scale is any function of the place along the axis, given in
+// place of the factor: each vertex's offset from the line through origin along
+// 'along' is scaled by scaleAt(u), its t unchanged. 'taper' by a factor is
 // scaleAt = u => 1 + factor u when the origin is at the mesh's least t.
-pub fn taperBy[F fn(u f32) f32](m &PolyMesh, along Vec3, origin Vec3, scaleAt &F) PolyMesh {
+pub fn taperBy[F fn(u f32) f32] overload taper(m &PolyMesh, scaleAt &F, along Vec3, origin Vec3) PolyMesh {
   imm d = unit(along);
   imm ext = extentAlong(m, origin, d);
   imm span = ext.y - ext.x;
@@ -311,10 +312,10 @@ pub fn taperBy[F fn(u f32) f32](m &PolyMesh, along Vec3, origin Vec3, scaleAt &F
   withPositions(m, out);
 }
 
-// A twist (see 'twist') whose turn is any function of the place along the
-// axis: each vertex is turned about the line through origin along 'along' by
+// A twist whose turn is any function of the place along the axis, given in
+// place of the angle: each vertex is turned about the line through origin along 'along' by
 // angleAt(u) radians, counterclockwise seen from the tip of 'along'.
-pub fn twistBy[F fn(u f32) f32](m &PolyMesh, along Vec3, origin Vec3, angleAt &F) PolyMesh {
+pub fn twistBy[F fn(u f32) f32] overload twist(m &PolyMesh, angleAt &F, along Vec3, origin Vec3) PolyMesh {
   imm d = unit(along);
   imm ext = extentAlong(m, origin, d);
   imm span = ext.y - ext.x;
@@ -333,14 +334,14 @@ pub fn twistBy[F fn(u f32) f32](m &PolyMesh, along Vec3, origin Vec3, angleAt &F
   withPositions(m, out);
 }
 
-// A displacement along the normals (see 'displaceAlongNormal') whose amount
-// is a function of the vertex, in place of a channel the caller filled first:
+// A displacement along the normals whose amount is a function of the vertex,
+// given in place of a channel the caller filled first and its amount:
 // each vertex moves along its unit normal by amountAt(k), k its index. The
 // function reads whatever it likes of vertex k, by capturing the mesh: its
 // position ('m.positions'), a channel ('m.float(ch, k)'), or a dial in
 // scope. The normals are those of the mesh as given, all found before any
 // vertex moves. An isolated vertex has no normal and stays.
-pub fn displaceAlongNormalBy[F fn(k u32) f32](m &PolyMesh, amountAt &F) PolyMesh {
+pub fn displaceAlongNormalBy[F fn(k u32) f32] overload displaceAlongNormal(m &PolyMesh, amountAt &F) PolyMesh {
   imm normals = m.vertexNormals();
   imm n = m.positions.len();
   mut out = List[Vec3].withCapacity(n);

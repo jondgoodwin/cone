@@ -18,9 +18,10 @@
 //   vertex 1 by 0.5 and vertex 2 by 1; a mesh with no extent along the axis
 //   has u = 0.
 // - The box (a 2 x 2 square extruded 2 in z, 2 pieces, vertex 4i + j at
-//   z = i): taperBy with u => 1 + u * factor is taper's, and a scale of 1
-//   leaves it as it was; twistBy with u => angle * u is twist's.
-// - displaceAlongNormalBy (k => w) is displaceAlongNormal by a channel filled
+//   z = i): taper given u => 1 + u * factor is taper by the factor, and a
+//   scale of 1 leaves it as it was; twist given u => angle * u is twist by
+//   the angle. (The messages' 'taperBy' and the like name the function forms.)
+// - displaceAlongNormal given k => w is displaceAlongNormal by a channel filled
 //   with the same w: the same bits, the function reading the very mesh it is
 //   given (a closure naming it). A constant amount moves every vertex by
 //   exactly it, along its normal.
@@ -143,7 +144,7 @@ fn tapersAndTwists() {
   // taper's own: factor 1 over a span from the origin at one end
   imm factor = 1.;
   imm byFactor = taper(&b, factor, new Vec3(0., 0., 1.), new Vec3(0., 0., 0.));
-  imm byFn = taperBy(&b, new Vec3(0., 0., 1.), new Vec3(0., 0., 0.), u => 1. + factor * u);
+  imm byFn = taper(&b, u => 1. + factor * u, new Vec3(0., 0., 1.), new Vec3(0., 0., 0.));
   point(*byFn.positions[5usize], 1.5, -1.5, 1., "taperBy: vertex 5 at u = 0.5");
   point(*byFn.positions[10usize], 2., 2., 2., "taperBy: vertex 10 at the end");
   point(*byFn.positions[2usize], 1., 1., 0., "taperBy: vertex 2 stays");
@@ -155,14 +156,14 @@ fn tapersAndTwists() {
     i = i + 1usize;
   }
   expectFloat(f64.from(worst), 0., near, "taperBy: u => 1 + factor u is taper by factor");
-  imm same = taperBy(&b, new Vec3(0., 0., 1.), new Vec3(0., 0., 0.), u => 1.);
+  imm same = taper(&b, u => 1., new Vec3(0., 0., 1.), new Vec3(0., 0., 0.));
   expectBool(sameBits(&same, &b), true, "taperBy: a scale of 1 leaves the mesh");
-  imm waist = taperBy(&b, new Vec3(0., 0., 1.), new Vec3(0., 0., 0.), u => 1. - 0.5 * sin(pi * u));
+  imm waist = taper(&b, u => 1. - 0.5 * sin(pi * u), new Vec3(0., 0., 1.), new Vec3(0., 0., 0.));
   point(*waist.positions[5usize], 0.5, -0.5, 1., "taperBy: a waist, half the width midway");
 
   imm quarter = pi / 2.;
   imm twisted = twist(&b, quarter, new Vec3(0., 0., 1.), new Vec3(0., 0., 0.));
-  imm viaFn = twistBy(&b, new Vec3(0., 0., 1.), new Vec3(0., 0., 0.), u => quarter * u);
+  imm viaFn = twist(&b, u => quarter * u, new Vec3(0., 0., 1.), new Vec3(0., 0., 0.));
   point(*viaFn.positions[1usize], 1., -1., 0., "twistBy: vertex 1 stays");
   point(*viaFn.positions[5usize], 1.414214, 0., 1., "twistBy: vertex 5 turned 45");
   point(*viaFn.positions[9usize], 1., 1., 2., "twistBy: vertex 9 turned 90");
@@ -176,7 +177,7 @@ fn tapersAndTwists() {
   }
   expectFloat(f64.from(worst), 0., near, "twistBy: u => angle u is twist by angle");
   // Turned back and forth: the middle ring turns 90, the ends none
-  imm wag = twistBy(&b, new Vec3(0., 0., 1.), new Vec3(0., 0., 0.), u => quarter * sin(pi * u));
+  imm wag = twist(&b, u => quarter * sin(pi * u), new Vec3(0., 0., 1.), new Vec3(0., 0., 0.));
   point(*wag.positions[5usize], 1., 1., 1., "twistBy: the middle ring turned 90");
   point(*wag.positions[9usize], 1., -1., 2., "twistBy: the end not turned");
 }
@@ -193,11 +194,11 @@ fn displacements() {
     k = k + 1u32;
   }
   imm viaChannel = displaceAlongNormal(&b, "lift", 1.);
-  imm viaFn = displaceAlongNormalBy(&b, k => b.float(along, k) * 0.1 * k0 + 0.01 * f32.from(k));
+  imm viaFn = displaceAlongNormal(&b, k => b.float(along, k) * 0.1 * k0 + 0.01 * f32.from(k));
   expectBool(sameBits(&viaChannel, &viaFn), true, "displaceAlongNormalBy: the same bits as the channel form");
   expectInt(i64.from(viaFn.vertexCount()), 12, "displaceAlongNormalBy: the topology is kept");
   // Every vertex 0.25 out along its normal: the box's end vertices at (1, 1, 0) have the diagonal normal
-  imm fat = displaceAlongNormalBy(&b, k => 0.25);
+  imm fat = displaceAlongNormal(&b, k => 0.25);
   imm n = b.vertexNormals();
   imm moved = *fat.positions[0usize] - *b.positions[0usize];
   expectFloat(f64.from(moved.length()), 0.25, near, "displaceAlongNormalBy: a constant amount moves by it");
