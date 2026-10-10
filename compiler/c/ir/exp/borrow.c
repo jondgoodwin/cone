@@ -57,7 +57,11 @@ static int borrowRefusesConst(INode *place) {
 // An owning reference held in a place reached through a borrow that only reads
 // ('h.app' for a 'h &Holder' holding 'app So[App]'), lent as a borrow that may
 // write, is refused: a '&' lends only '&' of what it holds, owners included.
-// 'perm' is the permission the lend asks for. Reports it and answers 1 when refused.
+// So is one reached through a borrow that others share ('h &mut Holder'), lent
+// as a '&uni' or a '&imm': a '&mut' lends only '&mut' (refborref.html, "Freezing
+// access to the source of a borrow"); the shared path may replace the owner and
+// end what was lent. 'perm' is the permission the lend asks for. Reports it and
+// answers 1 when refused.
 int borrowOwnerLendRefused(INode *owner, INode *perm) {
     if (!isExpNode(owner) || !iexpIsLval(owner))
         return 0;
@@ -66,16 +70,34 @@ int borrowOwnerLendRefused(INode *owner, INode *perm) {
         || itypeGetTypeDcl(((RefNode*)ownertype)->region) == (INode*)borrowRef)
         return 0;
     INode *wanted = itypeGetTypeDcl(perm);
-    if (wanted->tag != PermTag || !(permGetFlags(wanted) & MayWrite) || !iexpPathThroughBorrow(owner))
+    if (wanted->tag != PermTag || !iexpPathThroughBorrow(owner))
+        return 0;
+    int wantsWrite = permGetFlags(wanted) & MayWrite;
+    // A '&imm' of an owner whose own value cannot change is no promise broken
+    int wantsImm = wanted == (INode*)immPerm && (permGetFlags(((RefNode*)ownertype)->perm) & MayWrite);
+    if (!wantsWrite && !wantsImm)
         return 0;
     INode *lvalperm = (INode*)uniPerm;
     uint16_t scope = 0;
     iexpGetLvalInfo(owner, &lvalperm, &scope);
-    if (permIsLock(lvalperm) || (permGetFlags(lvalperm) & MayWrite))
+    if (permIsLock(lvalperm))
+        return 0;
+    if (permGetFlags(lvalperm) & MayWrite) {
+        // Writable, but is it the only path to the owner? '&uni' and '&imm' ask for that
+        INode *held = itypeGetTypeDcl(lvalperm);
+        if ((wanted != (INode*)uniPerm && !wantsImm) || held == (INode*)uniPerm || held == (INode*)newPerm)
+            return 0;
+        errorMsgNode(owner, ErrorBadPerm,
+            "Cannot lend `&%s` of this owner: it is reached through a `%s` reference, which others share, and an owner reached that way lends at most `&mut`: another name can replace the owner while the loan is used.",
+            wanted == (INode*)uniPerm ? "uni" : "imm", &inodeGetName(held)->namestr);
+        return 1;
+    }
+    // A place that is 'imm' lends '&imm' of what it holds, owners included
+    if (!wantsWrite && permMatches(wanted, lvalperm))
         return 0;
     errorMsgNode(owner, ErrorBadPerm,
         "Cannot lend `&%s` of this owner: it is reached through a reference that only reads, and a `&` lends only `&` of what it holds, owners included.",
-        wanted == (INode*)uniPerm ? "uni" : wanted == (INode*)mutPerm ? "mut" : &inodeGetName(wanted)->namestr);
+        wanted == (INode*)uniPerm ? "uni" : wanted == (INode*)mutPerm ? "mut" : wanted == (INode*)immPerm ? "imm" : &inodeGetName(wanted)->namestr);
     return 1;
 }
 
