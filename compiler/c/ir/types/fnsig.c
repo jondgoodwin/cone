@@ -467,6 +467,73 @@ int fnSigCallSelfFits(StructNode *trait, FnDclNode *meth) {
         && !(permGetFlags(perm) & MayWrite);
 }
 
+// The permission a method's 'self' borrows with, or NULL when 'self' is not a
+// borrow ('self So[T]', a by-value self, a static function)
+static INode *fnSigSelfBorrowPerm(FnDclNode *meth) {
+    FnSigNode *msig = (FnSigNode*)itypeGetTypeDcl(meth->vtype);
+    if (msig->tag != FnSigTag || msig->parms->used == 0)
+        return NULL;
+    INode *selftype = iexpGetTypeDcl(nodesGet(msig->parms, 0));
+    if (selftype->tag != RefTag || itypeGetTypeDcl(((RefNode*)selftype)->region) != (INode*)borrowRef)
+        return NULL;
+    return itypeGetTypeDcl(((RefNode*)selftype)->perm);
+}
+
+// Whether a type's method may fill the slot of a trait's method behind a
+// virtual reference. A call through the trait lends the permission the trait's
+// 'self' declares, and that borrow is all the caller holds, so the
+// implementation may ask for no more of it: a trait's 'self &' met by 'self &mut'
+// would change what the caller was only allowed to read. Anything but a borrow
+// on both sides is not compared here.
+int fnSigVrefSelfFits(FnDclNode *traitmeth, FnDclNode *implmeth) {
+    INode *tperm = fnSigSelfBorrowPerm(traitmeth);
+    INode *iperm = fnSigSelfBorrowPerm(implmeth);
+    if (tperm == NULL || iperm == NULL || tperm->tag != PermTag || iperm->tag != PermTag)
+        return 1;
+    return permMatches(iperm, tperm) != NoMatch;
+}
+
+// A 'self' as it is written, for a message: 'self &', 'self &mut', 'self &uni'
+static char *fnSigSelfSpell(FnDclNode *meth, char *buf, size_t size) {
+    INode *perm = fnSigSelfBorrowPerm(meth);
+    char *name = perm && perm->tag == PermTag ? &inodeGetName(perm)->namestr : "";
+    snprintf(buf, size, "self &%s", strcmp(name, "ro") == 0 ? "" : name);
+    return buf;
+}
+
+// Why the struct 'impl' cannot be viewed as the trait 'trait' behind a virtual
+// reference when one of its methods asks for a stronger 'self' than the trait's
+// method declares; NULL when it is not that
+char *fnSigVrefSelfRefusal(StructNode *trait, StructNode *impl) {
+    if (trait->tag != StructTag || impl->tag != StructTag || trait->callsig || !(trait->flags & TraitType)
+        || (impl->flags & TraitType) || closureOfStruct((INode*)impl))
+        return NULL;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&trait->nodelist, cnt, nodesp)) {
+        if ((*nodesp)->tag != FnDclTag || !((*nodesp)->flags & FlagMethFld))
+            continue;
+        FnDclNode *meth = (FnDclNode*)*nodesp;
+        INode *binding = namespaceFind(&impl->namespace, meth->namesym);
+        if (binding == NULL)
+            continue;
+        FnDclNode *implmeth = iNsTypeFindVrefMethod(binding, meth, NULL);
+        if (implmeth == NULL || fnSigVrefSelfFits(meth, implmeth))
+            continue;
+        static char msg[900];
+        char wanted[40], has[40];
+        fnSigSelfSpell(meth, wanted, sizeof(wanted));
+        fnSigSelfSpell(implmeth, has, sizeof(has));
+        snprintf(msg, sizeof(msg),
+            "%s's `%s` takes `%s`, but %s's `%s` takes `%s`: a call through the trait lends only what the trait declares, so %s would have more of the value than the caller allowed. Declare `%s` with `%s`, or the trait's with `%s`.",
+            &impl->namesym->namestr, &meth->namesym->namestr, has,
+            &trait->namesym->namestr, &meth->namesym->namestr, wanted,
+            &impl->namesym->namestr, &meth->namesym->namestr, wanted, has);
+        return msg;
+    }
+    return NULL;
+}
+
 // A callable reference or owner as it is written, for a message: '&<fn(i32) i32',
 // '&<mut fn(i32) i32', 'So[imm, fn(i32) i32]'. 'ref' says the region and the
 // permission it was written with, 'trait' the signature and the kind.
@@ -492,7 +559,8 @@ static void fnCallSpell(char *buf, size_t size, RefNode *ref, StructNode *trait)
 // Why a value of type 'from' is refused where the callable type 'to' is wanted,
 // when that is the permission its '()' or the borrow needs; NULL when it is not
 // that. The message leads with the cause in the author's words.
-char *fnSigCallRefusal(INode *from, INode *to) {
+char *fnSigCallRefusal(INode *from, INode *to, int *code) {
+    *code = ErrorCallablePerm;
     INode *todcl = itypeGetTypeDcl(to);
     if (todcl->tag != VirtRefTag)
         return NULL;
@@ -504,11 +572,17 @@ char *fnSigCallRefusal(INode *from, INode *to) {
     // A closure literal that fills a trait's method and changes state, behind a
     // reference that only reads
     if (trait->callsig == NULL) {
-        if (fromdcl->tag != RefTag || permGetFlags(toref->perm) & MayWrite)
+        if (fromdcl->tag != RefTag)
             return NULL;
-        ClosureInfo *info = closureOfStruct(itypeGetTypeDcl(((RefNode*)fromdcl)->vtexp));
-        if (info == NULL || !closureMethodMutates(info))
-            return NULL;
+        INode *target = itypeGetTypeDcl(((RefNode*)fromdcl)->vtexp);
+        ClosureInfo *info = closureOfStruct(target);
+        if (info == NULL || !closureMethodMutates(info) || permGetFlags(toref->perm) & MayWrite) {
+            // A method that asks for a stronger 'self' than the trait's
+            char *selfwhy = target->tag == StructTag ? fnSigVrefSelfRefusal(trait, (StructNode*)target) : NULL;
+            if (selfwhy)
+                *code = ErrorVtableSelf;
+            return selfwhy;
+        }
         static char tmsg[700];
         INode *region = itypeGetTypeDcl(toref->region);
         char spelled[200], flipped[200];

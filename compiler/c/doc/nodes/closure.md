@@ -184,6 +184,10 @@ trait that already exists.
   takes a `self &` (or `imm`, `opaq`) and one that may write also a `self &mut`; a
   `self` by value or `&uni` fits neither (call once is later). A `&<mut fn` is not
   lent as a `&<fn`, because the callable behind it may change.
+  A closure's method is exempt from the check every other trait gets
+  (`fnSigVrefSelfFits`, [struct](struct.md)): it takes the `self` its body needs,
+  and a literal that changes a captured variable is met behind `&<mut` though the
+  trait's method says `self &`.
   `fnSigCallRefusal` says which of these refused a coercion, in the author's
   words (`ErrorCallablePerm`), at an argument (`fnCallTypeCheck`), an
   initializer (`varDclTypeCheck`) and an owner's making.

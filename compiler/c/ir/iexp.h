@@ -95,6 +95,10 @@ int iexpIsLval(INode *lval);
 // Ensure it is a lval, return error and 0 if not.
 int iexpIsLvalError(INode *lval);
 
+// Is this place reached through a borrowed reference, a slice or a virtual
+// reference, so that what is lent of it is held to that loan's permission?
+int iexpPathThroughBorrow(INode *lval);
+
 // Extract lval variable, scope and overall permission from lval. The scope is
 // the lifetime a borrow of the place has.
 INode *iexpGetLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope);
