@@ -551,9 +551,10 @@ static LLVMValueRef genlTypeRecFn(GenState *gen, INode *vtype, LLVMTypeRef fntyp
     // build, so the function has a subprogram, placed at the type
     INode *typedcl = itypeGetTypeDcl(vtype);
     if (!gen->opt->release) {
-        LLVMMetadataRef sptype = LLVMDIBuilderCreateSubroutineType(gen->dibuilder, gen->difile, NULL, 0, 0);
-        LLVMMetadataRef sp = LLVMDIBuilderCreateFunction(gen->dibuilder, gen->difile,
-            name, strlen(name), name, strlen(name), gen->difile, typedcl->linenbr, sptype, 1, 1, typedcl->linenbr, 0, 0);
+        LLVMMetadataRef difile = genlDiFile(gen, typedcl);
+        LLVMMetadataRef sptype = LLVMDIBuilderCreateSubroutineType(gen->dibuilder, difile, NULL, 0, 0);
+        LLVMMetadataRef sp = LLVMDIBuilderCreateFunction(gen->dibuilder, difile,
+            name, strlen(name), name, strlen(name), difile, typedcl->linenbr, sptype, 1, 1, typedcl->linenbr, 0, 0);
         LLVMSetSubprogram(fn, sp);
     }
     gen->builder = LLVMCreateBuilderInContext(gen->context);
