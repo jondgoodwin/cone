@@ -799,9 +799,10 @@ INode *itypeThreadBoundWhy(INode *type, char *path, size_t size) {
 // A struct declaring Shareable is taken at its word, except that an instance
 // of a generic one is Shareable only where its type arguments are. Raw
 // pointers of a type that is not generic are trusted (nothing is followed
-// behind one), and an Arc, an atomic and a number are free. A reference to a
-// trait is not followed (its implementers are not known): the reference marks
-// the value it points at, '&<Shape + Shareable', where it must be sure.
+// behind one), and an Arc, an atomic and a number are free. A virtual
+// reference (to a trait or a callable) is NOT Shareable unless it says so: its
+// implementers are not known, so the reference marks the value it points at,
+// '&<Shape + Shareable' (or '+ Sendable'), and is held to it where it is made.
 
 // The first reference in 'type' that makes it not Shareable, or NULL; 'path'
 // says where it sits ('Job.data'), as the thread check's does
@@ -819,8 +820,15 @@ static INode *itypeShareCulprit(INode *type, int mutrule, INode **seen, uint32_t
     case VirtRefTag:
         if (refCountsPlain((RefNode *)type) || (mutrule && refWritesShared((RefNode *)type)))
             return type;
-        if (type->tag == VirtRefTag && (((RefNode *)type)->marks & RefMarkShareable))
-            return NULL;
+        // A reference to a trait or a callable hides the implementer, so nothing
+        // says a borrow of it may be shared (Rust's &dyn Trait is not Sync): the
+        // reference vouches for it, '+ Shareable' (or '+ Sendable', which is
+        // Shareable too)
+        if (type->tag == VirtRefTag) {
+            if (((RefNode *)type)->marks & (RefMarkShareable | RefMarkSendable))
+                return NULL;
+            return type;
+        }
         return itypeShareCulprit(((RefNode *)type)->vtexp, mutrule, seen, nseen, path, size);
     case ArrayTag:
         snprintf(path + used, size - used, used ? "[]" : "an element");

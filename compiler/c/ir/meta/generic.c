@@ -1724,6 +1724,10 @@ void genericNotShareableReason(INode *culprit, int fix, char *reason, size_t siz
         snprintf(reason, size,
             "an owner that may be copied, and %s does not declare ThreadSafe: a copy writes its count without an atomic operation, which two threads cannot do together%s",
             regname, fix ? ". Hold it in an Arc, whose count is atomic" : "");
+    else if (culprit->tag == VirtRefTag && !refWritesShared(ref))
+        snprintf(reason, size,
+            "a reference to a trait or a callable, whose implementers are not all known here, so nothing says a borrow of what it points at may be shared between threads%s",
+            fix ? ". Say what the value behind it is where the reference is written: '+ Shareable' (or '+ Sendable'), as in '&<Shape + Shareable' or 'So[fn(i32) i32 + Sendable]'" : "");
     else
         snprintf(reason, size,
             "a reference of permission %s, which may write: Cone's %s is shared mutable, so whatever holds one writes through a borrow of it, and two threads holding that borrow could write at once%s",

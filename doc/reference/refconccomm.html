@@ -142,7 +142,13 @@ thread.start(job, &amp;work);
 		is shared mutable, so what holds one writes through a <span class="pre">&amp;</span> of it), or
 		an <span class="pre">Arc[mut, T]</span>. A closure that names a <span class="pre">&amp;mut</span>
 		variable is not Shareable, whatever its <span class="pre">()</span> takes, nor is a struct with
-		a <span class="pre">&amp;mut</span> field.</li>
+		a <span class="pre">&amp;mut</span> field;</li>
+	<li>a reference to a trait or a callable (<span class="pre">&amp;&lt;Shape</span>,
+		<span class="pre">&amp;&lt;fn(i32) i32</span>, <span class="pre">So[Shape]</span>) that does not
+		say what is behind it: the implementers are not known, so nothing says a borrow of the
+		value may be shared (Rust's <span class="pre">&amp;dyn Trait</span> is not <i>Sync</i>
+		either). <span class="pre">+ Shareable</span>, or <span class="pre">+ Sendable</span>,
+		below, vouches.</li>
 	</ul>
 	<p>Raw pointers of a struct that is not generic are trusted, as the parallel-body check has
 		always trusted them (nothing is followed behind one), a type holding ones it shares safely
@@ -156,7 +162,9 @@ thread.start(job, &amp;work);
 	<p>A reference to a trait or a callable hides the type of the value behind it, so it may say
 		what that value is with <span class="pre">+</span>, after the type: <span class="pre">So[fn(x f32) f32
 		+ Sendable]</span>, <span class="pre">&amp;&lt;Shape + Shareable</span>, or both, in either order. A value is made
-		such a reference only if its type is each marker, and the error names what is not:</p>
+		such a reference only if its type is each marker, and the error names what is not. A
+		<span class="pre">parallel each</span> body may name a reference to a trait or a callable
+		from outside the loop only if it carries one of the two markers:</p>
 <pre>
 imm flock = new So[fn(x f32, z f32) f32 + Sendable](fn(x f32, z f32) [hf] f32 { ... });
 imm t = thread.start(flock, &amp;run);       // Ok: hf is an Arc[imm, Grid], listed

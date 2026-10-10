@@ -60,8 +60,26 @@ fn shapes() {
   areaOwned(new So[Counted](new Counted(new Rc[imm, Grid](new Grid(3)))));   //~ ErrorNotSendable "Counted.g is Rc[imm, Grid]"
 }
 
+// A reference to a trait or a callable hides what is behind it, so unmarked it is not
+// Shareable (Rust's &dyn Trait is not Sync): named in a parallel each body it is
+// refused, though what is behind it may be fine. The mark vouches (closure_shareable
+// runs one), and a value that cannot is refused where the reference is made (above)
+fn unmarked(sh &<Shape, f &<fn(x i32) i32, owned So[Shape], marked &<Shape + Shareable) f32 {
+  imm total = Atomic[u64].of(0u64);
+  parallel each i in 0usize < 4usize {
+    imm a = sh.area();                        //~ ErrorParReach "reaches 'sh', a &<Shape"
+    imm b = f(1);                             //~ ErrorParReach "reaches 'f', a &<fn(i32) i32"
+    imm c = owned.area();                     //~ ErrorParReach "reaches 'owned', a So[uni, Shape]"
+    imm d = marked.area();
+    total.add(1u64);
+  }
+  0.;
+}
+
 fn types() {
   shares[Rc[imm, Grid]]();                    //~ ErrorNotShareable "Rc[imm, Grid]"
+  shares[&<Shape]();                          //~ ErrorNotShareable "a reference to a trait or a callable"
+  shares[So[Shape]]();                        //~ ErrorNotShareable "a reference to a trait or a callable"
   shares[&mut i32]();                         //~ ErrorNotShareable "a reference of permission mut, which may write"
   shares[Holder]();                           //~ ErrorNotShareable "Holder.r is &mut i32"
   shares[Arc[mut, Grid]]();                   //~ ErrorNotShareable "Arc[mut, Grid]"

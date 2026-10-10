@@ -890,9 +890,10 @@ writes, may be aliased and is not `RaceSafe`: `mut` and `mut1`, so `&mut` and
 `Arc[mut, T]`; Cone's `&mut` is shared mutable, a `&mut` field being written through
 a `&` of its struct) makes the type not Shareable. A struct declaring `Shareable`
 is taken at its word except for a generic instance's type arguments; raw
-pointers of a non-generic struct are trusted, and a reference to a trait is not
-followed (an unmarked one is Shareable, as it always was for the parallel-body
-check). `genericTypeIs` grants it, and an unmet `T is Shareable` is
+pointers of a non-generic struct are trusted, and a virtual reference (to a trait
+or a callable, any owner) is not Shareable unless it is marked `+ Shareable` or
+`+ Sendable` (its implementers are not known; Rust's `&dyn Trait` is not `Sync`
+either): such a reference is itself the culprit, and is not followed. `genericTypeIs` grants it, and an unmet `T is Shareable` is
 `ErrorNotShareable`, naming the reference found, its path and, for a closure, the
 captured variable (`genericNotShareableMsg`, `genericClosureNotShareableCap`).
 
@@ -928,9 +929,10 @@ keeps it rather than copying it into an instance of a generic.
   aliasable owner without a race-safe permission or an `Rc`, and the share
   check's refusals are those and a `&mut`, which is a borrow already). A type
   declaring `Sendable` over raw pointers promises it too. They are asked apart
-  (`Shareable`, below) because a reference to a trait is *bound* for the thread
-  check and *not followed* by the share check, and a type may declare one and
-  not the other.
+  (`Shareable`, below) because a type may declare one and not the other, and a
+  borrow is bound for the thread check and fine for the share check. An unmarked
+  virtual reference fails both; `+ Sendable` vouches for both, `+ Shareable` for
+  the second.
 - **A borrowed reference's inferred type has `typeinfo == NULL`.** The borrow
   path and the allocate path have different invariants for the same field.
   Anything reading `typeinfo` off an arbitrary reference type crashes on borrows

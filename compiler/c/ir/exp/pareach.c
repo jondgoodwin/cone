@@ -877,7 +877,7 @@ static int parCheckReach(INode *node, void *ctxp) {
     // outside). A '&mut' held inside what it reaches is another matter.
     INode *named = var->vtype;
     INode *namedcl = itypeGetTypeDcl(named);
-    if ((namedcl->tag == RefTag || namedcl->tag == ArrayRefTag || namedcl->tag == VirtRefTag)
+    if ((namedcl->tag == RefTag || namedcl->tag == ArrayRefTag)
         && itypeGetTypeDcl(((RefNode *)namedcl)->region) == borrowRef)
         named = ((RefNode *)namedcl)->vtexp;
     char path[256];
@@ -887,7 +887,11 @@ static int parCheckReach(INode *node, void *ctxp) {
     parSetAdd(&parReachReported, node);
     char typename[256] = "";
     itypeSpellCat(typename, sizeof(typename), var->vtype, 0);
-    int writes = !refCountsPlain((RefNode *)culprit);
+    // Three kinds of culprit: a count or a root written without atomics, a
+    // reference that writes through a shared path, and a reference to a trait or
+    // a callable that does not say what is behind it
+    int opaque = culprit->tag == VirtRefTag && !refCountsPlain((RefNode *)culprit) && !refWritesShared((RefNode *)culprit);
+    int writes = !refCountsPlain((RefNode *)culprit) && !opaque;
     // A closure passed in: say which variable it holds or borrows, which is
     // where the fix is
     INode *held = itypeGetTypeDcl(var->vtype);
@@ -900,7 +904,11 @@ static int parCheckReach(INode *node, void *ctxp) {
         char sentence[600], reason[512] = "";
         genericCapSentence(cap, culprit, sentence, sizeof(sentence));
         genericNotShareableReason(culprit, 0, reason, sizeof(reason));
-        if (writes)
+        if (opaque)
+            errorMsgNode(node, ErrorParReach,
+                "This 'parallel each' reaches '%s', the closure passed in, and %s: %s. The passes run at the same time, so each would call whatever it is.",
+                &var->namesym->namestr, sentence, reason);
+        else if (writes)
             errorMsgNode(node, ErrorParReach,
                 "This 'parallel each' reaches '%s', the closure passed in, and %s: %s. The passes run at the same time, so each would hold that reference and could write through it. Give the closure a copy of what it needs by value in its list, as '[n = *%s]', instead of the reference.",
                 &var->namesym->namestr, sentence, reason, capname);
@@ -908,6 +916,15 @@ static int parCheckReach(INode *node, void *ctxp) {
             errorMsgNode(node, ErrorParReach,
                 "This 'parallel each' reaches '%s', the closure passed in, and %s: %s. The passes run at the same time, so each would copy it. Where '%s' is made, hold it in an Arc ('Arc[imm, ...]'), and give the closure the Arc in its list: '[%s]'.",
                 &var->namesym->namestr, sentence, reason, capname, capname);
+    }
+    else if (opaque) {
+        char reason[512] = "", culpritname[256] = "";
+        itypeSpellCat(culpritname, sizeof(culpritname), culprit, 0);
+        genericNotShareableReason(culprit, 1, reason, sizeof(reason));
+        errorMsgNode(node, ErrorParReach,
+            "This 'parallel each' reaches '%s', a %s declared outside the loop%s%s%s%s: %s.",
+            &var->namesym->namestr, typename, path[0] ? ", which holds a " : "", path[0] ? culpritname : "",
+            path[0] ? " in " : "", path, reason);
     }
     else if (writes) {
         char reason[512] = "", culpritname[256] = "";

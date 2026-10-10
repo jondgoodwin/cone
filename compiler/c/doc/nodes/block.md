@@ -269,14 +269,15 @@ except the item, a borrow into the source (`nodesGet(loop->stmts, 1)`), which is
 judged without the `&mut` rule (no other pass reaches it). A name that is itself a
 borrow (`self`, a `&mut` parameter) is read through as a `&`: what it reaches is
 judged, not its own permission, since `parCheckWrites` refuses the body's writes
-through it. A raw
+through it (a virtual reference is not peeled: unmarked, it is the culprit itself,
+`+ Shareable` or `+ Sendable` vouches). A raw
 pointer of a type that is not generic is trusted and nothing behind it is
 followed; an instance of a generic type is not safe when any type argument is not
 (`itypeInstanceTypeArgs`), so `List[Rc[...]]`, which keeps its
 block behind a pointer, is found by its argument. The message differs for a root
 that is a counted or traced owner itself (`parIsCountedItself`: borrow its contents
 before the loop), one that holds it (copy what the loop needs into a local), one
-that holds a `&mut`, and a closure passed in, where it names the variable the
+that holds a `&mut`, one that is or holds an unmarked virtual reference, and a closure passed in, where it names the variable the
 closure borrows or holds (`genericClosureNotShareableCap`) and what to list.
 
 A loop that **writes through its source** also refuses an outside variable whose
