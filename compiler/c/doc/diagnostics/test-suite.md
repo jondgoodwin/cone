@@ -80,7 +80,9 @@ as that group's own subject requires.
 | 2 | `intrinsic` | Intrinsics: `@intrinsic` declarations, the registry's checks, each intrinsic's meaning, lowered and through its fallback body |
 
 `stream` is `each` drawing from a source inside a `<-` list: `xs <- each src`
-and `xs <- each x in src if cond yield v`. The `<-` list itself -- its other
+and `xs <- each x in src if cond yield v`, the source being an iterator chain too
+(`xs <- each src.iter().filter(f).map(g)`; the parallel builder refuses a chain, in
+`concurrency`). The `<-` list itself -- its other
 entries, a collection's contents after a construction -- is `collection`'s,
 beside the manual's collection chapter, an array's contents are `array`'s, and
 the loop header the entry reads is `each`'s.

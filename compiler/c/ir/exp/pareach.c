@@ -1719,6 +1719,10 @@ static void parSourceError(INode *src, INode *type) {
         errorMsgNode(src, ErrorParSource,
             "A 'parallel each' over %s, which has 'len' and 'split' and so is a ParallelIterable, is not built yet: it walks arrays, slices, lists, number ranges and the runs of 'chunks' and 'mutChunks'.",
             itypeName(type));
+    else if (parIsCore(type, "IterMap", 7) || parIsCore(type, "IterFilter", 10)
+        || parIsCore(type, "IterTake", 8) || parIsCore(type, "IterSkip", 8))
+        errorMsgNode(src, ErrorParSource,
+            "A 'parallel each' splits its source into pieces that run at the same time, so the source must report its size and split ('len' and 'split': a ParallelIterable). A chain of iterator adapters ('map', 'filter', 'take', 'skip') hands out its items one after another, with 'next', and cannot be split. Walk the list the chain starts from, and put the adapter's work in the loop's own header and 'yield' ('parallel each x in xs if cond yield expr'), or collect the chain into a list first.");
     else if (cursor)
         errorMsgNode(src, ErrorParSource,
             "A 'parallel each' splits its source into pieces that run at the same time, so the source must report its size and split ('len' and 'split': a ParallelIterable). %s hands out its items one after another, with 'next', and cannot be split. Collect it into a list first, and walk the list.",

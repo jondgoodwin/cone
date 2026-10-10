@@ -19,7 +19,7 @@
 			change its items in place (<span class="pre">mutItems</span>), consume it (<span class="pre">drain</span>), number them
 			(<span class="pre">indexed</span>) or cut it into runs (<span class="pre">chunks</span>, <span class="pre">mutChunks</span>), and <span class="pre">zip</span>; <span class="pre">each</span> as an entry of the append operator's list
 			(<a href="#builder">below</a>); and <a href="#parallel">parallel each</a> over a number range, an
-			array, a slice or a list, or the runs of one, with <span class="pre">indexed</span> giving the position, in a function or an actor's method, and <a href="#parallelbuilder">the parallel builder</a> that builds a list from it. The <a href="#adapters">adapters</a> of a cursor that declares itself an <span class="pre">Iterator</span>, <span class="pre">xs.iter().map(f).filter(g).sum()</span>. Not built yet: <a href="#closure">closure iterators</a>, adapters that feed a <span class="pre">&lt;- each</span> list, the parallel reductions and a source that runs its own loop, all of which build on <a href="refclosure.html">closures</a>, which are built. An enum's variant is constructed with its values in square brackets, as written here: that is the current spelling, and how a variant is constructed is an open design question (<a href="refenum.html#init">Enums</a>).</i></p>
+			array, a slice or a list, or the runs of one, with <span class="pre">indexed</span> giving the position, in a function or an actor's method, and <a href="#parallelbuilder">the parallel builder</a> that builds a list from it. The <a href="#adapters">adapters</a> of a cursor that declares itself an <span class="pre">Iterator</span>, <span class="pre">xs.iter().map(f).filter(g).sum()</span>, and a chain of them as the source of a <span class="pre">&lt;- each</span> list (<a href="#builder">below</a>). Not built yet: <a href="#closure">closure iterators</a>, the parallel reductions and a source that runs its own loop, all of which build on <a href="refclosure.html">closures</a>, which are built. An enum's variant is constructed with its values in square brackets, as written here: that is the current spelling, and how a variant is constructed is an open design question (<a href="refenum.html#init">Enums</a>).</i></p>
 
 	<p><span class="pre">each</span> makes it easier than <span class="pre">while</span>
 		to iterate over a sequence of values.
@@ -114,6 +114,7 @@ imm big = new List[i32] &lt;- each x in other if x &gt; 9 yield *x;
 imm squares = new List[i32] &lt;- each i in 1 &lt;= 5 yield i * i;  // 1 4 9 16 25
 imm index = new Dict[i32, str] &lt;- each p in people yield p.id: p.name;
 xs &lt;- 0, each x in other yield x + 1, 99;               // in the middle of a list
+imm tens = new List[i32] &lt;- each other.iter().filter(x =&gt; *x &gt; 2).map(x =&gt; *x * 10);   // a chain
 </pre>
 	<p>This <span class="pre">yield</span> belongs to the entry: it is not a generator's, which is a
 		statement of its own, so a generator may build a list this way and then hand values to
@@ -125,6 +126,22 @@ xs &lt;- 0, each x in other yield x + 1, 99;               // in the middle of a
 		<span class="pre">*</span> itself where it wants the value. The list being appended to cannot be the
 		source: <span class="pre">xs &lt;- each xs</span> is refused, as pushing to a list while a loop
 		walks it is. An array's contents cannot hold an <span class="pre">each</span>, as its size is fixed.</p>
+	<p id="builderchain">The source may be a chain of <a href="#adapters">adapters</a>, in the bare form or after
+		<span class="pre">in</span> in the header form: the chain is a cursor, and the entry walks it as any other, one
+		loop. A chain that starts at a list's <span class="pre">iter()</span> hands out borrows, so the items are copied as
+		from the list itself; a chain whose closure makes the value (<span class="pre">map(s =&gt; String.from(s.view()))</span>)
+		hands the value over; and one that starts at <span class="pre">drain()</span> moves the items out of the list, those a
+		<span class="pre">filter</span> rejects are dropped, and the list is left empty:</p>
+<pre>
+imm lengths = new List[usize] &lt;- each names.drain().map(s =&gt; s.len);      // names is left empty
+imm kept = new List[i32] &lt;- each v in xs.iter().map(x =&gt; *x * 2) if v &gt; 6 yield v + 1;
+imm squares = new Dict[i32, i32] &lt;- each k, v in xs.iter().map(x =&gt; (*x, *x * *x)) yield k: v;
+</pre>
+	<p>A chain that starts at the list being appended to is refused as <span class="pre">xs &lt;- each xs</span> is
+		(<span class="pre">xs &lt;- each xs.iter().map(f)</span>, and with <span class="pre">drain()</span>), and so is a
+		chain whose closure reads the list while it grows. A dictionary takes pairs by <span class="pre">yield k: v</span>
+		in the header form; the bare form <span class="pre">new Dict[K, V] &lt;- each pairs</span> is not built for any source.
+		<span class="pre">new List[T] &lt;- parallel each chain</span> is refused: a chain cannot be split (<a href="#parallelbuilder">below</a>).</p>
 
 	<h2>Iterators</h2>
 	<p><span class="pre">each</span> supports several ways to iterate over a sequence of values:</p>
@@ -451,8 +468,8 @@ struct Countdown is Iterator[i64] {         // declared: it has map, filter, sum
 		as a closure, for a source that cannot hand out its items one by one (a line reader that lends each line from its own
 		buffer, say). <span class="pre">each</span> would use it when the source has it, and otherwise use <span class="pre">next</span>;
 		<span class="pre">break</span>, <span class="pre">continue</span> and <span class="pre">return</span> in the body would reach the source as
-		signals, and an <span class="pre">await</span> in such a body may be refused. A chain feeding the entries of
-		<a href="#builder">a collection being built</a> (<span class="pre">&lt;- each</span>) and the parallel reductions are to follow.</p>
+		signals, and an <span class="pre">await</span> in such a body may be refused. The parallel reductions are to follow.
+		A chain feeding the entries of <a href="#builderchain">a collection being built</a> (<span class="pre">&lt;- each</span>) is built.</p>
 
 	<h2 id="parallel">parallel each</h2>
 	<p style="margin-left: 40px;"><i>Note: Built in a function and in an actor's methods (<a href="#parallelactor">below</a>): over a number range, an
@@ -496,6 +513,8 @@ fn total(xs &amp;Array[u64]) u64 {
 		<span class="pre">chunks(n)</span> and <span class="pre">mutChunks(n)</span> give, which it cuts between runs
 		(<a href="#parallelfill">below</a>). A cursor, a generator, a file or a
 		channel hands out its items one after another and cannot be split: collect it into a list first, and walk the list.
+		A chain of adapters (<span class="pre">xs.iter().map(f)</span>) is a cursor too: walk the list it starts from, and put
+		the adapters' work in the loop's own header, <span class="pre">if</span> and <span class="pre">yield</span>.
 		As in the loops above, the variable is a new one on every pass, and is a borrow of the item for an array,
 		a slice or a list.</p>
 
