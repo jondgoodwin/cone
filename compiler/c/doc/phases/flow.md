@@ -1248,6 +1248,26 @@ a struct, means **both** hold of its methods (`siInferStruct`):
   all the same, which is why the test is not "has a pointer field";
 - one returns a type that carries a borrow (`itypeCarriesBorrow`).
 
+The methods are not the only code that lends from a type or changes it: a
+**free function of the type's own module** that takes it by reference counts
+too (`siEachFree`, `siFreeFn`). It is a lender when its result carries a
+borrow, and a writer when it takes the type `&mut`, is visible, and writes
+storage through that parameter (`siParamWrites`, the same engine as for a method's
+`self`). The two may come from either side, so `Block` with a lending method and a
+free `grow(b &mut Block)`, `Cell` with a free lender and a free writer, and
+`Heap` with a free lender and a method writer all change shape. The search is
+bound to the module the type is declared in (a function there naming it as the
+target of a parameter's reference), for this reason: another module reaches the
+type only through its public methods, which are read here, and its public fields,
+whose writes through another name are the store gap ("What it does not follow").
+A package is one module, so this is the type's own package, and its include file
+records the verdict for importers as above. Not read: a generic function (its
+body is only checked when instantiated) and any free function of a generic type
+(an instance is made where it is used, in another module); an `extern` free function
+taking the type `&mut` is not counted as a writer (a method that hands storage
+to one is). `siDemandMethods` asks for the module's candidates to be checked as it
+asks for the methods.
+
 A callee the compiler cannot read counts as writing (`siVisible`): an
 `extern` function, a call through a trait or a function pointer, a function
 whose body its package's include file left out, an intrinsic given a writable
@@ -1278,8 +1298,9 @@ with an `await`, a module's `init`) takes an unsettled type as shape-changing.
 A walk made later is the same walk, so nothing else about the function depends
 on when it ran.
 
-What is not covered: a type that reshapes only through a free function taking
-it (the function is not one of its methods), and an enum's reshaping.
+What is not covered: an enum's reshaping, a type that reshapes only through a
+generic free function or a free function of a generic type, and (above) a free
+function of another module writing a public field.
 
 ### A change through another name
 
@@ -1347,8 +1368,23 @@ it is reported at once (`loanShapeNow`). `ErrorShapeReshape`. The holder of a bo
 a generator's `yield` handed out is the stand-in for the generator's caller ("A
 yield"), which a call that could reshape the collection is reported against at the call.
 
-What it does not follow: a borrow handed out by a free function (no method, so no
-receiver loan); types are compared as types, so two `List[Pt]` are not told apart
+A borrow a free function hands out is followed the way a method's is
+(`pwLentArg`, `pwLendRef`): an argument that is a reference to a shape-changing
+type, whose parameter the result may hold a borrow of (`pwArgCarries`), is lent as a
+method's receiver is — a loan of what it points at, made with the parameter's
+permission and not two-phase — and the same two things follow: `loanFreezeShared`
+freezes the path it was reached through, and `pwShapeBorrow` marks the loan where
+that path is shared. The loan walk's readiness (`siNeedNode`) settles the type of each
+such argument, as it does a receiver's. A free function with several such
+arguments lends each. Before this, an argument written `first(xs)` for a reference
+`xs` held only the loans `xs` already held, so nothing followed the borrow; one
+written `first(&xs)` of a local was a loan like any other. A call through a function
+reference and an operator are not lent from, and a result that cannot hold the
+borrow (a number, `'static`) lends nothing; where the signature names a lifetime for
+another parameter the loan is made but the result does not carry it, so nothing is
+frozen.
+
+What it does not follow: types are compared as types, so two `List[Pt]` are not told apart
 (the point: it is never a proof of aliasing, only that nothing proves it absent);
 a global that code the compiler cannot read changes while it is handed nothing
 that reaches the type; and a raw pointer inside a local this function owns is

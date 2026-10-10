@@ -15,6 +15,13 @@
  * Writing a number field (a cursor advancing, a count) reshapes no storage, and
  * writing an element through the pointer moves nothing.
  *
+ * A free function of the type's own module that takes it by reference counts as a
+ * method does: it is a lender when it returns a borrow, a writer when it takes the
+ * type writable and writes such a place through that parameter. The search is
+ * bound to that module: another module reaches the type only through its public
+ * methods, read here, and its public fields. Generic functions and generic types'
+ * free functions are not read.
+ *
  * Code the compiler cannot see counts as writing: an 'extern' function, a
  * virtual call, a function pointer, and a function of another package whose
  * body its include file left out. That last case is decided once, where the

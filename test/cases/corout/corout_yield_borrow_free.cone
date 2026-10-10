@@ -1,0 +1,46 @@
+mod corout_yield_borrow_free;
+
+// A borrow a 'yield' hands out that a free function made (or a sub-generator it
+// hands on with 'yield each') of what the generator was lent stays borrowed for
+// the rest of the body, as one made by a method or an index does
+// (corout_yield_borrow): the body may not change the list afterwards, nor call
+// anything that could reshape it. Each refusal is at the change.
+
+import collections use *;
+
+fn first(xs &List[i64]) &i64 { xs[0usize]; }
+
+fn text(buf &List[u8]) &Array[u8] { buf.view(); }
+
+fn fill(buf &mut List[u8], k u8) {
+  buf.clear();
+  mut i = 0u8;
+  while i < k { buf.push('a' + k - 1u8); i = i + 1u8; }
+}
+
+// The first borrow is made by a free function, then the list grows
+fn growsAfter(xs &mut List[i64]) yields &i64 {
+  yield first(xs);
+  xs.push(1i64);                          //~ ErrorFrozen "A 'yield' handed the generator's caller a borrow of what the generator was lent"
+}
+
+// A sub-generator's borrows of the list, handed on, then the list grows
+fn child(xs &List[i64]) yields &i64 {
+  yield xs[0usize];
+}
+
+fn growsAfterEach(xs &mut List[i64]) yields &i64 {
+  yield each child(xs);
+  xs.push(1i64);                          //~ ErrorFrozen "A 'yield' handed the generator's caller a borrow of what the generator was lent"
+}
+
+// A buffer refilled through a call in each pass of a loop, after the pass before
+// it handed out a view of it that a free function made
+fn refills(buf &mut List[u8], n u8) yields &Array[u8] {
+  mut k = 1u8;
+  while k <= n {
+    fill(buf, k);                         //~ ErrorShapeReshape:9 "while the generator's caller may still hold a borrow into it"
+    yield text(buf);
+    k = k + 1u8;
+  }
+}
