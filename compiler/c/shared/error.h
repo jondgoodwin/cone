@@ -601,8 +601,8 @@ enum ErrorCode {
     ErrorCallableUse = 1398,    // A value made into a 'So[fn(sig)]' or 'Rc[fn(sig)]' that has no pub '()' of that signature
     ErrorClosureTrait = 1399,   // A closure literal given where a trait is wanted that does not have exactly one required method (and no field) for it to fill
 
-    // What a GPU has none of, refused where it is written (ir/exp/borrow.c, ir/exp/allocate.c, ir/iexp.c)
-    ErrorGpuUnavailable = 1400, // In GPU code, a function reference ('&name'), a virtual reference made from a reference, or an allocation ('new So[T]', 'new Rc[T]', ...): a GPU has no pointers to code, no tables of them and no allocator
+    // What a GPU has none of, refused where it is written (ir/exp/borrow.c, ir/exp/allocate.c, ir/iexp.c, ir/types/reference.c, ir/exp/fncall.c, ir/exp/pareach.c, ir/exp/await.c, parser/parseactor.c)
+    ErrorGpuUnavailable = 1400, // In GPU code, what a GPU has none of: a function reference ('&name'), a virtual reference made from a reference, an allocation ('new So[T]', 'new Rc[T]', ...), an owning reference type written ('So[T]', 'Rc[T]'), an actor, a 'parallel each' or an 'await' (threads), or a call of a C library function that is not math (I/O, the allocator): a GPU has no pointers to code, no tables of them, no allocator, no threads and no operating system
 
     // A virtual reference's trait method met by a stronger 'self' (ir/types/fnsig.c)
     ErrorVtableSelf = 1401,     // A struct viewed as a trait behind a virtual reference (`&<Trait`, `So[Trait]`) whose method takes a stronger `self` permission than the trait's method declares

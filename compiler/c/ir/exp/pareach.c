@@ -1673,6 +1673,12 @@ static int parMayBeFrame(INode *node) {
 // worker running pieces meanwhile, so its actor is not run again until it returns.)
 static int parRuntime(TypeCheckState *pstate, INode *lexnode, int *seam) {
     *seam = 0;
+    // A GPU has no threads to run the passes on: its invocations are the parallelism
+    if (flowGpu) {
+        errorMsgNode(lexnode, ErrorGpuUnavailable,
+            "In GPU code there is no 'parallel each': it runs its passes on worker threads, which a GPU has none of. A kernel is already run by thousands of invocations at once, each taking its part by its id.");
+        return 0;
+    }
     FnDclNode *fn = pstate->fn;
     ModuleNode *mod = fn ? dclInfoGetModule((INode*)fn) : NULL;
     if (mod == NULL) {

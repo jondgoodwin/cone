@@ -1,0 +1,53 @@
+// An owning reference type written in GPU code is refused where it is written
+// (ErrorGpuUnavailable): a GPU has no allocator, so nothing could own memory,
+// and a kernel has only its locals and the buffers it is bound. Allocating one
+// is refused too (module_gpu_unavailable), so this is the other half: the type
+// in a parameter, a field, a return type or a local, whether So, Rc or a lock's
+// Rc[Rwcell, T]. Each was accepted silently, a type no kernel could fill.
+// A borrow, the reference a GPU has, and a struct built as a value are fine and
+// stand beside them, with an atomic counter and the C library's math.
+
+mod module_gpu_owner_type;
+
+import libc;
+
+struct Holder {
+  pub value So[f32];                                            //~ ErrorGpuUnavailable
+}
+
+fn takes(one So[f32]) f32 {                                     //~ ErrorGpuUnavailable
+  *one;
+}
+
+fn gives(x f32) Rc[f32] {                                       //~ ErrorGpuUnavailable
+  new Rc[f32](x);
+}
+
+fn locked(guard &Rc[Rwcell, f32]) f32 {                         //~ ErrorGpuUnavailable
+  0.;
+}
+
+fn @compute(64) heldLocal(inv Invocation, xs &Array[f32], out &mut Array[f32]) {
+  imm i = usize.from(inv.globalId[0]);
+  if i < out.len and i < xs.len {
+    imm held So[f32];                                           //~ ErrorGpuUnavailable
+    out[i] = xs[i];
+  }
+}
+
+struct Ball {
+  pub r f32;
+}
+
+fn radius(b &Ball) f32 { b.r; }
+
+// Not refused
+fn @compute(64) fine(inv Invocation, xs &Array[f32], count &mut Array[Atomic[u32]], out &mut Array[f32]) {
+  imm i = usize.from(inv.globalId[0]);
+  if i < out.len and i < xs.len {
+    imm ball = new Ball(2.);
+    imm view &Ball = &ball;
+    out[i] = radius(view) + libc.sqrtf(xs[i]) + libc.sinf(xs[i]);
+    count[0usize].add(1u32);
+  }
+}
