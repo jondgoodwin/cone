@@ -1,0 +1,42 @@
+// 's.cstr()' on a So[str], such as a frozen String, is the owner's C string: its
+// bytes and the NUL kept after them, with no copy, handed to C as they are. A NUL
+// inside the text would end the string early for C, which reads only up to the
+// first one, so asking for the C string of such an owner is a panic, at the
+// caller's line, which .err pins; the owner itself is fine to hold and to read.
+
+mod cstrowner;
+
+import stdio use *;
+import collections use *;
+import libc;
+
+fn main() i32 {
+  // "frozen" is 6 bytes, and C's strlen counts the same 6
+  imm fine = String.from("frozen").freeze();
+  printStr("an owner without a NUL is a C string of 6 bytes: ");
+  printUInt(u64.from(libc.strlen(fine.cstr())));
+  printStr("\n");
+  // the same bytes, not a copy: its pointer is the owner's own
+  imm same = fine.cstr().ptr() == cstr.fromOwned(&fine).ptr();
+  printStr("it is the owner's own bytes: ");
+  printStr(if same { "yes"; } else { "no"; });
+  printStr("\n");
+  // an empty owner is the empty C string
+  imm none = String.empty().freeze();
+  printStr("an empty owner is a C string of 0 bytes: ");
+  printUInt(u64.from(libc.strlen(none.cstr())));
+  printStr("\n");
+
+  // 'a', a NUL, 'b': 3 bytes to Cone, and C would see 1
+  mut text = String.from("a");
+  text.appendByte(0u8);
+  text.append("b");
+  imm nul = text.freeze();
+  printStr("an owner holding a NUL has 3 bytes: ");
+  printUInt(u64.from(nul.len));
+  printStr("\n");
+  printStr("asking for its C string\n");
+  imm c = nul.cstr();
+  printStr("not reached\n");
+  0i32;
+}

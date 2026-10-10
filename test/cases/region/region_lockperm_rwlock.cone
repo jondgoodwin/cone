@@ -10,9 +10,12 @@
 // would time out. Then main starts a writer, which borrows mutably. Main
 // sleeps 20 ms and checks that the writer has not got in: it waits while any
 // reader holds the lock, however long that is, so it is still outside
-// whatever the timing. Main gives the word; each reader reads the scale, 10,
-// leaves, and its borrow's end gives its read lock back; the writer gets in,
-// finds nobody inside, and sets the scale to 20, which main reads last.
+// whatever the timing. Main gives the word; each reader leaves the count and
+// then reads the scale, 10, its borrow's last use, which gives its read lock
+// back; the writer gets in, finds nobody inside, and sets the scale to 20,
+// which main reads last. (Each reader leaves the count first, while it still
+// holds the lock: the lock goes back at the last use, so a count changed after
+// the read could be seen by the writer.)
 //
 // Worked out by hand: inside together 2; the writer waited; the readers saw
 // 10 and 10; the writer saw 0 readers inside; the scale is then 20.
@@ -47,10 +50,10 @@ fn reader(s Shared) u64 {
   while !release.load() {
     thread.yieldNow();
   }
-  imm seen = r.scale;
-  inside.sub(1u32);
+  inside.sub(1u32);            // out of the count while the lock is still held
+  imm seen = r.scale;          // the borrow's last use: the read lock goes back after it
   seen;
-}                              // the borrow ends: the read lock is given back
+}
 
 fn writer(s Shared) u32 {
   imm w = &mut *s;             // the write lock, once every reader is out

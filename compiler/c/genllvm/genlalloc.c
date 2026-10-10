@@ -1598,7 +1598,14 @@ void genlDealiasNode(GenState *gen, INode *node) {
             return;
         }
         LLVMBasicBlockRef endblk = genlDropFlagIf(gen, test->var, test->state);
-        genlDealiasNode(gen, test->release);
+        if (node->flags & FlagLockGive) {
+            // A guard given back at its borrow's last use: it releases as it
+            // does at its scope's end, and the scope's end then finds it gone
+            genlFinalizeAt(gen, test->var->llvmvar, test->var->vtype);
+            genlDropFlagSet(gen, test->var, DropFlagEmpty);
+        }
+        else
+            genlDealiasNode(gen, test->release);
         genlDropFlagEnd(gen, endblk);
     }
     // Generate function calls that drop/dealias values

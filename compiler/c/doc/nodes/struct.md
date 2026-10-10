@@ -1592,9 +1592,16 @@ first use, with the field `p`) and binds the name for every module as it does
 hands the parser the compiler's node, emptied, for that declaration: a compile
 with core gets core's field and methods, one without (libc's own) the
 compiler's field. A literal converts to it through `fromLiteral` (`slitFromLiteralFn`),
-so the hook is not special to it; the struct adds no case to `slitCoerce`.
+so the hook is not special to it; the one case `slitCoerce` adds for the struct is
+the refusal of a literal holding a NUL (`slitCStrCheck`, `ErrorCStrNul`).
+An owner of text reaches C by `s.cstr()`, a method of `str` declared `self
+&So[str]` (a borrow of an owner of the type, which `fnDclTypeCheck` allows as a
+`self`; [fncall](fncall.md), "The borrow retry", is how a `So[str]` receiver finds
+it, and a `&str` finds nothing) that calls `fromOwned`. A type that folds in
+`str`'s methods and declares a `cstr` of its own leaves the fold's out
+(`use str via view but cstr, ...`, as `String` does).
 `cstr` is not a keyword, so a type may declare a method of that name
-(collections' `String.cstr`), which hides the type inside that declaration:
+(collections' `String.cstr`, core's `str.cstr`), which hides the type inside that declaration:
 collections spells the type there through an alias.
 
 ## An enum extending an enum

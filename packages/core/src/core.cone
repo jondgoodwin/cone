@@ -47,6 +47,10 @@ pub use Result;
 // a 'String' or any owner of either reaches them. Positions are bytes, and a
 // position that is not the start of a character is a program error where a
 // method says so.
+// A method of str is named 'cstr', which hides the type of that name inside
+// str's declaration; this is the type, for there
+alias CStrType = cstr;
+
 pub struct @opaque str {
   // The number of bytes, not characters
   pub fn len(self &) usize inline {
@@ -57,6 +61,13 @@ pub struct @opaque str {
   pub fn isEmpty(self &) bool inline {
     imm b &Array[u8] = self;
     b.len == 0usize;
+  }
+
+  // The C string of an owner of text, which keeps a NUL after its bytes: 's.cstr()'
+  // for a 'So[str]'. A plain '&str' promises no NUL after its bytes, so it has no
+  // such method. A NUL inside the text is a panic.
+  pub fn cstr(self &So[str], file &Array[u8] = srcFile(), line u32 = srcLine()) CStrType inline {
+    CStrType.fromOwned(self, file, line);
   }
 
   // The bytes themselves
@@ -736,10 +747,11 @@ pub fn zip[A, I, C Iterable[A, I], B, J, D Iterable[B, J]](xs &C, ys &D) Zip[A, 
 // this is its field and its methods.
 //
 // What reaches C as one: a literal, which converts where a 'cstr' is wanted
-// ('fromLiteral'); a String's 'cstr()' (collections); an owner of text,
-// 'cstr.fromOwned'. A general '&str' promises no NUL after its bytes (it may be
-// a part of a longer text), so it is copied into a String first:
-// 'String.from(s).cstr()'.
+// ('fromLiteral'; the compiler refuses a literal holding a NUL byte, which C
+// would read up to); a String's 'cstr()' (collections); an owner of text, 's.cstr()'
+// on a 'So[str]' (str's method, which is 'cstr.fromOwned(&s)'). A general '&str'
+// promises no NUL after its bytes (it may be a part of a longer text), so it is
+// copied into a String first: 'String.from(s).cstr()'.
 pub struct cstr {
   p *u8;
 

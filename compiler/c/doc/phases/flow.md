@@ -627,6 +627,35 @@ operand: `flowLoadValue` moves or copies the operand into it
 (`flowHandleMoveOrCopy`, counting a copied owner) rather than wrapping the
 operand as a temporary of its own.
 
+**A lock's guard gives its lock back at the last use of its borrow.** A guard a
+local's initializer extended is a hidden local (`tempLocalName`) that dies with
+its block, but the lock it holds goes back earlier: the borrow is the only way
+to the value the lock guards, so once nothing holding the borrow is used again
+the lock protects nothing. The last use is found forward, as a frozen borrow's
+is (§6): at each point a guard might give its lock back -- after each statement
+of a block, and at the start of an `if`'s arm (`pwLockPoint`, from `pwStmts` and
+`pwBlock`) -- every variable holding a loan rooted at the guard
+(`loanSetRootedAt`) is given a live mark for that point
+(`loanLockLive`, kind `PendingLockLive`), which its next use fires
+(`loanUse`) and reports nothing. A point is no candidate where an operand still
+in flight (`loanFlightRootedAt`), or the stand-in of a statement's temporary,
+carries a loan of the guard: those are used after it with no name to fire a
+mark. A mark is fired for good by a use on any path, so a point whose mark is
+never fired has no use after it on any path: the walk's end
+(`pwLockApply`) makes each such point a statement of its block, a
+`DropFlagNode` flagged `FlagLockGive` (`flowLockGive`) with no release of its
+own, and flags the guard `VarSeamHeld` so generation gives it a flag. Of one
+guard's points in one block only the first is made, every path reaching the
+others passing through it. The marks are facts of the holders, so they join with
+the paths, go round a loop until it settles and are dropped by a holder's death
+or reassignment, as pending conflicts are. Nothing is given back inside a
+`parallel each`'s body (the statements are an outlined function's), or an
+operator's rewrite (`FlagKeepTemps`). A guard in scope at a generator's `yield`
+is still refused (`ErrorGenFrame`) though its borrow is dead and its lock gone.
+Generation ([Generation](generation.md), "The allocation header") releases the
+guard if its flag says it holds its value, and says it no longer does; the
+scope's end, and every exit, find it gone.
+
 **Where a value is a temporary.** `flowIsTemp` is the test: an expression that
 does not read a place that keeps its value (`flowIsLvalRead`), and is not an
 assignment (its value is what its target keeps), a literal, a call that never
@@ -1552,7 +1581,8 @@ is awaited, which the `await` takes as a call takes an argument. At the seam
    for one on every variable.
 4. **A lock's guard** (the hidden owner a borrow through a lock permission
    reads through, a `permHeldKind` type, `SeamGuard`) gives its lock back at
-   the seam, with its borrow; it does not travel.
+   the seam, with its borrow, unless it has already (its borrow's last use was
+   before the seam: its flag says); it does not travel.
 5. **What the record holds dies as if the method were not cut**: the
    statement's temporaries, then the locals and the parameters, the last
    declared first. Nothing droppable is dropped early, so the order is the
@@ -1798,7 +1828,9 @@ droppable noted as holding nothing is never finalized.
 | | `loanWhole` | a loan of the whole of its root, where a slot's tag stays the root's |
 | | `loanAccess`, `loanUse` | a conflicting access records a pending conflict on each holder of the loan; a use of the holder fires it (`ErrorFrozen`, or `ErrorGpuRefChoice` for a `PendingChosen` one; a `PendingSeamLive` one records the variable live after its seam) |
 | | `loanIsGlobal`, `loanSeamEnds`, `loanSeamPending`, `loanSeamLive`, `loanSeamFlight`, `loanSeamOf` | a seam: whether a loan is global; the loan a holder holds that ends there, the borrow it was given where that can be told; the pending conflict and the live mark; what is in flight across it; what an ended borrow was of, for the message |
+| | `loanLockLive`, `loanLockStillLive`, `loanSetRootedAt`, `loanFlightRootedAt` | a lock's guard given back at its borrow's last use: the live mark of a point (`PendingLockLive`) and whether a use fired it; whether a loan set, or an operand in flight, holds a loan of the guard |
 | | `loanIsGenOwn`, `loanGenOwnIn`, `loanYieldPending` | a generator's seam: whether a loan is of the generator's own ground (a local, or its parameters held by value); the first such in a set; the pending conflict of the seam ending it |
+| `ir/flowpath.c` | `pwLockPoint`, `pwLockApply`, `pwLockPos` | the points where a guard might give its lock back, a mark on each holder of its borrow; the points never fired made statements (`flowLockGive`, a `DropFlagNode` flagged `FlagLockGive`) |
 | `ir/exp/yield.c` | `yieldGenNew`, `yieldGenOf`, `yieldSplitRegister`, `yieldTypeCheck` | the generators made, each with its `next`, its struct and its seams, numbered once the function is walked; a `yield` type checked against what `next` gives |
 | `ir/exp/await.c` | `awaitIsPath`, `awaitReReached`, `awaitOrder`, `awaitChainLevels`, `awaitLeftCallMsg` | where a seam cuts inside a statement ("A seam"): what is a plain path, reached again after the seam; which operands that makes after the last one holding a seam; the refusal of what a call made |
 | | `awaitSplitOrReport`, `awaitReportUnbuilt`, `awaitRecordTraced` | the seams of a function flow accepted: a behaviour's split where each awaits a behaviour returning a value, or under `--await-direct` (numbered, each lock's guard marked `VarSeamHeld`, the function recorded for generation, `awaitSplitOf`), unless one stands where the split is not built (`awaitWalk`, `awaitReportIn`) or a seam's record would hold a traced reference; otherwise each reported not built with what it would end, give back, carry (in the order it would die) and leave |

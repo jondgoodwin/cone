@@ -452,6 +452,9 @@ marker `+ Sendable`, unmet, is `ErrorNotSendable`, the thread check's); and a
 marking a reference to a type that is known, is `ErrorMarkUse`
 ([references](../nodes/references.md), `RefNode.marks`).
 
+A string literal holding a NUL byte (`"ab\x00cd"`) wanted as a `cstr`, which C
+would read up to the NUL, is `ErrorCStrNul` ([literals](../nodes/literals.md)).
+
 A struct viewed as a trait behind a virtual reference (`&<Trait`, `So[Trait]`) whose
 method takes a stronger `self` than the trait's method declares (`self &mut` for
 `self &`, `self &uni` for `self &mut`) is `ErrorVtableSelf`; so is a closure literal
