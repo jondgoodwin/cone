@@ -1,0 +1,56 @@
+// What an owner held in a field lends when its holder is reached through a
+// counted owner, 'Rc[mut, T]' (a shared path, so no '&uni' and no '&imm' of it):
+// '&mut' and '&' (a receiver, an argument); a 'So[imm]' or 'Rc[imm]' in it still
+// lends '&imm'; through an 'Rc[imm]' the holder's owner lends '&' and its 'imm'
+// owners '&imm'; an owner in a struct held by a local lends '&uni' as before. The
+// numbers show each call reached the value.
+// ref_typecheck_owner_field_rc holds the lends refused.
+
+mod ref_owner_field_rc;
+
+import stdio use *;
+
+struct App {
+  pub n i64;
+  pub fn bump(self &mut) i64 { n = n + 1; n; }
+  pub fn look(self &) i64 { n; }
+  pub fn takeUni(self &uni) i64 { n; }
+}
+
+struct Holder {
+  pub app So[App];
+  pub frozen So[imm, App];
+  pub counted Rc[imm, App];
+}
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn needUni(a &uni App) i64 { a.n; }
+fn needImm(a &imm App) i64 { a.n; }
+fn needMut(a &mut App) i64 { a.bump(); }
+fn needRo(a &App) i64 { a.n; }
+
+fn viaRc(a Rc[mut, Holder]) i64 { needMut(a.app) + a.app.bump() + needRo(a.app) + a.app.look(); }
+fn frozenRc(a Rc[mut, Holder]) i64 { needImm(a.frozen) + needImm(a.counted) + a.frozen.look(); }
+fn viaRcImm(a Rc[imm, Holder]) i64 { needRo(a.app) + a.app.look() + needImm(a.frozen); }
+
+fn make(n i64) Holder {
+  new Holder(new So[App](n), new So[imm, App](new App(n + 100)), new Rc[imm, App](new App(n + 200)));
+}
+
+fn main() {
+  imm shared = new Rc[mut, Holder](make(1));
+  imm other = shared;
+  show("rc", viaRc(shared));                        // 2 + 3 + 3 + 3 = 11
+  show("rc-other", other.app.look());               // 3: both names reach one holder
+  show("frozen", frozenRc(other));                  // 101 + 201 + 101 = 403
+  imm fixed = new Rc[imm, Holder](make(5));
+  show("rc-imm", viaRcImm(fixed));                  // 5 + 5 + 105 = 115
+  mut own = make(20);
+  show("local", needUni(own.app) + own.app.takeUni() + needImm(own.app));  // 20 + 20 + 20 = 60
+}
