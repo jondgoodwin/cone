@@ -178,13 +178,25 @@ each p in bag.backward() { ... }
 			it ends at the <span class="pre">yield</span>, and it is an error to use it after. The error names the
 			<span class="pre">yield</span>.</li>
 		<li>What a <span class="pre">yield</span> hands the caller may borrow only what the generator was lent. It is a
-			borrow of that, not of the generator, so a caller may hold several of the values handed out at once.</li>
+			borrow of that, not of the generator, so a caller may keep a value handed out for as long as the generator
+			lives, several of them at once.</li>
+		<li>So the body holds each borrow it has handed out, from the <span class="pre">yield</span> to the end of the body,
+			as if a variable of its own held it. It may go on reading what it lent, or change another part of it, but it may
+			not change the thing the borrow points into, or call anything that could change the shape of the collection it
+			points into (a <span class="pre">push</span> or a <span class="pre">clear</span> on a list). The error is at the
+			change. Copy the value to hand it out, or hand out the borrow once the body has done changing what it borrows.</li>
 	</ul>
 <pre>
 fn words(text &amp;str) yields &amp;str {   // each word borrows the text
   ...
   yield &amp;text[start ..&lt; i];
   ...
+}
+
+fn grows(xs &amp;mut List[i64]) yields &amp;i64 {
+  yield xs[0usize];
+  xs.push(1i64);   // ERROR: the caller may still hold the borrow just yielded,
+                   // and the push could move the list's elements
 }
 
 fn bad(k i64) yields i64 {

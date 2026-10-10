@@ -1,0 +1,89 @@
+mod corout_yield_borrow_ok;
+
+// What a generator may still do once the rule of corout_yield_borrow holds: hand
+// out borrows of something it never changes afterwards, which the caller keeps;
+// hand out copies of something it then changes as it likes; change something
+// before the first yield of a borrow of it; and change a field other than the
+// one it handed a borrow of. Every value printed is worked out by hand from the
+// values put in.
+
+import stdio use *;
+import collections use *;
+
+// Borrows of a list the generator only reads: the caller keeps all three
+fn evens(xs &List[i64]) yields &i64 {
+  mut i = 0usize;
+  while i < xs.len {
+    if xs[i] % 2i64 == 0i64 { yield xs[i]; }
+    i = i + 1usize;
+  }
+}
+
+// Copies of an element of a list the generator then grows, writes and empties
+fn snapshots(xs &mut List[i64]) yields i64 {
+  yield *xs[0usize];
+  xs.push(10i64);
+  xs.set(0usize, 99i64);
+  yield *xs[0usize];
+  xs.clear();
+  yield 5i64;
+}
+
+// A buffer filled before it is lent, once
+fn onceFilled(buf &mut List[u8]) yields &Array[u8] {
+  buf.clear();
+  buf.push('x');
+  buf.push('y');
+  yield buf.view();
+}
+
+// The cursor moves while the borrows of the items are held; the items do not
+struct Reader {
+  pub items List[i64];
+  pub pos usize;
+
+  fn walk(self &mut) yields &i64 {
+    while pos < items.len {
+      yield items[pos];
+      pos = pos + 1usize;
+    }
+  }
+}
+
+fn main() {
+  // evens: 2 4 6, all kept past the loop
+  mut xs = List[i64].empty();
+  mut i = 1i64;
+  while i <= 6i64 { xs.push(i); i = i + 1i64; }
+  mut kept = List[&i64].empty();
+  each e in evens(&xs) { kept.push(e); }
+  each k in kept { printInt(**k); printStr(" "); }
+  printStr("\n");
+
+  // snapshots: 7 99 5, and the list ends empty
+  mut ys = List[i64].empty();
+  ys.push(7i64);
+  mut copies = List[i64].empty();
+  each v in snapshots(&mut ys) { copies.push(v); }
+  each c in copies { printInt(*c); printStr(" "); }
+  printInt(i64.from(ys.len));
+  printStr("\n");
+
+  // onceFilled: xy
+  mut buf = List[u8].empty();
+  each line in onceFilled(&mut buf) {
+    mut j = 0usize;
+    while j < line.len { printChar(u64.from(line[j])); j = j + 1usize; }
+  }
+  printStr("\n");
+
+  // Reader: 3 1 2, all kept past the loop while the generator advanced pos
+  mut r = new Reader(List[i64].empty(), 0usize);
+  r.items.push(3i64);
+  r.items.push(1i64);
+  r.items.push(2i64);
+  mut seen = List[&i64].empty();
+  each it in r.walk() { seen.push(it); }
+  each s in seen { printInt(**s); printStr(" "); }
+  printStr("\n");
+}

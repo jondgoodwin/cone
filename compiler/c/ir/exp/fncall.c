@@ -292,6 +292,10 @@ void fnCallNameRes(NameResState *pstate, FnCallNode **nodep) {
     INode **argsp;
     uint32_t cnt;
 
+    // 'xs.parallel().sum()': a reduction called on a parallel view is a call of the
+    // actors package's function, made once its parts are resolved (pareach.c)
+    int reduction = parallelReduceIs(node);
+
     // Name resolve objfn so we know what it is to vary subsequent processing
     inodeNameRes(pstate, &node->objfn);
 
@@ -304,6 +308,16 @@ void fnCallNameRes(NameResState *pstate, FnCallNode **nodep) {
     if (node->args) {
         for (nodesFor(node->args, cnt, argsp))
             inodeNameRes(pstate, argsp);
+    }
+
+    if (reduction) {
+        parallelReduceNameRes(pstate, nodep);
+        return;
+    }
+    // '(lo < hi).parallel()': a number range has no view yet, and is refused with the reason
+    if (parallelRangeIs(node)) {
+        parallelRangeNameRes(pstate, nodep);
+        return;
     }
 
     // 'Array[f32, 3]' is the array type, lowered here rather than at type check
@@ -1242,6 +1256,7 @@ static INode *fnCallSliceBodyOf(TypeCheckState *pstate, FnCallNode *callnode) {
 }
 
 static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INode *bodytype);
+static void fnCallReadThroughRefs(FnCallNode *node);
 
 // A method called on an array, a reference to one or a slice, lowered against
 // core's 'Array[T]' for its element type. Answers 0, changing nothing, where
@@ -1393,6 +1408,8 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
                 return -1;
             }
         }
+        if (foundnode == NULL && parallelViewNotFound(callnode, objdereftype, methsym))
+            return -1;
         errorMsgNode((INode*)callnode, ErrorNoMbr, "Method or field `%s` not found.", &methsym->namestr);
         return -1;
     }
@@ -2530,6 +2547,7 @@ static int fnCallMethodTypeArgs(TypeCheckState *pstate, FnCallNode **nodep) {
         node->vtype = errorType;
         return 1;
     }
+    fnCallReadThroughRefs(member);
     NameUseNode *methfld = (NameUseNode*)member->methfld;
     INode *rcvtype = isExpNode(member->objfn) ? iexpGetDerefTypeDcl(member->objfn) : NULL;
     // An array or a slice has the methods of core's body 'Array[T]' (numbers
@@ -3085,6 +3103,53 @@ static int fnCallClosureArgs(TypeCheckState *pstate, FnCallNode *node, FnDclNode
     return 1;
 }
 
+// A field, a method or an index reached through a reference to a reference, to
+// an owner of one, to a slice or to a virtual reference ('&&Pt', '&&&Pt',
+// '&mut &Pt', '&So[&Pt]') reads through every reference but the last: the
+// receiver becomes '*r', '**r', ... as though the dereferences were written, so
+// everything after sees a receiver of one reference level. Only a '.name' or an
+// index reads through, never an operator: the outer reference's own operators
+// ('===') and the comparisons, which read through on their own terms, are the
+// operator's to select first. A key and a lock-managed reference are left to
+// the refusal each has, and a raw pointer is not read through.
+//
+// What the path permits is what the explicit dereferences would: 'r.x' is
+// '(**r).x', so a borrow read out of another keeps its own permission. An owner
+// reached through a step that cannot write lends only what that step lets
+// (borrowOwnerLendRefused: a '&' lends only '&' of an owner), so the dereference
+// that reaches it is typed with the permission of that step, and every use
+// after it -- a field written, a method wanting 'self &mut' -- is held to it.
+static void fnCallReadThroughRefs(FnCallNode *node) {
+    if (!isExpNode(node->objfn) || (node->flags & FlagOperator))
+        return;
+    // A borrowed or ranged index has the borrow the parser put round its receiver
+    // (borrowReassocIndex), which reads through on its own
+    if (node->flags & FlagIndex ? (node->flags & (FlagBorrow | FlagRange)) != 0
+                                : !(node->methfld && isNameUseNode(node->methfld)))
+        return;
+    INode *clamp = NULL;  // the permission of the first step that cannot write
+    for (;;) {
+        INode *type = iexpGetTypeDcl(node->objfn);
+        if (type->tag != RefTag || lifeIsKey(type) || permIsLock(((RefNode*)type)->perm))
+            return;
+        RefNode *step = (RefNode*)type;
+        RefNode *held = (RefNode*)itypeGetTypeDcl(step->vtexp);
+        if (held->tag != RefTag && held->tag != ArrayRefTag && held->tag != VirtRefTag)
+            return;
+        if (clamp == NULL && !(permGetFlags(step->perm) & MayWrite))
+            clamp = step->perm;
+        derefInject(&node->objfn);
+        if (clamp && held->tag == RefTag && itypeGetTypeDcl(held->region) != borrowRef
+            && !permIsLock(held->perm) && (permGetFlags(held->perm) & MayWrite)) {
+            RefNode *seen = newRefNode(held->tag);
+            *seen = *held;
+            seen->typeinfo = NULL;
+            seen->perm = clamp;
+            ((IExpNode*)node->objfn)->vtype = (INode*)seen;
+        }
+    }
+}
+
 // Perform type check on function/method call node
 // This should only be run once on a node, as it mutably lowers the node to another form:
 // - If a generic/macro, it instantiates, then type checks instantiated nodes
@@ -3204,6 +3269,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
             node->vtype = errorType;
             return;
         }
+        fnCallReadThroughRefs(node);
         // 'stack[i64].push(x)': a path through an instance of a generic module,
         // which exists only now that the instantiation above made it
         if (nameUseNames(node->objfn, ModuleTag)) {
@@ -3358,6 +3424,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         node->vtype = errorType;
         return;
     }
+    fnCallReadThroughRefs(node);
 
     // All arguments must now be expressions
     int badarg = 0;
