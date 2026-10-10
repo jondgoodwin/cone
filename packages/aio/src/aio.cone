@@ -332,21 +332,43 @@ fn final() {
 // ---------------------------------------------------------------------------
 
 // The seam starts an operation: the reply its answer goes back in is written
-// into the job, which goes to the I/O thread (actors.Awaitable's 'start')
+// into the job, which goes to the I/O thread (actors.Awaitable's closure)
 fn startJob[J](ctx *u8, rp actors.Reply) {
   imm p = ctx as *Job[J];
   (*p).body.reply = rp;
   enqueue(ctx);
 }
 
+// A job's block until the 'await' starts it: 'take' hands it on, and an
+// Awaitable that dies unawaited, its closure finalized, drops the job it still
+// holds (its body dropped, an operation's reply among it)
+struct JobHold is Move {
+  job *u8;
+
+  fn take(self &mut) *u8 {
+    imm j = job;
+    job = null;
+    j;
+  }
+
+  fn final(self &uni) {
+    if job as usize != 0usize {
+      dropHead(job as *JobHead);
+    }
+  }
+}
+
 // The operation awaited: its job, made now, started by the 'await'
 fn awaitable[J, R](body J) actors.Awaitable[R] {
-  actors.Awaitable[R].make(newJob[J](body), &startJob[J], &dropJob[J]);
+  actors.Awaitable[R].make(fn(rp actors.Reply) [mut held = new JobHold(newJob[J](body))] {
+    startJob[J](held.take(), rp);
+  });
 }
 
 // Where an operation was made, for the panic if it does not finish: a
-// srcFile() slice, which is static, kept as its parts
-struct Site {
+// srcFile() slice, which is static, kept as its parts: Sendable on trust, as
+// the text it points at lives for the whole program
+struct Site is Sendable {
   pub file *u8;
   pub len usize;
   pub line u32;
@@ -365,56 +387,41 @@ struct OpJob[R] {
   // Start the operation on the I/O thread's Loop, its answer to a hook that
   // holds the reply
   fn run(self &mut, lp &mut Loop) {
-    imm w = libc.malloc(mem.sizeof[Waiting[R]]()) as *Waiting[R];
-    if w as usize == 0usize {
-      die("aio: out of memory for an operation");
-    }
     mut rp = new actors.Reply();
     rp <=> reply;
-    mem.writeRaw[Waiting[R]](w, new Waiting[R](rp, answer, site));
     mut o Op = Op.RecvReady[Handle.none()];
     o <=> op;
-    lp.submit(o, Target.Hook[0u64, Sink.make(w as *u8, &deliverTo[R], &dropWaiting[R])]);
+    lp.submit(o, Target.Hook[0u64, Sink.make(waiting[R](rp, answer, site))]);
   }
 }
 
-// What a hook holds while its operation is in flight
-struct Waiting[R] {
-  pub reply actors.Reply;
-  pub answer &fn(c &mut Completion) R;
-  pub site Site;
-}
-
-// The operation's answer, on the I/O thread: made its R and written into the
-// reply, which goes to the actor awaiting it. One that did not finish panics
-// at the line that made it; once the Loop is dying, the answer is dropped,
-// and what awaits it abandoned (its reply's envelope dropped with the hook)
-fn deliverTo[R](ctx *u8, c Completion) {
-  mut w = mem.readRaw[Waiting[R]](ctx as *Waiting[R]);
-  libc.free(ctx);
-  if abandoning {
-    return;
-  }
-  if c.status == diag.outcomeCancelled {
-    panic("aio: an awaited operation did not finish: it was cancelled, its socket closed while it was in flight",
-      mem.sliceFromParts[u8](w.site.file, w.site.len), w.site.line);
-  }
-  if c.status == diag.outcomeTimedOut {
-    panic("aio: an awaited operation did not finish: its deadline passed",
-      mem.sliceFromParts[u8](w.site.file, w.site.len), w.site.line);
-  }
-  mut done = c;
-  imm f = w.answer;
-  imm v = f(&mut done);
-  mut rp = new actors.Reply();
-  rp <=> w.reply;
-  actors.answerNow[R](rp, v);
-}
-
-// A hook that dies undelivered: what awaits it is abandoned
-fn dropWaiting[R](ctx *u8) {
-  imm w = mem.readRaw[Waiting[R]](ctx as *Waiting[R]);
-  libc.free(ctx);
+// The hook an operation in flight holds: a closure that keeps the reply, the
+// function that makes the answer an R and where the operation was made. It
+// runs on the I/O thread with the operation's answer: it makes its R and writes
+// it into the reply, which goes to the actor awaiting it. One that did not
+// finish panics at the line that made it; once the Loop is dying, the answer
+// is dropped, and what awaits it abandoned (the reply's envelope dropped with
+// the hook). A hook that dies undelivered abandons what awaits it the same
+// way, the reply it holds dying with it
+fn waiting[R](rp actors.Reply, answer &fn(c &mut Completion) R, site Site) So[fn(c Completion) + Sendable] {
+  new So[fn(c Completion) + Sendable](fn(c Completion) [mut reply = rp, answer, site] {
+    if abandoning {
+      return;
+    }
+    if c.status == diag.outcomeCancelled {
+      panic("aio: an awaited operation did not finish: it was cancelled, its socket closed while it was in flight",
+        mem.sliceFromParts[u8](site.file, site.len), site.line);
+    }
+    if c.status == diag.outcomeTimedOut {
+      panic("aio: an awaited operation did not finish: its deadline passed",
+        mem.sliceFromParts[u8](site.file, site.len), site.line);
+    }
+    mut done = c;
+    imm v = answer(&mut done);
+    mut back = new actors.Reply();
+    back <=> reply;
+    actors.answerNow[R](back, v);
+  });
 }
 
 // Each operation's answer, from its Completion: Done is the success, Failed

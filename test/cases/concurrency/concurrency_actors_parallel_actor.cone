@@ -88,8 +88,7 @@ struct Pass {
   pub who Summer;              // the actor, to send it the poke
 }
 
-fn bodyFill(data *u8, lo usize, hi usize) {
-  imm p = data as *Pass;
+fn bodyFill(p *Pass, lo usize, hi usize) {
   imm w = actors.workerIndex();
   (*p).ran.bitOr(1u64 << u64.from(w));
   if (*p).poked.swap(1u64) == 0u64 {
@@ -124,7 +123,8 @@ actor Summer {
     imm cells = libc.calloc(usize.from(n), 8usize) as *u64;
     mut p = new Pass(cells, Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
       Atomic[u64].of(0u64), n, selfactor);
-    actors.parallelRange(0usize, usize.from(n), 8usize, &bodyFill, &mut p as *Pass as *u8);
+    imm pp = &mut p as *Pass;
+    actors.parallelRange(0usize, usize.from(n), 8usize, fn(lo usize, hi usize) [pp] { bodyFill(pp, lo, hi); });
     // the loop has finished: all items ran, and their results are here
     mut ok = p.done.load() == n;
     mut i = 0u64;

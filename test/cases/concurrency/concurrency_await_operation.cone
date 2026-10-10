@@ -47,34 +47,19 @@ struct Fin {
 
 fn two(a u64, b u64) u64 {a * 10u64 + b;}
 
-// An operation answering v as soon as it is started
-fn startNow[R](ctx *u8, rp actors.Reply) {
-  imm v = mem.readRaw[R](ctx as *R);
-  libc.free(ctx);
-  actors.answerNow[R](rp, v);
-}
-
-fn dropNow[R](ctx *u8) {
-  imm v = mem.readRaw[R](ctx as *R);
-  libc.free(ctx);
-}
-
+// An operation answering v as soon as it is started: a closure holding v
 fn now[R](v R) actors.Awaitable[R] {
-  imm ctx = libc.malloc(mem.sizeof[R]());
-  mem.writeRaw[R](ctx as *R, v);
-  actors.Awaitable[R].make(ctx, &startNow[R], &dropNow[R]);
+  actors.Awaitable[R].make(fn(rp actors.Reply) [v] {
+    actors.answerNow[R](rp, v);
+  });
 }
 
 // An operation that never answers: its envelope dropped, the actor's count
 // let go with it
-fn startNever(ctx *u8, rp actors.Reply) {
-  say("  never started", 0u64);
-}
-
-fn dropNever(ctx *u8) {}
-
 fn never() actors.Awaitable[u64] {
-  actors.Awaitable[u64].make(1usize as *u8, &startNever, &dropNever);
+  actors.Awaitable[u64].make(fn(rp actors.Reply) {
+    say("  never started", 0u64);
+  });
 }
 
 actor Prober {
@@ -123,8 +108,20 @@ actor Prober {
   }
 }
 
+// An operation made and never awaited: it dies unstarted, and its closure with
+// what it holds (a Fin here), once
+fn unawaited() actors.Awaitable[u64] {
+  actors.Awaitable[u64].make(fn(rp actors.Reply) [tag = new Fin(5u64)] {
+    say("  unawaited started", 0u64);
+  });
+}
+
 fn main() {
   initAll();
+  {
+    imm op = unawaited();
+    say("unawaited", 0u64);
+  }
   {
     imm p = new Prober();
     p.go();
