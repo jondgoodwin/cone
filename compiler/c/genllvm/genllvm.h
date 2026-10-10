@@ -125,6 +125,13 @@ typedef struct GenRoots {
     uint32_t max;
 } GenRoots;
 
+// A source file other than the compile's main one that debug info names (genlDiFile)
+typedef struct GenDiFile {
+    const char *url;
+    LLVMMetadataRef file;
+    struct GenDiFile *next;
+} GenDiFile;
+
 typedef struct GenState {
     LLVMTargetMachineRef machine;
     LLVMTargetDataRef datalayout;
@@ -135,7 +142,8 @@ typedef struct GenState {
     LLVMBuilderRef builder;
 
     LLVMDIBuilderRef dibuilder;
-    LLVMMetadataRef difile;
+    LLVMMetadataRef difile;     // The compile's main source file
+    GenDiFile *difiles;         // The others, made as the code in them is reached
 
     LLVMTypeRef emptyStructType;
 
@@ -143,6 +151,7 @@ typedef struct GenState {
     ModuleNode *libroot;    // The package's root module in a library compile, else NULL
     ProgramNode *pgm;       // The program being generated, whose module order genlStitch reads
     LLVMValueRef stitch[2]; // The stitched init and final, once a call asks for one (genlStitchFn); else NULL
+    FnDclNode *entrymain;   // The program's own 'main' when this object builds the entry that calls it (genlEntry), else NULL
     int comdats;            // enum ComdatSupport, from the target's object format
     Nodes *symnodes;        // Every declaration given a global, which genlClaimSymbol searches for a clash
     INode *fnblock;
@@ -258,6 +267,11 @@ typedef enum GenlDefinition {
 // Set a declared symbol's linkage, storage class and calling convention from its
 // node's facts (NULL for a vtable), and what this object does with it
 void genlLinkage(LLVMValueRef global, INode *dclnode, GenlDefinition defined);
+
+// The debug info file of the source a node was written in (a debug build only):
+// the compile's main file, or one made once for the file or module it came from.
+// A node with no source of its own, one the compiler wrote, is in the main file.
+LLVMMetadataRef genlDiFile(GenState *gen, INode *node);
 // What an object does with a vtable it builds: shared in a described build
 GenlDefinition genlVtableDefinition(GenState *gen);
 void genlGloVarName(GenState *gen, VarDclNode *glovar);
