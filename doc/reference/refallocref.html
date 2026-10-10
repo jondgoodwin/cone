@@ -216,15 +216,21 @@ imm kept = list.freeze();                       // a So[Array[T]] holding a list
 		be part of a longer text and a slice never has one, so neither converts to a
 		<span class="pre">cstr</span>, nor does a raw pointer. What does:</p>
 	<ul>
-		<li>A <b>literal</b>, wherever a <span class="pre">cstr</span> is wanted: <span class="pre">puts("hi")</span>.</li>
+		<li>A <b>literal</b>, wherever a <span class="pre">cstr</span> is wanted: <span class="pre">puts("hi")</span>.
+				A literal with a zero <i>inside</i> (<span class="pre">"ab\x00cd"</span>) is <b>refused</b> there, since C
+				would read only <span class="pre">ab</span>; the same text is fine as a <span class="pre">&amp;str</span>,
+				a <span class="pre">String</span> or an owner.</li>
 		<li>A <b>String</b>, <span class="pre">s.cstr()</span>, with no copy: its block always keeps a zero after
 			its bytes, rewritten by each change, and a String that holds nothing has a static empty literal for
 			one. A zero <i>inside</i> the text would end the string early for C, so <span class="pre">cstr()</span>
 			scans for one (at <span class="pre">memchr</span>'s speed) and <b>panics</b>, at the caller's line, if it
 			finds it. It is good until the String next changes or dies.</li>
 		<li>An <b>owner of text</b> keeps the zero after its bytes too, however it was made (copied from a
-			literal or a view, or by <span class="pre">s.freeze()</span>): <span class="pre">cstr.fromOwned(&amp;owner)</span>
-			checks the text for a zero inside, as <span class="pre">cstr()</span> does.</li>
+			literal or a view, or by <span class="pre">s.freeze()</span>): <span class="pre">owner.cstr()</span> on a
+			<span class="pre">So[str]</span> is its C string, with no copy, checking the text for a zero inside
+			as a String's <span class="pre">cstr()</span> does (<span class="pre">cstr.fromOwned(&amp;owner)</span> is the
+			same call). A plain <span class="pre">&amp;str</span> has no <span class="pre">cstr()</span>: it promises no
+			zero.</li>
 		<li>A <b>general <span class="pre">&amp;str</span></b>, which promises nothing after its bytes, reaches C by a
 			copy: <span class="pre">String.from(s).cstr()</span>. There is no owned C-string type; a String is one.</li>
 		<li>A <b>raw pointer</b> the caller knows ends in a zero, <span class="pre">cstr.fromPtr(p)</span>: an
@@ -242,6 +248,8 @@ imm kept = list.freeze();                       // a So[Array[T]] holding a list
 imm name String = "core";
 libc.remove(name.cstr());                    // a pointer to its bytes and the zero, no copy
 libc.remove("old.tmp");                      // a literal is a cstr where one is wanted
+imm owner So[str] = "scratch.tmp";
+libc.remove(owner.cstr());                   // an owner of text is one too, no copy
 imm text = libc.strerror(2i32).view();       // a &amp;str of C's answer, scanned
 libc.fwrite(bytes as *u8, 1usize, bytes.len, f);  // a buffer and a count: a pointer, asked for
 </pre>
