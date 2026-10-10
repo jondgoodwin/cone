@@ -88,7 +88,7 @@ enum ErrorCode {
 
     // Overloaded function/method declaration and selection
     ErrorBadOverload = 1052,    // Malformed 'overload' declaration
-    ErrorGenericOverload = 1053,// Generic function may not also declare an overload name
+    ErrorGenericOverload = 1053,// Generic function declares an overload name but a type parameter of it is not bound to a function signature
     ErrorOverloadClash = 1054,  // Overload name is already bound to a different kind of declaration
     ErrorDupOverload = 1055,    // Two candidates accept the same parameter signature
     ErrorNoCandidate = 1056,    // No overloaded candidate accepts the call's arguments

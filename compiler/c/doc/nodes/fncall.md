@@ -481,9 +481,9 @@ type that has the member where its `where` clause holds: then it is
 `ErrorWhereAbsent`, naming the clause (`genericReportAbsent`;
 [generic](generic.md), "Constraints").
 
-**A generic method is selected as its instance.** A generic method may not
-declare an overload name, so a name binding one binds it alone, and the
-candidate tried is the instance: the one already bound to the member — by
+**A generic method named alone is selected as its instance.** A generic method
+bound by more than function signatures may not declare an overload name, so a
+name binding one binds it alone, and the candidate tried is the instance: the one already bound to the member — by
 `fnCallMethodTypeArgs` for written type arguments, or by substitution for a
 bare `pick[i32](6)` that became `self.pick` — which `genericIsInstanceOf`
 recognizes in the generic's memo, else the one the call's arguments infer
@@ -491,6 +491,26 @@ recognizes in the generic's memo, else the one the call's arguments infer
 parameters after `self`, since the receiver is not among them yet, so the
 receiver tells it nothing. The instance is then selected like any method, and
 the receiver dereferenced or borrowed to fit its `self`.
+
+**A generic in an overload set is selected by its arguments, and instantiated
+after.** Only a generic whose every type parameter is bound to a function
+signature may name a set (`parseGenericOverloadVet`; any other is
+`ErrorGenericOverload`). Its signature is never type checked, so
+`iNsTypeFindMethodPass` asks `genericOverloadViable` in place of
+`fnSigViableCall`: each parameter that is, or is a reference to, a type parameter
+is given the type of its argument by `genericInferType` and the bound is
+evaluated at it (`genericUnmetCondition`), and every other parameter is a copy of
+its written type, checked, that the argument must coerce to. A closure literal
+not yet checked is taken to fit its parameter, and what the others give is all the
+test has (`fnCallClosureOverload` asks it too, so another argument can tell two
+generic candidates apart before the literal is checked). Nothing is instantiated by
+the test. The one candidate selected is then instantiated from the call's
+arguments: a method by `genericMethodInstance` in `fnCallLowerMethod`, just
+before the receiver is inserted, and a function by `genericSubstitute` in
+`fnCallLowerOverloadFn`, which answers 0 so `fnCallTypeCheck` carries on with
+the instance as an ordinary callee. Two viable candidates are
+`OverloadAmbiguous`, and `iNsTypeAmbiguous` holds the first two for the error to
+name.
 
 Then the node is rewritten: the receiver is inserted at `args[0]`, `methfld`'s
 name-use node is repurposed into `objfn` pointing at the selected function,

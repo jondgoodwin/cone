@@ -63,6 +63,10 @@ INode *iNsTypeFindFnField(INsTypeNode *type, Name *name);
 // candidate, exactly one candidate, or more than one candidate accepted it.
 FnDclNode *iNsTypeFindMethod(INode *binding, INode **self, Nodes *args, enum OverloadMatch *status);
 
+// When that selection answered OverloadAmbiguous, the first two candidates that
+// accepted the call, for the error to name
+extern FnDclNode *iNsTypeAmbiguous[2];
+
 // The number type, other than bool, that some method candidate declares for the
 // parameter after 'self' numbered 'argi', or NULL when none does
 INode *iNsTypeNumberParm(INode *binding, uint32_t argi);

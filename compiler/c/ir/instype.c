@@ -134,6 +134,9 @@ INode *iNsTypeNumberParm(INode *binding, uint32_t argi) {
     return NULL;
 }
 
+// The first two candidates the last ambiguous selection found viable
+FnDclNode *iNsTypeAmbiguous[2];
+
 // Find the one method candidate that accepts the call's receiver and arguments.
 // Every candidate is tested, using a viability test that never alters the call.
 // No candidate wins for being an exact rather than a coercible match, for needing
@@ -145,11 +148,17 @@ static FnDclNode *iNsTypeFindMethodPass(INode *binding, INode **self, Nodes *arg
 
     FnDclNode *found = NULL;
     *status = OverloadNone;
+    iNsTypeAmbiguous[0] = iNsTypeAmbiguous[1] = NULL;
     while (cnt--) {
         FnDclNode *methnode = (FnDclNode *)*candidatep++;
-        if (!fnSigViableCall((FnSigNode *)methnode->vtype, self, args))
+        // A generic candidate (bound only by function signatures) is judged
+        // by its arguments' types, as it has no checked signature of its own
+        if (methnode->genericinfo ? !genericOverloadViable(methnode, self, args, 0)
+            : !fnSigViableCall((FnSigNode *)methnode->vtype, self, args))
             continue;
         if (found) {
+            iNsTypeAmbiguous[0] = found;
+            iNsTypeAmbiguous[1] = methnode;
             *status = OverloadAmbiguous;
             return NULL;
         }
@@ -184,6 +193,7 @@ FnDclNode *iNsTypeFindPtrMethod(INode *binding, Nodes *args, enum OverloadMatch 
 
     FnDclNode *found = NULL;
     *status = OverloadNone;
+    iNsTypeAmbiguous[0] = iNsTypeAmbiguous[1] = NULL;
     while (cnt--) {
         FnDclNode *methnode = (FnDclNode *)*candidatep++;
         Nodes *parms = ((FnSigNode *)methnode->vtype)->parms;

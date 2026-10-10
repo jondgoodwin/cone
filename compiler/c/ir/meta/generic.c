@@ -2765,6 +2765,111 @@ FnSigNode *genericClosureSig(TypeCheckState *pstate, FnDclNode *generic, Nodes *
     return (FnSigNode*)itypeGetTypeDcl(copy);
 }
 
+// Can a call passing 'self' (NULL if none) and 'args', all of them checked, call
+// generic function or method 'generic', a candidate of an overload set? Only a
+// generic whose every type parameter is bound to a function signature joins a
+// set (parseGenericOverloadVet), and a parameter of its signature is either one
+// of those type parameters ('f F', 'f &F', 'f &mut F') or names none. The first
+// kind is viable when its argument has a type to give the parameter, read off
+// as an inference reads it, and the signature bound is met by it, as the
+// generic's own instance would require. The second is judged as a plain
+// function's parameter is, by a copy of its written type, checked. Nothing is
+// inserted into the call and no instance is made: that waits for the one
+// candidate the call selects.
+int genericOverloadViable(FnDclNode *generic, INode **self, Nodes *args, uint32_t firstparm) {
+    GenericInfo *info = generic->genericinfo;
+    FnSigNode *gsig = (FnSigNode*)itypeGetTypeDcl(generic->vtype);
+    uint32_t nargs = args ? args->used : 0;
+    uint32_t first = self ? 0 : firstparm;
+    uint32_t end = first + nargs + (self ? 1 : 0);
+    if (end > gsig->parms->used)
+        return 0;
+
+    // What the arguments say of each type parameter, and a list that says
+    // nothing, to ask which parameters a type names
+    FnCallNode *known = newFnCallNode((INode*)newNameUseNode(anonName), info->parms->used);
+    Nodes *blank = newNodes(info->parms->used);
+    for (uint32_t j = 0; j < info->parms->used; ++j) {
+        nodesAdd(&known->args, (INode*)NULL);
+        nodesAdd(&blank, (INode*)NULL);
+    }
+
+    // The type parameters first: each is the type of the argument it takes.
+    // A closure literal not yet checked has no type: the parameter it fills is
+    // left for its signature to settle, which the bound's clause leaves unknown
+    uint32_t j;
+    INode *literalfor[8];
+    uint32_t nliteral = 0;
+    for (j = first; j < end; ++j) {
+        INode *ptype = ((VarDclNode*)nodesGet(gsig->parms, j))->vtype;
+        if (genericTypeArgsKnown(ptype, info->parms, blank))
+            continue;
+        INode *bare = ptype;
+        while (bare && (bare->tag == RefTag || bare->tag == BorrowTag))
+            bare = ((RefNode*)bare)->vtexp;
+        if (!nameUseNames(bare, GenVarDclTag))
+            return 0;
+        INode *arg = self && j == 0 ? *self : nodesGet(args, j - first - (self ? 1 : 0));
+        if (arg->tag == ClosureTag) {
+            if (nliteral < 8)
+                literalfor[nliteral++] = nameUseGetDcl((NameUseNode*)bare);
+            continue;
+        }
+        if (!isExpNode(arg) || inodeIsError(arg))
+            return 0;
+        INode *argtype = ((IExpNode*)arg)->vtype;
+        if (argtype == NULL || argtype == unknownType || !genericInferType(known, info->parms, ptype, argtype))
+            return 0;
+    }
+    for (j = 0; j < known->args->used; ++j) {
+        if (nodesGet(known->args, j) != NULL)
+            continue;
+        int literal = 0;
+        for (uint32_t i = 0; i < nliteral; ++i)
+            if (literalfor[i] == nodesGet(info->parms, j))
+                literal = 1;
+        if (!literal)
+            return 0;
+    }
+    if (genericUnmetCondition(generic->where, info->parms, known->args) != NULL)
+        return 0;
+
+    // The other parameters are a plain function's
+    INode *owner = inodeGetOwner((INode*)generic);
+    TypeCheckState tstate;
+    tstate.typenode = owner && owner->tag == StructTag ? owner : NULL;
+    tstate.fn = NULL;
+    tstate.scope = 0;
+    tstate.extend = NULL;
+    for (j = first; j < end; ++j) {
+        INode *ptype = ((VarDclNode*)nodesGet(gsig->parms, j))->vtype;
+        if (!genericTypeArgsKnown(ptype, info->parms, blank))
+            continue;
+        INode **argp = self && j == 0 ? self : &nodesGet(args, j - first - (self ? 1 : 0));
+        if ((*argp)->tag == ClosureTag)
+            continue;
+        // A virtual reference receiver is judged as a plain method's is, by
+        // fnSigViableCall, and a generic has no such receiver
+        if (j == 0 && self && iexpGetTypeDcl(*self)->tag == VirtRefTag)
+            return 0;
+        CloneState cstate;
+        uint32_t dclpos = cloneDclPush();
+        clonePushState(&cstate, ptype, NULL, 0, info->parms, known->args);
+        INode *copy = cloneNode(&cstate, ptype);
+        clonePopState();
+        cloneDclPop(dclpos);
+        inodeTypeCheckAny(&tstate, &copy);
+        if (inodeIsError(copy) || iexpMatches(argp, copy, Coercion) == NoMatch)
+            return 0;
+    }
+
+    // Every parameter the call did not supply must declare a default value
+    for (j = end; j < gsig->parms->used; ++j)
+        if (((VarDclNode*)nodesGet(gsig->parms, j))->value == NULL)
+            return 0;
+    return 1;
+}
+
 // Is 'fn' an instance of generic function or method 'generic'?
 int genericIsInstanceOf(INode *fn, FnDclNode *generic) {
     Nodes *memonodes = generic->genericinfo->memonodes;

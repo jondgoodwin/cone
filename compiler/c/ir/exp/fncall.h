@@ -82,7 +82,10 @@ int fnCallLowerPtrMethod(FnCallNode *callnode, INsTypeNode *methtype);
 
 // objfn names an overload set. Select the one candidate that accepts the call's
 // arguments, rewrite the call to that concrete function, then finalize its arguments.
-void fnCallLowerOverloadFn(TypeCheckState *pstate, FnCallNode *node);
+// Answers 1 when that is done, or reported. Answers 0 when the one selected is a
+// generic, now instantiated and the call's callee: the call is then an ordinary
+// call of an instance, which the caller carries on checking.
+int fnCallLowerOverloadFn(TypeCheckState *pstate, FnCallNode **nodep);
 
 // A properly lowered call -- objfn names a function, args are all given --
 // gets its returned type and its arguments coerced to the parameters. The type
