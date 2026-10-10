@@ -18,7 +18,10 @@
 			(including through a pointer, reference or slice parameter, a generic type's instance
 			and a function reference's signature),
 			and generic methods, and so are <a href="refmodule.html#generic">generic
-			modules</a>. Constraints are implemented as described under
+			modules</a>. A generic function or method may also take a number,
+			<span class="pre">[N usize]</span>, used only as itself (<a href="#value">Value
+			Parameters</a>); a generic type taking one, and arithmetic over one in a type, are not built.
+			Constraints are implemented as described under
 			<a href="#constraints">Generic Constraints</a>: a trait after a type
 			parameter, several joined with +, and the where clause of clauses
 			joined with and and or, grouped by parentheses, on a generic function, a
@@ -241,6 +244,56 @@ imm c = Holder.pick(&h, 8i32);    // the receiver passed, T is i32
 		own: each instance of the type has the method, and each makes its own
 		versions of it, as <span class="pre">Box[i64]</span> makes
 		<span class="pre">pair[f32]</span> for <span class="pre">bx.pair[f32](1.5)</span>.</p>
+
+	<h2 id="value">Value Parameters</h2>
+	<p>A generic function or method may be generic over a number as well as
+		over types. The parameter is named, then given an integer type, in the
+		place a type parameter's constraint goes:</p>
+<pre>
+fn dot[N usize](a &amp;Array[f32, N], b &amp;Array[f32, N]) f32 {
+  mut sum = 0.0;
+  each i in 0usize &lt; N { sum = sum + a[i] * b[i]; }
+  sum;
+}
+</pre>
+	<p>The parameter stands for an integer literal of its type, in the way a type
+		parameter stands for a type. It is used only as itself: as an array's
+		size, <span class="pre">Array[T, N]</span>, or as a value in the body, here
+		the loop's limit. The compiler makes an instance for each number, as it does
+		for each type, so <span class="pre">dot</span> over arrays of 3 and of 4 are
+		two functions, each as fast as one written for that size.</p>
+	<p>The number is inferred from an argument whose type has the size, or written
+		in the brackets after the name, beside any type parameters in the order
+		declared. An inferred 3 and a written 3 are the same instance:</p>
+<pre>
+imm a = new Array[f32, 3] &lt;- 1.0, 2.0, 3.0;
+imm b = new Array[f32, 3] &lt;- 4.0, 5.0, 6.0;
+imm x = dot(&amp;a, &amp;b);      // N is 3, read off both arrays
+imm y = dot[3](&amp;a, &amp;b);   // the same instance
+imm z = filled[i32, 4](7);   // fn filled[T, N usize](v T) Array[T, N]
+</pre>
+	<p>A written number is an integer literal, not negative, that the parameter's
+		type holds and, with a suffix, of that type. It is no variable, because the
+		compiler decides it when it makes the instance. A number inferred from two
+		arguments must agree: <span class="pre">dot(&amp;a3, &amp;a4)</span> is refused,
+		naming both sizes. The size may be that of a slice's elements, and nested arrays
+		give one number each:</p>
+<pre>
+fn width[T, N usize](rows &amp;Array[Array[T, N]]) usize {N;}
+fn cells[N usize, M usize](g &amp;Array[f32, N, M]) usize {N * 100usize + M;}
+</pre>
+	<p>A generic type's method may take a number of its own,
+		<span class="pre">fn chunk[N usize](self &amp;)</span>, called
+		<span class="pre">buf.chunk[3]()</span>. A field of the same name as such a
+		method is still indexed, <span class="pre">s.pick[2]</span>.</p>
+	<p>Not built, and refused: arithmetic over the parameter in a type,
+		<span class="pre">Array[T, N + 1]</span>, which would need two such sizes compared;
+		a number parameter on a generic type, <span class="pre">struct Matrix[N usize]</span>;
+		a parameter that is not an integer (<span class="pre">f32</span>,
+		<span class="pre">bool</span> and <span class="pre">char</span> are not);
+		a constraint beside the integer type, and a <span class="pre">where</span> clause about it.
+		A parameter is not a type, so it names no type of a value's:
+		<span class="pre">x N</span> is not a parameter's type.</p>
 
 	<h2>Generic Modules</h2>
 	<p>A module may be generic in the same way, its type parameters on its

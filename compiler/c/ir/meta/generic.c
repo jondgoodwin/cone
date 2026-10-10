@@ -66,8 +66,12 @@ int genericCaptureType(FnCallNode *gencall, Nodes *genparms, INode *parmtype, IN
     INode **genargp = &nodesGet(gencall->args, 0);
     for (nodesFor(genparms, genvarcnt, genvarp)) {
         Name *genvarname = ((GenVarDclNode *)(*genvarp))->namesym;
-        // Found parameter with corresponding name? Capture/check type
+        // Found parameter with corresponding name? Capture/check type. A value
+        // parameter is no type: what it names is a number, captured from an
+        // array's size (genericCaptureValue), never from a type
         if (genvarname == ((NameUseNode*)parmtype)->namesym) {
+            if (((GenVarDclNode *)(*genvarp))->valtype)
+                break;
             if (*genargp == NULL)
                 *genargp = argtype->tag == StructTag ? newNameUseFromDclNode(argtype, (INode*)gencall) : argtype;
             else if (!itypeIsSame(*genargp, argtype))
@@ -75,6 +79,156 @@ int genericCaptureType(FnCallNode *gencall, Nodes *genparms, INode *parmtype, IN
             break;
         }
         ++genargp;
+    }
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
+// Value parameters, '[N usize]': a number the instance is made for. N stands
+// for an integer literal wherever it is used, as a type parameter stands for a
+// type, and only as itself: an array's size, 'Array[T, N]', or a value in the
+// body. Nothing is computed from it in a type.
+
+// The value parameter a node is a use of, or NULL
+GenVarDclNode *genericValueParmOf(INode *node) {
+    if (node == NULL || !isNameUseNode(node))
+        return NULL;
+    INode *dcl = nameUseGetDcl((NameUseNode*)node);
+    if (dcl == NULL || dcl->tag != GenVarDclTag || ((GenVarDclNode*)dcl)->valtype == NULL)
+        return NULL;
+    return (GenVarDclNode*)dcl;
+}
+
+// Does this size, as written, compute something from a value parameter? It
+// does when a parameter is used in it beside anything else
+int genericMentionsValueParm(INode *node) {
+    if (node == NULL)
+        return 0;
+    if (isNameUseNode(node))
+        return genericValueParmOf(node) != NULL;
+    INode **nodesp;
+    uint32_t cnt;
+    switch (node->tag) {
+    case FnCallTag: {
+        FnCallNode *call = (FnCallNode*)node;
+        if (genericMentionsValueParm(call->objfn))
+            return 1;
+        if (call->args)
+            for (nodesFor(call->args, cnt, nodesp))
+                if (genericMentionsValueParm(*nodesp))
+                    return 1;
+        return 0;
+    }
+    case CastTag:
+        return genericMentionsValueParm(((CastNode*)node)->exp);
+    case VTupleTag:
+        for (nodesFor(((TupleNode*)node)->elems, cnt, nodesp))
+            if (genericMentionsValueParm(*nodesp))
+                return 1;
+        return 0;
+    case OrLogicTag:
+    case AndLogicTag:
+        return genericMentionsValueParm(((LogicNode*)node)->lexp)
+            || genericMentionsValueParm(((LogicNode*)node)->rexp);
+    case NotLogicTag:
+        return genericMentionsValueParm(((LogicNode*)node)->lexp);
+    default:
+        return 0;
+    }
+}
+
+// Does the integer type hold this value?
+static int genericValueFits(uint64_t value, INode *valtype) {
+    NbrNode *nbr = (NbrNode*)itypeGetTypeDcl(valtype);
+    if (nbr->bits >= 64)
+        return nbr->tag == UintNbrTag || value <= (uint64_t)INT64_MAX;
+    if (nbr->tag == IntNbrTag)
+        return value <= (((uint64_t)1 << (nbr->bits - 1)) - 1);
+    return value <= (((uint64_t)1 << nbr->bits) - 1);
+}
+
+// The argument for value parameter 'parm': a literal of the parameter's type,
+// built whole (checked, with no suffix or sign left to read). NULL once
+// reported, at 'errnode'.
+static INode *genericValueArg(GenVarDclNode *parm, uint64_t value, INode *errnode) {
+    if (!genericValueFits(value, parm->valtype)) {
+        errorMsgNode(errnode, ErrorGenValueArg,
+            "The value parameter %s is a %s, and %" PRIu64 " does not fit it.",
+            &parm->namesym->namestr, &((NbrNode*)itypeGetTypeDcl(parm->valtype))->namesym->namestr, value);
+        return NULL;
+    }
+    ULitNode *lit = newULitNodeTC(value, itypeGetTypeDcl(parm->valtype));
+    inodeLexCopy((INode*)lit, errnode);
+    return (INode*)lit;
+}
+
+// A written argument for a value parameter, 'dot[3]': an integer literal, with
+// no minus, of the parameter's type or untyped. Answers the argument as the
+// instance holds it, or NULL once reported.
+static INode *genericWrittenValueArg(GenVarDclNode *parm, INode *arg) {
+    char *tname = &((NbrNode*)itypeGetTypeDcl(parm->valtype))->namesym->namestr;
+    if (arg->tag != ULitTag) {
+        errorMsgNode(arg, ErrorGenValueArg,
+            "The value parameter %s is a %s, so its argument is an integer written as a number, like 3. (A size is decided when the program is compiled, so it is no variable.)",
+            &parm->namesym->namestr, tname);
+        return NULL;
+    }
+    ULitNode *lit = (ULitNode*)arg;
+    if (lit->flags & FlagLitNeg) {
+        errorMsgNode(arg, ErrorGenValueArg,
+            "The value parameter %s is a %s, and its argument may not be negative.",
+            &parm->namesym->namestr, tname);
+        return NULL;
+    }
+    if (!(lit->flags & FlagUnkType) && itypeGetTypeDcl(lit->vtype) != itypeGetTypeDcl(parm->valtype)) {
+        errorMsgNode(arg, ErrorGenValueArg,
+            "The value parameter %s is a %s, and this literal is a %s.",
+            &parm->namesym->namestr, tname, &((NbrNode*)itypeGetTypeDcl(lit->vtype))->namesym->namestr);
+        return NULL;
+    }
+    return genericValueArg(parm, lit->uintlit, arg);
+}
+
+// Is an argument of the instance the same as another? A type by its identity, a
+// number by its value
+static int genericArgSame(INode *a, INode *b) {
+    if (a->tag == ULitTag || b->tag == ULitTag)
+        return a->tag == b->tag && ((ULitNode*)a)->uintlit == ((ULitNode*)b)->uintlit
+            && itypeGetTypeDcl(((ULitNode*)a)->vtype) == itypeGetTypeDcl(((ULitNode*)b)->vtype);
+    return itypeIsSame(a, b);
+}
+
+// Set once a capture has reported its own diagnostic, so its caller does not
+// add the general one
+static int genericReported = 0;
+
+// A value parameter's number, found in an argument's type (an array's size)
+// while inferring: its argument, if none yet, otherwise agreeing with it.
+// Returns 0, reported, where it does not.
+static int genericCaptureValue(FnCallNode *gencall, Nodes *genparms, GenVarDclNode *parm, uint64_t value) {
+    INode **genvarp;
+    uint32_t genvarcnt;
+    INode **genargp = &nodesGet(gencall->args, 0);
+    for (nodesFor(genparms, genvarcnt, genvarp)) {
+        if (*genvarp != (INode*)parm) {
+            ++genargp;
+            continue;
+        }
+        if (*genargp == NULL) {
+            *genargp = genericValueArg(parm, value, (INode*)gencall);
+            if (*genargp == NULL) {
+                genericReported = 1;
+                return 0;
+            }
+        }
+        else if (((ULitNode*)*genargp)->uintlit != value) {
+            errorMsgNode((INode*)gencall, ErrorGenValueClash,
+                "The value parameter %s is %" PRIu64 " by an earlier argument and %" PRIu64 " by another: the arguments must agree on it.",
+                &parm->namesym->namestr, ((ULitNode*)*genargp)->uintlit, value);
+            genericReported = 1;
+            return 0;
+        }
+        break;
     }
     return 1;
 }
@@ -103,6 +257,7 @@ int genericInferStructParms(TypeCheckState *pstate, Nodes *genparms, StructNode 
             errorMsgNode(*argsp, ErrorInvType, "Inconsistent type for generic type");
             retcode = 0;
         }
+        genericReported = 0;
         ++parmp;
     }
     return retcode;
@@ -169,6 +324,23 @@ static int genericInferType(FnCallNode *inferredgencall, Nodes *genparms, INode 
         else
             return 1;
         return genericInferType(inferredgencall, genparms, ((RefNode *)parmtype)->vtexp, elemtype);
+    }
+    case ArrayTag: {
+        // An array type, 'Array[f32, N]', matches an array of the same shape: a
+        // value parameter used as its size takes the argument's size, and its
+        // element type is matched in turn
+        if (argtype->tag != ArrayTag)
+            return 1;
+        ArrayNode *parmarray = (ArrayNode *)parmtype;
+        ArrayNode *argarray = (ArrayNode *)argtype;
+        if (parmarray->dimens->used == 1 && argarray->dimens->used == 1) {
+            GenVarDclNode *sizeparm = genericValueParmOf(nodesGet(parmarray->dimens, 0));
+            INode *size = nodesGet(argarray->dimens, 0);
+            if (sizeparm && size->tag == ULitTag
+                && genericCaptureValue(inferredgencall, genparms, sizeparm, ((ULitNode*)size)->uintlit) == 0)
+                return 0;
+        }
+        return genericInferType(inferredgencall, genparms, arrayElemType(parmtype), arrayElemType(argtype));
     }
     case FnSigTag: {
         // A function signature, reached through a function reference, matches
@@ -321,6 +493,7 @@ static int genericInferArrayBound(TypeCheckState *pstate, Nodes *genparms, Nodes
 static int genericInferFnParms(TypeCheckState *pstate, Nodes *genparms, FnSigNode *genfnsig,
         Nodes *args, uint32_t firstparm, INode *errnode, FnCallNode *inferredgencall, Nodes *where) {
 
+    genericReported = 0;
     if (args == NULL)
         return 1;
     if (args->used + firstparm > genfnsig->parms->used) {
@@ -345,9 +518,11 @@ static int genericInferFnParms(TypeCheckState *pstate, Nodes *genparms, FnSigNod
         if (!litIsUntypedNull(*argsp) && !genericArgIsAdaptable(*argsp, parmtype)
             && !genericInferArrayBound(pstate, genparms, where, inferredgencall, parmtype, argtype)
             && genericInferType(inferredgencall, genparms, parmtype, argtype) == 0) {
-            errorMsgNode(*argsp, ErrorInvType, "Inconsistent type for generic function");
+            if (!genericReported)
+                errorMsgNode(*argsp, ErrorInvType, "Inconsistent type for generic function");
             retcode = 0;
         }
+        genericReported = 0;
         ++parmp;
     }
 
@@ -670,6 +845,12 @@ static int genericConditionNameRes(NameResState *pstate, INode *cond, Nodes *own
             &subject->namesym->namestr);
         ok = 0;
     }
+    else if (subject->dclnode->tag == GenVarDclTag && ((GenVarDclNode*)subject->dclnode)->valtype) {
+        errorMsgNode(clause->exp, ErrorGenValueParm,
+            "%s is a value parameter, a number, and a 'where' clause asks what a type is or fits.",
+            &subject->namesym->namestr);
+        ok = 0;
+    }
     else if (subject->dclnode->tag != GenVarDclTag) {
         errorMsgNode(clause->exp, ErrorWhereSubject,
             "A 'where' clause constrains a type parameter of this generic, or of the generic type it is a member of, and %s is not one.",
@@ -728,6 +909,23 @@ void genericConstraintsNameRes(NameResState *pstate, Nodes *parms, Nodes **where
             GenVarDclNode *parm = (GenVarDclNode*)*nodesp;
             if (parm->annot == NULL)
                 continue;
+            // A number type makes a value parameter, '[N usize]': the type
+            // alone, an integer one
+            INode *first = nodesGet(parm->annot, 0);
+            INode *firstdcl = isNameUseNode(first) && isTypeNode(first) ? itypeGetTypeDcl(first) : NULL;
+            if (firstdcl && (firstdcl->tag == IntNbrTag || firstdcl->tag == UintNbrTag || firstdcl->tag == FloatNbrTag)) {
+                if (firstdcl->tag == FloatNbrTag || firstdcl == (INode*)boolType || firstdcl == (INode*)charType)
+                    errorMsgNode(first, ErrorGenValueParm,
+                        "A value parameter is an integer: %s is not an integer type, so %s is not built as a value parameter.",
+                        &((NbrNode*)firstdcl)->namesym->namestr, &parm->namesym->namestr);
+                else if (parm->annot->used > 1)
+                    errorMsgNode(nodesGet(parm->annot, 1), ErrorGenValueParm,
+                        "A value parameter takes its integer type alone, '[%s %s]', and no constraint beside it.",
+                        &parm->namesym->namestr, &((NbrNode*)firstdcl)->namesym->namestr);
+                else
+                    parm->valtype = firstdcl;
+                continue;
+            }
             INode **annotp;
             uint32_t annotcnt;
             for (nodesFor(parm->annot, annotcnt, annotp)) {
@@ -747,7 +945,7 @@ void genericConstraintsNameRes(NameResState *pstate, Nodes *parms, Nodes **where
                             &bare->namesym->namestr, &parm->namesym->namestr, &bare->namesym->namestr);
                     else if (!isNameUseNode(*annotp) || ((NameUseNode*)*annotp)->dclnode != NULL)
                         errorMsgNode(*annotp, ErrorGenParmConstr,
-                            "What follows the type parameter %s constrains it, so it names a trait, and this is not one. A value parameter, typed, and a parameter of another kind are not built yet.",
+                            "What follows the type parameter %s constrains it, so it names a trait, and this is not one. (A value parameter's annotation is an integer type, '[N usize]'; a parameter of another kind is not built yet.)",
                             &parm->namesym->namestr);
                     continue;
                 }
@@ -767,6 +965,73 @@ void genericConstraintsNameRes(NameResState *pstate, Nodes *parms, Nodes **where
         }
     }
     *wherep = clauses;
+}
+
+// A generic type takes type parameters only. A value parameter on one is
+// refused: its instances, its literals, and the type-or-value reading of
+// 'Name[3]' are not built for a number.
+void genericRefuseValueParms(Nodes *parms, Name *typename) {
+    INode **nodesp;
+    uint32_t cnt;
+    if (parms == NULL)
+        return;
+    for (nodesFor(parms, cnt, nodesp)) {
+        GenVarDclNode *parm = (GenVarDclNode*)*nodesp;
+        if (parm->valtype)
+            errorMsgNode(parm->annot ? nodesGet(parm->annot, 0) : *nodesp, ErrorGenValueParm,
+                "%s is a value parameter, and a generic type does not take one yet: only a generic function or method does. (%s takes type parameters.)",
+                &parm->namesym->namestr, &typename->namestr);
+    }
+}
+
+// The names of the generic functions and methods that take a value parameter.
+// 's.asArrays[3]()' and 'a.items[3]' are the same shape until the receiver's
+// type says whether the name is a generic method or a field; only a name in
+// this list can be the first (fnCallMethodTypeArgs), so an index is not
+// mistaken for type arguments anywhere else.
+static Name **genericValueFnNames = NULL;
+static uint32_t genericValueFnCount = 0;
+static uint32_t genericValueFnCap = 0;
+
+void genericValueFnNote(Nodes *parms, Name *name) {
+    INode **nodesp;
+    uint32_t cnt;
+    int hasvalue = 0;
+    if (parms == NULL || name == NULL)
+        return;
+    for (nodesFor(parms, cnt, nodesp))
+        if (((GenVarDclNode*)*nodesp)->valtype)
+            hasvalue = 1;
+    if (!hasvalue || genericValueFnNamed(name))
+        return;
+    if (genericValueFnCount == genericValueFnCap) {
+        uint32_t newcap = genericValueFnCap ? genericValueFnCap * 2 : 8;
+        Name **grown = memAllocBlk(newcap * sizeof(Name*));
+        if (genericValueFnCount)
+            memcpy(grown, genericValueFnNames, genericValueFnCount * sizeof(Name*));
+        genericValueFnNames = grown;
+        genericValueFnCap = newcap;
+    }
+    genericValueFnNames[genericValueFnCount++] = name;
+}
+
+int genericValueFnNamed(Name *name) {
+    for (uint32_t i = 0; i < genericValueFnCount; ++i)
+        if (genericValueFnNames[i] == name)
+            return 1;
+    return 0;
+}
+
+// Does this generic take a value parameter?
+int genericHasValueParm(GenericInfo *info) {
+    INode **nodesp;
+    uint32_t cnt;
+    if (info == NULL || info->parms == NULL)
+        return 0;
+    for (nodesFor(info->parms, cnt, nodesp))
+        if (((GenVarDclNode*)*nodesp)->valtype)
+            return 1;
+    return 0;
 }
 
 // Does this trait require nothing of a value -- no method, no field? Such a
@@ -2157,6 +2422,9 @@ static void genericEnumInstanceLayout(TypeCheckState *pstate, INode *instrait, v
 // "Lifetime bounds"), which the function's order holds outlasts ''a'. The
 // renaming is the parameter's, not the use's, so it multiplies no instance.
 static INode *genericInstanceArg(INode *generic, GenericInfo *info, uint32_t i, INode *arg) {
+    // A number has no lifetime
+    if (arg->tag == ULitTag)
+        return arg;
     if (info->parms && i < info->parms->used && isTypeNode(arg)) {
         Name *tparm = ((GenVarDclNode*)nodesGet(info->parms, i))->namesym;
         if (lifeParmBounded(generic, tparm))
@@ -2185,8 +2453,19 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nod
     INode **nodesp;
     uint32_t cnt;
     int badargs = 0;
+    uint32_t argi = 0;
     for (nodesFor(srcgencall->args, cnt, nodesp)) {
-        if (!isTypeNode(*nodesp)) {
+        GenVarDclNode *parm = (GenVarDclNode*)nodesGet(genericinfo->parms, argi++);
+        // A value parameter takes a number, written or inferred, and is held
+        // as a literal of its type
+        if (parm->valtype) {
+            INode *valarg = genericWrittenValueArg(parm, *nodesp);
+            if (valarg)
+                *nodesp = valarg;
+            else
+                badargs = 1;
+        }
+        else if (!isTypeNode(*nodesp)) {
             errorMsgNode((INode*)*nodesp, ErrorNotType, "Expected a type for a generic parameter");
             badargs = 1;
         }
@@ -2224,8 +2503,8 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nod
         INode **nownodesp = &nodesGet(srcgencall->args, 0);
         INode **erasednodesp = erased ? &nodesGet(erased, 0) : NULL;
         for (nodesFor(fncallprior->args, priorcnt, priornodesp)) {
-            if (!itypeIsSame(*priornodesp, *nownodesp)
-                || (erasednodesp && !lifeBrandsEqual(*priornodesp, *erasednodesp))) {
+            if (!genericArgSame(*priornodesp, *nownodesp)
+                || (erasednodesp && (*erasednodesp)->tag != ULitTag && !lifeBrandsEqual(*priornodesp, *erasednodesp))) {
                 match = 0;
                 break;
             }
@@ -2264,7 +2543,8 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nod
     if (structTargetDeferring() && genericConditioned(nodetoclone, genericinfo)) {
         uint32_t target = structTargetSuspend();
         for (nodesFor(written, cnt, nodesp))
-            structTypeSettle(pstate, *nodesp);
+            if ((*nodesp)->tag != ULitTag)
+                structTypeSettle(pstate, *nodesp);
         structTargetResume(target);
     }
 
@@ -2422,6 +2702,12 @@ int genericSubstitute(TypeCheckState *pstate, FnCallNode **srcgencallp) {
                 usesTypeArgs = 1;
         }
     }
+    // A function taking a value parameter, called with brackets, 'dot[3]': there
+    // is nothing else an index of a function can mean, so what is in them are
+    // its generic arguments (genericMemoize refuses one that is no number)
+    if (nodetoclone->tag == FnDclTag && (srcgencall->flags & FlagIndex) && srcgencall->args != NULL
+        && genericHasValueParm(genericinfo))
+        usesTypeArgs = 1;
 
     // Since the arguments are types, no inference is needed
     // Replace gennnone with instantiated generic, substituting parameters

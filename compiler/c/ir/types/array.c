@@ -78,6 +78,10 @@ INode *cloneArrayNode(CloneState *cstate, ArrayNode *node) {
     ArrayNode *newnode = memAllocBlk(sizeof(ArrayNode));
     memcpy(newnode, node, sizeof(ArrayNode));
     newnode->elems = cloneNodes(cstate, node->elems);
+    // A size is a use of a value parameter in a generic's template, which the
+    // instance holds as the number it was given
+    if (node->dimens)
+        newnode->dimens = cloneNodes(cstate, node->dimens);
     // arrayNameRes decided array type or array literal by asking whether the
     // element is a type, and in a template '[2; T]' asked that of a generic
     // parameter, which is not one -- so the template holds a literal. Cloning
@@ -190,6 +194,17 @@ void arrayTypeLower(NameResState *pstate, INode **nodep) {
             "An array type's first argument is its element type, and the sizes follow it: 'Array[T, n]'.");
         *((INode**)nodep) = newErrorNode(where);
         return;
+    }
+    // A value parameter is a size as itself, 'Array[T, N]'. Arithmetic over one,
+    // 'N + 1', would need two such sizes compared and solved, which is not built.
+    for (uint32_t i = 1; i < args->used; ++i) {
+        INode *size = nodesGet(args, i);
+        if (size->tag != ULitTag && !isNameUseNode(size) && genericMentionsValueParm(size)) {
+            errorMsgNode(size, ErrorGenValueArith,
+                "An array's size is a number or a value parameter alone, 'Array[T, N]'. Arithmetic over a value parameter in a type, like this one, is not supported.");
+            *((INode**)nodep) = newErrorNode(where);
+            return;
+        }
     }
     INode *type = elemtype;
     for (uint32_t i = args->used - 1; i >= 1; --i) {

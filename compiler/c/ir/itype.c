@@ -1250,10 +1250,15 @@ Nodes *itypeInstanceTypeArgs(INode *dclnode) {
     Nodes *typeargs = ((FnCallNode*)instnode)->args;
     if (typeargs == NULL || typeargs->used == 0)
         return NULL;
+    // A number is an argument of a generic function's value parameter. A macro
+    // given numbers has the same shape of call, and is not an instance.
+    INode *callee = isNameUseNode(((FnCallNode*)instnode)->objfn)
+        ? nameUseGetDcl((NameUseNode*)((FnCallNode*)instnode)->objfn) : NULL;
+    int numbersok = callee && callee->tag == FnDclTag && ((FnDclNode*)callee)->genericinfo != NULL;
     INode **argsp;
     uint32_t cnt;
     for (nodesFor(typeargs, cnt, argsp)) {
-        if (*argsp == NULL || !isTypeNode(*argsp))
+        if (*argsp == NULL || (!isTypeNode(*argsp) && !(numbersok && (*argsp)->tag == ULitTag)))
             return NULL;
     }
     return typeargs;
