@@ -516,8 +516,37 @@ false diagnostic. The cost is silent acceptance — see Hazards.
    a stack of `i64` types the 8 as `i64`, and `max(big, 6)` follows `big`, in
    either order. Only this shape defers: a literal for `&T` or `Box[T]` matches
    nothing anyway. A float literal has no such flag and is an `f32`, as it is
-   anywhere; a type literal's arguments (`genericInferStructParms`) are inferred
-   as before.
+   anywhere. A type literal's values defer the same way
+   (`genericInferStructParms` leaves such a literal, written by position or by
+   name, to `genericInferStructLiterals`, which runs last), so `Some[5]` and
+   `Pair[a: 1i64, b: 2]` agree on one type.
+
+   **A type parameter nothing above filled is read off where the value goes**
+   (`genericInferFromExpected`; one hook for every generic). `fnCallTypeCheck`
+   hands `genericSubstitute` the `expectType` its caller passed `inodeTypeCheck`
+   (a declared variable's type, a return type, an assignment's left side, a
+   non-generic callee's parameter, a non-generic struct's field, the branches of
+   an `if`, a block's last value, and the two operand rules in [fncall](fncall.md)),
+   and the hook matches the generic's *result* against it with `genericInferType`,
+   as a parameter is matched against an argument. The result is a function's
+   `rettype`; for a type literal or `new`, the variant's `basetrait` (`Option[T]`,
+   which a variant keeps as a call of its enum over its own copies of the enum's
+   parameters) or, for any other generic struct, a `Box[T]` built from its
+   `genericinfo->parms` (`genericResultTemplate`). Only empty slots are filled
+   (`genericCaptureType` never overwrites), so a written argument, an argument's
+   type and a bound win, and in the instance loop a disagreeing argument is
+   passed over (`genericExpectMode`) so the others are still matched; an
+   expectation the result does not match captures nothing and the call is judged
+   as with none. The step sits after the arguments and the bounds and before the
+   literals take their default, in a function and in a type literal alike, so
+   `imm n i64 = add(2000000000, 2000000000)` adds `i64`s. A method gets it through
+   `genericMethodInstance`, and `typeLitNewCheck` for `new Box(5)`. Not built, and
+   so refused: a constructor given to a constructor (`Some[None[]]` has no
+   expectation for the inner call), a parameter that comes from a later
+   argument, and an untyped `None[]` as an operator's receiver. A slot still
+   empty is reported by `genericMissingParms`, which names the parameters and the
+   brackets to write, and the call becomes an error node, so no second diagnostic
+   follows.
 
 **A generic method called on a receiver** — `h.pick(6)`, `h.pick[i32](6)` — is
 instantiated by `fnCallLowerMethod` rather than here, since the method is known

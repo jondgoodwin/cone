@@ -401,7 +401,7 @@ static int typeLitArgIsFinished(Nodes *args, INode *type) {
         && itypeIsSame(((IExpNode*)arg)->vtype, type);
 }
 
-static void typeLitNewChecked(TypeCheckState *pstate, FnCallNode **nodep, int argschecked);
+static void typeLitNewChecked(TypeCheckState *pstate, FnCallNode **nodep, int argschecked, INode *expectType);
 
 // The value an allocation stores, from its parentheses, or NULL when they give
 // none. A struct's value is constructed by one of its inits ('new Rc[mut,
@@ -463,7 +463,7 @@ static INode *typeLitAllocValue(TypeCheckState *pstate, FnCallNode *node, INode 
         inodeLexCopy((INode*)construct, (INode*)node);
         construct->flags |= FlagNew;
         construct->args = args;
-        typeLitNewChecked(pstate, &construct, argschecked);
+        typeLitNewChecked(pstate, &construct, argschecked, unknownType);
         return (INode*)construct;
     }
 
@@ -654,15 +654,15 @@ static void typeLitNewAllocate(TypeCheckState *pstate, FnCallNode **nodep, RefNo
 // so the fields' names reach it whatever the struct declares. The implicit init is lowered to the struct's literal, whose fields are
 // stored straight into wherever the value goes; a declared one to a call of it,
 // which generation hands the memory the value goes into (genlNew).
-void typeLitNewCheck(TypeCheckState *pstate, FnCallNode **nodep) {
-    typeLitNewChecked(pstate, nodep, 0);
+void typeLitNewCheck(TypeCheckState *pstate, FnCallNode **nodep, INode *expectType) {
+    typeLitNewChecked(pstate, nodep, 0, expectType);
 }
 
 // The same for a construction whose arguments are already checked (a closure's
 // hidden struct is made from the values of its state list and borrows of the
 // variables it names, closure.c)
 void typeLitNewArgsChecked(TypeCheckState *pstate, FnCallNode **nodep) {
-    typeLitNewChecked(pstate, nodep, 1);
+    typeLitNewChecked(pstate, nodep, 1, unknownType);
 }
 
 // 'new Rc[mut, Array[i32, 4]] <- fill 0': the allocation, of the reference
@@ -687,7 +687,7 @@ INode *typeLitNewFilled(TypeCheckState *pstate, FnCallNode **nodep, RefNode *ref
 
 // typeLitNewCheck, its arguments already checked when 'argschecked' (an
 // allocation's one argument, checked to see whether it is a finished value)
-static void typeLitNewChecked(TypeCheckState *pstate, FnCallNode **nodep, int argschecked) {
+static void typeLitNewChecked(TypeCheckState *pstate, FnCallNode **nodep, int argschecked, INode *expectType) {
     FnCallNode *node = *nodep;
     // Already lowered to its declared init's call, and reached again
     if (nameUseNames(node->objfn, FnDclTag))
@@ -716,13 +716,14 @@ static void typeLitNewChecked(TypeCheckState *pstate, FnCallNode **nodep, int ar
     // A generic struct named without its type arguments, 'new Box(5i64)', has
     // them inferred from the values its fields are given, as its literal did:
     // the arguments are checked first, with no expectation, and the instance
-    // they infer replaces the name
+    // they infer replaces the name. What they leave unsaid is read off the type
+    // the construction is wanted as ('imm b Box[i64] = new Box(5)')
     if (!argschecked && isNameUseNode(node->objfn) && nameUseNames(node->objfn, StructTag)
         && genericGetInfo(nameUseGetDcl((NameUseNode*)node->objfn)) != NULL) {
         for (nodesFor(node->args, cnt, argsp))
             inodeTypeCheck(pstate, argsp, unknownType);
         argschecked = 1;
-        if (genericSubstitute(pstate, nodep))
+        if (genericSubstitute(pstate, nodep, expectType))
             return;
         node = *nodep;
     }

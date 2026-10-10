@@ -502,7 +502,7 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
     case FnCallTag:
     {
         int awaited = *node == actorAwaitOperand;
-        fnCallTypeCheck(pstate, (FnCallNode **)node);
+        fnCallTypeCheck(pstate, (FnCallNode **)node, expectType);
         if (!awaited && expectType != noCareType && (*node)->tag == FnCallTag
             && (expectType == NULL || !isTypeNode(expectType) || itypeGetTypeDcl(expectType)->tag != VoidTag))
             actorFutureCall(pstate, (FnCallNode *)*node);

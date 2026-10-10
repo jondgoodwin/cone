@@ -26,8 +26,10 @@ void typeLitTypeCheck(TypeCheckState *pstate, FnCallNode *lit);
 // construction to the struct's literal (its implicit init) or to a call of a
 // declared init, which fills the value in place. 'new Rc[mut, Node](1)', and
 // 'trynew', allocate it in a region: an AllocateTag node holding the value's
-// construction.
-void typeLitNewCheck(TypeCheckState *pstate, FnCallNode **nodep);
+// construction. 'expectType' is what the construction is wanted as, from which a
+// generic struct named without its type arguments takes those its values leave
+// unsaid.
+void typeLitNewCheck(TypeCheckState *pstate, FnCallNode **nodep, INode *expectType);
 void typeLitNewArgsChecked(TypeCheckState *pstate, FnCallNode **nodep);
 
 // The construction an init's '*self = new T(...)' fills its self with, while

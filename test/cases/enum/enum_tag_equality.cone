@@ -1,0 +1,86 @@
+// '==' and '!=' against an empty variant ask the tag alone, whatever the enum's
+// other variants carry: 'x == None[]' needs no '==' on Some, and 'event ==
+// Lamp.Off[]' none on Blink. It is a rule of enums, not of Option, and it holds
+// on either side of the operator. Two variants that both carry fields still
+// compare their tags and then the variant's own '==' (enum_payload_equality),
+// refused where one declares none (enum_typecheck_payload_eq).
+//
+// Each printed value was checked by hand against the source: 1 is true.
+
+mod enum_tag_equality;
+
+import stdio use *;
+
+fn show(label &str, b bool) {
+  printStr(label);
+  printStr(" ");
+  printInt(if b {1;} else {0;});
+  printStr("\n");
+}
+
+// No variant declares a '==', as core's Some does not
+enum Shape {
+  Dot;
+  Circle(i32);
+  struct Rect {
+    pub w i32;
+    pub h i32;
+  }
+}
+
+enum Lamp {
+  Off;
+  On;
+  Blink(i32);
+}
+
+fn mkNone() Option[i64] { None[]; }
+fn mkSome() Option[i64] { Some[3]; }
+
+fn isNone(o &Option[i64]) bool { o == None[]; }
+fn notNone(o &Option[i64]) bool { o != None[]; }
+
+fn main() {
+  imm n Option[i64] = None[];
+  imm s Option[i64] = Some[3];
+  show("None == None", n == None[]);       // 1
+  show("None != None", n != None[]);       // 0
+  show("Some == None", s == None[]);       // 0
+  show("Some != None", s != None[]);       // 1
+
+  imm d Shape = Shape.Dot[];
+  imm c Shape = Shape.Circle[4];
+  imm r Shape = Shape.Rect[1, 2];
+  show("Dot == Dot", d == Shape.Dot[]);    // 1
+  show("Circle == Dot", c == Shape.Dot[]); // 0
+  show("Circle != Dot", c != Shape.Dot[]); // 1
+  show("Rect == Dot", r == Shape.Dot[]);   // 0
+  show("Rect != Dot", r != Shape.Dot[]);   // 1
+
+  imm l Lamp = Lamp.Blink[2];
+  imm off Lamp = Lamp.Off[];
+  show("Blink == Off", l == Lamp.Off[]);   // 0
+  show("Blink != On", l != Lamp.On[]);     // 1
+  show("Off == Off", off == Lamp.Off[]);   // 1
+  show("Off != On", off != Lamp.On[]);     // 1
+
+  // The empty variant on the left, typed by what it says or by its enum
+  show("left None", None[i64][] == n);     // 1
+  show("left None Some", None[i64][] == s); // 0
+  show("left Dot", Shape.Dot[] != c);      // 1
+  show("left Dot Dot", Shape.Dot[] != d);  // 0
+  show("left On", Lamp.On[] == l);         // 0
+
+  // An empty variant held in a variable
+  imm none Option[i64] = None[];
+  imm nothing = None[i64][];
+  show("variable", s != nothing);          // 1
+  show("variable same", n == nothing);     // 1
+
+  // Operands that are calls and references
+  show("call", mkNone() == None[]);        // 1
+  show("call Some", mkSome() == None[]);   // 0
+  show("ref", isNone(&n));                 // 1
+  show("ref Some", isNone(&s));            // 0
+  show("ref ne", notNone(&s));             // 1
+}

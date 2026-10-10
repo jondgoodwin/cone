@@ -493,6 +493,27 @@ no `-eq` was made, because a variant carries fields and declares no `==`, the
 call is refused with `ErrorEnumEquality`, naming the first such variant and its
 fields.
 
+**`==` and `!=` with an empty variant compare the tag alone**
+(`fnCallLowerEnumTagTest`, tried first by `fnCallLowerEnumEq`). When either
+operand is statically an empty variant of the enum, written out or held in a
+variable (a variant with nothing beyond the tag; anything else is not read, so
+nothing with an effect is dropped), the call becomes `other is &Variant` on a
+read-only borrow of the other operand, with no `-eq` and no `==` of any variant
+needed. The test is built here and put in the call's place by `fnCallTypeCheck`
+(`fnCallTagTest`), under the `not` for `!=`. An empty variant on the left has no `==`
+to select, so `fnCallTypeCheck` tries the same lowering before dispatch, deriving
+the `not` itself. Two variants that both carry fields are not of this shape.
+
+**An operator's argument that is a call is checked after its receiver for `==`,
+`!=` and `<-`**, where the argument first is the order operators otherwise keep (a
+macro method's argument is not checked before it expands). The argument is then
+expected to be the receiver's type for the comparisons, and for `<-` the parameter
+every `<-` candidate agrees on (`fnCallArgAgreed`), so `x == None[]` types the
+`None`, and so does `list <- None[]`. A call among the arguments of an overload set
+is likewise expected to be the type every candidate that could take the call (the
+rest having defaults) declares at its position, when none is generic and they
+agree; any other argument is checked with no expectation as before.
+
 The permission a reference carries is enforced on the dereference, by flow, so
 `==` through an `opaq` reference is `ErrorNoRead` while `===` on it is allowed.
 

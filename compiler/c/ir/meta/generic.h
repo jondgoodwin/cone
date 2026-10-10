@@ -76,14 +76,19 @@ void genericInstantiateExit();
 uint32_t genericInstantiateDepth();
 void genericInstantiateDepthSet(uint32_t depth);
 
-// Perform generic substitution, if this is a correctly set up generic "fncall"
+// Perform generic substitution, if this is a correctly set up generic "fncall".
+// A type parameter the arguments leave unsaid is read off 'expectType', the type
+// the call's value is wanted as (unknownType if nothing says): see
+// genericInferFromExpected in generic.c.
 // Return 1 if done/error needed. Return 0 if not generic or it leaves behind a lit/fncall that needs processing.
-int genericSubstitute(TypeCheckState *pstate, FnCallNode **nodep);
+int genericSubstitute(TypeCheckState *pstate, FnCallNode **nodep, INode *expectType);
 
 // The instance of generic method 'genmeth' that a call on a receiver names,
 // its type arguments 'typeargs' or, when NULL, inferred from the call's
-// arguments. NULL once an error is reported.
-FnDclNode *genericMethodInstance(TypeCheckState *pstate, FnCallNode *callnode, FnDclNode *genmeth, Nodes *typeargs);
+// arguments and from 'expectType', the type its value is wanted as. NULL once
+// an error is reported.
+FnDclNode *genericMethodInstance(TypeCheckState *pstate, FnCallNode *callnode, FnDclNode *genmeth, Nodes *typeargs,
+        INode *expectType);
 
 // Is 'fn' one of the instances made of generic function or method 'generic'?
 int genericIsInstanceOf(INode *fn, FnDclNode *generic);
