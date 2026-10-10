@@ -96,8 +96,8 @@ writes one line and aborts at once.
 **The compiler's checks** (`genlPanic`) — an index at or past its count, a
 range not within its count, a region's `alloc` answering null — call conestd's
 entry for each, handing it the values compared and the location:
-`index 5 is out of bounds for a count of 3`, `slice 2..7 is out of bounds for
-a count of 5`, `slice 4..2 starts after it ends`, `out of memory allocating 24
+`index 5 is out of bounds for a count of 3`, `slice 2..<7 is out of bounds for
+a count of 5`, `slice 4..<2 starts after it ends`, `out of memory allocating 24
 bytes`. On WebAssembly, which links no conestd, each is a trap.
 
 ## What is built, and what is not

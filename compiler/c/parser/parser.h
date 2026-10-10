@@ -248,6 +248,8 @@ INode *parseLifetime(ParseState *parse, int stmtflag);
 
 // parseexpr.c
 INode *parseSimpleExpr(ParseState *parse);
+// Report '...' (the lexer on it) as the retired range operator it is
+void parseRangeEllipsis(void);
 // Parse an operand of a comparison: everything that binds tighter than one
 INode *parseOr(ParseState *parse);
 // Finish a simple expression whose first operand parseOr has already parsed

@@ -503,3 +503,62 @@ void eachLower(TypeCheckState *pstate, BlockNode *outer) {
         (uint16_t)(scope + 1), lexnode);
     nodesAdd(&outer->stmts, (INode*)loop);
 }
+
+Name *eachRangeStepName = NULL;
+
+void eachRangeNames() {
+    if (eachRangeStepName == NULL)
+        eachRangeStepName = nametblPrivate("rangestep'", 10);
+}
+
+// The step of a numeric range, which the parser could not build before the type of
+// its counter was known (see each.h). The call is on the counter, with the range's
+// first value and the count of steps so far, and the step after them when one was
+// written. A float counter becomes 'x = first + n * step' ('first + n' with no step):
+// computed from the first value, so a step of 0.1 taken ten times lands on 1.0
+// and does not stop at the 0.9999999999999999 that adding it up reaches. Any other
+// counter is stepped by the operator, 'x += step' or 'x++', which wraps at the
+// type's extreme where the loop's own guard sees it (parseEachLoop). Returns 1 when
+// the node has been replaced and checked, 0 when it is now that operator, to be checked
+// as any other.
+int eachRangeStepLower(TypeCheckState *pstate, FnCallNode **nodep) {
+    FnCallNode *node = *nodep;
+    Nodes *args = node->args;
+    INode *step = args->used > 4 ? nodesGet(args, 4) : NULL;
+
+    // The counter's declaration is an earlier statement of the block, checked already
+    INode *counter = isNameUseNode(node->objfn) ? ((NameUseNode*)node->objfn)->dclnode : NULL;
+    INode *type = NULL;
+    if (counter != NULL && counter->tag == VarDclTag)
+        type = itypeGetTypeDcl(((VarDclNode*)counter)->vtype);
+    if (type != NULL && type->tag == FloatNbrTag) {
+        INode *lexnode = (INode*)node;
+        // The count as the counter's float type, 'f64.from(n)': the parser wrote the
+        // conversion to each of the two, name resolved like any the reader writes
+        INode *count = nodesGet(args, ((NbrNode*)type)->bits == 32 ? 2 : 3);
+        if (step != NULL) {
+            FnCallNode *scaled = newFnCallOpnameLower(lexnode, count, multName, 1);
+            nodesAdd(&scaled->args, step);
+            count = (INode*)scaled;
+        }
+        FnCallNode *sum = newFnCallOpnameLower(lexnode, nodesGet(args, 0), plusName, 1);
+        nodesAdd(&sum->args, count);
+        // (the target is a use of the counter under the counter's own name: an assignment
+        // to the anonymous name discards its value)
+        AssignNode *set = newAssignNode(NormalAssign, eachUse((VarDclNode*)counter, lexnode), (INode*)sum);
+        inodeLexCopy((INode*)set, lexnode);
+        *((INode**)nodep) = (INode*)set;
+        inodeTypeCheckAny(pstate, (INode**)nodep);
+        return 1;
+    }
+
+    node->methfld = (INode*)newMemberUseNode(step != NULL ? plusEqName : incrPostName);
+    inodeLexCopy(node->methfld, (INode*)node);
+    if (step != NULL) {
+        node->args = newNodes(1);
+        nodesAdd(&node->args, step);
+    }
+    else
+        node->args = NULL;
+    return 0;
+}
