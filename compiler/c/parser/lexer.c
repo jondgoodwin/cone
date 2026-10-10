@@ -1153,6 +1153,8 @@ void lexNextTokenx() {
             if (*(srcp + 1) == '.') {
                 if (*(srcp + 2) == '.')
                     lexReturnPuncTok(EllipsisToken, 3);
+                if (*(srcp + 2) == '<')
+                    lexReturnPuncTok(DotDotLessToken, 3);
                 lexReturnPuncTok(DotDotToken, 2);
             }
             lexReturnPuncTok(DotToken, 1);

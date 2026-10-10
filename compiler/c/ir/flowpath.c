@@ -960,7 +960,7 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
         if (node->flags & FlagConvert)
             break;
         // An owner of 'Array[T]' lent as the slice it is indexed through
-        // ('&o[a..b]') is a borrow of the owner, whose loan the walk of it as
+        // ('&o[a..<b]') is a borrow of the owner, whose loan the walk of it as
         // a value makes, not a place of its own
         if (iexpGetTypeDcl(node)->tag == ArrayRefTag && pwIsOwnedLent((CastNode *)node))
             break;

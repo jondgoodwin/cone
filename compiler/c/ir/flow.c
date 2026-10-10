@@ -579,7 +579,7 @@ static void flowMoveSource(INode *node, Nodes **moved, INode *top, MoveParts *pa
     // dereference -- is read through that reference.
     case ArrIndexTag:
     {
-        // A borrow of an element or of a range, '&uni a[i]' or '&uni s[a..b]',
+        // A borrow of an element or of a range, '&uni a[i]' or '&uni s[a..<b]',
         // is the new reference it makes, as a borrow of a field is (the
         // default arm): nothing is moved out of the place it borrows from
         if (((FnCallNode*)node)->flags & FlagBorrow)

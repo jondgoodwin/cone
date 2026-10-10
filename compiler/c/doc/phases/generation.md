@@ -2293,7 +2293,7 @@ variables.
 | | `genlArrayIndex`, `genlBoundsCheck` | multi-dimensional GEP and its checks |
 | | `genlArrayLitInto`, `genlArrayRun` | an array's contents repeating a value, or the scalars of one written with several sizes, filled in place element by element, into a variable or an allocation: a `memset` for a null constant, a loop for any other repeated value, never one aggregate ([literals](../nodes/literals.md), "Generation") |
 | | `genlArrayLitScalars`, `genlArrayConstRows` | a literal of scalars wanted as a value: the nested constant, rows cut from the scalars, or filled into a local and loaded |
-| | `genlSubslice` | a borrowed range index, `&x[a..b]`: the slice `{&x[a], b - a}` once `a <= b <= count` is checked |
+| | `genlSubslice` | a borrowed range index, `&x[a..<b]`: the slice `{&x[a], b - a}` once `a <= b <= count` is checked |
 | `genllvm/genlalloc.c` | `genlRefTypeSetup`, `genlallocref` | the `{region, perm, value}` header and an allocation's emission, in its order (section 3) |
 | | `genlRegionHeader`, `genlRegionAlias`, `genlRegionDealias`, `genlRegionDeath` | the header a region method is handed; calling `aliasRef`, `dealiasRef` and `free` at each reference event; a death in place, then `free` |
 | | `genlOwnerHeader`, `genlVirtHeader`, `genlVirtRecord`, `genlVirtFinalize` | an owning virtual reference's header, from its vtable record's alignment; that record; its value's death through the record's `finalize` |

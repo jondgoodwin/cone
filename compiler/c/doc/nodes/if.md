@@ -48,7 +48,7 @@ returns the wrapping block, not the `IfNode`.**
 
 `parseMatch` lowers the whole construct into a block plus one `IfNode`:
 `case is T` → an `is` node, `case == v` (or any comparison operator) → that
-operator's call with the scrutinee on the left, `case a .. b` → `>= a and < b`
+operator's call with the scrutinee on the left, `case a ..< b` → `>= a and < b`
 (`<=` for `...`), `case imm x T` → a bound pattern, `case v` (a value alone) →
 an `is` node flagged `FlagMatchValue` that type check turns into `v`'s variant
 test or `== v` ([cast](cast.md)), `else` → `elseCond`. Patterns joined by `or` → a logical `or` of

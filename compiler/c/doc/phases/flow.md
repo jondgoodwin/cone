@@ -323,7 +323,7 @@ its own, is refused as before.
 more sources. A global has no scope in which a deactivated state could be recovered.
 A place reached through a **borrowed reference** — a dereference of one, or an
 element read straight through one, as a slice's element is (not a borrow of
-one, `&uni s[i]` or `&uni s[a..b]`, which makes a new reference and moves nothing
+one, `&uni s[i]` or `&uni s[a..<b]`, which makes a new reference and moves nothing
 out) — belongs
 to whatever was borrowed, which releases or finalizes it at the end of its own
 scope, so a move out of it would make a second owner (`ErrorMoveOut`). The
