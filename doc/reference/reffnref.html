@@ -16,7 +16,8 @@
 	<p style="margin-left: 40px;"><i>Note: This is implemented: borrowing a reference to a named function,
 		holding one in a variable, passing it to a parameter that spells out its signature,
 		with the signature's parameters named or written as their types alone,
-		calling through it, and writing an anonymous function where the reference is wanted.</i></p>
+		calling through it, writing an anonymous function where the reference is wanted, and giving it a
+		<a href="refclosure.html">closure</a> that holds and borrows nothing.</i></p>
 	
 	<p>Function references are useful when you want to generalize some piece of code,
 		such that part of its logic is performed by one of several compatible functions
@@ -77,12 +78,21 @@ struct Applier {
 		thereby prohibiting the ability to read or change the logic of the function it points to.
 	</p>
 
-	<p>A function reference is one code address, so it takes only a function. A generic that should take
-		a function or any struct with a <span class="pre">()</span> method of the same signature asks for the
-		signature as a constraint instead,
-		<span class="pre">fn sortBy[T, F fn(a &amp;T, b &amp;T) i32](xs &amp;mut Array[T], order &amp;F)</span>,
-		and is given <span class="pre">&amp;byName</span> or a struct
-		(<a href="refgeneric.html#sigbound">A function signature as a constraint</a>).</p>
+	<p>A function reference is one code address, so it takes only a function: no state travels with it.
+		Something that should take a function, a <a href="refclosure.html">closure</a> that carries state, or any struct
+		with a <span class="pre">()</span> method of the same signature asks for one of two things instead:</p>
+	<ul>
+		<li>a <a href="refcloref.html">closure reference</a>, <span class="pre">&amp;&lt;fn(u32) u32</span> (or
+			<span class="pre">&amp;&lt;mut fn(u32) u32</span> where the callable may change its state), which is compiled
+			once and calls through the reference; a reference to a plain function, <span class="pre">&amp;incr</span>,
+			is accepted where one is wanted;</li>
+		<li>the signature as a constraint,
+			<span class="pre">fn sortBy[T, F fn(a &amp;T, b &amp;T) i32](xs &amp;mut Array[T], order &amp;F)</span>,
+			which is compiled for each type it is given and is given <span class="pre">&amp;byName</span>, a closure, or a struct
+			(<a href="refgeneric.html#sigbound">A function signature as a constraint</a>).</li>
+	</ul>
+	<p>The one-word <span class="pre">&amp;fn(sig)</span> stays what it is, and is what a C library's
+		callback parameter takes.</p>
 
 	<h2>Anonymous Functions</h2>
 	<p>When the function you want to get a reference to is small,
@@ -92,10 +102,25 @@ struct Applier {
 	</p>
 <pre>
 fn doit() {
-	dostuff(&amp;fn(nbr u32) u32 {nbr+1});
-	dostuff(&amp;fn(nbr u32) u32 {nbr+nbr});
+	dostuff(&amp;fn(nbr u32) u32 {nbr+1;});
+	dostuff(&amp;fn(nbr u32) u32 {nbr+nbr;});
 }
 </pre>
+	<p>An anonymous function is a function that happens to be written in place. It is made
+		at the module level, so it sees none of the variables around it, and it is the same function every time.
+		A <a href="refclosure.html">closure literal</a>, written without the ampersand,
+		<span class="pre">fn(nbr u32) u32 {nbr+1;}</span> or <span class="pre">nbr =&gt; nbr+1</span>, may name those variables.
+		Given where a function reference is wanted, a closure that holds and borrows nothing
+		becomes a plain function reference, so either spelling works for such a case:</p>
+<pre>
+fn doit() {
+	dostuff(fn(nbr u32) u32 {nbr+1;});    // a closure, here a plain function
+	dostuff(nbr =&gt; nbr+nbr);              // the parameter's type comes from the signature
+}
+</pre>
+	<p>A closure that does name a variable of the code around it cannot be a function reference, which has no place to
+		keep it, and is refused there with a message saying so. The parameter is then declared
+		<span class="pre">&amp;&lt;fn(u32) u32</span>.</p>
 
 
 	<p style="text-align: right; margin-top: 2em;">

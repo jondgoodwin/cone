@@ -13,35 +13,187 @@
 
     <div class="text">
 
-	<p style="margin-left: 40px;"><i>Note: The closure reference is built, spelled as the signature it calls: <span class="pre">&amp;&lt;fn(x i32) i32</span> borrows anything with a <span class="pre">pub</span> <span class="pre">()</span> of that signature (a closure, a struct of yours, a plain function through a stub) and only reads it; <span class="pre">&amp;&lt;mut fn(x i32) i32</span> may change what it points at; <span class="pre">So[fn(x i32) i32]</span> and <span class="pre">Rc[fn(x i32) i32]</span> own one, made as <span class="pre">new So[fn(x i32) i32](closure)</span>. A closure literal given to a borrowed one is lent for the statement, and a callable held in a field is called by the field's name, <span class="pre">b.onClick(3)</span>. A closure literal also fills a trait that has exactly one required method and no field, wherever that trait is wanted (a generic's <span class="pre">[S Shape]</span>, <span class="pre">&amp;&lt;Shape</span>, <span class="pre">So[Shape]</span>): <span class="pre">p =&gt; p.length() - 1.</span> is a <span class="pre">Shape</span> whose <span class="pre">distance</span> it is. The trait's default methods come with it, as they do for any type that implements the trait, and call the literal's body through the required method. A literal takes the <span class="pre">self</span> its body needs, and as a struct's must, it may ask for no stronger one than the trait's method declares: a literal that changes state, which needs <span class="pre">self &amp;mut</span>, is refused wherever the trait's method says <span class="pre">self &amp;</span> (through <span class="pre">&amp;&lt;mut Shape</span> too); declare the trait's method <span class="pre">self &amp;mut</span> or do not change the state. The examples below, written before this, use the older plus spelling, <span class="pre">+So |{window}|</span> and <span class="pre">+&lt;So ||</span>, and are to be rewritten.</i></p>
-	
+	<p style="margin-left: 40px;"><i>Note: Built: the closure reference, spelled as the signature it calls
+		(<span class="pre">&amp;&lt;fn(x i32) i32</span>, <span class="pre">&amp;&lt;mut fn(x i32) i32</span>), the
+		owners <span class="pre">So[fn(x i32) i32]</span> and <span class="pre">Rc[fn(x i32) i32]</span> made with
+		<span class="pre">new</span>, a closure literal lent for a statement, a callable held in a field and called by its name, and
+		the markers <span class="pre">+ Sendable</span> and <span class="pre">+ Shareable</span> on a reference or an owner.
+		Not built: calling a closure once, which consumes it, through an owner; and <span class="pre">+</span> joining
+		any trait but those two markers.</i></p>
+
 	<p>Earlier, we introduced value-based <a href="refclosure.html">closures</a>.
-		Value-based closures struggle when we need closures that have a specific calling signature,
-		but whose underlying struct state may vary in size and fields.
-		To satisfy this requirement, a closure may be passed as a virtual reference.</p>
+		A closure is a value of a struct that has no name, and its size and fields depend on what it holds.
+		Value-based closures struggle when we need a function to take any closure that has a specific calling signature,
+		whatever struct holds its state. To satisfy this requirement, a closure may be passed as a reference
+		to the signature it calls.</p>
 	<p>Let's illustrate this with a simple event-handling example:</p>
 <pre>
-window.whenClicked(+So |{window}| { ... });
+struct Button {
+  pub label i32;
+  pub onClick So[fn(n i32)];
+  pub fn setHandler(self &amp;mut, f So[fn(n i32)]) { onClick = f; }
+  pub fn press(self &amp;mut, n i32) { onClick(n); }
+}
+
+imm w = new Window(7);       // a Window has an id field
+mut b = new Button(1, new So[fn(n i32)](fn(n i32) { }));
+b.setHandler(new So[fn(n i32)](fn(n i32) [id = w.id] { print &lt;- id + n, "\n"; }));
+b.press(5);      // 12
 </pre>
 	<p>Here we allocate a new click-handling closure using the single-owner region
-		(ensuring it is automatically freed after being triggered and discarded).
-		The closure's state remembers the window, which its logic uses when
-		the window is clicked.</p>
-	<p>The <span class="pre">whenClicked</span> method accepts any closure
-		whose type signature is <span class="pre">+&lt;So ||</span>.
-		In other words, it accepts closures having any underlying state,
-		so long as the closure's function signature matches
-		(it accepts no arguments and returns no values).</p>
-	<p>Closures allocated this way are virtual references.
-		In the same way that closures are implicit structs,
-		closure references take advantage of an implicit trait,
-		one which defines the appropriate method signature 
-		for the <span class="pre">()</span> method.</p>
-	<p>When the event fires on a click,
-		the event handler simply calls the closure to perform its defined logic:</p>
+		(ensuring it is automatically freed after being replaced or discarded).
+		The closure's state remembers the window's <span class="pre">id</span>, which its logic uses when
+		the button is pressed. The <span class="pre">Button</span> holds the closure as a
+		<span class="pre">So[fn(n i32)]</span>: it accepts any closure, whatever its underlying state,
+		so long as its function signature matches (it accepts one <span class="pre">i32</span> and returns no value).
+		The button calls the handler by the field's name, <span class="pre">onClick(n)</span>.</p>
+
+	<h2 id="forms">The forms of a closure reference</h2>
+	<p>The reference is written as the signature of the call, <span class="pre">fn(x i32) i32</span>, behind a
+		reference or an owner. The signature stands for the idea "anything that can be called like this", a trait
+		that needs no declaring, and the reference is a <a href="refvirtref.html">virtual reference</a> to it.</p>
+	<ul>
+		<li><span class="pre">&amp;&lt;fn(x i32) i32</span>, a borrowed reference that may <b>read</b> what it points at.
+			The closure's <span class="pre">()</span> takes <span class="pre">self &amp;</span>.</li>
+		<li><span class="pre">&amp;&lt;mut fn(x i32) i32</span>, a borrowed reference that may <b>change</b> what it points at:
+			a closure that counts, or changes a variable it borrows.</li>
+		<li><span class="pre">So[fn(x i32) i32]</span>, an owner of a closure on the heap. The permission of an owner
+			works as it does for any owner: <span class="pre">So[fn(sig)]</span> may change the closure's state,
+			<span class="pre">So[imm, fn(sig)]</span> only reads it.</li>
+		<li><span class="pre">Rc[imm, fn(x i32) i32]</span>, shared owners of a closure that only reads;
+			<span class="pre">Rc[mut, fn(x i32) i32]</span>, shared owners of a state they all change, so every holder
+			sees one count. <span class="pre">Rc[fn(x i32) i32]</span> with no permission is <span class="pre">uni</span>,
+			the sole owner, as for any <span class="pre">Rc</span>, and moves when copied.</li>
+	</ul>
+	<p>These are the same permissions as elsewhere, so the call kind is the reference's permission, with no separate
+		families of function types: a function that takes a callable it only reads takes <span class="pre">&amp;&lt;fn(sig)</span>;
+		one that lets it change takes <span class="pre">&amp;&lt;mut fn(sig)</span>. The call is written as any call, and goes
+		through the reference to the closure's code:</p>
 <pre>
-handler();
+fn apply(f &amp;&lt;fn(x i32) i32, x i32) i32 { f(x); }
+fn applyMut(f &amp;&lt;mut fn(x i32) i32, x i32) i32 { f(x); }
+fn run(f So[fn(x i32) i32], x i32) i32 { f(x); }
 </pre>
+
+	<h3 id="meets">What meets it</h3>
+	<p>Anything that has a <span class="pre">pub</span> <span class="pre">()</span> method of the signature, parameters and
+		return type exactly (the parameters' names do not matter):</p>
+<pre>
+struct Triple { pub k i32; pub fn `()`(self &amp;, x i32) i32 { x * k; } }
+struct Tally  { pub n i32; pub fn `()`(self &amp;mut, x i32) i32 { n = n + x; n; } }
+fn succ(x i32) i32 { x + 1; }
+
+imm off = 10;
+imm shift = fn(x i32) i32 { x + off; };
+imm t = new Triple(3);
+mut tally = new Tally(0);
+
+apply(&amp;shift, 5);              // 15: a closure
+apply(&amp;t, 5);                  // 15: a struct with a '()'
+apply(&amp;succ, 5);               // 6: a plain function
+applyMut(&amp;mut tally, 5);       // 5
+applyMut(&amp;mut tally, 7);       // 12, and tally.n is 12
+</pre>
+	<p>A plain function needs no state, so a reference to it meets any of the references above. A callable that
+		reads meets <span class="pre">&amp;&lt;mut fn</span> as well, since a reference that may change can read.</p>
+	<p>A callable that <i>changes</i> its state (its <span class="pre">()</span> takes <span class="pre">self &amp;mut</span>)
+		is refused behind <span class="pre">&amp;&lt;fn(sig)</span>, which promises only to read, and the error says so:
+		"<span class="pre">&amp;&lt;fn(i32) i32</span> may only call a callable that reads its state; this closure changes it ...
+		To let it change, the type is <span class="pre">&amp;&lt;mut fn(i32) i32</span>." Likewise a
+		<span class="pre">&amp;&lt;mut fn</span> is not lent where a <span class="pre">&amp;&lt;fn</span> is wanted, nor is a
+		<span class="pre">So[fn(sig)]</span>, which may change: the callable behind it might. An owner meant to be lent
+		to a reader is made <span class="pre">So[imm, fn(sig)]</span>.</p>
+
+	<h3 id="lent">A closure literal, lent</h3>
+	<p>A closure literal written as an argument to a parameter taken by <span class="pre">&amp;&lt;fn</span> or
+		<span class="pre">&amp;&lt;mut fn</span> is lent as a temporary, dropped at the end of the statement. The permission
+		lent is the parameter's, so a literal given to <span class="pre">&amp;&lt;fn</span> that changes a variable is refused by
+		the message above. The literal's parameter types come from the signature:</p>
+<pre>
+apply(x =&gt; x * 2, 21);                                    // 42
+applyMut(fn(x i32) i32 { total += x; total; }, 10);       // total is changed
+</pre>
+	<p>A literal is lent only as an argument. To keep one, move it into an owner.</p>
+
+	<h3 id="owner">An owner of a closure</h3>
+	<p><span class="pre">new So[fn(sig)](value)</span> takes one value, a closure literal or a struct with a
+		<span class="pre">()</span> of the signature, moves it into an allocation of its own, and gives the owner
+		of that as the callable. The literal's parameter types may come from the signature. The same holds for
+		<span class="pre">Rc</span>:</p>
+<pre>
+mut owned So[fn(x i32) i32] = new So[fn(x i32) i32](fn(x i32) [mut sum = 100] i32 { sum += x; sum; });
+owned(1);        // 101
+applyMut(owned, 2);   // 103: an owner is lent as &amp;&lt;mut
+run(owned, 3);        // 106: or handed on whole, moved
+
+imm shared = new Rc[imm, fn(x i32) i32](new Triple(4));
+imm again = shared;               // another holder of the same closure
+</pre>
+	<p>The owner holds whatever the closure holds, and finalizes it when the last owner dies. A closure that
+		holds nothing is allocated like any other. A plain function is wrapped by giving its reference,
+		<span class="pre">new So[fn(sig)](&amp;f)</span>; a function of another signature, or a value with no
+		<span class="pre">()</span> of the signature, is an error.</p>
+	<p>An owner outlives the function that made it, so the closure in it may not borrow a local. The refusal is the
+		one in <a href="refclosure.html#goes">Closures</a>: it names the variable and says to list it, so the closure holds
+		its own copy.</p>
+
+	<h3 id="alias">Naming a signature</h3>
+	<p>An alias gives a signature a name, and the name works wherever the signature does:</p>
+<pre>
+alias Profile = fn(u i32) i32;
+
+fn viaAlias(f &amp;&lt;Profile, u i32) i32 { f(u); }
+</pre>
+	<p>A bare <span class="pre">fn(sig)</span> is read as a signature in the brackets of a type
+		(<span class="pre">So[fn(i32) i32]</span>, <span class="pre">Applied[fn(i32) i32]</span>), as the target of an
+		<span class="pre">alias</span> and as a generic's bound (<a href="refgeneric.html#sigbound">Generics</a>). It is not
+		itself the type of a variable or a return value: write <span class="pre">&amp;&lt;fn(..)</span>,
+		<span class="pre">So[fn(..)]</span> or the alias. A signature is a trait, so it has no size, and a field of a generic
+		type holds it by an owner or a reference, not by value:</p>
+<pre>
+struct Applied[F] { pub f So[F]; }     // Applied[fn(i32) i32] holds a So[fn(i32) i32]
+</pre>
+
+	<h3 id="field">A callable held in a field</h3>
+	<p>A field that holds a callable is called by its name, with no parentheses around it: <span class="pre">b.onClick(5)</span>
+		calls the closure in <span class="pre">onClick</span>, and <span class="pre">(b.onClick)(5)</span> keeps working. A field and a method
+		of one name cannot both exist, so there is nothing to choose between. A field that cannot be called, an
+		<span class="pre">i32</span> given arguments, is an error that says what the field holds.</p>
+	<p>An owner whose state may change is called through a reference that may change, so a method that calls
+		a <span class="pre">So[fn(sig)]</span> field takes <span class="pre">self &amp;mut</span>, as
+		<span class="pre">press</span> does above. The handler is replaced by assigning the field.</p>
+
+	<h2 id="marks">Saying what is behind a reference: Sendable and Shareable</h2>
+	<p>A virtual reference hides the type behind it, so a reference to a callable or a trait is not
+		<span class="pre">Sendable</span> or <span class="pre">Shareable</span> unless it says so. The markers follow the
+		signature or the trait with a <span class="pre">+</span>, in either order:</p>
+<pre>
+fn work(f So[fn(x i32) i32 + Sendable]) i32 { f(1); }
+fn read(f &amp;&lt;fn(x i32) i32 + Shareable, x i32) i32 { f(x); }
+So[Shape + Sendable + Shareable]
+</pre>
+	<p>The marker is a requirement on the closure put behind the reference, and a closure that does not meet it is
+		refused where the reference is made, naming the variable it borrows or the owner it holds
+		(<a href="refconccomm.html#shareable">Sendable and Shareable</a>). An owner of a closure sent to a thread:</p>
+<pre>
+imm k = 3;
+imm c = new So[fn(x i32) i32 + Sendable](fn(x i32) [k] i32 { x * k; });   // k is listed: its own copy
+imm th = thread.start(c, &amp;work);
+</pre>
+	<p>Only <span class="pre">Sendable</span> and <span class="pre">Shareable</span> may follow the <span class="pre">+</span>.
+		A reference to a known type takes no marker (ask the type, <span class="pre">T is Sendable</span>), and joining
+		two traits with their methods, <span class="pre">&amp;&lt;Shape + Named</span>, is not built.</p>
+
+	<h2 id="traitlit">A literal that fills a trait</h2>
+	<p>A closure literal also fills a trait that has exactly one required method, wherever that trait is wanted: as a
+		generic's bound, <span class="pre">[S Shape]</span>, as a reference, <span class="pre">&amp;&lt;Shape</span>, and as an owner,
+		<span class="pre">So[Shape]</span>. That is described under <a href="reftrait.html#closure">Traits</a>.</p>
+
+	<h2 id="static">A signature as a generic bound</h2>
+	<p>A function may instead be generic over the signature, <span class="pre">[F fn(x i32) i32]</span>. That form is compiled
+		for each closure and inlined, where the references above are compiled once and call through the closure's
+		code (<a href="refgeneric.html#sigbound">Generics</a>). The reference is what a field or a variable of unknown
+		closure holds; the generic is what a function that only calls it uses.</p>
 
 	<p style="text-align: right; margin-top: 2em;">
 		<a href="reftypemanage.html"><img alt="_" src="next.png" /></a>
