@@ -184,7 +184,7 @@ int awaitReReached(INode *node);
 // generation both take an operand list in this order
 uint32_t awaitOrder(Nodes *nodes, uint32_t *order);
 
-// A place indexed more than once -- 'a[i][j]', 'a[i].f[j]', a slice 'a[i][lo..hi]'
+// A place indexed more than once -- 'a[i][j]', 'a[i].f[j]', a slice 'a[i][lo..<hi]'
 // -- reaches the array each index names after every seam in the indexes, which
 // are made first, in the order written, each kept in flight across the seams
 // that follow it. The chain of a place is the indexes it passes through

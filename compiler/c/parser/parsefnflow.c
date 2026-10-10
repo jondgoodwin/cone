@@ -418,7 +418,7 @@ static INode *parseMatchPattern(ParseState *parse, INode *matchee) {
         return cond;
     }
     INode *value = parseOr(parse);
-    if (lexIsToken(DotDotToken) || lexIsToken(EllipsisToken))
+    if (lexIsRangeOp())
         return parseMatchRange(parse, matchee, value);
     if (parseCmpOp() != NULL || lexIsToken(IsToken) || lexIsToken(AndToken)) {
         errorMsgNode(value, ErrorPatBare, PatBareMsg);

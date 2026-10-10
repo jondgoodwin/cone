@@ -553,7 +553,7 @@ static int parseLifeNamed(ParseState *parse, Name *name, INode *at) {
 
 // Parse the arguments of an index, 'x[...]': a list of expressions, or one range
 // that a borrow makes a slice of part of an array (doc/reference/
-// refarrayref.html, "Subslices"). 'a..b' excludes b and 'a...b' includes it; a
+// refarrayref.html, "Subslices"). 'a..<b' and 'a..b' exclude b and 'a...b' includes it; a
 // missing start is 0, and a missing end, 'a..', is the array's end. A range is
 // held on the index as FlagRange, its arguments the start and, unless it runs
 // to the end, the end; FlagRangeIncl says the end was written with '...'.
@@ -611,13 +611,13 @@ static Nodes *parseIndexArgsIn(ParseState *parse, FnCallNode *fncall) {
     lexNextToken();
     Nodes *args = newNodes(2);
     INode *start = NULL;
-    if (!lexIsToken(DotDotToken) && !lexIsToken(EllipsisToken)) {
+    if (!lexIsRangeOp()) {
         if (lexIsToken(RBracketToken)) {
             lexNextToken();
             return args;
         }
         start = parseIndexArg(parse);
-        if (!lexIsToken(DotDotToken) && !lexIsToken(EllipsisToken)) {
+        if (!lexIsRangeOp()) {
             nodesAdd(&args, start);
             while (lexIsToken(CommaToken)) {
                 lexNextToken();

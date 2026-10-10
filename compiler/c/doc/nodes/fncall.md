@@ -334,7 +334,7 @@ struct that lends it (`structLentBody`). Then: (1) `==`, `!=` and the orderings
 between two texts of different kinds replace each operand that lends by the call
 of its lending method (`fnCallLentOperands`, `structLendView`), so the comparison
 is `str`'s own operator on two borrows, and `String == So[str]` needs no operator
-of either; (2) a borrowed range of text, `&s[a..b]`, `&s[a..]`, `&s[a...b]`, is a
+of either; (2) a borrowed range of text, `&s[a..<b]`, `&s[a..]`, `&s[a...b]`, is a
 call of the `slice`, `sliceFrom` or `sliceThrough` method (`fnCallLowerStrRange`,
 asked once the receiver is checked, as the dispatch's first test of a range). The
 receiver is the borrow `borrowReassocIndex` put around what is indexed; it is

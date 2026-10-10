@@ -86,12 +86,13 @@ something that begins a value follow it, so `fill(3)`, `fill[0]`, `fill.n`,
 `fill + 1` and `fill of 3` keep `fill` a name; after the space, a token that
 could go either way (`-`, `*`, `&`, `(`, `[`) is taken as the value's.
 
-**`..` and `...` are the range tokens** (`DotDotToken`, `EllipsisToken`), read
-by a match's range pattern and by an index (`parseIndexArgs`): `x[a..b]` is held
-as the index with `FlagRange`, its arguments the start (a `usize` 0 when none is
-written) and the end unless the range runs to it, `FlagRangeIncl` marking an end
-written with `...`; `x[a...]` is `ErrorBadIndex`. A number stops scanning at a
-`..`, so `0..3` is two integers and a range, not the float `0.`.
+**`..<`, `..` and `...` are the range tokens** (`DotDotLessToken`, `DotDotToken`,
+`EllipsisToken`), read by a match's range pattern and by an index (`parseIndexArgs`):
+`x[a..<b]` is held as the index with `FlagRange`, its arguments the start (a `usize` 0
+when none is written) and the end unless the range runs to it, `FlagRangeIncl` marking
+an end written with `...`; `x[a...]` is `ErrorBadIndex`. A number stops scanning at a
+`..`, so `0..<3` is two integers and a range, not the float `0.`. (`..` still excludes
+its end, as `..<` does, for now; it changes with the range notation.)
 
 **A number straight after a `.` is an integer only.** `lexScanNumber` looks at
 the token before it: after a `DotToken` the number names a tuple element, so it
@@ -508,7 +509,7 @@ construction is the left of an ordinary `<-` and takes the whole list.
 **`parseSimpleExprFrom` resumes the cascade** above an operand already parsed
 by `parseOr`: the comparison, `and` and `or` levels each have a `...From` form
 taking their left operand. It exists for a match's pattern, which cannot tell a
-range (`0 .. 3`) from a value alone (`3`) or a condition (`n > 3`, refused as
+range (`0 ..< 3`) from a value alone (`3`) or a condition (`n > 3`, refused as
 `ErrorPatBare`) until it has read the first operand and seen what follows it.
 With one token of lookahead, reading the operand and then continuing is the
 only way to decide, and continuing lets the refused expression be reported
