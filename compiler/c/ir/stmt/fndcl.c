@@ -168,16 +168,21 @@ void fnOverloadDclPrint(FnOverloadDclNode *node) {
 // or fallback body, is expanded at each call), a trait's default (cloned
 // into each implementer), a module trait's default (cloned into each conforming
 // module), and any method of a generic type (cloned into each instance).
-// A generator is expanded too: the function that makes one, and the 'next' that
-// holds its body, are generated again from the include file's text by an importer,
-// which makes the generator's struct and its frame from the body (parsegen.c).
+// A generator an importer can reach is expanded too (yieldGenExpanded): the
+// function that makes one, and the 'next' that holds its body, are generated again
+// from the include file's text by an importer, which makes the generator's struct
+// and its frame from the body (parsegen.c).
 // 'typenode' is the type or module trait whose braces declare it, or NULL.
 int fnDclIsExpanded(FnDclNode *fndclnode, INode *typenode) {
     if ((fndclnode->flags & FlagInline) || fndclnode->genericinfo
         || (fndclnode->dclinfo.facts & DclIntrinsic))
         return 1;
-    if (yieldAny() && (yieldGenOfCtor(fndclnode) || yieldGenOf(fndclnode)))
-        return 1;
+    if (yieldAny()) {
+        GenInfo *info = yieldGenOf(fndclnode);
+        FnDclNode *ctor = info ? info->ctor : (yieldGenOfCtor(fndclnode) ? fndclnode : NULL);
+        if (ctor && yieldGenExpanded(ctor))
+            return 1;
+    }
     if (typenode && typenode->tag == ModTraitTag)
         return 1;
     if (typenode && typenode->tag == StructTag
@@ -197,6 +202,12 @@ void fnDclNameRes(NameResState *nstate, FnDclNode *fndclnode) {
     INode *svexpander = nstate->expander;
     if (fnDclIsExpanded(fndclnode, nstate->typenode))
         nstate->expander = (INode*)fndclnode;
+    // A generator not (yet) known to be expanded: what its body names is recorded,
+    // and marked afterwards if it turns out to be (exportGenReach)
+    else if (yieldAny() && yieldGenOf(fndclnode) && yieldGenOf(fndclnode)->ctor) {
+        nstate->expander = (INode*)fndclnode;
+        exportCondStep(fndclnode);
+    }
 
     nametblHookPush();
     // Resolve generic parameters inside the hooked context. Resolving one hooks
