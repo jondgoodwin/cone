@@ -358,7 +358,16 @@ pins it.
 
 ⚠ **A generic method costs a trait its virtual reference, and `structMakeVtable`
 is where that is said.** A vtable slot holds one machine signature and a generic
-method has one per instantiation, so no slot can be filled from it. The slot is
+method has one per instantiation, so no slot can be filled from it. This is a
+generic method that is *required*: a generic **default** (one with a body), a default
+with a `where` clause and an `inline` default are no slot (`structMakeVtable` passes
+them by), since each is cloned into the types that declare the trait and reached
+through them, and none has a symbol for a slot to point at or exists for every
+implementer. A trait's own check passes a generic default by too (`structCheckMembers`):
+its signature, which may name `Self` in a type held by value (`Step[T, Self]`), is made
+for each type that declares the trait, where `Self` is that type and no longer the trait;
+the structural fit of a bound passes the defaults by (`structMatches`), so a type with
+the required methods fits and gets the defaults only with `is`. The slot is
 counted anyway, which leaves a requirement no type satisfies and every coercion
 to `&<Trait` refused: `structMapVtableImpl` fails on it without comparing
 signatures, which are written in type parameters rather than types; `ErrorGenericVtable` names the method at its declaration in

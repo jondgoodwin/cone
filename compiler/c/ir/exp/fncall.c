@@ -1289,6 +1289,33 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
                     &methsym->namestr, &actorname->namestr);
             return -1;
         }
+        // A method every Iterator shares, asked of a type that has a 'next' and does
+        // not declare it is one: fitting the trait gives a bound its cursor, and the
+        // shared methods come only with the declaration
+        if (foundnode == NULL && objdereftype->tag == StructTag && !(objdereftype->flags & TraitType)
+            && iNsTypeFindFnField((INsTypeNode*)objdereftype, nametblFind("next", 4)) != NULL && pstate->fn) {
+            INode *shared = coreIteratorTrait ? iNsTypeFindFnField((INsTypeNode*)coreIteratorTrait, methsym) : NULL;
+            if (shared && shared->tag == FnDclTag && ((FnDclNode*)shared)->value != NULL) {
+                Name *tname = ((StructNode*)objdereftype)->namesym;
+                int declared = 0;
+                StructNode *tnode = (StructNode*)objdereftype;
+                INode **tp;
+                uint32_t tcnt;
+                if (tnode->traits)
+                    for (nodesFor(tnode->traits, tcnt, tp))
+                        if ((*tp)->tag == StructTag && ((StructNode*)*tp)->namesym == iteratorTraitName)
+                            declared = 1;
+                if (declared)
+                    errorMsgNode((INode*)callnode, ErrorNoMbr,
+                        "`%s` is a method of Iterator that %s's items do not qualify for: it is there only where its `where` clause holds of the items (`sum`, `min` and `max` want numbers, integers, f32 or f64), so a cursor that lends is mapped to values first, `map(x => *x)`.",
+                        &methsym->namestr, &tname->namestr);
+                else
+                    errorMsgNode((INode*)callnode, ErrorNoMbr,
+                        "`%s` is a method every Iterator shares, and %s has a `next` but does not declare itself one. Declare it to get the shared methods: `struct %s is Iterator[T]`, T being what `next` gives.",
+                        &methsym->namestr, &tname->namestr, &tname->namestr);
+                return -1;
+            }
+        }
         errorMsgNode((INode*)callnode, ErrorNoMbr, "Method or field `%s` not found.", &methsym->namestr);
         return -1;
     }

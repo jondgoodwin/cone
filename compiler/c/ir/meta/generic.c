@@ -1077,6 +1077,10 @@ static void genericDemandMatch(StructNode *trait, StructNode *type) {
     for (nodelistFor(&trait->nodelist, cnt, nodesp)) {
         if ((*nodesp)->tag != FnDclTag || !((*nodesp)->flags & FlagMethFld))
             continue;
+        // A generic default is no requirement: nothing is compared of it, and its
+        // signature (a step naming 'Self') is made only where it is called
+        if (((FnDclNode*)*nodesp)->genericinfo && ((FnDclNode*)*nodesp)->value)
+            continue;
         if (!((*nodesp)->flags & (TypeChecked | TypeChecking))) {
             TypeCheckState tstate;
             tstate.typenode = (INode*)trait;

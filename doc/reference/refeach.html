@@ -19,7 +19,7 @@
 			change its items in place (<span class="pre">mutItems</span>), consume it (<span class="pre">drain</span>), number them
 			(<span class="pre">indexed</span>) or cut it into runs (<span class="pre">chunks</span>, <span class="pre">mutChunks</span>), and <span class="pre">zip</span>; <span class="pre">each</span> as an entry of the append operator's list
 			(<a href="#builder">below</a>); and <a href="#parallel">parallel each</a> over a number range, an
-			array, a slice or a list, or the runs of one, with <span class="pre">indexed</span> giving the position, in a function or an actor's method, and <a href="#parallelbuilder">the parallel builder</a> that builds a list from it. The <a href="#adapters">adapters</a> of a cursor, <span class="pre">lazy(xs.iter()).map(f).filter(g).sum()</span>. Not built yet: <a href="#closure">closure iterators</a>, adapters that feed a <span class="pre">&lt;- each</span> list, the parallel reductions and a source that runs its own loop, all of which build on <a href="refclosure.html">closures</a>, which are built. An enum's variant is constructed with its values in square brackets, as written here: that is the current spelling, and how a variant is constructed is an open design question (<a href="refenum.html#init">Enums</a>).</i></p>
+			array, a slice or a list, or the runs of one, with <span class="pre">indexed</span> giving the position, in a function or an actor's method, and <a href="#parallelbuilder">the parallel builder</a> that builds a list from it. The <a href="#adapters">adapters</a> of a cursor that declares itself an <span class="pre">Iterator</span>, <span class="pre">xs.iter().map(f).filter(g).sum()</span>. Not built yet: <a href="#closure">closure iterators</a>, adapters that feed a <span class="pre">&lt;- each</span> list, the parallel reductions and a source that runs its own loop, all of which build on <a href="refclosure.html">closures</a>, which are built. An enum's variant is constructed with its values in square brackets, as written here: that is the current spelling, and how a variant is constructed is an open design question (<a href="refenum.html#init">Enums</a>).</i></p>
 
 	<p><span class="pre">each</span> makes it easier than <span class="pre">while</span>
 		to iterate over a sequence of values.
@@ -396,14 +396,22 @@ each x in |{cnt = 12}| if cnt &gt; 0 {Some[cnt /= 2]} else {None} {
 			This is because, unless its state can be independently reset, it will only ever afterward say it is out of values.</p>
 
 	<h4 id="adapters">Adapters</h4>
-	<p><span class="pre">lazy(cursor)</span> gives any cursor (an <a href="reftrait.html#iterator"><span class="pre">Iterator</span></a>: a
-		collection's <span class="pre">iter()</span>, a <span class="pre">zip</span>, a generator, a struct of your own) the steps that
-		work on a sequence as a whole. A step is a method of the <span class="pre">Lazy</span> that wraps the cursor and gives a
-		<span class="pre">Lazy</span> again; none does any work until a <b>terminal</b> method walks the chain once:</p>
+	<p>Every cursor that declares itself an <a href="reftrait.html#iterator"><span class="pre">Iterator</span></a> has the steps
+		that work on a sequence as a whole, as methods the trait shares: the cursors of the collections (<span class="pre">xs.iter()</span>,
+		<span class="pre">chunks</span>, <span class="pre">mutItems</span>, <span class="pre">indexed</span>, a dictionary's, a deque's), a
+		<span class="pre">zip</span>, <span class="pre">text.chars()</span>, a <a href="refcorout.html">generator</a>, and a struct of your own that says
+		<span class="pre">is Iterator[T]</span>, <span class="pre">T</span> being what its <span class="pre">next</span> gives. A step gives a
+		cursor again; none does any work until a <b>terminal</b> method walks the chain once, from where the cursor is, and
+		leaves it advanced:</p>
 <pre>
 imm k = 3;
-imm total = lazy(xs.iter()).map(x =&gt; *x * k).filter(y =&gt; *y &gt; 9).sum();
-each v in lazy(xs.iter()).map(x =&gt; *x * k) {      // a Lazy is a cursor: each walks it
+imm total = xs.iter().map(x =&gt; *x * k).filter(y =&gt; *y &gt; 9).sum();
+each v in xs.iter().map(x =&gt; *x * k) {      // a step is a cursor too: each walks it
+}
+
+struct Countdown is Iterator[i64] {         // declared: it has map, filter, sum and the rest
+  n i64;
+  pub fn next(self &amp;mut) Option[i64] { ... }
 }
 </pre>
 	<table border="1" cellpadding="4" cellspacing="0">
@@ -433,10 +441,12 @@ each v in lazy(xs.iter()).map(x =&gt; *x * k) {      // a Lazy is a cursor: each
 		vectorized as the hand-written loop is. Over a cursor that lends the loop is not vectorized, since each step answers an
 		<span class="pre">Option</span> of a borrow, which is a pointer tested for null: the same loop a hand-written
 		<span class="pre">while</span> over <span class="pre">next()</span> is.</p>
-	<p>The adapters are methods of the wrapper <span class="pre">Lazy[T, I]</span>, and not of every cursor, because a type is an
-		<span class="pre">Iterator</span> by having <span class="pre">next</span> alone, and a method of a trait reaches only a type that
-		declares the trait. A chain therefore begins with <span class="pre">lazy(...)</span>, and each step is a new <span class="pre">Lazy</span>
-		(its type is the whole chain's, which is why a chain is held in a variable of inferred type, or walked at once).</p>
+	<p>A type with a <span class="pre">next</span> that does not declare <span class="pre">is Iterator[T]</span> is still accepted wherever an
+		<span class="pre">Iterator</span> is asked for as a bound (<span class="pre">fn f[T, I Iterator[T]](it &amp;mut I)</span>: fitting a
+		trait is by shape), and <span class="pre">each</span> walks it. What it does not get is the shared methods, which come with the
+		declaration; asking it for <span class="pre">map</span> is an error that says to declare it. Each step is a cursor of its own type
+		(the whole chain's, so a chain is held in a variable of inferred type, or walked at once). The terminal methods take the cursor by
+		<span class="pre">&amp;mut</span>, so one called on a chain made in the same expression needs no name for it.</p>
 	<p><i>Not built yet:</i> a source that runs its own loop around the body of an <span class="pre">each</span>, taking the body
 		as a closure, for a source that cannot hand out its items one by one (a line reader that lends each line from its own
 		buffer, say). <span class="pre">each</span> would use it when the source has it, and otherwise use <span class="pre">next</span>;

@@ -2258,6 +2258,8 @@ void structNameRes(NameResState *pstate, StructNode *node) {
     // below hooks its own 'Self' over this one for the duration
     namespaceAdd(&node->namespace, selfTypeName, (INode*)node);
     nametblHookNode(selfTypeName, (INode*)node);
+    if (coreIteratorTrait == NULL && coreIsIteratorTrait((INode*)node))
+        coreIteratorTrait = (INode*)node;
 
     // Resolve the base before any other name in the type is hooked, and when it is
     // a declaration this type may stand on, stand a placeholder field for it at
@@ -3530,8 +3532,16 @@ static void structCheckMembers(StructNode *node) {
     // the type (structAtomicValueCheck).
     uint32_t methcnt = structAtomicValueCheck(node, 0) ? node->nodelist.used : 0;
     uint32_t pos;
-    for (pos = 0; pos < methcnt; ++pos)
+    for (pos = 0; pos < methcnt; ++pos) {
+        INode *meth = nodelistGet(&node->nodelist, pos);
+        // A generic default of a trait is a template for the types that declare the
+        // trait: its signature (a step that names 'Self') is made for each of them,
+        // never for the trait, where 'Self' is the trait and holds nothing by value
+        if ((node->flags & TraitType) && meth->tag == FnDclTag && ((FnDclNode*)meth)->genericinfo
+            && ((FnDclNode*)meth)->value)
+            continue;
         inodeTypeCheckAny(&tstate, &nodelistGet(&node->nodelist, pos));
+    }
 
     // Now that every method's signature is known, verify that no overload name this
     // type declares has two candidates that would accept the same arguments.
@@ -4089,6 +4099,14 @@ void structMakeVtable(StructNode *node) {
         if (!((*nodesp)->flags & FlagMethFld))
             continue;
         FnDclNode *meth = (FnDclNode *)*nodesp;
+        // A generic default is cloned into the types that declare the trait and is
+        // reached through them, never dispatched: it has no slot, and does not make
+        // the trait unusable behind a reference. Nor has a default that exists only
+        // where a condition holds (`where T is Integer`): a type that lacks it, as the
+        // item type decides, would leave the slot unfilled. Nor has an `inline` one:
+        // it has no symbol for a slot to point at
+        if (meth->value && (meth->genericinfo || meth->where || (meth->flags & FlagInline)))
+            continue;
         if (!inodeIsPrivate((INode*)meth)) {
             // A vtable slot holds one machine signature and a generic method has
             // one per instantiation, so there is nothing to put in the slot. The
@@ -4120,7 +4138,14 @@ void structMakeVtable(StructNode *node) {
     // Only a trait allocates 'derived'; a plain struct's is NULL
     if (node->derived) {
         for (nodesFor(node->derived, cnt, nodesp)) {
-            structAddVtableImpl(node, (StructNode *)*nodesp);
+            // An open trait is not indexed by a tag, so a type left out here is mapped
+            // where a value of it is first made a reference to the trait: a generic
+            // type's declaration is a template with nothing to map, and one not yet
+            // checked has no signatures to compare
+            StructNode *derived = (StructNode *)*nodesp;
+            if (!(node->flags & HasTagField) && (derived->genericinfo || !(derived->flags & TypeChecked)))
+                continue;
+            structAddVtableImpl(node, derived);
         }
     }
 }
@@ -4277,6 +4302,11 @@ TypeCompare structMatches(StructNode *to, INode *fromdcl, SubtypeConstraint cons
         if (!((*nodesp)->flags & FlagMethFld))
             continue;
         FnDclNode *meth = (FnDclNode *)*nodesp;
+        // A default (a method with a body) is not a requirement of a bound: a type that
+        // has the required methods fits, and gets the defaults only by declaring the
+        // trait with 'is'. A generic default fits no slot of a reference either
+        if (meth->value && (constraint == Monomorph || meth->genericinfo))
+            continue;
         INode *frombinding = namespaceFind(&from->namespace, meth->namesym);
         // Under a constraint, 'Self' in the requirement is the type asked
         // about, since the instance calls that type's own method. A reference

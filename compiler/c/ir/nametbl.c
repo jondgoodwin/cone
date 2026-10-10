@@ -228,6 +228,7 @@ void nametblInit() {
     hashName = nametblFind("hash", 4);
     hashTraitName = nametblFind("Hash", 4);
     hasherName = nametblFind("Hasher", 6);
+    iteratorTraitName = nametblFind("Iterator", 8);
     writeU64Name = nametblFind("writeU64", 8);
     ofName = nametblFind("of", 2);
     fillName = nametblFind("fill", 4);

@@ -1,7 +1,9 @@
 // What the adapters refuse. 'sum', 'min' and 'max' are there where the items are
 // numbers, so a cursor that lends (its items are borrows) is mapped to values first,
 // and a struct has none of them; the closure given to 'map' is typed from the item,
-// so its body is checked against it; a chain needs an Iterator to begin.
+// so its body is checked against it; and the shared methods come only to a type that
+// declares 'is Iterator[T]': one with a 'next' and no declaration meets an Iterator
+// bound (each_adapters) and is told, asked for 'map', to declare itself.
 
 mod each_adapters_typecheck;
 
@@ -12,19 +14,29 @@ struct Pt {
   y i32;
 }
 
+// Has a 'next', and does not say it is an Iterator
+struct Bare {
+  n i64;
+  pub fn next(self &mut) Option[i64] {
+    if n <= 0i64 { return None[i64][]; }
+    n = n - 1i64;
+    Some[i64][n];
+  }
+}
+
 fn borrowedSum(xs &List[i64]) {
-  imm s = lazy(xs.iter()).sum();                //~ ErrorWhereAbsent:26 "it exists only where T is Integer or T is f32 or T is f64"
+  imm s = xs.iter().sum();                //~ ErrorNoMbr:20 "ListIter's items do not qualify for"
 }
 
 fn structMax(ps &List[Pt]) {
-  imm m = lazy(ps.iter()).map(p => *p).max();   //~ ErrorWhereAbsent:39 "that is false for T = Pt"
+  imm m = ps.iter().map(p => *p).max();   //~ ErrorNoMbr:33 "IterMap's items do not qualify for"
 }
 
 fn badBody(xs &List[i64]) {
-  imm n = lazy(xs.iter()).map(x => *x + "a").count();   //~ ErrorNoCandidate:39 "No method declared by `+` accepts the call's arguments"
+  imm n = xs.iter().map(x => *x + "a").count();   //~ ErrorNoCandidate:33 "No method declared by `+` accepts the call's arguments"
 }
 
-fn notACursor(xs &List[i64]) {
-  imm n = lazy(xs).count();                     //~ ErrorInvType:15 "Could not infer all of generic's type parameters"
-                                                //~^ ErrorNoMeth:15 "This type does not support calls or field access"
+fn undeclared() {
+  imm n = new Bare(3i64).map(fn(x i64) i64 { x + 1i64; }).count();   //~ ErrorNoMbr:25 "does not declare itself one. Declare it to get the shared methods: `struct Bare is Iterator[T]`"
+                                                                     //~^ ErrorNoMeth:25 follow-on
 }

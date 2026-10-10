@@ -211,6 +211,11 @@ int invocationIsCore(INode *type);
 // gives them their 'hash' (nbrAddHashMethods) and supplies the 'hash' of a
 // struct that declares Hash and writes none (structSupplyHash)
 int coreIsHashTrait(INode *dcl);
+// Core's Iterator trait, known by its name and its package; the compiler keeps the
+// declaration it met (coreIteratorTrait) to say, of a type that has a `next` and
+// does not declare it, that the shared methods come with the declaration
+int coreIsIteratorTrait(INode *dcl);
+extern INode *coreIteratorTrait;
 int coreIsHasher(INode *dcl);
 
 // Core's TypeRecord struct, once the core package's declaration of
