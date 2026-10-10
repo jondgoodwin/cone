@@ -1,57 +1,61 @@
 // Parallel loops: a range of work spread over the actors' workers (the
-// package's header, PARALLEL LOOPS). This is the LOW-LEVEL form: a function
-// reference, a pointer to shared data and an index range, called as a
-// library. The language's 'parallel each' is written over it (parallelEach,
-// below), and checks the rules of its body at compile time; for a caller of
-// parallelRange they are its own.
+// package's header, PARALLEL LOOPS). This is the LOW-LEVEL form: a callable
+// that takes an index range, called as a library. The language's 'parallel each'
+// is written over the same machinery (parallelEach, below), and checks the
+// rules of its body at compile time; for a caller of parallelRange they are its
+// own, beyond what a Shareable body is checked for.
 //
 //   import actors;
 //
-//   struct Sums {
-//     in *u64;                  // read by every piece
-//     out *u64;                 // piece i writes only out[i]
-//   }
-//
-//   fn square(data *u8, lo usize, hi usize) {
-//     imm d = data as *Sums;
-//     mut i = lo;
-//     while i < hi {
-//       *((*d).out + i) = *((*d).in + i) * *((*d).in + i);
-//       i = i + 1usize;
-//     }
-//   }
-//
 //   fn main() {
 //     initAll();
-//     mut s = new Sums(inp, outp);
-//     actors.parallelRange(0usize, 1000000usize, 1024usize, &square, &mut s as *u8);
+//     // the body lists the two pointers it uses: its own copies of the addresses
+//     actors.parallelRange(0usize, 1000000usize, 1024usize, fn(lo usize, hi usize) [inp, outp] {
+//       mut i = lo;
+//       while i < hi {                  // piece i writes only out[i]
+//         *(outp + i) = *(inp + i) * *(inp + i);
+//         i = i + 1usize;
+//       }
+//     });
 //     // every out[i] is written; the loop has finished
 //     finalAll();
 //   }
 //
-//   actors.parallelRange(lo, hi, grain, body, data)
+//   actors.parallelRange(lo, hi, grain, body)
 //                          run body over [lo, hi), in pieces no smaller than
 //                          grain (except the last of a range that does not
-//                          divide), and return when all have finished
-//   actors.parallelRangeThen(lo, hi, grain, body, data, onDone, doneArg)
+//                          divide), and return when all have finished. The body
+//                          is a callable taking (lo, hi): a closure, a function
+//                          reference or a struct with a '()', lent for the
+//                          call, and Shareable
+//   actors.parallelRangeThen(lo, hi, grain, body, onDone)
 //                          the same, but return at once: whichever piece
-//                          finishes last calls onDone(doneArg), on whichever
-//                          thread that is. This is the form a loop inside an
-//                          actor's behaviour will end at.
-//   actors.RangeBody       &fn(data *u8, lo usize, hi usize)
-//   actors.parallelEach(lo, hi, body, data)
+//                          finishes last calls onDone(), on whichever thread
+//                          that is. This is the form a loop inside an actor's
+//                          behaviour will end at. Both are moved in (closures
+//                          that list what they use): the body Sendable and
+//                          Shareable, onDone Sendable
+//   actors.RangeBody       fn(lo usize, hi usize)
+//   actors.PieceFn         &fn(data *u8, lo usize, hi usize)
+//   actors.parallelEach(lo, hi, piece, data)
 //                          what a 'parallel each' becomes: parallelRange with a
 //                          grain chosen from the workers (at least 128), and the messages the
 //                          pieces send to actors gathered and sent after the
-//                          loop in iteration order (SENDS GATHERED)
+//                          loop in iteration order (SENDS GATHERED). Called by
+//                          the compiler's code, with the loop it outlined into
+//                          a PieceFn and the record of the variables it uses:
+//                          the one place a function reference and a data pointer
+//                          stay, as that is the form the generated code makes
 //
-// WHAT THE BODY MAY DO. This form TRUSTS ITS CALLER. The body is called with
-// the caller's 'data' pointer and a sub-range [lo, hi) of the loop's range,
-// any number of times, on any worker, in any order, and at the same time as
-// itself on other pieces. So it must write only the items of its own
-// sub-range (or its own locals); it must read what it shares only if no piece
-// writes it; and it must not 'await', or block on anything another piece or
-// the loop's caller must do (a piece is run to completion on the worker's
+// WHAT THE BODY MAY DO. This form TRUSTS ITS CALLER, beyond the compiler's
+// check that the body is Shareable. The body is called with a sub-range
+// [lo, hi) of the loop's range, any number of times, on any worker, in any
+// order, and at the same time as itself on other pieces. So it must write only
+// the items of its own sub-range (or its own locals), through a raw pointer or
+// an atomic (a body that changes a variable it borrows, or holds an Rc or a
+// &mut, is refused as not Shareable); it must read what it shares only if no
+// piece writes it; and it must not 'await', or block on anything another piece
+// or the loop's caller must do (a piece is run to completion on the worker's
 // stack, and a loop that waited could not finish). It may call
 // parallelRange itself: the inner loop finishes inside the piece that began
 // it. It may send messages (their order across pieces is not defined; a
@@ -112,9 +116,18 @@
 // counted (liveScheduled) so that finalAll() does not stop the workers while
 // it is unfinished.
 
-// The body of a loop: the caller's data pointer and a sub-range [lo, hi) of
-// the range, called possibly many times and at once on different pieces
-pub alias RangeBody = &fn(data *u8, lo usize, hi usize);
+// The body of a loop: a sub-range [lo, hi) of the range, called possibly many
+// times and at once on different pieces. A callable of this signature is what
+// parallelRange and parallelRangeThen take (a closure, a function reference, or
+// a struct with a '()' of it), as a '[F RangeBody + Shareable]'
+pub alias RangeBody = fn(lo usize, hi usize);
+
+// How the runtime itself holds a body, and how the compiler's code hands it one:
+// a function reference and a pointer to the record of what the body uses, which
+// the function is given beside a sub-range. The compiler outlines a 'parallel
+// each' loop into such a function (genlpar.c) and calls parallelEach or parSeam
+// with it; parallelRange and parallelRangeThen make one of a callable
+pub alias PieceFn = &fn(data *u8, lo usize, hi usize);
 
 // How many tasks a deque holds
 const taskCap = 128u64;
@@ -128,7 +141,7 @@ const taskMask = 127u64;
 struct LoopRec {
   pub remaining usize;         // items not yet run (atomic)
   pub grain usize;
-  pub body RangeBody;
+  pub body PieceFn;
   pub data *u8;
   pub onDone &fn(arg *u8);     // called by the last task, scheduled form only
   pub doneArg *u8;
@@ -351,14 +364,36 @@ fn eachGrain(len usize, workers usize) usize {
 // scheduler, and return when every piece has finished. An empty range
 // (hi <= lo) calls nothing. The caller works on its own loop while it waits.
 //
-// This is the low-level form: 'parallel each' will sit on it. It TRUSTS ITS
-// CALLER on the body's rules: the body writes only the items of the sub-range
-// it is handed, reads shared data that no piece writes, and does not 'await'
-// or wait on another piece (this file's header, WHAT THE BODY MAY DO). It may
-// be called from main, from any thread, or from inside an actor's behaviour,
-// where the actor is not run again until it returns; the workers are started
-// if no actor has started them.
-pub fn parallelRange(lo usize, hi usize, grain usize, body RangeBody, data *u8) {
+// The body is any callable taking a sub-range: a closure written at the call
+// (it reaches what it uses by borrowing it or by listing it), a function
+// reference, or a struct with a '()'. It is lent for the call, and compiled
+// for each body: the call of it from a piece is the body itself, not a call
+// through a reference. Its pieces run at the same time, so it must be
+// Shareable (what it holds is safe to read from several threads, which refuses
+// a body that borrows a variable it changes, or holds an Rc), and it takes
+// `self &`, so a body that changes a variable it borrows is refused.
+//
+// This is the low-level form: 'parallel each' sits on parallelEach, which
+// shares its machinery. Beyond what the compiler checks of a body here, it
+// TRUSTS ITS CALLER on the body's rules: the body writes only the items of the
+// sub-range it is handed (through a raw pointer, or an atomic), reads shared
+// data that no piece writes, and does not 'await' or wait on another piece
+// (this file's header, WHAT THE BODY MAY DO). It may be called from main, from
+// any thread, or from inside an actor's behaviour, where the actor is not run
+// again until it returns; the workers are started if no actor has started them.
+pub fn parallelRange[F fn(lo usize, hi usize) + Shareable](lo usize, hi usize, grain usize, body &F) {
+  rangeRun(lo, hi, grain, &callBody[F], body as *F as *u8);
+}
+
+// A piece of a loop whose body is a callable: the record is a pointer to it
+fn callBody[F fn(lo usize, hi usize) + Shareable](data *u8, lo usize, hi usize) {
+  imm f = data as &F;
+  f(lo, hi);
+}
+
+// The loop of a piece function and its record: what parallelRange, parallelEach
+// and the compiler's loops run on
+fn rangeRun(lo usize, hi usize, grain usize, body PieceFn, data *u8) {
   if hi <= lo {
     return;
   }
@@ -386,7 +421,7 @@ pub fn parallelRange(lo usize, hi usize, grain usize, body RangeBody, data *u8) 
 // the compiler has checked them. Unlike parallelRange, it gathers the messages
 // the pieces send to actors and sends them after the loop, in iteration order
 // (SENDS GATHERED, below).
-pub fn parallelEach(lo usize, hi usize, body RangeBody, data *u8) {
+pub fn parallelEach(lo usize, hi usize, body PieceFn, data *u8) {
   if hi <= lo {
     return;
   }
@@ -394,7 +429,7 @@ pub fn parallelEach(lo usize, hi usize, body RangeBody, data *u8) {
   imm s = running as *Sched;
   imm grain = eachGrain(hi - lo, usize.from((*s).nworkers));
   mut job = new EachLoop(body, data, 0usize);
-  parallelRange(lo, hi, grain, &gatherPiece, &mut job as *EachLoop as *u8);
+  rangeRun(lo, hi, grain, &gatherPiece, &mut job as *EachLoop as *u8);
   sendGathered(&mut job as *EachLoop);
 }
 
@@ -429,7 +464,7 @@ mut @threadlocal curPiece usize = 0usize;
 // the pieces that sent something, a stack of records pushed as the pieces end
 // (the head's address, atomic)
 struct EachLoop {
-  pub body RangeBody;
+  pub body PieceFn;
   pub data *u8;
   pub records usize;
 }
@@ -570,13 +605,51 @@ fn sendGathered(job *EachLoop) {
 }
 
 // The same loop, started and left: it returns at once, and the piece that
-// finishes last calls onDone(doneArg), on whichever thread runs it, exactly
-// once; for an empty range, or one no longer than grain, onDone is called
-// before this returns, after the single call of body for the latter. The
-// first task goes on top of the caller's own queue if it is a worker, else on
-// the shared deque, and workers take it from there. data must live until
-// onDone is called. The same trust in the body's rules as parallelRange.
-pub fn parallelRangeThen(lo usize, hi usize, grain usize, body RangeBody, data *u8,
+// finishes last calls onDone, on whichever thread runs it, exactly once; for an
+// empty range, or one no longer than grain, onDone is called before this
+// returns, after the single call of body for the latter. The first task goes on
+// top of the caller's own queue if it is a worker, else on the shared deque,
+// and workers take it from there. Both callables are moved in, since they
+// outlive this call: each is kept in an owner of its own and finalized when the
+// loop has finished (the body after its last piece, onDone after its call), so
+// a closure listing what it uses (a closure that borrows a local is refused:
+// the local would be gone) is the shape of both. The body is Sendable and
+// Shareable, being called from several threads at once, and onDone Sendable.
+// The same trust in the body's rules as parallelRange.
+pub fn parallelRangeThen[B fn(lo usize, hi usize) + Sendable + Shareable, D fn() + Sendable](
+    lo usize, hi usize, grain usize, body B, onDone D) {
+  imm box = libc.malloc(mem.sizeof[ThenBox]()) as *ThenBox;
+  if box as usize == 0usize {
+    die("actors: out of memory for a parallel loop");
+  }
+  mem.writeRaw[ThenBox](box, new ThenBox(
+    new So[imm, fn(lo usize, hi usize) + Sendable + Shareable](body),
+    new So[fn() + Sendable](onDone)));
+  rangeThen(lo, hi, grain, &thenPiece, box as *u8, &thenDone, box as *u8);
+}
+
+// What parallelRangeThen keeps while the loop runs, in a block of its own
+struct ThenBox {
+  pub body So[imm, fn(lo usize, hi usize) + Sendable + Shareable];
+  pub onDone So[fn() + Sendable];
+}
+
+fn thenPiece(data *u8, lo usize, hi usize) {
+  imm b = data as *ThenBox;
+  (*b).body(lo, hi);
+}
+
+// The loop has finished: the block is freed, onDone called, and the owners die
+fn thenDone(arg *u8) {
+  mut b = mem.readRaw[ThenBox](arg as *ThenBox);
+  libc.free(arg);
+  b.onDone();
+}
+
+// The scheduled form over a piece function and its record, as parSeam's loop
+// is: onDone(doneArg) is called by the piece that finishes last, and data must
+// live until then
+fn rangeThen(lo usize, hi usize, grain usize, body PieceFn, data *u8,
     onDone &fn(arg *u8), doneArg *u8) {
   imm g = grainOf(grain);
   if hi <= lo or hi - lo <= g {
@@ -637,7 +710,7 @@ struct ParPending {
   pub h *Header;
   pub lo usize;
   pub hi usize;
-  pub body RangeBody;          // the compiler's piece, handed 'caps'
+  pub body PieceFn;            // the compiler's piece, handed 'caps'
   pub caps *u8;                // the block of copies the pieces read, or 0 (freed when the loop ends)
   pub resume *u8;              // the seam's resume function
   pub id u64;                  // the record's slot in the pending table
@@ -661,7 +734,7 @@ pub fn parBlock(size usize) *u8 {
 // the actor whose behaviour is running, to begin once the behaviour has
 // returned. 'resume' is the seam's resume function and 'id' its record's slot
 // in the pending table (hasId false: no record)
-pub fn parSeam(lo usize, hi usize, body RangeBody, caps *u8, resume *u8, id u64, hasId bool) {
+pub fn parSeam(lo usize, hi usize, body PieceFn, caps *u8, resume *u8, id u64, hasId bool) {
   imm h = curActor as *Header;
   if h as usize == 0usize {
     die("actors: a parallel each cut at its end, outside an actor's behaviour");
@@ -687,7 +760,7 @@ fn startHeld(w *Worker, h *Header) {
   }
   mem.writeRaw[EachLoop](job, new EachLoop((*p).body, (*p).caps, 0usize));
   (*p).job = job;
-  parallelRangeThen((*p).lo, (*p).hi, grain, &gatherPiece, job as *u8, &parSeamDone, p as *u8);
+  rangeThen((*p).lo, (*p).hi, grain, &gatherPiece, job as *u8, &parSeamDone, p as *u8);
 }
 
 // The loop has finished, on whichever thread ran its last piece: send what its

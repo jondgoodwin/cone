@@ -167,12 +167,16 @@
 //
 // Once: a function run exactly once, however many threads ask at once. The
 // first caller runs it; every other caller sleeps until it has returned, and
-// then sees all it did. A closure cannot capture yet, so what is run is a
-// plain function, given nothing or one value:
+// then sees all it did. What is run is any callable taking nothing, or one
+// value: a plain function (&f), a closure (a literal is lent for the call,
+// `o.callOnce(fn() { ... })`, and may change what it borrows), or a struct with
+// a '()' of that signature (&mut s). The parameter is a '&<mut fn(..)': compiled
+// once and called through the reference, since a Once is for the cold path of a
+// start-up and nothing here is worth inlining:
 //
 //   Once.make()               a Once whose function has not run
-//   o.callOnce(&f)            run f() if no call on this Once has run one
-//   o.callOnceWith(arg, &f)   run f(arg) likewise. 'arg' is moved in, and
+//   o.callOnce(f)             run f() if no call on this Once has run one
+//   o.callOnceWith(arg, f)    run f(arg) likewise. 'arg' is moved in, and
 //                             dropped unused when another call ran first.
 //   o.isCompleted()           whether a call has run its function to the end
 //
@@ -947,7 +951,7 @@ pub struct Once is Move {
 
   // Run f() if no call on this Once has run its function. Every call returns
   // only once the function has run, by whichever thread ran it.
-  pub fn callOnce(self &opaq, f &fn()) {
+  pub fn callOnce(self &opaq, f &<mut fn()) {
     if self.begin() {
       f();
       self.finish();
@@ -956,7 +960,7 @@ pub struct Once is Move {
 
   // Run f(arg) likewise; arg is moved in, and dropped when another call ran
   // the function
-  pub fn callOnceWith[A](self &opaq, arg A, f &fn(a A)) {
+  pub fn callOnceWith[A](self &opaq, arg A, f &<mut fn(a A)) {
     if self.begin() {
       f(arg);
       self.finish();

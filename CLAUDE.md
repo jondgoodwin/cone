@@ -458,8 +458,8 @@ Visual Studio projects stay at the root.
   channel, held and retried when full), `Target.Once` (a sync one-shot)
   and `Target.Status` (a `StatusArray` slot looked at without waiting);
   `Target.Hook`, an answer handed to another runtime's code, a `Sink`
-  (its pointer and two plain functions, `deliver` and `drop`), which the
-  loop knows nothing of;
+  (a closure of that runtime's, a `So[fn(c Completion) + Sendable]`: a Sink that dies
+  undelivered finalizes it and what it holds), which the loop knows nothing of;
   and external operations, `lp.external`, ended from any thread by a
   `Completer` (a GPU fence's watcher, a callback library) under the same
   contract; its tests include `race.cone`, a million operations each
@@ -618,12 +618,14 @@ Visual Studio projects stay at the root.
   actors counted through `Arc` and finalized once when their last handle and
   message have gone, and quiescence, which its module's finalizer waits for
   before stopping the workers (`configure`, `stats`), parallel loops on the same workers
-  (`parallelRange`, `parallelRangeThen`: split on demand, a task queue above the actors' messages;
-  `parallelEach`, which a `parallel each` runs through, gathering the messages its pieces send
+  (`parallelRange`, `parallelRangeThen`, each taking its body as a callable, a closure or a
+  function reference, `[F fn(lo usize, hi usize) + Shareable]`: split on demand, a task queue above the actors' messages;
+  `parallelEach`, which a `parallel each` runs through, taking the compiler's outlined
+  function and record (`PieceFn`), gathering the messages its pieces send
   and sending them after the loop in iteration order), its header the shape of
   what the compiler generates for an actor and its example `pingpong.cone` the
-  timed benchmark, and `Awaitable[R]`, an operation a behaviour may `await`,
-  started at the seam with the reply's envelope its answer, an `R`, goes back
+  timed benchmark, and `Awaitable[R]`, an operation a behaviour may `await`, a closure
+  (`So[fn(rp Reply)]`) started at the seam with the reply's envelope its answer, an `R`, goes back
   in, and a pending table that drops (abandons) the records still parked when
   its actor dies, and `Future[T]`, a behaviour's value kept to be awaited
   later, here or in another actor (`futures.cone`: the futures region, one
