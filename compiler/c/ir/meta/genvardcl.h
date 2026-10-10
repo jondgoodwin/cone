@@ -14,8 +14,13 @@ typedef struct GenVarDclNode {
     // What is written after the parameter's name, '[T Integer + Copy]': each
     // '+'-joined name, or NULL. Its meaning is what it resolves to: a trait
     // makes it a constraint (genericConstraintsNameRes); a type or a kind, a
-    // value or kind parameter, which are not built.
+    // value or kind parameter. A kind parameter is not built.
     Nodes *annot;
+    // The integer type of a value parameter, '[N usize]': its annotation named
+    // a number type, which genericConstraintsNameRes takes out of the
+    // constraints and records here. NULL for a type parameter. An argument is
+    // a literal of this type (genericValueArg).
+    INode *valtype;
 } GenVarDclNode;
 
 // Create a new generic variable declaraction node

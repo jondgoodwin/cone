@@ -1,0 +1,105 @@
+// A picture of pixels that are arrays, written a row to a pass: a slice of
+// arrays, '&mut Array[Array[u8, 3]]', is cut into rows by 'mutChunks(width)',
+// each row a slice no other pass can reach, and a pixel's channels are written
+// through the item, '(*p)[k]'. The same walk by 'each' is the serial twin the
+// parallel one is compared with, byte for byte, over an array's slice and over
+// a list of arrays; 'mutItems().indexed()' and indexing the slice are the
+// other ways to the same pixels.
+//
+// Pixel (x, y), channel k is 3x + 5y + k, in 5 columns and 7 rows. The sum:
+//
+//   3 * (0 + ... + 4) * 7 * 3  = 3 * 10 * 21 =  630
+//   5 * (0 + ... + 6) * 5 * 3  = 5 * 21 * 15 = 1575
+//   (0 + 1 + 2) * 35           = 3 * 35      =  105
+//                                        total = 2310
+//
+// and pixel (4, 6)'s channel 2 is 12 + 30 + 2 = 44. A pass per pixel then sets
+// channel 0 to the pixel's place, so pixel 34 reads 34, 43 (12 + 30 + 1), 44.
+
+mod concurrency_parallel_array_rows;
+
+import stdio use *;
+import collections use *;
+import actors;
+
+fn show(label &str, n u64) {
+  printStr(label);
+  printStr(" = ");
+  printUInt(n);
+  printStr("\n");
+}
+
+fn channel(x usize, y usize, k usize) u8 {
+  u8.from(x * 3usize + y * 5usize + k);
+}
+
+// The picture a row to a pass
+fn bakeParallel(pixels &mut Array[Array[u8, 3]], width usize) {
+  parallel each y, row in pixels.mutChunks(width).indexed() {
+    each x, p in row.mutItems().indexed() {
+      each k in 0usize < 3usize { (*p)[k] = channel(x, y, k); }
+    }
+  }
+}
+
+fn bakeSerial(pixels &mut Array[Array[u8, 3]], width usize) {
+  each y, row in pixels.mutChunks(width).indexed() {
+    each x, p in row.mutItems().indexed() {
+      each k in 0usize < 3usize { (*p)[k] = channel(x, y, k); }
+    }
+  }
+}
+
+fn total(pixels &mut Array[Array[u8, 3]]) u64 {
+  mut sum = 0u64;
+  each i in 0usize < pixels.len {
+    each k in 0usize < 3usize { sum = sum + u64.from(pixels[i][k]); }
+  }
+  sum;
+}
+
+fn mismatches(a &mut Array[Array[u8, 3]], b &mut Array[Array[u8, 3]]) u64 {
+  mut bad = 0u64;
+  each i in 0usize < a.len {
+    each k in 0usize < 3usize {
+      if a[i][k] != b[i][k] { bad = bad + 1u64; }
+    }
+  }
+  bad;
+}
+
+fn main() {
+  initAll();
+  actors.configure(new actors.Options(workers: 4u32));
+
+  // ---- a fixed array's slice ----
+  mut parallelArr Array[Array[u8, 3], 35];
+  mut serialArr Array[Array[u8, 3], 35];
+  mut s1 &mut Array[Array[u8, 3]] = &mut parallelArr;
+  mut s2 &mut Array[Array[u8, 3]] = &mut serialArr;
+  bakeParallel(s1, 5usize);
+  bakeSerial(s2, 5usize);
+  show("array sum", total(s1));
+  show("array serial sum", total(s2));
+  show("array mismatches", mismatches(s1, s2));
+  show("array last pixel channel 2", u64.from(s1[34][2]));
+
+  // ---- a list of arrays, lent as the same slice ----
+  mut parallelList = new List[Array[u8, 3]];
+  mut serialList = new List[Array[u8, 3]];
+  each i in 0usize < 35usize {
+    parallelList.push([0u8, 0u8, 0u8]);
+    serialList.push([0u8, 0u8, 0u8]);
+  }
+  bakeParallel(parallelList.viewMut(), 5usize);
+  bakeSerial(serialList.viewMut(), 5usize);
+  show("list sum", total(parallelList.viewMut()));
+  show("list mismatches", mismatches(parallelList.viewMut(), serialList.viewMut()));
+
+  // ---- a pass per pixel ----
+  parallel each i, p in s1.mutItems().indexed() {
+    (*p)[0] = u8.from(i);
+  }
+  show("pixel 34 channel 0", u64.from(s1[34][0]));
+  show("pixel 34 channel 1", u64.from(s1[34][1]));
+}

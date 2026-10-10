@@ -607,6 +607,12 @@ enum ErrorCode {
     // A virtual reference's trait method met by a stronger 'self' (ir/types/fnsig.c)
     ErrorVtableSelf = 1401,     // A struct viewed as a trait behind a virtual reference (`&<Trait`, `So[Trait]`) whose method takes a stronger `self` permission than the trait's method declares
 
+    // Value parameters of a generic, '[N usize]' (ir/meta/generic.c, ir/types/array.c)
+    ErrorGenValueParm = 1402,   // A value parameter, '[N usize]', that is not built: its annotation is not an integer type, it has another annotation beside it, it is on a generic type, or a 'where' clause asks about it
+    ErrorGenValueArg = 1403,    // An argument for a value parameter that is not a non-negative integer literal of the parameter's type that fits it
+    ErrorGenValueClash = 1404,  // A value parameter inferred as two different numbers: 'dot(&three, &four)' over 'Array[f32, N]' twice
+    ErrorGenValueArith = 1405,  // Arithmetic over a value parameter in a type, 'Array[T, N + 1]': a size is written as a number or as a value parameter alone
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

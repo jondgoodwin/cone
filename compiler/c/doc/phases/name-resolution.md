@@ -432,7 +432,7 @@ next pass a null to trip over.
 | `ir/types/fnsig.c` | `fnSigNameRes` | forces scope 0 |
 | `ir/itype.c` | `itypeIsGenericType` | makes an unlowered `Box[i64]` count as a type |
 | | `itypeIsManagedRefType`, `itypeManagedRefRegion` | make an unlowered `Rc[mut, Node]` count as a type: a region's head, its `is` list read as written (`regionStructWritesRegionRef`), and type arguments |
-| `ir/types/array.c` | `arrayNameRes`, `arrayTypeLower` | an array literal, refusing `[n; x]`, the old spelling of a type and the retired fill literal; the array type `Array[T, n, …]` built from its bracketed call, which `fnCallNameRes` hands it once the call's head is bound to `arrayTypeDcl` |
+| `ir/types/array.c` | `arrayNameRes`, `arrayTypeLower` | an array literal, refusing `[n; x]`, the old spelling of a type and the retired fill literal; the array type `Array[T, n, …]` built from its bracketed call, which `fnCallNameRes` hands it once the call's head is bound to `arrayTypeDcl`, refusing a size that is arithmetic over a generic's value parameter (`ErrorGenValueArith`) |
 | `ir/exp/allocate.c` | `allocateQuesNameRes` | the one parent-pointer rewrite |
 | `ir/exp/closure.c` | `closureNameRes`, `closureNoteUse` | a closure literal: its state's values and parameters' types read in the code around it, then its own names hooked over that for the body; each local of the code around that a bound name reaches, and the `self` a bare member is reached through, is noted as one it borrows ([closure](../nodes/closure.md)) |
 | `ir/clone.c` | `cloneNode`, `cloneDclFix`, `clonePushState` | how a resolved template survives instantiation |
