@@ -429,8 +429,10 @@ The last statement splits:
   knows a path ends at a `return`, and generation ends this one with
   `unreachable` ([return](return.md)).
 - **Regular block ending in a jump**: checked, nothing injected.
-- **Anything else** (empty, or ending in a declaration): `blockret nil` is
-  appended, and it is a value path.
+- **Anything else** (empty, or ending in a declaration or a type name): `blockret
+  nil` is appended, and it is a value path. The `nil` takes the position of the
+  last statement (of the block, when it is empty), so a refusal of the value it
+  stands for points at the source.
 
 Then every registered break is folded in — except for the function's own body
 block, where `returnTypeCheck` already coerced returns against the signature.

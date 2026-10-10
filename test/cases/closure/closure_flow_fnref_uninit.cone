@@ -1,0 +1,45 @@
+// A call through a function-reference variable reads that variable, so one that
+// was never given a value is refused as any other use of it is. The call used to
+// pass: fnCallFlow flowed the arguments and not the callee. The neighbours that
+// follow are accepted: a variable given its function before the call, on every
+// path and in both arms, and one initialised where it is declared.
+
+mod closure_flow_fnref_uninit;
+
+fn double(x i32) i32 { x * 2; }
+fn triple(x i32) i32 { x * 3; }
+
+fn never() i32 {
+  mut f &fn(x i32) i32;
+  f(3);                                       //~ ErrorMove:3 "This variable has not been initialized"
+}
+
+fn afterOtherWork() i32 {
+  mut f &fn(x i32) i32;
+  imm base = 10;
+  base + f(3);                                //~ ErrorMove:10 "This variable has not been initialized"
+}
+
+fn nested(g &fn(x i32) i32) i32 {
+  mut f &fn(x i32) i32;
+  g(f(2));                                    //~ ErrorMove:5 "This variable has not been initialized"
+}
+
+fn given(c bool) i32 {
+  mut f &fn(x i32) i32;
+  f = &double;
+  f(3);
+}
+
+fn eitherArm(c bool) i32 {
+  mut f &fn(x i32) i32;
+  if c { f = &double; } else { f = &triple; }
+  f(3);
+}
+
+fn declared() i32 {
+  imm f &fn(x i32) i32 = &triple;
+  f(4);
+}
+
+fn main() {}
