@@ -1,0 +1,95 @@
+// What '==' and '!=' on an enum whose variants carry fields cannot do. The
+// comparison is the tags and then the variant's own '==', so every variant that
+// carries fields has to declare one: where one does not, the comparison is
+// refused at the place it is written, naming the first variant that has none and
+// what it carries. enum_payload_equality runs the comparison where each declares
+// one.
+//
+// What counts as carrying fields is anything but the discriminant, the fields the
+// enum's variants have in common included.
+
+mod enum_typecheck_payload_eq;
+
+// No variant declares a '==': the first one that carries fields is named, and
+// '!=' is refused under the same words, as it is the negation of the '=='
+enum Shape {
+  struct Circle {
+    pub radius i32;
+  }
+  struct Rect {
+    pub w i32;
+    pub h i32;
+  }
+  struct Dot {}
+}
+
+fn noneDeclare(a Shape, b Shape) bool {
+  a == b;                 //~ ErrorEnumEquality:5 "Circle carries a payload (radius i32) and declares none"
+}
+
+fn noneDeclareNe(a Shape, b Shape) bool {
+  a != b;                 //~ ErrorEnumEquality:5 "Circle carries a payload (radius i32) and declares none"
+}
+
+// One that declares it does not make up for another that does not: the first
+// variant with none is named, and a variant carrying nothing is never the one
+enum Half {
+  struct Empty {}
+  struct Has {
+    pub a i32;
+    pub fn `==`(self, other Has) bool { a == other.a; }
+  }
+  struct Lacks {
+    pub b i32;
+    pub c i32;
+  }
+}
+
+fn oneLacks(a Half, b Half) bool {
+  a == b;                 //~ ErrorEnumEquality:5 "Lacks carries a payload (b i32, c i32) and declares none"
+}
+
+// A field in common is part of every variant, so a variant declaring no field of
+// its own still carries one, and needs the '==' that compares it
+enum Event {
+  pub time i32;
+  struct Tick {}
+  struct Key {
+    pub code i32;
+    pub fn `==`(self &, other &Key) bool { time == other.time and code == other.code; }
+  }
+}
+
+fn commonField(a Event, b Event) bool {
+  a == b;                 //~ ErrorEnumEquality:5 "Tick carries a payload (time i32) and declares none"
+}
+
+// A generic enum is asked per instance, and core's Option and Result declare no
+// '==' on Some, Ok or Error
+fn optionOfNumber(a Option[i32], b Option[i32]) bool {
+  a == b;                 //~ ErrorEnumEquality:5 "Some carries a payload (value i32) and declares none"
+}
+
+fn resultOfNumbers(a Result[i32, bool], b Result[i32, bool]) bool {
+  a != b;                 //~ ErrorEnumEquality:5 "Ok carries a payload (value i32) and declares none"
+}
+
+// References are read through to the values, and refused the same way
+fn throughReferences(a &Shape, b &Shape) bool {
+  a == b;                 //~ ErrorEnumEquality:5 "Circle carries a payload (radius i32) and declares none"
+}
+
+// A '==' the variant declares must take another of the variant, or the enum's
+// comparison has nothing to call: reported where the variant declares it
+enum Wrong {
+  struct One {
+    pub a i32;
+    pub fn `==`(self, other i32) bool { a == other; }   //~ ErrorNoCandidate:9 "No method declared by `==` accepts the call's arguments"
+                                                         //~^ ErrorInvType:9 "Conditional expression must be coercible to boolean value" follow-on
+  }
+  struct Two {}
+}
+
+fn wrongSignature(a Wrong, b Wrong) bool {
+  a == b;
+}
