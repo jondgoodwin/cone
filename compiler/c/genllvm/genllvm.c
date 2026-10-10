@@ -2448,6 +2448,9 @@ void genSetup(GenState *gen, ConeOptions *opt) {
     gen->flightbase = 0;
     gen->awaitflights = 0;
     gen->awaitid = NULL;
+    gen->pres = NULL;
+    gen->precnt = 0;
+    gen->premax = 0;
     gen->parbody = NULL;
     gen->genstep = NULL;
     gen->genself = NULL;

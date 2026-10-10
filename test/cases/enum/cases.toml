@@ -67,12 +67,12 @@
 # the owning references a variant holds is region's, region_enum_owner; that a
 # variant which moves makes its enum move is move's, move_flow_infection.
 #
+# Comparing two values of an enum whose variants carry fields -- the tags, and then
+# the variant's own '==' -- has a run program of its own, enum_payload_equality,
+# and its refusals (a variant declaring no '==') are enum_typecheck_payload_eq.
+#
 # Left out, with reasons:
 #
-# - Comparing two values of an enum whose variants carry fields. That would have
-#   to compare the fields, and Cone has no structural comparison for a struct of
-#   any kind, so there is nothing to establish beyond the refusal --
-#   enum_typecheck_match holds it.
 # - The match patterns refmatch.html still marks as not implemented: a tuple
 #   matchee, partial and first-class patterns. A condition as a pattern ('not b',
 #   'n > 3') is not decided, and enum_parse_patterns holds its refusal.
@@ -234,6 +234,40 @@ name = "an-inlined-result-is-not-merged-in-an-aggregate-phi"
 target = "preir"
 contains = ["%merge = alloca %Got", "%merge = alloca %Option"]
 excludes = ["phi %Got", "phi %Option"]
+
+[scenario.enum_payload_equality]
+category = "run"
+description = "'==' and '!=' on enums whose variants carry fields: the tags are compared, then the variant's own '==' (by value or by reference) on the two payloads, and a variant carrying nothing is equal by its tag alone -- same variant and payload, same variant and a payload that differs in each field, different variants in both orders, the empty variant; variables, call results, parameters and references as operands; a mix of empty and non-empty variants; a payload that is itself an enum; a field the variants have in common; a generic enum's instance; an enum that moves, whose operands are not moved; an enum laid out without a tag, a private '==', an extension's copies and added variants; and two slices of them, compared element by element"
+tags = ["typecheck", "flow", "genllvm", "runtime"]
+
+# Debug too, as enum_success: the comparison is a function the compiler builds
+[[scenario.enum_payload_equality.run]]
+name = "release"
+options = []
+
+[[scenario.enum_payload_equality.run]]
+name = "debug"
+options = ["--debug"]
+
+# The comparison is a function the compiler gives the enum, defined in the object
+# of the package that declares it and called from the program that imports it
+# (the enum's variants and their '==' are all the include file carries). q's
+# private '==' of a variant is reached by q's own comparison, so the program
+# never names it. Its generic enum's instance is the program's own.
+[scenario.enum_payload_equality_link]
+category = "run"
+description = "An enum with variants that carry fields, declared in a package compiled on its own, compared by a program linked with it: the package's comparison is called, a variant's private '==' is reached through it, and a generic enum's instance is made by the program"
+tags = ["genllvm", "runtime"]
+link = ["q/q.conebuild"]
+include = ["include/q.cone"]
+
+# q defines the comparison of its Shape and the program only declares it, while
+# the program defines its own copy of the generic enum's, shared with any other
+# object that makes the same instance
+[[scenario.enum_payload_equality_link.check]]
+name = "the-program-declares-q's-comparison"
+target = "symbols"
+contains = ["declare q.Shape.`-eq`", "define linkonce_odr q.Maybe[i32].`-eq` comdat any"]
 
 [scenario.enum_payload_loop_option]
 category = "compile"
@@ -457,9 +491,15 @@ diagnostics = 2
 
 [scenario.enum_typecheck_match]
 category = "reject"
-description = "Matches that are not exhaustive, a guarded arm not counting toward it, not ordered, or not of one type; an enum comparison with no candidate and none to have, a range on an enum, and a guard that is not a condition; a bool's two values alone not exhaustive, and a value alone refused as the '==' it means"
+description = "Matches that are not exhaustive, a guarded arm not counting toward it, not ordered, or not of one type; an enum comparison with no candidate, and one whose variants carry fields and declare no '==', a range on an enum, and a guard that is not a condition; a bool's two values alone not exhaustive, and a value alone refused as the '==' it means"
 tags = ["typecheck"]
 diagnostics = 19
+
+[scenario.enum_typecheck_payload_eq]
+category = "reject"
+description = "'==' and '!=' on an enum with a variant that carries fields and declares no '==': the first such variant is named with what it carries, however many others have one, a field in common counting as carried, for core's Option and Result instances, through references, and a '==' of a variant that takes something other than another of the variant reported where it is declared"
+tags = ["typecheck"]
+diagnostics = 9
 
 [scenario.enum_typecheck_narrow]
 category = "reject"

@@ -37,6 +37,9 @@ extern Name *dropName;  // "drop": the finalizer the compiler gives a module
 // structSetEnumDropFn). 'drop' is an ordinary method name, so the generated one
 // takes a name no plainly written method has, and the two never share a symbol.
 extern Name *typeDropName;
+// "-eq": the comparison the compiler gives an enum whose variants carry fields
+// (structSetEnumEqFn). No source can spell it, so it collides with no name.
+extern Name *enumEqName;
 extern Name *cloneName; // "clone" method
 extern Name *finalName; // "final": a type's finalizer method, and a module's own finalizer
 // "-final": an enum's 'final' as cloned into a variant that declares its own,
@@ -100,6 +103,7 @@ extern Name *optionName;   // "Option"
 extern Name *fromName;     // "from", a number type's conversion: 'u64.from(count)'
 extern Name *hashName;     // "hash", what core's Hash trait requires: 'key.hash(h)'
 extern Name *hashTraitName;  // "Hash", core's trait of a value that feeds a hasher
+extern Name *iteratorTraitName; // "Iterator", core's trait of a cursor, whose shared methods come with its declaration
 extern Name *hasherName;     // "Hasher", core's hasher, the algorithm a Hash feeds
 extern Name *writeU64Name;   // "writeU64", the Hasher method an integer's hash feeds its bits through
 

@@ -461,6 +461,48 @@ static void contentsLowerEntries(TypeCheckState *pstate, FnCallNode **nodep) {
     int haseach = 0;
     for (uint32_t i = 0; i < nentries; ++i)
         haseach |= entryp[i]->tag == EachEntryTag;
+
+    // An entry holding an 'await' is made before the receiver is borrowed, as is
+    // every entry written before it, in the order written, each into a local of
+    // the rewrite: the seam ends a borrow, and the receiver is borrowed (and the
+    // values appended) only after the last of them. A repeated, filled or looped
+    // entry makes its value more than once, past the seam, and is not hoisted
+    // (the seam is then reported where it stands, pwSeamVar)
+    uint32_t lastawait = 0;     // One past the last entry that holds a seam
+    int hoistable = 1;
+    for (uint32_t i = 0; i < nentries; ++i) {
+        INode *entry = entryp[i];
+        if (!awaitWithin(entry))
+            continue;
+        lastawait = i + 1;
+        if (entry->tag == OfEntryTag || entry->tag == FillEntryTag || entry->tag == EachEntryTag)
+            hoistable = 0;
+    }
+    VarDclNode **hoisted = NULL;
+    uint32_t nhoisted = 0;
+    if (lastawait && hoistable) {
+        hoisted = (VarDclNode **)memAllocBlk(lastawait * 2 * sizeof(VarDclNode *));
+        for (uint32_t i = 0; i < lastawait; ++i) {
+            INode *entry = entryp[i];
+            INode **partp[2] = { NULL, NULL };
+            if (entry->tag == PairEntryTag) {
+                partp[0] = &((EntryNode*)entry)->first;
+                partp[1] = &((EntryNode*)entry)->val;
+            }
+            else if (entry->tag != OfEntryTag && entry->tag != FillEntryTag && entry->tag != EachEntryTag)
+                partp[0] = &entryp[i];
+            for (int p = 0; p < 2; ++p) {
+                if (partp[p] == NULL || litIsLiteral(*partp[p]))
+                    continue;
+                VarDclNode *part = contentsVar(tempLocalName, unknownType, immPerm, *partp[p],
+                    (uint16_t)(pstate->scope + 1), *partp[p]);
+                *partp[p] = contentsVarUse(part, (INode*)part);
+                hoisted[nhoisted++] = part;
+            }
+        }
+    }
+    for (uint32_t i = 0; i < nhoisted; ++i)
+        nodesAdd(&blk->stmts, (INode*)hoisted[i]);
     VarDclNode *recv = contentsVar(haseach ? contentsRecvName() : tempName, unknownType, immPerm, lval,
         (uint16_t)(pstate->scope + 1), (INode*)node);
     nodesAdd(&blk->stmts, (INode*)recv);

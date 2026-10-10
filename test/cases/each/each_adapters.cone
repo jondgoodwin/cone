@@ -1,0 +1,177 @@
+// The adapters of a cursor: every cursor that declares 'is Iterator[T]' has map,
+// filter, take and skip (each giving a cursor again) and the terminal methods fold, any, all,
+// count, find, sum, min and max. A closure given to one is typed from the item, and
+// the whole chain is one loop (each_adapters_fused).
+//
+// Each case prints what it saw; the numbers are worked out in the comments.
+// xs is 1 2 3 4 5 6 (sum 21) and k is 3, so 'map(x => *x * k)' gives 3 6 9 12 15 18 (sum 63).
+
+mod each_adapters;
+
+import stdio use *;
+import collections use *;
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn showBool(label &str, b bool) {
+  printStr(label);
+  printStr(" = ");
+  printStr(if b { "true"; } else { "false"; });
+  printStr("\n");
+}
+
+fn showOpt(label &str, o Option[i64]) {
+  printStr(label);
+  printStr(" = ");
+  match o {
+    case imm e Some { printInt(e.value); }
+    case is None { printStr("none"); }
+  }
+  printStr("\n");
+}
+
+// A cursor of one's own, and a generator
+struct Countdown is Iterator[i64] {
+  n i64;
+
+  pub fn next(self &mut) Option[i64] {
+    if n <= 0i64 { return None[i64][]; }
+    imm v = n;
+    n = n - 1i64;
+    Some[i64][v];
+  }
+}
+
+// Has a 'next' and does not declare itself an Iterator: it meets an Iterator bound
+// (a generic asks for the shape), and has none of the shared methods (each_adapters_typecheck)
+struct Bare {
+  n i64;
+
+  pub fn next(self &mut) Option[i64] {
+    if n <= 0i64 { return None[i64][]; }
+    imm v = n;
+    n = n - 1i64;
+    Some[i64][v];
+  }
+}
+
+fn countBound[T, I Iterator[T]](it &mut I) i64 {
+  mut n = 0i64;
+  while true {
+    match it.next() {
+      case imm e Some { n = n + 1i64; }
+      case is None { break; }
+    }
+  }
+  n;
+}
+
+fn upto(top i64) yields i64 {
+  each i in 1i64 <= top { yield i; }
+}
+
+fn main() {
+  mut xs = new List[i64];
+  each i in 1i64 <= 6i64 { xs.push(i); }
+  imm k = 3i64;
+
+  // map: a closure that borrows k; the sum and the order of the items
+  show("map sum", xs.iter().map(x => *x * k).sum());                        // 63
+  mut order = 0i64;
+  each v in xs.iter().map(x => *x * k) { order = order * 10i64 + v / k; }
+  show("map order", order);                                                       // 123456
+
+  // filter: the closure is given a borrow of the item
+  show("filter sum", xs.iter().map(x => *x).filter(y => *y % 2i64 == 0i64).sum());   // 2 + 4 + 6 = 12
+  imm kept = xs.iter().filter(y => **y > 3i64).count();                     // 4 5 6
+  show("filter on borrows", i64.from(kept));                                      // 3
+
+  // a chain: map, filter, sum
+  show("chain", xs.iter().map(x => *x * k).filter(y => *y > 9i64).sum());   // 12 + 15 + 18 = 45
+
+  // fold: the result so far and each item
+  show("fold", xs.iter().fold(100i64, (acc, x) => acc - *x));               // 100 - 21 = 79
+  show("fold order", xs.iter().fold(0i64, (acc, x) => acc * 10i64 + *x));   // 123456
+
+  // take and skip, in the middle and at the bounds
+  show("take 3", xs.iter().map(x => *x * k).take(3usize).sum());            // 3 + 6 + 9 = 18
+  show("take 0", xs.iter().map(x => *x * k).take(0usize).sum());            // 0
+  show("take 6", xs.iter().map(x => *x * k).take(6usize).sum());            // 63
+  show("take 100", xs.iter().map(x => *x * k).take(100usize).sum());        // 63
+  show("skip 4", xs.iter().map(x => *x * k).skip(4usize).sum());            // 15 + 18 = 33
+  show("skip 0", xs.iter().map(x => *x * k).skip(0usize).sum());            // 63
+  show("skip 6", xs.iter().map(x => *x * k).skip(6usize).sum());            // 0
+  show("skip 100", xs.iter().map(x => *x * k).skip(100usize).sum());        // 0
+  show("skip 2 take 3", xs.iter().map(x => *x).skip(2usize).take(3usize).sum());   // 3 + 4 + 5 = 12
+  show("take 4 skip 3", xs.iter().map(x => *x).take(4usize).skip(3usize).sum());   // 4
+
+  // any and all, and on no items
+  showBool("any > 5", xs.iter().any(x => *x > 5i64));                       // true
+  showBool("any > 6", xs.iter().any(x => *x > 6i64));                       // false
+  showBool("all > 0", xs.iter().all(x => *x > 0i64));                       // true
+  showBool("all < 6", xs.iter().all(x => *x < 6i64));                       // false
+  showBool("any of none", xs.iter().skip(6usize).any(x => *x > 0i64));      // false
+  showBool("all of none", xs.iter().skip(6usize).all(x => *x > 100i64));    // true
+
+  // count
+  show("count", i64.from(xs.iter().count()));                               // 6
+  show("count none", i64.from(xs.iter().skip(9usize).count()));             // 0
+  show("count even", i64.from(xs.iter().filter(y => **y % 2i64 == 0i64).count()));   // 3
+
+  // find: the first item the closure (given a borrow) is true of, as an Option
+  imm found = xs.iter().map(x => *x * k).find(y => *y > 10i64);
+  showOpt("find", found);                                                         // 12
+  showOpt("find none", xs.iter().map(x => *x).find(y => *y > 100i64));      // none
+  showOpt("find mapped", xs.iter().map(x => *x).find(y => *y == 5i64));      // 5
+
+  // min and max, and None on no items
+  mut ys = new List[i64];
+  ys.push(5i64); ys.push(-2i64); ys.push(9i64); ys.push(-7i64); ys.push(4i64);
+  showOpt("min", ys.iter().map(x => *x).min());                             // -7
+  showOpt("max", ys.iter().map(x => *x).max());                             // 9
+  showOpt("min mapped", xs.iter().map(x => *x * k).min());                  // 3
+  showOpt("max mapped", xs.iter().map(x => *x * k).max());                  // 18
+  showOpt("min none", xs.iter().map(x => *x).skip(6usize).min());           // none
+  showOpt("max none", xs.iter().map(x => *x).filter(y => *y > 100i64).max());   // none
+
+  // empty input
+  mut none = new List[i64];
+  show("empty sum", none.iter().map(x => *x).sum());                        // 0
+  show("empty count", i64.from(none.iter().count()));                       // 0
+  show("empty fold", none.iter().fold(7i64, (acc, x) => acc + *x));         // 7
+  showOpt("empty min", none.iter().map(x => *x).min());                     // none
+
+  // a closure that changes a variable: laziness, and the step is run once an item
+  mut calls = 0i64;
+  imm two = xs.iter().map(x => { calls += 1i64; *x; }).take(2usize).sum();  // 1 + 2
+  show("counting sum", two);                                                      // 3
+  show("counting calls", calls);                                                  // 2
+
+  // other cursors: an array, a zip, a cursor of one's own, floats
+  imm arr = [10i64, 20i64, 30i64];
+  show("array", arr.iter().map(x => *x + 1i64).sum());                      // 11 + 21 + 31 = 63
+  mut zs = new List[i64];
+  zs.push(10i64); zs.push(20i64); zs.push(30i64);
+  show("zip", zip(&xs, &zs).map(p => *p.0 * *p.1).sum());                   // 10 + 40 + 90 = 140
+  show("own cursor", new Countdown(4i64).map(x => x * x).sum());              // 16 + 9 + 4 + 1 = 30
+  show("generator", upto(5i64).filter(y => *y % 2i64 == 1i64).fold(0i64, (acc, x) => acc + x));   // 1 + 3 + 5 = 9
+  mut dq = new Deque[i64];
+  dq.push(4i64); dq.push(8i64); dq.pushFront(2i64);
+  show("deque", dq.items().map(x => *x).skip(1).sum());                     // 4 + 8 = 12
+  mut bare = new Bare(5i64);
+  show("bound, undeclared", countBound(&mut bare));                               // 5
+  mut declared = new Countdown(3i64);
+  show("bound, declared", countBound(&mut declared));                             // 3
+  mut fs = new List[f64];
+  fs.push(0.5); fs.push(1.5); fs.push(2.0);
+  printFloat(fs.iter().map(x => *x).sum()); printStr("\n");                 // 4
+  match fs.iter().map(x => *x * 2.0).max() {                                // 4
+    case imm e Some { printFloat(e.value); printStr("\n"); }
+    case is None { printStr("none\n"); }
+  }
+}

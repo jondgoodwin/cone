@@ -206,7 +206,7 @@ enum ErrorCode {
     ErrorTagWidth = 1092,       // A tag value its discriminant cannot hold: outside the integer type the enum declared or the one its base settled, or none holds it
     ErrorBadUnsized = 1093,     // '@unsized' where there is no variant padding to decline
     ErrorNoVariants = 1094,     // An enum declaring no variants
-    ErrorEnumEquality = 1095,   // '==' on an enum whose variants carry payloads, which have no comparison
+    ErrorEnumEquality = 1095,   // '==' on an enum with a variant that carries fields and declares no '=='
 
     // Nominal is-a conformance, asserted with 'is'
     ErrorExtends = 1096,        // A base clause that may not stand where it is written: 'extends' on an abstraction, or either clause twice

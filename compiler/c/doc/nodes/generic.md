@@ -537,6 +537,10 @@ the one copy that is not generic — the instance itself — and clears it there
 A trait's generic default is inherited by a type that declares the trait, and
 `structCheckTraitReqs` does not compare the copy, which shares the default's
 type parameters and so is told from a method the type declares itself.
+A type argument is the use's own source, resolved where it is written: `cloneNode`
+clones one substituted for a generic parameter with no `selftype`, so a `Self` in it
+(a default naming `Step[T, Self]`) stays the type the default was taken into and is not
+repointed at the instance being made (`Step`).
 Not yet built: a trait's public generic method met by a generic method the type
 declares itself. `structCheckTraitReqs` compares the requirement with that
 method by `fnSigVrefEqual`, and `itypeIsSame` finds no two
