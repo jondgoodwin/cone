@@ -1,0 +1,45 @@
+// An owner held in a field, reached through a reference whose value others
+// share (a '&mut', or a '&' that only reads), lends no '&uni' and no '&imm' of
+// what it holds: a '&mut' lends '&mut' at most (refborref.html, "Freezing access
+// to the source of a borrow"), since another name for the same holder can replace
+// the owner while the loan is used. A receiver ('self &uni'), an argument, a
+// local's initializer and a borrow written out are all refused; so is the
+// use-after-free the receiver form allowed, 'take' replacing the owner whose value
+// it is still reading. ref_owner_field_shared runs what stays allowed.
+
+mod ref_typecheck_owner_field_shared;
+
+struct App {
+  pub n i64;
+  pub fn take(self &uni, other &mut Holder) i64 { other.app = new So[App](9); n; }
+  pub fn takeUni(self &uni) i64 { n; }
+}
+
+struct Holder {
+  pub app So[App];
+}
+
+struct Outer {
+  pub boxed So[Holder];
+}
+
+fn needUni(a &uni App) i64 { a.n; }
+fn needImm(a &imm App) i64 { a.n; }
+
+fn viaMut(h &mut Holder) i64 { h.app.takeUni(); }                      //~ ErrorBadPerm:33 "Cannot lend `&uni` of this owner"
+fn viaWritten(h &mut Holder) i64 { (&uni *h.app).takeUni(); }          //~ ErrorBadPerm:37 "Borrowed reference cannot obtain this permission"
+fn viaInit(h &mut Holder) i64 { imm r &uni App = h.app; r.takeUni(); } //~ ErrorBadPerm:51 "Cannot lend `&uni` of this owner"
+fn viaArg(h &mut Holder) i64 { needUni(h.app); }                       //~ ErrorBadPerm:41 "Cannot lend `&uni` of this owner"
+fn viaNested(o &mut Outer) i64 { needUni(o.boxed.app); }               //~ ErrorBadPerm:49 "Cannot lend `&uni` of this owner"
+fn viaImmInit(h &mut Holder) i64 { imm r &imm App = h.app; r.n; }      //~ ErrorBadPerm:54 "Cannot lend `&imm` of this owner"
+fn viaImmArg(h &mut Holder) i64 { needImm(h.app); }                    //~ ErrorBadPerm:44 "Cannot lend `&imm` of this owner"
+fn viaImmWritten(h &mut Holder) i64 { imm r = &imm *h.app; r.n; }      //~ ErrorBadPerm:47 "Borrowed reference cannot obtain this permission"
+fn viaRead(h &Holder) i64 { needImm(h.app); }                          //~ ErrorBadPerm:38 "Cannot lend `&imm` of this owner"
+
+fn viaTwo(h &mut Holder, h2 &mut Holder) i64 { h.app.take(h2); }      //~ ErrorBadPerm:49 "Cannot lend `&uni` of this owner"
+
+fn main() {
+  imm a = new Rc[mut, Holder](new Holder(new So[App](5)));
+  imm b = a;
+  viaTwo(&mut *a, &mut *b);
+}
