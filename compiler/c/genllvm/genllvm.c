@@ -802,6 +802,38 @@ void genlGloVarName(GenState *gen, VarDclNode *glovar) {
     genlClaimSymbol(gen, (INode*)glovar, global, defined, symbol);
 }
 
+// Do two paths name the same file, a '\' being a '/'? The command line spells the
+// main file as the user typed it, and a lexer's url as a folder walk joined it.
+static int genlSamePath(const char *a, const char *b) {
+    for (; *a && *b; ++a, ++b) {
+        char ca = *a == '\\' ? '/' : *a;
+        char cb = *b == '\\' ? '/' : *b;
+        if (ca != cb)
+            return 0;
+    }
+    return *a == *b;
+}
+
+// The debug info file of the source a node was written in. A file is named as a
+// diagnostic names it (its lexer's url, which a line mark may have renamed to the
+// source an include file was made from), and one DIFile is made for each name.
+LLVMMetadataRef genlDiFile(GenState *gen, INode *node) {
+    if (node == NULL || node->lexer == NULL || node->lexer->url == NULL
+        || genlSamePath(node->lexer->url, gen->opt->srcpath))
+        return gen->difile;
+    const char *url = node->lexer->url;
+    for (GenDiFile *known = gen->difiles; known; known = known->next) {
+        if (genlSamePath(known->url, url))
+            return known->file;
+    }
+    GenDiFile *made = memAllocBlk(sizeof(GenDiFile));
+    made->url = url;
+    made->file = LLVMDIBuilderCreateFile(gen->dibuilder, url, strlen(url), ".", 1);
+    made->next = gen->difiles;
+    gen->difiles = made;
+    return made->file;
+}
+
 // Generate LLVMValueRef for a global function
 void genlGloFnName(GenState *gen, FnDclNode *glofn) {
     // Do not generate inline functions
@@ -854,11 +886,12 @@ void genlGloFnName(GenState *gen, FnDclNode *glofn) {
         // carrying a subprogram
         if (!gen->opt->release && defined != GenlDeclared) {
             char *fnname = glofn->namesym? &glofn->namesym->namestr : "";
+            LLVMMetadataRef difile = genlDiFile(gen, (INode*)glofn);
             LLVMMetadataRef fntype = LLVMDIBuilderCreateSubroutineType(gen->dibuilder,
-                gen->difile, NULL, 0, 0);
-            LLVMMetadataRef sp = LLVMDIBuilderCreateFunction(gen->dibuilder, gen->difile,
+                difile, NULL, 0, 0);
+            LLVMMetadataRef sp = LLVMDIBuilderCreateFunction(gen->dibuilder, difile,
                 fnname, strlen(fnname), symbol, strlen(symbol),
-                gen->difile, glofn->linenbr, fntype, 0, 1, glofn->linenbr, LLVMDIFlagPublic, 0);
+                difile, glofn->linenbr, fntype, 0, 1, glofn->linenbr, LLVMDIFlagPublic, 0);
             LLVMSetSubprogram(glofn->llvmvar, sp);
         }
     }
@@ -1253,6 +1286,7 @@ void genlProgram(GenState *gen, ProgramNode *pgm) {
     LLVMDisposeMessage(layout);
     if (!gen->opt->release) {
         gen->dibuilder = LLVMCreateDIBuilder(gen->module);
+        gen->difiles = NULL;
         gen->difile = LLVMDIBuilderCreateFile(gen->dibuilder, gen->opt->srcpath, strlen(gen->opt->srcpath), ".", 1);
         // The compile unit is attached to the module; nothing reads it back
         LLVMDIBuilderCreateCompileUnit(gen->dibuilder, LLVMDWARFSourceLanguageC,
