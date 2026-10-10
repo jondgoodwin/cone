@@ -150,7 +150,9 @@ static void nameUseMarkOne(NameResState *pstate, INode *dcl) {
     DclInfo *dclinfo = inodeGetDclInfo(dcl);
     if (dclinfo->owner == NULL)   // a local or a parameter has no symbol
         return;
-    dclinfo->facts |= DclExpandReached;
+    // (a generator not known to be expanded only records the reach: exportGenReach)
+    if (!exportIsCondStep(pstate->expander))
+        dclinfo->facts |= DclExpandReached;
     exportReachAdd(pstate->expander, dcl);
 }
 

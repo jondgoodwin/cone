@@ -24,6 +24,20 @@ int dclIsInstance(INode *dclnode);
 // generic method, a macro method, or -- in a trait or a generic type -- every method
 int typeHoldsExpanded(INode *type);
 
+// Whether the generator whose constructor is 'ctor' is expanded: carried whole in
+// the include file because an importer can reach it (a public one, one an expanded
+// body names, one a body that can reach a private method through a value may call).
+// Other generators stay inside the package
+int yieldGenExpanded(FnDclNode *ctor);
+
+// A generator's body is resolved with what it names recorded as reached and not
+// yet marked (exportCondStep, exportIsCondStep), since whether the generator is
+// expanded depends on bodies resolved after it; exportGenReach marks, once name
+// resolution is done, what the expanded generators' bodies name
+void exportCondStep(FnDclNode *step);
+int exportIsCondStep(INode *from);
+void exportGenReach();
+
 // Whether a function is a type's 'final' or 'clone', which a value of the type
 // calls wherever it is dropped or copied, without naming it
 int fnIsTypeLifecycle(INode *dclnode);

@@ -37,22 +37,147 @@ int dclIsInstance(INode *dclnode) {
 // which name resolution cannot see (it binds the member at type check), so
 // such a type exports all of them, as does a type whose module holds an
 // expanded body elsewhere (modHoldsExpanded).
-int typeHoldsExpanded(INode *type) {
+//
+// 'gens' says whether a public generator counts as such a body. It does for what
+// a library exports (typeHoldsExpanded); it does not in deciding which private
+// generators an importer needs (yieldGenExpanded), where one public generator
+// would otherwise make every other one in its module needed
+static int typeHolds(INode *type, int gens) {
     if (type->tag != StructTag)
         return 0;
     StructNode *strnode = (StructNode*)type;
+    // A generator's struct holds the inline function that makes what a 'yield'
+    // hands out, which no importer calls: what it holds is the generator's own
+    // affair (yieldGenExpanded)
+    if (yieldAny() && yieldGenOfStruct(type))
+        return 0;
     if (strnode->genericinfo || (type->flags & TraitType))
         return 1;
     INode **nodesp;
     uint32_t cnt;
     for (nodelistFor(&strnode->nodelist, cnt, nodesp)) {
         INode *node = *nodesp;
+        // A public generator is a body an importer expands. A private one is
+        // not, unless the type holds another body that can reach it
         if (node->tag == MacroDclTag
             || (node->tag == FnDclTag && ((node->flags & FlagInline) || ((FnDclNode*)node)->genericinfo
-                || (yieldAny() && yieldGenOfCtor((FnDclNode*)node)))))
+                || (gens && (node->flags & FlagPub) && yieldAny() && yieldGenOfCtor((FnDclNode*)node)))))
             return 1;
     }
     return 0;
+}
+
+int typeHoldsExpanded(INode *type) {
+    return typeHolds(type, 1);
+}
+
+// ---- Which generators an importer needs ---------------------------------------
+//
+// A generator is expanded -- carried whole in the include file, its body's names
+// exported and declared beside it -- only where an importer can reach it:
+// - a public one;
+// - one named, by name resolution, in a body an importer expands (DclExpandReached);
+// - a method of a type, when the type holds a body an importer expands (a public
+//   generator among them), or an expanded body names the type, since a body can
+//   call a private method through a value, which name resolution does not see;
+//   or when the module holds an inline, generic or macro body, which can reach
+//   any type's private methods the same way. A public generator in the module
+//   does not count for that: one that reaches a private generator method of a
+//   type it does not name is not seen.
+// Any other generator, a private one nothing reaches, stays inside the package.
+
+static int typeTreeHolds(INode *type, int gens);
+
+// Whether a module holds a body an importer expands, not counting generators.
+// Asked afresh each time: it is asked while the reaches are still being worked
+// out, when a kept answer could be too early
+static int modHoldsExpandedNoGens(ModuleNode *mod) {
+    if (mod == NULL)
+        return 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(mod->nodes, cnt, nodesp)) {
+        INode *node = *nodesp;
+        if (node->tag == FnDclTag) {
+            FnDclNode *fn = (FnDclNode*)node;
+            if ((fn->flags & FlagInline) || fn->genericinfo || (fn->dclinfo.facts & DclIntrinsic))
+                return 1;
+        }
+        else if (node->tag == StructTag && typeTreeHolds(node, 0))
+            return 1;
+    }
+    return 0;
+}
+
+// Whether the generator whose constructor is 'ctor' is expanded
+int yieldGenExpanded(FnDclNode *ctor) {
+    if ((ctor->flags & FlagPub) || (ctor->dclinfo.facts & DclExpandReached))
+        return 1;
+    INode *owner = ctor->dclinfo.owner;
+    if (owner == NULL || owner->tag != StructTag)
+        return 0;
+    return (owner->tag == StructTag && (inodeGetDclInfo(owner)->facts & DclExpandReached))
+        || typeHolds(owner, 1) || modHoldsExpandedNoGens(dclInfoGetModule(owner));
+}
+
+// The generators whose bodies name things an importer needs only if the
+// generator is itself expanded, which name resolution cannot know when it reads
+// the body (a callee's body may be read before its caller's): the bodies are
+// resolved with their reaches recorded and not yet marked, and exportGenReach
+// marks them once everything is resolved
+static Nodes *condsteps = NULL;
+
+void exportCondStep(FnDclNode *step) {
+    if (condsteps == NULL)
+        condsteps = newNodes(8);
+    nodesAdd(&condsteps, (INode*)step);
+}
+
+int exportIsCondStep(INode *from) {
+    if (condsteps == NULL || from == NULL)
+        return 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(condsteps, cnt, nodesp)) {
+        if (*nodesp == from)
+            return 1;
+    }
+    return 0;
+}
+
+// Mark what the bodies of the expanded generators name, and so on: marking a
+// private generator reached makes it expanded, and its body's names are marked in
+// turn
+void exportGenReach() {
+    if (condsteps == NULL)
+        return;
+    int changed = 1;
+    while (changed) {
+        changed = 0;
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(condsteps, cnt, nodesp)) {
+            FnDclNode *step = (FnDclNode*)*nodesp;
+            GenInfo *info = yieldGenOf(step);
+            if (info == NULL || info->ctor == NULL || !yieldGenExpanded(info->ctor))
+                continue;
+            Nodes *reached = exportReachesOf((INode*)step);
+            if (reached == NULL)
+                continue;
+            INode **rp;
+            uint32_t rcnt;
+            for (nodesFor(reached, rcnt, rp)) {
+                INode *to = *rp;
+                if (to->tag != FnDclTag && to->tag != VarDclTag && to->tag != StructTag)
+                    continue;
+                DclInfo *toinfo = inodeGetDclInfo(to);
+                if (toinfo == NULL || toinfo->owner == NULL || (toinfo->facts & DclExpandReached))
+                    continue;
+                toinfo->facts |= DclExpandReached;
+                changed = 1;
+            }
+        }
+    }
 }
 
 // Whether a module declares a body an importer expands anywhere in it: a
@@ -61,16 +186,20 @@ int typeHoldsExpanded(INode *type) {
 // included. A type's private members are its module's, so such a body can call
 // a private method of any type of the module through a value, which name
 // resolution cannot see. Asked once a module, and kept.
-static int typeTreeHoldsExpanded(INode *type) {
-    if (typeHoldsExpanded(type))
+static int typeTreeHolds(INode *type, int gens) {
+    if (typeHolds(type, gens))
         return 1;
     INode **nodesp;
     uint32_t cnt;
     for (nodelistFor(&((StructNode*)type)->nodelist, cnt, nodesp)) {
-        if ((*nodesp)->tag == StructTag && typeTreeHoldsExpanded(*nodesp))
+        if ((*nodesp)->tag == StructTag && typeTreeHolds(*nodesp, gens))
             return 1;
     }
     return 0;
+}
+
+static int typeTreeHoldsExpanded(INode *type) {
+    return typeTreeHolds(type, 1);
 }
 
 static int modHoldsExpanded(ModuleNode *mod) {
@@ -192,6 +321,11 @@ int dclIsExported(ModuleNode *libroot, INode *dclnode) {
     if (mod != libroot)
         return 0;
     DclInfo *dclinfo = inodeGetDclInfo(dclnode);
+    // A generator is carried whole or not at all (a bodiless one cannot be read
+    // from the file): one no importer can reach stays inside the package
+    if (dclnode->tag == FnDclTag && yieldAny() && yieldGenOfCtor((FnDclNode*)dclnode)
+        && !yieldGenExpanded((FnDclNode*)dclnode))
+        return 0;
     if (dclinfo->facts & (DclExpandReached | DclLifecycle | DclActorGen))
         return 1;
     INode *owner = dclinfo->owner;

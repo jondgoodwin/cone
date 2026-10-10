@@ -1,0 +1,55 @@
+// Package vault's source: private generators, some a public generator reaches and
+// some nothing public reaches. An importer makes a generator again from the include
+// file, so the file carries the public generators whole and, with them, the private
+// ones they name and the private declarations those name. The others stay inside
+// the package: they, and the function only they name, are not in the file. (The
+// method 'bonus', only a private generator names, is in it as a declaration without
+// a body: a module that holds a body an importer expands, here the public
+// generators, keeps the declaration of every private method of its types, as a
+// package with an inline function does; no importer can name it.)
+
+mod vault;
+
+// ---- Private generators nothing public reaches: not in the include file
+
+fn offset(x i64) i64 { x + 100i64; }
+
+fn lonelyFree(n i64) yields i64 { yield offset(n); }
+
+pub struct Ledger {
+  pub total i64;
+
+  fn bonus(self &) i64 { total / 10i64; }
+
+  fn lonely(self &) yields i64 { yield self.bonus(); }
+
+  // A public method that is no generator: its body is not in the file, so what it
+  // calls is not wanted there
+  pub fn sum(self &) i64 {
+    mut t = 0i64;
+    each x in lonelyFree(total) { t = t + x; }
+    each x in self.lonely() { t = t + x; }
+    t;
+  }
+}
+
+pub fn makeLedger(total i64) Ledger { new Ledger(total); }
+
+// ---- Private generators a public one reaches: in the include file, whole, with
+// what they name. 'inner' is declared ahead of the generator that names it
+
+fn scale(x i64) i64 { x * 3i64; }
+
+fn inner(n i64) yields i64 { yield scale(n); }
+
+pub fn outer(n i64) yields i64 { yield each inner(n); }
+
+pub struct Tally {
+  pub n i64;
+
+  fn step(self &) i64 { n + 1i64; }
+
+  fn walk(self &) yields i64 { yield self.step(); }
+
+  pub fn all(self &) yields i64 { yield each self.walk(); }
+}

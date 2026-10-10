@@ -823,12 +823,24 @@ and generated when it is used, as a generic type's methods are.
 source and made again from that text wherever the declaration is read, so the
 include file carries it as it carries an `inline` function: whole, with the
 private declarations its body names (`incfile.c`). `fnDclIsExpanded` says so for
-every generator's constructor and `next` (`yieldGenOfCtor`, `yieldGenOf`), which
-keeps the declaration out of the cut to `extern` (`incCut`) a bodiless generator
-could not be read from, marks what the body names as reached by an expander
+the constructor and `next` of a generator an importer can reach
+(`yieldGenExpanded`, `ir/export.c`): a `pub` one; a private one that an expanded
+body names, which name resolution marks (`DclExpandReached`); and a method of a
+type that holds a body an importer expands, or that such a body names, or of a
+module that holds an inline, generic or macro body, since a body can call a
+private method through a value, which name resolution does not see. Any other
+generator stays inside the package, is not exported (`dclIsExported`) and is
+left out of the file with what only it names. Being expanded keeps the
+declaration out of the cut to `extern` (`incCut`) a bodiless generator could not
+be read from, marks what the body names as reached by an expander
 (`nameUseMarkExpandReached`: exported, and declared in the file), and has the
 include-file walk follow the body through the struct, which the constructor's
-result type names. The span the caller records for the declaration is the
+result type names. Whether a private generator is reached is known only once
+the bodies that name it are read, and a callee's body may be read before its
+caller's, so the body of a generator not yet known to be expanded is read with
+its reaches recorded and not marked (`exportCondStep`), and `exportGenReach`
+marks them once name resolution is done, repeating as each private generator it
+reaches makes its own body's names reached. The span the caller records for the declaration is the
 author's text, not the generated text read last (`parseFn` restores
 `ParseState.bodyp`). The struct and its members are not the package's to export
 (`dclIsInstance`); each object that uses a generator defines them
