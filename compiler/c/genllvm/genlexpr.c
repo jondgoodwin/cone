@@ -623,6 +623,16 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
         LLVMValueRef mathret = genlGpuMath(gen, fndcl, fnargs, fnargcnt);
         if (mathret)
             return mathret;
+        // Nothing else of the C library, nor any function defined elsewhere,
+        // is there. A kernel's own call is refused where it is written (type
+        // checking); this is a call a C binding's inline function makes for
+        // the kernel's call of it. Nothing is emitted after an error: the
+        // value only lets generation go on to report the rest
+        if (flowGpuExternRefused(fndcl, fnargcnt)) {
+            errorMsgNode(objfn, ErrorGpuUnavailable, flowGpuExternMsg, &fndcl->namesym->namestr);
+            LLVMTypeRef rettype = genlType(gen, ((FnSigNode*)fndcl->vtype)->rettype);
+            return LLVMGetTypeKind(rettype) == LLVMVoidTypeKind ? NULL : LLVMGetUndef(rettype);
+        }
     }
 
     if (fndcl->flags & FlagInline) {
