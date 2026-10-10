@@ -100,17 +100,58 @@ void ifNameRes(NameResState *pstate, IfNode *ifnode) {
     }
 }
 
-// Do two 'is' conditions test the same value? The match desugaring writes one
-// scrutinee node into every condition, so a match written in source shares it.
-// A clone of the match -- a generic instance's, or a macro expansion's -- copies
-// that node once per condition, so there two uses of the one variable the
-// desugaring declared are what the same scrutinee looks like.
-static int ifSameScrutinee(INode *a, INode *b) {
+// Are these two checked expressions reads of the same place: one variable, or the
+// same field of the same place, or a dereference of one, or an element at the same
+// name or literal? (A match on a place reads the place as written in each of its
+// tests, parseMatchSubject.)
+static int ifSamePlace(INode *a, INode *b) {
     if (a == b)
         return 1;
-    return isNameUseNode(a) && isNameUseNode(b)
-        && ((NameUseNode*)a)->dclnode != NULL
-        && ((NameUseNode*)a)->dclnode == ((NameUseNode*)b)->dclnode;
+    if (a == NULL || b == NULL || a->tag != b->tag)
+        return 0;
+    if (isNameUseNode(a))
+        return ((NameUseNode*)a)->dclnode != NULL && ((NameUseNode*)a)->dclnode == ((NameUseNode*)b)->dclnode;
+    switch (a->tag) {
+    case DerefTag:
+        return ifSamePlace(((StarNode*)a)->vtexp, ((StarNode*)b)->vtexp);
+    case FldAccessTag:
+    {
+        INode *fa = ((FnCallNode*)a)->methfld;
+        INode *fb = ((FnCallNode*)b)->methfld;
+        if (fa == NULL || fb == NULL || fa->tag != fb->tag)
+            return 0;
+        if (isNameUseNode(fa) ? (((NameUseNode*)fa)->dclnode == NULL || ((NameUseNode*)fa)->dclnode != ((NameUseNode*)fb)->dclnode)
+            : (fa->tag != ULitTag || ((ULitNode*)fa)->uintlit != ((ULitNode*)fb)->uintlit))
+            return 0;
+        return ifSamePlace(((FnCallNode*)a)->objfn, ((FnCallNode*)b)->objfn);
+    }
+    case ArrIndexTag:
+    {
+        Nodes *ia = ((FnCallNode*)a)->args;
+        Nodes *ib = ((FnCallNode*)b)->args;
+        if (ia == NULL || ib == NULL || ia->used != 1 || ib->used != 1)
+            return 0;
+        INode *xa = nodesGet(ia, 0);
+        INode *xb = nodesGet(ib, 0);
+        if (xa->tag != xb->tag)
+            return 0;
+        if (xa->tag == ULitTag ? ((ULitNode*)xa)->uintlit != ((ULitNode*)xb)->uintlit : !ifSamePlace(xa, xb))
+            return 0;
+        return ifSamePlace(((FnCallNode*)a)->objfn, ((FnCallNode*)b)->objfn);
+    }
+    default:
+        return 0;
+    }
+}
+
+// Do two 'is' conditions test the same value? A match on a value it holds writes
+// one scrutinee node into every condition, so a match written in source shares
+// it. A clone of the match -- a generic instance's, or a macro expansion's -- copies
+// that node once per condition, so there two uses of the one variable the
+// desugaring declared are what the same scrutinee looks like. A match on a place
+// reads the place in each condition, which are reads of the same place.
+static int ifSameScrutinee(INode *a, INode *b) {
+    return ifSamePlace(a, b);
 }
 
 // Detect when all closed variants are matched, and turn last match into 'else'

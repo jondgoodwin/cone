@@ -311,8 +311,8 @@ reads out freely.
 The one exception is a variant's only field (all of a variant declared as a type,
 which a binding reads through the hidden local castBindProject declares), read
 through a match's binding whose matched value sits in a variable of the match's own (`_`: the value a
-`match f()` holds, one a by-value `match` consumes, the Option an `each` over a
-cursor holds), where the variant declares no `final` and has no field but that
+`match f()` holds, the one an arm of a `match` on a place takes from it, the Option
+an `each` over a cursor holds), where the variant declares no `final` and has no field but that
 one (`flowTakesSoleField`). The field is then the whole of the matched value
 under another name, so the move is the move of the binding, which moves the
 matched value (`flowMatchBound`): nothing is left with a hole, the matched
@@ -418,8 +418,11 @@ to the one owner, so these walks, and `blockResultMove` and the path walk's
 
 **A match's binding is the matched value.** `case imm c Circle` desugars to a
 variable initialized with the matched value converted to its variant (a
-`CastTag` carrying `FlagMatchBind`), and the match holds the matched value in
-a variable of its own. The binding is that value under the variant's name, not
+`CastTag` carrying `FlagMatchBind`), and the matched value is held in a variable
+of its own: the match's, for a value that is not a place or a match with a bound
+guard, or the arm's, which the arm declares first and initializes from the place
+it tests, copying or moving it (so a match on a place takes nothing in an arm that
+does not bind). The binding is that value under the variant's name, not
 a second value: `flowMatchBound` answers the matched value's name for it, and
 the walks treat the two as one. `flowScopeDealias` never releases the binding,
 since the matched value's variable releases it, as the enum, whichever arm ran;
@@ -437,7 +440,8 @@ variable releases, and the store releases what it replaces as any store does
 reference, and a store over it releases nothing. A guard's binding
 (`case imm c Circle if g`) is a second binding of the same value, and owns
 nothing either. The match's own variable
-(`_`) is named by one name use that every pattern and binding shares, so no
+(`_`) is named by one name use that every pattern and binding shares (an arm's own
+by the one binding that reads it), so no
 move of it is marked: a binding's initializer that moves it (a `&uni`
 narrowed) deactivates it as before, and no drop flag follows it.
 

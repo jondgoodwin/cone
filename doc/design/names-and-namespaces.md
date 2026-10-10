@@ -243,7 +243,7 @@ An inherited default method, and an enum's field spliced into a variant, are typ
 
 ### A variant bare in a pattern
 
-**A pattern knows the enum of the value it is matched against, so it names that enum's variants bare with no `use`.** Every pattern on a value is covered, since `match` desugars to the others: `case is Red`, `case imm c Circle`, a name alone, `case Red`, a bound `if imm c &Circle = s` and its `elif`, and the expression `s is &Circle`. The name looked up is the pattern's root — the referent's under a reference, the callee's where type arguments are written.
+**A pattern knows the enum of the value it is matched against, so it names that enum's variants bare with no `use`.** Every pattern on a value is covered, since `match` desugars to the others: `case is Red`, `case imm c Circle`, a name alone, `case Red`, a bound `if imm c Circle = s` and its `elif`, and the expression `s is Circle`. The name looked up is the pattern's root — the referent's under a reference, the callee's where type arguments are written.
 
 - **The matched value's enum is asked first**, through a reference, and the name's lexical meaning is used only when that enum has no variant of the name. So with `use Colors;` in force, `case is Red` on a `Lamp` means `Lamp`'s `Red`. A value that is not of an enum — a struct, a number, a variant already narrowed — has no variants to offer, and the lexical meaning is the only one.
 - **A qualified pattern is taken as written.** `case is Colors.Red` is a path, collapsed by name resolution like any other.

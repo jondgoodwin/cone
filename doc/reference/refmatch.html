@@ -20,7 +20,10 @@
     and 'else'. Not implemented: tuples, partial matches and
     first-class patterns, beyond binding a variable to a variant. A condition written where a
     pattern is expected, such as <span class="pre">case not b</span> or
-    <span class="pre">case n &gt; 3</span>, is refused. A struct's partial pattern is written with its fields in square brackets (<span class="pre">Point[0., _]</span>), and a variant's as a variant is constructed, in square brackets (<span class="pre">SomeInt[&lt;0]</span>): that is the current spelling, and how a match pattern spells a type or a construction is an open design question, as is how a variant is constructed (<a href="refenum.html#init">Enums</a>).</i></p>
+    <span class="pre">case n &gt; 3</span>, is refused: the comparison <span class="pre">case &gt;3</span>
+    and an <span class="pre">if</span> guard say it. The form of the matched value decides what a match
+    takes (<a href="#form">What a match takes</a>), and a pattern names only the variant, the matched value
+    supplying the reference it is (<a href="#enum">Variant type partial matches</a>). A struct's partial pattern is written with its fields in square brackets (<span class="pre">Point[0., _]</span>), and a variant's as a variant is constructed, in square brackets (<span class="pre">SomeInt[&lt;0]</span>): that is the current spelling, and how a match pattern spells a type or a construction is an open design question, as is how a variant is constructed (<a href="refenum.html#init">Enums</a>).</i></p>
 
   <p>As with <span class="pre">if</span>, pattern matching is about deciding
   which code path to perform. 
@@ -57,6 +60,30 @@ fn power(n i32, pow i32) i32 {
   able to match wholly to specified values, partially, or using a first-class pattern.
   Pattern matching also supports de-structuring portions of the original value
   into bound variables.</p>
+
+  <h3 id="form">What a match takes</h3>
+  <p>The form of the expression after <span class="pre">match</span> decides what the match
+  does with it, and a bound <span class="pre">if</span>, <span class="pre">if imm c Circle = s</span>,
+  reads its value the same way.</p>
+  <ul>
+  <li><b>A place</b> &mdash; a variable, a field of one, a dereference, an element at a name or a
+  literal, <span class="pre">match r</span> &mdash; is matched as the value it holds. Every test
+  reads it where it stands and takes nothing, so a match that only tests moves no resource away, and
+  <span class="pre">r</span> is whole after it. An arm that binds is the one that takes: the binding
+  holds the payload by value, a copy of a copy type, or a move of one that owns, which consumes
+  <span class="pre">r</span> on the paths that reach that arm. A <span class="pre">mut</span> binding
+  changes what the arm took and never <span class="pre">r</span>.</li>
+  <li><b>A borrow</b> &mdash; <span class="pre">match &amp;r</span>, <span class="pre">&amp;imm r</span>,
+  <span class="pre">&amp;mut r</span>, <span class="pre">&amp;uni r</span> &mdash; binds a reference of
+  that kind into <span class="pre">r</span>, which stays frozen to the match for as long as the
+  bindings are used. That is how a match changes <span class="pre">r</span>:
+  <span class="pre">match &amp;mut r</span>.</li>
+  <li><b>Any other value</b> &mdash; a call, <span class="pre">match f()</span> &mdash; is a temporary
+  the match owns: it is made once, every pattern reads it, and it is finalized as the match ends.</li>
+  </ul>
+  <p>A match with a bound <span class="pre">if</span> guard
+  (<span class="pre">case imm x Some if x &gt; 0</span>) holds the value it matches as a temporary does,
+  since the guard reads the binding before the arm is chosen.</p>
 
   <h2>Whole Value Matches</h2>
   <p>These patterns involve straightforward comparisons between the matchee value
@@ -263,17 +290,28 @@ match oddval {
     of the <span class="pre">i32</span>, or, when what it holds moves, a move of it out of the
     matched value, which is then finalized without it; a <span class="pre">mut</span> binding
     changes the copy and not the matched value. Bound through a reference
-    (<span class="pre">case imm n &amp;SomeInt</span>), it is a reference of the same permission
+    (<span class="pre">case imm n SomeInt</span> on a reference to the enum), it is a reference of the same permission
     to what the variant holds, an <span class="pre">&amp;i32</span> here. A variant declared as a struct
     binds the struct, whose tag is never a visible field.</p>
   <p>A variant is a name of its enum (see <a href="refenum.html#naming">Naming a variant</a>), and a
     pattern names it bare with no <span class="pre">use</span>: the match already knows which enum
     the value belongs to. This is true of every pattern on a value &mdash; a
     <span class="pre">case</span>, a bound <span class="pre">if</span> or
-    <span class="pre">elif</span>, and an <span class="pre">is</span> test such as
-    <span class="pre">s is &amp;Circle</span> &mdash; and it looks through a reference, so
-    <span class="pre">case imm c &amp;Circle</span> on a <span class="pre">&amp;Shape</span> names
-    <span class="pre">Shape.Circle</span>.</p>
+    <span class="pre">elif</span>, and an <span class="pre">is</span> test &mdash; and it looks
+    through a reference, so <span class="pre">case imm c Circle</span> on a
+    <span class="pre">&amp;Shape</span> names <span class="pre">Shape.Circle</span>.</p>
+  <p><b>A pattern names only the variant.</b> The matched value supplies the rest: the type
+    arguments, and, where it is a reference, the kind of reference, its region and its permission.
+    On a <span class="pre">&amp;imm Shape</span>, <span class="pre">case imm c Circle</span> binds an
+    <span class="pre">&amp;imm Circle</span>; on a <span class="pre">&amp;mut Shape</span> (a borrow made at the match), an
+    <span class="pre">&amp;mut Circle</span>; on an <span class="pre">Rc[mut, Shape]</span>, an
+    <span class="pre">Rc[mut, Circle]</span>; on a <span class="pre">Shape</span>, a
+    <span class="pre">Circle</span>. A test with no binding, <span class="pre">case Circle</span> or
+    <span class="pre">s is Circle</span>, asks only whether the value is that variant. A pattern
+    may still be written as the reference, <span class="pre">case imm c &amp;Circle</span>, which then
+    checks that the matched value is one: it is an error where the value is no reference, or is in
+    another region, or has a weaker permission than the pattern asks for. A managed reference is
+    never spelled in a pattern, and the older <span class="pre">+Rc-mut Circle</span> is refused.</p>
   <p><b>A binding through a reference points into the variant.</b>
     Through a reference, <span class="pre">c</span> is a reference into the value's payload,
     and a change of variant would have it read the payload as the wrong type.
@@ -296,20 +334,20 @@ match oddval {
 <pre>
 fn grow(s &amp;mut Shape) {
   match s {
-    case mut c &amp;mut Circle {c.radius = 2;}   // Error: another reference to s may change its variant
+    case mut c Circle {c.radius = 2;}   // Error: another reference to s may change its variant
     else {}
   }
 }
 fn radius(s &amp;imm Shape) i32 {
-  if imm c &amp;Circle = s {c.radius;} else {0;}      // Ok: imm never changes
+  if imm c Circle = s {c.radius;} else {0;}      // Ok: imm never changes
 }
 fn reshape(s Shape) i32 {
   mut t = s;
   match &amp;mut t {
-    case mut c &amp;mut Circle {c.radius = 2;}   // Ok: t is frozen while c is used
+    case mut c Circle {c.radius = 2;}   // Ok: t is frozen while c is used
     else {}
   }
-  if imm c &amp;Circle = &amp;t {c.radius;} else {0;}
+  if imm c Circle = &amp;t {c.radius;} else {0;}
 }
 </pre>
   <p><b>The matched value's enum is asked first.</b> A bare name in a pattern means that enum's
@@ -317,21 +355,25 @@ fn reshape(s Shape) i32 {
     so a <span class="pre">use</span> of another enum with a <span class="pre">Red</span> does not
     change what <span class="pre">case is Red</span> means on a <span class="pre">Lamp</span>. Only a
     name the enum has no variant of is looked up as any other name is. A qualified pattern,
-    <span class="pre">case is Colors.Red</span>, is taken as written.</p>
+    <span class="pre">case is Colors.Red</span>, is taken as written; and a variant named
+    through its enum alone, <span class="pre">case Colors.Red</span>, means
+    <span class="pre">case is Colors.Red</span>, as the variant bare does.</p>
   <p><b>The value supplies a generic variant's type arguments.</b> On an
     <span class="pre">Option[i32]</span>, <span class="pre">case imm s Some</span> means
     <span class="pre">Some[i32]</span>. Arguments may still be written where the name is in scope,
     as <span class="pre">Some[i32]</span> always is. Written on a variant that is in scope only
     because the matched enum has it, they are an error that says to drop them or to name the
     variant through its enum.</p>
-  <p><b>A struct variant bound by value is the matched value under its variant's name</b>, not a copy
-    of it. The match holds the value, and when the match ends it is
-    <a href="refenum.html#final">finalized</a> once, as the variant it is, whichever case ran. Moving
-    the bound variable, or handing it back as the case's value, moves the matched value. A bound
-    variable declared <span class="pre">mut</span> changes the matched value: assigning over it,
-    or over one of its fields, finalizes what is replaced, and a value swapped out of it with
-    <span class="pre">&lt;=&gt;</span> leaves what was swapped in to be finalized with the matched
-    value.</p>
+  <p><b>A struct variant bound by value is the value the arm took, under its variant's name</b>, not a
+    second copy of it. The arm takes the matched value into a variable of its own (a move of one that
+    owns, which consumes a matched place on the paths to that arm), and when the arm ends it is
+    <a href="refenum.html#final">finalized</a> once, as the variant it is. Moving
+    the bound variable, or handing it back as the case's value, moves that value. A bound
+    variable declared <span class="pre">mut</span> changes that value, not a matched place:
+    assigning over it, or over one of its fields, finalizes what is replaced, and a value swapped out
+    of it with <span class="pre">&lt;=&gt;</span> leaves what was swapped in to be finalized with it.
+    A match on a call, or with a bound guard, holds the matched value itself for the whole match and
+    finalizes it as the match ends, whichever case ran.</p>
   <p style="margin-left: 40px;"><i>Note: a bound variable moved, on every path or only some,
     and then assigned over leaves a value unfinalized: what it was given, or, where it was not
     moved, what it held.</i></p>

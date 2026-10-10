@@ -119,6 +119,10 @@ name what they hold (parse), or bound through a reference into a managed value, 
 contents cannot be lent as a binding yet (type check). The message says which, and
 what to write.
 
+`ErrorPatManaged` is a match pattern written as a managed reference, `+Rc-mut
+Circle`: a pattern names only the variant, and the matched value supplies the
+reference, its region and its permission (parse).
+
 `ErrorBuildDesc` is a third: a build description that cannot be read, whether a
 setting is unknown, set twice, badly valued or written after the module, a line
 is malformed, a child module, an import or a package line is named twice, a

@@ -43,11 +43,10 @@ typedef struct {
     uint8_t capture;
     // Written '+R-perm T' (parsePlus). As an allocation that spelling is
     // refused (allocateTypeCheck, ErrorPlusAlloc); as a single or virtual
-    // reference type it is refused (refTypeCheck), except at a match pattern's
-    // root, which keeps it until patterns are given their own
-    // (castPatternMark clears it there). A managed reference type is written
-    // 'R[perm, T]' (fnCallLowerManagedRef), and allocated 'new R[perm, T](...)'
-    // (typeLitNewAllocate).
+    // reference type it is refused (refTypeCheck), and as a match pattern's root
+    // at parse (castPatternMark, ErrorPatManaged). A managed reference type is
+    // written 'R[perm, T]' (fnCallLowerManagedRef), and allocated
+    // 'new R[perm, T](...)' (typeLitNewAllocate).
     uint16_t plusSpelled;
     // Written '&[]' (parseAmper), the retired spelling of a slice, '&Array[T]':
     // refused where name resolution settles that it is a type (arrayRefNameRes,

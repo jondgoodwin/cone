@@ -571,8 +571,17 @@ void nameuseFlow(FlowState *fstate, NameUseNode **nodep) {
     }
     if (!(vardclnode->flowtempflags & VarInitialized))
         errorMsgNode((INode*)node, ErrorMove, "This variable has not been initialized. There is no value to use.");
-    else if (vardclnode->flowtempflags & (VarMoved | VarHollow))
+    else if (vardclnode->flowtempflags & (VarMoved | VarHollow)) {
+        // A match on a place reads it in each of its tests: many uses of one
+        // variable at one position in the source, said once
+        static char *lastMovedAt = NULL;
+        static VarDclNode *lastMovedVar = NULL;
+        if (lastMovedAt == node->srcp && lastMovedVar == vardclnode)
+            return;
+        lastMovedAt = node->srcp;
+        lastMovedVar = vardclnode;
         errorMsgNode((INode*)node, ErrorMove, "This variable's value has been moved out. It is no longer there to use.");
+    }
 }
 
 // Ensure the variable at the root of a borrowed place was not moved out or

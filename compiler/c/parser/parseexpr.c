@@ -885,8 +885,9 @@ INode *parseAmper(ParseState *parse) {
 // An allocation is written 'new Rc[i32](5)' or 'new Rc[mut, Node](1)'
 // (parseNew); one spelled with '+' is refused at type check (ErrorPlusAlloc),
 // and '+<' at name resolution. A single or virtual reference TYPE is written
-// 'Rc[mut, Node]', and type check refuses this spelling of one outside a match
-// pattern's root (plusSpelled), which keeps it until patterns have their own.
+// 'Rc[mut, Node]', and type check refuses this spelling of one (plusSpelled); at a
+// match pattern's root the parser does (castPatternMark), since a pattern names only the
+// variant.
 //
 // There is no owning array reference: an owned run-time-sized array is a
 // 'So[Array[T]]' (shared, 'Rc[Array[T]]'), a growable one a List. '+[]' stays a token so that it can be

@@ -649,9 +649,11 @@ type's body, a module's top level, a function's body -- are
 whole (to its `;`, or through its `{ ... }`), so nothing in it is reported
 again.
 
-**It desugars.** `match` becomes a block holding an anonymous capture variable
-plus an `if` chain, each case's patterns becoming its condition: `is T` an `is`
-node, `<v` (and every comparison) the operator call with the captured value on
+**It desugars.** `match` becomes a block holding an `if` chain and, for a matched
+value that is not a place, an anonymous capture variable before it (a place is read
+where it stands, a copy of it written into each test), each case's patterns becoming
+its condition: `is T` an `is`
+node, `<v` (and every comparison) the operator call with the matched value on
 the left, `a .. b` and `a ..< b` two calls joined by `and`, `or` between patterns
 a logical `or`, and an `if` guard an `and` after them ([if](../nodes/if.md)).
 `while c {…}` becomes a loop block with `if not c {break

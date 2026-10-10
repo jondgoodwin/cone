@@ -365,7 +365,7 @@ static void refRefuseRegionRef(RefNode *node) {
 // A managed reference type is written 'R[perm, T]', and so is the one an
 // allocation names, 'new R[perm, T](...)', so the older plus spelling of one,
 // '+R-perm T', is refused where it was written. Reported once:
-// a node reached twice (a pattern and its variable share one) says it once.
+// a node reached twice says it once.
 static void refRefusePlusType(RefNode *node) {
     if (!node->plusSpelled)
         return;

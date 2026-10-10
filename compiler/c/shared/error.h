@@ -633,6 +633,9 @@ enum ErrorCode {
     // Variants declared as a type (parser/parsetype.c, exp/cast.c)
     ErrorTypeVariant = 1413,    // A variant declared as a type, 'Ok(i32);', in an enum that has common fields (every variant of such an enum names what it holds: write it as a struct), or bound through a managed reference, whose contents cannot be lent
 
+    // Match patterns name only the variant (ir/exp/cast.c)
+    ErrorPatManaged = 1414,     // A match pattern written as a managed reference, '+Rc-mut Circle': the matched value supplies the reference, its region and its permission, so the pattern names the variant alone
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

@@ -151,11 +151,11 @@ resolution, and `allocateTypeCheck` refuses it (`ErrorPlusAlloc`, naming the
 `new` or `trynew` form, with `(...)` for a construction and `(value)` for any
 other value, a type with no name of its own written `T`). With a type operand it
 is a `RefTag` or `VirtRefTag` type, which type check refuses
-(`refRefusePlusType`, `ErrorPlusRefType`), naming the bracket spelling. The
-one exception is a match pattern's root, `case imm c +Rc-mut Circle`:
-`castPatternName` reads the root at parse time, before anything knows `Rc` is
-a region rather than a generic variant, so `castPatternMark` clears the mark
-there and the `+` spelling stands until patterns are given their own.
+(`refRefusePlusType`, `ErrorPlusRefType`), naming the bracket spelling. A match
+pattern's root, `case imm c +Rc-mut Circle`, is refused at parse by
+`castPatternMark` (`ErrorPatManaged`): a pattern names only the variant, and the
+matched value supplies the managed reference, its region and permission
+(`castPatternAdoptRef`, [cast](cast.md)).
 
 ## The managed reference type, `Rc[mut, Node]`
 
