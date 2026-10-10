@@ -298,6 +298,11 @@ enum NodeTags {
 // allocation (typeLitNewCheck). 0x0400 is free on a FnCall: FlagPattern is a
 // name use's and FlagStatic a variable's.
 #define FlagTryNew    0x0400        // FnCall: a construction written 'trynew'
+// A member access whose receiver has been type checked already, by
+// fnCallMethodTypeArgs asking what the name before an index of numbers is. Its
+// own check does not walk the receiver a second time, and clears this.
+// 0x2000 is free on a FnCall: FlagHollowOut is a name use's.
+#define FlagRcvChecked 0x2000       // FnCall: the receiver (objfn) is already type checked
 
 #define FlagLoop      0x0001        // Block: is a Loop block
 // 'each' lowers to a 'while' whose body ends with the step that advances the loop

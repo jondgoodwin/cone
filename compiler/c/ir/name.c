@@ -428,6 +428,17 @@ char *nameType(char *bufp, INode *vtype) {
         *bufp++ = 'P';
         return nameType(bufp, ((StarNode *)vtype)->vtexp);
 
+    case ULitTag:
+    {
+        // A number a generic's value parameter was given, among its arguments:
+        // 'L', the number type's letter, the value in decimal, '_'
+        ULitNode *lit = (ULitNode *)vtype;
+        *bufp++ = 'L';
+        *bufp++ = nameNbrLetter(itypeGetTypeDcl(lit->vtype));
+        bufp += sprintf(bufp, "%llu_", (unsigned long long)lit->uintlit);
+        return bufp;
+    }
+
     case TTupleTag:
     {
         TupleNode *tuple = (TupleNode *)vtype;

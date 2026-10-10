@@ -1,0 +1,143 @@
+// Number generics: a value parameter, '[N usize]', is a number an instance is
+// made for, as a type parameter is a type. It is used only as itself: an
+// array's size, 'Array[T, N]', or a value in the body, where it is an integer
+// literal of its type. Nothing is computed from it in a type.
+//
+// An instance is made for each number. It is inferred from an argument whose
+// type has the size ('dot(&a, &b)' over 'Array[f32, N]' twice) or written in
+// brackets ('dot[3](&a, &b)'), and an inferred 3 and a written 3 are the one
+// instance. A parameter beside a type parameter takes its place in the
+// bracketed list, and a method of a plain or of a generic type takes one too.
+//
+// Each printed value was checked by hand against the source:
+//
+//   dot of (1, 2, 3) and (4, 5, 6)           1*4 + 2*5 + 3*6 = 32
+//   dot of (1, 2, 3, 4) and four halves      0.5 * (1 + 2 + 3 + 4) = 5
+//   twice over the first pair                dot[N] + dot = 32 + 32 = 64
+//   count[7]                                 7
+//   small[200]                               a u8 parameter, 200
+//   filled[i32, 4](7)                        four sevens, summed: 28
+//   cells over a 2 x 3 array                 N * 100 + M = 203
+//   width over rows of 3                     3 (inferred from a slice of arrays)
+//   rowsTotal over 1..12 in 4 rows of 3      78
+//   chunk[3], chunk[4] of a Buf              N * 10: 30, 40
+//   sumN[2](9)[1] and sumN[5](7)[4]          9 and 7
+//   pick[7](1) with size 100                 N + k + size = 108
+//   a field named like a method, indexed     the 3rd of (5, 6, 7, 8): 7
+//   the Buf's own data[3]                    the 4th of 1..6: 4
+
+mod generic_value_params;
+
+import stdio use *;
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn dot[N usize](a &Array[f32, N], b &Array[f32, N]) f32 {
+  mut sum = 0.0;
+  each i in 0usize < N {
+    sum = sum + a[i] * b[i];
+  }
+  sum;
+}
+
+// N written inside an instance names the same instance: dot[3] twice
+fn twice[N usize](a &Array[f32, N], b &Array[f32, N]) f32 {
+  dot[N](a, b) + dot(a, b);
+}
+
+fn count[N usize]() usize {
+  N;
+}
+
+fn small[N u8]() u8 {
+  N;
+}
+
+fn filled[T, N usize](v T) Array[T, N] {
+  new Array[T, N] <- fill v;
+}
+
+fn cells[N usize, M usize](g &Array[f32, N, M]) usize {
+  N * 100usize + M;
+}
+
+fn width[T, N usize](rows &Array[Array[T, N]]) usize {
+  N;
+}
+
+fn rowsTotal[N usize](rows &mut Array[Array[u8, N]]) usize {
+  mut total = 0usize;
+  each r in rows.mutItems() {
+    each i in 0usize < N {
+      total = total + usize.from((*r)[i]);
+    }
+  }
+  total;
+}
+
+struct Buf[T] {
+  pub data Array[T, 6];
+  pub fn chunk[N usize](self &) usize {
+    N * 10usize;
+  }
+  pub fn sumN[N usize](self &, v T) Array[T, N] {
+    new Array[T, N] <- fill v;
+  }
+}
+
+struct Plain {
+  pub size usize;
+  pub fn pick[N usize](self &, k usize) usize {
+    N + k + self.size;
+  }
+}
+
+// A field named as a method taking a number is still indexed
+struct Shadow {
+  pub pick Array[i32, 4];
+}
+
+fn main() {
+  imm a3 = new Array[f32, 3] <- 1.0, 2.0, 3.0;
+  imm b3 = new Array[f32, 3] <- 4.0, 5.0, 6.0;
+  imm a4 = new Array[f32, 4] <- 1.0, 2.0, 3.0, 4.0;
+  imm b4 = new Array[f32, 4] <- 0.5, 0.5, 0.5, 0.5;
+  show("dot3", i64.from(dot(&a3, &b3)));
+  show("dot4", i64.from(dot(&a4, &b4)));
+  show("dot3-written", i64.from(dot[3](&a3, &b3)));
+  show("dot4-written", i64.from(dot[4](&a4, &b4)));
+  show("twice", i64.from(twice(&a3, &b3)));
+
+  show("count", i64.from(count[7]()));
+  show("small", i64.from(small[200]()));
+  imm four = filled[i32, 4](7);
+  show("filled", i64.from(four[0] + four[1] + four[2] + four[3]));
+
+  imm grid = new Array[f32, 2, 3] <- fill 1.0;
+  show("cells", i64.from(cells(&grid)));
+
+  mut rows Array[Array[u8, 3], 4] = [[1u8, 2u8, 3u8], [4u8, 5u8, 6u8], [7u8, 8u8, 9u8], [10u8, 11u8, 12u8]];
+  mut slice &mut Array[Array[u8, 3]] = &mut rows;
+  show("width", i64.from(width(slice)));
+  show("rows-total", i64.from(rowsTotal(slice)));
+
+  imm raw = new Array[i32, 6] <- 1, 2, 3, 4, 5, 6;
+  imm buf = new Buf[i32](raw);
+  show("chunk3", i64.from(buf.chunk[3]()));
+  show("chunk4", i64.from(buf.chunk[4]()));
+  imm two = buf.sumN[2](9);
+  show("sumN2", i64.from(two[1]));
+  imm five = buf.sumN[5](7);
+  show("sumN5", i64.from(five[4]));
+  imm plain = new Plain(100usize);
+  show("pick", i64.from(plain.pick[7](1usize)));
+  imm fours = new Array[i32, 4] <- 5, 6, 7, 8;
+  imm shadow = new Shadow(fours);
+  show("shadow-index", i64.from(shadow.pick[2]));
+  show("data-index", i64.from(buf.data[3]));
+}

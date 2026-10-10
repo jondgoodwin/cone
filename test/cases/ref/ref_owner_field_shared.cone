@@ -1,0 +1,59 @@
+// What an owner held in a field lends by the reference its holder is reached
+// through, now that a shared path lends no '&uni' and no '&imm': through a
+// '&mut' the owner lends '&mut' and '&' (a receiver, an argument), a 'So[imm]'
+// and an 'Rc[imm]' in it still lend '&imm', through a '&uni' holder and from a
+// local the owner lends '&uni' and '&imm', and through a '&imm' holder it lends
+// '&imm'. The numbers show each call reached the value.
+// ref_typecheck_owner_field_shared holds the lends refused.
+
+mod ref_owner_field_shared;
+
+import stdio use *;
+
+struct App {
+  pub n i64;
+  pub fn bump(self &mut) i64 { n = n + 1; n; }
+  pub fn look(self &) i64 { n; }
+  pub fn takeUni(self &uni) i64 { n; }
+}
+
+struct Holder {
+  pub app So[App];
+  pub frozen So[imm, App];
+  pub counted Rc[imm, App];
+}
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn needUni(a &uni App) i64 { a.n; }
+fn needImm(a &imm App) i64 { a.n; }
+fn needMut(a &mut App) i64 { a.bump(); }
+fn needRo(a &App) i64 { a.n; }
+
+fn viaMut(h &mut Holder) i64 { needMut(h.app) + h.app.bump() + needRo(h.app) + h.app.look(); }
+fn frozenMut(h &mut Holder) i64 { needImm(h.frozen) + needImm(h.counted) + h.frozen.look(); }
+fn viaUni(h &uni Holder) i64 { needUni(h.app) + h.app.takeUni() + needImm(h.app) + needMut(h.app); }
+fn viaImm(h &imm Holder) i64 { needImm(h.app) + needImm(h.frozen) + needRo(h.app); }
+fn viaRead(h &Holder) i64 { needRo(h.app) + needImm(h.frozen) + needImm(h.counted); }
+
+fn make(n i64) Holder {
+  new Holder(new So[App](n), new So[imm, App](new App(n + 100)), new Rc[imm, App](new App(n + 200)));
+}
+
+fn main() {
+  mut h = make(1);
+  show("mut", viaMut(&mut h));         // 2 + 3 + 3 + 3 = 11
+  show("frozen", frozenMut(&mut h));   // 101 + 201 + 101 = 403
+  mut sole = new So[Holder](make(10));
+  show("uni", viaUni(&uni *sole));     // 10 + 10 + 10 + 11 = 41
+  imm fixed = make(5);
+  show("imm", viaImm(&imm fixed));         // 5 + 105 + 5 = 115
+  show("read", viaRead(&h));           // 3 + 101 + 201 = 305
+  mut own = make(20);
+  show("local", needUni(own.app) + own.app.takeUni() + needImm(own.app));  // 20 + 20 + 20 = 60
+}

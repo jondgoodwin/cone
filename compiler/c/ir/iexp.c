@@ -655,13 +655,18 @@ static INode *iexpLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope, int s
         INode *lvalvar = iexpLvalInfo(refexp, lvalperm, scope, stored);
         RefNode *vtype = (RefNode*)iexpGetTypeDcl(refexp);
         if (vtype->tag == RefTag || vtype->tag == ArrayRefTag) {
-            // An owner held in a place reached through a borrow that only reads
+            // An owner held in a place reached through a borrow that does not
+            // hold the place alone ('ro', 'imm', or 'mut', which others share)
             // lends no more than that borrow lets: its own permission is what
-            // it grants a holder of the place, not one reading through a loan
-            int ownerRead = vtype->region != borrowRef && !permIsLock(*lvalperm) && !permIsLock(vtype->perm)
-                && (permGetFlags(vtype->perm) & MayWrite) && !(permGetFlags(*lvalperm) & MayWrite)
+            // it grants a holder of the place, not one reading through a loan.
+            // So an owner reached through a '&mut' lends '&mut' at most, never
+            // '&uni' or '&imm': the shared path may be used to replace the
+            // owner and end what was lent.
+            int ownerShared = vtype->region != borrowRef && !permIsLock(*lvalperm) && !permIsLock(vtype->perm)
+                && (permGetFlags(vtype->perm) & MayWrite)
+                && itypeGetTypeDcl(*lvalperm) != (INode*)uniPerm && itypeGetTypeDcl(*lvalperm) != (INode*)newPerm
                 && iexpPathThroughBorrow(refexp);
-            if (!ownerRead)
+            if (!ownerShared)
                 *lvalperm = vtype->perm;
             iexpScopeThroughRef(refexp, lvalvar, vtype, scope, stored);
         }

@@ -2398,11 +2398,27 @@ static int fnCallMethodTypeArgs(TypeCheckState *pstate, FnCallNode **nodep) {
     if (node->methfld == NULL && !(node->flags & FlagIndex) && node->objfn->tag == FnCallTag)
         index = (FnCallNode*)node->objfn;
     if (!(index->flags & FlagIndex) || (index->flags & (FlagRange | FlagBorrow))
-        || index->methfld != NULL || index->objfn->tag != FnCallTag || !fnCallHasTypeArgs(index))
+        || index->methfld != NULL || index->objfn->tag != FnCallTag)
         return 0;
+    // Type arguments, or numbers, 'h.pick[3]': told from an index only by
+    // the name being a generic method taking a number, and then by the
+    // receiver's type
+    int numargs = 0;
+    if (!fnCallHasTypeArgs(index)) {
+        if (index->args == NULL || index->args->used == 0)
+            return 0;
+        INode **litp;
+        uint32_t litcnt;
+        for (nodesFor(index->args, litcnt, litp))
+            if ((*litp)->tag != ULitTag)
+                return 0;
+        numargs = 1;
+    }
     FnCallNode *member = (FnCallNode*)index->objfn;
     if (member->methfld == NULL || !isNameUseNode(member->methfld) || member->args != NULL
         || (member->flags & (FlagOperator | FlagIndex)) || fnCallIsPathBase(member->objfn))
+        return 0;
+    if (numargs && !genericValueFnNamed(((NameUseNode*)member->methfld)->namesym))
         return 0;
 
     inodeTypeCheckAny(pstate, &member->objfn);
@@ -2412,8 +2428,24 @@ static int fnCallMethodTypeArgs(TypeCheckState *pstate, FnCallNode **nodep) {
     }
     NameUseNode *methfld = (NameUseNode*)member->methfld;
     INode *rcvtype = isExpNode(member->objfn) ? iexpGetDerefTypeDcl(member->objfn) : NULL;
+    // An array or a slice has the methods of core's body 'Array[T]' (numbers
+    // only: type arguments written to a method of an array's body are refused
+    // as they were)
+    INode *bodytype = NULL;
+    if (numargs && rcvtype && !isMethodType(rcvtype)) {
+        bodytype = fnCallSliceBodyOf(pstate, member);
+        rcvtype = bodytype;
+    }
     INode *found = rcvtype && isMethodType(rcvtype)
         ? aliasDclResolve(iNsTypeFindFnField((INsTypeNode*)rcvtype, methfld->namesym)) : NULL;
+    // Numbers after a name that is not a generic method taking a number, on
+    // this receiver, are an index, as they were. The receiver has been checked,
+    // once, and the member's own check will not walk it again.
+    if (numargs && (found == NULL || found->tag != FnDclTag || !(found->flags & FlagMethFld)
+        || !genericHasValueParm(((FnDclNode*)found)->genericinfo))) {
+        member->flags |= FlagRcvChecked;
+        return 0;
+    }
     if (found == NULL || found->tag != FnDclTag || !(found->flags & FlagMethFld)
         || ((FnDclNode*)found)->genericinfo == NULL) {
         errorMsgNode(nodesGet(index->args, 0), ErrorNotTyped,
@@ -2460,7 +2492,10 @@ static int fnCallMethodTypeArgs(TypeCheckState *pstate, FnCallNode **nodep) {
         node->vtype = errorType;
         return 1;
     }
-    fnCallLowerMethod(pstate, node);
+    if (bodytype)
+        fnCallLowerSliceMethod(pstate, node);
+    else
+        fnCallLowerMethod(pstate, node);
     return 1;
 }
 
@@ -3016,7 +3051,10 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         overloadset = nameUseGetDcl((NameUseNode*)node->objfn);
     if (node->methfld && isNameUseNode(node->methfld)
         && !(node->flags & FlagOperator) && !calleeIsOverload) {
-        inodeTypeCheckAny(pstate, &node->objfn);
+        if (node->flags & FlagRcvChecked)
+            node->flags &= ~FlagRcvChecked;
+        else
+            inodeTypeCheckAny(pstate, &node->objfn);
         objfnChecked = 1;
         if (inodeIsError(node->objfn)) {
             node->vtype = errorType;

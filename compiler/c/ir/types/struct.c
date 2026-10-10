@@ -2251,6 +2251,7 @@ void structNameRes(NameResState *pstate, StructNode *node) {
         genericParmsNameRes(pstate, node->genericinfo->parms);
         // The type's requirements on its arguments
         genericConstraintsNameRes(pstate, node->genericinfo->parms, &node->genericinfo->where);
+        genericRefuseValueParms(node->genericinfo->parms, node->namesym);
     }
 
     // 'Self' first: a field's type may name it, and a type resolved by demand

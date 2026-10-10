@@ -24,6 +24,28 @@ void genericParmsNameRes(NameResState *pstate, Nodes *parms);
 // Serialize
 void genericInfoPrint(GenericInfo *info);
 
+// Value parameters, '[N usize]': a number the instance is made for, used only as
+// itself -- an array's size, 'Array[T, N]', or a value in the body. The
+// parameter is a GenVarDclNode whose 'valtype' is its integer type; its argument
+// is a ULit of that type, written ('dot[3]') or read off an argument's array
+// size when inferred ('&Array[f32, N]' given '&Array[f32, 3]').
+//
+// The value parameter a node is a use of, or NULL
+GenVarDclNode *genericValueParmOf(INode *node);
+// Does this size, as written, mention a value parameter? A size that is exactly
+// one is the parameter's own use, which is fine; arithmetic over one is not
+// supported (ErrorGenValueArith), checked where the array type is lowered
+int genericMentionsValueParm(INode *node);
+// Does this generic take a value parameter?
+int genericHasValueParm(GenericInfo *info);
+// A generic type is refused a value parameter (ErrorGenValueParm), after its
+// parameters' annotations are resolved; 'typename' is its name
+void genericRefuseValueParms(Nodes *parms, Name *typename);
+// Note a generic function's name, for fnCallMethodTypeArgs, when it takes a
+// value parameter; and ask whether a name was noted
+void genericValueFnNote(Nodes *parms, Name *name);
+int genericValueFnNamed(Name *name);
+
 // Obtain the GenericInfo a declaration carries, or NULL if it is not a generic.
 // This is what distinguishes a generic from every other declaration: a generic
 // is an ordinary FnDcl, StructNode or ModuleNode with a parameter list

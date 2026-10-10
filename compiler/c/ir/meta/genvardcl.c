@@ -17,6 +17,7 @@ GenVarDclNode *newGVarDclNode(Name *namesym) {
     var->vtype = NULL;
     var->namesym = namesym;
     var->annot = NULL;
+    var->valtype = NULL;
     return var;
 }
 
