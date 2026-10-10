@@ -186,10 +186,9 @@ trait that already exists.
   takes a `self &` (or `imm`, `opaq`) and one that may write also a `self &mut`; a
   `self` by value or `&uni` fits neither (call once is later). A `&<mut fn` is not
   lent as a `&<fn`, because the callable behind it may change.
-  A closure's method is exempt from the check every other trait gets
-  (`fnSigVrefSelfFits`, [struct](struct.md)): it takes the `self` its body needs,
-  and a literal that changes a captured variable is met behind `&<mut` though the
-  trait's method says `self &`.
+  A trait's own method is held to `fnSigVrefSelfFits` ([struct](struct.md)), a
+  closure's too: a literal that changes state has `self &mut`, and is refused
+  (`ErrorVtableSelf`) where the trait's method says `self &`, under every holder.
   `fnSigCallRefusal` says which of these refused a coercion, in the author's
   words (`ErrorCallablePerm`), at an argument (`fnCallTypeCheck`), an
   initializer (`varDclTypeCheck`) and an owner's making.
@@ -231,11 +230,20 @@ trait that already exists.
 The call is the ordinary virtual dispatch: `f(x)` on a callable reference reaches the
 trait's `()` (`fnCallTypeCheck`, `VirtRefTag`) through the vtable.
 
-## A literal meets a trait with one method
+## A literal meets a trait with one required method
 
 A closure literal given where a trait is wanted fills the trait's method when the
-trait has exactly one method (private ones count: a generic bound requires them)
-and no field (`closureTraitSig`). Only a literal, at the point the trait is
+trait has exactly one *required* method (a method without a body; private ones
+count: a generic bound requires them) and no field (`closureTraitSig`). A method
+with a body is a default: the hidden struct inherits each, cloned in as an
+implementer's are (`structInheritDefaults`, called by `closureBuild` from
+`ClosurePlan.trait`, set by the places below through `closureTrait`), so the
+defaults call the literal's body through the required method. The struct does
+not *declare* the trait (no `traits` entry, so no `structCheckTraitReqs`); it
+meets it structurally, as before. One exception: a body that needs `self &mut`
+under a trait method that says `self &` gets no defaults, since the literal is
+refused for that anyway (below) and defaults reading through `self &` would add
+their own failures to its. Only a literal, at the point the trait is
 expected, so no struct of the author's meets anything differently. The literal is
 checked as one given to a signature: the signature is the method's without its
 receiver, and `closureMethod` (beside `closureHint`) says the hidden struct's one
@@ -250,14 +258,24 @@ method is named for the trait's method, not `()` (`ClosurePlan.method`,
 - **An owner** (`new So[Shape](literal)`): `typeLitNewCallable`, the callable's
   making, for any trait when the one argument is a literal.
 
-A trait with other than one method is `ErrorClosureTrait`, naming what it has
-(`fnCallClosureTraitRefused`). A parameter count, a written parameter type or a
-written return type that is not the method's is `ErrorClosureParm`, naming the
-method. **The method's `self` follows the body**, as `()`'s does: a literal whose
-body changes state has `self &mut`, and behind a reference that only reads it is
-refused (`ErrorCallablePerm`: `refvirtMatchesRef` for `&<Shape`, `genericCallablePermCheck`
-for `&S`). The trait's own `self` is not what decides it: a vtable match does not
-compare receivers, so for a closure the check is made against the reference.
+A trait with other than one required method, or with a field, is `ErrorClosureTrait`,
+naming what it has (`fnCallClosureTraitRefused`). A parameter count, a written
+parameter type or a written return type that is not the method's is
+`ErrorClosureParm`, naming the method. **The method's `self` follows the body**,
+as `()`'s does: a literal whose body changes state has `self &mut`. It is held to
+the trait's `self` as any implementer is (`fnSigVrefSelfFits`): where the trait's
+method says `self &` it is refused, under every holder -- `&<Shape`, `&<mut Shape`,
+`So[Shape]`, `[S Shape]` by `&S`, `&mut S` or value -- as `ErrorVtableSelf`, in
+the literal's words (`fnSigVrefSelfRefusal`: it needs `self &mut` because it
+changes state it holds or borrows; declare the trait's method `self &mut`, or do
+not change it). The vtable cases reach it through `structMapVtableImpl` and
+`fnSigCallRefusal`, the static one through `genericCallablePermCheck`. A literal
+that only reads has `self &` and meets a trait method of either kind. A callable
+(`&<fn`) is different: its kind and the reference's permission decide
+(`fnSigCallSelfFits`; `refvirtMatchesRef` keeps a `&<fn` from taking a changing
+literal when it only reads). Under a trait whose method says `self &mut`, a
+literal that changes state is met, and called through a reference that only reads
+it is refused at the call, as a struct's is.
 
 **A closure that fails stops its call.** A literal that failed to type check as an
 argument of a generic call leaves the call nothing to infer from; `fnCallClosureArgs`
@@ -334,8 +352,9 @@ says so, and the object defines the hidden struct's methods, internally
 | | `genericCallablePermCheck` | a callable that changes, given to `&F`, refused at the argument |
 | `ir/types/fnsig.c` | `fnSigCallTrait`, `fnSigOfCallTrait` | the trait that stands for a signature behind a virtual reference |
 | | `fnSigCallSelfFits`, `fnSigCallRefusal` | which `()` a callable reference holds; why a coercion was refused (a closure's method behind a reference that only reads too) |
-| `ir/exp/closure.c` | `closureTraitSig`, `closureMethodMutates` | the one method of a trait a literal fills; whether a closure's method takes `self &mut` |
-| `ir/exp/fncall.c` | `fnCallLendParm`, `fnCallClosureTraitRefused` | `&<Shape` takes a lent literal; a trait with not exactly one method refuses it |
+| `ir/exp/closure.c` | `closureTraitSig`, `closureMethodMutates` | the one required method of a trait a literal fills; whether a closure's method takes `self &mut` |
+| `ir/types/struct.c` | `structInheritDefaults` | the trait's default methods cloned into the hidden struct |
+| `ir/exp/fncall.c` | `fnCallLendParm`, `fnCallClosureTraitRefused` | `&<Shape` takes a lent literal; a trait without exactly one required method, or with a field, refuses it |
 | `ir/meta/generic.c` | `genericParmTraitBound` | the plain trait that bounds a parameter a literal is given to |
 | `ir/exp/typelit.c` | `typeLitNewCallable` | `new So[fn(sig)](c)` |
 | `genllvm/genltype.c` | `genlFnStubVtable` | the vtable of a plain function's reference |
