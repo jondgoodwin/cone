@@ -351,7 +351,7 @@ the first it has yet to give. A header `if` needs nothing of its own: it is
 loop's step is inserted.
 
 A **zip** of cursors (core's `Zip` and, from its `indexed()`, `ZipIndexed`; with a
-three sources from core's `zip3`, the flat-triple `Zip3` and its `Zip3Indexed`) is
+third source from `Zip`'s own `zip`, the flat-triple `Zip3` and its `Zip3Indexed`) is
 one of these cursors: it takes two variables (three for `ZipIndexed` and `Zip3`, four
 for `Zip3Indexed`, the position first), unpacked from the tuple its `at` gives. The
 three-way zip is a struct of its own, not a `Zip` of a `Zip`, so that its item is

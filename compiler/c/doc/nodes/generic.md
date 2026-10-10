@@ -537,15 +537,14 @@ the one copy that is not generic — the instance itself — and clears it there
 A trait's generic default is inherited by a type that declares the trait, and
 `structCheckTraitReqs` does not compare the copy, which shares the default's
 type parameters and so is told from a method the type declares itself.
-A type may not replace a generic default with a generic method of its own under
-the same name: the check finds no signature of the trait's it matches (1013). So
-`Iterator`'s `zip` is the only `zip` a cursor has: `ArrayChunks`, `ArrayMutChunks`,
-`ArrayMutItems` and `Zip` have none of their own (a zip of three is the function
-`zip3`, since the default would nest the pair). A *field* named like a generic
-default is refused the same way, as `IterSkip`'s was: `ZipIndexed` and `Zip3Indexed`
-hold their zip in `src`. The default's `Self` is the cursor without its lifetime
-parameter, so a `Zip` of two chunk cursors made by the default is not met by
-`ParallelIterable` (no `split`; `len`, `at`, `each` and `parallel each` are).
+A generic method the type declares itself under a generic default's name replaces
+the default (the default is not copied in where the name is declared), and
+`structCheckTraitReqs` accepts it whatever its signature: no slot holds a generic
+default and nothing reads its signature through the trait. `Zip.zip` is one (it
+gives a flat `Zip3`, where `Iterator`'s `zip` would nest the pair); `ArrayChunks`,
+`ArrayMutChunks` and `ArrayMutItems` keep theirs. A *field* named like a generic
+default is still refused (1013), as `IterSkip`'s was: `ZipIndexed` and `Zip3Indexed`
+hold their zip in `src`.
 A type argument is the use's own source, resolved where it is written: `cloneNode`
 clones one substituted for a generic parameter with no `selftype`, so a `Self` in it
 (a default naming `Step[T, Self]`) stays the type the default was taken into and is not
