@@ -223,3 +223,49 @@ category = "reject"
 description = "What an operator still refuses to read through a borrow: a String or a struct that moves, an operator taking its other operand by value, two number types that differ"
 tags = ["typecheck"]
 diagnostics = 7
+
+[scenario.each_adapters]
+category = "run"
+description = "The adapters of a cursor: lazy(xs.iter()).map, filter, take, skip and the terminals fold, any, all, count, find, sum, min and max; closures typed from the item (one borrowing a variable, one changing a counter), a chain, empty input, take and skip at their bounds, find and min/max answering an Option, and other cursors (an array, a zip, floats)"
+tags = ["typecheck", "genllvm", "runtime"]
+
+# The adapters are one loop, not a call per item: the closures' bodies and every
+# step's 'next' are inline, and the loop is the one a hand-written loop over a
+# cursor that gives numbers is. Compiled as a library so its public function is
+# exported (in a program the optimizer deletes what main never calls). The method
+# is enum_payload_loop_option's.
+[scenario.each_adapters_fused]
+category = "compile"
+description = "A map and a sum over a cursor that gives numbers is one vectorized loop with the closure inline and no call, as the hand-written loop over the same cursor is"
+tags = ["genllvm"]
+
+[[scenario.each_adapters_fused.run]]
+name = "library"
+options = ["--library"]
+
+[[scenario.each_adapters_fused.check]]
+name = "the-chain-is-one-vectorized-loop-with-no-call"
+target = "llvmir"
+contains = ["define i64 @sumChain(", "vector.body", "mul <2 x i64>", "llvm.vector.reduce.add"]
+excludes = ["@_C", "phi %Option", "insertvalue %Option", "[15 x i8]"]
+
+[scenario.each_adapters_fused_borrow]
+category = "compile"
+description = "A map, a filter and a sum over a cursor that lends, with a closure borrowing a variable, is one loop with both closures inline and no call (not vectorized: the cursor's Option of a borrow is tested for null in the loop)"
+tags = ["genllvm"]
+
+[[scenario.each_adapters_fused_borrow.run]]
+name = "library"
+options = ["--library"]
+
+[[scenario.each_adapters_fused_borrow.check]]
+name = "the-chain-is-one-loop-with-no-call"
+target = "llvmir"
+contains = ["define i64 @sumBorrowed(", "loopend:"]
+excludes = ["@_C", "phi %Option", "insertvalue %Option", "alloca", "vector.body"]
+
+[scenario.each_adapters_typecheck]
+category = "reject"
+description = "What the adapters refuse: sum over a cursor that lends, max over structs, a closure body that does not check against the item it is typed from, and a chain begun on something that is not an Iterator"
+tags = ["typecheck"]
+diagnostics = 5

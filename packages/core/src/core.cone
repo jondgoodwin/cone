@@ -972,6 +972,253 @@ pub trait RandomAccess[T] {
   pub fn at(self &, k usize) T;
 }
 
+// ADAPTERS: a cursor walked through a chain of steps, 'lazy(xs.iter()).map(f).filter(g).sum()'.
+// 'lazy' wraps any Iterator[T] (a cursor of the collections, a zip, a generator, a
+// struct of one's own) in a 'Lazy[T, I]', which has the adapters as methods. Each
+// adapter returns a Lazy again and does no work until a terminal method walks it,
+// and every step is a generic instance holding the cursor it wraps and a closure
+// of its own type ('F fn(x T) U'), so a chain compiles to one loop with the
+// closures' bodies inline and no call through a pointer for any item.
+//
+// Why a wrapper and not methods of Iterator itself: a type is an Iterator by its
+// 'next' alone, with no declaration, and a method of a trait reaches only a type
+// that declares the trait with 'is', so a cursor does not inherit 'map'. The
+// wrapper is the one place the adapters are written. (It also keeps the items'
+// types in view: the closure given to 'map' on a Lazy[T, I] is typed from T.)
+//
+// An item is whatever the cursor gives, so a cursor that lends ('xs.iter()', whose
+// items are '&V') gives closures borrows: 'map(x => *x * 2)', 'filter(y => *y > 3)'
+// (a filter's closure is given a borrow of the item, as a find's is: a borrow of a
+// borrow here, which an operator reads through). A step that
+// needs a number, 'sum', 'min' and 'max', is there where the items are numbers, so
+// a lending cursor is mapped to values first: 'map(x => *x).sum()'. So is 'find' on
+// one, which hands an item back: each step's 'next' has a signature that names no
+// lifetime, so a borrow it answers is held to lend from the step, and cannot leave
+// the function that walks the chain.
+
+// Each step below holds the cursor it wraps and gives the Option of what comes
+// out; they are not named in a program, 'Lazy''s methods make them
+pub struct LazyMap[T, U, I Iterator[T], F fn(x T) U] {
+  src Lazy[T, I];
+  f F;
+
+  pub fn next(self &mut) Option[U] inline {
+    match src.next() {
+      case imm e Some { return Some[U][f(e.value)]; }
+      case is None { return None[U][]; }
+    }
+  }
+}
+
+pub struct LazyFilter[T, I Iterator[T], F fn(x &T) bool] {
+  src Lazy[T, I];
+  f F;
+
+  pub fn next(self &mut) Option[T] inline {
+    while true {
+      match src.next() {
+        case imm e Some {
+          imm v = e.value;
+          if f(&v) { return Some[T][v]; }
+        }
+        case is None { return None[T][]; }
+      }
+    }
+    None[T][];
+  }
+}
+
+// The first 'left' items, then None
+pub struct LazyTake[T, I Iterator[T]] {
+  src Lazy[T, I];
+  left usize;
+
+  pub fn next(self &mut) Option[T] inline {
+    if left == 0usize { return None[T][]; }
+    left = left - 1usize;
+    src.next();
+  }
+}
+
+// All but the first 'skip' items: the skipped are taken (and dropped) on the first call
+pub struct LazySkip[T, I Iterator[T]] {
+  src Lazy[T, I];
+  skip usize;
+
+  pub fn next(self &mut) Option[T] inline {
+    while skip > 0usize {
+      skip = skip - 1usize;
+      match src.next() {
+        case imm e Some { }
+        case is None { skip = 0usize; return None[T][]; }
+      }
+    }
+    src.next();
+  }
+}
+
+// A cursor with the adapters. 'next' is the cursor's own, so a Lazy is walked by
+// 'each' like any cursor, and wrapped again by 'lazy'
+pub struct Lazy[T, I Iterator[T]] {
+  inner I;
+
+  pub fn next(self &mut) Option[T] inline { inner.next(); }
+
+  // The items through 'f': the closure is typed from the item and its result is
+  // the new item's type, 'lazy(xs.iter()).map(x => *x * k)'
+  pub fn map[U, F fn(x T) U](self, f F) Lazy[U, LazyMap[T, U, I, F]] inline {
+    new Lazy[U, LazyMap[T, U, I, F]](new LazyMap[T, U, I, F](self, f));
+  }
+
+  // The items 'f' answers true for. 'f' is given a borrow of the item
+  pub fn filter[F fn(x &T) bool](self, f F) Lazy[T, LazyFilter[T, I, F]] inline {
+    new Lazy[T, LazyFilter[T, I, F]](new LazyFilter[T, I, F](self, f));
+  }
+
+  // At most the first n items. n is any integer, a literal included. The method is
+  // generic in n's type only so that an instance of Lazy does not need, to be made,
+  // the Lazy of a Lazy of a Lazy without end: a generic method is made when called
+  pub fn take[N Integer](self, n N) Lazy[T, LazyTake[T, I]] inline {
+    new Lazy[T, LazyTake[T, I]](new LazyTake[T, I](self, usize.from(n)));
+  }
+
+  // The items after the first n (none when there are not more than n)
+  pub fn skip[N Integer](self, n N) Lazy[T, LazySkip[T, I]] inline {
+    new Lazy[T, LazySkip[T, I]](new LazySkip[T, I](self, usize.from(n)));
+  }
+
+  // The terminal methods walk the chain once, consuming it
+
+  // 'init', then 'f' given the result so far and each item in turn
+  pub fn fold[A, F fn(acc A, x T) A](self, init A, f F) A inline {
+    mut it = self;
+    mut g = f;
+    mut acc = init;
+    while true {
+      match it.next() {
+        case imm e Some { acc = g(acc, e.value); }
+        case is None { break; }
+      }
+    }
+    acc;
+  }
+
+  // Whether 'f' is true of some item (false for none), stopping at the first
+  pub fn any[F fn(x T) bool](self, f F) bool inline {
+    mut it = self;
+    mut g = f;
+    while true {
+      match it.next() {
+        case imm e Some { if g(e.value) { return true; } }
+        case is None { break; }
+      }
+    }
+    false;
+  }
+
+  // Whether 'f' is true of every item (true for none), stopping at the first it is false of
+  pub fn all[F fn(x T) bool](self, f F) bool inline {
+    mut it = self;
+    mut g = f;
+    while true {
+      match it.next() {
+        case imm e Some { if !g(e.value) { return false; } }
+        case is None { break; }
+      }
+    }
+    true;
+  }
+
+  // How many items there are
+  pub fn count(self) usize inline {
+    mut it = self;
+    mut n = 0usize;
+    while true {
+      match it.next() {
+        case imm e Some { n = n + 1usize; }
+        case is None { break; }
+      }
+    }
+    n;
+  }
+
+  // The first item 'f' answers true for, or None. 'f' is given a borrow of the item
+  pub fn find[F fn(x &T) bool](self, f F) Option[T] inline {
+    mut it = self;
+    mut g = f;
+    while true {
+      match it.next() {
+        case imm e Some {
+          imm v = e.value;
+          if g(&v) { return Some[T][v]; }
+        }
+        case is None { break; }
+      }
+    }
+    None[T][];
+  }
+
+  // The total of number items (0 for none)
+  pub fn sum(self) T inline where T is Integer or T is f32 or T is f64 {
+    mut it = self;
+    mut s = T.from(0i32);
+    while true {
+      match it.next() {
+        case imm e Some { s = s + e.value; }
+        case is None { break; }
+      }
+    }
+    s;
+  }
+
+  // The smallest number item (the first of equals), or None for no items
+  pub fn min(self) Option[T] inline where T is Integer or T is f32 or T is f64 {
+    mut it = self;
+    match it.next() {
+      case is None { return None[T][]; }
+      case imm first Some {
+        mut best = first.value;
+        while true {
+          match it.next() {
+            case imm e Some {
+              imm v = e.value;
+              if v < best { best = v; }
+            }
+            case is None { break; }
+          }
+        }
+        return Some[T][best];
+      }
+    }
+  }
+
+  // The largest number item (the first of equals), or None for no items
+  pub fn max(self) Option[T] inline where T is Integer or T is f32 or T is f64 {
+    mut it = self;
+    match it.next() {
+      case is None { return None[T][]; }
+      case imm first Some {
+        mut best = first.value;
+        while true {
+          match it.next() {
+            case imm e Some {
+              imm v = e.value;
+              if v > best { best = v; }
+            }
+            case is None { break; }
+          }
+        }
+        return Some[T][best];
+      }
+    }
+  }
+}
+
+// Give a cursor the adapters: 'lazy(xs.iter()).map(x => *x * 2).sum()'. Any Iterator
+// will do, and the cursor is taken by value (a cursor held in a variable is copied
+// where it copies, moved where it moves)
+pub fn lazy[T, I Iterator[T]](it I) Lazy[T, I] inline { new Lazy[T, I](it); }
+
 // A panic ends the program where something that must not happen has: an index
 // out of bounds, memory exhausted, an invariant broken. It is a bug report, not
 // error handling, which is Option's and Result's. The runtime does the work

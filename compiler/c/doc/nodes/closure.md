@@ -128,7 +128,9 @@ borrow points at, `*self.field`, for a captured variable. Type check replaces th
 node through the pointer to it, as it does for a bare field.
 
 **The return type** is the written one, the expected signature's, or read off the
-paths. Read off, the signature holds `void` while the body is checked, and
+paths (also when the expected signature has none to give: a generic's bound whose
+result names a type parameter nothing else settles, `F fn(x T) U`, hands the closure
+`unknownType` for it, and the body settles `U`). Read off, the signature holds `void` while the body is checked, and
 `closureImplicitReturn` and `closureReturnTypeCheck` (called from `fnDclTypeCheck`
 and `returnTypeCheck` for a function whose `ClosureInfo` says `retinfer`) set it
 from the first return the check meets and hold the others to it. An `if` whose
@@ -145,7 +147,9 @@ which say what its signature is, then `fnCallClosureArgs` checks it.
 - **A generic.** `genericClosureSig` finds the signature bound of the type
   parameter the argument's parameter is (or is a reference to), reads the other
   type parameters off the other arguments (`genericInferType`), and clones the
-  bound with them. A parameter that is `&F` or `&mut F` is given the literal
+  bound with them. Every type parameter the bound's parameters name must be known
+  by then; its result type may name one that is not (a `map`'s `U`), and the hint
+  then has `unknownType` for the result, which the body gives. A parameter that is `&F` or `&mut F` is given the literal
   lent as a temporary, a borrow of it, as `&make()` is.
 - **An overload set.** The literal is considered only against the overloads whose
   parameter there is callable (a function reference's signature, or a generic

@@ -3162,8 +3162,25 @@ FnSigNode *genericClosureSig(TypeCheckState *pstate, FnDclNode *generic, Nodes *
             continue;
         genericInferType(known, info->parms, ((VarDclNode*)nodesGet(gsig->parms, firstparm + j))->vtype, argtype);
     }
-    if (!genericTypeArgsKnown(bound, info->parms, known->args))
-        return NULL;
+    if (!genericTypeArgsKnown(bound, info->parms, known->args)) {
+        // A return type that names a parameter nothing else has settled ('U' in
+        // 'F fn(x T) U', which a map's closure gives) waits for the closure's body:
+        // the hint then has the parameters alone, and no return type
+        FnSigNode *full = (FnSigNode*)bound;
+        if (full->tag != FnSigTag)
+            return NULL;
+        INode **parmp;
+        uint32_t pcnt;
+        for (nodesFor(full->parms, pcnt, parmp))
+            if (!genericTypeArgsKnown(((VarDclNode*)*parmp)->vtype, info->parms, known->args))
+                return NULL;
+        FnSigNode *open = newFnSigNode();
+        inodeLexCopy((INode*)open, (INode*)full);
+        open->parms = full->parms;
+        open->rettype = unknownType;
+        open->spelled = full->spelled;
+        bound = (INode*)open;
+    }
 
     CloneState cstate;
     uint32_t dclpos = cloneDclPush();
