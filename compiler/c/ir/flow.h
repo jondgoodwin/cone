@@ -81,6 +81,8 @@ void flowVarJoin(FlowVarPath *paths, uint32_t npaths);
 // Is this variable one whose state the path walk follows for drop flags: a local
 // or a parameter whose value moves or has something to do as it dies?
 int flowDropTracked(VarDclNode *var);
+// A local declared without a value is tracked whatever its type
+void flowDropTrackUninit(VarDclNode *var);
 // Is this type certainly one whose value has nothing to do as it dies, by a
 // look at what it names: a number or void? Anything else is asked.
 int flowNoDeath(INode *type);

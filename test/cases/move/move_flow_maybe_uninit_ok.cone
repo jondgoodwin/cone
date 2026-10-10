@@ -1,0 +1,124 @@
+// The neighbours move_flow_maybe_uninit must not refuse: a local declared
+// without a value, given one on every path that reaches a read. Each function
+// prints what it computed, so a variable read before it was set would show.
+
+mod move_flow_maybe_uninit_ok;
+
+import stdio use *;
+
+struct Pt {
+  pub x i32;
+  pub y i32;
+}
+
+enum Dir {
+  Up, Down, Left;
+}
+
+mut gcell i32 = 7;
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+// Given a value in both arms
+fn bothArms(c i32) i32 {
+  mut n i32;
+  if c > 0 { n = 2; } else { n = 3; }
+  n + 1;
+}
+
+// Given a value before the branch, and again in one arm
+fn beforeBranch(c i32) i32 {
+  mut n i32;
+  n = 10;
+  if c > 0 { n = 20; }
+  n;
+}
+
+// A borrowed reference given a value in both arms
+fn refBoth(c i32, x &i32, y &i32) i32 {
+  mut r &i32;
+  if c > 0 { r = x; } else { r = y; }
+  *r;
+}
+
+// A struct of plain data given a value in both arms
+fn structBoth(c i32) i32 {
+  mut p Pt;
+  if c > 0 { p = new Pt(1, 2); } else { p = new Pt(3, 4); }
+  p.x + p.y;
+}
+
+// A raw pointer given a value in both arms
+fn rawBoth(c i32) i32 {
+  mut p *i32;
+  if c > 0 { p = &gcell; } else { p = &gcell; }
+  *p;
+}
+
+// Given a value in every arm of a match
+fn matchAll(d Dir) i32 {
+  mut n i32;
+  match d {
+    case is Up { n = 1; }
+    case is Down { n = 2; }
+    case is Left { n = 3; }
+  }
+  n;
+}
+
+// Given a value in one arm of an 'if'; the other arm leaves the function
+fn otherArmReturns(c i32) i32 {
+  mut n i32;
+  if c > 0 { n = 2; } else { return 0; }
+  n;
+}
+
+// A loop with no condition is left only by its 'break', which comes after the
+// value is given: the read after the loop is reached only by that path
+fn assignedThenBreak(c i32) i32 {
+  mut n i32;
+  mut i = 0;
+  while {
+    if i < c { i = i + 1; }
+    else { n = i * 2; break; }
+  }
+  n;
+}
+
+// Declared inside a loop's body, given a value in both arms each pass
+fn declaredInLoop(c i32) i32 {
+  mut sum = 0;
+  mut i = 0;
+  while i < c {
+    mut n i32;
+    if i > 1 { n = i; } else { n = 1; }
+    sum = sum + n;
+    i = i + 1;
+  }
+  sum;
+}
+
+fn main() {
+  show("both-arms-pos", bothArms(1));
+  show("both-arms-neg", bothArms(0));
+  show("before-branch-pos", beforeBranch(1));
+  show("before-branch-neg", beforeBranch(0));
+  imm a = 40;
+  imm b = 50;
+  show("ref-both-pos", refBoth(1, &a, &b));
+  show("ref-both-neg", refBoth(0, &a, &b));
+  show("struct-both-pos", structBoth(1));
+  show("struct-both-neg", structBoth(0));
+  show("raw-both", rawBoth(1));
+  show("match-up", matchAll(Dir.Up[]));
+  show("match-left", matchAll(Dir.Left[]));
+  show("other-arm-returns-pos", otherArmReturns(1));
+  show("other-arm-returns-neg", otherArmReturns(0));
+  show("assigned-then-break", assignedThenBreak(3));
+  show("declared-in-loop", declaredInLoop(4));
+}

@@ -649,4 +649,6 @@ void varDclFlow(FlowState *fstate, VarDclNode **vardclnode) {
         flowHandleMoveOrCopy(&((*vardclnode)->value));  // initialization copies/moves value
         (*vardclnode)->flowtempflags |= VarInitialized;
     }
+    else if (!((*vardclnode)->flowtempflags & VarInitialized))
+        flowDropTrackUninit(*vardclnode);
 }

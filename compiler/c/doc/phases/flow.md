@@ -1372,7 +1372,11 @@ agrees, there is no flag, and the release is what it is, or nothing.
 **The gate** (`FlowState.dropgate`) is set by the main walk at O(1) per state
 change: a *tracked* variable — a local or a parameter whose value moves or has
 anything to do as it dies (`flowDropTracked`; a match's binding stands for the
-matched value's variable, `flowDropOwner`) — moved, hollowed or stored over
+matched value's variable, `flowDropOwner`), or a local declared without a value
+whatever its type (`flowDropTrackUninit`, from `varDclFlow`: a number, a
+struct of plain data, a borrowed reference, a raw pointer, which could only ever
+be uninitialized, never moved, and are otherwise untracked, as a local given its
+value where it is declared is) — moved, hollowed or stored over
 deeper in the conditional structure than it was declared (`flowDepth`: an
 `if`'s arms and its later conditions, the right operand of `and` and `or`, a
 loop's body; `flowDropNote`), or moved or hollowed by only some of the values a
@@ -1402,7 +1406,15 @@ local held. Loop walks gather into one record (`DropSite`), the union.
 it moved, hollowed or never gave a value (a borrow: moved or hollowed only) is
 `ErrorMove` "may have been moved out" / "may not have been given a value"
 (`dropRefuse`), once per site: a loop moving a variable declared outside it,
-a read in a pass after one that moved it. The main walk refuses what one walk
+a read in a pass after one that moved it. This holds for every type: a number
+given a value in one arm of an `if`, a borrowed reference or raw pointer
+dereferenced after one (`pwThrough` checks the variable the reference is read
+from, which `pwDropUse` skips for a place reached through a dereference), a
+struct's field, a variable a `match` arm or a loop that may not run left
+unset. A `while` with a condition, `while true` included, keeps the condition's
+exit; only a `while` with none is left by its `break` alone. A variable given
+a value only after a read in source order is the main walk's ("has not been
+initialized"). The main walk refuses what one walk
 in source order sees.
 
 **What it decides** (`dropWalkEnd`, once the walk reported no error). A
@@ -1626,7 +1638,7 @@ filled `self`'s fields is an ordinary store.
 | **Freezing** | the loan walk, on a gated function | a borrow held in a local, bare or inside a struct, enum, `Option`, array or list, and its copies, freeze the source until the last use (a finalizer that may read it, at the holder's death, included), and so do a borrow a call returns, of every argument, and one a call or a store through a reference puts into a local (from a `NoLoanMut` or `NoLoanRead` container, only its life): `ErrorFrozen` at a change, a move, a conflicting borrow, the source's end, and, under a mutable borrow, a read — for a source reached as `uni`; for one reached through a shared path, only its owner's move, replacement or end, a change or mutable borrow of the owner where it is held, and an `&uni` or `&imm` borrow, but for a borrow a method of a container that changes shape (`ShapeChanging`, declared or found) returns, which freezes the path it was reached through as a local's does | an element borrow of a container that changes shape through a shared path, when the change comes through another name or a call that might make one (part (b) of the rule; not built); two copies of one `&mut`; a global a callee changes |
 | **De-aliasing / drops** | flow decides, generation executes | scope-exit release of owning refs, of drop-fn structs and enums, and of tuples and arrays holding what finalizes or owns, from a jump down to the block it names; the previous value's release at a store over a variable, a part of one, or a place reached through a reference; each on the paths that hold the value, by a drop flag where they differ; a temporary's at the end of its statement, condition or operand, newest first, hollow where a value moved out through it | an array an element was moved out of leaks the rest; a value stored into a field of a variable holding nothing leaks; a temporary a borrow or a pointer made from it may outlive is kept, and leaks — see Hazards |
 | **Permission** | `MayWrite` and `MayRead` | `ErrorNoMut` on assignment and swap; `ErrorNoRead` on a read through a reference — a dereference, an index, or a field of a virtual reference | `MayAliasWrite` and `IsLockless` are populated and read nowhere; `RaceSafe` is read by the thread check, a type check question (`refThreadBinds`) |
-| **Initialization** | yes | `ErrorMove` "has not been initialized"; for a variable that moves or has anything to do as it dies, "may not have been given a value" where some path did not (the path walk) | for any other type, "initialized on one branch" reads as initialized everywhere; a variable never initialized may be borrowed, so a method taking it `&mut` can fill it, and nothing then stops a field it left unset being read through the borrow; the unused-variable warning in `flow.h`'s header does not exist |
+| **Initialization** | yes | `ErrorMove` "has not been initialized"; for any local declared without a value, of any type, "may not have been given a value" where some path did not (the path walk) | a variable never initialized may be borrowed, so a method taking it `&mut` can fill it, and nothing then stops a field it left unset being read through the borrow; the unused-variable warning in `flow.h`'s header does not exist |
 
 Everything else about permissions is type check's: `permMatches` in
 `borrowTypeCheck`, and variance in the reference matchers.
@@ -1816,7 +1828,7 @@ droppable noted as holding nothing is never finalized.
 | | `flowLendNote`, `flowLendWritable` | a borrow of a variable's own storage, or a raw pointer made of one, noted on it for generation's lending (`VarFlowLend`); whether a borrow's permission may write |
 | | `flowScopeDealias`, `flowVarRelease`, `flowScopeHandsBack` | build a scope's release list; skip an uninitialized, moved-out or handed-back variable; release a hollowed one hollow; one variable's release, whole or hollow, in a `DropFlagNode` where asked; whether a scope hands one of its variables back whole |
 | | `flowVarSetFlags`, `flowVarLogMark`, `flowVarPathTake`, `flowVarRollback`, `flowVarJoin` | the main walk's variable flags, logged so that an `if`'s arms are walked from one state and joined |
-| | `flowDropTracked`, `flowDropNote`, `flowDropOwner`, `flowLvalRootVar` | the drop gate: a tracked variable changed deeper than its declaration; the variable owning a binding's value; the local a store's target is part of |
+| | `flowDropTracked`, `flowDropTrackUninit`, `flowDropNote`, `flowDropOwner`, `flowLvalRootVar` | the drop gate: a tracked variable (any local declared without a value included) changed deeper than its declaration; the variable owning a binding's value; the local a store's target is part of |
 | | `flowStateInit`, `flowGateResultAsk`, `flowGateCallAsk`, `flowGateOperandAsk`, `flowGateIsOwnedLent`, `flowGateBoxedAsk`, `flowGateUse`, `flowGateCount`, `flowGatePrint` | the gate (§3, "The gate"): the questions its triggers ask out of line, the waiting operands' borrows, written or an owner's implicit lend, the `-V 2` tallies |
 | `ir/flowgate.h` | `flowGateHolder`, `flowGateAssigned`, `flowGateResult`, `flowGateCall`, `flowGateOperand` | the gate's triggers as inline tests, dismissing what cannot carry a borrow without a call |
 | `ir/itype.c` | `itypeCarriesBorrow` | may a value of this type hold a borrowed reference; a struct's answer remembered in `StructNode.carriesborrow` |
