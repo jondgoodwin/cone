@@ -1,0 +1,44 @@
+// A closure given to a generic callable whose signature names a result type no argument
+// has settled ('F fn(x T) U', U the result): the closure is typed from what is known
+// (its parameters, T), and its body gives U. A map is that, written once.
+//
+// Each case prints what it saw; the numbers are worked out in the comments.
+
+mod closure_generic_result;
+
+import stdio use *;
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+// T from the first argument, U from the closure's body
+fn apply[T, U, F fn(x T) U](v T, f F) U { f(v); }
+
+struct Box[T] {
+  v T;
+
+  // The same as a method, T from the struct
+  pub fn through[U, F fn(x T) U](self &, f F) U { f(v); }
+  pub fn both[U, F fn(x T, y T) U](self &, w T, f F) U { f(v, w); }
+  pub fn through2[U, F fn(x T) U](self &, f &mut F) U { f(v); }
+}
+
+fn main() {
+  imm k = 3i64;
+  show("free", apply(7i64, x => x * k));                              // 21
+  imm half = apply(9i64, x => x / 2i64 == 4i64);                      // U is bool
+  show("bool result", if half { 1i64; } else { 0i64; });              // 1
+  imm b = new Box[i64](5i64);
+  show("method", b.through(x => x + k));                               // 8
+  show("two params", b.both(10i64, (x, y) => x * y - k));             // 5 * 10 - 3 = 47
+  imm c = new Box[f64](1.5);
+  imm scaled = c.through(x => x * 2.0);                               // U is f64
+  show("float", if scaled == 3.0 { 1i64; } else { 0i64; });           // 1
+  mut n = 0i64;
+  show("changes", b.through2(x => { n += 1i64; x; }));                 // 5
+  show("changed", n);                                                 // 1
+}

@@ -1,0 +1,265 @@
+// An iterator chain as the source of an 'each' inside '<-': 'xs <- each src.filter(..).map(..)'.
+//
+// The adapters (map, filter, take, skip) give a cursor, and a cursor is a source as any
+// other: the entry walks it with 'next', one loop, and appends what it gives. So
+//
+// - the bare form 'xs <- each chain' appends every item the chain gives, copying a
+//   borrow of a number or a plain struct as it does from a list;
+// - the header form 'xs <- each v in chain if cond yield expr' filters and shapes it
+//   again, and 'yield k: v' appends a pair to a dictionary;
+// - 'chain' may start at a list's 'iter()', 'drain()' (the items move and the list is
+//   left empty) or 'mutItems()', an array, text, a generator (an infinite one cut by
+//   'take'), a cursor of one's own, 'zip' and 'indexed';
+// - a chain held in a variable is a source too, and a closure in it is run once an
+//   item, as far as the entry asks for items.
+//
+// Every value printed is worked out by hand from the values put in; the comments hold it.
+// xs is 1 2 3 4 5 6, and k is 3.
+
+mod stream_chains;
+
+import stdio use *;
+import collections use *;
+
+fn shows(label &str, xs &List[i64]) {
+  printStr(label);
+  printStr(" =");
+  each x in xs {
+    printStr(" ");
+    printInt(*x);
+  }
+  printStr("\n");
+}
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+// A cursor of one's own that declares itself an Iterator: n, n - 1, ... 1
+struct Countdown is Iterator[i64] {
+  n i64;
+
+  pub fn next(self &mut) Option[i64] {
+    if n <= 0i64 { return None[i64][]; }
+    imm v = n;
+    n = n - 1i64;
+    Some[i64][v];
+  }
+}
+
+// 1, 2, ... top
+fn upto(top i64) yields i64 {
+  each i in 1i64 <= top { yield i; }
+}
+
+// 0, 1, 2, ... without end
+fn nat() yields i64 {
+  mut i = 0i64;
+  while true {
+    yield i;
+    i = i + 1i64;
+  }
+}
+
+struct Pt {
+  x i64;
+  y i64;
+}
+
+// A generic function holds the chain, copied into each instance
+fn firstTwo[T](xs &List[T]) List[T] where T is Copy {
+  new List[T] <- each xs.iter().take(2usize).map(x => *x);
+}
+
+// A builder inside a generator, whose result the generator hands on
+fn doubledThenSummed(xs &List[i64]) yields i64 {
+  imm built = new List[i64] <- each xs.iter().map(x => *x * 2i64);
+  yield i64.from(built.len);
+  yield built.iter().fold(0i64, (acc, x) => acc + *x);
+}
+
+fn lists() {
+  mut xs = new List[i64];
+  xs <- 1, 2, 3, 4, 5, 6;
+  imm k = 3i64;
+
+  // A filter then a map, into a list that already holds a value: 7, then 3 4 5 6 times 10
+  mut ys = new List[i64];
+  ys <- 7;
+  ys <- each xs.iter().filter(x => *x > 2i64).map(x => *x * 10i64);
+  shows("filter-map", &ys);                            // 7 30 40 50 60
+
+  // A new list; a closure that reads a variable
+  imm plus = new List[i64] <- each xs.iter().map(x => *x + 1i64);
+  shows("map-new", &plus);                             // 2 3 4 5 6 7
+  imm times = new List[i64] <- each xs.iter().map(x => *x * k);
+  shows("map-capture", &times);                        // 3 6 9 12 15 18
+
+  // Beside other entries, in order: skip 4 leaves 5 and 6
+  imm around = new List[i64] <- 100, each xs.iter().skip(4usize).map(x => *x), 200;
+  shows("beside", &around);                            // 100 5 6 200
+
+  // take, and a chain that gives borrows (3 4 5 6 copied)
+  imm firsts = new List[i64] <- each xs.iter().map(x => *x).take(2usize);
+  shows("take", &firsts);                              // 1 2
+  imm borrows = new List[i64] <- each xs.iter().filter(x => *x > 2i64);
+  shows("borrows", &borrows);                          // 3 4 5 6
+
+  // The source list is read, not consumed
+  shows("source-intact", &xs);                         // 1 2 3 4 5 6
+
+  // A list already holding values, appended from another list through a chain
+  mut other = new List[i64];
+  other <- 7, 8;
+  xs <- each other.iter().map(x => *x * 2i64);
+  shows("appended", &xs);                              // 1 2 3 4 5 6 14 16
+
+  // A generic function
+  mut small = new List[i64];
+  small <- 5, 6, 7;
+  imm two = firstTwo(&small);
+  shows("generic", &two);                              // 5 6
+}
+
+fn headers() {
+  mut xs = new List[i64];
+  xs <- 1, 2, 3, 4, 5, 6;
+
+  // The loop's own header over the chain: doubles 2 4 6 8 10 12, kept above 6, plus one
+  imm kept = new List[i64] <- each v in xs.iter().map(x => *x * 2i64) if v > 6i64 yield v + 1i64;
+  shows("header-if", &kept);                           // 9 11 13
+
+  // Positions with indexed(): 0..5 times 1..6
+  imm weighted = new List[i64] <- each xs.indexed().map(p => i64.from(p.0) * *p.1);
+  shows("indexed", &weighted);                         // 0 2 6 12 20 30
+
+  // zip: two lists of three side by side
+  mut a = new List[i64];
+  a <- 1, 2, 3;
+  mut b = new List[i64];
+  b <- 10, 20, 30;
+  imm products = new List[i64] <- each zip(&a, &b).map(p => *p.0 * *p.1);
+  shows("zip", &products);                             // 10 40 90
+
+  // A chain inside a chain's yield: six items, each the length of a list of six
+  imm lens = new List[i64] <- each x in xs.iter().map(x => *x) yield i64.from((new List[i64] <- each y in xs.iter().map(y => *y + x) yield y).len);
+  shows("nested", &lens);                              // 6 6 6 6 6 6
+
+  // A struct: the two fields summed per point (1 + 2, 10 + 20)
+  mut pts = new List[Pt];
+  pts.push(new Pt(1i64, 2i64));
+  pts.push(new Pt(10i64, 20i64));
+  imm sums = new List[i64] <- each pts.iter().map(p => p.x + p.y);
+  shows("struct", &sums);                              // 3 30
+}
+
+fn sources() {
+  // A generator, filtered then scaled: 2 4 6 8 times 100
+  imm evens = new List[i64] <- each upto(8i64).filter(y => *y % 2i64 == 0i64).map(y => y * 100i64);
+  shows("generator", &evens);                          // 200 400 600 800
+
+  // A generator without end, cut by skip and take: 0 1 2 3 4 5 -> 2 3 4
+  imm cut = new List[i64] <- each nat().skip(2usize).take(3usize);
+  shows("endless", &cut);                              // 2 3 4
+
+  // A cursor of one's own: 4 3 2 1 squared
+  imm squares = new List[i64] <- each new Countdown(4i64).map(x => x * x);
+  shows("own-cursor", &squares);                       // 16 9 4 1
+
+  // An array and text
+  imm arr = [10i64, 20i64, 30i64];
+  imm arrplus = new List[i64] <- each arr.iter().map(x => *x + 1i64);
+  shows("array", &arrplus);                            // 11 21 31
+  imm codes = new List[i64] <- each "abc".chars().map(c => i64.from(u64.from(c)));
+  shows("chars", &codes);                              // 97 98 99
+
+  // mutItems() lends each item for writing; this one only reads it
+  mut xs = new List[i64];
+  xs <- 1, 2, 3;
+  imm bumped = new List[i64] <- each xs.mutItems().map(x => *x + 1i64);
+  shows("mutitems", &bumped);                          // 2 3 4
+  shows("mutitems-source", &xs);                       // 1 2 3
+
+  // A chain held in a variable
+  mut c = xs.iter().map(x => *x * 2i64);
+  imm held = new List[i64] <- each c;
+  shows("variable", &held);                            // 2 4 6
+
+  // Into a deque: 3 6 9 12 15 18, six items, summing 63
+  mut six = new List[i64];
+  six <- 1, 2, 3, 4, 5, 6;
+  imm dq = new Deque[i64] <- each six.iter().map(x => *x * 3i64);
+  mut total = 0i64;
+  each v in dq { total = total + *v; }
+  show("deque-len", i64.from(dq.len));                 // 6
+  show("deque-sum", total);                            // 63
+
+  // The closure runs once an item, and only as far as the entry asks: 2 of 6
+  mut calls = 0i64;
+  imm lazy = new List[i64] <- each six.iter().map(x => { calls += 1i64; *x; }).take(2usize);
+  shows("lazy", &lazy);                                // 1 2
+  show("lazy-calls", calls);                           // 2
+}
+
+fn moving() {
+  mut names = new List[String];
+  names.push(String.from("ab"));
+  names.push(String.from("cde"));
+  names.push(String.from("fghi"));
+
+  // A value made from each borrowed String: new Strings, the source stays
+  imm copies = new List[String] <- each names.iter().map(s => String.from(s.view()));
+  show("copies", i64.from(copies.len));                // 3
+  show("copies-source", i64.from(names.len));          // 3
+
+  // drain() moves the Strings out; filter keeps those longer than two, and the
+  // others are dropped with the chain: cde, fghi
+  imm longer = new List[String] <- each names.drain().filter(s => s.len > 2usize);
+  show("drain-filter", i64.from(longer.len));          // 2
+  show("drain-source", i64.from(names.len));           // 0
+  mut joined = String.from("");
+  each s in longer { joined.append(s.view()); }
+  printStr(joined.view());
+  printStr("\n");                                      // cdefghi
+
+  // drain().map: the lengths 2 3 4 of the Strings moved out, nothing left behind
+  names.push(String.from("ab"));
+  names.push(String.from("cde"));
+  names.push(String.from("fghi"));
+  imm lengths = new List[i64] <- each names.drain().map(s => i64.from(s.len));
+  shows("drain-map", &lengths);                        // 2 3 4
+  show("drain-map-source", i64.from(names.len));       // 0
+}
+
+fn dictionaries() {
+  mut xs = new List[i64];
+  xs <- 1, 2, 3, 4, 5, 6;
+
+  // Pairs (k, k * k) from a chain, built with the header's 'yield k: v': six entries,
+  // the keys times the values summing 1 + 8 + 27 + 64 + 125 + 216 = 441
+  imm squares = new Dict[i64, i64] <- each k, v in xs.iter().map(x => (*x, *x * *x)) yield k: v;
+  show("dict-len", i64.from(squares.len));             // 6
+  mut sum = 0i64;
+  each k, v in squares { sum = sum + *k * *v; }
+  show("dict-sum", sum);                               // 441
+}
+
+fn generators() {
+  mut xs = new List[i64];
+  xs <- 1, 2, 3, 4, 5, 6;
+  mut got = new List[i64];
+  each v in doubledThenSummed(&xs) { got <- v; }
+  shows("in-generator", &got);                         // 6, then 2 + 4 + 6 + 8 + 10 + 12 = 42
+}
+
+fn main() {
+  lists();
+  headers();
+  sources();
+  moving();
+  dictionaries();
+  generators();
+}

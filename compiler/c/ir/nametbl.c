@@ -174,6 +174,7 @@ void nametblInit() {
     cloneName = nametblFind("clone", 5);
     dropName = nametblFind("drop", 4);
     typeDropName = nametblFind("-drop", 5);
+    enumEqName = nametblFind("-eq", 3);
     finalName = nametblFind("final", 5);
     enumFinalName = nametblFind("-final", 6);
     initName = nametblFind("init", 4);
@@ -228,6 +229,7 @@ void nametblInit() {
     hashName = nametblFind("hash", 4);
     hashTraitName = nametblFind("Hash", 4);
     hasherName = nametblFind("Hasher", 6);
+    iteratorTraitName = nametblFind("Iterator", 8);
     writeU64Name = nametblFind("writeU64", 8);
     ofName = nametblFind("of", 2);
     fillName = nametblFind("fill", 4);

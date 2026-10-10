@@ -9,7 +9,7 @@
  * and parsed here, in this order (a diagnostic against generated text is
  * reported at the generator's name, Lexer.genat):
  *
- *   struct walk.Gen {                                  the generator's value
+ *   struct walk.Gen is Iterator[&Node] {               the generator's value, declaring what it is
  *     imm t &'a Tree;  imm n i32;                      the parameters, as the author wrote them
  *     state' u32;                                      where the body resumes
  *     pub fn next(self &mut) Option[&'a Node] {...}    the author's body
@@ -408,7 +408,10 @@ FnDclNode *parseGenFinish(ParseState *parse, FnDclNode *fn, GenSig *sig, GenCtx 
         genPutn(&g, tdecl.text, tdecl.len);
         genPuts(&g, "]");
     }
-    genPuts(&g, " {\n");
+    // It declares what it is, an Iterator of what it yields, so it has the adapters
+    genPuts(&g, " is Iterator[");
+    genPutn(&g, yplain.text, yplain.len);
+    genPuts(&g, "] {\n");
     for (uint32_t i = 0; i < nparms; ++i) {
         if (!parms[i].hasperm)
             genPuts(&g, "  imm ");

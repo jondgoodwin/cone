@@ -490,7 +490,7 @@ static StructNode *closureBuild(TypeCheckState *pstate, ClosureNode *clo, Closur
     // '()': the user's parameters after a 'self' of the struct, the body
     FnSigNode *sig = clo->sig;
     if (sig->rettype == unknownType) {
-        if (exsig)
+        if (exsig && exsig->rettype != unknownType)
             sig->rettype = exsig->rettype;
         else {
             // Read off the paths when the body is checked (closureImplicitReturn)

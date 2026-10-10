@@ -21,6 +21,8 @@
 // - A loop holding an 'await', which is legal: each pass waits for its reply.
 // - The rest of the statement: Shelf.stock's 'await's cut a place's index, a
 //   receiver's call and a compound assignment, each finished after its reply.
+// - Several awaits in a place: Board.fill's indexes are worked out first, the
+//   arrays reached after the last reply.
 //
 // doc/reference/refpermlock.html shows Tally.bump too, and says what Mixed
 // below checks.
@@ -33,6 +35,7 @@ mod concurrency_await_manual;
 import stdio use *;
 import actors;
 import sync use Arc, Mutex;
+import collections use List;
 
 fn say(s &str, n u64) {printStr(s); printStr(" "); printUInt(n); printStr("\n");}
 
@@ -194,6 +197,27 @@ actor Shelf {
 }
 // manual: end
 
+// manual: several awaits in a place
+actor Lane {
+  pub async do pick(self, n u64) u64 {n;}
+}
+
+actor Board {
+  lane Lane;
+  cells Array[Array[u64, 3], 2];
+  marks List[u64];
+
+  pub async do fill(self) u64 {
+    cells[await lane.pick(1u64)][await lane.pick(2u64)] = 5u64;                 // cells[1][2]
+    cells[await lane.pick(0u64)][0u64] <=> cells[await lane.pick(1u64)][2u64];  // both sides
+    (cells[0][1], cells[await lane.pick(1u64)][await lane.pick(1u64)]) = (7u64, 8u64);
+    marks <- (cells[1][2], await lane.pick(9u64), 3u64);
+    imm row = &cells[await lane.pick(1u64)][await lane.pick(0u64)..await lane.pick(2u64)];
+    row.len() * 100u64 + cells[0][0] * 10u64 + *marks[1];
+  }
+}
+// manual: end
+
 // Not shown, but said on refpermlock.html: a borrow through a lock that is
 // no local's lasts to the end of its statement, or to an 'await' within it.
 // Mixed reads under the lock, then awaits Locker, which takes the same lock:
@@ -229,6 +253,7 @@ actor Driver {
   cache Cache;
   sizes Sizes;
   shelf Shelf;
+  board Board;
 
   pub async do go(self) {
     say("log", await logger.log());
@@ -239,6 +264,7 @@ actor Driver {
     say("get cold", await cache.get(4u64));
     say("total", await sizes.total(3u64));
     say("stock", await shelf.stock());
+    say("board", await board.fill());
     say("mixed", await mixed.read());
     page.load(7u64);
   }
@@ -254,7 +280,8 @@ fn main() {
     imm count = new Arc[Mutex, Count](0u64);
     imm shared = new Arc[Mutex, Count](0u64);
     imm d = new Driver(new Mixed(shared, new Locker(shared)), page, new Logger(clock), new Gauge(clock), new Tally(count, clock),
-      new Doubler(), new Cache(net, 3u64), new Sizes(net), new Shelf(new Counter(), [0u64, 0u64, 0u64, 0u64], 0u64));
+      new Doubler(), new Cache(net, 3u64), new Sizes(net), new Shelf(new Counter(), [0u64, 0u64, 0u64, 0u64], 0u64),
+      new Board(new Lane(), [[0u64, 0u64, 0u64], [0u64, 0u64, 0u64]], List[u64].empty()));
     d.go();
   }
   finalAll();

@@ -19,8 +19,7 @@
 			change its items in place (<span class="pre">mutItems</span>), consume it (<span class="pre">drain</span>), number them
 			(<span class="pre">indexed</span>) or cut it into runs (<span class="pre">chunks</span>, <span class="pre">mutChunks</span>), and <span class="pre">zip</span>; <span class="pre">each</span> as an entry of the append operator's list
 			(<a href="#builder">below</a>); and <a href="#parallel">parallel each</a> over a number range, an
-			array, a slice or a list, or the runs of one, with <span class="pre">indexed</span> giving the position, in a function or an actor's method, and <a href="#parallelbuilder">the parallel builder</a> that builds a list from it. Not built yet: <a href="#closure">closure iterators</a>, the adapters (<span class="pre">map</span>,
-			<span class="pre">filter</span>, <span class="pre">fold</span>) and a source that runs its own loop, all of which build on <a href="refclosure.html">closures</a>, which are built. An enum's variant is constructed with its values in square brackets, as written here: that is the current spelling, and how a variant is constructed is an open design question (<a href="refenum.html#init">Enums</a>).</i></p>
+			array, a slice or a list, or the runs of one, with <span class="pre">indexed</span> giving the position, in a function or an actor's method, and <a href="#parallelbuilder">the parallel builder</a> that builds a list from it. The <a href="#adapters">adapters</a> of a cursor that declares itself an <span class="pre">Iterator</span>, <span class="pre">xs.iter().map(f).filter(g).sum()</span>, and a chain of them as the source of a <span class="pre">&lt;- each</span> list (<a href="#builder">below</a>). Not built yet: <a href="#closure">closure iterators</a>, the parallel reductions and a source that runs its own loop, all of which build on <a href="refclosure.html">closures</a>, which are built. An enum's variant is constructed with its values in square brackets, as written here: that is the current spelling, and how a variant is constructed is an open design question (<a href="refenum.html#init">Enums</a>).</i></p>
 
 	<p><span class="pre">each</span> makes it easier than <span class="pre">while</span>
 		to iterate over a sequence of values.
@@ -115,6 +114,7 @@ imm big = new List[i32] &lt;- each x in other if x &gt; 9 yield *x;
 imm squares = new List[i32] &lt;- each i in 1 &lt;= 5 yield i * i;  // 1 4 9 16 25
 imm index = new Dict[i32, str] &lt;- each p in people yield p.id: p.name;
 xs &lt;- 0, each x in other yield x + 1, 99;               // in the middle of a list
+imm tens = new List[i32] &lt;- each other.iter().filter(x =&gt; *x &gt; 2).map(x =&gt; *x * 10);   // a chain
 </pre>
 	<p>This <span class="pre">yield</span> belongs to the entry: it is not a generator's, which is a
 		statement of its own, so a generator may build a list this way and then hand values to
@@ -126,6 +126,22 @@ xs &lt;- 0, each x in other yield x + 1, 99;               // in the middle of a
 		<span class="pre">*</span> itself where it wants the value. The list being appended to cannot be the
 		source: <span class="pre">xs &lt;- each xs</span> is refused, as pushing to a list while a loop
 		walks it is. An array's contents cannot hold an <span class="pre">each</span>, as its size is fixed.</p>
+	<p id="builderchain">The source may be a chain of <a href="#adapters">adapters</a>, in the bare form or after
+		<span class="pre">in</span> in the header form: the chain is a cursor, and the entry walks it as any other, one
+		loop. A chain that starts at a list's <span class="pre">iter()</span> hands out borrows, so the items are copied as
+		from the list itself; a chain whose closure makes the value (<span class="pre">map(s =&gt; String.from(s.view()))</span>)
+		hands the value over; and one that starts at <span class="pre">drain()</span> moves the items out of the list, those a
+		<span class="pre">filter</span> rejects are dropped, and the list is left empty:</p>
+<pre>
+imm lengths = new List[usize] &lt;- each names.drain().map(s =&gt; s.len);      // names is left empty
+imm kept = new List[i32] &lt;- each v in xs.iter().map(x =&gt; *x * 2) if v &gt; 6 yield v + 1;
+imm squares = new Dict[i32, i32] &lt;- each k, v in xs.iter().map(x =&gt; (*x, *x * *x)) yield k: v;
+</pre>
+	<p>A chain that starts at the list being appended to is refused as <span class="pre">xs &lt;- each xs</span> is
+		(<span class="pre">xs &lt;- each xs.iter().map(f)</span>, and with <span class="pre">drain()</span>), and so is a
+		chain whose closure reads the list while it grows. A dictionary takes pairs by <span class="pre">yield k: v</span>
+		in the header form; the bare form <span class="pre">new Dict[K, V] &lt;- each pairs</span> is not built for any source.
+		<span class="pre">new List[T] &lt;- parallel each chain</span> is refused: a chain cannot be split (<a href="#parallelbuilder">below</a>).</p>
 
 	<h2>Iterators</h2>
 	<p><span class="pre">each</span> supports several ways to iterate over a sequence of values:</p>
@@ -396,21 +412,64 @@ each x in |{cnt = 12}| if cnt &gt; 0 {Some[cnt /= 2]} else {None} {
 			and then discarded afterward.
 			This is because, unless its state can be independently reset, it will only ever afterward say it is out of values.</p>
 
-	<h4 id="adapters">Adapters and sources that run their own loop</h4>
-	<p><i>Not built yet.</i> Two more uses of closures with <span class="pre">each</span> are planned, both on top of closures:</p>
-	<ul>
-		<li><b>Adapters.</b> <span class="pre">map</span>, <span class="pre">filter</span>, <span class="pre">fold</span> and the like
-			are to be methods every <span class="pre">Iterator</span> shares, generic over the closure's own type, so that a
-			chain such as <span class="pre">items.filter(...).map(...)</span> is compiled into one loop with no call through
-			a pointer for each item. Such a chain could then feed an <span class="pre">each</span> loop or the entries of
-			<a href="#builder">a collection being built</a>.</li>
-		<li><b>A source that runs its own loop.</b> A source may offer an optional method that runs the loop itself,
-			taking the body as a closure, for a source that cannot hand out its items one by one (a line reader that
-			lends each line from its own buffer, say). <span class="pre">each</span> would use it when the source has it,
-			and otherwise use <span class="pre">next</span>; <span class="pre">break</span>, <span class="pre">continue</span> and
-			<span class="pre">return</span> in the body would reach the source as signals, and an <span class="pre">await</span>
-			in such a body may be refused.</li>
-	</ul>
+	<h4 id="adapters">Adapters</h4>
+	<p>Every cursor that declares itself an <a href="reftrait.html#iterator"><span class="pre">Iterator</span></a> has the steps
+		that work on a sequence as a whole, as methods the trait shares: the cursors of the collections (<span class="pre">xs.iter()</span>,
+		<span class="pre">chunks</span>, <span class="pre">mutItems</span>, <span class="pre">indexed</span>, a dictionary's, a deque's), a
+		<span class="pre">zip</span>, <span class="pre">text.chars()</span>, a <a href="refcorout.html">generator</a>, and a struct of your own that says
+		<span class="pre">is Iterator[T]</span>, <span class="pre">T</span> being what its <span class="pre">next</span> gives. A step gives a
+		cursor again; none does any work until a <b>terminal</b> method walks the chain once, from where the cursor is, and
+		leaves it advanced:</p>
+<pre>
+imm k = 3;
+imm total = xs.iter().map(x =&gt; *x * k).filter(y =&gt; *y &gt; 9).sum();
+each v in xs.iter().map(x =&gt; *x * k) {      // a step is a cursor too: each walks it
+}
+
+struct Countdown is Iterator[i64] {         // declared: it has map, filter, sum and the rest
+  n i64;
+  pub fn next(self &amp;mut) Option[i64] { ... }
+}
+</pre>
+	<table border="1" cellpadding="4" cellspacing="0">
+		<tr><td><span class="pre">map(f)</span></td><td>each item through <span class="pre">f</span>; the closure is typed from the item and its result is the new item's type</td></tr>
+		<tr><td><span class="pre">filter(f)</span></td><td>the items <span class="pre">f</span> is true of; <span class="pre">f</span> is given a <i>borrow</i> of the item</td></tr>
+		<tr><td><span class="pre">take(n)</span>, <span class="pre">skip(n)</span></td><td>at most the first <span class="pre">n</span> items; all but the first <span class="pre">n</span> (any integer, a plain literal included; more than there are is none)</td></tr>
+		<tr><td><span class="pre">fold(init, f)</span></td><td><span class="pre">f(result so far, item)</span> over the items, starting from <span class="pre">init</span></td></tr>
+		<tr><td><span class="pre">any(f)</span>, <span class="pre">all(f)</span></td><td>whether <span class="pre">f</span> is true of some / every item; stops at the first that settles it; false / true for no items</td></tr>
+		<tr><td><span class="pre">count()</span></td><td>how many items</td></tr>
+		<tr><td><span class="pre">find(f)</span></td><td>the first item <span class="pre">f</span> (given a borrow) is true of, as an <span class="pre">Option</span></td></tr>
+		<tr><td><span class="pre">sum()</span>, <span class="pre">min()</span>, <span class="pre">max()</span></td><td>for number items: the total (0 for none); the smallest and largest as an <span class="pre">Option</span>, <span class="pre">None</span> for no items (the first of equals)</td></tr>
+	</table>
+	<p>An item is whatever the cursor gives. A cursor that lends (<span class="pre">xs.iter()</span>) gives borrows, so a closure
+		reads through them: <span class="pre">map(x =&gt; *x * 2)</span>. A <span class="pre">filter</span>'s closure is given a borrow
+		of the item, a borrow of a borrow for such a cursor, which an operator reads through
+		(<span class="pre">filter(y =&gt; *y &gt; 3)</span> for either kind). <span class="pre">sum</span>,
+		<span class="pre">min</span> and <span class="pre">max</span> are methods only where the items are numbers
+		(integers, <span class="pre">f32</span>, <span class="pre">f64</span>), so a cursor that lends is mapped to values first,
+		<span class="pre">map(x =&gt; *x).max()</span>, and a struct has none of them. <span class="pre">find</span> hands the item back,
+		and a borrow cannot be handed back through the chain's steps (each step's <span class="pre">next</span> is a method whose signature
+		names no lifetime, so its result is held to lend from the step), so it too is called on values:
+		<span class="pre">map(x =&gt; *x).find(y =&gt; *y == 5)</span>.</p>
+	<p>The closures are generic arguments (<span class="pre">[F fn(x T) U]</span>), each its own type, so a chain is compiled into
+		<b>one loop</b> with every closure's body inline and no call through a pointer for any item. A closure that changes a
+		variable (<span class="pre">x =&gt; { n += 1; *x; }</span>) is run once for each item the chain asks for and no more.
+		Over a cursor that gives numbers (not a borrow), a <span class="pre">map</span> and a <span class="pre">sum</span> is
+		vectorized as the hand-written loop is. Over a cursor that lends the loop is not vectorized, since each step answers an
+		<span class="pre">Option</span> of a borrow, which is a pointer tested for null: the same loop a hand-written
+		<span class="pre">while</span> over <span class="pre">next()</span> is.</p>
+	<p>A type with a <span class="pre">next</span> that does not declare <span class="pre">is Iterator[T]</span> is still accepted wherever an
+		<span class="pre">Iterator</span> is asked for as a bound (<span class="pre">fn f[T, I Iterator[T]](it &amp;mut I)</span>: fitting a
+		trait is by shape), and <span class="pre">each</span> walks it. What it does not get is the shared methods, which come with the
+		declaration; asking it for <span class="pre">map</span> is an error that says to declare it. Each step is a cursor of its own type
+		(the whole chain's, so a chain is held in a variable of inferred type, or walked at once). The terminal methods take the cursor by
+		<span class="pre">&amp;mut</span>, so one called on a chain made in the same expression needs no name for it.</p>
+	<p><i>Not built yet:</i> a source that runs its own loop around the body of an <span class="pre">each</span>, taking the body
+		as a closure, for a source that cannot hand out its items one by one (a line reader that lends each line from its own
+		buffer, say). <span class="pre">each</span> would use it when the source has it, and otherwise use <span class="pre">next</span>;
+		<span class="pre">break</span>, <span class="pre">continue</span> and <span class="pre">return</span> in the body would reach the source as
+		signals, and an <span class="pre">await</span> in such a body may be refused. The parallel reductions are to follow.
+		A chain feeding the entries of <a href="#builderchain">a collection being built</a> (<span class="pre">&lt;- each</span>) is built.</p>
 
 	<h2 id="parallel">parallel each</h2>
 	<p style="margin-left: 40px;"><i>Note: Built in a function and in an actor's methods (<a href="#parallelactor">below</a>): over a number range, an
@@ -454,6 +513,8 @@ fn total(xs &amp;Array[u64]) u64 {
 		<span class="pre">chunks(n)</span> and <span class="pre">mutChunks(n)</span> give, which it cuts between runs
 		(<a href="#parallelfill">below</a>). A cursor, a generator, a file or a
 		channel hands out its items one after another and cannot be split: collect it into a list first, and walk the list.
+		A chain of adapters (<span class="pre">xs.iter().map(f)</span>) is a cursor too: walk the list it starts from, and put
+		the adapters' work in the loop's own header, <span class="pre">if</span> and <span class="pre">yield</span>.
 		As in the loops above, the variable is a new one on every pass, and is a borrow of the item for an array,
 		a slice or a list.</p>
 
