@@ -13,8 +13,13 @@
 
     <div class="text">
 
-		<p style="margin-left: 40px;"><i>Note: The closure literal is built: the full form with a state list, the short form <span class="pre">x =&gt; x * 2</span>, and a body that borrows the variables around it (<span class="pre">&amp;</span>, or <span class="pre">&amp;mut</span> where it changes them; a variable is copied or moved in by listing it in the state). A closure is given on as a reference or an owner as <span class="pre">&amp;&lt;fn(sig)</span> and <span class="pre">So[fn(sig)]</span> (<a href="refcloref.html">closure references</a>). This page, written before them, is to be rewritten.</i></p>
-	
+		<p style="margin-left: 40px;"><i>Note: Built: the closure literal in both forms, the full form with a state list and the short
+			form <span class="pre">x =&gt; x * 2</span>; a body that borrows the variables around it; the permission of the closure's
+			<span class="pre">()</span> found from its body; the return type written, taken from the signature expected, or read off the
+			paths; and the checks on where a closure may go. Passing a closure on as a reference or an owner is
+			<a href="refcloref.html">Closure References</a>; a literal that meets a trait is described under
+			<a href="reftrait.html#closure">Traits</a>. Not built: a closure that calls itself, and calling a closure once and consuming it.</i></p>
+
 	<p>A closure may be viewed as a function that preserves its state from one invocation to the next.
 		Because closures preserve their state, they are useful for:</p>
 	<ul>
@@ -24,63 +29,246 @@
 			(<span class="pre">map</span>, <span class="pre">filter</span>, <span class="pre">fold</span>), written once as
 			methods every <span class="pre">Iterator</span> shares, and a source that runs its own loop around the
 			body of an <span class="pre">each</span>
-			(<a href="refeach.html#adapters">Each and Iteration</a>).</li>
+			(<a href="refeach.html#adapters">Each and Iteration</a>). Neither is built yet.</li>
 		<li>Generators that return a different value on each use. The generator
 			a function declares with <span class="pre">yields</span> needs no closure
 			(<a href="refcorout.html">Co-routines</a>).</li>
 		<li>Event-triggered callbacks, whose state guides what happens after an event is triggered.</li>
+		<li>Function-valued inputs of a library, such as the profile a sweep follows or the order a sort uses,
+			whose numbers belong to the caller rather than to a fixed function.</li>
 	</ul>
 
 	<h2>Closure Definition</h2>
-	<p>A closure definition resembles a function definition.
-		There are three key differences: the name is omitted,
-		the return value type(s) are be omitted (and inferred), and
-		the initial value of the preserved state is specified, </p>
+	<p>A closure is written where it is used, in the body of a function, in one of two forms.</p>
+
+	<h3 id="full">The full form</h3>
+	<p>The full form resembles a function definition. There are three key differences: the name is omitted,
+		the return type may be omitted (and inferred), and the state the closure carries may be listed
+		in square brackets after the parameters.</p>
+<pre>
+fn (parameters) [state] return_type { body }
+</pre>
 	<p>For example:</p>
 <pre>
-mut counter = fn(n i32) [cnt = 0] { cnt += n; };
+mut counter = fn(n i32) [mut cnt = 0] { cnt += n; cnt; };
 
 // Closure use
 counter(1);        // 1
 counter(2);        // 3
 </pre>
-	<p>In this case, the closure takes no parameters. It infers that the return value is an integer.</p>
-	<p>This closure's state is explicitly defined within square brackets after the parameter list.
-		The closure's state is a semi-colon-separated collection of named closure variables.
-		Each closure variable specifies its initial value (and implicitly its type).
-		If no initial value is specified, it will use the current value of that same-named variable in the outer scope.</p>
-	<p>Each time the closure is called, it increments the value held by <span class="pre">cnt</span>.
-		which is why it returns a different value each time it is called.</p>
-	<p>A closure's state is bound by value, which means it is created using a <i>copy</i> of the bound variable(s).
-		Any change to <span class="pre">cnt</span> within the closure has
-		no impact on the outer scope's <span class="pre">cnt</span> variable.
-		(Binding state by reference is also possible, but must be always done explicitly
-		such that the value is a reference.)</p>
+	<p>This closure takes one parameter, <span class="pre">n</span>. It infers that its return value is an integer,
+		since the last expression is <span class="pre">cnt</span>, an <span class="pre">i32</span>.</p>
+	<p>The state list holds the variables the closure owns. Each entry is a field of the closure, written as a
+		field is: a name with an initial value, <span class="pre">cnt = 0</span>, whose type is the value's.
+		Entries are separated by commas. An entry is <span class="pre">imm</span> unless written <span class="pre">mut</span>,
+		so a closure that changes its state lists it <span class="pre">mut</span>.
+		The list may be left out. The brackets sit after the parameters because a bracket never begins a type,
+		so they cannot be taken for the return type.</p>
+	<p>A parameter's type may be left out where the closure is given to something that says what the signature is
+		(<span class="pre">fn(x) { x + 1; }</span>, below); nothing else may leave a type out.</p>
 
-	<p>Explicit specification of the closure's state has several benefits:
+	<h3 id="short">The short form</h3>
+	<p>For a small closure the short form puts the parameter names, an arrow, and the body:</p>
+<pre>
+x =&gt; x * 2
+(a, b) =&gt; a.len() &lt; b.len()
+() =&gt; 5
+n =&gt; total += n
+u =&gt; 1.0 + depth * sin(u * ribs)
+</pre>
+	<p>The short form takes parameter names only, whose types come from the signature the closure is given to,
+		and a body that is one expression, an assignment, or a block. It has no state list and no written return
+		type; a closure that needs either is written in the full form. A comma after the body belongs to the list
+		the closure is in, so <span class="pre">f(x =&gt; x + 1, 3)</span> is a call with two arguments.</p>
+	<p>The arrow is <span class="pre">=&gt;</span>, not <span class="pre">-&gt;</span>, which would read as
+		"returns".</p>
+<pre>
+fn apply(f &amp;&lt;fn(x i32) i32, x i32) i32 { f(x); }
+
+imm off = 10;
+apply(x =&gt; x * 2, 21);                     // 42
+apply(fn(x i32) i32 { x + off; }, 1);      // 11
+apply(fn(x) { x + off; }, 1);              // 11: the type comes from the signature
+</pre>
+
+	<h2 id="capture">What a closure captures</h2>
+	<p>A closure's body may name variables of the function around it. Each one it names is <b>borrowed</b>:
+		the closure holds a reference to it, <span class="pre">&amp;</span> where the body only reads it and
+		<span class="pre">&amp;mut</span> where the body changes it, and the compiler works out which from the body.
+		The variable around shows the change:</p>
+<pre>
+mut total = 10;
+mut add = fn(x i32) { total += x; };   // borrows total as &amp;mut
+add(3);
+add(4);
+total;                                 // 17
+</pre>
+	<p>Only a <span class="pre">mut</span> variable can be changed by a closure; changing any other is the ordinary
+		"no permission to modify" error, reported inside the body. The borrow is an ordinary one, so it
+		holds the variable as borrows do. While a closure that reads a variable is still to be used, the
+		variable cannot be changed or moved; after the closure's last use it can:</p>
+<pre>
+imm limit = 100;
+mut count = 1;
+imm sum = fn(x i32) i32 { x + limit + count; };
+sum(1);        // 102
+count = 5;     // ERROR if sum is called again below this line; fine once it is not
+</pre>
+	<p>Borrowing is the default because a copy made silently would duplicate state: a closure that
+		added to its own copy of <span class="pre">total</span> would leave <span class="pre">total</span> unchanged
+		and would give no sign that it had. When a closure should hold its own value instead, it is listed.</p>
+
+	<h3 id="own">Giving the closure its own value</h3>
+	<p>A variable listed in the state list is no longer borrowed. The entry is a field with an initializer, so the
+		ordinary rules for values decide what the closure holds:</p>
+<pre>
+imm ribs = 3;
+imm shape = fn(u i32) [ribs, base = 2 * 5 + 1] i32 { u * ribs + base; };
+shape(2);                              // 2 * 3 + 11: 17
+
+mut xs = new List[i32]();
+imm count = fn(x i32) [buf = xs] i32 { x + i32.from(buf.len()); };   // xs is moved in
+
+imm p = new Pt(4, 5);
+imm viaRef = fn(k i32) [r = &amp;p] i32 { r.x * k; };              // a borrow, written out
+
+imm mesh = new Rc[imm, Pt](7, 8);
+imm h = fn() [mesh] i32 { mesh.y; };   // a counted owner is copied: mesh is still held
+</pre>
 	<ul>
-	<li>It signals to the code reader which variables represent the closure's state.</li>
-	<li>It simplifies the code (like here) when the closure variable is not a mirror of an existing
-		variable in an outer scope, but can be initialized with some expression or literal.</li>
-	<li>It is also useful when we want to bind by reference, rather than make a copy of a value.</li>
+		<li><b>A copy</b>: <span class="pre">[ribs]</span>. An entry with no <span class="pre">=</span> starts from the
+			variable of that name around the closure. A value that copies is copied and one that moves
+			is moved, as it would be passed to a function.</li>
+		<li><b>A move</b>: <span class="pre">[buf = xs]</span>, for a value that moves. The closure owns it, and
+			<span class="pre">xs</span> can no longer be used.</li>
+		<li><b>Shared ownership</b>: list a handle of a region that counts its owners, such as an
+			<span class="pre">Rc</span> or an <span class="pre">Arc</span>. The closure holds one count and the
+			original holds another. The permission of the handle decides whether the closure may change what it points at
+			(<span class="pre">Rc[mut, T]</span>).</li>
+		<li><b>New state</b>: <span class="pre">[mut n = 0]</span>, which has no variable around it to mirror.</li>
+		<li><b>A borrow, written out</b>: <span class="pre">[r = &amp;p]</span>. The closure then has the lifetime of
+			the borrow, as it does for a borrow it makes itself.</li>
 	</ul>
-	<p>Notice how the closure's logic accesses its state using bound closure variables.</p>
+	<p>An entry's initial value is read in the code around the closure, not from the entries before it:
+		in <span class="pre">[a = 1, b = a]</span> the <span class="pre">a</span> that <span class="pre">b</span> starts
+		from is the one outside.</p>
+	<p>Naming the state has other benefits: it tells the reader which variables are the closure's own, and an entry
+		may be given a name of its own, as a field may. Listing is optional where borrowing will do.</p>
+	<p>A closure written in a method that names a member of the object, <span class="pre">hits</span> or
+		<span class="pre">step</span>, reaches it through the method's <span class="pre">self</span>, which it borrows
+		as it borrows any variable. A closure sees exactly what the code around it sees, private members included,
+		wherever it is later called from:</p>
+<pre>
+struct Tally {
+  hits i32;
+  step i32;
+  pub fn run(self &amp;mut) i32 {
+    mut bump = fn(x i32) i32 { hits += x * step; hits; };
+    bump(1) + bump(2);
+  }
+}
+</pre>
 
+	<h2 id="self">Whether the closure changes</h2>
+	<p>A closure is a value whose one method, <span class="pre">()</span>, is the body. That method's
+		<span class="pre">self</span> permission is not written: it follows the body. A body that only reads what the
+		closure holds and borrows has <span class="pre">self &amp;</span>. A body that changes a captured variable or a
+		<span class="pre">mut</span> state entry has <span class="pre">self &amp;mut</span>.</p>
+	<p>This decides what the closure may be used for. A closure whose <span class="pre">()</span> takes
+		<span class="pre">self &amp;mut</span> is held in a <span class="pre">mut</span> variable to be called, and goes
+		only where a callable may change its state, <span class="pre">&amp;mut F</span> and
+		<span class="pre">&amp;&lt;mut fn(sig)</span> (<a href="refgeneric.html#sigbound">Generics</a>,
+		<a href="refcloref.html">Closure References</a>). Given to a parameter that promises only to read it
+		(<span class="pre">&amp;F</span>, <span class="pre">&amp;&lt;fn(sig)</span>), it is refused, and the error
+		says that this closure changes its state.</p>
+
+	<h2 id="ret">The return type</h2>
+	<p>The return type is, in order of preference:</p>
+	<ol>
+		<li>the one written, <span class="pre">fn(x i32) i64 { ... }</span>;</li>
+		<li>the one the signature expected gives, where the closure is passed or assigned to one, every path
+			being checked against it;</li>
+		<li>read off the body's paths: the first <span class="pre">return</span> or final expression the check meets
+			fixes it, and the others must fit it. A body whose last statement changes something
+			(<span class="pre">total += x;</span>) returns nothing; any other last expression is the value;</li>
+		<li>otherwise an error at the closure, "the paths give different types; write the closure's return type":
+			<span class="pre">fn(x i32) { if x &gt; 0 { x; } else { 0u8; } }</span>.</li>
+	</ol>
+	<p><span class="pre">return</span> in a closure returns from the closure, never from the function around it.</p>
+<pre>
+imm early = fn(x i32) i32 { if x &gt; 5 { return 1; } x + 2; };
+early(9);      // 1
+early(3);      // 5
+</pre>
+
+	<h2 id="nothing">A closure that holds nothing</h2>
+	<p>A closure that borrows nothing and has no state is a plain function. Where a
+		<a href="reffnref.html">function reference</a>, <span class="pre">&amp;fn(sig)</span>, is wanted it becomes one:
+		<span class="pre">twice(x =&gt; x * 3, 1)</span> to a parameter <span class="pre">f &amp;fn(x i32) i32</span>.
+		One that holds or borrows something is refused there; the parameter is then written
+		<span class="pre">&amp;&lt;fn(sig)</span>. An anonymous function written with the ampersand,
+		<span class="pre">&amp;fn(x i32) i32 { x + 1; }</span>, is not a closure: it is a function reference
+		and sees no variable of the code around it.</p>
+
+	<h2 id="goes">Where a closure may go</h2>
+	<p>A closure is a value of a struct of what it holds and borrows, so where it can go is decided by the rules for
+		its fields, with nothing special for closures. A closure that borrows a variable cannot outlive it:</p>
+	<ul>
+		<li><b>Down a call</b>, passed to a function that uses it and returns, it is free to borrow anything.</li>
+		<li><b>Kept in a local</b>, it blocks moving or reshaping what it borrows until its last use.</li>
+		<li><b>Stored past the function or returned</b> (in a field, in an owner such as
+			<span class="pre">So[fn(sig)]</span>, or as a returned borrow), it is refused if it borrows a local.
+			The error names the variable and says to list it, so that the closure holds its own copy:
+			<span class="pre">fn (...) [k] ... { ... }</span>.</li>
+		<li><b>Stored in the object that made it</b>: a closure in a method that names a member borrows
+			<span class="pre">self</span>, so it cannot be stored in <span class="pre">self</span>. The error says to
+			copy the members it needs into its list (<span class="pre">[tag = tag]</span>), or to capture a counted
+			handle to the object.</li>
+		<li><b>Sent to another thread or actor</b>, or run in a <span class="pre">parallel each</span>, it must be
+			<span class="pre">Sendable</span>, or <span class="pre">Shareable</span> for the loop, judged by what it holds
+			(<a href="refconccomm.html#shareable">Sendable and Shareable</a>). A closure that borrows a variable is
+			neither; the error names the variable and says to list it. A closure holding an <span class="pre">Rc</span>
+			is told to hold an <span class="pre">Arc</span>.</li>
+	</ul>
+<pre>
+fn returned() So[fn(x i32) i32] {
+  imm k = 3;
+  // ERROR: The closure borrows 'k' because its body names it: list it ...
+  return new So[fn(x i32) i32](fn(x i32) i32 { x * k; });
+}
+
+fn listed() So[fn(x i32) i32] {
+  imm k = 3;
+  return new So[fn(x i32) i32](fn(x i32) [k] i32 { x * k; });   // its own copy of k
+}
+</pre>
+
+	<h2>Rules that follow</h2>
+	<ul>
+		<li><b>A closure cannot call itself.</b> The variable it is the value of is not a name inside it. Recursion
+			uses a named function.</li>
+		<li><b>A closure is written in a function</b>, never at the module level as a global's value or a field's
+			default: there is nothing there to borrow.</li>
+		<li><b>On a GPU</b> a closure is allowed in its static form only (<a href="refgpu.html#closures">Closures on
+			the GPU</a>).</li>
+	</ul>
 
 	<h2>Closures are values</h2>
 	<p>Although closures may be viewed as functions with a persistent state,
-		it is more useful and accurate to view them as a data value that carries an associated function (method).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           
-		Later pages add important details on additional capabilities of closures:</p>
+		it is more useful and accurate to view them as a data value that carries an associated function (method):</p>
 	<ul>
-	<li>A closure is <a href="refmethop.html#clotype">syntactic sugar for an anonymous struct</a>.
-		Knowing its underlying type makes it possible to pass around a closure (and its state)
-		just like any other value.</li>
-	<li>Like any value, a closure may be allocated on the heap.</li>
-	<li>A closure may be passed as a 
-		<a href="refcloref.html">closure reference</a> to another function,
-		allowing it to be used by that function without regard for the shape of its state.
-	</li>
-	</ul>	
+	<li>A closure is <a href="refmethop.html#clotype">syntactic sugar for an anonymous struct</a>,
+		whose fields are the state list's entries and a reference for each variable it borrows.
+		The struct has no name that can be written, so a closure is held in a variable whose type is inferred,
+		and given on as one of the references below.</li>
+	<li>Like any value, a closure may be allocated on the heap, in an owner such as
+		<span class="pre">So[fn(sig)]</span>.</li>
+	<li>A function that should accept any closure of a signature, without regard for the shape of its state, takes
+		it as a <a href="refcloref.html">closure reference</a>, <span class="pre">&amp;&lt;fn(sig)</span>, or
+		as a <a href="refgeneric.html#sigbound">generic over the signature</a>, <span class="pre">[F fn(sig)]</span>,
+		which is compiled for each closure and inlined.</li>
+	<li>A closure may fill a <a href="reftrait.html#closure">trait with one required method</a> as a struct does.</li>
+	</ul>
 
 	<p style="text-align: right; margin-top: 2em;">
 		<a href="refflow.html"><img alt="_" src="next.png" /></a>

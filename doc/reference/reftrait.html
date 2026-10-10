@@ -354,6 +354,72 @@ fn walk[T, I, C Iterable[T, I]](c &amp;C) where I is Iterator[T] { ... c.iter() 
 		<span class="pre">next</span> (or <span class="pre">iter</span>), or with one that gives another type,
 		is refused where the function is called.</p>
 
+	<h3 id="closure">A closure literal fills a trait with one required method</h3>
+
+	<p>A trait whose work is one method, such as a distance function or a comparison, would need a
+		struct written for each use. A <a href="refclosure.html">closure literal</a> given where such a trait is wanted
+		does that instead: it is the method. The trait must have <b>exactly one required method</b>, a method written
+		without a body, and no field. A method with a body is a default, and the literal's type inherits each default
+		as any type complying with the trait does, so the defaults call the literal's body through the required
+		method:</p>
+<pre>
+trait Shape {
+  pub fn distance(self &amp;, p V) f32;                          // the one required method
+  pub fn nearness(self &amp;, p V) f32 { 100. - self.distance(p); }   // a default
+}
+
+fn depth[S Shape](shape &amp;S, p V) f32 { shape.distance(p) * 2.; }
+fn lend(shape &amp;&lt;Shape, p V) f32 { shape.nearness(p); }
+
+depth(q =&gt; q.x * q.x + q.y * q.y - 5., p);     // the static form: p is (3, 4): 40
+lend(q =&gt; q.x + q.y, p);                       // the dynamic form: 100 - 7: 93
+imm k = 10.;
+imm own = new So[Shape](fn(q V) [off = k] f32 { q.x + off; });
+own.distance(p);     // 13
+own.nearness(p);     // 87
+</pre>
+	<p>The places a trait is wanted are a generic constraint (<span class="pre">[S Shape]</span>, taken as
+		<span class="pre">S</span>, <span class="pre">&amp;S</span> or <span class="pre">&amp;mut S</span>), a borrowed
+		<a href="refvirtref.html">virtual reference</a> (<span class="pre">&amp;&lt;Shape</span>,
+		<span class="pre">&amp;&lt;mut Shape</span>, which lend the literal for the statement), and an owner made with
+		<span class="pre">new</span> (<span class="pre">So[Shape]</span>, <span class="pre">Rc[imm, Shape]</span>). It applies only to a
+		literal, written at the point the trait is expected, so no struct of yours meets a trait any differently.
+		A generic trait's instance as the constraint (<span class="pre">[S Shape[T]]</span>), and a literal as a field's
+		initial value or a variable's, are not built.</p>
+	<ul>
+		<li><b>The signature is the method's</b>, without its receiver. The literal's parameter types may be left out,
+			and if written they must be the method's exactly, as must a written return type, or the error names the
+			method: "the trait's <span class="pre">distance</span> takes V there". The number of parameters must match.</li>
+		<li><b>The literal's method has the method's name</b>, so a state entry or captured variable of the same name
+			is the ordinary duplicate-name error.</li>
+		<li><b>A trait with two required methods, none, or a field is refused</b>, naming what it has. A trait with
+			only defaults has nothing to fill.</li>
+	</ul>
+
+	<p><b><span class="pre">self</span>: a literal that changes state.</b> As for any closure, the method's
+		<span class="pre">self</span> follows the body: <span class="pre">self &amp;</span> for a body that only reads,
+		<span class="pre">self &amp;mut</span> for one that changes what it holds or borrows. The literal is held to the trait
+		as any implementer is, which may not ask for a stronger <span class="pre">self</span> than the trait's
+		method declares. So a literal that changes state fills a trait whose method says
+		<span class="pre">self &amp;mut</span>, and is refused where the method says <span class="pre">self &amp;</span>,
+		under every holder, <span class="pre">&amp;&lt;Shape</span>, <span class="pre">&amp;&lt;mut Shape</span>, <span class="pre">So[Shape]</span>
+		and a generic's <span class="pre">S</span> alike, with an error that says to declare the trait's method
+		<span class="pre">self &amp;mut</span> or to not change the state. A literal that only reads meets a
+		method of either kind.</p>
+<pre>
+trait Counter {
+  pub fn bump(self &amp;mut, step i32) i32;
+}
+fn bumpTwice(c &amp;&lt;mut Counter) i32 { c.bump(1); c.bump(10); }
+
+bumpTwice(fn(step i32) [mut n = 5] i32 { n += step; n; });    // 6, then 16: 16
+// ERROR on a trait that says 'fn distance(self &amp;, ..)':
+//   depth(q =&gt; { total += q.x; total; }, p);   // needs 'self &amp;mut' but Shape's distance takes 'self &amp;'
+</pre>
+	<p>This is a rule about the reference, not only the trait: a literal that changes state, given as
+		<span class="pre">&amp;&lt;mut Shape</span> and narrowed to a <span class="pre">&amp;&lt;Shape</span>, would change state through a
+		reference promised to read.</p>
+
 	<h3 id="self"><span class="pre">Self</span> in a trait</h3>
 
 	<p>Inside a trait, <span class="pre">Self</span> stands for the type complying with it. A

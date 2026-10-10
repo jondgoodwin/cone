@@ -33,7 +33,8 @@
 			and a condition on one entry of a generic struct's or enum's <span class="pre">is</span>
 			list, <span class="pre">is Move if T is Move</span>, and a generic trait's
 				instance as a constraint, <span class="pre">[T, S Stack[T]]</span>, and a function
-				signature as one, <span class="pre">[F fn(a &amp;T, b &amp;T) i32]</span>.
+				signature as one, <span class="pre">[F fn(a &amp;T, b &amp;T) i32]</span>, which a closure
+				literal meets and which lets a generic share an overload name.
 			Not yet: a condition on an <span class="pre">is</span> entry of a trait or of an
 			enum's variant, a lifetime bound on a generic type's parameter, a clause relating two
 			parameters other than by a generic trait's instance, or constraining a type expression, not, constraints on a generic
@@ -495,7 +496,11 @@ drain[i64, WrongParm](&amp;mut wp);
 		permission it takes the parameter by decides what that call may do: <span class="pre">&amp;F</span>
 		reaches a <span class="pre">()</span> that takes <span class="pre">self &amp;</span>,
 		<span class="pre">&amp;mut F</span> one that takes <span class="pre">self &amp;mut</span> too, and keeps what
-		it changed, and <span class="pre">F</span> by value one that takes <span class="pre">self &amp;</span>.</p>
+		it changed, and <span class="pre">F</span> by value one that takes <span class="pre">self &amp;</span>.
+		A callable whose <span class="pre">()</span> takes <span class="pre">self &amp;mut</span>, such as a closure that
+		changes a variable it borrows, given to a parameter taken as <span class="pre">&amp;F</span> is refused at the
+		caller's argument, which says to take the parameter as <span class="pre">&amp;mut F</span> or to pass a callable
+		that only reads.</p>
 <pre>
 fn sortBy[T, F fn(a &amp;T, b &amp;T) i32](xs &amp;mut Array[T], order &amp;F) {...}
 fn counted[T, F](xs &amp;mut Array[T], order &amp;mut F) where F is fn(a &amp;T, b &amp;T) i32 {...}
@@ -526,12 +531,44 @@ sortBy(&amp;mut people, (a, b) =&gt; a.age - b.age);    // so does a closure wri
 		and a function referenced meets the constraint by its signature alone: through <span class="pre">&amp;F</span>
 		<span class="pre">F</span> is the function's type, and taken by value (<span class="pre">f F</span>) it is the
 		reference itself, <span class="pre">&amp;fn(i32) i32</span>. A plain function has no state to change,
-		so <span class="pre">&amp;mut F</span> is for a struct. A signature is not a constraint on a
+		so <span class="pre">&amp;mut F</span> is for a struct or a closure. A signature is not a constraint on a
 		macro's or a generic module's parameter, nor in a condition on an <span class="pre">is</span>
 		entry.</p>
-	<p>A generic whose every type parameter is bound this way may declare an
+	<p>The constraint is the <i>static</i> form of taking a callable: the generic is compiled for each callable it is
+		given, and the call is inlined. The <i>dynamic</i> form, <span class="pre">&amp;&lt;fn(sig)</span>
+		(<a href="refcloref.html">Closure References</a>), is compiled once and calls through the reference, which is
+		what a field or a variable holding a callable of unknown shape needs. A bound may carry the markers a
+		thread or a parallel loop asks, <span class="pre">[F fn() + Sendable]</span> and
+		<span class="pre">[F fn() + Shareable]</span>.</p>
+
+	<h4 id="genoverload">Generic overloads</h4>
+	<p>A generic function or method whose every type parameter is bound this way may declare an
 		<a href="reffunc.html#overload">overload name</a>, and so share it with functions that take a number
-		or another kind of callable: the call picks it by the callable it is given.</p>
+		or another kind of callable. For the choice the generic's <span class="pre">&amp;F</span> (or
+		<span class="pre">&amp;mut F</span>, or <span class="pre">F</span>) parameter counts as a callable parameter of
+		its signature, and the call picks the overload by what it is given:</p>
+<pre>
+fn taperNum overload taper(m i32, t f32) f32 { f32.from(m) * t; }
+fn taperOne[F fn(u f32) f32] overload taper(m i32, f &amp;F) f32 { f(f32.from(m)); }
+fn taperTwo[F fn(u f32, v f32) f32] overload taper(m i32, f &amp;F) f32 { f(f32.from(m), 2.); }
+
+taper(2, 0.5);                 // the number: 1
+imm k = 3.;
+taper(2, t =&gt; t * k);          // taperOne: 6
+taper(2, (a, b) =&gt; a + b);     // taperTwo: 4
+taper(2, &amp;new Doubler());      // a struct whose '()' is (u f32) f32: taperOne
+</pre>
+	<p>A <a href="refclosure.html">closure literal</a> is matched in steps. It can meet only the overloads whose parameter
+		there is a callable (a number never takes it). Of those, the generics the call's other arguments leave viable,
+		then the ones that take as many parameters as the literal writes, then, if several remain, the ones whose signature
+		has exactly the parameter types the literal writes. One left is chosen; none or more than one is an error that
+		names the candidates and says to write the parameter's types, <span class="pre">taper(2, fn(u f32) f32 { u; })</span>.
+		The body is never tried against the candidates to see which fits. A function reference or a struct is matched
+		by its exact signature, and two generics it meets are an ambiguity error naming both.</p>
+	<p>A generic with a type parameter that is not bound by a signature, such as <span class="pre">[T]</span> or
+		<span class="pre">[T Comparable]</span>, may not declare an overload name; the error names the unbound
+		parameter. Once the overload is chosen it stands: if its instance then fails to type check, the call does not fall
+		back to another overload.</p>
 
 	<h3 id="where">Where clause</h3>
 	<p>The same constraints may instead be written as a
