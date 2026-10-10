@@ -270,12 +270,12 @@ enum NodeTags {
 #define FlagSelfRecv  0x0040        // FnCall: receiver was a macro method's 'self'
 // An index whose argument is a range, 'x[a..<b]', which a borrow makes a slice of
 // part of an array. Its arguments are the start and, unless the range runs to
-// the end ('x[a..]'), the end; FlagRangeIncl marks an end written with '...',
+// the end ('x[a..]'), the end; FlagRangeIncl marks an end written with '..',
 // which includes it. Set only by the parser (parseIndexArgs). 0x0080 and 0x0100
 // are free on a FnCall: FirstAssign is a name use's, and the type flags that
 // use them are never read off an expression.
 #define FlagRange     0x0080        // FnCall: index argument is a range
-#define FlagRangeIncl 0x0100        // FnCall: the range's end is included ('...')
+#define FlagRangeIncl 0x0100        // FnCall: the range's end is included ('..')
 // A literal written in brackets that a '+' allocation takes as its value,
 // '+Rc-mut Node[1]'. The allocation is refused by allocateTypeCheck itself
 // (ErrorPlusAlloc, naming 'new Rc[mut, Node](...)'), so a struct's literal is

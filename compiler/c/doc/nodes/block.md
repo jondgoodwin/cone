@@ -39,17 +39,29 @@ caused, were measured.*
 a macro body, and the wrapper blocks pattern-matching builds — is regular.
 
 **`while` and `each` are lowered here, not later.** `while cond {…}` gets
-`if not cond { break }` inserted at index 0. `each x in a < b by s` becomes an
-outer block holding the loop's **counter** (a hidden variable, no name of the
-reader's) plus a loop block that begins with the guard and the pass's variable,
+`if not cond { break }` inserted at index 0. `each x in a ..< b by s` (`a .. b`
+runs through `b`) becomes an
+outer block holding the range's first value (`first`, a hidden variable), the
+loop's **counter** (`counter`, another, no name of the
+reader's) and the count of steps taken (`n`), plus a loop block that begins with the guard and the pass's variable,
 `imm x = counter`, and whose **last statement is the synthesized step**, flagged
-`FlagLoopStep`. The variable is a new one on every pass and cannot be written;
+`FlagLoopStep`. The guard is `c < b` (`c <= b` for `..`) going up and `c > b`
+(`c >= b`) going down; which way a range goes is the sign of its step, read off
+a literal step by the parser, or, for a step that is not a literal, held in a
+hidden variable (`by`, evaluated once) whose two signs are held in two more
+(`up` and `down`, so the guard is `(up and c < b) or (down and c > b)`; a step of
+zero is neither, and runs no pass). With no `by` the range goes up. The variable
+is a new one on every pass and cannot be written;
 the loop steps its counter, whose uses are bound as the parser builds them, so a
 copy of the step carried into an inner loop by a labelled `continue` reaches this
-loop's counter whatever the inner loop names. Where stepping past the bound
-could wrap the counter around the type's extreme, and so satisfy the
-comparison again, that step is itself a block. For an inclusive range without
-`by` it is `{ if c == b {break}; c++ }`. With `by` it is `{ imm prev = c; c += s;
+loop's counter whatever the inner loop names. The step is a block of `n += 1`
+and a call of a private name on the counter (`eachRangeStepName`), which type check
+turns into the operator (`c += s`, `c++`) or, for a float counter, into
+`c = first + f64.from(n) * s` (`eachRangeStepLower`): a fractional step is
+computed from the first value and the count, never added up. Where stepping
+past the bound could wrap the counter around the type's extreme, and so satisfy
+the comparison again, that block holds the guard. For an inclusive range without
+`by` it is `{ n += 1; if c == b {break}; c++ }`. With `by` it is `{ imm prev = c; n += 1; c += s;
 if c < prev {break} }`, `>` in place of `<` for a range counting down: a step of
 more than one need never land on the bound, and neither the distance to the bound
 nor the step's sign may be computed ahead of the step, so the wrap is recognized
@@ -57,7 +69,8 @@ afterwards instead — as the counter having moved against the range's direction
 The statements are one block so that the `continue` repair below carries the
 guard too, and `prev` is a phantom variable, resolved as the parser builds it, so
 that a copy reads its own. The synthesized `break` names the loop's lifetime when
-it has one, since a copy of it can land inside an inner loop.
+it has one, since a copy of it can land inside an inner loop. The counter has a
+name of its own (`-counter`): an assignment to the anonymous name discards its value.
 
 **`each` over anything else is finished by type check.** The parser cannot say
 how a loop walks its source, which is the source's type to say, so it builds an
@@ -91,14 +104,14 @@ cannot name them, and `eachLower` takes it out to make the exit of the counted
 loop or of the cursor's `None` arm. A range has several places it runs out
 (the guard, and the steps that stop a counter wrapping or reaching its bound),
 and one `else`: they set a hidden flag instead of breaking, and the guard
-`if flag or not (c < b) {…else…}` leaves at the top of the next pass.
+`if flag or not (guard) {…else…}` leaves at the top of the next pass.
 
 **`parallel each` is parsed as `each` is**, with `FlagParallel` beside `FlagEach`.
 `parallel` is an ordinary name (`parallelName`) that `parseExprBlock` takes for the
 word only when `each` follows it directly (`lexNextIsWord`), so it stays usable as
 a variable, a function or a field. A number range is not rewritten to a counter, as
 `each`'s is: its two bounds are held in two hidden variables (`first'`, `last'`),
-the block has three statements, and `FlagParIncl` says `<=`. A count down, a
+the block has three statements, and `FlagParIncl` says `..`. A count down, a
 `by` step and an `else` are refused here (`ErrorParSource`, `ErrorParElse`); a
 header `if` is the same `continue` statement after the pass's variable. As an
 entry of `<-` it is read by `parseEntry` the same way (`parseParallelEachEntry`),

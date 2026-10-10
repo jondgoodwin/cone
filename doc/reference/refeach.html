@@ -13,7 +13,7 @@
 
     <div class="text">
 
-	<p style="margin-left: 40px;"><i>Note: Built: number ranges with &lt;, &le;, &gt;, &ge; and by; arrays, slices and lists; and
+	<p style="margin-left: 40px;"><i>Note: Built: number ranges, <span class="pre">a .. b</span> and <span class="pre">a ..&lt; b</span>, with <span class="pre">by</span>; arrays, slices and lists; and
 			anything with a <span class="pre">next</span> method (a cursor) or an <span class="pre">iter</span> method (something
 			that gives one), a <a href="refcorout.html">generator</a> among them, with one variable or several that unpack a pair; a filter after the source (<span class="pre">if</span>); an <span class="pre">else</span> that makes the loop a value; the ways to walk a list, an array or a slice that
 			change its items in place (<span class="pre">mutItems</span>), consume it (<span class="pre">drain</span>), number them
@@ -27,14 +27,14 @@
 <pre>
 fn fact(n i32) i32 {
   mut result = 1;
-  each x in 2 &lt;= n {
+  each x in 2 .. n {
     result *= x;
   }
   result;
 }
 </pre>
 	<p>Effectively this <span class="pre">each</span> statement binds the variable x to each iterated value
-		from 2 up to n inclusively, each time performing the loop's inner block.</p>
+		from 2 through n, each time performing the loop's inner block.</p>
 		<p>As this example shows, the <span class="pre">each</span> statement has a simple structure:</p>
 		<ul>
 			<li>One or more variables to be bound to values produced by the iterator.
@@ -60,13 +60,13 @@ fn fact(n i32) i32 {
 		is false are skipped, as if the block began with <span class="pre">if !cond { continue; }</span>.
 		It reads the loop's variables, and works for every kind of source below, ranges included:</p>
 <pre>
-each x in 0 &lt; 10 if x % 2 == 0 {       // 0 2 4 6 8
+each x in 0 ..&lt; 10 if x % 2 == 0 {      // 0 2 4 6 8
 }
 each name in names if name.len &gt; 3 {   // a List[String]
 }
 each key, value in ages if value &gt; 18 {
 }
-each x in 100 &gt;= 0 by 10 if x != 50 {
+each x in 100 .. 0 by -10 if x != 50 {
 }
 </pre>
 
@@ -84,7 +84,7 @@ fn firstBig(list &amp;List[i32], limit i32) i32 {
   }
 }
 
-imm total = each x in 1 &lt;= 100 {
+imm total = each x in 1 .. 100 {
   if x * x &gt; 500 { break x; }
 } else {
   0;
@@ -111,7 +111,7 @@ imm total = each x in 1 &lt;= 100 {
 <pre>
 imm copy = new List[i32] &lt;- each other;                     // every item of other
 imm big = new List[i32] &lt;- each x in other if x &gt; 9 yield *x;
-imm squares = new List[i32] &lt;- each i in 1 &lt;= 5 yield i * i;  // 1 4 9 16 25
+imm squares = new List[i32] &lt;- each i in 1 .. 5 yield i * i;    // 1 4 9 16 25
 imm index = new Dict[i32, str] &lt;- each p in people yield p.id: p.name;
 xs &lt;- 0, each x in other yield x + 1, 99;               // in the middle of a list
 imm tens = new List[i32] &lt;- each other.iter().filter(x =&gt; *x &gt; 2).map(x =&gt; *x * 10);   // a chain
@@ -153,36 +153,49 @@ imm squares = new Dict[i32, i32] &lt;- each k, v in xs.iter().map(x =&gt; (*x, *
 		<li><b>Closure</b>, to deal with algorithmically-generated values (not built yet).</li>
 	</ul>
 
-	<h3>Number Range Iterator</h3>
-	<p>As the above example shows, a range is written as a comparison, <span class="pre">&lt;</span>
-		or <span class="pre">&lt;=</span>, and iterates successively over integers or floating point numbers.
-		Iteration begins with the first number and then increments by 1 until it
-		reaches (<span class="pre">&lt;</span>) or passes (<span class="pre">&lt;=</span>) the second number.
-		Expressions may be used in place of literal numbers, if desired.</p>
-	<p>To iterate <b>backwards</b> (decrementing the iterated number), use the
-			<span class="pre">&gt;</span> or <span class="pre">&gt;=</span> operators instead.</p>
+	<h3 id="range">Number Range Iterator</h3>
+	<p>As the above example shows, a range is written with a range operator between its first and last
+		numbers, and iterates successively over integers or floating point numbers. <span class="pre">a .. b</span>
+		runs <b>through</b> <span class="pre">b</span>: it includes it. <span class="pre">a ..&lt; b</span> stops
+		<b>before</b> <span class="pre">b</span>. Iteration begins with the first number and then increments by 1.
+		Expressions may be used in place of literal numbers, if desired. The same two operators make a
+		<a href="refmatch.html#ranges">range pattern</a> and a <a href="refarrayref.html#slice">subslice</a>.</p>
 <pre>
-each x in 6 &gt; 1 {  // iterates:  6 5 4 3 2
+each x in 3 .. 7 {      // iterates:  3 4 5 6 7
+}
+each x in 3 ..&lt; 7 {     // iterates:  3 4 5 6
+}
+</pre>
+	<p>A range never guesses a direction: one that starts past its end is empty, so <span class="pre">6 .. 2</span>
+		runs no pass. To iterate <b>backwards</b>, count by a negative step:</p>
+<pre>
+each x in 6 ..&lt; 1 by -1 {  // iterates:  6 5 4 3 2
 }
 </pre>
 	<p>A <b>step value</b> may be specified after <span class="pre">by</span>.
-		Instead of incrementing or decrementing by 1, the step value specifies how much to increase the iterated number each time:</p>
+		Instead of incrementing by 1, the step value specifies how much to add to the iterated number each time,
+		and its sign says which way the range runs. A step of zero runs no pass:</p>
 <pre>
 mut sum = 0;
-each x in 0 &lt;= 10 by 2 { // iterates: 0, 2, 4, 6, 8, 10
+each x in 0 .. 10 by 2 { // iterates: 0, 2, 4, 6, 8, 10
   sum += x;
 }
 </pre>
 	<p>A range counting down takes a negative step value.
-		Iteration stops as soon as a step moves the number away from the bound rather than toward it,
+		Iteration stops as soon as a step moves the number away from the end rather than toward it,
 		which is also what a step past the largest (or smallest) value the number's type can hold
 		amounts to:</p>
 <pre>
-each x in 10 &gt;= 0 by -2 {      // iterates: 10, 8, 6, 4, 2, 0
+each x in 10 .. 0 by -2 {      // iterates: 10, 8, 6, 4, 2, 0
 }
-each x in 250u8 &lt;= 255 by 2 {  // iterates: 250, 252, 254
+each x in 250u8 .. 255 by 2 {  // iterates: 250, 252, 254
 }
 </pre>
+	<p>The end is read before every pass. A step that is not a literal (<span class="pre">by dx</span>) is read once,
+		before the first pass, and the sign it has then decides whether the range counts up or down.
+		A <b>fractional</b> step is not added up: the number of a pass is the first value plus the count of
+		steps taken times the step, so no rounding builds up in it. <span class="pre">0.0 .. 1.0 by 0.1</span> takes
+		eleven passes, the last of them exactly 1.0, in <span class="pre">f32</span> and <span class="pre">f64</span> alike.</p>
 	<p>A range gives one variable. The loop steps a counter of its own and each pass's
 		variable holds the number, so writing to the variable is refused. A loop that steers its count by hand
 		is a <span class="pre">while</span>.</p>
@@ -507,7 +520,7 @@ fn total(xs &amp;Array[u64]) u64 {
 		a <span class="pre">ParallelIterable</span>, met by its methods alone, with no declaration, as
 		<span class="pre">Iterator</span> is (<span class="pre">len</span>, and <span class="pre">split(at)</span> giving
 		the items before <span class="pre">at</span> and the items from it on). Today the loop walks a number range counting
-		up by one (<span class="pre">parallel each i in 0 &lt; n</span>, or <span class="pre">&lt;=</span>; a count down
+		up by one (<span class="pre">parallel each i in 0 ..&lt; n</span>, or <span class="pre">..</span> to include <span class="pre">n</span>; a count down
 		or a <span class="pre">by</span> step is refused, since which pass runs first is not defined in parallel), an array,
 		a slice and a list, which it cuts into ranges of positions itself, and the runs
 		<span class="pre">chunks(n)</span> and <span class="pre">mutChunks(n)</span> give, which it cuts between runs
@@ -689,7 +702,7 @@ actor Scaler {
 <pre>
 imm weights = new List[u64] &lt;- parallel each x in xs yield weigh(*x);
 imm keep = new List[u64] &lt;- parallel each x in xs if x &gt; 9 yield weigh(*x);
-imm squares = new List[i32] &lt;- parallel each i in 0 &lt; n yield i * i;     // n an i32
+imm squares = new List[i32] &lt;- parallel each i in 0 ..&lt; n yield i * i;   // n an i32
 xs &lt;- 0, parallel each x in other yield x + 1, 99;    // in the middle of a list
 </pre>
 	<p>The list holds the values in the order of the passes, the order a plain <span class="pre">each</span> would

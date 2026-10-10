@@ -86,13 +86,15 @@ something that begins a value follow it, so `fill(3)`, `fill[0]`, `fill.n`,
 `fill + 1` and `fill of 3` keep `fill` a name; after the space, a token that
 could go either way (`-`, `*`, `&`, `(`, `[`) is taken as the value's.
 
-**`..<`, `..` and `...` are the range tokens** (`DotDotLessToken`, `DotDotToken`,
-`EllipsisToken`), read by a match's range pattern and by an index (`parseIndexArgs`):
-`x[a..<b]` is held as the index with `FlagRange`, its arguments the start (a `usize` 0
-when none is written) and the end unless the range runs to it, `FlagRangeIncl` marking
-an end written with `...`; `x[a...]` is `ErrorBadIndex`. A number stops scanning at a
-`..`, so `0..<3` is two integers and a range, not the float `0.`. (`..` still excludes
-its end, as `..<` does, for now; it changes with the range notation.)
+**`..` and `..<` are the range tokens** (`DotDotToken`, `DotDotLessToken`), read by a
+match's range pattern, by an index (`parseIndexArgs`) and by an `each` over a number
+range: `..` runs through its end and `..<` stops before it. `x[a..b]` is held as the
+index with `FlagRange`, its arguments the start (a `usize` 0 when none is written) and
+the end unless the range runs to it, `FlagRangeIncl` marking an end written with `..`;
+`x[a..]` runs to the end, and `x[a..<]` is `ErrorBadIndex`. `...` is lexed
+(`EllipsisToken`) only to be refused, `ErrorRangeEllipsis` (`parseRangeEllipsis`), and read
+on as `..`. A number stops scanning at a `..`, so `0..<3` is two integers and a range, not
+the float `0.`.
 
 **A number straight after a `.` is an integer only.** `lexScanNumber` looks at
 the token before it: after a `DotToken` the number names a tuple element, so it
@@ -650,20 +652,28 @@ again.
 **It desugars.** `match` becomes a block holding an anonymous capture variable
 plus an `if` chain, each case's patterns becoming its condition: `is T` an `is`
 node, `<v` (and every comparison) the operator call with the captured value on
-the left, `a .. b` and `a ... b` two calls joined by `and`, `or` between patterns
+the left, `a .. b` and `a ..< b` two calls joined by `and`, `or` between patterns
 a logical `or`, and an `if` guard an `and` after them ([if](../nodes/if.md)).
 `while c {…}` becomes a loop block with `if not c {break
-nil}` inserted first. `each x in a < b by s` becomes an outer block holding the
-loop variable plus a loop block whose last statement is the synthesized step,
-flagged `FlagLoopStep`. That step is a block wherever the value it steps to could
-wrap past the type's extreme and pass the guard again. For an inclusive range
-without `by` — `a <= b`, `a >= b` — it is `{ if x == b {break}; x++ }`, with the
+nil}` inserted first. `each x in a ..< b by s` becomes an outer block holding the
+range's first value, the loop variable (a counter) and the count of steps, plus a loop
+block whose last statement is the synthesized step,
+flagged `FlagLoopStep`. That step is a block that carries the guard wherever the
+value it steps to could wrap past the type's extreme and pass the loop's guard
+again. For an inclusive range
+without `by` (`a .. b`) it is `{ if x == b {break}; x++ }`, with the
 bound cloned for the second comparison. With `by` it is `{ imm prev = x; x += s;
 if x < prev {break} }`, `>` for a range counting down, since a step of more than
 one need not land on the bound and the wrap is only visible after the step, as a
 move against the range's direction; `prev` is a phantom variable the parser
 resolves itself. Either block stays one statement so a `continue` carries the
-guard with the step. `with e {…}` becomes a block with a `this` declaration
+guard with the step. Which way a range goes is its step's sign: up with no `by`, by
+the sign of a literal step, and, for any other step, by the sign it has when the loop
+begins (held in a hidden variable, read once). The parser cannot tell a float counter
+from an integer one, so the step is a call of a private name that type check finishes
+([block](../nodes/block.md), `eachRangeStepLower`). The comparison forms the range was once
+written in, `a < b`, are refused, `ErrorEachCompare`, and `...` is refused,
+`ErrorRangeEllipsis`. `with e {…}` becomes a block with a `this` declaration
 first. Prefix `.f` becomes `this.f`. `else if` folds into `elif`. Unary minus on
 a literal is constant-folded in place, and an integer literal records it
 (`FlagLitNeg`), because its range check needs the digits written

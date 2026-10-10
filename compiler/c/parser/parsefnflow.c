@@ -365,14 +365,16 @@ INode *parseIf(ParseState *parse) {
     return retnode;
 }
 
-// Finish a range pattern, whose lower bound is parsed and whose '..' or '...'
+// Finish a range pattern, whose lower bound is parsed and whose '..' or '..<'
 // is the current token. It tests the matched value against both bounds:
-// 'a .. b' is 'v >= a and v < b', and 'a ... b' is 'v >= a and v <= b'.
+// 'a .. b' is 'v >= a and v <= b', and 'a ..< b' is 'v >= a and v < b'.
 static INode *parseMatchRange(ParseState *parse, INode *matchee, INode *lower) {
     // All three nodes take the operator's position, so a matched value that
     // cannot be ordered is reported at the '..'
+    if (lexIsToken(EllipsisToken))
+        parseRangeEllipsis();
     FnCallNode *gecall = newFnCallOp(matchee, ">=", 2);
-    FnCallNode *upcall = newFnCallOp(matchee, lexIsToken(EllipsisToken) ? "<=" : "<", 2);
+    FnCallNode *upcall = newFnCallOp(matchee, lexIsToken(DotDotLessToken) ? "<" : "<=", 2);
     LogicNode *range = newLogicNode(AndLogicTag);
     lexNextToken();
     nodesAdd(&gecall->args, lower);
@@ -388,7 +390,7 @@ static INode *parseMatchRange(ParseState *parse, INode *matchee, INode *lower) {
 //   value's enum (castPatternMark)
 // - a comparison operator and a value, '==v', '<v', '!=v' and the rest, compares
 //   the matched value, the operator's left operand, with the value
-// - 'a .. b' or 'a ... b' is a range (parseMatchRange)
+// - 'a .. b' or 'a ..< b' is a range (parseMatchRange)
 // - a value alone, '2', '"s"', 'K', means equality with the matched value; a
 //   bare name is asked of the matched value's enum first, so the test waits for
 //   type check to become '==' or 'is' (newMatchValueNode)
@@ -610,6 +612,140 @@ static BlockNode *parseEachYield(ParseState *parse, int build, INode *lexnode) {
     return loopnode;
 }
 
+// Which way a literal step moves a range: 1 up, -1 down, 0 for a step of zero
+// (the range runs no pass); 2 for a step that is not a literal, whose sign is
+// only known when the loop runs
+static int parseRangeStepSign(INode *step) {
+    if (step->tag == ULitTag && !(step->flags & FlagCharLit)) {
+        if (((ULitNode*)step)->uintlit == 0)
+            return 0;
+        return (step->flags & FlagLitNeg) ? -1 : 1;
+    }
+    if (step->tag == FLitTag) {
+        double v = ((FLitNode*)step)->floatlit;
+        return v > 0 ? 1 : v < 0 ? -1 : 0;
+    }
+    return 2;
+}
+
+// 'by > by - by' or 'by < by - by', the held step's sign: zero is written as the
+// step minus itself, which is zero in the step's own type, a float's included
+static VarDclNode *parseRangeSign(VarDclNode *by, int up, INode *lexnode) {
+    FnCallNode *zero = newFnCallOpnameLower(lexnode, parseEachCounterUse(by, lexnode), minusName, 1);
+    nodesAdd(&zero->args, parseEachCounterUse(by, lexnode));
+    FnCallNode *cmp = newFnCallOpnameLower(lexnode, parseEachCounterUse(by, lexnode), up ? gtName : ltName, 1);
+    nodesAdd(&cmp->args, (INode*)zero);
+    VarDclNode *flag = newVarDclFull(nametblFind(up ? "-up" : "-down", up ? 3 : 5), VarDclTag, unknownType,
+        (INode*)immPerm, (INode*)cmp);
+    inodeLexCopy((INode*)flag, lexnode);
+    return flag;
+}
+
+// A use of one of a held step's two signs; a step that is the literal 0 has neither
+static INode *parseRangeFlag(VarDclNode *flag, INode *lexnode) {
+    if (flag)
+        return parseEachCounterUse(flag, lexnode);
+    INode *no = (INode*)newULitNode(0, (INode*)boolType);
+    inodeLexCopy(no, lexnode);
+    return no;
+}
+
+// 'a and b' or 'a or b' of two conditions
+static INode *parseRangeLogic(uint16_t tag, INode *left, INode *right, INode *lexnode) {
+    LogicNode *logic = newLogicNode(tag);
+    inodeLexCopy((INode*)logic, lexnode);
+    logic->lexp = left;
+    logic->rexp = right;
+    return (INode*)logic;
+}
+
+// The test that lets a pass of a range run: the counter has not passed the end
+// in the range's direction ('<=' or '<' going up, '>=' or '>' going down, the end
+// itself passing for '..'). Where the direction is the held step's sign, either way:
+// '(up and x <= end) or (down and x >= end)', the end read once of the two
+static INode *parseRangeGuard(INode *lexnode, VarDclNode *counter, INode *end, int incl, int dir,
+    VarDclNode *up, VarDclNode *down) {
+    if (dir != 0) {
+        FnCallNode *cmp = newFnCallOpnameLower(lexnode, parseEachCounterUse(counter, lexnode),
+            dir > 0 ? (incl ? leName : ltName) : (incl ? geName : gtName), 1);
+        nodesAdd(&cmp->args, end);
+        return (INode*)cmp;
+    }
+    // The end is cloned rather than shared: a node reachable twice in the tree is type checked twice
+    CloneState cstate = {0};
+    cstate.instnode = NULL;
+    cstate.selftype = NULL;
+    cstate.selfparm = NULL;
+    cstate.scope = 0;
+    FnCallNode *upcmp = newFnCallOpnameLower(lexnode, parseEachCounterUse(counter, lexnode), incl ? leName : ltName, 1);
+    nodesAdd(&upcmp->args, end);
+    FnCallNode *downcmp = newFnCallOpnameLower(lexnode, parseEachCounterUse(counter, lexnode), incl ? geName : gtName, 1);
+    nodesAdd(&downcmp->args, cloneNode(&cstate, end));
+    return parseRangeLogic(OrLogicTag,
+        parseRangeLogic(AndLogicTag, parseRangeFlag(up, lexnode), (INode*)upcmp, lexnode),
+        parseRangeLogic(AndLogicTag, parseRangeFlag(down, lexnode), (INode*)downcmp, lexnode), lexnode);
+}
+
+// The test that a step wrapped the counter past its type's extreme: it moved
+// against the range's direction, 'x < prev' going up and 'x > prev' going down;
+// for a held step, whichever its sign says
+static INode *parseRangeMoved(INode *lexnode, VarDclNode *counter, VarDclNode *prev, int dir,
+    VarDclNode *up, VarDclNode *down) {
+    FnCallNode *lower = NULL, *higher = NULL;
+    if (dir >= 0) {
+        lower = newFnCallOpnameLower(lexnode, parseEachCounterUse(counter, lexnode), ltName, 1);
+        nodesAdd(&lower->args, parseEachCounterUse(prev, lexnode));
+    }
+    if (dir <= 0) {
+        higher = newFnCallOpnameLower(lexnode, parseEachCounterUse(counter, lexnode), gtName, 1);
+        nodesAdd(&higher->args, parseEachCounterUse(prev, lexnode));
+    }
+    if (dir > 0)
+        return (INode*)lower;
+    if (dir < 0)
+        return (INode*)higher;
+    return parseRangeLogic(OrLogicTag,
+        parseRangeLogic(AndLogicTag, parseRangeFlag(up, lexnode), (INode*)lower, lexnode),
+        parseRangeLogic(AndLogicTag, parseRangeFlag(down, lexnode), (INode*)higher, lexnode), lexnode);
+}
+
+// 'n += 1', the count of steps a range has taken
+static INode *parseRangeCount(VarDclNode *count, INode *lexnode) {
+    FnCallNode *add = newFnCallOpnameLower(lexnode, parseEachCounterUse(count, lexnode), plusEqName, 1);
+    add->flags |= FlagOpAssgn | FlagLvalOp;
+    INode *one = (INode*)newULitNode(1, (INode*)usizeType);
+    inodeLexCopy(one, lexnode);
+    nodesAdd(&add->args, one);
+    return (INode*)add;
+}
+
+// 'f64.from(n)': the count of steps as the float type a range's counter may be
+static INode *parseRangeConvert(char *type, size_t len, VarDclNode *count, INode *lexnode) {
+    FnCallNode *call = newFnCallLower(lexnode, (INode*)newNameUseFromLex(nametblFind(type, len), lexnode), 1);
+    call->methfld = (INode*)newMemberUseNode(fromName);
+    inodeLexCopy(call->methfld, lexnode);
+    nodesAdd(&call->args, parseEachCounterUse(count, lexnode));
+    return (INode*)call;
+}
+
+// The step of a range's counter, which type check finishes once it knows the
+// counter's type (eachRangeStepLower): 'x += step', or 'x++' with no step, or for
+// a float 'x = first + n * step'. Its arguments are the first value, the count, the
+// count converted to f32 and to f64, and the step when there is one.
+static INode *parseRangeStepCall(INode *lexnode, VarDclNode *counter, VarDclNode *first, VarDclNode *count, INode *step) {
+    FnCallNode *call = newFnCallOpnameLower(lexnode, parseEachCounterUse(counter, lexnode), eachRangeStepName, step ? 5 : 4);
+    call->flags |= FlagLvalOp;
+    if (step)
+        call->flags |= FlagOpAssgn;
+    nodesAdd(&call->args, parseEachCounterUse(first, lexnode));
+    nodesAdd(&call->args, parseEachCounterUse(count, lexnode));
+    nodesAdd(&call->args, parseRangeConvert("f32", 3, count, lexnode));
+    nodesAdd(&call->args, parseRangeConvert("f64", 3, count, lexnode));
+    if (step)
+        nodesAdd(&call->args, step);
+    return (INode*)call;
+}
+
 // Parse each block. 'build' is EachBuildNone for an each statement or expression,
 // and for an entry of '<-' EachBuildVars ('each x in src [if c] yield v') or
 // EachBuildDrain ('each src'), whose body is the yield (parseEachYield).
@@ -662,19 +798,46 @@ static INode *parseEachLoop(ParseState *parse, Name *lifesym, int stmtflag, int 
     INode *iter = parseSimpleExpr(parse);
     if (iter == NULL)       // Not a term, and already reported as such
         return (INode *)outerblk;
-    parseEachMutSource(iter, parallel);
-    INode *step = NULL;
-    int isrange = 0;
-    if (iter->tag == FnCallTag && ((FnCallNode*)iter)->methfld) {
-        Name *methodnm = ((NameUseNode*)((FnCallNode*)iter)->methfld)->namesym;
-        if (methodnm == leName || methodnm == ltName)
-            isrange = 1;
-        else if (methodnm == geName || methodnm == gtName)
-            isrange = -1;
+    // A number range: 'a .. b' runs through b, 'a ..< b' stops before it, and a
+    // step after 'by' moves it by that much (a negative step counts down)
+    INode *rangeend = NULL;
+    int rangeincl = 0;
+    if (lexIsRangeOp()) {
+        if (lexIsToken(EllipsisToken))
+            parseRangeEllipsis();
+        rangeincl = !lexIsToken(DotDotLessToken);
+        lexNextToken();
+        rangeend = parseSimpleExpr(parse);
+        if (rangeend == NULL)       // Not a term, and already reported as such
+            return (INode *)outerblk;
     }
+    else if (iter->tag == FnCallTag && ((FnCallNode*)iter)->methfld
+        && (iter->flags & FlagOperator) && ((FnCallNode*)iter)->args && ((FnCallNode*)iter)->args->used == 1) {
+        // The range this was once written as, a comparison, is refused. It is read on as
+        // the range it stands for, so that the rest of the loop is not reported again
+        FnCallNode *old = (FnCallNode*)iter;
+        Name *methodnm = ((NameUseNode*)old->methfld)->namesym;
+        char *oldop = methodnm == ltName ? "<" : methodnm == leName ? "<=" : methodnm == gtName ? ">" : methodnm == geName ? ">=" : NULL;
+        if (oldop != NULL) {
+            int up = methodnm == ltName || methodnm == leName;
+            int incl = methodnm == leName || methodnm == geName;
+            errorMsgNode(iter, ErrorEachCompare,
+                "A range is written with '..' or '..<', not as a comparison: 'each i in a %s b' is 'each i in a %s b%s'. '..' runs through its end and '..<' stops before it; counting down takes a negative step.",
+                oldop, incl ? ".." : "..<", up ? "" : " by -1");
+            rangeincl = incl;
+            rangeend = nodesGet(old->args, 0);
+            iter = old->objfn;
+        }
+    }
+    int isrange = rangeend != NULL;
+    if (!isrange)
+        parseEachMutSource(iter, parallel);
+    INode *step = NULL;
     if (isrange && lexIsToken(ByToken)) {
         lexNextToken();
         step = parseSimpleExpr(parse);
+        if (step == NULL)
+            return (INode *)outerblk;
     }
     INode *filter = build == EachBuildDrain ? NULL : parseEachFilter(parse);
     BlockNode *loopnode;
@@ -712,19 +875,18 @@ static INode *parseEachLoop(ParseState *parse, Name *lifesym, int stmtflag, int 
             errorMsgNode(iter, ErrorBadTok, "A numeric range gives one variable, the number.");
             return (INode *)outerblk;
         }
-        if (isrange < 0 || step) {
+        if (step) {
             errorMsgNode(iter, ErrorParSource,
-                "A 'parallel each' over a number range counts up by one ('parallel each i in 0 < n', or '<='): which pass runs first is not defined in parallel, so a count down or a step is not offered.");
+                "A 'parallel each' over a number range counts up by one ('parallel each i in 0 ..< n', or '..'): which pass runs first is not defined in parallel, so a count down or a step is not offered.");
             return (INode *)outerblk;
         }
-        FnCallNode *bounds = (FnCallNode *)iter;
         parallelEachNames();
-        VarDclNode *firstdcl = newVarDclFull(parFirstName, VarDclTag, unknownType, (INode*)immPerm, bounds->objfn);
+        VarDclNode *firstdcl = newVarDclFull(parFirstName, VarDclTag, unknownType, (INode*)immPerm, iter);
         inodeLexCopy((INode*)firstdcl, iter);
-        VarDclNode *lastdcl = newVarDclFull(parLastName, VarDclTag, unknownType, (INode*)immPerm, nodesGet(bounds->args, 0));
+        VarDclNode *lastdcl = newVarDclFull(parLastName, VarDclTag, unknownType, (INode*)immPerm, rangeend);
         inodeLexCopy((INode*)lastdcl, iter);
         outerblk->flags |= FlagEach | FlagParallel;
-        if (((NameUseNode*)bounds->methfld)->namesym == leName)
+        if (rangeincl)
             outerblk->flags |= FlagParIncl;
         nodesAdd(&outerblk->stmts, (INode*)firstdcl);
         nodesAdd(&outerblk->stmts, (INode*)lastdcl);
@@ -735,27 +897,61 @@ static INode *parseEachLoop(ParseState *parse, Name *lifesym, int stmtflag, int 
         return (INode *)outerblk;
     }
 
-    // Assemble logic for a range (with optional step), e.g.:
-    // { mut counter = initial; while counter <= iterend { imm elemname = counter; ... ; counter += step}}
+    // Assemble logic for a range (with optional step), e.g. 'each x in a .. b by s':
+    // { imm first = a; mut counter = first; mut n = 0;
+    //   while counter <= b { imm x = counter; ... ; { n += 1; counter += s } } }
     // The loop's variable is a new one on every pass, which the body cannot
     // change: counting by hand is a 'while'. The counter is the loop's own, a
-    // variable no name reaches, its uses bound here.
+    // variable no name reaches, its uses bound here. The first value and the count
+    // of steps taken are kept for a float counter, whose step is computed from them
+    // (eachRangeStepLower).
     if (isrange) {
-        FnCallNode *itercmp = (FnCallNode *)iter;
         if (nelems != 1) {
             errorMsgNode(iter, ErrorBadTok, "A numeric range gives one variable, the number.");
             return (INode *)outerblk;
         }
+        eachRangeNames();
         // Every node below is built after parseExprBlock has consumed the whole
         // loop body, so the lexer sits on the token following the body's '}' --
         // which is usually the enclosing function's. Position them on the range
         // expression instead, since that is what the reader wrote and what the
         // diagnostic is really about.
-        VarDclNode *elemdcl = newVarDclNode(anonName, VarDclTag, (INode*)mutPerm);
+        VarDclNode *firstdcl = newVarDclFull(nametblFind("-first", 6), VarDclTag, unknownType, (INode*)immPerm, iter);
+        inodeLexCopy((INode*)firstdcl, iter);
+        nodesAdd(&outerblk->stmts, (INode*)firstdcl);
+
+        // Which way the range runs. With no step it counts up. A literal step says
+        // which by its sign, and a step of 0 runs no pass. Any other step is held in
+        // a variable of the loop's (evaluated once, before the first pass) and says
+        // by its sign when the loop runs: 'up' and 'down' are what it was.
+        int dir = 1;                    // 1 up, -1 down, 0 up or down by the step held
+        VarDclNode *updcl = NULL, *downdcl = NULL;
+        INode *stepexp = step;          // what the step adds: the literal, or a use of the held step
+        if (step) {
+            dir = parseRangeStepSign(step);
+            if (dir == 2) {
+                dir = 0;
+                VarDclNode *bydcl = newVarDclFull(nametblFind("-by", 3), VarDclTag, unknownType, (INode*)immPerm, step);
+                inodeLexCopy((INode*)bydcl, iter);
+                nodesAdd(&outerblk->stmts, (INode*)bydcl);
+                updcl = parseRangeSign(bydcl, 1, iter);
+                downdcl = parseRangeSign(bydcl, 0, iter);
+                nodesAdd(&outerblk->stmts, (INode*)updcl);
+                nodesAdd(&outerblk->stmts, (INode*)downdcl);
+                stepexp = parseEachCounterUse(bydcl, iter);
+            }
+        }
+
+        // (a name of its own, since a float counter is assigned and an assignment to the
+        // anonymous name discards its value)
+        VarDclNode *elemdcl = newVarDclNode(nametblFind("-counter", 8), VarDclTag, (INode*)mutPerm);
         inodeLexCopy((INode*)elemdcl, iter);
-        elemdcl->value = itercmp->objfn;
+        elemdcl->value = parseEachCounterUse(firstdcl, iter);
         nodesAdd(&((BlockNode*)outerblk)->stmts, (INode*)elemdcl);
-        itercmp->objfn = parseEachCounterUse(elemdcl, iter);
+        VarDclNode *ndcl = newVarDclFull(nametblFind("-n", 2), VarDclTag, unknownType, (INode*)mutPerm,
+            (INode*)newULitNode(0, (INode*)usizeType));
+        inodeLexCopy((INode*)ndcl, iter);
+        nodesAdd(&outerblk->stmts, (INode*)ndcl);
         // A range that gives a value when it runs out has several places it runs
         // out at (the guard, and the steps that stop a counter wrapping or
         // reaching its bound), but one 'else': so they only say it has, in a flag
@@ -768,10 +964,9 @@ static INode *parseEachLoop(ParseState *parse, Name *lifesym, int stmtflag, int 
             inodeLexCopy((INode*)donedcl, iter);
             nodesAdd(&outerblk->stmts, (INode*)donedcl);
         }
+        // The test that lets a pass run
+        INode *guard = parseRangeGuard(iter, elemdcl, rangeend, rangeincl, dir, updcl, downdcl);
         if (step) {
-            FnCallNode *pluseq = newFnCallOpnameLower(iter, parseEachCounterUse(elemdcl, iter), plusEqName, 1);
-            pluseq->flags |= FlagOpAssgn | FlagLvalOp;
-            nodesAdd(&pluseq->args, step);
             // A step of more than one need never land on the bound, so nothing
             // stops it carrying the loop variable past the type's extreme: it
             // wraps to the other end, satisfies the comparison again, and the
@@ -781,40 +976,37 @@ static INode *parseEachLoop(ParseState *parse, Name *lifesym, int stmtflag, int 
             // subtracts is not known until it has been evaluated -- but the wrap
             // is plain afterwards: the loop variable moved against the range's
             // direction. So the step is '{ imm prev = x; x += s; if x < prev
-            // {break} }', with '>' for a range counting down. The three stay one
+            // {break} }', with '>' for a range counting down. The statements stay one
             // statement, because the trailing statement is what a 'continue'
             // carries a copy of, and 'prev' is a phantom variable the copy
             // re-points at its own declaration.
             VarDclNode *prevdcl = newVarDclFull(anonName, VarDclTag, unknownType, (INode*)immPerm,
                 parseEachCounterUse(elemdcl, iter));
             inodeLexCopy((INode*)prevdcl, iter);
-            NameUseNode *prevuse = newNameUseFromLex(anonName, iter);
-            prevuse->dclnode = (INode*)prevdcl;
-            FnCallNode *wrapped = newFnCallOpnameLower(iter, parseEachCounterUse(elemdcl, iter),
-                isrange > 0 ? ltName : gtName, 1);
-            nodesAdd(&wrapped->args, (INode*)prevuse);
+            INode *wrapped = parseRangeMoved(iter, elemdcl, prevdcl, dir, updcl, downdcl);
             BlockNode *stepblk = newBlockNode();
             inodeLexCopy((INode*)stepblk, iter);
             nodesAdd(&stepblk->stmts, (INode*)prevdcl);
-            nodesAdd(&stepblk->stmts, (INode*)pluseq);
+            nodesAdd(&stepblk->stmts, parseRangeCount(ndcl, iter));
+            nodesAdd(&stepblk->stmts, parseRangeStepCall(iter, elemdcl, firstdcl, ndcl, stepexp));
             if (donedcl)
-                nodesAdd(&stepblk->stmts, (INode*)parseJumpIf((INode*)wrapped, 0, parseEachSetDone(donedcl, iter)));
+                nodesAdd(&stepblk->stmts, (INode*)parseJumpIf(wrapped, 0, parseEachSetDone(donedcl, iter)));
             else
-                nodesAdd(&stepblk->stmts, (INode*)parseBreakIf((INode*)wrapped, 0, lifesym));
+                nodesAdd(&stepblk->stmts, (INode*)parseBreakIf(wrapped, 0, lifesym));
             nodesAdd(&loopnode->stmts, (INode*)stepblk);
         }
         else {
-            INode *incr = (INode *)newFnCallOpnameLower(iter, parseEachCounterUse(elemdcl, iter),
-                isrange > 0 ? incrPostName : decrPostName, 0);
-            incr->flags |= FlagLvalOp;
-            Name *cmpname = ((NameUseNode*)itercmp->methfld)->namesym;
-            if (cmpname == leName || cmpname == geName) {
+            INode *incr = parseRangeStepCall(iter, elemdcl, firstdcl, ndcl, NULL);
+            BlockNode *stepblk = newBlockNode();
+            inodeLexCopy((INode*)stepblk, iter);
+            nodesAdd(&stepblk->stmts, parseRangeCount(ndcl, iter));
+            if (rangeincl) {
                 // An inclusive range's last value is its bound, and the bound may
-                // be the type's maximum (or minimum, counting down). Stepping past
-                // it wraps, the wrapped value passes the guard again, and the loop
-                // never ends -- LLVM folds 'x <= MAX' to true and emits a loop with
-                // no exit. So the step is guarded: '{ if x == bound {break}; x++ }'.
-                // The two stay one statement, because the trailing statement is
+                // be the type's maximum. Stepping past it wraps, the wrapped value
+                // passes the guard again, and the loop never ends -- LLVM folds
+                // 'x <= MAX' to true and emits a loop with no exit. So the step is
+                // guarded: '{ if x == bound {break}; x++ }'.
+                // The statements stay one statement, because the trailing statement is
                 // what a 'continue' carries a copy of. The bound is cloned rather
                 // than shared with the guard: a node reachable twice in the tree
                 // is type checked twice.
@@ -824,9 +1016,7 @@ static INode *parseEachLoop(ParseState *parse, Name *lifesym, int stmtflag, int 
                 cstate.selfparm = NULL;
                 cstate.scope = 0;
                 FnCallNode *atbound = newFnCallOpnameLower(iter, parseEachCounterUse(elemdcl, iter), eqName, 1);
-                nodesAdd(&atbound->args, cloneNode(&cstate, nodesGet(itercmp->args, 0)));
-                BlockNode *stepblk = newBlockNode();
-                inodeLexCopy((INode*)stepblk, iter);
+                nodesAdd(&atbound->args, cloneNode(&cstate, rangeend));
                 if (donedcl) {
                     // '{ if x == bound {done = true} else {x++} }'
                     IfNode *atend = parseJumpIf((INode*)atbound, 0, parseEachSetDone(donedcl, iter));
@@ -841,9 +1031,10 @@ static INode *parseEachLoop(ParseState *parse, Name *lifesym, int stmtflag, int 
                     nodesAdd(&stepblk->stmts, (INode*)parseBreakIf((INode*)atbound, 0, lifesym));
                     nodesAdd(&stepblk->stmts, incr);
                 }
-                incr = (INode*)stepblk;
             }
-            nodesAdd(&loopnode->stmts, incr);
+            else
+                nodesAdd(&stepblk->stmts, incr);
+            nodesAdd(&loopnode->stmts, (INode*)stepblk);
         }
         // The step is now the block's last statement and stays there: the guard
         // below is inserted at index 0, blockTypeCheck appends no 'blockret' to a
@@ -851,10 +1042,10 @@ static INode *parseEachLoop(ParseState *parse, Name *lifesym, int stmtflag, int 
         // resolution find the step to copy ahead of a 'continue'.
         loopnode->flags |= FlagLoopStep;
         if (donedcl) {
-            // 'if done or !(counter < bound) {...else...}'
+            // 'if done or !(guard) {...else...}'
             LogicNode *notiter = newLogicNode(NotLogicTag);
             inodeLexCopy((INode*)notiter, iter);
-            notiter->lexp = iter;
+            notiter->lexp = guard;
             LogicNode *either = newLogicNode(OrLogicTag);
             inodeLexCopy((INode*)either, iter);
             either->lexp = parseEachCounterUse(donedcl, iter);
@@ -866,7 +1057,7 @@ static INode *parseEachLoop(ParseState *parse, Name *lifesym, int stmtflag, int 
             nodesInsert(&loopnode->stmts, (INode*)leave, 0);
         }
         else
-            parseInsertWhileBreak((INode*)loopnode, iter, NULL);
+            parseInsertWhileBreak((INode*)loopnode, guard, NULL);
         // The pass's variable, taken from the counter after the guard has let the pass run
         elemvars[0]->value = parseEachCounterUse(elemdcl, iter);
         nodesInsert(&loopnode->stmts, (INode*)elemvars[0], 1);

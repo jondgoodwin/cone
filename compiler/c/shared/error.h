@@ -617,6 +617,10 @@ enum ErrorCode {
     ErrorNotShareable = 1406,   // An instance whose 'T is Shareable' is unmet, or a value made a reference marked '+ Shareable' (or '+ Sendable') that is not: the type holds a counted owner whose count is not atomic, a traced reference, or a reference that writes through a shared path ('&mut')
     ErrorMarkUse = 1407,        // A '+' in a reference type followed by something but Sendable or Shareable, or marking a reference that is not virtual ('&<Trait + Shareable', 'So[fn() + Sendable]')
 
+    // The range notation (parser/parsefnflow.c, parser/parseexpr.c): '..' runs through its end, '..<' stops before it
+    ErrorRangeEllipsis = 1408,  // A range written '...', retired: 'a .. b' runs through b, 'a ..< b' stops before it
+    ErrorEachCompare = 1409,    // An 'each' over a comparison, 'each i in 0 < n', retired for the range notation ('0 ..< n', '0 .. n', 'by -1' to count down)
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

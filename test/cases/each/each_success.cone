@@ -1,15 +1,19 @@
-// 'each' over a numeric range: the four range operators, the optional 'by'
-// step, the scope of the loop variable, and how 'break' behaves inside one.
+// 'each' over a numeric range: the two range operators ('..' runs through its end,
+// '..<' stops before it), the optional 'by' step (a negative one counts down), the
+// scope of the loop variable, and how 'break' behaves inside one.
 //
 // Everything is printed, because 'each' is not generated directly. The parser
 // rewrites it into a counter's declaration plus a 'while' whose condition is the
 // range comparison and whose body begins with the pass's variable, a copy of the
-// counter, and ends with the increment, so a loop that compiles is not a loop
+// counter, and ends with the step, so a loop that compiles is not a loop
 // that visits the values meant. The sums below are order-independent, so each
 // one is paired with an iteration count where the count is what distinguishes
-// the operator.
+// the operator. The labels say 'lt' and 'le' for '..<' and '..' going up, and
+// 'gt' and 'ge' for the same going down.
 //
-// Iteration over anything but a range is each_collections'.
+// Iteration over anything but a range is each_collections'. What the notation
+// itself promises (a fractional step, direction by the step's sign, an empty
+// range) is each_ranges'.
 
 mod each_success;
 
@@ -36,14 +40,14 @@ fn showF(label &str, n f64) {
   printStr("\n");
 }
 
-// -------- the four range operators --------
+// -------- the two range operators, up and down --------
 
-// '<' stops before the bound and '<=' stops on it, so the two differ by one
+// '..<' stops before the bound and '..' stops on it, so the two differ by one
 // visit and not merely by one added value.
 fn ascending() {
   mut sum = 0;
   mut count = 0;
-  each i in 0 < 5 {
+  each i in 0 ..< 5 {
     sum += i;
     count += 1;
   }
@@ -52,7 +56,7 @@ fn ascending() {
 
   mut sum2 = 0;
   mut count2 = 0;
-  each i in 0 <= 5 {
+  each i in 0 .. 5 {
     sum2 += i;
     count2 += 1;
   }
@@ -60,13 +64,14 @@ fn ascending() {
   show("le-count", count2);
 }
 
-// '>' and '>=' count down instead, so the first value is the left operand and
-// the loop variable is decremented rather than incremented.
+// A negative step counts down, so the first value is the left operand and the
+// loop variable is decremented rather than incremented: '6 ..< 1 by -1' is 6 to
+// 2 and '6 .. 1 by -1' is 6 to 1.
 fn descending() {
   mut first = -1;
   mut last = -1;
   mut count = 0;
-  each i in 6 > 1 {
+  each i in 6 ..< 1 by -1 {
     if count == 0 {
       first = i;
     }
@@ -78,7 +83,7 @@ fn descending() {
   show("gt-count", count);
 
   mut last2 = -1;
-  each i in 6 >= 1 {
+  each i in 6 .. 1 by -1 {
     last2 = i;
   }
   show("ge-last", last2);
@@ -88,10 +93,10 @@ fn descending() {
 // either direction: the comparison is tested before the first visit.
 fn empty() {
   mut count = 0;
-  each i in 0 < 0 {
+  each i in 0 ..< 0 {
     count += 1;
   }
-  each i in 0 > 0 {
+  each i in 0 ..< 0 by -1 {
     count += 1;
   }
   show("empty-count", count);
@@ -99,13 +104,13 @@ fn empty() {
 
 // -------- 'by' --------
 
-// Without 'by' the loop variable moves by one; with it, by the step. A
-// descending range still adds the step rather than subtracting it, so counting
-// down by more than one needs a negative step.
+// Without 'by' the loop variable moves up by one; with it, by the step. The
+// step is added whatever its sign, so counting down by more than one needs a
+// negative step.
 fn stepped() {
   mut sum = 0;
   mut count = 0;
-  each i in 0 <= 10 by 2 {
+  each i in 0 .. 10 by 2 {
     sum += i;
     count += 1;
   }
@@ -113,7 +118,7 @@ fn stepped() {
   show("by-asc-count", count);
 
   mut sum2 = 0;
-  each i in 10 >= 0 by -2 {
+  each i in 10 .. 0 by -2 {
     sum2 += i;
   }
   show("by-desc-sum", sum2);
@@ -126,7 +131,7 @@ fn stepped() {
 // must be of that type too: an f64 range steps by an f64.
 fn unsignedRange() u64 {
   mut result = 1u;
-  each nbrx in 1u < 10u by 2 {
+  each nbrx in 1u ..< 10u by 2 {
     result += nbrx;
   }
   result;
@@ -134,7 +139,7 @@ fn unsignedRange() u64 {
 
 fn floatRange() f64 {
   mut sum = 0.;
-  each x in 0. <= 1. by 0.5 {
+  each x in 0. .. 1. by 0.5 {
     sum += x;
   }
   sum;
@@ -144,7 +149,7 @@ fn floatRange() f64 {
 // what makes 'each' usable over a function's parameters.
 fn total(low i32, high i32) i32 {
   mut sum = 0;
-  each i in low <= high {
+  each i in low .. high {
     sum += i;
   }
   sum;
@@ -173,18 +178,19 @@ fn stride() i32 {
 
 // The upper bound is the loop's condition rather than a value captured once, so
 // it is re-evaluated on every test -- five visits, six evaluations, the last of
-// which is the one that ends the loop. The step sits at the end of the body, so
-// it is evaluated once per visit instead.
+// which is the one that ends the loop. A step that is not a literal is evaluated
+// once, before the first visit: its sign says which way the range runs, and a
+// fractional step is the same number at every count.
 fn reevaluated() {
   mut count = 0;
-  each i in 0 < upper() {
+  each i in 0 ..< upper() {
     count += 1;
   }
   show("bound-visits", count);
   show("bound-evals", boundCalls);
 
   mut count2 = 0;
-  each i in 0 < 4 by stride() {
+  each i in 0 ..< 4 by stride() {
     count2 += 1;
   }
   show("step-visits", count2);
@@ -198,7 +204,7 @@ fn reevaluated() {
 // still holds 99 after a loop that counted it from 0 to 3.
 fn scoping() {
   mut outer = 99;
-  each outer in 0 < 3 {
+  each outer in 0 ..< 3 {
   }
   show("shadowed-local", outer);
 }
@@ -210,7 +216,7 @@ fn scoping() {
 fn freshEveryPass() {
   mut visits = 0;
   mut sum = 0;
-  each i in 0 < 5 {
+  each i in 0 ..< 5 {
     visits += 1;
     {
       imm i = 100;
@@ -229,7 +235,7 @@ fn freshEveryPass() {
 // one.
 fn breaking() {
   mut sum = 0;
-  each i in 0 < 100 {
+  each i in 0 ..< 100 {
     if i == 5 {
       break;
     }
@@ -238,8 +244,8 @@ fn breaking() {
   show("break-sum", sum);
 
   mut visits = 0;
-  'outer: each i in 1 <= 3 {
-    each j in 1 <= 3 {
+  'outer: each i in 1 .. 3 {
+    each j in 1 .. 3 {
       if j == 2 {
         break 'outer;
       }
@@ -252,7 +258,7 @@ fn breaking() {
   // the parser appends sits behind it, so the 'break' the reader wrote last is
   // still the last one they wrote.
   mut once = 0;
-  each i in 0 < 5 {
+  each i in 0 ..< 5 {
     once += 1;
     break;
   }
@@ -267,7 +273,7 @@ fn breaking() {
 fn continuing() {
   mut sum = 0;
   mut visits = 0;
-  each i in 0 < 10 {
+  each i in 0 ..< 10 {
     if i == 3 {
       continue;
     }
@@ -280,7 +286,7 @@ fn continuing() {
   // With 'by', the step to carry is the '+=' rather than the '++', so a skipped
   // visit must still advance by the step and not by one
   mut stepped = 0;
-  each i in 0 <= 10 by 2 {
+  each i in 0 .. 10 by 2 {
     if i == 4 {
       continue;
     }
@@ -290,7 +296,7 @@ fn continuing() {
 
   // Counting down, where the step decrements
   mut down = 0;
-  each i in 5 > 0 {
+  each i in 5 ..< 0 by -1 {
     if i == 3 {
       continue;
     }
@@ -305,8 +311,8 @@ fn continuing() {
 fn labeledContinuing() {
   mut pairs = 0;
   mut tails = 0;
-  'outer: each i in 0 < 4 {
-    each j in 0 < 4 {
+  'outer: each i in 0 ..< 4 {
+    each j in 0 ..< 4 {
       if j == 2 {
         continue 'outer;
       }
@@ -324,7 +330,7 @@ fn continueInsideNestedEach() {
   mut n = 0;
   mut visits = 0;
   while n < 2 {
-    each i in 0 < 4 {
+    each i in 0 ..< 4 {
       if i == 1 {
         continue;
       }
@@ -339,7 +345,7 @@ fn continueInsideNestedEach() {
 // statement the reader wrote, so it does not make the 'continue' not-last, and
 // the loop still runs to its bound rather than spinning on one value.
 fn continueOnlyBody() {
-  each i in 0 < 3 {
+  each i in 0 ..< 3 {
     continue;
   }
   show("after-continue-only-body", 1);
@@ -349,8 +355,8 @@ fn continueOnlyBody() {
 // fresh loop variable per outer visit rather than resuming where it stopped.
 fn nesting() {
   mut sum = 0;
-  each i in 1 <= 3 {
-    each j in 1 <= 3 {
+  each i in 1 .. 3 {
+    each j in 1 .. 3 {
       sum += i * j;
     }
   }
@@ -359,7 +365,7 @@ fn nesting() {
   mut n = 0;
   mut rounds = 0;
   while n < 3 {
-    each i in 0 < 2 {
+    each i in 0 ..< 2 {
       rounds += 1;
     }
     n += 1;
@@ -370,7 +376,7 @@ fn nesting() {
 // An empty body is accepted, unlike an empty 'while' body, and the program goes
 // on afterwards.
 fn emptyBody() {
-  each i in 0 < 3 {
+  each i in 0 ..< 3 {
   }
   show("after-empty-body", 1);
 }
@@ -388,19 +394,19 @@ fn emptyBody() {
 // short; the i32 case is the one that was measured.
 fn atTheExtreme() {
   mut count = 0;
-  each x in 250u8 <= 255u8 {
+  each x in 250u8 .. 255u8 {
     count += 1;
   }
   show("le-u8-max-count", count);
 
   mut count2 = 0;
-  each x in 5u8 >= 0u8 {
+  each x in 5u8 .. 0u8 by -1 {
     count2 += 1;
   }
   show("ge-u8-min-count", count2);
 
   mut count3 = 0;
-  each x in 2147483640 <= 2147483647 {
+  each x in 2147483640 .. 2147483647 {
     count3 += 1;
   }
   show("le-i32-max-count", count3);
@@ -411,7 +417,7 @@ fn atTheExtreme() {
 // 2. are visited and 3. is not, the same three visits the comparison alone made.
 fn floatBoundNotLandedOn() {
   mut count = 0;
-  each x in 0. <= 2.5 {
+  each x in 0. .. 2.5 {
     count += 1;
   }
   show("le-float-passed-count", count);
@@ -427,25 +433,25 @@ fn floatBoundNotLandedOn() {
 // visited, and the loop ended at all.
 fn steppedAtTheExtreme() {
   mut count = 0;
-  each x in 250u8 <= 255u8 by 2 {
+  each x in 250u8 .. 255u8 by 2 {
     count += 1;
   }
   show("by-le-u8-max-count", count);
 
   mut count2 = 0;
-  each x in 246u8 < 255u8 by 5 {
+  each x in 246u8 ..< 255u8 by 5 {
     count2 += 1;
   }
   show("by-lt-u8-max-count", count2);
 
   mut count3 = 0;
-  each x in 5u8 >= 0u8 by -2 {
+  each x in 5u8 .. 0u8 by -2 {
     count3 += 1;
   }
   show("by-ge-u8-min-count", count3);
 
   mut count4 = 0;
-  each x in 9u8 > 0u8 by -5 {
+  each x in 9u8 ..< 0u8 by -5 {
     count4 += 1;
   }
   show("by-gt-u8-min-count", count4);
@@ -453,26 +459,26 @@ fn steppedAtTheExtreme() {
   // A step of one lands on the bound and still wraps on the step past it, and a
   // step larger than the whole range visits the first value and no other.
   mut count5 = 0;
-  each x in 250u8 <= 255u8 by 1 {
+  each x in 250u8 .. 255u8 by 1 {
     count5 += 1;
   }
   show("by-one-u8-max-count", count5);
 
   mut count6 = 0;
-  each x in 250u8 <= 255u8 by 100 {
+  each x in 250u8 .. 255u8 by 100 {
     count6 += 1;
   }
   show("by-big-u8-max-count", count6);
 
   // i32 at both of its extremes.
   mut count7 = 0;
-  each x in 2147483640 <= 2147483647 by 4 {
+  each x in 2147483640 .. 2147483647 by 4 {
     count7 += 1;
   }
   show("by-le-i32-max-count", count7);
 
   mut count8 = 0;
-  each x in -2147483640 >= -2147483648 by -4 {
+  each x in -2147483640 .. -2147483648 by -4 {
     count8 += 1;
   }
   show("by-ge-i32-min-count", count8);
@@ -482,7 +488,7 @@ fn steppedAtTheExtreme() {
   // that distance, so the loop's end cannot be predicted from it: this one ends
   // by reaching its bound and not by wrapping, and must visit all 17 values.
   mut count9 = 0;
-  each x in -2000000000 <= 2000000000 by 250000000 {
+  each x in -2000000000 .. 2000000000 by 250000000 {
     count9 += 1;
   }
   show("by-wide-i32-count", count9);
@@ -492,7 +498,7 @@ fn steppedAtTheExtreme() {
 // 'continue' on the visit at the bound ends the loop rather than wrapping.
 fn continueAtTheBound() {
   mut count = 0;
-  each x in 253u8 <= 255u8 {
+  each x in 253u8 .. 255u8 {
     count += 1;
     continue;
   }
@@ -503,8 +509,8 @@ fn continueAtTheBound() {
   // copied into: bound to the wrong loop, it would let the outer body's tail
   // run once more.
   mut tails = 0;
-  'outer: each i in 254u8 <= 255u8 {
-    each j in 0 < 2 {
+  'outer: each i in 254u8 .. 255u8 {
+    each j in 0 ..< 2 {
       continue 'outer;
     }
     tails += 1;
@@ -515,15 +521,15 @@ fn continueAtTheBound() {
   // variable holding the value before the step, which the copy must read as its
   // own rather than the original's.
   mut count2 = 0;
-  each x in 250u8 <= 255u8 by 2 {
+  each x in 250u8 .. 255u8 by 2 {
     count2 += 1;
     continue;
   }
   show("continue-by-at-max-count", count2);
 
   mut tails2 = 0;
-  'outer2: each i in 252u8 <= 255u8 by 2 {
-    each j in 0 < 2 {
+  'outer2: each i in 252u8 .. 255u8 by 2 {
+    each j in 0 ..< 2 {
       continue 'outer2;
     }
     tails2 += 1;
@@ -534,12 +540,12 @@ fn continueAtTheBound() {
 // An inclusive 'each' may be a function's last statement, stepped or not --
 // where the step is a block, the block is what the function ends with.
 fn lastInFunction() {
-  each x in 0u8 <= 255u8 {
+  each x in 0u8 .. 255u8 {
   }
 }
 
 fn lastInFunctionStepped() {
-  each x in 0u8 <= 255u8 by 5 {
+  each x in 0u8 .. 255u8 by 5 {
   }
 }
 
