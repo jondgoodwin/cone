@@ -1,0 +1,52 @@
+// A GPU has no operating system and no C library, and a call of a function
+// defined elsewhere is refused where it is written in GPU code
+// (ErrorGpuUnavailable): the C library's allocator, its files and its streams
+// through libc's bindings, and any 'extern' function a program declares. Each
+// was once a crash in LLVM's SPIR-V backend, or compiled silently when the
+// result was unused. The C library's math, which a GPU lowers to its own
+// instructions, and core's 'panic', which it records, are fine and stand
+// beside them (a binding's inline function that calls what it wraps is
+// module_gpu_io_wrapper).
+
+mod module_gpu_io;
+
+import libc;
+
+pub extern {
+  fn puts(text cstr) i32;
+}
+
+fn @compute(64) alloc(inv Invocation, xs &Array[f32], out &mut Array[f32]) {
+  imm i = usize.from(inv.globalId[0]);
+  if i < out.len and i < xs.len {
+    imm block = libc.malloc(16usize);                           //~ ErrorGpuUnavailable
+    out[i] = xs[i];
+  }
+}
+
+fn @compute(64) files(inv Invocation, xs &Array[f32], out &mut Array[f32]) {
+  imm i = usize.from(inv.globalId[0]);
+  if i < out.len and i < xs.len {
+    imm file = libc.fopen("log.txt", "w");                      //~ ErrorGpuUnavailable
+    out[i] = xs[i];
+  }
+}
+
+fn @compute(64) declared(inv Invocation, xs &Array[f32], out &mut Array[f32]) {
+  imm i = usize.from(inv.globalId[0]);
+  if i < out.len and i < xs.len {
+    puts("hello");                                              //~ ErrorGpuUnavailable
+    out[i] = xs[i];
+  }
+}
+
+// Not refused
+fn @compute(64) fine(inv Invocation, xs &Array[f32], out &mut Array[f32]) {
+  imm i = usize.from(inv.globalId[0]);
+  if i < out.len and i < xs.len {
+    out[i] = libc.sinf(xs[i]) + libc.sqrtf(xs[i]) + libc.fabsf(xs[i]) + libc.atan2f(xs[i], 1.);
+    if out[i] > 1000. {
+      panic("out of range");
+    }
+  }
+}

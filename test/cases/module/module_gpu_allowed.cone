@@ -1,0 +1,53 @@
+// What GPU code may use still compiles, with the refusals of what a GPU lacks
+// (module_gpu_unavailable, _owner_type, _threads, _actor, _io) in force: numbers,
+// structs and arrays of them, borrowed references, methods, generics, static
+// traits, loops, if and match, the C library's math, atomics on the buffers a
+// kernel is bound and on its workgroup's memory, constants, string literals,
+// and core's 'panic', which a GPU records. A struct built with 'new' as a value
+// is a value, not an allocation.
+
+mod module_gpu_allowed;
+
+import libc;
+
+const scale = 3.;
+
+pub trait Shape {
+  pub fn dist(self &, x f32) f32;
+}
+
+struct Ball {
+  pub r f32;
+  pub fn dist(self &, x f32) f32 { libc.fabsf(x - r); }
+}
+
+fn measure[S Shape](s &S, x f32) f32 { s.dist(x); }
+
+fn pick(n u32) f32 {
+  if n == 0u32 {
+    1.;
+  } else if n == 1u32 {
+    2.;
+  } else {
+    4.;
+  }
+}
+
+fn @compute(64) allowed(inv Invocation, xs &Array[f32], hits &mut Array[Atomic[u32]], out &mut Array[f32]) {
+  imm i = usize.from(inv.globalId[0]);
+  if i < out.len and i < xs.len {
+    imm ball = new Ball(2.);
+    imm view &Ball = &ball;
+    mut total = measure(view, xs[i]) * scale;
+    mut k = 0u32;
+    while k < 3u32 {
+      total = total + pick(k) + libc.sqrtf(xs[i]) + libc.sinf(xs[i]);
+      k = k + 1u32;
+    }
+    hits[0usize].add(1u32);
+    if total < -1000. {
+      panic("total out of range");
+    }
+    out[i] = total;
+  }
+}

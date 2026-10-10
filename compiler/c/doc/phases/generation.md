@@ -1757,9 +1757,27 @@ indirect call; a reference converted to a virtual reference (`iexpCoerceShape`,
 the `ConvSubtype` case), whose table of code pointers LLVM's SPIR-V backend
 crashes on (its `SPIRV legalize pointer cast pass`); and an allocation, `new` or
 `trynew` of an owner (`allocateValueCheck`), whose allocator call becomes an
-import the Vulkan form does not allow (`Capability Linkage`). An owner or a
-function reference can still arrive as a parameter of a function and be passed
-about; nothing can make one.
+import the Vulkan form does not allow (`Capability Linkage`). Also an owning
+reference type written at all, `So[T]`, `Rc[T]`, `Arc[imm, T]`, `Rc[Rwcell, T]`
+(`refTypeCheck` and `refvirtTypeCheck`, `refGpuOwnerCheck`), in any declaration but
+the type a `new` names, which `allocateValueCheck` reports as the allocation it
+is (`refNewTypeWritten`); a function reference can still arrive as a parameter
+of a function and be passed about, and nothing can make one.
+
+Threads are refused at their syntax: an `actor` declaration
+(`parseActorRuntime`, at parse, before the import of `actors` is looked for), a
+`parallel each` (`parRuntime`) and an `await` (`awaitTypeCheck`). A call of a
+function defined elsewhere (`extern`: libc's allocator, files and streams, a
+program's own declarations) is refused in `fnCallFinalizeArgs`, since a GPU has
+no operating system and no C library, unless it is core's (`panic` is recorded,
+`genlGpuPanic`) or the C library's math (`genlGpuIsMathSymbol`, the table
+`genlGpuMath` lowers by). A C binding's inline function that calls what it wraps
+(`libc.errno()`) makes the call in a `@c` module, whose own bodies are not
+refused, and the call is refused where a kernel reaches it, in
+`genlFnCallInternal`, which reports it at the call inside the binding. Core's own
+source is exempt from the owner and call refusals (`flowGpuRefuses`): its
+regions are written with the owners and the allocator, reached only by an
+allocation or an owner that is refused where written.
 
 **LLVM 23's SPIR-V backend takes only some shapes of IR**, and on the rest it
 crashes, in its own passes, or emits a module the validator refuses. With

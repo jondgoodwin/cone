@@ -557,7 +557,10 @@ static void typeLitNewCallable(TypeCheckState *pstate, FnCallNode **nodep, RefNo
     }
     // The owner of the value itself, then that viewed as the callable
     INode *owner =(INode*)newRefNodeFull(RefTag, (INode*)node, reftype->region, reftype->perm, vtype);
-    if (!itypeTypeCheck(pstate, &owner))
+    refNewTypeWritten = 1;
+    int ownerok = itypeTypeCheck(pstate, &owner);
+    refNewTypeWritten = 0;
+    if (!ownerok)
         return;
     // A callable that holds nothing has no size: its allocation is the smallest block
     allocateZeroSizeOk = 1;
@@ -723,7 +726,10 @@ static void typeLitNewChecked(TypeCheckState *pstate, FnCallNode **nodep, int ar
             return;
         node = *nodep;
     }
-    if (!itypeTypeCheck(pstate, &node->objfn))
+    refNewTypeWritten = 1;
+    int typeok = itypeTypeCheck(pstate, &node->objfn);
+    refNewTypeWritten = 0;
+    if (!typeok)
         return;
 
     INode *typedcl = itypeGetTypeDcl(node->objfn);
