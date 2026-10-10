@@ -976,7 +976,11 @@ Steps 9 to 11 are `structCheckMembers`, run from the members queue:
 10. **Verify the traits' method requirements** (`structCheckTraitReqs`), now
    that every signature has its types: for each method of each trait in
    `traits`, the type's binding for the name must have the one candidate of the
-   trait's signature — an inherited default meets that by construction — and a
+   trait's signature — an inherited default meets that by construction, a
+   generic one too: its copy shares the trait method's `GenericInfo` parameters,
+   which is how it is told from a generic method the type declares itself, and
+   that one is compared by `fnSigVrefEqual`, which finds no two uses of a type
+   parameter the same (generic.md) — and a
    requirement with no body, inherited as such, is unmet in a struct; a trait
    may pass it on. **`Self` in the requirement is this type**, as it is in a
    default cloned in: `fnSigVrefEqual` is given this type as its `selftype`, so

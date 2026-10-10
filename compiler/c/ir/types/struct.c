@@ -2611,6 +2611,15 @@ static void structCheckTraitReqs(StructNode *node) {
                     &traitmeth->namesym->namestr, &trait->namesym->namestr);
                 continue;
             }
+            // A generic default the type did not declare is the trait's own, copied
+            // in with the type: the copy shares the method's type parameters, so
+            // it meets the requirement by construction, and compares equal to it
+            // by nothing (fnSigVrefEqual cannot match two uses of a type parameter).
+            // A generic method the type declares itself has parameters of its own
+            if (traitmeth->genericinfo && traitmeth->value && binding && binding->tag == FnDclTag
+                && ((FnDclNode*)binding)->genericinfo
+                && ((FnDclNode*)binding)->genericinfo->parms == traitmeth->genericinfo->parms)
+                continue;
             // A trait method is one named requirement. The type satisfies it with
             // a directly named method or the one overload candidate of that signature.
             //

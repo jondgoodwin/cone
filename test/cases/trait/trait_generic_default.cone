@@ -1,0 +1,99 @@
+// A trait's default method may be generic. A type that declares the trait with
+// 'is' takes it in with the rest of the trait, and calling it on the type makes
+// an instance for that type: 'self' in the body is the type. It is so for a
+// plain trait and for a parameterised one, for a default that calls a method
+// the trait requires, for one given a closure, and for a default that takes
+// '&mut self'.
+// Each printed value was worked out by hand from the source.
+
+mod trait_generic_default;
+
+import stdio use *;
+
+// A plain trait: a required method, and three generic defaults
+trait Source {
+  pub fn get(self &) i64;
+  pub fn ident[U](self &, u U) U { u; }
+  // Calls the required method
+  pub fn pick[U](self &, a U, b U) U { if self.get() > 0 {a;} else {b;} }
+  // Given a closure
+  pub fn apply[F fn(x i64) i64](self &, f F) i64 { f(self.get()); }
+}
+
+struct Seven is Source {
+  pub fn get(self &) i64 { 7; }
+}
+
+struct Zero is Source {
+  pub v i64;
+  pub fn get(self &) i64 { v; }
+}
+
+// A parameterised trait; its defaults name T
+trait Holder[T] {
+  pub fn held(self &) T;
+  pub fn ident[U](self &, u U) U { u; }
+  pub fn through[F fn(x T) T](self &, f F) T { f(self.held()); }
+  pub fn heldWith[U](self &, u U) T { self.held(); }
+}
+
+struct Crate is Holder[i64] {
+  pub n i64;
+  pub fn held(self &) i64 { n; }
+}
+
+struct Small is Holder[i32] {
+  pub fn held(self &) i32 { 4; }
+}
+
+// A cursor-shaped trait: a generic default that takes '&mut self' and drives
+// the required 'next'
+trait Cursor[T] {
+  pub fn next(self &mut) Option[T];
+  pub fn ident[U](self &mut, u U) U { u; }
+  pub fn total[F fn(x T) i64](self &mut, f F) i64 {
+    mut sum = 0i64;
+    while true {
+      match self.next() {
+        case imm v Some {sum = sum + f(v.value);}
+        case is None {break;}
+      }
+    }
+    sum;
+  }
+}
+
+struct Countdown is Cursor[i64] {
+  pub n i64;
+  pub fn next(self &mut) Option[i64] {
+    if n <= 0 { return None[i64][]; }
+    imm v = n;
+    n = n - 1;
+    Some[i64][v];
+  }
+}
+
+// Reached through a bound
+fn viaBound[T Source](t &T) i64 { t.ident(t.get() + 1); }
+
+fn main() {
+  imm s = new Seven();
+  print <- viaBound(&s), "\n";                                         // 8
+  print <- s.ident(5), " ", s.ident(-2i32), " ", s.ident("hi"), "\n";   // 5 -2 hi
+  imm z = new Zero(0);
+  imm k = 10;
+  print <- s.pick(1, 2), " ", z.pick(1, 2), "\n";                       // 1 2
+  print <- s.apply(x => x + k), " ", z.apply(x => x * 3 + k), "\n";     // 17 10
+
+  imm c = new Crate(6);
+  print <- c.ident(8), " ", c.through(x => x * x), " ", c.heldWith(2i32), "\n";   // 8 36 6
+  imm w = new Small();
+  print <- w.ident(4i64), " ", w.through(x => x + 1), " ", w.heldWith(9i64), "\n";   // 4 5 4
+
+  mut cd = new Countdown(4);
+  print <- cd.ident(3), "\n";                                          // 3
+  print <- cd.total(x => x * k), " ", cd.n, "\n";                      // 100 0
+  mut cd2 = new Countdown(3);
+  imm bias = 1;
+  print <- cd2.total(x => x + bias), "\n";                             // 9
+}
