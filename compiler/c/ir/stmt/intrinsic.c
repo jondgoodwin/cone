@@ -412,6 +412,17 @@ int coreIsHashTrait(INode *dcl) {
         && intrinsicModuleIsCore(strnode->dclinfo.owner);
 }
 
+INode *coreIteratorTrait = NULL;
+
+int coreIsIteratorTrait(INode *dcl) {
+    if (dcl == NULL || dcl->tag != StructTag)
+        return 0;
+    StructNode *strnode = (StructNode *)dcl;
+    return strnode->namesym == iteratorTraitName && strnode->genericinfo != NULL
+        && (strnode->flags & TraitType) && !(strnode->flags & EnumType)
+        && intrinsicModuleIsCore(strnode->dclinfo.owner);
+}
+
 int coreIsHasher(INode *dcl) {
     if (dcl == NULL || dcl->tag != StructTag)
         return 0;

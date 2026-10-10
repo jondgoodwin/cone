@@ -74,6 +74,7 @@ Name *optionName;
 Name *fromName;
 Name *hashName;
 Name *hashTraitName;
+Name *iteratorTraitName;
 Name *hasherName;
 Name *writeU64Name;
 Name *ofName;

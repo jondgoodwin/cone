@@ -1,0 +1,79 @@
+// A trait's generic default may name 'Self' in the type it hands back, 'MapC[T, U, Self, F]':
+// 'Self' is the type that declared the trait, not the struct the result is made of.
+// The result is itself a cursor declaring the trait, so the chain goes on. A type with the
+// required method and no 'is' meets a bound on the trait and has none of the defaults.
+// Each printed value was worked out by hand from the source.
+
+mod trait_default_names_self;
+
+import stdio use *;
+
+trait Cur[T] {
+  pub fn next(self &mut) Option[T];
+
+  pub fn mapp[U, F fn(x T) U](self, f F) MapC[T, U, Self, F] inline {
+    new MapC[T, U, Self, F](self, f);
+  }
+
+  pub fn total[F fn(x T) i64](self &mut, f F) i64 inline {
+    mut s = 0i64;
+    while true {
+      match self.next() {
+        case imm e Some { s = s + f(e.value); }
+        case is None { break; }
+      }
+    }
+    s;
+  }
+}
+
+pub struct MapC[T, U, I Cur[T], F fn(x T) U] is Cur[U] {
+  pub src I;
+  pub f F;
+  pub fn next(self &mut) Option[U] inline {
+    match src.next() {
+      case imm e Some { return Some[U][f(e.value)]; }
+      case is None { return None[U][]; }
+    }
+  }
+}
+
+struct Down is Cur[i64] {
+  n i64;
+  pub fn next(self &mut) Option[i64] inline {
+    if n <= 0 { return None[i64][]; }
+    n = n - 1;
+    Some[i64][n];
+  }
+}
+
+// Has the method and no 'is'
+struct Plain {
+  n i64;
+  pub fn next(self &mut) Option[i64] {
+    if n <= 0 { return None[i64][]; }
+    n = n - 1;
+    Some[i64][n];
+  }
+}
+
+fn countBound[T, I Cur[T]](c &mut I) i64 {
+  mut k = 0i64;
+  while true {
+    match c.next() {
+      case imm e Some { k = k + 1; }
+      case is None { break; }
+    }
+  }
+  k;
+}
+
+fn main() {
+  imm k = 3;
+  mut d = new Down(5);
+  print <- d.mapp(x => x * k).total(y => y), "\n";                       // (4 + 3 + 2 + 1 + 0) * 3 = 30
+  mut e = new Down(5);
+  print <- e.mapp(x => x * k).mapp(y => y + 1).total(z => z), "\n";      // 30 + 5 = 35
+  mut p = new Plain(4);
+  print <- countBound(&mut p), "\n";                                     // 4
+}
