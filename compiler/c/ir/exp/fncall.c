@@ -3493,6 +3493,8 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     }
 
     // Dispatch for correct handling based on the type of the object
+    int ownerread = 0;
+dispatch:
     switch (objtype->tag) {
     // Pure function call
     case FnSigTag:
@@ -3592,6 +3594,16 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
                     fnCallLowerPtrMethod(node, ptrType);
                 else if (objdereftype->tag == ArrayTag && fnCallLowerSliceMethod(pstate, node))
                     ;
+                // A borrow of an owner ('self &So[Node]', a method's receiver form) is
+                // read through to the owner, whose value's fields and methods these are
+                else if (!ownerread && objdereftype->tag == RefTag
+                    && itypeGetTypeDcl(((RefNode*)objdereftype)->region) != borrowRef
+                    && isMethodType(itypeGetTypeDcl(((RefNode*)objdereftype)->vtexp))) {
+                    derefInject(&node->objfn);
+                    objtype = iexpGetTypeDcl(node->objfn);
+                    ownerread = 1;
+                    goto dispatch;
+                }
                 else
                     errorMsgNode((INode*)node, ErrorNoMeth, "Invalid operation on a reference.");
             }

@@ -580,12 +580,18 @@ Three adjustments, two of them asymmetric on purpose:
   does: `mk().get()`. **A pointer is never borrowed from** — a pointer receiver,
   and a dereference of one written out, are left as the deref retry left them.
   An ambiguity among the probed candidates is reported as one. **An owner
-  receiver is borrowed too** (a `So[str]`, any reference that is not a borrow):
-  it is a reference and so passed as it is, but a method may declare `self
-  &So[str]`, a borrow of an owner of its type (core's `str.cstr`, which a plain
-  `&str` therefore has no candidate for), and that is what the probe's borrow of
-  the owner finds. `fnDclTypeCheck` allows the form: a method's `self` is its
-  type, a reference to it, or a borrow of an owner of it.
+  receiver is borrowed too** (a `So[T]`, `Rc[T]`, `Arc[T]`, any reference that
+  is not a borrow): it is a reference and so passed as it is, but any type's
+  method may declare `self &So[Self]` (or `&Rc[Self]`, `&Arc[Self]`, ...), a
+  borrow of an owner of its type — core's `str.cstr`, which a plain `&str`
+  therefore has no candidate for, is one — and that is what the probe's borrow of
+  the owner finds. The form is general: no owner kind is named in the compiler.
+  `fnDclTypeCheck` allows it: a method's `self` is its type, a reference to it,
+  or a borrow of an owner of it. Inside such a method `self` is a borrow of an
+  owner, a reference to a reference, and a field or method named on it is
+  read through to the value: the RefTag branch of `fnCallTypeCheck` dereferences
+  a borrow of an owner once (`ownerread`) and dispatches again on the owner.
+  Pinned by `typemgmt_owner_self` and `typemgmt_typecheck_owner_self`.
 - **An operator on a pointer does not reach through.** `p + 2` offsets the
   pointer; `p * 2` is an error rather than becoming `(*p) * 2`. `FlagOperator`
   on a pointer receiver is what skips the retry, argument included. A
