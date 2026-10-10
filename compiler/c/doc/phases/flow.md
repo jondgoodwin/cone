@@ -1736,8 +1736,9 @@ droppable noted as holding nothing is never finalized.
   value is taken must not, or it is finalized under its new holder.
 - **`flowIsLvalRead` is not `iexpIsLval`.** They disagree on recursion into
   `objfn` and on string literals. Do not substitute one for the other.
-- **`fnCallFlow` does not flow `objfn`**, so a call through an uninitialized
-  function-reference variable is not reported.
+- **`fnCallFlow` flows `objfn` only when it names a variable** (`nameuseFlow`),
+  which is how a call through an uninitialized function-reference variable is
+  reported. A callee reached any other way is not walked here.
 - **`flowLoadValue`'s `default:` arm reports `ErrorUnreachable` and stops.** An
   unhandled tag therefore fails the compile rather than passing through it —
   passing through would mean no move check, no alias injection and no

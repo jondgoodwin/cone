@@ -740,7 +740,9 @@ looking at a bug.
 
 Three entry points, by what the node became:
 
-- `fnCallFlow` — for each argument: `flowLoadValue`, then
+- `fnCallFlow` — first, when `objfn` names a variable (a function reference
+  called through), `nameuseFlow` on it, so one never given a value is refused;
+  then for each argument: `flowLoadValue`, then
   `flowHandleMoveOrCopy`. Arguments are moved or copied into the callee. A
   method's receiver that is an init's `self &new` is walked as a use through
   it (`flowNewSelfThrough`; [Flow](../phases/flow.md), "An init's self"). A
@@ -758,9 +760,6 @@ Three entry points, by what the node became:
 passed its function's flow gate, because what failed was reported elsewhere —
 a field of a value returned by a function whose signature failed — but type
 check gave up on it unlowered, so a field access still has no arguments.
-
-**`fnCallFlow` does not flow `objfn`**, so a call through an uninitialized
-function-reference variable goes unreported. See Hazards.
 
 ## Generation
 
@@ -829,8 +828,6 @@ when the range runs to the end, and one past what was written for `...`).
 - **One dispatch arm skips resolving the callee** — the overload-set path — so
   the invariant "objfn is type checked by stage 3" holds in most of the function
   and not all of it.
-- **`fnCallFlow` ignores `objfn`.** An uninitialized `&fn` variable called
-  through is not diagnosed.
 - **`fnCallLowerMethod` returns three values** — 1 lowered, 0 receiver has no
   methods so try another way, −1 already reported. Treating it as a boolean
   produces a duplicate diagnostic.

@@ -3655,6 +3655,10 @@ void fnCallFlow(FlowState *fstate, FnCallNode **nodep) {
     INode *callee = isNameUseNode(node->objfn) ? ((NameUseNode*)node->objfn)->dclnode : NULL;
     int method = callee && callee->tag == FnDclTag
         && ((callee->flags & FlagMethFld) || actorOfSelfFn((FnDclNode*)callee));
+    // A call through a variable holding a function reference reads that variable
+    // first, so one never given a value is refused as any other use of it is
+    if (callee && callee->tag == VarDclTag)
+        nameuseFlow(fstate, (NameUseNode**)&node->objfn);
     for (nodesFor(node->args, cnt, argsp)) {
         if (method && cnt == node->args->used && flowNewSelf(*argsp))
             flowNewSelfThrough(fstate, argsp);
