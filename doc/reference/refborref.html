@@ -271,6 +271,8 @@ imm ref4 = &amp;mut list[key];  // passes &amp;mut list as self to list's `&amp;
 // pointref is a reference to a Point structure
 imm ref3 = &amp;pointref.x;   // equivalent to:  &amp;(*pointref).x
 </pre>
+		The source may be a reference to a reference, to any depth: every level is dereferenced
+		(<a href="#implicit">Implicit De-referencing</a>).
 	</li>
 	</ul>
 
@@ -713,6 +715,29 @@ imm sum = ref + 4.;   // sum is 0. Equivalent to *ref + 4.
 		depends on what is supported by implemented methods.
 		If an existing method can accept the reference as a reference, it is used.
 		If not, the reference is de-referenced before applying the method.</p>
+	<p>A field or a method called by name, or an index, reaches through <i>every</i> level of reference:
+		a reference to a reference (<span class="pre">&amp;&amp;Pt</span>, <span class="pre">&amp;&amp;&amp;Pt</span>,
+		<span class="pre">&amp;mut &amp;Pt</span>), an owner behind a borrow
+		(<span class="pre">&amp;So[Pt]</span>), a slice or a virtual reference behind one. This is what the closure
+		of <span class="pre">iter().filter(...)</span> sees, a borrow of the borrowed item:</p>
+<pre>
+imm big = pts.iter().filter(p =&gt; p.x &gt; 5).count();   // p is &amp;&amp;Pt: p.x is (**p).x
+imm n = rr.len();                                     // rr is &amp;&amp;&amp;Pt: (***rr).len()
+</pre>
+	<p>The outermost level wins a name. A method the outer reference or owner itself declares is
+		used before the receiver is read through any further: the identity test
+		<span class="pre">===</span> on two <span class="pre">&amp;&amp;Pt</span> asks whether the outer
+		references are the same place, not whether the <span class="pre">&amp;Pt</span> they hold point at
+		one. A struct that holds a reference and declares its own <span class="pre">len</span> has that one
+		called, never the held value's. A raw pointer is not read through: its own operators are used,
+		and it is dereferenced with <span class="pre">*</span> (<a href="refptr.html">Pointers</a>).</p>
+	<p>The permission of the path is the intersection of the permission of every step
+		(<a href="refperm.html">Permissions</a>). A <span class="pre">&amp;mut</span> reached through a
+		<span class="pre">&amp;</span> gives only <span class="pre">&amp;</span> access, at any depth: through
+		<span class="pre">r &amp; &amp;mut Pt</span>, <span class="pre">r.x</span> reads, while
+		<span class="pre">r.x = 9</span>, <span class="pre">r.bump()</span> for a <span class="pre">self &amp;mut</span>
+		method and <span class="pre">&amp;mut r.x</span> are refused. Through
+		<span class="pre">&amp;mut &amp;mut Pt</span> they are allowed.</p>
 	<p>An operator's other operand is read through the same way. A reference on either side of an
 		operator, or on the right of a compound assignment, gives the operator the value it refers to,
 		so a variable that borrows a number takes part in arithmetic and comparison like the number:</p>

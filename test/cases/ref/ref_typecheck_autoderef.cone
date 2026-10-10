@@ -1,0 +1,45 @@
+// What a field or a method reached through several references may not do. The
+// permission of the path is the intersection of its steps, so a '&mut' reached
+// through a '&' reads and nothing more, at any depth, and an owner behind a
+// borrow that only reads is no more writable than the borrow. ref_autoderef holds
+// the same shapes where the permissions allow.
+//
+// Type-check stage only, as ref_typecheck_perm is.
+
+mod ref_typecheck_autoderef;
+
+struct Pt {
+  pub x i32;
+  pub y i32;
+  pub fn bump(self &mut) { x = x + 1; }
+}
+
+// a '&mut' behind a '&'
+fn writeRoMut(r & &mut Pt) {
+  r.x = 9;                //~ ErrorNoMut:4 "You do not have permission to modify lval"
+}
+
+// the method wants 'self &mut', which the read-only view of it is not
+fn callRoMut(r & &mut Pt) {
+  r.bump();               //~ ErrorNoCandidate:4 "No method declared by `bump` accepts the call's arguments."
+}
+
+// a '&mut' on top of a '&'
+fn writeMutRo(r &mut &Pt) {
+  r.x = 9;                //~ ErrorNoMut:4 "You do not have permission to modify lval"
+}
+
+// a '&' in the middle of three: the read-only step governs what is beyond it
+fn writeMiddle(r &mut & &mut Pt) {
+  r.x = 9;                //~ ErrorNoMut:4 "You do not have permission to modify lval"
+}
+
+// a mutable borrow of a field reached that way
+fn lendRoMut(r & &mut Pt) {
+  imm q = &mut r.x;       //~ ErrorBadPerm:11 "Borrowed reference cannot obtain this permission"
+}
+
+// an owner behind a borrow that only reads
+fn writeOwner(r &So[Pt]) {
+  r.x = 5;                //~ ErrorNoMut:4 "You do not have permission to modify lval"
+}
