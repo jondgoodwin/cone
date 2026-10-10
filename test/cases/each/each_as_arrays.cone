@@ -1,0 +1,93 @@
+// 'asArrays[N]()' sees a slice of T as a slice of 'Array[T, N]' over the same memory: no
+// copy, and N is written in brackets because no argument says it. 'mutArrays[N]()' is the
+// '&mut' twin, which writes through to the original. Over the bytes 1..6:
+//
+//   rows of 3: [1 2 3] [4 5 6]    so rows[1][2] is 6 and rows[0][1] is 2
+//   pairs:     [1 2] [3 4] [5 6]  so pairs[2][1] is 6 and pairs[1][0] is 3
+//
+// The same on an array's slice, an array value and a field of a struct, and on a list, whose
+// folded-in methods reach it. A row's first element is the element at row * N.
+
+mod each_as_arrays;
+
+import stdio use *;
+import collections use *;
+
+struct Frame {
+  pub bytes Array[u8, 6];
+}
+
+fn show(label &str, n u64) {
+  printStr(label);
+  printStr(" = ");
+  printUInt(n);
+  printStr("\n");
+}
+
+fn rowsOf3(s &Array[u8]) {
+  imm rows = s.asArrays[3]();
+  show("rows len", u64.from(rows.len));
+  show("rows[0][1]", u64.from(rows[0][1]));
+  show("rows[1][2]", u64.from(rows[1][2]));
+}
+
+fn pairsOf(s &Array[u8]) {
+  imm pairs = s.asArrays[2]();
+  show("pairs len", u64.from(pairs.len));
+  show("pairs[1][0]", u64.from(pairs[1][0]));
+  show("pairs[2][1]", u64.from(pairs[2][1]));
+}
+
+fn writeThrough(s &mut Array[u8]) {
+  imm rows = s.mutArrays[3]();
+  rows[1][0] = 40u8;
+  rows[0][2] = 30u8;
+}
+
+fn main() {
+  initAll();
+
+  // ---- an array's slice, then the array itself changed through the &mut form ----
+  mut a Array[u8, 6] = [1u8, 2u8, 3u8, 4u8, 5u8, 6u8];
+  imm s &Array[u8] = &a;
+  rowsOf3(s);
+  pairsOf(s);
+  mut m &mut Array[u8] = &mut a;
+  writeThrough(m);
+  show("a[2] after", u64.from(a[2]));
+  show("a[3] after", u64.from(a[3]));
+  show("a[4] unchanged", u64.from(a[4]));
+
+  // ---- an array value, called directly ----
+  mut b Array[u8, 6] = [1u8, 2u8, 3u8, 4u8, 5u8, 6u8];
+  show("array value rows[1][2]", u64.from(b.asArrays[3]()[1][2]));
+  show("array value pairs[2][1]", u64.from(b.asArrays[2]()[2][1]));
+  imm bm = b.mutArrays[2]();
+  bm[2][1] = 60u8;
+  show("array value b[5] after", u64.from(b[5]));
+
+  // ---- an array in a struct's field ----
+  mut f = new Frame(bytes: [1u8, 2u8, 3u8, 4u8, 5u8, 6u8]);
+  show("field rows[1][2]", u64.from(f.bytes.asArrays[3]()[1][2]));
+  show("field pairs[2][1]", u64.from(f.bytes.asArrays[2]()[2][1]));
+  imm fm = f.bytes.mutArrays[3]();
+  fm[1][1] = 50u8;
+  show("field bytes[4] after", u64.from(f.bytes[4]));
+
+  // ---- a list ----
+  mut l = new List[u8];
+  each i in 1u8 <= 6u8 { l.push(i); }
+  show("list rows[1][2]", u64.from(l.asArrays[3]()[1][2]));
+  show("list pairs[2][1]", u64.from(l.asArrays[2]()[2][1]));
+  imm lm = l.mutArrays[3]();
+  lm[0][0] = 10u8;
+  show("list l[0] after", u64.from(*l[0usize]));
+
+  // ---- other element types, and a count of exactly one row ----
+  mut w Array[u32, 4] = [7u32, 8u32, 9u32, 10u32];
+  show("u32 rows[1][1]", u64.from(w.asArrays[2]()[1][1]));
+  show("one row len", u64.from(w.asArrays[4]().len));
+  show("one row [0][3]", u64.from(w.asArrays[4]()[0][3]));
+  mut e Array[u8, 0];
+  show("empty slice rows", u64.from(e.asArrays[3]().len));
+}
