@@ -1,0 +1,43 @@
+// An owner held in a field, reached through a counted owner that may change
+// ('Rc[mut, T]'), is on a shared path as one reached through a '&mut' is
+// (refborref.html, "Freezing access to the source of a borrow"): another name for
+// the 'Rc' reaches the same holder and can replace the owner while a loan of it
+// is used. It lends no '&uni' and no '&imm', as a receiver, an argument, an
+// initializer or a borrow written out; so is refused the use-after-free the
+// receiver form allowed, 'take' replacing the owner whose value it is still
+// reading. ref_owner_field_rc runs what stays allowed.
+
+mod ref_typecheck_owner_field_rc;
+
+struct App {
+  pub n i64;
+  pub fn take(self &uni, other &mut Holder) i64 { other.app = new So[App](9); n; }
+  pub fn takeUni(self &uni) i64 { n; }
+}
+
+struct Holder {
+  pub app So[App];
+}
+
+struct Outer {
+  pub inner Holder;
+  pub boxed So[Holder];
+}
+
+fn needUni(a &uni App) i64 { a.n; }
+fn needImm(a &imm App) i64 { a.n; }
+
+fn rcRecv(a Rc[mut, Holder]) i64 { a.app.takeUni(); }                          //~ ErrorBadPerm:37 "Cannot lend `&uni` of this owner"
+fn rcWritten(a Rc[mut, Holder]) i64 { (&uni *a.app).takeUni(); }               //~ ErrorBadPerm:40 "Borrowed reference cannot obtain this permission"
+fn rcInit(a Rc[mut, Holder]) i64 { imm r &uni App = a.app; r.takeUni(); }      //~ ErrorBadPerm:54 "Cannot lend `&uni` of this owner"
+fn rcArg(a Rc[mut, Holder]) i64 { needUni(a.app); }                            //~ ErrorBadPerm:44 "Cannot lend `&uni` of this owner"
+fn rcImmArg(a Rc[mut, Holder]) i64 { needImm(a.app); }                         //~ ErrorBadPerm:47 "Cannot lend `&imm` of this owner"
+fn rcNested(a Rc[mut, Outer]) i64 { needUni(a.boxed.app); }                    //~ ErrorBadPerm:52 "Cannot lend `&uni` of this owner"
+fn rcInline(a Rc[mut, Outer]) i64 { needUni(a.inner.app); }                    //~ ErrorBadPerm:52 "Cannot lend `&uni` of this owner"
+
+fn viaRc(a Rc[mut, Holder]) i64 { imm b = a; a.app.take(&mut *b); }            //~ ErrorBadPerm:47 "Cannot lend `&uni` of this owner"
+
+fn main() {
+  imm a = new Rc[mut, Holder](new Holder(new So[App](5)));
+  viaRc(a);
+}

@@ -184,6 +184,11 @@ StructNode *structBaseTraitDcl(StructNode *node);
 // Does this type's 'is' list name this trait (once it has been taken in)?
 int structDeclaresTrait(StructNode *node, StructNode *trait);
 
+// The default methods of a trait cloned into a type that does not declare it
+// (a closure literal's hidden struct, which fills the trait's one required
+// method), each unless the type has the name already
+void structInheritDefaults(StructNode *node, StructNode *trait);
+
 // The concrete type at the bottom of this type's 'extends' chain: the type
 // itself where it enriches nothing. Two types substitute for each other exactly
 // where this answers the same declaration for both -- which is what the

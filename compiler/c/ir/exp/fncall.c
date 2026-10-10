@@ -2712,8 +2712,9 @@ static int fnCallFieldCall(TypeCheckState *pstate, FnCallNode *node, FieldDclNod
 // '&<Shape', is the same: the literal fills the method, whose name is in
 // '*method'. NULL for any other parameter; '*bad' is the trait of a borrowed
 // virtual reference a literal cannot fill (it has not exactly one method).
-static FnSigNode *fnCallLendParm(INode *ptype, INode **lendperm, Name **method, StructNode **bad) {
+static FnSigNode *fnCallLendParm(INode *ptype, INode **lendperm, Name **method, StructNode **filled, StructNode **bad) {
     *method = NULL;
+    *filled = NULL;
     *bad = NULL;
     if (ptype == NULL || ptype == unknownType || !isTypeNode(ptype))
         return NULL;
@@ -2731,6 +2732,7 @@ static FnSigNode *fnCallLendParm(INode *ptype, INode **lendperm, Name **method, 
             *bad = trait;
             return NULL;
         }
+        *filled = trait;
     }
     *lendperm = (INode*)newPermUseNode((PermNode*)itypeGetTypeDcl(((RefNode*)dcl)->perm));
     return sig;
@@ -2744,10 +2746,10 @@ void fnCallClosureTraitRefused(INode *lit, StructNode *trait) {
     closureTraitSig(trait, &method, &count);
     if (count == 0)
         errorMsgNode(lit, ErrorClosureTrait,
-            "A closure fills a trait that has one method, and %s has none.", &trait->namesym->namestr);
+            "A closure fills a trait that has one required method, and %s has none.", &trait->namesym->namestr);
     else
         errorMsgNode(lit, ErrorClosureTrait,
-            "A closure fills a trait that has exactly one method and no field, and %s has %u methods and fields (the first method is `%s`): write a struct that implements it.",
+            "A closure fills a trait that has exactly one required method and no field (any default methods come with it), and %s has %u required methods and fields (the first required method is `%s`): write a struct that implements it.",
             &trait->namesym->namestr, count, method ? &method->namestr : "...");
 }
 
@@ -2758,7 +2760,8 @@ static void fnCallCheckClosureArg(TypeCheckState *pstate, INode **argp, INode *p
     INode *lendperm;
     Name *method;
     StructNode *bad;
-    FnSigNode *sig = fnCallLendParm(ptype, &lendperm, &method, &bad);
+    StructNode *filled;
+    FnSigNode *sig = fnCallLendParm(ptype, &lendperm, &method, &filled, &bad);
     if (bad) {
         fnCallClosureTraitRefused(*argp, bad);
         *argp = newErrorNode(*argp);
@@ -2772,9 +2775,11 @@ static void fnCallCheckClosureArg(TypeCheckState *pstate, INode **argp, INode *p
     *argp = (INode*)newRefNodeFull(BorrowTag, lit, borrowRef, lendperm, lit);
     closureHint = sig;
     closureMethod = method;
+    closureTrait = filled;
     inodeTypeCheck(pstate, argp, unknownType);
     closureHint = NULL;
     closureMethod = NULL;
+    closureTrait = NULL;
     // A literal that failed is reported once; the lent borrow of it is no argument to coerce
     if ((*argp)->tag == BorrowTag && inodeIsError(((RefNode*)*argp)->vtexp))
         *argp = newErrorNode(*argp);
@@ -2889,6 +2894,7 @@ static int fnCallClosureArgs(TypeCheckState *pstate, FnCallNode *node, FnDclNode
         if (generic) {
             INode *refperm;
             Name *method = NULL;
+            StructNode *filled = NULL;
             FnSigNode *sig = genericClosureSig(pstate, generic, node->args, firstparm, argi, &refperm);
             // A parameter bound by a trait with one method: the literal fills that method
             if (sig == NULL) {
@@ -2903,6 +2909,7 @@ static int fnCallClosureArgs(TypeCheckState *pstate, FnCallNode *node, FnDclNode
                         return 0;
                     }
                     refperm = traitperm;
+                    filled = trait;
                 }
             }
             if (refperm) {
@@ -2911,9 +2918,11 @@ static int fnCallClosureArgs(TypeCheckState *pstate, FnCallNode *node, FnDclNode
             }
             closureHint = sig;
             closureMethod = method;
+            closureTrait = filled;
             inodeTypeCheck(pstate, argsp, unknownType);
             closureHint = NULL;
             closureMethod = NULL;
+            closureTrait = NULL;
         }
         else if (pick) {
             FnSigNode *sig = (FnSigNode*)itypeGetTypeDcl(pick->vtype);

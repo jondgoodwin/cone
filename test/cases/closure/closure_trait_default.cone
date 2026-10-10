@@ -1,0 +1,67 @@
+// A trait with one required method and some default methods is filled by a closure
+// literal as a trait with only the one method is: the literal fills the required
+// method, and the hidden struct inherits the defaults, as any implementer does
+// (they call the required method, and one calls another default). The same
+// places: the static form ('[S Shape]'), '&<Shape', '&<mut Shape' and an owner
+// 'So[Shape]'. A method that takes 'self &mut' is filled by a literal with state
+// of its own, and its default (also 'self &mut') calls it twice. Every value is
+// worked out by hand.
+
+mod closure_trait_default;
+
+import stdio use *;
+
+struct V { pub x f32; pub y f32; }
+
+pub trait Shape {
+  pub fn distance(self &, p V) f32;
+  pub fn nearness(self &, p V) f32 { 100. - self.distance(p); }
+  pub fn doubled(self &, p V) f32 { self.nearness(p) * 2.; }
+}
+
+pub trait Counter {
+  pub fn bump(self &mut, step i32) i32;
+  pub fn bumpTwice(self &mut, step i32) i32 { self.bump(step); self.bump(step); }
+}
+
+// A struct of the author's, which declares the trait and takes the defaults as ever
+struct Disc is Shape {
+  pub r f32;
+  pub fn distance(self &, p V) f32 { p.x * p.x + p.y * p.y - r; }
+}
+
+fn both[S Shape](shape &S, p V) f32 { shape.distance(p) + shape.nearness(p); }
+fn nearStatic[S Shape](shape &S, p V) f32 { shape.nearness(p); }
+fn byValue[S Shape](shape S, p V) f32 { shape.doubled(p); }
+fn viaRef(shape &<Shape, p V) f32 { shape.nearness(p) + 1000.; }
+fn viaMut(shape &<mut Shape, p V) f32 { shape.distance(p) + shape.doubled(p); }
+fn twice(c &<mut Counter) i32 { c.bumpTwice(3); }
+
+fn main() {
+  imm p = new V(3., 4.);
+  imm k = 10.;
+
+  // The static form
+  print <- both(q => q.x + q.y, p), "\n";                       // 7 + (100 - 7): 100
+  print <- nearStatic(fn(q V) f32 { q.x + k; }, p), "\n";       // the default, through the literal: 100 - 13: 87
+  print <- byValue(q => q.y, p), "\n";                          // doubled: (100 - 4) * 2: 192
+
+  // The dynamic form
+  print <- viaRef(q => q.x * q.y, p), "\n";                     // 100 - 12 + 1000: 1088
+  print <- viaMut(q => q.x - q.y, p), "\n";                     // -1 + (100 - -1) * 2: 201
+  imm d = new Disc(5.);
+  print <- viaRef(&d, p), "\n";                                 // 100 - 20 + 1000: 1080
+
+  // As an owner
+  imm own = new So[Shape](fn(q V) [off = k] f32 { q.x + off; });
+  print <- own.distance(p), "\n";                               // 13
+  print <- own.nearness(p), "\n";                               // 87
+  print <- own.doubled(p), "\n";                                // 174
+
+  // A required method that takes 'self &mut', and a default that calls it twice
+  print <- twice(step => step * 7), "\n";                       // a literal that holds nothing: 21 both times: 21
+  print <- twice(fn(step i32) [mut n = 5] i32 { n += step; n; }), "\n";   // 8, then 11: 11
+  mut counted = new So[Counter](fn(step i32) [mut n = 100] i32 { n += step; n; });
+  print <- counted.bumpTwice(1), "\n";                          // 101, then 102: 102
+  print <- counted.bump(10), "\n";                              // 112
+}

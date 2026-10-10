@@ -609,11 +609,11 @@ TypeCompare refvirtMatchesRef(RefNode *to, RefNode *from, SubtypeConstraint cons
     if (tovtypedcl == fromvtypedcl)
         return (fromvtypedcl->flags & HasTagField) ? ConvSubtype : NoMatch;
 
-    // A closure whose method changes its state is not held by a reference that
-    // only reads (a literal given where a trait is wanted fills its method, and
-    // the trait's own 'self' does not say what the literal's body does)
+    // A closure whose '()' changes its state is not held by a callable reference
+    // that only reads. (A trait's method is judged by its own 'self' against the
+    // closure's, in structMapVtableImpl, as any struct's is.)
     ClosureInfo *closure = closureOfStruct((INode*)fromvtypedcl);
-    if (closure && !(permGetFlags(to->perm) & MayWrite) && closureMethodMutates(closure))
+    if (closure && tovtypedcl->callsig && !(permGetFlags(to->perm) & MayWrite) && closureMethodMutates(closure))
         return NoMatch;
 
     // Use special structural subtyping logic to not only check compatibility,

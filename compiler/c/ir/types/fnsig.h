@@ -64,6 +64,9 @@ FnSigNode *fnSigOfCallTrait(INode *type);
 // Does a struct's '()' take the receiver the callable trait's kind allows?
 int fnSigCallSelfFits(StructNode *trait, FnDclNode *meth);
 
+// The permission a method's 'self' borrows with, or NULL when 'self' is not a borrow
+INode *fnSigSelfBorrowPerm(FnDclNode *meth);
+
 // Does a type's method ask for no stronger 'self' than the trait's method
 // declares, so it may fill the trait's slot behind a virtual reference?
 int fnSigVrefSelfFits(FnDclNode *traitmeth, FnDclNode *implmeth);

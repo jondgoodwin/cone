@@ -600,7 +600,11 @@ static void iexpScopeThroughRef(INode *refexp, INode *lvalvar, RefNode *reftype,
 
 // Is this place reached through a borrowed reference, a slice or a virtual
 // reference: the value it holds is where a loan points, and what is lent of it
-// is held to that loan's permission?
+// is held to that loan's permission? An owner whose own permission is shared
+// and writable ('Rc[mut, T]', 'Arc[mut, T]') is a shared path as well
+// (refborref.html, "Freezing access to the source of a borrow"): another name
+// for the owner reaches the same value. A lock permission is not one: its value
+// is reached only through the lock's guard.
 int iexpPathThroughBorrow(INode *lval) {
     for (;;) {
         INode *obj;
@@ -616,6 +620,12 @@ int iexpPathThroughBorrow(INode *lval) {
         if (((objtype->tag == RefTag || objtype->tag == ArrayRefTag) && itypeGetTypeDcl(((RefNode*)objtype)->region) == (INode*)borrowRef)
             || objtype->tag == VirtRefTag)
             return 1;
+        if (objtype->tag == RefTag && itypeGetTypeDcl(((RefNode*)objtype)->region) != (INode*)borrowRef) {
+            INode *ownerperm = itypeGetTypeDcl(((RefNode*)objtype)->perm);
+            if (ownerperm->tag == PermTag && !permIsLock(ownerperm) && (permGetFlags(ownerperm) & MayWrite)
+                && ownerperm != (INode*)uniPerm && ownerperm != (INode*)newPerm)
+                return 1;
+        }
         lval = obj;
     }
 }
@@ -655,13 +665,18 @@ static INode *iexpLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope, int s
         INode *lvalvar = iexpLvalInfo(refexp, lvalperm, scope, stored);
         RefNode *vtype = (RefNode*)iexpGetTypeDcl(refexp);
         if (vtype->tag == RefTag || vtype->tag == ArrayRefTag) {
-            // An owner held in a place reached through a borrow that only reads
+            // An owner held in a place reached through a borrow that does not
+            // hold the place alone ('ro', 'imm', or 'mut', which others share)
             // lends no more than that borrow lets: its own permission is what
-            // it grants a holder of the place, not one reading through a loan
-            int ownerRead = vtype->region != borrowRef && !permIsLock(*lvalperm) && !permIsLock(vtype->perm)
-                && (permGetFlags(vtype->perm) & MayWrite) && !(permGetFlags(*lvalperm) & MayWrite)
+            // it grants a holder of the place, not one reading through a loan.
+            // So an owner reached through a '&mut' lends '&mut' at most, never
+            // '&uni' or '&imm': the shared path may be used to replace the
+            // owner and end what was lent.
+            int ownerShared = vtype->region != borrowRef && !permIsLock(*lvalperm) && !permIsLock(vtype->perm)
+                && (permGetFlags(vtype->perm) & MayWrite)
+                && itypeGetTypeDcl(*lvalperm) != (INode*)uniPerm && itypeGetTypeDcl(*lvalperm) != (INode*)newPerm
                 && iexpPathThroughBorrow(refexp);
-            if (!ownerRead)
+            if (!ownerShared)
                 *lvalperm = vtype->perm;
             iexpScopeThroughRef(refexp, lvalvar, vtype, scope, stored);
         }
