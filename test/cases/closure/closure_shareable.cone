@@ -29,6 +29,15 @@ struct Tally { pub hits Atomic[u64]; }
 // A promise the compiler takes on trust: raw pointers it cannot follow
 struct Handle is Shareable { pub p *u8; }
 
+// A trait: its references say what the value behind them is
+trait Shape { pub fn area(self &) f32; }
+struct Sq is Shape { pub s f32; pub fn area(self &) f32 { s * s; } }
+
+fn areaOf(s &<Shape + Shareable) f32 { s.area(); }
+fn areaWhole(s &<Shape + 'static + Shareable + Sendable) f32 { s.area(); }
+fn areaOwned(s So[Shape + Sendable + Shareable]) f32 { s.area(); }
+fn areaShared(s Rc[imm, Shape + Shareable]) f32 { s.area(); }
+
 fn crosses[T Sendable]() {}
 fn shares[T Shareable]() {}
 
@@ -107,6 +116,19 @@ fn main() {
   imm reads = fn(x i32) i32 { x + n; };
   printStr("borrowed ");
   printInt(i64.from(readTwice(&reads, 1)));   // 8 + 9 = 17
+  printStr("\n");
+
+  // The same markers on a trait's references
+  imm sq = new Sq(3.);
+  printStr("shapes ");
+  printFloat(f64.from(areaOf(&sq)));                                       // 9
+  printStr(" ");
+  printFloat(f64.from(areaWhole(&sq)));                                    // 9
+  printStr(" ");
+  printFloat(f64.from(areaOwned(new So[Sq](new Sq(2.)))));                 // 4
+  printStr(" ");
+  imm shared Rc[imm, Shape + Shareable] = new Rc[imm, Sq](new Sq(1.5));
+  printFloat(f64.from(areaShared(shared)));                                // 2.25
   printStr("\n");
 
   // Closures sent over a channel: each owner moves to the consumer with what it listed

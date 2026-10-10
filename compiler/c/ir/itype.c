@@ -595,7 +595,12 @@ void itypeSpellCat(char *buf, size_t size, INode *type, int depth) {
                 snprintf(buf + used, size - used, "]");
                 return;
             }
-            snprintf(buf + used, size - used, "&%s %s", pname, shape);
+            // A virtual reference as it is written, '&<fn(i32) i32' or '&<mut Shape'
+            if (dcl->tag == VirtRefTag)
+                snprintf(buf + used, size - used, "&<%s%s", strcmp(pname, "ro") == 0 ? "" : pname,
+                    strcmp(pname, "ro") == 0 ? "" : " ");
+            else
+                snprintf(buf + used, size - used, "&%s %s", pname, shape);
             itypeSpellCat(buf, size, ref->vtexp, depth + 1);
             refMarksCat(buf, size, ref->marks);
             return;
