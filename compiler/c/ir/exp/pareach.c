@@ -143,7 +143,7 @@ static ParCursor parCursorOf(INode *type) {
     else if (parIsCore(type, "ZipIndexed", 10)) {
         c.cursor = 1;
         c.vars = 3;
-        c.mut = parCursorOf(parFieldType(type, "zip")).mut;
+        c.mut = parCursorOf(parFieldType(type, "src")).mut;
     }
     else if (parIsCore(type, "Zip3", 4)) {
         // three, a flat triple: one variable from each source
@@ -155,7 +155,7 @@ static ParCursor parCursorOf(INode *type) {
     else if (parIsCore(type, "Zip3Indexed", 11)) {
         c.cursor = 1;
         c.vars = 4;
-        c.mut = parCursorOf(parFieldType(type, "zip")).mut;
+        c.mut = parCursorOf(parFieldType(type, "src")).mut;
     }
     return c;
 }
@@ -1010,7 +1010,7 @@ static void parWrittenElems(INode *type, INode **elems, uint32_t *n) {
             parWrittenElems(parFieldType(type, "third"), elems, n);
     }
     else if (parIsCore(type, "ZipIndexed", 10) || parIsCore(type, "Zip3Indexed", 11))
-        parWrittenElems(parFieldType(type, "zip"), elems, n);
+        parWrittenElems(parFieldType(type, "src"), elems, n);
 }
 
 // The type, and the types it holds inline (a field, a tuple's or array's element): a

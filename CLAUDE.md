@@ -46,7 +46,7 @@ Visual Studio projects stay at the root.
   one; `parallel each` walks these cursors by their `len` and `at(k)`; and `asArrays[N]()`
   and `mutArrays[N]()`, which see a slice as a slice of `Array[T, N]` over the same
   memory, `N` a number parameter written in brackets, a list's `mutArrays` its own), with `zip`, which walks two sources with an `iter` side by side (a
-  cursor zips with another by its own `zip` method; the `Zip` it gives, and the
+  cursor zips with another by `zip`, a method every `is Iterator[T]` cursor has, as `xs.iter().zip(ys.iter())`; the `Zip` it gives, and the
   `ZipIndexed` of its `indexed()`, have `len`, `at` and `split` where both sources do
   — `RandomAccess` and `ParallelIterable` — so `parallel each` walks it, one item from each
   source; a `Zip`'s own `zip` takes a third, a flat-triple `Zip3` with its `Zip3Indexed`), and
