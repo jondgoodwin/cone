@@ -985,7 +985,12 @@ static FnDclNode *fnCallBorrowReceiver(TypeCheckState *pstate, FnCallNode *calln
         enum OverloadMatch *status) {
     INode *obj = callnode->objfn;
     INode *objtype = iexpGetTypeDcl(obj);
-    if (fnCallIsRefReceiver(objtype) || objtype->tag == PtrTag || !(isMethodType(objtype) || objtype->tag == ArrayTag))
+    // A reference is passed as it is, but for an owner (not a borrow) of the type: a
+    // method declaring 'self &So[str]' (fnDclTypeCheck) takes the borrow of the owner
+    INode *ownerof = objtype->tag == RefTag && itypeGetTypeDcl(((RefNode*)objtype)->region) != borrowRef
+        ? itypeGetTypeDcl(((RefNode*)objtype)->vtexp) : NULL;
+    if (ownerof ? !isMethodType(ownerof)
+        : (fnCallIsRefReceiver(objtype) || objtype->tag == PtrTag || !(isMethodType(objtype) || objtype->tag == ArrayTag)))
         return NULL;
     // '(*p).push(x)' written on a pointer is the pointer's own business: the
     // borrow would be '&mut *p', a reference made from a pointer

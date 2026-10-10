@@ -579,7 +579,13 @@ Three adjustments, two of them asymmetric on purpose:
   lifetime (`borrowTempScope`), and lives to its statement's end, as `&` of it
   does: `mk().get()`. **A pointer is never borrowed from** — a pointer receiver,
   and a dereference of one written out, are left as the deref retry left them.
-  An ambiguity among the probed candidates is reported as one.
+  An ambiguity among the probed candidates is reported as one. **An owner
+  receiver is borrowed too** (a `So[str]`, any reference that is not a borrow):
+  it is a reference and so passed as it is, but a method may declare `self
+  &So[str]`, a borrow of an owner of its type (core's `str.cstr`, which a plain
+  `&str` therefore has no candidate for), and that is what the probe's borrow of
+  the owner finds. `fnDclTypeCheck` allows the form: a method's `self` is its
+  type, a reference to it, or a borrow of an owner of it.
 - **An operator on a pointer does not reach through.** `p + 2` offsets the
   pointer; `p * 2` is an error rather than becoming `(*p) * 2`. `FlagOperator`
   on a pointer receiver is what skips the retry, argument included. A

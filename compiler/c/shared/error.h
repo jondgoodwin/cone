@@ -617,6 +617,9 @@ enum ErrorCode {
     ErrorNotShareable = 1406,   // An instance whose 'T is Shareable' is unmet, or a value made a reference marked '+ Shareable' (or '+ Sendable') that is not: the type holds a counted owner whose count is not atomic, a traced reference, or a reference that writes through a shared path ('&mut')
     ErrorMarkUse = 1407,        // A '+' in a reference type followed by something but Sendable or Shareable, or marking a reference that is not virtual ('&<Trait + Shareable', 'So[fn() + Sendable]')
 
+    // A string literal where a cstr is wanted (ir/exp/literal.c)
+    ErrorCStrNul = 1408,        // A string literal holding a NUL byte ('"ab\x00cd"') where a cstr is wanted: C would read it as 'ab', cutting the text short
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name
