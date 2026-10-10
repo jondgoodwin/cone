@@ -576,8 +576,8 @@ pub struct MutItemsIndexed['a, T] is Iterator[(usize, &mut T)] {
 // what each cursor gives, and answers None as soon as either runs out. When the
 // second runs out after the first has given a value, that value is dropped.
 pub struct Zip[A, B, I Iterator[A], J Iterator[B]] is Iterator[(A, B)] {
-  first I;
-  second J;
+  pub first I;
+  pub second J;
 
   pub fn next(self &mut) Option[(A, B)] {
     match first.next() {
@@ -627,11 +627,11 @@ pub struct Zip[A, B, I Iterator[A], J Iterator[B]] is Iterator[(A, B)] {
 // A zip with the pairs numbered, which a zip's 'indexed' gives: 'next' gives a
 // tuple of the number and what each source gives
 pub struct ZipIndexed[A, B, I Iterator[A], J Iterator[B]] is Iterator[(usize, A, B)] {
-  pub zip Zip[A, B, I, J];
+  pub src Zip[A, B, I, J];
   pub index usize;
 
   pub fn next(self &mut) Option[(usize, A, B)] {
-    match zip.next() {
+    match src.next() {
       case imm p Some {
         imm i = index;
         index = i + 1usize;
@@ -642,10 +642,10 @@ pub struct ZipIndexed[A, B, I Iterator[A], J Iterator[B]] is Iterator[(usize, A,
     }
   }
 
-  pub fn len(self &) usize where I is RandomAccess[A] and J is RandomAccess[B] { zip.len(); }
+  pub fn len(self &) usize where I is RandomAccess[A] and J is RandomAccess[B] { src.len(); }
 
   pub fn at(self &, k usize) (usize, A, B) where I is RandomAccess[A] and J is RandomAccess[B] {
-    imm pair = zip.at(k);
+    imm pair = src.at(k);
     (index + k, pair.0, pair.1);
   }
 }
@@ -708,11 +708,11 @@ pub struct Zip3[A, B, C, I Iterator[A], J Iterator[B], K Iterator[C]] is Iterato
 // A three-way zip with the triples numbered, which its 'indexed' gives: 'next' gives
 // a flat tuple of the number and what each of the three gives
 pub struct Zip3Indexed[A, B, C, I Iterator[A], J Iterator[B], K Iterator[C]] is Iterator[(usize, A, B, C)] {
-  pub zip Zip3[A, B, C, I, J, K];
+  pub src Zip3[A, B, C, I, J, K];
   pub index usize;
 
   pub fn next(self &mut) Option[(usize, A, B, C)] {
-    match zip.next() {
+    match src.next() {
       case imm p Some {
         imm i = index;
         index = i + 1usize;
@@ -724,11 +724,11 @@ pub struct Zip3Indexed[A, B, C, I Iterator[A], J Iterator[B], K Iterator[C]] is 
   }
 
   pub fn len(self &) usize
-      where I is RandomAccess[A] and J is RandomAccess[B] and K is RandomAccess[C] { zip.len(); }
+      where I is RandomAccess[A] and J is RandomAccess[B] and K is RandomAccess[C] { src.len(); }
 
   pub fn at(self &, k usize) (usize, A, B, C)
       where I is RandomAccess[A] and J is RandomAccess[B] and K is RandomAccess[C] {
-    imm triple = zip.at(k);
+    imm triple = src.at(k);
     (index + k, triple.0, triple.1, triple.2);
   }
 }
@@ -1034,6 +1034,14 @@ pub trait Iterator[T] {
       }
     }
     true;
+  }
+
+  // Walked side by side with another cursor, pair by pair, stopping when the shorter
+  // runs out: 'xs.iter().zip(ys.iter())' gives pairs, which 'each x, y in ...' unpacks.
+  // 'other' is any cursor (an Iterator[U]), not a collection: the function 'zip(&xs, &ys)'
+  // is the one for two collections
+  pub fn zip[U, J Iterator[U]](self, other J) Zip[T, U, Self, J] inline {
+    new Zip[T, U, Self, J](self, other);
   }
 
   // How many items there are

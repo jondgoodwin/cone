@@ -1,0 +1,102 @@
+// What stays accepted beside the refused self-store (lifetime_band_self_store_
+// refused): a method may store a borrow it was GIVEN (the caller's, which
+// outlives the call), a copy or an index of its own storage, and may borrow its
+// own field for a local that ends with the call or hand one back; a borrow of
+// where a borrow field POINTS (a slice of the text a tokenizer was lent) is the
+// text's, not the value's own storage, and may be stored in another field; a
+// local value may hold a borrow of its own field, a thing the caller sees whole.
+//
+// Verdict: accept; prints the lines below.
+// Basis: same as lifetime_band_self_store_refused. A borrow the caller lent is
+// the caller's to keep alive (lifetime_band_call_setter_method).
+// Master 03de4a12: correct.
+
+mod lifetime_band_self_store_ok;
+
+import stdio use *;
+import collections use *;
+
+struct Holder {
+  pub buf List[u8];
+  pub held &Array[u8];
+  pub words List[&Array[u8]];
+  pub mark usize;
+  pub first u8;
+
+  // A borrow it was given
+  pub fn adopt(self &mut, given &Array[u8]) { held = given; words.push(given); }
+  // A copy and an index of its own storage
+  pub fn note(self &mut) { mark = buf.len; first = buf.view()[0usize]; }
+  // Its own field, borrowed for a local that ends with the call
+  pub fn total(self &) u64 {
+    mut sum = 0u64;
+    imm b = buf.view();
+    mut i = 0usize;
+    while i < b.len { sum = sum + u64.from(b[i]); i = i + 1usize; }
+    sum;
+  }
+  // Its own field, handed back: the caller's borrow of the holder, not a store
+  pub fn view(self &) &Array[u8] { buf.view(); }
+  // What it holds, handed back
+  pub fn current(self &) &Array[u8] { held; }
+  pub fn refill(self &mut) { buf.clear(); buf.push('z'); }
+}
+
+// A tokenizer over lent text: the slice it keeps is of the text, not of itself
+struct Lexer['t] {
+  text &'t str;
+  cur &'t str;
+  pos usize;
+  pub fn advance(self &mut) {
+    cur = text.slice(pos, pos + 2usize);
+    pos = pos + 2usize;
+  }
+}
+
+struct Plain {
+  src &str;
+  cur &str;
+  pub fn second(self &mut) { cur = src.slice(1usize, 3usize); }
+}
+
+fn main() {
+  imm text = "abcdef";
+  mut lx = new Lexer(text, "", 0usize);
+  lx.advance();
+  lx.advance();
+  printStr(lx.cur);
+  printStr(" ");
+  mut pl = new Plain(text, "");
+  pl.second();
+  printStr(pl.cur);
+  printStr("\n");
+
+  mut given = List[u8].empty();
+  given.push('x');
+  given.push('y');
+  mut h = new Holder(List[u8].empty(), "" as &Array[u8], List[&Array[u8]].empty(), 0usize, 0u8);
+  h.buf.push('a');
+  h.buf.push('b');
+  h.adopt(given.view());
+  h.note();
+  h.refill();
+  printUInt(u64.from(h.current()[0usize]));   // the given borrow, untouched by the refill
+  printStr(" ");
+  printUInt(u64.from(h.words.view()[0usize][1usize]));
+  printStr(" ");
+  printUInt(u64.from(h.mark));
+  printStr(" ");
+  printUInt(u64.from(h.first));
+  printStr(" ");
+  printUInt(h.total());
+  printStr(" ");
+  printUInt(u64.from(h.view()[0usize]));
+  printStr("\n");
+
+  // A local value holding a borrow of its own field, nothing changing it meanwhile
+  mut s = new Holder(List[u8].empty(), "" as &Array[u8], List[&Array[u8]].empty(), 0usize, 0u8);
+  s.buf.push('c');
+  s.held = s.buf.view();
+  printUInt(u64.from(s.held[0usize]));
+  printStr("\n");
+}

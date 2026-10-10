@@ -620,8 +620,11 @@ enum ErrorCode {
     // A string literal where a cstr is wanted (ir/exp/literal.c)
     ErrorCStrNul = 1408,        // A string literal holding a NUL byte ('"ab\x00cd"') where a cstr is wanted: C would read it as 'ab', cutting the text short
 
+    // A value stored in itself (ir/flowpath.c, pwStoreEscapes)
+    ErrorSelfStore = 1409,      // A borrow of part of a value stored into that same value through a reference (a method's 'self', a '&mut' parameter): the value would hold a borrow of its own storage, which its owner may change or move
+
     // Variants declared as a type (parser/parsetype.c, exp/cast.c)
-    ErrorTypeVariant = 1409,    // A variant declared as a type, 'Ok(i32);', in an enum that has common fields (every variant of such an enum names what it holds: write it as a struct), or bound through a managed reference, whose contents cannot be lent
+    ErrorTypeVariant = 1410,    // A variant declared as a type, 'Ok(i32);', in an enum that has common fields (every variant of such an enum names what it holds: write it as a struct), or bound through a managed reference, whose contents cannot be lent
 
     // Warnings
     WarnCode = 3000,

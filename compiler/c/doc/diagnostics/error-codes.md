@@ -455,6 +455,13 @@ marking a reference to a type that is known, is `ErrorMarkUse`
 A string literal holding a NUL byte (`"ab\x00cd"`) wanted as a `cstr`, which C
 would read up to the NUL, is `ErrorCStrNul` ([literals](../nodes/literals.md)).
 
+A borrow of part of what a reference parameter points at, stored into what that
+same reference points at (`held = buf.view()` in a method taking `self &mut`, or
+into a list there through a call), is `ErrorSelfStore`: the value would hold a
+borrow of its own storage, which its owner may change or move after the call
+([flow](../phases/flow.md), "Stores through a reference"). A store into a place
+of the function's own, or of another parameter, is the other stores' business.
+
 A struct viewed as a trait behind a virtual reference (`&<Trait`, `So[Trait]`) whose
 method takes a stronger `self` than the trait's method declares (`self &mut` for
 `self &`, `self &uni` for `self &mut`) is `ErrorVtableSelf`; so is a closure literal

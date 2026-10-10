@@ -909,7 +909,19 @@ v`), or through one a struct handed by value holds (`st(w, &x)`, `w` holding a
 borrows past it, and each place in that range is checked and takes the loans
 as a store through a reference there would: a borrow past the target is where
 its near loans point, two or more, anywhere its loans reach. An argument the
-walk cannot key (`st(new W(&mut q), &x)`) is gone by through its own loans. One exception keeps two such places
+walk cannot key (`st(new W(&mut q), &x)`) is gone by through its own loans. A value may not be stored
+into what a reference points at when it carries a borrow of part of what that *same* reference
+points at (`held = buf.view()` in a method, `h.held = h.buf.view()` for `h &mut H`, or
+`words.push(text.view())` into a list field): the caller lent the whole value, can change or move
+the part the borrow points into after the call, and is told of no store by a call that is handed
+one argument (the call-site check above sees only the other arguments' loans). Written in one
+function on a local, the same store is refused where the part is changed, because the local is a
+holder of its own loan; through a reference parameter nothing in the callee changes the part, so
+the store itself is the error (`ErrorSelfStore`, `loanSelfStore`, from `pwStoreEscapes` and
+`pwCallStores`, found by `loanNamedThroughIn`: a loan of a place reached through the stored-into
+reference by name, never a caller loan, so a borrow the function was given, or one read out of a
+borrow field, still stores). A borrow reached through *another* reference parameter is not this
+error: the caller sees it, as the other arguments' loans. One exception keeps two such places
 lent to one call apart: a borrow written as an argument is stored only where the
 place's type can hold a borrow of what it borrows (`itypeHoldsBorrowOf`), so
 `arrive(&mut world, &mut seen, name)` leaves `world`, a `List[Named]`, holding
