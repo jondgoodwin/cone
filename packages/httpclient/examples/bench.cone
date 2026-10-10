@@ -62,7 +62,7 @@ fn readText(name &str) String {
   mut out = String.empty();
   imm file = certs(name);
   match fs.readFile(&file) {
-    case mut r Ok {out <=> r.value;}
+    case mut r Ok {out <=> r;}
     case imm e Error {}
   }
   out;
@@ -88,8 +88,8 @@ fn portOf(drv &mut httpconn.Driver, lp &Loop, r Result[httpconn.ListenerId, ioco
   mut port = 0u16;
   match r {
     case imm l Ok {
-      match drv.localAddr(lp, l.value) {
-        case imm a Ok {port = a.value.port();}
+      match drv.localAddr(lp, l) {
+        case imm a Ok {port = a.port();}
         case imm e Error {}
       }
     }
@@ -110,12 +110,12 @@ fn serveThread(a ServerArgs) u64 {
   imm serverKey = certs("server.key");
   match tls.Server.make(tls.ServerConfig.make(&serverPem, &serverKey)) {
     case imm s Ok {
-      imm secure = drv.listenWith(&mut lp, SocketAddr.localhost(0u16), new So[TlsMaker](new TlsMaker(s.value, pool)),
+      imm secure = drv.listenWith(&mut lp, SocketAddr.localhost(0u16), new So[TlsMaker](new TlsMaker(s, pool)),
         httpconn.Sink.Here[1u64]);
       a.portTx.send(portOf(&mut drv, &lp, secure));
     }
     case imm e Error {
-      printStr(e.value.message().view());
+      printStr(e.message().view());
       printStr(" (run from the repository's root)\n");
       a.portTx.send(0u16);
     }
@@ -404,11 +404,11 @@ fn main() i32 {
   mut plain = 0u16;
   mut secure = 0u16;
   match portRx.recv() {
-    case imm p Some {plain = p.value;}
+    case imm p Some {plain = p;}
     case is None[u16] {}
   }
   match portRx.recv() {
-    case imm p Some {secure = p.value;}
+    case imm p Some {secure = p;}
     case is None[u16] {}
   }
   if plain == 0u16 or secure == 0u16 {return 1i32;}

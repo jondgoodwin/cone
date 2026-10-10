@@ -59,10 +59,10 @@ fn buildPackage(repo &Path, pkg Package, mode &str, defines &List[String]) Path 
   match build(&mut s, top) {
     case mut ok Ok {
       mut built Path = "";
-      built <=> ok.value;
+      built <=> ok;
       built;
     }
-    case imm e Error { fail(e.value.copy()); }
+    case imm e Error { fail(e.copy()); }
   }
 }
 
@@ -73,13 +73,13 @@ fn build(s &mut Session, top usize) Result[Path, String] {
   imm name = s.reg.packages[top].name.copy();
   mut plan = emptyPlan();
   match buildOrder(&s.reg, top) {
-    case mut ok Ok { plan <=> ok.value; }
-    case imm e Error { return Error[Path, String][e.value.copy()]; }
+    case mut ok Ok { plan <=> ok; }
+    case imm e Error { return Error[Path, String][e.copy()]; }
   }
   mut objs = List[Path].empty();
   match compile(s, &plan, top, "", true) {
-    case mut ok Ok { objs <=> ok.value; }
-    case imm e Error { return Error[Path, String][e.value.copy()]; }
+    case mut ok Ok { objs <=> ok; }
+    case imm e Error { return Error[Path, String][e.copy()]; }
   }
   if isLibrary {
     imm obj = objs[objs.len() - 1usize].copy();
@@ -96,7 +96,7 @@ fn build(s &mut Session, top usize) Result[Path, String] {
   imm exe = s.out.join(exeName.view());
   match link(s, &plan, &objs, &exe, true) {
     case is Ok {}
-    case imm e Error { return Error[Path, String][e.value.copy()]; }
+    case imm e Error { return Error[Path, String][e.copy()]; }
   }
   imm place = shown(&exe);
   imm finished = cat(s.mode.view(), " ", place.view());
@@ -113,25 +113,25 @@ fn build(s &mut Session, top usize) Result[Path, String] {
 fn buildProgram(s &mut Session, file &Path, dest &Path) Result[Path, String] {
   mut pkg = emptyPackage();
   match lonePackage(file) {
-    case mut ok Ok { pkg <=> ok.value; }
-    case imm e Error { return Error[Path, String][e.value.copy()]; }
+    case mut ok Ok { pkg <=> ok; }
+    case imm e Error { return Error[Path, String][e.copy()]; }
   }
   imm exeName = cat(pkg.name.view(), ".exe");
   imm top = s.reg.add(pkg);
   mut plan = emptyPlan();
   match buildOrder(&s.reg, top) {
-    case mut ok Ok { plan <=> ok.value; }
-    case imm e Error { return Error[Path, String][e.value.copy()]; }
+    case mut ok Ok { plan <=> ok; }
+    case imm e Error { return Error[Path, String][e.copy()]; }
   }
   mut objs = List[Path].empty();
   match compile(s, &plan, top, dest, false) {
-    case mut ok Ok { objs <=> ok.value; }
-    case imm e Error { return Error[Path, String][e.value.copy()]; }
+    case mut ok Ok { objs <=> ok; }
+    case imm e Error { return Error[Path, String][e.copy()]; }
   }
   imm exe = dest.join(exeName.view());
   match link(s, &plan, &objs, &exe, false) {
     case is Ok {}
-    case imm e Error { return Error[Path, String][e.value.copy()]; }
+    case imm e Error { return Error[Path, String][e.copy()]; }
   }
   Ok[Path, String][exe];
 }
@@ -162,8 +162,8 @@ fn lonePackage(given &Path) Result[Package, String] {
   if not fs.isFile(&file) { return Error[Package, String][cat("no file ", place.view())]; }
   mut header = noHeader();
   match scanHeader(&file) {
-    case mut ok Ok { header <=> ok.value; }
-    case imm e Error { return Error[Package, String][e.value.copy()]; }
+    case mut ok Ok { header <=> ok; }
+    case imm e Error { return Error[Package, String][e.copy()]; }
   }
   imm name = if header.hasMod {header.modName.copy();} else {String.from(file.stem());};
   imm fault = nameFault(name.view());
@@ -200,7 +200,7 @@ fn compileUnit(conec &Path, reg &Registry, plan &Plan, u usize, out &Path, inclu
   match fs.writeFile(&desc, text.view()) {
     case is Ok {}
     case imm e Error {
-      fail(fsMessage(&e.value));
+      fail(fsMessage(&e));
     }
   }
   // A library's include file is written afresh, so one left by an earlier
@@ -209,8 +209,8 @@ fn compileUnit(conec &Path, reg &Registry, plan &Plan, u usize, out &Path, inclu
   match fs.removeFile(&incl) {
     case is Ok {}
     case imm e Error {
-      if not e.value.notFound() {
-        fail(fsMessage(&e.value));
+      if not e.notFound() {
+        fail(fsMessage(&e));
       }
     }
   }
@@ -258,13 +258,13 @@ fn runConec(conec &Path, defines &List[String], rest List[String]) bool {
   mut code = 0u32;
   match process.run(args.view()) {
     case imm ok Ok {
-      chatter = utf8Text(ok.value.stdout.view());
-      imm err = utf8Text(ok.value.stderr.view());
+      chatter = utf8Text(ok.stdout.view());
+      imm err = utf8Text(ok.stderr.view());
       chatter <- err.view();
-      code = ok.value.exitCode;
+      code = ok.exitCode;
     }
     case imm e Error {
-      fail(e.value.message());
+      fail(e.message());
     }
   }
   imm lines = splitLines(chatter.view());
@@ -289,7 +289,7 @@ fn makeFolder(folder &Path) {
   match fs.makeDirAll(folder) {
     case is Ok {}
     case imm e Error {
-      fail(fsMessage(&e.value));
+      fail(fsMessage(&e));
     }
   }
 }
@@ -305,8 +305,8 @@ fn compile(s &mut Session, plan &Plan, top usize, topOut &Path, announce bool) R
   // error in the source is reported before anything about the machine
   if s.conec.isEmpty() {
     match findConec(&s.repo) {
-      case mut ok Ok { s.conec <=> ok.value; }
-      case imm e Error { return Error[List[Path], String][e.value.copy()]; }
+      case mut ok Ok { s.conec <=> ok; }
+      case imm e Error { return Error[List[Path], String][e.copy()]; }
     }
   }
   imm out = s.out.copy();
@@ -350,7 +350,7 @@ fn compile(s &mut Session, plan &Plan, top usize, topOut &Path, announce bool) R
         case is Ok {}
         case imm e Error {
           changes.restore();
-          return Error[List[Path], String][e.value.copy()];
+          return Error[List[Path], String][e.copy()];
         }
       }
       s.gpuChecked.push(pkg.name.copy());
@@ -373,10 +373,10 @@ fn compile(s &mut Session, plan &Plan, top usize, topOut &Path, announce bool) R
       mut obj Path = "";
       match compileUnit(&s.conec, &s.reg, plan, u, &dest, &out, s.mode.view(), &s.defines, isTop,
         announce or not isTop) {
-        case mut ok Ok { obj <=> ok.value; }
+        case mut ok Ok { obj <=> ok; }
         case imm e Error {
           changes.restore();
-          return Error[List[Path], String][e.value.copy()];
+          return Error[List[Path], String][e.copy()];
         }
       }
       if not own and (not isTop or s.reg.packages[top].output.equals("library")) {
@@ -396,10 +396,10 @@ fn compile(s &mut Session, plan &Plan, top usize, topOut &Path, announce bool) R
     imm name = s.reg.packages[plan.units[u].pkg].name.copy();
     if plan.units[u].kernels and hasCore and not s.spvs.contains(name.view()) {
       match compileGpu(s, plan, u, coreUnit) {
-        case imm ok Ok { s.spvs.insert(name, ok.value.copy()); }
+        case imm ok Ok { s.spvs.insert(name, ok.copy()); }
         case imm e Error {
           changes.restore();
-          return Error[List[Path], String][e.value.copy()];
+          return Error[List[Path], String][e.copy()];
         }
       }
     }
@@ -436,7 +436,7 @@ fn holdsPath(list &List[Path], p &Path) bool {
 fn moveAsideIfRunning(exe &Path) {
   mut running Path = "";
   match process.currentExe() {
-    case mut ok Ok { running <=> ok.value; }
+    case mut ok Ok { running <=> ok; }
     case is Error { return; }
   }
   if not samePath(&running, exe) { return; }
@@ -444,15 +444,15 @@ fn moveAsideIfRunning(exe &Path) {
   match fs.removeFile(&old) {
     case is Ok {}
     case imm e Error {
-      if not e.value.notFound() {
-        fail(fsMessage(&e.value));
+      if not e.notFound() {
+        fail(fsMessage(&e));
       }
     }
   }
   match fs.rename(exe, &old) {
     case is Ok {}
     case imm e Error {
-      fail(fsMessage(&e.value));
+      fail(fsMessage(&e));
     }
   }
 }
@@ -501,7 +501,7 @@ fn runtimeFolders(repo &Path, paths &List[Path]) List[Path] {
   if fs.isDir(&deps) {
     mut entries = List[fs.DirEntry].empty();
     match fs.readDir(&deps) {
-      case mut ok Ok { entries <=> ok.value; }
+      case mut ok Ok { entries <=> ok; }
       case is Error {}
     }
     mut i = 0usize;
@@ -547,9 +547,9 @@ fn copyRuntime(source &Path, folder &Path, name &str) Result[bool, String] {
 fn copyIfChanged(source &Path, target &Path) Result[bool, String] {
   mut data = String.empty();
   match fs.readFile(source) {
-    case mut ok Ok { data <=> ok.value; }
+    case mut ok Ok { data <=> ok; }
     case imm e Error {
-      imm why = fsMessage(&e.value);
+      imm why = fsMessage(&e);
       imm from = native(source);
       imm to = native(target);
       return Error[bool, String][cat("cannot copy ", from.view(), " to ", to.view(), ": ", why.view())];
@@ -558,7 +558,7 @@ fn copyIfChanged(source &Path, target &Path) Result[bool, String] {
   if fs.isFile(target) {
     mut there = String.empty();
     match fs.readFile(target) {
-      case mut ok Ok { there <=> ok.value; }
+      case mut ok Ok { there <=> ok; }
       case is Error {}
     }
     if there.len() == data.len() and there.equals(data.view()) { return Ok[bool, String][false]; }
@@ -566,7 +566,7 @@ fn copyIfChanged(source &Path, target &Path) Result[bool, String] {
   match fs.writeFile(target, data.view()) {
     case is Ok {}
     case imm e Error {
-      imm why = fsMessage(&e.value);
+      imm why = fsMessage(&e);
       imm from = native(source);
       imm to = native(target);
       return Error[bool, String][cat("cannot copy ", from.view(), " to ", to.view(), ": ", why.view())];
@@ -584,12 +584,12 @@ fn link(s &mut Session, plan &Plan, objs &List[Path], exe &Path, announce bool) 
   if not s.hasLinker {
     mut conestd Path = "";
     match findConestd(&s.conec) {
-      case mut ok Ok { conestd <=> ok.value; }
-      case imm e Error { return Error[void, String][e.value.copy()]; }
+      case mut ok Ok { conestd <=> ok; }
+      case imm e Error { return Error[void, String][e.copy()]; }
     }
     match findLinker(&conestd) {
-      case mut ok Ok { s.linker <=> ok.value; }
-      case imm e Error { return Error[void, String][e.value.copy()]; }
+      case mut ok Ok { s.linker <=> ok; }
+      case imm e Error { return Error[void, String][e.copy()]; }
     }
     s.hasLinker = true;
   }
@@ -643,10 +643,10 @@ fn link(s &mut Session, plan &Plan, objs &List[Path], exe &Path, announce bool) 
       imm name = pkg.runtime[j].view();
       if not holdsName(&runtimeNames, name) {
         match findRuntime(&s.repo, name, pkg.name.view(), &folders, &paths) {
-          case imm ok Ok { runtimeFiles.push(ok.value.copy()); }
+          case imm ok Ok { runtimeFiles.push(ok.copy()); }
           case imm e Error {
             fs.removeFile(exe);
-            return Error[void, String][e.value.copy()];
+            return Error[void, String][e.copy()];
           }
         }
         runtimeNames.push(String.from(name));
@@ -690,8 +690,8 @@ fn link(s &mut Session, plan &Plan, objs &List[Path], exe &Path, announce bool) 
   match fs.removeFile(exe) {
     case is Ok {}
     case imm e Error {
-      if not e.value.notFound() {
-        fail(fsMessage(&e.value));
+      if not e.notFound() {
+        fail(fsMessage(&e));
       }
     }
   }
@@ -701,13 +701,13 @@ fn link(s &mut Session, plan &Plan, objs &List[Path], exe &Path, announce bool) 
   mut said = String.empty();
   match process.run(command.view()) {
     case imm ok Ok {
-      code = ok.value.exitCode;
-      said = consoleText(ok.value.stdout.view());
-      imm err = consoleText(ok.value.stderr.view());
+      code = ok.exitCode;
+      said = consoleText(ok.stdout.view());
+      imm err = consoleText(ok.stderr.view());
       said <- err.view();
     }
     case imm e Error {
-      fail(e.value.message());
+      fail(e.message());
     }
   }
   changes.restore();
@@ -736,12 +736,12 @@ fn link(s &mut Session, plan &Plan, objs &List[Path], exe &Path, announce bool) 
   while i < runtimeNames.len() {
     match copyRuntime(runtimeFiles[i], &exeFolder, runtimeNames[i].view()) {
       case imm ok Ok {
-        if ok.value and announce {
+        if ok and announce {
           imm place = shown(runtimeFiles[i]);
           say("Copying", place.view());
         }
       }
-      case imm e Error { return Error[void, String][e.value.copy()]; }
+      case imm e Error { return Error[void, String][e.copy()]; }
     }
     i = i + 1usize;
   }
@@ -757,12 +757,12 @@ fn link(s &mut Session, plan &Plan, objs &List[Path], exe &Path, announce bool) 
         imm target = exeFolder.join(spv.name());
         match copyIfChanged(&spv, &target) {
           case imm ok Ok {
-            if ok.value and announce {
+            if ok and announce {
               imm place = shown(&spv);
               say("Copying", place.view());
             }
           }
-          case imm e Error { return Error[void, String][e.value.copy()]; }
+          case imm e Error { return Error[void, String][e.copy()]; }
         }
       }
     }

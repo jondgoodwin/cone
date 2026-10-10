@@ -67,6 +67,11 @@ its own `or` included, so it is reported once. Anything else is a value alone
 (`case 1`, `case true`, `case K`, `case Circle`), the same at the start of a
 case and after an `or`.
 
+**A bound pattern to a variant declared as a type binds what it holds**, not the
+variant: type check hoists a hidden local holding the converted value before the
+variable, whose initializer becomes the local's contents ([cast](cast.md),
+`castBindProject`). The desugaring here is the same for every variant.
+
 **A bound pattern's guard binds the variable a second time.** The variable is
 declared at the head of the arm, which the condition is outside, so `case imm x
 T if g {…}` becomes the condition `is T and {imm x = [T]v; g}` — a block

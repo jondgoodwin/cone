@@ -1091,8 +1091,13 @@ static void fnCallLowerEnumEq(TypeCheckState *pstate, FnCallNode *callnode, Stru
             FieldDclNode *field = (FieldDclNode*)*fldp;
             if (field->flags & (IsTagField | IsMixin) || used + 40 >= sizeof(carries))
                 continue;
-            used += snprintf(carries + used, sizeof(carries) - used, "%s%s %s", used ? ", " : "",
-                &field->namesym->namestr, itypeName(field->vtype));
+            // (what a variant declared as a type holds has no name, only a type)
+            if (field->namesym == payloadName)
+                used += snprintf(carries + used, sizeof(carries) - used, "%s%s", used ? ", " : "",
+                    itypeName(field->vtype));
+            else
+                used += snprintf(carries + used, sizeof(carries) - used, "%s%s %s", used ? ", " : "",
+                    &field->namesym->namestr, itypeName(field->vtype));
         }
         errorMsgNode((INode*)callnode, ErrorEnumEquality,
             "`==` and `!=` on %s compare the variants' own `==`, and %s carries a payload (%s) and declares none. Give %s a `==` taking another %s, or use 'match' to recover the variant.",
@@ -1407,6 +1412,16 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
                         &methsym->namestr, &tname->namestr, &tname->namestr);
                 return -1;
             }
+        }
+        // A variant declared as a type holds its contents with no name to reach them by
+        if (foundnode == NULL && objdereftype->tag == StructTag
+            && structIsTypeVariant((StructNode*)objdereftype)) {
+            StructNode *variant = (StructNode*)objdereftype;
+            errorMsgNode((INode*)callnode, ErrorNoMbr,
+                "`%s` is not a field of %s: %s is declared as a type, so what it holds has no field name. A pattern that binds it, as 'case imm n %s', gives the %s.",
+                &methsym->namestr, &variant->namesym->namestr, &variant->namesym->namestr,
+                &variant->namesym->namestr, itypeName(structTypeVariantField(variant)->vtype));
+            return -1;
         }
         if (foundnode == NULL && parallelViewNotFound(callnode, objdereftype, methsym))
             return -1;

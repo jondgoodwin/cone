@@ -630,6 +630,9 @@ enum ErrorCode {
     ErrorRangeEllipsis = 1411,  // A range written '...', retired: 'a .. b' runs through b, 'a ..< b' stops before it
     ErrorEachCompare = 1412,    // An 'each' over a comparison, 'each i in 0 < n', retired for the range notation ('0 ..< n', '0 .. n', 'by -1' to count down)
 
+    // Variants declared as a type (parser/parsetype.c, exp/cast.c)
+    ErrorTypeVariant = 1413,    // A variant declared as a type, 'Ok(i32);', in an enum that has common fields (every variant of such an enum names what it holds: write it as a struct), or bound through a managed reference, whose contents cannot be lent
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

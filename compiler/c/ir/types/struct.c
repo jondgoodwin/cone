@@ -2922,6 +2922,25 @@ int structVariantCarriesFields(StructNode *variant) {
     return 0;
 }
 
+// The field a type-variant ('Ok(i32);') holds its contents in, or NULL where the
+// variant was declared any other way. Its name is one no program can write, so
+// the field is found by that name and nothing else.
+FieldDclNode *structTypeVariantField(StructNode *variant) {
+    INode **nodesp;
+    uint32_t cnt;
+    if (variant->tag != StructTag)
+        return NULL;
+    for (nodelistFor(&variant->fields, cnt, nodesp)) {
+        if ((*nodesp)->tag == FieldDclTag && ((FieldDclNode*)*nodesp)->namesym == payloadName)
+            return (FieldDclNode*)*nodesp;
+    }
+    return NULL;
+}
+
+int structIsTypeVariant(StructNode *variant) {
+    return structTypeVariantField(variant) != NULL;
+}
+
 // The '==' a variant declares for itself, or NULL. Only the variant's own
 // namespace is asked: its enum's '==' is the refusal or the generated comparison
 // this finds the pieces of, and a variant never inherits it.

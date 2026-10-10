@@ -23,7 +23,7 @@ fn socketOf(r Result[Socket, IoError]) Socket {
   mut res = r;
   mut s = Socket.none();
   match &mut res {
-    case mut ok &mut Ok {s <=> ok.value;}
+    case mut ok &mut Ok {s <=> *ok;}
     else {}
   }
   s;
@@ -31,7 +31,7 @@ fn socketOf(r Result[Socket, IoError]) Socket {
 
 fn take[T](rx &mut Receiver[T], dflt T) T {
   match rx.recv() {
-    case imm v Some {v.value;}
+    case imm v Some {v;}
     else {dflt;}
   }
 }
@@ -46,13 +46,13 @@ actor Reader {
     imm r = await s.read(pool.mustTake(64usize));
     match r {
       case imm b Ok {
-        if b.value.len() == 1usize {
-          arrived.send(u64.from(b.value.view()[0usize]));
+        if b.len() == 1usize {
+          arrived.send(u64.from(b.view()[0usize]));
         } else {
-          arrived.send(100u64 + u64.from(b.value.len()));
+          arrived.send(100u64 + u64.from(b.len()));
         }
       }
-      case imm e Error {arrived.send(1000u64 + u64.from(e.value.code));}
+      case imm e Error {arrived.send(1000u64 + u64.from(e.code));}
     }
   }
 }
@@ -66,7 +66,7 @@ actor Hub {
     imm ls = socketOf(l);
     imm a = await ls.localAddr();
     match a {
-      case imm addr Ok {ports.send(u64.from(addr.value.port()));}
+      case imm addr Ok {ports.send(u64.from(addr.port()));}
       else {ports.send(0u64);}
     }
     mut k = 0u64;
@@ -87,7 +87,7 @@ actor Hub {
       b.append(&one);
       imm w = await conns[i].write(b);
       match w {
-        case imm n Ok {wrote.send(u64.from(n.value));}
+        case imm n Ok {wrote.send(u64.from(n));}
         else {wrote.send(0u64);}
       }
     }

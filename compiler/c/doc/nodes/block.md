@@ -193,14 +193,14 @@ statements; the loop below then checks them as built. By the source's type:
   held first unless it is a place.
 
 Each pass of a cursor loop declares its variable from the item:
-`imm x = match cursor.next() { case imm s Some { s.value; } case is None {
+`imm x = match cursor.next() { case imm s Some { s; } case is None {
 break; } }`, built as `match` is desugared (`eachNextItem`), the `break`
 joined to the loop as it is built. Two or more variables take the item through
 a variable of the pass's own, `imm -item = ...; imm k = -item.0; imm v =
 -item.1`. The pass's binding of the `Some` has a name no reader can write
 (`-some`), so that a move out of it is marked at the move as a named binding's
-is. An item that moves is taken whole by one variable, `s.value` moving the
-Option the loop holds with it (`flowTakesSoleField`, [Flow](../phases/flow.md),
+is. An item that moves is taken whole by one variable, the binding of the
+`Some` moving the Option the loop holds with it (`flowTakesSoleField`, [Flow](../phases/flow.md),
 "Moves and counting"); with several variables it would move the elements of a
 tuple out one by one, which is refused before the loop is built
 (`ErrorEachItem`).
@@ -428,7 +428,9 @@ becomes a hidden local of this block ([VarDcl](vardcl.md), "Temporaries an
 initializer extends"), handed back in the order they run. They are inserted
 just before the statement once the whole block is checked (`blockHoist`), the
 last thing before either return, since the checks after the statement loop
-still hold pointers into the statement list.
+still hold pointers into the statement list. The other hidden local that way is a
+pattern binding's (`-bound`, [cast](cast.md), `castBindProject`), which `blockHoist`
+tells from a statement by its name as it tells a temporary's.
 
 The last statement splits:
 

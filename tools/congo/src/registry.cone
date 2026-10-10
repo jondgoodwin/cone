@@ -90,12 +90,12 @@ fn readText(file &Path) Result[String, String] {
   match fs.readFile(file) {
     case mut ok Ok {
       mut text = String.empty();
-      text <=> ok.value;
+      text <=> ok;
       text.replace("\r\n", "\n");
       text.replaceByte('\r', '\n');
       Ok[String, String][text];
     }
-    case imm e Error { Error[String, String][fsMessage(&e.value)]; }
+    case imm e Error { Error[String, String][fsMessage(&e)]; }
   }
 }
 
@@ -103,20 +103,20 @@ fn readText(file &Path) Result[String, String] {
 fn readToml(file &Path) Result[toml.Document, String] {
   mut text = String.empty();
   match readText(file) {
-    case mut ok Ok { text <=> ok.value; }
+    case mut ok Ok { text <=> ok; }
     case mut e Error {
       mut m = String.empty();
-      m <=> e.value;
+      m <=> e;
       return Error[toml.Document, String][m];
     }
   }
   match toml.parse(text.view()) {
     case mut ok Ok {
       mut doc = new toml.Document();
-      doc <=> ok.value;
+      doc <=> ok;
       Ok[toml.Document, String][doc];
     }
-    case imm e Error { Error[toml.Document, String][e.value.message()]; }
+    case imm e Error { Error[toml.Document, String][e.message()]; }
   }
 }
 
@@ -145,19 +145,19 @@ fn readLink(file &Path, table &toml.Table, pkg &mut Package) String {
   mut runtime = List[String].empty();
   if table.has("libraries") {
     match table.getStrings("libraries") {
-      case mut l Some { libraries <=> l.value; }
+      case mut l Some { libraries <=> l; }
       case is None { return cat(place.view(), ": [link] libraries must be a list of strings"); }
     }
   }
   if table.has("paths") {
     match table.getStrings("paths") {
-      case mut l Some { paths <=> l.value; }
+      case mut l Some { paths <=> l; }
       case is None { return cat(place.view(), ": [link] paths must be a list of strings"); }
     }
   }
   if table.has("runtime") {
     match table.getStrings("runtime") {
-      case mut l Some { runtime <=> l.value; }
+      case mut l Some { runtime <=> l; }
       case is None { return cat(place.view(), ": [link] runtime must be a list of strings"); }
     }
   }
@@ -207,7 +207,7 @@ fn readTargets(file &Path, table &toml.Table, pkg &mut Package) String {
   imm place = native(file);
   mut targets = List[String].empty();
   match table.getStrings("targets") {
-    case mut l Some { targets <=> l.value; }
+    case mut l Some { targets <=> l; }
     case is None {
       return cat(place.view(), ": [package] targets must be a list of targets, such as [\"native\", \"gpu\"]");
     }
@@ -239,9 +239,9 @@ fn readTargets(file &Path, table &toml.Table, pkg &mut Package) String {
 fn readManifest(file &Path) Result[Package, String] {
   mut doc = new toml.Document();
   match readToml(file) {
-    case mut ok Ok { doc <=> ok.value; }
+    case mut ok Ok { doc <=> ok; }
     case imm e Error {
-      return manifestError(file, cat("cannot read the manifest: ", e.value.view()));
+      return manifestError(file, cat("cannot read the manifest: ", e.view()));
     }
   }
   // Every top-level key, as tomllib's dict holds them: the root's keys, then
@@ -278,7 +278,7 @@ fn readManifest(file &Path) Result[Package, String] {
   }
   mut pkg = emptyPackage();
   match table.getString("name") {
-    case mut n Some { pkg.name <=> n.value; }
+    case mut n Some { pkg.name <=> n; }
     case is None {}
   }
   if not isConeName(pkg.name.view()) {
@@ -289,14 +289,14 @@ fn readManifest(file &Path) Result[Package, String] {
     return manifestError(file, cat("[package] name '", pkg.name.view(), "' ", fault.view(), "; choose another"));
   }
   match table.getString("version") {
-    case mut v Some { pkg.version <=> v.value; }
+    case mut v Some { pkg.version <=> v; }
     case is None {}
   }
   if not isVersion(pkg.version.view()) {
     return manifestError(file, String.from("[package] version must be MAJOR.MINOR.PATCH, such as \"0.1.0\""));
   }
   match table.getString("output") {
-    case mut o Some { pkg.output <=> o.value; }
+    case mut o Some { pkg.output <=> o; }
     case is None {}
   }
   if not (pkg.output.equals("executable") or pkg.output.equals("library")) {
@@ -357,15 +357,15 @@ fn registryFolders(repo &Path) List[Path] {
     imm place = native(&config);
     mut doc = new toml.Document();
     match readToml(&config) {
-      case mut ok Ok { doc <=> ok.value; }
+      case mut ok Ok { doc <=> ok; }
       case imm e Error {
-        fail(cat(place.view(), ": cannot read the machine config: ", e.value.view()));
+        fail(cat(place.view(), ": cannot read the machine config: ", e.view()));
       }
     }
     mut listed = List[String].empty();
     if doc.has("registry") and doc["registry"].has("folders") {
       match doc["registry"].getStrings("folders") {
-        case mut l Some { listed <=> l.value; }
+        case mut l Some { listed <=> l; }
         case is None {
           fail(cat(place.view(), ": [registry] folders must be a list of folder paths"));
         }
@@ -432,9 +432,9 @@ fn readRegistry(folders List[Path]) Registry {
     else {
       mut entries = List[fs.DirEntry].empty();
       match fs.readDir(&folder) {
-        case mut ok Ok { entries <=> ok.value; }
+        case mut ok Ok { entries <=> ok; }
         case imm e Error {
-          fail(fsMessage(&e.value));
+          fail(fsMessage(&e));
         }
       }
       mut i = 0usize;
@@ -444,7 +444,7 @@ fn readRegistry(folders List[Path]) Registry {
           match readManifest(&manifest) {
             case mut ok Ok {
               mut pkg = emptyPackage();
-              pkg <=> ok.value;
+              pkg <=> ok;
               if not reg.byName.contains(pkg.name.view()) {
                 imm name = pkg.name.copy();
                 reg.packages.push(pkg);
@@ -452,7 +452,7 @@ fn readRegistry(folders List[Path]) Registry {
               }
             }
             case imm e Error {
-              warn(cat("warning: skipped: ", e.value.view()));
+              warn(cat("warning: skipped: ", e.view()));
             }
           }
         }

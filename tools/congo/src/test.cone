@@ -122,10 +122,10 @@ fn readAll(file &Path) String {
   match fs.readFile(file) {
     case mut ok Ok {
       mut text = String.empty();
-      text <=> ok.value;
+      text <=> ok;
       text;
     }
-    case imm e Error { fail(fsMessage(&e.value)); }
+    case imm e Error { fail(fsMessage(&e)); }
   }
 }
 
@@ -133,7 +133,7 @@ fn readAll(file &Path) String {
 fn writeAll(file &Path, text &str) {
   match fs.writeFile(file, text) {
     case is Ok {}
-    case imm e Error { fail(fsMessage(&e.value)); }
+    case imm e Error { fail(fsMessage(&e)); }
   }
 }
 
@@ -250,8 +250,8 @@ fn programs(folder &Path, filter &str, hasFilter bool) List[Path] {
   if not fs.isDir(folder) { return found; }
   mut entries = List[fs.DirEntry].empty();
   match fs.readDir(folder) {
-    case mut ok Ok { entries <=> ok.value; }
-    case imm e Error { fail(fsMessage(&e.value)); }
+    case mut ok Ok { entries <=> ok; }
+    case imm e Error { fail(fsMessage(&e)); }
   }
   mut i = 0usize;
   while i < entries.len() {
@@ -278,8 +278,8 @@ fn runTest(s &mut Session, file &Path, bless bool) Verdict {
   imm dest = tests.join(stem);
   mut exe Path = "";
   match buildProgram(s, file, &dest) {
-    case mut ok Ok { exe <=> ok.value; }
-    case imm e Error { return new Verdict(false, e.value.copy()); }
+    case mut ok Ok { exe <=> ok; }
+    case imm e Error { return new Verdict(false, e.copy()); }
   }
   // Run in its own build folder, so a file it writes by a relative name
   // lands there and not in the package's source
@@ -293,22 +293,22 @@ fn runTest(s &mut Session, file &Path, bless bool) Verdict {
   match process.run(args.view(), new process.Options(
       timeout: time.Duration.fromSeconds(testTimeoutSeconds), crashReport: false), &dest) {
     case imm ok Ok {
-      if ok.value.timedOut {
+      if ok.timedOut {
         // What it wrote to stderr says how far it got: a panic's line, say,
         // before an end that never came
         mut note = String.from("timed out after 60 seconds");
-        imm err = utf8Decode(ok.value.stderr.view());
+        imm err = utf8Decode(ok.stderr.view());
         if not isStrippedAway(err.view()) {
           imm shownErr = indent(err.view(), "  ");
           note <- "\nstderr:\n", shownErr.view();
         }
         return new Verdict(false, note);
       }
-      code = ok.value.exitCode;
-      stdout = utf8Decode(ok.value.stdout.view());
-      stderr = utf8Decode(ok.value.stderr.view());
+      code = ok.exitCode;
+      stdout = utf8Decode(ok.stdout.view());
+      stderr = utf8Decode(ok.stderr.view());
     }
-    case imm e Error { fail(processMessage(&e.value)); }
+    case imm e Error { fail(processMessage(&e)); }
   }
   // A program that could not start has nothing to compare, and this line is
   // how a person learns why (no dialog says so)
@@ -344,8 +344,8 @@ fn runTest(s &mut Session, file &Path, bless bool) Verdict {
   mut problems = List[String].empty();
   mut want = String.empty();
   match expectedExit(file) {
-    case mut ok Ok { want <=> ok.value; }
-    case imm e Error { return new Verdict(false, e.value.copy()); }
+    case mut ok Ok { want <=> ok; }
+    case imm e Error { return new Verdict(false, e.copy()); }
   }
   // Compared in decimal, so a status beyond any exit code's range is
   // simply not the one the test ended with
@@ -444,7 +444,7 @@ fn testPackage(repo &Path, pkg Package, mode &str, filter &str, hasFilter bool, 
   match build(&mut s, top) {
     case is Ok {}
     case imm e Error {
-      warn(cat("error: ", e.value.view()));
+      warn(cat("error: ", e.view()));
       tally.broken = tally.broken + 1u64;
       tally.failures.push(cat(name.view(), ": the package does not build"));
       imm result = cat(name.view(), ": the package does not build");
@@ -532,7 +532,7 @@ fn testPackage(repo &Path, pkg Package, mode &str, filter &str, hasFilter bool, 
       case is Ok {}
       case imm e Error {
         passed = false;
-        detail = e.value.copy();
+        detail = e.copy();
       }
     }
     mut outcome &str = "built";
@@ -558,8 +558,8 @@ fn packageManifests(folder &Path) List[Path] {
   mut found = List[Path].empty();
   mut entries = List[fs.DirEntry].empty();
   match fs.readDir(folder) {
-    case mut ok Ok { entries <=> ok.value; }
-    case imm e Error { fail(fsMessage(&e.value)); }
+    case mut ok Ok { entries <=> ok; }
+    case imm e Error { fail(fsMessage(&e)); }
   }
   mut i = 0usize;
   while i < entries.len() {
@@ -578,8 +578,8 @@ fn cmdTest(filter &str, hasFilter bool, release bool, bless bool, defines &List[
   imm repo = findRepo();
   mut here Path = "";
   match fs.currentDir() {
-    case mut ok Ok { here <=> ok.value; }
-    case imm e Error { fail(fsMessage(&e.value)); }
+    case mut ok Ok { here <=> ok; }
+    case imm e Error { fail(fsMessage(&e)); }
   }
   imm own = here.join("congo.toml");
   mut manifests = List[Path].empty();
@@ -590,8 +590,8 @@ fn cmdTest(filter &str, hasFilter bool, release bool, bless bool, defines &List[
   while i < manifests.len() {
     mut pkg = emptyPackage();
     match readManifest(manifests[i]) {
-      case mut ok Ok { pkg <=> ok.value; }
-      case imm e Error { fail(e.value.copy()); }
+      case mut ok Ok { pkg <=> ok; }
+      case imm e Error { fail(e.copy()); }
     }
     imm tally = testPackage(&repo, pkg, mode, filter, hasFilter, bless, defines);
     total.add(&tally);

@@ -30,7 +30,7 @@ fn makeRoot(name &str) Path {
   imm tempPath = Path.from(cstr.fromPtr(temp).view());
   mut root = Path.from("");
   match fs.absolute(&tempPath) {
-    case imm t Ok { root = t.value.join(name); }
+    case imm t Ok { root = t.join(name); }
     case is Error { require(false, "TEMP has an absolute path"); }
   }
   imm up = root.parent();
@@ -47,7 +47,7 @@ fn shown(root &Path, text &Array[u8]) String {
 
 fn messageOf[T](root &Path, r Result[T, fs.FsError]) String {
   match r {
-    case imm e Error { imm m = e.value.message(); shown(root, m.view()); }
+    case imm e Error { imm m = e.message(); shown(root, m.view()); }
     case is Ok { String.from("<succeeded>"); }
   }
 }
@@ -82,9 +82,9 @@ fn showEntries(root &Path, entries &List[fs.DirEntry]) String {
 
 fn listingIs(root &Path, dir &Path, want &Array[u8], label &Array[u8]) {
   match fs.readDir(dir) {
-    case imm l Ok { imm s = showEntries(root, &l.value); expectStr(s.view(), want, label); }
+    case imm l Ok { imm s = showEntries(root, &l); expectStr(s.view(), want, label); }
     case imm e Error {
-      imm m = e.value.message();
+      imm m = e.message();
       imm s = shown(root, m.view());
       expectStr(s.view(), want, label);
     }
@@ -93,9 +93,9 @@ fn listingIs(root &Path, dir &Path, want &Array[u8], label &Array[u8]) {
 
 fn walkIs(root &Path, dir &Path, want &Array[u8], label &Array[u8]) {
   match fs.walk(dir) {
-    case imm l Ok { imm s = showEntries(root, &l.value); expectStr(s.view(), want, label); }
+    case imm l Ok { imm s = showEntries(root, &l); expectStr(s.view(), want, label); }
     case imm e Error {
-      imm m = e.value.message();
+      imm m = e.message();
       imm s = shown(root, m.view());
       expectStr(s.view(), want, label);
     }
@@ -110,7 +110,7 @@ fn making(root &Path) {
   expect(fs.isDir(&one), "made a folder");
   failsWith(root, fs.makeDir(&one), "makeDir <root>/one: File exists", "makeDir again");
   match fs.makeDir(&one) {
-    case imm e Error { expect(e.value.alreadyExists(), "makeDir again is alreadyExists"); }
+    case imm e Error { expect(e.alreadyExists(), "makeDir again is alreadyExists"); }
     case is Ok { expect(false, "makeDir again fails"); }
   }
   imm deep = root.join("two/three/four");
@@ -260,7 +260,7 @@ fn guards(root &Path) {
 fn currentFolder(root &Path) {
   mut before = Path.from("");
   match fs.currentDir() {
-    case mut c Ok { before <=> c.value; }
+    case mut c Ok { before <=> c; }
     case is Error { require(false, "currentDir"); }
   }
   expect(before.isAbsolute(), "currentDir is absolute");
@@ -272,7 +272,7 @@ fn currentFolder(root &Path) {
   match fs.currentDir() {
     case imm c Ok {
       imm want = here.normalize();
-      expectStr(c.value.view(), want.view(), "currentDir is where it was set");
+      expectStr(c.view(), want.view(), "currentDir is where it was set");
     }
     case is Error { expect(false, "currentDir after setCurrentDir"); }
   }
@@ -286,33 +286,33 @@ fn currentFolder(root &Path) {
   mut wantRel = String.from(norm.view());
   wantRel.append("/rel.txt");
   match fs.absolute("rel.txt") {
-    case imm a Ok { expectStr(a.value.view(), wantRel.view(), "absolute of a name"); }
+    case imm a Ok { expectStr(a.view(), wantRel.view(), "absolute of a name"); }
     case is Error { expect(false, "absolute of a name"); }
   }
   match fs.absolute("sub\\..\\.\\rel.txt") {
-    case imm a Ok { expectStr(a.value.view(), wantRel.view(), "absolute reads '.' and '..'"); }
+    case imm a Ok { expectStr(a.view(), wantRel.view(), "absolute reads '.' and '..'"); }
     case is Error { expect(false, "absolute with '..'"); }
   }
   match fs.absolute("not-there.txt") {
     case imm a Ok {
       imm want = norm.join("not-there.txt");
-      expectStr(a.value.view(), want.view(), "absolute of a name not there");
+      expectStr(a.view(), want.view(), "absolute of a name not there");
     }
     case is Error { expect(false, "absolute of a name not there"); }
   }
   match fs.absolute("") {
-    case imm a Ok { expectStr(a.value.view(), norm.view(), "absolute of \"\" is the current folder"); }
+    case imm a Ok { expectStr(a.view(), norm.view(), "absolute of \"\" is the current folder"); }
     case is Error { expect(false, "absolute of \"\""); }
   }
   match fs.absolute("..") {
     case imm a Ok {
       imm want = root.normalize();
-      expectStr(a.value.view(), want.view(), "absolute of '..'");
+      expectStr(a.view(), want.view(), "absolute of '..'");
     }
     case is Error { expect(false, "absolute of '..'"); }
   }
   match fs.absolute("C:\\Some\\..\\Where") {
-    case imm a Ok { expectStr(a.value.view(), "C:/Where", "absolute of an absolute path"); }
+    case imm a Ok { expectStr(a.view(), "C:/Where", "absolute of an absolute path"); }
     case is Error { expect(false, "absolute of an absolute path"); }
   }
   imm missing = root.join("missing");
@@ -322,7 +322,7 @@ fn currentFolder(root &Path) {
   // Back where it started
   ok(fs.setCurrentDir(&before), "setCurrentDir back");
   match fs.currentDir() {
-    case imm c Ok { expectStr(c.value.view(), before.view(), "currentDir restored"); }
+    case imm c Ok { expectStr(c.view(), before.view(), "currentDir restored"); }
     case is Error { expect(false, "currentDir restored"); }
   }
   ok(fs.removeAll(&here), "remove 'here é'");

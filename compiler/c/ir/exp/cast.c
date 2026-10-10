@@ -31,6 +31,7 @@ INode *cloneCastNode(CloneState *cstate, CastNode *node) {
     CastNode *newnode;
     newnode = memAllocBlk(sizeof(CastNode));
     memcpy(newnode, node, sizeof(CastNode));
+    newnode->flags &= 0xFFFF - FlagMatchChecked;
     newnode->exp = cloneNode(cstate, node->exp);
     newnode->typ = cloneNode(cstate, node->typ);
     return (INode *)newnode;
@@ -354,10 +355,71 @@ static void castSumInterior(CastNode *node, RefNode *from, RefNode *to) {
         &perm->namesym->namestr, &fromstr->namesym->namestr);
 }
 
+// The field of the hidden local holding the matched value, which a variable
+// bound to a type-variant's contents reads: 'local.(payload)'
+static INode *castPayloadAccess(VarDclNode *local, INode *lexnode) {
+    FnCallNode *access = newFnCallLower(lexnode, newNameUseFromDclNode((INode*)local, lexnode), 0);
+    access->methfld = (INode*)newMemberUseNode(payloadName);
+    inodeLexCopy(access->methfld, lexnode);
+    return (INode*)access;
+}
+
+int castBindProject(TypeCheckState *pstate, VarDclNode *var) {
+    CastNode *cast = (CastNode*)var->value;
+    if ((cast->flags & FlagMatchChecked) || pstate->extend == NULL || pstate->extend->var != var)
+        return 0;
+    // The conversion is checked here, once, as the variable would have checked it:
+    // what it narrows to says whether the pattern named a variant declared as a type
+    // (a second check would find the conversion already made, which castTypeCheck
+    // leaves for a plain narrowing, and read it as a reinterpretation)
+    iexpTypeCheckAny(pstate, &var->value);
+    cast->flags |= FlagMatchChecked;
+    INode *type = cast->vtype;
+    if (type == errorType || type == unknownType || !isTypeNode(type))
+        return 0;
+    type = itypeGetTypeDcl(type);
+    INode *target = (type->tag == RefTag || type->tag == VirtRefTag)
+        ? itypeGetTypeDcl(((RefNode*)type)->vtexp) : type;
+    if (target->tag != StructTag || !structIsTypeVariant((StructNode*)target))
+        return 0;
+    StructNode *variant = (StructNode*)target;
+
+    // The matched value under the variant's name, in a local of its own that the
+    // variable's initializer reads from
+    VarDclNode *alias = newVarDclFull(matchAliasName, VarDclTag, unknownType, (INode*)immPerm, (INode*)cast);
+    inodeLexCopy((INode*)alias, (INode*)var);
+    alias->scope = var->scope;
+    varDclTypeCheck(pstate, alias);
+    alias->flags |= TypeChecked;
+
+    INode *contents = castPayloadAccess(alias, (INode*)var);
+    if (type->tag == RefTag || type->tag == VirtRefTag) {
+        RefNode *ref = (RefNode*)type;
+        if (itypeGetTypeDcl(ref->region) != borrowRef) {
+            errorMsgNode((INode*)var, ErrorTypeVariant,
+                "A reference into a managed value (an Rc, an So) cannot lend the contents of %s as a binding yet: match a borrow of the value, '&', or the value itself.",
+                &variant->namesym->namestr);
+            var->vtype = errorType;
+            var->value = NULL;
+            return 1;
+        }
+        // A borrow of the contents, as the narrowed reference is of the variant
+        RefNode *borrow = newRefNodeFull(BorrowTag, (INode*)var, (INode*)borrowRef, newPermUseNode((PermNode*)itypeGetTypeDcl(ref->perm)), contents);
+        var->value = (INode*)borrow;
+    }
+    else
+        var->value = contents;
+    varDclHoistBefore(pstate, var, alias);
+    return 1;
+}
+
 // Type check cast node:
 // - reinterpret cast types must be same size
 // - a bound pattern's conversion narrows a reference, or a value of a sum type
 void castTypeCheck(TypeCheckState *pstate, CastNode *node) {
+    // A bound pattern's conversion castBindProject has checked
+    if (node->flags & FlagMatchChecked)
+        return;
     if (iexpTypeCheckAny(pstate, &node->exp) == 0)
         return;
     // A bound pattern's conversion binds its pattern as the 'is' test before it

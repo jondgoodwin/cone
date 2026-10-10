@@ -80,6 +80,20 @@ relationship to its enum is membership, not is-a conformance. ⚠ *That refusal 
 Penny's default from the enum build, not Jon's ruling* [Penny 22 Sep], standing
 unless he objects. Open traits it may name with `is` (below).
 
+**A variant may be declared as a type.** `Ok(i32);` in an enum body (a name and a
+type in parentheses; a name and a type without them, `time datetime;`, is always a
+common field, whatever its case, and so is a name and a tuple type, `t (A, B);`:
+`parseParenHoldsComma` tells the tuple from the parentheses by a top-level comma,
+so a tuple variant will need a spelling of its own) is parsed into the variant a struct would be with
+one field, and nothing marks it but that field's name: `payloadName`, `(payload)`,
+which no source can spell. `structIsTypeVariant` and `structTypeVariantField` ask.
+Layout, construction (`Ok[5]`), the nullable-pointer test, finalizing and
+extension all see a one-field struct variant, so none of them knows the form. ▸
+**Forbids** the form in an enum with fields in common (`parseCheckTypeVariants`,
+`ErrorTypeVariant`): such an enum names everything it holds. What the field holds
+is reached by a pattern that binds the variant (`castBindProject`,
+[cast](cast.md)), never by name. Core's `Option` and `Result` are declared so.
+
 **An enrichment adds methods and no fields, and that is what makes its values
 and its base's interchangeable.** A type declared with `extends` over a concrete
 base takes the base's fields as its own and adds methods of its own; it declares

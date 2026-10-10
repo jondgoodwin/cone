@@ -166,6 +166,8 @@ void nametblInit() {
     anonName = nametblFind("_", 1);
     tempName = nametblFind("-_", 2);
     tempLocalName = nametblFind("-temp", 5);
+    matchAliasName = nametblFind("-bound", 6);
+    payloadName = nametblFind("(payload)", 9);
     selfName = nametblFind("self", 4);
     staticLifeName = nametblFind("'static", 7);
     unknownBrandName = nametblFind("'=?", 3);

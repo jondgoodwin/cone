@@ -741,7 +741,9 @@ static INode *itypeThreadBoundCulprit(INode *type, char *path, size_t size,
             FieldDclNode *field = (FieldDclNode *)*nodesp;
             if (!itypeThreadBoundHow(field->vtype, NULL, itypeStaticHow))
                 continue;
-            snprintf(path + used, size - used, ".%s", &field->namesym->namestr);
+            // (what a variant declared as a type holds has no name to give)
+            if (field->namesym != payloadName)
+                snprintf(path + used, size - used, ".%s", &field->namesym->namestr);
             INode *culprit = itypeThreadBoundCulprit(field->vtype, path, size, seen, nseen);
             if (culprit)
                 return culprit;
@@ -881,7 +883,8 @@ static INode *itypeShareCulprit(INode *type, int mutrule, INode **seen, uint32_t
             return NULL;
         for (nodelistFor(&strnode->fields, cnt, nodesp)) {
             FieldDclNode *field = (FieldDclNode *)*nodesp;
-            snprintf(path + named, size - named, ".%s", &field->namesym->namestr);
+            if (field->namesym != payloadName)
+                snprintf(path + named, size - named, ".%s", &field->namesym->namestr);
             INode *culprit = itypeShareCulprit(field->vtype, mutrule, seen, nseen, path, size);
             if (culprit)
                 return culprit;

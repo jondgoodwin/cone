@@ -308,8 +308,9 @@ nothing. Swap and left-assignment take a value out of a field, and moving the
 whole struct takes every field with it. A copy-typed field is never walked, so it
 reads out freely.
 
-The one exception is a variant's only field, read through a match's binding
-whose matched value sits in a variable of the match's own (`_`: the value a
+The one exception is a variant's only field (all of a variant declared as a type,
+which a binding reads through the hidden local castBindProject declares), read
+through a match's binding whose matched value sits in a variable of the match's own (`_`: the value a
 `match f()` holds, one a by-value `match` consumes, the Option an `each` over a
 cursor holds), where the variant declares no `final` and has no field but that
 one (`flowTakesSoleField`). The field is then the whole of the matched value

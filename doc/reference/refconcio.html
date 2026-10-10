@@ -57,8 +57,8 @@ fn socketOf(r Result[Socket, IoError]) Socket {
   mut res = r;
   mut s = Socket.none();
   match &amp;mut res {
-    case mut ok &amp;mut Ok {s &lt;=&gt; ok.value;}
-    case imm e &amp;mut Error {say("failed", u64.from(e.value.code));}
+    case mut ok &amp;mut Ok {s &lt;=&gt; *ok;}
+    case imm e &amp;mut Error {say("failed", u64.from(e.code));}
   }
   s;
 }
@@ -72,7 +72,7 @@ actor Client {
     buf.append("hello");
     imm sent = await conn.write(buf);          // pauses until all of it is sent
     match sent {
-      case imm e Error {say("write failed", u64.from(e.value.code));}
+      case imm e Error {say("write failed", u64.from(e.code));}
       else {}
     }
   }                                           // conn closes here
@@ -86,13 +86,13 @@ actor Server {
     imm listener = socketOf(await aio.listen(SocketAddr.localhost(0u16)));
     imm addr = await listener.localAddr();     // the port the system chose
     match addr {
-      case imm a Ok {client.send(a.value.port());}
-      case imm e Error {say("no address", u64.from(e.value.code));}
+      case imm a Ok {client.send(a.port());}
+      case imm e Error {say("no address", u64.from(e.code));}
     }
     imm conn = socketOf(await listener.accept());
     imm none = await conn.read(IoBuf.empty());           // a buffer with no room
     match none {
-      case imm e Error {say("no room: error", u64.from(e.value.code));}
+      case imm e Error {say("no room: error", u64.from(e.code));}
       else {}
     }
     mut total = 0u64;
@@ -101,16 +101,16 @@ actor Server {
       imm got = await conn.read(pool.mustTake(4096usize));
       match got {
         case imm b Ok {
-          if b.value.len() == 0usize {
+          if b.len() == 0usize {
             say("end of stream", total);                 // the peer closed
             more = false;
           } else {
-            say("received", u64.from(b.value.len()));
-            total = total + u64.from(b.value.len());
+            say("received", u64.from(b.len()));
+            total = total + u64.from(b.len());
           }
         }
         case imm e Error {
-          say("read failed", u64.from(e.value.code));
+          say("read failed", u64.from(e.code));
           more = false;
         }
       }

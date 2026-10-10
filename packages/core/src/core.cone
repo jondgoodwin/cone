@@ -22,14 +22,16 @@ mod core;
 // two routes nobody wrote, which is one binding, not a collision
 import libc pub use malloc;
 
+// A variant declared as a type, 'Some(T);', holds that type itself: it has no
+// field name, and a pattern that binds it ('case imm n Some') gets the T
 pub enum Option[T] {
-  struct None {}
-  struct Some {pub value T;}
+  None;
+  Some(T);
 }
 
 pub enum Result[T,E] {
-  struct Ok {pub value T;}
-  struct Error {pub value E;}
+  Ok(T);
+  Error(E);
 }
 
 // A variant is a name of its enum, so these two statements are what make Some,
@@ -396,7 +398,7 @@ pub struct ChunksIndexed['a, T] is Iterator[(usize, &Array[T])] {
       case imm c Some {
         imm i = index;
         index = i + 1usize;
-        return Some[(usize, &Array[T])][(i, c.value)];
+        return Some[(usize, &Array[T])][(i, c)];
       }
       case is None { return None[(usize, &Array[T])][]; }
     }
@@ -467,7 +469,7 @@ pub struct MutChunksIndexed['a, T] is Iterator[(usize, &mut Array[T])] {
       case imm c Some {
         imm i = index;
         index = i + 1usize;
-        return Some[(usize, &mut Array[T])][(i, c.value)];
+        return Some[(usize, &mut Array[T])][(i, c)];
       }
       case is None { return None[(usize, &mut Array[T])][]; }
     }
@@ -600,9 +602,9 @@ pub struct Zip[A, B, I Iterator[A], J Iterator[B]] is Iterator[(A, B)] {
   pub fn next(self &mut) Option[(A, B)] {
     match first.next() {
       case imm x Some {
-        imm a = x.value;
+        imm a = x;
         match second.next() {
-          case imm y Some { return Some[(A, B)][(a, y.value)]; }
+          case imm y Some { return Some[(A, B)][(a, y)]; }
           case is None { return None[(A, B)][]; }
         }
       }
@@ -656,7 +658,7 @@ pub struct ZipIndexed[A, B, I Iterator[A], J Iterator[B]] is Iterator[(usize, A,
       case imm p Some {
         imm i = index;
         index = i + 1usize;
-        imm pair = p.value;
+        imm pair = p;
         return Some[(usize, A, B)][(i, pair.0, pair.1)];
       }
       case is None { return None[(usize, A, B)][]; }
@@ -686,12 +688,12 @@ pub struct Zip3[A, B, C, I Iterator[A], J Iterator[B], K Iterator[C]] is Iterato
   pub fn next(self &mut) Option[(A, B, C)] {
     match first.next() {
       case imm x Some {
-        imm a = x.value;
+        imm a = x;
         match second.next() {
           case imm y Some {
-            imm b = y.value;
+            imm b = y;
             match third.next() {
-              case imm z Some { return Some[(A, B, C)][(a, b, z.value)]; }
+              case imm z Some { return Some[(A, B, C)][(a, b, z)]; }
               case is None { return None[(A, B, C)][]; }
             }
           }
@@ -743,7 +745,7 @@ pub struct Zip3Indexed[A, B, C, I Iterator[A], J Iterator[B], K Iterator[C]] is 
       case imm p Some {
         imm i = index;
         index = i + 1usize;
-        imm triple = p.value;
+        imm triple = p;
         return Some[(usize, A, B, C)][(i, triple.0, triple.1, triple.2)];
       }
       case is None { return None[(usize, A, B, C)][]; }
@@ -1035,7 +1037,7 @@ pub trait Iterator[T] {
     mut acc = init;
     while true {
       match self.next() {
-        case imm e Some { acc = g(acc, e.value); }
+        case imm e Some { acc = g(acc, e); }
         case is None { break; }
       }
     }
@@ -1047,7 +1049,7 @@ pub trait Iterator[T] {
     mut g = f;
     while true {
       match self.next() {
-        case imm e Some { if g(e.value) { return true; } }
+        case imm e Some { if g(e) { return true; } }
         case is None { break; }
       }
     }
@@ -1059,7 +1061,7 @@ pub trait Iterator[T] {
     mut g = f;
     while true {
       match self.next() {
-        case imm e Some { if !g(e.value) { return false; } }
+        case imm e Some { if !g(e) { return false; } }
         case is None { break; }
       }
     }
@@ -1092,7 +1094,7 @@ pub trait Iterator[T] {
     while true {
       match self.next() {
         case imm e Some {
-          imm v = e.value;
+          imm v = e;
           if g(&v) { return Some[T][v]; }
         }
         case is None { break; }
@@ -1106,7 +1108,7 @@ pub trait Iterator[T] {
     mut s = T.from(0i32);
     while true {
       match self.next() {
-        case imm e Some { s = s + e.value; }
+        case imm e Some { s = s + e; }
         case is None { break; }
       }
     }
@@ -1118,11 +1120,11 @@ pub trait Iterator[T] {
     match self.next() {
       case is None { return None[T][]; }
       case imm first Some {
-        mut best = first.value;
+        mut best = first;
         while true {
           match self.next() {
             case imm e Some {
-              imm v = e.value;
+              imm v = e;
               if v < best { best = v; }
             }
             case is None { break; }
@@ -1138,11 +1140,11 @@ pub trait Iterator[T] {
     match self.next() {
       case is None { return None[T][]; }
       case imm first Some {
-        mut best = first.value;
+        mut best = first;
         while true {
           match self.next() {
             case imm e Some {
-              imm v = e.value;
+              imm v = e;
               if v > best { best = v; }
             }
             case is None { break; }
@@ -1163,7 +1165,7 @@ pub struct IterMap[T, U, I Iterator[T], F fn(x T) U] is Iterator[U] {
 
   pub fn next(self &mut) Option[U] inline {
     match src.next() {
-      case imm e Some { return Some[U][f(e.value)]; }
+      case imm e Some { return Some[U][f(e)]; }
       case is None { return None[U][]; }
     }
   }
@@ -1177,7 +1179,7 @@ pub struct IterFilter[T, I Iterator[T], F fn(x &T) bool] is Iterator[T] {
     while true {
       match src.next() {
         case imm e Some {
-          imm v = e.value;
+          imm v = e;
           if f(&v) { return Some[T][v]; }
         }
         case is None { return None[T][]; }

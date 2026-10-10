@@ -567,12 +567,9 @@ static INode *parseYieldEach(ParseState *parse, INode *src, YieldNode *at) {
     gen->gennames = names;
     gen->ngennames = GenSlots;
     lexPush(gen);
-    // The sub-generator's result is already what this one hands the caller:
-    // 'Some(value)', whole, the value moved with it and not out of it
-    int svraw = parse->genraw;
-    parse->genraw = 1;
+    // The binding holds the item the sub-generator gave, which 'yield' hands the
+    // caller in a Some of its own
     BlockNode *blk = (BlockNode *)parseExprBlock(parse, 0);
-    parse->genraw = svraw;
     lexPop();
     VarDclNode *sub = (VarDclNode *)nodesGet(blk->stmts, 0);
     sub->value = src;
@@ -618,10 +615,6 @@ INode *parseYield(ParseState *parse) {
     if (each)
         return parseYieldEach(parse, exp, node);
     ++ctx->yields;
-    if (parse->genraw) {
-        node->exp = exp;
-        return (INode *)node;
-    }
     FnCallNode *some = newFnCallNode((INode *)newNameUseNode(ctx->some), 1);
     nodesAdd(&some->args, exp);
     inodeLexCopy((INode *)some, exp);
