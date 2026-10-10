@@ -1254,8 +1254,8 @@ pub trait RandomAccess[T] {
 }
 
 // What a parallel 'sum' needs of a view: how many items, and the number at k (a
-// copy, whether the view's items are numbers or borrows of them). The views of
-// numbers have both, met by the methods alone as the other shapes are
+// copy, whether the view's items are numbers or borrows of them). A view of numbers
+// has both, met by the methods alone as the other shapes are
 pub trait ParallelNumberAt[N] {
   pub fn len(self &) usize;
   pub fn numberAt(self &, k usize) N;
@@ -1265,9 +1265,10 @@ pub trait ParallelNumberAt[N] {
 // for the reductions that run on the actors' workers. Plain data: 'sum', 'fold' and
 // 'findFirst' are the actors package's, and are called on the view as it is made
 // ('xs.parallel().sum()'). Every view is RandomAccess, whose 'len' and 'at' the
-// reductions cut it by. The views are these two and the cursors themselves: the runs
+// reductions cut it by. The views are this one and the cursors themselves: the runs
 // of 'chunks', the cursors 'indexed' and 'zip' give, which have 'len' and 'at'
-// already (their 'parallel' answers the cursor).
+// already (their 'parallel' answers the cursor). A number range has none yet: it
+// comes with the new range syntax.
 //
 // A slice's (a list's, an array's): the items are borrows, as 'iter' gives
 pub struct ParallelSlice['a, T] {
@@ -1278,34 +1279,6 @@ pub struct ParallelSlice['a, T] {
   pub fn at(self &, k usize) &'a T { &items[k]; }
 
   pub fn numberAt(self &, k usize) T where T is Integer or T is f32 or T is f64 { items[k]; }
-}
-
-// A number range as a source: the numbers lo, lo + 1 and so on, 'count' of them.
-// '(0 < n).parallel()' makes one
-pub struct ParallelNumbers[T] {
-  pub lo T;
-  pub count usize;
-
-  pub fn len(self &) usize { count; }
-
-  pub fn at(self &, k usize) T {
-    if k >= count {
-      panic("ParallelNumbers.at: the number is past the end");
-    }
-    lo + T.from(k);
-  }
-
-  pub fn numberAt(self &, k usize) T { self.at(k); }
-}
-
-// The view of a '(lo < hi).parallel()' and of a '(lo <= hi).parallel()' (the compiler
-// calls these): the numbers from lo up to hi, or through it; none if hi is not past lo
-pub fn parallelNumbers[T Integer](lo T, hi T) ParallelNumbers[T] {
-  new ParallelNumbers[T](lo, if hi > lo { usize.from(hi - lo); } else { 0usize; });
-}
-
-pub fn parallelNumbersThrough[T Integer](lo T, hi T) ParallelNumbers[T] {
-  new ParallelNumbers[T](lo, if hi >= lo { usize.from(hi - lo) + 1usize; } else { 0usize; });
 }
 
 // A panic ends the program where something that must not happen has: an index

@@ -75,8 +75,7 @@ Visual Studio projects stay at the root.
   `chunks` and `mutChunks` give into ranges of runs, and does not call a
   type's own `split` yet); `parallel()`, a method of `Array[T]` and of the cursors that have
   `len` and `at`, giving a view (`ParallelSlice`, the cursor itself for the runs of `chunks`,
-  `indexed()` and a zip, and `ParallelNumbers[T]` for the number range `(0 < n).parallel()`
-  is, through `parallelNumbers`), plain data whose reductions
+  `indexed()` and a zip; a number range has none until the new range syntax), plain data whose reductions
   `sum`, `fold` and `findFirst` are the actors package's (the compiler rewrites
   `xs.parallel().sum()` into a call of `actors.parSum`); and `panic`, `assert`, `unreachable`, `todo` and `setPanicHook`, whose
   work is conestd's, with `srcFile` and `srcLine`, intrinsics outside `mem`,

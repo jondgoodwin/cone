@@ -131,7 +131,7 @@ outer hop looks at it.
 shape**, ahead of the receiver's resolution: a method named `sum`, `fold` or
 `findFirst` called directly on a `.parallel()` with no arguments
 (`parallelReduceIs`, `ir/exp/pareach.c`). `parallel()` is an ordinary method of
-core's `Array` and cursors, giving a view (`ParallelSlice`, `ParallelNumbers`, or
+core's `Array` and cursors, giving a view (`ParallelSlice`, or
 the cursor itself where it has `len` and `at`); the reductions
 run on the actors' workers, which core cannot reach, so they are the actors
 package's `parSum`, `parFold` and `parFindFirst` (`reduce.cone`) and, once the
@@ -147,10 +147,10 @@ view held in a variable (`imm v = xs.parallel(); v.sum()`) is not rewritten and 
 refused at type check, in `fnCallLowerMethodOn`'s method-not-found message
 (`parallelViewNotFound`), as is `parallel()` of a type that has none (a chain of
 iterator adapters, a deque's cursor): `ErrorParReduce`, saying what has one. A
-number range is no value, so `(lo < hi).parallel()` and `(lo <= hi).parallel()`
-(an operator application of `<` or `<=` directly under a `.parallel()`) become the
-call of core's `parallelNumbers(lo, hi)` or `parallelNumbersThrough`
-(`parallelRangeNameRes`).
+number range has no view yet: `(lo < hi).parallel()` and `(lo <= hi).parallel()`
+(an operator application of `<` or `<=` directly under a `.parallel()`) are refused
+with the reason, `ErrorParReduce` (`parallelRangeNameRes`); ranges get one with the
+new range syntax.
 
 **Privacy is checked here**, against `dclInfoGetModule` of the base — so
 `modulesyms.Gadget.make` is judged against `modulesyms`, one hop back, which is

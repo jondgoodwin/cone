@@ -2,7 +2,7 @@
 // actors' workers (four, started for them). A reduction is a method called
 // directly on 'parallel()', a view of any source that can split itself: a list, an
 // array, a slice, the runs of 'chunks', an 'iter()', 'indexed()' or 'zip' of
-// those, or a number range written '(0 < n).parallel()'.
+// those. (A number range has no view until the new range syntax.)
 //
 // Every value printed is worked out by hand, and most cases are checked against a
 // plain loop over the same items. What is pinned:
@@ -10,8 +10,7 @@
 //   - sum over a list of every size around the block boundaries (a block holds at
 //     least 128 items and a view is cut into at most 256): 0, 1, 127, 128, 129,
 //     255, 256, 257, 1000, 32768, 32769 and 100000 items, against n(n-1)/2
-//   - sum of an array, a slice, a part of one, an 'iter()', and number ranges with
-//     '<' and '<=' (empty and reversed ones are 0); u32, f32 and f64 sums
+//   - sum of an array, a slice, an 'iter()' and an empty list; u32, f32 and f64 sums
 //   - a float sum is the same bits on every run (30 runs) and is the sum of a tree
 //     fixed by the item count: the test computes that tree itself, serially, and the
 //     bits must be identical (and they are printed, so the output pins them)
@@ -26,7 +25,7 @@
 //     reduction's closure
 //   - findFirst: the earliest by POSITION, though a later block finds a match
 //     first (a predicate that is slow for the first block); none found is None; a
-//     match at the first and at the last item; many matches; a number range; and
+//     match at the first and at the last item; many matches; and
 //     the later blocks are given up early (the number of predicate calls is a
 //     small part of the items when the first item matches)
 //   - a reduction written in an actor's behaviour
@@ -95,15 +94,6 @@ fn sums() {
   say("iter", a.iter().parallel().sum());
   mut empty = new List[i64]();
   say("empty list", empty.parallel().sum());
-
-  // Number ranges: '<' counts up to the bound, '<=' through it
-  say("range <", i64.from((1 < 11).parallel().sum()));
-  say("range <=", i64.from((1 <= 10).parallel().sum()));
-  say("range empty", i64.from((5 < 5).parallel().sum()));
-  say("range reversed", i64.from((9 < 3).parallel().sum()));
-  say("range one", i64.from((7 <= 7).parallel().sum()));
-  say("range of usize", i64.from((0usize < 100000usize).parallel().sum()));
-  say("range signed", (-50i64 <= 50i64).parallel().sum());
 
   // Other number types
   mut u = new List[u32]();
@@ -280,9 +270,9 @@ fn otherSources() {
   }
   imm dot = zip(&l, &r).parallel().fold(0i64, (acc, p) => acc + *p.0 * *p.1, (a, b) => a + b);
   say("zip dot product", dot);
-  // a range, folded: the number of multiples of 7 from 0 through 999
-  imm sevens = (0 < 1000).parallel().fold(0, (acc, x) => acc + (if x % 7 == 0 { 1; } else { 0; }), (a, b) => a + b);
-  say("range multiples of 7", i64.from(sevens));
+  // the multiples of 7 among 0..999: 0, 7, ... 994 are 143
+  imm sevens = l.parallel().fold(0i64, (acc, x) => acc + (if *x % 7i64 == 0i64 { 1i64; } else { 0i64; }), (a, b) => a + b);
+  say("multiples of 7", sevens);
 }
 
 // A reduction in a method, its closures naming a field and a field's list
@@ -296,10 +286,12 @@ struct Grid {
 }
 
 fn nested() {
-  // Each of 300 rows folds a range of 1000 in parallel inside a parallel fold:
+  // Each of 300 rows folds a list of 1000 in parallel inside a parallel fold:
   // the sum of c * r over c < 1000 and r < 300 is 499500 * 44850
-  imm outer = (0 < 300).parallel().fold(0i64,
-    (acc, r) => acc + (0 < 1000).parallel().fold(0i64, (a2, c) => a2 + i64.from(c) * i64.from(r), (p, q) => p + q),
+  imm rows = counting(300usize);
+  imm cols = counting(1000usize);
+  imm outer = rows.parallel().fold(0i64,
+    (acc, r) => acc + cols.parallel().fold(0i64, (a2, c) => a2 + *c * *r, (p, q) => p + q),
     (a, b) => a + b);
   say("nested folds", outer);
   mut g = new Grid(counting(5000usize), 3i64);
@@ -358,10 +350,10 @@ fn finds() {
     case imm s Some { printStr("empty found\n"); }
     case is None { printStr("empty: none\n"); }
   }
-  // A range
-  match (10 < 1000).parallel().findFirst(x => *x % 97 == 0) {
-    case imm s Some { say("range", i64.from(s.value)); }
-    case is None { printStr("range none\n"); }
+  // Over indexed(): the first position whose item is 97 times 3
+  match l.indexed().parallel().findFirst(p => *(*p).1 == 291i64) {
+    case imm s Some { say("indexed position", i64.from(s.value.0)); }
+    case is None { printStr("indexed none\n"); }
   }
 }
 

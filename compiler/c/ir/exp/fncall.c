@@ -314,7 +314,7 @@ void fnCallNameRes(NameResState *pstate, FnCallNode **nodep) {
         parallelReduceNameRes(pstate, nodep);
         return;
     }
-    // '(lo < hi).parallel()': a number range is no value, so its view is core's parallelNumbers(lo, hi)
+    // '(lo < hi).parallel()': a number range has no view yet, and is refused with the reason
     if (parallelRangeIs(node)) {
         parallelRangeNameRes(pstate, nodep);
         return;
