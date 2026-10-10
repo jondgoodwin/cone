@@ -1544,6 +1544,125 @@ static ModuleNode *parFindImport(Nodes *imports, char *name) {
     return NULL;
 }
 
+// ---- Parallel reductions: 'xs.parallel().sum()' ---------------------------------
+//
+// `parallel()` is an ordinary method (core's Array and cursors give a view, a
+// ParallelSlice, or the cursor itself). The three reductions of that view, 'sum', 'fold' and
+// 'findFirst', run on the actors' workers, which core cannot reach, so they are
+// functions of the actors package (reduce.cone) and the call is written as a call
+// of them: 'xs.parallel().sum()' is 'actors.parSum(xs.parallel())'. That is done
+// here, in name resolution, where the call is only what the reader wrote, by its
+// shape: a method named sum, fold or findFirst called directly on a '.parallel()'
+// with no arguments. Everything after is an ordinary call of a generic function.
+// A number range is no value yet, so '(lo < hi).parallel()' is refused
+// (parallelRangeNameRes); ranges get a view with the new range syntax.
+
+static Name *parReduceName(FnCallNode *call, Name *a, Name *b, Name *c) {
+    if (call->methfld == NULL || !isNameUseNode(call->methfld))
+        return NULL;
+    Name *name = ((NameUseNode*)call->methfld)->namesym;
+    return name == a || name == b || name == c ? name : NULL;
+}
+
+// Is this call a method call written 'x.parallel()'?
+static int parIsParallelCall(INode *node) {
+    if (node == NULL || node->tag != FnCallTag)
+        return 0;
+    FnCallNode *call = (FnCallNode*)node;
+    if (call->flags & (FlagOperator | FlagIndex | FlagNew))
+        return 0;
+    if (call->args != NULL && call->args->used != 0)
+        return 0;
+    return parReduceName(call, nametblFind("parallel", 8), NULL, NULL) != NULL;
+}
+
+// Is this call a reduction called on a '.parallel()'? Asked before the call is name
+// resolved, of what was written
+int parallelReduceIs(FnCallNode *node) {
+    if (node->flags & (FlagOperator | FlagIndex | FlagNew))
+        return 0;
+    if (!parIsParallelCall(node->objfn))
+        return 0;
+    return parReduceName(node, nametblFind("sum", 3), nametblFind("fold", 4), nametblFind("findFirst", 9)) != NULL;
+}
+
+// The reduction, its parts name resolved: the call of the actors package's function
+// with the view first, 'actors.parSum(view)'
+void parallelReduceNameRes(NameResState *pstate, FnCallNode **nodep) {
+    FnCallNode *node = *nodep;
+    Name *method = ((NameUseNode*)node->methfld)->namesym;
+    char *fnname = method == nametblFind("sum", 3) ? "parSum"
+        : method == nametblFind("fold", 4) ? "parFold" : "parFindFirst";
+    ModuleNode *actorsmod = pstate->mod ? parFindImport(pstate->mod->imports, "actors") : NULL;
+    INode *run = actorsmod ? namespaceFind(&actorsmod->namespace, nametblFind(fnname, (uint32_t)strlen(fnname))) : NULL;
+    if (run == NULL || run->tag != FnDclTag) {
+        errorMsgNode((INode*)node, ErrorParReduce,
+            "'%s' on a parallel view runs on the actors package's workers, which module %s does not import: write 'import actors;' after the 'mod' line.",
+            &method->namestr, pstate->mod ? &pstate->mod->namesym->namestr : "this");
+        *((INode**)nodep) = newErrorNode((INode*)node);
+        return;
+    }
+    NameUseNode *member = newNameUseNode(nametblFind(fnname, (uint32_t)strlen(fnname)));
+    inodeLexCopy((INode*)member, node->methfld);
+    member->dclnode = run;
+    member->flags |= FlagQualified;
+    nameUseMarkExpandReached(pstate, member);
+
+    uint32_t nold = node->args ? node->args->used : 0;
+    Nodes *args = newNodes(1 + nold);
+    nodesAdd(&args, node->objfn);
+    for (uint32_t i = 0; i < nold; ++i)
+        nodesAdd(&args, nodesGet(node->args, i));
+    node->objfn = (INode*)member;
+    node->methfld = NULL;
+    node->args = args;
+}
+
+// A method that is not found, asked of a type: if it is `parallel` on a source that
+// cannot be cut, or a reduction on a parallel view held in a variable, say so (and
+// answer 1), else answer 0 and leave the plain message to the caller
+int parallelViewNotFound(FnCallNode *callnode, INode *objdereftype, Name *methsym) {
+    char *tname = isMethodType(objdereftype) && inodeGetName(objdereftype)
+        ? &inodeGetName(objdereftype)->namestr : "this";
+    if (parIsCore(objdereftype, "IterMap", 7) || parIsCore(objdereftype, "IterFilter", 10)
+        || parIsCore(objdereftype, "IterTake", 8) || parIsCore(objdereftype, "IterSkip", 8))
+        tname = "A chain of iterator adapters ('map', 'filter', 'take', 'skip')";
+    if (methsym == nametblFind("parallel", 8)) {
+        int cursor = isMethodType(objdereftype) && parHasMethod(objdereftype, nextName);
+        errorMsgNode((INode*)callnode, ErrorParReduce,
+            "`parallel()` makes a view of a source that can be cut into pieces: a list, an array or a slice, the runs of `chunks`, an `iter()` or `indexed()` of those, or a zip of them. %s %s. Collect it into a list first, or walk the list it starts from.",
+            tname, cursor ? "hands out its items one after another and cannot be cut" : "is not a source of items");
+        return 1;
+    }
+    if (parIsCore(objdereftype, "ParallelSlice", 13)
+        && parReduceName(callnode, nametblFind("sum", 3), nametblFind("fold", 4), nametblFind("findFirst", 9)) != NULL) {
+        errorMsgNode((INode*)callnode, ErrorParReduce,
+            "`%s` is called directly on `parallel()`, as `xs.parallel().%s(...)`: a parallel view held in a variable has no methods of its own, because the reduction runs on the actors package's workers.",
+            &methsym->namestr, &methsym->namestr);
+        return 1;
+    }
+    return 0;
+}
+
+// '(lo < hi).parallel()' and '(lo <= hi).parallel()': a number range, which has no view yet
+int parallelRangeIs(FnCallNode *node) {
+    if (!parIsParallelCall((INode*)node) || node->objfn->tag != FnCallTag)
+        return 0;
+    FnCallNode *range = (FnCallNode*)node->objfn;
+    if (!(range->flags & FlagOperator) || range->args == NULL || range->args->used != 1)
+        return 0;
+    return parReduceName(range, nametblFind("<", 1), nametblFind("<=", 2), NULL) != NULL;
+}
+
+// A comparison is no range value, and the comparison spelling of a range is being
+// replaced, so a view of one is refused until the new range syntax gives it
+void parallelRangeNameRes(NameResState *pstate, FnCallNode **nodep) {
+    FnCallNode *node = *nodep;
+    errorMsgNode((INode*)node, ErrorParReduce,
+        "parallel() over a number range comes with the new range syntax: it is not built for a comparison written '(a < b)'. Reduce over a list or an array, or write a `parallel each` over the range.");
+    *((INode**)nodep) = newErrorNode((INode*)node);
+}
+
 // ---- A loop in an actor's behaviour: the seam ----------------------------------
 //
 // Written directly in a behaviour (not inside another parallel each's body, whose

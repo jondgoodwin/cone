@@ -259,6 +259,11 @@ pub struct @opaque Array[T] {
   // A cursor over the elements, front to back: 'next' gives a borrow of each
   pub fn iter(self &) ArrayIter[T] { new ArrayIter[T](self, 0usize); }
 
+  // A parallel view of the elements, for the reductions that run on the actors'
+  // workers: 'xs.parallel().sum()', 'fold' and 'findFirst' (the actors package
+  // runs them; the module imports it). Its items are borrows, as 'iter' gives
+  pub fn parallel(self &) ParallelSlice[T] { new ParallelSlice[T](self); }
+
   // The elements with their positions: 'next' gives a tuple of the position and
   // a borrow of the element, and 'each i, x in a.indexed()' unpacks it
   pub fn indexed(self &) ArrayIndexed[T] { new ArrayIndexed[T](self, 0usize); }
@@ -370,6 +375,10 @@ pub struct ArrayChunks['a, T] is Iterator[&Array[T]] {
   // The runs with their numbers, counted from 0 as the runs it gives are
   pub fn indexed(self) ChunksIndexed['a, T] { new ChunksIndexed[T](self, 0usize); }
 
+  // The runs left, as a parallel view (see Array's 'parallel'): the cursor itself, whose
+  // 'len' and 'at' the reductions cut it by
+  pub fn parallel(self) ArrayChunks['a, T] { self; }
+
   // Walked side by side with another cursor, as 'zip' does two collections: the
   // pairs of a run and what the other gives, ending with the shorter. When the other
   // is one that can be cut and walked by position too, so is the zip (a Zip)
@@ -399,6 +408,9 @@ pub struct ChunksIndexed['a, T] is Iterator[(usize, &Array[T])] {
   pub fn len(self &) usize { chunks.len(); }
 
   pub fn at(self &, k usize) (usize, &'a Array[T]) { (index + k, chunks.at(k)); }
+
+  // The numbered runs left, as a parallel view (see Array's 'parallel')
+  pub fn parallel(self) ChunksIndexed['a, T] { self; }
 }
 
 // The same for changing: 'mutChunks' gives it, and each run is a '&mut' slice
@@ -489,6 +501,11 @@ pub struct ArrayIter['a, T] is Iterator[&T] {
 
   pub fn at(self &, k usize) &'a T { &items[pos + k]; }
 
+  // The elements left, as a parallel view (see Array's 'parallel')
+  pub fn parallel(self) ParallelSlice['a, T] {
+    new ParallelSlice[T](mem.sliceFromParts[T]((items as *T) + pos, items.len - pos));
+  }
+
   pub fn split(self &, at usize) (ArrayIter['a, T], ArrayIter['a, T]) {
     if at > self.len() {
       panic("ArrayIter.split: the index is past the end");
@@ -522,6 +539,9 @@ pub struct ArrayIndexed['a, T] is Iterator[(usize, &T)] {
     imm i = pos + k;
     (i, &items[i]);
   }
+
+  // The positions and elements left, as a parallel view (see Array's 'parallel')
+  pub fn parallel(self) ArrayIndexed['a, T] { self; }
 }
 
 // A cursor over a slice's elements for changing them, which 'mutItems' gives: 'next'
@@ -616,6 +636,9 @@ pub struct Zip[A, B, I Iterator[A], J Iterator[B]] is Iterator[(A, B)] {
     (first.at(k), second.at(k));
   }
 
+  // The pairs, as a parallel view (see Array's 'parallel'), when both sources can be walked by position
+  pub fn parallel(self) Zip[A, B, I, J] where I is RandomAccess[A] and J is RandomAccess[B] { self; }
+
   pub fn split(self &, at usize) (Zip[A, B, I, J], Zip[A, B, I, J])
       where I is ParallelIterable[A, I] and J is ParallelIterable[B, J] {
     imm f = first.split(at);
@@ -648,6 +671,9 @@ pub struct ZipIndexed[A, B, I Iterator[A], J Iterator[B]] is Iterator[(usize, A,
     imm pair = src.at(k);
     (index + k, pair.0, pair.1);
   }
+
+  pub fn parallel(self) ZipIndexed[A, B, I, J]
+      where I is RandomAccess[A] and J is RandomAccess[B] { self; }
 }
 
 // Three sources walked side by side, which a zip's own 'zip' gives: 'next' gives a
@@ -696,6 +722,9 @@ pub struct Zip3[A, B, C, I Iterator[A], J Iterator[B], K Iterator[C]] is Iterato
     (first.at(k), second.at(k), third.at(k));
   }
 
+  pub fn parallel(self) Zip3[A, B, C, I, J, K]
+      where I is RandomAccess[A] and J is RandomAccess[B] and K is RandomAccess[C] { self; }
+
   pub fn split(self &, at usize) (Zip3[A, B, C, I, J, K], Zip3[A, B, C, I, J, K])
       where I is ParallelIterable[A, I] and J is ParallelIterable[B, J] and K is ParallelIterable[C, K] {
     imm f = first.split(at);
@@ -731,6 +760,9 @@ pub struct Zip3Indexed[A, B, C, I Iterator[A], J Iterator[B], K Iterator[C]] is 
     imm triple = src.at(k);
     (index + k, triple.0, triple.1, triple.2);
   }
+
+  pub fn parallel(self) Zip3Indexed[A, B, C, I, J, K]
+      where I is RandomAccess[A] and J is RandomAccess[B] and K is RandomAccess[C] { self; }
 }
 
 // Walk two sources side by side: 'each x, y in zip(xs, ys)' gives each pair of
@@ -1221,6 +1253,34 @@ pub trait ParallelIterable[T, P] {
 pub trait RandomAccess[T] {
   pub fn len(self &) usize;
   pub fn at(self &, k usize) T;
+}
+
+// What a parallel 'sum' needs of a view: how many items, and the number at k (a
+// copy, whether the view's items are numbers or borrows of them). A view of numbers
+// has both, met by the methods alone as the other shapes are
+pub trait ParallelNumberAt[N] {
+  pub fn len(self &) usize;
+  pub fn numberAt(self &, k usize) N;
+}
+
+// PARALLEL VIEWS: what 'parallel()' gives, a source that can split itself, held
+// for the reductions that run on the actors' workers. Plain data: 'sum', 'fold' and
+// 'findFirst' are the actors package's, and are called on the view as it is made
+// ('xs.parallel().sum()'). Every view is RandomAccess, whose 'len' and 'at' the
+// reductions cut it by. The views are this one and the cursors themselves: the runs
+// of 'chunks', the cursors 'indexed' and 'zip' give, which have 'len' and 'at'
+// already (their 'parallel' answers the cursor). A number range has none yet: it
+// comes with the new range syntax.
+//
+// A slice's (a list's, an array's): the items are borrows, as 'iter' gives
+pub struct ParallelSlice['a, T] {
+  pub items &'a Array[T];
+
+  pub fn len(self &) usize { items.len; }
+
+  pub fn at(self &, k usize) &'a T { &items[k]; }
+
+  pub fn numberAt(self &, k usize) T where T is Integer or T is f32 or T is f64 { items[k]; }
 }
 
 // A panic ends the program where something that must not happen has: an index

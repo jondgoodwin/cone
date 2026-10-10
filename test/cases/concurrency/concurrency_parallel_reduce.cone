@@ -1,0 +1,407 @@
+// Parallel reductions: 'xs.parallel().sum()', 'fold' and 'findFirst', run on the
+// actors' workers (four, started for them). A reduction is a method called
+// directly on 'parallel()', a view of any source that can split itself: a list, an
+// array, a slice, the runs of 'chunks', an 'iter()', 'indexed()' or 'zip' of
+// those. (A number range has no view until the new range syntax.)
+//
+// Every value printed is worked out by hand, and most cases are checked against a
+// plain loop over the same items. What is pinned:
+//
+//   - sum over a list of every size around the block boundaries (a block holds at
+//     least 128 items and a view is cut into at most 256): 0, 1, 127, 128, 129,
+//     255, 256, 257, 1000, 32768, 32769 and 100000 items, against n(n-1)/2
+//   - sum of an array, a slice, an 'iter()' and an empty list; u32, f32 and f64 sums
+//   - a float sum is the same bits on every run (30 runs) and is the sum of a tree
+//     fixed by the item count: the test computes that tree itself, serially, and the
+//     bits must be identical (and they are printed, so the output pins them)
+//   - fold: a running sum; a (lowest, highest) pair per block joined by 'combine'
+//     (the 3-D bounds shape: the identity is the pair that nothing is below or
+//     above); a NON-COMMUTATIVE, associative combine (the polynomial hash of the
+//     items in order), which proves the blocks are joined by position; 'init' is
+//     the identity, copied for each block
+//   - fold over the runs of 'chunks', over 'indexed()' and over a 'zip' of two lists
+//   - a closure that reads a variable around it (borrowed) is Shareable and fine;
+//     a reduction in a method (its closures name a field), and one inside another
+//     reduction's closure
+//   - findFirst: the earliest by POSITION, though a later block finds a match
+//     first (a predicate that is slow for the first block); none found is None; a
+//     match at the first and at the last item; many matches; and
+//     the later blocks are given up early (the number of predicate calls is a
+//     small part of the items when the first item matches)
+//   - a reduction written in an actor's behaviour
+
+mod concurrency_parallel_reduce;
+
+import stdio use *;
+import collections use *;
+import actors;
+
+fn report(name &str, ok bool) {
+  printStr(name);
+  printStr(if ok {": ok\n";} else {": FAILED\n";});
+}
+
+fn say(name &str, n i64) {
+  printStr(name);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+// A list of 0, 1, 2, ... n - 1
+fn counting(n usize) List[i64] {
+  mut l = new List[i64]();
+  mut i = 0i64;
+  while i < i64.from(n) {
+    l.push(i);
+    i = i + 1i64;
+  }
+  l;
+}
+
+// What 0 + 1 + ... + (n - 1) is
+fn tri(n usize) i64 {
+  imm m = i64.from(n);
+  m * (m - 1i64) / 2i64;
+}
+
+// ---- sums of the sizes around the blocks' ----
+
+fn sums() {
+  imm sizes = [0usize, 1usize, 2usize, 127usize, 128usize, 129usize, 255usize, 256usize, 257usize,
+    1000usize, 32768usize, 32769usize, 100000usize];
+  mut bad = 0usize;
+  each n in sizes {
+    imm l = counting(*n);
+    if l.parallel().sum() != tri(*n) {
+      printStr("  wrong sum for ");
+      printUInt(u64.from(*n));
+      printStr("\n");
+      bad = bad + 1usize;
+    }
+  }
+  report("sum of lists of 13 sizes", bad == 0usize);
+
+  // Shown: the sum of 1 000 items is 499500 and of 100 000 is 4999950000
+  say("sum of 1000", counting(1000usize).parallel().sum());
+  say("sum of 100000", counting(100000usize).parallel().sum());
+
+  // An array, a slice of it, an iter()
+  imm a = [3i64, 1i64, 4i64, 1i64, 5i64, 9i64, 2i64, 6i64];
+  say("array", a.parallel().sum());
+  imm part &Array[i64] = &a;
+  say("slice", part.parallel().sum());
+  say("iter", a.iter().parallel().sum());
+  mut empty = new List[i64]();
+  say("empty list", empty.parallel().sum());
+
+  // Other number types
+  mut u = new List[u32]();
+  mut f = new List[f32]();
+  mut d = new List[f64]();
+  mut i = 0u32;
+  while i < 1000u32 {
+    u.push(i);
+    f.push(1.0);
+    d.push(0.5d);
+    i = i + 1u32;
+  }
+  say("u32", i64.from(u.parallel().sum()));
+  report("f32 (1000 ones)", f.parallel().sum() == 1000.0);
+  report("f64 (1000 halves)", d.parallel().sum() == 500.0d);
+}
+
+// ---- a float sum is the same bits every run, and a tree fixed by the count ----
+
+fn bitsOf(x f64) u64 {
+  mut c = x;
+  mem.readRaw[u64](&mut c as *f64 as *u64);
+}
+
+// The reference: the same blocks and the same tree, added in one thread. A block is
+// n / blocks items rounded up, the blocks n / 128 rounded up but at most 256; a
+// block is summed from 0 front to back; and the blocks are joined by halving: the
+// left half's total plus the right half's
+fn blockSum(l &List[f64], lo usize, hi usize) f64 {
+  mut s = 0.0d;
+  mut k = lo;
+  while k < hi {
+    s = s + l[k];
+    k = k + 1usize;
+  }
+  s;
+}
+
+fn treeSum(l &List[f64], blk usize, b0 usize, b1 usize) f64 {
+  if b1 - b0 == 1usize {
+    imm lo = b0 * blk;
+    imm end = lo + blk;
+    return blockSum(l, lo, if end < l.len() { end; } else { l.len(); });
+  }
+  imm mid = b0 + (b1 - b0) / 2usize;
+  treeSum(l, blk, b0, mid) + treeSum(l, blk, mid, b1);
+}
+
+fn referenceSum(l &List[f64]) f64 {
+  imm n = l.len();
+  mut blocks = (n + 127usize) / 128usize;
+  if blocks > 256usize {
+    blocks = 256usize;
+  }
+  imm blk = (n + blocks - 1usize) / blocks;
+  imm nb = (n + blk - 1usize) / blk;
+  treeSum(l, blk, 0usize, nb);
+}
+
+fn floatSums() {
+  mut l = new List[f64]();
+  mut k = 0usize;
+  while k < 100000usize {
+    l.push(1.0d / (f64.from(k) + 1.0d));
+    k = k + 1usize;
+  }
+  imm first = l.parallel().sum();
+  mut same = true;
+  mut run = 0usize;
+  while run < 30usize {
+    if bitsOf(l.parallel().sum()) != bitsOf(first) {
+      same = false;
+    }
+    run = run + 1usize;
+  }
+  report("float sum, 30 runs, the same bits", same);
+  report("float sum is the fixed tree's", bitsOf(first) == bitsOf(referenceSum(&l)));
+  printStr("harmonic sum bits ");
+  printUInt(bitsOf(first));
+  printStr("\n");
+  // 129 items: two blocks of 65, joined once
+  mut m = new List[f64]();
+  k = 0usize;
+  while k < 129usize {
+    m.push(1.0d / (f64.from(k) + 1.0d));
+    k = k + 1usize;
+  }
+  report("129 items are two blocks", bitsOf(m.parallel().sum()) == bitsOf(referenceSum(&m)));
+  printStr("harmonic 129 bits ");
+  printUInt(bitsOf(m.parallel().sum()));
+  printStr("\n");
+}
+
+// ---- fold ----
+
+struct Bounds {
+  pub lo i64;
+  pub hi i64;
+}
+
+// The polynomial hash of a sequence, kept as (h, p): h is the hash and p is 31 to
+// the sequence's length, so that two sequences join as (h1 * p2 + h2, p1 * p2).
+// That is associative and NOT commutative, and (0, 1) is its identity
+struct Seq {
+  pub h u64;
+  pub p u64;
+}
+
+const modulus = 1000003u64;
+
+fn seqJoin(a Seq, b Seq) Seq {
+  new Seq((a.h * b.p + b.h) % modulus, (a.p * b.p) % modulus);
+}
+
+fn folds() {
+  imm l = counting(5000usize);
+  // A running sum
+  say("fold running sum", l.parallel().fold(0i64, (acc, x) => acc + *x, (a, b) => a + b));
+  // Bounds: the lowest and highest of 7 * k % 1009 - 400 over 5000 items, joined
+  mut vals = new List[i64]();
+  each x in l {
+    vals.push((*x * 7i64) % 1009i64 - 400i64);
+  }
+  imm identity = new Bounds(1000000i64, -1000000i64);
+  imm b = vals.parallel().fold(identity,
+    (acc, x) => new Bounds(if *x < acc.lo { *x; } else { acc.lo; }, if *x > acc.hi { *x; } else { acc.hi; }),
+    (p, q) => new Bounds(if q.lo < p.lo { q.lo; } else { p.lo; }, if q.hi > p.hi { q.hi; } else { p.hi; }));
+  say("bounds lowest", b.lo);
+  say("bounds highest", b.hi);
+  // A non-commutative combine: the hash of the items in order
+  imm s = l.parallel().fold(new Seq(0u64, 1u64),
+    (acc, x) => seqJoin(acc, new Seq(u64.from(*x) + 1u64, 31u64)),
+    (p, q) => seqJoin(p, q));
+  mut h = 0u64;
+  each x in l {
+    h = (h * 31u64 + u64.from(*x) + 1u64) % modulus;
+  }
+  report("order-sensitive combine is the in-order hash", s.h == h);
+  printStr("hash of 5000 items ");
+  printUInt(s.h);
+  printStr("\n");
+  // The same with 100 items, a single block, and with none
+  imm few = counting(100usize);
+  imm sf = few.parallel().fold(new Seq(0u64, 1u64),
+    (acc, x) => seqJoin(acc, new Seq(u64.from(*x) + 1u64, 31u64)),
+    (p, q) => seqJoin(p, q));
+  mut hf = 0u64;
+  each x in few {
+    hf = (hf * 31u64 + u64.from(*x) + 1u64) % modulus;
+  }
+  report("one block", sf.h == hf);
+  mut none = new List[i64]();
+  imm sn = none.parallel().fold(new Seq(0u64, 1u64), (acc, x) => seqJoin(acc, new Seq(1u64, 31u64)), (p, q) => seqJoin(p, q));
+  report("no items is the identity", sn.h == 0u64 and sn.p == 1u64);
+  // A closure that reads a variable around it
+  imm scale = 3i64;
+  say("fold reading a variable", l.parallel().fold(0i64, (acc, x) => acc + *x * scale, (a, b) => a + b));
+}
+
+fn otherSources() {
+  imm l = counting(1000usize);
+  // The runs of chunks: 1000 items in runs of 64 are 16 runs, the last of 40
+  imm runs = l.chunks(64usize).parallel().fold(0i64, (acc, c) => acc + 1i64, (a, b) => a + b);
+  say("chunk runs", runs);
+  imm items = l.chunks(64usize).parallel().fold(0i64, (acc, c) => acc + i64.from(c.len), (a, b) => a + b);
+  say("chunk items", items);
+  // indexed(): position times item, 0 * 0 + 1 * 1 + ... = the sum of squares to 999
+  imm sq = l.indexed().parallel().fold(0i64, (acc, p) => acc + i64.from(p.0) * *p.1, (a, b) => a + b);
+  say("indexed sum of squares", sq);
+  // zip of two lists: a dot product of 0..999 with its reverse
+  mut r = new List[i64]();
+  each x in l {
+    r.push(999i64 - *x);
+  }
+  imm dot = zip(&l, &r).parallel().fold(0i64, (acc, p) => acc + *p.0 * *p.1, (a, b) => a + b);
+  say("zip dot product", dot);
+  // the multiples of 7 among 0..999: 0, 7, ... 994 are 143
+  imm sevens = l.parallel().fold(0i64, (acc, x) => acc + (if *x % 7i64 == 0i64 { 1i64; } else { 0i64; }), (a, b) => a + b);
+  say("multiples of 7", sevens);
+}
+
+// A reduction in a method, its closures naming a field and a field's list
+struct Grid {
+  pub cells List[i64];
+  pub scale i64;
+
+  pub fn total(self &) i64 {
+    cells.parallel().fold(0i64, (acc, x) => acc + *x * scale, (a, b) => a + b);
+  }
+}
+
+fn nested() {
+  // Each of 300 rows folds a list of 1000 in parallel inside a parallel fold:
+  // the sum of c * r over c < 1000 and r < 300 is 499500 * 44850
+  imm rows = counting(300usize);
+  imm cols = counting(1000usize);
+  imm outer = rows.parallel().fold(0i64,
+    (acc, r) => acc + cols.parallel().fold(0i64, (a2, c) => a2 + *c * *r, (p, q) => p + q),
+    (a, b) => a + b);
+  say("nested folds", outer);
+  mut g = new Grid(counting(5000usize), 3i64);
+  say("in a method", g.total());
+}
+
+// ---- findFirst ----
+
+// A predicate that is slow for the first block's items (the first 128) and
+// fast for the rest, so that a later block finds its match long before the first
+fn slowFor(x i64) bool {
+  if x < 128i64 {
+    mut n = 0u64;
+    mut k = 0u64;
+    while k < 3000000u64 {
+      n = n * 6364136223846793005u64 + k;
+      k = k + 1u64;
+    }
+    if n == 1u64 {
+      return false;
+    }
+  }
+  true;
+}
+
+fn finds() {
+  imm l = counting(100000usize);
+  match l.parallel().findFirst(x => **x == 77777i64) {
+    case imm s Some { say("found", *s.value); }
+    case is None { printStr("found none\n"); }
+  }
+  // Many match: the earliest, though blocks later than it have matches too
+  match l.parallel().findFirst(x => **x % 10000i64 == 5i64) {
+    case imm s Some { say("earliest of many", *s.value); }
+    case is None { printStr("earliest none\n"); }
+  }
+  // The first block's match is slow to find, a later block's is fast: the first one wins
+  match l.parallel().findFirst(x => (**x == 5i64 and slowFor(**x)) or **x == 90000i64) {
+    case imm s Some { say("earliest by position", *s.value); }
+    case is None { printStr("earliest none\n"); }
+  }
+  match l.parallel().findFirst(x => **x < 0i64) {
+    case imm s Some { say("negative", *s.value); }
+    case is None { printStr("no negative: none\n"); }
+  }
+  match l.parallel().findFirst(x => **x == 0i64) {
+    case imm s Some { say("first item", *s.value); }
+    case is None { printStr("first none\n"); }
+  }
+  match l.parallel().findFirst(x => **x == 99999i64) {
+    case imm s Some { say("last item", *s.value); }
+    case is None { printStr("last none\n"); }
+  }
+  mut empty = new List[i64]();
+  match empty.parallel().findFirst(x => true) {
+    case imm s Some { printStr("empty found\n"); }
+    case is None { printStr("empty: none\n"); }
+  }
+  // Over indexed(): the first position whose item is 97 times 3
+  match l.indexed().parallel().findFirst(p => *(*p).1 == 291i64) {
+    case imm s Some { say("indexed position", i64.from(s.value.0)); }
+    case is None { printStr("indexed none\n"); }
+  }
+}
+
+// ---- the later blocks are given up ----
+
+struct Calls {
+  pub n Atomic[u64];
+}
+
+fn giveUp() {
+  imm l = counting(1000000usize);
+  imm calls = new Calls(Atomic[u64].of(0u64));
+  match l.parallel().findFirst(x => { calls.n.add(1u64); **x == 0i64; }) {
+    case imm s Some { say("match at the first item", *s.value); }
+    case is None { printStr("none\n"); }
+  }
+  // The first item matches, so only the blocks already begun, up to their next look
+  // (every 32 items), ran: far fewer than a million
+  report("later blocks given up", calls.n.load() < 500000u64);
+}
+
+// ---- in an actor ----
+
+actor Summer {
+  pub async do run(self, n u64) {
+    imm l = counting(usize.from(n));
+    printStr("actor sum ");
+    printInt(l.parallel().sum());
+    printStr("\n");
+    match l.parallel().findFirst(x => **x == 4000i64) {
+      case imm s Some { say("actor found", *s.value); }
+      case is None { printStr("actor none\n"); }
+    }
+  }
+}
+
+fn main() {
+  actors.configure(new actors.Options(workers: 4u32));
+  sums();
+  floatSums();
+  folds();
+  otherSources();
+  nested();
+  finds();
+  giveUp();
+  {
+    imm s = new Summer();
+    s.run(6000u64);
+  }
+  finalAll();
+}

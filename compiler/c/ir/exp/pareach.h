@@ -54,6 +54,16 @@ extern Name *parSliceMutName; // ... when it lends its items to be changed (mutI
 // Make the names, once
 void parallelEachNames();
 
+// 'xs.parallel().sum()' (and 'fold', 'findFirst') is a call of the actors package's
+// function on the view, rewritten in name resolution by its shape (fnCallNameRes);
+// '(lo < hi).parallel()', a view of a number range, is refused there until ranges
+// have the new syntax
+int parallelReduceIs(FnCallNode *node);
+void parallelReduceNameRes(NameResState *pstate, FnCallNode **nodep);
+int parallelViewNotFound(FnCallNode *callnode, INode *objdereftype, Name *methsym);
+int parallelRangeIs(FnCallNode *node);
+void parallelRangeNameRes(NameResState *pstate, FnCallNode **nodep);
+
 // The actors package's parallelEach, which the loop is run by, once a parallel
 // each has found it
 extern FnDclNode *parallelEachFn;

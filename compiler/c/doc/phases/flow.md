@@ -1344,7 +1344,9 @@ A call that could reshape, met while a variable holds the marked loan, is a
 pending conflict on the holder (`PendingShape`, `loanShapePend`) fired by its next
 use as an ordinary freeze is, and reported at the call; met while the loan is in
 flight, or when the borrow is handed to the very call (`out.append(x.view())`),
-it is reported at once (`loanShapeNow`). `ErrorShapeReshape`.
+it is reported at once (`loanShapeNow`). `ErrorShapeReshape`. The holder of a borrow
+a generator's `yield` handed out is the stand-in for the generator's caller ("A
+yield"), which a call that could reshape the collection is reported against at the call.
 
 What it does not follow: a borrow handed out by a free function (no method, so no
 receiver loan); types are compared as types, so two `List[Pt]` are not told apart
@@ -1634,6 +1636,23 @@ a value holding a traced reference, that would stay in the frame is refused at t
 seam (`ErrorGenFrame`): the lock would be held while the generator waits, and the
 collector finds a traced reference by the stack, not by a struct.
 
+What the value hands out carries, apart from the loans of the generator's own
+ground, goes to a stand-in for the generator's caller (`pwYieldCaller`, a
+temporary-named variable of scope 2 that nothing ends, made once per walk), which
+holds the union of every `yield`'s on the paths reaching a point, joined like any
+variable's. The caller may keep a value handed out for as long as the generator
+lives, so the body is held to what it handed out as if a local held it to the end
+of the body, including the walk of a loop's next pass. Its difference from a local
+holder is that it is always used again: an access that conflicts with a loan it
+holds (`loanPend`), or a call that could reshape a collection one points into
+(`loanShapePend`), fires the conflict at once (`loanYieldHolder`,
+`ErrorFrozen`, `ErrorShapeReshape`, worded for it), at the change. The conflicts
+are the ordinary ones, so a loan of a source reached through a shared path
+conflicts only where it would for a local: a method returning a borrow into a
+container that changes shape freezes the place it was reached by (`loanFreezeShared`),
+and reads, a write to another field and a write to a container that does not change
+shape pass.
+
 A parameter of a generator is a field of the struct that is the generator, named
 by its bare name in the body as a method names its fields: the body may borrow it
 or copy it, or write one declared `mut`, but a move out of it is refused as a
@@ -1707,7 +1726,7 @@ Everything else about permissions is type check's: `permMatches` in
 | `ErrorLifetimeBound` | `loanNotGlobal` and `loanNotBound`, from `pwStaticArgs`; `fnCallStaticArgs`; `loanNotBound`, from `pwBoundHolds`; `loanNotBoxable`, from `pwValue` | an argument for a part a type parameter's `'static` bound makes global, or for a parameter `&<Trait + 'static`, carries, or is, a borrow that is not global; a value returned or stored as a virtual reference bounded by `'a` holds a borrow not known to last `'a`; a value made an owning virtual reference holds a borrow not known to be global |
 | `ErrorFrozen` | `loanUse`, for a conflict `loanAccess` recorded; `loanFlightAccess`, `loanFlightActivate` | a source read, changed, moved, borrowed or ended while a borrow of it that forbids that is still to be used; reported at the access, naming the borrow (or the method that returned it) and its next use. Or, at once, an access conflicting with a loan an earlier operand of the same call or literal carries, or a two-phase receiver conflicting at its call with what another argument carries |
 | `ErrorFrozen` | `loanUse`, for a seam's `AccessSeam` conflict; `loanSeamFlight` | a borrow that is not global, held at a seam (`await`) and used after it, reported at the seam where it ended; or one an operand around the seam carries in flight, a plain path |
-| `ErrorFrozen` | `loanUse`, for a generator seam's `AccessYield` conflict | a borrow of a generator's own ground -- one of its locals, or of a parameter it holds by value -- held at a `yield` and used after it, reported at the `yield` |
+| `ErrorFrozen` | `loanUse`, for a generator seam's `AccessYield` conflict | a borrow of a generator's own ground -- one of its locals, or of a parameter it holds by value -- held at a `yield` and used after it, reported at the `yield`; and, from the stand-in for the generator's caller, a change to a place a borrow a `yield` handed out points into, reported at the change |
 | `ErrorGenFrame` | `pwYieldVar` | a lock's guard, or a value holding a traced reference, that would stay in a generator's frame across a `yield`; or, in generation, a `yield` where a temporary of an enclosing statement is still to be dropped |
 | `ErrorMoveField` | `flowRefuseMoveField` | among the rest, a move out of a generator's parameter, a field of the value it is |
 | `ErrorAwaitLeftCall` | `loanSeamFlight`; `awaitWalk`, from `awaitSplitOrReport` | a borrow, or a place's base or a swap's other side, written to the left of an `await` in its statement and used after it, made by a call or a temporary: only a plain path is reached again after the seam |
@@ -1827,7 +1846,7 @@ droppable noted as holding nothing is never finalized.
 | | `pwStmts`, `pwBlock`, `pwBlockExits`, `pwLoop`, `pwIf`, `pwJump`, `pwScopeEnd`, `pwScopeEndHanding`, `pwHolderDies`, `pwExit` | forks and joins, loops to a fixed point, jumps, a scope's end as an access (with a block's value in flight), a finalizing holder's death as a use, and an exit's record for the drop-flag client |
 | | `pwDropUse` | a use of a place's root variable, checked by the drop-flag client |
 | | `pwSeam`, `pwSeamVar`, `pwSeamNote`, `pathSeamLive`, `pwGlobalOnly`, `pwIsGuard` | a seam ("A seam"): what is awaited, the loans in flight across it, and each variable in scope -- its borrows ended, its live mark set, what it would do noted on the `AwaitNode` |
-| | `pwYield`, `pwYieldVar`, `pwYieldNote`, `pwGenKept` | a generator's seam ("A yield"): the result handed out, and each variable in scope -- the borrows of its own ground that end, its live mark, what it does there noted on the `YieldNode` |
+| | `pwYield`, `pwYieldVar`, `pwYieldNote`, `pwGenKept`, `pwYieldCaller` | a generator's seam ("A yield"): the result handed out, held from there by the stand-in for the generator's caller, and each variable in scope -- the borrows of its own ground that end, its live mark, what it does there noted on the `YieldNode` |
 | | `pwOrder`, `pwSeams` | in a function holding an `await`, an operand list in the order generation makes it, a plain path before a seam made after it (`awaitOrder`) |
 | | `pwPreBegin`, `pwPreHas` | the arguments of the indexes of places holding a seam in an index (`awaitChainLevels`) walked first, those indexes noted so the walk of each place leaves them out |
 | | `pwGpuOneValue`, `pwIsLitIndex`, `pathGpuChoices`, `pwRetFirst` | GPU targets: an `if`'s or a block's value, and a function's returns, against each other (`pathJoin` compares a holder's paths); a literal index |
