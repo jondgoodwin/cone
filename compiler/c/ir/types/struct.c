@@ -2626,13 +2626,16 @@ static void structCheckTraitReqs(StructNode *node) {
                 && ((FnDclNode*)binding)->genericinfo
                 && ((FnDclNode*)binding)->genericinfo->parms == traitmeth->genericinfo->parms)
                 continue;
-            // A generic default has no vtable slot and no caller reads its signature
-            // through the trait, so a type may replace it with a generic method of
-            // its own that gives something else (a Zip's 'zip' gives a flat triple,
-            // where the default would nest the pair). The default is not cloned in
-            // when the type declares the name
-            if (traitmeth->genericinfo && traitmeth->value && binding && binding->tag == FnDclTag
-                && ((FnDclNode*)binding)->genericinfo)
+            // A type's own method replaces a shared one of the same name, whatever its
+            // shape (a Zip's 'zip' gives a flat triple, where the default would nest the
+            // pair). Only a default that fills no vtable slot can be replaced so (a
+            // generic one, one with a 'where' clause, an 'inline' one: structMakeVtable
+            // passes them by), since no caller reads its signature through the trait; a
+            // default in a slot is met by its signature as a requirement is. The default
+            // is not cloned in where the type declares the name, so a direct call gets
+            // the type's own method and generic code over the trait gets the default
+            if (traitmeth->value && (traitmeth->genericinfo || traitmeth->where || (traitmeth->flags & FlagInline))
+                && binding && binding->tag == FnDclTag)
                 continue;
             // A trait method is one named requirement. The type satisfies it with
             // a directly named method or the one overload candidate of that signature.
