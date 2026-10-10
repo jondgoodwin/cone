@@ -334,13 +334,15 @@ outermost level winning a name is that order: the only names a reference
 declares are `refType`'s `===` and `!==`, operators, which this does not touch
 and which `fnCallLowerPtrMethod(node, refType)` takes first; a struct's own
 method is found on the struct before anything it holds (a fold cannot repeat a
-name). **Permission is the intersection of the steps**, and the explicit
-dereference does not compute that (a `& &mut` read through `(**r).x` keeps the
-inner `&mut`'s, `iexpLvalInfo`), so the injected dereference is typed with it:
-from the first step whose permission cannot write, the reference each deeper
-dereference holds is a copy of its type with that permission (`clamp`), and
-every later use, a field stored, a mutable borrow, a `self &mut` candidate, is
-held to it by the checks that already read the type. The `RefTag` branch's
+name). **What it permits is what the explicit dereferences permit**: a borrow
+read out of another keeps its own permission (`iexpLvalInfo` takes the last
+step's), so `r.x = 9` through a `& &mut Pt` is allowed as `(**r).x = 9` is, and
+refused through a `&mut &Pt` because the inner level is read-only. Only an owner
+is held to the steps above it (a `&` lends only `&` of an owner,
+`borrowOwnerLendRefused`): from the first step whose permission cannot write,
+the dereference that reaches an owner is typed as a copy of the owner's type
+with that permission (`clamp`), so a field stored or a `self &mut` candidate
+through it is refused by the checks that already read the type. The `RefTag` branch's
 `ownerread` retry remains for what this skips: an operator, or a call, on a
 borrow of an owner.
 

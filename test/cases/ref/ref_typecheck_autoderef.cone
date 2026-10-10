@@ -1,8 +1,10 @@
-// What a field or a method reached through several references may not do. The
-// permission of the path is the intersection of its steps, so a '&mut' reached
-// through a '&' reads and nothing more, at any depth, and an owner behind a
-// borrow that only reads is no more writable than the borrow. ref_autoderef holds
-// the same shapes where the permissions allow.
+// What a field or a method reached through several references may not do. It is
+// what the explicit dereferences refuse: 'r.x' is '(**r).x'. A borrow read out of
+// another keeps its own permission (ref_autoderef writes through '& &mut Pt', as
+// '(**r).x = 9' does), so a write is refused where the inner level is read-only;
+// and an owner behind a borrow that only reads lends only what the borrow does
+// (a '&' lends only '&' of an owner). ref_autoderef holds the same shapes where
+// the permissions allow.
 //
 // Type-check stage only, as ref_typecheck_perm is.
 
@@ -14,32 +16,31 @@ struct Pt {
   pub fn bump(self &mut) { x = x + 1; }
 }
 
-// a '&mut' behind a '&'
-fn writeRoMut(r & &mut Pt) {
-  r.x = 9;                //~ ErrorNoMut:4 "You do not have permission to modify lval"
-}
-
-// the method wants 'self &mut', which the read-only view of it is not
-fn callRoMut(r & &mut Pt) {
-  r.bump();               //~ ErrorNoCandidate:4 "No method declared by `bump` accepts the call's arguments."
-}
-
-// a '&mut' on top of a '&'
+// a '&' held behind a '&mut': the inner level cannot write
 fn writeMutRo(r &mut &Pt) {
   r.x = 9;                //~ ErrorNoMut:4 "You do not have permission to modify lval"
 }
 
-// a '&' in the middle of three: the read-only step governs what is beyond it
-fn writeMiddle(r &mut & &mut Pt) {
-  r.x = 9;                //~ ErrorNoMut:4 "You do not have permission to modify lval"
+// the same, the dereferences written out
+fn writeMutRoExplicit(r &mut &Pt) {
+  (**r).x = 9;            //~ ErrorNoMut:8 "You do not have permission to modify lval"
 }
 
-// a mutable borrow of a field reached that way
-fn lendRoMut(r & &mut Pt) {
-  imm q = &mut r.x;       //~ ErrorBadPerm:11 "Borrowed reference cannot obtain this permission"
+// the method wants 'self &mut', which that read-only level is not
+fn callMutRo(r &mut &Pt) {
+  r.bump();               //~ ErrorNoCandidate:4 "No method declared by `bump` accepts the call's arguments."
 }
 
 // an owner behind a borrow that only reads
 fn writeOwner(r &So[Pt]) {
+  r.x = 5;                //~ ErrorNoMut:4 "You do not have permission to modify lval"
+}
+
+fn callOwner(r &So[Pt]) {
+  r.bump();               //~ ErrorNoCandidate:4 "No method declared by `bump` accepts the call's arguments."
+}
+
+// two borrows deep
+fn writeOwnerTwo(r &&So[Pt]) {
   r.x = 5;                //~ ErrorNoMut:4 "You do not have permission to modify lval"
 }

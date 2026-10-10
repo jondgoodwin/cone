@@ -3097,12 +3097,12 @@ static int fnCallClosureArgs(TypeCheckState *pstate, FnCallNode *node, FnDclNode
 // operator's to select first. A key and a lock-managed reference are left to
 // the refusal each has, and a raw pointer is not read through.
 //
-// The permission of the path is the intersection of its steps (refperm.html,
-// "viewpoint adaptation"): a reference read out from behind one that cannot
-// write is seen as that one, so a '&mut' reached through a '&' gives '&' access.
-// The dereference is typed that way, the reference it holds with the permission
-// of the step that could not write, and every use after it -- a field written,
-// a mutable borrow, a method wanting 'self &mut' -- is held to it.
+// What the path permits is what the explicit dereferences would: 'r.x' is
+// '(**r).x', so a borrow read out of another keeps its own permission. An owner
+// reached through a step that cannot write lends only what that step lets
+// (borrowOwnerLendRefused: a '&' lends only '&' of an owner), so the dereference
+// that reaches it is typed with the permission of that step, and every use
+// after it -- a field written, a method wanting 'self &mut' -- is held to it.
 static void fnCallReadThroughRefs(FnCallNode *node) {
     if (!isExpNode(node->objfn) || (node->flags & FlagOperator))
         return;
@@ -3123,7 +3123,8 @@ static void fnCallReadThroughRefs(FnCallNode *node) {
         if (clamp == NULL && !(permGetFlags(step->perm) & MayWrite))
             clamp = step->perm;
         derefInject(&node->objfn);
-        if (clamp && !permIsLock(held->perm) && (permGetFlags(held->perm) & MayWrite)) {
+        if (clamp && held->tag == RefTag && itypeGetTypeDcl(held->region) != borrowRef
+            && !permIsLock(held->perm) && (permGetFlags(held->perm) & MayWrite)) {
             RefNode *seen = newRefNode(held->tag);
             *seen = *held;
             seen->typeinfo = NULL;
