@@ -1,0 +1,401 @@
+// The rest of an 'await' inside an expression (concurrency_await_expr is the
+// first part): a place indexed more than once, both sides of a swap, a slice's
+// bounds, a parallel assignment's places and the entries of a '<-'. Where an
+// 'await' is among these, the indexes of the place (or of both places, or of
+// every place of the assignment) are made first, in the order written, each
+// kept in flight across the seams after it; the arrays and slices they index
+// are reached after the last seam, and the value an assignment stores, made
+// before the places, is in flight across all of them. Each entry of a '<-'
+// written before the last one holding an 'await' is made before the receiver
+// is borrowed, in the order written, and appended after.
+// What is awaited here is a plain function, so this compiles with
+// '--await-direct', for tests: each seam hands its record straight to its
+// second half. concurrency_await_places_reply awaits behaviours instead.
+//
+// Each behaviour is run beside its twin with no 'await', and the two traces
+// are the same: each 'give' is called once, in the order written, a call
+// written beside it keeps its place in that order, and each droppable dies
+// where and in the order the one scope says.
+//
+// - chain: 'grid[await give(1)][await give(2)]', a place two indexes deep with a
+//   seam in each, and a call among the indexes ('mk') made between the seams;
+// - field: 'rows[await give(1)].cells[await give(2)]', a field between the
+//   indexes;
+// - swaps: 'items[await give(0)] <=> items[await give(3)]', and two places
+//   two indexes deep, four seams;
+// - slices: '&items[await give(1)..await give(3)]', one bound, an inclusive
+//   range, and a slice of a row at a seam-held row;
+// - parallel: 'a, b = await give(1), await give(2)' (the values only), a place
+//   among the places stored into, and two places each holding a seam, the
+//   values (calls) made before either;
+// - lists: 'v <- (mk(1), await give(2), mk(3))', a droppable among the entries
+//   that travels across the seam, and two seams among the entries; pairs into
+//   a dictionary, 'd <- mk(1): await give(2), await give(3): mk(4)';
+// - locals and loops: the same places in a local array, and in a loop whose
+//   second halves run the next pass to the seams again;
+// - twice: a local made by an 'await' used in several indexes, each 'await'
+//   called once.
+
+mod concurrency_await_places;
+
+import stdio use *;
+import actors;
+import collections use List, Dict;
+
+struct Fin {
+  pub n u64;
+  fn final(self &uni) {printStr("  drop "); printUInt(n); printStr("\n");}
+}
+
+struct Row {
+  pub cells Array[u64, 3];
+}
+
+fn give(n u64) u64 {printStr("  give "); printUInt(n); printStr("\n"); n;}
+fn mk(n u64) u64 {printStr("  mk "); printUInt(n); printStr("\n"); n;}
+fn make(n u64) Fin {printStr("  make "); printUInt(n); printStr("\n"); new Fin(n);}
+fn yes(b bool) u64 {if b {1u64;} else {0u64;}}
+fn say(s &str, n u64) {printStr("  "); printStr(s); printStr(" "); printUInt(n); printStr("\n");}
+fn head(s &str) {printStr(s); printStr("\n");}
+
+actor Page {
+  body u64;
+  items Array[u64, 4];
+  grid Array[Array[u64, 3], 2];
+  rows Array[Row, 2];
+
+  fn fill(self) {
+    items[0] = 10u64; items[1] = 20u64; items[2] = 30u64; items[3] = 40u64;
+    grid[0][0] = 100u64; grid[0][1] = 101u64; grid[0][2] = 102u64;
+    grid[1][0] = 110u64; grid[1][1] = 111u64; grid[1][2] = 112u64;
+    rows[0].cells[0] = 200u64; rows[0].cells[1] = 201u64; rows[0].cells[2] = 202u64;
+    rows[1].cells[0] = 210u64; rows[1].cells[1] = 211u64; rows[1].cells[2] = 212u64;
+  }
+
+  pub async do chain(self) {
+    head("chain");
+    fill();
+    imm g = new Fin(64u64);
+    body = grid[await give(1u64)][await give(2u64)];
+    say("body", body);
+    body = grid[await give(0u64)][mk(1u64) + await give(1u64)] + mk(1000u64);
+    say("body", body);
+    grid[await give(1u64)][await give(0u64)] = mk(555u64);
+    say("grid10", grid[1][0]);
+  }
+  pub async do chainPlain(self) {
+    head("chain plain");
+    fill();
+    imm g = new Fin(64u64);
+    body = grid[give(1u64)][give(2u64)];
+    say("body", body);
+    body = grid[give(0u64)][mk(1u64) + give(1u64)] + mk(1000u64);
+    say("body", body);
+    grid[give(1u64)][give(0u64)] = mk(555u64);
+    say("grid10", grid[1][0]);
+  }
+
+  pub async do field(self) {
+    head("field");
+    fill();
+    body = rows[await give(1u64)].cells[await give(2u64)];
+    say("body", body);
+    rows[await give(0u64)].cells[await give(1u64)] = mk(77u64);
+    say("cell01", rows[0].cells[1]);
+  }
+  pub async do fieldPlain(self) {
+    head("field plain");
+    fill();
+    body = rows[give(1u64)].cells[give(2u64)];
+    say("body", body);
+    rows[give(0u64)].cells[give(1u64)] = mk(77u64);
+    say("cell01", rows[0].cells[1]);
+  }
+
+  pub async do swaps(self) {
+    head("swaps");
+    fill();
+    imm g = new Fin(65u64);
+    items[await give(0u64)] <=> items[await give(3u64)];
+    say("items0", items[0]);
+    say("items3", items[3]);
+    grid[await give(0u64)][await give(1u64)] <=> grid[await give(1u64)][await give(2u64)];
+    say("grid01", grid[0][1]);
+    say("grid12", grid[1][2]);
+  }
+  pub async do swapsPlain(self) {
+    head("swaps plain");
+    fill();
+    imm g = new Fin(65u64);
+    items[give(0u64)] <=> items[give(3u64)];
+    say("items0", items[0]);
+    say("items3", items[3]);
+    grid[give(0u64)][give(1u64)] <=> grid[give(1u64)][give(2u64)];
+    say("grid01", grid[0][1]);
+    say("grid12", grid[1][2]);
+  }
+
+  pub async do slices(self) {
+    head("slices");
+    fill();
+    imm s = &items[await give(1u64)..await give(3u64)];
+    say("len", s.len());
+    say("first", s[0]);
+    imm t = &items[await give(2u64)..4u64];
+    say("len", t.len());
+    say("first", t[0]);
+    imm u = &items[await give(0u64)...await give(1u64)];
+    say("len", u.len());
+    say("last", u[1]);
+    imm w = &grid[await give(1u64)][await give(1u64)..await give(3u64)];
+    say("len", w.len());
+    say("first", w[0]);
+  }
+  pub async do slicesPlain(self) {
+    head("slices plain");
+    fill();
+    imm s = &items[give(1u64)..give(3u64)];
+    say("len", s.len());
+    say("first", s[0]);
+    imm t = &items[give(2u64)..4u64];
+    say("len", t.len());
+    say("first", t[0]);
+    imm u = &items[give(0u64)...give(1u64)];
+    say("len", u.len());
+    say("last", u[1]);
+    imm w = &grid[give(1u64)][give(1u64)..give(3u64)];
+    say("len", w.len());
+    say("first", w[0]);
+  }
+
+  pub async do written(self) {
+    head("written");
+    fill();
+    imm s = &mut items[await give(1u64)..await give(3u64)];
+    s[0] = mk(91u64);
+    s[1] = mk(92u64);
+    say("items1", items[1]);
+    say("items2", items[2]);
+    imm r = &mut grid[await give(0u64)][await give(1u64)..await give(3u64)];
+    r[1] = mk(93u64);
+    say("grid02", grid[0][2]);
+  }
+  pub async do writtenPlain(self) {
+    head("written plain");
+    fill();
+    imm s = &mut items[give(1u64)..give(3u64)];
+    s[0] = mk(91u64);
+    s[1] = mk(92u64);
+    say("items1", items[1]);
+    say("items2", items[2]);
+    imm r = &mut grid[give(0u64)][give(1u64)..give(3u64)];
+    r[1] = mk(93u64);
+    say("grid02", grid[0][2]);
+  }
+
+  pub async do parallel(self) {
+    head("parallel");
+    fill();
+    imm g = new Fin(66u64);
+    mut a = 0u64;
+    mut b = 0u64;
+    a, b = await give(1u64), await give(2u64);
+    say("a", a);
+    say("b", b);
+    (a, items[await give(1u64)]) = (mk(7u64), mk(8u64));
+    say("a", a);
+    say("items1", items[1]);
+    (items[await give(0u64)], grid[await give(1u64)][await give(2u64)]) = (mk(5u64), mk(6u64));
+    say("items0", items[0]);
+    say("grid12", grid[1][2]);
+  }
+  pub async do parallelPlain(self) {
+    head("parallel plain");
+    fill();
+    imm g = new Fin(66u64);
+    mut a = 0u64;
+    mut b = 0u64;
+    a, b = give(1u64), give(2u64);
+    say("a", a);
+    say("b", b);
+    (a, items[give(1u64)]) = (mk(7u64), mk(8u64));
+    say("a", a);
+    say("items1", items[1]);
+    (items[give(0u64)], grid[give(1u64)][give(2u64)]) = (mk(5u64), mk(6u64));
+    say("items0", items[0]);
+    say("grid12", grid[1][2]);
+  }
+
+  pub async do locals(self) {
+    head("locals");
+    mut m = [[1u64, 2u64, 3u64], [4u64, 5u64, 6u64]];
+    imm g = new Fin(67u64);
+    body = m[await give(1u64)][await give(0u64)];
+    say("body", body);
+    m[await give(0u64)][await give(2u64)] = mk(99u64);
+    m[await give(1u64)][await give(1u64)] <=> m[await give(0u64)][await give(0u64)];
+    say("m00", m[0][0]);
+    say("m02", m[0][2]);
+    say("m11", m[1][1]);
+    mut a = 0u64;
+    (a, m[await give(1u64)][await give(2u64)]) = (mk(8u64), mk(9u64));
+    say("a", a);
+    say("m12", m[1][2]);
+    imm s = &m[await give(1u64)][await give(0u64)..await give(2u64)];
+    say("slen", s.len());
+    say("s0", s[0]);
+  }
+  pub async do localsPlain(self) {
+    head("locals plain");
+    mut m = [[1u64, 2u64, 3u64], [4u64, 5u64, 6u64]];
+    imm g = new Fin(67u64);
+    body = m[give(1u64)][give(0u64)];
+    say("body", body);
+    m[give(0u64)][give(2u64)] = mk(99u64);
+    m[give(1u64)][give(1u64)] <=> m[give(0u64)][give(0u64)];
+    say("m00", m[0][0]);
+    say("m02", m[0][2]);
+    say("m11", m[1][1]);
+    mut a = 0u64;
+    (a, m[give(1u64)][give(2u64)]) = (mk(8u64), mk(9u64));
+    say("a", a);
+    say("m12", m[1][2]);
+    imm s = &m[give(1u64)][give(0u64)..give(2u64)];
+    say("slen", s.len());
+    say("s0", s[0]);
+  }
+
+  pub async do loops(self) {
+    head("loops");
+    fill();
+    mut i = 0u64;
+    mut sum = 0u64;
+    while i < 3u64 {
+      imm g = new Fin(70u64 + i);
+      sum = sum + grid[await give(i % 2u64)][await give(i)] + mk(i);
+      items[await give(i)] <=> items[await give(3u64 - i)];
+      i = i + 1u64;
+    }
+    say("sum", sum);
+    say("items0", items[0]);
+    say("items1", items[1]);
+    say("items2", items[2]);
+    say("items3", items[3]);
+  }
+  pub async do loopsPlain(self) {
+    head("loops plain");
+    fill();
+    mut i = 0u64;
+    mut sum = 0u64;
+    while i < 3u64 {
+      imm g = new Fin(70u64 + i);
+      sum = sum + grid[give(i % 2u64)][give(i)] + mk(i);
+      items[give(i)] <=> items[give(3u64 - i)];
+      i = i + 1u64;
+    }
+    say("sum", sum);
+    say("items0", items[0]);
+    say("items1", items[1]);
+    say("items2", items[2]);
+    say("items3", items[3]);
+  }
+
+  pub async do twice(self) {
+    head("twice");
+    fill();
+    imm k = await give(1u64);
+    body = grid[k][await give(k + 1u64)] + grid[k][k] + items[await give(k + 2u64)];
+    say("body", body);
+  }
+  pub async do twicePlain(self) {
+    head("twice plain");
+    fill();
+    imm k = give(1u64);
+    body = grid[k][give(k + 1u64)] + grid[k][k] + items[give(k + 2u64)];
+    say("body", body);
+  }
+
+  pub async do pairs(self) {
+    head("pairs");
+    mut d = new Dict[u64, u64];
+    d <- mk(1u64): await give(2u64), await give(3u64): mk(4u64), mk(5u64): mk(6u64);
+    say("dlen", d.len());
+    say("has1", yes(d.contains(&1u64)));
+    say("has3", yes(d.contains(&3u64)));
+    say("has5", yes(d.contains(&5u64)));
+  }
+  pub async do pairsPlain(self) {
+    head("pairs plain");
+    mut d = new Dict[u64, u64];
+    d <- mk(1u64): give(2u64), give(3u64): mk(4u64), mk(5u64): mk(6u64);
+    say("dlen", d.len());
+    say("has1", yes(d.contains(&1u64)));
+    say("has3", yes(d.contains(&3u64)));
+    say("has5", yes(d.contains(&5u64)));
+  }
+
+  pub async do lists(self) {
+    head("lists");
+    mut v = List[u64].empty();
+    v <- (mk(1u64), await give(2u64), mk(3u64));
+    say("len", v.len());
+    say("v0", *v[0]);
+    say("v1", *v[1]);
+    say("v2", *v[2]);
+    mut f = List[Fin].empty();
+    f <- (make(4u64), new Fin(await give(5u64)), make(7u64));
+    say("flen", f.len());
+    mut w = List[u64].empty();
+    w <- (await give(8u64), mk(9u64), await give(10u64), mk(11u64));
+    say("wlen", w.len());
+    say("w3", *w[3]);
+  }
+  pub async do listsPlain(self) {
+    head("lists plain");
+    mut v = List[u64].empty();
+    v <- (mk(1u64), give(2u64), mk(3u64));
+    say("len", v.len());
+    say("v0", *v[0]);
+    say("v1", *v[1]);
+    say("v2", *v[2]);
+    mut f = List[Fin].empty();
+    f <- (make(4u64), new Fin(give(5u64)), make(7u64));
+    say("flen", f.len());
+    mut w = List[u64].empty();
+    w <- (give(8u64), mk(9u64), give(10u64), mk(11u64));
+    say("wlen", w.len());
+    say("w3", *w[3]);
+  }
+}
+
+fn main() {
+  initAll();
+  actors.configure(new actors.Options(workers: 1u32));
+  {
+    imm p = new Page(0u64, [0u64, 0u64, 0u64, 0u64], [[0u64, 0u64, 0u64], [0u64, 0u64, 0u64]],
+      [new Row([0u64, 0u64, 0u64]), new Row([0u64, 0u64, 0u64])]);
+    p.chain();
+    p.chainPlain();
+    p.field();
+    p.fieldPlain();
+    p.swaps();
+    p.swapsPlain();
+    p.slices();
+    p.slicesPlain();
+    p.written();
+    p.writtenPlain();
+    p.parallel();
+    p.parallelPlain();
+    p.locals();
+    p.localsPlain();
+    p.loops();
+    p.loopsPlain();
+    p.twice();
+    p.twicePlain();
+    p.pairs();
+    p.pairsPlain();
+    p.lists();
+    p.listsPlain();
+  }
+  finalAll();
+}

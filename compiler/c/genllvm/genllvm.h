@@ -185,6 +185,11 @@ typedef struct GenState {
     // envelope reserved in the pending table (NULL where the record is empty)
     uint32_t awaitflights;
     LLVMValueRef awaitid;
+    // The indexes of places made before the places are reached, a seam among
+    // them (genlPlacePre): the index each was made for, and its values
+    struct GenPre *pres;
+    uint32_t precnt;
+    uint32_t premax;
 
     // A generator's 'next' (genlyield.c): the generator, which holds the
     // function's frame; the switch at the function's entry, which each seam
@@ -563,6 +568,16 @@ LLVMValueRef genlKeepAcross(GenState *gen, INode *node, INode *type, LLVMValueRe
 LLVMValueRef genlKeptAcross(GenState *gen, LLVMValueRef slot, LLVMValueRef val, uint32_t mark);
 // Whether a seam is generated inside 'node', in a split method
 int genlHasSeam(GenState *gen, INode *node);
+// The indexes of a place holding a seam -- of each of 'places', where several are
+// reached after all their seams, as a swap's two sides are -- made first, in the
+// order written and across the seams (awaitChainLevels), and noted: the values
+// of an index (genlPreOf), until genlPlacePreEnd. Answers the mark to end it at
+uint32_t genlPlacePre(GenState *gen, Nodes *places);
+void genlPlacePreEnd(GenState *gen, uint32_t mark);
+// The values made early for this index (an ArrIndex node), or NULL
+LLVMValueRef *genlPreOf(GenState *gen, INode *index);
+// Whether a place not yet noted has an index in its chain holding a seam
+int genlNeedsPre(GenState *gen, INode *place);
 // A lock's guard's flag, made as a temporary guard is kept (genlTempKeep)
 // in a split method, and code run only while it holds its lock, ended by
 // genlDropFlagEnd
