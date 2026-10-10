@@ -449,6 +449,12 @@ marking a reference to a type that is known, is `ErrorMarkUse`
 A string literal holding a NUL byte (`"ab\x00cd"`) wanted as a `cstr`, which C
 would read up to the NUL, is `ErrorCStrNul` ([literals](../nodes/literals.md)).
 
+A parallel reduction (`xs.parallel().sum()`, `fold`, `findFirst`) in a module that
+does not import `actors`, `parallel()` asked of a source that cannot be cut (a
+chain of iterator adapters, a deque's cursor) or of a number range, and a reduction
+asked of a parallel view held in a variable are `ErrorParReduce` ([fncall](../nodes/fncall.md), "The
+parallel reductions").
+
 A borrow of part of what a reference parameter points at, stored into what that
 same reference points at (`held = buf.view()` in a method taking `self &mut`, or
 into a list there through a call), is `ErrorSelfStore`: the value would hold a

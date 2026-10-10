@@ -2841,10 +2841,28 @@ static void pwYieldVar(YieldNode *node, uint32_t index, int isparm) {
     pwYieldNote(node, var, flags);
 }
 
+// The caller of a generator, as the loan walk sees it: a variable that holds
+// every borrow a 'yield' has handed out on the paths reaching a point, and that
+// nothing ends, since the caller may keep the value for as long as the
+// generator lives (loanYieldHolder)
+static VarDclNode *pwYieldCallerDcl = NULL;
+
+static uint32_t pwYieldCaller(INode *exp) {
+    if (pwYieldCallerDcl == NULL) {
+        pwYieldCallerDcl = newVarDclFull(tempName, VarDclTag, ((IExpNode *)exp)->vtype, (INode *)immPerm, NULL);
+        inodeLexCopy((INode *)pwYieldCallerDcl, exp);
+        pwYieldCallerDcl->scope = 2;
+        pwYieldCallerDcl->flowtracked = 1;
+    }
+    return pathVar(pwYieldCallerDcl);
+}
+
 // A generator's seam, 'yield': the result 'next' gives is made, and the body is
 // left there to be resumed. What it hands the caller carries no borrow of the
-// generator's own ground, as a 'return''s carries none of the function's; then
-// each variable in scope is noted (pwYieldVar)
+// generator's own ground, as a 'return''s carries none of the function's, and
+// the caller then holds it for the rest of the body (pwYieldCaller): a change
+// the body makes afterwards to what it borrows is refused as if a local held it.
+// Then each variable in scope is noted (pwYieldVar)
 static PathSet *pwYield(YieldNode *node) {
     PathSet *carried = pwValue(&node->exp, 1);
     node->walked = 1;
@@ -2853,6 +2871,12 @@ static PathSet *pwYield(YieldNode *node) {
         loanEscape(node->exp, own, LoanEscapeReturn);
     else
         pwBoundHolds(node->exp, pwSig->rettype, carried);
+    // A borrow of the generator's own ground is refused above, not held
+    if (pathLoans && carried) {
+        uint32_t caller = pwYieldCaller(node->exp);
+        loanYieldHolder(caller);
+        pathSetFacts(caller, pathSetUnion(pathVars[caller].holds, pwGenKept(carried)), pathVars[caller].pending);
+    }
     // The statement's own temporaries end with it, before the seam
     if (!pathDrops) {
         INode **nodesp;

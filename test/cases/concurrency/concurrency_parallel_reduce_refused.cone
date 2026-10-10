@@ -1,0 +1,36 @@
+// What a parallel reduction refuses: 'parallel()' asked of a source that cannot be
+// cut (an iterator chain, a deque's cursor), a reduction asked of a parallel view
+// held in a variable (the reduction is called directly on 'parallel()'), a closure
+// that changes a variable around it (it runs on several workers at once, so it
+// must be Shareable, as the body of a 'parallel each' must), and a sum of items
+// that are not numbers.
+
+mod concurrency_parallel_reduce_refused;
+
+import collections use *;
+import actors;
+
+fn chain(xs &List[i64]) {
+  imm a = xs.iter().map(x => *x + 1i64).parallel();     //~ ErrorParReduce:40 "A chain of iterator adapters ('map', 'filter', 'take', 'skip') hands out its items one after another and cannot be cut"
+}
+
+fn deque(d &Deque[i64]) {
+  imm a = d.iter().parallel();                           //~ ErrorParReduce:19 "DequeItems hands out its items one after another and cannot be cut"
+}
+
+fn held(xs &List[i64]) {
+  imm v = xs.parallel();
+  imm t = v.sum();                                       //~ ErrorParReduce:12 "a parallel view held in a variable has no methods of its own"
+}
+
+fn changes(xs &List[i64]) i64 {
+  mut count = 0i64;
+  xs.parallel().fold(0i64, (acc, x) => { count += 1i64; acc + *x; }, (a, b) => a + b);   //~ ErrorNotShareable:16 "List 'count' to copy"
+  count;
+}
+
+fn notNumbers(names &List[String]) {
+  imm total = names.parallel().sum();                   //~ ErrorInvType:31 "Could not infer all of generic's type parameters"
+}
+
+fn main() i32 { 0i32; }

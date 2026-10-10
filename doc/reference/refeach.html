@@ -19,7 +19,7 @@
 			change its items in place (<span class="pre">mutItems</span>), consume it (<span class="pre">drain</span>), number them
 			(<span class="pre">indexed</span>) or cut it into runs (<span class="pre">chunks</span>, <span class="pre">mutChunks</span>), and <span class="pre">zip</span>; <span class="pre">each</span> as an entry of the append operator's list
 			(<a href="#builder">below</a>); and <a href="#parallel">parallel each</a> over a number range, an
-			array, a slice or a list, or the runs of one, with <span class="pre">indexed</span> giving the position, in a function or an actor's method, and <a href="#parallelbuilder">the parallel builder</a> that builds a list from it. The <a href="#adapters">adapters</a> of a cursor that declares itself an <span class="pre">Iterator</span>, <span class="pre">xs.iter().map(f).filter(g).sum()</span>, and a chain of them as the source of a <span class="pre">&lt;- each</span> list (<a href="#builder">below</a>). Not built yet: <a href="#closure">closure iterators</a>, the parallel reductions and a source that runs its own loop, all of which build on <a href="refclosure.html">closures</a>, which are built. An enum's variant is constructed with its values in square brackets, as written here: that is the current spelling, and how a variant is constructed is an open design question (<a href="refenum.html#init">Enums</a>).</i></p>
+			array, a slice or a list, or the runs of one, with <span class="pre">indexed</span> giving the position, in a function or an actor's method, and <a href="#parallelbuilder">the parallel builder</a> that builds a list from it. The <a href="#adapters">adapters</a> of a cursor that declares itself an <span class="pre">Iterator</span>, <span class="pre">xs.iter().map(f).filter(g).sum()</span>, and a chain of them as the source of a <span class="pre">&lt;- each</span> list (<a href="#builder">below</a>); and the <a href="#parallelreduce">parallel reductions</a>, <span class="pre">xs.parallel().sum()</span>, <span class="pre">fold</span> and <span class="pre">findFirst</span>. Not built yet: <a href="#closure">closure iterators</a> and a source that runs its own loop, both of which build on <a href="refclosure.html">closures</a>, which are built. An enum's variant is constructed with its values in square brackets, as written here: that is the current spelling, and how a variant is constructed is an open design question (<a href="refenum.html#init">Enums</a>).</i></p>
 
 	<p><span class="pre">each</span> makes it easier than <span class="pre">while</span>
 		to iterate over a sequence of values.
@@ -489,15 +489,15 @@ struct Countdown is Iterator[i64] {         // declared: it has map, filter, sum
 		as a closure, for a source that cannot hand out its items one by one (a line reader that lends each line from its own
 		buffer, say). <span class="pre">each</span> would use it when the source has it, and otherwise use <span class="pre">next</span>;
 		<span class="pre">break</span>, <span class="pre">continue</span> and <span class="pre">return</span> in the body would reach the source as
-		signals, and an <span class="pre">await</span> in such a body may be refused. The parallel reductions are to follow.
+		signals, and an <span class="pre">await</span> in such a body may be refused. The parallel reductions are <a href="#parallelreduce">below</a>.
 		A chain feeding the entries of <a href="#builderchain">a collection being built</a> (<span class="pre">&lt;- each</span>) is built.</p>
 
 	<h2 id="parallel">parallel each</h2>
 	<p style="margin-left: 40px;"><i>Note: Built in a function and in an actor's methods (<a href="#parallelactor">below</a>): over a number range, an
 			array, a slice or a list, with the header <span class="pre">if</span>, <span class="pre">mutItems()</span>, <span class="pre">indexed()</span> and the runs of <span class="pre">chunks(n)</span> and <span class="pre">mutChunks(n)</span>, a <a href="#parallelzip">zip</a> of such cursors, and, in a function that is not an actor's method, <a href="#parallelbuilder">the parallel builder</a> (<span class="pre">new List[T] &lt;- parallel each &hellip; yield</span>).
-			Not built yet: inside a generator; a source of your own that is a
-			<span class="pre">ParallelIterable</span>; and
-			the reductions that come with closures. A parallel each takes no
+			The reductions, <span class="pre">xs.parallel().sum()</span>, are <a href="#parallelreduce">below</a>.
+			Not built yet: inside a generator; and a source of your own that is a
+			<span class="pre">ParallelIterable</span>. A parallel each takes no
 			<span class="pre">else</span> and is a statement.</i></p>
 	<p>Writing <span class="pre">parallel</span> in front of an <span class="pre">each</span> runs the loop's passes at
 		the same time, on the <a href="refconccomm.html#actors">actors package's</a> workers, one for each CPU:</p>
@@ -732,6 +732,56 @@ xs &lt;- 0, parallel each x in other yield x + 1, 99;    // in the middle of a l
 		piece began. <span class="pre">List</span> has four methods the compiler calls for this,
 		<span class="pre">pieceBag</span>, <span class="pre">emptyPiece</span>, <span class="pre">depositPiece</span> and
 		<span class="pre">joinPieces</span>: they are not for a program to call.</p>
+
+	<h3 id="parallelreduce">Reductions: parallel().sum()</h3>
+	<p style="margin-left: 40px;"><i>Note: Built: a view of a list, an array or a slice, of the runs of
+			<span class="pre">chunks(n)</span>, of <span class="pre">iter()</span>, <span class="pre">indexed()</span> and a
+			<span class="pre">zip</span> of those;
+			<span class="pre">sum</span>, <span class="pre">fold</span> and <span class="pre">findFirst</span>. A view of
+			<span class="pre">mutItems()</span> or <span class="pre">mutChunks(n)</span> has none (a reduction reads). Not built yet: a view of a number range, which comes with the new range syntax.</i></p>
+	<p>A loop cannot hand a result back: a parallel each may not write a variable outside it, since which pass wrote
+		last would vary from run to run. A result is a <b>reduction</b>, and is written as a method called on
+		<span class="pre">parallel()</span>, a view of any source that can be cut into pieces:</p>
+<pre>
+import actors;
+
+fn stats(xs &amp;List[f64]) {
+  imm total = xs.parallel().sum();                 // the total of the numbers (0 for none)
+  imm top = xs.parallel().fold(0.0d, (m, x) =&gt; if *x &gt; m { *x; } else { m; },
+                               (a, b) =&gt; if b &gt; a { b; } else { a; });
+  imm hit = xs.parallel().findFirst(x =&gt; **x &gt; 100.0d);   // an Option of the item
+}
+</pre>
+	<p>Each piece of the source keeps a result of its own, and the results of neighbouring pieces are joined
+		pairwise up the tree the loop's splitting makes, on the workers, so that only the final value reaches the
+		code after the call. A module that calls one imports <span class="pre">actors</span>, as one that writes a
+		parallel each does. The reduction is called directly on <span class="pre">parallel()</span>: a view held in a
+		variable has no methods of its own, and a source that cannot be cut (a chain of adapters, a generator, a
+		file or a channel) has no <span class="pre">parallel()</span>; collect it into a list first.</p>
+	<ul>
+		<li><span class="pre">sum()</span> is the total of a view of numbers (integers, <span class="pre">f32</span>,
+			<span class="pre">f64</span>), or of borrows of them, as a list's items are.</li>
+		<li><span class="pre">fold(init, step, combine)</span>: <span class="pre">step(acc, item)</span> folds a run of items,
+			front to back, into an accumulator that starts as a copy of <span class="pre">init</span>, and
+			<span class="pre">combine(a, b)</span> joins the accumulators of two neighbouring runs, <span class="pre">a</span>
+			the earlier. <span class="pre">combine</span> must be associative, and need not be commutative (it may join
+			text or multiply matrices in order); <span class="pre">init</span> must be its identity, since each run begins
+			from a copy of it, so it may not have a finalizer (a number, a plain struct: a bounds, a total; a
+			<span class="pre">List</span> or <span class="pre">String</span> is a panic, and one is built in parallel by the
+			<a href="#parallelbuilder">builder</a>). The closures give each item as the view does: a borrow for a
+			list's, a tuple for a zip's.</li>
+		<li><span class="pre">findFirst(pred)</span> is the earliest item <i>by position</i> that
+			<span class="pre">pred</span> (given a borrow of the item) is true of, as an <span class="pre">Option</span>, though
+			a later piece may find a match first. The pieces after a match are not scanned, and a piece under way stops
+			at its next look.</li>
+	</ul>
+	<p>The closures run on several workers at once, so each must be <b>Shareable</b>, as a parallel each's body must:
+		one that borrows a variable it changes, or holds an <span class="pre">Rc</span>, is refused.</p>
+	<p><b>The result is the same on every run, with any number of workers</b>, a float sum included: the items are
+		cut into runs by their count alone (at least 128 items to a run, and at most 256 runs; a view of 128 or
+		fewer is one run, folded at once on the caller's thread), each run is folded front to back, and the runs are
+		joined by halving. So a float sum is not the plain loop's last bits, and is identical from one run, and one
+		machine, to the next.</p>
 
 	<p style="text-align: right; margin-top: 2em;">
 		<a href="refexcept.html"><img alt="_" src="next.png" /></a>

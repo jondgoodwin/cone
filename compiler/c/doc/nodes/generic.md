@@ -744,8 +744,11 @@ signature itself, and `genericParmBound` answers it too. A closure literal given
 parameter takes its parameter types from the bound instead: `genericClosureSig`
 finds the bound (`genericParmBound`: the clause whose subject is the parameter
 the argument's parameter is, or is a reference to), reads the other type
-parameters off the call's other arguments (`genericInferType`) and clones the
-bound with them ([closure](closure.md)). The refusal is `ErrorWhereUnmet`,
+parameters off the call's other arguments (`genericInferType`), and a parameter
+named only in the bound of another those settled (`T` in `[T, V RandomAccess[T],
+F fn(x &T) bool]`) off that argument's methods (`genericInferFromBounds`, as the
+call's own inference reads it), and clones the bound with them
+([closure](closure.md)). The refusal is `ErrorWhereUnmet`,
 spelling the signature as written (`spelled`), as it comes to here
 (`genericFnSigCat`) and what the argument has instead (`genericSigMeetWhy`).
 
