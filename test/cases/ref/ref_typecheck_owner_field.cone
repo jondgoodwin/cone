@@ -1,0 +1,38 @@
+// An owner held in a field, reached through a reference that only reads, lends
+// only what that reference lets: a '&' lends only '&' of what it holds, owners
+// included. 'h.app.frame()' through a '&Holder' (or '&imm') holding 'app So[App]'
+// would change a value the caller holds others able to read, so it is refused as
+// the same change through any other field is; so is the owner handed on as a
+// '&mut App' (a local's initializer, an argument), a '&mut' borrow of it written
+// out, a callable owner ('So[fn]') called, an owner in an owner, and a counted
+// owner that may change ('Rc[mut, App]'). ref_owner_field runs what stays allowed.
+
+mod ref_typecheck_owner_field;
+
+struct App {
+  pub n i64;
+  pub fn frame(self &mut) i64 { n = n + 1; n; }
+  pub fn look(self &) i64 { n; }
+}
+
+struct Holder {
+  pub app So[App];
+  pub shared Rc[mut, App];
+  pub onClick So[fn(x i64) i64];
+}
+
+struct Outer {
+  pub inner Holder;
+  pub boxed So[Holder];
+}
+
+fn take(a &mut App) i64 { a.frame(); }
+
+fn viaRead(h &Holder) i64 { h.app.frame(); }                       //~ ErrorBadPerm:30 "Cannot lend `&mut` of this owner"
+fn viaImm(h &imm Holder) i64 { h.app.frame(); }                    //~ ErrorBadPerm:33 "Cannot lend `&mut` of this owner"
+fn viaInit(h &Holder) i64 { imm r &mut App = h.app; r.frame(); }  //~ ErrorBadPerm:47 "Cannot lend `&mut` of this owner"
+fn viaArg(h &Holder) i64 { take(h.app); }                          //~ ErrorBadPerm:34 "Cannot lend `&mut` of this owner"
+fn viaWritten(h &Holder) i64 { (&mut *h.app).frame(); }            //~ ErrorBadPerm:33 "Borrowed reference cannot obtain this permission"
+fn viaShared(h &Holder) i64 { h.shared.frame(); }                  //~ ErrorBadPerm:32 "Cannot lend `&mut` of this owner"
+fn viaCall(h &Holder, x i64) i64 { h.onClick(x); }                 //~ ErrorBadPerm:37 "Cannot lend `&mut` of this owner"
+fn viaNested(o &Outer) i64 { o.boxed.app.frame(); }                //~ ErrorBadPerm:37 "Cannot lend `&mut` of this owner"

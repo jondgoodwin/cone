@@ -1,0 +1,50 @@
+// A struct is viewed as a trait behind a virtual reference ('&<Reading',
+// 'So[Reading]') through a table of its methods, and a call through the trait
+// lends only the 'self' permission the trait's method declares. A method asking
+// for a stronger 'self' than that cannot fill the slot: 'self &mut' where the
+// trait says 'self &' would change, through a reference that only reads, a value
+// the caller holds others able to read; the same for 'self &uni' met where the
+// trait says 'self &mut', and 'self &imm' where it says 'self &'. Each is
+// refused where the struct is given as the virtual reference, naming both
+// methods and both permissions. A method asking for no more than the trait's
+// ('self &' for 'self &mut') fills the slot: trait_vref_self runs it.
+
+mod trait_typecheck_vref_self;
+
+trait Reading {
+  pub fn read(self &) i64;
+}
+
+trait Editing {
+  pub fn edit(self &mut) i64;
+}
+
+struct Counter {
+  pub n i64;
+  pub fn read(self &mut) i64 { n = n + 1; n; }
+}
+
+struct Taker {
+  pub n i64;
+  pub fn edit(self &uni) i64 { n; }
+}
+
+struct Sealed {
+  pub n i64;
+  pub fn read(self &imm) i64 { n; }
+}
+
+fn through(r &<Reading) i64 { r.read(); }
+fn editing(e &<mut Editing) i64 { e.edit(); }
+
+fn main() {
+  imm c = new Counter(5);
+  mut t = new Taker(1);
+  imm s = new Sealed(2);
+
+  through(&c);                      //~ ErrorVtableSelf:11 "Counter's `read` takes `self &mut`, but Reading's `read` takes `self &`"
+  editing(&mut t);                  //~ ErrorVtableSelf:11 "Taker's `edit` takes `self &uni`, but Editing's `edit` takes `self &mut`"
+  through(&s);                      //~ ErrorVtableSelf:11 "Sealed's `read` takes `self &imm`, but Reading's `read` takes `self &`"
+  imm r &<Reading = &c;             //~ ErrorVtableSelf:21 "Counter's `read` takes `self &mut`"
+  imm o So[Reading] = new So[Counter](3); //~ ErrorVtableSelf:23 "Counter's `read` takes `self &mut`"
+}

@@ -3971,7 +3971,11 @@ static VtableImpl *structMapVtableImpl(StructNode *basenode, StructNode *strnode
                 return 0;
             // A callable trait's kind says what its '()' may do to the state: a
             // read-only reference is met only by a '()' that reads
-            if (basenode->callsig && !fnSigCallSelfFits(basenode, strmeth))
+            // and any other trait's method is met by no stronger 'self' than its own.
+            // A closure's method takes the 'self' its body needs, and a literal
+            // that changes state is met behind '&<mut' as it is (closure.md).
+            if (basenode->callsig ? !fnSigCallSelfFits(basenode, strmeth)
+                : !closureOfStruct((INode*)strnode) && !fnSigVrefSelfFits(meth, strmeth))
                 return NULL;
             // it matches, add the method to the implementation. A method the
             // type holds by folding satisfies the slot too, and the fields its

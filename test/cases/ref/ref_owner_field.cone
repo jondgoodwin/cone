@@ -1,0 +1,60 @@
+// What an owner held in a field lends, by the reference its holder is reached
+// through: through a '&' only '&' (a receiver that reads, a '&' argument, a
+// counted 'imm' owner read), through a '&mut' or a '&uni' whatever the owner
+// itself allows, and from a local struct the same. Called as a 'So[fn]' through a
+// '&mut', the callable's state changes and is seen on the next call. The numbers
+// show each call reached the value. ref_typecheck_owner_field holds the lends a
+// '&' refuses.
+
+mod ref_owner_field;
+
+import stdio use *;
+
+struct App {
+  pub n i64;
+  pub fn frame(self &mut) i64 { n = n + 1; n; }
+  pub fn look(self &) i64 { n; }
+}
+
+struct Holder {
+  pub app So[App];
+  pub shared Rc[imm, App];
+  pub onClick So[fn(x i64) i64];
+}
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn peek(h &Holder) i64 { h.app.look() + h.shared.look(); }
+fn readOwner(a &App) i64 { a.n; }
+fn viaArg(h &Holder) i64 { readOwner(h.app); }
+fn bump(h &mut Holder) i64 { h.app.frame(); }
+fn bumpUni(h &uni Holder) i64 { h.app.frame(); }
+fn click(h &mut Holder, x i64) i64 { h.onClick(x); }
+
+fn make(n i64) Holder {
+  new Holder(
+    new So[App](n),
+    new Rc[imm, App](new App(100)),
+    new So[fn(x i64) i64](fn(x i64) [mut s = 0i64] i64 { s += x; s; }));
+}
+
+fn main() {
+  mut h = make(10);
+  show("peek", peek(&h));              // 10 + 100
+  show("arg", viaArg(&h));             // 10
+  show("bump-1", bump(&mut h));        // 11
+  show("bump-2", bump(&mut h));        // 12
+  mut sole = new So[Holder](make(30));
+  show("uni", bumpUni(&uni *sole));    // 31
+  show("arg-after", viaArg(&h));       // 12
+  show("click-1", click(&mut h, 5));   // 5
+  show("click-2", click(&mut h, 7));   // 12
+  mut own = make(20);
+  show("own", own.app.frame());        // 21
+  show("own-click", own.onClick(3));   // 3
+}

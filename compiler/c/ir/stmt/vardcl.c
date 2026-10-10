@@ -574,9 +574,10 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
         if (matches && pstate->extend && pstate->extend->var == name && !(name->flags & FlagStatic))
             varDclExtend(pstate->extend, &name->value);
         if (!matches) {
-            char *why = isExpNode(name->value) ? fnSigCallRefusal(((IExpNode*)name->value)->vtype, name->vtype) : NULL;
+            int whycode;
+            char *why = isExpNode(name->value) ? fnSigCallRefusal(((IExpNode*)name->value)->vtype, name->vtype, &whycode) : NULL;
             if (why)
-                errorMsgNode(name->value, ErrorCallablePerm, "%s", why);
+                errorMsgNode(name->value, whycode, "%s", why);
             else
                 errorMsgNode(name->value, ErrorInvType, "Initialization value's type does not match variable's declared type");
         }

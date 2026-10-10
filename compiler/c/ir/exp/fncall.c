@@ -671,9 +671,10 @@ void fnCallFinalizeArgs(TypeCheckState *pstate, FnCallNode *node) {
                 && parmtype->tag == RefTag && ((RefNode*)parmtype)->region == borrowRef)
                 permLockRefused(*argsp, ((RefNode*)argtype)->perm, "lend the value");
             else {
-                char *why = fnSigCallRefusal(argtype, parmtype);
+                int whycode;
+                char *why = fnSigCallRefusal(argtype, parmtype, &whycode);
                 if (why)
-                    errorMsgNode(*argsp, ErrorCallablePerm, "%s", why);
+                    errorMsgNode(*argsp, whycode, "%s", why);
                 else
                     errorMsgNode(*argsp, ErrorInvType, "Expression's type does not match declared parameter");
             }

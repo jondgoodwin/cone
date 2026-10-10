@@ -64,9 +64,18 @@ FnSigNode *fnSigOfCallTrait(INode *type);
 // Does a struct's '()' take the receiver the callable trait's kind allows?
 int fnSigCallSelfFits(StructNode *trait, FnDclNode *meth);
 
+// Does a type's method ask for no stronger 'self' than the trait's method
+// declares, so it may fill the trait's slot behind a virtual reference?
+int fnSigVrefSelfFits(FnDclNode *traitmeth, FnDclNode *implmeth);
+
+// Why 'impl' cannot be viewed as 'trait' behind a virtual reference because a
+// method asks for a stronger 'self' than the trait's; NULL when it is not that
+char *fnSigVrefSelfRefusal(StructNode *trait, StructNode *impl);
+
 // Why a value of type 'from' is refused where the callable type 'to' is wanted,
-// when that is the permission of its '()'; NULL when it is not that
-char *fnSigCallRefusal(INode *from, INode *to);
+// when that is the permission of its '()'; NULL when it is not that. '*code' is
+// the error code to report it under.
+char *fnSigCallRefusal(INode *from, INode *to, int *code);
 
 // Can a call passing 'self' (NULL if none) and 'args' call this signature?
 // This only decides viability, and never alters the call: no cast, borrow or

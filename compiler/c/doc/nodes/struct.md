@@ -383,6 +383,19 @@ An implementer's member fills a slot whatever its own visibility: matching
 (`structMapVtableImpl`) compares names and signatures only.
 `trait_typecheck_vref_private` pins the refusals and `trait_vref_private` what
 runs.
+
+⚠ **A slot is filled by no stronger a `self` than the trait's method declares.**
+`fnSigVrefEqual` skips the receiver, so a vtable slot's match would meet a trait's
+`self &` with a method taking `self &mut`, and a call through a `&<Trait` would
+change what it was lent to read. `structMapVtableImpl` asks `fnSigVrefSelfFits`:
+the trait's borrow permission must `permMatches` the implementer's (a `self &mut`
+method meets `&`, `&uni` meets `&mut`, `&imm` meets nothing but `&imm`), and a
+`self` that is not a borrow is not compared. A closure's method is exempt, as it
+takes the `self` its body needs and is met behind `&<mut` as it is
+([closure](closure.md)). `fnSigCallRefusal` says why a coercion was refused
+(`fnSigVrefSelfRefusal`, `ErrorVtableSelf`), at an argument, an initializer and
+an owner's making; other positions report the generic type mismatch.
+`trait_typecheck_vref_self` pins the refusals and `trait_vref_self` what runs.
 | `namespace` | every named member: fields, methods, macros, overload sets, `Self`, **an enum's variants** — each a `StructNode`, bound at parse, and never a member of the enum's values: a lookup through a value passes one over (`fnCallLowerMethod`) — and what a fold admits — a **copy** of a folded field (a `FieldDclNode` with a `hop`) and an **alias** (`AliasDclNode`) for a folded method, overload set or macro method, for every member of an `extends` base but its fields, `final` and `clone` (those two are copied into `nodelist`, as a trait's defaults are), and for every member a sibling `use` admits. The copies and aliases live here only; `fields` and `nodelist` never hold one |
 | `dropfn` | NULL until type check settles the layout, and set as part of it, before any method is checked — an enum's once its variants are laid out, and only where one of them has something to do as it dies (type check, step 8a) |
 | `dclinfo` | owner and the facts its symbols are spelled from — [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Symbols". The owner is a module, or the enum for a variant declared inside one — for an extension's copy of a base variant, the extension, so the copy's methods are spelled after it. Read for one thing besides naming: rejecting a variant declared outside its enum's module, through `dclInfoGetModule` |

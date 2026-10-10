@@ -607,6 +607,21 @@ looks into a returned `if`, `match` (an `if` once desugared) or block and checks
 each arm's or the block's last value where it is written, so the refusal names
 the arm that would dangle.
 
+**An owner reached through a borrow that only reads lends only what it lets.**
+`iexpGetLvalInfo` takes the permission of a dereference from the reference
+dereferenced, which for an owner (`So`, `Rc`) is its own, `uni` for a `So`. Held in
+a field of a `&Holder`, the owner would lend `&mut` and change what the borrow was
+lent to read; viewpoint adaptation ([refperm](../../../../doc/reference/refperm.html))
+is the intersection. So where the owner's place is reached through a borrow
+(`iexpPathThroughBorrow`) that does not permit writing and the owner's permission
+does, the place keeps the borrow's. The refusal is `ErrorBadPerm`, reported by
+`borrowTypeCheck` for a written `&mut *h.app` and by `borrowOwnerLendRefused` for
+an owner lent implicitly: a method's receiver (`borrowMutRef`), an argument or an
+initializer (`iexpCoerce`), a `So[fn]` called. A local, or a field of one held
+by value, is not reached through a borrow and lends as before. An owner reached
+through a `&mut` borrow and lent as `&uni` is not held to this.
+`ref_typecheck_owner_field` pins the refusals and `ref_owner_field` what runs.
+
 **The lifetime of a borrow is that of the place borrowed**, which
 `iexpGetLvalInfo` computes for every borrow, written or injected
 (`borrowTypeCheck`, `borrowMutRef`, `borrowAuto`, `borrowUniReborrow` for a

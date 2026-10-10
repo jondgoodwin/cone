@@ -13,6 +13,10 @@
 // Create a borrowed ref node
 INode *newBorrowMutRef(INode *node, INode* type, INode *perm);
 
+// Refuse (reporting it) an owner in a place reached through a read-only borrow
+// lent as one that may write
+int borrowOwnerLendRefused(INode *owner, INode *perm);
+
 // Inject a borrow mutable node on some node (expected to be an lval)
 void borrowMutRef(INode **node, INode* type, INode *perm);
 

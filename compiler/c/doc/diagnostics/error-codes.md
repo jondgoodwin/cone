@@ -436,6 +436,13 @@ of it, or a function of another signature) is `ErrorCallableUse`; and a closure 
 given where a trait is wanted that has not exactly one method and no field is
 `ErrorClosureTrait`.
 
+A struct viewed as a trait behind a virtual reference (`&<Trait`, `So[Trait]`) whose
+method takes a stronger `self` than the trait's method declares (`self &mut` for
+`self &`, `self &uni` for `self &mut`) is `ErrorVtableSelf`. An owner held in a
+place reached through a reference that only reads, lent as a `&mut` or `&uni`
+(a receiver, an argument, an initializer, a `So[fn]` called), is `ErrorBadPerm`,
+as a written `&mut` of the same place is.
+
 `await` has five error codes and a warning. Where it may not stand -- anywhere
 but a behaviour -- is `ErrorAwaitPlace`; on a behaviour that returns nothing,
 which sends no reply, it is `ErrorAwaitVoid`, a rule rather than a gap; a

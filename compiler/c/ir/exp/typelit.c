@@ -565,8 +565,9 @@ static void typeLitNewCallable(TypeCheckState *pstate, FnCallNode **nodep, RefNo
         return;
     INode *made = (INode*)*nodep;
     if (!iexpCoerce((INode**)nodep, (INode*)reftype)) {
-        char *why = fnSigCallRefusal((INode*)owner, (INode*)reftype);
-        errorMsgNode(made, why ? ErrorCallablePerm : ErrorCallableUse, "%s",
+        int whycode;
+        char *why = fnSigCallRefusal((INode*)owner, (INode*)reftype, &whycode);
+        errorMsgNode(made, why ? whycode : ErrorCallableUse, "%s",
             why ? why : "That value has no pub `()` of the signature the owner is of.");
         *((INode**)nodep) = newErrorNode(made);
     }
