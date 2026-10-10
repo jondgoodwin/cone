@@ -562,6 +562,60 @@ static void fnCallSpell(char *buf, size_t size, RefNode *ref, StructNode *trait)
         snprintf(buf, size, "%s[%s, %s]", regname, &inodeGetName(perm)->namestr, sig);
 }
 
+static int fnSigFieldThreadBound(INode *type) {
+    return itypeThreadBound(type, NULL);
+}
+
+static int fnSigFieldNotShareable(INode *type) {
+    return itypeNotShareable(type);
+}
+
+// Why a value of the struct 'target' is refused where a virtual reference marked
+// '+ Sendable' or '+ Shareable' ('mark', the one it does not meet) is wanted: the
+// variable a closure holds or borrows that binds it, or the part of a struct that
+// does, and what to do about it
+static char *fnSigMarkRefusal(RefNode *toref, StructNode *target, uint8_t mark) {
+    static char msg[1400];
+    char wanted[300] = "", why[512] = "", what[512] = "", advice[600] = "";
+    itypeSpellCat(wanted, sizeof(wanted), (INode*)toref, 0);
+    int sendable = mark == RefMarkSendable;
+    int (*bad)(INode *) = sendable ? fnSigFieldThreadBound : fnSigFieldNotShareable;
+    ClosureCap *cap = closureFirstCap((INode*)target, bad);
+    if (cap != NULL) {
+        char captype[256] = "";
+        itypeSpellCat(captype, sizeof(captype), cap->field->vtype, 0);
+        if (sendable)
+            genericNotSendableWhy(cap->field->vtype, what, why, StaticOff);
+        else {
+            char path[128];
+            INode *culprit = itypeNotShareableWhy(cap->field->vtype, 1, path, sizeof(path));
+            if (culprit)
+                genericNotShareableReason(culprit, 0, why, sizeof(why));
+        }
+        closureCapAdvice(cap, !bad(closureCapValueType(cap)), advice, sizeof(advice));
+        snprintf(msg, sizeof(msg),
+            "`%s` says the closure behind it is %s, and this closure is not: it %s '%s' (%s), which is %s. %s",
+            wanted, refMarkSpell(mark), cap->state ? "holds" : "borrows", &cap->dcl->namesym->namestr, captype, why, advice);
+        return msg;
+    }
+    if (sendable) {
+        genericNotSendableWhy((INode*)target, what, why, StaticOff);
+        snprintf(msg, sizeof(msg), "`%s` says the value behind it is Sendable, and %s is not: %s %s.",
+            wanted, itypeName((INode*)target), what, why);
+    }
+    else {
+        char path[128], culpritname[256] = "";
+        INode *culprit = itypeNotShareableWhy((INode*)target, 1, path, sizeof(path));
+        if (culprit) {
+            genericNotShareableReason(culprit, 1, why, sizeof(why));
+            itypeSpellCat(culpritname, sizeof(culpritname), culprit, 0);
+        }
+        snprintf(msg, sizeof(msg), "`%s` says the value behind it is Shareable, and %s is not: %s is %s, %s.",
+            wanted, itypeName((INode*)target), path[0] ? path : "it", culpritname, why);
+    }
+    return msg;
+}
+
 // Why a value of type 'from' is refused where the callable type 'to' is wanted,
 // when that is the permission its '()' or the borrow needs; NULL when it is not
 // that. The message leads with the cause in the author's words.
@@ -575,6 +629,16 @@ char *fnSigCallRefusal(INode *from, INode *to, int *code) {
     if (trait->tag != StructTag)
         return NULL;
     INode *fromdcl = itypeGetTypeDcl(from);
+    // A value that is not what '+ Sendable' or '+ Shareable' promises of it
+    if (toref->marks && fromdcl->tag == RefTag) {
+        INode *target = itypeGetTypeDcl(((RefNode*)fromdcl)->vtexp);
+        uint8_t unmet = target->tag == StructTag && !(target->flags & TraitType)
+            ? refMarksUnmet(toref->marks, target) : 0;
+        if (unmet) {
+            *code = unmet == RefMarkSendable ? ErrorNotSendable : ErrorNotShareable;
+            return fnSigMarkRefusal(toref, (StructNode*)target, unmet);
+        }
+    }
     // A struct (a closure's included) whose method asks for a stronger 'self' than
     // the trait's
     if (trait->callsig == NULL) {

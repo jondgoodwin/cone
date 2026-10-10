@@ -672,18 +672,9 @@ static int parCheckAlias(INode *node, void *ctxp) {
 // A traced reference the pass makes itself is refused too, below.)
 
 // Does a copy of a reference of this kind write shared state without atomics?
+// (reference.c: the share check's rule, which this is the first user of)
 static int parRefCountsPlain(RefNode *ref) {
-    INode *region = ref->region && isTypeNode(ref->region) ? itypeGetTypeDcl(ref->region) : ref->region;
-    if (region == NULL || region == borrowRef || permHeldKind(ref->perm))
-        return 0;
-    if (regionIsTraced(ref->region))
-        return 1;
-    if (regionIsMove(ref->region))
-        return 0;
-    INode *perm = ref->perm && isTypeNode(ref->perm) ? itypeGetTypeDcl(ref->perm) : NULL;
-    if (perm == NULL || perm->tag != PermTag || !(permGetFlags(perm) & MayAlias))
-        return 0;
-    return !regionIsThreadSafe(ref->region);
+    return refCountsPlain(ref);
 }
 
 // Does a copy of a value of this type copy a counted owner whose count is not
@@ -813,17 +804,18 @@ static int parCheckCopies(INode *node, void *ctxp) {
 // A copy is not the only way a pass touches a count it shares. A helper handed a
 // borrow of an Rc may copy it, and so may anything reached through a field, an
 // element or a reference: the call is not seen into. So a value declared outside
-// the loop whose type is not SAFE TO SHARE across the passes (Rust's Sync, the
-// sibling of Sendable, inferred from the type's contents, no annotation) may not
-// be named in the body at all: not read, not lent, not passed. It is not safe
-// when it holds, through a field, a variant, a tuple or array element, a borrow
-// or an owner's pointee, either an aliasable owner of a region that does not
-// declare ThreadSafe, or a traced reference: exactly parRefCountsPlain's test of
-// each reference met, and so does an instance of a generic type whose type
+// the loop whose type is not Shareable (the marker, Rust's Sync, the sibling of
+// Sendable: a borrow of it may be held by several threads at once, inferred from
+// the type's contents, itypeNotShareable) may not be named in the body at all:
+// not read, not lent, not passed. It is not when it holds, through a field, a
+// variant, a tuple or array element, a borrow or an owner's pointee, an
+// aliasable owner of a region that does not declare ThreadSafe, a traced
+// reference, or a reference that writes through a shared path (a '&mut': Cone's
+// is shared mutable), and so does an instance of a generic type whose type
 // argument does (List[Rc[T]], whatever pointer the list keeps its items behind).
-// Raw pointers of a type that is not generic are trusted (nothing is followed
-// behind one), and an Arc, an atomic and a number are free. What the pass declares itself is
-// its own, and so is nothing it was lent: the variable holding the item.
+// What the pass declares itself is its own, and so is nothing it was lent: the
+// variable holding the item, which is judged without the '&mut' rule (no other
+// pass reaches the item it is lent).
 
 typedef struct {
     ParSet inside;      // The variables declared in the body, and the loop's own
@@ -832,70 +824,6 @@ typedef struct {
 } ParReach;
 
 static ParSet parReachReported;
-
-// Does a value of this type hold, where a borrow of it can reach, a reference
-// that is not safe for passes to share?
-static int parNotSync(INode *type, INode **seen, uint32_t *nseen) {
-    if (type == NULL || *nseen > 60)
-        return 0;
-    switch (type->tag) {
-    case NameUseTag:
-        return isTypeNode(type) ? parNotSync(itypeGetTypeDcl(type), seen, nseen) : 0;
-    case AliasDclTag:
-        return parNotSync(((AliasDclNode *)type)->target, seen, nseen);
-    case RefTag:
-    case ArrayRefTag:
-    case VirtRefTag:
-        if (parRefCountsPlain((RefNode *)type))
-            return 1;
-        return parNotSync(((RefNode *)type)->vtexp, seen, nseen);
-    case ArrayTag:
-        return parNotSync(arrayElemType(type), seen, nseen);
-    case TTupleTag: {
-        INode **nodesp;
-        uint32_t cnt;
-        for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp)) {
-            if (parNotSync(*nodesp, seen, nseen))
-                return 1;
-        }
-        return 0;
-    }
-    case StructTag: {
-        for (uint32_t i = 0; i < *nseen; ++i) {
-            if (seen[i] == type)
-                return 0;       // (found where it was first asked)
-        }
-        seen[(*nseen)++] = type;
-        StructNode *strnode = (StructNode *)type;
-        INode **nodesp;
-        uint32_t cnt;
-        // An instance of a generic type is safe to share only if every type
-        // argument is (Rust's rule: Vec<T> is Sync iff T is), whatever raw
-        // pointer it keeps its items behind. A struct that is not generic keeps
-        // the trust given to its raw pointers.
-        Nodes *args = itypeInstanceTypeArgs(type);
-        if (args != NULL) {
-            for (nodesFor(args, cnt, nodesp)) {
-                if (parNotSync(*nodesp, seen, nseen))
-                    return 1;
-            }
-        }
-        for (nodelistFor(&strnode->fields, cnt, nodesp)) {
-            if (parNotSync(((IExpNode *)*nodesp)->vtype, seen, nseen))
-                return 1;
-        }
-        if (strnode->derived) {
-            for (nodesFor(strnode->derived, cnt, nodesp)) {
-                if (parNotSync(*nodesp, seen, nseen))
-                    return 1;
-            }
-        }
-        return 0;
-    }
-    default:
-        return 0;
-    }
-}
 
 // Is this type a counted or traced owner itself, or a borrow of one, as against
 // a value or borrow of a struct, collection or tuple that holds one?
@@ -940,14 +868,57 @@ static int parCheckReach(INode *node, void *ctxp) {
     if (var->vtype == NULL || var->vtype == unknownType || parHiddenVar(var)
         || (parSetHas(&ctx->inside, dcl) && var != ctx->item))
         return 1;
-    INode *seen[64];
-    uint32_t nseen = 0;
-    if (!parNotSync(var->vtype, seen, &nseen) || parSetHas(&parReachReported, node))
+    // Shareable: the item a pass is lent is its own, so it is judged without the
+    // rule about references that write
+    int mutrule = var != ctx->item;
+    // A variable that is itself a borrow ('self', a '&mut' parameter) is read
+    // through, as a '&': what it can reach is judged, not its own permission
+    // (the body's writes through it are refused above, as writes to anything
+    // outside). A '&mut' held inside what it reaches is another matter.
+    INode *named = var->vtype;
+    INode *namedcl = itypeGetTypeDcl(named);
+    if ((namedcl->tag == RefTag || namedcl->tag == ArrayRefTag || namedcl->tag == VirtRefTag)
+        && itypeGetTypeDcl(((RefNode *)namedcl)->region) == borrowRef)
+        named = ((RefNode *)namedcl)->vtexp;
+    char path[256];
+    INode *culprit = itypeNotShareableWhy(named, mutrule, path, sizeof(path));
+    if (culprit == NULL || parSetHas(&parReachReported, node))
         return 1;
     parSetAdd(&parReachReported, node);
     char typename[256] = "";
     itypeSpellCat(typename, sizeof(typename), var->vtype, 0);
-    if (var == ctx->item)
+    int writes = !refCountsPlain((RefNode *)culprit);
+    // A closure passed in: say which variable it holds or borrows, which is
+    // where the fix is
+    INode *held = itypeGetTypeDcl(var->vtype);
+    while (held != NULL && (held->tag == RefTag || held->tag == ArrayRefTag || held->tag == VirtRefTag))
+        held = itypeGetTypeDcl(((RefNode *)held)->vtexp);
+    ClosureCap *cap = held != NULL && closureOfStruct(held) != NULL
+        ? genericClosureNotShareableCap(held, mutrule) : NULL;
+    if (cap != NULL) {
+        char *capname = &cap->dcl->namesym->namestr;
+        char sentence[600], reason[512] = "";
+        genericCapSentence(cap, culprit, sentence, sizeof(sentence));
+        genericNotShareableReason(culprit, 0, reason, sizeof(reason));
+        if (writes)
+            errorMsgNode(node, ErrorParReach,
+                "This 'parallel each' reaches '%s', the closure passed in, and %s: %s. The passes run at the same time, so each would hold that reference and could write through it. Give the closure a copy of what it needs by value in its list, as '[n = *%s]', instead of the reference.",
+                &var->namesym->namestr, sentence, reason, capname);
+        else
+            errorMsgNode(node, ErrorParReach,
+                "This 'parallel each' reaches '%s', the closure passed in, and %s: %s. The passes run at the same time, so each would copy it. Where '%s' is made, hold it in an Arc ('Arc[imm, ...]'), and give the closure the Arc in its list: '[%s]'.",
+                &var->namesym->namestr, sentence, reason, capname, capname);
+    }
+    else if (writes) {
+        char reason[512] = "", culpritname[256] = "";
+        itypeSpellCat(culpritname, sizeof(culpritname), culprit, 0);
+        genericNotShareableReason(culprit, 0, reason, sizeof(reason));
+        errorMsgNode(node, ErrorParReach,
+            "This 'parallel each' reaches '%s', a %s declared outside the loop, which holds a %s%s%s%s: %s. Its passes run at the same time, and naming it at all gives each of them a path to write through. Copy what the loop needs into a local before it ('imm n = %s.n;') and use the local in the body.",
+            &var->namesym->namestr, typename, culpritname, path[0] ? " (" : "", path, path[0] ? ")" : "", reason,
+            &var->namesym->namestr);
+    }
+    else if (var == ctx->item)
         errorMsgNode(node, ErrorParReach,
             "This 'parallel each' reaches its item '%s', a %s, and the source's items hold a counted owner whose count is not atomic (an Rc, for example) or a traced reference (a Gc, for example): its passes run at the same time, and a copy made anywhere they can reach it, in this body or in a function it hands the item to, would write a count or a root that every pass shares without an atomic operation. Walk a source whose items are safe to share (numbers, structs of them, Arcs), or its indexes and look the data up from a borrow taken before the loop.",
             &var->namesym->namestr, typename);

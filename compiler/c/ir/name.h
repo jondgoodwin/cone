@@ -148,6 +148,7 @@ extern Name *atomicValueTraitName;   // "AtomicValue", a value changed only by a
 extern Name *integerTraitName;   // "Integer", the integer types, which a constraint may ask for
 extern Name *pointerTraitName;   // "Pointer", the raw pointer types, which a constraint may ask for
 extern Name *sendableTraitName;  // "Sendable", a type whose values may cross to another thread, which a constraint may ask for
+extern Name *shareableTraitName; // "Shareable", a type a borrow of which may be held by several threads at once, which a constraint may ask for
 extern Name *sizedTraitName;     // "Sized", a type whose size is known at compile time, which a constraint may ask for
 extern Name *dynSizedTraitName;  // "DynSized", a type whose size is known at compile time or carried by a reference to it
 extern Name *immutableTraitName; // "Immutable", a marker a type declares: its references default to imm, and mut is refused on it

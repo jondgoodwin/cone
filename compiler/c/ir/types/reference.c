@@ -7,6 +7,8 @@
 
 #include "../ir.h"
 #include <memory.h>
+#include <stdio.h>
+#include <string.h>
 
 // Create a new reference type whose info will be filled in afterwards
 RefNode *newRefNode(uint16_t tag) {
@@ -22,9 +24,32 @@ RefNode *newRefNode(uint16_t tag) {
     refnode->scope = 0;
     refnode->lifename = NULL;
     refnode->bound = NULL;
+    refnode->marks = 0;
+    refnode->capture = 0;
     refnode->plusSpelled = 0;
     refnode->bracketSpelled = 0;
     return refnode;
+}
+
+uint8_t refMarkOfName(Name *name) {
+    if (name == sendableTraitName)
+        return RefMarkSendable;
+    if (name == shareableTraitName)
+        return RefMarkShareable;
+    return 0;
+}
+
+char *refMarkSpell(uint8_t mark) {
+    return mark == RefMarkSendable ? "Sendable" : "Shareable";
+}
+
+void refMarksCat(char *buf, size_t size, uint8_t marks) {
+    for (uint8_t mark = RefMarkSendable; mark <= RefMarkShareable; mark = (uint8_t)(mark << 1)) {
+        if (marks & mark) {
+            size_t used = strlen(buf);
+            snprintf(buf + used, size - used, " + %s", refMarkSpell(mark));
+        }
+    }
 }
 
 // Does a reference to this type carry the length of what it points at, so that
@@ -83,7 +108,13 @@ INode *cloneRefNode(CloneState *cstate, RefNode *node) {
     memcpy(newnode, node, sizeof(RefNode));
     newnode->region = cloneNode(cstate, node->region);
     newnode->perm = cloneNode(cstate, node->perm);
-    newnode->vtexp = cloneNode(cstate, node->vtexp);
+    // The callable trait a signature behind a virtual reference became is one
+    // struct per signature (fnSigCallTrait): a reference to it is the same
+    // reference in an instance, and a copy of the struct would be another type
+    if (node->vtexp && node->vtexp->tag == StructTag && ((StructNode*)node->vtexp)->callsig != NULL)
+        newnode->vtexp = node->vtexp;
+    else
+        newnode->vtexp = cloneNode(cstate, node->vtexp);
     // refNameRes decided type or borrow by asking whether the operand is a type,
     // and in a template '&T' asked that of a generic parameter, which is not
     // one -- so the template holds a borrow. Cloning stands in for name
@@ -160,6 +191,40 @@ RefBinds refThreadBinds(RefNode *ref) {
     return RefCrosses;
 }
 
+// Does a copy of a reference of this kind write shared state without atomics?
+// A borrow and a guard copy nothing. A traced reference is counted as one: it
+// has no count, but a copy of it held in a local is a root the function links
+// into the collector's one chain of frames (conestd's roots.cone, single
+// threaded). A move owner (So) cannot be copied. Any other owner that may be
+// aliased writes its count, which only a region declaring ThreadSafe makes
+// atomic.
+int refCountsPlain(RefNode *ref) {
+    INode *region = ref->region && isTypeNode(ref->region) ? itypeGetTypeDcl(ref->region) : ref->region;
+    if (region == NULL || region == borrowRef || permHeldKind(ref->perm))
+        return 0;
+    if (regionIsTraced(ref->region))
+        return 1;
+    if (regionIsMove(ref->region))
+        return 0;
+    INode *perm = ref->perm && isTypeNode(ref->perm) ? itypeGetTypeDcl(ref->perm) : NULL;
+    if (perm == NULL || perm->tag != PermTag || !(permGetFlags(perm) & MayAlias))
+        return 0;
+    return !regionIsThreadSafe(ref->region);
+}
+
+// May the reference write through a path several threads share? 'mut' and
+// 'mut1' write, may be aliased and are not race-safe: Cone's '&mut' is shared
+// mutable, so a '&mut' held in a struct writes through a '&' of the struct. A
+// lock permission is race-safe where it is ThreadSafe, and 'uni' is the one
+// holder's.
+int refWritesShared(RefNode *ref) {
+    INode *perm = ref->perm && isTypeNode(ref->perm) ? itypeGetTypeDcl(ref->perm) : NULL;
+    if (perm == NULL || perm->tag != PermTag || permHeldKind(ref->perm))
+        return 0;
+    int flags = permGetFlags(perm);
+    return (flags & MayWrite) && (flags & MayAlias) && !(flags & RaceSafe);
+}
+
 // Whether a borrow that lives for the whole program may cross to another
 // thread, where the thread check allows it (StaticBorrow): it must be 'imm' or
 // 'opaq' (many threads may read it, none writes) or 'uni' (it moves, and only
@@ -223,6 +288,10 @@ void refPrint(RefNode *node) {
     inodePrintNode(node->vtexp);
     if (node->bound)
         inodeFprint(" + %s", &node->bound->namestr);
+    if (node->marks & RefMarkSendable)
+        inodeFprint(" + Sendable");
+    if (node->marks & RefMarkShareable)
+        inodeFprint(" + Shareable");
     inodeFprint(")");
 }
 
@@ -462,6 +531,7 @@ int refIsSame(RefNode *node1, RefNode *node2) {
     // names. Which brand a key carries is compared where a value meets a type
     // (lifeBrandsCoerce), not here: a generic's instance serves every brand.
     return lifeIsInvariant(node1->lifename) == lifeIsInvariant(node2->lifename)
+        && node1->marks == node2->marks
         && itypeIsSame(node1->vtexp,node2->vtexp)
         && permIsSame(node1->perm, node2->perm)
         && itypeIsSame(node1->region, node2->region);
@@ -472,7 +542,7 @@ size_t refHash(RefNode *node) {
     // The type pointed at is 'vtexp'. On a reference type node 'vtype' is
     // permanently unknownType, so hashing it collapses every reference type
     // into one bucket. refIsSame compares vtexp, so this is what agrees with it.
-    size_t hash = 5381 + node->tag;
+    size_t hash = 5381 + node->tag + node->marks * 131;
     hash = ((hash << 5) + hash) ^ itypeHash(node->region);
     hash = ((hash << 5) + hash) ^ itypeHash(node->perm);
     return ((hash << 5) + hash) ^ itypeHash(node->vtexp);
@@ -564,6 +634,16 @@ TypeCompare refMatches(RefNode *to, RefNode *from, SubtypeConstraint constraint)
     }
 }
 
+// The first marker a virtual reference promises of its hidden value that 'type'
+// is not, as a RefMark bit; 0 where it is each
+uint8_t refMarksUnmet(uint8_t marks, INode *type) {
+    if ((marks & RefMarkSendable) && !genericTypeIs(type, sendableTrait))
+        return RefMarkSendable;
+    if ((marks & RefMarkShareable) && !genericTypeIs(type, shareableTrait))
+        return RefMarkShareable;
+    return 0;
+}
+
 // Will from reference coerce to a virtual reference (we know they are not the same)
 TypeCompare refvirtMatchesRef(RefNode *to, RefNode *from, SubtypeConstraint constraint) {
     // Given this performs a runtime conversion to a completely different type, 
@@ -604,6 +684,11 @@ TypeCompare refvirtMatchesRef(RefNode *to, RefNode *from, SubtypeConstraint cons
     if (tovtypedcl->tag != StructTag || fromvtypedcl->tag != StructTag)
         return NoMatch;
 
+    // '+ Sendable' and '+ Shareable' promise what the hidden value is: a value
+    // is made one only if its type is each
+    if (refMarksUnmet(to->marks, (INode*)fromvtypedcl))
+        return NoMatch;
+
     // When value types are equivalent, ensure it is a closed, tagged trait.
     // The tag is needed to runtime select the vtable for the created virtual reference
     if (tovtypedcl == fromvtypedcl)
@@ -635,9 +720,16 @@ TypeCompare refvirtMatches(RefNode *to, RefNode *from, SubtypeConstraint constra
     if (!itypeIsSame(to->vtexp, from->vtexp))
         return NoMatch;
 
+    // A reference promising more of the value behind it is not made of one
+    // promising less; it drops a promise freely
+    if (to->marks & ~from->marks)
+        return NoMatch;
+
     // However, region, permission and lifetime can be supertyped
     // Note: mutability variance on value type should be invariant, since underlying subtype won't change
-    return refMatches(to, from, constraint);
+    TypeCompare match = refMatches(to, from, constraint);
+    // (the two are distinct types with one layout: recast, never the same type)
+    return match == EqMatch && to->marks != from->marks ? CastSubtype : match;
 }
 
 // Return a type that is the supertype of both type nodes, or NULL if none found

@@ -102,6 +102,7 @@ StructNode *atomicValueTrait;
 StructNode *integerTrait;
 StructNode *pointerTrait;
 StructNode *sendableTrait;
+StructNode *shareableTrait;
 StructNode *sizedTrait;
 StructNode *dynSizedTrait;
 StructNode *immutableTrait;
@@ -175,6 +176,7 @@ int corelibIsBuiltinTrait(INode *node) {
         || node == (INode*)noLoanMutTrait || node == (INode*)noLoanReadTrait
         || node == (INode*)atomicValueTrait || node == (INode*)integerTrait
         || node == (INode*)pointerTrait || node == (INode*)sendableTrait
+        || node == (INode*)shareableTrait
         || node == (INode*)sizedTrait || node == (INode*)dynSizedTrait
         || node == (INode*)immutableTrait
         || node == (INode*)lockPermTrait;
@@ -347,6 +349,20 @@ void stdlibInit(int ptrsize) {
     // instance of a generic type declaring it is Sendable only where its
     // type arguments are.
     sendableTrait = newBuiltinTrait(sendableTraitName);
+    // 'Shareable' [Jon 9 Oct]: a borrow of a value of the type may be held by
+    // several threads at once -- Sendable says the value may be handed to
+    // another thread, this that it may be read from several together. Granted
+    // by the compiler (genericTypeIs, itypeNotShareable) to every type holding,
+    // where a borrow of it reaches, no counted owner whose count is not atomic,
+    // no traced reference and no reference that may write through a shared
+    // path ('&mut': Cone's is shared mutable, so it writes through a '&' of
+    // the value holding it). A type may declare it, a promise taken on trust
+    // for what the compiler cannot see, except that an instance of a generic
+    // one is Shareable only where its type arguments are. Never by names. It
+    // is how a callable states what it may do beside others: '[F fn() +
+    // Shareable]', '&<fn() + Shareable', and it is what a 'parallel each'
+    // body is held to for what it names from outside.
+    shareableTrait = newBuiltinTrait(shareableTraitName);
     // 'Sized' and 'DynSized' [Jon 6 Oct]: what a type's size is. 'Sized': the
     // size is known at compile time, so a value may be held, and a reference
     // to it is one thin pointer. 'DynSized': the size is known at compile time

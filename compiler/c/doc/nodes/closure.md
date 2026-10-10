@@ -283,6 +283,37 @@ gives the call up (the failed literal's lent borrow, left behind, reached
 generic substitution as a node with no name). A closure whose body already failed
 reports no return mismatch of its own (`ClosureInfo.errbase`, `returnTypeCheck`).
 
+## Where a closure may go
+
+A closure is a struct of what it borrows and holds, so where it may go is
+decided by the rules for its fields, with nothing closure-specific: a borrow
+makes it lifetime-limited (the loan walk), an `Rc` makes it not Sendable and not
+Shareable, a `&mut` (whose body writes through it with the `()` still `self &`)
+makes it neither ([references](references.md), `Shareable`). What is closure's own
+is the message, which names the variable to list so the closure holds a copy
+instead of borrowing it.
+
+- **The implicit borrow knows it is one.** The borrow the compiler makes of each
+  variable the body names is a `BorrowTag` node with `RefNode.capture` set
+  (`closureTypeCheck`). The loan walk's escape messages (`loanNotBoxable`,
+  `loanNotGlobal`, `loanNotBound`, `loanEscape`; `loanCaptured`,
+  `loanCaptureAdvice`) read it off the loan's site and add the sentence: list the
+  variable, `[k]`; for `self` (a body that names a member borrows `self`), copy the
+  members into the list or capture a counted handle. A borrow stored in `self`
+  that borrows `self` is the same `ErrorLifetimeBound` an owner of a callable
+  holding any borrow of the function's gets (`So[fn]` bounds its value by
+  `'static`). A `&<fn` returned by borrow of a local closure is
+  `ErrorEscape` from `returnFlowEscape`, which says the closure can leave as an
+  owner and names what it borrows.
+- **Threads.** `closureFirstCap` finds the first captured variable (a list entry or
+  a borrowed variable) whose field the check refuses; `genericNotSendableMsg`,
+  `genericNotShareableMsg`, `fnSigMarkRefusal` (a value made `So[fn() + Sendable]`
+  or `&<fn() + Shareable`) and the `parallel each` reach message
+  (`parCheckReach`) say it as "it borrows 'k' (&ro i32)" and add
+  `closureCapAdvice`. A list entry holding an `Rc` is told to hold an `Arc`; a
+  captured `&mut` to copy the value it reads, or keep what it changes in an atomic or
+  behind a lock.
+
 ## In GPU code
 
 On a GPU target (`flowGpu`) a closure is allowed in its static form only: given to

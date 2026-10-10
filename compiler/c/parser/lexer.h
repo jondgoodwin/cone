@@ -231,6 +231,8 @@ int lexNextIsWord(char *word);
 int lexIdentOpensType();
 // Is the token after the current one a lifetime ('a)? The lexer is left where it was.
 int lexPeekIsLifetime();
+// Is the token after the current one a name? The lexer is left where it was.
+int lexPeekIsIdent();
 // With the lexer on a name, does a value follow it rather than an operator or
 // other continuation of an expression the name begins? ('fill' after '<-')
 int lexNextOpensValue();

@@ -468,17 +468,23 @@ fn total(xs &amp;Array[u64]) u64 {
 		<li>Nor may the body <b>reach</b> such a value at all. A function the body hands it to could copy what it was lent,
 			and so could any code reached through a field, an element or a borrow, so a value declared outside the loop
 			(or the pass's own item) whose type holds an <span class="pre">Rc</span> or a traced reference may not be named in the
-			body: not copied, not read, not lent, not passed. This is the rule Rust calls <i>Sync</i>, safe to share a borrow of across threads, and like
-			<span class="pre">Sendable</span> it is worked out from what a type holds, with nothing to write: it holds one when,
-			through a field, a variant, an element, a borrow or what an owner points at, there is an owner that may be copied
-			of a region that does not declare <span class="pre">ThreadSafe</span> (an <span class="pre">Rc</span>, or a region of
-			your own that counts without atomic operations), or a reference into a traced region. An instance of a generic
+			body: not copied, not read, not lent, not passed. This is the marker <span class="pre">Shareable</span> (Rust's <i>Sync</i>: a borrow
+			of it may be held by several threads at once; <a href="refconccomm.html#shareable">Race condition safety</a>),
+			and like <span class="pre">Sendable</span> it is worked out from what a type holds, with nothing to write: a value is
+			not Shareable when, through a field, a variant, an element, a borrow or what an owner points at, it holds an owner
+			that may be copied of a region that does not declare <span class="pre">ThreadSafe</span> (an <span class="pre">Rc</span>,
+			or a region of your own that counts without atomic operations), a reference into a traced region, or a reference that
+			writes through a shared path (a <span class="pre">&amp;mut</span> held in a field, an element, a type argument or a
+			closure's captured variable: Cone's <span class="pre">&amp;mut</span> is shared mutable, so what holds one writes through
+			a borrow of it). An instance of a generic
 			type holds one when a type argument does (<span class="pre">List[Rc[T]]</span>, <span class="pre">Dict[K, Rc[V]]</span>,
 			<span class="pre">Option[Rc[T]]</span>), whatever the collection keeps its items behind, as in Rust a
 			<span class="pre">Vec&lt;T&gt;</span> is shareable only if <span class="pre">T</span> is. A raw pointer in a type that is not
 			generic is trusted, and nothing behind it is followed; an
 			<span class="pre">Arc</span>, an <span class="pre">Atomic</span>, a number and a region that declares
-			<span class="pre">ThreadSafe</span> are free. Naming the value is enough, so a struct or an actor's
+			<span class="pre">ThreadSafe</span> are free. A name that is itself a borrow (<span class="pre">self</span>, a
+			<span class="pre">&amp;mut</span> parameter) is read through as a <span class="pre">&amp;</span>: what it reaches is judged,
+			and the body's writes through it are refused above. Naming the value is enough, so a struct or an actor's
 			<span class="pre">self</span> that holds an <span class="pre">Rc</span> cannot be read for a number beside it:
 			<b>copy what the loop needs into a local before it</b> (<span class="pre">imm n = self.n;</span>). For an
 			<span class="pre">Rc</span> itself, <b>borrow the contents before the loop</b>:

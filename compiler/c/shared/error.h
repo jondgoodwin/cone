@@ -613,6 +613,10 @@ enum ErrorCode {
     ErrorGenValueClash = 1404,  // A value parameter inferred as two different numbers: 'dot(&three, &four)' over 'Array[f32, N]' twice
     ErrorGenValueArith = 1405,  // Arithmetic over a value parameter in a type, 'Array[T, N + 1]': a size is written as a number or as a value parameter alone
 
+    // The share check: the built-in marker 'Shareable' and markers after a '+' in a reference type (ir/itype.c, ir/meta/generic.c, ir/types/reference.c)
+    ErrorNotShareable = 1406,   // An instance whose 'T is Shareable' is unmet, or a value made a reference marked '+ Shareable' (or '+ Sendable') that is not: the type holds a counted owner whose count is not atomic, a traced reference, or a reference that writes through a shared path ('&mut')
+    ErrorMarkUse = 1407,        // A '+' in a reference type followed by something but Sendable or Shareable, or marking a reference that is not virtual ('&<Trait + Shareable', 'So[fn() + Sendable]')
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

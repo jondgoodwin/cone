@@ -125,6 +125,48 @@ thread.start(job, &amp;work);
 // start requires A is Sendable, and Job is not Sendable: Job.data is &amp;mut Counter,
 // a borrowed reference, and no borrow may leave its thread ...
 </pre>
+	<p id="shareable"><b>Sendable and Shareable.</b> <span class="pre">Sendable</span> says a value may be
+		handed to another thread. A second built-in marker, <span class="pre">Shareable</span>, says a
+		<i>borrow</i> of a value may be held by several threads at once, so each reads it while the
+		others do: the passes of a <span class="pre">parallel each</span> naming a value from outside
+		the loop, the threads that hold an <span class="pre">Arc</span>. The compiler grants it from
+		what a type holds, never from names, to every type that does not hold, directly or in a field,
+		an element, a variant, a type argument or behind a borrow or an owner, one of these:</p>
+	<ul>
+	<li>an owner that may be copied in a region that does not declare <span class="pre">ThreadSafe</span>
+		(an <span class="pre">Rc</span>): two threads copying it write its count at once without an
+		atomic operation;</li>
+	<li>a traced reference, <span class="pre">Gc</span>, whose copies are roots in a collector that is
+		single threaded;</li>
+	<li>a reference that writes through a path others share: a <span class="pre">&amp;mut</span> (Cone's
+		is shared mutable, so what holds one writes through a <span class="pre">&amp;</span> of it), or
+		an <span class="pre">Arc[mut, T]</span>. A closure that names a <span class="pre">&amp;mut</span>
+		variable is not Shareable, whatever its <span class="pre">()</span> takes, nor is a struct with
+		a <span class="pre">&amp;mut</span> field.</li>
+	</ul>
+	<p>Raw pointers of a struct that is not generic are trusted, as the parallel-body check has
+		always trusted them (nothing is followed behind one), a type holding ones it shares safely
+		declares <span class="pre">is Shareable</span>, and an instance of a generic type is Shareable
+		only where its type arguments are. A plain borrow, an
+		<span class="pre">Arc[imm, T]</span> and an <span class="pre">Arc[Mutex, T]</span> of a
+		Shareable <span class="pre">T</span>, an atomic and a number are. A
+		<span class="pre">parallel each</span> body may name a value from outside the loop only if it
+		is Shareable (<a href="refeach.html">Parallel each</a>); a generic asks it of its argument as
+		it asks Sendable, <span class="pre">[F fn() + Shareable]</span>.</p>
+	<p>A reference to a trait or a callable hides the type of the value behind it, so it may say
+		what that value is with <span class="pre">+</span>, after the type: <span class="pre">So[fn(x f32) f32
+		+ Sendable]</span>, <span class="pre">&amp;&lt;Shape + Shareable</span>, or both, in either order. A value is made
+		such a reference only if its type is each marker, and the error names what is not:</p>
+<pre>
+imm flock = new So[fn(x f32, z f32) f32 + Sendable](fn(x f32, z f32) [hf] f32 { ... });
+imm t = thread.start(flock, &amp;run);       // Ok: hf is an Arc[imm, Grid], listed
+// With hf an Rc[imm, Grid]: `So[uni, fn(f32, f32) f32 + Sendable]` says the closure behind it
+// is Sendable, and this closure is not: it holds 'hf' (Rc[imm, Grid]), ...
+</pre>
+	<p>A reference with markers is a reference with fewer, never the other way: a
+		<span class="pre">So[fn() + Sendable]</span> goes where a <span class="pre">So[fn()]</span>
+		is wanted. Only these two markers follow a <span class="pre">+</span> in a reference's type
+		today; the intersection of other traits is not built.</p>
 	<p id="static-borrow"><b>A borrow that lasts the whole program</b> (<span class="pre">'static</span>,
 		<a href="reflifefn.html">Lifetimes</a>) is checked in no thread's scope, so it may cross threads
 		and actors in either of two cases, and in no other:</p>
@@ -171,9 +213,12 @@ thread.start(&amp;table, &amp;sum);                // Error: &amp;ro Array is no
 thread.start(&amp;imm onTheStack, &amp;sum);       // Error: must be global
 </pre>
 	<p>Not checked yet: a <span class="pre">mut</span> global reached from several threads; a
-		value's own methods that change it through <span class="pre">&amp;</span> (sendable here also
-		means safe to read from several threads at once behind <span class="pre">Arc[imm, T]</span>,
-		which a type declaring <span class="pre">Sendable</span> promises too). Actor messages are
+		value's own methods that change it through <span class="pre">&amp;</span>. What the compiler
+		grants <span class="pre">Sendable</span> it also grants <span class="pre">Shareable</span>,
+		so an <span class="pre">Arc[imm, T]</span> of one may be read by several threads at
+		once; a type declaring <span class="pre">Sendable</span> over raw pointers promises that
+		of them, and declares <span class="pre">Shareable</span> as well where its borrows may be
+		shared (<a href="#shareable">above</a>). Actor messages are
 		checked as a channel's values are: every parameter of an actor's behaviour, and of its
 		initializer, must be <span class="pre">Sendable</span>, and one that is not is refused
 		where it is declared; an actor's state is not asked, since it never crosses as a value

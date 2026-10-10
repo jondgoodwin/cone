@@ -487,8 +487,23 @@ static INode *parseIndexArg(ParseState *parse) {
     }
     // A signature, 'So[fn(i32) i32]' or 'apply[fn(i32) i32](...)': a type
     // argument. Nothing indexes by a closure.
-    if (lexIsToken(FnToken))
-        return parseFnBound(parse);
+    if (lexIsToken(FnToken)) {
+        INode *sig = parseFnBound(parse);
+        // 'So[fn(i32) i32 + Sendable]': markers of the value, joined as any type
+        // joined to another, by '+' (a sum node type check reads, fnCallMarkSplit)
+        while (lexIsToken(PlusToken)) {
+            FnCallNode *sum = newFnCallOpname(sig, plusName, 2);
+            lexNextToken();
+            if (lexIsToken(IdentToken))
+                nodesAdd(&sum->args, (INode*)parseNameUse(parse));
+            else {
+                errorMsgLex(ErrorMarkUse, "After a '+' in a type go the markers of the value, '+ Sendable' and '+ Shareable'.");
+                return sig;
+            }
+            sig = (INode*)sum;
+        }
+        return sig;
+    }
     return parseArg(parse);
 }
 
@@ -711,6 +726,40 @@ INode *parseSuffixTerm(ParseState *parse) {
 
 INode *parsePrefix(ParseState *parse);
 
+// What may follow the type a reference type points at, in a type: a bound,
+// '&<Trait + 'a': what the value a virtual reference points at holds lives at
+// least as long as ''a' (lifetime.h, "Lifetime bounds"), named where a lifetime
+// may be; and the markers of what it points at, '&<Trait + Shareable': the
+// value behind a virtual reference has a hidden type, so the reference says what
+// that type is promised to be (reference.h, RefNode.marks). Any order.
+static void parseRefBounds(ParseState *parse, RefNode *anode) {
+    while (parse->intype && lexIsToken(PlusToken)
+        && (lexPeekIsLifetime() || (anode->tag == VirtRefTag && lexPeekIsIdent()))) {
+        lexNextToken();
+        if (lexIsToken(IdentToken)) {
+            uint8_t mark = refMarkOfName(lex->val.ident);
+            if (mark == 0)
+                errorMsgLex(ErrorMarkUse, "After a '+' in a virtual reference's type go a lifetime bound, '+ 'a', or the markers of the value it points at, '+ Sendable' and '+ Shareable'; other traits are not intersected yet.");
+            else
+                anode->marks |= mark;
+            lexNextToken();
+            continue;
+        }
+        Name *bound = lex->val.ident;
+        if (anode->tag != VirtRefTag)
+            errorMsgLex(ErrorLifetimeBound, "A lifetime bound is said of a type whose insides are unknown: a virtual reference's, '&<Trait + 'a', or a type parameter's, '[T + 'a]'. A plain reference or slice names its own lifetime, '&'a T'.");
+        else if (lifeIsInvariant(bound))
+            errorMsgLex(ErrorLifetimeInvariant, "A bound says what the borrows inside a type outlive, and an invariant lifetime has no order to say it with.");
+        else if (parseLifeNamed(parse, bound, NULL)) {
+            anode->bound = bound;
+            lifeVirtBoundSeen = 1;
+            if (bound == staticLifeName)
+                lifeStaticBoundSeen = 1;
+        }
+        lexNextToken();
+    }
+}
+
 // Parse an "ampersand term" for a borrowed ref type or constructor:
 // - Some reference type ('&', '&[]' or '&<')
 // - Lifetime, in a type
@@ -770,6 +819,7 @@ INode *parseAmper(ParseState *parse) {
             }
             anode->vtexp = parseFnSig(parse, 1);
             parseFnSigSettle(parse, (FnSigNode*)anode->vtexp, 1);
+            parseRefBounds(parse, anode);
             return (INode *)anode;
         }
         FnDclNode *fndcl = (FnDclNode*)parseFn(parse, ParseMayAnon | ParseMayImpl | ParseMaySig | ParseEmbedded);
@@ -790,6 +840,7 @@ INode *parseAmper(ParseState *parse) {
         else {
             // If no implementation, assume we have a function signature type instead
             anode->vtexp = fndcl->vtype;
+            parseRefBounds(parse, anode);
         }
         return (INode *)anode;
     }
@@ -812,24 +863,7 @@ INode *parseAmper(ParseState *parse) {
     // business, where the receiver's type is known.
     anode->vtexp = parsePrefix(parse);
 
-    // A bound, '&<Trait + 'a': what the value a virtual reference points at
-    // holds lives at least as long as ''a' (lifetime.h, "Lifetime bounds").
-    // It is named where a lifetime may be.
-    if (parse->intype && lexIsToken(PlusToken) && lexPeekIsLifetime()) {
-        lexNextToken();
-        Name *bound = lex->val.ident;
-        if (anode->tag != VirtRefTag)
-            errorMsgLex(ErrorLifetimeBound, "A lifetime bound is said of a type whose insides are unknown: a virtual reference's, '&<Trait + 'a', or a type parameter's, '[T + 'a]'. A plain reference or slice names its own lifetime, '&'a T'.");
-        else if (lifeIsInvariant(bound))
-            errorMsgLex(ErrorLifetimeInvariant, "A bound says what the borrows inside a type outlive, and an invariant lifetime has no order to say it with.");
-        else if (parseLifeNamed(parse, bound, NULL)) {
-            anode->bound = bound;
-            lifeVirtBoundSeen = 1;
-            if (bound == staticLifeName)
-                lifeStaticBoundSeen = 1;
-        }
-        lexNextToken();
-    }
+    parseRefBounds(parse, anode);
     return (INode *)anode;
 }
 

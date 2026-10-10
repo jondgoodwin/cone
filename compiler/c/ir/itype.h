@@ -120,6 +120,18 @@ int itypeThreadBoundHow(INode *type, int *settled, StaticBorrow how);
 INode *itypeThreadBoundWhy(INode *type, char *path, size_t size);
 INode *itypeThreadBoundWhyHow(INode *type, char *path, size_t size, StaticBorrow how);
 
+// May a borrow of a value of this type NOT be held by several threads at once:
+// does it hold, where a borrow of it reaches, a counted owner whose count is
+// not atomic, a traced reference, or a reference that writes through a shared
+// path ('&mut')? What 'Shareable' is granted by (genericTypeIs).
+int itypeNotShareable(INode *type);
+
+// The reference found first that makes a type not Shareable, with 'path' set
+// to where it sits in the type, NULL where the type is Shareable. 'mutrule' 0
+// leaves a reference that writes through a shared path alone: the pass's own
+// item, which no other pass reaches.
+INode *itypeNotShareableWhy(INode *type, int mutrule, char *path, size_t size);
+
 // Append a type to 'buf' as a diagnostic spells it: a reference as it is
 // written ('&mut Point', 'Rc[imm, Point]', '*u64'), anything else by its name
 void itypeSpellCat(char *buf, size_t size, INode *type, int depth);

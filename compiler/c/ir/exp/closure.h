@@ -110,6 +110,20 @@ extern int closureInferring;
 // virtual reference: refused, answering whether it was
 int closureGpuVirtRefused(INode *from, INode *totypedcl);
 
+// The first captured variable of the closure whose hidden struct is 'type' whose
+// field's type 'bad' says keeps it from where it is going (a variable it
+// borrows, or a state entry it holds); NULL where 'type' is no closure's or none is
+ClosureCap *closureFirstCap(INode *type, int (*bad)(INode *fieldtype));
+
+// The type of the value a capture stands for: the variable's own, or, for a list
+// entry, the field that holds it (the entry's declaration has no type of its own)
+INode *closureCapValueType(ClosureCap *cap);
+
+// What to do about such a variable, in a message: list it, so the closure copies
+// it instead of borrowing it. 'valueok' says the variable's own value would go
+// where the closure is going.
+void closureCapAdvice(ClosureCap *cap, int valueok, char *buf, size_t size);
+
 // Whether a node is a closure literal, still to be lowered
 #define closureIsLiteral(node) ((node)->tag == ClosureTag)
 

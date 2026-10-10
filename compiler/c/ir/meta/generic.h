@@ -158,6 +158,21 @@ void genericSendableCheckAll();
 // the check was made: whether a borrow of the whole program may cross there
 int genericNotSendableWhy(INode *arg, char *what, char *reason, StaticBorrow how);
 
+// Why a type is not Shareable: what the reference found first (itypeNotShareableWhy)
+// is and why it may not be held by several threads at once, into 'reason'
+void genericNotShareableReason(INode *culprit, int fix, char *reason, size_t size);
+
+// "it borrows 'hf' (Rc[imm, Grid])": the captured variable that keeps a closure
+// from being Shareable, and where its type holds the culprit without being it,
+// what that is
+void genericCapSentence(struct ClosureCap *cap, INode *culprit, char *buf, size_t size);
+
+// The captured variable of the closure whose hidden struct is 'type' whose type
+// makes it not Shareable (a variable it borrows, or a state entry it holds), or
+// NULL where 'type' is no closure's, or each is Shareable. 'mutrule' as
+// itypeNotShareableWhy's.
+struct ClosureCap *genericClosureNotShareableCap(INode *type, int mutrule);
+
 // When the method or function 'name' is absent from the generic type instance
 // 'typedcl' because its 'where' clause is not met there, report so at
 // 'errnode', naming the clause, and return 1. Otherwise return 0.

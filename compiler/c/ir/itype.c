@@ -522,6 +522,10 @@ static int itypeThreadBoundAt(INode *type) {
         case RefCrossesAll:
             return 0;
         case RefCrosses:
+            // A virtual reference marked '+ Sendable' vouches for the value
+            // behind it: that was checked where the reference was made
+            if (type->tag == VirtRefTag && (((RefNode *)type)->marks & RefMarkSendable))
+                return 0;
             return itypeThreadBoundAt(((RefNode *)type)->vtexp);
         default:
             return 1;
@@ -593,11 +597,13 @@ void itypeSpellCat(char *buf, size_t size, INode *type, int depth) {
             }
             snprintf(buf + used, size - used, "&%s %s", pname, shape);
             itypeSpellCat(buf, size, ref->vtexp, depth + 1);
+            refMarksCat(buf, size, ref->marks);
             return;
         }
         // A managed reference: 'Rc[mut, Point]', whether thin or virtual
         snprintf(buf + used, size - used, "%s[%s, ", rname, pname);
         itypeSpellCat(buf, size, ref->vtexp, depth + 1);
+        refMarksCat(buf, size, ref->marks);
         used = strlen(buf);
         snprintf(buf + used, size - used, "]");
         return;
@@ -621,6 +627,14 @@ void itypeSpellCat(char *buf, size_t size, INode *type, int depth) {
         }
         used = strlen(buf);
         snprintf(buf + used, size - used, "]");
+        return;
+    }
+    // A callable trait, the type a signature behind a virtual reference stands
+    // for, is spelled as the signature was written
+    if (dcl->tag == StructTag && ((StructNode *)dcl)->callsig != NULL) {
+        char sig[300] = "";
+        genericFnSigCat(sig, sizeof(sig), ((StructNode *)dcl)->callsig);
+        snprintf(buf + used, size - used, "%s", sig);
         return;
     }
     snprintf(buf + used, size - used, "%s", itypeName(dcl));
@@ -656,6 +670,8 @@ static INode *itypeThreadBoundCulprit(INode *type, char *path, size_t size,
                 && isTypeNode(((RefNode *)type)->vtexp)
                 && itypeGetTypeDcl(((RefNode *)type)->vtexp)->tag != StructTag)
                 snprintf(path, size, "what the borrow points at");
+            if (type->tag == VirtRefTag && (((RefNode *)type)->marks & RefMarkSendable))
+                return NULL;
             return itypeThreadBoundCulprit(((RefNode *)type)->vtexp, path, size, seen, nseen);
         default:
             return type;
@@ -757,6 +773,135 @@ INode *itypeThreadBoundWhyHow(INode *type, char *path, size_t size, StaticBorrow
 
 INode *itypeThreadBoundWhy(INode *type, char *path, size_t size) {
     return itypeThreadBoundWhyHow(type, path, size, StaticOff);
+}
+
+// ---- The share check: may a borrow of this type be held by several threads at once? ----
+//
+// Sendable says a value may be handed to another thread; Shareable says a
+// borrow of it may be held by several at once (Rust's Sync), so each reads it
+// while the others do: the passes of a 'parallel each' naming a value from
+// outside, the threads of an 'Arc'. Granted from the type's contents, never by
+// names. A type is not Shareable when it holds, in a field, a variant, a
+// tuple's or array's element, behind a borrow or an owner, or as the argument
+// of a generic instance:
+//   - an owner that may be aliased in a region not declaring ThreadSafe (an
+//     Rc), or a traced reference (a Gc): a copy made by two threads together
+//     writes a count or a collector root that nothing makes atomic;
+//   - a reference that writes through a shared path (refWritesShared: '&mut',
+//     'mut1', 'Arc[mut, T]'): Cone's '&mut' is shared mutable, so what holds
+//     one writes through a '&' of it. A borrow of the item a pass is lent is
+//     the pass's own, so the caller asks without this rule (mutrule 0).
+// A struct declaring Shareable is taken at its word, except that an instance
+// of a generic one is Shareable only where its type arguments are. Raw
+// pointers of a type that is not generic are trusted (nothing is followed
+// behind one), and an Arc, an atomic and a number are free. A reference to a
+// trait is not followed (its implementers are not known): the reference marks
+// the value it points at, '&<Shape + Shareable', where it must be sure.
+
+// The first reference in 'type' that makes it not Shareable, or NULL; 'path'
+// says where it sits ('Job.data'), as the thread check's does
+static INode *itypeShareCulprit(INode *type, int mutrule, INode **seen, uint32_t *nseen, char *path, size_t size) {
+    if (type == NULL || *nseen > 60)
+        return NULL;
+    size_t used = strlen(path);
+    switch (type->tag) {
+    case NameUseTag:
+        return isTypeNode(type) ? itypeShareCulprit(itypeGetTypeDcl(type), mutrule, seen, nseen, path, size) : NULL;
+    case AliasDclTag:
+        return itypeShareCulprit(((AliasDclNode *)type)->target, mutrule, seen, nseen, path, size);
+    case RefTag:
+    case ArrayRefTag:
+    case VirtRefTag:
+        if (refCountsPlain((RefNode *)type) || (mutrule && refWritesShared((RefNode *)type)))
+            return type;
+        if (type->tag == VirtRefTag && (((RefNode *)type)->marks & RefMarkShareable))
+            return NULL;
+        return itypeShareCulprit(((RefNode *)type)->vtexp, mutrule, seen, nseen, path, size);
+    case ArrayTag:
+        snprintf(path + used, size - used, used ? "[]" : "an element");
+        {
+            INode *culprit = itypeShareCulprit(arrayElemType(type), mutrule, seen, nseen, path, size);
+            if (culprit == NULL)
+                path[used] = '\0';
+            return culprit;
+        }
+    case TTupleTag: {
+        INode **nodesp;
+        uint32_t cnt;
+        uint32_t index = 0;
+        for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp)) {
+            snprintf(path + used, size - used, used ? ".%u" : "element %u", index++);
+            INode *culprit = itypeShareCulprit(*nodesp, mutrule, seen, nseen, path, size);
+            if (culprit)
+                return culprit;
+            path[used] = '\0';
+        }
+        return NULL;
+    }
+    case StructTag: {
+        for (uint32_t i = 0; i < *nseen; ++i) {
+            if (seen[i] == type)
+                return NULL;        // (found where it was first asked)
+        }
+        seen[(*nseen)++] = type;
+        StructNode *strnode = (StructNode *)type;
+        INode **nodesp;
+        uint32_t cnt;
+        if (used == 0)
+            itypeSpellCat(path, size, type, 0);
+        size_t named = strlen(path);
+        // An instance of a generic type is shareable only if every type
+        // argument is (Rust's rule: Vec<T> is Sync iff T is), whatever raw
+        // pointer it keeps its items behind
+        Nodes *args = itypeInstanceTypeArgs(type);
+        if (args != NULL) {
+            for (nodesFor(args, cnt, nodesp)) {
+                char argpath[8] = "";
+                INode *culprit = itypeShareCulprit(*nodesp, mutrule, seen, nseen, argpath, sizeof(argpath));
+                if (culprit) {
+                    snprintf(path + named, size - named, "'s type argument");
+                    return culprit;
+                }
+            }
+        }
+        if (structDeclaresTrait(strnode, shareableTrait))
+            return NULL;
+        for (nodelistFor(&strnode->fields, cnt, nodesp)) {
+            FieldDclNode *field = (FieldDclNode *)*nodesp;
+            snprintf(path + named, size - named, ".%s", &field->namesym->namestr);
+            INode *culprit = itypeShareCulprit(field->vtype, mutrule, seen, nseen, path, size);
+            if (culprit)
+                return culprit;
+            path[named] = '\0';
+        }
+        // An enum holds whichever of its variants the value is
+        if (strnode->derived) {
+            for (nodesFor(strnode->derived, cnt, nodesp)) {
+                path[used] = '\0';
+                INode *culprit = itypeShareCulprit(*nodesp, mutrule, seen, nseen, path, size);
+                if (culprit)
+                    return culprit;
+                path[named] = '\0';
+            }
+        }
+        path[used] = '\0';
+        return NULL;
+    }
+    default:
+        return NULL;
+    }
+}
+
+INode *itypeNotShareableWhy(INode *type, int mutrule, char *path, size_t size) {
+    INode *seen[64];
+    uint32_t nseen = 0;
+    path[0] = '\0';
+    return itypeShareCulprit(type, mutrule, seen, &nseen, path, size);
+}
+
+int itypeNotShareable(INode *type) {
+    char path[256];
+    return itypeNotShareableWhy(type, 1, path, sizeof(path)) != NULL;
 }
 
 // Set when an answer reached a struct not yet type checked, whose fields may
@@ -1618,6 +1763,20 @@ INode *itypeManagedRefRegion(INode *type) {
 // refuses for 'new Rc(1usize)' (ErrorStructBracket). So
 // every argument must be a type -- a permission is one -- or, in a generic's
 // template, a type parameter still to be substituted.
+// A type with a type joined to it by '+', 'Shape + Sendable', the sum the
+// parser makes of a reference's markers (fnCallMarkSplit judges which they are)
+static int itypeIsMarkedType(INode *node) {
+    while (node != NULL && node->tag == FnCallTag && (node->flags & FlagOperator)) {
+        FnCallNode *sum = (FnCallNode*)node;
+        if (sum->methfld == NULL || !isNameUseNode(sum->methfld) || ((NameUseNode*)sum->methfld)->namesym != plusName
+            || sum->args == NULL || sum->args->used != 1 || sum->objfn == NULL
+            || !isNameUseNode(nodesGet(sum->args, 0)) || !isTypeNode(nodesGet(sum->args, 0)))
+            return 0;
+        node = sum->objfn;
+    }
+    return node != NULL && (isTypeNode(node) || inodeIsProvisionalType(node));
+}
+
 int itypeIsManagedRefType(INode *type) {
     if (type->tag != FnCallTag)
         return 0;
@@ -1627,7 +1786,7 @@ int itypeIsManagedRefType(INode *type) {
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(call->args, cnt, nodesp)) {
-        if (*nodesp == NULL || !(isTypeNode(*nodesp) || inodeIsProvisionalType(*nodesp)))
+        if (*nodesp == NULL || !(isTypeNode(*nodesp) || inodeIsProvisionalType(*nodesp) || itypeIsMarkedType(*nodesp)))
             return 0;
     }
     return 1;
