@@ -31,6 +31,16 @@ typedef struct {
     uint16_t scope;   // Lifetime: its band, 0 global, 1 the caller's, 2+ a block
     Name *lifename;   // The lifetime a signature names on it, or NULL (lifetime.h)
     Name *bound;      // A virtual reference's bound, '&<Trait + 'a': what the referenced value's borrows outlive, or NULL (lifetime.h)
+    // A virtual reference's markers, '&<Trait + Shareable', 'So[fn() + Sendable]':
+    // what the value behind it is promised to be, since its type is hidden. A
+    // value is made one only if its type is each (refvirtMatchesRef), and one
+    // with fewer markers is a reference with more, never the other way
+    // (refvirtMatches). RefMark* bits.
+    uint8_t marks;
+    // A borrow the compiler made for a variable a closure's body names (a
+    // BorrowTag node, closure.c): what an escape's message says to list, so the
+    // closure copies the variable instead of borrowing it
+    uint8_t capture;
     // Written '+R-perm T' (parsePlus). As an allocation that spelling is
     // refused (allocateTypeCheck, ErrorPlusAlloc); as a single or virtual
     // reference type it is refused (refTypeCheck), except at a match pattern's
@@ -44,6 +54,23 @@ typedef struct {
     // ErrorSliceSpelling). '&[]x', the borrow of a value as a slice, is not.
     uint16_t bracketSpelled;
 } RefNode;
+
+#define RefMarkSendable 1
+#define RefMarkShareable 2
+
+// The marker a name after a '+' in a reference type stands for, a RefMark bit,
+// or 0 where it is not Sendable or Shareable
+uint8_t refMarkOfName(Name *name);
+
+// A marker as it is written, 'Sendable' or 'Shareable' ('mark' is one RefMark bit)
+char *refMarkSpell(uint8_t mark);
+
+// The markers written after a type, ' + Sendable + Shareable', appended to 'buf'
+void refMarksCat(char *buf, size_t size, uint8_t marks);
+
+// The first marker a virtual reference promises of its hidden value that 'type'
+// is not, as a RefMark bit; 0 where it is each
+uint8_t refMarksUnmet(uint8_t marks, INode *type);
 
 // Create a new reference type whose info will be filled in afterwards
 RefNode *newRefNode(uint16_t tag);
@@ -90,6 +117,15 @@ typedef enum {
 } RefBinds;
 
 RefBinds refThreadBinds(RefNode *ref);
+
+// The share check's two rules for a reference (itypeNotShareable): does a copy
+// of it write a count that is not atomic, or a traced reference's root -- an
+// aliasable owner of a region not declaring ThreadSafe, or a traced one -- and
+// may it write through a path several threads share: a permission that writes,
+// may be aliased and is not race-safe ('mut', 'mut1'), which Cone lets write
+// through a '&' of the value holding it
+int refCountsPlain(RefNode *ref);
+int refWritesShared(RefNode *ref);
 
 // Why a borrow does not qualify to cross as one of the whole program's
 typedef enum {

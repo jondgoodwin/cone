@@ -110,6 +110,7 @@ INode *iexpScopedBorrowType(INode *typedcl, INode *lexnode, uint16_t scope) {
     scoped->scope = scope;
     scoped->lifename = ref->lifename;
     scoped->bound = ref->bound;
+    scoped->marks = ref->marks;
     return (INode*)scoped;
 }
 

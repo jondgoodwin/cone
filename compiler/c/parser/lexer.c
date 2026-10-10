@@ -1553,6 +1553,12 @@ int lexPeekIsLifetime() {
     return srcp[0] == '\'' && isalpha(srcp[1]) && srcp[2] != '\'';
 }
 
+// With the lexer on a token, does the next one begin a name?
+int lexPeekIsIdent() {
+    char *srcp = lexSkipTrivia(lex->srcp);
+    return isalpha((unsigned char)srcp[0]) || srcp[0] == '_';
+}
+
 int lexIdentOpensType() {
     char *srcp = lexSkipTrivia(lex->srcp);
     if (*srcp == '.')

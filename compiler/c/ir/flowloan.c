@@ -793,6 +793,8 @@ static char *loanAttempt(int access) {
     }
 }
 
+static char *loanCaptureAdvice(uint32_t loan, char *buf, size_t size);
+
 void loanEscape(INode *node, uint32_t loan, int how) {
     // Once, though a loop's body is walked again
     if (mapGet(node, 0, 1))
@@ -822,21 +824,23 @@ void loanEscape(INode *node, uint32_t loan, int how) {
                 loanTempEnds(temp));
         return;
     }
+    char advice[400];
+    loanCaptureAdvice(loan, advice, sizeof(advice));
     switch (how) {
     case LoanEscapeReturn:
         errorMsgNode(node, ErrorEscape,
-            "Returned value carries a borrow of '%s' (made %s), which it would outlive: '%s' belongs to this function.",
-            srcname, where, srcname);
+            "Returned value carries a borrow of '%s' (made %s), which it would outlive: '%s' belongs to this function.%s",
+            srcname, where, srcname, advice);
         break;
     case LoanEscapeStore:
         errorMsgNode(node, ErrorEscape,
-            "Stored where it may outlive this function, the value carries a borrow of '%s' (made %s), which belongs to this function.",
-            srcname, where);
+            "Stored where it may outlive this function, the value carries a borrow of '%s' (made %s), which belongs to this function.%s",
+            srcname, where, advice);
         break;
     default:
         errorMsgNode(node, ErrorCallEscape,
-            "Call could store a borrowed reference where it would outlive the value it points to: an argument carries a borrow of '%s' (made %s), and another reaches beyond this function.",
-            srcname, where);
+            "Call could store a borrowed reference where it would outlive the value it points to: an argument carries a borrow of '%s' (made %s), and another reaches beyond this function.%s",
+            srcname, where, advice);
         break;
     }
 }
@@ -882,6 +886,34 @@ void loanApart(INode *node, uint32_t loan, VarDclNode *through, int how) {
     }
 }
 
+// A closure's own borrow of a variable its body names is the loan of a borrow
+// the compiler made (RefNode.capture): the variable, else NULL
+static Name *loanCaptured(uint32_t loan) {
+    INode *site = loans[loan].site;
+    if (loans[loan].kind == LoanCaller || site == NULL || site->tag != BorrowTag || !((RefNode *)site)->capture
+        || !isNameUseNode(((RefNode *)site)->vtexp))
+        return NULL;
+    return ((NameUseNode *)((RefNode *)site)->vtexp)->namesym;
+}
+
+// What to do about it, as a sentence: list the variable, so the closure holds
+// its own copy and is lifetime-limited by nothing in this function; for 'self',
+// the members or a handle. Empty where the loan is no closure's.
+static char *loanCaptureAdvice(uint32_t loan, char *buf, size_t size) {
+    Name *capname = loanCaptured(loan);
+    buf[0] = '\0';
+    if (capname == NULL)
+        return buf;
+    if (capname == selfName)
+        snprintf(buf, size,
+            " The closure borrows 'self' because its body names members of the object it is in, and kept where it outlives this call it would point at an object it may outlive: copy the members it needs into its list ('[tag = tag]'), or capture a counted handle to the object (an Rc or an Arc) instead of 'self'.");
+    else
+        snprintf(buf, size,
+            " The closure borrows '%s' because its body names it: list it to give the closure its own copy instead, 'fn (...) [%s] ... { ... }'.",
+            &capname->namestr, &capname->namestr);
+    return buf;
+}
+
 void loanNotGlobal(INode *node, uint32_t loan, Name *tparm) {
     if (mapGet(node, 0, 1))
         return;
@@ -889,6 +921,7 @@ void loanNotGlobal(INode *node, uint32_t loan, Name *tparm) {
     char srcname[128];
     char where[160];
     char why[200];
+    char advice[400];
     loanSourceName(&loans[loan].place, srcname, sizeof(srcname));
     if (tparm)
         snprintf(why, sizeof(why), "The type parameter %s is bounded by ''static' ('%s + 'static'), so what is handed in for it must hold only global borrows, but it carries",
@@ -901,8 +934,8 @@ void loanNotGlobal(INode *node, uint32_t loan, Name *tparm) {
             why, &loanParm(loan)->namesym->namestr);
     else
         errorMsgNode(node, tparm ? ErrorLifetimeBound : ErrorCallEscape,
-            "%s a borrow of '%s' (made %s).",
-            why, srcname, loanWhere(&loans[loan], where, sizeof(where)));
+            "%s a borrow of '%s' (made %s).%s",
+            why, srcname, loanWhere(&loans[loan], where, sizeof(where)), loanCaptureAdvice(loan, advice, sizeof(advice)));
 }
 
 void loanNotBound(INode *node, uint32_t loan, Name *bound) {
@@ -919,9 +952,11 @@ void loanNotBound(INode *node, uint32_t loan, Name *bound) {
         return;
     }
     loanSourceName(&loans[loan].place, srcname, sizeof(srcname));
+    char advice[400];
     errorMsgNode(node, ErrorLifetimeBound,
-        "A virtual reference bounded by '%s' points at a value whose borrows all last '%s', but this one holds a borrow of '%s' (made %s), which belongs to this function.",
-        &bound->namestr, &bound->namestr, srcname, loanWhere(&loans[loan], where, sizeof(where)));
+        "A virtual reference bounded by '%s' points at a value whose borrows all last '%s', but this one holds a borrow of '%s' (made %s), which belongs to this function.%s",
+        &bound->namestr, &bound->namestr, srcname, loanWhere(&loans[loan], where, sizeof(where)),
+        loanCaptureAdvice(loan, advice, sizeof(advice)));
 }
 
 void loanNotBoxable(INode *node, uint32_t loan) {
@@ -938,9 +973,10 @@ void loanNotBoxable(INode *node, uint32_t loan) {
         return;
     }
     loanSourceName(&loans[loan].place, srcname, sizeof(srcname));
+    char advice[400];
     errorMsgNode(node, ErrorLifetimeBound,
-        "An owning virtual reference ('So[Trait]', 'Rc[Trait]') names no lifetime, so it may outlive any borrow: the value made one may hold only global borrows, as if bounded by ''static'. This one holds a borrow of '%s' (made %s), which belongs to this function.",
-        srcname, loanWhere(&loans[loan], where, sizeof(where)));
+        "An owning virtual reference ('So[Trait]', 'Rc[Trait]') names no lifetime, so it may outlive any borrow: the value made one may hold only global borrows, as if bounded by ''static'. This one holds a borrow of '%s' (made %s), which belongs to this function.%s",
+        srcname, loanWhere(&loans[loan], where, sizeof(where)), loanCaptureAdvice(loan, advice, sizeof(advice)));
 }
 
 // What a borrow a seam ends is of, as the reader would say it: what the caller

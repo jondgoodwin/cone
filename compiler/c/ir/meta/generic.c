@@ -1130,6 +1130,10 @@ static int genericTypeIsHow(INode *type, StructNode *trait, StaticBorrow how) {
     // is checked to meet
     if (trait == sendableTrait)
         return !itypeThreadBoundHow(dcl, NULL, how);
+    // Shareable is the share check's: granted to every type holding nothing a
+    // borrow of it could not share between threads
+    if (trait == shareableTrait)
+        return !itypeNotShareable(dcl);
     // Sized and DynSized are the type's size: known at compile time, or known
     // at compile time or carried by a reference to it. A type cannot declare
     // either.
@@ -1677,14 +1681,116 @@ int genericNotSendableWhy(INode *arg, char *what, char *reason, StaticBorrow how
 // Sendable, saying what binds it to its thread and where that sits in it. A
 // borrow or a permission is the cause most often met through a local, and a
 // local's own 'mut' is not what is checked, so the message says so.
+static int genericFieldThreadBound(INode *type) {
+    return itypeThreadBound(type, NULL);
+}
+
 static void genericNotSendableMsg(INode *errnode, Name *name, GenVarDclNode *parm, INode *arg, StaticBorrow how) {
     char argname[256] = "";
     genericTypeNameCat(argname, sizeof(argname), arg, 0);
     char what[512], reason[512];
+    // A closure: the variable it holds or borrows that binds it, and what to do about it
+    ClosureCap *cap = closureFirstCap(arg, genericFieldThreadBound);
+    if (cap != NULL) {
+        char why[512], advice[600], captype[256] = "";
+        genericNotSendableWhy(cap->field->vtype, what, why, how);
+        itypeSpellCat(captype, sizeof(captype), cap->field->vtype, 0);
+        closureCapAdvice(cap, !itypeThreadBound(closureCapValueType(cap), NULL), advice, sizeof(advice));
+        errorMsgNode(errnode, ErrorNotSendable, "%s requires %s is Sendable, and this closure is not: it %s '%s' (%s), which is %s. %s",
+            &name->namestr, &parm->namesym->namestr, cap->state ? "holds" : "borrows",
+            &cap->dcl->namesym->namestr, captype, why, advice);
+        return;
+    }
     int local = genericNotSendableWhy(arg, what, reason, how);
     errorMsgNode(errnode, ErrorNotSendable, "%s requires %s is Sendable, and %s is not Sendable: %s %s.%s",
         &name->namestr, &parm->namesym->namestr, argname, what, reason,
         local ? " What is checked is the types of the references a value holds, not how a variable was declared: a local declared 'mut x = 5' holds a number, which is Sendable." : "");
+}
+
+// What makes a type not Shareable, in the words of the reference found
+// (itypeNotShareableWhy): into 'reason', what kind of thing it is and why it may
+// not be held by several threads at once
+void genericNotShareableReason(INode *culprit, int fix, char *reason, size_t size) {
+    RefNode *ref = (RefNode *)culprit;
+    INode *region = ref->region && isTypeNode(ref->region) ? itypeGetTypeDcl(ref->region) : NULL;
+    char *regname = region && region->tag == StructTag ? &((StructNode *)region)->namesym->namestr : "its region";
+    INode *perm = ref->perm && isTypeNode(ref->perm) ? itypeGetTypeDcl(ref->perm) : NULL;
+    Name *permname = perm ? inodeGetName(perm) : NULL;
+    if (regionIsTraced(ref->region))
+        snprintf(reason, size,
+            "a reference the %s collector traces: copying one writes a root into the collector's one chain, which is single threaded, so two threads cannot do it together",
+            regname);
+    else if (refCountsPlain(ref))
+        snprintf(reason, size,
+            "an owner that may be copied, and %s does not declare ThreadSafe: a copy writes its count without an atomic operation, which two threads cannot do together%s",
+            regname, fix ? ". Hold it in an Arc, whose count is atomic" : "");
+    else if (culprit->tag == VirtRefTag && !refWritesShared(ref))
+        snprintf(reason, size,
+            "a reference to a trait or a callable, whose implementers are not all known here, so nothing says a borrow of what it points at may be shared between threads%s",
+            fix ? ". Say what the value behind it is where the reference is written: '+ Shareable' (or '+ Sendable'), as in '&<Shape + Shareable' or 'So[fn(i32) i32 + Sendable]'" : "");
+    else
+        snprintf(reason, size,
+            "a reference of permission %s, which may write: Cone's %s is shared mutable, so whatever holds one writes through a borrow of it, and two threads holding that borrow could write at once%s",
+            permname ? &permname->namestr : "?", perm == (INode *)mutPerm ? "'&mut'" : "reference of that permission",
+            fix ? ". Copy the value into the holder, or hold it behind a lock" : "");
+}
+
+// A captured variable that keeps a closure from being Shareable, in a sentence
+// the reason follows: "it borrows 'hf2' (Rc[imm, Grid])", or, where the variable
+// holds the culprit without being it, "it holds 'cfg' (Config), which holds Rc[imm, Grid]"
+void genericCapSentence(ClosureCap *cap, INode *culprit, char *buf, size_t size) {
+    char var[256] = "", held[256] = "";
+    itypeSpellCat(var, sizeof(var), closureCapValueType(cap), 0);
+    itypeSpellCat(held, sizeof(held), culprit, 0);
+    if (strcmp(var, held) == 0)
+        snprintf(buf, size, "it %s '%s' (%s)", cap->state ? "holds" : "borrows", &cap->dcl->namesym->namestr, var);
+    else
+        snprintf(buf, size, "it %s '%s' (%s), which holds %s", cap->state ? "holds" : "borrows",
+            &cap->dcl->namesym->namestr, var, held);
+}
+
+// A closure's captured variable whose type is not Shareable: the field of the
+// hidden struct that holds it (a variable borrowed, or a list entry), the first
+// in the order captured. NULL where 'type' is no closure's.
+ClosureCap *genericClosureNotShareableCap(INode *type, int mutrule) {
+    INode *dcl = type ? itypeGetTypeDcl(type) : NULL;
+    ClosureInfo *closure = dcl ? closureOfStruct(dcl) : NULL;
+    for (uint32_t c = 0; closure != NULL && c < closure->ncaps; ++c) {
+        ClosureCap *cap = &closure->caps[c];
+        if (cap->field == NULL || cap->dcl == NULL)
+            continue;
+        char path[64];
+        if (itypeNotShareableWhy(cap->field->vtype, mutrule, path, sizeof(path)) != NULL)
+            return cap;
+    }
+    return NULL;
+}
+
+// Refuse an instance whose argument 'arg', for parameter 'parm', is not Shareable
+static void genericNotShareableMsg(INode *errnode, Name *name, GenVarDclNode *parm, INode *arg) {
+    char path[256];
+    INode *culprit = itypeNotShareableWhy(arg, 1, path, sizeof(path));
+    ClosureCap *cap = genericClosureNotShareableCap(arg, 1);
+    char reason[512] = "";
+    if (culprit)
+        genericNotShareableReason(culprit, cap == NULL, reason, sizeof(reason));
+    char culpritname[256] = "";
+    if (culprit)
+        itypeSpellCat(culpritname, sizeof(culpritname), culprit, 0);
+    if (cap != NULL) {
+        char sentence[600], advice[600];
+        genericCapSentence(cap, culprit, sentence, sizeof(sentence));
+        closureCapAdvice(cap, !itypeNotShareable(closureCapValueType(cap)), advice, sizeof(advice));
+        errorMsgNode(errnode, ErrorNotShareable,
+            "%s requires %s is Shareable, and this closure is not: %s, %s. %s",
+            &name->namestr, &parm->namesym->namestr, sentence, reason, advice);
+        return;
+    }
+    char argname[256] = "";
+    genericTypeNameCat(argname, sizeof(argname), arg, 0);
+    errorMsgNode(errnode, ErrorNotShareable, "%s requires %s is Shareable, and %s is not Shareable: %s is %s, %s.",
+        &name->namestr, &parm->namesym->namestr, argname, path[0] ? path : "it",
+        culpritname, reason);
 }
 
 // An instance whose 'T is Sendable' was met while a struct it reaches was not
@@ -1977,6 +2083,10 @@ static int genericRequirementsMetIn(FnCallNode *srcgencall, INode *generic, Gene
         StaticBorrow how = genericStaticHow(trait, parm);
         genericWhereOwner = NULL;
         genericNotSendableMsg((INode*)srcgencall, name, parm, arg, how);
+        return 0;
+    }
+    if (trait == shareableTrait) {
+        genericNotShareableMsg((INode*)srcgencall, name, parm, arg);
         return 0;
     }
     // An instance of a generic trait is the one made at these arguments, and the

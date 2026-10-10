@@ -405,7 +405,8 @@ as is one made in a `parallel each` (`parallelEachCheckBody`), until the
 collector is per actor. A `parallel each` body (or a builder's filter or
 `yield`) that names a value from outside, or its item, whose type is not safe to
 share across the passes (it holds an `Rc`-like owner or a traced reference) is
-`ErrorParReach` (`parCheckReach`); copying one stays `ErrorParCopy`. In a loop
+`ErrorParReach` (`parCheckReach`; a `&mut` held in it counts, and a closure passed in
+is told which variable it borrows or holds); copying one stays `ErrorParCopy`. In a loop
 that writes through its source, naming an outside variable whose type could point at
 a written item is `ErrorParAlias` (`parCheckOuterAlias`).
 
@@ -435,6 +436,13 @@ of it, or a function of another signature) is `ErrorCallableUse`; and a closure 
 given where a trait is wanted that has not exactly one required method (a method
 with a body is a default, and comes with the literal) and no field is
 `ErrorClosureTrait`.
+
+The built-in marker `Shareable` has two: an unmet `T is Shareable`, or a value made a
+virtual reference marked `+ Shareable` that is not, is `ErrorNotShareable` (the
+marker `+ Sendable`, unmet, is `ErrorNotSendable`, the thread check's); and a
+`+` in a reference's type followed by anything but `Sendable` or `Shareable`, or
+marking a reference to a type that is known, is `ErrorMarkUse`
+([references](../nodes/references.md), `RefNode.marks`).
 
 A struct viewed as a trait behind a virtual reference (`&<Trait`, `So[Trait]`) whose
 method takes a stronger `self` than the trait's method declares (`self &mut` for

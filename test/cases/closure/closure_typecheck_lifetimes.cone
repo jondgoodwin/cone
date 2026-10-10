@@ -1,0 +1,78 @@
+// A closure that holds a borrow is lifetime-limited: it may be used down a call
+// and kept in a local, but not stored where it outlives the function, returned or
+// sent. Each escape names the variable the closure borrows and says to list it,
+// so the closure holds its own copy: 'fn (...) [k] ... { ... }'. A closure that
+// names a member of 'self' borrows 'self', and stored in 'self' it would point at
+// the object it is in: the message says to copy the member it needs into the
+// list, or to capture a counted handle. The same closures with the variable listed
+// are free (closure_lifetimes_free's cases, below, compile here beside the refusals).
+
+mod closure_typecheck_lifetimes;
+
+import stdio use *;
+import collections use *;
+import sync use Arc;
+import thread;
+
+struct Holder { pub f So[fn(x i32) i32]; }
+
+// Returned
+fn returned() So[fn(x i32) i32] {
+  imm k = 3;
+  return new So[fn(x i32) i32](fn(x i32) i32 { x * k; });         //~ ErrorLifetimeBound "The closure borrows 'k' because its body names it"
+}
+
+// Stored where the caller keeps it
+fn stored(h &mut Holder) {
+  imm k = 3;
+  h.f = new So[fn(x i32) i32](fn(x i32) i32 { x * k; });          //~ ErrorLifetimeBound "list it to give the closure its own copy"
+}
+
+// Sent: an owner of a closure that borrows, to a thread
+fn run(f So[fn(x i32) i32 + Sendable]) i32 { f(1); }
+
+fn sent() {
+  imm k = 3;
+  imm c = new So[fn(x i32) i32 + Sendable](fn(x i32) i32 { x * k; });   //~ ErrorNotSendable "it borrows 'k' (&ro i32)"
+}
+
+// A closure borrowing a local, returned by borrow
+fn byBorrow() &<fn(x i32) i32 {
+  imm k = 3;
+  imm c = fn(x i32) i32 { x * k; };
+  return &c;                                                       //~ ErrorEscape "is a closure: it can leave this function as an owner"
+}
+
+// A closure naming a member of 'self', stored in 'self'
+struct Button {
+  pub tag i32;
+  pub cb So[fn(x i32) i32];
+  pub fn install(self &mut) {
+    self.cb = new So[fn(x i32) i32](fn(x i32) i32 { x + tag; });  //~ ErrorLifetimeBound "borrows 'self' because its body names members"
+  }
+}
+
+// Listed, each is free
+fn returnedListed() So[fn(x i32) i32] {
+  imm k = 3;
+  return new So[fn(x i32) i32](fn(x i32) [k] i32 { x * k; });
+}
+
+fn storedListed(h &mut Holder) {
+  imm k = 3;
+  h.f = new So[fn(x i32) i32](fn(x i32) [k] i32 { x * k; });
+}
+
+fn sentListed() {
+  imm k = 3;
+  imm c = new So[fn(x i32) i32 + Sendable](fn(x i32) [k] i32 { x * k; });
+  imm t = thread.start(c, &run);
+}
+
+struct Button2 {
+  pub tag i32;
+  pub cb So[fn(x i32) i32];
+  pub fn install(self &mut) {
+    self.cb = new So[fn(x i32) i32](fn(x i32) [tag = tag] i32 { x + tag; });
+  }
+}

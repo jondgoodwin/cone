@@ -1,0 +1,147 @@
+// Shareable, beside Sendable: Sendable says a value may be handed to another
+// thread, Shareable that a borrow of it may be held by several threads at once.
+// The compiler grants each from what a type holds, never from names. And a
+// reference to a callable or a trait may say what the value behind it is with
+// '+': 'So[fn(f32, f32) f32 + Sendable]', '&<fn(i32) i32 + Shareable'.
+//
+// 3D Web's Flock: a closure listing 'hf' ('[hf]', an 'Arc[imm, Grid]') is held as
+// 'So[fn(x f32, z f32) f32 + Sendable]' and moved to another thread, which calls it,
+// while main still reads the Grid through its own Arc:
+//   2 * 2 + 3 + 0.5 = 7.5, and main reads scale 2 and bias 0.5.
+//
+// 'shares' and 'crosses' ask the markers of types without running anything: numbers,
+// a struct of them, an Arc of one (Arc[imm, T], and the lock permission Arc[Mutex, T]),
+// a List of them, an Atomic, a plain borrow, and a closure that lists or borrows
+// only such values are Shareable; a struct declaring Shareable is taken at its word.
+// closure_typecheck_shareable holds what is refused.
+
+mod closure_shareable;
+
+import stdio use *;
+import sync use Arc, Mutex, Channel, Sender, Receiver;
+import collections use *;
+import thread;
+
+struct Grid { pub scale f32; pub bias f32; }
+struct Pair { pub a i32; pub b f32; }
+struct Tally { pub hits Atomic[u64]; }
+
+// A promise the compiler takes on trust: raw pointers it cannot follow
+struct Handle is Shareable { pub p *u8; }
+
+// A trait: its references say what the value behind them is
+trait Shape { pub fn area(self &) f32; }
+struct Sq is Shape { pub s f32; pub fn area(self &) f32 { s * s; } }
+
+fn areaOf(s &<Shape + Shareable) f32 { s.area(); }
+fn areaWhole(s &<Shape + 'static + Shareable + Sendable) f32 { s.area(); }
+fn areaOwned(s So[Shape + Sendable + Shareable]) f32 { s.area(); }
+fn areaShared(s Rc[imm, Shape + Shareable]) f32 { s.area(); }
+
+fn crosses[T Sendable]() {}
+fn shares[T Shareable]() {}
+
+fn runAt(f So[fn(x f32, z f32) f32 + Sendable]) f32 { f(2., 3.); }
+
+// Closures sent over a channel to a consumer thread, which calls each with 10
+fn drain(rx Receiver[So[fn(x i32) i32 + Sendable]]) i32 {
+  mut rx2 = rx;
+  mut total = 0;
+  mut more = true;
+  while more {
+    match rx2.recv() {
+      case imm f Some {total = total + f.value(10);}
+      case is None[So[fn(x i32) i32 + Sendable]] {more = false;}
+    }
+  }
+  total;
+}
+
+// The static form, asked for both
+fn twice[F fn(x i32) i32 + Sendable + Shareable](f &F, x i32) i32 { f(f(x)); }
+
+// A callable lent to several readers at once: a '&<fn' says its callable is Shareable
+fn readTwice(f &<fn(x i32) i32 + Shareable, x i32) i32 { f(x) + f(x + 1); }
+
+// A reference marked '+ Shareable' dropped to one without: fewer promises
+fn plain(f &<fn(x i32) i32, x i32) i32 { f(x); }
+fn dropMark(f &<fn(x i32) i32 + Shareable, x i32) i32 { plain(f, x); }
+
+fn main() {
+  // What each marker is granted to
+  shares[i32]();
+  shares[Pair]();
+  shares[Arc[imm, Grid]]();
+  shares[Arc[Mutex, Grid]]();
+  shares[List[Pair]]();
+  shares[So[Pair]]();
+  shares[Atomic[u64]]();
+  shares[Tally]();
+  shares[&Pair]();
+  shares[Handle]();
+  crosses[Arc[imm, Grid]]();
+  crosses[So[fn(x i32) i32 + Sendable]]();
+  shares[So[fn(x i32) i32 + Shareable]]();
+  crosses[So[fn(x i32) i32 + Sendable + Shareable]]();
+
+  // Flock: the Arc in the closure's list, the closure owned and moved to a thread
+  imm hf = new Arc[imm, Grid](new Grid(2., 0.5));
+  imm sampler = new So[fn(x f32, z f32) f32 + Sendable](fn(x f32, z f32) [hf] f32 { x * hf.scale + z + hf.bias; });
+  imm thr = thread.start(sampler, &runAt);
+  printStr("thread ");
+  printFloat(f64.from(thr.join()));
+  printStr("\nmain reads ");
+  printFloat(f64.from(hf.scale));
+  printStr(" ");
+  printFloat(f64.from(hf.bias));
+  printStr("\n");
+
+  // The static form: a closure that copies a number in is Sendable and Shareable
+  imm k = 10;
+  imm add = fn(x i32) [k] i32 { x + k; };
+  printStr("twice ");
+  printInt(i64.from(twice(&add, 1)));         // (1 + 10) + 10 = 21
+  printStr("\n");
+
+  // '&<fn + Shareable': lent, and dropped to a plain '&<fn'
+  printStr("readTwice ");
+  printInt(i64.from(readTwice(fn(x i32) [k] i32 { x * k; }, 3)));   // 30 + 40 = 70
+  printStr(" ");
+  printInt(i64.from(dropMark(fn(x i32) [k] i32 { x * k; }, 2)));   // 20
+  printStr("\n");
+
+  // A closure that only borrows a number is Shareable (a borrow of a number is read
+  // by many), though it cannot cross: it borrows
+  imm n = 7;
+  imm reads = fn(x i32) i32 { x + n; };
+  printStr("borrowed ");
+  printInt(i64.from(readTwice(&reads, 1)));   // 8 + 9 = 17
+  printStr("\n");
+
+  // The same markers on a trait's references
+  imm sq = new Sq(3.);
+  printStr("shapes ");
+  printFloat(f64.from(areaOf(&sq)));                                       // 9
+  printStr(" ");
+  printFloat(f64.from(areaWhole(&sq)));                                    // 9
+  printStr(" ");
+  printFloat(f64.from(areaOwned(new So[Sq](new Sq(2.)))));                 // 4
+  printStr(" ");
+  imm shared Rc[imm, Shape + Shareable] = new Rc[imm, Sq](new Sq(1.5));
+  printFloat(f64.from(areaShared(shared)));                                // 2.25
+  printStr("\n");
+
+  // Closures sent over a channel: each owner moves to the consumer with what it listed
+  mut tx Sender[So[fn(x i32) i32 + Sendable]];
+  mut rx Receiver[So[fn(x i32) i32 + Sendable]];
+  tx, rx = Channel[So[fn(x i32) i32 + Sendable]].make();
+  imm consumer = thread.start(rx, &drain);
+  tx <- new So[fn(x i32) i32 + Sendable](fn(x i32) [k] i32 { x + k; });
+  tx <- new So[fn(x i32) i32 + Sendable](fn(x i32) [k] i32 { x * k; });
+  {
+    imm last = tx;   // the last sender goes at this block's end, closing the channel
+  }
+  printStr("channel ");
+  printInt(i64.from(consumer.join()));       // (10 + 10) + (10 * 10) = 120
+  printStr("\n");
+}

@@ -255,21 +255,30 @@ anything that could be copied:
 
 A body may not **reach** a value that is not safe to share (`ErrorParReach`,
 `parCheckReach`, over the loop: its source's item variable, filter, body and
-`yield`). The property is the sibling of `Sendable`, Rust's `Sync`, inferred
-(`parNotSync`): a type is not safe when a field, variant, element, borrow's or
-owner's pointee reaches a reference `parRefCountsPlain` says counts without
+`yield`). The property is the built-in marker `Shareable`, the sibling of
+`Sendable` and Rust's `Sync` (`itypeNotShareableWhy`, [references](references.md)):
+a type is not Shareable when a field, variant, element, borrow's or
+owner's pointee reaches a reference `refCountsPlain` says counts without
 atomics (an aliasable owner of a region not declaring `ThreadSafe`, or a traced
-region), by a region's declarations and never a name. Any name use of a
+region) or `refWritesShared` says writes through a path others share (`&mut`,
+`Arc[mut, T]`), by a region's declarations and never a name. Any name use of a
 variable declared outside the loop, a global or a parameter of that type is
 refused, except the places `parCheckCopies` already refused (no double report)
 and the lowering's hidden variables; a variable the loop declares is its own,
-except the item, a borrow into the source (`nodesGet(loop->stmts, 1)`). A raw
+except the item, a borrow into the source (`nodesGet(loop->stmts, 1)`), which is
+judged without the `&mut` rule (no other pass reaches it). A name that is itself a
+borrow (`self`, a `&mut` parameter) is read through as a `&`: what it reaches is
+judged, not its own permission, since `parCheckWrites` refuses the body's writes
+through it (a virtual reference is not peeled: unmarked, it is the culprit itself,
+`+ Shareable` or `+ Sendable` vouches). A raw
 pointer of a type that is not generic is trusted and nothing behind it is
 followed; an instance of a generic type is not safe when any type argument is not
-(`itypeInstanceTypeArgs`, in `parNotSync`), so `List[Rc[...]]`, which keeps its
+(`itypeInstanceTypeArgs`), so `List[Rc[...]]`, which keeps its
 block behind a pointer, is found by its argument. The message differs for a root
 that is a counted or traced owner itself (`parIsCountedItself`: borrow its contents
-before the loop) and one that holds it (copy what the loop needs into a local).
+before the loop), one that holds it (copy what the loop needs into a local), one
+that holds a `&mut`, one that is or holds an unmarked virtual reference, and a closure passed in, where it names the variable the
+closure borrows or holds (`genericClosureNotShareableCap`) and what to list.
 
 A loop that **writes through its source** also refuses an outside variable whose
 type could point at a written item (`ErrorParAlias`, `parCheckOuterAlias`, run where

@@ -878,6 +878,42 @@ apart, so the second can be loosened without touching the first:
   is. Slices (`&Array[T]` of an Immutable `T`), raw pointers and virtual references to
   a trait declaring it take no part in either rule.
 
+## `Shareable`, and a virtual reference's markers
+
+`Shareable` (Rust's `Sync`) says a borrow of a value may be held by several
+threads at once. `itypeNotShareable` / `itypeNotShareableWhy` (`itype.c`) walk a
+type, and are the one implementation (the `parallel each` body check asks them):
+a field, a variant, an element, a type argument or what a reference or an owner
+points at reaching a reference `refCountsPlain` (a counted owner of a region not
+declaring `ThreadSafe`, or a traced one) or `refWritesShared` (its permission
+writes, may be aliased and is not `RaceSafe`: `mut` and `mut1`, so `&mut` and
+`Arc[mut, T]`; Cone's `&mut` is shared mutable, a `&mut` field being written through
+a `&` of its struct) makes the type not Shareable. A struct declaring `Shareable`
+is taken at its word except for a generic instance's type arguments; raw
+pointers of a non-generic struct are trusted, and a virtual reference (to a trait
+or a callable, any owner) is not Shareable unless it is marked `+ Shareable` or
+`+ Sendable` (its implementers are not known; Rust's `&dyn Trait` is not `Sync`
+either): such a reference is itself the culprit, and is not followed. `genericTypeIs` grants it, and an unmet `T is Shareable` is
+`ErrorNotShareable`, naming the reference found, its path and, for a closure, the
+captured variable (`genericNotShareableMsg`, `genericClosureNotShareableCap`).
+
+`RefNode.marks` (`RefMarkSendable`, `RefMarkShareable`) is what a virtual
+reference promises of the value behind it, written `So[fn() + Sendable]`,
+`&<Shape + Shareable`: a `+` after the pointee, in either order with a lifetime
+bound (`parseRefBounds`); in brackets the parser joins a bare signature to its
+markers as a sum, which `fnCallMarkSplit` takes apart when the managed reference
+type is lowered (`itypeIsMarkedType` lets `itypeIsManagedRefType` see it as a
+type). A mark on a reference that is not virtual is `ErrorMarkUse`. A mark makes a
+type of its own (`refIsSame`, `refHash`, `nameType`); a reference with more
+converts to one with fewer (`refvirtMatches`, a `CastSubtype`) and not the other
+way; a thin reference to a struct becomes one only if the struct meets each mark
+(`refvirtMatchesRef`, `refMarksUnmet`), and when it does not `fnSigCallRefusal`
+says which and what in the value fails it (`fnSigMarkRefusal`: for a closure the
+variable it holds or borrows, and what to list). The thread check
+(`itypeThreadBoundAt`) takes a `+ Sendable` reference's pointee as vouched for.
+A callable trait (`fnSigCallTrait`) is one struct per signature, so `cloneRefNode`
+keeps it rather than copying it into an instance of a generic.
+
 ## Hazards
 
 - **A permission is not always a `PermNode`.** A lock permission is a struct,
@@ -885,12 +921,18 @@ apart, so the second can be loosened without touching the first:
   the header. `permGetFlags`, `permMatches` and `permIsSame` answer for all
   three; code reading `PermNode.permflags` directly, or treating every
   `PermTag` as zero-sized, misreads them.
-- **Sendable is also safe to read from several threads.** An `Arc[imm, T]` owner
-  crosses when its pointee does, so a type granted or declaring `Sendable` must
-  also bear being read through `&` from several threads at once. Nothing Cone
-  can write mutates through `imm` except an atomic value, so the grant holds; a
-  type declaring `Sendable` over raw pointers promises it too (Rust's `Send`
-  and `Sync` are one question here).
+- **What is Sendable is also Shareable, but the markers are two.** An
+  `Arc[imm, T]` owner crosses when its pointee does, so a type granted `Sendable`
+  must also bear being read through `&` from several threads at once. Nothing
+  Cone can write mutates through `imm` except an atomic value, so the grant
+  holds (every reference the thread check binds is a borrow, a traced one, an
+  aliasable owner without a race-safe permission or an `Rc`, and the share
+  check's refusals are those and a `&mut`, which is a borrow already). A type
+  declaring `Sendable` over raw pointers promises it too. They are asked apart
+  (`Shareable`, below) because a type may declare one and not the other, and a
+  borrow is bound for the thread check and fine for the share check. An unmarked
+  virtual reference fails both; `+ Sendable` vouches for both, `+ Shareable` for
+  the second.
 - **A borrowed reference's inferred type has `typeinfo == NULL`.** The borrow
   path and the allocate path have different invariants for the same field.
   Anything reading `typeinfo` off an arbitrary reference type crashes on borrows

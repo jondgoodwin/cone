@@ -104,6 +104,7 @@ Name *atomicValueTraitName;
 Name *integerTraitName;
 Name *pointerTraitName;
 Name *sendableTraitName;
+Name *shareableTraitName;
 Name *sizedTraitName;
 Name *dynSizedTraitName;
 Name *immutableTraitName;
@@ -422,6 +423,11 @@ char *nameType(char *bufp, INode *vtype) {
         RefNode *reftype = (RefNode *)vtype;
         *bufp++ = 'V';
         bufp = nameRegionPerm(bufp, reftype);
+        // '+ Sendable' and '+ Shareable' make a type of their own
+        if (reftype->marks) {
+            *bufp++ = 'Z';
+            *bufp++ = (char)('0' + reftype->marks);
+        }
         return namePath(bufp, nameTypeDcl(reftype->vtexp));
     }
     case PtrTag:

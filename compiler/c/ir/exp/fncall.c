@@ -2560,17 +2560,48 @@ int fnCallRefusePermArg(FnCallNode **nodep) {
     return 0;
 }
 
+// The markers written after a type in a reference type's brackets,
+// 'So[Shape + Sendable + Shareable]' (the parser joins them with '+', as
+// any sum): the type they follow is returned and the markers, RefMark bits, are
+// put in *marks. A '+' joining anything but a marker is reported, and the
+// operands that are not markers are left in place.
+static INode *fnCallMarkSplit(INode *arg, uint8_t *marks) {
+    while (arg->tag == FnCallTag && (arg->flags & FlagOperator)
+        && ((FnCallNode*)arg)->methfld != NULL && isNameUseNode(((FnCallNode*)arg)->methfld)
+        && ((NameUseNode*)((FnCallNode*)arg)->methfld)->namesym == plusName
+        && ((FnCallNode*)arg)->args != NULL && ((FnCallNode*)arg)->args->used == 1
+        && ((FnCallNode*)arg)->objfn != NULL) {
+        FnCallNode *sum = (FnCallNode*)arg;
+        INode *right = nodesGet(sum->args, 0);
+        INode *rightdcl = isNameUseNode(right) ? nameUseGetDcl((NameUseNode*)right) : NULL;
+        uint8_t mark = rightdcl == (INode*)sendableTrait ? RefMarkSendable
+            : rightdcl == (INode*)shareableTrait ? RefMarkShareable : 0;
+        if (mark == 0) {
+            // A sum of values: not ours. A type that is no marker is refused, and left off
+            if (!(isNameUseNode(right) && rightdcl != NULL && isTypeNode(right)))
+                return arg;
+            errorMsgNode(right, ErrorMarkUse,
+                "After a '+' in a reference type go the markers of the value it points at, '+ Sendable' and '+ Shareable'; other traits are not intersected yet.");
+        }
+        *marks |= mark;
+        arg = sum->objfn;
+    }
+    return arg;
+}
+
 // Lower a managed reference type, 'Rc[Node]' or 'Rc[mut, Node]', into the
 // reference node it names, and type check that. The region is the head; the
 // brackets hold an optional permission, 'uni' when it is left out, then the
 // value type. The reference is virtual exactly when the value type is an open
 // trait: an enum is a trait to the compiler too, and a reference to one is thin.
+// A virtual one may say what the value behind it is, 'So[fn() + Sendable]'.
 // From here on nothing downstream sees how the type was written.
 static void fnCallLowerManagedRef(TypeCheckState *pstate, FnCallNode **nodep) {
     FnCallNode *node = *nodep;
     Nodes *args = node->args;
     INode *perm = NULL;
-    INode *vtype = nodesGet(args, args->used - 1);
+    uint8_t marks = 0;
+    INode *vtype = fnCallMarkSplit(nodesGet(args, args->used - 1), &marks);
     Name *regname = ((StructNode*)itypeManagedRefRegion((INode*)node))->namesym;
     if (args->used > 2)
         errorMsgNode(nodesGet(args, 2), ErrorRefTypeArgs,
@@ -2624,11 +2655,20 @@ static void fnCallLowerManagedRef(TypeCheckState *pstate, FnCallNode **nodep) {
         return;
     }
 
+    if (marks && tag != VirtRefTag) {
+        errorMsgNode((INode*)node, ErrorMarkUse,
+            "A marker after a '+' says what the value behind a virtual reference is, since its type is hidden: %s[...] here refers to %s, a type that is known, so ask it of the type, 'T is %s', where it is written.",
+            &regname->namestr, isNameUseNode(vtype) ? &((NameUseNode*)vtype)->namesym->namestr : "a type",
+            (marks & RefMarkSendable) ? "Sendable" : "Shareable");
+        *((INode**)nodep) = newErrorNode((INode*)node);
+        return;
+    }
     RefNode *ref = newRefNode(tag);
     inodeLexCopy((INode*)ref, (INode*)node);
     ref->region = node->objfn;
     ref->perm = perm;
     ref->vtexp = vtype;
+    ref->marks = marks;
     *((INode**)nodep) = (INode*)ref;
     inodeTypeCheckAny(pstate, (INode**)nodep);
 }

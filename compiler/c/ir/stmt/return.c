@@ -6,6 +6,7 @@
 */
 
 #include "../ir.h"
+#include <stdio.h>
 
 // Create a new return statement retnode
 BreakRetNode *newReturnNode() {
@@ -117,9 +118,34 @@ void returnFlowEscape(INode *exp) {
     }
     if (reftype->tag != RefTag && reftype->tag != ArrayRefTag && reftype->tag != VirtRefTag)
         return;
-    if (reftype->region == borrowRef && reftype->scope > 1)
-        errorMsgNode(exp, ErrorEscape,
-            "Returned borrowed reference outlives the local value it points to");
+    if (reftype->region == borrowRef && reftype->scope > 1) {
+        // A borrow of a local closure: it can leave as an owner, holding its own
+        // copy of what it borrows
+        char advice[500] = "";
+        INode *inner = exp;
+        while (inner->tag == CastTag)
+            inner = ((CastNode *)inner)->exp;       // (the borrow, viewed as a virtual reference)
+        INode *borrowed = inner->tag == BorrowTag ? ((RefNode *)inner)->vtexp : NULL;
+        INode *vardcl = borrowed && isNameUseNode(borrowed) ? ((NameUseNode *)borrowed)->dclnode : NULL;
+        ClosureInfo *closure = vardcl && vardcl->tag == VarDclTag && ((VarDclNode *)vardcl)->vtype
+            ? closureOfStruct(itypeGetTypeDcl(((VarDclNode *)vardcl)->vtype)) : NULL;
+        if (closure) {
+            size_t used = snprintf(advice, sizeof(advice),
+                ". '%s' is a closure: it can leave this function as an owner, 'new So[fn(...)](%s)', if it holds what it uses",
+                &((VarDclNode *)vardcl)->namesym->namestr, &((VarDclNode *)vardcl)->namesym->namestr);
+            const char *sep = ": list ";
+            for (uint32_t c = 0; c < closure->ncaps && used < sizeof(advice) - 80; ++c) {
+                if (closure->caps[c].state || closure->caps[c].dcl == NULL)
+                    continue;
+                used += snprintf(advice + used, sizeof(advice) - used, "%s'%s'", sep, &closure->caps[c].dcl->namesym->namestr);
+                sep = ", ";
+            }
+            if (sep[0] == ',')
+                snprintf(advice + used, sizeof(advice) - used,
+                    " in its state, as in 'fn (...) [k] ... { ... }', to give it its own copy instead of a borrow");
+        }
+        errorMsgNode(exp, ErrorEscape, "Returned borrowed reference outlives the local value it points to%s", advice);
+    }
 }
 
 // Perform data flow analysis on a return statement's value

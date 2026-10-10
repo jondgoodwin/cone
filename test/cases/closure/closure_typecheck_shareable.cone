@@ -1,0 +1,120 @@
+// What Shareable and Sendable refuse. A closure is a struct of what it borrows
+// and holds, so it is the markers of those: a closure naming an 'Rc[imm, Grid]',
+// or a '&mut' (whose body may write through it with its '()' still taking
+// 'self &': Cone's '&mut' is shared mutable, and what holds one writes through a
+// borrow of it), is neither Shareable nor Sendable, and a hand-written struct with
+// a '&mut' field is the same. Each refusal names the variable the closure holds
+// or borrows and says what to list.
+//
+// closure_shareable holds what is granted.
+
+mod closure_typecheck_shareable;
+
+import stdio use *;
+import sync use Arc, Mutex;
+import collections use *;
+import thread;
+import actors;
+
+struct Grid { pub n i32; }
+
+// A hand-written struct with a '&mut' field, and a '()' to be called as a callable
+struct Holder {
+  pub r &mut i32;
+  pub fn `()`(self &, x i32) i32 { x + *r; }
+}
+
+fn crosses[T Sendable]() {}
+fn shares[T Shareable]() {}
+
+fn needShare[F fn(x i32) i32 + Shareable](f &F) i32 { f(1); }
+fn needSend[F fn(x i32) i32 + Sendable](f &F) i32 { f(1); }
+fn lendShare(f &<fn(x i32) i32 + Shareable) i32 { f(1); }
+fn runSend(f So[fn(x i32) i32 + Sendable]) i32 { f(1); }
+
+// A parallel each calling a closure for each item
+pub fn fillGrid[T, F fn(x i32, y i32) T](out &mut List[T], width usize, f &F) {
+  parallel each y, row in out.mutChunks(width).indexed() {
+    each x, t in row.mutItems().indexed() {
+      *t = f(i32.from(x), i32.from(y));       //~ ErrorParReach "the closure passed in, and it borrows 'r' (&mut i32)"
+                                              //~^ ErrorParReach "the closure passed in, and it borrows 'rc' (Rc[imm, Grid])"
+                                              //~^^ ErrorParReach "the closure passed in, and it holds 'rc' (Rc[imm, Grid])"
+    }
+  }
+}
+
+// A trait, and implementers that are neither Shareable nor Sendable
+trait Shape { pub fn area(self &) f32; }
+struct Tangled is Shape { pub r &mut i32; pub fn area(self &) f32 { f32.from(*r); } }
+struct Counted is Shape { pub g Rc[imm, Grid]; pub fn area(self &) f32 { f32.from(g.n); } }
+
+fn areaOf(s &<Shape + Shareable) f32 { s.area(); }
+fn areaOwned(s So[Shape + Sendable]) f32 { s.area(); }
+
+fn shapes() {
+  mut m = 1;
+  imm tangled = new Tangled(&mut m);
+  areaOf(&tangled);                           //~ ErrorNotShareable "Tangled.r is &mut i32"
+  imm counted = new Counted(new Rc[imm, Grid](new Grid(2)));
+  areaOf(&counted);                           //~ ErrorNotShareable "Counted.g is Rc[imm, Grid]"
+  areaOwned(new So[Counted](new Counted(new Rc[imm, Grid](new Grid(3)))));   //~ ErrorNotSendable "Counted.g is Rc[imm, Grid]"
+}
+
+// A reference to a trait or a callable hides what is behind it, so unmarked it is not
+// Shareable (Rust's &dyn Trait is not Sync): named in a parallel each body it is
+// refused, though what is behind it may be fine. The mark vouches (closure_shareable
+// runs one), and a value that cannot is refused where the reference is made (above)
+fn unmarked(sh &<Shape, f &<fn(x i32) i32, owned So[Shape], marked &<Shape + Shareable) f32 {
+  imm total = Atomic[u64].of(0u64);
+  parallel each i in 0usize < 4usize {
+    imm a = sh.area();                        //~ ErrorParReach "reaches 'sh', a &<Shape"
+    imm b = f(1);                             //~ ErrorParReach "reaches 'f', a &<fn(i32) i32"
+    imm c = owned.area();                     //~ ErrorParReach "reaches 'owned', a So[uni, Shape]"
+    imm d = marked.area();
+    total.add(1u64);
+  }
+  0.;
+}
+
+fn types() {
+  shares[Rc[imm, Grid]]();                    //~ ErrorNotShareable "Rc[imm, Grid]"
+  shares[&<Shape]();                          //~ ErrorNotShareable "a reference to a trait or a callable"
+  shares[So[Shape]]();                        //~ ErrorNotShareable "a reference to a trait or a callable"
+  shares[&mut i32]();                         //~ ErrorNotShareable "a reference of permission mut, which may write"
+  shares[Holder]();                           //~ ErrorNotShareable "Holder.r is &mut i32"
+  shares[Arc[mut, Grid]]();                   //~ ErrorNotShareable "Arc[mut, Grid]"
+  shares[List[Rc[imm, Grid]]]();              //~ ErrorNotShareable "Rc[imm, Grid]"
+  crosses[Holder]();                          //~ ErrorNotSendable "Holder.r is &mut i32"
+}
+
+fn closures() {
+  mut m = 5;
+  imm r = &mut m;
+  // Its '()' writes through 'r' and takes 'self &', a closure of a '&mut'
+  imm writes = fn(x i32) i32 { *r = *r + x; *r; };
+  needShare(&writes);                         //~ ErrorNotShareable "it borrows 'r' (&mut i32)"
+  needSend(&writes);                          //~ ErrorNotSendable "it borrows 'r' (&ro &mut i32)"
+  lendShare(&writes);                         //~ ErrorNotShareable "it borrows 'r' (&ro &mut i32)"
+
+  // A hand-written struct with a '&mut' field, called as a callable
+  imm holder = new Holder(&mut m);
+  needShare(&holder);                         //~ ErrorNotShareable "Holder.r is &mut i32"
+  needSend(&holder);                          //~ ErrorNotSendable "Holder.r is &mut i32"
+
+  // An owner marked Sendable, made from such a closure, and from one listing an Rc
+  imm rc = new Rc[imm, Grid](new Grid(4));
+  imm owned = new So[fn(x i32) i32 + Sendable](fn(x i32) i32 { *r = *r + x; x; });   //~ ErrorNotSendable "it borrows 'r' (&ro &mut i32)"
+  imm listed = new So[fn(x i32) i32 + Sendable](fn(x i32) [rc] i32 { x + rc.n; });   //~ ErrorNotSendable "it holds 'rc' (Rc[imm, Grid])"
+  imm shared = fn(x i32) [rc] i32 { x + rc.n; };
+  needShare(&shared);                         //~ ErrorNotShareable "it holds 'rc' (Rc[imm, Grid])"
+
+  // Handed to a parallel each
+  mut out = new List[f32];
+  fillGrid(&mut out, 4usize, fn(x i32, y i32) f32 { *r = *r + x; 1.; });
+  fillGrid(&mut out, 4usize, (x, y) => f32.from(x + rc.n));
+  fillGrid(&mut out, 4usize, fn(x i32, y i32) [rc] f32 { f32.from(x + rc.n); });
+}
+
+// A '+' marks a virtual reference, whose type is hidden; a type that is known is asked
+fn marks(g So[Grid + Sendable], f So[fn(x i32) i32 + Grid]) {}   //~ ErrorMarkUse "a type that is known"
+                                                                  //~^ ErrorMarkUse "other traits are not intersected yet"

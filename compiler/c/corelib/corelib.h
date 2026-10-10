@@ -120,6 +120,11 @@ extern StructNode *atomicValueTrait;
 extern StructNode *integerTrait;
 extern StructNode *pointerTrait;
 extern StructNode *sendableTrait;
+// 'Shareable', Sendable's sibling: a borrow of a value of the type may be held
+// by several threads at once, so it may be read while the passes of a 'parallel
+// each' run, or from the threads of an 'Arc'. Granted from a type's contents
+// (itypeNotShareable), and declarable
+extern StructNode *shareableTrait;
 // 'Sized' and 'DynSized', which the compiler grants from a type's size: a type
 // whose size is known at compile time is Sized, and DynSized too; so is a type
 // whose size a reference to it carries, a trait (its vtable) or a body such

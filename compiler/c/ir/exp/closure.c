@@ -868,6 +868,7 @@ void closureTypeCheck(TypeCheckState *pstate, ClosureNode **nodep, INode *expect
         use->dclnode = (INode*)var;
         INode *borrow = (INode*)newRefNodeFull(BorrowTag, (INode*)clo, borrowRef,
             (INode*)newPermUseNode(plan.capmut[i++] ? mutPerm : roPerm), (INode*)use);
+        ((RefNode*)borrow)->capture = 1;
         inodeTypeCheck(pstate, &borrow, unknownType);
         nodesAdd(&call->args, borrow);
     }
@@ -929,4 +930,48 @@ void closureReturnTypeCheck(TypeCheckState *tstate, BreakRetNode *retnode) {
                 "The paths of this closure give different types, so its return type cannot be read off them: write the closure's return type, as in 'fn (x i32) i32 { ... }'.");
     }
     returnJoinFn(tstate, retnode);
+}
+
+// ---------------------------------------------------------------------------
+// Where a closure may not go: naming the variable that keeps it
+
+ClosureCap *closureFirstCap(INode *type, int (*bad)(INode *fieldtype)) {
+    INode *dcl = type ? itypeGetTypeDcl(type) : NULL;
+    ClosureInfo *info = dcl ? closureOfStruct(dcl) : NULL;
+    for (uint32_t c = 0; info != NULL && c < info->ncaps; ++c) {
+        ClosureCap *cap = &info->caps[c];
+        if (cap->field != NULL && cap->dcl != NULL && cap->field->vtype != NULL && bad(cap->field->vtype))
+            return cap;
+    }
+    return NULL;
+}
+
+INode *closureCapValueType(ClosureCap *cap) {
+    return cap->state ? cap->field->vtype : cap->dcl->vtype;
+}
+
+void closureCapAdvice(ClosureCap *cap, int valueok, char *buf, size_t size) {
+    char *name = &cap->dcl->namesym->namestr;
+    INode *valuetype = closureCapValueType(cap);
+    INode *vartype = valuetype ? itypeGetTypeDcl(valuetype) : NULL;
+    int varborrow = vartype && vartype->tag == RefTag && ((RefNode*)vartype)->region == borrowRef;
+    if (cap->state)
+        snprintf(buf, size,
+            "Its list holds '%s' as its own: give it something that can go there (an Arc where it is an Rc, a value copied where it is a borrow).",
+            name);
+    else if (varborrow && (permGetFlags(((RefNode*)vartype)->perm) & MayWrite))
+        snprintf(buf, size,
+            "'%s' is itself a reference that may write ('&mut'), and a closure holding one is neither sent nor shared: list a copy of the value it reads, '[v = *%s]', if it only reads, or keep what it changes in an atomic or behind a lock ('Arc[Mutex, T]').",
+            name, name);
+    else if (cap->dcl->namesym == selfName)
+        snprintf(buf, size,
+            "It borrows 'self' because its body names members of the object it is in. Copy the members it needs into its list ('[tag = tag]'), or capture a counted handle to the object (an Rc or an Arc) instead of 'self'.");
+    else if (valueok)
+        snprintf(buf, size,
+            "List '%s' to copy (or move) it into the closure instead of borrowing it: 'fn (...) [%s] ... { ... }'.",
+            name, name);
+    else
+        snprintf(buf, size,
+            "'%s' could not go there even by value: hold it in a form that can (a counted owner that is atomic, an Arc, for an Rc), then list it: '[%s]'.",
+            name, name);
 }
