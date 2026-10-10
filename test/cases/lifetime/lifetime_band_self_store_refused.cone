@@ -1,0 +1,67 @@
+// A value may not keep a borrow of its own storage after the call that stored
+// it: a method, or a function handed a '&mut', stores a borrow of one field of
+// the value it was lent into another of its fields (or into a list in one).
+// The caller lent the whole value, and may change or move the field the borrow
+// points into (refill a buffer, push past its capacity) while the borrow is
+// still held; the callee cannot see that, nor can the caller, which is told of
+// no store by a call that is handed one argument.
+//
+// Verdict: refuse, ErrorSelfStore, at the store, in the callee. The same
+// stores written in one function on a local value are refused where the
+// field is changed (ErrorFrozen), as before.
+// Basis: lifetimes-design-2026-10-01, section 4.10: "a struct holding a
+// borrow of its own field" is refused, its lifetime being its own place's, and
+// moving it would dangle; Rust refuses it too. Measured 10 Oct 2026
+// (lending-iterators-measured-2026-10-10, 3k, 3n, 3o).
+// Master 03de4a12: accepted; 'grab' then 'refill' then a read of 'held'
+// printed the refilled byte ('z', 122) where the first was meant ('a', 97).
+
+mod lifetime_band_self_store_refused;
+
+import stdio use *;
+import collections use *;
+
+struct SelfRef {
+  pub buf List[u8];
+  pub held &Array[u8];
+  pub fn grab(self &mut) { held = buf.view(); }   //~ ErrorSelfStore "Stored into 'self.held', the value carries a borrow of 'self.buf'"
+  pub fn refill(self &mut) { buf.clear(); buf.push('z'); }
+}
+
+// The same through a function handed a '&mut' to the value
+fn grabFrom(h &mut SelfRef) {
+  h.held = h.buf.view();   //~ ErrorSelfStore "Stored into 'h.held'"
+}
+
+// A borrow of a whole field, not only of what a method makes of it
+struct Pair {
+  pub n i64;
+  pub p &i64;
+  pub fn pointAtN(self &mut) { p = &n; }   //~ ErrorSelfStore "borrow of 'self.n'"
+}
+
+// A field of a field
+struct Inner {
+  pub buf List[u8];
+  pub held &Array[u8];
+}
+struct Outer {
+  pub inner Inner;
+  pub fn grab(self &mut) { inner.held = inner.buf.view(); }   //~ ErrorSelfStore "Stored into 'self.inner.held'"
+}
+
+// Stored into a list that is a field: the call 'push' stores its argument
+struct Index {
+  pub text List[u8];
+  pub words List[&Array[u8]];
+  pub fn note(self &mut) { words.push(text.view()); }   //~ ErrorSelfStore "Handed to a call that could store it into 'self.words'"
+}
+
+fn main() {
+  mut s = new SelfRef(List[u8].empty(), "" as &Array[u8]);
+  s.buf.push('a');
+  s.grab();
+  s.refill();
+  printUInt(u64.from(s.held[0usize]));
+  printStr("\n");
+}
