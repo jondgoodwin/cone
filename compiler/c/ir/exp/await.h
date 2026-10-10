@@ -184,6 +184,18 @@ int awaitReReached(INode *node);
 // generation both take an operand list in this order
 uint32_t awaitOrder(Nodes *nodes, uint32_t *order);
 
+// A place indexed more than once -- 'a[i][j]', 'a[i].f[j]', a slice 'a[i][lo..hi]'
+// -- reaches the array each index names after every seam in the indexes, which
+// are made first, in the order written, each kept in flight across the seams
+// that follow it. The chain of a place is the indexes it passes through
+// (ArrIndex), by way of fields, dereferences, casts and borrows, down to its
+// root. Answers the indexes, innermost first, from the innermost one whose
+// arguments hold a seam outward (the ones inside it are plain paths, reached
+// after the seam as any are), or NULL where no index in the chain holds one;
+// '*rootseam' says whether the chain's root holds a seam of its own, which
+// cannot be made in that order
+Nodes *awaitChainLevels(INode *place, int *rootseam);
+
 // Refuse 'left', written to the left of a seam in its statement and used
 // after it, which a call or a temporary made (ErrorAwaitLeftCall). 'what'
 // names it, capitalized: "This borrow", "This place's base"
