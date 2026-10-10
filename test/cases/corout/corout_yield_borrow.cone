@@ -1,0 +1,61 @@
+mod corout_yield_borrow;
+
+// What a 'yield' hands out, the caller may keep for as long as the generator
+// lives: it may hold several of the values at once, or the first of them while
+// the body runs on. So a borrow handed out of something the generator was lent
+// stays borrowed for the rest of the body, as if a local held it there: the body
+// may not change that thing afterwards, nor call anything that could reshape the
+// collection the borrow points into. Each refusal is at the change.
+
+import collections use *;
+
+fn fill(buf &mut List[u8], k u8) {
+  buf.clear();
+  mut i = 0u8;
+  while i < k { buf.push('a' + k - 1u8); i = i + 1u8; }
+}
+
+// The list is lent mutably; the first borrow is handed out, then the list grows
+// and is written. The caller's copy of the first borrow would point into the
+// block the pushes moved away from
+fn growsAfter(xs &mut List[i64]) yields &i64 {
+  yield xs[0usize];
+  xs.push(1i64);                          //~ ErrorFrozen:3 "A 'yield' handed the generator's caller a borrow of what the generator was lent"
+  xs.set(0usize, 99i64);                  //~ ErrorFrozen:3 "The caller may keep it for as long as the generator lives"
+  yield xs[0usize];
+}
+
+// A buffer lent and refilled in each pass of a loop, after the pass before it
+// handed out a view of it: every view the caller kept would show the last fill
+fn refills(buf &mut List[u8], n u8) yields &Array[u8] {
+  mut k = 1u8;
+  while k <= n {
+    fill(buf, k);                         //~ ErrorShapeReshape:9 "while the generator's caller may still hold a borrow into it"
+    yield buf.view();
+    k = k + 1u8;
+  }
+}
+
+// The same in a method, the buffer a field of the receiver it was lent
+struct Source {
+  pub buf List[u8];
+  pub n u8;
+
+  fn lines(self &mut) yields &Array[u8] {
+    mut k = 1u8;
+    while k <= n {
+      buf.clear();                        //~ ErrorFrozen:7 "(made by 'view' at 49:13)"
+      buf.push('a' + k - 1u8);            //~ ErrorFrozen:7 "may not be borrowed mutably after that"
+      yield buf.view();
+      k = k + 1u8;
+    }
+  }
+}
+
+// A change on one path only still follows the yield on that path
+fn sometimes(xs &mut List[i64], c bool) yields &i64 {
+  yield xs[0usize];
+  if c {
+    xs.clear();                           //~ ErrorFrozen:5 "yield the borrow only once the generator has done changing it"
+  }
+}

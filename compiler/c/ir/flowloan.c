@@ -82,6 +82,10 @@ static uint32_t *saturated = NULL;
 static uint32_t nsaturated = 0;
 static uint32_t saturatedcap = 0;
 
+// The stand-in for the borrows a generator's 'yield' handed to its caller
+// (loanYieldHolder), or 0
+static uint32_t yieldHolder = 0;
+
 // The loans into a shape-changing value through a shared path (loanShapeMark),
 // and what each call that could reshape one was (loanShapePend), a pending
 // conflict's 'other'
@@ -192,6 +196,11 @@ void loanWalkBegin() {
     nflights = 0;
     nshapeloans = 0;
     nshapenotes = 0;
+    yieldHolder = 0;
+}
+
+void loanYieldHolder(uint32_t var) {
+    yieldHolder = var;
 }
 
 // *********************
@@ -641,6 +650,10 @@ static void loanPend(INode *node, int access, uint32_t loan, uint32_t holder) {
     uint32_t pend = loanPending(node, access, loan, holder);
     if (!pathSetHas(hv->pending, pend))
         pathSetFacts(holder, hv->holds, pathSetAdd(hv->pending, pend));
+    // What a 'yield' handed out is used by the caller whenever it likes, until
+    // the generator ends: a conflict is reported where it is made
+    if (holder == yieldHolder)
+        loanUse(holder, node);
 }
 
 void loanAccess(Place *pl, int access, INode *node) {
@@ -1102,6 +1115,21 @@ static void loanReport(Pending *pend, INode *usenode) {
     else
         snprintf(used, sizeof(used), "at %u:%u", usenode->linenbr, loanColumn(usenode));
     char *mutably = loan->writes ? " mutably" : "";
+    // A borrow a 'yield' handed to the caller, who may keep it as long as the
+    // generator lives
+    if (pend->holder == yieldHolder) {
+        // What the generator was lent is reached through its own 'self', which
+        // the body never names: say what it is, not the hidden name
+        char of[160];
+        if (loan->place.deref && pathVars[loan->place.var].var->namesym == selfName)
+            snprintf(of, sizeof(of), "what the generator was lent");
+        else
+            snprintf(of, sizeof(of), "'%s'", srcname);
+        errorMsgNode(pend->access, ErrorFrozen,
+            "A 'yield' handed the generator's caller a%s borrow of %s (made %s). The caller may keep it for as long as the generator lives, so %s may not be %s after that: yield a copy, or yield the borrow only once the generator has done changing it.",
+            loan->writes ? " mutable" : "", of, where, of, loanAttempt(pend->kind));
+        return;
+    }
     // A generator's seam keeps what the generator was lent and not its own
     // ground: a borrow of one of its locals, or of the parameters it holds by
     // value, ends there
@@ -1589,6 +1617,13 @@ static void loanShapeReport(Pending *pend, INode *usenode) {
     else
         snprintf(used, sizeof(used), "at %u:%u", usenode->linenbr, loanColumn(usenode));
     char msg[1400];
+    if (pend->holder == yieldHolder) {
+        snprintf(msg, sizeof(msg),
+            "This call could change the shape of a %s while the generator's caller may still hold a borrow into it that a 'yield' handed out (made %s, through a path other references share): %s. A %s that changes shape may move or free what it lent. Yield a copy, or yield the borrow only once the generator has done changing the %s.",
+            cont, where, loanShapeReason(note, cont, reason, sizeof(reason)), cont, cont);
+        loanShapeEmit(pend->access, msg);
+        return;
+    }
     snprintf(msg, sizeof(msg),
         "This call could change the shape of a %s while '%s' still holds a borrow into it (made %s, through a path other references share), used again %s: %s. A %s that changes shape may move or free what it lent. Reach it through an 'imm' or 'uni' reference, or copy what is needed out before this call.",
         cont, &holder->namesym->namestr, where, used, loanShapeReason(note, cont, reason, sizeof(reason)), cont);
@@ -1648,6 +1683,8 @@ void loanShapePend(INode *call, uint32_t loan, int why, Name *callee) {
         }
         if (!pathSetHas(hv->pending, id))
             pathSetFacts(holder, hv->holds, pathSetAdd(hv->pending, id));
+        if (holder == yieldHolder)
+            loanUse(holder, call);
     }
 }
 
