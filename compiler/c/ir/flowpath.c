@@ -479,6 +479,7 @@ static uint32_t pathVar(VarDclNode *var) {
     pv->jstamp = 0;
     pv->state = 0;
     pv->flagged = 0;
+    pv->guardname = NULL;
     pv->tracked = pathDrops && flowDropTracked(var) && !flowMatchBound((INode *)var);
     pv->dies = pv->tracked && itypeNeedsFinal(var->vtype);
     // A holder is a local variable or a parameter whose type carries a
@@ -1351,6 +1352,12 @@ static void pwStoreEscapes(INode *lval, Place *pl, PathSet *holds, INode *rval) 
     else if ((root->scope == 0 || (root->flags & FlagStatic)) && (caller = loanNotGlobalIn(holds)))
         loanEscape(lval, caller, LoanEscapeStore);
     else if (pl->deref) {
+        // A borrow of part of what the reference points at, stored in what it
+        // points at: the caller's value would hold a borrow of its own
+        // storage, which the caller may change or move after the call
+        uint32_t own = pwPlaceOutlives(pl) ? loanNamedThroughIn(holds, pl->var) : 0;
+        if (own)
+            loanSelfStore(lval, own, pl, LoanEscapeStore);
         pwStoreApart(lval, pathVars[pl->var].holds, pl->far,
             pl->slotted && !pl->far ? pl->slots : 0, holds, LoanEscapeStore);
         if (lval->tag == DerefTag)
@@ -1605,8 +1612,12 @@ static void pwCallStores(FnCallNode *call, PathSet **argsets, Place *recvpl) {
         // no borrow of the function's own storage
         if (local && pwPlaceOutlives(&reach))
             loanEscape((INode *)call, local, LoanEscapeCall);
-        else if (reach.deref)
+        else if (reach.deref) {
+            uint32_t own = pwPlaceOutlives(&reach) ? loanNamedThroughIn(others, target.var) : 0;
+            if (own)
+                loanSelfStore((INode *)call, own, &target, LoanEscapeCall);
             pwStoreApart((INode *)call, pathVars[target.var].holds, reach.far, 0, others, LoanEscapeCall);
+        }
         pwStoreInto(target.var, from, to > 2 ? 2 : to, others);
     }
 }
@@ -2737,6 +2748,29 @@ static PathSet *pwGenKept(PathSet *set) {
     return kept;
 }
 
+// The variable the writer named that holds a borrow through the lock taken in
+// the hidden temporary 'guard' (a parameter or a local, not itself hidden), or
+// NULL where the borrow has no name of its own
+static VarDclNode *pwGuardHolder(uint32_t guard) {
+    if (!pathDrops && pwParms) {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(pwParms, cnt, nodesp)) {
+            PathVar *hv = &pathVars[pathVar((VarDclNode *)*nodesp)];
+            if (hv->holder && !hv->temp && hv->var->namesym != tempLocalName && hv->var->namesym != tempName
+                && loanSetRootedAt(hv->holds, guard))
+                return hv->var;
+        }
+    }
+    for (uint32_t i = 0; i < ndecls; ++i) {
+        PathVar *hv = &pathVars[decls[i]];
+        if (decls[i] != guard && hv->holder && !hv->temp && hv->var->namesym != tempLocalName
+            && hv->var->namesym != tempName && loanSetRootedAt(hv->holds, guard))
+            return hv->var;
+    }
+    return NULL;
+}
+
 // One variable in scope at a generator's seam. What it does there is noted on
 // the 'yield': whether it holds its value, is used after the seam, does
 // something as it dies, or holds a borrow of the generator's own ground, which
@@ -2756,8 +2790,12 @@ static void pwYieldVar(YieldNode *node, uint32_t index, int isparm) {
         flags |= SeamOpen;
     if (var->vtype && !flowNoDeath(var->vtype) && itypeNeedsFinal(var->vtype))
         flags |= SeamDies;
-    if (pwIsGuard(var))
+    if (pwIsGuard(var)) {
         flags |= SeamGuard;
+        // Its holder may have ended at an earlier seam: keep the first name
+        if (var->namesym == tempLocalName && !pv->guardname)
+            pv->guardname = pwGuardHolder(index);
+    }
     if (pv->holder) {
         uint32_t ended = loanGenOwnIn(pv->holds);
         if (ended) {
@@ -2777,12 +2815,28 @@ static void pwYieldVar(YieldNode *node, uint32_t index, int isparm) {
         int seen = 0;
         for (uint32_t i = 0; i < node->nseamvars; ++i)
             seen |= node->seamvars[i].var == var;
-        if (!seen)
-            errorMsgNode((INode *)node, ErrorGenFrame,
-                (flags & SeamGuard)
-                    ? "'%s' holds a lock, and the lock would stay held across this 'yield', while the generator waits to be resumed. Let the guard end before it, or take the lock again after."
-                    : "'%s' holds a traced reference, which this generator's frame cannot keep across a 'yield': the collector finds a traced reference on the stack, and a frame lives in the generator's value. Keep it in a variable of the caller's, or yield what it points to.",
-                &var->namesym->namestr);
+        if (!seen) {
+            // A lock's guard is a hidden temporary, which the writer never
+            // named: say the variable that holds a borrow through it, else
+            // where the lock was taken
+            VarDclNode *holder = var->namesym == tempLocalName ? pv->guardname : NULL;
+            char who[200];
+            if (holder)
+                snprintf(who, sizeof(who), "'%s' holds a lock", &holder->namesym->namestr);
+            else if (var->namesym == tempLocalName)
+                snprintf(who, sizeof(who), "The lock taken at %u:%u is held", var->linenbr,
+                    (uint32_t)(var->srcp - var->linep) + 1);
+            else
+                snprintf(who, sizeof(who), "'%s' holds a lock", &var->namesym->namestr);
+            if (flags & SeamGuard)
+                errorMsgNode((INode *)node, ErrorGenFrame,
+                    "%s, and the lock would stay held across this 'yield', while the generator waits to be resumed. Let the guard end before it, or take the lock again after.",
+                    who);
+            else
+                errorMsgNode((INode *)node, ErrorGenFrame,
+                    "'%s' holds a traced reference, which this generator's frame cannot keep across a 'yield': the collector finds a traced reference on the stack, and a frame lives in the generator's value. Keep it in a variable of the caller's, or yield what it points to.",
+                    &var->namesym->namestr);
+        }
     }
     pwYieldNote(node, var, flags);
 }

@@ -902,6 +902,51 @@ void loanEscape(INode *node, uint32_t loan, int how) {
     }
 }
 
+uint32_t loanNamedThroughIn(PathSet *set, uint32_t var) {
+    if (set == NULL || set == &pathSetAll)
+        return 0;
+    for (uint32_t i = 0; i < set->cnt; ++i) {
+        // Not a place reached through a borrowed reference the value holds in a
+        // field ('*self.src'): that is where the field points, not the value's
+        // own storage
+        if (loanNamesThrough(loanOf(set->ids[i]), var) && !loans[loanOf(set->ids[i])].place.far)
+            return loanOf(set->ids[i]);
+    }
+    return 0;
+}
+
+// A place as the reader writes it: 'self.buf.items' for fields walked from a
+// reference variable, which names what the variable points at; a step that is
+// not a field ends the path with '[..]'
+static char *loanPlaceName(Place *pl, char *buf, size_t size) {
+    size_t n = (size_t)snprintf(buf, size, "%s%s", pl->nsteps == 0 && pl->deref ? "*" : "",
+        &pathVars[pl->var].var->namesym->namestr);
+    for (uint32_t i = 0; i < pl->nsteps && n < size; ++i) {
+        if (pl->steps[i] & 3) {
+            snprintf(buf + n, size - n, "[..]");
+            break;
+        }
+        n += (size_t)snprintf(buf + n, size - n, ".%s", &((Name *)pl->steps[i])->namestr);
+    }
+    return buf;
+}
+
+void loanSelfStore(INode *node, uint32_t loan, Place *target, int how) {
+    if (mapGet(node, 0, 1))
+        return;
+    mapPut(node, 0, 1, 1);
+    char borrowed[160];
+    char stored[160];
+    char where[160];
+    loanPlaceName(&loans[loan].place, borrowed, sizeof(borrowed));
+    loanPlaceName(target, stored, sizeof(stored));
+    loanWhere(&loans[loan], where, sizeof(where));
+    errorMsgNode(node, ErrorSelfStore,
+        "%s '%s', the value carries a borrow of '%s' (made %s). Both are parts of the one value the caller lent, which the caller may change or move while the borrow is still held: a value may not keep a borrow of its own storage after the call. Store an index or offset into '%s' instead, or hold the buffer somewhere else and borrow it from there.",
+        how == LoanEscapeStore ? "Stored into" : "Handed to a call that could store it into",
+        stored, borrowed, where, borrowed);
+}
+
 // How a caller loan is named in a message: its parameter, and, for a slot of
 // a struct declaring lifetimes, the slot's lifetime there
 static char *loanLentThrough(uint32_t loan, char *buf, size_t size) {
