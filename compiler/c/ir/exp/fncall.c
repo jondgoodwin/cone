@@ -2427,6 +2427,14 @@ static int fnCallMethodTypeArgs(TypeCheckState *pstate, FnCallNode **nodep) {
     }
     NameUseNode *methfld = (NameUseNode*)member->methfld;
     INode *rcvtype = isExpNode(member->objfn) ? iexpGetDerefTypeDcl(member->objfn) : NULL;
+    // An array or a slice has the methods of core's body 'Array[T]' (numbers
+    // only: type arguments written to a method of an array's body are refused
+    // as they were)
+    INode *bodytype = NULL;
+    if (numargs && rcvtype && !isMethodType(rcvtype)) {
+        bodytype = fnCallSliceBodyOf(pstate, member);
+        rcvtype = bodytype;
+    }
     INode *found = rcvtype && isMethodType(rcvtype)
         ? aliasDclResolve(iNsTypeFindFnField((INsTypeNode*)rcvtype, methfld->namesym)) : NULL;
     // Numbers after a name that is not a generic method taking a number, on
@@ -2483,7 +2491,10 @@ static int fnCallMethodTypeArgs(TypeCheckState *pstate, FnCallNode **nodep) {
         node->vtype = errorType;
         return 1;
     }
-    fnCallLowerMethod(pstate, node);
+    if (bodytype)
+        fnCallLowerSliceMethod(pstate, node);
+    else
+        fnCallLowerMethod(pstate, node);
     return 1;
 }
 

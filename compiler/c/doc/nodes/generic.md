@@ -638,7 +638,11 @@ before them was noted as a generic taking a value parameter
 the receiver's type finds a method of that name that takes one; a field of the
 same name, `a.pick[2]`, is indexed as before. Asking the receiver's type means
 checking the receiver, which type check does once, so `FlagRcvChecked` on the
-member access tells its own check not to walk the receiver a second time.
+member access tells its own check not to walk the receiver a second time. An
+array or a slice has the methods of core's body `Array[T]`, found as any call on
+one finds them (`fnCallSliceBodyOf`) and lowered the same way
+(`fnCallLowerSliceMethod`), so `s.m[3]()` on a slice reaches a generic method of
+`Array[T]` taking a number.
 
 ### Constraints
 
