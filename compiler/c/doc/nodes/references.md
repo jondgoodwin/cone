@@ -550,11 +550,17 @@ so it moves; it binds to its thread (`refThreadBinds`).
 The guard is an ordinary temporary owner: flow copies the reference into it,
 counted (`flowLoadValue`'s `CastTag` arm, `flowHandleMoveOrCopy`), or moves a
 temporary reference in, so the value outlives the guard whatever becomes of
-the reference; and the borrow is a borrow of the guard. So where the lock is
-given back is where the guard dies, by the existing rules for a temporary:
+the reference; and the borrow is a borrow of the guard. The guard dies by the
+existing rules for a temporary, and the lock goes back at the borrow's last
+use, which is no later:
 - **in a local's initializer**, an extending position, `varDclExtendTemp`
-  makes the guard a hidden local of the block, released at the block's end on
-  every path (the dealias lists, drop flags);
+  makes the guard a hidden local of the block, which dies at the block's end
+  on every path (the dealias lists, drop flags). The lock goes back earlier,
+  after the statement holding the last use of anything holding the borrow, on
+  each path, or where a branch that never uses it begins: the path walk finds
+  those points and makes each a statement giving the guard back (`pwLockPoint`,
+  [Flow](../phases/flow.md), "A lock's guard gives its lock back"); the guard
+  carries a drop flag (`VarSeamHeld`) saying it has, for the dealias lists;
 - **anywhere else** it is a statement's temporary (`flowTempRead`, at the
   dereference `borrowFlowPlace` walks), finalized at the statement's end, and
   the borrow, as any borrow of a temporary, is typed with the block's

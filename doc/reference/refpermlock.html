@@ -90,13 +90,21 @@ imm v = (&amp;*c).n;       // a borrow takes the lock: allowed
 		never on a lock permission's, whose lock sits in a header no program can name.</p>
 
 	<h2>Where the lock is given back</h2>
-	<p>The lock is given back where the borrow can no longer be used, which is one of two places:</p>
+	<p>The lock is given back at the borrow's <b>last use</b>, as any borrow ends at its last use.
+		The borrow is the only way to the value the lock guards, so a borrow that is never used
+		again protects nothing. Two kinds of borrow differ in how far the last use can be from where
+		the borrow was made:</p>
 	<ul>
-	<li><b>A borrow a local's initializer makes</b> holds the lock to the end of the block that
-		declares the local, on every way out of that block: its end, a
-		<span class="pre">return</span>, a <span class="pre">break</span>, a
-		<span class="pre">continue</span>, or, in an actor's behaviour, an
-		<span class="pre">await</span>. In a loop's body, that is the end of each pass.</li>
+	<li><b>A borrow a local's initializer makes</b> holds the lock until the last use of the local,
+		or of anything that holds the borrow on: a part of it borrowed in turn and kept, a copy of it,
+		a struct it was put in. On each path the lock goes back after the statement holding that
+		path's last use. A branch of an <span class="pre">if</span> that does not use the borrow
+		gives the lock back as it begins, if nothing after the <span class="pre">if</span> uses it
+		either; a loop whose body uses the borrow gives it back after the loop. A borrow made in a loop's body is its own on each
+		pass. Every way out gives the lock back too, if it was still held there: the end of the block,
+		a <span class="pre">return</span> (whose value may use the borrow), a
+		<span class="pre">break</span>, a <span class="pre">continue</span>, or, in an actor's
+		behaviour, an <span class="pre">await</span>.</li>
 	<li><b>Any other borrow</b> &mdash; an argument, a field read or written through it, an
 		operator applied to a part of it &mdash; holds the lock to the end of its statement, or to
 		an <span class="pre">await</span> within the statement.</li>
@@ -105,11 +113,16 @@ imm v = (&amp;*c).n;       // a borrow takes the lock: allowed
 imm point = new Arc[Mutex, Point](x: 2, y: 3);
 {
   imm pointref = &amp;mut *point;  // takes the lock
-  pointref.x += pointref.y;     // the point is reached only while it is held
-}                               // the block ends: the lock is given back
+  pointref.x += pointref.y;     // the point is reached only while it is held: the last use
+  show(point);                  // the lock was given back after that statement, so a
+}                               // borrow in show does not wait for this block's end
 bump(&amp;mut *point);              // taken and given back within the statement
 (&amp;mut *point).y = 7;           // and again
 </pre>
+	<p>To keep a lock held over a stretch of code, use the borrow in it (or in the statement that
+		ends it). A <span class="pre">Mutex</span> or <span class="pre">Rwlock</span> held as a value,
+		locked and unlocked by explicit calls, is not a lock permission, and is held until it is
+		unlocked.</p>
 	<p>An <span class="pre">await</span> ends every borrow the behaviour holds, so that no lock
 		is held while the behaviour waits for its reply and its actor handles other messages
 		(<a href="refconccomm.html#await">Awaiting a reply</a>). A lock borrow used after the

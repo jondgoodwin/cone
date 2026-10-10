@@ -213,7 +213,10 @@ void inodePrintNode(INode *node) {
     {
         DropFlagNode *test = (DropFlagNode *)node;
         inodeFprint("(if-held %s %d ", &test->var->namesym->namestr, (int)test->state);
-        inodePrintNode(test->release);
+        if (test->release)
+            inodePrintNode(test->release);
+        else
+            inodeFprint("lock-give");
         inodeFprint(")");
         break;
     }
