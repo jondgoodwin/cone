@@ -78,6 +78,10 @@ RefNode *newRefNode(uint16_t tag);
 // Set while a signature's 'self' is checked: the one place '&new' is written
 extern int refAllowNewPerm;
 
+// Set while the type a 'new' names is checked: an owning reference type there
+// is refused in GPU code as the allocation it makes, not as a type
+extern int refNewTypeWritten;
+
 // Does this reference type carry the length of its target: a pointer and a
 // count, where a reference to a type with a size is a pointer alone? The target
 // decides, whatever the region (itypeLenBodyElem).

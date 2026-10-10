@@ -625,6 +625,20 @@ void fnCallFinalizeArgs(TypeCheckState *pstate, FnCallNode *node) {
             owner && owner->tag == StructTag ? &((StructNode*)owner)->namesym->namestr : "T");
     }
 
+    // A GPU has no operating system and no C library: a function defined
+    // elsewhere is a call to code that is not there. The exceptions are the C
+    // library's math, which a GPU lowers to its own instructions, and core's
+    // own, whose 'panic' a GPU records (genlGpuPanic). A C binding's own
+    // inline functions call what they wrap, and are refused where a kernel
+    // calls them, at generation (genlFnCallInternal)
+    if (flowGpuRefuses((INode*)node) && initdcl && initdcl->tag == FnDclTag
+        && flowGpuExternRefused((FnDclNode*)initdcl, fnsig->parms->used)) {
+        ModuleNode *callermod = pstate->fn ? dclInfoGetModule((INode*)pstate->fn) : NULL;
+        if (callermod == NULL || !(callermod->dclinfo.facts & DclCName))
+            errorMsgNode((INode*)node, ErrorGpuUnavailable, flowGpuExternMsg,
+                &((FnDclNode*)initdcl)->namesym->namestr);
+    }
+
     // Establish the return type of the function call (or error if not what was expected)
     if (node->vtype != unknownType && !itypeIsSame(fnsig->rettype, node->vtype)) {
         errorMsgNode((INode*)node, ErrorNoMeth, "Type of call's returned value does not match what is expected");

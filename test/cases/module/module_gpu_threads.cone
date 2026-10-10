@@ -1,0 +1,41 @@
+// A GPU has no threads, and what runs on them is refused where it is written
+// in GPU code (ErrorGpuUnavailable): a 'parallel each', whose passes run on
+// worker threads, and an 'await', which parks an actor's behaviour (the actor
+// itself is module_gpu_actor). A kernel is already one function that thousands
+// of invocations run at once, each taking its part by its id. Each was once
+// refused only for a missing 'import actors', and with the import went on to
+// compile the actors package for the GPU and fail inside it. A plain 'each' is
+// fine and stands beside them.
+
+mod module_gpu_threads;
+
+fn give(n u64) u64 { n; }
+
+fn @compute(64) passes(inv Invocation, xs &Array[f32], out &mut Array[f32]) {
+  imm i = usize.from(inv.globalId[0]);
+  if i < out.len and i < xs.len {
+    parallel each j in 0usize < 4usize {                        //~ ErrorGpuUnavailable
+      out[i] = xs[i];
+    }
+  }
+}
+
+fn @compute(64) waits(inv Invocation, xs &Array[f32], out &mut Array[f32]) {
+  imm i = usize.from(inv.globalId[0]);
+  if i < out.len and i < xs.len {
+    imm n = await give(1u64);                                   //~ ErrorGpuUnavailable
+    out[i] = xs[i];
+  }
+}
+
+// Not refused
+fn @compute(64) fine(inv Invocation, xs &Array[f32], out &mut Array[f32]) {
+  imm i = usize.from(inv.globalId[0]);
+  if i < out.len and i < xs.len {
+    mut total = 0.;
+    each j in 0usize < 4usize {
+      total = total + xs[i];
+    }
+    out[i] = total;
+  }
+}

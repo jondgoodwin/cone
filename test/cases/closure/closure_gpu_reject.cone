@@ -20,14 +20,17 @@ pub trait Unary {
 fn viaTrait(f &<Unary, x f32) f32 { f(x); }
 fn viaCallable(f &<fn(x f32) f32, x f32) f32 { f(x); }
 
-// An owner or a function reference reaches GPU code only as a parameter of a
-// function (making one is refused: module_gpu_unavailable)
-fn owner(held Rc[f32]) f32 {
-  scaled(x => x * *held, 3.);                                  //~ ErrorGpuClosureData
+// A function reference reaches GPU code only as a parameter of a function
+// (making one is refused: module_gpu_unavailable). An owner cannot even be
+// written there (module_gpu_unavailable), so a closure holding one is refused
+// at the owner's type, and the closure that holds it is never reached; the
+// closure check for an owner stays as a second line of defence
+fn owner(held Rc[f32]) f32 {                                   //~ ErrorGpuUnavailable
+  scaled(x => x * *held, 3.);
 }
 
-fn ownState(held Rc[f32]) f32 {
-  scaled(fn(x f32) [h = held] f32 { x * *h; }, 3.);            //~ ErrorGpuClosureData
+fn ownState(held Rc[f32]) f32 {                                //~ ErrorGpuUnavailable
+  scaled(fn(x f32) [h = held] f32 { x * *h; }, 3.);
 }
 
 fn funcRef(f &fn(x f32) f32) f32 {
