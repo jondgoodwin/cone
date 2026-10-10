@@ -1628,9 +1628,10 @@ int parallelViewNotFound(FnCallNode *callnode, INode *objdereftype, Name *methsy
         || parIsCore(objdereftype, "IterTake", 8) || parIsCore(objdereftype, "IterSkip", 8))
         tname = "A chain of iterator adapters ('map', 'filter', 'take', 'skip')";
     if (methsym == nametblFind("parallel", 8)) {
+        int cursor = isMethodType(objdereftype) && parHasMethod(objdereftype, nextName);
         errorMsgNode((INode*)callnode, ErrorParReduce,
-            "`parallel()` makes a view of a source that can be cut into pieces: a list, an array or a slice, the runs of `chunks`, an `iter()` or `indexed()` of those, a zip of them, or a number range written `(0 < n).parallel()`. %s hands out its items one after another and cannot be cut. Collect it into a list first, or walk the list it starts from.",
-            tname);
+            "`parallel()` makes a view of a source that can be cut into pieces: a list, an array or a slice, the runs of `chunks`, an `iter()` or `indexed()` of those, a zip of them, or a number range written `(0 < n).parallel()`. %s %s. Collect it into a list first, or walk the list it starts from.",
+            tname, cursor ? "hands out its items one after another and cannot be cut" : "is not a source of items");
         return 1;
     }
     if ((parIsCore(objdereftype, "ParallelSlice", 13) || parIsCore(objdereftype, "ParallelNumbers", 15))
