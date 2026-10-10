@@ -292,6 +292,10 @@ void fnCallNameRes(NameResState *pstate, FnCallNode **nodep) {
     INode **argsp;
     uint32_t cnt;
 
+    // 'xs.parallel().sum()': a reduction called on a parallel view is a call of the
+    // actors package's function, made once its parts are resolved (pareach.c)
+    int reduction = parallelReduceIs(node);
+
     // Name resolve objfn so we know what it is to vary subsequent processing
     inodeNameRes(pstate, &node->objfn);
 
@@ -304,6 +308,16 @@ void fnCallNameRes(NameResState *pstate, FnCallNode **nodep) {
     if (node->args) {
         for (nodesFor(node->args, cnt, argsp))
             inodeNameRes(pstate, argsp);
+    }
+
+    if (reduction) {
+        parallelReduceNameRes(pstate, nodep);
+        return;
+    }
+    // '(lo < hi).parallel()': a number range has no view yet, and is refused with the reason
+    if (parallelRangeIs(node)) {
+        parallelRangeNameRes(pstate, nodep);
+        return;
     }
 
     // 'Array[f32, 3]' is the array type, lowered here rather than at type check
@@ -1394,6 +1408,8 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
                 return -1;
             }
         }
+        if (foundnode == NULL && parallelViewNotFound(callnode, objdereftype, methsym))
+            return -1;
         errorMsgNode((INode*)callnode, ErrorNoMbr, "Method or field `%s` not found.", &methsym->namestr);
         return -1;
     }

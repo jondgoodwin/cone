@@ -73,7 +73,11 @@ Visual Studio projects stay at the root.
   way (a list's through the `len` and `split` it folds in from `Array`'s; the compiler cuts
   arrays, slices, lists and number ranges into index ranges itself, and the runs
   `chunks` and `mutChunks` give into ranges of runs, and does not call a
-  type's own `split` yet); and `panic`, `assert`, `unreachable`, `todo` and `setPanicHook`, whose
+  type's own `split` yet); `parallel()`, a method of `Array[T]` and of the cursors that have
+  `len` and `at`, giving a view (`ParallelSlice`, the cursor itself for the runs of `chunks`,
+  `indexed()` and a zip; a number range has none until the new range syntax), plain data whose reductions
+  `sum`, `fold` and `findFirst` are the actors package's (the compiler rewrites
+  `xs.parallel().sum()` into a call of `actors.parSum`); and `panic`, `assert`, `unreachable`, `todo` and `setPanicHook`, whose
   work is conestd's, with `srcFile` and `srcLine`, intrinsics outside `mem`,
   which as a parameter's default give a caller's location; and the macros
   `assertDebug` and `assertDebugMsg`, checked in a debug build only, through
@@ -622,7 +626,10 @@ Visual Studio projects stay at the root.
   function reference, `[F fn(lo usize, hi usize) + Shareable]`: split on demand, a task queue above the actors' messages;
   `parallelEach`, which a `parallel each` runs through, taking the compiler's outlined
   function and record (`PieceFn`), gathering the messages its pieces send
-  and sending them after the loop in iteration order), its header the shape of
+  and sending them after the loop in iteration order; `parSum`, `parFold` and `parFindFirst`
+  (`reduce.cone`), what `xs.parallel().sum()`, `fold(init, step, combine)` and `findFirst`
+  become, over the views core's `parallel()` gives, cut into blocks by the item count alone
+  and joined pairwise up a fixed tree, the same result with any number of workers), its header the shape of
   what the compiler generates for an actor and its example `pingpong.cone` the
   timed benchmark, and `Awaitable[R]`, an operation a behaviour may `await`, a closure
   (`So[fn(rp Reply)]`) started at the seam with the reply's envelope its answer, an `R`, goes back
