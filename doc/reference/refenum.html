@@ -13,9 +13,8 @@
 
     <div class="text">
 	<p style="margin-left: 40px;"><i>Note: All of this capability is implemented except
-		comparing two values of an enum whose variants carry fields, and calling a method that
-		takes <span class="pre">self</span> by value on a value typed as the enum itself. Where
-		either is shown, it is marked.</i></p>
+		calling a method that takes <span class="pre">self</span> by value on a value typed as the
+		enum itself. Where it is shown, it is marked.</i></p>
 
 	<p>An <span class="pre">enum</span> declares a <b>closed set of variants</b>: a value of the
 		enum is exactly one of them, and the whole set is written inside the declaration, so
@@ -411,7 +410,7 @@ loudOf(&amp;Shape.Square[2, 3])     // 200: the enum's label, Named's loud
 		<a href="#extends">extends</a> another takes its base's traits with the variants it copies
 		and names none of its own.</p>
 
-	<h3>Comparing</h3>
+	<h3 id="compare">Comparing</h3>
 	<p>A value may be compared for equivalence, and not for order: which variant a value holds is
 		what a comparison can answer, and declaration order is not a magnitude.</p>
 	<p>Where every variant is empty, the value <i>is</i> the tag, so the comparison is exactly a tag
@@ -419,10 +418,51 @@ loudOf(&amp;Shape.Square[2, 3])     // 200: the enum's label, Named's loud
 <pre>
 if phone == PhoneType.Mobile[] { ... }
 </pre>
-	<p style="margin-left: 40px;"><i>Note: where a variant carries fields, comparing two values would
-		have to compare those fields as well, and Cone has no comparison of a struct's contents for
-		any kind of type yet. Comparing such an enum is an error today that names
-		<span class="pre">match</span> as the way to recover the variant.</i></p>
+	<p>Where a variant carries fields, two values are equal when they hold <b>the same variant</b>
+		and that variant's own <span class="pre">==</span> says their payloads are equal: the tags
+		are compared first, and only if they match is the variant's <span class="pre">==</span>
+		called. A variant that carries nothing is equal to another of its kind by its tag alone.
+		<span class="pre">!=</span> is the negation. A variant's <span class="pre">==</span> is
+		written as any struct's <a href="refmethop.html#compare">is</a>, taking another of the
+		variant, by value or by reference:</p>
+<pre>
+enum Shape {
+	struct Circle {
+		pub radius f32;
+		pub fn `==`(self, other Circle) bool {radius == other.radius;}
+	}
+	struct Rect {
+		pub w f32;
+		pub h f32;
+		pub fn `==`(self &amp;, other &amp;Rect) bool {w == other.w and h == other.h;}
+	}
+	struct Dot;                       // equal to any other Dot
+}
+
+imm unit Shape = Shape.Circle[1.0];
+unit == Shape.Circle[1.0]             // true: the same variant, equal payloads
+unit == Shape.Circle[2.0]             // false: the same variant, a payload that differs
+unit == Shape.Rect[1.0, 1.0]          // false: a different variant
+unit != Shape.Dot[]                   // true
+</pre>
+	<p>The comparison is the enum's: it is written on a value of the enum, and a variant on its
+		left is compared with the variant's own <span class="pre">==</span>, which takes another of
+		that variant.</p>
+	<p>A variant carries fields when it holds anything beyond the tag, and that includes the
+		fields every variant of the enum has in common: an enum with
+		<span class="pre">pub time i32;</span> compares the time through each variant's own
+		<span class="pre">==</span>, an empty variant's included, since the time is part of what it is.</p>
+	<p>Every variant that carries fields must declare a <span class="pre">==</span> of its own for the enum
+		to be compared: an enum compares by what its variants say, and there is no comparison of
+		a struct's contents to fall back on (deriving one is still to come). If one does not,
+		comparing the enum is an error, and the message names the first variant without one and
+		the fields it carries. Writing that variant's <span class="pre">==</span>, or
+		<a href="refmatch.html">matching</a> to recover the variant, is the remedy. That includes core's
+		<span class="pre">Option</span> and <span class="pre">Result</span>, whose
+		<span class="pre">Some</span>, <span class="pre">Ok</span> and <span class="pre">Error</span>
+		declare none: two options are matched, not compared, for now.</p>
+	<p>The operands are only read, wherever they lie: comparing two values of an enum that
+		<a href="refmove.html">moves</a> moves neither, and both can be used afterwards.</p>
 
 	<h3 id="unsized">Declining the padding</h3>
 	<p>Padding every variant to the largest costs memory, and whether to pay it for the convenience
