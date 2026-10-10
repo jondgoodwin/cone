@@ -1,0 +1,254 @@
+// Where a lock permission's borrow gives its lock back: at the borrow's last
+// use, on each path, not at the end of the block that holds the local. A lock
+// permission guards the value itself and the value is reachable only through
+// the borrow, so a borrow that is never used again protects nothing.
+//
+// A mutex in an 'Arc' is shared by main and a probe thread. The probe is
+// started before the borrow it tests, so that it is joined after it (a handle
+// dropped unjoined joins, and the probe cannot join while main still holds
+// the lock); it waits for main's word ('go') and then takes the lock with a
+// borrow of its own, counting itself in. After the borrow's last use main
+// gives the word and watches for the probe to get in, up to 3 seconds. The
+// probe gets in only if the borrow has given the lock back, whatever the
+// timing, while the probe's failure to get in is judged by waiting 50 ms: a
+// lock still held can only make the probe wait longer, so "still outside"
+// cannot come out wrong.
+//
+// Each case prints what it saw:
+// - early: the last use is a statement; the lock is free at the next one,
+//   though the local's block goes on
+// - then / else: the last use is in one branch and before the 'if' for the
+//   other; the lock is free in each, at the branch's own point
+// - loop: the borrow is used on every pass, and free after the loop
+// - pass: a local made in the loop's body, free after its last use each pass
+// - return: free before a 'return' that follows the last use, and held to the
+//   later use on the path that goes on
+// - late: held while a later use is to come, free right after it
+// - nested: the last use is in a nested block, and the lock is free there
+// - derived: the borrow's field borrowed again and kept; the lock is held while
+//   the derived borrow is to be used, though the first is dead
+// - read: a read-only borrow of an Rwlock, free for a writer after its last use
+//
+// Worked out by hand: every line says "free" where the case's last use is
+// behind it and the probe was let in, and "held" where a use is still to come.
+
+mod region_lockperm_release;
+
+import stdio use *;
+import thread;
+import time;
+import sync use Arc, Mutex, Rwlock;
+
+struct Cell {
+  pub n u64;
+}
+alias Shared = Arc[Mutex, Cell];
+
+struct Level {
+  pub scale u64;
+}
+alias Watched = Arc[Rwlock, Level];
+
+// main's word to the probe, and how many probes got in
+imm go Atomic[u32];
+imm got Atomic[u32];
+
+fn @initpure init() {
+  go = Atomic[u32].of(0u32);
+  got = Atomic[u32].of(0u32);
+}
+
+fn reset() {
+  go.store(0u32);
+  got.store(0u32);
+}
+
+fn probe(s Shared) u64 {
+  while go.load() == 0u32 {
+    thread.yieldNow();
+  }
+  (&mut *s).n += 1000u64;
+  got.add(1u32);
+  0u64;
+}
+
+fn probeWriter(s Watched) u64 {
+  while go.load() == 0u32 {
+    thread.yieldNow();
+  }
+  (&mut *s).scale += 1000u64;
+  got.add(1u32);
+  0u64;
+}
+
+// The probe is let go and waited for: did it get in?
+fn letIn() bool {
+  go.store(1u32);
+  mut tries = 0;
+  while got.load() == 0u32 {
+    if tries == 300 {
+      return false;
+    }
+    thread.sleep(time.Duration.fromMillis(10));
+    tries += 1;
+  }
+  true;
+}
+
+// The probe is let go: is it still outside after 50 ms?
+fn stillOut() bool {
+  go.store(1u32);
+  thread.sleep(time.Duration.fromMillis(50));
+  got.load() == 0u32;
+}
+
+fn say(what &str, free bool) {
+  printStr(what);
+  if free {
+    printStr(" free\n");
+  }
+  else {
+    printStr(" held\n");
+  }
+}
+
+fn early(s Shared) {
+  reset();
+  imm h = thread.start(s, &probe);
+  {
+    imm r = &mut *s;
+    r.n = 1u64;                        // the last use
+    say("early", letIn());
+  }
+  h.join();
+}
+
+fn branch(s Shared, c bool) {
+  reset();
+  imm h = thread.start(s, &probe);
+  {
+    imm r = &mut *s;
+    r.n = 1u64;
+    if c {
+      r.n = 2u64;                      // the last use, on this path
+      say("then", letIn());
+    }
+    else {
+      say("else", letIn());            // the last use was before the 'if'
+    }
+  }
+  h.join();
+}
+
+fn loopOver(s Shared) {
+  reset();
+  imm h = thread.start(s, &probe);
+  {
+    imm r = &mut *s;
+    mut i = 0;
+    while i < 3 {
+      r.n += 1u64;                     // used on every pass
+      i += 1;
+    }
+    say("loop", letIn());
+  }
+  h.join();
+}
+
+fn pass(s Shared) {
+  mut i = 0;
+  while i < 2 {
+    reset();
+    imm h = thread.start(s, &probe);
+    imm w = &mut *s;                   // this pass's own borrow
+    w.n += 1u64;
+    say("pass", letIn());
+    i += 1;
+  }
+}
+
+fn leave(s Shared, early bool) u64 {
+  reset();
+  imm h = thread.start(s, &probe);
+  imm r = &mut *s;
+  r.n = 1u64;
+  if early {
+    say("return", letIn());
+    return 1u64;
+  }
+  r.n = r.n + 1u64;                    // a later use, on the path that goes on
+  say("onward", letIn());              // and it was the last
+  2u64;
+}
+
+fn late(s Shared) {
+  reset();
+  imm h = thread.start(s, &probe);
+  {
+    imm r = &mut *s;
+    r.n = 1u64;
+    say("late", !stillOut());          // held: a use is to come
+    r.n = 2u64;                        // the last use
+    say("late", letIn());
+  }
+  h.join();
+}
+
+fn nested(s Shared) {
+  reset();
+  imm h = thread.start(s, &probe);
+  {
+    imm r = &mut *s;
+    {
+      r.n = 1u64;                      // the last use is in a nested block
+      say("nested", letIn());
+    }
+  }
+  h.join();
+}
+
+fn derived(s Shared) {
+  reset();
+  imm h = thread.start(s, &probe);
+  {
+    imm r = &mut *s;
+    imm q = &mut r.n;                  // r is not used again; q is
+    *q = 1u64;
+    say("derived", !stillOut());       // held: q is to be used
+    *q = 2u64;
+    say("derived", letIn());
+  }
+  h.join();
+}
+
+fn readOnly(w Watched) {
+  reset();
+  imm h = thread.start(w, &probeWriter);
+  {
+    imm r = &*w;                       // a read lock
+    imm seen = r.scale;
+    say("read", letIn());              // the writer gets in
+    printInt(i64.from(seen));
+    printStr("\n");
+  }
+  h.join();
+}
+
+fn main() {
+  initAll();
+  imm s = new Shared(0u64);
+  early(s);
+  branch(s, true);
+  branch(s, false);
+  loopOver(s);
+  pass(s);
+  printInt(i64.from(leave(s, true)));
+  printStr("\n");
+  printInt(i64.from(leave(s, false)));
+  printStr("\n");
+  late(s);
+  nested(s);
+  derived(s);
+  imm w = new Watched(5u64);
+  readOnly(w);
+}

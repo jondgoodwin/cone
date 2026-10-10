@@ -453,8 +453,9 @@ int borrowConstLitCoerce(INode *from, INode *totypedcl) {
 // it whatever becomes of 'p'. It is a temporary, so it dies, giving the lock
 // back before its owner goes (genlRegionDealiasPart), at the end of the
 // statement, or of the block where a local's initializer extends it, on
-// every path out; and the borrow is a borrow of it, which the lifetime
-// checks and the loan walk keep from being used after it dies. Only the
+// every path out; there the lock goes back earlier, at the borrow's last use
+// (flowpath.c, pwLockPoint). The borrow is a borrow of the guard, which the
+// lifetime checks and the loan walk keep from being used after it dies. Only the
 // reference nearest the borrow is locked: a place reached through another
 // lock-managed reference before it is a read through that one, refused.
 // Answer whether the borrow is now through a guard.
