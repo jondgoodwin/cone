@@ -184,5 +184,28 @@ fn main() i32 {
   }
   expectBool(before - low > 0.2, true, "a landing at 8 m/s drops the pelvis more than 20 cm");
   near((*models[PELVIS]).translation.y, before, 0.03, "and it has recovered after 2 s");
+
+  // A ground that is a closure holding what it needs: a slope of 0.1 m per metre
+  // rising towards -z, 'rise' captured. Two walkers of the same height and seed
+  // stand at z = -1 for a second, one on that slope and one on flat ground. Standing,
+  // a heel is HEEL_BACK * h = 0.04 * 1.75 = 0.07 m behind the body (towards +z), at
+  // z = -0.93, where the slope's height is 0.1 * 0.93 = 0.093 m; so the slope's
+  // left ankle stands 0.093 m higher than the flat one's
+  imm rise = 0.1;
+  mut ws = Walker.make(h, 3u32);
+  mut wf = Walker.make(h, 3u32);
+  mut ps = skel.restPose();
+  mut pf = skel.restPose();
+  mut ms = List[Transform3].empty();
+  mut mf = List[Transform3].empty();
+  imm here = new Vec3(0., 0., -1.);
+  s = 0;
+  while s < 60 {
+    ws.update(&skel, &mut ps, &mut ms, here, 0., 0., 0., true, (x, zz) => rise * (0. - zz), dt);
+    wf.update(&skel, &mut pf, &mut mf, here, 0., 0., 0., true, &flatGround, dt);
+    s = s + 1;
+  }
+  near((*ms[FOOT_L]).translation.y - (*mf[FOOT_L]).translation.y, 0.093, 0.005, "a closure ground: the left ankle stands 9.3 cm higher on the slope");
+  near((*ms[FOOT_R]).translation.y - (*mf[FOOT_R]).translation.y, 0.093, 0.005, "and the right");
   done();
 }
