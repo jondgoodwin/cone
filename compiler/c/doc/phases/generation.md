@@ -1660,7 +1660,11 @@ after. `--ir` is not an LLVM option at all — it dumps the Cone IR/AST.
 `--asm` adds a `.wat`, `.spvasm` or `.asm`. `--verify` runs `LLVMVerifyModule` and is off
 by default. `--debug` emits DWARF and drops optimization — it is the only
 switch here, with release as the default. Debug info covers only files,
-subprograms and each instruction's line and column, and the file name is hardcoded. A subprogram is attached only to a
+subprograms and each instruction's line and column. A subprogram is in the file its
+function was written in (`genlDiFile`: the lexer's url, one `DIFile` for each, the
+compile's main file for a node with no lexer), so a sibling file of a folder module,
+a submodule and an imported package that is compiled in each have their own.
+A subprogram is attached only to a
 function this object defines: an imported module's function has a body in the
 IR but is a declaration here, and the verifier rejects a declaration carrying
 one. Every `genlExpr` sets the builder's debug location to its node's line and

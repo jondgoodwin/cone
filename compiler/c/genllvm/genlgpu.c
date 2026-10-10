@@ -432,9 +432,10 @@ void genlComputeEntry(GenState *gen, FnDclNode *fnnode) {
     // A debug build gives the kernel a subprogram too, so that what is
     // inlined into it keeps its lines
     if (!gen->opt->release) {
-        LLVMMetadataRef fntype = LLVMDIBuilderCreateSubroutineType(gen->dibuilder, gen->difile, NULL, 0, 0);
-        LLVMMetadataRef sp = LLVMDIBuilderCreateFunction(gen->dibuilder, gen->difile,
-            name, strlen(name), name, strlen(name), gen->difile, fnnode->linenbr, fntype, 0, 1,
+        LLVMMetadataRef difile = genlDiFile(gen, (INode*)fnnode);
+        LLVMMetadataRef fntype = LLVMDIBuilderCreateSubroutineType(gen->dibuilder, difile, NULL, 0, 0);
+        LLVMMetadataRef sp = LLVMDIBuilderCreateFunction(gen->dibuilder, difile,
+            name, strlen(name), name, strlen(name), difile, fnnode->linenbr, fntype, 0, 1,
             fnnode->linenbr, LLVMDIFlagPublic, 0);
         LLVMSetSubprogram(kernel, sp);
         LLVMSetCurrentDebugLocation2(gen->builder,

@@ -260,10 +260,11 @@ static LLVMValueRef genlSeamFn(GenState *gen, char *symbol, LLVMTypeRef fntype, 
     genlComdat(gen, fn);
     if (!gen->opt->release) {
         char *fnname = &gen->fndcl->namesym->namestr;
-        LLVMMetadataRef ditype = LLVMDIBuilderCreateSubroutineType(gen->dibuilder, gen->difile, NULL, 0, 0);
-        LLVMMetadataRef sp = LLVMDIBuilderCreateFunction(gen->dibuilder, gen->difile,
+        LLVMMetadataRef difile = genlDiFile(gen, (INode*)node);
+        LLVMMetadataRef ditype = LLVMDIBuilderCreateSubroutineType(gen->dibuilder, difile, NULL, 0, 0);
+        LLVMMetadataRef sp = LLVMDIBuilderCreateFunction(gen->dibuilder, difile,
             fnname, strlen(fnname), symbol, strlen(symbol),
-            gen->difile, node->linenbr, ditype, 1, 1, node->linenbr, LLVMDIFlagPrivate, 0);
+            difile, node->linenbr, ditype, 1, 1, node->linenbr, LLVMDIFlagPrivate, 0);
         LLVMSetSubprogram(fn, sp);
     }
     return fn;

@@ -160,9 +160,10 @@ INode *genlParallelRun(GenState *gen, BlockNode *blk, INode *kdcl) {
     LLVMValueRef fn = LLVMAddFunction(gen->module, name, fntype);
     LLVMSetLinkage(fn, LLVMInternalLinkage);
     if (!gen->opt->release) {
-        LLVMMetadataRef ditype = LLVMDIBuilderCreateSubroutineType(gen->dibuilder, gen->difile, NULL, 0, 0);
-        LLVMMetadataRef sp = LLVMDIBuilderCreateFunction(gen->dibuilder, gen->difile,
-            name, strlen(name), name, strlen(name), gen->difile, loop->linenbr, ditype, 1, 1, loop->linenbr,
+        LLVMMetadataRef difile = genlDiFile(gen, (INode*)loop);
+        LLVMMetadataRef ditype = LLVMDIBuilderCreateSubroutineType(gen->dibuilder, difile, NULL, 0, 0);
+        LLVMMetadataRef sp = LLVMDIBuilderCreateFunction(gen->dibuilder, difile,
+            name, strlen(name), name, strlen(name), difile, loop->linenbr, ditype, 1, 1, loop->linenbr,
             LLVMDIFlagPrivate, 0);
         LLVMSetSubprogram(fn, sp);
     }
