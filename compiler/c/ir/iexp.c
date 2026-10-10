@@ -334,6 +334,8 @@ static int iexpCoerceShape(INode **from, INode *totype) {
             borrowUniReborrow(from, totypedcl);
         return 1;
     case CastSubtype: {
+        if ((totypedcl->tag == RefTag || totypedcl->tag == VirtRefTag) && ((RefNode*)totypedcl)->region == borrowRef)
+            borrowOwnerLendRefused(*from, ((RefNode*)totypedcl)->perm);
         // A sole owner wanted as a '&uni' borrowed reference is borrowed from,
         // as it is when wanted as a '&' or '&mut', not moved into the borrow
         if (borrowOwnerLendsUni(*from, totypedcl)) {
@@ -346,6 +348,8 @@ static int iexpCoerceShape(INode **from, INode *totype) {
         return 1;
     }
     case ConvSubtype: {
+        if (totypedcl->tag == VirtRefTag && ((RefNode*)totypedcl)->region == borrowRef)
+            borrowOwnerLendRefused(*from, ((RefNode*)totypedcl)->perm);
         // A float literal widened stays a literal, which the positions that
         // require one ask for, and so does a named constant's use
         if (litWidenFloat(from, totypedcl) || litWidenConst(from, totypedcl))
@@ -594,6 +598,28 @@ static void iexpScopeThroughRef(INode *refexp, INode *lvalvar, RefNode *reftype,
     }
 }
 
+// Is this place reached through a borrowed reference, a slice or a virtual
+// reference: the value it holds is where a loan points, and what is lent of it
+// is held to that loan's permission?
+int iexpPathThroughBorrow(INode *lval) {
+    for (;;) {
+        INode *obj;
+        if (lval->tag == FldAccessTag || lval->tag == ArrIndexTag)
+            obj = ((FnCallNode *)lval)->objfn;
+        else if (lval->tag == DerefTag)
+            obj = ((StarNode *)lval)->vtexp;
+        else
+            return 0;
+        if (!isExpNode(obj))
+            return 0;
+        INode *objtype = iexpGetTypeDcl(obj);
+        if (((objtype->tag == RefTag || objtype->tag == ArrayRefTag) && itypeGetTypeDcl(((RefNode*)objtype)->region) == (INode*)borrowRef)
+            || objtype->tag == VirtRefTag)
+            return 1;
+        lval = obj;
+    }
+}
+
 // Extract lval variable, scope and overall permission from lval, for a borrow
 // of the place ('stored' 0) or a store into it ('stored' 1). The two differ only
 // at a parameter.
@@ -629,7 +655,14 @@ static INode *iexpLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope, int s
         INode *lvalvar = iexpLvalInfo(refexp, lvalperm, scope, stored);
         RefNode *vtype = (RefNode*)iexpGetTypeDcl(refexp);
         if (vtype->tag == RefTag || vtype->tag == ArrayRefTag) {
-            *lvalperm = vtype->perm;
+            // An owner held in a place reached through a borrow that only reads
+            // lends no more than that borrow lets: its own permission is what
+            // it grants a holder of the place, not one reading through a loan
+            int ownerRead = vtype->region != borrowRef && !permIsLock(*lvalperm) && !permIsLock(vtype->perm)
+                && (permGetFlags(vtype->perm) & MayWrite) && !(permGetFlags(*lvalperm) & MayWrite)
+                && iexpPathThroughBorrow(refexp);
+            if (!ownerRead)
+                *lvalperm = vtype->perm;
             iexpScopeThroughRef(refexp, lvalvar, vtype, scope, stored);
         }
         else if (vtype->tag == PtrTag)

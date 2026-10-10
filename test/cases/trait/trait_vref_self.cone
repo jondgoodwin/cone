@@ -1,0 +1,85 @@
+// A method fills a trait's slot behind a virtual reference when it asks for no
+// stronger a 'self' than the trait's method declares: the same permission, or a
+// weaker one. 'self &' meets 'self &', 'self &mut' and 'self &uni'; 'self &mut'
+// meets 'self &mut' and 'self &uni'; 'self &uni' meets 'self &uni'. Each is
+// given as a borrowed virtual reference and as an owner, and the numbers show
+// the call reached the method. trait_typecheck_vref_self holds the stronger
+// ones, refused.
+
+mod trait_vref_self;
+
+import stdio use *;
+
+trait Reading {
+  pub fn read(self &) i64;
+}
+
+trait Editing {
+  pub fn edit(self &mut) i64;
+}
+
+trait Taking {
+  pub fn take(self &uni) i64;
+}
+
+// Each implementer asks for the same 'self' as its trait, or less
+struct Same {
+  pub n i64;
+  pub fn read(self &) i64 { n; }
+  pub fn edit(self &mut) i64 { n = n + 1; n; }
+  pub fn take(self &uni) i64 { n * 10; }
+}
+
+struct Less {
+  pub n i64;
+  pub fn read(self &) i64 { n + 100; }
+  pub fn edit(self &) i64 { n + 200; }
+  pub fn take(self &mut) i64 { n = n + 1; n + 300; }
+}
+
+struct Least {
+  pub n i64;
+  pub fn read(self &) i64 { n + 1000; }
+  pub fn edit(self &) i64 { n + 2000; }
+  pub fn take(self &) i64 { n + 3000; }
+}
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn reads(r &<Reading) i64 { r.read(); }
+fn edits(e &<mut Editing) i64 { e.edit(); }
+fn takes(t &<uni Taking) i64 { t.take(); }
+
+fn main() {
+  // Borrowed
+  mut s = new Same(1);
+  mut l = new Less(2);
+  mut z = new Least(3);
+  show("same-read", reads(&s));
+  show("same-edit", edits(&mut s));
+  show("less-read", reads(&l));
+  show("less-edit", edits(&mut l));
+  show("least-read", reads(&z));
+  show("least-edit", edits(&mut z));
+
+  // Borrowed '&<uni', from sole owners
+  mut us = new So[Same](4);
+  mut ul = new So[Less](5);
+  mut uz = new So[Least](6);
+  show("same-take", takes(&uni *us));
+  show("less-take", takes(&uni *ul));
+  show("least-take", takes(&uni *uz));
+
+  // Owning
+  mut o So[Editing] = new So[Same](7);
+  show("owned-same-edit", o.edit());
+  mut p So[Editing] = new So[Less](8);
+  show("owned-less-edit", p.edit());
+  imm q So[Reading] = new So[Least](9);
+  show("owned-least-read", q.read());
+}

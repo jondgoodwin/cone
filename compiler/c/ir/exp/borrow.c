@@ -54,6 +54,31 @@ static int borrowRefusesConst(INode *place) {
     return 1;
 }
 
+// An owning reference held in a place reached through a borrow that only reads
+// ('h.app' for a 'h &Holder' holding 'app So[App]'), lent as a borrow that may
+// write, is refused: a '&' lends only '&' of what it holds, owners included.
+// 'perm' is the permission the lend asks for. Reports it and answers 1 when refused.
+int borrowOwnerLendRefused(INode *owner, INode *perm) {
+    if (!isExpNode(owner) || !iexpIsLval(owner))
+        return 0;
+    INode *ownertype = iexpGetTypeDcl(owner);
+    if ((ownertype->tag != RefTag && ownertype->tag != VirtRefTag)
+        || itypeGetTypeDcl(((RefNode*)ownertype)->region) == (INode*)borrowRef)
+        return 0;
+    INode *wanted = itypeGetTypeDcl(perm);
+    if (wanted->tag != PermTag || !(permGetFlags(wanted) & MayWrite) || !iexpPathThroughBorrow(owner))
+        return 0;
+    INode *lvalperm = (INode*)uniPerm;
+    uint16_t scope = 0;
+    iexpGetLvalInfo(owner, &lvalperm, &scope);
+    if (permIsLock(lvalperm) || (permGetFlags(lvalperm) & MayWrite))
+        return 0;
+    errorMsgNode(owner, ErrorBadPerm,
+        "Cannot lend `&%s` of this owner: it is reached through a reference that only reads, and a `&` lends only `&` of what it holds, owners included.",
+        wanted == (INode*)uniPerm ? "uni" : wanted == (INode*)mutPerm ? "mut" : &inodeGetName(wanted)->namestr);
+    return 1;
+}
+
 // Inject a typed, borrowed node on some node (expected to be an lval)
 void borrowMutRef(INode **nodep, INode* type, INode *perm) {
     INode *node = *nodep;
@@ -65,6 +90,7 @@ void borrowMutRef(INode **nodep, INode* type, INode *perm) {
         INode *reftype = iexpGetTypeDcl(derefnode->vtexp);
         if (reftype->tag == RefTag && permIsLock(((RefNode*)reftype)->perm))
             permLockRefused(node, ((RefNode*)reftype)->perm, "borrow implicitly");
+        borrowOwnerLendRefused(derefnode->vtexp, perm);
         *nodep = derefnode->vtexp;
         return;
     }
