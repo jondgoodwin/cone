@@ -91,9 +91,12 @@ extern FnSigNode *closureHint;
 // where a trait with one method is wanted; NULL for '()'
 extern Name *closureMethod;
 
+// With the method, the trait itself: the literal's struct inherits its default methods
+extern StructNode *closureTrait;
+
 // What a literal given where 'trait' is wanted must be: the signature of the
-// trait's one method and its name; NULL when the trait is not one with exactly
-// one method and no field ('*count' says how many it has)
+// trait's one required method and its name; NULL when the trait is not one with
+// exactly one required method and no field ('*count' says how many it has)
 FnSigNode *closureTraitSig(StructNode *trait, Name **method, uint32_t *count);
 
 // Whether a closure's one method takes 'self &mut'

@@ -517,10 +517,12 @@ static void typeLitNewCallable(TypeCheckState *pstate, FnCallNode **nodep, RefNo
     if ((*argp)->tag == ClosureTag) {
         closureHint = csig;
         closureMethod = method;
+        closureTrait = method ? trait : NULL;
     }
     inodeTypeCheck(pstate, argp, unknownType);
     closureHint = NULL;
     closureMethod = NULL;
+    closureTrait = NULL;
     if (!isExpNode(*argp) || inodeIsError(*argp))
         return;
     INode *vtype = ((IExpNode*)*argp)->vtype;

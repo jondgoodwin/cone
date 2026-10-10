@@ -1,10 +1,12 @@
 // What a closure literal given where a trait is wanted is refused for. It fills a
-// trait with exactly one method and no field: a trait with two methods, or none, is
+// trait with exactly one required method and no field (the trait's default methods
+// come with it): a trait with two required methods, or none, or with a field, is
 // refused naming what it has; the literal's parameters and return type are the
 // method's (a count, a written type that differs, or a return type that differs
-// is refused naming the method); and a body that changes state does not fill a
-// method behind a reference that only reads, `&<Shape` or a generic's `&S`, in
-// the author's terms. Each is said once, at the literal.
+// is refused naming the method); and a body that changes state, so that its method
+// takes 'self &mut', does not meet a method that takes 'self &', under any holder:
+// '&<Shape', '&<mut Shape', 'So[Shape]' and a generic's '&S', 'S'. That is a
+// struct's rule too (ErrorVtableSelf). Each is said once, at the literal.
 
 mod closure_typecheck_trait;
 
@@ -22,31 +24,78 @@ pub trait Two {
 pub trait Mark {
 }
 
+// One required method and a default: a literal fills it (closure_trait_default)
+pub trait Rated {
+  pub fn distance(self &, p V) f32;
+  pub fn near(self &, p V) f32 { 100. - self.distance(p); }
+}
+
+// Only defaults: nothing for a literal to fill
+pub trait Defaults {
+  pub fn near(self &, p V) f32 { 1.; }
+}
+
+// One method, but also a field the literal cannot give
+pub trait Fielded {
+  pub w f32;
+  pub fn distance(self &, p V) f32;
+}
+
+pub trait Mover {
+  pub fn bump(self &mut, step i32) i32;
+}
+
 fn depth[S Shape](shape &S, p V) f32 { shape.distance(p); }
 fn depthVia(shape &<Shape, p V) f32 { shape.distance(p); }
 fn depthMut(shape &<mut Shape, p V) f32 { shape.distance(p); }
+fn depthVal[S Shape](shape S, p V) f32 { shape.distance(p); }
+fn depthRated[S Rated](shape &S, p V) f32 { shape.near(p); }
 fn twoVia(shape &<Two, p V) f32 { shape.distance(p); }
 fn twoGen[S Two](shape &S, p V) f32 { shape.distance(p); }
 fn markVia(shape &<Mark, p V) f32 { 0.; }
+fn defaultsVia(shape &<Defaults, p V) f32 { 0.; }
+fn fieldedVia(shape &<Fielded, p V) f32 { 0.; }
+fn fieldedGen[S Fielded](shape &S, p V) f32 { 0.; }
+fn moverVia(m &<Mover) i32 { 0; }
+
+// Hands a reader of the trait what a '&<mut Shape' holds: legal in itself, and the
+// way a literal that changes state would be read through a '&<' it was never
+// allowed to reach
+fn callIt(s &<Shape, p V) f32 { s.distance(p); }
+fn viaMut(s &<mut Shape, p V) f32 { imm r &<Shape = s; callIt(r, p); }
 
 fn main() {
   imm p = new V(3., 4.);
   mut total = 0.;
+  mut seen = 0.;
 
-  // A trait with more than one method, or none
-  twoVia(q => 1., p);              //~ ErrorClosureTrait:10 "Two has 2 methods and fields (the first method is `distance`)"
-  twoGen(q => 1., p);              //~ ErrorClosureTrait:10 "Two has 2 methods and fields (the first method is `distance`)"
+  // A trait with more than one required method, none, or a field
+  twoVia(q => 1., p);              //~ ErrorClosureTrait:10 "Two has 2 required methods and fields (the first required method is `distance`)"
+  twoGen(q => 1., p);              //~ ErrorClosureTrait:10 "Two has 2 required methods and fields (the first required method is `distance`)"
   markVia(q => 1., p);             //~ ErrorClosureTrait:11 "Mark has none"
-  imm many = new So[Two](q => 1.); //~ ErrorClosureTrait:26 "Two has 2 methods and fields"
+  defaultsVia(q => 1., p);         //~ ErrorClosureTrait:15 "Defaults has none"
+  fieldedVia(q => 1., p);          //~ ErrorClosureTrait:14 "Fielded has 2 required methods and fields"
+  fieldedGen(q => 1., p);          //~ ErrorClosureTrait:14 "Fielded has 2 required methods and fields"
+  imm many = new So[Two](q => 1.); //~ ErrorClosureTrait:26 "Two has 2 required methods and fields"
 
-  // A signature that is not the method's
+  // A signature that is not the method's, and the same for a trait with a default
   depthVia((a, b) => 1., p);                    //~ ErrorClosureParm:14 "This closure takes 2 parameters, and the trait's `distance` takes 1"
   depthVia(fn(q f32) f32 { q; }, p);            //~ ErrorClosureParm:15 "the trait's `distance` takes V there"
   depthVia(fn(q V) i32 { 1; }, p);              //~ ErrorClosureParm:12 "the trait's `distance` returns f32"
+  depthRated(fn(q f32) f32 { q; }, p);          //~ ErrorClosureParm:17 "the trait's `distance` takes V there"
   imm bad = new So[Shape](fn(q f32) f32 { q; }); //~ ErrorClosureParm:30 "the trait's `distance` takes V there"
 
-  // A body that changes state, behind a reference that only reads
-  depthVia(q => { total += q.x; total; }, p);   //~ ErrorCallablePerm:12 "`&<Shape` may only call a method that reads its state; this closure changes it (its `distance` takes `self &mut`)"
-  depth(q => { total += q.x; total; }, p);      //~ ErrorCallablePerm:9 "depth takes `shape` as `&S`, so the callable may only read its state; this closure changes it (its `distance` takes `self &mut`)"
-  depthMut(q => { total += q.x; total; }, p);
+  // A body that changes state does not meet a method that takes 'self &', whatever holds it
+  depthVia(q => { total += q.x; total; }, p);   //~ ErrorVtableSelf:12 "This closure's `distance` needs `self &mut` (it changes state it holds or borrows), but Shape's `distance` takes `self &`"
+  depth(q => { total += q.x; total; }, p);      //~ ErrorVtableSelf:9 "Declare the method `self &mut` in the trait, or don't change that state"
+  depthVal(q => { total += q.x; total; }, p);   //~ ErrorVtableSelf:12 "needs `self &mut`"
+  depthMut(q => { total += q.x; total; }, p);   //~ ErrorVtableSelf:12 "needs `self &mut`"
+  depthRated(q => { total += q.x; total; }, p); //~ ErrorVtableSelf:14 "Rated's `distance` takes `self &`"
+  imm owned = new So[Shape](q => { total += q.x; total; }); //~ ErrorVtableSelf:15 "needs `self &mut`"
+  viaMut(q => { seen += q.x; seen; }, p);       //~ ErrorVtableSelf:10 "needs `self &mut`"
+
+  // A literal that only reads still meets '&<mut Shape', and one that changes state
+  // meets a method that takes 'self &mut'
+  depthMut(q => q.x, p);
+  moverVia(step => { total += 1.; 1; });
 }
