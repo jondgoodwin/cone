@@ -41,37 +41,32 @@ fn work(i u64) u64 {
   (i * 7u64) % 31u64 * 4u64;
 }
 
-struct Fill {
-  pub out *u64;
-  pub nest u64;                // 1: this body calls parallelRange over its items too
+// The array the loops fill, a raw pointer a scheduled loop's closure moves to
+// the workers: Sendable on trust, the loop's owner keeping the array alive
+// until it has finished
+struct Out is Sendable {
+  pub p *u64;
 }
 
 // The items from 'base' on, which an inner loop fills
-struct Cell {
-  pub out *u64;
-  pub base usize;
-}
-
-fn bodyCell(data *u8, lo usize, hi usize) {
-  imm c = data as *Cell;
-  mut i = (*c).base + lo;
-  while i < (*c).base + hi {
-    *((*c).out + i) = mix(u64.from(i), work(u64.from(i)));
+fn bodyCell(out *u64, base usize, lo usize, hi usize) {
+  mut i = base + lo;
+  while i < base + hi {
+    *(out + i) = mix(u64.from(i), work(u64.from(i)));
     i = i + 1usize;
   }
 }
 
-fn bodyFill(data *u8, lo usize, hi usize) {
-  imm f = data as *Fill;
-  if (*f).nest == 1u64 {
+// nest 1: this body calls parallelRange over its items too
+fn bodyFill(out *u64, nest u64, lo usize, hi usize) {
+  if nest == 1u64 {
     // an inner loop over this piece's items, in a loop of its own
-    mut c = new Cell((*f).out, lo);
-    actors.parallelRange(0usize, hi - lo, 4usize, &bodyCell, &mut c as *Cell as *u8);
+    actors.parallelRange(0usize, hi - lo, 4usize, fn(a usize, b usize) [out, lo] { bodyCell(out, lo, a, b); });
     return;
   }
   mut i = lo;
   while i < hi {
-    *((*f).out + i) = mix(u64.from(i), work(u64.from(i)));
+    *(out + i) = mix(u64.from(i), work(u64.from(i)));
     i = i + 1usize;
   }
 }
@@ -92,8 +87,8 @@ fn oneLoop(iter u64, id u64) {
   imm n = usize.from(1u64 + (iter * 37u64 + id * 101u64) % 3000u64);
   imm grain = usize.from(1u64 + iter % 40u64);
   imm out = libc.calloc(n, 8usize) as *u64;
-  mut f = new Fill(out, if iter % 5u64 == 0u64 {1u64;} else {0u64;});
-  actors.parallelRange(0usize, n, grain, &bodyFill, &mut f as *Fill as *u8);
+  imm nest = if iter % 5u64 == 0u64 {1u64;} else {0u64;};
+  actors.parallelRange(0usize, n, grain, fn(lo usize, hi usize) [out, nest] { bodyFill(out, nest, lo, hi); });
   if !correct(out, n) {
     counts.failures.add(1u64);
   }
@@ -108,8 +103,12 @@ struct Waiting {
   pub n usize;
 }
 
-fn waitingDone(arg *u8) {
-  imm w = arg as *Waiting;
+// The Waiting a scheduled loop's onDone is handed
+struct WaitingRef is Sendable {
+  pub p *Waiting;
+}
+
+fn waitingDone(w *Waiting) {
   if !correct((*w).out, (*w).n) {
     counts.failures.add(1u64);
   }
@@ -120,10 +119,12 @@ fn waitingDone(arg *u8) {
 fn oneScheduled(iter u64, id u64) {
   imm n = usize.from(1u64 + (iter * 53u64 + id * 17u64) % 2000u64);
   imm out = libc.calloc(n, 8usize) as *u64;
-  mut f = new Fill(out, 0u64);
   mut w = new Waiting(Atomic[u64].of(0u64), out, n);
-  actors.parallelRangeThen(0usize, n, usize.from(1u64 + iter % 17u64), &bodyFill,
-    &mut f as *Fill as *u8, &waitingDone, &mut w as *Waiting as *u8);
+  imm o = new Out(out);
+  imm wr = new WaitingRef(&mut w as *Waiting);
+  actors.parallelRangeThen(0usize, n, usize.from(1u64 + iter % 17u64),
+    fn(lo usize, hi usize) [o] { bodyFill(o.p, 0u64, lo, hi); },
+    fn() [wr] { waitingDone(wr.p); });
   while w.flag.load() == 0u64 {
     thread.sleep(time.Duration.fromMillis(1));
   }

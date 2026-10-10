@@ -51,17 +51,20 @@
 //                                   (FUTURES, below)
 //   actors.liveFutures()            how many futures are not yet freed
 //   actors.waitQuiet()              wait until no actor is queued or running
-//   actors.parallelRange(lo, hi, grain, body, data)
-//                                   run body over [lo, hi) in pieces spread
-//                                   over the workers, and wait for all
+//   actors.parallelRange(lo, hi, grain, body)
+//                                   run body, a callable taking (lo, hi), over
+//                                   [lo, hi) in pieces spread over the workers,
+//                                   and wait for all
 //                                   (PARALLEL LOOPS, below, and parallel.cone)
-//   actors.parallelRangeThen(...)   the same, not waiting: the last piece
-//                                   calls a function
-//   actors.parallelEach(lo, hi, body, data)
+//   actors.parallelRangeThen(lo, hi, grain, body, onDone)
+//                                   the same, not waiting: the last piece
+//                                   calls onDone
+//   actors.parallelEach(lo, hi, piece, data)
 //                                   what a 'parallel each' runs through: the
 //                                   same with a grain chosen for the workers (at least 128),
 //                                   the pieces' sends sent after the loop in
-//                                   iteration order
+//                                   iteration order. The compiler's code calls it
+//                                   with a function reference and a record
 //
 // The five before Awaitable are what an actor's own code calls, and the compiler
 // generates that code from the 'actor' declaration
@@ -381,15 +384,15 @@
 // with a flood of messages cannot keep a worker from the others.
 //
 // PARALLEL LOOPS share these workers (parallel.cone has the whole account).
-// 'parallelRange(lo, hi, grain, body, data)' runs a function over an index
+// 'parallelRange(lo, hi, grain, body)' runs a callable over an index
 // range, split on demand: the range starts as one task, whoever runs a task
 // splits it in half while it is longer than grain and puts one half on top of
 // its worker's deque of tasks, which sits beside the ring of actors and is
 // taken before it, and an idle worker steals the oldest, largest half, tasks
 // before actors. Called from a behaviour, the worker runs tasks until the
 // loop is done, and its actor is not run again before that. It is the
-// low-level form: it trusts its caller that the body writes only its own
-// items and never waits. The language's 'parallel each' written directly in a
+// low-level form: beyond the check that the body is Shareable, it trusts its
+// caller that the body writes only its own items and never waits. The language's 'parallel each' written directly in a
 // behaviour does not wait: the behaviour is cut at the loop's end like an
 // 'await' (parSeam, parBlock: called by the compiler's code), the loop begins
 // when the behaviour has returned, the actor is neither queued nor marked idle
@@ -1115,38 +1118,32 @@ pub fn recordFree(record *u8) {
 
 // What an 'await' in a behaviour may wait for besides another actor's reply:
 // an operation started at the seam, an I/O operation above all (the aio
-// package), whose one answer is an R. Its maker erases its type: 'ctx' is the
-// maker's, and two functions made for it take it -- 'start', at the seam,
-// with the envelope of the reply the answer goes back in, written as
-// answerNow writes a behaviour's value; or 'drop', when the Awaitable dies
-// unawaited. The compiler generates the seam's call (startAwait). R is in no
-// field: it is the type the 'await' gives, which the maker's start promises
-// to write
+// package), whose one answer is an R. Its maker erases its type: the operation
+// is a closure the maker wrote, an owner of a 'fn(rp Reply)' holding what the
+// operation needs. The seam calls it, once, with the envelope of the reply the
+// answer goes back in, written as answerNow writes a behaviour's value; and an
+// Awaitable that dies unawaited finalizes the closure and what it holds, which
+// is how the maker learns that nothing will start it. A closure that has handed
+// what it holds on when it is called leaves nothing for that finalizing to do.
+// The compiler generates the seam's call (startAwait). R is in no field: it is
+// the type the 'await' gives, which the closure promises to write
 pub struct Awaitable[R] is Move {
-  ctx *u8;
-  start &fn(ctx *u8, rp Reply);
-  drop &fn(ctx *u8);
+  start So[fn(rp Reply)];
 
-  pub fn make(ctx *u8, start &fn(ctx *u8, rp Reply), drop &fn(ctx *u8)) Awaitable[R] {
-    new Awaitable[R](ctx, start, drop);
-  }
-
-  fn final(self &uni) {
-    if ctx as usize != 0usize {
-      imm f = drop;
-      f(ctx);
-    }
+  // An operation from the closure that starts it (a closure literal, or any
+  // callable of that signature)
+  pub fn make[F fn(rp Reply)](start F) Awaitable[R] {
+    new Awaitable[R](new So[fn(rp Reply)](start));
   }
 }
 
 // The seam starts what it awaits: 'a' is where the Awaitable lies, moved there
-// by the generated code, which finalizes nothing of it, and its ctx is start's
-// from now on. Every Awaitable[R] is laid out alike, whatever its R
+// by the generated code, which finalizes nothing of it, so the closure is moved
+// out here, called, and finalized when the call has returned. Every
+// Awaitable[R] is laid out alike, whatever its R
 pub fn startAwait(a *u8, rp Reply) {
-  imm aw = a as *Awaitable[u8];
-  imm x = (*aw).ctx;
-  imm f = (*aw).start;
-  f(x, rp);
+  mut aw = mem.readRaw[Awaitable[u8]](a as *Awaitable[u8]);
+  aw.start(rp);
 }
 
 // ---------------------------------------------------------------------------
@@ -1213,7 +1210,7 @@ struct Sched {
   pub threads *thread.Thread[u32];
   pub extTasks TaskDeque;      // the pieces of a loop begun off the workers (parallel.cone)
   pub stealRot u32;            // where the next steal of a piece starts looking (atomic)
-  pub taskSteals u64;          // pieces taken from another queue (atomic, Relaxed)
+  pub taskSteals u64;          // pieces stealTask took (atomic, Relaxed): the oldest of another worker's deque, or of the shared one when a worker idle of actors or a thread waiting on a loop looks there; not what a worker takes from the shared deque ahead of its actors
   pub liveScheduled u64;       // loops begun with parallelRangeThen not yet finished (atomic)
 }
 
@@ -1652,7 +1649,7 @@ pub struct Stats {
   pub messages u64;            // messages handled
   pub activations u64;         // turns: an actor taken from a queue and run
   pub steals u64;              // times a worker took actors from another's queue
-  pub taskSteals u64;          // loop pieces taken from another queue (parallelRange)
+  pub taskSteals u64;          // loop pieces taken by stealing: from another worker's deque, or from the shared deque (loops begun off the workers) when a worker with no actors to run, or a thread waiting on a loop, takes the oldest piece there (the caller's own loop's, if it began it off the workers); the shared deque's pieces a worker takes ahead of its actors are not counted
 }
 
 // What configure set, read when the workers start

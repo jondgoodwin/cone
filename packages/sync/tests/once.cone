@@ -112,5 +112,29 @@ fn main() i32 {
   p.callOnceWith(new Counted(4u64), &addCounted);
   expectUInt(value, 8u64, "the second call ran nothing");
   expectUInt(u64.from(deaths), 2u64, "and dropped its value unused");
+
+  // A closure is run the same way: it changes a variable it borrows, and a
+  // second call on the same Once runs nothing
+  imm q = Once.make();
+  mut hits = 0u64;
+  imm step = 7u64;
+  q.callOnce(fn() { hits = hits + step; });
+  q.callOnce(fn() { hits = hits + step; });
+  expectUInt(hits, 7u64, "a closure changed what it borrowed, once");
+
+  // callOnceWith hands a closure its value; the closure keeps its own state
+  imm r = Once.make();
+  mut seen = 0u64;
+  r.callOnceWith(9u64, fn(a u64) [bonus = 100u64] { seen = a + bonus; });
+  r.callOnceWith(1u64, fn(a u64) [bonus = 100u64] { seen = a + bonus; });
+  expectUInt(seen, 109u64, "callOnceWith handed a closure the value and its own state");
+
+  // A closure held in a variable is lent as a reference
+  imm s = Once.make();
+  mut count = 0u64;
+  mut bump = fn() { count = count + 1u64; };
+  s.callOnce(&mut bump);
+  s.callOnce(&mut bump);
+  expectUInt(count, 1u64, "a closure held in a variable, lent as a reference");
   done();
 }

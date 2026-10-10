@@ -1,14 +1,14 @@
 // The hook target: an answer handed to another runtime's code, which the
-// loop knows nothing of. A Sink is that runtime's pointer and two functions
-// made for it, and the loop calls 'deliver' with the answer, on its own
-// thread, once.
+// loop knows nothing of. A Sink is a closure of that runtime's own, holding what
+// it needs, and the loop calls it with the answer, on its own thread, once.
 //
-// 1. A timer and an external operation answered to hooks: each deliver is
-//    handed its own pointer, and the answer with its token, its outcome and
+// 1. A timer and an external operation answered to hooks: each closure holds
+//    its own pointer, and is handed the answer with its token, its outcome and
 //    its buffer; nothing comes to poll's own list.
 // 2. A loop that dies with a timer still to fire delivers its answer,
 //    Cancelled, to the hook, as it does to every target owed elsewhere.
-// 3. A Sink that dies without delivering calls 'drop' instead, once.
+// 3. A Sink that dies without delivering finalizes its closure, and what the
+//    closure holds dies with it (here a guard whose death counts a drop), once.
 
 mod hook;
 
@@ -31,22 +31,32 @@ struct Seen {
 
 fn seen() Seen {new Seen(0u64, 0u64, 0u64, 99u32, 0usize, 0usize);}
 
-fn deliverTo(ctx *u8, c Completion) {
-  imm s = ctx as *Seen;
-  (*s).delivered = (*s).delivered + 1u64;
-  (*s).token = c.token;
-  (*s).status = c.status;
-  (*s).n = c.n;
-  (*s).bufcap = c.buf.capacity();
-}
+// What a hook's closure holds besides the place it writes: a value whose death,
+// if the closure never delivered, counts a drop (the way a runtime learns that
+// no answer is coming)
+struct Guard is Sendable, Move {
+  pub s *Seen;
+  pub armed bool;
 
-fn droppedAt(ctx *u8) {
-  imm s = ctx as *Seen;
-  (*s).dropped = (*s).dropped + 1u64;
+  fn final(self &uni) {
+    if armed {
+      (*s).dropped = (*s).dropped + 1u64;
+    }
+  }
 }
 
 fn hookOf(s &mut Seen, token u64) Target {
-  Target.Hook[token, Sink.make(s as *Seen as *u8, &deliverTo, &droppedAt)];
+  imm place = s as *Seen;
+  Target.Hook[token, Sink.make(new So[fn(c Completion) + Sendable](
+    fn(c Completion) [mut guard = new Guard(place, true)] {
+      guard.armed = false;
+      imm p = guard.s;
+      (*p).delivered = (*p).delivered + 1u64;
+      (*p).token = c.token;
+      (*p).status = c.status;
+      (*p).n = c.n;
+      (*p).bufcap = c.buf.capacity();
+    }))];
 }
 
 fn main() i32 {

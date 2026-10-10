@@ -11,15 +11,12 @@ import testing use *;
 import libc;
 import actors;
 
-struct Squares {
-  pub out *u64;
-}
-
-fn bodySquares(data *u8, lo usize, hi usize) {
-  imm s = data as *Squares;
+// The loop's body is a closure that lists the pointer it writes through: its
+// own copy of the address, so it borrows nothing and is Shareable
+fn bodySquares(out *u64, lo usize, hi usize) {
   mut i = lo;
   while i < hi {
-    *((*s).out + i) = u64.from(i) * u64.from(i);
+    *(out + i) = u64.from(i) * u64.from(i);
     i = i + 1usize;
   }
 }
@@ -39,13 +36,12 @@ fn main() i32 {
   initAll();
   imm n = 100000usize;
   imm out = libc.calloc(n, 8usize) as *u64;
-  mut s = new Squares(out);
 
-  actors.parallelRange(0usize, 50usize, 64usize, &bodySquares, &mut s as *Squares as *u8);
+  actors.parallelRange(0usize, 50usize, 64usize, fn(lo usize, hi usize) [out] { bodySquares(out, lo, hi); });
   expectUInt(u64.from(actors.stats().workers), 0u64, "a range within the grain starts no workers");
   expect(allSquares(out, 50usize), "its items are written");
 
-  actors.parallelRange(0usize, n, 64usize, &bodySquares, &mut s as *Squares as *u8);
+  actors.parallelRange(0usize, n, 64usize, fn(lo usize, hi usize) [out] { bodySquares(out, lo, hi); });
   expect(actors.stats().workers > 0u32, "a longer range started the workers");
   expect(allSquares(out, n), "every item of the longer range is written");
   expectUInt(u64.from(actors.workerIndex()), u64.from(actors.noWorker), "main is still no worker");
