@@ -584,6 +584,16 @@ int slitMatches(INode *node, INode *totypedcl) {
         || slitFromLiteralFn(totypedcl) != NULL;
 }
 
+// A string literal made into a 'cstr' (by itself or lent as a temporary one): C
+// reads up to the first NUL, so a NUL inside the literal would cut the text
+// short and silently. Reported where it is known, at the literal. The
+// conversion still goes ahead, so nothing else is said about the value.
+static void slitCStrCheck(SLitNode *lit, INode *totypedcl) {
+    if (totypedcl == (INode*)cstrTypeDcl && lit->strlen > 0 && memchr(lit->strlit, 0, lit->strlen))
+        errorMsgNode((INode*)lit, ErrorCStrNul,
+            "A string literal holding a NUL byte cannot be a cstr: C reads a string up to its first NUL, so it would see only the text before it. Pass the text another way, as a &str or a String.");
+}
+
 // Coerce a string literal to a byte array it fills or an owner of 'str' it is
 // copied into [Jon 6 Oct: "Implicit copy is better."]. The copy is the
 // allocation 'new So[str](lit)' builds, region and permission as the wanted
@@ -601,6 +611,7 @@ int slitCoerce(INode **nodep, INode *totypedcl) {
     // A type that declares 'fromLiteral' is made by calling it on the literal
     FnDclNode *fromlit = slitFromLiteralFn(totypedcl);
     if (fromlit) {
+        slitCStrCheck(lit, totypedcl);
         fnCallDemandCandidates((INode*)fromlit);
         FnCallNode *call = newFnCallLower((INode*)lit, (INode*)newNameUseFromDclNode((INode*)fromlit, (INode*)lit), 1);
         nodesAdd(&call->args, (INode*)lit);
@@ -701,6 +712,7 @@ int slitBorrowRefused(INode *node, INode *totypedcl) {
 int slitBorrowCoerce(TypeCheckState *pstate, INode **nodep, INode *totype) {
     INode *totypedcl = itypeGetTypeDcl(totype);
     SLitNode *lit = (SLitNode*)*nodep;
+    slitCStrCheck(lit, slitBorrowTarget(*nodep, totypedcl));
     FnDclNode *fromlit = slitFromLiteralFn(slitBorrowTarget(*nodep, totypedcl));
     fnCallDemandCandidates((INode*)fromlit);
     FnCallNode *call = newFnCallLower((INode*)lit, (INode*)newNameUseFromDclNode((INode*)fromlit, (INode*)lit), 1);

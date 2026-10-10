@@ -393,6 +393,26 @@ static int pathGpuChoices = 0;  // a reference chosen at run time is refused: a 
 static PathSet *pwRetFirst = NULL;  // on a GPU target, what the first 'return' walked carries
 static int pwRetSeen = 0;
 
+// Where a lock's guard gives its lock back: a point after a statement, or at
+// the start of a block, with no use of the guard's borrow after it on any path
+// (pwLockPoint). Each is a candidate until a use of a holder of the borrow
+// fires its live mark (flowloan.h, loanLockLive); at the walk's end the
+// candidates never fired are made statements of their blocks (pwLockApply)
+typedef struct {
+    BlockNode *blk;
+    INode *site;        // the statement it follows, or the block itself for its start
+    VarDclNode *guard;
+    uint32_t mark;      // its live mark
+    uint8_t start;      // the start of the block
+} LockPoint;
+
+static LockPoint *lockpts = NULL;
+static uint32_t nlockpts = 0;
+static uint32_t lockptcap = 0;
+static int pwSawGuard = 0;      // a lock's guard has been declared in this function
+static int pwQuiet = 0;         // inside a block whose statements give no lock back early
+static int pwArm = 0;           // the block about to be walked is an arm of an 'if'
+
 // -V 2 tallies
 static uint32_t statFns = 0;
 static uint32_t statLoanFns = 0;
@@ -624,6 +644,8 @@ static PathSet *pwBlock(BlockNode *blk, int fnblock, int move);
 static PathSet *pwLend(INode *site, Place *pl, INode *perm, int access, uint32_t *loan);
 static void pwHolderDies(uint32_t var);
 static PathSet *pwPlaceSlots(Place *pl, PathSet *holds);
+static int pwIsGuard(VarDclNode *var);
+static void pwLockPoint(BlockNode *blk, INode *site, int kind);
 
 // The indexes of places holding a seam in an index (awaitChainLevels), whose
 // arguments were walked first, in the order generation makes them (genlPlacePre):
@@ -2049,6 +2071,8 @@ static void pwVarDcl(VarDclNode *var) {
     if (ndecls == declcap)
         decls = (uint32_t *)pathGrow(decls, &declcap, sizeof(uint32_t));
     decls[ndecls++] = index;
+    if (var->namesym == tempLocalName && pwIsGuard(var))
+        pwSawGuard = 1;
     // It holds nothing until its value is stored, again on each pass of a loop
     if (pathVars[index].tracked)
         pathSetState(index, DropUninit);
@@ -2236,6 +2260,10 @@ static PathSet *pwStmts(BlockNode *blk, int move) {
             ntemps = tempmark;
         else if (!keeptemps || cnt == 1)
             pwTempsEnd(tempmark, NULL);
+        // A lock's guard may give its lock back here
+        if (pwSawGuard && !dead && !pwQuiet && !keeptemps && (*nodesp)->tag != BlockRetTag
+            && (*nodesp)->tag != DropFlagTag)
+            pwLockPoint(blk, *nodesp, 0);
     }
     return value;
 }
@@ -2288,8 +2316,129 @@ static PathSet *pwBlockExits(PathFrame *frame, PathSet *value, int fallthrough) 
 // The parameters of the function being walked: variables of its block
 static Nodes *pwParms = NULL;
 
+// *********************
+// A lock's guard gives its lock back at the last use of its borrow
+//
+// A borrow through a lock permission reads through a hidden local of the
+// block, its guard, which holds the lock. The borrow is the only way to the
+// value the lock guards, so once nothing holding it is used again the lock
+// protects nothing, and goes back there: after the statement holding the
+// borrow's last use on each path, or where a branch that never uses it
+// begins. The guard's drop flag (VarSeamHeld, as a seam's gives one) says it
+// has, for the scope's end that every path still reaches.
+//
+// The last use is found forward, as a frozen borrow's is. At each point a
+// guard might give its lock back -- after each statement, and at the start of
+// an arm of an 'if' -- every holder of a loan rooted at the guard is given a
+// live mark for that point, which its next use fires (loanUse). A point
+// whose mark is never fired is one no use of the borrow follows on any path:
+// the walk's end makes it a release (pwLockApply). The marks live in the
+// holders' facts, so they join where paths do and go round a loop until it
+// settles, and a holder's death or reassignment drops them.
+// *********************
+
+static void pwLockPoint(BlockNode *blk, INode *site, int kind) {
+    for (uint32_t k = ndecls; k > 0; --k) {
+        uint32_t gi = decls[k - 1];
+        PathVar *gv = &pathVars[gi];
+        if (gv->initing || gv->temp || gv->var->namesym != tempLocalName || !pwIsGuard(gv->var))
+            continue;
+        // A borrow carried by a value still being made, or by the stand-in of
+        // a temporary some enclosing statement made, is used after this point
+        // without a name to fire a mark: the lock stays
+        int carried = loanFlightRootedAt(gi);
+        for (uint32_t t = 0; t < ntemps && !carried; ++t)
+            carried = loanSetRootedAt(pathVars[temps[t]].holds, gi);
+        if (carried)
+            continue;
+        uint32_t mark = 0;
+        for (uint32_t pass = 0; pass < 2; ++pass) {
+            uint32_t n = pass == 0 ? 0 : ndecls;
+            INode **nodesp = NULL;
+            uint32_t cnt = 0;
+            if (pass == 0 && !pathDrops && pwParms)
+                nodesp = nodesNodes(pwParms), cnt = pwParms->used;
+            for (uint32_t i = 0; pass == 0 ? i < cnt : i < n; ++i) {
+                uint32_t h = pass == 0 ? pathVar((VarDclNode *)nodesp[i]) : decls[i];
+                PathVar *hv = &pathVars[h];
+                if (!hv->holder || hv->temp || h == gi || !loanSetRootedAt(hv->holds, gi))
+                    continue;
+                if (mark == 0)
+                    mark = loanLockLive(site, kind, gi);
+                if (!pathSetHas(hv->pending, mark) && !loanLockStillLive(mark))
+                    pathSetFacts(h, hv->holds, pathSetAdd(hv->pending, mark));
+            }
+        }
+        if (mark == 0)
+            continue;
+        uint32_t i;
+        for (i = 0; i < nlockpts; ++i) {
+            if (lockpts[i].mark == mark)
+                break;
+        }
+        if (i < nlockpts)
+            continue;
+        if (nlockpts == lockptcap)
+            lockpts = (LockPoint *)pathGrow(lockpts, &lockptcap, sizeof(LockPoint));
+        lockpts[nlockpts].blk = blk;
+        lockpts[nlockpts].site = site;
+        lockpts[nlockpts].guard = gv->var;
+        lockpts[nlockpts].mark = mark;
+        lockpts[nlockpts].start = (uint8_t)kind;
+        ++nlockpts;
+    }
+}
+
+// Where a point stands among its block's statements: the index of the
+// statement it follows, or -1 for the start of the block, or -2 for neither
+static int pwLockPos(LockPoint *pt) {
+    if (pt->start)
+        return -1;
+    Nodes *stmts = pt->blk->stmts;
+    for (uint32_t i = 0; i < stmts->used; ++i) {
+        if (nodesGet(stmts, i) == pt->site)
+            return (int)i;
+    }
+    return -2;
+}
+
+// The points never fired become statements giving the lock back. In one block
+// the first of a guard's covers the rest after it, which every path reaches
+// through it
+static void pwLockApply() {
+    for (uint32_t i = 0; i < nlockpts; ++i) {
+        LockPoint *pt = &lockpts[i];
+        if (loanLockStillLive(pt->mark))
+            continue;
+        int pos = pwLockPos(pt);
+        if (pos == -2)
+            continue;
+        int covered = 0;
+        for (uint32_t j = 0; j < nlockpts && !covered; ++j) {
+            LockPoint *other = &lockpts[j];
+            if (j == i || other->blk != pt->blk || other->guard != pt->guard || loanLockStillLive(other->mark))
+                continue;
+            int opos = pwLockPos(other);
+            covered = opos < pos || (opos == pos && j < i);
+        }
+        if (covered)
+            continue;
+        // An earlier walk of this function left it already
+        Nodes *stmts = pt->blk->stmts;
+        INode *next = (uint32_t)(pos + 1) < stmts->used ? nodesGet(stmts, pos + 1) : NULL;
+        if (next && next->tag == DropFlagTag && (next->flags & FlagLockGive) && ((DropFlagNode *)next)->var == pt->guard)
+            continue;
+        nodesInsert(&pt->blk->stmts, flowLockGive(pt->guard, pt->site), (size_t)(pos + 1));
+        pt->guard->flowtempflags |= VarSeamHeld;
+    }
+}
 static PathSet *pwBlock(BlockNode *blk, int fnblock, int move) {
     uint32_t f = nframes;
+    int arm = pwArm;
+    pwArm = 0;
+    // A parallel each's statements are an outlined function's, an operator's
+    // rewrite's one statement: neither gives a lock back in the middle
+    int quiet = (blk->flags & (FlagParallel | FlagKeepTemps)) != 0;
     pwFramePush(blk);
     if (fnblock && pathDrops) {
         INode **nodesp;
@@ -2303,7 +2452,13 @@ static PathSet *pwBlock(BlockNode *blk, int fnblock, int move) {
                 pathSetState(index, DropWhole);
         }
     }
+    pwQuiet += quiet;
+    // An arm of an 'if' that uses a borrow no more than the 'if' before it did
+    // gives its lock back as it begins
+    if (arm && pwSawGuard && !pwQuiet && !fnblock)
+        pwLockPoint(blk, (INode *)blk, 1);
     PathSet *value = pwStmts(blk, move);
+    pwQuiet -= quiet;
     if (!dead && !fnblock)
         pwScopeEndHanding(frames[f].declstart, move ? value : NULL);
     int fallthrough = !dead;
@@ -2322,13 +2477,16 @@ static PathSet *pwLoop(BlockNode *blk) {
     pwFramePush(blk);
     ++statLoops;
     uint32_t walks = 0;
+    int quiet = (blk->flags & (FlagParallel | FlagKeepTemps)) != 0;
     while (1) {
         PathFrame *frame = &frames[f];
         frame->mark = nlog;
         frame->exits = NULL;
         frame->loops = NULL;
         ++walks;
+        pwQuiet += quiet;
         pwStmts(blk, 0);
+        pwQuiet -= quiet;
         frame = &frames[f];
         if (!dead) {
             pwScopeEnd(frame->declstart);
@@ -2394,6 +2552,7 @@ static PathSet *pwIf(IfNode *ifnode, int move) {
         }
         nodesp++; cnt--;
         uint32_t condmark = nlog;
+        pwArm = 1;
         PathSet *armval = pwBlock((BlockNode *)*nodesp, 0, move);
         if (!dead) {
             paths = pathDeltaPush(paths, pathDelta(mark, armval));
@@ -2768,6 +2927,8 @@ static PathSet *pwValue(INode **nodep, int move) {
         return ((HollowNode *)node)->exp ? pwValue(&((HollowNode *)node)->exp, move) : NULL;
     case TempTag:
         return pwValue(&((TempNode *)node)->exp, move);
+    case DropFlagTag:       // a lock given back, which an earlier walk of the function made
+        return NULL;
     case AwaitTag:
         return pwSeam((AwaitNode *)node, move);
     case YieldTag:
@@ -2853,6 +3014,10 @@ void flowPathWalk(FnDclNode *fndcl, int loans, int drops, int seams) {
     ntemps = 0;
     nframes = 0;
     dead = 0;
+    pwSawGuard = 0;
+    pwQuiet = 0;
+    pwArm = 0;
+    nlockpts = 0;
 
     // The parameters are variables of the function's block; what a caller lent
     // through one is the caller's to freeze, and outlives the call: each holds
@@ -2870,6 +3035,8 @@ void flowPathWalk(FnDclNode *fndcl, int loans, int drops, int seams) {
     pwBlock((BlockNode *)fndcl->value, 1, 1);
     if (drops)
         dropWalkEnd(errors == errorsOnEntry);
+    if (nlockpts && errors == errorsOnEntry)
+        pwLockApply();
 
     // A variable's index is the walk's own
     for (uint32_t i = 1; i < nvars; ++i)

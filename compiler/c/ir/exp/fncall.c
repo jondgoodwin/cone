@@ -999,7 +999,12 @@ static FnDclNode *fnCallBorrowReceiver(TypeCheckState *pstate, FnCallNode *calln
         enum OverloadMatch *status) {
     INode *obj = callnode->objfn;
     INode *objtype = iexpGetTypeDcl(obj);
-    if (fnCallIsRefReceiver(objtype) || objtype->tag == PtrTag || !(isMethodType(objtype) || objtype->tag == ArrayTag))
+    // A reference is passed as it is, but for an owner (not a borrow) of the type: a
+    // method declaring 'self &So[str]' (fnDclTypeCheck) takes the borrow of the owner
+    INode *ownerof = objtype->tag == RefTag && itypeGetTypeDcl(((RefNode*)objtype)->region) != borrowRef
+        ? itypeGetTypeDcl(((RefNode*)objtype)->vtexp) : NULL;
+    if (ownerof ? !isMethodType(ownerof)
+        : (fnCallIsRefReceiver(objtype) || objtype->tag == PtrTag || !(isMethodType(objtype) || objtype->tag == ArrayTag)))
         return NULL;
     // '(*p).push(x)' written on a pointer is the pointer's own business: the
     // borrow would be '&mut *p', a reference made from a pointer
@@ -3623,6 +3628,8 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     }
 
     // Dispatch for correct handling based on the type of the object
+    int ownerread = 0;
+dispatch:
     switch (objtype->tag) {
     // Pure function call
     case FnSigTag:
@@ -3722,6 +3729,16 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
                     fnCallLowerPtrMethod(node, ptrType);
                 else if (objdereftype->tag == ArrayTag && fnCallLowerSliceMethod(pstate, node))
                     ;
+                // A borrow of an owner ('self &So[Node]', a method's receiver form) is
+                // read through to the owner, whose value's fields and methods these are
+                else if (!ownerread && objdereftype->tag == RefTag
+                    && itypeGetTypeDcl(((RefNode*)objdereftype)->region) != borrowRef
+                    && isMethodType(itypeGetTypeDcl(((RefNode*)objdereftype)->vtexp))) {
+                    derefInject(&node->objfn);
+                    objtype = iexpGetTypeDcl(node->objfn);
+                    ownerread = 1;
+                    goto dispatch;
+                }
                 else
                     errorMsgNode((INode*)node, ErrorNoMeth, "Invalid operation on a reference.");
             }
