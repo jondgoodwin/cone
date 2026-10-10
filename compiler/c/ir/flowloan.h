@@ -196,6 +196,12 @@ int loanIsGenOwn(uint32_t loan);
 uint32_t loanGenOwnIn(PathSet *set);
 uint32_t loanYieldPending(INode *seam, uint32_t loan, uint32_t holder);
 
+// The stand-in for the caller of a generator (flowpath.c, pwYield): what a
+// 'yield' hands out it holds from there to the end of the body, since the caller
+// may keep the value as long as the generator lives. An access or a call that
+// conflicts with what it holds is reported where it is made, not at a later use
+void loanYieldHolder(uint32_t var);
+
 // The live mark of 'holder' at the seam 'seam': a pending entry that, fired by
 // the variable's next use, records it as used after the seam (pathSeamLive),
 // and reports nothing. Any variable may carry one, not only a holder.
