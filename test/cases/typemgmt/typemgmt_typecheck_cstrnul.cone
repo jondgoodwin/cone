@@ -1,0 +1,60 @@
+// A string literal that holds a NUL byte is refused where a cstr is wanted: C
+// reads a string up to its first NUL, so '"ab\x00cd"' would arrive as "ab" and
+// say nothing. Every place a literal becomes a cstr is checked once, at the
+// literal: an argument of a C binding and of a function of ours, a borrow of a
+// cstr, a local, a field and a return. A literal without a NUL is untouched
+// (typemgmt_cstr runs them), and so is the same text wherever a cstr is not
+// wanted: a &str, a String or an owner of text hold a NUL like any byte.
+//
+// Also here: 's.cstr()' is a method of an owner of text only. A plain &str may
+// be part of a longer text and promises no NUL after its bytes, so it has none.
+
+mod typemgmt_typecheck_cstrnul;
+
+import libc;
+
+fn want(c cstr) {
+}
+
+fn wantBorrow(c &cstr) {
+}
+
+fn withDefault(c cstr = "d\x00e") {                //~ ErrorCStrNul:25 "holding a NUL byte cannot be a cstr"
+}
+
+struct Holder {
+  c cstr;
+}
+
+fn give() cstr {
+  "x\x00y";                                         //~ ErrorCStrNul:3 "C reads a string up to its first NUL"
+}
+
+fn refused() {
+  withDefault();
+  libc.strlen("ab\x00cd");                          //~ ErrorCStrNul:15 "holding a NUL byte cannot be a cstr"
+  want("ab\x00cd");                                 //~ ErrorCStrNul:8 "holding a NUL byte cannot be a cstr"
+  want("\x00");                                     //~ ErrorCStrNul:8 "holding a NUL byte cannot be a cstr"
+  want("tail\x00");                                 //~ ErrorCStrNul:8 "holding a NUL byte cannot be a cstr"
+  wantBorrow("p\x00q");                             //~ ErrorCStrNul:14 "holding a NUL byte cannot be a cstr"
+  imm c cstr = "m\x00n";                            //~ ErrorCStrNul:16 "holding a NUL byte cannot be a cstr"
+  imm h = new Holder("h\x00i");                     //~ ErrorCStrNul:22 "holding a NUL byte cannot be a cstr"
+}
+
+// None of these is refused
+fn fine(t &str, o So[str]) {
+  libc.strlen("ab");
+  want("");
+  want("a literal");
+  wantBorrow("borrowed");
+  imm c cstr = "local";
+  imm s &str = "ab\x00cd";
+  imm owned So[str] = "ab\x00cd";
+  imm bytes &Array[u8] = "ab\x00cd";
+  want(cstr.fromPtr(&"ab\x00cd" as *u8));
+  want(o.cstr());
+}
+
+fn plain(t &str) {
+  imm c = t.cstr();                                 //~ ErrorNoCandidate:12 "No method declared by `cstr` accepts the call's arguments"
+}

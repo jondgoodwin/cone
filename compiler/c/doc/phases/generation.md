@@ -613,7 +613,13 @@ What follows from that:
   (`genlRegionDealiasPart`), both reaching it from the value pointer as a region
   method reaches the header ([references](../nodes/references.md), "Lock
   permissions"). A guard's type lays its permission out as the lock
-  (`genlType`'s `PermTag` arm), so its header is the lock-managed one's.
+  (`genlType`'s `PermTag` arm), so its header is the lock-managed one's. A
+  hidden local guard is released at its borrow's last use by a statement flow
+  put there (a `DropFlagNode` flagged `FlagLockGive`, `genlDealiasNode`): the
+  guard's release, run if its drop flag says it holds its value, and the flag
+  set empty, so the scope's end and every exit, which find the flag
+  (`VarSeamHeld`), release it only where that statement did not run
+  ([Flow](flow.md), "A lock's guard gives its lock back").
 - **An owning virtual reference is the fat `{ptr, ptr}` value, and its concrete
   type is read from the vtable's last slot.** `genlRefPtr`, at the entry of
   `genlRegionDealias` and `genlRegionAlias`, takes word 0, the object, so every

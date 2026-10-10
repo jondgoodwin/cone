@@ -48,7 +48,9 @@ fn main() {
   show("strlen hello", u64.from(libc.strlen("hello")));
   show("strlen empty", u64.from(libc.strlen("")));
   show("lengthOf core", lengthOf("core"));
-  show("C stops at a NUL", u64.from(libc.strlen("ab\x00cd")));
+  // A literal holding a NUL is refused as a cstr (typemgmt_typecheck_cstrnul); C's
+  // reading of such bytes is shown through a pointer, which is the caller's promise
+  show("C stops at a NUL", u64.from(libc.strlen(cstr.fromPtr(&"ab\x00cd" as *u8))));
   show("pick yes", u64.from(pick(true).len()));
   show("pick no", u64.from(pick(false).len()));
   imm c cstr = "core";
@@ -86,6 +88,15 @@ fn main() {
   show("So[str] len", u64.from(sobytes.len));
   show("So[str] NUL", u64.from((sobytes as *u8)[3usize]));
   show("So[str] as a cstr", u64.from(cstr.fromOwned(&so).len()));
+  // 's.cstr()' is the same C string as 'cstr.fromOwned(&s)', no copy: handed to C
+  // (strlen counts "abc" as 3, strcmp finds it equal to "abc" and not to "abd")
+  // and read back as text
+  show("So[str] cstr()", u64.from(libc.strlen(so.cstr())));
+  show("So[str] cstr() equal", if libc.strcmp(so.cstr(), "abc") == 0i32 { 1u64; } else { 0u64; });
+  show("So[str] cstr() differs", if libc.strcmp(so.cstr(), "abd") == 0i32 { 1u64; } else { 0u64; });
+  show("So[str] cstr() same pointer", if so.cstr().ptr() == cstr.fromOwned(&so).ptr() { 1u64; } else { 0u64; });
+  show("So[str] cstr() view", if so.cstr().view() == "abc" { 1u64; } else { 0u64; });
+  show("So[str] cstr() NUL", u64.from(so.cstr().ptr()[3usize]));
   dirtyTheHeap();
   imm shared Rc[str] = "wxyz";
   imm sharedbytes &Array[u8] = &*shared;

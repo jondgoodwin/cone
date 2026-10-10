@@ -1,0 +1,177 @@
+// A lock permission's borrow gives its lock back at its last use, in the shapes
+// a borrow is kept in, on one thread. An 'Rc[Rwcell, T]' panics where a thread
+// would wait, so each case takes a second borrow that may write while its first
+// is still in scope: had the first kept the lock to its block's end, the run
+// would end there, and every line below is printed only because it gave the
+// lock back. (The first borrow kept to a later use is the panic scenario's,
+// region_lockperm_rwcell_panic, and region_lockperm_release's two threads.)
+//
+// - plain: the first borrow is used once, the second is taken in the same block
+// - arms: the first is chosen by an 'if' (its guard is made in an arm)
+// - passed: the first is handed to a function, which is its last use
+// - derived: a field is borrowed from the first and kept in a local; the
+//   second borrow comes after that one's last use
+// - held: a struct holds the first; the second comes after the struct's last use
+// - copied: the first is copied to a second local and not used again
+// - looping: the first is used on every pass of a loop; the second comes after
+// - passes: a loop whose body takes both, on the passes that do
+// - leaving: the first is dead on the path that returns, and on the one that
+//   goes on, a second borrow follows its last use
+//
+// Each case sets x to 0, adds 1 through the first borrow and 10 through the
+// second (the loops as their comments say), then reads x through a third:
+//   plain 11, arms 11 and 11, passed 11, derived 11, held 11, copied 11,
+//   looping 13 (the first adds 3), passes 22 (passes 0 and 2 add 11, pass 1
+//   takes no borrow), then 'left' 10 (leaving returned after its second
+//   borrow added 10) and leaving 11.
+
+mod region_lockperm_release_rwcell;
+
+import stdio use *;
+
+struct Point {
+  pub x i32;
+  pub y i32;
+}
+alias Cell = Rc[Rwcell, Point];
+
+struct Hold {
+  pub p &mut Point;
+}
+
+fn bump(p &mut Point, amount i32) {
+  p.x += amount;
+}
+
+fn field(p &mut Point) &mut i32 {
+  &mut p.x;
+}
+
+fn reset(p Cell) {
+  (&mut *p).x = 0;
+}
+
+fn show(what &str, p Cell) {
+  printStr(what);
+  printStr(" ");
+  imm r = &*p;
+  printInt(i64.from(r.x));
+  printStr("\n");
+}
+
+fn plain(p Cell) {
+  reset(p);
+  imm a = &mut *p;
+  a.x += 1;
+  imm b = &mut *p;
+  b.x += 10;
+  show("plain", p);
+}
+
+fn arms(p Cell, c bool) {
+  reset(p);
+  imm a = if c { &mut *p; } else { &mut *p; };
+  a.x += 1;
+  imm b = &mut *p;
+  b.x += 10;
+  show("arms", p);
+}
+
+fn passed(p Cell) {
+  reset(p);
+  imm a = &mut *p;
+  bump(a, 1);
+  imm b = &mut *p;
+  b.x += 10;
+  show("passed", p);
+}
+
+fn derived(p Cell) {
+  reset(p);
+  imm a = &mut *p;
+  imm q = field(a);
+  *q += 1;
+  imm b = &mut *p;
+  b.x += 10;
+  show("derived", p);
+}
+
+fn held(p Cell) {
+  reset(p);
+  imm a = &mut *p;
+  imm h = new Hold(a);
+  h.p.x += 1;
+  imm b = &mut *p;
+  b.x += 10;
+  show("held", p);
+}
+
+fn copied(p Cell) {
+  reset(p);
+  imm a = &mut *p;
+  imm c = a;
+  c.x += 1;
+  imm b = &mut *p;
+  b.x += 10;
+  show("copied", p);
+}
+
+fn looping(p Cell) {
+  reset(p);
+  imm a = &mut *p;
+  mut i = 0;
+  while i < 3 {
+    a.x += 1;
+    i += 1;
+  }
+  imm b = &mut *p;
+  b.x += 10;
+  show("looping", p);
+}
+
+fn passes(p Cell) {
+  reset(p);
+  mut i = 0;
+  while i < 3 {
+    if i == 1 {
+      i += 1;
+      continue;
+    }
+    imm a = &mut *p;
+    a.x += 1;
+    imm b = &mut *p;
+    b.x += 10;
+    i += 1;
+  }
+  show("passes", p);
+}
+
+fn leaving(p Cell, stop bool) {
+  reset(p);
+  imm a = &mut *p;
+  if stop {
+    imm b = &mut *p;
+    b.x += 10;
+    return;
+  }
+  a.x += 1;
+  imm c = &mut *p;
+  c.x += 10;
+  show("leaving", p);
+}
+
+fn main() {
+  imm p = new Cell(0, 0);
+  plain(p);
+  arms(p, true);
+  arms(p, false);
+  passed(p);
+  derived(p);
+  held(p);
+  copied(p);
+  looping(p);
+  passes(p);
+  leaving(p, true);
+  show("left", p);
+  leaving(p, false);
+}

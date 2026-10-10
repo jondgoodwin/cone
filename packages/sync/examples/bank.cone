@@ -26,10 +26,11 @@
 //   it, 'bank.total()': the compiler refuses both, since only a borrow takes
 //   the lock.
 // - Keep a borrow past its statement: 'mut b = &mut *bank;' in a teller's
-//   loop holds the lock to the end of each pass, and 'imm b = &mut *bank;'
-//   before the loop holds it until the teller returns, the other tellers
-//   waiting meanwhile. Two such borrows on one thread wait for each other
-//   forever: Cone does not prevent a deadlock.
+//   loop holds the lock to the borrow's last use in each pass, and
+//   'imm b = &mut *bank;' before the loop, used in it, holds it until the
+//   loop's last use, the other tellers waiting meanwhile. Two such borrows on
+//   one thread, the first still to be used, wait for each other forever:
+//   Cone does not prevent a deadlock.
 // - Change 'Arc[Mutex, Bank]' to 'Rc[Mutex, Bank]': refused, since an Rc's
 //   owners stay on one thread. 'Rc[Rwcell, Bank]' is the one-thread lock,
 //   whose conflicting borrow panics rather than waits.
@@ -77,8 +78,8 @@ fn work(t Teller) i32 {
     else {
       imm b = &mut *t.bank;                          // one borrow, the lock held
       b.accounts[from] -= amount;                    // across both changes
-      b.accounts[to] += amount;
-    }                                                // and given back here
+      b.accounts[to] += amount;                      // and given back after the last
+    }
     if (&*t.bank).total() != 40000 {
       wrong += 1;
     }
