@@ -667,16 +667,30 @@ static void parseVariantTagPin(StructNode *substruct) {
     lexNextToken();
 }
 
-// Is this name spelled as a variant's is, with a capital? Types and variants are
-// capitalised and fields are not, which is what tells 'Ok i32;' (a variant
-// holding an i32) from 'time datetime;' (a field every variant has).
-static int parseIsVariantSpelling(Name *name) {
-    char first = (&name->namestr)[0];
-    return first >= 'A' && first <= 'Z';
+// With the lexer on the '(' after a name in an enum's body: does the
+// parenthesized text hold a comma at its top level? 'Ok(i32);' does not, and is
+// a variant declared as a type; 't (A, B);' does, and is a common field whose
+// type is a tuple, as it has always been. Read from the source text, because
+// which of the two to build is settled before the type is.
+static int parseParenHoldsComma() {
+    int depth = 0;
+    for (char *p = lex->tokp; *p; ++p) {
+        if (*p == '(' || *p == '[' || *p == '{')
+            ++depth;
+        else if (*p == ')' || *p == ']' || *p == '}') {
+            if (--depth <= 0)
+                return 0;
+        }
+        else if (*p == ',' && depth == 1)
+            return 1;
+        else if (*p == ';')
+            return 0;
+    }
+    return 0;
 }
 
 // An enum with fields in common has a name for everything it holds, so no
-// variant of it is declared as a type, which has none ('Ok i32;'). Reported at the
+// variant of it is declared as a type, which has none ('Ok(i32);'). Reported at the
 // first such variant, naming the first common field.
 static void parseCheckTypeVariants(StructNode *strnode) {
     FieldDclNode *common = NULL;
@@ -1183,12 +1197,14 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                     continue;
                 }
 
-                // In an enum, a capitalised name and a type, 'Ok i32;', is a
+                // In an enum, a name and a type in parentheses, 'Ok(i32);', is a
                 // variant declared as a type: a variant that holds that type
-                // itself, with no name for it and no field to reach it by. The
-                // capital is what tells it from a common field ('time datetime;'),
-                // which is written the same way and spelled as a field is.
-                if (isenum && !hadperm && parseIsVariantSpelling(field->namesym)) {
+                // itself, with no name for it and no field to reach it by. A name
+                // and a type without parentheses is always a common field
+                // ('time datetime;'), and so is one whose parentheses are a tuple
+                // type ('t (A, B);').
+                if (isenum && !hadperm && lexIsToken(LParenToken) && !parseParenHoldsComma()) {
+                    lexNextToken();
                     strnode->flags |= HasTagField;
                     StructNode *substruct = newStructNode(field->namesym);
                     inodeLexCopy((INode*)substruct, (INode*)field);  // the name's position
@@ -1202,8 +1218,9 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                     contents->flags |= FlagMethFld | FlagPub;
                     StructNode *svlifestruct = parse->lifestruct;
                     parse->lifestruct = lifeowner;
-                    contents->vtype = parseType(parse);
+                    contents->vtype = parseTypeReq(parse, "'(' of a variant");
                     parse->lifestruct = svlifestruct;
+                    parseCloseTok(RParenToken);
                     structAddField(substruct, contents);
                     parseVariantTagPin(substruct);
                     parseAddVariant(parse, strnode, substruct, &priortag);

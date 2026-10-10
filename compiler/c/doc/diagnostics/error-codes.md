@@ -113,7 +113,7 @@ struct enrichment wears for the same mistake. One question — is this
 relationship declared correctly — with the cause in the
 message.
 
-`ErrorTypeVariant` is a variant declared as a type (`Ok i32;`) used where it has
+`ErrorTypeVariant` is a variant declared as a type (`Ok(i32);`) used where it has
 nothing to give: written in an enum that has fields in common, whose variants all
 name what they hold (parse), or bound through a reference into a managed value, whose
 contents cannot be lent as a binding yet (type check). The message says which, and

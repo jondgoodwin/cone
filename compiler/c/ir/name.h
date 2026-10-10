@@ -31,7 +31,7 @@ extern Name *tempLocalName;
 // reads them from: the matched value under the variant's name, declared just
 // before the binding (castBindProject). No source can spell it.
 extern Name *matchAliasName;
-// "(payload)": the one field of a type-variant ('Ok i32;'), which holds the
+// "(payload)": the one field of a type-variant ('Ok(i32);'), which holds the
 // contents and has no name a program can write.
 extern Name *payloadName;
 extern Name *selfName;  // "self"

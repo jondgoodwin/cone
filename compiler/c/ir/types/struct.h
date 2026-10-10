@@ -319,7 +319,7 @@ FnDclNode *structEnumEqFn(StructNode *node);
 StructNode *structEnumVariantWithoutEq(StructNode *node);
 int structVariantCarriesFields(StructNode *variant);
 
-// Is this variant declared as a type ('Ok i32;')? It holds one field, the
+// Is this variant declared as a type ('Ok(i32);')? It holds one field, the
 // contents, which has no name a program can write (payloadName). The field is
 // returned by structTypeVariantField, or NULL for any other variant.
 int structIsTypeVariant(StructNode *variant);

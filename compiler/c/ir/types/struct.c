@@ -2911,7 +2911,7 @@ int structVariantCarriesFields(StructNode *variant) {
     return 0;
 }
 
-// The field a type-variant ('Ok i32;') holds its contents in, or NULL where the
+// The field a type-variant ('Ok(i32);') holds its contents in, or NULL where the
 // variant was declared any other way. Its name is one no program can write, so
 // the field is found by that name and nothing else.
 FieldDclNode *structTypeVariantField(StructNode *variant) {
