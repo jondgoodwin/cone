@@ -41,8 +41,10 @@ void fnCallPrint(FnCallNode *node);
 // Note: this never name resolves .methfld, which is handled in type checking
 void fnCallNameRes(NameResState *pstate, FnCallNode **nodep);
 
-// Type check on fncall
-void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **node);
+// Type check on fncall. 'expectType' is the type the call's value is wanted as,
+// or unknownType: a generic whose type arguments its own arguments leave unsaid
+// takes them from it (genericSubstitute).
+void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **node, INode *expectType);
 
 // The index an assignment stores into, 'x[i] = v', while its lval is checked:
 // on a type declaring '&[]', it is lowered as '&mut x[i]' would be

@@ -1004,7 +1004,9 @@ members", is the mechanism.
    enum which moves is compared where it lies. The variant's `==` is called through
    the ordinary comparison of references, so a `==` taking its operands by value
    and one taking them by reference are both found, and one of the wrong shape is
-   reported on the variant's own `==`, where the call is positioned.
+   reported on the variant's own `==`, where the call is positioned. A comparison
+   with an empty variant does not use `-eq` at all: it is a tag test
+   ([fncall](fncall.md), `fnCallLowerEnumTagTest`).
    Unlike `-drop` it is *type checked as any function is* (no `TypeChecked` from
    birth), by the members walk of the enum, or on demand by the first call
    (`fnCallDemandCandidates`).

@@ -11,6 +11,18 @@
 #include <string.h>
 #include <stdio.h>
 
+// The call fnCallTypeCheck is checking and the type its value is wanted as.
+// A generic method, or a generic picked out of an overload set, that the call
+// names takes the type arguments its values leave unsaid from it
+// (genericMethodInstance, genericSubstitute). Keyed to the node, so a call made
+// on the way to lowering this one never reads the expectation of another.
+static FnCallNode *fnCallExpectNode = NULL;
+static INode *fnCallExpectType = NULL;
+
+static INode *fnCallExpectFor(FnCallNode *node) {
+    return node == fnCallExpectNode && fnCallExpectType ? fnCallExpectType : unknownType;
+}
+
 // Create a function call node
 FnCallNode *newFnCallNode(INode *fn, int nnodes) {
     FnCallNode *node;
@@ -1068,6 +1080,67 @@ static void fnCallLendEnumOperand(TypeCheckState *pstate, INode **operandp) {
         borrowTempRef(operandp, type, perm, borrowTempScope(pstate));
 }
 
+// Is this operand an empty variant of 'enumnode' that is plain to read: a
+// construction written out or a variable holding one? Its value is then known
+// but for nothing, and a comparison need not evaluate it.
+static StructNode *fnCallEmptyVariantOperand(INode *operand, StructNode *enumnode) {
+    if (operand->tag != TypeLitTag && !nameUseNames(operand, VarDclTag))
+        return NULL;
+    INode *type = iexpGetTypeDcl(operand);
+    if (type->tag != StructTag || (type->flags & (EnumType | TraitType)) || !(type->flags & HasTagField)
+        || structBaseTraitDcl((StructNode*)type) != enumnode || structVariantCarriesFields((StructNode*)type))
+        return NULL;
+    return (StructNode*)type;
+}
+
+// The test a comparison with an empty variant is, set by fnCallLowerEnumTagTest
+// and put in the call's place by fnCallTypeCheck, which holds where the call is
+static FnCallNode *fnCallTagTestFor = NULL;
+static INode *fnCallTagTest = NULL;
+
+// '==' on an enum where either operand is statically an empty variant of it
+// ('x == None[]', 'event == Lamp.Off[]'): the other operand is that variant or
+// is not, so the comparison asks the tag alone, whatever the other variants
+// carry, as 'x is &None' does of a borrow. Two variants that both carry fields
+// are not asked this way (fnCallLowerEnumEq). Lowers the call to the test, left
+// for fnCallTypeCheck to put in its place, and answers 1; answers 0, touching
+// nothing, where the comparison is not of that shape.
+static int fnCallLowerEnumTagTest(TypeCheckState *pstate, FnCallNode *callnode, StructNode *enumnode) {
+    if (callnode->args == NULL || callnode->args->used != 1)
+        return 0;
+    INode *left = callnode->objfn;
+    INode *right = nodesGet(callnode->args, 0);
+    if (!isExpNode(left) || !isExpNode(right))
+        return 0;
+    StructNode *variant = fnCallEmptyVariantOperand(right, enumnode);
+    INode *tested = left;
+    if (variant == NULL) {
+        variant = fnCallEmptyVariantOperand(left, enumnode);
+        tested = right;
+    }
+    if (variant == NULL)
+        return 0;
+    // The tested operand is the enum itself, a value or a borrow of it
+    INode *ttype = iexpGetTypeDcl(tested);
+    int isenum = ttype == (INode*)enumnode
+        || (ttype->tag == RefTag && itypeGetTypeDcl(((RefNode*)ttype)->region) == borrowRef
+            && itypeGetTypeDcl(((RefNode*)ttype)->vtexp) == (INode*)enumnode);
+    if (!isenum)
+        return 0;
+    fnCallLendEnumOperand(pstate, &tested);
+    INode *vref = (INode*)newRefNodeFull(RefTag, (INode*)callnode, (INode*)borrowRef, newPermUseNode(roPerm),
+        newNameUseFromDclNode((INode*)variant, (INode*)callnode));
+    CastNode *test = newIsNode(tested, vref);
+    inodeLexCopy((INode*)test, (INode*)callnode);
+    if (!itypeTypeCheck(pstate, &test->typ))
+        return 0;
+    test->vtype = (INode*)boolType;
+    callnode->vtype = (INode*)boolType;
+    fnCallTagTestFor = callnode;
+    fnCallTagTest = (INode*)test;
+    return 1;
+}
+
 // '==' on an enum where a variant carries fields: tags first, then the variant's
 // own '==' on the two payloads (doc/reference/refenum.html, "Comparing"). The
 // comparison is a function the compiler gave the enum (structSetEnumEqFn), made
@@ -1075,6 +1148,8 @@ static void fnCallLendEnumOperand(TypeCheckState *pstate, INode **operandp) {
 // call of it on the two operands lent. Where one does not, the call is refused
 // here, naming the first variant that has none and what it carries.
 static void fnCallLowerEnumEq(TypeCheckState *pstate, FnCallNode *callnode, StructNode *enumnode) {
+    if (fnCallLowerEnumTagTest(pstate, callnode, enumnode))
+        return;
     FnDclNode *eqfn = structEnumEqFn(enumnode);
     if (eqfn == NULL) {
         StructNode *lacking = structEnumVariantWithoutEq(enumnode);
@@ -1470,7 +1545,8 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
         if (genericIsInstanceOf(methfld->dclnode, (FnDclNode*)foundnode))
             foundnode = methfld->dclnode;
         else
-            foundnode = (INode*)genericMethodInstance(pstate, callnode, (FnDclNode*)foundnode, NULL);
+            foundnode = (INode*)genericMethodInstance(pstate, callnode, (FnDclNode*)foundnode, NULL,
+                fnCallExpectFor(callnode));
         if (foundnode == NULL) {
             callnode->vtype = errorType;
             return -1;
@@ -1563,7 +1639,7 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
     // selected by its arguments' types: its instance for them is what is called,
     // as a generic method named alone is
     if (selected->genericinfo) {
-        selected = genericMethodInstance(pstate, callnode, selected, NULL);
+        selected = genericMethodInstance(pstate, callnode, selected, NULL, fnCallExpectFor(callnode));
         if (selected == NULL) {
             callnode->vtype = errorType;
             return -1;
@@ -1856,7 +1932,7 @@ static void fnCallLowerSliceCompare(TypeCheckState *pstate, FnCallNode *node) {
     // mem.sliceEq[T], T the receiver's element type
     Nodes *typeargs = newNodes(1);
     nodesAdd(&typeargs, slicetype->vtexp);
-    FnDclNode *instance = genericMethodInstance(pstate, node, sliceeq, typeargs);
+    FnDclNode *instance = genericMethodInstance(pstate, node, sliceeq, typeargs, unknownType);
     if (instance == NULL) {
         node->vtype = errorType;
         return;
@@ -2219,7 +2295,7 @@ int fnCallLowerOverloadFn(TypeCheckState *pstate, FnCallNode **nodep) {
     // inferred from the arguments, which are all checked, and the instance
     // becomes the callee (genericSubstitute)
     if (selected->genericinfo)
-        return genericSubstitute(pstate, nodep);
+        return genericSubstitute(pstate, nodep, fnCallExpectFor(node));
     fnCallFinalizeArgs(pstate, node);
     return 1;
 }
@@ -2624,7 +2700,7 @@ static int fnCallMethodTypeArgs(TypeCheckState *pstate, FnCallNode **nodep) {
     for (nodesFor(typeargs, cnt, argsp))
         inodeTypeCheckAny(pstate, argsp);
 
-    methfld->dclnode = (INode*)genericMethodInstance(pstate, node, (FnDclNode*)found, typeargs);
+    methfld->dclnode = (INode*)genericMethodInstance(pstate, node, (FnDclNode*)found, typeargs, unknownType);
     if (methfld->dclnode == NULL) {
         node->vtype = errorType;
         return 1;
@@ -3165,6 +3241,57 @@ static void fnCallReadThroughRefs(FnCallNode *node) {
     }
 }
 
+// The type the argument at 'argi' (of 'nargs' written) is wanted as, when it is the
+// same whichever candidate of 'set' takes the call: every candidate that could
+// take this many arguments (the rest having defaults) is not generic and
+// declares the same type for that parameter. NULL when they differ, when one is
+// generic, or when none could. 'firstparm' is how many parameters the call's
+// receiver fills, 1 for a method called on one. A single declaration is the
+// easiest agreement.
+static INode *fnCallArgAgreed(INode *set, uint32_t firstparm, uint32_t argi, uint32_t nargs) {
+    INode **candp;
+    uint32_t ncand;
+    if (set->tag != FnDclTag && set->tag != FnOverloadDclTag)
+        return NULL;
+    fnCallDemandCandidates(set);
+    if (set->tag == FnDclTag) {
+        candp = &set;
+        ncand = 1;
+    }
+    else {
+        candp = &nodesGet(((FnOverloadDclNode*)set)->overloads, 0);
+        ncand = ((FnOverloadDclNode*)set)->overloads->used;
+    }
+    INode *agreed = NULL;
+    while (ncand--) {
+        FnDclNode *cand = (FnDclNode*)*candp++;
+        if (cand->genericinfo)
+            return NULL;
+        if (cand->vtype == NULL)
+            return NULL;
+        FnSigNode *sig = (FnSigNode*)itypeGetTypeDcl(cand->vtype);
+        if (sig->tag != FnSigTag)
+            return NULL;
+        uint32_t wanted = firstparm + nargs;
+        if (sig->parms->used < wanted)
+            continue;
+        uint32_t k;
+        for (k = wanted; k < sig->parms->used; ++k)
+            if (((VarDclNode*)nodesGet(sig->parms, k))->value == NULL)
+                break;
+        if (k < sig->parms->used)
+            continue;
+        INode *ptype = ((VarDclNode*)nodesGet(sig->parms, firstparm + argi))->vtype;
+        if (ptype == NULL)
+            return NULL;
+        if (agreed == NULL)
+            agreed = ptype;
+        else if (!itypeIsSame(agreed, ptype))
+            return NULL;
+    }
+    return agreed;
+}
+
 // Perform type check on function/method call node
 // This should only be run once on a node, as it mutably lowers the node to another form:
 // - If a generic/macro, it instantiates, then type checks instantiated nodes
@@ -3173,12 +3300,27 @@ static void fnCallReadThroughRefs(FnCallNode *node) {
 // - If an array index, it turns it into an ArrIndex node
 // - A method call is resolved by lookup and lowered to a function call
 // - A function call coerces and injects arguments as needed
-void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
+// 'expectType' is what the value is wanted as; a generic named in the call takes the type
+// arguments its values leave unsaid from it, so it is known to the lowering of this node
+// alone (fnCallExpectFor) and the checks of the arguments, which run inside, put it back.
+static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INode *expectType);
+
+void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep, INode *expectType) {
+    FnCallNode *savednode = fnCallExpectNode;
+    INode *savedtype = fnCallExpectType;
+    fnCallExpectNode = *nodep;
+    fnCallExpectType = expectType;
+    fnCallTypeCheckNode(pstate, nodep, expectType);
+    fnCallExpectNode = savednode;
+    fnCallExpectType = savedtype;
+}
+
+static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INode *expectType) {
     FnCallNode *node = *nodep;
 
     // 'new Point(1, 2)': a construction, which selects one of the type's 'init's
     if (node->flags & FlagNew) {
-        typeLitNewCheck(pstate, nodep);
+        typeLitNewCheck(pstate, nodep, expectType);
         return;
     }
 
@@ -3393,16 +3535,53 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
             litstruct = (StructNode*)littype;
     }
 
+    // An operator whose one argument is a call, 'x == None[]' or 'xs <- make()',
+    // is checked receiver first, as a method call is, so the argument can be
+    // wanted as what the receiver says: its own type for '==' and '!=', the
+    // type the receiver's '<-' takes for an append. Any other operand keeps
+    // the order it always had, the argument first, since a macro method's
+    // argument is not checked until the macro has expanded.
+    INode *opexpect = NULL;
+    Name *argopname = fnCallOperatorName(node);
+    if (argopname && (argopname == eqName || argopname == neName || argopname == lessDashName)
+        && node->args && node->args->used == 1 && nodesGet(node->args, 0)->tag == FnCallTag
+        && !objfnChecked && !calleeIsOverload
+        && (!isNameUseNode(node->objfn) || nameUseNames(node->objfn, VarDclTag) || nameUseNames(node->objfn, ConstDclTag))) {
+        inodeTypeCheckAny(pstate, &node->objfn);
+        objfnChecked = 1;
+        if (inodeIsError(node->objfn)) {
+            node->vtype = errorType;
+            return;
+        }
+        if (isExpNode(node->objfn)) {
+            INode *rcvtype = iexpGetDerefTypeDcl(node->objfn);
+            if (argopname == lessDashName) {
+                INode *found = isMethodType(rcvtype) ? iNsTypeFindFnField((INsTypeNode*)rcvtype, argopname) : NULL;
+                if (found)
+                    opexpect = fnCallArgAgreed(found, 1, 0, 1);
+            }
+            else
+                opexpect = rcvtype;
+        }
+    }
+
     // Type check arguments (methfld is handled later), each against the type of
     // the parameter or field it fills when the callee is already known. That is
     // what lets an 'if', a block or an array literal passed as an argument be
     // coerced branch by branch, as it is when a variable of that type is
     // initialized with it. Overload selection needs the arguments' own types
-    // to choose, so an overload set's arguments are checked with no expectation.
+    // to choose, so an overload set's arguments are checked with no expectation,
+    // but for a call among them, which is wanted as the type every candidate
+    // declares there when they all agree on one.
     INode **argsp;
     uint32_t cnt;
     if (node->args) {
         uint32_t argi = 0;
+        uint32_t ovfirst = firstparm;
+        if (overloadset && overloadset->tag == FnOverloadDclTag && node->methfld == NULL
+            && (nodesGet(((FnOverloadDclNode*)overloadset)->overloads, 0)->flags & FlagMethFld)
+            && !(node->objfn->flags & FlagQualified))
+            ovfirst = 1;
         for (nodesFor(node->args, cnt, argsp)) {
             INode *expect = unknownType;
             if (argsig && firstparm + argi < argsig->parms->used)
@@ -3411,6 +3590,13 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
                 FieldDclNode *field = fnCallTypeLitField(litstruct, node->args, argi);
                 if (field)
                     expect = field->vtype;
+            }
+            else if (opexpect)
+                expect = opexpect;
+            else if (overloadset && (*argsp)->tag == FnCallTag) {
+                INode *agreed = fnCallArgAgreed(overloadset, ovfirst, argi, node->args->used);
+                if (agreed)
+                    expect = agreed;
             }
             // A closure literal given to a generic or an overload set waits for
             // the other arguments, which say what its signature is
@@ -3433,7 +3619,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     }
 
     // Perform generic substitution (if requested) and quit if that finishes processing
-    if (genericSubstitute(pstate, nodep))
+    if (genericSubstitute(pstate, nodep, expectType))
         return;
 
     if (!calleeIsOverload && !objfnChecked)
@@ -3617,6 +3803,22 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         inodeLexCopy((INode*)derivedne, (INode*)node);
         derivedne->lexp = (INode*)node;
         *((INode**)nodep) = (INode*)derivedne;
+    }
+
+    // An empty variant on the left of '==' against a value of its enum, 'None[i64][] == x',
+    // asks the same question as the other way round
+    if ((opname == eqName || opname == neName) && objtype->tag == StructTag
+        && !(objtype->flags & (EnumType | TraitType)) && (objtype->flags & HasTagField)
+        && structBaseTraitDcl((StructNode*)objtype) != NULL
+        && fnCallLowerEnumTagTest(pstate, node, structBaseTraitDcl((StructNode*)objtype))) {
+        // (a variant declares no '==' to derive the '!=' from)
+        if (opname == neName) {
+            derivedne = newLogicNode(NotLogicTag);
+            inodeLexCopy((INode*)derivedne, (INode*)node);
+            derivedne->lexp = (INode*)node;
+            *((INode**)nodep) = (INode*)derivedne;
+        }
+        goto tagtested;
     }
 
     // An owner of 'Array[T]' indexed is indexed as the slice it lends
@@ -3827,6 +4029,18 @@ dispatch:
     default:
         errorMsgNode((INode*)node->objfn, ErrorNoMeth, "This type does not support calls or field access.");
         node->vtype = errorType;
+    }
+
+    // A comparison with an empty variant is the test of its tag
+    // (fnCallLowerEnumTagTest), standing where the call, or the 'not' of it, stood
+tagtested:
+    if (fnCallTagTestFor == node) {
+        if (derivedne)
+            derivedne->lexp = fnCallTagTest;
+        else
+            *((INode**)nodep) = fnCallTagTest;
+        fnCallTagTestFor = NULL;
+        fnCallTagTest = NULL;
     }
 
     // 'not' takes a bool, which a '==' returning anything else reaches through
