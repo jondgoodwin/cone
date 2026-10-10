@@ -1,0 +1,57 @@
+// The Peek adapter of lifetime_band_self_store_peek_refused over a list's
+// cursor: the cursor's 'next' names the lifetime of the list it walks
+// ('Option[&'a T]'), so an item it hands out is the list's, not the cursor's,
+// and outlives the cursor's next step. Holding one in the adapter's field is
+// no borrow of the adapter's own storage, and stays accepted.
+//
+// Verdict: accept; prints the lines below.
+// Basis: reflifefn.html, "Lifetimes in a struct's methods": a result naming
+// the cursor's lifetime keeps frozen what the cursor holds, not the cursor.
+// Measured 10 Oct 2026 (lending-iterators-measured-2026-10-10, 3e).
+// Master 03de4a12: correct.
+
+mod lifetime_band_self_store_peek_list;
+
+import stdio use *;
+import collections use *;
+
+struct Peek[T, I Iterator[T]] {
+  pub src I;
+  pub held Option[T];
+
+  pub fn peek(self &mut) {
+    match held {
+      case is Some { return; }
+      case is None { }
+    }
+    held = src.next();
+  }
+  pub fn skipSource(self &mut) { src.next(); }
+  pub fn take(self &mut) Option[T] {
+    imm out = held;
+    held = None[T][];
+    out;
+  }
+}
+
+fn main() {
+  mut xs = List[i64].empty();
+  xs.push(10);
+  xs.push(20);
+  xs.push(30);
+  xs.push(40);
+  mut p = new Peek[&i64, ListIter[i64]](xs.iter(), None[&i64][]);
+  p.peek();
+  p.skipSource();
+  p.skipSource();
+  match p.take() {
+    case imm e Some { printInt(*e.value); }
+    case is None { printStr("none"); }
+  }
+  printStr(" ");
+  match p.take() {
+    case imm e Some { printInt(*e.value); }
+    case is None { printStr("none"); }
+  }
+  printStr("\n");
+}

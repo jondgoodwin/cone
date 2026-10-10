@@ -109,6 +109,18 @@ enum LoanEscape {
 };
 void loanEscape(INode *node, uint32_t loan, int how);
 
+// A loan in 'set' of a place reached through the reference variable 'var', by
+// name (not a caller loan), or 0: a borrow of what 'var' points at, itself
+// (never of where a borrowed reference that is a field of it points)
+uint32_t loanNamedThroughIn(PathSet *set, uint32_t var);
+
+// A value carrying 'loan', a borrow of part of what the reference variable
+// 'target->var' points at, is stored in that same value (LoanEscapeStore at
+// 'node'), or handed to a call that could store it there (LoanEscapeCall): a
+// value holding a borrow of its own storage, which the caller may change or
+// move
+void loanSelfStore(INode *node, uint32_t loan, Place *target, int how);
+
 // Named lifetimes (lifetime.h). A caller loan stands for the lifetimes of the
 // part of its parameter it lends: a value may carry it where its type holds
 // one they flow to by the signature's order (lifePartFlows). 'sig' is the
