@@ -702,11 +702,10 @@ path to a struct trait's method is. `extends` naming a module trait is
 answers such a name as one. It is asked where a bare generic is
 ([generic.md](generic.md), "A generic named bare where a type is wanted").
 
-**What is not built** [Jon 23 Sep]: host traits (a shell's, a web server's), the
-entry glue — a trait default the host calls as `main`, running the program's
-stitched init and final round the program's own `main` ("Init and final":
-`initAll()` and `finalAll()` are what it would call) — and traits that require
-types. Conformance declared by
+**What is not built** [Jon 23 Sep]: host traits (a shell's, a web server's),
+whose entry glue would be a trait default the host calls — the compiler builds
+the entry of an executable's `main` itself ("Init and final") — and traits that
+require types. Conformance declared by
 structure alone does not exist and is not planned. A generic module conforms by
 its `mod` line: the generic takes the defaults as any module does, and each
 instance clones them with the rest of its declarations and is checked against
@@ -1976,18 +1975,27 @@ of its own is `ErrorModLifecycle`: both would be one symbol.
 object being generated: `cone.initAll`, calling `initfn` of each module in
 `pgm->initorder` that has one, and `cone.finalAll`, calling `finalfn` of each in
 the reverse. A module with neither gets no call. Each is internal, made only
-when a call asks for it (`genlStitchFn`), and built last, after every module's
-bodies. **A program calls them through two compiler-provided functions,
-`initAll()` and `finalAll()`** (`corelib.c`, `InitAllIntrinsic` and
-`FinalAllIntrinsic`): bound as names every module reaches, as it reaches `i64`.
-Only a local declaration of the same name hides them; a module-level one is
-refused as a duplicate at parse (`modAddNamedNode`), as one named `i64` is —
-Jon, 24 September 2026: the compiler is right, and they hold that place for now
+when something asks for it (`genlStitchFn`), and built last, after every module's
+bodies. **The entry runs them** [Jon 23 Sep]: for an executable the compiler
+builds the C `main` itself (`genlEntry`), which calls `cone.initAll`, the
+program's own `main` and `cone.finalAll`, and returns what `main` returned; the
+program's `main` is internal under the symbol `cone.main`. The program's `main`
+is the root's bare Cone-named `main` taking nothing or `(argc i32, argv **u8)`;
+a library compile, a WebAssembly or GPU one, a `main` with a C name (its own C
+entry) and a `main` with other parameters get no entry. A panic (`abort`) or C's
+`exit` ends the process without reaching the final. **A program may still call
+them through two compiler-provided functions, `initAll()` and `finalAll()`**
+(`corelib.c`, `InitAllIntrinsic` and `FinalAllIntrinsic`): bound as names every
+module reaches, as it reaches `i64`. Only a local declaration of the same name
+hides them; a module-level one is refused as a duplicate at parse
+(`modAddNamedNode`), as one named `i64` is — Jon, 24 September 2026: the
+compiler is right, and they hold that place for now
 ([Name Resolution](../phases/name-resolution.md), "Some bindings are never hooked").
-They stand in for the entry glue until it is built; nothing calls them
-implicitly, and how an executable's C `main` is chosen is unchanged. Nothing
-stops them being called twice. Where they end up, since user code should not
-call them once the entry glue does, belongs to the entry-trait conversation.
+Both stitched functions swap one flag, `cone.live`, as their first act: the init
+does nothing on a program already live and the final nothing on one that is not,
+so a call after the entry's runs nothing, and a program that finalizes and
+initializes again runs both again. A library called from C gets no entry, and the
+C caller sets it up.
 
 **Across separately compiled packages**, a package's `init`, `final` and `drop`
 keep the package's Cone names (`lib.init`, `lib.drop`), and a library compile
@@ -2780,12 +2788,12 @@ a reference names is a type, and that is what is built.
   ⚠ **This paragraph previously read "the artifact is therefore serialized IR."**
   That was stated here and contradicted in the packages backlog item, with
   nothing saying which won.
-- **Module `init` and `final` are built; purity and the entry are not** ("Init
+- **Module `init` and `final` and the program's entry are built; purity is not** ("Init
   and final"). What `refmodule.html` specifies and nothing checks is the
   `initpure` rule that such a function call only `pure` or `initpure` functions,
   and that one other than `init` read no uninitialized global of its module:
-  `pure` itself is unbuilt. Nothing runs the stitched init and final but a call
-  to `initAll()` and `finalAll()`, until the entry glue does. **A package the
+  `pure` itself is unbuilt. The entry the compiler builds runs the stitched init
+  and final round `main`. **A package the
   program reaches only through other packages has its `init` and `final` run**:
   an include file imports, and the package lines list the whole closure ("A
   described build"), so every include file the program's imports reach,

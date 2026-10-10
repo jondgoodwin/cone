@@ -265,6 +265,13 @@ void awaitTypeCheck(TypeCheckState *pstate, AwaitNode *node, INode *expectType) 
             node->vtype = ((IExpNode *)node->exp)->vtype;
         return;
     }
+    // A GPU has no actors to wait on and no threads to run meanwhile
+    if (flowGpu) {
+        errorMsgNode((INode *)node, ErrorGpuUnavailable,
+            "In GPU code there is no 'await': it parks an actor's behaviour while other threads run, and a GPU has no actors and no threads.");
+        node->vtype = errorType;
+        return;
+    }
     char *where = awaitNotPlaced(pstate->fn, buf, sizeof(buf));
     if (where)
         errorMsgNode((INode *)node, ErrorAwaitPlace,

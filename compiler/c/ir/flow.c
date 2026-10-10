@@ -1871,6 +1871,56 @@ void flowScopePop(size_t startpos) {
 int flowGateCountAll = 0;
 int flowGpu = 0;
 
+const char *flowGpuExternMsg =
+    "In GPU code a function defined elsewhere cannot be called, '%s': a GPU has no operating system and no C library, so no input or output, files, sockets or allocator. Only the C library's math is there (sqrt, sin, cos, tan, asin, acos, atan, atan2, exp, log, pow, fabs, floor, ceil, fmod, and their float forms).";
+
+// Whether a call of 'callee', taking 'nargs' arguments, is to a function
+// defined elsewhere that a GPU has none of: any 'extern' function but core's
+// own, whose 'panic' a GPU records, and the C library's math, which it lowers
+// to its own instructions (genlGpuMath)
+int flowGpuExternRefused(FnDclNode *callee, unsigned nargs) {
+    if (!(callee->dclinfo.facts & DclExternal))
+        return 0;
+    ModuleNode *mod = dclInfoGetModule((INode*)callee);
+    if (mod && strcmp(&mod->namesym->namestr, "core") == 0)
+        return 0;
+    if (callee->dclinfo.facts & DclCName) {
+        char symbol[2048];
+        nameSymbol(symbol, (INode*)callee);
+        if (genlGpuIsMathSymbol(symbol, nargs))
+            return 0;
+    }
+    return 1;
+}
+
+// Whether 'node' is written in GPU code that the refusal of what a GPU lacks
+// reads: any code of a GPU compile but core's own, whose regions are written
+// with the owners and the allocator that a kernel is refused (core's
+// 'inline fn alloc', 'So' and 'Rc' themselves), and are reached only by an
+// allocation or an owner that is refused where it is written
+int flowGpuRefuses(INode *node) {
+    if (!flowGpu)
+        return 0;
+    // A node the compiler made has no place to report at
+    const char *url = node->lexer ? node->lexer->url : NULL;
+    if (url == NULL)
+        return 0;
+    size_t len = strlen(url);
+    const char *tail = "core/src/core.cone";
+    size_t tlen = strlen(tail);
+    if (len < tlen)
+        return 1;
+    for (size_t i = 0; i < tlen; ++i) {
+        char c = url[len - tlen + i];
+        if (c == '\\')
+            c = '/';
+        if (c != tail[i])
+            return 1;
+    }
+    int incore = len == tlen || url[len - tlen - 1] == '/' || url[len - tlen - 1] == '\\';
+    return !incore;
+}
+
 // Functions walked, functions gated, and functions each trigger fired in
 static uint32_t flowGateFns = 0;
 static uint32_t flowGateGated = 0;

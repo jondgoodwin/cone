@@ -41,7 +41,8 @@ support = ["modulesub.cone",
            "modulefold.cone", "modulefoldlate.cone", "modfolder",
            "moduleextbase.cone", "modulepkgs", "modulepkgfiles", "modtree",
            "moduleinline.cone", "moduleextern.cone",
-           "modulenomod.cone", "modulecomments.cone", "modulecfree.cone"]
+           "modulenomod.cone", "modulecomments.cone", "modulecfree.cone",
+           "module_gpu_cbinding.cone"]
 
 # -------- success --------
 
@@ -1053,19 +1054,55 @@ tags = ["genllvm", "runtime"]
 
 # Generated returning i32 0 for the C runtime, rather than an undefined value
 # of Cone's empty 'void' type. Only main is pinned: every other function
-# returning nothing returns %void as it declares. The optimizer adds attributes
-# of its own before the return type, so the line is matched from it.
+# returning nothing returns %void as it declares. The program's own 'main' is
+# internal, called by the C entry, which is the one named 'main' (module_entry).
 [[scenario.module_main_void.check]]
 name = "a-void-main-returns-i32-zero"
-target = "llvmir"
-contains = ["i32 @main()", "ret i32 0"]
-excludes = ["define %void @main"]
+target = "preir"
+contains = ["define internal i32 @cone.main()", "ret i32 0", "define i32 @main(i32 %0, ptr %1)"]
+excludes = ["define %void @cone.main", "define %void @main"]
 
 [scenario.module_main_status]
 category = "run"
 description = "A 'main' returning i32 exits with the value it returns"
 tags = ["genllvm", "runtime"]
 program_exit = 7
+
+# THE PROGRAM'S ENTRY [Jon 23 Sep]: the compiler builds the C 'main', which runs
+# the stitched init, the program's own 'main' (whose symbol is 'cone.main'), then
+# the stitched final, and returns what 'main' returned as the exit status.
+# module_entry calls neither 'initAll()' nor 'finalAll()' and pins the order,
+# helper's init, the root's init, main, the root's final, helper's final, and
+# the status; module_entry_explicit is a program that still calls them, which
+# find nothing left to run; module_entry_args hands argc and argv through.
+[scenario.module_entry]
+category = "run"
+description = "A two-module program that calls neither 'initAll()' nor 'finalAll()': each module's 'init' runs before 'main' in the module order, 'main' reads what they made, the finals run after it in the reverse, and its i32 is the exit status"
+tags = ["genllvm", "runtime"]
+program_exit = 7
+
+# The C entry is the one 'main'; the program's own is internal and the entry
+# calls the stitched pair, built because the entry asks for them
+[[scenario.module_entry.check]]
+name = "the-entry-calls-the-program-between-the-stitched-pair"
+target = "symbols"
+contains = [
+  "define main comdat nodeduplicate",
+  "define internal cone.main comdat nodeduplicate",
+  "define internal cone.initAll comdat nodeduplicate",
+  "define internal cone.finalAll comdat nodeduplicate",
+]
+
+[scenario.module_entry_explicit]
+category = "run"
+description = "A program that still calls 'initAll()' and 'finalAll()' itself, twice each: the entry has run the init before 'main', so its calls find nothing to run until 'finalAll()' has run the finals; an 'initAll()' after that starts the program again, and the entry's own final finalizes that run once"
+tags = ["genllvm", "runtime"]
+
+[scenario.module_entry_args]
+category = "run"
+description = "A 'main' taking C's argc and argv is handed the entry's: argc is 1, and the i32 it returns is the exit status"
+tags = ["genllvm", "runtime"]
+program_exit = 3
 
 # GENERIC MODULES, treated as generic types are [Jon 23 Sep]. module_generic
 # runs two instances of one generic module with separate globals, one instance
@@ -3294,3 +3331,82 @@ diagnostics = 5
 [[scenario.module_gpu_unavailable.run]]
 name = "vulkan"
 options = ["--triple=spirv1.6-unknown-vulkan1.3"]
+
+[scenario.module_debug_files]
+category = "run"
+description = "A debug build names the file each function was written in: a sibling file of a folder module, and an imported package, each in a DIFile of its own beside the main one"
+tags = ["genllvm", "runtime"]
+
+[[scenario.module_debug_files.run]]
+name = "debug"
+options = ["--debug"]
+
+# The DIFile of the main file, of the sibling the folder swept in, and of stdio's
+# source. Each function's subprogram names its own: `fromSecond` the sibling's.
+[[scenario.module_debug_files.check]]
+name = "each-source-file-has-its-own-difile"
+target = "preir"
+contains = [
+  "module_debug_files.cone\", directory",
+  "second.cone\", directory",
+  "stdio.cone\", directory",
+]
+
+[scenario.module_gpu_owner_type]
+category = "reject"
+description = "In GPU code an owning reference type written in a parameter, a field, a return type, a local or a lock's Rc[Rwcell, T] is refused where it is written; a borrow, a struct built as a value, an atomic and the C library's math are not"
+tags = ["typecheck"]
+diagnostics = 5
+
+[[scenario.module_gpu_owner_type.run]]
+name = "vulkan"
+options = ["--triple=spirv1.6-unknown-vulkan1.3"]
+
+[scenario.module_gpu_actor]
+category = "reject"
+description = "In GPU code an actor declaration is refused where it is declared, with or without 'import actors'"
+tags = ["parse"]
+diagnostics = 1
+
+[[scenario.module_gpu_actor.run]]
+name = "vulkan"
+options = ["--triple=spirv1.6-unknown-vulkan1.3"]
+
+[scenario.module_gpu_threads]
+category = "reject"
+description = "In GPU code a 'parallel each' and an 'await' are refused where they are written; a plain 'each' is not"
+tags = ["typecheck"]
+diagnostics = 2
+
+[[scenario.module_gpu_threads.run]]
+name = "vulkan"
+options = ["--triple=spirv1.6-unknown-vulkan1.3"]
+
+[scenario.module_gpu_io]
+category = "reject"
+description = "In GPU code a call of the C library's allocator or file functions, or of any extern function a program declares, is refused where it is written; the C library's math and core's panic are not"
+tags = ["typecheck"]
+diagnostics = 3
+
+[[scenario.module_gpu_io.run]]
+name = "vulkan"
+options = ["--triple=spirv1.6-unknown-vulkan1.3"]
+
+[scenario.module_gpu_io_wrapper]
+category = "reject"
+description = "In GPU code a kernel's call of a C binding's inline function that calls an extern function is refused at generation, where the binding makes the call"
+tags = ["genllvm"]
+diagnostics = 1
+
+[[scenario.module_gpu_io_wrapper.run]]
+name = "vulkan"
+options = ["--triple=spirv1.6-unknown-vulkan1.3"]
+
+[scenario.module_gpu_allowed]
+category = "compile"
+description = "What GPU code may use still compiles beside the refusals of what a GPU lacks: numbers, structs, borrows, generics, static traits, loops, math, atomics, constants and panic"
+tags = ["genllvm"]
+
+[[scenario.module_gpu_allowed.run]]
+name = "vulkan"
+options = ["--triple=spirv1.6-unknown-vulkan1.3", "--verify"]

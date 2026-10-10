@@ -234,6 +234,22 @@ LLVMValueRef genlGpuMath(GenState *gen, FnDclNode *fndcl, LLVMValueRef *args, un
     return NULL;
 }
 
+// Whether a C symbol taking 'nargs' arguments is one of the C library's math
+// functions a GPU lowers (genlGpuMath), in either form. Type checking asks it
+// to refuse a call of any other function defined elsewhere: nothing else of
+// the C library, nor any other code, is there on a GPU.
+int genlGpuIsMathSymbol(const char *symbol, unsigned nargs) {
+    size_t len = strlen(symbol);
+    if (len > 1 && symbol[len - 1] == 'f')
+        --len;
+    for (size_t i = 0; i < sizeof(genlGpuMathFns) / sizeof(genlGpuMathFns[0]); ++i) {
+        const GenlGpuMathFn *mathfn = &genlGpuMathFns[i];
+        if (strlen(mathfn->cname) == len && strncmp(mathfn->cname, symbol, len) == 0 && mathfn->nargs == nargs)
+            return 1;
+    }
+    return 0;
+}
+
 // ---- The kernel -------------------------------------------------------------
 
 // The name a binding is given in the module (an OpName): LLVM's SPIR-V
@@ -432,9 +448,10 @@ void genlComputeEntry(GenState *gen, FnDclNode *fnnode) {
     // A debug build gives the kernel a subprogram too, so that what is
     // inlined into it keeps its lines
     if (!gen->opt->release) {
-        LLVMMetadataRef fntype = LLVMDIBuilderCreateSubroutineType(gen->dibuilder, gen->difile, NULL, 0, 0);
-        LLVMMetadataRef sp = LLVMDIBuilderCreateFunction(gen->dibuilder, gen->difile,
-            name, strlen(name), name, strlen(name), gen->difile, fnnode->linenbr, fntype, 0, 1,
+        LLVMMetadataRef difile = genlDiFile(gen, (INode*)fnnode);
+        LLVMMetadataRef fntype = LLVMDIBuilderCreateSubroutineType(gen->dibuilder, difile, NULL, 0, 0);
+        LLVMMetadataRef sp = LLVMDIBuilderCreateFunction(gen->dibuilder, difile,
+            name, strlen(name), name, strlen(name), difile, fnnode->linenbr, fntype, 0, 1,
             fnnode->linenbr, LLVMDIFlagPublic, 0);
         LLVMSetSubprogram(kernel, sp);
         LLVMSetCurrentDebugLocation2(gen->builder,
