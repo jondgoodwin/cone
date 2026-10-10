@@ -58,6 +58,10 @@ typedef struct {
 // A variable's live mark at a seam (loanSeamLive): fired, it records the
 // variable as used after the seam, and reports nothing
 #define PendingSeamLive 0xFE
+// A point where a lock's guard might give its lock back (loanLockLive): fired,
+// a holder of the guard's borrow is used after the point, and the point is no
+// release. Nothing fired is reported
+#define PendingLockLive 0xFC
 
 static Loan *loans = NULL;
 static uint32_t nloans = 0;
@@ -731,6 +735,46 @@ uint32_t loanSeamLive(INode *seam, uint32_t var) {
     return id;
 }
 
+// The live mark of the lock guard 'guard' at a point that follows the
+// statement 'site' (kind 0), or begins the block 'site' (kind 1): a pending
+// entry that any use of a holder of the guard's borrow fires, from there on,
+// on any path. Keyed apart from every other key the map holds by its first
+// number, which no loan's id reaches.
+uint32_t loanLockLive(INode *site, int kind, uint32_t guard) {
+    uint32_t key = (kind ? 0x38000000u : 0x30000000u);
+    uint32_t id = mapGet(site, key, guard);
+    if (id)
+        return id;
+    if (npendings >= pendingcap)
+        pendings = (Pending *)pathGrow(pendings, &pendingcap, sizeof(Pending));
+    id = npendings++;
+    Pending *pend = &pendings[id];
+    pend->access = site;
+    pend->loan = 0;
+    pend->other = 0;
+    pend->holder = guard;
+    pend->kind = PendingLockLive;
+    pend->fired = 0;
+    mapPut(site, key, guard, id);
+    return id;
+}
+
+int loanLockStillLive(uint32_t id) {
+    return pendings[id].fired;
+}
+
+int loanSetRootedAt(PathSet *set, uint32_t root) {
+    if (set == NULL)
+        return 0;
+    if (set == &pathSetAll)
+        return 1;
+    for (uint32_t i = 0; i < set->cnt; ++i) {
+        if (loans[loanOf(set->ids[i])].place.var == root)
+            return 1;
+    }
+    return 0;
+}
+
 // *********************
 // Reporting
 // *********************
@@ -1083,6 +1127,10 @@ void loanUse(uint32_t var, INode *usenode) {
             pathSeamLive(pend->access, pend->holder);
             continue;
         }
+        if (pend->kind == PendingLockLive) {
+            pend->fired = 1;
+            continue;
+        }
         if (pend->kind == PendingChosen) {
             pend->fired = 1;
             char what[160];
@@ -1162,6 +1210,15 @@ void loanFlightPush(PathSet *carried, uint32_t reserved) {
 
 void loanFlightPop(uint32_t mark) {
     nflights = mark;
+}
+
+// Does an operand walked and waiting for its call carry a loan rooted at 'root'?
+int loanFlightRootedAt(uint32_t root) {
+    for (uint32_t f = 0; f < nflights; ++f) {
+        if (loanSetRootedAt(flights[f].loans, root))
+            return 1;
+    }
+    return 0;
 }
 
 // Report once at 'node', unless something there is reported already

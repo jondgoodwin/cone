@@ -311,8 +311,9 @@ static permission would be, `Arc[Mutex, T]`. Its value is the lock, in each
 allocation's header between the region's part and the value. The reference
 copies, counts and (for a lock for threads) crosses threads, but reaches
 nothing; a borrow through it takes the lock, waiting for a lock for threads,
-panicking for `Rwcell`, and the borrow's end gives it back, which is the end of
-its statement or of the block whose local's initializer made it. What is built
+panicking for `Rwcell`, and the borrow's last use gives it back: the end of its
+statement, or, where a local's initializer made it, the last use of the local
+(or of what holds the borrow on) on each path. What is built
 and what is not is `doc/reference/refpermlock.html`; how,
 [references](../../compiler/c/doc/nodes/references.md), "Lock permissions".
 
