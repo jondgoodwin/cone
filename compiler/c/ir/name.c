@@ -18,6 +18,8 @@
 Name *anonName;
 Name *tempName;
 Name *tempLocalName;
+Name *matchAliasName;
+Name *payloadName;
 Name *selfName;
 Name *staticLifeName;
 Name *unknownBrandName;

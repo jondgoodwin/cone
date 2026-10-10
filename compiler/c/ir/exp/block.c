@@ -242,7 +242,8 @@ static void blockHoist(BlockNode *blk, Nodes *hoists) {
     for (uint32_t at = 0; at < blk->stmts->used && from < hoists->used; ++at) {
         uint32_t to = from;
         while (nodesGet(hoists, to)->tag == VarDclTag
-            && ((VarDclNode *)nodesGet(hoists, to))->namesym == tempLocalName)
+            && (((VarDclNode *)nodesGet(hoists, to))->namesym == tempLocalName
+                || ((VarDclNode *)nodesGet(hoists, to))->namesym == matchAliasName))
             ++to;
         if (nodesGet(blk->stmts, at) != nodesGet(hoists, to))
             continue;

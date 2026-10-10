@@ -125,4 +125,10 @@ int varDclExtendTemp(TypeCheckState *pstate, INode **slot);
 // stands instead of borrowing the local, which is then never declared.
 INode *varDclTempValue(TypeCheckState *pstate, INode *node);
 
+// Declare 'hidden', a local named for no source (a temporary's, or the match
+// alias castBindProject makes), just before the statement declaring 'var',
+// which is being type checked. Returns 0, changing nothing, where that
+// statement is not the one being checked.
+int varDclHoistBefore(TypeCheckState *pstate, VarDclNode *var, VarDclNode *hidden);
+
 #endif

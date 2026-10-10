@@ -65,7 +65,7 @@ fn resolveImports(reg &Registry, p usize, scanned List[Module]) Result[Unit, Str
         // very file it was loaded from, so the two are one module
         match reg.find("core") {
           case imm c Some {
-            if not pkg.name.equals("core") { addLine(&mut mods[m], imp.name.view(), c.value); }
+            if not pkg.name.equals("core") { addLine(&mut mods[m], imp.name.view(), c); }
           }
           case is None {}
         }
@@ -73,8 +73,8 @@ fn resolveImports(reg &Registry, p usize, scanned List[Module]) Result[Unit, Str
       else {
         match reg.find(imp.name.view()) {
           case imm f Some {
-            if not holds(&deps, f.value) { deps.push(f.value); }
-            addLine(&mut mods[m], imp.name.view(), f.value);
+            if not holds(&deps, f) { deps.push(f); }
+            addLine(&mut mods[m], imp.name.view(), f);
           }
           case is None {
             // A name of the parent, which the compiler resolves
@@ -93,7 +93,7 @@ fn resolveImports(reg &Registry, p usize, scanned List[Module]) Result[Unit, Str
   }
   match checkModuleLoops(pkg, &mods, reg) {
     case is Ok {}
-    case imm e Error { return Error[Unit, String][e.value.copy()]; }
+    case imm e Error { return Error[Unit, String][e.copy()]; }
   }
   // Only what is compiled for the GPU has its kernels built, so only its
   // source is read past the headers: a marked package's, or its gpu/ folder's
@@ -104,8 +104,8 @@ fn resolveImports(reg &Registry, p usize, scanned List[Module]) Result[Unit, Str
       mut f = 0usize;
       while f < mods[m].files.len() and not kernels {
         match holdsKernel(mods[m].files[f]) {
-          case imm ok Ok { kernels = ok.value; }
-          case imm e Error { return Error[Unit, String][e.value.copy()]; }
+          case imm ok Ok { kernels = ok; }
+          case imm e Error { return Error[Unit, String][e.copy()]; }
         }
         f = f + 1usize;
       }
@@ -219,13 +219,13 @@ struct Plan {
     state.insert(String.from(name), visiting);
     mut scanned = List[Module].empty();
     match scanPackage(reg.packages[p]) {
-      case mut ok Ok { scanned <=> ok.value; }
-      case imm e Error { return Error[void, String][e.value.copy()]; }
+      case mut ok Ok { scanned <=> ok; }
+      case imm e Error { return Error[void, String][e.copy()]; }
     }
     mut unit = new Unit(p, List[Module].empty(), List[usize].empty(), false, false, List[usize].empty());
     match resolveImports(reg, p, scanned) {
-      case mut ok Ok { unit <=> ok.value; }
-      case imm e Error { return Error[void, String][e.value.copy()]; }
+      case mut ok Ok { unit <=> ok; }
+      case imm e Error { return Error[void, String][e.copy()]; }
     }
     units.push(unit);
     imm u = units.len() - 1usize;
@@ -259,7 +259,7 @@ struct Plan {
       if self.stateOf(depName) == unvisited {
         match self.visit(reg, dep) {
           case is Ok {}
-          case imm e Error { return Error[void, String][e.value.copy()]; }
+          case imm e Error { return Error[void, String][e.copy()]; }
         }
       }
       d = d + 1usize;
@@ -297,7 +297,7 @@ fn buildOrder(reg &Registry, top usize) Result[Plan, String] {
   if topName != "core" {
     mut core = 0usize;
     match reg.find("core") {
-      case imm c Some { core = c.value; }
+      case imm c Some { core = c; }
       case is None {
         imm searched = reg.searched();
         return Error[Plan, String][cat("no package named 'core', the prelude, in the registries searched: ", searched.view())];
@@ -305,7 +305,7 @@ fn buildOrder(reg &Registry, top usize) Result[Plan, String] {
     }
     match plan.visit(reg, core) {
       case is Ok {}
-      case imm e Error { return Error[Plan, String][e.value.copy()]; }
+      case imm e Error { return Error[Plan, String][e.copy()]; }
     }
     if plan.state.contains(topName) {
       // One of core's own imports: built with what it imports, and no core
@@ -314,7 +314,7 @@ fn buildOrder(reg &Registry, top usize) Result[Plan, String] {
   }
   match plan.visit(reg, top) {
     case is Ok {}
-    case imm e Error { return Error[Plan, String][e.value.copy()]; }
+    case imm e Error { return Error[Plan, String][e.copy()]; }
   }
   Ok[Plan, String][plan];
 }

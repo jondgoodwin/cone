@@ -99,12 +99,9 @@ static INode *eachBreakIf(INode *cond, BlockNode *loop, BlockNode *elseblk, INod
 // parseBoundMatch), with the matched value held in a variable of the block that
 // is the initializer:
 //   { imm m = cursor.next();
-//     if m is Some { imm s = [Some]m; s.value } elif m is None { break } }
+//     if m is Some { imm s = [Some]m; s } elif m is None { break } }
 // 'scope' is that block's.
 static INode *eachNextItem(INode *cursor, BlockNode *loop, BlockNode *elseblk, uint16_t scope, INode *lexnode) {
-    static Name *valueName = NULL;
-    if (valueName == NULL)
-        valueName = nametblFind("value", 5);
     BlockNode *blk = newBlockNode();
     inodeLexCopy((INode*)blk, lexnode);
     VarDclNode *matched = eachVar(immPerm, (INode*)eachCall(cursor, nextName, lexnode), scope, lexnode);
@@ -130,7 +127,8 @@ static INode *eachNextItem(INode *cursor, BlockNode *loop, BlockNode *elseblk, u
     BlockNode *arm = newBlockNode();
     inodeLexCopy((INode*)arm, lexnode);
     nodesAdd(&arm->stmts, (INode*)bound);
-    nodesAdd(&arm->stmts, (INode*)eachField(eachUse(bound, lexnode), valueName, lexnode));
+    // 'Some' is declared as a type, so the binding holds the item itself
+    nodesAdd(&arm->stmts, eachUse(bound, lexnode));
 
     NameUseNode *none = newNameUseFromLex(noneName, lexnode);
     castPatternMark((INode*)none);
@@ -236,9 +234,6 @@ static INode *eachVariant(INode *enumdcl, Name *name) {
 // the signature is not settled enough to say (the loop is then built, and what
 // is wrong shows where it is checked).
 static int eachCheckItem(INode *cursortype, uint32_t nvars, INode *lexnode, INode *varnode, INode **itemp) {
-    static Name *valueName = NULL;
-    if (valueName == NULL)
-        valueName = nametblFind("value", 5);
     *itemp = NULL;
     FnDclNode *nextfn = eachMethod(cursortype, nextName);
     INode *answer = nextfn ? eachAnswer(nextfn) : NULL;
@@ -251,10 +246,10 @@ static int eachCheckItem(INode *cursortype, uint32_t nvars, INode *lexnode, INod
             itypeName(cursortype), itypeName(answer));
         return 0;
     }
-    INode *field = isMethodType(some) ? iNsTypeFindFnField((INsTypeNode*)some, valueName) : NULL;
-    if (field == NULL || field->tag != FieldDclTag)
+    FieldDclNode *field = some->tag == StructTag ? structTypeVariantField((StructNode*)some) : NULL;
+    if (field == NULL)
         return 1;
-    INode *item = itypeGetTypeDcl(((FieldDclNode*)field)->vtype);
+    INode *item = itypeGetTypeDcl(field->vtype);
     if (item == NULL || item == unknownType || item == errorType || item->tag == FnCallTag)
         return 1;
     *itemp = item;

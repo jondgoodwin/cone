@@ -809,10 +809,10 @@ pub struct Driver {
     imm c = self.connAt(i) as &mut Conn;
     match c.core.pollTimeout() {
       case imm t Some {
-        if c.timer.isNone() or t.value < c.timerAt {
+        if c.timer.isNone() or t < c.timerAt {
           if not c.timer.isNone() {lp.cancel(c.timer);}
-          c.timer = lp.after(t.value, Target.Here[self.tok(kTimer, i, c.gen)]);
-          c.timerAt = t.value;
+          c.timer = lp.after(t, Target.Here[self.tok(kTimer, i, c.gen)]);
+          c.timerAt = t;
         }
       }
       case is None[Instant] {}
@@ -837,7 +837,7 @@ pub struct Driver {
     c.readyHit = false;
     mut b = IoBuf.empty();
     match pool.take(cfg.recvSize) {
-      case mut s Some {b <=> s.value;}
+      case mut s Some {b <=> s;}
       case is None[IoBuf] {}
     }
     if b.capacity() == 0usize {
@@ -888,7 +888,7 @@ pub struct Driver {
     if c.eof or c.recvOut or c.readyOut {return;}
     mut b = IoBuf.empty();
     match pool.take(lingerSize) {
-      case mut s Some {b <=> s.value;}
+      case mut s Some {b <=> s;}
       case is None[IoBuf] {}
     }
     if b.capacity() == 0usize {
@@ -1183,13 +1183,13 @@ pub struct Driver {
     if c.state == cFree {return id;}
     match parseV4(host, port) {
       case imm a Some {
-        c.addrs.push(a.value);
+        c.addrs.push(a);
         self.connectNext(lp, i);
       }
       case is None[SocketAddr] {
         mut b = IoBuf.empty();
         match pool.take(resolveSize) {
-          case mut s Some {b <=> s.value;}
+          case mut s Some {b <=> s;}
           case is None[IoBuf] {}
         }
         if b.capacity() == 0usize {
@@ -1299,8 +1299,8 @@ pub struct Driver {
     mut cancelled = false;
     match group {
       case imm g Some {
-        if g.value.isCancelled() {cancelled = true;}
-        if g.value.deadline() < dl {dl = g.value.deadline();}
+        if g.isCancelled() {cancelled = true;}
+        if g.deadline() < dl {dl = g.deadline();}
       }
       else {}
     }
@@ -1315,7 +1315,7 @@ pub struct Driver {
     match group {
       case imm g Some {
         imm at = if dl < forever() {dl;} else {now + Duration.fromHours(87600i64);};
-        r.watch = lp.afterIn(at, Target.Here[self.tok(kWatch, ri, r.gen)], g.value);
+        r.watch = lp.afterIn(at, Target.Here[self.tok(kWatch, ri, r.gen)], g);
       }
       else {
         if dl < forever() {r.watch = lp.after(dl, Target.Here[self.tok(kWatch, ri, r.gen)]);}
@@ -1349,8 +1349,8 @@ pub struct Driver {
   pub fn listenWith(self &mut, lp &mut Loop, addr SocketAddr, make So[LayerMaker], sink Sink) Result[ListenerId, IoError] {
     mut h = Handle.none();
     match lp.listen(addr) {
-      case imm r Ok {h = r.value;}
-      case imm e Error {return Error[ListenerId, IoError][e.value];}
+      case imm r Ok {h = r;}
+      case imm e Error {return Error[ListenerId, IoError][e];}
     }
     imm k = u32.from(listeners.len());
     listeners.push(new Lst(1u32, true, h, sink, make, 0u32));
@@ -1417,7 +1417,7 @@ pub struct Driver {
     c.sock = comp.handle;
     c.listener = new ListenerId(k, gen);
     match lp.peerAddr(c.sock) {
-      case imm a Ok {c.peer = a.value;}
+      case imm a Ok {c.peer = a;}
       case imm x Error {}
     }
     st.accepted = st.accepted + 1u64;
@@ -1488,7 +1488,7 @@ pub struct Driver {
     mut refused = false;
     match c.core.sendData(buf, file, line) {
       case mut s Some {
-        back <=> s.value;
+        back <=> s;
         refused = true;
       }
       case is None[IoBuf] {}
@@ -1693,7 +1693,7 @@ fn trySink(s Sink, e Event, back &mut Event) Sink, u32 {
           if ch.tx.isClosed() {
             how = sinkGone;
           } else {
-            *back <=> r.value;
+            *back <=> r;
             how = sinkFull;
           }
         }

@@ -792,9 +792,8 @@ given the one lifetime `'a` (`parseGenAnnotate`), so that `next` hands out borro
 of what the generator was lent, not of the generator. `final` is an empty method
 that makes the struct need finalizing; generation hangs the frame's drop on it.
 `yield each src` is written as text too (`parseYieldEach`): a block holding
-`mut sub = src;` and a loop of `match sub.next()` that `yield`s each `Some`
-whole (`ParseState.genraw`: its `YieldNode`'s value is the sub-generator's own
-result, not wrapped again). What the compiler needs later is recorded in a
+`mut sub = src;` and a loop of `match sub.next()` that `yield`s each item
+the `Some` binding holds, which the `yield` wraps in a `Some` of its own. What the compiler needs later is recorded in a
 `GenInfo` (`ir/exp/yield.h`).
 
 **A method is a generator the same way.** The struct is named for both

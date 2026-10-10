@@ -2006,7 +2006,6 @@ Nodes *parseIncludeCheck(ProgramNode *pgm, BuildDesc *desc, char *text, char *ur
     parse.isgen = 0;
     memset(&parse.gensig, 0, sizeof(parse.gensig));
     parse.genctx = NULL;
-    parse.genraw = 0;
     parse.library = 0;
     parse.genoperand = 0;
     parse.tparms = parse.tparmsend = NULL;
@@ -2095,7 +2094,6 @@ ProgramNode *parsePgm(ConeOptions *opt, BuildDesc *desc) {
     parse.isgen = 0;
     memset(&parse.gensig, 0, sizeof(parse.gensig));
     parse.genctx = NULL;
-    parse.genraw = 0;
     parse.library = desc != NULL && desc->library;
     parse.genoperand = 0;
     parse.tparms = parse.tparmsend = NULL;

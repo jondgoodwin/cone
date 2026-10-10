@@ -21,8 +21,8 @@
 		nothing elsewhere can add to it. That closedness is what buys an
 		<a href="refmatch.html">exhaustive match</a>.</p>
 
-	<p>The variants may carry values of their own, or carry nothing at all. Both are the same
-		construct:</p>
+	<p>The variants may carry values of their own, or carry nothing at all (<a href="#forms">three forms</a>
+		below):</p>
 <pre>
 enum PhoneType {
 	Home, Work, Mobile;
@@ -102,6 +102,39 @@ enum Event {
 	<p><b>A common member may be written anywhere in the body.</b> What makes a member common is its
 		kind, not its position: a <span class="pre">struct</span> is a variant, and anything else is
 		common. The layout still puts common fields first in every variant.</p>
+
+	<h3 id="forms">Variant forms</h3>
+	<p>A variant is declared in one of three forms, and one enum may mix them freely:</p>
+<pre>
+enum Token {
+	Number f64;                                    // declared as a type
+	Word &amp;str;
+	struct Op {pub prec i32; pub right bool;}       // declared as a struct
+	End;                                           // empty
+}
+</pre>
+	<ul>
+		<li><b>As a type</b>: a name and a type, <span class="pre">Number f64;</span>. The variant holds that
+			type itself. It has no field name, so there is no <span class="pre">.value</span>, or any name at all,
+			to reach what it holds by: a <a href="refmatch.html#enum">pattern that binds it</a> gives the
+			contents, as <span class="pre">case imm n Number</span> binds an <span class="pre">f64</span>
+			(a copy, or a move of what moves, as the matched value allows; through a reference, a reference
+			to it). The variant stays a type of its own, distinct from the type it holds: a
+			<span class="pre">Number</span> is not an <span class="pre">f64</span>. It is built as any variant is,
+			<span class="pre">Number[1.5]</span>, and may pin its tag value after its type,
+			<span class="pre">Data i64 = 7;</span>. Core's <span class="pre">Option</span> and
+			<span class="pre">Result</span> are declared this way: <span class="pre">None; Some T;</span> and
+			<span class="pre">Ok T; Error E;</span>.</li>
+		<li><b>As a struct</b>: <span class="pre">struct Op {...}</span> names its fields and may have methods.
+			A binding gives the struct, whose tag is never a visible field.</li>
+		<li><b>Empty</b>: a bare name holds nothing, <span class="pre">End;</span>, and declares what
+			<span class="pre">struct End;</span> would.</li>
+	</ul>
+	<p><b>A variant declared as a type is told from a common field by its capital</b>:
+		<span class="pre">Number f64;</span> declares a variant, and <span class="pre">time datetime;</span>
+		a field every variant has. An enum with fields in common names everything it holds, so
+		<b>none of its variants is declared as a type</b>, and is refused where one is written
+		(<span class="pre">ErrorTypeVariant</span>); declare it as a struct, whose field has a name.</p>
 
 	<h3>Tag values</h3>
 	<p>Each variant's tag value is assigned for you, ascending from zero in declaration order. You
@@ -309,7 +342,8 @@ enum Resource {
 	<p>A common field is readable from a value whose variant is not yet known, because every variant
 		holds it at the same offset. To reach a variant's own fields, use
 		<a href="refmatch.html">pattern matching</a> to establish which variant the value holds.
-		Once it has been narrowed it is used like any other struct value.</p>
+		Once it has been narrowed it is used like any other struct value. A variant declared as a
+		type has no field to read: its pattern binds what it holds.</p>
 
 	<h3 id="dispatch">Method dispatch</h3>
 	<p>Sometimes every variant should answer the same method with its own implementation. Declare the
@@ -563,7 +597,7 @@ imm p Pending[i32] = Pending.Some[5];
 imm w Pending[i32] = Pending.Waiting[i32][];
 
 match p {
-	case imm s Some {s.value;}      // Pending[i32]'s Some, holding an i32
+	case imm s Some {s;}            // Pending[i32]'s Some, holding an i32
 	case is None {0;}
 	case is Waiting {-1;}
 }

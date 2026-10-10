@@ -34,13 +34,13 @@ fn findConec(repo &Path) Result[Path, String] {
 fn warnIfStale(repo &Path, conec &Path) {
   mut stamp = new time.Timestamp();
   match fs.stat(conec) {
-    case imm s Ok { stamp = s.value.modified; }
+    case imm s Ok { stamp = s.modified; }
     case is Error { return; }
   }
   imm sources = repo.join("compiler/c");
   mut entries = List[fs.DirEntry].empty();
   match fs.walk(&sources) {
-    case mut ok Ok { entries <=> ok.value; }
+    case mut ok Ok { entries <=> ok; }
     case is Error { return; }
   }
   mut i = 0usize;
@@ -50,7 +50,7 @@ fn warnIfStale(repo &Path, conec &Path) {
     if ext == ".c" or ext == ".h" {
       match fs.stat(&entry.path) {
         case imm s Ok {
-          if s.value.modified > stamp {
+          if s.modified > stamp {
             // The file relative to the repository, as Path.relative_to gives it
             imm full = native(&entry.path);
             imm base = native(repo);
@@ -116,7 +116,7 @@ fn findVcvars() Path {
       "-utf8");
     match process.run(args.view()) {
       case imm ok Ok {
-        imm out = utf8Text(ok.value.stdout.view());
+        imm out = utf8Text(ok.stdout.view());
         imm trimmed = out.trim();
         imm roots = splitLines(trimmed.view());
         if roots.len() > 0usize {
@@ -147,9 +147,9 @@ fn isMsvcLinker(tool &Path) bool {
   imm args = argList(place.view(), "/?");
   match process.run(args.view(), new process.Options(timeout: time.Duration.fromSeconds(20))) {
     case imm ok Ok {
-      if ok.value.timedOut { return false; }
-      mut both = consoleText(ok.value.stdout.view());
-      imm err = consoleText(ok.value.stderr.view());
+      if ok.timedOut { return false; }
+      mut both = consoleText(ok.stdout.view());
+      imm err = consoleText(ok.stderr.view());
       both <- err.view();
       both.contains("Microsoft");
     }
@@ -251,12 +251,12 @@ fn runVcvars(changes &mut EnvChanges) Result[Vcvars, String] {
   mut code = 0u32;
   match process.runLine(line.view()) {
     case imm ok Ok {
-      out = ok.value.stdout.copy();
-      err = consoleText(ok.value.stderr.view());
-      code = ok.value.exitCode;
+      out = ok.stdout.copy();
+      err = consoleText(ok.stderr.view());
+      code = ok.exitCode;
     }
     case imm e Error {
-      fail(e.value.message());
+      fail(e.message());
     }
   }
   mut printed = String.empty();
@@ -267,7 +267,7 @@ fn runVcvars(changes &mut EnvChanges) Result[Vcvars, String] {
     case imm at Some {
       printed = consoleText(&raw[..at.value]);
       // After the line end echo writes
-      mut from = at.value + marker.len();
+      mut from = at + marker.len();
       if from + 2usize <= raw.len and raw[from] == '\r' and raw[from + 1usize] == '\n' {
         from = from + 2usize;
       }
@@ -365,7 +365,7 @@ fn findLinker(conestd &Path) Result[Linker, String] {
   mut changes = noChanges();
   match linkerIn(&mut changes) {
     case imm ok Ok {
-      mut linker = new Linker(ok.value.copy(), conestd.copy(), List[String].empty(), List[String].empty());
+      mut linker = new Linker(ok.copy(), conestd.copy(), List[String].empty(), List[String].empty());
       mut i = 0usize;
       while i < changes.names.len() {
         imm name = changes.names[i].view();
@@ -378,7 +378,7 @@ fn findLinker(conestd &Path) Result[Linker, String] {
     }
     case imm e Error {
       changes.restore();
-      Error[Linker, String][e.value.copy()];
+      Error[Linker, String][e.copy()];
     }
   }
 }
@@ -402,8 +402,8 @@ fn linkerIn(changes &mut EnvChanges) Result[Path, String] {
   }
   if vcvarsNeeded {
     match runVcvars(changes) {
-      case mut ok Ok { ran <=> ok.value; }
-      case imm e Error { return Error[Path, String][e.value.copy()]; }
+      case mut ok Ok { ran <=> ok; }
+      case imm e Error { return Error[Path, String][e.copy()]; }
     }
   }
   imm pathList = envOr("PATH", "");

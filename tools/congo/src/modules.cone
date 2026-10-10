@@ -59,9 +59,9 @@ struct Listing {
 fn coneFiles(folder &Path) Listing {
   mut entries = List[fs.DirEntry].empty();
   match fs.readDir(folder) {
-    case mut ok Ok { entries <=> ok.value; }
+    case mut ok Ok { entries <=> ok; }
     case imm e Error {
-      fail(fsMessage(&e.value));
+      fail(fsMessage(&e));
     }
   }
   mut out = new Listing(List[Path].empty(), List[Path].empty());
@@ -115,8 +115,8 @@ fn scanFolderModule(mods &mut List[Module], name &str, folder &Path, designated 
   imm me = mods.len();
   mods.push(newModule(name, designated, hasParent, parent));
   match scanHeader(designated) {
-    case imm h Ok { addImports(&mut mods[me], &h.value); }
-    case imm e Error { return Error[usize, String][e.value.copy()]; }
+    case imm h Ok { addImports(&mut mods[me], &h); }
+    case imm e Error { return Error[usize, String][e.copy()]; }
   }
   mut kids = List[usize].empty();
   imm listing = coneFiles(folder);
@@ -126,8 +126,8 @@ fn scanFolderModule(mods &mut List[Module], name &str, folder &Path, designated 
     if not samePath(file, designated) {
       mut header = noHeader();
       match scanHeader(file) {
-        case mut h Ok { header <=> h.value; }
-        case imm e Error { return Error[usize, String][e.value.copy()]; }
+        case mut h Ok { header <=> h; }
+        case imm e Error { return Error[usize, String][e.copy()]; }
       }
       if header.hasMod {
         imm stem = file.stem();
@@ -166,14 +166,14 @@ fn scanFolderModule(mods &mut List[Module], name &str, folder &Path, designated 
             "; rename the folder, its designated file and its 'mod' line")];
         }
         match scanFolderModule(mods, subName, sub, &inner, true, me) {
-          case imm k Ok { kids.push(k.value); }
-          case imm e Error { return Error[usize, String][e.value.copy()]; }
+          case imm k Ok { kids.push(k); }
+          case imm e Error { return Error[usize, String][e.copy()]; }
         }
       }
       else {
         match scanOrganisational(mods, me, sub) {
           case is Ok {}
-          case imm e Error { return Error[usize, String][e.value.copy()]; }
+          case imm e Error { return Error[usize, String][e.copy()]; }
         }
       }
     }
@@ -194,8 +194,8 @@ fn scanOrganisational(mods &mut List[Module], m usize, folder &Path) Result[void
     imm file = listing.files[i];
     mut hasMod = false;
     match scanHeader(file) {
-      case imm h Ok { hasMod = h.value.hasMod; }
-      case imm e Error { return Error[void, String][e.value.copy()]; }
+      case imm h Ok { hasMod = h.hasMod; }
+      case imm e Error { return Error[void, String][e.copy()]; }
     }
     if hasMod {
       imm place = native(file);
@@ -217,7 +217,7 @@ fn scanOrganisational(mods &mut List[Module], m usize, folder &Path) Result[void
     }
     match scanOrganisational(mods, m, sub) {
       case is Ok {}
-      case imm e Error { return Error[void, String][e.value.copy()]; }
+      case imm e Error { return Error[void, String][e.copy()]; }
     }
     i = i + 1usize;
   }
@@ -239,21 +239,21 @@ fn scanPackage(pkg &Package) Result[List[Module], String] {
   if pkg.lone {
     mods.push(newModule(pkg.name.view(), &pkg.src, false, 0usize));
     match scanHeader(&pkg.src) {
-      case imm h Ok { addImports(&mut mods[0usize], &h.value); }
-      case imm e Error { return Error[List[Module], String][e.value.copy()]; }
+      case imm h Ok { addImports(&mut mods[0usize], &h); }
+      case imm e Error { return Error[List[Module], String][e.copy()]; }
     }
     return Ok[List[Module], String][mods];
   }
   imm folder = pkg.src.parent();
   match scanFolderModule(&mut mods, pkg.name.view(), &folder, &pkg.src, false, 0usize) {
     case is Ok {}
-    case imm e Error { return Error[List[Module], String][e.value.copy()]; }
+    case imm e Error { return Error[List[Module], String][e.copy()]; }
   }
   imm gpuFolder = pkg.root.join("gpu");
   if fs.isDir(&gpuFolder) {
     match scanGpuFolder(pkg, &mut mods, &gpuFolder) {
       case is Ok {}
-      case imm e Error { return Error[List[Module], String][e.value.copy()]; }
+      case imm e Error { return Error[List[Module], String][e.copy()]; }
     }
   }
   Ok[List[Module], String][mods];
@@ -288,8 +288,8 @@ fn scanGpuFolder(pkg &Package, mods &mut List[Module], folder &Path) Result[void
     imm file = listing.files[i];
     mut header = noHeader();
     match scanHeader(file) {
-      case mut h Ok { header <=> h.value; }
-      case imm e Error { return Error[void, String][e.value.copy()]; }
+      case mut h Ok { header <=> h; }
+      case imm e Error { return Error[void, String][e.copy()]; }
     }
     if not header.hasMod {
       imm place = native(file);
@@ -326,8 +326,8 @@ fn scanGpuFolder(pkg &Package, mods &mut List[Module], folder &Path) Result[void
         "; rename the folder, its designated file and its 'mod' line")];
     }
     match scanFolderModule(mods, subName, sub, &inner, true, 0usize) {
-      case imm k Ok { found.push(k.value); }
-      case imm e Error { return Error[void, String][e.value.copy()]; }
+      case imm k Ok { found.push(k); }
+      case imm e Error { return Error[void, String][e.copy()]; }
     }
     i = i + 1usize;
   }
@@ -527,7 +527,7 @@ fn visitModule(pkg &Package, mods &List[Module], reg &Registry, m usize,
     if *state[to] == unvisited {
       match visitModule(pkg, mods, reg, to, state, steps) {
         case is Ok {}
-        case imm err Error { return Error[void, String][err.value.copy()]; }
+        case imm err Error { return Error[void, String][err.copy()]; }
       }
     }
     steps.pop();

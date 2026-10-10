@@ -49,7 +49,7 @@ fn socketOf(r Result[Socket, IoError]) Socket {
   mut res = r;
   mut s = Socket.none();
   match &mut res {
-    case mut ok &mut Ok {s <=> ok.value;}
+    case mut ok &mut Ok {s <=> *ok;}
     else {}
   }
   s;
@@ -67,7 +67,7 @@ fn same(a &Array[u8], b &Array[u8]) bool {
 
 fn codeOf[T](r Result[T, IoError]) u64 {
   match r {
-    case imm e Error {u64.from(e.value.code);}
+    case imm e Error {u64.from(e.code);}
     else {0u64;}
   }
 }
@@ -82,8 +82,8 @@ actor Client {
     b.append("hello, actor");
     imm w = await s.write(b);
     match w {
-      case imm n Ok {got.written.store(u64.from(n.value));}
-      case imm e Error {got.written.store(1000000u64 + u64.from(e.value.code));}
+      case imm n Ok {got.written.store(u64.from(n));}
+      case imm e Error {got.written.store(1000000u64 + u64.from(e.code));}
     }
   }
 }
@@ -97,7 +97,7 @@ actor Server {
     imm a = await ls.localAddr();
     mut port = 0u16;
     match a {
-      case imm addr Ok {port = addr.value.port();}
+      case imm addr Ok {port = addr.port();}
       else {}
     }
     got.port.store(u64.from(port));
@@ -112,15 +112,15 @@ actor Server {
     match &mut r {
       case mut ok &mut Ok {
         mut b = IoBuf.empty();
-        b <=> ok.value;
+        b <=> *ok;
         got.read.store(u64.from(b.len()));
         if same(b.view(), "hello, actor") {got.text.store(1u64);}
         b.clear();
         imm rest = await conn.read(b);
         match rest {
           case imm end Ok {
-            if end.value.len() == 0usize {got.ended.store(1u64);}
-            got.capacity.store(u64.from(end.value.capacity()));
+            if end.len() == 0usize {got.ended.store(1u64);}
+            got.capacity.store(u64.from(end.capacity()));
           }
           else {}
         }

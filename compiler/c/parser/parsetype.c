@@ -667,6 +667,43 @@ static void parseVariantTagPin(StructNode *substruct) {
     lexNextToken();
 }
 
+// Is this name spelled as a variant's is, with a capital? Types and variants are
+// capitalised and fields are not, which is what tells 'Ok i32;' (a variant
+// holding an i32) from 'time datetime;' (a field every variant has).
+static int parseIsVariantSpelling(Name *name) {
+    char first = (&name->namestr)[0];
+    return first >= 'A' && first <= 'Z';
+}
+
+// An enum with fields in common has a name for everything it holds, so no
+// variant of it is declared as a type, which has none ('Ok i32;'). Reported at the
+// first such variant, naming the first common field.
+static void parseCheckTypeVariants(StructNode *strnode) {
+    FieldDclNode *common = NULL;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&strnode->fields, cnt, nodesp)) {
+        if ((*nodesp)->tag == FieldDclTag && !((*nodesp)->flags & (IsTagField | IsMixin))) {
+            common = (FieldDclNode*)*nodesp;
+            break;
+        }
+    }
+    if (common == NULL || strnode->derived == NULL)
+        return;
+    for (nodesFor(strnode->derived, cnt, nodesp)) {
+        StructNode *variant = (StructNode*)*nodesp;
+        if (!structIsTypeVariant(variant))
+            continue;
+        errorMsgNode((INode*)variant, ErrorTypeVariant,
+            "%s is declared as a type, and %s has fields every variant shares (%s), so every variant of it names what it holds. Declare %s as a struct: 'struct %s {value %s;}'.",
+            &variant->namesym->namestr, &strnode->namesym->namestr, &common->namesym->namestr,
+            &variant->namesym->namestr, &variant->namesym->namestr,
+            structTypeVariantField(variant)->vtype->tag == NameUseTag
+                ? &((NameUseNode*)structTypeVariantField(variant)->vtype)->namesym->namestr : "T");
+        return;
+    }
+}
+
 // Parse a struct, a trait or an enum. They are one node, and what tells them
 // apart is in 'strflags': see the flag block in ir/inode.h.
 INode *parseStruct(ParseState *parse, uint16_t strflags) {
@@ -1099,6 +1136,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                 parseEndOfStatement();
             }
             else if (lexIsToken(PermToken) || lexIsToken(IdentToken)) {
+                int hadperm = lexIsToken(PermToken);
                 INode *perm = parseDclPerm(mutPerm);
                 parseStorageAttr(0);
                 if (!lexIsToken(IdentToken)) {
@@ -1140,6 +1178,35 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                         parseVariantTagPin(next);
                         parseAddVariant(parse, strnode, next, &priortag);
                     }
+                    parseEndOfStatement();
+                    parseSpan(parse, &strnode->spans, NULL, mstart, mkw, SpanMember);
+                    continue;
+                }
+
+                // In an enum, a capitalised name and a type, 'Ok i32;', is a
+                // variant declared as a type: a variant that holds that type
+                // itself, with no name for it and no field to reach it by. The
+                // capital is what tells it from a common field ('time datetime;'),
+                // which is written the same way and spelled as a field is.
+                if (isenum && !hadperm && parseIsVariantSpelling(field->namesym)) {
+                    strnode->flags |= HasTagField;
+                    StructNode *substruct = newStructNode(field->namesym);
+                    inodeLexCopy((INode*)substruct, (INode*)field);  // the name's position
+                    substruct->tag = StructTag;
+                    substruct->flags |= pubflag | (strnode->flags & FlagPub);
+                    // The contents, held in the variant's one field. The field is
+                    // built while the lexer is on the type, so a diagnostic about
+                    // it points there.
+                    FieldDclNode *contents = newFieldDclNode(payloadName, (INode*)mutPerm);
+                    contents->index = 0;
+                    contents->flags |= FlagMethFld | FlagPub;
+                    StructNode *svlifestruct = parse->lifestruct;
+                    parse->lifestruct = lifeowner;
+                    contents->vtype = parseType(parse);
+                    parse->lifestruct = svlifestruct;
+                    structAddField(substruct, contents);
+                    parseVariantTagPin(substruct);
+                    parseAddVariant(parse, strnode, substruct, &priortag);
                     parseEndOfStatement();
                     parseSpan(parse, &strnode->spans, NULL, mstart, mkw, SpanMember);
                     continue;
@@ -1236,6 +1303,9 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
         else
             errorMsgLex(ErrorNoVariants, "An enum declares its variants: an empty one has no value it could hold.");
     }
+
+    if (isenum)
+        parseCheckTypeVariants(strnode);
 
     // The tag field belongs to the closed-variant machinery: it is the
     // discriminant a match on a plain reference reads to pick the variant, and

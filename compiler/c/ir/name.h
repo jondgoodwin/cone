@@ -27,6 +27,13 @@ extern Name *tempName;    // "-_"
 // "-temp": the hidden local of a block that a temporary its borrow extends
 // becomes ('imm r = &make();', varDclExtend). No source can spell it.
 extern Name *tempLocalName;
+// "-bound": the hidden local a pattern binding to a type-variant's contents
+// reads them from: the matched value under the variant's name, declared just
+// before the binding (castBindProject). No source can spell it.
+extern Name *matchAliasName;
+// "(payload)": the one field of a type-variant ('Ok i32;'), which holds the
+// contents and has no name a program can write.
+extern Name *payloadName;
 extern Name *selfName;  // "self"
 extern Name *staticLifeName;  // "'static", the global lifetime (lifetime.h)
 extern Name *unknownBrandName; // "'=?", an invariant lifetime nothing is known of: the same as none
