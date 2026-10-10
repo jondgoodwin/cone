@@ -14,6 +14,7 @@
 #include "../ir/nametbl.h"
 #include "lexer.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -238,42 +239,140 @@ VarDclNode *parseBindVarDcl(ParseState *parse) {
 }
 
 // De-sugar a variable bound pattern match
-void parseBoundMatch(ParseState *parse, IfNode *ifnode, NameUseNode *expnamenode, VarDclNode *valnode) {
-    // We will desugar a variable declaration into using a pattern match and re-cast
-    CastNode *isnode = newIsNode((INode*)expnamenode, unknownType);
-    CastNode *castnode = newConvCastNode((INode*)expnamenode, unknownType);
+// What a match, or a bound 'if', matches against [topic 2: the matchee's form
+// decides]. A value that is a place -- a name, a field of a place, a dereference,
+// an element at a name or a literal -- is matched where it stands: every test
+// reads it in place and takes nothing, so a pattern that only tests moves no
+// resource away, and the arm that binds is the one that takes from it (copying
+// or moving it into a hidden variable of its own, as a binding of the matched
+// value always has). Anything else -- a call, a borrow ('&r', '&mut r'), a literal
+// -- is a value this match owns, evaluated once into a hidden variable that every
+// test and binding reads. A reference is a value: its copy is the reference.
+typedef struct {
+    INode *place;           // the place as written, cloned for each use; NULL when the value is held
+    NameUseNode *held;      // the use of the hidden variable holding the value; NULL when it is a place
+} MatchSubject;
 
+// Is this expression a place that may be read again for each test: free of calls,
+// so that reading it again is the same read? A name (a module's too), a field of
+// a place, a dereference of one, or an element at a name or a literal.
+static int parseMatchIsPlace(INode *exp) {
+    if (exp == NULL)
+        return 0;
+    if (isNameUseNode(exp))
+        return 1;
+    if (exp->tag == StarTag)
+        return parseMatchIsPlace(((StarNode*)exp)->vtexp);
+    if (exp->tag != FnCallTag)
+        return 0;
+    FnCallNode *fncall = (FnCallNode*)exp;
+    if (fncall->flags & FlagIndex) {
+        if (fncall->methfld != NULL || fncall->args == NULL || fncall->args->used != 1 || (fncall->flags & FlagRangeIncl))
+            return 0;
+        INode *index = nodesGet(fncall->args, 0);
+        return (isNameUseNode(index) || index->tag == ULitTag) && parseMatchIsPlace(fncall->objfn);
+    }
+    // A field: a member named on a receiver, with no parentheses after it
+    return fncall->args == NULL && fncall->methfld != NULL && isNameUseNode(fncall->methfld)
+        && !(fncall->flags & FlagOperator) && parseMatchIsPlace(fncall->objfn);
+}
+
+// A copy of a place, for one more use of it: a node reachable twice in the tree is
+// type checked twice, and a place is read by many tests
+static INode *parseMatchPlaceCopy(INode *place) {
+    CloneState cstate = {0};     // Every field the clone reads, the ones not set below NULL
+    cstate.instnode = NULL;
+    cstate.selftype = NULL;
+    cstate.selfparm = NULL;
+    cstate.scope = 0;
+    return cloneNode(&cstate, place);
+}
+
+// One use of the matched value, for a test
+static INode *parseMatchUse(MatchSubject *subject) {
+    return subject->place ? parseMatchPlaceCopy(subject->place) : (INode*)subject->held;
+}
+
+// Set the value to match: a place is matched where it stands, anything else is
+// held. The hidden variable is returned for the caller to declare, NULL for a place.
+static VarDclNode *parseMatchSubject(MatchSubject *subject, INode *value, int mayUsePlace) {
+    if (mayUsePlace && parseMatchIsPlace(value)) {
+        subject->place = value;
+        subject->held = NULL;
+        return NULL;
+    }
+    VarDclNode *holder = newVarDclFull(anonName, VarDclTag, unknownType, (INode*)immPerm, value);
+    NameUseNode *held = newNameUseNode(anonName);
+    held->dclnode = (INode*)holder;
+    subject->place = NULL;
+    subject->held = held;
+    return holder;
+}
+
+// De-sugar a variable bound pattern match. In a match 'subject' is the matched value
+// and 'wrapper' is NULL. In a bound 'if' the matched value follows the variable's
+// type, after '=', so it is read here and made the subject; the block that 'wrapper'
+// is declares the hidden variable that holds it when it is not a place.
+static void parseBoundMatch(ParseState *parse, IfNode *ifnode, MatchSubject *subject, BlockNode *wrapper) {
+    // We will desugar a variable declaration into using a pattern match and re-cast.
     // Parse the variable-bind into a vardcl, then move its desired type into both
     // the 'is' and 'cast' nodes. The pattern's bare root name is looked up in the
     // matched value's enum at type check (castPatternBind), so the variable takes
     // its type from the conversion, once that is bound, rather than holding a
     // third copy of a node a clone would leave unbound.
+    CastNode *isnode = newIsNode(NULL, unknownType);
+    CastNode *castnode = newConvCastNode(NULL, unknownType);
     VarDclNode *varnode = parseBindVarDcl(parse);
     castPatternMark(varnode->vtype);
-    isnode->typ = castnode->typ = castnode->vtype = varnode->vtype;
-    castnode->flags |= FlagMatchBind;
-    varnode->vtype = unknownType;
-    varnode->value = (INode *)castnode;
 
     // If value expression is needed, obtain it also
-    if (valnode != NULL) {
+    MatchSubject iform;
+    if (wrapper != NULL) {
         if (lexIsToken(AssgnToken))
             lexNextToken();
         else {
             errorMsgLex(ErrorInvType, "Expected '=' followed by value to match against");
         }
-        valnode->value = parseSimpleExpr(parse);
-        nodesAdd(&ifnode->condblk, (INode*)isnode);
+        subject = &iform;
+        VarDclNode *holder = parseMatchSubject(subject, parseSimpleExpr(parse), 1);
+        if (holder != NULL)
+            nodesInsert(&wrapper->stmts, (INode*)holder, 0);
     }
+
+    // The test reads the matched value where it is. A binding takes from the
+    // matched value only in the arm that runs: from the hidden variable that holds
+    // it, or, for a place, from a hidden variable of the arm's own that it is
+    // copied or moved into, as a bound value always has been
+    VarDclNode *armholder = NULL;
+    if (subject->place) {
+        armholder = newVarDclFull(anonName, VarDclTag, unknownType, (INode*)immPerm, parseMatchUse(subject));
+        inodeLexCopy((INode*)armholder, subject->place);
+        NameUseNode *armuse = newNameUseNode(anonName);
+        armuse->dclnode = (INode*)armholder;
+        castnode->exp = (INode*)armuse;
+    }
+    else
+        castnode->exp = (INode*)subject->held;
+    isnode->exp = parseMatchUse(subject);
+    isnode->typ = castnode->typ = castnode->vtype = varnode->vtype;
+    castnode->flags |= FlagMatchBind;
+    varnode->vtype = unknownType;
+    varnode->value = (INode *)castnode;
+
+    if (wrapper != NULL)
+        nodesAdd(&ifnode->condblk, (INode*)isnode);
     // A match's case may end in an 'if' guard, which may name the variable. The
     // variable is declared in the arm, which the guard is not in, so the guard is
     // a block that binds it again, to the same conversion of the same value:
     //   'case imm x T if g {...}'  ->  'is T and {imm x = [T]v; g}' then '{imm x = [T]v; ...}'
     // Being an 'and', the condition is not an 'is', so exhaustiveness does not
-    // count the arm, which is right: the guard may fail.
+    // count the arm, which is right: the guard may fail. (A match with a bound guard
+    // holds its matched value, parseMatchHasBoundGuard: the guard reads the binding
+    // before the arm is chosen, and must take nothing from a place the arms after
+    // it test.)
     else if (lexIsToken(IfToken)) {
         lexNextToken();
-        CastNode *guardcast = newConvCastNode((INode*)expnamenode, castnode->typ);
+        CastNode *guardcast = newConvCastNode(parseMatchUse(subject), castnode->typ);
         guardcast->vtype = castnode->typ;
         guardcast->flags |= FlagMatchBind;
         VarDclNode *guardvar = newVarDclFull(varnode->namesym, VarDclTag, unknownType, varnode->perm, (INode*)guardcast);
@@ -288,9 +387,12 @@ void parseBoundMatch(ParseState *parse, IfNode *ifnode, NameUseNode *expnamenode
     else
         nodesAdd(&ifnode->condblk, (INode*)isnode);
 
-    // Create and-then block, with vardcl injected at start
+    // Create and-then block, with vardcl injected at start, after the hidden
+    // variable it reads
     BlockNode *blknode = (BlockNode*)parseExprBlock(parse, 0);
-    nodesInsert(&blknode->stmts, (INode*)varnode, 0); // Inject vardcl at start of block
+    nodesInsert(&blknode->stmts, (INode*)varnode, 0);
+    if (armholder != NULL)
+        nodesInsert(&blknode->stmts, (INode*)armholder, 0);
     nodesAdd(&ifnode->condblk, (INode*)blknode);
 }
 
@@ -307,13 +409,9 @@ INode *parseIf(ParseState *parse) {
     // - The first statement in the block actually binds the var to the re-cast value
     if (lexIsToken(PermToken)) {
         BlockNode *blknode = newBlockNode();
-        VarDclNode *valnode = newVarDclFull(anonName, VarDclTag, unknownType, (INode*)immPerm, NULL);
-        NameUseNode *valnamenode = newNameUseNode(anonName);
-        valnamenode->dclnode = (INode*)valnode;
-        nodesAdd(&blknode->stmts, (INode*)valnode);
         nodesAdd(&blknode->stmts, (INode*)ifnode);
         retnode = (INode*)blknode; // return block instead of 'if'!
-        parseBoundMatch(parse, ifnode, valnamenode, valnode);
+        parseBoundMatch(parse, ifnode, NULL, blknode);
     }
     else {
         INode *cond = parseSimpleExpr(parse);
@@ -349,13 +447,9 @@ INode *parseIf(ParseState *parse) {
             BlockNode *blknode = newBlockNode();
             nodesAdd(&ifnode->condblk, elseCond);
             nodesAdd(&ifnode->condblk, (INode*)blknode);
-            VarDclNode *valnode = newVarDclFull(anonName, VarDclTag, unknownType, (INode*)immPerm, NULL);
-            NameUseNode *valnamenode = newNameUseNode(anonName);
-            valnamenode->dclnode = (INode*)valnode;
-            nodesAdd(&blknode->stmts, (INode*)valnode);
             ifnode = newIfNode();
             nodesAdd(&blknode->stmts, (INode*)ifnode);
-            parseBoundMatch(parse, ifnode, valnamenode, valnode);
+            parseBoundMatch(parse, ifnode, NULL, blknode);
         }
         else {
             nodesAdd(&ifnode->condblk, parseSimpleExpr(parse));
@@ -368,13 +462,13 @@ INode *parseIf(ParseState *parse) {
 // Finish a range pattern, whose lower bound is parsed and whose '..' or '..<'
 // is the current token. It tests the matched value against both bounds:
 // 'a .. b' is 'v >= a and v <= b', and 'a ..< b' is 'v >= a and v < b'.
-static INode *parseMatchRange(ParseState *parse, INode *matchee, INode *lower) {
+static INode *parseMatchRange(ParseState *parse, MatchSubject *subject, INode *lower) {
     // All three nodes take the operator's position, so a matched value that
     // cannot be ordered is reported at the '..'
     if (lexIsToken(EllipsisToken))
         parseRangeEllipsis();
-    FnCallNode *gecall = newFnCallOp(matchee, ">=", 2);
-    FnCallNode *upcall = newFnCallOp(matchee, lexIsToken(DotDotLessToken) ? "<" : "<=", 2);
+    FnCallNode *gecall = newFnCallOp(parseMatchUse(subject), ">=", 2);
+    FnCallNode *upcall = newFnCallOp(parseMatchUse(subject), lexIsToken(DotDotLessToken) ? "<" : "<=", 2);
     LogicNode *range = newLogicNode(AndLogicTag);
     lexNextToken();
     nodesAdd(&gecall->args, lower);
@@ -399,9 +493,9 @@ static INode *parseMatchRange(ParseState *parse, INode *matchee, INode *lower) {
 // decided. It is parsed to its end, its own 'or' included, so that it is
 // reported once.
 #define PatBareMsg "A condition is not a pattern: a value alone is compared with the matched value. Write the comparison with the matched value left out, as '>3', or put the condition in an 'if' guard."
-static INode *parseMatchPattern(ParseState *parse, INode *matchee) {
+static INode *parseMatchPattern(ParseState *parse, MatchSubject *subject) {
     if (lexIsToken(IsToken)) {
-        CastNode *isnode = newIsNode(matchee, unknownType);
+        CastNode *isnode = newIsNode(parseMatchUse(subject), unknownType);
         lexNextToken();
         isnode->typ = parseTypeReq(parse, "'is'");
         castPatternMark(isnode->typ);
@@ -409,7 +503,7 @@ static INode *parseMatchPattern(ParseState *parse, INode *matchee) {
     }
     char *cmpop = parseCmpOp();
     if (cmpop != NULL) {
-        FnCallNode *callnode = newFnCallOp(matchee, cmpop, 2);
+        FnCallNode *callnode = newFnCallOp(parseMatchUse(subject), cmpop, 2);
         lexNextToken();
         nodesAdd(&callnode->args, parseOr(parse));
         return (INode *)callnode;
@@ -421,28 +515,116 @@ static INode *parseMatchPattern(ParseState *parse, INode *matchee) {
     }
     INode *value = parseOr(parse);
     if (lexIsRangeOp())
-        return parseMatchRange(parse, matchee, value);
+        return parseMatchRange(parse, subject, value);
     if (parseCmpOp() != NULL || lexIsToken(IsToken) || lexIsToken(AndToken)) {
         errorMsgNode(value, ErrorPatBare, PatBareMsg);
         return parseSimpleExprFrom(parse, value);
     }
-    return (INode *)newMatchValueNode(matchee, value);
+    return (INode *)newMatchValueNode(parseMatchUse(subject), value);
+}
+
+// Does the match whose '{' is the current token have an arm that binds a variable and
+// ends in an 'if' guard, 'case imm x T if g {'? Read ahead in the text, before the
+// matched value is made: such a match holds its value (parseBoundMatch). The text is
+// read as the lexer would, skipping comments, strings and characters, and nested
+// braces, so an arm of a match inside this one is not this one's.
+static int parseMatchHasBoundGuard() {
+    char *p = lex->tokp;
+    int depth = 0;
+    while (*p) {
+        char c = *p;
+        if (c == '/' && p[1] == '/') {
+            while (*p && *p != '\n')
+                ++p;
+            continue;
+        }
+        if (c == '/' && p[1] == '*') {
+            p += 2;
+            while (*p && !(p[0] == '*' && p[1] == '/'))
+                ++p;
+            if (*p)
+                p += 2;
+            continue;
+        }
+        if (c == '"') {
+            for (++p; *p && *p != '"'; ++p)
+                if (*p == '\\' && p[1])
+                    ++p;
+            if (*p)
+                ++p;
+            continue;
+        }
+        if (c == '\'') {
+            // A character is 'x' or '\x...'; otherwise the quote opens a lifetime
+            if (p[1] == '\\') {
+                for (p += 2; *p && *p != '\''; ++p)
+                    ;
+                if (*p)
+                    ++p;
+            }
+            else
+                p += (p[1] && p[2] == '\'') ? 3 : 1;
+            continue;
+        }
+        if (c == '{') {
+            ++depth;
+            ++p;
+            continue;
+        }
+        if (c == '}') {
+            if (--depth <= 0)
+                return 0;
+            ++p;
+            continue;
+        }
+        // 'case' at this match's own level, then a permission: a binding
+        if (depth == 1 && c == 'c' && strncmp(p, "case", 4) == 0 && (p == lex->tokp || !(isalnum((unsigned char)p[-1]) || p[-1] == '_'))
+            && (p[4] == ' ' || p[4] == '\t' || p[4] == '\n' || p[4] == '\r')) {
+            char *q = p + 4;
+            while (*q == ' ' || *q == '\t' || *q == '\n' || *q == '\r')
+                ++q;
+            size_t wordlen = 0;
+            while (isalnum((unsigned char)q[wordlen]) || q[wordlen] == '_')
+                ++wordlen;
+            int bound = (wordlen == 3 && (strncmp(q, "imm", 3) == 0 || strncmp(q, "mut", 3) == 0 || strncmp(q, "uni", 3) == 0))
+                || (wordlen == 2 && strncmp(q, "ro", 2) == 0) || (wordlen == 4 && strncmp(q, "mut1", 4) == 0);
+            p += 4;
+            if (!bound)
+                continue;
+            // The arm's pattern runs to the '{' of its block, outside any bracket
+            int nest = 0;
+            for (q += wordlen; *q; ++q) {
+                if (*q == '(' || *q == '[')
+                    ++nest;
+                else if (*q == ')' || *q == ']')
+                    --nest;
+                else if (*q == '{' && nest <= 0)
+                    break;
+                else if (nest <= 0 && q[0] == 'i' && q[1] == 'f' && !(isalnum((unsigned char)q[2]) || q[2] == '_')
+                    && !(isalnum((unsigned char)q[-1]) || q[-1] == '_'))
+                    return 1;
+            }
+            continue;
+        }
+        ++p;
+    }
+    return 0;
 }
 
 // Parse match expression, which is sugar translated to an 'if' block
 INode *parseMatch(ParseState *parse) {
     // 'match' is de-sugared into a block:
-    // - vardcl that capture the expression in a variable
+    // - a vardcl that captures the expression in a variable, unless it is a place,
+    //   which the cases read where it stands (MatchSubject)
     // - if .. elif .. else sequence for all the match cases
     BlockNode *blknode = newBlockNode();
     IfNode *ifnode = newIfNode();
 
-    // Pick up the expression in a variable, then start the block
+    // Pick up the expression, then start the block
     lexNextToken();
-    VarDclNode *expdclnode = newVarDclNode(anonName, VarDclTag, (INode*)immPerm);
-    NameUseNode *expnamenode = newNameUseNode(anonName);
-    expnamenode->dclnode = (INode*)expdclnode;
-    expdclnode->value = parseSimpleExpr(parse);
+    INode *matchee = parseSimpleExpr(parse);
+    MatchSubject subject;
+    VarDclNode *expdclnode = parseMatchSubject(&subject, matchee, !parseMatchHasBoundGuard());
 
     // Parse all cases
     parseBlockStart();
@@ -452,18 +634,18 @@ INode *parseMatch(ParseState *parse) {
             lexNextToken(); // consume the 'case' token
             // Handle bound variable pattern
             if (lexIsToken(PermToken)) {
-                parseBoundMatch(parse, ifnode, expnamenode, NULL);
+                parseBoundMatch(parse, ifnode, &subject, NULL);
                 continue;
             }
 
             // Anything else is one or more patterns joined by 'or', then an
             // optional 'if' guard
-            INode *cond = parseMatchPattern(parse, (INode *)expnamenode);
+            INode *cond = parseMatchPattern(parse, &subject);
             while (lexIsToken(OrToken)) {
                 LogicNode *ornode = newLogicNode(OrLogicTag);
                 lexNextToken();
                 ornode->lexp = cond;
-                ornode->rexp = parseMatchPattern(parse, (INode *)expnamenode);
+                ornode->rexp = parseMatchPattern(parse, &subject);
                 cond = (INode *)ornode;
             }
             if (lexIsToken(IfToken)) {
@@ -484,7 +666,8 @@ INode *parseMatch(ParseState *parse) {
             return (INode *)blknode;
         }
     }
-    nodesAdd(&blknode->stmts, (INode*)expdclnode);
+    if (expdclnode)
+        nodesAdd(&blknode->stmts, (INode*)expdclnode);
     nodesAdd(&blknode->stmts, (INode*)ifnode);
     return (INode *)blknode;
 }

@@ -53,14 +53,33 @@ fn matchNonEnum(n i32) i32 {
   }
 }
 
-// A pattern may not narrow across regions. The value is borrowed, so its variant
-// is borrowed too; asking for an owning reference would hand the match arm
-// storage that nothing gave it ownership of, and the two regions are laid out
-// differently besides -- an 'Rc' allocation carries a count the borrow has no
-// room for. There is no recast between regions, so the regions must be the same.
-fn foreignRegion(s &imm Shape) i32 {
+// A pattern written as a reference is a check that the matched value is one of that
+// kind, and may not narrow across regions. The value is owned by an 'Rc', so its
+// variant is the 'Rc''s; a borrow of it would hand the match arm a reference that
+// nothing counts, and the two regions are laid out differently besides -- an 'Rc'
+// allocation carries a count the borrow has no room for. There is no recast between
+// regions, so the regions must be the same. (Naming the variant alone, 'Circle', is
+// the reference the matched value is.)
+fn foreignRegion(s Rc[imm, Shape]) i32 {
   match s {
-    case imm c +Rc-mut Circle {c.radius;}   //~ ErrorInvType "won't downcast safely"
+    case imm c &Circle {c.radius;}   //~ ErrorInvType "won't downcast safely"
+    else {0;}
+  }
+}
+
+// The same check against a stronger permission than the matched value has
+fn foreignPermission(s &imm Shape) i32 {
+  match s {
+    case imm c &mut Circle {c.radius;}   //~ ErrorInvType "won't downcast safely"
+    else {0;}
+  }
+}
+
+// ...and against a matched value that is no reference at all
+fn notAReference(s Shape) i32 {
+  match s {
+    case imm c &Circle {c.radius;}   //~ ErrorInvType:10 "Types are not compatible for this downcast specialization"
+                                    //~^ ErrorInvType:16 "Unsupported built-in type conversion" follow-on
     else {0;}
   }
 }

@@ -78,6 +78,7 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
     case IsTag:
         node = cloneCastNode(cstate, (CastNode *)nodep); break;
     case DerefTag:
+    case StarTag:
         node = cloneStarNode(cstate, (StarNode *)nodep); break;
     case FnCallTag:
     case ArrIndexTag:

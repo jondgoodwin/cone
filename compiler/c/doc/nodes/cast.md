@@ -85,7 +85,9 @@ generated: it is a question asked of a type argument at compile time
 bare name, the referent's under `&` or `&<`, or the callee's where type arguments
 are written (`castPatternName` finds it). A path, `Shape.Circle`, has no root and
 is taken as written. The mark is what tells the later phases that the name is
-looked up in the matched value's enum first.
+looked up in the matched value's enum first. A pattern written as a managed
+reference, `+Rc-mut Circle`, is refused here (`ErrorPatManaged`): a pattern names
+only the variant.
 
 **A value alone as a pattern is an undecided `is` test.** A value alone means
 equality with the matched value, but a bare name may be a variant of the
@@ -139,6 +141,18 @@ reference type, whatever the name means for now.
    returns — the conversion's `vtype` becomes `errorType`, so the variable the
    pattern declares is silenced too.
 
+**The matched value supplies the reference** (`castPatternAdoptRef`, run by
+`castPatternBind` once the name is bound). A pattern that names a type, not
+written as a reference, against a matched value that is a reference of any kind
+(a borrow, an owner into a managed region, a virtual reference) becomes a
+reference to that type with the matched value's region and permission:
+`case imm c Circle` on an `&imm Shape` narrows to `&imm Circle`, on an
+`Rc[mut, Shape]` to `Rc[mut, Circle]`. The `is` test and the conversion each wrap
+their own copy of the pattern, around the one shared name. A pattern that is
+already a reference, `&Circle`, or an alias of one, is left as written: it is the
+check, and `castIsTypeCheck` refuses it where the matched value is no reference,
+is in another region, or has a weaker permission.
+
 **Only the `is` test reports.** In source the two nodes share `typ`, so the `is`
 test, checked first, binds it for both and the conversion finds the mark
 cleared. A clone — a generic instance's body, a default method's copy — has
@@ -154,10 +168,11 @@ that holds it, and the flag is cleared first. A value that is a bare name
 already is, and `castIsTypeCheck` binds and checks it, so `case Circle` is
 `case is Circle` in every respect, exhaustiveness and a reference matched
 included. Otherwise the mark is cleared and the name keeps its lexical meaning,
-or, having none, is `ErrorUnkName`. A value that is then a type — a bare name
-bound to one, a path such as `Shape.Circle`, `i32`, `Some[i32]` — is no value
-to compare with, `ErrorPatType`, whose message says to write `is`; `typ`
-becomes `errorType`. Anything else replaces the node in its slot with
+or, having none, is `ErrorUnkName`. A value that is then a type is no value to
+compare with, `ErrorPatType`, whose message says to write `is`, and `typ` becomes
+`errorType` — except a variant of an enum named through it, a path such as
+`Shape.Circle`, which is the `is` test the node already is, as the bare variant
+is. A bare name bound to another type, `i32`, `Some[i32]`, is refused. Anything else replaces the node in its slot with
 `matched == value`, an operator call positioned on the value, and checks that
 call, so a value alone reports exactly what `case ==value` would.
 

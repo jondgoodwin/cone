@@ -39,31 +39,50 @@ which failed module verification.
 
 `if` / `elif` / `else` append pairs; `else if` is folded into `elif`.
 
-**A bound pattern match is de-sugared into a wrapping block**: `if imm c &Circle
-= value {…}` becomes a block declaring an anonymous variable for the value, an
-`is` condition over a shared name use, and a variable bound to a cast inserted
-at index 0 of the arm. The condition and the cast share the pattern's type node,
-and the variable takes its type from the cast ([cast](cast.md)). **`parseIf`
-returns the wrapping block, not the `IfNode`.**
+**What a match or a bound `if` matches against is decided by its form**
+(`MatchSubject`, `parseMatchSubject`). A *place* -- a name, a field of a place, a
+dereference, an element at a name or a literal, with no call anywhere in it
+(`parseMatchIsPlace`) -- is matched where it stands: the lowering declares no
+variable for it and writes a copy of the place (`parseMatchPlaceCopy`) into every
+test, so a pattern that only tests reads the tag in place and takes nothing.
+Anything else -- a call, a borrow (`&r`, `&mut r`), a literal -- is evaluated once
+into an anonymous variable, which every test and binding reads through one shared
+name use. A reference is such a value: its copy is the reference. A match whose
+arm binds a variable and ends in an `if` guard (`parseMatchHasBoundGuard`, read
+ahead in the source text before the matched value is made) holds its value
+whatever its form: the guard's binding reads the value before the arm is chosen,
+and may take nothing from a place the arms after it test.
+
+**A bound pattern match is de-sugared**: `if imm c Circle = value {…}` becomes the
+`is` condition and a variable bound to a cast inserted at index 0 of the arm. For
+a value that is held, a wrapping block declares the anonymous variable, the
+condition and the cast share one name use of it, and **`parseIf` returns the
+wrapping block, not the `IfNode`** (it returns the block for a place too, holding
+only the `IfNode`). For a place, the condition tests a copy of the place and the arm
+begins with an anonymous variable of its own, initialized from another copy of the
+place, which the cast reads: the arm that runs is the one that takes the value,
+copying it or moving it, and finalizes it as the arm ends. The condition and the cast
+share the pattern's type node, and the variable takes its type from the cast
+([cast](cast.md)).
 
 `parseMatch` lowers the whole construct into a block plus one `IfNode`:
 `case is T` → an `is` node, `case == v` (or any comparison operator) → that
-operator's call with the scrutinee on the left, `case a ..< b` → `>= a and < b` (`case a .. b` → `>= a and <= b`)
-(`<=` for `...`), `case imm x T` → a bound pattern, `case v` (a value alone) →
+operator's call with the scrutinee on the left, `case a ..< b` → `>= a and < b` (`case a .. b` → `>= a and <= b`),
+`case imm x T` → a bound pattern, `case v` (a value alone) →
 an `is` node flagged `FlagMatchValue` that type check turns into `v`'s variant
 test or `== v` ([cast](cast.md)), `else` → `elseCond`. Patterns joined by `or` → a logical `or` of
-their conditions; an `if g` after them → `cond and g`. **Every arm shares one
-scrutinee node pointer**, a use of the variable the lowering declared to hold
-the matched value, so a range's two calls and every `or` alternative hold it too.
+their conditions; an `if g` after them → `cond and g`. **A held value is one scrutinee node
+pointer shared by every arm**, so a range's two calls and every `or` alternative hold
+it too; **a place is a separate copy in each test.**
 
 **A pattern's first operand decides between a range, a value and a refusal.**
 A pattern beginning with neither `is` nor a comparison operator reads one
 operand (`parseOr`); a following `..` or `..<` makes it a range. A comparison
 operator, `is` or `and` after it makes it a condition (`case n > 3`), and so does
-a leading `not` (`case not b`). A condition is refused, `ErrorPatBare`: as a
-value alone it would be compared with the matched value, and whether it should
-be is not decided. The refused expression is finished (`parseSimpleExprFrom`),
-its own `or` included, so it is reported once. Anything else is a value alone
+a leading `not` (`case not b`). A condition is refused, `ErrorPatBare`: a value
+alone is compared with the matched value, and the comparison without its left side
+(`case >3`) and an `if` guard say a condition. The refused expression is finished
+(`parseSimpleExprFrom`), its own `or` included, so it is reported once. Anything else is a value alone
 (`case 1`, `case true`, `case K`, `case Circle`), the same at the start of a
 case and after an `or`.
 
@@ -123,13 +142,16 @@ flow later injects wraps the already-coerced node.
 Given an `is` condition on a **closed** variant set — an enum with no base of
 its own, carrying `HasTagField` or `SameSize` — it checks whether every entry of
 `derived` is matched by some arm testing **the same scrutinee**: the same node,
-or two name uses of one declaration (`ifSameScrutinee`). An enum that *extends*
+two name uses of one declaration, or two reads of the same place -- the same variable,
+the same field of the same place, a dereference of one, an element at the same name or
+literal (`ifSameScrutinee`, `ifSamePlace`). An enum that *extends*
 another is such a set and its `derived` holds the base's variants ahead of its own,
 so a match on it must account for both; a match on the base still accounts for the
 base's alone, which is what forbidding the substitution between the two buys. The
 second
 form is what a clone of the match presents — a generic instance's or a macro
-expansion's — since cloning copies the shared node once per arm. If they all
+expansion's — since cloning copies the shared node once per arm, and the last
+is a match on a place. If they all
 are, and one of the variant tests is the **last** condition, it **overwrites that
 condition with `elseCond`**. An arm after the one being checked may name its
 variant bare and not be bound to it yet (`castPatternPending`), or be a value

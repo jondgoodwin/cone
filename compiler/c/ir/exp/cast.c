@@ -74,13 +74,18 @@ NameUseNode *castPatternName(INode *typ, int *hasargs) {
 // Mark a pattern's bare root name, so that name resolution leaves it for
 // castPatternBind to look up in the matched value's enum.
 //
-// An owning reference at the root keeps its '+R-perm T' spelling, which is
-// refused as a type anywhere else: its root is read here, at parse time, before
-// anything knows that 'R' in 'R[mut, Circle]' is a region rather than a generic
-// variant, and how a pattern spells a managed reference is not settled yet.
+// A reference at the root is a pattern's check that the matched value is a
+// reference ('&Circle', castPatternAdoptRef); the retired spelling of a managed
+// one, '+R-perm T', is refused.
 void castPatternMark(INode *typ) {
-    if (typ && (typ->tag == RefTag || typ->tag == VirtRefTag))
+    // A pattern names only the variant: the matched value supplies the managed
+    // reference, its region and its permission, so '+Rc-mut Circle' is refused where
+    // it is written, and a reference to a managed region need not be spelled
+    if (typ && (typ->tag == RefTag || typ->tag == VirtRefTag) && ((RefNode*)typ)->plusSpelled) {
         ((RefNode*)typ)->plusSpelled = 0;
+        errorMsgNode(typ, ErrorPatManaged,
+            "A pattern names only the variant: the matched value supplies the managed reference and its permission. Write 'Circle', not '+Rc-mut Circle'.");
+    }
     NameUseNode *name = castPatternName(typ, NULL);
     if (name)
         name->flags |= FlagPattern;
@@ -139,7 +144,7 @@ static INode *castEnumVariant(StructNode *enumdcl, Name *name) {
 //
 // Returns 0 when the pattern names nothing to narrow to, reported, and there is
 // no type to check.
-static int castPatternBind(CastNode *node, int report) {
+static int castPatternBindName(CastNode *node, int report) {
     int hasargs;
     NameUseNode *name = castPatternName(node->typ, &hasargs);
     if (name == NULL)
@@ -168,6 +173,44 @@ static int castPatternBind(CastNode *node, int report) {
         }
     }
     return name->dclnode != errorType;
+}
+
+// A pattern names only the variant [topic 6a]: the matched value supplies the
+// reference kind, region and permission. Matched against a reference -- a borrow of
+// any permission, or an owning reference into a managed region ('Rc[mut, Shape]') --
+// a pattern that names a type, 'Circle', is the same reference to it: '&imm Circle',
+// 'Rc[mut, Circle]'. A pattern that is written as a reference, '&Circle', is that
+// check instead, and stays what it was written (castIsTypeCheck refuses it where it
+// disagrees with the matched value in kind, region or permission). The 'is' test and
+// the conversion that binds each do this to their own copy of the pattern.
+static void castPatternAdoptRef(CastNode *node) {
+    INode *typ = node->typ;
+    if (typ == NULL || typ == errorType || typ == unknownType)
+        return;
+    int isname = isNameUseNode(typ);
+    if (!isname && !(typ->tag == FnCallTag && (typ->flags & FlagIndex)))
+        return;
+    if (!isTypeNode(typ) || itypeIsManagedRefType(typ) || !isExpNode(node->exp))
+        return;
+    // An alias of a reference type is written as one
+    if (isname) {
+        INode *named = itypeGetTypeDcl(typ);
+        if (named->tag == RefTag || named->tag == VirtRefTag)
+            return;
+    }
+    INode *fromtype = iexpGetTypeDcl(node->exp);
+    if (fromtype->tag != RefTag && fromtype->tag != VirtRefTag)
+        return;
+    RefNode *from = (RefNode*)fromtype;
+    // A virtual reference narrows to the reference it was made from
+    node->typ = (INode*)newRefNodeFull(RefTag, typ, from->region, from->perm, typ);
+}
+
+static int castPatternBind(CastNode *node, int report) {
+    if (!castPatternBindName(node, report))
+        return 0;
+    castPatternAdoptRef(node);
+    return 1;
 }
 
 // Create the test for a value alone as a match pattern, positioned on the value.
@@ -211,6 +254,14 @@ void castMatchValueTypeCheck(TypeCheckState *pstate, INode **nodep) {
         }
     }
     if (isTypeNode(value)) {
+        // A variant named through its enum alone, 'Shape.Circle', means 'is' as the
+        // variant bare does [topic 6b]
+        INode *dcl = (value->flags & FlagQualified) ? itypeGetTypeDcl(value) : NULL;
+        StructNode *base = dcl && dcl->tag == StructTag ? structBaseTraitDcl((StructNode*)dcl) : NULL;
+        if (base != NULL && base->tag == StructTag && (base->flags & EnumType)) {
+            castIsTypeCheck(pstate, node);
+            return;
+        }
         errorMsgNode(value, ErrorPatType,
             "A type alone is not a pattern: a value alone is compared with the matched value, as by '=='. Write 'is' before the type to narrow to it.");
         node->typ = errorType;
