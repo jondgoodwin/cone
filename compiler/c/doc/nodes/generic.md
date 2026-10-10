@@ -534,9 +534,12 @@ substitutions, as a macro's copy does. So `Box[i64]` has its own generic
 `pair[U]` with its own instances, `Box[i64].pair[i64]`. `genericClone` makes
 the one copy that is not generic — the instance itself — and clears it there.
 
-Not yet built: a trait's public generic method met by a type that is the trait.
-`structCheckTraitReqs` compares the requirement with the type's method, its own
-or the copy of a default, by `fnSigVrefEqual`, and `itypeIsSame` finds no two
+A trait's generic default is inherited by a type that declares the trait, and
+`structCheckTraitReqs` does not compare the copy, which shares the default's
+type parameters and so is told from a method the type declares itself.
+Not yet built: a trait's public generic method met by a generic method the type
+declares itself. `structCheckTraitReqs` compares the requirement with that
+method by `fnSigVrefEqual`, and `itypeIsSame` finds no two
 uses of a type parameter the same — a use of one is not a type, so neither
 resolves to a declaration — so every such type is `ErrorInvType`, "none of
 what it declares has the signature". Comparing them would mean matching type
