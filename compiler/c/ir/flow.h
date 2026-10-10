@@ -252,6 +252,13 @@ typedef struct {
     uint8_t state;
 } DropFlagNode;
 
+// A statement giving a lock's guard back before its scope ends (the path walk,
+// flowpath.c, "A lock's guard gives its lock back at the last use of its
+// borrow"): a DropFlagNode flagged FlagLockGive with no 'release' of its own,
+// which releases 'guard' if its drop flag says it holds its value, and says it
+// no longer does. 'at' positions it.
+INode *flowLockGive(VarDclNode *guard, INode *at);
+
 // A temporary: the value of an expression nothing takes -- not bound to a
 // variable, stored, passed by value, handed back or moved -- whose death does
 // something (itypeNeedsFinal), or which a borrow points at, whatever its type.
