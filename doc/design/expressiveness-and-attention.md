@@ -64,6 +64,29 @@ lifetimes, by trait bounds — so no two pieces snap together the same way and t
 joint is where the thinking goes. Generic-heavy library composition is the shape
 this note is steering away from.
 
+## General mechanisms, never a special case
+
+> *"I'm constantly talking about making the mechanisms be consistent and broadly
+> usable where applicable … There are obviously limitations, but … a general
+> principle … about trying to keep the principles simple, broad, usable,
+> consistent, right? And not special casing things."*
+
+**What it rejects:** a rule, a syntactic form or a compiler path that serves one
+type, one generic or one construct, where a general mechanism would serve it.
+Each special case is one more thing a reader has to know about, and it does not
+carry over to the next type that needs the same thing. That is the attention
+cost above, paid once for every case.
+
+It has ruled on several designs. Type arguments are inferred wherever they can
+be, for every generic, not only for `Option`'s `None`. `match` has no
+prefix-pattern form: a tokenizer matches the first character and then matches
+the rest inside that arm. `Option` gets no rules of its own in the compiler.
+`each` gets no special form for types that cannot lend a stable reference.
+
+**A special case is raised only with the reason the general mechanism cannot
+apply.** The limitations are real, and sometimes one is the answer. But the
+question is put as the general mechanism first.
+
 ## Safety is priced, not assumed
 
 The author does not treat safety as a free good:
