@@ -137,11 +137,13 @@ for a call to bind the places to ([Type Check
 Reasoning](../phases/type-check-reasoning.md), "Invariant lifetimes:
 brands").
 
-**`GenVarDclNode`** is `{ IExpNodeHdr; Name *namesym; Nodes *annot; }`. Its
+**`GenVarDclNode`** is `{ IExpNodeHdr; Name *namesym; Nodes *annot; INode *valtype; }`. Its
 `vtype` is set NULL and never assigned; `gVarDclTypeCheck` is empty. `namesym`
 sits at the same offset as `VarDclNode.namesym` and `NameUseNode.namesym`, which
 is what makes the casts in the three `*NameRes` functions safe. `annot` is what
-was written after the parameter's name, each `+`-joined name, or NULL.
+was written after the parameter's name, each `+`-joined name, or NULL. `valtype`
+is the integer type of a **value parameter**, `[N usize]` (below), NULL for a
+type parameter.
 
 **Why the annotation is one slot, of no fixed meaning.** `[T ___]` is where a
 parameter will be annotated with more than a constraint: a type, making a value
@@ -149,11 +151,11 @@ parameter, `[N usize]`, and a kind, `[e Expr]`, `[b Block]`, `[M Module]` — Jo
 direction that generic and macro parameters be typed like any parameter, by
 *"the kind of a parameter"* [Jon 26 Sep]. So
 the parser reads whatever names are there into `annot` without deciding, and
-what each **resolves to** decides what it means: a trait is a constraint, which
-is built; anything else is a value or kind parameter, refused at name
-resolution as not built (`ErrorGenParmConstr`). A macro's parameter and a
-generic module's are refused in the parser, as before, since neither kind of
-declaration takes a constraint yet.
+what each **resolves to** decides what it means: a trait is a constraint; an
+integer type makes a value parameter (`valtype`); anything else is a kind
+parameter, refused at name resolution as not built (`ErrorGenParmConstr`). A
+macro's parameter and a generic module's are refused in the parser, as before,
+since neither kind of declaration takes a constraint yet.
 
 **`MacroDclNode`** carries `namesym`, `parms`, `body`, and a `memonodes` that is
 **dead** — macros are never memoized; every expansion is a fresh clone. Declared
@@ -271,7 +273,9 @@ enclosing scope and the matching pop would never remove it.
 `fnDclNameRes` for a function's. It first folds each parameter's annotation into
 the list, as clauses of a fresh use of the parameter and the annotation's name
 (a signature stands as it is, to be decided by evaluation) —
-refusing, `ErrorGenParmConstr`, a name that resolves to no trait — and then
+refusing, `ErrorGenParmConstr`, a name that resolves to no trait; a parameter
+whose annotation is an integer type is taken out first as a value parameter
+(below) — and then
 resolves every clause of every written condition (`genericConditionNameRes`),
 keeping a condition whose clauses each have a subject that is a type parameter
 (the function's own, or its generic type's) and a name that is a trait that is
@@ -587,6 +591,54 @@ instance and its variants are checked — on the first instance of the generic
 only, since the discriminant node and the tag values are shared by every
 instance, and measuring each would report a declared type's overflow once per
 instance.
+
+### Value parameters
+
+**`[N usize]` is a generic parameter whose argument is a number.** Name
+resolution (`genericConstraintsNameRes`) takes a parameter whose annotation is
+an integer type out of the constraints and records the type in
+`GenVarDclNode.valtype`; a float, `bool` or `char` type, a second annotation
+beside it, a `where` clause about it and a generic *type* declaring one are
+refused (`ErrorGenValueParm`; `genericRefuseValueParms`). The parameter is
+**used only as itself**: an array's size, `Array[T, N]`, or a value in the body.
+`arrayTypeLower` refuses a size that mentions one inside anything else, `N + 1`
+(`ErrorGenValueArith`, `genericMentionsValueParm`), because arithmetic in a type
+would need two such sizes compared, which is the open question of checking a
+generic where it is declared.
+
+**An argument is a `ULitNode` of the parameter's type** (`genericValueArg`),
+built whole, so it is not a type and `isTypeNode` is false of it. It is written
+in the brackets, `dot[3](a, b)`, or inferred: `genericInferType` has an
+`ArrayTag` case that matches a parameter type's array against the argument's,
+captures the number where the parameter's size is a use of a value parameter
+(`genericCaptureValue`; two sizes for one parameter are `ErrorGenValueClash`) and
+goes on into the element types, so nested arrays and a slice of arrays give a
+number each. A value parameter used as a whole type, `x N`, captures nothing
+(`genericCaptureType`).
+
+**`genericSubstitute` takes the bracketed list of a function with a value
+parameter as its generic arguments** whatever they are (an index of a function
+means nothing else), and `genericMemoize` turns each into the literal or refuses
+it (`ErrorGenValueArg`: not a literal, negative, of another type, too large for
+the parameter's). The memo compares a number by value (`genericArgSame`), and
+`genericInstanceArg` leaves it alone, having no lifetime. The clone substitutes a
+use of the parameter with a copy of the literal like any argument, and
+`cloneArrayNode` clones an array's sizes for it, which it had shared.
+
+**An instance is told apart by its number in its symbol**, `L`, the number type's
+letter, the value, `_`, among the type arguments (`nameType`; `dot[3]` reads
+`_CINv3dotLj3_E`); `itypeInstanceTypeArgs` accepts a number among a generic
+*function's* arguments (a macro's call of numbers has the same shape and is not
+an instance).
+
+**A method's brackets, `s.asArrays[3]()`, are an index until the name says
+otherwise.** `fnCallMethodTypeArgs` takes them as arguments only when the name
+before them was noted as a generic taking a value parameter
+(`genericValueFnNote`, at the function's name resolution), and then only when
+the receiver's type finds a method of that name that takes one; a field of the
+same name, `a.pick[2]`, is indexed as before. Asking the receiver's type means
+checking the receiver, which type check does once, so `FlagRcvChecked` on the
+member access tells its own check not to walk the receiver a second time.
 
 ### Constraints
 

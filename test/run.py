@@ -1917,6 +1917,8 @@ def object_extension(options: tuple[str, ...]) -> str:
 #   type    = basic-letter | path | 'T' {type} 'E' | 'F' [lifetimes] {type} 'E' type
 #           | 'A' type decimal '_' | 'R' ident ident type | 'S' ident ident type
 #           | 'V' ident ident path | 'P' type
+#           | 'L' basic-letter decimal '_'   a number, the argument of a value parameter;
+#                                        the letter is the number type's
 #   lifetimes = 'G' {digit} '_'          what a signature's named lifetimes promise, where
 #                                        that differs from the same signature unannotated
 #   ident   = decimal ['_'] bytes        bytes all [A-Za-z0-9_]; '_' when they start with '_' or a digit
@@ -2119,6 +2121,14 @@ class Demangler:
         if ch in ("C", "N", "I"):
             return self.path()
         self.take()
+        if ch == "L":
+            # A value parameter's argument: the number type's letter, then the value
+            letter = self.take()
+            if letter not in DEMANGLE_BASIC_TYPES:
+                raise DemangleError(f"number type {letter!r} unknown at {self.pos - 1}")
+            value = self.decimal()
+            self.expect("_")
+            return str(value)
         if ch == "T":
             elems = []
             while self.peek() != "E":
@@ -2232,6 +2242,8 @@ DEMANGLE_EXAMPLES = [
     ("_CINv11passThroughFEuE", "passThrough[fn()]"),
     ("_CINv11passThroughR04opaqFG10_R02roxR02roxER02roxE", "passThrough[&opaq fn'10(&ro i64,&ro i64) &ro i64]"),
     ("_CINv11passThroughuE", "passThrough[void]"),
+    ("_CINv3dotLj3_E", "dot[3]"),
+    ("_CINv4fillxLj12_E", "fill[i64,12]"),
     ("_CINv11passThroughPhE", "passThrough[*u8]"),
     ("_CNvC1mu9_gre_6ka8i", "m.größe"),
     ("_CNvNt6Umlautu8_ab_eh24y", "Umlaut.`a b`"),

@@ -286,9 +286,14 @@ not built (a relation, a type expression, `not`) or an unclosed parenthesis,
 refused by the parser; `ErrorWhereSubject`, a subject that is no type parameter
 in scope; `ErrorWhereTrait`, an `is` naming no trait; and `ErrorWhereNoParms`, a
 clause on a declaration with no type parameters to constrain. An annotation after
-a type parameter's name that names no trait stays `ErrorGenParmConstr`, the code
+a type parameter's name that names no trait or integer type stays `ErrorGenParmConstr`, the code
 for a parameter annotated in a way that is not built, as a macro's parameter
-given one is; `or` there, `[T A or B]`, is `ErrorGenParmOr`, whose remedy is to
+given one is. A value parameter, `[N usize]`, has four codes of its own:
+`ErrorGenValueParm`, one declared in a way not built (not an integer type, a
+constraint beside it, a `where` clause about it, on a generic type);
+`ErrorGenValueArg`, an argument that is no non-negative integer literal the
+parameter's type holds; `ErrorGenValueClash`, a number inferred two ways; and
+`ErrorGenValueArith`, arithmetic over one in an array's size; `or` there, `[T A or B]`, is `ErrorGenParmOr`, whose remedy is to
 move the choice into a `where` clause.
 
 A condition on one entry of a type's `is` list, `is Move if T is Move`, is written

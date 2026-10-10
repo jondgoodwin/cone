@@ -714,6 +714,7 @@ type     = letter                                a built-in number type, bool, o
          | "S" ident ident type                  array reference
          | "V" ident ident path                  virtual reference to a trait
          | "P" type                              raw pointer
+         | "L" letter decimal "_"                a number, the argument of a value parameter: its type's letter, then its value
 
 decimal  = "0" | [1-9][0-9]*
 ```
@@ -813,6 +814,7 @@ demangler in `test/run.py`:
 | private `SubPt._hid` | `_CNvNtC3sub5SubPt4__hid` | `sub.SubPt._hid` — the separator `_` is required before a name beginning with `_` or a digit, so two underscores; privacy is a fact, not a spelling |
 | root generic `fn pick[T](a T, b T)` at `i64` | `_CINv4pickxE` | `pick[i64]` — the type *argument*, once |
 | `fn pickSecond[T,U]` at `i64`, `f64` | `_CINv10pickSecondxdE` | `pickSecond[i64,f64]` |
+| `fn dot[N usize]` at 3 | `_CINv3dotLj3_E` | `dot[3]` — the number *argument*, spelled by its type's letter (`j`, `usize`) and its value |
 | `Holder[i64].tally` | `_CNvINt6HolderxE5tally` | `Holder[i64].tally` — the instance is the owner |
 | `push` of generic module `mod stack[T]`, a submodule of the root, at `i64`; its global `count` | `_CNvIC5stackxE4push`, `_CNvIC5stackxE5count` | `stack[i64].push`, `stack[i64].count` — the module instance is the owner, and its members' components are bare |
 | a method of `struct Entry` in `stack[i64]`; `tally[T]`'s `see` at a type of module `user` | `_CNvNtIC5stackxE5Entry7doubled`, `_CNvIC5tallyNtC4user3TagE3see` | `stack[i64].Entry.doubled`, `tally[user.Tag].see` |

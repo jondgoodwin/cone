@@ -221,9 +221,13 @@ void fnDclNameRes(NameResState *nstate, FnDclNode *fndclnode) {
     // a clause to name.
     INode *owner = nstate->typenode;
     if (fndclnode->genericinfo
-        || (owner && owner->tag == StructTag && ((StructNode*)owner)->genericinfo))
+        || (owner && owner->tag == StructTag && ((StructNode*)owner)->genericinfo)) {
         genericConstraintsNameRes(nstate, fndclnode->genericinfo ? fndclnode->genericinfo->parms : NULL,
             &fndclnode->where);
+        // A name taking a value parameter, 'h.pick[3]' (fnCallMethodTypeArgs)
+        if (fndclnode->genericinfo)
+            genericValueFnNote(fndclnode->genericinfo->parms, fndclnode->namesym);
+    }
     else if (fndclnode->where) {
         errorMsgNode(nodesGet(fndclnode->where, 0), ErrorWhereNoParms,
             "%s has no type parameters, nor is it a member of a generic type, so a 'where' clause has nothing to constrain.",

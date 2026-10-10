@@ -604,6 +604,12 @@ enum ErrorCode {
     // What a GPU has none of, refused where it is written (ir/exp/borrow.c, ir/exp/allocate.c, ir/iexp.c)
     ErrorGpuUnavailable = 1400, // In GPU code, a function reference ('&name'), a virtual reference made from a reference, or an allocation ('new So[T]', 'new Rc[T]', ...): a GPU has no pointers to code, no tables of them and no allocator
 
+    // Value parameters of a generic, '[N usize]' (ir/meta/generic.c, ir/types/array.c)
+    ErrorGenValueParm = 1401,   // A value parameter, '[N usize]', that is not built: its annotation is not an integer type, it has another annotation beside it, it is on a generic type, or a 'where' clause asks about it
+    ErrorGenValueArg = 1402,    // An argument for a value parameter that is not a non-negative integer literal of the parameter's type that fits it
+    ErrorGenValueClash = 1403,  // A value parameter inferred as two different numbers: 'dot(&three, &four)' over 'Array[f32, N]' twice
+    ErrorGenValueArith = 1404,  // Arithmetic over a value parameter in a type, 'Array[T, N + 1]': a size is written as a number or as a value parameter alone
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name
