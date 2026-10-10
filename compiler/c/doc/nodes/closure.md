@@ -149,8 +149,10 @@ which say what its signature is, then `fnCallClosureArgs` checks it.
   lent as a temporary, a borrow of it, as `&make()` is.
 - **An overload set.** The literal is considered only against the overloads whose
   parameter there is callable (a function reference's signature, or a generic
-  parameter bound by one), so a number's overload never takes it; among those,
-  the ones taking as many parameters as it writes; and among several, the ones
+  parameter bound by one, in a generic that may join the set only because every
+  type parameter of it is so bound), so a number's overload never takes it; among
+  those, the generics the call's other arguments leave viable
+  (`genericOverloadViable`), the ones taking as many parameters as it writes; and among several, the ones
   whose callable has exactly the types the literal writes. One left is chosen;
   more than one is `ErrorClosureOverload` naming them and saying to write the
   parameter's types; none is `ErrorClosureOverload`. The body is checked against

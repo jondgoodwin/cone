@@ -1,0 +1,90 @@
+// A generic function whose type parameters are all bound by function signatures
+// joins an overload set. Its '&F' parameter counts as a callable for overload
+// resolution: a closure literal, a function reference or a struct with a '()'
+// reaches it, and a number reaches the plain overload beside it. Every value is
+// worked out by hand.
+
+mod closure_generic_overload;
+
+import stdio use *;
+
+// One name, three overloads: a number, a callable taken as '&F' that inlines
+// and is called with one parameter, and a callable taken as '&G' with two
+fn taperNum overload taper(m i32, t f32) f32 { f32.from(m) * t; }
+fn taperOne[F fn(u f32) f32] overload taper(m i32, f &F) f32 { f(f32.from(m)); }
+fn taperTwo[F fn(u f32, v f32) f32] overload taper(m i32, f &F) f32 { f(f32.from(m), 2.); }
+
+// A plain borrowed callable, beside a generic whose callable takes two parameters
+fn lendOne overload deform(m i32, f &<fn(u f32) f32) f32 { f(f32.from(m)) + 100.; }
+fn deformTwo[F fn(u f32, v f32) f32] overload deform(m i32, f &F) f32 { f(f32.from(m), 3.); }
+
+// Two generics of one parameter count, told apart by the signature each is bound by
+fn byFloat[F fn(u f32) f32] overload scale(m i32, f &F) f32 { f(f32.from(m)); }
+fn byInt[F fn(u i32) f32] overload scale(m i32, f &F) f32 { f(m); }
+
+// Two generics bound by one signature, told apart by another argument
+fn onNumber[F fn(u f32) f32] overload apply(m i32, f &F) f32 { f(f32.from(m)); }
+fn onFlag[F fn(u f32) f32] overload apply(m &Flag, f &F) f32 { if m.on { f(1.); } else { f(0.); } }
+struct Flag {
+  pub on bool;
+}
+
+// A callable that changes its state is taken as '&mut F'
+fn bump[F fn(u i32) i32] overload run(f &mut F) i32 { f(10); f(20); }
+fn runNum overload run(n i32) i32 { n; }
+
+// A struct with a '()' meets the bound as a closure does
+struct Doubler {
+  pub fn `()`(self &, u f32) f32 { u * 2.; }
+}
+
+fn plain(u f32) f32 { u + 0.25; }
+
+struct Shaper {
+  pub base i64;
+  pub fn shapeNum overload shape(self &, t i64) i64 { base * t; }
+  pub fn shapeOne[F fn(u i64) i64] overload shape(self &, f &F) i64 { f(base); }
+  pub fn shapeTwo[F fn(u i64, v i64) i64] overload shape(self &, f &F) i64 { f(base, 2); }
+}
+
+fn main() {
+  // A number takes the plain overload
+  print <- taper(2, 0.5), "\n";                        // 2 * 0.5: 1
+  // A closure capturing a variable takes the generic: t * k with t = 2 and k = 3
+  imm k = 3.;
+  print <- taper(2, t => t * k), "\n";                 // 6
+  // Two parameters take the other generic: 2 + 2
+  print <- taper(2, (a, b) => a + b), "\n";            // 4
+  // The full form with types
+  print <- taper(2, fn(u f32) f32 { u - k; }), "\n";   // -1
+  // A struct with a '()', lent
+  print <- taper(5, &new Doubler()), "\n";             // 10
+  // A closure given a name, lent
+  imm named = fn(u f32) f32 { u * k + 1.; };
+  print <- taper(4, &named), "\n";                     // 13
+
+  // A plain '&<fn' overload beside a generic whose callable has two parameters
+  print <- deform(2, t => t + 1.), "\n";               // 3 + 100: 103
+  print <- deform(2, (a, b) => a * b), "\n";           // 2 * 3: 6
+
+  // Two generics of one count: the written types choose
+  print <- scale(2, fn(u f32) f32 { u + 0.5; }), "\n";     // 2.5
+  print <- scale(3, fn(u i32) f32 { 0.75; }), "\n";        // 0.75
+  // Two generics bound by one signature: the other argument chooses, a literal included
+  print <- apply(4, t => t * k), "\n";                     // 12
+  print <- apply(&new Flag(true), t => t * k + 100.), "\n";    // 103
+  print <- apply(&new Flag(false), t => t * k + 100.), "\n";   // 100
+  // A function reference is told apart the same way, by its exact signature
+  print <- scale(6, &plain), "\n";                         // 6.25
+
+  // '&mut F': the state changes. The calls count 1, 2 and the last answer is 20 + 2
+  mut calls = 0;
+  print <- run(fn(u i32) i32 { calls = calls + 1; u + calls; }), "\n";   // 22
+  print <- run(7), "\n";                               // 7
+
+  // Methods join a set the same way
+  imm s = new Shaper(10);
+  print <- s.shape(4), "\n";                           // 10 * 4: 40
+  print <- s.shape(x => x + 3), "\n";                  // 10 + 3: 13
+  print <- s.shape((a, b) => a * b), "\n";             // 10 * 2: 20
+}

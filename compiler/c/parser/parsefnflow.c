@@ -1405,6 +1405,57 @@ INode *parseIsCondition(ParseState *parse) {
     return cond;
 }
 
+// Is this type parameter bound to a function signature, '[F fn(u f32) f32]' or
+// 'where F is fn(u f32) f32'?
+static int parseGenericParmSigBound(GenVarDclNode *parm, INode *cond) {
+    if (cond == NULL)
+        return 0;
+    if (cond->tag == AndLogicTag)
+        return parseGenericParmSigBound(parm, ((LogicNode*)cond)->lexp)
+            || parseGenericParmSigBound(parm, ((LogicNode*)cond)->rexp);
+    if (cond->tag != IsTag)
+        return 0;
+    CastNode *clause = (CastNode*)cond;
+    return clause->typ && clause->typ->tag == FnSigTag && isNameUseNode(clause->exp)
+        && ((NameUseNode*)clause->exp)->namesym == parm->namesym;
+}
+
+// A generic function joins an overload set only when every one of its type
+// parameters is bound to a function signature: a call then picks it by the
+// callables it is given (a closure, a function, a struct with a '()'), which a
+// call can tell from another overload's parameters. Any other generic would
+// need rules to rank it against the rest, and has none, so the declaration is
+// refused and does not join.
+static void parseGenericOverloadVet(FnDclNode *fnnode) {
+    INode **parmp;
+    uint32_t cnt;
+    for (nodesFor(fnnode->genericinfo->parms, cnt, parmp)) {
+        GenVarDclNode *parm = (GenVarDclNode*)*parmp;
+        int bound = 0;
+        if (parm->annot) {
+            INode **annotp;
+            uint32_t acnt;
+            for (nodesFor(parm->annot, acnt, annotp))
+                if ((*annotp)->tag == FnSigTag)
+                    bound = 1;
+        }
+        if (!bound && fnnode->where) {
+            INode **condp;
+            uint32_t ccnt;
+            for (nodesFor(fnnode->where, ccnt, condp))
+                if (parseGenericParmSigBound(parm, *condp))
+                    bound = 1;
+        }
+        if (!bound) {
+            errorMsgNode((INode*)fnnode, ErrorGenericOverload,
+                "A generic function may join the overload set %s only when every type parameter is bound to a function signature, as in `[F fn(u f32) f32]`, and %s is not. An overload is chosen by what its arguments are, and a generic with another kind of parameter has no rule to rank it against the rest.",
+                &fnnode->overloadsym->namestr, &parm->namesym->namestr);
+            fnnode->overloadsym = NULL;
+            return;
+        }
+    }
+}
+
 // Parse a list of generic variables and add to the genericnode.
 //
 // What follows a parameter's name, before its ',' or ']', is its annotation:
@@ -1700,10 +1751,9 @@ INode *parseFn(ParseState *parse, uint16_t mayflags) {
             else if (fnnode->namesym == overloadsym)
                 errorMsgLex(ErrorBadOverload,
                     "A declaration's overload name must differ from its own name %s", &overloadsym->namestr);
-            else if (fnnode->genericinfo)
-                errorMsgLex(ErrorGenericOverload,
-                    "A generic function may not declare the overload name %s", &overloadsym->namestr);
             else
+                // A generic's right to name a set is judged once its bounds are
+                // all read (parseGenericOverloadVet)
                 fnnode->overloadsym = overloadsym;
         }
     }
@@ -1744,6 +1794,9 @@ INode *parseFn(ParseState *parse, uint16_t mayflags) {
     // any function's order among its signature's lifetimes
     if (lexIsToken(WhereToken))
         parseWhere(parse, &fnnode->where, &((FnSigNode*)fnnode->vtype)->lifeorder, 1);
+
+    if (fnnode->genericinfo && fnnode->overloadsym)
+        parseGenericOverloadVet(fnnode);
 
     // '@c' names a symbol, so it goes only where a function has one of its own
     if (hasc) {

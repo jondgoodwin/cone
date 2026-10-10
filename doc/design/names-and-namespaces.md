@@ -203,7 +203,9 @@ After selection, the call refers directly to the chosen concrete function or met
 
 Visibility is checked on the name the caller uses, so an overload set and its candidates must agree: a private concrete candidate may not join a public overload name. `fnOverloadDclAdd` reports `ErrorPrivOverload` where the set is built, for a module's functions and a type's methods alike, and leaves the candidate out; the author makes both private or both public. A compiler-defined intrinsic is exempt, because it is never a symbol — which is how the core types hide `_neg` behind `-`. A public name therefore holds only public candidates, and generation has nothing to reach that its own privacy filter would hide.
 
-Extending a type's overload sets from an extension is intended, but its ownership and collision rules are deferred until extensions are designed. Generic candidates and merging matching `extern` declarations with implementations are likewise deferred; a generic declaration may not currently name an overload set at all.
+Extending a type's overload sets from an extension is intended, but its ownership and collision rules are deferred until extensions are designed. Merging matching `extern` declarations with implementations is likewise deferred.
+
+A generic function or method is a candidate when every one of its type parameters is bound to a function signature (`[F fn(u f32) f32]`, or the same in a `where` clause); any other generic may not name an overload set (`ErrorGenericOverload`), because nothing ranks it against the rest. Such a candidate has no checked signature to compare, so it is judged by its arguments: a parameter that is, or is a reference to, a bound type parameter takes an argument whose type meets the bound, read off it as an inference reads it, and every other parameter is a plain function's. A closure literal among the arguments is matched against the candidates whose parameter there is callable, by parameter count and written types, as it is for any overload, and the generic is then instantiated for the one candidate selected, as a call by its own name instantiates it. Two such candidates a call cannot tell apart are an ambiguity, the error naming both.
 
 ## Lookup and paths
 
@@ -1069,8 +1071,8 @@ would see little but `main`.
 
 - Overloading:
 	- Overloading is implemented with `FnDclNode` and `FnOverloadDclNode` rather than with a general `NameDef`, so the concrete/overload split described above exists only for functions and methods.
-	- A generic function may not declare an overload name; the parser reports that combination.
-	- Extending a type's overload sets from an extension, generic candidates, and merging matching `extern` declarations with implementations remain deferred.
+	- A generic function may declare an overload name only when every type parameter is bound to a function signature; the parser reports any other combination.
+	- Extending a type's overload sets from an extension and merging matching `extern` declarations with implementations remain deferred.
 - Compile unit handling of duplicate, consistent type `extern` vs. value-specified names.
 - **A struct a global's fold needs is resolved once, even round a refused loop.** The fold passes retry a fold whose own source has not arrived, but a global's fold resolves its struct on demand, in the struct's module, and where that module is mid-fold round a loop a name the struct's declaration reaches through a late re-export (a field's type) is reported unknown beside the loop, and not retried ([module](../../compiler/c/doc/nodes/module.md), Hazards).
 - An `alias` statement's target is a type expression only. A function, a global, a module or a method as the target is not built: nothing yet names a declaration directly outside a fold clause.

@@ -339,7 +339,11 @@ against its parameter already matches it.
 overload set — that one path deliberately skips the name-use check, so the
 overload name stays rejected everywhere except here. Then rewrite the shapes
 that are not yet calls: a type becomes a constructor (`FlagIndex`) or its `init`
-method; a bare method name becomes `self.method`.
+method; a bare method name becomes `self.method`. An overload set's selected
+candidate may be a generic bound only by function signatures: it is judged by its
+arguments' types (`genericOverloadViable`), and instantiated once chosen, its
+instance then the callee the rest of the call is checked against
+([fncall](../nodes/fncall.md), "Selecting a candidate").
 
 **Stage 3 — dispatch on the receiver's type tag**, after a tuple element
 numbered through a reference or pointer (`fnCallLowerRefIntField`), to `fnCallFnSigTypeCheck`,
