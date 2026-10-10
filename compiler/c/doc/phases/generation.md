@@ -82,13 +82,29 @@ a global would then fold to a stride the backend does not use.
    generic's body may make one), and the symbol pass skipped it, so it is named
    here.
 
-Then, **the program's stitched init and final** (`genlStitch`), where a call to
-`initAll()` or `finalAll()` asked for one (`genlStitchFn`, from the intrinsic's
-case in `genlFnCallInternal`): `cone.initAll` calls each module's `initfn` in
+Then, **the program's entry** (`genlEntry`) and **its stitched init and final**
+(`genlStitch`), which the entry or a call to `initAll()` or `finalAll()` asked
+for (`genlStitchFn`, from the entry and from the intrinsic's case in
+`genlFnCallInternal`): `cone.initAll` calls each module's `initfn` in
 `pgm->initorder`, and `cone.finalAll` each module's `finalfn` in the reverse,
 declaring the symbol of one this object does not define. They are built last
-because they call what the passes above named. Both are internal; the entry glue
-that will call them is unbuilt. [module](../nodes/module.md), "Init and final".
+because they call what the passes above named. Both are internal, and share a
+flag, `cone.live`, swapped atomically as each one's first act: the init runs only
+on a program not live and the final only on one that is, so two calls in a row
+(the entry's and a program's own) run the modules once, and a program that
+finalizes and initializes again runs both again. A final with no init in the
+object runs always.
+**The entry** is the C `main`, `define i32 @main(i32 %argc, ptr %argv)`: it calls
+`cone.initAll`, the program's own `main`, then `cone.finalAll`, and returns the
+`main`'s result (an integer cast to i32; anything else is 0). The program's own
+`main` — the bare, Cone-named `main` of an executable's root (`genlIsEntryMain`:
+not a library, WebAssembly or GPU compile; not a function with a C name; with no
+parameters or two) — is therefore declared under the internal symbol
+`cone.main` (`genlGloFnName`), and is called with `argc` and `argv` if it takes
+them. `genlIsVoidMain` treats `cone.main` as it does `main`: a `main` returning
+nothing is generated returning `i32 0`. A panic ends the process through
+`abort`, and a call to C's `exit` leaves it, so neither reaches the final.
+[module](../nodes/module.md), "Init and final".
 
 **An `imm` global is an LLVM constant only where this object gives it its value
 and nothing writes it** (`genlGloVarIsConstant`): it has an initial value, is
@@ -308,9 +324,11 @@ status to whatever the return register held. So `genlGloFnName` declares such a
 `main` with an `i32` return, `genlFn` sets `gen->exitzero` for its body, and
 `genlReturn` returns 0 at every return; `genlFnSym` hands a call or a reference
 to it the function bitcast to the type its signature declares, so the IR stays
-well typed. The test is the symbol `main` itself, as `genlLinkage`'s is, so a
-C-named entry, `fn @c("main") start()`, is treated alike. A `main` that declares a
-return type returns what it returns.
+well typed. The test is the symbol `main` or `cone.main` (the program's own
+`main` behind the entry, below), as `genlLinkage`'s is for `main`, so a C-named
+entry, `fn @c("main") start()`, is treated alike. A `main` that declares a
+return type returns what it returns, and the entry the compiler builds hands it
+on as the exit status.
 
 `genlFn` per function: entry block, a dummy `allocaPoint` alloca, an alloca and
 store for **every** parameter, then `genlBlock` on the body, then, where the
@@ -1660,7 +1678,11 @@ after. `--ir` is not an LLVM option at all — it dumps the Cone IR/AST.
 `--asm` adds a `.wat`, `.spvasm` or `.asm`. `--verify` runs `LLVMVerifyModule` and is off
 by default. `--debug` emits DWARF and drops optimization — it is the only
 switch here, with release as the default. Debug info covers only files,
-subprograms and each instruction's line and column, and the file name is hardcoded. A subprogram is attached only to a
+subprograms and each instruction's line and column. A subprogram is in the file its
+function was written in (`genlDiFile`: the lexer's url, one `DIFile` for each, the
+compile's main file for a node with no lexer), so a sibling file of a folder module,
+a submodule and an imported package that is compiled in each have their own.
+A subprogram is attached only to a
 function this object defines: an imported module's function has a body in the
 IR but is a declaration here, and the verifier rejects a declaration carrying
 one. Every `genlExpr` sets the builder's debug location to its node's line and
@@ -2192,8 +2214,9 @@ variables.
 | | `genlGpuAggregates`, `genlGpuAggregatesFn`, `genlAggLeaves` | on a GPU target, after optimization, each struct or array value carried as its scalar leaves (section 7) |
 | | `genlGpuRetypeFn`, `genlGpuPointee` | on a GPU target, after optimization, a first field's address computed from its struct's type again (for a load, a store, an address computation or an atomic), and an array's from its first element's (section 7) |
 | | `genlGpuGepChainsFn` | on a GPU target, after optimization, an address computed from another in one step, or beside it (section 7) |
-| | `genlProgram` | create the module with the target's triple and data layout, the two-pass symbols-then-implementations walk, then the stitched pair |
-| | `genlStitchFn`, `genlStitch` | the program's stitched init and final: declared on the first call to `initAll()` or `finalAll()`, built last, every module's `init` in the module order and every finalizer in the reverse |
+| | `genlProgram` | create the module with the target's triple and data layout, the two-pass symbols-then-implementations walk, then the entry and the stitched pair |
+| | `genlIsEntryMain`, `genlEntry` | the program's own `main` (renamed `cone.main`), and the C `main` built round it: stitched init, `cone.main`, stitched final, its result the exit status |
+| | `genlStitchFn`, `genlStitch` | the program's stitched init and final: declared by the entry or on the first call to `initAll()` or `finalAll()`, built last, every module's `init` in the module order and every finalizer in the reverse, each guarded by the `cone.live` flag |
 | | `genlGlobalSyms`, `genlGlobalImpl` | declare a node's symbol; emit its body |
 | | `genlImportedInstances` | emit the bodies of the instances this compile made of a module it does not generate |
 | | `genlFn`, `genlParmVar`, `genlAlloca` | function body (a split method's first half, then its second halves), parameter allocas, entry-block alloca placement |
