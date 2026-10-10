@@ -1143,9 +1143,11 @@ it ([flow](../phases/flow.md), "Calls"):
   the container's life; a borrow of a `NoLoanMut` container itself only keeps
   it alive;
 - `ShapeChanging` (`List`, `Deque`, `String`, `Dict`, `OrderedDict`, `Set`,
-  `Pool`), an assertion the compiler checks against the type's methods
-  (`ErrorShapeMark`): its elements may
-  move. A borrow its method returns loans the receiver, and where the receiver
+  `Pool`), an assertion the compiler checks against the type's methods and the
+  free functions of its module that take it by reference (`ErrorShapeMark`): its
+  elements may
+  move. A borrow its method returns loans the receiver (so does a free function's,
+  from an argument that is a reference to the type), and where the receiver
   is reached through a shared path that loan freezes the same path, as a
   local's does (`loanFreezeShared`): a change through the same name is
   refused. A change through another name, or a call that might make one, is
