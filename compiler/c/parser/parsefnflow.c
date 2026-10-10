@@ -659,28 +659,37 @@ static INode *parseRangeLogic(uint16_t tag, INode *left, INode *right, INode *le
     return (INode*)logic;
 }
 
-// The test that lets a pass of a range run: the counter has not passed the end
-// in the range's direction ('<=' or '<' going up, '>=' or '>' going down, the end
-// itself passing for '..'). Where the direction is the held step's sign, either way:
-// '(up and x <= end) or (down and x >= end)', the end read once of the two
-static INode *parseRangeGuard(INode *lexnode, VarDclNode *counter, INode *end, int incl, int dir,
-    VarDclNode *up, VarDclNode *down) {
-    if (dir != 0) {
-        FnCallNode *cmp = newFnCallOpnameLower(lexnode, parseEachCounterUse(counter, lexnode),
-            dir > 0 ? (incl ? leName : ltName) : (incl ? geName : gtName), 1);
-        nodesAdd(&cmp->args, end);
-        return (INode*)cmp;
-    }
-    // The end is cloned rather than shared: a node reachable twice in the tree is type checked twice
-    CloneState cstate = {0};
+// A use of a range's end. An end that is not a literal is held in a variable of the
+// loop's, read once before the first pass, and each use is a use of that variable; a
+// literal is cloned for each use (a node reachable twice in the tree is type checked
+// twice), and takes the counter's type where it is compared with it
+static INode *parseRangeEndUse(VarDclNode *enddcl, INode *endlit, INode *lexnode) {
+    if (enddcl)
+        return parseEachCounterUse(enddcl, lexnode);
+    CloneState cstate = {0};     // Every field the clone reads, the ones not set below NULL
     cstate.instnode = NULL;
     cstate.selftype = NULL;
     cstate.selfparm = NULL;
     cstate.scope = 0;
+    return cloneNode(&cstate, endlit);
+}
+
+// The test that lets a pass of a range run: the counter has not passed the end
+// in the range's direction ('<=' or '<' going up, '>=' or '>' going down, the end
+// itself passing for '..'). Where the direction is the held step's sign, either way:
+// '(up and x <= end) or (down and x >= end)'
+static INode *parseRangeGuard(INode *lexnode, VarDclNode *counter, VarDclNode *enddcl, INode *endlit, int incl, int dir,
+    VarDclNode *up, VarDclNode *down) {
+    if (dir != 0) {
+        FnCallNode *cmp = newFnCallOpnameLower(lexnode, parseEachCounterUse(counter, lexnode),
+            dir > 0 ? (incl ? leName : ltName) : (incl ? geName : gtName), 1);
+        nodesAdd(&cmp->args, parseRangeEndUse(enddcl, endlit, lexnode));
+        return (INode*)cmp;
+    }
     FnCallNode *upcmp = newFnCallOpnameLower(lexnode, parseEachCounterUse(counter, lexnode), incl ? leName : ltName, 1);
-    nodesAdd(&upcmp->args, end);
+    nodesAdd(&upcmp->args, parseRangeEndUse(enddcl, endlit, lexnode));
     FnCallNode *downcmp = newFnCallOpnameLower(lexnode, parseEachCounterUse(counter, lexnode), incl ? geName : gtName, 1);
-    nodesAdd(&downcmp->args, cloneNode(&cstate, end));
+    nodesAdd(&downcmp->args, parseRangeEndUse(enddcl, endlit, lexnode));
     return parseRangeLogic(OrLogicTag,
         parseRangeLogic(AndLogicTag, parseRangeFlag(up, lexnode), (INode*)upcmp, lexnode),
         parseRangeLogic(AndLogicTag, parseRangeFlag(down, lexnode), (INode*)downcmp, lexnode), lexnode);
@@ -920,6 +929,15 @@ static INode *parseEachLoop(ParseState *parse, Name *lifesym, int stmtflag, int 
         inodeLexCopy((INode*)firstdcl, iter);
         nodesAdd(&outerblk->stmts, (INode*)firstdcl);
 
+        // An end that is not a literal is read once, here, before the first pass (a
+        // literal is cloned where it is compared, to take the counter's type)
+        VarDclNode *enddcl = NULL;
+        if (parseRangeStepSign(rangeend) == 2) {
+            enddcl = newVarDclFull(nametblFind("-end", 4), VarDclTag, unknownType, (INode*)immPerm, rangeend);
+            inodeLexCopy((INode*)enddcl, iter);
+            nodesAdd(&outerblk->stmts, (INode*)enddcl);
+        }
+
         // Which way the range runs. With no step it counts up. A literal step says
         // which by its sign, and a step of 0 runs no pass. Any other step is held in
         // a variable of the loop's (evaluated once, before the first pass) and says
@@ -965,7 +983,7 @@ static INode *parseEachLoop(ParseState *parse, Name *lifesym, int stmtflag, int 
             nodesAdd(&outerblk->stmts, (INode*)donedcl);
         }
         // The test that lets a pass run
-        INode *guard = parseRangeGuard(iter, elemdcl, rangeend, rangeincl, dir, updcl, downdcl);
+        INode *guard = parseRangeGuard(iter, elemdcl, enddcl, rangeend, rangeincl, dir, updcl, downdcl);
         if (step) {
             // A step of more than one need never land on the bound, so nothing
             // stops it carrying the loop variable past the type's extreme: it
@@ -1007,16 +1025,10 @@ static INode *parseEachLoop(ParseState *parse, Name *lifesym, int stmtflag, int 
                 // 'x <= MAX' to true and emits a loop with no exit. So the step is
                 // guarded: '{ if x == bound {break}; x++ }'.
                 // The statements stay one statement, because the trailing statement is
-                // what a 'continue' carries a copy of. The bound is cloned rather
-                // than shared with the guard: a node reachable twice in the tree
-                // is type checked twice.
-                CloneState cstate = {0};     // Every field the clone reads, the ones not set below NULL
-                cstate.instnode = NULL;
-                cstate.selftype = NULL;
-                cstate.selfparm = NULL;
-                cstate.scope = 0;
+                // what a 'continue' carries a copy of. The bound is a use of its
+                // variable, or a clone of its literal, not the guard's own node.
                 FnCallNode *atbound = newFnCallOpnameLower(iter, parseEachCounterUse(elemdcl, iter), eqName, 1);
-                nodesAdd(&atbound->args, cloneNode(&cstate, rangeend));
+                nodesAdd(&atbound->args, parseRangeEndUse(enddcl, rangeend, iter));
                 if (donedcl) {
                     // '{ if x == bound {done = true} else {x++} }'
                     IfNode *atend = parseJumpIf((INode*)atbound, 0, parseEachSetDone(donedcl, iter));

@@ -41,7 +41,8 @@ a macro body, and the wrapper blocks pattern-matching builds — is regular.
 **`while` and `each` are lowered here, not later.** `while cond {…}` gets
 `if not cond { break }` inserted at index 0. `each x in a ..< b by s` (`a .. b`
 runs through `b`) becomes an
-outer block holding the range's first value (`first`, a hidden variable), the
+outer block holding the range's first value (`first`, a hidden variable), its end
+unless the end is a literal (`end`, read once, before the first pass, as the step is), the
 loop's **counter** (`counter`, another, no name of the
 reader's) and the count of steps taken (`n`), plus a loop block that begins with the guard and the pass's variable,
 `imm x = counter`, and whose **last statement is the synthesized step**, flagged
