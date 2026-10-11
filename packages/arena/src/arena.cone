@@ -163,16 +163,16 @@ struct Block {
 // node is allocated in the arena beside the value, whose address and type record
 // it keeps, so the arena, which holds values of many types, gives a collector
 // each of them as an Erased value, which is traced by its type's own trace.
-struct TraceNode {
-  pub next *TraceNode;
+struct GcTraceNode {
+  pub next *GcTraceNode;
   pub p *u8;              // an Erased value is these two fields, 'p' and 'rec', as they sit here
   pub rec *TypeRecord;
 }
 
 // A cursor over the values an arena holds that need tracing, newest first: 'next'
 // gives a writable reference to each, as an Erased value
-pub struct ArenaTraceItems is Iterator[&mut Erased] {
-  node *TraceNode;
+pub struct ArenaGcTraceItems is Iterator[&mut Erased] {
+  node *GcTraceNode;
 
   pub fn next(self &mut) Option[&mut Erased] {
     if node as usize == 0usize { return None; }
@@ -197,7 +197,7 @@ struct ArenaCore is GcTraceElements {
   finals *FinalNode;   // the newest header, or null
   nfinals usize;       // how many headers the list has held
   nblocks usize;       // how many blocks it holds
-  traced *TraceNode;   // the newest value needing a trace, or null
+  traced *GcTraceNode;   // the newest value needing a trace, or null
   ntraced usize;       // how many it has held
 
   // Room for a value of 'size' bytes aligned to 'align' that needs no
@@ -224,7 +224,7 @@ struct ArenaCore is GcTraceElements {
   }
 
   // The values it holds that need tracing, for a collector (see Arena.gcTraceElements)
-  pub fn gcTraceElements(self &mut) ArenaTraceItems { new ArenaTraceItems(traced); }
+  pub fn gcTraceElements(self &mut) ArenaGcTraceItems { new ArenaGcTraceItems(traced); }
 
   // A new arena state: no block yet, the three region functions set
   fn make() *MemRegion {
@@ -238,8 +238,8 @@ struct ArenaCore is GcTraceElements {
   // The value at 'p', whose type's record is 'rec', needs tracing: its node is
   // allocated here, and put first on the list
   fn noteTraced(self &mut, p *u8, rec *TypeRecord) {
-    imm node = self.place(mem.sizeof[TraceNode](), mem.alignof[TraceNode]()) as *TraceNode;
-    mem.writeRaw(node, new TraceNode(traced, p, rec));
+    imm node = self.place(mem.sizeof[GcTraceNode](), mem.alignof[GcTraceNode]()) as *GcTraceNode;
+    mem.writeRaw(node, new GcTraceNode(traced, p, rec));
     traced = node;
     ntraced = ntraced + 1usize;
   }
@@ -370,7 +370,7 @@ pub struct Arena is NoLoanMut, GcTraceElements {
   // How a collector reaches what the arena holds, whatever the types: the values
   // whose type holds a traced reference, each as an Erased value, which is traced
   // by its type's own trace. An arena holding none gives none.
-  pub fn gcTraceElements(self &mut) ArenaTraceItems { coreOf(region).gcTraceElements(); }
+  pub fn gcTraceElements(self &mut) ArenaGcTraceItems { coreOf(region).gcTraceElements(); }
 
   // How many values have been given a finalizer header, and how many blocks
   // it holds: for tests and for tuning, not for correctness
