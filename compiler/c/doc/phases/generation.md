@@ -1758,6 +1758,13 @@ link: the scenario instantiates a generic function and a generic type in the
 package and in the program, at a type argument both use and at one only the
 program uses, and tests in the package a virtual reference the program built.
 
+**The relocation model is PIC for a library, for `--pic`, and by default for a
+Linux triple.** `genlCreateMachine` asks LLVM for position-independent code when
+`opt->pic` or `opt->library` is set, or when the triple names `linux` and
+`--nopic` (`opt->nopic`) was not given: Ubuntu's `cc` links a position-independent
+executable, which refuses an object that is not (`R_X86_64_32` against `.rodata`).
+Every other target keeps LLVM's default model.
+
 **A SPIR-V triple emits a SPIR-V module, `.spv`.** `--triple=spirv64-unknown-unknown`
 is SPIR-V's OpenCL form (physical addressing, the `Kernel` capability) and
 `--triple=spirv1.6-unknown-vulkan1.3` its Vulkan form (logical addressing,
@@ -2351,7 +2358,8 @@ variables.
 | `packages/conestd/roots.cone` | `cone_gcframes`, `cone_traceRoots` | the head of the chain of frames, and its walk, which `mem.traceRoots` calls |
 | `packages/conestd/barrier.cone` | `cone_barrierHook`, `cone_barrierCtx`, `cone_setBarrierHook`, `cone_clearBarrierHook` | the thread's barrier hook and its context, which a barrier on the CPU calls, and core's `setBarrierHook` and `clearBarrierHook` |
 | `packages/conestd/rawblocks.cone` | `cone_rawBlockAlloc`, `cone_rawBlockResize`, `cone_rawBlockRelease` | the raw blocks layer, `libc`'s `malloc`, `realloc` and `free` and nothing more: core's `RawBlocks`, which the regions of `So`, `Rc` and `Arc`, the heap region (`heapregion.c`), the collections' `freeze`, an arena's blocks and an actor's chunks go through |
-| `packages/conestd/hash.cone` | `cone_hashSeed` | the process's hash seed, 64 random bits from the OS (the C runtime's `rand_s`) drawn once, the first time core's `processSeed` asks, from any thread: what `Hasher.seeded()` starts from |
+| `packages/conestd/hash.cone` | `cone_hashSeed` | the process's hash seed, 64 random bits from the OS (the C runtime's `rand_s` on Windows, `getentropy` elsewhere) drawn once, the first time core's `processSeed` asks, from any thread: what `Hasher.seeded()` starts from |
+| `packages/conestd/cnames.c` | `cone_stdin`, `cone_stdout`, `cone_stderr`, `cone_errno`, `cone_time`, `cone_timespec_get`, `cone_fprintFloat` | the C library's names that differ by platform or that Cone cannot spell, each answered from the C library's own header, which `libc`'s `stdin()`, `stdout()`, `stderr()`, `errno()`, `time` and `timespec_get` bind (`libc` is C-named, with no prelude and so no `isWindows()`), and which conestd's printing of a float calls |
 | `ir/types/reference.h` | `enum ManagedRefFields` | `RegionField`, `PermField`, `ValueField` |
 | `ir/name.c` | `nameSymbol`, `nameType`, `nameVtable`, `nameVtableImpl`, `nameVtableList` | spelling a symbol from a node's owner chain and facts, and a type argument within it — the rules are in [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Symbols" |
 | `ir/dclinfo.c` | `dclInfoJoin` | writes the declaration facts where a declaration joins its namespace |
