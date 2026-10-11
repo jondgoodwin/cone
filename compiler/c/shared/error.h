@@ -675,7 +675,7 @@ enum ErrorCode {
     ErrorPatTraitBind = 1472,   // A trait pattern that binds a virtual reference where the matched value is no borrowed reference (a value, an owner), or where the pattern is written as a plain reference
 
     // A 'parallel each' over a zip (ir/exp/pareach.c)
-    ErrorParSources = 1480,     // The sources of a zip a 'parallel each' walks lend from the same buffer while the loop changes what they lend: two passes could write the same part at once
+    ErrorParSources = 1480,     // The sources of a zip a 'parallel each' walks lend from the same buffer (or from two '&mut' parameters, which may be one) while the loop changes what they lend: two passes could write the same part at once
 
     // Warnings
     WarnCode = 3000,
