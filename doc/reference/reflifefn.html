@@ -13,52 +13,11 @@
 
     <div class="text">
 
-	<p style="margin-left: 40px;"><i>Note: Lifetime annotations on a function's signature,
-			on a struct's fields and uses, and the <span class="pre">where</span> clause
-			ordering lifetimes are implemented. A lifetime is written right after the reference's
-			<span class="pre">&amp;</span>, before its permission:
-			<span class="pre">&amp;'a i32</span>, <span class="pre">&amp;'a mut i32</span>,
-			<span class="pre">&amp;'a Array[u8]</span>; and the global lifetime is
-			<span class="pre">'static</span>. Parameters are written
-			<span class="pre">name type</span>, without the colon some examples below still show.
-			A returned borrowed reference has the lifetime of the shortest borrowed
-			reference passed to the call for a parameter whose lifetime it may hold,
-			and keeps those arguments frozen while it is used, a method's receiver
-			included (see <a href="refborref.html#returned">borrowed references</a>);
-			where only a lifetime of what an argument points at may be held -- a
-			struct's, held by the receiver of one of its methods, or the inner one of a
-			<span class="pre">&amp;'a mut &amp;'b T</span> -- it keeps frozen
-			only what the argument holds in that lifetime, not the argument, nor a local the
-			argument borrows (see <a href="#layers">reference layers</a>).
-			A mutable or unique borrowed reference to a place that can hold a borrowed
-			reference (a method's receiver included) handed to a call may have stored
-			there any other borrow the call is handed, of a lifetime that place holds:
-			a local of the caller's then holds it, and is refused where it is used after
-			that borrow's source is gone; a call that could store one that lives less
-			long into a place outliving the caller (a global, what a parameter points at)
-			is refused.
-			A value passed by value that holds a borrowed reference counts as one of the
-			lifetimes its type names, the unnamed one where it names none, for both rules.
-			Inside the function, a borrowed reference the caller lent may be returned only
-			as a lifetime it is written with, or one its <span class="pre">where</span> clause
-			or its types order shorter, and stored only where what a parameter points at holds such a
-			lifetime; no order between two names is inferred but what a
-			<span class="pre">where</span> clause declares and what a borrow of a value
-			holding lifetimes implies (see <a href="#implied">implied bounds</a>).
-			A trait's implementation may promise more than the trait does: a result of
-			<span class="pre">'static</span> or of a longer lifetime, a parameter of any
-			lifetime where the trait's is <span class="pre">'static</span>.
-			A <span class="pre">'static</span> parameter takes only a global borrow, and
-			<span class="pre">'static</span> may be written on a parameter's own
-			reference or in the result, not inside a parameter's type.
-			A value holding borrowed references has the lifetime of the shortest of them, as
-			<span class="pre">makewrap</span> below shows. Invariant lifetimes
-			(<span class="pre">'=a</span>) are implemented, on the <span class="pre">arena</span> package's
-			<span class="pre">DynArena</span> and its keys. A
-			<span class="pre">+ 'a</span> bound is implemented on a generic function's type parameter
-			and on a borrowed virtual reference (see <a href="#bounds">lifetime bounds</a>); not yet on a
-			generic type's parameter or an owning virtual reference, which is bounded by
-			<span class="pre">'static</span> and may not be given another.</i></p>
+	<p style="margin-left: 40px;"><i>Note: A <span class="pre">+ 'a</span> bound is not yet accepted on a
+			generic type's parameter, and an owning virtual reference, which is bounded by
+			<span class="pre">'static</span>, may not be given another. <span class="pre">'static</span>
+			written inside a parameter's type, on what a <span class="pre">&amp;mut</span> points at, is
+			refused.</i></p>
 	
 	<p>To ensure borrowed references are always safe to use, they carry 
 		a lifetime constraint that restricts them from living beyond the scope
@@ -82,7 +41,7 @@
 		<a href="reftoken.html#lifetime">lifetime annotations</a> on
 		borrowed references in a function's signature.</p>
 <pre>
-fn dostuff(a: &amp;'a i32, b: &amp;'b i32) &amp;'a i32, &amp;'b i32;
+fn dostuff(a &amp;'a i32, b &amp;'b i32) &amp;'a i32, &amp;'b i32 {..}
 </pre>
 	<p><span class="pre">'a</span> and <span class="pre">'b</span> are lifetime
 		annotations representing two possibly-different lifetime scopes.
@@ -90,6 +49,14 @@ fn dostuff(a: &amp;'a i32, b: &amp;'b i32) &amp;'a i32, &amp;'b i32;
 		In this example, this means the first return value
 		has the same lifetime as <span class="pre">a</span>, and the
 		second has the same lifetime as <span class="pre">b</span>.</p>
+	<p>A lifetime is written right after the reference's <span class="pre">&amp;</span>, before its permission:
+		<span class="pre">&amp;'a i32</span>, <span class="pre">&amp;'a mut i32</span>,
+		<span class="pre">&amp;'a Array[u8]</span>. Parameters are written name first, then type, with no colon.
+		The global lifetime is <span class="pre">'static</span> (<a href="#static">below</a>).</p>
+<pre>
+fn first(a &amp;'a i32, b &amp;'b mut i32) &amp;'a i32 {..}
+fn firstOf(a &amp;'a Array[u8], b &amp;'b i32) &amp;'a Array[u8] {..}
+</pre>
 	<p>Although the called function treats them as having the "same" lifetime,
 		they might in fact have different lifetimes in the calling function.
 		When references with two different lifetimes are treated as having the
@@ -102,7 +69,7 @@ fn dostuff(a: &amp;'a i32, b: &amp;'b i32) &amp;'a i32, &amp;'b i32;
 		marked by the same lifetime annotation.
 		The above example is thus identical to:</p>
 <pre>
-fn dostuff(a: &amp;i32, b: &amp;'b i32) &amp;i32, &amp;'b i32;
+fn dostuff(a &amp;i32, b &amp;'b i32) &amp;i32, &amp;'b i32 {..}
 </pre>
 	<p>We can rule out the need for any lifetime annotations if the function does not
 		receive at least two borrowed references in its parameters.
@@ -166,6 +133,37 @@ fn refswitch(nbr i32, ref1 &amp;'a i32, ref2 &amp;i32) &amp;i32 {
 		the source for it are marked with a different lifetime.
 		When correctly marked in this way, lifetime constraints will be properly
 		enforced on both the caller and called functions.</p>
+	<p>The caller reads the signature the same way. A returned borrowed reference has the lifetime of the
+		shortest borrowed reference passed to the call for a parameter whose lifetime it may hold,
+		and it keeps those arguments frozen while it is used. A method's receiver counts as one of the arguments.
+		Only the argument the result may hold is frozen:</p>
+<pre>
+fn pick(x &amp;'a i32, y &amp;'b i32) &amp;'a i32 {..}
+
+mut a = 1;
+mut b = 2;
+imm r = pick(&amp;a, &amp;b);
+b = 6;                 // fine: r holds nothing of b
+a = 5;                 // **ERROR** r still holds a borrow of a
+print &lt;- *r;
+</pre>
+<pre>
+struct S {
+  pub n i32;
+  pub fn get(self &amp;) &amp;i32 { &amp;n; }
+}
+
+mut s = new S(1);
+imm r = s.get();
+s.n = 3;               // **ERROR** r keeps the receiver frozen
+print &lt;- *r;
+</pre>
+	<p>Where the result may hold only a lifetime of what an argument points at, not the argument itself
+		(a struct's lifetime held by the receiver of one of its methods, or the inner lifetime of a
+		<span class="pre">&amp;'a mut &amp;'b T</span>), the call keeps frozen only what the argument
+		holds in that lifetime, not the argument, nor a local the argument borrows
+		(<a href="#layers">reference layers</a>). The full rules for returned borrows are those of
+		<a href="refborref.html#returned">borrowed references</a>.</p>
 
 	<h3>Mutable borrowed reference parameters</h3>
 	<p>When a function passes at least two borrowed references as parameters,
@@ -273,6 +271,74 @@ fn refstore(refmut &amp;mut &amp;i32, refval &amp;'b i32) {
 		with a different lifetime annotation if you don't intend for it to be
 		stored in the mutable borrowed reference.</p>
 
+	<h3 id="inside">Inside the function</h3>
+	<p>The annotations bind the called function as well. Inside it, a borrowed reference the caller lent
+		may be returned only as a lifetime it is written with, or one that its
+		<a href="#where"><span class="pre">where</span> clause</a> or its types order shorter. It may be
+		stored only where what a parameter points at holds such a lifetime. No order between two
+		names is inferred, except what a <span class="pre">where</span> clause declares and what a borrow
+		of a value holding lifetimes implies (<a href="#implied">implied bounds</a>):</p>
+<pre>
+struct R { pub n i64; }
+
+fn bad(x &amp;'a R, y &amp;'b R) &amp;'a R {
+  y;                  // **ERROR** y's lifetime 'b is not one the result names
+}
+fn ok(x &amp;'a R, y &amp;'b R) &amp;'a R where 'b &gt;= 'a {
+  y;                  // Ok: 'b lasts at least as long as 'a
+}
+fn put(d &amp;mut &amp;'b R, s &amp;'a R) {
+  *d = s;             // **ERROR** s is not of a lifetime that d holds
+}
+</pre>
+
+	<h3 id="static">The 'static lifetime</h3>
+	<p>The global lifetime is <span class="pre">'static</span>. A <span class="pre">'static</span> parameter
+		takes only a global borrow, a borrow of a global variable, and a borrow the caller lent may not be
+		returned as <span class="pre">'static</span>:</p>
+<pre>
+mut GLOBAL R = new R(1);
+
+fn keep(s &amp;'static R) i64 { s.n; }
+fn leak(x &amp;R) &amp;'static R {
+  x;                       // **ERROR** a borrow the caller lent is not global
+}
+fn caller() i64 {
+  imm v = new R(5);
+  keep(&amp;GLOBAL);           // Ok
+  keep(&amp;v);                // **ERROR** a local's borrow is not global
+}
+</pre>
+	<p><span class="pre">'static</span> may be written on a parameter's own reference or in the result,
+		but not inside a parameter's type: <span class="pre">fn read(slot &amp;mut &amp;'static R)</span> is
+		refused, since what a caller passes there is not checked to be global.</p>
+
+	<h3 id="traitimpl">Implementing a trait</h3>
+	<p>A trait's implementation may promise more than the trait does: a result of
+		<span class="pre">'static</span> or of a longer lifetime, and a parameter of any lifetime where the
+		trait's is <span class="pre">'static</span>. A call through the trait is checked against the trait's
+		signature, which holds its result to everything the signature lets it carry, so an implementation
+		that carries less is safe:</p>
+<pre>
+struct R { pub n i64; }
+
+mut THREE R = new R(3);
+
+trait Source {
+  pub fn top(self &amp;) &amp;R;
+  pub fn note(self &amp;, x &amp;'static R);
+}
+
+struct Cursor['a] is Source {
+  pub items &amp;'a Array[R];
+  pub fn top(self &amp;) &amp;'static R { &amp;THREE; }       // promises more: a global borrow
+  pub fn note(self &amp;, x &amp;R) { print &lt;- x.n; }     // takes more: a borrow of any lifetime
+}
+</pre>
+	<p>The reverse is refused: an implementation that takes only a <span class="pre">'static</span> borrow
+		where the trait's parameter takes any, or whose result is tied to an argument where the trait's result
+		is tied to the receiver, does not meet the trait.</p>
+
 	<h2>Lifetime Annotations on Fields</h2>
 	<p>It is not enough to just constrain the lifetimes of borrowed references,
 		we must also constrain the lifetimes of any data structures that
@@ -353,6 +419,29 @@ fn getref(wrap Wrapper['a, 'b]) &amp;'a i32 {
 		<span class="pre">refb</span> instead, the <span class="pre">makewrap</span>
 		function will be smacked with an error for trying to return
 		a borrowed reference it created and which must not outlive its scope.</p>
+	<p>A value passed by value that holds a borrowed reference counts as one of the lifetimes its type
+		names, the unnamed one where it names none, both for the lifetime a returned borrow takes and for
+		where a borrow may be stored. Here the result is of <span class="pre">h</span>'s
+		<span class="pre">'a</span>, so it outlives the borrow of <span class="pre">y</span>:</p>
+<pre>
+struct Holder['a] { pub r &amp;'a i32; }
+
+fn pick(h Holder['a], y &amp;'b i32) &amp;'a i32 { h.r; }
+
+fn main() i32 {
+  imm x = 1;
+  mut r = &amp;x;
+  {
+    imm y = 2;
+    r = pick(new Holder(&amp;x), &amp;y);     // Ok: the result is of h's 'a, not y's
+  }
+  *r;
+}
+</pre>
+	<p>Written without lifetimes, <span class="pre">fn pick(h Holder, y &amp;i32) &amp;i32</span>, the
+		<span class="pre">Holder</span> takes the unnamed lifetime that <span class="pre">y</span> has, the
+		result may hold either, and the same call is refused where <span class="pre">r</span> is used after
+		<span class="pre">y</span> is gone.</p>
 
 	<h3>Lifetimes in a struct's methods</h3>
 	<p>Inside a struct's methods, <span class="pre">Self</span> (and so an unwritten
@@ -453,6 +542,11 @@ fn caller(p &amp;R) &amp;R {
   first(z);     // Ok: of what pp holds, p's borrow, not of pp
 }
 </pre>
+	<p>Because the result is of the inner lifetime, the call keeps frozen only what the argument holds in
+		it (<span class="pre">p</span>'s borrow), not the argument <span class="pre">z</span>, nor
+		<span class="pre">pp</span>, the local it borrows. After
+		<span class="pre">imm r = first(z);</span>, <span class="pre">pp</span> may still be assigned
+		while <span class="pre">r</span> is in use.</p>
 	<p>A borrow taken through an inner <span class="pre">uni</span> reference is a reborrow of
 		it, which lasts no longer than the outer borrow, since the inner reference may be used
 		again once the outer borrow ends: <span class="pre">&amp;uni **x</span> for

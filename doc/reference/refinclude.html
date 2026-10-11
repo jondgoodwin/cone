@@ -589,29 +589,50 @@ pub fn @c scaled(v Vec4, k f32) Vec4 { // C calls it: Vec4 scaled(Vec4 v, float 
   new Vec4(v.x * k, v.y * k, v.z * k, v.w * k);
 }
 </pre>
+<p>How a struct crosses is the platform's C ABI. On 64-bit Windows a struct of
+	1, 2, 4 or 8 bytes crosses as one integer of its size, whatever its fields
+	(floats too). Any other size is passed as a pointer to a copy the caller
+	made, and is returned through a pointer to the caller's result slot, which C
+	passes as a hidden first parameter. The <span class="pre">Vec4</span> above is
+	16 bytes, so it crosses by pointer both ways; a struct of two
+	<span class="pre">i32</span>s is one 64-bit integer. The C library's own
+	<span class="pre">div</span> and <span class="pre">lldiv</span> return a struct each
+	way:</p>
+<pre>
+struct DivT { pub quot i32; pub rem i32; }      // C's div_t: 8 bytes, returned as one integer
+struct LldivT { pub quot i64; pub rem i64; }    // C's lldiv_t: 16 bytes, returned through a result pointer
+
+extern fn @c div(numer i32, denom i32) DivT;
+extern fn @c lldiv(numer i64, denom i64) LldivT;
+
+fn main() {
+  imm d = div(17, 5);          // d.quot is 3 and d.rem is 2
+  imm l = lldiv(17i64, 5i64);  // so are l.quot and l.rem
+}
+</pre>
 <p>The same holds for <span class="pre">bool</span>, which is C's
 	<span class="pre">bool</span>: an argument or a result crosses as one byte
 	holding 0 or 1, widened in its register as the platform's C compiler widens
 	it, and a <span class="pre">bool</span> field of a struct is one byte holding
 	0 or 1, as a C <span class="pre">bool</span> field is. An integer narrower
 	than C's <span class="pre">int</span> is widened by its sign as C widens it
-	on that platform.</p>
+	on that platform. A <span class="pre">bool</span>, and an 8- or 16-bit integer,
+	cross as C's do on 64-bit Windows, x86-64 Linux and macOS, and
+	WebAssembly.</p>
 <pre>
 extern fn @c SetWindowFullscreen(window *Window, fullscreen bool) bool;  // bool f(Window *, bool);
 </pre>
-<p style="margin-left: 40px;"><i>Note: This is implemented for 64-bit Windows,
-	where a struct of 1, 2, 4 or 8 bytes crosses as one integer and any other
-	through a pointer to a copy, and a larger one is returned through a
-	pointer the caller supplies. A <span class="pre">bool</span>, and an 8- or
-	16-bit integer, crosses as C's does on 64-bit Windows, x86-64 Linux and
-	macOS, and WebAssembly. On other platforms (x86-64 Linux and macOS,
-	WebAssembly) a struct of more than one scalar still does not cross as C
-	passes it. A call made through a function reference
-	(<span class="pre">&amp;fn</span>) uses Cone's own convention, as does a
-	type's method named with <span class="pre">@c</span>; so C's function
-	pointer taking or returning a struct by value cannot yet be called from
-	Cone. A slice,
-	a tuple or an array is not a C type, and passes as Cone passes it.</i></p>
+<p>A slice, a tuple or an array is not a C type, and passes as Cone passes it: a
+	slice's pointer and length arrive as two arguments, as a C function's
+	<span class="pre">(char *, size_t)</span> takes them.</p>
+<p style="margin-left: 40px;"><i>Note: A struct crosses as C passes it on 64-bit Windows only.
+	On every other target (x86-64 Linux and macOS, WebAssembly) a struct of more than one
+	scalar does not yet cross as C passes it. A call made through a function
+	reference (<span class="pre">&amp;fn</span>) uses Cone's own convention, as does a
+	type's method named with <span class="pre">@c</span>; so a C-named function
+	taking or returning a struct by value goes wrong when it is called through a
+	reference to it, and C's function pointer taking or returning a struct by
+	value cannot yet be called from Cone.</i></p>
 
 <h3 id="onecname">One C name, one symbol</h3>
 <p>C has one namespace for its symbols, so a C name means the same thing

@@ -13,23 +13,18 @@
 
     <div class="text">
 
-	<p style="margin-left: 40px;"><i>Note: Most of this is implemented: the built-in Move and Copy traits
-		(declaring <span class="pre">is Move</span>, and <span class="pre">is Copy</span> refused on a type that moves),
-		a finalizer or a move-typed field inferring move semantics, source deactivation
-		on assignment and on a call, including through a block, an if or a loop value that moves it,
-		conditional moves (a deactivated source may be neither read nor borrowed; one moved on some
-		paths only is finalized on the others, by a drop flag), refusal of a move out through a borrowed reference or a shared owning reference,
-		refusal of a move out of a struct's field or a tuple's element, or of a value reached through one,
-		the swap operator and left-assignment. A clone method does not cancel move semantics:
-		no copy calls it yet, so a type declaring one keeps the semantics the other rules give it,
-		and a finalizer still makes it a move type. Assigning to the anonymous
-		variable '_' to destroy a value early is not. A move out of an indexed array element is
-		permitted, and deactivates the whole array, rather than being prohibited.
-		A generic may require <span class="pre">where T is Move</span> or <span class="pre">where T is Copy</span>,
-		and a generic type may be Move for only some of its instances,
-		<span class="pre">is Move if T is Move</span> (see below). There is no compile-time
-		<span class="pre">if</span>, and <span class="pre">v is Move</span>
-		in an expression is the variant test, which refuses a value that has no variants.</i></p>
+	<p style="margin-left: 40px;"><i>Note: Assigning a value to the anonymous variable <span class="pre">_</span>
+		to destroy it early is not implemented: the name is not recognized. A clone method takes no part in copying:
+		a type may declare one and call it by name, but no copy calls it, so it does not make a type
+		copyable, and a type with a finalizer is still a move type. A clone method written with the
+		<span class="pre">new</span> permission is refused. There is no compile-time <span class="pre">if</span>.
+		The rule that a type holding a reference to other data moves is not yet enforced as written: a struct whose
+		fields are borrowed references (<span class="pre">&amp;</span>, <span class="pre">&amp;mut</span>,
+		<span class="pre">&amp;imm</span>) or shared owning references (<span class="pre">Rc[mut, T]</span>,
+		<span class="pre">Rc[imm, T]</span>) is copied, and only an owning <span class="pre">So</span> or a
+		<span class="pre">uni</span> field makes it move. The rule that a non-copyable value may not be moved out of an
+		indexed array element is not yet enforced: such a move is accepted and deactivates the whole array, and the
+		elements left in it are never finalized.</i></p>
 	
 	<p>Values are copied as they flow from 
 		variable-to-variable or function-to-function.
@@ -127,8 +122,9 @@ struct Log is Copy {       // **ERROR**: its finalizer makes it move
 		ask about, which is what a trait is for; an attribute is an instruction to the compiler
 		about representation or linkage that no code asks about. A generic asks by requiring
 		<span class="pre">where T is Copy</span> or <span class="pre">where T is Move</span>
-		(<a href="refgeneric.html#constraints">Generic constraints</a>); a compile-time test is
-		not built yet.</p>
+		(<a href="refgeneric.html#constraints">Generic constraints</a>). There is no
+		compile-time <span class="pre">if</span> to ask it inside a body: <span class="pre">v is Move</span>
+		in an expression is the variant test, so it is refused on a value that has no variants.</p>
 	<p>An owning reference is a move type when its permission forbids aliasing, or when its
 		region ref declares <span class="pre">Move</span>, as <span class="pre">So</span> does
 		(<a href="refregionglo.html">Regions</a>).</p>
@@ -222,30 +218,72 @@ imm socket = new Socket(); // Open a new network socket (move semantics)
 afunction(socket);     // the socket is moved to the called function
 anotherfunc(socket);   // **ERROR**: socket is deactivated and unusable
 </pre>
+	<p>A value handed on by a block, an <span class="pre">if</span> or a loop is moved just the same,
+	and deactivates its source:</p>
+<pre>
+imm socket = new Socket();
+imm moved = { socket; };   // the block hands socket on: it moves
+afunction(socket);         // **ERROR**: socket is deactivated and unusable
+</pre>
+
+	<p>A non-copyable value may be returned by a called function.
+		There is no need to deactivate the value's source, since it is already gone.</p>
+	<p>(<b>Note:</b> A deactivated source variable may be re-activated at any point by giving it a new value.)</p>
+
+	<h3 id="condmoves">Conditional moves and drop flags</h3>
 	<p>Deactivation of the source happens even for <b>conditional moves</b>,
 	where one branch moves the value but another does not.
 	When the branches join together again, the compiler can't know whether
 	the value is there or not, so conservatively, it assumes the value is gone:
 	the variable may not be used again until it is given a new value.
-	The same holds for a move in a loop: a value moved in one pass is not there
-	in the next, so moving or using a variable declared outside the loop after it
-	may have moved is an error.</p>
+	A deactivated source may be neither read nor borrowed.</p>
 <pre>
 imm socket = new Socket();
 if done {
   afunction(socket);   // moved on this path only
 }
 socket.poll();         // **ERROR**: socket may have been moved
+peek(&amp;socket);        // **ERROR**: nor may it be borrowed
+</pre>
+	<p>The same holds for a move in a loop: a value moved in one pass is not there
+	in the next, so moving or using a variable declared outside the loop after it
+	may have moved is an error.</p>
+<pre>
+imm socket = new Socket();
+mut n = 0;
+while n &lt; 3 {
+  afunction(socket);   // **ERROR**: socket may have been moved by an earlier pass
+  n = n + 1;
+}
 </pre>
 	<p>The value itself is still destroyed exactly once. On the path that moved it,
 	its new holder destroys it; on the path that did not, it is destroyed at the end
-	of its scope, as any value is. The compiler keeps a hidden flag beside such a
-	variable, cleared where the value moves out, and the end of the scope tests it.
-	A variable moved on every path, or on none, needs no flag.</p>
+	of its scope, as any value is. The compiler keeps a hidden <b>drop flag</b> beside such a
+	variable, set where its value arrives and cleared where the value moves out, and the end of
+	the scope tests it: the value is finalized there only if the flag says it is still there.
+	A variable moved on every path, or on none, needs no flag and costs nothing.</p>
+<pre>
+struct Socket is Move {
+  pub id i32;
+  fn final(self &amp;uni) { print &lt;- "close "; print &lt;- id; print &lt;- "\n"; }
+}
 
-	<p>A non-copyable value may be returned by a called function.
-		There is no need to deactivate the value's source, since it is already gone.</p>
-	<p>(<b>Note:</b> A deactivated source variable may be re-activated at any point by giving it a new value.)</p>
+fn consume(s Socket) { print &lt;- "consume "; print &lt;- s.id; print &lt;- "\n"; }
+
+fn run(done bool, id i32) {
+  imm socket = new Socket(id);
+  if done {
+    consume(socket);     // moved on this path only
+  }
+  print &lt;- "end of run\n";
+}                        // socket is closed here only if done was false
+</pre>
+	<p><span class="pre">run(true, 1)</span> prints <span class="pre">consume 1</span>,
+	<span class="pre">close 1</span> (consume's parameter dies at its end) and
+	<span class="pre">end of run</span>. <span class="pre">run(false, 2)</span> prints
+	<span class="pre">end of run</span> and then <span class="pre">close 2</span>. Neither closes a socket twice.</p>
+	<p>The same flag serves a value that is given a new value on only some paths, or assigned over
+	(<a href="refinitdrop.html#finalizer">finalizers</a>).</p>
 
 	<h3>Scope-surfing and Destruction</h3>
 	<p>This movement of a non-copyable value can be understood as

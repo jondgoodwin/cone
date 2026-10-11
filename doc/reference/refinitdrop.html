@@ -13,32 +13,12 @@
 
     <div class="text">
 
-	<p style="margin-left: 40px;"><i>Note: Finalizers are implemented; a type that defines final is destroyed
-		through it at the end of its value's life, whether the value lives on the stack or in a region
-		(So, Rc, or any struct declaring is RegionRef), where it is finalized just before its memory is
-		freed. A value typed as an enum is finalized as the variant it holds, the enum's own final
-		after the variant's. A tuple or an array is finalized element by element,
-		and the owning references a value holds are released with it, however deep. A value
-		assigned over is finalized as it is replaced, and one moved out, or given a value, on only
-		some paths is finalized on the paths that still hold it. A temporary is finalized at the
-		end of its statement, condition or operand, and one a variable's initializer borrows at
-		the end of its block, as described below; one that a raw pointer made from it may
-		outlive is not finalized at all. A module's
-		global variable is finalized by its module's finalizer when the program shuts down,
-		whatever it holds: a value whose type finalizes, a tuple or an array of them, or an
-		owning reference, which is released. Initializers are implemented: every struct's
-		implicit one, and those a struct declares with the <span class="pre">new</span> permission,
-		named <span class="pre">init</span> or joining the overload name <span class="pre">init</span>.
-		An initializer of any other name is not, nor is a clone method written against the
-		<span class="pre">new</span> permission: a method named clone may be declared and called,
-		but no copy calls it, and it does not make a type copyable. An enum's variant is
-		constructed with parentheses, <span class="pre">Some(x)</span>, and an empty one by its name alone (<a href="refenum.html#init">Enums</a>). An
-		<a href="refallocref.html">allocation</a> constructs its value the same way, in the region:
-		<span class="pre">new Rc[mut, Node](1)</span> runs Node's initializer on the memory the region
-		allocated, after the region's own initializer has filled its bookkeeping, and one given a finished
-		Node instead, <span class="pre">new Rc[mut, Node](n)</span>, moves it in and runs no initializer. A module's own initializer and
-		finalizer are implemented, and are described with
-		<a href="refmodule.html#dyninit">modules</a>.</i></p>
+	<p style="margin-left: 40px;"><i>Note: A method taking <span class="pre">self &amp;new</span> is an initializer only if it
+		is named <span class="pre">init</span> or joins the overload name <span class="pre">init</span>;
+		under any other name it is refused. So a clone method written against the
+		<span class="pre">new</span> permission, as the Clone method section shows, is refused too.
+		A method named clone may be declared and called as an ordinary method,
+		but no copy calls it, and it does not make a type copyable.</i></p>
 	
 	<p>Initializers and finalizers are specialized methods a type may optionally define.
 		Their use bookends the life of a type's objects.
@@ -144,6 +124,66 @@ imm pt = new Point();  // x,y,z of the new Point value are 1.0
 	<p>A value is constructed once. <span class="pre">new Point(p)</span>, where <span class="pre">p</span>
 		is already a Point, is an error: a finished value needs no construction. An
 		<a href="refallocref.html#value">allocation</a> takes one as its value, moving it in.</p>
+	<p>An enum's variant is constructed with parentheses, <span class="pre">Some(x)</span>,
+		and an empty one by its name alone, <span class="pre">None</span>
+		(<a href="refenum.html#init">Enums</a>).</p>
+
+	<h3 id="inregion">Constructing in a region</h3>
+	<p>An allocation constructs its value the same way, in the region. <span class="pre">new Rc[mut, Node](1)</span>
+		runs Node's initializer on the memory the region allocated, after the region's own initializer has filled
+		its bookkeeping. One given a finished Node instead, <span class="pre">new Rc[mut, Node](n)</span>,
+		moves it in and runs no initializer:</p>
+<pre>
+import stdio use *;
+import libc;
+
+struct Counted is RegionRef {
+  owners usize;
+  fn alloc(size usize) *u8 { libc.malloc(size); }
+  fn init(self &amp;new) {
+    print &lt;- "region init\n";
+    *self = new Counted(1usize);
+  }
+  fn aliasRef(self &amp;uni Counted) { owners = owners + 1usize; }
+  fn dealiasRef(self &amp;uni Counted) bool {
+    owners = owners - 1usize;
+    owners == 0usize;
+  }
+  fn free(self &amp;uni Counted) {
+    print &lt;- "free\n";
+    libc.free(self as *u8);
+  }
+}
+
+struct Node {
+  pub n i32;
+  pub fn init(self &amp;new, k i32) {
+    print &lt;- "node init\n";
+    *self = new Node(n: k * 10);
+  }
+  fn final(self &amp;uni) { print &lt;- "node final "; print &lt;- n; print &lt;- "\n"; }
+}
+
+fn main() i32 {
+  {
+    imm a = new Counted[mut, Node](1);    // Node's initializer runs, on the region's memory
+    print &lt;- a.n;
+    print &lt;- "\n";
+  }
+  {
+    imm done = new Node(5);
+    imm b = new Counted[mut, Node](done); // a finished Node moves in: no initializer runs
+    print &lt;- "moved in\n";
+  }
+  0i32;
+}
+</pre>
+	<p>The first block prints <span class="pre">region init</span>, <span class="pre">node init</span>,
+		<span class="pre">10</span>, <span class="pre">node final 10</span> and <span class="pre">free</span>.
+		The second prints <span class="pre">node init</span> (for <span class="pre">new Node(5)</span>),
+		<span class="pre">region init</span>, <span class="pre">moved in</span>,
+		<span class="pre">node final 50</span> and <span class="pre">free</span>.
+		The allocator is described in <a href="refalloccust.html">custom allocators</a>.</p>
 
 <h3 id="clone">Clone method</h3>
 <p>As discussed <a href="refmove.html">earlier</a>, it is not always obvious
@@ -193,8 +233,8 @@ fn final(self &amp;uni) {
 		a temporary at the end of its statement:
 		its finalizer runs first, then the finalizers of its fields, in the order they are
 		declared, then the owning references its fields hold are released, in the order they are
-		declared. A tuple's elements die in order, as fields do, and so do an array's, first element
-		first.</p>
+		declared, and so on down, however deep. A tuple's elements die in order, as fields do, and so
+		do an array's, first element first.</p>
 	<p>A temporary is a value an expression produces that nothing takes: it is not bound to a
 		variable, stored in a field or element, passed by value, returned or moved. A call's
 		result whose field is read, an owning reference read through, an owner lent to a call
@@ -236,6 +276,16 @@ imm r = &amp;make();             // the temporary lives to the end of the block
 imm s &amp;R = makeOwner();       // so does the owner, and what it owns
 imm t = pick(makeOwner());    // the owner dies here: t may not be used after this statement
 </pre>
+	<p>A temporary that a raw pointer made from it may outlive is not finalized at all. Nothing follows a
+		raw pointer, so the compiler leaves the value as it is rather than finalize it and leave the pointer
+		dangling. An ordinary borrow of the same temporary does not keep it:</p>
+<pre>
+fn mk(n i32) R {..}
+fn id(r &amp;R) &amp;R {..}          // answers the borrow it is handed
+
+imm p = id(&amp;mk(2)) as *R;    // p may outlive the temporary: R's final never runs for it
+imm q = id(&amp;mk(3));          // an ordinary borrow: R's final runs at the end of this statement
+</pre>
 	<p>A value dies on the path that still holds it, and only there. Where a variable's value was
 		moved out, or given, on only some of the paths that reach the end of its scope
 		&mdash; in one branch of an <span class="pre">if</span> or a <span class="pre">match</span>,
@@ -271,11 +321,29 @@ if verbose {
 		more general, as with inheritance in other languages. An enum none of whose variants has
 		anything to finalize, such as <span class="pre">Option[i32]</span>, costs nothing when its
 		value dies.</p>
-	<p>A global variable lives until the program shuts down, and a value its type finalizes is
-		finalized then, and an owning reference it holds released, by its module's finalizer,
-		after the module's own
-		<span class="pre">final</span>: see
-		<a href="refmodule.html#dyninit">Dynamic initialization of global variables</a>.</p>
+	<p>A global variable lives until the program shuts down. Whatever it holds is then finalized by its
+		module's finalizer, after the module's own <span class="pre">final</span>: a value whose type
+		finalizes, a tuple or an array of them, or an owning reference, which is released
+		(<a href="refmodule.html#dyninit">Dynamic initialization of global variables</a>).
+		A module has an initializer and a finalizer of its own too, described there.</p>
+<pre>
+struct R {
+  pub n i32;
+  fn final(self &amp;uni) { print &lt;- "final "; print &lt;- n; print &lt;- "\n"; }
+}
+mut one R;
+mut pair (R, R);
+mut many Array[R, 2];
+mut owned So[R];
+fn @initpure init() {
+  one = new R(1);
+  pair = (new R(2), new R(3));
+  many = [new R(4), new R(5)];
+  owned = new So[R](6);
+}
+</pre>
+	<p>After <span class="pre">main</span> returns, this prints <span class="pre">final 1</span> through
+		<span class="pre">final 6</span>, one to a line.</p>
 
 	<p style="text-align: right; margin-top: 2em;">
 		<a href="refinherit.html"><img alt="_" src="next.png" /></a>

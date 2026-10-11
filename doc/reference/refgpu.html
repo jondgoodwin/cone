@@ -13,21 +13,10 @@
 
     <div class="text">
 
-	<p style="margin-left: 40px;"><i>Note: Compute entry points are implemented for SPIR-V's
-		Vulkan form (<span class="pre">conec --triple=spirv1.6-unknown-vulkan1.3</span>), with
-		their buffers, their Invocation, their error buffer, atomics on buffer elements,
-		workgroup memory and barriers as described below, and Congo builds a package's
-		kernels, a marked package's and a <span class="pre">gpu/</span> folder's (below,
-		"A package's kernels"). What a GPU has none of is refused where it is written in GPU code
-		(below, "What a GPU lacks"): a reference to a function, a virtual reference, an
-		allocation and an owning reference type, an actor, a <span class="pre">parallel each</span>,
-		an <span class="pre">await</span>, and a call of a function defined elsewhere that is not
-		the C library's math. Not yet: textures, a checked form of
-		workgroup memory, a CPU twin in <span class="pre">gpuwork</span> that runs a workgroup's
-		invocations together (so that one reading another's writes across a barrier gets the
-		GPU's answer; the barrier hook it needs is built, below), one package's
-		<span class="pre">gpu/</span> folder using another's, and
-		<span class="pre">f16</span>.</i></p>
+	<p style="margin-left: 40px;"><i>Note: Not implemented: textures in a kernel, a checked form of
+		workgroup memory and of the buffers a kernel writes, one package's
+		<span class="pre">gpu/</span> folder used by another's, <span class="pre">f16</span>,
+		and any GPU target but SPIR-V's Vulkan form.</i></p>
 
 	<p>A GPU runs one function, a kernel, thousands of times at once, each run an
 		<i>invocation</i> working on its own part of the data. Cone writes a kernel as an
@@ -60,6 +49,13 @@ fn @compute(64) bake(inv Invocation, parts &amp;Array[Part], out &amp;mut Array[
 		<span class="pre">inline</span>, not <span class="pre">@c</span>. An
 		<span class="pre">extern</span> one, as a package's include file declares it, is called
 		on the CPU as any function is.</p>
+
+	<p>Compiled for a GPU, the entry points of a module are written as SPIR-V's Vulkan form:
+		<span class="pre">conec --triple=spirv1.6-unknown-vulkan1.3</span> writes
+		<span class="pre">&lt;name&gt;.spv</span>, holding each entry point under its function's name.
+		SPIR-V's OpenCL form (<span class="pre">--triple=spirv64-unknown-unknown</span>) has kernels of another kind,
+		and a compute entry point compiled for it is refused (Error 1263). For a package, Congo builds the module
+		(<a href="#packages">A package's kernels</a>, below).</p>
 
 	<p>An entry point returns nothing: what a kernel makes, it writes into a slice it was
 		given. Its parameters are what a dispatch binds, each of one of three kinds, in any
@@ -412,8 +408,8 @@ fn @compute(256) prefix(inv Invocation, input &amp;Array[u32], out &amp;mut Arra
 		wrote (the last invocation of a workgroup gathering what the others counted, say). One
 		whose invocations read what invocations after them write, as the prefix sum above
 		does, needs its workgroup's invocations run together, on threads that meet at each
-		barrier: what the <a href="#cpubarriers">barrier hook</a> is for. The loop in
-		<span class="pre">gpuwork</span> does not yet do that. Nothing resets the one copy
+		barrier: what the <a href="#cpubarriers">barrier hook</a> is for, and what
+		<span class="pre">gpuwork</span> does for a kernel's <a href="#cputwin">CPU twin</a>. Nothing resets the one copy
 		between workgroups, which on a GPU starts undefined anyway.</p>
 
 	<h2 id="barriers">Barriers</h2>
@@ -483,6 +479,23 @@ fn lane(l Lane) {              // one invocation of each workgroup, on its own t
 		loads) and what the optimizer may no longer do across a barrier, since a hook, if set,
 		lets other threads change workgroup memory there. On WebAssembly a barrier is
 		nothing.</p>
+
+	<h3 id="cputwin">The CPU twin: a workgroup run together</h3>
+	<p>The <span class="pre">gpuwork</span> package runs a kernel's CPU twin with
+		<span class="pre">runTwin</span>, over the same buffers a dispatch has, workgroup by workgroup, x fastest.
+		A kernel with no barrier runs its invocations one at a time, x fastest, on the calling thread.
+		A kernel with one (<span class="pre">Kernel.make</span> finds an <span class="pre">OpControlBarrier</span> in
+		its SPIR-V, in the entry point or in any function it calls, however deep) runs each workgroup's invocations
+		together: one thread for each invocation, at most 256 to a workgroup (a larger one is refused), started by
+		<span class="pre">runTwin</span> and joined before it returns. Each thread sets its barrier hook to a
+		barrier that waits for every thread of the workgroup and orders memory as a lock does, so a prefix sum
+		across a workgroup, or a tree reduction, whose invocations read after a barrier what others wrote, gives
+		the GPU's answer on its twin. A <span class="pre">storageBarrier</span> waits as a
+		<span class="pre">workgroupBarrier</span> does.</p>
+	<p>The threads meet again after each workgroup, so the workgroups still run one after another and the one
+		copy of each <span class="pre">@workgroup</span> global is the running workgroup's. As on the GPU, every
+		invocation must reach every barrier the others of its workgroup reach: one that returns early, or
+		fails, leaves the others waiting for ever.</p>
 
 	<p style="text-align: right; margin-top: 2em;">
 		<a href="refmodule.html"><img alt="_" src="next.png" /></a>
