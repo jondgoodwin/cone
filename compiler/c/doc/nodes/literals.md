@@ -402,7 +402,8 @@ type, a third argument and a `trynew` are `ErrorRegionNew`. The head is checked
 first, on a copy, and must be a region value: a value whose type is a struct
 whose first field is a public `*MemRegion` (`typeLitRegionField`, reading no
 method's name); any other is `ErrorRegionHead` -- unless its type *leads to* a
-region (`typeLitLeadsToRegion`): it has a method named `allocRegion` (an actor's
+region (`typeLitLeadsToRegion`): it has a method named `allocRegion` (provisional, as the
+rule is; an actor's
 state has one, generated for every actor,
 [parse](../phases/parse.md), "Actors"), and the head becomes the call
 `x.allocRegion()`, checked the same way on a copy and so asked to be a region

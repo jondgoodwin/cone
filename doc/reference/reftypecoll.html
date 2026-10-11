@@ -22,8 +22,8 @@
 		constructed with <span class="pre">new</span>, its first values after
 		<span class="pre">&lt;-</span>: <span class="pre">new List[i32](100) &lt;- fill 0</span>
 		(<a href="refmethop.html#contents">a collection's contents</a>). Each holds its elements in
-		one block it gets from its region (the heap's, which is the C allocator, unless it was made in another;
-			see below) through a raw pointer, not in an array reference. A borrow
+		one block it gets from its region (the heap's unless it was made in another;
+			<a href="#region">see below</a>) through a raw pointer, not in an array reference. A borrow
 		of an element (<span class="pre">list[i]</span>, <span class="pre">dict[key]</span>,
 		<span class="pre">s.view()</span>) keeps a local collection loaned while it is used: it may be
 		read, but a push, which may move every element, waits for the borrow's last use (see
@@ -48,7 +48,7 @@
 		<span class="pre">truncate</span>.
 		The array primitives are implemented as far as the next two pages say.</i></p>
 
-	<p style="margin-left: 40px;"><i>Note: <b>The region a collection's block comes from.</b> Every
+	<p id="region" style="margin-left: 40px;"><i>Note: <b>The region a collection's block comes from.</b> Every
 		growable collection (<span class="pre">List</span>, <span class="pre">String</span>,
 		<span class="pre">Deque</span>, <span class="pre">Dict</span>, <span class="pre">OrderedDict</span>,
 		<span class="pre">Set</span> and the <span class="pre">pool</span> package's <span class="pre">Pool</span>)
@@ -60,9 +60,12 @@
 		<span class="pre">resize(block, old, new, align)</span> makes it longer, in place or by copying to a new
 		one (a null block of 0 bytes is an allocation), and <span class="pre">release(block, bytes)</span>
 		gives it back. The heap's region, <span class="pre">heapRegion()</span>, is one static object that is
-		never null, whose functions take blocks from the program's heap (today the C library's
-		<span class="pre">malloc</span>, <span class="pre">realloc</span> and
-		<span class="pre">free</span>); a collection made without a region points to it, so
+		never null, whose functions take blocks from the program's heap through core's raw blocks layer
+		(<span class="pre">RawBlocks</span>: <span class="pre">alloc</span>, <span class="pre">resize</span> and
+		<span class="pre">release</span>, the one place the heap's bytes come from, which today forwards to
+		the C library's <span class="pre">malloc</span>, <span class="pre">realloc</span> and
+		<span class="pre">free</span>; a block comes back to it, never to the C library directly); a collection made
+		without a region points to it, so
 		<span class="pre">new List[i32]</span> and <span class="pre">List[i32].empty()</span> are as they
 		were. Another region is the construction's last argument: <span class="pre">new List[i32](100,
 		r)</span>, <span class="pre">new Dict[String, i64](r)</span>, where <span class="pre">r</span> is a
@@ -89,16 +92,21 @@
 		allocation</a>), has its own words in the arena and its block there too: an arena is a region, and the
 		construction hands the list the arena's unless the arguments pass another last. The list grows its block
 		in place while it is the last thing the arena allocated and the room is there, so a list alone in its
-		arena does (made with a starting size, the list is built before it is placed, so its first growth copies
-		once); otherwise the arena bumps a new block, copies the values and abandons the old one, which it
-		holds until it dies (two lists in one arena that grow in turn copy at every growth). Giving a block back
+		arena does, as long as the block the arena is bumping through (4096 bytes, or the size of a value that
+		needed more) has the room (made with a starting size, the list is built before it is placed, so its first
+		growth copies once); otherwise the arena bumps a new block, copies the values and abandons the old one,
+		which it holds until it dies (two lists in one arena that grow in turn copy at every growth, and so does
+		a lone list whose block has outgrown the arena's). Giving a block back
 		does nothing. When the arena dies it finalizes the list, which gives its elements' own memory back to
 		wherever it came from (a <span class="pre">List[String]</span> whose strings came from the heap frees
-		them then).</i></p>
+		them then). An actor's own region is one too: <span class="pre">new self[List[T]](16)</span> takes the
+		list's block from the region's allocate, resize and release, a block of its own that the region's
+		collector never moves, and the list's <span class="pre">final</span> gives it back
+		(<a href="refconccomm.html#actor-gc">Its own region</a>).</i></p>
 
 	<p style="margin-left: 40px;"><i>Note: A collection can hold garbage-collected references
-		(<a href="refalloccust.html">Gc</a>): a <span class="pre">List[Gc[mut, Node]]</span> is traced
-		value by value. A collection, a <span class="pre">Pool</span> and an <span class="pre">Arena</span> each
+		(<a href="refalloccust.html">Gc</a>, or in an actor its own <span class="pre">ActorGc</span>): a
+		<span class="pre">List[Gc[mut, Node]]</span> is traced value by value. A collection, a <span class="pre">Pool</span> and an <span class="pre">Arena</span> each
 		declare the built-in trait <span class="pre">GcTraceElements</span> (a provisional name) and a method
 		<span class="pre">fn gcTraceElements(self &amp;mut) I</span> giving a cursor over a writable reference to each value
 		they hold (<span class="pre">I</span> declares <span class="pre">is Iterator[&amp;mut E]</span>, as
