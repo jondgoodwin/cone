@@ -92,7 +92,8 @@ static void rcMemoPut(INode *st, INode *want, int writable, int ind, unsigned bi
 
 // 'ind': bit 0, a reference or pointer has been passed through on the way; bit 1, the walk is
 // under a read-only view, through which nothing is written but by a reference beneath it
-// that is itself shared mutable
+// that is itself shared mutable; bit 2, a reference that does not own what it points at
+// (a borrow, a raw pointer) has been passed through
 static void rcWalk(INode *type, int ind) {
     if (type == NULL)
         return;
@@ -134,11 +135,14 @@ static void rcWalk(INode *type, int ind) {
         }
         // A 'mut' reference beneath a read-only view can be written through
         uint16_t pflags = perm && perm->tag == PermTag ? ((PermNode *)perm)->permflags : 0;
-        rcWalk(ref->vtexp, 1 | ((ind & 2) && !(pflags & MayAliasWrite) ? 2 : 0));
+        // An owning reference ('So', 'Rc', 'Arc', a user region) keeps what it points at alive:
+        // the walk stays 'owned' through it (ReachOwned); a borrow does not
+        int owning = ref->region && itypeGetTypeDcl(ref->region) != borrowRef;
+        rcWalk(ref->vtexp, 1 | (owning ? (ind & 4) : 4) | ((ind & 2) && !(pflags & MayAliasWrite) ? 2 : 0));
         return;
     }
     case PtrTag:
-        rcWalk(((StarNode *)type)->vtexp, 1 | (ind & 2));
+        rcWalk(((StarNode *)type)->vtexp, 1 | 4 | (ind & 2));
         return;
     case ArrayTag:
         rcWalk(arrayElemType(type), ind);
@@ -156,7 +160,7 @@ static void rcWalk(INode *type, int ind) {
         if (type == rcWant) {
             // Under a read-only view it is reached and not written
             if (!(ind & 2))
-                rcBits |= (ind & 1) ? ReachBorrowed : ReachContained;
+                rcBits |= (ind & 1) ? (ReachBorrowed | ((ind & 4) ? 0 : ReachOwned)) : ReachContained;
             return;
         }
         RcMemo *kept = rcMemoFind(type, rcWant, rcMode, ind);
@@ -367,10 +371,13 @@ int reshapeStoreHits(INode *lval, INode *cont) {
     INode *stored = iexpGetTypeDcl(lval);
     if (stored == NULL || stored == cont)
         return stored != NULL;
-    if (stored->tag != StructTag && stored->tag != ArrayTag && stored->tag != TTupleTag)
+    if (stored->tag != StructTag && stored->tag != ArrayTag && stored->tag != TTupleTag
+            && !((stored->tag == RefTag || stored->tag == ArrayRefTag) && ((RefNode *)stored)->region
+                && itypeGetTypeDcl(((RefNode *)stored)->region) != borrowRef))
         return 0;
-    // A value holding the other by value: replaced whole, it takes the old one with it
-    if (reshapeReach(stored, cont, 0) & ReachContained)
+    // A value holding the other by value, or through owning references alone ('So', 'Rc',
+    // 'Arc'): replaced whole, it takes the old one with it (the last owner's going frees it)
+    if (reshapeReach(stored, cont, 0) & (ReachContained | ReachOwned))
         return 1;
     // An element that owns something (a String), replaced inside a collection: what the
     // old one owned is freed
