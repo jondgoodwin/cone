@@ -840,7 +840,7 @@ package's tests call, ordinary library code that the compiler knows nothing of
 Cone package over `libc`: a growable `List[T]`, an owned `String` and a
 `Dict[K, V]` (a SwissTable over any `K` that is `Hash`), `OrderedDict[K, V]` (the same
 table indexing a dense array, so it iterates in insertion order), `Set[T]` and a ring-buffer `Deque[T]`,
-each holding its elements in one block from its region (core's `MemRegion`; the heap's, the C allocator, unless it is made in another: struct.md, "CarriesRegion") and moving them with core's `mem` intrinsics,
+each holding its elements in one block from its region (core's `MemRegion`; the heap's, which is core's raw blocks layer, unless it is made in another: struct.md, "CarriesRegion") and moving them with core's `mem` intrinsics,
 and the structural capability traits `Collection`, `Indexed`, `Stack`, `Queue` and `Map`; its generic types'
 methods are written whole into its include file, so each importer compiles the
 instances it uses.
@@ -2527,7 +2527,7 @@ and those four are the only symbols its object defines. The structs they
 declare (`posix.Stat`, `posix.FindData64`) are the runtime's layouts, measured
 against its headers (`posix`'s own test, `packages/posix/tests/`). `stdio` still holds its C
 declarations inside its Cone-named module, each function marked `@c`, and
-`core` holds none: its allocator is `libc`'s. `libc`'s math.h functions are
+`core` holds none: its allocator is the raw blocks layer's, over `libc`'s. `libc`'s math.h functions are
 declared in both forms; the one the UCRT has only as an inline function on x64,
 `fabsf`, is an `inline` function calling `fabs`, as the runtime's is. Every
 compile loads `libc`, so each of its declarations is in every program's IR, and
@@ -2746,8 +2746,9 @@ Sendable (`refThreadBinds` is still `RefBindsTraced`). It is a traced region
 ref's only (`ErrorActorLocalUse`, from `regionActorLocalUseCheck`), and trusted.
 It declares no `writeBarrier`, so a reference to a value holding one may sit behind
 an `Rc` (a barrier is told of a store, which a value behind an owner does not make).
-The actor reaches its region by a method of its state, `allocRegion`, generated
-for every actor ([Parse](../phases/parse.md), "Actors"), and
+The actor reaches its region by a method of its state, `allocRegion` (a provisional
+name, as is the general rule it carries, that `new x[T](...)` allocates in the region
+`x` leads to), generated for every actor ([Parse](../phases/parse.md), "Actors"), and
 `new self[T](...)` is `self.allocRegion().alloc(new T(...))`
 ([Literals](literals.md), "Construction"). The region is a record the actor's
 `Header` points to (null till the first `allocRegion`) and the collector is the `actors` package's own (`packages/actors/src/gc.cone`,
@@ -2792,7 +2793,8 @@ inline `writeBarrier` tests a private global in line and calls its private
 `shade` only while a collection marks.
 
 `So` and `Rc` are written this way in `packages/core/src/core.cone`, `inline`,
-their `free` calling libc's by its qualified name, since inside a method named
+their `alloc` and `free` calling the raw blocks layer, `RawBlocks.alloc` and
+`RawBlocks.release`, by its qualified name, since inside a method named
 `free` a bare `free` is the method. Core is their module wrapper; a region
 naming a module rather than a struct is not built.
 

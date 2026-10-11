@@ -101,8 +101,9 @@
 		<span class="pre">ThreadSafe</span>, whatever its permission: <span class="pre">Rc[imm, T]</span>,
 		whose count is not atomic. <span class="pre">Arc[imm, T]</span> and
 		<span class="pre">Arc[opaq, T]</span> cross;</li>
-	<li>a traced reference, <span class="pre">Gc</span>, whatever its permission, until each thread
-		has its own collector;</li>
+	<li>a traced reference, <span class="pre">Gc</span> or an actor's <span class="pre">ActorGc</span>, whatever
+		its permission: the first's collector is single threaded, and the second stays in the actor whose
+		collector moves it (<a href="#actor-gc">Its own region</a>);</li>
 	<li>a raw pointer, whose target nothing checks.</li>
 	</ul>
 	<p>An owner that moves takes its value with it: a <span class="pre">uni</span> owner of any
@@ -136,7 +137,9 @@ thread.start(job, &amp;work);
 		(an <span class="pre">Rc</span>): two threads copying it write its count at once without an
 		atomic operation;</li>
 	<li>a traced reference, <span class="pre">Gc</span>, whose copies are roots in a collector that is
-		single threaded;</li>
+		single threaded (a read-only <span class="pre">ActorGc[imm, T]</span> is the exception, in the passes
+		of a <span class="pre">parallel each</span> in its own actor's behaviour:
+		<a href="refeach.html#parallelactor">In an actor's method</a>);</li>
 	<li>a reference that writes through a path others share: a <span class="pre">&amp;mut</span> (Cone's
 		is shared mutable, so what holds one writes through a <span class="pre">&amp;</span> of it), or
 		an <span class="pre">Arc[mut, T]</span>. A closure that names a <span class="pre">&amp;mut</span>
@@ -616,7 +619,8 @@ actor Echo {
 		plain thread:</p>
 	<ul>
 	<li>The <span class="pre">collector</span> package's <span class="pre">Gc</span> is <b>not supported</b> inside an
-		actor. That collector is single-threaded, and an actor runs on every worker in turn; a
+		actor (it is <a href="refalloccust.html">discouraged</a> everywhere, and likely to be replaced).
+		That collector is single-threaded, and an actor runs on every worker in turn; a
 		traced reference made, held, reached or dropped by an actor corrupts it. So the compiler
 		refuses one made or held in an actor &mdash; a field of its state, a synchronous method's
 		parameter, an allocation, a call that returns one or a literal holding one in any method's
@@ -638,15 +642,21 @@ actor Echo {
 		methods alike, <span class="pre">init</span> after <span class="pre">*self</span> is filled &mdash; allocates there, as
 		<span class="pre">new a[T](args)</span> allocates in an arena
 		(<a href="refregionglo.html">Region strategies</a>): it is
-		<span class="pre">self.allocRegion().alloc(new T(args))</span>. A reference is an
+		<span class="pre">self.allocRegion().alloc(new T(args))</span>, the general rule that
+		<span class="pre">new x[T](...)</span> allocates in the region <span class="pre">x</span> is or leads to
+		(<b>provisional</b>: the <span class="pre">allocRegion</span> method behind it is not settled). A reference is an
 		<span class="pre">ActorGc[mut, T]</span> (or <span class="pre">ActorGc[imm, T]</span>, from
-		<span class="pre">self.allocRegion().allocImm(v)</span>, a provisional spelling). The region's record is made when the
+		<span class="pre">self.allocRegion().allocImm(v)</span>, a <b>provisional</b> spelling that stands in for
+		<span class="pre">new self[imm, T]</span>, which is not decided). A bare
+		<span class="pre">new ActorGc[mut, T](...)</span> names no actor, so it has no region to be in and
+		panics. The region's record is made when the
 		actor first asks for it, and holds no memory until it first allocates, so an actor that never does
-		pays only one pointer in its header.
+		pays only one pointer in its header (8 bytes). Each object in the region carries a header of its own, 24
+		bytes before the value, and every object is rounded up to a multiple of 16 bytes.
 		Only the actor's own code holds
 		<span class="pre">self</span>, so only it allocates in the region; other code is handed the actor's state
 		to allocate there. A collection made so, <span class="pre">new self[List[T]](16)</span>, is
-		handed the region as any collection made in a region is (<a href="reftypecoll.html">a collection</a>):
+		handed the region as any collection made in a region is (<a href="reftypecoll.html#region">a collection</a>):
 		its words are an object of the region, and its block comes from the region's own allocate,
 		resize and release, which count it with what the actor has allocated. The block is a block of its own,
 		never moved by a collection (a collection's block pointer is a raw pointer, which the collector
@@ -668,26 +678,29 @@ actor Keeper {
 }
 </pre>
 	<p>A reference into the region is made, held and copied in the actor's state, its locals, a
-		<span class="pre">List</span>, <span class="pre">Dict</span> or <span class="pre">Rc</span> it owns, and a
+		<span class="pre">List</span>, a <span class="pre">Dict</span>'s values (a traced key is refused) or an
+		<span class="pre">Rc</span> it owns, and a
 		record parked by an <span class="pre">await</span>. It is never Sendable: it stays in its actor, so it
-		is refused in a message, a reply or a thread's start. It has no write barrier and no count, so a
+		is refused in a message, a reply or a thread's start (<span class="pre">ErrorNotSendable</span>). It has no write barrier and no count, so a
 		reference behind an <span class="pre">Rc</span> is allowed (the <span class="pre">Rc</span> is traced once for each
 		collection, so a cycle of them ends).</p>
 	<p><b>It is collected between the actor's messages, by a copying collector.</b> After each message
 		(and after the rest of a behaviour that began a <span class="pre">parallel each</span>, once the loop has
 		finished) the worker may collect, when the bytes allocated since the last collection exceed the
-		bytes that survived it and are not under 64 KiB. The roots are the actor's state and the records
+		bytes that survived it, and not before 64 KiB have been allocated (a floor, so a tiny actor does not
+		collect all the time). The roots are the actor's state and the records
 		its <span class="pre">await</span>s have parked; nothing else holds a reference, since no borrow
 		and no stack of the actor's exists between messages. Everything reached is copied into new chunks
 		and the references are rewritten, so <b>an object moves</b>: nothing holds its address across a
-		message. A value over 4096 bytes is a <i>large object</i>, which never moves. A value with a
+		message. An object over 4096 bytes (its header counted) is a <i>large object</i>, a block of its own
+		that is marked where it sits and never moves. A value with a
 		<span class="pre">final</span>, or a field that needs finalizing, is finalized when a collection finds
 		it unreached (it and what it reaches are kept for that one cycle, its death run once, newest first,
 		and the collection after frees it), and when the actor dies, after its state's own death, every one
 		still alive is finalized, newest first, and the region is freed whole.</p>
 	<p><span class="pre">actors.setFloor(bytes)</span> and <span class="pre">actors.setStress(on)</span> (collect after
 		every message; the environment variable <span class="pre">CONE_ACTORGC_STRESS</span> does the same for
-		a whole run) tune it, for the process, before the first actor is made;
+		a whole run) tune it, for the process, before the first actor allocates;
 		<span class="pre">self.allocRegion().stats()</span> says what the region holds and has done, for
 		tests. Inside a <span class="pre">parallel each</span> a pass reads a read-only reference
 		(<a href="refeach.html#parallelactor">Parallel each in a behaviour</a>), and allocates nothing.</p>
