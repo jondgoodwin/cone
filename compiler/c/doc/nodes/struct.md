@@ -2110,13 +2110,30 @@ and `extractvalue`, and `vtblidx` for vtable slots.
   real cycle through the variant, or a reference in the variant's layout whose
   target holds the enum by value (see [Type Check](../phases/type-check.md),
   "Layout before members").
-- **An enum's method is never generated for the enum.** Each variant has a clone,
-  and a call through a reference to the enum dispatches on the tag. A call on a
-  value typed as the enum — possible only for a by-value `self` — would need the
-  same dispatch on a value, which is not built, so `fnCallLowerMethod` refuses it
-  with `ErrorEnumValueDispatch` rather than leave a call to a function that does
-  not exist. The same absence is why a virtual reference to another trait is
-  built from the variant's vtable and never from one for the enum.
+- **An enum's method is never generated for the enum, unless its receiver names
+  it.** Each variant has a clone, and a call through a reference to the enum
+  dispatches on the tag. A call on a value typed as the enum — possible only for a
+  by-value `self` — would need the same dispatch on a value, which is not built,
+  so `fnCallLowerMethod` refuses it with `ErrorEnumValueDispatch` rather than
+  leave a call to a function that does not exist. The same absence is why a
+  virtual reference to another trait is built from the variant's vtable and never
+  from one for the enum. **The exception is a method whose written receiver names
+  the enum** (`self &Lamp`, `&mut Lamp`, `self Lamp`; `structIsWholeEnumMethod`,
+  read off the parameter as written, so `Self` and an omitted type are the
+  variant's): it is one function over the whole enum. `structInheritTrait` and
+  `structEnumCloneOwnMethods` do not clone it, `structMakeVtable` gives it no slot,
+  `structCheckTraitReqs` does not count it a requirement, `fnDclTypeCheck` checks
+  its body with the enum as `self` (where `match self` and `self is Red` work),
+  `genlGlobalSyms`/`genlGlobalImpl` generate it, an include file declares it
+  `extern` (the parser allows `extern` in an enum for exactly this receiver,
+  `parseNamesEnumReceiver`), and a call is not refused or dispatched by tag
+  (`fnCallLowerTraitMethod`, the `ErrorEnumValueDispatch` test). A value of a
+  variant reaches it by `fnCallLowerMethodOn` finding it in the variant's enum
+  when the variant has no method of that name, the receiver widened to the enum by
+  the ordinary candidate test, so a variant's own method of the same name is the
+  one a variant-typed value calls. A generic enum's (`self &Box[T]`) is not built:
+  the receiver is not a plain name, so it stays a per-variant method and is
+  refused as before (`ErrorInvType`).
 - **`structAddField` drops a duplicate-named field from `fields`** while the
   parser has already assigned indices, so positional literals shift.
 - **An enum's equality is declared even where it cannot be given.** Where a variant

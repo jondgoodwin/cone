@@ -151,19 +151,24 @@ void fnCallPrint(FnCallNode *node) {
 }
 
 // Whether a declaration is a method, or an overload name one of whose
-// candidates is
-static int fnCallNamesMethod(INode *dcl) {
+// candidates is. An enum's method over the whole enum ('self &Lamp') is a
+// function of its own, not a template, so naming it is naming a function
+static int fnCallNamesTemplateMethod(INode *dcl, int wholeenum) {
     if (dcl->tag == FnDclTag)
-        return (dcl->flags & FlagMethFld) != 0;
+        return (dcl->flags & FlagMethFld) != 0 && (wholeenum || !structIsWholeEnumMethod(dcl));
     if (dcl->tag != FnOverloadDclTag)
         return 0;
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(((FnOverloadDclNode*)dcl)->overloads, cnt, nodesp)) {
-        if ((*nodesp)->flags & FlagMethFld)
+        if (((*nodesp)->flags & FlagMethFld) && (wholeenum || !structIsWholeEnumMethod(*nodesp)))
             return 1;
     }
     return 0;
+}
+
+static int fnCallNamesMethod(INode *dcl) {
+    return fnCallNamesTemplateMethod(dcl, 0);
 }
 
 static void fnCallVariantReceiver(FnCallNode *node);
@@ -1461,6 +1466,17 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
     // has no visibility to refuse here
     if (foundnode && foundnode->tag == StructTag)
         foundnode = NULL;
+    // A value of a variant reaches a method of its enum that takes the whole enum
+    // ('self &Lamp'): the variant has no copy of it, and its receiver is widened to
+    // the enum. A method the variant declares or was given is its own, and is
+    // found above.
+    if (foundnode == NULL && objdereftype->tag == StructTag) {
+        StructNode *enumdcl = structBaseTraitDcl((StructNode*)objdereftype);
+        INode *wholemeth = enumdcl && (enumdcl->flags & EnumType)
+            ? iNsTypeFindFnField((INsTypeNode*)enumdcl, methsym) : NULL;
+        if (wholemeth && fnCallNamesTemplateMethod(wholemeth, 1) && !fnCallNamesMethod(wholemeth))
+            foundnode = wholemeth;
+    }
     int notpublic = foundnode && inodeIsPrivate(foundnode) && !(callnode->flags & FlagSelfRecv)
         && !(isNameUseNode(obj) && isExpNode(obj)
              && ((VarDclNode*)((NameUseNode*)obj)->dclnode)->namesym == selfName)
@@ -1707,7 +1723,10 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
     // rather than left as a call to a function that does not exist. An intrinsic,
     // such as a payload-free enum's '==', is no function and is not refused. On a
     // variant's value the receiver's type is the variant, whose clone is selected.
+    // A method whose receiver names the enum ('self &Lamp') is one function over
+    // the whole enum and is called as it is: nothing is read from the tag.
     if (!(callnode->flags & FlagVDisp) && (selected->flags & FlagMethFld)
+        && !structIsWholeEnumMethod((INode*)selected)
         && (selected->value == NULL || selected->value->tag != IntrinsicTag)) {
         INode *owner = inodeGetOwner((INode*)selected);
         if (owner != NULL && owner->tag == StructTag && (owner->flags & TraitType)) {
@@ -2263,6 +2282,9 @@ int fnCallLowerTraitMethod(TypeCheckState *pstate, FnCallNode *callnode, INode *
     Name *methsym = ((NameUseNode*)callnode->methfld)->namesym;
     INode *foundnode = iNsTypeFindFnField((INsTypeNode*)objdereftype, methsym);
     if (foundnode == NULL || foundnode->tag == FieldDclTag)
+        return 0;
+    // A method over the whole enum is called on the reference as it is
+    if (structIsWholeEnumMethod(foundnode))
         return 0;
 
     RefNode *objtype = (RefNode*)iexpGetTypeDcl(callnode->objfn);
@@ -3422,7 +3444,7 @@ static void fnCallVariantReceiver(FnCallNode *node) {
     StructNode *base = member == NULL ? structBaseTraitDcl(variant) : NULL;
     if (base != NULL)
         member = namespaceFind(&base->namespace, methname);
-    if (member == NULL || !fnCallNamesMethod(member))
+    if (member == NULL || !fnCallNamesTemplateMethod(member, 1))
         return;
     FnCallNode *lit = newFnCallNode(node->objfn, 0);
     inodeLexCopy((INode*)lit, node->objfn);

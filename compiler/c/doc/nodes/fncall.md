@@ -563,7 +563,12 @@ Only a by-value `self` can be called on a value, and which variant's clone runs
 would have to be read from the tag at run time, which is built for a reference and
 not for a value. Before, the call named the enum's own declaration, which is never
 generated, and only LLVM's verifier or the linker caught it. On a variant's value
-the call reaches that variant's clone and is fine.
+the call reaches that variant's clone and is fine. **A method whose receiver names
+the enum** (`self &Lamp`, `structIsWholeEnumMethod`) is not a template and is
+exempt: it is the one function over the whole enum, called as it is on an enum's
+value, a reference to it, or a variant's value (found in the enum when the variant
+has none of its own, `fnCallLowerMethodOn`), and `fnCallLowerTraitMethod` leaves it
+alone rather than coerce to `&<Enum`.
 
 ### Selecting a candidate
 

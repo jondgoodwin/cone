@@ -186,7 +186,8 @@ int fnDclIsExpanded(FnDclNode *fndclnode, INode *typenode) {
     if (typenode && typenode->tag == ModTraitTag)
         return 1;
     if (typenode && typenode->tag == StructTag
-        && (((StructNode*)typenode)->genericinfo || (typenode->flags & TraitType)))
+        && (((StructNode*)typenode)->genericinfo || (typenode->flags & TraitType))
+        && !structIsWholeEnumMethod((INode*)fndclnode))
         return 1;
     return 0;
 }
@@ -560,7 +561,8 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
     // trait, or a module trait's default: each is checked in the copy its
     // implementer or conforming module owns, where its names are that one's
     if (!fnnode->value
-        || ((fnnode->flags & FlagMethFld) && pstate->typenode->tag == StructTag && (pstate->typenode->flags & TraitType))
+        || ((fnnode->flags & FlagMethFld) && pstate->typenode->tag == StructTag && (pstate->typenode->flags & TraitType)
+            && !structIsWholeEnumMethod((INode*)fnnode))
         || (pstate->typenode && pstate->typenode->tag == ModTraitTag))
         return;
 

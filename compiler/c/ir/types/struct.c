@@ -306,6 +306,43 @@ static int structIsEnumFinal(StructNode *base, FnDclNode *meth) {
     return (base->flags & EnumType) && meth->namesym == finalName && meth->value != NULL;
 }
 
+// Is this a method of an enum, with a body, whose receiver NAMES THE ENUM? That
+// method is one function over the whole enum: 'fn describe(self &Lamp)', or
+// '&mut Lamp', or by value 'self Lamp'. It is not copied into the variants, its
+// 'self' is the enum, so 'match self' and 'self is Red' work, and it is
+// generated once. A receiver written 'self &' or 'self &Self' is the
+// implementer's instead: the method is a default, copied into each variant.
+// What the receiver names decides, not where the method is declared.
+//
+// Read from the parameter as written, which name resolution has bound by the
+// time any caller asks: a use of 'Self' is the variant a copy is made for, and
+// any other name for the enum is the enum.
+int structIsWholeEnumMethod(INode *meth) {
+    if (meth == NULL || meth->tag != FnDclTag || !(meth->flags & FlagMethFld))
+        return 0;
+    FnDclNode *fn = (FnDclNode*)meth;
+    // An include file declares such a method 'extern', with no body: it is one
+    // function, defined in one place
+    if ((fn->value == NULL && !(fn->flags & FlagExtern)) || fn->genericinfo || fn->vtype == NULL || fn->vtype->tag != FnSigTag)
+        return 0;
+    Nodes *parms = ((FnSigNode*)fn->vtype)->parms;
+    if (parms == NULL || parms->used == 0)
+        return 0;
+    INode *self = nodesGet(parms, 0);
+    if (self->tag != VarDclTag || ((VarDclNode*)self)->namesym != selfName)
+        return 0;
+    INode *type = ((VarDclNode*)self)->vtype;
+    while (type && type->tag == RefTag)
+        type = ((RefNode*)type)->vtexp;
+    if (type == NULL || !isNameUseNode(type) || ((NameUseNode*)type)->namesym == selfTypeName)
+        return 0;
+    INode *dcl = nameUseGetDcl((NameUseNode*)type);
+    if (dcl == NULL || dcl->tag != StructTag || !(dcl->flags & EnumType))
+        return 0;
+    INode *owner = inodeGetOwner(meth);
+    return owner == dcl;
+}
+
 // Keep a clone of the enum's 'final' in a variant that declares its own, under
 // a name no source spells: it is this variant's method, so its symbol is spelled
 // after the variant, and it is in the method list, so it is checked and generated
@@ -372,6 +409,10 @@ static void structInheritTrait(StructNode *node, uint32_t fldpos, StructNode *tr
         if (!((*nodesp)->flags & FlagMethFld))
             continue;
         FnDclNode *traitmeth = (FnDclNode*)*nodesp;
+        // An enum's method whose receiver names the enum is one function over it,
+        // not a default for the variants
+        if (structBaseGivesFields(trait) && structIsWholeEnumMethod((INode*)traitmeth))
+            continue;
         // A requirement with no body is inherited as it is, so that the name is
         // in the namespace: a trait passes the requirement on to its own
         // implementers, and a struct is told to implement it by type check.
@@ -1448,6 +1489,8 @@ static void structEnumCloneOwnMethods(StructNode *node, uint32_t ownmethods) {
         for (cnt = 0; cnt < ownmethods; ++cnt) {
             FnDclNode *meth = (FnDclNode*)nodelistGet(&node->nodelist, cnt);
             if (meth->tag != FnDclTag || !(meth->flags & FlagMethFld) || meth->value == NULL)
+                continue;
+            if (structIsWholeEnumMethod((INode*)meth))
                 continue;
             // The extension's own 'final' is kept beside a copy's, as an enum's is
             // beside a variant's (structIsEnumFinal)
@@ -2805,6 +2848,9 @@ static void structCheckTraitReqs(StructNode *node) {
         uint32_t cnt;
         for (nodelistFor(&trait->nodelist, cnt, nodesp)) {
             if ((*nodesp)->tag != FnDclTag || !((*nodesp)->flags & FlagMethFld))
+                continue;
+            // An enum's method over the whole enum is no requirement of its variants
+            if (structIsWholeEnumMethod(*nodesp))
                 continue;
             FnDclNode *traitmeth = (FnDclNode*)*nodesp;
             INode *binding = namespaceFind(&node->namespace, traitmeth->namesym);
@@ -4498,6 +4544,10 @@ void structMakeVtable(StructNode *node) {
         // dispatch on, so it is neither a slot nor a requirement an implementer
         // has to satisfy. It stays the declaring type's own.
         if (!((*nodesp)->flags & FlagMethFld))
+            continue;
+        // Nor has an enum's method over the whole enum ('self &Lamp'): it is one
+        // function, and no variant has a copy for a slot to point at
+        if (structIsWholeEnumMethod(*nodesp))
             continue;
         FnDclNode *meth = (FnDclNode *)*nodesp;
         // A generic default is cloned into the types that declare the trait and is
