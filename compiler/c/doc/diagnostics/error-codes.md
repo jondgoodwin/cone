@@ -453,12 +453,17 @@ mutably borrowed. The sources need not share a name: two different variables tha
 each a `&mut` (two parameters) may be the one buffer, since the caller may pass it twice,
 so `ErrorParSources` is also reported for them (`ParAlias.viaref`).
 
-A field that is a `&uni` reference (borrow, slice or virtual reference), named through a
-reference on the way to it that is not `uni` (a `&`, a `&mut`, a virtual reference, an owner
-of permission `mut`), is `ErrorUniShared` (type check, `fnCallUniFieldSeen` in `fncall.c`):
-the access is refused whatever is done with it, because another name for the struct holding
-the field could reach the one reference that promised to be unique
-([references](../nodes/references.md), "A `&uni` field is seen only through `uni` references").
+A field, array element or tuple element that is a `&uni` reference (borrow, slice or virtual
+reference), named through a reference on the way to it that is not `uni` (a `&`, a `&mut`, a
+virtual reference, an owner of permission `mut`), is `ErrorUniShared` (type check,
+`fnCallUniSeen` in `fncall.c`): the access is refused whatever is done with it, because another
+name for what holds the field or element could reach the one reference that promised to be unique
+([references](../nodes/references.md), "A `&uni` field or element is seen only through `uni` references").
+Where the place is in code a generic use instantiated (a `List[&uni App]`, whose methods reach
+their elements through `self &mut`), the error is reported once, at the outermost use, with a
+message naming the type argument ("A `&uni` cannot be the type argument of this use: the generic
+code it instantiates reaches it, as an element, through a `&mut` reference..."), and not inside the
+generic; `fnCallUniUses` remembers the uses already reported.
 
 A trait named as a pattern ([cast](../nodes/cast.md), "Trait patterns") has three codes. On an enum, a
 trait that no variant complies with matches nothing: `ErrorPatTraitNone` (a method over the whole enum

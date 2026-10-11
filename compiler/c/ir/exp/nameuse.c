@@ -462,6 +462,7 @@ void nameUseTypeCheck(TypeCheckState *pstate, NameUseNode **namep) {
         FnCallNode *fncall = newFnCallNode((INode *)selfnode, 0);
         fncall->methfld = (INode*)name;
         copyNodeLex(fncall, name); // Copy lexer info into injected node in case it has errors
+        fncall->instnode = name->instnode;  // and what instantiated it, which a '&uni' field's error names
         *((FnCallNode**)namep) = fncall;
         inodeTypeCheckAny(pstate, (INode**)namep);
         return;
