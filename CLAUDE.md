@@ -1065,8 +1065,14 @@ generated like the rest of the program's, plus the packages it imports.
     divergence is closed goes with it. `doc/design/_index.md`, "Implementation
     status", carries the scheme,
   - the **reference page** under `doc/reference/` for any feature whose
-    built status changed, including the italic status note at the top of that
-    page and any marking on its examples,
+    built status changed. The italic status note at the top of that page says
+    only what is still missing: a PR updates it to say so, deletes it when
+    nothing is missing, and never appends what was built. Something important
+    enough that a reader would look for it by name gets its own heading (h2/h3)
+    or its own page with an entry in `doc/reference/index.html`, never only a
+    status note or a corner of another feature's section; a minor change or
+    extension goes into the existing section's prose. Update any marking on
+    the page's examples too,
   - and, when you have access to the owner's plan, the work item that owns the
     subsystem, so what the change closed stops being listed as owed and what it
     opened is recorded.
