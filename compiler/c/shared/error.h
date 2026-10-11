@@ -665,6 +665,11 @@ enum ErrorCode {
     ErrorLetElse = 1462,        // The 'else' of 'imm n Ok = r else ...' falls through to the binding: it must leave with 'return', 'break', 'continue' or a call that does not return
     ErrorOwnerNarrow = 1463,    // An owner ('Rc[mut, Shape]') narrowed to a variant whose value would sit at another offset in its allocation: the address would have to change
 
+    // Trait patterns on a closed family (ir/exp/cast.c)
+    ErrorPatTrait = 1470,       // A trait named as a pattern where the matched value is not an enum: an open trait cannot say which values comply with another trait, so only a concrete type can be narrowed to
+    ErrorPatTraitNone = 1471,   // A trait pattern that no variant of the matched enum complies with: it can never match
+    ErrorPatTraitBind = 1472,   // A trait pattern that binds a virtual reference where the matched value is no borrowed reference (a value, an owner), or where the pattern is written as a plain reference
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

@@ -13,6 +13,7 @@ CastNode *newRecastNode(INode *exp, INode *type) {
     newNode(node, CastNode, CastTag);
     node->typ = node->vtype = type;
     node->exp = exp;
+    node->variants = NULL;
     return node;
 }
 
@@ -23,6 +24,7 @@ CastNode *newConvCastNode(INode *exp, INode *type) {
     node->flags |= FlagConvert;
     node->typ = node->vtype = type;
     node->exp = exp;
+    node->variants = NULL;
     return node;
 }
 
@@ -31,6 +33,7 @@ INode *cloneCastNode(CloneState *cstate, CastNode *node) {
     CastNode *newnode;
     newnode = memAllocBlk(sizeof(CastNode));
     memcpy(newnode, node, sizeof(CastNode));
+    newnode->variants = NULL;   // a trait pattern is asked again of the clone's own enum
     newnode->flags &= 0xFFFF - FlagMatchChecked;
     newnode->exp = cloneNode(cstate, node->exp);
     newnode->typ = cloneNode(cstate, node->typ);
@@ -44,6 +47,7 @@ CastNode *newIsNode(INode *exp, INode *type) {
     node->vtype = (INode*)boolType;  // 'is' answers a question, whatever it asks about
     node->typ = type;
     node->exp = exp;
+    node->variants = NULL;
     return node;
 }
 
@@ -202,6 +206,18 @@ static void castPatternAdoptRef(CastNode *node) {
     if (fromtype->tag != RefTag && fromtype->tag != VirtRefTag)
         return;
     RefNode *from = (RefNode*)fromtype;
+    // A trait on an enum's reference is a virtual reference built from the variant [topic 7]:
+    // only a borrow of the enum can lend one. (Another matched reference keeps the bare name,
+    // which castTraitBind refuses where the pattern binds.)
+    if (castMatchedEnum(node->exp) != NULL) {
+        // (a generic trait's instance, 'Boxed[i32]', is named through its callee)
+        INode *named = itypeGetTypeDcl(isname ? typ : ((FnCallNode*)typ)->objfn);
+        if (named->tag == StructTag && (named->flags & TraitType) && !(named->flags & EnumType)) {
+            if (fromtype->tag == RefTag && itypeGetTypeDcl(from->region) == borrowRef)
+                node->typ = (INode*)newRefNodeFull(VirtRefTag, typ, from->region, from->perm, typ);
+            return;
+        }
+    }
     // A virtual reference narrows to the reference it was made from
     node->typ = (INode*)newRefNodeFull(RefTag, typ, from->region, from->perm, typ);
 }
@@ -210,6 +226,160 @@ static int castPatternBind(CastNode *node, int report) {
     if (!castPatternBindName(node, report))
         return 0;
     castPatternAdoptRef(node);
+    return 1;
+}
+
+static void castSumInterior(CastNode *node, RefNode *from, RefNode *to);
+
+// ---- Trait patterns on an enum [topic 7] ----
+//
+// 'case imm m Measured' on an enum matches every variant that complies with the trait. It is
+// a test of those variants' tags (no run-time cost beyond the tags), counts toward
+// exhaustiveness as the variants it names, and binds a virtual reference to the trait built
+// from the variant the matched reference points at, its vtable chosen by the tag. Only a
+// closed family can say which values comply, so an open trait has no trait patterns.
+
+// The trait a pattern names, or NULL when it names anything else: an enum, a variant, a
+// type that is not a struct, or a name not yet bound. A reference written around it is looked through.
+static StructNode *castPatternTrait(INode *typ) {
+    if (typ == NULL || typ == errorType || typ == unknownType || castPatternPending(typ) || !isTypeNode(typ))
+        return NULL;
+    if (typ->tag == RefTag || typ->tag == VirtRefTag)
+        typ = ((RefNode*)typ)->vtexp;
+    if (typ == NULL || !isTypeNode(typ))
+        return NULL;
+    INode *dcl = itypeGetTypeDcl(typ);
+    if (dcl->tag != StructTag || !(dcl->flags & TraitType) || (dcl->flags & EnumType))
+        return NULL;
+    return (StructNode*)dcl;
+}
+
+// A variant complies with a trait when it can be viewed through it: it declares the trait with
+// 'is' or has what it requires, as a generic's 'where T is Trait' asks, and its methods fit a
+// vtable's slots. Asking registers the variant's vtable for the trait. A method over the whole enum
+// ('self &Lamp') is one function, with no slot in any variant's vtable, so it makes no variant comply.
+static int castVariantComplies(StructNode *variant, StructNode *trait) {
+    if (variant->tag != StructTag)
+        return 0;
+    return genericTypeIs((INode*)variant, trait) && structVirtRefMatches(trait, variant) != NoMatch;
+}
+
+// The variants of an enum that comply with a trait, in the enum's order
+static Nodes *castTraitVariants(StructNode *enumdcl, StructNode *trait) {
+    Nodes *found = newNodes(enumdcl->derived->used);
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(enumdcl->derived, cnt, nodesp)) {
+        if (castVariantComplies((StructNode*)*nodesp, trait))
+            nodesAdd(&found, *nodesp);
+    }
+    return found;
+}
+
+uint32_t castIsVariants(CastNode *isnode, StructNode *enumdcl, uint8_t *has) {
+    uint32_t found = 0;
+    INode *single = isnode->variants ? NULL : itypeGetDerefTypeDcl(isnode->typ);
+    INode **nodesp;
+    uint32_t cnt, k = 0;
+    for (nodesFor(enumdcl->derived, cnt, nodesp)) {
+        int named = *nodesp == single;
+        if (isnode->variants) {
+            INode **namedp;
+            uint32_t namedcnt;
+            for (nodesFor(isnode->variants, namedcnt, namedp))
+                named = named || *namedp == *nodesp;
+        }
+        if (named) {
+            has[k] = 1;
+            ++found;
+        }
+        ++k;
+    }
+    return found;
+}
+
+// The test of a trait pattern: the variants that comply, and the pattern as it may be written.
+// Returns 1 when this is a trait pattern on an enum, whether or not it is well formed.
+static int castTraitIsCheck(CastNode *node) {
+    StructNode *trait = castPatternTrait(node->typ);
+    StructNode *enumdcl = trait ? castMatchedEnum(node->exp) : NULL;
+    if (enumdcl == NULL)
+        return 0;
+    INode *fromtype = iexpGetTypeDcl(node->exp);
+    // The pattern names the trait, and the matched value supplies the rest (topic 6a). A plain
+    // reference to a trait has no vtable to carry, so one written is refused; a virtual one is
+    // the check that the matched value agrees with it
+    if (node->typ->tag == RefTag) {
+        errorMsgNode(node->typ, ErrorPatTraitBind,
+            "A trait pattern binds a virtual reference built from the variant, not a plain reference to %s. Write %s, or &<%s.",
+            &trait->namesym->namestr, &trait->namesym->namestr, &trait->namesym->namestr);
+        node->vtype = (INode*)boolType;
+        return 1;
+    }
+    if (node->typ->tag == VirtRefTag) {
+        RefNode *to = (RefNode*)node->typ;
+        RefNode *from = (RefNode*)fromtype;
+        if (fromtype->tag != RefTag || itypeGetTypeDcl(from->region) != borrowRef) {
+            errorMsgNode(node->typ, ErrorPatTraitBind,
+                "A trait pattern written as a virtual reference needs the matched value to be a borrowed reference: match a borrow of the value, '&s', and the pattern is %s.",
+                &trait->namesym->namestr);
+            return 1;
+        }
+        if (!itypeIsSame(from->region, to->region) || permMatches(to->perm, from->perm) == NoMatch) {
+            errorMsgNode(node->typ, ErrorInvType, "Reference region/permission won't downcast safely this way");
+            return 1;
+        }
+    }
+    Nodes *variants = castTraitVariants(enumdcl, trait);
+    if (variants->used == 0) {
+        errorMsgNode(node->typ, ErrorPatTraitNone,
+            "No variant of %s complies with %s, so this pattern can never match. A variant complies when it declares %s with 'is' or has what it requires; a method over the whole enum (a receiver named %s) belongs to no variant.",
+            &enumdcl->namesym->namestr, &trait->namesym->namestr, &trait->namesym->namestr, &enumdcl->namesym->namestr);
+        return 1;
+    }
+    node->variants = variants;
+    return 1;
+}
+
+// A bound pattern's conversion when the pattern names a trait: the virtual reference to it built
+// from the matched reference, its vtable chosen by the variant's tag. The matched value must be
+// a borrowed reference, since a virtual reference is one. Returns 1 when this is a trait pattern.
+static int castTraitBind(CastNode *node) {
+    StructNode *trait = castPatternTrait(node->typ);
+    StructNode *enumdcl = trait ? castMatchedEnum(node->exp) : NULL;
+    if (enumdcl == NULL)
+        return 0;
+    INode *fromtype = iexpGetTypeDcl(node->exp);
+    if (node->typ->tag == RefTag) {      // the test has refused it
+        node->vtype = errorType;
+        return 1;
+    }
+    if (node->typ->tag != VirtRefTag) {
+        errorMsgNode(node->typ, ErrorPatTraitBind,
+            "%s is a trait, so this pattern binds a virtual reference to it, and only a borrowed reference can lend one. Match a borrow of the value, 'match &s' or 'match &mut s', or test with 'case is %s' and bind nothing.",
+            &trait->namesym->namestr, &trait->namesym->namestr);
+        node->vtype = errorType;
+        return 1;
+    }
+    RefNode *from = (RefNode*)fromtype;
+    RefNode *to = (RefNode*)node->typ;
+    if (fromtype->tag != RefTag || castTraitVariants(enumdcl, trait)->used == 0) {
+        node->vtype = errorType;     // the test has said so
+        return 1;
+    }
+    // An enum laid out as a pointer, null standing for its empty variant, has no tag to choose
+    // a vtable by (and a reference to one converts to no virtual reference either)
+    if (structPointerField(enumdcl) != NULL) {
+        errorMsgNode(node->typ, ErrorPatTraitBind,
+            "%s is laid out as a pointer, with no tag to say which variant's vtable a virtual reference to %s would carry. Test with 'case is %s', or bind the variants that comply.",
+            &enumdcl->namesym->namestr, &trait->namesym->namestr, &trait->namesym->namestr);
+        node->vtype = errorType;
+        return 1;
+    }
+    node->flags |= FlagTraitBind;
+    node->vtype = iexpCoerceType(node->exp, node->typ);
+    // The collection rule: the variant could change under a reference others share
+    castSumInterior(node, from, to);
     return 1;
 }
 
@@ -592,6 +762,8 @@ void castTypeCheck(TypeCheckState *pstate, CastNode *node) {
         return;
 
     node->vtype = node->typ;
+    if ((node->flags & FlagMatchBind) && castTraitBind(node))
+        return;
     // 'null as *T' is the null of the pointer type named; 'as' anything else
     // asks a pointer to be what it is not
     if (litAdoptNullType(&node->exp, node->typ) && inodeIsError(node->exp)) {
@@ -677,6 +849,10 @@ void castIsTypeCheck(TypeCheckState *pstate, CastNode *node) {
         return;
     }
 
+    // A trait named on an enum matches the variants that comply
+    if (castTraitIsCheck(node))
+        return;
+
     // Downcasting type check from a virt ref to a ref, or from a ref to a ref?
     INode *totype = itypeGetTypeDcl(node->typ);
     INode *fromtype = iexpGetTypeDcl(node->exp);
@@ -706,9 +882,14 @@ void castIsTypeCheck(TypeCheckState *pstate, CastNode *node) {
                 // no such type: no vtable is ever built for one, only for its
                 // implementers or variants, so there is nothing to compare with.
                 if ((tostr->flags & TraitType) && !(fromstr->flags & HasTagField)) {
-                    errorMsgNode((INode*)node, ErrorInvType,
-                        "%s is a trait or enum, and a virtual reference narrows only to the concrete type it was made from. Narrow to one of its variants or implementers.",
-                        &tostr->namesym->namestr);
+                    if (tostr->flags & EnumType)
+                        errorMsgNode((INode*)node, ErrorInvType,
+                            "%s is a trait or enum, and a virtual reference narrows only to the concrete type it was made from. Narrow to one of its variants or implementers.",
+                            &tostr->namesym->namestr);
+                    else
+                        errorMsgNode((INode*)node, ErrorPatTrait,
+                            "%s is a trait, and a virtual reference narrows only to the concrete type it was made from. A trait pattern is for an enum, which can say which of its variants comply with it; narrow this to one of its implementers.",
+                            &tostr->namesym->namestr);
                     return;
                 }
                 if (structVirtRefMatches(fromstr, tostr))
@@ -767,5 +948,11 @@ void castIsTypeCheck(TypeCheckState *pstate, CastNode *node) {
         return;
     }
 
-    errorMsgNode((INode*)node, ErrorInvType, "Types are not compatible for this downcast specialization");
+    StructNode *pattrait = castPatternTrait(node->typ);
+    if (pattrait != NULL)
+        errorMsgNode((INode*)node, ErrorPatTrait,
+            "%s is a trait, and only an enum can say which of its values comply with a trait. Match an enum, or narrow this value to a concrete type.",
+            &pattrait->namesym->namestr);
+    else
+        errorMsgNode((INode*)node, ErrorInvType, "Types are not compatible for this downcast specialization");
 }

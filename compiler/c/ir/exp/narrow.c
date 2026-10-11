@@ -373,18 +373,19 @@ static int narrowCalledSince(NarrowFact *fact) {
 
 // ---- What a condition says ----
 
-static void narrowAssumeVar(VarDclNode *var, StructNode *enumdcl, int shared, uint32_t idx, int truth, INode *test) {
+// 'bits' are the variants the test names: one for a variant, those that comply for a trait
+// pattern
+static void narrowAssumeVar(VarDclNode *var, StructNode *enumdcl, int shared, uint64_t bits, int truth, INode *test) {
     NarrowFact *fact = narrowFind(var);
     if (fact == NULL)
         fact = narrowAdd(var, enumdcl, shared);
-    uint64_t bit = (uint64_t)1 << idx;
     // What the test found holds, whatever was believed before it: a test that
     // contradicts it is of a branch that cannot run, which is no reason to refuse
     // the code in it
     if (truth)
-        fact->possible = bit;
+        fact->possible = (fact->possible & bits) ? (fact->possible & bits) : bits;
     else {
-        fact->possible &= ~bit;
+        fact->possible &= ~bits;
         if (fact->possible == 0)
             fact->possible = narrowAll(fact->nvariants);
     }
@@ -411,10 +412,22 @@ static void narrowAssumeCond(INode *cond, int truth) {
         StructNode *enumdcl = narrowEnumOfVar(var, &isref, &shared);
         if (enumdcl == NULL)
             return;
-        uint32_t idx = narrowIndexOf(enumdcl, itypeGetDerefTypeDcl(isnode->typ));
-        if (idx == ~0u)
-            return;
-        narrowAssumeVar(var, enumdcl, shared, idx, truth, cond);
+        uint64_t bits = 0;
+        if (isnode->variants) {
+            uint8_t has[64] = {0};
+            if (castIsVariants(isnode, enumdcl, has) == 0)
+                return;
+            for (uint32_t k = 0; k < enumdcl->derived->used; ++k)
+                if (has[k])
+                    bits |= (uint64_t)1 << k;
+        }
+        else {
+            uint32_t idx = narrowIndexOf(enumdcl, itypeGetDerefTypeDcl(isnode->typ));
+            if (idx == ~0u)
+                return;
+            bits = (uint64_t)1 << idx;
+        }
+        narrowAssumeVar(var, enumdcl, shared, bits, truth, cond);
         return;
     }
     case NotLogicTag:

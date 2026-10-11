@@ -252,7 +252,7 @@ static int genlTagsIndexVtables(StructNode *trait) {
 // and no default arm is reachable. No basic blocks, so nothing here depends on
 // where the coercion sits.
 static LLVMValueRef genlVtableForTag(GenState *gen, Vtable *vtable, StructNode *trait,
-                                     LLVMValueRef tagval, FieldDclNode *tagnode) {
+                                     LLVMValueRef tagval, FieldDclNode *tagnode, int partial) {
     LLVMTypeRef tagtype = genlType(gen, tagnode->vtype);
     LLVMValueRef chosen = NULL;
     INode **nodesp;
@@ -271,7 +271,11 @@ static LLVMValueRef genlVtableForTag(GenState *gen, Vtable *vtable, StructNode *
         // structMakeVtable prewires every variant into the enum's own vtable,
         // and structVirtRefMatches maps every one into another trait's before
         // it lets a reference to the enum convert, so a miss is a broken
-        // invariant rather than a program the compiler should diagnose
+        // invariant rather than a program the compiler should diagnose. A trait
+        // pattern's conversion is the exception: only the variants that comply
+        // have one, and the others cannot reach the arm that makes it
+        if (variantvtable == NULL && partial)
+            continue;
         if (variantvtable == NULL)
             errorExit(ExitGen, "No vtable implementation registered for an enum variant");
         if (chosen == NULL) {
@@ -1253,7 +1257,7 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
 // - Numbers to another number (extending or truncating)
 // - Number or ref/ptr to true/false
 // - Array ref to ptr or size
-LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
+LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to, int partial) {
     INode *fromtype = iexpGetTypeDcl(exp);
     INode *totype = itypeGetTypeDcl(to);
     LLVMValueRef genexp = genlExpr(gen, exp);
@@ -1419,7 +1423,7 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
                     vtablep = LLVMBuildLoad2(gen->builder, LLVMPointerType(vtable->llvmvtable, 0), vtablep, "");
                 }
                 else
-                    vtablep = genlVtableForTag(gen, vtable, strnode, val, tagnode);
+                    vtablep = genlVtableForTag(gen, vtable, strnode, val, tagnode, partial);
             }
             if (vtablep == NULL)
                 errorExit(ExitGen, "Virtual reference source trait has no tag field");
@@ -1761,6 +1765,9 @@ LLVMValueRef genlLocalVar(GenState *gen, VarDclNode *var) {
     return val;
 }
 
+static LLVMValueRef genlIsVariant(GenState *gen, CastNode *isnode, LLVMValueRef val, INode *exptype, int viaref,
+                                  StructNode *structtype);
+
 // Returns a boolean indicating whether some value may be downcast to the specialized type
 LLVMValueRef genlIsType(GenState *gen, CastNode *isnode) {
     LLVMValueRef val = genlExpr(gen, isnode->exp);
@@ -1807,13 +1814,30 @@ LLVMValueRef genlIsType(GenState *gen, CastNode *isnode) {
         return NULL;
     }
 
+    // A trait pattern tests the tag against each variant that complies [topic 7]
+    if (isnode->variants) {
+        LLVMValueRef any = NULL;
+        INode **variantp;
+        uint32_t variantcnt;
+        for (nodesFor(isnode->variants, variantcnt, variantp)) {
+            LLVMValueRef test = genlIsVariant(gen, isnode, val, exptype, exptype->tag == RefTag, (StructNode*)*variantp);
+            any = any ? LLVMBuildOr(gen->builder, any, test, "istrait") : test;
+        }
+        return any;
+    }
+    return genlIsVariant(gen, isnode, val, exptype, istype->tag == RefTag, structtype);
+}
+
+// Does the tagged (or nullable-pointer) value 'val', through a reference if 'viaref', hold this variant?
+static LLVMValueRef genlIsVariant(GenState *gen, CastNode *isnode, LLVMValueRef val, INode *exptype, int viaref,
+                                  StructNode *structtype) {
     // Special handling for nullable pointers
     if (structtype->flags & NullablePtr) {
         LLVMTypeRef ptrtype = structtype->llvmtype;
         // Matching through a reference hands over the address of the value, so
         // load it before testing it against null -- the tagged path below reads
         // its tag field through the same kind of reference for the same reason.
-        if (istype->tag == RefTag)
+        if (viaref)
             val = LLVMBuildLoad2(gen->builder, genlPointeeType(gen, exptype), val, "nullable");
         // A virtual reference or a slice is two words, and the empty variant is
         // the one whose first word, the pointer, is null -- as the variant
@@ -1835,7 +1859,7 @@ LLVMValueRef genlIsType(GenState *gen, CastNode *isnode) {
     for (nodelistFor(&structtype->fields, cnt, nodesp)) {
         if ((*nodesp)->flags & IsTagField) {
             FieldDclNode *tagnode = (FieldDclNode*)*nodesp;
-            if (istype->tag == RefTag) {
+            if (viaref) {
                 val = LLVMBuildStructGEP2(gen->builder, genlPointeeType(gen, exptype), val, tagnode->index, "tagref");
                 val = LLVMBuildLoad2(gen->builder, genlType(gen, tagnode->vtype), val, "tag");
             }
@@ -2654,7 +2678,7 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
             }
         }
         else if (littype->tag == IntNbrTag || littype->tag == UintNbrTag || littype->tag == FloatNbrTag) {
-            return genlConvert(gen, nodesGet(lit->args, 0), lit->objfn);
+            return genlConvert(gen, nodesGet(lit->args, 0), lit->objfn, 0);
         }
         else {
             errorMsgNode((INode*)lit, ErrorBadTerm, "Unknown literal type to generate");
@@ -2949,7 +2973,7 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
         if (node->flags & FlagLockAcquire)
             return genlLockAcquire(gen, genlExpr(gen, node->exp), (RefNode *)itypeGetTypeDcl(node->vtype), termnode);
         if (node->flags & FlagConvert)
-            return genlConvert(gen, node->exp, node->vtype);
+            return genlConvert(gen, node->exp, node->vtype, (node->flags & FlagTraitBind) != 0);
         if (node->flags & FlagOwnerNarrow)
             genlOwnerNarrowCheck(gen, node);
         return genlRecast(gen, node->exp, node->vtype);
