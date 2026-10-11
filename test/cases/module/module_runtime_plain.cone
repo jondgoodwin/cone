@@ -1,0 +1,143 @@
+// What a plain program (no actors, no threads) needs of the OS, on every
+// platform the runtime is built for: it prints, hashes and reads the clock, and
+// is pinned to print the same on Windows and on Linux. The runtime's C bindings
+// differ by platform (the streams, errno, the seed of the hashers, the clocks);
+// the checks below are the ones that are the same everywhere.
+//
+// Printing: integers, a float, a code point as its UTF-8 bytes and a C string,
+// to standard output, and a line to standard error (the .err file).
+//
+// Hashing: a dictionary and a set of integers keyed by the hashers, each seeded
+// from the OS, so nothing here depends on an order; the sums and counts are
+// worked out by hand. The process's seed is not 0 and is the same all through
+// the process; a fixed seed gives the same hash every run, which differs from
+// the seed's own.
+//
+// The clocks: the steady clock never goes back and ticks in nanoseconds, so
+// 2 milliseconds spun away show as between 2 ms and 2 s on it and under 2 s
+// on the calendar clock, which is not behind it by more than its own step
+// (50 ms allowed); the calendar clock says it is after
+// Nov 2023 and not yet 2096, and libc's 'time' is within 2 s of it.
+//
+// errno: opening a file that is not there fails with ENOENT, 2, where 'errno'
+// says so, and setting it to 0 is read back.
+
+mod module_runtime_plain;
+
+import stdio use *;
+import collections use *;
+import time use *;
+import libc;
+
+fn line(label &str, n i64) {
+  printStr(label);
+  printStr(": ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn yes(b bool) i64 {
+  if b {1i64;} else {0i64;}
+}
+
+fn printing() {
+  printInt(-42i64);
+  printStr(" ");
+  printUInt(18446744073709551615u64);
+  printStr(" ");
+  printFloat(2.5d);
+  printStr(" ");
+  printFloat(1e20d);
+  printStr(" ");
+  printChar(0x20ACu64);
+  printStr(" ");
+  printCStr(&"a C string" as *u8);
+  printStr("\n");
+  eprintStr("to standard error: ");
+  eprintInt(7i64);
+  eprintStr("\n");
+}
+
+fn hashing() {
+  // Integer keys to their squares, enough to grow the table several times
+  mut squares = Dict[i64, i64].empty();
+  mut i = 0i64;
+  while i < 1000i64 {
+    squares.insert(i, i * i);
+    i++;
+  }
+  mut sum = 0i64;
+  i = 0i64;
+  while i < 1000i64 {
+    sum = sum + *squares[&i];
+    i++;
+  }
+  line("dict length", i64.from(squares.len()));
+  // 0 squared to 999 squared: 999 * 1000 * 1999 / 6
+  line("dict sum", sum);
+  line("dict has 999", yes(squares.contains(&999i64)));
+  line("dict has 1000", yes(squares.contains(&1000i64)));
+
+  // A set counts its members once each: 0 to 6 by sevens' remainders
+  mut seen = Set[i64].empty();
+  mut fresh = 0i64;
+  i = 0i64;
+  while i < 500i64 {
+    if seen.insert(i % 7i64) { fresh++; }
+    i++;
+  }
+  line("set fresh", fresh);
+  line("set length", i64.from(seen.len()));
+
+  // The seed from the OS
+  line("seed is not 0", yes(processSeed() != 0u64));
+  line("seed is steady", yes(processSeed() == processSeed()));
+  mut a = Hasher.withSeed(processSeed());
+  a.writeU64(7u64);
+  mut b = Hasher.withSeed(processSeed());
+  b.writeU64(7u64);
+  line("same seed, same hash", yes(a.finish() == b.finish()));
+  mut c = Hasher.withSeed(1u64);
+  c.writeU64(7u64);
+  mut d = Hasher.withSeed(2u64);
+  d.writeU64(7u64);
+  line("other seeds, other hashes", yes(c.finish() != d.finish()));
+}
+
+fn clocks() {
+  imm wall0 = Timestamp.now();
+  imm start = Instant.now();
+  // Spun, not slept: a plain program has no threads to sleep on
+  mut ticks = 0i64;
+  while Instant.now() - start < Duration.fromMillis(2i64) { ticks++; }
+  imm steady = Instant.now() - start;
+  imm wall = Timestamp.now() - wall0;
+  line("steady is 2 ms or more", yes(steady >= Duration.fromMillis(2i64)));
+  line("steady is under 2 s", yes(steady < Duration.fromSeconds(2i64)));
+  line("wall is under 2 s", yes(wall < Duration.fromSeconds(2i64)));
+  // The calendar clock may step coarsely, so allow it 50 ms
+  line("wall is not behind steady", yes(wall + Duration.fromMillis(50i64) >= steady));
+  line("steady never goes back", yes(Instant.now() >= start));
+
+  imm now = Timestamp.now();
+  line("after Nov 2023", yes(now.unixSeconds() > 1700000000i64));
+  line("before 2096", yes(now.unixSeconds() < 4000000000i64));
+  imm cseconds = libc.time(null);
+  imm gap = cseconds - now.unixSeconds();
+  line("libc time agrees", yes(gap > -3i64 and gap < 3i64));
+}
+
+fn errors() {
+  *libc.errno() = 0i32;
+  line("errno set to 0", i64.from(*libc.errno()));
+  imm f = libc.fopen("no-such-file-for-module-runtime-plain.txt", "rb");
+  line("fopen fails", yes((f as usize) == 0usize));
+  line("errno is ENOENT", i64.from(*libc.errno()));
+}
+
+fn main() {
+  printing();
+  hashing();
+  clocks();
+  errors();
+}

@@ -58,6 +58,10 @@ C_SOURCE_DIRS = (Path("compiler") / "c", Path("packages") / "conestd")
 # core does not stop the suite until the library is rebuilt.
 CONESTD_SOURCE_DIRS = (Path("packages") / "conestd",)
 IS_WINDOWS = os.name == "nt"
+# The host's name in a platform's own expectation file: ``name.linux.out`` is
+# what a ``run`` scenario prints on Linux where the C library's spelling of a
+# value differs from the one ``name.out`` pins (see ``expectation_file``)
+HOST_OS = "windows" if IS_WINDOWS else ("macos" if sys.platform == "darwin" else "linux")
 # The status a program ends with through the C library's 'abort', as a panic
 # does: the Microsoft C library's fail-fast, 0xC0000409, or death by SIGABRT
 ABORT_STATUS = 0xC0000409 if IS_WINDOWS else -6
@@ -1628,6 +1632,16 @@ class Completed:
     seconds: float
 
 
+def expectation_file(source: Path, suffix: str) -> Path:
+    """The file a ``run`` scenario's stdout (``.out``) or stderr (``.err``) is
+    compared with on this host. It is ``name.out`` unless the scenario has a
+    file of its own for this host, ``name.<host>.out`` (``windows``, ``linux``
+    or ``macos``), which is for a value the C library spells differently on one
+    platform, where the program cannot print the same on all."""
+    own = source.with_suffix(f".{HOST_OS}{suffix}")
+    return own if own.exists() else source.with_suffix(suffix)
+
+
 def normalize(text: str) -> str:
     """R4.1. Git checks .out files out as CRLF on Windows while the repository
     holds LF, and there are no .gitattributes eol rules, so every comparison is
@@ -2740,7 +2754,7 @@ class Runner:
         # printed is the candidate expectation whether or not it matched.
         result.program_stdout = ran.stdout
 
-        expected_path = scenario.source.with_suffix(".out")
+        expected_path = expectation_file(scenario.source, ".out")
         if not expected_path.exists():
             result.status = FAIL
             result.problems.append(f"no expected stdout at {expected_path.name}")
@@ -2756,7 +2770,7 @@ class Runner:
         # A program that writes to stderr on purpose -- a panic's report --
         # pins it in a .err file beside the .out, compared the same way. Without
         # one, stderr is not compared. Written by hand: bless leaves it alone.
-        err_path = scenario.source.with_suffix(".err")
+        err_path = expectation_file(scenario.source, ".err")
         if err_path.exists():
             expected_err = normalize(err_path.read_text(encoding="utf-8"))
             actual_err = normalize(ran.stderr)
@@ -3236,7 +3250,7 @@ def bless_scenario(scenario: Scenario, results: list[Result],
 
         stdout: bytes | None = None
         if scenario.category == "run":
-            expected_path = scenario.source.with_suffix(".out")
+            expected_path = expectation_file(scenario.source, ".out")
             if result.program_stdout is None:
                 reported.append(
                     f"{expected_path.name} left alone: the program did not run to"
@@ -3261,7 +3275,7 @@ def bless_scenario(scenario: Scenario, results: list[Result],
         for rel, lines in edits.items():
             apply_source_edits(REPO / rel, lines)
         if stdout is not None:
-            scenario.source.with_suffix(".out").write_bytes(stdout)
+            expectation_file(scenario.source, ".out").write_bytes(stdout)
     blessing.rewrote = described
     blessing.reported = reported
     return blessing
