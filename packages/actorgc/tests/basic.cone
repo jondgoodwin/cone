@@ -1,0 +1,106 @@
+// An actor allocates in its own region with 'new self[T](...)', and the
+// region is collected between its messages. Stress mode (a collection after
+// every message) makes every count worked out by hand: each message that
+// follows is one collection, copying the nodes the state still reaches and
+// nothing else.
+//
+//   push(1..5)  after push(k) the list holds k nodes, so collection k copies k:
+//               1 + 2 + 3 + 4 + 5 = 15 copied, 5 collections, 5 objects
+//   report      reads the list, prints 5 nodes summing 15; the collection after
+//               it copies the 5 again (20 copied, 6 collections)
+//   dropAll     the list is dropped: the next collection copies none, and the
+//               region holds no object (7 collections, 0 objects)
+//   report      0 nodes; a collection after it that copies none (8)
+//   push(6)     one node: 9 collections, 21 copied, 1 object
+//   report      1 node, 6
+
+mod basic;
+
+import actors;
+import actorgc;
+import stdio use *;
+
+struct Node {
+  pub n i64;
+  pub next Option[ActorGc[mut, Node]];
+}
+alias NodeRef = ActorGc[mut, Node];
+
+fn line(label &str, n i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+// Matched by value: a reference into an Option held in a 'mut' variable
+// could see it changed while in use
+fn nextOf(r Option[NodeRef]) Option[NodeRef] {
+  match r {
+    case imm s Some[NodeRef] { s.next; }
+    else { None; }
+  }
+}
+fn valueOf(r Option[NodeRef]) i64 {
+  match r {
+    case imm s Some[NodeRef] { s.n; }
+    else { 0; }
+  }
+}
+fn present(r Option[NodeRef]) bool {
+  match r {
+    case imm s Some[NodeRef] { true; }
+    else { false; }
+  }
+}
+
+actor Keeper {
+  head Option[NodeRef];
+
+  fn init(self &new) {
+    *self = new Self(None[NodeRef]);
+  }
+
+  pub async do push(self, n i64) {
+    head = Some[NodeRef](new self[Node](n, head));
+  }
+
+  pub async do dropAll(self) {
+    head = None;
+  }
+
+  pub async do report(self, tag i64) {
+    mut sum = 0i64;
+    mut count = 0i64;
+    mut at = head;
+    while present(at) {
+      sum = sum + valueOf(at);
+      count = count + 1;
+      at = nextOf(at);
+    }
+    imm st = self.allocRegion().stats();
+    line("report", tag);
+    line("  nodes", count);
+    line("  sum", sum);
+    line("  collections", i64.from(st.collections));
+    line("  objects", i64.from(st.objects));
+    line("  copied", i64.from(st.copied));
+  }
+}
+
+fn main() {
+  actorgc.setStress(true);
+  {
+    imm k = new Keeper();
+    mut i = 1i64;
+    while i <= 5i64 {
+      k.push(i);
+      i = i + 1i64;
+    }
+    k.report(1i64);
+    k.dropAll();
+    k.report(2i64);
+    k.push(6i64);
+    k.report(3i64);
+  }
+}

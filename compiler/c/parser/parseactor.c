@@ -113,6 +113,7 @@ enum GenSlot {
     GenResumeId,    // The resume variant whose second half takes a record, by its id
     GenMem,         // Core's 'mem', whatever the actor's own names hide it
     GenAt,          // The handle's initializer's local: where the state is made
+    GenActorGc,     // The actorgc package, as this module imports it, if it does
     GenState,       // 'Counter.State'
     GenMsg,         // 'Counter.Msg'
     GenDispatch,    // 'Counter.dispatch'
@@ -120,6 +121,7 @@ enum GenSlot {
     GenReply,       // 'Counter.reply'': a request's envelope, its resume message naming no record
     GenReplyId,     // 'Counter.replyid'': the same, naming the record's id
     GenSelf,        // 'Counter.self'': 'selfactor', the handle from the state
+    GenAllocs,      // The struct the state's allocator is read from
     GenSlots
 };
 
@@ -648,6 +650,7 @@ static int parseActorRuntime(ParseState *parse, StructNode *at, Name *actorname,
         genShared[GenResumeId] = nametblPrivate("resumeid'", 9);
         genShared[GenMem] = nametblPrivate("mem", 3);
         genShared[GenAt] = nametblPrivate("state'", 6);
+        genShared[GenActorGc] = nametblPrivate("actorgc", 7);
     }
     if (namespaceFind(&mod->namespace, genShared[GenActors]))
         return 1;
@@ -682,6 +685,11 @@ static int parseActorRuntime(ParseState *parse, StructNode *at, Name *actorname,
     parseActorBind(mod, genShared[GenSync], (INode *)syncmod, FlagImportName);
     parseActorBind(mod, genShared[GenSendable], (INode *)sendableTrait, 0);
     parseActorBind(mod, genShared[GenMem], memdcl, 0);
+    // The actors' own collector, if the module imports it: each actor's state
+    // then has the allocator 'new self[T](...)' means
+    ModuleNode *gcmod = parseActorFindImport(mod->imports, "actorgc");
+    if (gcmod != NULL)
+        parseActorBind(mod, genShared[GenActorGc], (INode *)gcmod, FlagImportName);
 
     // What generation calls for a split method's seams, which no source names
     for (int i = 0; i < ActorRtCount; ++i) {
@@ -792,6 +800,8 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
     names[GenReplyId] = nametblPrivate(buf, strlen(buf));
     snprintf(buf, sizeof(buf), "%s.self'", &actorname->namestr);
     names[GenSelf] = nametblPrivate(buf, strlen(buf));
+    snprintf(buf, sizeof(buf), "%s.allocs'", &actorname->namestr);
+    names[GenAllocs] = nametblPrivate(buf, strlen(buf));
     uint32_t ask = GenSlots;
     for (nodesFor(members.messages, cnt, nodesp)) {
         FnDclNode *fn = (FnDclNode *)*nodesp;
@@ -828,6 +838,30 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
             genPuts(&g, ".Answer();\n");
         }
         genPuts(&g, "}\n");
+    }
+
+    // The state's way to its own region, where the module imports the actors'
+    // collector: a method 'allocRegion' giving the region the actor's values are
+    // allocated in, which is what makes 'new self[T](v)' mean
+    // 'self.allocRegion().alloc(new T(v))' (typelit.c, a value that leads to a
+    // region). Read as a struct's of its own and moved into the state like the
+    // hidden fields; the region is found from the state by the actors runtime
+    // (actorgc's regionOf)
+    int hasgc = namespaceFind(&mod->namespace, genShared[GenActorGc]) != NULL;
+    if (hasgc) {
+        genPuts(&g, "struct ");
+        genSlot(&g, GenAllocs);
+        genPuts(&g, " {\n  fn allocRegion(self &mut ");
+        genSlot(&g, GenState);
+        genPuts(&g, ") &'static mut ");
+        genSlot(&g, GenActorGc);
+        genPuts(&g, ".ActorRegion {\n    ");
+        genSlot(&g, GenActorGc);
+        genPuts(&g, ".regionOf[");
+        genSlot(&g, GenState);
+        genPuts(&g, ", ");
+        genSlot(&g, GenMsg);
+        genPuts(&g, "](self);\n  }\n}\n");
     }
 
     // The message enum: a variant per message, its fields the parameters,
@@ -1330,6 +1364,13 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
                 info->pending = field;
             else if (field->namesym == names[GenAnswer])
                 info->answer = field;
+        }
+    }
+    if (hasgc) {
+        StructNode *allocs = (StructNode *)parseStruct(parse, 0);
+        for (nodelistFor(&allocs->nodelist, cnt, nodesp)) {
+            if ((*nodesp)->tag == FnDclTag)
+                iNsTypeAddFn((INsTypeNode *)state, (FnDclNode *)*nodesp);
         }
     }
     modAddNode(mod, names[GenState], (INode *)state);

@@ -1,0 +1,155 @@
+// References held in what the actor's state owns are found and moved: a 'List'
+// and a 'Dict' of them in its fields, behind an 'Rc' (shared by two owners, so
+// traced once for a collection), and round a ring of 'Rc' nodes (a cycle). The
+// stress mode collects after every message, and garbage made between them makes
+// the survivors move to new addresses, so a reference the collector missed
+// reads a freed chunk; every value is worked out by hand.
+//
+// A reference is read through a borrow of it ('v.n', 'v' a '&LeafRef'), which
+// once crashed the compiler (the fix is pinned in test/cases/region).
+
+mod containers;
+
+import actors;
+import actorgc;
+import collections use *;
+import stdio use *;
+
+struct Leaf { pub n i64; }
+alias LeafRef = ActorGc[mut, Leaf];
+
+fn line(label &str, n i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+// A shared cell holding a reference, behind an Rc
+struct Cell {
+  pub leaf LeafRef;
+  pub tag i64;
+}
+
+// A node of a ring: an Rc node holding a reference and the next node
+struct RingNode {
+  pub leaf LeafRef;
+  pub next Option[Rc[mut, RingNode]];
+}
+
+actor Shelf {
+  list List[LeafRef];
+  table Dict[i64, LeafRef];
+  shared Option[Rc[mut, Cell]];
+  other Option[Rc[mut, Cell]];
+  ring Option[Rc[mut, RingNode]];
+
+  fn init(self &new) {
+    *self = new Self(List[LeafRef].empty(), Dict[i64, LeafRef].empty(), None[Rc[mut, Cell]],
+      None[Rc[mut, Cell]], None[Rc[mut, RingNode]]);
+  }
+
+  // One cell, shared by two owners of the state: its leaf is 5000
+  pub async do share(self) {
+    imm cell = new Rc[mut, Cell](new self[Leaf](5000), 1);
+    shared = Some[Rc[mut, Cell]](cell);
+    other = Some[Rc[mut, Cell]](cell);
+  }
+
+  // Leaves 1 to count in the list, 100 times each in the table
+  pub async do fill(self, count i64) {
+    mut i = 1i64;
+    while i <= count {
+      list.push(new self[Leaf](i));
+      table.insert(i, new self[Leaf](i * 100));
+      i = i + 1;
+    }
+  }
+
+  // Garbage: leaves nothing reaches
+  pub async do churn(self, count i64) {
+    mut i = 0i64;
+    while i < count {
+      imm junk = new self[Leaf](i);
+      i = i + 1;
+    }
+  }
+
+  // A ring of three nodes, leaves 11, 12, 13, held by the state
+  pub async do makeRing(self) {
+    imm a = new Rc[mut, RingNode](new self[Leaf](11), None[Rc[mut, RingNode]]);
+    imm b = new Rc[mut, RingNode](new self[Leaf](12), Some[Rc[mut, RingNode]](a));
+    imm c = new Rc[mut, RingNode](new self[Leaf](13), Some[Rc[mut, RingNode]](b));
+    a.next = Some[Rc[mut, RingNode]](c);
+    ring = Some[Rc[mut, RingNode]](a);
+  }
+
+  // The sum of what each holds, read through borrows
+  pub async do report(self, tag i64) {
+    mut listSum = 0i64;
+    each v in list.iter() { listSum = listSum + v.n; }
+    mut tableSum = 0i64;
+    mut k = 1i64;
+    while k <= i64.from(list.len()) {
+      match table.get(&k) {
+        case imm leaf Some[&LeafRef] { tableSum = tableSum + leaf.n; }
+        else { }
+      }
+      k = k + 1;
+    }
+    imm st = self.allocRegion().stats();
+    line("report", tag);
+    line("  list", listSum);
+    line("  table", tableSum);
+    match shared {
+      case imm c Some[Rc[mut, Cell]] {
+        line("  shared leaf", c.leaf.n);
+        match other {
+          case imm d Some[Rc[mut, Cell]] {
+            line("  other leaf", d.leaf.n);
+            // the same cell: a write through one is seen through the other
+            c.tag = c.tag + 1;
+            line("  tag seen through the other", d.tag);
+          }
+          else { }
+        }
+      }
+      else { }
+    }
+    line("  objects", i64.from(st.objects));
+    line("  collections", i64.from(st.collections));
+  }
+
+  // Round the ring twice from its first node, adding the leaves
+  pub async do walkRing(self) {
+    mut sum = 0i64;
+    mut at = ring;
+    mut steps = 0i64;
+    while steps < 6 {
+      match at {
+        case imm node Some[Rc[mut, RingNode]] {
+          sum = sum + node.leaf.n;
+          at = node.next;
+        }
+        else { }
+      }
+      steps = steps + 1;
+    }
+    line("ring walk", sum);
+  }
+}
+
+fn main() {
+  actorgc.setStress(true);
+  {
+    imm s = new Shelf();
+    s.share();
+    s.fill(10i64);
+    s.churn(25i64);
+    s.report(1i64);
+    s.makeRing();
+    s.churn(25i64);
+    s.walkRing();
+    s.report(2i64);
+  }
+}

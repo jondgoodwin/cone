@@ -1,0 +1,82 @@
+// A record parked by an 'await' is a root. A behaviour makes values in its
+// region before an 'await' and reads them after it: they are held only by the
+// record waiting in the actor's pending table, between messages, when the
+// collection runs (stress mode: after every message), and the collector finds
+// them there, moves them and rewrites the record. Garbage made before the
+// values makes them move down; the record then reads them by their new
+// addresses. The value in flight (the leaf handed to a second call) and a
+// variable (the leaf bound by name) are both in the record.
+//
+//   go(n)     junk made first; 'keep' = a leaf holding n, 'chain' = two leaves
+//             (n+1 holding n+2), both only in the record while the actor
+//             awaits Doubler.twice(n) = 2n; after it, the sum
+//             keep.n + chain.n + chain.next.n + 2n = n + (n+1) + (n+2) + 2n = 5n + 3
+//   the leaf is at a new address after the await than before (the junk below it is gone)
+
+mod parked;
+
+import actors;
+import actorgc;
+import stdio use *;
+
+struct Link {
+  pub n i64;
+  pub next Option[ActorGc[mut, Link]];
+}
+alias LinkRef = ActorGc[mut, Link];
+
+fn line(label &str, n i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn tail(r LinkRef) i64 {
+  match r.next {
+    case imm t Some[LinkRef] { t.n; }
+    else { 0; }
+  }
+}
+
+mut before = 0usize;
+
+actor Doubler {
+  pub async do twice(self, n i64) i64 { n * 2; }
+}
+
+actor Waiter {
+  d Doubler;
+
+  fn init(self &new, d Doubler) {
+    *self = new Self(d: d);
+  }
+
+  pub async do go(self, n i64) {
+    mut i = 0i64;
+    while i < 7 {
+      imm junk = new self[Link](i, None[LinkRef]);
+      i = i + 1;
+    }
+    imm keep = new self[Link](n, None[LinkRef]);
+    imm tailer = new self[Link](n + 2, None[LinkRef]);
+    imm chain = new self[Link](n + 1, Some[LinkRef](tailer));
+    before = &*keep as *u8 as usize;
+    imm doubled = await d.twice(n);
+    imm after = &*keep as *u8 as usize;
+    line("moved", if after != before {1;} else {0;});
+    line("sum", keep.n + chain.n + tail(chain) + doubled);
+    imm st = self.allocRegion().stats();
+    line("collections", i64.from(st.collections));
+    line("objects", i64.from(st.objects));
+  }
+}
+
+fn main() {
+  actorgc.setStress(true);
+  {
+    imm d = new Doubler();
+    imm w = new Waiter(d);
+    w.go(10i64);
+  }
+}

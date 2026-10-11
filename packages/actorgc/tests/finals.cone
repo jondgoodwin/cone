@@ -1,0 +1,112 @@
+// A value with a 'final' is on its region's final list from the moment it is
+// made. A collection that finds it unreached keeps it one more cycle, copied
+// with all it reaches, and runs its death on the copy, once, newest first; the
+// collection after frees it. When the actor dies, after its state's own death,
+// every value still on the final list is finalized, newest first, and the
+// region is freed. Worked out by hand, stress mode (a collection after every
+// message):
+//
+//   build        makes 1, 2, 3 (3 holds 2 holds 1), all reached: 3 copied; no final
+//   cut          3's link to 2 is cut: 2 and 1 are unreached, kept one cycle and
+//                finalized newest first, 2 then 1: the log reads 21; 3 + 2 + 1 are
+//                all in the region, 3 objects
+//   report 1     prints the log 21, 3 objects, 2 finalized; the collection after it
+//                finds 2 and 1 unreached again, with no final to run: 1 object
+//   dropAll      3 is unreached: kept a cycle, finalized: the log reads 213
+//   report 2     213, 1 object, 3 finalized; the collection after it frees it: 0
+//   a second actor holds 7, 8, 9 and dies with them: the death finalizes 9, 8,
+//   7, newest first, after its state: the log reads 213987
+
+mod finals;
+
+import actors;
+import actorgc;
+import stdio use *;
+
+mut log = 0i64;
+fn note(d i64) { log = log * 10 + d; }
+
+struct ResValue {
+  pub n i64;
+  pub next Option[ActorGc[mut, ResValue]];
+
+  fn final(self &uni) { note(n); }
+}
+alias Res = ActorGc[mut, ResValue];
+
+fn line(label &str, n i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+actor Holder {
+  head Option[Res];
+
+  fn init(self &new) {
+    *self = new Self(None[Res]);
+  }
+
+  pub async do build(self) {
+    head = Some[Res](new self[ResValue](1, None[Res]));
+    head = Some[Res](new self[ResValue](2, head));
+    head = Some[Res](new self[ResValue](3, head));
+  }
+
+  // The newest one stays, its link to the others cut
+  pub async do cut(self) {
+    match head {
+      case imm top Some[Res] { top.next = None[Res]; }
+      else { }
+    }
+  }
+
+  pub async do dropAll(self) {
+    head = None[Res];
+  }
+
+  pub async do report(self, tag i64) {
+    imm st = self.allocRegion().stats();
+    line("report", tag);
+    line("  log", log);
+    line("  objects", i64.from(st.objects));
+    line("  finalized", i64.from(st.finalized));
+  }
+}
+
+// Holds three, and dies with them
+actor Keeper {
+  a Option[Res];
+  b Option[Res];
+  c Option[Res];
+
+  fn init(self &new) {
+    *self = new Self(None[Res], None[Res], None[Res]);
+  }
+
+  pub async do fill(self) {
+    a = Some[Res](new self[ResValue](7, None[Res]));
+    b = Some[Res](new self[ResValue](8, None[Res]));
+    c = Some[Res](new self[ResValue](9, None[Res]));
+  }
+}
+
+fn main() {
+  actorgc.setStress(true);
+  {
+    imm h = new Holder();
+    h.build();
+    h.cut();
+    h.report(1i64);
+    h.dropAll();
+    h.report(2i64);
+  }
+  actors.waitQuiet();
+  {
+    imm k = new Keeper();
+    k.fill();
+  }
+  actors.waitQuiet();
+  line("after the deaths", log);
+}

@@ -1,0 +1,42 @@
+// An actor may allocate in its region in its 'init', once the state is filled:
+// 'self' is reached through itself there, so 'new self[T](...)' is good after
+// '*self = ...' and refused before it (the init rule: self holds no value
+// until it is filled). A value made there is found like any other: here a node
+// and a list made in the init, read after a collection.
+
+mod ininit;
+
+import actors;
+import actorgc;
+import stdio use *;
+
+struct Node { pub n i64; }
+alias NodeRef = ActorGc[mut, Node];
+
+actor Maker {
+  first Option[NodeRef];
+
+  fn init(self &new, n i64) {
+    *self = new Self(None[NodeRef]);
+    self.first = Some[NodeRef](new self[Node](n));
+  }
+
+  pub async do report(self) {
+    match first {
+      case imm f Some[NodeRef] { printInt(f.n); }
+      else { printInt(-1); }
+    }
+    printStr(" ");
+    printInt(i64.from(self.allocRegion().stats().collections));
+    printStr("\n");
+  }
+}
+
+fn main() {
+  actorgc.setStress(true);
+  {
+    imm m = new Maker(41i64);
+    m.report();
+    m.report();
+  }
+}

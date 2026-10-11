@@ -615,18 +615,75 @@ actor Echo {
 		workers orders what the first did before anything the next does. Three things differ from a
 		plain thread:</p>
 	<ul>
-	<li><span class="pre">Gc</span> is <b>not supported</b> inside an actor, for now. The collector is
-		single-threaded, and an actor runs on every worker in turn; a traced reference made, held,
-		reached or dropped by an actor corrupts it. So the compiler refuses one made or held in an
-		actor &mdash; a field of its state, a synchronous method's parameter, an allocation, a call that
-		returns one or a literal holding one in any method's body, <span class="pre">init</span> and
-		<span class="pre">final</span> included, a struct, tuple, array or enum holding one as well &mdash;
-		saying that GC per actor is coming. The refusal lifts when the collector is per actor.</li>
+	<li>The <span class="pre">collector</span> package's <span class="pre">Gc</span> is <b>not supported</b> inside an
+		actor. That collector is single-threaded, and an actor runs on every worker in turn; a
+		traced reference made, held, reached or dropped by an actor corrupts it. So the compiler
+		refuses one made or held in an actor &mdash; a field of its state, a synchronous method's
+		parameter, an allocation, a call that returns one or a literal holding one in any method's
+		body, <span class="pre">init</span> and <span class="pre">final</span> included, a struct,
+		tuple, array or enum holding one as well &mdash; and says to hold an
+		<span class="pre">ActorGc</span> instead. <b>An actor has a garbage-collected region of its own</b>
+		(<a href="#actor-gc">Its own region</a>, below), whose references it makes, holds and copies
+		freely.</li>
 	<li>A thread-local global seen from an actor's method is the current <i>worker's</i> copy,
 		not the actor's: its next message may run on another worker.</li>
 	<li>A method that blocks holds its worker while it does. Actors wait by being sent a
 		message.</li>
 	</ul>
+	<p id="actor-gc"><b>Its own region.</b> An actor owns a garbage-collected region, found by the
+		<span class="pre">actorgc</span> package: a module that declares actors and imports it
+		(<span class="pre">import actorgc;</span> binds <span class="pre">ActorGc</span>, the region) gives every actor's state a
+		method <span class="pre">allocRegion</span> that answers the region, and
+		<span class="pre">new self[T](args)</span> inside the actor's methods &mdash; behaviours and synchronous
+		methods alike, <span class="pre">init</span> after <span class="pre">*self</span> is filled &mdash; allocates there, as
+		<span class="pre">new a[T](args)</span> allocates in an arena
+		(<a href="refregionglo.html">Region strategies</a>): it is
+		<span class="pre">self.allocRegion().alloc(new T(args))</span>. A reference is an
+		<span class="pre">ActorGc[mut, T]</span> (or <span class="pre">ActorGc[imm, T]</span>, from
+		<span class="pre">self.allocRegion().allocImm(v)</span>). Only the actor's own code holds
+		<span class="pre">self</span>, so only it allocates in the region; other code is handed the actor's state
+		to allocate there. A collection made so, <span class="pre">new self[List[T]](16)</span>, keeps its words in the region
+		and its block on the heap, which the list's own <span class="pre">final</span> gives back.</p>
+<pre>
+import actors;
+import actorgc;
+
+struct Node { pub n i64; pub next Option[ActorGc[mut, Node]]; }
+
+actor Keeper {
+  head Option[ActorGc[mut, Node]];
+
+  fn init(self &amp;new) {*self = new Self(None[ActorGc[mut, Node]]);}
+
+  pub async do push(self, n i64) {
+    head = Some[ActorGc[mut, Node]](new self[Node](n, head));
+  }
+}
+</pre>
+	<p>A reference into the region is made, held and copied in the actor's state, its locals, a
+		<span class="pre">List</span>, <span class="pre">Dict</span> or <span class="pre">Rc</span> it owns, and a
+		record parked by an <span class="pre">await</span>. It is never Sendable: it stays in its actor, so it
+		is refused in a message, a reply or a thread's start. It has no write barrier and no count, so a
+		reference behind an <span class="pre">Rc</span> is allowed (the <span class="pre">Rc</span> is traced once for each
+		collection, so a cycle of them ends).</p>
+	<p><b>It is collected between the actor's messages, by a copying collector.</b> After each message
+		(and after the rest of a behaviour that began a <span class="pre">parallel each</span>, once the loop has
+		finished) the worker may collect, when the bytes allocated since the last collection exceed the
+		bytes that survived it and are not under 64 KiB. The roots are the actor's state and the records
+		its <span class="pre">await</span>s have parked; nothing else holds a reference, since no borrow
+		and no stack of the actor's exists between messages. Everything reached is copied into new chunks
+		and the references are rewritten, so <b>an object moves</b>: nothing holds its address across a
+		message. A value over 4096 bytes is a <i>large object</i>, which never moves. A value with a
+		<span class="pre">final</span>, or a field that needs finalizing, is finalized when a collection finds
+		it unreached (it and what it reaches are kept for that one cycle, its death run once, newest first,
+		and the collection after frees it), and when the actor dies, after its state's own death, every one
+		still alive is finalized, newest first, and the region is freed whole.</p>
+	<p><span class="pre">actorgc.setFloor(bytes)</span> and <span class="pre">actorgc.setStress(on)</span> (collect after
+		every message; the environment variable <span class="pre">CONE_ACTORGC_STRESS</span> does the same for
+		a whole run) tune it, for the process, before the first allocation;
+		<span class="pre">self.allocRegion().stats()</span> says what the region holds and has done, for
+		tests. Inside a <span class="pre">parallel each</span> a pass reads a read-only reference
+		(<a href="refeach.html#parallelactor">Parallel each in a behaviour</a>), and allocates nothing.</p>
 	<p><b>The runtime starts and stops by itself.</b> The workers start with the first actor, on
 		whichever thread starts it; two threads starting a first actor at once start them once. A
 		program that starts no actor starts no thread. They start then, not in the module's
@@ -1369,11 +1426,11 @@ actor Sizes {
 		(<span class="pre">v &lt;- 3 of await f()</span>), and in an array's contents that repeat
 		a value more than 16 times (<span class="pre">&lt;- fill await f()</span>). Written as a
 		statement of its own first, each <span class="pre">await</span> is built.</li>
-	<li><b>A traced reference waiting for a reply.</b> An <span class="pre">await</span> at which
-		the behaviour holds a <span class="pre">Gc</span> reference it would keep is refused: the
-		collector does not see a paused behaviour's values. (<span class="pre">Gc</span> is refused
-		inside an actor altogether for now, "Inside an actor", above, so the reference itself is
-		reported first.)</li>
+	<li><b>A reference into the actor's own region waiting for a reply</b> is kept by the
+		actor's collector: a paused behaviour's record, parked in the pending table, is one of its
+		roots (<a href="#actor-gc">Its own region</a>). (The <span class="pre">collector</span>
+		package's <span class="pre">Gc</span> is refused inside an actor altogether,
+		"Inside an actor", above.)</li>
 	<li><b>Timeouts and cancellation.</b> A paused behaviour waits until its reply comes. There
 		is no time limit on the wait, and no way to cancel a paused behaviour. Only the program's
 		end ends one early: a behaviour paused on I/O is abandoned then, the rest of it never run,

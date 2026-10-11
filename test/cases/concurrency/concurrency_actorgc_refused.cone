@@ -1,0 +1,80 @@
+// What an actor's own region (the actorgc package's ActorGc) refuses, beside
+// what it allows (the actorgc package's tests run those):
+//
+// - A reference into it is never Sendable: it is refused wherever it would
+//   cross threads (a message, a reply, a thread's start; 'actors.sendable' is
+//   the same check for code written by hand). It stays in the actor that made it.
+// - A 'parallel each' written in a behaviour reads a read-only reference to the
+//   actor's region and allocates nothing in it: 'new self[T](...)' and a
+//   direct 'new ActorGc[...]' there are ErrorActorGcPiece.
+// - 'ActorLocal' is declared by a traced region ref alone (ErrorActorLocalUse).
+//
+// A region of the program's own that does not declare ActorLocal is refused
+// inside an actor as the collector's Gc is (concurrency_gc_stopgap_actor).
+
+mod concurrency_actorgc_refused;
+
+import actors;
+import actorgc;
+
+struct Leaf { pub n i64; }
+alias LeafRef = ActorGc[mut, Leaf];
+
+// Not Sendable, whatever its permission
+fn cross(g LeafRef) LeafRef {
+  actors.sendable(g);                                       //~ ErrorNotSendable "may not leave its actor"
+}
+
+// A reference that can write ('mut') is not read by passes that run at the same
+// time: it writes through a path they share. A read-only one is (the actorgc
+// package's tests, pieces)
+actor Reader {
+  held Option[LeafRef];
+
+  fn init(self &new) {
+    *self = new Self(None[LeafRef]);
+  }
+
+  pub async do readMut(self) {
+    match held {
+      case imm g Some[LeafRef] {
+        parallel each i in 0usize ..< 4usize {
+          imm n = g.n;                                      //~ ErrorParReach "This 'parallel each' reaches 'g'"
+        }
+      }
+      else { }
+    }
+  }
+}
+
+actor Looper {
+  total i64;
+
+  pub async do allocate(self) {
+    parallel each i in 0usize ..< 4usize {
+      imm g = new self[Leaf](1);                            //~ ErrorActorGcPiece "allocates in the actor's region from a 'parallel each' body"
+    }
+  }
+
+  pub async do direct(self) {
+    parallel each i in 0usize ..< 4usize {
+      imm g = new ActorGc[mut, Leaf](new Leaf(1));          //~ ErrorActorGcPiece "allocates in an actor's region from a 'parallel each' body"
+    }
+  }
+
+  pub async do third(self) {
+    parallel each i in 0usize ..< 4usize {
+      imm g = new self[Leaf](3);                            //~ ErrorActorGcPiece "allocates in the actor's region from a 'parallel each' body"
+    }
+  }
+}
+
+// Declaring ActorLocal on what is no traced region ref
+struct NotARegion is ActorLocal { pub n i64; }              //~ ErrorActorLocalUse "Only a traced region ref may declare ActorLocal"
+
+struct CountedOnly is RegionRef, ActorLocal {               //~ ErrorActorLocalUse "Only a traced region ref may declare ActorLocal"
+  pub n i64;
+  fn alloc(size usize) *u8 { null; }
+}
+
+fn main() {}

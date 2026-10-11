@@ -114,6 +114,7 @@ extern StructNode *moveTrait;
 extern StructNode *copyTrait;
 extern StructNode *tracedTrait;
 extern StructNode *threadSafeTrait;
+extern StructNode *actorLocalTrait;
 extern StructNode *shapeChangingTrait;
 extern StructNode *noLoanMutTrait;
 extern StructNode *noLoanReadTrait;

@@ -224,15 +224,21 @@
 //   (Release) for a worker to take (Acquire); and its death follows 'Arc's
 //   Release decrement and Acquire load. Each chain is release to acquire, so
 //   what one method did happens before the next method runs, wherever.
-// - 'Gc' is NOT supported inside an actor. The collector package's
-//   collector is single-threaded, its root chain one global, and an actor
-//   runs on every worker in turn: a traced reference made, held, reached or
-//   dropped by an actor corrupts it. The compiler refuses one made or held
-//   in an actor, in its state, its methods' parameters or its methods'
-//   bodies (ErrorGcStopgap), and the thread check refuses 'Gc' in a message;
-//   a collector per actor is a later design, and the refusal lifts with it.
-//   Nor is the pending table a root set, so the compiler refuses an 'await'
-//   whose continuation would hold a traced reference.
+// - The collector package's 'Gc' is NOT supported inside an actor. That
+//   collector is single-threaded and an actor runs on every worker in turn: a
+//   traced reference made, held, reached or dropped by an actor corrupts it.
+//   The compiler refuses one made or held in an actor, in its state, its
+//   methods' parameters or its methods' bodies (ErrorGcStopgap), and the thread
+//   check refuses 'Gc' in a message. An actor has a collector of its own: the
+//   actorgc package's 'ActorGc', a region whose values 'new self[T](...)' makes
+//   and a copying collector frees between the actor's messages. This package
+//   runs it, through GcLink on the actor's Header: after each message a worker
+//   calls the collector's hook with the actor's state and its type record, whose
+//   trace hands the collector every reference the state holds, the pending
+//   table's records among them (Pending is GcTraceElements, a record an Erased
+//   value naming it and its own type record); the actor's death calls the
+//   other hook, after its state's death. Nothing is called while a 'parallel
+//   each' the behaviour began is still to run its passes.
 // - A thread-local global ('mut @threadlocal x T') seen from an actor's
 //   method is the current WORKER's copy, not the actor's: its next message
 //   may run on another worker, with another copy. An actor keeps its own
@@ -569,6 +575,19 @@ struct Header {
   pub dispatch *u8;                      // the actor's dispatch function
   pub par *ParPending = null;            // a behaviour's 'parallel each' to begin once it has returned (parallel.cone, A PARALLEL EACH IN A BEHAVIOUR)
   pub ready *ParPending = null;          // ... finished: the rest of the behaviour, to run ahead of the mailbox
+  pub gc GcLink = new GcLink(null, null, null);  // the actor's own collector, once it has allocated (INSIDE AN ACTOR, above)
+}
+
+// What the actors' own collector (the actorgc package) hangs on an actor, all
+// null until the actor first allocates in its region with 'new self[T](...)':
+// the region's bookkeeping, a function the worker calls after each message
+// (when to collect is the collector's), and one called at the actor's death.
+// Type-erased functions, set and called by the collector alone; this package
+// calls them without knowing what they do.
+pub struct GcLink {
+  pub space *u8;   // the region, the collector's own record of it
+  pub after *u8;   // &fn(space *u8, st *u8, rec *TypeRecord): a message has finished
+  pub death *u8;   // &fn(space *u8): the actor has died, its state finalized
 }
 
 // What an actor's handle owns, 'Arc[opaq, T]': the runtime's part of an actor
@@ -604,6 +623,13 @@ fn stateOf[S, M Sendable](h *Header) *S {
 fn actorDied(h *Header) {
   imm finalize = (*h).finalize;
   finalize(h);
+  // The actor's region goes after its state, whose finals may read what they
+  // reach in it: every object with a final is finalized, then the region freed
+  if (*h).gc.death as usize != 0usize {
+    mut d = (*h).gc.death;
+    imm death = mem.readRaw[&fn(space *u8)](&mut d as *(&fn(space *u8)));
+    death((*h).gc.space);
+  }
   if (*h).tail as usize != 0usize {
     libc.free((*h).tail as *u8);
   }
@@ -722,6 +748,7 @@ fn runBatch[S, M Sendable](h *Header, limit u32) u32 {
   mut slot = (*h).dispatch;
   imm f = mem.readRaw[&fn(s &mut S, m *M)](&mut slot as *(&fn(s &mut S, m *M)));
   imm st = stateOf[S, M](h);
+  imm rec = mem.typeRecord[S]();
   curActor = h as usize;
   mut n = 0u32;
   // A 'parallel each' this actor's behaviour left has finished: the rest of the
@@ -730,6 +757,7 @@ fn runBatch[S, M Sendable](h *Header, limit u32) u32 {
   if ready as usize != 0usize {
     (*h).ready = nullPar();
     runReady[S](st, ready);
+    afterMessage(h, st as *u8, rec);
   }
   // A behaviour that begins a 'parallel each' returns, and the actor then runs
   // nothing more until the loop has finished: runActor begins it
@@ -741,9 +769,28 @@ fn runBatch[S, M Sendable](h *Header, limit u32) u32 {
     }
     f(&mut *st, &(*(node as *Node[M])).msg as *M);
     n = n + 1u32;
+    afterMessage(h, st as *u8, rec);
   }
   curActor = 0usize;
   n;
+}
+
+// A message has finished, between it and the next: the actor's own collector,
+// if it has one, may collect (INSIDE AN ACTOR). Not while a 'parallel each' the
+// behaviour began is still to run its passes, which hold the references they
+// read where no collection finds them.
+fn afterMessage(h *Header, st *u8, rec *TypeRecord) {
+  if (*h).gc.after as usize == 0usize or (*h).par as usize != 0usize {
+    return;
+  }
+  mut a = (*h).gc.after;
+  imm after = mem.readRaw[&fn(space *u8, st *u8, rec *TypeRecord)](&mut a as *(&fn(space *u8, st *u8, rec *TypeRecord)));
+  after((*h).gc.space, st, rec);
+}
+
+// The link the actors' own collector hangs on the actor whose state is at st
+pub fn gcLink[S, M Sendable](st &S) *GcLink {
+  &(*headerOf[S, M](st)).gc as *GcLink;
 }
 
 // The rest of a behaviour cut at its 'parallel each', run as a reply's dispatch
@@ -1007,14 +1054,23 @@ pub fn resumeId[S](st &mut S, run *u8, id u64, data *u8) {
 // An actor's pending table: its parked continuations' records, each in a
 // block of its own, keyed by a plain id, the slot's index. A slot holds a
 // record's block, or, free, the next free slot's index + 1, times 2, plus 1.
-// A block begins with its record's drop function, which the compiler made
-// for the seam, and its record follows, recordHead bytes in. Only the actor's
-// own methods touch it, one at a time.
-pub struct Pending {
+// A block begins with the record's type record (core's TypeRecord, made in the
+// block at parking from the drop and the trace functions the compiler made for
+// the seam) and an Erased value naming the record and that type record, which
+// is how a collector reaches what a parked record holds; the record follows,
+// recordHead bytes in. Only the actor's own methods touch it, one at a time.
+pub struct Pending is GcTraceElements {
   slots *usize = null;
   cap usize = 0usize;
   free usize = 0usize;     // The first free slot's index + 1, or 0
   count usize = 0usize;    // How many records are parked
+
+  // How a collector reaches the values the parked records hold, whatever the
+  // seams' types: each record, as an Erased value, is traced by its own type
+  // record's trace (a parked record is a root between messages)
+  pub fn gcTraceElements(self &mut) PendingWalk {
+    new PendingWalk(slots, cap, 0usize);
+  }
 
   // An actor that dies with records parked abandons them: each record is
   // dropped, its values' finalizers run in the order its seam's would have
@@ -1033,8 +1089,7 @@ pub struct Pending {
       imm v = *(slots + i);
       if v & 1usize == 0usize {
         imm block = v as *u8;
-        mut d = *(block as **u8);
-        imm drop = mem.readRaw[&fn(record *u8)](&mut d as *(&fn(record *u8)));
+        imm drop = (*recordType(block)).finalize;
         drop(block + recordHead);
         libc.free(block);
         count = count - 1usize;
@@ -1045,21 +1100,50 @@ pub struct Pending {
   }
 }
 
-// Where a record begins in its block, after its drop function: room enough
-// that a record aligned as malloc aligns stays so
-const recordHead = 16usize;
+// A cursor over the parked records, each as an Erased value: the first thing
+// in its block
+pub struct PendingWalk is Iterator[&mut Erased] {
+  slots *usize;
+  cap usize;
+  at usize;
+
+  pub fn next(self &mut) Option[&mut Erased] {
+    while at < cap {
+      imm v = *(slots + at);
+      at = at + 1usize;
+      if v & 1usize == 0usize {
+        return Some[&mut Erased](v as &mut Erased);
+      }
+    }
+    None;
+  }
+}
+
+// Where a record begins in its block, after its Erased value and its type
+// record: room enough that a record aligned as malloc aligns stays so
+const recordHead = 64usize;
+
+// The type record of the record in a block: after the Erased value
+fn recordType(block *u8) *TypeRecord {
+  (block + 16usize) as *TypeRecord;
+}
+
+// A function that traces nothing, for a record holding no traced reference
+fn noTrace(record *u8, mode u32) {}
 
 // A slot for a record of 'size' bytes, its block allocated: the id, which the
 // request's resume message carries. 'drop' is the record's drop function,
 // '&fn(record *u8)', which the table calls if the actor dies with the record
-// parked. A PLAIN ID, with no generation: a slot is freed only by the one
+// parked, and 'trace' the function '&fn(record *u8, mode u32)' handing each
+// traced reference the record holds to its region (null where it holds none).
+// A PLAIN ID, with no generation: a slot is freed only by the one
 // reply its record is owed, which comes exactly once, and that reply's
 // envelope holds this actor's count, so no reply can be stale, doubled, or
 // sent to an actor that has died. A generation becomes necessary exactly
 // when a timeout or a cancel can free a slot while its reply is still in
 // flight, and nothing has a timeout path yet: an I/O operation's answer
 // comes exactly once too, and its envelope counts the actor the same way.
-pub fn parkReserve(p &mut Pending, size usize, drop *u8) u64 {
+pub fn parkReserve(p &mut Pending, size usize, drop *u8, trace *u8) u64 {
   if p.free == 0usize {
     mut newcap = 8usize;
     if p.cap != 0usize {newcap = p.cap * 2usize;}
@@ -1092,7 +1176,17 @@ pub fn parkReserve(p &mut Pending, size usize, drop *u8) u64 {
   if block as usize == 0usize {
     die("actors: out of memory for a continuation");
   }
-  *(block as **u8) = drop;
+  mut d = drop;
+  imm dropfn = mem.readRaw[&fn(record *u8)](&mut d as *(&fn(record *u8)));
+  mut tracefn = &noTrace;
+  mut flags = 1u32;
+  if trace as usize != 0usize {
+    mut t = trace;
+    tracefn = mem.readRaw[&fn(record *u8, mode u32)](&mut t as *(&fn(record *u8, mode u32)));
+    flags = 3u32;
+  }
+  mem.writeRaw[TypeRecord](recordType(block), new TypeRecord(size, 16usize, dropfn, tracefn, flags));
+  mem.writeRaw[Erased](block as *Erased, new Erased(block + recordHead, recordType(block)));
   *slot = block as usize;
   p.count = p.count + 1usize;
   u64.from(id);

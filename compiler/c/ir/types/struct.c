@@ -4016,6 +4016,7 @@ static void structCheckMembers(StructNode *node) {
         if (!lockperm)
             regionThreadSafeUseCheck(node);
     }
+    regionActorLocalUseCheck(node);
 
     // 'Sized' and 'DynSized' are the compiler's to grant, from the type's size
     if (structDeclaresTrait(node, sizedTrait) || structDeclaresTrait(node, dynSizedTrait))

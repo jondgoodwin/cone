@@ -782,6 +782,22 @@ static FieldDclNode *typeLitRegionField(INode *vtype) {
     return coreIsRegion(pdcl) ? field : NULL;
 }
 
+// Does this value's type, a reference to it too, lead to a region: declare an
+// 'allocRegion' method, giving the region value the allocation is made in?
+// 'new x[T](...)' with x such a value is 'x.allocRegion()' as the head, and so
+// 'x.allocRegion().alloc(new T(...))'. An actor's state declares one, which the
+// compiler generates in a module that imports the actors' collector, so that
+// 'new self[T](...)' allocates in the actor's own region.
+static int typeLitLeadsToRegion(INode *vtype) {
+    if (vtype == NULL || inodeIsError(vtype))
+        return 0;
+    INode *dcl = itypeGetDerefTypeDcl(vtype);
+    if (dcl == NULL || dcl->tag != StructTag || (dcl->flags & (TraitType | EnumType)))
+        return 0;
+    INode *member = iNsTypeFindFnField((INsTypeNode*)dcl, allocRegionMethodName);
+    return member != NULL && member->tag == FnDclTag;
+}
+
 static int typeLitNewInRegion(TypeCheckState *pstate, FnCallNode **nodep, int hasoption, INode *expectType) {
     FnCallNode *node = *nodep;
     if (node->objfn == NULL || node->objfn->tag != FnCallTag)
@@ -812,9 +828,32 @@ static int typeLitNewInRegion(TypeCheckState *pstate, FnCallNode **nodep, int ha
     errors = svErrors;
     warnings = svWarnings;
     FieldDclNode *regionfld = probeok ? typeLitRegionField(((IExpNode*)probe)->vtype) : NULL;
+    // A value that is no region but leads to one ('allocRegion', as an actor's
+    // state has) is made the head's region: 'x.allocRegion()' is the head from
+    // here on, and is asked the same
+    if (probeok && regionfld == NULL && typeLitLeadsToRegion(((IExpNode*)probe)->vtype)) {
+        FnCallNode *lead = newFnCallLower((INode*)node, index->objfn, 1);
+        lead->methfld = (INode*)newMemberUseNode(allocRegionMethodName);
+        inodeLexCopy(lead->methfld, (INode*)node);
+        index->objfn = (INode*)lead;
+        dclpos = cloneDclPush();
+        clonePushState(&cstate, NULL, NULL, pstate->scope, NULL, NULL);
+        probe = cloneNode(&cstate, index->objfn);
+        clonePopState();
+        cloneDclPop(dclpos);
+        errorSilent++;
+        svErrors = errors;
+        svWarnings = warnings;
+        inodeTypeCheck(pstate, &probe, unknownType);
+        probeok = errors == svErrors && isExpNode(probe) && !inodeIsError(probe);
+        errorSilent--;
+        errors = svErrors;
+        warnings = svWarnings;
+        regionfld = probeok ? typeLitRegionField(((IExpNode*)probe)->vtype) : NULL;
+    }
     if (probeok && regionfld == NULL) {
         errorMsgNode(index->objfn, ErrorRegionHead,
-            "'new a[T](...)' allocates in a region, and this is a %s, which is not one. A region is a struct whose first field is a public '*MemRegion', as an arena's is.",
+            "'new a[T](...)' allocates in a region, and this is a %s, which is not one. A region is a struct whose first field is a public '*MemRegion', as an arena's is; or a value whose type has an 'allocRegion' method giving one (an actor's state has one in a module that imports the actorgc package).",
             itypeName(((IExpNode*)probe)->vtype));
         return 1;
     }

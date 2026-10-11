@@ -408,14 +408,13 @@ static GenSeam *genlSeamLayout(GenState *gen, AwaitNode *node, uint32_t nflights
     }
     seam->fields = fields;
     seam->nfields = cnt;
-    // A record parked in the pending table is off the stack, where the
-    // collector's roots are not; flow refused a variable holding a traced
-    // reference there (awaitRecordTraced), and here is a value in flight or a
-    // temporary holding one
+    // A record parked in the pending table is off the stack, where a stack-scanning
+    // collector's roots are: the actor's collector finds what it holds through
+    // the record's trace function (below), which the table keeps with it
+    int tracedfields = 0;
     for (uint32_t i = 0; awaitParks(node) && i < cnt; ++i) {
-        if ((fields[i].kind == GenSeamFlight || fields[i].kind == GenSeamTemp) && itypeHoldsTraced(fields[i].type))
-            errorMsgNode((INode *)node, ErrorUnbuiltAwait,
-                "'await' whose continuation holds a traced reference is not built: a value made before it and used after would wait in the actor's pending table, which the collector does not trace yet.");
+        if (fields[i].kind != GenSeamFlag && fields[i].type != NULL && itypeHoldsTraced(fields[i].type))
+            tracedfields = 1;
     }
 
     // The second half: '<method>'<n>', private to the object
@@ -453,6 +452,7 @@ static GenSeam *genlSeamLayout(GenState *gen, AwaitNode *node, uint32_t nflights
     // the table calls if the actor dies with it parked
     seam->resume = NULL;
     seam->drop = NULL;
+    seam->trace = NULL;
     if (awaitParks(node)) {
         char resumename[2120];
         snprintf(resumename, sizeof(resumename), "%s.resume", symbol);
@@ -467,6 +467,16 @@ static GenSeam *genlSeamLayout(GenState *gen, AwaitNode *node, uint32_t nflights
             snprintf(dropname, sizeof(dropname), "%s.drop", symbol);
             LLVMTypeRef droptype = LLVMFunctionType(LLVMVoidTypeInContext(gen->context), &ptr, 1, 0);
             seam->drop = genlSeamFn(gen, dropname, droptype, node);
+            // Where the record holds a traced reference, its trace function
+            // '<method>'<n>.trace(record, mode)', which the actor's collector
+            // calls on it between messages
+            if (tracedfields) {
+                char tracename[2120];
+                snprintf(tracename, sizeof(tracename), "%s.trace", symbol);
+                LLVMTypeRef tparms[2] = {ptr, LLVMInt32TypeInContext(gen->context)};
+                LLVMTypeRef tracetype = LLVMFunctionType(LLVMVoidTypeInContext(gen->context), tparms, 2, 0);
+                seam->trace = genlSeamFn(gen, tracename, tracetype, node);
+            }
         }
     }
     return seam;
@@ -561,11 +571,12 @@ static LLVMValueRef genlSeamReply(GenState *gen, AwaitNode *await, GenSeam *seam
     args[nargs++] = st;
     args[nargs++] = seam->resume;
     if (seam->record) {
-        LLVMValueRef rargs[3];
+        LLVMValueRef rargs[4];
         rargs[0] = genlStateField(gen, info, st, info->pending);
         rargs[1] = LLVMConstInt(usize, LLVMABISizeOfType(gen->datalayout, seam->record), 0);
         rargs[2] = seam->drop;
-        gen->awaitid = genlCallFn(gen, actorRuntime[ActorRtParkReserve], rargs, 3, "id");
+        rargs[3] = seam->trace ? seam->trace : LLVMConstNull(ptr);
+        gen->awaitid = genlCallFn(gen, actorRuntime[ActorRtParkReserve], rargs, 4, "id");
         args[nargs++] = gen->awaitid;
     }
     args[nargs++] = size;
@@ -752,11 +763,12 @@ LLVMValueRef genlAwait(GenState *gen, AwaitNode *node) {
         LLVMValueRef parid = LLVMConstInt(i64, 0, 0);
         if (record) {
             ActorInfo *info = genlSplitActor(gen->fndcl);
-            LLVMValueRef rargs[3];
+            LLVMValueRef rargs[4];
             rargs[0] = genlStateField(gen, info, genlSplitState(gen), info->pending);
             rargs[1] = LLVMConstInt(genlUsize(gen), LLVMABISizeOfType(gen->datalayout, seam->record), 0);
             rargs[2] = seam->drop;
-            parid = genlCallFn(gen, actorRuntime[ActorRtParkReserve], rargs, 3, "id");
+            rargs[3] = seam->trace ? seam->trace : LLVMConstNull(ptr);
+            parid = genlCallFn(gen, actorRuntime[ActorRtParkReserve], rargs, 4, "id");
             LLVMValueRef pargs[2] = {rargs[0], parid};
             LLVMValueRef block = genlCallFn(gen, actorRuntime[ActorRtParked], pargs, 2, "parked");
             LLVMBuildStore(gen->builder, record, block);
@@ -1096,6 +1108,72 @@ static void genlSeamDrop(GenState *gen, FnDclNode *fnnode, AwaitNode *node) {
     genlRootsRestore(gen, &svroots);
 }
 
+// A parked record's trace function, '<method>'<n>.trace(record, mode)', which
+// the actor's collector calls on a record in the pending table between
+// messages: each traced reference the record holds is handed to its region's
+// 'mark', the slot it lies in the record. A variable carried with its drop flag
+// is traced only where the flag says it holds its whole value, as it is dropped.
+static void genlSeamTrace(GenState *gen, FnDclNode *fnnode, AwaitNode *node) {
+    GenSeam *seam = node->genseam;
+    LLVMValueRef svfn = gen->fn;
+    LLVMBuilderRef svbuilder = gen->builder;
+    LLVMValueRef svallocaPoint = gen->allocaPoint;
+    FnDclNode *svfndcl = gen->fndcl;
+    uint32_t svtempbase = gen->tempbase;
+    gen->tempbase = gen->tempcnt;
+    GenRoots svroots;
+    genlRootsSave(gen, &svroots);
+
+    gen->fn = seam->trace;
+    gen->fndcl = fnnode;
+    LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(gen->context, gen->fn, "entry");
+    gen->builder = LLVMCreateBuilderInContext(gen->context);
+    LLVMPositionBuilderAtEnd(gen->builder, entry);
+    LLVMValueRef allocaPoint = LLVMBuildAlloca(gen->builder, LLVMInt32TypeInContext(gen->context), "alloca_point");
+    gen->allocaPoint = allocaPoint;
+    if (!gen->opt->release)
+        LLVMSetCurrentDebugLocation2(gen->builder,
+            LLVMDIBuilderCreateDebugLocation(gen->context, node->linenbr, 0, LLVMGetSubprogram(gen->fn), NULL));
+
+    LLVMTypeRef i8 = LLVMInt8TypeInContext(gen->context);
+    LLVMValueRef record = LLVMGetParam(gen->fn, 0);
+    LLVMValueRef mode = LLVMGetParam(gen->fn, 1);
+    for (uint32_t i = 0; i < seam->nfields; ++i) {
+        GenSeamField *field = &seam->fields[i];
+        if (field->kind == GenSeamFlag || field->type == NULL || !itypeHoldsTraced(field->type))
+            continue;
+        LLVMValueRef at = LLVMBuildStructGEP2(gen->builder, seam->record, record, i, "tracing");
+        LLVMBasicBlockRef endblk = NULL;
+        if (field->kind == GenSeamVar && i + 1 < seam->nfields && seam->fields[i + 1].kind == GenSeamFlag
+            && seam->fields[i + 1].var == field->var) {
+            LLVMValueRef flagat = LLVMBuildStructGEP2(gen->builder, seam->record, record, i + 1, "flag");
+            LLVMValueRef held = LLVMBuildLoad2(gen->builder, i8, flagat, "held");
+            LLVMValueRef whole = LLVMBuildICmp(gen->builder, LLVMIntEQ, held, LLVMConstInt(i8, DropFlagWhole, 0), "whole");
+            LLVMBasicBlockRef doblk = LLVMAppendBasicBlockInContext(gen->context, gen->fn, "trace");
+            endblk = LLVMAppendBasicBlockInContext(gen->context, gen->fn, "traced");
+            LLVMBuildCondBr(gen->builder, whole, doblk, endblk);
+            LLVMPositionBuilderAtEnd(gen->builder, doblk);
+        }
+        genlTraceAt(gen, at, field->type, mode);
+        if (endblk) {
+            LLVMBuildBr(gen->builder, endblk);
+            LLVMPositionBuilderAtEnd(gen->builder, endblk);
+        }
+    }
+    LLVMBuildRetVoid(gen->builder);
+
+    if (LLVMGetInstructionParent(allocaPoint))
+        LLVMInstructionEraseFromParent(allocaPoint);
+    LLVMDisposeBuilder(gen->builder);
+    gen->builder = svbuilder;
+    gen->fn = svfn;
+    gen->allocaPoint = svallocaPoint;
+    gen->fndcl = svfndcl;
+    gen->tempcnt = gen->tempbase;
+    gen->tempbase = svtempbase;
+    genlRootsRestore(gen, &svroots);
+}
+
 void genlSplitHalves(GenState *gen, FnDclNode *fnnode) {
     Nodes *seams = awaitSplitOf(fnnode);
     INode **nodesp;
@@ -1112,5 +1190,7 @@ void genlSplitHalves(GenState *gen, FnDclNode *fnnode) {
             genlSeamResume(gen, fnnode, node);
         if (node->genseam->drop)
             genlSeamDrop(gen, fnnode, node);
+        if (node->genseam->trace)
+            genlSeamTrace(gen, fnnode, node);
     }
 }

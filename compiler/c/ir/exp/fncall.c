@@ -3290,8 +3290,11 @@ static void fnCallReadThroughRefs(FnCallNode *node) {
             && !permIsLock(held->perm) && (permGetFlags(held->perm) & MayWrite)) {
             RefNode *seen = newRefNode(held->tag);
             *seen = *held;
-            seen->typeinfo = NULL;
             seen->perm = clamp;
+            // A type of its own (the clamped permission), normalized like any
+            // reference type: generation lays out an owning reference's block
+            // and traces it by this record
+            seen->typeinfo = typetblFind((INode*)seen, refTypeInfoAlloc);
             ((IExpNode*)node->objfn)->vtype = (INode*)seen;
         }
     }

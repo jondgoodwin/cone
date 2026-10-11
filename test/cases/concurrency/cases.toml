@@ -497,7 +497,7 @@ contains = [
 
 [scenario.concurrency_await_message]
 category = "reject"
-description = "An 'await' on a behaviour returning nothing, through another actor's handle or through 'self', is ErrorAwaitVoid; a record holding a traced reference is ErrorUnbuiltAwait; a behaviour returning what is not Sendable is ErrorNotSendable; 'self.m()' on a behaviour holding an 'await' is a send, refused nowhere; 'selfactor' in an actor's init is good; outside an actor's method -- its final, a function, another type's method -- it is ErrorSelfActorPlace"
+description = "An 'await' on a behaviour returning nothing, through another actor's handle or through 'self', is ErrorAwaitVoid; a behaviour returning what is not Sendable is ErrorNotSendable; 'self.m()' on a behaviour holding an 'await' is a send, refused nowhere; 'selfactor' in an actor's init is good; outside an actor's method -- its final, a function, another type's method -- it is ErrorSelfActorPlace"
 tags = ["typecheck", "flow"]
 
 [scenario.concurrency_iobuf_loan]
@@ -649,7 +649,7 @@ contains = [
   "define internal void @\"_CNvNtu18_ProberState_l7620i4kept'1.drop\"(ptr %0)",
   "%dropping = getelementptr inbounds nuw %\"_CNvNtu18_ProberState_l7620i4kept'1.record\", ptr %0, i32 0, i32 1",
   "@_CNvNt3Fin5final(ptr %dropping)",
-  "i64 16, ptr @\"_CNvNtu18_ProberState_l7620i4kept'1.drop\")",
+  "i64 16, ptr @\"_CNvNtu18_ProberState_l7620i4kept'1.drop\", ptr null)",
   "@_CNvC6actors10startAwait(ptr %awaitable, ptr %agg",
 ]
 
@@ -1031,13 +1031,27 @@ tags = ["typecheck"]
 
 [scenario.concurrency_gc_stopgap_actor]
 category = "reject"
-description = "A Gc may not be made, held or copied inside an actor until the collector is per actor (ErrorGcStopgap, saying GC per actor is coming): a local of a behaviour (3D Web's probe), of a synchronous method, of init and of final, a struct holding one made in a behaviour, a parameter, a program's own traced region (judged by what a region declares, never by its name), one made in a parallel each written in a behaviour; a plain function using Gc and an actor using none are untouched"
+description = "A traced reference of a region that is not actor-local (the collector package's Gc) may not be made, held or copied inside an actor (ErrorGcStopgap, saying to hold an ActorGc, the actor's own region): a local of a behaviour (3D Web's probe), of a synchronous method, of init and of final, a struct holding one made in a behaviour, a parameter, a program's own traced region (judged by what a region declares, never by its name), one made in a parallel each written in a behaviour; a plain function using Gc and an actor using none are untouched"
 tags = ["typecheck"]
 
 [scenario.concurrency_gc_stopgap_parallel]
 category = "reject"
-description = "A Gc may not be made or held in a parallel each until the collector is per actor (ErrorGcStopgap): an allocation, a struct holding one and a call returning one in the body, an allocation in a parallel builder's filter and yield, a program's own traced region; a copy in from outside is still ErrorParCopy once, and a loop touching no Gc is untouched"
+description = "A traced reference of a region that is not actor-local (the collector package's Gc) may not be made or held in a parallel each (ErrorGcStopgap): an allocation, a struct holding one and a call returning one in the body, an allocation in a parallel builder's filter and yield, a program's own traced region; a copy in from outside is still ErrorParCopy once, and a loop touching no Gc is untouched"
 tags = ["typecheck"]
+
+# What an actor's own region, the actorgc package's ActorGc, refuses: a reference
+# into it is never Sendable; a parallel each in a behaviour allocates nothing in
+# it ('new self[T]' or a direct 'new ActorGc'); ActorLocal only on a traced region
+[scenario.concurrency_actorgc_refused]
+category = "reject"
+description = "A reference into an actor's own region (ActorGc) is not Sendable and stays in its actor (ErrorNotSendable); a parallel each in a behaviour may not allocate in the actor's region, by 'new self[T](...)' or a direct 'new ActorGc[...]' (ErrorActorGcPiece, each reported once however the body was checked); ActorLocal declared by what is not a traced region ref is ErrorActorLocalUse"
+tags = ["typecheck"]
+
+[scenario.concurrency_actorgc_state_root]
+category = "recover"
+description = "An actor whose state holds a reference into its own region and a raw pointer to a value holding one has a reference its collector cannot follow: ErrorTraceRoot at the actor, and where the runtime holds the state"
+tags = ["typecheck"]
+diagnostics = 3
 
 [scenario.concurrency_parallel_each_counted]
 category = "run"

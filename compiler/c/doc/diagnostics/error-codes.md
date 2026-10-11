@@ -138,7 +138,15 @@ type declaring `CarriesRegion` that declares no init, or an init whose last para
 `new a[T](...)`, written with a `trynew`, a permission other than `mut`, a permission and
 no type, or more than a permission and a type in its brackets is `ErrorRegionNew` (type
 check). One whose head `a` is a value that is not a region (a struct whose first field is a
-public `*MemRegion`) is `ErrorRegionHead`.
+public `*MemRegion`) and does not lead to one (a type with an `allocRegion` method giving
+a region value, as an actor's state has) is `ErrorRegionHead`.
+
+`ErrorActorLocalUse` and `ErrorActorGcPiece` are about an actor's own region. A type
+declaring `ActorLocal` that is not a traced region ref is `ErrorActorLocalUse`
+(`regionActorLocalUseCheck`). An allocation in an actor-local region from the body of a
+`parallel each` (a call of the actor's `allocRegion`, which `new self[T]` is, or a direct
+`new ActorGc[...]`) is `ErrorActorGcPiece` (`gcPieceVisit`, from the loop's body check and
+again from `actorCheckAll`).
 
 `ErrorGcTraceElementsShape`, `ErrorTraceRoot` and `ErrorTraceKey` are about what a collector
 can reach. A type declaring `GcTraceElements` whose `gcTraceElements` is not `fn
@@ -444,12 +452,13 @@ initializer's parameter, or a behaviour's returned type, that cannot cross
 threads is `ErrorNotSendable`, the thread check's code, whatever finds it --
 the parser, for a borrow or the state itself, or `actorCheckAll` after type
 check -- and the state's field or synchronous method reached through the
-handle is `ErrorNotPublic`, as any private member is. A traced (`Gc`)
-reference made or held inside an actor -- a state field, a synchronous method's
+handle is `ErrorNotPublic`, as any private member is. A reference
+into a traced region that is not `ActorLocal` (the collector package's `Gc`) made or held
+inside an actor -- a state field, a synchronous method's
 parameter, an allocation, call or literal in any method's body, `init` and
 `final` included -- is `ErrorGcStopgap` (`actorRefuseGc`, from `actorCheckAll`),
-as is one made in a `parallel each` (`parallelEachCheckBody`), until the
-collector is per actor. A `parallel each` body (or a builder's filter or
+as is one made in a `parallel each` (`parallelEachCheckBody`); a reference into an
+actor-local region (`ActorGc`) is not. A `parallel each` body (or a builder's filter or
 `yield`) that names a value from outside, or its item, whose type is not safe to
 share across the passes (it holds an `Rc`-like owner or a traced reference) is
 `ErrorParReach` (`parCheckReach`; a `&mut` held in it counts, and a closure passed in

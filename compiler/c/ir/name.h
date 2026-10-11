@@ -139,6 +139,7 @@ extern Name *noneName;     // "None"
 // calls at each reference event (ir/types/region.c), and the built-in trait
 // that checks them
 extern Name *allocMethodName;  // "alloc"
+extern Name *allocRegionMethodName; // "allocRegion" [provisional], the method of a value that leads to a region: 'new x[T](...)' allocates in the region it gives
 extern Name *initMethodName;   // "init"
 extern Name *aliasRefMethodName;  // "aliasRef"
 extern Name *dealiasRefMethodName; // "dealiasRef"
@@ -148,6 +149,7 @@ extern Name *writeBarrierMethodName; // "writeBarrier", called after a traced re
 extern Name *regionRefName;    // "RegionRef"
 extern Name *tracedTraitName;  // "Traced", a region ref whose references are traced
 extern Name *threadSafeTraitName; // "ThreadSafe", a region ref whose owners several threads may hold
+extern Name *actorLocalTraitName; // "ActorLocal" [provisional], a traced region ref collected only between one actor's messages
 
 // The built-in marker traits every type has exactly one of (corelib.c)
 extern Name *moveTraitName;    // "Move"

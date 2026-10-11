@@ -609,8 +609,19 @@ Visual Studio projects stay at the root.
   `collector` is `Gc`, a garbage-collected region ref and its incremental
   collector (Acorn's mark and sweep a step at a time, with a write barrier,
   Lua's separation of finalizers, and Acorn's generational mode as an
-  option), which a
-  bare `import collector;` brings in; `thread` is OS threads (start a function on
+  option), single threaded and for use outside actors, which a
+  bare `import collector;` brings in; `actorgc` is each actor's own garbage
+  collector: `ActorGc`, a region a module that declares actors and imports it
+  allocates in with `new self[T](...)` (the actor's state gets an
+  `allocRegion` method giving its `ActorRegion`), whose references are made,
+  held and copied inside the actor (the region declares the built-in trait
+  `ActorLocal`), never Sendable, a read-only one Shareable in a behaviour's
+  `parallel each`; a copying collector the actors runtime calls between the
+  actor's messages (when the bytes allocated since the last collection exceed
+  the bytes that survived it, and not under a 64 KiB floor), its roots the
+  state and the records its `await`s parked, large objects (over 4096 bytes)
+  never moved, a final list run on what is found unreached (kept one cycle)
+  and at the actor's death; `thread` is OS threads (start a function on
   a value moved in, join, detach, a handle dropped unjoined joins, sleep,
   parking; what it is handed and returns must be `Sendable`, the
   compiler's thread check), Windows only, over `sync`; `sync` is what threads share

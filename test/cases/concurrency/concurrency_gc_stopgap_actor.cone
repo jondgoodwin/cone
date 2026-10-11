@@ -1,9 +1,11 @@
-// A 'Gc' may not be made, held or copied inside an actor, for now. The
-// collector keeps its heap and its one chain of roots in process globals,
+// The collector package's 'Gc' may not be made, held or copied inside an actor.
+// The collector keeps its heap and its one chain of roots in process globals,
 // without locks, and a 'Gc' held in an actor's state is on no stack between
 // messages, so one made by an actor corrupts them whichever worker runs it.
-// Until the collector is per actor (the regions work), the compiler refuses it,
-// ErrorGcStopgap, saying GC per actor is coming:
+// The compiler refuses it, ErrorGcStopgap, saying to hold an ActorGc (the
+// actorgc package, the actor's own region) instead -- which a program's own
+// traced region is refused for too, since only a region that declares ActorLocal
+// is the actor's own (actorgc_stopgap has the allowed side):
 //
 //   - a 'Gc' local of a behaviour (3D Web's probe), of a synchronous method, of
 //     'init' and of 'final'
@@ -52,7 +54,7 @@ actor Own {
 actor Holder {
   n i32;
   pub async do poke(self) {
-    imm g = new Gc[mut, Node](new Node(1));    //~ ErrorGcStopgap "GC per actor is coming"
+    imm g = new Gc[mut, Node](new Node(1));    //~ ErrorGcStopgap "hold an ActorGc"
     self.n = g.v;
   }
 }
@@ -77,12 +79,12 @@ actor Methods {
   fn take(self, g Gc[mut, Node]) {}            //~ ErrorGcStopgap "this holds a Gc[mut, Node]"
 
   fn init(self &new) {
-    imm g = new Gc[mut, Node](new Node(1));    //~ ErrorGcStopgap "GC per actor is coming"
+    imm g = new Gc[mut, Node](new Node(1));    //~ ErrorGcStopgap "hold an ActorGc"
     *self = new Self(n: 0);
   }
 
   fn final(self &uni) {
-    imm g = new Gc[mut, Node](new Node(1));    //~ ErrorGcStopgap "GC per actor is coming"
+    imm g = new Gc[mut, Node](new Node(1));    //~ ErrorGcStopgap "hold an ActorGc"
   }
 }
 

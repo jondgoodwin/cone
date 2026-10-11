@@ -2716,7 +2716,34 @@ Rc[Node]` before `g Gc[Leaf]`), so type check notes each place a rule looks at
 (`regionTracedRefNote`, `regionTracedGlobalNote`, `regionTracedRootNote`,
 `regionTracedRawCall`) and judges them all once it has finished
 (`regionTracedCheckAll`, from `conec.c`); a compile declaring no traced region
-judges none.
+judges none. An actor's state is an exception to what a place holds: the actors
+runtime hands it to the actor's collector wherever it keeps it (the `Arc` block it
+lives in, the raw move that makes it), so the placement rules ask
+`itypeHoldsTracedPlaced`, which passes over a struct that is an actor's state
+(`actorIsState`), where they would ask `itypeHoldsTraced`.
+
+**An actor's own region is declared too,** with the built-in trait `ActorLocal`
+(a provisional name): `struct ActorGc is RegionRef, Traced, ActorLocal`, the
+`actorgc` package's. It says the region's collector runs only between the messages
+of the one actor that holds every reference into it, and so: a reference into it
+may be made, held and copied inside an actor and a `parallel each`'s passes where
+any other traced region's is refused (`ErrorGcStopgap`: `itypeHoldsCollected` asks
+whether a type holds a reference into a traced region that is *not* actor-local);
+a copy of one counts nothing and links a root of the thread's own chain
+(`refCountsPlain` is false for it, so a read-only one is Shareable in a loop's
+passes); no stack is scanned for its roots; and it does not make the reference
+Sendable (`refThreadBinds` is still `RefBindsTraced`). It is a traced region
+ref's only (`ErrorActorLocalUse`, from `regionActorLocalUseCheck`), and trusted.
+It declares no `writeBarrier`, so a reference to a value holding one may sit behind
+an `Rc` (a barrier is told of a store, which a value behind an owner does not make).
+The actor reaches its region by a method of its state, `allocRegion`, generated
+where the module imports the package ([Parse](../phases/parse.md), "Actors"), and
+`new self[T](...)` is `self.allocRegion().alloc(new T(...))`
+([Literals](literals.md), "Construction"). The collector is the package's
+(`packages/actorgc`); the actors runtime calls it through the hooks on the actor's
+header (`GcLink`: after each message, at the actor's death) and reaches the records a
+seam parked through the pending table's `GcTraceElements`
+([Generation](../phases/generation.md), "A traced record").
 
 **Whether several threads may hold owners of one value is declared too,** with
 the built-in trait `ThreadSafe` (a provisional name): `struct Arc is RegionRef,

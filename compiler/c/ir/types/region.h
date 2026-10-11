@@ -84,6 +84,13 @@ int regionIsThreadSafe(INode *region);
 // A type declaring 'ThreadSafe' that is not a region ref is refused
 void regionThreadSafeUseCheck(StructNode *node);
 
+// Is this region slot's type a traced region ref declaring 'ActorLocal': its
+// references stay in one actor and are collected between that actor's messages?
+int regionIsActorLocal(INode *region);
+
+// A type declaring 'ActorLocal' that is not a traced region ref is refused
+void regionActorLocalUseCheck(StructNode *node);
+
 // Note, as type check meets them, the places where a traced reference may not
 // be held, or must be found by a trace: an owning reference type, a global or
 // static, a call of mem.writeRaw or mem.moveRaw (from a method of a type that

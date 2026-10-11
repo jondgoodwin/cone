@@ -470,7 +470,7 @@ says; what it points at is asked separately by the walk (`itypeThreadBound`, in
 | --- | --- |
 | to a function (`&fn`) | crosses, whatever it points at: code every thread shares |
 | a borrow, any permission, or a guard (a lock held, below) | `RefBindsBorrow`: its lifetime is checked in one thread alone |
-| into a region declaring `Traced` | `RefBindsTraced`: the collector is single threaded |
+| into a region declaring `Traced` | `RefBindsTraced`: the collector is single threaded (an `ActorLocal` region's, the actor's own, is collected between that actor's messages, so its references stay in the actor: the same answer, worded so) |
 | an owner that cannot be aliased: `uni`, or any owner of a `Move` region (`So`) | crosses if what it points at does: it moves, taking its value |
 | any other owner whose permission is not `RaceSafe` (`mut`, `ro`, `mut1`, a lock permission not declaring `ThreadSafe`) | `RefBindsPerm` |
 | any other owner whose region does not declare `ThreadSafe` (`Rc`) | `RefBindsShared` |

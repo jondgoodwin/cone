@@ -369,7 +369,11 @@ is held to the steps above it (a `&` lends only `&` of an owner,
 `borrowOwnerLendRefused`): from the first step whose permission cannot write,
 the dereference that reaches an owner is typed as a copy of the owner's type
 with that permission (`clamp`), so a field stored or a `self &mut` candidate
-through it is refused by the checks that already read the type. The `RefTag` branch's
+through it is refused by the checks that already read the type. That copy is a
+reference type of its own, so it is normalized as any is (`typetblFind`, as
+`refTypeCheck` does): generation lays out an owning reference's block and traces a
+traced one by that record, and a copy with none crashed the compiler on a field read
+through a borrow of a traced region reference. The `RefTag` branch's
 `ownerread` retry remains for what this skips: an operator, or a call, on a
 borrow of an owner.
 
