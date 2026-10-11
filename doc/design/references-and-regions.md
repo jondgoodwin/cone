@@ -61,7 +61,8 @@ before their objects are freed; and, chosen by `gc.setGenerational`, Acorn's
 generational mode, whose minor collections mark and sweep only the young
 objects, the barrier on between collections (keyed on the value, it keeps
 every young object stored into the heap through the next minor collection).
-That collector is single threaded and for use outside actors. An actor has a
+That collector is single threaded, for use outside actors, and discouraged: it is
+likely to be replaced, and nothing else in the packages depends on it. An actor has a
 collector of its own, the `actors` package's region `ActorGc`, which declares
 `ActorLocal` beside `Traced` (its references stay in one actor, so they may be
 made and held in an actor's methods where any other traced region's are

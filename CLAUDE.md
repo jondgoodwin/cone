@@ -93,7 +93,7 @@ Visual Studio projects stay at the root.
   `stdio` prints;
   `libc` and `posix` are C packages of raw bindings to the C library and the
   POSIX functions beyond it (Windows first), and `core` imports `libc` for its
-  allocator; `sdl` is a C package of raw bindings to SDL3 (a window for
+  allocator (through `RawBlocks`, its raw blocks layer); `sdl` is a C package of raw bindings to SDL3 (a window for
   Vulkan and its size in pixels, its events, the keyboard's, the mouse's,
   the wheel's and a window's, each with its nanosecond timestamp, the
   mouse's relative mode, clocks, and loading Vulkan), linking `SDL3.lib`,
@@ -584,7 +584,8 @@ Visual Studio projects stay at the root.
   run moved in order); each holding its
   elements in one block (an `OrderedDict` in two) from the region it points to
   (core's `MemRegion`, a field of its own; the heap's, whose functions are
-  `libc`'s allocator, unless it is made in another, passed as the last argument
+  core's raw blocks layer (`RawBlocks`, today `libc`'s allocator and nothing
+  more), unless it is made in another, passed as the last argument
   of a construction: `CarriesRegion`) and
   moving them with core's `mem` intrinsics; and the capability traits, met by
   the collections' method names alone (Cone's traits are structural): `Collection`,
@@ -609,7 +610,8 @@ Visual Studio projects stay at the root.
   `collector` is `Gc`, a garbage-collected region ref and its incremental
   collector (Acorn's mark and sweep a step at a time, with a write barrier,
   Lua's separation of finalizers, and Acorn's generational mode as an
-  option), single threaded and for use outside actors, which a
+  option), single threaded and for use outside actors only, discouraged and
+  likely to be replaced (nothing depends on it), which a
   bare `import collector;` brings in; `actors` carries each actor's own
   garbage collector (`packages/actors/src/gc.cone`, no import beyond `actors`):
   `ActorGc`, the region every actor has (one pointer in its Header, the record made at its first `allocRegion`), which an

@@ -20,7 +20,8 @@
 		<span class="pre">collector</span> package's <span class="pre">Gc</span>
 		(<span class="pre">import collector;</span> then <span class="pre">new Gc[mut, T](...)</span>): an
 		incremental collector, run a step at a time inside allocation, whole on
-		<span class="pre">Gc.collect()</span>, or generationally, and single threaded, outside actors only
+		<span class="pre">Gc.collect()</span>, or generationally, and single threaded, outside actors only, and
+		discouraged: likely to be replaced, so new code does not build on it
 		(see <a href="refalloccust.html">custom allocators</a>); inside an actor, the
 		<span class="pre">actors</span> package's <span class="pre">ActorGc</span> is a region of the actor's own,
 		collected between its messages by a copying collector
@@ -38,15 +39,18 @@
 		<span class="pre">allocRegion</span> method giving the region value, and
 		<span class="pre">new x[T](...)</span> is <span class="pre">x.allocRegion().alloc(new T(...))</span>
 		(the head's call is made again to hand the region to a type that gets its memory from one, so it
-		should lend nothing still borrowed when it is called again). An actor's state leads to the actor's own
+		should lend nothing still borrowed when it is called again; <b>provisional</b>: the
+		<span class="pre">allocRegion</span> protocol behind this general rule, its name and its shape, is not
+		settled). An actor's state leads to the actor's own
 		garbage-collected region, the <span class="pre">actors</span> package's
 		(<a href="refconccomm.html#actor-gc">Its own region</a>), which is how <span class="pre">new self[T](...)</span>
 		allocates there. An arena is itself a region: a type that gets its memory
-		from a region (<a href="reftypecoll.html">a collection</a>) and is made with
+		from a region (<a href="reftypecoll.html#region">a collection</a>) and is made with
 		<span class="pre">new a[T](...)</span> is handed that arena's, so
 		<span class="pre">new a[List[i32]](16)</span> keeps the list's words and its block in the arena
-		(the block grows in place while it is the arena's last, otherwise it is copied and the old one
-		abandoned, and giving one back does nothing). When the
+		(the block grows in place while it is the arena's last and the room is there, otherwise it is copied
+		to a new one and the old one abandoned, held until the arena dies, and giving one back does nothing;
+		<a href="reftypecoll.html#region">the details</a>). When the
 		<span class="pre">Arena</span> dies, each value in it that needs finalizing is finalized, newest first, and then
 		its memory is freed. Held in a local variable, it is a scratch arena: its references are borrows
 		with that variable's lifetime, so returning one, or assigning it where it would outlive the
@@ -82,7 +86,9 @@
 		declaring <span class="pre">is RegionRef</span>, not with a <span class="pre">region</span> declaration:
 		So is <span class="pre">struct So is RegionRef, Move</span>, with <span class="pre">fn alloc(size usize) *u8</span>
 		(null for failure, rather than an Option) and <span class="pre">fn free(self &amp;uni So)</span>, which
-		calls C's <span class="pre">libc.free</span>; declaring the built-in trait
+		gives the block back to core's raw blocks layer (<span class="pre">RawBlocks</span>: the one place the
+		heap's bytes come from, which today forwards to C's <span class="pre">malloc</span>,
+		<span class="pre">realloc</span> and <span class="pre">free</span>); declaring the built-in trait
 		<a href="refmove.html"><span class="pre">Move</span></a> is what makes it single-owner. Rc adds a count, an
 		<span class="pre">init</span> setting it to one, <span class="pre">aliasRef</span>, and a
 		<span class="pre">dealiasRef</span> that answers whether the count reached zero, and does not declare
@@ -274,13 +280,22 @@ childnode.parent = parentnoderef.weak;
 				and tunable incremental, generational, and multi-threading algorithms for optimizing performance.</li>
 			<li>Memory greedy, as optimal performance can require 4-6x more memory than the amount used.</li>
 	</ul>
-		
+	<p>Two are built, both as library code. The <span class="pre">collector</span> package's
+		<span class="pre">Gc</span> is the general incremental one described above: single threaded, usable outside
+		actors only, discouraged and likely to be replaced
+		(<a href="refalloccust.html">custom allocators</a>). An actor has a collector of its own: the
+		<span class="pre">actors</span> package's <span class="pre">ActorGc</span> is collected only between that
+		actor's messages, by a copying collector, so a collection stops no other actor and needs no write barrier and
+		no stack scan (<a href="refconccomm.html#actor-gc">Its own region</a>).</p>
+
 	<h2>Arena</h2>
 	<p>An arena region begins life 
 		pre-allocating a large (and growable) slab of memory. This is the arena.
 	  Every new allocation takes a bite out of this arena using a fast bump pointer.
 		Allocations are never individually freed.
-		The entire arena is freed as a single event when the program ends.</p>
+		The entire arena is freed as a single event when the arena dies (a scratch arena at the end of its
+		function, a dynamic one with whatever holds it), and each value in it that needs finalizing is
+		finalized then, newest first.</p>
 	<p>Arena region is a good choice if you are looking for:</p>
 	<ul>
 		<li>Blazing-fast throughput. Bump pointer allocation is much faster than malloc.
@@ -291,8 +306,11 @@ childnode.parent = parentnoderef.weak;
 	</ul>
 	<p>The biggest shortcomings are:</p>
 	<ul>
-		<li>Memory use grows without bounds, due to individual objects never being freed.</li>
-		<li>Awful determinism for finalizers, as objects are only finalized when the program ends.</li>
+		<li>Memory use grows without bounds, due to individual objects never being freed. A growable
+			collection made in an arena (<span class="pre">new a[List[i32]](16)</span>) leaks the block it
+			outgrows whenever it cannot grow in place, until the arena dies, and the larger the block,
+			the more is held.</li>
+		<li>Poor determinism for finalizers, as objects are only finalized when the arena dies.</li>
 	</ul>
 	<p>An arena region is a surprisingly good fit for a
 		limited-lifetime program that allocates a lot of small objects but
