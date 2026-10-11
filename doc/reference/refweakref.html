@@ -13,7 +13,7 @@
 
     <div class="text">
 
-		<p style="margin-left: 40px;"><i>Note: Cached weak references are not implemented. How a value is allocated in a dynamic region such as an arena or a pool is an open design question: the packages allocate with <span class="pre">a.alloc(value)</span>, <span class="pre">new a[T](...)</span> and <span class="pre">p.add(value)</span>, and no other spelling is read.</i></p>
+		<p style="margin-left: 40px;"><i>Note: Cached weak references are not implemented. Nor is a pattern match on a weak reference that produces a borrowed reference: a weak reference gives a new counted owner instead. The <span class="pre">&amp;arena mut 5</span> allocation and the <span class="pre">Arena['a]</span> and <span class="pre">ArenaRef+'a'</span> spellings below are not implemented; the arena package's <span class="pre">DynArena</span> hands out keys. How a value is allocated in a dynamic region such as an arena or a pool is an open design question: the packages allocate with <span class="pre">a.alloc(value)</span>, <span class="pre">new a[T](...)</span> and <span class="pre">p.add(value)</span>, and no other spelling is read.</i></p>
 
 	<p>Owning and borrowed references always point to live objects,
 		and may always be directly used to manipulate the objects they point to.
@@ -39,13 +39,15 @@
 		Unlike normal references, weak references won't keep the object it points to alive.
 		It accomplishes this using a separate weak reference counter which
 		behaves a bit differently than the "strong" reference count</p>
-	<p>The downside of a weak reference is that you need to ask it for a counted owner
+	<p>The downside of a weak reference is that you need to pattern match on it
 		before you can use it, to ensure the object is still there.
-		If it is, the owner keeps the object alive for as long as it is held, and can then be used to
-		work with the object it points to.</p>
+		As with many weak references, a successful pattern match produces
+		a lifetime-constrained borrowed reference which can be then be used
+		to work with the object it points to.</p>
 
 	<h3 id="rcw">Rcw and Weak</h3>
-	<p>Cycle-breaking weak references are library code, not a kind of reference. The <span class="pre">rcweak</span>
+	<p>Today, cycle-breaking weak references are library code, not a kind of reference, and a weak reference
+		is asked for a new counted owner rather than pattern matched into a borrow. The <span class="pre">rcweak</span>
 		package's region <span class="pre">Rcw</span> counts both strong owners and weak references. A
 		strong owner is allocated as any other, <span class="pre">new Rcw[mut, T](...)</span>. The weak
 		reference is an ordinary struct, <span class="pre">Weak[T]</span>.</p>
@@ -155,13 +157,19 @@ fn main() i32 {
 		However, if we need either the object references or the dynamic arena to
 		span multiple lifetime scopes, borrowed references may be too restrictive.</p>
 	<p>Weak references may be used to solve this flexible lifetime requirement.
-		The <span class="pre">arena</span> package's <span class="pre">DynArena</span> does so: every request to
-		allocate a new object in the arena returns a <i>key</i>, a reference of the arena's own brand,
-		<span class="pre">&amp;'=a mut T</span>, which reaches nothing on its own.
+		Every request to allocate a new object in the arena returns a weak reference.
 		We know the object is still alive as long as the arena is alive, so to
-		access the object, we only need to prove the arena is still there
-		(<a href="refregionglo.html#dynarena">a dynamic arena</a>):</p>
+		access the object, we only need to prove the arena is still there:</p>
 
+<pre>
+mut arena = Arena.empty();     // A new dynamic arena
+imm objref = &amp;arena mut 5;  // Allocate a new i32 object in the new arena region
+arena[objref] = 2;          // Change the value of the object
+</pre>
+	<p>The <span class="pre">arena</span> package's <span class="pre">DynArena</span> is the form built today:
+		every request to allocate a new object in the arena returns a <i>key</i>, a reference of the arena's own
+		brand, <span class="pre">&amp;'=a mut T</span>, which reaches nothing on its own
+		(<a href="refregionglo.html#dynarena">a dynamic arena</a>):</p>
 <pre>
 import stdio use *;
 import arena use *;
@@ -183,6 +191,10 @@ fn main() i32 {
 		as both share the same hidden lifetime information.
 		This lifetime information must be explicitly noted should one wish to
 		pass the arena or object references to other functions or methods:</p>
+<pre>
+fn dowork(arena Arena['a], objref ArenaRef+'a') { ... }
+</pre>
+	<p>Built today, the brand is written <span class="pre">'=a</span> on the arena and on the key:</p>
 <pre>
 import stdio use *;
 import arena use *;

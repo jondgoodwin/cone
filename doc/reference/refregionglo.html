@@ -21,7 +21,10 @@
 		<span class="pre">allocRegion</span> method behind <span class="pre">new x[T](...)</span> is
 		provisional: its name and its shape are not settled. A pool's <span class="pre">Ref</span> is not yet paired with its own
 		pool: used with another pool of the same type, it is checked there, and cannot reach outside that
-		pool's memory. An <span class="pre">Arc</span> value has no weak references.</i></p>
+		pool's memory. An <span class="pre">Arc</span> value has no weak references. The
+		<span class="pre">region</span> declaration the first examples show is not implemented: a region is a struct that
+		declares <span class="pre">RegionRef</span>. Nor is <span class="pre">.weak</span> on an owning reference: a weak
+		reference is made with <span class="pre">Weak[T].of(owner)</span> from an <span class="pre">Rcw</span> owner.</i></p>
 
 	<p>To allocate a new value, we ask a region to get it done:</p>
 <pre>
@@ -98,7 +101,19 @@ imm pt = new Rc[imm, Point](1, 2);  // the 'Rc' region counts references
 		to ensure no copy of the reference is ever made.
 		Because there is only one reference to the object,
 	    the memory for that value can be automatically finalized and freed when the reference expires.</p>
-	<p>Here is the simple definition of a single-owner region, written as the core package's <span class="pre">So</span> is:</p>
+	<p>Here is the simple definition of a single-owner region:</p>
+<pre>
+region So is Move {    // Move ensures move semantics on references, i.e. no aliasing
+    pub fn alloc(size usize) Option[*u8] {
+	    malloc(size);  // May use any general-purpose memory allocator
+    }
+	pub fn free(self &amp;uni So) {
+	    free();
+	}
+}
+</pre>
+	<p>Written as the core package's <span class="pre">So</span> is, a region is a struct that declares
+		<span class="pre">RegionRef</span> (<a href="#regionstruct">below</a>):</p>
 <pre>
 struct Solo is RegionRef, Move {    // Move ensures move semantics on references, i.e. no aliasing
     fn alloc(size usize) *u8 {
@@ -144,6 +159,29 @@ struct Solo is RegionRef, Move {    // Move ensures move semantics on references
 		When the counter reaches 0, the object is reclaimed.</p>
 	<p>Here is the simple definition of a reference counting region, where aliasing happens automatically:</p>
 <pre>
+region Rc {
+    pub cnt u32;
+    pub fn alloc(size usize) Option[*u8] {
+	    malloc(size);
+    }
+	pub fn init(self &amp;uni Rc) {
+	    cnt = 1;
+	}
+	pub fn aliasRef(self &amp;uni Rc) {
+	    ++cnt;
+	}
+	pub fn dealiasRef(self &amp;uni Rc) {
+	    if (--cnt == 0) {
+		  free();
+	    }
+	}
+	pub fn free(self &amp;uni Rc) {
+	    free();
+	}
+}
+</pre>
+	<p>Written as a struct that declares <span class="pre">RegionRef</span>, the form built today:</p>
+<pre>
 struct Counted is RegionRef {
     cnt u32;                       // the count is the bookkeeping kept with each value
     fn alloc(size usize) *u8 {
@@ -181,7 +219,11 @@ struct Counted is RegionRef {
 	</ul>
 	<p>To prevent cycle-based memory leaks, one can use a variation that supports
 		<a href="refweakref.html">weak references</a> to make any cycle breakable.
-		That variation is the <span class="pre">rcweak</span> package's <span class="pre">Rcw</span>,
+		A weak reference may be obtained from any owning reference:</p>
+<pre>
+childnode.parent = parentnoderef.weak;
+</pre>
+	<p>Today that variation is the <span class="pre">rcweak</span> package's <span class="pre">Rcw</span>,
 		which counts strong owners and weak references, and a weak reference is made from a strong owner
 		with <span class="pre">Weak[T].of(owner)</span>
 		(<a href="refweakref.html#rcw">Rcw and Weak</a>):</p>
