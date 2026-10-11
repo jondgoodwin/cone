@@ -258,6 +258,42 @@ void loanReturnedBy(uint32_t loan, Name *method);
 // shared path, and the place's container may move what it lent when it
 // changes: the loan freezes the place, as a local's would
 void loanFreezeShared(uint32_t loan);
+// The same for a borrow that writes where the shape check does not follow the loan: the
+// place is frozen against everything
+void loanFreezeWritable(uint32_t loan);
+
+// A place whose source has a 'mut' borrow live now besides the name it is reached by (a
+// borrow of a place reached as 'uni' is an alias loan: several may be held at once, and the
+// source stays usable as one more alias). A borrow of it that returns a borrow into a
+// collection that changes shape is then marked for the shape check, as one through a shared
+// path is, and a read-only loan of it no longer excludes writers
+int loanAliasedAt(Place *pl);
+int loanUniqAlias(uint32_t loan);
+int loanIsAliased(uint32_t loan);
+int loanHoldsUniqAlias(PathSet *holds);
+// A borrow into a shape-changing container through a source no other name reaches yet:
+// marked (loanShapeMark) when one does
+void loanShapeLazy(uint32_t loan, INode *container);
+
+// What a call or a store can reach of this function's own storage: the locals whose
+// storage the loans it is handed borrow, 'ext' where anything else (what a caller lent, a
+// global, an owner others own), 'all' where it may be any loan. A marked loan that points
+// only into locals (loanShapeLocal) is reached only by a call or store that reaches one of
+// them (loanShapeReaches)
+typedef struct {
+    uint32_t roots[6];
+    uint8_t nroots;
+    uint8_t ext;
+    uint8_t all;
+} LoanReach;
+void loanReachInit(LoanReach *r);
+void loanReachRoot(LoanReach *r, uint32_t var);
+void loanReachAdd(LoanReach *r, PathSet *set);
+
+int loanShapeLocal(uint32_t loan);
+int loanShapeReaches(uint32_t loan, const LoanReach *r);
+// The locals a loan that points only into locals points into (up to 3), else 0
+int loanShapeRootVars(uint32_t loan, VarDclNode **out);
 
 // A shape loan: the borrow a call returned carries this loan of a place reached
 // through a shared path that another holder may write by, into 'container', a

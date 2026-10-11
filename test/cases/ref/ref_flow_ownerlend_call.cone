@@ -1,14 +1,16 @@
 // An owner lent where a '&' or '&mut' is wanted is borrowed from, and so is
 // one lent as a method's 'self &' or 'self &mut' receiver: a 'So' owner is
-// 'uni', and a 'uni' source lent to one call twice is a conflict whether the
-// borrows are written ('both(&mut *a, &*a)') or made by the coercion. Each
-// function below holds no written borrow at all, so the gate must see the
-// implicit lend as it sees a written one: a '&mut' lend meeting a '&' one, two
-// '&mut' lends, a lend meeting a move, the receiver lent mutably beside an
-// argument lending or moving the same owner, a counted owner still 'uni', and
-// a field of a local and of a '&uni' parameter lent twice.
-// Lends one after another, two '&' lends to one call, and a receiver lent
-// mutably beside an argument that only reads it are allowed
+// 'uni', and a 'uni' source lent to one call twice is a conflict where one of
+// the lends needs the source unique, whether the borrows are written
+// ('mutAndMove(&mut *a, a)') or made by the coercion. Each function below
+// holds no written borrow at all, so the gate must see the implicit lend as it
+// sees a written one: a lend meeting a move, and the receiver lent mutably
+// beside an argument moving the same owner. A '&mut' lend beside a '&' or
+// another '&mut' one is no conflict, as through a shared path it never was (the
+// source is one more alias; ref_alias_mut_success runs them: a counted owner, a
+// field of a local and of a '&uni' parameter lent twice too, a receiver lent
+// mutably beside an argument that reads the same owner).
+// Lends one after another, and two '&' lends to one call, are allowed too
 // (ref_ownerlend_call runs them).
 //
 // One function per case, so that one borrow's conflict cannot stand in for
@@ -19,26 +21,9 @@ mod ref_flow_ownerlend_call;
 struct R {
   pub n i64;
   pub fn absorb(self &mut, o So[R]) { n = n + o.n; }
-  pub fn peekMut(self &mut, o &R) { n = n + o.n; }
 }
 
-struct H {
-  pub s So[R];
-}
-
-fn both(x &mut R, y &R) {}
-fn twoMut(x &mut R, y &mut R) {}
 fn mutAndMove(x &mut R, y So[R]) {}
-
-fn mutAndRead() {
-  imm a = new So[R](1);
-  both(a, a);                      //~ ErrorFrozen:11 "may not be borrowed"
-}
-
-fn mutTwice() {
-  imm a = new So[R](1);
-  twoMut(a, a);                    //~ ErrorFrozen:13 "may not be borrowed mutably"
-}
 
 fn mutThenMove() {
   imm a = new So[R](1);
@@ -48,25 +33,6 @@ fn mutThenMove() {
 fn receiverAndMove() {
   imm a = new So[R](1);
   a.absorb(a);                     //~ ErrorFrozen:12 "may not be moved"
-}
-
-fn receiverAndArgument() {
-  imm a = new So[R](1);
-  a.peekMut(a);                    //~ ErrorFrozen:3 "as the call's receiver"
-}
-
-fn countedOwner() {
-  imm a = new Rc[R](1);
-  both(a, a);                      //~ ErrorFrozen:11 "may not be borrowed"
-}
-
-fn localField() {
-  imm h = new H(new So[R](1));
-  both(h.s, h.s);                  //~ ErrorFrozen:14 "may not be borrowed"
-}
-
-fn uniParamField(h &uni H) {
-  both(h.s, h.s);                  //~ ErrorFrozen:14 "may not be borrowed"
 }
 
 fn main() {

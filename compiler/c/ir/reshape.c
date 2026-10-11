@@ -24,6 +24,8 @@ static int rcN;
 static unsigned rcBits;
 static INode *rcWant;
 static int rcWritable;
+static int rcLocalOnly;     // a value lent from a local: an owning virtual reference holds no borrow of one
+static int rcMode;          // what the kept answers are kept by: rcWritable and rcLocalOnly
 static int rcLow;           // the lowest stack position a struct below reached back to
 
 // What one struct reaches, kept: asked of nearly every call made while a borrow is
@@ -88,7 +90,9 @@ static void rcMemoPut(INode *st, INode *want, int writable, int ind, unsigned bi
     ++rcMemoUsed;
 }
 
-// 'ind': a reference or pointer has been passed through on the way
+// 'ind': bit 0, a reference or pointer has been passed through on the way; bit 1, the walk is
+// under a read-only view, through which nothing is written but by a reference beneath it
+// that is itself shared mutable
 static void rcWalk(INode *type, int ind) {
     if (type == NULL)
         return;
@@ -105,21 +109,36 @@ static void rcWalk(INode *type, int ind) {
     case VirtRefTag:
     {
         RefNode *ref = (RefNode *)type;
-        // A read-only reference cannot write what it reaches, however many others may
+        INode *perm = ref->perm == unknownType ? (INode *)roPerm : itypeGetTypeDcl(ref->perm);
+        // A read-only reference cannot write what it reaches, however many others may; but
+        // a 'mut' reference it reaches (a field of a struct it points at: 'Guard' holding a
+        // '&mut List') can be written through, and is followed
         if (rcWritable && ref->region && itypeGetTypeDcl(ref->region) == borrowRef) {
-            INode *perm = ref->perm == unknownType ? (INode *)roPerm : itypeGetTypeDcl(ref->perm);
-            if (perm == (INode *)roPerm || perm == (INode *)immPerm)
+            if (perm == (INode *)immPerm)
                 return;
+            if (perm == (INode *)roPerm) {
+                // Followed only for a borrow of this function's own storage, which a call reaches
+                // only through the borrows it is handed (reshapeCall's 'mine')
+                if (type->tag != VirtRefTag && rcLocalOnly)
+                    rcWalk(ref->vtexp, 1 | 2);
+                return;
+            }
         }
         if (type->tag == VirtRefTag) {
+            // An owning virtual reference holds only global borrows (it names no lifetime), so
+            // it cannot reach a local of this function
+            if (rcLocalOnly && ref->region && itypeGetTypeDcl(ref->region) != borrowRef)
+                return;
             rcBits |= ReachVirtual | ReachBorrowed;
             return;
         }
-        rcWalk(ref->vtexp, 1);
+        // A 'mut' reference beneath a read-only view can be written through
+        uint16_t pflags = perm && perm->tag == PermTag ? ((PermNode *)perm)->permflags : 0;
+        rcWalk(ref->vtexp, 1 | ((ind & 2) && !(pflags & MayAliasWrite) ? 2 : 0));
         return;
     }
     case PtrTag:
-        rcWalk(((StarNode *)type)->vtexp, 1);
+        rcWalk(((StarNode *)type)->vtexp, 1 | (ind & 2));
         return;
     case ArrayTag:
         rcWalk(arrayElemType(type), ind);
@@ -135,10 +154,12 @@ static void rcWalk(INode *type, int ind) {
     case StructTag:
     {
         if (type == rcWant) {
-            rcBits |= ind ? ReachBorrowed : ReachContained;
+            // Under a read-only view it is reached and not written
+            if (!(ind & 2))
+                rcBits |= (ind & 1) ? ReachBorrowed : ReachContained;
             return;
         }
-        RcMemo *kept = rcMemoFind(type, rcWant, rcWritable, ind);
+        RcMemo *kept = rcMemoFind(type, rcWant, rcMode, ind);
         if (kept) {
             rcBits |= kept->bits;
             return;
@@ -180,7 +201,7 @@ static void rcWalk(INode *type, int ind) {
         rcOnStack[at] = 0;
         // Settled when nothing it walked leans on a struct above it
         if (rcLow >= at && (type->flags & TypeChecked))
-            rcMemoPut(type, rcWant, rcWritable, ind, rcBits);
+            rcMemoPut(type, rcWant, rcMode, ind, rcBits);
         rcBits |= outer;
         rcLow = rcLow < outerLow ? rcLow : outerLow;
         return;
@@ -190,14 +211,20 @@ static void rcWalk(INode *type, int ind) {
     }
 }
 
-unsigned reshapeReach(INode *type, INode *cont, int writable) {
+static unsigned reshapeReachMode(INode *type, INode *cont, int writable, int local) {
     rcN = 0;
     rcBits = 0;
     rcLow = RcSeenCap;
     rcWant = cont;
     rcWritable = writable;
+    rcLocalOnly = local;
+    rcMode = (writable ? 1 : 0) | (local ? 2 : 0);
     rcWalk(type, 0);
     return rcBits;
+}
+
+unsigned reshapeReach(INode *type, INode *cont, int writable) {
+    return reshapeReachMode(type, cont, writable, 0);
 }
 
 // ---- Globals -----------------------------------------------------------------------
@@ -254,7 +281,8 @@ int reshapeGlobalsReach(INode *cont) {
 
 // ---- Values the function owns whole ---------------------------------------------
 
-int reshapeUniqueLocal(INode *e) {
+// The local a place is of, when it is one this function owns whole, else NULL
+static VarDclNode *reshapeLocalRoot(INode *e) {
     for (;;) {
         if (e->tag == CastTag && !(e->flags & FlagConvert))
             e = ((CastNode *)e)->exp;
@@ -267,9 +295,24 @@ int reshapeUniqueLocal(INode *e) {
     }
     VarDclNode *var = siNamedVar(e);
     if (!var || var->scope == 0 || (var->flags & FlagStatic))
-        return 0;
+        return NULL;
     INode *t = iexpGetTypeDcl(e);
-    return t->tag != RefTag && t->tag != ArrayRefTag && t->tag != VirtRefTag && t->tag != PtrTag;
+    return t->tag != RefTag && t->tag != ArrayRefTag && t->tag != VirtRefTag && t->tag != PtrTag ? var : NULL;
+}
+
+int reshapeUniqueLocal(INode *e) {
+    return reshapeLocalRoot(e) != NULL;
+}
+
+// The same, but not one of the locals 'mine' (n of them): a local a loan points into has
+// other names, the loan's own borrow among them
+static int reshapeUniqueLocalExcept(INode *e, VarDclNode **mine, int n) {
+    VarDclNode *var = reshapeLocalRoot(e);
+    for (int i = 0; var && i < n; ++i) {
+        if (mine[i] == var)
+            return 0;
+    }
+    return var != NULL;
 }
 
 // ---- A store ---------------------------------------------------------------------
@@ -345,7 +388,8 @@ static INode *reshapeParmType(FnDclNode *callee, uint32_t k, INode *arg) {
     return iexpGetTypeDcl(arg);
 }
 
-int reshapeCall(FnCallNode *call, FnDclNode *meth, int recvunique, INode *cont, ReshapeVerdict *verdict) {
+int reshapeCall(FnCallNode *call, FnDclNode *meth, int recvunique, INode *cont, ReshapeVerdict *verdict,
+        VarDclNode **mine, int nmine) {
     INode *fnn = call->objfn;
     FnDclNode *callee = isNameUseNode(fnn) && ((NameUseNode *)fnn)->dclnode && ((NameUseNode *)fnn)->dclnode->tag == FnDclTag
         ? (FnDclNode *)((NameUseNode *)fnn)->dclnode : NULL;
@@ -365,7 +409,10 @@ int reshapeCall(FnCallNode *call, FnDclNode *meth, int recvunique, INode *cont, 
     int capable = 0;
     for (uint32_t k = 0; k < nargs && !capable; ++k) {
         INode *t = iexpGetTypeDcl(nodesGet(call->args, k));
+        // A read-only reference to a value holding borrows can write through a 'mut' one it holds
+        INode *pointee = nmine > 0 && (t->tag == RefTag || t->tag == ArrayRefTag) ? itypeGetTypeDcl(((RefNode *)t)->vtexp) : NULL;
         capable = ((t->tag == RefTag || t->tag == ArrayRefTag) && (permGetFlags(((RefNode *)t)->perm) & MayWrite))
+            || (pointee && pointee->tag == StructTag && ((StructNode *)pointee)->carriesborrow != CarriesBorrowNo)
             || (t->tag == StructTag && ((StructNode *)t)->carriesborrow != CarriesBorrowNo)
             || t->tag == PtrTag || t->tag == VirtRefTag;
     }
@@ -409,17 +456,20 @@ int reshapeCall(FnCallNode *call, FnDclNode *meth, int recvunique, INode *cont, 
             ba = ((CastNode *)ba)->exp;
         INode *wt = reshapeParmType(callee, k, arg);
         unsigned bits;
-        if (ba->tag == BorrowTag && at->tag == RefTag && reshapeUniqueLocal(((RefNode *)ba)->vtexp)) {
-            // The callee may write what the borrow lends only if its parameter says so
+        if (ba->tag == BorrowTag && at->tag == RefTag
+                && reshapeUniqueLocalExcept(((RefNode *)ba)->vtexp, mine, nmine)) {
+            // The callee may write what the borrow lends only if its parameter says so: a
+            // read-only one, through what the local holds by a 'mut' reference
             INode *wp = wt->tag == RefTag ? (((RefNode *)wt)->perm == unknownType ? (INode *)roPerm
                 : itypeGetTypeDcl(((RefNode *)wt)->perm)) : NULL;
-            bits = (wp == (INode *)roPerm || wp == (INode *)immPerm) ? 0
-                : reshapeReach(((RefNode *)at)->vtexp, cont, 1) & (ReachBorrowed | ReachVirtual);
+            bits = wp == (INode *)immPerm ? 0
+                : wp == (INode *)roPerm ? (nmine > 0 ? reshapeReachMode(wt, cont, 1, 1) & (ReachBorrowed | ReachVirtual) : 0)
+                : reshapeReachMode(((RefNode *)at)->vtexp, cont, 1, nmine > 0) & (ReachBorrowed | ReachVirtual);
         }
         else if (at->tag != RefTag && at->tag != ArrayRefTag && at->tag != VirtRefTag && at->tag != PtrTag)
-            bits = reshapeReach(wt, cont, 1) & (ReachBorrowed | ReachVirtual);
+            bits = reshapeReachMode(wt, cont, 1, nmine > 0) & (ReachBorrowed | ReachVirtual);
         else
-            bits = reshapeReach(wt, cont, 1);
+            bits = reshapeReachMode(wt, cont, 1, nmine > 0);
         if (bits)
             writable = 1;
     }

@@ -1,21 +1,37 @@
-// What a '&uni' parameter points at is reached as 'uni': a mutable borrow of
-// it freezes it entirely, so writing through the parameter while the borrow
-// is still to be used is refused. This is Rust's '&mut' exclusivity, which in
-// Cone is '&uni', not '&mut'.
+// What a '&uni' parameter points at is reached as 'uni', and a mutable borrow
+// of it ('mut') is an alias loan: the parameter is written while the borrow is
+// still to be used, and the borrow's write follows. What it still forbids is
+// lending the parameter '&uni' or '&imm', moving it or ending it
+// (ref_flow_freeze, ref_flow_unireborrow).
 //
-// Verdict: refuse, ErrorFrozen at the write.
-// Basis: refborref.html, "Freezing access to the source of a borrow" (a
-// source reached as uni -- "what a uni reference points at"); language rule
-// (26 Sep 2026): Rust's '&mut' is Cone's '&uni'.
-// Rust: 'fn f(p: &mut i64) { let a = &mut *p; *p = 7; *a = 1; }' is refused
-// (E0506; by reading, not run).
-// Master d331baab: correct.
+// Verdict: accept; prints 1 (the write through the borrow comes last). (Refused,
+// ErrorFrozen at the write, until 11 Oct 2026.)
+// Basis: language rule (11 Oct 2026) -- locals lend several '&mut', as
+// parameters already do, including what a '&uni' reference points at; the
+// ruling's rule names it. Rust's '&mut' is Cone's '&uni' and its exclusivity
+// is the '&uni' borrow's: 'fn f(p: &mut i64) { let a = &mut *p; *p = 7; *a = 1; }'
+// is refused (E0506; by reading, not run); here the borrow is Cone's '&mut'.
+// Master cb9e00ea: refused.
 
 mod lifetime_free_uni_param_frozen;
 
+import stdio use *;
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
 fn f(p &uni i64) i64 {
   imm a = &mut *p;
-  *p = 7;                    //~ ErrorFrozen
+  *p = 7;
   *a = 1;
   *p;
+}
+
+fn main() {
+  imm o = new So[i64](0);
+  show("uni-param-write-beside-borrow", f(o));
 }

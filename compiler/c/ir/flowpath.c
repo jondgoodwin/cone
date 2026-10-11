@@ -1753,13 +1753,53 @@ static int pwHeldExcluding(Place *pl, int sharedok) {
     return 1;
 }
 
-static void pwShapeBorrow(Place *recvpl, uint32_t recvloan, INode *container) {
+static int pwShapeBorrow(Place *recvpl, uint32_t recvloan, INode *container) {
     VarDclNode *rv = pathVars[recvpl->var].var;
     INode *rt = rv ? itypeGetTypeDcl(rv->vtype) : NULL;
     int frozen = recvpl->deref && !recvpl->owned && rt && rt->tag == RefTag
         && (pwHeldExcluding(recvpl, 0) || (!(permGetFlags(((RefNode *)rt)->perm) & MayWrite) && pwHeldExcluding(recvpl, 1)));
     if (!frozen)
         loanShapeMark(recvloan, container);
+    // Frozen because the reference holds a 'mut' borrow of a 'uni' source and nothing else
+    // reaches the source yet: marked when something does
+    else if (loanHoldsUniqAlias(pathVars[recvpl->var].holds))
+        loanShapeLazy(recvloan, container);
+    return !frozen;
+}
+
+// The borrow a call returned out of a container that changes shape, carrying the loan
+// 'loan' of the place 'pl' (a method's receiver, or a reference a free function was
+// handed): the place is frozen against a change through the same name
+// (loanFreezeShared), and the loan marked for the shape check, which asks of every
+// later call whether it could reshape the container through another name. Marked where
+// others may write by the path (a shared one), and where the source is reached as 'uni'
+// but is lent by a 'mut' borrow (an alias loan), or a 'mut' borrow of it is held beside
+// this one. Where it is not marked, a borrow that writes freezes the place entirely.
+static void pwShapeLent(Place *pl, uint32_t loan, INode *container, int ofarg) {
+    int marked = 0;
+    if (pl->shwrite)
+        marked = pwShapeBorrow(pl, loan, container);
+    else if (!pl->shared) {
+        // A source no other name reaches yet is frozen as it always was: marked once one does
+        // (loanAliasMet). A reference a free function was handed is a borrow of the collection
+        // itself more often than into it (a generator over a '&mut List'), which the callee
+        // using its own borrow must be let reshape: only a method's receiver is followed so
+        if (loanAliasedAt(pl) || loanIsAliased(loan)) {
+            loanShapeMark(loan, container);
+            marked = 1;
+        }
+        else if (loanUniqAlias(loan) && !ofarg) {
+            loanShapeLazy(loan, container);
+            marked = 1;
+        }
+    }
+    // Followed by the shape check, a borrow through a shared path is an alias loan whether it
+    // writes or not: the path stays readable, lendable and writable, a change of its shape
+    // being what is refused. Not followed, it freezes the path as a local's loan does
+    if (!marked) {
+        loanFreezeShared(loan);
+        loanFreezeWritable(loan);
+    }
 }
 
 // A call is made. Each marked loan is asked whether the call could reshape the
@@ -1768,21 +1808,47 @@ static void pwShapeBorrow(Place *recvpl, uint32_t recvloan, INode *container) {
 // each variable holding it, fired when that variable is used again. The answer is
 // the same for the loans of one type, so it is worked out once.
 static void pwShapeCall(FnCallNode *call, FnDclNode *meth, Place *recvpl, PathSet **argsets, uint32_t nargs,
-        uint32_t recvloan) {
+        uint32_t recvloan, PathSet *fnholds) {
     // No other name reaches the receiver: a local, a place reached through 'uni'
     // references only, or through a reference that holds only the exclusive
     // borrow of such a place (the temporary an operator changing its operand in
     // place borrows it through: 'text <- a, b')
     int recvunique = recvpl && !recvpl->owned && (!recvpl->shared || (recvpl->deref && pwHeldExcluding(recvpl, 0)));
+    // What the call can reach of the function's own storage, and what its receiver can. A
+    // 'mut' borrow of a local is an alias loan, so the local has other names (the source by
+    // name, another borrow), but only ones the call is handed: a loan that points only into
+    // locals is reached only by a call that reaches one of them.
+    LoanReach reach;
+    LoanReach recvreach;
+    loanReachInit(&reach);
+    loanReachInit(&recvreach);
+    loanReachAdd(&reach, fnholds);
+    for (uint32_t j = 0; j < nargs; ++j)
+        loanReachAdd(&reach, argsets[j]);
+    if (meth && nargs > 0)
+        loanReachAdd(&recvreach, argsets[0]);
     INode *conts[4];
+    int rus[4];
     ReshapeVerdict verdicts[4];
     uint8_t answers[4];
     uint32_t ncont = 0;
     for (uint32_t i = 0; i < loanShapeCount(); ++i) {
         uint32_t loan = loanShapeId(i);
         INode *cont = loanShapeContainer(loan);
+        int local = loanShapeLocal(loan);
+        if (local && !loanShapeReaches(loan, &reach))
+            continue;
+        // Is the receiver another name for what this loan points into? A local lent by a
+        // 'mut' borrow has the name it was declared by
+        int ru = recvunique;
+        if (local && meth && loanShapeReaches(loan, &recvreach))
+            ru = 0;
+        VarDclNode *mine[3];
+        int nmine = local ? loanShapeRootVars(loan, mine) : 0;
         uint32_t c = 0;
-        while (c < ncont && conts[c] != cont)
+        // The answer is the same for the loans of one type, unless the loan's own locals
+        // change what it is
+        while (c < ncont && (conts[c] != cont || rus[c] != ru || local))
             ++c;
         if (c == ncont) {
             if (ncont == 4) {
@@ -1791,8 +1857,9 @@ static void pwShapeCall(FnCallNode *call, FnDclNode *meth, Place *recvpl, PathSe
                 ncont = 3;
             }
             conts[c] = cont;
+            rus[c] = ru;
             uint32_t unsettled = shapeUnsettled;
-            answers[c] = (uint8_t)reshapeCall(call, meth, recvunique, cont, &verdicts[c]);
+            answers[c] = (uint8_t)reshapeCall(call, meth, ru, cont, &verdicts[c], mine, nmine);
             // A body this leans on is not checked yet: the verdict waits for the
             // walk made again at the end of type check
             if (shapeUnsettled != unsettled && !flowWalkFinal) {
@@ -1800,6 +1867,8 @@ static void pwShapeCall(FnCallNode *call, FnDclNode *meth, Place *recvpl, PathSe
                 answers[c] = 0;
             }
             ncont = c + 1;
+            if (local)
+                rus[c] = -1;        // not kept for another loan
         }
         if (!answers[c])
             continue;
@@ -1862,10 +1931,26 @@ static PathSet *pwNarrowShared(CastNode *cast) {
 // that diverges from it is another value; a store by a name the walk cannot tell from
 // the loan's is taken to be another
 static void pwShapeStore(INode *lval, Place *pl) {
-    if (reshapeUniqueLocal(lval))
-        return;
+    // A local stored over has no other name -- but for a loan that points into it, which a
+    // 'mut' borrow of it is (it is an alias loan: the local is not frozen against a store)
+    int unique = reshapeUniqueLocal(lval);
+    LoanReach reach;
+    loanReachInit(&reach);
+    if (pl) {
+        // What a 'uni' reference points at is reached by that reference and nothing else
+        if (pl->deref && pl->shared)
+            loanReachAdd(&reach, pathVars[pl->var].holds);
+        else
+            loanReachRoot(&reach, pl->var);
+    }
     for (uint32_t i = 0; i < loanShapeCount(); ++i) {
         uint32_t loan = loanShapeId(i);
+        int local = loanShapeLocal(loan);
+        if (unique && !(local && pl && loanShapeReaches(loan, &reach)))
+            continue;
+        // A store that reaches only other locals cannot change what the loan points into
+        if (local && pl && !loanShapeReaches(loan, &reach))
+            continue;
         if (!reshapeStoreHits(lval, loanShapeContainer(loan)))
             continue;
         if (pl && (loanShapeDisjoint(loan, pl) || (loanShapeFrozen(loan) && loanShapeSamePlace(loan, pl))))
@@ -1894,8 +1979,10 @@ static void pwShapeStore(INode *lval, Place *pl) {
 // replacing or ending it.
 static PathSet *pwCall(FnCallNode *call) {
     INode *objfn = call->objfn;
+    // What a function value called holds, a closure's borrows, is reached by the call too
+    PathSet *fnholds = NULL;
     if (pwNamedVar(objfn) || objfn->tag == DerefTag || objfn->tag == FldAccessTag)
-        pwValue(&call->objfn, 0);
+        fnholds = pwValue(&call->objfn, 0);
     FnDclNode *meth = pwMethod(call);
     FnSigNode *sig = pwNamedSig(call);
     int carries = pwCarries(call->vtype);
@@ -1968,7 +2055,7 @@ static PathSet *pwCall(FnCallNode *call) {
         pwCallStores(call, argsets, recvloan ? &recvpl : NULL);
         pwCallMoves(call, sig, recvloan ? &recvpl : NULL);
         if (loanShapeCount())
-            pwShapeCall(call, meth, recvloan ? &recvpl : NULL, argsets, nargs, recvloan);
+            pwShapeCall(call, meth, recvloan ? &recvpl : NULL, argsets, nargs, recvloan, fnholds);
     }
     if (!carries)
         return NULL;
@@ -2002,11 +2089,8 @@ static PathSet *pwCall(FnCallNode *call) {
         if (recvloan && pathSetHasLoan(fromrecv, recvloan)) {
             INode *recvtype = iexpGetTypeDcl(nodesGet(call->args, 0));
             INode *container = recvtype->tag == RefTag ? itypeGetTypeDcl(((RefNode *)recvtype)->vtexp) : NULL;
-            if (container && container->tag == StructTag && shapeChanging((StructNode *)container)) {
-                loanFreezeShared(recvloan);
-                if (recvpl.shwrite)
-                    pwShapeBorrow(&recvpl, recvloan, container);
-            }
+            if (container && container->tag == StructTag && shapeChanging((StructNode *)container))
+                pwShapeLent(&recvpl, recvloan, container, 0);
         }
         result = pathSetUnion(result, fromrecv);
     }
@@ -2016,11 +2100,8 @@ static PathSet *pwCall(FnCallNode *call) {
     // through another name is asked of every call made meanwhile
     for (uint32_t i = 0; i < nargs && i < 8; ++i) {
         if (lentloan[i] && argsets[i] != &pathSetAll
-                && pathSetHasLoan(pwArgCarries(sig, i, rettype, argsets[i]), lentloan[i])) {
-            loanFreezeShared(lentloan[i]);
-            if (lentpl[i].shwrite)
-                pwShapeBorrow(&lentpl[i], lentloan[i], (INode *)lentcnt[i]);
-        }
+                && pathSetHasLoan(pwArgCarries(sig, i, rettype, argsets[i]), lentloan[i]))
+            pwShapeLent(&lentpl[i], lentloan[i], (INode *)lentcnt[i], 1);
     }
     // What the result's borrows point at may be anything its arguments reach
     // ('h.r' returned from '&h'): every loan both near and far, and of no
@@ -2041,6 +2122,8 @@ static void pwStore(INode **lvalp, PathSet *holds, INode **rvalp) {
         Place pl = { index, 0, 0 };
         pwStoreEscapes(*lvalp, &pl, holds, rvalp ? *rvalp : NULL);
         pwAccess(&pl, itypeNeedsFinal(var->vtype) ? AccessReplace : AccessWrite, *lvalp);
+        if (pathLoans && loanShapeCount())
+            pwShapeStore(*lvalp, &pl);
         if (pathVars[index].holder) {
             pwHolderDies(index);
             pathSetFacts(index, pathSetWithoutThrough(holds, index), NULL);
@@ -2170,10 +2253,8 @@ static void pwSwap(SwapNode *node) {
     // A side that is not a local named whole is stored over: through another name, it
     // could reshape a value a borrow is into
     if (pathLoans && loanShapeCount()) {
-        for (int i = 0; i < 2; ++i) {
-            if (!whole[i])
-                pwShapeStore(*sides[i], found[i] ? &places[i] : NULL);
-        }
+        for (int i = 0; i < 2; ++i)
+            pwShapeStore(*sides[i], found[i] ? &places[i] : NULL);
     }
     // Each side is a store of the other's value. A side that is part of a
     // holder ('h.r', 'a[1]', 'g.h.r') is stored into as pwStore stores into

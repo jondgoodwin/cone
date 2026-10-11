@@ -55,15 +55,19 @@
 			allowed, and refused only if something could reshape the collection while the borrow is
 			still to be used. That has two parts, and both are enforced.
 			(a) A change through the same name is refused: a borrow a method of the collection, or a
-			free function handed a reference to it, returns (an element, a cursor, a view) freezes
-			the path the collection was reached
-			through, as it freezes a local, while the borrow is still to be used. The path may be read
-			and borrowed read-only again, but not pushed onto, grown or lent mutably:
+			free function handed a reference to it, returns (an element, a cursor, a view) is an alias
+			loan of the path the collection was reached
+			through, while the borrow is still to be used. The path may be read, lent and written,
+			but its shape not changed, by a push, a clear or a store over it:
 			<span class="pre">fn f(l &amp;mut List[Pt], p Pt) { imm e = l[0usize]; l.push(p); e.x; }</span>
 			is refused at the push, as is a cursor
 			(<span class="pre">mut it = dq.items(); dq.push(9); it.next();</span>) and the same through a
 			field of <span class="pre">self</span>
 			(<span class="pre">imm e = items[0usize]; items.push(p); e.x;</span>).
+			A borrow that may write (<span class="pre">&amp;mut l[0usize]</span>, <span class="pre">l.viewMut()</span>) is an
+			alias loan the same way, and so is a read-only one: either lets the path be read, lent again
+			and written, and refuses only a change of its shape, by the same name or another.
+			(A read-only borrow of a local, which no other name reaches, freezes it against changes.)
 			(b) A change through another name, or a call that might make one, is refused too:
 			another, different reference to the same collection, or a call that could make one,
 			leaves the element dangling. The compiler asks of every call made while such a borrow is
@@ -415,16 +419,25 @@ p.count;                     // but refused here: the owner died with the statem
 	<p>A source reached as <a href="refperm.html#uni"><span class="pre">uni</span></a> &mdash;
 		a local variable, which the stack alone owns, a field of one,
 		or what a <span class="pre">uni</span> reference points at &mdash;
-		has no other reference to it, so the borrow may be given more than
-		the source can share, and the source waits until it is given back
+		has no other reference to it, so a borrow that promises it unique or unchanging may be given more
+		than the source can share, and the source waits until it is given back
 		(see <a href="refperm.html">"From 'uni'"</a>):</p>
 	<ul>
 	<li>While a <b>read-only</b> borrow (<span class="pre">&amp;</span>, <span class="pre">&amp;ro</span>,
 		<span class="pre">&amp;imm</span>) is still to be used, its source may be read,
 		and borrowed read-only again, but not changed, moved, or ended.</li>
-	<li>While a <b>mutable</b> borrow (<span class="pre">&amp;mut</span>, <span class="pre">&amp;uni</span>,
-		<span class="pre">&amp;mut1</span>) is still to be used, its source may not be touched at all
+	<li>While an <b>exclusive</b> borrow (<span class="pre">&amp;uni</span>, <span class="pre">&amp;mut1</span>)
+		is still to be used, its source may not be touched at all
 		except through the borrow: it may not be read, borrowed, changed, moved, or ended.</li>
+	<li>A <b>mutable</b> borrow (<span class="pre">&amp;mut</span>) is an <i>alias</i> loan, as a borrow of a
+		source reached through a shared path is (below): <span class="pre">mut</span> is shared mutable, so the source
+		may be read, changed, and borrowed again while the borrow is still to be used, as one more alias
+		of the value, and any number of <span class="pre">&amp;mut</span> borrows of it may be held at once, in one
+		call, in locals and in structs. What the source cannot give while another reference may change it is
+		refused: moving it, sending it, lending it <span class="pre">&amp;uni</span> or <span class="pre">&amp;imm</span>,
+		ending it, replacing it whole (its old value finalized). A change of its <i>shape</i> &mdash; a collection
+		reshaped, an enum given another variant &mdash; while a borrow into it is still to be used is
+		refused too, by the rule for shape-changing values below.</li>
 	<li>An <span class="pre">&amp;opaq</span> borrow, which reads and writes nothing,
 		only keeps its source from being moved, replaced whole, or ended.</li>
 	</ul>
@@ -476,11 +489,20 @@ fn freeze(n i32) i32 {
   mut k = n;
   imm r = &amp;mut k;
   *r = 5;
-  imm m = k;         // Ok: r is not used again, so k is no longer frozen
+  imm m = k;         // Ok: r is not used again (and a read would be let through beside it)
   imm s = &amp;k;
   imm t = k;         // Ok: a read-only borrow still lets k be read
   k = 6;             // Error: s is used again below, and may not see k change
   *s + m + t;
+}
+
+fn aliases(n i32) i32 {
+  mut k = n;
+  imm a = &amp;mut k;
+  imm b = &amp;mut k;    // Ok: a 'mut' borrow of a local is an alias loan, so several may be held
+  *a = 5;
+  k = *b + 1;        // Ok: k is one more alias of the value
+  *a + *b;
 }
 </pre>
 	<p>Borrowing one field of a struct freezes that field, and the whole struct with it,
@@ -499,7 +521,8 @@ fn freeze(n i32) i32 {
 		holds while it is still to be used: the enum stored over whole or swapped, through the same name
 		or another, or handed to a call whose body (or what it calls) does either, or whose body the
 		compiler cannot read. Writing a field within the variant, by the binding or by the enum's
-		name, or a field the variants share, is not a change. A borrow of a local is frozen, as above,
+		name, or a field the variants share, is not a change. A <span class="pre">&amp;mut</span> borrow of a
+		local is an alias loan and is asked the same; a read-only borrow of a local is frozen, as above,
 		and a <span class="pre">uni</span>, <span class="pre">imm</span> or <span class="pre">mut1</span>
 		reference has no other name to change it, so neither is asked. A name narrowed by a test,
 		<span class="pre">if s is Circle</span>, is followed the same way (<a href="refmatch.html#flow">flow typing</a>).
@@ -527,13 +550,21 @@ imm n = list.len();            // Ok: list may still be read
 list.push(new Point(3, 4));    // Error: first is used again below
 first.x;
 </pre>
-	<p>A method returning a mutable borrow freezes its receiver entirely while the borrow is used.</p>
+	<p>A method returning a mutable borrow (<span class="pre">&amp;mut list[0usize]</span>, <span class="pre">list.viewMut()</span>)
+		holds an alias loan on its receiver: the receiver may be read, lent again and written while the borrow is used,
+		and a change of its shape &mdash; a push, which may move what the borrow points into &mdash; is what is refused.
+		A struct that wraps a collection (a method of it lends an element) is held the same way, except that a
+		change to the collection inside it through the struct's own field (<span class="pre">w.entities.push(x)</span>)
+		is refused where the loan is, as it always was: the shape check asks about the struct, and a push to
+		what it holds is not a change of the struct's shape.</p>
 	<p>The arguments of one call are all used by it, so none may touch what an earlier one
-		borrowed in a way that borrow forbids: <span class="pre">f(&amp;mut v, v.len())</span>
-		is an error. The borrow a method call makes of its receiver is the exception when it
-		is mutable: it waits for the call, meeting the arguments as a read-only borrow would,
+		borrowed in a way that borrow forbids: <span class="pre">f(&amp;uni v, v.len())</span>
+		is an error, while two <span class="pre">&amp;mut</span> (or a <span class="pre">&amp;mut</span> and a
+		<span class="pre">&amp;</span>) of one source in one call are not: <span class="pre">f(&amp;mut v, &amp;mut v)</span>,
+		<span class="pre">step(&amp;w, &amp;mut w.entities[0usize])</span>. The borrow a method call makes of its receiver is
+		mutable and waits for the call, meeting the arguments as a read-only borrow would,
 		so <span class="pre">v.push(v.len())</span> reads <span class="pre">v</span> first and then
-		pushes, while <span class="pre">v.push(takeLast(&amp;mut v))</span> is an error.</p>
+		pushes, as does <span class="pre">v.push(takeLast(&amp;mut v))</span>, which works the argument out before the push.</p>
 	<p>A container may declare that the borrows it hands out need no loan on it, because it
 		never moves what it lent. An arena's allocations are fresh and stay where they are, so
 		the arena declares <span class="pre">NoLoanMut</span>: while an allocation is used, the arena

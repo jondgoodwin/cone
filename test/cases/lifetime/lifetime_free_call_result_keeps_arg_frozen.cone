@@ -1,19 +1,35 @@
-// A borrow returned by a call is a borrow of what the call was handed: while
-// it is still to be used, the argument's source stays frozen.
+// A borrow returned by a call is a borrow of what the call was handed. Handed
+// a 'mut' borrow of a local, an alias loan, it keeps the argument's source
+// alive but lets it be written meanwhile; the returned borrow sees the write.
 //
-// Verdict: refuse, ErrorFrozen at the change.
-// Basis: refborref.html, "A borrow a method returns" ("the returned borrow
-// keeps each borrowed argument frozen, as if it were that borrow itself");
-// reflifefn.html's status note.
-// Master d331baab: correct.
+// Verdict: accept; prints 24 (the borrow read 2 after the write by name, then
+// wrote 4 itself). (Refused, ErrorFrozen at the write, until 11 Oct 2026.)
+// Basis: language rule (11 Oct 2026) -- locals lend several '&mut', as
+// parameters already do; refborref.html, "A borrow a method returns".
+// Master cb9e00ea: refused.
 
 mod lifetime_free_call_result_keeps_arg_frozen;
+
+import stdio use *;
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
 
 fn same(x &mut i64) &mut i64 { x; }
 
 fn f() i64 {
   mut k = 1i64;
   imm r = same(&mut k);
-  k = 2;                     //~ ErrorFrozen
-  *r;
+  k = 2;
+  imm seen = *r;
+  *r = 4;
+  seen * 10 + k;
+}
+
+fn main() {
+  show("write-beside-returned-borrow", f());
 }

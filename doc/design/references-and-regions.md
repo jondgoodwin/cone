@@ -492,7 +492,7 @@ gap:
 | a moved-out value may not be used | `nameuseFlow` | **flow** |
 | a borrow may not outlive what it points at | `assignlvalrtype` and `swapFlow` (one check, `assignBorrowLifetimeCheck`), `returnFlowEscape`; the loan walk for what a call may store (`pwCallStores`) and for a variable that follows what it holds | **flow** |
 | a call's returned borrow lives as long as the narrowest borrow it was handed | `fnCallFinalizeArgs`, on a reference node of the call's own — or on the borrowed elements of a tuple of its own, where the call returns several values | type check |
-| freezing a borrow's source, and so aliasing of borrows: a borrow held in a local freezes its source until the borrow's last use | the loan walk, `loanAccess` and `loanUse` (`ErrorFrozen`) | **flow**, for a borrow held in a local, bare or inside a struct, `Option`, array or list the local holds, one a call returned included (it borrows every argument; a `NoLoanMut` container only its life), and between a call's arguments (`loanFlightAccess`, a receiver two-phase) |
+| freezing a borrow's source, and so aliasing of borrows: a borrow held in a local freezes its source until the borrow's last use (a `mut` borrow, an alias loan, only against what needs the source unique, and a change of shape) | the loan walk, `loanAccess` and `loanUse` (`ErrorFrozen`) | **flow**, for a borrow held in a local, bare or inside a struct, `Option`, array or list the local holds, one a call returned included (it borrows every argument; a `NoLoanMut` container only its life), and between a call's arguments (`loanFlightAccess`, a receiver two-phase) |
 
 ## Hazards
 

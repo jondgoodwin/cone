@@ -1,23 +1,39 @@
-// Problem case #1 with the borrow used again after the push: the source is
-// still frozen at the push.
+// Problem case #1 with the borrow used again after the push: 'slice' is a
+// borrow of the list itself, whose header a push through the list's name
+// updates in place, so the borrow is still good after it. (An element borrow is
+// not: collection_flow_freeze refuses a push while one is used.)
 //
-// Verdict: refuse, ErrorFrozen at the push.
-// Basis: borrow-freezing rule (26 Sep 2026) -- while a mutable borrow is
-// still to be used, the source may not be touched except through it.
-// Rust: the same program with 'capitalize(slice)' after the push is refused
-// (E0499; by the RFC's reasoning, not run).
-// Master d331baab: correct.
+// Verdict: accept; prints 232 (the list holds 2, 3 and 2). (Refused,
+// ErrorFrozen at the push, until 11 Oct 2026.)
+// Basis: language rule (11 Oct 2026) -- locals lend several '&mut', as
+// parameters already do: the same program with 'data' a '&mut' parameter always
+// compiled. Rust: the program is refused (E0499; by the RFC's reasoning, not
+// run), which is the '&uni' case, not this one.
+// Master cb9e00ea: refused.
 
 mod lifetime_free_nll1_used_after_push;
 
+import stdio use *;
 import collections use *;
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
 
 fn capitalize(l &mut List[i64]) { l.push(2); }
 
-fn f() {
+fn f() i64 {
   mut data = List[i64].empty();
   imm slice = &mut data;
   capitalize(slice);
-  data.push(3);              //~ ErrorFrozen
+  data.push(3);
   capitalize(slice);
+  *data[0usize] * 100 + *data[1usize] * 10 + *data[2usize];
+}
+
+fn main() {
+  show("list-borrow-after-push", f());
 }

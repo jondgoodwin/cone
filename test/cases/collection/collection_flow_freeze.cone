@@ -1,21 +1,24 @@
 // A borrow a method returns keeps the method's receiver loaned while it is
 // used, the Rust way: 'list[0usize]' borrows 'list' read-only, so while the
 // element is still to be used the list may be read but not changed -- a push
-// may move every element -- and a method returning a mutable borrow freezes
-// its receiver entirely: while the slice 'viewMut' lends is still to be used,
-// the list may not be pushed onto, lent again by 'viewMut', or read through
-// 'view' (a write through the slice is collections' own 'list' test). A call's arguments are in flight until it is made: an
-// argument may not touch what an earlier one borrowed in a way that borrow
-// forbids, except that a method receiver's mutable borrow is two-phase and
-// meets the arguments as a read-only borrow would ('v.push(v.len())' is
-// collection_freeze_success). Each error is reported at the touch.
+// may move every element. A method returning a mutable borrow ('viewMut', a
+// mutable element) is an alias loan, as any 'mut' borrow of a local is
+// (collection_freeze_success runs what it lets through: the list read, lent
+// again and viewed beside it); what it forbids is a change of shape, a push
+// that may move the storage the slice points into, which the shape check
+// refuses (ErrorShapeReshape), as it does through a shared path. A call's
+// arguments are in flight until it is made: an argument may not touch what an
+// earlier one borrowed in a way that borrow forbids, and a method receiver's
+// mutable borrow is two-phase and meets the arguments as a read-only borrow
+// would ('v.push(v.len())' is collection_freeze_success). Each error is
+// reported at the touch.
 //
 // A collection reached as 'uni' -- a local, a field of one -- is loaned this
-// way against every other access; one reached through a shared path freezes only
-// that same path (collection_flow_freeze_shared), and a change through another
-// name for it, or a call that might make one, is refused too
-// (collection_flow_reshape, collection_flow_reshape_owners: two '&mut'
-// parameters, a field of 'self' and another reference to the whole, a
+// way against every other access a read-only borrow forbids; one reached through
+// a shared path freezes only that same path (collection_flow_freeze_shared), and
+// a change through another name for it, or a call that might make one, is
+// refused too (collection_flow_reshape, collection_flow_reshape_owners: two
+// '&mut' parameters, a field of 'self' and another reference to the whole, a
 // 'Rc[mut, T]' owner and a copy, a collection allocated in an arena and held by
 // name, a reference made from a pointer). List, Deque, String, Dict and Pool
 // declare 'ShapeChanging', the marker those checks read.
@@ -27,12 +30,6 @@ import pool use *;
 
 struct Pt { pub x i64; pub y i64; }
 
-// A plain struct whose method lends a mutable borrow of its field
-struct Cell {
-  pub v i64;
-  pub fn get(self &mut) &mut i64 { &mut v; }
-}
-
 // Pushed onto while a borrow of an element is still to be used
 fn pushWhileElementHeld() i64 {
   mut list = List[Pt].empty();
@@ -42,51 +39,23 @@ fn pushWhileElementHeld() i64 {
   first.x;
 }
 
-// Pushed onto while the mutable slice 'viewMut' lent is still to be used
+// Pushed onto while the mutable slice 'viewMut' lent is still to be used: the
+// push may move the storage the slice points into
 fn pushWhileViewMutHeld() i64 {
   mut list = List[i64].empty();
   list.push(1);
   imm s = list.viewMut();
-  list.push(2);                 //~ ErrorFrozen:3 "may not be borrowed"
+  list.push(2);                 //~ ErrorShapeReshape:7 "could change the shape of a 'List'"
   s[0usize] = 5;
   s[0usize];
-}
-
-// Lent mutably a second time while the first mutable slice is still to be used
-fn secondViewMut() {
-  mut list = List[i64].empty();
-  list.push(1);
-  imm s = list.viewMut();
-  imm t = list.viewMut();       //~ ErrorFrozen:11 "may not be borrowed"
-  s[0usize] = 5;
-  t[0usize] = 6;
-}
-
-// Read through 'view' while the mutable slice is still to be used
-fn viewUnderViewMut() i64 {
-  mut list = List[i64].empty();
-  list.push(1);
-  imm s = list.viewMut();
-  imm r = list.view();          //~ ErrorFrozen:11 "may not be borrowed"
-  s[0usize] = 5;
-  r[0usize];
 }
 
 // A String grown while the mutable slice of its bytes is still to be used
 fn appendWhileBytesHeld() {
   mut str = String.from("ab");
   imm b = str.viewMut();
-  str.appendByte('c');          //~ ErrorFrozen:3 "may not be borrowed"
+  str.appendByte('c');          //~ ErrorShapeReshape:6 "could change the shape of a 'String'"
   b[0usize] = 'x';
-}
-
-// Read while a mutable borrow a method returned is still to be used
-fn readUnderReturnedMut() i64 {
-  mut c = new Cell(5);
-  imm r = c.get();
-  imm seen = c.v;               //~ ErrorFrozen:15 "may not be read"
-  *r = 6;
-  seen;
 }
 
 // A value removed from a pool while a borrow of it is still to be used
@@ -96,28 +65,6 @@ fn removeWhileHeld() i64 {
   imm e = p[id];
   p.remove(id);                 //~ ErrorFrozen:3 "may not be borrowed mutably"
   e.x;
-}
-
-fn fill(l &mut List[i64], n usize) { l.push(i64.from(n)); }
-
-// An explicit mutable borrow is not two-phase: a later argument may not read it
-fn explicitThenRead() {
-  mut v = List[i64].empty();
-  fill(&mut v, v.len());        //~ ErrorFrozen:16 "may not be borrowed"
-}
-
-fn takeLast(l &mut List[i64]) i64 {
-  match l.pop() {
-    case imm n Some { n; }
-    else { 0; }
-  }
-}
-
-// A receiver's reserved borrow meets its arguments as a read-only borrow:
-// one borrowing the receiver mutably is refused
-fn receiverThenMutArg() {
-  mut v = List[i64].empty();
-  v.push(takeLast(&mut v));     //~ ErrorFrozen:19 "may not be borrowed mutably"
 }
 
 // Activated at the call, a receiver's mutable borrow may not meet what another

@@ -1,10 +1,14 @@
 // A borrow held in a local freezes its source until the borrow's last use.
 // A local is a 'uni' source: a read-only borrow lets it be read and borrowed
-// read-only again, but not changed, moved or ended; a mutable borrow lets
-// nothing touch it but the borrow itself, not even a read. A source reached
-// through a shared path -- a 'Rc[mut, T]' owner, a '&mut' reference -- others may
-// read and change anyway, so a borrow of it needs only that it stays alive:
-// the owner may not be moved, replaced, changed where it is held, or ended.
+// read-only again, but not changed, moved or ended. A mutable borrow ('mut') of
+// it is an alias loan, as a borrow through a shared path is, so it freezes only
+// what needs the source unique: the source may not be moved, replaced or ended,
+// nor lent '&uni' or '&imm' (ref_alias_mut_success runs what it allows: the
+// source read, written and borrowed again, several such borrows at once). A
+// source reached through a shared path -- a 'Rc[mut, T]' owner, a '&mut'
+// reference -- others may read and change anyway, so a borrow of it needs only
+// that it stays alive: the owner may not be moved, replaced, changed where it
+// is held, or ended.
 // Each function here touches the source while a borrow of it is still to be
 // used, and the error is reported at the touch, naming the borrow and its
 // next use.
@@ -28,14 +32,6 @@ struct Fin {
 }
 
 fn consume(f Fin) {}
-
-// The source read while a mutable borrow of it is still to be used
-fn readUnderMut() {
-  mut k = 5;
-  imm b = &mut k;
-  printInt(k);               //~ ErrorFrozen:12 "may not be read"
-  *b = 9;
-}
 
 // Changed while a read-only borrow is still to be used: by assignment, and by
 // an operator that changes it in place
@@ -71,24 +67,34 @@ fn swapUnderMut() {
   r.n = 3;
 }
 
-// Borrowed read-only while a mutable borrow is still to be used
-fn borrowUnderMut() {
-  mut p = new Pt(1, 2);
-  imm r = &mut p;
-  imm s = &p;                //~ ErrorFrozen:11 "may not be borrowed until"
+// Lent '&imm' or '&uni' while a mutable borrow is still to be used: an '&imm'
+// borrow promises nobody changes what it borrows, and an '&uni' that nobody
+// else reaches it, which a mutable borrow held beside it would break
+fn immUnderMut(p &uni Pt) i64 {
+  imm r = &mut *p;
+  imm s = &imm *p;           //~ ErrorFrozen:11 "may not be borrowed as 'imm'"
   r.x = 2;
-  printInt(s.x);
+  s.x;
 }
 
-// A reborrow through a reference keeps what the reference borrowed frozen:
-// the local itself, not what the reference points at (which the reference
-// may still write, as ref_freeze_success shows)
-fn reborrowKeepsLocalFrozen() {
-  mut k = 1;
-  imm r = &mut k;
-  imm r2 = &mut *r;
-  k = 2;                     //~ ErrorFrozen:3 "'k' is borrowed mutably"
-  *r2 = 3;
+fn uniUnderMut(p &uni Pt) i64 {
+  imm r = &mut *p;
+  imm s = &uni *p;           //~ ErrorFrozen:11 "may not be borrowed as 'uni'"
+  r.x = 2;
+  s.x;
+}
+
+// A reborrow through a reference keeps what the reference borrowed alive: the
+// local may not end while the reborrow is used
+fn reborrowKeepsLocalAlive() {
+  mut zero = 0i64;
+  mut r &mut i64 = &mut zero;
+  {
+    mut k = 1i64;            //~ ErrorFrozen:9 "goes out of scope while"
+    imm r1 = &mut k;
+    r = &mut *r1;
+  }
+  *r = 3;
 }
 
 // -------- through a shared path: only the owner's liveness --------
@@ -164,10 +170,12 @@ fn scopeEnds() {
   printInt(*r);
 }
 
-// A binding into an enum's variant, narrowed from a borrow of a local, keeps
-// the local frozen while it is used: this is what lets the type check allow
-// that narrowing (enum_typecheck_narrow), since the variant cannot change
-// underneath
+// A binding into an enum's variant, narrowed from a borrow of a local, is
+// followed by the enum rule, as one narrowed through a shared path is: the local
+// is no longer frozen against being written (the borrow is an alias loan), and
+// what is refused is a change of variant while the binding is still to be used
+// (enum_typecheck_narrow allows the narrowing since the variant cannot change
+// underneath). Reported where the binding is used again, naming the change
 enum Sh {
   struct Ci { pub r i64; }
   struct Re { pub w i64; }
@@ -176,7 +184,47 @@ enum Sh {
 fn variantChangedUnderBinding(v Sh) i64 {
   mut s = v;
   match &mut s {
-    case mut c &mut Ci { s = Sh.Re(2); c.r; }   //~ ErrorFrozen:26 "may not be changed"
+    case mut c &mut Ci { s = Sh.Re(2); c.r; }   //~ ErrorVariantReshape:40 "which could change which variant the 'Sh' value holds"
     else { 0; }
   }
+}
+
+fn resetSh(s &mut Sh) { *s = Sh.Re(3); }
+
+// ... by a call handed another '&mut' of the enum
+fn variantChangedByCall(v Sh) i64 {
+  mut s = v;
+  match &mut s {
+    case mut c &mut Ci { resetSh(&mut s); c.r; }   //~ ErrorVariantReshape:43 "which could change which variant the 'Sh' value holds"
+    else { 0; }
+  }
+}
+
+// ... or of an enum held in a field
+struct ShapeBag { pub shape Sh; }
+
+fn variantChangedInField(v Sh) i64 {
+  mut h = new ShapeBag(v);
+  match &mut h.shape {
+    case mut c &mut Ci { h.shape = Sh.Re(2); c.r; }   //~ ErrorVariantReshape:46 "which could change which variant the 'Sh' value holds"
+    else { 0; }
+  }
+}
+
+// -------- what a mutable borrow still keeps the local from --------
+
+// Moved away while a mutable borrow is still to be used
+fn moveUnderMut() {
+  mut a = new Fin(1);
+  imm r = &mut a;
+  consume(a);                //~ ErrorFrozen:11 "may not be moved"
+  r.n = 3;
+}
+
+// Replaced whole (its old value finalized)
+fn replaceUnderMut() {
+  mut a = new Fin(1);
+  imm r = &mut a;
+  a = new Fin(2);            //~ ErrorFrozen:3 "may not be changed"
+  r.n = 3;
 }

@@ -1,14 +1,26 @@
-// The unsafe neighbour of lifetime_free_lending_return_from_loop: two items
-// of a lending iterator held at once. The second 'next' borrows the cursor
-// mutably while the first item, a borrow of the cursor, is still to be used.
+// The neighbour of lifetime_free_lending_return_from_loop: two items of a
+// lending iterator held at once. The second 'next' borrows the cursor mutably
+// while the first item, a borrow of the cursor, is still to be used. Both are
+// 'mut' borrows of a local, alias loans, so both are held, and they point at
+// the one field.
 //
-// Verdict: refuse, ErrorFrozen at the second 'next'.
-// Basis: borrow-freezing rule (26 Sep 2026) -- a borrow a method hands back
-// keeps its receiver frozen; a local is a 'uni' source. Rust: refused by NLL
-// and Polonius alike (E0499; by reading, not run).
-// Master d331baab: correct.
+// Verdict: accept; prints 4 (the field is 2 by the time either is read).
+// (Refused, ErrorFrozen at the second 'next', until 11 Oct 2026.)
+// Basis: language rule (11 Oct 2026) -- locals lend several '&mut', as
+// parameters already do. Rust refuses it (E0499; by reading, not run), which
+// is the '&uni' case, not this one.
+// Master cb9e00ea: refused.
 
 mod lifetime_free_lending_two_items_live;
+
+import stdio use *;
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
 
 struct Cursor {
   pub n i64;
@@ -21,6 +33,10 @@ struct Cursor {
 fn f() i64 {
   mut c = new Cursor(0);
   imm a = c.next();
-  imm b = c.next();          //~ ErrorFrozen
+  imm b = c.next();
   *a + *b;
+}
+
+fn main() {
+  show("two-items", f());
 }

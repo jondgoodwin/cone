@@ -3,9 +3,11 @@
 // deque or a String reached through a '&mut' parameter or a field of 'self'
 // freezes that path only until the borrow's last use, and only against what
 // it forbids: a read-only borrow lets the path be read and borrowed read-only
-// again, and a push or an append after its last use is fine. A change through
-// another name, two references to one list, is refused too
-// (collection_flow_reshape).
+// again, and a push or an append after its last use is fine. A mutable borrow a
+// method returned (a mutable element, the slice 'viewMut' lends) is an alias loan
+// (11 Oct 2026): the path stays readable, lendable and writable while it is
+// used, and only a change of shape is refused. A change through another name,
+// two references to one list, is refused too (collection_flow_reshape).
 
 mod collection_freeze_shared_success;
 
@@ -13,6 +15,23 @@ import stdio use *;
 import collections use *;
 
 struct Pt { pub x i64; pub y i64; }
+
+// A counted owner of a struct holding a list behind an owner of its own
+struct Item { pub n i64; }
+struct Ship { pub fuel i64; pub vec So[List[Item]]; }
+
+fn noShape(s &mut Ship) { s.fuel = s.fuel + 1; }
+
+// An element borrowed through the owner, then another field written and the whole
+// lent '&mut' to a call that only writes a field: a read-only element borrow through
+// a shared path is an alias loan, so the path stays lendable and writable, and only a
+// change of the list's shape is refused (collection_flow_reshape_owners)
+fn elemViaRc(r Rc[mut, Ship]) i64 {
+  imm e = r.vec[0usize];
+  r.fuel = 3;
+  noShape(&mut *r);
+  e.n;
+}
 
 fn show(label &str, n i64) {
   printStr(label);
@@ -36,6 +55,29 @@ fn readsUnderElement(l &mut List[Pt]) i64 {
   imm f = l[1usize];
   imm v = l.view();
   n * 1000 + i64.from(v.len) * 100 + e.x * 10 + f.x;
+}
+
+// A mutable element borrow, then the list read: its length, another element,
+// and a second mutable borrow of it, which writes the same element
+fn mutElementThenRead(l &mut List[Pt]) i64 {
+  imm e = &mut l[0usize];
+  imm n = l.len();
+  imm o = l[1usize].y;
+  imm f = &mut l[0usize];
+  e.x = 5;
+  f.y = f.y + 100;
+  i64.from(n) * 1000 + o * 100 + e.x + f.y;
+}
+
+// The slice 'viewMut' lends, then the list lent again and viewed: the slices
+// are one memory
+fn viewMutTwice(l &mut List[i64]) i64 {
+  imm s = l.viewMut();
+  imm t = l.viewMut();
+  imm v = l.view();
+  s[0usize] = 1;
+  t[0usize] = t[0usize] + 10;
+  s[0usize] * 100 + v[0usize];
 }
 
 // A cursor used up before the deque is pushed onto
@@ -89,6 +131,20 @@ fn main() {
   two.push(new Pt(3, 0));
   two.push(new Pt(4, 0));
   show("reads-under-element", readsUnderElement(&mut two));
+
+  mut pair = List[Pt].empty();
+  pair.push(new Pt(1, 2));
+  pair.push(new Pt(3, 4));
+  show("mut-element-then-read", mutElementThenRead(&mut pair));
+
+  mut ints = List[i64].empty();
+  ints.push(0);
+  show("view-mut-twice", viewMutTwice(&mut ints));
+
+  mut items = List[Item].empty();
+  items.push(new Item(8));
+  imm ship = new Rc[mut, Ship](1, new So[List[Item]](items));
+  show("elem-via-rc", elemViaRc(ship) * 100 + ship.fuel);
 
   mut dq = Deque[i64].empty();
   dq.push(2);

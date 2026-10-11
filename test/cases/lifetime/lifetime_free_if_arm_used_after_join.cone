@@ -1,16 +1,33 @@
 // The neighbour of lifetime_free_if_arm_read_other_arm with the borrow used
-// after the 'if': now the change in the 'else' arm comes before a use.
+// after the 'if': the change in the 'else' arm comes before a use of the
+// borrow. A 'mut' borrow is an alias loan, so the change is let through; the
+// borrow reads what the arm wrote.
 //
-// Verdict: refuse, ErrorFrozen at the change.
-// Basis: borrow-freezing rule (26 Sep 2026) -- a change to a source while a
-// borrow of it is still to be used is refused.
-// Master d331baab: correct.
+// Verdict: accept; prints 55 when the borrow's arm runs (k is 5), 22 when the
+// change does (k is 2). (Refused, ErrorFrozen at the change, until 11 Oct 2026.)
+// Basis: language rule (11 Oct 2026) -- locals lend several '&mut', as
+// parameters already do.
+// Master cb9e00ea: refused.
 
 mod lifetime_free_if_arm_used_after_join;
+
+import stdio use *;
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
 
 fn f(c bool) i64 {
   mut k = 1i64;
   imm r = &mut k;
-  if c { *r = 5; } else { k = 2; }   //~ ErrorFrozen
-  *r;
+  if c { *r = 5; } else { k = 2; }
+  *r * 10 + k;
+}
+
+fn main() {
+  show("borrow-arm", f(true));
+  show("change-arm", f(false));
 }

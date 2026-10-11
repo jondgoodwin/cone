@@ -1,8 +1,9 @@
 // An owning virtual reference lent as a borrowed one, each lend ending with its
 // call: lent as '&<mut' twice one call after another, lent twice to one call
-// as '&<', and a 'self &' dispatch handed its own receiver as a '&<' argument,
-// two read-only lends. None of these holds a written borrow, and none
-// conflicts. Two lends that do conflict in one call are
+// as '&<', as '&<mut' beside '&<' (the owner is one more alias, as a place
+// reached through a shared path is), and a 'self &' or 'self &mut' dispatch
+// handed its own receiver as a '&<' argument. None of these holds a written
+// borrow, and none conflicts. Two lends that do conflict in one call are
 // trait_flow_vref_owner_call.
 
 mod trait_vref_owner_call;
@@ -20,6 +21,7 @@ trait App {
   pub fn frame(self &mut) bool;
   pub fn look(self &) i64;
   pub fn see(self &, o &<App) i64;
+  pub fn mix(self &mut, o &<App);
 }
 
 struct Spinner {
@@ -27,10 +29,12 @@ struct Spinner {
   pub fn frame(self &mut) bool {n = n + 1; n < 4;}
   pub fn look(self &) i64 {n;}
   pub fn see(self &, o &<App) i64 {n + o.look();}
+  pub fn mix(self &mut, o &<App) { n = n + o.look(); }
 }
 
 fn nudge(x &<mut App) { x.frame(); }
 fn sum(x &<App, y &<App) i64 { x.look() + y.look(); }
+fn both(x &<mut App, y &<App) { x.frame(); }
 
 fn main() {
   imm a So[App] = new So[Spinner](1);
@@ -41,4 +45,8 @@ fn main() {
   show("see", a.see(a));
   a.frame();
   show("after", a.look());
+  both(a, a);
+  show("mut-and-read", a.look());
+  a.mix(a);
+  show("mix-self", a.look());
 }

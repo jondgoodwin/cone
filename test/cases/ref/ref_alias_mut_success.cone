@@ -1,0 +1,442 @@
+// Locals lend several '&mut', as parameters already do (11 Oct 2026). A 'mut'
+// reference is shared mutable: a '&mut' borrow of a place reached through a
+// '&mut' parameter has always been an alias loan, so several may be held at
+// once, the source stays usable as one more alias, and only what needs the
+// source unique is refused (moving it, lending it '&uni' or '&imm', its end).
+// The same borrow of a place reached as 'uni' -- a local, a field of one, what
+// a '&uni' reference points at, an owner's contents, a '&uni' slice's element
+// -- is held the same way: nothing but a change of shape (collection_flow_alias,
+// ref_flow_freeze for an enum's variant) is refused. Every value printed is worked
+// out by hand. The refusals that remain are ref_flow_freeze, collection_flow_alias
+// and the files they name.
+
+mod ref_alias_mut_success;
+
+import stdio use *;
+import collections use *;
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+struct Ring { pub power i64; }
+struct Entity {
+  pub hp i64;
+  pub armor i64;
+  pub rings List[Ring];
+}
+struct World {
+  pub entities List[Entity];
+  pub score i64;
+}
+struct Pt { pub x i64; pub y i64; }
+
+fn entity(hp i64, armor i64) Entity { new Entity(hp, armor, List[Ring].empty()); }
+
+// ---- several '&mut' of one local in one call ----
+
+fn appendBoth(a &mut List[i64], b &mut List[i64]) { a.push(1); b.push(2); }
+
+// {} -> {1, 2}: 2 items, then 1 and 2
+fn twoLists() i64 {
+  mut l = new List[i64](4);
+  appendBoth(&mut l, &mut l);
+  i64.from(l.len()) * 100 + *l[0usize] * 10 + *l[1usize];
+}
+
+fn mutPair(a &mut i64, b &mut i64) { *a = *a + 1; *b = *b + 10; }
+
+// 5 -> 6 -> 16: the second '&mut' sees the first one's write
+fn onePlace() i64 {
+  mut k = 5i64;
+  mutPair(&mut k, &mut k);
+  k;
+}
+
+// two fields of a local, and one field twice
+fn fields() i64 {
+  mut p = new Pt(1, 2);
+  mutPair(&mut p.x, &mut p.y);
+  mutPair(&mut p.x, &mut p.x);
+  p.x * 100 + p.y;
+}
+
+// ---- several held in locals ----
+
+// two '&mut' of one list, pushed through both, and the list itself
+fn heldAliases() i64 {
+  mut l = new List[i64](4);
+  imm ra = &mut l;
+  imm rb = &mut l;
+  ra.push(42);
+  rb.push(73);
+  l.push(5);
+  *l[0usize] * 1000 + *l[1usize] * 10 + *l[2usize];
+}
+
+// a reference to the list survives a push through the list's name
+fn listRefSurvivesPush() i64 {
+  mut v = new List[i64](4);
+  v.push(1);
+  imm vr = &mut v;
+  v.push(2);
+  vr.push(3);
+  i64.from(v.len()) * 100 + *v[0usize] * 10 + *v[2usize];
+}
+
+// ---- a call beside a borrow of the same source ----
+
+fn advance(e &mut Entity) { e.hp = e.hp + 1; }
+fn collision(w &World, e &Entity) i64 { i64.from(w.entities.len()) + e.hp; }
+fn step(w &World, e &mut Entity) { advance(e); imm c = collision(w, e); e.hp = c; }
+
+// the world read-only and one of its entities writable, in one call:
+// advance 1 -> 2, collision 1 + 2 = 3
+fn worldStep() i64 {
+  mut w = new World(new List[Entity](4), 0);
+  w.entities.push(entity(1, 5));
+  step(&w, &mut w.entities[0usize]);
+  w.entities[0usize].hp;
+}
+
+fn damage(e &mut Entity, n i64) { e.hp = e.hp - n; }
+
+// a reference to a field survives a call changing the struct it is in
+fn fieldSurvives() i64 {
+  mut e = entity(20, 0);
+  imm hp = &mut e.hp;
+  damage(&mut e, 10);
+  *hp;
+}
+
+// ... and so does one to a list the struct holds, the list not reshaped
+fn listFieldSurvives() i64 {
+  mut e = entity(20, 0);
+  e.rings.push(new Ring(7));
+  imm r = &mut e.rings;
+  damage(&mut e, 1);
+  i64.from(r.len()) * 100 + e.hp;
+}
+
+// ---- the source read, changed and borrowed while a '&mut' of it lives ----
+
+// 5 read, then 9 written through the borrow
+fn readUnderMut() i64 {
+  mut k = 5i64;
+  imm b = &mut k;
+  imm seen = k;
+  *b = 9;
+  seen * 10 + k;
+}
+
+// a read-only view of the struct sees the write through the other borrow
+fn borrowUnderMut() i64 {
+  mut p = new Pt(1, 2);
+  imm r = &mut p;
+  imm s = &p;
+  r.x = 7;
+  s.x * 10 + s.y;
+}
+
+// the source written by name, then through the reborrow
+fn reborrowThenWrite() i64 {
+  mut k = 1i64;
+  imm r = &mut k;
+  imm r2 = &mut *r;
+  k = 2;
+  imm seen = k;
+  *r2 = 3;
+  seen * 10 + k;
+}
+
+// copied out whole while a field of it is borrowed mutably
+fn wholeUnderFieldBorrow() i64 {
+  mut p = new Pt(1, 2);
+  imm a = &mut p.x;
+  imm q = p;
+  *a = 3;
+  q.x * 100 + q.y * 10 + p.x;
+}
+
+// a borrow reassigned on one path only, the source written
+fn conditionalReassign(c bool) i64 {
+  mut a = 1i64;
+  mut b = 2i64;
+  mut r = &mut a;
+  if c { r = &mut b; }
+  a = 7;
+  *r + a * 10 + b * 100;
+}
+
+// the source written in one arm of an 'if', the borrow in the other
+fn ifArm(c bool) i64 {
+  mut k = 1i64;
+  imm r = &mut k;
+  if c { *r = 5; } else { k = 2; }
+  *r * 10 + k;
+}
+
+// a borrow a call returns, the source written by name while it is held
+fn same(x &mut i64) &mut i64 { x; }
+
+fn callResultKept() i64 {
+  mut k = 1i64;
+  imm r = same(&mut k);
+  k = 2;
+  imm seen = k;
+  *r = 4;
+  seen * 10 + k;
+}
+
+// a method handing out the borrow of its own field, twice at once
+struct Cursor {
+  pub n i64;
+  pub fn next(self &mut) &mut i64 {
+    n = n + 1;
+    &mut n;
+  }
+}
+
+// n 0 -> 1 -> 2, both items point at the one field
+fn twoItems() i64 {
+  mut c = new Cursor(0);
+  imm a = c.next();
+  imm b = c.next();
+  *a + *b * 10;
+}
+
+// through a '&uni' parameter: written while a reborrow lives
+fn uniParam(p &uni i64) i64 {
+  imm a = &mut *p;
+  *p = 7;
+  *a = *a + 1;
+  *p;
+}
+
+// ---- in a loop: the next iteration, a continue, a break ----
+
+// k read after each write through the borrow, which is used again next time
+fn nextIteration() i64 {
+  mut k = 1i64;
+  imm r = &mut k;
+  mut j = 0i64;
+  mut sum = 0i64;
+  while j < 3i64 {
+    *r = j;
+    sum = sum + k;
+    j = j + 1i64;
+  }
+  sum;
+}
+
+// c: the borrow of k kept past the 'continue', k written only when it is not
+fn throughContinue(c bool) i64 {
+  mut k = 1i64;
+  mut n = 0i64;
+  mut r = &mut n;
+  mut j = 0i64;
+  while j < 5i64 {
+    j = j + 1i64;
+    *r = 1i64;
+    if c {
+      r = &mut k;
+      continue;
+    }
+    k = 3i64;
+  }
+  k * 10 + n;
+}
+
+// the borrow of k kept out of the loop through a 'break', k read after it
+fn outThroughBreak(c bool) i64 {
+  mut k = 1i64;
+  mut n = 0i64;
+  mut r = &mut n;
+  while c {
+    r = &mut k;
+    if c {
+      break;
+    }
+  }
+  imm seen = k;
+  *r = 5i64;
+  seen * 10 + k + n;
+}
+
+// ---- elements of one list: the same exclusivity through a parameter and a local ----
+
+fn attack(a &mut Entity, d &mut Entity) { d.hp = d.hp - a.armor; }
+fn duel(es &mut List[Entity]) { attack(&mut es[0usize], &mut es[1usize]); }
+
+// 10 -> 7 -> 4 for the second; the first attacks itself, 10 -> 7
+fn duels() i64 {
+  mut es = new List[Entity](4);
+  es.push(entity(10, 3));
+  es.push(entity(10, 1));
+  attack(&mut es[0usize], &mut es[1usize]);
+  duel(&mut es);
+  attack(&mut es[0usize], &mut es[0usize]);
+  es[0usize].hp * 100 + es[1usize].hp;
+}
+
+// ---- held by a struct, beside the source ----
+
+struct Guard['a] {
+  pub target &'a mut List[i64];
+  pub fn rollback(self &) { target.push(0); }
+}
+
+// the guard pushes 0 after the list was pushed through its own name: {1, 0}
+fn guarded() i64 {
+  mut l = new List[i64](4);
+  imm g = new Guard(&mut l);
+  l.push(1);
+  g.rollback();
+  i64.from(l.len()) * 10 + *l[0usize];
+}
+
+struct FileSystem { pub opened i64; }
+struct File['a] {
+  pub fs &'a mut FileSystem;
+  pub fn open(self &) { fs.opened = fs.opened + 1; }
+}
+
+// two structs each holding a '&mut' to one file system
+fn twoFiles() i64 {
+  mut fs = new FileSystem(0);
+  imm a = new File(&mut fs);
+  imm b = new File(&mut fs);
+  a.open();
+  b.open();
+  fs.opened;
+}
+
+// ---- through a '&uni' slice, an owner and an owner's field ----
+
+// 0 -> 1 -> 11 for the one element
+fn uniSlice(s &uni Array[i64]) i64 {
+  mutPair(&mut s[0usize], &mut s[0usize]);
+  s[0usize];
+}
+
+fn ownerElement() i64 {
+  imm a = new So[Array[i64, 4]]([0, 0, 0, 0]);
+  mutPair(&mut a[0usize], &mut a[0usize]);
+  a[0usize];
+}
+
+struct R {
+  pub n i64;
+  pub fn bump(self &mut) { n = n + 1; }
+  pub fn peekMut(self &mut, o &R) { n = n + o.n; }
+}
+
+struct H { pub s So[R]; }
+
+fn both(x &mut R, y &R) { x.n = x.n + y.n; }
+
+// an owner lent as '&mut' beside a '&' of itself: 1 + 1
+fn ownerTwice() i64 {
+  imm a = new So[R](1);
+  both(a, a);
+  a.n;
+}
+
+// ... a counted owner, a field of a local and one of a '&uni' parameter
+fn countedOwner() i64 {
+  imm a = new Rc[R](1);
+  both(a, a);
+  a.n;
+}
+
+fn ownerField() i64 {
+  imm h = new H(new So[R](1));
+  both(h.s, h.s);
+  h.s.n;
+}
+
+fn uniParamField(h &uni H) i64 {
+  both(h.s, h.s);
+  h.s.n;
+}
+
+// a '&uni' lent as '&mut' twice to one call
+fn twoMut(a &mut R, b &mut R) { a.n = a.n + 1; b.n = b.n + 10; }
+
+fn uniLentTwice(p &uni R) i64 {
+  twoMut(p, p);
+  p.n;
+}
+
+fn uniHeldRead(p &uni R) i64 {
+  imm b &mut R = p;
+  imm x = p.n;
+  b.n = b.n + 1;
+  x * 10 + p.n;
+}
+
+fn mutAndRead(a &mut R, b &R) { a.n = a.n + b.n; }
+
+fn uniMutThenRead(p &uni R) i64 {
+  mutAndRead(p, p);
+  p.n;
+}
+
+// a receiver lent mutably beside an argument lending the same value to be read
+fn ownerReceiver() i64 {
+  imm a = new So[R](3);
+  a.peekMut(a);
+  a.n;
+}
+
+fn uniReceiver(p &uni R) i64 {
+  p.peekMut(p);
+  p.n;
+}
+
+fn main() {
+  show("twoLists", twoLists());
+  show("onePlace", onePlace());
+  show("fields", fields());
+  show("heldAliases", heldAliases());
+  show("listRefSurvivesPush", listRefSurvivesPush());
+  show("worldStep", worldStep());
+  show("fieldSurvives", fieldSurvives());
+  show("listFieldSurvives", listFieldSurvives());
+  show("readUnderMut", readUnderMut());
+  show("borrowUnderMut", borrowUnderMut());
+  show("reborrowThenWrite", reborrowThenWrite());
+  show("wholeUnderFieldBorrow", wholeUnderFieldBorrow());
+  show("conditionalReassign true", conditionalReassign(true));
+  show("conditionalReassign false", conditionalReassign(false));
+  show("ifArm true", ifArm(true));
+  show("ifArm false", ifArm(false));
+  show("callResultKept", callResultKept());
+  show("twoItems", twoItems());
+  show("uniParam", uniParam(new So[i64](0)));
+  show("nextIteration", nextIteration());
+  show("throughContinue true", throughContinue(true));
+  show("throughContinue false", throughContinue(false));
+  show("outThroughBreak true", outThroughBreak(true));
+  show("outThroughBreak false", outThroughBreak(false));
+  show("duels", duels());
+  show("guarded", guarded());
+  show("twoFiles", twoFiles());
+  imm arr = new So[Array[i64, 4]]([5, 0, 0, 0]);
+  show("uniSlice", uniSlice(arr));
+  show("ownerElement", ownerElement());
+  show("ownerTwice", ownerTwice());
+  show("countedOwner", countedOwner());
+  show("ownerField", ownerField());
+  imm h = new So[H](new So[R](1));
+  show("uniParamField", uniParamField(h));
+  imm p = new So[R](1);
+  show("uniLentTwice", uniLentTwice(p));
+  show("uniHeldRead", uniHeldRead(p));
+  show("uniMutThenRead", uniMutThenRead(p));
+  show("ownerReceiver", ownerReceiver());
+  show("uniReceiver", uniReceiver(p));
+}
