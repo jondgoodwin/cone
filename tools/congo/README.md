@@ -346,9 +346,12 @@ it, synchronization validation included, and fail on any message.
 `window` besides.
 
 `thread`, OS threads and the futex, is Cone code over `extern` declarations
-of the C runtime and Windows, not a C package, and its `[link]` names
-`synchronization`: the Windows SDK's `Synchronization.lib`, which defines
-`WaitOnAddress` and its wakes and is not on the C runtime's default link line.
+of the C runtime and Windows, not a C package, and names no `[link]` library.
+The futex calls `WaitOnAddress` and its wakes, which the Windows SDK's
+`Synchronization.lib` defines and the C runtime's default link line lacks; since
+`[link]` has no per-system form, Congo's Windows link line adds
+`synchronization.lib` itself, beside `msvcrt.lib`. A program that calls none of it
+takes nothing from it.
 
 ## Runtime libraries
 

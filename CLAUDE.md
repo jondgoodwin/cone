@@ -1003,11 +1003,9 @@ other object; `--nopic` opts out.
 
 Congo runs on Linux (`python3 tools/congo/congo.py test` in a package's folder,
 with `conec` built at `build/x64-release/conec`), and `sync`, `thread`,
-`actors` and `time` pass their tests there, with one workaround: `sync`'s
-`congo.toml` names `synchronization`, the Windows SDK's library, and `[link]`
-has no per-system form yet, so the linker needs an empty `libsynchronization.a`
-(`ar rc libsynchronization.a` in a folder of its own) on `LIBRARY_PATH`. The
-packages built on Windows alone (`fs`, `posix`, `process`, `iocore` and what
+`actors` and `time` pass their tests there. (`synchronization.lib`, the Windows
+SDK's library, is on Congo's Windows link line itself, so no package's `[link]`
+names it.) The packages built on Windows alone (`fs`, `posix`, `process`, `iocore` and what
 imports them, `sdl` and what draws) do not build or run there.
 
 ## Validating a change
@@ -1082,7 +1080,7 @@ link prog.obj build\x64-release\conestd.lib /OUT:prog.exe /SUBSYSTEM:CONSOLE msv
 
 A program that imports `sync` (or `thread`, which imports it) also needs
 `synchronization.lib`, the Windows SDK library its futex calls into; the test
-runner's link line has it. On Linux the link line is `cc`, with `-lm -lpthread`,
+runner's link line and Congo's both have it. On Linux the link line is `cc`, with `-lm -lpthread`,
 and the futex is in `libconestd.a`.
 
 Or let Congo do it: `congo run prog.cone` (`tools/congo/`) compiles a lone file
