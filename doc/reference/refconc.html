@@ -13,37 +13,14 @@
 
     <div class="text">
 
-	<p style="margin-left: 40px;"><i>Note: Of the models below, only OS threads are implemented, on
-		Windows only, as the <span class="pre">thread</span> library package: starting, joining
-		(a handle dropped unjoined joins) and detaching a thread, its identity, sleep and parking,
-		all described <a href="#thread">near the end of this page</a>. So are
-		<a href="#atomic">atomic values</a>, core's <span class="pre">Atomic[T]</span> for
-		integers, <span class="pre">bool</span> and raw pointers, and the compiler's rules for the
-		<span class="pre">AtomicValue</span> marker it declares; and the
-		<span class="pre">sync</span> package: <a href="#futex">the futex</a>;
-		and <a href="#locks">the locks</a> built on it, <span class="pre">Mutex</span>,
-		<span class="pre">Rwlock</span>, <span class="pre">Condvar</span> and
-		<span class="pre">Once</span>, which are unchecked when held as values (what a lock
-		protects is the program's to keep), while <span class="pre">Mutex</span> and
-		<span class="pre">Rwlock</span> are also <a href="refpermlock.html">lock permissions</a>,
-		which are checked: <span class="pre">Arc[Mutex, T]</span>; and
-		the <a href="refconccomm.html#channel">channel</a> of many senders and one
-		receiver, <span class="pre">Channel[T]</span>, unbounded or bounded, or of one sender and
-		one receiver, on the next page. So is the runtime
-		<a href="refconccomm.html#actors">actors</a> run on, the <span class="pre">actors</span>
-		package, also on the next page: actors multiplexed on a pool of worker threads by a
-		work-stealing scheduler, each message handled to completion on a worker's own stack,
-		not a green thread paused and resumed; and the <span class="pre">actor</span> declaration
-		that runs on it, made with <span class="pre">new</span>, its behaviours, declared
-		<span class="pre">async do</span>, messages that may return a value to an
-		<span class="pre">await</span> (<span class="pre">actor trait</span> is not
-		implemented). The
-		<span class="pre">atomic</span> permission is not implemented. What is handed to a thread,
-		returned from one, sent over a channel or sent to an actor must be
-		<span class="pre">Sendable</span>
-		(<a href="refconccomm.html#race">Race condition safety</a>). Co-routines, green threads, processes,
-		distributed computing, and splitting work across threads are not implemented.</i></p>
-	
+	<p style="margin-left: 40px;"><i>Note: Co-routines beyond generators (a two-way
+		<span class="pre">yield</span>), green threads that are paused and resumed, processes working
+		together on one job, and distributed computing are not implemented. The
+		<span class="pre">thread</span> and <span class="pre">sync</span> packages, and so the locks, the channels
+		and the actors built on them, run on Windows only. The <span class="pre">atomic</span>
+		permission is not implemented, nor is the rule that a whole atomic value may be replaced
+		plainly only through a unique path. <span class="pre">actor trait</span> is not implemented.</i></p>
+
 	<p>Concurrency and parallelism can sometimes improve program throughput, by:</p>
 	<ul>
 	<li>Distributing work across multiple CPUs (many hands make light work).</li>
@@ -53,9 +30,17 @@
 		Depending on the library packages chosen, many work distribution and scheduling approaches can be taken
 		(ordered by context switching cost):</p>
 	<ul>
-	<li>Cooperative concurrency (generators or co-routines), where context switching is explicitly baked into the logic.</li>
-	<li>Green (mxn) threads, where context-switching is cooperatively handled by the runtime's work-stealing scheduler, rather than the OS.</li>
-	<li>OS threads, where context-switching is handled by the OS scheduler. Threads share memory and resources.</li>
+	<li>Cooperative concurrency (generators or co-routines), where context switching is explicitly baked into the logic.
+		<a href="refcorout.html">Generators</a> are the form that exists.</li>
+	<li>Green (mxn) threads, where context-switching is cooperatively handled by the runtime's work-stealing scheduler, rather than the OS.
+		The <span class="pre">actors</span> package (<a href="refconccomm.html#actors">Actors</a>) is the nearest thing:
+		actors are multiplexed on a pool of worker threads by a work-stealing scheduler, and each message is
+		handled to completion on a worker's own stack, or up to an <span class="pre">await</span>, where the compiler
+		cuts the behaviour in two. An actor is not a green thread that is paused and resumed.</li>
+	<li>OS threads, where context-switching is handled by the OS scheduler. Threads share memory and resources.
+		The <span class="pre">thread</span> package provides them, <a href="#thread">below</a>, with
+		<a href="#atomic">atomic values</a>, <a href="#futex">the futex</a> and <a href="#locks">locks</a> to share
+		memory safely, and <a href="refconccomm.html#channel">channels</a> to pass messages.</li>
 	<li>OS processes, where context-switching is handled by the OS. Processes are isolated, largely communicating via pipes.</li>
 	<li>Distributed computing, where work is distributed across different machines, communicating via network sockets.</li>
 	</ul>
@@ -65,7 +50,8 @@
 		All new processes or threads are effectively owned resources. 
 		Like all owned resources, there is a programmatic point-in-time when owned threads are joined, terminated and freed
 		according to the logic of the finalizer.
-		Libraries also support the ability to split m pieces of work across n independent processes/logic.</p>
+		A <a href="refeach.html#parallel"><span class="pre">parallel each</span></a> loop splits the pieces of a loop
+		across the actors package's worker threads.</p>
 	<p>Concurrency (and parallelism) introduce safety risks, when implemented poorly:</p>
 	<ul>
 	<li><b>Race conditions</b>, where a system's behavior varies inconsistently, depending on the sequence or timing of independent operations.</li>
@@ -113,20 +99,9 @@ fn main() {
 		A number literal given as the value keeps its own type, <span class="pre">i32</span> unless
 		suffixed, and must agree with <span class="pre">f</span>'s parameter:
 		<span class="pre">100i64</span> for a function taking an <span class="pre">i64</span>.</li>
-	<li><b>What is handed to a thread is not checked yet.</b> Safe to hand over is a value the
-		thread will own outright (a number, a struct of them, a <span class="pre">So</span> owner,
-		a <span class="pre">uni</span> reference) or an <span class="pre">imm</span> or
-		<span class="pre">opaq</span> reference, which <a href="refconccomm.html">the permission
-		rules</a> already mark as safe to share, where its region's count, if it keeps one,
-		is atomic: an <span class="pre">Arc[imm, T]</span> owner (the <span class="pre">sync</span>
-		package's <span class="pre">Arc</span>, folded in by <span class="pre">import sync use Arc</span>), which
-		<span class="pre">thread.start</span> copies, so the value is freed once, after the last
-		thread lets it go (<a href="refregionglo.html">regions</a>). A <span class="pre">mut</span> or
-		<span class="pre">ro</span> reference, an <span class="pre">Rc</span> owner that is not
-		<span class="pre">uni</span> (its count is not atomic), a borrowed reference into the starting thread's stack, or a raw pointer to
-		memory another thread also writes all compile today, and are the program's to get right,
-		with <a href="#atomic">atomic values</a> or <a href="#locks">locks</a>. The compiler's
-		check comes later.</li>
+	<li><b>The value and the result must be <span class="pre">Sendable</span></b>, which the
+		compiler checks where <span class="pre">start</span> is called
+		(<a href="#sendable">below</a>).</li>
 	</ul>
 	<p><span class="pre">thread.startWith(new thread.Options(name: n, stackSize: s), arg, &amp;f)</span>
 		does the same with options, each of which has a default and may be left out:</p>
@@ -141,6 +116,51 @@ fn main() {
 	<p>A thread that cannot be started, or memory that cannot be allocated for it, is a
 		<a href="refexcept.html#panic">panic</a>. A panic or a trap on any thread ends the whole
 		process: nothing unwinds, so no thread fails alone while the others go on.</p>
+
+	<h3 id="sendable">What a thread may be handed</h3>
+	<p>The value handed to a thread, and the value it returns, must be <span class="pre">Sendable</span>:
+		a value the thread may own, or share with the others, without a race. The compiler checks it where
+		<span class="pre">thread.start</span> is called, and the same holds for a value sent over a channel or to
+		an actor (<a href="refconccomm.html#race">Race condition safety</a>). These cross:</p>
+	<ul>
+	<li>A value the thread owns outright: a number, a struct of them, a <span class="pre">So</span> owner, a
+		<span class="pre">uni</span> reference.</li>
+	<li>An <span class="pre">imm</span> or <span class="pre">opaq</span> reference, which
+		<a href="refconccomm.html">the permission rules</a> already mark as safe to share, where
+		its region's count, if it keeps one, is atomic: an <span class="pre">Arc[imm, T]</span> owner
+		(the <span class="pre">sync</span> package's <span class="pre">Arc</span>, folded in by
+		<span class="pre">import sync use Arc</span>), which <span class="pre">thread.start</span> copies, so the
+		value is freed once, after the last thread lets it go (<a href="refregionglo.html">regions</a>); and a
+		borrow of a global, <span class="pre">thread.start(&amp;imm table, &amp;sum)</span>, since a global lives
+		for the whole program.</li>
+	<li>A struct that carries raw pointers the program shares safely, with <a href="#atomic">atomic values</a> or
+		<a href="#locks">locks</a>, and declares <span class="pre">is Sendable</span>. That is a promise the
+		compiler takes on trust.</li>
+	</ul>
+	<p>These are refused, naming what is at fault (Error 1194):</p>
+	<ul>
+	<li>A <span class="pre">mut</span> or <span class="pre">ro</span> borrow, and any borrow into the starting
+		thread's stack (an <span class="pre">imm</span> borrow of a local is refused as not global, Error 1249).</li>
+	<li>An <span class="pre">Rc</span> owner that is not <span class="pre">uni</span>, since its count is not
+		atomic.</li>
+	<li>A reference the <span class="pre">collector</span> package's <span class="pre">Gc</span> traces, since that
+		collector is single threaded (<a href="#started">below</a>).</li>
+	<li>A raw pointer, since nothing checks what it points at, unless a struct holding it declares
+		<span class="pre">is Sendable</span>.</li>
+	</ul>
+<pre>
+struct Counter { pub n i64; }
+struct Job { pub data &amp;mut Counter; }
+
+fn work(j Job) i64 { j.data.n; }
+
+fn main() {
+  mut c = new Counter(1i64);
+  imm t = thread.start(new Job(&amp;mut c), &amp;work);
+  // Error 1194: start requires A is Sendable, and Job is not Sendable:
+  // Job.data is &amp;mut Counter, a borrowed reference of permission mut, ...
+}
+</pre>
 
 	<h3>The handle: join, detach, and join on drop</h3>
 	<p>A <span class="pre">Thread[R]</span> is its thread's one owner, a move type.</p>
@@ -196,7 +216,7 @@ fn main() {
 		thread still checks what it was waiting for, since a token may have been meant for an earlier
 		park. Parking is built on <a href="#futex">the futex</a>.</p>
 
-	<h3>What a started thread may not use yet</h3>
+	<h3 id="started">What a started thread may not use yet</h3>
 	<p>The <span class="pre">collector</span> package's <span class="pre">Gc</span> collector is
 		single threaded: its roots are one chain and its heap is not synchronized. A traced reference
 		made, held, reached or dropped on a thread the package started corrupts it. One is not
