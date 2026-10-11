@@ -396,7 +396,57 @@ Reading.High(1, 4).get()      // 1: High's own copy of get
 		runs would have to be read from the tag the same way, and that is not built for a value.
 		Calling such a method on a value of the enum is an error today; <span class="pre">match</span>
 		to recover the variant, or declare the method with a reference receiver, which dispatches
-		as above.</i></p>
+		as above, or <a href="#wholeenum">name the enum as the receiver</a>.</i></p>
+
+	<h4 id="wholeenum">One function over the whole enum</h4>
+	<p>The receiver a method names decides which it is. A method written with
+		<span class="pre">self &amp;</span> or <span class="pre">self &amp;Self</span> belongs to the
+		variants: it is copied into each, and inside a copy <span class="pre">self</span> is that
+		variant. A method whose receiver <b>names the enum</b> &mdash; <span class="pre">self &amp;Lamp</span>,
+		<span class="pre">self &amp;mut Lamp</span>, any other kind of reference, or by value
+		<span class="pre">self Lamp</span> &mdash; is <b>one function over the whole enum</b>. It is not
+		copied, nothing is dispatched on the tag, and inside it <span class="pre">self</span> is the enum, so
+		<span class="pre">match self</span>, <span class="pre">case is</span> and
+		<span class="pre">self is Red</span> work as they do anywhere else:</p>
+<pre>
+enum Lamp {
+	pub n i32 = 7;
+	Red;
+	Green;
+	Off;
+
+	pub fn describe(self &amp;Lamp) i32 {      // one function over the whole enum
+		match self {
+			case Red   {10;}
+			case Green {20;}
+			case Off   {30;}
+		}
+	}
+	pub fn next(self &amp;mut Lamp) {          // may store any variant through self
+		match self {
+			case Red   {*self = Lamp.Green;}
+			case Green {*self = Lamp.Off;}
+			case Off   {*self = Lamp.Red;}
+		}
+	}
+	pub fn get(self &amp;) i32 {n;}            // copied into each variant, as above
+}
+
+imm l Lamp = Lamp.Green;
+l.describe()               // 20
+Lamp.Red.describe()        // 10: a variant's value calls it, widened to Lamp
+</pre>
+	<p>A method over the whole enum is called on a value of the enum or on a value of one of its
+		variants, which is widened to the enum for the call, and by value it takes a copy. A variant's
+		value cannot lend <span class="pre">&amp;mut Lamp</span>, since the method could store another
+		variant in it: declare the value as the enum, <span class="pre">mut l Lamp = Lamp.Red</span>.
+		If a variant declares a method of the same name, a value typed as that variant calls the
+		variant's own, and a value typed as the enum calls the enum's. Within one enum a name is
+		declared once, so the two kinds cannot share a name there. A package that declares such a
+		method defines it once, and an importer calls it.
+		An enum that <a href="#extends">extends</a> another does not inherit its base's methods over the
+		base, since a value of the extension is not a value of the base. A generic enum's
+		method over the whole enum, <span class="pre">self &amp;Option[T]</span>, is not available yet.</p>
 
 	<h3 id="isa">Complying with a trait</h3>
 	<p>An enum may say in its declaration that it complies with one or more open

@@ -194,6 +194,12 @@ Name *structLentVia(StructNode *type);
 // borrow of the body that type's lending method gives
 void structLendView(TypeCheckState *pstate, StructNode *type, INode **objp, INode *lexnode);
 
+// Is this a method of an enum, with a body, whose receiver names the enum
+// ('self &Lamp', 'self &mut Lamp', 'self Lamp')? Such a method is one function
+// over the whole enum, not a default copied into each variant: a receiver written
+// 'self &' or 'self &Self' is the variant's.
+int structIsWholeEnumMethod(INode *meth);
+
 // Unwrap one hop: the declaration of the base this type names
 StructNode *structBaseTraitDcl(StructNode *node);
 

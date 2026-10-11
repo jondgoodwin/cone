@@ -517,6 +517,22 @@ static int parseNamesType(INode *named, StructNode *type) {
     return named->tag == NameUseTag && ((NameUseNode*)named)->namesym == type->namesym;
 }
 
+// Does this method's receiver, as written, name the enum: 'self &Lamp', '&mut Lamp'
+// or by value 'self Lamp'? Such a method is one function over the whole enum
+// (structIsWholeEnumMethod), where 'self &' and 'self &Self' are the variant's.
+static int parseNamesEnumReceiver(FnDclNode *fn, StructNode *enumnode) {
+    if (fn->vtype == NULL || fn->vtype->tag != FnSigTag)
+        return 0;
+    Nodes *parms = ((FnSigNode*)fn->vtype)->parms;
+    if (parms == NULL || parms->used == 0 || nodesGet(parms, 0)->tag != VarDclTag
+        || ((VarDclNode*)nodesGet(parms, 0))->namesym != selfName)
+        return 0;
+    INode *type = ((VarDclNode*)nodesGet(parms, 0))->vtype;
+    while (type && type->tag == RefTag)
+        type = ((RefNode*)type)->vtexp;
+    return type != NULL && parseNamesType(type, enumnode);
+}
+
 // Join a variant to the enum that declares it: the closed-type flags, the
 // base link back to the enum, the tag number, and its name.
 //
@@ -1038,6 +1054,11 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
             // which is where their bodies are needed, so they have no one
             // definition elsewhere to name
             uint16_t externflag = 0;
+            // An enum's method whose receiver names the enum ('self &Lamp') is one
+            // function over the whole enum, defined in one place, so an include file
+            // may declare it 'extern'. Which receiver is written is known only once
+            // the signature is parsed, where it is checked
+            int externenum = 0;
             if (lexIsToken(ExternToken)) {
                 lexNextToken();
                 if (!lexIsToken(FnToken)) {
@@ -1046,7 +1067,9 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                     parseSkipToNextStmt();
                     continue;
                 }
-                if (strnode->flags & TraitType)
+                if (isenum)
+                    externenum = 1;
+                else if (strnode->flags & TraitType)
                     errorMsgLex(ErrorBadExtern,
                         "A trait's method is a requirement each implementer meets, or a default copied into each, so it is defined in no one place for 'extern' to name.");
                 else if (strnode->genericinfo)
@@ -1074,6 +1097,10 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                     nodesAdd(&parse->dcltexts->behaviours, (INode*)fn);
                 fn->flags |= externflag;
                 parseExternFnCheck(fn);
+                if (externenum && !parseNamesEnumReceiver(fn, strnode))
+                    errorMsgNode((INode*)fn, ErrorBadExtern,
+                        "An enum's method is a requirement each variant meets, or a default copied into each, so it is defined in no one place for 'extern' to name, unless its receiver names the enum, as 'self &%s'.",
+                        &strnode->namesym->namestr);
                 // A function whose name was missing is reported and not added:
                 // the type's namespace binds names, and it has none
                 if (fn->namesym) {

@@ -912,7 +912,7 @@ static void genlGenericInstanceSyms(GenState *gen, INode *instance) {
     INode **nodesp;
     uint32_t cnt;
     for (nodelistFor(&((INsTypeNode*)instance)->nodelist, cnt, nodesp)) {
-        if (istrait && ((*nodesp)->flags & FlagMethFld))
+        if (istrait && ((*nodesp)->flags & FlagMethFld) && !structIsWholeEnumMethod(*nodesp))
             continue;
         genlGlobalSyms(gen, *nodesp);
     }
@@ -961,7 +961,8 @@ void genlGlobalSyms(GenState *gen, INode *node) {
                 // owns and names the copy. Its static functions are its own --
                 // nothing inherits or dispatches them -- so they are generated
                 // here or nowhere, and 'Trait.name()' loaded a null without this.
-                if (istrait && ((*nodesp)->flags & FlagMethFld))
+                // (an enum's method over the whole enum, 'self &Lamp', is its own)
+                if (istrait && ((*nodesp)->flags & FlagMethFld) && !structIsWholeEnumMethod(*nodesp))
                     continue;
                 genlGlobalSyms(gen, *nodesp);
             }
@@ -1039,7 +1040,7 @@ void genlGlobalImpl(GenState *gen, INode *node) {
             uint32_t cnt;
             int istrait = node->tag == StructTag && (node->flags & TraitType);
             for (nodelistFor(&tnode->nodelist, cnt, nodesp)) {
-                if (istrait && ((*nodesp)->flags & FlagMethFld))
+                if (istrait && ((*nodesp)->flags & FlagMethFld) && !structIsWholeEnumMethod(*nodesp))
                     continue;
                 genlGlobalImpl(gen, *nodesp);
             }
@@ -1139,7 +1140,7 @@ static void genlImportedInstances(GenState *gen, INode *node) {
         // A non-generic type's generic methods
         int istrait = node->flags & TraitType;
         for (nodelistFor(&strnode->nodelist, cnt, nodesp)) {
-            if (istrait && ((*nodesp)->flags & FlagMethFld))
+            if (istrait && ((*nodesp)->flags & FlagMethFld) && !structIsWholeEnumMethod(*nodesp))
                 continue;
             genlImportedInstances(gen, *nodesp);
         }
