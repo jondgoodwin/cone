@@ -1616,7 +1616,10 @@ class Linker:
                 "/SUBSYSTEM:CONSOLE", "msvcrt.lib", "legacy_stdio_definitions.lib",
                 "synchronization.lib",
             ]
-        return [self.tool, *map(str, objs), str(self.conestd), "-o", str(exe), "-lm"]
+        # -lpthread: the thread package's pthread_create; the C library holds
+        # it since glibc 2.34, and older ones keep it in a library of its own
+        return [self.tool, *map(str, objs), str(self.conestd), "-o", str(exe), "-lm",
+                "-lpthread"]
 
 
 # ---------------------------------------------------------------------------

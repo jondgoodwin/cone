@@ -1327,7 +1327,7 @@ class Linker:
                     "legacy_stdio_definitions.lib"]
         return [self.tool, *map(str, objs), str(self.conestd),
                 *(f"-L{p}" for p in paths), *(f"-l{lib}" for lib in libraries),
-                "-o", str(exe), "-lm"]
+                "-o", str(exe), "-lm", "-lpthread"]
 
 
 # ---------------------------------------------------------------------------
@@ -2006,13 +2006,17 @@ def normalized_lines(text: str) -> list[str]:
 
 def expected_exit(program: Path) -> int:
     """tests/<name>.exit holds the exit status the program must end with, where
-    it is not 0: one integer, as the compiler suite's 'program_exit' is."""
+    it is not 0: one integer, as the compiler suite's 'program_exit' is. A file
+    is written on Windows, so its number for a panic, the fail-fast status
+    3221226505, is read off Windows as the status abort ends a process with there,
+    killed by SIGABRT (-6), as the compiler suite's ABORT_STATUS is."""
     path = program.with_suffix(".exit")
     if not path.is_file():
         return 0
     text = path.read_text(encoding="utf-8").strip()
     try:
-        return int(text)
+        status = int(text)
+        return -6 if status == 0xC0000409 and not IS_WINDOWS else status
     except ValueError:
         raise CongoError(f"{shown(path)} must hold one integer, the exit status the"
                          f" test ends with; it holds {text!r}") from None

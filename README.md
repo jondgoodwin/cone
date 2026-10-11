@@ -86,8 +86,11 @@ with the X86, WebAssembly and SPIR-V targets from [apt.llvm.org][aptllvm] (its
 	cmake --build build/x64-release
 	python3 test/run.py --conec build/x64-release/conec
 
-A plain program (no actors or threads) compiles, links and runs; what is built
-on threads and futexes is still Windows only. `conec` makes position-independent
+A plain program compiles, links and runs, and so do threads, the `sync`
+package's locks and channels, and actors (the `thread`, `sync` and `actors`
+packages bind pthreads and the futex); what is built on the rest of the OS
+(`iocore`, `process`, `fs` and `posix` beyond `libc`) is still Windows only.
+`conec` makes position-independent
 code by default on Linux, as the usual `cc` links position-independent
 executables (`--nopic` opts out). Linking LLVM's static components takes about
 850 MB of memory; on a small machine, changing

@@ -16,8 +16,16 @@ import thread;
 import time use Duration, Instant;
 import collections use String;
 
+// The OS's own answer to who is running: kernel32's on Windows, on Linux the
+// kernel's thread id, which conestd's oscalls.c makes callable. Both are
+// declared everywhere and only the target's is called
 extern {
   fn @c(system) GetCurrentThreadId() u32;
+}
+extern fn @c cone_threadId() u32;
+
+fn osThreadId() u32 {
+  if isWindows() {GetCurrentThreadId();} else {cone_threadId();}
 }
 
 // What a thread sees of itself
@@ -29,7 +37,7 @@ struct Seen {
 
 fn look(want &str) Seen {
   imm me = thread.current();
-  new Seen(me.id(), GetCurrentThreadId(), me.name() == want);
+  new Seen(me.id(), osThreadId(), me.name() == want);
 }
 
 fn lookUnnamed(x i64) Seen { look(""); }
@@ -55,7 +63,7 @@ fn main() i32 {
 
   imm main = thread.current();
   expectStr(main.name(), "", "the main thread's name");
-  expectUInt(u64.from(main.id()), u64.from(GetCurrentThreadId()), "the main thread's id");
+  expectUInt(u64.from(main.id()), u64.from(osThreadId()), "the main thread's id");
   expect(main.id() != seen.id, "a started thread's id is not main's");
   expect(plainSeen.id != seen.id, "two threads' ids differ");
 
