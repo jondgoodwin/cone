@@ -87,7 +87,7 @@
 // (test/cases/lifetime/lifetime_inv_*.cone): another arena's key, a key used
 // without its arena, a key kept past the loop pass whose arena made it.
 //
-// Memory. A block is allocated with the C library's 'malloc'. If that fails,
+// Memory. A block comes from the raw blocks layer (core's 'RawBlocks'). If that fails,
 // or the room asked for cannot be counted in a usize, the arena panics. There
 // is no fallible form of 'alloc' yet ('trynew a[T](...)' is refused).
 //
@@ -303,7 +303,7 @@ struct ArenaCore is GcTraceElements {
     while blocks as usize != 0usize {
       imm blk = blocks;
       blocks = (blk as &Block).prev;
-      libc.free(blk as *u8);
+      RawBlocks.release(blk as *u8);
     }
   }
 }
@@ -437,13 +437,13 @@ fn blockRoom(need usize) usize {
 }
 
 // A new block with 'room' bytes after its header, the block before it 'prev'.
-// A block the C library cannot allocate, or whose size does not fit in a
+// A block the raw blocks layer cannot give, or whose size does not fit in a
 // usize, is a panic.
 fn newBlock(prev *Block, room usize) *Block {
   if room > (0usize - 1usize) - mem.sizeof[Block]() {
     panic("arena: a block that large cannot be counted in a usize");
   }
-  imm blk = libc.malloc(mem.sizeof[Block]() + room) as *Block;
+  imm blk = RawBlocks.alloc(mem.sizeof[Block]() + room, 16usize) as *Block;
   if blk as usize == 0usize { panic("arena: out of memory for a block"); }
   mem.writeRaw(blk, new Block(prev));
   blk;

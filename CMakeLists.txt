@@ -192,6 +192,7 @@ set(CONESTD_CONE
 	${CMAKE_SOURCE_DIR}/packages/conestd/barrier.cone
 	${CMAKE_SOURCE_DIR}/packages/conestd/hash.cone
 	${CMAKE_SOURCE_DIR}/packages/conestd/panic.cone
+	${CMAKE_SOURCE_DIR}/packages/conestd/rawblocks.cone
 	${CMAKE_SOURCE_DIR}/packages/conestd/roots.cone
 	${CMAKE_SOURCE_DIR}/packages/conestd/stdio.cone
 )

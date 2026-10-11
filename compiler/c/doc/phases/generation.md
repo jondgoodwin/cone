@@ -822,13 +822,15 @@ nulled and the reference becomes the allocation's birth, or the local it is
 given to, so the block lives no longer than its owners.
 
 `So` and `Rc` are declared in Cone source in the core package,
-`packages/core/src/core.cone` ([What a region is](../nodes/module.md)). `malloc`
-and `free` are `libc`'s ordinary `extern` declarations, which `core`'s import
-of `libc` puts in every compile; the regions' `alloc` and `free` call them by
-their qualified names, and a program's own declaration of `free` meets
-`libc`'s as any two declarations of one C name do (`genlClaimSymbol`).
-`conestd` supplies stdio and the head of the roots' chain and its walk (below),
-no allocator.
+`packages/core/src/core.cone` ([What a region is](../nodes/module.md)). Their
+`alloc` and `free` call core's `RawBlocks`, the raw blocks layer, which `conestd`
+defines (`rawblocks.cone`: `cone_rawBlockAlloc`, `cone_rawBlockResize`,
+`cone_rawBlockRelease`, each a forward to `libc`'s `malloc`, `realloc` or `free`,
+`libc`'s ordinary `extern` declarations, which `core`'s import of `libc` puts in
+every compile). A program's own declaration of `free` meets `libc`'s as any two
+declarations of one C name do (`genlClaimSymbol`). `conestd` also supplies stdio
+and the head of the roots' chain and its walk (below), and no allocator of its
+own.
 
 ### Roots: the shadow stack
 
@@ -1090,7 +1092,7 @@ get no symbol at all: their parameters become allocas at the call site and their
 body is generated inline, as a block whose returns are breaks out of it. With
 more than one return that block converges on a phi of the function's return
 type, which type check stored as the body block's `vtype`. This is how the region allocator becomes a direct
-`malloc` call at each allocation. Having no symbol, one cannot be borrowed:
+call of the raw blocks layer's `cone_rawBlockAlloc` at each allocation. Having no symbol, one cannot be borrowed:
 `borrowTypeCheck` refuses `&name` on an inline function (`ErrorInlineRef`), so
 `genlAddr`'s function arm never meets a declaration without an `llvmvar`.
 
@@ -2346,6 +2348,7 @@ variables.
 | | `genlBarrierAt`, `itypeHoldsBarriered` | the write barrier: the same walk over a value just stored, each reference into a region with a `writeBarrier` handed to it |
 | `packages/conestd/roots.cone` | `cone_gcframes`, `cone_traceRoots` | the head of the chain of frames, and its walk, which `mem.traceRoots` calls |
 | `packages/conestd/barrier.cone` | `cone_barrierHook`, `cone_barrierCtx`, `cone_setBarrierHook`, `cone_clearBarrierHook` | the thread's barrier hook and its context, which a barrier on the CPU calls, and core's `setBarrierHook` and `clearBarrierHook` |
+| `packages/conestd/rawblocks.cone` | `cone_rawBlockAlloc`, `cone_rawBlockResize`, `cone_rawBlockRelease` | the raw blocks layer, `libc`'s `malloc`, `realloc` and `free` and nothing more: core's `RawBlocks`, which the regions of `So`, `Rc` and `Arc`, the heap region (`heapregion.c`), the collections' `freeze`, an arena's blocks and an actor's chunks go through |
 | `packages/conestd/hash.cone` | `cone_hashSeed` | the process's hash seed, 64 random bits from the OS (the C runtime's `rand_s`) drawn once, the first time core's `processSeed` asks, from any thread: what `Hasher.seeded()` starts from |
 | `ir/types/reference.h` | `enum ManagedRefFields` | `RegionField`, `PermField`, `ValueField` |
 | `ir/name.c` | `nameSymbol`, `nameType`, `nameVtable`, `nameVtableImpl`, `nameVtableList` | spelling a symbol from a node's owner chain and facts, and a type argument within it — the rules are in [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Symbols" |
