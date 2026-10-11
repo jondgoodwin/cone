@@ -765,7 +765,7 @@ class Scenarios(unittest.TestCase):
                 """)
             run = self.congo("run", f"{name}.cone", cwd=self.root, ok=False)
             self.assertNotEqual(run.returncode, 0, name)
-            self.assertIn("may not be borrowed mutably", run.stdout + run.stderr, name)
+            self.assertIn("could change the shape of a", run.stdout + run.stderr, name)
 
     def test_an_indirect_package_runs_its_init_once(self):
         # A diamond: the program imports a and c, each of which imports b, and
