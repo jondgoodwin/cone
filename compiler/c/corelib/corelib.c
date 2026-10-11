@@ -98,6 +98,7 @@ StructNode *threadSafeTrait;
 StructNode *shapeChangingTrait;
 StructNode *noLoanMutTrait;
 StructNode *noLoanReadTrait;
+StructNode *carriesRegionTrait;
 StructNode *atomicValueTrait;
 StructNode *integerTrait;
 StructNode *pointerTrait;
@@ -174,6 +175,7 @@ int corelibIsBuiltinTrait(INode *node) {
         || node == (INode*)tracedTrait || node == (INode*)threadSafeTrait
         || node == (INode*)shapeChangingTrait
         || node == (INode*)noLoanMutTrait || node == (INode*)noLoanReadTrait
+        || node == (INode*)carriesRegionTrait
         || node == (INode*)atomicValueTrait || node == (INode*)integerTrait
         || node == (INode*)pointerTrait || node == (INode*)sendableTrait
         || node == (INode*)shareableTrait
@@ -316,6 +318,15 @@ void stdlibInit(int ptrsize) {
     shapeChangingTrait = newBuiltinTrait(shapeChangingTraitName);
     noLoanMutTrait = newBuiltinTrait(noLoanMutTraitName);
     noLoanReadTrait = newBuiltinTrait(noLoanReadTraitName);
+    // 'CarriesRegion': a type whose memory comes from a region it is handed
+    // when it is made, and which it keeps to grow and give back through: a
+    // growable collection. The region is core's 'MemRegion', held as a '*MemRegion'.
+    // The type declares an init, and each init's last parameter is
+    // 'region *MemRegion'; a construction that does not pass one is handed the
+    // heap's (typelit.c, typeLitRegionArg). It is the one place the compiler
+    // knows a collection's memory, and it knows no collection by name: any type
+    // declaring the trait is treated alike (structCarriesRegionCheck).
+    carriesRegionTrait = newBuiltinTrait(carriesRegionTraitName);
     // 'AtomicValue' [Jon 26 Sep]: a struct declaring it is changed only by
     // atomic operations, even where it is 'imm' -- the one exception to 'imm
     // never changes'. It is a struct of one field, an integer, a bool or a raw

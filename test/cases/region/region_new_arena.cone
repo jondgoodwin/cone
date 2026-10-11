@@ -1,0 +1,69 @@
+// An allocation that names an arena value, 'new a[Pt](1, 2)': the arena in the
+// head, the type in brackets, the arguments those of the type's init. It means
+// 'a.alloc(new Pt(1, 2))' and answers what that arena's 'alloc' answers, so the
+// borrow rules that apply to an allocation apply to it (region_flow_arena_new).
+// Every expected line is worked out by hand:
+// - an Arena gives a '&mut Pt': 'p' is 1 and 2, then changed through it to 10
+//   and 2 (12 summed), and the permission may be written, 'new a[mut, Pt](3, 4)':
+//   7;
+// - the type may be a generic instance: 'new a[List[i64]](8)' is a List with
+//   room for 8, kept in the arena, 3 values pushed through the reference;
+// - a type with a 'final' is finalized when the arena dies, newest first: the
+//   arena ends inside its block, so '21' is printed there, before "after";
+// - a DynArena gives a key, '&'=a mut Pt', read and written through the arena:
+//   5 + 6 = 11, then x set to 50: 56;
+// - the value is made where the arena is lent, so the arguments are checked
+//   as a construction's are: 'new a[Pt](y: 8, x: 7)' names the fields, 15.
+
+mod region_new_arena;
+
+import stdio use *;
+import arena use *;
+import collections use *;
+
+struct Pt {
+  pub x i64;
+  pub y i64;
+  pub fn sum(self &) i64 { x + y; }
+}
+
+struct Fin {
+  pub n i64;
+  fn final(self &uni) { printInt(n); }
+}
+
+fn main() i32 {
+  {
+    mut a = Arena.empty();
+    imm p = new a[Pt](1, 2);
+    p.x = 10;
+    printInt(p.sum());
+    printStr("\n");
+    imm q = new a[mut, Pt](3, 4);
+    printInt(q.sum());
+    printStr("\n");
+    imm named = new a[Pt](y: 8, x: 7);
+    printInt(named.sum());
+    printStr("\n");
+    imm l = new a[List[i64]](8usize);
+    l.push(5);
+    l.push(6);
+    l.push(7);
+    printInt(i64.from(l.len()) * 100 + i64.from(l.capacity()));
+    printStr("\n");
+  }
+  {
+    mut a = Arena.empty();
+    new a[Fin](1);
+    new a[Fin](2);
+  }
+  printStr("\nafter\n");
+  mut d = DynArena.empty();
+  imm k = new d[Pt](5, 6);
+  printInt(d[k].sum());
+  printStr("\n");
+  d[k].x = 50;
+  printInt(d[k].sum());
+  printStr("\n");
+  0i32;
+}

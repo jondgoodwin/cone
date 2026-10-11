@@ -235,6 +235,19 @@ void sliceEqDclNameRes(FnDclNode *fndcl);
 // name resolved, or in a compile whose core declares none
 FnDclNode *sliceEqFn(void);
 
+// Core's MemRegion struct, known by its name and its package: a CarriesRegion
+// type holds a '*MemRegion'
+int coreIsRegion(INode *dcl);
+
+// A function declaration, once name resolved: if it is core's 'heapRegion',
+// hold it to its signature and remember it for heapRegionFn
+void heapRegionDclNameRes(FnDclNode *fndcl);
+
+// Core's 'fn heapRegion() *MemRegion', which a construction of a CarriesRegion type
+// that names no region is handed the result of (typeLitRegionArg); NULL before
+// core's declaration is name resolved, or in a compile whose core declares none
+FnDclNode *heapRegionFn(void);
+
 // Type check what is left of a declared intrinsic's instance, lowered or not:
 // the type an atomic operation acts on must be of the class its entry names.
 // Answers 0, having reported it, when it is not, so its fallback body is not

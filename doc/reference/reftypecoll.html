@@ -22,7 +22,8 @@
 		constructed with <span class="pre">new</span>, its first values after
 		<span class="pre">&lt;-</span>: <span class="pre">new List[i32](100) &lt;- fill 0</span>
 		(<a href="refmethop.html#contents">a collection's contents</a>). Each holds its elements in
-		one block it gets from the C allocator through a raw pointer, not in an array reference. A borrow
+		one block it gets from its region (the heap's, which is the C allocator, unless it was made in another;
+			see below) through a raw pointer, not in an array reference. A borrow
 		of an element (<span class="pre">list[i]</span>, <span class="pre">dict[key]</span>,
 		<span class="pre">s.view()</span>) keeps a local collection loaned while it is used: it may be
 		read, but a push, which may move every element, waits for the borrow's last use (see
@@ -46,6 +47,46 @@
 		only where <span class="pre">T</span> copies; a list of values with finalizers is shortened with
 		<span class="pre">truncate</span>.
 		The array primitives are implemented as far as the next two pages say.</i></p>
+
+	<p style="margin-left: 40px;"><i>Note: <b>The region a collection's block comes from.</b> Every
+		growable collection (<span class="pre">List</span>, <span class="pre">String</span>,
+		<span class="pre">Deque</span>, <span class="pre">Dict</span>, <span class="pre">OrderedDict</span>,
+		<span class="pre">Set</span> and the <span class="pre">pool</span> package's <span class="pre">Pool</span>)
+		gets, grows and gives back its block through a <span class="pre">*MemRegion</span> it holds as its
+		last field, not through the C library. A <span class="pre">MemRegion</span> (core) is three
+		function references, <span class="pre">allocFn</span>, <span class="pre">resizeFn</span> and
+		<span class="pre">releaseFn</span>, held in a struct's first field and handed that field's
+		address: <span class="pre">allocate(bytes, align)</span> gives a block,
+		<span class="pre">resize(block, old, new, align)</span> makes it longer, in place or by copying to a new
+		one (a null block of 0 bytes is an allocation), and <span class="pre">release(block, bytes)</span>
+		gives it back. The heap's region, <span class="pre">heapRegion()</span>, is one static object that is
+		never null, whose functions are <span class="pre">malloc</span>, <span class="pre">realloc</span> and
+		<span class="pre">free</span>; a collection made without a region points to it, so
+		<span class="pre">new List[i32]</span> and <span class="pre">List[i32].empty()</span> are as they
+		were. Another region is the construction's last argument: <span class="pre">new List[i32](100,
+		r)</span>, <span class="pre">new Dict[String, i64](r)</span>, where <span class="pre">r</span> is a
+		<span class="pre">*MemRegion</span>. Every block of the collection is then the region's, and its death
+		gives each back to it. A type declares <span class="pre">CarriesRegion</span> (a provisional name)
+		to say that it gets its memory this way: it declares an init, and every init it declares ends
+		with the parameter <span class="pre">region *MemRegion</span>, which a construction naming none
+		leaves out and the compiler fills in with the heap's. A collection that cannot hand its block over,
+		because the owner of <span class="pre">freeze()</span> frees it with the C library, moves its values
+		into a heap block first when its region is not the heap's. The word costs 8 bytes a collection:
+		a <span class="pre">List</span> and a <span class="pre">String</span> are 32 bytes (24 before), a
+		<span class="pre">Deque</span> 40, a <span class="pre">Dict</span> and a <span class="pre">Set</span> 56, an
+		<span class="pre">OrderedDict</span> 64. Every collection takes a starting size as its first
+		argument, <span class="pre">new Deque[i32](100)</span>, <span class="pre">new String(100)</span> (bytes),
+		<span class="pre">new Dict[String, i64](100)</span> and likewise <span class="pre">OrderedDict</span> and
+		<span class="pre">Set</span> (entries, without growing; the table rounds the room up to its size),
+		<span class="pre">new Pool[Npc](100)</span> (slots), and a <span class="pre">withCapacity(n)</span> function
+		makes one: <span class="pre">Dict[String, i64].withCapacity(100)</span>. Any type may declare
+		<span class="pre">CarriesRegion</span>, not only a collection: a struct that holds lists declares it and
+		passes its own <span class="pre">region</span> on to them,
+		<span class="pre">init(self &amp;new, n usize, region *MemRegion) { *self = new Mesh(pts: new List[f32](n, region), ...) }</span>,
+		so everything it is made of comes from the one region it was handed. A collection made
+		in an arena, <span class="pre">new arena[List[i32]](16)</span> (<a href="refregionglo.html">the arena's
+		allocation</a>), has its own words in the arena and its block from the region passed last, the heap's
+		if none: an arena is not yet a region a block can come from.</i></p>
 
 	<p style="margin-left: 40px;"><i>Note: A list is <span class="pre">String</span>'s twin for any element.
 		<span class="pre">list.view()</span> lends its elements as a <span class="pre">&amp;Array[T]</span>, the slice, and the

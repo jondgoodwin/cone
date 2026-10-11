@@ -1,0 +1,39 @@
+// 'new a[Pt](1, 2)' is 'a.alloc(new Pt(1, 2))' and gives what 'alloc' gives, so a
+// reference into an arena held in a local is a borrow of that local as it is
+// there (region_flow_arena_escape pins each route): it may not be returned from
+// the function holding the arena, alone or through a variable, nor kept past the
+// arena and used, and the arena may not be moved while it is still used.
+
+mod region_flow_arena_new;
+
+import arena use *;
+
+struct Pt { pub x i64; pub y i64; }
+
+fn returned() &mut Pt {
+  mut a = Arena.empty();
+  new a[Pt](1, 2);              //~ ErrorEscape:3 "outlives"
+}
+
+fn returnedVar() &mut Pt {
+  mut a = Arena.empty();
+  imm p = new a[mut, Pt](1, 2);
+  p;                            //~ ErrorEscape:3 "outlives"
+}
+
+fn outerVariable() i64 {
+  mut dummy = new Pt(0, 0);
+  mut r = &mut dummy;
+  {
+    mut a = Arena.empty();      //~ ErrorFrozen "goes out of scope"
+    r = new a[Pt](1, 2);
+  }
+  r.x;
+}
+
+fn movedWhileUsed() i64 {
+  mut a = Arena.empty();
+  imm p = new a[Pt](1, 2);
+  imm b = a;                    //~ ErrorFrozen
+  p.x;
+}

@@ -2507,12 +2507,69 @@ void structNameRes(NameResState *pstate, StructNode *node) {
     if (structDeclaresTrait(node, moveTrait) || structDeclaresTrait(node, atomicValueTrait))
         node->flags |= MoveType;
     structLendsDeclared(node);
+    structCarriesRegionCheck(node);
     nametblHookPop();
     if (enclosing)
         nametblHookPop();
     pstate->typenode = svtypenode;
     pstate->expander = svexpander;
     node->flags = (node->flags & ~NameResolving) | NameResolved;
+}
+
+// Is this init's last parameter 'region *MemRegion', core's MemRegion?
+static int structInitTakesRegion(FnDclNode *init) {
+    FnSigNode *sig = (FnSigNode*)init->vtype;
+    if (sig == NULL || sig->tag != FnSigTag || sig->parms->used < 2)
+        return 0;
+    VarDclNode *last = (VarDclNode*)nodesGet(sig->parms, sig->parms->used - 1);
+    if (last->namesym == NULL || strcmp(&last->namesym->namestr, "region") != 0 || last->value != NULL)
+        return 0;
+    INode *type = last->vtype;
+    if (type == NULL || type->tag != PtrTag)
+        return 0;
+    INode *pointee = ((StarNode*)type)->vtexp;
+    INode *dcl = pointee && isNameUseNode(pointee) ? nameUseGetDcl((NameUseNode*)pointee) : pointee;
+    return coreIsRegion(dcl);
+}
+
+// A type declaring CarriesRegion gets the memory it grows in from a region it is
+// handed when it is made, and keeps it. Its inits are how it is handed one, so it
+// declares at least one, and each ends with the parameter 'region *MemRegion':
+// the construction's last argument, which a construction naming no region does
+// not write and is handed the heap's (typelit.c, typeLitRegionArg). The
+// compiler checks only that shape; where the type keeps the region, and what
+// it does with it, are the type's own.
+void structCarriesRegionCheck(StructNode *node) {
+    if (!structDeclaresTrait(node, carriesRegionTrait))
+        return;
+    INode *inits = iNsTypeFindFnField((INsTypeNode*)node, initMethodName);
+    int found = 0;
+    if (inits && (inits->tag == FnDclTag || inits->tag == FnOverloadDclTag)) {
+        INode **candp;
+        uint32_t ncand;
+        if (inits->tag == FnDclTag) {
+            candp = &inits;
+            ncand = 1;
+        }
+        else {
+            candp = &nodesGet(((FnOverloadDclNode*)inits)->overloads, 0);
+            ncand = ((FnOverloadDclNode*)inits)->overloads->used;
+        }
+        while (ncand--) {
+            FnDclNode *cand = (FnDclNode*)*candp++;
+            if (!fnDclIsInit(cand))
+                continue;
+            ++found;
+            if (!structInitTakesRegion(cand))
+                errorMsgNode((INode*)cand, ErrorRegionMark,
+                    "%s declares CarriesRegion, so each of its inits ends with the parameter 'region *MemRegion': the region the construction hands it, which the init keeps.",
+                    &node->namesym->namestr);
+        }
+    }
+    if (found == 0)
+        errorMsgNode((INode*)node, ErrorRegionMark,
+            "%s declares CarriesRegion, so it declares an init, which ends with the parameter 'region *MemRegion': the region a construction hands it.",
+            &node->namesym->namestr);
 }
 
 // What this type's element borrows cost it, as its 'is' list declares

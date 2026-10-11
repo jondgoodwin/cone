@@ -1,0 +1,101 @@
+// A type declaring 'CarriesRegion' gets the region its memory comes from as the
+// last argument of its inits (core's 'MemRegion', held as a '*MemRegion'). A
+// construction that names none, by whatever form it is written, is handed the
+// heap's, 'heapRegion()'; one that passes a region is handed that. 'Probe' is such
+// a type, with two inits that end with the region; it keeps what it was handed
+// in a public field so that the construction can be read back. Every expected
+// line is worked out by hand from what each construction names:
+// - 'new Probe()' and 'new Probe(5)' name no region: the heap's;
+// - 'new Probe(6, other)' and 'new Probe(other)' pass 'other', a second region
+//   that is not the heap's;
+// - a Probe inside a struct, in a list, and inside an owner is constructed by
+//   the same 'new Probe(...)', so it too is handed the heap's;
+// - a Shape, made of a Probe, declares it too and passes its own region to the
+//   Probe's construction: 'new Shape(11, other)' has 'other' in both, and
+//   'new Shape(12)' the heap's in both;
+// - the collections declare it themselves, so a List is 32 bytes, three words
+//   and its region (24 before it kept one), and a String, which is a List and
+//   nothing else, is 32 too. (The collections package's own tests, regions,
+//   pin that their blocks come from the region they were given.)
+
+mod collection_region_handover;
+
+import stdio use *;
+import collections use *;
+
+struct Probe is CarriesRegion {
+  pub n i64;
+  pub region *MemRegion;
+
+  pub fn initEmpty overload init(self &new, region *MemRegion) { *self = new Probe(n: 0i64, region: region); }
+  pub fn initOne overload init(self &new, n i64, region *MemRegion) { *self = new Probe(n: n, region: region); }
+}
+
+struct Holder {
+  pub probe Probe;
+}
+
+// A type that is made of another that carries a region declares the trait too,
+// and passes the region it was handed on: the part it holds is made in it
+struct Shape is CarriesRegion {
+  pub probe Probe;
+  pub region *MemRegion;
+
+  pub fn init(self &new, n i64, region *MemRegion) {
+    *self = new Shape(probe: new Probe(n, region), region: region);
+  }
+}
+
+// A region that is not the heap's: three functions that give nothing, since
+// nothing is ever allocated from it here
+fn noAlloc(r *MemRegion, bytes usize, align usize) *u8 { null; }
+fn noResize(r *MemRegion, block *u8, oldBytes usize, newBytes usize, align usize) *u8 { null; }
+fn noRelease(r *MemRegion, block *u8, bytes usize) {}
+
+fn line(label &str, ok bool) {
+  printStr(label);
+  printStr(": ");
+  printStr(if ok { "yes"; } else { "no"; });
+  printStr("\n");
+}
+
+fn isHeap(r *MemRegion) bool { r as usize == heapRegion() as usize; }
+
+fn main() i32 {
+  mut other = new MemRegion(&noAlloc, &noResize, &noRelease);
+  imm o = &mut other as *MemRegion;
+
+  imm a = new Probe();
+  line("new Probe() is handed the heap's", isHeap(a.region) and a.n == 0i64);
+  imm b = new Probe(5i64);
+  line("new Probe(5) is handed the heap's", isHeap(b.region) and b.n == 5i64);
+  imm c = new Probe(6i64, o);
+  line("new Probe(6, other) keeps other", c.region as usize == o as usize and c.n == 6i64);
+  imm d = new Probe(o);
+  line("new Probe(other) keeps other", d.region as usize == o as usize and d.n == 0i64);
+  line("and other is not the heap's", not isHeap(o));
+
+  imm h = new Holder(new Probe(7i64));
+  line("a Probe in a struct is handed the heap's", isHeap(h.probe.region) and h.probe.n == 7i64);
+  mut ps = List[Probe].empty();
+  ps.push(new Probe(8i64));
+  line("a Probe in a list is handed the heap's", isHeap(ps[0usize].region) and ps[0usize].n == 8i64);
+  imm rc = new Rc[Probe](9i64);
+  line("a Probe in an Rc is handed the heap's", isHeap(rc.region) and rc.n == 9i64);
+
+  imm s = new Shape(11i64, o);
+  line("a Shape passes its region on to the Probe it holds", s.region as usize == o as usize
+    and s.probe.region as usize == o as usize and s.probe.n == 11i64);
+  imm t = new Shape(12i64);
+  line("a Shape that names none, and so its Probe, are handed the heap's", isHeap(t.region)
+    and isHeap(t.probe.region) and t.probe.n == 12i64);
+
+  printStr("a Probe is ");
+  printUInt(u64.from(mem.sizeof[Probe]()));
+  printStr(" bytes, a List ");
+  printUInt(u64.from(mem.sizeof[List[i64]]()));
+  printStr(", a String ");
+  printUInt(u64.from(mem.sizeof[String]()));
+  printStr("\n");
+  0i32;
+}
