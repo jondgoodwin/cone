@@ -970,6 +970,35 @@ static int fnCallBoolOperandWantsNumber(FnCallNode *callnode, INode *foundnode, 
     return 0;
 }
 
+// A field that is a '&uni' reference is seen -- read, lent or written -- only
+// where every reference on the way to it is 'uni' too, or the struct holding it
+// is held by value (refperm.html, "Viewpoint Adaptation"): through a '&' or a
+// '&mut' there may be another name for the same struct, and the one reference
+// that promised to be unique would be reached by both. The access 'access' of
+// field 'fld' is refused otherwise.
+static void fnCallUniFieldSeen(FnCallNode *access, FieldDclNode *fld) {
+    INode *fldtype = itypeGetTypeDcl(fld->vtype);
+    if ((fldtype->tag != RefTag && fldtype->tag != ArrayRefTag && fldtype->tag != VirtRefTag)
+        || itypeGetTypeDcl(((RefNode*)fldtype)->region) != (INode*)borrowRef
+        || itypeGetTypeDcl(((RefNode*)fldtype)->perm) != (INode*)uniPerm)
+        return;
+    INode *link = iexpPathNonUniLink((INode*)access);
+    if (link == NULL)
+        return;
+    Name *permname = inodeGetName(itypeGetTypeDcl(((RefNode*)link)->perm));
+    char *perm = permname ? &permname->namestr : "";
+    char how[64];
+    if (itypeGetTypeDcl(((RefNode*)link)->region) == (INode*)borrowRef || link->tag != RefTag)
+        snprintf(how, sizeof(how), "a `&%s` reference", strcmp(perm, "ro") == 0 ? "" : perm);
+    else
+        snprintf(how, sizeof(how), "an owner with permission `%s`", perm);
+    errorMsgNode((INode*)access, ErrorUniShared,
+        "The `&uni` field `%s` cannot be seen through %s: that reference could be another name for the struct holding the field, "
+        "and reaching it would share what is supposed to be a unique reference. Reach the field through a `&uni` reference or a "
+        "struct held by value.",
+        &((NameUseNode*)access->methfld)->namesym->namestr, how);
+}
+
 // Find the one field or method that accepts the call's receiver and arguments,
 // then lower the node to a function call (objfn+args) or field access (objfn+methfld).
 // A receiver held through a reference or pointer is dereferenced where the selected
@@ -991,6 +1020,7 @@ INode *fnCallFieldAccess(INode *obj, FieldDclNode *fld, INode *lexnode) {
     access->methfld = newNameUseFromDclNode((INode*)fld, lexnode);
     access->vtype = lifeBrandField(((IExpNode*)obj)->vtype, fld->vtype, lexnode);
     access->tag = FldAccessTag;
+    fnCallUniFieldSeen(access, fld);
     return (INode*)access;
 }
 
@@ -1573,6 +1603,7 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
         callnode->vtype = methfld->vtype = lifeBrandField(((IExpNode*)callnode->objfn)->vtype,
             ((IExpNode*)foundnode)->vtype, (INode*)callnode);
         callnode->tag = FldAccessTag;
+        fnCallUniFieldSeen(callnode, fld);
         return 1;
     }
 

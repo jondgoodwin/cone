@@ -453,6 +453,13 @@ mutably borrowed. The sources need not share a name: two different variables tha
 each a `&mut` (two parameters) may be the one buffer, since the caller may pass it twice,
 so `ErrorParSources` is also reported for them (`ParAlias.viaref`).
 
+A field that is a `&uni` reference (borrow, slice or virtual reference), named through a
+reference on the way to it that is not `uni` (a `&`, a `&mut`, a virtual reference, an owner
+of permission `mut`), is `ErrorUniShared` (type check, `fnCallUniFieldSeen` in `fncall.c`):
+the access is refused whatever is done with it, because another name for the struct holding
+the field could reach the one reference that promised to be unique
+([references](../nodes/references.md), "A `&uni` field is seen only through `uni` references").
+
 A trait named as a pattern ([cast](../nodes/cast.md), "Trait patterns") has three codes. On an enum, a
 trait that no variant complies with matches nothing: `ErrorPatTraitNone` (a method over the whole enum
 is no variant's). A trait pattern that binds needs a borrowed reference to build a virtual reference

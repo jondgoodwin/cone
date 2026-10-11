@@ -99,6 +99,11 @@ int iexpIsLvalError(INode *lval);
 // reference, so that what is lent of it is held to that loan's permission?
 int iexpPathThroughBorrow(INode *lval);
 
+// The type of the first reference the place is reached through that is not
+// 'uni' (a '&' or '&mut' borrow, a virtual reference, an owner of another
+// permission), or NULL where every one is 'uni' or the place is held by value.
+INode *iexpPathNonUniLink(INode *lval);
+
 // Does every reference the place is reached through grant write? The viewpoint
 // a borrowed reference held there is seen from: not if one only reads.
 int iexpReachWrites(INode *lval);

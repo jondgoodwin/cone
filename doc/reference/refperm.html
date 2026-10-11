@@ -17,9 +17,8 @@
 			a permission transition cannot be undone that way, and an externally-isolated graph cannot
 			be built with one. Nor can a <span class="pre">uni</span> reference be kept through a call
 			of a pure method, since pure functions are not implemented. Seeing through a field of a
-			different permission is not refused: a reference to a Car without the
-			<span class="pre">uni</span> permission can read what its <span class="pre">uni</span>
-			field points at, and a <span class="pre">&amp;uni</span> reference to a Car can read what its
+			different permission is refused only for a <span class="pre">uni</span> field: a
+			<span class="pre">&amp;uni</span> reference to a Car can read what its
 			<span class="pre">mut</span> field points at. Nor is the permanent transition of a
 			<span class="pre">uni</span> reference enforced as the example of a permanent transition below shows it: assigned to
 			a <span class="pre">&amp;mut i32</span> variable, the reference is borrowed, not moved, and the source stays usable;
@@ -460,14 +459,15 @@ fn handleCar(car &amp;Car) {
 		To mutate the value, all reference must grant permission to mutate.
 		A borrowed reference held in a field is no exception either:
 		through a <span class="pre">&amp;Car</span>, <span class="pre">car.owner</span>
-		reads and lends only <span class="pre">&amp;</span>, whether <span class="pre">owner</span> is
-		a <span class="pre">&amp;mut Person</span> or a <span class="pre">&amp;uni Person</span>,
+		reads and lends only <span class="pre">&amp;</span>, <span class="pre">owner</span> being
+		a <span class="pre">&amp;mut Person</span>,
 		so <span class="pre">car.owner.age = 18</span> is refused, and so is calling a
 		<span class="pre">self &amp;mut</span> method on it. A method that changes what a
 		<span class="pre">&amp;mut</span> field points at takes <span class="pre">self &amp;mut</span>;
 		one declared <span class="pre">self &amp;</span> may only read through it.
 		Through a <span class="pre">&amp;mut Car</span>, or a <span class="pre">Car</span> held by value,
-		<span class="pre">owner</span> keeps its own permission.
+		<span class="pre">owner</span> keeps its own permission. (A field that is a
+		<span class="pre">&amp;uni</span> reference is another matter, below.)
 		An owning field, such as <span class="pre">app So[App]</span> in a struct <span class="pre">Holder</span>,
 		is no exception: through a <span class="pre">&amp;Holder</span>, <span class="pre">h.app</span>
 		lends only <span class="pre">&amp;</span>, so a <span class="pre">self &amp;mut</span> method
@@ -478,8 +478,13 @@ fn handleCar(car &amp;Car) {
 		for the same holder could replace the owner while the loan is in use.</p>
 	<p>Sadly, this also mean that our car reference cannot see anything about the engine.
 		A shared reference cannot see through a <span class="pre">uni</span> reference,
-		because that would effectively be sharing what is supposed to be a unique reference.</p>
-	<p>We can only see engine if our car reference is also <span class="pre">uni</span>.
+		because that would effectively be sharing what is supposed to be a unique reference.
+		"Shared" here includes <span class="pre">&amp;mut</span>: through a <span class="pre">&amp;Car</span>
+		or a <span class="pre">&amp;mut Car</span>, <span class="pre">car.engine</span> is an error, however it is
+		used &mdash; read, lent, written or copied out into a local &mdash; because another name for
+		the same Car could reach the engine too.</p>
+	<p>We can only see engine if our car reference is also <span class="pre">uni</span>
+		(or the Car is held by value, with no other name to reach it).
 		But if we do that, then we can no longer see anything about the owner because it is shared, mutable.
 		It would violate the guarantee of <span class="pre">uni</span> to move this reference
 		to another thread, if this could result in <span class="pre">mut</span> references to the

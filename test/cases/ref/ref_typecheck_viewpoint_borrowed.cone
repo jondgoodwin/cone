@@ -1,13 +1,14 @@
 // A borrowed reference held in a field lends what the holder's own reference
 // lets, never more (refperm.html, "Viewpoint Adaptation": the permissions we
 // get are the intersection of all the permissions we go through). Through a '&'
-// (or a '&imm'), a field that is a '&mut' or a '&uni' reads and lends only '&':
+// (or a '&imm'), a field that is a '&mut' reads and lends only '&':
 // 'car.owner.age = 18' with 'owner &mut Person' is refused, so is a '&mut'
 // method called on it, a '&mut' borrow of it written out, an element of a '&mut'
 // slice in a field stored, and the same through every step of a longer path.
 // The read-only method of a struct holding a '&mut' list may not push through
 // it: the push could move the list's block under a '&' another name lent of its
-// element. ref_viewpoint_borrowed runs what stays allowed.
+// element. A '&uni' field is not seen through a '&' at all
+// (ref_typecheck_uni_field_shared). ref_viewpoint_borrowed runs what stays allowed.
 
 mod ref_typecheck_viewpoint_borrowed;
 
@@ -21,7 +22,6 @@ struct Person {
 struct Item { pub n i64; }
 
 struct Car['a] { pub owner &'a mut Person; }
-struct Cell['a] { pub holder &'a uni Person; }
 struct Fleet['a, 'b] { pub car &'a mut Car['b]; }
 struct Row['a] { pub cells &'a mut Array[i64]; }
 
@@ -34,7 +34,5 @@ fn setAge(car &Car) { car.owner.age = 18; }                    //~ ErrorNoMut:32
 fn setAgeImm(car &imm Car) { car.owner.age = 18; }             //~ ErrorNoMut:39 "You do not have permission to modify lval"
 fn birth(car &Car) { car.owner.birthday(); }                   //~ ErrorBadPerm:25 "Borrowed reference cannot obtain this permission"
 fn birthWritten(car &Car) { (&mut *car.owner).birthday(); }    //~ ErrorBadPerm:30 "Borrowed reference cannot obtain this permission"
-fn setUni(cell &Cell) { cell.holder.age = 18; }                //~ ErrorNoMut:36 "You do not have permission to modify lval"
-fn birthUni(cell &Cell) { cell.holder.birthday(); }            //~ ErrorBadPerm:31 "Borrowed reference cannot obtain this permission"
 fn setFar(fleet &Fleet) { fleet.car.owner.age = 18; }          //~ ErrorNoMut:42 "You do not have permission to modify lval"
 fn setCell(row &Row) { row.cells[0usize] = 7; }                //~ ErrorNoMut:33 "You do not have permission to modify lval"
