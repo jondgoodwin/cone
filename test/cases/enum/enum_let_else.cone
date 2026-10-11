@@ -1,0 +1,101 @@
+// A binding that outlives an early exit, 'imm n Ok = r else {...};' [let-else]: the
+// variable is the binding of 'if imm n Ok = r', and the 'else' runs when the value is
+// another variant and must leave -- 'return', 'break', 'continue', or a call that does
+// not return. It takes what a binding takes (a copy of plain data, a move of an owner,
+// a reference into a borrowed value) and may be 'mut'.
+//
+// The finalizer prints its number, so the output is the whole assertion: what is
+// finalized, and when. The expected lines are worked out by hand in the comments.
+
+mod enum_let_else;
+
+import stdio use *;
+
+struct Fin {
+  pub id i32;
+  fn final(self &uni) {
+    printStr("fin");
+    printInt(i64.from(self.id));
+    printStr(" ");
+  }
+}
+
+fn num(n i32) {
+  printInt(i64.from(n));
+  printStr(" ");
+}
+fn end() {
+  printStr("|\n");
+}
+
+// Ok(4) -> "5 |"; Error -> "0 |", the else leaving
+fn plain(r Result[i32, i32]) i32 {
+  imm n Ok = r else { return 0; };
+  return n + 1;
+}
+
+// A copy of plain data leaves the place whole: 'r' is used again after the binding.
+// Ok(4) -> "4 ok |"
+fn copied(r Result[i32, Fin]) {
+  imm n Ok = r else { return; };
+  num(n);
+  if r is Ok { printStr("ok "); }
+}
+
+// A payload that moves moves out of the place, and is finalized with the binding at
+// the function's end, after "end ". Some(Fin(7)) -> "end fin7 |"; None -> "none |"
+fn moved(o Option[Fin]) {
+  imm f Some = o else { printStr("none "); return; };
+  printStr("end ");
+}
+
+// 'mut' changes the copy: 6 then the original is still 4. Some(4) -> "6 4 |"
+fn mutated(o Option[i32]) {
+  mut n Some = o else { return; };
+  n = n + 2;
+  num(n);
+  imm m Some = o else { return; };
+  num(m);
+}
+
+// A reference matchee gives a reference into it, which changes it:
+// 'imm n Ok = &mut r else' is an '&mut i32'. Ok(1) -> "10 |"
+fn through(r Result[i32, i32]) {
+  mut v = r;
+  {
+    imm n Ok = &mut v else { return; };
+    *n = 10;
+  }
+  imm k Ok = v else { return; };
+  num(k);
+}
+
+fn evenOf(i i32) Option[i32] {
+  if i % 2 == 0 { return Some(i); }
+  return None;
+}
+
+// 'break' and 'continue' leave too. The odd numbers are skipped, the first even number
+// past six ends it: 2 4 6 then done |
+fn inLoop() {
+  mut i = 0;
+  while i < 20 {
+    i += 1;
+    imm even Some = evenOf(i) else { continue; };
+    if even > 6 { break; }
+    num(even);
+  }
+  printStr("done ");
+}
+
+fn main() i32 {
+  num(plain(Ok[i32, i32](4))); end();
+  num(plain(Error[i32, i32](9))); end();
+  copied(Ok[i32, Fin](4)); end();
+  moved(Some[Fin](new Fin(7))); end();
+  moved(None); end();
+  mutated(Some[i32](4)); end();
+  through(Ok[i32, i32](1)); end();
+  inLoop(); end();
+  0i32;
+}

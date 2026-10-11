@@ -248,10 +248,41 @@ does not follow) — is a narrowing the loan walk follows: the cast is marked
 (`FlowGateShape`, `flowGateNarrow`) and makes `pwNarrowShared` lend the place the
 reference is read through to whatever holds the narrowed reference, marking the
 loan as the loan of a borrow into a collection is marked (flow.md, "A change through
-another name"). A narrowing of an owning reference, an `Rc[mut, T]` narrowed to
-an `Rc[mut, Variant]`, is another owner of the value and no loan stands for it, so it
-stays refused (`ErrorBadPerm`). The `is` test binds nothing and is not asked. A
-narrowing from a virtual reference is not asked either.
+another name"). A narrowing of an owning reference, an `Rc[imm, T]` narrowed to an `Rc[imm, Variant]`, is
+a copy of the owner typed as the variant, allowed only where no writer can store another variant
+through any owner (`MayIntRefSum`: `imm`, `uni`, `mut1`): the cast is a recast marked
+`FlagOwnerNarrow`, which flow counts as it counts any copy of an owner (a recast is its operand).
+No loan stands for the other owners, so an owner whose permission lets one store another variant
+(`mut`, `ro`, a lock) is refused (`ErrorBadPerm`). The variant is at its enum's address, but
+the allocation's header before it is rounded up to the alignment of the type, which a variant
+may have less of: generation asks that the value sits at the same offset in both allocations
+(`genlOwnerNarrowCheck`, `ErrorOwnerNarrow`). The `is` test binds
+nothing and is not asked. A narrowing from a virtual reference is not asked either.
+
+**Flow typing narrows a reference the same way** (`castNarrowRef`, from narrow.c): a
+recast built already typed and marked checked (`FlagMatchChecked`) from a name use to a
+reference to the variant, through `castSumInterior`, so a reference others may share is
+marked `FlagVariantNarrow` and followed by the loan walk. It initializes the hidden
+`-narrow` local ([narrow](narrow.md)).
+
+### What a binding takes from a place
+
+An arm that binds, `case imm c Circle` or `if imm c Circle = s`, on a place takes the
+place's value into a hidden variable of its own (`FlagMatchArm`, made by
+`parseBoundMatch`), which the binding's conversion reads. Where the variant is **plain
+data** (`castVariantIsPlain`: nothing in it to move, finalize, count or trace),
+`castArmCopies` makes that variable hold the variant alone, a conversion of the place
+to the variant read from its leading bytes: a copy, and the place is not moved from. An
+owner's variant keeps the whole place moving into the variable, as it always has. Flow
+reads a conversion as a new value, a temporary, so it could not count or move what a
+payload held; that is why only plain data is copied this way.
+
+A guard's binding (`FlagMatchGuardBind`, the second declaration of the variable the guard
+`and`s with the pattern) reads the place before the arm is chosen, so it takes nothing
+from it: `castGuardBorrow` rewrites it, before it is checked, to a conversion of a
+read-only borrow of the place to a reference to the variant, wherever the variant is not
+plain data; plain data is copied, as an arm copies it. A guard on a held value (a call, or a
+borrow) reads the hidden variable that holds it, as before.
 
 ### `castIsTypeCheck`
 

@@ -286,6 +286,7 @@ and carries the manifest for the per-node notes beside it.
 | `BreakRetNode` — `return`, `break`, `continue`, `blockret` | [return](../../compiler/c/doc/nodes/return.md) |
 | `BlockNode` — blocks and loops | [block](../../compiler/c/doc/nodes/block.md) |
 | `IfNode` — `if`, `elif`, `else`, and `match` | [if](../../compiler/c/doc/nodes/if.md) |
+| flow typing — a name tested for a variant is that variant where the test holds (no node of its own) | [narrow](../../compiler/c/doc/nodes/narrow.md) |
 | literals — `nil`, numbers, strings, arrays, type literals; construction, `new T(...)`, and the init it selects | [literals](../../compiler/c/doc/nodes/literals.md) |
 | `GenericInfo`, `GenVarDclNode`, `MacroDclNode`, cloning | [generic](../../compiler/c/doc/nodes/generic.md) |
 

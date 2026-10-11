@@ -1391,8 +1391,11 @@ value holding it, in this function (`pwShapeStore`) or in a callee handed it
 whole value for an enum, `reshapeIsSum`); and the same name does it as another does, since
 nothing freezes the place. The borrow a free function returns out of an enum is
 lent and marked as it is out of a collection (`shapeChanging` of an enum is
-`siSumHasPayload`). A conflict is reported at the change, once the holder is used again,
-as `ErrorVariantReshape`, naming the narrowed binding and where it is used.
+`siSumHasPayload`). A conflict is reported where the holder is used again, as
+`ErrorVariantReshape`, naming the narrowed binding and the change. A name that flow typing
+narrowed ([narrow](../nodes/narrow.md)) is held by the hidden local `-narrow`, whose recast
+is this narrowed reference: the message names the original name, which is the one the writer
+sees go stale.
 
 An answer is yes, no or not yet, as the inference of a shape-changing type is: a
 callee whose body is not type checked yet answers not yet, counted in

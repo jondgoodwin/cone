@@ -411,7 +411,7 @@ static int flowTakesSoleField(FnCallNode *fld) {
     if (matched == NULL)
         return 0;
     INode *holder = ((NameUseNode *)matched)->dclnode;
-    if (holder->tag != VarDclTag || ((VarDclNode *)holder)->namesym != anonName)
+    if (holder->tag != VarDclTag || !nameIsMatchHolder(((VarDclNode *)holder)->namesym))
         return 0;
     INode *variant = itypeGetTypeDcl(((VarDclNode *)bound)->vtype);
     if (variant->tag != StructTag)
@@ -545,7 +545,7 @@ static void flowMoveSource(INode *node, Nodes **moved, INode *top, MoveParts *pa
             // (flowDropOwner).
             // The match's own variable ('_') is named by one name use every
             // pattern and binding shares, so no one site can be marked on it.
-            if (!parts->nomark && vardclnode->namesym != anonName)
+            if (!parts->nomark && !nameIsMatchHolder(vardclnode->namesym))
                 node->flags |= FlagMoveOut;
         }
         if (vardclnode->scope == 0) {

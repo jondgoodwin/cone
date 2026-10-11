@@ -614,7 +614,11 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
     pstate->extend = NULL;
     LifeBrandSave svBrands;
     lifeBrandFnBegin((FnSigNode *)fnnode->vtype, &svBrands);
+    // What is known of the variants names hold is this body's alone
+    NarrowFnSave svNarrow;
+    narrowFnBegin(&svNarrow);
     inodeTypeCheck(pstate, &fnnode->value, noCareType);
+    narrowFnEnd(&svNarrow);
     lifeBrandFnEnd(&svBrands);
     pstate->scope = svScope;
     pstate->fn = svFn;

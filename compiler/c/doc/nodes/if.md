@@ -49,11 +49,9 @@ variable for it and writes a copy of the place (`parseMatchPlaceCopy`) into ever
 test, so a pattern that only tests reads the tag in place and takes nothing.
 Anything else -- a call, a borrow (`&r`, `&mut r`), a literal -- is evaluated once
 into an anonymous variable, which every test and binding reads through one shared
-name use. A reference is such a value: its copy is the reference. A match whose
-arm binds a variable and ends in an `if` guard (`parseMatchHasBoundGuard`, read
-ahead in the source text before the matched value is made) holds its value
-whatever its form: the guard's binding reads the value before the arm is chosen,
-and may take nothing from a place the arms after it test.
+name use. A reference is such a value: its copy is the reference. A guard's
+binding reads the value before the arm is chosen, so it takes nothing from a place
+the arms after it test (see [cast](cast.md), "What a binding takes from a place").
 
 **A bound pattern match is de-sugared**: `if imm c Circle = value {…}` becomes the
 `is` condition and a variable bound to a cast inserted at index 0 of the arm. For
@@ -100,6 +98,19 @@ alone is compared with the matched value, and the comparison without its left si
 (`parseSimpleExprFrom`), its own `or` included, so it is reported once. Anything else is a value alone
 (`case 1`, `case true`, `case K`, `case Circle`), the same at the start of a
 case and after an `or`.
+
+**A binding that outlives an early exit, `imm n Ok = r else {...};`, is the same bound
+pattern declared where it stands** (`parseLetElse`, from the `PermToken` case of
+`parseExprBlock`, when `else` follows a local declaration's initializer). It makes, in the
+enclosing block: the hidden variable that holds a value that is not a place (named
+`-held1`, a name of its own because several of these can stand in one block), an
+`IfNode` flagged `FlagIfLetElse` whose condition is the `is` test, whose block is empty
+and whose `else` is the one written, then the arm's hidden variable (`-arm2`) if the value
+is a place, and the declared variable with the pattern's conversion as its value. Type
+check refuses an `else` that does not jump (`ifBlockJumps`, `ErrorLetElse`); because it
+jumps, the `if`'s path out is the test holding, so the narrowing after it
+([narrow](narrow.md)) is the variant. The hidden names are recognized as a match's own
+(`nameIsMatchHolder`) wherever flow asks whether a variable is one.
 
 **A bound pattern to a variant declared as a type binds what it holds**, not the
 variant: type check hoists a hidden local holding the converted value before the
@@ -217,6 +228,16 @@ A match with no `else` that is covered has its **last case rewritten to `elseCon
 `ErrorMatchNotExhaustive` (once, replacing `ErrorNoElse` for a match), its type left
 unknown as `ErrorNoElse` left it. A match whose cases were not judged falls through to
 `ErrorNoElse` as an `if` does.
+
+### Flow typing
+
+`ifTypeCheck` also carries what is known of the variant each name holds ([narrow](narrow.md)):
+it restores the environment going into each condition (the earlier conditions false), assumes the
+condition true for its block and false for the next, and after the arms joins the environments
+of those that do not jump with the path that went by every condition when no `else` ends the
+`if` (a match whose cases cover counts as having one). It anchors the hidden local a shared
+reference's narrowing is held by to the block (`narrowAnchorArm`, `narrowInsertHeads`) or to
+the `if` as a statement of its block (`narrowAnchorAfter`).
 
 `ifRemoveReturns`, called from `returnTypeCheck`, strips the redundant `return`
 from each arm of `return if … { return a } else { b }`, recursively.

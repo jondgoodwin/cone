@@ -324,6 +324,7 @@ phase notes for mechanism rather than restating it:
 | `ir/stmt/return.c`, `break.h` | [return](return.md) | one struct serves four tags; placement rule and escape check live in three different phases |
 | `ir/exp/block.c` | [block](block.md) | loops are the same node; `blockret` is injected by two phases |
 | `ir/exp/if.c` | [if](if.md) | a flat alternating list, an identity-compared sentinel, and `match` lowered into it |
+| `ir/exp/narrow.c` | [narrow](narrow.md) | no node of its own: what type check knows of the variant a name holds along a path, read where a member of the variant is named |
 | `ir/exp/closure.c` | [closure](closure.md) | a literal that lives until type check, which makes a struct of it, found by trying the body |
 | `ir/exp/literal.c`, `arraylit.c`, `typelit.c` | [literals](literals.md) | the array node is also the array type; the type literal is also a call |
 | `ir/meta/generic.c`, `macro.c`, `ir/clone.c` | [generic](generic.md) | no node of its own; cloning stands in for name resolution |
