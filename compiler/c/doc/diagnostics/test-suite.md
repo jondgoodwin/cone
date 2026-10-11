@@ -135,6 +135,10 @@ test/cases/core/
   exception_panic.err           expected stderr, only where a run scenario's program
                                 writes it on purpose (a panic's report); otherwise
                                 stderr is not compared
+  core_success.linux.out        the same on Linux, only where the C library spells a
+                                value differently (.windows.out and .macos.out
+                                likewise, and the .err): the host's own file is
+                                used where there is one, else the plain one
   core_parse_delimiters.cone    parse-stage rejects, expectations annotated inline
   core_parse_decls.cone
   core_typecheck.cone

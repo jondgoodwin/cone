@@ -55,6 +55,7 @@ typedef struct ConeOptions {
     int described;  // 1=a build description names the package: one object of several linked together
     int runtimebc;    // Compile with the LLVM bitcode file for the runtime
     int pic;        // Compile using position independent code
+    int nopic;      // --nopic was given: not position independent even on Linux, where it is the default
     int print_stats;    // Print some compiler statistics
     int verify;        // Verify LLVM IR
     int extfun;        // Set function default linkage to external

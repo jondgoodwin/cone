@@ -406,8 +406,8 @@ Visual Studio projects stay at the root.
   `process`'s time limit and `fs`'s file times take them; it imports only
   `libc`, and has no calendar;
   its values no OS's, `Timestamp.now` ISO C's (C11 `timespec_get`, bound
-  in `libc`), and `Instant.now` Windows only (`QueryPerformanceCounter`:
-  ISO C reaches no steady clock);
+  in `libc`), and `Instant.now` the OS's (`QueryPerformanceCounter` on
+  Windows, `clock_gettime` on Linux: ISO C reaches no steady clock);
   `calendar` is the civil calendar over `time`'s `Timestamp`, pure
   arithmetic, no time zones: `Date` (proleptic Gregorian, any i32 year,
   Hinnant's day-count algorithms), `TimeOfDay`, `DateTime` (UTC, to and from
@@ -789,10 +789,15 @@ Visual Studio projects stay at the root.
   chain of traced roots, what a panic does, the thread-local barrier hook
   a kernel's barriers call on the CPU, and the process's hash seed. It is Cone, one C-named module
   (`conestd.cone` and the files beside it) that the build compiles with the
-  `conec` it has just built, and two C files: `mainthread.c`, recording the
-  thread the program started on before `main` runs, and `heapregion.c`, the
+  `conec` it has just built, and three C files: `mainthread.c`, recording the
+  thread the program started on before `main` runs, `heapregion.c`, the
   heap's region (core's `heapRegion()`), a static object of function addresses,
-  which Cone cannot say.
+  and `cnames.c`, the C library's names that differ by platform or that Cone
+  cannot spell (`stdin`, `stdout`, `stderr`, `errno`, `time`, `timespec_get`,
+  and a variadic print of a float), which `libc` and the printing bind, so
+  that they take them from the C library's own header; the rest it chooses by
+  target with `isWindows()`, as the hash seed's `rand_s` or `getentropy`,
+  all of which Cone cannot say.
   Not a Congo package: nothing imports it.
 - `doc/design/`: the language design notes — what Cone is aiming at and how far
   the compiler is, the notes that would survive a rewrite — plus the naming
@@ -960,9 +965,34 @@ by folder. Update them in the same change as `CMakeLists.txt`.
 repository's existing CMake setup; do not change the LLVM major version
 without updating source compatibility and both build systems. `conestd`'s
 Cone is compiled by the `conec` the same build makes, so the library follows
-the compiler. It binds the Windows C runtime (its streams through `libc`,
-`GetCurrentThreadId`, and Win64's `va_list`), so it is Windows only for now,
-as `libc`'s bindings are.
+the compiler. It binds the Windows C runtime or the C library of Linux, a
+call at a time (`cnames.c`, and `isWindows()` in the Cone), so a plain
+program (no actors, threads or `sync`) compiles, links and runs on both; what
+is built on the OS's threads and futex (`sync`, `thread`, `actors`, `iocore`,
+`process`, the `posix` and `fs` beyond `libc`) is Windows only for now, and the
+suite's tests of it fail to link on Linux.
+
+#### Building on Linux
+
+On x86-64 Ubuntu, LLVM 23.1 with the X86, WebAssembly and SPIR-V targets comes
+from apt.llvm.org (`llvm-23-dev`; its `llvm.sh` adds the repository); with
+`cmake`, `ninja-build` and `build-essential`, configure as on Windows with the
+Unix paths:
+
+```sh
+cmake -S . -B build/x64-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DLLVM_DIR=/usr/lib/llvm-23/lib/cmake/llvm
+cmake --build build/x64-release
+python3 test/run.py --conec build/x64-release/conec
+```
+
+(`--build` finds the Visual Studio environment, so it is Windows's.) The link
+of LLVM's static components peaks near 850 MB of memory and makes a 155 MB
+`conec`; on a small machine, changing `target_link_libraries(conec ${llvm_libs})`
+to `target_link_libraries(conec LLVM m)` links the shared `libLLVM.so` instead
+(104 MB, a 1.6 MB `conec`). Keep that change local; it is not committed.
+`conec` makes position-independent code by default when the target is Linux,
+because Ubuntu's `cc` links position-independent executables and refuses any
+other object; `--nopic` opts out.
 
 ## Validating a change
 

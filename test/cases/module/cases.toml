@@ -474,11 +474,12 @@ tags = ["nameres", "genllvm"]
 # C names, one declaration each: calloc, fopen and the rest are the C runtime's
 # symbols, and malloc is declared once though core and libc both put it in reach.
 # 'fabsf' is an inline function over 'fabs', as the runtime has it on x64, so
-# it is no symbol
+# it is no symbol. The standard streams are inline calls of conestd's cnames.c
+# (cone_stdout), which answers C's 'stdout' whatever the C library
 [[scenario.module_package_libc.check]]
 name = "libc-binds-the-c-symbols"
 target = "symbols"
-contains = ["declare calloc", "declare fopen", "declare malloc", "declare __acrt_iob_func", "declare atan2", "declare atan2f", "declare fmodf", "declare fabs"]
+contains = ["declare calloc", "declare fopen", "declare malloc", "declare cone_stdout", "declare atan2", "declare atan2f", "declare fmodf", "declare fabs"]
 excludes = ["malloc.1", "libc.", "fabsf"]
 
 [scenario.module_package_posix]
@@ -526,6 +527,22 @@ excludes = ["fabsf"]
 [scenario.module_stdio_values]
 category = "run"
 description = "Every kind of value stdio prints, at the edges of its spelling, the same on standard output and standard error: integers at their extremes, floats as '%g' with the infinities and NaNs, code points of one to four UTF-8 bytes and the two that print nothing, a C string and a null one, the streams' operators"
+tags = ["runtime"]
+
+# Where the C library spells a value differently from the Windows runtime, the
+# program cannot print the same on both: the indefinite NaN is '-nan(ind)' in
+# the .out and .err, and '-nan' in the .linux.out and .linux.err, which Linux
+# uses in their place
+
+# -------- what the runtime asks of the OS --------
+#
+# The parts of the runtime a plain program reaches that differ by platform
+# (conestd's streams, errno, hash seed and printing of a float, libc's time and
+# the time package's clocks), pinned to print the same on Windows and on Linux.
+
+[scenario.module_runtime_plain]
+category = "run"
+description = "A plain program on any platform the runtime is built for: it prints (integers, floats, a code point, a C string, standard error), hashes (a Dict and a Set of integers, the process's seed, fixed seeds), reads the steady and the calendar clocks (they agree, and tick in nanoseconds) and reads errno after a failed fopen, the same on Windows and on Linux"
 tags = ["runtime"]
 
 # -------- import of a parent's name --------
@@ -2085,6 +2102,43 @@ name = "the-remainder-is-not-decorated"
 target = "asm"
 contains = ["OpFRem %"]
 excludes = ["NoContraction"]
+
+# Linux code is position independent by default (the usual Linux C compiler
+# links position independent executables); '--nopic' opts out. Windows code is
+# unchanged by either
+[scenario.module_target_linux_pic]
+category = "compile"
+description = "Code for Linux is position independent without any option, and under '--pic' too: a string's address is taken relative to the instruction pointer"
+tags = ["genllvm"]
+
+[[scenario.module_target_linux_pic.run]]
+name = "default"
+options = ["--triple=x86_64-unknown-linux-gnu"]
+
+[[scenario.module_target_linux_pic.run]]
+name = "pic"
+options = ["--triple=x86_64-unknown-linux-gnu", "--pic"]
+
+[[scenario.module_target_linux_pic.check]]
+name = "the-address-is-relative"
+target = "asm"
+contains = ["string(%rip)"]
+excludes = ["$string"]
+
+[scenario.module_target_linux_nopic]
+category = "compile"
+description = "Under '--nopic' code for Linux is not position independent: a string's address is an absolute one"
+tags = ["genllvm"]
+
+[[scenario.module_target_linux_nopic.run]]
+name = "nopic"
+options = ["--triple=x86_64-unknown-linux-gnu", "--nopic"]
+
+[[scenario.module_target_linux_nopic.check]]
+name = "the-address-is-absolute"
+target = "asm"
+contains = ["$string"]
+excludes = ["string(%rip)"]
 
 # A signed remainder is never OpSRem (a driver computes it unsigned): the
 # quotient, product and difference instead; an unsigned one is OpUMod

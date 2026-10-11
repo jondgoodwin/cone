@@ -35,8 +35,14 @@ mut @threadlocal panicking = false;
 // 'main' runs: the one thing here Cone cannot do
 extern imm cone_mainThread u64;
 
-// This thread's identity: kernel32's
+// This thread's identity: kernel32's on Windows, elsewhere the C library's
+// 'pthread_self', which mainthread.c records the same way
 extern fn @c(system) GetCurrentThreadId() u32;
+extern fn pthread_self() u64;
+
+fn thisThread() u64 {
+  if core.isWindows() {u64.from(GetCurrentThreadId());} else {pthread_self();}
+}
 
 pub fn cone_setPanicHook(hook Hook) {
   core.mem.atomicStore[usize](&panicHook as *usize, hook as usize, core.MemOrder.SeqCst);
@@ -60,7 +66,7 @@ pub fn cone_panic(msg &str, fileBytes &Array[u8], line u32) Never {
   }
   panicking = true;
 
-  imm thread = u64.from(GetCurrentThreadId());
+  imm thread = thisThread();
   if thread == cone_mainThread {
     out.text("panic at ");
   }

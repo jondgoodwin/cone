@@ -4,9 +4,11 @@
 // the numbers differ from run to run and nobody outside the process can tell
 // which keys collide (core's 'processSeed' is this function). It is 64 random
 // bits from the OS, drawn the first time anything asks, from any thread, and
-// then the same for the rest of the process. The OS's generator is the C
-// runtime's 'rand_s', which the UCRT answers from the system's own
-// (RtlGenRandom) and which needs no library beyond the ones every program links.
+// then the same for the rest of the process. The OS's generator is, on
+// Windows, the C runtime's 'rand_s', which the UCRT answers from the system's
+// own (RtlGenRandom) and which needs no library beyond the ones every program
+// links; elsewhere, POSIX's 'getentropy' (the kernel's, in the C library of
+// Linux and macOS alike). Only the side the build takes is generated.
 
 // The seed once drawn, 0 until then. Read and set only atomically
 mut hashSeed = 0u64;
@@ -14,15 +16,28 @@ mut hashSeed = 0u64;
 // The C runtime's 32 random bits from the OS: 0 if it drew them, else an error
 extern fn rand_s(value *u32) i32;
 
+// Fills the 'len' bytes at 'buf' (at most 256) with the kernel's random bytes:
+// 0 if it did, else -1
+extern fn getentropy(buf *u8, len usize) i32;
+
 pub fn cone_hashSeed() u64 {
   imm drawn = core.mem.atomicLoad[u64](&hashSeed as *u64, core.MemOrder.SeqCst);
   if drawn != 0u64 {return drawn;}
 
   mut low = 0u32;
   mut high = 0u32;
+  mut bits = 0u64;
   mut fresh = 0u64;
-  if rand_s(&mut low as *u32) == 0 and rand_s(&mut high as *u32) == 0 {
-    fresh = (u64.from(high) << 32u64) | u64.from(low);
+  mut got = false;
+  if core.isWindows() {
+    got = rand_s(&mut low as *u32) == 0 and rand_s(&mut high as *u32) == 0;
+    bits = (u64.from(high) << 32u64) | u64.from(low);
+  }
+  else {
+    got = getentropy(&mut bits as *u8, 8usize) == 0;
+  }
+  if got {
+    fresh = bits;
   }
   else {
     // The OS refused, which it does not: the clock and where this global sits

@@ -140,8 +140,8 @@ static void usage()
         "                  the output directory, as 'output: library' does.\n"
         "  --runtimebc     Compile with the LLVM bitcode file for the runtime.\n"
         "  --wasm          Compile for WebAssembly target.\n"
-        "  --pic           Compile using position independent code.\n"
-        "  --nopic         Don't compile using position independent code.\n"
+        "  --pic           Compile using position independent code (the default on Linux).\n"
+        "  --nopic         Don't compile using position independent code, on Linux too.\n"
         "  --docs, -g      Generate code documentation.\n"
         "  --docs-public   Generate code documentation for public types only.\n"
         ,
@@ -370,8 +370,8 @@ int coneOptSet(ConeOptions *opt, int *argc, char **argv) {
         case OPT_OUTPUT: opt->output = s.arg_val; break;
         case OPT_LIBRARY: opt->library = 1; break;
         case OPT_RUNTIMEBC: opt->runtimebc = 1; break;
-        case OPT_PIC: opt->pic = 1; break;
-        case OPT_NOPIC: opt->pic = 0; break;
+        case OPT_PIC: opt->pic = 1; opt->nopic = 0; break;
+        case OPT_NOPIC: opt->pic = 0; opt->nopic = 1; break;
         case OPT_DOCS:
         {
             opt->docs = 1;
