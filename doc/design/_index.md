@@ -243,7 +243,7 @@ design behind it.
 | Category | Reference pages | Design note |
 | --- | --- | --- |
 | **Lexical and basic form** | `reftoken` · `refterm` · `refbasics` · `ebnf` | [Parse](../../compiler/c/doc/phases/parse.md) |
-| **Expressions and control flow** | `refexpr` · `refif` · `refwhile` · `refeach` · `refblock` · `refmatch` · `refflow` | [block](../../compiler/c/doc/nodes/block.md) · [if](../../compiler/c/doc/nodes/if.md) · [return](../../compiler/c/doc/nodes/return.md) |
+| **Expressions and control flow** | `refexpr` · `refif` · `refwhile` · `refeach` · `refparallel` · `refblock` · `refmatch` · `refflow` | [block](../../compiler/c/doc/nodes/block.md) · [if](../../compiler/c/doc/nodes/if.md) · [return](../../compiler/c/doc/nodes/return.md) |
 | **Functions** | `reffunc` · `refmethod` · `refmethop` · `refclosure` · `reffnref` · `refcloref` | [fncall](../../compiler/c/doc/nodes/fncall.md) |
 | **Core types** | `reftypes` · `refnumber` · `refstruct` · `refenum` · `reftuple` · `refarray` · `reftypealias` · `refvoid` | [struct](../../compiler/c/doc/nodes/struct.md) · [literals](../../compiler/c/doc/nodes/literals.md) |
 | **Traits and polymorphism** | `reftrait` · `reftraitvar` · `refinherit` · `refvirtref` · `refgeneric` | [struct](../../compiler/c/doc/nodes/struct.md) · [generic](../../compiler/c/doc/nodes/generic.md) |
@@ -253,7 +253,7 @@ design behind it.
 | **Safety and trust** | `refsafety` · `reftypesafe` · `reftrust` · `refintrinsic` | [Safety](safety.md) · [intrinsic](../../compiler/c/doc/nodes/intrinsic.md) |
 | **Error handling** | `refexcept` · `refoption` · `refresult` | [Panics](panics.md); ⚠ **no note for recoverable errors** |
 | **Metaprogramming** | `refmacro` · `refmeta` | [generic](../../compiler/c/doc/nodes/generic.md) |
-| **Concurrency** | `refconc` · `refconccomm` · `refconcio` · `refcorout` | ⚠ **no note; no thread layer in the language** (OS threads and the futex are library code, the `thread` package, described in `refconc`; the `actor` declaration and the `actors` package it runs on are described in `refconccomm`, "Actors", and `await` in an actor's behaviour in "Awaiting a reply", a behaviour's value kept as a future in "Storing a future", and on an I/O operation of the `aio` package in `refconcio`, "Awaiting I/O"; the parser generates an actor's declarations, [Parse](../../compiler/c/doc/phases/parse.md) section 6) |
+| **Concurrency** | `refconc` · `refconccomm` · `refactor` · `refawait` · `refconcio` · `refcorout` | ⚠ **no note; no thread layer in the language** (OS threads and the futex are library code, the `thread` package, described in `refconc`; the `actor` declaration and the `actors` package it runs on are described in `refactor`, and `await` in an actor's behaviour in `refawait`, a behaviour's value kept as a future in its "Futures", and on an I/O operation of the `aio` package in `refconcio`, "Awaiting I/O"; the parser generates an actor's declarations, [Parse](../../compiler/c/doc/phases/parse.md) section 6) |
 | **Collections** | `reftypecoll` | ⚠ **no note** |
 
 ⚠ **A reference page shows the language's *intended* shape, not only what is
