@@ -14,6 +14,18 @@ typedef struct IfNode {
     Nodes *condblk;
 } IfNode;
 
+// An 'if' that a 'match' was de-sugared into: the arms are the cases of one match,
+// so type check asks that they cover every value (ifMatchCover)
+#define FlagIfMatch   0x0001        // If
+#define MatchMaxColumns 8           // the values a 'match a, b, ...' may take
+// The logic nodes of a match's conditions: the 'and' that joins the patterns of one
+// row of 'match a, b' (one per column), and the 'and' that adds an 'if' guard to the
+// pattern before it. An 'and' of neither kind is a range pattern.
+#define FlagMatchRow  0x0001        // Logic: joins the columns of a row
+#define FlagMatchGuard 0x0002       // Logic: a guard after the pattern
+// A literal 'true' that stands for '_', a column's pattern that matches any value
+#define FlagMatchAny  0x0008        // ULit
+
 IfNode *newIfNode();
 
 // Clone if

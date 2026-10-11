@@ -123,6 +123,15 @@ what to write.
 Circle`: a pattern names only the variant, and the matched value supplies the
 reference, its region and its permission (parse).
 
+`ErrorMatchNotExhaustive`, `ErrorMatchUnreachable` and `ErrorMatchColumn` are what a match
+must cover. A match that does not cover every variant of its enum, both values of its bool or
+every combination of its columns, and has no `else`, or whose cases cannot be shown to
+cover (numbers, characters, text), is `ErrorMatchNotExhaustive`: the message names what is
+missing. A case, or an `else`, that can never run is `ErrorMatchUnreachable`. They are two
+codes because the remedies are opposite (add a case or an `else`; delete one). A misuse of
+the columns of `match a, b` (a `_` in a match of one value, too few or too many patterns in a
+case, a column that binds a variable) is `ErrorMatchColumn`, at parse.
+
 `ErrorBuildDesc` is a third: a build description that cannot be read, whether a
 setting is unknown, set twice, badly valued or written after the module, a line
 is malformed, a child module, an import or a package line is named twice, a

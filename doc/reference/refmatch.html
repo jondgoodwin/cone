@@ -17,7 +17,10 @@
     equivalence patterns, with or without <span class="pre">==</span>, comparison patterns,
     range patterns, <span class="pre">or</span> between
     patterns, <span class="pre">if</span> guards, bound pattern matching, variants named bare,
-    and 'else'. Not implemented: tuples, partial matches and
+    and 'else'. A match must cover every value it can be shown to cover, or end in
+    <span class="pre">else</span> (<a href="#cover">Covering every value</a>), and
+    <span class="pre">match a, b</span> matches several values at once
+    (<a href="#columns">Several values</a>). Not implemented: partial matches and
     first-class patterns, beyond binding a variable to a variant. A condition written where a
     pattern is expected, such as <span class="pre">case not b</span> or
     <span class="pre">case n &gt; 3</span>, is refused: the comparison <span class="pre">case &gt;3</span>
@@ -54,8 +57,48 @@ fn power(n i32, pow i32) i32 {
     followed by a match pattern, which is followed by a block.
   When a match pattern matches, the evaluated value of its block is the match's value</li>
   <li>Using the <span class="pre">else</span> pattern will always match any value.
-  If specified, it should be the last pattern used.</li>
+  If specified, it must be the last pattern used.</li>
   </ul>
+
+  <h3 id="cover">Covering every value</h3>
+  <p>Every match must cover the values it matches, statement or value alike, or end in
+  <span class="pre">else</span>. The compiler counts what simple, clear logic can count, and asks
+  for an <span class="pre">else</span> wherever it cannot:</p>
+  <ul>
+  <li>A match on an <b>enum</b> is covered when every variant has a case. A case names a variant
+  alone (<span class="pre">case Circle</span>), binds it (<span class="pre">case imm c Circle</span>)
+  or <span class="pre">or</span>s several (<span class="pre">case Rect or Dot</span>); each counts toward
+  every variant it names.</li>
+  <li>A match on a <b>bool</b> is covered by <span class="pre">case true</span> and
+  <span class="pre">case false</span>.</li>
+  <li>A match on several values is covered when every <i>combination</i> of its columns is
+  (<a href="#columns">below</a>).</li>
+  <li>Anything else &mdash; numbers, characters, text, floats, a comparison, a range, a value held in a
+  variable, a guarded case &mdash; matches some values, and which only running says. The compiler does not
+  try to prove it covers them all. End such a match with <span class="pre">else</span>, which may
+  say only that no other value can happen: <span class="pre">else {}</span>.</li>
+  </ul>
+  <p>A match that is not covered is an error that names what is missing, so a statement match
+  that handles some variants needs <span class="pre">else {}</span> to say the rest need no action.
+  The opposite is an error too: a case that can never run, because the cases before it match every
+  value it matches (a variant named twice, a case after the cases cover everything), and an
+  <span class="pre">else</span> after cases that already cover everything. Open traits never count: a match on a
+  trait that other modules may add structs to needs its <span class="pre">else</span>.</p>
+<pre>
+fn name(s &amp;imm Shape) i32 {
+  match s {
+    case imm c Circle { c.radius; }
+    case Rect or Dot { 0; }          // every variant: no else
+  }
+}
+fn side(n i32) i32 {
+  match n {
+    case 0 { 1; }
+    case 1 ..&lt; 10 { 2; }
+    else { 3; }                       // numbers cannot be counted
+  }
+}
+</pre>
   <p>A versatile range of patterns are supported, 
   able to match wholly to specified values, partially, or using a first-class pattern.
   Pattern matching also supports de-structuring portions of the original value
@@ -124,11 +167,12 @@ match word {
   else { 0; }
 }
 </pre>
-  <p style="margin-left: 40px;"><i>Note: an equivalence pattern does not count toward
-    covering every value: a match on a <span class="pre">bool</span> with cases for
-    <span class="pre">true</span> and <span class="pre">false</span> still needs an
-    <span class="pre">else</span> to produce a value. A variant named on its own does count,
-    as <span class="pre">case is</span> does.</i></p>
+  <p style="margin-left: 40px;"><i>Note: an equivalence pattern counts toward
+    <a href="#cover">covering every value</a> only as the literal <span class="pre">true</span>
+    or <span class="pre">false</span> on a <span class="pre">bool</span>, with or without
+    <span class="pre">==</span>. A variant named on its own counts, as <span class="pre">case is</span>
+    does. A number, a character, a string or a named constant does not: the match ends in
+    <span class="pre">else</span>.</i></p>
   
   <h3>Comparisons</h3>
   <p>Comparison patterns make use of the <a href="refif.html#compop">comparison operators</a>
@@ -188,20 +232,37 @@ match n {
   whole value patterns, or an <span class="pre">is</span> test. A pattern that binds a
   variable stands alone.</p>
 
-  <h3>Tuples</h3>
-  <p>Multiple values to be matched can be specified on the
-  <span class="pre">match</span> statement as a comma-separated tuple
-  or with a function that returns multiple values.
-  If a tuple is specified on the match, then all match patterns must be specified as tuples.
-  For a tuple to match, all values must match individually:</p>
+  <h3 id="columns">Several values</h3>
+  <p>Several values can be matched at once by writing them after <span class="pre">match</span>,
+  separated by commas. No tuple is made: the commas are all it takes. Each case then gives one pattern
+  for each value, separated by commas, and matches when every value matches its pattern. The values are
+  evaluated once each, left to right, before any pattern is tried. <span class="pre">_</span> is the
+  pattern that takes any value; it belongs to this form alone (a match of one value ends in
+  <span class="pre">else</span>):</p>
 <pre>
-match key,value {
+match key, value {
   case 0, _ { 0; }
   case _, 0 { 1; }
   else { 2; }
 }
+
+match state, byte {
+  case Start, 'G' { 1; }
+  case Start, _ { 0; }
+  case Done, _ { 2; }
+}
 </pre>
-  <p style="margin-left: 40px;"><i>Note: tuples are not implemented.</i></p>
+  <p>A pattern of a column is any pattern of a single value, <span class="pre">or</span> included
+  (<span class="pre">case Start or Done, 'G'</span>), followed by one <span class="pre">if</span> guard for the
+  case. A pattern of a column does not bind a variable. The second match above (where
+  <span class="pre">state</span> is an enum of just <span class="pre">Start</span> and
+  <span class="pre">Done</span>) has no <span class="pre">else</span>: it is
+  <a href="#cover">covered</a>, because every combination of the variants is. The compiler
+  counts the combinations of the values it can count (variants and <span class="pre">bool</span>s), and a
+  case that tests a number or a character in a column counts toward none. The first
+  <span class="pre">Start</span> case tests a character, so it is <span class="pre">case Start, _</span>
+  that covers <span class="pre">Start</span>; without it the match would need its
+  <span class="pre">else</span>.</p>
 
   <h3>if Guards</h3>
   <p>An 'if' clause may be specified following all patterns as an additional guard.
@@ -223,11 +284,8 @@ match opt {
 }
 </pre>
   <p>Because a guard can fail, a case with a guard does not account for its variant when
-  deciding whether a match covers every variant of an enum. Above, the unguarded
+  deciding whether a match <a href="#cover">covers every value</a>. Above, the unguarded
   <span class="pre">Some</span> case does.</p>
-  <p style="margin-left: 40px;"><i>Note: nor today does an <span class="pre">or</span> of
-    <span class="pre">is</span> tests: a match needs an <span class="pre">else</span> to be a
-    value unless each variant has a case of its own.</i></p>
 
   
   <h2>Partial matches</h2>

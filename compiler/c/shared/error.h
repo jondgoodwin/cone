@@ -640,8 +640,13 @@ enum ErrorCode {
     ErrorVariantBracket = 1415, // A variant constructed in square brackets, 'Some[5]', 'None[]', 'Some[i32][5]': it is constructed with parentheses, 'Some(5)', an empty one by its name alone, 'None', and brackets give type arguments only
     ErrorVariantEmptyCall = 1416, // An empty variant written with parentheses, 'Lamp.Red()': it is constructed by its name alone
 
+    // A match covers every value it can be shown to, or ends in 'else' (ir/exp/if.c, parser/parsefnflow.c)
+    ErrorMatchNotExhaustive = 1417, // A match whose cases do not cover every value of an enum or a bool, or are not shown to cover the values of any other type, and that has no 'else': the message names what is missing
+    ErrorMatchUnreachable = 1418,   // A case or an 'else' of a match that can never run: every value it matches an earlier case matches already (a variant or a combination of columns named twice, a case after the cases cover everything)
+    ErrorMatchColumn = 1419,        // A misuse of the columns of 'match a, b': '_' in a match of one value, a row with more or fewer patterns than the match has values, or a pattern that binds a variable in a column
+
     // A type that gets its memory from a region (ir/types/struct.c, ir/exp/typelit.c)
-    ErrorRegionMark = 1417, // A type declaring CarriesRegion that declares no init, or an init whose last parameter is not 'region *MemRegion'
+    ErrorRegionMark = 1420, // A type declaring CarriesRegion that declares no init, or an init whose last parameter is not 'region *MemRegion'
 
     // Warnings
     WarnCode = 3000,

@@ -249,8 +249,9 @@ VarDclNode *parseBindVarDcl(ParseState *parse) {
 // -- is a value this match owns, evaluated once into a hidden variable that every
 // test and binding reads. A reference is a value: its copy is the reference.
 typedef struct {
-    INode *place;           // the place as written, cloned for each use; NULL when the value is held
+    INode *place;          // the place as written, cloned for each use; NULL when the value is held
     NameUseNode *held;      // the use of the hidden variable holding the value; NULL when it is a place
+    int column;             // a value of 'match a, b', whose patterns stand in a row and may be '_'
 } MatchSubject;
 
 // Is this expression a place that may be read again for each test: free of calls,
@@ -296,6 +297,7 @@ static INode *parseMatchUse(MatchSubject *subject) {
 // Set the value to match: a place is matched where it stands, anything else is
 // held. The hidden variable is returned for the caller to declare, NULL for a place.
 static VarDclNode *parseMatchSubject(MatchSubject *subject, INode *value, int mayUsePlace) {
+    subject->column = 0;
     if (mayUsePlace && parseMatchIsPlace(value)) {
         subject->place = value;
         subject->held = NULL;
@@ -380,6 +382,7 @@ static void parseBoundMatch(ParseState *parse, IfNode *ifnode, MatchSubject *sub
         nodesAdd(&guardblk->stmts, (INode*)guardvar);
         nodesAdd(&guardblk->stmts, parseSimpleExpr(parse));
         LogicNode *guarded = newLogicNode(AndLogicTag);
+        guarded->flags |= FlagMatchGuard;
         guarded->lexp = (INode*)isnode;
         guarded->rexp = (INode*)guardblk;
         nodesAdd(&ifnode->condblk, (INode*)guarded);
@@ -478,6 +481,13 @@ static INode *parseMatchRange(ParseState *parse, MatchSubject *subject, INode *l
     return (INode *)range;
 }
 
+// The pattern of a column that takes any value, '_': a literal 'true' that says so
+static INode *parseMatchWild() {
+    ULitNode *any = newULitNode(1, (INode*)boolType);
+    any->flags |= FlagMatchAny;
+    return (INode *)any;
+}
+
 // Parse one pattern of a case, returning the condition that tests the matched
 // value against it:
 // - 'is T' narrows to a type, and its bare root name is looked up in the matched
@@ -492,8 +502,18 @@ static INode *parseMatchRange(ParseState *parse, MatchSubject *subject, INode *l
 // would be compared with the matched value, and whether it should be is not
 // decided. It is parsed to its end, its own 'or' included, so that it is
 // reported once.
+// - '_' takes any value, and is a pattern of 'match a, b' alone (parseMatchWild)
 #define PatBareMsg "A condition is not a pattern: a value alone is compared with the matched value. Write the comparison with the matched value left out, as '>3', or put the condition in an 'if' guard."
 static INode *parseMatchPattern(ParseState *parse, MatchSubject *subject) {
+    // '_' is the pattern of a column that takes any value
+    if (lexIsToken(IdentToken) && lex->val.ident == anonName) {
+        INode *any = parseMatchWild();
+        if (!subject->column)
+            errorMsgLex(ErrorMatchColumn,
+                "'_' is the pattern of one of the values of 'match a, b', which takes any value of its column. A match of one value ends in 'else' to take any other.");
+        lexNextToken();
+        return any;
+    }
     if (lexIsToken(IsToken)) {
         CastNode *isnode = newIsNode(parseMatchUse(subject), unknownType);
         lexNextToken();
@@ -617,6 +637,31 @@ static int parseMatchHasBoundGuard() {
     return 0;
 }
 
+// The patterns of one value of a match, joined by 'or'. In a column of 'match a, b'
+// a pattern binds no variable: whether one should is not decided, so it is refused
+// and read as the 'is' test it would be.
+static INode *parseMatchColumn(ParseState *parse, MatchSubject *subject) {
+    INode *cond;
+    if (subject->column && lexIsToken(PermToken)) {
+        VarDclNode *var = parseBindVarDcl(parse);
+        errorMsgNode((INode*)var, ErrorMatchColumn,
+            "A pattern in a column of 'match a, b' does not bind a variable: write the variant alone, and bind inside the case with 'imm x Some = a'");
+        CastNode *isnode = newIsNode(parseMatchUse(subject), var->vtype);
+        castPatternMark(var->vtype);
+        cond = (INode *)isnode;
+    }
+    else
+        cond = parseMatchPattern(parse, subject);
+    while (lexIsToken(OrToken)) {
+        LogicNode *ornode = newLogicNode(OrLogicTag);
+        lexNextToken();
+        ornode->lexp = cond;
+        ornode->rexp = parseMatchPattern(parse, subject);
+        cond = (INode *)ornode;
+    }
+    return cond;
+}
+
 // Parse match expression, which is sugar translated to an 'if' block
 INode *parseMatch(ParseState *parse) {
     // 'match' is de-sugared into a block:
@@ -625,12 +670,37 @@ INode *parseMatch(ParseState *parse) {
     // - if .. elif .. else sequence for all the match cases
     BlockNode *blknode = newBlockNode();
     IfNode *ifnode = newIfNode();
+    ifnode->flags |= FlagIfMatch;
 
-    // Pick up the expression, then start the block
+    // Pick up the expression, or the comma-separated expressions of 'match a, b',
+    // then start the block
     lexNextToken();
-    INode *matchee = parseSimpleExpr(parse);
-    MatchSubject subject;
-    VarDclNode *expdclnode = parseMatchSubject(&subject, matchee, !parseMatchHasBoundGuard());
+    INode *matchees[MatchMaxColumns];
+    int ncols = 0;
+    matchees[ncols++] = parseSimpleExpr(parse);
+    while (lexIsToken(CommaToken)) {
+        lexNextToken();
+        INode *more = parseSimpleExpr(parse);
+        if (ncols == MatchMaxColumns)
+            errorMsgNode(more, ErrorMatchColumn, "A match takes at most %d values, 'match a, b, ...'", MatchMaxColumns);
+        else
+            matchees[ncols++] = more;
+    }
+    int mayUsePlace = !parseMatchHasBoundGuard();
+    MatchSubject subjects[MatchMaxColumns];
+    VarDclNode *expdclnodes[MatchMaxColumns];
+    for (int i = 0; i < ncols; ++i) {
+        expdclnodes[i] = parseMatchSubject(&subjects[i], matchees[i], mayUsePlace);
+        subjects[i].column = ncols > 1;
+        // Each held value is a variable of its own: the first keeps the anonymous name
+        if (i > 0 && expdclnodes[i]) {
+            char heldname[16];
+            snprintf(heldname, sizeof(heldname), "-match%d", i);
+            Name *name = nametblFind(heldname, strlen(heldname));
+            expdclnodes[i]->namesym = name;
+            subjects[i].held->namesym = name;
+        }
+    }
 
     // Parse all cases
     parseBlockStart();
@@ -639,23 +709,47 @@ INode *parseMatch(ParseState *parse) {
         if (lexIsToken(CaseToken)) {
             lexNextToken(); // consume the 'case' token
             // Handle bound variable pattern
-            if (lexIsToken(PermToken)) {
-                parseBoundMatch(parse, ifnode, &subject, NULL);
+            if (ncols == 1 && lexIsToken(PermToken)) {
+                parseBoundMatch(parse, ifnode, &subjects[0], NULL);
                 continue;
             }
 
-            // Anything else is one or more patterns joined by 'or', then an
-            // optional 'if' guard
-            INode *cond = parseMatchPattern(parse, &subject);
-            while (lexIsToken(OrToken)) {
-                LogicNode *ornode = newLogicNode(OrLogicTag);
-                lexNextToken();
-                ornode->lexp = cond;
-                ornode->rexp = parseMatchPattern(parse, &subject);
-                cond = (INode *)ornode;
+            // Anything else is, for each value matched, one or more patterns joined
+            // by 'or', the values' patterns separated by commas, then an optional
+            // 'if' guard. The columns of a row are joined by 'and' (FlagMatchRow).
+            INode *cond = NULL;
+            int missing = 0;
+            for (int i = 0; i < ncols; ++i) {
+                if (i > 0 && !missing) {
+                    if (lexIsToken(CommaToken))
+                        lexNextToken();
+                    else {
+                        errorMsgLex(ErrorMatchColumn, "This case has %d pattern%s and the match has %d values: write one pattern for each, '_' for any value",
+                            i, i == 1 ? "" : "s", ncols);
+                        missing = 1;
+                    }
+                }
+                INode *column = missing ? parseMatchWild() : parseMatchColumn(parse, &subjects[i]);
+                if (cond == NULL)
+                    cond = column;
+                else {
+                    LogicNode *row = newLogicNode(AndLogicTag);
+                    row->flags |= FlagMatchRow;
+                    row->lexp = cond;
+                    row->rexp = column;
+                    cond = (INode *)row;
+                }
+            }
+            if (ncols > 1 && lexIsToken(CommaToken)) {
+                errorMsgLex(ErrorMatchColumn, "This case has more patterns than the match has values (%d)", ncols);
+                while (lexIsToken(CommaToken)) {
+                    lexNextToken();
+                    parseMatchColumn(parse, &subjects[ncols - 1]);
+                }
             }
             if (lexIsToken(IfToken)) {
                 LogicNode *guarded = newLogicNode(AndLogicTag);
+                guarded->flags |= FlagMatchGuard;
                 lexNextToken();
                 guarded->lexp = cond;
                 guarded->rexp = parseSimpleExpr(parse);
@@ -672,8 +766,9 @@ INode *parseMatch(ParseState *parse) {
             return (INode *)blknode;
         }
     }
-    if (expdclnode)
-        nodesAdd(&blknode->stmts, (INode*)expdclnode);
+    for (int i = 0; i < ncols; ++i)
+        if (expdclnodes[i])
+            nodesAdd(&blknode->stmts, (INode*)expdclnodes[i]);
     nodesAdd(&blknode->stmts, (INode*)ifnode);
     return (INode *)blknode;
 }

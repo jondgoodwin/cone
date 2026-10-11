@@ -655,7 +655,9 @@ where it stands, a copy of it written into each test), each case's patterns beco
 its condition: `is T` an `is`
 node, `<v` (and every comparison) the operator call with the matched value on
 the left, `a .. b` and `a ..< b` two calls joined by `and`, `or` between patterns
-a logical `or`, and an `if` guard an `and` after them ([if](../nodes/if.md)).
+a logical `or`, and an `if` guard an `and` after them. `match a, b` takes a matchee for each
+value and a pattern for each in a case, `_` for any, the patterns of a row joined by `and`
+([if](../nodes/if.md)).
 `while c {…}` becomes a loop block with `if not c {break
 nil}` inserted first. `each x in a ..< b by s` becomes an outer block holding the
 range's first value, the loop variable (a counter) and the count of steps, plus a loop
@@ -1059,6 +1061,7 @@ numbers.
 | | `parseGenericParms`, `parseWhere`, `parseIsCondition`, `parseMacro` | the type parameter list, shared by `fn`, `struct`, `mod` and `macro`: comma-separated names, each a generic's annotated with `+`-joined names (or a function signature written bare, `parseFnBound`) whose meaning name resolution decides (`or` there is `ErrorGenParmOr`), and a macro's or module's refused an annotation as `ErrorGenParmConstr`; the `where` clause just before a function's or a type's block, `T is Name` (or `T is fn(...) R`) clauses joined by `and` and `or`, `and` binding tighter, grouped by parentheses, any other form `ErrorWhereForm` ([generic](../nodes/generic.md), "Parse"); and the condition after an `is` entry's `if`, read as a `where` clause's is, but kept whole and with no lifetime in it |
 | | `parseExprBlock` | the statement-block loop — the parser's second dispatch table |
 | | `parseIf`, `parseMatch`, `parseBoundMatch` | `if`/`elif`/`else` and the `match`-to-`if` desugaring; every pattern's root name is marked (`castPatternMark`) to be looked up in the matched value's enum at type check, as `parseCmp` marks an `is` test's |
+| | `parseMatchColumn`, `parseMatchWild` | the patterns of one value of a match, joined by `or`; in `match a, b` a column that binds is `ErrorMatchColumn`; `_` (`parseMatchWild`) is a literal `true` flagged `FlagMatchAny`, refused in a match of one value |
 | | `parseMatchPattern`, `parseMatchRange` | one pattern of a case — `is`, a comparison, a range, a value alone — lowered to the condition that tests the captured value, a value alone to the undecided test `newMatchValueNode` builds; a condition (`not b`, `n > 3`), at the start of a case or after an `or`, is `ErrorPatBare` |
 | | `parseWhile`, `parseEach`, `parseWith`, `parseLifetime` | loop and scope desugaring |
 | | `parseEachLoop`'s range helpers (`parseRangeStepSign`, `parseRangeGuard`, `parseRangeMoved`, `parseRangeStepCall`) | an `each` over a number range: which way the step runs, the guard that lets a pass run, the test that a step wrapped past the type's extreme, and the step itself, finished by type check (`eachRangeStepLower`, `ir/exp/each.c`) |
