@@ -1776,7 +1776,6 @@ static int pwShapeBorrow(Place *recvpl, uint32_t recvloan, INode *container) {
 // but is lent by a 'mut' borrow (an alias loan), or a 'mut' borrow of it is held beside
 // this one. Where it is not marked, a borrow that writes freezes the place entirely.
 static void pwShapeLent(Place *pl, uint32_t loan, INode *container, int ofarg) {
-    loanFreezeShared(loan);
     int marked = 0;
     if (pl->shwrite)
         marked = pwShapeBorrow(pl, loan, container);
@@ -1794,8 +1793,13 @@ static void pwShapeLent(Place *pl, uint32_t loan, INode *container, int ofarg) {
             marked = 1;
         }
     }
-    if (!marked)
+    // Followed by the shape check, a borrow through a shared path is an alias loan whether it
+    // writes or not: the path stays readable, lendable and writable, a change of its shape
+    // being what is refused. Not followed, it freezes the path as a local's loan does
+    if (!marked) {
+        loanFreezeShared(loan);
         loanFreezeWritable(loan);
+    }
 }
 
 // A call is made. Each marked loan is asked whether the call could reshape the

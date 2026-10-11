@@ -1240,11 +1240,13 @@ only keeps the source alive (`LoanAlias`), so `imm e = l[0usize]; m.push(p); e.x
 compiles when `m` is another reference to the same list, and `e` dangles. For
 a container that changes shape (it declares `ShapeChanging`, or is found to
 be one: `shapeChanging`) the loan the
-returned borrow carries is made a `LoanShared` one when the borrow is read-only
-(`pwCall`, `loanFreezeShared`): the same path, `l` or `self.items`, is frozen against
-changes while the borrow is used. A borrow that may write (`&mut l[0usize]`,
-`l.viewMut()`) stays an alias loan, marked for the shape check (`pwShapeLent`), and is
-frozen (`LoanExcl`, `loanFreezeWritable`) only where the check does not follow it. So
+returned borrow carries, read-only or writing (`l[0usize]`, `&mut l[0usize]`, `l.viewMut()`),
+stays an alias loan marked for the shape check (`pwShapeLent`): the path, `l` or
+`self.items`, stays readable, lendable and writable, and a change of its shape is what is
+refused. Where the check does not follow the loan (the path is reached through a reference
+others do not write by: `imm`, `mut1`), a read-only borrow's loan is made a `LoanShared`
+one and a writing one a `LoanExcl` one (`loanFreezeShared`, `loanFreezeWritable`): the
+path is frozen as a local's is. So
 `imm e = l[0usize]; l.push(p); e.x`, the
 same through a struct wrapping a `List` (`bag.first(); bag.add(p)` through
 `bag &mut Bag`) and

@@ -16,6 +16,23 @@ import collections use *;
 
 struct Pt { pub x i64; pub y i64; }
 
+// A counted owner of a struct holding a list behind an owner of its own
+struct Item { pub n i64; }
+struct Ship { pub fuel i64; pub vec So[List[Item]]; }
+
+fn noShape(s &mut Ship) { s.fuel = s.fuel + 1; }
+
+// An element borrowed through the owner, then another field written and the whole
+// lent '&mut' to a call that only writes a field: a read-only element borrow through
+// a shared path is an alias loan, so the path stays lendable and writable, and only a
+// change of the list's shape is refused (collection_flow_reshape_owners)
+fn elemViaRc(r Rc[mut, Ship]) i64 {
+  imm e = r.vec[0usize];
+  r.fuel = 3;
+  noShape(&mut *r);
+  e.n;
+}
+
 fn show(label &str, n i64) {
   printStr(label);
   printStr(" = ");
@@ -123,6 +140,11 @@ fn main() {
   mut ints = List[i64].empty();
   ints.push(0);
   show("view-mut-twice", viewMutTwice(&mut ints));
+
+  mut items = List[Item].empty();
+  items.push(new Item(8));
+  imm ship = new Rc[mut, Ship](1, new So[List[Item]](items));
+  show("elem-via-rc", elemViaRc(ship) * 100 + ship.fuel);
 
   mut dq = Deque[i64].empty();
   dq.push(2);
