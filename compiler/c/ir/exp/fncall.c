@@ -166,6 +166,8 @@ static int fnCallNamesMethod(INode *dcl) {
     return 0;
 }
 
+static void fnCallVariantReceiver(FnCallNode *node);
+
 // A '.' whose left side names a namespace is a path through it, not an access
 // to a value: 'math3d.Point3', 'Tally.make(1)', 'Tally.made'. The parser cannot
 // tell the two apart, so the decision is made here, as soon as the base name is
@@ -191,6 +193,10 @@ static int fnCallNameResPath(NameResState *pstate, FnCallNode **nodep) {
     // An operator, a tuple index, or a call with no member name is never a path
     if (node->methfld == NULL || !isNameUseNode(node->methfld) || (node->flags & FlagOperator))
         return 0;
+    // 'Lamp.Red.get()', 'Pending.Waiting[i64].key()': a method called through an empty
+    // variant's name is called on that variant constructed
+    if (node->args != NULL)
+        fnCallVariantReceiver(node);
     if (!isNameUseNode(node->objfn))
         return 0;
     INode *basedcl = nameUseGetDcl((NameUseNode*)node->objfn);
@@ -3383,6 +3389,40 @@ void fnCallVariantTermNameRes(NameResState *pstate, INode **nodep) {
     lit->args = newNodes(1);
     lit->flags |= FlagIndex | FlagCtorParen;
     *nodep = (INode*)lit;
+}
+
+// A method called through an empty variant's name, 'Lamp.Red.get()', 'Red.get()' after
+// a 'use', 'Pending.Waiting[i64].key()', is called on that variant constructed, as if it were
+// written '(Lamp.Red).get()': the name alone is the value (fnCallVariantTermNameRes),
+// and a '.' after a value reaches its methods. Without this the variant's name is a
+// namespace and the call a path through it, to a function whose 'self' is then missing.
+// The receiver is wrapped in the literal the construction is. Left alone: a function
+// with no 'self' (a static is the path's), a name the variant does not declare, and
+// a variant that holds values, which is no value by its name alone.
+static void fnCallVariantReceiver(FnCallNode *node) {
+    INode *name = node->objfn;
+    // A generic variant with its type arguments written: 'None[i32]' before the '.'
+    if (name->tag == FnCallTag && (name->flags & FlagIndex) && ((FnCallNode*)name)->methfld == NULL
+        && !(name->flags & FlagRange) && ((FnCallNode*)name)->args != NULL
+        && ((FnCallNode*)name)->args->used > 0)
+        name = ((FnCallNode*)name)->objfn;
+    if (!fnCallIsEmptyVariantName(name))
+        return;
+    StructNode *variant = fnCallVariantNamed(name);
+    Name *methname = ((NameUseNode*)node->methfld)->namesym;
+    INode *member = namespaceFind(&variant->namespace, methname);
+    // A generic variant has no methods of its own until it is an instance: the enum it
+    // belongs to has them
+    StructNode *base = member == NULL ? structBaseTraitDcl(variant) : NULL;
+    if (base != NULL)
+        member = namespaceFind(&base->namespace, methname);
+    if (member == NULL || !fnCallNamesMethod(member))
+        return;
+    FnCallNode *lit = newFnCallNode(node->objfn, 0);
+    inodeLexCopy((INode*)lit, node->objfn);
+    lit->args = newNodes(1);
+    lit->flags |= FlagIndex | FlagCtorParen;
+    node->objfn = (INode*)lit;
 }
 
 // A call whose callee is a variant, 'Some(5)' or, with its type arguments written,
