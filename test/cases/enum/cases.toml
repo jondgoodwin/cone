@@ -353,8 +353,45 @@ excludes = ["3GenlEu11_drop", "6OptionR0"]
 
 [scenario.enum_match_form]
 category = "run"
-description = "The matchee's form decides what a match takes: a place is tested where it stands and only the arm that binds takes from it (a move of an owner, a copy of a copy type that 'mut' changes without touching the original), a borrow binds a reference into it, a call is a temporary the match owns, a bound guard holds the value; and a pattern names only the variant, taking the reference kind of the matched value ('&imm', an 'Rc', a value), a variant named through its enum alone is an 'is', and '&Circle' stays a check"
+description = "The matchee's form decides what a match takes: a place is tested where it stands and only the arm that binds takes from it (a move of an owner, a copy of a copy type that 'mut' changes without touching the original), a borrow binds a reference into it, a call is a temporary the match owns, a bound guard takes nothing from a place; and a pattern names only the variant, taking the reference kind of the matched value ('&imm', an 'Rc', a value), a variant named through its enum alone is an 'is', and '&Circle' stays a check"
 tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.enum_flow_typing]
+category = "run"
+description = "Flow typing: a name tested for a variant is that variant where the test holds -- in the branch, joined by 'and', in the branch of a failed 'not', in the arm of a match, in the other branch of a two-variant test, after a branch that leaves, in a loop's pass -- so its fields are read by name; assigning a known variant narrows to it, and writing a field of the variant is no change of it"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.enum_match_keeps_place]
+category = "run"
+description = "A match on a place takes only what its arm binds: a binding of plain data copies it and the place is matched again after the arm, a guard on a binding takes nothing whatever the payload (a failing guard leaves the place whole for the cases after it), and an arm that binds a payload that moves takes it and finalizes it as the arm ends"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.enum_let_else]
+category = "run"
+description = "let-else, 'imm n Ok = r else {...};': the binding of 'if imm n Ok = r' declared where it stands, whose 'else' leaves ('return', 'break', 'continue'); it takes what a binding takes (a copy of plain data that leaves the place whole, a move of an owner, a reference into a borrowed value) and may be 'mut'"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.enum_owner_narrow]
+category = "run"
+description = "A pattern on an owner, 'match s { case imm c Circle }' on an 'Rc[mut, Shape]', binds a copy of the owner (counted one more, released with its arm) typed 'Rc[mut, Circle]', in a match, a bound 'if' and let-else; the value dies once, with its last owner, and writes through the narrowed owner are seen through the others"
+tags = ["typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.enum_flow_typing_refs]
+category = "run"
+description = "Flow typing through a reference parameter: an 'imm' or 'uni' reference is narrowed as it stands, a '&' or '&mut' one through a reference the compiler declares where the test was made; fields read, written and methods of the variant called by name, in a branch, joined by 'and', after a branch that leaves, by elimination, in a match arm, across a call that cannot reach the enum, and again after the enum is stored over"
+tags = ["typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.enum_typecheck_flow_typing]
+category = "reject"
+description = "Where flow typing does not narrow: a field only a variant has, named with no test or outside the test's branch; and what is said when the name was narrowed and is not any more (an assignment of a value not known to be a variant, a writable borrow of the whole enum, a branch that changed it, a reference stored over), naming the change; a narrowing from before a loop that the loop changes and comes back to; the name still the whole enum where a variant is wanted; a let-else whose else falls through"
+tags = ["typecheck"]
+diagnostics = 9
+
+[scenario.enum_flow_typing_reshape]
+category = "reject"
+description = "A reference name others may share, narrowed to a variant by a test, used as the variant after a call handed another name for the enum, a store through one, a swap, or a call whose body cannot be seen, in a branch, after a branch that left, in a match arm and in a loop: refused at the use that is stale, naming the change"
+tags = ["flow"]
+diagnostics = 7
 
 [scenario.enum_match_cover]
 category = "run"
@@ -573,9 +610,9 @@ diagnostics = 9
 
 [scenario.enum_typecheck_narrow]
 category = "reject"
-description = "Patterns narrowing to a type the matched value could never be, already narrow, or in another region; a pattern written as a reference that disagrees with the matched value (a region, a stronger permission, a value that is no reference); and a binding narrowed from an 'Rc', another owner of the value, which stays refused"
+description = "Patterns narrowing to a type the matched value could never be, already narrow, or in another region; a pattern written as a reference that disagrees with the matched value (a region, a stronger permission, a value that is no reference)"
 tags = ["typecheck"]
-diagnostics = 14
+diagnostics = 12
 
 # A reference narrowed into a variant through a 'mut' or 'ro' reference other
 # references share is the collection rule's case: allowed, and refused only if something

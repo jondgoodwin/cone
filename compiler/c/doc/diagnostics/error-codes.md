@@ -422,7 +422,20 @@ anything that could change which variant an enum holds under a reference narrowe
 into one of its variants, call or store, `ErrorVariantReshape`. The three are
 separate because the remedies differ: a collection is cured by copying out what is
 needed or by a read-only path, and a narrowed reference by ending its use before the
-change. All are reported at the change, naming where the borrow is used again.
+change. A collection's are reported at the change, naming where the borrow is used again;
+`ErrorVariantReshape` is reported where the narrowed reference or name is used again,
+naming the change, as the narrowing errors below are.
+
+`ErrorNarrowStale`, `ErrorNarrowLoop` and `ErrorLetElse` are about a name narrowed by a test
+(flow typing, [narrow](../nodes/narrow.md)) and the binding that outlives an early exit. A
+member only one variant has, named on a name that was narrowed to it and has since been
+changed by an assignment, a writable borrow of the whole enum, a swap, a reference stored over
+or a branch that did one of these, is `ErrorNarrowStale` (type check); a name narrowed from before
+a loop, used in it, that a change later in the loop reaches by the back edge is
+`ErrorNarrowLoop`; and the `else` of `imm n Ok = r else {...};` that falls through to the binding
+is `ErrorLetElse`. Each is reported at the use or the `else`, and the first two name the
+change. `ErrorOwnerNarrow` is an owner (`Rc[mut, Shape]`) narrowed to a variant whose value
+would sit at another offset in its allocation (generation).
 
 An actor's declaration has five codes of its own and borrows two. What its
 body may not hold, or a form of it not built (a `pub` field, a static, a

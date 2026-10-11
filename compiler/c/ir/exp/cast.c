@@ -372,7 +372,7 @@ static int castBorrowsUni(INode *exp) {
     if (!isNameUseNode(exp) || !isExpNode(exp))
         return 0;
     INode *dcl = ((NameUseNode *)exp)->dclnode;
-    if (dcl == NULL || dcl->tag != VarDclTag || ((VarDclNode *)dcl)->namesym != anonName
+    if (dcl == NULL || dcl->tag != VarDclTag || !nameIsMatchHolder(((VarDclNode *)dcl)->namesym)
         || ((VarDclNode *)dcl)->value == NULL)
         return 0;
     INode *value = ((VarDclNode *)dcl)->value;
@@ -404,20 +404,15 @@ static int castSumNarrowsRefs(CastNode *node, RefNode *from, RefNode *to) {
     return !((permGetFlags(from->perm) & MayIntRefSum) || castBorrowsUni(node->exp));
 }
 
-// Only a borrow is followed: an owner narrowed (an 'Rc' to one of its variants) is
-// another owner of the value, which no loan on its source stands for, so it stays
-// refused
+// Only a borrow is followed by the loan walk. An owner narrowed (an 'Rc[mut, Shape]'
+// to an 'Rc[mut, Circle]') is a copy of the owner with another static type [topic 6a]:
+// it holds the same allocation, counted one more, and a variant has its enum's
+// address, so nothing is adjusted. No loan stands for another owner of the value, so
+// nothing follows a change of its variant through one (see the compiler note).
 static void castSumInterior(CastNode *node, RefNode *from, RefNode *to) {
     if (!castSumNarrowsRefs(node, from, to))
         return;
-    if (itypeGetTypeDcl(from->region) == borrowRef) {
-        node->flags |= FlagVariantNarrow;
-        return;
-    }
-    PermNode *perm = (PermNode *)itypeGetTypeDcl(from->perm);
-    errorMsgNode((INode *)node, ErrorBadPerm,
-        "A '%s' reference to %s, held by an owner (an 'Rc'), may not be narrowed to a reference into one of its variants: another owner may change which variant it holds while this one is used. Match a borrow of the value, a 'uni' or 'imm' reference, or the value.",
-        &perm->namesym->namestr, &((StructNode *)itypeGetTypeDcl(from->vtexp))->namesym->namestr);
+    node->flags |= itypeGetTypeDcl(from->region) == borrowRef ? FlagVariantNarrow : FlagOwnerNarrow;
 }
 
 // The field of the hidden local holding the matched value, which a variable
@@ -429,10 +424,87 @@ static INode *castPayloadAccess(VarDclNode *local, INode *lexnode) {
     return (INode*)access;
 }
 
+// The narrowing of a reference to a reference to one of its enum's variants, made by flow
+// typing (narrow.c): a recast, type checked here as a bound pattern's conversion of a
+// reference would be, so a reference other references may share is followed by the loan
+// walk
+CastNode *castNarrowRef(INode *exp, RefNode *to) {
+    CastNode *cast = newRecastNode(exp, (INode *)to);
+    inodeLexCopy((INode *)cast, exp);
+    cast->vtype = (INode *)to;
+    cast->flags |= FlagMatchChecked;
+    castSumInterior(cast, (RefNode *)iexpGetTypeDcl(exp), to);
+    return cast;
+}
+
+// Is this the use of a hidden variable a match keeps its value in (the anonymous
+// one, or a later column's)?
+static int castIsHeldUse(INode *exp) {
+    if (!isNameUseNode(exp) || !isExpNode(exp))
+        return 0;
+    INode *dcl = ((NameUseNode *)exp)->dclnode;
+    if (dcl == NULL || dcl->tag != VarDclTag)
+        return 0;
+    Name *name = ((VarDclNode *)dcl)->namesym;
+    return name == anonName || (&name->namestr)[0] == '-';
+}
+
+// Is a variant plain data: nothing in it to move, finalize, count or trace? Reading
+// its bytes out of a place is a copy of it, and the place keeps its own.
+static int castVariantIsPlain(StructNode *variant) {
+    INode *type = (INode *)variant;
+    return !itypeIsMove(type) && !itypeNeedsFinal(type) && !itypeHoldsTraced(type)
+        && !flowIsRcRef(type) && !flowHeldCounted(type);
+}
+
+// A guard's binding reads the matched place before the arm is chosen, so it takes
+// nothing from it. What the pattern binds is copied if it is plain data, and where it
+// moves (an owner) the guard is shown it through a read-only borrow of the place, so
+// that a guard which fails leaves the place whole for the cases after it. The
+// pattern's type node is the 'is' test's, bound by the test before the guard.
+static void castGuardBorrow(CastNode *cast) {
+    if (!(cast->flags & FlagMatchGuardBind) || castPatternPending(cast->typ) || !isTypeNode(cast->typ)
+        || castIsHeldUse(cast->exp))
+        return;
+    INode *variant = itypeGetTypeDcl(cast->typ);
+    if (variant->tag != StructTag || castVariantIsPlain((StructNode *)variant))
+        return;
+    INode *place = cast->exp;
+    RefNode *borrow = newRefNodeFull(BorrowTag, place, borrowRef, newPermUseNode(roPerm), place);
+    RefNode *reftype = newRefNodeFull(RefTag, place, borrowRef, newPermUseNode(roPerm), cast->typ);
+    cast->exp = (INode *)borrow;
+    cast->typ = (INode *)reftype;
+    cast->vtype = (INode *)reftype;
+}
+
+// An arm that binds a payload that is plain data copies it, and the matched place it
+// came from stays whole: the hidden variable the arm takes the place into holds the
+// variant alone, a copy of its leading bytes. Where the variant owns something, the
+// whole place moves into the variable, as a binding that moves always has.
+static void castArmCopies(CastNode *cast, StructNode *variant) {
+    // (Anything else, flow must move or count: a conversion's value is a temporary
+    // to it, which would leave that undone)
+    if (!castVariantIsPlain(variant) || !isNameUseNode(cast->exp))
+        return;
+    NameUseNode *armuse = (NameUseNode *)cast->exp;
+    if (armuse->dclnode == NULL || armuse->dclnode->tag != VarDclTag || !(armuse->dclnode->flags & FlagMatchArm))
+        return;
+    VarDclNode *arm = (VarDclNode *)armuse->dclnode;
+    if (arm->value == NULL || !isExpNode(arm->value))
+        return;
+    CastNode *take = newConvCastNode(arm->value, (INode *)variant);
+    inodeLexCopy((INode *)take, arm->value);
+    take->vtype = (INode *)variant;
+    arm->value = (INode *)take;
+    arm->vtype = (INode *)variant;
+    armuse->vtype = (INode *)variant;
+}
+
 int castBindProject(TypeCheckState *pstate, VarDclNode *var) {
     CastNode *cast = (CastNode*)var->value;
     if ((cast->flags & FlagMatchChecked) || pstate->extend == NULL || pstate->extend->var != var)
         return 0;
+    castGuardBorrow(cast);
     // The conversion is checked here, once, as the variable would have checked it:
     // what it narrows to says whether the pattern named a variant declared as a type
     // (a second check would find the conversion already made, which castTypeCheck
@@ -443,6 +515,8 @@ int castBindProject(TypeCheckState *pstate, VarDclNode *var) {
     if (type == errorType || type == unknownType || !isTypeNode(type))
         return 0;
     type = itypeGetTypeDcl(type);
+    if (type->tag == StructTag)
+        castArmCopies(cast, (StructNode *)type);
     INode *target = (type->tag == RefTag || type->tag == VirtRefTag)
         ? itypeGetTypeDcl(((RefNode*)type)->vtexp) : type;
     if (target->tag != StructTag || !structIsTypeVariant((StructNode*)target))

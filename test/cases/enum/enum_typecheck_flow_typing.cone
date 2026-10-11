@@ -1,0 +1,97 @@
+// Where a name is not narrowed [4a, 4b], and what is said when it was and is no longer.
+// A name is the whole enum except where a test found its variant, so a field only a
+// variant has is refused without one. A narrowing ends at any change of the name: an
+// assignment of a value that is not known to be a variant, a writable borrow of the
+// whole enum, a path where one branch changed it. The use that needed it is then
+// refused, and the message names the change. A narrowing from before a loop is good for
+// the first pass: a change later in the loop is reported at the use the next pass
+// reaches. The name stays the original value (4c), so it is not a variant where a
+// variant is wanted.
+
+mod enum_typecheck_flow_typing;
+
+enum Shape {
+  struct Circle { pub radius i32; }
+  struct Rect { pub w i32; }
+  struct Dot {}
+}
+use Shape;
+
+fn reshape(s &mut Shape) { *s = Shape.Rect(1); }
+
+// No test, no narrowing
+fn untested(s Shape) {
+  s.radius;                              //~ ErrorNoMbr "radius"
+}
+
+// A test elsewhere narrows only where it holds
+fn outsideBranch(s Shape) {
+  if s is Circle { s.radius; }
+  s.radius;                              //~ ErrorNoMbr "radius"
+}
+
+// A value that is not known to be a variant ends it, and the message names it
+fn changedToUnknown(other Shape) {
+  mut s Shape = Shape.Circle(1);
+  s.radius;
+  s = other;
+  s.radius;                              //~ ErrorNarrowStale "was changed at 37:3"
+}
+
+// ... a writable borrow of the whole enum, which a call may store another variant through
+fn borrowedWhole() {
+  mut s Shape = Shape.Circle(1);
+  reshape(&mut s);
+  s.radius;                              //~ ErrorNarrowStale "was changed at"
+}
+
+// ... and a path where one branch changed it
+fn oneBranch(c bool, other Shape) {
+  mut s Shape = Shape.Circle(1);
+  if c { s = other; }
+  s.radius;                              //~ ErrorNarrowStale "was changed at"
+}
+
+// ... a reference stored over
+fn throughReference(s &mut Shape, other Shape) {
+  if s is Circle {
+    *s = other;
+    s.radius;                            //~ ErrorNarrowStale "was changed at"
+  }
+}
+
+// A narrowing from before a loop, a change later in it, and the next pass
+fn loopCarried(other Shape) {
+  mut s Shape = Shape.Circle(1);
+  mut n = 0;
+  while n < 3 {
+    s.radius;                            //~ ErrorNarrowLoop "does not hold on the next pass"
+    s = other;
+    n += 1;
+  }
+}
+
+// ... where the loop tests again, it holds
+fn loopTestsAgain(other Shape) {
+  mut s Shape = Shape.Circle(1);
+  mut n = 0;
+  while n < 3 {
+    if s is Circle { s.radius; }
+    s = other;
+    n += 1;
+  }
+}
+
+// The name stays the whole enum where a variant is wanted
+fn takesCircle(c Circle) {}
+fn notAVariant(s Shape) {
+  if s is Circle {
+    takesCircle(s);                      //~ ErrorInvType "does not match"
+  }
+}
+
+// A binding that outlives an early exit leaves in its 'else'
+fn fallsThrough(r Result[i32, i32]) i32 {
+  imm n Ok = r else { 0; };              //~ ErrorLetElse "must leave"
+  return n;
+}

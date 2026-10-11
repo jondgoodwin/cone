@@ -1,0 +1,190 @@
+// Flow typing [4a, 4b, 4c]: a name that was tested for a variant is that variant where
+// the test holds. In the branch of 'if s is Circle', after a branch that leaves, and by
+// elimination in the branches that remain, 's.radius' reads the variant's field; the
+// name is the whole enum again at any change of it, and assigning a known variant
+// narrows to it. The name stays the original value (4c): a type-variant's contents
+// are reached by a binding, not by the name.
+//
+// The expected lines are worked out by hand in the comments.
+
+mod enum_flow_typing;
+
+import stdio use *;
+
+enum Shape {
+  struct Circle {
+    pub radius i32;
+    pub fn grow(self &mut, n i32) { radius = radius + n; }
+    pub fn doubled(self) i32 { radius * 2; }
+  }
+  struct Rect { pub w i32; pub h i32; }
+  struct Dot {}
+}
+use Shape;
+
+struct Fin {
+  pub id i32;
+  fn final(self &uni) {
+    printStr("fin");
+    printInt(i64.from(id));
+    printStr(" ");
+  }
+}
+
+// A variant that owns something
+enum Own {
+  struct Holds {
+    pub f Fin;
+    pub fn unwrap(self) i32 { f.id; }
+  }
+  struct Empty {}
+}
+
+fn num(n i32) {
+  printInt(i64.from(n));
+  printStr(" ");
+}
+
+// -------- in the branch --------
+
+// 3 then 20
+fn inBranch() {
+  imm c Shape = Shape.Circle(3);
+  imm r Shape = Shape.Rect(4, 5);
+  if c is Circle { num(c.radius); }
+  if r is Rect { num(r.w * r.h); }
+}
+
+// A test joined to others by 'and': the right side knows the left was true.
+// 7, then the second is false because the test fails: nothing
+fn inAnd() {
+  imm c Shape = Shape.Circle(7);
+  imm d Shape = Shape.Dot;
+  if c is Circle and c.radius > 5 { num(c.radius); }
+  if d is Circle and d.radius > 5 { num(0); }
+}
+
+// 'not': the branch of a test that failed. 9
+fn inNot() {
+  imm r Shape = Shape.Circle(9);
+  if not (r is Rect) and r is Circle { num(r.radius); }
+}
+
+// -------- the branches that remain --------
+
+// By elimination: in the 'else' of a two-variant test, the other one. 4 then 6
+enum Pair {
+  struct Left { pub a i32; }
+  struct Right { pub b i32; }
+}
+
+fn elimination(p Pair) {
+  if p is Left { num(p.a); }
+  else { num(p.b); }
+}
+
+// A match arm that names the variant narrows the matched name as an 'if' does, and
+// the last arm of a match that covers is what the others left. 3, 4, 0
+fn matched(s Shape) {
+  match s {
+    case Circle { num(s.radius); }
+    case Rect { num(s.w); }
+    case Dot { num(0); }
+  }
+}
+
+// -------- after a branch that leaves --------
+
+// After 'if p is Right { return }', p is Left. 1 then 0
+fn afterExit(p Pair) i32 {
+  if p is Right { return 0; }
+  return p.a;
+}
+
+// A branch that leaves the loop narrows what follows it in the loop's pass. 5
+fn inLoop(p Pair) {
+  mut k = 0;
+  while k < 1 {
+    if p is Right { break; }
+    num(p.a);
+    k += 1;
+  }
+}
+
+// -------- the end of a narrowing --------
+
+// An assignment of a known variant narrows to it: after it, 's' is a Rect, and
+// reading its field is fine. 8, then 2, then 6
+fn assigned() {
+  mut s Shape = Shape.Circle(1);
+  s = Shape.Rect(2, 3);
+  num(s.h + 5);
+  s = Shape.Circle(2);
+  num(s.radius);
+  if s is Circle {
+    s.radius = 6;
+    num(s.radius);
+  }
+}
+
+// A field written in the variant is no change of variant. 5 then 7
+fn fieldWritten() {
+  mut s Shape = Shape.Circle(4);
+  if s is Circle {
+    s.radius = 5;
+    num(s.radius);
+    s.radius += 2;
+    num(s.radius);
+  }
+}
+
+// A method of the variant is called by name, on the value itself: 5 then 10
+fn methods() {
+  mut s Shape = Shape.Circle(1);
+  if s is Circle {
+    s.grow(4);
+    num(s.radius);
+    num(s.doubled());
+  }
+}
+
+// A method that consumes the variant, called on the narrowed name, moves it out of the value,
+// which is not finalized again: the Fin dies with the method, once. "fin7 7 |"
+fn consumes(e Own) {
+  if e is Holds { num(e.unwrap()); }
+}
+
+// The state machine: the arm changes the value near its end to the next state, and
+// the next pass tests it afresh. States: 1 then 2 then 0
+fn machine() {
+  mut state Shape = Shape.Circle(2);
+  mut n = 0;
+  while n < 3 {
+    if state is Circle {
+      num(state.radius - 1);
+      state = Shape.Rect(1, 1);
+    }
+    else if state is Rect {
+      num(state.w + 1);
+      state = Shape.Dot;
+    }
+    else { num(0); }
+    n += 1;
+  }
+}
+
+fn main() i32 {
+  inBranch(); printStr("|\n");
+  inAnd(); printStr("|\n");
+  inNot(); printStr("|\n");
+  elimination(Pair.Left(4)); elimination(Pair.Right(6)); printStr("|\n");
+  matched(Shape.Circle(3)); matched(Shape.Rect(4, 0)); matched(Shape.Dot); printStr("|\n");
+  num(afterExit(Pair.Left(1))); num(afterExit(Pair.Right(1))); printStr("|\n");
+  inLoop(Pair.Left(5)); printStr("|\n");
+  assigned(); printStr("|\n");
+  fieldWritten(); printStr("|\n");
+  methods(); printStr("|\n");
+  consumes(Own.Holds(new Fin(7))); printStr("|\n");
+  machine(); printStr("|\n");
+  0i32;
+}

@@ -28,8 +28,10 @@
     takes (<a href="#form">What a match takes</a>), and a pattern names only the variant, the matched value
     supplying the reference it is (<a href="#enum">Variant type partial matches</a>). A binding through a
     <span class="pre">mut</span> or <span class="pre">ro</span> reference is followed by the collection rule: allowed,
-    and refused only if something could change the variant while it is used (an owned <span class="pre">Rc</span>
-    is not narrowed this way yet). A struct's partial pattern is written with its fields in square brackets (<span class="pre">Point[0., _]</span>), and a variant's as a variant is constructed, in square brackets (<span class="pre">SomeInt[&lt;0]</span>): that is the current spelling, and how a match pattern spells a type or a construction is an open design question, as is how a variant is constructed (<a href="refenum.html#init">Enums</a>).</i></p>
+    and refused only if something could change the variant while it is used; one through an owner such as an
+    <span class="pre">Rc</span> is another owner of the value. A name tested for a variant is that variant
+    where the test holds (<a href="#flow">Flow typing</a>), and a binding that outlives an early exit is
+    <span class="pre">imm n Ok = r else {...};</span> (<a href="#letelse">Binding past an early exit</a>). A struct's partial pattern is written with its fields in square brackets (<span class="pre">Point[0., _]</span>), and a variant's as a variant is constructed, in square brackets (<span class="pre">SomeInt[&lt;0]</span>): that is the current spelling, and how a match pattern spells a type or a construction is an open design question, as is how a variant is constructed (<a href="refenum.html#init">Enums</a>).</i></p>
 
   <p>As with <span class="pre">if</span>, pattern matching is about deciding
   which code path to perform. 
@@ -127,9 +129,13 @@ fn side(n i32) i32 {
   <li><b>Any other value</b> &mdash; a call, <span class="pre">match f()</span> &mdash; is a temporary
   the match owns: it is made once, every pattern reads it, and it is finalized as the match ends.</li>
   </ul>
-  <p>A match with a bound <span class="pre">if</span> guard
-  (<span class="pre">case imm x Some if x &gt; 0</span>) holds the value it matches as a temporary does,
-  since the guard reads the binding before the arm is chosen.</p>
+  <p>A binding takes only what it binds. Where the payload is plain data (a number, a borrowed
+  reference, a struct of them), the arm copies it and the place is whole after the arm, even
+  where the enum holds an owner in another variant. A bound <span class="pre">if</span> guard
+  (<span class="pre">case imm x Some if x &gt; 0</span>) reads its binding before the arm is chosen, so it takes
+  nothing from a place at all: it sees a copy of plain data, and a payload that owns something through a
+  read-only borrow of it. A guard that fails leaves the place whole for the cases after it, and the arm
+  that runs is the one that takes.</p>
 
   <h2>Whole Value Matches</h2>
   <p>These patterns involve straightforward comparisons between the matchee value
@@ -389,14 +395,18 @@ match oddval {
   <p>Writing a field within the variant is not a change, whether through <span class="pre">c</span> or
     through the enum's name, and neither is a field every variant has
     (<span class="pre">s.kind = 9</span>), nor reading the enum, nor a call that only reads it.
-    The refusal is reported at the change, and says where <span class="pre">c</span> is used again; a
+    The refusal is reported where <span class="pre">c</span> is used again, and names the change; a
     change after its last use is fine, which is how a state machine moves to its next state.
     A borrow of a local made where it is matched needs no question: the borrow freezes the local
     (<a href="refborref.html">Freezing access to the source of a borrow</a>) until the
     binding's last use, and a <span class="pre">uni</span>, <span class="pre">imm</span> or
     <span class="pre">mut1</span> reference has no other name to change it. A value owned by an
-    <span class="pre">Rc</span>, another owner of the same value, is not narrowed this way yet: match a
-    borrow of it. An <span class="pre">is</span> test binds nothing, and narrows through any reference.</p>
+    <span class="pre">Rc</span> is another owner of the same value: the binding is a copy of the owner, counted
+    one more and let go as the arm ends, typed as the variant (<span class="pre">Rc[mut, Circle]</span> for an
+    <span class="pre">Rc[mut, Shape]</span>), and the variant is at its enum's address, so nothing moves. No loan
+    stands for another owner, so the compiler does not follow a change of the variant through another handle
+    while the narrowed copy is used: read what is needed from it before handing the value to code that may store
+    another variant over it. An <span class="pre">is</span> test binds nothing.</p>
 <pre>
 fn grow(s &amp;mut Shape) {
   match s {
@@ -446,7 +456,7 @@ fn step(m &amp;mut Machine) {
     variable declared <span class="pre">mut</span> changes that value, not a matched place:
     assigning over it, or over one of its fields, finalizes what is replaced, and a value swapped out
     of it with <span class="pre">&lt;=&gt;</span> leaves what was swapped in to be finalized with it.
-    A match on a call, or with a bound guard, holds the matched value itself for the whole match and
+    A match on a call holds the matched value itself for the whole match and
     finalizes it as the match ends, whichever case ran.</p>
   <p style="margin-left: 40px;"><i>Note: a bound variable moved, on every path or only some,
     and then assigned over leaves a value unfinalized: what it was given, or, where it was not
@@ -460,6 +470,85 @@ match oddval {
   case is None { 0; }
 }
 </pre>
+
+  <h2 id="flow">Flow typing</h2>
+  <p>A test of a variant tells the compiler what the tested name is, and it uses the name that way
+  until something may have changed it. After <span class="pre">if s is Circle</span>, inside its block
+  <span class="pre">s</span> is a <span class="pre">Circle</span> wherever a field or a method of
+  <span class="pre">Circle</span> is named on it: <span class="pre">s.radius</span> reads it,
+  <span class="pre">s.radius = 2</span> writes it, <span class="pre">s.grow()</span> calls it. The name is
+  narrowed:</p>
+  <ul>
+  <li>in the block of an <span class="pre">if</span>, an <span class="pre">elif</span>, or the
+  <span class="pre">case</span> of a match that names the variant, and on the right of an
+  <span class="pre">and</span> whose left tests it (<span class="pre">if s is Circle and s.radius &gt; 3</span>);</li>
+  <li>after a branch that leaves, for what follows: after
+  <span class="pre">if s is Circle { return 0; }</span>, <span class="pre">s</span> is not a
+  <span class="pre">Circle</span>;</li>
+  <li>by elimination: when the variants that remain are one, <span class="pre">s</span> is that one, in the
+  <span class="pre">else</span> of a two-variant test, in the last <span class="pre">case</span> of a
+  match, after an early exit;</li>
+  <li>by an assignment of a known variant: after <span class="pre">state = State.Run(speed)</span>,
+  <span class="pre">state.speed</span> reads the field.</li>
+  </ul>
+  <p>It is a name that is narrowed &mdash; a local variable or a parameter, held by value or through a
+  reference &mdash; and only to name a member of the variant. Narrowing does not retype the name for anything
+  else: it is still the original, whole value, passed and returned as the enum, and
+  <span class="pre">takesCircle(s)</span> is still an error (bind it for that). A variant declared as a
+  type, <span class="pre">Ok(i32);</span>, has no fields to name: the narrowed name has nothing more to
+  offer, and a binding is how to reach what it holds. The test <span class="pre">if x</span> is a plain truth
+  test, and never narrows: only the language's own tests do, <span class="pre">is</span> and a binding, never what
+  a method returns (<a href="refoption.html">Option</a> unwraps with them).</p>
+  <p>A narrowing ends when the name may hold another variant: an assignment to the whole of it, a
+  mutable borrow of the whole enum (a call that takes <span class="pre">&amp;mut Shape</span>), a swap, a
+  reference stored over (<span class="pre">*s = ...</span>), or a path where one branch did one of these.
+  Writing a field within the variant is not a change, whether a field of the variant or a field the
+  variants share. After a change the name is its whole type again, and a use that needed the variant
+  says so, at the use, naming the change:</p>
+<pre>
+fn step(state &amp;mut Machine) {
+  if state is Run {
+    state.speed = state.speed + 1;   // Ok
+    *state = Machine.Stop;          // the whole value is replaced: the narrowing ends
+    state.speed;                    // Error: `state` is not known to be Run here: it was changed at ...
+  }
+}
+</pre>
+  <p>A name that is a reference others may share (<span class="pre">&amp;</span> or <span class="pre">&amp;mut</span>)
+  is narrowed through a reference the compiler declares where the test was made, and the loan walk follows it as it
+  follows a binding (<a href="refborref.html">Borrowed references</a>): a call handed another name for the
+  enum, a store through one, a swap, or a call whose body it cannot read is a change, refused at the next use of
+  the narrowed name; a call that cannot reach the enum is none. A name held by value, or through an
+  <span class="pre">imm</span>, <span class="pre">uni</span> or <span class="pre">mut1</span> reference, has no other
+  name that can change it, so only its own assignments and mutable borrows are changes.</p>
+  <p>A narrowing from before a loop is good for the loop's first pass. A use of it that a change later in
+  the loop reaches again by the loop's back edge is an error, reported at the use. Test again inside the loop
+  to narrow afresh, which is how a state machine reads its next state:</p>
+<pre>
+while running {
+  if state is Idle { start(); state = State.Run(1); }       // tested each pass
+  else if state is Run { state.speed = state.speed + 1; }   // narrowed by its own test
+}
+</pre>
+
+  <h3 id="letelse">Binding past an early exit</h3>
+  <p>A binding made by <span class="pre">if imm n Ok = r</span> lives in the block of the
+  <span class="pre">if</span>. To use it after the test and leave otherwise, write the binding as a declaration
+  with an <span class="pre">else</span> that must not fall through (<span class="pre">return</span>,
+  <span class="pre">break</span>, <span class="pre">continue</span>, or a call that does not return, such as
+  <span class="pre">panic</span>):</p>
+<pre>
+fn bump(r Result[i32, Fin]) i32 {
+  imm n Ok = r else { return 0; };
+  n + 1;
+}
+</pre>
+  <p>It binds what a binding does (<a href="#form">What a match takes</a>): a copy of plain data, a move of
+  an owner, a reference into a borrowed value (<span class="pre">imm n Ok = &amp;mut r else ...</span> gives an
+  <span class="pre">&amp;mut i32</span>); it may be <span class="pre">mut</span>; and the pattern names only the
+  variant, taking its type arguments from the value. An <span class="pre">else</span> that falls through is an
+  error. Since the <span class="pre">else</span> leaves, <span class="pre">r</span> is known to be the variant
+  after the declaration, as after any branch that leaves.</p>
 
   <h2>First-class patterns</h2>
   <p>Whole and partial matching patterns handle many situations, but not all.

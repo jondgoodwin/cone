@@ -127,43 +127,52 @@ imm x = maybePoint?.dist();
 		and will bypass the assignment altogether if the optional value is None.
 	</p>
 
-	<h3>Conditional Variable Specialization</h3>
-	<p>Suppose we have a optional value stored in a variable, and we just want to check whether it is not None only once.
-		If it is not None, we want to be able to work with its unwrapped value using the same variable name
-		without having to constantly reaffirm it is not None.
-		This is surprisingly easy to accomplish:</p>
+	<h3>Testing for a value</h3>
+	<p>An Option used as a condition, <span class="pre">if maybePoint { ... }</span>, is a plain truth test:
+		it asks the Option's <span class="pre">isTrue</span>, which is true when it holds a value, and nothing more.
+		It does not unwrap anything, and <span class="pre">maybePoint</span> is the same optional value inside the block.
+		Narrowing comes only from the language's own tests, <span class="pre">is</span> and a binding, never from what
+		a method returns: <span class="pre">isTrue</span> is one method among others, and a three-variant enum whose
+		false covers two of them has no one variant to narrow to. To ask whether a value is there and say
+		so, test the variant:</p>
 <pre>
-if maybePoint {
-	imm x = maybePoint.x;
-	imm y = maybePoint.y;
-	imm dist = maybePoint.dist;
-}
-</pre>
-  <p>When an optional value is used in a conditional expression, it evaluates as false if None and true otherwise.
-		So, the above block will be performed whenever maybePoint is not None.
-		When this not None check is using a variable, as it is in this case, a local immutable shadow of that variable
-		is implicitly created at the top of the block which contains a copy of the unwrapped value inside maybePoint.
-		Since this shadow variable contains an unwrapped value, it can be directly used within that block as a Point value.
-		The use of this technique means, however, that the original variable is not accessible nor mutable within the block.</p>
-	<p>As an extension of this principle, if the conditional expression follows such a check with additional
-		conditions after the <span class="pre">and</span> operator, the shadow variable may also be used in the remaining condition:</p>
-<pre>
-if maybeInt and maybeInt &lt; 10 {
-  scale *= maybeInt;
-}
-</pre>
-	<p>A conditional can also check for the None value:</p>
-<pre>
-if !maybeRef {
+if maybeRef is None {
   // do some error recovery actions
 }
 </pre>
-	<p>The block is performed when maybeRef is None. No shadow variable is created for maybeRef at the top of the block,
-		as we have no value to unwrap.</p>
+	<p>Inside the block <span class="pre">maybeRef</span> is known to be <span class="pre">None</span>, and after a block
+		that leaves it is known not to be (<a href="refmatch.html#flow">Flow typing</a>). It is still the whole
+		Option: <span class="pre">Some</span> holds its integer as a type, with no field to name,
+		so to work with the value inside, bind it.</p>
+
+	<h3>Unwrapping with a binding</h3>
+	<p>Every enum unwraps with the same two forms, and an Option is no exception. A binding in an
+		<span class="pre">if</span> is the value inside, for the block:</p>
+<pre>
+if imm p Some = maybePoint {
+  imm x = p.x;
+  imm y = p.y;
+  imm dist = p.dist();
+}
+</pre>
+	<p>A second condition is a nested <span class="pre">if</span>, since the binding is made by the
+		first:</p>
+<pre>
+if imm n Some = maybeInt {
+  if n &lt; 10 {
+    scale *= n;
+  }
+}
+</pre>
+	<p>To use the value after the test and leave when there is none, bind it in a declaration whose
+		<span class="pre">else</span> leaves (<a href="refmatch.html#letelse">Binding past an early exit</a>):</p>
+<pre>
+imm p Some = maybePoint else { return; };
+imm dist = p.dist();
+</pre>
 
 	<h3>Pattern Matching</h3>
-	<p>If none of the above convenient approaches apply to your situation, 
-		just make use of straightforward pattern matching:</p>
+	<p>A bound <span class="pre">if</span> may carry an <span class="pre">else</span> for when there is no value, and a <span class="pre">match</span> handles every case at once:</p>
 
 <pre>
 if imm integer Some = maybeInt {

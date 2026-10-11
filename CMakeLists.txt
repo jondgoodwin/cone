@@ -109,6 +109,7 @@ add_executable(conec
 	compiler/c/ir/exp/logic.c
 	compiler/c/ir/exp/namedval.c
 	compiler/c/ir/exp/nameuse.c
+	compiler/c/ir/exp/narrow.c
 	compiler/c/ir/exp/sizeof.c
 	compiler/c/ir/exp/typelit.c
 	compiler/c/ir/exp/vtuple.c

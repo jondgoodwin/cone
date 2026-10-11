@@ -213,14 +213,19 @@ void blockNameRes(NameResState *pstate, BlockNode *blk) {
 // (varDclExtendBegin); 'hoists' gathers, for each such statement, its hidden
 // locals in order and then the statement, for blockHoist.
 static void blockStmtTypeCheck(TypeCheckState *pstate, INode **stmtp, Nodes **hoists) {
+    // Flow typing declares hidden variables after the statement that narrows a name,
+    // and must know which statement of this block that is (narrow.h)
+    INode *svstmt = narrowStmtBegin(*stmtp);
     if ((*stmtp)->tag != VarDclTag) {
         inodeTypeCheck(pstate, stmtp, noCareType);
+        narrowStmtEnd(svstmt);
         return;
     }
     VarDclExtend ext;
     INode *stmt = *stmtp;
     varDclExtendBegin(pstate, &ext, (VarDclNode *)stmt);
     inodeTypeCheck(pstate, stmtp, noCareType);
+    narrowStmtEnd(svstmt);
     Nodes *hoisted = varDclExtendEnd(pstate, &ext);
     if (hoisted == NULL)
         return;
@@ -236,6 +241,8 @@ static void blockStmtTypeCheck(TypeCheckState *pstate, INode **stmtp, Nodes **ho
 // Declare each hidden local just before the statement whose initializer
 // extends it. Done once nothing holds a pointer into the statement list.
 static void blockHoist(BlockNode *blk, Nodes *hoists) {
+    // (and the hidden variables flow typing declares after a statement, narrow.h)
+    narrowInsertAfters(blk);
     if (hoists == NULL)
         return;
     uint32_t from = 0;
@@ -264,6 +271,7 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
     // Save and adjust pstate for block
     // This includes block stack, used for gathering all breaks that might belong to some block
     ++pstate->scope;
+    narrowBlockBegin(blk);
 
     // An 'each' over a source that is not a range: what the source is says how
     // the loop is built, so the source is checked first, as the initializer of
@@ -292,8 +300,10 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
     }
 
     // A brand minted in a loop's body is its pass's (lifetime.h)
-    if (blk->flags & FlagLoop)
+    if (blk->flags & FlagLoop) {
         lifeBrandLoopEnter((INode*)blk);
+        narrowLoopEnter();
+    }
 
     // An 'each' loop block ends with the synthesized step that advances the loop
     // variable, so a 'continue' the reader wrote last sits one place further back.
@@ -375,8 +385,10 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
             inodeTypeCheck(pstate, laststmtp, noCareType); // we don't care about the type
     }
 
-    if (blk->flags & FlagLoop)
+    if (blk->flags & FlagLoop) {
         lifeBrandLoopExit();
+        narrowLoopExit();
+    }
 
     // A parallel each's body is checked: what its pieces may write is known now
     // that its statements have their types

@@ -627,6 +627,11 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
             errorMsgNode((INode*)name, ErrorNotLit, "Variable may only be initialized with a literal value.");
     }
 
+    // A local declared with a variant of its enum is that variant until it changes
+    // (narrow.h)
+    if (name->value && name->scope >= 2 && !(name->flags & FlagStatic) && name->vtype != errorType)
+        narrowDeclared(name);
+
     // A global or a static is found by no collector, so it may not hold a
     // traced reference (judged once every type is laid out)
     if (name->scope == 0 || (name->flags & FlagStatic))

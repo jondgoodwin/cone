@@ -228,6 +228,15 @@ void assignTypeCheck(TypeCheckState *pstate, AssignNode *node) {
             assignInitRecurse(pstate, node->lval, node->rval);
         }
     }
+    // What the names assigned hold now: the variant stored, where it is known (narrow.h)
+    if (lval->tag == VTupleTag) {
+        INode **elemp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode*)lval)->elems, cnt, elemp))
+            narrowAssigned(*elemp, NULL);
+    }
+    else
+        narrowAssigned(lval, assignOneTakesTuple(node) || node->rval->tag != VTupleTag ? node->rval : NULL);
     node->vtype = ((IExpNode*)node->rval)->vtype;
 }
 

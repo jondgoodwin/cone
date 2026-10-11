@@ -1,0 +1,119 @@
+// A match on a place takes only what its arm binds. A binding of a payload that is plain
+// data copies it and leaves the place whole, so the place is matched again after the
+// arm; a guard on a binding takes nothing from the place at all, whatever the payload,
+// so a guard that fails leaves the place whole for the cases after it. Only an arm that
+// binds a payload that moves takes it, and finalizes it as the arm ends.
+//
+// The finalizer prints its number, so the output is the whole assertion: what is
+// finalized, and when. The expected lines are worked out by hand in the comments.
+
+mod enum_match_keeps_place;
+
+import stdio use *;
+
+struct Fin {
+  pub id i32;
+  fn final(self &uni) {
+    printStr("fin");
+    printInt(i64.from(id));
+    printStr(" ");
+  }
+}
+
+fn num(n i32) {
+  printInt(i64.from(n));
+  printStr(" ");
+}
+fn end() {
+  printStr("|\n");
+}
+
+// -------- a copied payload leaves the place whole --------
+
+// Ok(5): the first match copies the 5, the second matches the same 'r' again
+//   "5 ok |"
+// Error(new Fin(7)): the first only tests, the second takes the Fin, which dies with its arm
+//   "err took fin7 |"
+fn copiedThenAgain(r Result[i32, Fin]) {
+  match r {
+    case imm n Ok { num(n); }
+    case is Error { printStr("err "); }
+  }
+  match r {
+    case imm e Error { printStr("took "); }
+    case is Ok { printStr("ok "); }
+  }
+}
+
+// The same through a bound 'if': the Ok(3) arm copies it and 'r' is matched again
+//   "3 ok |"
+fn copiedByIf(r Result[i32, Fin]) {
+  if imm n Ok = r { num(n); }
+  if r is Ok { printStr("ok "); }
+}
+
+// A copy that 'mut' changes is a copy: 'r' is untouched. Ok(5) -> "6 5 |"
+fn copiedMutable(r Result[i32, Fin]) {
+  match r {
+    case mut n Ok { n = n + 1; num(n); }
+    case is Error { printStr("err "); }
+  }
+  match r {
+    case imm n Ok { num(n); }
+    case is Error { printStr("err "); }
+  }
+}
+
+// -------- a guard takes nothing --------
+
+// The guard is true: the arm takes the Fin, which dies as the arm ends
+//   Some(new Fin(7)), limit 3: "big fin7 end |"
+// The guard is false, and the next arm takes it
+//   Some(new Fin(7)), limit 9: "small fin7 end |"
+fn guardMoves(o Option[Fin], limit i32) {
+  match o {
+    case imm f Some if f.id > limit { printStr("big "); }
+    case imm f Some { printStr("small "); }
+    case is None { printStr("none "); }
+  }
+  printStr("end ");
+}
+
+// The guard fails and no case takes: 'o' is whole afterwards, and the Fin is
+// finalized at the function's end, after "end ", not when the first match ends
+//   Some(new Fin(7)): "else still end fin7 |"
+fn guardLeavesWhole(o Option[Fin]) {
+  match o {
+    case imm f Some if f.id > 100 { printStr("huge "); return; }
+    else { printStr("else "); }
+  }
+  match o {
+    case is Some { printStr("still "); }
+    else { printStr("none "); }
+  }
+  printStr("end ");
+}
+
+// A guard on plain data copies it: the guard reads 'n', and the arm after takes it
+//   Ok(8): "big 8 |"   Ok(2): "small 2 |"
+fn guardCopies(r Result[i32, Fin]) {
+  match r {
+    case imm n Ok if n > 5 { printStr("big "); num(n); }
+    case imm n Ok { printStr("small "); num(n); }
+    case is Error { printStr("err "); }
+  }
+}
+
+fn main() i32 {
+  copiedThenAgain(Ok[i32, Fin](5)); end();
+  copiedThenAgain(Error[i32, Fin](new Fin(7))); end();
+  copiedByIf(Ok[i32, Fin](3)); end();
+  copiedMutable(Ok[i32, Fin](5)); end();
+  guardMoves(Some[Fin](new Fin(7)), 3); end();
+  guardMoves(Some[Fin](new Fin(7)), 9); end();
+  guardMoves(None, 1); end();
+  guardLeavesWhole(Some[Fin](new Fin(7))); end();
+  guardCopies(Ok[i32, Fin](8)); end();
+  guardCopies(Ok[i32, Fin](2)); end();
+  0i32;
+}

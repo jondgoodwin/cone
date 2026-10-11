@@ -3635,7 +3635,11 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
             node->vtype = errorType;
             return;
         }
+        // A name narrowed to a variant, naming a member only that variant has (narrow.h)
+        narrowReceiver(pstate, node);
         fnCallReadThroughRefs(node);
+        if (node->vtype == errorType)
+            return;
         // 'stack[i64].push(x)': a path through an instance of a generic module,
         // which exists only now that the instantiation above made it
         if (nameUseNames(node->objfn, ModuleTag)) {
@@ -3834,7 +3838,10 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
         node->vtype = errorType;
         return;
     }
+    narrowReceiver(pstate, node);
     fnCallReadThroughRefs(node);
+    if (node->vtype == errorType)
+        return;
 
     // All arguments must now be expressions
     int badarg = 0;

@@ -410,6 +410,15 @@ enum NodeTags {
 // pattern's root is a type use, and each lower bit is a type flag that some check
 // reads off whatever type node it is holding; 0x0400 is read on a VarDcl only.
 #define FlagPattern   0x0400        // NameUse: a pattern's bare root name, bound against the matched value first
+// A variable of an enum's type named as the one variant it is known to hold (narrow.h):
+// the use is typed as the variant, a prefix of the variable's own bytes, which
+// generation reads where it loads the variable. 0x0800 is free on a name use.
+#define FlagNarrowed  0x0800        // NameUse: typed as one variant of the enum its variable is declared as
+// The hidden variable an arm of a match on a place binds from: the matched value
+// copied or moved into it as the arm begins (parseBoundMatch). Where the arm binds a
+// payload that is plain data, it holds the variant alone (castBindProject), so the
+// place is not moved from.
+#define FlagMatchArm  0x1000        // VarDcl: the matched place's copy or move, made by the arm that binds it
 
 // Flags used across all types
 #define MoveType           0x0001  // Type's values impose move semantics (vs. copy)

@@ -17,6 +17,9 @@ typedef struct IfNode {
 // An 'if' that a 'match' was de-sugared into: the arms are the cases of one match,
 // so type check asks that they cover every value (ifMatchCover)
 #define FlagIfMatch   0x0001        // If
+// The 'if' that 'imm n Ok = r else {...};' is de-sugared into: its 'else' must leave,
+// since the binding that follows it takes the variant the test found
+#define FlagIfLetElse 0x0002        // If
 #define MatchMaxColumns 8           // the values a 'match a, b, ...' may take
 // The logic nodes of a match's conditions: the 'and' that joins the patterns of one
 // row of 'match a, b' (one per column), and the 'and' that adds an 'if' guard to the
