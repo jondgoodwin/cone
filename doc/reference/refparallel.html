@@ -1,0 +1,321 @@
+<html>
+  <head>
+	  <title>Parallel each - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Parallel each</div>
+		</div>
+
+    <div class="text">
+
+	<p style="margin-left: 40px;"><i>Note: Not built yet: <span class="pre">parallel each</span> inside a generator; a source of your own that is a <span class="pre">ParallelIterable</span>; the parallel builder inside an actor's method; and a reduction over a number range.</i></p>
+
+	<h2 id="parallel">Writing a parallel each</h2>
+	<p>Writing <span class="pre">parallel</span> in front of an <span class="pre">each</span> runs the loop's passes at
+		the same time, on the <a href="refactor.html#runtime">actors package's</a> workers, one for each CPU:</p>
+<pre>
+import actors;
+
+fn total(xs &amp;Array[u64]) u64 {
+  imm sum = Atomic[u64].of(0u64);
+  parallel each x in xs {
+    sum.add(weigh(*x));
+  }
+  sum.load();               // every pass has finished
+}
+</pre>
+	<p>The loop has finished when control reaches the statement after it. It starts as one task for the
+		whole range of passes; whoever runs a task splits it in half while it is bigger than a small share of the
+		range, queues one half and works the other, and an idle worker takes the oldest, largest half. So uneven
+		passes spread themselves, and the code that wrote the loop works on pieces of its own loop while it waits.
+		A module that writes one imports <span class="pre">actors</span>.</p>
+	<p><span class="pre">parallel</span> is a word only directly before <span class="pre">each</span>: anywhere else
+		it is a name like any other (a variable, a function, a field).</p>
+
+	<p>The filter, <span class="pre">parallel each x in xs if cond { &hellip; }</span>, skips the items for which the condition is
+		false, as it does for <span class="pre">each</span>.</p>
+	<p>A <span class="pre">parallel each</span> takes no <span class="pre">else</span> and is a statement.</p>
+
+	<h2 id="parallelwalk">What it can walk</h2>
+	<p>The source must be something that can be split into independent pieces and says how big it is:
+		a <span class="pre">ParallelIterable</span>, met by its methods alone, with no declaration, as
+		<span class="pre">Iterator</span> is (<span class="pre">len</span>, and <span class="pre">split(at)</span> giving
+		the items before <span class="pre">at</span> and the items from it on). Today the loop walks a number range counting
+		up by one (<span class="pre">parallel each i in 0 ..&lt; n</span>, or <span class="pre">..</span> to include <span class="pre">n</span>; a count down
+		or a <span class="pre">by</span> step is refused, since which pass runs first is not defined in parallel), an array,
+		a slice and a list, which it cuts into ranges of positions itself, and the runs
+		<span class="pre">chunks(n)</span> and <span class="pre">mutChunks(n)</span> give, which it cuts between runs
+		(<a href="#parallelfill">below</a>). A cursor, a generator, a file or a
+		channel hands out its items one after another and cannot be split: collect it into a list first, and walk the list.
+		A chain of adapters (<span class="pre">xs.iter().map(f)</span>) is a cursor too: walk the list it starts from, and put
+		the adapters' work in the loop's own header, <span class="pre">if</span> and <span class="pre">yield</span>.
+		As in <a href="refeach.html">the other loops</a>, the variable is a new one on every pass, and is a borrow of the item for an array,
+		a slice or a list.</p>
+
+	<h2 id="parallelbody">What the body may do</h2>
+	<p>The passes run at the same time, so the body keeps rules an ordinary <span class="pre">each</span> does not:</p>
+	<ul>
+		<li>What is declared <b>outside</b> the loop is <b>read-only</b> in it, borrowed for as long as the loop runs. Writing
+			it is refused: an assignment, an operator that assigns, a field, an element, a swap, a method that changes it, or a
+			borrow that may write, and a write through a <span class="pre">&amp;mut</span> reference declared outside.
+			A <b>parameter</b> of the enclosing function is declared outside, and so is whatever is reached from one: a
+			<span class="pre">&amp;mut</span> parameter handed on as it is, to a method that takes <span class="pre">&amp;mut self</span>
+			(<span class="pre">l.mutItems()</span>, <span class="pre">l[0].n = &hellip;</span>) or to a function whose parameter is a
+			<span class="pre">&amp;mut</span> (<span class="pre">bump(l)</span>), is lent for writing as much as
+			<span class="pre">&amp;mut l[0]</span> is, and is refused alike. Handed to a <span class="pre">&amp;</span> it is only read.
+			What the pass declares itself is its own to change. A write through a raw pointer is not checked: the loop
+			trusts its writer.</li>
+		<li>A <b>copy</b> of a value from outside is a write when it counts: copying an <span class="pre">Rc</span> adds to its count, which
+			passes running at the same time cannot do without atomic operations. So a body may not copy an
+			<span class="pre">Rc</span> (or a struct, tuple, array, enum or list element that holds one, or a traced
+			<span class="pre">Gc</span> reference, whose roots are the collector's one chain) that is not its own. An
+			<span class="pre">Arc</span> counts atomically and may be copied.</li>
+		<li>Nor may the body <b>reach</b> such a value at all. A function the body hands it to could copy what it was lent,
+			and so could any code reached through a field, an element or a borrow, so a value declared outside the loop
+			(or the pass's own item) whose type holds an <span class="pre">Rc</span> or a traced reference may not be named in the
+			body: not copied, not read, not lent, not passed. This is the marker <span class="pre">Shareable</span> (Rust's <i>Sync</i>: a borrow
+			of it may be held by several threads at once; <a href="refconccomm.html#shareable">Race condition safety</a>),
+			and like <span class="pre">Sendable</span> it is worked out from what a type holds, with nothing to write: a value is
+			not Shareable when, through a field, a variant, an element, a borrow or what an owner points at, it holds an owner
+			that may be copied of a region that does not declare <span class="pre">ThreadSafe</span> (an <span class="pre">Rc</span>,
+			or a region of your own that counts without atomic operations), a reference into a traced region, or a reference that
+			writes through a shared path (a <span class="pre">&amp;mut</span> held in a field, an element, a type argument or a
+			closure's captured variable: Cone's <span class="pre">&amp;mut</span> is shared mutable, so what holds one writes through
+			a borrow of it), or a reference to a trait or a callable that does not say what is behind it
+			(<span class="pre">&amp;&lt;Shape</span>, <span class="pre">&amp;&lt;fn(i32) i32</span>, <span class="pre">So[Shape]</span>:
+			Rust's <span class="pre">&amp;dyn Trait</span> is not <i>Sync</i> either; write
+			<span class="pre">&amp;&lt;Shape + Shareable</span> where the value qualifies). An instance of a generic
+			type holds one when a type argument does (<span class="pre">List[Rc[T]]</span>, <span class="pre">Dict[K, Rc[V]]</span>,
+			<span class="pre">Option[Rc[T]]</span>), whatever the collection keeps its items behind, as in Rust a
+			<span class="pre">Vec&lt;T&gt;</span> is shareable only if <span class="pre">T</span> is. A raw pointer in a type that is not
+			generic is trusted, and nothing behind it is followed; an
+			<span class="pre">Arc</span>, an <span class="pre">Atomic</span>, a number and a region that declares
+			<span class="pre">ThreadSafe</span> are free. A name that is itself a borrow (<span class="pre">self</span>, a
+			<span class="pre">&amp;mut</span> parameter) is read through as a <span class="pre">&amp;</span>: what it reaches is judged,
+			and the body's writes through it are refused above. Naming the value is enough, so a struct or an actor's
+			<span class="pre">self</span> that holds an <span class="pre">Rc</span> cannot be read for a number beside it:
+			<b>copy what the loop needs into a local before it</b> (<span class="pre">imm n = self.n;</span>). For an
+			<span class="pre">Rc</span> itself, <b>borrow the contents before the loop</b>:
+			<span class="pre">imm mesh = &amp;*shared;</span>, then use <span class="pre">mesh</span> in the body.</li>
+		<li>A loop that <b>writes through its source</b> (<span class="pre">mutChunks</span>, <span class="pre">mutItems</span>,
+			a zip of them, or a <span class="pre">&amp;mut</span> slice) may not name, in its body, filter or
+			<span class="pre">yield</span>, a place from outside that could be one of the items it writes. It is judged by the
+			<b>path</b> the body reads: <span class="pre">first</span> where <span class="pre">first</span> is a reference to the item's type; a
+			struct reached through a reference that is itself of the item's type; an index into a collection or array reached
+			through a reference whose elements are of the item's type (<span class="pre">hr.cells[0]</span>, <span class="pre">s.items[0]</span> after
+			<span class="pre">imm s = &amp;*self;</span>). A scalar field beside the buffer (<span class="pre">self.scale</span>) reads none of them. A
+			name used whole, or reached through a call, is judged by its whole type: a reference to the item's type, or a struct or
+			collection holding one or elements of that type, reached through a reference. A raw pointer is trusted. Another pass is
+			writing that item, so reading it would race, and flow analysis sees only a local, not a parameter, a reborrow or a struct's
+			field. <b>Copy what you need before the loop</b>: <span class="pre">imm f = *first;</span>, then use <span class="pre">f</span>. A value
+			already copied, a reference to another type, and every outside reference when nothing is written
+			(<span class="pre">chunks</span>) are free. A closure handed to a function that runs such a loop is read by every pass:
+			one that <i>borrows</i> a variable of the written type (<span class="pre">(x, y) =&gt; scale * f32.from(x)</span> into
+			a list of <span class="pre">f32</span>) is refused, naming the variable; copy it into the closure with the state list,
+			<span class="pre">fn(x i32, y i32) [scale] f32 { scale * f32.from(x); }</span>, where it is a value of its own.</li>
+		<li>The <span class="pre">collector</span> package's <span class="pre">Gc</span> may not be <b>made or held</b> in the
+			loop: its heap and its one chain of roots are not safe on the workers the passes run on. An allocation
+			(<span class="pre">new Gc[...]</span>), a call that returns one, or a literal holding one (a struct, tuple, array or
+			enum holding a traced reference counts) is refused in the body, and in a parallel builder's source,
+			<span class="pre">if</span> and <span class="pre">yield</span>, with a message saying to hold an
+			<span class="pre">ActorGc</span> instead. A reference into an actor's own region
+			(<a href="refactor.html#actor-gc">The actor's own garbage-collected region</a>) is read in the passes of a loop in a behaviour if it is
+			<b>read-only</b>, <span class="pre">ActorGc[imm, T]</span>: it counts as Shareable, since nothing collects or moves
+			the object while the passes run. One that can write, <span class="pre">ActorGc[mut, T]</span>, is not shared into
+			them, like any <span class="pre">&amp;mut</span>, and nor is the state of an actor that holds one; and nothing
+			allocates in the actor's region from a pass, neither <span class="pre">new self[T](...)</span> nor a direct
+			allocation (<span class="pre">ErrorActorGcPiece</span>).</li>
+		<li>Results come back through something that is changed by its methods, an <span class="pre">Atomic</span>, or as the list <a href="#parallelbuilder">the parallel builder</a> builds.</li>		<li>A pass may <b>change its own item</b>: <span class="pre">parallel each x in list.mutItems()</span> (or an
+			array's or a slice's, or a mutable slice as the source itself) gives <span class="pre">x</span> as a
+			<span class="pre">&amp;mut</span> of the pass's item, and the items are disjoint. Then the body may not name
+			the list (or slice, or the struct holding it, or what is inside the place the items are lent from) as well:
+			<span class="pre">&amp;mut</span> is shared in Cone, so another pass may be changing the item it would read.
+			Another field of the same struct is free.</li>
+		<li><span class="pre">continue</span> skips the rest of a pass. A <span class="pre">break</span> or
+			<span class="pre">continue</span> of a loop <i>inside</i> the body is the pass's own. A
+			<span class="pre">break</span> and a <span class="pre">return</span> are refused (which items had run by then would vary
+			from run to run), and so is an <span class="pre">await</span> (a pass runs to completion and has no mailbox).</li>
+		<li>A <b>message sent to an actor</b> is allowed, and is not sent where it is written: the passes' messages are kept and
+			sent after the loop, by the code that wrote it, in iteration order &mdash; the first pass's, then the second's &mdash; so
+			an actor sees the same order every run. A loop inside a pass's body is gathered into that pass in the same way.</li>
+	</ul>
+
+	<h2 id="parallelfill">Filling a buffer: indexed, chunks and mutChunks</h2>
+	<p>A counting range cannot write the elements of a buffer by position (<span class="pre">out[i] = &hellip;</span> writes
+		something declared outside the loop, and the compiler does not try to prove the passes' writes disjoint). A buffer is
+		filled by handing each pass the part it alone may write. Two variables from <span class="pre">indexed()</span> are the
+		position and the item, and the position is <b>global</b>: the item's place in the whole source, whichever piece of the loop
+		it falls in.</p>
+<pre>
+parallel each i, p in buf.mutItems().indexed() { *p = f(i); }     // one pass an element
+
+parallel each y, row in pixels.mutChunks(size).indexed() {      // one pass a row
+  each x, p in row.mutItems().indexed() { *p = shade(x, y); }
+}
+</pre>
+	<p><span class="pre">mutChunks(n)</span> cuts only between runs, so each pass is given a <span class="pre">&amp;mut</span> slice
+		of its own run (the last may be shorter) that no other pass can reach; the position of
+		<span class="pre">mutChunks(n).indexed()</span> is the run's number. <span class="pre">chunks(n)</span> is the same for
+		reading. <span class="pre">indexed()</span> over a list, an array, a slice or these runs gives two variables; every other
+		source gives one. The rules for the body are those above: a pass writes through its own run or item, naming the buffer the
+		runs come from in the body is refused (it may be a run another pass is writing), and a run <span class="pre">chunks</span>
+		gives cannot be written.</p>
+
+	<h3 id="parallelzip">Two buffers in one pass: zip</h3>
+	<p>A zip of cursors is walked by a parallel each when <b>both</b> its sources can be cut and walked by position
+		(core's <span class="pre">RandomAccess</span> and <span class="pre">ParallelIterable</span>, met by the methods alone):
+		the cursors <span class="pre">chunks(n)</span>, <span class="pre">mutChunks(n)</span> and <span class="pre">mutItems()</span> give,
+		and those of arrays, slices and lists that <span class="pre">zip(&amp;a, &amp;b)</span> takes. The zip is as long as the shorter
+		source, is cut at the same place in both (as Rayon's zip is), and the pass <span class="pre">k</span> gets what each
+		gives at <span class="pre">k</span>. Its <span class="pre">indexed()</span> adds the pass's number, global, so three variables:</p>
+<pre>
+parallel each y, ra, rb in a.mutChunks(n).zip(b.mutChunks(3usize * n)).indexed() {
+  each x, p in ra.mutItems().indexed() { *p = f(y * n + x); }          // a's part of the pass
+  each x, q in rb.mutItems().indexed() { *q = g(y * 3usize * n + x); }      // b's part, three times as long
+}
+</pre>
+	<p>Without <span class="pre">indexed()</span> a zip gives two variables. What each source lends,
+		<span class="pre">&amp;</span> or <span class="pre">&amp;mut</span>, is what its own cursor says. A source that cannot be cut or
+		walked by position, a Deque's cursor, a cursor of your own, a generator, a file or a channel, is refused with the reason: collect it
+		into a list and zip the list. The body rules stand for both buffers: neither may be named in the body (the passes change their
+		own parts of them at the same time; naming a buffer is refused even when its source only reads), and a zip of two cursors over the
+		same buffer, where the loop changes what they lend, is refused (two passes could be given the same part, and write it at the same time).
+		Two different <span class="pre">&amp;mut</span> references, two parameters say, may be the one buffer, because the caller may pass it
+		twice, so a zip whose sources are reached from two of them is refused too, when the loop changes what they lend. Zip buffers the
+		function owns, or the fields of one value it is lent (<span class="pre">p.first.mutChunks(n).zip(p.second.mutChunks(n))</span>).</p>
+	<p>A zip takes a third source with its own <span class="pre">zip</span>, a flat triple, three variables (four with
+		<span class="pre">indexed()</span>, the position first). It is as long as the shortest, cut at the same place in all three,
+		and the rules above hold for all three buffers:</p>
+<pre>
+parallel each y, ca, cb, cc in a.mutChunks(n).zip(b.mutChunks(m)).zip(c.mutChunks(k)).indexed() {
+  ...                          // a part of each of three buffers, one pass
+}
+</pre>
+
+	<h2 id="parallelactor">In an actor's method</h2>
+	<p>A <span class="pre">parallel each</span> written directly in a behaviour (a method declared <span class="pre">async do</span>)
+		cuts the behaviour where the loop ends, as an <span class="pre">await</span> does. The behaviour returns to the actor's
+		dispatcher while the passes run on the workers, and the rest of it runs when the last pass has finished:</p>
+<pre>
+actor Scaler {
+  vals List[u64];
+  scale u64;
+
+  pub async do run(self, add u64) {
+    imm k = add * 2u64;
+    parallel each v in vals.mutItems() {
+      *v = *v * scale + k;      // the actor's fields are read through self; k and add are carried
+    }
+    // here the loop has finished, and this is the same behaviour, the same call
+  }
+}
+</pre>
+	<ul>
+		<li>The actor is <b>not run again until the loop has finished</b>, the rest of the behaviour included. Its mailbox goes on
+			accepting messages, and they are handled after the behaviour, in order. A message sent after the behaviour began is
+			handled after all its parallel work.</li>
+		<li>The passes <b>borrow the actor's fields</b> directly, through <span class="pre">self</span>, for the loop: nothing is moved out or
+			copied, and no update is lost. This is the one borrow a behaviour holds across the cut; nothing else runs the actor, and a
+			pass can neither <span class="pre">await</span> nor receive, so the loop always finishes.</li>
+		<li>What the behaviour holds across the cut is carried as it is across an <span class="pre">await</span>: the parameters and locals it
+			uses afterwards, and every droppable value, which dies where it would have died had the method not been cut. What the passes read of
+			the behaviour's variables is copied as the behaviour returns, so a pass may not read a <b>borrow held in a variable</b>
+			(<span class="pre">imm t = &amp;total</span>; read <span class="pre">total</span> through <span class="pre">self</span> instead),
+			and the array or slice the loop walks may not lie in the behaviour's own frame (an array in a local, or made for the loop; walk a list,
+			or an array in a field).</li>
+		<li>The messages the passes send are sent when the last pass has finished, before the rest of the behaviour runs, in iteration order.</li>
+		<li>A behaviour that returns a value answers it from after the loop. A loop in a loop of the behaviour, and several loops, are a cut each.
+			A loop inside a pass's body runs inside that pass.</li>
+		<li>A synchronous <span class="pre">fn</span> of an actor cannot be cut. A loop there runs where it stands, the worker
+			running passes meanwhile, so its actor is not run again until the method that called it has returned.</li>
+		<li>The parallel builder is not built inside an actor's method yet.</li>
+	</ul>
+
+	<h2 id="parallelbuilder">The parallel builder</h2>
+	<p>A list is built by a parallel each as it is by an <a href="refeach.html#builder">each inside &lt;-</a>: put
+		<span class="pre">parallel</span> in front of the <span class="pre">each</span> in the list of entries, and give the value each pass
+		appends with <span class="pre">yield</span>:</p>
+<pre>
+imm weights = new List[u64] &lt;- parallel each x in xs yield weigh(*x);
+imm keep = new List[u64] &lt;- parallel each x in xs if x &gt; 9 yield weigh(*x);
+imm squares = new List[i32] &lt;- parallel each i in 0 ..&lt; n yield i * i;   // n an i32
+xs &lt;- 0, parallel each x in other yield x + 1, 99;    // in the middle of a list
+</pre>
+	<p>The list holds the values in the order of the passes, the order a plain <span class="pre">each</span> would
+		give them, however the passes were spread over the workers; with a filter, the values of the passes that kept
+		their items, in order. The loop has finished, and the list is whole, when control reaches the statement after
+		it. The body's rules above hold for the header, the filter and the <span class="pre">yield</span>: nothing outside the
+		loop is written, an <span class="pre">Rc</span> from outside is not reached, and there is no
+		<span class="pre">break</span>, <span class="pre">return</span> or <span class="pre">await</span>. The items of a
+		collection come as borrows, as in a loop, so the <span class="pre">yield</span> writes its own <span class="pre">*</span>; a
+		value that moves (a <span class="pre">String</span> made in the body) is handed to the list. With only a source,
+		<span class="pre">new List[T] &lt;- parallel each src</span>, every item is appended as a copy.</p>
+	<p>Only a <span class="pre">List</span> is built this way. A dictionary or any other collection is built from a
+		list of pairs after the loop: a receiver that is not a <span class="pre">List</span> is refused, and so is
+		<span class="pre">yield k: v</span> into a list. A builder inside an actor's method or a generator is refused as a
+		parallel each is. The list being appended to may be the one the loop reads: the pieces are appended
+		once the loop has read everything.</p>
+	<p>Underneath, each piece of the loop (a run of consecutive passes) appends to a list of its own, and when the
+		loop has finished the pieces' lists are joined onto the end of the list being built in the order of where each
+		piece began. <span class="pre">List</span> has four methods the compiler calls for this,
+		<span class="pre">pieceBag</span>, <span class="pre">emptyPiece</span>, <span class="pre">depositPiece</span> and
+		<span class="pre">joinPieces</span>: they are not for a program to call.</p>
+
+	<h2 id="parallelreduce">Reductions: parallel().sum()</h2>
+	<p>A loop cannot hand a result back: a parallel each may not write a variable outside it, since which pass wrote
+		last would vary from run to run. A result is a <b>reduction</b>, and is written as a method called on
+		<span class="pre">parallel()</span>, a view of any source that can be cut into pieces:</p>
+<pre>
+import actors;
+
+fn stats(xs &amp;List[f64]) {
+  imm total = xs.parallel().sum();                 // the total of the numbers (0 for none)
+  imm top = xs.parallel().fold(0.0d, (m, x) =&gt; if *x &gt; m { *x; } else { m; },
+                               (a, b) =&gt; if b &gt; a { b; } else { a; });
+  imm hit = xs.parallel().findFirst(x =&gt; **x &gt; 100.0d);   // an Option of the item
+}
+</pre>
+	<p>Each piece of the source keeps a result of its own, and the results of neighbouring pieces are joined
+		pairwise up the tree the loop's splitting makes, on the workers, so that only the final value reaches the
+		code after the call. A module that calls one imports <span class="pre">actors</span>, as one that writes a
+		parallel each does. The reduction is called directly on <span class="pre">parallel()</span>: a view held in a
+		variable has no methods of its own, and a source that cannot be cut (a chain of adapters, a generator, a
+		file or a channel) has no <span class="pre">parallel()</span>; collect it into a list first.</p>
+	<p>A reduction reads, so a view of <span class="pre">mutItems()</span> or <span class="pre">mutChunks(n)</span> has none. The views that have them are those of a list, an array or a slice, of the runs of <span class="pre">chunks(n)</span>, of <span class="pre">iter()</span>, <span class="pre">indexed()</span> and a <span class="pre">zip</span> of those.</p>
+	<ul>
+		<li><span class="pre">sum()</span> is the total of a view of numbers (integers, <span class="pre">f32</span>,
+			<span class="pre">f64</span>), or of borrows of them, as a list's items are.</li>
+		<li><span class="pre">fold(init, step, combine)</span>: <span class="pre">step(acc, item)</span> folds a run of items,
+			front to back, into an accumulator that starts as a copy of <span class="pre">init</span>, and
+			<span class="pre">combine(a, b)</span> joins the accumulators of two neighbouring runs, <span class="pre">a</span>
+			the earlier. <span class="pre">combine</span> must be associative, and need not be commutative (it may join
+			text or multiply matrices in order); <span class="pre">init</span> must be its identity, since each run begins
+			from a copy of it, so it may not have a finalizer (a number, a plain struct: a bounds, a total; a
+			<span class="pre">List</span> or <span class="pre">String</span> is a panic, and one is built in parallel by the
+			<a href="#parallelbuilder">builder</a>). The closures give each item as the view does: a borrow for a
+			list's, a tuple for a zip's.</li>
+		<li><span class="pre">findFirst(pred)</span> is the earliest item <i>by position</i> that
+			<span class="pre">pred</span> (given a borrow of the item) is true of, as an <span class="pre">Option</span>, though
+			a later piece may find a match first. The pieces after a match are not scanned, and a piece under way stops
+			at its next look.</li>
+	</ul>
+	<p>The closures run on several workers at once, so each must be <b>Shareable</b>, as a parallel each's body must:
+		one that borrows a variable it changes, or holds an <span class="pre">Rc</span>, is refused.</p>
+	<p><b>The result is the same on every run, with any number of workers</b>, a float sum included: the items are
+		cut into runs by their count alone (at least 128 items to a run, and at most 256 runs; a view of 128 or
+		fewer is one run, folded at once on the caller's thread), each run is folded front to back, and the runs are
+		joined by halving. So a float sum is not the plain loop's last bits, and is identical from one run, and one
+		machine, to the next.</p>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="refexcept.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

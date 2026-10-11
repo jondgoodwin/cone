@@ -41,7 +41,7 @@
 	<li><b>I/O an actor awaits:</b> <span class="pre">aio</span>. An actor's behaviour may
 		<span class="pre">await</span> a socket's operation &mdash; listen, accept, connect, read,
 		write &mdash; and pauses there until the operation's answer comes, as it pauses for another
-		actor's reply (<a href="refconccomm.html#await">Awaiting a reply</a>; below,
+		actor's reply (<a href="refawait.html#await">Awaiting a reply</a>; below,
 		<a href="#await-io">Awaiting I/O</a>). TCP sockets only.</li>
 	</ul>
 
@@ -179,7 +179,7 @@ await ...', and match on it.
 	<p>A <span class="pre">Socket</span> moves: it may be sent in a message to another actor.
 		Dropping it closes the socket, after whatever operations were started on it before. A
 		socket in a paused behaviour waits with the behaviour, as any value does
-		(<a href="refconccomm.html#await-cross">What crosses an await</a>), so it stays open
+		(<a href="refawait.html#await-cross">What crosses an await</a>), so it stays open
 		until the behaviour ends.</p>
 
 	<h3>The I/O thread, and the program's end</h3>
@@ -203,6 +203,77 @@ await ...', and match on it.
 	<li>Files, the blocking pool's work, UDP, and a socket's half-close, awaited.</li>
 	<li>More than one I/O thread.</li>
 	</ul>
+
+	<h2 id="cancel-groups">Cancel groups</h2>
+	<p>Work in flight on the <span class="pre">iocore</span> package's completion loop, the layer
+		<span class="pre">aio</span> awaits through, can be asked to end. <span class="pre">lp.cancel(id)</span>
+		asks one operation to. A <span class="pre">CancelGroup</span> asks many at once, as the browser's
+		<i>AbortSignal</i> does. A group is a value: copying it makes another handle on the same group, it is
+		handed to many operations on any loops, and it crosses threads. Its one
+		<span class="pre">cancel()</span>, from any thread, asks every operation in it to end, and a loop asleep in
+		<span class="pre">poll</span> wakes at once to act on it.</p>
+	<p>An operation joins a group as it is submitted, with
+		<span class="pre">lp.submitIn(op, to, group, deadline)</span>, or
+		<span class="pre">lp.afterIn(at, to, group)</span> for a timer. A cancel is a request, so each operation
+		still answers exactly once, and its answer says how it ended: <span class="pre">Cancelled</span> if the
+		cancel caught it, or <span class="pre">Done</span> (or <span class="pre">Failed</span>) if it had finished
+		first, its buffer back either way. Cancelled is a state, not an event: from the cancel on,
+		<span class="pre">group.isCancelled()</span> is true, and an operation submitted into the group is
+		answered <span class="pre">Cancelled</span> at once, its buffer back, and never started.
+		<span class="pre">cancel()</span> is idempotent: it answers true the first time and false after.</p>
+<pre>
+import stdio use *;
+import collections use List;
+import time use Instant, Duration;
+import iocore use *;
+
+fn main() {
+  mut lp = Loop.mustMake();
+  imm group = CancelGroup.make();
+  imm hour = Duration.fromSeconds(3600i64);
+  lp.afterIn(Instant.now() + hour, Target.Here(1u64), group);   // two timers, an hour away,
+  lp.afterIn(Instant.now() + hour, Target.Here(2u64), group);   // in the group
+  lp.after(Instant.now() + hour, Target.Here(3u64));            // and one outside it
+  printStr(if group.cancel() {"first cancel\n";} else {"cancel again\n";});
+  printStr(if group.cancel() {"first cancel\n";} else {"cancel again\n";});
+  mut out = List[Completion].empty();
+  while out.len() &lt; 2usize {
+    lp.poll(forever(), &amp;mut out);            // the only place the loop waits
+  }
+  mut cancelled = 0u64;
+  each c in out {
+    match c.outcome() {
+      case is Cancelled {cancelled = cancelled + 1u64;}
+      else {}
+    }
+  }
+  printUInt(cancelled);
+  printStr(" cancelled, ");
+  printUInt(lp.inFlight());
+  printStr(" still waiting\n");
+}
+</pre>
+	<p>This prints:</p>
+<pre>
+first cancel
+cancel again
+2 cancelled, 1 still waiting
+</pre>
+	<p>The timer outside the group is still in flight; the loop cancels it when it dies. Groups nest and carry
+		deadlines, which are absolute: an <span class="pre">Instant</span>, never a duration.</p>
+	<ul>
+	<li><span class="pre">group.child()</span> is cancelled with <span class="pre">group</span> and by its own
+		cancel, which does not reach <span class="pre">group</span>.</li>
+	<li><span class="pre">CancelGroup.until(deadline)</span> is a group whose operations answer
+		<span class="pre">TimedOut</span> by the deadline. <span class="pre">group.childUntil(d)</span> is a child whose
+		deadline is the tighter of its parent's and <span class="pre">d</span>, so deadlines are inherited as the
+		tighter, all the way down.</li>
+	<li><span class="pre">group.shield(d)</span> is for cleanup after a cancel: the group's cancel and deadline do not
+		reach the shield, its own deadline <span class="pre">d</span> bounds it, and its own cancel still ends
+		it.</li>
+	</ul>
+	<p>An actor cannot yet cancel what it awaits: the awaited operations take no group
+		(<a href="#await-io-unbuilt">Not built yet</a>, above).</p>
 
 	<h2>The original exploration</h2>
 
