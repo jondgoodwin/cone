@@ -404,6 +404,17 @@ a borrow that is too short is the loan walk's `ErrorFrozen`, `ErrorEscape` or
 parameter of the function is `ErrorWhereSubject`, and of a lifetime its
 signature does not name `ErrorLifetimeUndeclared`.
 
+A borrow into a value that changes shape, held through a path other references
+share, is refused only if something could reshape the value while it is still to
+be used, and the something names the code. A call that could reshape a collection (a
+list, a string) is `ErrorShapeReshape`; a store through another name that could, the
+whole collection or an element that owns something replaced, `ErrorShapeStore`; and
+anything that could change which variant an enum holds under a reference narrowed
+into one of its variants, call or store, `ErrorVariantReshape`. The three are
+separate because the remedies differ: a collection is cured by copying out what is
+needed or by a read-only path, and a narrowed reference by ending its use before the
+change. All are reported at the change, naming where the borrow is used again.
+
 An actor's declaration has five codes of its own and borrows two. What its
 body may not hold, or a form of it not built (a `pub` field, a static, a
 `pub` function without `self`, a `pub fn` method other than `init`, a

@@ -121,6 +121,30 @@ static inline void flowGateOperand(FlowState *fstate, INode *operand) {
         flowGateOperandAsk(fstate, operand);
 }
 
+// Gate trigger: a reference narrowed from an enum to one of its variants through
+// a reference other references share (castSumNarrows). Whether the variant could
+// change while the narrowed reference is used is the loan walk's to say, through
+// the same name and through others, so the function is walked
+static inline void flowGateNarrow(FlowState *fstate, INode *cast) {
+    if (castSumNarrows(cast))
+        fstate->gate |= FlowGateShape;
+}
+
+// Gate trigger: a place stored into, in a function that has lent a borrow of a
+// value that may change shape: the store could replace what the borrow is into
+// (a list or string whole, an owning element of one, an enum), through another
+// name for it (reshape.h). A local named whole has no other name; a value that is
+// no struct (a number, a reference) is no collection or enum.
+static inline void flowGateShapeStore(FlowState *fstate, INode *lval) {
+    if (!fstate->shapelend || (fstate->gate & FlowGateShape))
+        return;
+    if (lval->tag == NameUseTag || lval->tag == VTupleTag)
+        return;
+    INode *type = ((IExpNode *)lval)->vtype;
+    if (type && flowGateNamed(type)->tag == StructTag)
+        fstate->gate |= FlowGateShape;
+}
+
 // Gate trigger: a conversion, which may make an owning virtual reference of
 // a value holding a borrow ('So[Trait]' from a 'So[H]'): a number's
 // conversion is dismissed by its operand's type

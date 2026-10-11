@@ -1,0 +1,281 @@
+// What the collection rule for an enum accepts (the refusals are
+// enum_flow_narrow_shared). A reference narrowed into one of an enum's variants,
+// through a 'mut' or 'ro' reference that other references share, is allowed;
+// each case here holds one while a call is made or a place stored into that cannot
+// change which variant the enum holds:
+// - the variant's own fields written, through the narrowed reference or the enum's
+//   (a field the variants share is written within whichever variant it holds);
+// - the enum read, through the same name or another;
+// - a call handed the enum that only reads it, or writes a field it shares;
+// - the enum stored over only after the narrowed reference's last use, or in a
+//   statement it is not used again after (a state machine's next state);
+// - a 'ro' reference, and a payload narrowed from an 'Option'.
+// Each function is run with two names for one value.
+
+mod enum_narrow_shared_success;
+
+import stdio use *;
+import collections use *;
+
+enum Shape {
+  kind i32;
+
+  struct Circle {
+    pub radius i32;
+  }
+
+  struct Rect {
+    pub w i32;
+    h i32;
+  }
+}
+use Shape;
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+// A narrowed 'mut' binding, its field written, the enum untouched
+fn grow(s &mut Shape) i32 {
+  match s {
+    case mut c Circle {
+      c.radius = c.radius + 10;
+      c.radius;
+    }
+    case mut r Rect {
+      r.w = r.w + 1;
+      r.w;
+    }
+  }
+}
+
+// A field every variant has, written through the enum while the narrowed reference
+// is used, and read back through it
+fn sharedField(s &mut Shape) i32 {
+  match s {
+    case mut c Circle {
+      s.kind = 9;
+      c.radius = c.radius + s.kind;
+      c.radius + s.kind;
+    }
+    else {0;}
+  }
+}
+
+// The enum read through the other name while the narrowed reference is used
+fn readOther(s &mut Shape, t &mut Shape) i32 {
+  match s {
+    case mut c Circle {
+      c.radius = 4;
+      t.kind + c.radius;
+    }
+    else {0;}
+  }
+}
+
+// A call handed the enum that reads it, and one that writes a field it shares
+fn kindOf(s &Shape) i32 {
+  s.kind;
+}
+
+fn setKind(s &mut Shape, k i32) {
+  s.kind = k;
+}
+
+fn calls(s &mut Shape, t &mut Shape) i32 {
+  match s {
+    case mut c Circle {
+      imm k = kindOf(t);
+      setKind(t, 5);
+      c.radius = c.radius + k;
+      c.radius + kindOf(s);
+    }
+    else {0;}
+  }
+}
+
+// The enum replaced after the narrowed reference's last use
+fn replaceAfter(s &mut Shape, t &mut Shape) i32 {
+  imm r = match s {
+    case mut c Circle {
+      c.radius = 3;
+      c.radius;
+    }
+    else {0;}
+  };
+  *t = Shape.Rect(1, 20, 30);
+  r + kindOf(s);
+}
+
+// A state machine: the arm moves the machine to its next state as its last act,
+// the narrowed reference not used again
+struct Machine {
+  pub state Shape;
+  pub steps i32;
+}
+
+fn step(m &mut Machine) i32 {
+  match &mut m.state {
+    case mut c Circle {
+      c.radius = c.radius + 1;
+      m.steps = m.steps + c.radius;
+      m.state = Shape.Rect(0, 4, 5);
+    }
+    case mut r Rect {
+      r.w = r.w + r.h;
+      m.steps = m.steps + r.w;
+    }
+  }
+  m.steps;
+}
+
+// A borrow of a local held in a variable: nothing else can reach the local, so a
+// call handed another enum may store over it
+fn resetIt(s &mut Shape) {
+  *s = Shape.Rect(0, 0, 0);
+}
+
+fn heldInAVariable(v Shape, t &mut Shape) i32 {
+  mut s = v;
+  imm r = &mut s;
+  match r {
+    case mut c Circle {
+      resetIt(t);
+      c.radius = c.radius + 1;
+      c.radius;
+    }
+    else {0;}
+  }
+}
+
+// A different field of the same struct, of the same type, is another enum: stored over
+// while the narrowed reference is used, whether it was made from the field's borrow
+// directly or from a variable that holds one
+struct Pair {
+  pub a Shape;
+  pub b Shape;
+}
+
+fn otherField(p &mut Pair) i32 {
+  match &mut p.a {
+    case mut c Circle {
+      p.b = Shape.Rect(1, 5, 6);
+      c.radius = c.radius + 1;
+      c.radius;
+    }
+    else {0;}
+  }
+}
+
+fn heldField(p &mut Pair) i32 {
+  imm r = &mut p.a;
+  match r {
+    case mut c Circle {
+      p.b = Shape.Circle(3, 8);
+      c.radius;
+    }
+    else {0;}
+  }
+}
+
+// Through a 'ro' reference, read
+fn radius(s &Shape) i32 {
+  if imm c Circle = s {c.radius;} else {0;}
+}
+
+// A payload narrowed from an 'Option', written, with another name handed to a call
+// that reads it
+fn bump(o &mut Option[i32]) i32 {
+  match o {
+    case mut n Some {
+      *n = *n + 1;
+      *n;
+    }
+    else {0;}
+  }
+}
+
+fn present(o &Option[i32]) bool {
+  o is Some;
+}
+
+fn bumpChecked(o &mut Option[i32], p &mut Option[i32]) i32 {
+  match o {
+    case mut n Some {
+      imm there = present(p);
+      *n = *n + 100;
+      if there {*n + 1000;} else {*n;}
+    }
+    else {0;}
+  }
+}
+
+// An 'Option' of a list, read through a shared reference while another name is read
+// and another is only asked its size
+fn peek(o &Option[List[i64]]) &i64 {
+  match o {
+    case imm l Some {l[0usize];}
+    else {panic("empty");}
+  }
+}
+
+fn count(o &Option[List[i64]]) i64 {
+  match o {
+    case imm l Some {i64.from(l.len());}
+    else {0i64;}
+  }
+}
+
+fn peeked(a &mut Option[List[i64]], b &mut Option[List[i64]]) i64 {
+  imm e = peek(a);
+  imm n = count(b);
+  *e * 100i64 + n;
+}
+
+fn main() {
+  mut circle Shape = Shape.Circle(1, 7);
+  imm one = &mut circle;
+  imm two = one;
+  show("grow-circle", i64.from(grow(one)));
+  show("grow-circle-again", i64.from(grow(two)));
+  mut rect Shape = Shape.Rect(2, 3, 4);
+  show("grow-rect", i64.from(grow(&mut rect)));
+
+  show("shared-field", i64.from(sharedField(one)));
+  show("kind-after", i64.from(kindOf(two)));
+
+  show("read-other", i64.from(readOther(one, two)));
+  show("calls", i64.from(calls(one, two)));
+  show("replace-after", i64.from(replaceAfter(one, two)));
+  show("radius-of-rect", i64.from(radius(two)));
+
+  mut machine = new Machine(Shape.Circle(0, 7), 0);
+  imm first = step(&mut machine);
+  imm second = step(&mut machine);
+  show("step-circle", i64.from(first));
+  show("step-rect", i64.from(second));
+
+  mut opt Option[i32] = Some(41);
+  imm optOne = &mut opt;
+  imm optTwo = optOne;
+  show("bump", i64.from(bump(optOne)));
+  show("bump-checked", i64.from(bumpChecked(optOne, optTwo)));
+
+  mut items = List[i64].empty();
+  items.push(5i64);
+  items.push(6i64);
+  mut held Option[List[i64]] = Some(items);
+  imm heldOne = &mut held;
+  imm heldTwo = heldOne;
+  show("peeked", peeked(heldOne, heldTwo));
+  show("held-local", i64.from(heldInAVariable(Shape.Circle(1, 20), two)));
+
+  mut pair = new Pair(Shape.Circle(1, 30), Shape.Circle(2, 40));
+  show("other-field", i64.from(otherField(&mut pair)));
+  show("other-field-kind", i64.from(kindOf(&pair.b)));
+  show("held-field", i64.from(heldField(&mut pair)));
+  show("held-field-kind", i64.from(kindOf(&pair.b)));
+}

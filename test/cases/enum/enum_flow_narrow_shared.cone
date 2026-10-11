@@ -1,0 +1,227 @@
+// A reference narrowed into one of an enum's variants, through a 'mut' or 'ro'
+// reference that other references may share, is allowed, and refused only if
+// something could change which variant the enum holds while the narrowed reference
+// is still to be used (the collection rule, as for a borrow into a list): the
+// enum stored over whole through the same name or another, swapped, handed to a call
+// whose body does either, or to one whose body cannot be seen. The refusal is
+// reported at the change, and names where the narrowed reference is used again. Writing
+// a field within the variant is not a change (enum_narrow_shared_success holds what is
+// accepted beside each refusal).
+
+mod enum_flow_narrow_shared;
+
+import collections use *;
+
+enum Shape {
+  kind i32;
+
+  struct Circle {
+    pub radius i32;
+  }
+
+  struct Rect {
+    pub w i32;
+    h i32;
+  }
+}
+use Shape;
+
+// The same name stores another variant over the enum
+fn sameName(s &mut Shape) i32 {
+  match s {
+    case mut c Circle {
+      *s = Shape.Rect(1, 2, 3);        //~ ErrorVariantReshape "could change which variant a 'Shape' value holds while 'c'"
+      c.radius;
+    }
+    else {0;}
+  }
+}
+
+// A call handed the enum, whose body stores over it
+fn reset(s &mut Shape) {
+  *s = Shape.Rect(0, 0, 0);
+}
+
+fn viaCall(s &mut Shape) i32 {
+  if imm c Circle = s {
+    reset(s);                          //~ ErrorVariantReshape "'reset' is handed something that reaches a 'Shape' value"
+    c.radius;
+  }
+  else {0;}
+}
+
+// ... through what it calls
+fn resetTwice(s &mut Shape) {
+  reset(s);
+  reset(s);
+}
+
+fn viaTwoCalls(s &mut Shape) i32 {
+  if imm c Circle = s {
+    resetTwice(s);                     //~ ErrorVariantReshape "'resetTwice' is handed something that reaches a 'Shape' value"
+    c.radius;
+  }
+  else {0;}
+}
+
+// Another name for the enum is handed to the call, or stored through
+fn otherName(s &mut Shape, t &mut Shape) i32 {
+  match s {
+    case imm c Circle {
+      reset(t);                        //~ ErrorVariantReshape "'reset' is handed something that reaches a 'Shape' value"
+      c.radius;
+    }
+    else {0;}
+  }
+}
+
+fn storeOther(s &mut Shape, t &mut Shape) i32 {
+  match s {
+    case imm c Circle {
+      *t = Shape.Rect(0, 0, 0);        //~ ErrorVariantReshape "this store replaces a 'Shape' value whole"
+      c.radius;
+    }
+    else {0;}
+  }
+}
+
+// ... or swapped with another value
+fn swapOther(s &mut Shape, t &mut Shape, v Shape) i32 {
+  mut u = v;
+  match s {
+    case imm c Circle {
+      *t <=> u;                        //~ ErrorVariantReshape "this store replaces a 'Shape' value whole"
+      c.radius;
+    }
+    else {0;}
+  }
+}
+
+// A function the compiler cannot see the body of is assumed to
+extern fn mystery(s &mut Shape);
+
+fn viaUnseen(s &mut Shape) i32 {
+  match s {
+    case imm c Circle {
+      mystery(s);                      //~ ErrorVariantReshape "its body is not visible here"
+      c.radius;
+    }
+    else {0;}
+  }
+}
+
+// A struct holding the enum is replaced whole
+struct Machine {
+  pub shape Shape;
+  pub count i32;
+}
+
+fn replaceHolder(m &mut Machine, n Machine) i32 {
+  match &m.shape {
+    case imm c Circle {
+      *m = n;                          //~ ErrorVariantReshape "this store replaces a 'Shape' value whole, or a value that holds one"
+      c.radius;
+    }
+    else {0;}
+  }
+}
+
+// The narrowed reference through a 'ro' reference, and a field of a 'mut' one
+fn throughRo(s &Shape, t &mut Shape) i32 {
+  if imm c Circle = s {
+    reset(t);                          //~ ErrorVariantReshape "'reset' is handed something that reaches a 'Shape' value"
+    c.radius;
+  }
+  else {0;}
+}
+
+fn throughField(m &mut Machine) i32 {
+  match &mut m.shape {
+    case mut c Circle {
+      m.shape = Shape.Rect(1, 1, 1);   //~ ErrorVariantReshape "this store replaces a 'Shape' value whole"
+      c.radius = 2;
+      c.radius;
+    }
+    else {0;}
+  }
+}
+
+// A shared 'Rc[mut, T]' owner's field: another handle stores, or another reference is
+// handed to a call that does
+fn throughOwner(v Shape, t &mut Shape) i32 {
+  imm u = new Rc[mut, Machine](v, 0);
+  match &mut u.shape {
+    case mut c Circle {
+      reset(t);                        //~ ErrorVariantReshape "'reset' is handed something that reaches a 'Shape' value"
+      c.radius;
+    }
+    else {0;}
+  }
+}
+
+fn throughOwnerStore(v Shape) i32 {
+  imm u = new Rc[mut, Machine](v, 0);
+  imm u2 = u;
+  match &mut u.shape {
+    case mut c Circle {
+      u2.shape = Shape.Rect(0, 0, 0);  //~ ErrorVariantReshape "this store replaces a 'Shape' value whole"
+      c.radius;
+    }
+    else {0;}
+  }
+}
+
+// An enum whose variant owns a list: borrowed into through a shared reference, and
+// emptied by another name
+enum Slot {
+  Full(List[i64]);
+  Empty;
+}
+
+fn first(s &Slot) &i64 {
+  match s {
+    case imm l Full {l[0usize];}
+    else {panic("empty");}
+  }
+}
+
+fn clear(s &mut Slot) {
+  *s = Slot.Empty;
+}
+
+fn emptiedUnderneath(a &mut Slot, b &mut Slot) i64 {
+  imm e = first(a);
+  clear(b);                            //~ ErrorVariantReshape "'clear' is handed something that reaches a 'Slot' value"
+  *e;
+}
+
+// 'Option[List]' with a 'take' that leaves 'None' behind
+fn take(o &mut Option[List[i64]]) Option[List[i64]] {
+  mut t Option[List[i64]] = None;
+  *o <=> t;
+  t;
+}
+
+fn peek(o &Option[List[i64]]) &i64 {
+  match o {
+    case imm l Some {l[0usize];}
+    else {panic("empty");}
+  }
+}
+
+fn tookUnderneath(a &mut Option[List[i64]], b &mut Option[List[i64]]) i64 {
+  imm e = peek(a);
+  imm taken = take(b);                 //~ ErrorVariantReshape "'take' is handed something that reaches a 'Option' value"
+  *e;
+}
+
+// Matching the 'Option' itself
+fn matchedThenTaken(a &mut Option[List[i64]], b &mut Option[List[i64]]) i64 {
+  match a {
+    case imm l Some {
+      imm taken = take(b);             //~ ErrorVariantReshape "'take' is handed something that reaches a 'Option' value"
+      *l[0usize];
+    }
+    else {0;}
+  }
+}

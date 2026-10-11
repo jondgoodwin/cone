@@ -1806,8 +1806,10 @@ static void pwShapeCall(FnCallNode *call, FnDclNode *meth, Place *recvpl, PathSe
         // The collection changed through the very name the borrow was taken by is
         // the loan's own freezing, which reports it; another field of the same
         // struct, through the same reference, is another collection
+        // (a borrow narrowed into an enum's variant freezes nothing, so a change of
+        // variant through the same name is for this check to report)
         if ((verdicts[c].why == ReshapeReceiver || verdicts[c].why == ReshapeReceiverUnseen) && recvpl
-                && (loanShapeSamePlace(loan, recvpl) || loanShapeDisjoint(loan, recvpl)))
+                && ((loanShapeFrozen(loan) && loanShapeSamePlace(loan, recvpl)) || loanShapeDisjoint(loan, recvpl)))
             continue;
         Name *callee = verdicts[c].callee ? verdicts[c].callee->namesym : NULL;
         // The borrow handed to this very call, beside whatever could reshape its collection
@@ -1820,6 +1822,58 @@ static void pwShapeCall(FnCallNode *call, FnDclNode *meth, Place *recvpl, PathSe
             loanShapeNow((INode *)call, loan, verdicts[c].why, callee);
         else
             loanShapePend((INode *)call, loan, verdicts[c].why, callee);
+    }
+}
+
+// A reference narrowed from an enum to one of its variants, through a reference other
+// references share (castSumNarrows): the collection rule applies. It is a borrow of
+// the place the enum is reached by, held by whatever holds the narrowed reference, and
+// marked: every call made, and every store over a value that holds the enum, while it
+// is held asks whether it could change which variant the enum holds (pwShapeCall,
+// pwShapeStore). It freezes nothing: the enum may be read and its fields written, by
+// this name or another, as a collection may; only a change of variant is refused, by
+// whichever name, and only if the narrowed reference is used afterwards.
+static PathSet *pwNarrowShared(CastNode *cast) {
+    Place pl;
+    PathSet *base;
+    if (!pwThrough(&cast->exp, &pl, &base))
+        return base;
+    INode *fromtype = iexpGetTypeDcl(cast->exp);
+    INode *sum = itypeGetTypeDcl(((RefNode *)fromtype)->vtexp);
+    INode *perm = ((RefNode *)iexpGetTypeDcl((INode *)cast))->perm;
+    uint32_t loan = 0;
+    PathSet *holds = pwLend((INode *)cast, &pl, perm, loanBorrowAccess(perm), &loan);
+    if (loan && pl.shwrite) {
+        // A hidden variable holding the one borrow of the enum ('match &mut m.a'): the
+        // enum is where that borrow is, which another field of 'm' is not
+        if (pl.deref && pl.nsteps == 0)
+            loanShapeSource(loan, pathVars[pl.var].holds);
+        pwShapeBorrow(&pl, loan, sum);
+    }
+    return holds;
+}
+
+// A store over 'lval', or one side of a swap, while borrows into a shape-changing value
+// are held through paths others share (reshapeStoreHits): the whole of a collection or
+// an enum stored over, an owning element of a collection replaced ('m[0] = s' frees the
+// bytes of the old String a view was taken of), through some other name. The place
+// 'pl' is NULL where the walk does not follow it (an element reached by a call). The
+// loan's own place is the loan's freezing where it freezes, and a part of the same root
+// that diverges from it is another value; a store by a name the walk cannot tell from
+// the loan's is taken to be another
+static void pwShapeStore(INode *lval, Place *pl) {
+    if (reshapeUniqueLocal(lval))
+        return;
+    for (uint32_t i = 0; i < loanShapeCount(); ++i) {
+        uint32_t loan = loanShapeId(i);
+        if (!reshapeStoreHits(lval, loanShapeContainer(loan)))
+            continue;
+        if (pl && (loanShapeDisjoint(loan, pl) || (loanShapeFrozen(loan) && loanShapeSamePlace(loan, pl))))
+            continue;
+        if (loanShapeInFlight(loan))
+            loanShapeNow(lval, loan, ReshapeStore, NULL);
+        else
+            loanShapePend(lval, loan, ReshapeStore, NULL);
     }
 }
 
@@ -2004,9 +2058,14 @@ static void pwStore(INode **lvalp, PathSet *holds, INode **rvalp) {
     }
     Place pl;
     PathSet *base;
-    if (!pwPlace(lvalp, &pl, &base))
+    if (!pwPlace(lvalp, &pl, &base)) {
+        if (pathLoans && loanShapeCount())
+            pwShapeStore(*lvalp, NULL);
         return;
+    }
     pwAccess(&pl, AccessWrite, *lvalp);
+    if (pathLoans && loanShapeCount())
+        pwShapeStore(*lvalp, &pl);
     // Part of a local's own value: its old value is released if the local holds one
     if (pathDrops && !pl.deref && pathVars[pl.var].tracked && flowLvalRootVar(*lvalp) == pathVars[pl.var].var)
         dropPartStore(pl.var, *lvalp);
@@ -2108,6 +2167,14 @@ static void pwSwap(SwapNode *node) {
         }
     }
     pwPreCnt = premark;
+    // A side that is not a local named whole is stored over: through another name, it
+    // could reshape a value a borrow is into
+    if (pathLoans && loanShapeCount()) {
+        for (int i = 0; i < 2; ++i) {
+            if (!whole[i])
+                pwShapeStore(*sides[i], found[i] ? &places[i] : NULL);
+        }
+    }
     // Each side is a store of the other's value. A side that is part of a
     // holder ('h.r', 'a[1]', 'g.h.r') is stored into as pwStore stores into
     // one: the holder there holds the other side's loans from here on, so
@@ -3023,6 +3090,8 @@ static PathSet *pwValue(INode **nodep, int move) {
     }
     case CastTag:
     {
+        if (pathLoans && castSumNarrows(node))
+            return pwNarrowShared((CastNode *)node);
         if (!(node->flags & FlagConvert) && pwIsOwnedLent((CastNode *)node))
             return pwOwnedLent((CastNode *)node);
         // A conversion moves nothing but an owner it carries; whatever borrow

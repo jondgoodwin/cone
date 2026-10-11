@@ -1,0 +1,112 @@
+// What the check on a store through another name accepts (the refusals are
+// collection_flow_store). Every case holds a borrow into a collection reached through
+// a reference while a store is made that cannot reshape it:
+// - an element that owns nothing replaced through the other name: no block is freed,
+//   so the borrow reads the new value where it stands;
+// - an element's own field replaced through the borrow that holds it, or through a
+//   reference to the element;
+// - a field of some other struct that merely holds a String, beside a borrow of an
+//   element of a list of structs holding one;
+// - a list this function owns, replaced or written;
+// - the borrow used up before the store.
+// Each is run with two names for one list.
+
+mod collection_store_success;
+
+import stdio use *;
+import collections use *;
+
+struct Pt { pub x i64; pub y i64; }
+
+struct Person {
+  pub name String;
+  pub age i64;
+}
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+// An element that owns nothing, replaced through the other name
+fn setPoint(l &mut List[Pt], m &mut List[Pt], p Pt) i64 {
+  imm e = l[0usize];
+  m[0usize] = p;
+  e.x;
+}
+
+// An element's field replaced through the borrow of the element
+fn renameVia(l &mut List[Person], s String) usize {
+  imm e = &mut l[0usize];
+  e.name = s;
+  e.name.len();
+}
+
+// ... and a number in an element, through the other name
+fn birthday(l &mut List[Person], m &mut List[Person]) i64 {
+  imm e = l[0usize].age;
+  m[0usize].age = 99i64;
+  e;
+}
+
+// A field of another struct holding a String, beside a borrow of an element of a list
+// of structs holding one
+struct Log {
+  pub last String;
+  pub count i64;
+}
+
+fn noteName(l &mut List[Person], log &mut Log) usize {
+  imm e = &mut l[0usize];
+  log.last = String.from(e.name.view());
+  log.count = log.count + 1i64;
+  e.name.len() + log.last.len();
+}
+
+// A list this function owns
+fn ownedList(src &String) usize {
+  mut mine = List[String].empty();
+  mine.push(String.from(src.view()));
+  imm t = mine[0usize].view();
+  imm n = t.len;
+  mine[0usize] = String.from("longer");
+  n + mine[0usize].len();
+}
+
+// The borrow used up before the store
+fn usedUp(l &mut List[String], m &mut List[String], s String) usize {
+  imm n = l[0usize].view().len;
+  m[0usize] = s;
+  n + l[0usize].len();
+}
+
+fn main() {
+  mut shared = List[Pt].empty();
+  shared.push(new Pt(1, 0));
+  imm one = &mut shared;
+  imm other = one;
+  show("set-point", setPoint(one, other, new Pt(7, 0)));
+
+  mut people = List[Person].empty();
+  people.push(new Person(String.from("Ann"), 40i64));
+  imm peopleOne = &mut people;
+  imm peopleOther = peopleOne;
+  show("rename-via", i64.from(renameVia(peopleOne, String.from("Annabel"))));
+  show("birthday", birthday(peopleOne, peopleOther));
+  show("age-after", peopleOne[0usize].age);
+
+  mut log = new Log(String.empty(), 0i64);
+  show("note-name", i64.from(noteName(peopleOne, &mut log)));
+  show("log-count", log.count);
+
+  imm src = String.from("abc");
+  show("owned-list", i64.from(ownedList(&src)));
+
+  mut words = List[String].empty();
+  words.push(String.from("abcd"));
+  imm wordsOne = &mut words;
+  imm wordsOther = wordsOne;
+  show("used-up", i64.from(usedUp(wordsOne, wordsOther, String.from("xy"))));
+}

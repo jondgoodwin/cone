@@ -650,6 +650,10 @@ enum ErrorCode {
     ErrorRegionNew = 1421,  // An allocation in an arena, 'new a[T](...)', written other than with the type, or a 'mut' and the type, in its brackets, or as a 'trynew'
     ErrorRegionHead = 1422, // An allocation 'new a[T](...)' whose head 'a' is a value that is not a region: a struct whose first field is a public '*MemRegion'
 
+    // An enum under the collection rule (ir/reshape.c, ir/flowpath.c, ir/flowloan.c)
+    ErrorVariantReshape = 1425,     // A call, or a store through another name, that could change which variant an enum holds while a reference narrowed into one of its variants, through a path other references share, is still to be used
+    ErrorShapeStore = 1426,         // A store through another name that replaces a shape-changing value whole (a list, a string), or an element of one that owns something, while a borrow into it, through a path other references share, is still to be used
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

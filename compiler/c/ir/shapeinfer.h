@@ -15,6 +15,11 @@
  * Writing a number field (a cursor advancing, a count) reshapes no storage, and
  * writing an element through the pointer moves nothing.
  *
+ * An enum is shape-changing when a variant holds more than the fields the variants
+ * share, whatever its methods do (those declared on it are copied into its variants):
+ * a reference narrowed into a variant is a borrow into it, and storing another variant
+ * over the value rereads the same bytes as other types (reshape.h).
+ *
  * A free function of the type's own module that takes it by reference counts as a
  * method does: it is a lender when it returns a borrow, a writer when it takes the
  * type writable and writes such a place through that parameter. The search is

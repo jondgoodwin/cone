@@ -268,8 +268,15 @@ void loanFreezeShared(uint32_t loan);
 // operand already walked waits for its call) or handed to the call itself
 // (loanShapeNow), and otherwise made a pending conflict for each variable holding
 // the loan (loanShapePend), which that variable's next use fires. 'why' is a
-// ReshapeWhy, 'callee' the function called, for the message.
+// ReshapeWhy, 'callee' the function called, for the message (NULL for a store, whose
+// node is the place stored over).
+//
+// A reference narrowed into an enum's variant is such a loan too, into the enum
+// itself, and freezes nothing ('loanShapeFrozen' says whether a loan does): a change
+// of variant through its own name is for the shape check to report.
 int loanExcludesWriters(uint32_t entry);
+int loanShapeFrozen(uint32_t loan);
+void loanShapeSource(uint32_t loan, PathSet *holds);
 int loanIsExclusive(uint32_t entry);
 void loanShapeMark(uint32_t loan, INode *container);
 uint32_t loanShapeCount();

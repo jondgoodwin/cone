@@ -573,9 +573,24 @@ diagnostics = 9
 
 [scenario.enum_typecheck_narrow]
 category = "reject"
-description = "Patterns narrowing to a type the matched value could never be, already narrow, or in another region; a pattern written as a reference that disagrees with the matched value (a region, a stronger permission, a value that is no reference); and a binding narrowed through a 'mut' or 'ro' reference of unseen origin -- a parameter, a reborrow of one, a field through one, a shared owner, a variable holding a borrow"
+description = "Patterns narrowing to a type the matched value could never be, already narrow, or in another region; a pattern written as a reference that disagrees with the matched value (a region, a stronger permission, a value that is no reference); and a binding narrowed from an 'Rc', another owner of the value, which stays refused"
 tags = ["typecheck"]
-diagnostics = 20
+diagnostics = 14
+
+# A reference narrowed into a variant through a 'mut' or 'ro' reference other
+# references share is the collection rule's case: allowed, and refused only if something
+# could change the variant while it is used. enum_narrow_shared_success holds what is
+# accepted beside each refusal.
+[scenario.enum_flow_narrow_shared]
+category = "reject"
+description = "A reference narrowed into an enum's variant, through a 'mut' or 'ro' reference or a field through one, used again after the enum is stored over by the same name or another, swapped, replaced inside a struct holding it, handed to a call whose body (or what it calls) stores over it, or to one whose body cannot be seen; and a borrow into an 'Option' of a list, or an enum whose variant owns one, emptied by another name's 'take' or 'clear'; and the field of a shared 'Rc[mut, T]' owner, stored over through another handle or by a call handed another reference"
+tags = ["flow"]
+diagnostics = 15
+
+[scenario.enum_narrow_shared_success]
+category = "run"
+description = "A reference narrowed into an enum's variant through a 'mut' or 'ro' reference of unseen origin, used while its fields are written (the variant's, and one the variants share, through the enum), the enum is read through the same name or another, a call is handed it that only reads it or writes a shared field, a state machine stores its next state in the arm's last act, and an 'Option' payload is written; the enum stored over only after the narrowed reference's last use; and a borrow of a local held in a variable, which no other name reaches"
+tags = ["flow", "genllvm", "runtime"]
 
 # A pattern's bare name is looked up in the matched value's enum, which only type
 # check knows, so what it fails to name is reported here rather than at name

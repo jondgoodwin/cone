@@ -998,9 +998,9 @@ members", is the mechanism.
    the way a program would write it: for each variant in order, `if l is &V { return
    r is &V and (l as &V) == (r as &V); }`, the comparison left out for a variant that
    carries nothing, and `return false` last. The narrowing is a recast and not a
-   pattern, because a pattern refuses to narrow a `ro` reference (`castSumInterior`:
-   another reference might change the variant while the narrowed one is used), and
-   nothing can here, the body holding nothing but reads. References, so that an
+   pattern, so it is not marked `FlagVariantNarrow` and the loan walk follows no
+   borrow of it (a pattern narrowing a `ro` reference is followed, `castSumInterior`),
+   for nothing can change the variant here, the body holding nothing but reads. References, so that an
    enum which moves is compared where it lies. The variant's `==` is called through
    the ordinary comparison of references, so a `==` taking its operands by value
    and one taking them by reference are both found, and one of the wrong shape is
@@ -1155,7 +1155,12 @@ it ([flow](../phases/flow.md), "Calls"):
   refused. A change through another name, or a call that might make one, is
   refused too (`ErrorShapeReshape`; flow's "A change through another name"):
   every call made while the borrow is held is asked whether it could reshape a
-  value of the type. Its alternatives are writable: a `&uni` variable passed to a
+  value of the type, and so is every store (`ErrorShapeStore`: the whole value, a
+  value holding it, or an element that owns something, found by indexing it).
+  An enum with a variant holding more than the fields they share is one too
+  (`siSumHasPayload`): a reference narrowed into a variant, or a borrow a free function
+  returns out of an enum, is asked the same, and what reshapes an enum is the whole value stored
+  over or swapped (`ErrorVariantReshape`). Its alternatives are writable: a `&uni` variable passed to a
   `&`, `&mut` or `&uni` is borrowed from, so a `self &uni` method may be called
   repeatedly.
 
