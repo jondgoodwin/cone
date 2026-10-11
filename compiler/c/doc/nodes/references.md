@@ -661,27 +661,34 @@ captured `&mut` parameter takes `self &mut` and not `self &`. `ref_typecheck_vie
 and `ref_typecheck_autoderef` pin the refusals; `ref_viewpoint_borrowed` what
 runs.
 
-**A `&uni` field is seen only through `uni` references, or in a struct held by
-value.** "A shared reference cannot see through a uni reference"
+**A `&uni` field or element is seen only through `uni` references, or in a holder
+held by value.** "A shared reference cannot see through a uni reference"
 ([refperm](../../../../doc/reference/refperm.html), "Viewpoint Adaptation"), and
 "shared" includes `&mut`: `a.holder` with `holder &uni App`, reached through two
 `&mut Cell` names of one cell, would hand the one reference that promised to be
 unique to both, and the shape check that guards an element borrowed through a
 shared path (`ErrorShapeReshape`) treats a path through a `uni` link as reached
 by one name and skips it, so a second name could free the element the first
-still reads. `fnCallUniFieldSeen` (`fncall.c`), run where a field access is
-built (`fnCallFieldAccess`, and the field branch of `fnCallLowerMethodOn`), refuses with `ErrorUniShared` any access
-to a field declared as a `&uni` borrow, slice or virtual reference when
-`iexpPathNonUniLink` finds a reference on the way to it that is not `uni`: a `&`,
-`&mut`, `&imm`, a virtual reference, an owner whose permission is not `uni`
-(`Rc[mut, T]`). It is the access that is refused, whatever is done with the
-reference (a read, a lend, a write, a copy into a local), since every use is a
-sight of it. A local, a field of a value held by value, a `&uni` holder and an
-owner that is `uni` (`So[T]`, `Rc[T]`) are not refused. Not covered: a `&uni`
-held as an array element or in a tuple, which is reached by an index and not a
-field. The route in for a shared holder, a `recover` block that transitions the
-`uni` to `mut`, is not built. `ref_typecheck_uni_field_shared` pins the refusals
-and the allowed forms; `ref_viewpoint_borrowed` what runs.
+still reads. `fnCallUniSeen` (`fncall.c`), run where a place's type is settled,
+refuses with `ErrorUniShared` any access to a place whose type is a `&uni` borrow,
+slice or virtual reference when `iexpPathNonUniLink` finds a reference on the way
+to it that is not `uni`: a `&`, `&mut`, `&imm`, a virtual reference, an owner
+whose permission is not `uni` (`Rc[mut, T]`). The places are a struct field
+(`fnCallFieldAccess`, and the field branch of `fnCallLowerMethodOn`, through
+`fnCallUniFieldSeen`), an array or slice element (`fnCallArrIndex`, on the element
+type before a borrow of it wraps the type; a range lends a slice of elements and
+is not an element) and a tuple element (`fnCallLowerIntField`). An array lent
+whole as a `&mut` is seen the same way where it is indexed. It is the access that
+is refused, whatever is done with the reference (a read, a lend, a write, a copy
+into a local), since every use is a sight of it. A local, a field or element of a
+value held by value, a `&uni` holder and an owner that is `uni` (`So[T]`, `Rc[T]`)
+are not refused. A generic type instantiated with a `&uni` (`List[&uni App]`,
+whose own methods index their elements through `self &mut`) is refused where
+its own code does that, since the check is on the instantiated place's type, as
+a field of type `T` is. The route in for a shared holder, a `recover` block that
+transitions the `uni` to `mut`, is not built. `ref_typecheck_uni_field_shared`
+and `ref_typecheck_uni_elem_shared` pin the refusals and the allowed forms;
+`ref_viewpoint_borrowed` and `ref_uni_elem_held` what runs.
 
 **The lifetime of a borrow is that of the place borrowed**, which
 `iexpGetLvalInfo` computes for every borrow, written or injected

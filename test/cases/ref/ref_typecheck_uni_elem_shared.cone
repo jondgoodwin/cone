@@ -1,0 +1,73 @@
+// A '&uni' array or tuple element is seen -- read, lent or written -- only where
+// every reference on the way to it is 'uni' too, or what holds it is held by
+// value, as a '&uni' field is (ref_typecheck_uni_field_shared; refperm.html,
+// "Viewpoint Adaptation"). Through a '&' or a '&mut' another name could reach the
+// same array, and the one reference that promised to be unique would be reached
+// by both: 'a.cells[0].items[0]' borrowed through one '&mut Pair', then
+// 'b.cells[0].wipe()' through a second, called with the same pair twice, frees
+// the element that borrow still reads. The array lent whole as a '&mut' is seen
+// the same way where it is indexed. Each access below is refused alone; the
+// functions at the end are what stays allowed.
+
+mod ref_typecheck_uni_elem_shared;
+
+import collections use *;
+
+struct Item { pub n i64; }
+struct App {
+  pub items List[Item];
+  pub fn wipe(self &mut) { items = List[Item].empty(); }
+  pub fn count(self &) usize { items.len(); }
+}
+struct Pair['a] { pub cells Array[&'a uni App, 1]; }
+struct Tup['a] { pub cells (i64, &'a uni App); }
+
+fn arrShared(p &Pair) usize { p.cells[0].count(); }             //~ ErrorUniShared:38 "The `&uni` element cannot be seen through a `&` reference"
+fn arrMut(p &mut Pair) usize { p.cells[0].count(); }            //~ ErrorUniShared:39 "The `&uni` element cannot be seen through a `&mut` reference"
+fn arrWipe(p &mut Pair) { p.cells[0].wipe(); }                  //~ ErrorUniShared:34 "cannot be seen through a `&mut` reference"
+fn arrCopy(p &mut Pair) { imm h = p.cells[0]; }                 //~ ErrorUniShared:42 "cannot be seen through a `&mut` reference"
+fn arrStore(p &mut Pair, h &uni App) { p.cells[0] = h; }        //~ ErrorUniShared:47 "cannot be seen through a `&mut` reference"
+fn tupShared(t &Tup) usize { t.cells.1.count(); }               //~ ErrorUniShared:37 "The `&uni` element cannot be seen through a `&` reference"
+fn tupMut(t &mut Tup) usize { t.cells.1.count(); }              //~ ErrorUniShared:38 "cannot be seen through a `&mut` reference"
+fn tupWipe(t &mut Tup) { t.cells.1.wipe(); }                    //~ ErrorUniShared:33 "cannot be seen through a `&mut` reference"
+fn tupRef(c &mut (i64, &uni App)) usize { c.1.count(); }        //~ ErrorUniShared:44 "cannot be seen through a `&mut` reference"
+fn wipeAll(cs &mut Array[&uni App, 1]) { cs[0].wipe(); }        //~ ErrorUniShared:44 "cannot be seen through a `&mut` reference"
+
+struct Mixed['a] {
+  pub cells Array[&'a uni App, 1];
+  pub fn size(self &mut) usize { cells[0].count(); }             //~ ErrorUniShared:39 "cannot be seen through a `&mut` reference"
+}
+
+// the harm: a borrow of an element, then the second name wipes the list
+fn twoNames(a &mut Pair, b &mut Pair) i64 {
+  imm e = a.cells[0].items[0usize];                              //~ ErrorUniShared:18 "cannot be seen through a `&mut` reference"
+  b.cells[0].wipe();                                             //~ ErrorUniShared:10 "cannot be seen through a `&mut` reference"
+  e.n;
+}
+fn twoTuples(a &mut Tup, b &mut Tup) i64 {
+  imm e = a.cells.1.items[0usize];                               //~ ErrorUniShared:18 "cannot be seen through a `&mut` reference"
+  b.cells.1.wipe();                                              //~ ErrorUniShared:10 "cannot be seen through a `&mut` reference"
+  e.n;
+}
+
+// allowed: a '&uni' holder, an owner of the holder, and the array or tuple held by value
+fn readUni(p &uni Pair) usize { p.cells[0].count(); }
+fn wipeUni(p &uni Pair) { p.cells[0].wipe(); }
+fn readTupUni(t &uni Tup) usize { t.cells.1.count(); }
+fn readOwner(p So[Pair]) usize { p.cells[0].count(); }
+fn readLocal(h &uni App) usize {
+  imm held = new Pair([h]);
+  held.cells[0].count();
+}
+fn readLocalTuple(h &uni App) usize {
+  imm held = new Tup((1, h));
+  held.cells.1.count();
+}
+fn readBareArray(h &uni App) usize {
+  imm cells = [h];
+  cells[0].count();
+}
+fn readBareTuple(h &uni App) usize {
+  imm t = (1, h);
+  t.1.count();
+}
