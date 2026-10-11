@@ -1,0 +1,210 @@
+// A trait pattern on a closed family [match topic 7]: in a match on an enum,
+// 'case imm m Measured' matches every variant that complies with 'Measured'. It is a
+// test of those variants' tags, it counts toward exhaustiveness as the variants it
+// names, and 'm' is a virtual reference to the trait built from the variant the matched
+// reference points at, so a call through it goes through that variant's vtable. The
+// matched reference supplies the kind and the permission: a '&mut' gives a writable one.
+//
+// The expected numbers are worked out by hand in the comments.
+
+mod enum_trait_pattern;
+
+import stdio use *;
+
+trait Measured {
+  pub fn size(self &) i32;
+}
+
+trait Grower {
+  pub fn grow(self &mut, n i32);
+  pub fn size(self &) i32;
+}
+
+// A marker trait, which no variant has structurally: only the variants that say 'is' comply
+trait Flagged {}
+
+enum Shape {
+  struct Circle is Measured, Grower, Flagged {
+    pub r i32;
+    pub fn size(self &) i32 {r * 10;}
+    pub fn grow(self &mut, n i32) {r = r + n;}
+  }
+  struct Square is Measured, Grower {
+    pub s i32;
+    pub fn size(self &) i32 {s * 100;}
+    pub fn grow(self &mut, n i32) {s = s + n;}
+  }
+  struct Third {
+    pub t i32;
+  }
+}
+
+// Tag values pinned apart: the vtable is chosen by comparing the tag, not by indexing
+enum Color {
+  struct Red = 0xFF0000 is Measured {
+    pub fn size(self &) i32 {1;}
+  }
+  struct Green = 0xFF00 is Measured {
+    pub fn size(self &) i32 {2;}
+  }
+  struct Blue = 0xFF {}
+}
+
+// The enum names the trait itself, so every variant complies
+enum Pet is Measured {
+  pub legs i32;
+  pub fn size(self &) i32 {legs * 3;}
+  struct Dog {}
+  struct Bird {
+    pub wings i32;
+  }
+}
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+// Circle(3) -> 30, Square(2) -> 200: each variant's own size. Third(9) -> the arm after: 7
+fn measure(s &Shape) i32 {
+  match s {
+    case imm m Measured {m.size();}
+    case is Third {7;}
+  }
+}
+
+// A '&mut' matched gives a writable virtual reference: 'grow' needs 'self &mut'.
+// Circle(3) grown by 5 is r = 8, size 80; Third gives 0
+fn grew(s &mut Shape) i32 {
+  match s {
+    case imm g Grower {g.grow(5); g.size();}
+    case is Third {0;}
+  }
+}
+
+// A guard may name the binding. Circle(3): size 30 is not over 50, so the Circle arm: 2.
+// Square(2): size 200 is over 50: 1. Square(0): size 0 is not, so the Square arm: 3. Third: 4
+fn guarded(s &Shape) i32 {
+  match s {
+    case imm m Measured if m.size() > 50 {1;}
+    case is Circle {2;}
+    case imm q Square {3;}
+    case is Third {4;}
+  }
+}
+
+// A trait pattern joined to a variant by 'or' tests both: Circle -> 1, Square -> 1, Third -> 1
+fn joined(s &Shape) i32 {
+  match s {
+    case is Measured or Third {1;}
+  }
+}
+
+// A trait pattern that binds nothing is a test, and a value matched may be a value
+// rather than a reference. Circle -> 1, Square -> 1, Third -> 0
+fn counts(s Shape) i32 {
+  match s {
+    case is Measured {1;}
+    case is Third {0;}
+  }
+}
+
+// A marker trait is nominal: only Circle says 'is Flagged'. Circle -> 1, Square -> 0, Third -> 0
+fn flagged(s Shape) i32 {
+  match s {
+    case is Flagged {1;}
+    else {0;}
+  }
+}
+
+// The same pattern in a bound 'if' and in let-else. Circle(3) -> 30, Third -> -1
+fn viaIf(s &Shape) i32 {
+  if imm m Measured = s {
+    return m.size();
+  }
+  else {
+    return -1;
+  }
+}
+
+fn viaLetElse(s &Shape) i32 {
+  imm m Measured = s else { return -1; };
+  m.size() + 1;
+}
+
+// By elimination: past a test that returns for the variants that comply, only Third is left
+fn eliminated(s &Shape) i32 {
+  if s is Measured {return 0;}
+  s.t;
+}
+
+// Pinned tags: Red 1, Green 2, Blue has no size
+fn colorSize(c &Color) i32 {
+  match c {
+    case imm m Measured {m.size();}
+    case is Blue {9;}
+  }
+}
+
+// An enum that names the trait: every variant complies, so a trait pattern alone is
+// exhaustive. Dog(4 legs) -> 12; Bird(2 legs, 5 wings) -> 6
+fn petSize(p &Pet) i32 {
+  match p {
+    case imm m Measured {m.size();}
+  }
+}
+
+fn main() i32 {
+  imm c = Shape.Circle(3);
+  imm sq = Shape.Square(2);
+  imm sq0 = Shape.Square(0);
+  imm th = Shape.Third(9);
+  show("circle-size", i64.from(measure(&c)));        // 3 * 10
+  show("square-size", i64.from(measure(&sq)));       // 2 * 100
+  show("third-arm", i64.from(measure(&th)));         // the arm after the trait's
+
+  mut gc Shape = Shape.Circle(3);
+  show("circle-grown", i64.from(grew(&mut gc)));     // (3 + 5) * 10
+  show("circle-after", i64.from(measure(&gc)));      // the growth stayed: 80
+  mut gs Shape = Shape.Square(1);
+  show("square-grown", i64.from(grew(&mut gs)));     // (1 + 5) * 100
+  mut gt Shape = Shape.Third(9);
+  show("third-not-grown", i64.from(grew(&mut gt)));  // the other arm: 0
+
+  show("guard-fails-circle", i64.from(guarded(&c)));   // 30 is not over 50
+  show("guard-holds-square", i64.from(guarded(&sq)));  // 200 is
+  show("guard-fails-square", i64.from(guarded(&sq0))); // 0 is not
+  show("guard-third", i64.from(guarded(&th)));
+
+  show("joined-circle", i64.from(joined(&c)));
+  show("joined-third", i64.from(joined(&th)));
+  show("counts-circle", i64.from(counts(c)));
+  show("counts-square", i64.from(counts(sq)));
+  show("counts-third", i64.from(counts(th)));
+
+  show("flagged-circle", i64.from(flagged(c)));
+  show("flagged-square", i64.from(flagged(sq)));
+  show("flagged-third", i64.from(flagged(th)));
+
+  show("if-bound-circle", i64.from(viaIf(&c)));        // 30
+  show("if-bound-third", i64.from(viaIf(&th)));        // else: -1
+  show("let-else-square", i64.from(viaLetElse(&sq)));  // 200 + 1
+  show("let-else-third", i64.from(viaLetElse(&th)));   // else: -1
+  show("eliminated-measured", i64.from(eliminated(&c)));  // returned: 0
+  show("eliminated-third", i64.from(eliminated(&th)));     // the field of Third: 9
+
+  imm r = Color.Red;
+  imm g = Color.Green;
+  imm b = Color.Blue;
+  show("pinned-red", i64.from(colorSize(&r)));
+  show("pinned-green", i64.from(colorSize(&g)));
+  show("pinned-blue", i64.from(colorSize(&b)));
+
+  imm dog = Pet.Dog(4);
+  imm bird = Pet.Bird(2, 5);
+  show("pet-dog", i64.from(petSize(&dog)));       // 4 legs * 3
+  show("pet-bird", i64.from(petSize(&bird)));     // 2 legs * 3
+  0;
+}

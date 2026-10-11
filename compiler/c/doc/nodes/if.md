@@ -203,7 +203,9 @@ noted. A cell (`matchClassify`) is one of:
 - **a set** of the values of the column's type, which the first cell that is one gives the
   column: an `is` of a variant of a closed enum (`matchClosedEnum`: the test `ifExhaustCheck`
   used, a trait with no base carrying `HasTagField` or `SameSize`), which is the variant's index
-  in `derived`; or `v == true` / `v == false` on a `bool`, the call type check made of
+  in `derived`, or of a trait pattern ([cast](cast.md), "Trait patterns"), which is the indexes
+  of the variants that comply (`castIsVariants`), so a trait case after the variants it names,
+  or a variant after the trait, is unreachable as a variant named twice is; or `v == true` / `v == false` on a `bool`, the call type check made of
   `case true` and `case ==true` (its callee a use of the `==` it found, the matched value
   its first argument); an `or` is the union of its alternatives'; a cell of another
   type than the column's is "other";

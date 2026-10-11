@@ -18,6 +18,7 @@ kind**, not by Cone tag.
 | `exp` | the value being converted or tested |
 | `typ` | the target type, or the type being tested against |
 | `vtype` | `typ` for a cast; `bool` for `is` |
+| `variants` | an `is` test of a trait pattern: the variants of the matched enum that comply, once checked; else NULL ([Trait patterns](#trait-patterns)) |
 
 Six forms:
 
@@ -265,6 +266,53 @@ reference to the variant, through `castSumInterior`, so a reference others may s
 marked `FlagVariantNarrow` and followed by the loan walk. It initializes the hidden
 `-narrow` local ([narrow](narrow.md)).
 
+### Trait patterns
+
+A trait named as a pattern on an enum (`case imm m Measured`, `s is Measured`) matches the
+variants that comply with it. It is the same pair, an `is` test and a conversion that binds,
+and the same shared `typ`; what differs is what the name is bound to. `castPatternTrait` finds
+a trait (a struct with `TraitType`, not an enum) at the root of a pattern, looking through a
+written reference, and `castMatchedEnum` says the matched value is an enum, so the pattern
+is a trait pattern; where the matched value is not an enum, the downcast checks of
+`castIsTypeCheck` refuse it with `ErrorPatTrait` (a closed family alone can say which values
+comply).
+
+**Which variants comply** (`castTraitVariants`, `castVariantComplies`): a variant of the
+enum's `derived` complies when a generic's `where T is Trait` would say yes of it
+(`genericTypeIs`: it declares the trait with `is`, or, for a trait that requires something,
+has it) and the variant can fill the trait's vtable (`structVirtRefMatches`, which registers
+its implementation). So a marker trait is complied with only by declaring it, and a method over
+the whole enum (`self &Shape`, which has no copy in any variant, `structIsWholeEnumMethod`)
+makes no variant comply. None at all is `ErrorPatTraitNone`.
+
+**The test.** `castTraitIsCheck` stores the complying variants on the `is` node (`variants`).
+Everything that reads an `is` test of a variant reads that list when there is one:
+`castIsVariants` marks the variants a test names, which `matchClassify` (exhaustiveness and
+unreachable cases, [if](if.md)), `ifExhaustCheck` and the flow-typing facts ([narrow](narrow.md))
+use, so a trait case counts as the variants it names and narrows by elimination as they do.
+Generation tests the tag against each variant in turn and `or`s them (`genlIsType`,
+`genlIsVariant`).
+
+**The binding.** The matched value supplies the reference kind and permission (`castPatternAdoptRef`):
+a borrow of an enum gives a virtual reference to the trait, `&<imm Measured` from `&imm Shape`,
+with the borrow's region and permission. Only a borrowed reference can lend one, so a binding
+where the matched value is a value or an owner is `ErrorPatTraitBind` (`castTraitBind`), as is a
+pattern written as a plain reference to the trait (a plain reference to a trait has no vtable
+to carry). `&<Measured` is accepted as the check that the matched value agrees, as `&Circle`
+is for a variant. The conversion is flagged `FlagConvert | FlagTraitBind`, and its type is the
+virtual reference carrying the matched borrow's lifetime (`iexpCoerceType`), as a coercion
+from a reference to an enum to another trait's virtual reference has it. It is a reference into
+the variant like any narrowing from an enum, so `castSumInterior` asks the collection rule of it:
+through a reference others may share, the loan walk follows it (`FlagVariantNarrow`,
+`pwNarrowShared`) and refuses a use after a change of variant.
+
+Generation builds the virtual reference as it does for a reference to an enum coerced to a
+virtual reference to another trait: the pointer, and the vtable the tag names. That list holds
+only the variants that comply, so `FlagTraitBind` lets the selection skip the others
+(`genlVtableForTag`'s `partial`); they cannot reach the arm, because the test that guards it
+named only the others. The selection is always by comparing the tag, never by index, since the
+trait's vtable list is in the order conversions registered their implementers.
+
 ### What a binding takes from a place
 
 An arm that binds, `case imm c Circle` or `if imm c Circle = s`, on a place takes the
@@ -297,7 +345,8 @@ discriminant to do it.
   `structMatches` under `Regref`. A virtual reference to an untagged trait may
   not narrow to a trait or an enum: it was made from a concrete type, its vtable
   pointer is compared with that type's, and no vtable is built for a trait or an
-  enum, so the comparison had nothing to find and failed at link.
+  enum, so the comparison had nothing to find and failed at link. (A trait is
+  `ErrorPatTrait`: a trait pattern is for an enum, [Trait patterns](#trait-patterns).)
 - **Struct to struct**: needs `HasTagField`, then `structMatches` under
   `Coercion`.
 
@@ -358,7 +407,9 @@ which is lowered to a type literal, [literals](literals.md)):
   the pointer and the compile-time dimension into the fat pointer.
 - `VirtRefTag`: build the vtable if needed, find the implementation, then
   `{object pointer, vtablep}`. Every pointer is LLVM's `ptr`, so the bitcasts
-  here and above fold away as they are built.
+  here and above fold away as they are built. From a reference to an enum the implementation
+  is chosen by the tag; a trait pattern's conversion (`FlagTraitBind`) has an implementation for
+  the variants that comply only, and the selection skips the rest.
 
 `genlRecast` (no flag): **re-checks size for a struct or array target** with
 `LLVMABISizeOfType` and reports `ErrorRecastSize` — this is the check
@@ -372,7 +423,8 @@ pointer→int is `ptrtoint`, int→pointer is `inttoptr`, everything else is
 `genlIsType` has three paths: virtual reference (compare vtable pointers),
 nullable-pointer enum (compare the pointer against a null of its own type: a
 slice's or a virtual reference's first word, never the two-word value), and tagged (read the
-`IsTagField` and compare against `tagnbr`).
+`IsTagField` and compare against `tagnbr`). The last two are `genlIsVariant`, one variant's test;
+a trait pattern's test (`variants` set) is that test for each variant that complies, `or`ed.
 
 ## Hazards
 

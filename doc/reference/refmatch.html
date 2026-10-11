@@ -31,7 +31,7 @@
     and refused only if something could change the variant while it is used; one through an owner such as an
     <span class="pre">Rc</span> is another owner of the value. A name tested for a variant is that variant
     where the test holds (<a href="#flow">Flow typing</a>), and a binding that outlives an early exit is
-    <span class="pre">imm n Ok = r else {...};</span> (<a href="#letelse">Binding past an early exit</a>). A struct's partial pattern is written with its fields in square brackets (<span class="pre">Point[0., _]</span>), and a variant's as a variant is constructed, in square brackets (<span class="pre">SomeInt[&lt;0]</span>): that is the current spelling, and how a match pattern spells a type or a construction is an open design question, as is how a variant is constructed (<a href="refenum.html#init">Enums</a>).</i></p>
+    <span class="pre">imm n Ok = r else {...};</span> (<a href="#letelse">Binding past an early exit</a>). A trait named in a match on an enum matches the variants that comply with it (<a href="#traitpat">Trait patterns</a>). A struct's partial pattern is written with its fields in square brackets (<span class="pre">Point[0., _]</span>), and a variant's as a variant is constructed, in square brackets (<span class="pre">SomeInt[&lt;0]</span>): that is the current spelling, and how a match pattern spells a type or a construction is an open design question, as is how a variant is constructed (<a href="refenum.html#init">Enums</a>).</i></p>
 
   <p>As with <span class="pre">if</span>, pattern matching is about deciding
   which code path to perform. 
@@ -73,7 +73,8 @@ fn power(n i32, pow i32) i32 {
   <li>A match on an <b>enum</b> is covered when every variant has a case. A case names a variant
   alone (<span class="pre">case Circle</span>), binds it (<span class="pre">case imm c Circle</span>)
   or <span class="pre">or</span>s several (<span class="pre">case Rect or Dot</span>); each counts toward
-  every variant it names.</li>
+  every variant it names. A trait (<span class="pre">case imm m Measured</span>) names every variant that
+  complies with it (<a href="#traitpat">Trait patterns</a>).</li>
   <li>A match on a <b>bool</b> is covered by <span class="pre">case true</span> and
   <span class="pre">case false</span>.</li>
   <li>A match on several values is covered when every <i>combination</i> of its columns is
@@ -86,7 +87,8 @@ fn power(n i32, pow i32) i32 {
   <p>A match that is not covered is an error that names what is missing, so a statement match
   that handles some variants needs <span class="pre">else {}</span> to say the rest need no action.
   The opposite is an error too: a case that can never run, because the cases before it match every
-  value it matches (a variant named twice, a case after the cases cover everything), and an
+  value it matches (a variant named twice, a variant after a trait that names it, a trait after the variants
+  it names, a case after the cases cover everything), and an
   <span class="pre">else</span> after cases that already cover everything. Open traits never count: a match on a
   trait that other modules may add structs to needs its <span class="pre">else</span>.</p>
 <pre>
@@ -547,6 +549,54 @@ fn bump(r Result[i32, Fin]) i32 {
   variant, taking its type arguments from the value. An <span class="pre">else</span> that falls through is an
   error. Since the <span class="pre">else</span> leaves, <span class="pre">r</span> is known to be the variant
   after the declaration, as after any branch that leaves.</p>
+
+  <h3 id="traitpat">Trait patterns</h3>
+  <p>In a match on an enum, a pattern may name a <i>trait</i> instead of a variant. It matches every variant
+  that complies with the trait: one that declares it with <span class="pre">is</span>, or has what it
+  requires (<a href="reftrait.html">Traits</a>), including what the enum gives every variant. A variant
+  that does not comply, <span class="pre">Third</span> below, is left to the cases after it. The match
+  compiles to tests of the tags of the variants that comply, so it costs nothing beyond them, and it counts
+  toward covering every value as the variants it names, so the match below needs no
+  <span class="pre">else</span>:</p>
+<pre>
+trait Measured {
+  pub fn size(self &amp;) i32;
+}
+
+enum Shape {
+  struct Circle is Measured { pub r i32; pub fn size(self &amp;) i32 {r * 10;} }
+  struct Square is Measured { pub s i32; pub fn size(self &amp;) i32 {s * 100;} }
+  struct Third { pub t i32; }
+}
+
+fn measure(s &amp;Shape) i32 {
+  match s {
+    case imm m Measured { m.size(); }   // Circle's or Square's own size, by their vtables
+    case is Third { 7; }
+  }
+}
+</pre>
+  <p>The binding is a <a href="refvirtref.html">virtual reference</a> to the trait, built from the variant the
+  matched reference points at, so a call through it goes through that variant's vtable. As for a variant
+  (<a href="#enum">Variant type partial matches</a>), the matched value supplies the kind and the permission: on a
+  <span class="pre">&amp;mut Shape</span>, <span class="pre">m</span> is a <span class="pre">&amp;&lt;mut Measured</span>
+  and may call what needs <span class="pre">self &amp;mut</span>; on a <span class="pre">&amp;Shape</span> it is
+  read-only. It is a reference into the variant, so it follows the collection rule as a binding to a variant
+  does, and it may not outlive the value it borrows. Because only a borrowed reference can lend a virtual
+  reference, a pattern that <i>binds</i> a trait needs the matched value to be one (<span class="pre">match &amp;s</span>,
+  <span class="pre">match &amp;mut s</span>); a value or an owner such as an <span class="pre">Rc</span> can be asked,
+  <span class="pre">case is Measured</span>, and not bound. A pattern may not be written as a plain reference to the
+  trait (<span class="pre">&amp;Measured</span>), which has no vtable to carry. The patterns work in a bound
+  <span class="pre">if</span>, <span class="pre">imm m Measured = s</span>, in let-else, and joined by
+  <span class="pre">or</span> and guarded like any other.</p>
+  <p>Which variants comply is decided as a generic's <span class="pre">where T is Measured</span> decides it:
+  by declaring the trait, or structurally for a trait that requires something. A marker trait, which requires
+  nothing, is complied with by declaring it alone. A method written over the whole enum
+  (<span class="pre">fn size(self &amp;Shape)</span>) is one function that no variant has a copy of, so it makes
+  no variant comply; a trait that no variant complies with is an error, since the pattern could never match.
+  Only a closed family can say which of its values comply, so an <b>open</b> trait has no trait patterns: a
+  <span class="pre">&amp;&lt;Measured</span> can be narrowed to the concrete type it was made from, and only to that
+  (<a href="refvirtref.html">Virtual references</a>).</p>
 
   <h2>First-class patterns</h2>
   <p>Whole and partial matching patterns handle many situations, but not all.

@@ -445,6 +445,14 @@ is `ErrorLetElse`. Each is reported at the use or the `else`, and the first two 
 change. `ErrorOwnerNarrow` is an owner (`Rc[mut, Shape]`) narrowed to a variant whose value
 would sit at another offset in its allocation (generation).
 
+A trait named as a pattern ([cast](../nodes/cast.md), "Trait patterns") has three codes. On an enum, a
+trait that no variant complies with matches nothing: `ErrorPatTraitNone` (a method over the whole enum
+is no variant's). A trait pattern that binds needs a borrowed reference to build a virtual reference
+from, and is written as the trait or `&<Trait`: a matched value, an owner, or a pattern written as a
+plain reference `&Trait` is `ErrorPatTraitBind`. Where the matched value is not an enum (a virtual
+reference to an open trait, a tagged trait), a trait named as a pattern is `ErrorPatTrait`: only a
+closed family can say which of its values comply.
+
 An actor's declaration has five codes of its own and borrows two. What its
 body may not hold, or a form of it not built (a `pub` field, a static, a
 `pub` function without `self`, a `pub fn` method other than `init`, a

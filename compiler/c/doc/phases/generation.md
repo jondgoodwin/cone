@@ -562,7 +562,9 @@ case is a chain of `select`s comparing the tag against each variant's value with
 last as the fall-through. The tag came out of a value of the enum, so no default arm
 is reachable; and because it is selects rather than branches, nothing about it
 depends on where the coercion sits. `genlTagsIndexVtables` is the test,
-`genlVtableForTag` the chain.
+`genlVtableForTag` the chain. A trait pattern's conversion (`FlagTraitBind`) has a vtable for
+the variants that comply only, and the chain skips the others: a tag of one of them cannot reach
+the arm that makes the conversion.
 
 **A slot a folded method fills holds a thunk** (`genlVtableThunk`). Through the
 fat pointer the concrete type is erased, so the shift from the object to the

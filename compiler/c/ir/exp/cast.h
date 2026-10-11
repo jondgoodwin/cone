@@ -13,6 +13,7 @@ typedef struct CastNode {
     IExpNodeHdr;
     INode *exp;
     INode *typ;
+    Nodes *variants;    // Is: the variants of the matched enum a trait pattern names, once checked; else NULL
 } CastNode;
 
 struct NameUseNode;
@@ -49,6 +50,10 @@ struct NameUseNode;
 // the value sits at the same offset in both allocations, which generation asks
 // (genlOwnerNarrowCheck).
 #define FlagOwnerNarrow 0x0040  // Cast: narrows an owning reference to a variant of its enum
+// A trait pattern on an enum, 'case imm m Measured' [topic 7], binds a virtual reference to the
+// trait built from whichever variant the reference points at, chosen by the tag. Only the variants
+// that comply have a vtable, so generation tolerates the others: they cannot reach the arm.
+#define FlagTraitBind 0x0080  // Cast: a trait pattern's conversion, to a virtual reference over the matched enum
 
 // Create node for recasting to a new type without conversion
 CastNode *newRecastNode(INode *exp, INode *type);
@@ -61,6 +66,11 @@ INode *cloneCastNode(CloneState *cstate, CastNode *node);
 
 // Create a new cast node
 CastNode *newIsNode(INode *exp, INode *type);
+
+// Which of an enum's variants (by position in 'derived') does this 'is' test name? One
+// for a variant, those that comply for a trait pattern. Marks 'has[k]' for each and
+// returns how many; 0 where the test names none of them.
+uint32_t castIsVariants(CastNode *isnode, StructNode *enumdcl, uint8_t *has);
 
 // A reference narrowed to a reference to a variant of its enum, for flow typing (narrow.h)
 CastNode *castNarrowRef(INode *exp, RefNode *to);
