@@ -1,0 +1,68 @@
+// A pattern on an owner [topic 6a]: 'match s { case imm c Circle }' on an 'Rc[imm, Shape]'
+// binds a copy of the owner, counted one more, typed 'Rc[imm, Circle]' -- the value
+// of a variant is at its enum's address, so nothing moves. Only an owner nobody can store
+// another variant through is narrowed: 'Rc[mut, Shape]' and 'Rc[ro, Shape]' stay refused
+// (enum_typecheck_narrow), since another owner could change the variant while the copy is used. The arm's copy is released
+// as the arm ends, and the value dies once, with its last owner.
+//
+// The finalizer prints its number, so the output is the whole assertion: when the value
+// dies. The expected lines are worked out by hand in the comments.
+
+mod enum_owner_narrow;
+
+import stdio use *;
+
+struct Fin {
+  pub id i32;
+  fn final(self &uni) {
+    printStr("fin");
+    printInt(i64.from(self.id));
+    printStr(" ");
+  }
+}
+
+enum E {
+  struct A { pub f Fin; }
+  struct B { pub n i32; }
+}
+use E;
+
+fn num(n i32) {
+  printInt(i64.from(n));
+  printStr(" ");
+}
+fn end() {
+  printStr("|\n");
+}
+
+// The binding is another owner, released with its arm; the parameter and 'p' are the
+// others, and the value dies when 'p' does, at the end of 'scope'
+fn takes(s Rc[imm, E]) {
+  match s {
+    case imm a A { printStr("A "); num(a.f.id); }
+    else { printStr("else "); }
+  }
+  printStr("end ");
+}
+
+//   "A 9 end after fin9 |"
+fn scope() {
+  imm p = new Rc[imm, E](A(new Fin(9)));
+  takes(p);
+  printStr("after ");
+}
+
+// Bound through a bound 'if', and in let-else: the second keeps the owner past the
+// block. "7 7 |"
+fn bound() {
+  imm p = new Rc[imm, E](B(7));
+  if imm b B = p { num(b.n); }
+  imm b B = p else { return; };
+  num(b.n);
+}
+
+fn main() i32 {
+  scope(); end();
+  bound(); end();
+  0i32;
+}

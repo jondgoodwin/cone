@@ -61,6 +61,12 @@ void logicNameRes(NameResState *pstate, LogicNode *node) {
 void logicTypeCheck(TypeCheckState *pstate, LogicNode *node) {
     if (0 == iexpTypeCheckCoerce(pstate, (INode*)boolType, &node->lexp))
         errorMsgNode(node->lexp, ErrorInvType, "Conditional expression must be coercible to boolean value.");
+    // The right operand runs only when the left is true (for 'and'), or false (for
+    // 'or'), and what that says of the names it tests is known there. What the right
+    // operand changes may or may not happen, so afterwards either path may hold.
+    NarrowEnv *left = narrowSave();
+    narrowAssumeLocal(node->lexp, node->tag == AndLogicTag);
     if (0 == iexpTypeCheckCoerce(pstate, (INode*)boolType, &node->rexp))
         errorMsgNode(node->rexp, ErrorInvType, "Conditional expression must be coercible to boolean value.");
+    narrowRestore(narrowJoin(left, narrowSave()));
 }

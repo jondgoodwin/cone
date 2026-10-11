@@ -104,6 +104,7 @@ int borrowOwnerLendRefused(INode *owner, INode *perm) {
 // Inject a typed, borrowed node on some node (expected to be an lval)
 void borrowMutRef(INode **nodep, INode* type, INode *perm) {
     INode *node = *nodep;
+    narrowBorrowed(node, perm, type);
     // Rather than borrow from a deref, just return the ptr node we are de-reffing.
     // Not through a lock-managed reference: only a borrow written out takes its
     // lock, so a method is not called on its value, nor an operator applied.
@@ -218,6 +219,8 @@ static void borrowDerefOf(INode **from, INode *perm, INode *vtexp) {
     uint16_t scope = 0;
     iexpGetLvalInfo((INode*)deref, &lvalperm, &scope);
 
+    if (!slice)
+        narrowBorrowed((INode*)deref, perm, vtexp);
     RefNode *reftype = newRefNodeFull(slice ? ArrayRefTag : RefTag, *from, borrowRef, perm, vtexp);
     reftype->scope = scope;
     RefNode *borrownode = newRefNodeFull(slice ? ArrayBorrowTag : BorrowTag, *from, borrowRef, perm, (INode*)deref);
@@ -677,6 +680,8 @@ void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     RefNode *reftype = newRefNodeFull(tag, (INode*)node, borrowRef, refperm, refvtype);
     reftype->scope = scope;
     node->vtype = (INode *)reftype;
+    if (tag == RefTag && !refused)
+        narrowBorrowed(lval, refperm, refvtype);
 
     // The borrowed receiver is now typed, so the method call can be selected
     // against it, exactly as '(&mut value).`&[]`()' is.

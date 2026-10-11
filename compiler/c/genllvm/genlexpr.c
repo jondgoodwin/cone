@@ -31,8 +31,10 @@ static int genlIsLocalName(INode *lval);
 // since a dereference the compiler builds itself (a synthesized drop's)
 // carries no type of its own.
 static INode *genlAddrType(INode *lval) {
+    // (a variable named as the one variant it is known to hold is that variant's
+    // leading bytes: narrow.h)
     if (isNameUseNode(lval) && isExpNode(lval))
-        return ((IExpNode*)((NameUseNode *)lval)->dclnode)->vtype;
+        return (lval->flags & FlagNarrowed) ? ((IExpNode*)lval)->vtype : ((IExpNode*)((NameUseNode *)lval)->dclnode)->vtype;
     if (lval->tag == DerefTag)
         return genlPointee(((IExpNode*)((StarNode *)lval)->vtexp)->vtype);
     return ((IExpNode*)lval)->vtype;
@@ -1442,6 +1444,28 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
     }
 }
 
+// An owner narrowed to one of its enum's variants is a copy of the same pointer, which
+// holds the value's address with the allocation's header before it: the same bytes only
+// if the value sits at the same offset in an allocation of either type. The value of a
+// variant is its enum's, but the offset rounds the header up to the value's alignment,
+// which a variant may have less of.
+static void genlOwnerNarrowCheck(GenState *gen, CastNode *node) {
+    INode *from = iexpGetTypeDcl(node->exp);
+    INode *to = itypeGetTypeDcl(node->vtype);
+    if (from->tag != RefTag || to->tag != RefTag || ((RefNode*)from)->region->tag == BorrowRegTag)
+        return;
+    genlType(gen, from);
+    genlType(gen, to);
+    genlRefTypeSetup(gen, (RefNode*)from);
+    genlRefTypeSetup(gen, (RefNode*)to);
+    unsigned long long fromat = LLVMOffsetOfElement(gen->datalayout, ((RefNode*)from)->typeinfo->structype, ValueField);
+    unsigned long long toat = LLVMOffsetOfElement(gen->datalayout, ((RefNode*)to)->typeinfo->structype, ValueField);
+    if (fromat != toat)
+        errorMsgNode((INode*)node, ErrorOwnerNarrow,
+            "Narrowing this owner to a variant would change where its value is in the allocation (%llu bytes in as the enum, %llu as the variant): the header before the value is rounded up to the alignment of the type, and the variant has less of it than its enum. The address would have to change.",
+            fromat, toat);
+}
+
 // Reinterpret a value as if it were another type
 LLVMValueRef genlRecast(GenState *gen, INode* exp, INode* to) {
     INode *totype = itypeGetTypeDcl(to);
@@ -2495,7 +2519,10 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
     if (isNameUseNode(termnode) && isExpNode(termnode)) {
         VarDclNode *vardcl = (VarDclNode*)((NameUseNode *)termnode)->dclnode;
         if (vardcl->tag == VarDclTag) {
-            LLVMValueRef val = LLVMBuildLoad2(gen->builder, genlType(gen, vardcl->vtype), genlVarSym(gen, vardcl), &vardcl->namesym->namestr);
+            // A variable named as the one variant it is known to hold is read as that
+            // variant: its leading bytes
+            LLVMTypeRef loadtype = genlType(gen, (termnode->flags & FlagNarrowed) ? ((IExpNode*)termnode)->vtype : vardcl->vtype);
+            LLVMValueRef val = LLVMBuildLoad2(gen->builder, loadtype, genlVarSym(gen, vardcl), &vardcl->namesym->namestr);
             genlDropFlagUse(gen, termnode);
             return val;
         }
@@ -2923,6 +2950,8 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
             return genlLockAcquire(gen, genlExpr(gen, node->exp), (RefNode *)itypeGetTypeDcl(node->vtype), termnode);
         if (node->flags & FlagConvert)
             return genlConvert(gen, node->exp, node->vtype);
+        if (node->flags & FlagOwnerNarrow)
+            genlOwnerNarrowCheck(gen, node);
         return genlRecast(gen, node->exp, node->vtype);
     }
     case IsTag:

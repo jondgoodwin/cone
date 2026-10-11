@@ -578,6 +578,15 @@ static int ifMatchCover(IfNode *ifnode, int clean) {
     return result;
 }
 
+// What is known of the names' variants after an 'if': where its branches meet, each
+// that does not leave holds what it ended with, and a missing 'else' is a path that
+// went by every condition false. Nothing live at all means nothing after it runs.
+static NarrowEnv *ifNarrowAfter(NarrowEnv *armends, int livearms, NarrowEnv *pathenv, int fallthrough) {
+    if (fallthrough)
+        return livearms ? narrowJoin(armends, pathenv) : pathenv;
+    return livearms ? armends : pathenv;
+}
+
 // Type check the if statement node
 // - Every conditional expression must be a bool
 // - else can only be last
@@ -590,7 +599,14 @@ void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode, INode *expectType) {
     INode **nodesp;
     uint32_t cnt;
     int condErrors = 0;     // a condition (a match's pattern) was reported
+    // Flow typing: each condition is checked knowing the ones before it were false, and
+    // its branch knowing it was true (narrow.h)
+    NarrowEnv *pathenv = narrowSave();  // what holds going into the next condition
+    NarrowEnv *armends = NULL;          // where the branches that do not leave end, met
+    int livearms = 0;
+    int direct = narrowIsStmt((INode*)ifnode);  // a statement of its block
     for (nodesFor(ifnode->condblk, cnt, nodesp)) {
+        narrowRestore(pathenv);
 
         // Validate conditional node
         int errorsBefore = errors;
@@ -605,6 +621,11 @@ void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode, INode *expectType) {
         if (*nodesp != elseCond) {
             if (0 == iexpCoerce(nodesp, (INode*)boolType))
                 errorMsgNode(*nodesp, ErrorInvType, "Conditional expression requires true/false value (possibly via implicit .isTrue).");
+            NarrowEnv *aftercond = narrowSave();
+            narrowAssume(*nodesp, 0);
+            pathenv = narrowSave();
+            narrowRestore(aftercond);
+            narrowAssume(*nodesp, 1);
         }
         else {
             hasElse = 1;
@@ -615,7 +636,24 @@ void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode, INode *expectType) {
 
         // Validate the node performed when previous condition is true
         ++nodesp; --cnt;
-        if (!iexpTypeCheckCoerce(pstate, expectType, nodesp)) {
+        BlockNode *armblk = (*nodesp)->tag == BlockTag ? (BlockNode *)*nodesp : NULL;
+        if (armblk)
+            narrowAnchorArm(armblk, (uint16_t)(pstate->scope + 1));
+        uint32_t killmark = narrowKillMark();
+        int armtyped = iexpTypeCheckCoerce(pstate, expectType, nodesp);
+        if (armblk)
+            narrowInsertHeads(armblk);
+        if (ifBlockJumps((BlockNode *)*nodesp)) {
+            // A branch that leaves the loop takes its changes with it; one that
+            // continues the loop carries them to its next pass
+            if (nodesLast(((BlockNode *)*nodesp)->stmts)->tag != ContinueTag)
+                narrowKillDrop(killmark);
+        }
+        else {
+            NarrowEnv *end = narrowSave();
+            armends = livearms++ ? narrowJoin(armends, end) : end;
+        }
+        if (!armtyped) {
             errorMsgNode(*nodesp, ErrorInvType, "Expression does not match expected type.");
             match = NoMatch;
         }
@@ -649,10 +687,23 @@ void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode, INode *expectType) {
     // cases cover them all ends in one
     if (ifnode->flags & FlagIfMatch) {
         int cover = ifMatchCover(ifnode, !condErrors);
-        if (cover == MatchCoverMissing)
+        if (cover == MatchCoverMissing) {
+            narrowRestore(ifNarrowAfter(armends, livearms, pathenv, 1));
             return;
+        }
         if (cover == MatchCoverComplete)
             hasElse = 1;
+    }
+    narrowRestore(ifNarrowAfter(armends, livearms, pathenv, !hasElse));
+    narrowAnchorAfter((INode*)ifnode, pstate->scope, direct);
+
+    // 'imm n Ok = r else {...};' goes on to take the variant its test found, so its
+    // 'else' must leave
+    if ((ifnode->flags & FlagIfLetElse) && ifnode->condblk->used >= 2) {
+        INode *elseblk = nodesGet(ifnode->condblk, ifnode->condblk->used - 1);
+        if (!ifBlockJumps((BlockNode *)elseblk) && !condErrors)
+            errorMsgNode(elseblk, ErrorLetElse,
+                "The 'else' of a binding like this must leave: end it with 'return', 'break', 'continue' or a call that does not return. Otherwise the binding after it would take a variant that was not there.");
     }
 
     if (expectType == noCareType)

@@ -3505,6 +3505,25 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep, INode *expectTy
     fnCallTypeCheckNode(pstate, nodep, expectType);
     fnCallExpectNode = savednode;
     fnCallExpectType = savedtype;
+    // A call may store another variant over an enum reached through a reference others
+    // may share (narrow.h). A field, an element and a number's operator cannot.
+    INode *done = *(INode**)nodep;
+    if (done && done->tag == FnCallTag && !(done->flags & FlagIndex)) {
+        // (an operator on numbers: every operand is one)
+        int scalars = (done->flags & FlagOperator) != 0;
+        FnCallNode *call = (FnCallNode*)done;
+        INode **argp;
+        uint32_t cnt;
+        if (scalars && call->args) {
+            for (nodesFor(call->args, cnt, argp)) {
+                INode *argtype = isExpNode(*argp) ? iexpGetTypeDcl(*argp) : NULL;
+                if (argtype == NULL || !(isNbr(argtype) || argtype == (INode*)boolType))
+                    scalars = 0;
+            }
+        }
+        if (!scalars)
+            narrowCallMade(done);
+    }
 }
 
 static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INode *expectType) {
@@ -3635,7 +3654,11 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
             node->vtype = errorType;
             return;
         }
+        // A name narrowed to a variant, naming a member only that variant has (narrow.h)
+        narrowReceiver(pstate, node);
         fnCallReadThroughRefs(node);
+        if (node->vtype == errorType)
+            return;
         // 'stack[i64].push(x)': a path through an instance of a generic module,
         // which exists only now that the instantiation above made it
         if (nameUseNames(node->objfn, ModuleTag)) {
@@ -3834,7 +3857,10 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
         node->vtype = errorType;
         return;
     }
+    narrowReceiver(pstate, node);
     fnCallReadThroughRefs(node);
+    if (node->vtype == errorType)
+        return;
 
     // All arguments must now be expressions
     int badarg = 0;

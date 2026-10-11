@@ -566,6 +566,12 @@ well — and would hand every `*NameRes` function an `fn` it must never read, an
 every `*TypeCheck` function a `mod` and `loopblock` it must never read. Two
 structs make that a compile error instead of a convention.
 
+**One more piece of state rides the walk and is not in `TypeCheckState`:** what is known of
+the variant each name of an enum's type holds along the path being checked (flow typing,
+[narrow](../nodes/narrow.md)). It is file-static and saved and cleared by
+`fnDclTypeCheck` (`narrowFnBegin`), so a declaration reached by demand starts with
+nothing known and gives back what it was given.
+
 `loopblock` is read only during name resolution, which is still one eager
 source-order pass, so demand cannot reach it. `scope` is consumed during type
 check by `clonePushState`, which gives a cloned lifetime node its `life`, and by

@@ -55,6 +55,10 @@ void swapTypeCheck(TypeCheckState *pstate, SwapNode *node) {
         errorMsgNode(node->lval, ErrorInvType, "Swap lvals do not have matching types");
         return;
     }
+    // Each side now holds what the other did
+    narrowAssigned(node->lval, NULL);
+    narrowAssigned(node->rval, NULL);
+    narrowCallMade((INode*)node);
 }
 
 // Perform data flow analysis on swap node

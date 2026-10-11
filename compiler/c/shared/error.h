@@ -659,6 +659,12 @@ enum ErrorCode {
     ErrorTraceRoot = 1441,  // A local, parameter, or value of a traced region, of a type that needs tracing and cannot be traced
     ErrorTraceKey = 1442,   // A type argument that holds a traced reference, of a GcTraceElements type whose gcTraceElements does not reach it: a Dict's key, which a collector that moved it would leave hashed where it was
 
+    // Flow typing and let-else (ir/exp/narrow.c, ir/exp/if.c)
+    ErrorNarrowStale = 1460,    // A member of one variant named on a name that was narrowed to it and has since been changed: the message names the change
+    ErrorNarrowLoop = 1461,     // A name narrowed to a variant from before a loop, used in the loop, which changes it later and comes back to the use
+    ErrorLetElse = 1462,        // The 'else' of 'imm n Ok = r else ...' falls through to the binding: it must leave with 'return', 'break', 'continue' or a call that does not return
+    ErrorOwnerNarrow = 1463,    // An owner ('Rc[mut, Shape]') narrowed to a variant whose value would sit at another offset in its allocation: the address would have to change
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

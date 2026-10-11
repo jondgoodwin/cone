@@ -40,6 +40,15 @@ struct NameUseNode;
 // reference that other references may share: the collection rule applies to the
 // narrowed reference (castSumInterior). Set once the conversion is a plain recast.
 #define FlagVariantNarrow 0x0010  // Cast: narrows a shared reference into one of an enum's variants
+// The binding a guard makes of a variable the arm binds again ('case imm x T if g'):
+// it reads the matched place before the arm is chosen, so it takes nothing from it --
+// a payload that moves is viewed through a borrow (castGuardBorrow)
+#define FlagMatchGuardBind 0x0020  // Cast: a bound pattern's conversion made for its guard
+// An owning reference ('Rc[mut, Shape]') narrowed to one of its variants is a copy of
+// the owner, typed as the variant (castSumInterior). Its address is the same only if
+// the value sits at the same offset in both allocations, which generation asks
+// (genlOwnerNarrowCheck).
+#define FlagOwnerNarrow 0x0040  // Cast: narrows an owning reference to a variant of its enum
 
 // Create node for recasting to a new type without conversion
 CastNode *newRecastNode(INode *exp, INode *type);
@@ -52,6 +61,9 @@ INode *cloneCastNode(CloneState *cstate, CastNode *node);
 
 // Create a new cast node
 CastNode *newIsNode(INode *exp, INode *type);
+
+// A reference narrowed to a reference to a variant of its enum, for flow typing (narrow.h)
+CastNode *castNarrowRef(INode *exp, RefNode *to);
 
 // The name at the root of a pattern's type: 'Circle' in 'Circle', '&Circle',
 // 'Some[i32]' or '&Some[i32]', or NULL for any other shape, a path among them.

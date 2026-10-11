@@ -1,0 +1,126 @@
+// Flow typing through references [4a, 4b]. A parameter that is a reference to an enum is
+// narrowed as a local is: where it was tested for a variant, its fields are read and its
+// methods called by name. A reference no other can change the variant under ('imm',
+// 'uni') is narrowed as it stands. One others may share ('&', '&mut') is narrowed by a
+// reference the compiler declares where the test was made, which the loan walk follows:
+// a call that could change the variant while it is used is refused
+// (enum_flow_typing_reshape), and a call that could not is no change at all.
+//
+// The expected lines are worked out by hand in the comments.
+
+mod enum_flow_typing_refs;
+
+import stdio use *;
+
+enum Shape {
+  struct Circle {
+    pub radius i32;
+    pub fn grow(self &mut, n i32) { radius = radius + n; }
+    pub fn twice(self &) i32 { radius * 2; }
+  }
+  struct Rect { pub w i32; pub h i32; }
+  struct Dot {}
+}
+use Shape;
+
+fn num(n i32) {
+  printInt(i64.from(n));
+  printStr(" ");
+}
+fn end() {
+  printStr("|\n");
+}
+
+// Each kind of reference, read where the test holds. 3 3 3 then 0 0 0
+fn viaImm(s &imm Shape) i32 { if s is Circle { return s.radius; } return 0; }
+fn viaRo(s &Shape) i32 { if s is Circle { return s.radius; } return 0; }
+fn viaMut(s &mut Shape) i32 { if s is Circle { return s.radius; } return 0; }
+
+// A call that cannot reach the enum is no change of it: the narrowing holds across it.
+// 3, then 6 (the radius twice, by a method of the variant)
+fn acrossCall(s &Shape) i32 {
+  if s is Circle {
+    num(s.radius);
+    return s.twice();
+  }
+  return 0;
+}
+
+// A write through the narrowed reference, and a method of the variant that writes:
+// "5 7 |"
+fn writes(s &mut Shape) {
+  if s is Circle {
+    s.radius = 5;
+    num(s.radius);
+    s.grow(2);
+    num(s.radius);
+  }
+}
+
+// Joined by 'and', after a branch that leaves, and by elimination
+//   Circle(9): 9 ; Rect(2, 3): 6 ; Dot: 0
+fn joined(s &Shape) i32 {
+  if s is Circle and s.radius > 5 { return s.radius; }
+  if s is Rect { return s.w * s.h; }
+  return 0;
+}
+
+enum Pair {
+  struct Left { pub a i32; }
+  struct Right { pub b i32; }
+}
+fn eliminated(p &mut Pair) i32 {
+  if p is Left { return p.a; }
+  else { return p.b; }
+}
+fn afterExit(p &Pair) i32 {
+  if p is Right { return p.b; }
+  num(0);
+  return p.a;
+}
+
+// A match arm that names the variant, with no binding: the matched reference is narrowed
+//   Circle(3): 3 ; Rect(4, 5): 4 ; Dot: 0
+fn matched(s &mut Shape) i32 {
+  match s {
+    case Circle { return s.radius; }
+    case Rect { return s.w; }
+    case Dot { return 0; }
+  }
+}
+
+// A name tested again after a change is narrowed again. The reference is stored over:
+// the next test is the new value's. "3 4 |"
+fn restored(s &mut Shape) {
+  if s is Circle { num(s.radius); }
+  *s = Shape.Rect(4, 4);
+  if s is Rect { num(s.w); }
+}
+
+fn main() i32 {
+  imm c Shape = Shape.Circle(3);
+  imm r Shape = Shape.Rect(2, 3);
+  imm d Shape = Shape.Dot;
+  mut mc Shape = Shape.Circle(3);
+  mut mc2 Shape = Shape.Circle(3);
+
+  mut mr Shape = Shape.Rect(4, 5);
+  mut mcc Shape = Shape.Circle(9);
+  mut mrr Shape = Shape.Rect(2, 3);
+  mut mdd Shape = Shape.Dot;
+  mut mdm Shape = Shape.Dot;
+  mut pl Pair = Pair.Left(4);
+  mut pr Pair = Pair.Right(6);
+  mut wc Shape = Shape.Circle(1);
+  mut re Shape = Shape.Circle(3);
+  num(viaImm(&imm c)); num(viaRo(&c)); num(viaMut(&mut mc2));
+  num(viaImm(&imm d)); num(viaRo(&d)); num(viaMut(&mut mdd)); end();
+  num(acrossCall(&c)); end();
+  writes(&mut wc); end();
+  num(joined(&mcc)); num(joined(&mrr)); num(joined(&mdd)); end();
+  num(eliminated(&mut pl)); num(eliminated(&mut pr)); end();
+  num(afterExit(&Pair.Left(7))); end();
+  num(matched(&mut mc)); num(matched(&mut mr)); num(matched(&mut mdm)); end();
+  restored(&mut re); end();
+  0i32;
+}

@@ -1662,11 +1662,29 @@ static void loanShapeReport(Pending *pend, INode *usenode) {
         return;
     }
     if (sum) {
-        snprintf(msg, sizeof(msg),
-            "This %s could change which variant a %s holds while '%s', a reference into one of its variants (made %s, through a path other references share), is still to be used, used again %s: %s. A reference into a variant reads the value as that variant, so a change of variant would have it read the wrong bytes. Narrow a borrow of a local, an 'imm' or 'uni' reference, or the value, or do not use '%s' after this %s.",
-            what, cont, &holder->namesym->namestr, where, used, loanShapeReason(note, cont, sum, reason, sizeof(reason)),
-            &holder->namesym->namestr, what);
-        loanShapeEmit(pend->access, pend->loan, note->why, msg);
+        // Reported where the stale reference is used again, naming the change. A name
+        // flow typing narrowed (the hidden local '-narrow') is named for itself.
+        char change[40];
+        snprintf(change, sizeof(change), "%u:%u", pend->access->linenbr, loanColumn(pend->access));
+        VarDclNode *narrowed = NULL;
+        if (strcmp(&holder->namesym->namestr, "-narrow") == 0 && holder->value && holder->value->tag == CastTag
+            && isNameUseNode(((CastNode *)holder->value)->exp))
+            narrowed = (VarDclNode *)((NameUseNode *)((CastNode *)holder->value)->exp)->dclnode;
+        INode *at = usenode->tag == VarDclTag ? pend->access : usenode;
+        if (narrowed) {
+            RefNode *reftype = (RefNode *)itypeGetTypeDcl(holder->vtype);
+            StructNode *variant = (StructNode *)itypeGetTypeDcl(reftype->vtexp);
+            snprintf(msg, sizeof(msg),
+                "`%s` may no longer be a %s here: the %s at %s could change which variant the %s it refers to holds (it was tested %s, through a path other references share): %s. A name narrowed to a variant reads the value as that variant, so a change of variant would have it read the wrong bytes. Test it again with 'is' after the %s, or reach it through an 'imm' or 'uni' reference.",
+                &narrowed->namesym->namestr, &variant->namesym->namestr, what, change, cont, where,
+                loanShapeReason(note, cont, sum, reason, sizeof(reason)), what);
+        }
+        else
+            snprintf(msg, sizeof(msg),
+                "'%s', a reference into one of the variants of a %s (made %s, through a path other references share), is used here after the %s at %s, which could change which variant the %s holds: %s. A reference into a variant reads the value as that variant, so a change of variant would have it read the wrong bytes. Narrow a borrow of a local, an 'imm' or 'uni' reference, or the value, or do not use '%s' after this %s.",
+                &holder->namesym->namestr, cont, where, what, change, cont, loanShapeReason(note, cont, sum, reason, sizeof(reason)),
+                &holder->namesym->namestr, what);
+        loanShapeEmit(at, pend->loan, note->why, msg);
         return;
     }
     snprintf(msg, sizeof(msg),
