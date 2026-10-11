@@ -12,12 +12,16 @@
 // Cone-flavoured layer over it (Result errors, slices, owned strings) is the
 // 'fs' and 'env' packages; this one stays the C library as C spells it.
 //
-// Windows first: Cone cannot yet choose declarations by target, so this
-// version binds the Windows C runtime (the UCRT, linked through msvcrt.lib,
-// which every Congo and test-suite link already names). Where the UCRT
-// spells a function differently or has it only as a macro, the binding says
-// so beside it. The POSIX functions, which the ISO C library lacks, are the
-// posix package's, which is built on this one.
+// Windows first: this version binds the Windows C runtime (the UCRT, linked
+// through msvcrt.lib, which every Congo and test-suite link already names), and
+// the C library of Linux, glibc, answers the same names. Where the UCRT spells
+// a function differently or has it only as a macro, or a platform's C library
+// does, the binding goes through a function of conestd's cnames.c, which takes
+// each from the C library's own header: this module is C-named, so it gets no
+// prelude and cannot choose a declaration by target (that is core's
+// 'isWindows()' and its kin, and core imports this module, not the other way).
+// The POSIX functions, which the ISO C library lacks, are the posix package's,
+// which is built on this one.
 //
 // This is a C-named module ('@c' on the 'mod' line): each function below binds
 // to the C symbol of its own name. Its object defines nothing: the three stream
@@ -75,39 +79,39 @@ pub extern {
 
 // errno.h: the number of the last error a C library function reported,
 // which C's 'errno' names as a variable. Most functions set it only when
-// they fail, so it is read just after a failure, before any other call. The
-// UCRT's 'errno' is a macro calling '_errno', which answers where this
-// thread's number is kept; 'errno()' is that expansion, read with
-// '*libc.errno()' and set with '*libc.errno() = 0i32'. The ISO C names
-// follow; the POSIX names, more of them, are posix's.
-extern fn _errno() *i32;
-pub fn errno() *i32 inline {_errno();}
+// they fail, so it is read just after a failure, before any other call. C's
+// 'errno' is a macro or a call that answers where this thread's number is
+// kept (the UCRT's '_errno', glibc's '__errno_location'); 'errno()' is that
+// expansion, from cnames.c, read with '*libc.errno()' and set with
+// '*libc.errno() = 0i32'. The ISO C names follow, with the UCRT's numbers
+// (glibc's EILSEQ is 84); the POSIX names, more of them, are posix's.
+extern fn cone_errno() *i32;
+pub fn errno() *i32 inline {cone_errno();}
 pub const EDOM = 33i32;
 pub const ERANGE = 34i32;
 pub const EILSEQ = 42i32;
 
 // time.h: the time now, in seconds since 1970 (UTC), also stored where 't'
-// points unless it is null. The UCRT's 'time' is an inline function calling
-// '_time64', whose 64-bit 'time_t' this binds.
+// points unless it is null. 'time_t' is 64 bits; cnames.c's 'cone_time' is C's
+// 'time' (the UCRT's is an inline function calling '_time64').
 pub extern {
-  fn @c("_time64") time(t *i64) i64;
+  fn @c("cone_time") time(t *i64) i64;
 }
 
 // time.h (C11): the calendar time now, finer than whole seconds. For 'base'
 // TIME_UTC, the one base ISO C defines, it stores the seconds since 1970
 // (UTC) and the nanoseconds past them in 'ts', and answers TIME_UTC; 0 when
-// it fails. The UCRT's 'timespec_get' is an inline function calling
-// '_timespec64_get', whose 64-bit 'struct timespec' this binds; it steps in
-// the system clock's 100 ns. 'Timespec' is 'struct _timespec64', measured
-// against the runtime's header with cl.exe (x64): 16 bytes, 'tv_sec' at 0
-// and 'tv_nsec' (a C 'long') at 8.
+// it fails. cnames.c's 'cone_timespec_get' is C's 'timespec_get' (the UCRT's
+// is an inline function calling '_timespec64_get'; it steps in the system
+// clock's 100 ns) with the result in this layout, whatever the platform's
+// 'struct timespec': 16 bytes, 'tv_sec' at 0 and 'tv_nsec' at 8.
 pub struct Timespec {
   pub tv_sec i64;
   pub tv_nsec i32;
 }
 pub const TIME_UTC = 1i32;
 pub extern {
-  fn @c("_timespec64_get") timespec_get(ts *Timespec, base i32) i32;
+  fn @c("cone_timespec_get") timespec_get(ts *Timespec, base i32) i32;
 }
 
 // string.h: the text of an error number, "No such file or directory" for
@@ -117,18 +121,21 @@ pub extern {
 }
 
 // stdio.h: the standard streams. C's 'stdin', 'stdout' and 'stderr' are
-// macros, which the UCRT expands to a call of '__acrt_iob_func' with the
-// stream's number; these three functions are that expansion.
-extern fn __acrt_iob_func(index u32) *FILE;
-pub fn stdin() *FILE inline {__acrt_iob_func(0u32);}
-pub fn stdout() *FILE inline {__acrt_iob_func(1u32);}
-pub fn stderr() *FILE inline {__acrt_iob_func(2u32);}
+// macros or variables, differing by C library (the UCRT expands them to a call
+// of '__acrt_iob_func' with the stream's number, glibc has variables of the
+// names); these three functions answer them through cnames.c.
+extern fn cone_stdin() *FILE;
+extern fn cone_stdout() *FILE;
+extern fn cone_stderr() *FILE;
+pub fn stdin() *FILE inline {cone_stdin();}
+pub fn stdout() *FILE inline {cone_stdout();}
+pub fn stderr() *FILE inline {cone_stderr();}
 
 // locale.h: the program's locale, which starts as "C". 'setlocale' sets one
 // category, or all of them, to the locale named, and answers that locale's
 // name, or null when it cannot set it; a null name only asks, answering the
 // name in force. The answer is the C library's, good until the next call.
-// The categories are the UCRT's numbers.
+// The categories are the UCRT's numbers (glibc's differ: LC_ALL is 6).
 //
 // On Windows the narrow file functions ('fopen', 'remove', and posix's
 // 'mkdir' and folder listing) read a name in the locale's code page, the

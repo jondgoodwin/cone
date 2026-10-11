@@ -77,26 +77,23 @@ Only the `llvm`, `cmake` and `third-party` folders of the source are needed.
 
 ## Building (Linux and WSL in Windows)
 
-To build on Linux:
+To build on Linux (x86-64; Ubuntu 24.04 is the one measured), install LLVM 23.1
+with the X86, WebAssembly and SPIR-V targets from [apt.llvm.org][aptllvm] (its
+`llvm.sh 23` adds the repository, then `sudo apt-get install llvm-23-dev`), and
+`cmake`, `ninja-build` and `build-essential`:
 
-	sudo apt-get install llvm-23-dev
-	cmake .
-	make
+	cmake -S . -B build/x64-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DLLVM_DIR=/usr/lib/llvm-23/lib/cmake/llvm
+	cmake --build build/x64-release
+	python3 test/run.py --conec build/x64-release/conec
 
-Note: Sometimes, it is necessary to custom-build LLVM, e.g.:
-
-	mkdir llvm
-	cd llvm
-	svn co http://llvm.org/svn/llvm-project/llvm/trunk llvm-src
-	cd llvm-src/tools
-	svn co http://llvm.org/svn/llvm-project/cfe/trunk clang
-	svn co http://llvm.org/svn/llvm-project/lld/trunk lld
-	cd ../..
-	mkdir llvm-build
-	cd llvm-build
-	CC=clang CXX=clang++ cmake -G "Unix Makefiles" -DLLVM_BUILD_LLVM_DYLIB=ON -DCMAKE_INSTALL_PREFIX=/llvm/wasm -DLLVM_EXPERIMENTAL_TARGETS_TO_BUILD=WebAssembly /llvm/llvm-src
-	make
-	make install
+A plain program (no actors or threads) compiles, links and runs; what is built
+on threads and futexes is still Windows only. `conec` makes position-independent
+code by default on Linux, as the usual `cc` links position-independent
+executables (`--nopic` opts out). Linking LLVM's static components takes about
+850 MB of memory; on a small machine, changing
+`target_link_libraries(conec ${llvm_libs})` in `CMakeLists.txt` to
+`target_link_libraries(conec LLVM m)` links the shared `libLLVM.so` instead
+(about 100 MB), a change to keep local.
 
 ## Building (Mac OS)
 
@@ -128,6 +125,7 @@ See LICENSE and COPYRIGHT for details. The two Phacelle noise files in
 [acorn]: https://github.com/jondgoodwin/acornvm
 [acornref]: http://web3d.jondgoodwin.com/acorn
 [llvm]: https://llvm.org/
+[aptllvm]: https://apt.llvm.org/
 
 [hello]: http://cone.jondgoodwin.com/play/index.html?gist=f55a8caa2605a11223437167730c53af
 [pi]: http://cone.jondgoodwin.com/play/index.html?gist=4510655502edcde9d50d185cfd7f3c2e
