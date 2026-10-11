@@ -104,14 +104,14 @@ fn serveThread(a ServerArgs) u64 {
   mut cfg = httpconn.Config.make();
   cfg.acceptDepth = 64u32;
   mut drv = httpconn.Driver.make(cfg, pool);
-  imm plain = drv.listen(&mut lp, SocketAddr.localhost(0u16), httpconn.Sink.Here[1u64]);
+  imm plain = drv.listen(&mut lp, SocketAddr.localhost(0u16), httpconn.Sink.Here(1u64));
   a.portTx.send(portOf(&mut drv, &lp, plain));
   imm serverPem = certs("server.pem");
   imm serverKey = certs("server.key");
   match tls.Server.make(tls.ServerConfig.make(&serverPem, &serverKey)) {
     case imm s Ok {
       imm secure = drv.listenWith(&mut lp, SocketAddr.localhost(0u16), new So[TlsMaker](new TlsMaker(s, pool)),
-        httpconn.Sink.Here[1u64]);
+        httpconn.Sink.Here(1u64));
       a.portTx.send(portOf(&mut drv, &lp, secure));
     }
     case imm e Error {
@@ -127,7 +127,7 @@ fn serveThread(a ServerArgs) u64 {
     mut k = 0usize;
     while k < evs.len() {
       imm e = &mut evs[k];
-      if e.kind == httpconn.EventKind.Request[] {
+      if e.kind == httpconn.EventKind.Request {
         drv.respond(e.req, ResponseHead.make(200u16), BodyLength.sized(64u64));
         mut b = pool.mustTake(64usize);
         b.setLen(64usize);
@@ -169,7 +169,7 @@ fn gets(cl &mut Client, lp &mut Loop, base &str, n u64, inFlight u64, cold bool)
   while run.done + run.bad < n {
     while asked < n and asked - run.done - run.bad < inFlight {
       if cold {cl.closeIdle(lp);}
-      cl.get(lp, base, Sink.Here[1u64]);
+      cl.get(lp, base, Sink.Here(1u64));
       asked = asked + 1u64;
     }
     cl.poll(lp, forever(), &mut out);
@@ -177,8 +177,8 @@ fn gets(cl &mut Client, lp &mut Loop, base &str, n u64, inFlight u64, cold bool)
     while k < out.len() {
       imm e = &mut out[k];
       k = k + 1usize;
-      if e.kind == EventKind.Data[] {cl.release(e.id, e.buf.len());}
-      elif e.kind == EventKind.Done[] {
+      if e.kind == EventKind.Data {cl.release(e.id, e.buf.len());}
+      elif e.kind == EventKind.Done {
         run.done = run.done + 1u64;
         run.lat.record((e.timing.ended - e.timing.queued).nanos());
       } elif e.isTerminal() {
@@ -255,7 +255,7 @@ fn freshClients(lp &mut Loop, pool Pool, base &str, n u64) Run {
 fn sameLoop(pool Pool, n u64) Run {
   mut lp = Loop.mustMake();
   mut sdrv = httpconn.Driver.make(httpconn.Config.make(), pool);
-  imm l = sdrv.listen(&mut lp, SocketAddr.localhost(0u16), httpconn.Sink.Here[1u64]);
+  imm l = sdrv.listen(&mut lp, SocketAddr.localhost(0u16), httpconn.Sink.Here(1u64));
   imm port = portOf(&mut sdrv, &lp, l);
   mut base = String.from("http://127.0.0.1:");
   base.appendUInt(u64.from(port));
@@ -270,7 +270,7 @@ fn sameLoop(pool Pool, n u64) Run {
   mut total = 0u64;
   while total < n + 100u64 {
     if not busy {
-      cl.get(&mut lp, base.view(), Sink.Here[1u64]);
+      cl.get(&mut lp, base.view(), Sink.Here(1u64));
       busy = true;
     }
     cl.pump(&mut lp, &mut out);
@@ -291,7 +291,7 @@ fn sameLoop(pool Pool, n u64) Run {
     k = 0usize;
     while k < sevs.len() {
       imm e = &mut sevs[k];
-      if e.kind == httpconn.EventKind.Request[] {
+      if e.kind == httpconn.EventKind.Request {
         sdrv.respond(e.req, ResponseHead.make(200u16), BodyLength.sized(64u64));
         mut b = pool.mustTake(64usize);
         b.setLen(64usize);
@@ -306,14 +306,14 @@ fn sameLoop(pool Pool, n u64) Run {
     while k < out.len() {
       imm e = &mut out[k];
       k = k + 1usize;
-      if e.kind == EventKind.Data[] {cl.release(e.id, e.buf.len());}
+      if e.kind == EventKind.Data {cl.release(e.id, e.buf.len());}
       elif e.isTerminal() {
         busy = false;
         total = total + 1u64;
         // The first hundred warm it
         if total == 100u64 {t0 = Instant.now();}
         if total > 100u64 {
-          if e.kind == EventKind.Done[] {
+          if e.kind == EventKind.Done {
             run.done = run.done + 1u64;
             run.lat.record((e.timing.ended - e.timing.queued).nanos());
           } else {

@@ -46,7 +46,7 @@
 //   s.len()  s.view()  s.slice(start, end)              (SHARED BYTES)
 //
 //   Chain.make(limit)     an empty chain holding at most limit bytes (CHAINS)
-//   c.push(buf)           None once its bytes are in; Some[buf] back,
+//   c.push(buf)           None once its bytes are in; Some(buf) back,
 //                         refused, past the limit
 //   c.len()  c.isEmpty()  c.segments()  c.bound()  c.firstLen()
 //   c.find(pat, from)     the offset of pat, across segment boundaries
@@ -217,16 +217,16 @@ pub fn osBytes() u64 {liveBytes.load();}
 fn osAlloc(size usize) *u8 {
   imm b = VirtualAlloc(null, size, memCommit | memReserve, pageReadWrite);
   if b as usize != 0usize {
-    liveBlocks.addOrdered(1u64, MemOrder.Relaxed[]);
-    liveBytes.addOrdered(u64.from(size), MemOrder.Relaxed[]);
+    liveBlocks.addOrdered(1u64, MemOrder.Relaxed);
+    liveBytes.addOrdered(u64.from(size), MemOrder.Relaxed);
   }
   b;
 }
 
 fn osFree(block *u8, size usize) {
   VirtualFree(block, 0usize, memRelease);
-  liveBlocks.subOrdered(1u64, MemOrder.Relaxed[]);
-  liveBytes.subOrdered(u64.from(size), MemOrder.Relaxed[]);
+  liveBlocks.subOrdered(1u64, MemOrder.Relaxed);
+  liveBytes.subOrdered(u64.from(size), MemOrder.Relaxed);
 }
 
 // ---------------------------------------------------------------------------
@@ -468,16 +468,16 @@ pub struct Pool {
     b, room = (&mut *state).lend(c, cap, &mut trim);
     freeList(trim);
     if !room {
-      return None[IoBuf][];
+      return None;
     }
     if b as usize == 0usize {
       b = osAlloc(cap);
       if b as usize == 0usize {
         (&mut *state).unlend(cap);
-        return None[IoBuf][];
+        return None;
       }
     }
-    Some[IoBuf][new IoBuf(b, 0usize, cap, c, Some[Shared][state])];
+    Some[IoBuf](new IoBuf(b, 0usize, cap, c, Some[Shared](state)));
   }
 
   // A buffer of at least size bytes, empty; a panic, reported at the
@@ -520,7 +520,7 @@ pub struct IoBuf is Move, Sendable {
   pool Option[Shared];
 
   // A buffer with no block: capacity 0, from no pool
-  pub fn empty() IoBuf {new IoBuf(null, 0usize, 0usize, 0u32, None[Shared][]);}
+  pub fn empty() IoBuf {new IoBuf(null, 0usize, 0usize, 0u32, None);}
 
   pub fn len(self &) usize {used;}
   pub fn capacity(self &) usize {cap;}
@@ -638,15 +638,15 @@ pub struct Chain is Move, Sendable {
   }
 
   // Add a filled buffer's bytes after those held: None once it is in (an
-  // empty one is dropped, back to its pool), or Some[buf] back, refused,
+  // empty one is dropped, back to its pool), or Some(buf) back, refused,
   // when its bytes would take the chain past its bound
   pub fn push(self &mut, buf IoBuf) Option[IoBuf] {
     imm n = buf.len();
     if total + n > limit {
-      return Some[IoBuf][buf];
+      return Some[IoBuf](buf);
     }
     if n == 0usize {
-      return None[IoBuf][];
+      return None;
     }
     if count == slots {
       self.grow();
@@ -654,7 +654,7 @@ pub struct Chain is Move, Sendable {
     mem.writeRaw[IoBuf](self.at(count), buf);
     count = count + 1usize;
     total = total + n;
-    None[IoBuf][];
+    None;
   }
 
   // Twice the slots, the segments moved to the front in order
@@ -689,8 +689,8 @@ pub struct Chain is Move, Sendable {
 
   // The byte at offset i, or None past the end
   pub fn peek(self &, i usize) Option[u8] {
-    if i >= total {return None[u8][];}
-    Some[u8][self.byteAt(i)];
+    if i >= total {return None;}
+    Some[u8](self.byteAt(i));
   }
 
   // Whether pat is there at segment k, offset j onward
@@ -729,8 +729,8 @@ pub struct Chain is Move, Sendable {
   // The offset of the first pat at or after offset 'from', across segment
   // boundaries, or None
   pub fn find(self &, pat &Array[u8], from usize = 0usize) Option[usize] {
-    if from + pat.len > total {return None[usize][];}
-    if pat.len == 0usize {return Some[usize][from];}
+    if from + pat.len > total {return None;}
+    if pat.len == 0usize {return Some[usize](from);}
     imm first = pat[0usize];
     imm last = total - pat.len;    // the last offset pat may start at
     mut base = 0usize;             // the offset segment k starts at
@@ -739,16 +739,16 @@ pub struct Chain is Move, Sendable {
       imm s = self.seg(k);
       mut j = if from > base {from - base;} else {0usize;};
       while j < s.len {
-        if base + j > last {return None[usize][];}
+        if base + j > last {return None;}
         if s[j] == first and self.matchFrom(k, j, pat) {
-          return Some[usize][base + j];
+          return Some[usize](base + j);
         }
         j = j + 1usize;
       }
       base = base + s.len;
       k = k + 1usize;
     }
-    None[usize][];
+    None;
   }
 
   // The offset of the first byte b at or after offset 'from', or None
@@ -759,13 +759,13 @@ pub struct Chain is Move, Sendable {
       imm s = self.seg(k);
       mut j = if from > base {from - base;} else {0usize;};
       while j < s.len {
-        if s[j] == b {return Some[usize][base + j];}
+        if s[j] == b {return Some[usize](base + j);}
         j = j + 1usize;
       }
       base = base + s.len;
       k = k + 1usize;
     }
-    None[usize][];
+    None;
   }
 
   // Copy unconsumed bytes from offset 'from' into dest, as many as fit and
@@ -795,19 +795,19 @@ pub struct Chain is Move, Sendable {
   // one segment; None when they cross a boundary (copy them out instead) or
   // run past the end
   pub fn contiguous(self &, from usize, n usize) Option[&Array[u8]] {
-    if from + n > total {return None[&Array[u8]][];}
+    if from + n > total {return None;}
     mut at = from;
     mut k = 0usize;
     while k < count {
       imm s = self.seg(k);
       if at < s.len or (n == 0usize and at == s.len) {
-        if at + n > s.len {return None[&Array[u8]][];}
-        return Some[&Array[u8]][&s[at ..< at + n]];
+        if at + n > s.len {return None;}
+        return Some[&Array[u8]](&s[at ..< at + n]);
       }
       at = at - s.len;
       k = k + 1usize;
     }
-    None[&Array[u8]][];
+    None;
   }
 
   // Consume the first n bytes: every segment wholly consumed dies, its block
@@ -841,7 +841,7 @@ pub struct Chain is Move, Sendable {
   // Move the first segment out whole, its unconsumed bytes moved to its
   // start, or None when the chain is empty
   pub fn popFront(self &mut) Option[IoBuf] {
-    if count == 0usize {return None[IoBuf][];}
+    if count == 0usize {return None;}
     mut b = mem.readRaw[IoBuf](self.at(0usize));
     head = (head + 1usize) & (slots - 1usize);
     count = count - 1usize;
@@ -852,7 +852,7 @@ pub struct Chain is Move, Sendable {
       skip = 0usize;
     }
     total = total - b.used;
-    Some[IoBuf][b];
+    Some[IoBuf](b);
   }
 
   // Its death: every segment it still holds, back to its pool

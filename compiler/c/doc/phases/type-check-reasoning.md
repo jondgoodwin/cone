@@ -525,7 +525,7 @@ brand (`lifeBindClose`), and the result type is the declared one with each
 name replaced by its brand (`lifeBrandSubst`): a name no argument bound is
 minted there, fresh for the call site. `typeLitStructCheck` binds a struct's
 own names the same way from its fields' values, and from the use where it
-names them (`None[&'=a T][]`), minting a name no field gives (`DynArena`'s
+names them (`None[&'=a T]`), minting a name no field gives (`DynArena`'s
 phantom `'=a`). A field read substitutes the struct's names by the brands its
 receiver's type gives (`lifeBrandField`). The injected borrows of a receiver
 keep the value's type use, not its declaration, so they keep its brands

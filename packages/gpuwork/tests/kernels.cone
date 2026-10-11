@@ -157,7 +157,7 @@ fn windowLine() u32 { srcLine() - 4u32; }
 fn @compute(64) compact(inv Invocation, input &Array[u32], count &mut Array[Atomic[u32]], out &mut Array[u32]) {
   imm i = usize.from(inv.globalId[0]);
   if i < input.len and input[i] % 3u32 == 0u32 {
-    imm slot = count[0usize].addOrdered(1u32, MemOrder.Relaxed[]);
+    imm slot = count[0usize].addOrdered(1u32, MemOrder.Relaxed);
     out[usize.from(slot)] = input[i];
   }
 }
@@ -168,9 +168,9 @@ fn @compute(64) extremes(inv Invocation, input &Array[i32], acc &mut Array[Atomi
   imm i = usize.from(inv.globalId[0]);
   if i < input.len {
     imm v = input[i];
-    acc[0usize].minOrdered(v, MemOrder.Relaxed[]);
-    acc[1usize].maxOrdered(v, MemOrder.Relaxed[]);
-    acc[2usize].addOrdered(v, MemOrder.Relaxed[]);
+    acc[0usize].minOrdered(v, MemOrder.Relaxed);
+    acc[1usize].maxOrdered(v, MemOrder.Relaxed);
+    acc[2usize].addOrdered(v, MemOrder.Relaxed);
   }
 }
 
@@ -2663,7 +2663,7 @@ fn runOne(device &mut Device, works &mut Works, kernel &Kernel, n usize, groups 
   imm out = job.give(zeroed(device, n));
   job.dispatch(device, kernel, &[out], groups);
   job.readback(device, out);
-  imm ticket = works.submit(device, job, Target.Here[0u64]);
+  imm ticket = works.submit(device, job, Target.Here(0u64));
   works.waitFor(device, ticket, done);
 }
 
@@ -2843,7 +2843,7 @@ fn main() i32 {
     job.dispatch(&mut device, &panicsK, &[pOut], 1u32);
     imm sBack = job.readback(&mut device, sOut);
     imm cBack = job.readback(&mut device, cOut);
-    imm ticket = works.submit(&mut device, job, Target.Here[0u64]);
+    imm ticket = works.submit(&mut device, job, Target.Here(0u64));
     works.waitFor(&mut device, ticket, &mut got);
     require(got.len() == 1usize, "the three-dispatch job's Completion");
     imm c = got[0usize];
@@ -2887,7 +2887,7 @@ fn main() i32 {
     imm b = job.give(zeroed(&mut device, 64usize));
     job.dispatch(&mut device, &oobK, &[a], 1u32);
     job.dispatch(&mut device, &oobK, &[b], 1u32);
-    imm ticket = works.submit(&mut device, job, Target.Here[0u64]);
+    imm ticket = works.submit(&mut device, job, Target.Here(0u64));
     works.waitFor(&mut device, ticket, &mut got);
     require(got.len() == 1usize and got[0usize].failures.len() == 2usize, "two failures, one a dispatch");
     expect(got[0usize].failures[0usize].count == 1u32 and got[0usize].failures[1usize].count == 1u32
@@ -2902,7 +2902,7 @@ fn main() i32 {
     imm a = job.give(upload(&mut device, &[bits(4.0), bits(5.0)]));
     imm o = job.give(zeroed(&mut device, 2usize));
     job.dispatch(&mut device, &scaleK, &[s, a, o], 1u32);
-    imm ticket = works.submit(&mut device, job, Target.Here[0u64]);
+    imm ticket = works.submit(&mut device, job, Target.Here(0u64));
     works.waitFor(&mut device, ticket, &mut got);
     require(got.len() == 1usize, "the clean job's Completion");
     expect(got[0usize].ok and got[0usize].failures.len() == 0usize, "ok, no failures");
@@ -2917,7 +2917,7 @@ fn main() i32 {
     mut job = Job.make(&mut device);
     imm o = job.give(zeroed(&mut device, 64usize));
     job.dispatch(&mut device, &oobK, &[o], 1u32);
-    works.submit(&mut device, job, onLoop(&mut lp, iocore.Target.Here[71u64], 7u64));
+    works.submit(&mut device, job, onLoop(&mut lp, iocore.Target.Here(71u64), 7u64));
     imm limit = Instant.now() + Duration.fromSeconds(5i64);
     while io.len() < 1usize and Instant.now() < limit { lp.poll(limit, &mut io); }
     require(io.len() == 1usize, "the failing Loop job's answer");
@@ -2936,7 +2936,7 @@ fn main() i32 {
     imm a = job.give(upload(&mut device, &[bits(4.0), bits(5.0)]));
     imm o = job.give(zeroed(&mut device, 2usize));
     job.dispatch(&mut device, &scaleK, &[s, a, o], 1u32);
-    works.submit(&mut device, job, onLoop(&mut lp, iocore.Target.Here[72u64], 8u64));
+    works.submit(&mut device, job, onLoop(&mut lp, iocore.Target.Here(72u64), 8u64));
     imm limit = Instant.now() + Duration.fromSeconds(5i64);
     while io.len() < 1usize and Instant.now() < limit { lp.poll(limit, &mut io); }
     require(io.len() == 1usize, "the clean Loop job's answer");
@@ -2971,7 +2971,7 @@ fn main() i32 {
     job.dispatch(&mut device, &compactK, &[inS, countS, outS], 16u32);
     imm countB = job.readback(&mut device, countS);
     imm outB = job.readback(&mut device, outS);
-    imm ticket = works.submit(&mut device, job, Target.Here[0u64]);
+    imm ticket = works.submit(&mut device, job, Target.Here(0u64));
     works.waitFor(&mut device, ticket, &mut got);
     require(got.len() == 1usize and got[0usize].ok, "the compaction job, ok");
     imm gpuCount = *got[0usize].words(countB)[0usize];

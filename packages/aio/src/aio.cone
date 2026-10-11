@@ -389,9 +389,9 @@ struct OpJob[R] {
   fn run(self &mut, lp &mut Loop) {
     mut rp = new actors.Reply();
     rp <=> reply;
-    mut o Op = Op.RecvReady[Handle.none()];
+    mut o Op = Op.RecvReady(Handle.none());
     o <=> op;
-    lp.submit(o, Target.Hook[0u64, Sink.make(waiting[R](rp, answer, site))]);
+    lp.submit(o, Target.Hook(0u64, Sink.make(waiting[R](rp, answer, site))));
   }
 }
 
@@ -431,23 +431,23 @@ fn readAnswer(c &mut Completion) Result[IoBuf, IoError] {
   if c.status == diag.outcomeDone {
     mut b = IoBuf.empty();
     b <=> c.buf;
-    return Ok[IoBuf, IoError][b];
+    return Ok[IoBuf, IoError](b);
   }
-  Error[IoBuf, IoError][new IoError(c.code)];
+  Error[IoBuf, IoError](new IoError(c.code));
 }
 
 fn writeAnswer(c &mut Completion) Result[usize, IoError] {
   if c.status == diag.outcomeDone {
-    return Ok[usize, IoError][c.n];
+    return Ok[usize, IoError](c.n);
   }
-  Error[usize, IoError][new IoError(c.code)];
+  Error[usize, IoError](new IoError(c.code));
 }
 
 fn socketAnswer(c &mut Completion) Result[Socket, IoError] {
   if c.status == diag.outcomeDone {
-    return Ok[Socket, IoError][new Socket(c.handle)];
+    return Ok[Socket, IoError](new Socket(c.handle));
   }
-  Error[Socket, IoError][new IoError(c.code)];
+  Error[Socket, IoError](new IoError(c.code));
 }
 
 fn opAwaitable[R](op Op, answer &fn(c &mut Completion) R, file &Array[u8], line u32) actors.Awaitable[R] {
@@ -463,8 +463,8 @@ struct ListenJob {
     mut rp = new actors.Reply();
     rp <=> reply;
     match lp.listen(addr) {
-      case imm ok Ok {actors.answerNow[Result[Socket, IoError]](rp, Ok[Socket, IoError][new Socket(ok)]);}
-      case imm e Error {actors.answerNow[Result[Socket, IoError]](rp, Error[Socket, IoError][e]);}
+      case imm ok Ok {actors.answerNow[Result[Socket, IoError]](rp, Ok[Socket, IoError](new Socket(ok)));}
+      case imm e Error {actors.answerNow[Result[Socket, IoError]](rp, Error[Socket, IoError](e));}
     }
   }
 }
@@ -511,19 +511,19 @@ pub struct Socket is Move {
 
   // The next connection on this listening socket
   pub fn accept(self &, file &Array[u8] = srcFile(), line u32 = srcLine()) actors.Awaitable[Result[Socket, IoError]] {
-    opAwaitable[Result[Socket, IoError]](Op.Accept[h], &socketAnswer, file, line);
+    opAwaitable[Result[Socket, IoError]](Op.Accept(h), &socketAnswer, file, line);
   }
 
   // What arrives, appended to buf, which is moved in and comes back in the
   // answer; at the clean end of the stream, buf comes back as it was. A buf
   // with no room fails (ERROR_INSUFFICIENT_BUFFER, 122)
   pub fn read(self &, buf IoBuf, file &Array[u8] = srcFile(), line u32 = srcLine()) actors.Awaitable[Result[IoBuf, IoError]] {
-    opAwaitable[Result[IoBuf, IoError]](Op.Recv[h, buf], &readAnswer, file, line);
+    opAwaitable[Result[IoBuf, IoError]](Op.Recv(h, buf), &readAnswer, file, line);
   }
 
   // All of buf, which is moved in and goes home once sent: the count
   pub fn write(self &, buf IoBuf, file &Array[u8] = srcFile(), line u32 = srcLine()) actors.Awaitable[Result[usize, IoError]] {
-    opAwaitable[Result[usize, IoError]](Op.Send[h, buf], &writeAnswer, file, line);
+    opAwaitable[Result[usize, IoError]](Op.Send(h, buf), &writeAnswer, file, line);
   }
 
   // The address the socket is bound to: a listening socket's port, where the
@@ -547,5 +547,5 @@ pub fn listen(addr SocketAddr) actors.Awaitable[Result[Socket, IoError]] {
 
 // A TCP socket connected to addr
 pub fn connect(addr SocketAddr, file &Array[u8] = srcFile(), line u32 = srcLine()) actors.Awaitable[Result[Socket, IoError]] {
-  opAwaitable[Result[Socket, IoError]](Op.Connect[addr], &socketAnswer, file, line);
+  opAwaitable[Result[Socket, IoError]](Op.Connect(addr), &socketAnswer, file, line);
 }

@@ -89,7 +89,7 @@ struct Fetch {
   timing Timing;
 
   fn methodName(self &) &str {
-    if method == Method.Other[] {methodText.view();} else {methodToken(method);};
+    if method == Method.Other {methodText.view();} else {methodToken(method);};
   }
 }
 
@@ -157,12 +157,12 @@ pub struct Client {
     c.conn.protocol.idleTimeout = c.idleTimeout;
     mut tc = tls.ClientConfig.make();
     tc <=> c.tlsConfig;
-    mut tlsc Option[tls.Client] = None[tls.Client][];
+    mut tlsc Option[tls.Client] = None;
     mut tf = Failure.none();
     match tls.Client.make(tc) {
-      case imm r Ok {tlsc = Some[tls.Client][r];}
+      case imm r Ok {tlsc = Some[tls.Client](r);}
       case imm e Error {
-        tf = Failure.make(Stage.Tls[], e.osError, ErrorKind.Unsupported[], e.message().view());
+        tf = Failure.make(Stage.Tls, e.osError, ErrorKind.Unsupported, e.message().view());
       }
     }
     imm d = httpconn.Driver.make(c.conn, pool);
@@ -234,10 +234,10 @@ pub struct Client {
   }
 
   fn blankFetch(self &, next u32) Fetch {
-    new Fetch(gen: 1u32, state: fFree, nextFree: next, seq: 0u64, intent: Intent.Visible[], score: 0i64,
-      sink: Sink.Here[0u64], method: Method.Get[], methodText: String.empty(), url: Url.empty(),
+    new Fetch(gen: 1u32, state: fFree, nextFree: next, seq: 0u64, intent: Intent.Visible, score: 0i64,
+      sink: Sink.Here(0u64), method: Method.Get, methodText: String.empty(), url: Url.empty(),
       headers: Headers.empty(), body: String.empty(), origin: noEntry, conn: noEntry,
-      req: httpconn.ReqId.none(), deadline: forever(), group: None[CancelGroup][], watch: OpId.none(),
+      req: httpconn.ReqId.none(), deadline: forever(), group: None, watch: OpId.none(),
       ending: endNone, delivered: false, following: false, cutting: false, location: String.empty(),
       redirectStatus: 0u16, drained: 0usize, held: 0usize, sent: 0usize, retries: 0u32,
       maxRedirects: 0u32, heldEvents: 0u32, timing: Timing.zero());
@@ -286,12 +286,12 @@ pub struct Client {
     imm f = self.fetchAt(i) as &mut Fetch;
     f.state = fFree;
     f.gen = nextGen(f.gen);
-    f.sink = Sink.Here[0u64];
+    f.sink = Sink.Here(0u64);
     f.methodText = String.empty();
     f.url = Url.empty();
     f.headers = Headers.empty();
     f.body = String.empty();
-    f.group = None[CancelGroup][];
+    f.group = None;
     f.location = String.empty();
     f.nextFree = freeFetch;
     freeFetch = i;
@@ -373,7 +373,7 @@ pub struct Client {
   pub fn send(self &mut, lp &mut Loop, req Request, sink Sink, file &Array[u8] = srcFile(), line u32 = srcLine()) FetchId {
     mut r = req;
     if not isToken(r.methodName()) {panic("httpclient: the request's method is not a token", file, line);}
-    if r.method == Method.Connect[] {panic("httpclient: CONNECT is not supported", file, line);}
+    if r.method == Method.Connect {panic("httpclient: CONNECT is not supported", file, line);}
     if r.headers.has("Host") {panic("httpclient: Host is written from the request's URL, not its fields", file, line);}
     if r.headers.has("Content-Length") or r.headers.has("Transfer-Encoding") {
       panic("httpclient: framing fields are the client's to write, from the request's body", file, line);
@@ -406,15 +406,15 @@ pub struct Client {
     imm id = self.idOf(fi);
     // Answered at once: a bad URL, a full queue, a cancelled group, a past deadline
     if not r.urlError.isNone() {
-      self.refuse(lp, fi, Stage.Url[], r.urlError.message().view());
+      self.refuse(lp, fi, Stage.Url, r.urlError.message().view());
       return id;
     }
     if not f.url.isHttp() {
-      self.refuse(lp, fi, Stage.Url[], "only http and https URLs are fetched");
+      self.refuse(lp, fi, Stage.Url, "only http and https URLs are fetched");
       return id;
     }
     if queuedN >= cfg.maxQueued {
-      self.refuse(lp, fi, Stage.Queue[], "maxQueued requests already wait for a connection");
+      self.refuse(lp, fi, Stage.Queue, "maxQueued requests already wait for a connection");
       return id;
     }
     mut dl = f.deadline;
@@ -441,10 +441,10 @@ pub struct Client {
     match g {
       case imm gv Some {
         imm at = if dl < forever() {dl;} else {now + Duration.fromHours(87600i64);};
-        f.watch = lp.afterIn(at, Target.Here[wt], gv);
+        f.watch = lp.afterIn(at, Target.Here(wt), gv);
       }
       else {
-        if dl < forever() {f.watch = lp.after(dl, Target.Here[wt]);}
+        if dl < forever() {f.watch = lp.after(dl, Target.Here(wt));}
       }
     }
     self.enqueue(fi);
@@ -453,7 +453,7 @@ pub struct Client {
 
   // A fetch that cannot be made is answered Failed at once
   fn refuse(self &mut, lp &mut Loop, fi u32, stage Stage, detail &str) {
-    mut fl = Failure.make(stage, 0u32, if stage == Stage.Queue[] {ErrorKind.TooLarge[];} else {ErrorKind.Malformed[];}, detail);
+    mut fl = Failure.make(stage, 0u32, if stage == Stage.Queue {ErrorKind.TooLarge;} else {ErrorKind.Malformed;}, detail);
     fl.unsent = true;
     fl.error.noResponse = true;
     st.refused = st.refused + 1u64;
@@ -569,26 +569,26 @@ pub struct Client {
       f.held = 0usize;
     }
     f.timing.ended = Instant.now();
-    mut k EventKind = EventKind.Done[];
+    mut k EventKind = EventKind.Done;
     mut failure = fl;
     if how == endDone {
       st.done = st.done + 1u64;
     } elif how == endFailed or how == endLimit {
       st.failed = st.failed + 1u64;
-      k = EventKind.Failed[];
+      k = EventKind.Failed;
       if how == endLimit {
-        failure = Failure.make(Stage.Limit[], 0u32, ErrorKind.TooLarge[], "the body is longer than the limit it was fetched with");
+        failure = Failure.make(Stage.Limit, 0u32, ErrorKind.TooLarge, "the body is longer than the limit it was fetched with");
       }
     } elif how == endCancelled {
       st.cancelled = st.cancelled + 1u64;
-      k = EventKind.Cancelled[];
+      k = EventKind.Cancelled;
     } else {
       st.timedOut = st.timedOut + 1u64;
-      k = EventKind.TimedOut[];
+      k = EventKind.TimedOut;
     }
     mut ev = Event.make(k, f.sink.token, self.idOf(fi));
     ev.timing = f.timing;
-    if k == EventKind.Failed[] {
+    if k == EventKind.Failed {
       failure.attempts = f.timing.attempts;
       ev.failure = failure;
     }
@@ -602,7 +602,7 @@ pub struct Client {
     imm f = self.fetchAt(fi) as &Fetch;
     if f.delivered or f.ending != endNone or f.retries >= cfg.maxRetries {return false;}
     imm s = fl.stage;
-    if s != Stage.Read[] and s != Stage.Write[] and s != Stage.Closed[] {return false;}
+    if s != Stage.Read and s != Stage.Write and s != Stage.Closed {return false;}
     if fl.unsent {return true;}
     fl.error.noResponse and isIdempotent(f.method);
   }
@@ -624,7 +624,7 @@ pub struct Client {
       self.hold(fi, credit, e);
       return;
     }
-    mut s Sink = Sink.Here[0u64];
+    mut s Sink = Sink.Here(0u64);
     s <=> f.sink;
     mut back = blankEvent();
     mut sent = sinkTaken;
@@ -666,7 +666,7 @@ pub struct Client {
       mut e = blankEvent();
       imm es = &mut heldE[k];
       e <=> *es;
-      mut s Sink = Sink.Here[0u64];
+      mut s Sink = Sink.Here(0u64);
       imm ss = &mut heldS[k];
       s <=> *ss;
       imm fi = *heldF[k];
@@ -826,7 +826,7 @@ pub struct Client {
           }
         }
         // A request the client no longer follows: its body's credit back
-        if e.kind == httpconn.EventKind.Data[] {drv.release(e.req, e.buf.len());}
+        if e.kind == httpconn.EventKind.Data {drv.release(e.req, e.buf.len());}
       } elif (t & tokConn) != 0u64 {
         if index < connCount {
           imm p = self.connAt(index) as &PConn;
@@ -847,7 +847,7 @@ pub struct Client {
   fn onConn(self &mut, lp &mut Loop, pc u32, e &mut httpconn.Event) {
     imm p = self.connAt(pc) as &mut PConn;
     imm og = self.originAt(p.origin) as &mut Origin;
-    if e.kind == httpconn.EventKind.Connected[] {
+    if e.kind == httpconn.EventKind.Connected {
       if p.state == pConnecting {
         p.state = pIdle;
         og.connecting = og.connecting - 1u32;
@@ -856,7 +856,7 @@ pub struct Client {
       }
       return;
     }
-    if e.kind != httpconn.EventKind.Closed[] {return;}
+    if e.kind != httpconn.EventKind.Closed {return;}
     imm was = p.state;
     if was == pConnecting {
       og.connecting = og.connecting - 1u32;
@@ -876,7 +876,7 @@ pub struct Client {
     // first exchange) fails what waits for its origin, when nothing else is
     // open to it: they would meet the same failure
     imm s = e.failure.stage;
-    imm establishing = was == pConnecting or (p.uses <= 1u32 and s == httpconn.Stage.Tls[]);
+    imm establishing = was == pConnecting or (p.uses <= 1u32 and s == httpconn.Stage.Tls);
     if not e.clean and establishing and og.open == og.connecting {
       imm fl = Failure.fromConn(&e.failure);
       while og.queue.len() > 0usize {
@@ -946,7 +946,7 @@ pub struct Client {
     og.connecting = og.connecting + 1u32;
     total = total + 1u32;
     st.connects = st.connects + 1u64;
-    imm sink = httpconn.Sink.Here[tokConn | (u64.from(p.gen) << 32u64) | u64.from(pc)];
+    imm sink = httpconn.Sink.Here(tokConn | (u64.from(p.gen) << 32u64) | u64.from(pc));
     // The driver is handed a copy of the host: it holds Strings, and nothing shows
     // the origin's is none of them
     imm host = og.host.copy();
@@ -1087,7 +1087,7 @@ pub struct Client {
     f.timing.reused = p.uses > 1u32;
     st.sent = st.sent + 1u64;
     if f.timing.reused {st.reused = st.reused + 1u64;}
-    f.req = drv.request(lp, p.id, head, body, httpconn.Sink.Here[tokReq | (u64.from(f.gen) << 32u64) | u64.from(fi)]);
+    f.req = drv.request(lp, p.id, head, body, httpconn.Sink.Here(tokReq | (u64.from(f.gen) << 32u64) | u64.from(fi)));
   }
 
   // As much of fetch fi's body as its connection takes now
@@ -1127,7 +1127,7 @@ pub struct Client {
   fn onRequest(self &mut, lp &mut Loop, fi u32, e &mut httpconn.Event) {
     imm f = self.fetchAt(fi) as &mut Fetch;
     imm k = e.kind;
-    if k == httpconn.EventKind.Response[] {
+    if k == httpconn.EventKind.Response {
       f.timing.firstByte = Instant.now();
       imm status = e.response.status;
       if f.ending == endNone and followsRedirect(status) and f.maxRedirects > 0u32 {
@@ -1143,12 +1143,12 @@ pub struct Client {
         }
       }
       f.delivered = true;
-      mut ev = Event.make(EventKind.Response[], f.sink.token, self.idOf(fi));
+      mut ev = Event.make(EventKind.Response, f.sink.token, self.idOf(fi));
       ev.response <=> e.response;
       ev.body = e.body;
       ev.url = f.url.text();
       self.emit(fi, 0usize, ev);
-    } elif k == httpconn.EventKind.Data[] {
+    } elif k == httpconn.EventKind.Data {
       imm n = e.buf.len();
       if f.following {
         // A redirect's body: read and dropped, cut off past drainLimit
@@ -1160,7 +1160,7 @@ pub struct Client {
         }
         return;
       }
-      mut ev = Event.make(EventKind.Data[], f.sink.token, self.idOf(fi));
+      mut ev = Event.make(EventKind.Data, f.sink.token, self.idOf(fi));
       ev.buf <=> e.buf;
       if isChan(&mut f.sink) {
         self.emit(fi, n, ev);
@@ -1168,14 +1168,14 @@ pub struct Client {
         f.held = f.held + n;
         self.emit(fi, 0usize, ev);
       }
-    } elif k == httpconn.EventKind.End[] {
+    } elif k == httpconn.EventKind.End {
       if f.following {return;}
-      mut ev = Event.make(EventKind.End[], f.sink.token, self.idOf(fi));
+      mut ev = Event.make(EventKind.End, f.sink.token, self.idOf(fi));
       ev.trailers <=> e.trailers;
       self.emit(fi, 0usize, ev);
-    } elif k == httpconn.EventKind.Writable[] {
+    } elif k == httpconn.EventKind.Writable {
       self.sendBody(lp, fi);
-    } elif k == httpconn.EventKind.Done[] {
+    } elif k == httpconn.EventKind.Done {
       imm pc = f.conn;
       self.connDone(lp, pc);
       if f.following {
@@ -1183,7 +1183,7 @@ pub struct Client {
       } else {
         self.finishFetch(lp, fi, endDone, Failure.none());
       }
-    } elif k == httpconn.EventKind.Failed[] {
+    } elif k == httpconn.EventKind.Failed {
       self.connEnded(lp, f.conn);
       imm fl = Failure.fromConn(&e.failure);
       if f.ending == endLimit or f.ending == endCancelled or f.ending == endTimedOut {
@@ -1195,16 +1195,16 @@ pub struct Client {
       } else {
         self.finishFetch(lp, fi, endFailed, fl);
       }
-    } elif k == httpconn.EventKind.Cancelled[] or k == httpconn.EventKind.TimedOut[] {
+    } elif k == httpconn.EventKind.Cancelled or k == httpconn.EventKind.TimedOut {
       self.connEnded(lp, f.conn);
       if f.cutting and f.ending == endNone {
         self.follow(lp, fi);
       } elif f.ending == endFailed {
         self.finishFetch(lp, fi, endFailed,
-          Failure.make(Stage.Limit[], 0u32, ErrorKind.TooLarge[], "the buffer pool refused a buffer for the request's body"));
+          Failure.make(Stage.Limit, 0u32, ErrorKind.TooLarge, "the buffer pool refused a buffer for the request's body"));
       } elif f.ending == endTimedOut or f.ending == endLimit {
         self.finishFetch(lp, fi, f.ending, Failure.none());
-      } elif k == httpconn.EventKind.TimedOut[] {
+      } elif k == httpconn.EventKind.TimedOut {
         self.finishFetch(lp, fi, endTimedOut, Failure.none());
       } else {
         self.finishFetch(lp, fi, endCancelled, Failure.none());
@@ -1223,7 +1223,7 @@ pub struct Client {
       mut d = String.from("more than ");
       d.appendUInt(u64.from(f.maxRedirects));
       d.append(" redirects");
-      self.finishFetch(lp, fi, endFailed, Failure.make(Stage.Redirect[], 0u32, ErrorKind.TooLarge[], d.view()));
+      self.finishFetch(lp, fi, endFailed, Failure.make(Stage.Redirect, 0u32, ErrorKind.TooLarge, d.view()));
       return;
     }
     mut next = Url.empty();
@@ -1238,14 +1238,14 @@ pub struct Client {
       d.append(f.location.view());
       d.append("' cannot be followed: ");
       d.append(why.view());
-      self.finishFetch(lp, fi, endFailed, Failure.make(Stage.Redirect[], 0u32, ErrorKind.Malformed[], d.view()));
+      self.finishFetch(lp, fi, endFailed, Failure.make(Stage.Redirect, 0u32, ErrorKind.Malformed, d.view()));
       return;
     }
     // 303 makes it a GET (a HEAD stays one), as 301 and 302 do of a POST
-    imm toGet = (status == 303u16 and f.method != Method.Head[]) or
-      ((status == 301u16 or status == 302u16) and f.method == Method.Post[]);
-    if toGet and f.method != Method.Get[] {
-      f.method = Method.Get[];
+    imm toGet = (status == 303u16 and f.method != Method.Head) or
+      ((status == 301u16 or status == 302u16) and f.method == Method.Post);
+    if toGet and f.method != Method.Get {
+      f.method = Method.Get;
       f.methodText = String.empty();
       f.body = String.empty();
       f.headers.remove("Content-Type");
@@ -1278,7 +1278,7 @@ pub struct Client {
   // gathered up to limit bytes (past it, Failed at Stage.Limit). Other
   // fetches' events that arrive meanwhile wait for the next poll
   pub fn fetchWhole(self &mut, lp &mut Loop, req Request, limit usize, file &Array[u8] = srcFile(), line u32 = srcLine()) Response {
-    imm id = self.send(lp, req, Sink.Here[0u64], file, line);
+    imm id = self.send(lp, req, Sink.Here(0u64), file, line);
     mut resp = Response.blank();
     mut others = List[Event].empty();
     mut going = true;
@@ -1293,11 +1293,11 @@ pub struct Client {
         k = k + 1usize;
         if e.id != id {
           others.push(e);
-        } elif e.kind == EventKind.Response[] {
+        } elif e.kind == EventKind.Response {
           resp.status = e.response.status;
           resp.headers <=> e.response.headers;
           resp.url <=> e.url;
-        } elif e.kind == EventKind.Data[] {
+        } elif e.kind == EventKind.Data {
           imm n = e.buf.len();
           if resp.body.len() + n > limit {
             imm fi = self.fetchIndex(id);
@@ -1394,7 +1394,7 @@ fn followsRedirect(s u16) bool {
 }
 
 // An event holding nothing, to swap one out of where it is held
-fn blankEvent() Event {Event.make(EventKind.Data[], 0u64, FetchId.none());}
+fn blankEvent() Event {Event.make(EventKind.Data, 0u64, FetchId.none());}
 
 // What a channel sink did with an event
 const sinkTaken = 0u32;
@@ -1405,11 +1405,11 @@ const sinkGone = 2u32;
 // swapped into a local to be matched: Cone narrows only a local's variant,
 // error 1034)
 fn copySink(s &mut Sink) Sink {
-  mut here Sink = Sink.Here[0u64];
+  mut here Sink = Sink.Here(0u64);
   here <=> *s;
-  mut out Sink = Sink.Here[here.token];
+  mut out Sink = Sink.Here(here.token);
   match &here {
-    case imm c &Chan {out = Sink.Chan[here.token, c.tx.clone()];}
+    case imm c &Chan {out = Sink.Chan(here.token, c.tx.clone());}
     else {}
   }
   *s <=> here;
@@ -1418,7 +1418,7 @@ fn copySink(s &mut Sink) Sink {
 
 // Whether a sink is a channel
 fn isChan(s &mut Sink) bool {
-  mut here Sink = Sink.Here[0u64];
+  mut here Sink = Sink.Here(0u64);
   here <=> *s;
   mut yes = false;
   match &here {

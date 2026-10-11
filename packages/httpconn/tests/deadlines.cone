@@ -50,7 +50,7 @@ struct Slot {
 }
 
 fn blankSlot() Slot {
-  new Slot(0u16, 0u64, 0u32, 0u32, EventKind.Writable[], Stage.Closed[], ErrorKind.Malformed[], 0u32,
+  new Slot(0u16, 0u64, 0u32, 0u32, EventKind.Writable, Stage.Closed, ErrorKind.Malformed, 0u32,
     false, false, 0u32, false, new Instant());
 }
 
@@ -110,10 +110,10 @@ fn run(drv &mut Driver, lp &mut Loop, st &mut State, pool &Pool, ms i64, tok u64
       imm e = &mut events[k];
       k = k + 1usize;
       if e.token == tokServer {
-        if e.kind == EventKind.Request[] {serve(drv, st, e);}
+        if e.kind == EventKind.Request {serve(drv, st, e);}
       } elif e.token >= 100u64 {
         imm s = &mut st.conn[usize.from(e.token - 100u64)];
-        if e.kind == EventKind.Closed[] {
+        if e.kind == EventKind.Closed {
           s.closes = s.closes + 1u32;
           s.clean = e.clean;
           s.stage = e.failure.stage;
@@ -124,8 +124,8 @@ fn run(drv &mut Driver, lp &mut Loop, st &mut State, pool &Pool, ms i64, tok u64
       } else {
         imm s = &mut st.req[usize.from(e.token)];
         if s.finals > 0u32 {s.after = s.after + 1u32;}
-        if e.kind == EventKind.Response[] {s.status = e.response.status;}
-        elif e.kind == EventKind.Data[] {
+        if e.kind == EventKind.Response {s.status = e.response.status;}
+        elif e.kind == EventKind.Data {
           s.bytes = s.bytes + u64.from(e.buf.len());
           drv.release(e.req, e.buf.len());
         } elif e.isTerminal() {
@@ -145,11 +145,11 @@ fn run(drv &mut Driver, lp &mut Loop, st &mut State, pool &Pool, ms i64, tok u64
 }
 
 fn get(drv &mut Driver, lp &mut Loop, conn ConnId, target &str, tok u64) ReqId {
-  drv.request(lp, conn, RequestHead.get(target, "127.0.0.1"), BodyLength.empty(), Sink.Here[tok]);
+  drv.request(lp, conn, RequestHead.get(target, "127.0.0.1"), BodyLength.empty(), Sink.Here(tok));
 }
 
 fn getBy(drv &mut Driver, lp &mut Loop, conn ConnId, target &str, tok u64, at Instant) ReqId {
-  drv.requestBy(lp, conn, RequestHead.get(target, "127.0.0.1"), BodyLength.empty(), Sink.Here[tok], at);
+  drv.requestBy(lp, conn, RequestHead.get(target, "127.0.0.1"), BodyLength.empty(), Sink.Here(tok), at);
 }
 
 fn main() i32 {
@@ -166,7 +166,7 @@ fn main() i32 {
     i = i + 1usize;
   }
   mut listener = ListenerId.none();
-  match drv.listen(&mut lp, SocketAddr.localhost(0u16), Sink.Here[tokServer]) {
+  match drv.listen(&mut lp, SocketAddr.localhost(0u16), Sink.Here(tokServer)) {
     case imm r Ok {listener = r;}
     case imm e Error {}
   }
@@ -179,13 +179,13 @@ fn main() i32 {
 
   // 1. requestBy, the server stalling
   {
-    imm c = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here[100u64]);
+    imm c = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here(100u64));
     imm t0 = Instant.now();
     getBy(&mut drv, &mut lp, c, "/stall", 1u64, t0 + Duration.fromMillis(50i64));
     run(&mut drv, &mut lp, &mut st, &pool, 3000i64, 1u64);
     imm s = st.req[1usize];
     expectUInt(u64.from(s.finals), 1u64, "1: one final answer");
-    expect(s.kind == EventKind.TimedOut[], "1: ...TimedOut");
+    expect(s.kind == EventKind.TimedOut, "1: ...TimedOut");
     imm took = (s.at - t0).millis();
     expect(took >= 50i64 and took < 1000i64, "1: ...at its deadline");
     run(&mut drv, &mut lp, &mut st, &pool, 50i64, 0u64);
@@ -195,40 +195,40 @@ fn main() i32 {
 
   // 2. A group's deadline, inherited
   {
-    imm c = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here[101u64]);
+    imm c = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here(101u64));
     imm t0 = Instant.now();
     imm g = CancelGroup.until(t0 + Duration.fromMillis(60i64));
-    drv.requestIn(&mut lp, c, RequestHead.get("/stall", "127.0.0.1"), BodyLength.empty(), Sink.Here[2u64], g, forever());
+    drv.requestIn(&mut lp, c, RequestHead.get("/stall", "127.0.0.1"), BodyLength.empty(), Sink.Here(2u64), g, forever());
     run(&mut drv, &mut lp, &mut st, &pool, 3000i64, 2u64);
     imm s = st.req[2usize];
-    expect(s.kind == EventKind.TimedOut[], "2: TimedOut");
+    expect(s.kind == EventKind.TimedOut, "2: TimedOut");
     imm took = (s.at - t0).millis();
     expect(took >= 60i64 and took < 1000i64, "2: ...at the group's deadline");
   }
 
   // 3. A deadline already past
   {
-    imm c = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here[102u64]);
+    imm c = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here(102u64));
     imm before = drv.stats().requests;
     getBy(&mut drv, &mut lp, c, "/ok/0", 3u64, Instant.now() - Duration.fromMillis(1i64));
     run(&mut drv, &mut lp, &mut st, &pool, 3000i64, 3u64);
-    expect(st.req[3usize].kind == EventKind.TimedOut[], "3: TimedOut at once");
+    expect(st.req[3usize].kind == EventKind.TimedOut, "3: TimedOut at once");
     expectUInt(drv.stats().requests - before, 1u64, "3: ...never sent: the server read nothing");
     drv.close(&mut lp, c);
   }
 
   // 4. A waiting request times out; the one ahead is Done
   {
-    imm c = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here[103u64]);
+    imm c = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here(103u64));
     get(&mut drv, &mut lp, c, "/ok/150", 4u64);
     imm t0 = Instant.now();
     getBy(&mut drv, &mut lp, c, "/ok/0", 5u64, t0 + Duration.fromMillis(40i64));
     run(&mut drv, &mut lp, &mut st, &pool, 3000i64, 4u64);
     imm s5 = st.req[5usize];
-    expect(s5.kind == EventKind.TimedOut[], "4: the waiting one: TimedOut");
+    expect(s5.kind == EventKind.TimedOut, "4: the waiting one: TimedOut");
     imm took = (s5.at - t0).millis();
     expect(took >= 40i64 and took < 140i64, "4: ...at its deadline, while still waiting");
-    expect(st.req[4usize].kind == EventKind.Done[], "4: the one ahead: Done");
+    expect(st.req[4usize].kind == EventKind.Done, "4: the one ahead: Done");
     expectUInt(st.req[4usize].bytes, 2u64, "4: ...its body");
     expect(drv.isIdle(c), "4: the connection lives on");
     drv.close(&mut lp, c);
@@ -239,9 +239,9 @@ fn main() i32 {
     mut c5 = Config.make();
     c5.protocol.headTimeout = Duration.fromMillis(100i64);
     mut d5 = Driver.make(c5, pool);
-    imm c = d5.connect(&mut lp, "127.0.0.1", port, Sink.Here[104u64]);
+    imm c = d5.connect(&mut lp, "127.0.0.1", port, Sink.Here(104u64));
     imm t0 = Instant.now();
-    d5.request(&mut lp, c, RequestHead.get("/stall", "127.0.0.1"), BodyLength.empty(), Sink.Here[6u64]);
+    d5.request(&mut lp, c, RequestHead.get("/stall", "127.0.0.1"), BodyLength.empty(), Sink.Here(6u64));
     // Two drivers on one loop: d5's completions are its own, the server's
     // the other's
     mut events = List[Event].empty();
@@ -281,9 +281,9 @@ fn main() i32 {
       events.clear();
     }
     imm s = st.req[6usize];
-    expect(s.kind == EventKind.Failed[], "5: Failed");
-    expect(s.stage == Stage.Http[], "5: ...at the Http stage");
-    expect(s.errKind == ErrorKind.TimedOut[], "5: ...timed out");
+    expect(s.kind == EventKind.Failed, "5: Failed");
+    expect(s.stage == Stage.Http, "5: ...at the Http stage");
+    expect(s.errKind == ErrorKind.TimedOut, "5: ...timed out");
     expect(s.noResponse, "5: ...no byte of a response");
     expect(not s.unsent, "5: ...but the request was sent");
     imm took = (s.at - t0).millis();
@@ -308,23 +308,23 @@ fn main() i32 {
     c6.connectTimeout = Duration.fromMillis(200i64);
     mut d6 = Driver.make(c6, pool);
     imm t0 = Instant.now();
-    imm c = d6.connect(&mut lp, "127.0.0.1", dead, Sink.Here[105u64]);
-    d6.request(&mut lp, c, RequestHead.get("/ok/0", "127.0.0.1"), BodyLength.empty(), Sink.Here[7u64]);
+    imm c = d6.connect(&mut lp, "127.0.0.1", dead, Sink.Here(105u64));
+    d6.request(&mut lp, c, RequestHead.get("/ok/0", "127.0.0.1"), BodyLength.empty(), Sink.Here(7u64));
     mut events = List[Event].empty();
     imm until = t0 + Duration.fromSeconds(5i64);
     mut closedAt = new Instant();
-    mut closed Event = Event.make(EventKind.Writable[], 0u64, ConnId.none(), ReqId.none());
+    mut closed Event = Event.make(EventKind.Writable, 0u64, ConnId.none(), ReqId.none());
     mut gotClosed = false;
     mut req7 = 0u32;
     mut req7Unsent = false;
-    mut req7Stage Stage = Stage.Closed[];
+    mut req7Stage Stage = Stage.Closed;
     while not gotClosed and Instant.now() < until {
       d6.poll(&mut lp, until, &mut events);
       mut k = 0usize;
       while k < events.len() {
         imm e = &mut events[k];
         k = k + 1usize;
-        if e.token == 105u64 and e.kind == EventKind.Closed[] {
+        if e.token == 105u64 and e.kind == EventKind.Closed {
           gotClosed = true;
           closedAt = Instant.now();
           closed.clean = e.clean;
@@ -339,21 +339,21 @@ fn main() i32 {
     }
     expect(gotClosed, "6: the connection: Closed");
     expect(not closed.clean, "6: ...not clean");
-    expect(closed.failure.stage == Stage.Connect[], "6: ...at the Connect stage");
+    expect(closed.failure.stage == Stage.Connect, "6: ...at the Connect stage");
     imm took = (closedAt - t0).millis();
     expect(took < 1000i64, "6: ...within connectTimeout's bound");
     expectUInt(u64.from(req7), 1u64, "6: its request: one final answer");
     expect(req7Unsent, "6: ...unsent");
-    expect(req7Stage == Stage.Connect[], "6: ...at the Connect stage");
-    expect(closed.failure.error.kind == ErrorKind.TimedOut[], "6: ...timed out: Windows had not refused it within 200 ms");
+    expect(req7Stage == Stage.Connect, "6: ...at the Connect stage");
+    expect(closed.failure.error.kind == ErrorKind.TimedOut, "6: ...timed out: Windows had not refused it within 200 ms");
   }
 
   // 7. A deadline that does not pass
   {
-    imm c = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here[106u64]);
+    imm c = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here(106u64));
     getBy(&mut drv, &mut lp, c, "/ok/0", 8u64, Instant.now() + Duration.fromMillis(80i64));
     run(&mut drv, &mut lp, &mut st, &pool, 3000i64, 8u64);
-    expect(st.req[8usize].kind == EventKind.Done[], "7: Done");
+    expect(st.req[8usize].kind == EventKind.Done, "7: Done");
     // Past the deadline: nothing more comes
     run(&mut drv, &mut lp, &mut st, &pool, 150i64, 0u64);
     expectUInt(u64.from(st.req[8usize].after), 0u64, "7: ...and nothing after it");

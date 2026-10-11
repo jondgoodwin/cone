@@ -188,7 +188,7 @@ fn dequePush(d *TaskDeque, t Task) bool {
   }
   imm slot = taskAt(d, (*d).head + n);
   *slot = t;
-  mem.atomicStore[u64](&(*d).n as *u64, n + 1u64, MemOrder.SeqCst[]);
+  mem.atomicStore[u64](&(*d).n as *u64, n + 1u64, MemOrder.SeqCst);
   (*d).lock.unlock();
   true;
 }
@@ -205,7 +205,7 @@ fn dequePopNewest(d *TaskDeque, out *Task) bool {
     return false;
   }
   *out = *taskAt(d, (*d).head + n - 1u64);
-  mem.atomicStore[u64](&(*d).n as *u64, n - 1u64, MemOrder.SeqCst[]);
+  mem.atomicStore[u64](&(*d).n as *u64, n - 1u64, MemOrder.SeqCst);
   (*d).lock.unlock();
   true;
 }
@@ -223,7 +223,7 @@ fn dequeTakeOldest(d *TaskDeque, out *Task) bool {
   }
   *out = *taskAt(d, (*d).head);
   (*d).head = (*d).head + 1u64;
-  mem.atomicStore[u64](&(*d).n as *u64, n - 1u64, MemOrder.SeqCst[]);
+  mem.atomicStore[u64](&(*d).n as *u64, n - 1u64, MemOrder.SeqCst);
   (*d).lock.unlock();
   true;
 }
@@ -259,20 +259,20 @@ fn curDeque(s *Sched) *TaskDeque {
 // at every steal.
 fn stealTask(s *Sched, w *Worker, out *Task) bool {
   imm n = (*s).nworkers;
-  imm r = mem.atomicAdd[u32](&(*s).stealRot as *u32, 1u32, MemOrder.Relaxed[]);
+  imm r = mem.atomicAdd[u32](&(*s).stealRot as *u32, 1u32, MemOrder.Relaxed);
   mut i = 0u32;
   while i < n {
     imm v = workerAt(s, (r + i) % n);
     if v as usize != w as usize {
       if dequeTakeOldest(tasksOf(v), out) {
-        mem.atomicAdd[u64](&(*s).taskSteals as *u64, 1u64, MemOrder.Relaxed[]);
+        mem.atomicAdd[u64](&(*s).taskSteals as *u64, 1u64, MemOrder.Relaxed);
         return true;
       }
     }
     i = i + 1u32;
   }
   if dequeTakeOldest(extDeque(s), out) {
-    mem.atomicAdd[u64](&(*s).taskSteals as *u64, 1u64, MemOrder.Relaxed[]);
+    mem.atomicAdd[u64](&(*s).taskSteals as *u64, 1u64, MemOrder.Relaxed);
     return true;
   }
   false;
@@ -308,12 +308,12 @@ fn runTask(s *Sched, t Task) {
 // loop's record may be gone as soon as the count is zero, so nothing here
 // touches it after the subtraction.
 fn finishItems(s *Sched, rec *LoopRec, n usize, scheduled bool, onDone &fn(arg *u8), doneArg *u8) {
-  imm prev = mem.atomicSub[usize](&(*rec).remaining as *usize, n, MemOrder.AcqRel[]);
+  imm prev = mem.atomicSub[usize](&(*rec).remaining as *usize, n, MemOrder.AcqRel);
   if prev == n and scheduled {
     libc.free(rec as *u8);
     onDone(doneArg);
-    mem.atomicSub[u64](&(*s).liveScheduled as *u64, 1u64, MemOrder.SeqCst[]);
-    mem.atomicAdd[u32](&(*s).quiet as *u32, 1u32, MemOrder.SeqCst[]);
+    mem.atomicSub[u64](&(*s).liveScheduled as *u64, 1u64, MemOrder.SeqCst);
+    mem.atomicAdd[u32](&(*s).quiet as *u32, 1u32, MemOrder.SeqCst);
     sync.futexWake(&(*s).quiet);
   }
 }
@@ -325,7 +325,7 @@ fn helpUntilDone(s *Sched, rec *LoopRec) {
   imm remp = &(*rec).remaining as *usize;
   imm w = me as *Worker;
   imm mine = curDeque(s);
-  while mem.atomicLoad[usize](remp, MemOrder.Acquire[]) != 0usize {
+  while mem.atomicLoad[usize](remp, MemOrder.Acquire) != 0usize {
     mut t = emptyTask();
     if dequePopNewest(mine, &mut t as *Task) or stealTask(s, w, &mut t as *Task) {
       runTask(s, t);
@@ -517,10 +517,10 @@ fn gatherPiece(data *u8, lo usize, hi usize) {
     mut seen = 0usize;
     mut pushed = false;
     while !pushed {
-      imm head = mem.atomicLoad[usize](headp, MemOrder.Acquire[]);
+      imm head = mem.atomicLoad[usize](headp, MemOrder.Acquire);
       (*piece.rec).next = head as *PieceRec;
       seen, pushed = mem.atomicCompareSwap[usize](headp, head, piece.rec as usize,
-        MemOrder.AcqRel[], MemOrder.Relaxed[]);
+        MemOrder.AcqRel, MemOrder.Relaxed);
     }
   }
 }
@@ -664,7 +664,7 @@ fn rangeThen(lo usize, hi usize, grain usize, body PieceFn, data *u8,
     die("actors: out of memory for a parallel loop");
   }
   mem.writeRaw[LoopRec](rec, new LoopRec(hi - lo, g, body, data, onDone, doneArg, true));
-  mem.atomicAdd[u64](&(*s).liveScheduled as *u64, 1u64, MemOrder.SeqCst[]);
+  mem.atomicAdd[u64](&(*s).liveScheduled as *u64, 1u64, MemOrder.SeqCst);
   if !dequePush(curDeque(s), new Task(rec, lo, hi)) {
     // The deque is full: run the loop's first task here, which splits it
     runTask(s, new Task(rec, lo, hi));

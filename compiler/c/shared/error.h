@@ -394,7 +394,7 @@ enum ErrorCode {
     ErrorNbrFrom = 1208,        // A number type's 'from' named without a call, given other than one value, or given a value that does not convert: bool's takes a number, reference or pointer, every other's a number
 
     // Construction, 'new Point(1, 2)', and the 'init' that fills a value in place (ir/exp/typelit.c, ir/exp/fncall.c, ir/stmt/fndcl.c, ir/flow.c)
-    ErrorStructBracket = 1209,  // 'Point[1, 2]': a struct's value is constructed 'new Point(1, 2)'; an enum's variant keeps the brackets
+    ErrorStructBracket = 1209,  // 'Point[1, 2]': a struct's value is constructed 'new Point(1, 2)'; an enum's variant is constructed without 'new' (ErrorVariantBracket)
     ErrorNewType = 1210,        // 'new' given what it cannot construct: not a struct (a number converts with 'from'), an enum's variant, a trait or an enum
     ErrorInitNone = 1211,       // No 'init' takes a construction's arguments, or several the struct declares do: one it declares is preferred to the implicit field-wise one
     ErrorInitCall = 1212,       // A type called without 'new', 'Point(1, 2)', or an 'init' called by name: a value is constructed 'new Point(1, 2)'
@@ -635,6 +635,10 @@ enum ErrorCode {
 
     // Match patterns name only the variant (ir/exp/cast.c)
     ErrorPatManaged = 1414,     // A match pattern written as a managed reference, '+Rc-mut Circle': the matched value supplies the reference, its region and its permission, so the pattern names the variant alone
+
+    // A variant's construction (ir/exp/typelit.c, ir/exp/fncall.c)
+    ErrorVariantBracket = 1415, // A variant constructed in square brackets, 'Some[5]', 'None[]', 'Some[i32][5]': it is constructed with parentheses, 'Some(5)', an empty one by its name alone, 'None', and brackets give type arguments only
+    ErrorVariantEmptyCall = 1416, // An empty variant written with parentheses, 'Lamp.Red()': it is constructed by its name alone
 
     // Warnings
     WarnCode = 3000,

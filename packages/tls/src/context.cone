@@ -170,7 +170,7 @@ fn sslErrors(out &mut String) u32 {
 fn configError(what &str) TlsError {
   mut d = String.from(what);
   imm code = sslErrors(&mut d);
-  new TlsError(TlsErrorKind.Config[], code, 0u32, d);
+  new TlsError(TlsErrorKind.Config, code, 0u32, d);
 }
 
 // A new SSL_CTX with the versions, options and buffers every one takes
@@ -200,7 +200,7 @@ pub struct Client {
   // holding no certificate)
   pub fn make(cfg ClientConfig) Result[Client, TlsError] {
     imm ctx = newCtx(TLS_client_method(), cfg.minVersion, cfg.maxVersion);
-    if ctx as usize == 0usize {return Error[Client, TlsError][configError("SSL_CTX_new failed")];}
+    if ctx as usize == 0usize {return Error[Client, TlsError](configError("SSL_CTX_new failed"));}
     // Sessions are cached here, not in OpenSSL's own cache: OpenSSL hands
     // each over as it comes (see the header)
     imm resume = cfg.resume and ticketSlot() >= 0i32;
@@ -216,14 +216,14 @@ pub struct Client {
       SSL_CTX_set_alpn_protos(ctx, &w[0usize] as *u8, u32.from(w.len));
     }
     imm kind = cfg.verify.kind;
-    if kind == VerifyKind.Insecure[] {
+    if kind == VerifyKind.Insecure {
       SSL_CTX_set_verify(ctx, verifyNone, null);
-    } elif kind == VerifyKind.Roots[] {
+    } elif kind == VerifyKind.Roots {
       SSL_CTX_set_verify(ctx, verifyPeer, null);
       imm n = loadRoots(ctx, cfg.verify.bundle.view());
       if n == 0u32 {
         SSL_CTX_free(ctx);
-        return Error[Client, TlsError][configError("the root bundle holds no certificate")];
+        return Error[Client, TlsError](configError("the root bundle holds no certificate"));
       }
     } else {
       // The OS's verifier and pinning: OpenSSL hands the chain to
@@ -240,7 +240,7 @@ pub struct Client {
     imm st = new Shared(new CtxState(ctx: ctx, server: false, kind: kind, pins: pins,
       resume: resume, lane: cfg.verifyLane, offline: cfg.offline, alpn: null,
       cache: List[Cached].empty()));
-    Ok[Client, TlsError][new Client(st)];
+    Ok[Client, TlsError](new Client(st));
   }
 
   // A session with the server named serverName (a DNS name, sent by SNI and
@@ -287,24 +287,24 @@ pub struct Server {
   // could not be read, a key that is not the certificate's)
   pub fn make(cfg ServerConfig) Result[Server, TlsError] {
     imm ctx = newCtx(TLS_server_method(), cfg.minVersion, cfg.maxVersion);
-    if ctx as usize == 0usize {return Error[Server, TlsError][configError("SSL_CTX_new failed")];}
+    if ctx as usize == 0usize {return Error[Server, TlsError](configError("SSL_CTX_new failed"));}
     mut cert = String.from(cfg.certFile.view());
     if SSL_CTX_use_certificate_chain_file(ctx, cert.cstr()) != 1i32 {
       SSL_CTX_free(ctx);
       mut what = String.from("the certificate chain could not be loaded from ");
       what.append(cfg.certFile.view());
-      return Error[Server, TlsError][configError(what.view())];
+      return Error[Server, TlsError](configError(what.view()));
     }
     mut key = String.from(cfg.keyFile.view());
     if SSL_CTX_use_PrivateKey_file(ctx, key.cstr(), filetypePem) != 1i32 {
       SSL_CTX_free(ctx);
       mut what = String.from("the private key could not be loaded from ");
       what.append(cfg.keyFile.view());
-      return Error[Server, TlsError][configError(what.view())];
+      return Error[Server, TlsError](configError(what.view()));
     }
     if SSL_CTX_check_private_key(ctx) != 1i32 {
       SSL_CTX_free(ctx);
-      return Error[Server, TlsError][configError("the private key is not the certificate's")];
+      return Error[Server, TlsError](configError("the private key is not the certificate's"));
     }
     // The ALPN list the select callback chooses from: its length, then the
     // wire format, in memory the state frees
@@ -316,10 +316,10 @@ pub struct Server {
       libc.memcpy(block + 4usize, &w[0usize] as *u8, w.len);
     }
     SSL_CTX_set_alpn_select_cb(ctx, &alpnSelect, block);
-    imm st = new Shared(new CtxState(ctx: ctx, server: true, kind: VerifyKind.Insecure[],
+    imm st = new Shared(new CtxState(ctx: ctx, server: true, kind: VerifyKind.Insecure,
       pins: List[u8].empty(), resume: false, lane: defaultVerifyLane(), offline: false, alpn: block,
       cache: List[Cached].empty()));
-    Ok[Server, TlsError][new Server(st)];
+    Ok[Server, TlsError](new Server(st));
   }
 
   // A session with one client

@@ -54,7 +54,7 @@ fn serve(a ServerArgs) Report {
     case imm e Error {}
   }
   a.portTx.send(port);
-  lp.submit(Op.Accept[listener], Target.Here[0u64]);
+  lp.submit(Op.Accept(listener), Target.Here(0u64));
   mut out = List[Completion].empty();
   mut conn = Handle.none();
   mut rep = new Report(0u64, 0u64, 0u64, 0u64, diag.Counters.zero());
@@ -67,21 +67,21 @@ fn serve(a ServerArgs) Report {
       if not c.isDone() {rep.notDone = rep.notDone + 1u64;}
       if c.token == 0u64 {
         conn = c.handle;
-        lp.submit(Op.Recv[conn, a.pool.mustTake(4096usize)], Target.Here[1u64]);
+        lp.submit(Op.Recv(conn, a.pool.mustTake(4096usize)), Target.Here(1u64));
       } elif c.token == 1u64 {
         if c.count() == 0usize {
           open = false;
         } else {
           mut b = IoBuf.empty();
           b <=> c.buf;
-          lp.submit(Op.Send[conn, b], Target.Here[2u64]);
+          lp.submit(Op.Send(conn, b), Target.Here(2u64));
         }
       } else {
         rep.count = rep.count + u64.from(c.n);
         mut b = IoBuf.empty();
         b <=> c.buf;
         b.clear();
-        lp.submit(Op.Recv[conn, b], Target.Here[1u64]);
+        lp.submit(Op.Recv(conn, b), Target.Here(1u64));
       }
       k = k + 1usize;
     }
@@ -129,17 +129,17 @@ fn client(a ClientArgs) Report {
   mut rep = new Report(0u64, 0u64, 0u64, 0u64, diag.Counters.zero());
   mut out = List[Completion].empty();
   mut fh = Handle.none();
-  match lp.openFile("echo.tmp", Access.Read[]) {
+  match lp.openFile("echo.tmp", Access.Read) {
     case imm r Ok {fh = r;}
     case imm e Error {}
   }
   // Read tokens: 100 + the chunk's number
   mut nextRead = 0u64;
   while nextRead < depth {
-    lp.submit(Op.ReadAt[fh, nextRead * chunk, a.pool.mustTake(usize.from(chunk))], Target.Here[100u64 + nextRead]);
+    lp.submit(Op.ReadAt(fh, nextRead * chunk, a.pool.mustTake(usize.from(chunk))), Target.Here(100u64 + nextRead));
     nextRead = nextRead + 1u64;
   }
-  lp.submit(Op.Connect[SocketAddr.localhost(a.port)], Target.Here[0u64]);
+  lp.submit(Op.Connect(SocketAddr.localhost(a.port)), Target.Here(0u64));
   mut conn = Handle.none();
   mut sent = 0u64;
   mut readsOut = depth;
@@ -159,7 +159,7 @@ fn client(a ClientArgs) Report {
           mut b = IoBuf.empty();
           b <=> c.buf;
           b.clear();
-          lp.submit(Op.ReadAt[fh, nextRead * chunk, b], Target.Here[100u64 + nextRead]);
+          lp.submit(Op.ReadAt(fh, nextRead * chunk, b), Target.Here(100u64 + nextRead));
           nextRead = nextRead + 1u64;
           readsOut = readsOut + 1u64;
         }
@@ -168,14 +168,14 @@ fn client(a ClientArgs) Report {
         conn = c.handle;
         mut b = a.pool.mustTake(msgSize);
         fillMsg(&mut b, 0u64);
-        lp.submit(Op.Send[conn, b], Target.Here[1u64]);
+        lp.submit(Op.Send(conn, b), Target.Here(1u64));
         sent = 1u64;
       } elif c.token == 1u64 {
         // Sent: its buffer receives the echo
         mut b = IoBuf.empty();
         b <=> c.buf;
         b.clear();
-        lp.submit(Op.Recv[conn, b], Target.Here[2u64]);
+        lp.submit(Op.Recv(conn, b), Target.Here(2u64));
       } else {
         // Some of the echo: more to come, or the whole message
         mut b = IoBuf.empty();
@@ -184,7 +184,7 @@ fn client(a ClientArgs) Report {
           rep.wrong = rep.wrong + 1u64;
           rep.count = messages;
         } elif b.len() < msgSize {
-          lp.submit(Op.Recv[conn, b], Target.Here[2u64]);
+          lp.submit(Op.Recv(conn, b), Target.Here(2u64));
         } else {
           imm v = b.view();
           mut j = 0usize;
@@ -197,7 +197,7 @@ fn client(a ClientArgs) Report {
           rep.count = rep.count + 1u64;
           if sent < messages {
             fillMsg(&mut b, sent);
-            lp.submit(Op.Send[conn, b], Target.Here[1u64]);
+            lp.submit(Op.Send(conn, b), Target.Here(1u64));
             sent = sent + 1u64;
           }
         }
@@ -215,7 +215,7 @@ fn client(a ClientArgs) Report {
 fn writeFile(pool &Pool) bool {
   mut lp = Loop.mustMake();
   mut fh = Handle.none();
-  match lp.openFile("echo.tmp", Access.Create[]) {
+  match lp.openFile("echo.tmp", Access.Create) {
     case imm r Ok {fh = r;}
     case imm e Error {return false;}
   }
@@ -233,7 +233,7 @@ fn writeFile(pool &Pool) bool {
         j = j + 1usize;
       }
       b.setLen(b.capacity());
-      lp.submit(Op.WriteAt[fh, at, b], Target.Here[at]);
+      lp.submit(Op.WriteAt(fh, at, b), Target.Here(at));
       at = at + chunk;
       pending = pending + 1u64;
     }

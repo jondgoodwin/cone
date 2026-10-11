@@ -14,8 +14,8 @@
  *     state' u32;                                      where the body resumes
  *     pub fn next(self &mut) Option[&'a Node] {...}    the author's body
  *     fn final(self &uni) {}                           what the frame's drop hangs on
- *     fn walk.yield(v &Node) Option[&Node] inline {Some[&Node][v];}   what a 'yield' hands the caller
- *     fn walk.none() Option[&Node] {None[&Node][];}                   what its end hands the caller
+ *     fn walk.yield(v &Node) Option[&Node] inline {Some[&Node](v);}   what a 'yield' hands the caller
+ *     fn walk.none() Option[&Node] {None[&Node];}                     what its end hands the caller
  *   }
  *   fn walk(t &Tree, n i32) walk.Gen {new walk.Gen(t, n, 0u32);}    the generator, made
  *
@@ -454,13 +454,13 @@ FnDclNode *parseGenFinish(ParseState *parse, FnDclNode *fn, GenSig *sig, GenCtx 
     genPutn(&g, yplain.text, yplain.len);
     genPuts(&g, "] inline {Some[");
     genPutn(&g, yplain.text, yplain.len);
-    genPuts(&g, "][v];}\n  fn ");
+    genPuts(&g, "](v);}\n  fn ");
     genSlot(&g, GenNone);
     genPuts(&g, "() Option[");
     genPutn(&g, yplain.text, yplain.len);
     genPuts(&g, "] {None[");
     genPutn(&g, yplain.text, yplain.len);
-    genPuts(&g, "][];}\n}\n");
+    genPuts(&g, "];}\n}\n");
 
     // The generator, made: its parameters in the struct, unstarted
     genPuts(&g, "fn ");

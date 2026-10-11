@@ -75,7 +75,7 @@ fn server(pool Pool) Srv {
 
 fn listen(sv &mut Srv, lp &mut Loop) u16 {
   mut port = 0u16;
-  match sv.drv.listen(lp, SocketAddr.localhost(0u16), httpconn.Sink.Here[tokSrv]) {
+  match sv.drv.listen(lp, SocketAddr.localhost(0u16), httpconn.Sink.Here(tokSrv)) {
     case imm r Ok {
       match sv.drv.localAddr(lp, r) {
         case imm a Ok {port = a.port();}
@@ -158,7 +158,7 @@ fn answer(sv &mut Srv, lp &mut Loop, k usize) {
   while q < t.len and t[q] != '?' {q = q + 1usize;}
   imm path = &t[0usize ..< q];
   imm query = &t[(if q < t.len {q + 1usize;} else {q;}) ..];
-  imm head = *sv.methods[k] == Method.Head[];
+  imm head = *sv.methods[k] == Method.Head;
   if path == "/echo" {
     mut b = String.from(methodToken(*sv.methods[k]));
     b.append(" ");
@@ -252,13 +252,13 @@ fn fieldOr(h &Headers, name &str) String {
 
 fn serve(sv &mut Srv, lp &mut Loop, e &mut httpconn.Event) {
   imm kind = e.kind;
-  if kind == httpconn.EventKind.Accepted[] {
+  if kind == httpconn.EventKind.Accepted {
     sv.accepted = sv.accepted + 1u64;
     sv.open = sv.open + 1u64;
     if sv.open > sv.maxOpen {sv.maxOpen = sv.open;}
-  } elif kind == httpconn.EventKind.Closed[] {
+  } elif kind == httpconn.EventKind.Closed {
     sv.open = sv.open - 1u64;
-  } elif kind == httpconn.EventKind.Request[] {
+  } elif kind == httpconn.EventKind.Request {
     sv.requests = sv.requests + 1u64;
     sv.order.push(e.request.target.copy());
     sv.reqs.push(e.req);
@@ -268,14 +268,14 @@ fn serve(sv &mut Srv, lp &mut Loop, e &mut httpconn.Event) {
     sv.bodies.push(String.empty());
     sv.auths.push(fieldOr(&e.request.headers, "Authorization"));
     sv.cookies.push(fieldOr(&e.request.headers, "Cookie"));
-  } elif kind == httpconn.EventKind.Data[] {
+  } elif kind == httpconn.EventKind.Data {
     imm k = findReq(sv, e.req);
     if k < sv.reqs.len() {(&mut sv.bodies[k]).appendBytes(e.buf.view());}
     sv.drv.release(e.req, e.buf.len());
-  } elif kind == httpconn.EventKind.End[] {
+  } elif kind == httpconn.EventKind.End {
     imm k = findReq(sv, e.req);
     if k < sv.reqs.len() {answer(sv, lp, k);}
-  } elif kind == httpconn.EventKind.Writable[] {
+  } elif kind == httpconn.EventKind.Writable {
     imm j = findStream(sv, e.req);
     if j < sv.streams.len() {pumpStream(sv, j);}
   } elif e.isTerminal() {
@@ -348,23 +348,23 @@ struct Seen {
 
 fn seen() Seen {
   new Seen(status: 0u16, body: String.empty(), url: String.empty(), kinds: String.empty(), finals: 0u64,
-    last: EventKind.Done[], failure: String.empty(), stage: Stage.Url[], timing: Timing.zero());
+    last: EventKind.Done, failure: String.empty(), stage: Stage.Url, timing: Timing.zero());
 }
 
 fn note(cl &mut Client, s &mut Seen, e &mut Event) {
   imm n = eventName(e.kind);
   s.kinds.appendByte(n[0usize]);
-  if e.kind == EventKind.Response[] {
+  if e.kind == EventKind.Response {
     s.status = e.response.status;
     s.url = e.url.copy();
-  } elif e.kind == EventKind.Data[] {
+  } elif e.kind == EventKind.Data {
     s.body.appendBytes(e.buf.view());
     cl.release(e.id, e.buf.len());
   } elif e.isTerminal() {
     s.finals = s.finals + 1u64;
     s.last = e.kind;
     s.timing = e.timing;
-    if e.kind == EventKind.Failed[] {
+    if e.kind == EventKind.Failed {
       s.failure = e.failure.message();
       s.stage = e.failure.stage;
     }
@@ -392,7 +392,7 @@ fn finishOf(cl &mut Client, sv &mut Srv, lp &mut Loop, id FetchId, s &mut Seen) 
 // A request sent and driven to its final answer: what was seen
 fn fetchSeen(cl &mut Client, sv &mut Srv, lp &mut Loop, r Request) Seen {
   mut s = seen();
-  imm id = cl.send(lp, r, Sink.Here[1u64]);
+  imm id = cl.send(lp, r, Sink.Here(1u64));
   finishOf(cl, sv, lp, id, &mut s);
   s;
 }
@@ -406,7 +406,7 @@ fn idleFor(cl &mut Client, sv &mut Srv, lp &mut Loop, d Duration) {
     mut k = 0usize;
     while k < out.len() {
       imm e = &mut out[k];
-      if e.kind == EventKind.Data[] {cl.release(e.id, e.buf.len());}
+      if e.kind == EventKind.Data {cl.release(e.id, e.buf.len());}
       k = k + 1usize;
     }
     out.clear();
@@ -454,7 +454,7 @@ fn tlsServer(cert &str, key &str) tls.Server {
 fn listenTls(sv &mut Srv, lp &mut Loop, s tls.Server) u16 {
   mut port = 0u16;
   match sv.drv.listenWith(lp, SocketAddr.localhost(0u16), new So[TlsMaker](new TlsMaker(s, sv.pool)),
-      httpconn.Sink.Here[tokSrv]) {
+      httpconn.Sink.Here(tokSrv)) {
     case imm r Ok {
       match sv.drv.localAddr(lp, r) {
         case imm a Ok {port = a.port();}
@@ -478,7 +478,7 @@ fn secure(port u16, path &str) String {
 fn atOnce(cl &mut Client, sv &mut Srv, lp &mut Loop, port u16, n u32) u32 {
   mut k = 0u32;
   while k < n {
-    cl.get(lp, secure(port, "/hello").view(), Sink.Here[2u64]);
+    cl.get(lp, secure(port, "/hello").view(), Sink.Here(2u64));
     k = k + 1u32;
   }
   mut out = List[Event].empty();
@@ -490,10 +490,10 @@ fn atOnce(cl &mut Client, sv &mut Srv, lp &mut Loop, port u16, n u32) u32 {
     mut j = 0usize;
     while j < out.len() {
       imm e = &mut out[j];
-      if e.kind == EventKind.Data[] {cl.release(e.id, e.buf.len());}
+      if e.kind == EventKind.Data {cl.release(e.id, e.buf.len());}
       if e.isTerminal() {
         finals = finals + 1u32;
-        if e.kind == EventKind.Done[] {dones = dones + 1u32;}
+        if e.kind == EventKind.Done {dones = dones + 1u32;}
       }
       j = j + 1usize;
     }
@@ -522,7 +522,7 @@ fn main() i32 {
   mut oks = 0u32;
   while k < 5u32 {
     imm s = fetchSeen(&mut cl, &mut sv, &mut lp, Request.get(secure(good, "/hello").view()));
-    if s.last == EventKind.Done[] and s.status == 200u16 and s.body.view() == "hello" {oks = oks + 1u32;}
+    if s.last == EventKind.Done and s.status == 200u16 and s.body.view() == "hello" {oks = oks + 1u32;}
     if k > 0u32 and not s.timing.reused {oks = 0u32;}
     k = k + 1u32;
   }
@@ -558,7 +558,7 @@ fn main() i32 {
 
   // An http origin beside it
   imm p = fetchSeen(&mut cl, &mut sv, &mut lp, Request.get(url(plain, "/hello").view()));
-  expect(p.last == EventKind.Done[] and p.body.view() == "hello", "http beside https: Done");
+  expect(p.last == EventKind.Done and p.body.view() == "hello", "http beside https: Done");
   expectUInt(u64.from(cl.stats().origins), 2u64, "two origins pooled");
 
   // A certificate the client does not trust: Failed at Stage.Tls, and the
@@ -568,8 +568,8 @@ fn main() i32 {
   cfg1.tlsConfig.offline = true;
   cfg1.maxPerOrigin = 1u32;
   mut c1 = Client.make(cfg1, pool);
-  imm a = c1.get(&mut lp, secure(untrusted, "/hello").view(), Sink.Here[3u64]);
-  imm b = c1.get(&mut lp, secure(untrusted, "/hello").view(), Sink.Here[3u64]);
+  imm a = c1.get(&mut lp, secure(untrusted, "/hello").view(), Sink.Here(3u64));
+  imm b = c1.get(&mut lp, secure(untrusted, "/hello").view(), Sink.Here(3u64));
   mut sa = seen();
   mut sb = seen();
   imm giveUp2 = Instant.now() + Duration.fromSeconds(10i64);
@@ -584,10 +584,10 @@ fn main() i32 {
     }
     out.clear();
   }
-  expect(sa.last == EventKind.Failed[] and sa.stage == Stage.Tls[], "an untrusted certificate: Failed at Stage.Tls");
+  expect(sa.last == EventKind.Failed and sa.stage == Stage.Tls, "an untrusted certificate: Failed at Stage.Tls");
   expect(sa.failure.contains("unable to get local issuer certificate"), "...saying why");
   expectUInt(u64.from(sa.timing.attempts), 1u64, "...not retried");
-  expect(sb.last == EventKind.Failed[] and sb.stage == Stage.Tls[], "the one waiting for that origin: Failed too");
+  expect(sb.last == EventKind.Failed and sb.stage == Stage.Tls, "the one waiting for that origin: Failed too");
   expectUInt(c1.stats().connects, 1u64, "...one connection tried");
   c1.abortAll(&mut lp);
 

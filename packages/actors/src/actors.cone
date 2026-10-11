@@ -511,11 +511,11 @@ fn nullHeader() *Header {null;}
 // Put node n at the end of h's mailbox: whether the mailbox was idle, which
 // makes this sender the one to schedule the actor
 fn mailPush(h *Header, n *Link) bool {
-  mem.atomicStore[*Link](&(*n).next as **Link, nullLink(), MemOrder.Relaxed[]);
-  imm prev = mem.atomicSwap[*Link](&(*h).head as **Link, n, MemOrder.AcqRel[]);
+  mem.atomicStore[*Link](&(*n).next as **Link, nullLink(), MemOrder.Relaxed);
+  imm prev = mem.atomicSwap[*Link](&(*h).head as **Link, n, MemOrder.AcqRel);
   imm bits = prev as usize;
   imm p = (bits & pointerBits) as *Link;
-  mem.atomicStore[*Link](&(*p).next as **Link, n, MemOrder.Release[]);
+  mem.atomicStore[*Link](&(*p).next as **Link, n, MemOrder.Release);
   (bits & idleBit) != 0usize;
 }
 
@@ -524,7 +524,7 @@ fn mailPush(h *Header, n *Link) bool {
 // freed. Only the worker running the actor calls this.
 fn mailPop(h *Header) *Link {
   imm t = (*h).tail;
-  imm next = mem.atomicLoad[*Link](&(*t).next as **Link, MemOrder.Acquire[]);
+  imm next = mem.atomicLoad[*Link](&(*t).next as **Link, MemOrder.Acquire);
   if next as usize != 0usize {
     (*h).tail = next;
     libc.free(t as *u8);
@@ -537,14 +537,14 @@ fn mailPop(h *Header) *Link {
 fn mailMarkIdle(h *Header) bool {
   imm t = (*h).tail;
   imm headp = &(*h).head as **Link;
-  imm hd = mem.atomicLoad[*Link](headp, MemOrder.Relaxed[]);
+  imm hd = mem.atomicLoad[*Link](headp, MemOrder.Relaxed);
   if hd as usize != t as usize {
     return false;
   }
   mut seen = nullLink();
   mut marked = false;
   seen, marked = mem.atomicCompareSwap[*Link](headp, t, ((t as usize) | idleBit) as *Link,
-    MemOrder.AcqRel[], MemOrder.Relaxed[]);
+    MemOrder.AcqRel, MemOrder.Relaxed);
   marked;
 }
 
@@ -1231,12 +1231,12 @@ fn ringAt(w *Worker, pos u64) **Header {
   (&(*w).ring as **Header) + usize.from(pos & queueMask);
 }
 
-fn ld32(p *u32) u32 {mem.atomicLoad[u32](p, MemOrder.SeqCst[]);}
-fn ld64(p *u64) u64 {mem.atomicLoad[u64](p, MemOrder.SeqCst[]);}
+fn ld32(p *u32) u32 {mem.atomicLoad[u32](p, MemOrder.SeqCst);}
+fn ld64(p *u64) u64 {mem.atomicLoad[u64](p, MemOrder.SeqCst);}
 
 // Add one to a count only its worker writes, which stats() reads meanwhile
 fn tally(p *u64, n u64) {
-  mem.atomicStore[u64](p, mem.atomicLoad[u64](p, MemOrder.Relaxed[]) + n, MemOrder.Relaxed[]);
+  mem.atomicStore[u64](p, mem.atomicLoad[u64](p, MemOrder.Relaxed) + n, MemOrder.Relaxed);
 }
 
 // An actor has become runnable, its mailbox having left idle: count the
@@ -1247,10 +1247,10 @@ fn schedule(h *Header) {
   imm w = me as *Worker;
   if w as usize != 0usize and (*w).sched as usize == s as usize {
     imm startedp = &(*w).started as *u64;
-    mem.atomicStore[u64](startedp, mem.atomicLoad[u64](startedp, MemOrder.Relaxed[]) + 1u64, MemOrder.SeqCst[]);
+    mem.atomicStore[u64](startedp, mem.atomicLoad[u64](startedp, MemOrder.Relaxed) + 1u64, MemOrder.SeqCst);
     localPush(w, h);
   } else {
-    mem.atomicAdd[u64](&(*s).extStarted as *u64, 1u64, MemOrder.SeqCst[]);
+    mem.atomicAdd[u64](&(*s).extStarted as *u64, 1u64, MemOrder.SeqCst);
     (*h).link = nullHeader();
     injectPush(s, h, h, 1u64);
   }
@@ -1262,11 +1262,11 @@ fn localPush(w *Worker, h *Header) {
   imm headp = &(*w).head as *u64;
   imm tailp = &(*w).tail as *u64;
   while true {
-    imm t = mem.atomicLoad[u64](tailp, MemOrder.Relaxed[]);
-    imm hd = mem.atomicLoad[u64](headp, MemOrder.Acquire[]);
+    imm t = mem.atomicLoad[u64](tailp, MemOrder.Relaxed);
+    imm hd = mem.atomicLoad[u64](headp, MemOrder.Acquire);
     if t - hd < queueCap {
-      mem.atomicStore[*Header](ringAt(w, t), h, MemOrder.Relaxed[]);
-      mem.atomicStore[u64](tailp, t + 1u64, MemOrder.Release[]);
+      mem.atomicStore[*Header](ringAt(w, t), h, MemOrder.Relaxed);
+      mem.atomicStore[u64](tailp, t + 1u64, MemOrder.Release);
       if t != hd {
         notify((*w).sched);
       }
@@ -1287,15 +1287,15 @@ fn overflow(w *Worker, h *Header, hd u64, t u64) bool {
   mut seen = 0u64;
   mut taken = false;
   seen, taken = mem.atomicCompareSwap[u64](&(*w).head as *u64, hd, hd + n,
-    MemOrder.AcqRel[], MemOrder.Relaxed[]);
+    MemOrder.AcqRel, MemOrder.Relaxed);
   if !taken {
     return false;
   }
-  imm first = mem.atomicLoad[*Header](ringAt(w, hd), MemOrder.Relaxed[]);
+  imm first = mem.atomicLoad[*Header](ringAt(w, hd), MemOrder.Relaxed);
   mut last = first;
   mut i = 1u64;
   while i < n {
-    imm next = mem.atomicLoad[*Header](ringAt(w, hd + i), MemOrder.Relaxed[]);
+    imm next = mem.atomicLoad[*Header](ringAt(w, hd + i), MemOrder.Relaxed);
     (*last).link = next;
     last = next;
     i = i + 1u64;
@@ -1311,16 +1311,16 @@ fn queuePop(w *Worker) *Header {
   imm headp = &(*w).head as *u64;
   imm tailp = &(*w).tail as *u64;
   while true {
-    imm hd = mem.atomicLoad[u64](headp, MemOrder.Acquire[]);
-    imm t = mem.atomicLoad[u64](tailp, MemOrder.Acquire[]);
+    imm hd = mem.atomicLoad[u64](headp, MemOrder.Acquire);
+    imm t = mem.atomicLoad[u64](tailp, MemOrder.Acquire);
     if hd >= t {
       return nullHeader();
     }
-    imm h = mem.atomicLoad[*Header](ringAt(w, hd), MemOrder.Relaxed[]);
+    imm h = mem.atomicLoad[*Header](ringAt(w, hd), MemOrder.Relaxed);
     mut seen = 0u64;
     mut taken = false;
     seen, taken = mem.atomicCompareSwap[u64](headp, hd, hd + 1u64,
-      MemOrder.AcqRel[], MemOrder.Relaxed[]);
+      MemOrder.AcqRel, MemOrder.Relaxed);
     if taken {
       return h;
     }
@@ -1333,10 +1333,10 @@ fn queuePop(w *Worker) *Header {
 fn stealFrom(w *Worker, v *Worker) *Header {
   imm headp = &(*v).head as *u64;
   imm tailp = &(*v).tail as *u64;
-  imm ot = mem.atomicLoad[u64](&(*w).tail as *u64, MemOrder.Relaxed[]);
+  imm ot = mem.atomicLoad[u64](&(*w).tail as *u64, MemOrder.Relaxed);
   while true {
-    imm hd = mem.atomicLoad[u64](headp, MemOrder.Acquire[]);
-    imm t = mem.atomicLoad[u64](tailp, MemOrder.Acquire[]);
+    imm hd = mem.atomicLoad[u64](headp, MemOrder.Acquire);
+    imm t = mem.atomicLoad[u64](tailp, MemOrder.Acquire);
     if hd >= t {
       return nullHeader();
     }
@@ -1344,18 +1344,18 @@ fn stealFrom(w *Worker, v *Worker) *Header {
     imm k = n - n / 2u64;
     mut i = 0u64;
     while i < k {
-      imm h = mem.atomicLoad[*Header](ringAt(v, hd + i), MemOrder.Relaxed[]);
-      mem.atomicStore[*Header](ringAt(w, ot + i), h, MemOrder.Relaxed[]);
+      imm h = mem.atomicLoad[*Header](ringAt(v, hd + i), MemOrder.Relaxed);
+      mem.atomicStore[*Header](ringAt(w, ot + i), h, MemOrder.Relaxed);
       i = i + 1u64;
     }
     mut seen = 0u64;
     mut taken = false;
     seen, taken = mem.atomicCompareSwap[u64](headp, hd, hd + k,
-      MemOrder.AcqRel[], MemOrder.Relaxed[]);
+      MemOrder.AcqRel, MemOrder.Relaxed);
     if taken {
-      imm run = mem.atomicLoad[*Header](ringAt(w, ot + k - 1u64), MemOrder.Relaxed[]);
+      imm run = mem.atomicLoad[*Header](ringAt(w, ot + k - 1u64), MemOrder.Relaxed);
       if k > 1u64 {
-        mem.atomicStore[u64](&(*w).tail as *u64, ot + k - 1u64, MemOrder.Release[]);
+        mem.atomicStore[u64](&(*w).tail as *u64, ot + k - 1u64, MemOrder.Release);
       }
       tally(&(*w).steals as *u64, 1u64);
       return run;
@@ -1375,7 +1375,7 @@ fn injectPush(s *Sched, first *Header, last *Header, count u64) {
   }
   (*s).injectTail = last;
   (*s).lock.unlock();
-  mem.atomicAdd[u64](&(*s).injectLen as *u64, count, MemOrder.SeqCst[]);
+  mem.atomicAdd[u64](&(*s).injectLen as *u64, count, MemOrder.SeqCst);
   notify(s);
 }
 
@@ -1383,7 +1383,7 @@ fn injectPush(s *Sched, first *Header, last *Header, count u64) {
 // queue: the one to run, or 0
 fn injectPop(s *Sched, w *Worker) *Header {
   imm lenp = &(*s).injectLen as *u64;
-  if mem.atomicLoad[u64](lenp, MemOrder.SeqCst[]) == 0u64 {
+  if mem.atomicLoad[u64](lenp, MemOrder.SeqCst) == 0u64 {
     return nullHeader();
   }
   (*s).lock.lock();
@@ -1393,7 +1393,7 @@ fn injectPop(s *Sched, w *Worker) *Header {
     return nullHeader();
   }
   // Take the first, and up to a share of the rest for this worker's queue
-  imm len = mem.atomicLoad[u64](lenp, MemOrder.Relaxed[]);
+  imm len = mem.atomicLoad[u64](lenp, MemOrder.Relaxed);
   mut extra = len / u64.from((*s).nworkers);
   if extra > 32u64 {
     extra = 32u64;
@@ -1409,7 +1409,7 @@ fn injectPop(s *Sched, w *Worker) *Header {
     (*s).injectTail = nullHeader();
   }
   (*last).link = nullHeader();
-  mem.atomicSub[u64](lenp, k, MemOrder.SeqCst[]);
+  mem.atomicSub[u64](lenp, k, MemOrder.SeqCst);
   (*s).lock.unlock();
   // The rest to this worker's own queue
   mut next = (*first).link;
@@ -1428,10 +1428,10 @@ fn notify(s *Sched) {
   if ld32(&(*s).sleepers as *u32) == 0u32 {
     return;
   }
-  if mem.atomicSwap[u32](&(*s).searching as *u32, 1u32, MemOrder.SeqCst[]) != 0u32 {
+  if mem.atomicSwap[u32](&(*s).searching as *u32, 1u32, MemOrder.SeqCst) != 0u32 {
     return;
   }
-  mem.atomicAdd[u32](&(*s).epoch as *u32, 1u32, MemOrder.SeqCst[]);
+  mem.atomicAdd[u32](&(*s).epoch as *u32, 1u32, MemOrder.SeqCst);
   sync.futexWake(&(*s).epoch);
 }
 
@@ -1439,7 +1439,7 @@ fn notify(s *Sched) {
 // looking, and if more work is waiting, another is woken to look
 fn foundAway(w *Worker) {
   imm s = (*w).sched;
-  mem.atomicStore[u32](&(*s).searching as *u32, 0u32, MemOrder.SeqCst[]);
+  mem.atomicStore[u32](&(*s).searching as *u32, 0u32, MemOrder.SeqCst);
   if ld64(&(*s).injectLen as *u64) != 0u64 or ld64(&(*w).tail as *u64) != ld64(&(*w).head as *u64)
       or taskWork(s) {
     notify(s);
@@ -1529,7 +1529,7 @@ fn runActor(w *Worker, h *Header) {
     imm release = (*h).release;
     release(h);
     imm endedp = &(*w).ended as *u64;
-    mem.atomicStore[u64](endedp, mem.atomicLoad[u64](endedp, MemOrder.Relaxed[]) + 1u64, MemOrder.SeqCst[]);
+    mem.atomicStore[u64](endedp, mem.atomicLoad[u64](endedp, MemOrder.Relaxed) + 1u64, MemOrder.SeqCst);
     return;
   }
   localPush(w, h);
@@ -1549,22 +1549,22 @@ fn idle(w *Worker) bool {
   }
   imm epochp = &(*s).epoch as *u32;
   imm e = ld32(epochp);
-  imm asleep = mem.atomicAdd[u32](&(*s).sleepers as *u32, 1u32, MemOrder.SeqCst[]) + 1u32;
-  mem.atomicStore[u32](&(*s).searching as *u32, 0u32, MemOrder.SeqCst[]);
+  imm asleep = mem.atomicAdd[u32](&(*s).sleepers as *u32, 1u32, MemOrder.SeqCst) + 1u32;
+  mem.atomicStore[u32](&(*s).searching as *u32, 0u32, MemOrder.SeqCst);
   if anyWork(s) {
-    mem.atomicSub[u32](&(*s).sleepers as *u32, 1u32, MemOrder.SeqCst[]);
+    mem.atomicSub[u32](&(*s).sleepers as *u32, 1u32, MemOrder.SeqCst);
     return true;
   }
   if ld32(&(*s).stopping as *u32) != 0u32 {
-    mem.atomicSub[u32](&(*s).sleepers as *u32, 1u32, MemOrder.SeqCst[]);
+    mem.atomicSub[u32](&(*s).sleepers as *u32, 1u32, MemOrder.SeqCst);
     return false;
   }
   if asleep == (*s).nworkers and ld32(&(*s).done as *u32) != 0u32 {
-    mem.atomicAdd[u32](&(*s).quiet as *u32, 1u32, MemOrder.SeqCst[]);
+    mem.atomicAdd[u32](&(*s).quiet as *u32, 1u32, MemOrder.SeqCst);
     sync.futexWake(&(*s).quiet);
   }
   sync.futexWait(&(*s).epoch, e);
-  mem.atomicSub[u32](&(*s).sleepers as *u32, 1u32, MemOrder.SeqCst[]);
+  mem.atomicSub[u32](&(*s).sleepers as *u32, 1u32, MemOrder.SeqCst);
   ld32(&(*s).stopping as *u32) == 0u32;
 }
 
@@ -1725,7 +1725,7 @@ fn startWorkers() {
 // Wait until s is quiescent. 'done' says the stop has begun, so that the
 // last worker to go to sleep wakes this thread to look again
 fn quiesce(s *Sched) {
-  mem.atomicStore[u32](&(*s).done as *u32, 1u32, MemOrder.SeqCst[]);
+  mem.atomicStore[u32](&(*s).done as *u32, 1u32, MemOrder.SeqCst);
   while true {
     imm q = ld32(&(*s).quiet as *u32);
     if quiescent(s) {
@@ -1757,8 +1757,8 @@ fn stopWorkers() {
   }
   imm s = running as *Sched;
   quiesce(s);
-  mem.atomicStore[u32](&(*s).stopping as *u32, 1u32, MemOrder.SeqCst[]);
-  mem.atomicAdd[u32](&(*s).epoch as *u32, 1u32, MemOrder.SeqCst[]);
+  mem.atomicStore[u32](&(*s).stopping as *u32, 1u32, MemOrder.SeqCst);
+  mem.atomicAdd[u32](&(*s).epoch as *u32, 1u32, MemOrder.SeqCst);
   sync.futexWakeAll(&(*s).epoch);
   mut i = 0u32;
   while i < (*s).nworkers {
@@ -1776,13 +1776,13 @@ fn stopWorkers() {
 // The workers' counts, summed
 fn totals(s *Sched) Stats {
   mut st = new Stats((*s).nworkers, 0u64, 0u64, 0u64,
-    mem.atomicLoad[u64](&(*s).taskSteals as *u64, MemOrder.Relaxed[]));
+    mem.atomicLoad[u64](&(*s).taskSteals as *u64, MemOrder.Relaxed));
   mut i = 0u32;
   while i < (*s).nworkers {
     imm w = workerAt(s, i);
-    st.messages = st.messages + mem.atomicLoad[u64](&(*w).messages as *u64, MemOrder.Relaxed[]);
-    st.activations = st.activations + mem.atomicLoad[u64](&(*w).activations as *u64, MemOrder.Relaxed[]);
-    st.steals = st.steals + mem.atomicLoad[u64](&(*w).steals as *u64, MemOrder.Relaxed[]);
+    st.messages = st.messages + mem.atomicLoad[u64](&(*w).messages as *u64, MemOrder.Relaxed);
+    st.activations = st.activations + mem.atomicLoad[u64](&(*w).activations as *u64, MemOrder.Relaxed);
+    st.steals = st.steals + mem.atomicLoad[u64](&(*w).steals as *u64, MemOrder.Relaxed);
     i = i + 1u32;
   }
   st;

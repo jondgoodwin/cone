@@ -303,6 +303,24 @@ enum NodeTags {
 // own check does not walk the receiver a second time, and clears this.
 // 0x2000 is free on a FnCall: FlagHollowOut is a name use's.
 #define FlagRcvChecked 0x2000       // FnCall: the receiver (objfn) is already type checked
+// A variant is constructed with parentheses, 'Some(5)', and an empty one by its name
+// alone, 'None', 'Lamp.Red', 'None[i32]'; written in square brackets, 'Some[5]',
+// it is refused. Both are built as the one literal, a FnCall with FlagIndex
+// retagged TypeLit, and this marks the literal as written the new way, so
+// typeLitTypeCheck refuses the other. Set by fnCallTypeCheck when a call of a
+// variant, or a name that is one, is lowered to its literal. 0x4000 is free on a
+// FnCall and a TypeLit: TypeChecking is a type declaration's, and a FnCall is not.
+#define FlagCtorParen 0x4000        // FnCall, TypeLit: a variant's construction written with parentheses or by its bare name
+// The last thing a value expression's suffixes made (parseSuffix) is the term
+// itself, and a name that stands alone there -- 'Lamp.Red', 'None', 'None[i32]' --
+// is an empty variant's construction when it names one, and a type otherwise.
+// Where a type is written (after 'is', 'as', in a declaration's type, in a
+// pattern) the parser does not set it, and the name stays a type. Cleared by
+// fnCallTypeCheck on the FnCall; on a NameUse (0x0002 was ThreadBound, retired,
+// and is read from no name use) it is left, and read by inodeTypeCheck alone.
+// 0x1000 on a FnCall: FlagPartNoPrior is flow's, long after type check clears it.
+#define FlagValueTermCall 0x1000    // FnCall: the last suffix of a value term, which may be an empty variant's construction
+#define FlagValueTermName 0x0002    // NameUse: a value term that is this name alone, which may be an empty variant's construction
 
 #define FlagLoop      0x0001        // Block: is a Loop block
 // 'each' lowers to a 'while' whose body ends with the step that advances the loop

@@ -128,10 +128,10 @@ fn failure(op &str, p &Path, code i32) FsError {
 }
 
 fn fail[T](op &str, p &Path, code i32) Result[T, FsError] {
-  Error[T, FsError][failure(op, p, code)];
+  Error[T, FsError](failure(op, p, code));
 }
 
-fn succeeded() Result[void, FsError] { Ok[void, FsError][nil]; }
+fn succeeded() Result[void, FsError] { Ok[void, FsError](nil); }
 
 // The error number the last C call left
 fn lastErrno() i32 { *libc.errno(); }
@@ -193,8 +193,8 @@ pub fn stat(path &Path) Result[FileInfo, FsError] {
   mut st = emptyStat();
   if posix.stat(c.cstr(), &mut st) != 0i32 { return fail[FileInfo]("stat", path, lastErrno()); }
   imm kind = st.st_mode & posix.S_IFMT;
-  Ok[FileInfo, FsError][new FileInfo(st.st_size, time.Timestamp.fromUnixSeconds(st.st_mtime),
-    kind == posix.S_IFDIR, kind == posix.S_IFREG)];
+  Ok[FileInfo, FsError](new FileInfo(st.st_size, time.Timestamp.fromUnixSeconds(st.st_mtime),
+    kind == posix.S_IFDIR, kind == posix.S_IFREG));
 }
 
 // The file-type bits of what a path names, or 0 when it cannot be seen
@@ -246,7 +246,7 @@ pub fn readFile(path &Path) Result[String, FsError] {
   imm code = lastErrno();
   libc.fclose(f);
   if broke { return fail[String]("readFile", path, code); }
-  Ok[String, FsError][out];
+  Ok[String, FsError](out);
 }
 
 // Open with mode, write data, close; a failure anywhere is op's
@@ -282,13 +282,13 @@ pub fn appendFile(path &Path, data &Array[u8]) Result[void, FsError] {
 // refuses, EEXIST for a file and EACCES for a folder, and nothing changes.
 pub fn rename(from &Path, to &Path) Result[void, FsError] {
   if hasNul(from) or hasNul(to) {
-    return Error[void, FsError][new FsError(String.from("rename"), from.copy(), to.copy(), posix.EINVAL)];
+    return Error[void, FsError](new FsError(String.from("rename"), from.copy(), to.copy(), posix.EINVAL));
   }
   useUtf8();
   mut a = cText(from);
   mut b = cText(to);
   if libc.rename(a.cstr(), b.cstr()) != 0i32 {
-    return Error[void, FsError][new FsError(String.from("rename"), from.copy(), to.copy(), lastErrno())];
+    return Error[void, FsError](new FsError(String.from("rename"), from.copy(), to.copy(), lastErrno()));
   }
   succeeded();
 }
@@ -388,7 +388,7 @@ pub fn readDir(path &Path) Result[List[DirEntry], FsError] {
   posix.closedir(dir);
   if code != 0i32 { return fail[List[DirEntry]]("readDir", path, code); }
   out.sortBy(&byName);
-  Ok[List[DirEntry], FsError][out];
+  Ok[List[DirEntry], FsError](out);
 }
 
 // Every entry below a folder, depth first: each folder's entries in name
@@ -403,11 +403,11 @@ pub fn walk(root &Path) Result[List[DirEntry], FsError] {
     case mut e Error {
       mut err = failure("", "", 0i32);
       err <=> e;
-      return Error[List[DirEntry], FsError][err];
+      return Error[List[DirEntry], FsError](err);
     }
     case is Ok {}
   }
-  Ok[List[DirEntry], FsError][out];
+  Ok[List[DirEntry], FsError](out);
 }
 
 fn walkInto(dir &Path, out &mut List[DirEntry]) Result[void, FsError] {
@@ -416,7 +416,7 @@ fn walkInto(dir &Path, out &mut List[DirEntry]) Result[void, FsError] {
       mut err = failure("", "", 0i32);
       err <=> e;
       err.op = String.from("walk");
-      return Error[void, FsError][err];
+      return Error[void, FsError](err);
     }
     case imm listed Ok {
       imm entries = &listed;
@@ -478,7 +478,7 @@ fn removeTree(path &Path, kind u16) Result[void, FsError] {
       mut err = failure("", "", 0i32);
       err <=> e;
       err.op = String.from("removeAll");
-      return Error[void, FsError][err];
+      return Error[void, FsError](err);
     }
     case imm listed Ok {
       imm entries = &listed;
@@ -516,7 +516,7 @@ pub fn currentDir() Result[Path, FsError] {
   if got == null { return fail[Path]("currentDir", "", lastErrno()); }
   imm raw = Path.from(cstr.fromPtr(got).view());
   libc.free(got);
-  Ok[Path, FsError][raw.normalize()];
+  Ok[Path, FsError](raw.normalize());
 }
 
 // Make path the folder relative paths are read from, for the whole program
@@ -542,5 +542,5 @@ pub fn absolute(path &Path) Result[Path, FsError] {
   if got == null { return fail[Path]("absolute", path, lastErrno()); }
   imm raw = Path.from(cstr.fromPtr(got).view());
   libc.free(got);
-  Ok[Path, FsError][raw.normalize()];
+  Ok[Path, FsError](raw.normalize());
 }

@@ -43,7 +43,7 @@
 //   c.sendRequest(head, body)    client: a request, its body to follow     (SENDING)
 //   c.sendResponse(head, body)   server: the response to the request read
 //   c.sendInterim(head) c.sendContinue()  server: a 1xx
-//   c.sendData(buf)              body bytes: None when queued, Some[buf] back
+//   c.sendData(buf)              body bytes: None when queued, Some(buf) back
 //                                when the queue is past its watermark
 //   c.finish()  c.finishWith(trailers)    the body is whole
 //   c.canSendRequest()  c.queued()  c.writeRoom()
@@ -331,9 +331,9 @@ pub struct Connection is Move {
   fn make(client bool, cfg Config, pool Pool, now Instant, file &Array[u8] = srcFile(), line u32 = srcLine()) Connection {
     if cfg.maxBuffered < cfg.maxHeadBytes {panic("http1: maxBuffered must hold a whole head (maxHeadBytes)", file, line);}
     new Connection(clientRole: client, cfg: cfg, pool: pool, now: now,
-      input: Chain.make(cfg.maxBuffered), eof: false, rs: ReadState.Idle[], remaining: 0u64,
+      input: Chain.make(cfg.maxBuffered), eof: false, rs: ReadState.Idle, remaining: 0u64,
       headBuf: IoBuf.empty(), headScan: 0usize, sawBytes: false, outstanding: 0usize, headInFlight: false,
-      ws: WriteState.Idle[], wremaining: 0u64, out: Chain.make(noBound), tail: IoBuf.empty(),
+      ws: WriteState.Idle, wremaining: 0u64, out: Chain.make(noBound), tail: IoBuf.empty(),
       held: Chain.make(noBound), holding: false, abandoned: false, requestSeen: false,
       answeringHead: false, peer10: false, keepAlive: true,
       headAt: now, headArmed: false, bodyAt: now, bodyArmed: false,
@@ -360,14 +360,14 @@ pub struct Connection is Move {
     if input.len() + n > cfg.maxBuffered {panic("http1: handleInput past the read credit", file, line);}
     input.push(buf);
     bytesIn = bytesIn + u64.from(n);
-    if rs == ReadState.Idle[] and not clientRole and not headArmed {
+    if rs == ReadState.Idle and not clientRole and not headArmed {
       // A request's first byte: its head timeout starts (pollEvent skips
       // any empty lines before it, then reads the head)
       idleArmed = false;
       headAt = at + cfg.headTimeout;
       headArmed = true;
     }
-    if rs == ReadState.Head[] {sawBytes = true;}
+    if rs == ReadState.Head {sawBytes = true;}
     if self.inBody() {
       bodyAt = at + cfg.bodyTimeout;
       bodyArmed = true;
@@ -377,7 +377,7 @@ pub struct Connection is Move {
   // The next bytes to send, moved out: an empty IoBuf when there are none
   pub fn pollTransmit(self &mut, at Instant) IoBuf {
     now = at;
-    if armHead and ws == WriteState.Done[] and not holding {
+    if armHead and ws == WriteState.Done and not holding {
       headAt = at + cfg.headTimeout;
       headArmed = true;
       armHead = false;
@@ -402,7 +402,7 @@ pub struct Connection is Move {
 
   // The one Instant the driver must wake at and call handleTimeout, or None
   pub fn pollTimeout(self &) Option[Instant] {
-    if closed or failed {return None[Instant][];}
+    if closed or failed {return None;}
     mut any = false;
     mut best = Instant.fromNanos(0x7FFFFFFFFFFFFFFFi64);
     if headArmed {
@@ -421,7 +421,7 @@ pub struct Connection is Move {
       any = true;
       if expectAt < best {best = expectAt;}
     }
-    if any {Some[Instant][best];} else {None[Instant][];};
+    if any {Some[Instant](best);} else {None;};
   }
 
   // The driver woke at 'at': act on every deadline due
@@ -434,12 +434,12 @@ pub struct Connection is Move {
     }
     if headArmed and at >= headAt {
       headArmed = false;
-      self.fail(ErrorKind.TimedOut[], 408u16, "no whole head within headTimeout");
+      self.fail(ErrorKind.TimedOut, 408u16, "no whole head within headTimeout");
       return;
     }
     if bodyArmed and self.inBody() and not self.blocked() and at >= bodyAt {
       bodyArmed = false;
-      self.fail(ErrorKind.TimedOut[], 408u16, "the body stalled for bodyTimeout");
+      self.fail(ErrorKind.TimedOut, 408u16, "the body stalled for bodyTimeout");
       return;
     }
     if idleArmed and at >= idleAt {
@@ -453,25 +453,25 @@ pub struct Connection is Move {
     while true {
       if failed {
         if not failureOut {return self.failedEvent();}
-        return Event.Closed[];
+        return Event.Closed;
       }
-      if closed {return Event.Closed[];}
-      if rs == ReadState.Idle[] {
+      if closed {return Event.Closed;}
+      if rs == ReadState.Idle {
         if clientRole {
           if input.len() > 0usize {
-            self.fail(ErrorKind.Malformed[], 0u16, "bytes arrived with no request outstanding");
+            self.fail(ErrorKind.Malformed, 0u16, "bytes arrived with no request outstanding");
             continue;
           }
           if eof {
             closed = true;
             continue;
           }
-          return Event.Paused[];
+          return Event.Paused;
         }
         // A server between requests: RFC 9112 (2.2) lets a server skip
         // empty lines before a request line
         while input.len() >= 2usize and input.matchesAt(0usize, "\r\n") {input.advance(2usize);}
-        if input.len() == 1usize and input.byteAt(0usize) == '\r' and not eof {return Event.NeedData[];}
+        if input.len() == 1usize and input.byteAt(0usize) == '\r' and not eof {return Event.NeedData;}
         if input.len() > 0usize {
           self.startHead();
           continue;
@@ -480,55 +480,55 @@ pub struct Connection is Move {
           closed = true;
           continue;
         }
-        return Event.NeedData[];
+        return Event.NeedData;
       }
-      if rs == ReadState.Head[] {return self.readHead();}
-      if rs == ReadState.Sized[] {
+      if rs == ReadState.Head {return self.readHead();}
+      if rs == ReadState.Sized {
         if remaining == 0u64 {return self.endMessage(Headers.empty());}
         return self.deliver();
       }
-      if rs == ReadState.ChunkData[] {
+      if rs == ReadState.ChunkData {
         if remaining == 0u64 {
-          rs = ReadState.ChunkEnd[];
+          rs = ReadState.ChunkEnd;
           continue;
         }
         return self.deliver();
       }
-      if rs == ReadState.ChunkEnd[] {
+      if rs == ReadState.ChunkEnd {
         // A client takes an LF alone for the CRLF (RFC 9112, 2.2)
         if clientRole and input.len() >= 1usize and input.byteAt(0usize) == '\n' {
           input.advance(1usize);
-          rs = ReadState.ChunkSize[];
+          rs = ReadState.ChunkSize;
           continue;
         }
         if input.len() < 2usize {
           if eof {return self.closedMidBody();}
-          return Event.NeedData[];
+          return Event.NeedData;
         }
         if not input.matchesAt(0usize, "\r\n") {
-          self.fail(ErrorKind.Malformed[], 400u16, "a chunk's data is not followed by CRLF");
+          self.fail(ErrorKind.Malformed, 400u16, "a chunk's data is not followed by CRLF");
           continue;
         }
         input.advance(2usize);
-        rs = ReadState.ChunkSize[];
+        rs = ReadState.ChunkSize;
         continue;
       }
-      if rs == ReadState.ChunkSize[] {
+      if rs == ReadState.ChunkSize {
         if self.chunkSize() {continue;}
         if failed {continue;}
-        return Event.NeedData[];
+        return Event.NeedData;
       }
-      if rs == ReadState.Trailers[] {return self.readTrailers();}
-      if rs == ReadState.UntilClose[] {
+      if rs == ReadState.Trailers {return self.readTrailers();}
+      if rs == ReadState.UntilClose {
         if input.len() == 0usize and eof {return self.endMessage(Headers.empty());}
         return self.deliver();
       }
-      if rs == ReadState.Done[] {
+      if rs == ReadState.Done {
         // The message is whole: the exchange waits on the program
-        return Event.Paused[];
+        return Event.Paused;
       }
     }
-    Event.Paused[];
+    Event.Paused;
   }
 
   // ------------------------------------------------------------- credit
@@ -563,7 +563,7 @@ pub struct Connection is Move {
   // Whether a request may be sent now: a client, open, with no exchange in
   // progress
   pub fn canSendRequest(self &) bool {
-    clientRole and not closed and not failed and not eof and ws == WriteState.Idle[] and rs == ReadState.Idle[];
+    clientRole and not closed and not failed and not eof and ws == WriteState.Idle and rs == ReadState.Idle;
   }
 
   // A client's request: its head now, its body (if any) by sendData and
@@ -573,7 +573,7 @@ pub struct Connection is Move {
     if not self.canSendRequest() {panic("http1: sendRequest while an exchange is in progress or the connection is closed (no pipelining)", file, line);}
     imm name = head.methodName();
     if not isToken(name) {panic("http1: the request's method is not a token", file, line);}
-    if head.method == Method.Connect[] {panic("http1: CONNECT is not supported", file, line);}
+    if head.method == Method.Connect {panic("http1: CONNECT is not supported", file, line);}
     if not isTargetText(head.target.view()) {panic("http1: the request's target is empty or holds a space or a control character", file, line);}
     if not isTargetText(head.authority.view()) {panic("http1: a request needs an authority, written as Host, without spaces", file, line);}
     if head.headers.has("Host") {panic("http1: Host is written from the head's authority, not its fields", file, line);}
@@ -592,25 +592,25 @@ pub struct Connection is Move {
       self.put("Content-Length: ");
       self.putNum(body.length, 10u64);
       self.put("\r\n");
-      ws = if body.length == 0u64 {WriteState.Done[];} else {WriteState.Sized[];};
+      ws = if body.length == 0u64 {WriteState.Done;} else {WriteState.Sized;};
       wremaining = body.length;
     } elif body.isUnsized() {
       self.put("Transfer-Encoding: chunked\r\n");
-      ws = WriteState.Chunked[];
+      ws = WriteState.Chunked;
     } else {
-      if head.method == Method.Post[] or head.method == Method.Put[] or head.method == Method.Patch[] {
+      if head.method == Method.Post or head.method == Method.Put or head.method == Method.Patch {
         self.put("Content-Length: 0\r\n");
       }
-      ws = WriteState.Done[];
+      ws = WriteState.Done;
     }
     self.put("\r\n");
     keepAlive = not head.headers.hasToken("Connection", "close");
-    headInFlight = head.method == Method.Head[];
+    headInFlight = head.method == Method.Head;
     abandoned = false;
-    rs = ReadState.Head[];
+    rs = ReadState.Head;
     sawBytes = false;
     armHead = true;
-    if ws != WriteState.Done[] and head.headers.hasToken("Expect", "100-continue") {
+    if ws != WriteState.Done and head.headers.hasToken("Expect", "100-continue") {
       self.flushTail();
       holding = true;
       armExpect = true;
@@ -623,7 +623,7 @@ pub struct Connection is Move {
   pub fn sendResponse(self &mut, head ResponseHead, body BodyLength, file &Array[u8] = srcFile(), line u32 = srcLine()) {
     if clientRole {panic("http1: sendResponse on a client's connection", file, line);}
     if closed or failed {return;}
-    if not requestSeen or ws != WriteState.Idle[] {panic("http1: sendResponse with no request awaiting one", file, line);}
+    if not requestSeen or ws != WriteState.Idle {panic("http1: sendResponse with no request awaiting one", file, line);}
     imm status = head.status;
     if status < 200u16 or status > 599u16 {panic("http1: sendResponse takes a final status, 200 to 599: a 1xx goes by sendInterim", file, line);}
     if head.headers.has("Content-Length") or head.headers.has("Transfer-Encoding") {
@@ -641,34 +641,34 @@ pub struct Connection is Move {
         self.putNum(body.length, 10u64);
         self.put("\r\n");
       }
-      ws = WriteState.Done[];
+      ws = WriteState.Done;
     } elif body.isSized() {
       self.put("Content-Length: ");
       self.putNum(body.length, 10u64);
       self.put("\r\n");
-      ws = if body.length == 0u64 {WriteState.Done[];} else {WriteState.Sized[];};
+      ws = if body.length == 0u64 {WriteState.Done;} else {WriteState.Sized;};
       wremaining = body.length;
     } elif body.isUnsized() {
       if peer10 {
-        ws = WriteState.UntilClose[];
+        ws = WriteState.UntilClose;
       } else {
         self.put("Transfer-Encoding: chunked\r\n");
-        ws = WriteState.Chunked[];
+        ws = WriteState.Chunked;
       }
     } else {
       self.put("Content-Length: 0\r\n");
-      ws = WriteState.Done[];
+      ws = WriteState.Done;
     }
     if not keepAlive and not head.headers.hasToken("Connection", "close") {self.put("Connection: close\r\n");}
     self.put("\r\n");
-    if ws == WriteState.Done[] {self.endExchange();}
+    if ws == WriteState.Done {self.endExchange();}
   }
 
   // A server's interim response, a 1xx other than 101, before its final one
   pub fn sendInterim(self &mut, head ResponseHead, file &Array[u8] = srcFile(), line u32 = srcLine()) {
     if clientRole {panic("http1: sendInterim on a client's connection", file, line);}
     if closed or failed {return;}
-    if not requestSeen or ws != WriteState.Idle[] {panic("http1: sendInterim with no request awaiting a response", file, line);}
+    if not requestSeen or ws != WriteState.Idle {panic("http1: sendInterim with no request awaiting a response", file, line);}
     if head.status < 100u16 or head.status > 199u16 or head.status == 101u16 {panic("http1: sendInterim takes a 1xx other than 101", file, line);}
     self.putStatusLine(head.status);
     self.putFields(&head.headers);
@@ -679,27 +679,27 @@ pub struct Connection is Move {
   pub fn sendContinue(self &mut) {self.sendInterim(ResponseHead.make(100u16));}
 
   // Body bytes, moved in: None once they are queued (or dropped, after the
-  // connection has closed or the body was abandoned), or Some[buf] back when
+  // connection has closed or the body was abandoned), or Some(buf) back when
   // the queue is past its watermark. Sending with no body under way, or past
   // a Content-Length, is a program error
   pub fn sendData(self &mut, buf IoBuf, file &Array[u8] = srcFile(), line u32 = srcLine()) Option[IoBuf] {
-    if closed or failed or abandoned {return None[IoBuf][];}
-    if ws != WriteState.Sized[] and ws != WriteState.Chunked[] and ws != WriteState.UntilClose[] {
+    if closed or failed or abandoned {return None;}
+    if ws != WriteState.Sized and ws != WriteState.Chunked and ws != WriteState.UntilClose {
       panic("http1: sendData with no body being sent", file, line);
     }
     imm n = buf.len();
-    if n == 0usize {return None[IoBuf][];}
-    if ws == WriteState.Sized[] and u64.from(n) > wremaining {panic("http1: sendData past the body's Content-Length", file, line);}
+    if n == 0usize {return None;}
+    if ws == WriteState.Sized and u64.from(n) > wremaining {panic("http1: sendData past the body's Content-Length", file, line);}
     imm q = self.queued();
-    if q > 0usize and q + n > cfg.writeWatermark {return Some[IoBuf][buf];}
-    if ws == WriteState.Chunked[] {
+    if q > 0usize and q + n > cfg.writeWatermark {return Some[IoBuf](buf);}
+    if ws == WriteState.Chunked {
       self.putNum(u64.from(n), 16u64);
       self.put("\r\n");
     }
     self.putBuf(buf);
-    if ws == WriteState.Chunked[] {self.put("\r\n");}
-    if ws == WriteState.Sized[] {wremaining = wremaining - u64.from(n);}
-    None[IoBuf][];
+    if ws == WriteState.Chunked {self.put("\r\n");}
+    if ws == WriteState.Sized {wremaining = wremaining - u64.from(n);}
+    None;
   }
 
   // The body is whole. Nothing more to do (already whole, abandoned, or the
@@ -712,18 +712,18 @@ pub struct Connection is Move {
   // The body is whole, and these trailer fields follow it (a chunked body
   // only: trailers on any other is a program error)
   pub fn finishWith(self &mut, trailers Headers, file &Array[u8] = srcFile(), line u32 = srcLine()) {
-    if closed or failed or abandoned or ws == WriteState.Done[] or ws == WriteState.Idle[] {return;}
-    if ws == WriteState.Sized[] and wremaining != 0u64 {panic("http1: finish short of the body's Content-Length", file, line);}
-    if ws != WriteState.Chunked[] and not trailers.isEmpty() {panic("http1: trailer fields go only after a chunked body", file, line);}
+    if closed or failed or abandoned or ws == WriteState.Done or ws == WriteState.Idle {return;}
+    if ws == WriteState.Sized and wremaining != 0u64 {panic("http1: finish short of the body's Content-Length", file, line);}
+    if ws != WriteState.Chunked and not trailers.isEmpty() {panic("http1: trailer fields go only after a chunked body", file, line);}
     if trailers.has("Content-Length") or trailers.has("Transfer-Encoding") or trailers.has("Host") {
       panic("http1: a trailer may not be a framing field or Host", file, line);
     }
-    if ws == WriteState.Chunked[] {
+    if ws == WriteState.Chunked {
       self.put("0\r\n");
       self.putFields(&trailers);
       self.put("\r\n");
     }
-    ws = WriteState.Done[];
+    ws = WriteState.Done;
     if clientRole {armHead = true;}
     self.endExchange();
   }
@@ -752,8 +752,8 @@ pub struct Connection is Move {
   // ------------------------------------------------------------- reading, inside
 
   fn inBody(self &) bool {
-    rs == ReadState.Sized[] or rs == ReadState.ChunkSize[] or rs == ReadState.ChunkData[] or
-      rs == ReadState.ChunkEnd[] or rs == ReadState.Trailers[] or rs == ReadState.UntilClose[];
+    rs == ReadState.Sized or rs == ReadState.ChunkSize or rs == ReadState.ChunkData or
+      rs == ReadState.ChunkEnd or rs == ReadState.Trailers or rs == ReadState.UntilClose;
   }
 
   // Waiting on the consumer to release credit
@@ -761,7 +761,7 @@ pub struct Connection is Move {
 
   // A server's request head begins: its timeout runs, from its first byte
   fn startHead(self &mut) {
-    rs = ReadState.Head[];
+    rs = ReadState.Head;
     idleArmed = false;
     if not headArmed {
       headAt = now + cfg.headTimeout;
@@ -774,7 +774,7 @@ pub struct Connection is Move {
     failureOut = true;
     mut e = HttpError.empty();
     e <=> failure;
-    Event.Failed[e];
+    Event.Failed(e);
   }
 
   fn fail(self &mut, kind ErrorKind, status u16, why &str) {
@@ -786,7 +786,7 @@ pub struct Connection is Move {
   fn failWith(self &mut, e HttpError) {
     if failed or closed {return;}
     failure = e;
-    failure.noResponse = clientRole and not sawBytes and rs == ReadState.Head[];
+    failure.noResponse = clientRole and not sawBytes and rs == ReadState.Head;
     failed = true;
     headArmed = false;
     bodyArmed = false;
@@ -795,16 +795,16 @@ pub struct Connection is Move {
     holding = false;
     mut h = Chain.make(noBound);
     h <=> held;
-    if not clientRole and cfg.autoErrorResponse and failure.status != 0u16 and ws == WriteState.Idle[] and
-        failure.kind != ErrorKind.Closed[] {
+    if not clientRole and cfg.autoErrorResponse and failure.status != 0u16 and ws == WriteState.Idle and
+        failure.kind != ErrorKind.Closed {
       self.putStatusLine(failure.status);
       self.put("Connection: close\r\nContent-Length: 0\r\n\r\n");
-      ws = WriteState.Done[];
+      ws = WriteState.Done;
     }
   }
 
   fn closedMidBody(self &mut) Event {
-    self.fail(ErrorKind.Closed[], 0u16, "the connection closed in the middle of a body");
+    self.fail(ErrorKind.Closed, 0u16, "the connection closed in the middle of a body");
     self.failedEvent();
   }
 
@@ -817,7 +817,7 @@ pub struct Connection is Move {
         case is None[IoBuf] {}
       }
       if headBuf.capacity() == 0usize {
-        self.fail(ErrorKind.TooLarge[], 503u16, "the buffer pool refused a buffer for a head");
+        self.fail(ErrorKind.TooLarge, 503u16, "the buffer pool refused a buffer for a head");
         return 0usize;
       }
       headScan = 0usize;
@@ -836,7 +836,7 @@ pub struct Connection is Move {
       if c == '\n' {
         imm bare = i == 0usize or v[i - 1usize] != '\r';
         if bare and not clientRole {
-          self.fail(ErrorKind.Malformed[], 400u16, "a line ends in an LF without its CR");
+          self.fail(ErrorKind.Malformed, 400u16, "a line ends in an LF without its CR");
           return 0usize;
         }
         if clientRole {
@@ -852,14 +852,14 @@ pub struct Connection is Move {
           return i + 1usize;
         }
       } elif i > 0usize and v[i - 1usize] == '\r' {
-        self.fail(ErrorKind.Malformed[], 400u16, "a CR is not followed by its LF");
+        self.fail(ErrorKind.Malformed, 400u16, "a CR is not followed by its LF");
         return 0usize;
       }
       i = i + 1usize;
     }
     headScan = i;
     if lim >= cfg.maxHeadBytes {
-      self.fail(ErrorKind.TooLarge[], 431u16, "the head is longer than maxHeadBytes");
+      self.fail(ErrorKind.TooLarge, 431u16, "the head is longer than maxHeadBytes");
     }
     0usize;
   }
@@ -878,11 +878,11 @@ pub struct Connection is Move {
     if failed {return self.failedEvent();}
     if len == 0usize {
       if eof {
-        if sawBytes {self.fail(ErrorKind.Closed[], 0u16, "the connection closed in the middle of a head");}
-        else {self.fail(ErrorKind.Closed[], 0u16, "the connection closed before a response");}
+        if sawBytes {self.fail(ErrorKind.Closed, 0u16, "the connection closed in the middle of a head");}
+        else {self.fail(ErrorKind.Closed, 0u16, "the connection closed before a response");}
         return self.failedEvent();
       }
-      return Event.NeedData[];
+      return Event.NeedData;
     }
     headArmed = false;
     if clientRole {self.responseHead(len);} else {self.requestHead(len);};
@@ -900,7 +900,7 @@ pub struct Connection is Move {
       imm h = headBuf.view();
       imm first = lineEnd(h, 0usize);
       if first > cfg.maxLineBytes {
-        bad(&mut err, ErrorKind.TooLarge[], 414u16, "the request line is longer than maxLineBytes");
+        bad(&mut err, ErrorKind.TooLarge, 414u16, "the request line is longer than maxLineBytes");
       } else {
         ok = parseRequestLine(&h[0usize ..< first], &mut head, &mut err) and
           parseFields(h, lineNext(h, first), &cfg, true, true, &mut head.headers, &mut host, &mut hosts, &mut err);
@@ -908,26 +908,26 @@ pub struct Connection is Move {
     }
     self.consumeHead(len);
     if ok {
-      imm http10 = head.version == Version.Http10[];
-      if hosts > 1usize {ok = bad(&mut err, ErrorKind.Malformed[], 400u16, "the request has more than one Host");}
-      elif hosts == 0usize and not http10 {ok = bad(&mut err, ErrorKind.Malformed[], 400u16, "an HTTP/1.1 request has no Host");}
-      elif head.method == Method.Connect[] {ok = bad(&mut err, ErrorKind.Unsupported[], 501u16, "CONNECT is not supported");}
+      imm http10 = head.version == Version.Http10;
+      if hosts > 1usize {ok = bad(&mut err, ErrorKind.Malformed, 400u16, "the request has more than one Host");}
+      elif hosts == 0usize and not http10 {ok = bad(&mut err, ErrorKind.Malformed, 400u16, "an HTTP/1.1 request has no Host");}
+      elif head.method == Method.Connect {ok = bad(&mut err, ErrorKind.Unsupported, 501u16, "CONNECT is not supported");}
     }
     mut mode = 0u32;
     mut n = 0u64;
-    if ok {ok = framingOf(&head.headers, true, head.version == Version.Http10[], &mut mode, &mut n, &mut err);}
+    if ok {ok = framingOf(&head.headers, true, head.version == Version.Http10, &mut mode, &mut n, &mut err);}
     if not ok {
       self.failWith(err);
       return self.failedEvent();
     }
     head.authority <=> host;
-    peer10 = head.version == Version.Http10[];
+    peer10 = head.version == Version.Http10;
     keepAlive = not peer10 and not head.headers.hasToken("Connection", "close");
-    answeringHead = head.method == Method.Head[];
+    answeringHead = head.method == Method.Head;
     requestSeen = true;
     sawBytes = false;
     imm body = self.startBody(mode, n);
-    Event.Request[head, body];
+    Event.Request(head, body);
   }
 
   // A client's response head, gathered: an interim one, or the final one
@@ -942,17 +942,17 @@ pub struct Connection is Move {
       imm h = headBuf.view();
       imm first = lineEnd(h, 0usize);
       if first > cfg.maxLineBytes {
-        bad(&mut err, ErrorKind.TooLarge[], 0u16, "the status line is longer than maxLineBytes");
+        bad(&mut err, ErrorKind.TooLarge, 0u16, "the status line is longer than maxLineBytes");
       } else {
         ok = parseStatusLine(&h[0usize ..< first], &mut head, &mut err) and
           parseFields(h, lineNext(h, first), &cfg, false, false, &mut head.headers, &mut host, &mut hosts, &mut err);
       }
     }
     self.consumeHead(len);
-    if ok and head.status == 101u16 {ok = bad(&mut err, ErrorKind.Unsupported[], 0u16, "101 Switching Protocols: upgrades are not supported");}
+    if ok and head.status == 101u16 {ok = bad(&mut err, ErrorKind.Unsupported, 0u16, "101 Switching Protocols: upgrades are not supported");}
     mut mode = 0u32;
     mut n = 0u64;
-    if ok {ok = framingOf(&head.headers, false, head.version == Version.Http10[], &mut mode, &mut n, &mut err);}
+    if ok {ok = framingOf(&head.headers, false, head.version == Version.Http10, &mut mode, &mut n, &mut err);}
     if not ok {
       self.failWith(err);
       return self.failedEvent();
@@ -965,14 +965,14 @@ pub struct Connection is Move {
       }
       // The head timeout starts again for the final head, once the whole
       // request has been handed over
-      if ws == WriteState.Done[] and not holding {
+      if ws == WriteState.Done and not holding {
         headAt = now + cfg.headTimeout;
         headArmed = true;
       } else {
         headArmed = false;
         armHead = true;
       }
-      return Event.Interim[head];
+      return Event.Interim(head);
     }
     if holding {
       // A final answer before the body was sent: it never will be
@@ -983,17 +983,17 @@ pub struct Connection is Move {
       self.dropTail();
       abandoned = true;
       keepAlive = false;
-      ws = WriteState.Done[];
+      ws = WriteState.Done;
     }
-    if headInFlight or not responseHasBody(Method.Get[], head.status) {
+    if headInFlight or not responseHasBody(Method.Get, head.status) {
       mode = frameEmpty;
       n = 0u64;
     }
-    if head.version == Version.Http10[] or head.headers.hasToken("Connection", "close") or mode == frameClose {
+    if head.version == Version.Http10 or head.headers.hasToken("Connection", "close") or mode == frameClose {
       keepAlive = false;
     }
     imm body = self.startBody(mode, n);
-    Event.Response[head, body];
+    Event.Response(head, body);
   }
 
   // Begin reading a body framed so: what is known of it
@@ -1001,19 +1001,19 @@ pub struct Connection is Move {
     bodyAt = now + cfg.bodyTimeout;
     bodyArmed = true;
     if mode == frameSized {
-      rs = ReadState.Sized[];
+      rs = ReadState.Sized;
       remaining = n;
       return if n == 0u64 {BodyLength.empty();} else {BodyLength.sized(n);};
     }
     if mode == frameChunked {
-      rs = ReadState.ChunkSize[];
+      rs = ReadState.ChunkSize;
       return BodyLength.unsized();
     }
     if mode == frameClose {
-      rs = ReadState.UntilClose[];
+      rs = ReadState.UntilClose;
       return BodyLength.unsized();
     }
-    rs = ReadState.Sized[];
+    rs = ReadState.Sized;
     remaining = 0u64;
     BodyLength.empty();
   }
@@ -1025,11 +1025,11 @@ pub struct Connection is Move {
     imm avail = u64.from(input.len());
     if avail == 0u64 {
       if eof {return self.closedMidBody();}
-      return Event.NeedData[];
+      return Event.NeedData;
     }
-    if self.blocked() {return Event.Paused[];}
+    if self.blocked() {return Event.Paused;}
     mut n = avail;
-    if rs != ReadState.UntilClose[] and remaining < n {n = remaining;}
+    if rs != ReadState.UntilClose and remaining < n {n = remaining;}
     mut buf = IoBuf.empty();
     if u64.from(input.firstLen()) <= n {
       match input.popFront() {
@@ -1043,7 +1043,7 @@ pub struct Connection is Move {
         case is None[IoBuf] {}
       }
       if buf.capacity() == 0usize {
-        self.fail(ErrorKind.TooLarge[], 503u16, "the buffer pool refused a buffer for a body");
+        self.fail(ErrorKind.TooLarge, 503u16, "the buffer pool refused a buffer for a body");
         return self.failedEvent();
       }
       imm room = buf.spare();
@@ -1053,8 +1053,8 @@ pub struct Connection is Move {
     }
     imm got = buf.len();
     outstanding = outstanding + got;
-    if rs != ReadState.UntilClose[] {remaining = remaining - u64.from(got);}
-    Event.Data[buf];
+    if rs != ReadState.UntilClose {remaining = remaining - u64.from(got);}
+    Event.Data(buf);
   }
 
   // A chunk's size line: true once read (the state moved on), false when it
@@ -1091,7 +1091,7 @@ pub struct Connection is Move {
     match input.findByte('\n') {
       case imm p Some {
         if p < upTo {
-          self.fail(ErrorKind.Malformed[], 400u16, "a chunk's size line ends in an LF without its CR");
+          self.fail(ErrorKind.Malformed, 400u16, "a chunk's size line ends in an LF without its CR");
           return false;
         }
       }
@@ -1100,7 +1100,7 @@ pub struct Connection is Move {
     match input.findByte('\r') {
       case imm p Some {
         if p < upTo and p + 1usize < input.len() {
-          self.fail(ErrorKind.Malformed[], 400u16, "a CR in a chunk's size line is not followed by its LF");
+          self.fail(ErrorKind.Malformed, 400u16, "a CR in a chunk's size line is not followed by its LF");
           return false;
         }
       }
@@ -1108,14 +1108,14 @@ pub struct Connection is Move {
     }
     if not found {
       if input.len() > cfg.maxChunkLineBytes {
-        self.fail(ErrorKind.TooLarge[], 400u16, "a chunk's size line is longer than maxChunkLineBytes");
+        self.fail(ErrorKind.TooLarge, 400u16, "a chunk's size line is longer than maxChunkLineBytes");
         return false;
       }
-      if eof {self.fail(ErrorKind.Closed[], 0u16, "the connection closed in the middle of a chunked body");}
+      if eof {self.fail(ErrorKind.Closed, 0u16, "the connection closed in the middle of a chunked body");}
       return false;
     }
     if at > cfg.maxChunkLineBytes {
-      self.fail(ErrorKind.TooLarge[], 400u16, "a chunk's size line is longer than maxChunkLineBytes");
+      self.fail(ErrorKind.TooLarge, 400u16, "a chunk's size line is longer than maxChunkLineBytes");
       return false;
     }
     mut size = 0u64;
@@ -1134,7 +1134,7 @@ pub struct Connection is Move {
         case is None[IoBuf] {}
       }
       if tmp.capacity() == 0usize {
-        self.fail(ErrorKind.TooLarge[], 503u16, "the buffer pool refused a buffer for a chunk's size line");
+        self.fail(ErrorKind.TooLarge, 503u16, "the buffer pool refused a buffer for a chunk's size line");
         return false;
       }
       imm room = tmp.spare();
@@ -1148,9 +1148,9 @@ pub struct Connection is Move {
     }
     input.advance(at + skip);
     if size == 0u64 {
-      rs = ReadState.Trailers[];
+      rs = ReadState.Trailers;
     } else {
-      rs = ReadState.ChunkData[];
+      rs = ReadState.ChunkData;
       remaining = size;
     }
     true;
@@ -1164,7 +1164,7 @@ pub struct Connection is Move {
     }
     if input.len() < 2usize {
       if eof {return self.closedMidBody();}
-      return Event.NeedData[];
+      return Event.NeedData;
     }
     if input.matchesAt(0usize, "\r\n") {
       input.advance(2usize);
@@ -1174,7 +1174,7 @@ pub struct Connection is Move {
     if failed {return self.failedEvent();}
     if len == 0usize {
       if eof {return self.closedMidBody();}
-      return Event.NeedData[];
+      return Event.NeedData;
     }
     mut trailers = Headers.empty();
     mut err = HttpError.empty();
@@ -1195,36 +1195,36 @@ pub struct Connection is Move {
 
   // The message read is whole
   fn endMessage(self &mut, trailers Headers) Event {
-    rs = ReadState.Done[];
+    rs = ReadState.Done;
     bodyArmed = false;
-    if clientRole and ws != WriteState.Done[] {
+    if clientRole and ws != WriteState.Done {
       // The response ended while the request's body was still being sent
       abandoned = true;
       keepAlive = false;
-      ws = WriteState.Done[];
+      ws = WriteState.Done;
       holding = false;
       mut h = Chain.make(noBound);
       h <=> held;
     }
     self.endExchange();
-    Event.End[trailers];
+    Event.End(trailers);
   }
 
   // When both messages are whole the exchange is over: the connection is
   // kept for the next, or it closes
   fn endExchange(self &mut) {
-    if not clientRole and ws == WriteState.Done[] and rs != ReadState.Done[] {
+    if not clientRole and ws == WriteState.Done and rs != ReadState.Done {
       // Answered before the request's body was read: the rest of it cannot
       // be told from the next request, so the connection closes
       exchanges = exchanges + 1u64;
       closed = true;
       return;
     }
-    if rs != ReadState.Done[] or ws != WriteState.Done[] {return;}
+    if rs != ReadState.Done or ws != WriteState.Done {return;}
     exchanges = exchanges + 1u64;
     if keepAlive and not eof {
-      rs = ReadState.Idle[];
-      ws = WriteState.Idle[];
+      rs = ReadState.Idle;
+      ws = WriteState.Idle;
       remaining = 0u64;
       wremaining = 0u64;
       sawBytes = false;
@@ -1258,7 +1258,7 @@ pub struct Connection is Move {
           case is None[IoBuf] {}
         }
         if tail.capacity() == 0usize {
-          self.fail(ErrorKind.TooLarge[], 0u16, "the buffer pool refused a buffer for output");
+          self.fail(ErrorKind.TooLarge, 0u16, "the buffer pool refused a buffer for output");
           return;
         }
       }

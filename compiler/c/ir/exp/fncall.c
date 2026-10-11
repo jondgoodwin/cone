@@ -286,7 +286,10 @@ static int fnCallNameResPath(NameResState *pstate, FnCallNode **nodep) {
             &member->namesym->namestr, &inodeGetName(basedcl)->namestr);
 
     if (node->args == NULL) {
+        // A path that is a value term by itself, 'Lamp.Red', stays one
         *((INode**)nodep) = (INode*)member;
+        if (node->flags & FlagValueTermCall)
+            fnCallVariantTermNameRes(pstate, (INode**)nodep);
         return 1;
     }
     node->objfn = (INode*)member;
@@ -316,6 +319,21 @@ void fnCallNameRes(NameResState *pstate, FnCallNode **nodep) {
         return;
     node = *nodep;
 
+    // What stands in brackets after a type or a generic is type arguments, so a
+    // name there is never an empty variant's construction, 'Array[Lamp.Red, 4]';
+    // after a value it is an index, and one is, 'counts[Lamp.Red]'
+    if (node->args && (node->flags & FlagIndex) && node->methfld == NULL && isNameUseNode(node->objfn)) {
+        INode *calleedcl = nameUseGetDcl((NameUseNode*)node->objfn);
+        if (calleedcl && (isTypeNode(node->objfn) || genericGetInfo(calleedcl) != NULL)) {
+            for (nodesFor(node->args, cnt, argsp)) {
+                if ((*argsp)->tag == NameUseTag)
+                    (*argsp)->flags &= ~FlagValueTermName;
+                else if ((*argsp)->tag == FnCallTag)
+                    (*argsp)->flags &= ~FlagValueTermCall;
+            }
+        }
+    }
+
     // Name resolve arguments/statements
     if (node->args) {
         for (nodesFor(node->args, cnt, argsp))
@@ -341,6 +359,10 @@ void fnCallNameRes(NameResState *pstate, FnCallNode **nodep) {
         && !(arrayTypeDcl->genericinfo != NULL && !(node->flags & FlagRange)
             && node->args != NULL && node->args->used == 1))
         arrayTypeLower(pstate, (INode**)nodep);
+
+    // 'None[i32]' standing as a value term constructs that empty variant
+    if ((*nodep)->tag == FnCallTag && ((*nodep)->flags & FlagValueTermCall))
+        fnCallVariantTermNameRes(pstate, (INode**)nodep);
 }
 
 // Is an lval operator's receiver already a reference? Then it is passed as it
@@ -1099,7 +1121,7 @@ static FnCallNode *fnCallTagTestFor = NULL;
 static INode *fnCallTagTest = NULL;
 
 // '==' on an enum where either operand is statically an empty variant of it
-// ('x == None[]', 'event == Lamp.Off[]'): the other operand is that variant or
+// ('x == None', 'event == Lamp.Off'): the other operand is that variant or
 // is not, so the comparison asks the tag alone, whatever the other variants
 // carry, as 'x is &None' does of a borrow. Two variants that both carry fields
 // are not asked this way (fnCallLowerEnumEq). Lowers the call to the test, left
@@ -3292,6 +3314,108 @@ static INode *fnCallArgAgreed(INode *set, uint32_t firstparm, uint32_t argi, uin
     return agreed;
 }
 
+// The variant a name use names, generic or not, or NULL. A variant is a struct
+// written inside an enum (or tagged trait), so it has the base it belongs to.
+static StructNode *fnCallVariantNamed(INode *node) {
+    if (node == NULL || !isNameUseNode(node))
+        return NULL;
+    INode *dcl = nameUseGetDcl((NameUseNode*)node);
+    if (dcl == NULL || dcl->tag != StructTag || (dcl->flags & (EnumType | TraitType)))
+        return NULL;
+    return ((StructNode*)dcl)->basetrait != NULL && (dcl->flags & HasTagField) ? (StructNode*)dcl : NULL;
+}
+
+// Does this name an empty variant: one that is made with no values, holding
+// nothing beyond its tag or only fields that have defaults?
+static int fnCallIsEmptyVariantName(INode *node) {
+    StructNode *variant = fnCallVariantNamed(node);
+    if (variant == NULL)
+        return 0;
+    // The fields its enum has in common are spliced into a variant only when the
+    // enum is resolved, which name resolution of a use may not wait for, so they
+    // are asked of the enum as well
+    INode *owner = inodeGetOwner((INode*)variant);
+    StructNode *base = owner != NULL && owner->tag == StructTag && (owner->flags & EnumType) ? (StructNode*)owner : NULL;
+    INode **fldp;
+    uint32_t cnt;
+    for (nodelistFor(&variant->fields, cnt, fldp))
+        if (!((*fldp)->flags & (IsTagField | IsMixin)) && ((FieldDclNode*)*fldp)->value == NULL)
+            return 0;
+    if (base != NULL)
+        for (nodelistFor(&base->fields, cnt, fldp))
+            if (!((*fldp)->flags & (IsTagField | IsMixin)) && ((FieldDclNode*)*fldp)->value == NULL)
+                return 0;
+    return 1;
+}
+
+// An argument that type check may give its type from where it goes: a call, which
+// an empty variant's bare name is by then (fnCallVariantTermNameRes)
+static int fnCallArgMayInfer(INode *arg) {
+    return arg->tag == FnCallTag;
+}
+
+// A name that stands as a value term (the parser's mark) and names an empty
+// variant, 'Lamp.Red' or 'None', or names one with its type arguments, 'None[i32]',
+// is that variant constructed. It is built here as the literal the variant was
+// once written as, 'Lamp.Red[]', 'None[i32][]', marked as written the new way, and
+// type check treats it as it did that, a generic variant taking its type arguments
+// from where it goes as every generic does. This is name resolution's, not type
+// check's, so that every pass that asks of a node whether it is an expression, a
+// block's last statement or a function's, finds the call it always found.
+void fnCallVariantTermNameRes(NameResState *pstate, INode **nodep) {
+    INode *term = *nodep;
+    int construct = 0;
+    if (term->tag == NameUseTag) {
+        term->flags &= ~FlagValueTermName;
+        construct = fnCallIsEmptyVariantName(term);
+    }
+    else if (term->tag == FnCallTag) {
+        FnCallNode *index = (FnCallNode*)term;
+        index->flags &= ~FlagValueTermCall;
+        // An empty variant holds no values, so what stands in brackets after its name is its type arguments
+        construct = (index->flags & FlagIndex) && index->methfld == NULL && index->args != NULL
+            && index->args->used > 0 && fnCallIsEmptyVariantName(index->objfn);
+    }
+    if (!construct)
+        return;
+    FnCallNode *lit = newFnCallNode(term, 0);
+    inodeLexCopy((INode*)lit, term);
+    lit->args = newNodes(1);
+    lit->flags |= FlagIndex | FlagCtorParen;
+    *nodep = (INode*)lit;
+}
+
+// A call whose callee is a variant, 'Some(5)' or, with its type arguments written,
+// 'Some[i32](5)', is that variant's construction: the literal it was once written
+// as, 'Some[5]', marked as written the new way. Answers 1 when the call is done with
+// (an error reported), 0 to go on checking it, a construction or not.
+static int fnCallVariantCall(TypeCheckState *pstate, FnCallNode *node) {
+    INode *callee = node->objfn;
+    // The type arguments first: 'Some[i32]' is the variant's instance
+    if (callee->tag == FnCallTag && (callee->flags & FlagIndex) && ((FnCallNode*)callee)->methfld == NULL
+        && !(callee->flags & FlagRange) && ((FnCallNode*)callee)->args != NULL
+        && fnCallVariantNamed(((FnCallNode*)callee)->objfn)) {
+        inodeTypeCheckAny(pstate, &node->objfn);
+        if (inodeIsError(node->objfn)) {
+            node->vtype = errorType;
+            return 1;
+        }
+        callee = node->objfn;
+    }
+    StructNode *variant = fnCallVariantNamed(callee);
+    if (variant == NULL)
+        return 0;
+    if (node->args->used == 0 && !structVariantCarriesFields(variant)) {
+        errorMsgNode((INode*)node, ErrorVariantEmptyCall,
+            "%s is an empty variant, which is constructed by its name alone: write %s, without parentheses.",
+            &variant->namesym->namestr, &variant->namesym->namestr);
+        node->vtype = errorType;
+        return 1;
+    }
+    node->flags |= FlagIndex | FlagCtorParen;
+    return 0;
+}
+
 // Perform type check on function/method call node
 // This should only be run once on a node, as it mutably lowers the node to another form:
 // - If a generic/macro, it instantiates, then type checks instantiated nodes
@@ -3323,6 +3447,16 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
         typeLitNewCheck(pstate, nodep, expectType);
         return;
     }
+
+    // Set by the parser on the last suffix of a value term; name resolution has
+    // read it (fnCallVariantTermNameRes), and it is gone from the node, not to be
+    // taken for flow's FlagPartNoPrior, which shares its bit
+    node->flags &= ~FlagValueTermCall;
+
+    // 'Some(5)', 'Some[i32](5)': a variant called is constructed
+    if (!(node->flags & (FlagIndex | FlagOperator)) && node->methfld == NULL && node->args != NULL
+        && fnCallVariantCall(pstate, node))
+        return;
 
     // The step of a numeric range 'each', which the parser built before its counter's
     // type was known: a float counter is assigned, any other stepped by the operator
@@ -3535,7 +3669,7 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
             litstruct = (StructNode*)littype;
     }
 
-    // An operator whose one argument is a call, 'x == None[]' or 'xs <- make()',
+    // An operator whose one argument is a call, 'x == None' or 'xs <- make()',
     // is checked receiver first, as a method call is, so the argument can be
     // wanted as what the receiver says: its own type for '==' and '!=', the
     // type the receiver's '<-' takes for an append. Any other operand keeps
@@ -3544,7 +3678,7 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
     INode *opexpect = NULL;
     Name *argopname = fnCallOperatorName(node);
     if (argopname && (argopname == eqName || argopname == neName || argopname == lessDashName)
-        && node->args && node->args->used == 1 && nodesGet(node->args, 0)->tag == FnCallTag
+        && node->args && node->args->used == 1 && fnCallArgMayInfer(nodesGet(node->args, 0))
         && !objfnChecked && !calleeIsOverload
         && (!isNameUseNode(node->objfn) || nameUseNames(node->objfn, VarDclTag) || nameUseNames(node->objfn, ConstDclTag))) {
         inodeTypeCheckAny(pstate, &node->objfn);
@@ -3593,7 +3727,7 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
             }
             else if (opexpect)
                 expect = opexpect;
-            else if (overloadset && (*argsp)->tag == FnCallTag) {
+            else if (overloadset && fnCallArgMayInfer(*argsp)) {
                 INode *agreed = fnCallArgAgreed(overloadset, ovfirst, argi, node->args->used);
                 if (agreed)
                     expect = agreed;
@@ -3658,7 +3792,8 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
 
     // If objfn is a type: a literal in brackets, or the type called
     if (isTypeNode(node->objfn)) {
-        // A literal in brackets: a variant's, 'Some[x]', or a struct's, refused
+        // A literal in brackets: a variant's (built from 'Some(x)' or the bare name, marked
+        // FlagCtorParen, else refused) or a struct's, refused
         // but where an allocation takes it as its value (typeLitTypeCheck)
         if (node->flags & FlagIndex) {
             node->tag = TypeLitTag;

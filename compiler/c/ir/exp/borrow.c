@@ -333,9 +333,9 @@ static int borrowRefIndexDispatches(RefNode *node) {
 //
 // A type in that position is not a receiver and is left alone. '&Box[i64]' is an
 // instantiation and never arrives here at all, refNameRes having kept the whole
-// node a type. A literal in brackets, '&Some[x]' (or a struct's, '&Point[1, 2]',
-// refused as one), does arrive, and stays a literal rather than becoming an
-// index of '&Some' -- a temporary, which the borrow refuses below. It used to
+// node a type. A literal in brackets, '&Point[1, 2]' (a struct's, refused;
+// a variant's is a call, '&Some(x)'), does arrive, and stays a literal rather than becoming an
+// index of '&Point' -- a temporary, which the borrow refuses below. It used to
 // be a literal of the reference type, which nothing accepted.
 // Nor is a list of type arguments an index: '&half[i64]' and
 // '&Holder.pick[i32]' borrow the instance they name, which re-associating would

@@ -38,11 +38,11 @@ fn spinFor(ns i64) {
   while Instant.now() < until {}
 }
 
-fn noWork(arg u64, buf &mut IoBuf) Outcome {Outcome.Done[0usize];}
+fn noWork(arg u64, buf &mut IoBuf) Outcome {Outcome.Done(0usize);}
 
 fn sleepWork(arg u64, buf &mut IoBuf) Outcome {
   thread.sleep(Duration.fromMillis(i64.from(arg)));
-  Outcome.Done[0usize];
+  Outcome.Done(0usize);
 }
 
 fn waitFor(lp &mut Loop, out &mut List[Completion], k usize) {
@@ -57,8 +57,8 @@ fn pair(lp &mut Loop) Handle, Handle {
     case imm a Ok {port = a.port();}
     case imm e Error {}
   }
-  lp.submit(Op.Accept[listener], Target.Here[1u64]);
-  lp.submit(Op.Connect[SocketAddr.localhost(port)], Target.Here[2u64]);
+  lp.submit(Op.Accept(listener), Target.Here(1u64));
+  lp.submit(Op.Connect(SocketAddr.localhost(port)), Target.Here(2u64));
   mut out = List[Completion].empty();
   waitFor(lp, &mut out, 2usize);
   mut a = Handle.none();
@@ -162,7 +162,7 @@ fn main() i32 {
     mut here = Histogram.make();
     mut k = 0u64;
     while k < n {
-      mut c = lp.external(Target.Here[0u64], IoBuf.empty());
+      mut c = lp.external(Target.Here(0u64), IoBuf.empty());
       c.done(0usize);
       waitFor(&mut lp, &mut out, 1usize);
       here.record((out[0usize].delivered - out[0usize].dequeued).nanos());
@@ -179,7 +179,7 @@ fn main() i32 {
     while k < n {
       spinFor(30000i64);
       imm before = lp.counters().handedOff;
-      mut c = lp.external(Target.Chan[0u64, tx.clone()], IoBuf.empty());
+      mut c = lp.external(Target.Chan(0u64, tx.clone()), IoBuf.empty());
       c.done(0usize);
       while lp.counters().handedOff == before {lp.poll(forever(), &mut out);}
       k = k + 1u64;
@@ -201,7 +201,7 @@ fn main() i32 {
       otx.send(srx);
       spinFor(30000i64);
       imm before = lp.counters().handedOff;
-      mut c = lp.external(Target.Once[0u64, stx], IoBuf.empty());
+      mut c = lp.external(Target.Once(0u64, stx), IoBuf.empty());
       c.done(0usize);
       while lp.counters().handedOff == before {lp.poll(forever(), &mut out);}
       k = k + 1u64;
@@ -217,7 +217,7 @@ fn main() i32 {
     while k < n {
       while not board.isFree(0u32) {}
       spinFor(5000i64);
-      mut c = lp.external(Target.Status[0u64, board, 0u32], IoBuf.empty());
+      mut c = lp.external(Target.Status(0u64, board, 0u32), IoBuf.empty());
       c.done(0usize);
       imm before = lp.counters().handedOff;
       while lp.counters().handedOff == before {lp.poll(forever(), &mut out);}
@@ -236,7 +236,7 @@ fn main() i32 {
     mut reply = Histogram.make();
     mut k = 0u64;
     while k < n {
-      imm id = lp.submit(Op.Recv[a, pool.mustTake(64usize)], Target.Here[0u64]);
+      imm id = lp.submit(Op.Recv(a, pool.mustTake(64usize)), Target.Here(0u64));
       imm t0 = Instant.now();
       lp.cancel(id);
       imm t1 = Instant.now();
@@ -256,7 +256,7 @@ fn main() i32 {
     mut remote = Histogram.make();
     k = 0u64;
     while k < n {
-      imm id = lp.submit(Op.Recv[a, pool.mustTake(64usize)], Target.Here[0u64]);
+      imm id = lp.submit(Op.Recv(a, pool.mustTake(64usize)), Target.Here(0u64));
       imm t0 = Instant.now();
       rtx.send(lp.request(id));
       waitFor(&mut lp, &mut out, 1usize);
@@ -289,7 +289,7 @@ fn main() i32 {
       imm g = CancelGroup.make();
       mut j = 0usize;
       while j < socks.len() {
-        lp.submitIn(Op.Recv[*socks[j], pool.mustTake(64usize)], Target.Here[0u64], g, forever());
+        lp.submitIn(Op.Recv(*socks[j], pool.mustTake(64usize)), Target.Here(0u64), g, forever());
         j = j + 1usize;
       }
       imm t0 = Instant.now();
@@ -306,11 +306,11 @@ fn main() i32 {
 
     imm one = addLane(new LaneConfig(name: "one", maxThreads: 1u32, queueBound: 2000u32));
     // A job holding the lane's one thread, so the 1,000 behind it stay queued
-    lp.submit(Op.Call[one, &sleepWork, 300u64, IoBuf.empty()], Target.Here[0u64]);
+    lp.submit(Op.Call(one, &sleepWork, 300u64, IoBuf.empty()), Target.Here(0u64));
     mut ids = List[OpId].empty();
     k = 0u64;
     while k < 1000u64 {
-      ids.push(lp.submit(Op.Call[one, &noWork, 0u64, pool.mustTake(64usize)], Target.Here[0u64]));
+      ids.push(lp.submit(Op.Call(one, &noWork, 0u64, pool.mustTake(64usize)), Target.Here(0u64)));
       k = k + 1u64;
     }
     imm t0 = Instant.now();
@@ -335,14 +335,14 @@ fn main() i32 {
     imm s0 = Instant.now();
     k = 0u64;
     while k < reps {
-      imm id = lp.after(Instant.now() + Duration.fromSeconds(1i64), Target.Here[0u64]);
+      imm id = lp.after(Instant.now() + Duration.fromSeconds(1i64), Target.Here(0u64));
       lp.cancel(id);
       k = k + 1u64;
     }
     imm s1 = Instant.now();
     k = 0u64;
     while k < reps {
-      imm id = lp.afterIn(Instant.now() + Duration.fromSeconds(1i64), Target.Here[0u64], g);
+      imm id = lp.afterIn(Instant.now() + Duration.fromSeconds(1i64), Target.Here(0u64), g);
       lp.cancel(id);
       k = k + 1u64;
     }
@@ -365,7 +365,7 @@ fn main() i32 {
     mut k = 0u64;
     while k < n {
       imm t0 = Instant.now();
-      lp.submit(Op.Call[Lane.general(), &noWork, 0u64, IoBuf.empty()], Target.Here[0u64]);
+      lp.submit(Op.Call(Lane.general(), &noWork, 0u64, IoBuf.empty()), Target.Here(0u64));
       waitFor(&mut lp, &mut out, 1usize);
       rt.record((out[0usize].delivered - t0).nanos());
       out.clear();
@@ -376,7 +376,7 @@ fn main() i32 {
     imm t0 = Instant.now();
     k = 0u64;
     while k < 10000u64 {
-      lp.submit(Op.Call[Lane.general(), &noWork, 0u64, IoBuf.empty()], Target.Here[0u64]);
+      lp.submit(Op.Call(Lane.general(), &noWork, 0u64, IoBuf.empty()), Target.Here(0u64));
       if k % 1000u64 == 999u64 {
         waitFor(&mut lp, &mut out, 1000usize);
         out.clear();
@@ -398,7 +398,7 @@ fn main() i32 {
     mut h = Histogram.make();
     mut k = 0u64;
     while k < n {
-      etx.send(lp.external(Target.Here[0u64], IoBuf.empty()));
+      etx.send(lp.external(Target.Here(0u64), IoBuf.empty()));
       lp.poll(forever(), &mut out);
       while out.len() == 0usize {lp.poll(forever(), &mut out);}
       h.record(out[0usize].delivered.nanos() - i64.from(out[0usize].n));

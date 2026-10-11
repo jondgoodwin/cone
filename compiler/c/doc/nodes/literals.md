@@ -3,8 +3,10 @@ string in `literal.c`; the array literal in `arraylit.c`, which **shares its nod
 array type**; and the type literal in `typelit.c`, which **shares its node with
 a call**. A struct's value is constructed `new Point(1, 2)`, and a construction
 its implicit field-wise init takes is lowered into a type literal; so is a
-number's conversion, `u64.from(count)`. An enum's variant writes its literal in
-brackets, `Some[x]`; a struct's in brackets is refused. An allocation,
+number's conversion, `u64.from(count)`. An enum's variant writes its literal with
+parentheses, `Some(x)`, and an empty one by its name alone, `None`; either is lowered here
+from a call or a name (`fnCallVariantCall`, `fnCallVariantTermNameRes`), and the variant's
+literal in brackets, `Some[x]`, is refused (`ErrorVariantBracket`), as a struct's is. An allocation,
 `new Rc[mut, Node](1)`, constructs its value the same way, in the region.
 
 **At a glance.** The parser builds them without deciding types. Name resolution
@@ -82,8 +84,8 @@ A type literal is not built as one. A construction, `new Point(1, 2)`, is an
 `FnCallNode` flagged `FlagNew` (`parseNew`): its `objfn` the type -- a name, a
 path, type arguments in brackets -- and its `args` what is in the parentheses,
 none when they are left off. A bracketed form is an `FnCallNode` with
-`FlagIndex` from `parseSuffix`, and whether `Some[x]` is an index, an
-instantiation, or a variant's literal is type check's. `parseArg` wraps
+`FlagIndex` from `parseSuffix`, and whether `Some[x]` is an index or an
+instantiation is type check's (a variant's literal is `Some(x)`). `parseArg` wraps
 `name: value` in a `NamedValNode` in every argument list, so refusing the
 wrapper everywhere else is type check's too: `fnCallTypeCheck`, once it knows
 the call is not a type literal, `typeLitNewCheck` for a name a declared init
@@ -372,7 +374,7 @@ one constant dimension, forced to `usize`, and exactly one value.
   supertype found by `itypeFindSuper`. An element already reported bad
   contributes nothing. Where a supertype was reached, a second pass coerces
   every element to it, because the array's element type and the values in it
-  would otherwise disagree about size. So `[Circle[..], Rect[..]]` is an array
+  would otherwise disagree about size. So `[Circle(..), Rect(..)]` is an array
   of their enum, while `[1, 2u8]` is still refused — signed and unsigned have
   no type in common.
 

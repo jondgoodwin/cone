@@ -514,6 +514,12 @@ static INode *parseMatchPattern(ParseState *parse, MatchSubject *subject) {
         return cond;
     }
     INode *value = parseOr(parse);
+    // A bare name here may name a variant of the matched value's enum, which is a
+    // test and no construction; type check decides (newMatchValueNode)
+    if (value && value->tag == NameUseTag)
+        value->flags &= ~FlagValueTermName;
+    else if (value && value->tag == FnCallTag)
+        value->flags &= ~FlagValueTermCall;
     if (lexIsRangeOp())
         return parseMatchRange(parse, subject, value);
     if (parseCmpOp() != NULL || lexIsToken(IsToken) || lexIsToken(AndToken)) {

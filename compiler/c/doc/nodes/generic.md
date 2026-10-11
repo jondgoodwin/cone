@@ -404,7 +404,7 @@ never misses the memo and never expands again. **A use given type arguments is
 the exception**: `Box[i32]` inside `Box[T]` names another instance, and `Box[T]`
 names this one through the memo, so `cloneFnCallNode` puts the template back as
 the head of any call whose arguments are types (`fnCallHasTypeArgs`). A
-construction or a variant's literal — `new Box(v)`, `Mb.No[]` — builds this
+construction or a variant's literal — `new Box(v)`, `Mb.No` — builds this
 instance and stays mapped. Only a generic
 *type* is reserved: a generic function named bare in its own body is a call whose
 type arguments are inferred, as it is anywhere else. A generic *module* maps its
@@ -518,7 +518,7 @@ false diagnostic. The cost is silent acceptance — see Hazards.
    nothing anyway. A float literal has no such flag and is an `f32`, as it is
    anywhere. A type literal's values defer the same way
    (`genericInferStructParms` leaves such a literal, written by position or by
-   name, to `genericInferStructLiterals`, which runs last), so `Some[5]` and
+   name, to `genericInferStructLiterals`, which runs last), so `Some(5)` and
    `Pair[a: 1i64, b: 2]` agree on one type.
 
    **A type parameter nothing above filled is read off where the value goes**
@@ -541,9 +541,9 @@ false diagnostic. The cost is silent acceptance — see Hazards.
    literals take their default, in a function and in a type literal alike, so
    `imm n i64 = add(2000000000, 2000000000)` adds `i64`s. A method gets it through
    `genericMethodInstance`, and `typeLitNewCheck` for `new Box(5)`. Not built, and
-   so refused: a constructor given to a constructor (`Some[None[]]` has no
+   so refused: a constructor given to a constructor (`Some(None)` has no
    expectation for the inner call), a parameter that comes from a later
-   argument, and an untyped `None[]` as an operator's receiver. A slot still
+   argument, and an untyped `None` as an operator's receiver. A slot still
    empty is reported by `genericMissingParms`, which names the parameters and the
    brackets to write, and the call becomes an error node, so no second diagnostic
    follows.

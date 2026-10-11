@@ -1023,8 +1023,16 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
                 genSlot(&g, variant);
             else
                 genName(&g, fn->namesym);
-            genPuts(&g, "[");
+            // A variant holding values is constructed with parentheses; one that
+            // holds none, by its name alone
+            int anyparm = 0;
+            for (nodesFor(((FnSigNode *)fn->vtype)->parms, parmcnt, parmp))
+                if (((VarDclNode *)*parmp)->namesym != selfName)
+                    anyparm = 1;
+            int holds = anyparm || asked;
             int first = 1;
+            if (holds)
+                genPuts(&g, "(");
             for (nodesFor(((FnSigNode *)fn->vtype)->parms, parmcnt, parmp)) {
                 VarDclNode *parm = (VarDclNode *)*parmp;
                 if (parm->namesym == selfName)
@@ -1039,7 +1047,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
                     genPuts(&g, ", ");
                 genSlot(&g, GenEnvelope);
             }
-            genPuts(&g, "]);}\n");
+            genPuts(&g, holds ? "));}\n" : ");}\n");
         }
     }
     // A behaviour that returns a value is called for its future by a third
@@ -1111,7 +1119,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
         genSlot(&g, GenMsg);
         genPuts(&g, ".");
         genSlot(&g, variant);
-        genPuts(&g, "[");
+        genPuts(&g, "(");
         for (nodesFor(((FnSigNode *)fn->vtype)->parms, parmcnt, parmp)) {
             VarDclNode *parm = (VarDclNode *)*parmp;
             if (parm->namesym == selfName)
@@ -1122,7 +1130,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
         genSlot(&g, GenActors);
         genPuts(&g, ".futureReply[");
         genPutn(&g, rtx.text, rtx.len);
-        genPuts(&g, "](&f)]);\n    f;\n  }\n");
+        genPuts(&g, "](&f)));\n    f;\n  }\n");
     }
     genPuts(&g, "}\n");
 
@@ -1274,9 +1282,9 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
         genSlot(&g, GenMsg);
         genPuts(&g, ".");
         genSlot(&g, withid ? GenResumeId : GenResume);
-        genPuts(&g, withid ? "[run, id, " : "[run, ");
+        genPuts(&g, withid ? "(run, id, " : "(run, ");
         genSlot(&g, GenActors);
-        genPuts(&g, ".replyData(&r)]);\n  r;\n}\n");
+        genPuts(&g, ".replyData(&r)));\n  r;\n}\n");
     }
 
     // 'selfactor': the actor's own handle, another owner of its mailbox, which

@@ -46,7 +46,7 @@ fn server(pool Pool) Srv {
 
 fn listen(sv &mut Srv, lp &mut Loop) u16 {
   mut port = 0u16;
-  match sv.drv.listen(lp, SocketAddr.localhost(0u16), httpconn.Sink.Here[tokSrv]) {
+  match sv.drv.listen(lp, SocketAddr.localhost(0u16), httpconn.Sink.Here(tokSrv)) {
     case imm r Ok {
       match sv.drv.localAddr(lp, r) {
         case imm a Ok {port = a.port();}
@@ -73,7 +73,7 @@ fn answer(sv &mut Srv, lp &mut Loop, k usize) {
   imm req = *sv.reqs[k];
   imm target = sv.targets[k].copy();
   imm t = target.view();
-  imm head = *sv.methods[k] == Method.Head[];
+  imm head = *sv.methods[k] == Method.Head;
   if t == "/echo" {
     mut b = String.from(methodToken(*sv.methods[k]));
     b.append(" ");
@@ -109,23 +109,23 @@ fn forget(sv &mut Srv, k usize) {
 
 fn serve(sv &mut Srv, lp &mut Loop, e &mut httpconn.Event) {
   imm kind = e.kind;
-  if kind == httpconn.EventKind.Accepted[] {
+  if kind == httpconn.EventKind.Accepted {
     sv.accepted = sv.accepted + 1u64;
     sv.open = sv.open + 1u64;
     if sv.open > sv.maxOpen {sv.maxOpen = sv.open;}
-  } elif kind == httpconn.EventKind.Closed[] {
+  } elif kind == httpconn.EventKind.Closed {
     sv.open = sv.open - 1u64;
-  } elif kind == httpconn.EventKind.Request[] {
+  } elif kind == httpconn.EventKind.Request {
     sv.requests = sv.requests + 1u64;
     sv.reqs.push(e.req);
     sv.methods.push(e.request.method);
     sv.targets.push(e.request.target.copy());
     sv.bodies.push(String.empty());
-  } elif kind == httpconn.EventKind.Data[] {
+  } elif kind == httpconn.EventKind.Data {
     imm k = findReq(sv, e.req);
     if k < sv.reqs.len() {(&mut sv.bodies[k]).appendBytes(e.buf.view());}
     sv.drv.release(e.req, e.buf.len());
-  } elif kind == httpconn.EventKind.End[] {
+  } elif kind == httpconn.EventKind.End {
     imm k = findReq(sv, e.req);
     if k < sv.reqs.len() {answer(sv, lp, k);}
   } elif e.isTerminal() {
@@ -182,23 +182,23 @@ struct Seen {
 
 fn seen() Seen {
   new Seen(status: 0u16, body: String.empty(), url: String.empty(), kinds: String.empty(), finals: 0u64,
-    last: EventKind.Done[], failure: String.empty(), stage: Stage.Url[], timing: Timing.zero());
+    last: EventKind.Done, failure: String.empty(), stage: Stage.Url, timing: Timing.zero());
 }
 
 fn note(cl &mut Client, s &mut Seen, e &mut Event) {
   imm n = eventName(e.kind);
   s.kinds.appendByte(n[0usize]);
-  if e.kind == EventKind.Response[] {
+  if e.kind == EventKind.Response {
     s.status = e.response.status;
     s.url = e.url.copy();
-  } elif e.kind == EventKind.Data[] {
+  } elif e.kind == EventKind.Data {
     s.body.appendBytes(e.buf.view());
     cl.release(e.id, e.buf.len());
   } elif e.isTerminal() {
     s.finals = s.finals + 1u64;
     s.last = e.kind;
     s.timing = e.timing;
-    if e.kind == EventKind.Failed[] {
+    if e.kind == EventKind.Failed {
       s.failure = e.failure.message();
       s.stage = e.failure.stage;
     }
@@ -240,11 +240,11 @@ fn drain(cl &mut Client, sv &mut Srv, lp &mut Loop, n u64, fails &mut List[Strin
     mut j = 0usize;
     while j < out.len() {
       imm e = &mut out[j];
-      if e.kind == EventKind.Data[] {cl.release(e.id, e.buf.len());}
+      if e.kind == EventKind.Data {cl.release(e.id, e.buf.len());}
       if e.isTerminal() {
         finals = finals + 1u64;
-        if e.kind == EventKind.Done[] {dones = dones + 1u64;}
-        if e.kind == EventKind.Failed[] {fails.push(e.failure.message());}
+        if e.kind == EventKind.Done {dones = dones + 1u64;}
+        if e.kind == EventKind.Failed {fails.push(e.failure.message());}
       }
       j = j + 1usize;
     }
@@ -295,7 +295,7 @@ fn main() i32 {
 
     // A GET: Response, Data, End, Done, in that order
     mut s = seen();
-    imm id = cl.get(&mut lp, url(port, "/hello").view(), Sink.Here[1u64]);
+    imm id = cl.get(&mut lp, url(port, "/hello").view(), Sink.Here(1u64));
     expect(cl.isLive(id), "a fetch's id names it until its answer");
     finishOf(&mut cl, &mut sv, &mut lp, id, &mut s);
     expectStr(s.kinds.view(), "RDED", "a GET's events: Response, Data, End, Done");
@@ -313,9 +313,9 @@ fn main() i32 {
     mut reusedAll = true;
     while k < 4u32 {
       mut t = seen();
-      imm i = cl.get(&mut lp, url(port, "/hello").view(), Sink.Here[1u64]);
+      imm i = cl.get(&mut lp, url(port, "/hello").view(), Sink.Here(1u64));
       finishOf(&mut cl, &mut sv, &mut lp, i, &mut t);
-      if not (t.last == EventKind.Done[] and t.timing.reused) {reusedAll = false;}
+      if not (t.last == EventKind.Done and t.timing.reused) {reusedAll = false;}
       k = k + 1u32;
     }
     expect(reusedAll, "each later GET on a reused connection");
@@ -331,37 +331,37 @@ fn main() i32 {
     mut post = Request.make("POST", url(port, "/echo").view());
     post.body = String.from("a body sent whole");
     post.headers.add("Content-Type", "text/plain");
-    imm pid = cl.send(&mut lp, post, Sink.Here[2u64]);
+    imm pid = cl.send(&mut lp, post, Sink.Here(2u64));
     finishOf(&mut cl, &mut sv, &mut lp, pid, &mut p);
     expectStr(p.body.view(), "POST a body sent whole", "POST: the body echoed");
 
     // HEAD and 204: no body
     mut h = seen();
-    imm hid = cl.send(&mut lp, Request.make("HEAD", url(port, "/hello").view()), Sink.Here[3u64]);
+    imm hid = cl.send(&mut lp, Request.make("HEAD", url(port, "/hello").view()), Sink.Here(3u64));
     finishOf(&mut cl, &mut sv, &mut lp, hid, &mut h);
     expectStr(h.kinds.view(), "RED", "HEAD: Response, End, Done");
     mut n = seen();
-    imm nid = cl.get(&mut lp, url(port, "/nobody").view(), Sink.Here[3u64]);
+    imm nid = cl.get(&mut lp, url(port, "/nobody").view(), Sink.Here(3u64));
     finishOf(&mut cl, &mut sv, &mut lp, nid, &mut n);
     expectUInt(u64.from(n.status), 204u64, "204");
     expectStr(n.kinds.view(), "RED", "204: Response, End, Done");
 
     // Refused at once: a URL that does not parse, another scheme
     mut b = seen();
-    imm bid = cl.get(&mut lp, "http://[::1/", Sink.Here[4u64]);
+    imm bid = cl.get(&mut lp, "http://[::1/", Sink.Here(4u64));
     finishOf(&mut cl, &mut sv, &mut lp, bid, &mut b);
     expectStr(b.kinds.view(), "F", "a bad URL: Failed alone");
-    expect(b.stage == Stage.Url[], "...at Stage.Url");
+    expect(b.stage == Stage.Url, "...at Stage.Url");
     expectStr(b.failure.view(), "url: malformed: url: an IPv6 address in a URL ends with ']' (at 7)", "...saying why");
     mut f = seen();
-    imm fid = cl.get(&mut lp, "ftp://example.com/x", Sink.Here[4u64]);
+    imm fid = cl.get(&mut lp, "ftp://example.com/x", Sink.Here(4u64));
     finishOf(&mut cl, &mut sv, &mut lp, fid, &mut f);
     expectStr(f.failure.view(), "url: malformed: only http and https URLs are fetched", "ftp: refused");
 
     // The per-origin limit: ten at once, two connections
     k = 0u32;
     while k < 10u32 {
-      cl.get(&mut lp, url(port, "/hello").view(), Sink.Here[5u64]);
+      cl.get(&mut lp, url(port, "/hello").view(), Sink.Here(5u64));
       k = k + 1u32;
     }
     expectUInt(u64.from(cl.queued()), 10u64, "ten wait before the client is driven");
@@ -380,12 +380,12 @@ fn main() i32 {
     mut cfg = Config.make();
     cfg.maxQueued = 2u32;
     mut cl = Client.make(cfg, pool);
-    cl.get(&mut lp, url(port, "/hello").view(), Sink.Here[1u64]);
-    cl.get(&mut lp, url(port, "/hello").view(), Sink.Here[1u64]);
+    cl.get(&mut lp, url(port, "/hello").view(), Sink.Here(1u64));
+    cl.get(&mut lp, url(port, "/hello").view(), Sink.Here(1u64));
     mut q = seen();
-    imm qid = cl.get(&mut lp, url(port, "/hello").view(), Sink.Here[1u64]);
+    imm qid = cl.get(&mut lp, url(port, "/hello").view(), Sink.Here(1u64));
     finishOf(&mut cl, &mut sv, &mut lp, qid, &mut q);
-    expect(q.last == EventKind.Failed[] and q.stage == Stage.Queue[], "the third: Failed, Stage.Queue");
+    expect(q.last == EventKind.Failed and q.stage == Stage.Queue, "the third: Failed, Stage.Queue");
     expectStr(q.failure.view(), "queue: too large: maxQueued requests already wait for a connection", "...saying why");
     expectUInt(drain(&mut cl, &mut sv, &mut lp, 2u64, &mut fails), 2u64, "the two before it Done");
     finish(&mut cl, &mut sv, &mut lp);
@@ -399,8 +399,8 @@ fn main() i32 {
     mut cl = Client.make(cfg, pool);
     mut k = 0u32;
     while k < 6u32 {
-      cl.get(&mut lp, url(port, "/hello").view(), Sink.Here[1u64]);
-      cl.get(&mut lp, url(port2, "/hello").view(), Sink.Here[1u64]);
+      cl.get(&mut lp, url(port, "/hello").view(), Sink.Here(1u64));
+      cl.get(&mut lp, url(port2, "/hello").view(), Sink.Here(1u64));
       k = k + 1u32;
     }
     peakOpen = 0u32;
@@ -417,19 +417,19 @@ fn main() i32 {
     // A third origin: the total is reached, so an idle connection is closed for it
     mut t = seen();
     imm closedBefore = s3.closed;
-    imm tid = cl.get(&mut lp, "http://127.0.0.1:1/x", Sink.Here[2u64]);
+    imm tid = cl.get(&mut lp, "http://127.0.0.1:1/x", Sink.Here(2u64));
     finishOf(&mut cl, &mut sv, &mut lp, tid, &mut t);
     expectUInt(cl.stats().closed - closedBefore, 2u64, "an idle connection closed to make room, and the failed one");
-    expect(t.last == EventKind.Failed[] and t.stage == Stage.Connect[], "nothing listens on port 1: Failed connecting");
+    expect(t.last == EventKind.Failed and t.stage == Stage.Connect, "nothing listens on port 1: Failed connecting");
     finish(&mut cl, &mut sv, &mut lp);
   }
 
   // ---- A connection that cannot be made fails all that wait for it ----
   {
     mut cl = Client.make(Config.make(), pool);
-    imm a = cl.get(&mut lp, "http://127.0.0.1:1/a", Sink.Here[1u64]);
-    cl.get(&mut lp, "http://127.0.0.1:1/b", Sink.Here[1u64]);
-    cl.get(&mut lp, "http://127.0.0.1:1/c", Sink.Here[1u64]);
+    imm a = cl.get(&mut lp, "http://127.0.0.1:1/a", Sink.Here(1u64));
+    cl.get(&mut lp, "http://127.0.0.1:1/b", Sink.Here(1u64));
+    cl.get(&mut lp, "http://127.0.0.1:1/c", Sink.Here(1u64));
     mut fl = List[String].empty();
     expectUInt(drain(&mut cl, &mut sv, &mut lp, 3u64, &mut fl), 0u64, "three to a port no one listens on: none Done");
     expectUInt(u64.from(fl.len()), 3u64, "...all three Failed");
@@ -446,15 +446,15 @@ fn main() i32 {
     cfg.idleTimeout = Duration.fromMillis(100i64);
     mut cl = Client.make(cfg, pool);
     mut s = seen();
-    imm i1 = cl.get(&mut lp, url(port, "/hello").view(), Sink.Here[1u64]);
+    imm i1 = cl.get(&mut lp, url(port, "/hello").view(), Sink.Here(1u64));
     finishOf(&mut cl, &mut sv, &mut lp, i1, &mut s);
     expectUInt(u64.from(cl.stats().idleNow), 1u64, "idle after its GET");
     idleFor(&mut cl, &mut sv, &mut lp, Duration.fromMillis(300i64));
     expectUInt(u64.from(cl.stats().openNow), 0u64, "closed once idle past idleTimeout");
     mut s2 = seen();
-    imm i2 = cl.get(&mut lp, url(port, "/hello").view(), Sink.Here[1u64]);
+    imm i2 = cl.get(&mut lp, url(port, "/hello").view(), Sink.Here(1u64));
     finishOf(&mut cl, &mut sv, &mut lp, i2, &mut s2);
-    expect(s2.last == EventKind.Done[] and not s2.timing.reused, "the next GET on a new connection");
+    expect(s2.last == EventKind.Done and not s2.timing.reused, "the next GET on a new connection");
     finish(&mut cl, &mut sv, &mut lp);
   }
 

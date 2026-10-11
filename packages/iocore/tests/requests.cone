@@ -34,8 +34,8 @@ fn pair(lp &mut Loop) Handle, Handle {
     case imm a Ok {port = a.port();}
     case imm e Error {}
   }
-  lp.submit(Op.Accept[listener], Target.Here[9001u64]);
-  lp.submit(Op.Connect[SocketAddr.localhost(port)], Target.Here[9002u64]);
+  lp.submit(Op.Accept(listener), Target.Here(9001u64));
+  lp.submit(Op.Connect(SocketAddr.localhost(port)), Target.Here(9002u64));
   mut out = List[Completion].empty();
   waitFor(lp, &mut out, 2usize);
   mut a = Handle.none();
@@ -69,7 +69,7 @@ fn main() i32 {
 
     // 1. Dropped
     {
-      imm id = lp.submit(Op.Recv[a, pool.mustTake(100usize)], Target.Here[1u64]);
+      imm id = lp.submit(Op.Recv(a, pool.mustTake(100usize)), Target.Here(1u64));
       {
         imm r = lp.request(id);
         expect(r.id() == id, "the request names its operation");
@@ -86,7 +86,7 @@ fn main() i32 {
 
     // 2. From another thread
     {
-      imm id = lp.submit(Op.Recv[a, pool.mustTake(100usize)], Target.Here[2u64]);
+      imm id = lp.submit(Op.Recv(a, pool.mustTake(100usize)), Target.Here(2u64));
       imm t = thread.start(lp.request(id), &cancelLater);
       lp.poll(forever(), &mut out);
       expect(t.join(), "both cancels reached the loop");
@@ -99,7 +99,7 @@ fn main() i32 {
 
     // 3. Detached
     {
-      imm id = lp.submit(Op.Recv[a, pool.mustTake(100usize)], Target.Here[3u64]);
+      imm id = lp.submit(Op.Recv(a, pool.mustTake(100usize)), Target.Here(3u64));
       {
         mut r = lp.request(id);
         r.detach();
@@ -108,7 +108,7 @@ fn main() i32 {
       expectUInt(u64.from(out.len()), 0u64, "a detached request's death cancels nothing");
       mut x = pool.mustTake(1usize);
       x.append("q");
-      lp.submit(Op.Send[b, x], Target.Here[4u64]);
+      lp.submit(Op.Send(b, x), Target.Here(4u64));
       waitFor(&mut lp, &mut out, 2usize);
       mut k = 0usize;
       while k < out.len() {
@@ -120,11 +120,11 @@ fn main() i32 {
 
     // 4. After the answer
     {
-      imm id = lp.submit(Op.Recv[a, pool.mustTake(100usize)], Target.Here[5u64]);
+      imm id = lp.submit(Op.Recv(a, pool.mustTake(100usize)), Target.Here(5u64));
       imm r = lp.request(id);
       mut x = pool.mustTake(1usize);
       x.append("w");
-      lp.submit(Op.Send[b, x], Target.Here[6u64]);
+      lp.submit(Op.Send(b, x), Target.Here(6u64));
       waitFor(&mut lp, &mut out, 2usize);
       expectUInt(u64.from(out.len()), 2u64, "both answered");
       out.clear();

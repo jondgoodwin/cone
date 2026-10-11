@@ -912,7 +912,7 @@ class Scenarios(unittest.TestCase):
             pub use kinds.Kind;
 
             pub fn classify(n i64) kinds.Kind {
-              if n < 10i64 {Small[];} else {Large[];}
+              if n < 10i64 {Small;} else {Large;}
             }
 
             pub fn code(k kinds.Kind) i64 {

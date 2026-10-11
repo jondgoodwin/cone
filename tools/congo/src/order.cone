@@ -41,24 +41,24 @@ fn resolveImports(reg &Registry, p usize, scanned List[Module]) Result[Unit, Str
     imm fromGpu = mods[m].gpu and mods[m].hasParent and not mods[mods[m].parent].gpu;
     mut sister = 0usize;
     if fromGpu and mods[m].hasExtends and sisterNamed(&mods, m, mods[m].extended.name.view(), &mut sister) and not mods[sister].gpu {
-      return Error[Unit, String][gpuUsesSrc(pkg, &mods[m].extended, "extends", &mods, true, sister)];
+      return Error[Unit, String](gpuUsesSrc(pkg, &mods[m].extended, "extends", &mods, true, sister));
     }
     mut i = 0usize;
     while i < imports.len() {
       imm imp = imports[i];
       if not imp.hasName {
         imm place = imp.location();
-        return Error[Unit, String][cat(place.view(), ": import ", imp.written.view(),
-          ": a Congo build imports a package by its name, not by a path")];
+        return Error[Unit, String](cat(place.view(), ": import ", imp.written.view(),
+          ": a Congo build imports a package by its name, not by a path"));
       }
       elif sisterNamed(&mods, m, imp.name.view(), &mut sister) {
         // a sister, answered inside the package
         if fromGpu and not mods[sister].gpu {
-          return Error[Unit, String][gpuUsesSrc(pkg, imp, "import", &mods, true, sister)];
+          return Error[Unit, String](gpuUsesSrc(pkg, imp, "import", &mods, true, sister));
         }
       }
       elif fromGpu and not imp.name.equals("core") and not reg.has(imp.name.view()) {
-        return Error[Unit, String][gpuUsesSrc(pkg, imp, "import", &mods, false, 0usize)];
+        return Error[Unit, String](gpuUsesSrc(pkg, imp, "import", &mods, false, 0usize));
       }
       elif imp.name.equals("core") {
         // The prelude is loaded already; an explicit import of it names the
@@ -81,8 +81,8 @@ fn resolveImports(reg &Registry, p usize, scanned List[Module]) Result[Unit, Str
             if not mods[m].hasParent {
               imm place = imp.location();
               imm searched = reg.searched();
-              return Error[Unit, String][cat(place.view(), ": import ", imp.name.view(), ": no package named '", imp.name.view(),
-                "' in the registries searched: ", searched.view())];
+              return Error[Unit, String](cat(place.view(), ": import ", imp.name.view(), ": no package named '", imp.name.view(),
+                "' in the registries searched: ", searched.view()));
             }
           }
         }
@@ -93,7 +93,7 @@ fn resolveImports(reg &Registry, p usize, scanned List[Module]) Result[Unit, Str
   }
   match checkModuleLoops(pkg, &mods, reg) {
     case is Ok {}
-    case imm e Error { return Error[Unit, String][e.copy()]; }
+    case imm e Error { return Error[Unit, String](e.copy()); }
   }
   // Only what is compiled for the GPU has its kernels built, so only its
   // source is read past the headers: a marked package's, or its gpu/ folder's
@@ -105,7 +105,7 @@ fn resolveImports(reg &Registry, p usize, scanned List[Module]) Result[Unit, Str
       while f < mods[m].files.len() and not kernels {
         match holdsKernel(mods[m].files[f]) {
           case imm ok Ok { kernels = ok; }
-          case imm e Error { return Error[Unit, String][e.copy()]; }
+          case imm e Error { return Error[Unit, String](e.copy()); }
         }
         f = f + 1usize;
       }
@@ -128,7 +128,7 @@ fn resolveImports(reg &Registry, p usize, scanned List[Module]) Result[Unit, Str
     }
     w = w + 1usize;
   }
-  Ok[Unit, String][new Unit(p, mods, deps, kernels, hasGpu, gpuDeps)];
+  Ok[Unit, String](new Unit(p, mods, deps, kernels, hasGpu, gpuDeps));
 }
 
 // The refusal of a gpu/ module's import or extends of src/: a sister there,
@@ -220,12 +220,12 @@ struct Plan {
     mut scanned = List[Module].empty();
     match scanPackage(reg.packages[p]) {
       case mut ok Ok { scanned <=> ok; }
-      case imm e Error { return Error[void, String][e.copy()]; }
+      case imm e Error { return Error[void, String](e.copy()); }
     }
     mut unit = new Unit(p, List[Module].empty(), List[usize].empty(), false, false, List[usize].empty());
     match resolveImports(reg, p, scanned) {
       case mut ok Ok { unit <=> ok; }
-      case imm e Error { return Error[void, String][e.copy()]; }
+      case imm e Error { return Error[void, String](e.copy()); }
     }
     units.push(unit);
     imm u = units.len() - 1usize;
@@ -253,13 +253,13 @@ struct Plan {
           j = j + 1usize;
         }
         chain <- depName;
-        return Error[void, String][cat("import loop between packages: ", chain.view(), ". Imports between packages must not loop (",
-          text.view(), ").")];
+        return Error[void, String](cat("import loop between packages: ", chain.view(), ". Imports between packages must not loop (",
+          text.view(), ")."));
       }
       if self.stateOf(depName) == unvisited {
         match self.visit(reg, dep) {
           case is Ok {}
-          case imm e Error { return Error[void, String][e.copy()]; }
+          case imm e Error { return Error[void, String](e.copy()); }
         }
       }
       d = d + 1usize;
@@ -300,12 +300,12 @@ fn buildOrder(reg &Registry, top usize) Result[Plan, String] {
       case imm c Some { core = c; }
       case is None {
         imm searched = reg.searched();
-        return Error[Plan, String][cat("no package named 'core', the prelude, in the registries searched: ", searched.view())];
+        return Error[Plan, String](cat("no package named 'core', the prelude, in the registries searched: ", searched.view()));
       }
     }
     match plan.visit(reg, core) {
       case is Ok {}
-      case imm e Error { return Error[Plan, String][e.copy()]; }
+      case imm e Error { return Error[Plan, String](e.copy()); }
     }
     if plan.state.contains(topName) {
       // One of core's own imports: built with what it imports, and no core
@@ -314,9 +314,9 @@ fn buildOrder(reg &Registry, top usize) Result[Plan, String] {
   }
   match plan.visit(reg, top) {
     case is Ok {}
-    case imm e Error { return Error[Plan, String][e.copy()]; }
+    case imm e Error { return Error[Plan, String](e.copy()); }
   }
-  Ok[Plan, String][plan];
+  Ok[Plan, String](plan);
 }
 
 // The packages core imports, directly or not: the C packages the prelude

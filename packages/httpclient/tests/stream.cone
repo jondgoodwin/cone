@@ -74,7 +74,7 @@ fn server(pool Pool) Srv {
 
 fn listen(sv &mut Srv, lp &mut Loop) u16 {
   mut port = 0u16;
-  match sv.drv.listen(lp, SocketAddr.localhost(0u16), httpconn.Sink.Here[tokSrv]) {
+  match sv.drv.listen(lp, SocketAddr.localhost(0u16), httpconn.Sink.Here(tokSrv)) {
     case imm r Ok {
       match sv.drv.localAddr(lp, r) {
         case imm a Ok {port = a.port();}
@@ -157,7 +157,7 @@ fn answer(sv &mut Srv, lp &mut Loop, k usize) {
   while q < t.len and t[q] != '?' {q = q + 1usize;}
   imm path = &t[0usize ..< q];
   imm query = &t[(if q < t.len {q + 1usize;} else {q;}) ..];
-  imm head = *sv.methods[k] == Method.Head[];
+  imm head = *sv.methods[k] == Method.Head;
   if path == "/echo" {
     mut b = String.from(methodToken(*sv.methods[k]));
     b.append(" ");
@@ -251,13 +251,13 @@ fn fieldOr(h &Headers, name &str) String {
 
 fn serve(sv &mut Srv, lp &mut Loop, e &mut httpconn.Event) {
   imm kind = e.kind;
-  if kind == httpconn.EventKind.Accepted[] {
+  if kind == httpconn.EventKind.Accepted {
     sv.accepted = sv.accepted + 1u64;
     sv.open = sv.open + 1u64;
     if sv.open > sv.maxOpen {sv.maxOpen = sv.open;}
-  } elif kind == httpconn.EventKind.Closed[] {
+  } elif kind == httpconn.EventKind.Closed {
     sv.open = sv.open - 1u64;
-  } elif kind == httpconn.EventKind.Request[] {
+  } elif kind == httpconn.EventKind.Request {
     sv.requests = sv.requests + 1u64;
     sv.order.push(e.request.target.copy());
     sv.reqs.push(e.req);
@@ -267,14 +267,14 @@ fn serve(sv &mut Srv, lp &mut Loop, e &mut httpconn.Event) {
     sv.bodies.push(String.empty());
     sv.auths.push(fieldOr(&e.request.headers, "Authorization"));
     sv.cookies.push(fieldOr(&e.request.headers, "Cookie"));
-  } elif kind == httpconn.EventKind.Data[] {
+  } elif kind == httpconn.EventKind.Data {
     imm k = findReq(sv, e.req);
     if k < sv.reqs.len() {(&mut sv.bodies[k]).appendBytes(e.buf.view());}
     sv.drv.release(e.req, e.buf.len());
-  } elif kind == httpconn.EventKind.End[] {
+  } elif kind == httpconn.EventKind.End {
     imm k = findReq(sv, e.req);
     if k < sv.reqs.len() {answer(sv, lp, k);}
-  } elif kind == httpconn.EventKind.Writable[] {
+  } elif kind == httpconn.EventKind.Writable {
     imm j = findStream(sv, e.req);
     if j < sv.streams.len() {pumpStream(sv, j);}
   } elif e.isTerminal() {
@@ -347,23 +347,23 @@ struct Seen {
 
 fn seen() Seen {
   new Seen(status: 0u16, body: String.empty(), url: String.empty(), kinds: String.empty(), finals: 0u64,
-    last: EventKind.Done[], failure: String.empty(), stage: Stage.Url[], timing: Timing.zero());
+    last: EventKind.Done, failure: String.empty(), stage: Stage.Url, timing: Timing.zero());
 }
 
 fn note(cl &mut Client, s &mut Seen, e &mut Event) {
   imm n = eventName(e.kind);
   s.kinds.appendByte(n[0usize]);
-  if e.kind == EventKind.Response[] {
+  if e.kind == EventKind.Response {
     s.status = e.response.status;
     s.url = e.url.copy();
-  } elif e.kind == EventKind.Data[] {
+  } elif e.kind == EventKind.Data {
     s.body.appendBytes(e.buf.view());
     cl.release(e.id, e.buf.len());
   } elif e.isTerminal() {
     s.finals = s.finals + 1u64;
     s.last = e.kind;
     s.timing = e.timing;
-    if e.kind == EventKind.Failed[] {
+    if e.kind == EventKind.Failed {
       s.failure = e.failure.message();
       s.stage = e.failure.stage;
     }
@@ -391,7 +391,7 @@ fn finishOf(cl &mut Client, sv &mut Srv, lp &mut Loop, id FetchId, s &mut Seen) 
 // A request sent and driven to its final answer: what was seen
 fn fetchSeen(cl &mut Client, sv &mut Srv, lp &mut Loop, r Request) Seen {
   mut s = seen();
-  imm id = cl.send(lp, r, Sink.Here[1u64]);
+  imm id = cl.send(lp, r, Sink.Here(1u64));
   finishOf(cl, sv, lp, id, &mut s);
   s;
 }
@@ -405,7 +405,7 @@ fn idleFor(cl &mut Client, sv &mut Srv, lp &mut Loop, d Duration) {
     mut k = 0usize;
     while k < out.len() {
       imm e = &mut out[k];
-      if e.kind == EventKind.Data[] {cl.release(e.id, e.buf.len());}
+      if e.kind == EventKind.Data {cl.release(e.id, e.buf.len());}
       k = k + 1usize;
     }
     out.clear();
@@ -445,8 +445,8 @@ struct Read {
 fn readBig(cl &mut Client, sv &mut Srv, lp &mut Loop, pool &Pool, port u16, n u64, perStep usize) Read {
   mut path = String.from("/big/");
   path.appendUInt(n);
-  imm id = cl.get(lp, url(port, path.view()).view(), Sink.Here[1u64]);
-  mut r = new Read(0u64, true, EventKind.Data[], 0u64, 0u64, 0u64);
+  imm id = cl.get(lp, url(port, path.view()).view(), Sink.Here(1u64));
+  mut r = new Read(0u64, true, EventKind.Data, 0u64, 0u64, 0u64);
   mut kept = List[IoBuf].empty();
   mut keptBytes = 0usize;
   mut out = List[Event].empty();
@@ -458,7 +458,7 @@ fn readBig(cl &mut Client, sv &mut Srv, lp &mut Loop, pool &Pool, port u16, n u6
       imm e = &mut out[k];
       k = k + 1usize;
       if e.id != id {continue;}
-      if e.kind == EventKind.Data[] {
+      if e.kind == EventKind.Data {
         if not pattern(e.buf.view(), r.bytes) {r.good = false;}
         r.bytes = r.bytes + u64.from(e.buf.len());
         if perStep == 0usize {
@@ -519,7 +519,7 @@ fn chanReader(rx Receiver[Event]) ChanRead {
   mut inbox = rx;
   mut seen = 0u64;
   while true {
-    mut e = Event.make(EventKind.Data[], 0u64, FetchId.none());
+    mut e = Event.make(EventKind.Data, 0u64, FetchId.none());
     match inbox.recv() {
       case mut s Some {e <=> s;}
       case is None[Event] {break;}
@@ -527,14 +527,14 @@ fn chanReader(rx Receiver[Event]) ChanRead {
     seen = seen + 1u64;
     if seen % 8u64 == 0u64 {thread.sleep(Duration.fromMillis(1i64));}
     if r.finals > 0u64 {r.good = false;}
-    if e.kind == EventKind.Response[] {r.responses = r.responses + 1u64;}
-    elif e.kind == EventKind.Data[] {
+    if e.kind == EventKind.Response {r.responses = r.responses + 1u64;}
+    elif e.kind == EventKind.Data {
       if not pattern(e.buf.view(), r.bytes) {r.good = false;}
       r.bytes = r.bytes + u64.from(e.buf.len());
-    } elif e.kind == EventKind.End[] {r.ends = r.ends + 1u64;}
+    } elif e.kind == EventKind.End {r.ends = r.ends + 1u64;}
     elif e.isTerminal() {
       r.finals = r.finals + 1u64;
-      r.doneLast = e.kind == EventKind.Done[];
+      r.doneLast = e.kind == EventKind.Done;
       break;
     }
   }
@@ -551,14 +551,14 @@ fn main() i32 {
 
   // A 16 MiB body, released as it comes
   imm fast = readBig(&mut cl, &mut sv, &mut lp, &pool, port, 16u64 * mib, 0usize);
-  expect(fast.last == EventKind.Done[] and fast.finals == 1u64, "16 MiB: Done, once");
+  expect(fast.last == EventKind.Done and fast.finals == 1u64, "16 MiB: Done, once");
   expectUInt(fast.bytes, 16u64 * mib, "...every byte");
   expect(fast.good, "...each the right one");
   expect(fast.peakLent <= 2u64 * mib, "...the bytes lent never past 2 MiB");
 
   // A slow consumer: 16 KiB released a turn; the link slows, memory does not grow
   imm slow = readBig(&mut cl, &mut sv, &mut lp, &pool, port, 8u64 * mib, 16384usize);
-  expect(slow.last == EventKind.Done[] and slow.finals == 1u64, "8 MiB to a slow consumer: Done, once");
+  expect(slow.last == EventKind.Done and slow.finals == 1u64, "8 MiB to a slow consumer: Done, once");
   expectUInt(slow.bytes, 8u64 * mib, "...every byte");
   expect(slow.good, "...each the right one");
   expect(slow.peakHeld <= 262144u64 + 65536u64, "...the consumer never held more than the window (256 KiB)");
@@ -566,7 +566,7 @@ fn main() i32 {
 
   // Cancelled mid-body: Cancelled, nothing after; its connection reset
   {
-    imm id = cl.get(&mut lp, url(port, "/stall").view(), Sink.Here[2u64]);
+    imm id = cl.get(&mut lp, url(port, "/stall").view(), Sink.Here(2u64));
     mut out = List[Event].empty();
     mut kinds = String.empty();
     mut cancelled = false;
@@ -580,7 +580,7 @@ fn main() i32 {
         imm e = &mut out[k];
         k = k + 1usize;
         kinds.appendByte(eventName(e.kind)[0usize]);
-        if e.kind == EventKind.Data[] {
+        if e.kind == EventKind.Data {
           cl.release(e.id, e.buf.len());
           if not cancelled {
             expect(cl.cancel(&mut lp, id), "cancel mid-body: its answer to come");
@@ -603,7 +603,7 @@ fn main() i32 {
     mut rx Receiver[Event];
     tx, rx = Channel[Event].bounded(4u64);
     imm reader = thread.start(rx, &chanReader);
-    imm id = cl.get(&mut lp, url(port, "/big/4194304").view(), Sink.Chan[3u64, tx]);
+    imm id = cl.get(&mut lp, url(port, "/big/4194304").view(), Sink.Chan(3u64, tx));
     mut out = List[Event].empty();
     mut peak = 0u64;
     imm giveUp = Instant.now() + Duration.fromSeconds(60i64);

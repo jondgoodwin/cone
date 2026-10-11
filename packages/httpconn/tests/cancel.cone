@@ -47,7 +47,7 @@ struct Slot {
 }
 
 fn blankSlot() Slot {
-  new Slot(0u16, 0u64, 0u32, 0u32, EventKind.Writable[], Stage.Closed[], 0u32, false, false, 0u32, false, new Instant());
+  new Slot(0u16, 0u64, 0u32, 0u32, EventKind.Writable, Stage.Closed, 0u32, false, false, 0u32, false, new Instant());
 }
 
 struct State {
@@ -91,18 +91,18 @@ fn run(drv &mut Driver, lp &mut Loop, st &mut State, pool &Pool, ms i64, tok u64
       imm e = &mut events[k];
       k = k + 1usize;
       if e.token == tokServer {
-        if e.kind == EventKind.Request[] {serve(drv, e, pool);}
-        elif e.kind == EventKind.Data[] {drv.release(e.req, e.buf.len());}
+        if e.kind == EventKind.Request {serve(drv, e, pool);}
+        elif e.kind == EventKind.Data {drv.release(e.req, e.buf.len());}
         elif e.isTerminal() {
           st.srvFinals.push(e.kind);
           st.srvStages.push(e.failure.stage);
-        } elif e.kind == EventKind.Closed[] {
+        } elif e.kind == EventKind.Closed {
           st.srvCloses = st.srvCloses + 1u32;
           if e.clean {st.srvClean = st.srvClean + 1u32;}
         }
       } elif e.token >= 100u64 {
         imm s = &mut st.conn[usize.from(e.token - 100u64)];
-        if e.kind == EventKind.Closed[] {
+        if e.kind == EventKind.Closed {
           s.closes = s.closes + 1u32;
           s.clean = e.clean;
           s.stage = e.failure.stage;
@@ -111,8 +111,8 @@ fn run(drv &mut Driver, lp &mut Loop, st &mut State, pool &Pool, ms i64, tok u64
       } else {
         imm s = &mut st.req[usize.from(e.token)];
         if s.finals > 0u32 {s.after = s.after + 1u32;}
-        if e.kind == EventKind.Response[] {s.status = e.response.status;}
-        elif e.kind == EventKind.Data[] {
+        if e.kind == EventKind.Response {s.status = e.response.status;}
+        elif e.kind == EventKind.Data {
           s.bytes = s.bytes + u64.from(e.buf.len());
           drv.release(e.req, e.buf.len());
         } elif e.isTerminal() {
@@ -131,7 +131,7 @@ fn run(drv &mut Driver, lp &mut Loop, st &mut State, pool &Pool, ms i64, tok u64
 }
 
 fn get(drv &mut Driver, lp &mut Loop, conn ConnId, target &str, tok u64) ReqId {
-  drv.request(lp, conn, RequestHead.get(target, "127.0.0.1"), BodyLength.empty(), Sink.Here[tok]);
+  drv.request(lp, conn, RequestHead.get(target, "127.0.0.1"), BodyLength.empty(), Sink.Here(tok));
 }
 
 // Cancel a group from another thread, after a while
@@ -159,7 +159,7 @@ fn main() i32 {
     i = i + 1usize;
   }
   mut listener = ListenerId.none();
-  match drv.listen(&mut lp, SocketAddr.localhost(0u16), Sink.Here[tokServer]) {
+  match drv.listen(&mut lp, SocketAddr.localhost(0u16), Sink.Here(tokServer)) {
     case imm r Ok {listener = r;}
     case imm e Error {}
   }
@@ -172,7 +172,7 @@ fn main() i32 {
 
   // 1. A waiting request cancelled; the one ahead of it still Done
   {
-    imm c = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here[100u64]);
+    imm c = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here(100u64));
     get(&mut drv, &mut lp, c, "/ok", 1u64);
     imm r2 = get(&mut drv, &mut lp, c, "/ok", 2u64);
     expect(drv.cancel(&mut lp, r2), "1: cancel of a waiting request: true");
@@ -180,10 +180,10 @@ fn main() i32 {
     run(&mut drv, &mut lp, &mut st, &pool, 3000i64, 1u64);
     imm s2 = st.req[2usize];
     expectUInt(u64.from(s2.finals), 1u64, "1: the waiting one: one final answer");
-    expect(s2.kind == EventKind.Cancelled[], "1: ...Cancelled");
+    expect(s2.kind == EventKind.Cancelled, "1: ...Cancelled");
     expectUInt(u64.from(s2.status), 0u64, "1: ...no response");
     imm s1 = st.req[1usize];
-    expect(s1.kind == EventKind.Done[], "1: the one ahead: Done");
+    expect(s1.kind == EventKind.Done, "1: the one ahead: Done");
     expectUInt(s1.bytes, 2u64, "1: ...its body");
     expect(drv.isIdle(c), "1: the connection lives on, free");
     expectUInt(u64.from(st.conn[0usize].closes), 0u64, "1: ...not closed");
@@ -193,7 +193,7 @@ fn main() i32 {
 
   // 2. A request under way, cancelled after its first body bytes
   {
-    imm c = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here[101u64]);
+    imm c = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here(101u64));
     imm r = get(&mut drv, &mut lp, c, "/slow", 3u64);
     imm until = Instant.now() + Duration.fromSeconds(3i64);
     while st.req[3usize].bytes == 0u64 and Instant.now() < until {
@@ -205,30 +205,30 @@ fn main() i32 {
     run(&mut drv, &mut lp, &mut st, &pool, 300i64, 0u64);
     imm s = st.req[3usize];
     expectUInt(u64.from(s.finals), 1u64, "2: one final answer");
-    expect(s.kind == EventKind.Cancelled[], "2: ...Cancelled");
+    expect(s.kind == EventKind.Cancelled, "2: ...Cancelled");
     expectUInt(u64.from(s.after), 0u64, "2: ...nothing after it");
     imm cs = st.conn[1usize];
     expectUInt(u64.from(cs.closes), 1u64, "2: the connection: one Closed");
     expect(not cs.clean, "2: ...not clean: it was reset");
-    expect(cs.stage == Stage.Closed[], "2: ...at the Closed stage");
+    expect(cs.stage == Stage.Closed, "2: ...at the Closed stage");
     expectUInt(u64.from(st.srvFinals.len() - srvBefore), 1u64, "2: the server's request: one final answer");
-    expect(*st.srvFinals[srvBefore] == EventKind.Failed[], "2: ...Failed");
-    expect(*st.srvStages[srvBefore] == Stage.Read[], "2: ...at Read: it saw the reset");
+    expect(*st.srvFinals[srvBefore] == EventKind.Failed, "2: ...Failed");
+    expect(*st.srvStages[srvBefore] == Stage.Read, "2: ...at Read: it saw the reset");
     expect(not drv.cancel(&mut lp, r), "2: a cancel after the answer: false");
   }
 
   // 3. A group cancelled from another thread while the server stalls
   {
-    imm c = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here[102u64]);
+    imm c = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here(102u64));
     imm g = CancelGroup.make();
-    drv.requestIn(&mut lp, c, RequestHead.get("/stall", "127.0.0.1"), BodyLength.empty(), Sink.Here[4u64], g, forever());
+    drv.requestIn(&mut lp, c, RequestHead.get("/stall", "127.0.0.1"), BodyLength.empty(), Sink.Here(4u64), g, forever());
     imm t0 = Instant.now();
     imm other = thread.start(new Canceller(g, Duration.fromMillis(30i64)), &cancelLater);
     run(&mut drv, &mut lp, &mut st, &pool, 3000i64, 4u64);
     expect(other.join(), "3: the group's cancel: true");
     imm s = st.req[4usize];
     expectUInt(u64.from(s.finals), 1u64, "3: one final answer");
-    expect(s.kind == EventKind.Cancelled[], "3: ...Cancelled");
+    expect(s.kind == EventKind.Cancelled, "3: ...Cancelled");
     imm took = (s.at - t0).millis();
     expect(took >= 25i64 and took < 1000i64, "3: ...when the group was cancelled");
     run(&mut drv, &mut lp, &mut st, &pool, 100i64, 0u64);
@@ -237,18 +237,18 @@ fn main() i32 {
 
   // 4. A group cancelled already: Cancelled at once, never sent
   {
-    imm c = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here[103u64]);
+    imm c = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here(103u64));
     imm g = CancelGroup.make();
     g.cancel();
     imm before = drv.stats().requests;
-    drv.requestIn(&mut lp, c, RequestHead.get("/ok", "127.0.0.1"), BodyLength.empty(), Sink.Here[5u64], g, forever());
+    drv.requestIn(&mut lp, c, RequestHead.get("/ok", "127.0.0.1"), BodyLength.empty(), Sink.Here(5u64), g, forever());
     get(&mut drv, &mut lp, c, "/ok", 6u64);
     run(&mut drv, &mut lp, &mut st, &pool, 3000i64, 6u64);
     imm s = st.req[5usize];
     expectUInt(u64.from(s.finals), 1u64, "4: one final answer");
-    expect(s.kind == EventKind.Cancelled[], "4: ...Cancelled");
+    expect(s.kind == EventKind.Cancelled, "4: ...Cancelled");
     expectUInt(u64.from(s.status), 0u64, "4: ...nothing of a response");
-    expect(st.req[6usize].kind == EventKind.Done[], "4: the connection's next request: Done");
+    expect(st.req[6usize].kind == EventKind.Done, "4: the connection's next request: Done");
     expectUInt(drv.stats().requests - before, 3u64, "4: two asked, and the server read one");
     drv.close(&mut lp, c);
   }
