@@ -143,7 +143,7 @@ StructNode *newStructNode(Name *namesym);
 void structLendsDeclared(StructNode *node);
 
 // A type declaring CarriesRegion declares an init, and each init ends with
-// 'region *Region'
+// 'region *MemRegion'
 void structCarriesRegionCheck(StructNode *node);
 
 // Clone struct

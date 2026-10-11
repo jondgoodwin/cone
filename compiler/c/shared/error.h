@@ -641,7 +641,7 @@ enum ErrorCode {
     ErrorVariantEmptyCall = 1416, // An empty variant written with parentheses, 'Lamp.Red()': it is constructed by its name alone
 
     // A type that gets its memory from a region (ir/types/struct.c, ir/exp/typelit.c)
-    ErrorRegionMark = 1417, // A type declaring CarriesRegion that declares no init, or an init whose last parameter is not 'region *Region'
+    ErrorRegionMark = 1417, // A type declaring CarriesRegion that declares no init, or an init whose last parameter is not 'region *MemRegion'
 
     // Warnings
     WarnCode = 3000,
