@@ -648,6 +648,7 @@ enum ErrorCode {
     // A type that gets its memory from a region (ir/types/struct.c, ir/exp/typelit.c)
     ErrorRegionMark = 1420, // A type declaring CarriesRegion that declares no init, or an init whose last parameter is not 'region *MemRegion'
     ErrorRegionNew = 1421,  // An allocation in an arena, 'new a[T](...)', written other than with the type, or a 'mut' and the type, in its brackets, or as a 'trynew'
+    ErrorRegionHead = 1422, // An allocation 'new a[T](...)' whose head 'a' is a value that is not a region: a struct whose first field is a public '*MemRegion'
 
     // An enum under the collection rule (ir/reshape.c, ir/flowpath.c, ir/flowloan.c)
     ErrorVariantReshape = 1425,     // A call, or a store through another name, that could change which variant an enum holds while a reference narrowed into one of its variants, through a path other references share, is still to be used

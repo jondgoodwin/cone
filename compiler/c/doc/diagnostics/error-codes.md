@@ -132,12 +132,13 @@ codes because the remedies are opposite (add a case or an `else`; delete one). A
 the columns of `match a, b` (a `_` in a match of one value, too few or too many patterns in a
 case, a column that binds a variable) is `ErrorMatchColumn`, at parse.
 
-`ErrorRegionMark` and `ErrorRegionNew` are about a type's memory region. A type declaring
-`CarriesRegion` that declares no init, or an init whose last parameter is not
-`region *MemRegion`, is `ErrorRegionMark` (name resolution). An allocation in an arena,
+`ErrorRegionMark`, `ErrorRegionNew` and `ErrorRegionHead` are about a type's memory region. A
+type declaring `CarriesRegion` that declares no init, or an init whose last parameter is not
+`region *MemRegion`, is `ErrorRegionMark` (name resolution). An allocation in a region,
 `new a[T](...)`, written with a `trynew`, a permission other than `mut`, a permission and
 no type, or more than a permission and a type in its brackets is `ErrorRegionNew` (type
-check).
+check). One whose head `a` is a value that is not a region (a struct whose first field is a
+public `*MemRegion`) is `ErrorRegionHead`.
 
 `ErrorBuildDesc` is a third: a build description that cannot be read, whether a
 setting is unknown, set twice, badly valued or written after the module, a line

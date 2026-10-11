@@ -1,0 +1,107 @@
+// 'new r[T](args)' with a region in the head: a CarriesRegion type made there is
+// handed the region in the head's first field, a public '*MemRegion', when its
+// construction names none. The head is any value whose type is a struct with
+// that first field (an Arena's is its own region, tested in the arena package);
+// here it is a region of this file's own, 'Mine', whose 'alloc' leaks a malloc'd
+// box and whose region is a counting one. Every expected line is worked out by
+// hand:
+// - 'new h[List[i64]](4)': a list with room for 4, whose block comes from the
+//   head's region: 1 allocation. A hundred values double it 4, 8, 16, 32, 64,
+//   128: 5 resizes. The list is never finalized (Mine leaks), so 0 releases:
+//   1, 5, 0;
+// - a region written in the arguments wins, 'new h[List[i64]](4, r2)': the
+//   second counting region sees its 1 allocation, and the first still has its 1:
+//   1, 1;
+// - a type that carries no region is made as 'a.alloc(new Pt(1, 2))' would: 3;
+// - the arena's list, 8 slots after 5 pushes (4, then doubled): 8.
+
+mod region_new_region_value;
+
+import stdio use *;
+import arena use *;
+import collections use *;
+import libc;
+
+// A counting region: its header first, then the tallies
+struct Counting {
+  header MemRegion;
+  allocs usize;
+  resizes usize;
+  releases usize;
+}
+
+fn countAlloc(r *MemRegion, bytes usize, align usize) *u8 {
+  imm c = r as *Counting;
+  (*c).allocs = (*c).allocs + 1usize;
+  libc.malloc(bytes);
+}
+
+fn countResize(r *MemRegion, block *u8, oldBytes usize, newBytes usize, align usize) *u8 {
+  imm c = r as *Counting;
+  (*c).resizes = (*c).resizes + 1usize;
+  libc.realloc(block, newBytes);
+}
+
+fn countRelease(r *MemRegion, block *u8, bytes usize) {
+  if block as usize == 0usize { return; }
+  imm c = r as *Counting;
+  (*c).releases = (*c).releases + 1usize;
+  libc.free(block);
+}
+
+fn newCounting() Counting {
+  new Counting(new MemRegion(&countAlloc, &countResize, &countRelease), 0usize, 0usize, 0usize);
+}
+
+fn regionOf(c &mut Counting) *MemRegion { (c as *Counting) as *MemRegion; }
+
+// A region value of this file's: its first field, public, the region its
+// allocations draw on, and its own 'alloc', which leaks
+struct Mine {
+  pub region *MemRegion;
+  made usize;
+
+  pub fn alloc[T](self &mut, value T) &mut T {
+    made = made + 1usize;
+    imm p = libc.malloc(mem.sizeof[T]()) as *T;
+    mem.writeRaw(p, value);
+    p as &mut T;
+  }
+}
+
+struct Pt {
+  pub x i64;
+  pub y i64;
+  pub fn sum(self &) i64 { x + y; }
+}
+
+fn show(n usize) {
+  printInt(i64.from(n));
+  printStr("\n");
+}
+
+fn main() i32 {
+  mut c = newCounting();
+  mut c2 = newCounting();
+  mut h = new Mine(regionOf(&mut c), 0usize);
+  imm l = new h[List[i64]](4usize);
+  mut i = 0i64;
+  while i < 100 { l.push(i); i = i + 1; }
+  show(c.allocs);
+  show(c.resizes);
+  show(c.releases);
+  imm m = new h[List[i64]](4usize, regionOf(&mut c2));
+  show(c2.allocs);
+  show(c.allocs);
+  imm p = new h[Pt](1, 2);
+  printInt(p.sum());
+  printStr("\n");
+  {
+    mut a = Arena.empty();
+    imm k = new a[List[i64]]();
+    mut j = 0i64;
+    while j < 5 { k.push(j); j = j + 1; }
+    show(k.capacity());
+  }
+  0i32;
+}

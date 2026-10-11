@@ -1197,10 +1197,15 @@ What the marker brings:
   collection passes its own `region` to the field's construction
   (`new List[f32](n, region)`), so a composite's parts come from the one
   region it was handed.
-  A construction whose head names an arena value, `new arena[List[i32]](16)`,
-  is `arena.alloc(new List[i32](16))` ([literals](literals.md), "Construction"):
-  an arena is not yet a region, so the list is handed the heap's and only its
-  four words are the arena's.
+  A construction whose head names a region value, `new arena[List[i32]](16)`,
+  is `arena.alloc(new List[i32](16))` ([literals](literals.md), "Construction"),
+  and a CarriesRegion type made there that names no region is handed the
+  region in the head's first field instead of the heap's: `typeLitNewInRegion`
+  puts the head's `.region`, read from a copy of the head, in the construction's
+  `methfld` as it makes it, `typeLitNewChecked` takes it as `hereregion`, and
+  `typeLitRegionArg` uses it in place of `heapRegion()`. A region passed last
+  in the arguments is still the one used. The arena's four words and its block
+  are both the arena's.
 
 ### AtomicValue
 

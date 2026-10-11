@@ -1,10 +1,11 @@
 // An allocation that names an arena, 'new a[Pt](1, 2)', has the type in its
 // brackets, and before it, if one is written, the permission 'mut' (all an
 // arena lends). Four ways to write it that cannot be read as that: a 'trynew'
-// (an arena's 'alloc' does not fail: it panics when memory runs out), a
-// permission an arena does not lend, a permission with no type after it, and
-// more than a permission and a type. A value that is no arena has no 'alloc'
-// to call, which the call says. The good forms stand beside them.
+// (whether an allocation in a region can fail is not settled, so it is refused),
+// a permission an arena does not lend, a permission with no type after it, and
+// more than a permission and a type. A head that is a value but not a region (a
+// struct whose first field is a public '*MemRegion') is refused, ErrorRegionHead,
+// whatever methods it has. The good forms stand beside them.
 
 mod region_typecheck_new_arena;
 
@@ -20,7 +21,7 @@ fn good() {
 
 fn tried() {
   mut a = Arena.empty();
-  imm p = trynew a[Pt](1, 2);       //~ ErrorRegionNew:11 "cannot"
+  imm p = trynew a[Pt](1, 2);       //~ ErrorRegionNew:11 "not settled"
 }
 
 fn immPerm() {
@@ -35,7 +36,31 @@ fn permOnly() {
 
 fn notAnArena() {
   imm n = 5i64;
-  imm p = new n[Pt](1, 2);          //~ ErrorNoMbr:11 "alloc"
+  imm p = new n[Pt](1, 2);          //~ ErrorRegionHead:15 "not one"
+}
+
+// A value with an 'alloc' method is no region for that: the test is the shape of
+// its type, not a method's name
+struct Fake {
+  pub n i64;
+  pub fn alloc(self &mut, v Pt) i64 { v.x; }
+}
+
+fn fakeRegion() {
+  mut f = new Fake(1);
+  imm p = new f[Pt](1, 2);          //~ ErrorRegionHead:15 "not one"
+}
+
+// A struct whose first field is a '*MemRegion' that is not public is no region
+// either: the compiler reads the field to hand it on
+struct Hidden {
+  region *MemRegion;
+  pub fn alloc(self &mut, v Pt) i64 { v.x; }
+}
+
+fn hiddenRegion() {
+  mut h = new Hidden(heapRegion());
+  imm p = new h[Pt](1, 2);          //~ ErrorRegionHead:15 "not one"
 }
 
 fn tooMany() {
