@@ -351,6 +351,11 @@ FieldDclNode *structTypeVariantField(StructNode *variant);
 // leaving its discriminant's width to the caller
 void structTypeCheckEnumInstance(TypeCheckState *pstate, StructNode *instance);
 
+// The pointer field that makes an enum a bare pointer, null standing for its empty variant
+// (an Option-shaped enum of a variant holding one pointer or reference and an empty one),
+// or NULL when the enum is tagged. Generation lays such an enum out as the pointer.
+FieldDclNode *structPointerField(StructNode *base);
+
 // Populate the vtable for this struct
 void structMakeVtable(StructNode *node);
 

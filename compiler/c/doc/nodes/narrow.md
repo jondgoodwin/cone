@@ -7,7 +7,9 @@ says what it is, who asks it, and what it deliberately does not do.
 test holds. Type check keeps, for each such variable, the set of variants it may hold
 (`NarrowFact.possible`, a bit for each of the enum's `derived`). An `is` test narrows it on
 the path where it holds, and the opposite test removes a variant on the other (so the last
-variant left is the name's by elimination). A change of the name, an assignment of a value not
+variant left is the name's by elimination). A test of a trait pattern (`s is Measured`) names
+the variants that comply ([cast](cast.md), "Trait patterns"): where it holds the name may be
+any of them, and where it fails those are removed, so what is left is narrowed as usual. A change of the name, an assignment of a value not
 known to be a variant, a writable borrow of the whole enum, a swap, a store through a
 reference, puts every variant back and remembers the change. The one place the knowledge is
 read is a member named on the name (`narrowReceiver`, from `fnCallTypeCheckNode`): if the

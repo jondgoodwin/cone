@@ -4427,6 +4427,29 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     pstate->typenode = svtypenode;
 }
 
+FieldDclNode *structPointerField(StructNode *base) {
+    if (!(base->flags & SameSize) || base->derived == NULL || base->derived->used != 2)
+        return NULL;
+    // Look for 2 variants, one with one field (the tag) and one with two
+    StructNode *nonenode = (StructNode*)nodesGet(base->derived, 0);
+    StructNode *somenode = (StructNode*)nodesGet(base->derived, 1);
+    if (nonenode->fields.used == 2 && somenode->fields.used == 1) {
+        StructNode *tempnode = nonenode;
+        nonenode = somenode;
+        somenode = tempnode;
+    }
+    else if (!(nonenode->fields.used == 1 && somenode->fields.used == 2))
+        return NULL;
+
+    // If the second field of the one with two is a pointer, the enum is that pointer
+    FieldDclNode *fld = (FieldDclNode*)nodelistGet(&somenode->fields, 1);
+    INode *fldtype = itypeGetTypeDcl(fld->vtype);
+    if (fldtype->tag == PtrTag || fldtype->tag == RefTag
+        || fldtype->tag == VirtRefTag || fldtype->tag == ArrayRefTag)
+        return fld;
+    return NULL;
+}
+
 // Map a struct's members onto a base struct's vtable slots, registering nothing
 // Return the implementation if it successfully type matches, NULL if not
 static VtableImpl *structMapVtableImpl(StructNode *basenode, StructNode *strnode) {

@@ -354,38 +354,17 @@ LLVMTypeRef genlStructFields(GenState *gen, LLVMTypeRef structype, StructNode *s
 // extension, with a third variant for which there is no pointer to be, is tagged.
 void genlSetupTaggedTrait(GenState *gen, StructNode *base) {
     // Set optimization flag if we have a nullable pointer variant types
-    if (base->flags & SameSize && base->derived->used == 2) {
-        // Look for 2 variants, one with one field (enum) and one with two
-        StructNode *nonenode = (StructNode*)nodesGet(base->derived, 0);
-        StructNode *somenode = (StructNode*)nodesGet(base->derived, 1);
-        if (nonenode->fields.used == 2 && somenode->fields.used == 1) {
-            StructNode *tempnode = nonenode;
-            nonenode = somenode;
-            somenode = tempnode;
-        }
-        else if (!(nonenode->fields.used == 1 && somenode->fields.used == 2))
-            nonenode = NULL;
-
-        // If some derived node's second field is a pointer, mark trait and derived's
-        // with optimization flag
-        if (nonenode) {
-            FieldDclNode *fld = (FieldDclNode*)nodelistGet(&somenode->fields, 1);
-            INode *fldtype = itypeGetTypeDcl(fld->vtype);
-            if (fldtype->tag == PtrTag || fldtype->tag == RefTag
-                || fldtype->tag == VirtRefTag || fldtype->tag == ArrayRefTag) {
-
-                // Yes, we have a nullable pointer, set flags to say so on trait & derived structs
-                base->flags |= NullablePtr;
-                INode **nodesp;
-                uint32_t cnt;
-                unsigned long long maxsize = 0;
-                base->llvmtype = genlType(gen, fldtype);
-                for (nodesFor(base->derived, cnt, nodesp)) {
-                    (*nodesp)->flags |= NullablePtr;
-                    ((StructNode*)*nodesp)->llvmtype = base->llvmtype;
-                }
-                return;
-            }
+    FieldDclNode *fld = structPointerField(base);
+    if (fld) {
+        // Yes, we have a nullable pointer, set flags to say so on trait & derived structs
+        INode *fldtype = itypeGetTypeDcl(fld->vtype);
+        base->flags |= NullablePtr;
+        INode **nodesp;
+        uint32_t cnt;
+        base->llvmtype = genlType(gen, fldtype);
+        for (nodesFor(base->derived, cnt, nodesp)) {
+            (*nodesp)->flags |= NullablePtr;
+            ((StructNode*)*nodesp)->llvmtype = base->llvmtype;
         }
     }
 }

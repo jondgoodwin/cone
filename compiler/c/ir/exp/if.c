@@ -157,6 +157,20 @@ static int ifSameScrutinee(INode *a, INode *b) {
     return ifSamePlace(a, b);
 }
 
+// Does this 'is' test name this variant: the variant itself, or a trait pattern's
+// variants that comply?
+static int ifTestsVariant(CastNode *isnode, INode *variant) {
+    if (isnode->variants == NULL)
+        return itypeGetDerefTypeDcl(isnode->typ) == variant;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(isnode->variants, cnt, nodesp)) {
+        if (*nodesp == variant)
+            return 1;
+    }
+    return 0;
+}
+
 // Detect when all closed variants are matched, and turn last match into 'else'
 // We know the condition is an 'is' node
 void ifExhaustCheck(IfNode *ifnode, CastNode *condition) {
@@ -188,7 +202,7 @@ void ifExhaustCheck(IfNode *ifnode, CastNode *condition) {
                 if ((isnode->flags & FlagMatchValue) || castPatternPending(isnode->typ)
                     || !isTypeNode(isnode->typ))
                     ;
-                else if (ifSameScrutinee(isnode->exp, condition->exp) && itypeGetDerefTypeDcl(isnode->typ) == *varnodesp) {
+                else if (ifSameScrutinee(isnode->exp, condition->exp) && ifTestsVariant(isnode, *varnodesp)) {
                     found = 1;
                     if (cnt < lowestcnt)
                         lowestcnt = cnt;
@@ -304,15 +318,20 @@ static MatchCell matchClassify(INode *cond, MatchCol *col, int *unsure) {
         StructNode *enumdcl = matchClosedEnum(iexpGetDerefTypeDcl(isnode->exp));
         if (enumdcl == NULL)
             break;
-        INode *variant = itypeGetDerefTypeDcl(isnode->typ);
-        INode **varnodesp;
-        uint32_t varcnt, k = 0;
-        for (nodesFor(enumdcl->derived, varcnt, varnodesp)) {
-            if (*varnodesp == variant)
-                return matchValueCell(col, enumdcl, 0, enumdcl->derived->used, k);
+        // A variant, or the variants a trait pattern names [topic 7]: tag tests, so they count
+        // as the variants they test
+        uint8_t *tested = memAllocBlk(enumdcl->derived->used);
+        memset(tested, 0, enumdcl->derived->used);
+        if (castIsVariants(isnode, enumdcl, tested) == 0)
+            break;
+        uint32_t k = 0;
+        while (!tested[k])
             ++k;
-        }
-        break;
+        cell = matchValueCell(col, enumdcl, 0, enumdcl->derived->used, k);
+        if (cell.kind == MatchCellSet)
+            for (++k; k < enumdcl->derived->used; ++k)
+                cell.has[k] = tested[k];
+        return cell;
     }
     case FnCallTag:
     {

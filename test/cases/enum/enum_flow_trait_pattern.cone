@@ -1,0 +1,98 @@
+// The virtual reference a trait pattern binds is a reference into one of the enum's
+// variants, so the collection rule applies to it as it does to a narrowing to a variant
+// [match topics 3, 7]: through a reference others may share ('&mut', '&') it is refused
+// only if something could change which variant the enum holds while it is used -- a call
+// handed another name for the enum, a store through one -- and a call it is not used
+// after is no harm. Through 'imm' or 'uni' nothing else can reach the enum. It is also a
+// borrow: it may not outlive what it was borrowed from.
+
+mod enum_flow_trait_pattern;
+
+trait Measured {
+  pub fn size(self &) i32;
+}
+
+enum Shape {
+  struct Circle is Measured {
+    pub r i32;
+    pub fn size(self &) i32 {r * 10;}
+  }
+  struct Square is Measured {
+    pub s i32;
+    pub fn size(self &) i32 {s * 100;}
+  }
+  struct Third {
+    pub t i32;
+  }
+}
+
+fn reshape(s &mut Shape) { *s = Shape.Third(1); }
+
+// A call handed the enum, between the binding and its use
+fn viaCall(s &mut Shape) i32 {
+  match s {
+    case imm m Measured {
+      reshape(s);
+      return m.size();         //~ ErrorVariantReshape "a reference into one of the variants of a 'Shape' value"
+    }
+    else {return 0;}
+  }
+}
+
+// ... another name for it
+fn viaOtherName(s &mut Shape, t &mut Shape) i32 {
+  match s {
+    case imm m Measured {
+      reshape(t);
+      return m.size();         //~ ErrorVariantReshape "a reference into one of the variants of a 'Shape' value"
+    }
+    else {return 0;}
+  }
+}
+
+// ... a store over it
+fn viaStore(s &mut Shape) i32 {
+  match s {
+    case imm m Measured {
+      *s = Shape.Third(2);
+      return m.size();         //~ ErrorVariantReshape "this store replaces a 'Shape' value whole"
+    }
+    else {return 0;}
+  }
+}
+
+// Used before the change, and not after: no harm
+fn usedBefore(s &mut Shape) i32 {
+  mut n = 0;
+  match s {
+    case imm m Measured {n = m.size();}
+    else {}
+  }
+  reshape(s);
+  return n;
+}
+
+// Nothing else can reach an 'imm' or 'uni' reference's enum, so it is not asked
+fn throughImm(s &imm Shape) i32 {
+  match s {
+    case imm m Measured {return m.size();}
+    case is Third {return 0;}
+  }
+}
+
+fn throughUni(s &uni Shape) i32 {
+  match s {
+    case imm m Measured {return m.size();}
+    case is Third {return 0;}
+  }
+}
+
+// The virtual reference borrows from the matched value, and cannot outlive it
+fn escapes() &<Measured {
+  imm c = Shape.Circle(1);
+  imm r &Shape = &c;
+  match r {
+    case imm m Measured {return m;}         //~ ErrorEscape
+    case is Third {return &c;}              //~ ErrorEscape
+  }
+}

@@ -2044,7 +2044,10 @@ registered its implementers, not in tag order, so the tag never indexes it
 (`genlConvert` indexes only when the source is the enum's own vtable). An open
 trait has no tag to pick with, so a plain reference to one converts to no other
 trait. `trait_enum_vref` runs it, and `trait_typecheck_enum_vref` pins the
-refusals.
+refusals. A trait pattern in a match on an enum ([cast](cast.md), "Trait patterns")
+makes the same conversion for the variants that comply alone: the enum need not comply,
+each variant that does is registered (`structVirtRefMatches` on the variant), and the
+selection by comparison skips the others.
 
 **Generation consumes without validating**: `FieldDclNode.index` for every GEP
 and `extractvalue`, and `vtblidx` for vtable slots.

@@ -410,7 +410,9 @@ Two syntaxes and a pattern's binding, all `CastNode`:
 which is unchecked, and never joins pointer-sized `usize` or `isize` to a
 fixed-width number, whose widths agree on some targets only
 (`ErrorPtrSizedAs`, [cast](../nodes/cast.md)). **Convert**, a bound pattern's, permits reference to
-reference, virtual reference to reference, and `SameSize` struct to struct. A
+reference, virtual reference to reference, `SameSize` struct to struct, and a
+borrowed reference to an enum to the virtual reference to a trait that a trait
+pattern names (`FlagTraitBind`, [cast](../nodes/cast.md), "Trait patterns"). A
 ref-to-ref conversion drops `FlagConvert` on the spot — it is a bitcast after
 all. Everything else is `ErrorInvType`, usually after the pattern's `is` test
 has refused the narrowing. A number converts with its type's `from`
