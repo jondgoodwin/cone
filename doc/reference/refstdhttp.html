@@ -1,0 +1,1534 @@
+<html>
+  <head>
+	  <title>HTTP, TLS and URLs - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">HTTP, TLS and URLs</div>
+		</div>
+
+    <div class="text">
+
+	<p style="margin-left: 40px;"><i>Note: Not built: HTTP/2 and HTTP/3; proxies, cookies, caches, authentication and
+		compression (a client sends no <span class="pre">Accept-Encoding</span> and leaves a
+		<span class="pre">Content-Encoding</span> to the program); <span class="pre">Upgrade</span> and
+		<span class="pre">CONNECT</span>; a request body streamed by <span class="pre">httpclient</span> (it sends one whole);
+		internationalized host names, IPv6 zones and the WHATWG URL standard's departures from RFC 3986;
+		an actor as the place a driver's or a client's events go; and a TLS back end other than OpenSSL.</i></p>
+
+	<p>Six library packages speak HTTP and its parts:</p>
+	<ul>
+	<li><span class="pre">url</span>: a URL read from text, resolved against another, and written back.</li>
+	<li><span class="pre">http</span>: HTTP's messages as data &mdash; methods, statuses, header fields,
+		request and response heads, what is known of a body's length, and errors &mdash; the same for every
+		version of the protocol.</li>
+	<li><span class="pre">http1</span>: HTTP/1.1 as a state machine with no I/O of its own. It is described briefly
+		<a href="#http1">below</a>; most programs never call it.</li>
+	<li><span class="pre">httpconn</span>: HTTP/1.1 over real sockets on an I/O loop, <i>as a client and as a
+		server</i>. This is where a program that serves HTTP lives.</li>
+	<li><span class="pre">httpclient</span>: fetch a URL, <span class="pre">http://</span> or
+		<span class="pre">https://</span>, in one call; or many at once, with a pool of connections per
+		server, retries, redirects, and a queue that orders what is fetched.</li>
+	<li><span class="pre">tls</span>: TLS 1.2 and 1.3 over OpenSSL, client and server. It does no I/O of its own,
+		and the operating system decides whether a server's certificate can be trusted.</li>
+	</ul>
+	<p>A program reaches them with <span class="pre">import url use *;</span>, <span class="pre">import http use *;</span>,
+		<span class="pre">import httpconn use *;</span> and so on. <span class="pre">httpconn</span>,
+		<span class="pre">httpclient</span> and <span class="pre">tls</span> run on Windows only, for now:
+		<span class="pre">httpconn</span> is written over <span class="pre">iocore</span>'s completion port and
+		Winsock (<a href="refconcio.html">I/O and Concurrency</a> and
+		<a href="refstdtime.html#io-timers">Timers, deadlines and cancelling in I/O</a> describe the loop and its deadlines),
+		and <span class="pre">tls</span> asks Windows' own certificate verifier
+		(<span class="pre">crypt32</span>) whether a server is who it says it is.
+		<span class="pre">httpclient</span> uses both. <span class="pre">url</span>, <span class="pre">http</span> and
+		<span class="pre">http1</span> call nothing of the operating system's. Congo copies OpenSSL's two
+		libraries beside any program that imports <span class="pre">tls</span> or
+		<span class="pre">httpclient</span>. Where a program imports both <span class="pre">httpconn</span> and
+		<span class="pre">httpclient</span>, each has a <span class="pre">Config</span>, a <span class="pre">Sink</span>,
+		an <span class="pre">Event</span> and so on, so it writes <span class="pre">import httpconn;</span> and says
+		<span class="pre">httpconn.Driver</span> and <span class="pre">httpconn.Event</span>.</p>
+	<p>Every example below is a complete program that was compiled and run, and its output is shown. The ones
+		with a client and a server run both in the one program, over <span class="pre">127.0.0.1</span>, so they
+		touch no other machine.</p>
+
+	<h2 id="url">URLs: the url package</h2>
+	<p>A <span class="pre">Url</span> is a URL as its parts: a scheme, an authority (user information, a host and
+		a port), a path, a query and a fragment, each kept as the text it is on the wire (percent-encoded). It
+		follows RFC 3986 and knows nothing of HTTP.</p>
+
+	<h3 id="url-read">Reading and writing a URL</h3>
+	<p><span class="pre">Url.parse(text)</span> reads an absolute URL and gives a
+		<span class="pre">Result[Url, UrlError]</span>. What is merely untidy is made tidy as a browser would:
+		the scheme and the host name are lower-cased; spaces at either end are dropped; in the path, query and
+		fragment a space, a quote, <span class="pre">&lt; &gt; \ ^ ` { | }</span> and every byte from 0x80 up
+		are percent-encoded (a <span class="pre">%</span> already there is left as it is); the path's
+		<span class="pre">.</span> and <span class="pre">..</span> segments are removed; and an http or https URL
+		with no path gets <span class="pre">/</span>. The parts are public fields:
+		<span class="pre">scheme</span>, <span class="pre">userinfo</span>, <span class="pre">host</span>
+		(an IPv6 address without its brackets), <span class="pre">hostKind</span>
+		(<span class="pre">HostKind.Empty</span>, <span class="pre">Name</span>, <span class="pre">Ipv4</span> or
+		<span class="pre">Ipv6</span>), <span class="pre">port</span> and <span class="pre">hasPort</span>,
+		<span class="pre">path</span>, <span class="pre">query</span> and <span class="pre">hasQuery</span>,
+		<span class="pre">fragment</span> and <span class="pre">hasFragment</span>, and
+		<span class="pre">hasAuthority</span>. The methods write it, or ask about it:</p>
+	<ul>
+	<li><span class="pre">text()</span>: the URL as text, the port only when it is not the scheme's default
+		(80 for http, 443 for https).</li>
+	<li><span class="pre">origin()</span>: <span class="pre">scheme://host:port</span>, the port always written. It is
+		what a client pools connections under.</li>
+	<li><span class="pre">authority()</span>: what HTTP writes as <span class="pre">Host</span>.</li>
+	<li><span class="pre">target()</span>: the request target, the path (at least <span class="pre">/</span>) and the
+		query, never the fragment.</li>
+	<li><span class="pre">effectivePort()</span>, <span class="pre">isHttp()</span>, <span class="pre">isSecure()</span>,
+		<span class="pre">sameOrigin(&amp;other)</span> and <span class="pre">copy()</span>;
+		<span class="pre">defaultPort(scheme)</span> is the free function behind the first.</li>
+	</ul>
+
+	<h3 id="url-resolve">Resolving a reference</h3>
+	<p><span class="pre">u.resolve(ref)</span> reads <span class="pre">ref</span> as RFC 3986 does, against
+		<span class="pre">u</span> as its base: it may be absolute, <span class="pre">//host/p</span>,
+		<span class="pre">/p</span>, <span class="pre">p</span>, <span class="pre">../p</span>,
+		<span class="pre">?q</span>, <span class="pre">#f</span> or empty. This is what a
+		<span class="pre">Location</span> header needs. <span class="pre">resolveRef(base, ref)</span> is the same as a
+		function.</p>
+
+	<h3 id="url-errors">Refusals</h3>
+	<p>A URL that cannot be read gives a <span class="pre">UrlError</span>: <span class="pre">at</span>, the byte
+		where it was found, <span class="pre">why</span>, and <span class="pre">message()</span>, which joins them.
+		A scheme that is not a letter followed by letters, digits, <span class="pre">+ - .</span>, a port that is
+		not decimal or is past 65535, a host with a character no host may hold, a control character, an http or
+		https URL with no host, and an IPv6 address that is not one are refused. Refused by name, because they are not read
+		yet: a host name with bytes past ASCII, a percent-encoded host name, an IPv6 zone
+		(<span class="pre">%25eth0</span>) and <span class="pre">[v1.x]</span>.</p>
+
+	<h3 id="url-encode">Encoding a component</h3>
+	<p><span class="pre">encodeComponent(text)</span> percent-encodes every byte that is not a letter, a digit
+		or one of <span class="pre">- . _ ~</span>: it is for a value put into a query or a path segment.
+		<span class="pre">decode(text)</span> undoes percent-encoding and gives an
+		<span class="pre">Option[String]</span>, <span class="pre">None</span> when a
+		<span class="pre">%</span> is not followed by two hex digits. <span class="pre">removeDotSegments(path)</span>
+		is also public.</p>
+<pre>
+mod urls;
+
+import stdio use *;
+import collections use String;
+import url use *;
+
+fn show(label &amp;str, s &amp;str) {
+  printStr(label);
+  printStr(" ");
+  printStr(s);
+  printStr("\n");
+}
+
+fn main() {
+  // Read a URL: it is tidied, and every way of writing it back is a method
+  match Url.parse("HTTPS://Example.com:443/a/./b/../c?x=1#top") {
+    case imm u Ok {
+      show("text     ", u.text().view());
+      show("origin   ", u.origin().view());
+      show("authority", u.authority().view());
+      show("target   ", u.target().view());
+      show("host     ", u.host.view());
+      show("path     ", u.path.view());
+      show("query    ", u.query.view());
+      show("fragment ", u.fragment.view());
+      printStr("port     ");
+      printUInt(u64.from(u.effectivePort()));
+      printStr(if u.hasPort {" written\n";} else {" default\n";});
+
+      // Resolve a reference against it
+      match u.resolve("../d?y") {
+        case imm t Ok {show("resolved ", t.text().view());}
+        case imm e Error {show("error    ", e.message().view());}
+      }
+      match u.resolve("//other.example/x") {
+        case imm t Ok {show("resolved ", t.text().view());}
+        case imm e Error {show("error    ", e.message().view());}
+      }
+    }
+    case imm e Error {show("error    ", e.message().view());}
+  }
+
+  // A refusal says where and why
+  match Url.parse("http://example.com:99999/") {
+    case imm u Ok {show("text     ", u.text().view());}
+    case imm e Error {
+      show("error    ", e.message().view());
+      printStr("at byte  ");
+      printUInt(u64.from(e.at));
+      printStr("\n");
+    }
+  }
+
+  // The same origin, however the default port is written
+  match Url.parse("http://a:80/x") {
+    case imm a Ok {
+      match Url.parse("http://A/y") {
+        case imm b Ok {printStr(if a.sameOrigin(&amp;b) {"same origin\n";} else {"other origin\n";});}
+        case imm e Error {}
+      }
+    }
+    case imm e Error {}
+  }
+
+  // A value for a query, encoded; and decoded again
+  imm enc = encodeComponent("a b&amp;c=d/é");
+  show("encoded  ", enc.view());
+  match decode(enc.view()) {
+    case imm d Some {show("decoded  ", d.view());}
+    case is None[String] {printStr("not decodable\n");}
+  }
+  match decode("%zz") {
+    case imm d Some {show("decoded  ", d.view());}
+    case is None[String] {printStr("%zz is not decodable\n");}
+  }
+}
+</pre>
+	<p>Output:</p>
+<pre>
+text      https://example.com/a/c?x=1#top
+origin    https://example.com:443
+authority example.com
+target    /a/c?x=1
+host      example.com
+path      /a/c
+query     x=1
+fragment  top
+port     443 written
+resolved  https://example.com/d?y
+resolved  https://other.example/x
+error     url: a port is 0 to 65535 (at 19)
+at byte  19
+same origin
+encoded   a%20b%26c%3Dd%2F%C3%A9
+decoded   a b&amp;c=d/é
+%zz is not decodable
+</pre>
+
+	<h2 id="http">Messages: the http package</h2>
+	<p>The <span class="pre">http</span> package holds what an HTTP exchange is made of, as plain data. Nothing in
+		it touches a socket, and nothing in it is about one version of the protocol: HTTP/1.1 writes a request's
+		head as lines of text, and a later version would write the same
+		<span class="pre">RequestHead</span> as binary frames, so the code above a core never asks which carried a
+		message.</p>
+
+	<h3 id="http-heads">Request and response heads</h3>
+	<p><span class="pre">RequestHead.make(method, target, authority)</span> makes a request's head: the
+		method (any token, <span class="pre">"GET"</span> or an extension's), the target (the path and query,
+		<span class="pre">/a/b?c</span>) and the authority (<span class="pre">example.com:8080</span>, which
+		HTTP/1.1 writes as <span class="pre">Host</span>). <span class="pre">RequestHead.get(target, authority)</span>
+		is the common case. The fields are public: <span class="pre">method</span> (a
+		<span class="pre">Method</span>), <span class="pre">target</span>, <span class="pre">authority</span>,
+		<span class="pre">scheme</span> (only HTTP/2 and HTTP/3 send it), <span class="pre">version</span> and
+		<span class="pre">headers</span>; <span class="pre">methodName()</span> is the method's text, an extension's
+		spelling kept. <span class="pre">ResponseHead.make(status)</span> makes a response's head, with a
+		<span class="pre">status</span> (a <span class="pre">u16</span>), a <span class="pre">version</span> and
+		<span class="pre">headers</span>. <span class="pre">Host</span> is never one of a request's fields: a core moves
+		it into <span class="pre">authority</span> as it reads, and writes it from there. Neither are the framing
+		fields, <span class="pre">Content-Length</span> and <span class="pre">Transfer-Encoding</span>: a core reads
+		and writes those, from a <span class="pre">BodyLength</span>.</p>
+
+	<h3 id="http-headers">Header fields</h3>
+	<p>A <span class="pre">Headers</span> is a message's header (or trailer) fields in the order they came or were
+		added, a name repeated as often as it was. Names compare ignoring ASCII case and are kept as written.
+		Nothing is joined unless asked, because Set-Cookie cannot be.</p>
+	<ul>
+	<li><span class="pre">h.add(name, value)</span> adds a field after the others, and says
+		<span class="pre">false</span>, adding nothing, when the name is not a token or the value, its spaces
+		and tabs at either end dropped, holds a CR, an LF, a NUL or a control character. So a
+		<span class="pre">Headers</span> holds only fields that any version may send.
+		<span class="pre">addUInt(name, n)</span> adds a number; <span class="pre">set</span> replaces every field of
+		the name; <span class="pre">remove</span> removes them and says how many.</li>
+	<li><span class="pre">get(name)</span> is an <span class="pre">Option[&amp;Array[u8]]</span>, the first value;
+		<span class="pre">count</span>, <span class="pre">has</span>, <span class="pre">joined(name)</span> (the values
+		joined by a comma and a space) and <span class="pre">hasToken(name, token)</span>, which asks whether a
+		comma-separated list field such as <span class="pre">Connection</span> has a member, ignoring case.</li>
+	<li><span class="pre">len()</span>, <span class="pre">nameAt(i)</span> and <span class="pre">valueAt(i)</span> walk
+		the fields; <span class="pre">copy()</span>, <span class="pre">clear()</span> and
+		<span class="pre">isEmpty()</span>.</li>
+	</ul>
+	<p>A name is text, a <span class="pre">&amp;str</span>; a value is bytes, a
+		<span class="pre">&amp;Array[u8]</span>, since it may hold bytes that are not UTF-8.
+		<span class="pre">checkFieldName</span> and <span class="pre">checkFieldValue</span> say why one is refused
+		(<span class="pre">""</span> when it is not), and <span class="pre">isToken</span> and
+		<span class="pre">trimOws</span> are there too.</p>
+
+	<h3 id="http-methods">Methods, versions and statuses</h3>
+	<p><span class="pre">Method</span> is <span class="pre">Get</span>, <span class="pre">Head</span>,
+		<span class="pre">Post</span>, <span class="pre">Put</span>, <span class="pre">Delete</span>,
+		<span class="pre">Connect</span>, <span class="pre">Options</span>, <span class="pre">Trace</span>,
+		<span class="pre">Patch</span> or <span class="pre">Other</span>. <span class="pre">methodOf(token)</span>
+		reads one, case-sensitively (<span class="pre">get</span> is <span class="pre">Other</span>), and
+		<span class="pre">methodToken(m)</span> writes it. <span class="pre">isSafe(m)</span> and
+		<span class="pre">isIdempotent(m)</span> are RFC 9110's: a request may be repeated automatically only
+		when its method is idempotent. <span class="pre">Version</span> is <span class="pre">Http10</span>,
+		<span class="pre">Http11</span>, <span class="pre">Http2</span> or <span class="pre">Http3</span>.</p>
+	<p>A status is its three-digit code. <span class="pre">reasonPhrase(code)</span> is the registered phrase
+		(<span class="pre">""</span> for any other code); <span class="pre">isInformational</span>,
+		<span class="pre">isSuccess</span>, <span class="pre">isRedirect</span>, <span class="pre">isClientError</span>
+		and <span class="pre">isServerError</span> sort codes by their hundreds; and
+		<span class="pre">responseHasBody(method, code)</span> is the rule every version shares: a response to HEAD,
+		and a 1xx, 204 or 304, has no body, whatever its fields say.</p>
+
+	<h3 id="http-bodies">Bodies and errors</h3>
+	<p>A <span class="pre">BodyLength</span> is what is known of a body: <span class="pre">BodyLength.empty()</span>
+		(none), <span class="pre">BodyLength.sized(n)</span> (exactly <span class="pre">n</span> bytes) or
+		<span class="pre">BodyLength.unsized()</span> (until the stream ends: HTTP/1.1's chunked coding or the
+		connection's close). Its <span class="pre">kind</span> and <span class="pre">length</span> are public, and
+		<span class="pre">isEmpty()</span>, <span class="pre">isSized()</span> and <span class="pre">isUnsized()</span>
+		ask. The bytes themselves travel separately, in buffers.</p>
+	<p>An <span class="pre">HttpError</span> says why an exchange or a connection failed: a
+		<span class="pre">kind</span> &mdash; <span class="pre">Malformed</span> (the peer broke the protocol),
+		<span class="pre">TooLarge</span> (a configured bound was passed), <span class="pre">Unsupported</span>,
+		<span class="pre">Closed</span> (the connection ended mid-message) or <span class="pre">TimedOut</span>
+		&mdash; the <span class="pre">status</span> a server would answer it with (0 for none),
+		<span class="pre">noResponse</span> (no byte of a response had arrived: with an idempotent method, the
+		time a client may retry), and <span class="pre">detail</span>, one line. <span class="pre">message()</span>
+		joins the kind and the detail.</p>
+<pre>
+mod msgs;
+
+import stdio use *;
+import collections use String;
+import http use *;
+
+fn main() {
+  // A request: method, target, authority; fields beside them
+  mut req = RequestHead.make("GET", "/tiles/7/12.bin", "example.com");
+  req.headers.add("Accept", "application/octet-stream");
+  req.headers.add("Range", "bytes=0-65535");
+  printStr(req.methodName());
+  printStr(" ");
+  printStr(req.target.view());
+  printStr(" to ");
+  printStr(req.authority.view());
+  printStr(", ");
+  printUInt(u64.from(req.headers.len()));
+  printStr(" fields\n");
+
+  // Names compare ignoring case; the first value comes back
+  match req.headers.get("RANGE") {
+    case imm v Some {
+      printStr("Range is ");
+      printStr(v as &amp;str);
+      printStr("\n");
+    }
+    case is None[&amp;Array[u8]] {printStr("no Range\n");}
+  }
+
+  // A field that is not allowed is refused, and nothing is added
+  imm ok = req.headers.add("Bad Name", "x");
+  printStr(if ok {"added\n";} else {"refused: ";});
+  printStr(checkFieldName("Bad Name"));
+  printStr("\n");
+  printStr(if req.headers.add("X-Note", "two\nlines") {"added\n";} else {"refused a value with a newline\n";});
+
+  // A repeated field is kept as often as it came; joined only when asked
+  mut h = Headers.empty();
+  h.add("Set-Cookie", "a=1");
+  h.add("Set-Cookie", "b=2");
+  h.add("Connection", "keep-alive, Upgrade");
+  printUInt(u64.from(h.count("set-cookie")));
+  printStr(" cookies; joined: ");
+  printStr(h.joined("Set-Cookie").view());
+  printStr("\n");
+  printStr(if h.hasToken("connection", "upgrade") {"Connection lists upgrade\n";} else {"no upgrade\n";});
+  h.set("Set-Cookie", "c=3");
+  printUInt(u64.from(h.count("Set-Cookie")));
+  printStr(" cookie after set\n");
+
+  // Methods, statuses, bodies
+  imm m = methodOf("PUT");
+  printStr(if isIdempotent(m) and not isSafe(m) {"PUT is idempotent, not safe\n";} else {"?\n";});
+  printStr(if methodOf("get") == Method.Other {"'get' is not GET\n";} else {"?\n";});
+  printStr(reasonPhrase(404u16));
+  printStr("; ");
+  printStr(if isRedirect(302u16) {"302 is a redirect; ";} else {"?; ";});
+  printStr(if responseHasBody(Method.Head, 200u16) {"HEAD has a body\n";} else {"a response to HEAD has no body\n";});
+
+  mut resp = ResponseHead.make(200u16);
+  resp.headers.addUInt("X-Count", 42u64);
+  match resp.headers.get("x-count") {
+    case imm v Some {printStr(v as &amp;str);}
+    case is None[&amp;Array[u8]] {}
+  }
+  printStr("\n");
+  imm body = BodyLength.sized(1024u64);
+  printStr(if body.isSized() and not body.isUnsized() {"sized\n";} else {"?\n";});
+
+  imm err = HttpError.make(ErrorKind.Malformed, 400u16, "a header field's name has a space before its colon");
+  printStr(err.message().view());
+  printStr("\n");
+}
+</pre>
+	<p>Output:</p>
+<pre>
+GET /tiles/7/12.bin to example.com, 2 fields
+Range is bytes=0-65535
+refused: a field's name has a space or a tab in it, or before its colon
+refused a value with a newline
+2 cookies; joined: a=1, b=2
+Connection lists upgrade
+1 cookie after set
+PUT is idempotent, not safe
+'get' is not GET
+Not Found; 302 is a redirect; a response to HEAD has no body
+42
+sized
+malformed: a header field's name has a space before its colon
+</pre>
+
+	<h2 id="http1">http1: HTTP/1.1 with no I/O of its own</h2>
+	<p>A <span class="pre">http1.Connection</span> is the protocol state of one TCP connection, as plain data, in
+		either role: <span class="pre">Connection.client(config, pool, now)</span> sends requests and reads
+		responses, <span class="pre">Connection.server(config, pool, now)</span> reads requests and sends
+		responses. It owns no socket, reads no clock and starts no thread. The program that does own the socket
+		(for a socket on a loop, <span class="pre">httpconn</span> is that program) calls it four ways:</p>
+	<ul>
+	<li><span class="pre">handleInput(buf, now)</span>: the bytes that arrived, in an owned buffer; an empty
+		buffer is the end of the peer's stream.</li>
+	<li><span class="pre">pollTransmit(now)</span>: the next buffer to send, empty when there is none.</li>
+	<li><span class="pre">pollEvent()</span>: what happened. A server's request arrives as
+		<span class="pre">Request</span> (the head and what is known of the body), any number of
+		<span class="pre">Data</span> (each an owned buffer), then <span class="pre">End</span> (with the trailer
+		fields); a client's response as <span class="pre">Response</span>, <span class="pre">Data</span>,
+		<span class="pre">End</span>, with a 1xx first as <span class="pre">Interim</span>. The others are
+		<span class="pre">NeedData</span>, <span class="pre">Paused</span> (waiting for the program),
+		<span class="pre">Failed</span> (an <span class="pre">HttpError</span>; every later event is
+		<span class="pre">Closed</span>) and <span class="pre">Closed</span>.</li>
+	<li><span class="pre">pollTimeout()</span> and <span class="pre">handleTimeout(now)</span>: the one deadline the
+		program must wake for, and the wake.</li>
+	</ul>
+	<p>The program sends with <span class="pre">sendRequest(head, body)</span> or
+		<span class="pre">sendResponse(head, body)</span> (and <span class="pre">sendInterim</span>,
+		<span class="pre">sendContinue</span>), then <span class="pre">sendData(buf)</span> and
+		<span class="pre">finish()</span> or <span class="pre">finishWith(trailers)</span> for a body. The memory it
+		holds is bounded: <span class="pre">readCredit()</span> says how many bytes it will take now, body bytes
+		handed out are on loan until the program calls <span class="pre">release(n)</span>, and
+		<span class="pre">sendData</span> hands a buffer back when too much waits to be sent. A
+		<span class="pre">Config</span> sets the bounds (head, line, field count, chunk line, buffering, window)
+		and the timeouts (head, body, idle, <span class="pre">Expect: 100-continue</span>); each limit passed is a
+		visible <span class="pre">Failed</span>. A server's failure sends the matching status first (400, 408,
+		414, 431, 501, 503 or 505) with <span class="pre">Connection: close</span>. A message that two readers
+		could frame differently (both <span class="pre">Content-Length</span> and
+		<span class="pre">Transfer-Encoding</span>, a space before a colon, a second
+		<span class="pre">Host</span>) is refused, never repaired.</p>
+	<p>The listing feeds a server connection a request, and shows what it says and what it wants sent. Each
+		line of the wire text ends in a carriage return and a line feed.</p>
+<pre>
+mod http1demo;
+
+import stdio use *;
+import collections use String;
+import time use Instant;
+import iobuf use *;
+import http use *;
+import http1 use *;
+
+// Everything the connection has to say, until it needs something from the program
+fn events(c &amp;mut Connection) {
+  while true {
+    match c.pollEvent() {
+      case mut e Request {
+        printStr("event Request ");
+        printStr(e.head.methodName());
+        printStr(" ");
+        printStr(e.head.target.view());
+        printStr(" for ");
+        printStr(e.head.authority.view());
+        printStr("\n");
+      }
+      case mut d Data {
+        printStr("event Data ");
+        printUInt(u64.from(d.buf.len()));
+        printStr(" bytes\n");
+        c.release(d.buf.len());
+      }
+      case is End {printStr("event End\n");}
+      case mut f Failed {
+        printStr("event Failed ");
+        printStr(f.error.message().view());
+        printStr("\n");
+      }
+      case is Closed {
+        printStr("event Closed\n");
+        return;
+      }
+      case is NeedData {
+        printStr("event NeedData\n");
+        return;
+      }
+      else {return;}
+    }
+  }
+}
+
+// The bytes the connection wants sent, written out
+fn wire(c &amp;mut Connection, at Instant) {
+  while true {
+    imm b = c.pollTransmit(at);
+    if b.len() == 0usize {break;}
+    printStr(b.view() as &amp;str);
+  }
+}
+
+fn main() {
+  imm pool = Pool.make();
+  imm now = Instant.now();
+  mut server = Connection.server(Config.make(), pool, now);
+
+  // Bytes arrive, as a socket would bring them
+  mut arrived = pool.mustTake(256usize);
+  arrived.append("POST /notes HTTP/1.1\r\nHost: example.com\r\nContent-Length: 5\r\n\r\nhello");
+  server.handleInput(arrived, now);
+  events(&amp;mut server);
+
+  // The program answers; the connection says what to put on the wire
+  mut head = ResponseHead.make(201u16);
+  head.headers.add("Content-Type", "text/plain");
+  server.sendResponse(head, BodyLength.sized(3u64));
+  mut body = pool.mustTake(16usize);
+  body.append("ok\n");
+  server.sendData(body);
+  server.finish();
+  printStr("--- to send:\n");
+  wire(&amp;mut server, now);
+  printStr("---\n");
+
+  // A request it will not accept is refused, and the connection ends
+  mut bad = Connection.server(Config.make(), pool, now);
+  mut junk = pool.mustTake(256usize);
+  junk.append("GET / HTTP/1.1\r\nHost: a\r\nHost: b\r\n\r\n");
+  bad.handleInput(junk, now);
+  events(&amp;mut bad);
+  printStr("--- to send:\n");
+  wire(&amp;mut bad, now);
+  printStr("---\n");
+}
+</pre>
+	<p>Output:</p>
+<pre>
+event Request POST /notes for example.com
+event Data 5 bytes
+event End
+--- to send:
+HTTP/1.1 201 Created
+Content-Type: text/plain
+Content-Length: 3
+
+ok
+---
+event Failed malformed: the request has more than one Host
+event Closed
+--- to send:
+HTTP/1.1 400 Bad Request
+Connection: close
+Content-Length: 0
+
+---
+</pre>
+
+	<h2 id="httpconn">Serving and fetching over sockets: the httpconn package</h2>
+	<p><span class="pre">httpconn</span> joins <span class="pre">http1</span> to sockets on an
+		<span class="pre">iocore</span> <span class="pre">Loop</span>, in both roles. A client connection looks its
+		host up, connects by a deadline, sends requests and streams their responses back; a server listens,
+		accepts, and runs one connection for each socket it accepts, streaming each request to the program and each
+		response back out. One <span class="pre">Driver</span> is all of it for one loop.</p>
+
+	<h3 id="httpconn-driver">The driver</h3>
+	<p><span class="pre">Driver.make(config, pool)</span> makes a driver. The <span class="pre">pool</span> is an
+		<span class="pre">iobuf</span> <span class="pre">Pool</span>: every body travels in an
+		<span class="pre">IoBuf</span> taken from it (<span class="pre">pool.mustTake(n)</span>, then
+		<span class="pre">buf.append(bytes)</span>), and a buffer a <span class="pre">Data</span> event gives the
+		program is the program's. A driver is driven by the thread that owns its loop. The simplest way is
+		<span class="pre">drv.poll(&amp;mut lp, until, &amp;mut events)</span>: it waits in the loop for at most
+		<span class="pre">until</span> (<span class="pre">iocore.forever()</span> for no limit; not at all while
+		events are ready) and appends to <span class="pre">events</span>, a
+		<span class="pre">List[Event]</span>, what happened; the program handles them and clears the list. It
+		never waits anywhere else. A program that also submits operations of its own to the loop polls the loop
+		itself, gives each completion to <span class="pre">drv.complete(lp, &amp;mut c)</span> (which says whether it was
+		the driver's, by <span class="pre">drv.owns(token)</span>), then calls
+		<span class="pre">drv.pump(lp, &amp;mut events)</span>; the loop's poll may wait no later than
+		<span class="pre">drv.wakeAt()</span>.</p>
+
+	<h3 id="httpconn-serve">A server</h3>
+	<p>A server is a driver that listens.
+		<span class="pre">drv.listen(&amp;mut lp, addr, sink)</span> gives a
+		<span class="pre">Result[ListenerId, IoError]</span>; <span class="pre">SocketAddr.localhost(port)</span>
+		is <span class="pre">127.0.0.1</span> only (port 0 asks for any free port, and
+		<span class="pre">drv.localAddr(&amp;lp, listener)</span> says which), and
+		<span class="pre">SocketAddr.v4(a, b, c, d, port)</span> makes any other. Every connection it
+		accepts, and every request on them, is told to the <span class="pre">sink</span> as events:
+		<span class="pre">Accepted</span> for each connection, then for each request
+		<span class="pre">Request</span> (the head: <span class="pre">e.request</span>, a
+		<span class="pre">RequestHead</span>; and <span class="pre">e.body</span>, what is known of the body),
+		<span class="pre">Data</span> for each piece of its body, and <span class="pre">End</span> when it is whole
+		(<span class="pre">e.trailers</span>). Each carries <span class="pre">e.req</span>, the request's
+		<span class="pre">ReqId</span>, and <span class="pre">e.conn</span>. The program answers a request with
+		<span class="pre">drv.respond(req, head, bodyLength)</span>, then
+		<span class="pre">drv.sendData(req, buf)</span> for each piece and <span class="pre">drv.finish(req)</span>
+		(or <span class="pre">drv.finishWith(req, trailers)</span>). The request's last event is
+		<span class="pre">Done</span> once the response has gone to the kernel whole, or
+		<span class="pre">Failed</span> if the connection ended first. A server answers one request at a time on a
+		connection; a pipelined request is read once the answer before it is whole. A server wanting a body only
+		on its say-so sees <span class="pre">Expect: 100-continue</span> in the request's head and calls
+		<span class="pre">drv.sendContinue(req)</span>; <span class="pre">drv.sendInterim(req, head)</span> sends
+		another 1xx.</p>
+	<p>The program below is a whole server and a client to try it with, on one loop. The server keeps a
+		<span class="pre">Pending</span> for each request it is reading, since a request's events can interleave
+		with another connection's; at <span class="pre">End</span> it takes the
+		<span class="pre">Pending</span> out and routes it; at a final event it forgets one it never answered. (The
+		body is copied out, or the <span class="pre">Pending</span> moved in whole, before the answer is
+		started, since answering changes the driver and the compiler refuses to lend a string across that.)
+		The client asks three things, one after another on one kept-alive connection, and prints what comes
+		back.</p>
+<pre>
+mod server;
+
+import stdio use *;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use Loop, SocketAddr, forever;
+import http use *;
+import httpconn use *;
+
+const tokServer = 100u64;
+const tokConn = 1u64;
+const tokReq = 2u64;
+
+// A request being read: what its head said, and its body so far
+struct Pending {
+  pub req ReqId;
+  pub method Method;
+  pub target String;
+  pub body String;
+}
+
+fn find(pending &amp;List[Pending], req ReqId) usize {
+  mut k = 0usize;
+  while k &lt; pending.len() {
+    if pending[k].req == req {return k;}
+    k = k + 1usize;
+  }
+  pending.len();
+}
+
+// Answer with a body that is a whole text
+fn reply(drv &amp;mut Driver, pool &amp;Pool, req ReqId, status u16, text &amp;Array[u8]) {
+  mut head = ResponseHead.make(status);
+  head.headers.add("Content-Type", "text/plain");
+  drv.respond(req, head, BodyLength.sized(u64.from(text.len)));
+  mut buf = pool.mustTake(text.len + 1usize);
+  buf.append(text);
+  drv.sendData(req, buf);
+  drv.finish(req);
+}
+
+// The routes: a request read whole
+fn route(drv &amp;mut Driver, pool &amp;Pool, p Pending) {
+  if p.method == Method.Get and p.target.view() == "/" {
+    reply(drv, pool, p.req, 200u16, "Hello from Cone.\n");
+  } elif p.method == Method.Post and p.target.view() == "/echo" {
+    reply(drv, pool, p.req, 200u16, p.body.view());
+  } else {
+    reply(drv, pool, p.req, 404u16, "No such page.\n");
+  }
+}
+
+// What the server does with one event of its own
+fn serve(drv &amp;mut Driver, pool &amp;Pool, pending &amp;mut List[Pending], e &amp;mut Event) {
+  if e.kind == EventKind.Request {
+    pending.push(new Pending(e.req, e.request.method, e.request.target.copy(), String.empty()));
+  } elif e.kind == EventKind.Data {
+    imm k = find(pending, e.req);
+    if k &lt; pending.len() {(&amp;mut pending[k]).body.appendBytes(e.buf.view());}
+    drv.release(e.req, e.buf.len());
+  } elif e.kind == EventKind.End {
+    imm k = find(pending, e.req);
+    if k &lt; pending.len() {
+      pending.swap(k, pending.len() - 1usize);
+      match pending.pop() {
+        case imm p Some {route(drv, pool, p);}
+        case is None[Pending] {}
+      }
+    }
+  } elif e.isTerminal() {
+    // Done, or the connection failed first: either way, the request is over
+    imm k = find(pending, e.req);
+    if k &lt; pending.len() {
+      pending.swap(k, pending.len() - 1usize);
+      pending.pop();
+    }
+  }
+}
+
+// The client's requests, one after another on one kept-alive connection
+fn ask(drv &amp;mut Driver, lp &amp;mut Loop, conn ConnId, step u32) {
+  if step == 0u32 {
+    drv.request(lp, conn, RequestHead.get("/", "localhost"), BodyLength.empty(), Sink.Here(tokReq));
+  } elif step == 1u32 {
+    drv.request(lp, conn, RequestHead.get("/nothing", "localhost"), BodyLength.empty(), Sink.Here(tokReq));
+  } else {
+    drv.request(lp, conn, RequestHead.make("POST", "/echo", "localhost"), BodyLength.sized(12u64),
+      Sink.Here(tokReq));
+  }
+}
+
+fn main() {
+  imm pool = Pool.make();
+  mut lp = Loop.mustMake();
+  mut drv = Driver.make(Config.make(), pool);
+
+  // Listen on any free port of this machine
+  mut port = 0u16;
+  match drv.listen(&amp;mut lp, SocketAddr.localhost(0u16), Sink.Here(tokServer)) {
+    case imm l Ok {
+      match drv.localAddr(&amp;lp, l) {
+        case imm a Ok {port = a.port();}
+        case imm e Error {}
+      }
+    }
+    case imm e Error {printStr(e.message().view());}
+  }
+
+  // A client on the same loop asks it three things
+  imm conn = drv.connect(&amp;mut lp, "127.0.0.1", port, Sink.Here(tokConn));
+  mut step = 0u32;
+  ask(&amp;mut drv, &amp;mut lp, conn, step);
+  mut pending = List[Pending].empty();
+  mut events = List[Event].empty();
+  imm giveUp = Instant.now() + Duration.fromSeconds(10i64);
+  while step &lt; 3u32 and Instant.now() &lt; giveUp {
+    drv.poll(&amp;mut lp, giveUp, &amp;mut events);
+    mut k = 0usize;
+    while k &lt; events.len() {
+      imm e = &amp;mut events[k];
+      k = k + 1usize;
+      if e.token == tokServer {
+        serve(&amp;mut drv, &amp;pool, &amp;mut pending, e);
+      } elif e.token == tokReq {
+        if e.kind == EventKind.Response {
+          printUInt(u64.from(e.response.status));
+          printStr(" ");
+          printStr(reasonPhrase(e.response.status));
+          printStr(": ");
+        } elif e.kind == EventKind.Data {
+          printStr(e.buf.view() as &amp;str);
+          drv.release(e.req, e.buf.len());
+        } elif e.kind == EventKind.Writable {
+          mut buf = pool.mustTake(16usize);
+          buf.append("hello, Cone\n");
+          drv.sendData(e.req, buf);
+          drv.finish(e.req);
+        } elif e.isTerminal() {
+          step = step + 1u32;
+          if step &lt; 3u32 {ask(&amp;mut drv, &amp;mut lp, conn, step);}
+        }
+      }
+    }
+    events.clear();
+  }
+  drv.abortAll(&amp;mut lp);
+}
+</pre>
+	<p>Output:</p>
+<pre>
+200 OK: Hello from Cone.
+404 Not Found: No such page.
+200 OK: hello, Cone
+</pre>
+
+	<h3 id="httpconn-stream">Streaming a body</h3>
+	<p>A body is never gathered whole, in either direction. A server sends one a piece at a time with
+		<span class="pre">sendData</span>, which takes the buffer (<span class="pre">None</span> comes back) or
+		hands it back, <span class="pre">Some(buf)</span>, when the connection already has a watermark's worth waiting
+		to go out. A <span class="pre">Writable</span> event then says there is room again. The same holds for a
+		client sending a request body. In the other direction, a body the program receives is on loan:
+		<span class="pre">drv.release(req, n)</span> says it is done with <span class="pre">n</span> bytes, and once
+		<span class="pre">bodyWindow</span> bytes (256 KiB) are out unreleased the driver stops reading and TCP's own
+		flow control holds the peer. The server below sends 1 MiB in 64 KiB pieces, stopping when a piece is
+		refused, and the client checks every byte. Its main loop is the previous one's, with these two parts
+		changed:</p>
+<pre>
+// A response going out: how much of it has been sent
+struct Sending {
+  pub req ReqId;
+  pub sent usize;
+  pub active bool;
+}
+
+// Send as many pieces as the connection takes now; finish when all are gone
+fn sendPieces(drv &amp;mut Driver, pool &amp;Pool, s &amp;mut Sending) {
+  while s.sent &lt; total {
+    mut buf = pool.mustTake(piece);
+    imm room = buf.spare();
+    mut i = 0usize;
+    while i &lt; piece {
+      room[i] = u8.from((s.sent + i) % 251usize);
+      i = i + 1usize;
+    }
+    buf.setLen(piece);
+    match drv.sendData(s.req, buf) {
+      case is None[IoBuf] {s.sent = s.sent + piece;}     // taken
+      else {return;}                                      // refused: wait for Writable
+    }
+  }
+  drv.finish(s.req);
+  s.active = false;
+}
+
+// ... in the loop over the events, for the server's:
+if e.kind == EventKind.End {
+  // The request is read; answer with a body of known length, sent as the connection takes it
+  drv.respond(e.req, ResponseHead.make(200u16), BodyLength.sized(u64.from(total)));
+  out.req = e.req;
+  out.active = true;
+  sendPieces(&amp;mut drv, &amp;pool, &amp;mut out);
+} elif e.kind == EventKind.Writable and out.active {
+  writable = writable + 1u32;
+  sendPieces(&amp;mut drv, &amp;pool, &amp;mut out);
+}
+</pre>
+	<p>The program prints (<span class="pre">total</span> is 1048576 and <span class="pre">piece</span> 65536):</p>
+<pre>
+1048576 bytes received, 0 wrong; the server was told to wait at least once
+</pre>
+	<p>An unknown length is sent with <span class="pre">BodyLength.unsized()</span>, which HTTP/1.1 writes in the
+		chunked coding, and <span class="pre">finishWith(req, trailers)</span> ends it with trailer fields.</p>
+
+	<h3 id="httpconn-client">Requests on a client connection</h3>
+	<p><span class="pre">drv.connect(&amp;mut lp, host, port, sink)</span> makes a client connection and gives
+		its <span class="pre">ConnId</span> at once. The host is looked up on the loop's name-lookup lane unless it is
+		an IPv4 address written as one, each address it gives is tried in turn, and the whole is bounded by
+		<span class="pre">connectTimeout</span> (10 s). <span class="pre">drv.connectAddr(&amp;mut lp, addr, sink)</span>
+		skips the lookup. The sink is told <span class="pre">Connected</span> first (<span class="pre">e.peer</span> is
+		the other end) and, last, exactly one <span class="pre">Closed</span>, <span class="pre">e.clean</span> when
+		it ended as HTTP meant it to (a kept-alive connection's end, an idle timeout, <span class="pre">Connection:
+		close</span>) and <span class="pre">e.failure</span> saying why when it did not.</p>
+	<p><span class="pre">drv.request(&amp;mut lp, conn, head, bodyLength, sink)</span> asks for an exchange and gives a
+		<span class="pre">ReqId</span>. Its events go to its own sink: <span class="pre">Response</span>
+		(<span class="pre">e.response</span>, a <span class="pre">ResponseHead</span>, preceded by an
+		<span class="pre">Interim</span> for each 1xx), <span class="pre">Data</span>, <span class="pre">End</span>
+		(with trailer fields), and then exactly one of the four final answers, <span class="pre">Done</span>
+		(<span class="pre">e.timing</span>: when it was asked for, put on the wire, first answered and ended),
+		<span class="pre">Failed</span>, <span class="pre">Cancelled</span> or <span class="pre">TimedOut</span>, and
+		nothing after it. A request with a body sends it with <span class="pre">sendData</span> and
+		<span class="pre">finish</span> once <span class="pre">Writable</span> says it is under way. A request that
+		cannot be made &mdash; the connection closed or a server's, its deadline past, its group cancelled &mdash; is
+		answered at once and never sent. A client connection carries one request at a time and is kept for the next;
+		<span class="pre">drv.isIdle(conn)</span> says it is free. At most <span class="pre">maxWaiting</span> (1) requests
+		may wait on a connection that is busy or still connecting; a request past that is
+		<span class="pre">Failed</span> at <span class="pre">Stage.Limit</span>. (<span class="pre">httpclient</span>,
+		below, does the pooling a program that makes many requests wants.)</p>
+	<p>The same driver can be a server and a client at once, as the programs above are.
+		<span class="pre">drv.close(lp, conn)</span> lets what was asked finish and closes politely;
+		<span class="pre">drv.abort(lp, conn)</span> resets it now, every request on it answered
+		<span class="pre">Cancelled</span>; <span class="pre">drv.abortAll(lp)</span> aborts every connection and
+		stops every listener; <span class="pre">drv.stopListening(lp, l)</span> stops one listener and leaves its
+		connections. <span class="pre">isOpen</span>, <span class="pre">peer</span> and
+		<span class="pre">layerInfo</span> ask about a connection.</p>
+
+	<h3 id="httpconn-sinks">Where events go: sinks</h3>
+	<p>Every connection, listener and request is given a <span class="pre">Sink</span> and the
+		<span class="pre">token</span> it carries back, a <span class="pre">u64</span> the driver never reads. The
+		program tells its events apart by token, as the programs above do.
+		<span class="pre">Sink.Here(token)</span> delivers to the thread that polls, appended to
+		<span class="pre">events</span>. <span class="pre">Sink.Chan(token, tx)</span> sends on a channel's
+		<span class="pre">Sender[Event]</span> to another thread, never waiting: when the channel is full the event is
+		held, the connection's reading stops behind it, and it is tried again at every pump, so the channel's bound
+		bounds what the connection holds. Events keep their order within one sink, not across sinks; a program
+		drives the driver until <span class="pre">drv.held()</span> is 0 before it stops. A
+		<span class="pre">drv.stats()</span> counts connections, requests by final answer, events and bytes.</p>
+
+	<h3 id="httpconn-events">Events</h3>
+	<p>An <span class="pre">Event</span> is a struct a program reads in place: its <span class="pre">kind</span>
+		(an <span class="pre">EventKind</span>: <span class="pre">Connected</span>, <span class="pre">Accepted</span>,
+		<span class="pre">Closed</span>, <span class="pre">Request</span>, <span class="pre">Response</span>,
+		<span class="pre">Interim</span>, <span class="pre">Data</span>, <span class="pre">End</span>,
+		<span class="pre">Writable</span>, <span class="pre">Done</span>, <span class="pre">Failed</span>,
+		<span class="pre">Cancelled</span>, <span class="pre">TimedOut</span>), its <span class="pre">token</span>,
+		<span class="pre">conn</span> and <span class="pre">req</span>, and the fields its kind fills:
+		<span class="pre">listener</span>, <span class="pre">peer</span>, <span class="pre">clean</span>,
+		<span class="pre">failure</span>, <span class="pre">request</span>, <span class="pre">response</span>,
+		<span class="pre">body</span>, <span class="pre">buf</span>, <span class="pre">trailers</span> and
+		<span class="pre">timing</span>. <span class="pre">e.isTerminal()</span> is true of the four final answers;
+		<span class="pre">eventName(kind)</span> is a kind's name.</p>
+
+	<h3 id="httpconn-cancel">Cancelling and deadlines</h3>
+	<p><span class="pre">drv.cancel(lp, req)</span> asks a request to end. Still waiting, it is taken out and
+		answered <span class="pre">Cancelled</span>; under way, HTTP/1.1's only way to stop it is to end the
+		connection, so the connection is reset, the request answered <span class="pre">Cancelled</span> and any
+		waiting behind it <span class="pre">Failed</span>, unsent. <span class="pre">drv.requestBy(..., deadline)</span>
+		takes an absolute <span class="pre">Instant</span> (never a duration) and answers the request
+		<span class="pre">TimedOut</span> then, the same way. <span class="pre">drv.requestIn(..., group, deadline)</span>
+		also puts it in a <span class="pre">CancelGroup</span> (<a href="refconcio.html#cancel-groups">Cancel
+		groups</a>), whose cancel, from any thread, cancels it and whose deadline it inherits when that is tighter.
+		A connection's own deadlines are the core's: a head, a body, an idle connection, an
+		<span class="pre">Expect</span>.</p>
+
+	<h3 id="httpconn-failures">Failures</h3>
+	<p>A <span class="pre">Failed</span> answer, and a <span class="pre">Closed</span> that is not clean, carry a
+		<span class="pre">Failure</span>: the <span class="pre">stage</span> it failed at
+		(<span class="pre">Resolve</span>, <span class="pre">Connect</span>, <span class="pre">Read</span>,
+		<span class="pre">Write</span>, <span class="pre">Http</span>, <span class="pre">Tls</span>,
+		<span class="pre">Closed</span> or <span class="pre">Limit</span>); the Windows error number in
+		<span class="pre">code</span> when the system gave one (a reset reads as 64, and the system's
+		certificate verifier refusing as <span class="pre">CERT_E_UNTRUSTEDROOT</span> and its kin); an
+		<span class="pre">HttpError</span> (its kind, detail and <span class="pre">noResponse</span>); and
+		<span class="pre">unsent</span>, no byte of the request reached the socket. A request may be tried again
+		on another connection when it is unsent, or when it is idempotent and has
+		<span class="pre">noResponse</span>; the client above decides, and these two say exactly. <span class="pre">message()</span>
+		joins them as <span class="pre">connect: closed: ... (Windows error 10061: ...)</span>.</p>
+
+	<h3 id="httpconn-config">Configuration</h3>
+	<p><span class="pre">Config.make()</span> gives the defaults, each a public field to change:
+		<span class="pre">protocol</span> (<span class="pre">http1.Config</span>: the bounds and timeouts above),
+		<span class="pre">connectTimeout</span> (10 s), <span class="pre">recvSize</span> (16 KiB, each receive's
+		buffer), <span class="pre">sendDepth</span> (4 sends in flight per connection),
+		<span class="pre">maxConnections</span> (10,000; an accept past it is not made),
+		<span class="pre">maxWaiting</span> (1), <span class="pre">lingerTimeout</span> (2 s: a connection closing
+		sends its FIN and waits that long for the peer's, so a reset never cuts off a response the peer has not
+		finished reading), <span class="pre">acceptDepth</span> (4 accepts outstanding per listener) and
+		<span class="pre">idleRecvReady</span> (an idle connection waits with a zero-byte receive and pins no
+		buffer).</p>
+
+	<h3 id="httpconn-layers">Layers</h3>
+	<p>Between the socket and the protocol is a byte-stream layer, a <span class="pre">Layer</span>: bytes off the
+		wire go in, the protocol's come out, and the other way round. A plain connection's is
+		<span class="pre">Plain</span> (<span class="pre">plainLayer()</span>), which passes buffers through whole;
+		a TLS session is the same shape, and <a href="#tls">the tls package</a> makes one.
+		<span class="pre">drv.connectWith(lp, host, port, layer, sink)</span> and
+		<span class="pre">drv.listenWith(lp, addr, maker, sink)</span> take a layer, or a
+		<span class="pre">LayerMaker</span> whose <span class="pre">make(self &amp;mut)</span> gives one for each
+		connection accepted. A type complies with <span class="pre">Layer</span> by having its methods, so
+		<span class="pre">httpconn</span> imports no TLS. A layer that has work that may block (a certificate check
+		the system makes may fetch over the network) hands it to the driver, which runs it on the blocking
+		pool; a layer that fails closes its connection, every request on it <span class="pre">Failed</span> at
+		<span class="pre">Stage.Tls</span>.</p>
+
+	<h2 id="httpclient">Fetching a URL: the httpclient package</h2>
+	<p>A <span class="pre">Client</span> takes a request for a URL and answers it with the response's events and
+		then exactly one final answer, as <span class="pre">httpconn</span> does for one connection. Between the two it
+		does what a program should not have to: it keeps a pool of connections per origin and reuses them, opens
+		new ones within its limits, orders the requests that wait, tries again a request that is safe to repeat,
+		follows redirects, and carries each request's cancel, group and deadline down to its connection.
+		Like a driver, a client belongs to one loop and the thread that polls it.</p>
+
+	<h3 id="httpclient-whole">One call: fetchWhole and getWhole</h3>
+	<p><span class="pre">Client.make(config, pool)</span> makes a client. <span class="pre">Request.get(url)</span> is a
+		request for a URL written as text and <span class="pre">Request.make(method, url)</span> any method's;
+		<span class="pre">Request.to(method, Url)</span> takes a parsed <span class="pre">Url</span>. A
+		<span class="pre">Request</span> has public fields to set: <span class="pre">headers</span>,
+		<span class="pre">body</span> (sent whole, with its <span class="pre">Content-Length</span>, so that a retry
+		or a 307 can send it again), <span class="pre">intent</span> and <span class="pre">score</span>,
+		<span class="pre">deadline</span> (an absolute <span class="pre">Instant</span>),
+		<span class="pre">group</span> (an <span class="pre">Option[CancelGroup]</span>) and
+		<span class="pre">maxRedirects</span>. The client writes <span class="pre">Host</span> from the URL and the framing
+		fields from the body, and adds <span class="pre">User-Agent</span> and <span class="pre">Accept: */*</span> when the
+		request has none. A URL's user information is never sent.</p>
+	<p><span class="pre">client.fetchWhole(&amp;mut lp, request, limit)</span> does it all in one call: it drives the
+		loop until the fetch has its final answer and gives a <span class="pre">Response</span>:
+		<span class="pre">outcome</span> (an <span class="pre">EventKind</span>: <span class="pre">Done</span>,
+		<span class="pre">Failed</span>, <span class="pre">Cancelled</span> or <span class="pre">TimedOut</span>;
+		<span class="pre">isOk()</span> is true of <span class="pre">Done</span>), <span class="pre">status</span>,
+		<span class="pre">headers</span>, the whole <span class="pre">body</span> as a <span class="pre">String</span>,
+		<span class="pre">url</span> (the URL that answered, after any redirects),
+		<span class="pre">failure</span> and <span class="pre">timing</span>. A body longer than
+		<span class="pre">limit</span> bytes fails the fetch at <span class="pre">Stage.Limit</span>. A 404 is an answer, not a
+		failure. Events of other fetches that arrive meanwhile are kept for the next
+		<span class="pre">poll</span>. Since <span class="pre">fetchWhole</span> polls the loop itself, a loop that also
+		runs a server's driver cannot use it, because what completes for the server would be dropped: the examples
+		below put the server on a thread of its own.
+		<span class="pre">getWhole(url, limit)</span> is the same with a loop and client of its own, for a
+		program that wants one URL and nothing more.</p>
+	<p>The server is the previous page section's, with three more routes, run by a thread of its own whose
+		listening port it sends back on a channel: <span class="pre">/</span> answers 200
+		<span class="pre">Hello from Cone.</span>, <span class="pre">/old</span> answers 302 with
+		<span class="pre">Location: /</span>, <span class="pre">/echo</span> answers 200 with the method, a space and
+		the body it was sent, and <span class="pre">/reset</span> resets the connection without an answer. (The whole
+		program is the file named below; the client is:)</p>
+<pre>
+fn urlOf(port u16, path &amp;str) String {
+  mut u = String.from("http://127.0.0.1:");
+  u.appendUInt(u64.from(port));
+  u.append(path);
+  u;
+}
+
+fn show(label &amp;str, r &amp;Response) {
+  printStr(label);
+  printStr(": ");
+  if r.isOk() {
+    printUInt(u64.from(r.status));
+    printStr(" ");
+    printStr(r.body.view());
+    printStr("  (");
+    printUInt(u64.from(r.timing.redirects));
+    printStr(" redirects, ");
+    printUInt(u64.from(r.timing.attempts));
+    printStr(" requests, ");
+    printStr(if r.timing.reused {"kept connection";} else {"new connection";});
+    printStr(")\n");
+  } else {
+    printStr(eventName(r.outcome));
+    printStr(", ");
+    printStr(stageName(r.failure.stage));
+    printStr(" stage\n");
+  }
+}
+
+fn main() {
+  // The server, on its own thread, and the port it listens on
+  mut portTx Sender[u16];
+  mut portRx Receiver[u16];
+  portTx, portRx = Channel[u16].make();
+  imm stop = new Arc[imm, Atomic[bool]](Atomic[bool].of(false));
+  imm server = thread.start(new ServerArgs(portTx, stop), &amp;serverThread);
+  mut port = 0u16;
+  match portRx.recv() {
+    case imm p Some {port = p;}
+    case is None[u16] {}
+  }
+
+  mut lp = Loop.mustMake();
+  mut client = Client.make(Config.make(), Pool.make());
+
+  // One call, the whole body: up to 64 KiB of it
+  imm hello = client.fetchWhole(&amp;mut lp, Request.get(urlOf(port, "/").view()), 65536usize);
+  show("GET /", &amp;hello);
+
+  // A redirect is followed; the URL that answered is on the response
+  imm moved = client.fetchWhole(&amp;mut lp, Request.get(urlOf(port, "/old").view()), 65536usize);
+  show("GET /old", &amp;moved);
+  printStr(if moved.url.view() == urlOf(port, "/").view() {"  answered by the URL of /\n";} else {"  answered by another URL\n";});
+
+  // Redirects are the caller's to follow when it says none
+  mut stay = Request.get(urlOf(port, "/old").view());
+  stay.maxRedirects = 0u32;
+  imm still = client.fetchWhole(&amp;mut lp, stay, 65536usize);
+  show("GET /old, no redirects", &amp;still);
+  match still.headers.get("location") {
+    case imm v Some {
+      printStr("  Location: ");
+      printStr(v as &amp;str);
+      printStr("\n");
+    }
+    case is None[&amp;Array[u8]] {}
+  }
+
+  // A POST with a body and a header field
+  mut post = Request.make("POST", urlOf(port, "/echo").view());
+  post.headers.add("Content-Type", "text/plain");
+  post.body = String.from("sent whole");
+  imm echoed = client.fetchWhole(&amp;mut lp, post, 65536usize);
+  show("POST /echo", &amp;echoed);
+
+  // A page that is not there is an answer, not a failure
+  imm missing = client.fetchWhole(&amp;mut lp, Request.get(urlOf(port, "/missing").view()), 65536usize);
+  show("GET /missing", &amp;missing);
+
+  // A failure says where it failed
+  imm bad = client.fetchWhole(&amp;mut lp, Request.get("ftp://127.0.0.1/"), 65536usize);
+  show("GET ftp://", &amp;bad);
+  printStr("  ");
+  printStr(bad.failure.message().view());
+  printStr("\n");
+
+  // A GET is repeated on a fresh connection when the first is reset under it; two repeats, then it fails
+  imm reset = client.fetchWhole(&amp;mut lp, Request.get(urlOf(port, "/reset").view()), 65536usize);
+  show("GET /reset", &amp;reset);
+  printUInt(u64.from(reset.failure.attempts));
+  printStr(" attempts\n");
+
+  imm s = client.stats();
+  printUInt(s.fetches);
+  printStr(" fetches, ");
+  printUInt(s.reused);
+  printStr(" on a kept connection, ");
+  printUInt(s.retries);
+  printStr(" retries, ");
+  printUInt(s.redirects);
+  printStr(" redirects\n");
+
+  client.abortAll(&amp;mut lp);
+  stop.store(true);
+  server.join();
+}
+</pre>
+	<p>Output:</p>
+<pre>
+GET /: 200 Hello from Cone.  (0 redirects, 1 requests, new connection)
+GET /old: 200 Hello from Cone.  (1 redirects, 2 requests, kept connection)
+  answered by the URL of /
+GET /old, no redirects: 302 moved  (0 redirects, 1 requests, kept connection)
+  Location: /
+POST /echo: 200 POST sent whole  (0 redirects, 1 requests, kept connection)
+GET /missing: 404 No such page.  (0 redirects, 1 requests, kept connection)
+GET ftp://: Failed, url stage
+  url: malformed: only http and https URLs are fetched
+GET /reset: Failed, read stage
+3 attempts
+7 fetches, 6 on a kept connection, 2 retries, 1 redirects
+</pre>
+
+	<h3 id="httpclient-events">A fetch's events</h3>
+	<p>A program that wants a response as it arrives, or many fetches at once, asks and polls.
+		<span class="pre">client.get(&amp;mut lp, url, sink)</span> and
+		<span class="pre">client.send(&amp;mut lp, request, sink)</span> give a <span class="pre">FetchId</span> and
+		later exactly one final answer, <span class="pre">Done</span>, <span class="pre">Failed</span>,
+		<span class="pre">Cancelled</span> or <span class="pre">TimedOut</span>, and nothing after it. Before it:
+		<span class="pre">Response</span> (<span class="pre">e.response</span>, the head of the response that will be
+		the answer, after any redirects; <span class="pre">e.url</span>, the URL that gave it),
+		<span class="pre">Data</span> (the body's bytes, in order, each an <span class="pre">IoBuf</span> the program
+		owns, handed back with <span class="pre">client.release(id, n)</span>) and <span class="pre">End</span>
+		(<span class="pre">e.trailers</span>). Sinks are <span class="pre">Sink.Here(token)</span> and
+		<span class="pre">Sink.Chan(token, tx)</span> as in <span class="pre">httpconn</span>, and the polling is
+		<span class="pre">client.poll(&amp;mut lp, until, &amp;mut events)</span>, or
+		<span class="pre">complete</span> and <span class="pre">pump</span> beside a program's own operations, with
+		<span class="pre">wakeAt()</span>. A fetch that cannot be made &mdash; a URL that does not parse or is not http or
+		https, the queue full, its group cancelled, its deadline past &mdash; is answered at once.
+		<span class="pre">client.cancel(&amp;mut lp, id)</span> asks a fetch to end; waiting, it is answered
+		<span class="pre">Cancelled</span> at once, and under way its connection's exchange is ended and
+		the answer says how. A <span class="pre">Request</span>'s <span class="pre">deadline</span> answers it
+		<span class="pre">TimedOut</span> then, across its retries and redirects, and its
+		<span class="pre">group</span> cancels it with the group's own cancel, from any thread. A final
+		answer's <span class="pre">e.timing</span> says when it was queued, last given a connection, first answered and
+		ended, how many requests it took, how many redirects, and whether its connection had been used before.
+		<span class="pre">client.stats()</span> and <span class="pre">client.driverStats()</span> count what
+		happened; <span class="pre">live()</span>, <span class="pre">queued()</span>, <span class="pre">held()</span> and
+		<span class="pre">isLive(id)</span> say what is outstanding; <span class="pre">abortAll(lp)</span> ends everything.</p>
+
+	<h3 id="httpclient-pool">The pool</h3>
+	<p>Connections are pooled per origin, the URL's scheme, host and port. A connection that ends an exchange with
+		both sides willing to keep it waits idle in its origin's pool, and the next request for that origin takes it.
+		At most <span class="pre">maxPerOrigin</span> (6) connections are open to an origin and
+		<span class="pre">maxTotal</span> (64) in all; an idle one is closed after <span class="pre">idleTimeout</span>
+		(90 s), or when the total is reached and another origin needs a connection, or by
+		<span class="pre">client.closeIdle(lp)</span>. HTTP/1.1 carries one request at a time on a connection, so
+		these are also the most requests under way at once. All of an <span class="pre">https</span> client's
+		connections take their TLS sessions from one <span class="pre">tls.Client</span>, so a new connection to a
+		server resumes an earlier one's session. A connection that cannot be made fails the requests waiting for
+		its origin.</p>
+
+	<h3 id="httpclient-order">Order: intents and scores</h3>
+	<p>A request that waits for a connection is queued by its <span class="pre">intent</span>:
+		<span class="pre">Intent.Urgent</span> (the frame waits on it), <span class="pre">Visible</span> (in view now;
+		the default), <span class="pre">Prefetch</span> or <span class="pre">Background</span>; then by its
+		<span class="pre">score</span> within the intent, higher first; then by the order asked. An intent is strict: a
+		Background request waits while any Urgent one does for the same connections. A request is given a
+		connection only once it is free, never queued behind another's exchange, so one asked for later at a higher
+		intent overtakes every one still waiting. <span class="pre">client.reprioritize(id, intent, score)</span>
+		changes a waiting fetch's place and says whether it still could. At most <span class="pre">maxQueued</span> (10,000)
+		requests wait; past that a fetch is <span class="pre">Failed</span> at once, at <span class="pre">Stage.Queue</span>.
+		The program below limits the client to one connection, so the order shows, and sends five fetches before it
+		first polls, one of them cancelled while it waits. (The server answers every GET with 200 and its own target
+		as the body; the first number on each line is the fetch's token.)</p>
+<pre>
+fn getAt(port u16, path &amp;str, intent Intent) Request {
+  mut r = Request.get(urlOf(port, path).view());
+  r.intent = intent;
+  r;
+}
+
+fn main() {
+  // ... the server thread and its port, as before ...
+
+  // One connection to an origin at a time, so the order requests are
+  // given it shows
+  mut config = Config.make();
+  config.maxPerOrigin = 1u32;
+  mut lp = Loop.mustMake();
+  mut client = Client.make(config, Pool.make());
+
+  // Five requests, asked for in this order; the fourth is changed its mind about
+  client.send(&amp;mut lp, getAt(port, "/background", Intent.Background), Sink.Here(1u64));
+  client.send(&amp;mut lp, getAt(port, "/prefetch", Intent.Prefetch), Sink.Here(2u64));
+  client.send(&amp;mut lp, getAt(port, "/visible", Intent.Visible), Sink.Here(3u64));
+  imm dropped = client.send(&amp;mut lp, getAt(port, "/cancelled", Intent.Visible), Sink.Here(4u64));
+  client.send(&amp;mut lp, getAt(port, "/urgent", Intent.Urgent), Sink.Here(5u64));
+  client.cancel(&amp;mut lp, dropped);
+
+  // Each fetch's events, as they come
+  mut events = List[Event].empty();
+  mut finals = 0u32;
+  imm giveUp = Instant.now() + Duration.fromSeconds(10i64);
+  while finals &lt; 5u32 and Instant.now() &lt; giveUp {
+    client.poll(&amp;mut lp, giveUp, &amp;mut events);
+    mut k = 0usize;
+    while k &lt; events.len() {
+      imm e = &amp;mut events[k];
+      k = k + 1usize;
+      printUInt(e.token);
+      printStr(" ");
+      printStr(eventName(e.kind));
+      if e.kind == EventKind.Response {
+        printStr(" ");
+        printUInt(u64.from(e.response.status));
+      } elif e.kind == EventKind.Data {
+        printStr(" ");
+        printStr(e.buf.view() as &amp;str);
+        client.release(e.id, e.buf.len());
+      } elif e.isTerminal() {
+        finals = finals + 1u32;
+      }
+      printStr("\n");
+    }
+    events.clear();
+  }
+  client.abortAll(&amp;mut lp);
+  stop.store(true);
+  server.join();
+}
+</pre>
+	<p>Output:</p>
+<pre>
+4 Cancelled
+5 Response 200
+5 Data /urgent
+5 End
+5 Done
+3 Response 200
+3 Data /visible
+3 End
+3 Done
+2 Response 200
+2 Data /prefetch
+2 End
+2 Done
+1 Response 200
+1 Data /background
+1 End
+1 Done
+</pre>
+
+	<h3 id="httpclient-retries">Retries and redirects</h3>
+	<p>A request is tried again, on another connection, when its connection failed under it (the stages
+		<span class="pre">Read</span>, <span class="pre">Write</span> and <span class="pre">Closed</span>) and it is known
+		safe to repeat: no byte of it reached the socket, or its method is idempotent and no byte of a response
+		arrived. At most <span class="pre">maxRetries</span> (2) times, and never once its
+		<span class="pre">Response</span> has gone to its sink. A connection that could not be made, a TLS failure, a
+		protocol refusal and a timeout are not retried. A retried request keeps its place in the order.</p>
+	<p>A response of 301, 302, 303, 307 or 308 with a <span class="pre">Location</span> is followed, up to
+		<span class="pre">maxRedirects</span> (10) or the request's own; past it the fetch fails at
+		<span class="pre">Stage.Redirect</span>, and with 0 none is followed and the 3xx is the answer. The
+		<span class="pre">Location</span> is resolved against the URL that answered. A 303 makes the next request a
+		GET (a HEAD stays a HEAD), as 301 and 302 do of a POST; the body and the
+		<span class="pre">Content-</span> fields go. A 307 or 308 sends the same method and body again. A
+		redirect to another origin drops the request's <span class="pre">Authorization</span>,
+		<span class="pre">Proxy-Authorization</span> and <span class="pre">Cookie</span> fields.</p>
+
+	<h3 id="httpclient-failures">Failures and configuration</h3>
+	<p>A <span class="pre">Failed</span> answer carries a <span class="pre">Failure</span>: its
+		<span class="pre">stage</span> (<span class="pre">Url</span>, <span class="pre">Queue</span>,
+		<span class="pre">Resolve</span>, <span class="pre">Connect</span>, <span class="pre">Read</span>,
+		<span class="pre">Write</span>, <span class="pre">Http</span>, <span class="pre">Tls</span>,
+		<span class="pre">Closed</span>, <span class="pre">Limit</span> or <span class="pre">Redirect</span>), the Windows
+		<span class="pre">code</span> when there is one, an <span class="pre">HttpError</span>,
+		<span class="pre">unsent</span>, and <span class="pre">attempts</span>, how many requests were made.
+		<span class="pre">message()</span> joins them, and <span class="pre">stageName</span>,
+		<span class="pre">intentName</span> and <span class="pre">eventName</span> name the enums.
+		<span class="pre">Config.make()</span> gives <span class="pre">conn</span> (an
+		<span class="pre">httpconn.Config</span>, its driver's), <span class="pre">tlsConfig</span> (a
+		<span class="pre">tls.ClientConfig</span>), <span class="pre">maxPerOrigin</span>,
+		<span class="pre">maxTotal</span>, <span class="pre">idleTimeout</span>, <span class="pre">maxQueued</span>,
+		<span class="pre">maxRetries</span>, <span class="pre">maxRedirects</span> and
+		<span class="pre">userAgent</span> (<span class="pre">cone-httpclient/0.1</span>), each a public field.</p>
+
+	<h2 id="tls">TLS: the tls package</h2>
+	<p>A TLS <span class="pre">Session</span> is one connection's state and never touches a socket: its owner hands
+		it the bytes that came off the wire, and takes back the bytes to send and the plaintext that came out. TLS 1.2
+		and 1.3 are done by OpenSSL 3.5 (<span class="pre">tls.backendVersion()</span> names it), and a server's
+		certificate is judged by the operating system. A program rarely calls a <span class="pre">Session</span>
+		directly: <span class="pre">httpclient</span> uses <span class="pre">tls</span> for every
+		<span class="pre">https://</span> URL, and a server uses it through <span class="pre">httpconn</span>'s layers.</p>
+
+	<h3 id="tls-https">HTTPS: a server, and a client that trusts it</h3>
+	<p>A TLS server is made from a certificate chain and a private key in PEM files:
+		<span class="pre">tls.Server.make(tls.ServerConfig.make(&amp;certFile, &amp;keyFile))</span> gives a
+		<span class="pre">Result[Server, TlsError]</span>. A <span class="pre">Server</span> is a handle, copied to share
+		between threads. For an HTTP server, <span class="pre">server.stream(pool)</span> makes a
+		<span class="pre">Stream</span>, a TLS session in the shape of httpconn's
+		<span class="pre">Layer</span>; the listener makes one for each connection it accepts through a
+		<span class="pre">LayerMaker</span> the program writes:</p>
+<pre>
+struct TlsMaker {
+  server tls.Server;
+  pool Pool;
+
+  pub fn make(self &amp;mut) So[httpconn.Layer] {new So[tls.Stream](server.stream(pool));}
+}
+
+// ... and where the plain server called drv.listen:
+match tls.Server.make(tls.ServerConfig.make(&amp;certFile, &amp;keyFile)) {
+  case imm tlsServer Ok {
+    imm maker = new So[TlsMaker](new TlsMaker(tlsServer, pool));
+    match drv.listenWith(&amp;mut lp, SocketAddr.localhost(0u16), maker, httpconn.Sink.Here(100u64)) {
+      ...
+    }
+  }
+  case imm e Error {printStr(e.message().view());}
+}
+</pre>
+	<p>Nothing else about the server changes: its requests are the same events, answered the same way. A client
+		is <span class="pre">httpclient</span> with a <span class="pre">tls.ClientConfig</span> in its
+		<span class="pre">tlsConfig</span>. By default the operating system verifies the server. The test
+		certificates the <span class="pre">tls</span> package keeps (<span class="pre">server.pem</span> and
+		<span class="pre">server.key</span>, for <span class="pre">localhost</span> and
+		<span class="pre">127.0.0.1</span>, under a test root the machine does not trust) show both answers: a client
+		given the test root as its only trust anchor, and a client left to the system. The program is in two parts, a
+		server on a thread (the file named below) and:</p>
+<pre>
+fn main() {
+  // ... the server thread and its port, as before ...
+  mut address = String.from("https://127.0.0.1:");
+  address.appendUInt(u64.from(port));
+  address.append("/");
+
+  // A client that trusts the test root, and only it
+  mut trusting = httpclient.Config.make();
+  trusting.tlsConfig.verify = tls.Verifier.roots(readText("ca.pem").view());
+  trusting.tlsConfig.offline = true;
+  mut lp = Loop.mustMake();
+  mut client = httpclient.Client.make(trusting, Pool.make());
+  imm ok = client.fetchWhole(&amp;mut lp, httpclient.Request.get(address.view()), 4096usize);
+  printStr(if ok.isOk() {"trusting client: ";} else {"trusting client failed: ";});
+  printUInt(u64.from(ok.status));
+  printStr(" ");
+  printStr(ok.body.view());
+  printStr("\n");
+
+  // A client that asks the operating system, which has never heard of that root
+  mut asking = httpclient.Config.make();
+  asking.tlsConfig.offline = true;
+  mut lp2 = Loop.mustMake();
+  mut client2 = httpclient.Client.make(asking, Pool.make());
+  imm refused = client2.fetchWhole(&amp;mut lp2, httpclient.Request.get(address.view()), 4096usize);
+  printStr("asking the OS: ");
+  printStr(httpclient.eventName(refused.outcome));
+  printStr(", ");
+  printStr(refused.failure.message().view());
+  printStr("\n");
+
+  client.abortAll(&amp;mut lp);
+  client2.abortAll(&amp;mut lp2);
+  stop.store(true);
+  server.join();
+}
+</pre>
+	<p>Output:</p>
+<pre>
+trusting client: 200 secure
+asking the OS: Failed, tls: closed: certificate untrusted (Windows error 2148204809: A certificate chain processed, but terminated in a root certificate which is not trusted by the trust provider)
+</pre>
+
+	<h3 id="tls-verify">Who verifies the server</h3>
+	<p>A <span class="pre">tls.ClientConfig.make()</span> gives the defaults, each a public field:
+		<span class="pre">verify</span> (a <span class="pre">Verifier</span>), <span class="pre">alpn</span> (the application
+		protocols offered, in order: <span class="pre">"http/1.1"</span>), <span class="pre">minVersion</span> and
+		<span class="pre">maxVersion</span> (<span class="pre">TlsVersion.Tls12</span> to
+		<span class="pre">Tls13</span>), <span class="pre">resume</span> (sessions are resumed when the server allows),
+		<span class="pre">backend</span>, <span class="pre">verifyLane</span> (the blocking pool's lane the system's
+		verifier runs on) and <span class="pre">offline</span> (the system's verifier fetches nothing over the network:
+		no intermediates, no revocation data). The <span class="pre">Verifier</span> decides whether a server is who
+		it claims to be:</p>
+	<ul>
+	<li><span class="pre">Verifier.platform()</span>, the default: the operating system. On Windows the chain the server
+		sent goes to the certificate chain engine and is judged by the SSL policy for the name asked for, as the
+		browser on the machine would judge it, with the machine's own roots and policy. It may fetch over the network,
+		so it never runs on the loop's thread. Revocation that cannot be checked does not refuse a server.</li>
+	<li><span class="pre">Verifier.roots(pem)</span>: for development. The chain is checked against these roots
+		alone, and the name; the machine's roots are not used.</li>
+	<li><span class="pre">Verifier.pinnedSha256(hex)</span>: for development. The server is accepted when the SHA-256 of
+		its public key is one of the 64-hex-digit values given, whatever signed it. A malformed value is a panic.</li>
+	<li><span class="pre">Verifier.insecureDevelopmentOnly()</span>: nothing is checked. Anyone in the path can read and
+		change the connection. Never use it against a real server.</li>
+	</ul>
+	<p>A <span class="pre">ServerConfig.make(certFile, keyFile)</span> has <span class="pre">alpn</span> (the protocols it
+		accepts, in its order of preference: a client offering none of them is refused),
+		<span class="pre">minVersion</span>, <span class="pre">maxVersion</span> and <span class="pre">backend</span>.
+		<span class="pre">tls.Client.make(config)</span> and <span class="pre">tls.Server.make(config)</span> fail with a
+		<span class="pre">TlsError</span> when the configuration cannot be loaded (a root bundle with no certificate, a file that
+		cannot be read, a key that is not the certificate's). A client that resumes keeps, for each server name, what it
+		was sent to resume with, so that a new connection to that server takes the newest; a TLS 1.3 ticket is
+		used once, up to 8 are kept for a server, and <span class="pre">client.cachedSessions()</span> says how many.</p>
+
+	<h3 id="tls-sansio">Without a socket: sessions</h3>
+	<p><span class="pre">client.session(serverName)</span> and <span class="pre">server.session()</span> make a
+		<span class="pre">Session</span> directly; the server name is sent by SNI and checked against the certificate
+		(an IP address is checked only). The owner moves the bytes:</p>
+	<ul>
+	<li><span class="pre">s.feed(cipher)</span> takes ciphertext that arrived (all of it; a partial record is buffered),
+		and <span class="pre">s.feedEnd()</span> says the transport's stream ended.</li>
+	<li><span class="pre">s.pending()</span> says how many bytes are ready to go out, and
+		<span class="pre">s.transmit(out)</span> copies them into a buffer: handshake messages, records, alerts.</li>
+	<li><span class="pre">s.write(plain)</span> protects plaintext (none is taken before the handshake is done,
+		<span class="pre">isOpen()</span>) and <span class="pre">s.read(out)</span> gives plaintext while
+		<span class="pre">canRead()</span> says some may be there.</li>
+	<li><span class="pre">s.close()</span> queues a close_notify; <span class="pre">s.peerEnded()</span> says the peer's stream
+		ended and was read. A stream that ends with no close_notify still ends, as a TCP FIN does, and
+		<span class="pre">info().truncated</span> says so.</li>
+	<li><span class="pre">s.pollEvent()</span> says once each what happened: <span class="pre">HandshakeDone</span>,
+		<span class="pre">VerifyNeeded</span>, <span class="pre">PeerClosed</span> or <span class="pre">Failed</span>
+		(<span class="pre">Nothing</span> when none). <span class="pre">isFailed()</span> and
+		<span class="pre">error()</span> say why a session failed.</li>
+	<li>When the system's verifier is to decide, the handshake stops at <span class="pre">VerifyNeeded</span>
+		(<span class="pre">s.wantsVerify()</span>): run <span class="pre">s.verifyNow()</span> where blocking is fine, or
+		give <span class="pre">s.verifyOp(&amp;pool)</span> to a loop's blocking pool and hand its completion to
+		<span class="pre">s.verifyDone(&amp;mut c)</span>. A <span class="pre">Stream</span> does this through the driver.</li>
+	</ul>
+	<p>The program moves bytes between a client's session and a server's by hand:</p>
+<pre>
+// Move what each side has to send to the other until neither has any;
+// what each reads is appended to its string
+fn pump(c &amp;mut tls.Session, s &amp;mut tls.Session, cin &amp;mut String, sin &amp;mut String) {
+  mut buf = new Array[u8, 20000] &lt;- fill 0u8;
+  mut moved = true;
+  while moved {
+    moved = false;
+    while c.pending() > 0usize {
+      imm n = c.transmit(&amp;mut buf[0usize ..&lt; 20000usize]);
+      s.feed(&amp;buf[0usize ..&lt; n]);
+      moved = true;
+    }
+    while s.pending() > 0usize {
+      imm n = s.transmit(&amp;mut buf[0usize ..&lt; 20000usize]);
+      c.feed(&amp;buf[0usize ..&lt; n]);
+      moved = true;
+    }
+    while c.canRead() {
+      imm n = c.read(&amp;mut buf[0usize ..&lt; 20000usize]);
+      if n == 0usize {break;}
+      cin.appendBytes(&amp;buf[0usize ..&lt; n]);
+    }
+    while s.canRead() {
+      imm n = s.read(&amp;mut buf[0usize ..&lt; 20000usize]);
+      if n == 0usize {break;}
+      sin.appendBytes(&amp;buf[0usize ..&lt; n]);
+    }
+  }
+}
+
+fn main() {
+  // The server's side: its certificate chain and key
+  imm certFile = certs("server.pem");
+  imm keyFile = certs("server.key");
+  imm server = tls.Server.make(tls.ServerConfig.make(&amp;certFile, &amp;keyFile));
+
+  // The client's side: trusts the test root alone
+  mut rootPem = String.empty();
+  imm caFile = certs("ca.pem");
+  match fs.readFile(&amp;caFile) {
+    case mut r Ok {rootPem &lt;=> r;}
+    case imm e Error {}
+  }
+  mut config = tls.ClientConfig.make();
+  config.verify = tls.Verifier.roots(rootPem.view());
+
+  match server {
+    case imm srv Ok {
+      match tls.Client.make(config) {
+        case imm cl Ok {
+          // One session each; no socket anywhere
+          mut c = cl.session("localhost");
+          mut s = srv.session();
+          mut cin = String.empty();
+          mut sin = String.empty();
+          pump(&amp;mut c, &amp;mut s, &amp;mut cin, &amp;mut sin);
+          printStr(if c.isOpen() and s.isOpen() {"handshake done\n";} else {"no handshake\n";});
+          imm info = c.info();
+          printStr(info.versionName.view());
+          printStr(" ");
+          printStr(info.cipher.view());
+          printStr(", ALPN ");
+          printStr(info.alpn.view());
+          printStr(", verified by ");
+          printStr(tls.verifyKindName(info.verifiedBy));
+          printStr("\n");
+
+          // Plaintext in, ciphertext out, and the other way
+          c.write("ping");
+          pump(&amp;mut c, &amp;mut s, &amp;mut cin, &amp;mut sin);
+          printStr("server read: ");
+          printStr(sin.view());
+          printStr("\n");
+          s.write("pong");
+          pump(&amp;mut c, &amp;mut s, &amp;mut cin, &amp;mut sin);
+          printStr("client read: ");
+          printStr(cin.view());
+          printStr("\n");
+
+          // Closing is a message too
+          c.close();
+          pump(&amp;mut c, &amp;mut s, &amp;mut cin, &amp;mut sin);
+          printStr(if s.peerEnded() {"the server saw the client close\n";} else {"still open\n";});
+          printStr(if s.info().closeNotify {"...with a close_notify\n";} else {"...without one\n";});
+
+          // The same client, the wrong name
+          mut c2 = cl.session("example.org");
+          mut s2 = srv.session();
+          pump(&amp;mut c2, &amp;mut s2, &amp;mut cin, &amp;mut sin);
+          if c2.isFailed() {
+            imm why = c2.error().message();
+            printStr(why.view());
+          } else {
+            printStr("no failure");
+          }
+          printStr("\n");
+        }
+        case imm e Error {printStr(e.message().view());}
+      }
+    }
+    case imm e Error {printStr(e.message().view());}
+  }
+}
+</pre>
+	<p>(<span class="pre">certs(name)</span> makes the <span class="pre">Path</span> of one of the test
+		certificates.) Output:</p>
+<pre>
+handshake done
+TLSv1.3 TLS_AES_256_GCM_SHA384, ALPN http/1.1, verified by roots
+server read: ping
+client read: pong
+the server saw the client close
+...with a close_notify
+tls: certificate name mismatch: hostname mismatch (OpenSSL's verify result 62)
+</pre>
+
+	<h3 id="tls-streams">Streams</h3>
+	<p>A <span class="pre">Stream</span> is a <span class="pre">Session</span> with buffers, in the shape of
+		httpconn's <span class="pre">Layer</span>: <span class="pre">client.stream(serverName, pool)</span> and
+		<span class="pre">server.stream(pool)</span> make one, and <span class="pre">new So[tls.Stream](...)</span>
+		slots it into <span class="pre">drv.connectWith</span> or a <span class="pre">LayerMaker</span>. The protocol's
+		bytes handed to it before the handshake is done wait and go out after it. A stream that fails reports it once
+		its last bytes (an alert, usually) have gone out. <span class="pre">st.session()</span> reaches the session.</p>
+
+	<h3 id="tls-errors">Errors and diagnostics</h3>
+	<p>A <span class="pre">TlsError</span> has a <span class="pre">kind</span> (a <span class="pre">TlsErrorKind</span>:
+		<span class="pre">CertExpired</span>, <span class="pre">CertNameMismatch</span>,
+		<span class="pre">CertUntrusted</span>, <span class="pre">CertRevoked</span>, <span class="pre">CertOther</span>,
+		<span class="pre">ProtocolVersion</span>, <span class="pre">NoAlpnMatch</span>, <span class="pre">Alert</span>,
+		<span class="pre">Protocol</span>, <span class="pre">Config</span> or <span class="pre">Backend</span>),
+		<span class="pre">code</span> (the back end's or the system's own number), <span class="pre">osError</span>
+		(Windows' error number when the system gave the reason), and <span class="pre">detail</span>.
+		<span class="pre">message()</span> joins them as <span class="pre">tls: certificate untrusted: ...</span>, and
+		<span class="pre">errorName(kind)</span> names a kind.</p>
+	<p><span class="pre">s.info()</span> gives a <span class="pre">TlsInfo</span> of what a session negotiated:
+		<span class="pre">version</span> and <span class="pre">versionName</span>, <span class="pre">cipher</span>,
+		<span class="pre">alpn</span>, <span class="pre">resumed</span>, <span class="pre">verifiedBy</span>,
+		<span class="pre">handshakeTime</span> and <span class="pre">verifyTime</span> (the system's verifier's share of it),
+		<span class="pre">closeNotify</span> and <span class="pre">truncated</span>; <span class="pre">text()</span> says it
+		in one line, which is what a connection's <span class="pre">layerInfo</span> gives. <span class="pre">tls.stats()</span>
+		counts, for the process, handshakes (and those resumed), failures, verifications by the system's verifier,
+		close_notify sent and received, and streams that ended without one.</p>
+
+	<p style="text-align: right; margin-top: 2em;"><a href="refstdtest.html"><img alt="_" src="next.png" /></a></p>
+    </div>
+  </body>
+</html>

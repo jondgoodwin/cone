@@ -1,0 +1,299 @@
+<html>
+  <head>
+	  <title>The Standard Library - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">The Standard Library</div>
+		</div>
+
+    <div class="text">
+
+	<p>Cone's standard library is a set of packages that come with the language, in the
+		<span class="pre">packages</span> folder of its repository. Each is written in Cone (a few lean on the C
+		library or the operating system), each is built on its own, and a program uses one by importing it by name.
+		This page lists them, says what each is for, how to import it, and where it is documented. Four of them have
+		pages of their own: <a href="refstdfs.html">files, folders, paths, the environment and processes</a>;
+		<a href="refstdtime.html">time</a>; <a href="refstdhttp.html">HTTP, TLS and URLs</a>; and
+		<a href="refstdtest.html">testing</a>.</p>
+	<p>The graphics, windowing and 3-D packages in the same folder are not described here.</p>
+
+	<h2 id="importing">Importing a package</h2>
+	<p>A package is imported by its name, with the <span class="pre">import</span> statement of
+		<a href="refinclude.html">import and extern</a>. There is no list of dependencies to write: Congo reads the
+		<span class="pre">import</span> lines, finds each package by name (<a href="refmodule.html#package">Packages
+		and Congo</a>), builds it, and links it. The three usual forms:</p>
+<pre>
+mod tour;
+
+import stdio use *;
+import collections use *;
+import time use Duration;
+import textdiff;
+
+fn main() {
+  // 'use *' brings in every public name: List, String, Dict...
+  mut names = List[String].empty();
+  names.push(String.from("collections"));
+  names.push(String.from("time"));
+  printUInt(u64.from(names.len()));
+  printStr(" packages used\n");
+
+  // 'use Duration' brings in just that one
+  imm pause = Duration.fromMillis(1500);
+  printInt(pause.millis());
+  printStr(" ms\n");
+
+  // with no 'use', the package's name is the way in: textdiff.unifiedText
+  imm shown = textdiff.unifiedText("a\n", "b\n", "old", "new");
+  printStr(shown.view());
+}
+</pre>
+	<p>which prints:</p>
+<pre>
+2 packages used
+1500 ms
+--- old
++++ new
+@@ -1 +1 @@
+-a
++b
+</pre>
+	<p>One package needs no import at all: <span class="pre">core</span>, the prelude, whose names (
+		<span class="pre">Option</span>, <span class="pre">Result</span>, <span class="pre">str</span>, the
+		atomic values, the panic functions) every module has already.</p>
+
+	<h2 id="packages">The packages</h2>
+
+	<h3 id="foundations">Foundations</h3>
+	<table border="1" cellpadding="4" cellspacing="0">
+	<tr><th>Package</th><th>What it is for</th></tr>
+	<tr><td><span class="pre">core</span><br>(no import)</td><td>The prelude: <span class="pre">Option</span>,
+		<span class="pre">Result</span>, <span class="pre">str</span> and the other types and functions of the
+		language itself, and its intrinsics (<a href="refintrinsic.html">Intrinsics</a>).</td></tr>
+	<tr><td><span class="pre">stdio</span><br><span class="pre">import stdio use *;</span></td><td>Printing text and
+		numbers to standard output and standard error: <span class="pre">printStr</span>,
+		<span class="pre">printInt</span>, <span class="pre">print &lt;- x</span>, and the
+		<span class="pre">eprint</span> forms for standard error. Standard output is buffered;
+		<span class="pre">print.flush()</span> writes it out before another program writes to the same place.</td></tr>
+	<tr><td><span class="pre">libc</span><br><span class="pre">import libc;</span></td><td>The ISO C library as C
+		spells it: C names, C types, errors as C reports them. A raw layer for programs that call C; the
+		packages below wrap it.</td></tr>
+	<tr><td><span class="pre">posix</span><br><span class="pre">import posix;</span></td><td>The POSIX functions
+		beyond ISO C (files, directories, processes, the environment), as raw bindings over the Windows C runtime.
+		<span class="pre">fs</span> and <span class="pre">env</span> are the Cone layer over it.</td></tr>
+	<tr><td><span class="pre">conestd</span><br>(no import)</td><td>The runtime every program links beside its own
+		code: the end of a panic, printing, and the raw blocks the heap's memory comes from. A program never
+		imports it.</td></tr>
+	</table>
+
+	<h3 id="memory">Collections and memory</h3>
+	<table border="1" cellpadding="4" cellspacing="0">
+	<tr><th>Package</th><th>What it is for</th></tr>
+	<tr><td><span class="pre">collections</span><br><span class="pre">import collections use *;</span></td>
+		<td><span class="pre">List</span>, <span class="pre">String</span>, <span class="pre">Dict</span>,
+		<span class="pre">OrderedDict</span>, <span class="pre">Set</span> and <span class="pre">Deque</span>
+		(<a href="reftypecoll.html">Collection Types</a>).</td></tr>
+	<tr><td><span class="pre">arena</span><br><span class="pre">import arena use *;</span></td>
+		<td><span class="pre">Arena</span>: values allocated one after another and freed together
+		(<a href="refregionglo.html">Region Strategies</a>).</td></tr>
+	<tr><td><span class="pre">pool</span><br><span class="pre">import pool use *;</span></td>
+		<td><span class="pre">Pool[T]</span>: values added and removed one at a time, reached by a
+		generational <span class="pre">Ref</span> that stops reaching anything once its value is removed
+		(<a href="refregionglo.html">Region Strategies</a>).</td></tr>
+	<tr><td><span class="pre">rcweak</span><br><span class="pre">import rcweak use *;</span></td>
+		<td><span class="pre">Rcw</span> and <span class="pre">Weak[T]</span>: reference counting with weak
+		references that do not keep a value alive (<a href="refweakref.html">Weak References</a>).</td></tr>
+	<tr><td><span class="pre">collector</span><br><span class="pre">import collector;</span></td>
+		<td><span class="pre">Gc</span>, a tracing garbage-collected region. Single-threaded, for code outside
+		actors only, and discouraged: inside an actor, use the actor's own collected region
+		(<a href="refregionglo.html">Region Strategies</a>).</td></tr>
+	</table>
+
+	<h3 id="threads">Threads, locks and actors</h3>
+	<table border="1" cellpadding="4" cellspacing="0">
+	<tr><th>Package</th><th>What it is for</th></tr>
+	<tr><td><span class="pre">thread</span><br><span class="pre">import thread;</span></td>
+		<td>OS threads: start, join, detach, sleep, park (<a href="refconc.html">Concurrency</a>).</td></tr>
+	<tr><td><span class="pre">sync</span><br><span class="pre">import sync use *;</span></td>
+		<td>What threads share safely: <span class="pre">Arc</span>, the futex, <span class="pre">Mutex</span>,
+		<span class="pre">Rwlock</span>, <span class="pre">Condvar</span>, <span class="pre">Once</span>,
+		channels and the one-shot <span class="pre">Oneshot</span>
+		(<a href="refconc.html">Concurrency</a>, <a href="refconccomm.html">Thread Communications</a>).</td></tr>
+	<tr><td><span class="pre">actors</span><br><span class="pre">import actors;</span></td>
+		<td>The runtime an <span class="pre">actor</span> declaration runs on: mailboxes, the scheduler of worker
+		threads, futures, parallel loops. A module that declares an actor or uses
+		<span class="pre">parallel each</span> imports it
+		(<a href="refactor.html">Actors</a>, <a href="refparallel.html">Parallel each</a>).</td></tr>
+	</table>
+
+	<h3 id="files">Files, paths, environment and processes</h3>
+	<table border="1" cellpadding="4" cellspacing="0">
+	<tr><th>Package</th><th>What it is for</th></tr>
+	<tr><td><span class="pre">fs</span><br><span class="pre">import fs;</span></td>
+		<td>Files and folders: read and write whole files, list, walk, rename, remove, stat, the current folder.</td></tr>
+	<tr><td><span class="pre">path</span><br><span class="pre">import path;</span></td>
+		<td>File paths taken apart and put together as text; never asks the file system anything.</td></tr>
+	<tr><td><span class="pre">env</span><br><span class="pre">import env;</span></td>
+		<td>The program's environment variables.</td></tr>
+	<tr><td><span class="pre">process</span><br><span class="pre">import process;</span></td>
+		<td>Running another program and waiting for it; the program's own arguments.</td></tr>
+	</table>
+	<p>All four are on <a href="refstdfs.html">their own page</a>.</p>
+
+	<h3 id="timepkgs">Time</h3>
+	<table border="1" cellpadding="4" cellspacing="0">
+	<tr><th>Package</th><th>What it is for</th></tr>
+	<tr><td><span class="pre">time</span><br><span class="pre">import time use *;</span></td>
+		<td><span class="pre">Duration</span>, <span class="pre">Instant</span>, <span class="pre">Timestamp</span>
+		and <span class="pre">Clock</span>.</td></tr>
+	<tr><td><span class="pre">calendar</span><br><span class="pre">import calendar;</span></td>
+		<td>Civil dates and times over a <span class="pre">Timestamp</span>, and RFC 3339 and HTTP date text.</td></tr>
+	<tr><td><span class="pre">timewheel</span><br><span class="pre">import timewheel use *;</span></td>
+		<td>Timers that cost almost nothing to arm and cancel, for the I/O loop.</td></tr>
+	</table>
+	<p>All three are on <a href="refstdtime.html">their own page</a>.</p>
+
+	<h3 id="asyncio">Asynchronous I/O</h3>
+	<table border="1" cellpadding="4" cellspacing="0">
+	<tr><th>Package</th><th>What it is for</th></tr>
+	<tr><td><span class="pre">iobuf</span><br><span class="pre">import iobuf use *;</span></td>
+		<td>Owned buffers for I/O, lent to an operation by moving them: <span class="pre">IoBuf</span>,
+		<span class="pre">Pool</span>, <span class="pre">Bytes</span>, <span class="pre">Chain</span>.</td></tr>
+	<tr><td><span class="pre">iocore</span><br><span class="pre">import iocore use *;</span></td>
+		<td>The completion loop: hand it a job (receive, send, accept, read a file, wake at a time) and later get
+		exactly one answer. Jobs may carry a deadline and join a cancel group.</td></tr>
+	<tr><td><span class="pre">aio</span><br><span class="pre">import aio;</span></td>
+		<td>I/O an actor awaits: a behaviour <span class="pre">await</span>s a socket's operation and pauses
+		until the answer comes.</td></tr>
+	<tr><td><span class="pre">diag</span><br><span class="pre">import diag;</span></td>
+		<td>Records of where an I/O operation's time went: one record per operation, a loop's counters,
+		latency histograms.</td></tr>
+	</table>
+	<p><a href="refconcio.html">I/O and Concurrency</a> describes them.</p>
+
+	<h3 id="networkpkgs">HTTP, TLS and URLs</h3>
+	<table border="1" cellpadding="4" cellspacing="0">
+	<tr><th>Package</th><th>What it is for</th></tr>
+	<tr><td><span class="pre">url</span><br><span class="pre">import url;</span></td>
+		<td>URLs read, resolved and written as text.</td></tr>
+	<tr><td><span class="pre">http</span><br><span class="pre">import http;</span></td>
+		<td>HTTP's message types, shared by every version.</td></tr>
+	<tr><td><span class="pre">http1</span><br><span class="pre">import http1;</span></td>
+		<td>HTTP/1.1's connection core, with no I/O of its own.</td></tr>
+	<tr><td><span class="pre">httpconn</span><br><span class="pre">import httpconn;</span></td>
+		<td>HTTP over sockets on an I/O loop, client and server.</td></tr>
+	<tr><td><span class="pre">httpclient</span><br><span class="pre">import httpclient;</span></td>
+		<td>Fetching an <span class="pre">http://</span> or <span class="pre">https://</span> URL in one call.</td></tr>
+	<tr><td><span class="pre">tls</span><br><span class="pre">import tls;</span></td>
+		<td>TLS 1.2 and 1.3 over OpenSSL, with no I/O of its own.</td></tr>
+	</table>
+	<p>All six are on <a href="refstdhttp.html">their own page</a>.</p>
+
+	<h3 id="textpkgs">Text: textdiff and toml</h3>
+	<table border="1" cellpadding="4" cellspacing="0">
+	<tr><th>Package</th><th>What it is for</th></tr>
+	<tr><td><span class="pre">textdiff</span><br><span class="pre">import textdiff;</span></td>
+		<td>The differences between two texts, line by line, and the unified diff that shows them, as
+		<span class="pre">diff -u</span> prints it.</td></tr>
+	<tr><td><span class="pre">toml</span><br><span class="pre">import toml;</span></td>
+		<td>A reader for a subset of TOML: tables, and string, integer, boolean and list-of-string values.
+		It reads Congo's manifests, and suits any small configuration file that keeps to the subset.</td></tr>
+	</table>
+
+	<h3 id="textdiff">textdiff</h3>
+	<p><span class="pre">textdiff.unifiedText(a, b, aName, bName)</span> compares two texts, split into lines,
+		and answers the unified diff as a <span class="pre">String</span>, empty when the texts are the same. A
+		fifth argument, <span class="pre">around</span>, sets how many unchanged lines show around each change
+		(3 unless given). <span class="pre">unified</span> does the same for two lists of lines, and
+		<span class="pre">spans</span> answers the edit itself as a list of stretches, each equal, deleted,
+		inserted or replaced.</p>
+<pre>
+mod showdiff;
+
+import stdio use *;
+import textdiff;
+
+fn main() {
+  imm shown = textdiff.unifiedText("one\ntwo\nthree\n", "one\n2\nthree\n", "want", "got");
+  printStr(shown.view());
+}
+</pre>
+	<p>prints:</p>
+<pre>
+--- want
++++ got
+@@ -1,3 +1,3 @@
+ one
+-two
++2
+ three
+</pre>
+
+	<h3 id="toml">toml</h3>
+	<p><span class="pre">toml.parse(text)</span> answers a <span class="pre">Result[Document, TomlError]</span>. A
+		<span class="pre">Document</span> holds tables, and <span class="pre">doc["package"]</span> is a table (a
+		panic if there is none; ask <span class="pre">doc.has("package")</span> first). A table answers
+		<span class="pre">getString</span>, <span class="pre">getInt</span>, <span class="pre">getBool</span> and
+		<span class="pre">getStrings</span>, each an <span class="pre">Option</span> that is
+		<span class="pre">None</span> when the key is missing or holds another kind of value. A TOML
+		feature outside the subset (floats, dates, inline tables, dotted names) is an error whose message names the line.</p>
+<pre>
+mod readname;
+
+import stdio use *;
+import toml;
+
+fn main() i32 {
+  mut doc = new toml.Document();
+  match toml.parse("[package]\nname = \"hello\"\nversion = \"0.1.0\"\n") {
+    case mut ok Ok { doc &lt;=&gt; ok; }
+    case imm e Error {
+      imm m = e.message();
+      printStr(m.view());
+      return 1i32;
+    }
+  }
+  match doc["package"].getString("name") {
+    case imm n Some { printStr(n.view()); printStr("\n"); }
+    case is None { printStr("no name\n"); }
+  }
+  0i32;
+}
+</pre>
+	<p>prints <span class="pre">hello</span>.</p>
+
+	<h3 id="testpkg">Testing</h3>
+	<table border="1" cellpadding="4" cellspacing="0">
+	<tr><th>Package</th><th>What it is for</th></tr>
+	<tr><td><span class="pre">testing</span><br><span class="pre">import testing use *;</span></td>
+		<td>Checks for a package's tests (<span class="pre">expectInt</span>, <span class="pre">require</span>,
+		<span class="pre">done</span>), run by <span class="pre">congo test</span>; see
+		<a href="refstdtest.html">Testing</a>.</td></tr>
+	</table>
+
+	<h2 id="platforms">Where they run</h2>
+	<p>These run on Windows only: <span class="pre">posix</span>, <span class="pre">fs</span>,
+		<span class="pre">env</span> (over <span class="pre">posix</span>), <span class="pre">process</span>,
+		<span class="pre">iobuf</span> (its blocks come from <span class="pre">VirtualAlloc</span>), and every package
+		built on <span class="pre">iobuf</span> or <span class="pre">iocore</span>: <span class="pre">iocore</span>
+		(over an I/O completion port) itself, <span class="pre">aio</span>, <span class="pre">http1</span>,
+		<span class="pre">httpconn</span>, <span class="pre">httpclient</span> and <span class="pre">tls</span>.
+		<span class="pre">path</span> reads Windows' paths: drive letters and shares, and both
+		<span class="pre">/</span> and <span class="pre">\</span> as separators.</p>
+	<p>The others use nothing that belongs to Windows alone. Of these,
+		<span class="pre">sync</span>, <span class="pre">thread</span>, <span class="pre">actors</span> and
+		<span class="pre">time</span> are the ones that have been run on Linux so far, with <span class="pre">core</span>
+		and a program that only prints.</p>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="refstdfs.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>
