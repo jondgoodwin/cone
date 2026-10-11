@@ -52,8 +52,8 @@ fn await1(lp &mut Loop, tok u64) Got {
 
 // A connected pair: the client's end and the accepted one
 fn pair(lp &mut Loop, l Handle, port u16) Handle, Handle {
-  lp.submit(Op.Accept[l], Target.Here[1u64]);
-  lp.submit(Op.Connect[SocketAddr.localhost(port)], Target.Here[2u64]);
+  lp.submit(Op.Accept(l), Target.Here(1u64));
+  lp.submit(Op.Connect(SocketAddr.localhost(port)), Target.Here(2u64));
   mut a = Handle.none();
   mut b = Handle.none();
   mut out = List[Completion].empty();
@@ -75,12 +75,12 @@ fn pair(lp &mut Loop, l Handle, port u16) Handle, Handle {
 fn send(lp &mut Loop, pool &Pool, h Handle, text &Array[u8], tok u64) Got {
   mut b = pool.mustTake(64usize);
   b.append(text);
-  lp.submit(Op.Send[h, b], Target.Here[tok]);
+  lp.submit(Op.Send(h, b), Target.Here(tok));
   await1(lp, tok);
 }
 
 fn recv(lp &mut Loop, pool &Pool, h Handle, tok u64) Got {
-  lp.submit(Op.Recv[h, pool.mustTake(4096usize)], Target.Here[tok]);
+  lp.submit(Op.Recv(h, pool.mustTake(4096usize)), Target.Here(tok));
   await1(lp, tok);
 }
 
@@ -130,7 +130,7 @@ fn main() i32 {
 
     // 3. A reset
     c, s = pair(&mut lp, l, port);
-    lp.submit(Op.Recv[c, pool.mustTake(4096usize)], Target.Here[20u64]);
+    lp.submit(Op.Recv(c, pool.mustTake(4096usize)), Target.Here(20u64));
     expect(lp.reset(s), "3: reset");
     expect(not lp.isOpen(s), "3: ...names nothing from now on");
     expect(not lp.reset(s), "3: ...and a second reset says false");
@@ -143,9 +143,9 @@ fn main() i32 {
     c, s = pair(&mut lp, l, port);
     send(&mut lp, &pool, c, "unread", 30u64);
     // Let the bytes arrive at the server's end before it closes
-    lp.after(Instant.now() + Duration.fromMillis(20i64), Target.Here[31u64]);
+    lp.after(Instant.now() + Duration.fromMillis(20i64), Target.Here(31u64));
     await1(&mut lp, 31u64);
-    lp.submit(Op.Recv[c, pool.mustTake(4096usize)], Target.Here[32u64]);
+    lp.submit(Op.Recv(c, pool.mustTake(4096usize)), Target.Here(32u64));
     lp.close(s);
     imm g5 = await1(&mut lp, 32u64);
     expect(g5.status == diag.outcomeFailed, "4: close with bytes unread: the peer's receive fails (a reset)");
@@ -154,7 +154,7 @@ fn main() i32 {
 
     // 5. close with nothing unread: the end of the stream
     c, s = pair(&mut lp, l, port);
-    lp.submit(Op.Recv[c, pool.mustTake(4096usize)], Target.Here[40u64]);
+    lp.submit(Op.Recv(c, pool.mustTake(4096usize)), Target.Here(40u64));
     lp.close(s);
     imm g6 = await1(&mut lp, 40u64);
     expect(g6.status == diag.outcomeDone and g6.n == 0usize, "5: close with nothing unread: the end of the stream");

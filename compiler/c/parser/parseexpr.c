@@ -678,6 +678,26 @@ INode *parseDotCall(ParseState *parse, INode *node, uint16_t flags) {
     return (INode*)fncall;
 }
 
+// A term that ends its suffixes in a value expression is, when it is a name alone
+// ('Lamp.Red', 'None'), a member path ('Lamp.Red' before name resolution collapses
+// it) or a name with type arguments in brackets ('None[i32]'), possibly the
+// construction of an empty variant, which type check decides by what the name
+// binds to (FlagValueTermName, FlagValueTermCall). Not marked where a type is
+// written (parseType), nor where a pattern is (parseMatchPattern clears it).
+static void parseMarkValueTerm(ParseState *parse, INode *node) {
+    if (parse->intype || node == NULL)
+        return;
+    if (node->tag == NameUseTag)
+        node->flags |= FlagValueTermName;
+    else if (node->tag == FnCallTag) {
+        FnCallNode *call = (FnCallNode*)node;
+        if (call->args == NULL && call->methfld && (call->flags & FlagOperator) == 0)
+            call->flags |= FlagValueTermCall;
+        else if ((call->flags & FlagIndex) && call->methfld == NULL && call->args != NULL)
+            call->flags |= FlagValueTermCall;
+    }
+}
+
 // This processes all suffix operators successively
 // Returns a node with first suffix inner-most, last is outermost.
 INode *parseSuffix(ParseState *parse, INode *node, uint16_t flags) {
@@ -723,8 +743,10 @@ INode *parseSuffix(ParseState *parse, INode *node, uint16_t flags) {
         }
 
         // No suffix, we are done with suffixes
-        else
+        else {
+            parseMarkValueTerm(parse, node);
             return node;
+        }
     }
     return node; // we never get here
 }

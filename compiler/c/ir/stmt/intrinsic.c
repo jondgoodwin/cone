@@ -654,7 +654,7 @@ int intrinsicIsAtomicType(INode *type) {
 static char *memOrderNames[] = {"Relaxed", "Acquire", "Release", "AcqRel", "SeqCst"};
 
 // The ordering an argument passed as a MemOrder names, when it is a constant:
-// a variant's literal, 'MemOrder.SeqCst[]', or a const holding one, coerced to
+// a variant's literal, 'MemOrder.SeqCst', or a const holding one, coerced to
 // the enum. Answers 0 for anything else, whose value is known only as it runs
 static int intrinsicOrderOf(INode *arg, MemOrderKind *order) {
     for (;;) {

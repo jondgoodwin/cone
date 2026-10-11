@@ -59,7 +59,7 @@ fn serve(a ServerArgs) ServerReport {
   mut lp = Loop.mustMake();
   mut drv = Driver.make(Config.make(), pool);
   mut listener = ListenerId.none();
-  match drv.listen(&mut lp, SocketAddr.localhost(0u16), Sink.Here[1u64]) {
+  match drv.listen(&mut lp, SocketAddr.localhost(0u16), Sink.Here(1u64)) {
     case imm r Ok {listener = r;}
     case imm e Error {}
   }
@@ -81,18 +81,18 @@ fn serve(a ServerArgs) ServerReport {
     while k < events.len() {
       imm e = &mut events[k];
       k = k + 1usize;
-      if e.kind == EventKind.Request[] {
+      if e.kind == EventKind.Request {
         rep.requests = rep.requests + 1u64;
         imm i = targetNumber(e.request.target.view());
         drv.respond(e.req, ResponseHead.make(200u16), BodyLength.sized(bodyLen(i)));
         sending.push(e.req);
         sentTo.push(0u64);
         which.push(i);
-      } elif e.kind == EventKind.Done[] {
+      } elif e.kind == EventKind.Done {
         rep.done = rep.done + 1u64;
       } elif e.isTerminal() {
         rep.notDone = rep.notDone + 1u64;
-      } elif e.kind == EventKind.Closed[] {
+      } elif e.kind == EventKind.Closed {
         rep.closed = rep.closed + 1u64;
       }
     }
@@ -163,8 +163,8 @@ fn consume(rx Receiver[Event]) ChanReport {
         got = true;
         imm e = &mut s;
         if rep.finals > 0u64 {rep.afterFinal = rep.afterFinal + 1u64;}
-        if e.kind == EventKind.Response[] {rep.responses = rep.responses + 1u64;}
-        elif e.kind == EventKind.Data[] {
+        if e.kind == EventKind.Response {rep.responses = rep.responses + 1u64;}
+        elif e.kind == EventKind.Data {
           imm v = e.buf.view();
           mut k = 0usize;
           while k < v.len {
@@ -175,10 +175,10 @@ fn consume(rx Receiver[Event]) ChanReport {
           seen = seen + 1u64;
           // Slow, now and then: the channel fills behind it
           if seen % 4u64 == 0u64 {thread.sleep(Duration.fromMillis(2i64));}
-        } elif e.kind == EventKind.End[] {rep.ends = rep.ends + 1u64;}
+        } elif e.kind == EventKind.End {rep.ends = rep.ends + 1u64;}
         elif e.isTerminal() {
           rep.finals = rep.finals + 1u64;
-          if e.kind == EventKind.Done[] {rep.done = rep.done + 1u64;}
+          if e.kind == EventKind.Done {rep.done = rep.done + 1u64;}
           return rep;
         }
       }
@@ -219,14 +219,14 @@ fn main() i32 {
   mut have = List[u64].empty();       // body bytes of its request in flight
   mut k = 0u64;
   while k < conns {
-    cs.push(drv.connect(&mut lp, "127.0.0.1", port, Sink.Here[k]));
+    cs.push(drv.connect(&mut lp, "127.0.0.1", port, Sink.Here(k)));
     next.push(0u64);
     have.push(0u64);
     k = k + 1u64;
   }
   // The big one, on a fourth connection, to the channel
-  imm bigConn = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here[99u64]);
-  drv.request(&mut lp, bigConn, RequestHead.get("/n/0", "127.0.0.1"), BodyLength.empty(), Sink.Chan[500u64, evTx]);
+  imm bigConn = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here(99u64));
+  drv.request(&mut lp, bigConn, RequestHead.get("/n/0", "127.0.0.1"), BodyLength.empty(), Sink.Chan(500u64, evTx));
 
   mut wrong = 0u64;
   mut dones = 0u64;
@@ -245,7 +245,7 @@ fn main() i32 {
         imm i = 1u64 + k * perConn + made;
         mut t = String.from("/n/");
         t.appendUInt(i);
-        drv.request(&mut lp, c, RequestHead.get(t.view(), "127.0.0.1"), BodyLength.empty(), Sink.Here[1000u64 + i]);
+        drv.request(&mut lp, c, RequestHead.get(t.view(), "127.0.0.1"), BodyLength.empty(), Sink.Here(1000u64 + i));
         next.set(usize.from(k), made + 1u64);
         have.set(usize.from(k), 0u64);
       } elif made == perConn and drv.isIdle(c) {
@@ -263,13 +263,13 @@ fn main() i32 {
     while j < events.len() {
       imm e = &mut events[j];
       j = j + 1usize;
-      if e.kind == EventKind.Closed[] {
+      if e.kind == EventKind.Closed {
         closed = closed + 1u64;
         if not e.clean {wrong = wrong + 1u64;}
       } elif e.token >= 1000u64 {
         imm i = e.token - 1000u64;
         imm c = (i - 1u64) / perConn;
-        if e.kind == EventKind.Data[] {
+        if e.kind == EventKind.Data {
           imm v = e.buf.view();
           imm off = *have[usize.from(c)];
           mut q = 0usize;
@@ -279,7 +279,7 @@ fn main() i32 {
           }
           have.set(usize.from(c), off + u64.from(v.len));
           drv.release(e.req, v.len);
-        } elif e.kind == EventKind.Done[] {
+        } elif e.kind == EventKind.Done {
           dones = dones + 1u64;
           if *have[usize.from(c)] != bodyLen(i) {wrong = wrong + 1u64;}
         } elif e.isTerminal() {

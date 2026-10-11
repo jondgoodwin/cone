@@ -46,6 +46,14 @@ void fnCallNameRes(NameResState *pstate, FnCallNode **nodep);
 // takes them from it (genericSubstitute).
 void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **node, INode *expectType);
 
+// A name that is an empty variant, 'Lamp.Red' or 'None', met by name resolution
+// where a value is wanted (FlagValueTermName, set by the parser): replaced by
+// that variant's construction, the literal it was once written as, 'Lamp.Red[]'.
+// Done there, not at type check, so that everything which asks of a statement
+// whether it gives a value finds a call. Likewise the instance's name with its
+// type arguments, 'None[i32]' (FlagValueTermCall).
+void fnCallVariantTermNameRes(NameResState *pstate, INode **nodep);
+
 // The index an assignment stores into, 'x[i] = v', while its lval is checked:
 // on a type declaring '&[]', it is lowered as '&mut x[i]' would be
 extern FnCallNode *fnCallSetIndex;

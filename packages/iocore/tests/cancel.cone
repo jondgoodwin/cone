@@ -49,8 +49,8 @@ fn main() i32 {
       case imm a Ok {port = a.port();}
       case imm e Error {}
     }
-    lp.submit(Op.Accept[listener], Target.Here[1u64]);
-    lp.submit(Op.Connect[SocketAddr.localhost(port)], Target.Here[2u64]);
+    lp.submit(Op.Accept(listener), Target.Here(1u64));
+    lp.submit(Op.Connect(SocketAddr.localhost(port)), Target.Here(2u64));
     waitFor(&mut lp, &mut out, 2usize);
     mut a = Handle.none();
     mut b = Handle.none();
@@ -63,7 +63,7 @@ fn main() i32 {
     require(lp.isOpen(a) and lp.isOpen(b), "a connected pair");
 
     // 1. Cancelled
-    imm r1 = lp.submit(Op.Recv[a, pool.mustTake(100usize)], Target.Here[10u64]);
+    imm r1 = lp.submit(Op.Recv(a, pool.mustTake(100usize)), Target.Here(10u64));
     lp.poll(Instant.now() + Duration.fromMillis(10i64), &mut out);
     expectUInt(u64.from(out.len()), 0u64, "a silent socket: nothing yet");
     expect(lp.cancel(r1), "cancel taken");
@@ -78,7 +78,7 @@ fn main() i32 {
 
     // 2. A deadline
     imm t0 = Instant.now();
-    lp.submitBy(Op.Recv[a, pool.mustTake(100usize)], Target.Here[20u64], t0 + Duration.fromMillis(30i64));
+    lp.submitBy(Op.Recv(a, pool.mustTake(100usize)), Target.Here(20u64), t0 + Duration.fromMillis(30i64));
     waitFor(&mut lp, &mut out, 1usize);
     requireUInt(u64.from(out.len()), 1u64, "one answer");
     expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeTimedOut), "TimedOut");
@@ -86,10 +86,10 @@ fn main() i32 {
     expect(out[0usize].dequeued >= t0 + Duration.fromMillis(30i64), "not before its deadline");
     out.clear();
     // In time: Done, and the deadline dies with it
-    lp.submitBy(Op.Recv[a, pool.mustTake(100usize)], Target.Here[21u64], Instant.now() + Duration.fromMillis(30i64));
+    lp.submitBy(Op.Recv(a, pool.mustTake(100usize)), Target.Here(21u64), Instant.now() + Duration.fromMillis(30i64));
     mut one = pool.mustTake(1usize);
     one.append("x");
-    lp.submit(Op.Send[b, one], Target.Here[22u64]);
+    lp.submit(Op.Send(b, one), Target.Here(22u64));
     waitFor(&mut lp, &mut out, 2usize);
     k = 0usize;
     while k < out.len() {
@@ -108,14 +108,14 @@ fn main() i32 {
     mut answers = 0u64;
     mut round = 0u32;
     while round < 2000u32 {
-      imm r = lp.submit(Op.Recv[a, pool.mustTake(100usize)], Target.Here[40u64]);
+      imm r = lp.submit(Op.Recv(a, pool.mustTake(100usize)), Target.Here(40u64));
       mut x = pool.mustTake(1usize);
       x.append("y");
       if round % 2u32 == 0u32 {
         lp.cancel(r);
-        lp.submit(Op.Send[b, x], Target.Here[41u64]);
+        lp.submit(Op.Send(b, x), Target.Here(41u64));
       } else {
-        lp.submit(Op.Send[b, x], Target.Here[41u64]);
+        lp.submit(Op.Send(b, x), Target.Here(41u64));
         lp.cancel(r);
       }
       waitFor(&mut lp, &mut out, 2usize);
@@ -138,7 +138,7 @@ fn main() i32 {
       // A cancelled receive took nothing: the byte waits, so take it, and
       // the next round starts clean
       if wasCancelled {
-        lp.submit(Op.Recv[a, pool.mustTake(100usize)], Target.Here[42u64]);
+        lp.submit(Op.Recv(a, pool.mustTake(100usize)), Target.Here(42u64));
         waitFor(&mut lp, &mut out, 1usize);
         drained = drained + u64.from(out[0usize].count());
         out.clear();
@@ -152,7 +152,7 @@ fn main() i32 {
     expectUInt(drained, cancelled, "each Cancelled took nothing: its byte was still there");
 
     // 3. Closed while receiving
-    lp.submit(Op.Recv[a, pool.mustTake(100usize)], Target.Here[30u64]);
+    lp.submit(Op.Recv(a, pool.mustTake(100usize)), Target.Here(30u64));
     lp.close(a);
     waitFor(&mut lp, &mut out, 1usize);
     requireUInt(u64.from(out.len()), 1u64, "one answer");
@@ -162,7 +162,7 @@ fn main() i32 {
     out.clear();
 
     // 5. Accept cancelled; a connection refused
-    imm acc = lp.submit(Op.Accept[listener], Target.Here[50u64]);
+    imm acc = lp.submit(Op.Accept(listener), Target.Here(50u64));
     lp.cancel(acc);
     waitFor(&mut lp, &mut out, 1usize);
     expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeCancelled), "an Accept cancelled");
@@ -174,7 +174,7 @@ fn main() i32 {
       case imm e Error {}
     }
     lp.close(spare);
-    lp.submit(Op.Connect[SocketAddr.localhost(deadPort)], Target.Here[51u64]);
+    lp.submit(Op.Connect(SocketAddr.localhost(deadPort)), Target.Here(51u64));
     waitFor(&mut lp, &mut out, 1usize);
     expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeFailed), "a Connect nobody answers fails");
     expectUInt(u64.from(out[0usize].code), u64.from(errorConnectionRefused), "...ERROR_CONNECTION_REFUSED");

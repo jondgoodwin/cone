@@ -187,15 +187,15 @@ enum Aligned {
 </pre>
 
 	<h3 id="init">Initialization</h3>
-	<p>A value is built using a constructor for one of the variants:</p>
+	<p>A value is built using a constructor for one of the variants: its name with its values in parentheses, with no <span class="pre">new</span>, and an empty variant's name alone:</p>
 <pre>
-mut event = Event.QuitEvent[timestamp];
-oddval = Event.KeyEvent[timestamp, 's'];
-imm phone = PhoneType.Work[];
+mut event = Event.QuitEvent(timestamp);
+oddval = Event.KeyEvent(timestamp, 's');
+imm phone = PhoneType.Work;
 </pre>
 	<p>Notice that the constructor supplies a value for every common field, and never for the tag:
 		that one is settled by which variant was named.</p>
-	<p style="margin-left: 40px;"><i>Note: A variant is constructed with its values in square brackets, as above. That is the current spelling; whether a variant is constructed with <span class="pre">new</span>, as a struct is, is an open design question.</i></p>
+	<p>A generic variant takes its type arguments from where its value goes, as every generic does (<a href="refgeneric.html#expected">Generics</a>): <span class="pre">imm none Option[i32] = None;</span>. Where nothing says, they are written in brackets after the name, and the values after them: <span class="pre">None[i32]</span>, <span class="pre">Some[i32](5)</span>. Square brackets after a variant give type arguments and never values, so <span class="pre">Some[5]</span> and <span class="pre">None[]</span> are refused, naming the spelling that replaces them. In a pattern or after <span class="pre">is</span> a name stays a type: <span class="pre">case is None[IoBuf]</span>.</p>
 
 	<h3 id="naming">Naming a variant</h3>
 	<p>A variant is a name of its enum, not of the module around it, so it is reached through the
@@ -208,7 +208,7 @@ imm phone = PhoneType.Work[];
 <pre>
 enum Traffic {
 	struct Stop {
-		fn next(self &amp;) Traffic {Go[5];}   // Traffic.Go
+		fn next(self &amp;) Traffic {Go(5);}   // Traffic.Go
 	}
 	struct Go {
 		pub delay i32;
@@ -223,7 +223,7 @@ enum Traffic {
 		In a generic enum the enum's bare name, and each variant's, is the instance being
 		defined, at the enum's current type arguments: inside <span class="pre">enum Maybe[T]</span>,
 		<span class="pre">Maybe</span> is <span class="pre">Maybe[T]</span> and a variant's
-		<span class="pre">No[]</span> builds <span class="pre">Maybe.No[T]</span> (see
+		<span class="pre">No</span> builds <span class="pre">Maybe.No[T]</span> (see
 		<a href="refgeneric.html">Generics</a>).
 		A variant that an extension copies from its base (below) keeps what its names meant where it
 		was written, so it still means the base's variants.</p>
@@ -265,8 +265,8 @@ use Event KeyEvent as Key, QuitEvent;  // only these, one of them renamed
 use Point {XyPoint, AngPoint};         // a list may be spread over lines in braces
 use Colors but Blue;                   // every variant but one
 </pre>
-	<p>After <span class="pre">use PhoneType;</span>, <span class="pre">Work[]</span> means
-		<span class="pre">PhoneType.Work[]</span>. The module that declares the enum is no exception:
+	<p>After <span class="pre">use PhoneType;</span>, <span class="pre">Work</span> means
+		<span class="pre">PhoneType.Work</span>. The module that declares the enum is no exception:
 		it writes <span class="pre">use</span> like any other module to have the variants bare. A
 		<span class="pre">use</span> folds variants and nothing else of the enum, and a variant it
 		leaves out is still reached through the enum. The enum may be named through a module,
@@ -389,7 +389,7 @@ enum Reading {
 	pub struct High {pub n i32;}
 }
 
-Reading.High[1, 4].get()      // 1: High's own copy of get
+Reading.High(1, 4).get()      // 1: High's own copy of get
 </pre>
 	<p style="margin-left: 40px;"><i>Note: on a value typed as the enum itself, which variant's copy
 		runs would have to be read from the tag the same way, and that is not built for a value.
@@ -430,8 +430,8 @@ enum Shape is Named {
 fn loudOf(n &amp;&lt;Named) i32 {n.loud();}
 fn shapeLoud(s &amp;Shape) i32 {loudOf(s);}   // passes the variant's vtable, chosen by the tag
 
-loudOf(&amp;Shape.Circle[1, 7])     // 7000: Circle's own label, Named's loud
-loudOf(&amp;Shape.Square[2, 3])     // 200: the enum's label, Named's loud
+loudOf(&amp;Shape.Circle(1, 7))     // 7000: Circle's own label, Named's loud
+loudOf(&amp;Shape.Square(2, 3))     // 200: the enum's label, Named's loud
 </pre>
 	<p>A <b>variant</b> may name traits of its own in the same way, beyond its enum:
 		<span class="pre">struct Square is Measured</span> above. Its enum is its base without being
@@ -451,7 +451,7 @@ loudOf(&amp;Shape.Square[2, 3])     // 200: the enum's label, Named's loud
 	<p>Where every variant is empty, the value <i>is</i> the tag, so the comparison is exactly a tag
 		comparison:</p>
 <pre>
-if phone == PhoneType.Mobile[] { ... }
+if phone == PhoneType.Mobile { ... }
 </pre>
 	<p>Where a variant carries fields, two values are equal when they hold <b>the same variant</b>
 		and that variant's own <span class="pre">==</span> says their payloads are equal: the tags
@@ -474,22 +474,22 @@ enum Shape {
 	struct Dot;                       // equal to any other Dot
 }
 
-imm unit Shape = Shape.Circle[1.0];
-unit == Shape.Circle[1.0]             // true: the same variant, equal payloads
-unit == Shape.Circle[2.0]             // false: the same variant, a payload that differs
-unit == Shape.Rect[1.0, 1.0]          // false: a different variant
-unit != Shape.Dot[]                   // true
+imm unit Shape = Shape.Circle(1.0);
+unit == Shape.Circle(1.0)             // true: the same variant, equal payloads
+unit == Shape.Circle(2.0)             // false: the same variant, a payload that differs
+unit == Shape.Rect(1.0, 1.0)          // false: a different variant
+unit != Shape.Dot                     // true
 </pre>
 	<p>The comparison is the enum's: it is written on a value of the enum, and a variant on its
 		left is compared with the variant's own <span class="pre">==</span>, which takes another of
 		that variant.</p>
 	<p><b>Comparing with an empty variant asks the tag alone.</b> When either operand is an empty
-		variant, <span class="pre">unit == Shape.Dot[]</span>, <span class="pre">unit != Shape.Dot[]</span>,
+		variant, <span class="pre">unit == Shape.Dot</span>, <span class="pre">unit != Shape.Dot</span>,
 		or the variant on the left, the other value either holds that variant or does not, and the
 		comparison says which, whatever the enum's other variants carry and whether they declare a
 		<span class="pre">==</span>. It is the test <span class="pre">unit is Dot</span> in the form of a
 		comparison. This holds for every enum, core's <span class="pre">Option</span> included:
-		<span class="pre">maybeInt == None[]</span> and <span class="pre">maybeInt != None[]</span> need no
+		<span class="pre">maybeInt == None</span> and <span class="pre">maybeInt != None</span> need no
 		<span class="pre">==</span> on <span class="pre">Some</span>. The empty variant takes the type
 		of the other operand where it needs one, as it does wherever its enum is
 		<a href="refgeneric.html#expected">expected</a>. Two values that both carry fields still
@@ -563,9 +563,9 @@ enum RichColors extends Colors {
 		a <span class="pre">Colors</span>; the <span class="pre">RichColors</span> value is
 		<span class="pre">RichColors.Green</span>:</p>
 <pre>
-imm plain Colors = Colors.Green[];
-imm rich RichColors = RichColors.Green[];     // the extension's own Green
-imm added RichColors = RichColors.Magenta[];
+imm plain Colors = Colors.Green;
+imm rich RichColors = RichColors.Green;     // the extension's own Green
+imm added RichColors = RichColors.Magenta;
 </pre>
 	<p>All five are names of <span class="pre">RichColors</span>, so <span class="pre">use RichColors;</span>
 		makes all five bare. A module that also folds <span class="pre">Colors</span> in would have two
@@ -573,7 +573,7 @@ imm added RichColors = RichColors.Magenta[];
 		<span class="pre">but</span>. A pattern on a <span class="pre">RichColors</span> names all five
 		bare with neither, and means the extension's own. So does a variant written inside
 		<span class="pre">RichColors</span>'s braces: a method of <span class="pre">Cyan</span> that writes
-		<span class="pre">Red[]</span> builds <span class="pre">RichColors.Red</span>. A method a copy
+		<span class="pre">Red</span> builds <span class="pre">RichColors.Red</span>. A method a copy
 		brought with it was written inside <span class="pre">Colors</span>'s braces, so its bare
 		<span class="pre">Green</span> is still <span class="pre">Colors.Green</span>, as its signature,
 		written for <span class="pre">Colors</span>, expects.</p>
@@ -606,8 +606,8 @@ enum Pending[T] extends Option[T] {
 		<span class="pre">Waiting</span>. They are built, named and matched as any generic enum's
 		are:</p>
 <pre>
-imm p Pending[i32] = Pending.Some[5];
-imm w Pending[i32] = Pending.Waiting[i32][];
+imm p Pending[i32] = Pending.Some(5);
+imm w Pending[i32] = Pending.Waiting;
 
 match p {
 	case imm s Some {s;}            // Pending[i32]'s Some, holding an i32
@@ -622,7 +622,7 @@ enum IntOrWait extends Option[i32] {
 	Waiting;
 }
 
-imm n IntOrWait = IntOrWait.Some[9];
+imm n IntOrWait = IntOrWait.Some(9);
 </pre>
 	<p>Everything said above holds instance by instance. <span class="pre">Pending[i32]</span> and
 		<span class="pre">Option[i32]</span> are two types, and neither's values are the other's. Each

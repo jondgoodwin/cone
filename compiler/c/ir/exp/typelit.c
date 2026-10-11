@@ -1,7 +1,8 @@
 /** Handling for type literals and constructions: a struct's value built from
  * its fields, which 'new Point(1., 2.)' lowers to when the struct's implicit
  * 'init' takes its arguments (typeLitNewCheck), or which an enum's variant
- * and an allocation's value write in brackets, 'Some[x]'; and a number's
+ * writes with parentheses, 'Some(x)', or by its name alone when it holds nothing,
+ * 'None'; and an allocation's value in brackets, '+Rc-mut Node[1]' (refused); and a number's
  * conversion, 'u64.from(count)', which type check lowers into the same node
  * (fnCallNumberFrom)
  * @file
@@ -46,11 +47,14 @@ int typeLitIsConstruction(INode *node) {
 // value, and a number's conversion, each as it was written
 void typeLitPrint(FnCallNode *node) {
     int conversion = node->vtype && typeLitIsNbrType(itypeGetTypeDcl(node->vtype));
-    int paren = conversion || (node->flags & FlagNew);
+    int paren = conversion || (node->flags & (FlagNew | FlagCtorParen));
     if (node->flags & FlagNew)
         inodeFprint("new ");
     if (node->objfn)
         inodePrintNode(node->objfn);
+    // An empty variant is its name alone
+    if ((node->flags & FlagCtorParen) && (node->args == NULL || node->args->used == 0))
+        return;
     INode **nodesp;
     uint32_t cnt;
     inodeFprint(conversion ? ".from(" : paren ? "(" : "[");
@@ -281,13 +285,29 @@ void typeLitTypeCheck(TypeCheckState *pstate, FnCallNode *arrlit) {
     if (!itypeIsConcrete(arrlit->vtype))
         errorMsgNode((INode*)arrlit, ErrorInvType, "Type must be concrete and instantiable.");
     else if (littype->tag == StructTag) {
-        // A struct's value is constructed with 'new'. An enum's variant keeps
-        // its brackets, 'Some[x]'; a '+' allocation's value, '+Rc-mut Node[1]',
+        // A struct's value is constructed with 'new'. An enum's variant is
+        // constructed with parentheses and no 'new', 'Some(x)', an empty one by its
+        // name alone; the brackets it was once written in, 'Some[x]', give type
+        // arguments only, and are refused where they are, naming the new spelling.
+        // A '+' allocation's value, '+Rc-mut Node[1]',
         // is refused with the allocation, by allocateTypeCheck (ErrorPlusAlloc).
         // Refused here, at type check, so that a struct reached through an
         // alias or a type parameter is refused as one named directly. The
         // literal is still built, so nothing after it reports again.
-        if (!(arrlit->flags & (FlagNew | FlagAllocValue)) && !typeLitIsVariant((StructNode*)littype)) {
+        if (typeLitIsVariant((StructNode*)littype)) {
+            if (!(arrlit->flags & FlagCtorParen)) {
+                Name *vname = ((StructNode*)littype)->namesym;
+                if (arrlit->args == NULL || arrlit->args->used == 0)
+                    errorMsgNode((INode*)arrlit, ErrorVariantBracket,
+                        "An empty variant is constructed by its name alone: write %s, not %s[]. Square brackets after a variant give a generic one its type arguments and never values, as in None[i32].",
+                        &vname->namestr, &vname->namestr);
+                else
+                    errorMsgNode((INode*)arrlit, ErrorVariantBracket,
+                        "A variant is constructed with parentheses: write %s(...), not %s[...]. Square brackets after a variant give a generic one its type arguments and never values, written before them, as in Some[i32](5).",
+                        &vname->namestr, &vname->namestr);
+            }
+        }
+        else if (!(arrlit->flags & (FlagNew | FlagAllocValue))) {
             Name *written = isNameUseNode(arrlit->objfn) ? ((NameUseNode*)arrlit->objfn)->namesym : ((StructNode*)littype)->namesym;
             errorMsgNode((INode*)arrlit, ErrorStructBracket,
                 "A struct's value is constructed with 'new', its init's arguments in parentheses: 'new %s(...)'.", &written->namestr);
@@ -766,7 +786,7 @@ static void typeLitNewChecked(TypeCheckState *pstate, FnCallNode **nodep, int ar
     StructNode *strnode = (StructNode*)typedcl;
     if (typeLitIsVariant(strnode)) {
         errorMsgNode((INode*)node, ErrorNewType,
-            "%s is an enum's variant, which is constructed with its brackets for now: '%s[...]'.",
+            "%s is an enum's variant, which is constructed without 'new': '%s(...)', and an empty one by its name alone.",
             &strnode->namesym->namestr, &strnode->namesym->namestr);
         return;
     }

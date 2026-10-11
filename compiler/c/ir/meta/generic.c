@@ -448,7 +448,7 @@ static int genericInferType(FnCallNode *inferredgencall, Nodes *genparms, INode 
             }
             return 1;
         }
-        // A variant is passed where its enum is expected: 'Some[7]' is an Option
+        // A variant is passed where its enum is expected: 'Some(7)' is an Option
         if (argtype->tag == StructTag) {
             StructNode *base = structBaseTraitDcl((StructNode *)argtype);
             if (base != NULL)

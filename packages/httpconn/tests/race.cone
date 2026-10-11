@@ -66,7 +66,7 @@ fn main() i32 {
   cfg.acceptDepth = 16u32;
   mut drv = Driver.make(cfg, pool);
   mut port = 0u16;
-  match drv.listen(&mut lp, SocketAddr.localhost(0u16), Sink.Here[tokServer]) {
+  match drv.listen(&mut lp, SocketAddr.localhost(0u16), Sink.Here(tokServer)) {
     case imm r Ok {
       match drv.localAddr(&lp, r) {
         case imm a Ok {port = a.port();}
@@ -95,7 +95,7 @@ fn main() i32 {
   mut closes = List[u32].empty();      // Closed per connection made, by its number
   mut k = 0u64;
   while k < conns {
-    cs.push(drv.connect(&mut lp, "127.0.0.1", port, Sink.Here[tokConn + u64.from(closes.len())]));
+    cs.push(drv.connect(&mut lp, "127.0.0.1", port, Sink.Here(tokConn + u64.from(closes.len()))));
     closes.push(0u32);
     made.push(0u64);
     busy.push(ReqId.none());
@@ -122,11 +122,11 @@ fn main() i32 {
         if r % 3u64 == 0u64 {
           imm g = CancelGroup.make();
           id = drv.requestIn(&mut lp, *cs[i], RequestHead.get("/x", "127.0.0.1"), BodyLength.empty(),
-            Sink.Here[tokReq + n], g, dl);
+            Sink.Here(tokReq + n), g, dl);
           gTx.send(g);
         } else {
           id = drv.requestBy(&mut lp, *cs[i], RequestHead.get("/x", "127.0.0.1"), BodyLength.empty(),
-            Sink.Here[tokReq + n], dl);
+            Sink.Here(tokReq + n), dl);
         }
         busy.set(i, id);
         made.set(i, *made[i] + 1u64);
@@ -162,7 +162,7 @@ fn main() i32 {
       imm e = &mut events[e2];
       e2 = e2 + 1usize;
       if e.token == tokServer {
-        if e.kind == EventKind.Request[] {
+        if e.kind == EventKind.Request {
           imm r = nextRand(&mut seed);
           if r % 2u64 == 0u64 {
             drv.respond(e.req, ResponseHead.make(200u16), BodyLength.sized(8u64));
@@ -178,7 +178,7 @@ fn main() i32 {
       } elif e.token >= tokReq {
         imm n = usize.from(e.token - tokReq);
         if *finals[n] > 0u32 {after = after + 1u64;}
-        if e.kind == EventKind.Data[] {drv.release(e.req, e.buf.len());}
+        if e.kind == EventKind.Data {drv.release(e.req, e.buf.len());}
         if e.isTerminal() {
           finals.set(n, *finals[n] + 1u32);
           answered = answered + 1u64;
@@ -186,7 +186,7 @@ fn main() i32 {
           if *busy[c] == e.req {busy.set(c, ReqId.none());}
         }
       } elif e.token >= tokConn {
-        if e.kind == EventKind.Closed[] {
+        if e.kind == EventKind.Closed {
           imm m = usize.from(e.token - tokConn);
           closes.set(m, *closes[m] + 1u32);
           // A connection reset by a cancel or a deadline: a new one takes
@@ -195,7 +195,7 @@ fn main() i32 {
           while k < conns {
             imm i = usize.from(k);
             if *cs[i] == e.conn {
-              cs.set(i, drv.connect(&mut lp, "127.0.0.1", port, Sink.Here[tokConn + u64.from(closes.len())]));
+              cs.set(i, drv.connect(&mut lp, "127.0.0.1", port, Sink.Here(tokConn + u64.from(closes.len()))));
               closes.push(0u32);
             }
             k = k + 1u64;
@@ -217,7 +217,7 @@ fn main() i32 {
     mut e2 = 0usize;
     while e2 < events.len() {
       imm e = &mut events[e2];
-      if e.token >= tokConn and e.token < tokReq and e.kind == EventKind.Closed[] {
+      if e.token >= tokConn and e.token < tokReq and e.kind == EventKind.Closed {
         imm m = usize.from(e.token - tokConn);
         closes.set(m, *closes[m] + 1u32);
       } elif e.token >= tokReq {

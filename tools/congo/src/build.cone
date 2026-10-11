@@ -74,12 +74,12 @@ fn build(s &mut Session, top usize) Result[Path, String] {
   mut plan = emptyPlan();
   match buildOrder(&s.reg, top) {
     case mut ok Ok { plan <=> ok; }
-    case imm e Error { return Error[Path, String][e.copy()]; }
+    case imm e Error { return Error[Path, String](e.copy()); }
   }
   mut objs = List[Path].empty();
   match compile(s, &plan, top, "", true) {
     case mut ok Ok { objs <=> ok; }
-    case imm e Error { return Error[Path, String][e.copy()]; }
+    case imm e Error { return Error[Path, String](e.copy()); }
   }
   if isLibrary {
     imm obj = objs[objs.len() - 1usize].copy();
@@ -90,18 +90,18 @@ fn build(s &mut Session, top usize) Result[Path, String] {
       finished <- " and kernels ", kernels.view();
     }
     say("Finished", finished.view());
-    return Ok[Path, String][obj];
+    return Ok[Path, String](obj);
   }
   imm exeName = cat(name.view(), ".exe");
   imm exe = s.out.join(exeName.view());
   match link(s, &plan, &objs, &exe, true) {
     case is Ok {}
-    case imm e Error { return Error[Path, String][e.copy()]; }
+    case imm e Error { return Error[Path, String](e.copy()); }
   }
   imm place = shown(&exe);
   imm finished = cat(s.mode.view(), " ", place.view());
   say("Finished", finished.view());
-  Ok[Path, String][exe];
+  Ok[Path, String](exe);
 }
 
 // A test or example program, built as a lone file of its own that imports
@@ -114,26 +114,26 @@ fn buildProgram(s &mut Session, file &Path, dest &Path) Result[Path, String] {
   mut pkg = emptyPackage();
   match lonePackage(file) {
     case mut ok Ok { pkg <=> ok; }
-    case imm e Error { return Error[Path, String][e.copy()]; }
+    case imm e Error { return Error[Path, String](e.copy()); }
   }
   imm exeName = cat(pkg.name.view(), ".exe");
   imm top = s.reg.add(pkg);
   mut plan = emptyPlan();
   match buildOrder(&s.reg, top) {
     case mut ok Ok { plan <=> ok; }
-    case imm e Error { return Error[Path, String][e.copy()]; }
+    case imm e Error { return Error[Path, String](e.copy()); }
   }
   mut objs = List[Path].empty();
   match compile(s, &plan, top, dest, false) {
     case mut ok Ok { objs <=> ok; }
-    case imm e Error { return Error[Path, String][e.copy()]; }
+    case imm e Error { return Error[Path, String](e.copy()); }
   }
   imm exe = dest.join(exeName.view());
   match link(s, &plan, &objs, &exe, false) {
     case is Ok {}
-    case imm e Error { return Error[Path, String][e.copy()]; }
+    case imm e Error { return Error[Path, String](e.copy()); }
   }
-  Ok[Path, String][exe];
+  Ok[Path, String](exe);
 }
 
 // A lone file's build goes under the Congo home, not beside the file: the
@@ -159,25 +159,25 @@ fn loneBuildRoot(file &Path) Path {
 fn lonePackage(given &Path) Result[Package, String] {
   imm file = resolved(given);
   imm place = native(&file);
-  if not fs.isFile(&file) { return Error[Package, String][cat("no file ", place.view())]; }
+  if not fs.isFile(&file) { return Error[Package, String](cat("no file ", place.view())); }
   mut header = noHeader();
   match scanHeader(&file) {
     case mut ok Ok { header <=> ok; }
-    case imm e Error { return Error[Package, String][e.copy()]; }
+    case imm e Error { return Error[Package, String](e.copy()); }
   }
   imm name = if header.hasMod {header.modName.copy();} else {String.from(file.stem());};
   imm fault = nameFault(name.view());
   if not header.hasMod and not fault.isEmpty() {
-    return Error[Package, String][cat(place.view(), ": with no 'mod' line it is named by its file: '", name.view(), "' ", fault.view(),
-      "; give the file a 'mod' line")];
+    return Error[Package, String](cat(place.view(), ": with no 'mod' line it is named by its file: '", name.view(), "' ", fault.view(),
+      "; give the file a 'mod' line"));
   }
   if not fault.isEmpty() {
-    return Error[Package, String][cat(place.view(), ": 'mod ", name.view(), "': '", name.view(), "' ", fault.view(),
-      "; rename the module, and the file where it is named for it")];
+    return Error[Package, String](cat(place.view(), ": 'mod ", name.view(), "': '", name.view(), "' ", fault.view(),
+      "; rename the module, and the file where it is named for it"));
   }
   imm folder = file.parent();
-  Ok[Package, String][new Package(name, String.empty(), String.from("executable"), folder, file.copy(), true,
-    List[String].empty(), List[Path].empty(), List[String].empty(), false)];
+  Ok[Package, String](new Package(name, String.empty(), String.from("executable"), folder, file.copy(), true,
+    List[String].empty(), List[Path].empty(), List[String].empty(), false));
 }
 
 // Write the package's build description into out and compile the package
@@ -223,19 +223,19 @@ fn compileUnit(conec &Path, reg &Registry, plan &Plan, u usize, out &Path, inclu
   imm outText = native(out);
   imm descText = native(&desc);
   if not runConec(conec, defines, argList("-o", outText.view(), descText.view())) {
-    return Error[Path, String][cat("could not compile ", pkg.name.view(), " (build description: ", descText.view(), ")")];
+    return Error[Path, String](cat("could not compile ", pkg.name.view(), " (build description: ", descText.view(), ")"));
   }
   imm objName = cat(pkg.name.view(), ".obj");
   imm obj = out.join(objName.view());
   if not fs.isFile(&obj) {
     imm place = native(&obj);
-    return Error[Path, String][cat("conec wrote no object at ", place.view())];
+    return Error[Path, String](cat("conec wrote no object at ", place.view()));
   }
   if output.equals("library") and not fs.isFile(&incl) {
     imm place = native(&incl);
-    return Error[Path, String][cat("conec wrote no include file for ", pkg.name.view(), " at ", place.view())];
+    return Error[Path, String](cat("conec wrote no include file for ", pkg.name.view(), " at ", place.view()));
   }
-  Ok[Path, String][obj];
+  Ok[Path, String](obj);
 }
 
 // Run conec with the -D defines after it, then rest, and show what it said
@@ -306,7 +306,7 @@ fn compile(s &mut Session, plan &Plan, top usize, topOut &Path, announce bool) R
   if s.conec.isEmpty() {
     match findConec(&s.repo) {
       case mut ok Ok { s.conec <=> ok; }
-      case imm e Error { return Error[List[Path], String][e.copy()]; }
+      case imm e Error { return Error[List[Path], String](e.copy()); }
     }
   }
   imm out = s.out.copy();
@@ -350,7 +350,7 @@ fn compile(s &mut Session, plan &Plan, top usize, topOut &Path, announce bool) R
         case is Ok {}
         case imm e Error {
           changes.restore();
-          return Error[List[Path], String][e.copy()];
+          return Error[List[Path], String](e.copy());
         }
       }
       s.gpuChecked.push(pkg.name.copy());
@@ -376,7 +376,7 @@ fn compile(s &mut Session, plan &Plan, top usize, topOut &Path, announce bool) R
         case mut ok Ok { obj <=> ok; }
         case imm e Error {
           changes.restore();
-          return Error[List[Path], String][e.copy()];
+          return Error[List[Path], String](e.copy());
         }
       }
       if not own and (not isTop or s.reg.packages[top].output.equals("library")) {
@@ -399,14 +399,14 @@ fn compile(s &mut Session, plan &Plan, top usize, topOut &Path, announce bool) R
         case imm ok Ok { s.spvs.insert(name, ok.copy()); }
         case imm e Error {
           changes.restore();
-          return Error[List[Path], String][e.copy()];
+          return Error[List[Path], String](e.copy());
         }
       }
     }
     i = i + 1usize;
   }
   changes.restore();
-  Ok[List[Path], String][objs];
+  Ok[List[Path], String](objs);
 }
 
 // Whether list holds name
@@ -522,7 +522,7 @@ fn findRuntime(repo &Path, name &str, pkgName &str, folders &List[Path], paths &
   mut i = 0usize;
   while i < folders.len() {
     imm candidate = folders[i].join(file.view());
-    if fs.isFile(&candidate) { return Ok[Path, String][candidate]; }
+    if fs.isFile(&candidate) { return Ok[Path, String](candidate); }
     i = i + 1usize;
   }
   mut listed = String.from("none");
@@ -531,7 +531,7 @@ fn findRuntime(repo &Path, name &str, pkgName &str, folders &List[Path], paths &
   imm depsText = native(&deps);
   mut m = cat(pkgName, "'s [link] runtime names ", name, ", but ", file.view(), " is in none of the folders Congo looks in: [link] paths (");
   m <- listed.view(), "), then each folder in ", depsText.view(), " (python tools/deps/fetch.py fills it), then the folders LIB lists, then the folders PATH lists";
-  Error[Path, String][m];
+  Error[Path, String](m);
 }
 
 // Copy a runtime DLL into a program's folder, unless the copy there is the
@@ -552,7 +552,7 @@ fn copyIfChanged(source &Path, target &Path) Result[bool, String] {
       imm why = fsMessage(&e);
       imm from = native(source);
       imm to = native(target);
-      return Error[bool, String][cat("cannot copy ", from.view(), " to ", to.view(), ": ", why.view())];
+      return Error[bool, String](cat("cannot copy ", from.view(), " to ", to.view(), ": ", why.view()));
     }
   }
   if fs.isFile(target) {
@@ -561,7 +561,7 @@ fn copyIfChanged(source &Path, target &Path) Result[bool, String] {
       case mut ok Ok { there <=> ok; }
       case is Error {}
     }
-    if there.len() == data.len() and there.equals(data.view()) { return Ok[bool, String][false]; }
+    if there.len() == data.len() and there.equals(data.view()) { return Ok[bool, String](false); }
   }
   match fs.writeFile(target, data.view()) {
     case is Ok {}
@@ -569,10 +569,10 @@ fn copyIfChanged(source &Path, target &Path) Result[bool, String] {
       imm why = fsMessage(&e);
       imm from = native(source);
       imm to = native(target);
-      return Error[bool, String][cat("cannot copy ", from.view(), " to ", to.view(), ": ", why.view())];
+      return Error[bool, String](cat("cannot copy ", from.view(), " to ", to.view(), ": ", why.view()));
     }
   }
-  Ok[bool, String][true];
+  Ok[bool, String](true);
 }
 
 // Link the objects into exe: the program's object first, then the packages
@@ -585,11 +585,11 @@ fn link(s &mut Session, plan &Plan, objs &List[Path], exe &Path, announce bool) 
     mut conestd Path = "";
     match findConestd(&s.conec) {
       case mut ok Ok { conestd <=> ok; }
-      case imm e Error { return Error[void, String][e.copy()]; }
+      case imm e Error { return Error[void, String](e.copy()); }
     }
     match findLinker(&conestd) {
       case mut ok Ok { s.linker <=> ok; }
-      case imm e Error { return Error[void, String][e.copy()]; }
+      case imm e Error { return Error[void, String](e.copy()); }
     }
     s.hasLinker = true;
   }
@@ -646,7 +646,7 @@ fn link(s &mut Session, plan &Plan, objs &List[Path], exe &Path, announce bool) 
           case imm ok Ok { runtimeFiles.push(ok.copy()); }
           case imm e Error {
             fs.removeFile(exe);
-            return Error[void, String][e.copy()];
+            return Error[void, String](e.copy());
           }
         }
         runtimeNames.push(String.from(name));
@@ -729,7 +729,7 @@ fn link(s &mut Session, plan &Plan, objs &List[Path], exe &Path, announce bool) 
       m <- "\nC libraries linked (", named.view(),
         "): the linker looks for each in the folders [link] paths names, then in the folders the LIB environment variable lists";
     }
-    return Error[void, String][m];
+    return Error[void, String](m);
   }
   imm exeFolder = exe.parent();
   i = 0usize;
@@ -741,7 +741,7 @@ fn link(s &mut Session, plan &Plan, objs &List[Path], exe &Path, announce bool) 
           say("Copying", place.view());
         }
       }
-      case imm e Error { return Error[void, String][e.copy()]; }
+      case imm e Error { return Error[void, String](e.copy()); }
     }
     i = i + 1usize;
   }
@@ -762,7 +762,7 @@ fn link(s &mut Session, plan &Plan, objs &List[Path], exe &Path, announce bool) 
               say("Copying", place.view());
             }
           }
-          case imm e Error { return Error[void, String][e.copy()]; }
+          case imm e Error { return Error[void, String](e.copy()); }
         }
       }
     }

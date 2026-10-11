@@ -63,8 +63,8 @@ end of file.
 
 Built from: a call `f(a)`, an index `a[i]`, a member access `a.b`, every binary
 and unary operator, a generic instantiation `Box[i64]`, a managed reference
-type `Rc[mut, Node]`, `?T` for `Option[T]`, a variant's literal `Some[x]` (or a
-struct's, refused), a number's conversion `u64.from(count)`, a member access
+type `Rc[mut, Node]`, `?T` for `Option[T]`, a variant's literal `Some(x)`, `None` or `None[i32]` (a
+struct's in brackets is refused), a number's conversion `u64.from(count)`, a member access
 like any other, and a construction, `new Point(1, 2)` or the allocation
 `new Rc[mut, Node](1)`: `parseNew`, a term, takes `new`, the type (a name,
 `.` paths and bracketed type arguments) and the parenthesized arguments, left
@@ -508,11 +508,29 @@ the `not` itself. Two variants that both carry fields are not of this shape.
 `!=` and `<-`**, where the argument first is the order operators otherwise keep (a
 macro method's argument is not checked before it expands). The argument is then
 expected to be the receiver's type for the comparisons, and for `<-` the parameter
-every `<-` candidate agrees on (`fnCallArgAgreed`), so `x == None[]` types the
-`None`, and so does `list <- None[]`. A call among the arguments of an overload set
+every `<-` candidate agrees on (`fnCallArgAgreed`), so `x == None` types the
+`None`, and so does `list <- None`. A call among the arguments of an overload set
 is likewise expected to be the type every candidate that could take the call (the
 rest having defaults) declares at its position, when none is generic and they
 agree; any other argument is checked with no expectation as before.
+
+**A variant is constructed by a call, `Some(5)` and `Some[i32](5)`, or by its name
+alone when it is empty** (`Lamp.Red`, `None`, `None[i32]`). A call whose callee
+names a variant, or a variant with its type arguments, is the variant's literal:
+`fnCallVariantCall` marks the node `FlagIndex | FlagCtorParen` and the call goes on
+as the literal always did, a generic variant inferring from its values and from
+where it goes (`genericSubstitute`). An empty variant's parentheses are
+`ErrorVariantEmptyCall`; a struct called is still `ErrorInitCall`. A name that is
+an empty variant is made the same literal by name resolution
+([name-resolution](../phases/name-resolution.md), "What it retags"). The literal
+written in square brackets, `Some[5]`, `None[]`, `Some[i32][5]`, lacks
+`FlagCtorParen` and is refused where it is built (`typeLitTypeCheck`,
+`ErrorVariantBracket`), naming the new spelling. A name is an *empty* variant, for
+this, when everything it holds has a default, its enum's common fields included
+(`fnCallIsEmptyVariantName`); the enum's are asked of the enum, since name
+resolution of a use does not wait for the splice that copies them into the variant.
+Code the compiler generates as text (an actor's messages, a generator's `Some` and
+`None`) writes the new spelling.
 
 The permission a reference carries is enforced on the dereference, by flow, so
 `==` through an `opaq` reference is `ErrorNoRead` while `===` on it is allowed.

@@ -23,7 +23,7 @@ import iocore use *;
 fn take(c Completion) u64 {0u64;}
 fn peek(c &mut Completion) u64 {0u64;}
 fn nudge(w Waker) bool {w.wake();}
-fn work(arg u64, buf &mut IoBuf) Outcome {Outcome.Done[0usize];}
+fn work(arg u64, buf &mut IoBuf) Outcome {Outcome.Done(0usize);}
 fn cancelIt(g CancelGroup) bool {g.cancel();}
 fn dropIt(r Request) u64 {0u64;}
 fn endIt(c Completer) bool {mut q = c; q.done(0usize);}
@@ -32,18 +32,18 @@ fn endRef(c &mut Completer) bool {c.done(0usize);}
 fn submitting(lp &mut Loop, pool &Pool, sock Handle, file Handle) {
   mut buf = pool.mustTake(4096usize);
   imm text &Array[u8] = "hello";
-  lp.submit(Op.Send[sock, text], Target.Here[1u64]);          //~ ErrorBadArray "does not match expected field's type"
-  lp.submit(Op.Send[sock, "hello"], Target.Here[2u64]);       //~ ErrorBadArray "does not match expected field's type"
-  lp.submit(Op.Recv[sock, &mut buf], Target.Here[3u64]);      //~ ErrorBadArray "does not match expected field's type"
-  lp.submit(Op.ReadAt[file, 0u64, buf.spare()], Target.Here[4u64]);   //~ ErrorBadArray "does not match expected field's type"
-  lp.submit(Op.SendBytes[sock, buf.view()], Target.Here[5u64]);       //~ ErrorBadArray "does not match expected field's type"
-  lp.submit(Op.Recv[sock, buf], Target.Here[6u64]);
+  lp.submit(Op.Send(sock, text), Target.Here(1u64));          //~ ErrorBadArray "does not match expected field's type"
+  lp.submit(Op.Send(sock, "hello"), Target.Here(2u64));       //~ ErrorBadArray "does not match expected field's type"
+  lp.submit(Op.Recv(sock, &mut buf), Target.Here(3u64));      //~ ErrorBadArray "does not match expected field's type"
+  lp.submit(Op.ReadAt(file, 0u64, buf.spare()), Target.Here(4u64));   //~ ErrorBadArray "does not match expected field's type"
+  lp.submit(Op.SendBytes(sock, buf.view()), Target.Here(5u64));       //~ ErrorBadArray "does not match expected field's type"
+  lp.submit(Op.Recv(sock, buf), Target.Here(6u64));
   mut out = pool.mustTake(10usize);
   out.append("bytes");
-  lp.submit(Op.SendBytes[sock, out.freeze()], Target.Here[7u64]);
+  lp.submit(Op.SendBytes(sock, out.freeze()), Target.Here(7u64));
   mut job = pool.mustTake(64usize);
-  lp.submit(Op.Call[Lane.general(), &work, 0u64, &mut job], Target.Here[8u64]);   //~ ErrorBadArray "does not match expected field's type"
-  lp.submit(Op.Call[Lane.general(), &work, 0u64, job], Target.Here[9u64]);
+  lp.submit(Op.Call(Lane.general(), &work, 0u64, &mut job), Target.Here(8u64));   //~ ErrorBadArray "does not match expected field's type"
+  lp.submit(Op.Call(Lane.general(), &work, 0u64, job), Target.Here(9u64));
 }
 
 fn crossing(lp &mut Loop, c Completion) {
@@ -55,8 +55,8 @@ fn crossing(lp &mut Loop, c Completion) {
   mut tc Sender[Completion];
   imm g = thread.start(CancelGroup.make(), &cancelIt);
   imm r = thread.start(lp.request(OpId.none()), &dropIt);
-  imm e = thread.start(lp.external(Target.Here[10u64], IoBuf.empty()), &endIt);
-  mut cm = lp.external(Target.Here[11u64], IoBuf.empty());
+  imm e = thread.start(lp.external(Target.Here(10u64), IoBuf.empty()), &endIt);
+  mut cm = lp.external(Target.Here(11u64), IoBuf.empty());
   imm be = thread.start(&mut cm, &endRef);   //~ ErrorNotSendable "start requires A is Sendable, and &mut Completer is not Sendable"
 }
 

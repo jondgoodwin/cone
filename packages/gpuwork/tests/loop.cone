@@ -168,8 +168,8 @@ fn main() i32 {
 
   // ---- 1. A loop asleep in poll, woken by the GPU ----
   imm frame1 = device.frameNumber;
-  imm op1 = lp.external(iocore.Target.Here[501u64], IoBuf.empty());
-  imm first = submitScramble(&mut works, &mut device, &kernel, words.view(), Target.Loop[11u64, op1]);
+  imm op1 = lp.external(iocore.Target.Here(501u64), IoBuf.empty());
+  imm first = submitScramble(&mut works, &mut device, &kernel, words.view(), Target.Loop(11u64, op1));
   imm asleep = Instant.now();
   lp.poll(asleep + Duration.fromSeconds(5i64), &mut io);
   waitIo(&mut lp, &mut io, 1usize);
@@ -196,7 +196,7 @@ fn main() i32 {
   imm output = second.give(zeroed(&mut device, 64usize));
   second.dispatch(&mut device, &kernel, &[input, output], 1u32);
   imm back2 = second.readback(&mut device, output);
-  imm ticket2 = works.submit(&mut device, second, onLoop(&mut lp, iocore.Target.Here[502u64], 22u64));
+  imm ticket2 = works.submit(&mut device, second, onLoop(&mut lp, iocore.Target.Here(502u64), 22u64));
   waitIo(&mut lp, &mut io, 1usize);
   require(io.len() == 1usize, "the second job's answer");
   expect(io[0usize].token == 502u64 and io[0usize].isDone() and u64.from(io[0usize].n) == ticket2.id,
@@ -209,9 +209,9 @@ fn main() i32 {
 
   // ---- 3. Three jobs in one frame, none ended ----
   imm frame3 = device.frameNumber;
-  imm t31 = submitScramble(&mut works, &mut device, &kernel, words.view(), onLoop(&mut lp, iocore.Target.Here[531u64], 31u64));
-  imm t32 = submitScramble(&mut works, &mut device, &kernel, words.view(), onLoop(&mut lp, iocore.Target.Here[532u64], 32u64));
-  imm t33 = submitScramble(&mut works, &mut device, &kernel, words.view(), onLoop(&mut lp, iocore.Target.Here[533u64], 33u64));
+  imm t31 = submitScramble(&mut works, &mut device, &kernel, words.view(), onLoop(&mut lp, iocore.Target.Here(531u64), 31u64));
+  imm t32 = submitScramble(&mut works, &mut device, &kernel, words.view(), onLoop(&mut lp, iocore.Target.Here(532u64), 32u64));
+  imm t33 = submitScramble(&mut works, &mut device, &kernel, words.view(), onLoop(&mut lp, iocore.Target.Here(533u64), 33u64));
   waitIo(&mut lp, &mut io, 3usize);
   expectUInt(u64.from(device.frameNumber), frame3, "one frame, not ended");
   require(io.len() == 3usize, "three answers");
@@ -225,9 +225,9 @@ fn main() i32 {
   device.endFrame();
 
   // ---- 4. Cancels ----
-  imm op4 = lp.external(iocore.Target.Here[541u64], IoBuf.empty());
+  imm op4 = lp.external(iocore.Target.Here(541u64), IoBuf.empty());
   imm id4 = op4.id();
-  submitScramble(&mut works, &mut device, &kernel, words.view(), Target.Loop[41u64, op4]);
+  submitScramble(&mut works, &mut device, &kernel, words.view(), Target.Loop(41u64, op4));
   expectBool(lp.cancel(id4), true, "the cancel asked while the job is on the GPU");
   waitIo(&mut lp, &mut io, 1usize);
   require(io.len() == 1usize, "its answer");
@@ -242,7 +242,7 @@ fn main() i32 {
   imm group = iocore.CancelGroup.make();
   group.cancel();
   submitScramble(&mut works, &mut device, &kernel, words.view(),
-    onLoopIn(&mut lp, iocore.Target.Here[542u64], group, iocore.forever(), 42u64));
+    onLoopIn(&mut lp, iocore.Target.Here(542u64), group, iocore.forever(), 42u64));
   waitIo(&mut lp, &mut io, 1usize);
   require(io.len() == 1usize, "the cancelled group's answer");
   expectUInt(u64.from(io[0usize].status), u64.from(diag.outcomeCancelled), "Cancelled at submit");
@@ -257,7 +257,7 @@ fn main() i32 {
   mut refused = Job.make(&mut device);
   imm only = refused.give(zeroed(&mut device, 4usize));
   expectBool(refused.dispatch(&mut device, &kernel, &[only], 1u32), false, "one slot for two bindings refused");
-  works.submit(&mut device, refused, onLoop(&mut lp, iocore.Target.Here[551u64], 51u64));
+  works.submit(&mut device, refused, onLoop(&mut lp, iocore.Target.Here(551u64), 51u64));
   waitIo(&mut lp, &mut io, 1usize);
   require(io.len() == 1usize, "the refused job's answer");
   expectUInt(u64.from(io[0usize].status), u64.from(diag.outcomeFailed), "Failed");
@@ -269,8 +269,8 @@ fn main() i32 {
   device.endFrame();
 
   // ---- 6. A Here job beside a Loop job ----
-  imm here = submitScramble(&mut works, &mut device, &kernel, words.view(), Target.Here[61u64]);
-  submitScramble(&mut works, &mut device, &kernel, words.view(), onLoop(&mut lp, iocore.Target.Here[562u64], 62u64));
+  imm here = submitScramble(&mut works, &mut device, &kernel, words.view(), Target.Here(61u64));
+  submitScramble(&mut works, &mut device, &kernel, words.view(), onLoop(&mut lp, iocore.Target.Here(562u64), 62u64));
   waitIo(&mut lp, &mut io, 1usize);
   expect(io.len() == 1usize and io[0usize].token == 562u64, "the Loop job's answer, its frame not ended");
   io.clear();
@@ -280,7 +280,7 @@ fn main() i32 {
   expectUInt(u64.from(works.waitFor(&mut device, here, &mut got)), 1u64, "the Here job, waited for");
   expectUInt(got[0usize].token, 61u64, "the Here job's");
   got.clear();
-  imm blocking = submitScramble(&mut works, &mut device, &kernel, words.view(), onLoop(&mut lp, iocore.Target.Here[563u64], 63u64));
+  imm blocking = submitScramble(&mut works, &mut device, &kernel, words.view(), onLoop(&mut lp, iocore.Target.Here(563u64), 63u64));
   expectUInt(u64.from(works.waitFor(&mut device, blocking, &mut got)), 1u64, "a Loop job waited for, as a tool would");
   expect(got[0usize].token == 63u64 and got[0usize].ok, "its Completion");
   expectUInt(differences(&got[0usize].words(2u32), &once), 0u64, "and its words");
@@ -294,7 +294,7 @@ fn main() i32 {
   device.endFrame();
   {
     mut doomed = Works.make();
-    submitScramble(&mut doomed, &mut device, &kernel, words.view(), onLoop(&mut lp, iocore.Target.Here[571u64], 71u64));
+    submitScramble(&mut doomed, &mut device, &kernel, words.view(), onLoop(&mut lp, iocore.Target.Here(571u64), 71u64));
   }
   waitIo(&mut lp, &mut io, 1usize);
   expect(io.len() == 1usize and io[0usize].token == 571u64 and io[0usize].isDone(), "still answered, Done");
@@ -308,7 +308,7 @@ fn main() i32 {
     {
       mut w = Works.make();
       expectUInt(u64.from(w.watcherThread()), 0u64, "no watcher before a Loop job");
-      submitScramble(&mut w, &mut device, &kernel, words.view(), onLoop(&mut lp, iocore.Target.Here[572u64], 72u64));
+      submitScramble(&mut w, &mut device, &kernel, words.view(), onLoop(&mut lp, iocore.Target.Here(572u64), 72u64));
       id = w.watcherThread();
       if id != 0u32 and hasThread(id) { alive = alive + 1u32; }
     }

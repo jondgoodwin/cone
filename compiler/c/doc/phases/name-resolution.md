@@ -194,6 +194,16 @@ functions included.
 | `QuesTag` | `FnCallTag` for `Option[T]`, including a generic parameter's `?T` | `allocateQuesNameRes` |
 | `FnCallTag` that is a namespace hop | the bound name use, or a plain call of it | `fnCallNameResPath` |
 | `FnCallTag` indexing `Array` | the array type, `ArrayTag`, one node per size | `arrayTypeLower` |
+| a name use, or a path or `Name[type arguments]`, that the parser marked as a value term (`FlagValueTermName`, `FlagValueTermCall`) and that names an empty variant | the literal that variant's construction is, a `FnCallTag` with no values, `FlagIndex` and `FlagCtorParen`: `None`, `Lamp.Red`, `None[i32]` | `fnCallVariantTermNameRes` |
+
+A variant's name is a value only where the parser met it in a value expression:
+the last suffix of a term parsed outside `parseType` (`parseMarkValueTerm`), not
+a pattern's value (`parseMatchPattern` clears it), and not in the brackets after
+a type or a generic, which are type arguments and have their marks cleared by
+`fnCallNameRes`. The conversion is made here, not at type check, so that
+everything that asks of a statement whether it is an expression (a block's or a
+function's last, `isExpOrMacroNode`) finds a call, and a generic variant is then
+checked as the call it always was, taking its type arguments from where it goes.
 
 The last two are *replacements* rather than retags. The path collapse: a
 period whose left side names a module or a type is a path, and the hop is

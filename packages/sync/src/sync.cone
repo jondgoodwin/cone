@@ -224,7 +224,7 @@
 //                            values, rounded as bounded's are: its
 //                            SoloSender[T] and its Receiver[T]
 //   tx.send(v)               put v in, waiting while a bounded channel is
-//                            full. None once it is in, or Some[v], the value
+//                            full. None once it is in, or Some(v), the value
 //                            handed back, when the receiver has gone or
 //                            closed the channel -- which wakes a send
 //                            waiting for room, to hand its value back too
@@ -232,11 +232,11 @@
 //                            borrows tx as 'mut', as '+=' does, so tx is a
 //                            'mut' variable or a reference to a Sender;
 //                            'tx <- (a, b)' sends each in turn
-//   tx.trySend(v)            send, but never waiting: Some[v] back when a
+//   tx.trySend(v)            send, but never waiting: Some(v) back when a
 //                            bounded channel is full, too
 //   tx.sendTimeout(v, d)     send, waiting at most d, a Duration, for room
 //                            (the futex's resolution: it may run over by a
-//                            tick): Some[v] back when none came
+//                            tick): Some(v) back when none came
 //   tx.clone()               another Sender on the same channel (not a
 //                            SoloSender: it has none)
 //   tx.isClosed()            whether the channel is closed, so that a
@@ -298,7 +298,7 @@
 //   match rx.recv() { ... }             // waits for the one value
 //
 //   Oneshot[T].make()        the two ends, a tuple as Channel's are
-//   tx.send(v)               put v in: None once it is there; Some[v] back
+//   tx.send(v)               put v in: None once it is there; Some(v) back
 //                            when a value was sent already or the receiver
 //                            has gone. Never waits. It takes tx as '&mut',
 //                            so a sender held in a field sends in place
@@ -388,11 +388,11 @@ pub struct Arc is RegionRef, ThreadSafe {
   fn alloc(size usize) *u8 inline {libc.malloc(size);}
   fn init(self &new) inline {*self = new Arc(1usize);}
   fn aliasRef(self &uni Arc) inline {
-    mem.atomicAdd[usize](self as *usize, 1usize, MemOrder.Relaxed[]);
+    mem.atomicAdd[usize](self as *usize, 1usize, MemOrder.Relaxed);
   }
   fn dealiasRef(self &uni Arc) bool inline {
-    imm last = mem.atomicSub[usize](self as *usize, 1usize, MemOrder.Release[]) == 1usize;
-    if last {mem.atomicLoad[usize](self as *usize, MemOrder.Acquire[]);}
+    imm last = mem.atomicSub[usize](self as *usize, 1usize, MemOrder.Release) == 1usize;
+    if last {mem.atomicLoad[usize](self as *usize, MemOrder.Acquire);}
     last;
   }
   fn free(self &uni Arc) inline {libc.free(self as *u8);}
@@ -496,15 +496,15 @@ const spinLimit = 100u32;
 // Put desired in *p if it holds expected, acquiring when it does: whether it
 // did, and the value seen
 fn casAcquire(p *u32, expected u32, desired u32) u32, bool {
-  mem.atomicCompareSwap[u32](p, expected, desired, MemOrder.Acquire[], MemOrder.Relaxed[]);
+  mem.atomicCompareSwap[u32](p, expected, desired, MemOrder.Acquire, MemOrder.Relaxed);
 }
 
 fn casRelaxed(p *u32, expected u32, desired u32) u32, bool {
-  mem.atomicCompareSwap[u32](p, expected, desired, MemOrder.Relaxed[], MemOrder.Relaxed[]);
+  mem.atomicCompareSwap[u32](p, expected, desired, MemOrder.Relaxed, MemOrder.Relaxed);
 }
 
 fn loadRelaxed(p *u32) u32 {
-  mem.atomicLoad[u32](p, MemOrder.Relaxed[]);
+  mem.atomicLoad[u32](p, MemOrder.Relaxed);
 }
 
 // ---------------------------------------------------------------------------
@@ -568,7 +568,7 @@ pub struct Mutex is Move, LockPermission, ThreadSafe {
       // not the only one wanting it, so it stays marked, and its unlock
       // wakes the next. (No write when it is contended already.)
       if state != mutexContended {
-        if mem.atomicSwap[u32](p, mutexContended, MemOrder.Acquire[]) == mutexUnlocked {
+        if mem.atomicSwap[u32](p, mutexContended, MemOrder.Acquire) == mutexUnlocked {
           return;
         }
       }
@@ -598,7 +598,7 @@ pub struct Mutex is Move, LockPermission, ThreadSafe {
   // is woken in its turn.
   pub fn unlock(self &opaq) {
     imm p = self.word();
-    imm was = mem.atomicSwap[u32](p, mutexUnlocked, MemOrder.Release[]);
+    imm was = mem.atomicSwap[u32](p, mutexUnlocked, MemOrder.Release);
     if was == mutexContended {
       rawWake(p);
     } elif was == mutexUnlocked {
@@ -717,7 +717,7 @@ pub struct Rwlock is Move, LockPermission, ThreadSafe {
 
   // Give up a read lock; the last reader out wakes a waiting writer
   pub fn readUnlock(self &opaq) {
-    imm was = mem.atomicSub[u32](self.word(), rwReadLocked, MemOrder.Release[]);
+    imm was = mem.atomicSub[u32](self.word(), rwReadLocked, MemOrder.Release);
     if rwIsUnlocked(was) or rwIsWriteLocked(was) {
       die("sync: Rwlock.readUnlock of a Rwlock no reader holds\n");
     }
@@ -776,7 +776,7 @@ pub struct Rwlock is Move, LockPermission, ThreadSafe {
       otherWritersWaiting = rwWritersWaiting;
       // Read the wake counter before rechecking the state, so a wake between
       // the two is not missed
-      imm seq = mem.atomicLoad[u32](self.notifyWord(), MemOrder.Acquire[]);
+      imm seq = mem.atomicLoad[u32](self.notifyWord(), MemOrder.Acquire);
       s = loadRelaxed(p);
       if rwIsUnlocked(s) or !rwHasWritersWaiting(s) {
         continue;
@@ -788,7 +788,7 @@ pub struct Rwlock is Move, LockPermission, ThreadSafe {
 
   // Give up the write lock, waking a writer, or the readers, if any wait
   pub fn writeUnlock(self &opaq) {
-    imm was = mem.atomicSub[u32](self.word(), rwWriteLocked, MemOrder.Release[]);
+    imm was = mem.atomicSub[u32](self.word(), rwWriteLocked, MemOrder.Release);
     if !rwIsWriteLocked(was) {
       die("sync: Rwlock.writeUnlock of a Rwlock no writer holds\n");
     }
@@ -834,7 +834,7 @@ pub struct Rwlock is Move, LockPermission, ThreadSafe {
 
   fn wakeWriter(self &opaq) {
     imm n = self.notifyWord();
-    mem.atomicAdd[u32](n, 1u32, MemOrder.Release[]);
+    mem.atomicAdd[u32](n, 1u32, MemOrder.Release);
     rawWake(n);
   }
 
@@ -888,14 +888,14 @@ pub struct Condvar is Move {
   // Wake one thread waiting
   pub fn notifyOne(self &opaq) {
     imm p = self.word();
-    mem.atomicAdd[u32](p, 1u32, MemOrder.Relaxed[]);
+    mem.atomicAdd[u32](p, 1u32, MemOrder.Relaxed);
     rawWake(p);
   }
 
   // Wake every thread waiting
   pub fn notifyAll(self &opaq) {
     imm p = self.word();
-    mem.atomicAdd[u32](p, 1u32, MemOrder.Relaxed[]);
+    mem.atomicAdd[u32](p, 1u32, MemOrder.Relaxed);
     rawWakeAll(p);
   }
 
@@ -946,7 +946,7 @@ pub struct Once is Move {
   // Whether a call has run its function to the end; if so, all it did is
   // seen by this thread
   pub fn isCompleted(self &opaq) bool {
-    mem.atomicLoad[u32](self.word(), MemOrder.Acquire[]) == onceComplete;
+    mem.atomicLoad[u32](self.word(), MemOrder.Acquire) == onceComplete;
   }
 
   // Run f() if no call on this Once has run its function. Every call returns
@@ -972,7 +972,7 @@ pub struct Once is Move {
   // another thread runs it
   fn begin(self &opaq) bool {
     imm p = self.word();
-    mut s = mem.atomicLoad[u32](p, MemOrder.Acquire[]);
+    mut s = mem.atomicLoad[u32](p, MemOrder.Acquire);
     mut done = false;
     while true {
       imm state = s & onceStateMask;
@@ -981,7 +981,7 @@ pub struct Once is Move {
       }
       if state == onceIncomplete {
         s, done = mem.atomicCompareSwap[u32](p, s, onceRunning | (s & onceQueued),
-          MemOrder.Acquire[], MemOrder.Acquire[]);
+          MemOrder.Acquire, MemOrder.Acquire);
         if done {
           return true;
         }
@@ -993,14 +993,14 @@ pub struct Once is Move {
         // (Rust's success ordering here is Relaxed, with an Acquire failure;
         // core's compareSwap refuses a failure ordering stronger than its
         // success, so both are Acquire)
-        s, done = mem.atomicCompareSwap[u32](p, s, queued, MemOrder.Acquire[], MemOrder.Acquire[]);
+        s, done = mem.atomicCompareSwap[u32](p, s, queued, MemOrder.Acquire, MemOrder.Acquire);
         if !done {
           continue;
         }
         s = queued;
       }
       rawWait(p, s, forever);
-      s = mem.atomicLoad[u32](p, MemOrder.Acquire[]);
+      s = mem.atomicLoad[u32](p, MemOrder.Acquire);
     }
     false;
   }
@@ -1008,7 +1008,7 @@ pub struct Once is Move {
   // The function has returned: complete, and wake whoever waits
   fn finish(self &opaq) {
     imm p = self.word();
-    imm was = mem.atomicSwap[u32](p, onceComplete, MemOrder.Release[]);
+    imm was = mem.atomicSwap[u32](p, onceComplete, MemOrder.Release);
     if (was & onceQueued) != 0u32 {
       rawWakeAll(p);
     }
@@ -1141,11 +1141,11 @@ fn chanPassBlock[T](b *Block[T]) *Block[T] {
   // Acquire, for the installer's release, which came before the last slot
   // was marked written: so the link is there already, and the wait is a guard
   imm nextp = &(*b).next as **Block[T];
-  mut next = mem.atomicLoad[*Block[T]](nextp, MemOrder.Acquire[]);
+  mut next = mem.atomicLoad[*Block[T]](nextp, MemOrder.Acquire);
   mut step = 0u32;
   while next as usize == 0usize {
     step = chanBackoff(step);
-    next = mem.atomicLoad[*Block[T]](nextp, MemOrder.Acquire[]);
+    next = mem.atomicLoad[*Block[T]](nextp, MemOrder.Acquire);
   }
   libc.free(b as *u8);
   next;
@@ -1171,8 +1171,8 @@ fn chanBackoff(step u32) u32 {
 // decides which of several senders makes the call; the OS compares the word
 // again as the receiver goes to sleep, so it needs no ordering of its own.
 fn chanWake(sleeping *u32) {
-  if mem.atomicLoad[u32](sleeping, MemOrder.SeqCst[]) != 0u32 {
-    if mem.atomicSwap[u32](sleeping, 0u32, MemOrder.Relaxed[]) != 0u32 {
+  if mem.atomicLoad[u32](sleeping, MemOrder.SeqCst) != 0u32 {
+    if mem.atomicSwap[u32](sleeping, 0u32, MemOrder.Relaxed) != 0u32 {
       rawWake(sleeping);
     }
   }
@@ -1182,7 +1182,7 @@ fn chanWake(sleeping *u32) {
 // lets go; the second to go frees the channel. AcqRel, so the one that frees
 // it has seen everything the other side did to it.
 fn chanRelease[T](c *Chan[T]) {
-  if mem.atomicSub[u32](&(*c).sides as *u32, 1u32, MemOrder.AcqRel[]) == 1u32 {
+  if mem.atomicSub[u32](&(*c).sides as *u32, 1u32, MemOrder.AcqRel) == 1u32 {
     libc.free(c as *u8);
   }
 }
@@ -1246,7 +1246,7 @@ fn cellAt[T](ring *Cell[T], i u64) *Cell[T] {
 }
 
 // Put v in a bounded channel's ring, waiting while it is full if mayWait,
-// for at most timeoutNs: None once it is there, or Some[v] back when the
+// for at most timeoutNs: None once it is there, or Some(v) back when the
 // channel is closed, or full and this may not wait longer
 fn ringSend[T](c *Chan[T], v T, mayWait bool, timeoutNs u64) Option[T] {
   imm tailp = &(*c).tail as *u64;
@@ -1256,13 +1256,13 @@ fn ringSend[T](c *Chan[T], v T, mayWait bool, timeoutNs u64) Option[T] {
   imm mask = (*c).mask;
   // Relaxed: the index only says which position to try for; the claim, a
   // compare-and-swap on it, is what orders
-  mut tail = mem.atomicLoad[u64](tailp, MemOrder.Relaxed[]);
+  mut tail = mem.atomicLoad[u64](tailp, MemOrder.Relaxed);
   mut spins = 0u32;
   mut started = false;
   mut start = 0u64;
   while true {
     if (tail & chanClosed) != 0u64 {
-      return Some[T][v];
+      return Some[T](v);
     }
     imm pos = chanPos(tail);
     // Room for pos: its cell's last value, pos less a ring, is taken. 'seen'
@@ -1271,10 +1271,10 @@ fn ringSend[T](c *Chan[T], v T, mayWait bool, timeoutNs u64) Option[T] {
     // the store Release: the receiver's release of 'taken' comes after it
     // moved that value out, which must be before this send writes the cell,
     // however many senders' hands 'seen' has passed through.
-    mut room = pos <= mem.atomicLoad[u64](seenp, MemOrder.Acquire[]) + mask;
+    mut room = pos <= mem.atomicLoad[u64](seenp, MemOrder.Acquire) + mask;
     if !room {
-      imm taken = mem.atomicLoad[u64](takenp, MemOrder.Acquire[]);
-      mem.atomicStore[u64](seenp, taken, MemOrder.Release[]);
+      imm taken = mem.atomicLoad[u64](takenp, MemOrder.Acquire);
+      mem.atomicStore[u64](seenp, taken, MemOrder.Release);
       room = pos <= taken + mask;
     }
     if room {
@@ -1285,26 +1285,26 @@ fn ringSend[T](c *Chan[T], v T, mayWait bool, timeoutNs u64) Option[T] {
       mut now = 0u64;
       mut claimed = false;
       now, claimed = mem.atomicCompareSwap[u64](tailp, tail, tail + chanOne,
-        MemOrder.SeqCst[], MemOrder.Relaxed[]);
+        MemOrder.SeqCst, MemOrder.Relaxed);
       if claimed {
         imm cell = cellAt[T](ring, pos & mask);
         mem.writeRaw[T](&(*cell).value as *T, v);
         // Release: the value, written above, is seen by the receiver that
         // acquires this stamp
-        mem.atomicStore[u64](&(*cell).stamp as *u64, pos + 1u64, MemOrder.Release[]);
+        mem.atomicStore[u64](&(*cell).stamp as *u64, pos + 1u64, MemOrder.Release);
         chanWake(&(*c).sleeping as *u32);
-        return None[T][];
+        return None;
       }
       tail = now;
       continue;
     }
     // Full: the position a ring back is not yet taken
     if !mayWait {
-      return Some[T][v];
+      return Some[T](v);
     }
     if spins < spinLimit {
       spins = spins + 1u32;
-      tail = mem.atomicLoad[u64](tailp, MemOrder.Relaxed[]);
+      tail = mem.atomicLoad[u64](tailp, MemOrder.Relaxed);
       continue;
     }
     mut left = forever;
@@ -1315,15 +1315,15 @@ fn ringSend[T](c *Chan[T], v T, mayWait bool, timeoutNs u64) Option[T] {
       }
       imm waited = nowNs() - start;
       if waited >= timeoutNs {
-        return Some[T][v];
+        return Some[T](v);
       }
       left = timeoutNs - waited;
     }
     ringPark[T](c, left);
     spins = 0u32;
-    tail = mem.atomicLoad[u64](tailp, MemOrder.Relaxed[]);
+    tail = mem.atomicLoad[u64](tailp, MemOrder.Relaxed);
   }
-  Some[T][v];
+  Some[T](v);
 }
 
 // A sender that found the ring full sleeps until the receiver takes a value
@@ -1346,10 +1346,10 @@ fn ringSend[T](c *Chan[T], v T, mayWait bool, timeoutNs u64) Option[T] {
 // once the others had finished; this one, none in 40.
 fn ringPark[T](c *Chan[T], timeoutNs u64) {
   imm spacep = &(*c).space as *u32;
-  imm seq = mem.atomicLoad[u32](spacep, MemOrder.SeqCst[]);
-  mem.atomicStore[u32](&(*c).waiting as *u32, 1u32, MemOrder.SeqCst[]);
-  imm tail = mem.atomicLoad[u64](&(*c).tail as *u64, MemOrder.SeqCst[]);
-  imm taken = mem.atomicLoad[u64](&(*c).taken as *u64, MemOrder.SeqCst[]);
+  imm seq = mem.atomicLoad[u32](spacep, MemOrder.SeqCst);
+  mem.atomicStore[u32](&(*c).waiting as *u32, 1u32, MemOrder.SeqCst);
+  imm tail = mem.atomicLoad[u64](&(*c).tail as *u64, MemOrder.SeqCst);
+  imm taken = mem.atomicLoad[u64](&(*c).taken as *u64, MemOrder.SeqCst);
   if (tail & chanClosed) == 0u64 and chanPos(tail) > taken + (*c).mask {
     rawWait(spacep, seq, timeoutNs);
   }
@@ -1360,7 +1360,7 @@ fn ringPark[T](c *Chan[T], timeoutNs u64) {
 // of ringPark's pairing. This load, one a take, is the whole of what the
 // senders' sleeping costs the receiver while none sleeps.
 fn ringFreed[T](c *Chan[T]) {
-  if mem.atomicLoad[u32](&(*c).waiting as *u32, MemOrder.SeqCst[]) != 0u32 {
+  if mem.atomicLoad[u32](&(*c).waiting as *u32, MemOrder.SeqCst) != 0u32 {
     ringWake[T](c);
   }
 }
@@ -1378,9 +1378,9 @@ fn ringFreed[T](c *Chan[T]) {
 // the flag was set measured twenty and more wakes for every sleep, the
 // receiver waking again and again while the first woken was still waking.)
 fn ringWake[T](c *Chan[T]) {
-  if mem.atomicSwap[u32](&(*c).waiting as *u32, 0u32, MemOrder.SeqCst[]) != 0u32 {
+  if mem.atomicSwap[u32](&(*c).waiting as *u32, 0u32, MemOrder.SeqCst) != 0u32 {
     imm spacep = &(*c).space as *u32;
-    mem.atomicAdd[u32](spacep, 1u32, MemOrder.SeqCst[]);
+    mem.atomicAdd[u32](spacep, 1u32, MemOrder.SeqCst);
     rawWakeAll(spacep);
   }
 }
@@ -1392,15 +1392,15 @@ fn ringWake[T](c *Chan[T]) {
 // and let go of the shared part, whose allocation holds the ring.
 fn ringFinal[T](c *Chan[T], head u64) {
   imm tailp = &(*c).tail as *u64;
-  mem.atomicOr[u64](tailp, chanClosed, MemOrder.SeqCst[]);
+  mem.atomicOr[u64](tailp, chanClosed, MemOrder.SeqCst);
   ringWake[T](c);
   // No claim follows the close, so the index is final
-  imm end = chanPos(mem.atomicLoad[u64](tailp, MemOrder.Acquire[]));
+  imm end = chanPos(mem.atomicLoad[u64](tailp, MemOrder.Acquire));
   mut pos = chanPos(head);
   while pos != end {
     imm cell = cellAt[T]((*c).ring, pos & (*c).mask);
     mut step = 0u32;
-    while mem.atomicLoad[u64](&(*cell).stamp as *u64, MemOrder.Acquire[]) != pos + 1u64 {
+    while mem.atomicLoad[u64](&(*cell).stamp as *u64, MemOrder.Acquire) != pos + 1u64 {
       step = chanBackoff(step);
     }
     mem.finalize[T](&(*cell).value as *T);
@@ -1478,11 +1478,11 @@ fn flushWrites() {
 // 'waiting' after the store of 'taken'; soloRefuse's).
 fn soloWaitRoom[T](c *Chan[T], tail u64, mask u64, timeoutNs u64) {
   imm spacep = &(*c).space as *u32;
-  imm seq = mem.atomicLoad[u32](spacep, MemOrder.SeqCst[]);
-  mem.atomicStore[u32](&(*c).waiting as *u32, 1u32, MemOrder.SeqCst[]);
+  imm seq = mem.atomicLoad[u32](spacep, MemOrder.SeqCst);
+  mem.atomicStore[u32](&(*c).waiting as *u32, 1u32, MemOrder.SeqCst);
   flushWrites();
-  imm taken = mem.atomicLoad[u64](&(*c).taken as *u64, MemOrder.SeqCst[]);
-  imm refused = mem.atomicLoad[u32](&(*c).refused as *u32, MemOrder.SeqCst[]);
+  imm taken = mem.atomicLoad[u64](&(*c).taken as *u64, MemOrder.SeqCst);
+  imm refused = mem.atomicLoad[u32](&(*c).refused as *u32, MemOrder.SeqCst);
   if refused == 0u32 and tail == taken + mask + 1u64 {
     rawWait(spacep, seq, timeoutNs);
   }
@@ -1495,12 +1495,12 @@ fn soloWaitRoom[T](c *Chan[T], tail u64, mask u64, timeoutNs u64) {
 // store, then the flush: the heavy half of the pairing with a send's busy
 // mark and its load of 'refused'.
 fn soloRefuse[T](c *Chan[T]) {
-  mem.atomicStore[u32](&(*c).refused as *u32, 1u32, MemOrder.SeqCst[]);
+  mem.atomicStore[u32](&(*c).refused as *u32, 1u32, MemOrder.SeqCst);
   flushWrites();
   ringWake[T](c);
   imm busyp = &(*c).busy as *u64;
   mut step = 0u32;
-  while mem.atomicLoad[u64](busyp, MemOrder.Acquire[]) != 0u64 {
+  while mem.atomicLoad[u64](busyp, MemOrder.Acquire) != 0u64 {
     step = chanBackoff(step);
   }
 }
@@ -1510,7 +1510,7 @@ fn soloRefuse[T](c *Chan[T]) {
 // part, whose allocation holds the ring
 fn soloFinal[T](c *Chan[T], ring *T, mask u64, head u64) {
   soloRefuse[T](c);
-  imm end = mem.atomicLoad[u64](&(*c).tail as *u64, MemOrder.Acquire[]) >> soloShift;
+  imm end = mem.atomicLoad[u64](&(*c).tail as *u64, MemOrder.Acquire) >> soloShift;
   mut pos = head;
   while pos != end {
     mem.finalize[T](ring + usize.from(pos & mask));
@@ -1611,7 +1611,7 @@ pub struct Sender[T Sendable] is Sendable {
 
   // Put v on the channel: None once it is there. A bounded channel's send
   // waits while it is full; an unbounded one's never waits. If the receiver
-  // has gone or closed the channel, v is handed back: Some[v].
+  // has gone or closed the channel, v is handed back: Some(v).
   pub fn send(self &, v T) Option[T] {
     if (*chan).ring as usize == 0usize {
       return self.listSend(v);
@@ -1620,7 +1620,7 @@ pub struct Sender[T Sendable] is Sendable {
   }
 
   // Put v on the channel if there is room now, never waiting: None once it
-  // is there; Some[v], handed back, when a bounded channel is full, or the
+  // is there; Some(v), handed back, when a bounded channel is full, or the
   // channel is closed
   pub fn trySend(self &, v T) Option[T] {
     if (*chan).ring as usize == 0usize {
@@ -1629,7 +1629,7 @@ pub struct Sender[T Sendable] is Sendable {
     ringSend[T](chan, v, false, 0u64);
   }
 
-  // send, waiting at most d for room: Some[v] back when there was none in
+  // send, waiting at most d for room: Some(v) back when there was none in
   // that time, or the channel is closed
   pub fn sendTimeout(self &, v T, d time.Duration) Option[T] {
     if (*chan).ring as usize == 0usize {
@@ -1646,8 +1646,8 @@ pub struct Sender[T Sendable] is Sendable {
     // Acquire: the installer of a block stores the block, then moves the
     // index on to its lap, releasing; an index seen in that lap brings the
     // block with it, and the zeroed memory under it
-    mut tail = mem.atomicLoad[u64](tailp, MemOrder.Acquire[]);
-    mut block = mem.atomicLoad[*Block[T]](blockp, MemOrder.Acquire[]);
+    mut tail = mem.atomicLoad[u64](tailp, MemOrder.Acquire);
+    mut block = mem.atomicLoad[*Block[T]](blockp, MemOrder.Acquire);
     // The next block, made before the claim of a block's last slot so the
     // other senders wait on the installer as briefly as can be
     mut spare *Block[T] = null;
@@ -1659,14 +1659,14 @@ pub struct Sender[T Sendable] is Sendable {
         if spare as usize != 0usize {
           libc.free(spare as *u8);
         }
-        return Some[T][v];
+        return Some[T](v);
       }
       offset = chanOffset(tail);
       // Another sender is installing the next block: wait for it
       if offset == blockCap {
         step = chanBackoff(step);
-        tail = mem.atomicLoad[u64](tailp, MemOrder.Acquire[]);
-        block = mem.atomicLoad[*Block[T]](blockp, MemOrder.Acquire[]);
+        tail = mem.atomicLoad[u64](tailp, MemOrder.Acquire);
+        block = mem.atomicLoad[*Block[T]](blockp, MemOrder.Acquire);
         continue;
       }
       if offset + 1u64 == blockCap and spare as usize == 0usize {
@@ -1677,10 +1677,10 @@ pub struct Sender[T Sendable] is Sendable {
       // sleeps). On failure, Acquire, as the first load.
       mut seen = 0u64;
       seen, claimed = mem.atomicCompareSwap[u64](tailp, tail, tail + chanOne,
-        MemOrder.SeqCst[], MemOrder.Acquire[]);
+        MemOrder.SeqCst, MemOrder.Acquire);
       if !claimed {
         tail = seen;
-        block = mem.atomicLoad[*Block[T]](blockp, MemOrder.Acquire[]);
+        block = mem.atomicLoad[*Block[T]](blockp, MemOrder.Acquire);
       }
     }
     // The block is the one the claimed position falls in: the index never
@@ -1693,9 +1693,9 @@ pub struct Sender[T Sendable] is Sendable {
       // senders' acquiring loads; then the link the receiver follows,
       // releasing for its acquire. All three come before this slot is marked
       // written, which the receiver waits for before it follows the link.
-      mem.atomicStore[*Block[T]](blockp, spare, MemOrder.Release[]);
-      mem.atomicAdd[u64](tailp, (chanLap - blockCap) << chanShift, MemOrder.Release[]);
-      mem.atomicStore[*Block[T]](&(*block).next as **Block[T], spare, MemOrder.Release[]);
+      mem.atomicStore[*Block[T]](blockp, spare, MemOrder.Release);
+      mem.atomicAdd[u64](tailp, (chanLap - blockCap) << chanShift, MemOrder.Release);
+      mem.atomicStore[*Block[T]](&(*block).next as **Block[T], spare, MemOrder.Release);
     } elif spare as usize != 0usize {
       // Made for an earlier try that another sender won
       libc.free(spare as *u8);
@@ -1704,9 +1704,9 @@ pub struct Sender[T Sendable] is Sendable {
     mem.writeRaw[T](&(*slot).value as *T, v);
     // Release: the value, written above, is seen by the receiver that
     // acquires this state
-    mem.atomicStore[u32](&(*slot).state as *u32, 1u32, MemOrder.Release[]);
+    mem.atomicStore[u32](&(*slot).state as *u32, 1u32, MemOrder.Release);
     chanWake(&(*c).sleeping as *u32);
-    None[T][];
+    None;
   }
 
   // 'tx <- v' is send: what it answers is send's
@@ -1717,7 +1717,7 @@ pub struct Sender[T Sendable] is Sendable {
   // Another sender on the same channel. Relaxed: this sender is alive, so
   // the count cannot reach 0 meanwhile, and nothing is published by it.
   pub fn clone(self &) Sender[T] {
-    mem.atomicAdd[u64](&(*chan).senders as *u64, 1u64, MemOrder.Relaxed[]);
+    mem.atomicAdd[u64](&(*chan).senders as *u64, 1u64, MemOrder.Relaxed);
     new Sender[T](chan);
   }
 
@@ -1726,7 +1726,7 @@ pub struct Sender[T Sendable] is Sendable {
   // value back on a channel that is not closed found it full. Acquire, as
   // the receiver's isClosed.
   pub fn isClosed(self &) bool {
-    (mem.atomicLoad[u64](&(*chan).tail as *u64, MemOrder.Acquire[]) & chanClosed) != 0u64;
+    (mem.atomicLoad[u64](&(*chan).tail as *u64, MemOrder.Acquire) & chanClosed) != 0u64;
   }
 
   // The last sender to go closes the channel, and wakes the receiver, which
@@ -1736,10 +1736,10 @@ pub struct Sender[T Sendable] is Sendable {
     // AcqRel: each sender's release, and the last one's acquire, bring every
     // sender's doings before the close, and so before the receiver's
     // acquiring load that sees it
-    if mem.atomicSub[u64](&(*c).senders as *u64, 1u64, MemOrder.AcqRel[]) == 1u64 {
+    if mem.atomicSub[u64](&(*c).senders as *u64, 1u64, MemOrder.AcqRel) == 1u64 {
       // SeqCst: the close is a change the receiver must not sleep through,
       // paired with chanWake's load as a claim is
-      mem.atomicOr[u64](&(*c).tail as *u64, chanClosed, MemOrder.SeqCst[]);
+      mem.atomicOr[u64](&(*c).tail as *u64, chanClosed, MemOrder.SeqCst);
       chanWake(&(*c).sleeping as *u32);
       chanRelease[T](c);
     }
@@ -1763,18 +1763,18 @@ pub struct SoloSender[T Sendable] is Sendable {
   }
 
   // Put v on the channel, waiting while it is full: None once it is there,
-  // or Some[v], handed back, when the receiver has gone or closed it
+  // or Some(v), handed back, when the receiver has gone or closed it
   pub fn send(self &mut, v T) Option[T] {
     self.put(v, true, forever);
   }
 
-  // Put v on the channel if there is room now, never waiting: Some[v] back
+  // Put v on the channel if there is room now, never waiting: Some(v) back
   // when it is full, or closed
   pub fn trySend(self &mut, v T) Option[T] {
     self.put(v, false, 0u64);
   }
 
-  // send, waiting at most d for room: Some[v] back when there was none in
+  // send, waiting at most d for room: Some(v) back when there was none in
   // that time, or the channel is closed
   pub fn sendTimeout(self &mut, v T, d time.Duration) Option[T] {
     self.put(v, true, durationNs(d));
@@ -1791,7 +1791,7 @@ pub struct SoloSender[T Sendable] is Sendable {
   fn put(self &mut, v T, mayWait bool, timeoutNs u64) Option[T] {
     if tail == room {
       if !self.findRoom(mayWait, timeoutNs) {
-        return Some[T][v];
+        return Some[T](v);
       }
     }
     imm c = chan;
@@ -1805,10 +1805,10 @@ pub struct SoloSender[T Sendable] is Sendable {
     // what a fence here would. The mark is on a line of its own, which the
     // receiver reads only as it closes, so the two stores cost the sender
     // no more than stores to its own stack.
-    mem.atomicStore[u64](busyp, 1u64, MemOrder.Relaxed[]);
-    if mem.atomicLoad[u32](&(*c).refused as *u32, MemOrder.SeqCst[]) != 0u32 {
-      mem.atomicStore[u64](busyp, 0u64, MemOrder.Relaxed[]);
-      return Some[T][v];
+    mem.atomicStore[u64](busyp, 1u64, MemOrder.Relaxed);
+    if mem.atomicLoad[u32](&(*c).refused as *u32, MemOrder.SeqCst) != 0u32 {
+      mem.atomicStore[u64](busyp, 0u64, MemOrder.Relaxed);
+      return Some[T](v);
     }
     mem.writeRaw[T](ring + usize.from(tail & mask), v);
     tail = tail + 1u64;
@@ -1817,10 +1817,10 @@ pub struct SoloSender[T Sendable] is Sendable {
     // that acquires it clear then sees the index too. Then the receiver's
     // sleep flag, the sender's half of soloPark's pairing, fenced as the
     // busy mark is.
-    mem.atomicStore[u64](&(*c).tail as *u64, tail << soloShift, MemOrder.Release[]);
-    mem.atomicStore[u64](busyp, 0u64, MemOrder.Release[]);
+    mem.atomicStore[u64](&(*c).tail as *u64, tail << soloShift, MemOrder.Release);
+    mem.atomicStore[u64](busyp, 0u64, MemOrder.Release);
     chanWake(&(*c).sleeping as *u32);
-    None[T][];
+    None;
   }
 
   // The ring was full when last seen: read the receiver's count again, and,
@@ -1836,11 +1836,11 @@ pub struct SoloSender[T Sendable] is Sendable {
     while true {
       // Acquire: the receiver stores its count, releasing, after it moved
       // out the value in the slot this send will write
-      room = mem.atomicLoad[u64](takenp, MemOrder.Acquire[]) + mask + 1u64;
+      room = mem.atomicLoad[u64](takenp, MemOrder.Acquire) + mask + 1u64;
       if tail != room {
         return true;
       }
-      if !mayWait or mem.atomicLoad[u32](&(*c).refused as *u32, MemOrder.Relaxed[]) != 0u32 {
+      if !mayWait or mem.atomicLoad[u32](&(*c).refused as *u32, MemOrder.Relaxed) != 0u32 {
         return false;
       }
       if spins < spinLimit {
@@ -1870,7 +1870,7 @@ pub struct SoloSender[T Sendable] is Sendable {
   // is made once.
   fn final(self &uni) {
     imm c = chan;
-    mem.atomicStore[u64](&(*c).tail as *u64, (tail << soloShift) | soloClosed, MemOrder.SeqCst[]);
+    mem.atomicStore[u64](&(*c).tail as *u64, (tail << soloShift) | soloClosed, MemOrder.SeqCst);
     chanWake(&(*c).sleeping as *u32);
     chanRelease[T](c);
   }
@@ -1910,14 +1910,14 @@ pub struct Receiver[T Sendable] is Sendable {
     while true {
       imm found = self.poll();
       if found == pollReady {
-        return Some[T][self.take()];
+        return Some[T](self.take());
       }
       if found == pollClosed {
-        return None[T][];
+        return None;
       }
       self.park(forever);
     }
-    None[T][];
+    None;
   }
 
   // The next value if one is there now, never waiting; None when there is
@@ -1926,19 +1926,19 @@ pub struct Receiver[T Sendable] is Sendable {
     if ring as usize != 0usize {
       if solo {
         if self.soloPoll() == pollReady {
-          return Some[T][self.soloTake()];
+          return Some[T](self.soloTake());
         }
-        return None[T][];
+        return None;
       }
       if self.ringPoll() == pollReady {
-        return Some[T][self.ringTake()];
+        return Some[T](self.ringTake());
       }
-      return None[T][];
+      return None;
     }
     if self.poll() == pollReady {
-      return Some[T][self.take()];
+      return Some[T](self.take());
     }
-    None[T][];
+    None;
   }
 
   // A bounded channel's recv and recvTimeout: timeoutNs is forever for recv
@@ -1947,22 +1947,22 @@ pub struct Receiver[T Sendable] is Sendable {
     while true {
       imm found = self.ringPoll();
       if found == pollReady {
-        return Some[T][self.ringTake()];
+        return Some[T](self.ringTake());
       }
       if found == pollClosed {
-        return None[T][];
+        return None;
       }
       if timeoutNs == forever {
         self.park(forever);
       } else {
         imm waited = nowNs() - start;
         if waited >= timeoutNs {
-          return None[T][];
+          return None;
         }
         self.park(timeoutNs - waited);
       }
     }
-    None[T][];
+    None;
   }
 
   // The next value, waiting at most d for one; None when none came in that
@@ -1980,18 +1980,18 @@ pub struct Receiver[T Sendable] is Sendable {
     while true {
       imm found = self.poll();
       if found == pollReady {
-        return Some[T][self.take()];
+        return Some[T](self.take());
       }
       if found == pollClosed {
-        return None[T][];
+        return None;
       }
       imm waited = nowNs() - start;
       if waited >= ns {
-        return None[T][];
+        return None;
       }
       self.park(ns - waited);
     }
-    None[T][];
+    None;
   }
 
   // Refuse any further send: each is handed its value back. What was sent
@@ -2002,11 +2002,11 @@ pub struct Receiver[T Sendable] is Sendable {
   // which also waits out a send already under way.
   pub fn close(self &mut) {
     if ring as usize == 0usize {
-      mem.atomicOr[u64](&(*chan).tail as *u64, chanClosed, MemOrder.Relaxed[]);
+      mem.atomicOr[u64](&(*chan).tail as *u64, chanClosed, MemOrder.Relaxed);
     } elif solo {
       soloRefuse[T](chan);
     } else {
-      mem.atomicOr[u64](&(*chan).tail as *u64, chanClosed, MemOrder.SeqCst[]);
+      mem.atomicOr[u64](&(*chan).tail as *u64, chanClosed, MemOrder.SeqCst);
       ringWake[T](chan);
     }
   }
@@ -2016,9 +2016,9 @@ pub struct Receiver[T Sendable] is Sendable {
   // waiting to be taken. Acquire, as poll's load of the same word.
   // (Single-sender: the sender's closed bit, or the receiver's own close.)
   pub fn isClosed(self &) bool {
-    imm tail = mem.atomicLoad[u64](&(*chan).tail as *u64, MemOrder.Acquire[]);
+    imm tail = mem.atomicLoad[u64](&(*chan).tail as *u64, MemOrder.Acquire);
     if solo {
-      return (tail & soloClosed) != 0u64 or mem.atomicLoad[u32](&(*chan).refused as *u32, MemOrder.Relaxed[]) != 0u32;
+      return (tail & soloClosed) != 0u64 or mem.atomicLoad[u32](&(*chan).refused as *u32, MemOrder.Relaxed) != 0u32;
     }
     (tail & chanClosed) != 0u64;
   }
@@ -2030,22 +2030,22 @@ pub struct Receiver[T Sendable] is Sendable {
     while true {
       imm found = self.soloPoll();
       if found == pollReady {
-        return Some[T][self.soloTake()];
+        return Some[T](self.soloTake());
       }
       if found == pollClosed {
-        return None[T][];
+        return None;
       }
       if timeoutNs == forever {
         self.soloPark(forever);
       } else {
         imm waited = nowNs() - start;
         if waited >= timeoutNs {
-          return None[T][];
+          return None;
         }
         self.soloPark(timeoutNs - waited);
       }
     }
-    None[T][];
+    None;
   }
 
   // A single-sender channel's poll. A value is there while the count taken,
@@ -2058,12 +2058,12 @@ pub struct Receiver[T Sendable] is Sendable {
     if head != limit {
       return pollReady;
     }
-    imm tail = mem.atomicLoad[u64](&(*chan).tail as *u64, MemOrder.Acquire[]);
+    imm tail = mem.atomicLoad[u64](&(*chan).tail as *u64, MemOrder.Acquire);
     limit = tail >> soloShift;
     if limit != head {
       return pollReady;
     }
-    if (tail & soloClosed) != 0u64 or mem.atomicLoad[u32](&(*chan).refused as *u32, MemOrder.Relaxed[]) != 0u32 {
+    if (tail & soloClosed) != 0u64 or mem.atomicLoad[u32](&(*chan).refused as *u32, MemOrder.Relaxed) != 0u32 {
       return pollClosed;
     }
     pollEmpty;
@@ -2078,7 +2078,7 @@ pub struct Receiver[T Sendable] is Sendable {
   fn soloTake(self &mut) T {
     imm v = mem.readRaw[T]((ring as *T) + usize.from(head & mask));
     head = head + 1u64;
-    mem.atomicStore[u64](&(*chan).taken as *u64, head, MemOrder.Release[]);
+    mem.atomicStore[u64](&(*chan).taken as *u64, head, MemOrder.Release);
     ringFreed[T](chan);
     v;
   }
@@ -2097,15 +2097,15 @@ pub struct Receiver[T Sendable] is Sendable {
     }
     imm c = chan;
     imm sleeping = &(*c).sleeping as *u32;
-    mem.atomicStore[u32](sleeping, 1u32, MemOrder.SeqCst[]);
+    mem.atomicStore[u32](sleeping, 1u32, MemOrder.SeqCst);
     flushWrites();
-    imm tail = mem.atomicLoad[u64](&(*c).tail as *u64, MemOrder.SeqCst[]);
+    imm tail = mem.atomicLoad[u64](&(*c).tail as *u64, MemOrder.SeqCst);
     if (tail >> soloShift) == head and (tail & soloClosed) == 0u64 {
       rawWait(sleeping, 1u32, timeoutNs);
     }
     // Relaxed: only this thread sets it to 1, and its next sleep sets it
     // again, SeqCst, before it rereads
-    mem.atomicStore[u32](sleeping, 0u32, MemOrder.Relaxed[]);
+    mem.atomicStore[u32](sleeping, 0u32, MemOrder.Relaxed);
   }
 
   // What is at the receiver's index, waiting out a send that has claimed
@@ -2114,18 +2114,18 @@ pub struct Receiver[T Sendable] is Sendable {
     imm slot = slotAt[T](block, chanOffset(head));
     imm statep = &(*slot).state as *u32;
     // Acquire: the sender's release store of the state brings its value
-    if mem.atomicLoad[u32](statep, MemOrder.Acquire[]) != 0u32 {
+    if mem.atomicLoad[u32](statep, MemOrder.Acquire) != 0u32 {
       return pollReady;
     }
     // Acquire: when this sees the channel closed, everything the senders
     // did before it closed is seen too
-    imm tail = mem.atomicLoad[u64](&(*chan).tail as *u64, MemOrder.Acquire[]);
+    imm tail = mem.atomicLoad[u64](&(*chan).tail as *u64, MemOrder.Acquire);
     if chanPos(tail) == chanPos(head) {
       return if (tail & chanClosed) != 0u64 {pollClosed;} else {pollEmpty;};
     }
     // Claimed, and being written
     mut step = 0u32;
-    while mem.atomicLoad[u32](statep, MemOrder.Acquire[]) == 0u32 {
+    while mem.atomicLoad[u32](statep, MemOrder.Acquire) == 0u32 {
       step = chanBackoff(step);
     }
     pollReady;
@@ -2136,17 +2136,17 @@ pub struct Receiver[T Sendable] is Sendable {
     imm pos = chanPos(head);
     imm stampp = &(*cellAt[T](ring, pos & mask)).stamp as *u64;
     // Acquire: the sender's release store of the stamp brings its value
-    if mem.atomicLoad[u64](stampp, MemOrder.Acquire[]) == pos + 1u64 {
+    if mem.atomicLoad[u64](stampp, MemOrder.Acquire) == pos + 1u64 {
       return pollReady;
     }
     // Acquire, as the unbounded kind's poll
-    imm tail = mem.atomicLoad[u64](&(*chan).tail as *u64, MemOrder.Acquire[]);
+    imm tail = mem.atomicLoad[u64](&(*chan).tail as *u64, MemOrder.Acquire);
     if chanPos(tail) == pos {
       return if (tail & chanClosed) != 0u64 {pollClosed;} else {pollEmpty;};
     }
     // Claimed, and being written
     mut step = 0u32;
-    while mem.atomicLoad[u64](stampp, MemOrder.Acquire[]) != pos + 1u64 {
+    while mem.atomicLoad[u64](stampp, MemOrder.Acquire) != pos + 1u64 {
       step = chanBackoff(step);
     }
     pollReady;
@@ -2165,7 +2165,7 @@ pub struct Receiver[T Sendable] is Sendable {
     imm pos = chanPos(head);
     imm v = mem.readRaw[T](&(*cellAt[T](ring, pos & mask)).value as *T);
     head = head + chanOne;
-    mem.atomicStore[u64](&(*chan).taken as *u64, pos + 1u64, MemOrder.SeqCst[]);
+    mem.atomicStore[u64](&(*chan).taken as *u64, pos + 1u64, MemOrder.SeqCst);
     ringFreed[T](chan);
     v;
   }
@@ -2215,14 +2215,14 @@ pub struct Receiver[T Sendable] is Sendable {
     // SeqCst, the receiver's half of the Dekker pairing chanWake describes.
     // A claim or a close this reread does not see comes after it, and its
     // sender's load then sees the 1 and wakes this thread.
-    mem.atomicStore[u32](sleeping, 1u32, MemOrder.SeqCst[]);
-    imm tail = mem.atomicLoad[u64](&(*c).tail as *u64, MemOrder.SeqCst[]);
+    mem.atomicStore[u32](sleeping, 1u32, MemOrder.SeqCst);
+    imm tail = mem.atomicLoad[u64](&(*c).tail as *u64, MemOrder.SeqCst);
     if chanPos(tail) == chanPos(head) and (tail & chanClosed) == 0u64 {
       rawWait(sleeping, 1u32, timeoutNs);
     }
     // Relaxed: only this thread sets it to 1, and its next sleep sets it
     // again, SeqCst, before it rereads
-    mem.atomicStore[u32](sleeping, 0u32, MemOrder.Relaxed[]);
+    mem.atomicStore[u32](sleeping, 0u32, MemOrder.Relaxed);
   }
 
   // The receiver's going closes the channel, so each later send gets its
@@ -2240,20 +2240,20 @@ pub struct Receiver[T Sendable] is Sendable {
       return;
     }
     imm tailp = &(*c).tail as *u64;
-    mem.atomicOr[u64](tailp, chanClosed, MemOrder.Relaxed[]);
+    mem.atomicOr[u64](tailp, chanClosed, MemOrder.Relaxed);
     // No claim follows the close; one that came before it may still be
     // installing the next block (offset 32), after which the index is final
-    mut tail = mem.atomicLoad[u64](tailp, MemOrder.Acquire[]);
+    mut tail = mem.atomicLoad[u64](tailp, MemOrder.Acquire);
     mut step = 0u32;
     while chanOffset(tail) == blockCap {
       step = chanBackoff(step);
-      tail = mem.atomicLoad[u64](tailp, MemOrder.Acquire[]);
+      tail = mem.atomicLoad[u64](tailp, MemOrder.Acquire);
     }
     while chanPos(head) != chanPos(tail) {
       imm offset = chanOffset(head);
       imm slot = slotAt[T](block, offset);
       step = 0u32;
-      while mem.atomicLoad[u32](&(*slot).state as *u32, MemOrder.Acquire[]) == 0u32 {
+      while mem.atomicLoad[u32](&(*slot).state as *u32, MemOrder.Acquire) == 0u32 {
         step = chanBackoff(step);
       }
       mem.finalize[T](&(*slot).value as *T);
@@ -2294,8 +2294,8 @@ struct OneSlot[T] {
 // The last end to go frees the slot, finalizing a value never taken. AcqRel:
 // the other end's doings, the value written among them, come before it
 fn oneRelease[T](s *OneSlot[T]) {
-  if mem.atomicSub[u32](&(*s).sides as *u32, 1u32, MemOrder.AcqRel[]) == 1u32 {
-    if mem.atomicLoad[u32](&(*s).state as *u32, MemOrder.Acquire[]) == oneFull {
+  if mem.atomicSub[u32](&(*s).sides as *u32, 1u32, MemOrder.AcqRel) == 1u32 {
+    if mem.atomicLoad[u32](&(*s).state as *u32, MemOrder.Acquire) == oneFull {
       mem.finalize[T](&(*s).value as *T);
     }
     libc.free(s as *u8);
@@ -2322,25 +2322,25 @@ pub struct OneshotSender[T Sendable] is Sendable {
   slot *OneSlot[T];
   sent bool;
 
-  // Send v: None once it is there for the receiver; Some[v], handed back,
+  // Send v: None once it is there for the receiver; Some(v), handed back,
   // when a value was sent already or the receiver has gone. Never waits.
   pub fn send(self &mut, v T) Option[T] {
-    if sent or mem.atomicLoad[u32](&(*slot).gone as *u32, MemOrder.Acquire[]) != 0u32 {
-      return Some[T][v];
+    if sent or mem.atomicLoad[u32](&(*slot).gone as *u32, MemOrder.Acquire) != 0u32 {
+      return Some[T](v);
     }
     sent = true;
     mem.writeRaw[T](&(*slot).value as *T, v);
     imm st = &(*slot).state as *u32;
-    if mem.atomicSwap[u32](st, oneFull, MemOrder.AcqRel[]) == oneWaiting {
+    if mem.atomicSwap[u32](st, oneFull, MemOrder.AcqRel) == oneWaiting {
       rawWake(st);
     }
-    None[T][];
+    None;
   }
 
   // Whether a send would hand its value back: one was sent, or the
   // receiver has gone
   pub fn isClosed(self &) bool {
-    sent or mem.atomicLoad[u32](&(*slot).gone as *u32, MemOrder.Acquire[]) != 0u32;
+    sent or mem.atomicLoad[u32](&(*slot).gone as *u32, MemOrder.Acquire) != 0u32;
   }
 
   // A sender going without sending closes the channel: the receiver, asleep
@@ -2348,7 +2348,7 @@ pub struct OneshotSender[T Sendable] is Sendable {
   fn final(self &uni) {
     if not sent {
       imm st = &(*slot).state as *u32;
-      if mem.atomicSwap[u32](st, oneClosed, MemOrder.Release[]) == oneWaiting {
+      if mem.atomicSwap[u32](st, oneClosed, MemOrder.Release) == oneWaiting {
         rawWake(st);
       }
     }
@@ -2374,27 +2374,27 @@ pub struct OneshotReceiver[T Sendable] is Sendable {
 
   // The value if it is there now, never waiting
   pub fn tryRecv(self &mut) Option[T] {
-    if mem.atomicLoad[u32](&(*slot).state as *u32, MemOrder.Acquire[]) == oneFull {
-      return Some[T][self.take()];
+    if mem.atomicLoad[u32](&(*slot).state as *u32, MemOrder.Acquire) == oneFull {
+      return Some[T](self.take());
     }
-    None[T][];
+    None;
   }
 
   // Whether the value is there, to be taken
   pub fn isReady(self &) bool {
-    mem.atomicLoad[u32](&(*slot).state as *u32, MemOrder.Acquire[]) == oneFull;
+    mem.atomicLoad[u32](&(*slot).state as *u32, MemOrder.Acquire) == oneFull;
   }
 
   // Whether nothing more will come: the sender went without sending, or the
   // value was taken
   pub fn isClosed(self &) bool {
-    imm s = mem.atomicLoad[u32](&(*slot).state as *u32, MemOrder.Acquire[]);
+    imm s = mem.atomicLoad[u32](&(*slot).state as *u32, MemOrder.Acquire);
     s == oneClosed or s == oneTaken;
   }
 
   fn take(self &mut) T {
     imm v = mem.readRaw[T](&(*slot).value as *T);
-    mem.atomicStore[u32](&(*slot).state as *u32, oneTaken, MemOrder.Relaxed[]);
+    mem.atomicStore[u32](&(*slot).state as *u32, oneTaken, MemOrder.Relaxed);
     v;
   }
 
@@ -2402,17 +2402,17 @@ pub struct OneshotReceiver[T Sendable] is Sendable {
     imm st = &(*slot).state as *u32;
     imm start = if timeoutNs == forever {0u64;} else {nowNs();};
     while true {
-      imm s = mem.atomicLoad[u32](st, MemOrder.Acquire[]);
+      imm s = mem.atomicLoad[u32](st, MemOrder.Acquire);
       if s == oneFull {
-        return Some[T][self.take()];
+        return Some[T](self.take());
       }
       if s == oneClosed or s == oneTaken {
-        return None[T][];
+        return None;
       }
       if s == oneEmpty {
         mut seen = 0u32;
         mut done = false;
-        seen, done = mem.atomicCompareSwap[u32](st, oneEmpty, oneWaiting, MemOrder.Acquire[], MemOrder.Acquire[]);
+        seen, done = mem.atomicCompareSwap[u32](st, oneEmpty, oneWaiting, MemOrder.Acquire, MemOrder.Acquire);
         if not done {
           continue;
         }
@@ -2422,18 +2422,18 @@ pub struct OneshotReceiver[T Sendable] is Sendable {
       } else {
         imm waited = nowNs() - start;
         if waited >= timeoutNs {
-          return None[T][];
+          return None;
         }
         rawWait(st, oneWaiting, timeoutNs - waited);
       }
     }
-    None[T][];
+    None;
   }
 
   // The receiver's going: a later send hands its value back, and a value
   // sent and never taken is finalized by whichever end goes last
   fn final(self &uni) {
-    mem.atomicStore[u32](&(*slot).gone as *u32, 1u32, MemOrder.Release[]);
+    mem.atomicStore[u32](&(*slot).gone as *u32, 1u32, MemOrder.Release);
     oneRelease[T](slot);
   }
 }

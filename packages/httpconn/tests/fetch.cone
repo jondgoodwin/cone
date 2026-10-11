@@ -52,7 +52,7 @@ struct Server {
 fn answer(drv &mut Driver, req ReqId, target &Array[u8], method Method, echo &Array[u8], pool &Pool) {
   if target == "/hello" {
     drv.respond(req, ResponseHead.make(200u16), BodyLength.sized(u64.from(helloBody().len)));
-    if method != Method.Head[] {
+    if method != Method.Head {
       mut b = pool.mustTake(64usize);
       b.append(helloBody());
       drv.sendData(req, b);
@@ -90,7 +90,7 @@ fn main() i32 {
   mut drv = Driver.make(Config.make(), pool);
   mut port = 0u16;
   mut listener = ListenerId.none();
-  match drv.listen(&mut lp, SocketAddr.localhost(0u16), Sink.Here[tokServer]) {
+  match drv.listen(&mut lp, SocketAddr.localhost(0u16), Sink.Here(tokServer)) {
     case imm r Ok {listener = r;}
     case imm e Error {}
   }
@@ -99,13 +99,13 @@ fn main() i32 {
     case imm e Error {}
   }
   require(port != 0u16, "the server listens");
-  imm conn = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here[tokConn]);
+  imm conn = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here(tokConn));
 
   mut cl = new Client(0u16, String.empty(), Headers.empty(), 0u64, 0u64, 0u64, 0u64, 0u64, false, 0u64);
   mut sv = new Server(0u64, String.empty(), 0u64, 0u64, 0u64, 0u64, 0u64);
   // What the server is reading, to answer on its End
   mut svTarget = String.empty();
-  mut svMethod Method = Method.Get[];
+  mut svMethod Method = Method.Get;
   mut svReq = ReqId.none();
 
   // The client's requests, one after another
@@ -121,16 +121,16 @@ fn main() i32 {
       cl.trailers = Headers.empty();
       cl.status = 0u16;
       if step == 0u32 {
-        req = drv.request(&mut lp, conn, RequestHead.get("/hello", "127.0.0.1"), BodyLength.empty(), Sink.Here[tokReq]);
+        req = drv.request(&mut lp, conn, RequestHead.get("/hello", "127.0.0.1"), BodyLength.empty(), Sink.Here(tokReq));
       } elif step == 1u32 {
-        req = drv.request(&mut lp, conn, RequestHead.get("/chunked", "127.0.0.1"), BodyLength.empty(), Sink.Here[tokReq]);
+        req = drv.request(&mut lp, conn, RequestHead.get("/chunked", "127.0.0.1"), BodyLength.empty(), Sink.Here(tokReq));
       } elif step == 2u32 {
-        req = drv.request(&mut lp, conn, RequestHead.make("HEAD", "/hello", "127.0.0.1"), BodyLength.empty(), Sink.Here[tokReq]);
+        req = drv.request(&mut lp, conn, RequestHead.make("HEAD", "/hello", "127.0.0.1"), BodyLength.empty(), Sink.Here(tokReq));
       } elif step == 3u32 {
-        req = drv.request(&mut lp, conn, RequestHead.get("/nocontent", "127.0.0.1"), BodyLength.empty(), Sink.Here[tokReq]);
+        req = drv.request(&mut lp, conn, RequestHead.get("/nocontent", "127.0.0.1"), BodyLength.empty(), Sink.Here(tokReq));
       } else {
         req = drv.request(&mut lp, conn, RequestHead.make("POST", "/echo", "127.0.0.1"),
-          BodyLength.sized(u64.from(postBody().len)), Sink.Here[tokReq]);
+          BodyLength.sized(u64.from(postBody().len)), Sink.Here(tokReq));
       }
     }
     drv.poll(&mut lp, forever(), &mut events);
@@ -139,43 +139,43 @@ fn main() i32 {
       imm e = &mut events[k];
       k = k + 1usize;
       if e.token == tokServer {
-        if e.kind == EventKind.Accepted[] {sv.accepted = sv.accepted + 1u64;}
-        elif e.kind == EventKind.Request[] {
+        if e.kind == EventKind.Accepted {sv.accepted = sv.accepted + 1u64;}
+        elif e.kind == EventKind.Request {
           sv.requests = sv.requests + 1u64;
           svTarget = String.from(e.request.target.view());
           svMethod = e.request.method;
           svReq = e.req;
           sv.echo = String.empty();
-        } elif e.kind == EventKind.Data[] {
+        } elif e.kind == EventKind.Data {
           sv.echo.appendBytes(e.buf.view());
           drv.release(e.req, e.buf.len());
-        } elif e.kind == EventKind.End[] {
+        } elif e.kind == EventKind.End {
           answer(&mut drv, svReq, svTarget.view(), svMethod, sv.echo.view(), &pool);
-        } elif e.kind == EventKind.Done[] {
+        } elif e.kind == EventKind.Done {
           sv.dones = sv.dones + 1u64;
-        } elif e.kind == EventKind.Failed[] {
+        } elif e.kind == EventKind.Failed {
           sv.failures = sv.failures + 1u64;
-        } elif e.kind == EventKind.Closed[] {
+        } elif e.kind == EventKind.Closed {
           sv.closed = sv.closed + 1u64;
           if e.clean {sv.clean = sv.clean + 1u64;}
         }
       } elif e.token == tokConn {
-        if e.kind == EventKind.Connected[] {connected = true;}
-        elif e.kind == EventKind.Closed[] {
+        if e.kind == EventKind.Connected {connected = true;}
+        elif e.kind == EventKind.Closed {
           cl.closed = cl.closed + 1u64;
           cl.clean = e.clean;
         } else {cl.other = cl.other + 1u64;}
       } elif e.token == tokReq {
         if e.req != req {cl.other = cl.other + 1u64;}
-        if e.kind == EventKind.Response[] {
+        if e.kind == EventKind.Response {
           cl.status = e.response.status;
-        } elif e.kind == EventKind.Data[] {
+        } elif e.kind == EventKind.Data {
           cl.body.appendBytes(e.buf.view());
           drv.release(e.req, e.buf.len());
-        } elif e.kind == EventKind.End[] {
+        } elif e.kind == EventKind.End {
           cl.ends = cl.ends + 1u64;
           cl.trailers = e.trailers.copy();
-        } elif e.kind == EventKind.Writable[] {
+        } elif e.kind == EventKind.Writable {
           cl.writable = cl.writable + 1u64;
           mut b = pool.mustTake(postBody().len);
           b.append(postBody());
@@ -186,9 +186,9 @@ fn main() i32 {
           drv.finish(req);
         } elif e.isTerminal() {
           cl.finals = cl.finals + 1u64;
-          expectBool(e.kind == EventKind.Done[], true, "each request ends Done");
+          expectBool(e.kind == EventKind.Done, true, "each request ends Done");
           expectUInt(cl.ends, cl.finals, "End comes before Done");
-          if e.kind == EventKind.Done[] {cl.dones = cl.dones + 1u64;}
+          if e.kind == EventKind.Done {cl.dones = cl.dones + 1u64;}
           // What this step's request should have got
           if step == 0u32 {
             expectInt(i64.from(cl.status), 200i64, "GET /hello: 200");

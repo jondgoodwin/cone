@@ -101,8 +101,8 @@ fn blankRec(index u32, next u32) Rec {
     token: 0u64, timer: TimerId.none(),
     submitted: new Instant(), dequeued: new Instant(),
     status: 0u32, n: 0usize, code: 0u32,
-    buf: IoBuf.empty(), bytes: None[Bytes][], target: Target.Here[0u64],
-    group: None[CancelGroup][],
+    buf: IoBuf.empty(), bytes: None, target: Target.Here(0u64),
+    group: None,
     addr: new Array[u8, 96] <- fill 0u8);
 }
 
@@ -173,8 +173,8 @@ pub struct Loop {
     mut port = 0usize;
     mut code = 0u32;
     code, port = openPort();
-    if code != 0u32 {return Error[Loop, IoError][new IoError(code)];}
-    Ok[Loop, IoError][Loop.assemble(port)];
+    if code != 0u32 {return Error[Loop, IoError](new IoError(code));}
+    Ok[Loop, IoError](Loop.assemble(port));
   }
 
   // A new loop; a panic, at the caller's line, if there can be none. (It
@@ -250,21 +250,21 @@ pub struct Loop {
   // choose one, which localAddr tells
   pub fn listen(self &mut, addr SocketAddr, backlog i32 = 128i32) Result[Handle, IoError] {
     imm s = tcpSocket(addr.family());
-    if s == invalidHandle {return Error[Handle, IoError][new IoError(wsaError())];}
+    if s == invalidHandle {return Error[Handle, IoError](new IoError(wsaError()));}
     mut a = addr;
     // Winsock's listen, named through the module: Loop's own 'listen' is
     // the bare name here
     if bind(s, &mut a as *u8, a.size) != 0i32 or iocore.listen(s, backlog) != 0i32 {
       imm code = wsaError();
       closesocket(s);
-      return Error[Handle, IoError][new IoError(code)];
+      return Error[Handle, IoError](new IoError(code));
     }
     if CreateIoCompletionPort(s, portHandle, keyIo, 0u32) == 0usize {
       imm code = GetLastError();
       closesocket(s);
-      return Error[Handle, IoError][new IoError(code)];
+      return Error[Handle, IoError](new IoError(code));
     }
-    Ok[Handle, IoError][self.register(s, hListener, addr.family())];
+    Ok[Handle, IoError](self.register(s, hListener, addr.family()));
   }
 
   // A listening socket; a panic, at the caller's line, if there can be none
@@ -278,35 +278,35 @@ pub struct Loop {
   // The address a socket is bound to
   pub fn localAddr(self &, h Handle) Result[SocketAddr, IoError] {
     imm i = self.handleIndex(h);
-    if i == noEntry {return Error[SocketAddr, IoError][new IoError(errorInvalidHandle)];}
+    if i == noEntry {return Error[SocketAddr, IoError](new IoError(errorInvalidHandle));}
     imm e = handles[usize.from(i)];
     mut a = new SocketAddr(new Array[u8, 28] <- fill 0u8, 28i32);
     mut len = 28i32;
     if getsockname(e.raw, &mut a as *u8, &mut len) != 0i32 {
-      return Error[SocketAddr, IoError][new IoError(wsaError())];
+      return Error[SocketAddr, IoError](new IoError(wsaError()));
     }
     a.size = len;
-    Ok[SocketAddr, IoError][a];
+    Ok[SocketAddr, IoError](a);
   }
 
   // The address of a connected socket's peer
   pub fn peerAddr(self &, h Handle) Result[SocketAddr, IoError] {
     imm raw = self.rawOf(h, hSocket);
-    if raw == invalidHandle {return Error[SocketAddr, IoError][new IoError(errorInvalidHandle)];}
+    if raw == invalidHandle {return Error[SocketAddr, IoError](new IoError(errorInvalidHandle));}
     mut a = new SocketAddr(new Array[u8, 28] <- fill 0u8, 28i32);
     mut len = 28i32;
     if getpeername(raw, &mut a as *u8, &mut len) != 0i32 {
-      return Error[SocketAddr, IoError][new IoError(wsaError())];
+      return Error[SocketAddr, IoError](new IoError(wsaError()));
     }
     a.size = len;
-    Ok[SocketAddr, IoError][a];
+    Ok[SocketAddr, IoError](a);
   }
 
   // A file, for ReadAt and WriteAt
   pub fn openFile(self &mut, path &Path, access Access) Result[Handle, IoError] {
     imm text &Array[u8] = path.view();
     imm w = widen(text);
-    if w as usize == 0usize {return Error[Handle, IoError][new IoError(errorNoUnicodeTranslation)];}
+    if w as usize == 0usize {return Error[Handle, IoError](new IoError(errorNoUnicodeTranslation));}
     mut want = genericRead;
     mut how = openExisting;
     match access {
@@ -316,13 +316,13 @@ pub struct Loop {
     }
     imm h = CreateFileW(w, want, shareAll, null, how, flagOverlapped, 0usize);
     libc.free(w as *u8);
-    if h == invalidHandle {return Error[Handle, IoError][new IoError(GetLastError())];}
+    if h == invalidHandle {return Error[Handle, IoError](new IoError(GetLastError()));}
     if CreateIoCompletionPort(h, portHandle, keyIo, 0u32) == 0usize {
       imm code = GetLastError();
       CloseHandle(h);
-      return Error[Handle, IoError][new IoError(code)];
+      return Error[Handle, IoError](new IoError(code));
     }
-    Ok[Handle, IoError][self.register(h, hFile, 0u16)];
+    Ok[Handle, IoError](self.register(h, hFile, 0u16));
   }
 
   // Whether h names something this loop holds
@@ -491,12 +491,12 @@ pub struct Loop {
     mut b = IoBuf.empty();
     if not keep {
       b <=> r.buf;
-      r.bytes = None[Bytes][];
+      r.bytes = None;
     }
     if r.abandon {stats.promptTimeouts = stats.promptTimeouts + 1u64;}
-    mut t Target = Target.Here[0u64];
+    mut t Target = Target.Here(0u64);
     t <=> r.target;
-    mut g Option[CancelGroup] = None[CancelGroup][];
+    mut g Option[CancelGroup] = None;
     g <=> r.group;
     match g {
       case is None[CancelGroup] {}
@@ -614,7 +614,7 @@ pub struct Loop {
       mut back = blankCompletion();
       mut still = false;
       // Out of the list into a local, to be narrowed to its variant
-      mut to Target = Target.Here[0u64];
+      mut to Target = Target.Here(0u64);
       imm tslot = &mut heldT[k];
       to <=> *tslot;
       match &mut to {
@@ -660,14 +660,14 @@ pub struct Loop {
   // Start an operation; its answer goes where 'to' says (see the package's
   // header, OPERATIONS and TARGETS). Its id, for cancel
   pub fn submit(self &mut, op Op, to Target, file &Array[u8] = srcFile(), line u32 = srcLine()) OpId {
-    self.start(op, to, forever(), None[CancelGroup][], file, line);
+    self.start(op, to, forever(), None, file, line);
   }
 
   // Start an operation that answers TimedOut if it has not finished by
   // deadline (see the package's header, DEADLINES)
   pub fn submitBy(self &mut, op Op, to Target, deadline Instant,
       file &Array[u8] = srcFile(), line u32 = srcLine()) OpId {
-    self.start(op, to, deadline, None[CancelGroup][], file, line);
+    self.start(op, to, deadline, None, file, line);
   }
 
   // Start an operation in a cancel group: the group's cancel cancels it, and
@@ -676,18 +676,18 @@ pub struct Loop {
   // the group is cancelled already (see the package's header, CANCEL GROUPS)
   pub fn submitIn(self &mut, op Op, to Target, group CancelGroup, deadline Instant,
       file &Array[u8] = srcFile(), line u32 = srcLine()) OpId {
-    self.start(op, to, deadline, Some[CancelGroup][group], file, line);
+    self.start(op, to, deadline, Some[CancelGroup](group), file, line);
   }
 
   // A timer: it answers Done (n 0) at 'at', to its target, unless cancelled
   pub fn after(self &mut, at Instant, to Target, file &Array[u8] = srcFile(), line u32 = srcLine()) OpId {
-    self.startTimer(at, to, None[CancelGroup][], file, line);
+    self.startTimer(at, to, None, file, line);
   }
 
   // A timer in a cancel group: the group's cancel cancels it
   pub fn afterIn(self &mut, at Instant, to Target, group CancelGroup,
       file &Array[u8] = srcFile(), line u32 = srcLine()) OpId {
-    self.startTimer(at, to, Some[CancelGroup][group], file, line);
+    self.startTimer(at, to, Some[CancelGroup](group), file, line);
   }
 
   // An external operation: one ended by whoever holds the Completer this
@@ -696,14 +696,14 @@ pub struct Loop {
   // package's header, EXTERNAL OPERATIONS). buf is lent to the completer
   // (IoBuf.empty() for none) and comes back in the answer
   pub fn external(self &mut, to Target, buf IoBuf, file &Array[u8] = srcFile(), line u32 = srcLine()) Completer {
-    self.startExternal(to, buf, forever(), None[CancelGroup][], file, line);
+    self.startExternal(to, buf, forever(), None, file, line);
   }
 
   // An external operation in a cancel group, with a deadline (forever()
   // for the group's alone)
   pub fn externalIn(self &mut, to Target, buf IoBuf, group CancelGroup, deadline Instant,
       file &Array[u8] = srcFile(), line u32 = srcLine()) Completer {
-    self.startExternal(to, buf, deadline, Some[CancelGroup][group], file, line);
+    self.startExternal(to, buf, deadline, Some[CancelGroup](group), file, line);
   }
 
   fn startExternal(self &mut, to Target, buf IoBuf, deadline Instant, group Option[CancelGroup],
@@ -837,7 +837,7 @@ pub struct Loop {
       }
       case imm o SendBytes {
         r.kind = diag.kindSend;
-        r.bytes = Some[Bytes][o.bytes];
+        r.bytes = Some[Bytes](o.bytes);
         r.sock = o.sock;
       }
       case mut o ReadAt {
@@ -1147,7 +1147,7 @@ pub struct Loop {
       }
       mut b = IoBuf.empty();
       b <=> r.buf;
-      r.bytes = None[Bytes][];
+      r.bytes = None;
       stats.lateReturns = stats.lateReturns + 1u64;
       self.freeRecord(r.index);
       return;

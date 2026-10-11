@@ -147,7 +147,7 @@ void varDclNameRes(NameResState *pstate, VarDclNode *name) {
 // makeOwner();', read as Rust's '&*'). The initializer is an extending
 // position, and so, recursively, are the operand of an extending borrow or
 // recast and each element of an extending tuple, array or variant literal
-// ('Some[..]'), and the final expression of a block in one, and so of an
+// ('Some(..)'), and the final expression of a block in one, and so of an
 // 'if''s or a 'match''s arm, as Rust 2024 extends them; a place an extending
 // borrow reaches extends the value it is part of, or that its owner is
 // reached through. A call's arguments, a method's receiver, a block's other
@@ -401,7 +401,7 @@ static void varDclExtendExp(VarDclExtend *ext, INode **nodep) {
     case ArrayLitTag:
     case TypeLitTag:
     {
-        // A variant's literal ('Some[x]'), not a construction ('new H(x)')
+        // A variant's literal ('Some(x)'), not a construction ('new H(x)')
         if (node->tag == TypeLitTag && !(node->flags & FlagIndex))
             return;
         Nodes *elems = node->tag == VTupleTag ? ((TupleNode *)node)->elems

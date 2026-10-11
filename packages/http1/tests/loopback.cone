@@ -66,11 +66,11 @@ fn drive(lp &mut Loop, s &mut Side, pool &Pool) {
   while s.sendsOut < sendDepth {
     mut b = s.conn.pollTransmit(now);
     if b.len() == 0usize {break;}
-    lp.submit(Op.Send[s.sock, b], Target.Here[tokSend]);
+    lp.submit(Op.Send(s.sock, b), Target.Here(tokSend));
     s.sendsOut = s.sendsOut + 1u32;
   }
   if not s.recvOut and not s.conn.isClosed() and s.conn.readCredit() >= recvSize {
-    lp.submit(Op.Recv[s.sock, pool.mustTake(recvSize)], Target.Here[tokRecv]);
+    lp.submit(Op.Recv(s.sock, pool.mustTake(recvSize)), Target.Here(tokRecv));
     s.recvOut = true;
   }
   if s.conn.shouldClose() and s.sendsOut == 0u32 {
@@ -149,7 +149,7 @@ fn serve(a ServerArgs) ServerReport {
     case imm e Error {}
   }
   a.portTx.send(port);
-  lp.submit(Op.Accept[listener], Target.Here[tokConnect]);
+  lp.submit(Op.Accept(listener), Target.Here(tokConnect));
   mut s = new Side(Handle.none(), Connection.server(Config.make(), pool, Instant.now()), false, 0u32, false);
   mut ans = new Answer(0u32, 0u64, 0u64, IoBuf.empty());
   mut rep = new ServerReport(0u64, 0u64, 0u64);
@@ -206,7 +206,7 @@ fn respond(c &mut Connection, pool &Pool, ans &mut Answer, rep &mut ServerReport
         mut h = ResponseHead.make(200u16);
         h.headers.add("Date", calendar.httpDate(Timestamp.now()).view());
         h.headers.add("Server", "cone-http1-loopback");
-        if e.head.method == Method.Post[] {
+        if e.head.method == Method.Post {
           ans.route = 2u32;
           h.headers.add("Content-Type", "application/octet-stream");
           c.sendResponse(h, BodyLength.unsized());
@@ -300,7 +300,7 @@ fn client(a ClientArgs) ClientReport {
   mut lp = Loop.mustMake();
   mut rep = new ClientReport(Histogram.make(), Histogram.make(), 0u64, 0u64, 0u64, Duration.zero(),
     Duration.zero(), 0u64, 0u64, 0u64, 0usize, 0u64);
-  lp.submit(Op.Connect[SocketAddr.localhost(a.port)], Target.Here[tokConnect]);
+  lp.submit(Op.Connect(SocketAddr.localhost(a.port)), Target.Here(tokConnect));
   mut s = new Side(Handle.none(), Connection.client(Config.make(), pool, Instant.now()), false, 0u32, false);
   mut out = List[Completion].empty();
   mut phase = 0u32;          // 0 GETs, 1 POSTs, 2 the large GET, 3 done

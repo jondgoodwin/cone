@@ -112,7 +112,7 @@ pub struct Session is Move {
     // SNI carries a DNS name, never an address (RFC 6066)
     if not isAddress(serverName) {SSL_ctrl(s.ssl, ctrlSetTlsextHostname, 0i32, cname.ptr());}
     // The Roots verifier checks the name in OpenSSL; the others, themselves
-    if s.kind == VerifyKind.Roots[] {SSL_set1_host(s.ssl, cname);}
+    if s.kind == VerifyKind.Roots {SSL_set1_host(s.ssl, cname);}
     if s.resume {
       imm cached = (&mut *s.state).takeCached(serverName);
       if cached as usize != 0usize {
@@ -155,7 +155,7 @@ pub struct Session is Move {
     eof = true;
     mayRead = true;
     if phase == pHandshake or phase == pVerify {
-      self.fail(TlsErrorKind.Protocol[], 0u32, "the peer closed the connection during the handshake");
+      self.fail(TlsErrorKind.Protocol, 0u32, "the peer closed the connection during the handshake");
     }
   }
 
@@ -246,21 +246,21 @@ pub struct Session is Move {
   pub fn pollEvent(self &mut) SessionEvent {
     if (events & evHandshake) != 0u32 {
       events = events & ~evHandshake;
-      return SessionEvent.HandshakeDone[];
+      return SessionEvent.HandshakeDone;
     }
     if (events & evVerify) != 0u32 {
       events = events & ~evVerify;
-      return SessionEvent.VerifyNeeded[];
+      return SessionEvent.VerifyNeeded;
     }
     if (events & evClosed) != 0u32 {
       events = events & ~evClosed;
-      return SessionEvent.PeerClosed[];
+      return SessionEvent.PeerClosed;
     }
     if (events & evFailed) != 0u32 {
       events = events & ~evFailed;
-      return SessionEvent.Failed[];
+      return SessionEvent.Failed;
     }
-    SessionEvent.Nothing[];
+    SessionEvent.Nothing;
   }
 
   // The handshake is done: plaintext flows
@@ -287,7 +287,7 @@ pub struct Session is Move {
     SSL_get0_alpn_selected(ssl, &mut ap, &mut alen);
     mut alpn = String.empty();
     if alen > 0u32 {alpn.appendBytes(mem.sliceFromParts(ap, usize.from(alen)));}
-    imm v = if SSL_version(ssl) == tls13Version {TlsVersion.Tls13[];} else {TlsVersion.Tls12[];};
+    imm v = if SSL_version(ssl) == tls13Version {TlsVersion.Tls13;} else {TlsVersion.Tls12;};
     new TlsInfo(version: v, versionName: String.from(cText(SSL_get_version(ssl))),
       cipher: String.from(cText(SSL_CIPHER_get_name(SSL_get_current_cipher(ssl)))), alpn: alpn,
       resumed: SSL_session_reused(ssl) == 1i32, verifiedBy: kind, handshakeTime: handshakeTime,
@@ -317,7 +317,7 @@ pub struct Session is Move {
       imm e = SSL_get_error(ssl, r);
       if e == sslErrorWantRead or e == sslErrorWantWrite {return;}
       if e == sslErrorWantRetryVerify {
-        if kind == VerifyKind.Pinned[] {
+        if kind == VerifyKind.Pinned {
           self.checkPins();
           continue;
         }
@@ -356,7 +356,7 @@ pub struct Session is Move {
       return;
     }
     SSL_set_ex_data(ssl, 0i32, verdictRefused as *u8);
-    err = TlsError.make(TlsErrorKind.CertUntrusted[], 0u32, "no pinned key matches the server's certificate");
+    err = TlsError.make(TlsErrorKind.CertUntrusted, 0u32, "no pinned key matches the server's certificate");
     ownError = true;
   }
 
@@ -379,7 +379,7 @@ pub struct Session is Move {
       return;
     }
     if e == sslErrorSyscall and first == 0u32 {
-      self.fail(TlsErrorKind.Protocol[], 0u32, "the transport ended");
+      self.fail(TlsErrorKind.Protocol, 0u32, "the transport ended");
       return;
     }
     if e != sslErrorSsl {
@@ -389,7 +389,7 @@ pub struct Session is Move {
         d.append(": ");
         d.append(text.view());
       }
-      self.fail(TlsErrorKind.Backend[], u32.from(e), d.view());
+      self.fail(TlsErrorKind.Backend, u32.from(e), d.view());
       return;
     }
     imm reason = errReason(first);
@@ -411,22 +411,22 @@ pub struct Session is Move {
         d.append(" (");
         d.appendUInt(u64.from(alert));
         d.append(")");
-        mut k TlsErrorKind = TlsErrorKind.Alert[];
-        if alert == 70u32 {k = TlsErrorKind.ProtocolVersion[];}
-        elif alert == 120u32 {k = TlsErrorKind.NoAlpnMatch[];}
+        mut k TlsErrorKind = TlsErrorKind.Alert;
+        if alert == 70u32 {k = TlsErrorKind.ProtocolVersion;}
+        elif alert == 120u32 {k = TlsErrorKind.NoAlpnMatch;}
         self.fail(k, alert, d.view());
         return;
       }
       if reason == reasonUnsupportedProtocol or reason == reasonNoProtocolsAvailable {
-        self.fail(TlsErrorKind.ProtocolVersion[], first, text.view());
+        self.fail(TlsErrorKind.ProtocolVersion, first, text.view());
         return;
       }
       if reason == reasonNoApplicationProtocol {
-        self.fail(TlsErrorKind.NoAlpnMatch[], first, text.view());
+        self.fail(TlsErrorKind.NoAlpnMatch, first, text.view());
         return;
       }
     }
-    self.fail(TlsErrorKind.Protocol[], first, text.view());
+    self.fail(TlsErrorKind.Protocol, first, text.view());
   }
 
   // ---------------------------------------------------------------------------
@@ -449,11 +449,11 @@ pub struct Session is Move {
       case is None[IoBuf] {}
     }
     if b.capacity() < job.len() {
-      self.fail(TlsErrorKind.Backend[], 0u32, "the buffer pool refused the verifier's buffer");
-      return Op.Call[lane, &refusedWork, 0u64, b];
+      self.fail(TlsErrorKind.Backend, 0u32, "the buffer pool refused the verifier's buffer");
+      return Op.Call(lane, &refusedWork, 0u64, b);
     }
     b.append(job.view());
-    Op.Call[lane, &verifyWork, if offline {1u64;} else {0u64;}, b];
+    Op.Call(lane, &verifyWork, if offline {1u64;} else {0u64;}, b);
   }
 
   // The OS's verifier's answer, from the pool
@@ -594,12 +594,12 @@ fn isAddress(name &str) bool {
 
 // The kind of a certificate error OpenSSL's verify result names
 fn certKindOfVerifyResult(vr i32) TlsErrorKind {
-  if vr == x509Expired or vr == x509NotYetValid {TlsErrorKind.CertExpired[];}
-  elif vr == x509HostnameMismatch or vr == x509IpMismatch {TlsErrorKind.CertNameMismatch[];}
+  if vr == x509Expired or vr == x509NotYetValid {TlsErrorKind.CertExpired;}
+  elif vr == x509HostnameMismatch or vr == x509IpMismatch {TlsErrorKind.CertNameMismatch;}
   elif vr == x509UnableToGetIssuer or vr == x509UnableToGetIssuerLocally or vr == x509DepthZeroSelfSigned or
-    vr == x509SelfSignedInChain {TlsErrorKind.CertUntrusted[];}
-  elif vr == x509Revoked {TlsErrorKind.CertRevoked[];}
-  else {TlsErrorKind.CertOther[];}
+    vr == x509SelfSignedInChain {TlsErrorKind.CertUntrusted;}
+  elif vr == x509Revoked {TlsErrorKind.CertRevoked;}
+  else {TlsErrorKind.CertOther;}
 }
 
 // The SHA-256 of a certificate's public key, its DER SubjectPublicKeyInfo

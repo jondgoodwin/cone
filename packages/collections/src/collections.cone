@@ -156,23 +156,23 @@ pub struct List[T] is ShapeChanging, Sendable {
 
   // Move the last value out, or None when it is empty
   pub fn pop(self &mut) Option[T] {
-    if used == 0usize { return None[T][]; }
+    if used == 0usize { return None; }
     used = used - 1usize;
-    Some[T][mem.readRaw(ptr + used)];
+    Some[T](mem.readRaw(ptr + used));
   }
 
   // A borrow of the last value, for reading it now, or None when it is empty:
   // what 'pop' would move out, left where it is (the Stack trait's 'peek')
   pub fn peek(self &) Option[&T] {
-    if used == 0usize { return None[&T][]; }
-    Some[&T][(ptr + (used - 1usize)) as &T];
+    if used == 0usize { return None; }
+    Some[&T]((ptr + (used - 1usize)) as &T);
   }
 
   // A borrow of the value at index, or None when index is out of range: the
   // lookup that does not panic (the Indexed trait's 'get')
   pub fn get(self &, index usize) Option[&T] {
-    if index >= used { return None[&T][]; }
-    Some[&T][(ptr + index) as &T];
+    if index >= used { return None; }
+    Some[&T]((ptr + index) as &T);
   }
 
   // A borrow of the value at index, for reading it now. Each of these four
@@ -327,10 +327,10 @@ pub struct List[T] is ShapeChanging, Sendable {
     mut seen = 0usize;
     mut pushed = false;
     while !pushed {
-      imm head = mem.atomicLoad[usize](headp, MemOrder.Acquire[]);
+      imm head = mem.atomicLoad[usize](headp, MemOrder.Acquire);
       (*node).next = head;
       seen, pushed = mem.atomicCompareSwap[usize](headp, head, node as usize,
-        MemOrder.AcqRel[], MemOrder.Relaxed[]);
+        MemOrder.AcqRel, MemOrder.Relaxed);
     }
   }
 
@@ -462,10 +462,10 @@ pub struct ListIter['a, T] is Iterator[&T] {
   pos usize;
 
   pub fn next(self &mut) Option[&'a T] {
-    if pos >= end { return None[&T][]; }
+    if pos >= end { return None; }
     imm i = pos;
     pos = i + 1usize;
-    Some[&T][(ptr + i) as &T];
+    Some[&T]((ptr + i) as &T);
   }
 
   // How many values are left, the one at k of them, and the cursors over those
@@ -499,10 +499,10 @@ pub struct ListDrain['a, T] is Iterator[T] {
   pos usize;
 
   pub fn next(self &mut) Option[T] {
-    if pos >= end { return None[T][]; }
+    if pos >= end { return None; }
     imm i = pos;
     pos = i + 1usize;
-    Some[T][mem.readRaw(ptr + i)];
+    Some[T](mem.readRaw(ptr + i));
   }
 
   fn final(self &uni) {
@@ -595,37 +595,37 @@ pub struct Deque[T] is ShapeChanging, Sendable {
 
   // Move the last value out, or None when it is empty
   pub fn pop(self &mut) Option[T] {
-    if used == 0usize { return None[T][]; }
+    if used == 0usize { return None; }
     used = used - 1usize;
-    Some[T][mem.readRaw(ptr + self.slot(used))];
+    Some[T](mem.readRaw(ptr + self.slot(used)));
   }
 
   // Move the first value out, or None when it is empty
   pub fn popFront(self &mut) Option[T] {
-    if used == 0usize { return None[T][]; }
+    if used == 0usize { return None; }
     imm slot = head;
     head = if head + 1usize == cap {0usize;} else {head + 1usize;};
     used = used - 1usize;
-    Some[T][mem.readRaw(ptr + slot)];
+    Some[T](mem.readRaw(ptr + slot));
   }
 
   // A borrow of the last value, for reading it now, or None when it is empty
   pub fn peek(self &) Option[&T] {
-    if used == 0usize { return None[&T][]; }
-    Some[&T][(ptr + self.slot(used - 1usize)) as &T];
+    if used == 0usize { return None; }
+    Some[&T]((ptr + self.slot(used - 1usize)) as &T);
   }
 
   // A borrow of the first value, or None when it is empty
   pub fn peekFront(self &) Option[&T] {
-    if used == 0usize { return None[&T][]; }
-    Some[&T][(ptr + head) as &T];
+    if used == 0usize { return None; }
+    Some[&T]((ptr + head) as &T);
   }
 
   // A borrow of the value at position index from the front, or None when index
   // is out of range
   pub fn get(self &, index usize) Option[&T] {
-    if index >= used { return None[&T][]; }
-    Some[&T][(ptr + self.slot(index)) as &T];
+    if index >= used { return None; }
+    Some[&T]((ptr + self.slot(index)) as &T);
   }
 
   // A borrow of the value at position index from the front, for reading it
@@ -704,10 +704,10 @@ pub struct DequeItems['a, T] is Iterator[&T] {
   pos usize;
 
   pub fn next(self &mut) Option[&'a T] {
-    if pos >= deque.used { return None[&T][]; }
+    if pos >= deque.used { return None; }
     imm i = pos;
     pos = i + 1usize;
-    Some[&T][(deque.ptr + deque.slot(i)) as &T];
+    Some[&T]((deque.ptr + deque.slot(i)) as &T);
   }
 }
 
@@ -1288,10 +1288,10 @@ pub struct Dict[K Hash, V] is ShapeChanging, Sendable {
       mem.finalize(&slot.key as *K);
       imm old = mem.readRaw(&slot.value as *V);
       mem.writeRaw(slots + found, new DictEntry[K, V](key, value));
-      return Some[V][old];
+      return Some[V](old);
     }
     self.fill(self.roomFor(hash, found), hash, key, value);
-    None[V][];
+    None;
   }
 
   // 'dict <- key: value' is 'dict.insert(key, value)': a later value for a key
@@ -1332,25 +1332,25 @@ pub struct Dict[K Hash, V] is ShapeChanging, Sendable {
   // A borrow of key's value, for reading it now, or None
   pub fn getKey overload get(self &, key &K) Option[&V] {
     imm i = self.find(self.hashOf(key), key);
-    if i == noBucket { return None[&V][]; }
-    Some[&V][&slots[i].value];
+    if i == noBucket { return None; }
+    Some[&V](&slots[i].value);
   }
   pub fn getText overload get(self &, key &str) Option[&V] where K is String or K is So[str] or K is Rc[str] {
     imm i = self.find(self.hashOf(key), key);
-    if i == noBucket { return None[&V][]; }
-    Some[&V][&slots[i].value];
+    if i == noBucket { return None; }
+    Some[&V](&slots[i].value);
   }
 
   // A borrow of key's value for changing it in place, or None
   pub fn getMutKey overload getMut(self &mut, key &K) Option[&mut V] {
     imm i = self.find(self.hashOf(key), key);
-    if i == noBucket { return None[&mut V][]; }
-    Some[&mut V][&mut slots[i].value];
+    if i == noBucket { return None; }
+    Some[&mut V](&mut slots[i].value);
   }
   pub fn getMutText overload getMut(self &mut, key &str) Option[&mut V] where K is String or K is So[str] or K is Rc[str] {
     imm i = self.find(self.hashOf(key), key);
-    if i == noBucket { return None[&mut V][]; }
-    Some[&mut V][&mut slots[i].value];
+    if i == noBucket { return None; }
+    Some[&mut V](&mut slots[i].value);
   }
 
   // A copy of key's value, or None. This is the lookup that answers without a
@@ -1358,13 +1358,13 @@ pub struct Dict[K Hash, V] is ShapeChanging, Sendable {
   // only where V copies: a number, an id, a reference-counted owner
   pub fn getCopyKey overload getCopy(self &, key &K) Option[V] where V is Copy {
     imm i = self.find(self.hashOf(key), key);
-    if i == noBucket { return None[V][]; }
-    Some[V][slots[i].value];
+    if i == noBucket { return None; }
+    Some[V](slots[i].value);
   }
   pub fn getCopyText overload getCopy(self &, key &str) Option[V] where (K is String or K is So[str] or K is Rc[str]) and V is Copy {
     imm i = self.find(self.hashOf(key), key);
-    if i == noBucket { return None[V][]; }
-    Some[V][slots[i].value];
+    if i == noBucket { return None; }
+    Some[V](slots[i].value);
   }
 
   // 'dict[&key]': a borrow of key's value. A key it does not hold is a program
@@ -1397,12 +1397,12 @@ pub struct Dict[K Hash, V] is ShapeChanging, Sendable {
   // holds no such key
   pub fn removeKey overload remove(self &mut, key &K) Option[V] {
     imm i = self.find(self.hashOf(key), key);
-    if i == noBucket { return None[V][]; }
+    if i == noBucket { return None; }
     self.take(i);
   }
   pub fn removeText overload remove(self &mut, key &str) Option[V] where K is String or K is So[str] or K is Rc[str] {
     imm i = self.find(self.hashOf(key), key);
-    if i == noBucket { return None[V][]; }
+    if i == noBucket { return None; }
     self.take(i);
   }
 
@@ -1524,7 +1524,7 @@ pub struct Dict[K Hash, V] is ShapeChanging, Sendable {
     // field, and the key is finalized where it sits
     imm slot = (slots + i) as &mut DictEntry[K, V];
     mem.finalize(&slot.key as *K);
-    Some[V][mem.readRaw(&slot.value as *V)];
+    Some[V](mem.readRaw(&slot.value as *V));
   }
 
   // A new block of this many buckets, every entry moved into it by its hash
@@ -1589,9 +1589,9 @@ pub struct DictKeys['a, K Hash, V] is Iterator[&K] {
 
   pub fn next(self &mut) Option[&'a K] {
     imm i = nextFull(dict.ctrl, dict.mask, pos);
-    if i == noBucket { pos = dict.mask + 1usize; return None[&K][]; }
+    if i == noBucket { pos = dict.mask + 1usize; return None; }
     pos = i + 1usize;
-    Some[&K][&dict.slots[i].key];
+    Some[&K](&dict.slots[i].key);
   }
 }
 
@@ -1602,9 +1602,9 @@ pub struct DictValues['a, K Hash, V] is Iterator[&V] {
 
   pub fn next(self &mut) Option[&'a V] {
     imm i = nextFull(dict.ctrl, dict.mask, pos);
-    if i == noBucket { pos = dict.mask + 1usize; return None[&V][]; }
+    if i == noBucket { pos = dict.mask + 1usize; return None; }
     pos = i + 1usize;
-    Some[&V][&dict.slots[i].value];
+    Some[&V](&dict.slots[i].value);
   }
 }
 
@@ -1615,9 +1615,9 @@ pub struct DictEntries['a, K Hash, V] is Iterator[&DictEntry[K, V]] {
 
   pub fn next(self &mut) Option[&'a DictEntry[K, V]] {
     imm i = nextFull(dict.ctrl, dict.mask, pos);
-    if i == noBucket { pos = dict.mask + 1usize; return None[&DictEntry[K, V]][]; }
+    if i == noBucket { pos = dict.mask + 1usize; return None; }
     pos = i + 1usize;
-    Some[&DictEntry[K, V]][(dict.slots + i) as &DictEntry[K, V]];
+    Some[&DictEntry[K, V]]((dict.slots + i) as &DictEntry[K, V]);
   }
 }
 
@@ -1629,9 +1629,9 @@ pub struct DictPairs['a, K Hash, V] is Iterator[(&K, &V)] {
 
   pub fn next(self &mut) Option[(&'a K, &'a V)] {
     imm i = nextFull(dict.ctrl, dict.mask, pos);
-    if i == noBucket { pos = dict.mask + 1usize; return None[(&K, &V)][]; }
+    if i == noBucket { pos = dict.mask + 1usize; return None; }
     pos = i + 1usize;
-    Some[(&K, &V)][(&dict.slots[i].key, &dict.slots[i].value)];
+    Some[(&K, &V)]((&dict.slots[i].key, &dict.slots[i].value));
   }
 }
 
@@ -1714,10 +1714,10 @@ pub struct OrderedDict[K Hash, V] is ShapeChanging, Sendable {
       mem.finalize(&slot.key as *K);
       imm old = mem.readRaw(&slot.value as *V);
       mem.writeRaw(at, new OrderedEntry[K, V](hash, key, value));
-      return Some[V][old];
+      return Some[V](old);
     }
     self.fill(self.roomFor(hash, found), hash, key, value);
-    None[V][];
+    None;
   }
 
   // 'dict <- key: value' is 'dict.insert(key, value)'
@@ -1746,38 +1746,38 @@ pub struct OrderedDict[K Hash, V] is ShapeChanging, Sendable {
   // A borrow of key's value, for reading it now, or None
   pub fn getKey overload get(self &, key &K) Option[&V] {
     imm b = self.find(self.hashOf(key), key);
-    if b == noBucket { return None[&V][]; }
-    Some[&V][&dense[self.posOf(b)].value];
+    if b == noBucket { return None; }
+    Some[&V](&dense[self.posOf(b)].value);
   }
   pub fn getText overload get(self &, key &str) Option[&V] where K is String or K is So[str] or K is Rc[str] {
     imm b = self.find(self.hashOf(key), key);
-    if b == noBucket { return None[&V][]; }
-    Some[&V][&dense[self.posOf(b)].value];
+    if b == noBucket { return None; }
+    Some[&V](&dense[self.posOf(b)].value);
   }
 
   // A borrow of key's value for changing it in place, or None
   pub fn getMutKey overload getMut(self &mut, key &K) Option[&mut V] {
     imm b = self.find(self.hashOf(key), key);
-    if b == noBucket { return None[&mut V][]; }
-    Some[&mut V][&mut dense[self.posOf(b)].value];
+    if b == noBucket { return None; }
+    Some[&mut V](&mut dense[self.posOf(b)].value);
   }
   pub fn getMutText overload getMut(self &mut, key &str) Option[&mut V] where K is String or K is So[str] or K is Rc[str] {
     imm b = self.find(self.hashOf(key), key);
-    if b == noBucket { return None[&mut V][]; }
-    Some[&mut V][&mut dense[self.posOf(b)].value];
+    if b == noBucket { return None; }
+    Some[&mut V](&mut dense[self.posOf(b)].value);
   }
 
   // A copy of key's value, or None: the lookup that holds no borrow into the
   // table, so it works through a shared owner, where V copies
   pub fn getCopyKey overload getCopy(self &, key &K) Option[V] where V is Copy {
     imm b = self.find(self.hashOf(key), key);
-    if b == noBucket { return None[V][]; }
-    Some[V][dense[self.posOf(b)].value];
+    if b == noBucket { return None; }
+    Some[V](dense[self.posOf(b)].value);
   }
   pub fn getCopyText overload getCopy(self &, key &str) Option[V] where (K is String or K is So[str] or K is Rc[str]) and V is Copy {
     imm b = self.find(self.hashOf(key), key);
-    if b == noBucket { return None[V][]; }
-    Some[V][dense[self.posOf(b)].value];
+    if b == noBucket { return None; }
+    Some[V](dense[self.posOf(b)].value);
   }
 
   // 'dict[&key]': a borrow of key's value; a key it does not hold is a panic
@@ -1810,13 +1810,13 @@ pub struct OrderedDict[K Hash, V] is ShapeChanging, Sendable {
   // others keep their order
   pub fn removeKey overload remove(self &mut, key &K) Option[V] {
     imm b = self.find(self.hashOf(key), key);
-    if b == noBucket { return None[V][]; }
-    Some[V][self.takeShift(b)];
+    if b == noBucket { return None; }
+    Some[V](self.takeShift(b));
   }
   pub fn removeText overload remove(self &mut, key &str) Option[V] where K is String or K is So[str] or K is Rc[str] {
     imm b = self.find(self.hashOf(key), key);
-    if b == noBucket { return None[V][]; }
-    Some[V][self.takeShift(b)];
+    if b == noBucket { return None; }
+    Some[V](self.takeShift(b));
   }
 
   // The same, but the last entry takes the removed one's place instead of the
@@ -1824,13 +1824,13 @@ pub struct OrderedDict[K Hash, V] is ShapeChanging, Sendable {
   // insertion
   pub fn swapRemoveKey overload swapRemove(self &mut, key &K) Option[V] {
     imm b = self.find(self.hashOf(key), key);
-    if b == noBucket { return None[V][]; }
-    Some[V][self.takeSwap(b)];
+    if b == noBucket { return None; }
+    Some[V](self.takeSwap(b));
   }
   pub fn swapRemoveText overload swapRemove(self &mut, key &str) Option[V] where K is String or K is So[str] or K is Rc[str] {
     imm b = self.find(self.hashOf(key), key);
-    if b == noBucket { return None[V][]; }
-    Some[V][self.takeSwap(b)];
+    if b == noBucket { return None; }
+    Some[V](self.takeSwap(b));
   }
 
   // Finalize every key and value, first inserted to last, and keep the blocks:
@@ -2074,10 +2074,10 @@ pub struct OrderedKeys['a, K Hash, V] is Iterator[&K] {
   pos usize;
 
   pub fn next(self &mut) Option[&'a K] {
-    if pos >= dict.count { return None[&K][]; }
+    if pos >= dict.count { return None; }
     imm i = pos;
     pos = i + 1usize;
-    Some[&K][&dict.dense[i].key];
+    Some[&K](&dict.dense[i].key);
   }
 }
 
@@ -2087,10 +2087,10 @@ pub struct OrderedValues['a, K Hash, V] is Iterator[&V] {
   pos usize;
 
   pub fn next(self &mut) Option[&'a V] {
-    if pos >= dict.count { return None[&V][]; }
+    if pos >= dict.count { return None; }
     imm i = pos;
     pos = i + 1usize;
-    Some[&V][&dict.dense[i].value];
+    Some[&V](&dict.dense[i].value);
   }
 }
 
@@ -2101,10 +2101,10 @@ pub struct OrderedEntries['a, K Hash, V] is Iterator[&OrderedEntry[K, V]] {
   pos usize;
 
   pub fn next(self &mut) Option[&'a OrderedEntry[K, V]] {
-    if pos >= dict.count { return None[&OrderedEntry[K, V]][]; }
+    if pos >= dict.count { return None; }
     imm i = pos;
     pos = i + 1usize;
-    Some[&OrderedEntry[K, V]][(dict.dense +i) as &OrderedEntry[K, V]];
+    Some[&OrderedEntry[K, V]]((dict.dense +i) as &OrderedEntry[K, V]);
   }
 }
 
@@ -2115,10 +2115,10 @@ pub struct OrderedPairs['a, K Hash, V] is Iterator[(&K, &V)] {
   pos usize;
 
   pub fn next(self &mut) Option[(&'a K, &'a V)] {
-    if pos >= dict.count { return None[(&K, &V)][]; }
+    if pos >= dict.count { return None; }
     imm i = pos;
     pos = i + 1usize;
-    Some[(&K, &V)][(&dict.dense[i].key, &dict.dense[i].value)];
+    Some[(&K, &V)]((&dict.dense[i].key, &dict.dense[i].value));
   }
 }
 
@@ -2292,10 +2292,10 @@ pub fn bytesCompare(a &Array[u8], b &Array[u8]) i32 {
 pub fn bytesFind(hay &Array[u8], needle &Array[u8], from usize) Option[usize] {
   mut i = from;
   while i + needle.len <= hay.len {
-    if &hay[i..<i + needle.len] == needle { return Some[usize][i]; }
+    if &hay[i..<i + needle.len] == needle { return Some[usize](i); }
     i = i + 1usize;
   }
-  None[usize][];
+  None;
 }
 
 // A space, tab, carriage return or line feed
@@ -2323,11 +2323,11 @@ pub fn parseInt(s &str) Option[i64] {
   imm limit = if negative {9223372036854775808u64;} else {9223372036854775807u64;};
   match digitsValue(&text[start..], limit) {
     case imm m Some {
-      if not negative {Some[i64][i64.from(m)];}
-      else if m == 0u64 {Some[i64][0i64];}
-      else {Some[i64][-1i64 - i64.from(m - 1u64)];}
+      if not negative {Some[i64](i64.from(m));}
+      else if m == 0u64 {Some[i64](0i64);}
+      else {Some[i64](-1i64 - i64.from(m - 1u64));}
     }
-    case is None {None[i64][];}
+    case is None {None;}
   }
 }
 
@@ -2343,19 +2343,19 @@ pub fn parseUInt(s &str) Option[u64] {
 // The value of one or more decimal digits and nothing else, or None when
 // there are none, when anything else is there, or when it is beyond limit
 fn digitsValue(digits &Array[u8], limit u64) Option[u64] {
-  if digits.len == 0usize { return None[u64][]; }
+  if digits.len == 0usize { return None; }
   mut n = 0u64;
   mut i = 0usize;
   while i < digits.len {
     imm c = digits[i];
-    if c < '0' or c > '9' { return None[u64][]; }
+    if c < '0' or c > '9' { return None; }
     imm d = u64.from(c - '0');
     // Whether n * 10 + d would pass limit, asked without overflowing
-    if n > (limit - d) / 10u64 { return None[u64][]; }
+    if n > (limit - d) / 10u64 { return None; }
     n = n * 10u64 + d;
     i = i + 1usize;
   }
-  Some[u64][n];
+  Some[u64](n);
 }
 
 // -------- program errors --------

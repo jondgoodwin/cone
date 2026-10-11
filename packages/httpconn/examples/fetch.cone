@@ -50,7 +50,7 @@ fn answer(drv &mut Driver, e &mut Event, pool &Pool) {
 
 fn listenOn(drv &mut Driver, lp &mut Loop) u16 {
   mut port = 0u16;
-  match drv.listen(lp, SocketAddr.localhost(0u16), Sink.Here[tokServer]) {
+  match drv.listen(lp, SocketAddr.localhost(0u16), Sink.Here(tokServer)) {
     case imm r Ok {
       match drv.localAddr(lp, r) {
         case imm a Ok {port = a.port();}
@@ -73,14 +73,14 @@ fn printTiming(t &Timing) {
 // Fetch each target in turn on one connection, printing what came; the
 // driver may be serving too (serveHere)
 fn fetchAll(drv &mut Driver, lp &mut Loop, pool &Pool, port u16, targets &Array[&str], serveHere bool) {
-  imm conn = drv.connect(lp, "127.0.0.1", port, Sink.Here[tokConn]);
+  imm conn = drv.connect(lp, "127.0.0.1", port, Sink.Here(tokConn));
   mut next = 0usize;
   mut inFlight = false;
   mut body = String.empty();
   mut events = List[Event].empty();
   while next < targets.len or inFlight {
     if not inFlight and drv.isIdle(conn) {
-      drv.request(lp, conn, RequestHead.get(targets[next], "127.0.0.1"), BodyLength.empty(), Sink.Here[10u64 + u64.from(next)]);
+      drv.request(lp, conn, RequestHead.get(targets[next], "127.0.0.1"), BodyLength.empty(), Sink.Here(10u64 + u64.from(next)));
       printStr("GET ");
       printStr(targets[next]);
       printStr("\n");
@@ -93,34 +93,34 @@ fn fetchAll(drv &mut Driver, lp &mut Loop, pool &Pool, port u16, targets &Array[
       imm e = &mut events[k];
       k = k + 1usize;
       if e.token == tokServer {
-        if serveHere and e.kind == EventKind.Request[] {answer(drv, e, pool);}
+        if serveHere and e.kind == EventKind.Request {answer(drv, e, pool);}
       } elif e.token == tokConn {
-        if e.kind == EventKind.Connected[] {
+        if e.kind == EventKind.Connected {
           printStr("connected to ");
           printStr(e.peer.text().view());
           printStr("\n");
-        } elif e.kind == EventKind.Closed[] and not e.clean {
+        } elif e.kind == EventKind.Closed and not e.clean {
           printStr("connection failed: ");
           printStr(e.failure.message().view());
           printStr("\n");
           return;
         }
-      } elif e.kind == EventKind.Response[] {
+      } elif e.kind == EventKind.Response {
         printStr("  ");
         printUInt(u64.from(e.response.status));
         printStr(" ");
         printStr(reasonPhrase(e.response.status));
         printStr("\n");
-      } elif e.kind == EventKind.Data[] {
+      } elif e.kind == EventKind.Data {
         body.appendBytes(e.buf.view());
         drv.release(e.req, e.buf.len());
-      } elif e.kind == EventKind.Done[] {
+      } elif e.kind == EventKind.Done {
         printStr("  ");
         printStr(body.view());
         printTiming(&e.timing);
         body.clear();
         inFlight = false;
-      } elif e.kind == EventKind.Failed[] {
+      } elif e.kind == EventKind.Failed {
         printStr("  failed: ");
         printStr(e.failure.message().view());
         printStr("\n");
@@ -137,7 +137,7 @@ fn fetchAll(drv &mut Driver, lp &mut Loop, pool &Pool, port u16, targets &Array[
     mut k = 0usize;
     while k < events.len() {
       imm e = &mut events[k];
-      if serveHere and e.token == tokServer and e.kind == EventKind.Request[] {answer(drv, e, pool);}
+      if serveHere and e.token == tokServer and e.kind == EventKind.Request {answer(drv, e, pool);}
       k = k + 1usize;
     }
     events.clear();
@@ -167,7 +167,7 @@ fn serve(a ServerArgs) u64 {
     mut k = 0usize;
     while k < events.len() {
       imm e = &mut events[k];
-      if e.kind == EventKind.Request[] {
+      if e.kind == EventKind.Request {
         answer(&mut drv, e, &pool);
         served = served + 1u64;
       }
@@ -197,7 +197,7 @@ fn printer(rx Receiver[Event]) u64 {
         n = n + 1u64;
         printStr("  [printer thread] ");
         printStr(eventName(e.kind));
-        if e.kind == EventKind.Data[] {
+        if e.kind == EventKind.Data {
           printStr(": ");
           printStr(e.buf.view() as &str);
         } else {
@@ -244,10 +244,10 @@ fn main() {
     mut rx Receiver[Event];
     tx, rx = Channel[Event].bounded(16u64);
     imm pr = thread.start(rx, &printer);
-    imm conn = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here[tokConn]);
+    imm conn = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here(tokConn));
     printStr("GET /about, its events to a channel\n");
     imm before = finals(&drv);
-    drv.request(&mut lp, conn, RequestHead.get("/about", "127.0.0.1"), BodyLength.empty(), Sink.Chan[50u64, tx]);
+    drv.request(&mut lp, conn, RequestHead.get("/about", "127.0.0.1"), BodyLength.empty(), Sink.Chan(50u64, tx));
     mut events = List[Event].empty();
     imm until = Instant.now() + Duration.fromSeconds(3i64);
     // Driven until its final answer has gone into the channel

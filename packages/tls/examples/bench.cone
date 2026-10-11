@@ -246,7 +246,7 @@ fn sendBig(drv &mut Driver, sv &mut Serving) {
 // (The event's kind, request and whether it asks for /big are lent, not the event: it is
 // in a list the driver might change, and its target a view of a String in it.)
 fn serve(drv &mut Driver, sv &mut Serving, kind EventKind, req ReqId, big bool, size u64) {
-  if kind == EventKind.Request[] {
+  if kind == EventKind.Request {
     if big {
       drv.respond(req, ResponseHead.make(200u16), BodyLength.sized(size));
       sv.big = req;
@@ -259,7 +259,7 @@ fn serve(drv &mut Driver, sv &mut Serving, kind EventKind, req ReqId, big bool, 
       drv.sendData(req, b);
       drv.finish(req);
     }
-  } elif kind == EventKind.Writable[] and sv.left > 0u64 {
+  } elif kind == EventKind.Writable and sv.left > 0u64 {
     sendBig(drv, sv);
   }
 }
@@ -267,9 +267,9 @@ fn serve(drv &mut Driver, sv &mut Serving, kind EventKind, req ReqId, big bool, 
 fn listenOn(drv &mut Driver, lp &mut Loop, secure bool, srv &tls.Server, pool Pool) u16 {
   mut port = 0u16;
   mut res = if secure {
-    drv.listenWith(lp, SocketAddr.localhost(0u16), new So[TlsMaker](new TlsMaker(*srv, pool)), Sink.Here[tokServer]);
+    drv.listenWith(lp, SocketAddr.localhost(0u16), new So[TlsMaker](new TlsMaker(*srv, pool)), Sink.Here(tokServer));
   } else {
-    drv.listen(lp, SocketAddr.localhost(0u16), Sink.Here[tokServer]);
+    drv.listen(lp, SocketAddr.localhost(0u16), Sink.Here(tokServer));
   };
   match res {
     case imm r Ok {
@@ -286,9 +286,9 @@ fn listenOn(drv &mut Driver, lp &mut Loop, secure bool, srv &tls.Server, pool Po
 fn connect(drv &mut Driver, lp &mut Loop, secure bool, cl &tls.Client, pool Pool, port u16, k u64) ConnId {
   if secure {
     return drv.connectWith(lp, "127.0.0.1", port, new So[tls.Stream](cl.stream("localhost", pool)),
-      Sink.Here[tokConn + k]);
+      Sink.Here(tokConn + k));
   }
-  drv.connect(lp, "127.0.0.1", port, Sink.Here[tokConn + k]);
+  drv.connect(lp, "127.0.0.1", port, Sink.Here(tokConn + k));
 }
 
 // ---------------------------------------------------------------------------
@@ -310,7 +310,7 @@ fn cycles(label &str, secure bool, resume bool, n u32) {
   while k < n + 1u32 {
     imm t0 = Instant.now();
     imm c = connect(&mut drv, &mut lp, secure, &cl, pool, port, 0u64);
-    drv.request(&mut lp, c, RequestHead.get("/x", "localhost"), BodyLength.empty(), Sink.Here[tokReq]);
+    drv.request(&mut lp, c, RequestHead.get("/x", "localhost"), BodyLength.empty(), Sink.Here(tokReq));
     mut going = true;
     while going {
       drv.poll(&mut lp, forever(), &mut events);
@@ -319,7 +319,7 @@ fn cycles(label &str, secure bool, resume bool, n u32) {
         imm e = &mut events[j];
         j = j + 1usize;
         if e.token == tokServer {serve(&mut drv, &mut sv, e.kind, e.req, e.request.target.view() == "/big", 0u64);}
-        elif e.kind == EventKind.Data[] {drv.release(e.req, e.buf.len());}
+        elif e.kind == EventKind.Data {drv.release(e.req, e.buf.len());}
         elif e.token == tokReq and e.isTerminal() {going = false;}
       }
       events.clear();
@@ -340,7 +340,7 @@ fn cycles(label &str, secure bool, resume bool, n u32) {
 
 // A GET on a connection, driven to its final answer
 fn getOn(drv &mut Driver, lp &mut Loop, sv &mut Serving, events &mut List[Event], c ConnId) {
-  drv.request(lp, c, RequestHead.get("/x", "localhost"), BodyLength.empty(), Sink.Here[tokReq]);
+  drv.request(lp, c, RequestHead.get("/x", "localhost"), BodyLength.empty(), Sink.Here(tokReq));
   mut going = true;
   while going {
     drv.poll(lp, forever(), events);
@@ -349,7 +349,7 @@ fn getOn(drv &mut Driver, lp &mut Loop, sv &mut Serving, events &mut List[Event]
       imm e = &mut events[j];
       j = j + 1usize;
       if e.token == tokServer {serve(drv, sv, e.kind, e.req, e.request.target.view() == "/big", 0u64);}
-      elif e.kind == EventKind.Data[] {drv.release(e.req, e.buf.len());}
+      elif e.kind == EventKind.Data {drv.release(e.req, e.buf.len());}
       elif e.token == tokReq and e.isTerminal() {going = false;}
     }
     events.clear();
@@ -410,10 +410,10 @@ fn bulk(label &str, secure bool, size u64) {
   mut t0 = Instant.now();
   while round < 2u32 {
     if round == 0u32 {
-      drv.request(&mut lp, c, RequestHead.get("/x", "localhost"), BodyLength.empty(), Sink.Here[tokReq]);
+      drv.request(&mut lp, c, RequestHead.get("/x", "localhost"), BodyLength.empty(), Sink.Here(tokReq));
     } else {
       t0 = Instant.now();
-      drv.request(&mut lp, c, RequestHead.get("/big", "localhost"), BodyLength.empty(), Sink.Here[tokReq]);
+      drv.request(&mut lp, c, RequestHead.get("/big", "localhost"), BodyLength.empty(), Sink.Here(tokReq));
     }
     mut going = true;
     while going {
@@ -423,7 +423,7 @@ fn bulk(label &str, secure bool, size u64) {
         imm e = &mut events[j];
         j = j + 1usize;
         if e.token == tokServer {serve(&mut drv, &mut sv, e.kind, e.req, e.request.target.view() == "/big", size);}
-        elif e.kind == EventKind.Data[] {
+        elif e.kind == EventKind.Data {
           if round == 1u32 {got = got + u64.from(e.buf.len());}
           drv.release(e.req, e.buf.len());
         } elif e.token == tokReq and e.isTerminal() {going = false;}
@@ -477,7 +477,7 @@ fn idleMemory(n u64) {
       if u64.from(cs.len()) < want and u64.from(cs.len()) < connected + 64u64 {
         imm k = u64.from(cs.len());
         imm c = connect(&mut drv, &mut lp, true, &cl, pool, port, k);
-        drv.request(&mut lp, c, RequestHead.get("/x", "localhost"), BodyLength.empty(), Sink.Here[tokReq + k]);
+        drv.request(&mut lp, c, RequestHead.get("/x", "localhost"), BodyLength.empty(), Sink.Here(tokReq + k));
         cs.push(c);
         continue;
       }
@@ -487,8 +487,8 @@ fn idleMemory(n u64) {
         imm e = &mut events[j];
         j = j + 1usize;
         if e.token == tokServer {serve(&mut drv, &mut sv, e.kind, e.req, e.request.target.view() == "/big", 0u64);}
-        elif e.kind == EventKind.Data[] {drv.release(e.req, e.buf.len());}
-        elif e.kind == EventKind.Connected[] {connected = connected + 1u64;}
+        elif e.kind == EventKind.Data {drv.release(e.req, e.buf.len());}
+        elif e.kind == EventKind.Connected {connected = connected + 1u64;}
         elif e.token >= tokReq and e.isTerminal() {ended = ended + 1u64;}
       }
       events.clear();

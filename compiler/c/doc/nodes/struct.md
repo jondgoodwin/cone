@@ -87,7 +87,7 @@ common field, whatever its case, and so is a name and a tuple type, `t (A, B);`:
 so a tuple variant will need a spelling of its own) is parsed into the variant a struct would be with
 one field, and nothing marks it but that field's name: `payloadName`, `(payload)`,
 which no source can spell. `structIsTypeVariant` and `structTypeVariantField` ask.
-Layout, construction (`Ok[5]`), the nullable-pointer test, finalizing and
+Layout, construction (`Ok(5)`), the nullable-pointer test, finalizing and
 extension all see a one-field struct variant, so none of them knows the form. ▸
 **Forbids** the form in an enum with fields in common (`parseCheckTypeVariants`,
 `ErrorTypeVariant`): such an enum names everything it holds. What the field holds

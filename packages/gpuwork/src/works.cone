@@ -28,14 +28,14 @@ pub enum Target {
 // A Target delivering into iocore Loop 'lp': an external operation there
 // whose answer goes to 'to', 'token' the gpuwork Completion's
 pub fn onLoop(lp &mut iocore.Loop, to iocore.Target, token u64 = 0u64) Target {
-  Target.Loop[token, lp.external(to, IoBuf.empty())];
+  Target.Loop(token, lp.external(to, IoBuf.empty()));
 }
 
 // The same, the operation in cancel group 'group' and answered TimedOut at
 // 'deadline' (iocore.forever() for the group's alone)
 pub fn onLoopIn(lp &mut iocore.Loop, to iocore.Target, group iocore.CancelGroup, deadline Instant,
     token u64 = 0u64) Target {
-  Target.Loop[token, lp.externalIn(to, IoBuf.empty(), group, deadline)];
+  Target.Loop(token, lp.externalIn(to, IoBuf.empty(), group, deadline));
 }
 
 // The Windows error number of a Loop job's iocore answer, Failed, for a job
@@ -166,9 +166,9 @@ fn watch(args WatchArgs) u32 {
 // or in which a Cone kernel failed (its error words, read here before the
 // job is counted done, after which 'poll' may drop their buffer)
 fn settle(w &mut Watch, state Arc[imm, WatchState]) {
-  mut fence Option[Fence] = None[Fence][];
+  mut fence Option[Fence] = None;
   fence <=> w.fence;
-  mut to Target = Target.Here[0u64];
+  mut to Target = Target.Here(0u64);
   to <=> w.to;
   mut signalled = false;
   match &fence {
@@ -229,7 +229,7 @@ pub struct Works {
     tx, rx = Channel[Watch].make();
     new Works(List[InFlight].empty(), List[List[BindGroup]].empty(), 0u64, tx, rx,
       new Arc[imm, WatchState](new WatchState(Atomic[u64].of(0u64), Atomic[u32].of(0u32), Atomic[u32].of(0u32))),
-      None[thread.Thread[u32]][], false, 0u32, 0u64);
+      None, false, 0u32, 0u64);
   }
 
   // How many jobs are submitted whose Completion is still to come
@@ -284,7 +284,7 @@ pub struct Works {
         errorWords.push(errorWordsAt(j.checks[k]));
         k = k + 1usize;
       }
-      tx.send(new Watch(Some[Fence][fence], to, ticket.id, ok, false, errorWords));
+      tx.send(new Watch(Some[Fence](fence), to, ticket.id, ok, false, errorWords));
     } elif ok {
       ok = device.queue.submit(j.encoder.finish());
     }
@@ -309,7 +309,7 @@ pub struct Works {
     imm t = thread.startWith[WatchArgs, u32](new thread.Options(name: "gpuwork watcher"),
       new WatchArgs(spareRx, state), &watch);
     watcherId = t.id();
-    watcher = Some[thread.Thread[u32]][t];
+    watcher = Some[thread.Thread[u32]](t);
   }
 
   // Whether the GPU has finished job 'e'
@@ -433,7 +433,7 @@ pub struct Works {
   // buffers with it.
   fn final(self &uni) {
     if !started { return; }
-    tx.send(new Watch(None[Fence][], Target.Here[0u64], 0u64, false, true, List[usize].empty()));
+    tx.send(new Watch(None, Target.Here(0u64), 0u64, false, true, List[usize].empty()));
     while state.stopped.load() == 0u32 { sync.futexWait(&state.stopped, 0u32); }
   }
 }

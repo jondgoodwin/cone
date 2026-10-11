@@ -788,8 +788,8 @@ lexer of its own with private names (`Lexer.gennames`, as an actor's):
 ```
 struct walk.Gen { imm t &'a Tree; state' u32;
                   pub fn next(self &mut) Option[&'a Node] {}  fn final(self &uni) {}
-                  fn walk.yield(v &Node) Option[&Node] inline {Some[&Node][v];}
-                  fn walk.none() Option[&Node] {None[&Node][];} }
+                  fn walk.yield(v &Node) Option[&Node] inline {Some[&Node](v);}
+                  fn walk.none() Option[&Node] {None[&Node];} }
 fn walk(t &Tree) walk.Gen {new walk.Gen(t, 0u32);}
 ```
 
@@ -1041,7 +1041,7 @@ numbers.
 | | `parseAssign` … `parseMult`, `parseCast` | the precedence cascade (section 3) |
 | | `parseRetiredInto` | the retired `into` reported, pointed at `T.from(x)` and a checked narrowing |
 | | `parsePrefix`, `parseAmper`, `parsePlus` | prefix operators, `await` among them; borrowed and region-managed references |
-| | `parseSuffix`, `parseDotCall`, `parseArgs`, `parseArg` | postfix `.`, `()`, `[]`, `++`, `--`; named values. The `.` production serves a member of a value and a path through a namespace alike |
+| | `parseSuffix`, `parseDotCall`, `parseArgs`, `parseArg` | postfix `.`, `()`, `[]`, `++`, `--`; named values. The `.` production serves a member of a value and a path through a namespace alike. The last suffix of a term parsed outside a type is marked as a value term (`parseMarkValueTerm`), which name resolution reads to make an empty variant's name its construction |
 | | `parseTerm`, `parseNameUse`, `parseArrayLit` | literals, parens, blocks-as-expressions, names; a parenthesized entry list when `entryparen` says the term begins an entry |
 | | `parseAppend`, `parseEntries`, `parseEntry`, `parseContentsAfter` | the list after `<-`, its entries and their contextual words, and a construction's contents inside a comma list (section 3) |
 | `parser/parsetype.c` | `parseType`, `parseIsTypeStart` | the type dispatcher that delegates to `parsePrefix` — principle 1 — and the tokens that may begin a type |

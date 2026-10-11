@@ -257,6 +257,10 @@ void inodeNameRes(NameResState *pstate, INode **node) {
     // the member needs the receiver's type, and fnCallTypeCheck selects it.
     if (isNameUseNode(*node)) {
         nameUseNameRes(pstate, (NameUseNode **)node);
+        // A name that stands as a value term and is an empty variant's is that
+        // variant constructed (FlagValueTermName)
+        if ((*node)->flags & FlagValueTermName)
+            fnCallVariantTermNameRes(pstate, node);
         return;
     }
     switch ((*node)->tag) {

@@ -34,7 +34,7 @@ fn waitFor(lp &mut Loop, out &mut List[Completion], n usize) {
 
 fn slowWork(arg u64, buf &mut IoBuf) Outcome {
   thread.sleep(Duration.fromMillis(i64.from(arg)));
-  Outcome.Done[0usize];
+  Outcome.Done(0usize);
 }
 
 fn pair(lp &mut Loop) Handle, Handle {
@@ -44,8 +44,8 @@ fn pair(lp &mut Loop) Handle, Handle {
     case imm a Ok {port = a.port();}
     case imm e Error {}
   }
-  lp.submit(Op.Accept[listener], Target.Here[9001u64]);
-  lp.submit(Op.Connect[SocketAddr.localhost(port)], Target.Here[9002u64]);
+  lp.submit(Op.Accept(listener), Target.Here(9001u64));
+  lp.submit(Op.Connect(SocketAddr.localhost(port)), Target.Here(9002u64));
   mut out = List[Completion].empty();
   waitFor(lp, &mut out, 2usize);
   mut a = Handle.none();
@@ -72,7 +72,7 @@ fn main() i32 {
     // 1. With its buffer
     {
       imm t0 = Instant.now();
-      lp.submitBy(Op.Recv[a, pool.mustTake(100usize)], Target.Here[1u64], t0 + Duration.fromMillis(50i64));
+      lp.submitBy(Op.Recv(a, pool.mustTake(100usize)), Target.Here(1u64), t0 + Duration.fromMillis(50i64));
       waitFor(&mut lp, &mut out, 1usize);
       requireUInt(u64.from(out.len()), 1u64, "one answer");
       expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeTimedOut), "TimedOut");
@@ -87,7 +87,7 @@ fn main() i32 {
     {
       lp.setGrace(Duration.zero());
       imm t0 = Instant.now();
-      imm id = lp.submitBy(Op.Recv[a, pool.mustTake(100usize)], Target.Here[2u64], t0 + Duration.fromMillis(20i64));
+      imm id = lp.submitBy(Op.Recv(a, pool.mustTake(100usize)), Target.Here(2u64), t0 + Duration.fromMillis(20i64));
       waitFor(&mut lp, &mut out, 1usize);
       requireUInt(u64.from(out.len()), 1u64, "one answer");
       expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeTimedOut), "TimedOut");
@@ -106,7 +106,7 @@ fn main() i32 {
     // 3. A job running past its deadline
     {
       imm t0 = Instant.now();
-      lp.submitBy(Op.Call[one, &slowWork, 150u64, pool.mustTake(100usize)], Target.Here[3u64],
+      lp.submitBy(Op.Call(one, &slowWork, 150u64, pool.mustTake(100usize)), Target.Here(3u64),
         t0 + Duration.fromMillis(20i64));
       waitFor(&mut lp, &mut out, 1usize);
       requireUInt(u64.from(out.len()), 1u64, "one answer");
@@ -123,8 +123,8 @@ fn main() i32 {
 
     // 4. A job still queued at its deadline
     {
-      lp.submit(Op.Call[one, &slowWork, 100u64, pool.mustTake(100usize)], Target.Here[4u64]);
-      lp.submitBy(Op.Call[one, &slowWork, 0u64, pool.mustTake(100usize)], Target.Here[5u64],
+      lp.submit(Op.Call(one, &slowWork, 100u64, pool.mustTake(100usize)), Target.Here(4u64));
+      lp.submitBy(Op.Call(one, &slowWork, 0u64, pool.mustTake(100usize)), Target.Here(5u64),
         Instant.now() + Duration.fromMillis(20i64));
       waitFor(&mut lp, &mut out, 1usize);
       requireUInt(u64.from(out.len()), 1u64, "the queued one answered first");

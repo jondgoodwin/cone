@@ -140,10 +140,10 @@ fn edit(a &Array[u64], b &Array[u64]) List[Span] {
       aEnd = run.aEnd;
       bEnd = run.bEnd;
     }
-    if i < ai and j < bj { out.push(new Span(Kind.Replace[], i, ai, j, bj)); }
-    elif i < ai { out.push(new Span(Kind.Delete[], i, ai, j, bj)); }
-    elif j < bj { out.push(new Span(Kind.Insert[], i, ai, j, bj)); }
-    if aEnd > ai { out.push(new Span(Kind.Equal[], ai, aEnd, bj, bEnd)); }
+    if i < ai and j < bj { out.push(new Span(Kind.Replace, i, ai, j, bj)); }
+    elif i < ai { out.push(new Span(Kind.Delete, i, ai, j, bj)); }
+    elif j < bj { out.push(new Span(Kind.Insert, i, ai, j, bj)); }
+    if aEnd > ai { out.push(new Span(Kind.Equal, ai, aEnd, bj, bEnd)); }
     i = aEnd;
     j = bEnd;
     r = r + 1usize;
@@ -193,7 +193,7 @@ fn addRun(runs &mut List[Span], aStart usize, aEnd usize, bStart usize, bEnd usi
       return;
     }
   }
-  runs.push(new Span(Kind.Equal[], aStart, aEnd, bStart, bEnd));
+  runs.push(new Span(Kind.Equal, aStart, aEnd, bStart, bEnd));
 }
 
 // A point in a and b
@@ -257,7 +257,7 @@ fn middle(a &Array[u64], b &Array[u64], aLo usize, aHi usize, bLo usize, bHi usi
         if k2off >= 0i64 and k2off < vlen and at(&v2, k2off) != -1i64 {
           // Where the backward path on this diagonal has reached, from the start
           if x1 >= n - at(&v2, k2off) {
-            return Some[Cut][new Cut(aLo + usize.from(x1), bLo + usize.from(y1))];
+            return Some[Cut](new Cut(aLo + usize.from(x1), bLo + usize.from(y1)));
           }
         }
       }
@@ -289,7 +289,7 @@ fn middle(a &Array[u64], b &Array[u64], aLo usize, aHi usize, bLo usize, bHi usi
           imm x1 = at(&v1, k1off);
           imm y1 = off + x1 - k1off;
           if x1 >= n - x2 {
-            return Some[Cut][new Cut(aLo + usize.from(x1), bLo + usize.from(y1))];
+            return Some[Cut](new Cut(aLo + usize.from(x1), bLo + usize.from(y1)));
           }
         }
       }
@@ -297,7 +297,7 @@ fn middle(a &Array[u64], b &Array[u64], aLo usize, aHi usize, bLo usize, bHi usi
     }
     d = d + 1i64;
   }
-  None[Cut][];
+  None;
 }
 
 fn at(v &List[i64], k i64) i64 { *v[usize.from(k)]; }
@@ -313,21 +313,21 @@ fn put(v &mut List[i64], k i64, x i64) { v.set(usize.from(k), x); }
 // perhaps the last; otherwise none does.
 fn render(a &Array[String], b &Array[String], spans &Array[Span], aName &str, bName &str, around usize, ownEnds bool) String {
   mut out = String.empty();
-  if spans.len == 0usize or (spans.len == 1usize and spans[0usize].kind == Kind.Equal[]) {
+  if spans.len == 0usize or (spans.len == 1usize and spans[0usize].kind == Kind.Equal) {
     return out;
   }
   mut codes = List[Span].withCapacity(spans.len);
   mut i = 0usize;
   while i < spans.len { codes.push(spans[i]); i = i + 1usize; }
   imm first = &mut codes[0usize];
-  if first.kind == Kind.Equal[] {
+  if first.kind == Kind.Equal {
     if first.aEnd - first.aStart > around {
       first.aStart = first.aEnd - around;
       first.bStart = first.bEnd - around;
     }
   }
   imm last = &mut codes[codes.len() - 1usize];
-  if last.kind == Kind.Equal[] {
+  if last.kind == Kind.Equal {
     if last.aEnd - last.aStart > around {
       last.aEnd = last.aStart + around;
       last.bEnd = last.bStart + around;
@@ -342,8 +342,8 @@ fn render(a &Array[String], b &Array[String], spans &Array[Span], aName &str, bN
   i = 0usize;
   while i < codes.len() {
     mut c = *codes[i];
-    if c.kind == Kind.Equal[] and c.aEnd - c.aStart > 2usize * around {
-      group.push(new Span(Kind.Equal[], c.aStart, c.aStart + around, c.bStart, c.bStart + around));
+    if c.kind == Kind.Equal and c.aEnd - c.aStart > 2usize * around {
+      group.push(new Span(Kind.Equal, c.aStart, c.aStart + around, c.bStart, c.bStart + around));
       hunk(&mut out, a, b, group.view(), ownEnds);
       group.clear();
       c.aStart = c.aEnd - around;
@@ -352,7 +352,7 @@ fn render(a &Array[String], b &Array[String], spans &Array[Span], aName &str, bN
     group.push(c);
     i = i + 1usize;
   }
-  if group.len() > 0usize and not (group.len() == 1usize and group[0usize].kind == Kind.Equal[]) {
+  if group.len() > 0usize and not (group.len() == 1usize and group[0usize].kind == Kind.Equal) {
     hunk(&mut out, a, b, group.view(), ownEnds);
   }
   out;
@@ -370,7 +370,7 @@ fn hunk(out &mut String, a &Array[String], b &Array[String], group &Array[Span],
   mut g = 0usize;
   while g < group.len {
     imm s = group[g];
-    if s.kind == Kind.Equal[] {
+    if s.kind == Kind.Equal {
       showLines(out, ' ', a, s.aStart, s.aEnd, ownEnds);
     }
     else {

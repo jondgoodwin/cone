@@ -36,7 +36,7 @@ struct StatusBlock is Sendable {
   fn final(self &uni) {
     mut i = 0u32;
     while i < count {
-      if mem.atomicLoad[u32](self.word(i), MemOrder.Acquire[]) == slotReady {
+      if mem.atomicLoad[u32](self.word(i), MemOrder.Acquire) == slotReady {
         mem.finalize[Completion](&(*self.slot(i)).c as *Completion);
       }
       i = i + 1u32;
@@ -68,13 +68,13 @@ pub struct StatusArray {
 
   // Whether slot i holds an answer to take
   pub fn isReady(self &, i u32) bool {
-    i < b.count and mem.atomicLoad[u32](b.word(i), MemOrder.Acquire[]) == slotReady;
+    i < b.count and mem.atomicLoad[u32](b.word(i), MemOrder.Acquire) == slotReady;
   }
 
   // Whether slot i is free for an operation to answer into: no operation
   // is armed on it, and no answer waits in it
   pub fn isFree(self &, i u32) bool {
-    i < b.count and mem.atomicLoad[u32](b.word(i), MemOrder.Acquire[]) == slotEmpty;
+    i < b.count and mem.atomicLoad[u32](b.word(i), MemOrder.Acquire) == slotEmpty;
   }
 
   // Move slot i's answer to the end of out, emptying the slot: true; false,
@@ -82,7 +82,7 @@ pub struct StatusArray {
   pub fn take(self &, i u32, out &mut List[Completion]) bool {
     if not self.isReady(i) {return false;}
     imm c = mem.readRaw[Completion](&(*b.slot(i)).c as *Completion);
-    mem.atomicStore[u32](b.word(i), slotEmpty, MemOrder.Release[]);
+    mem.atomicStore[u32](b.word(i), slotEmpty, MemOrder.Release);
     out.push(c);
     true;
   }
@@ -94,13 +94,13 @@ pub struct StatusArray {
     mut seen = 0u32;
     mut done = false;
     seen, done = mem.atomicCompareSwap[u32](b.word(i), slotEmpty, slotArmed,
-      MemOrder.Acquire[], MemOrder.Acquire[]);
+      MemOrder.Acquire, MemOrder.Acquire);
     done;
   }
 
   // Leave c in armed slot i
   fn put(self &, i u32, c Completion) {
     mem.writeRaw[Completion](&(*b.slot(i)).c as *Completion, c);
-    mem.atomicStore[u32](b.word(i), slotReady, MemOrder.Release[]);
+    mem.atomicStore[u32](b.word(i), slotReady, MemOrder.Release);
   }
 }

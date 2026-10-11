@@ -254,7 +254,7 @@ A temporary dies at the end of its statement ([Flow](../phases/flow.md),
 `let`'s initializer borrows it, and Cone follows (`refinitdrop.html`). The
 *extending positions* of a local's initializer are the initializer itself and,
 recursively, the operand of a borrow or a recast in one, and each element of a
-tuple, array or variant literal (`Some[..]`, a `TypeLitTag` with `FlagIndex`)
+tuple, array or variant literal (`Some(..)`, a `TypeLitTag` with `FlagIndex`)
 in one, and the final expression of a block in one (`{ ..; &mk() }`), and so
 of each arm of an `if` or a `match` in one, as Rust 2024 extends them. What a
 borrow there reaches is extended: the temporary at the root of

@@ -896,7 +896,7 @@ holder (`h.r = &x`) adds its loans to what the holder holds. Stored through a
 borrowed reference (`*r = v`, `r.f = v`), its loans go where the reference
 points: into what `r` holds, as far loans, since what is read back through `r`
 carries them, and into each holder a near loan of `r` borrows from — every
-loan, for a far place — so that after `imm r = &mut o; *r = Some[&R][&x]` a use
+loan, for a far place — so that after `imm r = &mut o; *r = Some[&R](&x)` a use
 of `o` uses `x`'s loan (`pwStoreLands`). A call handed a
 writable borrow of a place that can hold a borrow (`l.push(&x)`, `stash(&mut
 o, &x)`, `fill(r, v)` for `r &mut Option[&T]`) may store there anything its
@@ -1165,7 +1165,7 @@ with it. So a value's lifetime is the shortest root among its loans, and:
   which outlives every caller too, carries no caller loan either (the first
   `loanNotGlobalIn` finds, `ErrorEscape`): no borrow the caller lent, read
   through a parameter (`G = *x` from a `&mut &T`), held by a by-value
-  parameter, or carried inside a value (`G = Some[&T][r]`). A `'static`
+  parameter, or carried inside a value (`G = Some[&T](r)`). A `'static`
   parameter holds no caller loan, so its borrow may go there.
 
 Near and far tell where a reference points from what that place holds:
@@ -1841,7 +1841,7 @@ droppable noted as holding nothing is never finalized.
   the binding's own state, which the move left moved, so it releases nothing,
   and it does not give the matched value's variable its value back, so that
   variable, moved too, never releases what was stored: `case mut a A {
-  takeA(a); a = A[new Fin(2)]; }` leaks the new `Fin`. Moved on some paths only, the
+  takeA(a); a = A(new Fin(2)); }` leaks the new `Fin`. Moved on some paths only, the
   store still releases nothing, and the original leaks on the paths that kept
   it. The binding is untracked by the path walk (`flowMatchBound`), so neither
   the store nor the matched value's drop flag sees the other.

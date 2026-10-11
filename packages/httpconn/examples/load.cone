@@ -63,7 +63,7 @@ fn answer(drv &mut Driver, e &mut Event, pool &Pool) {
 // The listening driver's port
 fn listenOn(drv &mut Driver, lp &mut Loop) u16 {
   mut port = 0u16;
-  match drv.listen(lp, SocketAddr.localhost(0u16), Sink.Here[tokServer]) {
+  match drv.listen(lp, SocketAddr.localhost(0u16), Sink.Here(tokServer)) {
     case imm r Ok {
       match drv.localAddr(lp, r) {
         case imm a Ok {port = a.port();}
@@ -104,7 +104,7 @@ fn clients(drv &mut Driver, lp &mut Loop, pool &Pool, port u16, conns u64, perCo
     // More connections, a batch at a time
     if u64.from(cs.len()) < conns and u64.from(cs.len()) < connected + batch {
       imm k = u64.from(cs.len());
-      cs.push(drv.connect(lp, "127.0.0.1", port, Sink.Here[tokConn + k]));
+      cs.push(drv.connect(lp, "127.0.0.1", port, Sink.Here(tokConn + k)));
       made.push(0u64);
       busy.push(false);
       continue;
@@ -119,7 +119,7 @@ fn clients(drv &mut Driver, lp &mut Loop, pool &Pool, port u16, conns u64, perCo
       while k < cs.len() {
         if not *busy[k] and *made[k] < perConn {
           drv.request(lp, *cs[k], RequestHead.get("/x", "127.0.0.1"), BodyLength.empty(),
-            Sink.Here[tokReq + u64.from(k)]);
+            Sink.Here(tokReq + u64.from(k)));
           busy.set(k, true);
           made.set(k, *made[k] + 1u64);
         }
@@ -132,12 +132,12 @@ fn clients(drv &mut Driver, lp &mut Loop, pool &Pool, port u16, conns u64, perCo
       imm e = &mut events[j];
       j = j + 1usize;
       if e.token == tokServer {
-        if serveHere and e.kind == EventKind.Request[] {answer(drv, e, pool);}
+        if serveHere and e.kind == EventKind.Request {answer(drv, e, pool);}
       } elif e.token >= tokReq {
         imm k = usize.from(e.token - tokReq);
-        if e.kind == EventKind.Data[] {
+        if e.kind == EventKind.Data {
           drv.release(e.req, e.buf.len());
-        } elif e.kind == EventKind.Done[] {
+        } elif e.kind == EventKind.Done {
           run.lat.record((e.timing.ended - e.timing.submitted).nanos());
           run.done = run.done + 1u64;
           busy.set(k, false);
@@ -148,8 +148,8 @@ fn clients(drv &mut Driver, lp &mut Loop, pool &Pool, port u16, conns u64, perCo
           if *made[k] == perConn {finished = finished + 1u64;}
         }
       } elif e.token >= tokConn {
-        if e.kind == EventKind.Connected[] {connected = connected + 1u64;}
-        elif e.kind == EventKind.Closed[] and not started {
+        if e.kind == EventKind.Connected {connected = connected + 1u64;}
+        elif e.kind == EventKind.Closed and not started {
           run.bad = run.bad + 1u64;
           connected = connected + 1u64;
         }
@@ -215,7 +215,7 @@ fn serve(a ServerArgs) u64 {
     mut j = 0usize;
     while j < events.len() {
       imm e = &mut events[j];
-      if e.kind == EventKind.Request[] {
+      if e.kind == EventKind.Request {
         answer(&mut drv, e, &pool);
         served = served + 1u64;
       }
@@ -255,8 +255,8 @@ fn idleMemory(n u64, readyIdle bool) {
   while dones + failed < n {
     if u64.from(cs.len()) < n and u64.from(cs.len()) < connected + 64u64 {
       imm k = u64.from(cs.len());
-      imm c = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here[tokConn + k]);
-      drv.request(&mut lp, c, RequestHead.get("/x", "127.0.0.1"), BodyLength.empty(), Sink.Here[tokReq + k]);
+      imm c = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here(tokConn + k));
+      drv.request(&mut lp, c, RequestHead.get("/x", "127.0.0.1"), BodyLength.empty(), Sink.Here(tokReq + k));
       cs.push(c);
       continue;
     }
@@ -265,10 +265,10 @@ fn idleMemory(n u64, readyIdle bool) {
     while j < events.len() {
       imm e = &mut events[j];
       j = j + 1usize;
-      if e.token == tokServer and e.kind == EventKind.Request[] {answer(&mut drv, e, &pool);}
-      elif e.kind == EventKind.Data[] {drv.release(e.req, e.buf.len());}
-      elif e.kind == EventKind.Connected[] {connected = connected + 1u64;}
-      elif e.token >= tokReq and e.kind == EventKind.Done[] {dones = dones + 1u64;}
+      if e.token == tokServer and e.kind == EventKind.Request {answer(&mut drv, e, &pool);}
+      elif e.kind == EventKind.Data {drv.release(e.req, e.buf.len());}
+      elif e.kind == EventKind.Connected {connected = connected + 1u64;}
+      elif e.token >= tokReq and e.kind == EventKind.Done {dones = dones + 1u64;}
       elif e.token >= tokReq and e.isTerminal() {failed = failed + 1u64;}
     }
     events.clear();

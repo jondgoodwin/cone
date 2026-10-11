@@ -76,7 +76,7 @@ fn server(pool Pool) Srv {
 
 fn listen(sv &mut Srv, lp &mut Loop) u16 {
   mut port = 0u16;
-  match sv.drv.listen(lp, SocketAddr.localhost(0u16), httpconn.Sink.Here[tokSrv]) {
+  match sv.drv.listen(lp, SocketAddr.localhost(0u16), httpconn.Sink.Here(tokSrv)) {
     case imm r Ok {
       match sv.drv.localAddr(lp, r) {
         case imm a Ok {port = a.port();}
@@ -159,7 +159,7 @@ fn answer(sv &mut Srv, lp &mut Loop, k usize) {
   while q < t.len and t[q] != '?' {q = q + 1usize;}
   imm path = &t[0usize ..< q];
   imm query = &t[(if q < t.len {q + 1usize;} else {q;}) ..];
-  imm head = *sv.methods[k] == Method.Head[];
+  imm head = *sv.methods[k] == Method.Head;
   if path == "/echo" {
     mut b = String.from(methodToken(*sv.methods[k]));
     b.append(" ");
@@ -253,13 +253,13 @@ fn fieldOr(h &Headers, name &str) String {
 
 fn serve(sv &mut Srv, lp &mut Loop, e &mut httpconn.Event) {
   imm kind = e.kind;
-  if kind == httpconn.EventKind.Accepted[] {
+  if kind == httpconn.EventKind.Accepted {
     sv.accepted = sv.accepted + 1u64;
     sv.open = sv.open + 1u64;
     if sv.open > sv.maxOpen {sv.maxOpen = sv.open;}
-  } elif kind == httpconn.EventKind.Closed[] {
+  } elif kind == httpconn.EventKind.Closed {
     sv.open = sv.open - 1u64;
-  } elif kind == httpconn.EventKind.Request[] {
+  } elif kind == httpconn.EventKind.Request {
     sv.requests = sv.requests + 1u64;
     sv.order.push(e.request.target.copy());
     sv.reqs.push(e.req);
@@ -269,14 +269,14 @@ fn serve(sv &mut Srv, lp &mut Loop, e &mut httpconn.Event) {
     sv.bodies.push(String.empty());
     sv.auths.push(fieldOr(&e.request.headers, "Authorization"));
     sv.cookies.push(fieldOr(&e.request.headers, "Cookie"));
-  } elif kind == httpconn.EventKind.Data[] {
+  } elif kind == httpconn.EventKind.Data {
     imm k = findReq(sv, e.req);
     if k < sv.reqs.len() {(&mut sv.bodies[k]).appendBytes(e.buf.view());}
     sv.drv.release(e.req, e.buf.len());
-  } elif kind == httpconn.EventKind.End[] {
+  } elif kind == httpconn.EventKind.End {
     imm k = findReq(sv, e.req);
     if k < sv.reqs.len() {answer(sv, lp, k);}
-  } elif kind == httpconn.EventKind.Writable[] {
+  } elif kind == httpconn.EventKind.Writable {
     imm j = findStream(sv, e.req);
     if j < sv.streams.len() {pumpStream(sv, j);}
   } elif e.isTerminal() {
@@ -349,23 +349,23 @@ struct Seen {
 
 fn seen() Seen {
   new Seen(status: 0u16, body: String.empty(), url: String.empty(), kinds: String.empty(), finals: 0u64,
-    last: EventKind.Done[], failure: String.empty(), stage: Stage.Url[], timing: Timing.zero());
+    last: EventKind.Done, failure: String.empty(), stage: Stage.Url, timing: Timing.zero());
 }
 
 fn note(cl &mut Client, s &mut Seen, e &mut Event) {
   imm n = eventName(e.kind);
   s.kinds.appendByte(n[0usize]);
-  if e.kind == EventKind.Response[] {
+  if e.kind == EventKind.Response {
     s.status = e.response.status;
     s.url = e.url.copy();
-  } elif e.kind == EventKind.Data[] {
+  } elif e.kind == EventKind.Data {
     s.body.appendBytes(e.buf.view());
     cl.release(e.id, e.buf.len());
   } elif e.isTerminal() {
     s.finals = s.finals + 1u64;
     s.last = e.kind;
     s.timing = e.timing;
-    if e.kind == EventKind.Failed[] {
+    if e.kind == EventKind.Failed {
       s.failure = e.failure.message();
       s.stage = e.failure.stage;
     }
@@ -393,7 +393,7 @@ fn finishOf(cl &mut Client, sv &mut Srv, lp &mut Loop, id FetchId, s &mut Seen) 
 // A request sent and driven to its final answer: what was seen
 fn fetchSeen(cl &mut Client, sv &mut Srv, lp &mut Loop, r Request) Seen {
   mut s = seen();
-  imm id = cl.send(lp, r, Sink.Here[1u64]);
+  imm id = cl.send(lp, r, Sink.Here(1u64));
   finishOf(cl, sv, lp, id, &mut s);
   s;
 }
@@ -407,7 +407,7 @@ fn idleFor(cl &mut Client, sv &mut Srv, lp &mut Loop, d Duration) {
     mut k = 0usize;
     while k < out.len() {
       imm e = &mut out[k];
-      if e.kind == EventKind.Data[] {cl.release(e.id, e.buf.len());}
+      if e.kind == EventKind.Data {cl.release(e.id, e.buf.len());}
       k = k + 1usize;
     }
     out.clear();
@@ -457,15 +457,15 @@ fn collect(cl &mut Client, sv &mut Srv, lp &mut Loop, fs &mut Finals, n u64) {
         if e.isTerminal() {fs.counts.set(j, *fs.counts[j] + 1u32);}
         continue;
       }
-      if e.kind == EventKind.Data[] {cl.release(e.id, e.buf.len());}
+      if e.kind == EventKind.Data {cl.release(e.id, e.buf.len());}
       if e.isTerminal() {
         fs.ids.push(e.id);
         fs.counts.push(1u32);
         fs.kinds.push(e.kind);
         fs.ended.push(Instant.now());
-        if e.kind == EventKind.Done[] {fs.done = fs.done + 1u64;}
-        elif e.kind == EventKind.Cancelled[] {fs.cancelled = fs.cancelled + 1u64;}
-        elif e.kind == EventKind.TimedOut[] {fs.timedOut = fs.timedOut + 1u64;}
+        if e.kind == EventKind.Done {fs.done = fs.done + 1u64;}
+        elif e.kind == EventKind.Cancelled {fs.cancelled = fs.cancelled + 1u64;}
+        elif e.kind == EventKind.TimedOut {fs.timedOut = fs.timedOut + 1u64;}
         else {fs.failed = fs.failed + 1u64;}
       }
     }
@@ -477,7 +477,7 @@ fn collect(cl &mut Client, sv &mut Srv, lp &mut Loop, fs &mut Finals, n u64) {
 // How fetch id ended, and when (from the call that asked for it)
 fn kindOf(fs &Finals, id FetchId) EventKind {
   imm j = slot(fs, id);
-  if j < fs.ids.len() {*fs.kinds[j];} else {EventKind.Data[];};
+  if j < fs.ids.len() {*fs.kinds[j];} else {EventKind.Data;};
 }
 
 fn endedAt(fs &Finals, id FetchId) Instant {
@@ -544,17 +544,17 @@ fn main() i32 {
   mut i = 0u64;
   while i < 20u64 {
     imm m = i % 4u64;
-    imm intent = if m == 0u64 {Intent.Background[];} elif m == 1u64 {Intent.Prefetch[];}
-      elif m == 2u64 {Intent.Visible[];} else {Intent.Urgent[];};
-    ids.push(cl.send(&mut lp, ordered(port, numbered(i).view(), intent, i64.from(i)), Sink.Here[1u64]));
+    imm intent = if m == 0u64 {Intent.Background;} elif m == 1u64 {Intent.Prefetch;}
+      elif m == 2u64 {Intent.Visible;} else {Intent.Urgent;};
+    ids.push(cl.send(&mut lp, ordered(port, numbered(i).view(), intent, i64.from(i)), Sink.Here(1u64)));
     i = i + 1u64;
   }
-  expect(cl.reprioritize(*ids[0usize], Intent.Urgent[], 100i64), "the first moved to the front, waiting");
+  expect(cl.reprioritize(*ids[0usize], Intent.Urgent, 100i64), "the first moved to the front, waiting");
   expect(cl.cancel(&mut lp, *ids[19usize]), "the last cancelled, waiting");
   expect(not cl.cancel(&mut lp, *ids[19usize]), "...a second cancel: its answer is decided");
-  cl.send(&mut lp, ordered(port, "f1", Intent.Visible[], 0i64), Sink.Here[1u64]);
-  cl.send(&mut lp, ordered(port, "f2", Intent.Visible[], 0i64), Sink.Here[1u64]);
-  cl.send(&mut lp, ordered(port, "f3", Intent.Visible[], 0i64), Sink.Here[1u64]);
+  cl.send(&mut lp, ordered(port, "f1", Intent.Visible, 0i64), Sink.Here(1u64));
+  cl.send(&mut lp, ordered(port, "f2", Intent.Visible, 0i64), Sink.Here(1u64));
+  cl.send(&mut lp, ordered(port, "f3", Intent.Visible, 0i64), Sink.Here(1u64));
   expectUInt(u64.from(cl.queued()), 22u64, "twenty-two wait");
   mut fs = finals();
   collect(&mut cl, &mut sv, &mut lp, &mut fs, 23u64);
@@ -563,7 +563,7 @@ fn main() i32 {
     "the order: the moved one, then by intent, then score, then as asked");
   expectUInt(fs.done, 22u64, "twenty-two Done");
   expectUInt(fs.cancelled, 1u64, "one Cancelled");
-  expect(kindOf(&fs, *ids[19usize]) == EventKind.Cancelled[], "...the one cancelled waiting, never sent");
+  expect(kindOf(&fs, *ids[19usize]) == EventKind.Cancelled, "...the one cancelled waiting, never sent");
   expectUInt(fs.after, 0u64, "nothing after any final answer");
   expectUInt(sv.accepted, 1u64, "one connection carried them all");
 
@@ -571,10 +571,10 @@ fn main() i32 {
   imm from = sv.order.len();
   mut hang = Request.get(url(port, "/hang").view());
   hang.deadline = Instant.now() + Duration.fromMillis(100i64);
-  hang.intent = Intent.Background[];
-  imm hid = cl.send(&mut lp, hang, Sink.Here[2u64]);
-  imm b1 = cl.send(&mut lp, ordered(port, "b1", Intent.Background[], 0i64), Sink.Here[2u64]);
-  cl.send(&mut lp, ordered(port, "b2", Intent.Background[], 0i64), Sink.Here[2u64]);
+  hang.intent = Intent.Background;
+  imm hid = cl.send(&mut lp, hang, Sink.Here(2u64));
+  imm b1 = cl.send(&mut lp, ordered(port, "b1", Intent.Background, 0i64), Sink.Here(2u64));
+  cl.send(&mut lp, ordered(port, "b2", Intent.Background, 0i64), Sink.Here(2u64));
   // Driven until the hanging one is under way, the others waiting
   mut out = List[Event].empty();
   imm until = Instant.now() + Duration.fromSeconds(5i64);
@@ -583,26 +583,26 @@ fn main() i32 {
     out.clear();
   }
   expectUInt(u64.from(cl.queued()), 2u64, "two wait behind the one under way");
-  imm u = cl.send(&mut lp, ordered(port, "u", Intent.Urgent[], 0i64), Sink.Here[2u64]);
+  imm u = cl.send(&mut lp, ordered(port, "u", Intent.Urgent, 0i64), Sink.Here(2u64));
   mut fs2 = finals();
   collect(&mut cl, &mut sv, &mut lp, &mut fs2, 4u64);
   expectStr(orderSince(&sv, from).view(), "hang u b1 b2", "the urgent one, asked last, goes next");
-  expect(kindOf(&fs2, hid) == EventKind.TimedOut[], "the one under way: TimedOut at its deadline");
-  expect(kindOf(&fs2, u) == EventKind.Done[] and kindOf(&fs2, b1) == EventKind.Done[], "the rest Done");
+  expect(kindOf(&fs2, hid) == EventKind.TimedOut, "the one under way: TimedOut at its deadline");
+  expect(kindOf(&fs2, u) == EventKind.Done and kindOf(&fs2, b1) == EventKind.Done, "the rest Done");
 
   // ---- Deadlines: one waiting, one under way ----
   imm from3 = sv.order.len();
   imm t0 = Instant.now();
   mut h2 = Request.get(url(port, "/hang").view());
   h2.deadline = t0 + Duration.fromMillis(300i64);
-  imm h2id = cl.send(&mut lp, h2, Sink.Here[3u64]);
-  mut q = ordered(port, "q", Intent.Visible[], 0i64);
+  imm h2id = cl.send(&mut lp, h2, Sink.Here(3u64));
+  mut q = ordered(port, "q", Intent.Visible, 0i64);
   q.deadline = t0 + Duration.fromMillis(100i64);
-  imm qid = cl.send(&mut lp, q, Sink.Here[3u64]);
+  imm qid = cl.send(&mut lp, q, Sink.Here(3u64));
   mut fs3 = finals();
   collect(&mut cl, &mut sv, &mut lp, &mut fs3, 2u64);
-  expect(kindOf(&fs3, qid) == EventKind.TimedOut[], "waiting: TimedOut");
-  expect(kindOf(&fs3, h2id) == EventKind.TimedOut[], "under way: TimedOut");
+  expect(kindOf(&fs3, qid) == EventKind.TimedOut, "waiting: TimedOut");
+  expect(kindOf(&fs3, h2id) == EventKind.TimedOut, "under way: TimedOut");
   imm qAt = (endedAt(&fs3, qid) - t0).millis();
   imm hAt = (endedAt(&fs3, h2id) - t0).millis();
   expect(qAt >= 100i64 and qAt < 200i64, "...the one waiting at 100 ms, give or take the tick");
@@ -614,47 +614,47 @@ fn main() i32 {
   imm g = CancelGroup.make();
   mut h3 = Request.get(url(port, "/hang").view());
   h3.deadline = Instant.now() + Duration.fromSeconds(3i64);
-  h3.group = Some[CancelGroup][g];
-  h3.intent = Intent.Urgent[];
-  imm h3id = cl.send(&mut lp, h3, Sink.Here[4u64]);
+  h3.group = Some[CancelGroup](g);
+  h3.intent = Intent.Urgent;
+  imm h3id = cl.send(&mut lp, h3, Sink.Here(4u64));
   mut inGroup = List[FetchId].empty();
   mut k = 0u32;
   while k < 3u32 {
-    mut r = ordered(port, "g", Intent.Prefetch[], 0i64);
-    r.group = Some[CancelGroup][g];
-    inGroup.push(cl.send(&mut lp, r, Sink.Here[4u64]));
+    mut r = ordered(port, "g", Intent.Prefetch, 0i64);
+    r.group = Some[CancelGroup](g);
+    inGroup.push(cl.send(&mut lp, r, Sink.Here(4u64)));
     k = k + 1u32;
   }
-  imm outside = cl.send(&mut lp, ordered(port, "outside", Intent.Background[], 0i64), Sink.Here[4u64]);
+  imm outside = cl.send(&mut lp, ordered(port, "outside", Intent.Background, 0i64), Sink.Here(4u64));
   imm c0 = Instant.now();
   {
     imm th = thread.start(new Canceller(g, Duration.fromMillis(50i64)), &cancelLater);
     mut fs4 = finals();
     collect(&mut cl, &mut sv, &mut lp, &mut fs4, 5u64);
     expectUInt(fs4.cancelled, 4u64, "the group's four Cancelled: one under way, three waiting");
-    expect(kindOf(&fs4, h3id) == EventKind.Cancelled[], "...the one under way among them");
-    expect(kindOf(&fs4, outside) == EventKind.Done[], "the one outside the group goes on: Done");
+    expect(kindOf(&fs4, h3id) == EventKind.Cancelled, "...the one under way among them");
+    expect(kindOf(&fs4, outside) == EventKind.Done, "the one outside the group goes on: Done");
     imm cAt = (endedAt(&fs4, h3id) - c0).millis();
     expect(cAt >= 50i64 and cAt < 150i64, "the cancel wakes the loop at once");
   }
   expectStr(orderSince(&sv, from4).view(), "hang outside", "the group's waiting ones never sent");
   expect(g.isCancelled(), "the group is cancelled: a state");
-  mut late = ordered(port, "late", Intent.Urgent[], 0i64);
-  late.group = Some[CancelGroup][g];
+  mut late = ordered(port, "late", Intent.Urgent, 0i64);
+  late.group = Some[CancelGroup](g);
   mut fs5 = finals();
-  imm lid = cl.send(&mut lp, late, Sink.Here[5u64]);
+  imm lid = cl.send(&mut lp, late, Sink.Here(5u64));
   collect(&mut cl, &mut sv, &mut lp, &mut fs5, 1u64);
-  expect(kindOf(&fs5, lid) == EventKind.Cancelled[], "asked in a cancelled group: Cancelled at once");
+  expect(kindOf(&fs5, lid) == EventKind.Cancelled, "asked in a cancelled group: Cancelled at once");
 
   // ---- A group's deadline ----
   imm d0 = Instant.now();
   imm gd = CancelGroup.until(d0 + Duration.fromMillis(80i64));
   mut h4 = Request.get(url(port, "/hang").view());
-  h4.group = Some[CancelGroup][gd];
+  h4.group = Some[CancelGroup](gd);
   mut fs6 = finals();
-  imm h4id = cl.send(&mut lp, h4, Sink.Here[6u64]);
+  imm h4id = cl.send(&mut lp, h4, Sink.Here(6u64));
   collect(&mut cl, &mut sv, &mut lp, &mut fs6, 1u64);
-  expect(kindOf(&fs6, h4id) == EventKind.TimedOut[], "a group's deadline: TimedOut");
+  expect(kindOf(&fs6, h4id) == EventKind.TimedOut, "a group's deadline: TimedOut");
   imm dAt = (endedAt(&fs6, h4id) - d0).millis();
   expect(dAt >= 80i64 and dAt < 180i64, "...at it");
 

@@ -244,7 +244,7 @@ pub struct Driver {
   fn blankConn(self &, next u32) Conn {
     new Conn(gen: 1u32, state: cFree, nextFree: next, server: false, listener: ListenerId.none(),
       sock: Handle.none(), core: http1.Connection.client(cfg.protocol, pool, new Instant()),
-      layer: plainLayer(), sink: Sink.Here[0u64], addrs: List[SocketAddr].empty(), nextAddr: 0usize,
+      layer: plainLayer(), sink: Sink.Here(0u64), addrs: List[SocketAddr].empty(), nextAddr: 0usize,
       connOp: OpId.none(), callOp: OpId.none(), connectBy: new Instant(), peer: SocketAddr.localhost(0u16),
       recvOut: false, readyOut: false, readyHit: false, sendsOut: 0u32, eof: false, eofFed: false,
       shut: false, closeAsked: false, timer: OpId.none(), timerAt: new Instant(), current: noEntry,
@@ -254,7 +254,7 @@ pub struct Driver {
 
   fn blankReq(self &, next u32) Req {
     new Req(gen: 1u32, state: rFree, nextFree: next, conn: noEntry, connGen: 0u32, server: false,
-      sink: Sink.Here[0u64], head: RequestHead.empty(), body: BodyLength.empty(), isHead: false,
+      sink: Sink.Here(0u64), head: RequestHead.empty(), body: BodyLength.empty(), isHead: false,
       watch: OpId.none(), wrote: false, responded: false, finished: false, readDone: false,
       gotResponse: false, wantWritable: false, timing: Timing.zero());
   }
@@ -321,7 +321,7 @@ pub struct Driver {
     c.gen = nextGen(c.gen);
     c.core = http1.Connection.client(cfg.protocol, pool, new Instant());
     c.layer = plainLayer();
-    c.sink = Sink.Here[0u64];
+    c.sink = Sink.Here(0u64);
     c.addrs.clear();
     c.waiting.clear();
     c.flushing.clear();
@@ -369,7 +369,7 @@ pub struct Driver {
     imm r = self.reqAt(ri) as &mut Req;
     r.state = rFree;
     r.gen = nextGen(r.gen);
-    r.sink = Sink.Here[0u64];
+    r.sink = Sink.Here(0u64);
     r.head = RequestHead.empty();
     r.nextFree = freeReq;
     freeReq = ri;
@@ -403,7 +403,7 @@ pub struct Driver {
         return;
       }
     }
-    mut s Sink = Sink.Here[0u64];
+    mut s Sink = Sink.Here(0u64);
     s <=> *sink;
     mut back = blankEvent();
     mut sent = sinkTaken;
@@ -454,7 +454,7 @@ pub struct Driver {
       mut e = blankEvent();
       imm es = &mut heldE[k];
       e <=> *es;
-      mut s Sink = Sink.Here[0u64];
+      mut s Sink = Sink.Here(0u64);
       imm ss = &mut heldS[k];
       s <=> *ss;
       imm conn = *heldC[k];
@@ -618,7 +618,7 @@ pub struct Driver {
     if c.layer.failed() {
       c.failed = true;
       imm text = c.layer.failureText();
-      c.failure = Failure.make(Stage.Tls[], c.layer.failureCode(), ErrorKind.Closed[], text.view());
+      c.failure = Failure.make(Stage.Tls, c.layer.failureCode(), ErrorKind.Closed, text.view());
       self.closeNow(lp, i, true, false);
     }
   }
@@ -628,7 +628,7 @@ pub struct Driver {
   fn layerCall(self &mut, lp &mut Loop, i u32) {
     imm c = self.connAt(i) as &mut Conn;
     if not c.callOp.isNone() or not c.layer.wantsCall() {return;}
-    c.callOp = lp.submit(c.layer.takeCall(), Target.Here[self.tok(kCall, i, c.gen)]);
+    c.callOp = lp.submit(c.layer.takeCall(), Target.Here(self.tok(kCall, i, c.gen)));
   }
 
   // A client's next waiting request, when the connection is free for it
@@ -670,13 +670,13 @@ pub struct Driver {
           r.conn = i;
           r.connGen = c.gen;
           r.sink = copySink(&mut c.sink);
-          r.isHead = q.head.method == Method.Head[];
+          r.isHead = q.head.method == Method.Head;
           r.body = q.body;
           r.timing.submitted = now;
           r.timing.started = now;
           c.current = ri;
           st.requests = st.requests + 1u64;
-          mut ev = Event.make(EventKind.Request[], r.sink.token, self.connIdOf(i), self.reqIdOf(ri));
+          mut ev = Event.make(EventKind.Request, r.sink.token, self.connIdOf(i), self.reqIdOf(ri));
           ev.request <=> q.head;
           ev.body = q.body;
           self.emit(&mut r.sink, i, c.gen, 0usize, ev);
@@ -686,7 +686,7 @@ pub struct Driver {
             imm r = self.reqAt(c.current) as &mut Req;
             r.gotResponse = true;
             r.timing.firstByte = now;
-            mut ev = Event.make(EventKind.Response[], r.sink.token, self.connIdOf(i), self.reqIdOf(c.current));
+            mut ev = Event.make(EventKind.Response, r.sink.token, self.connIdOf(i), self.reqIdOf(c.current));
             ev.response <=> p.head;
             ev.body = p.body;
             self.emit(&mut r.sink, i, c.gen, 0usize, ev);
@@ -696,7 +696,7 @@ pub struct Driver {
           if c.current != noEntry {
             imm r = self.reqAt(c.current) as &mut Req;
             r.gotResponse = true;
-            mut ev = Event.make(EventKind.Interim[], r.sink.token, self.connIdOf(i), self.reqIdOf(c.current));
+            mut ev = Event.make(EventKind.Interim, r.sink.token, self.connIdOf(i), self.reqIdOf(c.current));
             ev.response <=> p.head;
             self.emit(&mut r.sink, i, c.gen, 0usize, ev);
           }
@@ -706,7 +706,7 @@ pub struct Driver {
           if c.current != noEntry {
             imm r = self.reqAt(c.current) as &mut Req;
             imm credit = if isChan(&mut r.sink) {n;} else {0usize;};
-            mut ev = Event.make(EventKind.Data[], r.sink.token, self.connIdOf(i), self.reqIdOf(c.current));
+            mut ev = Event.make(EventKind.Data, r.sink.token, self.connIdOf(i), self.reqIdOf(c.current));
             ev.buf <=> d.buf;
             self.emit(&mut r.sink, i, c.gen, credit, ev);
           } else {
@@ -718,7 +718,7 @@ pub struct Driver {
             imm ri = c.current;
             imm r = self.reqAt(ri) as &mut Req;
             r.readDone = true;
-            mut ev = Event.make(EventKind.End[], r.sink.token, self.connIdOf(i), self.reqIdOf(ri));
+            mut ev = Event.make(EventKind.End, r.sink.token, self.connIdOf(i), self.reqIdOf(ri));
             ev.trailers <=> e.trailers;
             self.emit(&mut r.sink, i, c.gen, 0usize, ev);
             if not c.server {
@@ -737,7 +737,7 @@ pub struct Driver {
           mut e = HttpError.empty();
           e <=> f.error;
           c.failed = true;
-          c.failure = new Failure(Stage.Http[], 0u32, e, false);
+          c.failure = new Failure(Stage.Http, 0u32, e, false);
           self.answerAll(lp, i, false);
         }
       }
@@ -766,7 +766,7 @@ pub struct Driver {
         c.layer.plainIn(p);
         continue;
       }
-      lp.submit(Op.Send[c.sock, b], Target.Here[self.tok(kSend, i, c.gen)]);
+      lp.submit(Op.Send(c.sock, b), Target.Here(self.tok(kSend, i, c.gen)));
       c.sendsOut = c.sendsOut + 1u32;
       // A layer's own bytes (a TLS handshake's) are not the request's
       if c.current != noEntry and c.layer.isOpen() {(self.reqAt(c.current) as &mut Req).wrote = true;}
@@ -799,7 +799,7 @@ pub struct Driver {
     if c.core.writeRoom() < cfg.protocol.writeWatermark / 2usize {return;}
     r.wantWritable = false;
     self.emit(&mut r.sink, i, c.gen, 0usize,
-      Event.make(EventKind.Writable[], r.sink.token, self.connIdOf(i), self.reqIdOf(c.current)));
+      Event.make(EventKind.Writable, r.sink.token, self.connIdOf(i), self.reqIdOf(c.current)));
   }
 
   // The core's deadline on the loop's timers. A timer armed earlier than
@@ -811,7 +811,7 @@ pub struct Driver {
       case imm t Some {
         if c.timer.isNone() or t < c.timerAt {
           if not c.timer.isNone() {lp.cancel(c.timer);}
-          c.timer = lp.after(t, Target.Here[self.tok(kTimer, i, c.gen)]);
+          c.timer = lp.after(t, Target.Here(self.tok(kTimer, i, c.gen)));
           c.timerAt = t;
         }
       }
@@ -830,7 +830,7 @@ pub struct Driver {
     if c.core.readCredit() < cfg.recvSize or c.layer.wireRoom() < cfg.recvSize {return;}
     imm reading = c.current != noEntry and not (self.reqAt(c.current) as &Req).readDone;
     if not reading and cfg.idleRecvReady and not c.readyHit {
-      lp.submit(Op.RecvReady[c.sock], Target.Here[self.tok(kReady, i, c.gen)]);
+      lp.submit(Op.RecvReady(c.sock), Target.Here(self.tok(kReady, i, c.gen)));
       c.readyOut = true;
       return;
     }
@@ -842,11 +842,11 @@ pub struct Driver {
     }
     if b.capacity() == 0usize {
       c.failed = true;
-      c.failure = Failure.make(Stage.Limit[], 0u32, ErrorKind.TooLarge[], "the buffer pool refused a receive buffer");
+      c.failure = Failure.make(Stage.Limit, 0u32, ErrorKind.TooLarge, "the buffer pool refused a receive buffer");
       self.closeNow(lp, i, true, false);
       return;
     }
-    lp.submit(Op.Recv[c.sock, b], Target.Here[self.tok(kRecv, i, c.gen)]);
+    lp.submit(Op.Recv(c.sock, b), Target.Here(self.tok(kRecv, i, c.gen)));
     c.recvOut = true;
   }
 
@@ -877,7 +877,7 @@ pub struct Driver {
     c.shut = true;
     lp.shutdown(c.sock);
     if not c.timer.isNone() {lp.cancel(c.timer);}
-    c.timer = lp.after(now + cfg.lingerTimeout, Target.Here[self.tok(kTimer, i, c.gen)]);
+    c.timer = lp.after(now + cfg.lingerTimeout, Target.Here(self.tok(kTimer, i, c.gen)));
     c.timerAt = now + cfg.lingerTimeout;
     self.lingerRecv(lp, i);
   }
@@ -895,7 +895,7 @@ pub struct Driver {
       self.closeNow(lp, i, false, false);
       return;
     }
-    lp.submit(Op.Recv[c.sock, b], Target.Here[self.tok(kRecv, i, c.gen)]);
+    lp.submit(Op.Recv(c.sock, b), Target.Here(self.tok(kRecv, i, c.gen)));
     c.recvOut = true;
   }
 
@@ -913,18 +913,18 @@ pub struct Driver {
     }
     r.timing.ended = Instant.now();
     imm id = self.reqIdOf(ri);
-    mut k EventKind = EventKind.Done[];
+    mut k EventKind = EventKind.Done;
     if how == endDone {
       st.done = st.done + 1u64;
     } elif how == endFailed {
       st.failed = st.failed + 1u64;
-      k = EventKind.Failed[];
+      k = EventKind.Failed;
     } elif how == endCancelled {
       st.cancelled = st.cancelled + 1u64;
-      k = EventKind.Cancelled[];
+      k = EventKind.Cancelled;
     } else {
       st.timedOut = st.timedOut + 1u64;
-      k = EventKind.TimedOut[];
+      k = EventKind.TimedOut;
     }
     mut ev = Event.make(k, r.sink.token, id.conn, id);
     ev.timing = r.timing;
@@ -938,17 +938,17 @@ pub struct Driver {
     imm c = self.connAt(i) as &Conn;
     imm r = self.reqAt(ri) as &Req;
     mut f = Failure.none();
-    imm opened = c.failed and c.failure.stage != Stage.Resolve[] and c.failure.stage != Stage.Connect[] and
-      c.failure.stage != Stage.Limit[];
+    imm opened = c.failed and c.failure.stage != Stage.Resolve and c.failure.stage != Stage.Connect and
+      c.failure.stage != Stage.Limit;
     if c.failed and not (waiting and opened) {
       f = c.failure.copy();
     } elif waiting {
-      f = Failure.make(Stage.Closed[], 0u32, ErrorKind.Closed[], "the connection closed before the request was sent");
+      f = Failure.make(Stage.Closed, 0u32, ErrorKind.Closed, "the connection closed before the request was sent");
     } else {
-      f = Failure.make(Stage.Closed[], 0u32, ErrorKind.Closed[], "the connection closed before the exchange ended");
+      f = Failure.make(Stage.Closed, 0u32, ErrorKind.Closed, "the connection closed before the exchange ended");
     }
     f.unsent = waiting or not r.wrote;
-    if f.stage != Stage.Http[] or waiting {
+    if f.stage != Stage.Http or waiting {
       f.error.noResponse = waiting or (not r.gotResponse and c.core.bytesReceived() == c.inAtStart);
     }
     f;
@@ -1009,7 +1009,7 @@ pub struct Driver {
     imm clean = not c.failed;
     st.closed = st.closed + 1u64;
     if clean {st.cleanCloses = st.cleanCloses + 1u64;}
-    mut ev = Event.make(EventKind.Closed[], c.sink.token, self.connIdOf(i), ReqId.none());
+    mut ev = Event.make(EventKind.Closed, c.sink.token, self.connIdOf(i), ReqId.none());
     ev.clean = clean;
     if not clean {ev.failure = c.failure.copy();}
     ev.peer = c.peer;
@@ -1095,7 +1095,7 @@ pub struct Driver {
         self.markDirty(index);
       } elif comp.status == diag.outcomeFailed {
         c.eof = true;
-        self.failConn(lp, index, Stage.Read[], comp.code, ErrorKind.Closed[], "a receive failed: the connection was reset, or broke");
+        self.failConn(lp, index, Stage.Read, comp.code, ErrorKind.Closed, "a receive failed: the connection was reset, or broke");
       }
     } elif kind == kReady {
       c.readyOut = false;
@@ -1104,7 +1104,7 @@ pub struct Driver {
         self.markDirty(index);
       } elif comp.status == diag.outcomeFailed {
         c.eof = true;
-        self.failConn(lp, index, Stage.Read[], comp.code, ErrorKind.Closed[], "a receive failed: the connection was reset, or broke");
+        self.failConn(lp, index, Stage.Read, comp.code, ErrorKind.Closed, "a receive failed: the connection was reset, or broke");
       }
     } elif kind == kSend {
       c.sendsOut = c.sendsOut - 1u32;
@@ -1112,7 +1112,7 @@ pub struct Driver {
         st.bytesOut = st.bytesOut + u64.from(comp.n);
         self.markDirty(index);
       } elif comp.status != diag.outcomeCancelled {
-        self.failConn(lp, index, Stage.Write[], comp.code, ErrorKind.Closed[], "a send failed: the connection was reset, or broke");
+        self.failConn(lp, index, Stage.Write, comp.code, ErrorKind.Closed, "a send failed: the connection was reset, or broke");
       }
     } elif kind == kTimer {
       if comp.id != c.timer {return true;}
@@ -1131,14 +1131,14 @@ pub struct Driver {
       if comp.isDone() {
         c.addrs = addressesIn(&comp.buf);
         if c.addrs.len() == 0usize {
-          self.failConn(lp, index, Stage.Resolve[], 11001u32, ErrorKind.Closed[], "the name has no address");
+          self.failConn(lp, index, Stage.Resolve, 11001u32, ErrorKind.Closed, "the name has no address");
         } else {
           self.connectNext(lp, index);
         }
       } elif comp.status == diag.outcomeTimedOut {
-        self.failConn(lp, index, Stage.Resolve[], 0u32, ErrorKind.TimedOut[], "no address within connectTimeout");
+        self.failConn(lp, index, Stage.Resolve, 0u32, ErrorKind.TimedOut, "no address within connectTimeout");
       } elif comp.status == diag.outcomeFailed {
-        self.failConn(lp, index, Stage.Resolve[], comp.code, ErrorKind.Closed[], "the name could not be looked up");
+        self.failConn(lp, index, Stage.Resolve, comp.code, ErrorKind.Closed, "the name could not be looked up");
       }
     } elif kind == kConnect {
       c.connOp = OpId.none();
@@ -1147,17 +1147,17 @@ pub struct Driver {
         c.sock = comp.handle;
         c.state = cOpen;
         st.connected = st.connected + 1u64;
-        mut ev = Event.make(EventKind.Connected[], c.sink.token, self.connIdOf(index), ReqId.none());
+        mut ev = Event.make(EventKind.Connected, c.sink.token, self.connIdOf(index), ReqId.none());
         ev.peer = c.peer;
         self.emit(&mut c.sink, index, c.gen, 0usize, ev);
         self.markDirty(index);
       } elif comp.status == diag.outcomeTimedOut {
-        self.failConn(lp, index, Stage.Connect[], 0u32, ErrorKind.TimedOut[], "no connection within connectTimeout");
+        self.failConn(lp, index, Stage.Connect, 0u32, ErrorKind.TimedOut, "no connection within connectTimeout");
       } elif comp.status == diag.outcomeFailed {
         if c.nextAddr < c.addrs.len() and now < c.connectBy {
           self.connectNext(lp, index);
         } else {
-          self.failConn(lp, index, Stage.Connect[], comp.code, ErrorKind.Closed[], "the connection could not be made");
+          self.failConn(lp, index, Stage.Connect, comp.code, ErrorKind.Closed, "the connection could not be made");
         }
       }
     }
@@ -1193,11 +1193,11 @@ pub struct Driver {
           case is None[IoBuf] {}
         }
         if b.capacity() == 0usize {
-          self.failConn(lp, i, Stage.Limit[], 0u32, ErrorKind.TooLarge[], "the buffer pool refused a lookup's buffer");
+          self.failConn(lp, i, Stage.Limit, 0u32, ErrorKind.TooLarge, "the buffer pool refused a lookup's buffer");
           return id;
         }
         c.state = cResolving;
-        c.connOp = lp.submitBy(resolveOp(host, port, b), Target.Here[self.tok(kResolve, i, c.gen)], c.connectBy);
+        c.connOp = lp.submitBy(resolveOp(host, port, b), Target.Here(self.tok(kResolve, i, c.gen)), c.connectBy);
       }
     }
     id;
@@ -1225,7 +1225,7 @@ pub struct Driver {
     st.connects = st.connects + 1u64;
     if full {
       // Its Closed goes to its sink like any connection's
-      self.failConn(lp, i, Stage.Limit[], 0u32, ErrorKind.TooLarge[], "the driver holds maxConnections connections");
+      self.failConn(lp, i, Stage.Limit, 0u32, ErrorKind.TooLarge, "the driver holds maxConnections connections");
     }
     i;
   }
@@ -1237,27 +1237,27 @@ pub struct Driver {
     c.nextAddr = c.nextAddr + 1usize;
     c.state = cConnecting;
     c.peer = a;
-    c.connOp = lp.submitBy(Op.Connect[a], Target.Here[self.tok(kConnect, i, c.gen)], c.connectBy);
+    c.connOp = lp.submitBy(Op.Connect(a), Target.Here(self.tok(kConnect, i, c.gen)), c.connectBy);
   }
 
   // A request on a client connection, its events to sink (see the package's
   // header, REQUESTS)
   pub fn request(self &mut, lp &mut Loop, conn ConnId, head RequestHead, body BodyLength, sink Sink,
       file &Array[u8] = srcFile(), line u32 = srcLine()) ReqId {
-    self.ask(lp, conn, head, body, sink, None[CancelGroup][], forever(), file, line);
+    self.ask(lp, conn, head, body, sink, None, forever(), file, line);
   }
 
   // A request answered TimedOut if it has not ended by deadline
   pub fn requestBy(self &mut, lp &mut Loop, conn ConnId, head RequestHead, body BodyLength, sink Sink,
       deadline Instant, file &Array[u8] = srcFile(), line u32 = srcLine()) ReqId {
-    self.ask(lp, conn, head, body, sink, None[CancelGroup][], deadline, file, line);
+    self.ask(lp, conn, head, body, sink, None, deadline, file, line);
   }
 
   // A request in a cancel group: the group's cancel cancels it, and its
   // deadline is the tighter of 'deadline' and the group's
   pub fn requestIn(self &mut, lp &mut Loop, conn ConnId, head RequestHead, body BodyLength, sink Sink,
       group CancelGroup, deadline Instant, file &Array[u8] = srcFile(), line u32 = srcLine()) ReqId {
-    self.ask(lp, conn, head, body, sink, Some[CancelGroup][group], deadline, file, line);
+    self.ask(lp, conn, head, body, sink, Some[CancelGroup](group), deadline, file, line);
   }
 
   fn ask(self &mut, lp &mut Loop, conn ConnId, head RequestHead, body BodyLength, sink Sink,
@@ -1272,7 +1272,7 @@ pub struct Driver {
     r.head <=> h;
     r.body = body;
     r.server = false;
-    r.isHead = r.head.method == Method.Head[];
+    r.isHead = r.head.method == Method.Head;
     r.conn = conn.index;
     r.connGen = conn.gen;
     r.timing.submitted = now;
@@ -1281,18 +1281,18 @@ pub struct Driver {
     imm id = self.reqIdOf(ri);
     imm ci = self.connIndex(conn);
     if ci == noEntry {
-      self.refuse(lp, ri, Stage.Closed[], "the connection is closed, or names nothing");
+      self.refuse(lp, ri, Stage.Closed, "the connection is closed, or names nothing");
       return id;
     }
     imm c = self.connAt(ci) as &mut Conn;
     if c.server {panic("httpconn: request on a server's connection", file, line);}
     if c.state == cClosing or c.failed or c.closeAsked {
-      self.refuse(lp, ri, Stage.Closed[], "the connection is closing");
+      self.refuse(lp, ri, Stage.Closed, "the connection is closing");
       return id;
     }
     imm busy = c.state != cOpen or c.current != noEntry or c.waiting.len() > 0usize;
     if busy and c.waiting.len() >= usize.from(cfg.maxWaiting) {
-      self.refuse(lp, ri, Stage.Limit[], "maxWaiting requests already wait on the connection");
+      self.refuse(lp, ri, Stage.Limit, "maxWaiting requests already wait on the connection");
       return id;
     }
     mut dl = deadline;
@@ -1315,10 +1315,10 @@ pub struct Driver {
     match group {
       case imm g Some {
         imm at = if dl < forever() {dl;} else {now + Duration.fromHours(87600i64);};
-        r.watch = lp.afterIn(at, Target.Here[self.tok(kWatch, ri, r.gen)], g);
+        r.watch = lp.afterIn(at, Target.Here(self.tok(kWatch, ri, r.gen)), g);
       }
       else {
-        if dl < forever() {r.watch = lp.after(dl, Target.Here[self.tok(kWatch, ri, r.gen)]);}
+        if dl < forever() {r.watch = lp.after(dl, Target.Here(self.tok(kWatch, ri, r.gen)));}
       }
     }
     c.waiting.push(ri);
@@ -1328,7 +1328,7 @@ pub struct Driver {
 
   // A request that cannot be made is answered Failed at once, never sent
   fn refuse(self &mut, lp &mut Loop, ri u32, stage Stage, detail &str) {
-    mut f = Failure.make(stage, 0u32, if stage == Stage.Limit[] {ErrorKind.TooLarge[];} else {ErrorKind.Closed[];}, detail);
+    mut f = Failure.make(stage, 0u32, if stage == Stage.Limit {ErrorKind.TooLarge;} else {ErrorKind.Closed;}, detail);
     f.unsent = true;
     f.error.noResponse = true;
     self.finishReq(lp, ri, endFailed, f);
@@ -1350,17 +1350,17 @@ pub struct Driver {
     mut h = Handle.none();
     match lp.listen(addr) {
       case imm r Ok {h = r;}
-      case imm e Error {return Error[ListenerId, IoError][e];}
+      case imm e Error {return Error[ListenerId, IoError](e);}
     }
     imm k = u32.from(listeners.len());
     listeners.push(new Lst(1u32, true, h, sink, make, 0u32));
     self.armAccepts(lp, k);
-    Ok[ListenerId, IoError][new ListenerId(k, 1u32)];
+    Ok[ListenerId, IoError](new ListenerId(k, 1u32));
   }
 
   // The address a listener is bound to (its port, when it asked for 0)
   pub fn localAddr(self &, lp &Loop, l ListenerId) Result[SocketAddr, IoError] {
-    if l.index >= u32.from(listeners.len()) {return Error[SocketAddr, IoError][new IoError(6u32)];}
+    if l.index >= u32.from(listeners.len()) {return Error[SocketAddr, IoError](new IoError(6u32));}
     lp.localAddr(listeners[usize.from(l.index)].sock);
   }
 
@@ -1382,7 +1382,7 @@ pub struct Driver {
       imm e = &mut listeners[usize.from(k)];
       if not e.open or e.acceptsOut >= cfg.acceptDepth or liveConns + acceptsOut >= cfg.maxConnections {break;}
       imm sock = e.sock;
-      lp.submit(Op.Accept[sock], Target.Here[t]);
+      lp.submit(Op.Accept(sock), Target.Here(t));
       listeners[usize.from(k)].acceptsOut = listeners[usize.from(k)].acceptsOut + 1u32;
       acceptsOut = acceptsOut + 1u32;
     }
@@ -1421,7 +1421,7 @@ pub struct Driver {
       case imm x Error {}
     }
     st.accepted = st.accepted + 1u64;
-    mut ev = Event.make(EventKind.Accepted[], c.sink.token, self.connIdOf(i), ReqId.none());
+    mut ev = Event.make(EventKind.Accepted, c.sink.token, self.connIdOf(i), ReqId.none());
     ev.listener = c.listener;
     ev.peer = c.peer;
     self.emit(&mut c.sink, i, c.gen, 0usize, ev);
@@ -1471,16 +1471,16 @@ pub struct Driver {
 
   // Body bytes for a request (a client's) or a response (a server's),
   // moved in: None once queued (or dropped, when the request has ended);
-  // Some[buf] back, refused, when the connection's send queue is at its
+  // Some(buf) back, refused, when the connection's send queue is at its
   // watermark or the request has not started -- Writable says when to try
   // again (see the package's header, CREDIT)
   pub fn sendData(self &mut, req ReqId, buf IoBuf, file &Array[u8] = srcFile(), line u32 = srcLine()) Option[IoBuf] {
     imm ri = self.reqIndex(req);
-    if ri == noEntry {return None[IoBuf][];}
+    if ri == noEntry {return None;}
     imm r = self.reqAt(ri) as &mut Req;
     if r.state == rWaiting {
       r.wantWritable = true;
-      return Some[IoBuf][buf];
+      return Some[IoBuf](buf);
     }
     if r.finished {panic("httpconn: sendData after the body was finished", file, line);}
     imm c = self.connAt(r.conn) as &mut Conn;
@@ -1496,9 +1496,9 @@ pub struct Driver {
     self.markDirty(r.conn);
     if refused {
       r.wantWritable = true;
-      return Some[IoBuf][back];
+      return Some[IoBuf](back);
     }
-    None[IoBuf][];
+    None;
   }
 
   // The body is whole
@@ -1566,7 +1566,7 @@ pub struct Driver {
     removeValue(&mut c.flushing, ri);
     self.finishReq(lp, ri, how, Failure.none());
     c.failed = true;
-    c.failure = Failure.make(Stage.Closed[], 0u32, ErrorKind.Closed[], "the connection was reset to end a request under way");
+    c.failure = Failure.make(Stage.Closed, 0u32, ErrorKind.Closed, "the connection was reset to end a request under way");
     self.closeNow(lp, ci, true, false);
   }
 
@@ -1586,7 +1586,7 @@ pub struct Driver {
     if ci == noEntry {return false;}
     imm c = self.connAt(ci) as &mut Conn;
     c.failed = true;
-    c.failure = Failure.make(Stage.Closed[], 0u32, ErrorKind.Closed[], "the connection was aborted");
+    c.failure = Failure.make(Stage.Closed, 0u32, ErrorKind.Closed, "the connection was aborted");
     self.closeNow(lp, ci, true, true);
     true;
   }
@@ -1673,7 +1673,7 @@ pub struct Driver {
 // ---------------------------------------------------------------------------
 
 // An event holding nothing, to swap one out of where it is held
-fn blankEvent() Event {Event.make(EventKind.Writable[], 0u64, ConnId.none(), ReqId.none());}
+fn blankEvent() Event {Event.make(EventKind.Writable, 0u64, ConnId.none(), ReqId.none());}
 
 // What a channel sink did with an event
 const sinkTaken = 0u32;
@@ -1734,7 +1734,7 @@ fn parseV4(host &str, port u16) Option[SocketAddr] {
   mut k = 0usize;
   while k <= host.len() {
     if k == host.len() or host[k] == '.' {
-      if digits == 0u32 or v > 255u32 or part >= 4usize {return None[SocketAddr][];}
+      if digits == 0u32 or v > 255u32 or part >= 4usize {return None;}
       parts[part] = u8.from(v);
       part = part + 1usize;
       v = 0u32;
@@ -1742,21 +1742,21 @@ fn parseV4(host &str, port u16) Option[SocketAddr] {
     } elif host[k] >= '0' and host[k] <= '9' {
       v = v * 10u32 + u32.from(host[k] - '0');
       digits = digits + 1u32;
-      if digits > 3u32 {return None[SocketAddr][];}
+      if digits > 3u32 {return None;}
     } else {
-      return None[SocketAddr][];
+      return None;
     }
     k = k + 1usize;
   }
-  if part != 4usize {return None[SocketAddr][];}
-  Some[SocketAddr][SocketAddr.v4(parts[0usize], parts[1usize], parts[2usize], parts[3usize], port)];
+  if part != 4usize {return None;}
+  Some[SocketAddr](SocketAddr.v4(parts[0usize], parts[1usize], parts[2usize], parts[3usize], port));
 }
 
 // A request head's program errors, reported at the caller's line (the core
 // checks them again where it writes the head)
 fn checkHead(head &RequestHead, file &Array[u8], line u32) {
   if not isToken(head.methodName()) {panic("httpconn: the request's method is not a token", file, line);}
-  if head.method == Method.Connect[] {panic("httpconn: CONNECT is not supported", file, line);}
+  if head.method == Method.Connect {panic("httpconn: CONNECT is not supported", file, line);}
   if not isVisible(head.target.view()) {panic("httpconn: the request's target is empty or holds a space or a control character", file, line);}
   if not isVisible(head.authority.view()) {panic("httpconn: a request needs an authority, written as Host, without spaces", file, line);}
   if head.headers.has("Host") {panic("httpconn: Host is written from the head's authority, not its fields", file, line);}

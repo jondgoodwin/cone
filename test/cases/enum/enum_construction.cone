@@ -1,0 +1,104 @@
+// A variant is constructed with parentheses and no 'new', 'Shape.Circle(2)', its type
+// arguments, where they are written, in brackets before them, 'Some[i32](5)'; one
+// that holds nothing is its name alone, 'Lamp.Red', and a generic one takes its type
+// arguments from where it goes ('None' wanted as an Option[i32]) or has them written
+// in brackets, 'None[i32]'. Square brackets after a variant never hold values.
+// After 'is', in a pattern and in a type argument a name is still a type.
+//
+// Each printed value was checked by hand against the source.
+
+mod enum_construction;
+
+import stdio use *;
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+enum Lamp {
+  Red;
+  Green;
+  Blink(i32);
+}
+
+enum Shape {
+  Dot;
+  struct Circle {pub radius i32;}
+  struct Rect {pub w i32; pub h i32;}
+}
+
+enum Pending[T] {
+  Waiting;
+  Done(T);
+}
+
+use Lamp;
+
+fn code(l Lamp) i64 {
+  match l {
+    case is Red {1;}
+    case is Green {2;}
+    case imm n Blink {i64.from(n) + 10;}
+  }
+}
+
+fn area(s Shape) i64 {
+  match s {
+    case is Dot {0;}
+    case imm c Circle {i64.from(c.radius) * 3;}
+    case imm r Rect {i64.from(r.w * r.h);}
+  }
+}
+
+fn pend(p Pending[i64]) i64 {
+  match p {
+    case is Waiting {-1;}
+    case imm d Done {d;}
+  }
+}
+
+fn opt(o Option[i64]) i64 {
+  match o {
+    case imm n Some {n;}
+    else {-1;}
+  }
+}
+
+fn pick(c bool) Lamp {
+  if c { Red; } else { Blink(7); }
+}
+
+fn main() {
+  // With values, in parentheses
+  show("blink", code(Lamp.Blink(5)));          // 15
+  show("circle", area(Shape.Circle(2)));       // 6
+  show("rect", area(Shape.Rect(3, 4)));        // 12
+  show("bare blink", code(Blink(1)));          // 11 (after 'use Lamp')
+
+  // Nothing held: the name alone
+  show("red", code(Lamp.Red));                 // 1
+  show("green", code(Green));                  // 2
+  show("dot", area(Shape.Dot));                // 0
+  imm l Lamp = Red;
+  show("variable", code(l));                   // 1
+  show("branch", code(pick(true)) * 100 + code(pick(false)));   // 117
+
+  // Generic: the type arguments from where it goes, or written
+  show("some", opt(Some(9)));                  // 9
+  show("none", opt(None));                     // -1
+  show("typed some", opt(Some[i64](8)));       // 8
+  show("typed none", opt(None[i64]));          // -1
+  imm w Pending[i64] = Pending.Waiting;
+  show("waiting", pend(w));                    // -1
+  show("done", pend(Pending.Done(5)));         // 5
+  show("typed done", pend(Pending.Done[i64](6)));  // 6
+  imm t = Pending.Waiting[i64];
+  show("typed variable", pend(t));             // -1
+
+  // Compared, the tag alone against an empty variant
+  show("equal", if l == Red {1;} else {0;});   // 1
+  show("not equal", if l != Lamp.Green {1;} else {0;});   // 1
+}
