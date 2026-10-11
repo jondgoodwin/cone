@@ -373,21 +373,28 @@ static int typeLitImplicitViable(StructNode *strnode, Nodes *args) {
 }
 
 // The region a construction of a CarriesRegion type is handed when it names
-// none: the heap's, core's 'heapRegion()', checked as written at the construction
-static INode *typeLitRegionArg(TypeCheckState *pstate, FnCallNode *node) {
-    FnDclNode *heap = heapRegionFn();
-    if (heap == NULL)
-        errorExit(ExitNF, "A CarriesRegion type's construction calls the core package's 'heapRegion', and the core package found declares none.");
-    FnCallNode *call = newFnCallNode(newNameUseFromDclNode((INode*)heap, (INode*)node), 1);
-    inodeLexCopy((INode*)call, (INode*)node);
-    INode *arg = (INode*)call;
+// none: the region of the arena it is made in ('new a[T](...)': 'hereregion', the
+// head's region field, typeLitNewInRegion), else the heap's, core's
+// 'heapRegion()'. Checked as written at the construction.
+static INode *typeLitRegionArg(TypeCheckState *pstate, FnCallNode *node, INode *hereregion) {
+    INode *arg;
+    if (hereregion)
+        arg = hereregion;
+    else {
+        FnDclNode *heap = heapRegionFn();
+        if (heap == NULL)
+            errorExit(ExitNF, "A CarriesRegion type's construction calls the core package's 'heapRegion', and the core package found declares none.");
+        FnCallNode *call = newFnCallNode(newNameUseFromDclNode((INode*)heap, (INode*)node), 1);
+        inodeLexCopy((INode*)call, (INode*)node);
+        arg = (INode*)call;
+    }
     inodeTypeCheck(pstate, &arg, unknownType);
     return arg;
 }
 
 // Coerce a declared init's arguments to its parameters after 'self', and
 // append the defaults of those left out, as fnCallFinalizeArgs does for a call
-static void typeLitInitArgs(TypeCheckState *pstate, FnCallNode *node, FnSigNode *sig, int carries) {
+static void typeLitInitArgs(TypeCheckState *pstate, FnCallNode *node, FnSigNode *sig, int carries, INode *hereregion) {
     INode **parmp = &nodesGet(sig->parms, 1);
     INode **argsp;
     uint32_t cnt;
@@ -401,9 +408,10 @@ static void typeLitInitArgs(TypeCheckState *pstate, FnCallNode *node, FnSigNode 
     for (uint32_t i = node->args->used + 1; i < sig->parms->used; ++i) {
         // 'srcFile()' and 'srcLine()' answer where the construction is
         INode *dflt = ((VarDclNode *)nodesGet(sig->parms, i))->value;
-        // A CarriesRegion type's last parameter, the region, left out: the heap's
+        // A CarriesRegion type's last parameter, the region, left out: the arena
+        // it is made in, else the heap's
         if (dflt == NULL && carries && i == sig->parms->used - 1)
-            dflt = typeLitRegionArg(pstate, node);
+            dflt = typeLitRegionArg(pstate, node, hereregion);
         else if (intrinsicIsSrcDefault(dflt))
             dflt = intrinsicSrcCallAt(dflt, (INode*)node);
         nodesAdd(&node->args, dflt);
@@ -744,9 +752,36 @@ static int typeLitIsValueHead(INode *head) {
 // any is and moved into the arena, and the construction is whatever that arena's
 // 'alloc' answers -- a scoped '&mut Node' of an Arena, a key '&'=a mut Node' of a
 // DynArena. The permission may be left out or written 'mut', which is what
-// 'alloc' lends. The arena is not a region the value's init is handed (a type
-// declaring CarriesRegion is handed the heap's, as everywhere else), so the
-// call this lowers to is the single place that changes.
+// 'alloc' lends.
+//
+// The head must be a REGION VALUE (typeLitRegionField): a value whose type is a
+// struct whose first field is a '*MemRegion', the region things made in it
+// draw their memory from. A type declaring CarriesRegion that is made here is
+// handed that region when its construction names none (the head's first field,
+// read at the construction: 'hereregion' of typeLitNewChecked).
+static int typeLitNewInRegion(TypeCheckState *pstate, FnCallNode **nodep, int hasoption, INode *expectType);
+
+// The first field of this value type's struct when that is a '*MemRegion' and
+// public, else NULL: what makes the value a region. A reference to one is the
+// region it refers to.
+static FieldDclNode *typeLitRegionField(INode *vtype) {
+    if (vtype == NULL || inodeIsError(vtype))
+        return NULL;
+    INode *dcl = itypeGetDerefTypeDcl(vtype);
+    if (dcl == NULL || dcl->tag != StructTag || (dcl->flags & (TraitType | EnumType)))
+        return NULL;
+    StructNode *strnode = (StructNode*)dcl;
+    if (strnode->fields.used == 0)
+        return NULL;
+    FieldDclNode *field = (FieldDclNode*)nodelistGet(&strnode->fields, 0);
+    INode *type = field->vtype;
+    if (type == NULL || type->tag != PtrTag || !(field->flags & FlagPub))
+        return NULL;
+    INode *pointee = ((StarNode*)type)->vtexp;
+    INode *pdcl = pointee && isNameUseNode(pointee) ? nameUseGetDcl((NameUseNode*)pointee) : pointee;
+    return coreIsRegion(pdcl) ? field : NULL;
+}
+
 static int typeLitNewInRegion(TypeCheckState *pstate, FnCallNode **nodep, int hasoption, INode *expectType) {
     FnCallNode *node = *nodep;
     if (node->objfn == NULL || node->objfn->tag != FnCallTag)
@@ -757,7 +792,30 @@ static int typeLitNewInRegion(TypeCheckState *pstate, FnCallNode **nodep, int ha
         return 0;
     if (hasoption) {
         errorMsgNode((INode*)node, ErrorRegionNew,
-            "'trynew' is an allocation that may fail, and an arena's 'alloc' cannot: it panics when memory runs out. Write 'new a[T](...)'.");
+            "'trynew' is refused in a region: whether an allocation there can fail is not settled. Write 'new a[T](...)'.");
+        return 1;
+    }
+    // The head, checked on a copy so the real one is checked once, in the call
+    // this lowers to: is its type a region?
+    CloneState cstate;
+    uint32_t dclpos = cloneDclPush();
+    clonePushState(&cstate, NULL, NULL, pstate->scope, NULL, NULL);
+    INode *probe = cloneNode(&cstate, index->objfn);
+    clonePopState();
+    cloneDclPop(dclpos);
+    errorSilent++;
+    int svErrors = errors;
+    int svWarnings = warnings;
+    inodeTypeCheck(pstate, &probe, unknownType);
+    int probeok = errors == svErrors && isExpNode(probe) && !inodeIsError(probe);
+    errorSilent--;
+    errors = svErrors;
+    warnings = svWarnings;
+    FieldDclNode *regionfld = probeok ? typeLitRegionField(((IExpNode*)probe)->vtype) : NULL;
+    if (probeok && regionfld == NULL) {
+        errorMsgNode(index->objfn, ErrorRegionHead,
+            "'new a[T](...)' allocates in a region, and this is a %s, which is not one. A region is a struct whose first field is a public '*MemRegion', as an arena's is.",
+            itypeName(((IExpNode*)probe)->vtype));
         return 1;
     }
     INode *perm = NULL;
@@ -785,6 +843,20 @@ static int typeLitNewInRegion(TypeCheckState *pstate, FnCallNode **nodep, int ha
     FnCallNode *ctor = newFnCallLower((INode*)node, type, 0);
     ctor->flags |= FlagNew;
     ctor->args = node->args;
+    // What a CarriesRegion type made here is handed when it names none: the
+    // head's region field, 'a.region' (read from a copy of the head: the head
+    // is a variable or a path of fields, so reading it twice runs nothing)
+    if (regionfld) {
+        dclpos = cloneDclPush();
+        clonePushState(&cstate, NULL, NULL, pstate->scope, NULL, NULL);
+        INode *headcopy = cloneNode(&cstate, index->objfn);
+        clonePopState();
+        cloneDclPop(dclpos);
+        FnCallNode *regionof = newFnCallLower((INode*)node, headcopy, 0);
+        regionof->methfld = (INode*)newMemberUseNode(regionfld->namesym);
+        inodeLexCopy(regionof->methfld, (INode*)node);
+        ctor->methfld = (INode*)regionof;
+    }
     FnCallNode *call = newFnCallLower((INode*)node, index->objfn, 1);
     call->methfld = (INode*)newMemberUseNode(allocMethodName);
     inodeLexCopy(call->methfld, (INode*)node);
@@ -804,8 +876,15 @@ static void typeLitNewChecked(TypeCheckState *pstate, FnCallNode **nodep, int ar
     node->vtype = errorType;    // until a value is known to come of it
     // 'trynew': the bound 'Option' name resolution left in methfld
     INode *option = NULL;
+    // 'new a[T](...)' made this construction with the region of 'a' in methfld
+    // (typeLitNewInRegion): what a CarriesRegion type is handed when it names none
+    INode *hereregion = NULL;
     if (node->flags & FlagTryNew) {
         option = node->methfld;
+        node->methfld = NULL;
+    }
+    else if (node->methfld) {
+        hereregion = node->methfld;
         node->methfld = NULL;
     }
 
@@ -1039,6 +1118,6 @@ static void typeLitNewChecked(TypeCheckState *pstate, FnCallNode **nodep, int ar
     }
     INode *type = node->objfn;
     node->objfn = newNameUseFromDclNode((INode*)selected, (INode*)node);
-    typeLitInitArgs(pstate, node, (FnSigNode*)selected->vtype, carries);
+    typeLitInitArgs(pstate, node, (FnSigNode*)selected->vtype, carries, hereregion);
     node->vtype = type;
 }

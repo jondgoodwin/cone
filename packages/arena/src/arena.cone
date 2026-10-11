@@ -91,6 +91,27 @@
 // or the room asked for cannot be counted in a usize, the arena panics. There
 // is no fallible form of 'alloc' yet ('trynew a[T](...)' is refused).
 //
+// An arena is a REGION: the first field of an Arena, 'region', is a
+// '*MemRegion', the arena's own allocate, resize and release, which a growable
+// collection made in it calls instead of the C library. So 'new a[List[i32]](16)'
+// puts the list's four words in the arena and its block there too, and so does
+// a struct declaring CarriesRegion that is made in it ('new a[Mesh](50)': its
+// lists draw from the arena when its construction names no other region). The
+// region is an object of its own that the Arena points to, so it stays where it
+// is when the Arena is moved, returned or stored with the lists in it.
+//   - allocate bumps, as 'alloc' does;
+//   - resize grows a block in place when it is the last thing the arena
+//     allocated and the room is there: a list alone in its arena grows in place
+//     every time. Otherwise it bumps a new block, copies the bytes and abandons
+//     the old one, which the arena does nothing more with until it dies: arenas
+//     leak by design, and the larger the block a list outgrows, the more is held
+//     (two lists pushed in turn copy at every growth);
+//   - release does nothing.
+// A collection in an arena is finalized by the arena's list of finalizers, like
+// any value: its 'final' gives its own elements' memory back to wherever it
+// came from (a 'List[String]' whose strings came from the heap frees them when
+// the arena dies), and its block goes with the arena's blocks.
+//
 // How a value is finalized. A value whose type needs finalizing
 // ('mem.needsFinal[T]()') gets a small header just before it, allocated in
 // the same bump: the next header in the arena's list, and a pointer to the
@@ -140,49 +161,18 @@ struct Block {
 // Room a new block has for values, unless a value needs more
 const blockBytes = 4096usize;
 
-pub struct Arena is NoLoanMut {
+// An arena's state: its region and the blocks it bumps through. It is its own
+// heap object, which the Arena points to and every collection made in the arena
+// points to as its region ('header' is first, so the object is the region), so
+// that moving the Arena moves neither.
+struct ArenaCore {
+  header MemRegion;    // the region: allocate, resize and release, below
   blocks *Block;       // the newest block, or null
   top usize;           // the address of its first unused byte
   limit usize;         // the address just past its end
   finals *FinalNode;   // the newest header, or null
   nfinals usize;       // how many headers the list has held
   nblocks usize;       // how many blocks it holds
-
-  // An arena holding nothing, with no block until the first value arrives
-  pub fn empty() Arena {
-    new Arena(null, 0usize, 0usize, null, 0usize, 0usize);
-  }
-
-  // An arena holding nothing yet, whose first block is allocated now, with
-  // room for at least 'bytes' of values and their headers: a scratch whose
-  // need is known then makes one allocation rather than several
-  pub fn withRoom(bytes usize) Arena {
-    imm room = blockRoom(bytes);
-    imm blk = newBlock(null, room);
-    imm start = blk as usize + mem.sizeof[Block]();
-    new Arena(blk, start, start + room, null, 0usize, 1usize);
-  }
-
-  // Move value into the arena, and a reference to it there. The reference is
-  // good for as long as the arena lives, and is checked as any borrow is, with
-  // the holes the top of this file lists. The placing is done by the two
-  // methods below, which are not generic, so each instance of this one is
-  // only the few lines that differ by T.
-  pub fn alloc[T](self &mut, value T) &mut T {
-    imm at = if mem.needsFinal[T]() {
-      self.placeFinal(mem.sizeof[T](), mem.alignof[T](), (mem.typeRecord[T]() as &TypeRecord).finalize);
-    }
-    else {
-      self.place(mem.sizeof[T](), mem.alignof[T]());
-    };
-    mem.writeRaw(at as *T, value);
-    at as &mut T;
-  }
-
-  // How many values have been given a finalizer header, and how many blocks
-  // it holds: for tests and for tuning, not for correctness
-  pub fn finalizers(self &) usize { nfinals; }
-  pub fn blockCount(self &) usize { nblocks; }
 
   // Room for a value of 'size' bytes aligned to 'align' that needs no
   // finalizing: its address. The caller writes the value there.
@@ -233,11 +223,29 @@ pub struct Arena is NoLoanMut {
     limit = top + room;
   }
 
+  // The block 'block', 'old' bytes long, made 'new' bytes (the region's
+  // resize). The last thing the arena allocated grows, or shrinks, where it
+  // is, if the room is there. Any other is allocated again, the bytes copied,
+  // and the old one abandoned: the arena does nothing more with it until it dies.
+  fn resize(self &mut, block *u8, oldBytes usize, newBytes usize, align usize) *u8 {
+    if block as usize == 0usize { return self.place(newBytes, align); }
+    imm at = block as usize;
+    if at + oldBytes == top and at + newBytes <= limit {
+      top = at + newBytes;
+      return block;
+    }
+    imm moved = self.place(newBytes, align);
+    mut n = oldBytes;
+    if newBytes < oldBytes { n = newBytes; }
+    libc.memcpy(moved, block, n);
+    moved;
+  }
+
   // Its death: every value that needs it finalized, newest first, each header
   // taken off the list before its value's thunk runs, so a value allocated by
   // a 'final' during teardown is finalized too, and none twice; then every
   // block freed. The blocks all stay until the last finalizer has run.
-  fn final(self &uni) {
+  fn teardown(self &mut) {
     while finals as usize != 0usize {
       imm node = finals;
       imm hdr = node as &FinalNode;
@@ -253,22 +261,104 @@ pub struct Arena is NoLoanMut {
   }
 }
 
+// The arena's region, as MemRegion's three functions: each is handed the region,
+// which is the ArenaCore it begins
+fn coreOf(r *MemRegion) &mut ArenaCore {
+  (r as *ArenaCore) as &mut ArenaCore;
+}
+
+fn regionAlloc(r *MemRegion, bytes usize, align usize) *u8 {
+  coreOf(r).place(bytes, align);
+}
+
+fn regionResize(r *MemRegion, block *u8, oldBytes usize, newBytes usize, align usize) *u8 {
+  coreOf(r).resize(block, oldBytes, newBytes, align);
+}
+
+// Nothing is done with a block given back: the arena's blocks go together
+fn regionRelease(r *MemRegion, block *u8, bytes usize) {}
+
+// A new arena state: no block yet, the three region functions set
+fn newCore() *MemRegion {
+  imm core = libc.malloc(mem.sizeof[ArenaCore]()) as *ArenaCore;
+  if core as usize == 0usize { panic("arena: out of memory for an arena"); }
+  mem.writeRaw(core, new ArenaCore(new MemRegion(&regionAlloc, &regionResize, &regionRelease),
+    null, 0usize, 0usize, null, 0usize, 0usize));
+  core as *MemRegion;
+}
+
+pub struct Arena is NoLoanMut {
+  // The arena's region, which the collections made in it point to: public so
+  // that 'new a[T](...)' can hand it to what it makes (typelit.c). Not to be
+  // changed.
+  pub region *MemRegion;
+
+  // An arena holding nothing, with no block until the first value arrives
+  pub fn empty() Arena {
+    new Arena(newCore());
+  }
+
+  // An arena holding nothing yet, whose first block is allocated now, with
+  // room for at least 'bytes' of values and their headers: a scratch whose
+  // need is known then makes one allocation rather than several
+  pub fn withRoom(bytes usize) Arena {
+    imm region = newCore();
+    imm core = coreOf(region);
+    core.grow(bytes);
+    new Arena(region);
+  }
+
+  // Move value into the arena, and a reference to it there. The reference is
+  // good for as long as the arena lives, and is checked as any borrow is, with
+  // the holes the top of this file lists. The placing is done by the two
+  // methods of ArenaCore, which are not generic, so each instance of this one
+  // is only the few lines that differ by T.
+  pub fn alloc[T](self &mut, value T) &mut T {
+    imm core = coreOf(region);
+    imm at = if mem.needsFinal[T]() {
+      core.placeFinal(mem.sizeof[T](), mem.alignof[T](), (mem.typeRecord[T]() as &TypeRecord).finalize);
+    }
+    else {
+      core.place(mem.sizeof[T](), mem.alignof[T]());
+    };
+    mem.writeRaw(at as *T, value);
+    at as &mut T;
+  }
+
+  // How many values have been given a finalizer header, and how many blocks
+  // it holds: for tests and for tuning, not for correctness
+  pub fn finalizers(self &) usize { coreOf(region).nfinals; }
+  pub fn blockCount(self &) usize { coreOf(region).nblocks; }
+
+  // Its death: the values and blocks of its state, then the state
+  fn final(self &uni) {
+    imm core = coreOf(region);
+    core.teardown();
+    libc.free(region as *u8);
+  }
+}
+
 // A dynamic arena (the top of this file): an Arena whose values are reached by
 // keys of its invariant lifetime ''=a', which only it unlocks. It holds the
 // Arena that does the work, so it is allocated, finalized and freed exactly
 // as a scratch is: its values die newest first when it does, then its blocks.
+// Its first field is the Arena's region, the same one, so what 'new d[T](...)'
+// makes in it draws from it.
 pub struct DynArena['=a] is NoLoanMut {
+  pub region *MemRegion;
   ar Arena;
 
   // An arena holding nothing, of a brand of its own: ''=a' is named by no
   // parameter, so each call mints a fresh one for its caller
   pub fn empty() DynArena['=a] {
-    new DynArena(Arena.empty());
+    imm a = Arena.empty();
+    new DynArena(a.region, a);
   }
 
   // The same, its first block allocated now with room for 'bytes' of values
   pub fn withRoom(bytes usize) DynArena['=a] {
-    new DynArena(Arena.withRoom(bytes));
+    imm a = Arena.withRoom(bytes);
+    new DynArena(a.region, a);
   }
 
   // Move value into the arena, and a key to it there: good for as long as
