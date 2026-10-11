@@ -1608,7 +1608,7 @@ class Linker:
         if IS_WINDOWS:
             # synchronization.lib: the sync package's futex (WaitOnAddress and
             # its wakes), which a scenario importing sync compiles in, as
-            # Congo links it from sync's congo.toml. An import library of the
+            # Congo's own Windows link line adds it. An import library of the
             # Windows SDK, beside the C runtime's; a program that calls none
             # of it takes nothing from it.
             return [

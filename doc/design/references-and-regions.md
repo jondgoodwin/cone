@@ -286,8 +286,9 @@ Two consequences worth knowing:
   field is not writable through an `imm` value or a `&` reference, and an `imm`
   field is not writable through a `&mut` one. That is the write half of what
   `doc/reference/refstruct.html` calls *viewpoint adaptation*, and it is the half that
-  exists, with one rule from the sharing side: a `&uni` field is seen only through
-  `uni` references or a struct held by value (`ErrorUniShared`). The rest of
+  exists, with one rule from the sharing side: a `&uni` field, array element or
+  tuple element is seen only through `uni` references or a holder held by value
+  (`ErrorUniShared`). The rest of
   adaptation over the sharing bits is unimplemented because those bits are read
   nowhere.
 
