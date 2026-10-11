@@ -521,6 +521,7 @@ void assignFlow(FlowState *fstate, AssignNode **nodep) {
         for (nodesFor(((TupleNode*)node->lval)->elems, cnt, lvalp)) {
             assignFlowLvalReads(fstate, lvalp);
             flowGateAssigned(fstate, *lvalp);
+            flowGateShapeStore(fstate, *lvalp);
         }
     }
     else {
@@ -529,6 +530,7 @@ void assignFlow(FlowState *fstate, AssignNode **nodep) {
         if (!flowNewSelfFill(node->lval))
             assignFlowLvalReads(fstate, &node->lval);
         flowGateAssigned(fstate, node->lval);
+        flowGateShapeStore(fstate, node->lval);
     }
 
     // Handle tuple decomposition for parallel assignment

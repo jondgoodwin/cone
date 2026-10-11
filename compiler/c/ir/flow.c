@@ -1422,8 +1422,10 @@ void flowLoadValue(FlowState *fstate, INode **nodep) {
         break;
     case CastTag: case IsTag:
         flowLoadValue(fstate, &((CastNode *)*nodep)->exp);
-        if ((*nodep)->tag == CastTag)
+        if ((*nodep)->tag == CastTag) {
             flowGateBoxed(fstate, *nodep);
+            flowGateNarrow(fstate, *nodep);
+        }
         // A raw pointer made of a borrow carries no permission: what it
         // points at may be written through it (VarLendWritable)
         if ((*nodep)->tag == CastTag && iexpGetTypeDcl(*nodep)->tag == PtrTag) {

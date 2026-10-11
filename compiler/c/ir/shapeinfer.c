@@ -146,6 +146,7 @@ typedef struct {
     INode *cont;            // type modes: the collection's type
     VarDclNode *parm;       // the parameter whose pointee is asked about
     int isref;              // it is a reference: a write through it reaches the caller's value
+    INode *pointee;         // then, the type it points at
     int hit;                // a write found
     int pending;            // a body that could settle it is not type checked yet
     VarDclNode *taint[SiTaintMax];  // locals holding a copy of storage read from the parameter's pointee
@@ -387,6 +388,11 @@ static int siWriteHits(INode *lval, SiCtx *c) {
     }
     if (!siRooted(lval, c))
         return 0;
+    // Asked of an enum (a method taking it by reference): only storing over the whole
+    // value reshapes it. A common field, or a field of a variant, is written within the
+    // variant
+    if (c->mode == SiModeField && reshapeIsSum(c->pointee))
+        return iexpGetTypeDcl(lval) == c->pointee;
     if (c->mode == SiModeField)
         return 1;
     INode *t = iexpGetTypeDcl(lval);
@@ -440,7 +446,13 @@ static int siTypeWriteHits(INode *lval, SiCtx *c) {
         }
         return 0;
     }
-    if (!siPlaceInCont(lval, c->cont) || reshapeUniqueLocal(lval))
+    if (reshapeUniqueLocal(lval))
+        return 0;
+    // The place's value stored over: the collection or enum itself, a value holding one
+    // by value, or an element that owns what a borrow may point at (reshapeStoreHits);
+    // or, for a collection, one of its header fields written. An enum's common field,
+    // or a field of its variant, is written within the variant: no reshape
+    if (!reshapeStoreHits(lval, c->cont) && (reshapeIsSum(c->cont) || !siPlaceInCont(lval, c->cont)))
         return 0;
     return c->mode != SiModeOut || siRooted(lval, c);
 }
@@ -830,6 +842,7 @@ static int siAsk(FnDclNode *fn, uint32_t k, int mode, INode *cont) {
         ctx.parm = (VarDclNode *)nodesGet(sig->parms, k);
         INode *ptype = iexpGetTypeDcl((INode *)ctx.parm);
         ctx.isref = ptype != NULL && ptype->tag == RefTag;
+        ctx.pointee = ctx.isref ? itypeGetTypeDcl(((RefNode *)ptype)->vtexp) : NULL;
     }
     siVisit(fn->value, siWalkNode, &ctx);
     // An element read into a local that is used otherwise than written back left
@@ -1041,9 +1054,42 @@ static int siIsRecorded(StructNode *st) {
         && !(st->dclinfo.facts & DclActorGen);
 }
 
+// How many fields the struct has besides the tag
+static uint32_t siPayloadFields(StructNode *st) {
+    uint32_t count = 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&st->fields, cnt, nodesp)) {
+        if (!((*nodesp)->flags & IsTagField))
+            ++count;
+    }
+    return count;
+}
+
+// An enum changes shape when one of its variants holds more than the fields they
+// share: a reference narrowed into that variant is a borrow into the value, and
+// storing another variant over it rereads the same bytes as other types. Nothing is
+// read from its methods (those declared on it are copied into its variants): a
+// store of the whole value is what reshapes it, asked wherever a borrow into it is
+// held (reshape.h). An enum of bare names holds nothing to borrow.
+static int siSumHasPayload(StructNode *st) {
+    uint32_t common = siPayloadFields(st);
+    if (st->derived == NULL)
+        return 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(st->derived, cnt, nodesp)) {
+        if ((*nodesp)->tag == StructTag && siPayloadFields((StructNode *)*nodesp) > common)
+            return 1;
+    }
+    return 0;
+}
+
 static int siSettle(StructNode *st, int demand) {
     if (st->lends == LendsShapeChanging || st->shapeinf == ShapeYes)
         return SiYes;
+    if (reshapeIsSum((INode *)st))
+        return !(st->flags & TypeChecked) ? SiPending : siSumHasPayload(st) ? SiYes : SiNo;
     if (st->lends != LendsLoaned || st->shapeinf == ShapeNo || (st->flags & (TraitType | EnumType)))
         return SiNo;
     if (st->shapeinf == ShapeAsking || !(st->flags & TypeChecked))

@@ -199,7 +199,7 @@ one bit per trigger:
 | `FlowGateStore` | `fnCallFlow` | a call with a `&mut X` argument, `X` carrying a borrow, or a struct argument holding such a writable borrow (`itypeWritableBorrowDepth`), beside another argument carrying one; or any call with arguments to a signature bounding a lifetime by `'static` (`FnSigNode.lifestatic`: a type parameter's `T + 'static`, a parameter `&<Trait + 'static`), whose arguments' loans `pwStaticArgs` checks though no type of them shows it, asked only once the parser has read a `'static` bound (`lifeStaticBoundSeen`) |
 | `FlowGateInCall` | `nameuseFlow`, `nameuseFlowBorrowed` | a variable named while a borrow of it made by an earlier operand of the same call, struct or array literal or value tuple is still waiting for it (`v.add(v.len())`); `&uni s[i]` and `&s[a..b]` on a slice are an index applied to a borrow of the slice (`borrowRefIndexDispatches`), so an operand that is an index is asked as that borrow (`flowGateOperandAsk`) |
 | `FlowGateBoxed` | `flowLoadValue` | a value whose type carries a borrow converted to an owning virtual reference (`So[Trait]` from a `So[H]`), whose loans the loan walk checks are global (section 6, "Named lifetimes") |
-| `FlowGateShape` | `fnCallFlow` (`flowGateShape`, `flowGateShapeAsk`) | a method call returning a borrow, on a receiver of a type that may change shape (`ShapeChanging`, or one whose answer `shapeinf` has not ruled out), reached through a reference, a field of `self` or a global rather than a plain local's own place. A borrow that never reaches a variable (`out.append(x.view())`, `two(l[0], bump(m))`) is otherwise no trigger at all, and a call made beside it could reshape what it lends. Asked even once another bit is set, for the bit also says the callees' bodies are to be checked before the walk (`shapeDemandCallees`) |
+| `FlowGateShape` | `fnCallFlow` (`flowGateShape`, `flowGateShapeAsk`) | a method call returning a borrow, on a receiver of a type that may change shape (`ShapeChanging`, or one whose answer `shapeinf` has not ruled out), reached through a reference, a field of `self` or a global rather than a plain local's own place. A borrow that never reaches a variable (`out.append(x.view())`, `two(l[0], bump(m))`) is otherwise no trigger at all, and a call made beside it could reshape what it lends. Asked even once another bit is set, for the bit also says the callees' bodies are to be checked before the walk (`shapeDemandCallees`). Also a reference narrowed from an enum to one of its variants through a path others share (`flowGateNarrow`), and a store into a struct-typed place that is no local named whole, in a function that has already lent such a borrow (`flowGateShapeStore`) |
 
 "Carries a borrow" is `itypeCarriesBorrow`: the type is a borrowed reference, or
 an owning reference, pointer, array, tuple or struct (an enum's variants
@@ -1303,9 +1303,15 @@ with an `await`, a module's `init`) takes an unsettled type as shape-changing.
 A walk made later is the same walk, so nothing else about the function depends
 on when it ran.
 
-What is not covered: an enum's reshaping, a type that reshapes only through a
-generic free function or a free function of a generic type, and (above) a free
-function of another module writing a public field.
+**An enum** changes shape when one of its variants holds more than the fields the
+variants share (`siSumHasPayload`), whatever its methods say (those declared on it are
+copied into its variants): a reference narrowed into a variant, or a borrow a free
+function returns out of the enum, is a borrow into it, and storing another variant over
+it rereads the same bytes as other types. An enum of bare names holds nothing to borrow.
+
+What is not covered: a type that reshapes only through a generic free function or a
+free function of a generic type, and (above) a free function of another module
+writing a public field.
 
 ### A change through another name
 
@@ -1336,7 +1342,7 @@ answered once per type per call):
   and `viewMut` write no field, destroy no element and move none out, and the bytes
   an element owns stay put, so a view of them is good after a swap or a sort. An
   element replaced by an assignment through another name (`m[0] = s`, which finalizes
-  the old value) is no call and is not seen. A read-only reference handed to code
+  the old value) is no call: it is asked as a store, below. A read-only reference handed to code
   that cannot be read cannot free what it points at (`siReadOnlyRef`). A method whose body is not
   visible (`siVisible`: another package's non-generic, non-inline function, a trait
   call, `extern`) is assumed to (layer 1). A read-only `self` never reshapes.
@@ -1353,7 +1359,40 @@ answered once per type per call):
   reshapes if it does so by something that is no parameter of its own
   (`SiModeOut`, which skips what is reached from the callee's parameters).
 - The same name changing the collection (`loanShapeSamePlace`) is the loan's own
-  freezing, which reports it; the shape check skips it.
+  freezing, which reports it; the shape check skips it where the loan freezes
+  (`loanShapeFrozen`).
+- **A store** is asked of each marked loan the same way (`pwShapeStore`, from `pwStore`
+  and `pwSwap`, for a place that is no local named whole, and none this function owns
+  whole: `reshapeUniqueLocal`; `ReshapeStore`, `ErrorShapeStore`). It reshapes
+  (`reshapeStoreHits`) when the value stored over is the loan's container itself, or
+  a value that holds one by value (`ReachContained`), or, for a collection, an element
+  that needs a finalizer found by indexing the container (`reshapeElementOf`: a chain
+  of field steps and dereferences ending in a call of a method whose receiver is the
+  container, as `m[0]` is). `m[0] = s` on a `List[String]` replaces and finalizes a
+  String, so a view of the old one's bytes dangles; `m[0] = p` on numbers, a field of
+  a struct that merely holds a String, and a field of the element written through the
+  borrow of the element do not. The place the store names is skipped as a call's
+  receiver is, where the loan freezes it or where it is another field of the same
+  root. A function that does so on its own account, handed a reference, is a callee
+  that reshapes (`siTypeWriteHits`, which asks the same). The gate
+  (`flowGateShapeStore`) sets `FlowGateShape` for a store into a struct-typed place that is no
+  local named whole, in a function that has lent.
+
+**An enum** is a marked loan's container too. A reference narrowed from an enum to one
+of its variants through a path others share (`FlagVariantNarrow`, `castSumNarrows`)
+is lent by `pwNarrowShared`: a loan of the place the reference is read through, held
+by whatever holds the narrowed reference (a pattern's hidden local, then the binding),
+marked with the enum as its container where the place is shared (`pwShapeBorrow`).
+Nothing is frozen (`loanFreezeShared` is not called, so the loan stays an alias): the
+enum may be read, and a field of the variant, or one the variants share, written, by
+any name. What reshapes it is the whole value stored over, swapped, or reached by a
+value holding it, in this function (`pwShapeStore`) or in a callee handed it
+(`reshapeCall` as for a collection; `siTypeWriteHits` and `siWriteHits` ask only of the
+whole value for an enum, `reshapeIsSum`); and the same name does it as another does, since
+nothing freezes the place. The borrow a free function returns out of an enum is
+lent and marked as it is out of a collection (`shapeChanging` of an enum is
+`siSumHasPayload`). A conflict is reported at the change, once the holder is used again,
+as `ErrorVariantReshape`, naming the narrowed binding and where it is used.
 
 An answer is yes, no or not yet, as the inference of a shape-changing type is: a
 callee whose body is not type checked yet answers not yet, counted in
@@ -1910,9 +1949,9 @@ droppable noted as holding nothing is never finalized.
 | `ir/shapeinfer.c` | `shapeChanging`, `siSettle`, `siInferStruct`, `siMethod` | whether a type changes shape: declared, or found from its methods (a writable `self` method that writes storage, one that returns a borrow); the answer cached on `StructNode.shapeinf` |
 | | `siParamWrites`, `siCall`, `siWriteHits`, `siReadsStorage`, `siRooted`, `siHoldsStorage`, `siVisible` | whether a function's body writes storage through one of its parameters: its own assignments, what it lends writable to its callees (asked in turn), storage handed to code it cannot read; memoised, a recursion guessed no |
 | | `siAsk`, `shapeParamReshapes`, `shapeTypeReshapes`, `siCallType`, `siTypeWriteHits`, `shapeDemandCallees`, `shapeUnsettled` | the same engine in its other modes (`SiMode`): any field of a parameter's pointee written (a method reshapes); a value of a collection type that is no local replaced, a header field written, or reshaped by a callee, through a parameter or only through a global (a call reshapes). Memoised by function, parameter, mode and type; callees never asked for are checked first; a body not checked yet answers not yet |
-| `ir/reshape.c` | `reshapeCall`, `reshapeReach`, `reshapeUniqueLocal` | could this call reshape a value of a collection type: its receiver, its other arguments by what their types reach, a global; a read-only reference not followed, a local the function owns whole excused ([A change through another name](#a-change-through-another-name)) |
-| `ir/flowpath.c` | `pwShapeBorrow`, `pwShapeCall`, `Place.shwrite`, `flowWalkFinal`, `flowShapeRetry` | mark a borrow into a shape-changing value through a path others may write by; ask every call made while it is held; a verdict that waits for an unchecked body |
-| `ir/flowloan.c` | `loanShapeMark`, `loanShapePend`, `loanShapeNow`, `loanShapeInFlight`, `loanShapeSamePlace`, `loanExcludesWriters` | the marked loans, the pending conflict (`PendingShape`) or immediate report (`ErrorShapeReshape`) of a call that could reshape one |
+| `ir/reshape.c` | `reshapeCall`, `reshapeReach`, `reshapeUniqueLocal`, `reshapeStoreHits`, `reshapeIsSum` | could this call reshape a value of a collection type or an enum: its receiver, its other arguments by what their types reach, a global; could this store; a read-only reference not followed, a local the function owns whole excused ([A change through another name](#a-change-through-another-name)) |
+| `ir/flowpath.c` | `pwShapeBorrow`, `pwShapeCall`, `pwShapeStore`, `pwNarrowShared`, `Place.shwrite`, `flowWalkFinal`, `flowShapeRetry` | mark a borrow into a shape-changing value, or a reference narrowed into an enum's variant, through a path others may write by; ask every call and store made while it is held; a verdict that waits for an unchecked body |
+| `ir/flowloan.c` | `loanShapeMark`, `loanShapePend`, `loanShapeNow`, `loanShapeInFlight`, `loanShapeSamePlace`, `loanShapeFrozen`, `loanExcludesWriters` | the marked loans, the pending conflict (`PendingShape`) or immediate report (`ErrorShapeReshape`, `ErrorShapeStore`, `ErrorVariantReshape`) of a call or store that could reshape one |
 | | `shapeWalkReady`, `shapeWalkDefer`, `shapeWalkDeferred`, `shapeDeclared`, `shapeDeclaredCheck`, `shapeRecordable` | a gated function's walk waits for the types it asks about (`fnDclTypeCheck`) and is made at the end of type check (`doAnalysis`) if a body is not checked yet; the types declaring `ShapeChanging` checked against the methods (`ErrorShapeMark`); the include file's record (`incRecordShape`) |
 | `ir/flow.c` | `flowLoadValue` | the walk's spine — tag dispatch for a value being read |
 | | `flowLoadThroughRef` | `MayRead` on the reference a value is read through; called from `derefFlow`, `fnCallArrIndexFlow` and `fnCallFldAccessFlow` |

@@ -28,8 +28,15 @@
  * 'clear', 'pop' and 'truncate' each write the length; 'set' of a String finalizes
  * the String it replaces, and 'set' of a number runs nothing. Moving elements about
  * within the storage ('swap', a sort) destroys none and moves none out, and what an
- * element owns stays where it is. An assignment through another name that finalizes
- * an element ('m[0] = s') is no call and is not seen.
+ * element owns stays where it is. An assignment or a swap through another name is no
+ * call, and is asked the same (reshapeStoreHits, flowpath.c pwShapeStore): 'm[0] = s'
+ * finalizes the element it replaces.
+ *
+ * An enum is asked the same of a reference narrowed into one of its variants: the
+ * borrow is allowed, and refused only if something could change which variant the
+ * value holds while the narrowed reference is used (reshapeIsSum). What reshapes an
+ * enum is storing over the whole value, or swapping it, by this name or another, in
+ * the function or in a callee. Writing a field within the variant does not.
  *
  * @file
  *
@@ -57,6 +64,22 @@ unsigned reshapeReach(INode *type, INode *cont, int writable);
 // reach it, so it is no other name for a value reached through a shared path.
 int reshapeUniqueLocal(INode *place);
 
+// Is this type an enum (or a tagged trait): a value that holds one of several variants?
+// A reference narrowed into one of its variants is a borrow into it, and what reshapes
+// it is a change of which variant it holds: the whole value stored over, or swapped,
+// through another name. Writing a field within the variant is not a reshape.
+int reshapeIsSum(INode *type);
+
+// Does storing over the place 'lval' reshape a value of 'cont'? A store of the type
+// itself replaces one whole (an enum then may hold another variant; a collection
+// frees its block), and so does a store of a value that holds one by value (a struct
+// with a list or an enum for a field). A store over an element of a collection, found
+// by indexing it, that owns something (a String, an element of a 'List[String]')
+// frees what the old one owned: a borrow of its bytes dangles. A number stored, any
+// element written that owns nothing, and a field of a struct that merely holds a String
+// reshape nothing.
+int reshapeStoreHits(INode *lval, INode *cont);
+
 // A global (a module-level variable, or a static) has been type checked. Whether
 // any global can reach a collection type decides whether a call that is handed
 // nothing reaching it still needs asking about
@@ -70,7 +93,8 @@ enum ReshapeWhy {
     ReshapeReceiverUnseen,  // the same, a method whose body the compiler cannot see: layer 1 assumes it does
     ReshapeUnseen,      // a callee whose body the compiler cannot see, handed a writable value that can reach it
     ReshapeBody,        // a callee handed a writable value that can reach it, whose body reshapes one
-    ReshapeGlobal       // a callee that reshapes one through a global, handed nothing that reaches it
+    ReshapeGlobal,      // a callee that reshapes one through a global, handed nothing that reaches it
+    ReshapeStore        // a store through another name (not a call): reshapeStoreHits
 };
 
 typedef struct {

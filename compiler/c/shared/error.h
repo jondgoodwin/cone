@@ -645,6 +645,10 @@ enum ErrorCode {
     ErrorMatchUnreachable = 1418,   // A case or an 'else' of a match that can never run: every value it matches an earlier case matches already (a variant or a combination of columns named twice, a case after the cases cover everything)
     ErrorMatchColumn = 1419,        // A misuse of the columns of 'match a, b': '_' in a match of one value, a row with more or fewer patterns than the match has values, or a pattern that binds a variable in a column
 
+    // An enum under the collection rule (ir/reshape.c, ir/flowpath.c, ir/flowloan.c)
+    ErrorVariantReshape = 1425,     // A call, or a store through another name, that could change which variant an enum holds while a reference narrowed into one of its variants, through a path other references share, is still to be used
+    ErrorShapeStore = 1426,         // A store through another name that replaces a shape-changing value whole (a list, a string), or an element of one that owns something, while a borrow into it, through a path other references share, is still to be used
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

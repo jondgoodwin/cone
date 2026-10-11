@@ -382,28 +382,42 @@ static int castBorrowsUni(INode *exp) {
 // A reference narrowed from a sum type -- an enum, a tagged trait, an
 // 'Option'-shaped enum -- to one of its variants points into the value's
 // payload. Changing which variant the value holds rereads that payload as
-// another type. Jon's 2018 rule ("Interior References and Shared
-// Mutability"): for 'mut' references to shape-changing types, no interior
-// references. So it narrows only when nothing can change the variant while the
-// narrowed reference is used: the reference is 'uni', 'imm' or 'mut1'
-// (MayIntRefSum), or, whatever its permission, it is a borrow made here of a
-// place reached as 'uni' -- a local above all, which the stack alone owns and
-// which the loan walk freezes against change while the borrow and the
-// narrowed reference live. A reference of unseen origin -- a parameter, one
-// reached through another reference or a shared owner -- may be one of
-// several, any of which may change the variant.
-static void castSumInterior(CastNode *node, RefNode *from, RefNode *to) {
+// another type. So it is the collection rule's case: the narrowing is allowed,
+// and refused only if something could change the variant while the narrowed
+// reference is used.
+//
+// Where nothing can, the narrowing needs no more: the reference is 'uni', 'imm'
+// or 'mut1' (MayIntRefSum), or, whatever its permission, it is a borrow made here
+// of a place reached as 'uni' -- a local above all, which the stack alone owns and
+// which the loan walk freezes against change while the borrow and the narrowed
+// reference live. A reference of unseen origin -- a parameter, one reached through
+// another reference or a shared owner -- may be one of several, any of which may
+// change the variant: the loan walk follows the narrowed reference as it follows a
+// borrow into a collection (castSumNarrows, flowpath.c pwNarrowShared), and
+// refuses the change that could be made while it is used.
+static int castSumNarrowsRefs(CastNode *node, RefNode *from, RefNode *to) {
     StructNode *fromstr = (StructNode *)itypeGetTypeDcl(from->vtexp);
     INode *tostr = itypeGetTypeDcl(to->vtexp);
     if (fromstr->tag != StructTag || tostr == (INode *)fromstr || !(fromstr->flags & TraitType)
         || !(fromstr->flags & (HasTagField | SameSize)))
+        return 0;
+    return !((permGetFlags(from->perm) & MayIntRefSum) || castBorrowsUni(node->exp));
+}
+
+// Only a borrow is followed: an owner narrowed (an 'Rc' to one of its variants) is
+// another owner of the value, which no loan on its source stands for, so it stays
+// refused
+static void castSumInterior(CastNode *node, RefNode *from, RefNode *to) {
+    if (!castSumNarrowsRefs(node, from, to))
         return;
-    if ((permGetFlags(from->perm) & MayIntRefSum) || castBorrowsUni(node->exp))
+    if (itypeGetTypeDcl(from->region) == borrowRef) {
+        node->flags |= FlagVariantNarrow;
         return;
+    }
     PermNode *perm = (PermNode *)itypeGetTypeDcl(from->perm);
     errorMsgNode((INode *)node, ErrorBadPerm,
-        "A '%s' reference to %s, not borrowed here from a local, may not be narrowed to a reference into one of its variants: another reference may change which variant it holds while this one is used. Match a borrow of a local, a 'uni' or 'imm' reference, or the value.",
-        &perm->namesym->namestr, &fromstr->namesym->namestr);
+        "A '%s' reference to %s, held by an owner (an 'Rc'), may not be narrowed to a reference into one of its variants: another owner may change which variant it holds while this one is used. Match a borrow of the value, a 'uni' or 'imm' reference, or the value.",
+        &perm->namesym->namestr, &((StructNode *)itypeGetTypeDcl(from->vtexp))->namesym->namestr);
 }
 
 // The field of the hidden local holding the matched value, which a variable
