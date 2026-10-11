@@ -554,7 +554,7 @@ tags = ["flow", "genllvm", "runtime"]
 [[scenario.region_uninit_never_assigned.check]]
 name = "never-assigned-variables-not-released"
 target = "preir"
-excludes = ["allocref", "call %void @free(", "add i64", "sub i64"]
+excludes = ["allocref", "call %void @cone_rawBlockRelease(", "add i64", "sub i64"]
 
 # The run is the claim: without the fix the compiler faults before emitting
 # anything. The check is the layout, which the run cannot see: an Option of an
@@ -646,7 +646,7 @@ tags = ["flow", "genllvm"]
 [[scenario.region_tuple_return.check]]
 name = "returned-tuple-elements-not-released"
 target = "preir"
-excludes = ["allocref", "call %void @free(", "add i64", "sub i64"]
+excludes = ["allocref", "call %void @cone_rawBlockRelease(", "add i64", "sub i64"]
 
 # The caller's side of region_tuple_return: a tuple held in a variable is one
 # holder of each Rc reference it carries. Destructuring it, or copying it whole,
@@ -684,9 +684,9 @@ contains = ["%14 = add i32 %13, 1", "%23 = add i32 %22, 1", "%30 = add i32 %29, 
 name = "tuple-variable-releases-its-elements"
 target = "preir"
 contains = [
-  "%67 = load i32, ptr %cnt93, align 4\n  %68 = sub i32 %67, 1",
-  "%74 = load i32, ptr %cnt106, align 4\n  %75 = sub i32 %74, 1",
-  "%tupelem = getelementptr inbounds nuw { ptr, i32 }, ptr %t, i32 0, i32 0\n  %finalref44 = load ptr, ptr %tupelem, align 8\n  %38 = getelementptr i8, ptr %finalref44, i64 -8\n  store ptr %38, ptr %self45, align 8\n  %self46 = load ptr, ptr %self45, align 8\n  %cnt47 = getelementptr inbounds nuw %Rc, ptr %self46, i32 0, i32 0\n  %39 = load i32, ptr %cnt47, align 4\n  %40 = sub i32 %39, 1",
+  "%67 = load i32, ptr %cnt100, align 4\n  %68 = sub i32 %67, 1",
+  "%74 = load i32, ptr %cnt115, align 4\n  %75 = sub i32 %74, 1",
+  "%tupelem = getelementptr inbounds nuw { ptr, i32 }, ptr %t, i32 0, i32 0\n  %finalref47 = load ptr, ptr %tupelem, align 8\n  %38 = getelementptr i8, ptr %finalref47, i64 -8\n  store ptr %38, ptr %self48, align 8\n  %self49 = load ptr, ptr %self48, align 8\n  %cnt50 = getelementptr inbounds nuw %Rc, ptr %self49, i32 0, i32 0\n  %39 = load i32, ptr %cnt50, align 4\n  %40 = sub i32 %39, 1",
 ]
 
 [[scenario.region_tuple_destructure.check]]
@@ -702,8 +702,8 @@ contains = [
 name = "so-tuple-left-in-variable-is-freed-through-it"
 target = "preir"
 contains = [
-  "%tupelem = getelementptr inbounds nuw { ptr, ptr }, ptr %t, i32 0, i32 0\n  %finalref = load ptr, ptr %tupelem, align 8\n  store ptr %finalref, ptr %self, align 8\n  %self4 = load ptr, ptr %self, align 8\n  %6 = call %void @free(ptr %self4)",
-  "%tupelem5 = getelementptr inbounds nuw { ptr, ptr }, ptr %t, i32 0, i32 1\n  %finalref6 = load ptr, ptr %tupelem5, align 8\n  store ptr %finalref6, ptr %self7, align 8\n  %self8 = load ptr, ptr %self7, align 8\n  %7 = call %void @free(ptr %self8)",
+  "%tupelem = getelementptr inbounds nuw { ptr, ptr }, ptr %t, i32 0, i32 0\n  %finalref = load ptr, ptr %tupelem, align 8\n  store ptr %finalref, ptr %self, align 8\n  %self4 = load ptr, ptr %self, align 8\n  store ptr %self4, ptr %block, align 8\n  %block5 = load ptr, ptr %block, align 8\n  %6 = call %void @cone_rawBlockRelease(ptr %block5)",
+  "%tupelem6 = getelementptr inbounds nuw { ptr, ptr }, ptr %t, i32 0, i32 1\n  %finalref7 = load ptr, ptr %tupelem6, align 8\n  store ptr %finalref7, ptr %self8, align 8\n  %self9 = load ptr, ptr %self8, align 8\n  store ptr %self9, ptr %block10, align 8\n  %block11 = load ptr, ptr %block10, align 8\n  %7 = call %void @cone_rawBlockRelease(ptr %block11)",
 ]
 
 # The same two claims for a tuple type named by an alias, which is what says an
@@ -739,7 +739,7 @@ tags = ["flow", "genllvm"]
 [[scenario.region_tail_move.check]]
 name = "tail-call-move-releases-nothing"
 target = "preir"
-excludes = ["allocref", "call %void @free(", "add i64"]
+excludes = ["allocref", "call %void @cone_rawBlockRelease(", "add i64"]
 
 # The same release list, for a value whose type has a drop fn, where a run can
 # see it: the drop fn prints. Three claims share the file because one list makes
@@ -822,8 +822,8 @@ name = "reassignment-frees-the-previous-so-value"
 target = "preir"
 contains = [
   "store ptr %dealiasref, ptr %self, align 8",
-  "%4 = call %void @free(ptr %self9)",
-  "%5 = call %void @free(ptr %self12)",
+  "%4 = call %void @cone_rawBlockRelease(ptr %block16)",
+  "%5 = call %void @cone_rawBlockRelease(ptr %block19)",
 ]
 
 [[scenario.region_so_reassign.check]]
@@ -857,25 +857,44 @@ contains = [
 ]
 
 # A program that declares C's 'free' itself links beside the releases 'So' and
-# 'Rc' make, whose 'free' methods call libc's. The run is the claim, since a
-# second declaration was renamed 'free.1' and failed at the linker; the check
-# names the two releases (soValue's, and rcValue's at a zero count) calling the
-# one declaration the program's and libc's share, and that no renamed one
-# exists. The registers were read out of the dump.
+# 'Rc' make, which go through the raw blocks layer. The run is the claim, since a
+# second declaration of 'free' would be renamed 'free.1' and fail at the linker;
+# the check names the two releases (soValue's, and rcValue's at a zero count)
+# calling the layer, the program's declaration the module's only 'free', and that
+# no renamed one exists. The registers were read out of the dump.
 [scenario.region_program_free]
 category = "run"
-description = "A program declaring C's 'free' in its own signature links and runs beside 'So' and 'Rc' releases, which call the one declaration it shares with libc's"
+description = "A program declaring C's 'free' in its own signature links and runs beside 'So' and 'Rc' releases, which go through the raw blocks layer, so the program's declaration is the only one"
 tags = ["genllvm", "runtime"]
 
 [[scenario.region_program_free.check]]
-name = "releases-call-the-programs-own-free"
+name = "releases-go-through-the-raw-blocks-layer"
 target = "preir"
 contains = [
   "declare %void @free(ptr)",
-  "%3 = call %void @free(ptr %self3)",
-  "%9 = call %void @free(ptr %self11)",
+  "%3 = call %void @cone_rawBlockRelease(ptr %block6)",
+  "%9 = call %void @cone_rawBlockRelease(ptr %block14)",
 ]
 excludes = ["@free.1"]
+
+# The raw blocks layer, core's 'RawBlocks': alloc, resize (grown and shrunk with
+# the first bytes kept, a null block allocated) and release (a null block
+# nothing), and 'So' and 'Rc', which allocate and release through it. The run is
+# the claim; the sums were added by hand (1 to 16 is 136, 1 to 8 is 36) and 41 +
+# 43 is 84. The check names the three calls the layer's functions are bound to.
+[scenario.region_raw_blocks]
+category = "run"
+description = "The raw blocks layer: a block allocated, grown and shrunk with its first bytes kept, a null block resized into an allocation, a null block released as nothing, and 'So' and 'Rc' values made and let go through it"
+tags = ["genllvm", "runtime"]
+
+[[scenario.region_raw_blocks.check]]
+name = "the-layer-is-bound-to-conestds-three-functions"
+target = "preir"
+contains = [
+  "call ptr @cone_rawBlockAlloc(",
+  "call ptr @cone_rawBlockResize(",
+  "call %void @cone_rawBlockRelease(",
+]
 
 # -------- parse stage --------
 
