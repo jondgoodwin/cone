@@ -195,6 +195,7 @@ functions included.
 | `FnCallTag` that is a namespace hop | the bound name use, or a plain call of it | `fnCallNameResPath` |
 | `FnCallTag` indexing `Array` | the array type, `ArrayTag`, one node per size | `arrayTypeLower` |
 | a name use, or a path or `Name[type arguments]`, that the parser marked as a value term (`FlagValueTermName`, `FlagValueTermCall`) and that names an empty variant | the literal that variant's construction is, a `FnCallTag` with no values, `FlagIndex` and `FlagCtorParen`: `None`, `Lamp.Red`, `None[i32]` | `fnCallVariantTermNameRes` |
+| a call of a method through an empty variant's name, `Lamp.Red.get()`, `Red.get()`, `Pending.Waiting[i64].key()` (the method is found in the variant's namespace or its enum's, and takes `self`) | the receiver, `Lamp.Red`, wrapped in the same construction literal; the call is then an ordinary method call on a value. A function with no `self`, a name the variant lacks, and a variant that holds values keep the path reading | `fnCallVariantReceiver` (called from `fnCallNameResPath`) |
 
 A variant's name is a value only where the parser met it in a value expression:
 the last suffix of a term parsed outside `parseType` (`parseMarkValueTerm`), not
