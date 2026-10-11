@@ -1,0 +1,130 @@
+// A list built onto from itself, and grown while a closure reads it: the lists are
+// big enough (a thousand items, started at a capacity of four) that appending
+// moves the block many times. Every value is checked by hand-worked formula.
+//
+//   - 'xs <- parallel each x in xs yield *x * 3': the passes read xs on the workers,
+//     the pieces are joined onto xs after the last pass (joinPieces), so xs is not
+//     touched until every read is done
+//   - 'xs <- each other.iter().map(x => len + *x)': the closure reads xs's length
+//     while xs grows one item a pass
+//   - the same with a closure that reads an element of xs (a copy) as it grows
+
+mod concurrency_parallel_builder_self;
+
+import stdio use *;
+import collections use *;
+import actors;
+
+fn report(name &str, ok bool) {
+  printStr(name);
+  printStr(if ok {": ok\n";} else {": FAILED\n";});
+}
+
+fn mix(i u64, n u64) u64 {
+  mut x = i + 1u64;
+  mut k = 0u64;
+  while k < n {
+    x = x * 6364136223846793005u64 + k;
+    k = k + 1u64;
+  }
+  x;
+}
+
+fn thousand() List[u64] {
+  mut l = new List[u64](4usize);
+  mut i = 0u64;
+  while i < 1000u64 {
+    l.push(i + 1u64);
+    i = i + 1u64;
+  }
+  l;
+}
+
+// xs is 1..1000; after the builder it is 1..1000 then 3, 6 .. 3000, whatever the work per pass
+fn selfBuilder(rounds u64) bool {
+  mut xs = thousand();
+  xs <- parallel each x in xs yield mix(*x, rounds) * 0u64 + *x * 3u64;
+  mut ok = xs.len() == 2000usize;
+  mut i = 0usize;
+  while i < 1000usize {
+    if *xs[i] != u64.from(i) + 1u64 { ok = false; }
+    if *xs[1000usize + i] != (u64.from(i) + 1u64) * 3u64 { ok = false; }
+    i = i + 1usize;
+  }
+  ok;
+}
+
+// xs is 1..1000, other 1001..2000; item k appended is (1000 + k) + (1001 + k)
+fn closureReadsLength() bool {
+  mut xs = thousand();
+  mut other = new List[u64](4usize);
+  mut i = 0u64;
+  while i < 1000u64 {
+    other.push(1001u64 + i);
+    i = i + 1u64;
+  }
+  xs <- each other.iter().map(x => u64.from(xs.len()) + *x);
+  mut ok = xs.len() == 2000usize;
+  mut k = 0usize;
+  while k < 1000usize {
+    if *xs[1000usize + k] != u64.from(1000usize + k) + 1001u64 + u64.from(k) { ok = false; }
+    k = k + 1usize;
+  }
+  ok;
+}
+
+// the closure reads xs[0] (1) every pass: item k appended is 1 + (1001 + k)
+fn closureReadsElement() bool {
+  mut xs = thousand();
+  mut other = new List[u64](4usize);
+  mut i = 0u64;
+  while i < 1000u64 {
+    other.push(1001u64 + i);
+    i = i + 1u64;
+  }
+  xs <- each other.iter().map(x => *xs[0usize] + *x);
+  mut ok = xs.len() == 2000usize;
+  mut k = 0usize;
+  while k < 1000usize {
+    if *xs[1000usize + k] != 1u64 + 1001u64 + u64.from(k) { ok = false; }
+    k = k + 1usize;
+  }
+  ok;
+}
+
+// the closure hands out a borrow of xs's first element, which the append copies before it
+// grows xs (the value is worked out first, the call made after): 1 each time, 1000 times,
+// the block moving on the way
+fn closureHandsOutBorrow() bool {
+  mut xs = thousand();
+  mut other = new List[u64](4usize);
+  mut i = 0u64;
+  while i < 1000u64 {
+    other.push(i);
+    i = i + 1u64;
+  }
+  xs <- each other.iter().map(x => &mut xs[0usize]);
+  mut ok = xs.len() == 2000usize;
+  mut k = 0usize;
+  while k < 1000usize {
+    if *xs[1000usize + k] != 1u64 { ok = false; }
+    k = k + 1usize;
+  }
+  ok;
+}
+
+fn main() {
+  initAll();
+  actors.configure(new actors.Options(workers: 4u32));
+  mut run = 0;
+  mut all = true;
+  while run < 20 {
+    if !selfBuilder(if run % 2 == 0 { 0u64; } else { 200u64; }) { all = false; }
+    if !closureReadsLength() { all = false; }
+    if !closureReadsElement() { all = false; }
+    if !closureHandsOutBorrow() { all = false; }
+    run = run + 1;
+  }
+  report("a list built onto from itself, 1000 items, 20 times", all);
+  finalAll();
+}
