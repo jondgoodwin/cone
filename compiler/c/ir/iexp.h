@@ -99,6 +99,10 @@ int iexpIsLvalError(INode *lval);
 // reference, so that what is lent of it is held to that loan's permission?
 int iexpPathThroughBorrow(INode *lval);
 
+// Does every reference the place is reached through grant write? The viewpoint
+// a borrowed reference held there is seen from: not if one only reads.
+int iexpReachWrites(INode *lval);
+
 // Extract lval variable, scope and overall permission from lval. The scope is
 // the lifetime a borrow of the place has.
 INode *iexpGetLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope);

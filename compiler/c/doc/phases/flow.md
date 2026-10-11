@@ -839,7 +839,8 @@ operands carry), so a call handed only other storage is not asked, and the excus
 local lent whole has -- it can reach a collection only through a reference it holds --
 does not apply to a local the loan points into (`reshapeCall`'s `mine`). In that
 mode (`reshapeReachMode`) a read-only reference is followed to the `mut` references it
-holds -- a `&Guard` holding a `&mut List` can push -- and an owning virtual reference,
+holds -- conservatively: a `&Guard` lends only `&` of the `&mut List` it holds, so no code
+can push through it ([references](../nodes/references.md), viewpoint adaptation) -- and an owning virtual reference,
 which names no lifetime and so holds no borrow of a local, is not followed. Two more
 cases an exclusive loan covered: an access that changes a collection *held by value*
 inside the loan's container (a struct whose method lent an element: `w.entities.push(x)`)

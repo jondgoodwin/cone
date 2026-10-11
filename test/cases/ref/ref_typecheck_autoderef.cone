@@ -1,10 +1,10 @@
 // What a field or a method reached through several references may not do. It is
 // what the explicit dereferences refuse: 'r.x' is '(**r).x'. A borrow read out of
-// another keeps its own permission (ref_autoderef writes through '& &mut Pt', as
-// '(**r).x = 9' does), so a write is refused where the inner level is read-only;
-// and an owner behind a borrow that only reads lends only what the borrow does
-// (a '&' lends only '&' of an owner). ref_autoderef holds the same shapes where
-// the permissions allow.
+// another has the intersection of the permissions gone through (a '&mut' held
+// behind a '&' or in a field of a '&Holder' lends only '&'), so a write is
+// refused where any level is read-only; and an owner behind a borrow that only
+// reads lends only what the borrow does (a '&' lends only '&' of an owner).
+// ref_autoderef holds the same shapes where the permissions allow.
 //
 // Type-check stage only, as ref_typecheck_perm is.
 
@@ -43,4 +43,31 @@ fn callOwner(r &So[Pt]) {
 // two borrows deep
 fn writeOwnerTwo(r &&So[Pt]) {
   r.x = 5;                //~ ErrorNoMut:4 "You do not have permission to modify lval"
+}
+
+// a '&mut' held behind a '&' reads and lends only '&' (refperm.html, "Viewpoint
+// Adaptation"), as an owner does: written implicit or explicit, or its method called
+fn writeRoMut(r & &mut Pt) {
+  r.x = 9;                //~ ErrorNoMut:4 "You do not have permission to modify lval"
+}
+
+fn writeRoMutExplicit(r & &mut Pt) {
+  (**r).x = 9;            //~ ErrorNoMut:8 "You do not have permission to modify lval"
+}
+
+fn callRoMut(r & &mut Pt) {
+  r.bump();               //~ ErrorBadPerm:3 "Borrowed reference cannot obtain this permission"
+}
+
+// a '&mut' in a field of a '&' holder
+struct MutHolder {
+  pub r &mut Pt;
+}
+
+fn writeHeld(h &MutHolder) {
+  h.r.x = 30;             //~ ErrorNoMut:6 "You do not have permission to modify lval"
+}
+
+fn callHeld(h &MutHolder) {
+  h.r.bump();             //~ ErrorBadPerm:4 "Borrowed reference cannot obtain this permission"
 }

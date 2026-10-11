@@ -329,13 +329,19 @@ static int iexpCoerceShape(INode **from, INode *totype) {
         }
         return 0;
     case EqMatch:
+        // A '&mut' or '&uni' read out of a place reached through a '&' is a '&',
+        // not handed on as the '&mut' it was declared (a held reference's
+        // viewpoint adaptation, borrowOwnerLendRefused)
+        if ((totypedcl->tag == RefTag || totypedcl->tag == ArrayRefTag || totypedcl->tag == VirtRefTag)
+            && itypeGetTypeDcl(((RefNode*)totypedcl)->region) == (INode*)borrowRef)
+            borrowOwnerLendRefused(*from, ((RefNode*)totypedcl)->perm);
         // A '&uni' wanted as a borrowed reference, a '&uni' too, is borrowed
         // from (a fresh, shorter loan), not handed over
         if (borrowUniReborrows(*from, totypedcl))
             borrowUniReborrow(from, totypedcl);
         return 1;
     case CastSubtype: {
-        if ((totypedcl->tag == RefTag || totypedcl->tag == VirtRefTag) && ((RefNode*)totypedcl)->region == borrowRef)
+        if ((totypedcl->tag == RefTag || totypedcl->tag == ArrayRefTag || totypedcl->tag == VirtRefTag) && ((RefNode*)totypedcl)->region == borrowRef)
             borrowOwnerLendRefused(*from, ((RefNode*)totypedcl)->perm);
         // A sole owner wanted as a '&uni' borrowed reference is borrowed from,
         // as it is when wanted as a '&' or '&mut', not moved into the borrow
@@ -631,6 +637,52 @@ int iexpPathThroughBorrow(INode *lval) {
     }
 }
 
+// Does every reference the place 'lval' is reached through grant write? A
+// reference that only reads ('&', '&imm', a read-only virtual reference or slice,
+// a 'So[imm, T]') on the way makes the place one nothing is written through,
+// whatever the place's own slot says: whether the slot can be assigned to (an
+// 'imm' field, a variable) is another matter, and does not reach what a
+// reference held in it points at. A lock permission is not asked: its value is
+// reached only by the lock's guard.
+int iexpReachWrites(INode *lval) {
+    for (;;) {
+        INode *obj;
+        if (lval->tag == FldAccessTag || lval->tag == ArrIndexTag)
+            obj = ((FnCallNode *)lval)->objfn;
+        else if (lval->tag == DerefTag)
+            obj = ((StarNode *)lval)->vtexp;
+        else
+            return 1;
+        if (!isExpNode(obj))
+            return 1;
+        INode *objtype = iexpGetTypeDcl(obj);
+        if (objtype->tag == RefTag || objtype->tag == ArrayRefTag || objtype->tag == VirtRefTag) {
+            INode *perm = itypeGetTypeDcl(((RefNode*)objtype)->perm);
+            if (perm->tag == PermTag && !permIsLock(perm) && !(permGetFlags(perm) & MayWrite)
+                && !((RefNode*)objtype)->capture)
+                return 0;
+        }
+        lval = obj;
+    }
+}
+
+// The permission of what a borrowed reference held in the place 'refexp' points
+// at, 'refperm' being the reference's own. The reference's permission is what it
+// grants its holder; a place reached through a borrow grants only what that borrow
+// let it be held with, so the permission is the intersection of all those along
+// the path (refperm.html, "Viewpoint Adaptation"): a '&mut' or '&uni' held in a
+// place reached through a '&' (or a '&imm') lends '&' and reads, no more. A place
+// not reached through a borrow (a variable, or a field of a value held by value:
+// it holds the reference as its own), one reached through references that all
+// grant write, and a reference that already grants no write keep the reference's.
+static INode *iexpViewpointPerm(INode *refexp, INode *refperm) {
+    if (!(permGetFlags(refperm) & MayWrite) || permIsLock(refperm))
+        return refperm;
+    if (!iexpPathThroughBorrow(refexp) || iexpReachWrites(refexp))
+        return refperm;
+    return (INode*)roPerm;
+}
+
 // Extract lval variable, scope and overall permission from lval, for a borrow
 // of the place ('stored' 0) or a store into it ('stored' 1). The two differ only
 // at a parameter.
@@ -678,7 +730,7 @@ static INode *iexpLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope, int s
                 && itypeGetTypeDcl(*lvalperm) != (INode*)uniPerm && itypeGetTypeDcl(*lvalperm) != (INode*)newPerm
                 && iexpPathThroughBorrow(refexp);
             if (!ownerShared)
-                *lvalperm = vtype->perm;
+                *lvalperm = itypeGetTypeDcl(vtype->region) == (INode*)borrowRef ? iexpViewpointPerm(refexp, vtype->perm) : vtype->perm;
             iexpScopeThroughRef(refexp, lvalvar, vtype, scope, stored);
         }
         else if (vtype->tag == PtrTag)
@@ -700,7 +752,8 @@ static INode *iexpLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope, int s
         // holding the reference instead, so 'v[0] = x' on a '&mut Array[i32, 3]'
         // parameter was refused while '(*v)[0] = x' was allowed.
         if (objtype->tag == ArrayRefTag || objtype->tag == RefTag) {
-            *lvalperm = ((RefNode*)objtype)->perm;
+            *lvalperm = itypeGetTypeDcl(((RefNode*)objtype)->region) == (INode*)borrowRef
+                ? iexpViewpointPerm(element->objfn, ((RefNode*)objtype)->perm) : ((RefNode*)objtype)->perm;
             iexpScopeThroughRef(element->objfn, lvalvar, (RefNode*)objtype, scope, stored);
         }
         else if (objtype->tag == PtrTag)
@@ -724,7 +777,7 @@ static INode *iexpLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope, int s
         // would otherwise be that of the binding holding it.
         RefNode *objtype = (RefNode*)iexpGetTypeDcl(element->objfn);
         if (objtype->tag == VirtRefTag) {
-            *lvalperm = objtype->perm;
+            *lvalperm = iexpViewpointPerm(element->objfn, objtype->perm);
             iexpScopeThroughRef(element->objfn, lvalvar, objtype, scope, stored);
         }
         // Downgrade overall static permission if the field may not be written.
