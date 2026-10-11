@@ -52,7 +52,8 @@ enum ReshapeReach {
     ReachContained = 1,     // by containment alone: a field, an element, a variant
     ReachBorrowed = 2,      // through some reference, pointer or owner
     ReachVirtual = 4,       // through a virtual reference, which could be anything
-    ReachGaveUp = 8         // the type graph was too large to follow: taken as reaching
+    ReachGaveUp = 8,        // the type graph was too large to follow: taken as reaching
+    ReachOwned = 16         // set beside ReachBorrowed when every reference on the way owns what it points at ('So', 'Rc', 'Arc')
 };
 
 // Can a value of 'type' reach a value of the struct 'cont'? 'writable' asks only

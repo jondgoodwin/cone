@@ -1414,7 +1414,11 @@ locals, which only a call that reaches one of them is asked of):
   whole: `reshapeUniqueLocal`, but for a loan that points into that local; a local
   named whole is asked for those; `ReshapeStore`, `ErrorShapeStore`). It reshapes
   (`reshapeStoreHits`) when the value stored over is the loan's container itself, or
-  a value that holds one by value (`ReachContained`), or, for a collection, an element
+  a value that holds one by value (`ReachContained`) or through owning references
+  alone (`ReachOwned`: `So`, `Rc`, `Arc` or a region a program declares, with fields and
+  elements, but no borrow or raw pointer, between: a replaced owner is freed, or
+  loses a count, and the last owner's going frees the collection; so a store over the
+  owning reference, a field holding it, or a struct holding it is refused), or, for a collection, an element
   that needs a finalizer found by indexing the container (`reshapeElementOf`: a chain
   of field steps and dereferences ending in a call of a method whose receiver is the
   container, as `m[0]` is). `m[0] = s` on a `List[String]` replaces and finalizes a
