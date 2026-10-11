@@ -2,10 +2,12 @@
 implies, and what `match` lowers into it.
 
 **At a glance.** `parseIf` and `parseMatch` both build it — `match` is
-de-sugared here, not later. Name resolution walks conditions and arms
-uniformly. Type check coerces each condition to `bool`, folds the arms into one
-type, and may rewrite the last condition into an `else`. Flow walks **both arms
-against one shared state**. Generation builds the basic blocks and a phi.
+de-sugared here, not later, and its `IfNode` is marked (`FlagIfMatch`). Name
+resolution walks conditions and arms uniformly. Type check coerces each condition
+to `bool`, folds the arms into one type, and may rewrite the last condition into
+an `else`; for a marked `if` it also judges what the cases cover (`ifMatchCover`).
+Flow walks **both arms against one shared state**. Generation builds the basic
+blocks and a phi.
 
 *Provenance: read from source.*
 
@@ -71,9 +73,22 @@ operator's call with the scrutinee on the left, `case a ..< b` → `>= a and < b
 `case imm x T` → a bound pattern, `case v` (a value alone) →
 an `is` node flagged `FlagMatchValue` that type check turns into `v`'s variant
 test or `== v` ([cast](cast.md)), `else` → `elseCond`. Patterns joined by `or` → a logical `or` of
-their conditions; an `if g` after them → `cond and g`. **A held value is one scrutinee node
+their conditions; an `if g` after them → `cond and g` (the `and` flagged
+`FlagMatchGuard`, so that a guard is told from the `and` of a range pattern). **A held value is one scrutinee node
 pointer shared by every arm**, so a range's two calls and every `or` alternative hold
-it too; **a place is a separate copy in each test.**
+it too; **a place is a separate copy in each test.** The `IfNode` is marked `FlagIfMatch`.
+
+**`match a, b` has one matchee for each value and one pattern for each in a case.**
+Each matchee is a place or held in a variable of its own (`-match1`, … after the first,
+which keeps the anonymous name), evaluated once each, left to right, in the block before
+the `if`. A case's condition is the patterns of its columns, in order, joined by `and`
+nodes flagged `FlagMatchRow` (left-nested, `(c0 and c1) and c2`), then a guard if there
+is one. `_` is a column's pattern that takes any value: a literal `true` flagged
+`FlagMatchAny` (`parseMatchWild`), so it type checks and generates as the constant it
+looks like and costs nothing at run time. `_` in a match of one value, a case whose
+patterns are fewer or more than the values, and a column that binds a variable
+(`case imm x Some, …`; whether a column may bind is not decided) are `ErrorMatchColumn`,
+reported at parse. At most `MatchMaxColumns` values.
 
 **A pattern's first operand decides between a range, a value and a refusal.**
 A pattern beginning with neither `is` nor a comparison operator reads one
@@ -97,14 +112,10 @@ T if g {…}` becomes the condition `is T and {imm x = [T]v; g}` — a block
 declaring its own `x`, from a second conversion that shares the pattern's type
 node (`FlagMatchBind`) — and the arm keeps its own `x` as before.
 
-**Only a bare `is` condition counts toward exhaustiveness.** A guarded arm's
-condition, and an `or` of `is` tests, are logic nodes, so `ifExhaustCheck`
-never sees them. For a guard that is the rule: the guard may fail. For `or` it is
-a gap: `case is A or is B` accounts for neither variant, and a match that relies
-on it needs an `else`. A variant named alone, `case A`, is its `is` test once
-checked and counts; any other value alone is an `==` call and counts for
-nothing, so `case true` and `case false` on a `bool` need an `else` to be a
-value, as `case ==true` and `case ==false` do.
+**What counts toward exhaustiveness is decided on a type checked match, by
+`ifMatchCover`** (below): an `is` test of a variant of a closed enum, an `or` of them,
+`v == true` and `v == false` on a `bool`, and `_`. A guarded case does not count (the guard
+may fail). Any other value alone is an `==` call that counts for nothing.
 
 ## Name resolution
 
@@ -166,6 +177,47 @@ takes effect for the very condition being processed: `hasElse` becomes true and
 no `bool` coercion is attempted. That is how a `match` covering every variant
 becomes a value-producing expression with no written `else`.
 
+This is the check of an `if` chain written as an `if`, not of a `match`: a marked
+`if` skips it, and `ifMatchCover` judges it once every condition is checked.
+
+### `ifMatchCover`
+
+Runs after the loop of pass 1 on an `IfNode` marked `FlagIfMatch`, unless a condition was
+reported (`condErrors`: the cases are not judged then; an error in an arm's body does not
+stop it). It reads each case as a **row** of cells, one for each value matched, found by
+flattening the `FlagMatchRow` `and`s, with the guard (a `FlagMatchGuard` `and`) taken off and
+noted. A cell (`matchClassify`) is one of:
+
+- **wild** — `_`, or, in an `or`, any alternative that is;
+- **a set** of the values of the column's type, which the first cell that is one gives the
+  column: an `is` of a variant of a closed enum (`matchClosedEnum`: the test `ifExhaustCheck`
+  used, a trait with no base carrying `HasTagField` or `SameSize`), which is the variant's index
+  in `derived`; or `v == true` / `v == false` on a `bool`, the call type check made of
+  `case true` and `case ==true` (its callee a use of the `==` it found, the matched value
+  its first argument); an `or` is the union of its alternatives'; a cell of another
+  type than the column's is "other";
+- **other** — a comparison, a range, `==` against anything but a bool literal, a number, a
+  string; anything this logic cannot count.
+
+A row with an "other" cell, or with a guard, is not **counted**: it covers nothing and makes
+no later case unreachable. The rows up to the first `else` are all that is read.
+
+*Covered?* (`matchCovers`) splits the counted rows on the first column that is not wild in
+all of them, by each value of its type, keeping the rows wild or naming that value, and
+recurses on the rest of the columns; it is covered when every combination ends with a row
+left. That is the one-level matrix check, the groundwork deep patterns would need. It stops
+at the first uncovered combination, which `ErrorMatchNotExhaustive` names (a single column
+names every variant missing).
+*Unreachable?* (`matchUseless`) asks the same of a pure row against the counted rows before
+it, over only the values the row takes: if every combination is taken already, the case is
+`ErrorMatchUnreachable`, and so is an `else` after cases that cover everything.
+
+A match with no `else` that is covered has its **last case rewritten to `elseCond`**, as
+`ifExhaustCheck` did, so the value of a match needs no other. One that is not covered is
+`ErrorMatchNotExhaustive` (once, replacing `ErrorNoElse` for a match), its type left
+unknown as `ErrorNoElse` left it. A match whose cases were not judged falls through to
+`ErrorNoElse` as an `if` does.
+
 `ifRemoveReturns`, called from `returnTypeCheck`, strips the redundant `return`
 from each arm of `return if … { return a } else { b }`, recursively.
 
@@ -212,7 +264,13 @@ aggregate is merged through a slot").
 - **`ifExhaustCheck` rewrites `condblk` while `ifTypeCheck` is iterating it.**
   The target is fixed at the second-to-last slot, so today it can only be the
   condition currently being processed. Anything that made the target a non-final
-  slot would corrupt the walk.
+  slot would corrupt the walk. (`ifMatchCover` rewrites after the walk.)
+- **`ifMatchCover` reads the shape type check leaves a condition in**: an `is` node,
+  `or` and `and` logic nodes, a literal, and the call of the `==` a comparison found
+  (callee a name use of the declaration, the matched value first). A lowering that
+  changes one of these makes the cell "other" and the match asks for an `else`; it does
+  not mis-cover. A match counted wrongly would be the dangerous failure, so a cell is
+  a set only for exactly those shapes.
 - **Exhaustiveness recognizes a scrutinee only as the shared node or as a use
   of the lowering's variable.** A lowering that wraps one arm's scrutinee in a
   coercion or a deref silently breaks detection — and it surfaces as

@@ -1,13 +1,14 @@
-// What a match must satisfy to be a value: every variant accounted for, the
-// catch-all last, and one type across the arms.
+// What a match must satisfy: every variant accounted for, statement or value, the
+// catch-all last, and one type across the arms. What it must cover and what it may not
+// repeat is enum_typecheck_match_cover.
 //
 // Type-check stage only: this file parses and resolves cleanly, so every
 // diagnostic below is reached. What a pattern may narrow to is in
 // enum_typecheck_narrow; how an enum relates to its variants as a type is in
 // enum_typecheck_variant.
 //
-// 'match' is sugar for an 'if' chain, which is why these diagnostics say 'if'
-// and 'else' where the source says 'match' and 'case'.
+// 'match' is sugar for an 'if' chain, which is why some of these diagnostics say
+// 'if' and 'else' where the source says 'match' and 'case'.
 
 mod enum_typecheck_match;
 
@@ -28,7 +29,7 @@ use Shape;
 // A match naming some but not all variants cannot produce a value, because the
 // unnamed variants reach no arm
 fn notExhaustive(s &imm Shape) i32 {
-  match s {              //~ ErrorNoElse:3 "requires an 'else' clause"
+  match s {              //~ ErrorMatchNotExhaustive:3 "does not cover Rect"
                          //~^ ErrorInvType:3 "Expression does not match expected type" follow-on
     case imm c &Circle {c.radius;}
   }
@@ -84,7 +85,7 @@ fn guardNotACondition(s Shape, other Shape) i32 {
 // A guarded arm may fail, so it does not account for its variant, and the arm
 // that would have made this match exhaustive leaves None unmatched
 fn guardedArmNotExhaustive(o Option[i32]) i32 {
-  match o {              //~ ErrorNoElse:3 "requires an 'else' clause"
+  match o {              //~ ErrorMatchNotExhaustive:3 "does not cover None"
                          //~^ ErrorInvType:3 "Expression does not match expected type" follow-on
     case imm s Some {s;}
     case is None if true {0;}
@@ -103,14 +104,13 @@ fn rangeOnAnEnum(s Shape) i32 {
   }
 }
 
-// A value alone compares with '==', so it accounts for no variant, and a bool's
-// two values named alone make no more a value than 'case ==true' and
-// 'case ==false' do: the match still needs an 'else'
-fn boolValuesNotExhaustive(b bool) i32 {
-  match b {              //~ ErrorNoElse:3 "requires an 'else' clause"
+// A bool's two values are counted when they are written, 'true' and 'false'; a
+// value alone that is anything else is compared with '==' and accounts for neither
+fn boolValueNotCounted(b bool, k bool) i32 {
+  match b {              //~ ErrorMatchNotExhaustive:3 "does not cover false"
                          //~^ ErrorInvType:3 "Expression does not match expected type" follow-on
     case true {1;}
-    case false {2;}
+    case k {2;}
   }
 }
 

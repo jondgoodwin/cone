@@ -1,0 +1,149 @@
+// What a match must cover, and what it may not repeat [topic 5, the exhaustiveness
+// principle, topic 6d]: every variant of an enum or both values of a bool, or an
+// 'else', and the combinations of 'match a, b' the same way. A case or an 'else' that
+// can never run is as much an error as one missing. The message names what is missing.
+// enum_match_cover is the program that compiles and runs.
+
+mod enum_typecheck_match_cover;
+
+enum Lamp {
+  Red;
+  Green;
+  Blink(i32);
+}
+
+enum Shape {
+  Dot;
+  struct Circle { pub radius i32; }
+  struct Rect { pub w i32; pub h i32; }
+}
+use Lamp;
+use Shape;
+
+// A statement match is held to it too: Dot is left out
+fn statementMissing(s &imm Shape, total &mut i32) {
+  match s {              //~ ErrorMatchNotExhaustive:3 "does not cover Dot"
+    case Circle { *total = 1; }
+    case Rect { *total = 2; }
+  }
+}
+
+fn valueMissing(l Lamp) i32 {
+  match l {              //~ ErrorMatchNotExhaustive:3 "does not cover Green"
+                         //~^ ErrorInvType:3 "Expression does not match expected type" follow-on
+    case Red { 1; }
+    case imm n Blink { n; }
+  }
+}
+
+// Numbers cannot be counted, so a match of them ends in 'else', which may say that
+// nothing else can happen
+fn numbersNeedElse(n i32, total &mut i32) {
+  match n {              //~ ErrorMatchNotExhaustive:3 "nothing but an enum's variants and true and false can be counted"
+    case 0 { *total = 1; }
+    case 1 ..< 10 { *total = 2; }
+  }
+}
+
+fn oneBoolValue(b bool, total &mut i32) {
+  match b {              //~ ErrorMatchNotExhaustive:3 "does not cover false"
+    case true { *total = 1; }
+  }
+}
+
+fn guardedDoesNotCount(s &imm Shape, k bool) i32 {
+  match s {              //~ ErrorMatchNotExhaustive:3 "does not cover Circle"
+                         //~^ ErrorInvType:3 "Expression does not match expected type" follow-on
+    case Circle if k { 1; }
+    case Rect { 2; }
+    case Dot { 3; }
+  }
+}
+
+fn orMissing(s &imm Shape) i32 {
+  match s {              //~ ErrorMatchNotExhaustive:3 "does not cover Dot"
+                         //~^ ErrorInvType:3 "Expression does not match expected type" follow-on
+    case Circle or Rect { 1; }
+  }
+}
+
+fn nothingToCover(s &imm Shape) i32 {
+  match s {              //~ ErrorMatchNotExhaustive:3 "has no cases"
+                         //~^ ErrorInvType:3 "Expression does not match expected type" follow-on
+  }
+}
+
+// -------- a case that can never run --------
+
+fn variantTwice(s &imm Shape) i32 {
+  match s {
+    case Circle { 1; }
+    case Rect { 2; }
+    case Circle { 3; }   //~ ErrorMatchUnreachable:10 "This case can never run"
+    case Dot { 4; }
+  }
+}
+
+// The second case adds Dot, so it runs; the third has nothing left to match
+fn orRepeats(s &imm Shape) i32 {
+  match s {
+    case Circle or Rect { 1; }
+    case Rect or Dot { 2; }
+    case Circle or Dot { 3; }   //~ ErrorMatchUnreachable:10 "This case can never run"
+  }
+}
+
+fn elseAfterAll(s &imm Shape) i32 {
+  match s {
+    case Circle { 1; }
+    case Rect or Dot { 2; }
+    else { 3; }          //~ ErrorMatchUnreachable:10 "This 'else' can never run"
+  }
+}
+
+fn boolTwice(b bool) i32 {
+  match b {
+    case true { 1; }
+    case false { 2; }
+    case true { 3; }     //~ ErrorMatchUnreachable:10 "This case can never run"
+  }
+}
+
+// -------- match a, b --------
+
+// Green with false is left out
+fn combinationMissing(l Lamp, up bool) i32 {
+  match l, up {          //~ ErrorMatchNotExhaustive:3 "no case takes (Green, false)"
+                         //~^ ErrorInvType:3 "Expression does not match expected type" follow-on
+    case Red, _ { 1; }
+    case Green, true { 2; }
+    case Blink, _ { 3; }
+  }
+}
+
+// Red with true was taken by the row before
+fn combinationTwice(l Lamp, up bool) i32 {
+  match l, up {
+    case Red, _ { 1; }
+    case Red, true { 2; }   //~ ErrorMatchUnreachable:10 "This case can never run"
+    case Green, _ { 3; }
+    case Blink, _ { 4; }
+  }
+}
+
+fn elseAfterRows(l Lamp, up bool) i32 {
+  match l, up {
+    case _, true { 1; }
+    case _, false { 2; }
+    else { 3; }          //~ ErrorMatchUnreachable:10 "This 'else' can never run"
+  }
+}
+
+// A column of numbers is not counted: a row that tests one covers nothing
+fn numberColumn(n i32, up bool) i32 {
+  match n, up {          //~ ErrorMatchNotExhaustive:3 "no case takes (_, _)"
+                         //~^ ErrorInvType:3 "Expression does not match expected type" follow-on
+    case 0, true { 1; }
+    case 0, false { 2; }
+  }
+}
