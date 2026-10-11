@@ -432,6 +432,9 @@ static LLVMValueRef genlDeclaredIntrinsic(GenState *gen, FnDclNode *fndcl, LLVMV
         return LLVMBuildLoad2(gen->builder, genlType(gen, type), fnargs[0], "rawread");
     case WriteRawIntrinsic:
         LLVMBuildStore(gen->builder, fnargs[1], fnargs[0]);
+        // A type that places values here says how a collector reaches them
+        // (Walk); one that marks while the program runs also hears of the store
+        genlBarrierAt(gen, fnargs[0], type);
         return NULL;
 
     // A block move of 'count' values, the two ranges free to overlap

@@ -39,6 +39,8 @@ StructNode *newStructNode(Name *namesym) {
     snode->lends = LendsLoaned;
     snode->shapeinf = ShapeUnknown;
     snode->holdsatomic = HoldsTracedUnknown;
+    snode->cannottrace = HoldsTracedUnknown;
+    snode->holdsbarrier = HoldsTracedUnknown;
     snode->threadbound = CarriesBorrowUnknown;
     snode->callmut = 0;
     snode->callsig = NULL;
@@ -82,6 +84,8 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
     newnode->carriesborrow = CarriesBorrowUnknown;
     newnode->holdstraced = HoldsTracedUnknown;
     newnode->holdsatomic = HoldsTracedUnknown;
+    newnode->cannottrace = HoldsTracedUnknown;
+    newnode->holdsbarrier = HoldsTracedUnknown;
     newnode->threadbound = CarriesBorrowUnknown;
     newnode->shapeinf = ShapeUnknown;
 
@@ -2508,6 +2512,8 @@ void structNameRes(NameResState *pstate, StructNode *node) {
         node->flags |= MoveType;
     structLendsDeclared(node);
     structCarriesRegionCheck(node);
+    if (structDeclaresTrait(node, tracedTrait))
+        regionTracedSeen();
     nametblHookPop();
     if (enclosing)
         nametblHookPop();
@@ -2570,6 +2576,140 @@ void structCarriesRegionCheck(StructNode *node) {
         errorMsgNode((INode*)node, ErrorRegionMark,
             "%s declares CarriesRegion, so it declares an init, which ends with the parameter 'region *MemRegion': the region a construction hands it.",
             &node->namesym->namestr);
+}
+
+// ---- Walk ------------------------------------------------------------------
+//
+// A type that holds values in memory it points to -- a collection's block, a
+// pool's slots, an arena's allocations -- cannot be traced by its fields: they
+// hold a raw pointer. It declares 'Walk' and a method 'fn walk(self &mut) I'
+// instead, I a cursor declaring 'is Iterator[&mut E]', giving a writable
+// reference to each element it holds. The element type's own trace is applied
+// to every reference given (genlTraceWalk), so a collector that moves what an
+// element refers to rewrites the slot the element is stored in.
+
+// What structWalk found
+typedef enum {
+    WalkNone,       // the type declares no Walk
+    WalkOk,         // its walk is of the shape, and *elem is the E
+    WalkPending,    // the type, or what its walk names, is not checked yet
+    WalkBad         // its walk is not of the shape; *why says how
+} WalkState;
+
+static WalkState structWalk(StructNode *node, INode **elem, char **why) {
+    *elem = NULL;
+    *why = NULL;
+    if (!structDeclaresTrait(node, walkTrait))
+        return WalkNone;
+    int pending = !(node->flags & TypeChecked);
+    #define WALK_FAIL(msg) do { *why = msg; return pending ? WalkPending : WalkBad; } while (0)
+    INode *meth = iNsTypeFindFnField((INsTypeNode*)node, walkMethodName);
+    if (meth == NULL || meth->tag != FnDclTag || !(meth->flags & FlagMethFld))
+        WALK_FAIL("it declares Walk, so it declares a method 'fn walk(self &mut) I' giving a cursor over writable references to the values it holds, and it declares none");
+    FnDclNode *fn = (FnDclNode*)meth;
+    FnSigNode *sig = fn->vtype ? (FnSigNode*)itypeGetTypeDcl(fn->vtype) : NULL;
+    if (sig == NULL || sig->tag != FnSigTag)
+        WALK_FAIL("its 'walk' is not checked yet");
+    if (sig->parms->used != 1)
+        WALK_FAIL("its 'walk' takes nothing but 'self &mut'");
+    RefNode *selftype = (RefNode*)itypeGetTypeDcl(iexpGetTypeDcl(nodesGet(sig->parms, 0)));
+    if (selftype->tag != RefTag || itypeGetTypeDcl(selftype->region) != borrowRef
+        || !(permGetFlags(itypeGetTypeDcl(selftype->perm)) & MayWrite)
+        || itypeGetTypeDcl(selftype->vtexp) != (INode*)node)
+        WALK_FAIL("its 'walk' takes nothing but 'self &mut'");
+    INode *cursor = itypeGetTypeDcl(sig->rettype);
+    if (cursor->tag != StructTag || (cursor->flags & (TraitType | EnumType)))
+        WALK_FAIL("its 'walk' must give a cursor: a struct declaring 'is Iterator[&mut E]'");
+    StructNode *cursnode = (StructNode*)cursor;
+    int declared = 0;
+    INode **tp;
+    uint32_t tcnt;
+    if (cursnode->traits)
+        for (nodesFor(cursnode->traits, tcnt, tp))
+            if ((*tp)->tag == StructTag && ((StructNode*)*tp)->namesym == iteratorTraitName)
+                declared = 1;
+    if (!declared)
+        WALK_FAIL("the cursor its 'walk' gives must declare 'is Iterator[&mut E]', E the type of the values it holds");
+    INode *next = iNsTypeFindFnField((INsTypeNode*)cursnode, nextName);
+    FnSigNode *nextsig = next && next->tag == FnDclTag && ((FnDclNode*)next)->vtype
+        ? (FnSigNode*)itypeGetTypeDcl(((FnDclNode*)next)->vtype) : NULL;
+    if (nextsig == NULL || nextsig->tag != FnSigTag)
+        WALK_FAIL("the cursor its 'walk' gives has no 'next' checked yet");
+    INode *option = itypeGetTypeDcl(nextsig->rettype);
+    if (option->tag != StructTag || ((StructNode*)option)->namesym != optionName || !((StructNode*)option)->derived)
+        WALK_FAIL("the cursor its 'walk' gives must declare 'is Iterator[&mut E]': its 'next' gives an Option");
+    // The Some variant's one field past the tag is the item
+    INode *item = NULL;
+    INode **vp;
+    uint32_t vcnt;
+    for (nodesFor(((StructNode*)option)->derived, vcnt, vp)) {
+        INode **fp;
+        uint32_t fcnt;
+        for (nodelistFor(&((StructNode*)*vp)->fields, fcnt, fp))
+            if (!((*fp)->flags & IsTagField))
+                item = ((FieldDclNode*)*fp)->vtype;
+    }
+    RefNode *ref = item ? (RefNode*)itypeGetTypeDcl(item) : NULL;
+    if (ref == NULL || ref->tag != RefTag || itypeGetTypeDcl(ref->region) != borrowRef
+        || !(permGetFlags(itypeGetTypeDcl(ref->perm)) & MayWrite))
+        WALK_FAIL("the cursor its 'walk' gives must declare 'is Iterator[&mut E]': a writable reference to each value, so that a collector can rewrite what it holds");
+    if (refIsFat(ref))
+        WALK_FAIL("the values its 'walk' gives must be of a type with a size known where it is written, not an array body or text");
+    #undef WALK_FAIL
+    *elem = ref->vtexp;
+    return WalkOk;
+}
+
+// The type of the values a Walk type's walk gives references to; NULL where the
+// type declares none, or its walk is not of the shape or not yet checked
+INode *structWalkElem(StructNode *node) {
+    INode *elem;
+    char *why;
+    structWalk(node, &elem, &why);
+    return elem;
+}
+
+// Does this type declare Walk and its walk is not checked yet? The answer to
+// "does it hold a traced reference" is then provisional.
+int structWalkPending(StructNode *node) {
+    INode *elem;
+    char *why;
+    return structWalk(node, &elem, &why) == WalkPending;
+}
+
+// A type declaring Walk has a walk of the shape, and the walk reaches every
+// type argument that holds a traced reference: a type argument the walk does
+// not give references to is held where nothing traces it (a dictionary's key,
+// which a collector that moved it would leave hashed where it was)
+void structWalkCheck(StructNode *node) {
+    INode *elem;
+    char *why;
+    WalkState state = structWalk(node, &elem, &why);
+    if (state == WalkNone)
+        return;
+    if (state != WalkOk) {
+        errorMsgNode((INode*)node, ErrorWalkShape, "%s declares Walk, and %s.", &node->namesym->namestr, why);
+        return;
+    }
+    Nodes *typeargs = itypeInstanceTypeArgs((INode*)node);
+    if (typeargs == NULL)
+        return;
+    // Its walk gives references to values of one type, so one traced type
+    // argument is reached if it is that type; two cannot both be
+    INode **argp;
+    uint32_t cnt;
+    uint32_t traced = 0;
+    for (nodesFor(typeargs, cnt, argp))
+        if (isTypeNode(*argp) && itypeHoldsTraced(*argp))
+            ++traced;
+    for (nodesFor(typeargs, cnt, argp)) {
+        if (isTypeNode(*argp) && itypeHoldsTraced(*argp) && (traced > 1 || !itypeIsSame(*argp, elem))) {
+            errorMsgNode(node->instnode ? node->instnode : (INode*)node, ErrorTraceKey,
+                "%s declares Walk, but its walk gives references to %s only, and %s, a type argument, holds a traced reference no walk of it would reach. A dictionary's keys are not traced: a collector that moved one would leave it hashed where it was.",
+                &node->namesym->namestr, itypeName(elem), itypeName(*argp));
+            return;
+        }
+    }
 }
 
 // What this type's element borrows cost it, as its 'is' list declares
@@ -3810,6 +3950,7 @@ static void structCheckMembers(StructNode *node) {
     }
 
     structCheckTraitReqs(node);
+    structWalkCheck(node);
 
     // 'RegionRef' requires nothing an ordinary requirement can state: each region
     // method is optional, with a fixed shape where declared. 'Traced' says

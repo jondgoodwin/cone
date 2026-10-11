@@ -136,7 +136,7 @@ fn isHeap(r *MemRegion) bool inline { r as usize == heapRegion() as usize; }
 // hold live values. Pushing grows it 4, 8, 16, ...; it never shrinks, and
 // gives its block back only when it dies. The block comes from the list's
 // region, the last field.
-pub struct List[T] is ShapeChanging, Sendable, CarriesRegion {
+pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, Walk {
   ptr *T;
   used usize;
   cap usize;
@@ -307,6 +307,12 @@ pub struct List[T] is ShapeChanging, Sendable, CarriesRegion {
   // (so the loop is a counted one, as for any slice), and the list may not be read or
   // changed otherwise while the loop runs
   pub fn mutItems(self &mut) ArrayMutItems[T] { new ArrayMutItems[T](mem.sliceFromPartsMut(ptr, used), 0usize); }
+
+  // How a collector reaches what the list holds, in its block: a writable
+  // reference to each value, which it traces as the value is traced (and, where
+  // it moves what a value refers to, rewrites in place). A list of numbers holds
+  // nothing a collector need find, and this costs it nothing.
+  pub fn walk(self &mut) ArrayMutItems[T] { new ArrayMutItems[T](mem.sliceFromPartsMut(ptr, used), 0usize); }
 
   // The values in runs of 'n' for changing in place, each run a '&mut' slice
   // (the last may be shorter): the mutable slice's 'mutChunks'. The list may not
@@ -589,7 +595,7 @@ pub struct ListDrain['a, T] is Iterator[T] {
 // Its values do not lie in one run of memory when they wrap round the block's
 // end, so there is no 'view' of them: walk them with 'items', or by position.
 // A borrow from a lookup or a cursor is good only until the deque next changes.
-pub struct Deque[T] is ShapeChanging, Sendable, CarriesRegion {
+pub struct Deque[T] is ShapeChanging, Sendable, CarriesRegion, Walk {
   ptr *T;
   head usize;    // the slot of the first value
   used usize;
@@ -624,6 +630,10 @@ pub struct Deque[T] is ShapeChanging, Sendable, CarriesRegion {
   pub fn len(self &) usize { used; }
   pub fn capacity(self &) usize { cap; }
   pub fn isEmpty(self &) bool { used == 0usize; }
+
+  // How a collector reaches what the deque holds, in its block: a writable
+  // reference to each value, front to back (see List)
+  pub fn walk(self &mut) DequeWalk[T] { new DequeWalk[T](self, 0usize); }
 
   // Make room for 'more' values beyond those it holds. A block too small is
   // replaced by one twice its size, or exactly big enough if that is more, and
@@ -771,6 +781,21 @@ pub struct DequeItems['a, T] is Iterator[&T] {
     imm i = pos;
     pos = i + 1usize;
     Some[&T]((deque.ptr + deque.slot(i)) as &T);
+  }
+}
+
+// A cursor over a deque's values, front to back, for a collector to trace
+// them: 'next' gives a writable reference to each in turn. It borrows the deque
+// mutably, which may not change while the cursor is used
+pub struct DequeWalk['a, T] is Iterator[&mut T] {
+  deque &'a mut Deque[T];
+  pos usize;
+
+  pub fn next(self &mut) Option[&'a mut T] {
+    if pos >= deque.used { return None; }
+    imm i = pos;
+    pos = i + 1usize;
+    Some[&mut T]((deque.ptr + deque.slot(i)) as &mut T);
   }
 }
 
@@ -1331,7 +1356,7 @@ fn capacityBuckets(n usize) usize {
   b;
 }
 
-pub struct Dict[K Hash, V] is ShapeChanging, Sendable, CarriesRegion {
+pub struct Dict[K Hash, V] is ShapeChanging, Sendable, CarriesRegion, Walk {
   ctrl *u8;
   slots *DictEntry[K, V];
   mask usize;       // the buckets, less one
@@ -1534,6 +1559,10 @@ pub struct Dict[K Hash, V] is ShapeChanging, Sendable, CarriesRegion {
   pub fn values(self &) DictValues[K, V] { new DictValues[K, V](self, 0usize); }
   pub fn entries(self &) DictEntries[K, V] { new DictEntries[K, V](self, 0usize); }
 
+  // How a collector reaches what the dictionary holds, in its block: a
+  // writable reference to each value (see List); the keys are not walked
+  pub fn walk(self &mut) DictWalk[K, V] { new DictWalk[K, V](self, 0usize); }
+
   // A cursor over its pairs, which 'each k, v in dict' walks: 'next' gives a
   // pair of borrows, a key and its value, in the table's order
   pub fn iter(self &) DictPairs[K, V] { new DictPairs[K, V](self, 0usize); }
@@ -1719,6 +1748,22 @@ pub struct DictValues['a, K Hash, V] is Iterator[&V] {
   }
 }
 
+// A cursor over a dictionary's values for a collector to trace them: 'next'
+// gives a writable reference to each. Keys are not walked: a collector that
+// moved one would leave it hashed where it was, so a key that holds a traced
+// reference is refused
+pub struct DictWalk['a, K Hash, V] is Iterator[&mut V] {
+  dict &'a mut Dict[K, V];
+  pos usize;
+
+  pub fn next(self &mut) Option[&'a mut V] {
+    imm i = nextFull(dict.ctrl, dict.mask, pos);
+    if i == noBucket { pos = dict.mask + 1usize; return None; }
+    pos = i + 1usize;
+    Some[&mut V](&mut dict.slots[i].value);
+  }
+}
+
 // A cursor over a dictionary's entries: a borrow of each key with its value
 pub struct DictEntries['a, K Hash, V] is Iterator[&DictEntry[K, V]] {
   dict &'a Dict[K, V];
@@ -1782,7 +1827,7 @@ pub struct OrderedEntry[K, V] {
   pub value V;
 }
 
-pub struct OrderedDict[K Hash, V] is ShapeChanging, Sendable, CarriesRegion {
+pub struct OrderedDict[K Hash, V] is ShapeChanging, Sendable, CarriesRegion, Walk {
   ctrl *u8;                        // the control bytes, past the index in its block
   index *u32;                      // per bucket, its entry's position; live only where ctrl is full
   dense *OrderedEntry[K, V];       // the entries in order, 'count' live, room for 7/8 of the buckets
@@ -1983,6 +2028,10 @@ pub struct OrderedDict[K Hash, V] is ShapeChanging, Sendable, CarriesRegion {
   pub fn keys(self &) OrderedKeys[K, V] { new OrderedKeys[K, V](self, 0usize); }
   pub fn values(self &) OrderedValues[K, V] { new OrderedValues[K, V](self, 0usize); }
   pub fn entries(self &) OrderedEntries[K, V] { new OrderedEntries[K, V](self, 0usize); }
+
+  // How a collector reaches what the dictionary holds, in its dense block: a
+  // writable reference to each value, in the order of insertion (see Dict.walk)
+  pub fn walk(self &mut) OrderedWalk[K, V] { new OrderedWalk[K, V](self, 0usize); }
 
   // A cursor over its pairs, which 'each k, v in dict' walks: 'next' gives a
   // pair of borrows, a key and its value, in the order of insertion
@@ -2220,6 +2269,20 @@ pub struct OrderedValues['a, K Hash, V] is Iterator[&V] {
     imm i = pos;
     pos = i + 1usize;
     Some[&V](&dict.dense[i].value);
+  }
+}
+
+// A cursor over an OrderedDict's values for a collector to trace them: 'next'
+// gives a writable reference to each, in the order of insertion (see DictWalk)
+pub struct OrderedWalk['a, K Hash, V] is Iterator[&mut V] {
+  dict &'a mut OrderedDict[K, V];
+  pos usize;
+
+  pub fn next(self &mut) Option[&'a mut V] {
+    if pos >= dict.count { return None; }
+    imm i = pos;
+    pos = i + 1usize;
+    Some[&mut V](&mut dict.dense[i].value);
   }
 }
 

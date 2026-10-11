@@ -1426,12 +1426,25 @@ pub struct So is RegionRef, Move {
 // 'Rc' does not declare 'ThreadSafe', and its owners belong to one thread.
 // The sync package's 'Arc' is the one whose count is atomic.
 pub struct Rc is RegionRef {
-  cnt usize;
+  cnt u32;
+  seen u32;
   fn alloc(size usize) *u8 inline {libc.malloc(size);}
-  fn init(self &new) inline {*self = new Rc(1usize);}
-  fn aliasRef(self &uni Rc) inline {cnt = cnt + 1usize;}
-  fn dealiasRef(self &uni Rc) bool inline {cnt = cnt - 1usize; cnt == 0usize;}
+  fn init(self &new) inline {*self = new Rc(1u32, 0u32);}
+  fn aliasRef(self &uni Rc) inline {
+    if cnt == 4294967295u32 {panic("Rc: more than 4294967295 owners of one value");}
+    cnt = cnt + 1u32;
+  }
+  fn dealiasRef(self &uni Rc) bool inline {cnt = cnt - 1u32; cnt == 0u32;}
   fn free(self &uni Rc) inline {libc.free(self as *u8);}
+  // A trace reached this object, which holds what a collector traces, in the
+  // collection whose epoch is 'mode': true the first time in that collection,
+  // so a value reached by two owners, or round a cycle, is traced once. A
+  // collector passes each collection a different nonzero mode.
+  fn visit(self &uni Rc, mode u32) bool inline {
+    if seen == mode {return false;}
+    seen = mode;
+    true;
+  }
 }
 
 // 'Rwcell', the lock permission for owners on one thread: 'Rc[Rwcell, T]'.
@@ -1554,6 +1567,17 @@ pub struct TypeRecord {
   // Bit 0: finalizing the value does something. Bit 1: the value holds a
   // traced reference
   pub flags u32;
+}
+
+// A value known only by its type record: the address of a value, and the
+// record of the type it is. Its trace is its record's own, called with the
+// address, so a type that holds values of many types (an arena) gives a
+// collector a writable reference to one of these for each, from its 'walk'.
+// It needs tracing wherever anything is traced, since what it names may hold
+// a traced reference, and the compiler knows nothing else of it.
+pub struct Erased {
+  pub p *u8;
+  pub rec *TypeRecord;
 }
 
 // The ordering an atomic operation of 'mem' promises for the memory around it,

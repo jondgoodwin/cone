@@ -1,0 +1,25 @@
+// An 'Rc' counts its owners in 32 bits, beside the epoch a trace marks it with
+// (so its header is two words of 32 bits, as it was one of 64). The count is
+// checked: an owner copied when 4294967295 already hold the value panics, rather
+// than wrapping to a count that would free the value while it is held. Billions
+// of copies are not made here; the count, in the header just before the value,
+// is set to its limit.
+
+mod region_rc_overflow;
+
+import stdio use *;
+
+struct Cell { pub n i32; }
+
+fn main() {
+  imm a = new Rc[mut, Cell](7i32);
+  imm count = ((&*a as *u8 as usize) - 8usize) as *u32;
+  printStr("owners ");
+  printInt(i64.from(mem.readRaw(count)));
+  printStr("\n");
+  mem.writeRaw(count, 4294967295u32);
+  printStr("copying\n");
+  imm b = a;
+  printInt(i64.from(a.n + b.n));
+  printStr("not reached\n");
+}

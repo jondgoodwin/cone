@@ -260,6 +260,10 @@ void nametblInit() {
     noLoanMutTraitName = nametblFind("NoLoanMut", 9);
     noLoanReadTraitName = nametblFind("NoLoanRead", 10);
     carriesRegionTraitName = nametblFind("CarriesRegion", 13);
+    erasedName = nametblFind("Erased", 6);
+    walkTraitName = nametblFind("Walk", 4);
+    walkMethodName = nametblFind("walk", 4);
+    visitMethodName = nametblFind("visit", 5);
     atomicValueTraitName = nametblFind("AtomicValue", 11);
     integerTraitName = nametblFind("Integer", 7);
     pointerTraitName = nametblFind("Pointer", 7);

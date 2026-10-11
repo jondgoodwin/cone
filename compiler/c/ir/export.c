@@ -245,10 +245,13 @@ int fnIsTypeLifecycle(INode *dclnode) {
         && (name == initMethodName || name == acquireMutMethodName || name == releaseMutMethodName
             || name == acquireReadMethodName || name == releaseReadMethodName))
         return 1;
+    // A Walk type's 'walk' is called wherever a value of the type is traced
+    if (name == walkMethodName && structDeclaresTrait((StructNode*)owner, walkTrait))
+        return 1;
     return regionIsRegionRef(owner)
         && (name == allocMethodName || name == initMethodName || name == aliasRefMethodName
             || name == dealiasRefMethodName || name == freeMethodName || name == markMethodName
-            || name == writeBarrierMethodName);
+            || name == writeBarrierMethodName || name == visitMethodName);
 }
 
 // Whether a type's method meets a requirement, or takes the place of a default,

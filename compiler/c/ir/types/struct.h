@@ -54,6 +54,8 @@ typedef struct StructNode {
     uint8_t holdstraced;    // itypeHoldsTraced's remembered answer (HoldsTraced*), once the type is checked
     uint8_t lends;          // What its element borrows cost it (StructLends), from its 'is' list at name resolution
     uint8_t shapeinf;       // Whether the compiler finds it shape-changing (ShapeInfer), for a type that declares none of the three (shapeinfer.h)
+    uint8_t cannottrace;    // itypeCannotTrace's remembered answer (HoldsTraced*, read as "cannot be traced"), once the type is checked
+    uint8_t holdsbarrier;   // itypeHoldsBarriered's remembered answer (HoldsTraced*, read as "holds a reference into a traced region with a write barrier")
     uint8_t holdsatomic;   // itypeHoldsAtomic's remembered answer (HoldsTraced*, read as "holds an atomic value"), once the type is checked
     uint8_t tagstate;       // Whether 'tagnbr' is settled yet, and whether it is below zero (TagState)
     uint8_t threadbound;    // itypeThreadBound's remembered answer (CarriesBorrow*, read as "bound to its thread"), once the type is checked
@@ -145,6 +147,15 @@ void structLendsDeclared(StructNode *node);
 // A type declaring CarriesRegion declares an init, and each init ends with
 // 'region *MemRegion'
 void structCarriesRegionCheck(StructNode *node);
+
+// A type declaring Walk (provisional) has a 'walk' of the shape, giving a cursor
+// over writable references to the values it holds, and it reaches every type
+// argument that holds a traced reference
+void structWalkCheck(StructNode *node);
+// The type of those values, or NULL where the type declares none or its walk is
+// not of the shape or not yet checked; and whether it declares one not yet checked
+INode *structWalkElem(StructNode *node);
+int structWalkPending(StructNode *node);
 
 // Clone struct
 INode *cloneStructNode(CloneState *cstate, StructNode *node);

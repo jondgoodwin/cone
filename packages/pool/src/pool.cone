@@ -177,7 +177,7 @@ pub struct Ref[T] is Hash {
   }
 }
 
-pub struct Pool[T] is ShapeChanging, CarriesRegion {
+pub struct Pool[T] is ShapeChanging, CarriesRegion, Walk {
   slots *Slot[T];   // the block, or null before the first value
   cap u32;          // slots the block has room for
   high u32;         // slots ever used: each below it has a generation
@@ -230,6 +230,11 @@ pub struct Pool[T] is ShapeChanging, CarriesRegion {
   pub fn len(self &) usize { usize.from(live); }
   pub fn capacity(self &) usize { usize.from(cap); }
   pub fn retiredSlots(self &) usize { usize.from(retired); }
+
+  // How a collector reaches what the pool holds, in its block: a writable
+  // reference to the value in each occupied slot (a free or retired slot holds
+  // none), in slot order
+  pub fn walk(self &mut) PoolWalk[T] { new PoolWalk[T](self, 0u32); }
 
   // Move value in, and a reference to it there
   pub fn add(self &mut, value T) Ref[T] {
@@ -379,6 +384,25 @@ pub struct Pool[T] is ShapeChanging, CarriesRegion {
     }
     self.freeStale();
     (region as &MemRegion).release(slots as *u8, usize.from(cap) * mem.sizeof[Slot[T]]());
+  }
+}
+
+// A cursor over the values a pool holds, in slot order, for a collector to trace
+// them: 'next' gives a writable reference to the value in each occupied slot.
+// It borrows the pool mutably, which may not change while the cursor is used
+pub struct PoolWalk['a, T] is Iterator[&mut T] {
+  pool &'a mut Pool[T];
+  pos u32;
+
+  pub fn next(self &mut) Option[&'a mut T] {
+    while pos < pool.high {
+      imm s = (pool.slots + usize.from(pos)) as &mut Slot[T];
+      pos = pos + 1u32;
+      if (s.gen & 1u32) == 1u32 {
+        return Some[&mut T](&mut s.value);
+      }
+    }
+    None;
   }
 }
 

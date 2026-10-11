@@ -156,6 +156,10 @@ extern Name *shapeChangingTraitName; // "ShapeChanging", a container that may mo
 extern Name *noLoanMutTraitName;     // "NoLoanMut", a container whose mutable element borrows loan nothing
 extern Name *noLoanReadTraitName;    // "NoLoanRead", a container whose read-only element borrows loan nothing
 extern Name *carriesRegionTraitName; // "CarriesRegion", a type whose memory comes from a region it is handed and keeps
+extern Name *erasedName;         // "Erased", core's value known only by its type record: what an arena's walk gives references to
+extern Name *walkTraitName;      // "Walk", a type saying how a collector reaches what it holds in memory it points to
+extern Name *walkMethodName;     // "walk", the method a Walk type declares: a cursor over writable references to its elements
+extern Name *visitMethodName;    // "visit", which a counted region's trace calls to trace an object once per collection
 extern Name *atomicValueTraitName;   // "AtomicValue", a value changed only by atomic operations
 extern Name *integerTraitName;   // "Integer", the integer types, which a constraint may ask for
 extern Name *pointerTraitName;   // "Pointer", the raw pointer types, which a constraint may ask for

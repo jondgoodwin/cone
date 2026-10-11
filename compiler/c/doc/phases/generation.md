@@ -767,18 +767,28 @@ two records of one type; nothing compares records across objects.
 of a record's trace and the expansion of `mem.trace`): for every reference into
 a region declaring `Traced` that the value holds inline, it loads the reference
 and, where it is not null, calls the region's `mark` with the header
-(`genlRegionHeader`) — and, where `mark` takes them
-(`regionMarkTakesContext`), the reference's permission, a constant (its
-`PermNode` flags), and the mode the trace was called with. It reaches a struct's
+(`genlRegionHeader`), the slot the reference is stored in (the address the trace
+loaded it from, so a collector that moves the value can rewrite it) — and, where
+`mark` takes them (`regionMarkTakesContext`), the reference's permission, a
+constant (its `PermNode` flags), and the mode the trace was called with. It
+passes through an owning reference of a region that is not traced to a value
+that needs tracing (`genlTraceThrough`): where the region declares `visit`, it
+is called with the header and the mode and the value is traced only if it answers
+that this is the first time, then the value's type's own record's trace is
+called on it (called, not expanded, so a type reaching itself through an owner
+traces in a finite function). It runs the walk of a value of a type declaring
+`Walk`, a cursor run until its `next` gives nothing, tracing each reference
+given as a value of the element type is traced (`genlTraceWalkElems`), and traces
+an `Erased` value by its record's own trace (`genlTraceErased`). It reaches a struct's
 fields and a tuple's elements that hold one (`itypeHoldsTraced`), each element
 of a fixed-size array whose element type does, in a loop (`genlEachElem`), and
 the variant an enum's tag picks, by a switch, as `genlEnumDrop` dispatches; the
 nullable-pointer layout, which has no tag, is its one reference — and so is a
 variant of such an enum held as itself (`*t` for `t &Some[Gc[T]]`, a birth),
 whose layout is its enum's (`genlTraceNullableVariant`). It stops at
-every other reference and every pointer: the placement rules keep a traced
-reference from hiding behind them. It does not share the finalizer's walk,
-which finalizes an owner's value where the trace must not follow one.
+every borrow and every pointer: the placement rules keep a traced reference
+from hiding behind them. It does not share the finalizer's walk, which finalizes
+an owner's value where the trace passes through it to find what it holds.
 
 **An allocation runs in one order, in every region** (`genlallocref`): the
 value init's arguments are evaluated (`genlNewArgs`; for the implicit init,
@@ -902,9 +912,10 @@ into — gets it as surely as one through a `R` reference.
   allocation's store of a value made before its `alloc` gets none unless a
   region's or permission's `init` ran between them: a new object nothing has
   run beside cannot have been finished with. A declared init's stores into
-  its `self` are stores through a reference, and get it. `mem.writeRaw` and
-  `mem.moveRaw` get none, since their
-  instances at a type holding a traced reference are refused.
+  its `self` are stores through a reference, and get it. `mem.writeRaw` gets it
+  too, for the value it wrote: a collection's push of a reference into its
+  block is such a store. `mem.moveRaw` gets none: it moves what was stored
+  already.
 - **What.** `genlBarrierAt` walks the value just stored, at its destination,
   with the trace's walk (`genlTraceWalk`), handing each reference into a
   region with a `writeBarrier` to it as the header of what it points at

@@ -1,0 +1,51 @@
+// A root is traced through an owner and a collection: a local 'Rc' whose value
+// holds traced references, and a local list of them, are found by the shadow
+// stack, each by its type's trace, which passes through the 'Rc' (once, for the
+// epoch 'mem.traceRoots' is given) and walks the list. The births -- the leaves
+// as they are made, before they are held -- are roots too, so each leaf is
+// found by them as well.
+
+mod region_walk_roots;
+
+import stdio use *;
+import libc;
+import collections;
+
+mut nextId = 1i64;
+
+struct Tr is RegionRef, Traced {
+  pub id i64;
+
+  fn alloc(size usize) *u8 {
+    imm p = malloc(size);
+    mem.writeRaw(p as *Tr, new Tr(nextId));
+    nextId = nextId + 1;
+    p;
+  }
+  fn mark(self &uni Tr, slot *usize, perm u32, mode u32) {
+    printStr(" "); printInt(id);
+  }
+}
+
+struct Leaf { pub n i32; }
+struct Pair { pub left Tr[mut, Leaf]; pub right Tr[mut, Leaf]; }
+
+fn leaf(n i32) Tr[mut, Leaf] { new Tr[mut, Leaf](n); }
+
+fn roots(label &str, mode u32) {
+  printStr(label);
+  mem.traceRoots(mode);
+  printStr("\n");
+}
+
+fn main() {
+  imm held = new Rc[mut, Pair](leaf(1i32), leaf(2i32));
+  imm again = held;
+  mut list = collections.List[Tr[mut, Leaf]].empty();
+  list.push(leaf(3i32));
+  list.push(leaf(4i32));
+  roots("roots, epoch 1:", 1u32);
+  roots("roots, epoch 2:", 2u32);
+  printInt(i64.from(held.left.n + held.right.n + again.left.n));
+  printStr("\n");
+}

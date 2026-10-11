@@ -1202,6 +1202,51 @@ What the marker brings:
   in the arguments is still the one used. The arena's four words and its block
   are both the arena's.
 
+### Walk
+
+`Walk` (a provisional name) is the built-in marker of a type that holds values
+in memory it points to -- a collection's block, a pool's slots, an arena's
+allocations -- and so cannot be traced by its fields, which hold a raw pointer.
+It says how a collector reaches them. The type declares `Walk` and one method,
+`fn walk(self &mut) I`, `I` a cursor that declares `is Iterator[&mut E]`: a
+writable reference to each value it holds, of a type `E` whose size is known where
+it is written. The compiler finds `E` from the cursor's `next` (`structWalk`,
+`structWalkElem`), and holds the declaration to its shape at the end of the
+type's check (`structWalkCheck`, `ErrorWalkShape`).
+
+- **What it means for tracing.** The trace in the type's record runs the cursor
+  until its `next` gives nothing, and traces each reference given as it traces a
+  value of `E` (`genlTraceWalkElems`), after the fields. A type needs tracing
+  where `E` does, so `List[i32]` has no trace and `List[Gc[Node]]` has one; a
+  raw pointer the type's own fields hold is covered by the walk and does not make
+  it untraceable (`itypeCannotTrace`, `HoldsAskWalkCovers`), which a pointer to a
+  value that needs tracing, in a type declaring no `Walk`, does. A Walk type's
+  `mem.writeRaw` and `mem.moveRaw` are not refused (`ErrorTracedRaw`); a call from a
+  method of any other type is. Stores through `mem.writeRaw` are handed to a
+  write barrier as any store is (`genlBarrierAt`), and a store of the whole
+  collection is handed the barrier for each reference it holds, by the same walk.
+- **One element type.** The walk gives references to values of one type, so a type
+  argument that holds a traced reference and is not `E` is held where no walk
+  finds it: `Dict[K, V]` walks its values, and a key that holds a traced reference
+  is refused (`ErrorTraceKey`), since a collector that moved it would leave it
+  hashed where it was.
+- **Many types.** An arena holds values of many types. Its cursor gives core's
+  `Erased`, `{p *u8, rec *TypeRecord}`: the address of a value and its type's
+  record, whose trace is the record's own (`genlTraceErased`). The arena puts
+  each value whose type needs tracing (`mem.holdsTraced[T]()`) on a list of
+  these, like its list of finalizers. `Erased` needs tracing wherever any
+  region of the compile is traced (`regionTracedAnywhere`, noted as each struct
+  is name resolved), so an arena is traced in a program with a collector and not
+  otherwise.
+- **Declared, not named.** The compiler looks for `walk` as it looks for a
+  CarriesRegion type's `init`: the trait is the declaration, and the method is
+  the one thing it asks of a type that makes it. Nothing is Walk because of a
+  method's name, or its type's: `List`, `Deque`, `Dict`, `OrderedDict`, `Pool`,
+  `Arena` and a program's own container all declare it the same way.
+  Two limits: the cursor's own finalization and lifetimes are not looked at (a
+  walk's cursor holds borrows and is dropped without running), and a type
+  declaring it is trusted to cover every value it points at.
+
 ### AtomicValue
 
 `AtomicValue` is the built-in marker of a value changed only by atomic
@@ -1910,10 +1955,16 @@ Flow's gate asks whether each local's type carries a borrow
 ([Flow](../phases/flow.md), "The gate"), which for a struct means its fields and,
 for an enum, its variants. The answer is remembered in `carriesborrow`, because
 asked afresh at every variable it cost flow 10–20%. Whether a value of the type
-holds a traced reference inline (`itypeHoldsTraced`: its fields, an enum's
-variants, stopping at every reference but a traced one) is remembered the same
-way, in `holdstraced`, since the type record, the trace, and the placement
-rules of traced references all ask it ([What a region is](module.md)). Whether
+needs tracing (`itypeHoldsTraced`: its fields, an enum's variants, and what a
+type declaring `Walk` gives references to, through owning references of regions
+that are not traced and stopping at every other reference and pointer) is
+remembered the same way, in `holdstraced`, and whether it cannot be traced
+(`itypeCannotTrace`, in `cannottrace`) and holds a reference into a traced
+region with a write barrier (`itypeHoldsBarriered`, in `holdsbarrier`) by the
+same walk, since the type record, the trace, and the placement rules of traced
+references all ask them ([What a region is](module.md)). A struct reached again
+through an owner while it is asked ('next Rc[Node]') answers no where it was
+first asked, and the answers that waited on it are settled there. Whether
 it holds an atomic value inline (`itypeHoldsAtomic`: a struct declaring
 `AtomicValue`, or its fields and an enum's variants, stopping at every
 reference and pointer) is remembered in `holdsatomic` by the same walk

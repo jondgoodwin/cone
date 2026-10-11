@@ -108,6 +108,14 @@ int regionReleaseActs(INode *region) {
 // traced, and the placement rules have nothing to look for.
 static int regionTracedDeclared = 0;
 
+void regionTracedSeen(void) {
+    regionTracedDeclared = 1;
+}
+
+int regionTracedAnywhere(void) {
+    return regionTracedDeclared;
+}
+
 int regionIsTraced(INode *region) {
     StructNode *strnode = regionDcl(region);
     return strnode != NULL && structDeclaresTrait(strnode, tracedTrait) && regionStructIsRegionRef(strnode);
@@ -166,20 +174,60 @@ static void regionCheckSelfMeth(StructNode *region, Name *name, int retbool) {
             &name->namestr, &name->namestr, &region->namesym->namestr);
 }
 
-// Is 'mark' of one of the two shapes a trace calls: '(self &uni R)', or
-// '(self &uni R, perm u32, mode u32)', returning nothing? The longer shape is
+// Is this parameter a '*usize': the slot a reference is stored in?
+static int regionIsSlotParm(INode *parm) {
+    INode *type = itypeGetTypeDcl(iexpGetTypeDcl(parm));
+    return type->tag == PtrTag && itypeGetTypeDcl(((StarNode*)type)->vtexp) == (INode*)usizeType;
+}
+
+// Is 'mark' of one of the two shapes a trace calls: '(self &uni R, slot
+// *usize)', or '(self &uni R, slot *usize, perm u32, mode u32)', returning
+// nothing? The slot is where the reference being traced is stored, so a
+// collector that moves what it points at can rewrite it. The longer shape is
 // how a region asks to be told, with each reference, its permission and the
 // mode its trace was called in (regionMarkTakesContext).
 static int regionMarkShapeOk(FnDclNode *meth, StructNode *region) {
     if (!regionMethReturnsNothing(meth))
         return 0;
-    if (regionIsSelfRef(meth, region, 1))
-        return 1;
-    if (!regionIsSelfRef(meth, region, 3))
+    int nparms = regionIsSelfRef(meth, region, 2) ? 2 : regionIsSelfRef(meth, region, 4) ? 4 : 0;
+    if (nparms == 0)
         return 0;
     FnSigNode *sig = (FnSigNode*)itypeGetTypeDcl(meth->vtype);
-    return itypeGetTypeDcl(iexpGetTypeDcl(nodesGet(sig->parms, 1))) == (INode*)u32Type
-        && itypeGetTypeDcl(iexpGetTypeDcl(nodesGet(sig->parms, 2))) == (INode*)u32Type;
+    if (!regionIsSlotParm(nodesGet(sig->parms, 1)))
+        return 0;
+    return nparms == 2
+        || (itypeGetTypeDcl(iexpGetTypeDcl(nodesGet(sig->parms, 2))) == (INode*)u32Type
+            && itypeGetTypeDcl(iexpGetTypeDcl(nodesGet(sig->parms, 3))) == (INode*)u32Type);
+}
+
+// Check the shape of 'visit' where a region declares it: '(self &uni R, mode
+// u32) bool', answering whether this is the first visit in the collection whose
+// epoch is 'mode'
+static void regionCheckVisit(StructNode *region) {
+    INode *member = iNsTypeFindFnField((INsTypeNode*)region, visitMethodName);
+    if (member == NULL)
+        return;
+    int ok = member->tag == FnDclTag && regionIsSelfRef((FnDclNode*)member, region, 2);
+    if (ok) {
+        FnSigNode *sig = (FnSigNode*)itypeGetTypeDcl(((FnDclNode*)member)->vtype);
+        ok = itypeGetTypeDcl(iexpGetTypeDcl(nodesGet(sig->parms, 1))) == (INode*)u32Type
+            && itypeGetTypeDcl(sig->rettype) == (INode*)boolType;
+    }
+    if (!ok)
+        errorMsgNode(member, ErrorRegionMeth,
+            "A region's visit must be declared 'fn visit(self &uni %s, mode u32) bool': it is handed the header of a value a trace reached and the collection's epoch, and answers whether this is the first time in it.",
+            &region->namesym->namestr);
+}
+
+// May a trace pass through an owning reference into this region, to the value
+// it holds? A single-owner region (Move) is reached once; a region with
+// several owners must say, by 'visit', whether a value was reached already, or a
+// value reached twice, or round a cycle, would be traced again and again.
+int regionCanPassTrace(INode *region) {
+    StructNode *strnode = regionDcl(region);
+    if (strnode == NULL)
+        return 0;
+    return (strnode->flags & MoveType) || regionMethod(region, visitMethodName) != NULL;
 }
 
 // A region declaring 'Traced' promises a 'mark' for its trace to call, and a
@@ -195,13 +243,13 @@ static void regionCheckTraced(StructNode *region) {
     INode *member = iNsTypeFindFnField((INsTypeNode*)region, markMethodName);
     if (member == NULL) {
         errorMsgNode((INode*)region, ErrorTracedMark,
-            "Region %s declares Traced, so its trace hands it each reference it finds, through a method it has not declared: 'fn mark(self &uni %s)', or 'fn mark(self &uni %s, perm u32, mode u32)'.",
+            "Region %s declares Traced, so its trace hands it each reference it finds, through a method it has not declared: 'fn mark(self &uni %s, slot *usize)', or 'fn mark(self &uni %s, slot *usize, perm u32, mode u32)'.",
             name, name, name);
         return;
     }
     if (member->tag != FnDclTag || !regionMarkShapeOk((FnDclNode*)member, region))
         errorMsgNode(member, ErrorRegionMeth,
-            "A traced region's mark must be declared 'fn mark(self &uni %s)', or 'fn mark(self &uni %s, perm u32, mode u32)' to be told each reference's permission and the trace's mode: it is handed the header, and returns nothing.",
+            "A traced region's mark must be declared 'fn mark(self &uni %s, slot *usize)', or 'fn mark(self &uni %s, slot *usize, perm u32, mode u32)' to be told each reference's permission and the trace's mode: it is handed the header of what the reference points at and the slot the reference is stored in (to rewrite, if what it points at moves), and returns nothing.",
             name, name);
     // Optional: a collector that marks while the program runs hears of every
     // store of one of its references that no root will show it
@@ -296,6 +344,7 @@ void regionRefCheck(StructNode *node) {
     regionCheckSelfMeth(node, aliasRefMethodName, 0);
     regionCheckSelfMeth(node, dealiasRefMethodName, 1);
     regionCheckSelfMeth(node, freeMethodName, 0);
+    regionCheckVisit(node);
 
     // Judged by the method: a member of the name that is not one was reported
     // above, and is no operation the compiler calls
@@ -348,7 +397,7 @@ int regionMarkTakesContext(INode *region) {
     if (markmeth == NULL)
         return 0;
     FnSigNode *marksig = (FnSigNode*)itypeGetTypeDcl(markmeth->vtype);
-    return marksig->parms->used == 3;
+    return marksig->parms->used == 4;
 }
 
 // At an allocation, 'new R[perm, T](...)': the region is a RegionRef (refTypeCheck reports
@@ -384,7 +433,8 @@ void regionAllocTypeCheck(INode *region) {
 typedef enum {
     TracedAtRef,        // An owning reference type: rules 1, 3, 5 and 6
     TracedAtGlobal,     // A global or static: rule 2
-    TracedAtRaw         // An instance of mem.writeRaw or mem.moveRaw: rule 4
+    TracedAtRaw,        // A call of mem.writeRaw or mem.moveRaw: rule 4
+    TracedAtRoot        // A local or parameter, a root the collector finds
 } TracedAt;
 
 typedef struct {
@@ -392,6 +442,7 @@ typedef struct {
     INode *where;       // Where to report it
     INode *type;        // The type asked about: the value, the variable's, the type argument
     TracedAt at;
+    int nested;         // A raw move asked for through a generic's body, reported where the generic was instanced
 } TracedPlace;
 
 static TracedPlace *regionTracedPlaces = NULL;
@@ -412,6 +463,7 @@ static void regionTracedNote(TracedAt at, INode *node, INode *where, INode *type
     place->where = where;
     place->type = type;
     place->at = at;
+    place->nested = 0;
 }
 
 // A reference type is checked: an owning one is noted for the rules. Its
@@ -426,18 +478,41 @@ void regionTracedGlobalNote(VarDclNode *var) {
     regionTracedNote(TracedAtGlobal, (INode*)var, (INode*)var, var->vtype);
 }
 
-// An instance of an intrinsic is checked: mem.writeRaw's and mem.moveRaw's
-// are noted for rule 4, reported where the program asked for them -- through a
-// collection's generic body, at the collection's instance in the program's own
-// source, the outermost place that asked, since that is where a traced type
-// argument was chosen
-void regionTracedRawNote(FnDclNode *fndcl, int16_t intrinsic, INode *typearg) {
-    if (intrinsic != WriteRawIntrinsic && intrinsic != MoveRawIntrinsic)
+// A local or a parameter is checked: a root, found by the collector through
+// its type's trace
+void regionTracedRootNote(VarDclNode *var) {
+    regionTracedNote(TracedAtRoot, (INode*)var, (INode*)var, var->vtype);
+}
+
+// A call of mem.writeRaw or mem.moveRaw is checked: noted for rule 4, reported
+// where the program asked for it -- through a collection's generic body, at the
+// collection's instance in the program's own source, the outermost place that
+// asked, since that is where a traced type argument was chosen. A method of a
+// type declaring Walk is exempt: the walk it declares is how a collector reaches
+// what the method places.
+void regionTracedRawCall(TypeCheckState *pstate, FnCallNode *call, FnDclNode *fndcl) {
+    IntrinsicNode *intrinsic = (IntrinsicNode *)fndcl->value;
+    if (intrinsic->intrinsicFn != WriteRawIntrinsic && intrinsic->intrinsicFn != MoveRawIntrinsic)
         return;
-    INode *where = fndcl->instnode ? fndcl->instnode : (INode *)fndcl;
+    // The T of 'writeRaw[T](p *T, ...)' or 'moveRaw[T](dst *T, ...)', read from the
+    // instance's signature, which is concrete
+    FnSigNode *sig = (FnSigNode *)itypeGetTypeDcl(fndcl->vtype);
+    if (sig->tag != FnSigTag || sig->parms->used == 0)
+        return;
+    INode *ptrtype = itypeGetTypeDcl(((VarDclNode *)nodesGet(sig->parms, 0))->vtype);
+    if (ptrtype->tag != PtrTag)
+        return;
+    INode *typearg = ((StarNode *)ptrtype)->vtexp;
+    if (itypeGetTypeDcl(typearg)->tag == GenVarDclTag)
+        return;
+    if (pstate->typenode && pstate->typenode->tag == StructTag
+        && structDeclaresTrait((StructNode *)pstate->typenode, walkTrait))
+        return;
+    INode *where = (INode *)call;
     while (where->instnode != NULL && where->instnode != where)
         where = where->instnode;
     regionTracedNote(TracedAtRaw, (INode*)fndcl, where, typearg);
+    regionTracedPlaces[regionTracedCnt - 1].nested = where != (INode *)call;
 }
 
 // A type as a diagnostic names it: itypeName, except that an owning reference
@@ -460,12 +535,33 @@ static void regionTracedJudgeRef(RefNode *node, INode *where) {
     StructNode *region = regionDcl(node->region);
     char *regname = &region->namesym->namestr;
     if (!regionIsTraced(node->region)) {
-        if (itypeHoldsTraced(node->vtexp))
+        // A trace passes through an owning reference to the value it holds
+        // (itypeHoldsTraced), unless it cannot: the region must be single-owner
+        // or say whether a value was reached already ('visit'), a collector that
+        // marks while the program runs hears of stores, which a value behind an
+        // owner does not make, and what is behind must itself be traceable
+        if (!itypeHoldsTraced(node->vtexp) || !itypeCannotTrace((INode*)node))
+            return;
+        if (!regionCanPassTrace(node->region))
             errorMsgNode(where, ErrorTracedHeld,
-                "A reference into %s may not point at %s, which holds a traced reference: %s is not traced, so no collector would find what its values hold. A traced reference may be held in a local, a parameter, or a value a traced region allocates.",
+                "A reference into %s may not point at %s, which holds a traced reference: %s has several owners and declares no 'visit', so a trace could not tell whether it had reached a value already, and would follow a cycle round forever. Declare 'fn visit(self &uni %s, mode u32) bool' to be traced through.",
+                regname, regionTracedTypeName(node->vtexp), regname, regname);
+        else if (itypeHoldsBarriered(node->vtexp))
+            errorMsgNode(where, ErrorTracedHeld,
+                "A reference into %s may not point at %s, which holds a reference into a traced region declaring writeBarrier: that collector marks while the program runs, hearing of each store of one of its references, and a value stored behind %s is not one it would hear of. A traced reference may be held in a local, a parameter, or a value a traced region allocates.",
                 regname, regionTracedTypeName(node->vtexp), regname);
+        else
+            errorMsgNode(where, ErrorTracedHeld,
+                "A reference into %s may not point at %s, which holds a traced reference and cannot be traced: it holds a raw pointer to a value that may hold one, or an array body of them, that no Walk reaches.",
+                regname, regionTracedTypeName(node->vtexp));
         return;
     }
+    // What a traced region allocates is traced by its type's record: a value
+    // that cannot be traced would hide what it holds
+    if (itypeHoldsTraced(node->vtexp) && itypeCannotTrace(node->vtexp))
+        errorMsgNode(where, ErrorTraceRoot,
+            "A reference into %s may not point at %s, which holds a traced reference and cannot be traced: it holds a raw pointer to a value that may hold one, or an owner a trace cannot pass through, that no Walk reaches.",
+            regname, regionTracedTypeName(node->vtexp));
     if (node->tag != RefTag) {
         errorMsgNode(where, ErrorTracedRefKind,
             "%s is traced, and its trace follows a single reference '%s[T]' only: the value type behind a virtual reference is not where it could find it.",
@@ -500,13 +596,13 @@ static void regionTracedJudgeRaw(TracedPlace *place, uint32_t index) {
             && itypeHoldsTraced(prior->type))
             return;
     }
-    if (place->where != fndcl->instnode)
+    if (place->nested)
         errorMsgNode(place->where, ErrorTracedRaw,
-            "What this instantiates would place %s, which holds a traced reference, in raw memory no collector traces (by mem.%s, as an arena, a pool or a collection places its values). A traced reference may be held in a local, a parameter, or a value a traced region allocates.",
+            "What this instantiates would place %s, which holds a traced reference, in raw memory no collector traces (by mem.%s, as an arena, a pool or a collection places its values). A type that holds values this way says how a collector reaches them: it declares Walk, and a 'walk' giving a cursor over a writable reference to each. A traced reference may also be held in a local, a parameter, or a value a traced region allocates.",
             regionTracedTypeName(place->type), &fndcl->namesym->namestr);
     else
         errorMsgNode(place->where, ErrorTracedRaw,
-            "mem.%s would place %s, which holds a traced reference, in raw memory no collector traces (an arena's, a pool's, a collection's block). A traced reference may be held in a local, a parameter, or a value a traced region allocates.",
+            "mem.%s would place %s, which holds a traced reference, in raw memory no collector traces (an arena's, a pool's, a collection's block), unless the method placing it belongs to a type that declares Walk, and a 'walk' giving a cursor over a writable reference to each value it holds. A traced reference may also be held in a local, a parameter, or a value a traced region allocates.",
             &fndcl->namesym->namestr, regionTracedTypeName(place->type));
 }
 
@@ -534,6 +630,18 @@ void regionTracedCheckAll() {
         case TracedAtRaw:
             regionTracedJudgeRaw(place, i);
             break;
+        case TracedAtRoot: {
+            // An owning reference is judged where it is written (a traced one
+            // for its value, any other for passing the trace through it)
+            INode *dcl = itypeGetTypeDcl(place->type);
+            if (dcl->tag == RefTag || dcl->tag == ArrayRefTag || dcl->tag == VirtRefTag)
+                break;
+            if (itypeHoldsTraced(place->type) && itypeCannotTrace(place->type))
+                errorMsgNode(place->where, ErrorTraceRoot,
+                    "%s holds a traced reference, and its type %s cannot be traced: it holds a raw pointer to a value that may hold one, or an owner a trace cannot pass through, and no Walk reaches what it points at. A type that holds values this way declares Walk, and a 'walk' giving a cursor over a writable reference to each.",
+                    &((VarDclNode *)place->node)->namesym->namestr, regionTracedTypeName(place->type));
+            break;
+        }
         }
     }
 }

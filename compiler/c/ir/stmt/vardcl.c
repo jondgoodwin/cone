@@ -631,6 +631,10 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
     // traced reference (judged once every type is laid out)
     if (name->scope == 0 || (name->flags & FlagStatic))
         regionTracedGlobalNote(name);
+    // A local or a parameter is a root: the collector finds what it holds by its
+    // type's trace (judged once every type is laid out)
+    else
+        regionTracedRootNote(name);
 
     // A variable holds its type by value, so that type has to be able to say how
     // large it is. A parameter of a function reference's signature, checked as

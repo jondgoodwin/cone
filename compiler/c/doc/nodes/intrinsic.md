@@ -133,13 +133,14 @@ type while each call gives its own orderings.
    an integer, so an `Atomic[bool]` never reaches this.) Then `intrinsicDclTypeCheck`: a declared
    intrinsic's instance has no body to check; its `typearg` is type checked and
    must have a size (`itypeNoSizeCause`), else `ErrorIntrinsicType`, reported at
-   the call that instantiated it (`instnode`), not in core. An instance of
-   `writeRaw` or `moveRaw` is also noted for the rule that no traced reference
-   is placed in raw memory (`regionTracedRawNote`, `ErrorTracedRaw`), judged
-   once type check has finished and reported at the outermost instantiation
-   — a collection's in the program's source, where it was reached through the
-   collection's body ([What a region is](module.md)). Each instance is judged
-   once, for its type, as an instance is made once.
+   the call that instantiated it (`instnode`), not in core. A call of
+   `writeRaw` or `moveRaw` is also noted, where it is made (`regionTracedRawCall`,
+   from `fnCallFinalizeArgs`), for the rule that no traced reference is placed in
+   raw memory unless the method making the call belongs to a type declaring `Walk`
+   (`ErrorTracedRaw`), judged once type check has finished and reported at the
+   outermost instantiation — a collection's in the program's source, where it was
+   reached through the collection's body ([What a region is](module.md)); once
+   for each place the program chose a type.
 5. **The call** (`fnCallFinalizeArgs` → `intrinsicCallCheck`), once its
    arguments are coerced and its defaults appended: each argument an entry's
    `ShapeOrder` parameter receives must be a constant `MemOrder`, a variant's

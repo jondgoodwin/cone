@@ -679,6 +679,12 @@ void fnCallFinalizeArgs(TypeCheckState *pstate, FnCallNode *node) {
             owner && owner->tag == StructTag ? &((StructNode*)owner)->namesym->namestr : "T");
     }
 
+    // A raw move of a value holding a traced reference hides it from a collector
+    // unless its method's type says how to reach it (judged once every type is laid out)
+    if (initdcl && initdcl->tag == FnDclTag && (((FnDclNode*)initdcl)->dclinfo.facts & DclIntrinsic)
+        && intrinsicIsDeclared((FnDclNode*)initdcl))
+        regionTracedRawCall(pstate, node, (FnDclNode*)initdcl);
+
     // A GPU has no operating system and no C library: a function defined
     // elsewhere is a call to code that is not there. The exceptions are the C
     // library's math, which a GPU lowers to its own instructions, and core's

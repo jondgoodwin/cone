@@ -158,6 +158,30 @@ struct Block {
   pub prev *Block;
 }
 
+// One value the arena holds that a collector must trace (its type holds a traced
+// reference, 'mem.holdsTraced[T]()'): the list of them is the arena's walk. The
+// node is allocated in the arena beside the value, whose address and type record
+// it keeps, so the arena, which holds values of many types, gives a collector
+// each of them as an Erased value, which is traced by its type's own trace.
+struct TraceNode {
+  pub next *TraceNode;
+  pub p *u8;              // an Erased value is these two fields, 'p' and 'rec', as they sit here
+  pub rec *TypeRecord;
+}
+
+// A cursor over the values an arena holds that need tracing, newest first: 'next'
+// gives a writable reference to each, as an Erased value
+pub struct ArenaWalk is Iterator[&mut Erased] {
+  node *TraceNode;
+
+  pub fn next(self &mut) Option[&mut Erased] {
+    if node as usize == 0usize { return None; }
+    imm at = node;
+    node = (*at).next;
+    Some[&mut Erased]((at as usize + mem.sizeof[usize]()) as &mut Erased);
+  }
+}
+
 // Room a new block has for values, unless a value needs more
 const blockBytes = 4096usize;
 
@@ -165,7 +189,7 @@ const blockBytes = 4096usize;
 // heap object, which the Arena points to and every collection made in the arena
 // points to as its region ('header' is first, so the object is the region), so
 // that moving the Arena moves neither.
-struct ArenaCore {
+struct ArenaCore is Walk {
   header MemRegion;    // the region: allocate, resize and release, below
   blocks *Block;       // the newest block, or null
   top usize;           // the address of its first unused byte
@@ -173,6 +197,8 @@ struct ArenaCore {
   finals *FinalNode;   // the newest header, or null
   nfinals usize;       // how many headers the list has held
   nblocks usize;       // how many blocks it holds
+  traced *TraceNode;   // the newest value needing a trace, or null
+  ntraced usize;       // how many it has held
 
   // Room for a value of 'size' bytes aligned to 'align' that needs no
   // finalizing: its address. The caller writes the value there.
@@ -195,6 +221,27 @@ struct ArenaCore {
     finals = node;
     nfinals = nfinals + 1usize;
     at as *u8;
+  }
+
+  // The values it holds that need tracing, for a collector (see Arena.walk)
+  pub fn walk(self &mut) ArenaWalk { new ArenaWalk(traced); }
+
+  // A new arena state: no block yet, the three region functions set
+  fn make() *MemRegion {
+    imm core = libc.malloc(mem.sizeof[ArenaCore]()) as *ArenaCore;
+    if core as usize == 0usize { panic("arena: out of memory for an arena"); }
+    mem.writeRaw(core, new ArenaCore(new MemRegion(&regionAlloc, &regionResize, &regionRelease),
+      null, 0usize, 0usize, null, 0usize, 0usize, null, 0usize));
+    core as *MemRegion;
+  }
+
+  // The value at 'p', whose type's record is 'rec', needs tracing: its node is
+  // allocated here, and put first on the list
+  fn noteTraced(self &mut, p *u8, rec *TypeRecord) {
+    imm node = self.place(mem.sizeof[TraceNode](), mem.alignof[TraceNode]()) as *TraceNode;
+    mem.writeRaw(node, new TraceNode(traced, p, rec));
+    traced = node;
+    ntraced = ntraced + 1usize;
   }
 
   // Room for a value of 'size' bytes aligned to 'align', with 'hdr' bytes
@@ -278,16 +325,7 @@ fn regionResize(r *MemRegion, block *u8, oldBytes usize, newBytes usize, align u
 // Nothing is done with a block given back: the arena's blocks go together
 fn regionRelease(r *MemRegion, block *u8, bytes usize) {}
 
-// A new arena state: no block yet, the three region functions set
-fn newCore() *MemRegion {
-  imm core = libc.malloc(mem.sizeof[ArenaCore]()) as *ArenaCore;
-  if core as usize == 0usize { panic("arena: out of memory for an arena"); }
-  mem.writeRaw(core, new ArenaCore(new MemRegion(&regionAlloc, &regionResize, &regionRelease),
-    null, 0usize, 0usize, null, 0usize, 0usize));
-  core as *MemRegion;
-}
-
-pub struct Arena is NoLoanMut {
+pub struct Arena is NoLoanMut, Walk {
   // The arena's region, which the collections made in it point to: public so
   // that 'new a[T](...)' can hand it to what it makes (typelit.c). Not to be
   // changed.
@@ -295,14 +333,14 @@ pub struct Arena is NoLoanMut {
 
   // An arena holding nothing, with no block until the first value arrives
   pub fn empty() Arena {
-    new Arena(newCore());
+    new Arena(ArenaCore.make());
   }
 
   // An arena holding nothing yet, whose first block is allocated now, with
   // room for at least 'bytes' of values and their headers: a scratch whose
   // need is known then makes one allocation rather than several
   pub fn withRoom(bytes usize) Arena {
-    imm region = newCore();
+    imm region = ArenaCore.make();
     imm core = coreOf(region);
     core.grow(bytes);
     new Arena(region);
@@ -322,8 +360,17 @@ pub struct Arena is NoLoanMut {
       core.place(mem.sizeof[T](), mem.alignof[T]());
     };
     mem.writeRaw(at as *T, value);
+    // A value holding a traced reference is put on the list a collector walks
+    if mem.holdsTraced[T]() {
+      core.noteTraced(at, mem.typeRecord[T]());
+    }
     at as &mut T;
   }
+
+  // How a collector reaches what the arena holds, whatever the types: the values
+  // whose type holds a traced reference, each as an Erased value, which is traced
+  // by its type's own trace. An arena holding none gives none.
+  pub fn walk(self &mut) ArenaWalk { coreOf(region).walk(); }
 
   // How many values have been given a finalizer header, and how many blocks
   // it holds: for tests and for tuning, not for correctness

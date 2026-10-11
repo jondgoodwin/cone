@@ -37,16 +37,32 @@
 		and allocator methods are not trust blocks.
 		An allocator whose struct also declares the built-in trait <span class="pre">Traced</span>
 		(<span class="pre">struct Gc is RegionRef, Traced</span>) has its references traced: it declares
-		<span class="pre">fn mark(self &amp;uni R)</span>, or <span class="pre">fn mark(self &amp;uni R, perm u32,
-		mode u32)</span> to be told each reference's permission and the mode it was traced in, and every
+		<span class="pre">fn mark(self &amp;uni R, slot *usize)</span>, or <span class="pre">fn mark(self &amp;uni R,
+		slot *usize, perm u32, mode u32)</span> to be told each reference's permission and the mode it was
+		traced in, and every
 		type record's trace (and <a href="refintrinsic.html"><span class="pre">mem.trace</span></a>) hands
-		it the bookkeeping of each of its references a value holds. It may not be
-		<span class="pre">Move</span>. A traced reference may be held only where a collector can find it:
-		in a local, a parameter, a temporary, a value held in one of those, or a value a traced allocator
-		allocated. So the compiler refuses one held by an allocator that is not traced (a
-		<span class="pre">Rc</span> or <span class="pre">So</span> value holding it), in a global, or in
-		memory placed by <span class="pre">mem.writeRaw</span> (an arena's, a pool's, a collection's); and
-		refuses a traced allocator's value holding a borrowed reference, a traced virtual
+		it the bookkeeping of each of its references a value holds, and the slot the reference is stored in
+		(its first word is the address of the value), which a collector that moves values rewrites. It may
+		not be <span class="pre">Move</span>. A traced reference may be held only where a collector can find it:
+		in a local, a parameter, a temporary, a value held in one of those, a value a traced allocator
+		allocated, or behind what a trace passes through. A trace passes through a
+		<span class="pre">Rc</span> or <span class="pre">So</span> reference to the traced references its
+		value holds (once for each collection: a count-owning allocator declares
+		<span class="pre">fn visit(self &amp;uni R, mode u32) bool</span>, which answers whether this is the first time its
+		value was reached in the collection whose epoch the trace's mode names, so a value several owners
+		hold, or one round a cycle, is traced once; one that declares neither
+		<span class="pre">Move</span> nor <span class="pre">visit</span> cannot be passed through), and through a
+		collection, a pool or an arena (a type that declares the built-in trait
+		<span class="pre">Walk</span> and a method <span class="pre">fn walk(self &amp;mut) I</span>, <span class="pre">I</span>
+		a cursor declaring <span class="pre">is Iterator[&amp;mut E]</span>: a writable reference to each
+		value it holds). So the compiler refuses one held in a global, or in
+		memory placed by <span class="pre">mem.writeRaw</span> from a type that declares no
+		<span class="pre">Walk</span>; one held by an allocator a trace cannot pass through, among them a
+		traced allocator that declares <span class="pre">writeBarrier</span> (below), whose collector would
+		not hear of a reference stored behind an owner; and a local, a parameter or a traced
+		allocator's value whose type holds a raw pointer to a value that holds one, declaring no
+		<span class="pre">Walk</span>, which no trace can follow. It refuses a traced allocator's value
+		holding a borrowed reference, a traced virtual
 		reference, and a permission that takes room. A traced value may hold <span class="pre">Rc</span>
 		and <span class="pre">So</span> references, which its finalizer releases. The traced references
 		on the stack are found: <a href="refintrinsic.html"><span class="pre">mem.traceRoots(mode)</span></a>

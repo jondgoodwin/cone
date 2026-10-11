@@ -1,0 +1,115 @@
+// A collection holds 'Gc' references in a block it points to, and says how a
+// collector reaches them (it declares Walk): the collector finds the references
+// in a list, a deque, a dictionary held in a local, and in one held in a 'Gc'
+// object, and the barrier hears of each one pushed into a block the marking
+// has finished with. The stress mode runs a step at every allocation, so every
+// leaf is made while a collection is marking or sweeping around a block half
+// filled; a block the roots or the traces missed, or a push the barrier missed,
+// is freed while it is held and reads back wrong here. Both modes are run:
+// incremental, and generational, where the barrier is on between collections too.
+
+mod containers;
+
+import testing use *;
+import collector;
+import collections use *;
+
+struct LeafValue {
+  pub n i64;
+}
+alias Leaf = Gc[mut, LeafValue];
+
+// A 'Gc' object holding collections of leaves
+struct Shelf {
+  pub list List[Leaf];
+  pub ring Deque[Leaf];
+  pub table Dict[i64, Leaf];
+}
+alias ShelfRef = Gc[mut, Shelf];
+
+mut made = 0i64;
+fn leaf() Leaf {
+  made = made + 1;
+  new Leaf(made);
+}
+
+fn garbage() {
+  mut i = 0i64;
+  while i < 60 {
+    imm junk = new Leaf(i);
+    i = i + 1;
+  }
+}
+
+// Leaves 1 to 50 in a list held in a local
+fn inLocal(mode &Array[u8]) {
+  made = 0;
+  mut list = List[Leaf].empty();
+  mut i = 0;
+  while i < 50 {
+    list.push(leaf());
+    i = i + 1;
+  }
+  garbage();
+  mut sum = 0i64;
+  each v in list.iter() { imm c = *v; sum = sum + c.n; }
+  expectInt(sum, 1275, mode);
+}
+
+// Leaves in a list, a deque (wrapped round its block) and a dictionary, all
+// held by a 'Gc' object whose collections are filled after it is made
+fn inObject(mode &Array[u8]) {
+  made = 0;
+  imm shelf = new ShelfRef(List[Leaf].empty(), Deque[Leaf].withCapacity(4usize), Dict[i64, Leaf].empty());
+  mut i = 0;
+  while i < 40 {
+    shelf.list.push(leaf());
+    shelf.table.insert(i64.from(i), leaf());
+    i = i + 1;
+  }
+  i = 0;
+  while i < 30 {
+    shelf.ring.push(leaf());
+    if i >= 3 {
+      imm gone = shelf.ring.popFront();
+    }
+    i = i + 1;
+  }
+  garbage();
+  mut sum = 0i64;
+  each v in shelf.list.iter() { imm c = *v; sum = sum + c.n; }
+  each v in shelf.table.values() { imm c = *v; sum = sum + c.n; }
+  each v in shelf.ring.items() { imm c = *v; sum = sum + c.n; }
+  // The leaves made are numbered 1 upward: a list's and a table's, then the
+  // ring's; the three the ring still holds are the last three made
+  mut expected = 0i64;
+  mut k = 1i64;
+  while k <= 110 { expected = expected + k; k = k + 1; }
+  // the ring made 30 and gave up 27 of them, the first 27 of the ring's
+  mut gone = 0i64;
+  k = 81;
+  while k <= 107 { gone = gone + k; k = k + 1; }
+  expectInt(sum, expected - gone, mode);
+}
+
+fn main() i32 {
+  Gc.setStress(true);
+  inLocal("a list of leaves held in a local, incremental");
+  Gc.collect();
+  expectUInt(u64.from(Gc.liveObjects()), 0, "every leaf freed once the list was gone");
+  inObject("collections held by a Gc object, incremental");
+  // The object is finalized (its collections give their blocks back) by the
+  // first collection, with what it reaches kept for it; freed by the second
+  Gc.collect();
+  Gc.collect();
+  expectUInt(u64.from(Gc.liveObjects()), 0, "the object, its collections and leaves freed");
+  Gc.setGenerational(true);
+  inLocal("a list of leaves held in a local, generational");
+  Gc.collect();
+  expectUInt(u64.from(Gc.liveObjects()), 0, "freed, generationally");
+  inObject("collections held by a Gc object, generational");
+  Gc.collect();
+  Gc.collect();
+  expectUInt(u64.from(Gc.liveObjects()), 0, "and again");
+  done();
+}
