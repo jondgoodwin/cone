@@ -398,10 +398,14 @@ construction of its value type or a finished value of it
 checked, to the call `a.alloc(new Node(1))` and checked as that, so it answers
 what that arena's `alloc` answers (a `&mut Node`, or a key for a `DynArena`)
 and is held to the rules that call is. Any other permission, a permission with no
-type, a third argument and a `trynew` are `ErrorRegionNew`; a value with no
-`alloc` is the call's own `ErrorNoMbr`. The arena is not a region the value's
-init is handed, so a type declaring `CarriesRegion` is made with the heap's, as
-anywhere. An array's construction is its
+type, a third argument and a `trynew` are `ErrorRegionNew`. The head is checked
+first, on a copy, and must be a region value: a value whose type is a struct
+whose first field is a public `*MemRegion` (`typeLitRegionField`, reading no
+method's name); any other is `ErrorRegionHead`. The allocation the construction
+is rewritten to is that region's `alloc`, as a region ref's is, so a region
+value without one reports the call's own `ErrorNoMbr`. A type declaring
+`CarriesRegion` made there that names no region is handed the head's region, that
+first field, in place of the heap's ([struct](struct.md), "CarriesRegion"). An array's construction is its
 contents, after `<-`, which `contentsLower` takes before this is reached, so
 one here has none (`ErrorArrayContents`); so is an allocation of an array
 with contents, which `contentsLower` hands its literal (`typeLitNewFilled`). Otherwise its type must be a struct

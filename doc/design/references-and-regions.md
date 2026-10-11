@@ -64,8 +64,11 @@ every young object stored into the heap through the next minor collection).
 The arena and the pool are written only as library values: the
 `arena` package's `Arena`, a dynamic region allocated into by a call on the
 value (`a.alloc(v)`, or `new a[T](...)`, which is that call: the arena value in
-the head, not a `new` allocation through a region ref), whose `alloc` is not
-handed the region value. It finalizes
+the head, not a `new` allocation through a region ref). It is also a region a
+growable collection draws its block from: its first field is a `*MemRegion`
+(allocate bumps, resize grows the last block in place or copies and abandons
+the old one, release does nothing), so a collection made in it with
+`new a[T](...)` lives wholly in it. It finalizes
 each value through the finalizer in its type's record
 (`mem.typeRecord[T]().finalize`) when it dies, newest first; nothing yet
 pairs a reference with its arena's lifetime. Held in a local, an `Arena` is the

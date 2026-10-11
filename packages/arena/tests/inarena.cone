@@ -1,0 +1,244 @@
+// An arena is a region: a growable collection made in one, 'new a[List[i32]](16)',
+// has its four words in the arena AND its block there, and the arena is what
+// grows the block. Every expected value is worked out by hand from the arena's
+// rules:
+// - allocate bumps; resize grows a block IN PLACE when it is the last thing the
+//   arena allocated and the room is there; otherwise it bumps a new block, copies
+//   the values and abandons the old one (arenas leak by design); release does
+//   nothing;
+// - a List[i32] has its block of 4 values first, then doubles (4, 8, ... 256), so
+//   pushing 200 values grows the block six times after the first allocation. The
+//   list's four words (and a finalizer header, since a list has a 'final') come
+//   first in the arena, so after them the list's block is the last thing
+//   allocated and grows in place, while nothing else is allocated, as long as
+//   the 4096-byte block the arena bumps through has the room: the biggest block
+//   here, 256 values of 4 bytes, is 1024;
+// - two lists pushed in turn each have the other's block last when they grow,
+//   so every growth after the first block copies: six growths each, twelve
+//   copies, and the abandoned blocks stay until the arena dies (1008 bytes of
+//   blocks left behind by each list: 16 + 32 + 64 + 128 + 256 + 512), so the
+//   two lists' blocks and words, 2 * 2032 + 2 * 48 = 4160 bytes, need a
+//   second 4096-byte block;
+// - a List[String] in an arena holds strings from another region (here a counting
+//   one standing for the heap); the arena's death runs the list's 'final', which
+//   gives every string back to where it came from, while the arena frees the list's
+//   own block with the rest.
+
+mod inarena;
+
+import testing use *;
+import arena use *;
+import collections use *;
+import libc;
+
+// A counting region: its header first, then the tallies
+struct Counting {
+  header MemRegion;
+  allocs usize;
+  releases usize;
+  live isize;
+}
+
+fn countAlloc(r *MemRegion, bytes usize, align usize) *u8 {
+  imm c = r as *Counting;
+  (*c).allocs = (*c).allocs + 1usize;
+  (*c).live = (*c).live + isize.from(bytes);
+  libc.malloc(bytes);
+}
+
+fn countResize(r *MemRegion, block *u8, oldBytes usize, newBytes usize, align usize) *u8 {
+  imm c = r as *Counting;
+  (*c).live = (*c).live + isize.from(newBytes) - isize.from(oldBytes);
+  libc.realloc(block, newBytes);
+}
+
+fn countRelease(r *MemRegion, block *u8, bytes usize) {
+  if block as usize == 0usize { return; }
+  imm c = r as *Counting;
+  (*c).releases = (*c).releases + 1usize;
+  (*c).live = (*c).live - isize.from(bytes);
+  libc.free(block);
+}
+
+fn newCounting() Counting {
+  new Counting(new MemRegion(&countAlloc, &countResize, &countRelease), 0usize, 0usize, 0isize);
+}
+
+fn regionOf(c &mut Counting) *MemRegion { (c as *Counting) as *MemRegion; }
+
+fn tally(c &Counting, allocs u64, releases u64, live i64, label &Array[u8]) {
+  imm ok = u64.from(c.allocs) == allocs and u64.from(c.releases) == releases and i64.from(c.live) == live;
+  expect(ok, label);
+}
+
+// A struct holding two lists, made in a region it hands to both
+struct Mesh is CarriesRegion {
+  pub pts List[f32];
+  pub ids List[u32];
+  pub region *MemRegion;
+
+  pub fn init(self &new, n usize, region *MemRegion) {
+    *self = new Mesh(pts: new List[f32](n, region), ids: new List[u32](n, region), region: region);
+  }
+}
+
+// Where the list's block is
+fn at(l &List[i32]) usize { (l[0usize] as *i32) as usize; }
+
+// A list alone in its arena, made empty: its block is asked for when the first
+// value arrives, after the list's own words, so it is the last thing allocated
+// and every growth is in place
+fn lone() {
+  mut a = Arena.empty();
+  imm l = new a[List[i32]]();
+  expectUInt(u64.from(a.finalizers()), 1, "the list in the arena has a finalizer header");
+  expectUInt(u64.from(l.capacity()), 0, "an empty list has no block");
+  l.push(0);
+  mut moves = 0u64;
+  mut last = at(l);
+  mut i = 1;
+  while i < 200 {
+    l.push(i);
+    if at(l) != last { moves = moves + 1u64; last = at(l); }
+    i = i + 1;
+  }
+  expectUInt(moves, 0, "a list alone in its arena grew in place at every one of its six doublings");
+  expectUInt(u64.from(l.len()), 200, "all two hundred are there");
+  expectInt(*l[0usize], 0, "the first is as pushed");
+  expectInt(*l[199usize], 199, "and the last");
+  expectUInt(u64.from(a.blockCount()), 1, "and the arena still has its one block");
+}
+
+// With a starting size, 'new a[List[i32]](16)': the list is built before it is
+// placed, so its block of 16 is allocated first and the list's words come after
+// it. The block is not the last, so the first growth copies it (the arena
+// abandons the 64 bytes); the block it moves to is the last, and every growth
+// after that is in place
+fn sized() {
+  mut a = Arena.empty();
+  imm l = new a[List[i32]](16usize);
+  expectUInt(u64.from(l.capacity()), 16, "the starting size is a block of 16");
+  mut i = 0;
+  while i < 16 { l.push(i); i = i + 1; }
+  imm start = at(l);
+  l.push(16);
+  i = 17;
+  expect(at(l) != start, "the first growth moved the block, the list's words coming after it");
+  imm moved = at(l);
+  while i < 200 { l.push(i); i = i + 1; }
+  expect(at(l) == moved, "and the growths after it were in place");
+  expectInt(*l[0usize], 0, "the first value survived the move");
+  expectInt(*l[199usize], 199, "and the last");
+}
+
+// Two lists pushed in turn: each growth finds the other's block last
+fn interleaved() {
+  mut a = Arena.empty();
+  imm x = new a[List[i32]]();
+  imm y = new a[List[i32]]();
+  mut xmoves = 0u64;
+  mut ymoves = 0u64;
+  mut xat = 0usize;
+  mut yat = 0usize;
+  mut i = 0;
+  while i < 200 {
+    x.push(i);
+    y.push(1000 + i);
+    if i == 0 {
+      xat = at(x);
+      yat = at(y);
+    }
+    else {
+      if at(x) != xat { xmoves = xmoves + 1u64; xat = at(x); }
+      if at(y) != yat { ymoves = ymoves + 1u64; yat = at(y); }
+    }
+    i = i + 1;
+  }
+  expectUInt(xmoves, 6, "the first list moved at each of its six growths");
+  expectUInt(ymoves, 6, "and so did the second");
+  expectInt(*x[199usize], 199, "the first list's values were carried over");
+  expectInt(*y[0usize], 1000, "and the second's");
+  expectInt(*y[199usize], 1199, "all of them");
+  expectUInt(u64.from(a.blockCount()), 2, "the abandoned blocks stay: the arena needed a second block of 4096");
+}
+
+// A list of strings from another region: the arena's death gives them back
+fn strings() {
+  mut c = newCounting();
+  {
+    mut a = Arena.empty();
+    imm l = new a[List[String]]();
+    mut i = 0;
+    while i < 10 {
+      mut s = new String(8usize, regionOf(&mut c));
+      s.append("ab");
+      l.push(s);
+      i = i + 1;
+    }
+    tally(&c, 10, 0, 90, "ten strings came from the region (8 bytes and the NUL: 9 each)");
+    expectUInt(u64.from(l.len()), 10, "the list holds all ten");
+  }
+  tally(&c, 10, 10, 0, "the arena's death finalized the list, which gave all ten strings back");
+}
+
+// A struct declaring CarriesRegion made in an arena, naming no region, draws
+// its lists from the arena; one that names a region keeps that one
+fn composition() {
+  mut a = Arena.empty();
+  imm m = new a[Mesh](8usize);
+  expect(m.region as usize == a.region as usize, "a Mesh made in an arena is handed the arena's region");
+  m.pts.push(1.5f32);
+  m.ids.push(7u32);
+  expectUInt(u64.from(m.pts.len()), 1, "and its lists work");
+  mut c = newCounting();
+  imm n = new a[Mesh](8usize, regionOf(&mut c));
+  expect(n.region as usize == regionOf(&mut c) as usize, "one that names a region keeps it");
+  imm o = new Mesh(8usize);
+  expect(o.region as usize == heapRegion() as usize, "and one made outside an arena is the heap's");
+}
+
+// The region is the arena's own object: the Arena is moved with its lists in it
+// and they still grow
+struct Holder['=a] {
+  pub ar DynArena['=a];
+  pub list &'=a mut List[i32];
+}
+
+fn make() Holder['=a] {
+  mut d = DynArena.empty();
+  imm l = new d[List[i32]]();
+  d[l].push(1);
+  new Holder(d, l);
+}
+
+fn moved() {
+  mut h = make();
+  imm k = h.list;
+  imm region = h.ar.region;
+  mut i = 2;
+  while i < 300 { h.ar[k].push(i); i = i + 1; }
+  expectUInt(u64.from(h.ar[k].len()), 299, "a list in an arena that was returned grew after the move");
+  expectInt(*h.ar[k][298usize], 299, "with its values");
+  expect(region as usize == h.ar.region as usize, "and the arena's region did not move");
+}
+
+// A DynArena is a region too
+fn dynamic() {
+  mut d = DynArena.empty();
+  imm k = new d[List[i32]](4usize);
+  mut i = 0;
+  while i < 50 { d[k].push(i); i = i + 1; }
+  expectUInt(u64.from(d[k].len()), 50, "a list in a dynamic arena, reached by its key");
+  expectInt(*d[k][49usize], 49, "grows");
+}
+
+fn main() {
+  lone();
+  sized();
+  interleaved();
+  strings();
+  composition();
+  moved();
+  dynamic();
+  done();
+}

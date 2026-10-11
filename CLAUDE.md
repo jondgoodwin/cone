@@ -593,7 +593,12 @@ Visual Studio projects stay at the root.
   trait's instance is not a constraint yet; `Collection` is also a constraint); `arena` is an
   `Arena`, a dynamic region whose values are finalized, newest first, and
   freed together when it dies (allocated into by `a.alloc(v)`, or `new a[T](...)`,
-  which the compiler reads as that call), and which, held in a local, is the scratch
+  which the compiler reads as that call, `a` any value whose type is a struct whose
+  first field is a public `*MemRegion`), itself a region the growable collections made
+  in it draw their blocks from (`new a[List[i32]](16)`: it bumps, grows the last
+  block in place, otherwise copies and abandons the old one, releases nothing;
+  its state is a heap object the `Arena` points to, so the region stays put when
+  the `Arena` is moved), and which, held in a local, is the scratch
   arena, and `DynArena['=a]`, the invariant-lifetime dynamic arena, whose
   `alloc` hands out keys, `&'=a mut T`, reached only through it, `ar[key]`;
   `rcweak` is `Rcw`, a region ref counting strong owners and weak
