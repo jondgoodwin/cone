@@ -1390,7 +1390,11 @@ LLVMTargetMachineRef genlCreateMachine(ConeOptions *opt) {
 
     // Create a specific target machine
     opt_level = opt->release? LLVMCodeGenLevelAggressive : LLVMCodeGenLevelNone;
-    reloc = (opt->pic || opt->library)? LLVMRelocPIC : LLVMRelocDefault;
+    // Position independent where asked, for a library, and by default on Linux:
+    // the usual Linux C compiler links a position independent executable, which
+    // refuses an object that is not (--nopic opts out)
+    int linux_pic = !opt->nopic && strstr(opt->triple, "linux") != NULL;
+    reloc = (opt->pic || opt->library || linux_pic)? LLVMRelocPIC : LLVMRelocDefault;
     // The CPU is the portable baseline unless named. 'native', which LLVM's
     // target machine does not know, is this machine's CPU and every feature it
     // has, as clang's -march=native means

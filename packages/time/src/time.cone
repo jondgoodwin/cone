@@ -68,7 +68,7 @@
 //                                   is later)
 //   ==  !=  <  <=  >  >=            earlier is less
 //   i.nanos(), Instant.fromNanos(n) the nanoseconds since the clock's origin
-//                                   (on Windows, near the machine's start),
+//                                   (near the machine's start, on Windows and Linux),
 //                                   for a program that keeps a count of its
 //                                   own; only differences mean anything
 //
@@ -116,15 +116,17 @@
 //     clock.now() - start;
 //   }
 //
-// WHAT IS WINDOWS-ONLY. The values and their arithmetic are no OS's, and
+// WHAT DEPENDS ON THE OS. The values and their arithmetic are no OS's, and
 // Timestamp.now() is ISO C's: C11's 'timespec_get' with TIME_UTC (libc's
 // binding), seconds and nanoseconds since 1970, which the Windows runtime
 // fills from the system clock in steps of 100 ns. Instant.now() is the one
-// Windows-only part: ISO C reaches no steady clock (C11 has none; C23's
-// TIME_MONOTONIC is optional, and not in the Windows runtime), so it is
-// kernel32's QueryPerformanceCounter, its count scaled to nanoseconds by
-// QueryPerformanceFrequency (split, so the multiplication cannot overflow).
-// On POSIX it will be clock_gettime's CLOCK_MONOTONIC.
+// part that depends on the OS: ISO C reaches no steady clock (C11 has none;
+// C23's TIME_MONOTONIC is optional, and not in the Windows runtime), so on
+// Windows it is kernel32's QueryPerformanceCounter, its count scaled to
+// nanoseconds by QueryPerformanceFrequency (split, so the multiplication
+// cannot overflow), and on Linux POSIX's clock_gettime with CLOCK_MONOTONIC.
+// 'isWindows()' (a constant of the compile) chooses, so only the target's
+// calls are generated.
 //
 // THE NAME. The package's name is also the name of libc's 'time()', the C
 // library's whole seconds since 1970. A module that imports this package
@@ -137,8 +139,9 @@ mod time;
 import libc;
 
 // ---------------------------------------------------------------------------
-// Windows: kernel32's steady clock, on every link line already, the one
-// thing the package asks of the OS beyond ISO C
+// The steady clock, the one thing the package asks of the OS beyond ISO C:
+// on Windows kernel32's, on every link line already; on Linux POSIX's
+// clock_gettime, in the C library
 // ---------------------------------------------------------------------------
 
 extern {
@@ -146,14 +149,32 @@ extern {
   fn @c(system) QueryPerformanceFrequency(freq *i64) i32;
 }
 
+// POSIX's 'struct timespec' on a 64-bit system: 'time_t' and 'long' are both
+// 64 bits
+struct PosixTimespec {
+  sec i64;
+  nsec i64;
+}
+extern fn @c clock_gettime(clock i32, ts *PosixTimespec) i32;
+
+// The clock that never goes back, on Linux
+const clockMonotonic = 1i32;
+
 // The steady clock's count, in nanoseconds
 fn steadyNs() i64 {
-  mut count = 0i64;
-  mut freq = 0i64;
-  QueryPerformanceCounter(&mut count as *i64);
-  QueryPerformanceFrequency(&mut freq as *i64);
-  // Split, so that count * 10^9 cannot overflow
-  (count / freq) * nsPerSecond + (count % freq) * nsPerSecond / freq;
+  if isWindows() {
+    mut count = 0i64;
+    mut freq = 0i64;
+    QueryPerformanceCounter(&mut count as *i64);
+    QueryPerformanceFrequency(&mut freq as *i64);
+    // Split, so that count * 10^9 cannot overflow
+    (count / freq) * nsPerSecond + (count % freq) * nsPerSecond / freq;
+  }
+  else {
+    mut ts = new PosixTimespec(0i64, 0i64);
+    clock_gettime(clockMonotonic, &mut ts as *PosixTimespec);
+    ts.sec * nsPerSecond + ts.nsec;
+  }
 }
 
 // ---------------------------------------------------------------------------
