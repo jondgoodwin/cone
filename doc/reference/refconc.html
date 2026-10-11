@@ -17,7 +17,7 @@
 		<span class="pre">yield</span>), green threads that are paused and resumed, processes working
 		together on one job, and distributed computing are not implemented. The
 		<span class="pre">thread</span> and <span class="pre">sync</span> packages, and so the locks, the channels
-		and the actors built on them, run on Windows only. The <span class="pre">atomic</span>
+		and the actors built on them, run on Windows and Linux (x86-64), not yet on macOS. The <span class="pre">atomic</span>
 		permission is not implemented, nor is the rule that a whole atomic value may be replaced
 		plainly only through a unique path. <span class="pre">actor trait</span> is not implemented.</i></p>
 
@@ -111,8 +111,10 @@ fn main() {
 		Cone's own, seen through <span class="pre">name()</span>; the operating system's debuggers do
 		not see it.</li>
 	<li><span class="pre">stackSize</span>, 0 by default, is how many bytes of address space to
-		reserve for the thread's stack; 0 is the executable's default. Windows rounds a size up to
-		its allocation granularity, and one of 4 GB or more is taken as 4 GB less one byte.</li>
+		reserve for the thread's stack; 0 is the system's default, the executable's on Windows and
+		the C library's on Linux (the process's stack limit, usually 8 MB). A size is rounded up to
+		64 KB at least, and Windows rounds it up to its allocation granularity and takes one of 4 GB
+		or more as 4 GB less one byte.</li>
 	</ul>
 	<p>A thread that cannot be started, or memory that cannot be allocated for it, is a
 		<a href="refexcept.html#panic">panic</a>. A panic or a trap on any thread ends the whole
@@ -194,13 +196,15 @@ fn main() {
 		included. A thread the package did not start takes up an identity the first time it asks
 		for one, and keeps it, since nothing runs when such a thread ends.</li>
 	<li><span class="pre">thread.parallelism()</span> is how many logical processors the machine
-		has, at least 1. It does not count what an affinity mask takes away.</li>
+		has (on Linux, the ones online), at least 1. It does not count what an affinity mask takes
+		away.</li>
 	<li><span class="pre">thread.sleep(d)</span> sleeps at least <span class="pre">d</span>,
 		a <span class="pre">Duration</span> of the <span class="pre">time</span> package
 		(<span class="pre">thread.sleep(time.Duration.fromMillis(5))</span>),
 		on Windows' high-resolution timer, so a 1 ms sleep takes 1 to 2 ms rather than
 		the 15.6 ms of the system's timer tick. Where that timer is missing (before Windows 10 version
-		1803) it falls back to whole milliseconds, rounded up. A sleep of zero, or of a negative
+		1803) it falls back to whole milliseconds, rounded up. On Linux it is POSIX's
+		<span class="pre">nanosleep</span>, accurate to a few tens of microseconds. A sleep of zero, or of a negative
 		duration, gives up the rest of the time slice to another ready thread of the same
 		priority.</li>
 	<li><span class="pre">thread.yieldNow()</span> lets another thread ready to run on the same
@@ -228,7 +232,7 @@ fn main() {
 		starting from its initial value, and nothing finalizes a thread's copies when it ends.</p>
 	<p>Deliberately not provided: killing a thread, priorities, pinning a thread to a processor, a
 		flag asking a thread to stop, and scoped threads, which would join before a function returns
-		so that their threads could borrow. The package runs on Windows only.</p>
+		so that their threads could borrow. The package runs on Windows and on Linux.</p>
 
 	<h2 id="atomic">Atomic values</h2>
 	<p>An <b>atomic value</b> is a number, a flag or a pointer that several threads may read and
@@ -372,8 +376,9 @@ fn push(node *Node) {           // called from any number of threads at once
 	<li><span class="pre">sync.futexWaitTimeout(&amp;word, expected, d)</span> is the same,
 		sleeping at most <span class="pre">d</span>, a <span class="pre">Duration</span> of the
 		<span class="pre">time</span> package. It returns false only when the timeout passed. The
-		timeout is rounded up to whole milliseconds; its resolution is the system's timer tick, up to
-		15.6 ms. A timeout of 2<sup>32</sup> - 1 ms or more is that long, not forever. A timeout of
+		timeout on Windows is rounded up to whole milliseconds, and its resolution is the system's timer
+		tick, up to 15.6 ms; a timeout of 2<sup>32</sup> - 1 ms or more is that long, not forever. On
+		Linux it is to the nanosecond, as the kernel's timers go. A timeout of
 		zero, or a negative one, returns false at once if the word still holds
 		<span class="pre">expected</span>.</li>
 	<li><span class="pre">sync.futexWake(&amp;word)</span> wakes one waiting thread, and

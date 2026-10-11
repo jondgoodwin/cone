@@ -630,20 +630,24 @@ Visual Studio projects stay at the root.
   the collection's `final`); `thread` is OS threads (start a function on
   a value moved in, join, detach, a handle dropped unjoined joins, sleep,
   parking; what it is handed and returns must be `Sendable`, the
-  compiler's thread check), Windows only, over `sync`; `sync` is what threads share
+  compiler's thread check), on Windows and Linux (kernel32 and the C runtime, or
+  pthreads), over `sync`; `sync` is what threads share
   safely where it needs the OS, built on core's `Atomic[T]`: `Arc`, the region `Rc` would be with its count atomic,
   for owners several threads hold, declaring the built-in marker
   `ThreadSafe` (not in core, as Rust's `Arc` is not in its prelude, so a
   module names it only after `import sync use Arc` or `use *`); the
   futex the blocking layers are built on (on an
-  `Atomic[u32]`, linking the Windows SDK's `Synchronization.lib`); and,
+  `Atomic[u32]`: on Windows `WaitOnAddress`, linking the Windows SDK's
+  `Synchronization.lib`, on Linux the futex system call through conestd's
+  `oscalls.c`, as the process-wide barrier of the single-sender channel is
+  kernel32's `FlushProcessWriteBuffers` or the kernel's `membarrier`); and,
   on the futex alone, Rust's way, the locks `Mutex`, `Rwlock`,
   `Condvar` and `Once`, unchecked with explicit lock and unlock when held
   as values, `Mutex` and `Rwlock` also lock permissions (`Arc[Mutex, T]`,
   the lock taken by a borrow through it); the channels (unbounded and
   bounded MPSC, SPSC) and `Oneshot[T]`, one value sent once from one thread
   to one; `actors` is the runtime an `actor`
-  declaration runs on, over `thread` and `sync`, Windows only: mailboxes, a
+  declaration runs on, over `thread` and `sync`, on Windows and Linux: mailboxes, a
   work-stealing scheduler of worker threads that start with the first actor,
   actors counted through `Arc` and finalized once when their last handle and
   message have gone, and quiescence, which its module's finalizer waits for
@@ -789,15 +793,18 @@ Visual Studio projects stay at the root.
   chain of traced roots, what a panic does, the thread-local barrier hook
   a kernel's barriers call on the CPU, and the process's hash seed. It is Cone, one C-named module
   (`conestd.cone` and the files beside it) that the build compiles with the
-  `conec` it has just built, and three C files: `mainthread.c`, recording the
+  `conec` it has just built, and four C files: `mainthread.c`, recording the
   thread the program started on before `main` runs, `heapregion.c`, the
   heap's region (core's `heapRegion()`), a static object of function addresses,
-  and `cnames.c`, the C library's names that differ by platform or that Cone
+  `cnames.c`, the C library's names that differ by platform or that Cone
   cannot spell (`stdin`, `stdout`, `stderr`, `errno`, `time`, `timespec_get`,
   and a variadic print of a float), which `libc` and the printing bind, so
   that they take them from the C library's own header; the rest it chooses by
   target with `isWindows()`, as the hash seed's `rand_s` or `getentropy`,
-  all of which Cone cannot say.
+  all of which Cone cannot say; and `oscalls.c`, the Linux system calls `sync`
+  and `thread` need that Cone cannot call (the futex's wait and wake, the
+  thread's kernel id, the processor count, the process-wide memory barrier),
+  empty on Windows, whose macOS half is to come.
   Not a Congo package: nothing imports it.
 - `doc/design/`: the language design notes — what Cone is aiming at and how far
   the compiler is, the notes that would survive a rewrite — plus the naming
@@ -967,10 +974,10 @@ without updating source compatibility and both build systems. `conestd`'s
 Cone is compiled by the `conec` the same build makes, so the library follows
 the compiler. It binds the Windows C runtime or the C library of Linux, a
 call at a time (`cnames.c`, and `isWindows()` in the Cone), so a plain
-program (no actors, threads or `sync`) compiles, links and runs on both; what
-is built on the OS's threads and futex (`sync`, `thread`, `actors`, `iocore`,
-`process`, the `posix` and `fs` beyond `libc`) is Windows only for now, and the
-suite's tests of it fail to link on Linux.
+program compiles, links and runs on both, and so do threads, `sync` and actors
+(pthreads and the futex system call, through `oscalls.c`); what is built on the
+rest of the OS (`iocore`, `process`, the `posix` and `fs` beyond `libc`) is
+Windows only for now, and the suite's tests of it fail to link on Linux.
 
 #### Building on Linux
 
@@ -993,6 +1000,15 @@ to `target_link_libraries(conec LLVM m)` links the shared `libLLVM.so` instead
 `conec` makes position-independent code by default when the target is Linux,
 because Ubuntu's `cc` links position-independent executables and refuses any
 other object; `--nopic` opts out.
+
+Congo runs on Linux (`python3 tools/congo/congo.py test` in a package's folder,
+with `conec` built at `build/x64-release/conec`), and `sync`, `thread`,
+`actors` and `time` pass their tests there, with one workaround: `sync`'s
+`congo.toml` names `synchronization`, the Windows SDK's library, and `[link]`
+has no per-system form yet, so the linker needs an empty `libsynchronization.a`
+(`ar rc libsynchronization.a` in a folder of its own) on `LIBRARY_PATH`. The
+packages built on Windows alone (`fs`, `posix`, `process`, `iocore` and what
+imports them, `sdl` and what draws) do not build or run there.
 
 ## Validating a change
 
@@ -1066,7 +1082,8 @@ link prog.obj build\x64-release\conestd.lib /OUT:prog.exe /SUBSYSTEM:CONSOLE msv
 
 A program that imports `sync` (or `thread`, which imports it) also needs
 `synchronization.lib`, the Windows SDK library its futex calls into; the test
-runner's link line has it.
+runner's link line has it. On Linux the link line is `cc`, with `-lm -lpthread`,
+and the futex is in `libconestd.a`.
 
 Or let Congo do it: `congo run prog.cone` (`tools/congo/`) compiles a lone file
 and every package it imports, each on its own, and links and runs the program.

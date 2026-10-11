@@ -651,7 +651,7 @@ packages/geomath/
    trailing blank lines aside, and its exit status with 0, or with the number
    in `tests/<name>.exit` where there is one. A test that writes to stderr on
    purpose -- a panic's line, whose exit status is abort's, 3221226505 on
-   Windows -- pins that too, in `tests/<name>.err`, written by hand; without
+   Windows (read as death by SIGABRT, -6, elsewhere) -- pins that too, in `tests/<name>.err`, written by hand; without
    one, stderr is not compared. A mismatch prints a diff of the output, or
    both statuses.
 4. **Builds each example**, `examples/<name>.cone`, the same way, and does not

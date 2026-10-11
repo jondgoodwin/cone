@@ -33,8 +33,8 @@
 // Deliberately not here: killing a thread, priorities, pinning a thread to a
 // processor, a flag asking a thread to stop, and scoped threads (a function
 // that joins every thread it starts before it returns, so they may borrow).
-// Windows only for now, with the posix side to come: every call the package
-// makes to the OS is in its own section below, beside nothing else.
+// On Windows and on Linux: every call the package makes to the OS is in its
+// own section below, beside nothing else.
 //
 // STARTING A THREAD. 'thread.start(arg, &f)' starts a new OS thread
 // running 'f(arg)', and returns its handle at once, a Thread[R]. f is a plain
@@ -75,9 +75,11 @@
 //   text need only live through the call. It is Cone's: the thread and its
 //   handle see it through 'name()', and the OS and its debuggers do not.
 // - 'stackSize' (0 by default) is how many bytes of address space to reserve
-//   for the thread's stack. 0 is the executable's default (1 MB as the Visual
-//   C++ linker writes it); Windows rounds any other size up to its allocation
-//   granularity, and a size of 4 GB or more is taken as 4 GB less one byte.
+//   for the thread's stack. 0 is the system's default: on Windows the
+//   executable's (1 MB as the Visual C++ linker writes it), on Linux the C
+//   library's (the process's stack limit, usually 8 MB). Any other size is
+//   rounded up to 64 KB at least, and on Windows to its allocation granularity,
+//   and there a size of 4 GB or more is taken as 4 GB less one byte.
 //   Running past the end of a stack is a trap.
 //
 // A thread that cannot be started, or a block the C library cannot allocate,
@@ -115,9 +117,10 @@
 // A ThreadRef keeps its thread's identity alive, not the thread, and may be
 // sent to other threads; it is a move type, and 'r.copy()' makes another.
 //
-// - 'id()' is the OS's thread id, a u32, the same seen from the thread and
-//   from its handle. The OS may give an id to a new thread once the thread
-//   that had it has ended and its handle is gone.
+// - 'id()' is the OS's thread id, a u32 (Windows' thread id, Linux's kernel
+//   thread id), the same seen from the thread and from its handle. The OS may
+//   give an id to a new thread once the thread that had it has ended and its
+//   handle is gone.
 // - 'name()' is the name 'startWith' was given, or "". The main thread, and
 //   any thread this package did not start, has the empty name.
 // - A thread this package did not start (main, or one started through the OS
@@ -126,7 +129,8 @@
 //   ends: one small block per such thread.
 //
 // 'thread.parallelism()' is how many logical processors the machine has, in
-// all processor groups: how many threads can truly run at once, at least 1.
+// all processor groups (on Linux, the ones online): how many threads can truly
+// run at once, at least 1.
 // It is not the number this process may use, which an affinity mask or a job
 // object can make smaller.
 //
@@ -135,7 +139,9 @@
 // resolution waitable timer: a 1 ms sleep takes 1 to 2 ms, where a plain
 // Win32 'Sleep' can take up to the 15.6 ms of the system's timer tick. Where
 // that timer is not available (before Windows 10 version 1803), it falls
-// back to 'Sleep', rounded up to whole milliseconds. A sleep of zero (or of
+// back to 'Sleep', rounded up to whole milliseconds. On Linux it is POSIX's
+// 'nanosleep', whose timers are fine to a few tens of microseconds, resumed
+// after a signal for the time that is left. A sleep of zero (or of
 // a negative duration) gives up the
 // rest of the thread's time slice to another thread of the same priority
 // that is ready to run. 'yieldNow()' gives it to any thread ready to run on
@@ -179,14 +185,24 @@ import sync;
 import time;
 
 // ---------------------------------------------------------------------------
-// Windows: the C runtime's thread start, and kernel32. A thread is started by
-// the C runtime's '_beginthreadex', not kernel32's 'CreateThread', so that
-// the runtime Cone programs link against sets up and tears down its own
-// per-thread state. The rest are kernel32's, on every link line already.
+// The OS. On Windows, the C runtime's thread start, and kernel32. A thread is
+// started by the C runtime's '_beginthreadex', not kernel32's 'CreateThread',
+// so that the runtime Cone programs link against sets up and tears down its
+// own per-thread state. The rest are kernel32's, on every link line already.
+// On Linux, POSIX's: pthread_create, pthread_join and pthread_detach,
+// sched_yield and nanosleep, all in the C library (the same on macOS), and
+// conestd's oscalls.c for what differs between the systems that have them:
+// the thread's identity (Linux's kernel thread id) and the processor count.
 // Parking sleeps and wakes through the sync package's futex.
+//
+// Each call below is made through a small function, 'osThreadId', 'osJoin' and
+// so on, choosing by 'isWindows()', a constant of the compile, so only the
+// target's calls are generated; every extern is declared on every platform.
 // ---------------------------------------------------------------------------
 
-// A thread's entry, as '_beginthreadex' calls it: its argument, and the exit code
+// A thread's entry, as '_beginthreadex' calls it: its argument, and the exit
+// code. POSIX's 'pthread_create' takes the same function, returning a pointer
+// whose value nothing reads (the thread is joined for its end alone)
 alias Entry = &fn(arg *u8) u32;
 
 extern fn @c _beginthreadex(security *u8, stack u32, entry Entry, arg *u8, flags u32, id *u32) usize;
@@ -202,11 +218,74 @@ extern {
   fn @c(system) SetWaitableTimer(timer usize, due *i64, period i32, routine *u8, arg *u8, resume i32) i32;
 }
 
+// POSIX's 'pthread_attr_t', as bytes enough for the C libraries of Linux (56)
+// and macOS (64); only 'pthread_attr_init' and the calls after it look inside
+struct PthreadAttr {
+  w0 u64;
+  w1 u64;
+  w2 u64;
+  w3 u64;
+  w4 u64;
+  w5 u64;
+  w6 u64;
+  w7 u64;
+}
+
+// POSIX's 'struct timespec' on a 64-bit system: 'time_t' and 'long' are both
+// 64 bits
+struct Timespec {
+  sec i64;
+  nsec i64;
+}
+
+// A pthread_t is an integer the size of a pointer, which is what 'handle' holds
+extern {
+  fn @c pthread_create(thread *usize, attr *PthreadAttr, entry Entry, arg *u8) i32;
+  fn @c pthread_join(thread usize, result *u8) i32;
+  fn @c pthread_detach(thread usize) i32;
+  fn @c pthread_attr_init(attr *PthreadAttr) i32;
+  fn @c pthread_attr_setstacksize(attr *PthreadAttr, size usize) i32;
+  fn @c pthread_attr_destroy(attr *PthreadAttr) i32;
+  fn @c sched_yield() i32;
+  fn @c nanosleep(request *Timespec, remaining *Timespec) i32;
+  fn @c cone_threadId() u32;
+  fn @c cone_processors() i32;
+}
+
 const infinite = 0xFFFFFFFFu32;                // INFINITE
 const stackIsReservation = 0x10000u32;         // STACK_SIZE_PARAM_IS_A_RESERVATION
 const timerHighResolution = 0x2u32;            // CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
 const timerAllAccess = 0x1F0003u32;            // TIMER_ALL_ACCESS
 const allProcessorGroups = 0xFFFFu16;          // ALL_PROCESSOR_GROUPS
+const eintr = 4i32;                            // EINTR, the same on Linux and macOS
+const minPosixStack = 65536usize;              // as small as a stack is asked for
+const nsPerSecond = 1000000000u64;
+
+// The OS's id for the calling thread
+fn osThreadId() u32 {
+  if isWindows() {GetCurrentThreadId();} else {cone_threadId();}
+}
+
+// Let another thread ready to run on this processor have it
+fn osYield() {
+  if isWindows() {SwitchToThread();} else {sched_yield();}
+}
+
+// Wait for the thread to end, and let go of its handle
+fn osJoin(handle usize) {
+  if isWindows() {
+    WaitForSingleObject(handle, infinite);
+    CloseHandle(handle);
+  }
+  else {
+    pthread_join(handle, null);
+  }
+}
+
+// Let go of the thread's handle; the thread runs on alone
+fn osDetach(handle usize) {
+  if isWindows() {CloseHandle(handle);} else {pthread_detach(handle);}
+}
 
 // ---------------------------------------------------------------------------
 // Program errors
@@ -286,7 +365,7 @@ mut @threadlocal me usize = 0usize;
 // when such a thread ends.
 fn mine() *Info {
   if me == 0usize {
-    me = infoNew("", 1u32, GetCurrentThreadId()) as usize;
+    me = infoNew("", 1u32, osThreadId()) as usize;
   }
   me as *Info;
 }
@@ -340,7 +419,7 @@ fn entry[A, R](p *u8) u32 {
 // The thread takes up its identity, and gives up its hold on it at the end
 fn enter(info *Info) {
   me = info as usize;
-  (*info).id.storeOrdered(GetCurrentThreadId(), MemOrder.Relaxed);
+  (*info).id.storeOrdered(osThreadId(), MemOrder.Relaxed);
 }
 
 fn leave() {
@@ -351,13 +430,43 @@ fn leave() {
 
 // Start the OS thread: its handle, or 0. The id is stored before the handle
 // is returned, so the handle's 'id()' is right from the first; the thread
-// stores the same id itself, for its own 'current()'.
+// stores the same id itself, for its own 'current()'. Windows tells the
+// starter the new thread's id; POSIX does not, so there the starter waits for
+// the thread to store it, which is the first thing it does.
 fn launch(entry Entry, pkt *u8, info *Info, stackSize usize) usize {
-  imm stack = if stackSize > 0xFFFFFFFFusize {0xFFFFFFFFu32;} else {u32.from(stackSize);};
-  mut id = 0u32;
-  imm handle = _beginthreadex(null, stack, entry, pkt, stackIsReservation, &mut id as *u32);
-  (*info).id.storeOrdered(id, MemOrder.Relaxed);
-  handle;
+  if isWindows() {
+    imm stack = if stackSize > 0xFFFFFFFFusize {0xFFFFFFFFu32;} else {u32.from(stackSize);};
+    mut id = 0u32;
+    imm handle = _beginthreadex(null, stack, entry, pkt, stackIsReservation, &mut id as *u32);
+    (*info).id.storeOrdered(id, MemOrder.Relaxed);
+    handle;
+  }
+  else {
+    mut handle = 0usize;
+    mut result = 0i32;
+    if stackSize == 0usize {
+      result = pthread_create(&mut handle as *usize, null, entry, pkt);
+    }
+    else {
+      mut attr = new PthreadAttr(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
+      pthread_attr_init(&mut attr as *PthreadAttr);
+      imm size = if stackSize < minPosixStack {minPosixStack;} else {stackSize;};
+      result = pthread_attr_setstacksize(&mut attr as *PthreadAttr, size);
+      if result == 0i32 {
+        result = pthread_create(&mut handle as *usize, &mut attr as *PthreadAttr, entry, pkt);
+      }
+      pthread_attr_destroy(&mut attr as *PthreadAttr);
+    }
+    if result != 0i32 {
+      handle = 0usize;
+    }
+    else {
+      while (*info).id.loadOrdered(MemOrder.Acquire) == 0u32 {
+        sched_yield();
+      }
+    }
+    handle;
+  }
 }
 
 // How to start a thread, for 'startWith': its name, and the bytes to reserve
@@ -409,8 +518,7 @@ pub struct Thread[R] {
 
   // Wait for the thread to finish, and answer what its function returned
   pub fn join(mut self) R {
-    WaitForSingleObject(handle, infinite);
-    CloseHandle(handle);
+    osJoin(handle);
     handle = 0usize;
     // The thread has ended, so the block is this handle's alone
     imm r = mem.readRaw[R](result);
@@ -421,7 +529,7 @@ pub struct Thread[R] {
 
   // Let the thread run on alone; it finalizes its own result
   pub fn detach(mut self) {
-    CloseHandle(handle);
+    osDetach(handle);
     handle = 0usize;
     if packetRelease(pkt) {
       // It had already finished
@@ -445,8 +553,7 @@ pub struct Thread[R] {
   // Dying unjoined joins, and finalizes the result nobody took
   fn final(self &uni) {
     if handle != 0usize {
-      WaitForSingleObject(handle, infinite);
-      CloseHandle(handle);
+      osJoin(handle);
       mem.finalize[R](result);
       libc.free(pkt);
       infoRelease(info);
@@ -490,35 +597,47 @@ pub fn current() ThreadRef {
 
 // How many logical processors the machine has, at least 1
 pub fn parallelism() u32 {
-  imm n = GetActiveProcessorCount(allProcessorGroups);
+  imm n = if isWindows() {GetActiveProcessorCount(allProcessorGroups);} else {u32.from(cone_processors());};
   if n == 0u32 {1u32;} else {n;};
 }
 
 // Let another thread ready to run on this processor have it
 pub fn yieldNow() {
-  SwitchToThread();
+  osYield();
 }
 
 // Sleep at least d, on the high resolution timer where there is one; zero or
 // less gives up the rest of the time slice
 pub fn sleep(d time.Duration) {
   if d.nanos() <= 0i64 {
-    Sleep(0u32);
+    if isWindows() {Sleep(0u32);} else {sched_yield();}
     return;
   }
   imm ns = u64.from(d.nanos());
-  imm timer = CreateWaitableTimerExW(null, null, timerHighResolution, timerAllAccess);
-  if timer != 0usize {
-    // Relative (negative), in 100 ns units, rounded up
-    mut due = 0i64 - i64.from((ns + 99u64) / 100u64);
-    if SetWaitableTimer(timer, &mut due as *i64, 0i32, null, null, 0i32) != 0i32 {
-      WaitForSingleObject(timer, infinite);
+  if isWindows() {
+    mut slept = false;
+    imm timer = CreateWaitableTimerExW(null, null, timerHighResolution, timerAllAccess);
+    if timer != 0usize {
+      // Relative (negative), in 100 ns units, rounded up
+      mut due = 0i64 - i64.from((ns + 99u64) / 100u64);
+      if SetWaitableTimer(timer, &mut due as *i64, 0i32, null, null, 0i32) != 0i32 {
+        WaitForSingleObject(timer, infinite);
+        slept = true;
+      }
       CloseHandle(timer);
-      return;
     }
-    CloseHandle(timer);
+    if !slept {
+      Sleep(msCeil(ns));
+    }
   }
-  Sleep(msCeil(ns));
+  else {
+    // POSIX's nanosleep, resumed for the time left when a signal ends it early
+    mut request = new Timespec(i64.from(ns / nsPerSecond), i64.from(ns % nsPerSecond));
+    mut left = new Timespec(0i64, 0i64);
+    while nanosleep(&mut request as *Timespec, &mut left as *Timespec) != 0i32 and *libc.errno() == eintr {
+      request = left;
+    }
+  }
 }
 
 // Nanoseconds as whole milliseconds, rounded up, and short of INFINITE

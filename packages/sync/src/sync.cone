@@ -4,7 +4,7 @@
 // locks built on the futex: Mutex, Rwlock, Condvar and Once, the first two
 // also lock permissions, 'Arc[Mutex, T]'; and the
 // channel, a pipe of values from any number of threads to one, unbounded or
-// bounded, or from one thread to one. Windows only for now: the futex's
+// bounded, or from one thread to one. On Windows and on Linux: the futex's
 // three functions, a yield and a flush of every processor's stores are the
 // package's only calls to the OS. Every timeout is a Duration of the time
 // package, whose steady clock (time.Instant) the channels measure by.
@@ -41,10 +41,11 @@
 //
 // - 'sync.futexWaitTimeout(&word, expected, d)': the same, sleeping at most
 //   d, a Duration of the time package. It returns false only when the
-//   timeout passed; true otherwise. The timeout is rounded up to whole
-//   milliseconds, and its resolution is the system's timer tick, up to
-//   15.6 ms: a 30 ms timeout may take 45. A timeout of 2^32 - 1 ms (49.7
-//   days) or more is that long, not forever. Zero, or a negative duration,
+//   timeout passed; true otherwise. On Windows the timeout is rounded up to
+//   whole milliseconds, and its resolution is the system's timer tick, up to
+//   15.6 ms: a 30 ms timeout may take 45; a timeout of 2^32 - 1 ms (49.7
+//   days) or more is that long, not forever. On Linux it is to the
+//   nanosecond, as the kernel's timers go. Zero, or a negative duration,
 //   checks the word and returns false at once if it still holds 'expected'.
 // - 'sync.futexWake(&word)' wakes one thread waiting on the word, and
 //   'futexWakeAll(&word)' every one. A wake is not remembered: with no thread
@@ -399,14 +400,21 @@ pub struct Arc is RegionRef, ThreadSafe {
 }
 
 // ---------------------------------------------------------------------------
-// Windows: WaitOnAddress and its two wakes, the api set
+// The OS: on Windows, WaitOnAddress and its two wakes, the api set
 // api-ms-win-core-synch-l1-2-0, linked through Synchronization.lib, which
 // this package's congo.toml names; and, for the channels, kernel32's yield
 // and FlushProcessWriteBuffers (the single-sender kind's asymmetric fence),
-// on every link line already. They are the package's only calls to the OS
-// (the clock the channels measure their timeouts by is the time package's);
-// a posix side (Linux's futex, sched_yield, membarrier) is to come beside
-// them.
+// on every link line already. On Linux, the futex system call and a
+// process-wide memory barrier (the kernel's membarrier, or a protection
+// change on a page when the kernel refuses it), which conestd's oscalls.c
+// makes into functions Cone can call, and POSIX's sched_yield from the C
+// library. They are the package's only calls to the OS (the clock the
+// channels measure their timeouts by is the time package's). The futex's wait
+// and wake are what differ between Linux and macOS, which has no futex, so
+// those, the barrier and the thread identity are the C file's, one set a
+// system; sched_yield is POSIX's, the same on both. 'isWindows()' is a
+// constant of the compile, so only the target's calls are generated; every
+// extern is declared on every platform.
 // ---------------------------------------------------------------------------
 
 extern {
@@ -417,6 +425,17 @@ extern {
   fn @c(system) SwitchToThread() i32;
   fn @c(system) FlushProcessWriteBuffers();
 }
+
+// Linux. The wait answers 0 only if the timeout passed (the nanoseconds, or
+// all ones for none); the wake wakes at most 'count' threads
+extern {
+  fn @c cone_futexWait(address *u32, expected u32, timeoutNs u64) i32;
+  fn @c cone_futexWake(address *u32, count i32);
+  fn @c cone_flushProcessWriteBuffers();
+  fn @c sched_yield() i32;
+}
+
+const wakeAll = 0x7FFFFFFFi32;                 // every waiter
 
 const infinite = 0xFFFFFFFFu32;                // INFINITE
 const errorTimeout = 1460u32;                  // ERROR_TIMEOUT
@@ -455,30 +474,42 @@ pub fn futexWaitTimeout(word &opaq Atomic[u32], expected u32, d time.Duration) b
 
 // Wake one thread waiting on the word
 pub fn futexWake(word &opaq Atomic[u32]) {
-  WakeByAddressSingle(word as *u32);
+  rawWake(word as *u32);
 }
 
 // Wake every thread waiting on the word
 pub fn futexWakeAll(word &opaq Atomic[u32]) {
-  WakeByAddressAll(word as *u32);
+  rawWakeAll(word as *u32);
 }
 
 // The same three on the word's address, as the locks reach their own words
 fn rawWait(word *u32, expected u32, timeoutNs u64) bool {
-  imm ms = if timeoutNs == forever {infinite;} else {msCeil(timeoutNs);};
-  mut compare = expected;
-  if WaitOnAddress(word, &mut compare as *u32, 4usize, ms) != 0i32 {
-    return true;
+  if isWindows() {
+    imm ms = if timeoutNs == forever {infinite;} else {msCeil(timeoutNs);};
+    mut compare = expected;
+    if WaitOnAddress(word, &mut compare as *u32, 4usize, ms) != 0i32 {
+      true;
+    }
+    else {
+      GetLastError() != errorTimeout;
+    }
   }
-  GetLastError() != errorTimeout;
+  else {
+    cone_futexWait(word, expected, timeoutNs) != 0i32;
+  }
 }
 
 fn rawWake(word *u32) {
-  WakeByAddressSingle(word);
+  if isWindows() {WakeByAddressSingle(word);} else {cone_futexWake(word, 1i32);}
 }
 
 fn rawWakeAll(word *u32) {
-  WakeByAddressAll(word);
+  if isWindows() {WakeByAddressAll(word);} else {cone_futexWake(word, wakeAll);}
+}
+
+// Let another thread ready to run on this processor have it
+fn yieldProcessor() {
+  if isWindows() {SwitchToThread();} else {sched_yield();}
 }
 
 // ---------------------------------------------------------------------------
@@ -800,7 +831,7 @@ pub struct Rwlock is Move, LockPermission, ThreadSafe {
 
   // After an unlock left it unlocked with someone waiting: wake one writer if
   // only writers wait; if readers wait too, wake one writer and then the
-  // readers as well (Windows' wake does not say whether it woke anyone, so
+  // readers as well (the futex's wake here does not say whether it woke anyone, so
   // this cannot tell that it reached a writer; a reader woken while the
   // writer holds the lock sleeps again); if only readers wait, wake them all.
   // If the lock is taken meanwhile, whoever took it wakes the rest at its
@@ -1159,7 +1190,7 @@ fn chanBackoff(step u32) u32 {
   if step < spinLimit {
     return step + 1u32;
   }
-  SwitchToThread();
+  yieldProcessor();
   step;
 }
 
@@ -1468,7 +1499,7 @@ const soloClosed = 1u64;               // tail: the sender has gone
 // of this process drains its stores, as if each had made a full fence where
 // it stands
 fn flushWrites() {
-  FlushProcessWriteBuffers();
+  if isWindows() {FlushProcessWriteBuffers();} else {cone_flushProcessWriteBuffers();}
 }
 
 // A sender that found the ring full sleeps until the receiver takes a value

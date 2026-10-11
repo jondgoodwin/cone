@@ -186,7 +186,9 @@ target_compile_definitions(conec PRIVATE CONE_PACKAGES_DIR="${CMAKE_SOURCE_DIR}/
 # piece Cone cannot say (it records the starting thread before 'main'), and
 # heapregion.c another (the heap's region, a static object of function
 # addresses), and cnames.c a third (the C library's stdin, stdout and stderr
-# and a variadic print, which Cone cannot name or call). All go into the one library. The object also holds what it uses of core and
+# and a variadic print, which Cone cannot name or call), and oscalls.c a fourth
+# (the futex and the other system calls sync and thread need on Linux, which
+# Cone cannot call; empty on Windows). All go into the one library. The object also holds what it uses of core and
 # libc, so it is rebuilt when they change.
 set(CONESTD_CONE
 	${CMAKE_SOURCE_DIR}/packages/conestd/conestd.cone
@@ -213,5 +215,6 @@ add_library(conestd STATIC
 	packages/conestd/mainthread.c
 	packages/conestd/heapregion.c
 	packages/conestd/cnames.c
+	packages/conestd/oscalls.c
 	${CONESTD_OBJ}
 )
