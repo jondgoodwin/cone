@@ -1349,7 +1349,7 @@ static int parCheckOuterAlias(INode *node, void *ctxp) {
 // each, corrupts it. They are refused. What counts is what itypeHoldsCollected does (a reference into
 // a traced region that is not actor-local, or a tuple, array, struct or enum
 // holding one inline; not what a borrow or a raw pointer reaches): a reference
-// into an actor-local region (the actorgc package's ActorGc) is the actor's
+// into an actor-local region (the actors package's ActorGc) is the actor's
 // own, collected between its messages, and is let by. A copy of a place is not
 // a new Gc: one made outside the loop is parCheckCopies's refusal, one made
 // inside is refused where it was made.
@@ -1364,7 +1364,7 @@ static void gcRefuse(INode *node, INode *type, const char *what, const char *whe
     char typename[256] = "";
     itypeSpellCat(typename, sizeof(typename), type, 0);
     errorMsgNode(node, ErrorGcStopgap,
-        "A traced reference (a Gc, for example) cannot be used inside an actor or a parallel each: this %s a %s, which a collector traces, inside %s. That collector's one chain of roots and its heap are process globals, not safe on the threads an actor or a parallel each runs on. Use Gc only in code that runs on a single thread; in an actor, allocate with 'new self[T](...)' and hold an ActorGc (the actorgc package), which the actor collects between its messages.",
+        "A traced reference (a Gc, for example) cannot be used inside an actor or a parallel each: this %s a %s, which a collector traces, inside %s. That collector's one chain of roots and its heap are process globals, not safe on the threads an actor or a parallel each runs on. Use Gc only in code that runs on a single thread; in an actor, allocate with 'new self[T](...)' and hold an ActorGc (the actors package's), which the actor collects between its messages.",
         what, typename, where);
 }
 

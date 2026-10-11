@@ -2724,7 +2724,7 @@ lives in, the raw move that makes it), so the placement rules ask
 
 **An actor's own region is declared too,** with the built-in trait `ActorLocal`
 (a provisional name): `struct ActorGc is RegionRef, Traced, ActorLocal`, the
-`actorgc` package's. It says the region's collector runs only between the messages
+`actors` package's. It says the region's collector runs only between the messages
 of the one actor that holds every reference into it, and so: a reference into it
 may be made, held and copied inside an actor and a `parallel each`'s passes where
 any other traced region's is refused (`ErrorGcStopgap`: `itypeHoldsCollected` asks
@@ -2737,11 +2737,12 @@ ref's only (`ErrorActorLocalUse`, from `regionActorLocalUseCheck`), and trusted.
 It declares no `writeBarrier`, so a reference to a value holding one may sit behind
 an `Rc` (a barrier is told of a store, which a value behind an owner does not make).
 The actor reaches its region by a method of its state, `allocRegion`, generated
-where the module imports the package ([Parse](../phases/parse.md), "Actors"), and
+for every actor ([Parse](../phases/parse.md), "Actors"), and
 `new self[T](...)` is `self.allocRegion().alloc(new T(...))`
-([Literals](literals.md), "Construction"). The collector is the package's
-(`packages/actorgc`); the actors runtime calls it through the hooks on the actor's
-header (`GcLink`: after each message, at the actor's death) and reaches the records a
+([Literals](literals.md), "Construction"). The region is a field of the actor's
+`Header` and the collector is the `actors` package's own (`packages/actors/src/gc.cone`,
+nothing to import): the runtime asks the region to collect after each message and
+finishes it at the actor's death, and reaches the records a
 seam parked through the pending table's `GcTraceElements`
 ([Generation](../phases/generation.md), "A traced record").
 

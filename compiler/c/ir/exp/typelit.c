@@ -853,7 +853,7 @@ static int typeLitNewInRegion(TypeCheckState *pstate, FnCallNode **nodep, int ha
     }
     if (probeok && regionfld == NULL) {
         errorMsgNode(index->objfn, ErrorRegionHead,
-            "'new a[T](...)' allocates in a region, and this is a %s, which is not one. A region is a struct whose first field is a public '*MemRegion', as an arena's is; or a value whose type has an 'allocRegion' method giving one (an actor's state has one in a module that imports the actorgc package).",
+            "'new a[T](...)' allocates in a region, and this is a %s, which is not one. A region is a struct whose first field is a public '*MemRegion', as an arena's is; or a value whose type has an 'allocRegion' method giving one (every actor's state has one).",
             itypeName(((IExpNode*)probe)->vtype));
         return 1;
     }

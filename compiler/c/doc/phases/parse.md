@@ -747,14 +747,13 @@ their dispatch arms, and the two functions that make a request's envelope
 dispatched through the Answer slot (`actors.ask`, `askNone`, `keep`,
 `answerAt`). An actor with a behaviour, or writing `selfactor`, gets
 `Counter.self'`, which makes the handle from the state
-([Generation](generation.md), "A message's reply"). A module that imports the
-`actorgc` package (found as `actors` is, and bound to a private name of its own)
-gives every actor's state one more method, `allocRegion`, read as a hidden struct's
+([Generation](generation.md), "A message's reply"). Every actor's state has one
+more method, `allocRegion`, read as a hidden struct's
 and moved into the state like the hidden fields: `fn allocRegion(self &mut
-Counter.State) &'static mut actorgc.ActorRegion`, which is the package's `regionOf`
-for this state and its message enum. It is the way `new self[T](...)` finds the
-actor's own region ([Literals](../nodes/literals.md), "Construction"); a module
-that does not import the package has none. What
+Counter.State) &'static mut actors.ActorRegion`, which is the `actors` package's
+`regionOf` for this state and its message enum (the region lives in the actor's
+Header, so no import beyond `actors` is needed). It is the way `new self[T](...)`
+finds the actor's own region ([Literals](../nodes/literals.md), "Construction"). What
 the compiler needs of all this later is recorded in the actor's `ActorInfo`
 (`ir/types/actor.h`).
 

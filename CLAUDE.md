@@ -610,9 +610,10 @@ Visual Studio projects stay at the root.
   collector (Acorn's mark and sweep a step at a time, with a write barrier,
   Lua's separation of finalizers, and Acorn's generational mode as an
   option), single threaded and for use outside actors, which a
-  bare `import collector;` brings in; `actorgc` is each actor's own garbage
-  collector: `ActorGc`, a region a module that declares actors and imports it
-  allocates in with `new self[T](...)` (the actor's state gets an
+  bare `import collector;` brings in; `actors` carries each actor's own
+  garbage collector (`packages/actors/src/gc.cone`, no import beyond `actors`):
+  `ActorGc`, the region every actor has in its Header, made with it, which an
+  actor allocates in with `new self[T](...)` (the actor's state gets an
   `allocRegion` method giving its `ActorRegion`), whose references are made,
   held and copied inside the actor (the region declares the built-in trait
   `ActorLocal`), never Sendable, a read-only one Shareable in a behaviour's
@@ -621,7 +622,10 @@ Visual Studio projects stay at the root.
   the bytes that survived it, and not under a 64 KiB floor), its roots the
   state and the records its `await`s parked, large objects (over 4096 bytes)
   never moved, a final list run on what is found unreached (kept one cycle)
-  and at the actor's death; `thread` is OS threads (start a function on
+  and at the actor's death; a collection made in the region
+  (`new self[List[T]](n)`) takes its block from the region's own
+  allocate, resize and release (malloc'd, counted, never moved, given back by
+  the collection's `final`); `thread` is OS threads (start a function on
   a value moved in, join, detach, a handle dropped unjoined joins, sleep,
   parking; what it is handed and returns must be `Sendable`, the
   compiler's thread check), Windows only, over `sync`; `sync` is what threads share

@@ -334,7 +334,7 @@ tuple, array, struct or enum holding one inline, through owners and
 `GcTraceElements`; it does not look behind a borrow or a pointer). A copy of a
 place is not a new reference, so one from outside is only `ErrorParCopy` and one
 the pass made is refused where it was made. A reference into an actor-local region
-(the `actorgc` package's `ActorGc`) is read in the passes if it is read-only
+(the `actors` package's `ActorGc`) is read in the passes if it is read-only
 (`refCountsPlain` is false for it and `refWritesShared` is false for `imm`, so it
 is Shareable; a `mut` one is `ErrorParReach` like any `&mut`, and so is the `self`
 of a state that holds one), and **allocating in it is refused**

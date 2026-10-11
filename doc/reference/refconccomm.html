@@ -630,23 +630,30 @@ actor Echo {
 	<li>A method that blocks holds its worker while it does. Actors wait by being sent a
 		message.</li>
 	</ul>
-	<p id="actor-gc"><b>Its own region.</b> An actor owns a garbage-collected region, found by the
-		<span class="pre">actorgc</span> package: a module that declares actors and imports it
-		(<span class="pre">import actorgc;</span> binds <span class="pre">ActorGc</span>, the region) gives every actor's state a
-		method <span class="pre">allocRegion</span> that answers the region, and
+	<p id="actor-gc"><b>Its own region.</b> Every actor owns a garbage-collected region, made with the
+		actor and part of the <span class="pre">actors</span> package: nothing is imported beyond
+		<span class="pre">import actors;</span>, which also binds <span class="pre">ActorGc</span>, the
+		region's reference. Each actor's state has a method <span class="pre">allocRegion</span> that
+		answers the region, and
 		<span class="pre">new self[T](args)</span> inside the actor's methods &mdash; behaviours and synchronous
 		methods alike, <span class="pre">init</span> after <span class="pre">*self</span> is filled &mdash; allocates there, as
 		<span class="pre">new a[T](args)</span> allocates in an arena
 		(<a href="refregionglo.html">Region strategies</a>): it is
 		<span class="pre">self.allocRegion().alloc(new T(args))</span>. A reference is an
 		<span class="pre">ActorGc[mut, T]</span> (or <span class="pre">ActorGc[imm, T]</span>, from
-		<span class="pre">self.allocRegion().allocImm(v)</span>). Only the actor's own code holds
+		<span class="pre">self.allocRegion().allocImm(v)</span>, a provisional spelling). The region holds no memory until the
+		actor first allocates, so an actor that never does pays only for the record in its header.
+		Only the actor's own code holds
 		<span class="pre">self</span>, so only it allocates in the region; other code is handed the actor's state
-		to allocate there. A collection made so, <span class="pre">new self[List[T]](16)</span>, keeps its words in the region
-		and its block on the heap, which the list's own <span class="pre">final</span> gives back.</p>
+		to allocate there. A collection made so, <span class="pre">new self[List[T]](16)</span>, is
+		handed the region as any collection made in a region is (<a href="reftypecoll.html">a collection</a>):
+		its words are an object of the region, and its block comes from the region's own allocate,
+		resize and release, which count it with what the actor has allocated. The block is a block of its own,
+		never moved by a collection (a collection's block pointer is a raw pointer, which the collector
+		has no way to find and rewrite), and the list's own <span class="pre">final</span> gives it back, which
+		the collector runs when it finds the list unreached, or at the actor's death.</p>
 <pre>
 import actors;
-import actorgc;
 
 struct Node { pub n i64; pub next Option[ActorGc[mut, Node]]; }
 
@@ -678,9 +685,9 @@ actor Keeper {
 		it unreached (it and what it reaches are kept for that one cycle, its death run once, newest first,
 		and the collection after frees it), and when the actor dies, after its state's own death, every one
 		still alive is finalized, newest first, and the region is freed whole.</p>
-	<p><span class="pre">actorgc.setFloor(bytes)</span> and <span class="pre">actorgc.setStress(on)</span> (collect after
+	<p><span class="pre">actors.setFloor(bytes)</span> and <span class="pre">actors.setStress(on)</span> (collect after
 		every message; the environment variable <span class="pre">CONE_ACTORGC_STRESS</span> does the same for
-		a whole run) tune it, for the process, before the first allocation;
+		a whole run) tune it, for the process, before the first actor is made;
 		<span class="pre">self.allocRegion().stats()</span> says what the region holds and has done, for
 		tests. Inside a <span class="pre">parallel each</span> a pass reads a read-only reference
 		(<a href="refeach.html#parallelactor">Parallel each in a behaviour</a>), and allocates nothing.</p>

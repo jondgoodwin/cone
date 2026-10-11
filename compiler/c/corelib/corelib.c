@@ -298,7 +298,7 @@ void stdlibInit(int ptrsize) {
     threadSafeTrait = newBuiltinTrait(threadSafeTraitName);
     // 'ActorLocal' [PROVISIONAL name], which a traced region ref declares beside
     // 'Traced' to say that its collector runs between the messages of the one
-    // actor that holds every reference into it (the actorgc package's
+    // actor that holds every reference into it (the actors package's
     // 'ActorGc'): no reference crosses to another thread, no collection runs
     // while a behaviour does, and no stack is scanned for its roots. So a
     // reference into it may be made, held and copied inside an actor, which the
