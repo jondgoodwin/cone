@@ -31,9 +31,15 @@ typedef struct NarrowFact {
     uint8_t anchorhead;
     uint8_t transient;      // made inside one condition ('s is Circle and s.radius > 3'): no local, a narrowed copy
     uint8_t shared;         // the name is a reference other references may share
+    // The calls made when it was tested (gEpoch). A reference others may share is held by a
+    // local the loan walk follows from where the local is declared, or has no local at all, so
+    // a call made between the test and there could change the variant unseen.
+    uint32_t epoch;
 } NarrowFact;
 
 struct NarrowEnv {
+    uint32_t epoch;         // how many calls had been made on the path this is the end of
+    INode *lastcall;        // and the last of them
     uint32_t used;
     NarrowFact facts[1];
 };
@@ -75,6 +81,18 @@ static BlockNode **gOpen;
 static uint32_t gOpenUsed;
 static uint32_t gOpenCap;
 static int gLocalAssume;        // facts being made are those of one condition
+
+// Calls (and stores through a name) made so far on the path being checked, which a name
+// narrowed through a reference others may share must not have a call of between its test and
+// its protection: the epoch is kept with each environment, as a path's own
+static uint32_t gEpoch;
+static INode *gLastCall;
+
+// The epoch each test was checked at, by its node
+typedef struct { INode *test; uint32_t epoch; } NarrowTest;
+static NarrowTest *gTests;
+static uint32_t gTestUsed;
+static uint32_t gTestCap;
 
 static uint64_t narrowAll(uint32_t n) {
     return n >= 64 ? ~(uint64_t)0 : (((uint64_t)1 << n) - 1);
@@ -132,7 +150,15 @@ static StructNode *narrowVariantOf(NarrowFact *fact) {
 }
 
 // A fact just made single: a narrowing made here and now
+static uint32_t narrowTestEpoch(INode *test) {
+    for (uint32_t i = gTestUsed; i > 0; --i)
+        if (gTests[i - 1].test == test)
+            return gTests[i - 1].epoch;
+    return gEpoch;
+}
+
 static void narrowFresh(NarrowFact *fact, INode *test) {
+    fact->epoch = narrowTestEpoch(test);
     fact->test = test;
     fact->depth = (uint16_t)gLoopDepth;
     fact->cause = NULL;
@@ -214,6 +240,8 @@ NarrowEnv *narrowSave(void) {
     if (gUsed == 0)
         return NULL;
     NarrowEnv *env = (NarrowEnv *)memAllocBlk(sizeof(NarrowEnv) + (gUsed - 1) * sizeof(NarrowFact));
+    env->epoch = gEpoch;
+    env->lastcall = gLastCall;
     env->used = gUsed;
     memcpy(env->facts, gFacts, gUsed * sizeof(NarrowFact));
     return env;
@@ -229,6 +257,8 @@ void narrowRestore(NarrowEnv *env) {
     }
     memcpy(gFacts, env->facts, env->used * sizeof(NarrowFact));
     gUsed = env->used;
+    gEpoch = env->epoch;
+    gLastCall = env->lastcall;
 }
 
 // What holds where two paths meet: a name may hold any variant either path says it may.
@@ -240,6 +270,10 @@ NarrowEnv *narrowJoin(NarrowEnv *a, NarrowEnv *b) {
         return NULL;
     NarrowEnv *out = (NarrowEnv *)memAllocBlk(sizeof(NarrowEnv) + (na + nb) * sizeof(NarrowFact));
     out->used = 0;
+    // Either path's calls were made
+    uint32_t ea = a ? a->epoch : 0, eb = b ? b->epoch : 0;
+    out->epoch = ea > eb ? ea : eb;
+    out->lastcall = ea > eb ? a->lastcall : b ? b->lastcall : NULL;
     for (uint32_t i = 0; i < na; ++i) {
         NarrowFact fact = a->facts[i];
         NarrowFact *other = NULL;
@@ -282,6 +316,9 @@ NarrowEnv *narrowJoin(NarrowEnv *a, NarrowEnv *b) {
 }
 
 void narrowFnBegin(NarrowFnSave *save) {
+    save->epoch = gEpoch;
+    save->lastcall = gLastCall;
+    save->tests = gTestUsed;
     save->env = narrowSave();
     save->depth = gLoopDepth;
     save->frames = gFrame;
@@ -292,6 +329,8 @@ void narrowFnBegin(NarrowFnSave *save) {
     gFrame = NULL;
     gStmt = NULL;
     gLocalAssume = 0;
+    gEpoch = 0;
+    gLastCall = NULL;
 }
 
 void narrowFnEnd(NarrowFnSave *save) {
@@ -300,6 +339,36 @@ void narrowFnEnd(NarrowFnSave *save) {
     gFrame = (NarrowFrame *)save->frames;
     gLazyUsed = save->lazy;
     gStmt = (INode *)save->stmt;
+    gEpoch = save->epoch;
+    gLastCall = (INode *)save->lastcall;
+    gTestUsed = save->tests;
+}
+
+// ---- Calls between a test and where it is protected ----
+
+// A test was type checked: the calls made so far
+void narrowNoteTest(INode *test) {
+    if (gTestUsed == gTestCap) {
+        gTestCap = gTestCap ? gTestCap * 2 : 32;
+        gTests = (NarrowTest *)realloc(gTests, gTestCap * sizeof(NarrowTest));
+    }
+    gTests[gTestUsed].test = test;
+    gTests[gTestUsed].epoch = gEpoch;
+    ++gTestUsed;
+}
+
+// A call, or a store through a name, was type checked: it may change the variant of an enum
+// reached through a reference others may share, which nothing follows until the local that
+// holds the narrowed reference is declared
+void narrowCallMade(INode *call) {
+    ++gEpoch;
+    gLastCall = call;
+}
+
+// A narrowing of a shared reference that a call has come between the test and the local that
+// holds it: it is not held, and the name is no longer known to be the variant
+static int narrowCalledSince(NarrowFact *fact) {
+    return fact->epoch != gEpoch && gLastCall != NULL;
 }
 
 // ---- What a condition says ----
@@ -528,6 +597,10 @@ void narrowAnchorArm(BlockNode *arm, uint16_t scope) {
         NarrowFact *fact = &gFacts[i];
         if (fact->shared && narrowIsSingle(fact->possible) && fact->holder == NULL && fact->anchor == NULL
             && !fact->transient) {
+            if (narrowCalledSince(fact)) {
+                narrowKillFact(fact, gLastCall);
+                continue;
+            }
             fact->anchor = (INode *)arm;
             fact->anchorhead = 1;
             fact->anchorscope = scope;
@@ -544,6 +617,10 @@ void narrowAnchorAfter(INode *ifnode, uint16_t scope, int direct) {
         NarrowFact *fact = &gFacts[i];
         if (fact->shared && narrowIsSingle(fact->possible) && fact->holder == NULL && fact->anchor == NULL
             && !fact->transient) {
+            if (narrowCalledSince(fact)) {
+                narrowKillFact(fact, gLastCall);
+                continue;
+            }
             fact->anchor = ifnode;
             fact->anchorhead = 0;
             fact->anchorscope = scope;
@@ -674,6 +751,24 @@ static void narrowAddUse(NarrowFrame *frame, VarDclNode *var, INode *use) {
     ++frame->nuses;
 }
 
+// A member of the variant a name was narrowed to, named after something may have changed it
+static void narrowStaleError(FnCallNode *node, VarDclNode *var, Name *member, StructNode *was, INode *cause) {
+    char at[40];
+    char how[120];
+    narrowAt(cause, at, sizeof(at));
+    if (cause->tag == FnCallTag)
+        snprintf(how, sizeof(how), "the call at %s could have changed it", at);
+    else if (cause->tag == AssignTag || cause->tag == SwapTag)
+        snprintf(how, sizeof(how), "the store at %s could have changed it", at);
+    else
+        snprintf(how, sizeof(how), "it was changed at %s", at);
+    errorMsgNode(node->objfn, ErrorNarrowStale,
+        "`%s` is not known to be %s here, and `%s` is a member of %s: %s. Test it again with 'is', or bind it with 'if imm x %s = %s'.",
+        &var->namesym->namestr, &was->namesym->namestr, &member->namestr, &was->namesym->namestr, how,
+        &was->namesym->namestr, &var->namesym->namestr);
+    node->vtype = errorType;
+}
+
 void narrowReceiver(TypeCheckState *pstate, FnCallNode *node) {
     if (gUsed == 0)
         return;
@@ -707,13 +802,7 @@ void narrowReceiver(TypeCheckState *pstate, FnCallNode *node) {
         // The name was a variant, and something has changed it since
         if (fact->cause != NULL && fact->was != NULL
             && iNsTypeFindFnField((INsTypeNode *)fact->was, member) != NULL) {
-            char at[40];
-            narrowAt(fact->cause, at, sizeof(at));
-            errorMsgNode(node->objfn, ErrorNarrowStale,
-                "`%s` is not known to be %s here, and `%s` is a member of %s: `%s` was changed at %s. Test it again with 'is', or bind it with 'if imm x %s = %s'.",
-                &var->namesym->namestr, &fact->was->namesym->namestr, &member->namestr, &fact->was->namesym->namestr,
-                &var->namesym->namestr, at, &fact->was->namesym->namestr, &var->namesym->namestr);
-            node->vtype = errorType;
+            narrowStaleError(node, var, member, fact->was, fact->cause);
         }
         return;
     }
@@ -729,8 +818,15 @@ void narrowReceiver(TypeCheckState *pstate, FnCallNode *node) {
             NameUseNode *held = (NameUseNode *)newNameUseFromDclNode((INode *)fact->holder, node->objfn);
             node->objfn = (INode *)held;
         }
-        else if (fact->transient)
+        else if (fact->transient) {
+            // Nothing follows the copy from the test to here: a call made between could
+            // have changed the variant
+            if (narrowCalledSince(fact)) {
+                narrowStaleError(node, var, member, variant, gLastCall);
+                return;
+            }
             node->objfn = (INode *)castNarrowRef(node->objfn, narrowRefTo((RefNode *)usetype, variant));
+        }
         else
             return;
     }

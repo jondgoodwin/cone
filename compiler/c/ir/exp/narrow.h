@@ -26,7 +26,7 @@ void narrowRestore(NarrowEnv *env);
 NarrowEnv *narrowJoin(NarrowEnv *a, NarrowEnv *b);
 
 // A function body is checked on its own, and in the middle of another's
-typedef struct { NarrowEnv *env; int depth; void *frames; uint32_t lazy; void *stmt; } NarrowFnSave;
+typedef struct { NarrowEnv *env; int depth; void *frames; uint32_t lazy; void *stmt; uint32_t epoch; void *lastcall; uint32_t tests; } NarrowFnSave;
 void narrowFnBegin(NarrowFnSave *save);
 void narrowFnEnd(NarrowFnSave *save);
 
@@ -55,6 +55,13 @@ void narrowDeclared(VarDclNode *var);
 // A writable borrow of 'place' (a variable, or the dereference of a reference variable)
 // pointing at 'pointee' was made: of the whole enum, it may change the variant
 void narrowBorrowed(INode *place, INode *perm, INode *pointee);
+
+// An 'is' test, and a call or a store through a name, was type checked. A name that is a
+// reference others may share is narrowed only if no call came between its test and the
+// local that holds it (or, within one condition, its use): nothing follows the reference
+// before that.
+void narrowNoteTest(INode *test);
+void narrowCallMade(INode *call);
 
 // A call's receiver, type checked: if a name narrowed to a variant is named on a member
 // that only the variant has, the name is typed as the variant

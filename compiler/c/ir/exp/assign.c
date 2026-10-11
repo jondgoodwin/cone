@@ -237,6 +237,9 @@ void assignTypeCheck(TypeCheckState *pstate, AssignNode *node) {
     }
     else
         narrowAssigned(lval, assignOneTakesTuple(node) || node->rval->tag != VTupleTag ? node->rval : NULL);
+    // A store through a reference or a field may change an enum another name reaches
+    if (!(isNameUseNode(lval) && isExpNode(lval)))
+        narrowCallMade((INode*)node);
     node->vtype = ((IExpNode*)node->rval)->vtype;
 }
 

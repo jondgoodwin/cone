@@ -248,14 +248,15 @@ does not follow) — is a narrowing the loan walk follows: the cast is marked
 (`FlowGateShape`, `flowGateNarrow`) and makes `pwNarrowShared` lend the place the
 reference is read through to whatever holds the narrowed reference, marking the
 loan as the loan of a borrow into a collection is marked (flow.md, "A change through
-another name"). A narrowing of an owning reference, an `Rc[mut, T]` narrowed to
-an `Rc[mut, Variant]`, is a copy of the owner typed as the variant: the cast is a
-recast marked `FlagOwnerNarrow`, which flow counts as it counts any copy of an owner
-(a recast is its operand), and no loan stands for the other owners, so nothing follows a
-change of the variant through one. The variant is at its enum's address, but the
-allocation's header before it is rounded up to the alignment of the type, which a
-variant may have less of: generation asks that the value sits at the same offset in
-both allocations (`genlOwnerNarrowCheck`, `ErrorOwnerNarrow`). The `is` test binds
+another name"). A narrowing of an owning reference, an `Rc[imm, T]` narrowed to an `Rc[imm, Variant]`, is
+a copy of the owner typed as the variant, allowed only where no writer can store another variant
+through any owner (`MayIntRefSum`: `imm`, `uni`, `mut1`): the cast is a recast marked
+`FlagOwnerNarrow`, which flow counts as it counts any copy of an owner (a recast is its operand).
+No loan stands for the other owners, so an owner whose permission lets one store another variant
+(`mut`, `ro`, a lock) is refused (`ErrorBadPerm`). The variant is at its enum's address, but
+the allocation's header before it is rounded up to the alignment of the type, which a variant
+may have less of: generation asks that the value sits at the same offset in both allocations
+(`genlOwnerNarrowCheck`, `ErrorOwnerNarrow`). The `is` test binds
 nothing and is not asked. A narrowing from a virtual reference is not asked either.
 
 **Flow typing narrows a reference the same way** (`castNarrowRef`, from narrow.c): a

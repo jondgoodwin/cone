@@ -66,6 +66,15 @@ shares are reached exactly as they were. Then:
   condition the use is a narrowed copy of the reference (`transient`), and elsewhere the name is
   not narrowed.
 
+  **The loan walk follows the local only from where it is declared.** A call or a store made
+  between the test and there, in a later operand of the condition, could change the variant
+  unseen, and so could one between the test and the use of a transient copy. So type check
+  counts them (`narrowCallMade`: a call that is not an operator on numbers, a store through a
+  name, a swap), keeps the count with each environment as the path's own (a branch's calls are
+  its own), and records the count at each test (`narrowNoteTest`). A fact made by a test is
+  anchored, or used as a transient copy, only if no call has been made since; otherwise the
+  narrowing ends, and the use is `ErrorNarrowStale` naming the call or store.
+
 A member the variant has, asked of a name that was narrowed and has been changed, is
 `ErrorNarrowStale` (type check), naming the change and where. A loop is walked once, so a
 narrowing it inherits from before it is good for its first pass: each such use is noted, each
@@ -82,7 +91,7 @@ change made in the loop is noted, and at the loop's end a use a change reaches i
 - **It does not retype the name.** Only a member of the variant named on it sees the variant.
   Passing the name where the variant is wanted is still a type error, since the name is the
   original value (4c).
-- **It does not narrow through an owner.** An `Rc[mut, Shape]` bound by a pattern is a copy of the
+- **It does not narrow through an owner.** An `Rc[imm, Shape]` bound by a pattern is a copy of the
   owner typed as the variant (cast.md); no name of an owner is narrowed.
 - **It does not follow a closure that changes a captured name,** or a pointer made of one, past
   the writable borrow that made it (`narrowBorrowed` ends the narrowing at the borrow).

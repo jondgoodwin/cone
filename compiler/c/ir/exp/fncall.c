@@ -3505,6 +3505,25 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep, INode *expectTy
     fnCallTypeCheckNode(pstate, nodep, expectType);
     fnCallExpectNode = savednode;
     fnCallExpectType = savedtype;
+    // A call may store another variant over an enum reached through a reference others
+    // may share (narrow.h). A field, an element and a number's operator cannot.
+    INode *done = *(INode**)nodep;
+    if (done && done->tag == FnCallTag && !(done->flags & FlagIndex)) {
+        // (an operator on numbers: every operand is one)
+        int scalars = (done->flags & FlagOperator) != 0;
+        FnCallNode *call = (FnCallNode*)done;
+        INode **argp;
+        uint32_t cnt;
+        if (scalars && call->args) {
+            for (nodesFor(call->args, cnt, argp)) {
+                INode *argtype = isExpNode(*argp) ? iexpGetTypeDcl(*argp) : NULL;
+                if (argtype == NULL || !(isNbr(argtype) || argtype == (INode*)boolType))
+                    scalars = 0;
+            }
+        }
+        if (!scalars)
+            narrowCallMade(done);
+    }
 }
 
 static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INode *expectType) {

@@ -395,24 +395,44 @@ static int castBorrowsUni(INode *exp) {
 // change the variant: the loan walk follows the narrowed reference as it follows a
 // borrow into a collection (castSumNarrows, flowpath.c pwNarrowShared), and
 // refuses the change that could be made while it is used.
-static int castSumNarrowsRefs(CastNode *node, RefNode *from, RefNode *to) {
+// Is this reference narrowed from an enum, tagged trait or 'Option'-shaped enum to one of
+// its variants?
+static int castIsSumNarrow(RefNode *from, RefNode *to) {
     StructNode *fromstr = (StructNode *)itypeGetTypeDcl(from->vtexp);
     INode *tostr = itypeGetTypeDcl(to->vtexp);
-    if (fromstr->tag != StructTag || tostr == (INode *)fromstr || !(fromstr->flags & TraitType)
-        || !(fromstr->flags & (HasTagField | SameSize)))
+    return fromstr->tag == StructTag && tostr != (INode *)fromstr && (fromstr->flags & TraitType)
+        && (fromstr->flags & (HasTagField | SameSize));
+}
+
+static int castSumNarrowsRefs(CastNode *node, RefNode *from, RefNode *to) {
+    if (!castIsSumNarrow(from, to))
         return 0;
     return !((permGetFlags(from->perm) & MayIntRefSum) || castBorrowsUni(node->exp));
 }
 
-// Only a borrow is followed by the loan walk. An owner narrowed (an 'Rc[mut, Shape]'
-// to an 'Rc[mut, Circle]') is a copy of the owner with another static type [topic 6a]:
-// it holds the same allocation, counted one more, and a variant has its enum's
-// address, so nothing is adjusted. No loan stands for another owner of the value, so
-// nothing follows a change of its variant through one (see the compiler note).
+// A borrow is followed by the loan walk. An owner narrowed to a variant ('Rc[imm, Shape]'
+// to 'Rc[imm, Circle]') is a copy of the owner with another static type [topic 6a]: it
+// holds the same allocation, counted one more, and a variant has its enum's address, so
+// nothing is adjusted. That is allowed only where no writer can change the variant: no loan
+// stands for another owner of the value, so nothing could follow a change through one. An
+// owner whose permission lets a writer store another variant ('mut', 'ro', a lock) stays
+// refused.
 static void castSumInterior(CastNode *node, RefNode *from, RefNode *to) {
-    if (!castSumNarrowsRefs(node, from, to))
+    if (!castIsSumNarrow(from, to))
         return;
-    node->flags |= itypeGetTypeDcl(from->region) == borrowRef ? FlagVariantNarrow : FlagOwnerNarrow;
+    if (itypeGetTypeDcl(from->region) != borrowRef) {
+        if (permGetFlags(from->perm) & MayIntRefSum) {
+            node->flags |= FlagOwnerNarrow;
+            return;
+        }
+        PermNode *perm = (PermNode *)itypeGetTypeDcl(from->perm);
+        errorMsgNode((INode *)node, ErrorBadPerm,
+            "A '%s' reference to %s, held by an owner (an 'Rc'), may not be narrowed to a reference into one of its variants: another owner could change which variant it holds while this one is used. Bind the payload by copy, or match through a borrow of the value, a 'uni' or 'imm' reference, or the value.",
+            &perm->namesym->namestr, &((StructNode *)itypeGetTypeDcl(from->vtexp))->namesym->namestr);
+        return;
+    }
+    if (castSumNarrowsRefs(node, from, to))
+        node->flags |= FlagVariantNarrow;
 }
 
 // The field of the hidden local holding the matched value, which a variable
@@ -644,6 +664,7 @@ void castTypeCheck(TypeCheckState *pstate, CastNode *node) {
 void castIsTypeCheck(TypeCheckState *pstate, CastNode *node) {
     node->vtype = (INode*)boolType;
     iexpTypeCheckAny(pstate, &node->exp);
+    narrowNoteTest((INode*)node);
     if (!castPatternBind(node, 1))
         return;
     itypeTypeCheck(pstate, &node->typ);

@@ -371,8 +371,8 @@ match oddval {
     arguments, and, where it is a reference, the kind of reference, its region and its permission.
     On a <span class="pre">&amp;imm Shape</span>, <span class="pre">case imm c Circle</span> binds an
     <span class="pre">&amp;imm Circle</span>; on a <span class="pre">&amp;mut Shape</span> (a borrow made at the match), an
-    <span class="pre">&amp;mut Circle</span>; on an <span class="pre">Rc[mut, Shape]</span>, an
-    <span class="pre">Rc[mut, Circle]</span>; on a <span class="pre">Shape</span>, a
+    <span class="pre">&amp;mut Circle</span>; on an <span class="pre">Rc[imm, Shape]</span>, an
+    <span class="pre">Rc[imm, Circle]</span>; on a <span class="pre">Shape</span>, a
     <span class="pre">Circle</span>. A test with no binding, <span class="pre">case Circle</span> or
     <span class="pre">s is Circle</span>, asks only whether the value is that variant. A pattern
     may still be written as the reference, <span class="pre">case imm c &amp;Circle</span>, which then
@@ -401,12 +401,10 @@ match oddval {
     (<a href="refborref.html">Freezing access to the source of a borrow</a>) until the
     binding's last use, and a <span class="pre">uni</span>, <span class="pre">imm</span> or
     <span class="pre">mut1</span> reference has no other name to change it. A value owned by an
-    <span class="pre">Rc</span> is another owner of the same value: the binding is a copy of the owner, counted
-    one more and let go as the arm ends, typed as the variant (<span class="pre">Rc[mut, Circle]</span> for an
-    <span class="pre">Rc[mut, Shape]</span>), and the variant is at its enum's address, so nothing moves. No loan
-    stands for another owner, so the compiler does not follow a change of the variant through another handle
-    while the narrowed copy is used: read what is needed from it before handing the value to code that may store
-    another variant over it. An <span class="pre">is</span> test binds nothing.</p>
+    <span class="pre">Rc</span> is another owner of the same value: where no writer can store another variant through any owner (<span class="pre">Rc[imm, Shape]</span>), the binding is a copy of the owner, counted
+    one more and let go as the arm ends, typed as the variant (<span class="pre">Rc[imm, Circle]</span>), and the variant is at its enum's address, so nothing moves.
+    Where another owner could change which variant the value holds (<span class="pre">Rc[mut, Shape]</span>, <span class="pre">Rc[ro, Shape]</span>), no loan stands for it and the narrowing is refused:
+    bind the payload by copy, or match through a borrow of the value, which is followed. An <span class="pre">is</span> test binds nothing.</p>
 <pre>
 fn grow(s &amp;mut Shape) {
   match s {
@@ -518,7 +516,7 @@ fn step(state &amp;mut Machine) {
   is narrowed through a reference the compiler declares where the test was made, and the loan walk follows it as it
   follows a binding (<a href="refborref.html">Borrowed references</a>): a call handed another name for the
   enum, a store through one, a swap, or a call whose body it cannot read is a change, refused at the next use of
-  the narrowed name; a call that cannot reach the enum is none. A name held by value, or through an
+  the narrowed name; a call that cannot reach the enum is none. Nothing follows the reference between the test and the block's start (or, inside one condition, the use), so a call or a store made in a later operand of the condition ends the narrowing, whatever it reaches: <span class="pre">if s is Circle and toRect(t) and s.radius &gt; 0</span> is refused at <span class="pre">s.radius</span>, naming the call. A name held by value, or through an
   <span class="pre">imm</span>, <span class="pre">uni</span> or <span class="pre">mut1</span> reference, has no other
   name that can change it, so only its own assignments and mutable borrows are changes.</p>
   <p>A narrowing from before a loop is good for the loop's first pass. A use of it that a change later in
