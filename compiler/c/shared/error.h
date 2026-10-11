@@ -647,6 +647,7 @@ enum ErrorCode {
 
     // A type that gets its memory from a region (ir/types/struct.c, ir/exp/typelit.c)
     ErrorRegionMark = 1420, // A type declaring CarriesRegion that declares no init, or an init whose last parameter is not 'region *MemRegion'
+    ErrorRegionNew = 1421,  // An allocation in an arena, 'new a[T](...)', written other than with the type, or a 'mut' and the type, in its brackets, or as a 'trynew'
 
     // Warnings
     WarnCode = 3000,

@@ -1188,8 +1188,14 @@ What the marker brings:
   A construction that passes one, `new List[i32](100, r)`, is coerced to the
   parameter like any argument. A type's own literal, `new List(null, 0, 0,
   region)`, is the implicit init and takes all its fields as written.
-  What a construction that names a region value does, `new arena[List[i32]](16)`,
-  is not built: allocation does not name a region value yet.
+  The marker is general: any type may declare it, and a type that holds a
+  collection passes its own `region` to the field's construction
+  (`new List[f32](n, region)`), so a composite's parts come from the one
+  region it was handed.
+  A construction whose head names an arena value, `new arena[List[i32]](16)`,
+  is `arena.alloc(new List[i32](16))` ([literals](literals.md), "Construction"):
+  an arena is not yet a region, so the list is handed the heap's and only its
+  four words are the arena's.
 
 ### AtomicValue
 

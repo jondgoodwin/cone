@@ -63,8 +63,9 @@ objects, the barrier on between collections (keyed on the value, it keeps
 every young object stored into the heap through the next minor collection).
 The arena and the pool are written only as library values: the
 `arena` package's `Arena`, a dynamic region allocated into by a call on the
-value (`a.alloc(v)`), not by a `new` allocation through a region ref,
-whose `alloc` is not handed the region value. It finalizes
+value (`a.alloc(v)`, or `new a[T](...)`, which is that call: the arena value in
+the head, not a `new` allocation through a region ref), whose `alloc` is not
+handed the region value. It finalizes
 each value through the finalizer in its type's record
 (`mem.typeRecord[T]().finalize`) when it dies, newest first; nothing yet
 pairs a reference with its arena's lifetime. Held in a local, an `Arena` is the

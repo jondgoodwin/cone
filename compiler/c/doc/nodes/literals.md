@@ -391,7 +391,17 @@ untyped.
 reference type makes it an allocation, an `AllocateTag` node holding the
 construction of its value type or a finished value of it
 ([references](references.md), "Allocation"); `trynew` on any other type is
-`ErrorTryNewValue`. An array's construction is its
+`ErrorTryNewValue`. A head that is a value, `new a[Node](1)` or `new a[mut, Node](1)`
+(a variable, or a field reached through one, with the type in the brackets and a
+`mut` before it if one is written), is an allocation in an arena
+(`typeLitNewInRegion`): the construction is rewritten, before anything of it is
+checked, to the call `a.alloc(new Node(1))` and checked as that, so it answers
+what that arena's `alloc` answers (a `&mut Node`, or a key for a `DynArena`)
+and is held to the rules that call is. Any other permission, a permission with no
+type, a third argument and a `trynew` are `ErrorRegionNew`; a value with no
+`alloc` is the call's own `ErrorNoMbr`. The arena is not a region the value's
+init is handed, so a type declaring `CarriesRegion` is made with the heap's, as
+anywhere. An array's construction is its
 contents, after `<-`, which `contentsLower` takes before this is reached, so
 one here has none (`ErrorArrayContents`); so is an allocation of an array
 with contents, which `contentsLower` hands its literal (`typeLitNewFilled`). Otherwise its type must be a struct

@@ -1,0 +1,217 @@
+// An allocation that names an arena, 'new a[Node](1)': the arena VALUE in the
+// head, then the type in brackets (a permission before it may be written, but
+// it can only be 'mut', which is what an arena lends). It means 'a.alloc(new
+// Node(1))' and answers what that arena's 'alloc' answers: a scoped '&mut Node'
+// from an Arena, a key '&'=a mut Node' from a DynArena. Every expected value is
+// worked out by hand from that meaning:
+// - a Pt made with 'new a[Pt](...)' is a Pt in the arena that can be changed
+//   through the reference, with the permission written or not, and takes no
+//   finalizer header; a Fin (a value with a 'final') takes one, and dies when
+//   the arena does, newest first;
+// - a List made in an arena with a counting region passed as the last argument,
+//   'new a[List[i64]](50, r)', is the list's four words in the arena and its
+//   block from the region ("allocs 1, 400 bytes live": 50 slots of 8); the
+//   arena's death runs the list's 'final', which gives the block back (live 0);
+// - a Mesh holds two lists and declares CarriesRegion, and its init passes its
+//   own 'region' on to both: made with a counting region in it, in an arena or
+//   not, two blocks of 50 slots of 4 bytes come from that region (allocs 2, 400
+//   bytes live), and both are given back when the Mesh dies, in the arena at its
+//   death. Made without a region it is handed the heap's. (An arena is not yet a
+//   region itself, so a Mesh made in one is not handed the arena as its region:
+//   this is the heap's, until it is.)
+// - in a DynArena the answer is a key: read and written through the arena,
+//   and a chain of nodes holding each other's keys is built with it.
+
+mod newin;
+
+import testing use *;
+import arena use *;
+import collections use *;
+import libc;
+
+mut log = 0i64;
+fn note(d i64) { log = log * 10i64 + d; }
+
+struct Fin {
+  pub n i64;
+  fn final(self &uni) { note(n); }
+}
+
+struct Pt {
+  pub x i64;
+  pub y i64;
+  pub fn sum(self &) i64 { x + y; }
+}
+
+// A counting region: its header first, then the tallies
+struct Counting {
+  header MemRegion;
+  allocs usize;
+  releases usize;
+  live isize;
+}
+
+fn countAlloc(r *MemRegion, bytes usize, align usize) *u8 {
+  imm c = r as *Counting;
+  (*c).allocs = (*c).allocs + 1usize;
+  (*c).live = (*c).live + isize.from(bytes);
+  libc.malloc(bytes);
+}
+
+fn countResize(r *MemRegion, block *u8, oldBytes usize, newBytes usize, align usize) *u8 {
+  imm c = r as *Counting;
+  (*c).live = (*c).live + isize.from(newBytes) - isize.from(oldBytes);
+  libc.realloc(block, newBytes);
+}
+
+fn countRelease(r *MemRegion, block *u8, bytes usize) {
+  if block as usize == 0usize { return; }
+  imm c = r as *Counting;
+  (*c).releases = (*c).releases + 1usize;
+  (*c).live = (*c).live - isize.from(bytes);
+  libc.free(block);
+}
+
+fn newCounting() Counting {
+  new Counting(new MemRegion(&countAlloc, &countResize, &countRelease), 0usize, 0usize, 0isize);
+}
+
+fn regionOf(c &mut Counting) *MemRegion { (c as *Counting) as *MemRegion; }
+
+fn tally(c &Counting, allocs u64, releases u64, live i64, label &Array[u8]) {
+  imm ok = u64.from(c.allocs) == allocs and u64.from(c.releases) == releases and i64.from(c.live) == live;
+  expect(ok, label);
+}
+
+// A value that holds two lists and hands its region on to both
+struct Mesh is CarriesRegion {
+  pub pts List[f32];
+  pub ids List[u32];
+  pub region *MemRegion;
+
+  pub fn init(self &new, n usize, region *MemRegion) {
+    *self = new Mesh(pts: new List[f32](n, region), ids: new List[u32](n, region), region: region);
+  }
+}
+
+// A value in an arena
+fn plain() {
+  mut a = Arena.empty();
+  imm p = new a[Pt](1, 2);
+  expectInt(p.sum(), 3, "new a[Pt](1, 2) is a Pt in the arena");
+  p.x = 10;
+  expectInt(p.sum(), 12, "and is changed through the reference it answers");
+  imm q = new a[mut, Pt](3, 4);
+  expectInt(q.sum(), 7, "the permission may be written, 'mut'");
+  imm r = a.alloc(new Pt(5, 6));
+  expectInt(r.sum(), 11, "and it is what a.alloc(new Pt(5, 6)) gives");
+  expectUInt(u64.from(a.finalizers()), 0, "a Pt needs no finalizer header");
+  expectUInt(u64.from(a.blockCount()), 1, "and the three share a block");
+}
+
+// A value with a 'final' dies with the arena, newest first
+fn dies() {
+  mut a = Arena.empty();
+  new a[Fin](1);
+  new a[Fin](2);
+  imm k = new a[Fin](3);
+  expectUInt(u64.from(a.finalizers()), 3, "each Fin gets a header");
+  expectInt(k.n, 3, "and is read through the reference");
+}
+
+// A list in an arena, its block from the region it is handed
+fn listInArena() {
+  mut c = newCounting();
+  {
+    mut a = Arena.empty();
+    imm l = new a[List[i64]](50usize, regionOf(&mut c));
+    tally(&c, 1, 0, 400, "the list's block, 50 slots, comes from the region");
+    expectUInt(u64.from(a.finalizers()), 1, "the list in the arena has a finalizer header");
+    mut i = 0i64;
+    while i < 50i64 { l.push(i); i = i + 1i64; }
+    expectInt(*l[49usize], 49, "fifty values fit and are read back");
+    tally(&c, 1, 0, 400, "without a second block");
+  }
+  tally(&c, 1, 1, 0, "the arena's death gave the block back");
+}
+
+// A struct that holds lists passes the region on to them
+fn composition() {
+  mut c = newCounting();
+  {
+    imm m = new Mesh(50usize, regionOf(&mut c));
+    tally(&c, 2, 0, 400, "a Mesh's two lists come from the region it was handed");
+    expect(m.region as usize == regionOf(&mut c) as usize, "and it keeps the region");
+  }
+  tally(&c, 2, 2, 0, "both were given back when it died");
+  {
+    mut a = Arena.empty();
+    imm m = new a[Mesh](50usize, regionOf(&mut c));
+    tally(&c, 4, 2, 400, "a Mesh in an arena draws its lists from the region it was handed");
+    m.pts.push(1.5f32);
+    m.ids.push(7u32);
+    expectUInt(u64.from(m.pts.len()), 1, "and is changed through the reference");
+  }
+  tally(&c, 4, 4, 0, "the arena's death gave both lists' blocks back");
+  mut b = Arena.empty();
+  imm n = new b[Mesh](5usize);
+  expect(n.region as usize == heapRegion() as usize, "a Mesh made with no region is handed the heap's, in an arena as anywhere");
+  imm o = new Mesh(5usize);
+  expect(o.region as usize == heapRegion() as usize, "and out of one");
+}
+
+// Nodes of a dynamic arena holding each other's keys
+struct Node['=a] {
+  pub val i64;
+  pub next Option[&'=a mut Node['=a]];
+}
+
+// n nodes allocated into the arena it is lent, each holding the key of the one
+// before it; the last made comes back
+fn chain(ar &mut DynArena['=a], n i64) Option[&'=a mut Node['=a]] {
+  mut head Option[&'=a mut Node['=a]] = None[&'=a mut Node['=a]];
+  mut i = 0i64;
+  while i < n {
+    head = Some(new ar[Node](i, head));
+    i = i + 1;
+  }
+  head;
+}
+
+fn total(ar &DynArena['=a], first Option[&'=a mut Node['=a]]) i64 {
+  mut sum = 0i64;
+  mut at = first;
+  while {
+    match at {
+      case imm s Some[&'=a mut Node['=a]] {
+        sum = sum + ar[s].val;
+        at = ar[s].next;
+      }
+      else { break; }
+    }
+  }
+  sum;
+}
+
+fn keys() {
+  mut d = DynArena.empty();
+  imm k = new d[Pt](3, 4);
+  expectInt(d[k].sum(), 7, "new d[Pt](3, 4) answers a key, read through the arena");
+  d[k].x = 30;
+  expectInt(d[k].x, 30, "and written through it");
+  imm j = new d[mut, Pt](5, 6);
+  expectInt(d[j].y, 6, "the permission may be written here too");
+  imm first = chain(&mut d, 4);
+  expectInt(total(&d, first), 6, "a chain of four nodes built with new ar[Node](i, head) sums 3 + 2 + 1 + 0");
+}
+
+fn main() {
+  plain();
+  log = 0;
+  dies();
+  expectInt(log, 321, "the values with a 'final' died newest first");
+  listInArena();
+  composition();
+  keys();
+  done();
+}

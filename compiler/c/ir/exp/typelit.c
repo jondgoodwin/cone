@@ -723,6 +723,77 @@ INode *typeLitNewFilled(TypeCheckState *pstate, FnCallNode **nodep, RefNode *ref
     return (INode*)*nodep;
 }
 
+// Is this name-resolved head a VALUE: a variable, or a field reached through
+// one ('a', 'self.arena')? A module's name, or a type's, is not.
+static int typeLitIsValueHead(INode *head) {
+    if (isNameUseNode(head)) {
+        INode *dcl = nameUseGetDcl((NameUseNode*)head);
+        return dcl != NULL && dcl->tag == VarDclTag;
+    }
+    if (head->tag == FnCallTag) {
+        FnCallNode *path = (FnCallNode*)head;
+        return path->methfld != NULL && path->args == NULL && !(path->flags & (FlagIndex | FlagOperator))
+            && typeLitIsValueHead(path->objfn);
+    }
+    return 0;
+}
+
+// 'new a[Node](1)', 'new a[mut, Node](1)': a construction whose head is a region
+// VALUE, an arena, then the type in brackets (WI type-expressions-gc-collections-
+// constructors, 30 Sep). It means 'a.alloc(new Node(1))': the value is made as
+// any is and moved into the arena, and the construction is whatever that arena's
+// 'alloc' answers -- a scoped '&mut Node' of an Arena, a key '&'=a mut Node' of a
+// DynArena. The permission may be left out or written 'mut', which is what
+// 'alloc' lends. The arena is not a region the value's init is handed (a type
+// declaring CarriesRegion is handed the heap's, as everywhere else), so the
+// call this lowers to is the single place that changes.
+static int typeLitNewInRegion(TypeCheckState *pstate, FnCallNode **nodep, int hasoption, INode *expectType) {
+    FnCallNode *node = *nodep;
+    if (node->objfn == NULL || node->objfn->tag != FnCallTag)
+        return 0;
+    FnCallNode *index = (FnCallNode*)node->objfn;
+    if (!(index->flags & FlagIndex) || index->methfld != NULL || index->args == NULL
+        || index->args->used == 0 || !typeLitIsValueHead(index->objfn))
+        return 0;
+    if (hasoption) {
+        errorMsgNode((INode*)node, ErrorRegionNew,
+            "'trynew' is an allocation that may fail, and an arena's 'alloc' cannot: it panics when memory runs out. Write 'new a[T](...)'.");
+        return 1;
+    }
+    INode *perm = NULL;
+    INode *type = nodesGet(index->args, 0);
+    if (index->args->used == 2) {
+        perm = type;
+        type = nodesGet(index->args, 1);
+    }
+    else if (index->args->used > 2) {
+        errorMsgNode((INode*)index, ErrorRegionNew,
+            "An allocation in an arena names the type it makes in brackets after the arena, with a permission before it if one is written: 'new a[Node](...)', 'new a[mut, Node](...)'.");
+        return 1;
+    }
+    if (perm && !(nameUseNames(perm, PermTag) && nameUseGetDcl((NameUseNode*)perm) == (INode*)mutPerm)) {
+        errorMsgNode(perm, ErrorRegionNew,
+            "An arena lends what it allocates mutably, so the permission of 'new a[perm, T](...)' is 'mut', or left out.");
+        return 1;
+    }
+    if (nameUseNames(type, PermTag)) {
+        errorMsgNode(type, ErrorRegionNew,
+            "An allocation in an arena names the type it makes after the arena: 'new a[Node](...)'.");
+        return 1;
+    }
+    // 'a.alloc(new T(args))'
+    FnCallNode *ctor = newFnCallLower((INode*)node, type, 0);
+    ctor->flags |= FlagNew;
+    ctor->args = node->args;
+    FnCallNode *call = newFnCallLower((INode*)node, index->objfn, 1);
+    call->methfld = (INode*)newMemberUseNode(allocMethodName);
+    inodeLexCopy(call->methfld, (INode*)node);
+    nodesAdd(&call->args, (INode*)ctor);
+    *((INode**)nodep) = (INode*)call;
+    inodeTypeCheck(pstate, (INode**)nodep, expectType);
+    return 1;
+}
+
 // typeLitNewCheck, its arguments already checked when 'argschecked' (an
 // allocation's one argument, checked to see whether it is a finished value)
 static void typeLitNewChecked(TypeCheckState *pstate, FnCallNode **nodep, int argschecked, INode *expectType) {
@@ -737,6 +808,10 @@ static void typeLitNewChecked(TypeCheckState *pstate, FnCallNode **nodep, int ar
         option = node->methfld;
         node->methfld = NULL;
     }
+
+    // 'new a[Node](1)': the head is an arena, a value
+    if (typeLitNewInRegion(pstate, nodep, option != NULL, expectType))
+        return;
 
     if (!isTypeNode(node->objfn)) {
         // 'new Plain[mut, i32](5)': a permission given to what is no region,

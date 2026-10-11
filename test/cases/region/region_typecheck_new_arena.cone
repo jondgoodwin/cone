@@ -1,0 +1,44 @@
+// An allocation that names an arena, 'new a[Pt](1, 2)', has the type in its
+// brackets, and before it, if one is written, the permission 'mut' (all an
+// arena lends). Four ways to write it that cannot be read as that: a 'trynew'
+// (an arena's 'alloc' does not fail: it panics when memory runs out), a
+// permission an arena does not lend, a permission with no type after it, and
+// more than a permission and a type. A value that is no arena has no 'alloc'
+// to call, which the call says. The good forms stand beside them.
+
+mod region_typecheck_new_arena;
+
+import arena use *;
+
+struct Pt { pub x i64; pub y i64; }
+
+fn good() {
+  mut a = Arena.empty();
+  imm p = new a[Pt](1, 2);
+  imm q = new a[mut, Pt](3, 4);
+}
+
+fn tried() {
+  mut a = Arena.empty();
+  imm p = trynew a[Pt](1, 2);       //~ ErrorRegionNew:11 "cannot"
+}
+
+fn immPerm() {
+  mut a = Arena.empty();
+  imm p = new a[imm, Pt](1, 2);     //~ ErrorRegionNew:17 "mutably"
+}
+
+fn permOnly() {
+  mut a = Arena.empty();
+  imm p = new a[mut](1, 2);         //~ ErrorRegionNew:17 "after the arena"
+}
+
+fn notAnArena() {
+  imm n = 5i64;
+  imm p = new n[Pt](1, 2);          //~ ErrorNoMbr:11 "alloc"
+}
+
+fn tooMany() {
+  mut a = Arena.empty();
+  imm p = new a[mut, Pt, Pt](1, 2);  //~ ErrorRegionNew:16 "brackets"
+}

@@ -592,7 +592,8 @@ Visual Studio projects stay at the root.
   generic ones taken as virtual references, `&<mut Stack[i64]`, since a generic
   trait's instance is not a constraint yet; `Collection` is also a constraint); `arena` is an
   `Arena`, a dynamic region whose values are finalized, newest first, and
-  freed together when it dies, and which, held in a local, is the scratch
+  freed together when it dies (allocated into by `a.alloc(v)`, or `new a[T](...)`,
+  which the compiler reads as that call), and which, held in a local, is the scratch
   arena, and `DynArena['=a]`, the invariant-lifetime dynamic arena, whose
   `alloc` hands out keys, `&'=a mut T`, reached only through it, `ar[key]`;
   `rcweak` is `Rcw`, a region ref counting strong owners and weak

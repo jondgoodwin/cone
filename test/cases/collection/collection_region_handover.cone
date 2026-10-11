@@ -10,6 +10,9 @@
 //   that is not the heap's;
 // - a Probe inside a struct, in a list, and inside an owner is constructed by
 //   the same 'new Probe(...)', so it too is handed the heap's;
+// - a Shape, made of a Probe, declares it too and passes its own region to the
+//   Probe's construction: 'new Shape(11, other)' has 'other' in both, and
+//   'new Shape(12)' the heap's in both;
 // - the collections declare it themselves, so a List is 32 bytes, three words
 //   and its region (24 before it kept one), and a String, which is a List and
 //   nothing else, is 32 too. (The collections package's own tests, regions,
@@ -30,6 +33,17 @@ struct Probe is CarriesRegion {
 
 struct Holder {
   pub probe Probe;
+}
+
+// A type that is made of another that carries a region declares the trait too,
+// and passes the region it was handed on: the part it holds is made in it
+struct Shape is CarriesRegion {
+  pub probe Probe;
+  pub region *MemRegion;
+
+  pub fn init(self &new, n i64, region *MemRegion) {
+    *self = new Shape(probe: new Probe(n, region), region: region);
+  }
 }
 
 // A region that is not the heap's: three functions that give nothing, since
@@ -68,6 +82,13 @@ fn main() i32 {
   line("a Probe in a list is handed the heap's", isHeap(ps[0usize].region) and ps[0usize].n == 8i64);
   imm rc = new Rc[Probe](9i64);
   line("a Probe in an Rc is handed the heap's", isHeap(rc.region) and rc.n == 9i64);
+
+  imm s = new Shape(11i64, o);
+  line("a Shape passes its region on to the Probe it holds", s.region as usize == o as usize
+    and s.probe.region as usize == o as usize and s.probe.n == 11i64);
+  imm t = new Shape(12i64);
+  line("a Shape that names none, and so its Probe, are handed the heap's", isHeap(t.region)
+    and isHeap(t.probe.region) and t.probe.n == 12i64);
 
   printStr("a Probe is ");
   printUInt(u64.from(mem.sizeof[Probe]()));
