@@ -1172,8 +1172,9 @@ region it is handed when it is made, and keeps (a growable collection; the
 provisional). The region is core's `MemRegion`, three function references
 (allocate, resize, release) in a struct's first field, held as a `*MemRegion`;
 `heapRegion()`, core's, is the program's one heap region, a static object that
-conestd's `heapregion.c` defines with the C library's `malloc`, `realloc` and
-`free` as its functions. The compiler knows `MemRegion` and `heapRegion` by
+conestd's `heapregion.c` defines with functions that forward to the raw blocks
+layer ([What a region is](module.md): core's `RawBlocks`, which is the C
+library's `malloc`, `realloc` and `free` today). The compiler knows `MemRegion` and `heapRegion` by
 their names and their package (`coreIsRegion`, `heapRegionDclNameRes`,
 `ir/stmt/intrinsic.c`, as it knows `sliceEq`), and no collection by name.
 

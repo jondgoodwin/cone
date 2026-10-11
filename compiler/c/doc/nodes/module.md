@@ -924,9 +924,19 @@ core, "A module imports another once"); the IR dump reads
 **`core` imports `libc`, and a C-named module gets no prelude** [Jon 26 Sep:
 core imports libc, so that libc is the one declaration of the C allocator and
 the compiler is hardwired to nothing but core; the no-prelude rule is Penny's,
-under his authorisation]. The regions' `alloc` calls `libc.malloc`, and
-`import libc pub use malloc;` keeps `malloc` a bare name of every module, as a
-region's own allocator writes it. `libc` itself is a private name of `core`, so
+under his authorisation]. The regions' `alloc` and `free` call `RawBlocks`, core's
+raw blocks layer: three inline functions (`alloc`, `resize`, `release`) over three
+private `extern` declarations bound by `@c` to `cone_rawBlockAlloc`,
+`cone_rawBlockResize` and `cone_rawBlockRelease`, which conestd's `rawblocks.cone`
+defines as `libc.malloc`, `libc.realloc` and `libc.free` and nothing more. It is
+the one place that names where the heap's bytes come from: the heap region
+(`heapregion.c`), `So`, `Rc`, `Arc`, `Rcw`, a collection's `freeze`, an arena's
+blocks and an actor's chunks and large objects go through it, so an allocator
+can replace the three functions and no caller. Bookkeeping objects (mailbox
+nodes, tables, the runtime's own records) and generated code's own boxes
+(`LLVMBuildMalloc` in `genlyield.c`) still call libc. `import libc pub use
+malloc;` keeps `malloc` a bare name of every module, as a region's own allocator
+writes it. `libc` itself is a private name of `core`, so
 it reaches no program that does not import it. The import makes no loop
 because a module whose `mod` line carries `@c` takes back the star import of
 `core` it was given before its files were read (`parseDropCorelibImport`, from

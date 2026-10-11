@@ -28,13 +28,13 @@
 // when it is made. The region is a '*MemRegion', core's three functions to
 // allocate, resize and release a block, held as a collection's last field
 // ('region'), and every block comes from it and goes back to it. A construction
-// that names none is handed the heap's ('heapRegion()': 'malloc', 'realloc' and
-// 'free', a static object that is never null), so 'new List[i64]' and
+// that names none is handed the heap's ('heapRegion()': the raw blocks layer's
+// 'alloc', 'resize' and 'release', a static object that is never null), so 'new List[i64]' and
 // 'List[i64].empty()' behave as they always have. Another is passed as the
 // construction's last argument, 'new List[i64](100, r)', where 'r' is a '*MemRegion'.
 // A collection holding others hands them its own region where they are made
 // inside it (a String its List, a Set its Dict), and a block no region can own
-// -- what 'freeze' hands to a 'So', which frees it with the C library -- is
+// -- what 'freeze' hands to a 'So', which gives it back to the raw blocks layer -- is
 // copied to the heap when the region is not the heap's.
 //
 // Moving values in and out of the block is done with core's 'mem' intrinsics:
@@ -127,7 +127,8 @@ fn blockFree[T](r *MemRegion, block *T, n usize) inline {
   (r as &MemRegion).release(block as *u8, n * mem.sizeof[T]());
 }
 
-// Whether a region is the heap's, whose blocks the C library frees
+// Whether a region is the heap's, whose blocks the raw blocks layer gives back
+// (as an owner's death does)
 fn isHeap(r *MemRegion) bool inline { r as usize == heapRegion() as usize; }
 
 // -------- List --------
@@ -344,7 +345,7 @@ pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
   // never copied, and what the owner's death finalizes is each of them. A list
   // that holds nothing makes a one-byte block, since the owner of an 'Array'
   // always owns heap bytes. (A list whose region is not the heap's cannot hand
-  // its block over, since the owner frees it with the C library: the values
+  // its block over, since the owner gives it back to the raw blocks layer: the values
   // are moved into a block of the heap's, and the old one goes back.)
   pub fn freeze(self) So[Array[T]] {
     mut me = self;
@@ -353,10 +354,10 @@ pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
     imm keep = if bytes == 0usize {1usize;} else {bytes;};
     mut p = null as *T;
     if isHeap(me.region) {
-      p = libc.realloc(me.ptr as *u8, keep) as *T;
+      p = RawBlocks.resize(me.ptr as *u8, me.cap * mem.sizeof[T](), keep, mem.alignof[T]()) as *T;
     }
     else {
-      p = libc.malloc(keep) as *T;
+      p = RawBlocks.alloc(keep, mem.alignof[T]()) as *T;
       if n > 0usize { mem.moveRaw(p, me.ptr, n); }
       blockFree[T](me.region, me.ptr, me.cap);
     }
@@ -449,7 +450,7 @@ pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
   // at the call).
   pub fn sortBy[F fn(a &T, b &T) i32](self &mut, order &F) {
     if used < 2usize { return; }
-    imm spare = libc.malloc(used * mem.sizeof[T]()) as *T;
+    imm spare = RawBlocks.alloc(used * mem.sizeof[T](), mem.alignof[T]()) as *T;
     // Each pass merges runs of 'width' values from one block into the other
     mut from = ptr;
     mut to = spare;
@@ -484,7 +485,7 @@ pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
       width = width * 2usize;
     }
     if from != ptr { mem.moveRaw(ptr, from, used); }
-    libc.free(spare as *u8);
+    RawBlocks.release(spare as *u8);
   }
 
   fn finalizeAll(self &mut) {
@@ -927,10 +928,10 @@ pub struct String is ShapeChanging, Hash, CarriesRegion {
     imm n = me.buf.used;
     mut p = null as *u8;
     if isHeap(me.buf.region) {
-      p = libc.realloc(me.buf.ptr as *u8, n + 1usize);
+      p = RawBlocks.resize(me.buf.ptr as *u8, me.buf.cap, n + 1usize, 1usize);
     }
     else {
-      p = libc.malloc(n + 1usize);
+      p = RawBlocks.alloc(n + 1usize, 1usize);
       if n > 0usize { mem.moveRaw(p, me.buf.ptr, n); }
       blockFree[u8](me.buf.region, me.buf.ptr, me.buf.cap);
     }

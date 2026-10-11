@@ -96,7 +96,8 @@
 // collection holds one). What a collection moves is the collection's own words
 // (a List's four), a region object like any, which keep the block's address and
 // the region's address, neither of which a collection changes. Resize is
-// 'realloc', so an outgrown block goes back at once, not at the next collection.
+// the raw blocks layer's, so an outgrown block goes back at once, not at the next
+// collection.
 // Because every collection has a 'final', one nobody reaches is finalized by the
 // collector as any dead object is, and that gives its block back; at the actor's
 // death, the same for every one still alive.
@@ -299,7 +300,7 @@ pub struct ActorRegion {
   // ---- A collection's block: the region's allocate, resize and release ----
 
   // A block of 'bytes' bytes for a collection made in the region. Not in the
-  // chunks, and never moved (A COLLECTION'S BLOCK, above): malloc's, counted
+  // chunks, and never moved (A COLLECTION'S BLOCK, above): the raw blocks layer's, counted
   // against the bytes allocated since the last collection
   fn blockNew(self &mut, bytes usize, align usize) *u8 {
     if align > 16usize {
@@ -309,7 +310,7 @@ pub struct ActorRegion {
     if n == 0usize {
       n = 1usize;
     }
-    imm p = libc.malloc(n);
+    imm p = RawBlocks.alloc(n, align);
     if p == null {
       return null;
     }
@@ -318,7 +319,7 @@ pub struct ActorRegion {
     p;
   }
 
-  // The block, 'old' bytes long, made 'new': realloc's, in place or not. A
+  // The block, 'old' bytes long, made 'new': in place or not. A
   // growth is counted as allocated, as much as it grew
   fn blockGrow(self &mut, block *u8, oldBytes usize, newBytes usize, align usize) *u8 {
     if block == null {
@@ -328,7 +329,7 @@ pub struct ActorRegion {
     if n == 0usize {
       n = 1usize;
     }
-    imm p = libc.realloc(block, n);
+    imm p = RawBlocks.resize(block, oldBytes, n, align);
     if p == null {
       return null;
     }
@@ -346,7 +347,7 @@ pub struct ActorRegion {
     if block == null {
       return;
     }
-    libc.free(block);
+    RawBlocks.release(block);
     if self.blocks >= bytes {
       self.blocks = self.blocks - bytes;
     } else {
@@ -395,7 +396,7 @@ pub struct ActorRegion {
     if size < need {
       size = ActorRegion.roundUp(need, 4096usize);
     }
-    imm c = libc.malloc(size) as *Chunk;
+    imm c = RawBlocks.alloc(size, 16usize) as *Chunk;
     if c == null {
       return null;
     }
@@ -426,7 +427,7 @@ pub struct ActorRegion {
     mut flags = 0u32;
     mut link = 0usize;
     if bytes > largeBytes {
-      p = libc.malloc(bytes);
+      p = RawBlocks.alloc(bytes, 16usize);
       flags = flagLarge;
       link = self.large;
     } else {
@@ -667,7 +668,7 @@ pub struct ActorRegion {
         } else {
           (prev as &mut ActorGc).link = next;
         }
-        libc.free(at as *u8);
+        RawBlocks.release(at as *u8);
         self.nfreed = self.nfreed + 1usize;
       } else {
         h.flags = h.flags & ~flagMarked;
@@ -681,7 +682,7 @@ pub struct ActorRegion {
     mut c = oldChunks;
     while c != null {
       imm next = (c as &Chunk).next;
-      libc.free(c as *u8);
+      RawBlocks.release(c as *u8);
       c = next;
     }
     self.ncollections = self.ncollections + 1usize;
@@ -725,13 +726,13 @@ pub struct ActorRegion {
     mut c = self.first;
     while c != null {
       imm next = (c as &Chunk).next;
-      libc.free(c as *u8);
+      RawBlocks.release(c as *u8);
       c = next;
     }
     mut at = self.large;
     while at != 0usize {
       imm next = (at as &ActorGc).link;
-      libc.free(at as *u8);
+      RawBlocks.release(at as *u8);
       at = next;
     }
     libc.free(self.finals as *u8);

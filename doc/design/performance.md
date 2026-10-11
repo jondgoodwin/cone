@@ -149,7 +149,7 @@ them.
 | **a two-variant enum with a pointer payload** | no struct is emitted at all — the value *is* the pointer, null is the empty variant |
 | **a payload-free enum's `==`** | one integer compare: every variant is empty, so the value *is* the tag |
 | **zero-size types** | `void` and an empty struct are `%void = {}` |
-| **`inline` functions** | inlined by the generator itself — no call, no symbol. This is how a region's `alloc` becomes a direct `malloc` at each allocation site |
+| **`inline` functions** | inlined by the generator itself — no call, no symbol. This is how a region's `alloc` becomes a direct call of the raw blocks layer's allocate (C's `malloc` behind it) at each allocation site |
 
 The first four are one claim restated: **the static safety apparatus is
 free.** That is the bet the language is making, and it is the one worth
@@ -200,7 +200,8 @@ type argument is built once.
 
 **Explicit allocation lets the allocator inline.** `alloc` is an ordinary
 `inline` method on a region struct, so the generator splices it in and the
-emitted code calls `malloc` directly with a constant size.
+emitted code calls the raw blocks layer's allocate (C's `malloc` behind it)
+directly with a constant size.
 
 **Values are memory-backed, then promoted.** Every local and parameter is an
 alloca with a store — because Cone lets you assign to a parameter and borrow
