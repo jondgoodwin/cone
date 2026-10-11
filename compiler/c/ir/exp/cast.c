@@ -209,9 +209,10 @@ static void castPatternAdoptRef(CastNode *node) {
     // A trait on an enum's reference is a virtual reference built from the variant [topic 7]:
     // only a borrow of the enum can lend one. (Another matched reference keeps the bare name,
     // which castTraitBind refuses where the pattern binds.)
-    if (castMatchedEnum(node->exp) != NULL) {
-        // (a generic trait's instance, 'Boxed[i32]', is named through its callee)
-        INode *named = itypeGetTypeDcl(isname ? typ : ((FnCallNode*)typ)->objfn);
+    // (a generic trait's instance, 'Boxed[i32]', is named through its callee)
+    INode *root = isname ? typ : ((FnCallNode*)typ)->objfn;
+    if (root != NULL && isNameUseNode(root) && castMatchedEnum(node->exp) != NULL) {
+        INode *named = itypeGetTypeDcl(root);
         if (named->tag == StructTag && (named->flags & TraitType) && !(named->flags & EnumType)) {
             if (fromtype->tag == RefTag && itypeGetTypeDcl(from->region) == borrowRef)
                 node->typ = (INode*)newRefNodeFull(VirtRefTag, typ, from->region, from->perm, typ);
