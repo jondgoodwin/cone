@@ -1,9 +1,11 @@
 // What a borrowed reference held in a field still lends, by the reference its
 // holder is reached through (refperm.html, "Viewpoint Adaptation"): through a
-// '&' it reads and lends '&'; through a '&mut' or a '&uni', or from a local
+// '&' a '&mut' field reads and lends '&'; through a '&mut', or from a local
 // struct holding it by value, it writes and lends '&mut' as its own permission
-// says. A read-only method may read through a '&mut' it holds; one that changes
-// it takes 'self &mut'. The numbers show each call reached the value.
+// says. A '&uni' field is seen only through a '&uni' holder or an owner or a local
+// struct holding it by value (ref_typecheck_uni_field_shared holds what a '&' or a
+// '&mut' refuses). A read-only method may read through a '&mut' it holds; one that
+// changes it takes 'self &mut'. The numbers show each call reached the value.
 // ref_typecheck_viewpoint_borrowed holds what a '&' refuses.
 
 mod ref_viewpoint_borrowed;
@@ -38,13 +40,13 @@ fn show(label &str, n i64) {
 fn readAge(car &Car) i64 { car.owner.age; }
 fn lookAge(car &Car) i64 { car.owner.look(); }
 fn readFar(fleet &Fleet) i64 { fleet.car.owner.age; }
-fn readUni(cell &Cell) i64 { cell.holder.look(); }
+fn readUni(cell &uni Cell) i64 { cell.holder.look(); }
 
 fn setAge(car &mut Car) { car.owner.age = 18; }
 fn birth(car &mut Car) { car.owner.birthday(); }
 fn setFar(fleet &mut Fleet) { fleet.car.owner.age = 40; }
-fn setUni(cell &mut Cell) { cell.holder.age = 7; }
-fn birthUni(cell &mut Cell) { cell.holder.birthday(); }
+fn setUni(cell &uni Cell) { cell.holder.age = 7; }
+fn birthUni(cell &uni Cell) { cell.holder.birthday(); }
 
 // 'rollback' takes 'self &mut' and pushes through the list it holds: the list
 // of capacity one, holding Item(42), then also Item(0); the first item still 42
@@ -55,14 +57,14 @@ fn guarded(l &mut List[Item]) i64 {
   i64.from(g.peek()) * 100 + i64.from(n0);
 }
 
-// The '&uni' field read through a '&' (5), written through a '&mut' holder (7), and a
+// The '&uni' field read through a '&uni' holder (5), written through one (7), and a
 // method called through it (8): 5, 7, 8 and the person's age ends at 8
 fn uniWorld(q &uni Person) i64 {
-  mut cell = new Cell(q);
-  imm before = readUni(&cell);
-  setUni(&mut cell);
+  imm cell = new So[Cell](q);
+  imm before = readUni(cell);
+  setUni(cell);
   imm mid = cell.holder.age;
-  birthUni(&mut cell);
+  birthUni(cell);
   before * 10000 + mid * 100 + cell.holder.age;
 }
 

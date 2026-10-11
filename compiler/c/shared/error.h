@@ -677,6 +677,9 @@ enum ErrorCode {
     // A 'parallel each' over a zip (ir/exp/pareach.c)
     ErrorParSources = 1480,     // The sources of a zip a 'parallel each' walks lend from the same buffer (or from two '&mut' parameters, which may be one) while the loop changes what they lend: two passes could write the same part at once
 
+    // A '&uni' field seen through a shared path (ir/exp/fncall.c)
+    ErrorUniShared = 1490,      // A field that is a '&uni' reference, read, lent or written through a '&', a '&mut', a virtual reference or an owner that is not 'uni' on the way to it: it could be another name for the struct holding the field, and the 'uni' reference would be reached by both
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

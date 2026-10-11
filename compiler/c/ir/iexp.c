@@ -637,6 +637,37 @@ int iexpPathThroughBorrow(INode *lval) {
     }
 }
 
+// The first reference, from the place outward, that the place 'lval' is reached
+// through and that is not 'uni': a borrow of any other permission, a slice or a
+// virtual reference likewise, an owner whose permission is not 'uni' ('Rc[mut,
+// T]'). Its type is answered, NULL where every link is 'uni' or the place is
+// reached through none (a variable, a field of a value held by value). A 'uni'
+// reference is the one name for what it points at; a '&uni' field is seen
+// only through such links (refperm.html, "Viewpoint Adaptation"). A lock
+// permission is not asked: its value is reached only by the lock's guard, a
+// '&mut' that is asked.
+INode *iexpPathNonUniLink(INode *lval) {
+    for (;;) {
+        INode *obj;
+        if (lval->tag == FldAccessTag || lval->tag == ArrIndexTag)
+            obj = ((FnCallNode *)lval)->objfn;
+        else if (lval->tag == DerefTag)
+            obj = ((StarNode *)lval)->vtexp;
+        else
+            return NULL;
+        if (!isExpNode(obj))
+            return NULL;
+        INode *objtype = iexpGetTypeDcl(obj);
+        if (objtype->tag == RefTag || objtype->tag == ArrayRefTag || objtype->tag == VirtRefTag) {
+            INode *perm = itypeGetTypeDcl(((RefNode*)objtype)->perm);
+            if (perm->tag == PermTag && !permIsLock(perm)
+                && perm != (INode*)uniPerm && perm != (INode*)newPerm)
+                return objtype;
+        }
+        lval = obj;
+    }
+}
+
 // Does every reference the place 'lval' is reached through grant write? A
 // reference that only reads ('&', '&imm', a read-only virtual reference or slice,
 // a 'So[imm, T]') on the way makes the place one nothing is written through,
@@ -670,8 +701,9 @@ int iexpReachWrites(INode *lval) {
 // at, 'refperm' being the reference's own. The reference's permission is what it
 // grants its holder; a place reached through a borrow grants only what that borrow
 // let it be held with, so the permission is the intersection of all those along
-// the path (refperm.html, "Viewpoint Adaptation"): a '&mut' or '&uni' held in a
-// place reached through a '&' (or a '&imm') lends '&' and reads, no more. A place
+// the path (refperm.html, "Viewpoint Adaptation"): a '&mut' held in a place
+// reached through a '&' (or a '&imm') lends '&' and reads, no more (a '&uni' field
+// is not seen through one at all: fnCallUniFieldSeen). A place
 // not reached through a borrow (a variable, or a field of a value held by value:
 // it holds the reference as its own), one reached through references that all
 // grant write, and a reference that already grants no write keep the reference's.
