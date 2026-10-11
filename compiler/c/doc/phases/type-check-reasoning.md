@@ -285,8 +285,12 @@ value (`ifBlockJumps`), so neither has a say in the type in common.
 
 `ifTypeCheck` carries three obligations a block does not: each condition is
 coerced to `bool` (which is where implicit `.isTrue` reaches a conditional), a
-closed-variant `is` match that covers everything is rewritten into the `else`
+closed-variant `is` chain that covers everything is rewritten into the `else`
 by `ifExhaustCheck`, and a value-producing `if` with no `else` is `ErrorNoElse`.
+A `match`'s `if` is judged instead by `ifMatchCover`, once all its conditions are
+checked: its cases must cover the enum's variants, the bool's two values and the
+combinations of its columns, or it ends in `else` (`ErrorMatchNotExhaustive`), and a
+case or `else` that can never run is `ErrorMatchUnreachable`.
 
 `iexpMultiInfer` does three different things depending on the expectation:
 

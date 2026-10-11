@@ -625,7 +625,7 @@ instance's `derived` is filled with every cloned variant before the enum or any
 variant is type checked**, so what a variant's body asks of the whole set sees
 all of it, whether the variant is reached in turn or first from the enum's own
 check: a match there on a value of the enum is exhaustive over every variant
-(`ifExhaustCheck`), a bare pattern name finds its sibling (`castPatternBind`),
+(`ifMatchCover`), a bare pattern name finds its sibling (`castPatternBind`),
 and a variant holding its own enum by value is refused as one still being laid
 out (`itypeVariantPending`). The instance is checked through
 `structTypeCheckEnumInstance`, whose layout lays out every variant with it —
