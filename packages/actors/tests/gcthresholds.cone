@@ -1,0 +1,92 @@
+// When the collector runs, with stress off: after a message, when the bytes
+// allocated since the last collection exceed the bytes that survived it, and
+// not under the floor (set here to 1000 bytes). A node is 48 bytes: a 24-byte
+// header, then an i64 and an optional reference (16), rounded to a multiple of
+// 16. Every number is worked out by hand:
+//
+//   keep 10        480 allocated, floor 1000: none
+//   churn 12       480 + 576 = 1056 > 1000: collection 1; 10 nodes survive, 480
+//   churn 15       720 allocated; 720 is not over max(1000, 480): none
+//   churn 10       720 + 480 = 1200 > 1000: collection 2; 480 survive
+//   keep 30 more   1440 allocated > 1000: collection 3; the 40 kept survive, 1920
+//   churn 30       1440 allocated; not over max(1000, 1920): none
+//   churn 11       1440 + 528 = 1968 > 1920: collection 4; 1920 survive
+//
+// So a region that keeps a lot lets its garbage grow as far as what it keeps
+// before it collects, and a small one is collected no oftener than the floor.
+
+mod gcthresholds;
+
+import actors;
+import stdio use *;
+
+struct Node {
+  pub n i64;
+  pub next Option[ActorGc[mut, Node]];
+}
+alias NodeRef = ActorGc[mut, Node];
+
+fn line(label &str, n i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+actor Keeper {
+  head Option[NodeRef];
+
+  fn init(self &new) {
+    *self = new Self(None[NodeRef]);
+  }
+
+  pub async do keep(self, count i64) {
+    mut i = 0i64;
+    while i < count {
+      head = Some[NodeRef](new self[Node](i, head));
+      i = i + 1;
+    }
+  }
+
+  pub async do churn(self, count i64) {
+    mut i = 0i64;
+    while i < count {
+      imm junk = new self[Node](i, None[NodeRef]);
+      i = i + 1;
+    }
+  }
+
+  pub async do report(self, tag i64) {
+    imm st = self.allocRegion().stats();
+    printStr("after ");
+    printInt(tag);
+    printStr(": collections ");
+    printInt(i64.from(st.collections));
+    printStr(", allocated ");
+    printInt(i64.from(st.allocated));
+    printStr(", survived ");
+    printInt(i64.from(st.survived));
+    printStr("\n");
+  }
+}
+
+fn main() {
+  actors.setFloor(1000usize);
+  {
+    imm k = new Keeper();
+    k.keep(10i64);
+    k.report(1i64);
+    k.churn(12i64);
+    k.report(2i64);
+    k.churn(15i64);
+    k.report(3i64);
+    k.churn(10i64);
+    k.report(4i64);
+    k.keep(30i64);
+    k.report(5i64);
+    k.churn(30i64);
+    k.report(6i64);
+    k.churn(11i64);
+    k.report(7i64);
+  }
+}

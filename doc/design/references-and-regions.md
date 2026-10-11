@@ -61,6 +61,16 @@ before their objects are freed; and, chosen by `gc.setGenerational`, Acorn's
 generational mode, whose minor collections mark and sweep only the young
 objects, the barrier on between collections (keyed on the value, it keeps
 every young object stored into the heap through the next minor collection).
+That collector is single threaded and for use outside actors. An actor has a
+collector of its own, the `actors` package's region `ActorGc`, which declares
+`ActorLocal` beside `Traced` (its references stay in one actor, so they may be
+made and held in an actor's methods where any other traced region's are
+refused): a copying collector run between the actor's messages, when the roots
+are the actor's state and the records its `await`s have parked, with a non-moving
+space for large objects and a final list for the values that need finalizing; no
+barrier and no stack scan. `new self[T](...)` allocates in it: the actor's state
+has an `allocRegion` method giving it, and a value whose type has one *leads to* a
+region, so `new x[T](...)` is `x.allocRegion().alloc(new T(...))`.
 The arena and the pool are written only as library values: the
 `arena` package's `Arena`, a dynamic region allocated into by a call on the
 value (`a.alloc(v)`, or `new a[T](...)`, which is that call: the arena value in

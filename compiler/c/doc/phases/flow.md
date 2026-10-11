@@ -1601,9 +1601,10 @@ index of the chain is built, below), in the places of a compound assignment
 storing its place's old value, and in an array's contents filled in memory;
 and among the entries one `<-` appends that repeat, fill or loop
 (`pwSeamVar`), whose receiver the rewrite borrows once, into a temporary that
-is no holder, for all of them. So is a seam whose record
-would hold a traced reference (`awaitRecordTraced`): the record waits in its
-actor's pending table, off the stack, which the collector does not trace.
+is no holder, for all of them. (A seam whose record holds a traced reference is
+built: the record waits in its actor's pending table, off the stack, and the
+actor's own collector reaches it through the record's trace function
+([Generation](generation.md), "A traced record").)
 
 **Where a seam cuts inside a statement**, the rest of the statement runs after
 it: `await e` is `t = e; await t`, and what is still to do once `t` is made is
@@ -1813,7 +1814,7 @@ Everything else about permissions is type check's: `permMatches` in
 | `ErrorMoveField` | `flowRefuseMoveField` | among the rest, a move out of a generator's parameter, a field of the value it is |
 | `ErrorAwaitLeftCall` | `loanSeamFlight`; `awaitWalk`, from `awaitSplitOrReport` | a borrow, or a place's base or a swap's other side, written to the left of an `await` in its statement and used after it, made by a call or a temporary: only a plain path is reached again after the seam |
 | `ErrorAwaitNotFuture` | `awaitReportSeams`, from `awaitSplitOrReport` | an `await` every seam rule accepted, in a behaviour flow found no error in, on something that waits for no answer -- not a behaviour's reply, a future or an operation (without `--await-direct`): refused, the message naming what its seam would end, give back, carry and leave |
-| `ErrorUnbuiltAwait` | `awaitReportUnbuilt`, `awaitReportIn` and `awaitRecordTraced`, from `awaitSplitOrReport`; `pwSeamVar` | in a behaviour that is split, an `await` standing where the split is not built (an index whose place's base is an expression holding a seam, the entries of one `<-` that repeat or fill a value, an array's contents filled in memory), or a seam whose record would hold a traced reference |
+| `ErrorUnbuiltAwait` | `awaitReportUnbuilt` and `awaitReportIn`, from `awaitSplitOrReport`; `pwSeamVar` | in a behaviour that is split, an `await` standing where the split is not built (an index whose place's base is an expression holding a seam, the entries of one `<-` that repeat or fill a value, an array's contents filled in memory) |
 
 A value an array's contents or `n of x` repeat is evaluated once per element,
 so the ordinary move rule judges it: the loop `n of x` lowers to is walked as
@@ -1946,7 +1947,7 @@ droppable noted as holding nothing is never finalized.
 | `ir/flowpath.c` | `pwLockPoint`, `pwLockApply`, `pwLockPos` | the points where a guard might give its lock back, a mark on each holder of its borrow; the points never fired made statements (`flowLockGive`, a `DropFlagNode` flagged `FlagLockGive`) |
 | `ir/exp/yield.c` | `yieldGenNew`, `yieldGenOf`, `yieldSplitRegister`, `yieldTypeCheck` | the generators made, each with its `next`, its struct and its seams, numbered once the function is walked; a `yield` type checked against what `next` gives |
 | `ir/exp/await.c` | `awaitIsPath`, `awaitReReached`, `awaitOrder`, `awaitChainLevels`, `awaitLeftCallMsg` | where a seam cuts inside a statement ("A seam"): what is a plain path, reached again after the seam; which operands that makes after the last one holding a seam; the refusal of what a call made |
-| | `awaitSplitOrReport`, `awaitReportUnbuilt`, `awaitRecordTraced` | the seams of a function flow accepted: a behaviour's split where each awaits a behaviour returning a value, or under `--await-direct` (numbered, each lock's guard marked `VarSeamHeld`, the function recorded for generation, `awaitSplitOf`), unless one stands where the split is not built (`awaitWalk`, `awaitReportIn`) or a seam's record would hold a traced reference; otherwise each reported not built with what it would end, give back, carry (in the order it would die) and leave |
+| | `awaitSplitOrReport`, `awaitReportUnbuilt` | the seams of a function flow accepted: a behaviour's split where each awaits a behaviour returning a value, or under `--await-direct` (numbered, each lock's guard marked `VarSeamHeld`, the function recorded for generation, `awaitSplitOf`), unless one stands where the split is not built (`awaitWalk`, `awaitReportIn`); otherwise each reported not built with what it would end, give back, carry (in the order it would die) and leave |
 | | `loanNearApart`, `loanChosen`, `loanChosenPending`, `loanIndexedRefs`, `loanOrigin`, `loanMemory` | GPU targets: whether two paths' values point at different places; a choice reported at once, or pending on a holder; a run-time index of references refused; where each choice points, for the message |
 | `ir/stmt/module.c` | `modInitOf`, `modInitFlowBegin`, `modInitFlowEnd` | round a module's `init` only: its module's globals without a value start the pass uninitialized, as locals, so `init` assigns each once and reads none first; one never assigned is `ErrorGlobalUninit`. [module](../nodes/module.md), "Init and final" |
 | `ir/shapeinfer.c` | `shapeChanging`, `siSettle`, `siInferStruct`, `siMethod` | whether a type changes shape: declared, or found from its methods (a writable `self` method that writes storage, one that returns a borrow); the answer cached on `StructNode.shapeinf` |

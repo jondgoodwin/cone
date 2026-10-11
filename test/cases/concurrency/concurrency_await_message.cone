@@ -4,9 +4,6 @@
 //   behaviour sends no reply, since whether one is sent is its signature's to
 //   say, and a caller that needs to know it finished awaits one that declares
 //   a return type. Through another actor's handle and through 'self' alike.
-// - A record that would hold a traced reference: a continuation waits in
-//   the actor's pending table, off the stack, which the collector does not
-//   trace yet (ErrorUnbuiltAwait at the 'await').
 // - What a behaviour returns goes back to the actor awaiting it, on its
 //   thread: it must be Sendable (ErrorNotSendable at the return type).
 // - 'selfactor', the actor's own handle, stands in an actor's methods, its
@@ -22,9 +19,6 @@
 mod concurrency_await_message;
 
 import actors;
-import collector;
-
-struct Cell {pub n u64;}
 
 actor Peer {
   pub async do ping(self) {}
@@ -57,12 +51,6 @@ actor Page {
 
   pub async do calls(self) {
     self.load();            // a send: no seam here
-  }
-
-  pub async do traced(self) {
-    imm g = new Gc[mut, Cell](1u64);    //~ ErrorGcStopgap "cannot be used inside an actor or a parallel each yet"
-    imm v = await peer.get();   //~ ErrorUnbuiltAwait "'await' whose continuation holds a traced reference is not built: g would wait in the actor's pending table"
-    body = v + g.n;
   }
 
   fn final(self &uni) {

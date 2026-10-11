@@ -1,0 +1,152 @@
+// Large objects and chunks. A value over 4096 bytes (header included) is a
+// large object: a block of its own that no collection moves, marked in place
+// and freed when nothing reaches it. The rest are copied; the region grows by
+// chunks, the first 4 KiB, each next twice the last. Stress mode, every number
+// worked out by hand:
+//
+//   makeBig       an array of 1000 i64s (8000 bytes + a 24-byte header: large),
+//                 element 3 set to 99
+//   report 1      the sum of elements 0 and 3 = 7 + 99 = 106; 1 large object
+//   churn 50      small garbage; the collections after find the big one marked in
+//                 place: its address is the same (stayed 1), nothing freed
+//   dropBig       the big one is unreached: freed (1 freed, 0 large)
+//   grow 400      400 nodes of 48 bytes kept in a list: 19200 bytes copied into
+//                 the new chunks of a collection, 4 KiB, 8 KiB and 16 KiB: the
+//                 first holds 84 nodes (4064 bytes of room), the second 170
+//                 (8160), the third the 146 left: 3 chunks, 400 objects; the
+//                 sum of the nodes 0..399 = 79800 read after
+//   makeWide      a large object holding 600 optional references (4800 bytes), to
+//                 600 nodes numbered 1000..1599 that nothing else reaches: they
+//                 are found by scanning the large object, in place, and moved;
+//                 their sum = 600 * 1000 + (0 + .. + 599) = 779700; 1 large, and
+//                 the 400 + 600 nodes and the wide one = 1001 objects; the 1000
+//                 nodes fill four chunks (4, 8, 16 and 32 KiB: 84 + 170 + 340 + 406)
+//   churn 50      the same after more garbage and collections
+
+mod gclarge;
+
+import actors;
+import collections use *;
+import stdio use *;
+
+struct Node {
+  pub n i64;
+  pub next Option[ActorGc[mut, Node]];
+}
+alias NodeRef = ActorGc[mut, Node];
+alias Big = ActorGc[mut, Array[i64, 1000]];
+
+// A large object whose slots hold references to small ones
+struct Wide {
+  pub slots Array[Option[NodeRef], 600];
+}
+alias WideRef = ActorGc[mut, Wide];
+
+mut bigAt = 0usize;
+
+fn line(label &str, n i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+actor Keeper {
+  big Option[Big];
+  nodes List[NodeRef];
+  wide Option[WideRef];
+
+  fn init(self &new) {
+    *self = new Self(None[Big], List[NodeRef].empty(), None[WideRef]);
+  }
+
+  pub async do makeWide(self) {
+    imm w = self.allocRegion().alloc(new Wide(new Array[Option[NodeRef], 600] <- fill None[NodeRef]));
+    mut i = 0usize;
+    while i < 600usize {
+      w.slots[i] = Some[NodeRef](new self[Node](1000i64 + i64.from(i), None[NodeRef]));
+      i = i + 1usize;
+    }
+    wide = Some[WideRef](w);
+  }
+
+  pub async do makeBig(self) {
+    imm b = self.allocRegion().alloc(new Array[i64, 1000] <- fill 7i64);
+    b[3usize] = 99i64;
+    bigAt = &*b as *u8 as usize;
+    big = Some[Big](b);
+  }
+
+  pub async do churn(self, count i64) {
+    mut i = 0i64;
+    while i < count {
+      imm junk = new self[Node](i, None[NodeRef]);
+      i = i + 1;
+    }
+  }
+
+  pub async do dropBig(self) {
+    big = None[Big];
+  }
+
+  pub async do grow(self, count i64) {
+    mut i = 0i64;
+    while i < count {
+      nodes.push(new self[Node](i, None[NodeRef]));
+      i = i + 1;
+    }
+  }
+
+  pub async do report(self, tag i64) {
+    imm st = self.allocRegion().stats();
+    line("report", tag);
+    match big {
+      case imm b Some[Big] {
+        line("  elements 0 + 3", b[0usize] + b[3usize]);
+        line("  stayed", if bigAt == (&*b as *u8 as usize) {1;} else {0;});
+      }
+      else { }
+    }
+    mut sum = 0i64;
+    each v in nodes.iter() { sum = sum + v.n; }
+    line("  node sum", sum);
+    match wide {
+      case imm w Some[WideRef] {
+        mut wsum = 0i64;
+        mut i = 0usize;
+        while i < 600usize {
+          match w.slots[i] {
+            case imm s Some[NodeRef] { wsum = wsum + s.n; }
+            else { }
+          }
+          i = i + 1usize;
+        }
+        line("  wide sum", wsum);
+      }
+      else { }
+    }
+    line("  large", i64.from(st.large));
+    line("  freed", i64.from(st.freed));
+    line("  objects", i64.from(st.objects));
+    line("  chunks", i64.from(st.chunks));
+  }
+}
+
+fn main() {
+  actors.setStress(true);
+  {
+    imm k = new Keeper();
+    k.makeBig();
+    k.report(1i64);
+    k.churn(50i64);
+    k.report(2i64);
+    k.dropBig();
+    k.report(3i64);
+    k.grow(400i64);
+    k.report(4i64);
+    k.makeWide();
+    k.report(5i64);
+    k.churn(50i64);
+    k.report(6i64);
+  }
+}

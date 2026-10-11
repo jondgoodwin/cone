@@ -379,6 +379,26 @@ void regionThreadSafeUseCheck(StructNode *node) {
             &node->namesym->namestr);
 }
 
+// Is this region slot's type a traced region ref declaring 'ActorLocal'? Its
+// references stay in the one actor that made them and are collected only between
+// that actor's messages, so they may be made and held inside an actor
+// (itypeHoldsCollected), and a read-only one is Shareable (refCountsPlain).
+int regionIsActorLocal(INode *region) {
+    StructNode *strnode = regionDcl(region);
+    return strnode != NULL && structDeclaresTrait(strnode, actorLocalTrait) && regionStructIsRegionRef(strnode)
+        && structDeclaresTrait(strnode, tracedTrait);
+}
+
+// 'ActorLocal' says something only of a traced region ref
+void regionActorLocalUseCheck(StructNode *node) {
+    if (!structDeclaresTrait(node, actorLocalTrait))
+        return;
+    if (!regionIsRegionRef((INode*)node) || !structDeclaresTrait(node, tracedTrait))
+        errorMsgNode((INode*)node, ErrorActorLocalUse,
+            "Only a traced region ref may declare ActorLocal, a struct declaring 'is RegionRef, Traced, ActorLocal': it says the region's collector runs between the messages of the one actor that holds every reference into it, and %s is not a traced region ref.",
+            &node->namesym->namestr);
+}
+
 // Does the region's 'alloc' take the value type's record as well as the size?
 // Only a region whose 'alloc' asks is handed one, so a region that does not
 // ask (So, Rc) is called exactly as it would be if records did not exist
@@ -540,7 +560,9 @@ static void regionTracedJudgeRef(RefNode *node, INode *where) {
         // or say whether a value was reached already ('visit'), a collector that
         // marks while the program runs hears of stores, which a value behind an
         // owner does not make, and what is behind must itself be traceable
-        if (!itypeHoldsTraced(node->vtexp) || !itypeCannotTrace((INode*)node))
+        // (an actor's state is found by the actors runtime wherever it keeps it:
+        // the block it lives in is not a place a traced reference hides in)
+        if (!itypeHoldsTracedPlaced(node->vtexp) || !itypeCannotTrace((INode*)node))
             return;
         if (!regionCanPassTrace(node->region))
             errorMsgNode(where, ErrorTracedHeld,
@@ -588,12 +610,12 @@ static void regionTracedJudgeRef(RefNode *node, INode *where) {
 // own instantiation, once however many raw moves that body makes.
 static void regionTracedJudgeRaw(TracedPlace *place, uint32_t index) {
     FnDclNode *fndcl = (FnDclNode *)place->node;
-    if (!itypeHoldsTraced(place->type))
+    if (!itypeHoldsTracedPlaced(place->type))
         return;
     for (uint32_t i = 0; i < index; ++i) {
         TracedPlace *prior = &regionTracedPlaces[i];
         if (prior->at == TracedAtRaw && prior->where == place->where && prior->node != place->node
-            && itypeHoldsTraced(prior->type))
+            && itypeHoldsTracedPlaced(prior->type))
             return;
     }
     if (place->nested)

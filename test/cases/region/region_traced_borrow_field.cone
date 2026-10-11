@@ -1,0 +1,66 @@
+// A traced region reference read through a borrow of it. 'v.n' with 'v &Leaf',
+// 'Leaf' an alias of a traced region reference, reads through the borrow and
+// then through the reference: the compiler types the reference as it is seen
+// through a read-only borrow ('Tr[ro, ...]', a type of its own), and it is the
+// birth of that value that a collection must find. That type had no layout
+// record, so generation crashed building the birth's trace (a measured defect:
+// conec ended in an access violation on 'fn get(v &Leaf) i64 { v.n; }').
+//
+// Every shape of the read is run: a field through '&', through '&&', through a
+// struct borrowed, a method call, an element of a list borrowed, and a write
+// through '&mut', which keeps the reference's own permission.
+
+mod region_traced_borrow_field;
+
+import stdio use *;
+import libc;
+import collections;
+
+struct Tr is RegionRef, Traced {
+  pub id i64;
+
+  fn alloc(size usize) *u8 {
+    imm p = malloc(size);
+    mem.writeRaw(p as *Tr, new Tr(1));
+    p;
+  }
+  fn mark(self &uni Tr, slot *usize) {}
+}
+
+struct LeafValue {
+  pub n i64;
+  pub fn twice(self &) i64 { n * 2; }
+}
+alias Leaf = Tr[mut, LeafValue];
+
+struct Holder { pub leaf Leaf; pub k i64; }
+
+fn get(v &Leaf) i64 { v.n; }
+fn getTwice(v &Leaf) i64 { v.twice(); }
+fn getDeep(v &&Leaf) i64 { v.n; }
+fn viaHolder(h &Holder) i64 { h.leaf.n + h.k; }
+fn viaList(xs &collections.List[Leaf]) i64 { xs[1usize].n; }
+fn bump(v &mut Leaf) { v.n = v.n + 1; }
+
+fn main() {
+  imm l = new Leaf(new LeafValue(5));
+  printInt(get(&l));
+  printStr("\n");
+  printInt(getTwice(&l));
+  printStr("\n");
+  imm r = &l;
+  printInt(getDeep(&r));
+  printStr("\n");
+  imm h = new Holder(new Leaf(new LeafValue(20)), 3);
+  printInt(viaHolder(&h));
+  printStr("\n");
+  mut xs = collections.List[Leaf].empty();
+  xs.push(new Leaf(new LeafValue(7)));
+  xs.push(new Leaf(new LeafValue(8)));
+  printInt(viaList(&xs));
+  printStr("\n");
+  mut m = new Leaf(new LeafValue(40));
+  bump(&mut m);
+  printInt(get(&m));
+  printStr("\n");
+}

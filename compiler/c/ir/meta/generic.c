@@ -1784,9 +1784,14 @@ int genericNotSendableWhy(INode *arg, char *what, char *reason, StaticBorrow how
             break;
         }
         case RefBindsTraced:
-            snprintf(reason, reasonsize,
-                "a reference the %s collector traces, and a collector is single threaded, so a traced reference may not leave its thread",
-                regname);
+            if (regionIsActorLocal(ref->region))
+                snprintf(reason, reasonsize,
+                    "a reference into %s, an actor's own region, which the actor's collector finds and moves between its messages, so the reference may not leave its actor",
+                    regname);
+            else
+                snprintf(reason, reasonsize,
+                    "a reference the %s collector traces, and a collector is single threaded, so a traced reference may not leave its thread",
+                    regname);
             break;
         case RefBindsPerm:
             local = 1;
@@ -1846,7 +1851,7 @@ void genericNotShareableReason(INode *culprit, int fix, char *reason, size_t siz
     char *regname = region && region->tag == StructTag ? &((StructNode *)region)->namesym->namestr : "its region";
     INode *perm = ref->perm && isTypeNode(ref->perm) ? itypeGetTypeDcl(ref->perm) : NULL;
     Name *permname = perm ? inodeGetName(perm) : NULL;
-    if (regionIsTraced(ref->region))
+    if (regionIsTraced(ref->region) && !regionIsActorLocal(ref->region))
         snprintf(reason, size,
             "a reference the %s collector traces: copying one writes a root into the collector's one chain, which is single threaded, so two threads cannot do it together",
             regname);

@@ -76,6 +76,9 @@ typedef struct GenSeam {
                             // calls: the record taken from the pending table, and the half called with it and the value
     LLVMValueRef drop;      // Where it parks a record, the record's drop function, '(record *u8)': its values
                             // finalized in death order, for the pending table to abandon it with
+    LLVMValueRef trace;     // Where it parks a record holding a traced reference, the record's trace function,
+                            // '(record *u8, mode u32)': each such reference handed to its region's 'mark', so
+                            // that the actor's collector finds, and may move, what a parked record holds; else NULL
     LLVMTypeRef record;     // The record's struct type, or NULL when it is empty: no record parameter
     GenSeamField *fields;
     uint32_t nfields;

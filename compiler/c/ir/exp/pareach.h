@@ -92,12 +92,19 @@ void parallelEachLeave();
 // nothing declared outside the loop is written or lent for writing
 void parallelEachCheckBody(TypeCheckState *pstate, BlockNode *outer);
 
-// The stopgap that keeps a 'Gc' out of actors and parallel loops until the
-// collector is per actor (ErrorGcStopgap). The body's allocations, calls and
-// literals of a type holding a traced reference are refused; so is a
-// declaration of one (an actor's state field, a method's parameter). 'where'
-// says which: "an actor", "a 'parallel each' body".
+// The stopgap that keeps a 'Gc' out of actors and parallel loops (ErrorGcStopgap):
+// a collector that runs whenever a program says. The body's allocations, calls
+// and literals of a type holding a reference into a traced region that is not
+// actor-local are refused; so is a declaration of one (an actor's state field,
+// a method's parameter). A reference into an actor-local region is let by.
+// 'where' says which: "an actor", "a 'parallel each' body".
 void gcStopgapCheckBody(INode *body, const char *where);
+
+// An allocation in an actor-local region (a call of the actor's 'allocRegion', which
+// 'new self[T](...)' is, or 'new ActorGc[...]') from the body of a 'parallel each'
+// is refused (ErrorActorGcPiece). This asks it of every such loop in a method of an
+// actor, once type check has finished; the loop's own check asks it as it is made
+void gcPieceCheckBody(INode *body, const char *where);
 void gcStopgapCheckDcl(INode *node, INode *type, const char *where);
 
 #endif

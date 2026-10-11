@@ -195,12 +195,16 @@ RefBinds refThreadBinds(RefNode *ref) {
 // A borrow and a guard copy nothing. A traced reference is counted as one: it
 // has no count, but a copy of it held in a local is a root the function links
 // into the collector's one chain of frames (conestd's roots.cone, single
-// threaded). A move owner (So) cannot be copied. Any other owner that may be
+// threaded; a reference into an actor-local region is not counted, since each
+// thread has a chain of its own and the actor's roots are found between its
+// messages). A move owner (So) cannot be copied. Any other owner that may be
 // aliased writes its count, which only a region declaring ThreadSafe makes
 // atomic.
 int refCountsPlain(RefNode *ref) {
     INode *region = ref->region && isTypeNode(ref->region) ? itypeGetTypeDcl(ref->region) : ref->region;
     if (region == NULL || region == borrowRef || permHeldKind(ref->perm))
+        return 0;
+    if (regionIsActorLocal(ref->region))
         return 0;
     if (regionIsTraced(ref->region))
         return 1;

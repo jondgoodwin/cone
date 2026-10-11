@@ -245,6 +245,7 @@ void nametblInit() {
     noneName = nametblFind("None", 4);
 
     allocMethodName = nametblFind("alloc", 5);
+    allocRegionMethodName = nametblFind("allocRegion", 11);
     initMethodName = nametblFind("init", 4);
     aliasRefMethodName = nametblFind("aliasRef", 8);
     dealiasRefMethodName = nametblFind("dealiasRef", 10);
@@ -254,6 +255,7 @@ void nametblInit() {
     regionRefName = nametblFind("RegionRef", 9);
     tracedTraitName = nametblFind("Traced", 6);
     threadSafeTraitName = nametblFind("ThreadSafe", 10);
+    actorLocalTraitName = nametblFind("ActorLocal", 10);
     moveTraitName = nametblFind("Move", 4);
     copyTraitName = nametblFind("Copy", 4);
     shapeChangingTraitName = nametblFind("ShapeChanging", 13);
