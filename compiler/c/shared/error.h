@@ -650,7 +650,10 @@ enum ErrorCode {
     ErrorRegionNew = 1421,  // An allocation in an arena, 'new a[T](...)', written other than with the type, or a 'mut' and the type, in its brackets, or as a 'trynew'
     ErrorRegionHead = 1422, // An allocation 'new a[T](...)' whose head 'a' is a value that is not a region: a struct whose first field is a public '*MemRegion'
 
-    // 1425-1439 are reserved for another build.
+    // An enum under the collection rule (ir/reshape.c, ir/flowpath.c, ir/flowloan.c)
+    ErrorVariantReshape = 1425,     // A call, or a store through another name, that could change which variant an enum holds while a reference narrowed into one of its variants, through a path other references share, is still to be used
+    ErrorShapeStore = 1426,         // A store through another name that replaces a shape-changing value whole (a list, a string), or an element of one that owns something, while a borrow into it, through a path other references share, is still to be used
+
     // What a collector reaches in memory a type points to (ir/types/struct.c, region.c)
     ErrorGcTraceElementsShape = 1440,  // A type declaring GcTraceElements whose 'gcTraceElements' is not 'fn gcTraceElements(self &mut) I', I a cursor declaring 'is Iterator[&mut E]' with E a sized type
     ErrorTraceRoot = 1441,  // A local, parameter, or value of a traced region, of a type that needs tracing and cannot be traced

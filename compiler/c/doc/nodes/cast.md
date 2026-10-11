@@ -226,11 +226,11 @@ narrowing, as `enum_typecheck_narrow` pins.
 the from-type's referent a trait with `HasTagField` or `SameSize` — an enum, a
 tagged trait, an `Option`-shaped enum — and the to-type's another struct) is a
 reference into the value's payload, which a change of variant would reread as
-the wrong type (Jon's 2018 rule: for `mut` references to shape-changing types,
-no interior references). `castSumInterior` allows it when nothing can change
-the variant while the narrowed reference is used, and refuses it
-(`ErrorBadPerm`) otherwise:
-- the from-reference's permission has `MayIntRefSum` — `uni`, `imm`, `mut1`; or
+the wrong type. It is the collection rule's case: allowed, and refused only if
+something could change the variant while the narrowed reference is used.
+`castSumInterior` asks, once the conversion has become a recast:
+- the from-reference's permission has `MayIntRefSum` — `uni`, `imm`, `mut1`: no
+  other name can change the variant, and nothing more is asked; or
 - it is a borrow made here of a place reached as `uni` (`castBorrowsUni`): the
   value of the hidden `_` variable a `match` or bound `if` captures its
   scrutinee in is a `BorrowTag` whose place
@@ -241,10 +241,17 @@ the variant while the narrowed reference is used, and refuses it
   loan, are used.
 
 Everything else — a parameter of reference type, a reborrow through a shared
-path, a field reached through a `mut` reference or a `Rc[mut, T]` owner, a variable
-the program names holding a borrow (a copy of it would reach the local another
-way, which freezing does not follow) — is refused. The `is` test binds nothing
-and is not asked. A narrowing from a virtual reference is not asked either.
+path, a field reached through a `mut` reference, a variable the program names
+holding a borrow (a copy of it would reach the local another way, which freezing
+does not follow) — is a narrowing the loan walk follows: the cast is marked
+`FlagVariantNarrow` (`castSumNarrows`), which gates the function for the walk
+(`FlowGateShape`, `flowGateNarrow`) and makes `pwNarrowShared` lend the place the
+reference is read through to whatever holds the narrowed reference, marking the
+loan as the loan of a borrow into a collection is marked (flow.md, "A change through
+another name"). A narrowing of an owning reference, an `Rc[mut, T]` narrowed to
+an `Rc[mut, Variant]`, is another owner of the value and no loan stands for it, so it
+stays refused (`ErrorBadPerm`). The `is` test binds nothing and is not asked. A
+narrowing from a virtual reference is not asked either.
 
 ### `castIsTypeCheck`
 

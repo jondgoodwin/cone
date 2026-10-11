@@ -36,6 +36,10 @@ struct NameUseNode;
 // variable it initializes was about to; if the pattern named a variant declared
 // as a type, it is now the value of a hidden local, not of the variable
 #define FlagMatchChecked 0x0008  // Cast: a bound pattern's conversion, already type checked
+// A reference narrowed from an enum to one of its variants, through a borrowed
+// reference that other references may share: the collection rule applies to the
+// narrowed reference (castSumInterior). Set once the conversion is a plain recast.
+#define FlagVariantNarrow 0x0010  // Cast: narrows a shared reference into one of an enum's variants
 
 // Create node for recasting to a new type without conversion
 CastNode *newRecastNode(INode *exp, INode *type);
@@ -72,6 +76,15 @@ void castPrint(CastNode *node);
 // a field of the local, or a borrow of the field where the conversion narrowed
 // a reference. Returns 1 when the pattern was one.
 int castBindProject(TypeCheckState *pstate, VarDclNode *var);
+
+// Is this cast a reference narrowed from an enum to one of its variants, through a
+// reference that other references may share (a 'mut' or 'ro' reference of
+// unseen origin), so that a change of variant could come through another name
+// while the narrowed reference is used? Such a narrowing is allowed, and the loan
+// walk follows it as it does a borrow into a collection (flowpath.c, pwNarrowShared).
+static inline int castSumNarrows(INode *cast) {
+    return cast->tag == CastTag && (cast->flags & FlagVariantNarrow) != 0;
+}
 
 // Name resolution of cast node
 void castNameRes(NameResState *pstate, CastNode *node);

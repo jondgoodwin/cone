@@ -1,0 +1,68 @@
+// A store through another name is no call, and part (b) of the rule asks it as it
+// asks a call (collection_flow_reshape): while a borrow into a collection that changes
+// shape is still to be used, through a path others share, a store that could reshape
+// the collection is refused. 'm[0] = s' frees the String it replaces, whose bytes a
+// view of 'l[0]' points at; a collection stored over whole is freed; a struct holding
+// one stored over takes it with it. Writing an element that owns nothing, or a field
+// of a struct that merely holds a String, reshapes no collection
+// (collection_store_success holds what is accepted beside each refusal).
+
+mod collection_flow_store;
+
+import collections use *;
+
+struct Person {
+  pub name String;
+  pub age i64;
+}
+
+// A view of an element's bytes, and another name replaces the element
+fn setElement(l &mut List[String], m &mut List[String], s String) usize {
+  imm t = l[0usize].view();
+  m[0usize] = s;                   //~ ErrorShapeStore "this store replaces a 'List'"
+  t.len;
+}
+
+// ... or a String that is a field of one
+fn setField(l &mut List[Person], m &mut List[Person], s String) usize {
+  imm t = l[0usize].name.view();
+  m[0usize].name = s;              //~ ErrorShapeStore "this store replaces a 'List'"
+  t.len;
+}
+
+// The list itself stored over
+fn replaceList(l &mut List[String], m &mut List[String]) usize {
+  imm t = l[0usize].view();
+  *m = List[String].empty();       //~ ErrorShapeStore "this store replaces a 'List'"
+  t.len;
+}
+
+// A struct holding the list stored over
+struct Bag {
+  pub items List[String];
+}
+
+fn replaceBag(b &mut Bag, c &mut Bag, d Bag) usize {
+  imm t = b.items[0usize].view();
+  *c = d;                          //~ ErrorShapeStore "this store replaces a 'List', or a value that holds one"
+  t.len;
+}
+
+// Swapped with another value
+fn swapList(l &mut List[String], m &mut List[String], other List[String]) usize {
+  mut mine = other;
+  imm t = l[0usize].view();
+  *m <=> mine;                     //~ ErrorShapeStore "this store replaces a 'List'"
+  t.len;
+}
+
+// A callee whose body stores, handed the other name
+fn replaceFirst(q &mut List[String], s String) {
+  q[0usize] = s;
+}
+
+fn viaCallee(l &mut List[String], m &mut List[String], s String) usize {
+  imm t = l[0usize].view();
+  replaceFirst(m, s);              //~ ErrorShapeReshape "'replaceFirst' is handed something that reaches a 'List'"
+  t.len;
+}

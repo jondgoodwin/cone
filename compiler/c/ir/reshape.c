@@ -272,6 +272,69 @@ int reshapeUniqueLocal(INode *e) {
     return t->tag != RefTag && t->tag != ArrayRefTag && t->tag != VirtRefTag && t->tag != PtrTag;
 }
 
+// ---- A store ---------------------------------------------------------------------
+
+int reshapeIsSum(INode *type) {
+    return type && type->tag == StructTag && (type->flags & TraitType) && (type->flags & (HasTagField | SameSize));
+}
+
+// Is this place an element of a collection of type 'cont': reached by indexing one
+// ('m[0]', '&mut m[i].name', 'self.items[k]'), a call of one of its methods that hands
+// out a reference to what it holds, and field steps and dereferences from there?
+static int reshapeElementOf(INode *e, INode *cont) {
+    for (;;) {
+        switch (e->tag) {
+        case CastTag:
+            if (e->flags & FlagConvert)
+                return 0;
+            e = ((CastNode *)e)->exp;
+            continue;
+        case BorrowTag:
+        case ArrayBorrowTag:
+            e = ((RefNode *)e)->vtexp;
+            continue;
+        case DerefTag:
+            e = ((StarNode *)e)->vtexp;
+            continue;
+        case FldAccessTag:
+            e = ((FnCallNode *)e)->objfn;
+            continue;
+        case ArrIndexTag:
+            e = ((FnCallNode *)e)->objfn;
+            continue;
+        case FnCallTag:
+        {
+            FnCallNode *call = (FnCallNode *)e;
+            if (call->args == NULL || call->args->used == 0)
+                return 0;
+            INode *recv = nodesGet(call->args, 0);
+            INode *rt = iexpGetTypeDcl(recv);
+            if (rt->tag == RefTag && itypeGetTypeDcl(((RefNode *)rt)->vtexp) == cont)
+                return 1;
+            e = recv;
+            continue;
+        }
+        default:
+            return 0;
+        }
+    }
+}
+
+int reshapeStoreHits(INode *lval, INode *cont) {
+    INode *stored = iexpGetTypeDcl(lval);
+    if (stored == NULL || stored == cont)
+        return stored != NULL;
+    if (stored->tag != StructTag && stored->tag != ArrayTag && stored->tag != TTupleTag)
+        return 0;
+    // A value holding the other by value: replaced whole, it takes the old one with it
+    if (reshapeReach(stored, cont, 0) & ReachContained)
+        return 1;
+    // An element that owns something (a String), replaced inside a collection: what the
+    // old one owned is freed
+    return !reshapeIsSum(cont) && stored->tag == StructTag && itypeNeedsFinal(stored)
+        && reshapeReach(cont, stored, 0) != 0 && reshapeElementOf(lval, cont);
+}
+
 // ---- A call ----------------------------------------------------------------------
 
 // What the callee may write through its parameter k: that parameter's own
