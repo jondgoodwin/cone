@@ -13,33 +13,16 @@
 
     <div class="text">
 
-	<p style="margin-left: 40px;"><i>Note: Although most of these permissions are supported,
-			only the right to read, the right to modify, coercion,
-			and freezing the source of a borrow held in a local variable are enforced.
-			A source reached as <span class="pre">uni</span> (a local variable is one) is frozen
-			as "From 'uni'" below describes, but for a <span class="pre">mut</span> borrow of it, which
-			is an alias loan: the source stays usable as one more alias, and only what needs it unique
-			is refused. A source reached through a shared
-			<span class="pre">mut</span> or <span class="pre">ro</span> path is only kept alive
-			(<a href="refborref.html">Freezing access to the source of a borrow</a>).
-			An owning reference coerced to a borrowed one, as in "From 'uni'" below,
-			freezes its source the same way; coerced to a <span class="pre">&amp;uni</span>,
-			it is borrowed from too, not moved, and finalized at its own scope's end.
-			A <span class="pre">&amp;uni</span> variable (or slice) passed where a
-			borrowed reference is wanted, <span class="pre">&amp;</span>, <span class="pre">&amp;imm</span>,
-			<span class="pre">&amp;mut</span> or <span class="pre">&amp;uni</span> (an argument, a method's
-			receiver, a variable's type), implicitly borrows from it, a fresh and shorter loan,
-			instead of handing over the reference itself: the caller is frozen meanwhile and uses
-			the reference again afterwards, as "Borrowed reference recovery" below describes.
-			The rule for shape-changing values under <span class="pre">mut</span> is the same for
-			a resizable collection and for an enum: an element borrowed through one, or a reference
-			narrowed from an enum to one of its variants, is allowed, and refused only if something could
-			change the shape while it is used. For a collection through a shared path the borrow lets
-			the path be read, lent and written as any alias does, and a change of its shape, by the same name or
-			another, is refused. For an enum nothing is frozen, and
-			storing another variant over it, by the same name or another, or handing it to a call that
-			might, is refused (<a href="refborref.html">borrowed references</a>
-			says what is and is not refused).</i></p>
+	<p style="margin-left: 40px;"><i>Note: The <span class="pre">recover</span> block is not implemented, so
+			a permission transition cannot be undone that way, and an externally-isolated graph cannot
+			be built with one. Nor can a <span class="pre">uni</span> reference be kept through a call
+			of a pure method, since pure functions are not implemented. Seeing through a field of a
+			different permission is refused only for a <span class="pre">uni</span> field: a
+			<span class="pre">&amp;uni</span> reference to a Car can read what its
+			<span class="pre">mut</span> field points at. Nor is the permanent transition of a
+			<span class="pre">uni</span> reference enforced as the example of a permanent transition below shows it: assigned to
+			a <span class="pre">&amp;mut i32</span> variable, the reference is borrowed, not moved, and the source stays usable;
+			only a transition to an owning type, <span class="pre">Rc[mut, i32]</span>, consumes it.</i></p>
 	
 	<p>Every reference's type specifies a permission which controls
 		what may, and may not, be done with that reference.
@@ -114,7 +97,7 @@
 		(<a href="refmatch.html">Match</a>). Like <span class="pre">mut</span>, its references stay on one thread, and it is refused on
 		a type that <a href="#immutable">never changes</a>.</dd>
 
-	<dt id="ro">ro</dd>
+	<dt id="ro">ro</dt>
 	<dd>A <span class="pre">ro</span> (readonly) reference may read, but not modify, the value it points to.
 		This may sound like <span class="pre">imm</span>, but it is not the same.
 		<span class="pre">imm</span> guarantees that <i>no</i> other mutable reference to the same object exists,
@@ -254,6 +237,14 @@ consume(uniref);                 // Error, uniref may not be moved while 'bref1'
 *bref2 = *bref1 + 1;             // The borrowed references' last use
 consume(uniref);                 // Allowed, since the borrowed references are not used again
 </pre>
+	<p>A source reached as <span class="pre">uni</span> is what a local variable is, and it is frozen
+		as just described. A source reached through a shared <span class="pre">mut</span> or
+		<span class="pre">ro</span> path, such as what a <span class="pre">&amp;mut</span> parameter points at,
+		is only kept alive while a borrow of it is still to be used
+		(<a href="refborref.html">Freezing access to the source of a borrow</a>).
+		An owning reference coerced to a borrowed one, as in the example, freezes its source the same way.
+		Coerced to a <span class="pre">&amp;uni</span>, it is borrowed from too, not moved,
+		and it is finalized at its own scope's end.</p>
 
 	<p>What such a borrow shares is the value the <span class="pre">uni</span> reference points to.
 		A borrow of the <span class="pre">uni</span> reference itself keeps that reference's permission:
@@ -271,7 +262,7 @@ imm other = share(&amp;uniref);     // ** ILLEGAL! A borrowed Rc[i32] is not a b
 		This is accomplished by moving the `uni` reference value to
 		a reference that holds a shared permission.
 		The original <span class="pre">uni</span> reference is consumed (because of move semantics),
-		leaving us with a new sharable reference, from which copies can be made.</p>		
+		leaving us with a new sharable reference, from which copies can be made.</p>
 <pre>
 imm ref = new Rc[i32](5);        // Allocate new value, return 'uni' reference
 imm newref1 &amp;mut i32 = ref;      // Move reference to newref with 'mut' permission
@@ -287,7 +278,70 @@ imm newref2 &amp;mut i32 = newref1;  // Two 'mut' references to the same object
 		As <span class="pre">mut</span>, it can never be shared across threads.
 		As <span class="pre">imm</span>, it can never be altered.</p>
 		
-	<h2>Permission Recovery</h3>
+		<h2 id="shape">Shape-changing values under mut</h2>
+	<p>Some values can change shape. A resizable collection (a list, a dictionary, a string) may move
+		all of its elements to a bigger block when it grows, and an enum may be given another variant.
+		A borrow into one is a borrow into storage that such a change would leave dangling, or read
+		as the wrong type. A <span class="pre">mut</span> reference is shared, so another name may make
+		that change while the borrow is in use. The rule is the same for a collection and for an enum:
+		an element borrowed through one, or a reference narrowed from an enum to one of its variants,
+		is allowed, and is refused only if something could change the shape while the borrow is
+		still to be used.</p>
+	<p>For a collection, a read-only borrow of an element of a local list holds the list against a change.
+		The list may be read, but a push waits for the borrow's last use:</p>
+<pre>
+mut list = List[i32].empty();
+list.push(10);
+list.push(20);
+imm first = list[0usize];     // borrows list, read-only
+imm n = list.len();           // fine: the list may be read
+list.push(30);                // **ERROR** first is used again below
+print &lt;- *first;
+</pre>
+	<p>A mutable borrow of an element is one more alias of the elements. Until its last use the
+		collection may still be read and written in place, but not reshaped by a push, a
+		<span class="pre">clear</span> or a <span class="pre">pop</span>:</p>
+<pre>
+mut list = List[i32].empty();
+list.push(10);
+list.push(20);
+imm e = &amp;mut list[0usize];
+imm n = list.len();           // fine: read while the mutable borrow is live
+list.set(1usize, 5);          // fine: written in place
+*e = 7;                       // the last use of e
+list.push(30);                // fine: the borrow is over
+</pre>
+	<p>This leaves the list holding 7, 5 and 30. A collection reached through a shared path is treated the
+		same way: the borrow lets the path be read, lent and written as any alias does, and a change of the
+		collection's shape, by the same name or another, is refused
+		(<a href="reftypecoll.html#shapechanging">why a push waits for a borrow of an element</a>).</p>
+	<p>For an enum, nothing is frozen. Narrowing a reference into one of the enum's variants is allowed, and the
+		fields of the variant may be written through it. What is refused is storing another variant over the
+		enum, by the same name or another, or handing it to a call that might, while the narrowed reference is
+		still to be used:</p>
+<pre>
+fn grow(s &amp;mut Shape) {
+  match s {
+    case mut c Circle { c.radius = 2; }   // Ok: nothing changes the variant while c is used
+    else {}
+  }
+}
+fn restart(s &amp;mut Shape) i32 {
+  match s {
+    case mut c Circle {
+      c.radius = 2;
+      *s = Shape.Rect(1, 2, 3);   // **ERROR** c is used again below
+      c.radius;
+    }
+    else { 0; }
+  }
+}
+</pre>
+	<p>The same store after the narrowed reference's last use is fine, which is how a state machine moves to its
+		next state. <a href="refmatch.html">Match</a> and
+		<a href="refborref.html">borrowed references</a> say what is and is not refused.</p>
+
+	<h2 id="recovery">Permission Recovery</h2>
 	<p>Permission transitions are not actually always a one-way trip. Under certain circumstances,
 	it is possible to safely recover "lost" permissions.
 	
@@ -298,9 +352,21 @@ imm newref2 &amp;mut i32 = newref1;  // Two 'mut' references to the same object
 		So, a <span class="pre">uni</span> can be borrowed as <span class="pre">mut</span> or <span class="pre">imm</span>.
 		After the borrowed references' last use, you once again have the original <span class="pre">uni</span> reference.
 		Similarly, one can borrow as <span class="pre">ro</span> and get back the original reference's permission later.
-		A borrowed <span class="pre">&amp;uni</span> reference passed to a call that wants a
-		<span class="pre">&amp;uni</span> is recovered the same way: the call is lent a fresh, shorter borrow of it,
-		and the caller has the reference, still unique, once that borrow's last use is behind it.</li>
+		A borrowed <span class="pre">&amp;uni</span> reference (or slice) passed where a borrowed reference
+		is wanted &mdash; <span class="pre">&amp;</span>, <span class="pre">&amp;imm</span>,
+		<span class="pre">&amp;mut</span> or <span class="pre">&amp;uni</span>, as an argument, a method's receiver
+		or a variable's type &mdash; is recovered the same way: instead of handing over the reference itself,
+		the call is lent a fresh, shorter borrow of it. The caller is frozen meanwhile, and has the reference,
+		still unique, once that borrow's last use is behind it:
+<pre>
+fn peek(r &amp;R) {..}
+fn bump(r &amp;mut R) {..}
+fn twice(r &amp;uni R) {
+  peek(r);          // lends a fresh, shorter borrow: r is still ours
+  bump(r);
+  peek(r);
+}
+</pre></li>
 	<li><b>Pure method calls</b>
 		Sometimes it is polymorphically convenient to be able to call a method on an object where we have
 		a <span class="pre">uni</span> reference, and we don't want the calling function to lose the object to the
@@ -393,14 +459,15 @@ fn handleCar(car &amp;Car) {
 		To mutate the value, all reference must grant permission to mutate.
 		A borrowed reference held in a field is no exception either:
 		through a <span class="pre">&amp;Car</span>, <span class="pre">car.owner</span>
-		reads and lends only <span class="pre">&amp;</span>, whether <span class="pre">owner</span> is
-		a <span class="pre">&amp;mut Person</span> or a <span class="pre">&amp;uni Person</span>,
+		reads and lends only <span class="pre">&amp;</span>, <span class="pre">owner</span> being
+		a <span class="pre">&amp;mut Person</span>,
 		so <span class="pre">car.owner.age = 18</span> is refused, and so is calling a
 		<span class="pre">self &amp;mut</span> method on it. A method that changes what a
 		<span class="pre">&amp;mut</span> field points at takes <span class="pre">self &amp;mut</span>;
 		one declared <span class="pre">self &amp;</span> may only read through it.
 		Through a <span class="pre">&amp;mut Car</span>, or a <span class="pre">Car</span> held by value,
-		<span class="pre">owner</span> keeps its own permission.
+		<span class="pre">owner</span> keeps its own permission. (A field that is a
+		<span class="pre">&amp;uni</span> reference is another matter, below.)
 		An owning field, such as <span class="pre">app So[App]</span> in a struct <span class="pre">Holder</span>,
 		is no exception: through a <span class="pre">&amp;Holder</span>, <span class="pre">h.app</span>
 		lends only <span class="pre">&amp;</span>, so a <span class="pre">self &amp;mut</span> method
@@ -411,8 +478,13 @@ fn handleCar(car &amp;Car) {
 		for the same holder could replace the owner while the loan is in use.</p>
 	<p>Sadly, this also mean that our car reference cannot see anything about the engine.
 		A shared reference cannot see through a <span class="pre">uni</span> reference,
-		because that would effectively be sharing what is supposed to be a unique reference.</p>
-	<p>We can only see engine if our car reference is also <span class="pre">uni</span>.
+		because that would effectively be sharing what is supposed to be a unique reference.
+		"Shared" here includes <span class="pre">&amp;mut</span>: through a <span class="pre">&amp;Car</span>
+		or a <span class="pre">&amp;mut Car</span>, <span class="pre">car.engine</span> is an error, however it is
+		used &mdash; read, lent, written or copied out into a local &mdash; because another name for
+		the same Car could reach the engine too.</p>
+	<p>We can only see engine if our car reference is also <span class="pre">uni</span>
+		(or the Car is held by value, with no other name to reach it).
 		But if we do that, then we can no longer see anything about the owner because it is shared, mutable.
 		It would violate the guarantee of <span class="pre">uni</span> to move this reference
 		to another thread, if this could result in <span class="pre">mut</span> references to the

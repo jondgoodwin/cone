@@ -13,26 +13,8 @@
 
     <div class="text">
 
-		<p style="margin-left: 40px;"><i>Note: Cycle-breaking weak references are built as library code,
-		not a kind of reference: the <span class="pre">rcweak</span> package's region ref
-		<span class="pre">Rcw</span> counts strong owners and weak references, and its weak reference is a struct,
-		<span class="pre">Weak[T]</span>, made with <span class="pre">Weak[T].of(owner)</span> from a
-		<span class="pre">Rcw[mut, T]</span> owner (allocated as any other, <span class="pre">new Rcw[mut, T](...)</span>)
-		and copied only by <span class="pre">w.clone()</span>.
-		Rather than a pattern match producing a borrowed reference, <span class="pre">w.upgrade()</span> gives an
-		Option of a new counted owner, None once the object has died; <span class="pre">w.alive()</span> and
-		<span class="pre">w.strong()</span> do the same in two steps, <span class="pre">w.strong()</span> of
-		a dead object being a <a href="refexcept.html#panic">panic</a> at the line calling it. The object is finalized when its last owner
-		goes, and its memory is freed when its last weak reference goes too. The owner in a Some goes
-		when the Option does. The arena and pool kinds below are built as library values as well: the
-		<span class="pre">arena</span> package's <span class="pre">DynArena</span> hands out keys,
-		<span class="pre">&amp;'=a mut T</span>, which only <span class="pre">a[key]</span>, on the arena of
-		the same brand, reaches, checked at compile time (see <a href="refregionglo.html">regions</a>), and the
-		<span class="pre">pool</span> package's <span class="pre">Pool[T]</span> hands out
-		<span class="pre">Ref[T]</span> handles, a slot and a generation, checked on each use:
-		<span class="pre">p.get(r)</span> answers <span class="pre">Some</span> borrow, or
-		<span class="pre">None</span> once the value is removed. Cached weak references are not built. How a value is allocated in a dynamic region such as an arena is an open design question: the packages allocate with <span class="pre">a.alloc(value)</span> and <span class="pre">p.add(value)</span>, and <span class="pre">&amp;arena mut 5</span> and <span class="pre">Arena['a]</span> below show the idea, not a spelling the compiler reads.</i></p>
-	
+		<p style="margin-left: 40px;"><i>Note: Cached weak references are not implemented. Nor is a pattern match on a weak reference that produces a borrowed reference: a weak reference gives a new counted owner instead. The <span class="pre">&amp;arena mut 5</span> allocation and the <span class="pre">Arena['a]</span> and <span class="pre">ArenaRef+'a'</span> spellings below are not implemented; the arena package's <span class="pre">DynArena</span> hands out keys. How a value is allocated in a dynamic region such as an arena or a pool is an open design question: the packages allocate with <span class="pre">a.alloc(value)</span>, <span class="pre">new a[T](...)</span> and <span class="pre">p.add(value)</span>, and no other spelling is read.</i></p>
+
 	<p>Owning and borrowed references always point to live objects,
 		and may always be directly used to manipulate the objects they point to.
 		This is not true for weak references.
@@ -45,8 +27,8 @@
 		liveness check. Let's examine different kinds of weak
 		references and explain the value they add to various region strategies.</p>
 
-	<h2>Cycle-breaking Weak References</h2>
-	<p>As mentioned earlier, one of the disadvantages of the reference 
+	<h2 id="cycle">Cycle-breaking Weak References</h2>
+	<p>As mentioned earlier, one of the disadvantages of the reference
 		counting region strategy is that they can leak memory whenever a
 		data structure has cyclic references. Essentially, cyclic references
 		prevent reference counts from ever decrementing to zero. This can cause useless
@@ -63,17 +45,102 @@
 		a lifetime-constrained borrowed reference which can be then be used
 		to work with the object it points to.</p>
 
-	<h2>Cached or memo-ized Weak References</h2>
+	<h3 id="rcw">Rcw and Weak</h3>
+	<p>Today, cycle-breaking weak references are library code, not a kind of reference, and a weak reference
+		is asked for a new counted owner rather than pattern matched into a borrow. The <span class="pre">rcweak</span>
+		package's region <span class="pre">Rcw</span> counts both strong owners and weak references. A
+		strong owner is allocated as any other, <span class="pre">new Rcw[mut, T](...)</span>. The weak
+		reference is an ordinary struct, <span class="pre">Weak[T]</span>.</p>
+	<ul>
+		<li><span class="pre">Weak[T].of(owner)</span> makes one from an <span class="pre">Rcw[mut, T]</span> owner.
+			A <span class="pre">Weak[T]</span> moves when assigned or passed, and is copied only by
+			<span class="pre">w.clone()</span>.</li>
+		<li><span class="pre">w.upgrade()</span> gives an Option of a new counted owner: <span class="pre">Some</span> while the
+			object is alive, and <span class="pre">None</span> once it has died. The owner in a
+			<span class="pre">Some</span> goes when the Option does.</li>
+		<li><span class="pre">w.alive()</span> and <span class="pre">w.strong()</span> do the same in two steps.
+			<span class="pre">w.strong()</span> of a dead object is a <a href="refexcept.html#panic">panic</a>
+			at the line calling it.</li>
+	</ul>
+	<p>The object is finalized when its last strong owner goes, and its memory is freed when its last weak
+		reference goes too. In this family, the child holds a weak reference to its parent, so the parent's
+		counted owners are the only thing that keep it alive:</p>
+<pre>
+import stdio use *;
+import rcweak use *;
+import collections use *;
+
+struct ChildValue {
+  pub name i64;
+  pub parent Weak[ParentValue];          // the weak half of the cycle
+  fn final(self &amp;uni) { printStr("child gone\n"); }
+}
+alias Child = Rcw[mut, ChildValue];
+
+struct ParentValue {
+  pub name i64;
+  pub kids List[Child];
+  fn final(self &amp;uni) { printStr("parent gone\n"); }
+}
+alias Parent = Rcw[mut, ParentValue];
+
+fn main() i32 {
+  imm p = new Parent(1, List[Child].empty());
+  imm w = Weak[ParentValue].of(p);
+  p.kids.push(new Child(2, w.clone()));
+  match p.kids[0usize].parent.upgrade() {  // an Option of a new counted owner
+    case imm owner Some { printInt(owner.name); printStr("\n"); }
+    case is None { printStr("dead\n"); }
+  }
+  printStr(if w.alive() { "alive\n"; } else { "dead\n"; });
+  0i32;
+}
+</pre>
+	<p>This prints <span class="pre">1</span> and <span class="pre">alive</span>. When <span class="pre">main</span>
+		ends, <span class="pre">p</span>'s last owner goes, so <span class="pre">parent gone</span> and
+		<span class="pre">child gone</span> follow; the child's weak reference did not hold the parent up.</p>
+	<p>Once the last owner is gone, a weak reference finds nothing:</p>
+<pre>
+import stdio use *;
+import rcweak use *;
+
+struct Thing {
+  pub n i64;
+  fn final(self &amp;uni) { printStr("thing gone\n"); }
+}
+
+fn main() i32 {
+  mut w = Weak[Thing].none();
+  {
+    imm owner = new Rcw[mut, Thing](7);
+    w = Weak[Thing].of(owner);
+    printStr(if w.alive() { "alive\n"; } else { "dead\n"; });
+  }                                        // the last owner goes: the Thing is finalized
+  printStr(if w.alive() { "alive\n"; } else { "dead\n"; });
+  match w.upgrade() {
+    case imm o Some { printInt(o.n); }
+    case is None { printStr("none\n"); }
+  }
+  imm s = w.strong();                      // a dead object: a panic
+  printStr("not reached\n");
+  0i32;
+}
+</pre>
+	<p>This prints <span class="pre">alive</span>, <span class="pre">thing gone</span>,
+		<span class="pre">dead</span> and <span class="pre">none</span>, and then the
+		<span class="pre">w.strong()</span> panics.</p>
+
+	<h2 id="cached">Cached or memo-ized Weak References</h2>
 	<p>Imagine we want memory access to a large number of sizable objects.
 		Due to memory constraints, we may not be able to fit all of them in memory
 		at the same time, but we can readily reload or reconstruct them on demand.
 		In this situation, we can use weak references to point to such cached objects,
-		knowing that the underlying system store may automatically unload some objects 
+		knowing that the underlying system store may automatically unload some objects
 		at any time to reclaim space for other objects.</p>
 	<p>Pattern-matching on such a weak reference reloads the object, if it has been purged,
 		before producing a usable borrowed reference to the now-live object.</p>
 
-	<h2>First-class Arenas</h2>
+	<h2 id="arenas">First-class Arenas</h2>
 	<p>The sizeable performance advantage of arena regions, is offset by their inability
 		to reclaim memory until the entire arena is freed.
 		This means memory waste and determinism worsen steadily the longer a program runs.
@@ -81,8 +148,8 @@
 		lasts for the lifetime of the program.</p>
 	<p>Dynamic (first-class) arenas offer a nice solution to this problem.
 		A dynamic arena may be created at any time, used to allocate a bunch of temporary
-		objects, and then destroyed soon after, when we have no further need for any of those	objects. 
-		Short-lived arenas offer the same performance advantage, 
+		objects, and then destroyed soon after, when we have no further need for any of those	objects.
+		Short-lived arenas offer the same performance advantage,
 		but dramatically improve determinism and memory efficiency.</p>
 	<p>If object references obtained from a dynamic arena never need to live longer
 		the lifetime of the scope where they were obtained, we can just produce a borrowed
@@ -99,23 +166,58 @@ mut arena = Arena.empty();     // A new dynamic arena
 imm objref = &amp;arena mut 5;  // Allocate a new i32 object in the new arena region
 arena[objref] = 2;          // Change the value of the object
 </pre>
+	<p>The <span class="pre">arena</span> package's <span class="pre">DynArena</span> is the form built today:
+		every request to allocate a new object in the arena returns a <i>key</i>, a reference of the arena's own
+		brand, <span class="pre">&amp;'=a mut T</span>, which reaches nothing on its own
+		(<a href="refregionglo.html#dynarena">a dynamic arena</a>):</p>
+<pre>
+import stdio use *;
+import arena use *;
+
+fn main() i32 {
+  mut ar = DynArena.empty();      // A new dynamic arena
+  imm objref = ar.alloc(5i64);    // Allocate a new i64 object in it: a key
+  ar[objref] = 2;                 // Change the value of the object
+  printInt(*ar[objref]);          // 2
+  printStr("\n");
+  0i32;
+}
+</pre>
 	<p>Although it may look like we are "indexing" the arena by an object reference,
 		there is no runtime indexing logic taking place. This construction simply
 		allows the compiler to verify at compile-time that the arena is still alive,
 		and therefore the object reference is still valid.</p>
 	<p>The compiler can also verify that the object reference came from that arena,
-		as both share the same hidden lifetime information. 
+		as both share the same hidden lifetime information.
 		This lifetime information must be explicitly noted should one wish to
 		pass the arena or object references to other functions or methods:</p>
 <pre>
 fn dowork(arena Arena['a], objref ArenaRef+'a') { ... }
 </pre>
-	<p>Notice that same lifetime annotation is specified for both the arena 
+	<p>Built today, the brand is written <span class="pre">'=a</span> on the arena and on the key:</p>
+<pre>
+import stdio use *;
+import arena use *;
+
+fn dowork(ar &amp;mut DynArena['=a], key &amp;'=a mut i64) {
+  ar[key] = ar[key] + 1;
+}
+
+fn main() i32 {
+  mut ar = DynArena.empty();
+  imm objref = ar.alloc(2i64);
+  dowork(&amp;mut ar, objref);        // the same lifetime '=a names both
+  printInt(*ar[objref]);          // 3
+  printStr("\n");
+  0i32;
+}
+</pre>
+	<p>Notice that same lifetime annotation is specified for both the arena
 		and the object reference. This ensures use of dynamic arena references is always safe.</p>
 
-	<h2>ECS-based Pools</h2>
-	<p>With games, we often want to create pool-allocated entities 
-		that we can deterministically kill at any time, much like single-owner objects. 
+	<h2 id="pools">ECS-based Pools</h2>
+	<p>With games, we often want to create pool-allocated entities
+		that we can deterministically kill at any time, much like single-owner objects.
 		However, we also want other entities
 		to be able to refer to them over an extended period of time (e.g., one character following or tracking another).
 		The lifetime constraints of borrowed references make them unsuitable for these
@@ -128,6 +230,35 @@ fn dowork(arena Arena['a], objref ArenaRef+'a') { ... }
 		Under the covers the weak reference determines
 		whether the same object is alive, using some technique like generational indexing,
 		a variation on reference counting, or subscription lists.</p>
+	<p>The <span class="pre">pool</span> package's <span class="pre">Pool[T]</span> uses generational
+		indexing. Adding a value hands out a <span class="pre">Ref[T]</span>, a slot and a generation, which
+		owns nothing and is copied freely, and the pool checks it on each use:
+		<span class="pre">p.get(r)</span> answers <span class="pre">Some</span> borrow of the value, or
+		<span class="pre">None</span> once the value has been removed
+		(<a href="refregionglo.html#genpool">the generational Pool</a>):</p>
+<pre>
+import stdio use *;
+import pool use *;
+
+struct Npc { pub hp i64; pub target Ref[Npc]; }
+
+fn main() i32 {
+  mut world = Pool[Npc].empty();
+  imm orc = world.add(new Npc(10, Ref[Npc].none()));
+  imm elf = world.add(new Npc(8, orc));          // the elf follows the orc
+  match world.get(world[elf].target) {
+    case imm t Some { printInt(t.hp); printStr("\n"); }
+    case is None { printStr("target gone\n"); }
+  }
+  world.remove(orc);                             // the orc dies
+  match world.get(world[elf].target) {
+    case imm t Some { printInt(t.hp); printStr("\n"); }
+    case is None { printStr("target gone\n"); }
+  }
+  0i32;
+}
+</pre>
+	<p>This prints <span class="pre">10</span> and then <span class="pre">target gone</span>.</p>
 
 	<p style="text-align: right; margin-top: 2em;">
 		<a href="reftypecoll.html"><img alt="_" src="next.png" /></a>

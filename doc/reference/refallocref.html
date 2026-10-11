@@ -13,31 +13,7 @@
 
     <div class="text">
 
-	<p style="margin-left: 40px;"><i>Note: Much of this capability is implemented,
-			including <span class="pre">new</span> and <span class="pre">trynew</span>
-			allocation and both responses to a failed allocation. The region may be Rc, So,
-			the <span class="pre">sync</span> package's Arc (Rc whose count several threads may change at once:
-			<span class="pre">Arc[imm, T]</span> owners may be copied and dropped on different threads, and the
-			value is finalized and freed once, after the last; see
-			<a href="refregionglo.html">regions</a>), the <span class="pre">collector</span> package's
-			garbage-collected Gc (<a href="refalloccust.html">custom allocators</a>; discouraged, single
-				threaded and outside actors only), the
-			<span class="pre">rcweak</span> package's Rcw, or any struct declaring
-			<span class="pre">is RegionRef</span>, and the region's own methods, and whether it declares
-			<a href="refmove.html"><span class="pre">Move</span></a>, decide when a value is freed;
-			its finalizer runs just before (<a href="refinitdrop.html#finalizer">finalizers</a>).
-			An allocation's parentheses hold the value's initializer arguments or a finished
-			value, <span class="pre">new Rc[imm, i32](4)</span>, and contents may follow it after
-			<span class="pre">&lt;-</span>. Not implemented: contents after a
-			<span class="pre">trynew</span> of anything but an array. The body of bytes,
-			<span class="pre">str</span>, may be owned in any region, a pointer and a count of
-			bytes (<a href="#dynbody">below</a>), and declares <a href="refperm.html#immutable">Immutable</a>;
-			its methods and its literals are not built, so it is allocated by copying a borrow of one made
-			of a slice of bytes. A construction whose head is a region <i>value</i> rather than a type,
-				<span class="pre">new a[Node](1)</span>, allocates in that value's region: an arena's, or for
-				<span class="pre">new self[Node](1)</span> in an actor, the actor's own garbage-collected
-				<span class="pre">ActorGc</span> (<a href="refregionglo.html">Region strategies</a>,
-				<a href="refconccomm.html#actor-gc">Its own region</a>).</i></p>
+	<p style="margin-left: 40px;"><i>Note: Contents after a <span class="pre">trynew</span> of anything but an array are not implemented.</i></p>
 
 	<p>When you allocate a new value within a region, you get back an owning reference that points to the new object.
 		For some regions, multiple alias copies may be created which are also owning references.
@@ -60,7 +36,16 @@ imm node = new Rc[mut, Node](1);
 		<li><a href="refregionglo.html"><b>Region</b></a> which allocates the value and manages its lifetime.
 			In this case, the value is allocated in the <span class="pre">Rc</span> region.
 			Later, we will explore some of the different kinds of
-			<a href="refregionglo.html">regions</a> supported by Cone.</li>
+			<a href="refregionglo.html">regions</a> supported by Cone.
+			The region may be <span class="pre">Rc</span> or <span class="pre">So</span> from core, the
+			<span class="pre">sync</span> package's <a href="refregionglo.html#arc">Arc</a> (Rc whose count several
+			threads may change at once), the <span class="pre">collector</span> package's garbage-collected
+			<span class="pre">Gc</span> (<a href="refalloccust.html">custom allocators</a>; discouraged, single
+			threaded and outside actors only), the <span class="pre">rcweak</span> package's
+			<span class="pre">Rcw</span>, or any struct declaring <span class="pre">is RegionRef</span>.
+			The region's own methods, and whether it declares
+			<a href="refmove.html"><span class="pre">Move</span></a>, decide when a value is freed; its
+			finalizer runs just before (<a href="refinitdrop.html#finalizer">finalizers</a>).</li>
 		<li><b><a href="refperm.html">Permission</a></b>.
 			This governs what you may do with the reference.
 			It can be a <a href="refperm.html">static</a> or <a href="refpermlock.html">lock</a> permission.
@@ -76,6 +61,17 @@ imm node = new Rc[mut, Node](1);
 		What we get back is an owning reference of the type written,
 		<span class="pre">Rc[mut, Node]</span>, which this example stores in the variable
 		<span class="pre">node</span>.</p>
+
+	<h3 id="regionhead">Allocating in a Region Value</h3>
+	<p>A construction whose head is a region <i>value</i> rather than a type,
+		<span class="pre">new a[Node](1)</span>, allocates in that value's region: an arena's, or, for
+		<span class="pre">new self[Node](1)</span> in an actor, the actor's own garbage-collected
+		<span class="pre">ActorGc</span>. The compiler reads <span class="pre">new a[Node](1)</span> as
+		<span class="pre">a.alloc(new Node(1))</span>, so what comes back is what that call returns (an arena
+		returns a borrowed <span class="pre">&amp;mut</span> reference to the value).
+		<a href="refregionglo.html#regionvalue">Region values</a> says what may head such a construction;
+		<a href="refregionglo.html#arenaalloc">Allocating in an arena</a> and
+		<a href="refregionglo.html#actorgc">ActorGc</a> show it at work.</p>
 
 	<h3 id="value">Allocating a Finished Value</h3>
 	<p>The parentheses may instead hold one finished value of the value type, which is moved

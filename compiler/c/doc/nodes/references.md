@@ -661,6 +661,28 @@ captured `&mut` parameter takes `self &mut` and not `self &`. `ref_typecheck_vie
 and `ref_typecheck_autoderef` pin the refusals; `ref_viewpoint_borrowed` what
 runs.
 
+**A `&uni` field is seen only through `uni` references, or in a struct held by
+value.** "A shared reference cannot see through a uni reference"
+([refperm](../../../../doc/reference/refperm.html), "Viewpoint Adaptation"), and
+"shared" includes `&mut`: `a.holder` with `holder &uni App`, reached through two
+`&mut Cell` names of one cell, would hand the one reference that promised to be
+unique to both, and the shape check that guards an element borrowed through a
+shared path (`ErrorShapeReshape`) treats a path through a `uni` link as reached
+by one name and skips it, so a second name could free the element the first
+still reads. `fnCallUniFieldSeen` (`fncall.c`), run where a field access is
+built (`fnCallFieldAccess`, and the field branch of `fnCallLowerMethodOn`), refuses with `ErrorUniShared` any access
+to a field declared as a `&uni` borrow, slice or virtual reference when
+`iexpPathNonUniLink` finds a reference on the way to it that is not `uni`: a `&`,
+`&mut`, `&imm`, a virtual reference, an owner whose permission is not `uni`
+(`Rc[mut, T]`). It is the access that is refused, whatever is done with the
+reference (a read, a lend, a write, a copy into a local), since every use is a
+sight of it. A local, a field of a value held by value, a `&uni` holder and an
+owner that is `uni` (`So[T]`, `Rc[T]`) are not refused. Not covered: a `&uni`
+held as an array element or in a tuple, which is reached by an index and not a
+field. The route in for a shared holder, a `recover` block that transitions the
+`uni` to `mut`, is not built. `ref_typecheck_uni_field_shared` pins the refusals
+and the allowed forms; `ref_viewpoint_borrowed` what runs.
+
 **The lifetime of a borrow is that of the place borrowed**, which
 `iexpGetLvalInfo` computes for every borrow, written or injected
 (`borrowTypeCheck`, `borrowMutRef`, `borrowAuto`, `borrowUniReborrow` for a
