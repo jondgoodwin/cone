@@ -7,7 +7,7 @@ resolution walks conditions and arms uniformly. Type check coerces each conditio
 to `bool`, folds the arms into one type, and may rewrite the last condition into
 an `else`; for a marked `if` it also judges what the cases cover (`ifMatchCover`).
 Flow walks **both arms against one shared state**. Generation builds the basic
-blocks and a phi.
+blocks and a phi, and a marked `if` that tests one integer, character or tag is built as one `switch`.
 
 *Provenance: read from source.*
 
@@ -269,6 +269,30 @@ the conditional branch (`genlTempsEnd`): a later condition runs on some paths
 only, so it cannot wait for the statement's end, and a `while`, which arrives
 as `if not cond { break }`, finalizes its own each pass ([Generation](../phases/generation.md),
 "Temporaries").
+
+**A marked `if` (`FlagIfMatch`) whose leading arms test one integer, character or
+enum tag is one LLVM `switch`** (`genlIfSwitch`), made before the chain, so flow,
+borrows, narrowing and exhaustiveness have all worked on the `if` nodes as written.
+`genlSwitchTest` reads each arm's condition as it was type checked and
+takes it if it is: a `==` of the matched value with a literal of its type or a named constant
+(the built-in integer `==`); `v >= lo and v <= hi` or `v < hi`, the range pattern, spelled out as a label
+for each value (at most `SwitchMaxRange`, 128); an `is` of a variant, or of the variants a
+trait pattern names (`CastNode.variants`), a label for each tag; or an `or` of those. The matched value
+is the expression the first test reads, generated once before the `switch`
+(a place is read once instead of once for each test; a call was already held in a variable), and for a tag it
+is the enum's tag field, read through the reference if the matched value is one
+(`genlTagLoad`, which `genlIsVariant` uses too). The plan stops at the first arm that is
+`elseCond`, is not such a test (a guard — the `and` flagged `FlagMatchGuard` —, a `match a, b` row, another
+comparison, a call, a string, a float), tests a different kind of value than the first, holds a
+nullable-pointer variant or a virtual reference, or would take the switch past `SwitchMaxLabels` (512) labels;
+fewer than `SwitchMinArms` (2) arms stay a chain. A value an earlier arm already has keeps that arm
+(LLVM refuses a label twice). Each arm's block is generated as the chain's are (`genlIfArm`): a binding is
+the first statements of the block, not part of the test. The `switch`'s default is the `ifnext` where
+the chain carries on from the first arm not taken, so an `else`, which a match that covers an enum has
+as its last case after `ifMatchCover`, is the default. The only difference from the chain is that the matched
+value is read once, which no arm could have changed before it was chosen. A debug build's `simplifycfg`
+makes a `switch` of a chain of `==` or of tag tests too, but not of ranges, and a chain it cannot make
+one of costs a compare for each arm; the plan makes the `switch` before any pass, in every build.
 
 After each arm, if its last statement is not a jump, branch to `endif` and
 record a phi incoming — using `LLVMGetInsertBlock`, not `ifblk`, because the arm
