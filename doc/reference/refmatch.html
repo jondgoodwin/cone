@@ -31,7 +31,7 @@
     and refused only if something could change the variant while it is used; one through an owner such as an
     <span class="pre">Rc</span> is another owner of the value. A name tested for a variant is that variant
     where the test holds (<a href="#flow">Flow typing</a>), and a binding that outlives an early exit is
-    <span class="pre">imm n Ok = r else {...};</span> (<a href="#letelse">Binding past an early exit</a>). A trait named in a match on an enum matches the variants that comply with it (<a href="#traitpat">Trait patterns</a>). A struct's partial pattern is written with its fields in square brackets (<span class="pre">Point[0., _]</span>), and a variant's as a variant is constructed, in square brackets (<span class="pre">SomeInt[&lt;0]</span>): that is the current spelling, and how a match pattern spells a type or a construction is an open design question, as is how a variant is constructed (<a href="refenum.html#init">Enums</a>).</i></p>
+    <span class="pre">imm n Ok = r else {...};</span> (<a href="#letelse">Binding past an early exit</a>). A trait named in a match on an enum matches the variants that comply with it (<a href="#traitpat">Trait patterns</a>). A match on one integer, character or enum compiles to a jump table (<a href="#switch">Jump tables</a>). A struct's partial pattern is written with its fields in square brackets (<span class="pre">Point[0., _]</span>), and a variant's as a variant is constructed, in square brackets (<span class="pre">SomeInt[&lt;0]</span>): that is the current spelling, and how a match pattern spells a type or a construction is an open design question, as is how a variant is constructed (<a href="refenum.html#init">Enums</a>).</i></p>
 
   <p>As with <span class="pre">if</span>, pattern matching is about deciding
   which code path to perform. 
@@ -138,6 +138,31 @@ fn side(n i32) i32 {
   nothing from a place at all: it sees a copy of plain data, and a payload that owns something through a
   read-only borrow of it. A guard that fails leaves the place whole for the cases after it, and the arm
   that runs is the one that takes.</p>
+
+  <h3 id="switch">Jump tables</h3>
+  <p>A match on <b>one integer, character or enum</b> compiles to a single <span class="pre">switch</span>
+  on that value in every build, which the back end makes a jump table, a binary search or a bit test
+  as the cases lie. Nothing is written for it: it is what the cases mean.
+  The cases that count are those before the first that does not test the value against constants:
+  a constant (a literal or a named constant), a range, <span class="pre">or</span> of those, and,
+  on an enum, a variant, a binding of one, and a trait that names variants
+  (<a href="#traitpat">Trait patterns</a>). Those cases are the <span class="pre">switch</span>; the rest, from the first
+  case with an <span class="pre">if</span> guard, a comparison such as <span class="pre">&gt; 3</span>, a text or a
+  range too wide to list (more than 128 values), or from the <span class="pre">else</span>, is tried in order as
+  the default. A match that covers an enum with no <span class="pre">else</span> has its last case as the default.
+  Cases are still tried top to bottom: a value two cases share belongs to the first.</p>
+<pre>
+fn kind(c char) i32 {
+  match c {
+    case 'a' or 'e' or 'i' or 'o' or 'u' { 1; }   // these four cases are the switch
+    case 'b' .. 'd' { 2; }
+    case '0' .. '9' { 3; }
+    case ' ' { 4; }
+    case 'Ā' .. '\U0010ffff' { 5; }          // too wide: tried after the switch, in order
+    else { 0; }
+  }
+}
+</pre>
 
   <h2>Whole Value Matches</h2>
   <p>These patterns involve straightforward comparisons between the matchee value

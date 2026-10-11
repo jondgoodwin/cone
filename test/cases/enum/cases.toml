@@ -398,6 +398,42 @@ category = "run"
 description = "A match that names every variant of an enum or both values of a bool needs no 'else', statement or value, an 'or' naming several at once, and 'match a, b' matches several values with a pattern for each and '_' for any: the combinations covered, a column of numbers needing the 'else', a guarded case not counting, the values evaluated once each in the order written"
 tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
 
+[scenario.enum_match_switch]
+category = "run"
+description = "A match on one integer, character or enum tag is an LLVM switch in every build: its leading cases that test constants (named ones too), ranges up to 128 values, 'or's and variants (a trait pattern's, through a reference, a binding in the case) are the labels, a value an earlier case took keeps that case, and the chain from the first guard, wider range or 'else' is the default, so each case still yields what the chain gave it"
+tags = ["genllvm", "runtime"]
+
+[[scenario.enum_match_switch.run]]
+name = "release"
+options = []
+
+[[scenario.enum_match_switch.run]]
+name = "debug"
+options = ["--debug"]
+
+# What generation writes, before any pass of LLVM's: sixty characters are one switch of the character,
+# a range is its values spelled out, a value an earlier case took is not a label again (12), and the
+# cases from the first range too wide to spell out are the chain in the default
+[[scenario.enum_match_switch.check]]
+name = "a-match-on-a-character-is-a-switch"
+target = "preir"
+contains = [
+  "switch i32 %c1, label %ifnext [\n    i32 97, label %ifblk\n    i32 98, label %ifblk2\n    i32 99, label %ifblk3\n",
+  "    i32 -1, label %ifblk\n    i32 7, label %ifblk2\n    i32 10, label %ifblk3\n    i32 11, label %ifblk3\n    i32 12, label %ifblk3\n    i32 -5, label %ifblk4\n",
+  "    i32 20, label %ifblk5\n    i32 21, label %ifblk5\n    i32 13, label %ifblk6\n    i32 40, label %ifblk7\n    i32 41, label %ifblk7\n    i32 42, label %ifblk7\n",
+  "switch i32 %n1, label %ifnext [\n    i32 1, label %ifblk\n    i32 2, label %ifblk2\n  ]",
+  "icmp sge i32 %n5, 3",
+]
+
+# A match on an enum switches on its tag, read once; a pinned tag is the label; the guard ends the labels
+[[scenario.enum_match_switch.check]]
+name = "a-match-on-an-enum-is-a-switch-of-its-tag"
+target = "preir"
+contains = [
+  "switch i32 %tag, label %ifnext [\n    i32 5, label %ifblk\n    i32 1000, label %ifblk2\n  ]",
+  "switch i8 %tag, label %ifnext [\n    i8 0, label %ifblk\n    i8 1, label %ifblk2\n  ]",
+]
+
 [scenario.enum_parse_match_columns]
 category = "reject"
 description = "The columns of 'match a, b': '_' in a match of one value, a case with fewer or more patterns than the match has values, and a pattern in a column that binds a variable"

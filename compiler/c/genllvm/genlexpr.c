@@ -79,6 +79,27 @@ static LLVMValueRef genlVarSym(GenState *gen, VarDclNode *var) {
     return var->llvmvar ? genlFlatAddr(gen, var->llvmvar) : NULL;
 }
 
+// Generate one arm's block, along with the jump to endif if it does not end with
+// a jump away, and remember its value and block for the phi (or merge slot) at endif
+static void genlIfArm(GenState *gen, BlockNode *blk, LLVMBasicBlockRef endif, int hasval, LLVMValueRef mergeslot,
+                      LLVMValueRef *blkvals, LLVMBasicBlockRef *blks, int *phicnt) {
+    LLVMValueRef blkval = genlBlock(gen, blk);
+    uint16_t lastStmttype = nodesLast(blk->stmts)->tag;
+    if (lastStmttype != ReturnTag && lastStmttype != BreakTag && lastStmttype != ContinueTag) {
+        if (mergeslot && blkval)
+            LLVMBuildStore(gen->builder, blkval, mergeslot);
+        LLVMBuildBr(gen->builder, endif);
+        // Remember value and block if needed for phi merge
+        if (hasval) {
+            blkvals[*phicnt] = blkval;
+            blks[(*phicnt)++] = LLVMGetInsertBlock(gen->builder);
+        }
+    }
+}
+
+static uint32_t genlIfSwitch(GenState *gen, IfNode *ifnode, LLVMBasicBlockRef endif, int hasval, LLVMValueRef mergeslot,
+                             LLVMValueRef *blkvals, LLVMBasicBlockRef *blks, int *phicnt);
+
 // Generate an if statement
 LLVMValueRef genlIf(GenState *gen, IfNode *ifnode) {
     LLVMBasicBlockRef endif;
@@ -105,7 +126,19 @@ LLVMValueRef genlIf(GenState *gen, IfNode *ifnode) {
     }
 
     endif = genlInsertBlock(gen, "endif");
+
+    // A match on one integer, character or enum's tag whose first arms test it
+    // against constants, ranges and variants becomes one 'switch' of those arms; the
+    // chain below carries on from the first arm that is not such a test
+    uint32_t switched = 0;
+    if (ifnode->flags & FlagIfMatch)
+        switched = genlIfSwitch(gen, ifnode, endif, hasval, mergeslot, hasval ? blkvals : NULL, hasval ? blks : NULL, &phicnt);
+
     for (nodesFor(ifnode->condblk, cnt, nodesp)) {
+        if ((uint32_t)i < switched) {
+            cnt--; nodesp++; i++;
+            continue;
+        }
 
         // A condition that is a constant of the build (intrinsicBuildConst):
         // a false one's block is not generated at all, and a true one's is
@@ -141,18 +174,7 @@ LLVMValueRef genlIf(GenState *gen, IfNode *ifnode) {
         }
 
         // Generate this condition's code block, along with jump to endif if block does not end with a return
-        LLVMValueRef blkval = genlBlock(gen, (BlockNode*)*(nodesp + 1));
-        uint16_t lastStmttype = nodesLast(((BlockNode*)*(nodesp + 1))->stmts)->tag;
-        if (lastStmttype != ReturnTag && lastStmttype != BreakTag && lastStmttype != ContinueTag) {
-            if (mergeslot && blkval)
-                LLVMBuildStore(gen->builder, blkval, mergeslot);
-            LLVMBuildBr(gen->builder, endif);
-            // Remember value and block if needed for phi merge
-            if (hasval) {
-                blkvals[phicnt] = blkval;
-                blks[phicnt++] = LLVMGetInsertBlock(gen->builder);
-            }
-        }
+        genlIfArm(gen, (BlockNode*)*(nodesp + 1), endif, hasval, mergeslot, blkvals, blks, &phicnt);
 
         LLVMPositionBuilderAtEnd(gen->builder, nextif);
         cnt--; nodesp++; i++;
@@ -1767,6 +1789,8 @@ LLVMValueRef genlLocalVar(GenState *gen, VarDclNode *var) {
 
 static LLVMValueRef genlIsVariant(GenState *gen, CastNode *isnode, LLVMValueRef val, INode *exptype, int viaref,
                                   StructNode *structtype);
+static FieldDclNode *genlTagField(StructNode *structtype);
+static LLVMValueRef genlTagLoad(GenState *gen, LLVMValueRef val, INode *exptype, int viaref, FieldDclNode *tagnode);
 
 // Returns a boolean indicating whether some value may be downcast to the specialized type
 LLVMValueRef genlIsType(GenState *gen, CastNode *isnode) {
@@ -1854,26 +1878,300 @@ static LLVMValueRef genlIsVariant(GenState *gen, CastNode *isnode, LLVMValueRef 
 
     // Pattern match whether termnode's tag matches desired concrete struct type
     // Find and extract tag field from val, then compare with to-type's tag number
-    INode **nodesp;
-    uint32_t cnt;
-    for (nodelistFor(&structtype->fields, cnt, nodesp)) {
-        if ((*nodesp)->flags & IsTagField) {
-            FieldDclNode *tagnode = (FieldDclNode*)*nodesp;
-            if (viaref) {
-                val = LLVMBuildStructGEP2(gen->builder, genlPointeeType(gen, exptype), val, tagnode->index, "tagref");
-                val = LLVMBuildLoad2(gen->builder, genlType(gen, tagnode->vtype), val, "tag");
-            }
-            else
-                val = LLVMBuildExtractValue(gen->builder, val, tagnode->index, "tag");
-            LLVMValueRef tagval = genlTagConst(genlType(gen, tagnode->vtype), structtype);
-            return LLVMBuildICmp(gen->builder, LLVMIntEQ, val, tagval, "istag");
-        }
+    FieldDclNode *tagnode = genlTagField(structtype);
+    if (tagnode) {
+        val = genlTagLoad(gen, val, exptype, viaref, tagnode);
+        LLVMValueRef tagval = genlTagConst(genlType(gen, tagnode->vtype), structtype);
+        return LLVMBuildICmp(gen->builder, LLVMIntEQ, val, tagval, "istag");
     }
     // castIsTypeCheck refuses a downcast whose source struct has no tag field,
     // and the target is a subtype of that source, so it carries the tag too
     errorUnreachable((INode*)isnode, "a narrowing to a type carrying no tag field");
     return NULL;
 }
+
+// The tag field of an enum's variant, or NULL for a struct that has none
+static FieldDclNode *genlTagField(StructNode *structtype) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&structtype->fields, cnt, nodesp)) {
+        if ((*nodesp)->flags & IsTagField)
+            return (FieldDclNode*)*nodesp;
+    }
+    return NULL;
+}
+
+// The tag of the tagged value 'val', through a reference if 'viaref'
+static LLVMValueRef genlTagLoad(GenState *gen, LLVMValueRef val, INode *exptype, int viaref, FieldDclNode *tagnode) {
+    if (viaref) {
+        val = LLVMBuildStructGEP2(gen->builder, genlPointeeType(gen, exptype), val, tagnode->index, "tagref");
+        return LLVMBuildLoad2(gen->builder, genlType(gen, tagnode->vtype), val, "tag");
+    }
+    return LLVMBuildExtractValue(gen->builder, val, tagnode->index, "tag");
+}
+
+// ---- A match as an LLVM 'switch' [match: jump tables] ----
+//
+// A match is de-sugared at parse time into an 'if' chain (FlagIfMatch), so that flow,
+// borrows, narrowing and exhaustiveness work on 'if' nodes unchanged. Here its leading
+// arms whose tests are all constants, ranges or variants of the one matched value become
+// a single 'switch' of that value; the arms' blocks are generated as the chain's are
+// (a binding is code in the block, not part of the test), and the rest of the chain,
+// from the first arm that tests anything else (a guard, a comparison, a call, a
+// 'match a, b' row) or is the 'else', is the switch's default.
+//
+// A range is spelled out as one case for each value it holds, up to SwitchMaxRange, and
+// an arm with a larger one, or that would take the switch past SwitchMaxLabels cases, is
+// the first arm of the chain. A value an earlier arm took keeps that arm. A match on a
+// nullable-pointer enum, a virtual reference or a float stays a chain.
+#define SwitchMaxLabels 512
+#define SwitchMaxRange 128
+#define SwitchMinArms 2
+
+typedef struct {
+    int started;            // the first test has set the kind of value
+    int tagged;             // the value is an enum's tag, else an integer or character
+    INode *subject;         // the matched expression, as the first test reads it
+    INode *typedcl;         // integer: the matched value's type
+    LLVMTypeRef valtype;    // the LLVM type switched on
+    INode *exptype;         // tagged: the matched expression's type
+    int viaref;             // tagged: the value is a reference to the enum
+    FieldDclNode *tagnode;  // tagged: the field the tag sits in
+    uint32_t nlabels;
+    uint64_t label[SwitchMaxLabels];
+    uint32_t arm[SwitchMaxLabels];
+} SwitchPlan;
+
+// Give a label to an arm, unless an earlier arm has it. Zero if the switch is full.
+static int genlSwitchLabel(SwitchPlan *plan, uint64_t label, uint32_t arm) {
+    for (uint32_t k = 0; k < plan->nlabels; ++k)
+        if (plan->label[k] == label)
+            return 1;
+    if (plan->nlabels == SwitchMaxLabels)
+        return 0;
+    plan->label[plan->nlabels] = label;
+    plan->arm[plan->nlabels++] = arm;
+    return 1;
+}
+
+// A call of a number's built-in comparison with the matched value first: the
+// intrinsic it is, and the two operands
+static int genlSwitchCompare(INode *cond, int16_t *op, INode **matched, INode **value) {
+    if (cond->tag != FnCallTag)
+        return 0;
+    FnCallNode *call = (FnCallNode*)cond;
+    if (!(call->flags & FlagOperator) || call->methfld != NULL || call->objfn == NULL || !isNameUseNode(call->objfn)
+        || call->args == NULL || call->args->used != 2)
+        return 0;
+    INode *callee = ((NameUseNode*)call->objfn)->dclnode;
+    if (callee == NULL || callee->tag != FnDclTag || ((FnDclNode*)callee)->value == NULL
+        || ((FnDclNode*)callee)->value->tag != IntrinsicTag || intrinsicIsDeclared((FnDclNode*)callee))
+        return 0;
+    *op = ((IntrinsicNode*)((FnDclNode*)callee)->value)->intrinsicFn;
+    *matched = nodesGet(call->args, 0);
+    *value = nodesGet(call->args, 1);
+    return 1;
+}
+
+// The matched value of an integer test, which must be the one the plan has, and
+// whose type sets the plan's if it is the first
+static int genlSwitchInt(GenState *gen, SwitchPlan *plan, INode *matched) {
+    if (!isExpNode(matched))
+        return 0;
+    INode *typedcl = iexpGetTypeDcl(matched);
+    if ((typedcl->tag != IntNbrTag && typedcl->tag != UintNbrTag) || ((NbrNode*)typedcl)->bits < 2)
+        return 0;
+    if (!plan->started) {
+        plan->started = 1;
+        plan->tagged = 0;
+        plan->subject = matched;
+        plan->typedcl = typedcl;
+        plan->valtype = genlType(gen, typedcl);
+        return 1;
+    }
+    return !plan->tagged && plan->typedcl == typedcl;
+}
+
+// The constant a test compares with: a literal of the matched value's type, or a
+// named constant that is one. Its bits at the width of that type.
+static int genlSwitchConst(GenState *gen, SwitchPlan *plan, INode *node, uint64_t *bits) {
+    while (isNameUseNode(node) && ((NameUseNode*)node)->dclnode && ((NameUseNode*)node)->dclnode->tag == ConstDclTag)
+        node = ((ConstDclNode*)((NameUseNode*)node)->dclnode)->value;
+    if (node == NULL || node->tag != ULitTag || (node->flags & (FlagMatchAny | FlagUnkType)))
+        return 0;
+    if (iexpGetTypeDcl(node) != plan->typedcl)
+        return 0;
+    unsigned width = LLVMGetIntTypeWidth(plan->valtype);
+    uint64_t val = ((ULitNode*)node)->uintlit;
+    *bits = width < 64 ? val & ((1ull << width) - 1) : val;
+    return 1;
+}
+
+// The bits of a constant as the number it is, widened to 64 bits as its type's sign says
+static int64_t genlSwitchSigned(SwitchPlan *plan, uint64_t bits) {
+    unsigned width = LLVMGetIntTypeWidth(plan->valtype);
+    return width < 64 ? (int64_t)(bits << (64 - width)) >> (64 - width) : (int64_t)bits;
+}
+
+// A range pattern, 'v >= lo and v <= hi' or 'v >= lo and v < hi': one label for
+// each value it holds
+static int genlSwitchRange(GenState *gen, SwitchPlan *plan, LogicNode *range, uint32_t arm) {
+    int16_t loop, hiop;
+    INode *lomatched, *lo, *himatched, *hi;
+    if (!genlSwitchCompare(range->lexp, &loop, &lomatched, &lo) || !genlSwitchCompare(range->rexp, &hiop, &himatched, &hi))
+        return 0;
+    int issigned = loop == SGeIntrinsic;
+    int exclusive = hiop == (issigned ? SLtIntrinsic : LtIntrinsic);
+    if ((loop != GeIntrinsic && loop != SGeIntrinsic) || (hiop != (issigned ? SLeIntrinsic : LeIntrinsic) && !exclusive))
+        return 0;
+    uint64_t lobits, hibits;
+    if (!genlSwitchInt(gen, plan, lomatched) || !genlSwitchInt(gen, plan, himatched)
+        || !genlSwitchConst(gen, plan, lo, &lobits) || !genlSwitchConst(gen, plan, hi, &hibits))
+        return 0;
+    unsigned width = LLVMGetIntTypeWidth(plan->valtype);
+    uint64_t mask = width < 64 ? (1ull << width) - 1 : ~0ull;
+    uint64_t first, count;
+    if (issigned) {
+        int64_t slo = genlSwitchSigned(plan, lobits), shi = genlSwitchSigned(plan, hibits);
+        if (exclusive ? shi <= slo : shi < slo)
+            return 1;       // no value is in it
+        first = (uint64_t)slo;
+        count = (uint64_t)shi - (uint64_t)slo + (exclusive ? 0 : 1);
+    }
+    else {
+        if (exclusive ? hibits <= lobits : hibits < lobits)
+            return 1;
+        first = lobits;
+        count = hibits - lobits + (exclusive ? 0 : 1);
+    }
+    if (count == 0 || count > SwitchMaxRange)
+        return 0;
+    for (uint64_t k = 0; k < count; ++k)
+        if (!genlSwitchLabel(plan, (first + k) & mask, arm))
+            return 0;
+    return 1;
+}
+
+// The variants an 'is' test names, as labels. A test of any other kind of value, or
+// of a variant held as a null pointer, is no label.
+static int genlSwitchIs(GenState *gen, SwitchPlan *plan, CastNode *isnode, uint32_t arm) {
+    if ((isnode->flags & FlagMatchValue) || castPatternPending(isnode->typ) || !isTypeNode(isnode->typ) || !isExpNode(isnode->exp))
+        return 0;
+    INode *exptype = iexpGetTypeDcl(isnode->exp);
+    INode *istype = itypeGetTypeDcl(isnode->typ);
+    if (exptype->tag == VirtRefTag || exptype->tag == UnknownTag)
+        return 0;
+    int viaref = isnode->variants ? exptype->tag == RefTag : istype->tag == RefTag;
+    StructNode *single = NULL;
+    if (!isnode->variants) {
+        INode *target = istype->tag == RefTag ? itypeGetTypeDcl(((RefNode*)istype)->vtexp) : istype;
+        if (target->tag != StructTag)
+            return 0;
+        single = (StructNode*)target;
+    }
+    Nodes *variants = isnode->variants;
+    uint32_t nvariants = variants ? variants->used : 1;
+    for (uint32_t k = 0; k < nvariants; ++k) {
+        StructNode *variant = single ? single : (StructNode*)nodesGet(variants, k);
+        if (variant->tag != StructTag || (variant->flags & NullablePtr))
+            return 0;
+        FieldDclNode *tagnode = genlTagField(variant);
+        if (tagnode == NULL)
+            return 0;
+        LLVMTypeRef tagtype = genlType(gen, tagnode->vtype);
+        if (!plan->started) {
+            plan->started = 1;
+            plan->tagged = 1;
+            plan->subject = isnode->exp;
+            plan->exptype = exptype;
+            plan->viaref = viaref;
+            plan->tagnode = tagnode;
+            plan->valtype = tagtype;
+        }
+        else if (!plan->tagged || plan->exptype != exptype || plan->viaref != viaref
+            || plan->tagnode->index != tagnode->index || plan->valtype != tagtype)
+            return 0;
+        if (!genlSwitchLabel(plan, LLVMConstIntGetZExtValue(genlTagConst(tagtype, variant)), arm))
+            return 0;
+    }
+    return 1;
+}
+
+// Can this arm's test be labels of the switch? Each alternative of an 'or' must be.
+static int genlSwitchTest(GenState *gen, SwitchPlan *plan, INode *cond, uint32_t arm) {
+    switch (cond->tag) {
+    case OrLogicTag:
+        return genlSwitchTest(gen, plan, ((LogicNode*)cond)->lexp, arm) && genlSwitchTest(gen, plan, ((LogicNode*)cond)->rexp, arm);
+    case AndLogicTag:
+        // a row of 'match a, b' or a guard is a condition to test, no range
+        if (cond->flags & (FlagMatchRow | FlagMatchGuard))
+            return 0;
+        return genlSwitchRange(gen, plan, (LogicNode*)cond, arm);
+    case IsTag:
+        return genlSwitchIs(gen, plan, (CastNode*)cond, arm);
+    case FnCallTag:
+    {
+        int16_t op;
+        INode *matched, *value;
+        uint64_t bits;
+        if (!genlSwitchCompare(cond, &op, &matched, &value) || op != EqIntrinsic)
+            return 0;
+        if (!genlSwitchInt(gen, plan, matched) || !genlSwitchConst(gen, plan, value, &bits))
+            return 0;
+        return genlSwitchLabel(plan, bits, arm);
+    }
+    default:
+        return 0;
+    }
+}
+
+// Generate the leading arms of a match as a 'switch'. Answers how many arms it took, or
+// 0 with nothing generated; the builder is left in the switch's default, where the
+// chain carries on with the arms that follow.
+static uint32_t genlIfSwitch(GenState *gen, IfNode *ifnode, LLVMBasicBlockRef endif, int hasval, LLVMValueRef mergeslot,
+                             LLVMValueRef *blkvals, LLVMBasicBlockRef *blks, int *phicnt) {
+    uint32_t count = ifnode->condblk->used / 2;
+    SwitchPlan planbuf;
+    SwitchPlan *plan = &planbuf;
+    memset(plan, 0, sizeof(SwitchPlan));
+    uint32_t narms = 0;
+    while (narms < count) {
+        INode *cond = nodesGet(ifnode->condblk, 2 * narms);
+        uint32_t mark = plan->nlabels;
+        if (cond == elseCond || !genlSwitchTest(gen, plan, cond, narms)) {
+            plan->nlabels = mark;
+            break;
+        }
+        ++narms;
+    }
+    if (narms < SwitchMinArms)
+        return 0;
+
+    // The matched value, read once: every test of the arms would have read the same
+    // place before any arm ran
+    uint32_t tempmark = gen->tempcnt;
+    LLVMValueRef val = genlExpr(gen, plan->subject);
+    if (plan->tagged)
+        val = genlTagLoad(gen, val, plan->exptype, plan->viaref, plan->tagnode);
+    genlTempsEnd(gen, tempmark);
+
+    // One block for each arm, then the default: the rest of the chain, or the end
+    LLVMBasicBlockRef *armblks = memAllocBlk(narms * sizeof(LLVMBasicBlockRef));
+    for (uint32_t a = 0; a < narms; ++a)
+        armblks[a] = LLVMInsertBasicBlockInContext(gen->context, endif, "ifblk");
+    LLVMBasicBlockRef deflt = narms < count ? LLVMInsertBasicBlockInContext(gen->context, endif, "ifnext") : endif;
+    LLVMValueRef sw = LLVMBuildSwitch(gen->builder, val, deflt, plan->nlabels);
+    for (uint32_t k = 0; k < plan->nlabels; ++k)
+        LLVMAddCase(sw, LLVMConstInt(plan->valtype, plan->label[k], 0), armblks[plan->arm[k]]);
+
+    for (uint32_t a = 0; a < narms; ++a) {
+        LLVMPositionBuilderAtEnd(gen->builder, armblks[a]);
+        genlIfArm(gen, (BlockNode*)nodesGet(ifnode->condblk, 2 * a + 1), endif, hasval, mergeslot, blkvals, blks, phicnt);
+    }
+    LLVMPositionBuilderAtEnd(gen->builder, deflt);
+    return narms;
+}
+
 
 // Add an attribute that takes no value ('noreturn', 'cold') to a function
 void genlFnAttr(GenState *gen, LLVMValueRef fn, char *name) {
