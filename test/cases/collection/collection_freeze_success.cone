@@ -9,7 +9,10 @@
 // '&mut' of it. An owning reference coerced to a borrow may be moved after the
 // borrow's last use. Each case prints what it read through the borrow.
 //
-// The refusals are collection_flow_freeze and region_flow_arena_freeze.
+// A mutable borrow of a local is an alias loan (ref_alias_mut_success): one a
+// method returned out of a list, or of a struct's field, lets the source be
+// read, lent again and written beside it. The refusals are
+// collection_flow_freeze and region_flow_arena_freeze.
 
 mod collection_freeze_success;
 
@@ -100,6 +103,56 @@ fn arenaAllocations() {
   show("arena-live-together", r1.x + r2.x * 10 + x.x * 100 + y.x * 1000 + node.n * 10000);
 }
 
+// A mutable borrow a method returned is an alias loan, as every 'mut' borrow of a
+// local is: while the slice 'viewMut' lends is used, the list is read, lent by
+// 'viewMut' again and viewed; a change of shape is what collection_flow_freeze
+// refuses
+fn viewMutBorrowsAlias() {
+  mut list = List[i64].empty();
+  list.push(1);
+  imm s = list.viewMut();
+  imm t = list.viewMut();
+  imm r = list.view();
+  imm n = list.len();
+  s[0usize] = 5;
+  t[0usize] = t[0usize] + 10;
+  show("views-alias", r[0usize] * 10 + i64.from(n));
+}
+
+// A plain struct whose method lends a mutable borrow of its field, read beside it
+struct Cell {
+  pub v i64;
+  pub fn get(self &mut) &mut i64 { &mut v; }
+}
+
+fn cellReadUnderMut() {
+  mut c = new Cell(5);
+  imm r = c.get();
+  imm seen = c.v;
+  *r = 6;
+  show("cell-read-under-mut", seen * 10 + c.v);
+}
+
+fn fill(l &mut List[i64], n usize) { l.push(i64.from(n)); }
+
+fn takeLast(l &mut List[i64]) i64 {
+  match l.pop() {
+    case imm n Some { n; }
+    else { 0; }
+  }
+}
+
+// An explicit mutable borrow beside a read of the list in one call, and a
+// receiver's push beside an argument borrowing the list mutably: the borrows
+// are all aliases, and the argument is worked out before the push
+fn explicitAndReceiver() {
+  mut v = List[i64].empty();
+  fill(&mut v, v.len());
+  v.push(7);
+  v.push(takeLast(&mut v));
+  show("explicit-borrow-and-receiver", i64.from(v.len()) * 100 + *v[0usize] * 10 + *v[1usize]);
+}
+
 fn consumePt(p So[Pt]) i64 { p.x; }
 
 // An owning reference coerced to a borrow, moved after the borrow's last use
@@ -116,6 +169,9 @@ fn main() {
   elementChain();
   loopThenPush();
   poolRead();
+  viewMutBorrowsAlias();
+  cellReadUnderMut();
+  explicitAndReceiver();
   arenaAllocations();
   ownedLent();
 }

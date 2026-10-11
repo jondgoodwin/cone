@@ -232,14 +232,17 @@ something could change the variant while the narrowed reference is used.
 `castSumInterior` asks, once the conversion has become a recast:
 - the from-reference's permission has `MayIntRefSum` — `uni`, `imm`, `mut1`: no
   other name can change the variant, and nothing more is asked; or
-- it is a borrow made here of a place reached as `uni` (`castBorrowsUni`): the
-  value of the hidden `_` variable a `match` or bound `if` captures its
-  scrutinee in is a `BorrowTag` whose place
+- it is a read-only or `uni` borrow made here of a place reached as `uni`
+  (`castBorrowsUni`): the value of the hidden `_` variable a `match` or bound
+  `if` captures its scrutinee in is a `BorrowTag` whose place
   (`castUniPlace`) is a non-static variable of this function held by value, a
   field or array element of one (not reached through a reference, slice or
   pointer), or a dereference of a `uni` reference such a place holds. The loan
   walk then freezes that place while the borrow, and the binding that holds its
-  loan, are used.
+  loan, are used. A `mut` borrow (`match &mut s`) is no longer such: it is an
+  alias loan, the local has other names while it is held, and the narrowing is
+  followed by the loan walk as one through a shared path is (flow.md, "A change
+  through another name").
 
 Everything else — a parameter of reference type, a reborrow through a shared
 path, a field reached through a `mut` reference, a variable the program names

@@ -1,0 +1,169 @@
+// What a 'mut' borrow of a local, or of what a '&uni' reference points at, still
+// refuses. It is an alias loan (ref_alias_mut_success): the source is readable,
+// lendable and writable beside it, and several such borrows are held at once. A
+// change of shape is not let through: the shape check, which a source reached
+// through a '&mut' parameter has always been held to, follows the borrow into a
+// collection, by the source's name or by another borrow of it, a store over the
+// collection and a call that pushes through another '&mut' of it, a struct
+// holding one, or a closure; so does a struct that wraps a collection, whose
+// field cannot be pushed to while a borrow its method lent is used. Each
+// function here is the program with a push (or a store) where the alias loan
+// lets only a read through; the same programs with the borrow dead before it are
+// collection_freeze_success.
+
+mod collection_flow_alias;
+
+import collections use *;
+
+struct Entity { pub hp i64; pub rings List[i64]; }
+struct World {
+  pub entities List[Entity];
+  pub score i64;
+  pub fn first(self &mut) &mut Entity { &mut entities[0usize]; }
+}
+
+struct Guard['a] {
+  pub target &'a mut List[Entity];
+  pub fn rollback(self &) { target.push(mk()); }
+}
+
+fn mk() Entity { new Entity(1, List[i64].empty()); }
+fn grow(l &mut List[Entity]) { l.push(mk()); }
+
+// An element borrowed mutably, then the list pushed onto through its name
+fn pushThroughName() i64 {
+  mut l = new List[Entity](4);
+  l.push(mk());
+  imm e = &mut l[0usize];
+  l.push(mk());                  //~ ErrorShapeReshape
+  e.hp;
+}
+
+// ... through another '&mut' of it
+fn pushThroughAlias() i64 {
+  mut l = new List[Entity](4);
+  l.push(mk());
+  imm m = &mut l;
+  imm e = &mut l[0usize];
+  m.push(mk());                  //~ ErrorShapeReshape
+  e.hp;
+}
+
+// ... through a call handed another '&mut' of it
+fn pushThroughCall() i64 {
+  mut l = new List[Entity](4);
+  l.push(mk());
+  imm e = &mut l[0usize];
+  grow(&mut l);                  //~ ErrorShapeReshape
+  e.hp;
+}
+
+// ... through a struct holding one
+fn pushThroughGuard() i64 {
+  mut l = new List[Entity](4);
+  l.push(mk());
+  imm g = new Guard(&mut l);
+  imm e = &mut l[0usize];
+  g.rollback();                  //~ ErrorShapeReshape
+  e.hp;
+}
+
+// ... through a closure that holds one
+fn pushThroughClosure() i64 {
+  mut l = new List[Entity](4);
+  l.push(mk());
+  mut f = fn() { l.push(mk()); };
+  imm e = &mut l[0usize];
+  f();                           //~ ErrorShapeReshape
+  e.hp;
+}
+
+// A read-only element borrow is frozen against a push, as it was
+fn pushUnderElement() i64 {
+  mut l = new List[Entity](4);
+  l.push(mk());
+  imm e = l[0usize];
+  l.push(mk());                  //~ ErrorFrozen
+  e.hp;
+}
+
+// A cursor over the list, then the list pushed onto
+fn pushUnderCursor() {
+  mut l = new List[i64](4);
+  l.push(1);
+  mut it = l.mutItems();
+  l.push(2);                     //~ ErrorShapeReshape
+  it.next();
+}
+
+// Through a '&uni' parameter
+fn pushUnderElementUni(l &uni List[Entity]) i64 {
+  imm e = &mut l[0usize];
+  l.push(mk());                  //~ ErrorShapeReshape
+  e.hp;
+}
+
+fn pushThroughReborrowUni(l &uni List[Entity]) i64 {
+  imm e = &mut l[0usize];
+  imm f = &mut *l;
+  f.push(mk());                  //~ ErrorShapeReshape
+  e.hp;
+}
+
+// The list stored over whole, or its elements dropped, while an element is borrowed
+fn storeOverList(l &mut List[Entity]) i64 {
+  imm e = &mut l[0usize];
+  *l = new List[Entity](4);      //~ ErrorShapeStore
+  e.hp;
+}
+
+fn storeOverThroughReference() i64 {
+  mut l = new List[Entity](4);
+  l.push(mk());
+  imm r = &mut l;
+  imm e = &mut r[0usize];
+  *r = new List[Entity](4);      //~ ErrorFrozen
+  e.hp;
+}
+
+fn storeOverField() i64 {
+  mut w = new World(new List[Entity](4), 0);
+  w.entities.push(mk());
+  imm e = &mut w.entities[0usize];
+  w.entities = new List[Entity](4);   //~ ErrorShapeStore
+  e.hp;
+}
+
+fn clearUnderElement() i64 {
+  mut l = new List[Entity](4);
+  l.push(mk());
+  imm a = &mut l[0usize];
+  imm m = &mut l;
+  m.clear();                     //~ ErrorShapeReshape
+  a.hp;
+}
+
+fn replaceWhole() i64 {
+  mut l = new List[Entity](4);
+  l.push(mk());
+  imm e = &mut l[0usize];
+  l = new List[Entity](4);       //~ ErrorFrozen
+  e.hp;
+}
+
+// A struct that wraps a collection: its method lends an element, and the
+// collection inside it is pushed to through the struct's own field, or through
+// the shared path
+fn pushIntoWrapper(x Entity) i64 {
+  mut w = new World(new List[Entity](4), 0);
+  w.entities.push(mk());
+  imm e = w.first();
+  w.entities.push(x);            //~ ErrorFrozen
+  e.hp;
+}
+
+fn pushIntoWrapperShared(w &mut World, x Entity) i64 {
+  imm e = w.first();
+  w.entities.push(x);            //~ ErrorFrozen
+  e.hp;
+}

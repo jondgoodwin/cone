@@ -105,7 +105,10 @@ typedef struct {
 // Could this call reshape a value of the struct 'cont'? 'meth' is the method it
 // calls when its first argument is the receiver (else NULL); 'recvunique' says
 // the receiver's place is reached by no shared path, so no other name for it
-// exists. Fills 'verdict' when it answers yes.
-int reshapeCall(FnCallNode *call, FnDclNode *meth, int recvunique, INode *cont, ReshapeVerdict *verdict);
+// exists. 'mine' are the 'nmine' locals the borrow being asked of points into: a local
+// lent whole to the call is no excuse for them, as it is for any other. Fills 'verdict'
+// when it answers yes.
+int reshapeCall(FnCallNode *call, FnDclNode *meth, int recvunique, INode *cont, ReshapeVerdict *verdict,
+    VarDclNode **mine, int nmine);
 
 #endif

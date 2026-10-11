@@ -17,7 +17,9 @@
 			only the right to read, the right to modify, coercion,
 			and freezing the source of a borrow held in a local variable are enforced.
 			A source reached as <span class="pre">uni</span> (a local variable is one) is frozen
-			as "From 'uni'" below describes; a source reached through a shared
+			as "From 'uni'" below describes, but for a <span class="pre">mut</span> borrow of it, which
+			is an alias loan: the source stays usable as one more alias, and only what needs it unique
+			is refused. A source reached through a shared
 			<span class="pre">mut</span> or <span class="pre">ro</span> path is only kept alive
 			(<a href="refborref.html">Freezing access to the source of a borrow</a>).
 			An owning reference coerced to a borrowed one, as in "From 'uni'" below,
@@ -32,8 +34,9 @@
 			The rule for shape-changing values under <span class="pre">mut</span> is the same for
 			a resizable collection and for an enum: an element borrowed through one, or a reference
 			narrowed from an enum to one of its variants, is allowed, and refused only if something could
-			change the shape while it is used. For a collection the borrow freezes the path it was taken
-			through, and a change through another name is refused; for an enum nothing is frozen, and
+			change the shape while it is used. For a collection a read-only borrow freezes the path it
+			was taken through against changes, and a mutable one lets it be read and lent as any alias
+			does; either way a change of its shape, by the same name or another, is refused. For an enum nothing is frozen, and
 			storing another variant over it, by the same name or another, or handing it to a call that
 			might, is refused (<a href="refborref.html">borrowed references</a>
 			says what is and is not refused).</i></p>
@@ -233,17 +236,23 @@ ref4 = &amp;mut x;   // ok
 		by using <a href="refborref.html#permtrans">borrowed references</a>.</p>
 	<p>Using borrowed references <i>does</i> make it possible to temporarily transition
 		a <span class="pre">uni</span> reference to some shared reference permission.
-		While a mutable borrowed reference is still to be used, the source for the borrowed reference
-		may not be used (<a href="refborref.html">Freezing access to the source of a borrow</a>).
-		However, once the borrowed references' last use is behind it,
-		the original source becomes usable again:</p>
+		A <span class="pre">mut</span> borrowed reference is shared mutable, so its source becomes
+		one more <span class="pre">mut</span> alias of the value while the borrow is still to be used: the
+		source may be read, changed and borrowed again (any number of <span class="pre">&amp;mut</span> borrows
+		may be held at once), and only what needs the source unique is refused &mdash; moving it,
+		sending it, lending it <span class="pre">&amp;uni</span> or <span class="pre">&amp;imm</span>, ending it
+		(<a href="refborref.html">Freezing access to the source of a borrow</a>).
+		A <span class="pre">&amp;uni</span> or <span class="pre">&amp;imm</span> borrow, which promises more,
+		freezes the source against reading and changing too. Once the borrowed references' last use is
+		behind it, the original source is unique, and usable in every way again:</p>
 <pre>
-imm uniref = new Rc[i32](5);
+imm uniref = new So[i32](5);
 imm bref1 &amp;mut i32 = uniref;     // Coerce owning reference to a 'mut' borrowed reference
 imm bref2 = bref1;               // Share with another borrowed reference
-*uniref = 6;                     // Error, uniref is frozen while 'bref1' and 'bref2' are still to be used
+*uniref = 6;                     // Allowed: uniref is one more 'mut' alias while 'bref1' and 'bref2' are still to be used
+consume(uniref);                 // Error, uniref may not be moved while 'bref1' and 'bref2' are still to be used (the same call is allowed below)
 *bref2 = *bref1 + 1;             // The borrowed references' last use
-*uniref = 7;                     // Allowed, since the borrowed references are not used again
+consume(uniref);                 // Allowed, since the borrowed references are not used again
 </pre>
 
 	<p>What such a borrow shares is the value the <span class="pre">uni</span> reference points to.

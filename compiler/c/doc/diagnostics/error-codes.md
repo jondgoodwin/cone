@@ -445,6 +445,12 @@ is `ErrorLetElse`. Each is reported at the use or the `else`, and the first two 
 change. `ErrorOwnerNarrow` is an owner (`Rc[mut, Shape]`) narrowed to a variant whose value
 would sit at another offset in its allocation (generation).
 
+A `parallel each` over a zip of cursors that lend from the same buffer, where the loop
+changes what they lend, is `ErrorParSources` (type check, `pareach.c`): two passes could
+be given the same part and write it at the same time. A `mut` borrow of a local is an alias
+loan, so the loan walk no longer refuses the second cursor as a second borrow of what is
+mutably borrowed.
+
 A trait named as a pattern ([cast](../nodes/cast.md), "Trait patterns") has three codes. On an enum, a
 trait that no variant complies with matches nothing: `ErrorPatTraitNone` (a method over the whole enum
 is no variant's). A trait pattern that binds needs a borrowed reference to build a virtual reference

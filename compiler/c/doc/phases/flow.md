@@ -754,9 +754,9 @@ permission and the place (`loanKindOf`):
 
 | Kind | Borrow | Of a place reached |
 | --- | --- | --- |
-| *exclusive* | `&mut`, `&mut1` / `&uni` | as `uni` / either way |
+| *exclusive* | `&mut1` / `&uni` | as `uni` / either way |
 | *shared* | `&ro` (the default `&`), `&imm` / `&imm` | as `uni` / through a shared path |
-| *alias* | `&mut`, `&mut1`, `&ro` | through a shared path |
+| *alias* | `&mut` / `&mut1`, `&ro` | either way / through a shared path |
 | *pin* | `&opaq` | either way |
 
 A *holder* is a local or a parameter whose type carries a borrow
@@ -813,6 +813,42 @@ through a borrowed reference is never ended by anything done here — reassignin
 `r` leaves `*r` alive — so an alias loan of `*r` conflicts with nothing a
 function can do but a `&uni` or `&imm` borrow, which the type check already
 refuses through a `mut` or `ro` reference (`ref_typecheck_perm`).
+
+**A `mut` borrow of a place reached as `uni`** is an alias loan too (`Loan.uniq`): the
+source is one more `mut` alias while the borrow is held, so a local, a field of one,
+what a `uni` reference points at, an owner's contents or a `uni` slice's element may
+be lent `&mut` any number of times (in one call, held in locals, held in structs), and
+read, written and borrowed beside them; only what needs the source unique conflicts
+(a move, a replacement, its end, an `&uni` or `&imm` borrow, as the table says).
+`&mut1`, which hands out interior references into a sum, keeps the source to itself. The
+rest is the shape rule, which a source another name reaches is asked of, and which the
+source of an alias loan has other names for. So long as a loan is the only `mut`
+borrow of its source, nothing differs from the exclusive loan it replaced: the loans a
+returned borrow carries into a shape-changing value, and a narrowed enum reference,
+are *lazy* (`loanShapeLazy`) and unmarked. Another name for the source met while
+the loan is held -- an access that an exclusive loan would have conflicted with and the
+alias loan lets through (`loanAliasLets`: a read, a read-only borrow, a `mut` borrow, a
+write), by the local's name or by another borrow, in a holder or in flight -- is an
+*event* (`loanAliasMet`): the loan is `aliased`, every lazy loan still held is marked
+(`loanShapePromote`), a read-only loan of the source then excludes no writer
+(`loanExcludesWriters`), and the shape check follows from there as it does through a
+shared path (below: parts (a) and (b), the stores, the enum rule). A loan that points
+only into function-local storage (`Loan.roots`) is reached only by a call or a store
+that reaches one of those locals (`LoanReach`, `loanShapeReaches`: the loans its
+operands carry), so a call handed only other storage is not asked, and the excuse a
+local lent whole has -- it can reach a collection only through a reference it holds --
+does not apply to a local the loan points into (`reshapeCall`'s `mine`). In that
+mode (`reshapeReachMode`) a read-only reference is followed to the `mut` references it
+holds -- a `&Guard` holding a `&mut List` can push -- and an owning virtual reference,
+which names no lifetime and so holds no borrow of a local, is not followed. Two more
+cases an exclusive loan covered: an access that changes a collection *held by value*
+inside the loan's container (a struct whose method lent an element: `w.entities.push(x)`)
+is refused where the loan is (`loanInnerChange`), since the shape check asks about
+the struct and not what it holds; and a read-only borrow written as an operand of the call
+making a `mut` borrow of the same local (`step(&w, &mut w.entities[0])`, `p.m(&p)`) is
+made an alias loan (`loanFlightOwnRo`), the callee taking it as a view others may change.
+A free function's borrowed argument that its result carries (`pwLentArg`) keeps the
+exclusive freeze: a generator over a `&mut List` reshapes its own list.
 
 A holder reaching its loan's source through the loan — `*b = 9`, `r.x` — uses
 the holder; it does not access the source.
@@ -1204,12 +1240,17 @@ only keeps the source alive (`LoanAlias`), so `imm e = l[0usize]; m.push(p); e.x
 compiles when `m` is another reference to the same list, and `e` dangles. For
 a container that changes shape (it declares `ShapeChanging`, or is found to
 be one: `shapeChanging`) the loan the
-returned borrow carries is made a `LoanShared` or `LoanExcl` one instead, as a
-local's is (`pwCall`, `loanFreezeShared`): the same path, `l` or `self.items`,
-is frozen while the borrow is used, so `imm e = l[0usize]; l.push(p); e.x`, the
+returned borrow carries is made a `LoanShared` one when the borrow is read-only
+(`pwCall`, `loanFreezeShared`): the same path, `l` or `self.items`, is frozen against
+changes while the borrow is used. A borrow that may write (`&mut l[0usize]`,
+`l.viewMut()`) stays an alias loan, marked for the shape check (`pwShapeLent`), and is
+frozen (`LoanExcl`, `loanFreezeWritable`) only where the check does not follow it. So
+`imm e = l[0usize]; l.push(p); e.x`, the
 same through a struct wrapping a `List` (`bag.first(); bag.add(p)` through
 `bag &mut Bag`) and
-a cursor `mut it = dq.items(); dq.push(9); it.next()` are refused, and a call
+a cursor `mut it = dq.items(); dq.push(9); it.next()` are refused, as are a push
+while `imm s = l.viewMut()` or `imm e = &mut l[0usize]` is held (by the shape check:
+`ErrorShapeReshape`, the path itself staying readable and lendable), and a call
 that returns nothing the receiver lent (`self.fill(self.roomFor(h), …)`)
 freezes nothing. That is part (a) of the rule for a shape-changing container —
 a borrow into it through a shared path is allowed, and refused only if something
@@ -1322,13 +1363,18 @@ write by (`Place.shwrite`: a `mut`, `ro` or lock-permission reference, an `Rc[mu
 owner; not `imm`, `mut1`, `opaq` or `uni`), the borrow's loan is *marked*
 (`loanShapeMark`, `Loan.shapecont`) — unless the reference is read-only and what it
 was borrowed from is a place this function holds a loan on that excludes writers,
-where there is no other name. Every later call is asked, for each marked loan's
-container type, whether it could reshape a value of that type (`reshapeCall`;
-answered once per type per call):
+where there is no other name. A place reached as `uni` has no other name until a
+`mut` borrow of it meets one (`loanAliasMet`, "The loan walk"): its loans are marked
+then (`loanShapeLazy`, `loanShapePromote`). Every later call is asked, for each marked
+loan's container type, whether it could reshape a value of that type (`reshapeCall`;
+answered once per type per call, and once per loan for a loan that points only into
+locals, which only a call that reaches one of them is asked of):
 
 - **The receiver**, when the call is a method whose `self` is that type, writable,
   and its place is reached through a shared path (`recvunique` is false: a local,
-  or a place reached through `uni` references only, has no other name): layer 2
+  or a place reached through `uni` references only, has no other name, but for a
+  loan that points into that local, which the receiver then reaches: it is the
+  loan's other name): layer 2
   reads the method's body (`shapeParamReshapes`, `SiModeField` of `siAsk`), which
   reshapes when it, or anything it calls, (a) writes any field of what `self` points at
   (the same engine as the inference of a shape-changing type, asked for any field
@@ -1363,7 +1409,8 @@ answered once per type per call):
   (`loanShapeFrozen`).
 - **A store** is asked of each marked loan the same way (`pwShapeStore`, from `pwStore`
   and `pwSwap`, for a place that is no local named whole, and none this function owns
-  whole: `reshapeUniqueLocal`; `ReshapeStore`, `ErrorShapeStore`). It reshapes
+  whole: `reshapeUniqueLocal`, but for a loan that points into that local; a local
+  named whole is asked for those; `ReshapeStore`, `ErrorShapeStore`). It reshapes
   (`reshapeStoreHits`) when the value stored over is the loan's container itself, or
   a value that holds one by value (`ReachContained`), or, for a collection, an element
   that needs a finalizer found by indexing the container (`reshapeElementOf`: a chain
@@ -1379,8 +1426,10 @@ answered once per type per call):
   local named whole, in a function that has lent.
 
 **An enum** is a marked loan's container too. A reference narrowed from an enum to one
-of its variants through a path others share (`FlagVariantNarrow`, `castSumNarrows`)
-is lent by `pwNarrowShared`: a loan of the place the reference is read through, held
+of its variants through a path others share, or from a `&mut` borrow of a local (an alias
+loan; a `&`, `&imm` or `&uni` one freezes the local, `castBorrowsUni`)
+(`FlagVariantNarrow`, `castSumNarrows`) is lent by `pwNarrowShared`: a loan of the place
+the reference is read through, held
 by whatever holds the narrowed reference (a pattern's hidden local, then the binding),
 marked with the enum as its container where the place is shared (`pwShapeBorrow`).
 Nothing is frozen (`loanFreezeShared` is not called, so the loan stays an alias): the
@@ -1953,9 +2002,10 @@ droppable noted as holding nothing is never finalized.
 | `ir/shapeinfer.c` | `shapeChanging`, `siSettle`, `siInferStruct`, `siMethod` | whether a type changes shape: declared, or found from its methods (a writable `self` method that writes storage, one that returns a borrow); the answer cached on `StructNode.shapeinf` |
 | | `siParamWrites`, `siCall`, `siWriteHits`, `siReadsStorage`, `siRooted`, `siHoldsStorage`, `siVisible` | whether a function's body writes storage through one of its parameters: its own assignments, what it lends writable to its callees (asked in turn), storage handed to code it cannot read; memoised, a recursion guessed no |
 | | `siAsk`, `shapeParamReshapes`, `shapeTypeReshapes`, `siCallType`, `siTypeWriteHits`, `shapeDemandCallees`, `shapeUnsettled` | the same engine in its other modes (`SiMode`): any field of a parameter's pointee written (a method reshapes); a value of a collection type that is no local replaced, a header field written, or reshaped by a callee, through a parameter or only through a global (a call reshapes). Memoised by function, parameter, mode and type; callees never asked for are checked first; a body not checked yet answers not yet |
-| `ir/reshape.c` | `reshapeCall`, `reshapeReach`, `reshapeUniqueLocal`, `reshapeStoreHits`, `reshapeIsSum` | could this call reshape a value of a collection type or an enum: its receiver, its other arguments by what their types reach, a global; could this store; a read-only reference not followed, a local the function owns whole excused ([A change through another name](#a-change-through-another-name)) |
+| `ir/reshape.c` | `reshapeCall`, `reshapeReach`, `reshapeReachMode`, `reshapeUniqueLocal`, `reshapeStoreHits`, `reshapeIsSum` | could this call reshape a value of a collection type or an enum: its receiver, its other arguments by what their types reach, a global; could this store; a read-only reference not followed, a local the function owns whole excused ([A change through another name](#a-change-through-another-name)) |
 | `ir/flowpath.c` | `pwShapeBorrow`, `pwShapeCall`, `pwShapeStore`, `pwNarrowShared`, `Place.shwrite`, `flowWalkFinal`, `flowShapeRetry` | mark a borrow into a shape-changing value, or a reference narrowed into an enum's variant, through a path others may write by; ask every call and store made while it is held; a verdict that waits for an unchecked body |
 | `ir/flowloan.c` | `loanShapeMark`, `loanShapePend`, `loanShapeNow`, `loanShapeInFlight`, `loanShapeSamePlace`, `loanShapeFrozen`, `loanExcludesWriters` | the marked loans, the pending conflict (`PendingShape`) or immediate report (`ErrorShapeReshape`, `ErrorShapeStore`, `ErrorVariantReshape`) of a call or store that could reshape one |
+| | `Loan.uniq`, `loanAliasMet`, `loanAliasLets`, `loanShapeLazy`, `loanShapePromote`, `loanInnerChange`, `LoanReach`, `loanShapeReaches`, `loanFlightOwnRo` | a `mut` borrow of a `uni` place as an alias loan: the other name for its source that marks the lazy loans, the accesses it lets through, a change to a collection held inside the container, what a call can reach of the locals, a read-only operand beside a `mut` one |
 | | `shapeWalkReady`, `shapeWalkDefer`, `shapeWalkDeferred`, `shapeDeclared`, `shapeDeclaredCheck`, `shapeRecordable` | a gated function's walk waits for the types it asks about (`fnDclTypeCheck`) and is made at the end of type check (`doAnalysis`) if a body is not checked yet; the types declaring `ShapeChanging` checked against the methods (`ErrorShapeMark`); the include file's record (`incRecordShape`) |
 | `ir/flow.c` | `flowLoadValue` | the walk's spine — tag dispatch for a value being read |
 | | `flowLoadThroughRef` | `MayRead` on the reference a value is read through; called from `derefFlow`, `fnCallArrIndexFlow` and `fnCallFldAccessFlow` |

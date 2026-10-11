@@ -1546,6 +1546,22 @@ void parallelEachCheckBody(TypeCheckState *pstate, BlockNode *outer) {
             if (alias.nlent > 0)
                 parWalk((INode*)loop, parCheckAlias, &alias);
 
+            // Two sources of a zip lend from the same buffer: a pass is given a part of each
+            // and writes one of them, so two passes may write the same part at once. A 'mut'
+            // borrow of a place does not keep a second borrow of it away (the source is an
+            // alias loan), so this is checked here
+            for (uint32_t i = 0; i < alias.nlent; ++i) {
+                for (uint32_t j = i + 1; j < alias.nlent; ++j) {
+                    if (parPathsOverlap(&alias.lent[i], &alias.lent[j])) {
+                        errorMsgNode(((VarDclNode*)stmt)->value, ErrorParSources,
+                            "The sources of this zip lend from the same buffer, '%s', and the loop changes what it lends: the passes are given parts of each source, so two passes could write the same part at the same time. Zip two different buffers, or cut the buffer into parts that do not overlap first.",
+                            &alias.lent[i].root->namesym->namestr);
+                        i = alias.nlent;
+                        break;
+                    }
+                }
+            }
+
             // Nor an outside reference that could point at what the loop writes
             ParAliasOuter outer_alias;
             memset(&outer_alias, 0, sizeof(outer_alias));

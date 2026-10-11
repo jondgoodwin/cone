@@ -547,7 +547,12 @@ static int castBorrowsUni(INode *exp) {
         || ((VarDclNode *)dcl)->value == NULL)
         return 0;
     INode *value = ((VarDclNode *)dcl)->value;
-    return value->tag == BorrowTag && castUniPlace(((RefNode *)value)->vtexp);
+    if (value->tag != BorrowTag || !castUniPlace(((RefNode *)value)->vtexp))
+        return 0;
+    // A 'mut' borrow is an alias loan: the place has other names while it is held, so it
+    // is no longer frozen against a change of variant, and the shape check follows it
+    INode *type = iexpGetTypeDcl(value);
+    return !(type->tag == RefTag && (permGetFlags(((RefNode *)type)->perm) & MayAliasWrite));
 }
 
 // A reference narrowed from a sum type -- an enum, a tagged trait, an
@@ -558,10 +563,11 @@ static int castBorrowsUni(INode *exp) {
 // reference is used.
 //
 // Where nothing can, the narrowing needs no more: the reference is 'uni', 'imm'
-// or 'mut1' (MayIntRefSum), or, whatever its permission, it is a borrow made here
+// or 'mut1' (MayIntRefSum), or it is a read-only or 'uni' borrow made here
 // of a place reached as 'uni' -- a local above all, which the stack alone owns and
 // which the loan walk freezes against change while the borrow and the narrowed
-// reference live. A reference of unseen origin -- a parameter, one reached through
+// reference live. A 'mut' borrow of one is an alias loan and is followed like the rest.
+// A reference of unseen origin -- a parameter, one reached through
 // another reference or a shared owner -- may be one of several, any of which may
 // change the variant: the loan walk follows the narrowed reference as it follows a
 // borrow into a collection (castSumNarrows, flowpath.c pwNarrowShared), and
