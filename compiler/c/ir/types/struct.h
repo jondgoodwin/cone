@@ -142,6 +142,10 @@ StructNode *newStructNode(Name *namesym);
 // Set what its element borrows cost it (StructNode.lends) from its 'is' list
 void structLendsDeclared(StructNode *node);
 
+// A type declaring CarriesRegion declares an init, and each init ends with
+// 'region *MemRegion'
+void structCarriesRegionCheck(StructNode *node);
+
 // Clone struct
 INode *cloneStructNode(CloneState *cstate, StructNode *node);
 

@@ -645,6 +645,10 @@ enum ErrorCode {
     ErrorMatchUnreachable = 1418,   // A case or an 'else' of a match that can never run: every value it matches an earlier case matches already (a variant or a combination of columns named twice, a case after the cases cover everything)
     ErrorMatchColumn = 1419,        // A misuse of the columns of 'match a, b': '_' in a match of one value, a row with more or fewer patterns than the match has values, or a pattern that binds a variable in a column
 
+    // A type that gets its memory from a region (ir/types/struct.c, ir/exp/typelit.c)
+    ErrorRegionMark = 1420, // A type declaring CarriesRegion that declares no init, or an init whose last parameter is not 'region *MemRegion'
+    ErrorRegionNew = 1421,  // An allocation in an arena, 'new a[T](...)', written other than with the type, or a 'mut' and the type, in its brackets, or as a 'trynew'
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

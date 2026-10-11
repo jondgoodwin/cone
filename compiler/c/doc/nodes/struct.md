@@ -1159,6 +1159,44 @@ it ([flow](../phases/flow.md), "Calls"):
   `&`, `&mut` or `&uni` is borrowed from, so a `self &uni` method may be called
   repeatedly.
 
+### CarriesRegion
+
+`CarriesRegion` is the built-in marker of a type whose memory comes from a
+region it is handed when it is made, and keeps (a growable collection; the
+`collections` package's types and `pool`'s `Pool` declare it; names
+provisional). The region is core's `MemRegion`, three function references
+(allocate, resize, release) in a struct's first field, held as a `*MemRegion`;
+`heapRegion()`, core's, is the program's one heap region, a static object that
+conestd's `heapregion.c` defines with the C library's `malloc`, `realloc` and
+`free` as its functions. The compiler knows `MemRegion` and `heapRegion` by
+their names and their package (`coreIsRegion`, `heapRegionDclNameRes`,
+`ir/stmt/intrinsic.c`, as it knows `sliceEq`), and no collection by name.
+
+What the marker brings:
+
+- **Its shape** (`structCarriesRegionCheck`, at the end of name resolution,
+  beside `structLendsDeclared`): the type declares an init, and every init it
+  declares ends with a parameter `region *MemRegion` that has no default.
+  Otherwise `ErrorRegionMark`. Where the type keeps the region, and what it
+  does with it, are the type's own; a type that wraps another (`String`'s
+  `List[u8]`, `Set`'s `Dict`) passes the region on to it.
+- **The handover** (`ir/exp/typelit.c`): the region is the init's last
+  argument. `typeLitInitViable` counts it as defaulted, so `new List[i32]`,
+  `new List[i32](100)` and the same through an allocation (`new Rc[List[i32]]`)
+  select an init without it written, and `typeLitInitArgs` fills it in with a
+  call of `heapRegion()` (`typeLitRegionArg`, type checked at the construction).
+  A construction that passes one, `new List[i32](100, r)`, is coerced to the
+  parameter like any argument. A type's own literal, `new List(null, 0, 0,
+  region)`, is the implicit init and takes all its fields as written.
+  The marker is general: any type may declare it, and a type that holds a
+  collection passes its own `region` to the field's construction
+  (`new List[f32](n, region)`), so a composite's parts come from the one
+  region it was handed.
+  A construction whose head names an arena value, `new arena[List[i32]](16)`,
+  is `arena.alloc(new List[i32](16))` ([literals](literals.md), "Construction"):
+  an arena is not yet a region, so the list is handed the heap's and only its
+  four words are the arena's.
+
 ### AtomicValue
 
 `AtomicValue` is the built-in marker of a value changed only by atomic

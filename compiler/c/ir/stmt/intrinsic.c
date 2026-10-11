@@ -485,6 +485,42 @@ FnDclNode *sliceEqFn(void) {
     return sliceEqCore;
 }
 
+// Core's 'MemRegion', the header every region at run time begins with and the type
+// a CarriesRegion type holds a pointer to: known by its name and its package
+int coreIsRegion(INode *dcl) {
+    if (dcl == NULL || dcl->tag != StructTag)
+        return 0;
+    StructNode *strnode = (StructNode *)dcl;
+    return strnode->namesym != NULL && strcmp(&strnode->namesym->namestr, "MemRegion") == 0
+        && strnode->genericinfo == NULL && !(strnode->flags & (TraitType | EnumType))
+        && intrinsicModuleIsCore(strnode->dclinfo.owner);
+}
+
+// Core's 'heapRegion', the region a construction is handed when it names none:
+// an inline function answering the address of the program's one heap region.
+// Known by its name and its package, and held to its one signature so that the
+// call the compiler builds for a CarriesRegion type's init is sure to fit it
+// (typeLitRegionArg)
+static FnDclNode *heapRegionCore = NULL;
+
+void heapRegionDclNameRes(FnDclNode *fndcl) {
+    if (fndcl->namesym == NULL || strcmp(&fndcl->namesym->namestr, "heapRegion") != 0
+        || (fndcl->dclinfo.facts & DclIntrinsic) || !intrinsicInCore(fndcl))
+        return;
+    FnSigNode *sig = (FnSigNode *)fndcl->vtype;
+    if (fndcl->value == NULL || sig == NULL || sig->tag != FnSigTag || sig->parms->used != 0
+        || fndcl->genericinfo != NULL) {
+        errorMsgNode((INode *)fndcl, ErrorIntrinsicSig,
+            "A CarriesRegion type's construction calls core's 'fn heapRegion() *MemRegion', with a body, and this declaration says something else.");
+        return;
+    }
+    heapRegionCore = fndcl;
+}
+
+FnDclNode *heapRegionFn(void) {
+    return heapRegionCore;
+}
+
 // Check an '@intrinsic' declaration against the registry, once its signature
 // and any body are name resolved. A declaration that passes gets its meaning:
 // its value becomes the IntrinsicNode that generation expands at each call,

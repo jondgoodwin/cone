@@ -104,6 +104,7 @@ Name *copyTraitName;
 Name *shapeChangingTraitName;
 Name *noLoanMutTraitName;
 Name *noLoanReadTraitName;
+Name *carriesRegionTraitName;
 Name *atomicValueTraitName;
 Name *integerTraitName;
 Name *pointerTraitName;

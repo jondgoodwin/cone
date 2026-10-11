@@ -1471,6 +1471,60 @@ pub struct Rwcell is LockPermission {
   fn releaseRead(self &uni Rwcell) inline {borrows = borrows - 1isize;}
 }
 
+// A region at run time: where a growable collection gets, grows and gives back
+// the block its values sit in. A collection holds a pointer to its region, a
+// '*MemRegion', and calls it instead of the C library, so the same List, String,
+// Dict, Deque, OrderedDict, Set or Pool lives on the heap, in an arena or in an
+// actor's own memory by being handed another region when it is made. (This is
+// not the 'RegionRef' above, a type-level region that managed references name,
+// 'Rc' and 'So'.)
+//
+// A region is any struct whose FIRST field is a MemRegion, filled with the three
+// functions below, each handed the region itself as a pointer to that first
+// field (and so to the whole struct, which its functions cast back to). The
+// functions are plain function references, held in the region:
+//
+//   alloc(r, bytes, align)             a block of at least 'bytes' bytes, aligned
+//                                       to 'align', a power of two
+//   resize(r, block, old, new, align)  the block, 'old' bytes long, made 'new'
+//                                       bytes: the same address, or a new one with
+//                                       the first old-or-new bytes copied, and
+//                                       the old one then the region's again. A
+//                                       null block of 0 bytes is an allocation
+//   release(r, block, bytes)           the block, 'bytes' long, given back; a null
+//                                       block is nothing
+//
+// A block the region cannot give is null, as the C library's is. Calls are
+// made through 'allocate', 'resize' and 'release', the methods below.
+pub struct MemRegion {
+  pub allocFn &fn(r *MemRegion, bytes usize, align usize) *u8;
+  pub resizeFn &fn(r *MemRegion, block *u8, oldBytes usize, newBytes usize, align usize) *u8;
+  pub releaseFn &fn(r *MemRegion, block *u8, bytes usize);
+
+  pub fn allocate(self &, bytes usize, align usize) *u8 inline {
+    imm f = allocFn;
+    f(self as *MemRegion, bytes, align);
+  }
+  pub fn resize(self &, block *u8, oldBytes usize, newBytes usize, align usize) *u8 inline {
+    imm f = resizeFn;
+    f(self as *MemRegion, block, oldBytes, newBytes, align);
+  }
+  pub fn release(self &, block *u8, bytes usize) inline {
+    imm f = releaseFn;
+    f(self as *MemRegion, block, bytes);
+  }
+}
+
+// The heap's region: the one object every collection made without a region
+// points to, always there and never null. Its functions are the C library's
+// 'malloc', 'realloc' and 'free' (conestd's heapregion.c defines it), and its
+// blocks are aligned as malloc's are, to 16 bytes.
+extern mut cone_heapRegion MemRegion;
+
+// The heap's region, which a construction of a CarriesRegion type that names no
+// region is handed (the compiler calls this by name, typelit.c)
+pub fn heapRegion() *MemRegion inline {&mut cone_heapRegion as *MemRegion;}
+
 // A type's record: what only the compiler knows about a value's type, for a
 // region that must act on values whose types it cannot name. The compiler
 // builds one constant record per type ('mem.typeRecord[T]()' is its address),

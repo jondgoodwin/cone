@@ -117,6 +117,7 @@ extern StructNode *threadSafeTrait;
 extern StructNode *shapeChangingTrait;
 extern StructNode *noLoanMutTrait;
 extern StructNode *noLoanReadTrait;
+extern StructNode *carriesRegionTrait;
 extern StructNode *atomicValueTrait;
 extern StructNode *integerTrait;
 extern StructNode *pointerTrait;
