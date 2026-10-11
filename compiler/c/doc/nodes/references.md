@@ -682,12 +682,18 @@ whole as a `&mut` is seen the same way where it is indexed. It is the access tha
 is refused, whatever is done with the reference (a read, a lend, a write, a copy
 into a local), since every use is a sight of it. A local, a field or element of a
 value held by value, a `&uni` holder and an owner that is `uni` (`So[T]`, `Rc[T]`)
-are not refused. A generic type instantiated with a `&uni` (`List[&uni App]`,
-whose own methods index their elements through `self &mut`) is refused where
-its own code does that, since the check is on the instantiated place's type, as
-a field of type `T` is. The route in for a shared holder, a `recover` block that
-transitions the `uni` to `mut`, is not built. `ref_typecheck_uni_field_shared`
-and `ref_typecheck_uni_elem_shared` pin the refusals and the allowed forms;
+are not refused. A generic type or function instantiated with a `&uni`
+(`List[&uni App]`, whose own methods index their elements through `self &mut`)
+is refused where its code reaches the `&uni` that way, since the check is on the
+instantiated place's type, as a field of type `T` is. A place in instantiated
+code (its node carries `instnode`; the bare-field lowering in `nameuse.c` copies
+it too) is not reported where it is written: `fnCallUniSeen` reports one
+`ErrorUniShared` at the outermost instantiating use, the author's own line, and
+none for the other methods of the generic that reach the element, so the author
+sees the one error naming the type argument. A list of owners, or a generic that
+never reaches the `&uni` through a shared path, is not refused. The route in for a shared holder, a `recover` block that
+transitions the `uni` to `mut`, is not built. `ref_typecheck_uni_field_shared`,
+`ref_typecheck_uni_elem_shared` and `ref_typecheck_uni_container_shared` pin the refusals and the allowed forms;
 `ref_viewpoint_borrowed` and `ref_uni_elem_held` what runs.
 
 **The lifetime of a borrow is that of the place borrowed**, which

@@ -409,7 +409,12 @@ static int fnCallRangeReceiver(INode *objtype) {
 // be another name for the same holder, and the one reference that promised to
 // be unique would be reached by both. The access 'access', of type 'placetype'
 // and naming the field 'fldname' (NULL for an element), is refused otherwise.
-static void fnCallUniSeen(FnCallNode *access, INode *placetype, Name *fldname) {
+// The uses already reported for code they instantiated, few at a time.
+static INode **fnCallUniUses = NULL;
+static uint32_t fnCallUniUseCnt = 0;
+static uint32_t fnCallUniUseCap = 0;
+
+static void fnCallUniSeen(FnCallNode *access, INode *placetype, Name *fldname, INode *inst) {
     INode *uniref = itypeGetTypeDcl(placetype);
     if ((uniref->tag != RefTag && uniref->tag != ArrayRefTag && uniref->tag != VirtRefTag)
         || itypeGetTypeDcl(((RefNode*)uniref)->region) != (INode*)borrowRef
@@ -425,6 +430,33 @@ static void fnCallUniSeen(FnCallNode *access, INode *placetype, Name *fldname) {
         snprintf(how, sizeof(how), "a `&%s` reference", strcmp(perm, "ro") == 0 ? "" : perm);
     else
         snprintf(how, sizeof(how), "an owner with permission `%s`", perm);
+    // Seen in code a generic use instantiated, the fault is the use's: it gave a
+    // '&uni' to code that reaches it through a shared path. One error at the
+    // outermost use, the author's own line, and none inside the library
+    // (however many of its methods reach the element, and however deep).
+    if (inst) {
+        INode *use = inst;
+        while (use->instnode)
+            use = use->instnode;
+        for (uint32_t i = 0; i < fnCallUniUseCnt; ++i)
+            if (fnCallUniUses[i] == use)
+                return;
+        if (fnCallUniUseCnt == fnCallUniUseCap) {
+            uint32_t cap = fnCallUniUseCap ? fnCallUniUseCap << 1 : 8;
+            INode **grown = memAllocBlk(cap * sizeof(INode*));
+            if (fnCallUniUseCnt)
+                memcpy(grown, fnCallUniUses, fnCallUniUseCnt * sizeof(INode*));
+            fnCallUniUses = grown;
+            fnCallUniUseCap = cap;
+        }
+        fnCallUniUses[fnCallUniUseCnt++] = use;
+        errorMsgNode(use, ErrorUniShared,
+            "A `&uni` cannot be the type argument of this use: the generic code it instantiates reaches it, as %s, "
+            "through %s, which could be another name for what holds it, and that would share what is supposed to be "
+            "a unique reference.",
+            fldname ? "a field" : "an element", how);
+        return;
+    }
     char what[128];
     if (fldname)
         snprintf(what, sizeof(what), "field `%s`", &fldname->namestr);
@@ -534,7 +566,7 @@ void fnCallArrIndex(FnCallNode *node) {
     // elements are lent as a slice of them, not read: its type is no element's.
     node->tag = ArrIndexTag;
     if (!(node->flags & FlagRange))
-        fnCallUniSeen(node, node->vtype, NULL);
+        fnCallUniSeen(node, node->vtype, NULL, node->instnode);
 
     // If we are borrowing a reference to indexed element, fix up type. A range's
     // borrow is a slice of the elements it spans, with the same permission and
@@ -904,7 +936,7 @@ int fnCallLowerIntField(FnCallNode *callnode) {
         return 0;
     callnode->vtype = nodesGet(ttuple->elems, index);
     callnode->tag = FldAccessTag;
-    fnCallUniSeen(callnode, callnode->vtype, NULL);
+    fnCallUniSeen(callnode, callnode->vtype, NULL, callnode->instnode);
     return 1;
 }
 
@@ -1013,8 +1045,8 @@ static int fnCallBoolOperandWantsNumber(FnCallNode *callnode, INode *foundnode, 
     return 0;
 }
 
-static void fnCallUniFieldSeen(FnCallNode *access, FieldDclNode *fld) {
-    fnCallUniSeen(access, fld->vtype, ((NameUseNode*)access->methfld)->namesym);
+static void fnCallUniFieldSeen(FnCallNode *access, FieldDclNode *fld, INode *lexnode) {
+    fnCallUniSeen(access, fld->vtype, ((NameUseNode*)access->methfld)->namesym, lexnode->instnode);
 }
 
 // Find the one field or method that accepts the call's receiver and arguments,
@@ -1038,7 +1070,7 @@ INode *fnCallFieldAccess(INode *obj, FieldDclNode *fld, INode *lexnode) {
     access->methfld = newNameUseFromDclNode((INode*)fld, lexnode);
     access->vtype = lifeBrandField(((IExpNode*)obj)->vtype, fld->vtype, lexnode);
     access->tag = FldAccessTag;
-    fnCallUniFieldSeen(access, fld);
+    fnCallUniFieldSeen(access, fld, lexnode);
     return (INode*)access;
 }
 
@@ -1621,7 +1653,7 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
         callnode->vtype = methfld->vtype = lifeBrandField(((IExpNode*)callnode->objfn)->vtype,
             ((IExpNode*)foundnode)->vtype, (INode*)callnode);
         callnode->tag = FldAccessTag;
-        fnCallUniFieldSeen(callnode, fld);
+        fnCallUniFieldSeen(callnode, fld, (INode*)callnode);
         return 1;
     }
 
