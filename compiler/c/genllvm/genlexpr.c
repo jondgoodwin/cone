@@ -433,7 +433,7 @@ static LLVMValueRef genlDeclaredIntrinsic(GenState *gen, FnDclNode *fndcl, LLVMV
     case WriteRawIntrinsic:
         LLVMBuildStore(gen->builder, fnargs[1], fnargs[0]);
         // A type that places values here says how a collector reaches them
-        // (Walk); one that marks while the program runs also hears of the store
+        // (GcTraceElements); one that marks while the program runs also hears of the store
         genlBarrierAt(gen, fnargs[0], type);
         return NULL;
 

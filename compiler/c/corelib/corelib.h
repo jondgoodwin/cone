@@ -118,10 +118,11 @@ extern StructNode *shapeChangingTrait;
 extern StructNode *noLoanMutTrait;
 extern StructNode *noLoanReadTrait;
 extern StructNode *carriesRegionTrait;
-// 'Walk' (provisional): a type declaring how a collector reaches what it holds
-// in memory it points to, a method 'walk' giving a cursor over writable
-// references to those elements (structWalkCheck, structWalkElem)
-extern StructNode *walkTrait;
+// 'GcTraceElements' (provisional): a type declaring how a collector reaches what
+// it holds in memory it points to, a method 'gcTraceElements' giving a cursor over
+// writable references to those elements (structGcTraceElementsCheck,
+// structGcTraceElementsElem)
+extern StructNode *gcTraceElementsTrait;
 extern StructNode *atomicValueTrait;
 extern StructNode *integerTrait;
 extern StructNode *pointerTrait;

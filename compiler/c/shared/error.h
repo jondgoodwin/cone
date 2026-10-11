@@ -652,9 +652,9 @@ enum ErrorCode {
 
     // 1425-1439 are reserved for another build.
     // What a collector reaches in memory a type points to (ir/types/struct.c, region.c)
-    ErrorWalkShape = 1440,  // A type declaring Walk whose 'walk' is not 'fn walk(self &mut) I', I a cursor declaring 'is Iterator[&mut E]' with E a sized type
+    ErrorGcTraceElementsShape = 1440,  // A type declaring GcTraceElements whose 'gcTraceElements' is not 'fn gcTraceElements(self &mut) I', I a cursor declaring 'is Iterator[&mut E]' with E a sized type
     ErrorTraceRoot = 1441,  // A local, parameter, or value of a traced region, of a type that needs tracing and cannot be traced
-    ErrorTraceKey = 1442,   // A type argument that holds a traced reference, of a Walk type whose walk does not reach it: a Dict's key, which a collector that moved it would leave hashed where it was
+    ErrorTraceKey = 1442,   // A type argument that holds a traced reference, of a GcTraceElements type whose gcTraceElements does not reach it: a Dict's key, which a collector that moved it would leave hashed where it was
 
     // Warnings
     WarnCode = 3000,

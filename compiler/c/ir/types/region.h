@@ -87,7 +87,7 @@ void regionThreadSafeUseCheck(StructNode *node);
 // Note, as type check meets them, the places where a traced reference may not
 // be held, or must be found by a trace: an owning reference type, a global or
 // static, a call of mem.writeRaw or mem.moveRaw (from a method of a type that
-// declares no Walk), a local or a parameter. Each is judged by regionTracedCheckAll.
+// declares no GcTraceElements), a local or a parameter. Each is judged by regionTracedCheckAll.
 void regionTracedRefNote(RefNode *node);
 void regionTracedGlobalNote(VarDclNode *var);
 void regionTracedRootNote(VarDclNode *var);

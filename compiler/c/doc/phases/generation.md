@@ -776,9 +776,9 @@ that needs tracing (`genlTraceThrough`): where the region declares `visit`, it
 is called with the header and the mode and the value is traced only if it answers
 that this is the first time, then the value's type's own record's trace is
 called on it (called, not expanded, so a type reaching itself through an owner
-traces in a finite function). It runs the walk of a value of a type declaring
-`Walk`, a cursor run until its `next` gives nothing, tracing each reference
-given as a value of the element type is traced (`genlTraceWalkElems`), and traces
+traces in a finite function). It runs the `gcTraceElements` of a value of a type
+declaring `GcTraceElements`, a cursor run until its `next` gives nothing, tracing
+each reference given as a value of the element type is traced (`genlTraceElements`), and traces
 an `Erased` value by its record's own trace (`genlTraceErased`). It reaches a struct's
 fields and a tuple's elements that hold one (`itypeHoldsTraced`), each element
 of a fixed-size array whose element type does, in a loop (`genlEachElem`), and
@@ -922,7 +922,7 @@ into — gets it as surely as one through a `R` reference.
   (`genlRegionHeader`), and passing over a null one: a reference itself, each
   such field of a struct, element of a tuple, element of a fixed array (in a
   loop), and the fields of the variant an enum's tag picks. It descends only
-  into parts holding such a reference (`genlHoldsBarriered`), so a type
+  into parts holding such a reference (`itypeHoldsBarriered`), so a type
   holding none emits nothing — every type, in a program with no traced region,
   which is why such a program generates exactly what it did before barriers
   existed. The walk is shared with `mark`'s: the same routines, the method
@@ -2328,7 +2328,7 @@ variables.
 | | `genlAliasHeld` | a copied struct, enum, tuple or array: `aliasRef` on each counted reference its death releases |
 | | `genlTypeRecord`, `genlTypeRecordOf`, `genlTypeRecFn`, `genlTypeRecNothing` | a type's record, once per object: its size, alignment, finalizer function, trace function and flags; what an `alloc` that asks is handed, `mem.typeRecord`, and a root map's entries |
 | | `genlTraceAt`, `genlTraceWalk`, `genlTraceRef`, `genlTraceVariants` | a value's traced references, each handed to its region's `mark`: a record's trace, and `mem.trace` |
-| | `genlBarrierAt`, `genlHoldsBarriered` | the write barrier: the same walk over a value just stored, each reference into a region with a `writeBarrier` handed to it |
+| | `genlBarrierAt`, `itypeHoldsBarriered` | the write barrier: the same walk over a value just stored, each reference into a region with a `writeBarrier` handed to it |
 | `packages/conestd/roots.cone` | `cone_gcframes`, `cone_traceRoots` | the head of the chain of frames, and its walk, which `mem.traceRoots` calls |
 | `packages/conestd/barrier.cone` | `cone_barrierHook`, `cone_barrierCtx`, `cone_setBarrierHook`, `cone_clearBarrierHook` | the thread's barrier hook and its context, which a barrier on the CPU calls, and core's `setBarrierHook` and `clearBarrierHook` |
 | `packages/conestd/hash.cone` | `cone_hashSeed` | the process's hash seed, 64 random bits from the OS (the C runtime's `rand_s`) drawn once, the first time core's `processSeed` asks, from any thread: what `Hasher.seeded()` starts from |

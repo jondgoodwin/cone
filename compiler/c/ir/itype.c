@@ -934,13 +934,13 @@ static int itypeAskDepth = 0;
 static int itypeAskLow = itypeAskNone;
 
 // What an itypeStructHolds walk asks, beyond the fields: an atomic value asks
-// of the fields alone; the traced questions ask of what a Walk type's walk gives
-// references to too, and 'cannot trace' passes over the raw pointers a Walk
-// type's walk covers
+// of the fields alone; the traced questions ask of what a GcTraceElements type's
+// gcTraceElements gives references to too, and 'cannot trace' passes over the raw
+// pointers its gcTraceElements covers
 enum HoldsAsk {
     HoldsAskFields,
-    HoldsAskWalk,
-    HoldsAskWalkCovers
+    HoldsAskElements,
+    HoldsAskElementsCovered
 };
 
 // Does a value of this struct hold what 'holdsfn' looks for, in a field or,
@@ -953,7 +953,7 @@ static int itypeStructHolds(StructNode *type, uint8_t *memo, int (*holdsfn)(INod
     case HoldsTracedNo:
         return 0;
     case HoldsTracedAsking: {
-        // A struct reaches itself again through a reference or a walk
+        // A struct reaches itself again through a reference or its gcTraceElements
         // ('next Rc[Node]'); what it holds is found where it was first
         // asked, and the answers that waited on it are settled there
         int at = itypeAskDepth < itypeAskMax ? itypeAskDepth : itypeAskMax;
@@ -980,13 +980,13 @@ static int itypeStructHolds(StructNode *type, uint8_t *memo, int (*holdsfn)(INod
     int holds = 0;
     INode **nodesp;
     uint32_t cnt;
-    // What the type's walk gives references to is held too; a malformed walk
+    // What the type's gcTraceElements gives references to is held too; a malformed one
     // is reported where it is declared and covers nothing
-    INode *walkelem = ask != HoldsAskFields ? structWalkElem(type) : NULL;
+    INode *traceelem = ask != HoldsAskFields ? structGcTraceElementsElem(type) : NULL;
     for (nodelistFor(&type->fields, cnt, nodesp)) {
         INode *ftype = ((IExpNode *)*nodesp)->vtype;
-        // A raw pointer the type's own walk covers is not a hole in its trace
-        if (ask == HoldsAskWalkCovers && walkelem && ftype && itypeGetTypeDcl(ftype)->tag == PtrTag)
+        // A raw pointer the type's own gcTraceElements covers is not a hole in its trace
+        if (ask == HoldsAskElementsCovered && traceelem && ftype && itypeGetTypeDcl(ftype)->tag == PtrTag)
             continue;
         if (holdsfn(ftype)) {
             holds = 1;
@@ -1002,9 +1002,9 @@ static int itypeStructHolds(StructNode *type, uint8_t *memo, int (*holdsfn)(INod
             }
         }
     }
-    if (!holds && walkelem && holdsfn(walkelem))
+    if (!holds && traceelem && holdsfn(traceelem))
         holds = 1;
-    if (ask != HoldsAskFields && structWalkPending(type))
+    if (ask != HoldsAskFields && structGcTraceElementsPending(type))
         itypeTracedProvisional = 1;
 
     if (!(type->flags & TypeChecked))
@@ -1025,7 +1025,7 @@ static int itypeStructHolds(StructNode *type, uint8_t *memo, int (*holdsfn)(INod
 }
 
 static int itypeStructHoldsTraced(StructNode *type) {
-    return itypeStructHolds(type, &type->holdstraced, itypeHoldsTraced, HoldsAskWalk);
+    return itypeStructHolds(type, &type->holdstraced, itypeHoldsTraced, HoldsAskElements);
 }
 
 // Does a value of this type hold an atomic value where it sits: is it a struct
@@ -1118,7 +1118,7 @@ int itypeHoldsBarriered(INode *type) {
 }
 
 static int itypeStructHoldsBarriered(StructNode *type) {
-    return itypeStructHolds(type, &type->holdsbarrier, itypeHoldsBarriered, HoldsAskWalk);
+    return itypeStructHolds(type, &type->holdsbarrier, itypeHoldsBarriered, HoldsAskElements);
 }
 
 static int itypeStructCannotTrace(StructNode *type);
@@ -1126,7 +1126,7 @@ static int itypeStructCannotTrace(StructNode *type);
 // Can a trace not reach everything a value of this type holds that it must?
 // Asked of a type that holds a traced reference (itypeHoldsTraced): a raw
 // pointer to a value that may hold one is a place a trace cannot follow, unless
-// the type that holds the pointer declares a Walk giving a reference to what
+// the type that holds the pointer declares GcTraceElements, giving a reference to what
 // it points at; an owning reference of a region that cannot be passed through
 // (itypeBehindOwner, regionCanPassTrace), or of an array body, is another.
 // Infectious: a type holding such a part cannot be traced either. A pointer to
@@ -1179,15 +1179,15 @@ int itypeCannotTrace(INode *type) {
 }
 
 static int itypeStructCannotTrace(StructNode *type) {
-    return itypeStructHolds(type, &type->cannottrace, itypeCannotTrace, HoldsAskWalkCovers);
+    return itypeStructHolds(type, &type->cannottrace, itypeCannotTrace, HoldsAskElementsCovered);
 }
 
 // Does a value of this type hold a traced reference where it sits: is it a
 // reference into a region declaring 'Traced', or an owning reference of any
 // other region to a value that does (a trace passes through 'Rc' and 'So'), or
-// a tuple, array, struct or enum holding one inline, or a type declaring Walk
-// whose walk gives references to values that do? The walk stops at borrows and at
-// raw pointers, which a type covers by declaring a Walk (itypeCannotTrace).
+// a tuple, array, struct or enum holding one inline, or a type declaring GcTraceElements
+// whose gcTraceElements gives references to values that do? The walk stops at
+// borrows and at raw pointers, which a type covers by declaring it (itypeCannotTrace).
 // A struct's answer is remembered once it is checked, since the trace, the type
 // record, the rules, and later rooting and barriers, all ask it.
 int itypeHoldsTraced(INode *type) {

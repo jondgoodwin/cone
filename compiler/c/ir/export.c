@@ -245,8 +245,8 @@ int fnIsTypeLifecycle(INode *dclnode) {
         && (name == initMethodName || name == acquireMutMethodName || name == releaseMutMethodName
             || name == acquireReadMethodName || name == releaseReadMethodName))
         return 1;
-    // A Walk type's 'walk' is called wherever a value of the type is traced
-    if (name == walkMethodName && structDeclaresTrait((StructNode*)owner, walkTrait))
+    // A GcTraceElements type's 'gcTraceElements' is called wherever a value of the type is traced
+    if (name == gcTraceElementsMethodName && structDeclaresTrait((StructNode*)owner, gcTraceElementsTrait))
         return 1;
     return regionIsRegionRef(owner)
         && (name == allocMethodName || name == initMethodName || name == aliasRefMethodName

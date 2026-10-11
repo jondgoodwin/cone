@@ -488,8 +488,8 @@ void regionTracedRootNote(VarDclNode *var) {
 // where the program asked for it -- through a collection's generic body, at the
 // collection's instance in the program's own source, the outermost place that
 // asked, since that is where a traced type argument was chosen. A method of a
-// type declaring Walk is exempt: the walk it declares is how a collector reaches
-// what the method places.
+// type declaring GcTraceElements is exempt: its gcTraceElements is how a collector
+// reaches what the method places.
 void regionTracedRawCall(TypeCheckState *pstate, FnCallNode *call, FnDclNode *fndcl) {
     IntrinsicNode *intrinsic = (IntrinsicNode *)fndcl->value;
     if (intrinsic->intrinsicFn != WriteRawIntrinsic && intrinsic->intrinsicFn != MoveRawIntrinsic)
@@ -506,7 +506,7 @@ void regionTracedRawCall(TypeCheckState *pstate, FnCallNode *call, FnDclNode *fn
     if (itypeGetTypeDcl(typearg)->tag == GenVarDclTag)
         return;
     if (pstate->typenode && pstate->typenode->tag == StructTag
-        && structDeclaresTrait((StructNode *)pstate->typenode, walkTrait))
+        && structDeclaresTrait((StructNode *)pstate->typenode, gcTraceElementsTrait))
         return;
     INode *where = (INode *)call;
     while (where->instnode != NULL && where->instnode != where)
@@ -552,7 +552,7 @@ static void regionTracedJudgeRef(RefNode *node, INode *where) {
                 regname, regionTracedTypeName(node->vtexp), regname);
         else
             errorMsgNode(where, ErrorTracedHeld,
-                "A reference into %s may not point at %s, which holds a traced reference and cannot be traced: it holds a raw pointer to a value that may hold one, or an array body of them, that no Walk reaches.",
+                "A reference into %s may not point at %s, which holds a traced reference and cannot be traced: it holds a raw pointer to a value that may hold one, or an array body of them, that no GcTraceElements reaches.",
                 regname, regionTracedTypeName(node->vtexp));
         return;
     }
@@ -560,7 +560,7 @@ static void regionTracedJudgeRef(RefNode *node, INode *where) {
     // that cannot be traced would hide what it holds
     if (itypeHoldsTraced(node->vtexp) && itypeCannotTrace(node->vtexp))
         errorMsgNode(where, ErrorTraceRoot,
-            "A reference into %s may not point at %s, which holds a traced reference and cannot be traced: it holds a raw pointer to a value that may hold one, or an owner a trace cannot pass through, that no Walk reaches.",
+            "A reference into %s may not point at %s, which holds a traced reference and cannot be traced: it holds a raw pointer to a value that may hold one, or an owner a trace cannot pass through, that no GcTraceElements reaches.",
             regname, regionTracedTypeName(node->vtexp));
     if (node->tag != RefTag) {
         errorMsgNode(where, ErrorTracedRefKind,
@@ -598,11 +598,11 @@ static void regionTracedJudgeRaw(TracedPlace *place, uint32_t index) {
     }
     if (place->nested)
         errorMsgNode(place->where, ErrorTracedRaw,
-            "What this instantiates would place %s, which holds a traced reference, in raw memory no collector traces (by mem.%s, as an arena, a pool or a collection places its values). A type that holds values this way says how a collector reaches them: it declares Walk, and a 'walk' giving a cursor over a writable reference to each. A traced reference may also be held in a local, a parameter, or a value a traced region allocates.",
+            "What this instantiates would place %s, which holds a traced reference, in raw memory no collector traces (by mem.%s, as an arena, a pool or a collection places its values). A type that holds values this way says how a collector reaches them: it declares GcTraceElements, and a 'gcTraceElements' giving a cursor over a writable reference to each. A traced reference may also be held in a local, a parameter, or a value a traced region allocates.",
             regionTracedTypeName(place->type), &fndcl->namesym->namestr);
     else
         errorMsgNode(place->where, ErrorTracedRaw,
-            "mem.%s would place %s, which holds a traced reference, in raw memory no collector traces (an arena's, a pool's, a collection's block), unless the method placing it belongs to a type that declares Walk, and a 'walk' giving a cursor over a writable reference to each value it holds. A traced reference may also be held in a local, a parameter, or a value a traced region allocates.",
+            "mem.%s would place %s, which holds a traced reference, in raw memory no collector traces (an arena's, a pool's, a collection's block), unless the method placing it belongs to a type that declares GcTraceElements, and a 'gcTraceElements' giving a cursor over a writable reference to each value it holds. A traced reference may also be held in a local, a parameter, or a value a traced region allocates.",
             &fndcl->namesym->namestr, regionTracedTypeName(place->type));
 }
 
@@ -638,7 +638,7 @@ void regionTracedCheckAll() {
                 break;
             if (itypeHoldsTraced(place->type) && itypeCannotTrace(place->type))
                 errorMsgNode(place->where, ErrorTraceRoot,
-                    "%s holds a traced reference, and its type %s cannot be traced: it holds a raw pointer to a value that may hold one, or an owner a trace cannot pass through, and no Walk reaches what it points at. A type that holds values this way declares Walk, and a 'walk' giving a cursor over a writable reference to each.",
+                    "%s holds a traced reference, and its type %s cannot be traced: it holds a raw pointer to a value that may hold one, or an owner a trace cannot pass through, and no GcTraceElements reaches what it points at. A type that holds values this way declares GcTraceElements, and a 'gcTraceElements' giving a cursor over a writable reference to each.",
                     &((VarDclNode *)place->node)->namesym->namestr, regionTracedTypeName(place->type));
             break;
         }

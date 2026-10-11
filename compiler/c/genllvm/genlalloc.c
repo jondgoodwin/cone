@@ -399,28 +399,29 @@ static void genlTraceErased(GenState *gen, LLVMValueRef valptr, StructNode *strn
     LLVMPositionBuilderAtEnd(gen->builder, doneblk);
 }
 
-// The values a type declaring Walk holds where it points: its 'walk' gives a
-// cursor, which is run until its 'next' gives nothing, and each reference it
-// gives -- the address of a value of 'elemtype' -- is traced as the value is.
-static void genlTraceWalkElems(GenState *gen, LLVMValueRef valptr, StructNode *strnode, INode *elemtype) {
-    FnDclNode *walkmeth = (FnDclNode *)iNsTypeFindFnField((INsTypeNode *)strnode, walkMethodName);
-    StructNode *cursor = (StructNode *)itypeGetTypeDcl(((FnSigNode *)itypeGetTypeDcl(walkmeth->vtype))->rettype);
+// The values a type declaring GcTraceElements holds where it points: its
+// 'gcTraceElements' gives a cursor, which is run until its 'next' gives nothing,
+// and each reference it gives -- the address of a value of 'elemtype' -- is
+// traced as the value is.
+static void genlTraceElements(GenState *gen, LLVMValueRef valptr, StructNode *strnode, INode *elemtype) {
+    FnDclNode *elemsmeth = (FnDclNode *)iNsTypeFindFnField((INsTypeNode *)strnode, gcTraceElementsMethodName);
+    StructNode *cursor = (StructNode *)itypeGetTypeDcl(((FnSigNode *)itypeGetTypeDcl(elemsmeth->vtype))->rettype);
     FnDclNode *nextmeth = (FnDclNode *)iNsTypeFindFnField((INsTypeNode *)cursor, nextName);
     genlType(gen, itypeGetTypeDcl(((FnSigNode *)itypeGetTypeDcl(nextmeth->vtype))->rettype));
-    LLVMValueRef curptr = genlAlloca(gen, genlType(gen, (INode *)cursor), "walkcursor");
+    LLVMValueRef curptr = genlAlloca(gen, genlType(gen, (INode *)cursor), "elemcursor");
     LLVMValueRef selfarg = valptr;
-    LLVMBuildStore(gen->builder, genlFnCallInternal(gen, SimpleDispatch, (INode *)walkmeth, 1, &selfarg, NULL), curptr);
+    LLVMBuildStore(gen->builder, genlFnCallInternal(gen, SimpleDispatch, (INode *)elemsmeth, 1, &selfarg, NULL), curptr);
 
-    LLVMBasicBlockRef doneblk = genlInsertBlock(gen, "walkdone");
-    LLVMBasicBlockRef elemblk = genlInsertBlock(gen, "walkelem");
-    LLVMBasicBlockRef headblk = genlInsertBlock(gen, "walkhead");
+    LLVMBasicBlockRef doneblk = genlInsertBlock(gen, "elemsdone");
+    LLVMBasicBlockRef elemblk = genlInsertBlock(gen, "elemsnext");
+    LLVMBasicBlockRef headblk = genlInsertBlock(gen, "elemshead");
     LLVMBuildBr(gen->builder, headblk);
     LLVMPositionBuilderAtEnd(gen->builder, headblk);
     LLVMValueRef nextarg = curptr;
     LLVMValueRef item = genlFnCallInternal(gen, SimpleDispatch, (INode *)nextmeth, 1, &nextarg, NULL);
     // The Option of a reference is the reference, null for none
     if (LLVMGetTypeKind(LLVMTypeOf(item)) != LLVMPointerTypeKind)
-        errorExit(ExitGen, "Internal error: a Walk type's cursor gave an Option of a reference that is not laid out as a nullable pointer");
+        errorExit(ExitGen, "Internal error: a GcTraceElements type's cursor gave an Option of a reference that is not laid out as a nullable pointer");
     LLVMBuildCondBr(gen->builder, LLVMBuildIsNotNull(gen->builder, item, "more"), elemblk, doneblk);
     LLVMPositionBuilderAtEnd(gen->builder, elemblk);
     genlTraceWalk(gen, item, elemtype);
@@ -562,10 +563,11 @@ static void genlTraceWalk(GenState *gen, LLVMValueRef valptr, INode *vtype) {
             genlTraceNullableVariant(gen, valptr, strnode);
         else
             genlTraceFields(gen, valptr, strnode);
-        // The values a type declaring Walk holds where it points are reached by its walk
-        INode *walkelem = structWalkElem(strnode);
-        if (walkelem && genlTraceWants(walkelem))
-            genlTraceWalkElems(gen, valptr, strnode, walkelem);
+        // The values a type declaring GcTraceElements holds where it points are
+        // reached by its gcTraceElements
+        INode *traceelem = structGcTraceElementsElem(strnode);
+        if (traceelem && genlTraceWants(traceelem))
+            genlTraceElements(gen, valptr, strnode, traceelem);
         return;
     }
     default:

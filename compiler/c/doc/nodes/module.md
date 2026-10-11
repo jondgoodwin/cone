@@ -2685,11 +2685,11 @@ reaching itself through an owner traces in a finite function; once for each
 collection where the region has several owners, by `visit`, called with the
 trace's mode, which the collector makes the collection's epoch, so a value
 reached by two owners, or round a cycle, is traced once), and through a type
-that declares `Walk` ([Struct](struct.md), "Walk"), which says how a collector
-reaches the values it holds where it points. So `itypeHoldsTraced` ("needs
-tracing") looks through owners and walks, and `itypeCannotTrace` ("cannot be
-traced", also infectious) marks a type holding a raw pointer to a value that
-needs tracing and declaring no `Walk`, or an owner a trace cannot pass through (a
+that declares `GcTraceElements` ([Struct](struct.md), "GcTraceElements"), which
+says how a collector reaches the values it holds where it points. So
+`itypeHoldsTraced` ("needs tracing") looks through owners and such types, and
+`itypeCannotTrace` ("cannot be traced", also infectious) marks a type holding a
+raw pointer to a value that needs tracing and declaring no `GcTraceElements`, or an owner a trace cannot pass through (a
 region with several owners and no `visit`; one whose value is behind an array
 body; a traced region declaring `writeBarrier`, whose stores a value behind an owner
 does not make); both are remembered per struct (`holdstraced`, `cannottrace`,
@@ -2700,7 +2700,7 @@ owning reference of a region that is not traced to a value holding a traced
 reference where the trace cannot pass through (`ErrorTracedHeld`); a global
 or static holding one (`ErrorTracedGlobal`); a call of `mem.writeRaw` or
 `mem.moveRaw` at a type holding one from a method of a type that declares no
-`Walk` (`ErrorTracedRaw`), the way an arena, a pool and a collection place their
+`GcTraceElements` (`ErrorTracedRaw`), the way an arena, a pool and a collection place their
 values and say how a collector reaches them, reported at the program's own
 instantiation where it was reached through a generic's body; a root (a local or
 a parameter) or a traced region's value whose type needs tracing and cannot be

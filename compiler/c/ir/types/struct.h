@@ -148,14 +148,15 @@ void structLendsDeclared(StructNode *node);
 // 'region *MemRegion'
 void structCarriesRegionCheck(StructNode *node);
 
-// A type declaring Walk (provisional) has a 'walk' of the shape, giving a cursor
-// over writable references to the values it holds, and it reaches every type
-// argument that holds a traced reference
-void structWalkCheck(StructNode *node);
-// The type of those values, or NULL where the type declares none or its walk is
-// not of the shape or not yet checked; and whether it declares one not yet checked
-INode *structWalkElem(StructNode *node);
-int structWalkPending(StructNode *node);
+// A type declaring GcTraceElements (provisional) has a 'gcTraceElements' of the
+// shape, giving a cursor over writable references to the values it holds, and it
+// reaches every type argument that holds a traced reference
+void structGcTraceElementsCheck(StructNode *node);
+// The type of those values, or NULL where the type declares none or its
+// gcTraceElements is not of the shape or not yet checked; and whether it declares
+// one not yet checked
+INode *structGcTraceElementsElem(StructNode *node);
+int structGcTraceElementsPending(StructNode *node);
 
 // Clone struct
 INode *cloneStructNode(CloneState *cstate, StructNode *node);

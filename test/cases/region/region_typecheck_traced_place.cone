@@ -1,7 +1,7 @@
 // Where a traced reference may be held: only where a collector can find it --
 // a local, a parameter, a temporary, a value held inline in one of those, a
 // value a traced region allocated, or behind what a trace passes through (an
-// 'Rc' or 'So' owner, a collection that declares how it is walked). So each of
+// 'Rc' or 'So' owner, a collection that declares how to trace its elements). So each of
 // these is refused, each with its own code:
 //
 // 1. an owning reference of a region that is not traced to a value holding a
@@ -13,7 +13,7 @@
 // 3. what a traced region allocates holding a borrowed reference, which its
 //    trace cannot see and no lifetime covers (ErrorTracedBorrow);
 // 4. mem.writeRaw and mem.moveRaw of a type holding one, from a method of a type
-//    that declares no 'Walk' -- how an arena, a pool and every collection place
+//    that declares no 'GcTraceElements' -- how an arena, a pool and every collection place
 //    values in memory, and say how a collector reaches them -- reported where
 //    the program chose the type, as in 'Bag[Pair]' (ErrorTracedRaw);
 // 5. an owning virtual reference into a traced region, whose value type the
@@ -23,7 +23,7 @@
 //    (ErrorTracedPerm);
 // 7. a root, or the value of a traced region, whose type needs tracing and cannot
 //    be traced: it holds a raw pointer to a value that may hold a traced
-//    reference, that no 'Walk' reaches (ErrorTraceRoot).
+//    reference, that no 'GcTraceElements' reaches (ErrorTraceRoot).
 //
 // What a traced region allocates may hold 'Rc' and 'So' owners, which its
 // finalizer releases and its trace passes through; a borrow or a raw pointer to
@@ -149,16 +149,16 @@ struct Bag[T] {
 }
 
 // Rule 7: a root that needs tracing and cannot be traced: a raw pointer to a
-// value that holds a traced reference, held beside one, with no Walk
-struct Unwalked {
+// value that holds a traced reference, held beside one, with no GcTraceElements
+struct Uncovered {
   pub g Tr[mut, Leaf];
   pub p *Pair;
 }
-fn takesUnwalked(u &Unwalked) { }
-struct HoldsUnwalked {
-  pub u Tr[mut, Unwalked];           //~ ErrorTraceRoot "may not point at Unwalked"
+fn takesUncovered(u &Uncovered) { }
+struct HoldsUncovered {
+  pub u Tr[mut, Uncovered];           //~ ErrorTraceRoot "may not point at Uncovered"
 }
-fn rootUnwalked(u Unwalked) { }      //~ ErrorTraceRoot "cannot be traced"
+fn rootUncovered(u Uncovered) { }      //~ ErrorTraceRoot "cannot be traced"
 
 fn main() {
   imm l = new Tr[mut, Leaf](1i32);

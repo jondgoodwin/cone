@@ -136,7 +136,7 @@ type while each call gives its own orderings.
    the call that instantiated it (`instnode`), not in core. A call of
    `writeRaw` or `moveRaw` is also noted, where it is made (`regionTracedRawCall`,
    from `fnCallFinalizeArgs`), for the rule that no traced reference is placed in
-   raw memory unless the method making the call belongs to a type declaring `Walk`
+   raw memory unless the method making the call belongs to a type declaring `GcTraceElements`
    (`ErrorTracedRaw`), judged once type check has finished and reported at the
    outermost instantiation — a collection's in the program's source, where it was
    reached through the collection's body ([What a region is](module.md)); once
