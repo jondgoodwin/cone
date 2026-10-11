@@ -640,6 +640,9 @@ enum ErrorCode {
     ErrorVariantBracket = 1415, // A variant constructed in square brackets, 'Some[5]', 'None[]', 'Some[i32][5]': it is constructed with parentheses, 'Some(5)', an empty one by its name alone, 'None', and brackets give type arguments only
     ErrorVariantEmptyCall = 1416, // An empty variant written with parentheses, 'Lamp.Red()': it is constructed by its name alone
 
+    // A type that gets its memory from a region (ir/types/struct.c, ir/exp/typelit.c)
+    ErrorRegionMark = 1417, // A type declaring CarriesRegion that declares no init, or an init whose last parameter is not 'region *Region'
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

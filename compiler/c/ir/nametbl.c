@@ -259,6 +259,7 @@ void nametblInit() {
     shapeChangingTraitName = nametblFind("ShapeChanging", 13);
     noLoanMutTraitName = nametblFind("NoLoanMut", 9);
     noLoanReadTraitName = nametblFind("NoLoanRead", 10);
+    carriesRegionTraitName = nametblFind("CarriesRegion", 13);
     atomicValueTraitName = nametblFind("AtomicValue", 11);
     integerTraitName = nametblFind("Integer", 7);
     pointerTraitName = nametblFind("Pointer", 7);

@@ -181,9 +181,10 @@ endif()
 target_compile_definitions(conec PRIVATE CONE_PACKAGES_DIR="${CMAKE_SOURCE_DIR}/packages/")
 
 # conestd, the runtime every program links. Its Cone files are one module,
-# which the conec built above compiles into one object; mainthread.c is the
-# piece Cone cannot say (it records the starting thread before 'main'). Both
-# go into the one library. The object also holds what it uses of core and
+# which the conec built above compiles into one object; mainthread.c is a
+# piece Cone cannot say (it records the starting thread before 'main'), and
+# heapregion.c another (the heap's region, a static object of function
+# addresses). All go into the one library. The object also holds what it uses of core and
 # libc, so it is rebuilt when they change.
 set(CONESTD_CONE
 	${CMAKE_SOURCE_DIR}/packages/conestd/conestd.cone
@@ -207,5 +208,6 @@ add_custom_command(
 )
 add_library(conestd STATIC
 	packages/conestd/mainthread.c
+	packages/conestd/heapregion.c
 	${CONESTD_OBJ}
 )

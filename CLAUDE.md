@@ -582,7 +582,10 @@ Visual Studio projects stay at the root.
   `pushFront`/`popFront` at the front, `peek`/`peekFront`, `get(i)`, `[i]` by
   position from the front, an `items()` cursor, doubling from 4 with the wrapped
   run moved in order); each holding its
-  elements in one block from `libc`'s allocator (an `OrderedDict` in two) and
+  elements in one block (an `OrderedDict` in two) from the region it points to
+  (core's `MemRegion`, a field of its own; the heap's, whose functions are
+  `libc`'s allocator, unless it is made in another, passed as the last argument
+  of a construction: `CarriesRegion`) and
   moving them with core's `mem` intrinsics; and the capability traits, met by
   the collections' method names alone (Cone's traits are structural): `Collection`,
   `Indexed[T]`, `Stack[T]`, `Queue[T]` and `Map[K, V]` (the
@@ -763,8 +766,10 @@ Visual Studio projects stay at the root.
   chain of traced roots, what a panic does, the thread-local barrier hook
   a kernel's barriers call on the CPU, and the process's hash seed. It is Cone, one C-named module
   (`conestd.cone` and the files beside it) that the build compiles with the
-  `conec` it has just built, and one C file, `mainthread.c`, recording the
-  thread the program started on before `main` runs, which Cone cannot say.
+  `conec` it has just built, and two C files: `mainthread.c`, recording the
+  thread the program started on before `main` runs, and `heapregion.c`, the
+  heap's region (core's `heapRegion()`), a static object of function addresses,
+  which Cone cannot say.
   Not a Congo package: nothing imports it.
 - `doc/design/`: the language design notes — what Cone is aiming at and how far
   the compiler is, the notes that would survive a rewrite — plus the naming

@@ -155,6 +155,7 @@ extern Name *copyTraitName;    // "Copy"
 extern Name *shapeChangingTraitName; // "ShapeChanging", a container that may move its elements
 extern Name *noLoanMutTraitName;     // "NoLoanMut", a container whose mutable element borrows loan nothing
 extern Name *noLoanReadTraitName;    // "NoLoanRead", a container whose read-only element borrows loan nothing
+extern Name *carriesRegionTraitName; // "CarriesRegion", a type whose memory comes from a region it is handed and keeps
 extern Name *atomicValueTraitName;   // "AtomicValue", a value changed only by atomic operations
 extern Name *integerTraitName;   // "Integer", the integer types, which a constraint may ask for
 extern Name *pointerTraitName;   // "Pointer", the raw pointer types, which a constraint may ask for

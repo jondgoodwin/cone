@@ -73,8 +73,11 @@
 // tests/gaps.cone writes these out. Keep each borrow brief, and let no borrow
 // into a pool live across a change to it.
 //
-// How it is laid out. The pool value is small: a pointer to its block and a
-// few counts. The block is an array of slots, each a generation, a free-list
+// How it is laid out. The pool value is small: a pointer to its block, a few
+// counts, and the region the block comes from and goes back to (core's
+// 'MemRegion', the heap's unless the pool is made in another: 'new
+// Pool[Npc](100, r)'; the pool declares 'CarriesRegion', as the collections
+// package's types do). The block is an array of slots, each a generation, a free-list
 // link and the value itself, grown by doubling (4, 8, 16, ...) and never
 // shrunk. A generation is odd while its slot holds a value and even while it
 // does not, so one compare checks both that a Ref's value is there and that
@@ -130,6 +133,7 @@ struct Slot[T] {
 struct Stale {
   pub prev *Stale;
   pub block *u8;
+  pub bytes usize;    // how long the block is, to give it back to the pool's region
 }
 
 // The end of the free list, and the slot of Ref.none(): past any slot a pool
@@ -173,7 +177,7 @@ pub struct Ref[T] is Hash {
   }
 }
 
-pub struct Pool[T] is ShapeChanging {
+pub struct Pool[T] is ShapeChanging, CarriesRegion {
   slots *Slot[T];   // the block, or null before the first value
   cap u32;          // slots the block has room for
   high u32;         // slots ever used: each below it has a generation
@@ -183,10 +187,33 @@ pub struct Pool[T] is ShapeChanging {
   lastGen u32;      // the last generation a slot may reach, odd
   dying u32;        // finalizers running now, nested
   stale *Stale;     // blocks replaced while one ran, or null
+  region *MemRegion;   // where the block comes from and goes back to
+
+  // An empty pool, 'new Pool[Npc]': no block until the first value arrives. The
+  // last argument of every init is the region the block will come from
+  // (collections' List has the whole of it), which a construction that names
+  // none leaves out and is handed the heap's.
+  pub fn initEmpty overload init(self &new, region *MemRegion) {
+    *self = new Pool[T](null, 0u32, 0u32, noSlot, 0u32, 0u32, 4294967295u32, 0u32, null, region);
+  }
+
+  // An empty pool whose block has room for n values, 'new Pool[Npc](100)'
+  pub fn initCapacity overload init(self &new, n usize, region *MemRegion) {
+    mut p = new Pool[T](null, 0u32, 0u32, noSlot, 0u32, 0u32, 4294967295u32, 0u32, null, region);
+    p.reserveSlots(n);
+    *self = p;
+  }
 
   // An empty pool: no block until the first value arrives
   pub fn empty() Pool[T] {
-    new Pool[T](null, 0u32, 0u32, noSlot, 0u32, 0u32, 4294967295u32, 0u32, null);
+    new Pool[T](null, 0u32, 0u32, noSlot, 0u32, 0u32, 4294967295u32, 0u32, null, heapRegion());
+  }
+
+  // An empty pool whose block already has room for n values
+  pub fn withCapacity(n usize) Pool[T] {
+    mut p = new Pool[T](null, 0u32, 0u32, noSlot, 0u32, 0u32, 4294967295u32, 0u32, null, heapRegion());
+    p.reserveSlots(n);
+    p;
   }
 
   // An empty pool whose slots are retired after generation 'last' rather
@@ -195,7 +222,7 @@ pub struct Pool[T] is ShapeChanging {
   // and 0 as 1.
   pub fn withLastGeneration(last u32) Pool[T] {
     imm odd = if last == 0u32 {1u32;} else if (last & 1u32) == 0u32 {last - 1u32;} else {last;};
-    new Pool[T](null, 0u32, 0u32, noSlot, 0u32, 0u32, odd, 0u32, null);
+    new Pool[T](null, 0u32, 0u32, noSlot, 0u32, 0u32, odd, 0u32, null, heapRegion());
   }
 
   // How many values it holds, how many slots its block has room for, and how
@@ -290,19 +317,31 @@ pub struct Pool[T] is ShapeChanging {
   fn grow(self &mut) {
     if cap >= maxSlots { outOfMemory(); }
     imm want = if cap == 0u32 {4u32;} else if cap > maxSlots / 2u32 {maxSlots;} else {cap * 2u32;};
+    self.growTo(want);
+  }
+
+  // Room for n slots at least, made now (a pool made with a starting size)
+  fn reserveSlots(self &mut, n usize) {
+    if n <= usize.from(cap) { return; }
+    self.growTo(if n > usize.from(maxSlots) {maxSlots;} else {u32.from(n);});
+  }
+
+  // A block of 'want' slots, which is more than the block has now
+  fn growTo(self &mut, want u32) {
     imm size = mem.sizeof[Slot[T]]();
     if usize.from(want) > (0usize - 1usize) / size { outOfMemory(); }
+    imm r = region as &MemRegion;
     if dying == 0u32 {
-      imm fresh = libc.realloc(slots as *u8, usize.from(want) * size);
+      imm fresh = r.resize(slots as *u8, usize.from(cap) * size, usize.from(want) * size, mem.alignof[Slot[T]]());
       if fresh as usize == 0usize { outOfMemory(); }
       slots = fresh as *Slot[T];
     }
     else {
-      imm fresh = libc.malloc(usize.from(want) * size);
+      imm fresh = r.allocate(usize.from(want) * size, mem.alignof[Slot[T]]());
       imm node = libc.malloc(mem.sizeof[Stale]()) as *Stale;
       if fresh as usize == 0usize or node as usize == 0usize { outOfMemory(); }
       libc.memcpy(fresh, slots as *u8, usize.from(cap) * size);
-      mem.writeRaw(node, new Stale(stale, slots as *u8));
+      mem.writeRaw(node, new Stale(stale, slots as *u8, usize.from(cap) * size));
       stale = node;
       slots = fresh as *Slot[T];
     }
@@ -314,7 +353,7 @@ pub struct Pool[T] is ShapeChanging {
     while stale as usize != 0usize {
       imm node = stale;
       stale = (node as &Stale).prev;
-      libc.free((node as &Stale).block);
+      (region as &MemRegion).release((node as &Stale).block, (node as &Stale).bytes);
       libc.free(node as *u8);
     }
   }
@@ -339,7 +378,7 @@ pub struct Pool[T] is ShapeChanging {
       dying = dying - 1u32;
     }
     self.freeStale();
-    libc.free(slots as *u8);
+    (region as &MemRegion).release(slots as *u8, usize.from(cap) * mem.sizeof[Slot[T]]());
   }
 }
 
