@@ -72,9 +72,16 @@ fn bakeSerial(pixels &mut Array[u8], width usize) {
   }
 }
 
+// The two pictures, held together: the zip's two buffers are fields of one struct this
+// function is lent, for two '&mut' parameters could be the one buffer (ErrorParSources)
+struct Pair {
+  first Array[u8, 105];
+  second Array[u8, 105];
+}
+
 // Two pictures in one pass, as surfacepatterns bakes its maps: the second has the channels reversed
-fn bakeZip(a &mut Array[u8], b &mut Array[u8], width usize) {
-  parallel each y, la, lb in a.mutArrays[3]().mutChunks(width).zip(b.mutArrays[3]().mutChunks(width)).indexed() {
+fn bakeZip(pair &mut Pair, width usize) {
+  parallel each y, la, lb in pair.first.mutArrays[3]().mutChunks(width).zip(pair.second.mutArrays[3]().mutChunks(width)).indexed() {
     each x in 0usize ..< width {
       each k in 0usize ..< 3usize {
         la[x][k] = channel(x, y, k);
@@ -144,11 +151,10 @@ fn main() {
   show("wide pixel (63, 47) channel 0", u64.from(wv[9213usize]));
 
   // ---- two pictures zipped, a row of each to a pass ----
-  mut za Array[u8, 105];
-  mut zb Array[u8, 105];
-  mut sa &mut Array[u8] = &mut za;
-  mut sb &mut Array[u8] = &mut zb;
-  bakeZip(sa, sb, 5usize);
+  mut zip Pair;
+  bakeZip(&mut zip, 5usize);
+  mut sa &mut Array[u8] = &mut zip.first;
+  mut sb &mut Array[u8] = &mut zip.second;
   show("zip first sum", total(sa));
   show("zip second sum", total(sb));
   show("zip first against flat", mismatches(sa, flatList.view()));

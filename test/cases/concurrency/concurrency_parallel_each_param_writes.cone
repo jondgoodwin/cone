@@ -1,0 +1,123 @@
+// A 'parallel each' body may not write through a '&mut' that is declared outside
+// the loop, and a PARAMETER of the enclosing function is declared outside it
+// (refeach.html, "What the body may do"). Writing through one by name
+// (concurrency_parallel_each_refused), lending '&mut l[0]' or lending a local list
+// were refused; handing the reference on, with no borrow written, was not: 'l[0].n
+// = ...', 'l.mutItems()' and 'bump(l)' on a '&mut List' parameter all compiled, and
+// every one lost updates when run on four workers (measured: 5688036 of 20000000
+// for 'l[0usize].n = l[0usize].n + 1'). A '&mut' lent on to a callee whose parameter
+// writes through it is the write, wherever the callee is: a method (the receiver), a
+// helper, a function of a builder's 'yield'.
+//
+// Two different '&mut' parameters may be the one buffer, because a caller may pass
+// it twice, so a zip of their cursors that the loop writes lends the same parts to
+// two passes (ErrorParSources): the check had compared the names.
+//
+// Allowed beside them: reading through a '&mut' or '&' parameter, lending a '&'
+// parameter on, and the pass's own item.
+
+mod concurrency_parallel_each_param_writes;
+
+import collections use *;
+import actors;
+
+struct Item { pub n i64; }
+
+fn bump(l &mut List[Item]) {
+  imm c = l.mutItems();
+  imm q = c.at(0usize);
+  q.n = q.n + 1;
+}
+
+fn peek(l &List[Item]) i64 {
+  l[0usize].n;
+}
+
+fn bumpAndGet(a &mut Item, x i64) i64 {
+  a.n = a.n + 1;
+  x;
+}
+
+// An element written by index through the parameter
+fn viaIndex(l &mut List[Item], total usize) {
+  parallel each k in 0usize ..< total {
+    l[0usize].n = l[0usize].n + 1;           //~ ErrorParWrite "may not lend for writing l"
+  }
+}
+
+// A cursor made in the body, with 'at'
+fn viaAt(l &mut List[Item], total usize) {
+  parallel each k in 0usize ..< total {
+    imm c = l.mutItems();                    //~ ErrorParWrite "may not lend for writing l"
+    imm q = c.at(0usize);
+    q.n = q.n + 1;
+  }
+}
+
+// ... and with the first item by 'next'
+fn viaNext(l &mut List[Item], total usize) {
+  parallel each k in 0usize ..< total {
+    mut c = l.mutItems();                    //~ ErrorParWrite "may not lend for writing l"
+    match c.next() {
+      case imm q Some { q.n = q.n + 1; }
+      case is None[&mut Item] { }
+    }
+  }
+}
+
+// ... from a '&mut' slice parameter
+fn viaSlice(s &mut Array[Item], total usize) {
+  parallel each k in 0usize ..< total {
+    imm c = s.mutItems();                    //~ ErrorParWrite "may not lend for writing s"
+    imm q = c.at(0usize);
+    q.n = q.n + 1;
+  }
+}
+
+// A helper the body calls with the parameter
+fn viaHelper(l &mut List[Item], total usize) {
+  parallel each k in 0usize ..< total {
+    bump(l);                                 //~ ErrorParWrite "may not lend for writing l"
+  }
+}
+
+// The reference captured in a parallel builder's 'yield': '&mut' declared outside
+fn viaBuilder(l &mut List[Item], xs &List[i64]) {
+  imm a = &mut l[0usize];
+  imm out = new List[i64] <- parallel each x in xs yield bumpAndGet(a, *x);   //~ ErrorParWrite "may not lend for writing a"
+}
+
+// ... and the same with a cursor's 'at'
+fn viaBuilderAt(l &mut List[Item], xs &List[i64]) {
+  imm c = l.mutItems();
+  imm a = c.at(0usize);
+  imm out = new List[i64] <- parallel each x in xs yield bumpAndGet(a, *x);   //~ ErrorParWrite "may not lend for writing a"
+}
+
+// A zip of two '&mut' parameters' cursors, one pass's part overlapping another's
+fn zipParams(a &mut List[Item], b &mut List[Item]) {
+  parallel each i, x, pair in a.mutItems().zip(b.mutArrays[2usize]().mutItems()).indexed() {   //~ ErrorParSources "both '&mut' references"
+    x.n = x.n + 1;
+  }
+}
+
+// Allowed: reads through the parameters, a '&' lent on, the item the pass is lent,
+// a zip of one '&mut' parameter and a list the function owns
+fn allowed(l &mut List[Item], r &List[Item], total usize) {
+  mut mine = new List[Item];
+  mine.push(new Item(0));
+  parallel each k in 0usize ..< total {
+    imm n = l.len;
+    imm m = peek(l) + peek(r) + l[0usize].n;
+    mut own = new List[Item];
+    own.push(new Item(m + i64.from(n)));
+    bump(&mut own);
+    own[0usize].n = own[0usize].n + 1;
+  }
+  parallel each x in l.mutItems() {
+    x.n = x.n + 1;
+  }
+  parallel each x, y in l.mutItems().zip(mine.mutItems()) {
+    x.n = y.n;
+  }
+}

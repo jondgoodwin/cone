@@ -425,6 +425,17 @@ static void parRefuseWrite(ParWrites *ctx, INode *site, INode *place, const char
         how, name);
 }
 
+// Is this type a borrow that may write what it points at: a '&mut' (or a slice of one)?
+static int parIsWritableBorrow(INode *type) {
+    type = type != NULL ? itypeGetTypeDcl(type) : NULL;
+    if (type == NULL || (type->tag != RefTag && type->tag != ArrayRefTag))
+        return 0;
+    RefNode *ref = (RefNode *)type;
+    if (itypeGetTypeDcl(ref->region) != borrowRef)
+        return 0;
+    return ref->perm != NULL && ref->perm != (INode *)unknownType && (permGetFlags(ref->perm) & MayWrite);
+}
+
 static int parCheckWrites(INode *node, void *ctxp) {
     ParWrites *ctx = (ParWrites *)ctxp;
     switch (node->tag) {
@@ -544,6 +555,7 @@ static int parPathsOverlap(ParPath *a, ParPath *b) {
 
 typedef struct {
     ParPath lent[ParLentMax];   // The places the items are lent from: those of each source of a zip
+    uint8_t viaref[ParLentMax]; // The place is a '&mut' held in a variable (a parameter, say)
     uint32_t nlent;
     ParSet reported;
 } ParAlias;
@@ -601,8 +613,12 @@ static void parLentPaths(INode *node, ParAlias *alias) {
         return;
     }
     ParPath path;
-    if (parPathOf(node, &path) && alias->nlent < ParLentMax)
+    if (parPathOf(node, &path) && alias->nlent < ParLentMax) {
+        // (a source reached from a variable that is a '&mut', a parameter for one, may be the
+        // buffer another '&mut' reaches: Cone lets two of them point at the one list)
+        alias->viaref[alias->nlent] = path.root->vtype != NULL && parIsWritableBorrow(path.root->vtype);
         alias->lent[alias->nlent++] = path;
+    }
 }
 
 // Walk the arguments of the indexes a place goes through: they are uses too
@@ -652,6 +668,51 @@ static int parCheckAlias(INode *node, void *ctxp) {
     // The place is taken whole: only the indexes inside it are uses of their own
     parWalkIndexArgs(node, parCheckAlias, ctx);
     return 0;
+}
+
+// ---- A '&mut' lent on to a callee ------------------------------------------------
+//
+// A call that hands a borrow it already holds on to a parameter that may write
+// through it: the argument is the variable (or a field, an element, of one) as it
+// stands, with no borrow written, so a '&mut' parameter, or a '&mut' variable of
+// the function around the loop, is lent on to the callee, which writes what it
+// points at ('l.mutItems()' on a '&mut List', 'bump(l)'). No '&mut' node is there
+// for parCheckWrites to see. It is a write through the reference as much as
+// '&mut l[0]' is, and is refused alike: a parameter, and what is reached from one,
+// is declared outside the loop. A '&' parameter is only read, and is let.
+
+typedef struct {
+    ParWrites *writes;
+    ParSet *named;      // The places parCheckAlias already refused
+} ParLentArgs;
+
+static int parCheckLentArgs(INode *node, void *ctxp) {
+    ParLentArgs *ctx = (ParLentArgs *)ctxp;
+    if (node->tag != FnCallTag)
+        return 1;
+    FnCallNode *call = (FnCallNode *)node;
+    if (call->objfn == NULL || call->args == NULL || !isExpNode(call->objfn))
+        return 1;
+    // (the actor's allocator, 'new self[T](...)', takes the actor's state: refused for itself)
+    INode *dcl = isNameUseNode(call->objfn) ? ((NameUseNode *)call->objfn)->dclnode : NULL;
+    if (dcl != NULL && dcl->tag == FnDclTag && actorIsAllocator((FnDclNode *)dcl))
+        return 1;
+    INode *sig = iexpGetDerefTypeDcl(call->objfn);
+    if (sig == NULL || sig->tag != FnSigTag)
+        return 1;
+    Nodes *parms = ((FnSigNode *)sig)->parms;
+    for (uint32_t i = 0; i < call->args->used && i < parms->used; ++i) {
+        INode *arg = nodesGet(call->args, i);
+        while (arg != NULL && arg->tag == CastTag)
+            arg = ((CastNode *)arg)->exp;
+        if (arg == NULL || arg->tag == BorrowTag || arg->tag == ArrayBorrowTag || !isExpNode(arg))
+            continue;       // (a borrow written is checked as one)
+        if (parSetHas(ctx->named, arg))
+            continue;
+        if (parIsWritableBorrow(((IExpNode *)nodesGet(parms, i))->vtype) && parIsWritableBorrow(iexpGetTypeDcl(arg)))
+            parRefuseWrite(ctx->writes, arg, arg, "lend for writing");
+    }
+    return 1;
 }
 
 // ---- Copies that write a count the passes share --------------------------------
@@ -1536,11 +1597,11 @@ void parallelEachCheckBody(TypeCheckState *pstate, BlockNode *outer) {
 
     // A loop that lends its items to be changed: the body names none of the
     // place they are lent from
+    ParAlias alias;
+    memset(&alias, 0, sizeof(alias));
     for (uint32_t i = 0; i < outer->stmts->used; ++i) {
         INode *stmt = nodesGet(outer->stmts, i);
         if (stmt->tag == VarDclTag && ((VarDclNode*)stmt)->namesym == parSliceMutName) {
-            ParAlias alias;
-            memset(&alias, 0, sizeof(alias));
             if (((VarDclNode*)stmt)->value != NULL)
                 parLentPaths(((VarDclNode*)stmt)->value, &alias);
             if (alias.nlent > 0)
@@ -1556,6 +1617,15 @@ void parallelEachCheckBody(TypeCheckState *pstate, BlockNode *outer) {
                         errorMsgNode(((VarDclNode*)stmt)->value, ErrorParSources,
                             "The sources of this zip lend from the same buffer, '%s', and the loop changes what it lends: the passes are given parts of each source, so two passes could write the same part at the same time. Zip two different buffers, or cut the buffer into parts that do not overlap first.",
                             &alias.lent[i].root->namesym->namestr);
+                        i = alias.nlent;
+                        break;
+                    }
+                    // Two different '&mut' (parameters, say) may be the one buffer: the caller
+                    // may have passed it twice
+                    if (alias.viaref[i] && alias.viaref[j] && alias.lent[i].root != alias.lent[j].root) {
+                        errorMsgNode(((VarDclNode*)stmt)->value, ErrorParSources,
+                            "The sources of this zip lend from '%s' and '%s', both '&mut' references, and the loop changes what they lend: nothing stops a caller passing the one buffer as both, and then two passes could write the same part at the same time. Zip buffers this function owns (locals, or the fields of one value it is lent), or cut one buffer into parts that do not overlap first.",
+                            &alias.lent[i].root->namesym->namestr, &alias.lent[j].root->namesym->namestr);
                         i = alias.nlent;
                         break;
                     }
@@ -1582,6 +1652,13 @@ void parallelEachCheckBody(TypeCheckState *pstate, BlockNode *outer) {
             break;
         }
     }
+
+    // Nor lends on a '&mut' it was given, to a callee that writes through it (a place
+    // already refused above as naming the buffer the items are lent from is not again)
+    ParLentArgs lentargs;
+    lentargs.writes = &ctx;
+    lentargs.named = &alias.reported;
+    parWalk((INode*)loop, parCheckLentArgs, &lentargs);
 }
 
 // ---- The loop ------------------------------------------------------------------

@@ -256,7 +256,12 @@ worked out there. Once the body is checked, `parallelEachCheckBody` refuses a
 write to anything declared outside the loop (`ErrorParWrite`): an assignment, a
 swap, or a borrow that may write, whose place is rooted in a variable that is not
 the loop's own or the body's, through fields, elements and references, but not
-through a raw pointer (the loop trusts its writer). The loop is the block's last
+through a raw pointer (the loop trusts its writer). A `&mut` handed on as it
+stands, with no borrow written (`l.mutItems()` on a `&mut List` parameter, `bump(l)`),
+has no borrow node to see, so `parCheckLentArgs` looks at the calls: an argument that is a
+`&mut` place rooted outside the loop, to a parameter that is a `&mut`, is the same
+`ErrorParWrite` (a place `parCheckAlias` already refused is not reported twice; the
+actor's allocator is `ErrorActorGcPiece`'s). The loop is the block's last
 statement, so type check has made it the value of a `blockret` (`parLoopOf`
 looks through it).
 
