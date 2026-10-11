@@ -449,7 +449,9 @@ A `parallel each` over a zip of cursors that lend from the same buffer, where th
 changes what they lend, is `ErrorParSources` (type check, `pareach.c`): two passes could
 be given the same part and write it at the same time. A `mut` borrow of a local is an alias
 loan, so the loan walk no longer refuses the second cursor as a second borrow of what is
-mutably borrowed.
+mutably borrowed. The sources need not share a name: two different variables that are
+each a `&mut` (two parameters) may be the one buffer, since the caller may pass it twice,
+so `ErrorParSources` is also reported for them (`ParAlias.viaref`).
 
 A trait named as a pattern ([cast](../nodes/cast.md), "Trait patterns") has three codes. On an enum, a
 trait that no variant complies with matches nothing: `ErrorPatTraitNone` (a method over the whole enum

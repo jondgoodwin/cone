@@ -547,6 +547,11 @@ fn total(xs &amp;Array[u64]) u64 {
 		<li>What is declared <b>outside</b> the loop is <b>read-only</b> in it, borrowed for as long as the loop runs. Writing
 			it is refused: an assignment, an operator that assigns, a field, an element, a swap, a method that changes it, or a
 			borrow that may write, and a write through a <span class="pre">&amp;mut</span> reference declared outside.
+			A <b>parameter</b> of the enclosing function is declared outside, and so is whatever is reached from one: a
+			<span class="pre">&amp;mut</span> parameter handed on as it is, to a method that takes <span class="pre">&amp;mut self</span>
+			(<span class="pre">l.mutItems()</span>, <span class="pre">l[0].n = &hellip;</span>) or to a function whose parameter is a
+			<span class="pre">&amp;mut</span> (<span class="pre">bump(l)</span>), is lent for writing as much as
+			<span class="pre">&amp;mut l[0]</span> is, and is refused alike. Handed to a <span class="pre">&amp;</span> it is only read.
 			What the pass declares itself is its own to change. A write through a raw pointer is not checked: the loop
 			trusts its writer.</li>
 		<li>A <b>copy</b> of a value from outside is a write when it counts: copying an <span class="pre">Rc</span> adds to its count, which
@@ -663,7 +668,10 @@ parallel each y, ra, rb in a.mutChunks(n).zip(b.mutChunks(3 * n)).indexed() {
 		walked by position, a Deque's cursor, a cursor of your own, a generator, a file or a channel, is refused with the reason: collect it
 		into a list and zip the list. The body rules stand for both buffers: neither may be named in the body (the passes change their
 		own parts of them at the same time; naming a buffer is refused even when its source only reads), and a zip of two cursors over the
-		same buffer, where the loop changes what they lend, is refused (two passes could be given the same part, and write it at the same time).</p>
+		same buffer, where the loop changes what they lend, is refused (two passes could be given the same part, and write it at the same time).
+		Two different <span class="pre">&amp;mut</span> references, two parameters say, may be the one buffer, because the caller may pass it
+		twice, so a zip whose sources are reached from two of them is refused too, when the loop changes what they lend. Zip buffers the
+		function owns, or the fields of one value it is lent (<span class="pre">p.first.mutChunks(n).zip(p.second.mutChunks(n))</span>).</p>
 	<p>A zip takes a third source with its own <span class="pre">zip</span>, a flat triple, three variables (four with
 		<span class="pre">indexed()</span>, the position first). It is as long as the shortest, cut at the same place in all three,
 		and the rules above hold for all three buffers:</p>
