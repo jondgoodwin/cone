@@ -751,7 +751,7 @@ dispatched through the Answer slot (`actors.ask`, `askNone`, `keep`,
 more method, `allocRegion`, read as a hidden struct's
 and moved into the state like the hidden fields: `fn allocRegion(self &mut
 Counter.State) &'static mut actors.ActorRegion`, which is the `actors` package's
-`regionOf` for this state and its message enum (the region lives in the actor's
+`regionOf` for this state and its message enum (the region's record is made at the first call and kept by the actor's
 Header, so no import beyond `actors` is needed). It is the way `new self[T](...)`
 finds the actor's own region ([Literals](../nodes/literals.md), "Construction"). What
 the compiler needs of all this later is recorded in the actor's `ActorInfo`

@@ -2739,8 +2739,8 @@ an `Rc` (a barrier is told of a store, which a value behind an owner does not ma
 The actor reaches its region by a method of its state, `allocRegion`, generated
 for every actor ([Parse](../phases/parse.md), "Actors"), and
 `new self[T](...)` is `self.allocRegion().alloc(new T(...))`
-([Literals](literals.md), "Construction"). The region is a field of the actor's
-`Header` and the collector is the `actors` package's own (`packages/actors/src/gc.cone`,
+([Literals](literals.md), "Construction"). The region is a record the actor's
+`Header` points to (null till the first `allocRegion`) and the collector is the `actors` package's own (`packages/actors/src/gc.cone`,
 nothing to import): the runtime asks the region to collect after each message and
 finishes it at the actor's death, and reaches the records a
 seam parked through the pending table's `GcTraceElements`

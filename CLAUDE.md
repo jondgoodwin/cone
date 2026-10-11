@@ -612,7 +612,7 @@ Visual Studio projects stay at the root.
   option), single threaded and for use outside actors, which a
   bare `import collector;` brings in; `actors` carries each actor's own
   garbage collector (`packages/actors/src/gc.cone`, no import beyond `actors`):
-  `ActorGc`, the region every actor has in its Header, made with it, which an
+  `ActorGc`, the region every actor has (one pointer in its Header, the record made at its first `allocRegion`), which an
   actor allocates in with `new self[T](...)` (the actor's state gets an
   `allocRegion` method giving its `ActorRegion`), whose references are made,
   held and copied inside the actor (the region declares the built-in trait

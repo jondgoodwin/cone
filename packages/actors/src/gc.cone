@@ -1,5 +1,5 @@
 // Each actor's own garbage collector, a part of the actors package: every actor
-// carries a region of its own, in its Header, made with it. 'ActorGc' is that
+// carries a region of its own, kept by its Header. 'ActorGc' is that
 // region's reference: its values live in the memory of the one actor that made
 // them and are found, moved and freed by a copying collector that runs only
 // between that actor's messages, when the actor's state and its parked 'await'
@@ -38,10 +38,13 @@
 // made in a region does (A COLLECTION'S BLOCK, below). 'self.allocRegion().stats()'
 // says what the region holds.
 //
-// WHAT AN ACTOR PAYS. The region is a field of the actor's Header, written when
-// the actor is made, and holds no memory until the actor first allocates: the
-// first chunk is made then. An actor that never allocates carries the record,
-// and its message loop one flag test.
+// WHAT AN ACTOR PAYS. Every actor has a region, but its record is made lazily:
+// the actor's Header holds one pointer to it, null till the actor first asks for
+// its region ('allocRegion'), and the first chunk is made at the first
+// allocation. An actor that never asks pays one word in its Header, and its
+// message loop one test of it. The record, and the three block functions that
+// collections point at, are one malloc'd object that lives till the actor's
+// death (freed after its finals), so their address never changes.
 //
 // HOW IT COLLECTS. The region is a list of CHUNKS the actor allocates in, a
 // bump pointer through the newest. The first is 4 KiB, made when the actor
@@ -220,16 +223,18 @@ pub struct GcStats {
 }
 
 // An actor's region: its chunks, its large objects, its final list, and what
-// the collector counts. It is a field of the actor's Header, made with the actor
-// and freed at its death, so it never moves. It is a region value (its first
-// field is a public '*MemRegion', the region the collections made in it draw
-// their blocks from: its own 'vt', the allocate, resize and release below, which
-// sit beside it), and 'new self[T](...)', which is 'self.allocRegion().alloc(new
-// T(...))', is the allocation below.
+// the collector counts. It is a record of its own, malloc'd when the actor first
+// asks for its region ('allocRegion') and freed at its death, after the finals;
+// the actor's Header holds one pointer to it, null till then, so it never moves.
+// It is a region value (its first field is a public '*MemRegion', the region the
+// collections made in it draw their blocks from: its own 'vt', the allocate,
+// resize and release below, which sit beside it IN THIS RECORD, so the address
+// the collections hold is the record's and lasts as long as the actor), and
+// 'new self[T](...)', which is 'self.allocRegion().alloc(new T(...))', is the
+// allocation below.
 pub struct ActorRegion {
-  pub region *MemRegion;         // what collections made here get their blocks from: 'vt', once the Header is in place
+  pub region *MemRegion;         // what collections made here get their blocks from: 'vt', below
   vt MemRegion;                  // the region's three functions: SECOND, at the offset of one pointer (blockRegion)
-  used bool = false;             // asked for, by 'allocRegion': the message loop looks at nothing else until then
   first *Chunk = null;           // the oldest chunk
   last *Chunk = null;            // the newest: allocation bumps here
   scanChunk *Chunk = null;       // a collection's scan: the chunk it is in
@@ -255,10 +260,16 @@ pub struct ActorRegion {
   blocks usize = 0usize;         // bytes held in the blocks of collections made here
   epoch u32 = 0u32;
 
-  // A region holding nothing: its three functions set, its 'region' still to be
-  // pointed at them once the Header it is a field of is where it will stay
-  fn empty() ActorRegion {
-    new ActorRegion(null, new MemRegion(&blockAlloc, &blockResize, &blockRelease));
+  // A region holding nothing, made where it will stay: its three functions set
+  // and its 'region' pointed at them
+  fn create() *ActorRegion {
+    imm g = libc.malloc(mem.sizeof[ActorRegion]()) as *ActorRegion;
+    if g == null {
+      panic("ActorGc: out of memory for an actor's region");
+    }
+    mem.writeRaw(g, new ActorRegion(null, new MemRegion(&blockAlloc, &blockResize, &blockRelease)));
+    (*g).region = (&mut (*g).vt) as *MemRegion;
+    g;
   }
 
   // A value made in the actor's region: 'new self[T](v)'. The next ActorGc
@@ -768,15 +779,12 @@ fn collectIfDue(g &mut ActorRegion, st *u8, rec *TypeRecord) {
   }
 }
 
-// A new actor's region, once its Header is where it will stay: pointed at its
-// own three functions, which every collection made in it is handed
-fn attachRegion(h *Header) {
-  (*h).gc.region = (&mut (*h).gc.vt) as *MemRegion;
-}
-
-// The actor's region, for the state's generated 'allocRegion'
+// The actor's region, for the state's generated 'allocRegion': made now, the
+// first time it is asked for, and kept by the actor's Header until its death
 pub fn regionOf[S, M Sendable](st &mut S) &'static mut ActorRegion {
-  imm g = &mut (*headerOf[S, M](st)).gc as *ActorRegion;
-  (*g).used = true;
-  g as &mut ActorRegion;
+  imm h = headerOf[S, M](st);
+  if (*h).gc as usize == 0usize {
+    (*h).gc = ActorRegion.create();
+  }
+  (*h).gc as &mut ActorRegion;
 }

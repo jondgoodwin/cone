@@ -232,7 +232,7 @@
 //   check refuses 'Gc' in a message. Every actor has a collector of its own, a
 //   part of this package (gc.cone): 'ActorGc', a region whose values 'new
 //   self[T](...)' makes and a copying collector frees between the actor's
-//   messages. The region is a field of the actor's Header, made with the actor;
+//   messages. The region's record is kept by the actor's Header, made when the actor first asks for it;
 //   after each message a worker asks it to collect, if the actor has used it,
 //   with the actor's state and its type record, whose trace hands the collector
 //   every reference the state holds, the pending table's records among them
@@ -574,9 +574,9 @@ struct Header {
   pub release &fn(h *Header);            // releaseHold[M]
   pub finalize &fn(h *Header);           // finalizeState[S, M]
   pub dispatch *u8;                      // the actor's dispatch function
-  pub gc ActorRegion;                    // the actor's own region, made with it, holding no memory till it allocates (INSIDE AN ACTOR, above; gc.cone)
   pub par *ParPending = null;            // a behaviour's 'parallel each' to begin once it has returned (parallel.cone, A PARALLEL EACH IN A BEHAVIOUR)
   pub ready *ParPending = null;          // ... finished: the rest of the behaviour, to run ahead of the mailbox
+  pub gc *ActorRegion = null;            // the actor's own region: null until the actor first asks for it (INSIDE AN ACTOR, above; gc.cone), a record of its own that never moves
 }
 
 // What an actor's handle owns, 'Arc[opaq, T]': the runtime's part of an actor
@@ -614,8 +614,9 @@ fn actorDied(h *Header) {
   finalize(h);
   // The actor's region goes after its state, whose finals may read what they
   // reach in it: every object with a final is finalized, then the region freed
-  if (*h).gc.used {
-    (&mut (*h).gc).die();
+  if (*h).gc as usize != 0usize {
+    ((*h).gc as &mut ActorRegion).die();
+    libc.free((*h).gc as *u8);
   }
   if (*h).tail as usize != 0usize {
     libc.free((*h).tail as *u8);
@@ -662,16 +663,14 @@ pub fn makeActor[S, M Sendable](dispatch &fn(s &mut S, m *M)) *S {
   (*stub).next = nullLink();
   mut f = dispatch;
   imm h = new Header(stub, stub, nullHeader(),
-    &runBatch[S, M], &releaseHold[M], &finalizeState[S, M], *(&mut f as **u8), ActorRegion.empty());
+    &runBatch[S, M], &releaseHold[M], &finalizeState[S, M], *(&mut f as **u8));
   imm b = new Arc[opaq, Block[S, M]](Mailbox[M].made(h), mem.readRaw[S](room as *S));
   libc.free(room);
   // The owner of the block, put away uncounted as its address, which is the
   // Header's: startActor remakes it
   mut slot *u8 = null;
   mem.writeRaw[Arc[opaq, Block[S, M]]](&mut slot as *(Arc[opaq, Block[S, M]]), b);
-  // The actor's region, in the Header now where it stays, pointed at its own
-  // functions; and the collector's knobs read once (gc.cone)
-  attachRegion(slot as *Header);
+  // The collector's knobs read once (gc.cone)
   readEnv();
   stateOf[S, M](slot as *Header);
 }
@@ -771,10 +770,10 @@ fn runBatch[S, M Sendable](h *Header, limit u32) u32 {
 // behaviour began is still to run its passes, which hold the references they
 // read where no collection finds them.
 fn afterMessage(h *Header, st *u8, rec *TypeRecord) {
-  if !(*h).gc.used or (*h).par as usize != 0usize {
+  if (*h).gc as usize == 0usize or (*h).par as usize != 0usize {
     return;
   }
-  collectIfDue(&mut (*h).gc, st, rec);
+  collectIfDue((*h).gc as &mut ActorRegion, st, rec);
 }
 
 // The rest of a behaviour cut at its 'parallel each', run as a reply's dispatch
