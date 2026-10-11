@@ -1,10 +1,11 @@
 // What Shareable and Sendable refuse. A closure is a struct of what it borrows
 // and holds, so it is the markers of those: a closure naming an 'Rc[imm, Grid]',
-// or a '&mut' (whose body may write through it with its '()' still taking
-// 'self &': Cone's '&mut' is shared mutable, and what holds one writes through a
-// borrow of it), is neither Shareable nor Sendable, and a hand-written struct with
-// a '&mut' field is the same. Each refusal names the variable the closure holds
-// or borrows and says what to list.
+// or a '&mut' (whose body reads through it with its '()' taking 'self &'), is
+// neither Shareable nor Sendable, and a hand-written struct with a '&mut' field is
+// the same. Each refusal names the variable the closure holds or borrows and says
+// what to list. A body that writes through the '&mut' has a '()' that takes
+// 'self &mut' (a '&' reads and lends only '&' of what it holds), so it is not
+// given where a callable that only reads is asked for.
 //
 // closure_shareable holds what is granted.
 
@@ -90,11 +91,16 @@ fn types() {
 fn closures() {
   mut m = 5;
   imm r = &mut m;
-  // Its '()' writes through 'r' and takes 'self &', a closure of a '&mut'
-  imm writes = fn(x i32) i32 { *r = *r + x; *r; };
+  // Its '()' reads through 'r' and takes 'self &', a closure of a '&mut'
+  imm writes = fn(x i32) i32 { *r + x; };
   needShare(&writes);                         //~ ErrorNotShareable "it borrows 'r' (&mut i32)"
   needSend(&writes);                          //~ ErrorNotSendable "it borrows 'r' (&ro &mut i32)"
   lendShare(&writes);                         //~ ErrorNotShareable "it borrows 'r' (&ro &mut i32)"
+
+  // One that writes through 'r' takes 'self &mut', which a '&F' of a callable that
+  // only reads refuses
+  imm changes = fn(x i32) i32 { *r = *r + x; *r; };
+  needShare(&changes);                        //~ ErrorCallablePerm "this closure changes it"
 
   // A hand-written struct with a '&mut' field, called as a callable
   imm holder = new Holder(&mut m);
@@ -103,14 +109,14 @@ fn closures() {
 
   // An owner marked Sendable, made from such a closure, and from one listing an Rc
   imm rc = new Rc[imm, Grid](new Grid(4));
-  imm owned = new So[fn(x i32) i32 + Sendable](fn(x i32) i32 { *r = *r + x; x; });   //~ ErrorNotSendable "it borrows 'r' (&ro &mut i32)"
+  imm owned = new So[fn(x i32) i32 + Sendable](fn(x i32) i32 { *r + x; });   //~ ErrorNotSendable "it borrows 'r' (&ro &mut i32)"
   imm listed = new So[fn(x i32) i32 + Sendable](fn(x i32) [rc] i32 { x + rc.n; });   //~ ErrorNotSendable "it holds 'rc' (Rc[imm, Grid])"
   imm shared = fn(x i32) [rc] i32 { x + rc.n; };
   needShare(&shared);                         //~ ErrorNotShareable "it holds 'rc' (Rc[imm, Grid])"
 
   // Handed to a parallel each
   mut out = new List[f32];
-  fillGrid(&mut out, 4usize, fn(x i32, y i32) f32 { *r = *r + x; 1.; });
+  fillGrid(&mut out, 4usize, fn(x i32, y i32) f32 { f32.from(*r + x); });
   fillGrid(&mut out, 4usize, (x, y) => f32.from(x + rc.n));
   fillGrid(&mut out, 4usize, fn(x i32, y i32) [rc] f32 { f32.from(x + rc.n); });
 }

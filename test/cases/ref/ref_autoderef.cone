@@ -2,10 +2,9 @@
 // level: '&&Pt', '&&&Pt', '&mut &Pt', an owner held behind a borrow, a slice or a
 // virtual reference behind one. 'r.x' is '(**r).x' however many references deep
 // 'r' is, and it permits exactly what the explicit dereferences do: a '&mut'
-// held behind a '&' still writes, written 'r.x = 9' or '(**r).x = 9', and the
-// field path through a '&Holder' holding a '&mut Pt' is as it always was. An
-// owner behind a '&' lends only '&' (ref_typecheck_autoderef holds the writes
-// refused, a read-only level and an owner).
+// held behind a '&', or in a field of a '&Holder', reads but does not write
+// (ref_typecheck_autoderef holds the writes refused, a read-only level and an
+// owner), and an owner behind a '&' lends only '&'.
 //
 // The outermost level wins a name: a reference's own '===' is asked of the
 // reference as written, before the receiver is read through, so two '&&Pt' that
@@ -34,7 +33,7 @@ struct Holder {
   pub fn len(self &) i32 { 100; }
 }
 
-// Holds a '&mut': written through a '&MutHolder', as ever
+// Holds a '&mut': read through a '&MutHolder', written only through a '&mut' one
 struct MutHolder {
   pub r &mut Pt;
 }
@@ -58,9 +57,7 @@ fn viaTwo(r &&Pt) i32 { r.x + r.len(); }
 fn viaThree(r &&&Pt) i32 { r.x + r.len(); }
 fn viaMutRo(r &mut &Pt) i32 { r.x + r.len(); }
 fn viaRoMut(r & &mut Pt) i32 { r.x + r.len(); }
-fn writeRoMut(r & &mut Pt) { r.x = 9; r.bump(); }
-fn writeRoMutExplicit(r & &mut Pt) { (**r).x = 9; (*r).bump(); }
-fn writeHeld(h &MutHolder) { h.r.x = 30; h.r.bump(); }
+fn readHeld(h &MutHolder) i32 { h.r.x + h.r.len(); }
 fn writeTwo(r &mut &mut Pt) { r.x = 9; r.bump(); }
 fn writeThree(r &mut &mut &mut Pt) { r.x = 20; r.bump(); }
 fn opAssign(r &mut &mut Pt) { r.x += 5; r.x++; }
@@ -102,21 +99,9 @@ fn main() {
   mut z = new Pt(3, 4);
   imm mz = &mut z;
   show("ro over mut", i64.from(viaRoMut(&mz)));       // 10
-
-  // a '&mut' held behind a '&' writes, implicit and explicit alike, and so does
-  // the field path through a '&' holder
-  mut e1 = new Pt(1, 1);
-  mut e2 = new Pt(1, 1);
-  mut e3 = new Pt(1, 1);
-  imm me1 = &mut e1;
-  imm me2 = &mut e2;
-  writeRoMut(&me1);
-  writeRoMutExplicit(&me2);
-  imm mh = new MutHolder(&mut e3);
-  writeHeld(&mh);
-  show("implicit", i64.from(e1.x));        // 9, then bumped: 10
-  show("explicit", i64.from(e2.x));        // 9, then bumped: 10
-  show("held", i64.from(e3.x));            // 30, then bumped: 31
+  mut hz = new Pt(3, 4);
+  imm mh = new MutHolder(&mut hz);
+  show("held", i64.from(readHeld(&mh)));              // 3 + 7 = 10
 
   // writes through every level that allows them
   mut w1 = new Pt(1, 1);

@@ -54,6 +54,28 @@ static int borrowRefusesConst(INode *place) {
     return 1;
 }
 
+// A borrowed reference that may write ('&mut', '&uni') held in a place reached
+// through a borrow that only reads ('car.owner' for a 'car &Car' holding
+// 'owner &mut Person'), used where one that may write is wanted -- a receiver, an
+// argument, an initializer -- is refused: through a '&' it is a '&', the
+// permissions being the intersection of all gone through (refperm.html,
+// "Viewpoint Adaptation"). 'perm' is the permission the use asks for. Reports
+// it and answers 1 when refused.
+static int borrowHeldRefLendRefused(INode *held, INode *perm) {
+    INode *heldtype = iexpGetTypeDcl(held);
+    if ((heldtype->tag != RefTag && heldtype->tag != ArrayRefTag && heldtype->tag != VirtRefTag)
+        || itypeGetTypeDcl(((RefNode*)heldtype)->region) != (INode*)borrowRef)
+        return 0;
+    INode *wanted = itypeGetTypeDcl(perm);
+    if (wanted->tag != PermTag || !(permGetFlags(wanted) & MayWrite)
+        || !(permGetFlags(((RefNode*)heldtype)->perm) & MayWrite) || permIsLock(((RefNode*)heldtype)->perm)
+        || !iexpPathThroughBorrow(held) || iexpReachWrites(held))
+        return 0;
+    errorMsgNode(held, ErrorBadPerm,
+        "Borrowed reference cannot obtain this permission: it is held in a place reached through a reference that only reads, and a `&` lends only `&` of the references it holds, `&mut` ones included. To change what it points at, reach it through a `&mut` (a method takes `self &mut`).");
+    return 1;
+}
+
 // An owning reference held in a place reached through a borrow that only reads
 // ('h.app' for a 'h &Holder' holding 'app So[App]'), lent as a borrow that may
 // write, is refused: a '&' lends only '&' of what it holds, owners included.
@@ -65,6 +87,8 @@ static int borrowRefusesConst(INode *place) {
 int borrowOwnerLendRefused(INode *owner, INode *perm) {
     if (!isExpNode(owner) || !iexpIsLval(owner))
         return 0;
+    if (borrowHeldRefLendRefused(owner, perm))
+        return 1;
     INode *ownertype = iexpGetTypeDcl(owner);
     if ((ownertype->tag != RefTag && ownertype->tag != VirtRefTag)
         || itypeGetTypeDcl(((RefNode*)ownertype)->region) == (INode*)borrowRef)

@@ -552,7 +552,10 @@ that changes state, which needs `self &mut`, given where a trait is wanted whose
 method says `self &` (under any holder, a generic's `[S Trait]` included). An owner held in a
 place reached through a reference that only reads, lent as a `&mut` or `&uni`
 (a receiver, an argument, an initializer, a `So[fn]` called), is `ErrorBadPerm`,
-as a written `&mut` of the same place is.
+as a written `&mut` of the same place is; so is a `&mut` or `&uni` borrowed
+reference held in such a place, used where one that may writes is wanted
+(`car.owner.birthday()` through a `car &Car` holding `owner &mut Person`), and a
+write through it is `ErrorNoMut`.
 
 `await` has five error codes and a warning. Where it may not stand -- anywhere
 but a behaviour -- is `ErrorAwaitPlace`; on a behaviour that returns nothing,

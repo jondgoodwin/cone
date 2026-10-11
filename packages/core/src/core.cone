@@ -560,7 +560,15 @@ pub struct ArrayMutItems['a, T] is Iterator[&mut T] {
 
   pub fn len(self &) usize { items.len - pos; }
 
-  pub fn at(self &, k usize) &'a mut T { &mut items[pos + k]; }
+  // Item k of the walk: a '&mut' lent from a shared cursor, as 'ArrayMutChunks.at' lends
+  // a run (through the raw pointer: a '&' cursor holds its '&mut' slice as a read-only
+  // view), safe because 'parallel each' asks for each k once
+  pub fn at(self &, k usize) &'a mut T {
+    if pos + k >= items.len {
+      panic("ArrayMutItems.at: the item is past the end");
+    }
+    &mut *((items as *T) + (pos + k));
+  }
 
   // The same with the positions: the item is a '&mut' too
   pub fn indexed(self) MutItemsIndexed['a, T] { new MutItemsIndexed[T](items, pos); }
@@ -586,9 +594,13 @@ pub struct MutItemsIndexed['a, T] is Iterator[(usize, &mut T)] {
 
   pub fn len(self &) usize { items.len - pos; }
 
+  // As 'ArrayMutItems.at': the '&mut' is lent through the raw pointer
   pub fn at(self &, k usize) (usize, &'a mut T) {
     imm i = pos + k;
-    (i, &mut items[i]);
+    if i >= items.len {
+      panic("MutItemsIndexed.at: the item is past the end");
+    }
+    (i, &mut *((items as *T) + i));
   }
 }
 

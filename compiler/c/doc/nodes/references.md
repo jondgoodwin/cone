@@ -637,6 +637,30 @@ called. A local, a field of one held by value, or a field reached through a
 `ref_typecheck_owner_field_rc` pin the refusals; `ref_owner_field`,
 `ref_owner_field_shared` and `ref_owner_field_rc` what runs.
 
+**A borrowed reference that may write, held in a place reached through a borrow
+that only reads, reads and lends only `&`.** The permissions of a path are the
+intersection of every reference gone through ([refperm](../../../../doc/reference/refperm.html),
+"Viewpoint Adaptation"): `car.owner.age = 18` through a `car &Car` is refused
+though `owner` is a `&mut Person`, as is `target.push(x)` in a `self &` method of
+a struct holding `target &mut List`. `iexpReachWrites` asks whether every
+reference the place is reached through (a borrow, a slice, a virtual reference,
+an owner whose own permission cannot write) grants write, looking at the
+references' permissions and not at the slots holding them: an `imm` field, or a
+variable, can hold a `&mut` that is written through. `iexpLvalInfo` takes the
+permission of a dereference, an index and a virtual reference's field from
+`iexpViewpointPerm`, which is the reference's own unless the place holding it
+is reached through a borrow (`iexpPathThroughBorrow`) and `iexpReachWrites`
+fails: then `ro`. Reading the `&mut` itself out of such a place to where a
+write is wanted — a receiver, an argument, an initializer — is refused by
+`borrowHeldRefLendRefused`, which `borrowOwnerLendRefused` begins with
+(`ErrorBadPerm`); a written write is `ErrorNoMut`. A local, a field of one held
+by value, or a place reached only through references that write is not held to
+this. The borrow a closure makes of a variable (`RefNode.capture`) does not
+narrow what the variable's own `&mut` writes, so a closure that writes through a
+captured `&mut` parameter takes `self &mut` and not `self &`. `ref_typecheck_viewpoint_borrowed`
+and `ref_typecheck_autoderef` pin the refusals; `ref_viewpoint_borrowed` what
+runs.
+
 **The lifetime of a borrow is that of the place borrowed**, which
 `iexpGetLvalInfo` computes for every borrow, written or injected
 (`borrowTypeCheck`, `borrowMutRef`, `borrowAuto`, `borrowUniReborrow` for a

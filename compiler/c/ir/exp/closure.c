@@ -477,6 +477,9 @@ static StructNode *closureBuild(TypeCheckState *pstate, ClosureNode *clo, Closur
         inodeLexCopy((INode*)fld, (INode*)clo);
         fld->vtype = (INode*)newRefNodeFull(RefTag, (INode*)clo, borrowRef,
             (INode*)newPermUseNode(plan->capmut[ci] ? mutPerm : roPerm), var->vtype);
+        // The borrow of a variable, not of a value that holds references: a
+        // '&mut' the variable holds is written through it (iexpReachWrites)
+        ((RefNode*)fld->vtype)->capture = 1;
         fld->flags |= FlagMethFld;
         fld->index = (uint16_t)k;
         structAddField(st, fld);

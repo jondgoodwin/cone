@@ -292,14 +292,17 @@ reports no return mismatch of its own (`ClosureInfo.errbase`, `returnTypeCheck`)
 A closure is a struct of what it borrows and holds, so where it may go is
 decided by the rules for its fields, with nothing closure-specific: a borrow
 makes it lifetime-limited (the loan walk), an `Rc` makes it not Sendable and not
-Shareable, a `&mut` (whose body writes through it with the `()` still `self &`)
-makes it neither ([references](references.md), `Shareable`). What is closure's own
+Shareable, a `&mut` (a body that writes through it takes `self &mut`: a `&`
+lends only `&` of the `&mut` it holds) makes it neither
+([references](references.md), `Shareable`). What is closure's own
 is the message, which names the variable to list so the closure holds a copy
 instead of borrowing it.
 
 - **The implicit borrow knows it is one.** The borrow the compiler makes of each
   variable the body names is a `BorrowTag` node with `RefNode.capture` set
-  (`closureTypeCheck`). The loan walk's escape messages (`loanNotBoxable`,
+  (`closureTypeCheck`), and the field's type is a reference with it set too
+  (`closureBuild`): a reference to a variable's slot, which does not narrow what
+  a `&mut` the variable holds may write (`iexpReachWrites`). The loan walk's escape messages (`loanNotBoxable`,
   `loanNotGlobal`, `loanNotBound`, `loanEscape`; `loanCaptured`,
   `loanCaptureAdvice`) read it off the loan's site and add the sentence: list the
   variable, `[k]`; for `self` (a body that names a member borrows `self`), copy the

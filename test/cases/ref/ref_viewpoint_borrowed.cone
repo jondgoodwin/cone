@@ -1,0 +1,96 @@
+// What a borrowed reference held in a field still lends, by the reference its
+// holder is reached through (refperm.html, "Viewpoint Adaptation"): through a
+// '&' it reads and lends '&'; through a '&mut' or a '&uni', or from a local
+// struct holding it by value, it writes and lends '&mut' as its own permission
+// says. A read-only method may read through a '&mut' it holds; one that changes
+// it takes 'self &mut'. The numbers show each call reached the value.
+// ref_typecheck_viewpoint_borrowed holds what a '&' refuses.
+
+mod ref_viewpoint_borrowed;
+
+import stdio use *;
+import collections use *;
+
+struct Person {
+  pub age i64;
+  pub fn birthday(self &mut) { age = age + 1; }
+  pub fn look(self &) i64 { age; }
+}
+struct Item { pub n i64; }
+
+struct Car['a] { pub owner &'a mut Person; }
+struct Cell['a] { pub holder &'a uni Person; }
+struct Fleet['a, 'b] { pub car &'a mut Car['b]; }
+
+struct Guard['a] {
+  pub target &'a mut List[Item];
+  pub fn rollback(self &mut) { target.push(new Item(0)); }
+  pub fn peek(self &) usize { target.len(); }
+}
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn readAge(car &Car) i64 { car.owner.age; }
+fn lookAge(car &Car) i64 { car.owner.look(); }
+fn readFar(fleet &Fleet) i64 { fleet.car.owner.age; }
+fn readUni(cell &Cell) i64 { cell.holder.look(); }
+
+fn setAge(car &mut Car) { car.owner.age = 18; }
+fn birth(car &mut Car) { car.owner.birthday(); }
+fn setFar(fleet &mut Fleet) { fleet.car.owner.age = 40; }
+fn setUni(cell &mut Cell) { cell.holder.age = 7; }
+fn birthUni(cell &mut Cell) { cell.holder.birthday(); }
+
+// 'rollback' takes 'self &mut' and pushes through the list it holds: the list
+// of capacity one, holding Item(42), then also Item(0); the first item still 42
+fn guarded(l &mut List[Item]) i64 {
+  imm n0 = l.len();
+  mut g = new Guard(l);
+  g.rollback();
+  i64.from(g.peek()) * 100 + i64.from(n0);
+}
+
+// The '&uni' field read through a '&' (5), written through a '&mut' holder (7), and a
+// method called through it (8): 5, 7, 8 and the person's age ends at 8
+fn uniWorld(q &uni Person) i64 {
+  mut cell = new Cell(q);
+  imm before = readUni(&cell);
+  setUni(&mut cell);
+  imm mid = cell.holder.age;
+  birthUni(&mut cell);
+  before * 10000 + mid * 100 + cell.holder.age;
+}
+
+fn main() {
+  mut p = new Person(30);
+  show("read through & ", readAge(&new Car(&mut p)));
+  show("look through & ", lookAge(&new Car(&mut p)));
+  mut c = new Car(&mut p);
+  setAge(&mut c);
+  show("set through &mut ", p.age);
+  mut c2 = new Car(&mut p);
+  birth(&mut c2);
+  show("method through &mut ", p.age);
+  // a local struct holding the '&mut' by value writes through it
+  mut c3 = new Car(&mut p);
+  c3.owner.age = c3.owner.age + 100;
+  show("local struct ", p.age);
+  mut c4 = new Car(&mut p);
+  mut fl = new Fleet(&mut c4);
+  show("read far ", readFar(&fl));
+  setFar(&mut fl);
+  show("set far ", p.age);
+  imm q = new So[Person](5);
+  show("uni field ", uniWorld(q));
+  show("after ", q.age);
+
+  mut l = new List[Item](1usize);
+  l.push(new Item(42));
+  show("guard ", guarded(&mut l));
+  show("first item ", (*l[0usize]).n);
+}
