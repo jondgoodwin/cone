@@ -96,6 +96,19 @@ int itypeCannotTrace(INode *type);
 // that region's collector of?
 int itypeHoldsBarriered(INode *type);
 
+// Does a value of this type hold, where itypeHoldsTraced looks, a reference into
+// a traced region that is not 'ActorLocal': one whose collector runs whenever
+// and wherever a program says, and so is unsafe in an actor or a 'parallel each'
+// (ErrorGcStopgap)? Not remembered: asked of a declaration or a node once.
+int itypeHoldsCollected(INode *type);
+
+// Does a value of this type hold a traced reference where a collector must find
+// it, as itypeHoldsTraced looks, but for an actor's state, which the actors
+// runtime hands to the actor's collector wherever it keeps it? The placement
+// rules ask this (regionTracedCheckAll): the Arc block an actor lives in, and
+// the raw move that makes its state, hold a state whose references are found.
+int itypeHoldsTracedPlaced(INode *type);
+
 // Does a value of this type hold an atomic value where it sits: a struct
 // declaring 'AtomicValue', or a tuple, array, struct or enum holding one inline
 // (not through a reference or a pointer)? Remembered per struct once the

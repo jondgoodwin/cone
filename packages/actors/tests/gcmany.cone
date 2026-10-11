@@ -1,0 +1,120 @@
+// Many actors on several workers, each with a region of its own, collected at
+// once on different threads, and moved between workers by the scheduler. Each
+// of 24 actors takes 300 messages: every one makes 10 nodes of garbage and
+// keeps one in a chain, the newest first holding the numbers 1..300, and a
+// list made in the region ('new self[List[i64]]', the list's words in the
+// region and its block on the heap) that gets every 10th number. At the end
+// each reports the sum of its chain (300 * 301 / 2 = 45150) and of its list
+// (10 + 20 + .. + 300 = 4650); a reference a collection missed, moved wrongly
+// or confused with another actor's would not add up. The sums are added into
+// atomics and printed once. Stress mode: a collection after every message.
+
+mod gcmany;
+
+import actors;
+import collections use *;
+import testing use *;
+
+struct Link {
+  pub n i64;
+  pub next Option[ActorGc[mut, Link]];
+}
+alias LinkRef = ActorGc[mut, Link];
+
+struct Totals {
+  pub chains Atomic[i64];
+  pub lists Atomic[i64];
+  pub reports Atomic[i64];
+  pub collections Atomic[i64];
+}
+imm totals Totals;
+
+fn @initpure init() {
+  totals = new Totals(Atomic[i64].of(0i64), Atomic[i64].of(0i64), Atomic[i64].of(0i64), Atomic[i64].of(0i64));
+}
+
+fn chainSum(r Option[LinkRef]) i64 {
+  mut sum = 0i64;
+  mut at = r;
+  mut going = true;
+  while going {
+    match at {
+      case imm l Some[LinkRef] {
+        sum = sum + l.n;
+        at = l.next;
+      }
+      else { going = false; }
+    }
+  }
+  sum;
+}
+
+actor Worker {
+  head Option[LinkRef];
+  tens Option[ActorGc[mut, List[i64]]];
+
+  fn init(self &new) {
+    *self = new Self(None[LinkRef], None[ActorGc[mut, List[i64]]]);
+  }
+
+  pub async do open(self) {
+    tens = Some[ActorGc[mut, List[i64]]](new self[List[i64]](16));
+  }
+
+  pub async do step(self, k i64) {
+    mut i = 0i64;
+    while i < 10 {
+      imm junk = new self[Link](i, None[LinkRef]);
+      i = i + 1;
+    }
+    head = Some[LinkRef](new self[Link](k, head));
+    if k % 10 == 0 {
+      match tens {
+        case imm t Some[ActorGc[mut, List[i64]]] { t.push(k); }
+        else { }
+      }
+    }
+  }
+
+  pub async do finish(self) {
+    mut listSum = 0i64;
+    match tens {
+      case imm t Some[ActorGc[mut, List[i64]]] {
+        each v in t.iter() { listSum = listSum + *v; }
+      }
+      else { }
+    }
+    totals.chains.add(chainSum(head));
+    totals.lists.add(listSum);
+    totals.reports.add(1i64);
+    totals.collections.add(i64.from(self.allocRegion().stats().collections));
+  }
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(new actors.Options(workers: 4u32, batch: 7u32));
+  actors.setStress(true);
+  {
+    mut ws = List[Worker].empty();
+    mut w = 0i64;
+    while w < 24 {
+      imm a = new Worker();
+      a.open();
+      ws.push(a);
+      w = w + 1;
+    }
+    mut k = 1i64;
+    while k <= 300 {
+      each a in ws.iter() { a.step(k); }
+      k = k + 1;
+    }
+    each a in ws.iter() { a.finish(); }
+  }
+  finalAll();
+  expectInt(totals.reports.load(), 24i64, "every actor reported");
+  expectInt(totals.chains.load(), 24i64 * 45150i64, "every chain summed");
+  expectInt(totals.lists.load(), 24i64 * 4650i64, "every list summed");
+  expect(totals.collections.load() >= 24i64 * 300i64, "a collection after every message");
+  done();
+}

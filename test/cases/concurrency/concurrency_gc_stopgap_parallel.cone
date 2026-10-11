@@ -1,8 +1,9 @@
-// A 'Gc' may not be made or held in a 'parallel each', for now: the passes run
-// at the same time on the actors' workers, and the collector's heap and its one
-// chain of roots are process globals without locks. Copying one in from outside
-// the loop is ErrorParCopy (concurrency_parallel_each_copies); this is the rest,
-// ErrorGcStopgap, until the collector is per actor (the regions work):
+// The collector package's 'Gc' may not be made or held in a 'parallel each': the
+// passes run at the same time on the actors' workers, and the collector's heap
+// and its one chain of roots are process globals without locks. Copying one in
+// from outside the loop is ErrorParCopy (concurrency_parallel_each_copies); this
+// is the rest, ErrorGcStopgap (an ActorGc, the actor's own region, is read in
+// one and not made there: the actors package's gcpieces):
 //
 //   - an allocation, 'new Gc[...]', and a struct holding one, in the body
 //   - the same in a parallel builder's header, filter and 'yield'
@@ -45,7 +46,7 @@ fn make() Gc[mut, Node] {
 
 fn bodies() {
   parallel each i in 0usize ..< 4usize {
-    imm g = new Gc[mut, Node](new Node(1u64));     //~ ErrorGcStopgap "GC per actor is coming"
+    imm g = new Gc[mut, Node](new Node(1u64));     //~ ErrorGcStopgap "hold an ActorGc"
   }
   parallel each i in 0usize ..< 4usize {
     imm w = new Wrap(new Gc[mut, Node](new Node(2u64)), 3u64);   //~ ErrorGcStopgap "this produces a Wrap, which a collector traces, inside a 'parallel each' body"

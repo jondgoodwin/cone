@@ -126,6 +126,14 @@ static void actorRefuseGc(ActorInfo *info) {
     StructNode *state = info->state;
     INode **nodesp;
     uint32_t cnt;
+    // The state is a root of the actor's own collector, handed to it between
+    // messages: one holding a traced reference that its trace cannot reach (a
+    // raw pointer to a value holding one, declaring no GcTraceElements) would
+    // leave that reference to dangle when the collector moves what it points at
+    if (itypeHoldsTraced((INode *)state) && itypeCannotTrace((INode *)state))
+        errorMsgNode((INode *)state, ErrorTraceRoot,
+            "Actor %s's state holds a traced reference and cannot be traced: it holds a raw pointer to a value that may hold one, or an owner a trace cannot pass through, and no GcTraceElements reaches what it points at. The actor's collector starts from its state, so a reference it cannot find would not be moved with the rest. A type that holds values this way declares GcTraceElements, and a 'gcTraceElements' giving a cursor over a writable reference to each.",
+            &info->handle->namesym->namestr);
     for (nodelistFor(&state->fields, cnt, nodesp)) {
         if ((*nodesp)->tag == FieldDclTag)
             gcStopgapCheckDcl(*nodesp, ((IExpNode *)*nodesp)->vtype, "an actor's state");
@@ -145,8 +153,10 @@ static void actorRefuseGc(ActorInfo *info) {
                     gcStopgapCheckDcl(*parmp, ((IExpNode *)*parmp)->vtype, "an actor's method");
             }
         }
-        if (fn->value != NULL && fn->value->tag == BlockTag)
+        if (fn->value != NULL && fn->value->tag == BlockTag) {
             gcStopgapCheckBody(fn->value, "an actor's method");
+            gcPieceCheckBody(fn->value, "a 'parallel each' body");
+        }
     }
 }
 
@@ -191,6 +201,13 @@ void actorCheckAll() {
 
 int actorIsState(INode *type) {
     return actorOfState(type) != NULL;
+}
+
+int actorIsAllocator(FnDclNode *fn) {
+    if (fn->namesym != allocRegionMethodName && fn->overloadsym != allocRegionMethodName)
+        return 0;
+    INode *owner = inodeGetOwner((INode *)fn);
+    return owner != NULL && actorOfState(owner) != NULL;
 }
 
 ActorInfo *actorOfState(INode *type) {

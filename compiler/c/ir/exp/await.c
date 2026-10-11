@@ -1036,29 +1036,6 @@ uint32_t awaitOrder(Nodes *nodes, uint32_t *order) {
     return lead;
 }
 
-// A continuation waiting in the pending table is off the stack, where the
-// collector's roots are not: the table is not traced yet, so a record that
-// would hold a traced reference is refused
-static int awaitRecordTraced(AwaitNode *node) {
-    int bad = 0;
-    for (uint32_t i = 0; i < node->nseamvars; ++i) {
-        SeamVar *sv = &node->seamvars[i];
-        if (!(sv->flags & SeamOpen) || !(sv->flags & (SeamLive | SeamDies)) || (sv->flags & SeamGuard))
-            continue;
-        if ((sv->flags & SeamParm) && sv->var->namesym == selfName)
-            continue;
-        if (!itypeHoldsTraced(sv->var->vtype))
-            continue;
-        errorMsgNode((INode *)node, ErrorUnbuiltAwait,
-            node->par
-                ? "A 'parallel each' in a behaviour, whose rest of the behaviour holds a traced reference, is not built: %s would wait in the actor's pending table while the loop runs, which the collector does not trace yet."
-                : "'await' whose continuation holds a traced reference is not built: %s would wait in the actor's pending table, which the collector does not trace yet.",
-            &sv->var->namesym->namestr);
-        bad = 1;
-    }
-    return bad;
-}
-
 void awaitSplitOrReport(FnDclNode *fn, Nodes *awaits) {
     if (!awaitIsMessage(fn)) {
         awaitReportUnbuilt(awaits);
@@ -1084,11 +1061,6 @@ void awaitSplitOrReport(FnDclNode *fn, Nodes *awaits) {
     }
     uint32_t bad = 0;
     awaitWalk(fn->value, 1, &bad);
-    for (nodesFor(awaits, cnt, nodesp)) {
-        AwaitNode *node = (AwaitNode *)*nodesp;
-        if (awaitParks(node) && awaitRecordTraced(node))
-            ++bad;
-    }
     if (bad)
         return;
     // Each seam numbered in the order written, and each lock's guard a seam

@@ -1,0 +1,81 @@
+// A 'parallel each' in a behaviour reads a read-only reference into the actor's
+// region: it counts as Shareable, so the passes, running at the same time on the
+// workers, each read the object through it. Nothing collects or moves while they
+// run, since a collection runs only between messages and the actor handles none
+// until the loop has finished; and one that begins after the loop finds the
+// object where the collector has put it. (A pass allocates nothing in the
+// region: concurrency_actorgc_refused.)
+//
+//   build        a table object holding scale 3 and the numbers 1 to 8 in a
+//                list (kept as a read-only reference), and 50 nodes of garbage
+//   run          1000 passes, each i giving scale * i + (i % 8 + 1), summed in
+//                order by a builder: sum over i < 1000 of 3i + (i % 8 + 1)
+//                = 3 * 499500 + (125 * 36) = 1498500 + 4500 = 1503000
+//   run (again)  after the collections between the messages (stress mode), the
+//                same sum
+//
+// The object is read through a local bound before the loop and through the
+// actor's own field (a borrow of 'self' in the passes, which they may read).
+
+mod gcpieces;
+
+import actors;
+import collections use *;
+import stdio use *;
+
+struct Table {
+  pub scale i64;
+  pub numbers Array[i64, 8];
+}
+alias TableRef = ActorGc[imm, Table];
+
+fn line(label &str, n i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+actor Summer {
+  table Option[TableRef];
+  total Atomic[i64];
+
+  fn init(self &new) {
+    *self = new Self(None[TableRef], Atomic[i64].of(0i64));
+  }
+
+  pub async do build(self) {
+    imm t = self.allocRegion().allocImm(new Table(3, [1, 2, 3, 4, 5, 6, 7, 8]));
+    table = Some[TableRef](t);
+    mut i = 0i64;
+    while i < 50 {
+      imm junk = new self[Table](i, [0, 0, 0, 0, 0, 0, 0, 0]);
+      i = i + 1;
+    }
+  }
+
+  pub async do run(self, tag i64) {
+    match table {
+      case imm tr Some[TableRef] {
+        total.store(0i64);
+        parallel each i in 0usize ..< 1000usize {
+          total.add(tr.scale * i64.from(i) + tr.numbers[i % 8usize]);
+        }
+        line("run", tag);
+        line("  sum", total.load());
+        line("  collections", i64.from(self.allocRegion().stats().collections));
+      }
+      else { }
+    }
+  }
+}
+
+fn main() {
+  actors.setStress(true);
+  {
+    imm s = new Summer();
+    s.build();
+    s.run(1i64);
+    s.run(2i64);
+  }
+}

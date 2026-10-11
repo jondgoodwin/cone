@@ -1341,16 +1341,18 @@ static int parCheckOuterAlias(INode *node, void *ctxp) {
     return 0;
 }
 
-// ---- A Gc in an actor or in a parallel each: refused, for now -------------------
+// ---- A Gc in an actor or in a parallel each: refused ---------------------------
 //
-// The collector keeps its heap and its one chain of roots in process globals,
-// without locks, and a 'Gc' held in an actor's state is on no stack between
-// messages, so a traced reference made, held or copied by an actor, or by the
-// passes of a parallel each, corrupts it. Until the collector is per actor, they
-// are refused. What counts is what itypeHoldsTraced does (a traced reference,
-// or a tuple, array, struct or enum holding one inline; not what a borrow or a
-// raw pointer reaches). A copy of a place is not a new Gc: one made outside the
-// loop is parCheckCopies's refusal, one made inside is refused where it was made.
+// The collector package's keeps its heap in process globals, without locks, and
+// a 'Gc' held in an actor's state is on no stack between messages, so a traced
+// reference made, held or copied by an actor, or by the passes of a parallel
+// each, corrupts it. They are refused. What counts is what itypeHoldsCollected does (a reference into
+// a traced region that is not actor-local, or a tuple, array, struct or enum
+// holding one inline; not what a borrow or a raw pointer reaches): a reference
+// into an actor-local region (the actors package's ActorGc) is the actor's
+// own, collected between its messages, and is let by. A copy of a place is not
+// a new Gc: one made outside the loop is parCheckCopies's refusal, one made
+// inside is refused where it was made.
 
 static ParSet gcReported;
 
@@ -1362,7 +1364,7 @@ static void gcRefuse(INode *node, INode *type, const char *what, const char *whe
     char typename[256] = "";
     itypeSpellCat(typename, sizeof(typename), type, 0);
     errorMsgNode(node, ErrorGcStopgap,
-        "A traced reference (a Gc, for example) cannot be used inside an actor or a parallel each yet: this %s a %s, which a collector traces, inside %s. GC per actor is coming; until it lands, the collector's one chain of roots and its heap are not safe on the threads an actor or a parallel each runs on. Use Gc only in code that runs on a single thread.",
+        "A traced reference (a Gc, for example) cannot be used inside an actor or a parallel each: this %s a %s, which a collector traces, inside %s. That collector's one chain of roots and its heap are process globals, not safe on the threads an actor or a parallel each runs on. Use Gc only in code that runs on a single thread; in an actor, allocate with 'new self[T](...)' and hold an ActorGc (the actors package's), which the actor collects between its messages.",
         what, typename, where);
 }
 
@@ -1372,7 +1374,7 @@ static int gcRefuseVisit(INode *node, void *where) {
     case FnCallTag:
     case TypeLitTag: {
         INode *type = isExpNode(node) ? ((IExpNode *)node)->vtype : NULL;
-        if (type != NULL && itypeHoldsTraced(type)) {
+        if (type != NULL && itypeHoldsCollected(type)) {
             gcRefuse(node, type, node->tag == AllocateTag ? "makes" : "produces", (const char *)where);
             return 0;
         }
@@ -1389,8 +1391,60 @@ void gcStopgapCheckBody(INode *body, const char *where) {
 }
 
 void gcStopgapCheckDcl(INode *node, INode *type, const char *where) {
-    if (type != NULL && itypeHoldsTraced(type))
+    if (type != NULL && itypeHoldsCollected(type))
         gcRefuse(node, type, "holds", where);
+}
+
+// A 'parallel each' body reads an actor-local reference but allocates none:
+// its passes run at the same time and hold no writable path to the actor's
+// region (the actor's state is a shared borrow there), and nothing may allocate
+// in it while they run. An allocation in the region, 'new ActorGc[...]', and a
+// call of the actor's allocator, which 'new self[T](...)' is, are refused.
+static ParSet gcPieceReported;
+
+static int gcPieceVisit(INode *node, void *where) {
+    INode *region = NULL;
+    if (node->tag == AllocateTag)
+        region = ((RefNode *)node)->region;
+    else if (node->tag == FnCallTag && ((FnCallNode *)node)->objfn != NULL
+        && isNameUseNode(((FnCallNode *)node)->objfn)) {
+        INode *dcl = ((NameUseNode *)((FnCallNode *)node)->objfn)->dclnode;
+        if (dcl != NULL && dcl->tag == FnDclTag && actorIsAllocator((FnDclNode *)dcl)) {
+            // (a pass of the checker run silently, to see what a body does, is
+            // not a report: the node is asked again where it is reported)
+            if (!errorSilent && !parSetHas(&gcPieceReported, node)) {
+                parSetAdd(&gcPieceReported, node);
+                errorMsgNode(node, ErrorActorGcPiece,
+                    "This allocates in the actor's region from %s: its passes run at the same time, and the actor's region has no writable path in them (the actor's state is a shared borrow there), so nothing may be allocated in it while they run. Read what the actor holds, and allocate in the behaviour, before the loop or after it.",
+                    (const char *)where);
+            }
+            return 0;
+        }
+    }
+    if (region != NULL && regionIsActorLocal(region)) {
+        if (!errorSilent && !parSetHas(&gcPieceReported, node)) {
+            parSetAdd(&gcPieceReported, node);
+            errorMsgNode(node, ErrorActorGcPiece,
+                "This allocates in an actor's region from %s: its passes run at the same time, and the actor's region has no writable path in them, so nothing may be allocated in it while they run. Allocate in the behaviour, before the loop or after it.",
+                (const char *)where);
+        }
+        return 0;
+    }
+    return 1;
+}
+
+// The same, over a whole method of an actor, once type check has finished: the
+// body of each 'parallel each' written in it
+static int gcPieceLoopVisit(INode *node, void *where) {
+    if (node->tag == BlockTag && (node->flags & FlagParallel)) {
+        parWalk(node, gcPieceVisit, where);
+        return 0;
+    }
+    return 1;
+}
+
+void gcPieceCheckBody(INode *body, const char *where) {
+    parWalk(body, gcPieceLoopVisit, (void *)where);
 }
 
 // ---- What a loop cut at its end reads from the behaviour's frame --------------
@@ -1470,6 +1524,7 @@ void parallelEachCheckBody(TypeCheckState *pstate, BlockNode *outer) {
 
     // Nor makes a Gc, in its header, its filter, its body or its yield (for now)
     parWalk((INode*)outer, gcRefuseVisit, (void *)"a 'parallel each' body");
+    parWalk((INode*)outer, gcPieceVisit, (void *)"a 'parallel each' body");
 
     // A loop cut at its end reads no borrow held in the behaviour's frame
     if (parHasSeam(outer)) {

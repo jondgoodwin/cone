@@ -328,11 +328,21 @@ struct with a value field is the same.
 
 A **traced reference made** in the loop is refused whole (`ErrorGcStopgap`,
 `gcRefuseVisit`, over the block with the loop's source, filter and `yield`): an
-allocation, a call or a type literal whose type `itypeHoldsTraced` says holds one
-(a traced reference, or a tuple, array, struct or enum holding one inline; it
-does not look behind a borrow, another owner or a pointer). A copy of a place is
-not a new reference, so one from outside is only `ErrorParCopy` and one the pass
-made is refused where it was made. A stopgap until the collector is per actor.
+allocation, a call or a type literal whose type `itypeHoldsCollected` says holds
+a reference into a traced region that is not `ActorLocal` (such a reference, or a
+tuple, array, struct or enum holding one inline, through owners and
+`GcTraceElements`; it does not look behind a borrow or a pointer). A copy of a
+place is not a new reference, so one from outside is only `ErrorParCopy` and one
+the pass made is refused where it was made. A reference into an actor-local region
+(the `actors` package's `ActorGc`) is read in the passes if it is read-only
+(`refCountsPlain` is false for it and `refWritesShared` is false for `imm`, so it
+is Shareable; a `mut` one is `ErrorParReach` like any `&mut`, and so is the `self`
+of a state that holds one), and **allocating in it is refused**
+(`ErrorActorGcPiece`, `gcPieceVisit`): a call of the actor's generated
+`allocRegion` (which `new self[T]` is) or a direct allocation of an actor-local
+region. A body is checked more than once at times (silently, to see what it does),
+so a report is made only when the check is not silent, and `gcPieceCheckBody` asks
+every loop of an actor's method again once type check has finished (`actorRefuseGc`).
 
 A mutable slice as the source (what `mutItems()` gives, or a `&mut` slice) lends
 each item mutably, as `eachLower` does, so a pass changes its own item through its

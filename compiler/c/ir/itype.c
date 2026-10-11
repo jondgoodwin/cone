@@ -1229,6 +1229,86 @@ int itypeHoldsTraced(INode *type) {
     }
 }
 
+// itypeHoldsTraced's walk, in two other senses. Collected: looking for a
+// reference into a traced region that is not actor-local. Placed: looking for
+// any traced reference, but passing over an actor's state, which the actors
+// runtime hands to the actor's collector between messages wherever it keeps it
+// (an Arc's block, raw memory): a traced reference held there is found. Not
+// remembered, so a struct reached again is passed over.
+typedef enum {
+    HoldsWalkCollected,
+    HoldsWalkPlaced
+} HoldsWalk;
+
+static int itypeHoldsWalkAt(INode *type, HoldsWalk walk, INode **seen, uint32_t *nseen) {
+    if (type == NULL || *nseen > 60)
+        return 0;
+    switch (type->tag) {
+    case NameUseTag:
+        return isTypeNode(type) ? itypeHoldsWalkAt(itypeGetTypeDcl(type), walk, seen, nseen) : 0;
+    case AliasDclTag:
+        return itypeHoldsWalkAt(((AliasDclNode *)type)->target, walk, seen, nseen);
+    case RefTag:
+    case ArrayRefTag:
+    case VirtRefTag: {
+        RefNode *ref = (RefNode *)type;
+        if (regionIsTraced(ref->region))
+            return walk == HoldsWalkPlaced || !regionIsActorLocal(ref->region);
+        INode *behind = itypeBehindOwner(ref);
+        return behind != NULL && itypeHoldsWalkAt(behind, walk, seen, nseen);
+    }
+    case ArrayTag:
+        return itypeHoldsWalkAt(arrayElemType(type), walk, seen, nseen);
+    case TTupleTag: {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp)) {
+            if (itypeHoldsWalkAt(*nodesp, walk, seen, nseen))
+                return 1;
+        }
+        return 0;
+    }
+    case StructTag: {
+        for (uint32_t i = 0; i < *nseen; ++i) {
+            if (seen[i] == type)
+                return 0;
+        }
+        seen[(*nseen)++] = type;
+        StructNode *strnode = (StructNode *)type;
+        if (walk == HoldsWalkPlaced && actorIsState(type))
+            return 0;
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodelistFor(&strnode->fields, cnt, nodesp)) {
+            if (itypeHoldsWalkAt(((IExpNode *)*nodesp)->vtype, walk, seen, nseen))
+                return 1;
+        }
+        if (strnode->derived) {
+            for (nodesFor(strnode->derived, cnt, nodesp)) {
+                if (itypeHoldsWalkAt(*nodesp, walk, seen, nseen))
+                    return 1;
+            }
+        }
+        INode *elem = structGcTraceElementsElem(strnode);
+        return elem != NULL && itypeHoldsWalkAt(elem, walk, seen, nseen);
+    }
+    default:
+        return 0;
+    }
+}
+
+int itypeHoldsCollected(INode *type) {
+    INode *seen[64];
+    uint32_t nseen = 0;
+    return itypeHoldsWalkAt(type, HoldsWalkCollected, seen, &nseen);
+}
+
+int itypeHoldsTracedPlaced(INode *type) {
+    INode *seen[64];
+    uint32_t nseen = 0;
+    return itypeHoldsWalkAt(type, HoldsWalkPlaced, seen, &nseen);
+}
+
 // Does a value of this type hold a borrowed reference where it sits, other
 // than a reference to a function (which points at code, not at anything that
 // dies)? Like itypeHoldsTraced, the walk stops at owning references and

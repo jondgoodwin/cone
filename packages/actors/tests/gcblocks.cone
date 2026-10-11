@@ -1,0 +1,125 @@
+// A collection made in the actor's region, 'new self[List[i64]](4)', takes its
+// block from the region: its words (the List) are an object of the region,
+// that a collection moves, and its block is the region's own, counted in
+// 'stats().blocks' and given back by the list's 'final'. Stress mode collects
+// after every message, so the lists move at every step, and the values read
+// back through them show the block was never lost. Worked out by hand:
+//
+//   open          two lists made with room for 4: nums (i64, 8 bytes a slot)
+//                 and leaves (a reference, 8 bytes a slot): blocks 32 + 32 = 64
+//   fill(1, 10)   pushes i*i and a leaf holding i*10, for i = 1..10: each list
+//                 grows 4, 8, 16 slots, so its block is 128 bytes: blocks 256.
+//                 The squares sum to 385, the leaves to 10 * 55 = 550
+//   junk          a list made with room for 100 and pushed once (800 bytes),
+//                 that nothing reaches: its block counts while it is made
+//                 (the collection after the message still sees blocks 1056
+//                 before it runs the dead list's 'final'), and the collection
+//                 finalizes it, which gives the 800 back: blocks 256, one
+//                 final run
+//   fill(11, 20)  the lists grow again, 16 to 32 slots, each 256 bytes: blocks
+//                 512. The squares to 20 sum to 2870, the leaves to 10 * 210 =
+//                 2100
+//   junk          a second dead list: finalized 2, blocks 512 again
+
+mod gcblocks;
+
+import actors;
+import collections use *;
+import stdio use *;
+
+struct Leaf { pub n i64; }
+alias LeafRef = ActorGc[mut, Leaf];
+alias NumsRef = ActorGc[mut, List[i64]];
+alias LeavesRef = ActorGc[mut, List[LeafRef]];
+
+fn line(label &str, n i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+actor Vault {
+  nums Option[NumsRef];
+  leaves Option[LeavesRef];
+
+  fn init(self &new) {
+    *self = new Self(None[NumsRef], None[LeavesRef]);
+  }
+
+  pub async do open(self) {
+    nums = Some[NumsRef](new self[List[i64]](4usize));
+    leaves = Some[LeavesRef](new self[List[LeafRef]](4usize));
+  }
+
+  // Push i * i, and a leaf holding i * 10, for each i from lo to hi
+  pub async do fill(self, lo i64, hi i64) {
+    mut i = lo;
+    while i <= hi {
+      match nums {
+        case imm l Some[NumsRef] { l.push(i * i); }
+        else { }
+      }
+      match leaves {
+        case imm l Some[LeavesRef] { l.push(new self[Leaf](i * 10)); }
+        else { }
+      }
+      i = i + 1;
+    }
+  }
+
+  // A list that nothing reaches, with a block of 800 bytes
+  pub async do junk(self) {
+    imm tmp = new self[List[i64]](100usize);
+    tmp.push(1);
+  }
+
+  pub async do report(self, tag i64) {
+    mut sum = 0i64;
+    mut count = 0i64;
+    mut cap = 0i64;
+    match nums {
+      case imm l Some[NumsRef] {
+        each v in l.iter() { sum = sum + *v; }
+        count = i64.from(l.len());
+        cap = i64.from(l.capacity());
+      }
+      else { }
+    }
+    mut leafSum = 0i64;
+    mut leafCap = 0i64;
+    match leaves {
+      case imm l Some[LeavesRef] {
+        each v in l.iter() { leafSum = leafSum + v.n; }
+        leafCap = i64.from(l.capacity());
+      }
+      else { }
+    }
+    imm st = self.allocRegion().stats();
+    line("report", tag);
+    line("  values", count);
+    line("  squares", sum);
+    line("  leaves", leafSum);
+    line("  slots", cap);
+    line("  leaf slots", leafCap);
+    line("  blocks", i64.from(st.blocks));
+    line("  finalized", i64.from(st.finalized));
+  }
+}
+
+fn main() {
+  actors.setStress(true);
+  {
+    imm v = new Vault();
+    v.open();
+    v.report(1i64);
+    v.fill(1i64, 10i64);
+    v.report(2i64);
+    v.junk();
+    v.report(3i64);
+    v.fill(11i64, 20i64);
+    v.report(4i64);
+    v.junk();
+    v.report(5i64);
+  }
+}

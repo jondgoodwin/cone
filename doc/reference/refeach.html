@@ -597,11 +597,18 @@ fn total(xs &amp;Array[u64]) u64 {
 			one that <i>borrows</i> a variable of the written type (<span class="pre">(x, y) =&gt; scale * f32.from(x)</span> into
 			a list of <span class="pre">f32</span>) is refused, naming the variable; copy it into the closure with the state list,
 			<span class="pre">fn(x i32, y i32) [scale] f32 { scale * f32.from(x); }</span>, where it is a value of its own.</li>
-		<li>A <span class="pre">Gc</span> may not be <b>made or held</b> in the loop, for now: the collector's heap and its one chain of
-			roots are not safe on the workers the passes run on. An allocation (<span class="pre">new Gc[...]</span>), a call that
-			returns one, or a literal holding one (a struct, tuple, array or enum holding a traced reference counts) is refused
-			in the body, and in a parallel builder's source, <span class="pre">if</span> and <span class="pre">yield</span>, with a
-			message saying GC per actor is coming. The refusal lifts when the collector is per actor.</li>
+		<li>The <span class="pre">collector</span> package's <span class="pre">Gc</span> may not be <b>made or held</b> in the
+			loop: its heap and its one chain of roots are not safe on the workers the passes run on. An allocation
+			(<span class="pre">new Gc[...]</span>), a call that returns one, or a literal holding one (a struct, tuple, array or
+			enum holding a traced reference counts) is refused in the body, and in a parallel builder's source,
+			<span class="pre">if</span> and <span class="pre">yield</span>, with a message saying to hold an
+			<span class="pre">ActorGc</span> instead. A reference into an actor's own region
+			(<a href="refconccomm.html#actor-gc">Its own region</a>) is read in the passes of a loop in a behaviour if it is
+			<b>read-only</b>, <span class="pre">ActorGc[imm, T]</span>: it counts as Shareable, since nothing collects or moves
+			the object while the passes run. One that can write, <span class="pre">ActorGc[mut, T]</span>, is not shared into
+			them, like any <span class="pre">&amp;mut</span>, and nor is the state of an actor that holds one; and nothing
+			allocates in the actor's region from a pass, neither <span class="pre">new self[T](...)</span> nor a direct
+			allocation (<span class="pre">ErrorActorGcPiece</span>).</li>
 		<li>Results come back through something that is changed by its methods, an <span class="pre">Atomic</span>, or as the list <a href="#parallelbuilder">the parallel builder</a> builds.</li>		<li>A pass may <b>change its own item</b>: <span class="pre">parallel each x in list.mutItems()</span> (or an
 			array's or a slice's, or a mutable slice as the source itself) gives <span class="pre">x</span> as a
 			<span class="pre">&amp;mut</span> of the pass's item, and the items are disjoint. Then the body may not name

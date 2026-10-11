@@ -95,6 +95,7 @@ StructNode *moveTrait;
 StructNode *copyTrait;
 StructNode *tracedTrait;
 StructNode *threadSafeTrait;
+StructNode *actorLocalTrait;
 StructNode *shapeChangingTrait;
 StructNode *noLoanMutTrait;
 StructNode *noLoanReadTrait;
@@ -174,6 +175,7 @@ StructNode *stdlibAdoptCStr(Name *name, ModuleNode *mod) {
 int corelibIsBuiltinTrait(INode *node) {
     return node == (INode*)regionRefTrait || node == (INode*)moveTrait || node == (INode*)copyTrait
         || node == (INode*)tracedTrait || node == (INode*)threadSafeTrait
+        || node == (INode*)actorLocalTrait
         || node == (INode*)shapeChangingTrait
         || node == (INode*)noLoanMutTrait || node == (INode*)noLoanReadTrait
         || node == (INode*)carriesRegionTrait || node == (INode*)gcTraceElementsTrait
@@ -294,6 +296,18 @@ void stdlibInit(int ptrsize) {
     // (regionThreadSafeUseCheck). Trusted: the compiler cannot check the
     // promise.
     threadSafeTrait = newBuiltinTrait(threadSafeTraitName);
+    // 'ActorLocal' [PROVISIONAL name], which a traced region ref declares beside
+    // 'Traced' to say that its collector runs between the messages of the one
+    // actor that holds every reference into it (the actors package's
+    // 'ActorGc'): no reference crosses to another thread, no collection runs
+    // while a behaviour does, and no stack is scanned for its roots. So a
+    // reference into it may be made, held and copied inside an actor, which the
+    // compiler refuses of any other traced region (ErrorGcStopgap), and a
+    // read-only one counts as Shareable in a behaviour's 'parallel each'. It
+    // does not make the reference Sendable. Declaring it on anything but a
+    // traced region ref is refused (regionActorLocalUseCheck). Trusted: the
+    // compiler cannot check the promise.
+    actorLocalTrait = newBuiltinTrait(actorLocalTraitName);
     // What a container's element borrows cost it [Jon 26 Sep; names
     // provisional]. A borrow a method returns keeps its receiver loaned, the
     // Rust way (the loan walk, flowpath.c's pwCall). 'NoLoanMut' and

@@ -276,9 +276,10 @@ LLVMValueRef genlAlloca(GenState *gen, LLVMTypeRef type, const char *name) {
 // ---- Roots: the shadow stack ------------------------------------------------
 //
 // Every function holding a traced reference on its stack links a frame of them
-// into one chain, the head of which is conestd's 'cone_gcframes', so that a
-// collector can find every live one (mem.traceRoots, conestd's
-// 'cone_traceRoots'). A root is a stack slot whose type holds a traced
+// into one chain, the head of which is conestd's 'cone_gcframes', a thread-local
+// (each thread links its own), so that a collector can find every live one of its
+// thread (mem.traceRoots, conestd's 'cone_traceRoots'). A root is a stack slot
+// whose type holds a traced
 // reference: a local's or a parameter's (its alloca), or a birth's -- a slot
 // of its own for each site that makes such a value outside any local, stored
 // as soon as the value exists, so that no collection can find it only in a
@@ -334,8 +335,10 @@ void genlRootsRestore(GenState *gen, GenRoots *saved) {
 // The head of the chain of frames, defined by conestd; a declaration here
 static LLVMValueRef genlRootChain(GenState *gen) {
     LLVMValueRef chain = LLVMGetNamedGlobal(gen->module, "cone_gcframes");
-    if (chain == NULL)
+    if (chain == NULL) {
         chain = LLVMAddGlobal(gen->module, LLVMPointerTypeInContext(gen->context, 0), "cone_gcframes");
+        LLVMSetThreadLocal(chain, 1);
+    }
     return chain;
 }
 

@@ -886,7 +886,12 @@ the function's roots aside around them (`genlRootsSave`, `genlRootsRestore`),
 as `genlFn` does for its own. Every root is an alloca whose address is stored
 into memory, so `mem2reg` never promotes it and no pass can shorten its life;
 LLVM's inliner moves an inlined callee's frame into its caller with its push and
-pop. The chain is one global: a thread would need its own, thread-local.
+pop. The head of the chain, `cone_gcframes`, is thread-local (the compiler declares
+it so, `genlRootChain`, as conestd defines it), so each thread, a worker running
+actors among them, links the frames of its own functions and
+`cone_traceRoots` walks the calling thread's. An actor's own collector scans no stack: its
+region is collected between messages, when its thread has no frame holding one of its
+references, and the frames pushed meanwhile are the thread's own.
 
 Where a **safe point** would go — a check whether to collect, rather than
 collecting inside `alloc` — is at a frame's push, where every parameter is
@@ -1459,7 +1464,7 @@ field of its state, and the reply's dispatch calls the second half.
   began (`GenState.awaitflights`), and its temporaries are all made by then;
   `genlAwait` checks both again at the seam. A record that is not empty is
   given a slot in the table (the actors package's `parkReserve`, with the
-  record's size and its **drop function**, below), which allocates its block:
+  record's size, its **drop function** and its **trace function**, below), which allocates its block:
   the slot's index is the record's **id**, a plain index with no generation.
   The actor's generated
   `<Actor>.replyid'` (or `<Actor>.reply'`, where the record is empty) makes the
@@ -1553,8 +1558,17 @@ envelope, or the future the record waits on was abandoned so, dropping the
 envelope parked on it ("A future"). The second half never runs. An empty record parks nothing and has no
 drop function.
 
-The pending table is not traced: a record that would hold a traced reference
-is refused before generation ([Flow](flow.md), "A seam").
+**A traced record.** A record that holds a traced reference (a reference into
+an actor's own region) has a third function, `<method>'<n>.trace(record, mode)`
+(`genlSeamTrace`), handed to `parkReserve` beside the drop: each field whose type
+holds one is walked with `genlTraceAt` (a variable carried with its drop flag only
+where the flag says it holds its whole value), so each such reference is handed
+to its region's `mark` with the slot it lies in the record. The table keeps it
+in a core `TypeRecord` made in the record's block, with an `Erased` value naming
+the record, and `Pending` declares `GcTraceElements` giving those, so the state's
+own trace reaches the parked records and the actor's collector moves what they
+hold. A record holding none passes a null trace. (The collector package's `Gc` is
+refused in an actor, so no other region's reference is parked.)
 
 ### A parallel each
 
@@ -2319,6 +2333,7 @@ variables.
 | | `genlSplitHalves`, `genlSplitHalf`, `genlSeamEntry` | each second half: the method generated again, its entry moving the record's values back and branching to the seam's `resume` block |
 | | `genlAwaitReply`, `genlSeamReply`, `genlSeamResume` | a message seam's envelope, the seam laid out and its record's slot reserved where it is passed (an operation's seam makes its envelope at the seam and starts the operation with it); the seam's resume function, which takes the record out of the pending table, calls the second half and answers ("A message's reply") |
 | | `genlSeamDrop` | a parked record's drop function, which its pending table calls if the actor dies with it parked ("A message's reply", "An abandoned record") |
+| | `genlSeamTrace` | a parked record's trace function, which its actor's collector reaches through the pending table ("A traced record") |
 | | `genlAwaitFuture`, `genlFutureOpen` | a seam awaiting a future: gone on from where it stands when the future has its ending, else parked on it; the value opened out of the future on either path and in the resume function ("A message's reply", "A future") |
 | | `genlExprsAcross`, `genlHasSeam` | operands in order (`awaitOrder`'s, where a seam cuts them), each made before a later one's seam kept in flight across it (`GenFlight`), a receiver or a borrow of a plain path made after it |
 | | `genlKeepAcross`, `genlKeptAcross` | one value kept in flight across a seam to come, and read back after it: an assignment's value while its place, holding the seam, is reached |

@@ -113,13 +113,14 @@ enum GenSlot {
     GenResumeId,    // The resume variant whose second half takes a record, by its id
     GenMem,         // Core's 'mem', whatever the actor's own names hide it
     GenAt,          // The handle's initializer's local: where the state is made
-    GenState,       // 'Counter.State'
+    GenState,      // 'Counter.State'
     GenMsg,         // 'Counter.Msg'
     GenDispatch,    // 'Counter.dispatch'
     GenHidden,      // The struct the state's hidden fields are read from
     GenReply,       // 'Counter.reply'': a request's envelope, its resume message naming no record
     GenReplyId,     // 'Counter.replyid'': the same, naming the record's id
     GenSelf,        // 'Counter.self'': 'selfactor', the handle from the state
+    GenAllocs,      // The struct the state's allocator is read from
     GenSlots
 };
 
@@ -792,6 +793,8 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
     names[GenReplyId] = nametblPrivate(buf, strlen(buf));
     snprintf(buf, sizeof(buf), "%s.self'", &actorname->namestr);
     names[GenSelf] = nametblPrivate(buf, strlen(buf));
+    snprintf(buf, sizeof(buf), "%s.allocs'", &actorname->namestr);
+    names[GenAllocs] = nametblPrivate(buf, strlen(buf));
     uint32_t ask = GenSlots;
     for (nodesFor(members.messages, cnt, nodesp)) {
         FnDclNode *fn = (FnDclNode *)*nodesp;
@@ -829,6 +832,27 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
         }
         genPuts(&g, "}\n");
     }
+
+    // The state's way to its own region, which every actor carries (in its
+    // Header, made with it): a method 'allocRegion' giving the region the
+    // actor's values are allocated in, which is what makes 'new self[T](v)' mean
+    // 'self.allocRegion().alloc(new T(v))' (typelit.c, a value that leads to a
+    // region). Read as a struct's of its own and moved into the state like the
+    // hidden fields; the region is found from the state by the actors runtime
+    // (actors.regionOf)
+    genPuts(&g, "struct ");
+    genSlot(&g, GenAllocs);
+    genPuts(&g, " {\n  fn allocRegion(self &mut ");
+    genSlot(&g, GenState);
+    genPuts(&g, ") &'static mut ");
+    genSlot(&g, GenActors);
+    genPuts(&g, ".ActorRegion {\n    ");
+    genSlot(&g, GenActors);
+    genPuts(&g, ".regionOf[");
+    genSlot(&g, GenState);
+    genPuts(&g, ", ");
+    genSlot(&g, GenMsg);
+    genPuts(&g, "](self);\n  }\n}\n");
 
     // The message enum: a variant per message, its fields the parameters,
     // written after the handle (a reference to it lays out nothing of it).
@@ -1331,6 +1355,11 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
             else if (field->namesym == names[GenAnswer])
                 info->answer = field;
         }
+    }
+    StructNode *allocs = (StructNode *)parseStruct(parse, 0);
+    for (nodelistFor(&allocs->nodelist, cnt, nodesp)) {
+        if ((*nodesp)->tag == FnDclTag)
+            iNsTypeAddFn((INsTypeNode *)state, (FnDclNode *)*nodesp);
     }
     modAddNode(mod, names[GenState], (INode *)state);
     StructNode *handle = (StructNode *)parseStruct(parse, pubflag);

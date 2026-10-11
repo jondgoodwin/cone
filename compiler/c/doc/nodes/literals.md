@@ -401,7 +401,14 @@ and is held to the rules that call is. Any other permission, a permission with n
 type, a third argument and a `trynew` are `ErrorRegionNew`. The head is checked
 first, on a copy, and must be a region value: a value whose type is a struct
 whose first field is a public `*MemRegion` (`typeLitRegionField`, reading no
-method's name); any other is `ErrorRegionHead`. The allocation the construction
+method's name); any other is `ErrorRegionHead` -- unless its type *leads to* a
+region (`typeLitLeadsToRegion`): it has a method named `allocRegion` (an actor's
+state has one, generated for every actor,
+[parse](../phases/parse.md), "Actors"), and the head becomes the call
+`x.allocRegion()`, checked the same way on a copy and so asked to be a region
+value; `new self[T](...)` is `self.allocRegion().alloc(new T(...))` so. (A type
+that gets its memory from a region is handed the head's region, which is read from
+a copy of the head, so a head that is a call is made twice.) The allocation the construction
 is rewritten to is that region's `alloc`, as a region ref's is, so a region
 value without one reports the call's own `ErrorNoMbr`. A type declaring
 `CarriesRegion` made there that names no region is handed the head's region, that

@@ -581,7 +581,7 @@ enum ErrorCode {
     ErrorParFrame = 1388,       // A 'parallel each' in an actor's behaviour, which the behaviour is cut at, walks or reads a borrow or an array held in the behaviour's own frame, which is gone while the pieces run
 
     // The stopgap until the collector is per actor (ir/exp/pareach.c, ir/types/actor.c)
-    ErrorGcStopgap = 1389,      // A 'Gc' (a value holding a traced reference) made or held inside an actor (state field, parameter, allocation, call, literal) or a 'parallel each' (body, header, filter, yield)
+    ErrorGcStopgap = 1389,      // A 'Gc' (a value holding a reference into a traced region that is not ActorLocal) made or held inside an actor (state field, parameter, allocation, call, literal) or a 'parallel each' (body, header, filter, yield)
 
     // What a 'parallel each' body may reach (ir/exp/pareach.c)
     ErrorParReach = 1390,       // A 'parallel each' body, header, filter or yield names a value declared outside the loop (or its item) whose type is not safe to share across the passes: it holds, through a field, element, borrow or pointee, an aliasable owner of a region not declaring ThreadSafe (an Rc) or a traced reference
@@ -658,6 +658,10 @@ enum ErrorCode {
     ErrorGcTraceElementsShape = 1440,  // A type declaring GcTraceElements whose 'gcTraceElements' is not 'fn gcTraceElements(self &mut) I', I a cursor declaring 'is Iterator[&mut E]' with E a sized type
     ErrorTraceRoot = 1441,  // A local, parameter, or value of a traced region, of a type that needs tracing and cannot be traced
     ErrorTraceKey = 1442,   // A type argument that holds a traced reference, of a GcTraceElements type whose gcTraceElements does not reach it: a Dict's key, which a collector that moved it would leave hashed where it was
+
+    // An actor's own collector (ir/types/region.c, ir/exp/pareach.c, ir/exp/typelit.c)
+    ErrorActorLocalUse = 1443,  // 'ActorLocal' declared by a type that is not a traced region ref
+    ErrorActorGcPiece = 1444,   // An allocation in an actor's region from a 'parallel each' body: the passes run at the same time and hold no writable path to the actor's region
 
     // Flow typing and let-else (ir/exp/narrow.c, ir/exp/if.c)
     ErrorNarrowStale = 1460,    // A member of one variant named on a name that was narrowed to it and has since been changed: the message names the change
