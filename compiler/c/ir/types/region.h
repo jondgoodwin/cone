@@ -55,8 +55,18 @@ int regionAllocTakesRecord(INode *region);
 int regionIsTraced(INode *region);
 
 // Does the traced region's 'mark' take each reference's permission and the
-// trace's mode, 'fn mark(self &uni R, perm u32, mode u32)'?
+// trace's mode, 'fn mark(self &uni R, slot *usize, perm u32, mode u32)'?
 int regionMarkTakesContext(INode *region);
+
+// Whether any struct of this compile declares 'Traced', noted as each struct is
+// name resolved, before any type is checked. Until one does, no reference is
+// traced, and an erased value (core's Erased) holds nothing a trace need find.
+void regionTracedSeen(void);
+int regionTracedAnywhere(void);
+
+// May a trace pass through an owning reference into this region, to the value it
+// holds: it is single-owner (Move), or declares 'visit'?
+int regionCanPassTrace(INode *region);
 
 // Is this a traced region declaring 'writeBarrier', which the compiler calls
 // with each of its references stored into memory that is not a local?
@@ -75,11 +85,13 @@ int regionIsThreadSafe(INode *region);
 void regionThreadSafeUseCheck(StructNode *node);
 
 // Note, as type check meets them, the places where a traced reference may not
-// be held: an owning reference type, a global or static, an instance of
-// mem.writeRaw or mem.moveRaw. Each is judged by regionTracedCheckAll.
+// be held, or must be found by a trace: an owning reference type, a global or
+// static, a call of mem.writeRaw or mem.moveRaw (from a method of a type that
+// declares no GcTraceElements), a local or a parameter. Each is judged by regionTracedCheckAll.
 void regionTracedRefNote(RefNode *node);
 void regionTracedGlobalNote(VarDclNode *var);
-void regionTracedRawNote(FnDclNode *fndcl, int16_t intrinsic, INode *typearg);
+void regionTracedRootNote(VarDclNode *var);
+void regionTracedRawCall(TypeCheckState *pstate, FnCallNode *call, FnDclNode *fndcl);
 
 // Judge every noted place, once type check has finished and every type is laid
 // out: the rules of where a traced reference may be held

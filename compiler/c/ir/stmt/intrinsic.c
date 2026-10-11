@@ -423,6 +423,15 @@ int coreIsIteratorTrait(INode *dcl) {
         && intrinsicModuleIsCore(strnode->dclinfo.owner);
 }
 
+int coreIsErased(INode *dcl) {
+    if (dcl == NULL || dcl->tag != StructTag)
+        return 0;
+    StructNode *strnode = (StructNode *)dcl;
+    return strnode->namesym == erasedName && strnode->genericinfo == NULL
+        && !(strnode->flags & (TraitType | EnumType)) && strnode->fields.used == 2
+        && intrinsicModuleIsCore(strnode->dclinfo.owner);
+}
+
 int coreIsHasher(INode *dcl) {
     if (dcl == NULL || dcl->tag != StructTag)
         return 0;
@@ -596,9 +605,6 @@ void intrinsicDclTypeCheck(TypeCheckState *pstate, FnDclNode *fndcl) {
             &fndcl->namesym->namestr, itypeName(nosizeroot), nosize);
         itypeNoSizeExplain(node->typearg);
     }
-    // A raw placement of a traced reference hides it from every collector
-    // (judged once every type is laid out)
-    regionTracedRawNote(fndcl, node->intrinsicFn, node->typearg);
 }
 
 // Whether a function is a declared intrinsic with its meaning from the registry

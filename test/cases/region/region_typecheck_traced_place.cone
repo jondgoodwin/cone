@@ -1,31 +1,36 @@
 // Where a traced reference may be held: only where a collector can find it --
-// a local, a parameter, a temporary, a value held inline in one of those, or a
-// value a traced region allocated. So each of these is refused, each with its
-// own code:
+// a local, a parameter, a temporary, a value held inline in one of those, a
+// value a traced region allocated, or behind what a trace passes through (an
+// 'Rc' or 'So' owner, a collection that declares how to trace its elements). So each of
+// these is refused, each with its own code:
 //
-// 1. an owning reference of a region that is not traced ('Rc', 'So', any
-//    region ref not declaring 'Traced') to a value holding a traced reference,
-//    wherever the reference type is written: a field, a parameter, an
-//    allocation, a generic's instance (ErrorTracedHeld);
+// 1. an owning reference of a region that is not traced to a value holding a
+//    traced reference, where the trace cannot pass through the owner: a region
+//    with several owners and no 'visit', or a traced region declaring
+//    'writeBarrier', which hears of stores and would not hear of a reference
+//    stored behind an owner (ErrorTracedHeld);
 // 2. a global or a static (ErrorTracedGlobal);
 // 3. what a traced region allocates holding a borrowed reference, which its
 //    trace cannot see and no lifetime covers (ErrorTracedBorrow);
-// 4. mem.writeRaw and mem.moveRaw of a type holding one, which is how an arena,
-//    a pool and every collection place values in memory no collector traces --
-//    reported where the program chose the type, as in 'List[Tr[mut, Leaf]]'
-//    (ErrorTracedRaw);
+// 4. mem.writeRaw and mem.moveRaw of a type holding one, from a method of a type
+//    that declares no 'GcTraceElements' -- how an arena, a pool and every collection place
+//    values in memory, and say how a collector reaches them -- reported where
+//    the program chose the type, as in 'Bag[Pair]' (ErrorTracedRaw);
 // 5. an owning virtual reference into a traced region, whose value type the
 //    trace could not find (ErrorTracedRefKind);
 // 6. a traced region's reference whose permission is a lock permission, whose
 //    lock would sit where the collector finds the value, taking room or not
-//    (ErrorTracedPerm).
+//    (ErrorTracedPerm);
+// 7. a root, or the value of a traced region, whose type needs tracing and cannot
+//    be traced: it holds a raw pointer to a value that may hold a traced
+//    reference, that no 'GcTraceElements' reaches (ErrorTraceRoot).
 //
 // What a traced region allocates may hold 'Rc' and 'So' owners, which its
-// finalizer releases; a borrow or a raw pointer to a value holding traced
-// references may be held anywhere, being unchecked or lifetime-bound. Every
-// judgment waits until each type is laid out, which is what lets a struct be
-// refused for a traced field declared after a field pointing back at it
-// ('Node').
+// finalizer releases and its trace passes through; a borrow or a raw pointer to
+// a value holding traced references may be held anywhere, being unchecked or
+// lifetime-bound. Every judgment waits until each type is laid out, which is
+// what lets a struct be refused for a traced field declared after a field
+// pointing back at it ('Node').
 
 mod region_typecheck_traced_place;
 
@@ -35,11 +40,28 @@ import pool;
 
 struct Tr is RegionRef, Traced {
   fn alloc(size usize) *u8 inline { malloc(size); }
-  fn mark(self &uni Tr, perm u32, mode u32) { }
+  fn mark(self &uni Tr, slot *usize, perm u32, mode u32) { }
+}
+
+// Traced, and hearing of stores
+struct TrB is RegionRef, Traced {
+  fn alloc(size usize) *u8 inline { malloc(size); }
+  fn mark(self &uni TrB, slot *usize) { }
+  fn writeBarrier(self &uni TrB) { }
+}
+
+// Counted, with no way to say a value was reached before
+struct Counted is RegionRef {
+  pub count usize;
+  fn alloc(size usize) *u8 inline { malloc(size); }
+  fn init(self &new) { *self = new Counted(1usize); }
+  fn aliasRef(self &uni Counted) { count = count + 1usize; }
+  fn dealiasRef(self &uni Counted) bool { count = count - 1usize; count == 0usize; }
 }
 
 struct Leaf { pub n i32; }
 struct Pair { pub left Tr[mut, Leaf]; pub right Tr[mut, Leaf]; }
+struct PairB { pub left TrB[mut, Leaf]; }
 struct Fin { pub v i32; fn final(self &uni) { } }
 struct Box { pub b Tr[mut, Leaf]; }
 
@@ -53,23 +75,33 @@ struct Mixed {
   pub p Tr[mut, Pair];
 }
 
-// Rule 1: in fields, however the traced reference is held inside
+// Rule 1 is refused for a region that cannot be passed through, and accepted
+// for 'Rc' and 'So', which a trace passes through to the traced reference they
+// hold: in fields, however it is held inside, in a generic's instance and in a
+// parameter. A self-referring type is traced once, as a cycle is
 struct RcHolder {
-  pub pr Rc[mut, Pair];              //~ ErrorTracedHeld "may not point at Pair"
+  pub pr Rc[mut, Pair];
   pub ok Rc[mut, Leaf];
 }
 struct SoOption {
-  pub o So[Option[Tr[mut, Leaf]]];   //~ ErrorTracedHeld "So is not traced"
+  pub o So[Option[Tr[mut, Leaf]]];
 }
 struct Node {
-  pub next Rc[mut, Node];            //~ ErrorTracedHeld "may not point at Node"
+  pub next Rc[mut, Node];
   pub g Tr[mut, Leaf];
 }
-struct RcBox[T] { pub v Rc[mut, T]; }   //~ ErrorTracedHeld "may not point at Tr[mut, Leaf]"
+struct RcBox[T] { pub v Rc[mut, T]; }
 fn useBox(b &RcBox[Tr[mut, Leaf]]) { }
+fn takesRc(p Rc[mut, Pair]) { }
 
-// Rule 1: in a parameter
-fn takesRc(p Rc[mut, Pair]) { }      //~ ErrorTracedHeld "may not point at Pair"
+struct Counts {
+  pub c Counted[mut, Pair];          //~ ErrorTracedHeld "declares no 'visit'"
+  pub ok Counted[mut, Leaf];
+}
+struct Barriered {
+  pub b Rc[mut, PairB];              //~ ErrorTracedHeld "writeBarrier"
+  pub ok So[Leaf];
+}
 
 // Rule 2: a global
 mut gp Pair;                        //~ ErrorTracedGlobal "gp is a global"
@@ -101,12 +133,32 @@ struct Unlock is LockPermission {
 }
 struct Unlocked { pub l Tr[Unlock, Leaf]; }  //~ ErrorTracedPerm "a lock permission, Unlock"
 
-// Rule 4: the raw moves, directly and through a collection
+// Rule 4: the raw moves, directly, from a type that says nothing of how a
+// collector reaches what it places, and through a collection that does (accepted)
 fn raw(p *Pair, q *Pair, v Pair) {
   mem.writeRaw[Pair](p, v);         //~ ErrorTracedRaw "mem.writeRaw would place Pair"
   mem.moveRaw[Pair](p, q, 1usize);  //~ ErrorTracedRaw "mem.moveRaw would place Pair"
   mem.writeRaw[i32](p as *i32, 5i32);
 }
+
+// A container of the program's own that places values in raw memory and does
+// not declare how they are walked
+struct Bag[T] {
+  ptr *T;
+  fn put(self &mut, v T) { mem.writeRaw(ptr, v); }
+}
+
+// Rule 7: a root that needs tracing and cannot be traced: a raw pointer to a
+// value that holds a traced reference, held beside one, with no GcTraceElements
+struct Uncovered {
+  pub g Tr[mut, Leaf];
+  pub p *Pair;
+}
+fn takesUncovered(u &Uncovered) { }
+struct HoldsUncovered {
+  pub u Tr[mut, Uncovered];           //~ ErrorTraceRoot "may not point at Uncovered"
+}
+fn rootUncovered(u Uncovered) { }      //~ ErrorTraceRoot "cannot be traced"
 
 fn main() {
   imm l = new Tr[mut, Leaf](1i32);
@@ -115,17 +167,19 @@ fn main() {
   imm b = &pr;
   imm rp = &pr as *Pair;
   imm mx = new Tr[mut, Mixed](l, new Rc[mut, Fin](1i32), new So[Fin](2i32), &nothing, new Tr[mut, Pair](l, l));
-  imm rc = new Rc[mut, Pair](l, l);      //~ ErrorTracedHeld "may not point at Pair"
+  // Accepted: an 'Rc' holding traced references, passed through by a trace
+  imm rc = new Rc[mut, Pair](l, l);
   imm n = 3i32;
   imm hb = new Tr[mut, HoldsBorrows]((1i64, new Borrows(&n)));  //~ ErrorTracedBorrow "which holds a borrowed reference"
-  mut list = collections.List[Tr[mut, Leaf]].empty();    //~ ErrorTracedRaw "would place Tr[mut, Leaf]"
+  // Accepted: a collection, an arena and a pool, each saying how it is walked
+  mut list = collections.List[Tr[mut, Leaf]].empty();
   list.push(l);
-  // Each instance of a raw move is judged once, for its type, so these place
-  // types nothing above has placed
   mut a = arena.Arena.empty();
-  a.alloc((1i32, l));                                   //~ ErrorTracedRaw "would place a tuple"
-  mut p = pool.Pool[Box].empty();                       //~ ErrorTracedRaw "would place Box"
+  a.alloc((1i32, l));
+  mut p = pool.Pool[Box].empty();
   p.add(new Box(l));
+  // Refused: a type of the program's own that places the same values raw
+  imm bag = new Bag[Pair](null);                           //~ ErrorTracedRaw "would place Pair"
 }
 
 fn nothing(x i32) i32 { x; }

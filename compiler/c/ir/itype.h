@@ -77,11 +77,24 @@ int itypeWritableBorrowDepth(INode *type, int most);
 // never read, as Rust's '#[may_dangle]' collections promise.
 int itypeDropReadsBorrow(INode *type);
 
-// Does a value of this type hold a traced reference where it sits: a reference
-// into a region declaring 'Traced', or a tuple, array, struct or enum holding
-// one inline (not through another reference or a pointer)? Remembered per
-// struct once the struct is type checked.
+// Does a value of this type need tracing: hold a traced reference where it
+// sits, a reference into a region declaring 'Traced'; or through an owning
+// reference of another region ('Rc', 'So'); or in a tuple, array, struct or
+// enum, or in what a type declaring GcTraceElements gives references to? Not through a
+// borrow or a raw pointer. Remembered per struct once it is type checked.
 int itypeHoldsTraced(INode *type);
+
+// Can a trace of a value of this type not reach everything that it must: a raw
+// pointer to a value that needs tracing, not covered by the GcTraceElements its
+// type declares; an owning reference of a region a trace cannot pass through; and
+// infectiously, any type holding one? (A value that needs tracing and cannot be
+// traced is refused where it is a root.)
+int itypeCannotTrace(INode *type);
+
+// Does a value of this type hold a reference into a traced region declaring
+// 'writeBarrier', where itypeHoldsTraced looks: what a store of it must tell
+// that region's collector of?
+int itypeHoldsBarriered(INode *type);
 
 // Does a value of this type hold an atomic value where it sits: a struct
 // declaring 'AtomicValue', or a tuple, array, struct or enum holding one inline

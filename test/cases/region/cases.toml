@@ -216,6 +216,42 @@ contains = [
   "call %void @_CNvNt6Holderu11_drop_9b166b(ptr %0)",
 ]
 
+# What a trace reaches beyond a value's fields: what a type declaring
+# GcTraceElements holds in memory it points to (a list, a deque, a dictionary, a
+# pool, an arena of many types), the traced references behind an Rc or an So
+# owner once for each collection (a cycle too), and the slot 'mark' is handed,
+# which it rewrites. The .out file shows every mark, the object's id and a *
+# where it rewrote its slot.
+[scenario.region_gc_trace_elements]
+category = "run"
+description = "A trace reaches the values a type declaring GcTraceElements holds where it points (List, Deque, Dict, OrderedDict, Pool, and an Arena of many types, whose Erased values are traced by their own records), passes through Rc and So to the traced references behind them once for each collection, so a shared owner and a cycle are traced once, and hands mark the slot, which it rewrites"
+tags = ["typecheck", "genllvm", "runtime"]
+
+# A type declaring GcTraceElements says how a collector reaches what it holds
+# where it points: a method 'gcTraceElements' giving a cursor that declares 'is
+# Iterator[&mut E]'.
+[scenario.region_typecheck_gc_trace_elements]
+category = "reject"
+description = "A type declaring GcTraceElements declares 'fn gcTraceElements(self &mut) I', I a cursor declaring 'is Iterator[&mut E]': none, one taking more or not self &mut, one giving no cursor, a cursor that does not declare Iterator, one giving a read-only reference or a value are refused; a traced type argument it does not reach is refused; a container and a cursor of the program's own are accepted"
+tags = ["typecheck"]
+diagnostics = 9
+
+# An Rc's 32-bit count is checked: copying an owner of a value that has 4294967295
+# panics. The program writes the limit into the header and copies once.
+[scenario.region_rc_overflow]
+category = "run"
+description = "An Rc's owner count is 32 bits, and copying an owner when 4294967295 hold the value panics instead of wrapping"
+tags = ["genllvm", "runtime"]
+program_exit = "abort"
+stderr_mask = ['(?<=core\.cone:)\d+']
+
+# The shadow stack finds a local 'Rc' holding traced references, and a local
+# list of them, through their types' traces.
+[scenario.region_gc_trace_elements_roots]
+category = "run"
+description = "A local Rc whose value holds traced references and a local list of them are roots: mem.traceRoots passes through the Rc once for each epoch and walks the list"
+tags = ["genllvm", "runtime"]
+
 # A traced region ref: 'is RegionRef, Traced', with a 'mark' the compiler's
 # traces call. Each type's record carries a trace walking a value of it and
 # handing each traced reference it holds to its region's 'mark', with the
@@ -234,7 +270,7 @@ target = "preir"
 contains = [
   "@cone.tyrec.3 = private constant %TypeRecord { i64 16, i64 8, ptr @cone.tyrec.nothing, ptr @cone.tyrec.trace.3, i32 2 }",
   "define private %void @cone.tyrec.trace.3(ptr %0, i32 %1)",
-  "call %void @_CNvNt2Tr4mark(ptr %2, i32 79, i32 %1)",
+  "call %void @_CNvNt2Tr4mark(ptr %2, ptr %left, i32 79, i32 %1)",
   "ptr @cone.tyrec.nothing, ptr @cone.tyrec.untraced, i32 0 }",
 ]
 
@@ -584,7 +620,7 @@ tags = ["flow", "genllvm"]
 [[scenario.region_enrich_count.check]]
 name = "alias-across-an-enrichment-is-counted"
 target = "preir"
-contains = ["%4 = add i64 %3, 1"]
+contains = ["%7 = add i32 %6, 1"]
 
 # Returning owning references in a value tuple. The claim is that 'pair' adjusts
 # no counter at all: both allocations are handed to the caller, so neither is
@@ -634,15 +670,15 @@ tags = ["flow", "genllvm", "runtime"]
 [[scenario.region_tuple_destructure.check]]
 name = "destructured-elements-gain-a-holder"
 target = "preir"
-contains = ["%14 = add i64 %13, 1", "%18 = add i64 %17, 1", "%10 = add i64 %9, 1"]
+contains = ["%14 = add i32 %13, 1", "%23 = add i32 %22, 1", "%30 = add i32 %29, 1"]
 
 [[scenario.region_tuple_destructure.check]]
 name = "tuple-variable-releases-its-elements"
 target = "preir"
 contains = [
-  "%55 = load i64, ptr %cnt76, align 8\n  %56 = sub i64 %55, 1",
-  "%62 = load i64, ptr %cnt89, align 8\n  %63 = sub i64 %62, 1",
-  "%tupelem = getelementptr inbounds nuw { ptr, i32 }, ptr %t, i32 0, i32 0\n  %finalref37 = load ptr, ptr %tupelem, align 8\n  %32 = getelementptr i8, ptr %finalref37, i64 -8\n  store ptr %32, ptr %self38, align 8\n  %self39 = load ptr, ptr %self38, align 8\n  %cnt40 = getelementptr inbounds nuw %Rc, ptr %self39, i32 0, i32 0\n  %33 = load i64, ptr %cnt40, align 8\n  %34 = sub i64 %33, 1",
+  "%67 = load i32, ptr %cnt93, align 4\n  %68 = sub i32 %67, 1",
+  "%74 = load i32, ptr %cnt106, align 4\n  %75 = sub i32 %74, 1",
+  "%tupelem = getelementptr inbounds nuw { ptr, i32 }, ptr %t, i32 0, i32 0\n  %finalref44 = load ptr, ptr %tupelem, align 8\n  %38 = getelementptr i8, ptr %finalref44, i64 -8\n  store ptr %38, ptr %self45, align 8\n  %self46 = load ptr, ptr %self45, align 8\n  %cnt47 = getelementptr inbounds nuw %Rc, ptr %self46, i32 0, i32 0\n  %39 = load i32, ptr %cnt47, align 4\n  %40 = sub i32 %39, 1",
 ]
 
 [[scenario.region_tuple_destructure.check]]
@@ -650,8 +686,8 @@ name = "overwritten-tuple-releases-previous-elements"
 target = "preir"
 contains = [
   "%dealiasref = load { ptr, ptr }, ptr %v, align 8",
-  "%27 = load i64, ptr %cnt34, align 8\n  %28 = sub i64 %27, 1",
-  "%36 = sub i64 %35, 1",
+  "%45 = load i32, ptr %cnt61, align 4\n  %46 = sub i32 %45, 1",
+  "%54 = sub i32 %53, 1",
 ]
 
 [[scenario.region_tuple_destructure.check]]
@@ -670,12 +706,12 @@ contains = [
 [[scenario.region_tuple_destructure.check]]
 name = "alias-destructured-elements-gain-a-holder"
 target = "preir"
-contains = ["%19 = add i64 %18, 1", "%23 = add i64 %22, 1", "%27 = add i64 %26, 1"]
+contains = ["%31 = add i32 %30, 1", "%38 = add i32 %37, 1", "%45 = add i32 %44, 1"]
 
 [[scenario.region_tuple_destructure.check]]
 name = "alias-tuple-variable-releases-its-elements"
 target = "preir"
-contains = ["%82 = sub i64 %81, 1", "%89 = sub i64 %88, 1", "%96 = sub i64 %95, 1"]
+contains = ["%100 = sub i32 %99, 1", "%107 = sub i32 %106, 1", "%114 = sub i32 %113, 1"]
 
 # A local moved into a call that is the block's final expression. The claim is
 # that nothing in this module is released: every allocation is handed on, to a
@@ -744,12 +780,12 @@ tags = ["flow", "genllvm"]
 [[scenario.region_jump_release.check]]
 name = "continue-releases-its-scope"
 target = "preir"
-contains = ["%4 = sub i64 %3, 1"]
+contains = ["%4 = sub i32 %3, 1"]
 
 [[scenario.region_jump_release.check]]
 name = "break-releases-the-scopes-between"
 target = "preir"
-contains = ["%6 = sub i64 %5, 1", "%13 = sub i64 %12, 1"]
+contains = ["%6 = sub i32 %5, 1", "%13 = sub i32 %12, 1"]
 
 # Reassigning a variable that holds an 'So' reference frees the value it held,
 # in every spelling the store has: a single reference, a struct field, and each
@@ -785,7 +821,7 @@ contains = [
 [[scenario.region_so_reassign.check]]
 name = "moved-out-uni-rc-not-dropped-again-on-reassignment"
 target = "preir"
-contains = ["%10 = sub i64 %9, 1"]
+contains = ["%10 = sub i32 %9, 1"]
 
 # An alias is transparent, so an owning type reached through one is
 # released exactly as the type it names is. Nothing rewrites the alias away: a
@@ -907,7 +943,7 @@ diagnostics = 7
 category = "reject"
 description = "What a region ref declaring 'Traced' promises: a 'mark' of one of the two shapes a trace calls, a 'writeBarrier' (where it declares one) of the one shape a store calls, not 'Move'; and only a region ref may declare it. Both shapes of 'mark', a traced region with 'writeBarrier', and one with 'dealiasRef', are accepted"
 tags = ["typecheck"]
-diagnostics = 10
+diagnostics = 15
 
 [scenario.region_typecheck_threadsafe]
 category = "reject"
@@ -923,9 +959,9 @@ diagnostics = 9
 
 [scenario.region_typecheck_traced_place]
 category = "reject"
-description = "Where a traced reference may not be held: behind an untraced region's owning reference (a field, a struct pointing back at itself, a generic's instance, a parameter, an allocation), in a global, placed raw by mem.writeRaw or mem.moveRaw (directly, and through List, Arena and Pool, reported at the program's instantiation); and what a traced region may not allocate: a value holding a borrow, a virtual reference, a lock permission"
+description = "Where a traced reference may not be held: behind an owning reference of a region a trace cannot pass through (several owners and no visit; a traced region with a write barrier), in a global, placed raw by mem.writeRaw or mem.moveRaw from a type declaring no GcTraceElements (directly, and through a container of the program's own, reported at the program's instantiation); in a root whose type needs tracing and cannot be traced; and what a traced region may not allocate: a value holding a borrow, a virtual reference, a lock permission. Rc and So (also self-referring), List, Arena and Pool holding traced references are accepted"
 tags = ["typecheck"]
-diagnostics = 16
+diagnostics = 12
 
 [scenario.region_typecheck_coerce]
 category = "reject"

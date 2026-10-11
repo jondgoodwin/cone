@@ -245,10 +245,13 @@ int fnIsTypeLifecycle(INode *dclnode) {
         && (name == initMethodName || name == acquireMutMethodName || name == releaseMutMethodName
             || name == acquireReadMethodName || name == releaseReadMethodName))
         return 1;
+    // A GcTraceElements type's 'gcTraceElements' is called wherever a value of the type is traced
+    if (name == gcTraceElementsMethodName && structDeclaresTrait((StructNode*)owner, gcTraceElementsTrait))
+        return 1;
     return regionIsRegionRef(owner)
         && (name == allocMethodName || name == initMethodName || name == aliasRefMethodName
             || name == dealiasRefMethodName || name == freeMethodName || name == markMethodName
-            || name == writeBarrierMethodName);
+            || name == writeBarrierMethodName || name == visitMethodName);
 }
 
 // Whether a type's method meets a requirement, or takes the place of a default,

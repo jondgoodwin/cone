@@ -1,0 +1,120 @@
+// How a type that holds values in memory it points to says how a collector
+// reaches them. It declares 'GcTraceElements' -- a built-in trait, beside
+// 'CarriesRegion' and 'ShapeChanging' -- and a method 'fn
+// gcTraceElements(self &mut) I', I a cursor that
+// declares 'is Iterator[&mut E]': a writable reference to each value it holds,
+// E a type whose size is known where it is written. The compiler runs the
+// cursor and traces each value as a value of E is traced. Without it a type
+// holding a raw pointer to a value that holds a traced reference cannot be
+// traced (region_typecheck_traced_place); with it, it can, and the type holds a
+// traced reference exactly where E does.
+//
+// Its cursor reaches the values of one type, E. A type argument that holds a
+// traced reference and is not E is held where nothing finds it, and is refused
+// (ErrorTraceKey): a dictionary's key, which a collector that moved it would
+// leave hashed where it was.
+
+mod region_typecheck_gc_trace_elements;
+
+struct Tr is RegionRef, Traced {
+  fn alloc(size usize) *u8 inline { malloc(size); }
+  fn mark(self &uni Tr, slot *usize) { }
+}
+
+struct Leaf { pub n i32; }
+
+// Accepted: a container of the program's own, a cursor of the program's own, and
+// a container that is not generic
+struct Bag[T] is GcTraceElements {
+  ptr *T;
+  used usize;
+  pub fn gcTraceElements(self &mut) ArrayMutItems[T] { new ArrayMutItems[T](mem.sliceFromPartsMut(ptr, used), 0usize); }
+}
+
+struct Beads['a, T] is Iterator[&mut T] {
+  at &'a mut Array[T];
+  pos usize;
+  pub fn next(self &mut) Option[&'a mut T] {
+    if pos >= at.len { return None; }
+    imm i = pos;
+    pos = i + 1usize;
+    Some[&mut T](&mut at[i]);
+  }
+}
+
+struct Strand is GcTraceElements {
+  ptr *Tr[mut, Leaf];
+  used usize;
+  pub fn gcTraceElements(self &mut) Beads[Tr[mut, Leaf]] { new Beads[Tr[mut, Leaf]](mem.sliceFromPartsMut(ptr, used), 0usize); }
+}
+
+// A type that gives a reference to its second type argument may hold a traced
+// first one only if it is the same type, and the first of no use here
+struct Two[A, B] is GcTraceElements {
+  a *A;
+  b *B;
+  used usize;
+  pub fn gcTraceElements(self &mut) ArrayMutItems[B] { new ArrayMutItems[B](mem.sliceFromPartsMut(b, used), 0usize); }
+}
+
+fn bagOfLeaves(b Bag[Tr[mut, Leaf]]) { }
+fn bagOfNumbers(b Bag[i32]) { }
+fn strand(s Strand) { }
+fn twoOk(t &Two[i32, Tr[mut, Leaf]]) { }
+fn twoNumbers(t &Two[i32, i64]) { }
+fn twoKey(t &Two[Tr[mut, Leaf], i32]) { }        //~ ErrorTraceKey "holds a traced reference it would not reach"
+fn twoBoth(t &Two[Tr[mut, Leaf], Tr[mut, Leaf]]) { }   //~ ErrorTraceKey "holds a traced reference it would not reach"
+
+// Refused: no 'gcTraceElements', one that takes more, one that gives no cursor, a cursor
+// that does not declare Iterator, one that gives no writable reference, and a
+// 'gcTraceElements' that does not take 'self &mut'
+struct NoElements is GcTraceElements {   //~ ErrorGcTraceElementsShape "declares a method 'fn gcTraceElements(self &mut) I'"
+  ptr *i32;
+}
+
+struct TooMany is GcTraceElements {   //~ ErrorGcTraceElementsShape "takes nothing but 'self &mut'"
+  ptr *i32;
+  used usize;
+  pub fn gcTraceElements(self &mut, from usize) ArrayMutItems[i32] { new ArrayMutItems[i32](mem.sliceFromPartsMut(ptr, used), from); }
+}
+
+struct NoCursor is GcTraceElements {   //~ ErrorGcTraceElementsShape "must give a cursor"
+  ptr *i32;
+  pub fn gcTraceElements(self &mut) i32 { 0i32; }
+}
+
+struct Bare {
+  pos usize;
+  pub fn next(self &mut) Option[&mut i32] { None; }
+}
+struct NotDeclared is GcTraceElements {   //~ ErrorGcTraceElementsShape "must declare 'is Iterator[&mut E]'"
+  ptr *i32;
+  pub fn gcTraceElements(self &mut) Bare { new Bare(0usize); }
+}
+
+struct Reads['a] is Iterator[&i32] {
+  src &'a i32;
+  pub fn next(self &mut) Option[&'a i32] { None; }
+}
+struct ReadOnly is GcTraceElements {   //~ ErrorGcTraceElementsShape "a writable reference to each value"
+  n i32;
+  pub fn gcTraceElements(self &mut) Reads { new Reads(&n); }
+}
+
+struct Values is Iterator[i32] {
+  pos usize;
+  pub fn next(self &mut) Option[i32] { None; }
+}
+struct ByValue is GcTraceElements {   //~ ErrorGcTraceElementsShape "a writable reference to each value"
+  ptr *i32;
+  pub fn gcTraceElements(self &mut) Values { new Values(0usize); }
+}
+
+struct Shared is GcTraceElements {   //~ ErrorGcTraceElementsShape "takes nothing but 'self &mut'"
+  ptr *i32;
+  used usize;
+  pub fn gcTraceElements(self &) ArrayMutItems[i32] { new ArrayMutItems[i32](mem.sliceFromPartsMut(ptr, used), 0usize); }
+}
+
+fn main() {
+}

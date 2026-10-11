@@ -140,6 +140,15 @@ no type, or more than a permission and a type in its brackets is `ErrorRegionNew
 check). One whose head `a` is a value that is not a region (a struct whose first field is a
 public `*MemRegion`) is `ErrorRegionHead`.
 
+`ErrorGcTraceElementsShape`, `ErrorTraceRoot` and `ErrorTraceKey` are about what a collector
+can reach. A type declaring `GcTraceElements` whose `gcTraceElements` is not `fn
+gcTraceElements(self &mut) I`, `I` a cursor declaring `is Iterator[&mut E]` with `E` a sized
+type, is `ErrorGcTraceElementsShape` (type check). A local, a parameter, or a value of a traced
+region, whose type needs tracing and cannot be traced (it holds a raw pointer to a value that
+needs tracing, with no `GcTraceElements`, or an owner a trace cannot pass through) is
+`ErrorTraceRoot`. A type argument that holds a traced reference, of a type whose
+`gcTraceElements` does not give references to it (a dictionary's key), is `ErrorTraceKey`.
+
 `ErrorBuildDesc` is a third: a build description that cannot be read, whether a
 setting is unknown, set twice, badly valued or written after the module, a line
 is malformed, a child module, an import or a package line is named twice, a

@@ -278,48 +278,10 @@ static LLVMValueRef genlTraceMode = NULL;
 // reference to its region's 'writeBarrier' instead of its 'mark'
 static int genlTraceBarrier = 0;
 
-// Does a value of this type hold, inline, a reference into a traced region
-// declaring 'writeBarrier'? The trace's walk, asked of what a store wrote.
-static int genlHoldsBarriered(INode *type) {
-    if (!itypeHoldsTraced(type))
-        return 0;
-    INode *typedcl = itypeGetTypeDcl(type);
-    INode **nodesp;
-    uint32_t cnt;
-    switch (typedcl->tag) {
-    case RefTag:
-        return regionHasBarrier(((RefNode *)typedcl)->region);
-    case ArrayTag:
-        return genlHoldsBarriered(arrayElemType(typedcl));
-    case TTupleTag:
-        for (nodesFor(((TupleNode *)typedcl)->elems, cnt, nodesp)) {
-            if (genlHoldsBarriered(*nodesp))
-                return 1;
-        }
-        return 0;
-    case StructTag: {
-        StructNode *strnode = (StructNode *)typedcl;
-        for (nodelistFor(&strnode->fields, cnt, nodesp)) {
-            if (genlHoldsBarriered(((FieldDclNode *)*nodesp)->vtype))
-                return 1;
-        }
-        if (strnode->derived) {
-            for (nodesFor(strnode->derived, cnt, nodesp)) {
-                if (genlHoldsBarriered(*nodesp))
-                    return 1;
-            }
-        }
-        return 0;
-    }
-    default:
-        return 0;
-    }
-}
-
 // Whether the walk goes into a part of this type: one holding a traced
 // reference for a trace, one holding a barriered reference for a barrier
 static int genlTraceWants(INode *type) {
-    return genlTraceBarrier ? genlHoldsBarriered(type) : itypeHoldsTraced(type);
+    return genlTraceBarrier ? itypeHoldsBarriered(type) : itypeHoldsTraced(type);
 }
 
 // A traced reference is handed to its region's 'mark' as the header of what it
@@ -342,9 +304,13 @@ static void genlTraceRef(GenState *gen, LLVMValueRef refptr, RefNode *refnode) {
     LLVMBasicBlockRef markblk = genlInsertBlock(gen, genlTraceBarrier ? "barrier" : "mark");
     LLVMBuildCondBr(gen->builder, LLVMBuildIsNotNull(gen->builder, ref, "present"), markblk, doneblk);
     LLVMPositionBuilderAtEnd(gen->builder, markblk);
-    LLVMValueRef args[3];
+    LLVMValueRef args[4];
     uint32_t nargs = 1;
     args[0] = genlRegionHeader(gen, ref, refnode);
+    // 'mark' is also handed the slot the reference is stored in, which a
+    // collector that moves what it points at rewrites
+    if (!genlTraceBarrier)
+        args[nargs++] = refptr;
     if (!genlTraceBarrier && regionMarkTakesContext(refnode->region)) {
         INode *perm = itypeGetTypeDcl(refnode->perm);
         LLVMTypeRef u32 = LLVMInt32TypeInContext(gen->context);
@@ -360,6 +326,107 @@ static void genlTraceWalk(GenState *gen, LLVMValueRef valptr, INode *vtype);
 
 static void genlTraceElem(GenState *gen, LLVMValueRef elemptr, INode *elemtype, long long amount) {
     genlTraceWalk(gen, elemptr, elemtype);
+}
+
+static LLVMTypeRef genlTypeRecSlotFnType(GenState *gen, StructNode *recnode, unsigned index);
+
+// The trace function in the type record of 'vtype', loaded from it, and its
+// function type. Called, not expanded, so a type that reaches itself through an
+// owner ('next Rc[Node]') traces in a finite function.
+static LLVMValueRef genlTraceFnOf(GenState *gen, INode *vtype, LLVMTypeRef *fntype) {
+    StructNode *recnode = typeRecordStruct();
+    if (recnode == NULL)
+        errorExit(ExitGen, "Internal error: a trace passes through an owner, and core declares no 'mem.typeRecord' whose TypeRecord holds each type's trace");
+    LLVMValueRef record = genlTypeRecordOf(gen, vtype, recnode);
+    *fntype = genlTypeRecSlotFnType(gen, recnode, TypeRecTrace);
+    LLVMValueRef slot = LLVMBuildStructGEP2(gen->builder, genlType(gen, (INode *)recnode), record, TypeRecTrace, "tracefnp");
+    return LLVMBuildLoad2(gen->builder, LLVMPointerTypeInContext(gen->context, 0), slot, "tracefn");
+}
+
+// A trace reaches an owning reference of a region that is not traced ('Rc',
+// 'So'), whose value holds a traced reference: it passes through to the value,
+// once per collection where the region has several owners and says so ('visit',
+// called with the trace's mode, the collection's epoch), by the value's type's
+// own trace. A null reference is passed over.
+static void genlTraceThrough(GenState *gen, LLVMValueRef refptr, RefNode *refnode) {
+    LLVMValueRef ref = LLVMBuildLoad2(gen->builder, genlType(gen, (INode*)refnode), refptr, "ownedref");
+    LLVMBasicBlockRef doneblk = genlInsertBlock(gen, "passed");
+    LLVMBasicBlockRef passblk = genlInsertBlock(gen, "pass");
+    LLVMBuildCondBr(gen->builder, LLVMBuildIsNotNull(gen->builder, ref, "present"), passblk, doneblk);
+    LLVMPositionBuilderAtEnd(gen->builder, passblk);
+    FnDclNode *visitmeth = regionMethod(refnode->region, visitMethodName);
+    if (visitmeth) {
+        LLVMValueRef vargs[2];
+        vargs[0] = genlRegionHeader(gen, ref, refnode);
+        vargs[1] = genlTraceMode;
+        LLVMValueRef first = genlFnCallInternal(gen, SimpleDispatch, (INode*)visitmeth, 2, vargs, NULL);
+        if (LLVMGetIntTypeWidth(LLVMTypeOf(first)) != 1)
+            first = LLVMBuildICmp(gen->builder, LLVMIntNE, first, LLVMConstNull(LLVMTypeOf(first)), "first");
+        LLVMBasicBlockRef valueblk = genlInsertBlock(gen, "passvalue");
+        LLVMBuildCondBr(gen->builder, first, valueblk, doneblk);
+        LLVMPositionBuilderAtEnd(gen->builder, valueblk);
+    }
+    LLVMTypeRef fntype;
+    LLVMValueRef tracefn = genlTraceFnOf(gen, refnode->vtexp, &fntype);
+    LLVMValueRef targs[2];
+    targs[0] = ref;
+    targs[1] = genlTraceMode;
+    LLVMBuildCall2(gen->builder, fntype, tracefn, targs, 2, "");
+    LLVMBuildBr(gen->builder, doneblk);
+    LLVMPositionBuilderAtEnd(gen->builder, doneblk);
+}
+
+// An erased value, core's {p, rec}: a value whose type is known only by its
+// type record, traced by that record's trace. Nothing, where it holds none.
+static void genlTraceErased(GenState *gen, LLVMValueRef valptr, StructNode *strnode) {
+    StructNode *recnode = typeRecordStruct();
+    LLVMTypeRef strtype = genlType(gen, (INode *)strnode);
+    LLVMTypeRef ptrtype = LLVMPointerTypeInContext(gen->context, 0);
+    LLVMValueRef datap = LLVMBuildLoad2(gen->builder, ptrtype, LLVMBuildStructGEP2(gen->builder, strtype, valptr, 0, "erasedp"), "data");
+    LLVMValueRef rec = LLVMBuildLoad2(gen->builder, ptrtype, LLVMBuildStructGEP2(gen->builder, strtype, valptr, 1, "erasedrec"), "rec");
+    LLVMBasicBlockRef doneblk = genlInsertBlock(gen, "erased");
+    LLVMBasicBlockRef traceblk = genlInsertBlock(gen, "erasedtrace");
+    LLVMBuildCondBr(gen->builder, LLVMBuildIsNotNull(gen->builder, rec, "present"), traceblk, doneblk);
+    LLVMPositionBuilderAtEnd(gen->builder, traceblk);
+    LLVMTypeRef fntype = genlTypeRecSlotFnType(gen, recnode, TypeRecTrace);
+    LLVMValueRef slot = LLVMBuildStructGEP2(gen->builder, genlType(gen, (INode *)recnode), rec, TypeRecTrace, "tracefnp");
+    LLVMValueRef tracefn = LLVMBuildLoad2(gen->builder, ptrtype, slot, "tracefn");
+    LLVMValueRef targs[2];
+    targs[0] = datap;
+    targs[1] = genlTraceMode;
+    LLVMBuildCall2(gen->builder, fntype, tracefn, targs, 2, "");
+    LLVMBuildBr(gen->builder, doneblk);
+    LLVMPositionBuilderAtEnd(gen->builder, doneblk);
+}
+
+// The values a type declaring GcTraceElements holds where it points: its
+// 'gcTraceElements' gives a cursor, which is run until its 'next' gives nothing,
+// and each reference it gives -- the address of a value of 'elemtype' -- is
+// traced as the value is.
+static void genlTraceElements(GenState *gen, LLVMValueRef valptr, StructNode *strnode, INode *elemtype) {
+    FnDclNode *elemsmeth = (FnDclNode *)iNsTypeFindFnField((INsTypeNode *)strnode, gcTraceElementsMethodName);
+    StructNode *cursor = (StructNode *)itypeGetTypeDcl(((FnSigNode *)itypeGetTypeDcl(elemsmeth->vtype))->rettype);
+    FnDclNode *nextmeth = (FnDclNode *)iNsTypeFindFnField((INsTypeNode *)cursor, nextName);
+    genlType(gen, itypeGetTypeDcl(((FnSigNode *)itypeGetTypeDcl(nextmeth->vtype))->rettype));
+    LLVMValueRef curptr = genlAlloca(gen, genlType(gen, (INode *)cursor), "elemcursor");
+    LLVMValueRef selfarg = valptr;
+    LLVMBuildStore(gen->builder, genlFnCallInternal(gen, SimpleDispatch, (INode *)elemsmeth, 1, &selfarg, NULL), curptr);
+
+    LLVMBasicBlockRef doneblk = genlInsertBlock(gen, "elemsdone");
+    LLVMBasicBlockRef elemblk = genlInsertBlock(gen, "elemsnext");
+    LLVMBasicBlockRef headblk = genlInsertBlock(gen, "elemshead");
+    LLVMBuildBr(gen->builder, headblk);
+    LLVMPositionBuilderAtEnd(gen->builder, headblk);
+    LLVMValueRef nextarg = curptr;
+    LLVMValueRef item = genlFnCallInternal(gen, SimpleDispatch, (INode *)nextmeth, 1, &nextarg, NULL);
+    // The Option of a reference is the reference, null for none
+    if (LLVMGetTypeKind(LLVMTypeOf(item)) != LLVMPointerTypeKind)
+        errorExit(ExitGen, "Internal error: a GcTraceElements type's cursor gave an Option of a reference that is not laid out as a nullable pointer");
+    LLVMBuildCondBr(gen->builder, LLVMBuildIsNotNull(gen->builder, item, "more"), elemblk, doneblk);
+    LLVMPositionBuilderAtEnd(gen->builder, elemblk);
+    genlTraceWalk(gen, item, elemtype);
+    LLVMBuildBr(gen->builder, headblk);
+    LLVMPositionBuilderAtEnd(gen->builder, doneblk);
 }
 
 // The fields of the struct 'strnode' at 'valptr' that hold a traced reference,
@@ -384,9 +451,9 @@ static void genlTraceNullableVariant(GenState *gen, LLVMValueRef valptr, StructN
     for (nodelistFor(&variant->fields, cnt, nodesp)) {
         if ((*nodesp)->flags & IsTagField)
             continue;
-        RefNode *reftype = (RefNode *)itypeGetTypeDcl(((FieldDclNode *)*nodesp)->vtype);
-        if (reftype->tag == RefTag && regionIsTraced(reftype->region))
-            genlTraceRef(gen, valptr, reftype);
+        INode *reftype = itypeGetTypeDcl(((FieldDclNode *)*nodesp)->vtype);
+        if (genlTraceWants(reftype))
+            genlTraceWalk(gen, valptr, reftype);
     }
 }
 
@@ -403,9 +470,9 @@ static void genlTraceVariants(GenState *gen, LLVMValueRef valptr, StructNode *en
             StructNode *variant = (StructNode *)*nodesp;
             if (variant->fields.used != 2)
                 continue;
-            RefNode *reftype = (RefNode *)itypeGetTypeDcl(((FieldDclNode *)nodelistGet(&variant->fields, 1))->vtype);
-            if (reftype->tag == RefTag && regionIsTraced(reftype->region))
-                genlTraceRef(gen, valptr, reftype);
+            INode *reftype = itypeGetTypeDcl(((FieldDclNode *)nodelistGet(&variant->fields, 1))->vtype);
+            if (genlTraceWants(reftype))
+                genlTraceWalk(gen, valptr, reftype);
         }
         return;
     }
@@ -450,6 +517,9 @@ static void genlTraceWalk(GenState *gen, LLVMValueRef valptr, INode *vtype) {
         // (ErrorTracedRefKind), so a traced reference is a single one
         if (regionIsTraced(((RefNode *)typedcl)->region))
             genlTraceRef(gen, valptr, (RefNode *)typedcl);
+        // Any other owning reference to a value holding one is passed through
+        else if (!genlTraceBarrier && itypeHoldsTraced(typedcl) && !refIsFat((RefNode *)typedcl))
+            genlTraceThrough(gen, valptr, (RefNode *)typedcl);
         return;
     case TTupleTag:
     {
@@ -481,12 +551,23 @@ static void genlTraceWalk(GenState *gen, LLVMValueRef valptr, INode *vtype) {
         INode *enumnode = strnode->basetrait ? itypeGetTypeDcl(strnode->basetrait) : NULL;
         if (enumnode && enumnode->tag == StructTag && (enumnode->flags & EnumType))
             genlType(gen, enumnode);
+        // An erased value is traced by its own record's trace
+        if (coreIsErased((INode *)strnode)) {
+            if (!genlTraceBarrier)
+                genlTraceErased(gen, valptr, strnode);
+            return;
+        }
         if (strnode->derived)
             genlTraceVariants(gen, valptr, strnode);
         else if (strnode->flags & NullablePtr)
             genlTraceNullableVariant(gen, valptr, strnode);
         else
             genlTraceFields(gen, valptr, strnode);
+        // The values a type declaring GcTraceElements holds where it points are
+        // reached by its gcTraceElements
+        INode *traceelem = structGcTraceElementsElem(strnode);
+        if (traceelem && genlTraceWants(traceelem))
+            genlTraceElements(gen, valptr, strnode, traceelem);
         return;
     }
     default:
@@ -518,7 +599,7 @@ void genlTraceAt(GenState *gen, LLVMValueRef valptr, INode *vtype, LLVMValueRef 
 // for a type holding no such reference -- every type, in a program with no
 // traced region.
 void genlBarrierAt(GenState *gen, LLVMValueRef valptr, INode *vtype) {
-    if (!genlHoldsBarriered(vtype))
+    if (!itypeHoldsBarriered(vtype))
         return;
     int svbarrier = genlTraceBarrier;
     genlTraceBarrier = 1;

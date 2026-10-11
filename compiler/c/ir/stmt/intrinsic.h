@@ -219,6 +219,10 @@ int coreIsHashTrait(INode *dcl);
 int coreIsIteratorTrait(INode *dcl);
 extern INode *coreIteratorTrait;
 int coreIsHasher(INode *dcl);
+// Core's Erased struct, '{p *u8, rec *TypeRecord}': a value known only by its type
+// record, which a trace of it calls (genlTraceErased). Known by its name, its two
+// fields and its package.
+int coreIsErased(INode *dcl);
 
 // Core's TypeRecord struct, once the core package's declaration of
 // 'mem.typeRecord' has been checked against the registry; NULL before, or in a

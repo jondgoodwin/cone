@@ -99,6 +99,7 @@ StructNode *shapeChangingTrait;
 StructNode *noLoanMutTrait;
 StructNode *noLoanReadTrait;
 StructNode *carriesRegionTrait;
+StructNode *gcTraceElementsTrait;
 StructNode *atomicValueTrait;
 StructNode *integerTrait;
 StructNode *pointerTrait;
@@ -175,7 +176,7 @@ int corelibIsBuiltinTrait(INode *node) {
         || node == (INode*)tracedTrait || node == (INode*)threadSafeTrait
         || node == (INode*)shapeChangingTrait
         || node == (INode*)noLoanMutTrait || node == (INode*)noLoanReadTrait
-        || node == (INode*)carriesRegionTrait
+        || node == (INode*)carriesRegionTrait || node == (INode*)gcTraceElementsTrait
         || node == (INode*)atomicValueTrait || node == (INode*)integerTrait
         || node == (INode*)pointerTrait || node == (INode*)sendableTrait
         || node == (INode*)shareableTrait
@@ -327,6 +328,15 @@ void stdlibInit(int ptrsize) {
     // knows a collection's memory, and it knows no collection by name: any type
     // declaring the trait is treated alike (structCarriesRegionCheck).
     carriesRegionTrait = newBuiltinTrait(carriesRegionTraitName);
+    // 'GcTraceElements' [PROVISIONAL name]: a type that holds values in memory it
+    // points to (a collection's block, a pool's slots, an arena's allocations)
+    // says how a garbage collector reaches them, by declaring the trait and a
+    // method 'fn gcTraceElements(self &mut) I', I a cursor declaring 'is
+    // Iterator[&mut E]'. The compiler traces each reference the cursor yields as
+    // a value of E is traced (structGcTraceElementsCheck); a type with a raw
+    // pointer to a value that may need tracing cannot be traced until its author
+    // declares one.
+    gcTraceElementsTrait = newBuiltinTrait(gcTraceElementsTraitName);
     // 'AtomicValue' [Jon 26 Sep]: a struct declaring it is changed only by
     // atomic operations, even where it is 'imm' -- the one exception to 'imm
     // never changes'. It is a struct of one field, an integer, a bool or a raw

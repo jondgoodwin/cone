@@ -3,12 +3,18 @@
 // 'Traced' is a built-in trait beside 'RegionRef', 'Move' and 'Copy'. A region
 // ref declares it to say that its references are traced: a type's record
 // carries a trace that hands each one a value holds to the region's 'mark'. So
-// it promises a 'mark' of a shape the trace calls -- '(self &uni R)', or
-// '(self &uni R, perm u32, mode u32)' to be told each reference's permission and
-// the trace's mode -- returning nothing; a 'writeBarrier' it declares has the
-// one shape '(self &uni R)', returning nothing. A traced region is not 'Move': one
-// owner deciding each value's death leaves a collector nothing to find. Only a
-// region ref may declare it.
+// it promises a 'mark' of a shape the trace calls -- '(self &uni R, slot
+// *usize)', the header of what the reference points at and the slot the
+// reference is stored in, which a collector that moves it rewrites; or '(self
+// &uni R, slot *usize, perm u32, mode u32)' to be told each reference's
+// permission and the trace's mode -- returning nothing; a 'writeBarrier' it
+// declares has the one shape '(self &uni R)', returning nothing. A traced
+// region is not 'Move': one owner deciding each value's death leaves a
+// collector nothing to find. Only a region ref may declare it.
+//
+// A region that is not traced may declare 'visit', '(self &uni R, mode u32)
+// bool', which a trace passing through its owners calls to reach each value
+// once per collection.
 //
 // Each diagnostic lands on the offending declaration: the struct, or its
 // 'mark'. What a traced reference may be held in is region_typecheck_traced_place.
@@ -21,19 +27,19 @@ struct Leaf { pub n i32; }
 // counted and traced region, whose count the collector may read)
 struct ShortMark is RegionRef, Traced {
   fn alloc(size usize) *u8 inline { malloc(size); }
-  fn mark(self &uni ShortMark) { }
+  fn mark(self &uni ShortMark, slot *usize) { }
 }
 
 struct LongMark is RegionRef, Traced {
   fn alloc(size usize, ty *TypeRecord) *u8 inline { malloc(size); }
-  fn mark(self &uni LongMark, perm u32, mode u32) { }
+  fn mark(self &uni LongMark, slot *usize, perm u32, mode u32) { }
 }
 
 // And a 'writeBarrier', which a collector marking while the program runs
 // declares, of the one shape the compiler calls
 struct Barriered is RegionRef, Traced {
   fn alloc(size usize) *u8 inline { malloc(size); }
-  fn mark(self &uni Barriered) { }
+  fn mark(self &uni Barriered, slot *usize) { }
   fn writeBarrier(self &uni Barriered) { }
 }
 
@@ -43,7 +49,7 @@ struct Counted is RegionRef, Traced {
   fn init(self &new) { *self = new Counted(1usize); }
   fn aliasRef(self &uni Counted) { count = count + 1usize; }
   fn dealiasRef(self &uni Counted) bool { count = count - 1usize; count == 0usize; }
-  fn mark(self &uni Counted) { }
+  fn mark(self &uni Counted, slot *usize) { }
 }
 
 // A trace hands its region each reference it finds, through 'mark'
@@ -53,17 +59,33 @@ struct NoMark is RegionRef, Traced {   //~ ErrorTracedMark "through a method it 
 
 struct MarkReturns is RegionRef, Traced {
   fn alloc(size usize) *u8 inline { malloc(size); }
-  fn mark(self &uni MarkReturns) bool { true; }   //~ ErrorRegionMeth "mark must be declared"
+  fn mark(self &uni MarkReturns, slot *usize) bool { true; }   //~ ErrorRegionMeth "mark must be declared"
+}
+
+// The header alone is not a shape: a trace hands over the slot too
+struct MarkNoSlot is RegionRef, Traced {
+  fn alloc(size usize) *u8 inline { malloc(size); }
+  fn mark(self &uni MarkNoSlot) { }   //~ ErrorRegionMeth "mark must be declared"
+}
+
+struct MarkNoSlotCtx is RegionRef, Traced {
+  fn alloc(size usize) *u8 inline { malloc(size); }
+  fn mark(self &uni MarkNoSlotCtx, perm u32, mode u32) { }   //~ ErrorRegionMeth "mark must be declared"
 }
 
 struct MarkTwoParms is RegionRef, Traced {
   fn alloc(size usize) *u8 inline { malloc(size); }
-  fn mark(self &uni MarkTwoParms, perm u32) { }   //~ ErrorRegionMeth "mark must be declared"
+  fn mark(self &uni MarkTwoParms, slot *usize, perm u32) { }   //~ ErrorRegionMeth "mark must be declared"
 }
 
 struct MarkWideMode is RegionRef, Traced {
   fn alloc(size usize) *u8 inline { malloc(size); }
-  fn mark(self &uni MarkWideMode, perm u32, mode u64) { }   //~ ErrorRegionMeth "mark must be declared"
+  fn mark(self &uni MarkWideMode, slot *usize, perm u32, mode u64) { }   //~ ErrorRegionMeth "mark must be declared"
+}
+
+struct MarkWrongSlot is RegionRef, Traced {
+  fn alloc(size usize) *u8 inline { malloc(size); }
+  fn mark(self &uni MarkWrongSlot, slot *u8) { }   //~ ErrorRegionMeth "mark must be declared"
 }
 
 struct MarkStatic is RegionRef, Traced {
@@ -74,20 +96,20 @@ struct MarkStatic is RegionRef, Traced {
 // A barrier is handed the header of what was stored, and returns nothing
 struct BarrierReturns is RegionRef, Traced {
   fn alloc(size usize) *u8 inline { malloc(size); }
-  fn mark(self &uni BarrierReturns) { }
+  fn mark(self &uni BarrierReturns, slot *usize) { }
   fn writeBarrier(self &uni BarrierReturns) bool { true; }   //~ ErrorRegionMeth "writeBarrier must be declared"
 }
 
 struct BarrierContext is RegionRef, Traced {
   fn alloc(size usize) *u8 inline { malloc(size); }
-  fn mark(self &uni BarrierContext) { }
+  fn mark(self &uni BarrierContext, slot *usize) { }
   fn writeBarrier(self &uni BarrierContext, perm u32, mode u32) { }   //~ ErrorRegionMeth "writeBarrier must be declared"
 }
 
 // One owner per value, and a collector, contradict each other
 struct MovedTraced is RegionRef, Move, Traced {   //~ ErrorRegionSet "is not Move"
   fn alloc(size usize) *u8 inline { malloc(size); }
-  fn mark(self &uni MovedTraced) { }
+  fn mark(self &uni MovedTraced, slot *usize) { }
 }
 
 // Only a region ref declares it
@@ -108,10 +130,33 @@ struct UntracedMark is RegionRef {
   fn writeBarrier(n i32) i32 { n; }
 }
 
+// 'visit': a counted region says whether a trace reached a value already in
+// this collection
+struct Visits is RegionRef {
+  pub count usize;
+  pub seen u32;
+  fn alloc(size usize) *u8 inline { malloc(size); }
+  fn init(self &new) { *self = new Visits(1usize, 0u32); }
+  fn aliasRef(self &uni Visits) { count = count + 1usize; }
+  fn dealiasRef(self &uni Visits) bool { count = count - 1usize; count == 0usize; }
+  fn visit(self &uni Visits, mode u32) bool { seen = mode; true; }
+}
+
+struct VisitNoMode is RegionRef {
+  fn alloc(size usize) *u8 inline { malloc(size); }
+  fn visit(self &uni VisitNoMode) bool { true; }   //~ ErrorRegionMeth "visit must be declared"
+}
+
+struct VisitReturnsNothing is RegionRef {
+  fn alloc(size usize) *u8 inline { malloc(size); }
+  fn visit(self &uni VisitReturnsNothing, mode u32) { }   //~ ErrorRegionMeth "visit must be declared"
+}
+
 fn main() {
   imm a = new ShortMark[mut, Leaf](1i32);
   imm b = new LongMark[mut, Leaf](2i32);
   imm e = new Barriered[mut, Leaf](5i32);
   imm c = new Counted[mut, Leaf](3i32);
   imm d = new UntracedMark[mut, Leaf](4i32);
+  imm v = new Visits[mut, Leaf](6i32);
 }
