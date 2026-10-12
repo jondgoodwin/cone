@@ -9,6 +9,15 @@ fn @initpure init() {
   messageCount = Atomic[u32].of(0u32);
 }
 
+// The functions Vulkan gave an instance, and a device: found once for each,
+// and shared by everything made from it, which keeps them alive
+alias InstFns = Arc[imm, vulkan.InstanceFns];
+alias DevFns = Arc[imm, vulkan.DeviceFns];
+
+// Tables with nothing found, for the objects that are not valid
+fn noInstFns() InstFns { new Arc[imm, vulkan.InstanceFns](new vulkan.InstanceFns()); }
+fn noDevFns() DevFns { new Arc[imm, vulkan.DeviceFns](new vulkan.DeviceFns()); }
+
 // How many Vulkan calls have failed
 pub fn failures() u32 { failureCount.load(); }
 
@@ -123,9 +132,9 @@ fn hasInstanceExtension(layer *u8, name cstr) bool {
 }
 
 // Whether 'physical' offers the device extension 'name'
-fn hasDeviceExtension(physical vulkan.PhysicalDevice, name cstr) bool {
+fn hasDeviceExtension(ifns &InstFns, physical vulkan.PhysicalDevice, name cstr) bool {
   mut n = 0u32;
-  if vulkan.enumerateDeviceExtensionProperties(physical, nullp(), &mut n, null)
+  if ifns.enumerateDeviceExtensionProperties(physical, nullp(), &mut n, null)
       != vulkan.SUCCESS {
     return false;
   }
@@ -133,7 +142,7 @@ fn hasDeviceExtension(physical vulkan.PhysicalDevice, name cstr) bool {
   mut props = List[vulkan.ExtensionProperties].empty();
   props.resize(usize.from(n), zeroed[vulkan.ExtensionProperties]());
   mut written = n;
-  vulkan.enumerateDeviceExtensionProperties(physical, nullp(), &mut written, props.viewMut() as *vulkan.ExtensionProperties);
+  ifns.enumerateDeviceExtensionProperties(physical, nullp(), &mut written, props.viewMut() as *vulkan.ExtensionProperties);
   props.truncate(usize.from(written));
   mut found = false;
   mut i = 0usize;

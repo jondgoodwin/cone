@@ -1,7 +1,8 @@
-// The vulkan package against the real Vulkan loader, with no window: SDL
-// loads vulkan-1.dll and hands out vkGetInstanceProcAddr, 'load' finds the
-// global functions through it, an instance is made with the extensions a
-// surface needs, 'loadInstance' finds that instance's functions, and the
+// The vulkan package against the real Vulkan loader, with no window: the
+// package's own 'init' has opened vulkan-1.dll and found the global
+// functions ('available'), SDL (which loads its own copy of the library, the
+// OS counting both) names the extensions a surface needs, an instance is
+// made with them, 'InstanceFns.load' finds that instance's functions, and the
 // physical devices are counted and destroyed with the instance. Only a
 // failure prints, and nothing printed depends on which GPU is present.
 //
@@ -18,8 +19,7 @@ import vulkan;
 fn main() i32 {
   require(sdl.Init(sdl.INIT_VIDEO), "SDL's video starts");
   require(sdl.Vulkan_LoadLibrary(null), "SDL finds the Vulkan loader");
-  imm gipa = sdl.Vulkan_GetVkGetInstanceProcAddr() as vulkan.PFN_GetInstanceProcAddr;
-  require(vulkan.load(gipa), "the global functions are found");
+  require(vulkan.available(), "the package's init found the Vulkan loader and its global functions");
 
   mut version = 0u32;
   expectInt(i64.from(vulkan.enumerateInstanceVersion(&mut version)), i64.from(vulkan.SUCCESS), "the loader's version");
@@ -37,16 +37,16 @@ fn main() i32 {
   mut instance = 0usize as vulkan.Instance;
   imm res = vulkan.createInstance(&ci, null, &mut instance);
   requireStr(vulkan.resultName(res), "SUCCESS", "vkCreateInstance");
-  expectBool(vulkan.loadInstance(instance), true, "the instance's functions are found");
-  expectInt(i64.from(vulkan.missing()), 0, "none missing");
-  expectBool(vulkan.hasDebugUtils(), false, "no debug messenger without VK_EXT_debug_utils");
+  imm fns = vulkan.InstanceFns.load(instance);
+  expectInt(i64.from(fns.missing), 0, "the instance's functions are found");
+  expectBool(fns.hasDebugUtils(), false, "no debug messenger without VK_EXT_debug_utils");
 
   mut ndev = 0u32;
-  expectInt(i64.from(vulkan.enumeratePhysicalDevices(instance, &mut ndev, null)),
+  expectInt(i64.from(fns.enumeratePhysicalDevices(instance, &mut ndev, null)),
     i64.from(vulkan.SUCCESS), "counting the physical devices");
   expect(ndev >= 1u32, "at least one physical device");
 
-  vulkan.destroyInstance(instance, null);
+  fns.destroyInstance(instance, null);
   sdl.Vulkan_UnloadLibrary();
   sdl.Quit();
   done();

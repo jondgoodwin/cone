@@ -4,6 +4,7 @@ struct InstanceBackend {
   handle vulkan.Instance;
   messenger vulkan.DebugUtilsMessengerEXT;
   loaded bool;             // SDL loaded the Vulkan loader for it
+  fns InstFns;             // the instance's functions, found when it was made
 }
 
 // The entry point: Vulkan loaded, an instance made with what a window's
@@ -14,25 +15,27 @@ pub struct Instance {
   pub syncValidation bool;     // and its synchronization validation
   pub debugMessages bool;      // the loader's and layers' warnings and errors are reported
 
-  // Load Vulkan (through SDL: no window is needed yet) and make an instance
-  // for 'appName'. Check 'isValid': without a Vulkan 1.3 loader it is not,
-  // and why has gone to stderr.
+  // Make an instance for 'appName'. The vulkan package found the Vulkan
+  // loader when the program started; SDL loads its own copy (the OS counts
+  // both) to name the surface extensions and make surfaces. Check
+  // 'isValid': without a Vulkan 1.3 loader it is not, and why has gone to
+  // stderr.
   pub fn create(appName &str) Instance {
-    mut result = new Instance(new InstanceBackend(0usize as vulkan.Instance, new vulkan.DebugUtilsMessengerEXT(0u64), false),
-      false, false, false);
+    mut result = new Instance(new InstanceBackend(0usize as vulkan.Instance, new vulkan.DebugUtilsMessengerEXT(0u64), false,
+      noInstFns()), false, false, false);
+    if !vulkan.available() {
+      fail("no Vulkan loader (vulkan-1.dll) was found, or it lacks its global functions");
+      return result;
+    }
     if !sdl.InitSubSystem(sdl.INIT_VIDEO) {
       fail("SDL's video subsystem did not start");
       return result;
     }
     if !sdl.Vulkan_LoadLibrary(nullp()) {
-      fail("no Vulkan loader (vulkan-1.dll) was found");
+      fail("SDL could not load the Vulkan loader");
       return result;
     }
     result.backend.loaded = true;
-    if !vulkan.load(sdl.Vulkan_GetVkGetInstanceProcAddr() as vulkan.PFN_GetInstanceProcAddr) {
-      fail("the Vulkan loader lacks its global functions");
-      return result;
-    }
     mut version = 0u32;
     if !check(vulkan.enumerateInstanceVersion(&mut version), "vkEnumerateInstanceVersion") { return result; }
     if version < vulkan.API_VERSION_1_3 {
@@ -103,13 +106,15 @@ pub struct Instance {
     mut handle = 0usize as vulkan.Instance;
     if !check(vulkan.createInstance(&ci, nullp(), &mut handle), "vkCreateInstance") { return result; }
     result.backend.handle = handle;
-    if !vulkan.loadInstance(handle) {
+    result.backend.fns = new Arc[imm, vulkan.InstanceFns](vulkan.InstanceFns.load(handle));
+    imm ifns = result.backend.fns;
+    if ifns.missing != 0u32 {
       fail("the Vulkan instance lacks some of its functions");
       return result;
     }
-    if result.debugMessages and vulkan.hasDebugUtils() {
+    if result.debugMessages and ifns.hasDebugUtils() {
       mut messenger = new vulkan.DebugUtilsMessengerEXT(0u64);
-      if check(vulkan.createDebugUtilsMessengerEXT(handle, &dbg, nullp(), &mut messenger), "vkCreateDebugUtilsMessengerEXT") {
+      if check(ifns.createDebugUtilsMessengerEXT(handle, &dbg, nullp(), &mut messenger), "vkCreateDebugUtilsMessengerEXT") {
         result.backend.messenger = messenger;
       }
     }
@@ -128,7 +133,7 @@ pub struct Instance {
         fail("SDL could not make a Vulkan surface of the window");
       }
     }
-    new Surface(new SurfaceBackend(backend.handle, surface));
+    new Surface(new SurfaceBackend(backend.handle, surface, backend.fns));
   }
 
   // The GPU to draw to 'surface' with: one supporting Vulkan 1.3, dynamic
@@ -145,16 +150,16 @@ pub struct Instance {
     if self.isValid() {
       // How many devices, asked first; every one is considered
       mut n = 0u32;
-      imm counted = check(vulkan.enumeratePhysicalDevices(backend.handle, &mut n, null), "vkEnumeratePhysicalDevices");
+      imm counted = check(backend.fns.enumeratePhysicalDevices(backend.handle, &mut n, null), "vkEnumeratePhysicalDevices");
       mut devices = List[vulkan.PhysicalDevice].empty();
       devices.resize(usize.from(n), 0usize as vulkan.PhysicalDevice);
-      if counted and check(vulkan.enumeratePhysicalDevices(backend.handle, &mut n, devices.viewMut() as *vulkan.PhysicalDevice),
+      if counted and check(backend.fns.enumeratePhysicalDevices(backend.handle, &mut n, devices.viewMut() as *vulkan.PhysicalDevice),
           "vkEnumeratePhysicalDevices") {
         devices.truncate(usize.from(n));
         mut i = 0usize;
         while i < devices.len() {
           mut family = 0u32;
-          imm score = adapterScore(*devices[i], surface.backend.surface, powerPreference, &mut family);
+          imm score = adapterScore(&backend.fns, *devices[i], surface.backend.surface, powerPreference, &mut family);
           if score > chosenScore {
             chosen = *devices[i];
             chosenFamily = family;
@@ -166,10 +171,10 @@ pub struct Instance {
     }
     if chosenScore == 0 {
       fail("no GPU supports Vulkan 1.3 with dynamic rendering and synchronization2 (and presents to the surface)");
-      return new Adapter(new AdapterBackend(chosen, 0u32), String.from(""), ADAPTER_TYPE_UNKNOWN, String.from(""), 0u32, 0u32);
+      return new Adapter(new AdapterBackend(chosen, 0u32, backend.fns), String.from(""), ADAPTER_TYPE_UNKNOWN, String.from(""), 0u32, 0u32);
     }
     mut props = zeroed[vulkan.PhysicalDeviceProperties]();
-    vulkan.getPhysicalDeviceProperties(chosen, &mut props);
+    backend.fns.getPhysicalDeviceProperties(chosen, &mut props);
     mut name = String.empty();
     appendCStr(&mut name, &mut props.deviceName as *u8);
     mut version = String.empty();
@@ -182,14 +187,14 @@ pub struct Instance {
     if props.deviceType == vulkan.PHYSICAL_DEVICE_TYPE_DISCRETE_GPU { kind = ADAPTER_TYPE_DISCRETE_GPU; }
     if props.deviceType == vulkan.PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU { kind = ADAPTER_TYPE_INTEGRATED_GPU; }
     if props.deviceType == vulkan.PHYSICAL_DEVICE_TYPE_CPU { kind = ADAPTER_TYPE_CPU; }
-    new Adapter(new AdapterBackend(chosen, chosenFamily), name, kind, version, props.vendorID, props.deviceID);
+    new Adapter(new AdapterBackend(chosen, chosenFamily, backend.fns), name, kind, version, props.vendorID, props.deviceID);
   }
 
   // Its end, after every object made from it
   fn final(self &uni) {
     if self.isValid() {
-      if backend.messenger.h != 0u64 { vulkan.destroyDebugUtilsMessengerEXT(backend.handle, backend.messenger, nullp()); }
-      vulkan.destroyInstance(backend.handle, nullp());
+      if backend.messenger.h != 0u64 { backend.fns.destroyDebugUtilsMessengerEXT(backend.handle, backend.messenger, nullp()); }
+      backend.fns.destroyInstance(backend.handle, nullp());
     }
     if backend.loaded { sdl.Vulkan_UnloadLibrary(); }
     sdl.QuitSubSystem(sdl.INIT_VIDEO);
@@ -199,7 +204,7 @@ pub struct Instance {
 // How well 'physical' suits: 0 if it cannot be used, else higher for the
 // kind of GPU 'powerPreference' prefers; 'family' gets the queue family that
 // draws and presents
-fn adapterScore(physical vulkan.PhysicalDevice, surface vulkan.SurfaceKHR, powerPreference u32, family &mut u32) i32 {
+fn adapterScore(ifns &InstFns, physical vulkan.PhysicalDevice, surface vulkan.SurfaceKHR, powerPreference u32, family &mut u32) i32 {
   mut discrete = 3;
   mut integrated = 2;
   if powerPreference == POWER_PREFERENCE_LOW_POWER {
@@ -207,26 +212,26 @@ fn adapterScore(physical vulkan.PhysicalDevice, surface vulkan.SurfaceKHR, power
     integrated = 3;
   }
   mut props = zeroed[vulkan.PhysicalDeviceProperties]();
-  vulkan.getPhysicalDeviceProperties(physical, &mut props);
+  ifns.getPhysicalDeviceProperties(physical, &mut props);
   if props.apiVersion < vulkan.API_VERSION_1_3 { return 0; }
-  if !hasDeviceExtension(physical, "VK_KHR_swapchain") { return 0; }
+  if !hasDeviceExtension(ifns, physical, "VK_KHR_swapchain") { return 0; }
 
   mut f13 = new vulkan.PhysicalDeviceVulkan13Features();
   mut f2 = new vulkan.PhysicalDeviceFeatures2(pNext: &mut f13 as *u8, features: zeroed[vulkan.PhysicalDeviceFeatures]());
-  vulkan.getPhysicalDeviceFeatures2(physical, &mut f2);
+  ifns.getPhysicalDeviceFeatures2(physical, &mut f2);
   if f13.dynamicRendering != vulkan.TRUE or f13.synchronization2 != vulkan.TRUE { return 0; }
 
   // How many families, asked first, then all of them
   mut n = 0u32;
-  vulkan.getPhysicalDeviceQueueFamilyProperties(physical, &mut n, null);
+  ifns.getPhysicalDeviceQueueFamilyProperties(physical, &mut n, null);
   mut families = List[vulkan.QueueFamilyProperties].empty();
   families.resize(usize.from(n), zeroed[vulkan.QueueFamilyProperties]());
-  vulkan.getPhysicalDeviceQueueFamilyProperties(physical, &mut n, families.viewMut() as *vulkan.QueueFamilyProperties);
+  ifns.getPhysicalDeviceQueueFamilyProperties(physical, &mut n, families.viewMut() as *vulkan.QueueFamilyProperties);
   families.truncate(usize.from(n));
   mut i = 0u32;
   while i < n {
     mut presents = vulkan.TRUE;       // with no surface, any queue family that draws
-    if surface.h != 0u64 { vulkan.getPhysicalDeviceSurfaceSupportKHR(physical, i, surface, &mut presents); }
+    if surface.h != 0u64 { ifns.getPhysicalDeviceSurfaceSupportKHR(physical, i, surface, &mut presents); }
     if (families[usize.from(i)].queueFlags & vulkan.QUEUE_GRAPHICS_BIT) != 0u32 and presents == vulkan.TRUE {
       *family = i;
       if props.deviceType == vulkan.PHYSICAL_DEVICE_TYPE_DISCRETE_GPU { return discrete; }
@@ -243,6 +248,7 @@ fn adapterScore(physical vulkan.PhysicalDevice, surface vulkan.SurfaceKHR, power
 struct SurfaceBackend {
   instance vulkan.Instance;
   surface vulkan.SurfaceKHR;
+  fns InstFns;                 // its instance's functions
 }
 
 // A window's surface, which a SwapChain presents to
@@ -253,10 +259,10 @@ pub struct Surface {
 
   // No surface: for 'requestAdapter' when nothing is to be presented
   // (WebGPU's compatibleSurface left out)
-  pub fn none() Surface { new Surface(new SurfaceBackend(0usize as vulkan.Instance, new vulkan.SurfaceKHR(0u64))); }
+  pub fn none() Surface { new Surface(new SurfaceBackend(0usize as vulkan.Instance, new vulkan.SurfaceKHR(0u64), noInstFns())); }
 
   fn final(self &uni) {
-    if self.isValid() { vulkan.destroySurfaceKHR(backend.instance, backend.surface, nullp()); }
+    if self.isValid() { backend.fns.destroySurfaceKHR(backend.instance, backend.surface, nullp()); }
   }
 }
 
@@ -265,6 +271,7 @@ pub struct Surface {
 struct AdapterBackend {
   physical vulkan.PhysicalDevice;
   queueFamily u32;
+  fns InstFns;                 // its instance's functions
 }
 
 // A GPU, and what it is
@@ -284,8 +291,8 @@ pub struct Adapter {
   // A device on this GPU, with one queue that draws and presents. Check
   // 'isValid'.
   pub fn requestDevice(self &) Device {
-    mut result = new Device(new DeviceBackend(0usize as vulkan.Device, backend.physical, backend.queueFamily),
-      new CommandQueue(zeroed[QueueBackend]()), 0u64);
+    mut result = new Device(new DeviceBackend(0usize as vulkan.Device, noDevFns(), backend.fns, backend.physical, backend.queueFamily),
+      new CommandQueue(zeroed[QueueBackend](), noDevFns()), 0u64);
     if !self.isValid() { return result; }
 
     imm priorities Array[f32, 1] = [1.];
@@ -298,9 +305,9 @@ pub struct Adapter {
     // where the GPU has it (every desktop one does), else samplers filter
     // trilinearly only ('Device.maxAnisotropy' is 0)
     mut props = zeroed[vulkan.PhysicalDeviceProperties]();
-    vulkan.getPhysicalDeviceProperties(backend.physical, &mut props);
+    backend.fns.getPhysicalDeviceProperties(backend.physical, &mut props);
     mut available = new vulkan.PhysicalDeviceFeatures2(pNext: null, features: zeroed[vulkan.PhysicalDeviceFeatures]());
-    vulkan.getPhysicalDeviceFeatures2(backend.physical, &mut available);
+    backend.fns.getPhysicalDeviceFeatures2(backend.physical, &mut available);
     mut enabled = zeroed[vulkan.PhysicalDeviceFeatures]();
     if available.features.raw[vulkan.FEATURE_SAMPLER_ANISOTROPY] == vulkan.TRUE and props.limits.maxSamplerAnisotropy >= 1. {
       enabled.raw[vulkan.FEATURE_SAMPLER_ANISOTROPY] = vulkan.TRUE;
@@ -311,24 +318,27 @@ pub struct Adapter {
       enabledExtensionCount: 1u32, ppEnabledExtensionNames: &exts as **u8,
       pEnabledFeatures: &enabled as *vulkan.PhysicalDeviceFeatures);
     mut device = 0usize as vulkan.Device;
-    if !check(vulkan.createDevice(backend.physical, &dci, nullp(), &mut device), "vkCreateDevice") { return result; }
+    if !check(backend.fns.createDevice(backend.physical, &dci, nullp(), &mut device), "vkCreateDevice") { return result; }
     result.backend.device = device;
-    if !vulkan.loadDevice(device) {
+    result.backend.fns = new Arc[imm, vulkan.DeviceFns](vulkan.DeviceFns.load(&*backend.fns, device));
+    result.queue.fns = result.backend.fns;
+    imm fns = result.backend.fns;
+    if fns.missing != 0u32 {
       fail("the Vulkan device lacks some of its functions");
       return result;
     }
     mut queue = 0usize as vulkan.Queue;
-    vulkan.getDeviceQueue(device, backend.queueFamily, 0u32, &mut queue);
+    fns.getDeviceQueue(device, backend.queueFamily, 0u32, &mut queue);
     result.queue.backend.handle = queue;
     result.queue.backend.device = device;
-    vulkan.getPhysicalDeviceMemoryProperties(backend.physical, &mut result.queue.backend.memory);
+    backend.fns.getPhysicalDeviceMemoryProperties(backend.physical, &mut result.queue.backend.memory);
 
     // Timestamps, if the queue keeps time: a tick's length
     mut n = 0u32;
-    vulkan.getPhysicalDeviceQueueFamilyProperties(backend.physical, &mut n, null);
+    backend.fns.getPhysicalDeviceQueueFamilyProperties(backend.physical, &mut n, null);
     mut families = List[vulkan.QueueFamilyProperties].empty();
     families.resize(usize.from(n), zeroed[vulkan.QueueFamilyProperties]());
-    vulkan.getPhysicalDeviceQueueFamilyProperties(backend.physical, &mut n, families.viewMut() as *vulkan.QueueFamilyProperties);
+    backend.fns.getPhysicalDeviceQueueFamilyProperties(backend.physical, &mut n, families.viewMut() as *vulkan.QueueFamilyProperties);
     families.truncate(usize.from(n));
     if backend.queueFamily < n and families[usize.from(backend.queueFamily)].timestampValidBits > 0u32 {
       result.timestampPeriod = props.limits.timestampPeriod;
@@ -341,10 +351,10 @@ pub struct Adapter {
     mut i = 0usize;
     while i < 2usize {
       mut fence = new vulkan.Fence(0u64);
-      check(vulkan.createFence(device, &fci, nullp(), &mut fence), "vkCreateFence");
+      check(fns.createFence(device, &fci, nullp(), &mut fence), "vkCreateFence");
       result.queue.backend.frames[i].fence = fence;
       mut pool = new vulkan.CommandPool(0u64);
-      check(vulkan.createCommandPool(device, &pci, nullp(), &mut pool), "vkCreateCommandPool");
+      check(fns.createCommandPool(device, &pci, nullp(), &mut pool), "vkCreateCommandPool");
       result.queue.backend.frames[i].pool = pool;
       i = i + 1usize;
     }

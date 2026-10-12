@@ -1,17 +1,19 @@
-// The vulkan package's loader, without Vulkan: 'load' is handed a stand-in for
-// vkGetInstanceProcAddr, which counts the names it is asked for. The stand-in
-// answers "vkGetDeviceProcAddr" with a second stand-in, so that 'loadDevice'
-// looks its functions up through what 'loadInstance' found, as with a real
-// driver. No function found is called. Only a failure prints.
+// The vulkan package's loader, without Vulkan: the tables are built from a
+// stand-in for vkGetInstanceProcAddr, which counts the names it is asked for.
+// The stand-in answers "vkGetDeviceProcAddr" with a second stand-in, so that
+// a device's table is found through what its instance's table found, as with
+// a real driver. No function found is called. Only a failure prints. (The
+// OS's own loader is the module's 'init', which 'runtime' tests.)
 //
-// - Before any load, nothing is loaded.
-// - A lookup finding nothing: 'load' answers false, and all 4 of its
-//   functions are missing.
-// - A lookup finding everything: 'load' asks for its 4 functions, each once,
-//   'loadInstance' for its 16 (2 of them the debug messenger's, optional),
-//   'loadDevice' for its 78, each once, and each answers true.
-// - An instance without debug utils: 'loadInstance' still answers true, and
-//   'hasDebugUtils' false.
+// - A lookup finding nothing: the global table has all 4 functions missing.
+// - A null lookup (no loader): nothing found, nothing counted missing.
+// - A lookup finding everything: the global table asks for its 4 functions,
+//   an instance's table for its 16 (2 of them the debug messenger's,
+//   optional), a device's for its 78, each once, and none is missing.
+// - An instance finding nothing misses its 14 required functions; tables are
+//   per instance and per device.
+// - An instance without debug utils: its table still has no function missing,
+//   and 'hasDebugUtils' is false.
 // - Every name asked for is a C name, beginning "vk".
 
 mod loader;
@@ -51,34 +53,44 @@ fn @c findEverything(instance vulkan.Instance, name *u8) *u8 {
 }
 
 fn main() i32 {
-  expectBool(vulkan.loaded(), false, "nothing loaded at first");
-
-  expectBool(vulkan.load(&findNothing), false, "a lookup that finds nothing");
-  expectInt(i64.from(vulkan.missing()), 4, "all four global functions missing");
+  imm nothing = vulkan.GlobalFns.find(&findNothing);
+  expectInt(i64.from(nothing.missing), 4, "all four global functions missing");
   expectInt(i64.from(asked), 4, "each global function asked for once");
 
   asked = 0;
-  expectBool(vulkan.load(&findEverything), true, "a lookup that finds everything");
-  expectBool(vulkan.loaded(), true, "loaded");
-  expectInt(i64.from(vulkan.missing()), 0, "no global function missing");
+  imm everything = vulkan.GlobalFns.find(&findEverything);
+  expectInt(i64.from(everything.missing), 0, "no global function missing");
   expectInt(i64.from(asked), 4, "the global functions asked for once again");
+
+  // No loader at all: a null vkGetInstanceProcAddr finds nothing and fails nothing
+  asked = 0;
+  imm absent = vulkan.GlobalFns.find(0usize as *u8 as vulkan.PFN_GetInstanceProcAddr);
+  expectInt(i64.from(absent.missing), 0, "no loader: nothing counted missing");
+  expectInt(i64.from(asked), 0, "and nothing asked");
 
   imm instance = 0x1000usize as vulkan.Instance;
   asked = 0;
-  expectBool(vulkan.loadInstance(instance), true, "every instance function found");
+  imm instanceFns = vulkan.InstanceFns.loadWith(&findEverything, instance);
+  expectInt(i64.from(instanceFns.missing), 0, "every instance function found");
   expectInt(i64.from(asked), 16, "each instance function asked for once");
-  expectBool(vulkan.hasDebugUtils(), true, "the debug messenger's functions found");
+  expectBool(instanceFns.hasDebugUtils(), true, "the debug messenger's functions found");
 
   imm device = 0x2000usize as vulkan.Device;
   asked = 0;
-  expectBool(vulkan.loadDevice(device), true, "every device function found");
+  imm deviceFns = vulkan.DeviceFns.load(&instanceFns, device);
+  expectInt(i64.from(deviceFns.missing), 0, "every device function found");
   expectInt(i64.from(asked), 78, "each device function asked for once");
-  expectInt(i64.from(vulkan.missing()), 0, "no device function missing");
+
+  // Another instance has a table of its own
+  imm lost = vulkan.InstanceFns.loadWith(&findNothing, instance);
+  expectInt(i64.from(lost.missing), 14, "an instance finding nothing: its 14 required functions missing");
+  expectBool(lost.hasDebugUtils(), false, "and no debug messenger");
+  expectBool(instanceFns.hasDebugUtils(), true, "the first instance's table is its own");
 
   noDebugUtils = true;
-  expectBool(vulkan.loadInstance(instance), true, "debug utils are optional");
-  expectBool(vulkan.hasDebugUtils(), false, "without debug utils");
-  expectInt(i64.from(vulkan.missing()), 0, "and not counted as missing");
+  imm plain = vulkan.InstanceFns.loadWith(&findEverything, instance);
+  expectInt(i64.from(plain.missing), 0, "debug utils are optional, and not counted as missing");
+  expectBool(plain.hasDebugUtils(), false, "without debug utils");
 
   expectInt(i64.from(badNames), 0, "every name begins vk");
   done();
