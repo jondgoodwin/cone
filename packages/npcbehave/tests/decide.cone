@@ -1,0 +1,343 @@
+// The three deciders. Behaviour trees are driven by scripted leaves: leaf i
+// answers the status in integer slot i of the blackboard (0 success, 1
+// failure, 2 running) and counts its calls in slot 16 + i, so a test sets what
+// each leaf says and then reads how often each was asked. The utility scores
+// and the state machine's enter and exit lists are worked out by hand.
+
+mod decide;
+import testing use *;
+import collections use List;
+import geomath use *;
+import npcbehave use *;
+
+fn scripted(id u32, bb &mut Blackboard) u32 {
+  imm slot = usize.from(id);
+  bb.setI(16usize + slot, bb.getI(16usize + slot) + 1);
+  u32.from(bb.getI(slot));
+}
+
+fn calls(bb &Blackboard, id usize) i64 { i64.from(bb.getI(16usize + id)); }
+
+fn say(bb &mut Blackboard, id usize, status u32) { bb.setI(id, i32.from(status)); }
+
+fn sequences() {
+  mut t = BehaviorTree.make();
+  mut bb = Blackboard.make();
+  imm a = t.leaf(0u32);
+  imm b = t.leaf(1u32);
+  imm c = t.leaf(2u32);
+  imm kids = new Array[u32, 3] <- a, b, c;
+  imm seq = t.sequence(&kids);
+  expectInt(i64.from(t.root), i64.from(seq), "the last node made is the root");
+  expectUInt(u64.from(t.tick(0.1, &mut bb, &scripted)), u64.from(SUCCESS), "sequence of three successes succeeds");
+  expectInt(calls(&bb, 0usize) + calls(&bb, 1usize) + calls(&bb, 2usize), 3i64, "each child ticked once");
+
+  // B runs for two ticks: the sequence resumes at B, A is not asked again
+  say(&mut bb, 1usize, RUNNING);
+  expectUInt(u64.from(t.tick(0.1, &mut bb, &scripted)), u64.from(RUNNING), "sequence is running when a child is");
+  expectInt(calls(&bb, 0usize), 2i64, "A ticked on the tick B started");
+  expectInt(calls(&bb, 1usize), 2i64, "B ticked");
+  expectInt(calls(&bb, 2usize), 1i64, "C not reached");
+  t.tick(0.1, &mut bb, &scripted);
+  expectInt(calls(&bb, 0usize), 2i64, "running B resumed without asking A again");
+  expectInt(calls(&bb, 1usize), 3i64, "B ticked again");
+  say(&mut bb, 1usize, SUCCESS);
+  expectUInt(u64.from(t.tick(0.1, &mut bb, &scripted)), u64.from(SUCCESS), "sequence succeeds when B finally does");
+  expectInt(calls(&bb, 0usize), 2i64, "A still not asked");
+  expectInt(calls(&bb, 2usize), 2i64, "C reached after B");
+  // The next tick starts again at A
+  t.tick(0.1, &mut bb, &scripted);
+  expectInt(calls(&bb, 0usize), 3i64, "after finishing, the sequence starts over at A");
+
+  // A failure stops the sequence at once
+  say(&mut bb, 1usize, FAILURE);
+  expectUInt(u64.from(t.tick(0.1, &mut bb, &scripted)), u64.from(FAILURE), "sequence fails at its first failure");
+  expectInt(calls(&bb, 2usize), 3i64, "C not asked after B failed");
+}
+
+fn selectors() {
+  mut t = BehaviorTree.make();
+  mut bb = Blackboard.make();
+  imm a = t.leaf(0u32);
+  imm b = t.leaf(1u32);
+  imm c = t.leaf(2u32);
+  imm kids = new Array[u32, 3] <- a, b, c;
+  t.selector(&kids);
+  say(&mut bb, 0usize, FAILURE);
+  say(&mut bb, 1usize, SUCCESS);
+  expectUInt(u64.from(t.tick(0.1, &mut bb, &scripted)), u64.from(SUCCESS), "selector succeeds at the first success");
+  expectInt(calls(&bb, 2usize), 0i64, "later children not asked");
+  say(&mut bb, 1usize, RUNNING);
+  expectUInt(u64.from(t.tick(0.1, &mut bb, &scripted)), u64.from(RUNNING), "selector is running when a child is");
+  t.tick(0.1, &mut bb, &scripted);
+  expectInt(calls(&bb, 0usize), 2i64, "running B resumed: A (which fails) not asked again");
+  say(&mut bb, 1usize, FAILURE);
+  say(&mut bb, 2usize, FAILURE);
+  expectUInt(u64.from(t.tick(0.1, &mut bb, &scripted)), u64.from(FAILURE), "selector fails when all fail");
+}
+
+fn reactives() {
+  // reactiveSequence(condition, action): the condition is re-checked while the action runs
+  mut t = BehaviorTree.make();
+  mut bb = Blackboard.make();
+  imm cond = t.leaf(0u32);
+  imm act = t.leaf(1u32);
+  imm kids = new Array[u32, 2] <- cond, act;
+  t.reactiveSequence(&kids);
+  say(&mut bb, 1usize, RUNNING);
+  t.tick(0.1, &mut bb, &scripted);
+  t.tick(0.1, &mut bb, &scripted);
+  t.tick(0.1, &mut bb, &scripted);
+  expectInt(calls(&bb, 0usize), 3i64, "reactive sequence re-checks its condition every tick");
+  say(&mut bb, 0usize, FAILURE);
+  expectUInt(u64.from(t.tick(0.1, &mut bb, &scripted)), u64.from(FAILURE), "and fails when the condition does");
+  expectInt(calls(&bb, 1usize), 3i64, "without ticking the action");
+
+  // reactiveSelector(urgent, routine): urgent pre-empts a running routine
+  mut t2 = BehaviorTree.make();
+  mut bb2 = Blackboard.make();
+  imm urgent = t2.leaf(0u32);
+  imm routine = t2.leaf(1u32);
+  imm kids2 = new Array[u32, 2] <- urgent, routine;
+  t2.reactiveSelector(&kids2);
+  say(&mut bb2, 0usize, FAILURE);
+  say(&mut bb2, 1usize, RUNNING);
+  expectUInt(u64.from(t2.tick(0.1, &mut bb2, &scripted)), u64.from(RUNNING), "routine runs while nothing is urgent");
+  say(&mut bb2, 0usize, SUCCESS);
+  expectUInt(u64.from(t2.tick(0.1, &mut bb2, &scripted)), u64.from(SUCCESS), "the urgent branch pre-empts");
+  expectInt(calls(&bb2, 1usize), 1i64, "the routine was not ticked that tick");
+}
+
+fn parallels() {
+  mut t = BehaviorTree.make();
+  mut bb = Blackboard.make();
+  imm a = t.leaf(0u32);
+  imm b = t.leaf(1u32);
+  imm kids = new Array[u32, 2] <- a, b;
+  t.parallel(&kids, true);
+  say(&mut bb, 0usize, RUNNING);
+  say(&mut bb, 1usize, SUCCESS);
+  expectUInt(u64.from(t.tick(0.1, &mut bb, &scripted)), u64.from(RUNNING), "parallel-all runs while one child does");
+  say(&mut bb, 0usize, SUCCESS);
+  expectUInt(u64.from(t.tick(0.1, &mut bb, &scripted)), u64.from(SUCCESS), "and succeeds when all have");
+  expectInt(calls(&bb, 1usize), 1i64, "a child that finished is not ticked again");
+  say(&mut bb, 0usize, FAILURE);
+  expectUInt(u64.from(t.tick(0.1, &mut bb, &scripted)), u64.from(FAILURE), "parallel-all fails at the first failure");
+
+  mut t2 = BehaviorTree.make();
+  mut bb2 = Blackboard.make();
+  imm a2 = t2.leaf(0u32);
+  imm b2 = t2.leaf(1u32);
+  imm kids2 = new Array[u32, 2] <- a2, b2;
+  t2.parallel(&kids2, false);
+  say(&mut bb2, 0usize, FAILURE);
+  say(&mut bb2, 1usize, RUNNING);
+  expectUInt(u64.from(t2.tick(0.1, &mut bb2, &scripted)), u64.from(RUNNING), "parallel-one waits while one may still succeed");
+  say(&mut bb2, 1usize, SUCCESS);
+  expectUInt(u64.from(t2.tick(0.1, &mut bb2, &scripted)), u64.from(SUCCESS), "and succeeds at the first success");
+  say(&mut bb2, 1usize, FAILURE);
+  expectUInt(u64.from(t2.tick(0.1, &mut bb2, &scripted)), u64.from(FAILURE), "and fails when all have failed");
+}
+
+fn decorators() {
+  mut t = BehaviorTree.make();
+  mut bb = Blackboard.make();
+  imm a = t.leaf(0u32);
+  t.inverter(a);
+  say(&mut bb, 0usize, SUCCESS);
+  expectUInt(u64.from(t.tick(0.1, &mut bb, &scripted)), u64.from(FAILURE), "inverter: success becomes failure");
+  say(&mut bb, 0usize, FAILURE);
+  expectUInt(u64.from(t.tick(0.1, &mut bb, &scripted)), u64.from(SUCCESS), "inverter: failure becomes success");
+  say(&mut bb, 0usize, RUNNING);
+  expectUInt(u64.from(t.tick(0.1, &mut bb, &scripted)), u64.from(RUNNING), "inverter: running stays");
+
+  mut t2 = BehaviorTree.make();
+  mut bb2 = Blackboard.make();
+  imm a2 = t2.leaf(0u32);
+  t2.succeeder(a2);
+  say(&mut bb2, 0usize, FAILURE);
+  expectUInt(u64.from(t2.tick(0.1, &mut bb2, &scripted)), u64.from(SUCCESS), "succeeder: failure is success");
+
+  // repeat 3 times: two RUNNING ticks, then SUCCESS on the third run
+  mut t3 = BehaviorTree.make();
+  mut bb3 = Blackboard.make();
+  imm a3 = t3.leaf(0u32);
+  t3.repeat(a3, 3u32);
+  expectUInt(u64.from(t3.tick(0.1, &mut bb3, &scripted)), u64.from(RUNNING), "repeat: after run 1");
+  expectUInt(u64.from(t3.tick(0.1, &mut bb3, &scripted)), u64.from(RUNNING), "repeat: after run 2");
+  expectUInt(u64.from(t3.tick(0.1, &mut bb3, &scripted)), u64.from(SUCCESS), "repeat: succeeds after run 3");
+  expectInt(calls(&bb3, 0usize), 3i64, "repeat ran the child three times");
+  expectUInt(u64.from(t3.tick(0.1, &mut bb3, &scripted)), u64.from(RUNNING), "repeat counts again from 0");
+  say(&mut bb3, 0usize, FAILURE);
+  expectUInt(u64.from(t3.tick(0.1, &mut bb3, &scripted)), u64.from(FAILURE), "repeat: a failure ends it");
+
+  // cooldown 1 s, ticked every 0.25 s (exact in binary): the child runs on the
+  // first tick (t = 0.25) and is ready again at 1.25
+  mut t4 = BehaviorTree.make();
+  mut bb4 = Blackboard.make();
+  imm a4 = t4.leaf(0u32);
+  t4.cooldown(a4, 1.);
+  expectUInt(u64.from(t4.tick(0.25, &mut bb4, &scripted)), u64.from(SUCCESS), "cooldown: the first run");
+  mut blocked = 0;
+  mut i = 0;
+  while i < 3 {
+    if t4.tick(0.25, &mut bb4, &scripted) == FAILURE { blocked = blocked + 1; }
+    i = i + 1;
+  }
+  expectInt(i64.from(blocked), 3i64, "cooldown: fails at 0.5, 0.75 and 1.0");
+  expectInt(calls(&bb4, 0usize), 1i64, "cooldown: the child was not asked meanwhile");
+  expectUInt(u64.from(t4.tick(0.25, &mut bb4, &scripted)), u64.from(SUCCESS), "cooldown: runs again at 1.25");
+  expectInt(calls(&bb4, 0usize), 2i64, "cooldown: the second run");
+
+  // timeout 1 s on a child that never finishes: started at 0.25, over at 1.5
+  mut t5 = BehaviorTree.make();
+  mut bb5 = Blackboard.make();
+  imm a5 = t5.leaf(0u32);
+  t5.timeout(a5, 1.);
+  say(&mut bb5, 0usize, RUNNING);
+  mut running = 0;
+  mut result = RUNNING;
+  while result == RUNNING {
+    result = t5.tick(0.25, &mut bb5, &scripted);
+    if result == RUNNING { running = running + 1; }
+  }
+  expectInt(i64.from(running), 5i64, "timeout: running at 0.25, 0.5, 0.75, 1.0 and 1.25");
+  expectUInt(u64.from(result), u64.from(FAILURE), "timeout: fails at 1.5");
+}
+
+// -------- utility --------
+
+fn utility() {
+  // slot 0 health (0 to 100), slot 1 distance to the enemy (0 to 50)
+  mut bb = Blackboard.make();
+  bb.setF(0usize, 20.);
+  bb.setF(1usize, 10.);
+  mut u = UtilitySelector.make(0.);
+  imm lowHealth = new Consideration(0usize, 0., 100., Curve.linear(-1., 1.));
+  imm heal = new Array[Consideration, 1] <- lowHealth;
+  imm healId = u.addAction(1., &heal);
+  imm enemyNear = new Consideration(1usize, 0., 50., Curve.linear(-1., 1.));
+  imm healthy = new Consideration(0usize, 0., 100., Curve.linear(1., 0.));
+  imm fight = new Array[Consideration, 2] <- enemyNear, healthy;
+  imm fightId = u.addAction(1., &fight);
+  expectUInt(u64.from(u.choose(&bb)), u64.from(healId), "health 20: heals");
+  // heal: 1 - 0.2 = 0.8. fight: 0.8 * 0.2 = 0.16, then 0.16 + 0.84 * 0.5 * 0.16 = 0.2272
+  expectFloat(u.score(healId), 0.8, 0.00001d, "heal score");
+  expectFloat(u.score(fightId), 0.2272, 0.00001d, "fight score with the compensation factor");
+  bb.setF(0usize, 90.);
+  expectUInt(u64.from(u.choose(&bb)), u64.from(fightId), "health 90: fights");
+  // heal 0.1; fight 0.8 * 0.9 = 0.72, then 0.72 + 0.28 * 0.5 * 0.72 = 0.8208
+  expectFloat(u.score(healId), 0.1, 0.00001d, "heal score at 90");
+  expectFloat(u.score(fightId), 0.8208, 0.00001d, "fight score at 90");
+
+  // The weight multiplies
+  mut w = UtilitySelector.make(0.);
+  imm lone = new Array[Consideration, 1] <- healthy;
+  w.addAction(0.5, &lone);
+  w.choose(&bb);
+  expectFloat(w.score(0u32), 0.45, 0.00001d, "a weight of 0.5 halves the score");
+
+  // Inertia: a 0.5 and a 0.52; the first is current and 0.1 of inertia keeps it
+  mut bb2 = Blackboard.make();
+  bb2.setF(0usize, 0.5);
+  bb2.setF(1usize, 0.52);
+  mut s = UtilitySelector.make(0.1);
+  imm c0 = new Consideration(0usize, 0., 1., Curve.linear(1., 0.));
+  imm c1 = new Consideration(1usize, 0., 1., Curve.linear(1., 0.));
+  imm x0 = new Array[Consideration, 1] <- c0;
+  imm x1 = new Array[Consideration, 1] <- c1;
+  s.addAction(1., &x0);
+  s.addAction(1., &x1);
+  expectUInt(u64.from(s.choose(&bb2)), 1u64, "first choice: the higher score");
+  bb2.setF(0usize, 0.55);
+  expectUInt(u64.from(s.choose(&bb2)), 1u64, "0.55 against 0.52: the current one is kept");
+  bb2.setF(0usize, 0.7);
+  expectUInt(u64.from(s.choose(&bb2)), 0u64, "0.7 against 0.52 + 0.1: switches");
+
+  expectFloat(Curve.polynomial(1., 2., 0., 0.).eval(0.5), 0.25, 0.00001d, "polynomial: x squared");
+  expectFloat(Curve.logistic(10., 1., 0., 0.5).eval(0.5), 0.5, 0.00001d, "logistic: half at its middle");
+  // 1 / (1 + e^-5)
+  expectFloat(Curve.logistic(10., 1., 0., 0.5).eval(1.), 0.993307, 0.00001d, "logistic at 1");
+  expectFloat(Curve.linear(2., 0.).eval(0.8), 1., 0.00001d, "a curve's answer is held to 1");
+  expectFloat(Curve.linear(1., -0.5).eval(0.2), 0., 0.00001d, "and to 0");
+}
+
+// -------- state machine --------
+
+fn flagged(id u32, bb &Blackboard) bool { bb.getI(usize.from(id)) != 0; }
+
+fn expectList(got &Array[u32], count usize, want &Array[u32], label &Array[u8]) {
+  expectInt(i64.from(count), i64.from(want.len()), label);
+  mut i = 0usize;
+  while i < want.len() and i < count {
+    expectInt(i64.from(got[i]), i64.from(want[i]), label);
+    i = i + 1usize;
+  }
+}
+
+fn machine() {
+  mut m = StateMachine.make();
+  imm a = m.addState(NO_STATE);
+  imm a1 = m.addState(a);
+  imm a2 = m.addState(a);
+  imm b = m.addState(NO_STATE);
+  m.setInitial(a, a1);
+  m.addTransition(a1, a2, 0u32);
+  m.addTransition(a2, a2, 3u32);
+  m.addTransition(a, b, 1u32);
+  m.addTransition(b, a, 2u32);
+  mut bb = Blackboard.make();
+  m.start(a);
+  expectInt(i64.from(m.active), i64.from(a1), "starts in A's initial child");
+  expectList(&m.entered, m.enteredCount, &(new Array[u32, 2] <- a, a1), "start enters A then A1");
+  expect(not m.tick(&bb, &flagged), "no condition true: no transition");
+  bb.setI(0usize, 1);
+  expect(m.tick(&bb, &flagged), "A1 -> A2 taken");
+  expectList(&m.exited, m.exitedCount, &(new Array[u32, 1] <- a1), "exits A1 only");
+  expectList(&m.entered, m.enteredCount, &(new Array[u32, 1] <- a2), "enters A2 only (A is not left)");
+  expect(m.isIn(a) and m.isIn(a2) and not m.isIn(a1) and not m.isIn(b), "isIn: the leaf and its ancestors");
+  bb.setI(0usize, 0);
+  bb.setI(3usize, 1);
+  expect(m.tick(&bb, &flagged), "a transition to itself is taken");
+  expectList(&m.exited, m.exitedCount, &(new Array[u32, 1] <- a2), "it exits A2");
+  expectList(&m.entered, m.enteredCount, &(new Array[u32, 1] <- a2), "and enters A2 again");
+  bb.setI(3usize, 0);
+  bb.setI(1usize, 1);
+  expect(m.tick(&bb, &flagged), "A -> B, from A's own transition, while in A2");
+  expectList(&m.exited, m.exitedCount, &(new Array[u32, 2] <- a2, a), "exits A2 then A, innermost first");
+  expectList(&m.entered, m.enteredCount, &(new Array[u32, 1] <- b), "enters B");
+  bb.setI(1usize, 0);
+  bb.setI(2usize, 1);
+  expect(m.tick(&bb, &flagged), "B -> A");
+  expectList(&m.exited, m.exitedCount, &(new Array[u32, 1] <- b), "exits B");
+  expectList(&m.entered, m.enteredCount, &(new Array[u32, 2] <- a, a1), "enters A then its initial child A1");
+  // The child's transition comes before the parent's
+  bb.setI(0usize, 1);
+  bb.setI(1usize, 1);
+  bb.setI(2usize, 0);
+  m.tick(&bb, &flagged);
+  expectInt(i64.from(m.active), i64.from(a2), "with both true, the innermost state's transition wins");
+}
+
+fn ticker() {
+  // 8 Hz: a period of 0.125, exact in binary
+  mut f = FixedTicker.make(8.);
+  expectUInt(u64.from(f.advance(0.0625)), 0u64, "half a period: no tick");
+  expectUInt(u64.from(f.advance(0.0625)), 1u64, "the other half: one tick");
+  expectUInt(u64.from(f.advance(0.3125)), 2u64, "0.3125 s: two ticks, half a period carried");
+  expectUInt(u64.from(f.advance(0.0625)), 1u64, "and the carried half completes one");
+  expectUInt(u64.from(f.advance(5.)), 4u64, "a stall gives at most the catch-up limit");
+  expectUInt(u64.from(f.advance(0.01)), 0u64, "and drops the rest");
+}
+
+fn main() i32 {
+  sequences();
+  selectors();
+  reactives();
+  parallels();
+  decorators();
+  utility();
+  machine();
+  ticker();
+  done();
+}

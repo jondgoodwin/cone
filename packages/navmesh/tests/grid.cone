@@ -1,0 +1,181 @@
+// Grid A* and jump point search, against hand-worked paths and an
+// independent brute force (Bellman-Ford relaxation over the same graph).
+
+mod grid;
+
+import testing use *;
+import collections use List;
+import navmesh use *;
+
+fn absf(a f32) f32 { if a < 0. { return -a; } a; }
+
+// The cheapest cost by repeated relaxation of every cell until nothing
+// improves: no heap, no heuristic, nothing shared with the searches
+fn brute(g &Grid, sx i32, sy i32, gx i32, gy i32, diagonal bool) f32 {
+  imm n = usize.from(g.w) * usize.from(g.h);
+  mut dist = List[f32].withCapacity(n);
+  mut i = 0usize;
+  while i < n { dist.push(3.4e38); i = i + 1usize; }
+  dist.set(usize.from(sy) * usize.from(g.w) + usize.from(sx), 0.);
+  mut changed = true;
+  while changed {
+    changed = false;
+    mut y = 0i32;
+    while y < g.h {
+      mut x = 0i32;
+      while x < g.w {
+        imm di = *dist[usize.from(y) * usize.from(g.w) + usize.from(x)];
+        if di < 3.0e38 {
+          mut dy = -1i32;
+          while dy <= 1i32 {
+            mut dx = -1i32;
+            while dx <= 1i32 {
+              imm diag = dx != 0i32 and dy != 0i32;
+              if (dx != 0i32 or dy != 0i32) and (diagonal or !diag) and g.canStep(x, y, dx, dy) {
+                imm len = if diag { 1.4142135; } else { 1.; };
+                imm nd = di + len * g.weightAt(x + dx, y + dy);
+                imm ni = usize.from(y + dy) * usize.from(g.w) + usize.from(x + dx);
+                if nd < *dist[ni] { dist.set(ni, nd); changed = true; }
+              }
+              dx = dx + 1i32;
+            }
+            dy = dy + 1i32;
+          }
+        }
+        x = x + 1i32;
+      }
+      y = y + 1i32;
+    }
+  }
+  *dist[usize.from(gy) * usize.from(g.w) + usize.from(gx)];
+}
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+fn testSerpentine() {
+  imm rows = ["S....", "####.", ".....", ".####", "....G"];
+  imm g = Grid.fromRows(&rows);
+  imm p4 = gridAStar(&g, 0i32, 0i32, 4i32, 4i32, false);
+  expectBool(p4.found, true, "serpentine 4-way found");
+  near(p4.cost, 16., 0.0001, "serpentine 4-way: 4+2+4+2+4 = 16");
+  expectInt(i64.from(p4.cells.len()), 17, "serpentine: 17 cells on the path");
+  imm p8 = gridAStar(&g, 0i32, 0i32, 4i32, 4i32, true);
+  near(p8.cost, 16., 0.0001, "serpentine 8-way: no corner may be cut, still 16");
+  imm pj = gridJps(&g, 0i32, 0i32, 4i32, 4i32);
+  near(pj.cost, 16., 0.0001, "serpentine jps: 16");
+  imm full = expandJumps(&pj);
+  expectInt(i64.from(full.len()), 17, "jps expanded to 17 cells");
+  // A wall with no gap: no path
+  imm rows2 = ["S.#..", "..#..", "..#.G"];
+  imm g2 = Grid.fromRows(&rows2);
+  expectBool(gridAStar(&g2, 0i32, 0i32, 4i32, 2i32, true).found, false, "walled off: A* finds nothing");
+  expectBool(gridJps(&g2, 0i32, 0i32, 4i32, 2i32).found, false, "walled off: jps finds nothing");
+}
+
+fn testDiagonalOpen() {
+  // An open 6 x 6 board, corner to corner: 5 diagonals = 5 sqrt 2
+  imm g = Grid.make(6i32, 6i32);
+  near(gridAStar(&g, 0i32, 0i32, 5i32, 5i32, true).cost, 7.0710678, 0.0001, "open board diagonal");
+  near(gridAStar(&g, 0i32, 0i32, 5i32, 5i32, false).cost, 10., 0.0001, "open board 4-way: 10");
+  // (0,0) to (5,2): 2 diagonals and 3 straight = 3 + 2 sqrt 2
+  near(gridAStar(&g, 0i32, 0i32, 5i32, 2i32, true).cost, 5.8284271, 0.0001, "octile 3 + 2 sqrt 2");
+  near(gridJps(&g, 0i32, 0i32, 5i32, 2i32).cost, 5.8284271, 0.0001, "jps octile");
+  // The corner is not cut: blocking (1,0) and (0,1) closes (0,0) to (1,1)
+  mut g3 = Grid.make(3i32, 3i32);
+  g3.setBlocked(1i32, 0i32, true);
+  g3.setBlocked(0i32, 1i32, true);
+  expectBool(gridAStar(&g3, 0i32, 0i32, 1i32, 1i32, true).found, false, "no corner cutting");
+  // Mud (1,0) and (1,1) of weight 5 on a 3 x 3 board, (0,0) to (2,0) 4-way:
+  // through (1,0) costs 5 + 1 = 6; round the bottom through (1,2) costs
+  // 1 + 1 + 1 + 1 + 1 + 1 = 6 as well; a tie, so 6 either way
+  mut gm = Grid.make(3i32, 3i32);
+  gm.setWeight(1i32, 0i32, 5.);
+  gm.setWeight(1i32, 1i32, 5.);
+  near(gridAStar(&gm, 0i32, 0i32, 2i32, 0i32, false).cost, 6., 0.0001, "mud weight 5: 6");
+  gm.setWeight(1i32, 0i32, 9.);
+  gm.setWeight(1i32, 1i32, 9.);
+  near(gridAStar(&gm, 0i32, 0i32, 2i32, 0i32, false).cost, 6., 0.0001, "heavier mud: round the bottom, 6");
+  expectBool(gridJps(&gm, 0i32, 0i32, 2i32, 0i32).refused, true, "jps refuses weights");
+}
+
+// A grid of the given density from a linear congruential generator
+fn randomGrid(w i32, h i32, seed u32, percent u32) Grid {
+  mut g = Grid.make(w, h);
+  mut s = seed;
+  mut y = 0i32;
+  while y < h {
+    mut x = 0i32;
+    while x < w {
+      s = s * 1664525u32 + 1013904223u32;
+      imm r = (s >> 16u32) % 100u32;
+      if r < percent { g.setBlocked(x, y, true); }
+      x = x + 1i32;
+    }
+    y = y + 1i32;
+  }
+  g.setBlocked(0i32, 0i32, false);
+  g.setBlocked(w - 1i32, h - 1i32, false);
+  g;
+}
+
+fn testRandom() {
+  mut agree4 = 0i32;
+  mut agree8 = 0i32;
+  mut agreeJ = 0i32;
+  mut agreeW = 0i32;
+  mut found = 0i32;
+  mut trial = 0u32;
+  while trial < 40u32 {
+    mut g = randomGrid(24i32, 18i32, 7u32 + trial * 977u32, 18u32 + trial % 20u32);
+    imm want4 = brute(&g, 0i32, 0i32, 23i32, 17i32, false);
+    imm want8 = brute(&g, 0i32, 0i32, 23i32, 17i32, true);
+    imm a4 = gridAStar(&g, 0i32, 0i32, 23i32, 17i32, false);
+    imm a8 = gridAStar(&g, 0i32, 0i32, 23i32, 17i32, true);
+    imm pj = gridJps(&g, 0i32, 0i32, 23i32, 17i32);
+    if want4 > 3.0e38 {
+      if !a4.found { agree4 = agree4 + 1i32; }
+    } else {
+      found = found + 1i32;
+      if a4.found and absf(a4.cost - want4) < 0.001 { agree4 = agree4 + 1i32; }
+    }
+    if want8 > 3.0e38 {
+      if !a8.found { agree8 = agree8 + 1i32; }
+      if !pj.found { agreeJ = agreeJ + 1i32; }
+    } else {
+      if a8.found and absf(a8.cost - want8) < 0.001 { agree8 = agree8 + 1i32; }
+      if pj.found and absf(pj.cost - want8) < 0.001 { agreeJ = agreeJ + 1i32; }
+    }
+    // Weighted: scatter weights 1 to 4 over the cells
+    mut y = 0i32;
+    while y < g.h {
+      mut x = 0i32;
+      while x < g.w {
+        g.setWeight(x, y, f32.from(1u32 + u32.from(x * 7i32 + y * 13i32 + i32.from(trial)) % 4u32));
+        x = x + 1i32;
+      }
+      y = y + 1i32;
+    }
+    imm wantW = brute(&g, 0i32, 0i32, 23i32, 17i32, true);
+    imm aw = gridAStar(&g, 0i32, 0i32, 23i32, 17i32, true);
+    if wantW > 3.0e38 {
+      if !aw.found { agreeW = agreeW + 1i32; }
+    } else {
+      if aw.found and absf(aw.cost - wantW) < 0.001 { agreeW = agreeW + 1i32; }
+    }
+    trial = trial + 1u32;
+  }
+  expectInt(i64.from(agree4), 40, "A* 4-way equals brute force on 40 random boards");
+  expectInt(i64.from(agree8), 40, "A* 8-way equals brute force");
+  expectInt(i64.from(agreeJ), 40, "jps equals brute force");
+  expectInt(i64.from(agreeW), 40, "weighted A* equals brute force");
+  expectBool(found > 15, true, "enough boards had a route to mean something");
+}
+
+fn main() i32 {
+  testSerpentine();
+  testDiagonalOpen();
+  testRandom();
+  done();
+}

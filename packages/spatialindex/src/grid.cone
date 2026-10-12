@@ -1,0 +1,663 @@
+// ======== HashGrid: a uniform hash grid over items ========
+//
+// Space is cut into cubes of one size ('cellSize'); an item is listed in
+// every cube its box touches, and a hash table maps a cube's coordinates to
+// the head of its list (spatial hashing: Teschner et al. 2003, "Optimized
+// Spatial Hashing for Collision Detection of Deformable Objects"; Ericson,
+// Real-Time Collision Detection, ch. 7). The grid is unbounded: cubes exist
+// only where items are. It is the right tool for very many small things of
+// about one size; it degrades when items are much larger than a cube (each
+// is listed in many) or crowd into few cubes (the lists grow long): the
+// benchmarks show both.
+//
+// An item that would touch more than 'maxCells' cubes (default 512) is kept
+// in a short list of oversize items instead, tested directly by every query.
+// Queries that would cover more cubes than there are items fall back to
+// scanning the items.
+//
+// An item in several cubes is reported once: box queries report it in the one
+// cube holding the minimum corner of (its box meets the query's box); ray
+// walks note the multi-cube items they have seen.
+
+struct GridEntry {
+  slot u32;
+  next u32;
+}
+
+// A block of cubes: [x0..x1] x [y0..y1] x [z0..z1], inclusive
+struct CellRange {
+  x0 i32;
+  y0 i32;
+  z0 i32;
+  x1 i32;
+  y1 i32;
+  z1 i32;
+
+  fn volume(self) i64 {
+    (i64.from(x1) - i64.from(x0) + 1i64) * (i64.from(y1) - i64.from(y0) + 1i64)
+      * (i64.from(z1) - i64.from(z0) + 1i64);
+  }
+}
+
+fn cellKey(x i32, y i32, z i32) u64 inline {
+  ((u64.from(x + 1048576i32) & 2097151u64) << 42u64) | ((u64.from(y + 1048576i32) & 2097151u64) << 21u64)
+    | (u64.from(z + 1048576i32) & 2097151u64);
+}
+
+pub struct HashGrid[T Copy] {
+  items Items[T];
+  cells Dict[u64, u32];     // cube -> first entry of its list
+  entries List[GridEntry];
+  freeEntry u32;
+  size f32;
+  inv f32;
+  maxCells i64;
+  big List[u32];            // oversize items' slots
+  lo Vec3;                  // cube range of everything listed in cubes (conservative: only grows)
+  hi Vec3;
+  anyCells bool;
+  pairs PairBook;
+  moved List[u32];
+  pendingRemoved List[Pair[T]];
+
+  // A grid of cubes 'cellSize' on a side
+  pub fn create(cellSize f32) HashGrid[T] {
+    new HashGrid[T](Items[T].create(), Dict[u64, u32].empty(), List[GridEntry].empty(), NONE, cellSize,
+      1. / cellSize, 512i64, List[u32].empty(), new Vec3(0., 0., 0.), new Vec3(0., 0., 0.), false,
+      PairBook.create(), List[u32].empty(), List[Pair[T]].empty());
+  }
+
+  pub fn len(self &) usize {items.count;}
+  pub fn contains(self &, p Proxy) bool {items.alive(p);}
+  pub fn handle(self &, p Proxy) T {items.list[usize.from(p.slot)].handle;}
+  pub fn box(self &, p Proxy) Aabb3 {items.list[usize.from(p.slot)].box;}
+  pub fn pairBox(self &, p Proxy) Aabb3 {box(p);}
+
+  // The number of cubes holding items
+  pub fn cellCount(self &) usize {cells.len();}
+
+  fn rangeOf(self &, b Aabb3) CellRange {
+    new CellRange(cellOf(b.min.x, 0., inv), cellOf(b.min.y, 0., inv), cellOf(b.min.z, 0., inv),
+      cellOf(b.max.x, 0., inv), cellOf(b.max.y, 0., inv), cellOf(b.max.z, 0., inv));
+  }
+
+  fn newEntry(self &mut, slot u32, next u32) u32 {
+    if freeEntry != NONE {
+      imm e = freeEntry;
+      freeEntry = entries[usize.from(e)].next;
+      entries[usize.from(e)].slot = slot;
+      entries[usize.from(e)].next = next;
+      return e;
+    }
+    entries.push(new GridEntry(slot, next));
+    u32.from(entries.len() - 1usize);
+  }
+
+  fn headOf(self &, key u64) u32 {
+    mut r = NONE;
+    match cells.getCopy(&key) {
+      case imm h Some { r = h; }
+      case is None { }
+    }
+    r;
+  }
+
+  fn addToCells(self &mut, slot u32, b Aabb3) {
+    imm si = usize.from(slot);
+    imm rg = rangeOf(b);
+    if rg.volume() > maxCells {
+      items.list[si].x = 0u32;
+      items.list[si].y = u32.from(big.len());
+      big.push(slot);
+      return;
+    }
+    items.list[si].x = u32.from(rg.volume());
+    items.list[si].y = NONE;
+    if !anyCells {
+      lo = new Vec3(f32.from(rg.x0), f32.from(rg.y0), f32.from(rg.z0));
+      hi = new Vec3(f32.from(rg.x1), f32.from(rg.y1), f32.from(rg.z1));
+      anyCells = true;
+    }
+    else {
+      lo = lo.min(new Vec3(f32.from(rg.x0), f32.from(rg.y0), f32.from(rg.z0)));
+      hi = hi.max(new Vec3(f32.from(rg.x1), f32.from(rg.y1), f32.from(rg.z1)));
+    }
+    mut x = rg.x0;
+    while x <= rg.x1 {
+      mut y = rg.y0;
+      while y <= rg.y1 {
+        mut z = rg.z0;
+        while z <= rg.z1 {
+          imm key = cellKey(x, y, z);
+          imm head = headOf(key);
+          imm e = newEntry(slot, head);
+          cells.insert(key, e);
+          z = z + 1i32;
+        }
+        y = y + 1i32;
+      }
+      x = x + 1i32;
+    }
+  }
+
+  fn removeFromCells(self &mut, slot u32) {
+    imm si = usize.from(slot);
+    if items.list[si].x == 0u32 {
+      // oversize: out of the list, the last one taking its place
+      imm at = items.list[si].y;
+      imm last = big.len() - 1usize;
+      imm moved = *big[last];
+      big.set(usize.from(at), moved);
+      items.list[usize.from(moved)].y = at;
+      big.truncate(last);
+      return;
+    }
+    imm rg = rangeOf(items.list[si].box);
+    mut x = rg.x0;
+    while x <= rg.x1 {
+      mut y = rg.y0;
+      while y <= rg.y1 {
+        mut z = rg.z0;
+        while z <= rg.z1 {
+          dropEntry(cellKey(x, y, z), slot);
+          z = z + 1i32;
+        }
+        y = y + 1i32;
+      }
+      x = x + 1i32;
+    }
+  }
+
+  fn dropEntry(self &mut, key u64, slot u32) {
+    mut prev = NONE;
+    mut cur = headOf(key);
+    while cur != NONE {
+      imm ci = usize.from(cur);
+      if entries[ci].slot == slot {
+        imm next = entries[ci].next;
+        if prev == NONE {
+          if next == NONE {cells.remove(&key);}
+          else {cells.insert(key, next);}
+        }
+        else {entries[usize.from(prev)].next = next;}
+        entries[ci].next = freeEntry;
+        freeEntry = cur;
+        return;
+      }
+      prev = cur;
+      cur = entries[ci].next;
+    }
+  }
+
+  fn flagMoved(self &mut, slot u32) {
+    if !items.list[usize.from(slot)].moved {
+      items.list[usize.from(slot)].moved = true;
+      moved.push(slot);
+    }
+  }
+
+  pub fn insert(self &mut, box Aabb3, handle T) Proxy {
+    imm p = items.add(box, handle);
+    addToCells(p.slot, box);
+    flagMoved(p.slot);
+    p;
+  }
+
+  pub fn remove(self &mut, p Proxy) bool {
+    if !items.alive(p) {return false;}
+    imm si = usize.from(p.slot);
+    removeFromCells(p.slot);
+    mut ended = List[u32].empty();
+    pairs.forget(p.slot, &mut ended);
+    imm h = items.list[si].handle;
+    mut i = 0usize;
+    while i < ended.len() {
+      imm o = *ended[i];
+      pendingRemoved.push(pairOf(p.slot, h, o, items.list[usize.from(o)].handle));
+      i = i + 1usize;
+    }
+    items.list[si].moved = false;
+    items.release(p.slot);
+    true;
+  }
+
+  fn pairOf(self &, sa u32, ha T, sb u32, hb T) Pair[T] {
+    if sa < sb {
+      new Pair[T](ha, hb, items.proxyOf(sa), items.proxyOf(sb));
+    }
+    else {
+      new Pair[T](hb, ha, items.proxyOf(sb), items.proxyOf(sa));
+    }
+  }
+
+  // The item has a new box; its cube lists change only if the cubes it
+  // touches do. 'displacement' is accepted for the same call as the BVH's
+  // and not used. Answers whether the lists changed.
+  pub fn move(self &mut, p Proxy, box Aabb3, displacement Vec3) bool {
+    if !items.alive(p) {return false;}
+    imm si = usize.from(p.slot);
+    imm a = rangeOf(items.list[si].box);
+    imm b = rangeOf(box);
+    flagMoved(p.slot);
+    if a.x0 == b.x0 and a.y0 == b.y0 and a.z0 == b.z0 and a.x1 == b.x1 and a.y1 == b.y1 and a.z1 == b.z1 {
+      items.list[si].box = box;
+      return false;
+    }
+    removeFromCells(p.slot);
+    items.list[si].box = box;
+    addToCells(p.slot, box);
+    true;
+  }
+
+  // ---------------- queries ----------------
+
+  // The cubes' range of everything listed (an empty range if nothing is)
+  fn populated(self &) CellRange {
+    if !anyCells {return new CellRange(0i32, 0i32, 0i32, -1i32, -1i32, -1i32);}
+    new CellRange(i32.from(lo.x), i32.from(lo.y), i32.from(lo.z), i32.from(hi.x), i32.from(hi.y), i32.from(hi.z));
+  }
+
+  // Clips a range to the populated one
+  fn clipRange(self &, r CellRange) CellRange {
+    imm p = populated();
+    new CellRange(if r.x0 > p.x0 {r.x0;} else {p.x0;}, if r.y0 > p.y0 {r.y0;} else {p.y0;},
+      if r.z0 > p.z0 {r.z0;} else {p.z0;}, if r.x1 < p.x1 {r.x1;} else {p.x1;},
+      if r.y1 < p.y1 {r.y1;} else {p.y1;}, if r.z1 < p.z1 {r.z1;} else {p.z1;});
+  }
+
+  // Whether walking the range's cubes costs less than scanning the items
+  fn walkable(self &, r CellRange) bool {
+    r.x0 <= r.x1 and r.y0 <= r.y1 and r.z0 <= r.z1 and r.volume() * 4i64 <= i64.from(items.count) + 16i64;
+  }
+
+  pub fn overlapAabb[F fn(h T, p Proxy) bool](self &, box Aabb3, visit &mut F) {
+    walkBox(box, 0i32, new Sphere(new Vec3(0., 0., 0.), 0.), visit);
+  }
+
+  pub fn overlapSphere[F fn(h T, p Proxy) bool](self &, s Sphere, visit &mut F) {
+    imm r = new Vec3(s.radius, s.radius, s.radius);
+    walkBox(new Aabb3(s.center - r, s.center + r), 1i32, s, visit);
+  }
+
+  // The shared walk of the box and the sphere query: 'mode' 0 tests items
+  // against the box, 1 against the ball (whose box is 'box').
+  fn walkBox[F fn(h T, p Proxy) bool](self &, box Aabb3, mode i32, ball Sphere, visit &mut F) {
+    imm rg = clipRange(rangeOf(box));
+    if walkable(rg) {
+      mut x = rg.x0;
+      while x <= rg.x1 {
+        mut y = rg.y0;
+        while y <= rg.y1 {
+          mut z = rg.z0;
+          while z <= rg.z1 {
+            mut e = headOf(cellKey(x, y, z));
+            while e != NONE {
+              imm slot = entries[usize.from(e)].slot;
+              imm it = items.list[usize.from(slot)];
+              if hits(it.box, box, mode, ball) {
+                // report in the cube of the minimum corner of the meeting of the two boxes
+                imm rx = cellOf(maxf(it.box.min.x, box.min.x), 0., inv);
+                imm ry = cellOf(maxf(it.box.min.y, box.min.y), 0., inv);
+                imm rz = cellOf(maxf(it.box.min.z, box.min.z), 0., inv);
+                if rx == x and ry == y and rz == z {
+                  if !visit(it.handle, new Proxy(slot, it.gen)) {return;}
+                }
+              }
+              e = entries[usize.from(e)].next;
+            }
+            z = z + 1i32;
+          }
+          y = y + 1i32;
+        }
+        x = x + 1i32;
+      }
+      mut i = 0usize;
+      while i < big.len() {
+        imm slot = *big[i];
+        imm it = items.list[usize.from(slot)];
+        if hits(it.box, box, mode, ball) {
+          if !visit(it.handle, new Proxy(slot, it.gen)) {return;}
+        }
+        i = i + 1usize;
+      }
+    }
+    else {
+      mut i = 0usize;
+      while i < items.list.len() {
+        if items.isLive(i) {
+          imm it = items.list[i];
+          if hits(it.box, box, mode, ball) {
+            if !visit(it.handle, new Proxy(u32.from(i), it.gen)) {return;}
+          }
+        }
+        i = i + 1usize;
+      }
+    }
+  }
+
+  fn hits(b Aabb3, box Aabb3, mode i32, ball Sphere) bool inline {
+    if mode == 0i32 {b.overlaps(box);} else {ball.overlapsAabb(b);};
+  }
+
+  // Not wholly outside the frustum. A grid has no hierarchy to prune with:
+  // cubes inside the populated range are tested (when that is fewer than the
+  // items), otherwise every item is.
+  pub fn frustum[F fn(h T, p Proxy) bool](self &, f &Frustum, visit &mut F) {
+    imm rg = populated();
+    if walkable(rg) {
+      mut seen = Seen.create();
+      mut x = rg.x0;
+      while x <= rg.x1 {
+        mut y = rg.y0;
+        while y <= rg.y1 {
+          mut z = rg.z0;
+          while z <= rg.z1 {
+            imm cb = new Aabb3(new Vec3(f32.from(x) * size, f32.from(y) * size, f32.from(z) * size),
+              new Vec3(f32.from(x + 1i32) * size, f32.from(y + 1i32) * size, f32.from(z + 1i32) * size));
+            if cullMask(f, &cb, ALL_PLANES) != NONE {
+              mut e = headOf(cellKey(x, y, z));
+              while e != NONE {
+                imm slot = entries[usize.from(e)].slot;
+                imm it = items.list[usize.from(slot)];
+                if (it.x <= 1u32 or seen.mark(slot)) and cullMask(f, &it.box, ALL_PLANES) != NONE {
+                  if !visit(it.handle, new Proxy(slot, it.gen)) {return;}
+                }
+                e = entries[usize.from(e)].next;
+              }
+            }
+            z = z + 1i32;
+          }
+          y = y + 1i32;
+        }
+        x = x + 1i32;
+      }
+      mut i = 0usize;
+      while i < big.len() {
+        imm slot = *big[i];
+        imm it = items.list[usize.from(slot)];
+        if cullMask(f, &it.box, ALL_PLANES) != NONE {
+          if !visit(it.handle, new Proxy(slot, it.gen)) {return;}
+        }
+        i = i + 1usize;
+      }
+    }
+    else {
+      mut i = 0usize;
+      while i < items.list.len() {
+        if items.isLive(i) {
+          imm it = items.list[i];
+          if cullMask(f, &it.box, ALL_PLANES) != NONE {
+            if !visit(it.handle, new Proxy(u32.from(i), it.gen)) {return;}
+          }
+        }
+        i = i + 1usize;
+      }
+    }
+  }
+
+  // As Bvh.rayCast. The ray walks cube by cube (Amanatides and Woo, "A Fast
+  // Voxel Traversal Algorithm for Ray Tracing", 1987) through the populated
+  // range, and ends when the next cube is beyond the reach in force.
+  pub fn rayCast[F fn(h T, p Proxy, t f32) f32](self &, ray Ray3, maxT f32, visit &mut F) {
+    imm r = RayQ.from(ray);
+    mut limit = maxT;
+    // oversize items first
+    mut i = 0usize;
+    while i < big.len() {
+      imm slot = *big[i];
+      imm it = items.list[usize.from(slot)];
+      imm t = rayBox(&r, &it.box, limit);
+      if t >= 0. {
+        imm res = visit(it.handle, new Proxy(slot, it.gen), t);
+        if res < 0. {return;}
+        if res < limit {limit = res;}
+      }
+      i = i + 1usize;
+    }
+    if !anyCells {return;}
+    imm pb = new Aabb3(lo * size, (hi + new Vec3(1., 1., 1.)) * size);
+    imm t0 = rayBox(&r, &pb, limit);
+    if t0 < 0. {return;}
+    imm start = ray.origin + ray.direction * t0;
+    mut ix = clampCell(cellOf(start.x, 0., inv), i32.from(lo.x), i32.from(hi.x));
+    mut iy = clampCell(cellOf(start.y, 0., inv), i32.from(lo.y), i32.from(hi.y));
+    mut iz = clampCell(cellOf(start.z, 0., inv), i32.from(lo.z), i32.from(hi.z));
+    imm dx = ray.direction.x;
+    imm dy = ray.direction.y;
+    imm dz = ray.direction.z;
+    imm sx = if dx > 0. {1i32;} else if dx < 0. {-1i32;} else {0i32;};
+    imm sy = if dy > 0. {1i32;} else if dy < 0. {-1i32;} else {0i32;};
+    imm sz = if dz > 0. {1i32;} else if dz < 0. {-1i32;} else {0i32;};
+    mut tx = if sx == 0i32 {FAR;} else {(f32.from(if sx > 0i32 {ix + 1i32;} else {ix;}) * size - ray.origin.x) / dx;};
+    mut ty = if sy == 0i32 {FAR;} else {(f32.from(if sy > 0i32 {iy + 1i32;} else {iy;}) * size - ray.origin.y) / dy;};
+    mut tz = if sz == 0i32 {FAR;} else {(f32.from(if sz > 0i32 {iz + 1i32;} else {iz;}) * size - ray.origin.z) / dz;};
+    imm ddx = if sx == 0i32 {FAR;} else {size / absf(dx);};
+    imm ddy = if sy == 0i32 {FAR;} else {size / absf(dy);};
+    imm ddz = if sz == 0i32 {FAR;} else {size / absf(dz);};
+    imm x0 = i32.from(lo.x);
+    imm x1 = i32.from(hi.x);
+    imm y0 = i32.from(lo.y);
+    imm y1 = i32.from(hi.y);
+    imm z0 = i32.from(lo.z);
+    imm z1 = i32.from(hi.z);
+    mut seen = Seen.create();
+    while true {
+      mut e = headOf(cellKey(ix, iy, iz));
+      while e != NONE {
+        imm slot = entries[usize.from(e)].slot;
+        imm it = items.list[usize.from(slot)];
+        if it.x <= 1u32 or seen.mark(slot) {
+          imm t = rayBox(&r, &it.box, limit);
+          if t >= 0. {
+            imm res = visit(it.handle, new Proxy(slot, it.gen), t);
+            if res < 0. {return;}
+            if res < limit {limit = res;}
+          }
+        }
+        e = entries[usize.from(e)].next;
+      }
+      // on to the next cube along the nearest boundary
+      if tx <= ty and tx <= tz {
+        if tx > limit {return;}
+        ix = ix + sx;
+        tx = tx + ddx;
+        if ix < x0 or ix > x1 {return;}
+      }
+      else if ty <= tz {
+        if ty > limit {return;}
+        iy = iy + sy;
+        ty = ty + ddy;
+        if iy < y0 or iy > y1 {return;}
+      }
+      else {
+        if tz > limit {return;}
+        iz = iz + sz;
+        tz = tz + ddz;
+        if iz < z0 or iz > z1 {return;}
+      }
+    }
+  }
+
+  pub fn rayNearest(self &, ray Ray3, maxT f32) Option[Hit[T]] {
+    mut best Option[Hit[T]] = None;
+    mut grab = fn(h T, p Proxy, t f32) f32 {
+      best = Some(new Hit[T](h, p, t));
+      t;
+    };
+    rayCast(ray, maxT, &mut grab);
+    best;
+  }
+
+  pub fn rayAll[F fn(h T, p Proxy, t f32) bool](self &, ray Ray3, maxT f32, visit &mut F) {
+    mut wrap = fn(h T, p Proxy, t f32) f32 {
+      if visit(h, p, t) {FAR;} else {-1.;};
+    };
+    rayCast(ray, maxT, &mut wrap);
+  }
+
+  // Keeps the best 'k' (nearest first) in 'out'
+  fn offer(out &mut List[Neighbor[T]], k usize, n Neighbor[T]) {
+    if out.len() == k and n.distSq >= out[k - 1usize].distSq {return;}
+    if out.len() < k {out.push(n);}
+    else {out.set(k - 1usize, n);}
+    mut j = out.len() - 1usize;
+    while j > 0usize and out[j - 1usize].distSq > out[j].distSq {
+      out.swap(j - 1usize, j);
+      j = j - 1usize;
+    }
+  }
+
+  // The 'k' nearest by distance to the item's box, nearest first. Cubes are
+  // searched in growing shells around the point's cube; a point outside the
+  // populated range, or a search that would visit more cubes than there are
+  // items, falls back to scanning the items.
+  pub fn nearest(self &, point Vec3, k usize, out &mut List[Neighbor[T]]) {
+    out.clear();
+    if items.count == 0usize or k == 0usize {return;}
+    mut i = 0usize;
+    while i < big.len() {
+      imm slot = *big[i];
+      imm it = items.list[usize.from(slot)];
+      offer(out, k, new Neighbor[T](it.handle, new Proxy(slot, it.gen), distSqPointBox(point, it.box)));
+      i = i + 1usize;
+    }
+    imm pc = new Vec3(f32.from(cellOf(point.x, 0., inv)), f32.from(cellOf(point.y, 0., inv)), f32.from(cellOf(point.z, 0., inv)));
+    imm inside = anyCells and pc.x >= lo.x and pc.x <= hi.x and pc.y >= lo.y and pc.y <= hi.y
+      and pc.z >= lo.z and pc.z <= hi.z;
+    mut scanned = false;
+    if inside {
+      imm cx = i32.from(pc.x);
+      imm cy = i32.from(pc.y);
+      imm cz = i32.from(pc.z);
+      mut seen = Seen.create();
+      mut r = 0i32;
+      mut visited = 0i64;
+      // the farthest shell that can matter
+      imm rmax = maxi(maxi(maxi(cx - i32.from(lo.x), i32.from(hi.x) - cx), maxi(cy - i32.from(lo.y), i32.from(hi.y) - cy)),
+        maxi(cz - i32.from(lo.z), i32.from(hi.z) - cz));
+      while r <= rmax {
+        visited = visited + (2i64 * i64.from(r) + 1i64) * (2i64 * i64.from(r) + 1i64) * (2i64 * i64.from(r) + 1i64);
+        if visited * 4i64 > i64.from(items.count) + 16i64 and r > 0i32 {scanned = true; break;}
+        mut x = cx - r;
+        while x <= cx + r {
+          mut y = cy - r;
+          while y <= cy + r {
+            mut z = cz - r;
+            while z <= cz + r {
+              // only the shell: some coordinate at distance r
+              imm edge = x == cx - r or x == cx + r or y == cy - r or y == cy + r or z == cz - r or z == cz + r;
+              if edge {
+                mut e = headOf(cellKey(x, y, z));
+                while e != NONE {
+                  imm slot = entries[usize.from(e)].slot;
+                  imm it = items.list[usize.from(slot)];
+                  if it.x <= 1u32 or seen.mark(slot) {
+                    offer(out, k, new Neighbor[T](it.handle, new Proxy(slot, it.gen), distSqPointBox(point, it.box)));
+                  }
+                  e = entries[usize.from(e)].next;
+                }
+              }
+              z = z + 1i32;
+            }
+            y = y + 1i32;
+          }
+          x = x + 1i32;
+        }
+        // nothing outside the shells so far is nearer than the faces of the block
+        imm gx = minf(point.x - f32.from(cx - r) * size, f32.from(cx + r + 1i32) * size - point.x);
+        imm gy = minf(point.y - f32.from(cy - r) * size, f32.from(cy + r + 1i32) * size - point.y);
+        imm gz = minf(point.z - f32.from(cz - r) * size, f32.from(cz + r + 1i32) * size - point.z);
+        imm bound = minf(gx, minf(gy, gz));
+        if out.len() == k and out[k - 1usize].distSq <= bound * bound {return;}
+        r = r + 1i32;
+      }
+      if !scanned {return;}
+    }
+    // scan everything (replacing what the shells found)
+    out.clear();
+    i = 0usize;
+    while i < big.len() {
+      imm slot = *big[i];
+      imm it = items.list[usize.from(slot)];
+      offer(out, k, new Neighbor[T](it.handle, new Proxy(slot, it.gen), distSqPointBox(point, it.box)));
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < items.list.len() {
+      if items.isLive(i) and items.list[i].x != 0u32 {
+        imm it = items.list[i];
+        offer(out, k, new Neighbor[T](it.handle, new Proxy(u32.from(i), it.gen), distSqPointBox(point, it.box)));
+      }
+      i = i + 1usize;
+    }
+  }
+
+  // ---------------- pairs ----------------
+
+  fn queryBox(self &, box Aabb3, found &mut List[u32]) {
+    mut collect = fn(h T, p Proxy) bool { found.push(p.slot); true; };
+    overlapAabb(box, &mut collect);
+  }
+
+  pub fn allPairs(self &, out &mut List[Pair[T]]) {
+    mut found = List[u32].empty();
+    mut i = 0usize;
+    while i < items.list.len() {
+      if items.isLive(i) {
+        found.clear();
+        queryBox(items.list[i].box, &mut found);
+        mut j = 0usize;
+        while j < found.len() {
+          imm o = *found[j];
+          if usize.from(o) > i {
+            out.push(pairOf(u32.from(i), items.list[i].handle, o, items.list[usize.from(o)].handle));
+          }
+          j = j + 1usize;
+        }
+      }
+      i = i + 1usize;
+    }
+  }
+
+  pub fn updatePairs(self &mut, events &mut PairEvents[T]) {
+    mut i = 0usize;
+    while i < pendingRemoved.len() {
+      events.removed.push(*pendingRemoved[i]);
+      i = i + 1usize;
+    }
+    pendingRemoved.clear();
+    mut found = List[u32].empty();
+    mut added = List[u32].empty();
+    mut ended = List[u32].empty();
+    i = 0usize;
+    while i < moved.len() {
+      imm m = *moved[i];
+      imm mi = usize.from(m);
+      i = i + 1usize;
+      if !items.isLive(mi) or !items.list[mi].moved {continue;}
+      items.list[mi].moved = false;
+      found.clear();
+      added.clear();
+      ended.clear();
+      queryBox(items.list[mi].box, &mut found);
+      pairs.sync(m, &found, &mut added, &mut ended);
+      mut j = 0usize;
+      while j < added.len() {
+        imm o = *added[j];
+        events.added.push(pairOf(m, items.list[mi].handle, o, items.list[usize.from(o)].handle));
+        j = j + 1usize;
+      }
+      j = 0usize;
+      while j < ended.len() {
+        imm o = *ended[j];
+        events.removed.push(pairOf(m, items.list[mi].handle, o, items.list[usize.from(o)].handle));
+        j = j + 1usize;
+      }
+    }
+    moved.clear();
+  }
+}
+
+fn clampCell(c i32, lo i32, hi i32) i32 inline {
+  if c < lo {lo;} else if c > hi {hi;} else {c;};
+}
