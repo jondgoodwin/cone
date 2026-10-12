@@ -1,0 +1,75 @@
+// A view of a String, or of an element of a List, held in a 'mut' GLOBAL, or in anything reached from one,
+// across ANY call. A function may write a global by its name, whatever it is handed, and the check does not
+// follow which globals a function writes (the work of knowing that is a summary of every function, left for
+// the day globals are designed as a whole). So a borrow into a 'mut' global is asked of every call made
+// while it is still to be used, or is being handed to a call: only the intrinsics, an init, and a call
+// through a virtual reference marked '+ ShapeKeeping' are let through. An 'imm' global cannot change, so a
+// borrow into it is untouched. collection_reshape_global_success holds what is accepted.
+//
+// Each function is a program that read freed memory when it was accepted: 'growFirst' appends to the big
+// String the view points into, which moves its block.
+
+mod collection_flow_reshape_global;
+
+import collections use *;
+
+struct Item { pub label String; }
+
+struct Ed {
+  pub items List[Item];
+  pub fn growFirst(self &mut, s &str) {
+    imm r = &mut items[0usize];
+    r.label.append(s);
+  }
+}
+
+mut gl Ed;
+mut title String;
+fn @initpure init() { gl = new Ed(List[Item].empty()); title = String.from("t"); }
+
+// The direct form: a visible function that writes the global by its name
+fn grow(s &str) { gl.growFirst(s); }
+
+fn direct() {
+  grow(gl.items[0usize].label.view());                        //~ ErrorShapeReshape "points into a 'mut' global"
+}
+
+// The same view held in a name, and a call made while it is held
+fn held() usize {
+  imm v = gl.items[0usize].label.view();
+  grow("more");                                               //~ ErrorShapeReshape "points into a 'mut' global"
+  v.len;
+}
+
+// A call that is handed nothing it could write through still may write a global
+fn show(s &str) usize { s.len; }
+
+fn readOnlyCallee() usize {
+  imm v = gl.items[0usize].label.view();
+  imm n = show("x");                                          //~ ErrorShapeReshape "points into a 'mut' global"
+  n + v.len;
+}
+
+// A view of the global's String itself
+fn handed() usize {
+  show(title.view());                                         //~ ErrorShapeReshape "points into a 'mut' global"
+}
+
+// A closure held by an owner that is 'imm' can write a global through its captured function, and a
+// '&<fn' called with the view, however read-only, can too
+struct Holder { pub f So[imm, fn(s &str)]; }
+
+fn viaHolder(h &Holder) {
+  h.f(gl.items[0usize].label.view());                         //~ ErrorShapeReshape "points into a 'mut' global"
+}
+
+fn viaFn(f &<fn(s &str)) {
+  f(gl.items[0usize].label.view());                           //~ ErrorShapeReshape "points into a 'mut' global"
+}
+
+// The view passed on through a helper that takes the owner and the view
+fn useHolder(h &Holder, s &str) { h.f(s); }
+
+fn viaHelper(h &Holder) {
+  useHolder(h, gl.items[0usize].label.view());                //~ ErrorShapeReshape "points into a 'mut' global"
+}

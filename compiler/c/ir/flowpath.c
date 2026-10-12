@@ -1915,6 +1915,10 @@ static void pwShapeLent(Place *pl, uint32_t loan, INode *container, int ofarg) {
     if (!marked) {
         loanFreezeShared(loan);
         loanFreezeWritable(loan);
+        // A place in a 'mut' global freezes against the same name, as above, and is also asked of
+        // every call, which may write the global by its name (reshapeCall's 'globalview')
+        if (loanPlaceInGlobal(pl))
+            loanShapeMark(loan, container);
     }
 }
 
@@ -1946,6 +1950,7 @@ static void pwShapeCall(FnCallNode *call, FnDclNode *meth, Place *recvpl, PathSe
     INode *conts[4];
     INode *owners[4];
     int rus[4];
+    int gvs[4];
     ReshapeVerdict verdicts[4];
     uint8_t answers[4];
     uint32_t ncont = 0;
@@ -1963,10 +1968,16 @@ static void pwShapeCall(FnCallNode *call, FnDclNode *meth, Place *recvpl, PathSe
             ru = 0;
         VarDclNode *mine[3];
         int nmine = local ? loanShapeRootVars(loan, mine) : 0;
+        int gv = loanShapeGlobalView(loan);
+        // A method lending a borrow from a place reached through this loan's own borrow ('view' in
+        // 'gl.items[0].label.view()') reads through it: the call that lends is not a call that
+        // writes. Anything made of the borrow afterwards is asked
+        if (gv && recvpl && pathSetHasLoan(pathVars[recvpl->var].holds, loan))
+            continue;
         uint32_t c = 0;
         // The answer is the same for the loans of one type, unless the loan's own locals
         // change what it is
-        while (c < ncont && (conts[c] != cont || owners[c] != owner || rus[c] != ru || local))
+        while (c < ncont && (conts[c] != cont || owners[c] != owner || rus[c] != ru || gvs[c] != gv || local))
             ++c;
         if (c == ncont) {
             if (ncont == 4) {
@@ -1977,8 +1988,9 @@ static void pwShapeCall(FnCallNode *call, FnDclNode *meth, Place *recvpl, PathSe
             conts[c] = cont;
             owners[c] = owner;
             rus[c] = ru;
+            gvs[c] = gv;
             uint32_t unsettled = shapeUnsettled;
-            answers[c] = (uint8_t)reshapeCall(call, meth, ru, cont, owner, &verdicts[c], mine, nmine);
+            answers[c] = (uint8_t)reshapeCall(call, meth, ru, cont, owner, gv, &verdicts[c], mine, nmine);
             // A body this leans on is not checked yet: the verdict waits for the
             // walk made again at the end of type check
             if (shapeUnsettled != unsettled && !flowWalkFinal) {

@@ -199,7 +199,7 @@ one bit per trigger:
 | `FlowGateStore` | `fnCallFlow` | a call with a `&mut X` argument, `X` carrying a borrow, or a struct argument holding such a writable borrow (`itypeWritableBorrowDepth`), beside another argument carrying one; or any call with arguments to a signature bounding a lifetime by `'static` (`FnSigNode.lifestatic`: a type parameter's `T + 'static`, a parameter `&<Trait + 'static`), whose arguments' loans `pwStaticArgs` checks though no type of them shows it, asked only once the parser has read a `'static` bound (`lifeStaticBoundSeen`) |
 | `FlowGateInCall` | `nameuseFlow`, `nameuseFlowBorrowed` | a variable named while a borrow of it made by an earlier operand of the same call, struct or array literal or value tuple is still waiting for it (`v.add(v.len())`); `&uni s[i]` and `&s[a..b]` on a slice are an index applied to a borrow of the slice (`borrowRefIndexDispatches`), so an operand that is an index is asked as that borrow (`flowGateOperandAsk`) |
 | `FlowGateBoxed` | `flowLoadValue` | a value whose type carries a borrow converted to an owning virtual reference (`So[Trait]` from a `So[H]`), whose loans the loan walk checks are global (section 6, "Named lifetimes") |
-| `FlowGateShape` | `fnCallFlow` (`flowGateShape`, `flowGateShapeAsk`) | a method call returning a borrow, on a receiver of a type that may change shape (`ShapeChanging`, or one whose answer `shapeinf` has not ruled out), reached through a reference, a field of `self` or a global rather than a plain local's own place. A borrow that never reaches a variable (`out.append(x.view())`, `two(l[0], bump(m))`) is otherwise no trigger at all, and a call made beside it could reshape what it lends. Asked even once another bit is set, for the bit also says the callees' bodies are to be checked before the walk (`shapeDemandCallees`). Also a reference narrowed from an enum to one of its variants through a path others share (`flowGateNarrow`), and a store into a struct-typed place that is no local named whole, in a function that has already lent such a borrow (`flowGateShapeStore`) |
+| `FlowGateShape` | `fnCallFlow` (`flowGateShape`, `flowGateShapeAsk`) | a method call returning a borrow, on a receiver of a type that may change shape (`ShapeChanging`, or one whose answer `shapeinf` has not ruled out), reached through a reference, a field of `self` or a global rather than a plain local's own place. A borrow that never reaches a variable (`out.append(x.view())`, `two(l[0], bump(m))`) is otherwise no trigger at all, and a call made beside it could reshape what it lends. Asked even once another bit is set, for the bit also says the callees' bodies are to be checked before the walk (`shapeDemandCallees`). A receiver that is a `mut` global's own place is no plain local, and a container some `mut` global reaches may be what a reference points at: the borrow is asked of every call, so any call after it is a trigger (`FlowState.shapeglobal`). Also a reference narrowed from an enum to one of its variants through a path others share (`flowGateNarrow`), and a store into a struct-typed place that is no local named whole, in a function that has already lent such a borrow (`flowGateShapeStore`) |
 
 "Carries a borrow" is `itypeCarriesBorrow`: the type is a borrowed reference, or
 an owning reference, pointer, array, tuple or struct (an enum's variants
@@ -1424,6 +1424,24 @@ locals, which only a call that reaches one of them is asked of):
 - **Globals**: handed nothing that reaches the type, a visible callee still
   reshapes if it does so by something that is no parameter of its own
   (`SiModeOut`, which skips what is reached from the callee's parameters).
+- **A borrow into a `mut` global** is asked of every call, whatever the call is handed
+  (`ReshapeGlobalView`, from the `globalview` argument of `reshapeCall`): which globals a function
+  writes is not followed, so any call might write this one by its name, and a visible or an
+  invisible callee, one handed nothing and one handed the view, are the same. A loan is a global
+  view (`loanShapeGlobalView`) when its place is rooted at a `mut` global or a static
+  (`loanPlaceInGlobal`: by the name, or through a reference whose own loans were of one, as the
+  `[]` of `gl.items[0usize].label.view()` leaves in its stand-in), and `pwShapeLent` marks such a
+  loan for the check though its path is not shared (it still freezes against the same name, as any
+  unmarked loan of a path does). `reshapeCall` asks the body first, then answers yes to any call
+  that is not exempt (`reshapeExempt`: an intrinsic, an init, `+ ShapeKeeping`). The call that lends
+  the borrow from the place the loan was reached through (`view` in that chain: the loan is held by
+  its receiver's root) is not asked. An `imm` global is no global view: nothing writes it.
+  A borrow reached through a reference a caller lent (a `&mut Ed` parameter that may have been
+  called with `&mut gl`: the loan is `rootsext`) is the same, where some `mut` global reaches the
+  container's type (`reshapeMutGlobalsReach`; `loanShapeGlobalView` answers 2, `ReshapeGlobalMaybe`):
+  the callee cannot tell the reference from the global. `flowGateShapeAsk` sets `shapeglobal` for such
+  a lend too, so the function is walked. A program with no `mut` global of that type is unaffected;
+  a global whose type is not yet worked out is taken to reach it.
 - The same name changing the collection (`loanShapeSamePlace`) is the loan's own
   freezing, which reports it; the shape check skips it where the loan freezes
   (`loanShapeFrozen`).
@@ -1541,8 +1559,8 @@ frozen.
 
 What it does not follow: types are compared as types, so two `List[Pt]` are not told apart
 (the point: it is never a proof of aliasing, only that nothing proves it absent);
-a global that code the compiler cannot read changes while it is handed nothing
-that reaches the type; and a raw pointer inside a local this function owns is
+which globals a function writes (a borrow a `mut` global could be is asked of every call
+instead, so a call that writes none is refused too); and a raw pointer inside a local this function owns is
 counted as reaching what it points at (a local `List[List[Pt]]` handed writable
 reaches a `List[Pt]` through its block), since nothing checks the convention that
 a collection owns its block.

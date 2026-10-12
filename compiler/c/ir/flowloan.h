@@ -291,6 +291,10 @@ void loanReachRoot(LoanReach *r, uint32_t var);
 void loanReachAdd(LoanReach *r, PathSet *set);
 
 int loanShapeLocal(uint32_t loan);
+int loanPlaceInGlobal(Place *pl);
+// A marked loan into a 'mut' global, or into something reached from one: every call is asked as one
+// that may write it (reshapeCall's 'globalview')
+int loanShapeGlobalView(uint32_t loan);
 int loanShapeReaches(uint32_t loan, const LoanReach *r);
 // The locals a loan that points only into locals points into (up to 3), else 0
 int loanShapeRootVars(uint32_t loan, VarDclNode **out);

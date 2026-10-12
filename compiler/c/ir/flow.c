@@ -1981,6 +1981,7 @@ void flowStateInit(FlowState *fstate, FnSigNode *fnsig) {
     fstate->yields = NULL;
     fstate->shapelend = 0;
     fstate->shapewrite = 0;
+    fstate->shapeglobal = 0;
 }
 
 // A value handed out that carries a borrow: what it holds, and so how long it
@@ -2147,14 +2148,25 @@ void flowGateShapeAsk(FlowState *fstate, INode *node) {
         if (isNameUseNode(place) && isExpNode(place)) {
             INode *dcl = ((NameUseNode *)place)->dclnode;
             if (dcl && dcl->tag == VarDclTag) {
+                VarDclNode *var = (VarDclNode *)dcl;
                 INode *vt = ((IExpNode *)dcl)->vtype ? flowGateTypeDcl(((IExpNode *)dcl)->vtype) : NULL;
+                // A 'mut' global is no plain local: any call may write it by its name
+                if ((var->scope == 0 || (var->flags & FlagStatic)) && var->perm && (permGetFlags(var->perm) & MayWrite))
+                    fstate->shapeglobal = 1;
                 // (an actor's 'self' is a value that is reached through its handle)
-                if (vt && vt->tag != RefTag && vt->tag != ArrayRefTag && vt->tag != VirtRefTag && vt->tag != PtrTag
-                        && ((VarDclNode *)dcl)->namesym != selfName)
+                else if (vt && vt->tag != RefTag && vt->tag != ArrayRefTag && vt->tag != VirtRefTag && vt->tag != PtrTag
+                        && var->namesym != selfName)
                     return;
             }
         }
     }
+    // Reached through a reference, of a type some 'mut' global reaches: the reference may be that
+    // global, so the borrow is asked of every call (loanShapeGlobalView)
+    if (reshapeMutGlobalsReach(container))
+        fstate->shapeglobal = 1;
+    // (a lend met after the first matters only for the global it may have been lent from, above)
+    if (fstate->shapelend)
+        return;
     fstate->shapelend = 1;
     flowGateShapeWrite(fstate, call->args);
 }

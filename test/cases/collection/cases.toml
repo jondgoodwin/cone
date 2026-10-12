@@ -291,7 +291,7 @@ diagnostics = 12
 category = "reject"
 description = "An element, a view or a struct's borrow held while another reference to the same container pushes, clears, pops or truncates it, replaces an element that owns the bytes viewed (a String), or takes one out, is handed to a call whose body reshapes it (directly, through what it calls, through a struct holding the reference, or through a global), to a function pointer or a function defined elsewhere, a view held by a result that may hold it while another String grows, and an element or view handed to the very call beside the reference that changes it"
 tags = ["flow"]
-diagnostics = 19
+diagnostics = 18
 
 # A struct that wraps a container is shape-changing too, though it declares
 # nothing: the compiler finds it from its methods (a pointer written, a borrow
@@ -456,6 +456,34 @@ diagnostics = 4
 [scenario.collection_reshape_virtual_success]
 category = "run"
 description = "A view held across a virtual call that cannot reach the container: a read-only '&<Trait' receiver and '&<fn', a list lent '&imm' to a visitor that takes a '&<mut fn', a '&<mut fn' marked '+ ShapeKeeping', and a '&<mut fn' handed a view of a String the function made"
+tags = ["flow", "genllvm", "runtime"]
+
+# A function may write a global by its name, whatever it is handed, and which globals a function writes
+# is not followed: a borrow into a 'mut' global is asked of every call
+# (collection_reshape_global_success holds what is accepted beside each refusal).
+[scenario.collection_flow_reshape_global]
+category = "reject"
+description = "A view of a String, or of an element of a List, held in a 'mut' global across any call: handed to a function that writes the global, held in a name across a call, a call handed nothing it could write through, a view of the global's own String, a closure in an 'imm' owner, a '&<fn', and a view passed on by a helper"
+tags = ["flow"]
+diagnostics = 7
+
+# A function handed a reference cannot tell it is a 'mut' global, so where one reaches the type
+# the view reached through the reference is asked of every call too
+[scenario.collection_flow_reshape_global_param]
+category = "reject"
+description = "A view of a String, or of an element of a List, reached through a '&mut' parameter, held across a call in a program with a 'mut' global that reaches the type: handed on beside a closure in an 'imm' owner, beside a '&<fn', through a '&<fn' whose body is not visible, to a function that writes nothing, and held in a name across a call"
+tags = ["flow"]
+diagnostics = 5
+
+[scenario.collection_flow_reshape_through_global]
+category = "reject"
+description = "A view reached through a '&mut List' parameter held across a visible call that clears a list through a global it is handed nothing of"
+tags = ["flow"]
+diagnostics = 1
+
+[scenario.collection_reshape_global_success]
+category = "run"
+description = "A view across calls that a 'mut' global's rule lets through: a view of an 'imm' global, a 'mut' global read into a local first (a copy of its String, a number), a view used by no call, a '&<mut fn' marked '+ ShapeKeeping', and a view of a local beside a 'mut' global"
 tags = ["flow", "genllvm", "runtime"]
 
 # A generic closure that captured the owner by '&mut' holds it as '& &mut Ed': a read-only reference

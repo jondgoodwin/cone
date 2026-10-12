@@ -105,8 +105,16 @@ static inline void flowGateShape(FlowState *fstate, FnCallNode *call) {
     // A call with a writable argument matters once a borrow is lent before it (a
     // borrow held across a loop is a holder, which gates the function itself)
     if (fstate->shapelend) {
-        if (!fstate->shapewrite)
-            flowGateShapeWrite(fstate, call->args);
+        // A borrow of a 'mut' global is asked of every call, not only one with a writable argument
+        if (fstate->shapeglobal)
+            fstate->gate |= FlowGateShape;
+        else {
+            if (!fstate->shapewrite)
+                flowGateShapeWrite(fstate, call->args);
+            // (a later borrow lent from a global)
+            if (!(fstate->gate & FlowGateShape) && call->vtype && !flowGateCarriesNone(call->vtype))
+                flowGateShapeAsk(fstate, (INode *)call);
+        }
     }
     else if (call->vtype && !flowGateCarriesNone(call->vtype))
         flowGateShapeAsk(fstate, (INode *)call);

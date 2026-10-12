@@ -50,6 +50,7 @@ typedef struct {
                         // reaches yet: the container it is marked for if one does (loanShapePromote)
     uint8_t nroots;     // a shape loan whose collection is function-local storage: how many of 'roots' (else 0)
     uint8_t rootsext;   // a shape loan's collection may be storage the function does not own
+    uint8_t globalview; // a shape loan's collection is a 'mut' global, or reached from one: any call may write it
     uint32_t roots[3];  // the local variables (walk indexes) whose storage it points into
 } Loan;
 
@@ -289,6 +290,7 @@ uint32_t loanMake(INode *site, Place *pl, INode *perm) {
     loan->lazycont = NULL;
     loan->nroots = 0;
     loan->rootsext = 0;
+    loan->globalview = 0;
     // Linked from its root variable, so an access finds it
     loan->next = pathVars[pl->var].loans;
     pathVars[pl->var].loans = id;
@@ -334,6 +336,7 @@ uint32_t loanCaller(uint32_t var, uint32_t part) {
     loan->lazycont = NULL;
     loan->nroots = 0;
     loan->rootsext = 0;
+    loan->globalview = 0;
     mapPut(parm, 0, loanCallerKey(part), id);
     return id;
 }
@@ -1810,9 +1813,37 @@ static int loanRootsHas(Loan *l, uint32_t var) {
     return 0;
 }
 
+// A global that can be written: an 'imm' one cannot change, so a borrow into it stays good across any call
+static int loanVarIsMutGlobal(VarDclNode *var) {
+    return loanVarIsGlobal(var) && var->perm && (permGetFlags(var->perm) & MayWrite);
+}
+
+// Is this place in a 'mut' global, or in something reached from one: by the global's own name, or
+// through a reference whose loans say it came from one? Which globals a call writes is not
+// followed, so a borrow into such a place is asked of every call (reshapeCall's 'globalview')
+int loanPlaceInGlobal(Place *p) {
+    if (loanVarIsMutGlobal(pathVars[p->var].var))
+        return 1;
+    if (!p->deref)
+        return 0;
+    PathSet *held = pathVars[p->var].holds;
+    if (held == NULL || held == &pathSetAll)
+        return 0;
+    for (uint32_t i = 0; i < held->cnt; ++i) {
+        if (held->ids[i] & LoanFar)
+            continue;
+        Loan *h = &loans[loanOf(held->ids[i])];
+        if (h->globalview || loanVarIsMutGlobal(pathVars[h->place.var].var))
+            return 1;
+    }
+    return 0;
+}
+
 static void loanRootsNote(uint32_t id) {
     Loan *l = &loans[id];
     Place *p = loanShapePlace(l);
+    if (loanPlaceInGlobal(p))
+        l->globalview = 1;
     if (p->owned || p->far) {
         l->rootsext = 1;
         return;
@@ -1880,6 +1911,16 @@ void loanShapeMark(uint32_t loan, INode *container) {
 // it only through a name for that local or a borrow of it
 int loanShapeLocal(uint32_t loan) {
     return loans[loan].nroots > 0 && !loans[loan].rootsext;
+}
+
+int loanShapeGlobalView(uint32_t loan) {
+    if (loans[loan].globalview)
+        return 1;
+    // Storage the function does not own (reached through a reference a caller lent) of a type some
+    // 'mut' global reaches: the reference may be that global, which a callee cannot tell
+    if (loans[loan].rootsext && reshapeMutGlobalsReach(loans[loan].shapecont))
+        return 2;
+    return 0;
 }
 
 int loanShapeRootVars(uint32_t loan, VarDclNode **out) {
@@ -1999,6 +2040,18 @@ static char *loanShapeReason(ShapeNote *note, char *cont, int sum, char *buf, si
             snprintf(buf, size, "'%s' may store over the %s it is called on, and its body is not visible here, so it is assumed to", name, cont);
         else
             snprintf(buf, size, "'%s' may change the %s it is called on, and its body is not visible here, so it is assumed to change its shape", name, cont);
+        break;
+    case ReshapeGlobalView:
+        if (sum)
+            snprintf(buf, size, "the borrow points into a 'mut' global, which '%s', like any call, may store over, and the compiler does not follow which globals a function writes", name);
+        else
+            snprintf(buf, size, "the borrow points into a 'mut' global, which '%s', like any call, may change the shape of, and the compiler does not follow which globals a function writes", name);
+        break;
+    case ReshapeGlobalMaybe:
+        if (sum)
+            snprintf(buf, size, "a 'mut' global reaches a %s and this borrow was lent by a caller, so it may point into that global, which '%s', like any call, may store over, and the compiler does not follow which globals a function writes", cont, name);
+        else
+            snprintf(buf, size, "a 'mut' global reaches a %s and this borrow was lent by a caller, so it may point into that global, which '%s', like any call, may change the shape of, and the compiler does not follow which globals a function writes", cont, name);
         break;
     case ReshapeUnseen:
         if (sum)

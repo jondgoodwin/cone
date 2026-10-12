@@ -1,0 +1,107 @@
+// What a 'mut' global's views are let through (collection_flow_reshape_global holds the refusals). A
+// borrow into a 'mut' global is asked of every call, so it is let through where
+//   - the global is 'imm', which no call can change;
+//   - the global is read into a local first, a copy of its String or a number, and the local is
+//     what is held across the calls;
+//   - the view is used by no call at all (its length, a comparison), or the call is a virtual one
+//     marked '+ ShapeKeeping', a promise held where the value becomes the reference;
+//   - the view is of a local, which no global can reach, or reached through a reference, of a type no
+//     'mut' global reaches.
+// Every value is worked out by hand and written at its line.
+
+mod collection_reshape_global_success;
+
+import stdio use *;
+import collections use *;
+
+struct Item { pub label String; }
+struct Ed { pub items List[Item]; }
+
+imm fixed Ed;
+mut gl Ed;
+mut title String;
+mut count i64;
+
+fn @initpure init() {
+  title = String.from("heading");
+  mut e = new Ed(List[Item].empty());
+  e.items.push(new Item(String.from("abc")));
+  fixed = e;
+  gl = new Ed(List[Item].empty());
+  gl.items.push(new Item(String.from("hello")));
+  count = 5i64;
+}
+
+fn note(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn bump() { count = count + 1i64; }
+
+// An 'imm' global cannot change: a view of it stays good across any call
+fn immView() {
+  imm v = fixed.items[0usize].label.view();
+  bump();
+  note("imm-view", i64.from(v.len));              // "abc": 3
+}
+
+// A 'mut' global read into a local first: a copy of the String, and a number
+fn copied() {
+  imm text = title.copy();
+  imm n = count;
+  bump();
+  note("copy-len", i64.from(text.view().len));    // "heading": 7
+  note("number", n);                              // read before the bump: 6
+}
+
+// A view that no call touches: its length, and a comparison
+fn noCall() {
+  imm v = gl.items[0usize].label.view();
+  imm n = i64.from(v.len);
+  if v == "hello" { note("no-call", n); }         // 5
+}
+
+// A virtual call marked '+ ShapeKeeping'
+fn keeping(f &<mut fn(s &str) + ShapeKeeping) {
+  f(gl.items[0usize].label.view());
+}
+
+fn useKeeping() {
+  mut seen = 0i64;
+  mut add = fn(s &str) { seen = seen + i64.from(s.len); };
+  keeping(&mut add);
+  note("keeping", seen);                          // 5
+}
+
+// A view of a local, with a 'mut' global in the program
+fn localView() {
+  imm mine = String.from("xyz");
+  imm v = mine.view();
+  bump();
+  note("local-view", i64.from(v.len));            // 3
+}
+
+// A view reached through a reference, of a type no 'mut' global reaches ('Ed' holds Items, Strings and
+// Lists of Items): the reference cannot be a global
+fn otherType(xs &mut List[i64]) {
+  imm e = xs[0usize];
+  bump();
+  note("other-type", *e);                         // the first element: 40
+}
+
+fn main() i32 {
+  immView();
+  copied();
+  noCall();
+  useKeeping();
+  localView();
+  mut nums = List[i64].empty();
+  nums.push(40i64);
+  nums.push(2i64);
+  otherType(&mut nums);
+  note("count", count);                           // 5, bumped by immView, copied, localView and otherType: 9
+  0;
+}
