@@ -120,34 +120,46 @@ const maxChunkBytes = 1048576usize;
 // A value over this many bytes (header included) is a large object, never moved
 const largeBytes = 4096usize;
 
-mut floorBytes = 65536usize;
-mut stressOn = false;
-mut envRead = false;
+// Every worker reads these after each message while the program may write them,
+// so each is an atomic held by an 'imm' global: a plain 'mut' one would be a
+// data race. 'floorBytes' starts at 'defaultFloor', all three set in the module's
+// 'init' (actors.cone)
+imm floorBytes Atomic[usize];
+imm stressOn Atomic[bool];
+
+// The environment is read once, by whichever comes first of the first actor and
+// a call to 'setFloor' or 'setStress'. Those two settle it without reading it,
+// so a program's own choice is not overwritten by the environment. A thread
+// that arrives while another is doing this waits until it is done
+imm envOnce sync.Once;
+
+fn envSettled() {}
+
+fn readEnvOnce() {
+  imm val = libc.getenv("CONE_ACTORGC_STRESS");
+  if val as usize != 0usize {
+    stressOn.store(true);
+  }
+}
 
 // Collect no sooner than after this many bytes are allocated: the floor under
 // the rule "allocated since the last collection exceeds what survived it".
 // For the process, before the first actor allocates
 pub fn setFloor(bytes usize) {
-  envRead = true;
-  floorBytes = bytes;
+  envOnce.callOnce(&envSettled);
+  floorBytes.store(bytes);
 }
 
 // Collect after every message, whatever was allocated: for tests, which find a
 // reference a collection missed, a stale one a move left behind, at once. The
 // environment variable CONE_ACTORGC_STRESS does the same for a whole run
 pub fn setStress(on bool) {
-  envRead = true;
-  stressOn = on;
+  envOnce.callOnce(&envSettled);
+  stressOn.store(on);
 }
 
 fn readEnv() {
-  if !envRead {
-    envRead = true;
-    imm val = libc.getenv("CONE_ACTORGC_STRESS");
-    if val as usize != 0usize {
-      stressOn = true;
-    }
-  }
+  envOnce.callOnce(&readEnvOnce);
 }
 
 // ---------------------------------------------------------------------------
@@ -767,9 +779,9 @@ fn blockRelease(r *MemRegion, block *u8, bytes usize) {
 // collection exceed what survived it, and are not under the floor (or if stress
 // is on). Only an actor that has asked for its region comes here
 fn collectIfDue(g &mut ActorRegion, st *u8, rec *TypeRecord) {
-  mut want = stressOn;
+  mut want = stressOn.load();
   if !want {
-    mut threshold = floorBytes;
+    mut threshold = floorBytes.load();
     if g.live > threshold {
       threshold = g.live;
     }
