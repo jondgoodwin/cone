@@ -63,6 +63,16 @@
 //   'addSkinnedMesh' and drawn by 'DrawList.addSkinned' with one skinning
 //   matrix a bone, which the GPU blends (linear blend skinning) in the
 //   skinned variants of the lit and physically based pipelines.
+// - Views (views.cone): the scene drawn from another camera into a texture
+//   of its own ('View', rendered before the frame's main 'render', with a
+//   layer mask over the draw list's items and a nesting limit), whose
+//   picture any material samples ('ViewMaterials': a screen, a planar mirror,
+//   reflective water with a Fresnel blend and a normal map's ripple); the
+//   camera that sees in a mirror is 'camera.reflectedAbout(plane)' (camera.cone:
+//   the world reflected, the mirror's plane the near plane by Lengyel's
+//   oblique clip). And reflection probes ('addProbe': a cube captured at a
+//   point, filtered like the sky by ibl.slang's pipelines), which light the
+//   physically based copies inside the probe's box, box-projected.
 // - Image, pixels from BMP (or made: 'Image.checker'), written as BMP too;
 //   'addTexture' hands one to the GPU as sRGB colour, 'addLinearTexture' as
 //   numbers (an ORM map), 'addNormalTexture' as a normal map; each with its
@@ -145,6 +155,7 @@
 //   lighting.cone  Sky, PbrMaterial, Environment; pbr.slang's and ibl.slang's SPIR-V
 //   post.cone      Post: the HDR frame, bloom, tone mapping; post.slang's SPIR-V
 //   camera.cone    Camera, Light
+//   views.cone     View, ViewMaterials, Probe; viewmat.slang's and probe.slang's SPIR-V
 //   image.cone     Image
 //
 // and its shaders, Slang: lit, lines, pbr, ibl and post, and the modules
@@ -290,6 +301,9 @@ pub struct Renderer {
   // The physically based pipeline for a mesh with a SWAY stream (gpumesh.cone)
   // drawn with a flutter material: a fourth vertex buffer, the colors
   pub pbrSwayPipeline RenderPipeline;
+  // The reflection probes ('addProbe', views.cone): a physically based copy
+  // inside a probe's box is lit by that probe's cubes instead of the sky's
+  pub probes List[ProbeSlot];
   // Store the depth buffer at the end of 'render' (it is discarded
   // otherwise), so that a later pass into the same target -- glowing
   // particles drawn additively, say -- is depth tested against the scene
@@ -461,8 +475,8 @@ pub struct Renderer {
       instances, FIRST_INSTANCES, List[f32].empty(), List[DrawKey].empty(), List[DrawBatch].empty(), 0u32,
       Pool[PipelineSlot].empty(), litSkinnedPipeline, pbrSkinnedPipeline, bones, FIRST_BONES, boneBases,
       List[u32].empty(), 0u32, litBlendPipeline, pbrBlendPipeline, litSkinnedBlendPipeline, pbrSkinnedBlendPipeline, 0u32,
-      pbrSwayPipeline);
-    mut w = new Image(1, 1, 3, List[u8].empty());
+      pbrSwayPipeline, List[ProbeSlot].empty());
+    mut w =new Image(1, 1, 3, List[u8].empty());
     w.pixels.push(255u8);
     w.pixels.push(255u8);
     w.pixels.push(255u8);
@@ -1006,6 +1020,15 @@ pub struct Renderer {
   // step when there are views).
   pub fn render(self &mut, device &mut Device, encoder &mut CommandEncoder, target &Texture, depth &Texture,
       camera &Camera, light &Light, list &DrawList) {
+    imm targetView = target.createView();
+    imm depthView = depth.createView();
+    self.renderTo(device, encoder, targetView, depthView, camera, light, list);
+  }
+
+  // The same into views of the target and its depth (a view of a texture
+  // the renderer itself holds a handle to, say: views.cone)
+  pub fn renderTo(self &mut, device &mut Device, encoder &mut CommandEncoder, target TextureView,
+      depth TextureView, camera &Camera, light &Light, list &DrawList) {
     self.update(device);
     drawCalls = 0u32;
     triangles = 0u64;
@@ -1060,13 +1083,14 @@ pub struct Renderer {
     // The background is light too: exposed like the rest
     imm bg = camera.background;
     imm clear = new Color(bg.red * exposure, bg.green * exposure, bg.blue * exposure, bg.alpha);
-    imm color = new RenderPassColorAttachment(view: target.createView(), clearValue: clear);
+    imm color = new RenderPassColorAttachment(view: target, clearValue: clear);
     imm depthStore = if keepDepth { STORE_OP_STORE; } else { STORE_OP_DISCARD; };
-    imm depthAttachment = new RenderPassDepthStencilAttachment(view: depth.createView(), depthStoreOp: depthStore);
+    imm depthAttachment = new RenderPassDepthStencilAttachment(view: depth, depthStoreOp: depthStore);
     mut pass = encoder.beginRenderPassWithDepth(&color, &depthAttachment);
     mut bound = BOUND_NONE;
     mut boundMaterial = Ref[MaterialSlot].none();
     mut boundPipeline = Ref[PipelineSlot].none();
+    mut boundProbe = 0u32;           // the probe whose group is group 2 (0: the sky's)
     mut skyDrawn = !drawSky;
     blendedDrawn = 0u32;
     mut b = 0usize;
@@ -1116,6 +1140,7 @@ pub struct Renderer {
             pass.setPipeline(&ps.pipeline);
             pass.setBindGroup(0u32, &frameGroup);
             if ps.environment { pass.setBindGroup(2u32, &environment.group); }
+            boundProbe = 0u32;
             bound = BOUND_CUSTOM;
             boundPipeline = mslot.pipeline.slot;
             boundMaterial = Ref[MaterialSlot].none();
@@ -1139,6 +1164,7 @@ pub struct Renderer {
             else { pass.setPipeline(&pbrSkinnedBlendPipeline); }
             pass.setBindGroup(0u32, &frameGroup);
             pass.setBindGroup(2u32, &environment.group);
+            boundProbe = 0u32;
             bound = want;
             boundMaterial = Ref[MaterialSlot].none();
           }
@@ -1162,6 +1188,17 @@ pub struct Renderer {
         if !(boundMaterial == item.material.slot) {
           pass.setBindGroup(1u32, &mslot.group);
           boundMaterial = item.material.slot;
+        }
+        // The environment this batch is lit by: the probe whose box holds it,
+        // or the sky's (views.cone)
+        if batch.probe != boundProbe and (mslot.kind == MATERIAL_PBR or (mslot.kind == MATERIAL_CUSTOM
+            and pipelines[mslot.pipeline.slot].environment)) {
+          if batch.probe == 0u32 {
+            pass.setBindGroup(2u32, &environment.group);
+          } else {
+            pass.setBindGroup(2u32, &probes[usize.from(batch.probe - 1u32)].group);
+          }
+          boundProbe = batch.probe;
         }
       }
       pass.setVertexBuffer(0u32, &m.positions, 0u64);
@@ -1208,6 +1245,26 @@ pub struct Renderer {
     drawCalls = drawCalls + 1u32;
   }
 
+  // The reflection probe whose box holds the point 'p': 1 + its index (the
+  // smallest box if several hold it), or 0 if none does (views.cone)
+  fn probeFor(self &, p Vec3) u32 {
+    mut found = 0u32;
+    mut volume = 0.;
+    mut i = 0usize;
+    while i < probes.len() {
+      imm s = probes[i];
+      if s.ready and p.x >= s.boxMin.x and p.x <= s.boxMax.x and p.y >= s.boxMin.y and p.y <= s.boxMax.y
+          and p.z >= s.boxMin.z and p.z <= s.boxMax.z {
+        if found == 0u32 or s.volume < volume {
+          found = u32.from(i) + 1u32;
+          volume = s.volume;
+        }
+      }
+      i = i + 1usize;
+    }
+    found;
+  }
+
   // Whether 'list' draws a mesh with a physically based material
   fn drawsPbr(self &, list &DrawList) bool {
     mut i = 0usize;
@@ -1250,14 +1307,15 @@ pub struct Renderer {
         if m.isValid() {
           if m.topology == PRIMITIVE_TOPOLOGY_LINE_LIST {
             imm d = item.model.translation().distanceSquared(eye);
-            keys.push(new DrawKey(LAYER_LINES, u32.from(i), item.mesh.slot.slot(), u32.from(i), d));
+            keys.push(new DrawKey(LAYER_LINES, u32.from(i), item.mesh.slot.slot(), u32.from(i), d, 0u32));
           } elif materials.alive(item.material.slot) {
+            imm probe = self.probeFor(item.model.translation());
             if materials[item.material.slot].blend {
               imm d = (item.model * m.center).distanceSquared(eye);
-              keys.push(new DrawKey(LAYER_BLEND, item.material.slot.slot(), item.mesh.slot.slot(), u32.from(i), d));
+              keys.push(new DrawKey(LAYER_BLEND, item.material.slot.slot(), item.mesh.slot.slot(), u32.from(i), d, probe));
             } else {
               imm d = item.model.translation().distanceSquared(eye);
-              keys.push(new DrawKey(LAYER_OPAQUE, item.material.slot.slot(), item.mesh.slot.slot(), u32.from(i), d));
+              keys.push(new DrawKey(LAYER_OPAQUE, item.material.slot.slot(), item.mesh.slot.slot(), u32.from(i), d, probe));
             }
           }
         }
@@ -1271,12 +1329,12 @@ pub struct Renderer {
       imm first = *keys[k];
       mut end = k + 1usize;
       while end < keys.len() and keys[end].layer == first.layer and keys[end].material == first.material
-          and keys[end].mesh == first.mesh {
+          and keys[end].mesh == first.mesh and keys[end].probe == first.probe {
         end = end + 1usize;
       }
       // The keys of a run are sorted nearest first (or, see-through,
       // farthest first)
-      batches.push(new DrawBatch(u32.from(k), u32.from(end - k), 0u32, first.distance, first.layer, u32.from(k)));
+      batches.push(new DrawBatch(u32.from(k), u32.from(end - k), 0u32, first.distance, first.layer, u32.from(k), first.probe));
       k = end;
     }
     batches.sortBy(&byDistance);
@@ -1357,6 +1415,7 @@ pub struct DrawKey {
   // Its distance from the eye, squared: its model's origin's, or, if it is
   // see-through, its bounding sphere's centre's
   distance f32;
+  probe u32;                   // the reflection probe that lights it, 1 + its index; 0: the sky's
 }
 
 // One instanced draw: 'count' keys from 'first', drawn as the instances
@@ -1368,6 +1427,7 @@ pub struct DrawBatch {
   distance f32;                // its nearest copy's distance from the eye, squared (see-through: its farthest's)
   layer u32;
   order u32;                   // its first key's place among the sorted keys
+  probe u32;                   // its copies' reflection probe (DrawKey)
 }
 
 fn byBatch(a &DrawKey, b &DrawKey) i32 {
@@ -1380,6 +1440,7 @@ fn byBatch(a &DrawKey, b &DrawKey) i32 {
   }
   if a.material != b.material { return if a.material < b.material { -1i32; } else { 1i32; }; }
   if a.mesh != b.mesh { return if a.mesh < b.mesh { -1i32; } else { 1i32; }; }
+  if a.probe != b.probe { return if a.probe < b.probe { -1i32; } else { 1i32; }; }
   if a.distance < b.distance { return -1i32; }
   if a.distance > b.distance { return 1i32; }
   0i32;
@@ -1414,6 +1475,7 @@ pub struct DrawItem {
   pub model Mat4;
   pub tint Color;
   pub bones u32 = NO_BONES;
+  pub layers u32 = 1u32;       // the layers it is on: a view draws the items its layer mask meets (views.cone)
 }
 
 // What a render pass draws: its items, and the skinned ones' bones, each
@@ -1455,6 +1517,18 @@ pub struct DrawList {
       b = b + 1usize;
     }
     items.push(new DrawItem(mesh, material, model, tint, first));
+  }
+
+  // Put the items from index 'from' on (those just added) on the layers
+  // 'mask' (a bit a layer; items start on layer bit 0)
+  pub fn setLayers(self &mut, from usize, mask u32) {
+    mut i = from;
+    while i < items.len() {
+      mut it = *items[i];
+      it.layers = mask;
+      items.set(i, it);
+      i = i + 1usize;
+    }
   }
 
   // Draw 'mesh' with 'material', placed by 'model'

@@ -87,7 +87,36 @@ static const uint ALPHA_BLEND = 2;
 [[vk::binding(3, 1)]] Texture2D metallicRoughnessTexture;
 [[vk::binding(4, 1)]] Texture2D normalTexture;
 [[vk::binding(5, 1)]] Texture2D occlusionTexture;
-[[vk::binding(0, 2)]] ConstantBuffer<SkyParams> skyParams;
+// Group 2's uniform buffer: the sky's parameters, then, for a reflection
+// probe's group (views.cone), its box and position. boxMin.w is 1 for a
+// probe and 0 for the sky's own group (all of these zero).
+struct EnvParams {
+    SkyParams sky;
+    float4 boxMin;                 // 144: xyz the probe's box, its minimum corner; w 1: box projection on
+    float4 boxMax;                 // 160: xyz the maximum corner
+    float4 probePosition;          // 176: xyz where the cube was captured
+};
+[[vk::binding(0, 2)]] ConstantBuffer<EnvParams> envParams;
+
+// The direction 'r' read from a probe's cube for a reflection leaving the
+// world point 'p': the ray p + t r is carried to where it leaves the
+// probe's box, and the cube is read towards that point from where it was
+// captured (box-projected parallax correction: Lagarde, "Image-based
+// Lighting approaches and parallax-corrected cubemap", SIGGRAPH 2012 course
+// notes, after Bjorke's "Image-Based Lighting", GPU Gems 2000). The sky's
+// own group is unprojected.
+float3 probeDirection(float3 r, float3 p) {
+    if (envParams.boxMin.w < 0.5) {
+        return r;
+    }
+    float3 safe = float3(abs(r.x) < 1e-6 ? 1e-6 : r.x, abs(r.y) < 1e-6 ? 1e-6 : r.y, abs(r.z) < 1e-6 ? 1e-6 : r.z);
+    float3 first = (envParams.boxMax.xyz - p) / safe;
+    float3 second = (envParams.boxMin.xyz - p) / safe;
+    float3 farthest = max(first, second);
+    float t = min(min(farthest.x, farthest.y), farthest.z);
+    float3 hit = p + r * t;
+    return normalize(hit - envParams.probePosition.xyz);
+}
 [[vk::binding(1, 2)]] TextureCube irradianceCube;
 [[vk::binding(2, 2)]] TextureCube specularCube;
 [[vk::binding(3, 2)]] Texture2D brdfTable;
@@ -256,9 +285,9 @@ float4 fragmentMain(VertexOutput input) : SV_Target {
     float nol = saturate(dot(n, l));
     float noh = saturate(dot(n, h));
     float loh = saturate(dot(l, h));
-    float3 r = reflect(-v, n);
+    float3 r = probeDirection(reflect(-v, n), input.world);
 
-    float4 base = material.baseColor * baseTexture.Sample(baseSampler, input.uv) * input.tint;
+    float4 base =material.baseColor * baseTexture.Sample(baseSampler, input.uv) * input.tint;
     uint alphaMode = uint(material.maps.z + 0.5);
     if (alphaMode == ALPHA_MASK) {
         if (base.a < material.maps.w) {
@@ -392,5 +421,5 @@ float4 backgroundFragment(SkyOutput input) : SV_Target {
         1.0 - input.position.y / frame.viewport.y * 2.0);
     float4 far = mul(frame.inverseViewProjection, float4(ndc, 1.0, 1.0));
     float3 dir = far.xyz / far.w - frame.cameraPosition.xyz;
-    return float4(skyRadiance(dir, skyParams, true) * frame.exposure.x, 1.0);
+    return float4(skyRadiance(dir, envParams.sky, true) * frame.exposure.x, 1.0);
 }
