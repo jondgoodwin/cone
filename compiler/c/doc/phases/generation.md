@@ -352,10 +352,29 @@ operation fast-math or contractable, so a vectorizer widens only what keeps
 each lane's operations in their written order (a loop scaling a slice, a
 matrix's columns), never a sum over a loop, and no multiply and add are fused,
 whatever the CPU. A `--debug` build runs only
-`function(mem2reg,reassociate,gvn,simplifycfg)`, with no target machine, and
-turns off the code generator's optimization and enables DWARF. A GPU target's
-pipeline is its own, at every level (section 7). **There is no `--release`
-flag** — release is the default and `--debug` turns it off.
+`globaldce,function(mem2reg,reassociate,gvn,simplifycfg)`, with no target
+machine, and turns off the code generator's optimization and enables DWARF. A
+GPU target's pipeline is its own, at every level (section 7). **There is no
+`--release` flag** — release is the default and `--debug` turns it off.
+
+**Only what live code reaches is emitted**, in a debug build as in a release
+one. `.preir` is what generation wrote, every function included; the `globaldce`
+that opens the debug pipeline (it is in `default<O2>` already) deletes each
+definition with internal, private or `linkonce` linkage that nothing refers to,
+and then whatever only it referred to, before anything else runs, so `.ir`
+and the object have only what live code reaches. The roots are the symbols the
+object makes visible, which `genlLinkage` decided — `main` and a public C-named
+definition, a library's exports (`GenlExported`), and so a library's module
+lifecycle functions its importers call by name — and everything they refer to:
+a function whose address is taken, a closure, a vtable and the thunks in its
+slots, a type record, a finalizer a live drop calls. No list of roots is kept
+here, so nothing a live symbol refers to can be dropped. It exists for the
+constants of the build: the untaken side of an `if` on one is not generated
+(section 6), and a helper holding only that side's calls, called from nowhere
+else, is dropped with it, with its calls to symbols the target does not have.
+The dead bodies are generated first, so this saves the object and the linker
+the work, not the compiler. A GPU target runs its own `globaldce`, after its
+kernels are settled.
 
 ## 3. Type lowering
 
@@ -1124,7 +1143,9 @@ generation.** `genlIf` asks `intrinsicBuildConst` of each condition:
 arm generates nothing, not even its test; a true one generates its body as the
 `else` would and ends the chain, the arms after it generating nothing. A call
 on an untaken side therefore never reaches the object, in either build, and an
-`extern` only that side names is declared and never referenced. Everything
+`extern` only that side names is declared and never referenced, and a function
+only that side calls is not emitted (section 2, "Only what live code reaches
+is emitted"). Everything
 before generation still sees both sides ([intrinsic](../nodes/intrinsic.md),
 "Constants of the build drop the untaken side at generation").
 
