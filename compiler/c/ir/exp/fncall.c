@@ -1899,7 +1899,7 @@ int fnCallLowerPtrMethod(FnCallNode *callnode, INsTypeNode *methtype) {
         INode *parm1type = iexpGetTypeDcl(nodesGet(parms, 1));
         if (parm1type->tag != PtrTag && parm1type->tag != RefTag && parm1type->tag != ArrayRefTag
             && !iexpCoerce(&nodesGet(callnode->args, 1), parm1type))
-            errorMsgNode(nodesGet(callnode->args, 1), ErrorInvType,
+            iexpMismatchMsg(nodesGet(callnode->args, 1), parm1type, ErrorInvType,
                 "Expression's type does not match declared parameter");
     }
 

@@ -371,7 +371,12 @@ static LLVMTypeRef genlCAbiRetType(GenState *gen, CAbiArg *ret) {
 LLVMTypeRef genlFnDclType(GenState *gen, FnDclNode *fndcl) {
     if (!genlIsCAbiFn(fndcl))
         return genlType(gen, fndcl->vtype);
-    FnSigNode *fnsig = (FnSigNode*)itypeGetTypeDcl(fndcl->vtype);
+    return genlCAbiFnType(gen, (FnSigNode*)itypeGetTypeDcl(fndcl->vtype));
+}
+
+// The LLVM function type of a C-named function, and of a reference to one
+// ('&fn @c (...)'): the signature with its values as the C ABI passes them
+LLVMTypeRef genlCAbiFnType(GenState *gen, FnSigNode *fnsig) {
     CAbiPlan plan;
     genlCAbiPlan(gen, fnsig, &plan);
     LLVMTypeRef ptrtype = LLVMPointerTypeInContext(gen->context, 0);
@@ -537,23 +542,43 @@ static LLVMValueRef genlCAbiJoin(GenState *gen, CAbiArg *arg, LLVMValueRef *in) 
 // ---- Calls, parameters and returns -----------------------------------------------
 
 // Build the call instruction itself, in the function's calling convention
-static LLVMValueRef genlFnDclCallInst(GenState *gen, FnDclNode *fndcl, LLVMTypeRef fntype, LLVMValueRef fn,
+static LLVMValueRef genlFnDclCallInst(GenState *gen, int stdcall, LLVMTypeRef fntype, LLVMValueRef fn,
         LLVMValueRef *args, uint32_t argcnt) {
     LLVMValueRef call = LLVMBuildCall2(gen->builder, fntype, fn, args, argcnt, "");
-    if (fndcl->dclinfo.facts & DclSystemCC)
+    if (stdcall)
         LLVMSetInstructionCallConv(call, LLVMX86StdcallCallConv);
     return call;
 }
+
+static LLVMValueRef genlCAbiCall(GenState *gen, FnSigNode *fnsig, LLVMTypeRef fntype, LLVMValueRef fn,
+        LLVMValueRef *args, uint32_t argcnt, int stdcall);
 
 // Call a declared function 'fn' with the Cone values 'args', returning the Cone
 // value it returns. A function that crosses to C is handed its arguments, and
 // hands back its result, as the C ABI passes them.
 LLVMValueRef genlFnDclCall(GenState *gen, FnDclNode *fndcl, LLVMValueRef fn, LLVMValueRef *args, uint32_t argcnt) {
     LLVMTypeRef fntype = genlFnDclType(gen, fndcl);
+    int stdcall = (fndcl->dclinfo.facts & DclSystemCC) != 0;
     if (!genlIsCAbiFn(fndcl))
-        return genlFnDclCallInst(gen, fndcl, fntype, fn, args, argcnt);
+        return genlFnDclCallInst(gen, stdcall, fntype, fn, args, argcnt);
+    return genlCAbiCall(gen, (FnSigNode*)itypeGetTypeDcl(fndcl->vtype), fntype, fn, args, argcnt, stdcall);
+}
 
-    FnSigNode *fnsig = (FnSigNode*)itypeGetTypeDcl(fndcl->vtype);
+// Call through a function pointer or reference whose pointee is 'pointee', the
+// function's signature. A reference marked '&fn @c' is called as the C ABI
+// passes values, as the C-named function it holds the address of expects; any
+// other as a Cone function is.
+LLVMValueRef genlFnPtrCall(GenState *gen, INode *pointee, LLVMValueRef fn, LLVMValueRef *args, uint32_t argcnt) {
+    INode *sig = itypeGetTypeDcl(pointee);
+    LLVMTypeRef fntype = genlType(gen, pointee);
+    if (sig->tag == FnSigTag && ((FnSigNode*)sig)->ccall)
+        return genlCAbiCall(gen, (FnSigNode*)sig, fntype, fn, args, argcnt, 0);
+    return genlFnDclCallInst(gen, 0, fntype, fn, args, argcnt);
+}
+
+// The call itself, with the Cone values of a C-named signature passed as C does
+static LLVMValueRef genlCAbiCall(GenState *gen, FnSigNode *fnsig, LLVMTypeRef fntype, LLVMValueRef fn,
+        LLVMValueRef *args, uint32_t argcnt, int stdcall) {
     assert(argcnt == fnsig->parms->used);
     CAbiPlan plan;
     genlCAbiPlan(gen, fnsig, &plan);
@@ -591,7 +616,7 @@ LLVMValueRef genlFnDclCall(GenState *gen, FnDclNode *fndcl, LLVMValueRef fn, LLV
         }
     }
 
-    LLVMValueRef call = genlFnDclCallInst(gen, fndcl, fntype, fn, cargs, cargcnt);
+    LLVMValueRef call = genlFnDclCallInst(gen, stdcall, fntype, fn, cargs, cargcnt);
     genlCAbiMark(gen, fnsig, &plan, NULL, call);
     switch (plan.ret.pass) {
     case CAbiIndirect:

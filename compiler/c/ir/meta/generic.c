@@ -1465,7 +1465,7 @@ static void genericDropRo(char *buf) {
 // Append a checked signature as it comes to: 'fn(&Person, &Person) i32'
 void genericFnSigCat(char *buf, size_t size, FnSigNode *sig) {
     size_t used = strlen(buf);
-    snprintf(buf + used, size - used, "fn(");
+    snprintf(buf + used, size - used, sig->ccall ? "fn @c (" : "fn(");
     for (uint32_t j = 0; j < sig->parms->used; ++j) {
         used = strlen(buf);
         snprintf(buf + used, size - used, j ? ", " : "");
