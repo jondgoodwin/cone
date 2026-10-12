@@ -2229,9 +2229,19 @@ void genpgm(GenState *gen, ProgramNode *pgm) {
     // CPU's that --cpu and --features name. O3 was measured against it and
     // compiled slower for no run time worth having. Generation marks no float
     // operation fast or contractable, so nothing reorders a float sum. A debug
-    // build only promotes allocas to registers, reassociates, eliminates
+    // build first drops what no live symbol reaches (globaldce: a definition
+    // with internal, private or linkonce linkage that nothing refers to, and
+    // then what only it referred to, which a release build's O2 does too),
+    // then only promotes allocas to registers, reassociates, eliminates
     // common subexpressions and simplifies the control flow graph, each
-    // function in turn, with no target machine.
+    // function in turn, with no target machine. So a helper holding the
+    // calls of one OS, which only the other OS's branch of an 'if' on a
+    // constant of the build calls, is no part of the object in a debug build
+    // either, and the symbols it names need not exist. The roots are the
+    // symbols the object makes visible, which genlLinkage decided -- 'main',
+    // a public C-named definition, a library's exports (and so the module
+    // lifecycle functions its importers call by name) -- and whatever they
+    // refer to: a vtable, a function whose address is taken, a closure.
     //
     // A GPU target's pipeline is its own at every optimization level, debug
     // too, since without it the module is not valid SPIR-V: inline every
@@ -2272,7 +2282,7 @@ void genpgm(GenState *gen, ProgramNode *pgm) {
             : "always-inline,function(sroa,instsimplify,sroa,infer-address-spaces,instsimplify,simplifycfg)")
         : gen->opt->release
         ? "default<O2>"
-        : "function(mem2reg,reassociate,gvn,simplifycfg)";
+        : "globaldce,function(mem2reg,reassociate,gvn,simplifycfg)";
     LLVMPassBuilderOptionsRef passopts = LLVMCreatePassBuilderOptions();
     LLVMErrorRef passerr = LLVMRunPasses(gen->module, pipeline,
         gen->opt->gpu || gen->opt->release ? gen->machine : NULL, passopts);

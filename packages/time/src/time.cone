@@ -162,19 +162,24 @@ const clockMonotonic = 1i32;
 
 // The steady clock's count, in nanoseconds
 fn steadyNs() i64 {
-  if isWindows() {
-    mut count = 0i64;
-    mut freq = 0i64;
-    QueryPerformanceCounter(&mut count as *i64);
-    QueryPerformanceFrequency(&mut freq as *i64);
-    // Split, so that count * 10^9 cannot overflow
-    (count / freq) * nsPerSecond + (count % freq) * nsPerSecond / freq;
-  }
-  else {
-    mut ts = new PosixTimespec(0i64, 0i64);
-    clock_gettime(clockMonotonic, &mut ts as *PosixTimespec);
-    ts.sec * nsPerSecond + ts.nsec;
-  }
+  if isWindows() {steadyWindows();} else {steadyPosix();}
+}
+
+// Each system's calls are a function of their own, called from the branch for
+// that system alone: on the other system it is not part of the program
+fn steadyWindows() i64 {
+  mut count = 0i64;
+  mut freq = 0i64;
+  QueryPerformanceCounter(&mut count as *i64);
+  QueryPerformanceFrequency(&mut freq as *i64);
+  // Split, so that count * 10^9 cannot overflow
+  (count / freq) * nsPerSecond + (count % freq) * nsPerSecond / freq;
+}
+
+fn steadyPosix() i64 {
+  mut ts = new PosixTimespec(0i64, 0i64);
+  clock_gettime(clockMonotonic, &mut ts as *PosixTimespec);
+  ts.sec * nsPerSecond + ts.nsec;
 }
 
 // ---------------------------------------------------------------------------

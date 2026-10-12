@@ -1,0 +1,85 @@
+// Code only the untaken side of an 'if' on a constant of the build reaches is
+// not part of the object (TEMPORARY, a provisional mechanism; its final design
+// is open). This scenario runs on Windows and on Linux and prints the same on
+// both, so the sides it must not generate are macOS's, which neither host is.
+//
+// Each of macHelper, macDeep, macCallback and macUnused holds only a call to a
+// function declared 'extern' and defined nowhere, so the program links only
+// because none of them is emitted: macHelper is called from the dead side
+// alone, macDeep only from macHelper (a chain of them), macCallback has its
+// address taken on the dead side alone, and macUnused is called from nowhere.
+// takenHelper holds the calls of the side the build takes, and is emitted. The
+// program links in a debug build as in a release one; before, a debug build
+// kept every function it defined, and the linker found the extern.
+
+mod intrinsic_buildconst_reach;
+
+import stdio use *;
+
+extern fn macDefinedNowhere();
+extern fn macValueDefinedNowhere() i32;
+
+// Called from the dead side alone
+fn macHelper() {
+  macDefinedNowhere();
+  macDeep();
+}
+
+// Called only from a function that is itself reached only from the dead side
+fn macDeep() i32 {
+  macDefinedNowhere();
+  macValueDefinedNowhere();
+}
+
+// Its address is taken on the dead side alone
+fn macCallback() {
+  macDefinedNowhere();
+}
+
+// Called from nowhere
+fn macUnused() {
+  macDefinedNowhere();
+}
+
+fn callIt(f &fn()) {
+  f();
+}
+
+// What the side the build takes calls
+fn takenHelper() {
+  printStr("the taken side's helper\n");
+}
+
+// A helper holding one platform's calls, called from the branch for it, as a
+// package writes one
+fn osNeutralHelper(n i32) i32 {
+  n * 2;
+}
+
+fn pick(n i32) i32 {
+  if isMacOS() {
+    macHelper();
+    callIt(&macCallback);
+    0;
+  }
+  elif isWindows() or isLinux() {
+    takenHelper();
+    osNeutralHelper(n);
+  }
+  else {
+    macDeep();
+  }
+}
+
+fn main() {
+  printInt(pick(21));
+  printStr("\n");
+
+  // The dead side of a statement 'if' with no 'else'
+  if isMacOS() {macHelper();}
+
+  // A constant after a test known only as the program runs
+  if pick(1) > 100 {printStr("never\n");}
+  elif isMacOS() {callIt(&macCallback);}
+  else {printStr("done\n");}
+}
