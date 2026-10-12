@@ -293,7 +293,8 @@ def read_link(path: Path, table: object,
 
 def read_manifest(path: Path) -> Package:
     """congo.toml: a [package] table with name, version and output, and, for a
-    package that needs C libraries linked, a [link] table.
+    package that needs C libraries linked, a [link] table and a section of it
+    for each system that needs more (read_link).
 
     There is no dependencies section: the imports in the source are the
     dependency list, and the registries say where each one is [Jon 23 Sep]."""
