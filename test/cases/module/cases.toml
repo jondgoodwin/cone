@@ -3599,3 +3599,30 @@ tags = ["genllvm"]
 [[scenario.module_gpu_allowed.run]]
 name = "vulkan"
 options = ["--triple=spirv1.6-unknown-vulkan1.3", "--verify"]
+
+[scenario.module_nonpub_final_link]
+category = "run"
+description = "A program dropping values of a package's public types whose 'final' is not public -- a local, a field of the program's own type, an array, a type holding a finalizing field with and without a 'final' of its own, an enum and its variant, a value assigned over -- links against the package's object and runs every finalizer, since the library exports a reachable type's 'final'"
+tags = ["genllvm", "runtime"]
+link = ["package/lib.conebuild"]
+include = ["include/lib.cone"]
+
+# No 'final' is public, yet the library's object defines each, and the
+# program only declares them: the drop is called wherever a value dies, so a
+# private 'final' is exported as a module's 'init' and 'final' are.
+[[scenario.module_nonpub_final_link.check]]
+name = "the-library-exports-every-final"
+target = "symbols"
+object = "lib"
+contains = [
+  "define lib.Handle.final comdat nodeduplicate",
+  "define lib.Pair.final comdat nodeduplicate",
+  "define lib.Tok.Plain.final comdat nodeduplicate",
+  "define lib.Tok.Held.final comdat nodeduplicate",
+]
+
+[[scenario.module_nonpub_final_link.check]]
+name = "the-program-declares-and-does-not-define-them"
+target = "symbols"
+contains = ["declare lib.Handle.final", "declare lib.Pair.final"]
+excludes = ["define lib.Handle.final", "define lib.Pair.final"]

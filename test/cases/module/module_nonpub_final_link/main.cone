@@ -1,0 +1,75 @@
+// A program dropping values of a package's public types whose 'final' is not
+// public. Package lib is compiled on its own (package\lib.conebuild); the
+// program sees only its include file, and every line below can only come from
+// lib's object. Each drop below must reach a 'final' the include file declares
+// and lib's object exports, so the program links and runs the finalizers:
+//   - a local of lib's type, dropped as its function ends;
+//   - a local that holds one in a field of its own, and an array of them;
+//   - a type of lib's holding another (with its own 'final', and without);
+//   - a value of lib's enum, finalized as the variant it holds.
+
+mod prog;
+
+import stdio use *;
+import lib;
+
+// A type of the program's own whose field is lib's
+struct Mine {
+  pub h lib.Handle;
+}
+
+fn plain() {
+  imm h = new lib.Handle(1i64);
+  printStr("local ");
+  printInt(h.id);
+  printStr("\n");
+}
+
+fn field() {
+  imm m = new Mine(new lib.Handle(2i64));
+  printStr("field ");
+  printInt(m.h.id);
+  printStr("\n");
+}
+
+fn pair() {
+  imm p = new lib.Pair(3i64, new lib.Handle(4i64));
+  printStr("pair ");
+  printInt(p.id);
+  printStr("\n");
+}
+
+fn holder() {
+  imm p = new lib.Holder(new lib.Handle(5i64));
+  printStr("holder ");
+  printInt(p.held.id);
+  printStr("\n");
+}
+
+fn tok() {
+  imm t lib.Tok = lib.Tok.Held(new lib.Handle(6i64));
+  printStr("tok\n");
+}
+
+fn array() {
+  imm a = new Array[lib.Handle, 2] <- new lib.Handle(7i64), new lib.Handle(8i64);
+  printStr("array\n");
+}
+
+// A drop that happens where the value is assigned over
+fn replaced() {
+  mut h = new lib.Handle(9i64);
+  h = new lib.Handle(10i64);
+  printStr("replaced\n");
+}
+
+fn main() i32 {
+  plain();
+  field();
+  pair();
+  holder();
+  tok();
+  array();
+  replaced();
+  0i32;
+}
