@@ -2497,7 +2497,10 @@ Cone helper beside the declarations is its object's to define. The package's
 manifest names the C library in a `[link]` table
 (`libraries`, and optionally `paths` to search, relative to the package), and
 Congo puts every library the packages of a build name on the executable's link
-line. The compiler is not involved in linking and needed no change: compiled on
+line. What differs by system is a section of that table for the system
+(`[link.windows]`, `[link.linux]`, `[link.macos]`, the same keys: `opengl32` on
+Windows is `GL` elsewhere), which adds to the plain table on its own system and
+is ignored on the others. The compiler is not involved in linking and needed no change: compiled on
 its own, as Congo compiles every package, a declarations-only `@c` module is an
 empty object, as `core`'s is, and Congo links it like any other rather than
 treating a C package as a case of its own. That also keeps a `@c` module that
@@ -2505,8 +2508,7 @@ holds a Cone body correct, since the body is in that object.
 
 What is still open: how `trust` is stated, how opaque types are declared,
 a C package whose root reaches a C-named submodule (its block keeps the
-submodule's `@c`, unmeasured), per-platform
-library names (`opengl32` on Windows is `GL` elsewhere), and generating such a
+submodule's `@c`, unmeasured), and generating such a
 package from a C header. `--safe=package`,
 which exists in the option help and controls which packages may use C FFI, is
 the policy half of the same question; that C naming is now written on the

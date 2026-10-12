@@ -437,8 +437,8 @@ Visual Studio projects stay at the root.
   hand, `commandLine`, `args` and `currentExe`, a `Path`), a failure to start a
   `ProcessError`; its interface is no OS's, its insides one per OS: on Windows
   `kernel32`'s `CreateProcessW`, overlapped pipes, a job object and the
-  debugging functions, `shell32`'s `CommandLineToArgvW` (which Congo's
-  Windows link line names), on Linux `posix_spawn` with pipes read by `poll`,
+  debugging functions, `shell32`'s `CommandLineToArgvW` (which its
+  `[link.windows]` names), on Linux `posix_spawn` with pipes read by `poll`,
   a process group stopped by `SIGKILL`, and `/proc/self` for `args` and
   `currentExe`;
   `iobuf` is owned buffers for I/O, the async I/O runtime's first package:
@@ -571,7 +571,7 @@ Visual Studio projects stay at the root.
   (`connectWith`; `listenWith` and a `LayerMaker`), whose blocking work
   (the OS's certificate check) the driver runs on the blocking pool;
   `tls` is TLS 1.2 and 1.3 over OpenSSL 3.5 (CPython's signed build, from
-  `tools/deps/fetch.py`; `[link] runtime` copies its DLLs), sans-IO over
+  `tools/deps/fetch.py`; `[link.windows] runtime` copies its DLLs), sans-IO over
   memory BIOs, client and server: a `Client` or `Server` context, a
   `Session` (bytes in and out, SNI, ALPN offering `http/1.1`, resumption,
   close_notify both ways, one `TlsError` with the back end's or the OS's
@@ -727,13 +727,16 @@ Visual Studio projects stay at the root.
   state, the value and the parked waiters in its payload; `liveFutures`);
   `aio` is the I/O an actor's behaviour awaits, over `actors`
   and `iocore`: `aio.listen`, `aio.connect`, a `Socket`'s `accept`, `read`,
-  `write` and `localAddr`, each an `actors.Awaitable` answering a `Result`
+  `write` and `localAddr`, and `aio.openFile` with a `File`'s `readAt` and
+  `writeAt` (iocore's `ReadAt` and `WriteAt` at a byte offset; a `File` moves
+  and closes on drop as a `Socket` does), each an `actors.Awaitable` answering a `Result`
   (a read's success its buffer back, what arrived appended; one cancelled or
   past its deadline an `Error` whose `IoErrorKind` (iocore's: `Os`, `Cancelled`, `TimedOut`)
   `isCancelled` or `isTimedOut` reads, never a panic), done by one I/O
   thread that owns the runtime's `iocore` Loop, takes operations from a
   queue under a Mutex and answers through `Target.Hook`; the `In` forms of
-  `connect`, `accept`, `read` and `write` take `IoLimits`, a `CancelGroup` and
+  `connect`, `accept`, `read` and `write` (and a file's `readAtIn` and
+  `writeAtIn`; `openFile` has none) take `IoLimits`, a `CancelGroup` and
   an absolute deadline, handed to `submitIn`; a dropped `Socket`
   closes, cancelling what is in flight on it; its finalizer, which `finalAll()` runs before `actors`', waits for
   quiet and ends the I/O, every behaviour still paused on it abandoned, its
@@ -1081,8 +1084,12 @@ Congo runs on Linux (`python3 tools/congo/congo.py test` in a package's folder,
 with `conec` built at `build/x64-release/conec`), and `sync`, `thread`,
 `actors`, `time`, `path`, `env`, `fs`, `posix`, `process`, `iobuf`, `iocore` and
 `aio` pass their tests there. (`synchronization.lib`, `shell32.lib`,
-`ws2_32.lib` and `ntdll.lib`, the Windows SDK's, are on Congo's Windows link
-line itself, so no package's `[link]` names them.) The packages built on
+`ws2_32.lib` and `ntdll.lib`, the Windows SDK's, are named by the
+`[link.windows]` of `sync`, `process` and `iocore`; a package's manifest has
+a section for each system, `[link.windows]`, `[link.linux]` and
+`[link.macos]`, added to its plain `[link]`, and `tls` links `ssl` and
+`crypto` from `[link.linux]`, so Ubuntu's `libssl-dev` must be installed.)
+The packages built on
 Windows alone (HTTP's `httpconn` examples and `httpclient`, `tls`, `sdl` and
 what draws) do not build or run there. A test whose output differs by system has a
 file of its own for the host, `name.linux.out` beside `name.out` (Congo reads
@@ -1161,7 +1168,7 @@ link prog.obj build\x64-release\conestd.lib /OUT:prog.exe /SUBSYSTEM:CONSOLE msv
 
 A program that imports `sync` (or `thread`, which imports it) also needs
 `synchronization.lib`, the Windows SDK library its futex calls into; the test
-runner's link line and Congo's both have it. On Linux the link line is `cc`, with `-lm -lpthread`,
+runner's link line has it, and Congo links it from `sync`'s `[link.windows]`. On Linux the link line is `cc`, with `-lm -lpthread`,
 and the futex is in `libconestd.a`.
 
 Or let Congo do it: `congo run prog.cone` (`tools/congo/`) compiles a lone file

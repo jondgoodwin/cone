@@ -273,6 +273,15 @@ void structLayoutExit(void);
 // Is a layout in flight, so that no member may be checked yet?
 int structLayoutInFlight(void);
 
+// Is this type's layout still to finish -- a struct not yet laid out, or an
+// enum with a variant not yet laid out -- so that whether its values move is
+// not yet settled? (structTypeCheck decides it from the fields.)
+int structLayoutUnsettled(INode *type);
+
+// Remove a method from an instance of a generic type that was cloned with it:
+// from the method list and the namespace, and from the overload set it joined
+void structRetireMember(StructNode *instance, INode *member);
+
 // The layout of a struct, an array or a tuple begins or ends: counted as above,
 // and kept on the stack a by-value cycle is named from (structLayoutCycle)
 void structLayoutBegin(INode *type);
