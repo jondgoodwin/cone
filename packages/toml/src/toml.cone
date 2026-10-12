@@ -37,17 +37,22 @@
 //   comments between its strings, and end with a ','.
 // A '#' starts a comment, to the end of the line, wherever a space could go
 // but inside a string. Lines end in '\n' or '\r\n'. The text must be UTF-8.
-// A key, and a table's name, is bare: letters, digits, '_' and '-'.
+// A key, and a part of a table's name, is bare: letters, digits, '_' and '-'.
+// A table's name may be dotted, '[link.windows]', the sub-table 'windows' of
+// 'link': the Document holds it as a table of its own, named 'link.windows'
+// (spaces around the dot are passed over), and 'link' need not be written
+// itself. Tables are found by that whole name.
 //
 // **What it refuses.** The rest of TOML is outside the subset, and each part
 // of it is refused by name, with its line, never read as something else:
 // dates and times, floats (and 'inf' and 'nan'), integers in hex, octal or
 // binary, literal strings ('...'), multi-line strings ('"""' and "'''"),
-// inline tables ('{...}'), arrays of tables ('[[...]]'), dotted keys and
-// table names ('a.b'), quoted keys and table names, and lists holding
-// anything but strings.
+// inline tables ('{...}'), arrays of tables ('[[...]]'), dotted keys
+// ('a.b = ...'), quoted keys and table names, and lists holding anything but
+// strings.
 // So is malformed text: a key set twice in one table, a table defined twice
-// (or named like a key of the root), a bad escape, a string or a list not
+// (or named like a key of the root, or a key of the table above it, or a
+// key given the name of a sub-table), a bad escape, a string or a list not
 // closed, a control character, a lone '\r', text that is not UTF-8, and
 // anything after a value or a table's name but a comment.
 //
@@ -403,18 +408,38 @@ fn header(text &Array[u8], r &mut Reader, doc &mut Document, current &mut usize)
     return;
   }
   skipSpace(text, r);
-  mut name = String.empty();
-  if not readKey(text, r, &mut name, "table name") { return; }
+  mut leaf = String.empty();
+  if not readKey(text, r, &mut leaf, "table name") { return; }
+  imm first = String.from(leaf.view());
+  mut name = String.from(leaf.view());
+  mut parent = String.empty();
+  // A dotted name, '[a.b]': the table named 'a.b', the sub-table of 'a'. Each
+  // part is a bare key; spaces around a dot are passed over and not kept.
   skipSpace(text, r);
-  if r.pos < text.len and text[r.pos] == '.' {
-    fail(r, "dotted table names ('[a.b]') are not supported");
-    return;
+  while r.pos < text.len and text[r.pos] == '.' {
+    parent = String.from(name.view());
+    leaf = String.empty();
+    r.pos = r.pos + 1usize;
+    skipSpace(text, r);
+    if not readKey(text, r, &mut leaf, "table name") { return; }
+    name.append(".");
+    name.append(leaf.view());
+    skipSpace(text, r);
   }
   if r.pos >= text.len or text[r.pos] != ']' {
     fail(r, "expected ']' after the table's name");
     return;
   }
   r.pos = r.pos + 1usize;
+  // A key of the table above with the sub-table's last part is a clash
+  if parent.len() > 0usize and doc.has(parent.view()) and doc[parent.view()].has(leaf.view()) {
+    mut m = String.from("table [");
+    m.append(name.view());
+    m.append("] has the name of a key set on line ");
+    m.appendUInt(u64.from(doc[parent.view()].lineOf(leaf.view())));
+    fail(r, m.view());
+    return;
+  }
   if doc.has(name.view()) {
     mut m = String.from("table [");
     m.append(name.view());
@@ -423,11 +448,11 @@ fn header(text &Array[u8], r &mut Reader, doc &mut Document, current &mut usize)
     fail(r, m.view());
     return;
   }
-  if doc.root.has(name.view()) {
+  if doc.root.has(first.view()) {
     mut m = String.from("table [");
     m.append(name.view());
     m.append("] has the name of a key set on line ");
-    m.appendUInt(u64.from(doc.root.lineOf(name.view())));
+    m.appendUInt(u64.from(doc.root.lineOf(first.view())));
     fail(r, m.view());
     return;
   }
@@ -458,6 +483,21 @@ fn keyValue(text &Array[u8], r &mut Reader, doc &mut Document, current usize) {
     addEntry(&mut doc.root, key, value, r);
   }
   else {
+    // A key named like a sub-table of this table, '[a.b]' before 'b = ...' in
+    // '[a]', is a clash
+    mut sub = String.from(doc.tables[current].name.view());
+    sub.append(".");
+    sub.append(key.view());
+    if doc.has(sub.view()) {
+      mut m = String.from("key '");
+      m.append(key.view());
+      m.append("' has the name of the table [");
+      m.append(sub.view());
+      m.append("] on line ");
+      m.appendUInt(u64.from(doc[sub.view()].line));
+      failAt(r, value.line, m.view());
+      return;
+    }
     addEntry(&mut doc.tables[current], key, value, r);
   }
   endLine(text, r, "expected the end of the line after the value");

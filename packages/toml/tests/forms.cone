@@ -2,7 +2,8 @@
 // and the root, in the order written; strings with each escape, raw UTF-8
 // and a raw tab; integers (signs, '_', the ends of i64's range); booleans;
 // lists of strings, empty, on one line, over several with comments between
-// and a ',' at the end; comments and spaces in every place TOML allows them,
+// and a ',' at the end; dotted table names ('[link.windows]'); comments and
+// spaces in every place TOML allows them,
 // and '#' inside a string, which is no comment; '\r\n' line ends; an empty
 // text, one of only comments, and a last line with no line end. Then the
 // getters: each answers None for a key not there and for a value of another
@@ -252,6 +253,30 @@ fn getters() {
   }
 }
 
+// A dotted table name, '[link.windows]': a table of its own, found by the whole
+// name, whether or not '[link]' is written, before or after it
+fn dotted() {
+  imm doc = parsed("[link]\nlibraries = [\"a\"]\n\n[link.windows]\nlibraries = [\"w\"]\n\n[ link . linux ]  # spaced\nlibraries = [\"l\"]\n\n[x.y.z]\nk = 1\n", "dotted tables");
+  imm names = doc.names();
+  isJoined(&names, "link|link.windows|link.linux|x.y.z", "dotted tables in the order written");
+  isList(doc["link"], "libraries", "a", "the table above");
+  isList(doc["link.windows"], "libraries", "w", "a dotted table");
+  isList(doc["link.linux"], "libraries", "l", "a dotted table written with spaces");
+  expectStr(doc["link.linux"].name.view(), "link.linux", "a dotted table's name is the whole name");
+  expectInt(int(doc["x.y.z"], "k"), 1i64, "three parts");
+  expectUInt(u64.from(doc["link.windows"].line), 4u64, "a dotted table's line");
+  expect(not doc.has("windows"), "the last part alone is no table");
+  expect(not doc.has("x"), "a table above that is not written is not made");
+  expect(not doc.has("x.y"), "nor one between");
+  // The table above may come after, or not be written at all
+  imm after = parsed("[a.b]\nk = 1\n[a]\nj = 2\n", "the table above written after");
+  expectInt(int(after["a.b"], "k"), 1i64, "the sub-table, written first");
+  expectInt(int(after["a"], "j"), 2i64, "the table above, written after");
+  imm alone = parsed("[link.linux]\nlibraries = [\"ssl\"]\n", "a dotted table alone");
+  expect(not alone.has("link"), "'link' is not written");
+  isList(alone["link.linux"], "libraries", "ssl", "a dotted table alone");
+}
+
 fn main() i32 {
   strings();
   integers();
@@ -259,5 +284,6 @@ fn main() i32 {
   lists();
   layout();
   getters();
+  dotted();
   done();
 }
