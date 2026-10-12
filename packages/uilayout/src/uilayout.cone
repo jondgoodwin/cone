@@ -9,19 +9,50 @@
 //
 // that the caller passes to 'layout'.
 //
+// THE SHAPE OF A PROGRAM THAT USES IT (examples/hud.cone is the whole of one):
+//
+//   mut ui = Ui.make(1280., 720.);                       // a Ui of that many pixels
+//   imm win = window(&mut ui, "Backpack", 40., 40., 300., 260.);
+//   imm grid = inventoryGrid(&mut ui, windowContent(&ui, win), packContainer, 4u32);
+//   imm ok = button(&mut ui, windowContent(&ui, win), "Sort");
+//   // each frame:
+//   pointerMove(&mut ui, x, y);  pointerDown(&mut ui, BTN_LEFT);  keyDown(&mut ui, code, mods);
+//   update(&mut ui, dt);
+//   layout(&mut ui, &mut measure);                        // only dirty nodes are done again
+//   imm events = ui.takeEvents();                         // UE_CLICK, UE_CHANGED, UE_DROP ...
+//   drawUi(&ui, &mut list);                               // the DrawList for the renderer
+//
+// The widgets, input and layout are functions taking the Ui (Cone has no way yet to spread one
+// struct's methods over several files); the Ui's own methods are the tree (create, append, detach,
+// destroy, raise), the properties that mark what they change (setSize, setText, setFlex ...) and the
+// event queue.
+//
 // WHAT IT IS MADE OF (one module, files beside this one):
 //
+//   util.cone      small numeric helpers
 //   draw.cone      DrawCmd and DrawList, colours packed as 0xRRGGBBAA
 //   theme.cone     Theme: named styles, inheritance, state variants
 //   node.cone      Node, the retained tree in flat tables (ids, not a struct
 //                  holding a List of itself), and the Ui that owns it
-//   layout.cone    two-pass measure then arrange with caches and dirty bits
-//   input.cone     hit testing, events, capture and bubble, focus, pointer
+//   layout.cone, layout2.cone
+//                  two-pass measure then arrange with caches and dirty bits;
+//                  flex, stack, grid, anchors, dock, split, scroll
+//   input.cone     hit testing, events, capture and bubble, focus and Tab, pointer
 //   dragdrop.cone  drag sources with payloads, drop targets that accept or refuse
 //   inventory.cone InvModel: items, stacks, bags in bags, the rules
-//   widgets*.cone  label, button, toggle, slider, knob, text field, list,
-//                  window, tabs, tooltip, inventory grid, hotbar, minimap
+//   widgets.cone   state tables, builders, the event switch; button, toggle,
+//                  slider, knob, scrolling, split view
+//   widgets2.cone  text field, list box, window, tabs, tooltip
+//   widgets3.cone  inventory slot grid and bag windows, hotbar, minimap frame
+//   render.cone    drawUi: the tree to a DrawList
 //   panel3d.cone   a Ui placed in 3-D as a transform: ray in, pixel out
+//
+// WHAT IT DOES NOT DO (yet): wrapped text and rich text (a label is one line; the text package
+// will shape and wrap, and a 'Label' that wraps asks for its width first); right-to-left and
+// input-method text; accessibility (the tree has roles by kind, but nothing mirrors it to a screen
+// reader); animation of properties (a tween layer sits above the setters); flex wrap; a menu or
+// popup list (a window in the overlay does it); clipboard and cursor shapes beyond what 'input.cursor'
+// and 'input.clipboard' hold for the host to use.
 //
 // THE TREE. Nodes are rows of one table, named by a usize id (0 is none). A
 // node knows its parent, first and last child, previous and next sibling; no

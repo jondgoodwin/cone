@@ -1,0 +1,73 @@
+// Times the layout of a big tree: a column of 100 rows of 20 labels (2,000 labels, 2,100 nodes).
+//
+//   congo run --release packages/uilayout/examples/bench.cone
+//
+// It reports the first layout (everything measured and arranged), a layout with nothing changed, a
+// layout after one label's text changes (one row remeasured, the rest answered from the caches), after
+// the viewport resizes, and the time to make the draw list. The text closure is a counter, so the
+// number of text measures is exact.
+
+mod bench;
+
+import stdio use *;
+import collections use *;
+import geomath use *;
+import time use Instant;
+import uilayout use *;
+
+fn main() i32 {
+  mut m = fn(t &str, font u32, size f32) Vec2 { new Vec2(f32.from(t.len()) * 8., 16.); };
+  mut ui = Ui.make(1600., 2000.);
+  imm col = ui.create(ui.root, K_PLAIN);
+  ui.setFlex(col, LK_COLUMN, 2.);
+  ui.setJustify(col, JUSTIFY_START, ALIGN_START);
+  mut labels = List[usize].empty();
+  mut r = 0;
+  while r < 100 {
+    imm row = ui.create(col, K_PLAIN);
+    ui.setFlex(row, LK_ROW, 4.);
+    ui.setJustify(row, JUSTIFY_START, ALIGN_START);
+    mut k = 0;
+    while k < 20 {
+      imm l = ui.create(row, K_LABEL);
+      ui.setText(l, "label");
+      labels.push(l);
+      k = k + 1;
+    }
+    r = r + 1;
+  }
+  mut t = Instant.now();
+  layout(&mut ui, &mut m);
+  print <- "first layout          "; print <- t.elapsed().nanos() / 1000i64; print <- " us  (";
+  print <- ui.stats.measured; print <- " measured, "; print <- ui.stats.arranged; print <- " arranged)\n";
+
+  t = Instant.now();
+  layout(&mut ui, &mut m);
+  print <- "nothing changed       "; print <- t.elapsed().nanos() / 1000i64; print <- " us  (";
+  print <- ui.stats.measured; print <- " measured, "; print <- ui.stats.arranged; print <- " arranged)\n";
+
+  ui.setText(*labels[1234usize], "a longer label");
+  t = Instant.now();
+  layout(&mut ui, &mut m);
+  print <- "one text changed      "; print <- t.elapsed().nanos() / 1000i64; print <- " us  (";
+  print <- ui.stats.measured; print <- " measured, "; print <- ui.stats.arranged; print <- " arranged, ";
+  print <- ui.stats.textMeasures; print <- " text measured)\n";
+
+  ui.setViewport(1400., 1900.);
+  t = Instant.now();
+  layout(&mut ui, &mut m);
+  print <- "viewport resized      "; print <- t.elapsed().nanos() / 1000i64; print <- " us  (";
+  print <- ui.stats.measured; print <- " measured, "; print <- ui.stats.arranged; print <- " arranged)\n";
+
+  mut list = DrawList.make();
+  t = Instant.now();
+  drawUi(&ui, &mut list);
+  print <- "draw list             "; print <- t.elapsed().nanos() / 1000i64; print <- " us  ("; print <- list.len(); print <- " commands)\n";
+
+  ui.invalidateAll();
+  t = Instant.now();
+  layout(&mut ui, &mut m);
+  print <- "invalidateAll + layout "; print <- t.elapsed().nanos() / 1000i64; print <- " us  (";
+  print <- ui.stats.measured; print <- " measured, "; print <- ui.stats.textMeasures; print <- " text measured)\n";
+  0;
+}

@@ -1,0 +1,365 @@
+// Drag and drop on an inventory window, a hotbar and a minimap, driven by pointer events.
+//
+// The pack is six slots in a grid of three columns at (100, 100); the chest is six more at
+// (100, 300). Slots are 44 px with a 3 px gap, so slot (c, r) is centred at (100 + 22 + 47c, 100 + 22 + 47r).
+//   pack: 0 coin x7, 1 coin x10, 2 coin x10, 3 small bag (4 slots), 4 large bag (8 slots), 5 empty.
+//   Types: coin (stack 10), sword (1, category 2), potion (stack 5).
+//
+// A. Drag the small bag (slot 3) over the empty slot 5: it shows ST_DROP_OK; released it is DR_PLACED.
+// B. Drag the small bag now in slot 5 onto the large bag (slot 4): DR_INTO_BAG, 4 < 8; the large
+//    bag holds it and the pack's slot 5 is empty.
+// C. Drag coins slot 1 (10, full) onto slot 2 (10, full): the slot shows ST_DROP_NO and the drop is
+//    refused with DR_FULL; nothing moves.
+// D. Drag the 7 coins (slot 0) onto the large bag (slot 4): DR_INTO_BAG; the large bag now holds 7 coins
+//    besides the small bag.
+// E. Drop on nothing: UE_DROP_REFUSED with DR_NO_TARGET, no node; the ghost goes; the source is no longer dragged.
+// F. Escape during a drag cancels it: no change, UE_DRAG_END reporting 0.
+// G. A right-button drag takes half: slot 1's 10 coins to the empty slot 0: 5 and 5 (DR_SPLIT).
+// H. A move of 3 px with the button down is a click, not a drag.
+// I. Between two windows: slot 2's coins (10) to the chest's empty slot 0: DR_PLACED; UE_INVENTORY names the chest.
+// J. Generic nodes: a source of kind 9 over a target whose mask has bit 9: DR_ACCEPTED, ST_DROP_OK while over;
+//    over a target without the bit: ST_DROP_NO and DR_KIND.
+// K. Hotbar: a spell dropped on slot 2 (F3) binds; F3 reports use (UE_HOTBAR_USE slot 2, spell 77) and, the spell
+//    having a 2 s cooldown, a second press reports UE_HOTBAR_BUSY with 2.0; after 1.5 s the cooldown is
+//    1.5 / 2 = 0.75 done... (left 0.5, fraction 0.25) and it reports 0.5 busy; after another second it is ready.
+//    A sword dragged from the pack onto slot 0 binds the sword kind and stays in the pack; slot 0 dragged to
+//    slot 1 moves the binding (slot 0 empties); dragged off the bar it is taken away. A bound hotbar kind dropped
+//    on a pack slot is refused (DR_KIND). An unbound F key is not consumed.
+// L. Minimap: centre (0.5, 0.5), zoom 2 shows u, v from 0.25 to 0.75; a click at the centre of a 100 px frame
+//    reports (0.5, 0.5), at 25 px across and 75 down (0.25, 0.75); the wheel up zooms by 1.25.
+
+mod dragdrop;
+
+import testing use *;
+import geomath use *;
+import collections use *;
+import uilayout use *;
+
+fn near(got f32, want f32, label &Array[u8]) {
+  expectFloat(f64.from(got), f64.from(want), 0.01, label);
+}
+
+fn centreX(ui &Ui, id usize) f32 {ui.nodes[id].gx + ui.nodes[id].w * 0.5;}
+fn centreY(ui &Ui, id usize) f32 {ui.nodes[id].gy + ui.nodes[id].h * 0.5;}
+
+fn count(evs &List[UiEvent], kind u32) i64 {
+  mut n = 0i64;
+  mut i = 0usize;
+  while i < evs.len() {
+    if evs[i].kind == kind {n = n + 1i64;}
+    i = i + 1usize;
+  }
+  n;
+}
+
+fn first(evs &List[UiEvent], kind u32) UiEvent {
+  mut i = 0usize;
+  while i < evs.len() {
+    if evs[i].kind == kind {return *evs[i];}
+    i = i + 1usize;
+  }
+  new UiEvent;
+}
+
+fn grab(ui &mut Ui, n usize, button u32) {
+  pointerMove(ui, centreX(ui, n), centreY(ui, n));
+  pointerDown(ui, button);
+}
+
+fn hover(ui &mut Ui, n usize) {pointerMove(ui, centreX(ui, n), centreY(ui, n));}
+
+fn main() i32 {
+  mut m = fn(t &str, font u32, size f32) Vec2 { new Vec2(f32.from(t.len()) * 8., 16.); };
+  mut ui = Ui.make(800., 600.);
+  imm coin = ui.inv.defineType("coin", 0u32, 10u32, 0u32, 1u32, 0xffd700ffu32);
+  imm sword = ui.inv.defineType("sword", 0u32, 1u32, 0u32, 2u32, 0xc0c0c0ffu32);
+  imm small = ui.inv.defineType("small bag", 0u32, 1u32, 4u32, 1u32, 0x806040ffu32);
+  imm large = ui.inv.defineType("large bag", 0u32, 1u32, 8u32, 1u32, 0xa07848ffu32);
+  imm pack = ui.inv.makeContainer(6u32, 0u32);
+  imm chest = ui.inv.makeContainer(6u32, 0u32);
+  ui.inv.put(ui.inv.newItem(coin, 7u32), pack, 0u32);
+  ui.inv.put(ui.inv.newItem(coin, 10u32), pack, 1u32);
+  ui.inv.put(ui.inv.newItem(coin, 10u32), pack, 2u32);
+  imm smallBag = ui.inv.newItem(small, 1u32);
+  imm largeBag = ui.inv.newItem(large, 1u32);
+  ui.inv.put(smallBag, pack, 3u32);
+  ui.inv.put(largeBag, pack, 4u32);
+  imm swordItem = ui.inv.newItem(sword, 1u32);
+  ui.inv.put(swordItem, chest, 1u32);
+
+  imm h1 = ui.create(ui.root, K_PLAIN);
+  ui.setLayout(h1, LK_ANCHOR);
+  ui.setOffsets(h1, 100., 100., 0., 0.);
+  imm g1 = inventoryGrid(&mut ui, h1, pack, 3u32);
+  imm h2 = ui.create(ui.root, K_PLAIN);
+  ui.setLayout(h2, LK_ANCHOR);
+  ui.setOffsets(h2, 100., 300., 0., 0.);
+  imm g2 = inventoryGrid(&mut ui, h2, chest, 3u32);
+  layout(&mut ui, &mut m);
+  imm s0 = slotNode(&ui, g1, 0u32);
+  imm s1 = slotNode(&ui, g1, 1u32);
+  imm s2 = slotNode(&ui, g1, 2u32);
+  imm s3 = slotNode(&ui, g1, 3u32);
+  imm s4 = slotNode(&ui, g1, 4u32);
+  imm s5 = slotNode(&ui, g1, 5u32);
+  near(centreX(&ui, s1), 100. + 22. + 47., "slot 1 is centred 47 px right of slot 0");
+  near(centreY(&ui, s3), 100. + 22. + 47., "slot 3 is on the second row");
+  ui.takeEvents();
+
+  // A
+  grab(&mut ui, s3, BTN_LEFT);
+  hover(&mut ui, s5);
+  expect(isDragging(&ui), "A: a drag is under way");
+  expect(ui.hasState(s3, ST_DRAGGED), "A: the source is marked");
+  expect(ui.hasState(s5, ST_DROP_OK) and !ui.hasState(s5, ST_DROP_NO), "A: the empty slot says OK");
+  near(ui.nodes[ui.input.drag.ghost].offL, centreX(&ui, s5) - 22., "A: the ghost follows the pointer");
+  pointerUp(&mut ui, BTN_LEFT);
+  imm evA = ui.takeEvents();
+  expectInt(i64.from(first(&evA, UE_DROP).i), i64.from(DR_PLACED), "A: placed");
+  expectInt(i64.from(ui.inv.itemAt(pack, 5u32)), i64.from(smallBag), "A: the bag is in slot 5");
+  expectInt(i64.from(ui.inv.itemAt(pack, 3u32)), 0i64, "A: and not in slot 3");
+  expect(!ui.hasState(s5, ST_DROP_OK) and !ui.hasState(s3, ST_DRAGGED), "A: the states are cleared");
+  expect(!isDragging(&ui), "A: the drag is over");
+  expectInt(count(&evA, UE_DRAG_BEGIN), 1i64, "A: a begin was reported");
+  expectInt(i64.from(first(&evA, UE_DRAG_END).i), 1i64,"A: and an end that dropped");
+
+  // B
+  grab(&mut ui, s5, BTN_LEFT);
+  hover(&mut ui, s4);
+  expect(ui.hasState(s4, ST_DROP_OK), "B: a larger bag says OK");
+  pointerUp(&mut ui, BTN_LEFT);
+  imm evB = ui.takeEvents();
+  expectInt(i64.from(first(&evB, UE_DROP).i), i64.from(DR_INTO_BAG), "B: into the bag");
+  imm largeC = ui.inv.items[usize.from(largeBag)].bag;
+  expectInt(i64.from(ui.inv.itemAt(largeC, 0u32)), i64.from(smallBag), "B: the large bag holds the small one");
+  expectInt(i64.from(ui.inv.itemAt(pack, 5u32)), 0i64, "B: slot 5 is empty again");
+
+  // C
+  grab(&mut ui, s1, BTN_LEFT);
+  hover(&mut ui, s2);
+  expect(ui.hasState(s2, ST_DROP_NO) and !ui.hasState(s2, ST_DROP_OK), "C: a full stack says no");
+  pointerUp(&mut ui, BTN_LEFT);
+  imm evC = ui.takeEvents();
+  expectInt(count(&evC, UE_DROP), 0i64, "C: no drop");
+  expectInt(i64.from(first(&evC, UE_DROP_REFUSED).i), i64.from(DR_FULL), "C: refused as full");
+  expectInt(i64.from(first(&evC, UE_DRAG_END).i), 0i64,"C: the drag ended without a drop");
+  expectInt(i64.from(ui.inv.countAt(pack, 1u32)), 10i64, "C: slot 1 unchanged");
+  expectInt(i64.from(ui.inv.countAt(pack, 2u32)), 10i64, "C: slot 2 unchanged");
+  expect(!ui.hasState(s2, ST_DROP_NO), "C: the refusal is cleared");
+
+  // D
+  grab(&mut ui, s0, BTN_LEFT);
+  hover(&mut ui, s4);
+  pointerUp(&mut ui, BTN_LEFT);
+  imm evD = ui.takeEvents();
+  expectInt(i64.from(first(&evD, UE_DROP).i), i64.from(DR_INTO_BAG), "D: coins into the large bag");
+  expectInt(i64.from(ui.inv.total(largeC, coin)), 7i64, "D: it holds 7 coins");
+  expectInt(i64.from(ui.inv.itemAt(pack, 0u32)), 0i64, "D: the coins left slot 0");
+
+  // E
+  grab(&mut ui, s2, BTN_LEFT);
+  pointerMove(&mut ui, 600., 500.);
+  expect(isDragging(&ui), "E: dragging over nothing");
+  pointerUp(&mut ui, BTN_LEFT);
+  imm evE = ui.takeEvents();
+  imm refusedE = first(&evE, UE_DROP_REFUSED);
+  expectInt(i64.from(refusedE.i), i64.from(DR_NO_TARGET), "E: dropped on nothing");
+  expectInt(i64.from(refusedE.node), 0i64, "E: no target node");
+  expectInt(i64.from(refusedE.other), i64.from(s2), "E: the source is named");
+  expect(!ui.nodes[ui.input.drag.ghost].visible, "E: the ghost is hidden");
+  expect(!ui.hasState(s2, ST_DRAGGED), "E: the source is no longer dragged");
+  expectInt(i64.from(ui.inv.countAt(pack, 2u32)), 10i64, "E: the stack is still in slot 2");
+
+  // F
+  grab(&mut ui, s2, BTN_LEFT);
+  hover(&mut ui, s0);
+  expect(ui.hasState(s0, ST_DROP_OK), "F: slot 0 is empty and says OK");
+  keyDown(&mut ui, KEY_ESCAPE, 0u32);
+  expect(!isDragging(&ui), "F: Escape ends the drag");
+  expect(!ui.hasState(s0, ST_DROP_OK), "F: and clears the feedback");
+  pointerUp(&mut ui, BTN_LEFT);
+  imm evF = ui.takeEvents();
+  expectInt(count(&evF, UE_DROP), 0i64, "F: no drop");
+  expectInt(i64.from(first(&evF, UE_DRAG_END).i), 0i64,"F: an end that did not drop");
+  expectInt(i64.from(ui.inv.countAt(pack, 2u32)), 10i64, "F: slot 2 unchanged");
+
+  // G: a right-button drag takes half
+  grab(&mut ui, s1, BTN_RIGHT);
+  hover(&mut ui, s0);
+  pointerUp(&mut ui, BTN_RIGHT);
+  imm evG = ui.takeEvents();
+  expectInt(i64.from(first(&evG, UE_DROP).i), i64.from(DR_SPLIT), "G: a split");
+  expectInt(i64.from(ui.inv.countAt(pack, 0u32)), 5i64, "G: half in slot 0");
+  expectInt(i64.from(ui.inv.countAt(pack, 1u32)), 5i64, "G: half stays");
+
+  // H: a short move is a click
+  pointerMove(&mut ui, centreX(&ui, s2), centreY(&ui, s2));
+  pointerDown(&mut ui, BTN_LEFT);
+  pointerMove(&mut ui, centreX(&ui, s2) + 3., centreY(&ui, s2));
+  expect(!isDragging(&ui), "H: 3 px is not a drag");
+  pointerUp(&mut ui, BTN_LEFT);
+  imm evH = ui.takeEvents();
+  expectInt(count(&evH, UE_CLICK), 1i64, "H: it is a click");
+  expectInt(count(&evH, UE_DRAG_BEGIN), 0i64, "H: and no drag began");
+
+  // I: between windows
+  grab(&mut ui, s2, BTN_LEFT);
+  imm c0 = slotNode(&ui, g2, 0u32);
+  hover(&mut ui, c0);
+  pointerUp(&mut ui, BTN_LEFT);
+  imm evI = ui.takeEvents();
+  expectInt(i64.from(first(&evI, UE_DROP).i), i64.from(DR_PLACED), "I: into the chest");
+  expectInt(i64.from(ui.inv.countAt(chest, 0u32)), 10i64, "I: ten coins in the chest");
+  expectInt(i64.from(first(&evI, UE_INVENTORY).i),i64.from(chest), "I: the inventory event names the chest");
+  expectInt(i64.from(ui.inv.itemAt(pack, 2u32)), 0i64, "I: and slot 2 is empty");
+
+  // J: generic nodes
+  imm src = ui.create(ui.root, K_PLAIN);
+  ui.setLayout(src, LK_ANCHOR);
+  ui.setOffsets(src, 500., 100., 0., 0.);
+  ui.setSize(src, 40., 40.);
+  ui.nodes[src].pointer = PM_STOP;
+  setDragSource(&mut ui, src, 9u32, 123u32, 0u32);
+  imm okT = ui.create(ui.root, K_PLAIN);
+  ui.setLayout(okT, LK_ANCHOR);
+  ui.setOffsets(okT, 500., 200., 0., 0.);
+  ui.setSize(okT, 60., 60.);
+  ui.nodes[okT].pointer = PM_STOP;
+  setDropTarget(&mut ui, okT, dropBit(9u32));
+  imm noT = ui.create(ui.root, K_PLAIN);
+  ui.setLayout(noT, LK_ANCHOR);
+  ui.setOffsets(noT, 500., 300., 0., 0.);
+  ui.setSize(noT, 60., 60.);
+  ui.nodes[noT].pointer = PM_STOP;
+  setDropTarget(&mut ui, noT, dropBit(4u32));
+  layout(&mut ui, &mut m);
+  grab(&mut ui, src, BTN_LEFT);
+  hover(&mut ui, noT);
+  expect(ui.hasState(noT, ST_DROP_NO), "J: a target without the bit says no");
+  hover(&mut ui, okT);
+  expect(ui.hasState(okT, ST_DROP_OK) and !ui.hasState(noT, ST_DROP_NO), "J: the OK target lights, the other clears");
+  expectInt(i64.from(dragPayload(&ui).a), 123i64, "J: the payload carries the source's id");
+  pointerUp(&mut ui, BTN_LEFT);
+  imm evJ = ui.takeEvents();
+  imm dropJ = first(&evJ, UE_DROP);
+  expectInt(i64.from(dropJ.i), i64.from(DR_ACCEPTED), "J: accepted");
+  expectInt(i64.from(dropJ.node), i64.from(okT), "J: the target is named");
+  expectInt(i64.from(dropJ.j), 9i64, "J: with the payload kind");
+  grab(&mut ui, src, BTN_LEFT);
+  hover(&mut ui, noT);
+  pointerUp(&mut ui, BTN_LEFT);
+  imm evJ2 = ui.takeEvents();
+  expectInt(i64.from(first(&evJ2, UE_DROP_REFUSED).i), i64.from(DR_KIND), "J: refused for its kind");
+
+  // K: the hotbar
+  imm bar = hotbar(&mut ui, ui.overlay, 10u32);
+  ui.setAnchors(bar, 0.5, 1., 0.5, 1.);
+  ui.setPivot(bar, 0.5, 1.);
+  ui.setOffsets(bar, 0., -10., 0., 0.);
+  imm spellSrc = ui.create(ui.root, K_PLAIN);
+  ui.setLayout(spellSrc, LK_ANCHOR);
+  ui.setOffsets(spellSrc, 650., 100., 0., 0.);
+  ui.setSize(spellSrc, 40., 40.);
+  ui.nodes[spellSrc].pointer = PM_STOP;
+  setDragSource(&mut ui, spellSrc, PK_SPELL, 77u32, 5u32);
+  layout(&mut ui, &mut m);
+  imm hs0 = hotbarSlot(&ui, bar, 0u32);
+  imm hs1 = hotbarSlot(&ui, bar, 1u32);
+  imm hs2 = hotbarSlot(&ui, bar, 2u32);
+  ui.hotslots[ui.nodes[hs2].data].cdDefault = 2.;
+  ui.takeEvents();
+  expect(!keyDown(&mut ui, KEY_F1 + 2u32, 0u32), "K: an unbound F key is not consumed");
+  grab(&mut ui, spellSrc, BTN_LEFT);
+  hover(&mut ui, hs2);
+  expect(ui.hasState(hs2, ST_DROP_OK), "K: the hotbar slot accepts a spell");
+  pointerUp(&mut ui, BTN_LEFT);
+  imm evK = ui.takeEvents();
+  expectInt(i64.from(first(&evK, UE_DROP).i), i64.from(DR_BOUND), "K: bound");
+  expectInt(i64.from(hotbarBinding(&ui, hs2)), 77i64, "K: the slot holds spell 77");
+  expectInt(count(&evK, UE_HOTBAR_BOUND), 1i64, "K: a binding change was reported");
+  expect(keyDown(&mut ui, KEY_F1 + 2u32, 0u32), "K: F3 is consumed");
+  imm evUse = ui.takeEvents();
+  imm used = first(&evUse, UE_HOTBAR_USE);
+  expectInt(i64.from(used.i), 2i64, "K: slot index 2");
+  expectInt(i64.from(used.j), 77i64, "K: the spell");
+  near(hotbarCooldown(&ui, hs2), 1., "K: the cooldown has just started");
+  keyDown(&mut ui, KEY_F1 + 2u32, 0u32);
+  near(first(&ui.takeEvents(), UE_HOTBAR_BUSY).a, 2., "K: pressed again at once: 2.0 s to go");
+  update(&mut ui, 1.5);
+  near(hotbarCooldown(&ui, hs2), 0.25, "K: after 1.5 s a quarter remains");
+  keyDown(&mut ui, KEY_F1 + 2u32, 0u32);
+  near(first(&ui.takeEvents(), UE_HOTBAR_BUSY).a, 0.5, "K: busy for 0.5 more");
+  update(&mut ui, 1.);
+  near(hotbarCooldown(&ui, hs2), 0., "K: ready");
+  keyDown(&mut ui, KEY_F1 + 2u32, 0u32);
+  expectInt(count(&ui.takeEvents(), UE_HOTBAR_USE), 1i64, "K: used again");
+  // a sword from the chest binds its kind and stays
+  update(&mut ui, 5.);
+  imm c1 = slotNode(&ui, g2, 1u32);
+  grab(&mut ui, c1, BTN_LEFT);
+  hover(&mut ui, hs0);
+  pointerUp(&mut ui, BTN_LEFT);
+  ui.takeEvents();
+  expectInt(i64.from(hotbarBinding(&ui, hs0)), i64.from(sword), "K: slot 0 is bound to the sword kind");
+  expectInt(i64.from(ui.inv.itemAt(chest, 1u32)), i64.from(swordItem), "K: the sword is still in the chest");
+  // move the binding from slot 0 to the empty slot 1
+  grab(&mut ui, hs0, BTN_LEFT);
+  hover(&mut ui, hs1);
+  pointerUp(&mut ui, BTN_LEFT);
+  ui.takeEvents();
+  expectInt(i64.from(hotbarBinding(&ui, hs1)), i64.from(sword), "K: moved to slot 1");
+  expectInt(i64.from(hotbarBinding(&ui, hs0)), 0i64, "K: slot 0 is empty");
+  // swap with a bound slot
+  grab(&mut ui, hs1, BTN_LEFT);
+  hover(&mut ui, hs2);
+  pointerUp(&mut ui, BTN_LEFT);
+  ui.takeEvents();
+  expectInt(i64.from(hotbarBinding(&ui, hs2)), i64.from(sword), "K: slots 1 and 2 swapped: 2 holds the sword kind");
+  expectInt(i64.from(hotbarBinding(&ui, hs1)), 77i64, "K: and 1 holds the spell");
+  // a hotbar binding onto a pack slot is refused
+  grab(&mut ui, hs1, BTN_LEFT);
+  hover(&mut ui, s2);
+  expect(ui.hasState(s2, ST_DROP_NO), "K: a pack slot says no to a hotbar binding");
+  pointerUp(&mut ui, BTN_LEFT);
+  expectInt(i64.from(first(&ui.takeEvents(), UE_DROP_REFUSED).i), i64.from(DR_KIND), "K: refused for its kind");
+  // off the bar: taken away
+  grab(&mut ui, hs1, BTN_LEFT);
+  pointerMove(&mut ui, 650., 400.);
+  pointerUp(&mut ui, BTN_LEFT);
+  ui.takeEvents();
+  expectInt(i64.from(hotbarBinding(&ui, hs1)), 0i64, "K: dragged off the bar, the binding is taken away");
+
+  // L: the minimap
+  imm mm = minimap(&mut ui, ui.root, 100., 7u32);
+  ui.setAnchors(mm, 1., 0., 1., 0.);
+  ui.setPivot(mm, 1., 0.);
+  ui.setOffsets(mm, -10., 10., 0., 0.);
+  layout(&mut ui, &mut m);
+  minimapSetView(&mut ui, mm, 0.5, 0.5, 2.);
+  imm view = minimapView(&ui, mm);
+  near(view.min.x, 0.25, "L: the view starts at 0.25");
+  near(view.max.y, 0.75, "L: and ends at 0.75");
+  ui.takeEvents();
+  pointerMove(&mut ui, ui.nodes[mm].gx + 50., ui.nodes[mm].gy + 50.);
+  pointerDown(&mut ui, BTN_LEFT);
+  pointerUp(&mut ui, BTN_LEFT);
+  imm clickL = first(&ui.takeEvents(), UE_MAP_CLICK);
+  near(clickL.a, 0.5, "L: a click in the middle: 0.5 across");
+  near(clickL.b, 0.5, "L: and 0.5 down");
+  update(&mut ui, 1.);
+  pointerMove(&mut ui, ui.nodes[mm].gx + 25., ui.nodes[mm].gy + 75.);
+  pointerDown(&mut ui, BTN_LEFT);
+  pointerUp(&mut ui, BTN_LEFT);
+  imm click2 = first(&ui.takeEvents(), UE_MAP_CLICK);
+  near(click2.a, 0.25, "L: 25 px across");
+  near(click2.b, 0.75, "L: 75 px down");
+  wheel(&mut ui, 0., 1.);
+  near(ui.minimaps[ui.nodes[mm].data].zoom, 2.5, "L: the wheel zooms by 1.25");
+  imm marker = minimapAddMarker(&mut ui, mm, 0.5, 0.5, 0xff0000ffu32, 6.);
+  minimapMoveMarker(&mut ui, marker, 0.3, 0.6);
+  near(ui.markers[marker].u, 0.3, "L: a marker moves");
+  minimapClearMarkers(&mut ui, mm);
+  expectInt(i64.from(ui.markers.len()), 0i64, "L: and clears");
+
+  done();
+}

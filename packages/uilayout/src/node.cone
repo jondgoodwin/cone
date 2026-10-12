@@ -110,6 +110,7 @@ pub struct Node {
   pub cMaxH f32 = 0.;
   pub cW f32 = 0.;
   pub cH f32 = 0.;
+  pub cConstrained bool = true;    // a bound shaped the cached size (see cacheFits)
   pub aValid bool = false;
   pub aW f32 = 0.;
   pub aH f32 = 0.;
@@ -211,6 +212,9 @@ pub struct Ui {
   // input state (input.cone, dragdrop.cone)
   pub input InputState;
 
+  // set while measuring: some child's size was shaped by a bound (layout.cone)
+  pub clampSeen bool = false;
+
   pub fn make(width f32, height f32) Ui {
     mut ui = new Ui(List[Node].empty(), List[String].empty(), List[String].empty(), List[usize].empty(),
       List[Track].empty(), Theme.standard(), 0usize, 0usize, width, height, new Stats,
@@ -276,8 +280,35 @@ pub struct Ui {
     id;
   }
 
+  // A node is going: nothing may keep its id (the focus, a held press, a drag, a listener)
   fn forgetNode(self &mut, id usize) {
     if input.focus == id {input.focus = NIL;}
+    if input.pressed == id {input.pressed = NIL;}
+    if input.capture == id {input.capture = NIL;}
+    if input.modal == id {input.modal = NIL;}
+    if input.hover == id {input.hover = NIL;}
+    if input.clickNode == id {input.clickNode = NIL;}
+    if input.activeWindow == id {input.activeWindow = NIL;}
+    if input.drag.candidate == id {input.drag.candidate = NIL;}
+    if input.drag.target == id {input.drag.target = NIL;}
+    if input.drag.source == id and input.drag.active {dragCancel(self);}
+    if input.tip.target == id {
+      input.tip.target = NIL;
+      input.tip.shown = false;
+    }
+    if input.tip.node == id {
+      input.tip.node = NIL;
+      input.tip.shown = false;
+    }
+    if input.win.node == id {input.win.mode = 0u32;}
+    unlisten(self, id);
+    mut i = 0usize;
+    while i < input.hoverChain.len() {
+      if *input.hoverChain[i] == id {
+        input.hoverChain.set(i, NIL);
+      }
+      i = i + 1usize;
+    }
   }
 
   pub fn setFocus(self &mut, id usize) {

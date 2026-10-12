@@ -15,7 +15,7 @@
 
 // ---- entry point ----
 
-// Lays out the whole Ui: ui.root, then ui.overlay. 'm' measures text:
+// Lays out the whole Ui: the root layer, then the overlay. 'm' measures text:
 // fn(text &str, font u32, size f32) Vec2
 pub fn layout[F fn(text &str, font u32, size f32) Vec2](ui &mut Ui, m &mut F) {
   ui.stats = new Stats;
@@ -70,9 +70,12 @@ pub fn measureNode[F fn(text &str, font u32, size f32) Vec2](ui &mut Ui, id usiz
   if !ui.nodes[id].visible {return new Vec2(0., 0.);}
   if ui.nodes[id].cValid and (ui.nodes[id].dirty & D_MEASURE) == 0u32 and cacheFits(ui, id, cminW, cmaxW, cminH, cmaxH) {
     ui.stats.measureHits = ui.stats.measureHits + 1u32;
+    if ui.nodes[id].cConstrained {ui.clampSeen = true;}
     return new Vec2(ui.nodes[id].cW, ui.nodes[id].cH);
   }
   ui.stats.measured = ui.stats.measured + 1u32;
+  imm outerClamp = ui.clampSeen;
+  ui.clampSeen = false;
   imm loW = clampf(ui.nodes[id].minW, cminW, cmaxW);
   imm hiW = clampf(ui.nodes[id].maxW, loW, cmaxW);
   imm loH = clampf(ui.nodes[id].minH, cminH, cmaxH);
@@ -83,9 +86,11 @@ pub fn measureNode[F fn(text &str, font u32, size f32) Vec2](ui &mut Ui, id usiz
   imm fixedH = ui.nodes[id].prefH >= 0.;
   mut w = 0.;
   mut h = 0.;
+  mut wantW = 0.;
+  mut wantH = 0.;
   if fixedW and fixedH {
-    w = clampf(ui.nodes[id].prefW, loW, hiW);
-    h = clampf(ui.nodes[id].prefH, loH, hiH);
+    wantW = ui.nodes[id].prefW;
+    wantH = ui.nodes[id].prefH;
   }
   else {
     mut availW = hiW - px;
@@ -93,9 +98,15 @@ pub fn measureNode[F fn(text &str, font u32, size f32) Vec2](ui &mut Ui, id usiz
     if fixedW {availW = clampf(ui.nodes[id].prefW, loW, hiW) - px;}
     if fixedH {availH = clampf(ui.nodes[id].prefH, loH, hiH) - py;}
     imm c = contentSize(ui, id, maxf(0., availW), maxf(0., availH), m);
-    if fixedW {w = clampf(ui.nodes[id].prefW, loW, hiW);} else {w = clampf(c.x + px, loW, hiW);}
-    if fixedH {h = clampf(ui.nodes[id].prefH, loH, hiH);} else {h = clampf(c.y + py, loH, hiH);}
+    wantW = if fixedW {ui.nodes[id].prefW;} else {c.x + px;};
+    wantH = if fixedH {ui.nodes[id].prefH;} else {c.y + py;};
   }
+  w = clampf(wantW, loW, hiW);
+  h = clampf(wantH, loH, hiH);
+  // the answer depends on the bounds when a bound changed it, or a child was changed by one
+  imm constrained = ui.clampSeen or wantW > hiW or wantH > hiH or wantW < loW or wantH < loH;
+  ui.nodes[id].cConstrained = constrained;
+  ui.clampSeen = outerClamp or constrained;
   ui.nodes[id].cMinW = cminW;
   ui.nodes[id].cMaxW = cmaxW;
   ui.nodes[id].cMinH = cminH;
@@ -107,16 +118,14 @@ pub fn measureNode[F fn(text &str, font u32, size f32) Vec2](ui &mut Ui, id usiz
   new Vec2(w, h);
 }
 
-// Whether the cached answer stands for these constraints. It does for the very
-// same constraints, and for others that admit it when the bounds it was made
-// under did not bind: a size strictly between its old bounds is the content's own
-// (a bound at zero cannot bind)
+// Whether the cached answer stands for these constraints. It does for the very same
+// constraints, and for others that admit it when no bound shaped it: a node's size is its
+// content's own unless a bound cut or raised it, or cut a child (the 'constrained' flag
+// measureNode records), and a size that no bound shaped is the same under any bounds that allow it
 fn cacheFits(ui &Ui, id usize, cminW f32, cmaxW f32, cminH f32, cmaxH f32) bool {
   imm n = ui.nodes[id];
   if n.cMinW == cminW and n.cMaxW == cmaxW and n.cMinH == cminH and n.cMaxH == cmaxH {return true;}
-  imm freeW = (n.cW > n.cMinW or n.cMinW == 0.) and n.cW < n.cMaxW;
-  imm freeH = (n.cH > n.cMinH or n.cMinH == 0.) and n.cH < n.cMaxH;
-  freeW and freeH and n.cW >= cminW and n.cW <= cmaxW and n.cH >= cminH and n.cH <= cmaxH;
+  !n.cConstrained and n.cW >= cminW and n.cW <= cmaxW and n.cH >= cminH and n.cH <= cmaxH;
 }
 
 // A child's size with its margins, measured loose inside 'availW' x 'availH'
@@ -249,7 +258,7 @@ fn absArrange[F fn(text &str, font u32, size f32) Vec2](ui &mut Ui, id usize, w 
   }
 }
 
-// The content box of a node of size w x h: left, top, ui.width, height
+// The content box of a node of size w x h, inside its padding: (left, top) and (width, height) as an Aabb2's min and max
 fn inner(ui &Ui, id usize, w f32, h f32) Aabb2 {
   imm l = ui.padOf(id, 0u32);
   imm t = ui.padOf(id, 1u32);
