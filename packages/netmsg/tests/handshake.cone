@@ -1,0 +1,128 @@
+// The connection handshake, step by step on a synthetic clock: Request,
+// Challenge, Response, Accept; a spoofed address that cannot finish it; a
+// cookie that expires; a Request too small to answer; retries and the
+// attempt that gets no answer; a refusal; and packets of another session.
+
+mod handshake;
+
+import testing use *;
+import collections use *;
+import time use Duration, Instant;
+import netmsg use *;
+
+const sec = 1000000000i64;
+
+fn at(ms i64) Instant {Instant.fromNanos(ms * 1000000i64);}
+
+// The datagram a dialer sends at 'now', if any
+fn dialed(d &mut ClientHandshake, now Instant) List[u8] {
+  mut out = List[List[u8]].empty();
+  d.poll(now, &mut out);
+  mut r = List[u8].empty();
+  if out.len() > 0usize {
+    match out.pop() {
+      case imm p Some { r = p; }
+      case is None[List[u8]] {}
+    }
+  }
+  r;
+}
+
+fn main() i32 {
+  imm cfg = NetConfig.defaults();
+  imm gate = ChallengeGate.make(12345u64);
+  mut reply = List[u8].empty();
+
+  // The whole handshake
+  mut d = ClientHandshake.make(cfg, 0x1111222233334444u64, at(0i64));
+  imm request = dialed(&mut d, at(0i64));
+  expectUInt(u64.from(request.len()), 1200u64, "a Request is padded to 1200 bytes");
+  expect(d.handshakeState() == HandshakeState.Requesting, "requesting");
+  expect(dialed(&mut d, at(100i64)).len() == 0usize, "nothing more before the retry time");
+  imm v1 = gate.handle("127.0.0.1:5000", request.view(), at(1i64), &mut reply);
+  expect(v1 == GateVerdict.Reply, "the gate answers a Request");
+  expectUInt(u64.from(reply.len()), 21u64, "with a 21-byte Challenge: no amplification");
+  imm challenge = copyBytes(reply.view());
+  expect(d.receive(challenge.view()) == HandshakeEvent.Nothing, "the dialer takes the Challenge");
+  expect(d.handshakeState() == HandshakeState.Responding, "and goes on to respond");
+  imm response = dialed(&mut d, at(2i64));
+  expectUInt(u64.from(response.len()), 1200u64, "the Response is padded too");
+  imm v2 = gate.handle("127.0.0.1:5000", response.view(), at(3i64), &mut reply);
+  mut session = 0u64;
+  match v2 {
+    case imm a Accept { session = a.session; }
+    else {}
+  }
+  expect(session != 0u64, "the gate accepts the Response, naming the session");
+  expectUInt(u64.from(reply.len()), 13u64, "in a 13-byte Accept");
+  expect(d.receive(reply.view()) == HandshakeEvent.Connected, "the dialer is connected");
+  expect(d.isConnected(), "connected");
+  expectUInt(d.sessionId(), session, "and agrees about the session");
+  mut cur = PacketReader.start();
+  cur.skip(challenge.view(), 13usize);
+  imm cookie = cur.rdU64(challenge.view());
+  expectUInt(session, 0x1111222233334444u64 ^ cookie, "the session is the client's salt xor the cookie");
+
+  // A Response with a wrong cookie, or from another address, or too late, is ignored
+  mut e = ClientHandshake.make(cfg, 0xAAAAu64, at(0i64));
+  imm req2 = dialed(&mut e, at(0i64));
+  gate.handle("10.0.0.1:7000", req2.view(), at(0i64), &mut reply);
+  e.receive(reply.view());
+  imm resp2 = dialed(&mut e, at(1i64));
+  expect(gate.handle("10.0.0.2:7000", resp2.view(), at(2i64), &mut reply) == GateVerdict.Ignore, "a Response from another address is ignored: the cookie is for the first");
+  expect(gate.handle("10.0.0.1:7001", resp2.view(), at(2i64), &mut reply) == GateVerdict.Ignore, "so is one from another port");
+  mut forged = copyBytes(resp2.view());
+  forged.set(20usize, 0u8);
+  forged.set(19usize, 1u8);
+  expect(gate.handle("10.0.0.1:7000", forged.view(), at(2i64), &mut reply) == GateVerdict.Ignore, "a forged cookie is ignored");
+  expect(gate.handle("10.0.0.1:7000", resp2.view(), at(5000i64), &mut reply) != GateVerdict.Ignore, "the right one, 5 s later, is accepted");
+  expect(gate.handle("10.0.0.1:7000", resp2.view(), at(25000i64), &mut reply) == GateVerdict.Ignore, "but not 25 s later: the cookie has expired");
+
+  // A Request too small to be worth answering
+  mut small = copyBytes(req2.view());
+  small.truncate(1199usize);
+  expect(gate.handle("10.0.0.1:7000", small.view(), at(0i64), &mut reply) == GateVerdict.Ignore, "a short Request is ignored");
+  expectUInt(u64.from(reply.len()), 0u64, "and nothing is sent");
+  mut junk = List[u8].empty();
+  putZeros(&mut junk, 1200usize);
+  expect(gate.handle("10.0.0.1:7000", junk.view(), at(0i64), &mut reply) == GateVerdict.Ignore, "garbage is ignored");
+
+  // A client that gets no answer: Requests repeat every 250 ms, then it fails
+  mut f = ClientHandshake.make(cfg, 0x42u64, at(0i64));
+  mut sent = 0u32;
+  mut t = 0i64;
+  while t < 5000i64 {
+    if dialed(&mut f, at(t)).len() > 0usize {sent = sent + 1u32;}
+    t = t + 10i64;
+  }
+  expectUInt(u64.from(sent), 20u64, "20 Requests in 5 s");
+  dialed(&mut f, at(5000i64));
+  expect(f.isFailed(), "and the attempt fails");
+  expect(not f.wasRefused(), "unanswered, not refused");
+
+  // A refusal
+  mut g = ClientHandshake.make(cfg, 0x77u64, at(0i64));
+  dialed(&mut g, at(0i64));
+  gate.handle("1.2.3.4:5", request.view(), at(0i64), &mut reply);
+  mut salt7 = ClientHandshake.make(cfg, 0x77u64, at(0i64));
+  imm rq = dialed(&mut salt7, at(0i64));
+  gate.handle("1.2.3.4:5", rq.view(), at(0i64), &mut reply);
+  g.receive(reply.view());
+  imm rs = dialed(&mut g, at(1i64));
+  imm denied = ChallengeGate.denied(ChallengeGate.saltOf(rs.view()));
+  expect(g.receive(denied.view()) == HandshakeEvent.Refused, "a Denied refuses it");
+  expect(g.isFailed() and g.wasRefused(), "failed, refused");
+
+  // Packets of another session are not a connection's
+  mut a = ConnectionCore.make(cfg, 0xABCDu64, at(0i64));
+  mut b = ConnectionCore.make(cfg, 0xABCEu64, at(0i64));
+  a.sendReliable("hi");
+  mut pk = List[List[u8]].empty();
+  mut evs = List[CoreEvent].empty();
+  a.poll(at(10i64), &mut pk, &mut evs);
+  expectUInt(u64.from(pk.len()), 1u64, "a sends a packet");
+  expect(not b.receive(pk[0usize].view(), at(11i64), &mut evs), "b, of another session, refuses it");
+  expectUInt(u64.from(evs.len()), 0u64, "and hears nothing");
+  expectUInt(b.stats().packetsInvalid, 1u64, "counted as invalid");
+  done();
+}
