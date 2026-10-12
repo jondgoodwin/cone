@@ -22,6 +22,7 @@ FnSigNode *newFnSigNode() {
     sig->lifechecked = 0;
     sig->lifestatic = 0;
     sig->spelled = NULL;
+    sig->ccall = 0;
     return sig;
 }
 
@@ -44,7 +45,7 @@ INode *cloneFnSigNode(CloneState *cstate, FnSigNode *node) {
 void fnSigPrint(FnSigNode *sig) {
     INode **nodesp;
     uint32_t cnt;
-    inodeFprint("fn(");
+    inodeFprint(sig->ccall ? "fn @c(" : "fn(");
     for (nodesFor(sig->parms, cnt, nodesp)) {
         inodePrintNode(*nodesp);
         if (cnt > 1)
@@ -132,10 +133,15 @@ void fnSigTypeCheck(TypeCheckState *pstate, FnSigNode *sig) {
         fnSigLifeCheck(pstate, (INode*)sig, NULL);
 }
 
-// Compare two function signatures to see if they are equivalent
-int fnSigEqual(FnSigNode *node1, FnSigNode *node2) {
+// Compare two function signatures to see if they are equivalent, the calling
+// convention they are marked for too if 'checkc'
+static int fnSigEqualC(FnSigNode *node1, FnSigNode *node2, int checkc) {
     INode **nodes1p, **nodes2p;
     uint32_t cnt;
+
+    // A Cone function and a C-named one are called differently: never one type
+    if (checkc && node1->ccall != node2->ccall)
+        return 0;
 
     // Return types and number of parameters must match
     if (!itypeIsSame(node1->rettype, node2->rettype)
@@ -153,6 +159,11 @@ int fnSigEqual(FnSigNode *node1, FnSigNode *node2) {
         nodes2p++;
     }
     return lifeSigsAgree(node1, node2);
+}
+
+// Compare two function signatures to see if they are equivalent
+int fnSigEqual(FnSigNode *node1, FnSigNode *node2) {
+    return fnSigEqualC(node1, node2, 1);
 }
 
 // Is an implementation's type 'impl' the type a trait requirement's 'req' names?
@@ -248,9 +259,15 @@ int fnSigParmsEqual(FnSigNode *node1, FnSigNode *node2) {
     return 1;
 }
 
-// Return TypeCompare indicating whether from type matches the function signature
-TypeCompare fnSigMatches(FnSigNode *to, FnSigNode *from, SubtypeConstraint constraint) {
+// Return TypeCompare indicating whether from type matches the function signature,
+// the calling convention each is marked for too if 'checkc'
+static TypeCompare fnSigMatchesC(FnSigNode *to, FnSigNode *from, SubtypeConstraint constraint, int checkc) {
     TypeCompare result = EqMatch;
+
+    // A Cone function and a C-named one pass their values differently, and no
+    // conversion or thunk makes one the other (fnSigConvRefusal says so)
+    if (checkc && to->ccall != from->ccall)
+        return NoMatch;
 
     // Number of parameters must match
     if (to->parms->used != from->parms->used)
@@ -296,6 +313,66 @@ TypeCompare fnSigMatches(FnSigNode *to, FnSigNode *from, SubtypeConstraint const
         break;
     }
     return result;
+}
+
+// Return TypeCompare indicating whether from type matches the function signature
+TypeCompare fnSigMatches(FnSigNode *to, FnSigNode *from, SubtypeConstraint constraint) {
+    return fnSigMatchesC(to, from, constraint, 1);
+}
+
+// The signature a type is a plain reference to, or NULL: '&fn(...)', or the
+// type of '&f' for a function 'f'
+static FnSigNode *fnSigRefTarget(INode *type) {
+    INode *dcl = itypeGetTypeDcl(type);
+    if (dcl->tag != RefTag)
+        return NULL;
+    INode *target = itypeGetTypeDcl(((RefNode*)dcl)->vtexp);
+    return target->tag == FnSigTag ? (FnSigNode*)target : NULL;
+}
+
+// A signature as a function reference is written: '&fn(Vec3) f32', '&fn @c (Vec3) f32'
+static void fnSigRefSpell(char *buf, size_t size, FnSigNode *sig) {
+    char spelled[300] = "";
+    genericFnSigCat(spelled, sizeof(spelled), sig);
+    snprintf(buf, size, "&%s", spelled);
+}
+
+// Why a value of type 'from' is refused where the type 'to' is wanted, when the
+// two are function references that differ only in the calling convention they
+// are marked for; NULL when it is not that
+char *fnSigConvRefusal(INode *from, INode *to) {
+    FnSigNode *fromsig = fnSigRefTarget(from);
+    if (fromsig == NULL)
+        return NULL;
+    static char msg[1100];
+    char have[320], wanted[320];
+    INode *todcl = itypeGetTypeDcl(to);
+    // A callable reference, '&<fn(...)', calls what it holds with Cone's convention
+    if (todcl->tag == VirtRefTag) {
+        StructNode *trait = (StructNode*)itypeGetTypeDcl(((RefNode*)todcl)->vtexp);
+        if (!fromsig->ccall || trait->tag != StructTag || trait->callsig == NULL
+            || !fnSigEqualC(trait->callsig, fromsig, 0))
+            return NULL;
+        fnSigRefSpell(have, sizeof(have), fromsig);
+        snprintf(msg, sizeof(msg),
+            "`%s` is a reference to a C-named function, and a callable (`&<fn`, `So[fn]`) calls what it holds in Cone's convention, which passes a struct differently from C's. Neither converts to the other. Call the function from a Cone function, and make that the callable.",
+            have);
+        return msg;
+    }
+    FnSigNode *tosig = fnSigRefTarget(to);
+    if (tosig == NULL || tosig->ccall == fromsig->ccall || fnSigMatchesC(tosig, fromsig, Coercion, 0) == NoMatch)
+        return NULL;
+    fnSigRefSpell(have, sizeof(have), fromsig);
+    fnSigRefSpell(wanted, sizeof(wanted), tosig);
+    if (fromsig->ccall)
+        snprintf(msg, sizeof(msg),
+            "`%s` is a reference to a C-named function, and `%s`, a Cone function's, is wanted. C and Cone pass a struct differently, so a call through one would pass its values wrongly, and neither converts to the other. Where C is to call it, write the wanted type `&fn @c (...)`; where Cone is, call the C function from a Cone function and use that.",
+            have, wanted);
+    else
+        snprintf(msg, sizeof(msg),
+            "`%s` is a reference to a Cone function, and `%s`, a C-named function's, is wanted. C would call it in C's convention, which passes a struct differently from Cone's, so its values would arrive wrong, and neither converts to the other. Make the function C-named, `fn @c name(...)`, or put it in an `@c` module.",
+            have, wanted);
+    return msg;
 }
 
 // Return true if type of from-exp matches totype
@@ -628,6 +705,11 @@ static char *fnSigMarkRefusal(RefNode *toref, StructNode *target, uint8_t mark) 
 // when that is the permission its '()' or the borrow needs; NULL when it is not
 // that. The message leads with the cause in the author's words.
 char *fnSigCallRefusal(INode *from, INode *to, int *code) {
+    char *convwhy = fnSigConvRefusal(from, to);
+    if (convwhy) {
+        *code = ErrorFnRefConv;
+        return convwhy;
+    }
     *code = ErrorCallablePerm;
     INode *todcl = itypeGetTypeDcl(to);
     if (todcl->tag != VirtRefTag)

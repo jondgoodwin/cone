@@ -1,0 +1,1370 @@
+// World: the tables and the rules that tie doors, inventories, attachments,
+// interactables, grabs, triggers, rules and timers together. Everything is in
+// flat tables of plain structs keyed by entity id (a u32, 0 for none), so a
+// whole world is data: no thing holds a reference to another, only an id, and
+// what leaves the world is an Event by value.
+//
+// Mutators finish by pumping the event queue, so a call such as 'activate' has run
+// every rule it set off when it returns; a rule's own actions emit events that
+// the same pump handles in order (first in, first out), at most 2048 events a
+// pump, after which it stops and emits EV_OVERFLOW.
+//
+// Time is the world's own clock, advanced by 'step(dt)'. A door asks the clock
+// for its pose, so nothing is integrated except grabs and nothing is lost if a
+// frame is skipped.
+
+// A thing in the world. The placement is its own; a thing attached to another
+// has its placement derived through 'worldTransform'.
+pub struct Entity {
+  pub alive bool;
+  pub class u32;
+  pub xf Transform3;
+  pub tracked bool;         // trigger volumes watch it
+  pub itemKind u32;         // nonzero: it is an item of that kind
+  pub itemCount u32;        // how many (a stack on the ground)
+}
+
+// A kind of item: keys, coins, a bag
+pub struct ItemDef {
+  pub name u32;             // symbol
+  pub maxStack u32;
+  pub weight f32;           // each
+  pub unique bool;          // each is its own entity, never merged (a bag, a lamp)
+}
+
+// Who can hold how much
+pub struct Inventory {
+  pub owner u32;
+  pub maxSlots u32;
+  pub maxWeight f32;        // 0 for unlimited
+}
+
+// One slot of an inventory: a count of an item kind, or one unique entity
+pub struct Slot {
+  pub owner u32;
+  pub kind u32;
+  pub count u32;            // 0 when the slot is empty and free to reuse
+  pub entity u32;           // the unique entity held, else 0
+}
+
+pub const ATT_SOCKET = 0u32;      // fixed to a bone of its parent, with an offset
+pub const ATT_CONTAINER = 1u32;   // inside its parent (a bag's contents): no placement of its own
+
+pub struct Attachment {
+  pub child u32;
+  pub parent u32;
+  pub mode u32;
+  pub bone u32;
+  pub offset Transform3;
+  pub alive bool;
+}
+
+// A thing a viewer can hover, focus, use or grab
+pub struct Interactable {
+  pub entity u32;
+  pub range f32;            // how near the agent must be
+  pub viewCos f32;          // the agent must face it within this cosine (-1 for any facing)
+  pub needFront bool;       // the agent must be on the front side
+  pub front Vec3;           // the front, in the thing's own frame
+  pub verbs u32;
+  pub enabled bool;
+}
+
+pub struct Viewer {
+  pub agent u32;
+  pub hover u32;
+  pub focus u32;
+}
+
+pub struct Prop {
+  pub entity u32;
+  pub key u32;
+  pub value Value;
+}
+
+pub const SHAPE_SPHERE = 0u32;
+pub const SHAPE_BOX = 1u32;
+
+// A trigger volume: a shape in the frame of its own entity
+pub struct TriggerVolume {
+  pub entity u32;
+  pub shape u32;
+  pub radius f32;           // sphere
+  pub half Vec3;            // box half extents
+  pub mask u32;             // classes that set it off (0 for any tracked thing)
+  pub enabled bool;
+}
+
+pub struct Occupant {
+  pub trigger u32;
+  pub who u32;
+  pub since f32;
+}
+
+// "on event [if conditions]: actions". The first four fields are the event
+// pattern; 0 in any of them matches anything.
+pub struct Rule {
+  pub onKind u32;
+  pub subject u32;
+  pub other u32;
+  pub key u32;
+  pub byMask u32;           // the class of the event's 'other' must have a bit in common (0 for any)
+  pub enabled bool;
+  pub once bool;            // disables itself after its first firing
+  pub removed bool;
+  pub fired u32;
+}
+
+pub struct Cond {
+  pub rule u32;
+  pub kind u32;
+  pub entity u32;
+  pub key u32;
+  pub op u32;
+  pub num f32;
+}
+
+pub struct Action {
+  pub rule u32;
+  pub kind u32;
+  pub target u32;
+  pub key u32;
+  pub value Value;
+  pub num f32;
+  pub num2 f32;
+}
+
+pub struct TimerRec {
+  pub owner u32;
+  pub name u32;
+  pub at f32;
+  pub repeat f32;
+  pub alive bool;
+}
+
+fn minF(a f32, b f32) f32 { if a < b { a; } else { b; }; }
+
+pub struct World {
+  pub now f32;
+  pub ents List[Entity];
+  pub names List[String];
+  pub itemDefs List[ItemDef];
+  pub invs List[Inventory];
+  pub slots List[Slot];
+  pub atts List[Attachment];
+  pub doors List[Door];
+  pub inter List[Interactable];
+  pub viewers List[Viewer];
+  pub props List[Prop];
+  pub grabs List[Grab];
+  pub volumes List[TriggerVolume];
+  pub insides List[Occupant];
+  pub rules List[Rule];
+  pub conds List[Cond];
+  pub acts List[Action];
+  pub timers List[TimerRec];
+  pub queue List[Event];
+  pub log List[Event];
+  pub pumping bool;
+
+  pub fn make() World {
+    mut w = new World(0., List[Entity].empty(), List[String].empty(), List[ItemDef].empty(),
+      List[Inventory].empty(), List[Slot].empty(), List[Attachment].empty(), List[Door].empty(),
+      List[Interactable].empty(), List[Viewer].empty(), List[Prop].empty(), List[Grab].empty(),
+      List[TriggerVolume].empty(), List[Occupant].empty(), List[Rule].empty(), List[Cond].empty(),
+      List[Action].empty(), List[TimerRec].empty(), List[Event].empty(), List[Event].empty(), false);
+    // id 0 is "none"
+    w.ents.push(new Entity(false, 0u32, Transform3.identity(), false, 0u32, 0u32));
+    w;
+  }
+
+  // ---------------------------------------------------------------- things
+
+  // A new thing of a class, at the origin
+  pub fn create(self &mut, class u32) u32 {
+    imm id = u32.from(ents.len());
+    ents.push(new Entity(true, class, Transform3.identity(), false, 0u32, 0u32));
+    id;
+  }
+
+  // A thing that already has an id elsewhere (a part the browser's registry numbered)
+  pub fn adopt(self &mut, id u32, class u32) u32 {
+    while ents.len() <= usize.from(id) {
+      ents.push(new Entity(false, 0u32, Transform3.identity(), false, 0u32, 0u32));
+    }
+    imm old = *ents[usize.from(id)];
+    ents.set(usize.from(id), new Entity(true, class, old.xf, old.tracked, old.itemKind, old.itemCount));
+    id;
+  }
+
+  pub fn exists(self &, id u32) bool { usize.from(id) < ents.len() and (*ents[usize.from(id)]).alive; }
+
+  pub fn decreate(self &mut, id u32) {
+    if self.exists(id) {
+      imm e = *ents[usize.from(id)];
+      ents.set(usize.from(id), new Entity(false, e.class, e.xf, false, e.itemKind, e.itemCount));
+    }
+  }
+
+  pub fn classOf(self &, id u32) u32 { if self.exists(id) { (*ents[usize.from(id)]).class; } else { 0u32; }; }
+
+  pub fn setTransform(self &mut, id u32, xf Transform3) {
+    if self.exists(id) {
+      mut e = *ents[usize.from(id)];
+      e.xf = xf;
+      ents.set(usize.from(id), e);
+    }
+  }
+
+  pub fn setPosition(self &mut, id u32, p Vec3) {
+    if self.exists(id) {
+      mut e = *ents[usize.from(id)];
+      e.xf = new Transform3(p, e.xf.rotation, e.xf.scale);
+      ents.set(usize.from(id), e);
+    }
+  }
+
+  pub fn transformOf(self &, id u32) Transform3 {
+    if self.exists(id) { (*ents[usize.from(id)]).xf; } else { Transform3.identity(); };
+  }
+
+  pub fn positionOf(self &, id u32) Vec3 { self.transformOf(id).translation; }
+
+  // The way a thing faces: its loc +z turned into the world
+  pub fn forwardOf(self &, id u32) Vec3 { self.transformOf(id).rotation * new Vec3(0., 0., 1.); }
+
+  // Whether trigger volumes watch it
+  pub fn setTracked(self &mut, id u32, tracked bool) {
+    if self.exists(id) {
+      mut e = *ents[usize.from(id)];
+      e.tracked = tracked;
+      ents.set(usize.from(id), e);
+    }
+  }
+
+  // ---------------------------------------------------------------- names
+
+  // The symbol for a name, made if new (symbols start at 1)
+  pub fn sym(self &mut, s &str) u32 {
+    mut i = 0usize;
+    while i < names.len() {
+      if (*names[i]).equals(s) { return u32.from(i) + 1u32; }
+      i = i + 1usize;
+    }
+    names.push(String.from(s));
+    u32.from(names.len());
+  }
+
+  pub fn nameOf(self &, sym u32) String {
+    if sym == 0u32 or usize.from(sym) > names.len() { return String.empty(); }
+    (*names[usize.from(sym) - 1usize]).copy();
+  }
+
+  // ---------------------------------------------------------------- events
+
+  // Queue an event (the world's own and the program's: a click, a signal)
+  pub fn post(self &mut, kind u32, subject u32, other u32, key u32, value Value, old Value) {
+    queue.push(new Event(kind, subject, other, key, value, old, now));
+  }
+
+  fn emit(self &mut, kind u32, subject u32, other u32, key u32, value Value) {
+    queue.push(new Event(kind, subject, other, key, value, Value.none(), now));
+  }
+
+  // The events that happened since the last call, oldest first
+  pub fn takeEvents(self &mut) List[Event] {
+    mut out = List[Event].empty();
+    mut i = 0usize;
+    while i < log.len() {
+      out.push(*log[i]);
+      i = i + 1usize;
+    }
+    log.clear();
+    out;
+  }
+
+  // Handle every queued event: log it, run the rules that match it
+  pub fn pump(self &mut) {
+    if pumping { return; }
+    pumping = true;
+    mut head = 0usize;
+    mut guard = 0usize;
+    while head < queue.len() {
+      imm ev = *queue[head];
+      head = head + 1usize;
+      guard = guard + 1usize;
+      if guard > 2048usize {
+        log.push(new Event(EV_OVERFLOW, 0u32, 0u32, 0u32, Value.none(), Value.none(), now));
+        break;
+      }
+      log.push(ev);
+      self.runRules(ev);
+    }
+    queue.clear();
+    pumping = false;
+  }
+
+  // ------------------------------------------------------------ properties
+
+  fn propIndex(self &, e u32, key u32) usize {
+    mut i = 0usize;
+    while i < props.len() {
+      imm p = *props[i];
+      if p.entity == e and p.key == key { return i; }
+      i = i + 1usize;
+    }
+    NONE_INDEX;
+  }
+
+  pub fn getProp(self &, e u32, key u32) Value {
+    imm i = self.propIndex(e, key);
+    if i == NONE_INDEX { Value.none(); } else { (*props[i]).value; };
+  }
+
+  pub fn getNum(self &, e u32, key u32) f32 { self.getProp(e, key).num; }
+
+  pub fn getBool(self &, e u32, key u32) bool { self.getProp(e, key).num != 0.; }
+
+  // Set a property; EV_PROP_CHANGED goes out when the value differs
+  pub fn setProp(self &mut, e u32, key u32, v Value) {
+    self.setPropQuiet(e, key, v);
+    self.pump();
+  }
+
+  fn setPropQuiet(self &mut, e u32, key u32, v Value) {
+    imm i = self.propIndex(e, key);
+    if i == NONE_INDEX {
+      props.push(new Prop(e, key, v));
+      self.emit2(EV_PROP_CHANGED, e, 0u32, key, v, Value.none());
+    } else {
+      imm old = (*props[i]).value;
+      if not old.same(v) {
+        props.set(i, new Prop(e, key, v));
+        self.emit2(EV_PROP_CHANGED, e, 0u32, key, v, old);
+      }
+    }
+  }
+
+  fn emit2(self &mut, kind u32, subject u32, other u32, key u32, value Value, old Value) {
+    queue.push(new Event(kind, subject, other, key, value, old, now));
+  }
+
+  // ----------------------------------------------------------------- doors
+
+  pub fn addDoor(self &mut, e u32, d Door) { doors.push(d); }
+
+  fn doorIndex(self &, e u32) usize {
+    mut i = 0usize;
+    while i < doors.len() {
+      imm d = *doors[i];
+      if d.entity == e and d.alive { return i; }
+      i = i + 1usize;
+    }
+    NONE_INDEX;
+  }
+
+  pub fn isDoor(self &, e u32) bool { self.doorIndex(e) != NONE_INDEX; }
+
+  pub fn doorOpenness(self &, e u32, t f32) f32 {
+    imm i = self.doorIndex(e);
+    if i == NONE_INDEX { 0.; } else { (*doors[i]).openness(t); };
+  }
+
+  // The door's pose in its closed frame at time t
+  pub fn doorPose(self &, e u32, t f32) Transform3 {
+    imm i = self.doorIndex(e);
+    if i == NONE_INDEX { Transform3.identity(); } else { (*doors[i]).pose(t); };
+  }
+
+  pub fn doorIsLocked(self &, e u32) bool {
+    imm i = self.doorIndex(e);
+    i != NONE_INDEX and (*doors[i]).locked;
+  }
+
+  // Whether the door is wantOpen or wantOpening (its target)
+  pub fn doorWantsOpen(self &, e u32) bool {
+    imm i = self.doorIndex(e);
+    i != NONE_INDEX and (*doors[i]).target > 0.5;
+  }
+
+  pub fn doorPassable(self &, e u32) bool {
+    imm i = self.doorIndex(e);
+    i != NONE_INDEX and (*doors[i]).passableAt(now);
+  }
+
+  // The item kind and use-up flag that unlock it, and whether it wantOpens as well
+  pub fn setDoorKey(self &mut, e u32, keyKind u32, consume bool, openOnUnlock bool) {
+    imm i = self.doorIndex(e);
+    if i != NONE_INDEX {
+      mut d = *doors[i];
+      d.keyKind = keyKind;
+      d.consumeKey = consume;
+      d.openOnUnlock = openOnUnlock;
+      doors.set(i, d);
+    }
+  }
+
+  pub fn setDoorAutoClose(self &mut, e u32, seconds f32) {
+    imm i = self.doorIndex(e);
+    if i != NONE_INDEX {
+      mut d = *doors[i];
+      d.autoClose = seconds;
+      doors.set(i, d);
+    }
+  }
+
+  // Set the lock without an event (for building a world)
+  pub fn setDoorLocked(self &mut, e u32, locked bool) {
+    imm i = self.doorIndex(e);
+    if i != NONE_INDEX {
+      mut d = *doors[i];
+      d.locked = locked;
+      doors.set(i, d);
+    }
+  }
+
+  pub fn lockDoor(self &mut, e u32) {
+    self.lockQuiet(e);
+    self.pump();
+  }
+
+  fn lockQuiet(self &mut, e u32) {
+    imm i = self.doorIndex(e);
+    if i != NONE_INDEX {
+      mut d = *doors[i];
+      if not d.locked {
+        d.locked = true;
+        doors.set(i, d);
+        self.emit(EV_DOOR_LOCKED, e, 0u32, 0u32, Value.none());
+      }
+    }
+  }
+
+  pub fn unlockDoor(self &mut, e u32) {
+    self.unlockQuiet(e, 0u32);
+    self.pump();
+  }
+
+  fn unlockQuiet(self &mut, e u32, byWho u32) {
+    imm i = self.doorIndex(e);
+    if i != NONE_INDEX {
+      mut d = *doors[i];
+      if d.locked {
+        d.locked = false;
+        doors.set(i, d);
+        self.emit(EV_DOOR_UNLOCKED, e, byWho, 0u32, Value.none());
+      }
+    }
+  }
+
+  // Open or close a door from now. A locked door does not wantOpen. Returns whether it changed.
+  pub fn setDoor(self &mut, e u32, wantOpen bool, agent u32) bool {
+    imm ok = self.setDoorQuiet(e, wantOpen, agent);
+    self.pump();
+    ok;
+  }
+
+  fn setDoorQuiet(self &mut, e u32, wantOpen bool, agent u32) bool {
+    imm i = self.doorIndex(e);
+    if i == NONE_INDEX { return false; }
+    mut d = *doors[i];
+    imm want = if wantOpen { 1.; } else { 0.; };
+    if d.target == want { return false; }
+    if wantOpen and d.locked { return false; }
+    d.from = d.openness(now);
+    d.target = want;
+    d.toggledAt = now;
+    d.settled = false;
+    doors.set(i, d);
+    self.emit(if wantOpen { EV_DOOR_OPENING; } else { EV_DOOR_CLOSING; }, e, agent, 0u32, Value.none());
+    true;
+  }
+
+  pub fn toggleDoor(self &mut, e u32, agent u32) bool {
+    imm wantOpen = not self.doorWantsOpen(e);
+    self.setDoor(e, wantOpen, agent);
+  }
+
+  // ------------------------------------------------------------ inventories
+
+  // Define an item kind; the kind number (from 1) is what everything else names
+  pub fn defineItem(self &mut, name &str, maxStack u32, weight f32, unique bool) u32 {
+    imm s = self.sym(name);
+    itemDefs.push(new ItemDef(s, maxStack, weight, unique));
+    u32.from(itemDefs.len());
+  }
+
+  fn defOf(self &, kind u32) ItemDef {
+    if kind == 0u32 or usize.from(kind) > itemDefs.len() { return new ItemDef(0u32, 1u32, 0., true); }
+    *itemDefs[usize.from(kind) - 1usize];
+  }
+
+  // Give a thing an inventory of some slots and a weight limit (0 for none)
+  pub fn addInventory(self &mut, owner u32, maxSlots u32, maxWeight f32) {
+    invs.push(new Inventory(owner, maxSlots, maxWeight));
+  }
+
+  fn invIndex(self &, owner u32) usize {
+    mut i = 0usize;
+    while i < invs.len() {
+      if (*invs[i]).owner == owner { return i; }
+      i = i + 1usize;
+    }
+    NONE_INDEX;
+  }
+
+  pub fn hasInventory(self &, owner u32) bool { self.invIndex(owner) != NONE_INDEX; }
+
+  fn usedSlots(self &, owner u32) u32 {
+    mut n = 0u32;
+    mut i = 0usize;
+    while i < slots.len() {
+      imm s = *slots[i];
+      if s.owner == owner and s.count > 0u32 { n = n + 1u32; }
+      i = i + 1usize;
+    }
+    n;
+  }
+
+  // Total of one kind held (stacked or as unique things)
+  pub fn invCount(self &, owner u32, kind u32) u32 {
+    mut n = 0u32;
+    mut i = 0usize;
+    while i < slots.len() {
+      imm s = *slots[i];
+      if s.owner == owner and s.kind == kind { n = n + s.count; }
+      i = i + 1usize;
+    }
+    n;
+  }
+
+  pub fn invHas(self &, owner u32, kind u32) bool { self.invCount(owner, kind) > 0u32; }
+
+  // Weight of everything held, a held container's contents too
+  pub fn invWeight(self &, owner u32) f32 { self.weightRec(owner, 0u32); }
+
+  fn weightRec(self &, owner u32, depth u32) f32 {
+    mut w = 0.;
+    mut i = 0usize;
+    while i < slots.len() {
+      imm s = *slots[i];
+      if s.owner == owner and s.count > 0u32 {
+        w = w + self.defOf(s.kind).weight * f32.from(s.count);
+        if s.entity != 0u32 and depth < 6u32 { w = w + self.weightRec(s.entity, depth + 1u32); }
+      }
+      i = i + 1usize;
+    }
+    w;
+  }
+
+  // How many more of an item (by weight alone) the owner could take
+  fn roomByWeight(self &, owner u32, kind u32, want u32) u32 {
+    imm ii = self.invIndex(owner);
+    imm def = self.defOf(kind);
+    if ii == NONE_INDEX { return 0u32; }
+    imm maxW = (*invs[ii]).maxWeight;
+    if maxW <= 0. or def.weight <= 0. { return want; }
+    imm free = maxW - self.invWeight(owner);
+    if free <= 0. { return 0u32; }
+    imm fit = u32.from(free / def.weight + 0.0001);
+    if fit < want { fit; } else { want; };
+  }
+
+  // Add up to 'count' of a stackable kind. Returns how many went in (slots and weight limit the rest).
+  pub fn invAdd(self &mut, owner u32, kind u32, count u32) u32 {
+    imm added = self.invAddQuiet(owner, kind, count);
+    self.pump();
+    added;
+  }
+
+  fn invAddQuiet(self &mut, owner u32, kind u32, count u32) u32 {
+    imm ii = self.invIndex(owner);
+    if ii == NONE_INDEX or count == 0u32 { return 0u32; }
+    imm def = self.defOf(kind);
+    mut left = self.roomByWeight(owner, kind, count);
+    imm total = left;
+    // fill what is there first
+    mut i = 0usize;
+    while i < slots.len() and left > 0u32 {
+      mut s = *slots[i];
+      if s.owner == owner and s.kind == kind and s.entity == 0u32 and s.count > 0u32 and s.count < def.maxStack {
+        imm room = def.maxStack - s.count;
+        imm put = if left < room { left; } else { room; };
+        s.count = s.count + put;
+        slots.set(i, s);
+        left = left - put;
+      }
+      i = i + 1usize;
+    }
+    // then new slots
+    while left > 0u32 and self.usedSlots(owner) < (*invs[ii]).maxSlots {
+      imm put = if left < def.maxStack { left; } else { def.maxStack; };
+      self.putSlot(owner, kind, put, 0u32);
+      left = left - put;
+    }
+    imm added = total - left;
+    if added > 0u32 { self.emit(EV_ITEM_ADDED, owner, 0u32, kind, Value.number(f32.from(added))); }
+    added;
+  }
+
+  // Use an empty slot if there is one, else a new one
+  fn putSlot(self &mut, owner u32, kind u32, count u32, entity u32) {
+    mut i = 0usize;
+    while i < slots.len() {
+      imm s = *slots[i];
+      if s.count == 0u32 {
+        slots.set(i, new Slot(owner, kind, count, entity));
+        return;
+      }
+      i = i + 1usize;
+    }
+    slots.push(new Slot(owner, kind, count, entity));
+  }
+
+  // Hold a unique thing (a bag) in a slot. False when there is no room.
+  pub fn invAddEntity(self &mut, owner u32, e u32) bool {
+    imm ok = self.invAddEntityQuiet(owner, e);
+    self.pump();
+    ok;
+  }
+
+  fn invAddEntityQuiet(self &mut, owner u32, e u32) bool {
+    imm ii = self.invIndex(owner);
+    if ii == NONE_INDEX or not self.exists(e) { return false; }
+    imm kind = (*ents[usize.from(e)]).itemKind;
+    if self.usedSlots(owner) >= (*invs[ii]).maxSlots { return false; }
+    if self.roomByWeight(owner, kind, 1u32) < 1u32 { return false; }
+    self.putSlot(owner, kind, 1u32, e);
+    self.emit(EV_ITEM_ADDED, owner, e, kind, Value.number(1.));
+    true;
+  }
+
+  // Take up to 'count' of a stackable kind out. Returns how many came out.
+  pub fn invRemove(self &mut, owner u32, kind u32, count u32) u32 {
+    imm r = self.invRemoveQuiet(owner, kind, count);
+    self.pump();
+    r;
+  }
+
+  fn invRemoveQuiet(self &mut, owner u32, kind u32, count u32) u32 {
+    mut left = count;
+    mut i = 0usize;
+    while i < slots.len() and left > 0u32 {
+      mut s = *slots[i];
+      if s.owner == owner and s.kind == kind and s.entity == 0u32 and s.count > 0u32 {
+        imm take = if left < s.count { left; } else { s.count; };
+        s.count = s.count - take;
+        slots.set(i, s);
+        left = left - take;
+      }
+      i = i + 1usize;
+    }
+    imm removed = count - left;
+    if removed > 0u32 { self.emit(EV_ITEM_REMOVED, owner, 0u32, kind, Value.number(f32.from(removed))); }
+    removed;
+  }
+
+  fn invRemoveEntityQuiet(self &mut, owner u32, e u32) bool {
+    mut i = 0usize;
+    while i < slots.len() {
+      mut s = *slots[i];
+      if s.owner == owner and s.entity == e and s.count > 0u32 {
+        s.count = 0u32;
+        s.entity = 0u32;
+        slots.set(i, s);
+        self.emit(EV_ITEM_REMOVED, owner, e, s.kind, Value.number(1.));
+        return true;
+      }
+      i = i + 1usize;
+    }
+    false;
+  }
+
+  // A thing of an item kind in the world: a key on a table, a bag on the floor
+  pub fn makeItem(self &mut, kind u32, count u32, at Vec3) u32 {
+    imm e = self.create(CLASS_ITEM);
+    mut en = *ents[usize.from(e)];
+    en.itemKind = kind;
+    en.itemCount = count;
+    en.xf = new Transform3(at, Quat.identity(), new Vec3(1., 1., 1.));
+    ents.set(usize.from(e), en);
+    e;
+  }
+
+  // The agent takes the item thing 'e' (reach is the largest distance allowed).
+  // A stackable merges into its slots and the thing shrinks, and is gone when
+  // all went in; a unique thing takes a slot and goes inside the agent.
+  pub fn pickUp(self &mut, agent u32, e u32, reach f32) bool {
+    imm ok = self.pickUpQuiet(agent, e, reach);
+    self.pump();
+    ok;
+  }
+
+  fn pickUpQuiet(self &mut, agent u32, e u32, reach f32) bool {
+    if not self.exists(e) or not self.exists(agent) { return false; }
+    mut en = *ents[usize.from(e)];
+    if en.itemKind == 0u32 { return false; }
+    if (self.positionOf(e) - self.positionOf(agent)).length() > reach { return false; }
+    imm def = self.defOf(en.itemKind);
+    if def.unique {
+      if not self.invAddEntityQuiet(agent, e) {
+        self.emit(EV_USE_DENIED, e, agent, 0u32, Value.number(f32.from(DENY_FULL)));
+        return false;
+      }
+      self.attachContainerQuiet(e, agent);
+      self.emit(EV_PICKED_UP, e, agent, en.itemKind, Value.number(1.));
+      return true;
+    }
+    imm added = self.invAddQuiet(agent, en.itemKind, en.itemCount);
+    if added == 0u32 {
+      self.emit(EV_USE_DENIED, e, agent, 0u32, Value.number(f32.from(DENY_FULL)));
+      return false;
+    }
+    en.itemCount = en.itemCount - added;
+    if en.itemCount == 0u32 { en.alive = false; }
+    ents.set(usize.from(e), en);
+    self.emit(EV_PICKED_UP, e, agent, en.itemKind, Value.number(f32.from(added)));
+    true;
+  }
+
+  // Put 'count' of a stackable kind down at a place as a new thing. Returns it (0 if none was held).
+  pub fn dropItems(self &mut, agent u32, kind u32, count u32, at Vec3) u32 {
+    imm removed = self.invRemoveQuiet(agent, kind, count);
+    mut made = 0u32;
+    if removed > 0u32 {
+      made = self.makeItem(kind, removed, at);
+      self.emit(EV_DROPPED, made, agent, kind, Value.number(f32.from(removed)));
+    }
+    self.pump();
+    made;
+  }
+
+  // Put a unique thing the agent holds (in a slot or in a hand) down at a place
+  pub fn dropEntity(self &mut, agent u32, e u32, at Vec3) bool {
+    imm inSlot = self.invRemoveEntityQuiet(agent, e);
+    imm held = self.detachQuiet(e);
+    mut ok = false;
+    if inSlot or held {
+      self.setPosition(e, at);
+      self.emit(EV_DROPPED, e, agent, (*ents[usize.from(e)]).itemKind, Value.number(1.));
+      ok = true;
+    }
+    self.pump();
+    ok;
+  }
+
+  // Hand over up to 'count' of a stackable kind. Returns how many the receiver took.
+  pub fn give(self &mut, from u32, to u32, kind u32, count u32) u32 {
+    imm out = self.invRemoveQuiet(from, kind, count);
+    imm took = self.invAddQuiet(to, kind, out);
+    if took < out { self.invAddQuiet(from, kind, out - took); }
+    if took > 0u32 { self.emit(EV_GIVEN, from, to, kind, Value.number(f32.from(took))); }
+    self.pump();
+    took;
+  }
+
+  // Hand over a unique thing
+  pub fn giveEntity(self &mut, from u32, to u32, e u32) bool {
+    mut ok = false;
+    if self.invRemoveEntityQuiet(from, e) {
+      if self.invAddEntityQuiet(to, e) {
+        self.attachContainerQuiet(e, to);
+        self.emit(EV_GIVEN, from, to, (*ents[usize.from(e)]).itemKind, Value.number(1.));
+        ok = true;
+      } else {
+        self.invAddEntityQuiet(from, e);
+      }
+    }
+    self.pump();
+    ok;
+  }
+
+  // ----------------------------------------------------------- attachments
+
+  fn attIndex(self &, child u32) usize {
+    mut i = 0usize;
+    while i < atts.len() {
+      imm a = *atts[i];
+      if a.child == child and a.alive { return i; }
+      i = i + 1usize;
+    }
+    NONE_INDEX;
+  }
+
+  // Fix a thing to a bone of another (a bag to a hand) with an offset from the bone
+  pub fn attach(self &mut, child u32, parent u32, bone u32, offset Transform3) {
+    self.detachQuiet(child);
+    atts.push(new Attachment(child, parent, ATT_SOCKET, bone, offset, true));
+    self.emit(EV_ATTACHED, child, parent, bone, Value.none());
+    self.pump();
+  }
+
+  // Take a unique thing out of the agent's slots (if it is in one) and hold it
+  // at a bone: a bag from the pocket to the hand. The hand's load is not in the inventory's weight.
+  pub fn hold(self &mut, agent u32, e u32, bone u32, offset Transform3) bool {
+    if not self.exists(e) { return false; }
+    self.invRemoveEntityQuiet(agent, e);
+    self.detachQuiet(e);
+    atts.push(new Attachment(e, agent, ATT_SOCKET, bone, offset, true));
+    self.emit(EV_ATTACHED, e, agent, bone, Value.none());
+    self.pump();
+    true;
+  }
+
+  // Put a held thing back in a slot. False when there is no room (it stays in the hand).
+  pub fn stow(self &mut, agent u32, e u32) bool {
+    mut ok = false;
+    if self.parentOf(e) == agent and self.invAddEntityQuiet(agent, e) {
+      self.attachContainerQuiet(e, agent);
+      ok = true;
+    }
+    self.pump();
+    ok;
+  }
+
+  fn attachContainerQuiet(self &mut, child u32, parent u32) {
+    self.detachQuiet(child);
+    atts.push(new Attachment(child, parent, ATT_CONTAINER, 0u32, Transform3.identity(), true));
+    self.emit(EV_ATTACHED, child, parent, 0u32, Value.none());
+  }
+
+  pub fn detach(self &mut, child u32) bool {
+    imm r = self.detachQuiet(child);
+    self.pump();
+    r;
+  }
+
+  fn detachQuiet(self &mut, child u32) bool {
+    imm i = self.attIndex(child);
+    if i == NONE_INDEX { return false; }
+    mut a = *atts[i];
+    a.alive = false;
+    atts.set(i, a);
+    self.emit(EV_DETACHED, child, a.parent, a.bone, Value.none());
+    true;
+  }
+
+  pub fn parentOf(self &, child u32) u32 {
+    imm i = self.attIndex(child);
+    if i == NONE_INDEX { 0u32; } else { (*atts[i]).parent; };
+  }
+
+  // Occupant a container, so not drawn or placed
+  pub fn isHidden(self &, child u32) bool {
+    imm i = self.attIndex(child);
+    i != NONE_INDEX and (*atts[i]).mode == ATT_CONTAINER;
+  }
+
+  // The world placement of a thing, following its attachments up. 'pose' gives
+  // the bone's placement in its parent's frame (the skeleton's, from bonepose).
+  pub fn worldTransform(self &, e u32, pose &<fn(parent u32, bone u32) Transform3) Transform3 {
+    mut cur = e;
+    mut acc = Transform3.identity();
+    mut depth = 0u32;
+    while depth < 8u32 {
+      imm i = self.attIndex(cur);
+      if i == NONE_INDEX { break; }
+      imm a = *atts[i];
+      if a.mode == ATT_SOCKET {
+        acc = (pose(a.parent, a.bone) * a.offset) * acc;
+      }
+      cur = a.parent;
+      depth = depth + 1u32;
+    }
+    self.transformOf(cur) * acc;
+  }
+
+  // ---------------------------------------------------------- interactables
+
+  pub fn addInteractable(self &mut, e u32, range f32, viewCos f32, needFront bool, front Vec3, verbs u32) {
+    inter.push(new Interactable(e, range, viewCos, needFront, front, verbs, true));
+  }
+
+  fn interIndex(self &, e u32) usize {
+    mut i = 0usize;
+    while i < inter.len() {
+      if (*inter[i]).entity == e { return i; }
+      i = i + 1usize;
+    }
+    NONE_INDEX;
+  }
+
+  pub fn setInteractable(self &mut, e u32, enabled bool) {
+    imm i = self.interIndex(e);
+    if i != NONE_INDEX {
+      mut it = *inter[i];
+      it.enabled = enabled;
+      inter.set(i, it);
+    }
+  }
+
+  // 0 when the agent may act on the thing, else why not (DENY_RANGE, DENY_FACING)
+  fn reach(self &, agent u32, it Interactable) u32 {
+    imm a = self.positionOf(agent);
+    imm p = self.positionOf(it.entity);
+    imm to = p - a;
+    imm d = to.length();
+    if d > it.range { return DENY_RANGE; }
+    if d > 0.0001 and it.viewCos > -1. {
+      if self.forwardOf(agent).dot(to * (1. / d)) < it.viewCos { return DENY_FACING; }
+    }
+    if it.needFront and d > 0.0001 {
+      imm front = self.transformOf(it.entity).rotation * it.front;
+      if front.dot((a - p) * (1. / d)) < 0. { return DENY_FACING; }
+    }
+    0u32;
+  }
+
+  fn viewerIndex(self &mut, agent u32) usize {
+    mut i = 0usize;
+    while i < viewers.len() {
+      if (*viewers[i]).agent == agent { return i; }
+      i = i + 1usize;
+    }
+    viewers.push(new Viewer(agent, 0u32, 0u32));
+    viewers.len() - 1usize;
+  }
+
+  // The pointer is over a thing (the browser's pick), or 0 for none
+  pub fn setHover(self &mut, viewer u32, e u32) {
+    imm vi = self.viewerIndex(viewer);
+    mut v = *viewers[vi];
+    if v.hover != e {
+      if v.hover != 0u32 { self.emit(EV_UNHOVER, v.hover, viewer, 0u32, Value.none()); }
+      v.hover = e;
+      viewers.set(vi, v);
+      if e != 0u32 { self.emit(EV_HOVER, e, viewer, 0u32, Value.none()); }
+    }
+    self.pump();
+  }
+
+  pub fn hoverOf(self &mut, viewer u32) u32 { (*viewers[self.viewerIndex(viewer)]).hover; }
+  pub fn focusOf(self &mut, viewer u32) u32 { (*viewers[self.viewerIndex(viewer)]).focus; }
+
+  // Which usable thing the agent would use if it pressed E now: those in range
+  // and facing, ranked by targeting's cost (angle from where the eye looks, then
+  // distance, with the current focus preferred), through the sight closure.
+  pub fn updateFocus(self &mut, agent u32, eye Vec3, forward Vec3, cast &<fn(o Vec3, d Vec3, m f32) RayHit) u32 {
+    mut cands = List[Candidate].empty();
+    mut i = 0usize;
+    while i < inter.len() {
+      imm it = *inter[i];
+      if it.enabled and (it.verbs & VERB_USE) != 0u32 and self.exists(it.entity) and self.reach(agent, it) == 0u32 {
+        cands.push(new Candidate(it.entity, self.positionOf(it.entity), 0.));
+      }
+      i = i + 1usize;
+    }
+    imm vi = self.viewerIndex(agent);
+    mut v = *viewers[vi];
+    imm p = new TargetParams(50., pi, 4., 1., 0.75, true);
+    imm pick = best(eye, forward, &cands, &p, v.focus, cast);
+    if pick != v.focus {
+      if v.focus != 0u32 { self.emit(EV_UNFOCUS, v.focus, agent, 0u32, Value.none()); }
+      v.focus = pick;
+      viewers.set(vi, v);
+      if pick != 0u32 { self.emit(EV_FOCUS, pick, agent, 0u32, Value.none()); }
+    }
+    self.pump();
+    pick;
+  }
+
+  fn deny(self &mut, e u32, agent u32, why u32) {
+    self.emit(EV_USE_DENIED, e, agent, 0u32, Value.number(f32.from(why)));
+  }
+
+  // The agent uses a thing (E pressed on the focus, or a click on it). A door
+  // toggles, unlocking first with its key; an item is picked up; anything
+  // else just gets EV_USED, which rules can answer. Returns whether it was allowed.
+  pub fn activate(self &mut, agent u32, e u32) bool {
+    imm ok = self.useQuiet(agent, e);
+    self.pump();
+    ok;
+  }
+
+  fn useQuiet(self &mut, agent u32, e u32) bool {
+    imm ii = self.interIndex(e);
+    if ii == NONE_INDEX { self.deny(e, agent, DENY_DISABLED); return false; }
+    imm it = *inter[ii];
+    if not it.enabled or (it.verbs & VERB_USE) == 0u32 or not self.exists(e) {
+      self.deny(e, agent, DENY_DISABLED);
+      return false;
+    }
+    imm why = self.reach(agent, it);
+    if why != 0u32 { self.deny(e, agent, why); return false; }
+    imm di = self.doorIndex(e);
+    if di != NONE_INDEX {
+      imm d = *doors[di];
+      if d.locked {
+        if d.keyKind == 0u32 or self.invCount(agent, d.keyKind) < 1u32 {
+          self.deny(e, agent, DENY_LOCKED);
+          return false;
+        }
+        self.emit(EV_USED, e, agent, 0u32, Value.none());
+        if d.consumeKey { self.invRemoveQuiet(agent, d.keyKind, 1u32); }
+        self.unlockQuiet(e, agent);
+        if d.openOnUnlock { self.setDoorQuiet(e, true, agent); }
+        return true;
+      }
+      self.emit(EV_USED, e, agent, 0u32, Value.none());
+      self.setDoorQuiet(e, not self.doorWantsOpen(e), agent);
+      return true;
+    }
+    self.emit(EV_USED, e, agent, 0u32, Value.none());
+    if (*ents[usize.from(e)]).itemKind != 0u32 { self.pickUpQuiet(agent, e, it.range); }
+    true;
+  }
+
+  // ------------------------------------------------------------------ grabs
+
+  fn grabIndex(self &, holder u32) usize {
+    mut i = 0usize;
+    while i < grabs.len() {
+      imm g = *grabs[i];
+      if g.holder == holder and g.alive { return i; }
+      i = i + 1usize;
+    }
+    NONE_INDEX;
+  }
+
+  // Take hold of a grabbable thing at a point on it, with a hand at 'hand'.
+  // The spring is 'frequency' Hz and breaks at 'breakDistance' metres of lag.
+  pub fn grabStart(self &mut, holder u32, e u32, hand Vec3, frequency f32, breakDistance f32) bool {
+    imm ii = self.interIndex(e);
+    if ii == NONE_INDEX { return false; }
+    imm it = *inter[ii];
+    if not it.enabled or (it.verbs & VERB_GRAB) == 0u32 { self.deny(e, holder, DENY_DISABLED); self.pump(); return false; }
+    imm why = self.reach(holder, it);
+    if why != 0u32 { self.deny(e, holder, why); self.pump(); return false; }
+    self.grabEndQuiet(holder, false);
+    imm origin = self.positionOf(e);
+    grabs.push(new Grab(holder, e, hand - origin, origin, new Vec3(0., 0., 0.), frequency, breakDistance, true));
+    self.emit(EV_GRAB, e, holder, 0u32, Value.none());
+    self.pump();
+    true;
+  }
+
+  // Move the hand: the held thing follows by its spring and is placed there.
+  // Returns the held thing's id (0 when not holding or the grab just broke).
+  pub fn grabUpdate(self &mut, holder u32, hand Vec3, dt f32) u32 {
+    imm i = self.grabIndex(holder);
+    if i == NONE_INDEX { return 0u32; }
+    mut g = *grabs[i];
+    imm holds = g.step(hand, dt);
+    grabs.set(i, g);
+    if holds {
+      self.setPosition(g.target, g.pos);
+      return g.target;
+    }
+    self.grabEndQuiet(holder, true);
+    self.pump();
+    0u32;
+  }
+
+  pub fn grabEnd(self &mut, holder u32) {
+    self.grabEndQuiet(holder, false);
+    self.pump();
+  }
+
+  fn grabEndQuiet(self &mut, holder u32, broke bool) {
+    imm i = self.grabIndex(holder);
+    if i != NONE_INDEX {
+      mut g = *grabs[i];
+      g.alive = false;
+      grabs.set(i, g);
+      self.emit(EV_RELEASE, g.target, holder, 0u32, Value.number(if broke { 1.; } else { 0.; }));
+    }
+  }
+
+  pub fn heldBy(self &, holder u32) u32 {
+    imm i = self.grabIndex(holder);
+    if i == NONE_INDEX { 0u32; } else { (*grabs[i]).target; };
+  }
+
+  // --------------------------------------------------------------- triggers
+
+  pub fn addSphereTrigger(self &mut, e u32, radius f32, mask u32) {
+    volumes.push(new TriggerVolume(e, SHAPE_SPHERE, radius, new Vec3(0., 0., 0.), mask, true));
+  }
+
+  pub fn addBoxTrigger(self &mut, e u32, half Vec3, mask u32) {
+    volumes.push(new TriggerVolume(e, SHAPE_BOX, 0., half, mask, true));
+  }
+
+  pub fn setTrigger(self &mut, e u32, enabled bool) {
+    mut i = 0usize;
+    while i < volumes.len() {
+      mut v = *volumes[i];
+      if v.entity == e { v.enabled = enabled; volumes.set(i, v); }
+      i = i + 1usize;
+    }
+  }
+
+  fn volumeHolds(self &, v TriggerVolume, p Vec3) bool {
+    imm loc = self.transformOf(v.entity).inverse().transformPoint(p);
+    if v.shape == SHAPE_SPHERE { return loc.length() <= v.radius; }
+    imm a = loc.abs();
+    a.x <= v.half.x and a.y <= v.half.y and a.z <= v.half.z;
+  }
+
+  // Per volume, in the order they were added: exits first, then enters (by
+  // ascending id), then stays. A disabled volume holds nobody, so it exits those inside.
+  fn updateTriggers(self &mut) {
+    mut fresh = List[Occupant].empty();
+    mut vi = 0usize;
+    while vi < volumes.len() {
+      imm v = *volumes[vi];
+      imm tid = v.entity;
+      // who is inside now, ascending by id
+      mut nowIn = List[u32].empty();
+      if v.enabled {
+        mut id = 1usize;
+        while id < ents.len() {
+          imm en = *ents[id];
+          if en.alive and en.tracked and u32.from(id) != tid and (v.mask == 0u32 or (en.class & v.mask) != 0u32) {
+            if self.volumeHolds(v, en.xf.translation) { nowIn.push(u32.from(id)); }
+          }
+          id = id + 1usize;
+        }
+      }
+      // exits
+      mut k = 0usize;
+      while k < insides.len() {
+        imm r = *insides[k];
+        if r.trigger == tid and not listHas(&nowIn, r.who) {
+          self.emit(EV_EXIT, tid, r.who, 0u32, Value.none());
+        }
+        k = k + 1usize;
+      }
+      // enters
+      mut n = 0usize;
+      while n < nowIn.len() {
+        imm who = *nowIn[n];
+        mut was = false;
+        mut m = 0usize;
+        while m < insides.len() {
+          imm r = *insides[m];
+          if r.trigger == tid and r.who == who { was = true; }
+          m = m + 1usize;
+        }
+        if not was {
+          fresh.push(new Occupant(tid, who, now));
+          self.emit(EV_ENTER, tid, who, 0u32, Value.none());
+        }
+        n = n + 1usize;
+      }
+      // stays
+      mut s = 0usize;
+      while s < insides.len() {
+        imm r = *insides[s];
+        if r.trigger == tid and listHas(&nowIn, r.who) {
+          fresh.push(r);
+          self.emit(EV_STAY, tid, r.who, 0u32, Value.number(now - r.since));
+        }
+        s = s + 1usize;
+      }
+      vi = vi + 1usize;
+    }
+    // volumes removed do not exist, so what remains is exactly the fresh list
+    insides.clear();
+    mut f = 0usize;
+    while f < fresh.len() {
+      insides.push(*fresh[f]);
+      f = f + 1usize;
+    }
+  }
+
+  // ----------------------------------------------------------------- timers
+
+  // Ring 'name' for 'owner' after 'delay' seconds, and every 'repeat' after if nonzero
+  pub fn startTimer(self &mut, owner u32, name u32, delay f32, repeat f32) {
+    timers.push(new TimerRec(owner, name, now + delay, repeat, true));
+  }
+
+  pub fn cancelTimer(self &mut, owner u32, name u32) {
+    mut i = 0usize;
+    while i < timers.len() {
+      mut t = *timers[i];
+      if t.alive and t.owner == owner and t.name == name { t.alive = false; timers.set(i, t); }
+      i = i + 1usize;
+    }
+  }
+
+  fn runTimers(self &mut) {
+    mut guard = 0u32;
+    while guard < 1000u32 {
+      guard = guard + 1u32;
+      mut pick = NONE_INDEX;
+      mut at = 0.;
+      mut i = 0usize;
+      while i < timers.len() {
+        imm t = *timers[i];
+        if t.alive and t.at <= now and (pick == NONE_INDEX or t.at < at) { pick = i; at = t.at; }
+        i = i + 1usize;
+      }
+      if pick == NONE_INDEX { break; }
+      mut t = *timers[pick];
+      queue.push(new Event(EV_TIMER, t.owner, 0u32, t.name, Value.none(), Value.none(), t.at));
+      if t.repeat > 0.0001 { t.at = t.at + t.repeat; } else { t.alive = false; }
+      timers.set(pick, t);
+    }
+  }
+
+  // ------------------------------------------------------------------ rules
+
+  // Add a rule "on <event pattern>": 0 in subject, other or key matches any.
+  // It starts enabled and has no conditions or actions. Returns its id (from 1).
+  pub fn addRule(self &mut, onKind u32, subject u32, other u32, key u32, byMask u32, once bool) u32 {
+    rules.push(new Rule(onKind, subject, other, key, byMask, true, once, false, 0u32));
+    u32.from(rules.len());
+  }
+
+  pub fn ruleIf(self &mut, rule u32, kind u32, entity u32, key u32, op u32, num f32) {
+    conds.push(new Cond(rule, kind, entity, key, op, num));
+  }
+
+  pub fn ruleDo(self &mut, rule u32, kind u32, target u32, key u32, value Value, num f32, num2 f32) {
+    acts.push(new Action(rule, kind, target, key, value, num, num2));
+  }
+
+  pub fn setRuleEnabled(self &mut, rule u32, enabled bool) {
+    if rule > 0u32 and usize.from(rule) <= rules.len() {
+      mut r = *rules[usize.from(rule) - 1usize];
+      r.enabled = enabled;
+      rules.set(usize.from(rule) - 1usize, r);
+    }
+  }
+
+  pub fn removeRule(self &mut, rule u32) {
+    if rule > 0u32 and usize.from(rule) <= rules.len() {
+      mut r = *rules[usize.from(rule) - 1usize];
+      r.removed = true;
+      r.enabled = false;
+      rules.set(usize.from(rule) - 1usize, r);
+    }
+  }
+
+  pub fn timesFired(self &, rule u32) u32 {
+    if rule > 0u32 and usize.from(rule) <= rules.len() { (*rules[usize.from(rule) - 1usize]).fired; } else { 0u32; };
+  }
+
+  fn resolve(self &, ent u32, ev Event) u32 {
+    if ent == ENT_SUBJECT { return ev.subject; }
+    if ent == ENT_OTHER { return ev.other; }
+    ent;
+  }
+
+  fn compare(self &, a f32, op u32, b f32) bool {
+    if op == OP_EQ { return a == b; }
+    if op == OP_NE { return a != b; }
+    if op == OP_LT { return a < b; }
+    if op == OP_LE { return a <= b; }
+    if op == OP_GT { return a > b; }
+    a >= b;
+  }
+
+  fn condHolds(self &, c Cond, ev Event) bool {
+    imm e = self.resolve(c.entity, ev);
+    if c.kind == COND_PROP_NUM { return self.compare(self.getNum(e, c.key), c.op, c.num); }
+    if c.kind == COND_PROP_BOOL { return self.getBool(e, c.key) == (c.num != 0.); }
+    if c.kind == COND_HAS_ITEM { return f32.from(self.invCount(e, c.key)) >= c.num; }
+    if c.kind == COND_DOOR_OPEN { return self.doorWantsOpen(e) == (c.num != 0.); }
+    if c.kind == COND_DOOR_LOCKED { return self.doorIsLocked(e) == (c.num != 0.); }
+    false;
+  }
+
+  fn runRules(self &mut, ev Event) {
+    imm count = rules.len();
+    mut ri = 0usize;
+    while ri < count {
+      imm r = *rules[ri];
+      imm rid = u32.from(ri) + 1u32;
+      mut hit = r.enabled and not r.removed and r.onKind == ev.kind;
+      if hit and r.subject != 0u32 and r.subject != ev.subject { hit = false; }
+      if hit and r.other != 0u32 and r.other != ev.other { hit = false; }
+      if hit and r.key != 0u32 and r.key != ev.key { hit = false; }
+      if hit and r.byMask != 0u32 and (self.classOf(ev.other) & r.byMask) == 0u32 { hit = false; }
+      if hit {
+        mut ci = 0usize;
+        while ci < conds.len() and hit {
+          imm c = *conds[ci];
+          if c.rule == rid and not self.condHolds(c, ev) { hit = false; }
+          ci = ci + 1usize;
+        }
+      }
+      if hit {
+        mut rr = *rules[ri];
+        rr.fired = rr.fired + 1u32;
+        if rr.once { rr.enabled = false; }
+        rules.set(ri, rr);
+        mut ai = 0usize;
+        while ai < acts.len() {
+          imm a = *acts[ai];
+          if a.rule == rid { self.doAction(a, ev); }
+          ai = ai + 1usize;
+        }
+      }
+      ri = ri + 1usize;
+    }
+  }
+
+  fn doAction(self &mut, a Action, ev Event) {
+    imm t = self.resolve(a.target, ev);
+    if a.kind == ACT_SET_PROP { self.setPropQuiet(t, a.key, a.value); return; }
+    if a.kind == ACT_ADD_PROP { self.setPropQuiet(t, a.key, Value.number(self.getNum(t, a.key) + a.num)); return; }
+    if a.kind == ACT_TOGGLE_DOOR { self.setDoorQuiet(t, not self.doorWantsOpen(t), ev.other); return; }
+    if a.kind == ACT_OPEN_DOOR { self.setDoorQuiet(t, true, ev.other); return; }
+    if a.kind == ACT_CLOSE_DOOR { self.setDoorQuiet(t, false, ev.other); return; }
+    if a.kind == ACT_LOCK_DOOR { self.lockQuiet(t); return; }
+    if a.kind == ACT_UNLOCK_DOOR { self.unlockQuiet(t, ev.other); return; }
+    if a.kind == ACT_GIVE_ITEM { self.invAddQuiet(t, a.key, u32.from(a.num)); return; }
+    if a.kind == ACT_START_TIMER { self.startTimer(t, a.key, a.num, a.num2); return; }
+    if a.kind == ACT_SIGNAL { self.emit(EV_SIGNAL, t, ev.other, a.key, a.value); return; }
+    if a.kind == ACT_ENABLE_RULE { self.setRuleEnabled(a.target, true); return; }
+    if a.kind == ACT_DISABLE_RULE { self.setRuleEnabled(a.target, false); return; }
+    if a.kind == ACT_ENABLE_TRIGGER { self.setTrigger(t, true); return; }
+    if a.kind == ACT_DISABLE_TRIGGER { self.setTrigger(t, false); return; }
+  }
+
+  // ------------------------------------------------------------------- time
+
+  // Let dt seconds pass: timers ring, doors finish their swings, auto-close
+  // timers run out, doors become passable or not, and trigger volumes see who
+  // is inside, then the rules answer.
+  pub fn step(self &mut, dt f32) {
+    now = now + dt;
+    self.runTimers();
+    mut i = 0usize;
+    while i < doors.len() {
+      mut d = *doors[i];
+      if d.alive {
+        if not d.settled and now >= d.endsAt() {
+          d.settled = true;
+          doors.set(i, d);
+          self.emit(if d.target > 0.5 { EV_DOOR_OPENED; } else { EV_DOOR_CLOSED; }, d.entity, 0u32, 0u32, Value.none());
+        }
+        if d.target > 0.5 and d.settled and d.autoClose > 0. and now >= d.endsAt() + d.autoClose {
+          self.setDoorQuiet(d.entity, false, 0u32);
+        }
+        d = *doors[i];
+        imm p = d.passableAt(now);
+        if p != d.passable {
+          d.passable = p;
+          doors.set(i, d);
+          self.emit(EV_PASSABILITY, d.entity, 0u32, 0u32, Value.boolean(p));
+        }
+      }
+      i = i + 1usize;
+    }
+    self.updateTriggers();
+    self.pump();
+  }
+}
+
+fn listHas(l &List[u32], v u32) bool {
+  mut i = 0usize;
+  while i < l.len() {
+    if *l[i] == v { return true; }
+    i = i + 1usize;
+  }
+  false;
+}

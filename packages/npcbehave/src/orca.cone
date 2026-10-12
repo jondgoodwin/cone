@@ -1,0 +1,295 @@
+// Crowd avoidance: optimal reciprocal collision avoidance, ORCA (van den
+// Berg, Guy, Lin and Manocha, "Reciprocal n-body collision avoidance", Robotics
+// Research: ISRR 2009, Springer 2011), on the ground plane.
+//
+// Each agent has a preferred velocity (towards its goal, from steering or a
+// path). For each neighbour the velocities that would lead to a collision
+// within 'timeHorizon' seconds form a truncated cone (the velocity obstacle);
+// ORCA takes the half-plane of velocities that is at least half the way out
+// of it from the relative velocity, so that if the neighbour does the same
+// (reciprocity) the pair avoids each other with the effort shared equally. The
+// agent's new velocity is the one nearest its preferred velocity that lies in
+// every half-plane and within its maximum speed, found by the incremental
+// linear programs of the authors' RVO2 library (Apache 2.0 licence; this is a
+// fresh implementation of the paper and of that library's published
+// algorithm, 'linearProgram1', '2' and '3', not a copy of its code). When the
+// half-planes cannot all be met, the third program minimises the worst
+// violation, as in the paper.
+//
+// Static circles (a pillar, a parked cart) are agents that do not move: they
+// give a half-plane too, but with the whole effort on the moving agent, not
+// half (the paper's non-reciprocal case).
+//
+// Neighbours are found by testing every agent against every other: O(n^2),
+// right for the hundreds of characters one room holds. A spatial index would
+// replace the 'neighbours' loop for thousands. 'step' allocates nothing once
+// the world has been stepped once (its scratch lists reach their size).
+
+const EPSILON = 0.00001;
+
+struct OrcaLine {
+  point Vec2;
+  dir Vec2;         // unit; the permitted side is its left
+}
+
+pub struct OrcaAgent {
+  pub pos Vec2;
+  pub vel Vec2;
+  pub pref Vec2;          // the preferred velocity, set by the caller each tick
+  pub radius f32;
+  pub maxSpeed f32;
+}
+
+pub struct OrcaWorld {
+  pub agents List[OrcaAgent];
+  pub obstacles List[Circle];
+  pub timeHorizon f32;      // seconds ahead a collision is avoided: 2 to 5 is usual
+  pub neighborDist f32;     // agents farther than this are not considered
+  pub maxNeighbors usize;   // at most 16 nearest are
+  newVel List[Vec2];
+  lines List[OrcaLine];
+  proj List[OrcaLine];
+  nearIdx List[usize];
+  nearDist List[f32];
+  steps u32;
+  // Added to every pair's combined radius when avoiding, so the rounding of
+  // f32 and the one-step lag of the least-penetration fallback leave bodies
+  // clear of each other rather than touching: 5 cm by default (measured: with
+  // 1 cm, a dense crowd of twenty still overlapped by up to 8 mm)
+  pub margin f32;
+
+  pub fn make(timeHorizon f32, neighborDist f32, maxNeighbors usize) OrcaWorld {
+    imm m = if maxNeighbors > 16usize { 16usize; } else { maxNeighbors; };
+    new OrcaWorld(List[OrcaAgent].empty(), List[Circle].empty(), timeHorizon, neighborDist, m,
+      List[Vec2].empty(), List[OrcaLine].empty(), List[OrcaLine].empty(), List[usize].empty(), List[f32].empty(), 0u32, 0.05);
+  }
+
+  pub fn addAgent(self &mut, pos Vec2, radius f32, maxSpeed f32) usize {
+    agents.push(new OrcaAgent(pos, new Vec2(0., 0.), new Vec2(0., 0.), radius, maxSpeed));
+    newVel.push(new Vec2(0., 0.));
+    agents.len() - 1usize;
+  }
+
+  pub fn addObstacle(self &mut, center Vec2, radius f32) { obstacles.push(new Circle(center, radius)); }
+
+  pub fn setPreferred(self &mut, i usize, v Vec2) {
+    imm a = *agents[i];
+    agents.set(i, new OrcaAgent(a.pos, a.vel, v, a.radius, a.maxSpeed));
+  }
+
+  // Moves every agent for 'dt' seconds: first all the new velocities from the
+  // old state, then all the moves, so the order of agents does not matter
+  pub fn step(self &mut, dt f32) {
+    steps = steps + 1u32;
+    mut i = 0usize;
+    while i < agents.len() {
+      newVel.set(i, self.computeVelocity(i, dt));
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < agents.len() {
+      imm a = *agents[i];
+      imm v = *newVel[i];
+      agents.set(i, new OrcaAgent(a.pos + v * dt, v, a.pref, a.radius, a.maxSpeed));
+      i = i + 1usize;
+    }
+  }
+
+  // The nearest agents within neighborDist, up to maxNeighbors, nearest first
+  fn neighbours(self &mut, i usize) {
+    nearIdx.clear();
+    nearDist.clear();
+    imm me = *agents[i];
+    imm limit = neighborDist * neighborDist;
+    mut j = 0usize;
+    while j < agents.len() {
+      if j != i {
+        imm d2 = me.pos.distanceSquared((*agents[j]).pos);
+        if d2 < limit and (nearIdx.len() < maxNeighbors or d2 < *nearDist[nearIdx.len() - 1usize]) {
+          if nearIdx.len() < maxNeighbors { nearIdx.push(j); nearDist.push(d2); }
+          else { nearIdx.set(nearIdx.len() - 1usize, j); nearDist.set(nearDist.len() - 1usize, d2); }
+          mut at = nearIdx.len() - 1usize;
+          while at > 0usize and *nearDist[at - 1usize] > *nearDist[at] {
+            nearDist.swap(at, at - 1usize);
+            nearIdx.swap(at, at - 1usize);
+            at = at - 1usize;
+          }
+        }
+      }
+      j = j + 1usize;
+    }
+  }
+
+  // One half-plane: me avoiding a body at relative position 'relPos' moving at
+  // 'otherVel' with combined radius 'r'; 'share' is the part of the avoiding
+  // this agent does (0.5 against another agent, 1 against a static circle)
+  fn addLine(self &mut, me OrcaAgent, otherPos Vec2, otherVel Vec2, otherRadius f32, share f32, dt f32) {
+    imm relPos = otherPos - me.pos;
+    imm relVel = me.vel - otherVel;
+    imm distSq = relPos.lengthSquared();
+    imm r = me.radius + otherRadius + margin;
+    imm rSq = r * r;
+    mut dir = new Vec2(0., 0.);
+    mut u = new Vec2(0., 0.);
+    if distSq > rSq {
+      // Not yet touching: the cone ahead, cut off at the time horizon
+      imm invT = 1. / timeHorizon;
+      imm w = relVel - relPos * invT;
+      imm wLenSq = w.lengthSquared();
+      imm dot1 = w.dot(relPos);
+      if dot1 < 0. and dot1 * dot1 > rSq * wLenSq {
+        // Closest to the cut-off circle
+        imm wLen = wLenSq.sqrt();
+        imm unitW = w * (1. / wLen);
+        dir = new Vec2(unitW.y, -unitW.x);
+        u = unitW * (r * invT - wLen);
+      } else {
+        // Closest to a leg of the cone
+        imm leg = (distSq - rSq).sqrt();
+        if relPos.cross(w) > 0. {
+          dir = new Vec2(relPos.x * leg - relPos.y * r, relPos.x * r + relPos.y * leg) * (1. / distSq);
+        } else {
+          dir = new Vec2(relPos.x * leg + relPos.y * r, -relPos.x * r + relPos.y * leg) * (-1. / distSq);
+        }
+        u = dir * relVel.dot(dir) - relVel;
+      }
+    } else {
+      // Already touching: avoid it within one time step
+      imm invStep = 1. / dt;
+      imm w = relVel - relPos * invStep;
+      imm wLen = w.length();
+      imm unitW = if wLen > 0.000001 { w * (1. / wLen); } else { relPos.normalize() * -1.; };
+      dir = new Vec2(unitW.y, -unitW.x);
+      u = unitW * (r * invStep - wLen);
+    }
+    lines.push(new OrcaLine(me.vel + u * share, dir));
+  }
+
+  fn computeVelocity(self &mut, i usize, dt f32) Vec2 {
+    imm me = *agents[i];
+    lines.clear();
+    self.neighbours(i);
+    mut k = 0usize;
+    while k < nearIdx.len() {
+      imm o = *agents[*nearIdx[k]];
+      self.addLine(me, o.pos, o.vel, o.radius, 0.5, dt);
+      k = k + 1usize;
+    }
+    k = 0usize;
+    while k < obstacles.len() {
+      imm c = *obstacles[k];
+      if me.pos.distanceSquared(c.center) < (neighborDist + c.radius) * (neighborDist + c.radius) {
+        self.addLine(me, c.center, new Vec2(0., 0.), c.radius, 1., dt);
+      }
+      k = k + 1usize;
+    }
+    mut result = new Vec2(0., 0.);
+    // The preferred velocity is nudged by up to a ten-thousandth of a metre
+    // a second in a hashed direction. Without it, a perfectly symmetric
+    // meeting (two agents head on, a ring crossing at its centre) has no
+    // reason to pass on one side rather than the other, and they brake to a
+    // stop (van den Berg's own RVO2 examples do the same, with a random nudge)
+    imm ang = unitHash(1234u32, u32.from(i), steps) * 2. * pi;
+    imm pref = me.pref + new Vec2(cos(ang), sin(ang)) * 0.0001;
+    imm fail = lp2(&lines, me.maxSpeed, pref, false, &mut result);
+    if fail < lines.len() { self.lp3(fail, me.maxSpeed, &mut result); }
+    result;
+  }
+
+  // Linear program 3: when the half-planes have no common point, the
+  // velocity that is least far outside the worst one, found line by line
+  fn lp3(self &mut, begin usize, radius f32, result &mut Vec2) {
+    mut distance = 0.;
+    mut i = begin;
+    while i < lines.len() {
+      imm li = *lines[i];
+      if li.dir.cross(li.point - *result) > distance {
+        proj.clear();
+        mut j = 0usize;
+        while j < i {
+          imm lj = *lines[j];
+          imm det = li.dir.cross(lj.dir);
+          if fabsf(det) <= EPSILON {
+            if li.dir.dot(lj.dir) > 0. {
+              // Same direction: nothing to add
+            } else {
+              proj.push(new OrcaLine((li.point + lj.point) * 0.5, (lj.dir - li.dir).normalize()));
+            }
+          } else {
+            imm p = li.point + li.dir * (lj.dir.cross(li.point - lj.point) / det);
+            proj.push(new OrcaLine(p, (lj.dir - li.dir).normalize()));
+          }
+          j = j + 1usize;
+        }
+        imm saved = *result;
+        imm fail = lp2(&proj, radius, new Vec2(-li.dir.y, li.dir.x), true, result);
+        if fail < proj.len() { *result = saved; }
+        distance = li.dir.cross(li.point - *result);
+      }
+      i = i + 1usize;
+    }
+  }
+}
+
+fn fabsf(a f32) f32 inline { libc.fabsf(a); }
+
+// Linear program 1: along line 'n' (inside the speed circle) find the point
+// nearest the optimum, subject to lines 0..n-1; false if there is none
+fn lp1(ls &List[OrcaLine], n usize, radius f32, opt Vec2, dirOpt bool, result &mut Vec2) bool {
+  imm ln = *ls[n];
+  imm dotp = ln.point.dot(ln.dir);
+  imm disc = dotp * dotp + radius * radius - ln.point.lengthSquared();
+  if disc < 0. { return false; }
+  imm sq = disc.sqrt();
+  mut tLeft = -dotp - sq;
+  mut tRight = -dotp + sq;
+  mut i = 0usize;
+  while i < n {
+    imm li = *ls[i];
+    imm denom = ln.dir.cross(li.dir);
+    imm numer = li.dir.cross(ln.point - li.point);
+    if fabsf(denom) <= EPSILON {
+      // Parallel: no point is allowed if the line is on the wrong side
+      if numer < 0. { return false; }
+    } else {
+      imm t = numer / denom;
+      if denom >= 0. { if t < tRight { tRight = t; } }
+      else { if t > tLeft { tLeft = t; } }
+      if tLeft > tRight { return false; }
+    }
+    i = i + 1usize;
+  }
+  if dirOpt {
+    *result = if opt.dot(ln.dir) > 0. { ln.point + ln.dir * tRight; } else { ln.point + ln.dir * tLeft; };
+  } else {
+    imm t = ln.dir.dot(opt - ln.point);
+    *result = ln.point + ln.dir * clampf(t, tLeft, tRight);
+  }
+  true;
+}
+
+// Linear program 2: the point in the speed circle nearest 'opt' (or, with
+// 'dirOpt', farthest along it) inside every half-plane; the number of the
+// first line that cannot be met, or the number of lines if all are
+fn lp2(ls &List[OrcaLine], radius f32, opt Vec2, dirOpt bool, result &mut Vec2) usize {
+  if dirOpt {
+    *result = opt * radius;
+  } elif opt.lengthSquared() > radius * radius {
+    *result = opt.normalize() * radius;
+  } else {
+    *result = opt;
+  }
+  mut i = 0usize;
+  while i < ls.len() {
+    imm li = *ls[i];
+    if li.dir.cross(li.point - *result) > 0. {
+      imm saved = *result;
+      if not lp1(ls, i, radius, opt, dirOpt, result) {
+        *result = saved;
+        return i;
+      }
+    }
+    i = i + 1usize;
+  }
+  ls.len();
+}

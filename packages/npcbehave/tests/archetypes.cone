@@ -1,0 +1,184 @@
+// The example characters. The guard's state sequence for a scripted sound is
+// the main check; the others check what each character is for.
+
+mod archetypes;
+import testing use *;
+import stdio use *;
+import collections use List;
+import geomath use *;
+import npcbehave use *;
+
+// A straight line stands for a navmesh's path
+fn straight(from Vec2, to Vec2, out &mut List[Vec2]) bool {
+  out.push(from);
+  out.push(to);
+  true;
+}
+
+fn noWall(a Vec3, b Vec3) bool { false; }
+
+// A wall across x = 6 between the post and the player, for the blocked-sight case
+fn wallAt6(a Vec3, b Vec3) bool { (a.x < 6. and b.x > 6.) or (a.x > 6. and b.x < 6.); }
+
+fn names(h &List[u32]) {
+  mut i = 0usize;
+  while i < h.len() {
+    imm s = *h[i];
+    print <- if s == GUARD_POST { "POST"; } elif s == GUARD_INVESTIGATE { "INVESTIGATE"; } elif s == GUARD_LOOK { "LOOK"; }
+      elif s == GUARD_RETURN { "RETURN"; } else { "CHASE"; }, " ";
+    i = i + 1usize;
+  }
+  print <- "\n";
+}
+
+fn newGuard() Guard {
+  imm body = Body2.make(new Vec2(0., 0.), 0.4, 3., 8.);
+  Guard.make(body, SightCone.make(20., radians(50.), 1.5), Hearing.make(1.));
+}
+
+fn same(h &List[u32], want &Array[u32], label &Array[u8]) {
+  expectInt(i64.from(h.len()), i64.from(want.len()), label);
+  mut i = 0usize;
+  while i < want.len() and i < h.len() {
+    expectInt(i64.from(*h[i]), i64.from(want[i]), label);
+    i = i + 1usize;
+  }
+}
+
+fn guardHears() {
+  mut g = newGuard();
+  mut none = List[SoundEvent].empty();
+  mut shot = List[SoundEvent].empty();
+  shot.push(SoundEvent.make(new Vec3(10., 0., 0.), 15., 1u32, 1u32));
+  imm far = new Vec3(100., 0., 100.);
+  mut t = 0.;
+  mut atSound = 1000.;
+  while t < 40. {
+    // The sound is made once, at 2 s
+    imm now = t >= 2. and t < 2.05;
+    g.step(0.05, far, new Vec2(0., 0.), if now { shot.view(); } else { none.view(); }, &noWall, &straight);
+    if g.body.pos.distance(new Vec2(10., 0.)) < atSound { atSound = g.body.pos.distance(new Vec2(10., 0.)); }
+    t = t + 0.05;
+  }
+  names(&g.history);
+  same(&g.history, &(new Array[u32, 5] <- GUARD_POST, GUARD_INVESTIGATE, GUARD_LOOK, GUARD_RETURN, GUARD_POST),
+    "heard sound: post, investigate, look, return, post");
+  expect(atSound < 0.8, "the guard went to the sound");
+  expect(g.body.pos.distance(new Vec2(0., 0.)) < 0.3, "and is back at its post at the end");
+  expect(g.body.vel.length() < 0.05, "standing still");
+}
+
+fn guardSoundTooFar() {
+  mut g = newGuard();
+  mut none = List[SoundEvent].empty();
+  mut shot = List[SoundEvent].empty();
+  shot.push(SoundEvent.make(new Vec3(40., 0., 0.), 15., 1u32, 1u32));
+  mut t = 0.;
+  while t < 10. {
+    g.step(0.05, new Vec3(100., 0., 100.), new Vec2(0., 0.), if t < 0.1 { shot.view(); } else { none.view(); }, &noWall, &straight);
+    t = t + 0.05;
+  }
+  same(&g.history, &(new Array[u32, 1] <- GUARD_POST), "a sound beyond its loudness radius: nothing happens");
+}
+
+fn guardSees() {
+  mut g = newGuard();
+  mut none = List[SoundEvent].empty();
+  // The player stands 8 m ahead for 1 to 3 s, then is gone (far away)
+  mut t = 0.;
+  while t < 30. {
+    imm here = t >= 1. and t < 3.;
+    imm player = if here { new Vec3(8., 0., 0.); } else { new Vec3(100., 0., 100.); };
+    g.step(0.05, player, new Vec2(0., 0.), none.view(), &noWall, &straight);
+    t = t + 0.05;
+  }
+  names(&g.history);
+  same(&g.history, &(new Array[u32, 6] <- GUARD_POST, GUARD_CHASE, GUARD_INVESTIGATE, GUARD_LOOK, GUARD_RETURN, GUARD_POST),
+    "seen then lost: post, chase, investigate (where he was), look, return, post");
+}
+
+fn guardWall() {
+  mut g = newGuard();
+  mut none = List[SoundEvent].empty();
+  mut t = 0.;
+  while t < 6. {
+    g.step(0.05, new Vec3(10., 0., 0.), new Vec2(0., 0.), none.view(), &wallAt6, &straight);
+    t = t + 0.05;
+  }
+  same(&g.history, &(new Array[u32, 1] <- GUARD_POST), "a player behind a wall is not seen");
+}
+
+fn others() {
+  // Patrol: four corners of a square, pausing 1 s at each
+  mut p = Patroller.make(Body2.make(new Vec2(0., 0.), 0.4, 2., 4.), 1.);
+  p.waypoints.push(new Vec2(10., 0.));
+  p.waypoints.push(new Vec2(10., 10.));
+  p.waypoints.push(new Vec2(0., 10.));
+  p.waypoints.push(new Vec2(0., 0.));
+  mut visited = 0;
+  mut lastNext = p.next;
+  mut t = 0.;
+  mut atCorner = 0;
+  while t < 60. {
+    p.step(0.05, &straight);
+    if p.next != lastNext { visited = visited + 1; lastNext = p.next; }
+    t = t + 0.05;
+  }
+  expect(visited >= 8, "patrol: it went round the square twice in a minute");
+  expect(p.body.pos.length() < 20., "patrol: and stays near the square");
+
+  // Follow: the follower settles 3 m from a player who walks away and stops
+  mut f = Follower.make(Body2.make(new Vec2(-10., 0.), 0.4, 4., 6.), 3.);
+  mut player = new Vec2(0., 0.);
+  t = 0.;
+  while t < 30. {
+    if t < 10. { player = player + new Vec2(1.5 * 0.05, 0.); }
+    f.step(0.05, player);
+    t = t + 0.05;
+  }
+  expectFloat(f.body.pos.distance(player), 3., 0.6d, "follow: stops about 3 m from the player");
+  expect(f.body.vel.length() < 0.1, "follow: and stays still");
+
+  // Flee: runs from a player who approaches, comes home after he leaves
+  mut r = Fleer.make(Body2.make(new Vec2(0., 0.), 0.4, 4., 8.), new Vec2(0., 0.), 6., 12.);
+  t = 0.;
+  mut farthest = 0.;
+  while t < 40. {
+    imm pp = if t < 8. { new Vec2(-10. + 2. * t, 0.); } else { new Vec2(-30., 0.); };
+    imm pv = if t < 8. { new Vec2(2., 0.); } else { new Vec2(0., 0.); };
+    r.step(0.05, pp, pv);
+    if r.body.pos.x > farthest { farthest = r.body.pos.x; }
+    t = t + 0.05;
+  }
+  expect(farthest > 5., "flee: ran away from the approaching player");
+  expect(r.body.pos.distance(new Vec2(0., 0.)) < 0.5, "flee: and went home once he had gone");
+
+  // Graze: alternates walking and grazing, stays near home
+  mut gr = Grazer.make(Body2.make(new Vec2(0., 0.), 0.5, 1.5, 3.), new Vec2(0., 0.), 12., 3u32);
+  t = 0.;
+  mut walking = 0.;
+  mut eating = 0.;
+  mut away = 0.;
+  mut changes = 0;
+  mut lastMode = gr.mode();
+  while t < 300. {
+    gr.step(0.05);
+    if gr.mode() == GRAZE_WALK { walking = walking + 0.05; } else { eating = eating + 0.05; }
+    if gr.mode() != lastMode { changes = changes + 1; lastMode = gr.mode(); }
+    if gr.body.pos.length() > away { away = gr.body.pos.length(); }
+    t = t + 0.05;
+  }
+  print <- "graze: walked ", walking, " s, ate ", eating, " s, ", changes, " changes, farthest ", away, " m\n";
+  expect(walking > 60. and eating > 40., "graze: both walks and grazes for a good share of five minutes");
+  expect(changes > 20, "graze: and alternates");
+  expect(away < 24., "graze: and stays within two leashes of home");
+}
+
+fn main() i32 {
+  guardHears();
+  guardSoundTooFar();
+  guardSees();
+  guardWall();
+  others();
+  done();
+}

@@ -22,6 +22,7 @@ typedef struct FnSigNode {
     uint8_t lifechecked;   // lifeSigCheck has settled 'lifenamed' and 'lifeorder'
     uint8_t lifestatic;    // Its order bounds a lifetime by ''static': a type parameter's bound (lifetime.h)
     Name *spelled;         // A signature written bare as a generic bound: the text it was written as, for messages; else NULL
+    uint8_t ccall;         // C's calling convention: the signature of a C-named function ('fn @c', a function of an '@c' module) and the type '&fn @c (...)' of a reference to one
 } FnSigNode;
 
 FnSigNode *newFnSigNode();
@@ -46,6 +47,12 @@ int fnSigVrefEqual(FnSigNode *node1, FnSigNode *node2, INode *selftype);
 // Do two signatures declare the same parameter types (ignoring return type)?
 // Used to detect two overload candidates that would accept the same arguments.
 int fnSigParmsEqual(FnSigNode *node1, FnSigNode *node2);
+
+// Why a value of type 'from' is refused where the type 'to' is wanted, when the
+// two are function references that differ only in the calling convention they
+// are marked for (FnSigNode.ccall); NULL when it is not that. The reference is
+// never converted: a Cone function and a C-named one are called differently
+char *fnSigConvRefusal(INode *from, INode *to);
 
 // Return TypeCompare indicating whether from type matches the function signature
 TypeCompare fnSigMatches(FnSigNode *to, FnSigNode *from, SubtypeConstraint constraint);
