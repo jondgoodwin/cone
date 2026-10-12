@@ -840,7 +840,8 @@ copied. A parameter waits only if its function says so by what it does with it
 (`genlInlineParm`): the parameter's one use (`VarDclNode.nuses`, counted by type
 check) is the value of a `writeRaw` that is a statement of the function's own
 block, reached through no branch or loop (`genlStraightUse` looks through calls,
-casts, declarations and the function's implicit return), or an argument to
+casts, declarations and the function's final return), in a function with no
+return before its end, or an argument to
 another inline function whose parameter waits in turn, as `DynArena.alloc`
 passes its parameter to `Arena.alloc`. A construction whose type holds a traced
 reference does not wait, and neither does one on a GPU target or in a split

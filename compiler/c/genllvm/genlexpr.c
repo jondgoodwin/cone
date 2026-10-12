@@ -1137,9 +1137,15 @@ static int genlInlineParm(FnDclNode *fn, uint32_t idx) {
     VarDclNode *var = (VarDclNode *)nodesGet(sig->parms, idx);
     if (var->tag != VarDclTag || var->nuses != 1)
         return 0;
+    // The body is left only at its end: a return before the write would leave
+    // the construction unbuilt, and unfinalized, on that path
+    BlockNode *body = (BlockNode *)fn->value;
+    if (body->breaks && body->breaks->used > 0
+        && (body->breaks->used > 1 || nodesGet(body->breaks, 0) != nodesLast(body->stmts)))
+        return 0;
     INode **stmtp;
     uint32_t cnt;
-    for (nodesFor(((BlockNode *)fn->value)->stmts, cnt, stmtp)) {
+    for (nodesFor(body->stmts, cnt, stmtp)) {
         if (genlStraightUse(*stmtp, var))
             return 1;
     }

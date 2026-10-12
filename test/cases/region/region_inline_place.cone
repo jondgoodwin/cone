@@ -11,11 +11,13 @@
 // - 'putVia' passes its parameter on to 'put', which writes it: the same, 1 2 3;
 // - 'putTwice' reads its parameter before it writes it, so the parameter is built
 //   at the call and moved: argument (1), init (2), then the room (3): 1 3 2;
+// - 'putMaybe' may return before it writes, and the value would then be dropped
+//   unbuilt, so it too is passed a built value: 1 3 2;
 // - 'putCopy' is not inline, so it is passed a built value, and copies it: 1 3 2;
-// - each value is readable where it was placed (its argument, 1, four of them: 4),
+// - each value is readable where it was placed (its argument, 1, five of them: 5),
 //   and none was finalized, though each was passed as a parameter: 0.
-// The first four lines print 'argument placed built'; the last two the sum of the
-// four arguments read through the references the calls answered, and the finals.
+// The first five lines print 'argument placed built'; the last two the sum of the
+// five arguments read through the references the calls answered, and the finals.
 
 mod region_inline_place;
 
@@ -66,6 +68,15 @@ struct Place {
     p as &mut T;
   }
 
+  // May return before it writes its parameter
+  pub fn putMaybe[T](self &mut, value T, skip bool) *T inline {
+    placed = next();
+    if skip { return null; }
+    imm p = libc.malloc(mem.sizeof[T]()) as *T;
+    mem.writeRaw(p, value);
+    p;
+  }
+
   // The same as 'put', not inline
   pub fn putCopy[T](self &mut, value T) &mut T {
     placed = next();
@@ -101,10 +112,14 @@ fn main() i32 {
   show(t3.a, place.placed, t3.built);
 
   tick = 0i64;
+  imm t5 = place.putMaybe(new Thing(next()), false);
+  show((*t5).a, place.placed, (*t5).built);
+
+  tick = 0i64;
   imm t4 = place.putCopy(new Thing(next()));
   show(t4.a, place.placed, t4.built);
 
-  printInt(t1.a + t2.a + t3.a + t4.a);
+  printInt(t1.a + t2.a + t3.a + (*t5).a + t4.a);
   printStr("\n");
   printInt(finals);
   printStr("\n");
