@@ -52,8 +52,7 @@ VertexOutput nothing() {
 // A sprite facing the camera, stretched along the particle's motion across
 // the view: as long as its size plus the way it moves in 'stretch' seconds,
 // its head at the particle
-[shader("vertex")]
-VertexOutput spriteVertex(uint vid : SV_VulkanVertexID, uint iid : SV_VulkanInstanceID) {
+VertexOutput spriteQuad(uint vid, uint iid, bool smoke) {
     if (iid >= emitter.seeds.w) { return nothing(); }
     Particle q = particleNow(emitter, emitter.seeds.z + iid);
     if (q.alive == 0.0 || q.color.w <= 0.0) { return nothing(); }
@@ -71,8 +70,21 @@ VertexOutput spriteVertex(uint vid : SV_VulkanVertexID, uint iid : SV_VulkanInst
     VertexOutput o;
     o.position = mul(frame.viewProjection, float4(p, 1.0));
     o.corner = c;
-    o.color = float4(q.color.xyz * q.color.w, 1.0);
+    // Glow: light to add. Smoke: the colour, with its opacity beside it
+    o.color = smoke ? float4(q.color.xyz, q.color.w) : float4(q.color.xyz * q.color.w, 1.0);
     return o;
+}
+
+[shader("vertex")]
+VertexOutput spriteVertex(uint vid : SV_VulkanVertexID, uint iid : SV_VulkanInstanceID) {
+    return spriteQuad(vid, iid, false);
+}
+
+// A puff of smoke: the same quad, drawn over what is behind it (see
+// smokeFragment), not as light added
+[shader("vertex")]
+VertexOutput smokeVertex(uint vid : SV_VulkanVertexID, uint iid : SV_VulkanInstanceID) {
+    return spriteQuad(vid, iid, true);
 }
 
 // A ribbon trail: the particle's own path over the last 'trail time'
@@ -111,4 +123,17 @@ float4 glowFragment(VertexOutput input) : SV_Target {
     float glow = max(1.0 - r2, 0.0);
     glow = glow * glow;
     return float4(input.color.xyz * glow, 0.0);
+}
+
+// A puff of smoke: a soft round disc of the particle's colour whose opacity
+// is its alpha (the colour key's alpha, at most 1) falling off to the edge,
+// premultiplied for blending ONE, ONE_MINUS_SRC_ALPHA. Smoke is dark or pale
+// against what is behind it, so it is drawn over it, not added to it.
+[shader("fragment")]
+float4 smokeFragment(VertexOutput input) : SV_Target {
+    float r2 = dot(input.corner, input.corner);
+    float soft = max(1.0 - r2, 0.0);
+    soft = soft * soft * (3.0 - 2.0 * soft);
+    float a = clamp(input.color.w, 0.0, 1.0) * soft;
+    return float4(input.color.xyz * a, a);
 }
