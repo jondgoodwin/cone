@@ -183,6 +183,8 @@ import diag;
 
 fn @initpure init() {
   ioLock = Mutex.make();
+  io = Atomic[usize].of(0usize);
+  ended = Atomic[bool].of(false);
 }
 
 // A panic, reported at the line calling 'die'
@@ -223,15 +225,17 @@ struct IoThread {
 // Guards the queue, 'io' and 'ended'
 imm ioLock Mutex;
 
-// The I/O thread, or 0 before the first operation is awaited
-mut io = 0usize;
+// The I/O thread, or 0 before the first operation is awaited. Read and written
+// under ioLock by any thread; an atomic held by an 'imm' global, set in 'init'
+imm io Atomic[usize];
 
-// The program is ending: no job is taken from now on (under ioLock)
-mut ended = false;
+// The program is ending: no job is taken from now on (under ioLock). An atomic
+// held by an 'imm' global, set in 'init'
+imm ended Atomic[bool];
 
 // The I/O thread's Loop is dying: what it delivers is abandoned. Read and
-// written by the I/O thread alone
-mut abandoning = false;
+// written by the I/O thread alone, so each thread has its own copy
+mut @threadlocal abandoning = false;
 
 fn nullJob() *JobHead {null;}
 
@@ -272,15 +276,15 @@ fn dropHead(h *JobHead) {
 fn enqueue(job *u8) {
   imm h = job as *JobHead;
   ioLock.lock();
-  if ended {
+  if ended.load() {
     ioLock.unlock();
     dropHead(h);
     return;
   }
-  if io == 0usize {
+  if io.load() == 0usize {
     startIo();
   }
-  imm t = io as *IoThread;
+  imm t = io.load() as *IoThread;
   if (*t).tail as usize == 0usize {
     (*t).head = h;
   } else {
@@ -308,7 +312,7 @@ fn startIo() {
   while (*t).ready.load() == 0u32 {
     sync.futexWait(&(*t).ready, 0u32);
   }
-  io = t as usize;
+  io.store(t as usize);
 }
 
 // The I/O thread: it waits in its Loop's poll, and after each, takes the
@@ -329,14 +333,14 @@ fn ioMain(arg IoArg) u32 {
       lp.poll(forever(), &mut out);
       out.clear();
       ioLock.lock();
-      imm t = io as *IoThread;
+      imm t = io.load() as *IoThread;
       mut h = nullJob();
       if t as usize != 0usize {
         h = (*t).head;
         (*t).head = nullJob();
         (*t).tail = nullJob();
       }
-      imm stop = ended;
+      imm stop = ended.load();
       ioLock.unlock();
       while h as usize != 0usize {
         imm next = (*h).next;
@@ -361,8 +365,8 @@ fn ioMain(arg IoArg) u32 {
 fn final() {
   actors.waitQuiet();
   ioLock.lock();
-  ended = true;
-  imm t = io as *IoThread;
+  ended.store(true);
+  imm t = io.load() as *IoThread;
   ioLock.unlock();
   if t as usize == 0usize {
     return;
