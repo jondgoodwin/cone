@@ -47,7 +47,8 @@ const conns = 50u64;            // operations a round
 const rounds = 10000u64;        // rounds of each kind
 const windowNs = 100000u64;     // the window the moments fall in
 const jitterNs = 8000u64;       // each racer within this of its moment
-const leadNs = 150000i64;       // how far ahead the window starts: room to submit
+const leadNs = 150000i64;       // how far ahead the window starts: room to submit (more, where a
+                                // round takes longer than that to set up: twice what the last took)
 const sendEarlyNs = 10000i64;   // a byte's send starts this much before its moment
 
 // xorshift64*: a cheap generator, one per thread
@@ -250,6 +251,14 @@ fn collect(lp &mut Loop, out &mut List[Completion], t &mut Tally, round u64, end
   t.missing = t.missing + (conns - got);
 }
 
+// How far ahead the next round's window starts, given how long this round
+// took to set up (its operations submitted, its racers told): the fixed lead,
+// or twice the setup where that is longer, as on a machine that is slow or
+// busy, so that no deadline is past before its operation is submitted
+fn nextLead(setupNs i64) i64 {
+  if setupNs * 2i64 > leadNs {setupNs * 2i64;} else {leadNs;}
+}
+
 // With '-D RACE_REPORT' (congo test race -D RACE_REPORT), how the races
 // ended and how long they took; otherwise nothing, so the test's output
 // stays its checks alone
@@ -425,8 +434,10 @@ fn main() i32 {
       mut leftWrong = 0u64;
       imm began = Instant.now();
       mut round = 0u64;
+      mut lead = leadNs;
       while round < rounds {
-        imm t0 = Instant.now() + Duration.fromNanos(leadNs);
+        imm began0 = Instant.now();
+        imm t0 = began0 + Duration.fromNanos(lead);
         imm m = plan(&mut rng, t0, sendEarlyNs);
         imm g = CancelGroup.make();
         mut reqs = List[Request].empty();
@@ -464,6 +475,7 @@ fn main() i32 {
         ptx.send(pl);
         imm cancelGroup = rng.below(4u64) == 0u64;
         orderCancels(&lp, &ctx, &m, &mut reqs, g, t0 + Duration.fromNanos(i64.from(rng.below(windowNs))), cancelGroup);
+        lead = nextLead(began0.elapsed().nanos());
         mut ended = new Array[u32, 50] <- fill 9u32;
         collect(&mut lp, &mut out, &mut t, round, &mut ended, true, round % 2u64 == 0u64);
         pdoneRx.recv();
@@ -519,8 +531,10 @@ fn main() i32 {
       mut t = Tally.zero();
       imm began = Instant.now();
       mut round = 0u64;
+      mut lead = leadNs;
       while round < rounds {
-        imm t0 = Instant.now() + Duration.fromNanos(leadNs);
+        imm began0 = Instant.now();
+        imm t0 = began0 + Duration.fromNanos(lead);
         imm m = plan(&mut rng, t0, 0i64);
         imm g = CancelGroup.make();
         mut reqs = List[Request].empty();
@@ -534,6 +548,7 @@ fn main() i32 {
         }
         imm cancelGroup = rng.below(4u64) == 0u64;
         orderCancels(&lp, &ctx, &m, &mut reqs, g, t0 + Duration.fromNanos(i64.from(rng.below(windowNs))), cancelGroup);
+        lead = nextLead(began0.elapsed().nanos());
         mut ended = new Array[u32, 50] <- fill 9u32;
         collect(&mut lp, &mut out, &mut t, round, &mut ended, false, round % 2u64 == 0u64);
         cdoneRx.recv();

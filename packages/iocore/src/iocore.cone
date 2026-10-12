@@ -4,7 +4,9 @@
 // and later gets exactly one answer for it, carrying the buffer back. The
 // one place anything waits is 'poll', which waits in the kernel until an
 // answer arrives, a timer is due, another thread wakes it, or the time it
-// was given comes. Windows only for now: the loop is an I/O completion port.
+// was given comes. On Windows the loop is an I/O completion port; on Linux
+// it is epoll (windows.cone and linux.cone are everything beneath the
+// interface; the interface and its answers are the same).
 //
 //   mod echo;
 //   import collections use List;
@@ -154,11 +156,13 @@
 //
 // ANSWERS. Every operation gets exactly one terminal answer, a Completion
 // (I1): its OpId, its token, its kind (diag's kind numbers), its outcome --
-// Done with a count, Failed with Windows' error number, Cancelled, or
+// Done with a count, Failed with Windows' error number (on Linux, the one
+// that names the same condition as the errno; see linux.cone), Cancelled, or
 // TimedOut -- the buffer back ('c.buf', IoBuf.empty() when it had none), the
 // handle Connect or Accept made, and three instants: submitted, dequeued
 // (when the loop took it from the kernel's queue: IOCP does not say when the
-// kernel finished, so this is the earliest the loop can know) and delivered
+// kernel finished, so this is the earliest the loop can know; on Linux, when
+// the loop tried the operation and it was done or failed) and delivered
 // (when poll handed it over, or the loop it was posted to took it). The
 // outcome is in plain fields ('c.status', a diag outcome number, 'c.n',
 // 'c.code'), and 'c.outcome()' gives it as the Outcome enum, to match on. A
@@ -283,6 +287,8 @@
 // for that instant and has the kernel deliver its expiry to the port as a
 // completion (a wait completion packet, NtAssociateWaitCompletionPacket):
 // the wait ends on time without raising the whole system's timer resolution.
+// On Linux the same is a timerfd, armed for that instant and watched by the
+// epoll instance, which ends the wait on time to the nanosecond.
 //
 // WAKERS. 'lp.waker()' is a Waker: Sendable, copied to share, and 'wake()'
 // from any thread ends the loop's current or next poll. It is also how
@@ -353,14 +359,22 @@
 // a wait on a Windows handle through the port (an event, a fence exported
 // as one), interrupting a running pool job (CancelSynchronousIo), priority
 // within a lane, IoRing and socket notifications (Windows 11 accelerators,
-// detected at run time behind this interface), and Linux and the browser.
+// detected at run time behind this interface), and the browser.
 //
-// What is Windows-only: everything beneath the interface (windows.cone),
-// which is kernel32's completion port, overlapped files, waitable timer and
-// file attributes, ntdll's wait completion packet, and Winsock, AcceptEx and
-// ConnectEx reached through WSAIoctl and called through function pointers,
-// and GetAddrInfoW, all from Cone with no C between; the pool's threads and
-// locks are the thread and sync packages'.
+// What depends on the OS: everything beneath the interface. On Windows
+// (windows.cone), kernel32's completion port, overlapped files, waitable timer
+// and file attributes, ntdll's wait completion packet, and Winsock, AcceptEx
+// and ConnectEx reached through WSAIoctl and called through function
+// pointers, and GetAddrInfoW. On Linux (linux.cone), epoll with an eventfd
+// (how other threads wake the loop) and a timerfd, non-blocking sockets and
+// accept4, getaddrinfo and stat on the pool's threads, and a lane of the pool
+// for ReadAt and WriteAt (pread and pwrite). All from Cone with no C between;
+// the pool's threads and locks are the thread and sync packages'. Where the
+// two differ in what a program can see: a Linux loop holds no operation's
+// buffer in the kernel, so a deadline or a cancel of a socket operation is
+// answered with the buffer even when the grace is zero (a Windows loop may
+// answer TimedOut without it: the prompt TimedOut); and the socket calls take
+// the same arguments and make the same answers.
 
 mod iocore;
 
@@ -416,11 +430,14 @@ pub struct Handle {
   pub fn `!=`(self, o Handle) bool {index != o.index or gen != o.gen;}
 }
 
-// Why something could not be done: Windows' error number
+// Why something could not be done: Windows' error number, on every system
+// (Linux's errno is turned into the Windows number that names the same
+// condition, or, with none, is itself above 0x10000000)
 pub struct IoError {
   pub code u32;
 
-  // Windows' text for it, in English where the system has it
+  // The OS's text for it: Windows' in English where the system has it, the
+  // C library's (strerror) on Linux
   pub fn message(self &) String {systemText(code);}
 }
 

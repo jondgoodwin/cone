@@ -975,9 +975,11 @@ Cone is compiled by the `conec` the same build makes, so the library follows
 the compiler. It binds the Windows C runtime or the C library of Linux, a
 call at a time (`cnames.c`, and `isWindows()` in the Cone), so a plain
 program compiles, links and runs on both, and so do threads, `sync` and actors
-(pthreads and the futex system call, through `oscalls.c`); what is built on the
-rest of the OS (`iocore`, `process`, the `posix` and `fs` beyond `libc`) is
-Windows only for now, and the suite's tests of it fail to link on Linux.
+(pthreads and the futex system call, through `oscalls.c`), and so do `iobuf`
+(`mmap`) and `iocore` (epoll, with an eventfd and a timerfd; `linux.cone` beside
+`windows.cone`, which keeps the completion port); what is built on the rest of
+the OS (`process`, the `posix` and `fs` beyond `libc`, HTTP and TLS) is Windows
+only for now, and the suite's tests of it fail to link on Linux.
 
 #### Building on Linux
 
@@ -1003,10 +1005,12 @@ other object; `--nopic` opts out.
 
 Congo runs on Linux (`python3 tools/congo/congo.py test` in a package's folder,
 with `conec` built at `build/x64-release/conec`), and `sync`, `thread`,
-`actors` and `time` pass their tests there. (`synchronization.lib`, the Windows
-SDK's library, is on Congo's Windows link line itself, so no package's `[link]`
-names it.) The packages built on Windows alone (`fs`, `posix`, `process`, `iocore` and what
-imports them, `sdl` and what draws) do not build or run there.
+`actors`, `time`, `iobuf`, `iocore` and `aio` pass their tests there.
+(`synchronization.lib`, the Windows SDK's library, is on Congo's Windows link
+line itself, so no package's `[link]` names it; a `[link]` key limited to one
+system is `windows-libraries`, `linux-paths` and so on.) The packages built on
+Windows alone (`fs`, `posix`, `process`, HTTP and what imports them, `sdl` and
+what draws) do not build or run there.
 
 ## Validating a change
 
