@@ -334,6 +334,141 @@ fn antialiasing(device &mut Device) {
   expect(linearError < aliasedError * 0.25, "unweighted, temporal AA is within a quarter of the aliased error");
 }
 
+// A half float's value
+fn halfToFloat(h u16) f32 {
+  imm bits = u32.from(h);
+  imm exponent = (bits >> 10u32) & 31u32;
+  imm sign = if (bits & 0x8000u32) != 0u32 { -1.; } else { 1.; };
+  if exponent == 0u32 { return 0.; }
+  imm f = (((bits & 0x3FFu32) << 13u32) | ((exponent + 112u32) << 23u32));
+  sign * (f as f32);
+}
+
+// ---- 2b. Moving objects ----
+
+// A sphere at x on black, lit by ambient light alone; drawn rigid (placed by
+// its model matrix) or skinned (placed by its one bone), at a position and,
+// for the motion list, where it was
+fn movingList(sphere MeshHandle, skinned MeshHandle, material MaterialHandle, rigid bool, x f32) DrawList {
+  mut list = DrawList.empty();
+  if rigid {
+    list.add(sphere, material, Mat4.fromTranslation(new Vec3(x, 0., 0.)));
+  } else {
+    imm pose = [Mat4.fromTranslation(new Vec3(x, 0., 0.))];
+    list.addSkinned(skinned, material, Mat4.identity(), &pose);
+  }
+  list;
+}
+
+fn movingObjects(device &mut Device) {
+  mut rig = makeRig(device);
+  imm p = rig.readback.mappedRange();
+  rig.post.toneMapper = TONE_MAP_NONE;
+  rig.post.bloom = 0.;
+  mut sphereMesh = Mesh.sphere(1., 24);
+  imm sphere = rig.renderer.addMesh(device, &sphereMesh);
+  mut skin = Skin.empty();
+  mut v = 0usize;
+  while v < sphereMesh.positions.len() {
+    skin.push(0u32, 0u32, 0u32, 0u32, 1., 0., 0., 0.);
+    v = v + 1usize;
+  }
+  imm skinnedSphere = rig.renderer.addSkinnedMesh(device, &sphereMesh, &skin);
+  imm discM = rig.renderer.addMaterial(device, &Material.plain(new Color(0.9, 0.5, 0.1, 1.)));
+  imm light = Light.directional(new Vec3(0., -1., 0.), new Color(0., 0., 0., 1.), new Color(1., 1., 1., 1.));
+  mut camera = Camera.make();
+  camera.fov = radians(40.);
+  camera.lookAt(new Vec3(0., 0., 6.), new Vec3(0., 0., 0.), new Vec3(0., 1., 0.));
+  camera.background = new Color(0., 0., 0.05, 1.);
+  // Where the sphere is on frame f: 1.5 pixels a frame (a pixel is 0.034 at the sphere's distance)
+  imm speed = 0.1;
+  imm frames = 16u32;
+  imm last = -1. + speed * f32.from(frames - 1u32);
+  // The supersample of the last frame's picture
+  mut reference = List[f32].empty();
+  {
+    imm still = movingList(sphere, skinnedSphere, discM, true, last);
+    mut sum = List[f32].empty();
+    mut i = 0u32;
+    while i < 64u32 {
+      mut jx = 0.;
+      mut jy = 0.;
+      jitterOf(i, 64u32, 1., &mut jx, &mut jy);
+      drawPlain(device, &mut rig, &camera, &light, &still, jx, jy);
+      imm g = grab(p);
+      if i == 0u32 { sum = g; } else {
+        mut k = 0usize;
+        while k < sum.len() {
+          sum.set(k, *sum[k] + *g[k]);
+          k = k + 1usize;
+        }
+      }
+      i = i + 1u32;
+    }
+    mut k = 0usize;
+    while k < sum.len() {
+      sum.set(k, *sum[k] / 64.);
+      k = k + 1usize;
+    }
+    reference = sum;
+  }
+  mut s = FxSettings.off();
+  s.aa = AA_TAA;
+  s.taa.sharpness = 0.;
+  rig.fx.configure(&s);
+  // Four runs of the same motion: rigid and skinned, each told it moves or not
+  mut errors = List[f32].empty();
+  mut run = 0usize;
+  while run < 4usize {
+    imm rigid = run < 2usize;
+    imm told = run % 2usize == 0usize;
+    rig.fx.cutHistory();
+    mut f = 0u32;
+    while f < frames {
+      imm x = -1. + speed * f32.from(f);
+      imm list = movingList(sphere, skinnedSphere, discM, rigid, x);
+      if told and f > 0u32 {
+        if rigid {
+          rig.fx.motion.add(0usize, Mat4.fromTranslation(new Vec3(x - speed, 0., 0.)));
+        } else {
+          imm before = [Mat4.fromTranslation(new Vec3(x - speed, 0., 0.))];
+          rig.fx.motion.addPosed(0usize, Mat4.identity(), &before);
+        }
+      }
+      drawScene(device, &mut rig, &camera, &light, &list);
+      f = f + 1u32;
+    }
+    errors.push(rms(&grab(p), &reference));
+    if run == 0usize {
+      mut vback = device.createBuffer(u64.from(SIDE) * u64.from(SIDE) * 8u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+      mut encoder = device.createCommandEncoder();
+      encoder.copyTextureToBuffer(&rig.fx.taa.velocity, &vback);
+      device.queue.submit(encoder.finish());
+      device.endFrame();
+      device.waitIdle();
+      imm vp = vback.mappedRange() as *u16;
+      imm at = (64usize * SIDEZ + 80usize) * 4usize;
+      eprint <- "measured: velocity at the sphere "; eprint <- halfToFloat(*(vp + at)); eprint <- ", "; eprint <- halfToFloat(*(vp + at + 1usize));
+      eprint <- ", marker "; eprint <- halfToFloat(*(vp + at + 3usize)); eprint <- "\n";
+      // 0.1 along x at the sphere's near side (5 away, the view 2 x 5 tan 20 = 3.64 wide): 0.1 / 3.64
+      expect(absf(halfToFloat(*(vp + at)) + 0.0275) < 0.002 and absf(halfToFloat(*(vp + at + 1usize))) < 0.001
+        and halfToFloat(*(vp + at + 3usize)) > 0.5, "the velocity pass wrote the sphere's motion in uv: 0.1 along x is -0.0275");
+    }
+    if run == 0usize { shot(p, "moving-rigid-told"); }
+    if run == 1usize { shot(p, "moving-rigid-not-told"); }
+    run = run + 1usize;
+  }
+  imm rigidTold = *errors[0usize];
+  imm rigidNot = *errors[1usize];
+  imm skinnedTold = *errors[2usize];
+  imm skinnedNot = *errors[3usize];
+  eprint <- "measured: moving sphere error against the supersample: rigid told "; eprint <- rigidTold; eprint <- ", rigid not told "; eprint <- rigidNot;
+  eprint <- ", skinned told "; eprint <- skinnedTold; eprint <- ", skinned not told "; eprint <- skinnedNot; eprint <- "\n";
+  expect(rig.fx.velocityDrawn == false, "nothing is drawn for the velocity of a frame that names nothing");
+  expect(rigidTold < rigidNot * 0.85, "a rigid object told to move has the cleaner picture than one that is not");
+  expect(skinnedTold < skinnedNot * 0.85, "and so has a skinned one (its bones' motion)");
+}
+
 // ---- 4. Auto-exposure ----
 
 // The four floats of the exposure buffer after a frame
@@ -483,6 +618,95 @@ fn ambientOcclusion(device &mut Device) {
   }
   // The off picture is untouched by the AO's machinery
   expect(rms(&cornerOff, &cornerOn) > 0.001, "the corner picture changed");
+}
+
+// ---- 9. Volumetric fog ----
+
+// The ground and a plate 6 above it, which casts a shadow or not
+fn plateScene(plane MeshHandle, cube MeshHandle, material MaterialHandle, casts bool) DrawList {
+  mut list = DrawList.empty();
+  list.add(plane, material, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(40., 1., 40.)));
+  list.add(cube, material, Mat4.fromTrs(new Vec3(0., 6., 0.), Quat.identity(), new Vec3(1., 0.1, 1.)));
+  if !casts { list.dontCastShadow(); }
+  list;
+}
+
+fn fogTest(device &mut Device) {
+  mut rig = makeRig(device);
+  imm p = rig.readback.mappedRange();
+  rig.post.toneMapper = TONE_MAP_NONE;
+  rig.post.bloom = 0.;
+  mut planeMesh = Mesh.plane(1, 1.);
+  imm plane = rig.renderer.addMesh(device, &planeMesh);
+  imm cubeMesh = Mesh.cube(1.);
+  imm cube = rig.renderer.addMesh(device, &cubeMesh);
+  imm gray = rig.renderer.addMaterial(device, &Material.plain(new Color(0.5, 0.5, 0.5, 1.)));
+  // The camera 12 above the ground looking straight down, up being -z
+  mut camera = Camera.make();
+  camera.fov = radians(40.);
+  camera.near = 0.1;
+  camera.far = 100.;
+  camera.lookAt(new Vec3(0., 12., 0.), new Vec3(0., 0., 0.), new Vec3(0., 0., -1.));
+  camera.background = new Color(0., 0., 0., 1.);
+  mut list = DrawList.empty();
+  list.add(plane, gray, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(40., 1., 40.)));
+
+  // Beer-Lambert: ground seen through 12 metres of an absorbing medium of extinction 0.1
+  imm ambientOnly = Light.directional(new Vec3(0., -1., 0.), new Color(0., 0., 0., 1.), new Color(1., 1., 1., 1.));
+  drawScene(device, &mut rig, &camera, &ambientOnly, &list);
+  imm bare = px(p, 64usize, 64usize, 1usize);
+  mut s = FxSettings.off();
+  s.fog = new FogSettings(enabled: true, density: 0.1, albedo: new Color(0., 0., 0., 1.), temporal: 1., maxDistance: 60.);
+  rig.fx.configure(&s);
+  drawScene(device, &mut rig, &camera, &ambientOnly, &list);
+  imm absorbed = px(p, 64usize, 64usize, 1usize);
+  imm want = bare * libc.expf(-0.1 * 12.);
+  eprint <- "measured: fog: ground "; eprint <- bare; eprint <- ", through 12 m of extinction 0.1 "; eprint <- absorbed; eprint <- " (Beer-Lambert says "; eprint <- want; eprint <- ")\n";
+  expect(absf(absorbed / want - 1.) < 0.05, "fog dims what is behind it by Beer-Lambert's law, within 5%");
+  // Scattering: with albedo 1 and only ambient light of radiance 1, what is
+  // scattered in is 1 x (1 - T) and the ground is dimmed by T
+  s.fog.albedo = new Color(1., 1., 1., 1.);
+  rig.fx.configure(&s);
+  drawScene(device, &mut rig, &camera, &ambientOnly, &list);
+  imm lit = px(p, 64usize, 64usize, 1usize);
+  imm t = libc.expf(-0.1 * 12.);
+  imm wantScatter = bare * t + 1. * (1. - t);
+  eprint <- "measured: fog with scattering "; eprint <- lit; eprint <- ", the formula "; eprint <- wantScatter; eprint <- "\n";
+  expect(absf(lit / wantScatter - 1.) < 0.05, "and scatters the ambient light in: ground x T + radiance x (1 - T)");
+  // Nothing behind the camera's far end: the sky takes the whole volume's
+  mut empty = DrawList.empty();
+  drawScene(device, &mut rig, &camera, &ambientOnly, &empty);
+  imm skyFog = px(p, 64usize, 64usize, 1usize);
+  imm tFar = libc.expf(-0.1 * 60.);
+  expect(absf(skyFog / (1. - tFar) - 1.) < 0.05, "the sky is fogged by the whole volume's");
+
+  // God rays: a plate high above the ground casts its shadow through the fog
+  mut shadows = ShadowSettings.high();
+  shadows.distance = 60.;
+  rig.renderer.setShadows(device, &shadows);
+  imm sun = Light.directional(new Vec3(-0.4472136, -0.8944272, 0.), new Color(3., 3., 3., 1.), new Color(0., 0., 0., 1.));
+  s.fog = new FogSettings(enabled: true, density: 0.15, anisotropy: 0., temporal: 1., maxDistance: 60.);
+  rig.fx.configure(&s);
+  imm casting = plateScene(plane, cube, gray, true);
+  imm notCasting = plateScene(plane, cube, gray, false);
+  drawScene(device, &mut rig, &camera, &sun, &notCasting);
+  imm unshaded = grab(p);
+  shot(p, "fog-no-shadow");
+  drawScene(device, &mut rig, &camera, &sun, &casting);
+  imm shaded = grab(p);
+  shot(p, "fog-god-rays");
+  mut ax = 0usize;
+  mut ay = 0usize;
+  pixelOf(&camera, new Vec3(-3., 0., 0.), &mut ax, &mut ay);
+  mut farX = 0usize;
+  mut farY = 0usize;
+  pixelOf(&camera, new Vec3(2.5, 0., 3.5), &mut farX, &mut farY);
+  imm inShaft = (ay * SIDEZ + ax) * 3usize + 1usize;
+  imm outside = (farY * SIDEZ + farX) * 3usize + 1usize;
+  eprint <- "measured: fog god rays: in the shaft "; eprint <- *shaded[inShaft] / *unshaded[inShaft]; eprint <- " of what it is without the shadow, far from it ";
+  eprint <- *shaded[outside] / *unshaded[outside]; eprint <- "\n";
+  expect(*shaded[inShaft] < *unshaded[inShaft] * 0.93, "the plate's shadow darkens the fog it falls through (a shaft of light is dimmer where it is shaded)");
+  expect(absf(*shaded[outside] / *unshaded[outside] - 1.) < 0.03, "and fog the shadow does not reach is as bright as without it");
 }
 
 // ---- 8. Depth of field ----
@@ -816,11 +1040,13 @@ fn main() i32 {
   eprint <- "measured adapter: "; eprintStr(adapter.name.view()); eprint <- "\n";
   identity(&mut device, &adapter.name);
   antialiasing(&mut device);
+  movingObjects(&mut device);
   exposure(&mut device);
   ambientOcclusion(&mut device);
   finish(&mut device);
   decalTest(&mut device);
   depthOfField(&mut device);
+  fogTest(&mut device);
   expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
   expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
   done();

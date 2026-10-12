@@ -292,8 +292,9 @@ pub struct TaaPass {
     sharpenGroups = List[BindGroup].empty();
     imm w = if enabled { width; } else { 1u32; };
     imm h = if enabled { height; } else { 1u32; };
+    // (copyable out too, so that a test or a debugger can look at them)
     imm desc = new TextureDescriptor(w, h, TEXTURE_FORMAT_RGBA16_FLOAT,
-      TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING);
+      TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING | TEXTURE_USAGE_COPY_SRC);
     history0 = device.createTexture(&desc);
     history1 = device.createTexture(&desc);
     velocity = device.createTexture(&desc);
@@ -525,15 +526,17 @@ fn resolveGroup(device &mut Device, layout &BindGroupLayout, frameBuffer &Buffer
   device.createBindGroup(layout, &entries);
 }
 
-// A velocity pipeline: the scene's depth tested (less or equal, with a
-// little bias so that the same surface drawn by another shader passes) and
-// not written; the velocity texture (rgba16float) written
+// A velocity pipeline: the scene's depth tested (less or equal, the fragment
+// moved a little towards the camera, so that the same surface drawn by
+// another shader passes though its depth differs in the last bit: a negative
+// bias is towards the camera) and not written; the velocity texture
+// (rgba16float) written
 fn velocityPipeline(device &mut Device, layout &PipelineLayout, shader &ShaderModule, vertex &str, fragment &str,
     buffers &Array[VertexBufferLayout]) RenderPipeline {
   imm desc = new RenderPipelineDescriptor(layout: layout, vertexModule: shader, vertexEntryPoint: vertex, buffers: buffers,
     fragmentModule: shader, fragmentEntryPoint: fragment, colorFormat: TEXTURE_FORMAT_RGBA16_FLOAT,
     cullMode: CULL_MODE_BACK, depthFormat: TEXTURE_FORMAT_DEPTH32_FLOAT, depthWriteEnabled: false,
-    depthCompare: COMPARE_FUNCTION_LESS_EQUAL, depthBiasConstant: 4., depthBiasSlopeScale: 1.);
+    depthCompare: COMPARE_FUNCTION_LESS_EQUAL, depthBiasConstant: -4., depthBiasSlopeScale: -1.);
   device.createRenderPipeline(&desc);
 }
 
