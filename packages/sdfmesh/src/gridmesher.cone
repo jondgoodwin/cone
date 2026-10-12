@@ -526,15 +526,18 @@ pub struct GridMesher {
     while i < plan.passes.len() {
       imm pass = plan.passes[i];
       mut bufs = List[List[u32]].withCapacity(pass.slots.len());
+      // The slot numbers are copied out: runTwin is handed a Kernel, whose twin is a closure the compiler cannot see into, so no borrow of the plan's passes is held across it
+      mut slots = List[u32].withCapacity(pass.slots.len());
       mut k = 0usize;
       while k < pass.slots.len() {
+        slots.push(*pass.slots[k]);
         bufs.push(takeWords(store, usize.from(*pass.slots[k])));
         k = k + 1usize;
       }
       runTwin(self.kernel(pass.kernel), &mut bufs, groupsX(pass.invocations), groupsY(pass.invocations));
       k = 0usize;
-      while k < pass.slots.len() {
-        store.set(usize.from(*pass.slots[k]), takeWords(&mut bufs, k));
+      while k < slots.len() {
+        store.set(usize.from(*slots[k]), takeWords(&mut bufs, k));
         k = k + 1usize;
       }
       i = i + 1usize;

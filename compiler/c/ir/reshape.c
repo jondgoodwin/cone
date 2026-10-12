@@ -146,9 +146,9 @@ static void rcWalk(INode *type, int ind) {
             if (perm == (INode *)immPerm)
                 return;
             if (perm == (INode *)roPerm) {
-                // Followed only for a borrow of this function's own storage, which a call reaches
-                // only through the borrows it is handed (reshapeCall's 'mine')
-                if (type->tag != VirtRefTag && rcLocalOnly)
+                // Followed: what it points at may hold a '&mut' ('& &mut Ed', a closure's capture
+                // of a '&mut' parameter), which still reaches a writable path
+                if (type->tag != VirtRefTag)
                     rcWalk(ref->vtexp, 1 | 2);
                 return;
             }
