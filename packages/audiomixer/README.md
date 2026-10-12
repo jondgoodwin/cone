@@ -17,6 +17,11 @@ src/engine.cone      Control (game thread) and Engine (audio thread) over a lock
 src/analysis.cone    rms, zero-crossing frequency, FFT, spectrum, centroid (for tests)
 ```
 
+## Dependencies
+
+`geomath` (vectors for positions and the listener), `collections`, `sync`
+(the single-producer ring and its sender and receiver) and `libc` (math).
+
 ## Model
 
 * **Game thread** holds a `Control`. `play` answers a voice id at once and
