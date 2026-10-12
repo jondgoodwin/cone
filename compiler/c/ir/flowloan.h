@@ -318,6 +318,11 @@ void loanShapeMark(uint32_t loan, INode *container);
 uint32_t loanShapeCount();
 uint32_t loanShapeId(uint32_t i);
 INode *loanShapeContainer(uint32_t loan);
+// The struct holding the container as a field, where the borrow was taken through that field
+// (a call asked whether it could reshape the container asks only whether it reaches this
+// struct, or the container through a reference), else NULL
+void loanShapeOwnerSet(uint32_t loan, INode *owner);
+INode *loanShapeOwner(uint32_t loan);
 int loanShapeInFlight(uint32_t loan);
 int loanShapeSamePlace(uint32_t loan, Place *pl);
 int loanShapeDisjoint(uint32_t loan, Place *pl);
