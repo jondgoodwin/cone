@@ -2471,6 +2471,7 @@ void genSetup(GenState *gen, ConeOptions *opt) {
 
     gen->comdats = genlComdatSupport(opt->triple);   // genlCreateMachine filled in the default
     gen->cabi = genlCAbiTarget(opt->triple);
+    gen->cabiargs = NULL;
     gen->emptyStructType = genlEmptyStruct(gen);
 }
 

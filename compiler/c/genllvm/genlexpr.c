@@ -56,6 +56,35 @@ static LLVMValueRef genlFnSym(GenState *gen, FnDclNode *fndcl) {
         return LLVMConstBitCast(fndcl->llvmvar, LLVMPointerType(genlType(gen, fndcl->vtype), 0));
     return fndcl->llvmvar;
 }
+
+// Is the call to a C-named function, whose arguments cross as C passes them?
+static int genlCallsCAbiFn(FnCallNode *fncall) {
+    INode *objfn = fncall->objfn;
+    if (fncall->flags & FlagVDisp)
+        return 0;
+    if (objfn->tag == FnDclTag)
+        return genlIsCAbiFn((FnDclNode *)objfn);
+    if (isNameUseNode(objfn) && isExpNode(objfn) && ((NameUseNode *)objfn)->dclnode
+        && ((NameUseNode *)objfn)->dclnode->tag == FnDclTag)
+        return genlIsCAbiFn((FnDclNode *)((NameUseNode *)objfn)->dclnode);
+    return 0;
+}
+
+// Is 'node' one of the arguments being generated for a call to a C-named
+// function? A '&f' written there is a callback C will call, so it stays f
+// itself (genlCAbiFnRef)
+static int genlCAbiHandedToC(GenState *gen, INode *node) {
+    if (gen->cabiargs == NULL)
+        return 0;
+    uint32_t cnt;
+    INode **nodesp;
+    for (nodesFor(gen->cabiargs, cnt, nodesp)) {
+        if (*nodesp == node)
+            return 1;
+    }
+    return 0;
+}
+
 // The address of a global, as a Cone reference holds it. On a GPU target a
 // global lives in an address space of its own (the target's datalayout puts
 // it there: Private in SPIR-V's Vulkan form, CrossWorkgroup in its OpenCL
@@ -1484,10 +1513,13 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
     // Get count and Valuerefs for all the arguments to pass to the function
     uint32_t fnargcnt = fncall->args->used;
     LLVMValueRef *fnargs = (LLVMValueRef*)memAllocBlk(fnargcnt * sizeof(LLVMValueRef*));
+    Nodes *svcabiargs = gen->cabiargs;
+    gen->cabiargs = genlCallsCAbiFn(fncall) ? fncall->args : NULL;
     if (genlCallLends(gen, fncall))
         genlArgsLending(gen, fncall, fnargs);
     else
         genlExprsAcross(gen, fncall->args, fnargs);
+    gen->cabiargs = svcabiargs;
 
     // An atomic intrinsic reads its orderings from the call's own arguments
     FnDclNode *atomic = intrinsicAtomicCallee(fncall);
@@ -3515,6 +3547,14 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
                 return NULL;
             }
             return genlExpr(gen, ((StarNode*)anode->vtexp)->vtexp);
+        }
+        // '&f' of a C-named function is a Cone reference, called in Cone's
+        // convention: the thunk that calls f as C, unless it is handed
+        // straight to a C-named function, which will call it as C
+        if (isNameUseNode(anode->vtexp) && isExpNode(anode->vtexp)
+            && ((NameUseNode *)anode->vtexp)->dclnode->tag == FnDclTag && !genlCAbiHandedToC(gen, termnode)) {
+            FnDclNode *fndcl = (FnDclNode *)((NameUseNode *)anode->vtexp)->dclnode;
+            return genlCAbiFnRef(gen, fndcl, genlFnSym(gen, fndcl));
         }
         return genlAddr(gen, anode->vtexp);
     }
