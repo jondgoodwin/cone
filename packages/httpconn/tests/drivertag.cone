@@ -1,0 +1,168 @@
+// Drivers on one Loop never claim each other's completions, however many
+// were made between them. A program with two drivers on a loop offers every
+// completion to one and then the other ('if not a.complete(c) {b.complete(c)}'),
+// so 'complete' must say true of a driver's own operations alone.
+//
+// Part 1: a server driver made first and kept alive; 127 more made and
+// dropped; then a client driver, the 128th after the server's. A GET goes
+// from the client to the server over 127.0.0.1, every completion offered to
+// the server's driver first. Checked: that the server's driver claimed no
+// Connect (only the client submits them), that the request got its one Done
+// with the server's body, and that no completion went unclaimed.
+//
+// Part 2: 1000 drivers alive at once, twice over: every one's tokens are its
+// own and no other's.
+
+mod drivertag;
+
+import testing use *;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use Loop, Completion, SocketAddr, forever;
+import http use *;
+import httpconn use *;
+import diag;
+
+const tokServer = 100u64;
+const tokConn = 1u64;
+const tokReq = 2u64;
+
+fn helloBody() &Array[u8] {"hello from the old driver";}
+
+fn main() i32 {
+  imm pool = Pool.make();
+  mut lp = Loop.mustMake();
+
+  // The old driver, alive from here to the end
+  mut srv = Driver.make(Config.make(), pool);
+  {
+    mut i = 0u32;
+    while i < 127u32 {
+      imm other = Driver.make(Config.make(), pool);
+      i = i + 1u32;
+    }
+  }
+  mut cli = Driver.make(Config.make(), pool);
+
+  mut port = 0u16;
+  match srv.listen(&mut lp, SocketAddr.localhost(0u16), Sink.Here(tokServer)) {
+    case imm r Ok {
+      match srv.localAddr(&lp, r) {
+        case imm a Ok {port = a.port();}
+        case imm e Error {}
+      }
+    }
+    case imm e Error {}
+  }
+  require(port != 0u16, "the server listens on a port");
+  imm conn = cli.connect(&mut lp, "127.0.0.1", port, Sink.Here(tokConn));
+  imm req = cli.request(&mut lp, conn, RequestHead.get("/hello", "127.0.0.1"), BodyLength.empty(), Sink.Here(tokReq));
+
+  mut status = 0u16;
+  mut body = String.empty();
+  mut finals = 0u64;
+  mut finalDone = false;
+  mut served = 0u64;
+  mut svReq = ReqId.none();
+  mut misrouted = 0u64;
+  mut unclaimed = 0u64;
+  mut events = List[Event].empty();
+  mut comps = List[Completion].empty();
+  imm giveUp = Instant.now() + Duration.fromSeconds(3i64);
+  while finals == 0u64 and Instant.now() < giveUp {
+    srv.pump(&mut lp, &mut events);
+    cli.pump(&mut lp, &mut events);
+    mut w = srv.wakeAt();
+    if cli.wakeAt() < w {w = cli.wakeAt();}
+    if events.len() > 0usize {w = new Instant();}
+    lp.poll(if w < giveUp {w;} else {giveUp;}, &mut comps);
+    mut k = 0usize;
+    while k < comps.len() {
+      imm c = &mut comps[k];
+      k = k + 1usize;
+      // Only the client's driver submits Connects: the server's driver
+      // claiming one has taken another driver's operation
+      imm isConnect = c.kind == diag.kindConnect;
+      if srv.complete(&mut lp, c) {
+        if isConnect {misrouted = misrouted + 1u64;}
+      } elif not cli.complete(&mut lp, c) {
+        unclaimed = unclaimed + 1u64;
+      }
+    }
+    comps.clear();
+    srv.pump(&mut lp, &mut events);
+    cli.pump(&mut lp, &mut events);
+    k = 0usize;
+    while k < events.len() {
+      imm e = &mut events[k];
+      k = k + 1usize;
+      if e.token == tokServer {
+        if e.kind == EventKind.Request {
+          svReq = e.req;
+        } elif e.kind == EventKind.End {
+          srv.respond(svReq, ResponseHead.make(200u16), BodyLength.sized(u64.from(helloBody().len)));
+          mut b = pool.mustTake(64usize);
+          b.append(helloBody());
+          srv.sendData(svReq, b);
+          srv.finish(svReq);
+          served = served + 1u64;
+        }
+      } elif e.token == tokReq {
+        if e.kind == EventKind.Response {
+          status = e.response.status;
+        } elif e.kind == EventKind.Data {
+          body.appendBytes(e.buf.view());
+          cli.release(e.req, e.buf.len());
+        } elif e.isTerminal() {
+          finals = finals + 1u64;
+          finalDone = e.kind == EventKind.Done;
+        }
+      }
+    }
+    events.clear();
+  }
+  expectUInt(misrouted, 0u64, "the old driver claimed none of the new one's Connects");
+  expectUInt(unclaimed, 0u64, "every completion was claimed by one driver");
+  requireUInt(finals, 1u64, "the request got its final answer in time");
+  expect(finalDone, "...Done");
+  expectInt(i64.from(status), 200i64, "...status 200");
+  expectStr(body.view(), helloBody(), "...with the old driver's body");
+  expectUInt(served, 1u64, "the old driver read one request");
+  cli.abortAll(&mut lp);
+  srv.abortAll(&mut lp);
+  events.clear();
+  expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");
+
+  // 1000 live drivers, twice (the second time they take the numbers the
+  // first gave back): each owns its own tokens, and no other's
+  expectUInt(ownership(pool, 1000u32), 0u64, "round 1: 1000 live drivers, each owns its own tokens alone");
+  expectUInt(ownership(pool, 1000u32), 0u64, "round 2: the numbers given back are taken again");
+  done();
+}
+
+// n drivers alive at once: how many (driver, token) pairs went wrong, a
+// token not owned by the driver that made it, or owned by another
+fn ownership(pool Pool, n u32) u64 {
+  mut ds = List[Driver].empty();
+  mut i = 0u32;
+  while i < n {
+    ds.push(Driver.make(Config.make(), pool));
+    i = i + 1u32;
+  }
+  mut wrong = 0u64;
+  mut a = 0usize;
+  while a < ds.len() {
+    imm da = &mut ds[a];
+    imm t = da.upperToken(3u8, u64.from(a));
+    mut b = 0usize;
+    while b < ds.len() {
+      imm db = &mut ds[b];
+      imm owns = db.owns(t);
+      if owns != (a == b) {wrong = wrong + 1u64;}
+      b = b + 1usize;
+    }
+    a = a + 1usize;
+  }
+  wrong;
+}
