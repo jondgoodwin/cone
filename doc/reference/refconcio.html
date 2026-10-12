@@ -51,9 +51,10 @@
 		URL in one call, with connection pooling, retries and redirects.</li>
 	<li><b>I/O an actor awaits:</b> <span class="pre">aio</span>. An actor's behaviour may
 		<span class="pre">await</span> a socket's operation &mdash; listen, accept, connect, read,
-		write &mdash; and pauses there until the operation's answer comes, as it pauses for another
+		write &mdash; or a file's &mdash; open, read at an offset, write at an offset &mdash; and
+		pauses there until the operation's answer comes, as it pauses for another
 		actor's reply (<a href="refawait.html#await">Awaiting a reply</a>; below,
-		<a href="#await-io">Awaiting I/O</a>). TCP sockets only.</li>
+		<a href="#await-io">Awaiting I/O</a>). TCP sockets and files.</li>
 	</ul>
 
 	<h2 id="await-io">Awaiting I/O</h2>
@@ -168,6 +169,11 @@ end of stream 5
 	<li><span class="pre">conn.write(buf)</span>: the count written, which is all of the buffer;
 		the buffer goes home.</li>
 	<li><span class="pre">s.localAddr()</span>: the address the socket is bound to.</li>
+	<li><span class="pre">aio.openFile(path, access)</span>: a <span class="pre">File</span>, out of the
+		<span class="pre">Result</span> by a swap as a <span class="pre">Socket</span> is.
+		<span class="pre">f.readAt(offset, buf)</span> and <span class="pre">f.writeAt(offset, buf)</span>
+		answer as <span class="pre">read</span> and <span class="pre">write</span> do: see
+		<a href="#await-io-files">Files</a>.</li>
 	</ul>
 	<p>An operation's answer should be used. An <span class="pre">await</span> on one that is a
 		statement of its own drops the failure unread, so it is warned. The program still
@@ -204,8 +210,10 @@ await ...', and match on it.
 		operation was given goes home to its pool.</p>
 	<p>An operation is limited by the <span class="pre">In</span> form of its call, which takes a
 		<span class="pre">IoLimits</span>: <span class="pre">conn.readIn(buf, lim)</span>,
-		<span class="pre">conn.writeIn(buf, lim)</span>, <span class="pre">listener.acceptIn(lim)</span>
-		and <span class="pre">aio.connectIn(addr, lim)</span>. A <span class="pre">IoLimits</span> holds
+		<span class="pre">conn.writeIn(buf, lim)</span>, <span class="pre">listener.acceptIn(lim)</span>,
+		<span class="pre">aio.connectIn(addr, lim)</span>, and a file's
+		<span class="pre">f.readAtIn(offset, buf, lim)</span> and
+		<span class="pre">f.writeAtIn(offset, buf, lim)</span>. A <span class="pre">IoLimits</span> holds
 		a <a href="#cancel-groups">cancel group</a> and an absolute deadline, an
 		<span class="pre">Instant</span>: <span class="pre">IoLimits.within(group)</span>,
 		<span class="pre">IoLimits.until(deadline)</span>, or both with
@@ -251,6 +259,44 @@ actor Reader {
 		(<a href="refawait.html#await-cross">What crosses an await</a>), so it stays open
 		until the behaviour ends.</p>
 
+	<h3 id="await-io-files">Files</h3>
+	<p><span class="pre">aio.openFile(path, access)</span> opens a file on the I/O thread, with
+		<span class="pre">iocore</span>'s <span class="pre">Access</span>: <span class="pre">Read</span>
+		an existing file; <span class="pre">Create</span> a new one, or an existing one emptied, to read
+		and write; <span class="pre">Update</span> an existing one or a new one, its bytes kept, to read and
+		write. It answers a <span class="pre">File</span>, or the system's failure (a name that is not
+		there is <span class="pre">ERROR_FILE_NOT_FOUND</span>, 2, on both systems). The path is copied.
+		<span class="pre">f.readAt(offset, buf)</span> and <span class="pre">f.writeAt(offset, buf)</span>
+		work at a byte offset, with no position kept in the file, so any number may be in flight on one
+		file at once. A read appends what is there to the buffer, up to its room, and from the end of the
+		file or past it comes back with the buffer as it went; a buffer with no room fails with 122, as a
+		socket's does. A write answers the count written, all of its buffer. Both take the
+		<span class="pre">In</span> forms above, and answer exactly once, done, failed, cancelled or timed out.
+		<span class="pre">openFile</span> has no <span class="pre">In</span> form: opening is one call to the
+		system, which cannot be cancelled once begun.</p>
+<pre>
+actor Patcher {
+  pool Pool;
+
+  pub async do patch(self, name Path) u64 {
+    imm f = fileOf(await aio.openFile(&amp;name, Access.Update));   // fileOf: as socketOf
+    mut b = pool.mustTake(5usize);
+    b.append("hello");
+    imm w = await f.writeAt(100u64, b);                     // five bytes at offset 100
+    match w {
+      case imm n Ok {u64.from(n);}                          // 5
+      case imm e Error {u64.from(e.code);}
+    }
+  }                                                         // f closes here
+}
+</pre>
+	<p>A <span class="pre">File</span>, like a <span class="pre">Socket</span>, moves: it may be sent in a
+		message to another actor, and dropping it closes the file, after the operations started on it before,
+		cancelling any still in flight. On Windows the operations are the completion port's; on Linux they run
+		on a thread of the blocking pool (<span class="pre">pread</span> and <span class="pre">pwrite</span>),
+		and answer the same. <span class="pre">fileio</span>, the file service with classes and a queue-depth
+		governor, is a package of its own, to come.</p>
+
 	<h3>The I/O thread, and the program's end</h3>
 	<p>The operations run on one thread of their own, the I/O thread, which the first operation
 		awaited starts: it waits in <span class="pre">iocore</span>'s completion loop, and hands each
@@ -268,7 +314,8 @@ actor Reader {
 
 	<h3 id="await-io-unbuilt">Not built yet</h3>
 	<ul>
-	<li>Files, the blocking pool's work, UDP, and a socket's half-close, awaited.</li>
+	<li>The blocking pool's other work (file metadata, name lookup), UDP, and a socket's half-close, awaited;
+		<span class="pre">fileio</span>, the file service.</li>
 	<li>More than one I/O thread.</li>
 	</ul>
 

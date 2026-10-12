@@ -153,9 +153,9 @@ KEYWORDS = frozenset((
     "include import extern pub static macro fn overload const alias typedef struct mod"
     " actor trait extends mixin use but enum return with if elif else case match"
     " while each in by break continue not or and as is into inline where new trynew await yield selfactor async do"
-    " void nil null true false undef").split())
+    " void nil null true false undef using").split())
 RESERVED = frozenset((
-    "baseurl context local selfmethod using wait throw catch spawn"
+    "baseurl context local selfmethod wait throw catch spawn"
     ).split())
 PERMISSIONS = frozenset("uni mut imm ro mut1 opaq".split())
 
@@ -225,30 +225,37 @@ LIBRARY_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.+-]*\Z")
 LIBRARY_SUFFIXES = (".lib", ".a", ".so", ".dylib", ".dll")
 
 
-def read_link(path: Path, table: object) -> tuple[list[str], list[Path], list[str]]:
-    """[link]: the C libraries a program using this package must be linked with,
-    folders to search for them, relative to the package folder, and the DLLs
-    the program needs beside it to run, which Congo copies there."""
-    if not isinstance(table, dict):
-        raise CongoError(f"{path}: [link] must be a table, with libraries, paths and"
-                         " runtime")
-    for key in table:
-        if key not in ("libraries", "paths", "runtime"):
-            raise CongoError(f"{path}: '{key}' is not a [link] key; the keys are"
-                             " libraries, paths and runtime")
+LINK_KEYS = ("libraries", "paths", "runtime")
+LINK_SYSTEMS = ("windows", "linux", "macos")
+
+
+def read_link_keys(path: Path, table: dict,
+                   label: str) -> tuple[list[str], list[Path], list[str]]:
+    """The keys of [link], or of one system's section of it: the C libraries a
+    program using this package must be linked with, folders to search for them,
+    relative to the package folder, and the DLLs the program needs beside it to
+    run, which Congo copies there. label is the table's name in a message."""
+    for key, value in table.items():
+        if key in LINK_KEYS:
+            continue
+        if isinstance(value, dict):
+            raise CongoError(f"{path}: {label[:-1]}.{key}] is not a link section; the sections are"
+                             " [link.windows], [link.linux] and [link.macos]")
+        raise CongoError(f"{path}: '{key}' is not a {label} key; the keys are"
+                         " libraries, paths and runtime")
     libraries, paths = table.get("libraries", []), table.get("paths", [])
     runtime = table.get("runtime", [])
     for key, value in (("libraries", libraries), ("paths", paths), ("runtime", runtime)):
         if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
-            raise CongoError(f"{path}: [link] {key} must be a list of strings")
+            raise CongoError(f"{path}: {label} {key} must be a list of strings")
     for lib in libraries:
         if not LIBRARY_RE.match(lib) or lib.lower().endswith(LIBRARY_SUFFIXES):
-            raise CongoError(f"{path}: [link] library \"{lib}\" must be the library's bare"
+            raise CongoError(f"{path}: {label} library \"{lib}\" must be the library's bare"
                              " name, such as \"SDL3\": no folder, prefix or suffix, which"
                              " Congo adds for the linker (and paths says where to look)")
     for dll in runtime:
         if not LIBRARY_RE.match(dll) or dll.lower().endswith(LIBRARY_SUFFIXES):
-            raise CongoError(f"{path}: [link] runtime \"{dll}\" must be the DLL's bare"
+            raise CongoError(f"{path}: {label} runtime \"{dll}\" must be the DLL's bare"
                              " name, such as \"SDL3\" for SDL3.dll: no folder or suffix,"
                              " which Congo adds")
     folders = []
@@ -258,9 +265,36 @@ def read_link(path: Path, table: object) -> tuple[list[str], list[Path], list[st
     return libraries, folders, runtime
 
 
+def read_link(path: Path, table: object,
+              system: str = HOST_OS) -> tuple[list[str], list[Path], list[str]]:
+    """[link] and the section for this system, [link.windows], [link.linux] or
+    [link.macos]: the plain table applies on every system, and the system's own
+    section adds to it, each list after the plain one's. A section for another
+    system is read, so that a mistake in it is found on every machine, and
+    contributes nothing."""
+    if not isinstance(table, dict):
+        raise CongoError(f"{path}: [link] must be a table, with libraries, paths and"
+                         " runtime")
+    plain = {k: v for k, v in table.items() if k not in LINK_SYSTEMS}
+    libraries, folders, runtime = read_link_keys(path, plain, "[link]")
+    for name in LINK_SYSTEMS:
+        if name not in table:
+            continue
+        section = table[name]
+        if not isinstance(section, dict):
+            raise CongoError(f"{path}: [link] {name} must be a table: write it as"
+                             f" [link.{name}]")
+        more = read_link_keys(path, section, f"[link.{name}]")
+        if name == system:
+            libraries, folders, runtime = (libraries + more[0], folders + more[1],
+                                           runtime + more[2])
+    return libraries, folders, runtime
+
+
 def read_manifest(path: Path) -> Package:
     """congo.toml: a [package] table with name, version and output, and, for a
-    package that needs C libraries linked, a [link] table.
+    package that needs C libraries linked, a [link] table and a section of it
+    for each system that needs more (read_link).
 
     There is no dependencies section: the imports in the source are the
     dependency list, and the registries say where each one is [Jon 23 Sep]."""
@@ -1325,21 +1359,14 @@ class Linker:
         """The link line: the objects, conestd, then the C libraries the packages'
         [link] tables name, each searched for first in their [link] paths."""
         if IS_WINDOWS:
-            # synchronization.lib: the sync package's futex (WaitOnAddress and
-            # its wakes), which a program importing sync compiles in. An import
-            # library of the Windows SDK, beside the C runtime's, so no
-            # package's [link] names it ([link] has no per-system form); a
-            # program that calls none of it takes nothing from it. The same
-            # goes for shell32.lib, whose CommandLineToArgvW the process
-            # package's 'args' splits the program's command line with, and
-            # for ws2_32.lib (Winsock) and ntdll.lib (the wait completion
-            # packet, the NTSTATUS translation), which iocore's Windows half
-            # calls.
+            # The C runtime's own libraries are the toolchain's and stay here;
+            # the Windows SDK's import libraries a package calls (sync's
+            # synchronization, process's shell32, iocore's ws2_32 and ntdll)
+            # are named by that package's [link.windows]
             return [self.tool, "/NOLOGO", *map(str, objs), str(self.conestd),
                     *(f"/LIBPATH:{p}" for p in paths), *(f"{lib}.lib" for lib in libraries),
                     f"/OUT:{exe}", "/SUBSYSTEM:CONSOLE", "msvcrt.lib",
-                    "legacy_stdio_definitions.lib", "synchronization.lib", "shell32.lib",
-                    "ws2_32.lib", "ntdll.lib"]
+                    "legacy_stdio_definitions.lib"]
         return [self.tool, *map(str, objs), str(self.conestd),
                 *(f"-L{p}" for p in paths), *(f"-l{lib}" for lib in libraries),
                 "-o", str(exe), "-lm", "-lpthread"]

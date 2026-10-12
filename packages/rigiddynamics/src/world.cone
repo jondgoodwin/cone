@@ -1,0 +1,1036 @@
+// The World: bodies, shapes, joints, the broad phase, the contact cache, and
+// the step that moves them all.
+//
+// A step (World.step), in Jolt's and Box2D v3's order:
+//   1. refresh each body's step state (world inertia, the pose it starts from)
+//   2. broad phase: the awake bodies' boxes updated, overlapping pairs found
+//   3. narrow phase and the contact cache: each pair that can move collided
+//      (rigidcollide), its manifolds matched to last step's for warm starting,
+//      sleeping bodies woken that an awake one touches, events emitted
+//   4. the constraint list: contacts of awake bodies, coloured (greedy graph
+//      colouring, so a later parallel solve is a swap and the order is fixed)
+//   5. Soft Step: for each sub-step, integrate velocities (gravity, forces,
+//      damping, the gyroscopic term), warm start, solve joints and contacts
+//      with their bias, integrate positions, relax; then restitution
+//   6. continuous collision for fast bodies, sleep timers, islands asleep.
+
+pub struct World {
+  pub gravity Vec3;
+  pub settings Settings;
+  pub shapes List[Shape];
+  pub bodies List[Body];
+  pub freeSlots List[u32];
+  pub joints List[Joint];
+  pub bp SweepAndPrune;
+  pub cache List[Contact];
+  pub next List[Contact];
+  pub pairs List[BodyPair];
+  pub active List[u32];             // indices into 'cache' the solver uses this step, in solve order
+  pub activeJoints List[u32];
+  pub events List[Event];
+  pub stepCount u32;
+  pub nextGroup u32;
+  pub fixedDt f32;
+  pub accumulator f32;
+  pub lastContacts usize;           // statistics of the last step
+  pub lastPairs usize;
+  pub lastColors i32;
+  pub noCollideJoints bool;         // some joint stops its bodies colliding
+
+  pub fn make() World {
+    new World(new Vec3(0., -9.81, 0.), Settings.standard(), List[Shape].empty(), List[Body].empty(), List[u32].empty(),
+      List[Joint].empty(), SweepAndPrune.empty(), List[Contact].empty(), List[Contact].empty(), List[BodyPair].empty(),
+      List[u32].empty(), List[u32].empty(), List[Event].empty(), 0u32, 1u32, 1. / 60., 0., 0usize, 0usize, 0, false);
+  }
+
+  // ------------------------------------------------------------------ shapes
+
+  // Register a shape (built once, shared by every body that uses it); its number
+  pub fn addShape(self &mut, s Shape) u32 {
+    shapes.push(s);
+    u32.from(shapes.len()) - 1u32;
+  }
+
+  // ------------------------------------------------------------------ bodies
+
+  // The shape's origin and orientation (what a renderer places the mesh by)
+  pub fn transformOf(self &, id u32) Rigid {
+    imm b = bodies[usize.from(id)];
+    new Rigid(b.pos - b.rot * b.comLocal, b.rot);
+  }
+
+  pub fn positionOf(self &, id u32) Vec3 { self.transformOf(id).pos; }
+  pub fn rotationOf(self &, id u32) Quat { bodies[usize.from(id)].rot; }
+  pub fn centerOfMass(self &, id u32) Vec3 { bodies[usize.from(id)].pos; }
+  pub fn linearVelocity(self &, id u32) Vec3 { bodies[usize.from(id)].linVel; }
+  pub fn angularVelocity(self &, id u32) Vec3 { bodies[usize.from(id)].angVel; }
+  pub fn isAsleep(self &, id u32) bool { bodies[usize.from(id)].asleep; }
+  pub fn isAlive(self &, id u32) bool { usize.from(id) < bodies.len() and bodies[usize.from(id)].alive; }
+  pub fn massOf(self &, id u32) f32 { bodies[usize.from(id)].mass; }
+  pub fn userDataOf(self &, id u32) u32 { bodies[usize.from(id)].userData; }
+  pub fn materialOf(self &, id u32) PhysMaterial { bodies[usize.from(id)].material; }
+  pub fn bodyCount(self &) usize { bodies.len() - freeSlots.len(); }
+
+  // The velocity of the body's material at a world point (a platform's, under a rider)
+  pub fn pointVelocity(self &, id u32, p Vec3) Vec3 {
+    imm b = bodies[usize.from(id)];
+    b.linVel + b.angVel.cross(p - b.pos);
+  }
+
+  fn velMargin(self &, i usize, dt f32) f32 {
+    imm b = bodies[i];
+    minf(settings.maxSpeculative, (b.linVel.length() + b.angVel.length() * b.radius) * dt);
+  }
+
+  fn bodyBox(self &, i usize, dt f32) Aabb3 {
+    imm b = bodies[i];
+    imm xf = new Rigid(b.pos - b.rot * b.comLocal, b.rot);
+    shapes[usize.from(b.shape)].bounds(xf).expand(settings.speculativeDistance * 0.5 + self.velMargin(i, dt));
+  }
+
+  pub fn setMaterial(self &mut, id u32, m PhysMaterial) { bodies[usize.from(id)].material = m; }
+  pub fn setLayers(self &mut, id u32, layer u32, mask u32) {
+    bodies[usize.from(id)].layer = layer;
+    bodies[usize.from(id)].mask = mask;
+    bp.remove(id);
+    imm b = bodies[usize.from(id)];
+    bp.add(id, self.bodyBox(usize.from(id), 0.), layer, mask, b.motion == MotionStatic);
+  }
+  pub fn setSensor(self &mut, id u32, sensor bool) { bodies[usize.from(id)].sensor = sensor; }
+
+  // Make a body. A body of a shape with no volume (a triangle mesh, a
+  // heightfield) can only be static or kinematic.
+  pub fn createBody(self &mut, def BodyDef) u32 {
+    imm sh = shapes[usize.from(def.shape)];
+    imm mp = sh.massProps();
+    mut motion = def.motion;
+    if motion == MotionDynamic and mp.volume <= 0.000001 { motion = MotionKinematic; }
+    imm dynamic = motion == MotionDynamic;
+    imm com = if dynamic { mp.com; } else { zero3(); };
+    mut mass = 0.;
+    mut inertia = mat3Diag(0., 0., 0.);
+    mut invI = mat3Diag(0., 0., 0.);
+    if dynamic {
+      mass = if def.mass > 0. { def.mass; } else { def.density * mp.volume; };
+      inertia = mat3Scale(mp.inertia, mass / mp.volume);
+      invI = inertia.inverse();
+    }
+    // the box round the shape in its own space, for the radius from the centre of mass
+    imm lb = sh.bounds(Rigid.identity());
+    imm ext = lb.halfExtents();
+    imm mid = lb.center();
+    imm toFar = new Vec3(absf(mid.x - com.x) + ext.x, absf(mid.y - com.y) + ext.y, absf(mid.z - com.z) + ext.z);
+    imm radius = toFar.length();
+    imm minExtent = minf(ext.x, minf(ext.y, ext.z));
+    imm pos = def.pos + def.rot * com;
+    imm body = new Body(true, motion, def.shape, def.layer, def.mask, def.sensor, def.allowSleep, def.bullet, def.userData,
+      pos, def.rot, com, def.linVel, def.angVel, mass, if dynamic { 1. / mass; } else { 0.; }, inertia, invI,
+      if dynamic { rotateInertia(def.rot, invI); } else { mat3Diag(0., 0., 0.); }, dynamic and not isIsotropic(inertia),
+      def.linearDamping, def.angularDamping, def.gravityFactor, def.material, zero3(), zero3(), radius, minExtent,
+      false, 0., 0u32, zero3(), Quat.identity(), def.pos, def.rot, 0u32, 0u64);
+    mut id = 0u32;
+    if freeSlots.len() > 0usize {
+      match freeSlots.pop() {
+        case imm s Some { id = s; }
+        case is None { }
+      }
+      bodies.set(usize.from(id), body);
+    } else {
+      id = u32.from(bodies.len());
+      bodies.push(body);
+    }
+    bp.add(id, self.bodyBox(usize.from(id), 0.), def.layer, def.mask, motion == MotionStatic);
+    id;
+  }
+
+  // Remove a body, its joints and its contacts
+  pub fn destroyBody(self &mut, id u32) {
+    imm i = usize.from(id);
+    if not isAlive(id) { return; }
+    bodies[i].alive = false;
+    bp.remove(id);
+    freeSlots.push(id);
+    mut k = 0usize;
+    while k < joints.len() {
+      if joints[k].alive and (joints[k].a == id or joints[k].b == id) { joints[k].alive = false; }
+      k = k + 1usize;
+    }
+    next.clear();
+    k = 0usize;
+    while k < cache.len() {
+      imm c = cache[k];
+      if c.a == id or c.b == id {
+        if c.touching { self.emit(if c.sensor { EvSensorExit; } else { EvContactRemoved; }, c.a, c.b, zero3(), c.normal, 0.); }
+      } else {
+        next.push(*c);
+      }
+      k = k + 1usize;
+    }
+    cache.clear();
+    k = 0usize;
+    while k < next.len() { cache.push(*next[k]); k = k + 1usize; }
+    next.clear();
+  }
+
+  // ------------------------------------------------------------------ driving bodies
+
+  fn touchBox(self &mut, id u32) {
+    imm i = usize.from(id);
+    bp.update(id, self.bodyBox(i, 0.));
+  }
+
+  // Put the body's shape origin and orientation somewhere else (a teleport; the velocity is kept)
+  pub fn setTransform(self &mut, id u32, pos Vec3, rot Quat) {
+    imm i = usize.from(id);
+    bodies[i].rot = rot;
+    bodies[i].pos = pos + rot * bodies[i].comLocal;
+    bodies[i].rot = rot;
+    self.touchBox(id);
+    self.wake(id);
+  }
+
+  pub fn setLinearVelocity(self &mut, id u32, v Vec3) {
+    bodies[usize.from(id)].linVel = v;
+    if bodies[usize.from(id)].motion == MotionDynamic { self.wake(id); }
+  }
+  pub fn setAngularVelocity(self &mut, id u32, v Vec3) {
+    bodies[usize.from(id)].angVel = v;
+    if bodies[usize.from(id)].motion == MotionDynamic { self.wake(id); }
+  }
+
+  // Drive a kinematic body to a pose over 'dt' seconds: sets the velocities that get it there
+  // (it carries what stands on it and shoves what it meets); call each step
+  pub fn moveKinematic(self &mut, id u32, pos Vec3, rot Quat, dt f32) {
+    imm i = usize.from(id);
+    imm b = bodies[i];
+    imm target = pos + rot * b.comLocal;
+    bodies[i].linVel = (target - b.pos) * (1. / dt);
+    mut dq = rot * b.rot.conjugate();
+    if dq.w < 0. { dq = new Quat(-dq.x, -dq.y, -dq.z, -dq.w); }
+    imm s = (dq.x * dq.x + dq.y * dq.y + dq.z * dq.z).sqrt();
+    imm ang = 2. * atan2(s, dq.w);
+    bodies[i].angVel = if s > 0.000001 { new Vec3(dq.x, dq.y, dq.z) * (ang / s / dt); } else { zero3(); };
+  }
+
+  pub fn applyForce(self &mut, id u32, f Vec3) {
+    imm i = usize.from(id);
+    if bodies[i].motion != MotionDynamic { return; }
+    bodies[i].force = bodies[i].force + f;
+    self.wake(id);
+  }
+  pub fn applyForceAt(self &mut, id u32, f Vec3, p Vec3) {
+    imm i = usize.from(id);
+    if bodies[i].motion != MotionDynamic { return; }
+    bodies[i].force = bodies[i].force + f;
+    bodies[i].torque = bodies[i].torque + (p - bodies[i].pos).cross(f);
+    self.wake(id);
+  }
+  pub fn applyTorque(self &mut, id u32, t Vec3) {
+    imm i = usize.from(id);
+    if bodies[i].motion != MotionDynamic { return; }
+    bodies[i].torque = bodies[i].torque + t;
+    self.wake(id);
+  }
+  // An instant change of velocity: impulse p (kg m/s)
+  pub fn applyImpulse(self &mut, id u32, p Vec3) {
+    imm i = usize.from(id);
+    if bodies[i].motion != MotionDynamic { return; }
+    bodies[i].linVel = bodies[i].linVel + p * bodies[i].invMass;
+    self.wake(id);
+  }
+  pub fn applyImpulseAt(self &mut, id u32, p Vec3, at Vec3) {
+    imm i = usize.from(id);
+    if bodies[i].motion != MotionDynamic { return; }
+    bodies[i].linVel = bodies[i].linVel + p * bodies[i].invMass;
+    bodies[i].angVel = bodies[i].angVel + rotateInertia(bodies[i].rot, bodies[i].invInertiaLocal) * (at - bodies[i].pos).cross(p);
+    self.wake(id);
+  }
+
+  // ------------------------------------------------------------------ sleeping
+
+  pub fn wake(self &mut, id u32) {
+    imm i = usize.from(id);
+    if not bodies[i].alive or not bodies[i].asleep { return; }
+    imm g = bodies[i].sleepGroup;
+    mut k = 0usize;
+    while k < bodies.len() {
+      if bodies[k].alive and bodies[k].asleep and bodies[k].sleepGroup == g {
+        bodies[k].asleep = false;
+        bodies[k].sleepTime = 0.;
+        bodies[k].sleepGroup = 0u32;
+        bodies[k].invInertia = rotateInertia(bodies[k].rot, bodies[k].invInertiaLocal);
+        self.emit(EvWake, u32.from(k), NoBody, zero3(), zero3(), 0.);
+      }
+      k = k + 1usize;
+    }
+  }
+
+  // Put a body (and everything resting on or joined to it) to sleep now
+  pub fn sleep(self &mut, id u32) {
+    imm i = usize.from(id);
+    if not bodies[i].alive or bodies[i].motion != MotionDynamic or bodies[i].asleep { return; }
+    bodies[i].asleep = true;
+    bodies[i].linVel = zero3();
+    bodies[i].angVel = zero3();
+    bodies[i].sleepGroup = nextGroup;
+    nextGroup = nextGroup + 1u32;
+  }
+
+  // ------------------------------------------------------------------ events
+
+  pub fn emit(self &mut, kind u32, a u32, b u32, point Vec3, normal Vec3, depth f32) {
+    if events.len() < 100000usize { events.push(new Event(kind, a, b, point, normal, depth)); }
+  }
+
+  // The events since the last call, oldest first
+  pub fn takeEvents(self &mut) List[Event] {
+    mut out = List[Event].empty();
+    mut i = 0usize;
+    while i < events.len() { out.push(*events[i]); i = i + 1usize; }
+    events.clear();
+    out;
+  }
+
+  // ------------------------------------------------------------------ joints
+
+  // A frame whose x axis is 'axis'
+  fn frameOf(axis Vec3) Quat { Quat.fromVectors(new Vec3(1., 0., 0.), axis.normalize()); }
+
+  fn addJoint(self &mut, kind i32, a u32, b u32, anchor Vec3, axis Vec3) u32 {
+    imm bA = bodies[usize.from(a)];
+    imm bB = bodies[usize.from(b)];
+    mut j = blankJoint(kind, a, b);
+    j.la = bA.rot.conjugate() * (anchor - bA.pos);
+    j.lb = bB.rot.conjugate() * (anchor - bB.pos);
+    imm f = World.frameOf(axis);
+    j.fa = bA.rot.conjugate() * f;
+    j.fb = bB.rot.conjugate() * f;
+    joints.push(j);
+    noCollideJoints = true;
+    self.wake(a);
+    self.wake(b);
+    u32.from(joints.len()) - 1u32;
+  }
+
+  // A ball and socket: the two bodies share the world point
+  pub fn addPointJoint(self &mut, a u32, b u32, anchor Vec3) u32 {
+    self.addJoint(JointPoint, a, b, anchor, new Vec3(1., 0., 0.));
+  }
+  // The two bodies held in the pose they have now
+  pub fn addFixedJoint(self &mut, a u32, b u32, anchor Vec3) u32 {
+    self.addJoint(JointFixed, a, b, anchor, new Vec3(1., 0., 0.));
+  }
+  // A door hinge: turns about 'axis' through 'anchor'; angle 0 is the pose it was made in
+  pub fn addHinge(self &mut, a u32, b u32, anchor Vec3, axis Vec3) u32 {
+    self.addJoint(JointHinge, a, b, anchor, axis);
+  }
+  pub fn setHingeLimits(self &mut, j u32, lower f32, upper f32) {
+    joints[usize.from(j)].limitOn = true;
+    joints[usize.from(j)].lower = lower;
+    joints[usize.from(j)].upper = upper;
+  }
+  // Drive a hinge or slider to a speed (rad/s or m/s) with at most this torque or force
+  pub fn setMotor(self &mut, j u32, speed f32, maxTorque f32) {
+    joints[usize.from(j)].motorOn = true;
+    joints[usize.from(j)].motorSpeed = speed;
+    joints[usize.from(j)].motorMax = maxTorque;
+    imm jj = joints[usize.from(j)];
+    self.wake(jj.a);
+    self.wake(jj.b);
+  }
+  pub fn clearMotor(self &mut, j u32) { joints[usize.from(j)].motorOn = false; joints[usize.from(j)].impMotor = 0.; }
+  // A drawer slide along 'axis'; offset 0 is where it was made
+  pub fn addSlider(self &mut, a u32, b u32, anchor Vec3, axis Vec3) u32 {
+    self.addJoint(JointSlider, a, b, anchor, axis);
+  }
+  pub fn setSliderLimits(self &mut, j u32, lower f32, upper f32) { self.setHingeLimits(j, lower, upper); }
+  // A rod of fixed length between two world points (one on each body)
+  pub fn addDistance(self &mut, a u32, b u32, anchorA Vec3, anchorB Vec3) u32 {
+    imm j = self.addJoint(JointDistance, a, b, anchorA, new Vec3(1., 0., 0.));
+    imm bB = bodies[usize.from(b)];
+    joints[usize.from(j)].lb = bB.rot.conjugate() * (anchorB - bB.pos);
+    imm len = (anchorB - anchorA).length();
+    joints[usize.from(j)].length = len;
+    joints[usize.from(j)].lower = len;
+    joints[usize.from(j)].upper = len;
+    j;
+  }
+  // A rope or telescoping rod: any length in [lower, upper] is free
+  pub fn setDistanceRange(self &mut, j u32, lower f32, upper f32) {
+    joints[usize.from(j)].limitOn = true;
+    joints[usize.from(j)].lower = lower;
+    joints[usize.from(j)].upper = upper;
+  }
+  // A spring to rest length 'length' (hertz 0: rigid)
+  pub fn setDistanceSpring(self &mut, j u32, length f32, hertz f32, damping f32) {
+    joints[usize.from(j)].length = length;
+    joints[usize.from(j)].hertz = hertz;
+    joints[usize.from(j)].damping = damping;
+  }
+  // The ragdoll shoulder: a ball joint whose B may swing 'coneAngle' from A's x axis and twist in [lo, hi]
+  pub fn addConeTwist(self &mut, a u32, b u32, anchor Vec3, twistAxis Vec3, coneAngle f32) u32 {
+    imm j = self.addJoint(JointConeTwist, a, b, anchor, twistAxis);
+    joints[usize.from(j)].coneAngle = coneAngle;
+    j;
+  }
+  pub fn setTwistLimits(self &mut, j u32, lo f32, hi f32) {
+    joints[usize.from(j)].twistLo = lo;
+    joints[usize.from(j)].twistHi = hi;
+  }
+  // May the two bodies a joint joins collide with each other? No by default (Box2D's collideConnected
+  // and Godot's exclude-from-collision: a hinge's door and its frame overlap by design)
+  pub fn setJointCollide(self &mut, j u32, collide bool) {
+    joints[usize.from(j)].collide = collide;
+    noCollideJoints = false;
+    mut k = 0usize;
+    while k < joints.len() { if joints[k].alive and not joints[k].collide { noCollideJoints = true; } k = k + 1usize; }
+  }
+  pub fn removeJoint(self &mut, j u32) { joints[usize.from(j)].alive = false; }
+  pub fn hingeAngleOf(self &, j u32) f32 { hingeAngle(self, joints[usize.from(j)]); }
+  // How far apart the joint's two anchors are now (zero when it is satisfied), metres
+  pub fn jointError(self &, j u32) f32 { jointState(self, joints[usize.from(j)]).d.length(); }
+  pub fn sliderOffsetOf(self &, j u32) f32 { sliderOffset(self, joints[usize.from(j)]); }
+
+  fn jointBlocks(self &, a u32, b u32) bool {
+    mut k = 0usize;
+    while k < joints.len() {
+      imm j = joints[k];
+      if j.alive and not j.collide and ((j.a == a and j.b == b) or (j.a == b and j.b == a)) { return true; }
+      k = k + 1usize;
+    }
+    false;
+  }
+
+  // ------------------------------------------------------------------ queries
+
+  // The nearest body a ray hits (see query.cone)
+  pub fn castRay(self &mut, origin Vec3, dir Vec3, maxT f32, f QueryFilter) WorldRayHit {
+    worldRayCast(self, origin, dir, maxT, f);
+  }
+  // Sweep a shape along disp; the first body it meets
+  pub fn castShape(self &mut, shape &Shape, xf Rigid, disp Vec3, f QueryFilter) WorldCastHit {
+    worldShapeCast(self, shape, xf, disp, f);
+  }
+  // The bodies a shape overlaps
+  pub fn overlapShape(self &mut, shape &Shape, xf Rigid, f QueryFilter, out &mut List[u32]) {
+    worldOverlap(self, shape, xf, f, out);
+  }
+  // The bodies containing a point
+  pub fn overlapPoint(self &mut, p Vec3, f QueryFilter, out &mut List[u32]) {
+    imm probe = Shape.single(Prim.sphere(0.));
+    worldOverlap(self, &probe, Rigid.at(p), f, out);
+  }
+
+  // ------------------------------------------------------------------ the step
+
+  // Advance by a frame's time in fixed steps (Fiedler, "Fix Your Timestep"); returns
+  // the steps taken. The leftover is 'accumulator', over fixedDt the blend for drawing.
+  pub fn advance(self &mut, frameDt f32) i32 {
+    accumulator = accumulator + minf(frameDt, 0.25);
+    mut n = 0;
+    while accumulator >= fixedDt {
+      self.step(fixedDt);
+      accumulator = accumulator - fixedDt;
+      n = n + 1;
+    }
+    n;
+  }
+
+  pub fn step(self &mut, dt f32) {
+    stepCount = stepCount + 1u32;
+    self.refreshBodies();
+    self.updateBroadPhase(dt);
+    self.updateContacts(dt);
+    self.buildConstraints();
+    self.solve(dt);
+    self.finalize(dt);
+  }
+
+  // The phases of a step, public so a program can time them one by one (World.step calls them in this order)
+  pub fn refreshBodies(self &mut) {
+    mut i = 0usize;
+    while i < bodies.len() {
+      if bodies[i].alive {
+        bodies[i].dpos = zero3();
+        bodies[i].dq = Quat.identity();
+        bodies[i].color = 0u64;
+        bodies[i].startPos = bodies[i].pos - bodies[i].rot * bodies[i].comLocal;
+        bodies[i].startRot = bodies[i].rot;
+        if bodies[i].motion == MotionDynamic {
+          bodies[i].invInertia = rotateInertia(bodies[i].rot, bodies[i].invInertiaLocal);
+        }
+      }
+      i = i + 1usize;
+    }
+  }
+
+  pub fn updateBroadPhase(self &mut, dt f32) {
+    mut i = 0usize;
+    while i < bodies.len() {
+      imm b = bodies[i];
+      if isAwakeDynamic(b) or isMovingKinematic(b) { bp.update(u32.from(i), self.bodyBox(i, dt)); }
+      i = i + 1usize;
+    }
+  }
+
+  fn isMover(self &, i usize) bool {
+    imm b = bodies[i];
+    isAwakeDynamic(b) or isMovingKinematic(b);
+  }
+
+  // Narrow phase over the broad phase's pairs, refreshing the cache
+  pub fn updateContacts(self &mut, dt f32) {
+    bp.pairs(&mut pairs);
+    lastPairs = pairs.len();
+    next.clear();
+    mut oldIdx = 0usize;
+    mut out = List[Manifold].empty();
+    mut p = 0usize;
+    while p < pairs.len() {
+      imm a = pairs[p].a;
+      imm b = pairs[p].b;
+      // old groups that sort before this pair belong to pairs that no longer overlap
+      while oldIdx < cache.len() and (cache[oldIdx].a < a or (cache[oldIdx].a == a and cache[oldIdx].b < b)) {
+        imm g = cache[oldIdx].a;
+        imm h = cache[oldIdx].b;
+        self.retire(oldIdx, g, h);
+        while oldIdx < cache.len() and cache[oldIdx].a == g and cache[oldIdx].b == h { oldIdx = oldIdx + 1usize; }
+      }
+      mut groupEnd = oldIdx;
+      while groupEnd < cache.len() and cache[groupEnd].a == a and cache[groupEnd].b == b { groupEnd = groupEnd + 1usize; }
+      imm ia = usize.from(a);
+      imm ib = usize.from(b);
+      imm moving = self.isMover(ia) or self.isMover(ib);
+      if not moving {
+        // nothing here is moving: the old manifolds stand
+        mut g = oldIdx;
+        while g < groupEnd { next.push(*cache[g]); g = g + 1usize; }
+        oldIdx = groupEnd;
+      } else if noCollideJoints and self.jointBlocks(a, b) {
+        self.retire(oldIdx, a, b);
+        oldIdx = groupEnd;
+      } else {
+        imm bA = bodies[ia];
+        imm bB = bodies[ib];
+        imm margin = settings.speculativeDistance + self.velMargin(ia, dt) + self.velMargin(ib, dt);
+        imm xfA = new Rigid(bA.pos - bA.rot * bA.comLocal, bA.rot);
+        imm xfB = new Rigid(bB.pos - bB.rot * bB.comLocal, bB.rot);
+        out.clear();
+        collide(shapes[usize.from(bA.shape)], xfA, shapes[usize.from(bB.shape)], xfB, margin, &mut out);
+        imm sensor = bA.sensor or bB.sensor;
+        mut anyOldTouching = false;
+        mut g = oldIdx;
+        while g < groupEnd { if cache[g].touching { anyOldTouching = true; } g = g + 1usize; }
+        mut usedMask = List[u32].empty();
+        g = oldIdx;
+        while g < groupEnd { usedMask.push(0u32); g = g + 1usize; }
+        mut anyNew = false;
+        mut anyNewTouching = false;
+        mut bestDepth = -bigNumber;
+        mut bestPoint = zero3();
+        mut bestNormal = zero3();
+        mut m = 0usize;
+        // The manifolds are used as the narrow phase gives them: a body on a mesh or heightfield
+        // gets one manifold per flat patch with the face's own normal (rigidcollide merges them),
+        // and a depth is never beyond what the two shapes' widths allow
+        imm prep = &out;
+        while m < prep.len() {
+          imm mf = prep[m];
+          if mf.count > 0usize {
+            mut c = blankContact(a, b);
+            c.partA = mf.partA; c.partB = mf.partB; c.subA = mf.subA; c.subB = mf.subB;
+            c.normal = mf.normal;
+            c.count = mf.count;
+            c.sensor = sensor;
+            c.friction = combineFriction(bA.material.friction, bB.material.friction);
+            c.staticFriction = combineFriction(bA.material.staticFriction, bB.material.staticFriction);
+            c.restitution = combineRestitution(bA.material.restitution, bB.material.restitution);
+            c.rolling = combineFriction(bA.material.rolling, bB.material.rolling);
+            c.stamp = stepCount;
+            // Warm starting: each point inherits the normal impulse of the nearest unused old point of the
+            // pair, found by position in A's frame, whichever old manifold it was in. (Matching only within
+            // the manifold of the same triangle or part loses the impulses when a body on a mesh or a
+            // heightfield moves from one triangle to another, and the lost support is felt as a jolt.)
+            // The manifold's friction impulses come from the old manifold that gave it the most points,
+            // or else the one of the same pieces.
+            mut inherit = groupEnd;
+            mut k = 0usize;
+            if settings.warmStart and groupEnd > oldIdx {
+              mut votes = List[i32].empty();
+              mut v = oldIdx;
+              while v < groupEnd { votes.push(0); v = v + 1usize; }
+              while k < mf.count {
+                imm mp = mf.points[k];
+                imm pnt = (mp.onA + mp.onB) * 0.5;
+                c.pts[k].depth = mp.depth;
+                c.pts[k].rA = pnt - bA.pos;
+                c.pts[k].rB = pnt - bB.pos;
+                c.pts[k].spot = xfA.unapply(mp.onA);
+                mut best = settings.matchDistance * settings.matchDistance;
+                mut bg = groupEnd;
+                mut bq = 4usize;
+                mut g3 = oldIdx;
+                while g3 < groupEnd {
+                  mut q = 0usize;
+                  while q < cache[g3].count {
+                    if (*usedMask[g3 - oldIdx] & (1u32 << u32.from(q))) == 0u32 {
+                      imm dd = (cache[g3].pts[q].spot - c.pts[k].spot);
+                      imm d2 = dd.dot(dd);
+                      if d2 < best { best = d2; bg = g3; bq = q; }
+                    }
+                    q = q + 1usize;
+                  }
+                  g3 = g3 + 1usize;
+                }
+                if bg < groupEnd {
+                  usedMask.set(bg - oldIdx, *usedMask[bg - oldIdx] | (1u32 << u32.from(bq)));
+                  c.pts[k].nImp = cache[bg].pts[bq].nImp;
+                  votes.set(bg - oldIdx, *votes[bg - oldIdx] + 1);
+                }
+                k = k + 1usize;
+              }
+              mut topVotes = 0;
+              v = oldIdx;
+              while v < groupEnd {
+                if *votes[v - oldIdx] > topVotes { topVotes = *votes[v - oldIdx]; inherit = v; }
+                v = v + 1usize;
+              }
+              if inherit == groupEnd {
+                v = oldIdx;
+                while v < groupEnd {
+                  if sameKey(cache[v], a, b, mf.partA, mf.partB, mf.subA, mf.subB) { inherit = v; break; }
+                  v = v + 1usize;
+                }
+              }
+            } else {
+              while k < mf.count {
+                imm mp = mf.points[k];
+                imm pnt = (mp.onA + mp.onB) * 0.5;
+                c.pts[k].depth = mp.depth;
+                c.pts[k].rA = pnt - bA.pos;
+                c.pts[k].rB = pnt - bB.pos;
+                c.pts[k].spot = xfA.unapply(mp.onA);
+                k = k + 1usize;
+              }
+            }
+            if inherit < groupEnd {
+              c.f1 = cache[inherit].f1;
+              c.f2 = cache[inherit].f2;
+              c.ft = cache[inherit].ft;
+              c.r1 = cache[inherit].r1;
+              c.r2 = cache[inherit].r2;
+            }
+            imm deepest = mf.deepest();
+            if sensor {
+              c.touching = deepest >= 0.;
+            } else if anyOldTouching {
+              c.touching = deepest > -3. * settings.linearSlop;
+            } else {
+              c.touching = deepest >= -settings.linearSlop;
+            }
+            anyNew = true;
+            if c.touching { anyNewTouching = true; }
+            if deepest > bestDepth { bestDepth = deepest; bestPoint = (mf.points[0usize].onA + mf.points[0usize].onB) * 0.5; bestNormal = mf.normal; }
+            next.push(c);
+          }
+          m = m + 1usize;
+        }
+        // waking: an awake body touching a sleeping one wakes it
+        if anyNew and not sensor {
+          if bA.asleep and self.isMover(ib) { self.wake(a); }
+          if bB.asleep and self.isMover(ia) { self.wake(b); }
+        }
+        // events
+        if sensor {
+          if anyNewTouching and not anyOldTouching {
+            if bA.sensor { self.emit(EvSensorEnter, a, b, bestPoint, bestNormal, bestDepth); }
+            else { self.emit(EvSensorEnter, b, a, bestPoint, bestNormal, bestDepth); }
+          } else if anyOldTouching and not anyNewTouching {
+            if bA.sensor { self.emit(EvSensorExit, a, b, bestPoint, bestNormal, bestDepth); }
+            else { self.emit(EvSensorExit, b, a, bestPoint, bestNormal, bestDepth); }
+          }
+        } else {
+          if anyNewTouching and not anyOldTouching {
+            self.emit(EvContactAdded, a, b, bestPoint, bestNormal, bestDepth);
+          } else if anyOldTouching and not anyNewTouching {
+            self.emit(EvContactRemoved, a, b, bestPoint, bestNormal, bestDepth);
+          } else if anyNewTouching and settings.persistedEvents {
+            self.emit(EvContactPersisted, a, b, bestPoint, bestNormal, bestDepth);
+          }
+        }
+        oldIdx = groupEnd;
+      }
+      p = p + 1usize;
+    }
+    // the rest of the old cache is for pairs that are gone
+    while oldIdx < cache.len() {
+      imm g = cache[oldIdx].a;
+      imm h = cache[oldIdx].b;
+      self.retire(oldIdx, g, h);
+      while oldIdx < cache.len() and cache[oldIdx].a == g and cache[oldIdx].b == h { oldIdx = oldIdx + 1usize; }
+    }
+    // swap
+    cache.clear();
+    mut k = 0usize;
+    while k < next.len() { cache.push(*next[k]); k = k + 1usize; }
+    next.clear();
+  }
+
+  // The manifolds of a pair that no longer exists: say so if they were touching
+  fn retire(self &mut, from usize, a u32, b u32) {
+    mut touching = false;
+    mut sensor = false;
+    mut g = from;
+    while g < cache.len() and cache[g].a == a and cache[g].b == b {
+      if cache[g].touching { touching = true; }
+      if cache[g].sensor { sensor = true; }
+      g = g + 1usize;
+    }
+    if touching {
+      if sensor {
+        if bodies[usize.from(a)].sensor { self.emit(EvSensorExit, a, b, zero3(), zero3(), 0.); }
+        else { self.emit(EvSensorExit, b, a, zero3(), zero3(), 0.); }
+      } else {
+        self.emit(EvContactRemoved, a, b, zero3(), zero3(), 0.);
+      }
+    }
+  }
+
+  // The contacts and joints the solver will work on, contacts in colour order
+  pub fn buildConstraints(self &mut) {
+    active.clear();
+    activeJoints.clear();
+    mut colorOf = List[u8].empty();
+    mut maxColor = -1;
+    mut ci = 0usize;
+    while ci < cache.len() { colorOf.push(0u8); ci = ci + 1usize; }
+    // Greedy graph colouring: each contact takes the lowest colour neither of its
+    // dynamic bodies has yet. Contacts between two dynamic bodies are coloured first
+    // and those against a static or kinematic body after them, so the solver meets
+    // the ground last (Box2D v3 does this: what the last pass satisfies, holds best).
+    mut pass = 0;
+    mut base = 0;
+    while pass < 2 {
+      ci = 0usize;
+      while ci < cache.len() {
+        imm c = cache[ci];
+        if not c.sensor and c.count > 0usize {
+          imm ia = usize.from(c.a);
+          imm ib = usize.from(c.b);
+          imm aw = isAwakeDynamic(bodies[ia]);
+          imm bw = isAwakeDynamic(bodies[ib]);
+          if (aw or bw) and not bodies[ia].asleep and not bodies[ib].asleep and ((aw and bw) == (pass == 0)) {
+            mut used = 0u64;
+            if aw { used = used | bodies[ia].color; }
+            if bw { used = used | bodies[ib].color; }
+            mut col = base;
+            while col < 63 and (used & (1u64 << u64.from(col))) != 0u64 { col = col + 1; }
+            imm bit = 1u64 << u64.from(col);
+            if aw { bodies[ia].color = bodies[ia].color | bit; }
+            if bw { bodies[ib].color = bodies[ib].color | bit; }
+            colorOf.set(ci, u8.from(col));
+            if col > maxColor { maxColor = col; }
+            active.push(u32.from(ci));
+          }
+        }
+        ci = ci + 1usize;
+      }
+      base = maxColor + 1;
+      pass = pass + 1;
+    }
+    // stable by colour
+    mut ordered = List[u32].empty();
+    mut col = 0;
+    while col <= maxColor {
+      mut k = 0usize;
+      while k < active.len() {
+        if i32.from(*colorOf[usize.from(*active[k])]) == col { ordered.push(*active[k]); }
+        k = k + 1usize;
+      }
+      col = col + 1;
+    }
+    active.clear();
+    mut k = 0usize;
+    while k < ordered.len() { active.push(*ordered[k]); k = k + 1usize; }
+    lastColors = maxColor + 1;
+    lastContacts = active.len();
+    // joints: wake what an awake body is joined to
+    mut ji = 0usize;
+    while ji < joints.len() {
+      if joints[ji].alive {
+        imm ja = joints[ji].a;
+        imm jb = joints[ji].b;
+        imm aw = isAwakeDynamic(bodies[usize.from(ja)]);
+        imm bw = isAwakeDynamic(bodies[usize.from(jb)]);
+        if aw and bodies[usize.from(jb)].asleep { self.wake(jb); }
+        if bw and bodies[usize.from(ja)].asleep { self.wake(ja); }
+        if aw or bw { activeJoints.push(u32.from(ji)); }
+      }
+      ji = ji + 1usize;
+    }
+  }
+
+  fn integrateVelocities(self &mut, h f32) {
+    imm g = gravity;
+    imm maxV = settings.maxLinearSpeed;
+    imm maxW = settings.maxAngularSpeed;
+    mut i = 0usize;
+    while i < bodies.len() {
+      if isAwakeDynamic(bodies[i]) {
+        imm b = &mut bodies[i];
+        mut v = b.linVel + (g * b.gravityFactor + b.force * b.invMass) * h;
+        mut w = b.angVel + b.invInertia * b.torque * h;
+        if b.gyro {
+          // implicit gyroscopic torque, one Newton step in the body frame (Catto, "Numerical Methods", GDC 2015):
+          // solve I (w' - w) + h w' x (I w') = 0
+          imm wl = b.rot.conjugate() * w;
+          imm iw = b.inertiaLocal * wl;
+          imm f = wl.cross(iw) * h;
+          imm jm = mat3Add(b.inertiaLocal, mat3Scale(mat3Add(skew(wl) * b.inertiaLocal, mat3Scale(skew(iw), -1.)), h));
+          imm dw = jm.inverse() * f;
+          w = b.rot * (wl - dw);
+        }
+        v = v * (1. / (1. + h * b.linearDamping));
+        w = w * (1. / (1. + h * b.angularDamping));
+        b.linVel = clampVec(v, maxV);
+        b.angVel = clampVec(w, maxW);
+      }
+      i = i + 1usize;
+    }
+  }
+
+  fn integratePositions(self &mut, h f32) {
+    mut i = 0usize;
+    while i < bodies.len() {
+      imm b = &mut bodies[i];
+      if b.alive and not b.asleep and b.motion != MotionStatic {
+        if b.motion == MotionDynamic or isMovingKinematic(b) {
+          imm dp = b.linVel * h;
+          b.pos = b.pos + dp;
+          b.dpos = b.dpos + dp;
+          b.rot = integrateRotation(b.rot, b.angVel, h);
+          b.dq = integrateRotation(b.dq, b.angVel, h);
+          if b.motion == MotionDynamic { b.invInertia = rotateInertia(b.rot, b.invInertiaLocal); }
+        }
+      }
+      i = i + 1usize;
+    }
+  }
+
+  pub fn solve(self &mut, dt f32) {
+    imm substeps = if settings.substeps < 1 { 1; } else { settings.substeps; };
+    imm h = dt / f32.from(substeps);
+    imm invH = 1. / h;
+    imm hz = minf(settings.contactHertz, 0.25 * invH);
+    imm soft = makeSoft(hz, settings.contactDamping, h);
+    imm softStatic = makeSoft(2. * hz, settings.contactDamping, h);
+    imm jsoft = makeSoft(settings.jointHertz, settings.jointDamping, h);
+    mut a = 0usize;
+    while a < active.len() { prepareContact(self, usize.from(*active[a])); a = a + 1usize; }
+    imm warm = settings.warmStart;
+    mut s = 0;
+    while s < substeps {
+      self.integrateVelocities(h);
+      a = 0usize;
+      while a < activeJoints.len() { warmStartJoint(self, usize.from(*activeJoints[a])); a = a + 1usize; }
+      if warm {
+        a = 0usize;
+        while a < active.len() { warmStartContact(self, usize.from(*active[a])); a = a + 1usize; }
+      } else {
+        a = 0usize;
+        while a < active.len() { self.zeroImpulses(usize.from(*active[a])); a = a + 1usize; }
+      }
+      a = 0usize;
+      while a < activeJoints.len() { solveJoint(self, usize.from(*activeJoints[a]), true, invH, h, jsoft); a = a + 1usize; }
+      imm odd = (s % 2) == 1;
+      a = 0usize;
+      while a < active.len() {
+        imm ai = if odd { active.len() - 1usize - a; } else { a; };
+        solveContact(self, usize.from(*active[ai]), true, odd, invH, soft, softStatic);
+        a = a + 1usize;
+      }
+      self.integratePositions(h);
+      mut r = 0;
+      while r < settings.relaxIterations {
+        a = 0usize;
+        while a < activeJoints.len() { solveJoint(self, usize.from(*activeJoints[a]), false, invH, h, jsoft); a = a + 1usize; }
+        a = 0usize;
+        while a < active.len() {
+          imm ai = if odd { a; } else { active.len() - 1usize - a; };
+          solveContact(self, usize.from(*active[ai]), false, not odd, invH, soft, softStatic);
+          a = a + 1usize;
+        }
+        r = r + 1;
+      }
+      s = s + 1;
+    }
+    a = 0usize;
+    while a < active.len() { applyRestitution(self, usize.from(*active[a]), settings.restitutionThreshold); a = a + 1usize; }
+  }
+
+  fn zeroImpulses(self &mut, ci usize) {
+    imm c = &mut cache[ci];
+    mut k = 0usize;
+    while k < c.count {
+      c.pts[k].nImp = 0.;
+      k = k + 1usize;
+    }
+    c.f1 = 0.;
+    c.f2 = 0.;
+    c.ft = 0.;
+    c.r1 = 0.;
+    c.r2 = 0.;
+  }
+
+  // After the sub-steps: continuous collision, sleep timers, islands
+  pub fn finalize(self &mut, dt f32) {
+    if settings.ccd { self.continuous(dt); }
+    mut i = 0usize;
+    while i < bodies.len() {
+      if isAwakeDynamic(bodies[i]) {
+        bodies[i].force = zero3();
+        bodies[i].torque = zero3();
+      }
+      i = i + 1usize;
+    }
+    if settings.sleepEnabled { self.updateSleep(dt); }
+  }
+
+  // Continuous collision (Box2D v3 style): a body that moved far in one step is
+  // swept from where it began; if the sweep hits something, the body is put back
+  // at the hit (a little short of it), keeping its velocity, and next step's
+  // contact does the rest. Static bodies are swept against always; other
+  // bodies only by a 'bullet'. The sweep is rigidcollide's shapeCast (translation only).
+  fn continuous(self &mut, dt f32) {
+    mut i = 0usize;
+    mut cands = List[u32].empty();
+    while i < bodies.len() {
+      imm b = bodies[i];
+      if isAwakeDynamic(b) and not b.sensor {
+        imm now = new Rigid(b.pos - b.rot * b.comLocal, b.rot);
+        imm disp = now.pos - b.startPos;
+        imm dist = disp.length();
+        if dist > settings.ccdThreshold * 2. * b.minExtent and dist > 0.0001 {
+          imm sh = shapes[usize.from(b.shape)];
+          imm startXf = new Rigid(b.startPos, b.startRot);
+          imm swept = sh.bounds(startXf).union(sh.bounds(now)).expand(0.01);
+          bp.queryBox(swept, b.mask, &mut cands);
+          mut bestT = 2.;
+          mut k = 0usize;
+          while k < cands.len() {
+            imm oj = usize.from(*cands[k]);
+            imm o = bodies[oj];
+            imm eligible = oj != i and o.alive and not o.sensor and (o.layer & b.mask) != 0u32 and (b.layer & o.mask) != 0u32
+              and (o.motion == MotionStatic or b.bullet);
+            if eligible {
+              imm oxf = new Rigid(o.pos - o.rot * o.comLocal, o.rot);
+              imm hit = shapeCast(sh, startXf, disp, shapes[usize.from(o.shape)], oxf);
+              // a hit counts if the sweep goes into the surface at more than about 6 degrees: one that
+              // grazes it is a body sliding along a surface it rests on, which the contacts handle
+              if hit.hit and hit.fraction > 0.0001 and hit.fraction < bestT and hit.normal.dot(disp) > 0.1 * dist { bestT = hit.fraction; }
+            }
+            k = k + 1usize;
+          }
+          if bestT <= 1. {
+            imm t = maxf(0., bestT - settings.linearSlop / dist);
+            imm origin = b.startPos + disp * t;
+            imm rot = b.startRot.slerp(b.rot, t);
+            bodies[i].rot = rot;
+            bodies[i].pos = origin + rot * b.comLocal;
+          }
+        }
+      }
+      i = i + 1usize;
+    }
+  }
+
+  // Islands (union-find over contacts and joints between awake dynamic bodies) go to
+  // sleep when every body in them has been slow for timeToSleep
+  fn updateSleep(self &mut, dt f32) {
+    imm n = bodies.len();
+    mut parent = List[u32].empty();
+    mut minSleep = List[f32].empty();
+    mut i = 0usize;
+    while i < n { parent.push(u32.from(i)); minSleep.push(bigNumber); i = i + 1usize; }
+    mut a = 0usize;
+    while a < active.len() {
+      imm c = cache[usize.from(*active[a])];
+      imm ia = usize.from(c.a);
+      imm ib = usize.from(c.b);
+      if bodies[ia].motion == MotionDynamic and bodies[ib].motion == MotionDynamic { unionSets(&mut parent, c.a, c.b); }
+      a = a + 1usize;
+    }
+    a = 0usize;
+    while a < activeJoints.len() {
+      imm j = joints[usize.from(*activeJoints[a])];
+      if bodies[usize.from(j.a)].motion == MotionDynamic and bodies[usize.from(j.b)].motion == MotionDynamic { unionSets(&mut parent, j.a, j.b); }
+      a = a + 1usize;
+    }
+    i = 0usize;
+    while i < n {
+      imm b = bodies[i];
+      if isAwakeDynamic(b) {
+        // Box2D's measure: the faster of its speed and its farthest point's speed from spin
+        imm slow = maxf(b.linVel.length(), b.angVel.length() * b.radius) < settings.sleepSpeed;
+        if slow and b.allowSleep { bodies[i].sleepTime = b.sleepTime + dt; } else { bodies[i].sleepTime = 0.; }
+        imm r = usize.from(findSet(&mut parent, u32.from(i)));
+        minSleep.set(r, minf(*minSleep[r], if b.allowSleep { bodies[i].sleepTime; } else { 0.; }));
+      }
+      i = i + 1usize;
+    }
+    // a moving kinematic body touching an island keeps it awake
+    a = 0usize;
+    while a < active.len() {
+      imm c = cache[usize.from(*active[a])];
+      imm ia = usize.from(c.a);
+      imm ib = usize.from(c.b);
+      if bodies[ia].motion == MotionDynamic and isMovingKinematic(bodies[ib]) {
+        imm r = usize.from(findSet(&mut parent, c.a));
+        minSleep.set(r, 0.);
+        bodies[ia].sleepTime = 0.;
+      }
+      if bodies[ib].motion == MotionDynamic and isMovingKinematic(bodies[ia]) {
+        imm r = usize.from(findSet(&mut parent, c.b));
+        minSleep.set(r, 0.);
+        bodies[ib].sleepTime = 0.;
+      }
+      a = a + 1usize;
+    }
+    mut groups = List[u32].empty();
+    i = 0usize;
+    while i < n { groups.push(0u32); i = i + 1usize; }
+    i = 0usize;
+    while i < n {
+      if isAwakeDynamic(bodies[i]) {
+        imm r = usize.from(findSet(&mut parent, u32.from(i)));
+        if *minSleep[r] >= settings.timeToSleep {
+          if *groups[r] == 0u32 { groups.set(r, nextGroup); nextGroup = nextGroup + 1u32; }
+          bodies[i].asleep = true;
+          bodies[i].linVel = zero3();
+          bodies[i].angVel = zero3();
+          bodies[i].sleepGroup = *groups[r];
+          self.emit(EvSleep, u32.from(i), NoBody, zero3(), zero3(), 0.);
+        }
+      }
+      i = i + 1usize;
+    }
+  }
+}
+
+fn findSet(parent &mut List[u32], x u32) u32 {
+  mut r = x;
+  while *parent[usize.from(r)] != r { r = *parent[usize.from(r)]; }
+  mut c = x;
+  while *parent[usize.from(c)] != r {
+    imm nx = *parent[usize.from(c)];
+    parent.set(usize.from(c), r);
+    c = nx;
+  }
+  r;
+}
+
+fn unionSets(parent &mut List[u32], a u32, b u32) {
+  imm ra = findSet(parent, a);
+  imm rb = findSet(parent, b);
+  if ra != rb { if ra < rb { parent.set(usize.from(rb), ra); } else { parent.set(usize.from(ra), rb); } }
+}

@@ -1,0 +1,888 @@
+// The render package's point and spot lights (lights.cone, locallights.slang),
+// on a real GPU with no window: scenes drawn into a 256 x 256 rgba8unorm target
+// (a channel v stored as v x 255) and read back, checked against numbers worked
+// out by hand or by a brute force. It needs a GPU driver with Vulkan 1.3 and
+// SDL3.dll; with the Vulkan SDK, validation and synchronization validation are
+// on, and must say nothing. GPU_POWER_PREFERENCE=low-power runs it on the
+// integrated GPU. Only a failure prints (and a few measurements, marked
+// "measured").
+//
+// The formulas, with no GPU needed:
+//  1. The falloff, saturate(1 - (d/R)^4)^2 / max(d^2, r^2): at d = 2 of a
+//     range 10, 0.9968 / 4; zero at the range and beyond; a source of radius
+//     1 does not give more than a point 1 away would. The spot's ramp: 1 at
+//     the inner half-angle's cosine, 0 at the outer's, the square of the
+//     linear ramp between (cos 37.5 degrees between 30 and 45: 0.5427^2).
+//     Candela from lumens.
+//  2. The handles: add, remove (the last light fills the hole), a removed
+//     handle refused and its slot reused with a new generation, the table
+//     full at 1,024.
+//
+// The clusters, 200 lights seen by a 16:9 camera (the grid is 16 x 9 x 24):
+//  3. Every cluster's list of lights equals a brute force over all 3,456
+//     boxes and all lights (sphere against box, by distance, written again
+//     here), in light order.
+//  4. 20,000 points at random pixels and depths (log-uniform from 0.15 to
+//     150): every light that gives the point any light (the falloff and the
+//     cone, worked here from the light's own numbers) is in the list of the
+//     cluster the point is in; no light is missed.
+//  5. 40 lights on one spot are 40 in a cluster (the limit is 64); 70 are 64
+//     and the rest counted as overflowed.
+//  6. 300 lights each reaching every cluster (the lists outgrow the first
+//     buffer, which is made again) draw without a validation message.
+//
+// On the GPU, a plane at y = 0 seen from straight above (6 up, field of view
+// 40 degrees: 2.1838 each way of the middle), the sun and ambient light off,
+// a lit material of base 0.8 (so a point light of I candela at distance d
+// from a point, its normal facing it at cosine c, gives it 0.8 / pi x I c
+// / d^2):
+//  7. A point light 1.5 above the middle: the row through the middle, nine
+//     pixels from the middle out to 2, against the formula to 1.5 levels of
+//     255 and 1.5 percent; the same with a range of 2.4 (the window takes
+//     the light to zero at d = 2.4, x = 1.87); with a source of radius 2
+//     (the nearest falloff held to 1 / r^2); with the light moved (by its
+//     handle) and with its colour changed (red: no green or blue).
+//  8. A spot light 2 above the middle shining down, inner 20 and outer 30
+//     degrees: the row through the middle against the formula (the ramp
+//     included); nothing beyond the outer angle (2 tan 30 = 1.1547); the
+//     light's axis turned by 'aim' moves the cone.
+//  9. The physically based material (roughness 1) is lit as the lit one is,
+//     within the specular its f0 of 0.04 adds (up to 15 percent over).
+// 10. Layers: a material on layer 1 alone is not lit by a light on layer 0;
+//     the light on layers 0 and 1 lights it; a light on layer 1 lights a
+//     material on layers 0 and 1 and not one on layer 0 alone.
+// 11. 200 lights over the plane seen by a camera from the side (6 up, 10
+//     back, looking at the middle), 32 x 32 pixels across it: each against
+//     the sum of every light's brute-force contribution at the point the
+//     pixel sees, to 2 levels of 255 and 2 percent. This checks the
+//     shader's cluster lookup everywhere, and the intensities set by handle.
+// 12. A light that reaches nothing in view leaves the picture as it was
+//     (lightsoff.cone has the bit-for-bit comparison with the renderer
+//     before lights).
+
+mod lights;
+
+import testing use *;
+import stdio use *;
+import libc;
+import geomath use *;
+import collections use *;
+import mesh use Mesh;
+import gpu use *;
+import render use *;
+
+const SIDE = 256u32;
+const SIDEZ = 256usize;
+const HEIGHT = 6.;
+const HALF_VIEW = 2.18382;
+
+fn absf(x f32) f32 { if x < 0. { 0. - x; } else { x; }; }
+fn minf(a f32, b f32) f32 { if a < b { a; } else { b; }; }
+fn maxf(a f32, b f32) f32 { if a > b { a; } else { b; }; }
+
+// A number from 0 to 1 from the state 's', which moves on
+fn rnd(s &mut u32) f32 {
+  *s = *s * 1664525u32 + 1013904223u32;
+  f32.from((*s >> 8u32) & 0xFFFFu32) / 65536.;
+}
+
+// Channel 'c' of the pixel (x, y) of the target at 'p', 0 to 1
+fn ch(p *u8, x usize, y usize, c usize) f32 { f32.from(*(p + (y * SIDEZ + x) * 4usize + c)) / 255.; }
+
+// The plane's x and z at the pixel column or row 'i' of the top-down camera
+fn planeAt(i usize) f32 { ((f32.from(i) + 0.5) - 128.) / 128. * HALF_VIEW; }
+
+fn drawFrame(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer,
+    camera &Camera, light &Light, list &DrawList) {
+  mut encoder = device.createCommandEncoder();
+  renderer.render(device, &mut encoder, color, depth, camera, light, list);
+  encoder.copyTextureToBuffer(color, readback);
+  device.queue.submit(encoder.finish());
+  device.endFrame();
+  device.waitIdle();
+}
+
+// The camera above the middle looking straight down, up being -z
+fn topDown() Camera {
+  mut camera = Camera.make();
+  camera.fov = radians(40.);
+  camera.near = 0.1;
+  camera.far = 100.;
+  camera.lookAt(new Vec3(0., HEIGHT, 0.), new Vec3(0., 0., 0.), new Vec3(0., 0., -1.));
+  camera.background = new Color(0., 0., 0., 1.);
+  camera;
+}
+
+// No sun, no ambient light: only the scene's point and spot lights
+fn dark() Light { Light.directional(new Vec3(0., -1., 0.), Color.gray(0.), Color.gray(0.)); }
+
+fn expectNear(got f32, want f32, within f32, label &Array[u8]) {
+  if !expect(absf(got - want) <= within, label) {
+    eprint <- "  got "; eprint <- got; eprint <- ", want "; eprint <- want; eprint <- " (within "; eprint <- within; eprint <- ")\n";
+  }
+}
+
+// ---- 1 and 2: the formulas and the handles ----
+
+fn formulaChecks() {
+  expectFloat(f64.from(pointFalloff(4., 10., 0.)), 0.24920064d, 0.000001d, "falloff at 2 of 10");
+  expectFloat(f64.from(pointFalloff(100., 10., 0.)), 0d, 0.0000001d, "falloff zero at the range");
+  expectFloat(f64.from(pointFalloff(121., 10., 0.)), 0d, 0.0000001d, "and beyond it");
+  // A source of radius 1, 0.5 away: held to 1 / r^2 (times the window, 0.9999875)
+  expectFloat(f64.from(pointFalloff(0.25, 10., 1.)), 0.9999875d / 1.0001d, 0.000001d, "a bulb of radius 1 is no brighter inside than at 1");
+  mut scale = 0.;
+  mut offset = 0.;
+  spotRamp(radians(30.), radians(45.), &mut scale, &mut offset);
+  expectFloat(f64.from(scale), 1d / (0.8660254d - 0.70710678d), 0.0005d, "the ramp's scale");
+  expectFloat(f64.from(spotFalloff(cos(radians(30.)), scale, offset)), 1d, 0.0001d, "the cone is full at the inner angle");
+  expectFloat(f64.from(spotFalloff(cos(radians(45.)), scale, offset)), 0d, 0.0001d, "and empty at the outer");
+  expectFloat(f64.from(spotFalloff(cos(radians(37.5)), scale, offset)), 0.2945d, 0.001d, "between them, the ramp squared");
+  expectFloat(f64.from(spotFalloff(cos(radians(10.)), scale, offset)), 1d, 0.0001d, "full inside");
+  expectFloat(f64.from(spotFalloff(cos(radians(80.)), scale, offset)), 0d, 0.0001d, "none beyond");
+  expectFloat(f64.from(candelaOfPointLumens(4. * pi)), 1d, 0.00001d, "lumens of a point source");
+  expectFloat(f64.from(candelaOfSpotLumens(pi, radians(60.))), 1d, 0.00001d, "lumens of a spot source");
+}
+
+fn handleChecks(renderer &mut Renderer) {
+  imm white = Color.gray(1.);
+  renderer.lights.clear();
+  expectUInt(u64.from(renderer.lights.count()), 0u64, "no lights at first");
+  imm a = renderer.lights.addPoint(new Vec3(1., 2., 3.), white, 10., 5.);
+  imm b = renderer.lights.addSpot(new Vec3(4., 5., 6.), new Vec3(0., -1., 0.), white, 20., 6., radians(10.), radians(20.));
+  imm c = renderer.lights.addPoint(new Vec3(7., 8., 9.), white, 30., 7.);
+  expectUInt(u64.from(renderer.lights.count()), 3u64, "three lights");
+  expect(renderer.lights.alive(a) and renderer.lights.alive(b) and renderer.lights.alive(c), "all alive");
+  expectUInt(u64.from(renderer.lights.rowIndex(c)), 2u64, "the third in the third row");
+  expect(renderer.lights.remove(a), "a removed");
+  expectUInt(u64.from(renderer.lights.count()), 2u64, "two left");
+  expect(!renderer.lights.alive(a), "a is gone");
+  expect(!renderer.lights.remove(a), "and cannot be removed twice");
+  expect(!renderer.lights.move(a, new Vec3(0., 0., 0.)), "nor moved");
+  expectUInt(u64.from(renderer.lights.rowIndex(c)), 0u64, "the last light filled the hole");
+  expectFloat(f64.from(renderer.lights.position(c).y), 8d, 0.0001d, "and kept its place");
+  expectFloat(f64.from(renderer.lights.range(b)), 6d, 0.0001d, "and b its range");
+  expect(renderer.lights.move(c, new Vec3(1., 1., 1.)), "c moved");
+  expectFloat(f64.from(renderer.lights.position(c).x), 1d, 0.0001d, "to where it was moved");
+  imm d = renderer.lights.addPoint(new Vec3(0., 0., 0.), white, 1., 1.);
+  expect(d.slot == a.slot and d.gen != a.gen, "a slot is reused with a new generation");
+  expect(!renderer.lights.alive(a), "and the old handle still reaches nothing");
+  renderer.lights.clear();
+  expect(!renderer.lights.alive(b) and !renderer.lights.alive(d), "clear removes all");
+  mut i = 0u32;
+  while i < MAX_LIGHTS {
+    imm h = renderer.lights.addPoint(new Vec3(f32.from(i), 0., 0.), white, 1., 1.);
+    if h.isNone() { expect(false, "room for MAX_LIGHTS lights"); }
+    i = i + 1u32;
+  }
+  expectUInt(u64.from(renderer.lights.count()), u64.from(MAX_LIGHTS), "the table full");
+  imm over = renderer.lights.addPoint(new Vec3(0., 0., 0.), white, 1., 1.);
+  expect(over.isNone(), "one more is refused");
+  renderer.lights.clear();
+}
+
+// ---- 3 to 6: the clusters ----
+
+// The lights of the tests of clusters, as they were made (the brute force
+// works from these, not from the set's rows)
+struct Placed {
+  pos List[Vec3];
+  axis List[Vec3];
+  range List[f32];
+  spot List[bool];
+  outer List[f32];
+  inner List[f32];
+}
+
+fn sceneCamera() Camera {
+  mut camera = Camera.make();
+  camera.fov = radians(60.);
+  camera.near = 0.1;
+  camera.far = 300.;
+  camera.lookAt(new Vec3(0., 2., 12.), new Vec3(0., 2., -40.), new Vec3(0., 1., 0.));
+  camera;
+}
+
+// Whether the light 'i' gives the point 'p' any light, from its own numbers
+fn influences(placed &Placed, i usize, p Vec3) bool {
+  imm d = *placed.pos[i] - p;
+  imm d2 = d.lengthSquared();
+  imm range = *placed.range[i];
+  if d2 >= range * range { return false; }
+  if !*placed.spot[i] { return true; }
+  imm toLight = d.normalize();
+  imm c = (new Vec3(0., 0., 0.) - toLight).dot(*placed.axis[i]);
+  c > cos(*placed.outer[i]);
+}
+
+fn clusterChecks(renderer &mut Renderer, device &mut Device) {
+  renderer.lights.clear();
+  mut placed = new Placed(List[Vec3].empty(), List[Vec3].empty(), List[f32].empty(), List[bool].empty(),
+    List[f32].empty(), List[f32].empty());
+  mut seed = 12345u32;
+  mut i = 0u32;
+  while i < 200u32 {
+    imm pos = new Vec3((rnd(&mut seed) - 0.5) * 60., rnd(&mut seed) * 6., 10. - rnd(&mut seed) * 90.);
+    imm range = 1.5 + rnd(&mut seed) * 8.;
+    imm isSpot = i % 4u32 == 0u32;
+    imm axis = new Vec3(rnd(&mut seed) - 0.5, rnd(&mut seed) - 0.7, rnd(&mut seed) - 0.5).normalize();
+    imm outer = radians(20. + rnd(&mut seed) * 55.);
+    imm inner = outer * 0.6;
+    if isSpot {
+      renderer.lights.addSpot(pos, axis, Color.gray(1.), 5., range, inner, outer);
+    } else {
+      renderer.lights.addPoint(pos, Color.gray(1.), 5., range);
+    }
+    placed.pos.push(pos);
+    placed.axis.push(axis);
+    placed.range.push(range);
+    placed.spot.push(isSpot);
+    placed.outer.push(outer);
+    placed.inner.push(inner);
+    i = i + 1u32;
+  }
+  imm camera = sceneCamera();
+  imm aspect = 16. / 9.;
+  renderer.lights.prepare(device, &camera, aspect, 1920u32, 1080u32);
+  expectUInt(u64.from(renderer.lights.overflowed), 0u64, "no cluster overflowed in the 200 lights' scene");
+  eprint <- "measured clusters: "; eprint <- u64.from(renderer.lights.active); eprint <- " of 200 lights reach the view, ";
+  eprint <- u64.from(renderer.lights.pairs); eprint <- " (light, cluster) pairs\n";
+
+  // 3. The brute force over every cluster and light: the sphere against the
+  // cluster's box. The assigned lists are the brute force's lists less the
+  // lights the projected rectangle left out, and a light left out must be
+  // one whose sphere is wholly outside one of the six planes of the cell the
+  // box was made about (so the cell, and not just its box, is untouched)
+  imm view = camera.viewMatrix();
+  imm proj = camera.projectionMatrix(aspect);
+  mut mismatches = 0u32;
+  mut maxCount = 0u32;
+  mut boxOnly = 0u32;
+  mut wrongly = 0u32;
+  mut c = 0u32;
+  while c < 3456u32 {
+    mut lo = new Vec3(0., 0., 0.);
+    mut hi = new Vec3(0., 0., 0.);
+    renderer.lights.clusterBox(c, &mut lo, &mut hi);
+    imm tx = c % 16u32;
+    imm ty = (c / 16u32) % 9u32;
+    imm sl = c / 144u32;
+    imm xLeft = -1. + 2. * f32.from(tx) / 16.;
+    imm xRight = -1. + 2. * f32.from(tx + 1u32) / 16.;
+    imm yTop = 1. - 2. * f32.from(ty) / 9.;
+    imm yBottom = 1. - 2. * f32.from(ty + 1u32) / 9.;
+    imm near = renderer.lights.gridNear;
+    imm far = renderer.lights.gridFar;
+    imm d0 = if sl == 0u32 { 0.; } else { near * libc.powf(far / near, f32.from(sl) / 24.); };
+    imm d1 = if sl == 23u32 { camera.far; } else { near * libc.powf(far / near, f32.from(sl + 1u32) / 24.); };
+    imm count = renderer.lights.clusterCount(c);
+    if count > maxCount { maxCount = count; }
+    mut k = 0u32;
+    mut l = 0usize;
+    while l < 200usize {
+      mut center = new Vec3(0., 0., 0.);
+      mut radius = 0.;
+      renderer.lights.lightSphere(l, &mut center, &mut radius);
+      imm v = view * center;
+      imm dx = maxf(maxf(lo.x - v.x, v.x - hi.x), 0.);
+      imm dy = maxf(maxf(lo.y - v.y, v.y - hi.y), 0.);
+      imm dz = maxf(maxf(lo.z - v.z, v.z - hi.z), 0.);
+      imm touchesBox = dx * dx + dy * dy + dz * dz <= radius * radius;
+      imm listed = k < count and renderer.lights.clusterLight(c, k) == u32.from(l);
+      if listed { k = k + 1u32; }
+      if listed and !touchesBox { mismatches = mismatches + 1u32; }
+      if touchesBox and !listed {
+        boxOnly = boxOnly + 1u32;
+        // The cell's planes, inward normals: the sphere is out if it is more than
+        // its radius behind one
+        imm pl = proj.m[0] * v.x + xLeft * v.z;
+        imm pl2 = (proj.m[0] * proj.m[0] + xLeft * xLeft).sqrt();
+        imm pr = 0. - proj.m[0] * v.x - xRight * v.z;
+        imm pr2 = (proj.m[0] * proj.m[0] + xRight * xRight).sqrt();
+        imm pb = proj.m[5] * v.y + yBottom * v.z;
+        imm pb2 = (proj.m[5] * proj.m[5] + yBottom * yBottom).sqrt();
+        imm pt = 0. - proj.m[5] * v.y - yTop * v.z;
+        imm pt2 = (proj.m[5] * proj.m[5] + yTop * yTop).sqrt();
+        imm pn = 0. - v.z - d0;
+        imm pf = d1 + v.z;
+        imm outside = pl / pl2 < 0. - radius or pr / pr2 < 0. - radius or pb / pb2 < 0. - radius
+          or pt / pt2 < 0. - radius or pn < 0. - radius or pf < 0. - radius;
+        if !outside { wrongly = wrongly + 1u32; }
+      }
+      l = l + 1usize;
+    }
+    if k != count { mismatches = mismatches + 1u32; }
+    c = c + 1u32;
+  }
+  expectUInt(u64.from(mismatches), 0u64, "every cluster's lights are among the brute force's, in order");
+  expectUInt(u64.from(wrongly), 0u64, "and each light the box has and the cluster lacks is wholly outside the cell");
+  eprint <- "measured clusters: at most "; eprint <- u64.from(maxCount); eprint <- " lights in a cluster; the box alone would add ";
+  eprint <- u64.from(boxOnly); eprint <- " pairs\n";
+
+  // 4. Sample points: no light that reaches a point is missing from its cluster
+  imm place = camera.placement();
+  imm eye = place.translation();
+  imm forward = new Vec3(-place.m[8], -place.m[9], -place.m[10]).normalize();
+  imm right = new Vec3(place.m[0], place.m[1], place.m[2]).normalize();
+  imm up = new Vec3(place.m[4], place.m[5], place.m[6]).normalize();
+  imm tanY = tan(camera.fov * 0.5);
+  mut missed = 0u32;
+  mut tested = 0u32;
+  mut hits = 0u32;
+  mut s = 0u32;
+  while s < 20000u32 {
+    imm px = rnd(&mut seed) * 1920.;
+    imm py = rnd(&mut seed) * 1080.;
+    imm depth = 0.15 * libc.powf(1000., rnd(&mut seed));
+    imm ndcx = px / 1920. * 2. - 1.;
+    imm ndcy = 1. - py / 1080. * 2.;
+    imm p = eye + forward * depth + right * (ndcx * depth * tanY * aspect) + up * (ndcy * depth * tanY);
+    imm cluster = renderer.lights.clusterAt(p, px, py);
+    mut l = 0usize;
+    while l < 200usize {
+      if influences(&placed, l, p) {
+        tested = tested + 1u32;
+        mut found = false;
+        mut k = 0u32;
+        while k < renderer.lights.clusterCount(cluster) {
+          if renderer.lights.clusterLight(cluster, k) == u32.from(l) { found = true; }
+          k = k + 1u32;
+        }
+        if !found { missed = missed + 1u32; } else { hits = hits + 1u32; }
+      }
+      l = l + 1usize;
+    }
+    s = s + 1u32;
+  }
+  expectUInt(u64.from(missed), 0u64, "no light that reaches a sampled point is missing from its cluster");
+  expect(tested > 100u32, "the samples met lights");
+  eprint <- "measured clusters: "; eprint <- u64.from(tested); eprint <- " (point, light) pairs sampled, none missed\n";
+
+  // 5. The limit of a cluster: 40 lights on one spot, then 70
+  renderer.lights.clear();
+  mut j = 0u32;
+  while j < 40u32 {
+    renderer.lights.addPoint(new Vec3(0., 2., -10.), Color.gray(1.), 1., 2.);
+    j = j + 1u32;
+  }
+  renderer.lights.prepare(device, &camera, aspect, 1920u32, 1080u32);
+  imm middle = renderer.lights.clusterAt(new Vec3(0., 2., -10.), 960., 540.);
+  expectUInt(u64.from(renderer.lights.clusterCount(middle)), 40u64, "40 lights in one cluster: all 40");
+  expectUInt(u64.from(renderer.lights.overflowed), 0u64, "none overflowed");
+  while j < 70u32 {
+    renderer.lights.addPoint(new Vec3(0., 2., -10.), Color.gray(1.), 1., 2.);
+    j = j + 1u32;
+  }
+  renderer.lights.prepare(device, &camera, aspect, 1920u32, 1080u32);
+  expectUInt(u64.from(renderer.lights.clusterCount(middle)), 64u64, "70 lights in one cluster: 64, the limit");
+  expect(renderer.lights.overflowed > 0u32, "and the rest counted as overflowed");
+  renderer.lights.clear();
+
+  // The lists are made again only when they must be: not for a flicker of
+  // intensity or colour or a change of layers; for a move, a range, a camera
+  // that moved, or a light going dark or coming back
+  imm h1 = renderer.lights.addPoint(new Vec3(1., 2., -10.), Color.gray(1.), 3., 4.);
+  renderer.lights.addPoint(new Vec3(-2., 2., -12.), Color.gray(1.), 3., 4.);
+  renderer.lights.prepare(device, &camera, aspect, 1920u32, 1080u32);
+  imm made = renderer.lights.assignments;
+  renderer.lights.prepare(device, &camera, aspect, 1920u32, 1080u32);
+  expectUInt(u64.from(renderer.lights.assignments), u64.from(made), "nothing changed: the lists stand");
+  renderer.lights.setIntensity(h1, 2.5);
+  renderer.lights.setColor(h1, new Color(1., 0.5, 0.2, 1.));
+  renderer.lights.setLayers(h1, 3u32);
+  renderer.lights.prepare(device, &camera, aspect, 1920u32, 1080u32);
+  expectUInt(u64.from(renderer.lights.assignments), u64.from(made), "a flicker of intensity and colour: the lists stand");
+  renderer.lights.move(h1, new Vec3(1.5, 2., -10.));
+  renderer.lights.prepare(device, &camera, aspect, 1920u32, 1080u32);
+  expectUInt(u64.from(renderer.lights.assignments), u64.from(made) + 1u64, "a move: made again");
+  mut turned = camera;
+  turned.lookAt(new Vec3(0., 2., 12.), new Vec3(5., 2., -40.), new Vec3(0., 1., 0.));
+  renderer.lights.prepare(device, &turned, aspect, 1920u32, 1080u32);
+  expectUInt(u64.from(renderer.lights.assignments), u64.from(made) + 2u64, "a camera that turned: made again");
+  renderer.lights.setIntensity(h1, 0.);
+  renderer.lights.prepare(device, &turned, aspect, 1920u32, 1080u32);
+  expectUInt(u64.from(renderer.lights.assignments), u64.from(made) + 3u64, "a light gone dark: made again");
+  expectUInt(u64.from(renderer.lights.active), 1u64, "and left out");
+  renderer.lights.setIntensity(h1, 1.);
+  renderer.lights.prepare(device, &turned, aspect, 1920u32, 1080u32);
+  expectUInt(u64.from(renderer.lights.active), 2u64, "back lit, back in");
+  renderer.lights.clear();
+}
+
+// 4b. A camera that sees in a mirror (camera.cone's 'reflectedAbout': the world
+// reflected about x = 0, an oblique near plane, the clip space's x flipped): the
+// same sample of points through the camera's own matrices (a point is found by
+// unprojecting a pixel and a depth through the inverse of its projection times
+// its view), every light that reaches one in the list of its cluster
+fn mirrorClusters(renderer &mut Renderer, device &mut Device) {
+  renderer.lights.clear();
+  mut placed = new Placed(List[Vec3].empty(), List[Vec3].empty(), List[f32].empty(), List[bool].empty(),
+    List[f32].empty(), List[f32].empty());
+  mut seed = 4242u32;
+  mut i = 0u32;
+  while i < 120u32 {
+    imm pos = new Vec3((rnd(&mut seed) - 0.5) * 60., rnd(&mut seed) * 6., 10. - rnd(&mut seed) * 90.);
+    imm range = 1.5 + rnd(&mut seed) * 8.;
+    renderer.lights.addPoint(pos, Color.gray(1.), 5., range);
+    placed.pos.push(pos);
+    placed.axis.push(new Vec3(0., 0., -1.));
+    placed.range.push(range);
+    placed.spot.push(false);
+    placed.outer.push(0.);
+    placed.inner.push(0.);
+    i = i + 1u32;
+  }
+  mut camera = sceneCamera();
+  camera.lookAt(new Vec3(6., 2., 12.), new Vec3(6., 2., -40.), new Vec3(0., 1., 0.));
+  mut mirrored = camera.reflectedAbout(new Vec4(1., 0., 0., 0.));
+  // (Without the oblique near plane the whole of the frustum is in view: with it, the points on
+  // the camera's axis are behind the mirror and clipped, and the sample would not find them. The
+  // oblique plane changes the depth row of the projection only, which the lists do not use.)
+  mirrored.clipped = false;
+  imm aspect = 16. / 9.;
+  renderer.lights.prepare(device, &mirrored, aspect, 1920u32, 1080u32);
+  imm view = mirrored.viewMatrix();
+  imm proj = mirrored.projectionMatrix(aspect);
+  imm inverse = (proj * view).inverse();
+  mut missed = 0u32;
+  mut tested = 0u32;
+  mut s = 0u32;
+  while s < 20000u32 {
+    imm px = rnd(&mut seed) * 1920.;
+    imm py = rnd(&mut seed) * 1080.;
+    imm depth = 0.2 * libc.powf(500., rnd(&mut seed));
+    imm onAxis = proj * new Vec4(0., 0., 0. - depth, 1.);
+    imm ndcz = onAxis.z / onAxis.w;
+    if ndcz > 0. and ndcz < 1. {
+      imm w = inverse * new Vec4(px / 1920. * 2. - 1., 1. - py / 1080. * 2., ndcz, 1.);
+      imm p = new Vec3(w.x / w.w, w.y / w.w, w.z / w.w);
+      imm cluster = renderer.lights.clusterAt(p, px, py);
+      mut l = 0usize;
+      while l < 120usize {
+        if influences(&placed, l, p) {
+          tested = tested + 1u32;
+          mut found = false;
+          mut k = 0u32;
+          while k < renderer.lights.clusterCount(cluster) {
+            if renderer.lights.clusterLight(cluster, k) == u32.from(l) { found = true; }
+            k = k + 1u32;
+          }
+          if !found { missed = missed + 1u32; }
+        }
+        l = l + 1usize;
+      }
+    }
+    s = s + 1u32;
+  }
+  expectUInt(u64.from(missed), 0u64, "a mirror camera: no light that reaches a sampled point is missing from its cluster");
+  expect(tested > 100u32, "the mirror camera's samples met lights");
+  eprint <- "measured mirror camera: "; eprint <- u64.from(tested); eprint <- " (point, light) pairs sampled, none missed\n";
+  renderer.lights.clear();
+}
+
+// 6. Lists that outgrow the first buffer
+fn growth(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer, scene &Scene) {
+  renderer.lights.clear();
+  mut i = 0u32;
+  while i < 300u32 {
+    renderer.lights.addPoint(new Vec3(f32.from(i % 20u32) - 10., 1.5, f32.from(i / 20u32) - 7.), Color.gray(1.), 0.02, 400.);
+    i = i + 1u32;
+  }
+  imm capacityBefore = renderer.lights.clusterCapacity;
+  imm camera = topDown();
+  imm light = dark();
+  mut list = DrawList.empty();
+  list.add(scene.ground, scene.lit, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(40., 1., 40.)));
+  drawFrame(renderer, device, color, depth, readback, &camera, &light, &list);
+  expect(renderer.lights.clusterCapacity > capacityBefore, "the cluster buffer grew");
+  drawFrame(renderer, device, color, depth, readback, &camera, &light, &list);
+  expect(renderer.lights.overflowed > 0u32, "300 lights everywhere overflow the clusters' limit");
+  renderer.lights.clear();
+}
+
+// ---- The scene of 7 to 10 ----
+
+struct Scene {
+  ground MeshHandle;
+  lit MaterialHandle;
+  pbr MaterialHandle;
+}
+
+fn makeScene(renderer &mut Renderer, device &mut Device) Scene {
+  mut plane = Mesh.plane(1, 1.);
+  imm ground = renderer.addMesh(device, &plane);
+  imm litM = Material.plain(new Color(0.8, 0.8, 0.8, 1.));
+  imm lit = renderer.addMaterial(device, &litM);
+  imm pbrM = PbrMaterial.standard(new Color(0.8, 0.8, 0.8, 1.), 0., 1.);
+  imm pbr = renderer.addPbrMaterial(device, &pbrM);
+  new Scene(ground, lit, pbr);
+}
+
+fn groundList(scene &Scene, material MaterialHandle) DrawList {
+  mut list = DrawList.empty();
+  list.add(scene.ground, material, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(40., 1., 40.)));
+  list;
+}
+
+// What a lit surface of base 0.8 facing up at the plane point (x, z) gives
+// back from a point light at 'at' of 'candela', range and radius
+fn pointRadiance(at Vec3, candela f32, range f32, radius f32, x f32, z f32) f32 {
+  imm d = at - new Vec3(x, 0., z);
+  imm d2 = d.lengthSquared();
+  imm cosine = at.y / d2.sqrt();
+  0.8 / pi * candela * cosine * pointFalloff(d2, range, radius);
+}
+
+// 7. A point light over the middle: the row through the middle
+fn pointRow(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer,
+    scene &Scene, material MaterialHandle, at Vec3, candela f32, range f32, radius f32, label &Array[u8]) {
+  imm p = readback.mappedRange();
+  renderer.lights.clear();
+  imm h = renderer.lights.addPoint(at, Color.gray(1.), candela, range);
+  if radius > 0. { renderer.lights.setSourceRadius(h, radius); }
+  imm camera = topDown();
+  imm light = dark();
+  imm list = groundList(scene, material);
+  drawFrame(renderer, device, color, depth, readback, &camera, &light, &list);
+  mut x = 128usize;
+  while x < 250usize {
+    imm want = pointRadiance(at, candela, range, radius, planeAt(x), planeAt(128usize));
+    imm got = ch(p, x, 128usize, 0usize);
+    expectNear(got, want, maxf(1.5 / 255., 0.015 * want), label);
+    x = x + 14usize;
+  }
+}
+
+fn lightChecks(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer,
+    scene &Scene) {
+  imm p = readback.mappedRange();
+  imm up15 = new Vec3(0., 1.5, 0.);
+  pointRow(renderer, device, color, depth, readback, scene, scene.lit, up15, 5., 8., 0., "a point light over a plane");
+  pointRow(renderer, device, color, depth, readback, scene, scene.lit, up15, 5., 2.4, 0., "a point light with a range of 2.4");
+  pointRow(renderer, device, color, depth, readback, scene, scene.lit, up15, 5., 8., 2., "a point light of source radius 2");
+
+  // The same light moved and recoloured by its handle
+  renderer.lights.clear();
+  imm h = renderer.lights.addPoint(up15, Color.gray(1.), 5., 8.);
+  imm camera = topDown();
+  imm light = dark();
+  imm list = groundList(scene, scene.lit);
+  expect(renderer.lights.move(h, new Vec3(1., 1.5, 0.)), "moved");
+  expect(renderer.lights.setColor(h, new Color(1., 0., 0., 1.)), "recoloured");
+  drawFrame(renderer, device, color, depth, readback, &camera, &light, &list);
+  imm moved = new Vec3(1., 1.5, 0.);
+  imm wantRed = pointRadiance(moved, 5., 8., 0., planeAt(128usize + 20usize), planeAt(128usize));
+  expectNear(ch(p, 128usize + 20usize, 128usize, 0usize), wantRed, maxf(1.5 / 255., 0.015 * wantRed), "a light moved by its handle");
+  expectNear(ch(p, 128usize + 20usize, 128usize, 1usize), 0., 0.5 / 255., "a red light gives no green");
+  expectNear(ch(p, 128usize + 20usize, 128usize, 2usize), 0., 0.5 / 255., "nor blue");
+  expect(renderer.lights.setIntensity(h, 2.5), "its intensity set");
+  drawFrame(renderer, device, color, depth, readback, &camera, &light, &list);
+  expectNear(ch(p, 128usize + 20usize, 128usize, 0usize), wantRed * 0.5, maxf(1.5 / 255., 0.015 * wantRed), "half the candela, half the light");
+  renderer.lights.remove(h);
+  drawFrame(renderer, device, color, depth, readback, &camera, &light, &list);
+  expectNear(ch(p, 128usize + 20usize, 128usize, 0usize), 0., 0.5 / 255., "a removed light lights nothing");
+
+  // 8. The spot
+  imm spot = renderer.lights.addSpot(new Vec3(0., 2., 0.), new Vec3(0., -1., 0.), Color.gray(1.), 8., 10., radians(20.), radians(30.));
+  drawFrame(renderer, device, color, depth, readback, &camera, &light, &list);
+  mut scale = 0.;
+  mut offset = 0.;
+  spotRamp(radians(20.), radians(30.), &mut scale, &mut offset);
+  mut worst = 0.;
+  mut x = 128usize;
+  while x < 250usize {
+    imm px = planeAt(x);
+    imm pz = planeAt(128usize);
+    imm d2 = px * px + pz * pz + 4.;
+    imm cosine = 2. / d2.sqrt();
+    imm want = 0.8 / pi * 8. * cosine * pointFalloff(d2, 10., 0.) * spotFalloff(cosine, scale, offset);
+    imm got = ch(p, x, 128usize, 0usize);
+    expectNear(got, want, maxf(1.5 / 255., 0.015 * want), "the spot's row against the formula");
+    if absf(got - want) > worst { worst = absf(got - want); }
+    x = x + 1usize;
+  }
+  eprint <- "measured the spot's row: the largest difference "; eprint <- worst * 255.; eprint <- " of 255\n";
+  // Beyond the outer angle nothing: 2 tan 30 = 1.1547, so the column
+  // 128 + 1.1547 / 2.18382 x 128 = 195.7; a column at 2 tan 32 = 1.2497 (200.8) is dark, one at 28 degrees (1.0634, 189.3) is not
+  expectNear(ch(p, 202usize, 128usize, 0usize), 0., 0.5 / 255., "dark beyond the outer angle");
+  expect(ch(p, 189usize, 128usize, 0usize) > 3. / 255., "light inside it");
+  // Turned 45 degrees about z to shine towards +x from 2 up, the cone's middle lands at x = 2
+  expect(renderer.lights.aim(spot, new Vec3(1., -1., 0.)), "the spot turned");
+  drawFrame(renderer, device, color, depth, readback, &camera, &light, &list);
+  imm axis = new Vec3(1., -1., 0.).normalize();
+  imm atX = new Vec3(planeAt(200usize), 0., planeAt(128usize));
+  imm toL = (new Vec3(0., 2., 0.) - atX);
+  imm dd2 = toL.lengthSquared();
+  imm cosAxis = (new Vec3(0., 0., 0.) - toL.normalize()).dot(axis);
+  imm wantTurned = 0.8 / pi * 8. * (2. / dd2.sqrt()) * pointFalloff(dd2, 10., 0.) * spotFalloff(cosAxis, scale, offset);
+  expectNear(ch(p, 200usize, 128usize, 0usize), wantTurned, maxf(1.5 / 255., 0.015 * wantTurned), "the turned spot");
+  expectNear(ch(p, 128usize - 40usize, 128usize, 0usize), 0., 0.5 / 255., "and dark behind it");
+  renderer.lights.clear();
+
+  // 9. The physically based material, roughness 1
+  renderer.environmentStrength = 0.;
+  renderer.lights.addPoint(up15, Color.gray(1.), 5., 8.);
+  imm pbrList = groundList(scene, scene.pbr);
+  drawFrame(renderer, device, color, depth, readback, &camera, &light, &pbrList);
+  mut x2 = 128usize;
+  while x2 < 250usize {
+    imm want = pointRadiance(up15, 5., 8., 0., planeAt(x2), planeAt(128usize));
+    imm got = ch(p, x2, 128usize, 0usize);
+    expect(got >= want * 0.97 - 1.5 / 255. and got <= want * 1.15 + 1.5 / 255., "the physically based plane is lit as the lit one, plus its specular");
+    x2 = x2 + 14usize;
+  }
+  renderer.lights.clear();
+  renderer.environmentStrength = 1.;
+}
+
+// 9b. The highlight of a glossy plane (roughness 0.2, a black base: nothing but
+// the highlight) from a light at (2, 1, 0), the camera at (0, 6, 0) looking
+// straight down: by the law of reflection it is centred where the angles of
+// incidence and reflection are equal, at x = 12 / 7 = 1.714 along the middle
+// row. A source of radius 0.15 (a bulb) spreads it and lowers its peak
+// (Karis's representative point and its normalisation) and leaves it where
+// it was.
+fn highlight(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer,
+    material MaterialHandle, radius f32, peakAt &mut f32, peak &mut f32, width &mut f32) {
+  imm p = readback.mappedRange();
+  renderer.lights.clear();
+  imm h = renderer.lights.addPoint(new Vec3(2., 1., 0.), Color.gray(1.), 0.4, 20.);
+  renderer.lights.setSourceRadius(h, radius);
+  imm camera = topDown();
+  imm light = dark();
+  mut list = DrawList.empty();
+  mut plane = Mesh.plane(1, 1.);
+  imm ground = renderer.addMesh(device, &plane);
+  list.add(ground, material, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(40., 1., 40.)));
+  drawFrame(renderer, device, color, depth, readback, &camera, &light, &list);
+  mut best = 0.;
+  mut bestX = 0usize;
+  mut x = 0usize;
+  while x < 256usize {
+    imm v = ch(p, x, 128usize, 0usize);
+    if v > best {
+      best = v;
+      bestX = x;
+    }
+    x = x + 1usize;
+  }
+  mut count = 0u32;
+  x = 0usize;
+  while x < 256usize {
+    if ch(p, x, 128usize, 0usize) > 0.5 * best { count = count + 1u32; }
+    x = x + 1usize;
+  }
+  *peakAt = planeAt(bestX);
+  *peak = best;
+  *width = f32.from(count);
+  renderer.removeMesh(device, ground);
+  renderer.lights.clear();
+}
+
+fn highlightChecks(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer) {
+  renderer.environmentStrength = 0.;
+  imm glossy = PbrMaterial.standard(new Color(0., 0., 0., 1.), 0., 0.2);
+  imm glossyHandle = renderer.addPbrMaterial(device, &glossy);
+  mut atPoint = 0.;
+  mut peakPoint = 0.;
+  mut widthPoint = 0.;
+  highlight(renderer, device, color, depth, readback, glossyHandle, 0., &mut atPoint, &mut peakPoint, &mut widthPoint);
+  mut atBulb = 0.;
+  mut peakBulb = 0.;
+  mut widthBulb = 0.;
+  highlight(renderer, device, color, depth, readback, glossyHandle, 0.15, &mut atBulb, &mut peakBulb, &mut widthBulb);
+  eprint <- "measured highlight: point light, peak "; eprint <- peakPoint; eprint <- " at x = "; eprint <- atPoint;
+  eprint <- ", "; eprint <- widthPoint; eprint <- " pixels wide; bulb of 0.15, peak "; eprint <- peakBulb; eprint <- " at x = ";
+  eprint <- atBulb; eprint <- ", "; eprint <- widthBulb; eprint <- " pixels wide\n";
+  expect(peakPoint > 0.08, "a glossy plane shows the light's highlight");
+  expectNear(atPoint, 1.7143, 0.15, "the highlight is where the angles are equal (point light)");
+  expectNear(atBulb, 1.7143, 0.15, "and (a bulb of radius 0.15)");
+  expect(widthBulb > widthPoint, "a bulb's highlight is wider");
+  expect(peakBulb < peakPoint, "and its peak lower");
+  renderer.environmentStrength = 1.;
+}
+
+// 10. Layers
+fn layerChecks(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer,
+    scene &Scene) {
+  imm p = readback.mappedRange();
+  imm camera = topDown();
+  imm light = dark();
+  mut onOne = Material.plain(new Color(0.8, 0.8, 0.8, 1.));
+  onOne.lightLayers = 2u32;
+  imm m1 = renderer.addMaterial(device, &onOne);
+  mut onBoth = Material.plain(new Color(0.8, 0.8, 0.8, 1.));
+  onBoth.lightLayers = 3u32;
+  imm m01 = renderer.addMaterial(device, &onBoth);
+  imm up15 = new Vec3(0., 1.5, 0.);
+  renderer.lights.clear();
+  imm h = renderer.lights.addPoint(up15, Color.gray(1.), 5., 8.);
+  imm list1 = groundList(scene, m1);
+  drawFrame(renderer, device, color, depth, readback, &camera, &light, &list1);
+  expectNear(ch(p, 128usize, 128usize, 0usize), 0., 0.5 / 255., "layer 1 alone is not lit by a light on layer 0");
+  renderer.lights.setLayers(h, 3u32);
+  drawFrame(renderer, device, color, depth, readback, &camera, &light, &list1);
+  imm want = pointRadiance(up15, 5., 8., 0., planeAt(128usize), planeAt(128usize));
+  expectNear(ch(p, 128usize, 128usize, 0usize), want, 0.015 * want + 1.5 / 255., "a light on layers 0 and 1 lights it");
+  renderer.lights.setLayers(h, 2u32);
+  drawFrame(renderer, device, color, depth, readback, &camera, &light, &list1);
+  expectNear(ch(p, 128usize, 128usize, 0usize), want, 0.015 * want + 1.5 / 255., "a light on layer 1 lights it");
+  imm list01 = groundList(scene, m01);
+  drawFrame(renderer, device, color, depth, readback, &camera, &light, &list01);
+  expectNear(ch(p, 128usize, 128usize, 0usize), want, 0.015 * want + 1.5 / 255., "and a material on layers 0 and 1");
+  imm list0 = groundList(scene, scene.lit);
+  drawFrame(renderer, device, color, depth, readback, &camera, &light, &list0);
+  expectNear(ch(p, 128usize, 128usize, 0usize), 0., 0.5 / 255., "but not one on layer 0 alone");
+  renderer.lights.clear();
+}
+
+// 11. 200 lights, seen from the side, and again by a camera that sees in a mirror
+// (the world reflected about x = 0, clip x flipped, nothing at x < 0 drawn): each
+// sampled pixel's point on the plane found by unprojecting the pixel through the
+// inverse of the camera's own projection times view, the lights found there
+fn crowd(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer, scene &Scene,
+    camera &Camera, minX f32, label &Array[u8]) {
+  imm p = readback.mappedRange();
+  renderer.lights.clear();
+  mut placed = new Placed(List[Vec3].empty(), List[Vec3].empty(), List[f32].empty(), List[bool].empty(),
+    List[f32].empty(), List[f32].empty());
+  mut handles = List[LightHandle].empty();
+  mut seed = 777u32;
+  mut i = 0u32;
+  while i < 200u32 {
+    imm pos = new Vec3((rnd(&mut seed) - 0.5) * 24., 0.4 + rnd(&mut seed) * 1.8, (rnd(&mut seed) - 0.5) * 24.);
+    imm range = 2.5 + rnd(&mut seed) * 3.;
+    handles.push(renderer.lights.addPoint(pos, Color.gray(1.), 1., range));
+    placed.pos.push(pos);
+    placed.range.push(range);
+    i = i + 1u32;
+  }
+  imm vp = camera.projectionMatrix(1.) * camera.viewMatrix();
+  imm inverse = vp.inverse();
+  // The first pass at intensity 1, to scale the brightest sample to 0.85
+  mut peak = 0.;
+  mut pass = 0u32;
+  mut scale = 1.;
+  while pass < 2u32 {
+    if pass == 1u32 {
+      scale = 0.85 / peak;
+      mut j = 0usize;
+      while j < 200usize {
+        renderer.lights.setIntensity(*handles[j], scale);
+        j = j + 1usize;
+      }
+      peak = 0.;
+    }
+    imm light = dark();
+    imm list = groundList(scene, scene.lit);
+    drawFrame(renderer, device, color, depth, readback, camera, &light, &list);
+    mut compared = 0u32;
+    mut bad = 0u32;
+    mut worst = 0.;
+    mut sy = 0usize;
+    while sy < 32usize {
+      mut sx = 0usize;
+      while sx < 32usize {
+        imm pxl = sx * 8usize + 4usize;
+        imm pyl = sy * 8usize + 4usize;
+        imm ndcx = (f32.from(pxl) + 0.5) / 128. - 1.;
+        imm ndcy = 1. - (f32.from(pyl) + 0.5) / 128.;
+        imm nearW = inverse * new Vec4(ndcx, ndcy, 0., 1.);
+        imm farW = inverse * new Vec4(ndcx, ndcy, 1., 1.);
+        imm origin = new Vec3(nearW.x / nearW.w, nearW.y / nearW.w, nearW.z / nearW.w);
+        imm dir = (new Vec3(farW.x / farW.w, farW.y / farW.w, farW.z / farW.w) - origin).normalize();
+        imm t = (0. - origin.y) / dir.y;
+        imm world = origin + dir * t;
+        // The ray meets the plane y = 0 somewhere along its line; it is seen at this pixel if the
+        // point is in front of the camera and inside its depth range
+        imm hit = vp * new Vec4(world.x, world.y, world.z, 1.);
+        if absf(dir.y) > 0.001 and hit.w > 0. and hit.z / hit.w > 0. and hit.z / hit.w < 1. and world.x >= minX {
+          mut expected = 0.;
+          mut l = 0usize;
+          while l < 200usize {
+            imm d = *placed.pos[l] - world;
+            imm d2 = d.lengthSquared();
+            imm cosine = d.y / d2.sqrt();
+            expected = expected + 0.8 / pi * scale * cosine * pointFalloff(d2, *placed.range[l], 0.);
+            l = l + 1usize;
+          }
+          if expected > peak { peak = expected; }
+          if pass == 1u32 and expected < 0.98 {
+            imm got = ch(p, pxl, pyl, 0usize);
+            imm err = absf(got - expected);
+            compared = compared + 1u32;
+            if err > worst { worst = err; }
+            if err > maxf(2. / 255., 0.02 * expected) { bad = bad + 1u32; }
+          }
+        }
+        sx = sx + 1usize;
+      }
+      sy = sy + 1usize;
+    }
+    if pass == 1u32 {
+      expectUInt(u64.from(bad), 0u64, label);
+      expect(compared > 300u32, label);
+      eprint <- "measured "; eprintStr(label as &str); eprint <- ": "; eprint <- u64.from(compared); eprint <- " pixels compared, the largest difference ";
+      eprint <- worst * 255.; eprint <- " of 255; ";
+      eprint <- u64.from(renderer.lights.active); eprint <- " lights active, "; eprint <- u64.from(renderer.lights.pairs);
+      eprint <- " pairs\n";
+    }
+    pass = pass + 1u32;
+  }
+  renderer.lights.clear();
+}
+
+fn main() i32 {
+  formulaChecks();
+
+  mut instance = Instance.create("render lights");
+  require(instance.isValid(), "a Vulkan 1.3 instance");
+  mut none = Surface.none();
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  if (env as usize) != 0usize {
+    if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  mut adapter = instance.requestAdapter(&none, preference);
+  require(adapter.isValid(), "an adapter");
+  mut device = adapter.requestDevice();
+  require(device.isValid(), "a device");
+  eprint <- "measured adapter: "; eprintStr(adapter.name.view()); eprint <- "\n";
+  imm targetDesc = new TextureDescriptor(SIDE, SIDE, TEXTURE_FORMAT_RGBA8_UNORM,
+    TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  mut color = device.createTexture(&targetDesc);
+  imm depthDesc = new TextureDescriptor(SIDE, SIDE, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  mut depth = device.createTexture(&depthDesc);
+  mut readback = device.createBuffer(262144u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  require(renderer.isValid(), "a renderer");
+  imm scene = makeScene(&mut renderer, &mut device);
+
+  handleChecks(&mut renderer);
+  clusterChecks(&mut renderer, &mut device);
+  mirrorClusters(&mut renderer, &mut device);
+  lightChecks(&mut renderer, &mut device, &color, &depth, &readback, &scene);
+  highlightChecks(&mut renderer, &mut device, &color, &depth, &readback);
+  layerChecks(&mut renderer, &mut device, &color, &depth, &readback, &scene);
+  mut side = Camera.make();
+  side.fov = radians(40.);
+  side.near = 0.1;
+  side.far = 100.;
+  side.lookAt(new Vec3(0., 6., 10.), new Vec3(0., 0., 0.), new Vec3(0., 1., 0.));
+  side.background = new Color(0., 0., 0., 1.);
+  crowd(&mut renderer, &mut device, &color, &depth, &readback, &scene, &side, -1000., "200 lights: every sampled pixel is the brute-force sum");
+  mut seen = Camera.make();
+  seen.fov = radians(40.);
+  seen.near = 0.1;
+  seen.far = 100.;
+  // A viewer at x = 8 looking at the mirror (the plane x = 0) in front of it, down at the ground; the
+  // camera that sees the reflection looks the other way, at the ground at x > 0, from x = -8
+  seen.lookAt(new Vec3(8., 6., 6.), new Vec3(-2., 0., 0.), new Vec3(0., 1., 0.));
+  seen.background = new Color(0., 0., 0., 1.);
+  imm inMirror = seen.reflectedAbout(new Vec4(1., 0., 0., 0.));
+  crowd(&mut renderer, &mut device, &color, &depth, &readback, &scene, &inMirror, 0.3, "200 lights seen in a mirror: every sampled pixel is the brute-force sum");
+  growth(&mut renderer, &mut device, &color, &depth, &readback, &scene);
+
+  expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
+  expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
+  done();
+}

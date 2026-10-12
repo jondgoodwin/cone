@@ -125,18 +125,33 @@ fn manifestError(file &Path, m String) Result[Package, String] {
   Error[Package, String](cat(place.view(), ": ", m.view()));
 }
 
-// [link]: the C libraries a program using this package must be linked with,
-// folders to search for them, relative to the package folder, and the DLLs
-// the program needs beside it to run, which Congo copies there. Into pkg;
-// "" or what is wrong.
-fn readLink(file &Path, table &toml.Table, pkg &mut Package) String {
+// The system Congo runs on, as a [link] section is named: windows, linux or
+// macos
+fn hostSystem() &str {
+  if isWindows() { return "windows"; }
+  if isLinux() { return "linux"; }
+  "macos";
+}
+
+fn isSystemName(key &str) bool {
+  key == "windows" or key == "linux" or key == "macos";
+}
+
+// The keys of [link], or of one system's section of it (label is its name in a
+// message, "[link]" or "[link.windows]"): the C libraries a program using this
+// package must be linked with, folders to search for them, relative to the
+// package folder, and the DLLs the program needs beside it to run, which Congo
+// copies there. A table's keys are checked whether or not it is this system's
+// (a mistake in another system's section is found on every machine), and
+// added to pkg after what is there only when apply. "" or what is wrong.
+fn readLinkKeys(file &Path, table &toml.Table, label &str, apply bool, pkg &mut Package) String {
   imm place = native(file);
   imm keys = table.keys();
   mut i = 0usize;
   while i < keys.len() {
     imm key = keys[i].view();
-    if key != "libraries" and key != "paths" and key != "runtime" {
-      return cat(place.view(), ": '", key, "' is not a [link] key; the keys are libraries, paths and runtime");
+    if key != "libraries" and key != "paths" and key != "runtime" and not (label == "[link]" and isSystemName(key)) {
+      return cat(place.view(), ": '", key, "' is not a ", label, " key; the keys are libraries, paths and runtime");
     }
     i = i + 1usize;
   }
@@ -146,26 +161,26 @@ fn readLink(file &Path, table &toml.Table, pkg &mut Package) String {
   if table.has("libraries") {
     match table.getStrings("libraries") {
       case mut l Some { libraries <=> l; }
-      case is None { return cat(place.view(), ": [link] libraries must be a list of strings"); }
+      case is None { return cat(place.view(), ": ", label, " libraries must be a list of strings"); }
     }
   }
   if table.has("paths") {
     match table.getStrings("paths") {
       case mut l Some { paths <=> l; }
-      case is None { return cat(place.view(), ": [link] paths must be a list of strings"); }
+      case is None { return cat(place.view(), ": ", label, " paths must be a list of strings"); }
     }
   }
   if table.has("runtime") {
     match table.getStrings("runtime") {
       case mut l Some { runtime <=> l; }
-      case is None { return cat(place.view(), ": [link] runtime must be a list of strings"); }
+      case is None { return cat(place.view(), ": ", label, " runtime must be a list of strings"); }
     }
   }
   i = 0usize;
   while i < libraries.len() {
     imm lib = libraries[i].view();
     if not isLibraryName(lib) {
-      return cat(place.view(), ": [link] library \"", lib, "\" must be the library's bare name, such as \"SDL3\": no folder, prefix or suffix, which Congo adds for the linker (and paths says where to look)");
+      return cat(place.view(), ": ", label, " library \"", lib, "\" must be the library's bare name, such as \"SDL3\": no folder, prefix or suffix, which Congo adds for the linker (and paths says where to look)");
     }
     i = i + 1usize;
   }
@@ -173,10 +188,11 @@ fn readLink(file &Path, table &toml.Table, pkg &mut Package) String {
   while i < runtime.len() {
     imm dll = runtime[i].view();
     if not isLibraryName(dll) {
-      return cat(place.view(), ": [link] runtime \"", dll, "\" must be the DLL's bare name, such as \"SDL3\" for SDL3.dll: no folder or suffix, which Congo adds");
+      return cat(place.view(), ": ", label, " runtime \"", dll, "\" must be the DLL's bare name, such as \"SDL3\" for SDL3.dll: no folder or suffix, which Congo adds");
     }
     i = i + 1usize;
   }
+  if not apply { return String.empty(); }
   i = 0usize;
   while i < paths.len() {
     imm user = expandUser(paths[i].view());
@@ -192,8 +208,58 @@ fn readLink(file &Path, table &toml.Table, pkg &mut Package) String {
     }
     i = i + 1usize;
   }
-  pkg.libraries = libraries;
-  pkg.runtime = runtime;
+  i = 0usize;
+  while i < libraries.len() {
+    pkg.libraries.push(libraries[i].copy());
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < runtime.len() {
+    pkg.runtime.push(runtime[i].copy());
+    i = i + 1usize;
+  }
+  String.empty();
+}
+
+// [link] and the section for this system, [link.windows], [link.linux] or
+// [link.macos]: the plain table applies on every system, and the system's own
+// section adds to it, each list after the plain one's. A section for another
+// system is read, so that a mistake in it is found on every machine, and
+// contributes nothing. Into pkg; "" or what is wrong.
+fn readLink(file &Path, doc &toml.Document, pkg &mut Package) String {
+  imm place = native(file);
+  if doc.has("link") {
+    imm wrong = readLinkKeys(file, doc["link"], "[link]", true, pkg);
+    if not wrong.isEmpty() { return wrong; }
+  }
+  imm names = doc.names();
+  mut i = 0usize;
+  while i < names.len() {
+    imm name = names[i].view();
+    if name.startsWith("link.") and name != "link.windows" and name != "link.linux" and name != "link.macos" {
+      return cat(place.view(), ": [", name, "] is not a link section; the sections are [link.windows], [link.linux] and [link.macos]");
+    }
+    i = i + 1usize;
+  }
+  if doc.has("link") {
+    imm plain = doc["link"];
+    if plain.has("windows") { return cat(place.view(), ": [link] windows must be a table: write it as [link.windows]"); }
+    if plain.has("linux") { return cat(place.view(), ": [link] linux must be a table: write it as [link.linux]"); }
+    if plain.has("macos") { return cat(place.view(), ": [link] macos must be a table: write it as [link.macos]"); }
+  }
+  imm host = hostSystem();
+  i = 0usize;
+  while i < names.len() {
+    imm name = names[i].view();
+    if name == "link.windows" or name == "link.linux" or name == "link.macos" {
+      imm label = cat("[", name, "]");
+      imm want = cat("link.", host);
+      imm apply = name == want.view();
+      imm wrong = readLinkKeys(file, doc[name], label.view(), apply, pkg);
+      if not wrong.isEmpty() { return wrong; }
+    }
+    i = i + 1usize;
+  }
   String.empty();
 }
 
@@ -233,8 +299,8 @@ fn readTargets(file &Path, table &toml.Table, pkg &mut Package) String {
 }
 
 // congo.toml: a [package] table with name, version and output, and, for a
-// package that needs C libraries linked, a [link] table. There is no
-// dependencies section: the imports in the source are the dependency list,
+// package that needs C libraries linked, a [link] table and a section of it
+// for each system that needs more. There is no dependencies section: the imports in the source are the dependency list,
 // and the registries say where each one is.
 fn readManifest(file &Path) Result[Package, String] {
   mut doc = new toml.Document();
@@ -255,7 +321,10 @@ fn readManifest(file &Path) Result[Package, String] {
   }
   i = 0usize;
   while i < tops.len() {
-    imm key = tops[i].view();
+    // A dotted table is under the table its name starts with: [link.linux]
+    // is part of [link], and [package.x] of [package]
+    imm parts = splitText(tops[i].view(), '.');
+    imm key = parts[0usize].view();
     if key != "package" and key != "link" {
       mut extra &str = "";
       if key == "dependencies" { extra = " There is no dependencies section: a package's imports are its dependencies."; }
@@ -273,6 +342,15 @@ fn readManifest(file &Path) Result[Package, String] {
     imm key = keys[i].view();
     if key != "name" and key != "version" and key != "output" and key != "targets" {
       return manifestError(file, cat("'", key, "' is not a [package] key; the keys are name, version, output and targets"));
+    }
+    i = i + 1usize;
+  }
+  // A dotted table under [package], [package.x], is a key that is not one
+  i = 0usize;
+  while i < names.len() {
+    imm parts = splitText(names[i].view(), '.');
+    if parts.len() > 1usize and parts[0usize].equals("package") {
+      return manifestError(file, cat("'", parts[1usize].view(), "' is not a [package] key; the keys are name, version, output and targets"));
     }
     i = i + 1usize;
   }
@@ -304,13 +382,11 @@ fn readManifest(file &Path) Result[Package, String] {
   }
   imm wrongTargets = readTargets(file, table, &mut pkg);
   if not wrongTargets.isEmpty() { return Error[Package, String](wrongTargets); }
-  if doc.has("link") {
-    imm wrong = readLink(file, doc["link"], &mut pkg);
-    if not wrong.isEmpty() { return Error[Package, String](wrong); }
-  }
-  elif doc.root.has("link") {
+  if doc.root.has("link") {
     return manifestError(file, String.from("[link] must be a table, with libraries, paths and runtime"));
   }
+  imm wrongLink = readLink(file, &doc, &mut pkg);
+  if not wrongLink.isEmpty() { return Error[Package, String](wrongLink); }
   imm folder = file.parent();
   pkg.root = resolved(&folder);
   imm srcName = cat(pkg.name.view(), ".cone");

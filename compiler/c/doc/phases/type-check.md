@@ -307,7 +307,13 @@ any type's members (`structDeferCheck`):
 Two kinds of check do not wait. **A condition on a generic** — a `where` on it,
 on its enum or on a member — decides whether the instance exists, so where one
 is written, `genericMemoize` lays the arguments out first (`structTypeSettle`),
-target mode suspended (`genericConditioned`). A `Sendable` clause standing
+target mode suspended (`genericConditioned`). An argument that is in flight
+cannot be laid out first, and a type that holds an instance of a generic by value
+is that argument when the instance is made from its own layout, as in `struct
+Node { kids List[Node]; }`, so a **member's** clause is not decided then: the
+member is kept, and `genericLateWhere` decides it as a check that reads layouts,
+once none is in flight (nodes/generic.md). An `is` entry's condition is part of
+the layout and is decided at once. A `Sendable` clause standing
 alone is the exception: whether a type may cross threads is answered
 provisionally of one not yet laid out, noted, and judged again once every type
 is (`genericSendableNote`), so it lays nothing out. That is what lets an
@@ -386,7 +392,7 @@ it is. `itypeNoSizeCause` answers, and there are six ways the answer is no:
 | a body whose length a reference carries (`str`, `Array[T]`) | `itypeLenBodyElem` | hold it through a reference: `&str` or `So[str]`, `&Array[T]` or `So[Array[T]]` |
 | a trait that is not `SameSize` | `structTypeCheck` | use a virtual reference, `&<Trait>` |
 | a function signature | `fnSigTypeCheck` | use a reference to a function |
-| a struct with an unsized field | `structTypeCheck`, infectiously | fix that field — the cause is further down |
+| a struct with an unsized field, or a tuple with an unsized element | `structTypeCheck`, infectiously | fix that field or element — the cause is further down |
 | a by-value cycle: still being laid out | rule 4 | break the cycle with a reference |
 
 All six are one `ErrorCode`, `ErrorNoSize`. Six codes would be
@@ -429,7 +435,11 @@ Error 1069: Field p cannot be held by value: P contains Q contains R contains P 
 ```
 
 An array or a tuple on the stack is part of the type holding it and is not
-named. Were the type not on the stack, which no measured case reaches, the
+named. A tuple holds each element by value as a struct holds a field, so the
+walk crosses a tuple to its first element with no size (`itypeNoSizeElem`) as it
+crosses a field, with no hop recorded for the tuple: `struct N { k (i32, N) }`,
+the same with the tuple nested or inside an array, and a tuple of an enum whose
+variant holds the struct are refused as the type held directly is. Were the type not on the stack, which no measured case reaches, the
 message would be the old one, "is still being laid out, so it would have to
 contain itself". ⚠ A function's signature demanded from inside a layout asks
 its parameters' sizes there, and one in flight would be named as a by-value
