@@ -1,0 +1,262 @@
+// ======== Drag and drop ========
+//
+// A DRAG SOURCE is a node with a nonzero 'dragKind'. Press on it and move more than 4
+// pixels with the button held and a drag begins, carrying a PAYLOAD: a kind, three ids
+// and a count (an inventory slot makes its own: the item, where it lies, how many; any
+// other node carries dragKind, dragA and dragB). A DROP TARGET is a node with a nonzero
+// 'dropMask' (bit k for payload kind k), or a slot or hotbar slot, which decide by
+// what they hold. While the drag is over a target the target is asked whether it accepts
+// (the inventory slot asks its InvModel, which knows stacks, bags and categories) and
+// shows it: the theme state ST_DROP_OK, or ST_DROP_NO when refused. The drag preview
+// (a K_GHOST node in the overlay) follows the pointer; Escape cancels.
+//
+// On release over a target that accepts, the drop is done (an inventory slot moves the
+// item; a hotbar slot binds it; any other target is only told) and reported as
+// UE_DROP with the outcome (DR_*). Over a target that refuses it is UE_DROP_REFUSED
+// with the reason; over nothing, UE_DROP_REFUSED with DR_NO_TARGET (a game may drop the
+// item into the world there). Pressing with the right button moves half a stack.
+
+pub const PK_ITEM = 1u32;         // a stack in an inventory slot: a item id, b container, c slot
+pub const PK_SPELL = 2u32;        // a spell: a spell id, b icon
+pub const PK_ITEMTYPE = 3u32;     // an item kind bound to a hotbar slot: a type id, b icon
+
+pub struct Payload {
+  pub kind u32 = 0u32;
+  pub a u32 = 0u32;
+  pub b u32 = 0u32;
+  pub c u32 = 0u32;
+  pub count u32 = 0u32;
+  pub source usize = 0usize;
+  pub button u32 = 0u32;
+}
+
+pub struct DragState {
+  pub candidate usize = 0usize;
+  pub button u32 = 0u32;
+  pub downX f32 = 0.;
+  pub downY f32 = 0.;
+  pub active bool = false;
+  pub source usize = 0usize;
+  pub payload Payload;
+  pub target usize = 0usize;
+  pub verdict u32 = 0u32;
+  pub ghost usize = 0usize;
+
+  pub fn make() DragState {new DragState(payload: new Payload);}
+}
+
+pub fn dropBit(kind u32) u32 {1u32 << kind;}
+
+pub fn setDragSource(ui &mut Ui, id usize, kind u32, a u32, b u32) {
+  ui.nodes[id].dragKind = kind;
+  ui.nodes[id].dragA = a;
+  ui.nodes[id].dragB = b;
+}
+
+pub fn setDropTarget(ui &mut Ui, id usize, mask u32) {
+  ui.nodes[id].dropMask = mask;
+}
+
+pub fn isDragging(ui &Ui) bool {ui.input.drag.active;}
+pub fn dragPayload(ui &Ui) Payload {ui.input.drag.payload;}
+
+fn dragCandidateAt(ui &mut Ui, hit usize, button u32, x f32, y f32) {
+  mut n = hit;
+  while n != NIL {
+    if ui.nodes[n].dragKind != 0u32 and ui.nodes[n].enabled {
+      ui.input.drag.candidate = n;
+      ui.input.drag.button = button;
+      ui.input.drag.downX = x;
+      ui.input.drag.downY = y;
+      return;
+    }
+    n = ui.nodes[n].parent;
+  }
+  ui.input.drag.candidate = NIL;
+}
+
+// What the source node would carry
+fn makePayload(ui &Ui, node usize, button u32) Payload {
+  imm k = ui.nodes[node].kind;
+  if k == K_SLOT {
+    imm d = ui.nodes[node].data;
+    imm c = ui.slots[d].container;
+    imm s = ui.slots[d].index;
+    imm item = ui.inv.itemAt(c, s);
+    if item == 0u32 {return new Payload;}
+    imm have = ui.inv.countAt(c, s);
+    imm count = if button == BTN_RIGHT and have > 1u32 {(have + 1u32) / 2u32;} else {have;};
+    return new Payload(kind: PK_ITEM, a: item, b: c, c: s, count: count, source: node, button: button);
+  }
+  if k == K_HOTSLOT {
+    imm d = ui.nodes[node].data;
+    if ui.hotslots[d].kind == BK_NONE {return new Payload;}
+    return new Payload(kind: if ui.hotslots[d].kind == BK_SPELL {PK_SPELL;} else {PK_ITEMTYPE;}, a: ui.hotslots[d].bind,
+      b: ui.hotslots[d].icon, c: ui.hotslots[d].index, count: 1u32, source: node, button: button);
+  }
+  new Payload(kind: ui.nodes[node].dragKind, a: ui.nodes[node].dragA, b: ui.nodes[node].dragB, count: 1u32, source: node, button: button);
+}
+
+// The nearest drop target at or above a node
+fn dropTargetAt(ui &Ui, hit usize) usize {
+  mut n = hit;
+  while n != NIL {
+    imm k = ui.nodes[n].kind;
+    if k == K_SLOT or k == K_HOTSLOT or ui.nodes[n].dropMask != 0u32 {return n;}
+    n = ui.nodes[n].parent;
+  }
+  NIL;
+}
+
+// What dropping the payload on the target would do: a DR_* code
+pub fn dropVerdict(ui &Ui, target usize, p &Payload) u32 {
+  imm k = ui.nodes[target].kind;
+  if k == K_SLOT {
+    if p.kind != PK_ITEM {return DR_KIND;}
+    imm d = ui.nodes[target].data;
+    return ui.inv.check(p.b, p.c, ui.slots[d].container, ui.slots[d].index, p.count);
+  }
+  if k == K_HOTSLOT {
+    if p.kind != PK_ITEM and p.kind != PK_SPELL and p.kind != PK_ITEMTYPE {return DR_KIND;}
+    if target == p.source {return DR_SAME;}
+    return DR_BOUND;
+  }
+  if (ui.nodes[target].dropMask & dropBit(p.kind)) != 0u32 {
+    if target == p.source {return DR_SAME;}
+    return DR_ACCEPTED;
+  }
+  DR_KIND;
+}
+
+fn setDropState(ui &mut Ui, target usize, verdict u32) {
+  if target == NIL {return;}
+  ui.setState(target, ST_DROP_OK, accepted(verdict) and verdict != DR_SAME);
+  ui.setState(target, ST_DROP_NO, !accepted(verdict) and verdict != DR_SAME);
+}
+
+fn clearDropState(ui &mut Ui, target usize) {
+  if target == NIL or !ui.alive(target) {return;}
+  ui.setState(target, ST_DROP_OK, false);
+  ui.setState(target, ST_DROP_NO, false);
+}
+
+fn beginDrag(ui &mut Ui, p Payload) {
+  ui.input.drag.active = true;
+  ui.input.drag.source = p.source;
+  ui.input.drag.payload = p;
+  ui.input.drag.target = NIL;
+  ui.input.drag.verdict = 0u32;
+  ui.input.capture = NIL;
+  ui.setState(p.source, ST_DRAGGED, true);
+  if ui.input.drag.ghost == NIL {
+    imm g = made(ui, ui.overlay, K_GHOST, "ghost");
+    ui.nodes[g].pointer = PM_IGNORE;
+    ui.setAnchors(g, 0., 0., 0., 0.);
+    imm s = ui.theme.num(ui.theme.find("slot"), P_SIZE, 0u32, 44.);
+    ui.setSize(g, s, s);
+    ui.input.drag.ghost = g;
+  }
+  imm g = ui.input.drag.ghost;
+  ui.setVisible(g, true);
+  ui.raise(g);
+  ui.emit(UE_DRAG_BEGIN, p.source, NIL, ui.input.px, ui.input.py, i32.from(p.kind), p.count);
+  dispatchDirect(ui, p.source, &new Ev(kind: EK_DRAG_START, target: p.source, x: ui.input.px, y: ui.input.py));
+}
+
+// A pointer move during a press: may begin a drag; during one, follows it. True if the
+// move belongs to a drag
+fn dragMove(ui &mut Ui, x f32, y f32) bool {
+  if !ui.input.drag.active {
+    if ui.input.drag.candidate == NIL or (ui.input.buttons & ui.input.drag.button) == 0u32 {return false;}
+    imm dx = x - ui.input.drag.downX;
+    imm dy = y - ui.input.drag.downY;
+    if dx * dx + dy * dy < 16. {return false;}
+    imm p = makePayload(ui, ui.input.drag.candidate, ui.input.drag.button);
+    if p.kind == 0u32 {
+      ui.input.drag.candidate = NIL;
+      return false;
+    }
+    beginDrag(ui, p);
+  }
+  // follow the pointer
+  imm g = ui.input.drag.ghost;
+  ui.setOffsets(g, x - ui.nodes[g].prefW * 0.5, y - ui.nodes[g].prefH * 0.5, 0., 0.);
+  imm hit = hitTest(ui, x, y);
+  imm target = dropTargetAt(ui, hit);
+  if target != ui.input.drag.target {
+    if ui.input.drag.target != NIL and ui.alive(ui.input.drag.target) {
+      clearDropState(ui, ui.input.drag.target);
+      sendDirect(ui, ui.input.drag.target, evAt(EK_DRAG_LEAVE, ui.input.drag.target, x, y));
+    }
+    ui.input.drag.target = target;
+    if target != NIL {sendDirect(ui, target, evAt(EK_DRAG_ENTER, target, x, y));}
+  }
+  if target != NIL {
+    ui.input.drag.verdict = dropVerdict(ui, target, &ui.input.drag.payload);
+    setDropState(ui, target, ui.input.drag.verdict);
+    ui.input.cursor = if accepted(ui.input.drag.verdict) {CURSOR_MOVE;} else {CURSOR_NO;};
+    sendDirect(ui, target, evAt(EK_DRAG_OVER, target, x, y));
+  }
+  else {ui.input.drag.verdict = DR_NO_TARGET;}
+  true;
+}
+
+fn endDrag(ui &mut Ui, accepted bool) {
+  imm src = ui.input.drag.source;
+  clearDropState(ui, ui.input.drag.target);
+  if ui.alive(src) {
+    ui.setState(src, ST_DRAGGED, false);
+    sendDirect(ui, src, evAt(EK_DRAG_END, src, ui.input.px, ui.input.py));
+  }
+  if ui.input.drag.ghost != NIL {ui.setVisible(ui.input.drag.ghost, false);}
+  ui.emit(UE_DRAG_END, src, ui.input.drag.target, ui.input.px, ui.input.py, if accepted {1i32;} else {0i32;}, 0u32);
+  ui.input.drag.active = false;
+  ui.input.drag.candidate = NIL;
+  ui.input.drag.target = NIL;
+}
+
+fn dragCancel(ui &mut Ui) {
+  if !ui.input.drag.active {return;}
+  endDrag(ui, false);
+}
+
+// The release of a button. True if it ended a drag
+fn dragRelease(ui &mut Ui, x f32, y f32, button u32) bool {
+  if !ui.input.drag.active {
+    ui.input.drag.candidate = NIL;
+    return false;
+  }
+  if button != ui.input.drag.button {return true;}
+  imm p = ui.input.drag.payload;
+  imm target = ui.input.drag.target;
+  mut done = false;
+  if target == NIL {
+    ui.emit(UE_DROP_REFUSED, NIL, p.source, x, y, i32.from(DR_NO_TARGET), p.kind);
+    // a hotbar button dragged off the bar is taken away
+    if ui.alive(p.source) and ui.nodes[p.source].kind == K_HOTSLOT {hotbarUnbind(ui, p.source);}
+  }
+  else {
+    imm v = dropVerdict(ui, target, &p);
+    if !accepted(v) {ui.emit(UE_DROP_REFUSED, target, p.source, x, y, i32.from(v), p.kind);}
+    elif v != DR_SAME {
+      done = true;
+      performDrop(ui, target, &p, v);
+    }
+  }
+  endDrag(ui, done);
+  true;
+}
+
+fn performDrop(ui &mut Ui, target usize, p &Payload, verdict u32) {
+  imm k = ui.nodes[target].kind;
+  mut outcome = verdict;
+  if k == K_SLOT {
+    imm d = ui.nodes[target].data;
+    outcome = ui.inv.move(p.b, p.c, ui.slots[d].container, ui.slots[d].index, p.count);
+    ui.emit(UE_INVENTORY, target, p.source, 0., 0., i32.from(ui.slots[d].container), p.b);
+  }
+  elif k == K_HOTSLOT {
+    bindFromPayload(ui, target, p);
+  }
+  ui.emit(UE_DROP, target, p.source, ui.input.px, ui.input.py, i32.from(outcome), p.kind);
+}

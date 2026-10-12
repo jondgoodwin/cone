@@ -1,0 +1,86 @@
+// ======== A panel placed in 3-D ========
+//
+// The second mode of a Ui: the same tree, laid out in pixels, shown on a rectangle in the
+// world. A Panel3d owns a Ui of W x H pixels and a Transform3 that puts its centre in the
+// world: the panel lies in the transform's local x-y plane, facing local +z, with local +x
+// to its right and +y up, 'widthMeters' wide (the height follows from the pixel shape). It
+// does no drawing either: a renderer draws the Ui's draw list into a texture
+// (render to texture) and shows that texture on a quad at the panel's corners.
+//
+// Input comes from a ray: the camera's through the mouse, a controller's, a hand's. 'pick'
+// turns a ray into the pixel it hits; 'pointerFromRay' also moves the Ui's pointer there, so
+// hover, press and drag work the same as on a screen overlay. The host presses and
+// releases buttons with the Ui's own pointerDown and pointerUp.
+
+pub struct PanelHit {
+  pub t f32;                // the distance along the ray, in multiples of its direction
+  pub x f32;                // the pixel hit
+  pub y f32;
+  pub u f32;                // the same as a fraction of the panel (0..1 across and down)
+  pub v f32;
+}
+
+pub struct Panel3d {
+  pub ui Ui;
+  pub xf Transform3;
+  pub widthMeters f32;
+  pub heightMeters f32;
+  pub doubleSided bool = false;
+
+  // A panel of w x h pixels, 'widthMeters' wide in the world
+  pub fn make(w f32, h f32, widthMeters f32, xf Transform3) Panel3d {
+    new Panel3d(ui: Ui.make(w, h), xf: xf, widthMeters: widthMeters, heightMeters: widthMeters * h / w);
+  }
+
+  // Where a pixel of the panel is in the world
+  pub fn pixelToWorld(self &, x f32, y f32) Vec3 {
+    imm lx = (x / ui.width - 0.5) * widthMeters;
+    imm ly = (0.5 - y / ui.height) * heightMeters;
+    xf.transformPoint(new Vec3(lx, ly, 0.));
+  }
+
+  // The four corners in the world: top left, top right, bottom right, bottom left
+  pub fn corners(self &) List[Vec3] {
+    mut c = List[Vec3].empty();
+    c.push(pixelToWorld(0., 0.));
+    c.push(pixelToWorld(ui.width, 0.));
+    c.push(pixelToWorld(ui.width, ui.height));
+    c.push(pixelToWorld(0., ui.height));
+    c;
+  }
+
+  // The panel's normal in the world (the side it faces)
+  pub fn normal(self &) Vec3 {xf.rotation * new Vec3(0., 0., 1.);}
+
+  // The pixel a ray hits, if it hits the panel (from the front, unless double sided, and
+  // within 'maxT' multiples of the ray's direction)
+  pub fn pick(self &, ray Ray3, maxT f32) Option[PanelHit] {
+    imm inv = xf.inverse();
+    imm o = inv.transformPoint(ray.origin);
+    imm d = inv.transformVector(ray.direction);
+    if absf(d.z) < 0.000001 {return None;}
+    if !doubleSided and d.z > 0. {return None;}
+    imm t = -o.z / d.z;
+    if t < 0. or t > maxT {return None;}
+    imm lx = o.x + d.x * t;
+    imm ly = o.y + d.y * t;
+    imm u = lx / widthMeters + 0.5;
+    imm v = 0.5 - ly / heightMeters;
+    if u < 0. or u >= 1. or v < 0. or v >= 1. {return None;}
+    Some[PanelHit](new PanelHit(t, u * ui.width, v * ui.height, u, v));
+  }
+
+  // Points the Ui's pointer where the ray hits. Returns whether it hit; a miss moves the
+  // pointer off the panel (so hover ends)
+  pub fn pointerFromRay(self &mut, ray Ray3, maxT f32) bool {
+    match pick(ray, maxT) {
+      case imm h Some {
+        pointerMove(&mut ui, h.x, h.y);
+        return true;
+      }
+      else {}
+    }
+    pointerMove(&mut ui, -10000., -10000.);
+    false;
+  }
+}

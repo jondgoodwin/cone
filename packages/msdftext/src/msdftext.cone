@@ -1,0 +1,76 @@
+// The msdftext package (a working name; the owner names packages): text for
+// the world, sharp at every size and angle, from TrueType fonts, as one
+// multi-channel signed distance field (MSDF) atlas. A program reaches it with
+// 'import msdftext', and gets:
+//
+// - Font (font.cone): a TrueType file read in place: glyf outlines (simple
+//   and composite, quadratic), cmap (formats 0, 4, 6, 12), hmtx, hhea, head,
+//   maxp, GPOS pair kerning (the 'kern' feature: lookup types 2 and 9) and
+//   the legacy kern table, names. CFF outlines are NOT read yet (a cubic
+//   solver and CFF's charstrings: 'Font.load' refuses an 'OTTO' file by name).
+// - Shape, Edge, resolveOverlaps, colorEdges (shape.cone): an outline as
+//   lines and quadratic Beziers in contours; overlapping and self-crossing
+//   contours (a variable font's) resolved to the boundary of the filled area;
+//   and msdfgen's edge colouring.
+// - generateMsdf, generateSdf, correctErrors (msdf.cone): the field of a
+//   coloured shape, on the CPU, after Viktor Chlumsky's msdfgen, and the
+//   repair of its interpolation artifacts.
+// - Atlas, SkylinePacker (atlas.cone): glyph fields generated on first use
+//   into one RGBA8 image.
+// - layoutText, TextLayout (layout.cone): code points to glyph quads: pair
+//   kerning, line breaking at a width, left, centre and right alignment, line
+//   height. No shaping (see layout.cone for what that would take).
+// - TextRenderer, TextStyle, overlayTransform, worldTransform,
+//   billboardPlacement (render.cone, msdftext.slang): the atlas on the GPU and
+//   text drawn from it, as screen overlay at pixel sizes or placed in the
+//   world (fixed or billboarded), with an outline and a drop shadow.
+// - DEMO_FONT (demofont.cone): six geometric glyphs made for the tests,
+//   public domain, so a program has a font to draw without a file.
+//
+// A frame, text on the screen and a label in the world (render's Post and
+// Renderer, the latter keeping its depth with 'renderer.keepDepth = true'):
+//
+//   // once
+//   imm font = Font.load(&DEMO_FONT)...;
+//   mut atlas = Atlas.create(AtlasConfig.standard());
+//   mut text = TextRenderer.create(&mut device, &atlas, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_FORMAT_RGBA16_FLOAT,
+//     TEXTURE_FORMAT_DEPTH32_FLOAT);
+//   imm hud = text.addText(&mut device, SPACE_OVERLAY);
+//   imm label = text.addText(&mut device, SPACE_WORLD);
+//   // when the words change
+//   imm layout = layoutText(&font, &mut atlas, "Score 10", &LayoutOptions.make(24.));
+//   text.syncAtlas(&mut device, &atlas);
+//   text.set(&mut device, hud, &layout, &TextStyle.plain(white), overlayTransform(w, h, 16., 16.));
+//   // each frame
+//   renderer.render(...);
+//   text.renderWorld(&mut encoder, &post.hdr, &depth);     // before post
+//   post.apply(&mut encoder, &target);
+//   text.renderOverlay(&mut encoder, &target);              // after tone mapping
+//
+// Conventions: the layout's block space is x right, y DOWN, origin at the
+// block's top left, in the units of the size given (pixels or metres).
+// Everything is f32 but the field generation, which is f64.
+//
+// Its files are one module, and only this one, the root, imports:
+//
+//   font.cone      Font, Outline, FontError
+//   shape.cone     Pt, Edge, Contour, Shape, colorEdges
+//   msdf.cone      Field, Frame, generateMsdf, generateSdf, correctErrors
+//   atlas.cone     AtlasConfig, GlyphEntry, SkylinePacker, Atlas
+//   layout.cone    LayoutOptions, TextLayout, layoutText, decodeUtf8
+//   render.cone    TextRenderer and the placement helpers; msdftext.slang's SPIR-V
+//   demofont.cone  DEMO_FONT, DEMO_FONT_KERN (tools/makedemofont.py writes it)
+//
+// Fonts: no font is shipped but the demo one. Windows' Cascadia (OFL 1.1 in
+// its source repository; the installed copy carries Microsoft's wording) and
+// Arial (proprietary) are used by tests that skip when they are absent. The
+// licence of any font a world embeds is open, and is not this package's to
+// settle.
+
+mod msdftext;
+
+import libc;
+import collections use *;
+import geomath use *;
+import gpu use *;
+import render use Camera;

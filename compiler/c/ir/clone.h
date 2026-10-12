@@ -21,6 +21,8 @@ typedef struct CloneState {
                          // and 'srcLine()' are placed (cloneFnCallNode), else NULL
     INode *structshell;  // An instance of a generic type reserved in advance, which the struct cloned next fills
     Nodes *absent;       // That instance's members whose 'where' its arguments do not meet, which it is cloned without
+    Nodes *late;         // That instance's members whose 'where' waits on an argument's layout: cloned, and settled once layouts are done (genericLateWhere)
+    Nodes *latepairs;    // Out: each of 'late' beside the copy made of it, alternating, the original first
     uint16_t scope;     // Current block level
 } CloneState;
 

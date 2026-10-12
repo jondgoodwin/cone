@@ -1,0 +1,674 @@
+// A game HUD laid out by uilayout and drawn by a tiny software rasteriser into BMP files.
+//
+//   congo run packages/uilayout/examples/hud.cone -- --out <folder>
+//
+// The scene: a Backpack window (an inventory grid of twelve slots holding stacks and two bags,
+// a status row), the small bag opened in a window of its own (a bag inside a bag is a bag
+// opened from a slot), a Settings window of tabs (sliders, knobs, toggles, a radio group), a
+// Character window (a text field with a selection, a list), a hotbar of ten slots bound to F1 to
+// F10 with a cooldown running, and a round minimap frame showing a texture handle with markers.
+//
+// uilayout draws nothing: this program takes its DrawList (rectangles, borders, rounded
+// rectangles, lines, arcs, images and text runs) and paints it with the plainest rasteriser that
+// shows what the list says: flat fills with a pixel of edge coverage, a 3 x 5 pixel font, and
+// procedural stand-ins for the textures a renderer would own (the map, the item icons).
+//
+// It writes two pictures: hud-a.bmp, the HUD with a drag in progress over a slot that accepts the
+// item, and hud-b.bmp, the same HUD with a drag over a slot that refuses it, a tooltip up, a text
+// field being edited. Both pictures come from pointer and key events pushed into the Ui, the way a
+// host's input would, and the Ui is laid out again between.
+
+mod hud;
+
+import stdio use *;
+import fs;
+import path use Path;
+import collections use *;
+import geomath use *;
+import time use Instant;
+import uilayout use *;
+
+// ---- the rasteriser ----
+
+const GLYPH_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.:/-,+'!?()%";
+const GLYPH_BITS = [11245u32, 27566u32, 14627u32, 27502u32, 31143u32, 31140u32, 14699u32, 23533u32, 29847u32, 4714u32, 23469u32, 18727u32, 24557u32, 27501u32, 11114u32, 27556u32, 11123u32, 27565u32, 14478u32, 29842u32, 23407u32, 23402u32, 23549u32, 23213u32, 23186u32, 29351u32, 31599u32, 11415u32, 25255u32, 25230u32, 23497u32, 31118u32, 14831u32, 29330u32, 31727u32, 31694u32, 2u32, 1040u32, 4772u32, 448u32, 20u32, 1488u32, 9216u32, 9346u32, 25218u32, 5265u32, 17556u32, 21157u32];
+
+struct Canvas {
+  w i32;
+  h i32;
+  px List[u32];                  // 0xRRGGBB
+  clips List[Aabb2];
+
+  fn make(w i32, h i32) Canvas {
+    mut px = List[u32].withCapacity(usize.from(w * h));
+    mut i = 0;
+    while i < w * h {
+      px.push(0u32);
+      i = i + 1;
+    }
+    new Canvas(w, h, px, List[Aabb2].empty());
+  }
+
+  fn clip(self &) Aabb2 {
+    if clips.len() == 0usize {new Aabb2(new Vec2(0., 0.), new Vec2(f32.from(w), f32.from(h)));}
+    else {*clips[clips.len() - 1usize];};
+  }
+
+  fn pushClip(self &mut, x f32, y f32, cw f32, ch f32) {
+    imm c = clip();
+    clips.push(new Aabb2(new Vec2(maxf(c.min.x, x), maxf(c.min.y, y)), new Vec2(minf(c.max.x, x + cw), minf(c.max.y, y + ch))));
+  }
+
+  fn popClip(self &mut) {
+    if clips.len() > 0usize {clips.pop();}
+  }
+
+  // Blends a colour (0xRRGGBBAA) over the pixel with a coverage in 0..1
+  fn plot(self &mut, x i32, y i32, color u32, cov f32) {
+    if x < 0 or y < 0 or x >= w or y >= h or cov <= 0. {return;}
+    imm c = clip();
+    if f32.from(x) + 0.5 < c.min.x or f32.from(x) + 0.5 >= c.max.x or f32.from(y) + 0.5 < c.min.y or f32.from(y) + 0.5 >= c.max.y {return;}
+    imm a = f32.from(colorA(color)) / 255. * minf(cov, 1.);
+    imm i = usize.from(y * w + x);
+    imm dst = *px[i];
+    imm dr = f32.from((dst >> 16u32) & 255u32);
+    imm dg = f32.from((dst >> 8u32) & 255u32);
+    imm db = f32.from(dst & 255u32);
+    imm r = u32.from(clampf(dr + (f32.from(colorR(color)) - dr) * a + 0.5, 0., 255.));
+    imm g = u32.from(clampf(dg + (f32.from(colorG(color)) - dg) * a + 0.5, 0., 255.));
+    imm b = u32.from(clampf(db + (f32.from(colorB(color)) - db) * a + 0.5, 0., 255.));
+    px.set(i, (r << 16u32) | (g << 8u32) | b);
+  }
+
+  fn set(self &mut, x i32, y i32, rgb u32) {
+    if x < 0 or y < 0 or x >= w or y >= h {return;}
+    px.set(usize.from(y * w + x), rgb);
+  }
+}
+
+// The signed distance from a point to a rounded box (negative inside)
+fn sdRound(px f32, py f32, cx f32, cy f32, hw f32, hh f32, r f32) f32 {
+  imm rr = minf(r, minf(hw, hh));
+  imm qx = absf(px - cx) - (hw - rr);
+  imm qy = absf(py - cy) - (hh - rr);
+  imm ox = maxf(qx, 0.);
+  imm oy = maxf(qy, 0.);
+  (ox * ox + oy * oy).sqrt() + minf(maxf(qx, qy), 0.) - rr;
+}
+
+fn fillRound(c &mut Canvas, x f32, y f32, w f32, h f32, r f32, color u32) {
+  imm clip = c.clip();
+  imm x0 = i32.from(floorf(maxf(x - 1., clip.min.x)));
+  imm x1 = i32.from(ceilf(minf(x + w + 1., clip.max.x)));
+  imm y0 = i32.from(floorf(maxf(y - 1., clip.min.y)));
+  imm y1 = i32.from(ceilf(minf(y + h + 1., clip.max.y)));
+  mut py = y0;
+  while py < y1 {
+    mut pxl = x0;
+    while pxl < x1 {
+      imm d = sdRound(f32.from(pxl) + 0.5, f32.from(py) + 0.5, x + w * 0.5, y + h * 0.5, w * 0.5, h * 0.5, r);
+      c.plot(pxl, py, color, clampf(0.5 - d, 0., 1.));
+      pxl = pxl + 1;
+    }
+    py = py + 1;
+  }
+}
+
+fn strokeRound(c &mut Canvas, x f32, y f32, w f32, h f32, r f32, thick f32, color u32) {
+  imm clip = c.clip();
+  imm x0 = i32.from(floorf(maxf(x - 1., clip.min.x)));
+  imm x1 = i32.from(ceilf(minf(x + w + 1., clip.max.x)));
+  imm y0 = i32.from(floorf(maxf(y - 1., clip.min.y)));
+  imm y1 = i32.from(ceilf(minf(y + h + 1., clip.max.y)));
+  mut py = y0;
+  while py < y1 {
+    mut pxl = x0;
+    while pxl < x1 {
+      imm d = sdRound(f32.from(pxl) + 0.5, f32.from(py) + 0.5, x + w * 0.5, y + h * 0.5, w * 0.5, h * 0.5, r);
+      imm cov = clampf(0.5 - d, 0., 1.) * clampf(0.5 + d + thick, 0., 1.);
+      c.plot(pxl, py, color, cov);
+      pxl = pxl + 1;
+    }
+    py = py + 1;
+  }
+}
+
+fn drawLine(c &mut Canvas, ax f32, ay f32, ex f32, ey f32, thick f32, color u32) {
+  imm x0 = i32.from(floorf(minf(ax, ex) - thick - 1.));
+  imm x1 = i32.from(ceilf(maxf(ax, ex) + thick + 1.));
+  imm y0 = i32.from(floorf(minf(ay, ey) - thick - 1.));
+  imm y1 = i32.from(ceilf(maxf(ay, ey) + thick + 1.));
+  imm dx = ex - ax;
+  imm dy = ey - ay;
+  imm len2 = maxf(dx * dx + dy * dy, 0.0001);
+  mut py = y0;
+  while py < y1 {
+    mut pxl = x0;
+    while pxl < x1 {
+      imm qx = f32.from(pxl) + 0.5 - ax;
+      imm qy = f32.from(py) + 0.5 - ay;
+      imm t = clampf((qx * dx + qy * dy) / len2, 0., 1.);
+      imm ex = qx - dx * t;
+      imm ey = qy - dy * t;
+      imm d = (ex * ex + ey * ey).sqrt() - thick * 0.5;
+      c.plot(pxl, py, color, clampf(0.5 - d, 0., 1.));
+      pxl = pxl + 1;
+    }
+    py = py + 1;
+  }
+}
+
+// An annular sector (thick > 0) or a pie (thick 0), angles clockwise on the screen from +x
+fn drawArc(c &mut Canvas, cx f32, cy f32, r f32, a0 f32, a1 f32, thick f32, color u32) {
+  imm x0 = i32.from(floorf(cx - r - 2.));
+  imm x1 = i32.from(ceilf(cx + r + 2.));
+  imm y0 = i32.from(floorf(cy - r - 2.));
+  imm y1 = i32.from(ceilf(cy + r + 2.));
+  imm tau = 6.2831855;
+  imm sweep = a1 - a0;
+  mut py = y0;
+  while py < y1 {
+    mut pxl = x0;
+    while pxl < x1 {
+      imm qx = f32.from(pxl) + 0.5 - cx;
+      imm qy = f32.from(py) + 0.5 - cy;
+      imm dist = (qx * qx + qy * qy).sqrt();
+      mut inside = true;
+      if sweep < tau - 0.001 {
+        mut a = atan2(qy, qx) - a0;
+        while a < 0. {a = a + tau;}
+        while a >= tau {a = a - tau;}
+        inside = a <= sweep;
+      }
+      if inside {
+        mut cov = 0.;
+        if thick <= 0. {cov = clampf(r + 0.5 - dist, 0., 1.);}
+        else {cov = clampf(thick * 0.5 + 0.5 - absf(dist - r), 0., 1.);}
+        c.plot(pxl, py, color, cov);
+      }
+      pxl = pxl + 1;
+    }
+    py = py + 1;
+  }
+}
+
+fn glyphOf(ch u8) u32 {
+  mut c = ch;
+  if c >= 'a' and c <= 'z' {c = c - 32u8;}
+  mut i = 0usize;
+  while i < GLYPH_CHARS.len {
+    if GLYPH_CHARS[i] == c {return GLYPH_BITS[i];}
+    i = i + 1usize;
+  }
+  0u32;
+}
+
+fn textScale(size f32) i32 {
+  imm s = i32.from(floorf(size / 7. + 0.5));
+  if s < 1 {1;} else {s;};
+}
+
+// The text closure the Ui is given: 4 pixels a character per unit of scale, 8 high
+fn measureText(t &str, font u32, size f32) Vec2 {
+  imm s = f32.from(textScale(size));
+  new Vec2(f32.from(t.len()) * 4. * s, 8. * s);
+}
+
+fn drawText(c &mut Canvas, x f32, y f32, w f32, h f32, t &str, size f32, color u32, align u32) {
+  imm s = textScale(size);
+  imm tw = f32.from(t.len()) * 4. * f32.from(s) - f32.from(s);
+  mut ox = x;
+  if align == TA_CENTER {ox = x + (w - tw) * 0.5;}
+  elif align == TA_RIGHT {ox = x + w - tw;}
+  imm oy = y + (h - 5. * f32.from(s)) * 0.5;
+  mut i = 0usize;
+  while i < t.len() {
+    imm bits = glyphOf(t[i]);
+    mut row = 0;
+    while row < 5 {
+      imm rowBits = (bits >> u32.from((4 - row) * 3)) & 7u32;
+      mut col = 0;
+      while col < 3 {
+        if ((rowBits >> u32.from(2 - col)) & 1u32) != 0u32 {
+          imm gx = ox + f32.from(i32.from(i) * 4 * s + col * s);
+          imm gy = oy + f32.from(row * s);
+          mut sy = 0;
+          while sy < s {
+            mut sx = 0;
+            while sx < s {
+              c.plot(i32.from(floorf(gx)) + sx, i32.from(floorf(gy)) + sy, color, 1.);
+              sx = sx + 1;
+            }
+            sy = sy + 1;
+          }
+        }
+        col = col + 1;
+      }
+      row = row + 1;
+    }
+    i = i + 1usize;
+  }
+}
+
+// The textures a renderer would hold, as functions of (u, v): the map (7) and some icons
+fn sampleTexture(tex u32, u f32, v f32) u32 {
+  if tex == 7u32 {
+    imm h = sin(u * 31.) + sin(v * 23.) * 0.8 + sin((u + v) * 17.) * 0.6 + sin((u - v) * 11.);
+    imm road = absf(sin((u * 0.8 + v * 1.3) * 29.));
+    if h < -1.4 {return rgb(40u32, 78u32, 130u32);}
+    if h < -0.9 {return rgb(70u32, 110u32, 160u32);}
+    if road < 0.05 {return rgb(180u32, 160u32, 110u32);}
+    if h > 1.6 {return rgb(120u32, 116u32, 110u32);}
+    if h > 0.6 {return rgb(70u32, 112u32, 66u32);}
+    return rgb(92u32, 138u32, 80u32);
+  }
+  imm dx = u - 0.5;
+  imm dy = v - 0.5;
+  imm r = (dx * dx + dy * dy).sqrt();
+  if tex == 101u32 {                       // a coin
+    if r < 0.30 {return rgb(255u32, 215u32, 60u32);}
+    if r < 0.40 {return rgb(190u32, 140u32, 20u32);}
+    return 0u32;
+  }
+  if tex == 102u32 {                       // a flask
+    imm qx = u - 0.5;
+    imm qy = v - 0.66;
+    if (qx * qx + qy * qy).sqrt() < 0.26 {return rgb(220u32, 50u32, 70u32);}
+    if absf(qx) < 0.07 and v > 0.18 and v < 0.45 {return rgb(200u32, 220u32, 235u32);}
+    if absf(qx) < 0.1 and v > 0.12 and v <= 0.18 {return rgb(160u32, 110u32, 70u32);}
+    return 0u32;
+  }
+  if tex == 103u32 {                       // a sword
+    imm d = absf((u + v) - 1.);
+    if d < 0.07 and u > 0.22 and u < 0.82 {return rgb(215u32, 220u32, 228u32);}
+    imm h = absf(u - v);
+    if h < 0.07 and u > 0.30 and u < 0.40 {return rgb(150u32, 110u32, 60u32);}
+    if d < 0.09 and u > 0.16 and u <= 0.22 {return rgb(130u32, 90u32, 50u32);}
+    return 0u32;
+  }
+  if tex == 105u32 or tex == 106u32 {      // a bag
+    imm rx = absf(dx) - 0.18;
+    imm ry = dy - 0.06;
+    if rx < 0.14 and ry < 0.26 and ry > -0.26 and (absf(dx) < 0.30) {
+      return if tex == 105u32 {rgb(150u32, 100u32, 60u32);} else {rgb(120u32, 78u32, 120u32);};
+    }
+    if absf(dx) < 0.09 and dy < -0.2 and dy > -0.36 {return rgb(200u32, 170u32, 90u32);}
+    return 0u32;
+  }
+  if tex == 110u32 {                       // fireball
+    if r < 0.18 {return rgb(255u32, 240u32, 150u32);}
+    if r < 0.34 {return rgb(255u32, 150u32, 40u32);}
+    if r < 0.42 {return rgb(200u32, 60u32, 20u32);}
+    return 0u32;
+  }
+  if tex == 111u32 {                       // frost
+    imm a = absf(dx) + absf(dy);
+    if a < 0.34 {return rgb(150u32, 210u32, 255u32);}
+    return 0u32;
+  }
+  if tex == 112u32 {                       // heal
+    if absf(dx) < 0.09 and absf(dy) < 0.32 {return rgb(90u32, 220u32, 120u32);}
+    if absf(dy) < 0.09 and absf(dx) < 0.32 {return rgb(90u32, 220u32, 120u32);}
+    return 0u32;
+  }
+  rgb(200u32, 80u32, 200u32);
+}
+
+fn drawImage(c &mut Canvas, x f32, y f32, w f32, h f32, tex u32, u0 f32, v0 f32, u1 f32, v1 f32, radius f32) {
+  imm clip = c.clip();
+  imm xa = i32.from(floorf(maxf(x, clip.min.x)));
+  imm xb = i32.from(ceilf(minf(x + w, clip.max.x)));
+  imm ya = i32.from(floorf(maxf(y, clip.min.y)));
+  imm yb = i32.from(ceilf(minf(y + h, clip.max.y)));
+  mut py = ya;
+  while py < yb {
+    mut pxl = xa;
+    while pxl < xb {
+      imm fx = (f32.from(pxl) + 0.5 - x) / w;
+      imm fy = (f32.from(py) + 0.5 - y) / h;
+      imm d = if radius > 0. {sdRound(f32.from(pxl) + 0.5, f32.from(py) + 0.5, x + w * 0.5, y + h * 0.5, w * 0.5, h * 0.5, radius);} else {-1.;};
+      imm col = sampleTexture(tex, u0 + (u1 - u0) * fx, v0 + (v1 - v0) * fy);
+      if colorA(col) != 0u32 or tex == 7u32 {
+        c.plot(pxl, py, withAlpha(col | 255u32, 255u32), clampf(0.5 - d, 0., 1.));
+      }
+      pxl = pxl + 1;
+    }
+    py = py + 1;
+  }
+}
+
+fn paint(c &mut Canvas, list &DrawList) {
+  c.clips.clear();
+  mut i = 0usize;
+  while i < list.cmds.len() {
+    imm d = list.cmds[i];
+    imm k = d.kind;
+    if k == DC_RECT {fillRound(c, d.x, d.y, d.w, d.h, d.radius, d.color);}
+    elif k == DC_BORDER {strokeRound(c, d.x, d.y, d.w, d.h, d.radius, d.thick, d.color);}
+    elif k == DC_IMAGE {drawImage(c, d.x, d.y, d.w, d.h, d.tex, d.u0, d.v0, d.u1, d.v1, d.radius);}
+    elif k == DC_LINE {drawLine(c, d.x, d.y, d.w, d.h, d.thick, d.color);}
+    elif k == DC_ARC {drawArc(c, d.x, d.y, d.w, d.a0, d.a1, d.thick, d.color);}
+    elif k == DC_TEXT {drawText(c, d.x, d.y, d.w, d.h, list.textOf(i), d.size, d.color, d.align);}
+    elif k == DC_CLIP_PUSH {c.pushClip(d.x, d.y, d.w, d.h);}
+    elif k == DC_CLIP_POP {c.popClip();}
+    i = i + 1usize;
+  }
+}
+
+// ---- BMP output ----
+
+fn put32(out &mut List[u8], v u32) {
+  out.push(u8.from(v & 0xFFu32));
+  out.push(u8.from((v >> 8u32) & 0xFFu32));
+  out.push(u8.from((v >> 16u32) & 0xFFu32));
+  out.push(u8.from((v >> 24u32) & 0xFFu32));
+}
+
+fn saveBmp(file &String, c &Canvas) bool {
+  imm rowSize = (c.w * 3 + 3) / 4 * 4;
+  imm pixelBytes = rowSize * c.h;
+  mut out = List[u8].withCapacity(usize.from(54 + pixelBytes));
+  out.push('B');
+  out.push('M');
+  put32(&mut out, u32.from(54 + pixelBytes));
+  put32(&mut out, 0u32);
+  put32(&mut out, 54u32);
+  put32(&mut out, 40u32);
+  put32(&mut out, u32.from(c.w));
+  put32(&mut out, u32.from(c.h));
+  out.push(1u8);
+  out.push(0u8);
+  out.push(24u8);
+  out.push(0u8);
+  put32(&mut out, 0u32);
+  put32(&mut out, u32.from(pixelBytes));
+  put32(&mut out, 2835u32);
+  put32(&mut out, 2835u32);
+  put32(&mut out, 0u32);
+  put32(&mut out, 0u32);
+  mut y = c.h - 1;
+  while y >= 0 {
+    mut x = 0;
+    while x < c.w {
+      imm p = *c.px[usize.from(y * c.w + x)];
+      out.push(u8.from(p & 255u32));
+      out.push(u8.from((p >> 8u32) & 255u32));
+      out.push(u8.from((p >> 16u32) & 255u32));
+      x = x + 1;
+    }
+    mut pad = c.w * 3;
+    while pad < rowSize {
+      out.push(0u8);
+      pad = pad + 1;
+    }
+    y = y - 1;
+  }
+  imm v = out.view();
+  imm p = Path.from(file.view());
+  fs.writeFile(&p, v) is Ok;
+}
+
+// ---- the world behind the HUD ----
+
+fn paintBackdrop(c &mut Canvas) {
+  mut y = 0;
+  while y < c.h {
+    imm t = f32.from(y) / f32.from(c.h);
+    mut x = 0;
+    while x < c.w {
+      imm fx = f32.from(x) / f32.from(c.w);
+      // a dusk sky above a dark ground, with hills
+      imm hill = 0.62 + sin(fx * 6.) * 0.03 + sin(fx * 15. + 1.) * 0.015;
+      if t < hill {
+        imm k = t / hill;
+        c.set(x, y, mixColor(rgb(30u32, 34u32, 74u32), rgb(214u32, 124u32, 96u32), k * k) >> 8u32);
+      }
+      else {
+        imm k = (t - hill) / (1. - hill);
+        c.set(x, y, mixColor(rgb(40u32, 52u32, 44u32), rgb(14u32, 18u32, 18u32), k) >> 8u32);
+      }
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+}
+
+// ---- the scene ----
+
+fn centreX(ui &Ui, id usize) f32 {ui.nodes[id].gx + ui.nodes[id].w * 0.5;}
+fn centreY(ui &Ui, id usize) f32 {ui.nodes[id].gy + ui.nodes[id].h * 0.5;}
+
+fn labelRow(ui &mut Ui, parent usize, text &str, w f32) usize {
+  imm l = label(ui, parent, text);
+  ui.setSize(l, w, -1.);
+  l;
+}
+
+fn main(argc i32, argv **u8) i32 {
+  mut dir = String.from(".");
+  mut a = 1;
+  while a < argc {
+    imm arg = *(argv + usize.from(a));
+    if *arg == '-' and *(arg + 1usize) == '-' and *(arg + 2usize) == 'o' and a + 1 < argc {
+      dir = String.empty();
+      imm s = *(argv + usize.from(a + 1));
+      mut i = 0usize;
+      while *(s + i) != 0u8 {
+        dir.appendByte(*(s + i));
+        i = i + 1usize;
+      }
+      a = a + 1;
+    }
+    a = a + 1;
+  }
+
+  mut ui = Ui.make(960., 600.);
+  mut m = fn(t &str, font u32, size f32) Vec2 { measureText(t, font, size); };
+
+  // items
+  imm coin = ui.inv.defineType("coin", 101u32, 99u32, 0u32, 1u32, 0xffd700ffu32);
+  imm potion = ui.inv.defineType("potion", 102u32, 20u32, 0u32, 1u32, 0xdc3246ffu32);
+  imm sword = ui.inv.defineType("sword", 103u32, 1u32, 0u32, 2u32, 0xd7dce4ffu32);
+  imm smallBagT = ui.inv.defineType("small bag", 105u32, 1u32, 4u32, 1u32, 0x96643cffu32);
+  imm largeBagT = ui.inv.defineType("large bag", 106u32, 1u32, 8u32, 1u32, 0x784e78ffu32);
+  imm pack = ui.inv.makeContainer(12u32, 0u32);
+  ui.inv.put(ui.inv.newItem(coin, 57u32), pack, 0u32);
+  ui.inv.put(ui.inv.newItem(potion, 5u32), pack, 1u32);
+  ui.inv.put(ui.inv.newItem(sword, 1u32), pack, 2u32);
+  imm smallBag = ui.inv.newItem(smallBagT, 1u32);
+  ui.inv.put(smallBag, pack, 3u32);
+  imm largeBag = ui.inv.newItem(largeBagT, 1u32);
+  ui.inv.put(largeBag, pack, 4u32);
+  ui.inv.put(ui.inv.newItem(coin, 12u32), pack, 6u32);
+  ui.inv.put(ui.inv.newItem(potion, 20u32), pack, 7u32);
+  imm smallC = ui.inv.items[usize.from(smallBag)].bag;
+  ui.inv.put(ui.inv.newItem(coin, 3u32), smallC, 0u32);
+  ui.inv.put(ui.inv.newItem(potion, 2u32), smallC, 1u32);
+
+  // the Backpack
+  imm w1 = window(&mut ui, "Backpack", 24., 36., 262., 292.);
+  windowSetResizable(&mut ui, w1, false);
+  imm c1 = windowContent(&ui, w1);
+  imm grid = inventoryGrid(&mut ui, c1, pack, 4u32);
+  imm status = ui.create(c1, K_PLAIN);
+  ui.setFlex(status, LK_ROW, 8.);
+  ui.setJustify(status, JUSTIFY_START, ALIGN_CENTER);
+  imm weight = label(&mut ui, status, "WEIGHT 12/40");
+  ui.setFlexChild(weight, 1., 1., -1.);
+  imm sortBtn = button(&mut ui, status, "SORT");
+  ui.setTooltip(sortBtn, "SORT THE PACK");
+  imm gold = label(&mut ui, c1, "GOLD 1,234");
+  ui.nodes[gold].style = ui.theme.find("label");
+
+  // the small bag opened
+  imm w2 = bagWindow(&mut ui, smallBag, 308., 92., 2u32);
+  ui.windows[ui.nodes[w2].data].title = ui.windows[ui.nodes[w2].data].title;
+
+  // Settings: tabs
+  imm w3 = window(&mut ui, "Settings", 600., 190., 330., 250.);
+  imm c3 = windowContent(&ui, w3);
+  imm tabset = tabs(&mut ui, c3);
+  ui.setFlexChild(tabset, 1., 1., -1.);
+  imm pAudio = addTab(&mut ui, tabset, "AUDIO");
+  imm pDisplay = addTab(&mut ui, tabset, "DISPLAY");
+  addTab(&mut ui, tabset, "KEYS");
+  imm volRow = ui.create(pAudio, K_PLAIN);
+  ui.setFlex(volRow, LK_ROW, 8.);
+  ui.setJustify(volRow, JUSTIFY_START, ALIGN_CENTER);
+  imm volLabel = labelRow(&mut ui, volRow, "VOLUME", 70.);
+  imm volume = slider(&mut ui, volRow, 0., 100., 65., 5.);
+  ui.setFlexChild(volume, 1., 1., -1.);
+  imm knobs = ui.create(pAudio, K_PLAIN);
+  ui.setFlex(knobs, LK_ROW, 18.);
+  ui.setJustify(knobs, JUSTIFY_CENTER, ALIGN_CENTER);
+  imm k1 = knob(&mut ui, knobs, 0., 1., 0.7, 0.);
+  imm k2 = knob(&mut ui, knobs, 0., 1., 0.25, 0.);
+  imm k3 = knob(&mut ui, knobs, 0., 1., 0.5, 0.);
+  imm knobNames = ui.create(pAudio, K_PLAIN);
+  ui.setFlex(knobNames, LK_ROW, 18.);
+  ui.setJustify(knobNames, JUSTIFY_CENTER, ALIGN_CENTER);
+  labelRow(&mut ui, knobNames, "BASS", 44.);
+  labelRow(&mut ui, knobNames, "MID", 44.);
+  labelRow(&mut ui, knobNames, "TREBLE", 44.);
+  ui.nodes[ui.nodes[knobNames].first].alignSelf = ALIGN_CENTER;
+  imm fs1 = toggle(&mut ui, pDisplay, "FULLSCREEN", true);
+  imm vs1 = toggle(&mut ui, pDisplay, "VSYNC", false);
+  imm q1 = toggle(&mut ui, pDisplay, "LOW", false);
+  imm q2 = toggle(&mut ui, pDisplay, "HIGH", true);
+  setRadioGroup(&mut ui, q1, 1u32);
+  setRadioGroup(&mut ui, q2, 1u32);
+
+  // Character: a text field and a list
+  imm w4 = window(&mut ui, "Character", 24., 350., 300., 170.);
+  imm c4 = windowContent(&ui, w4);
+  imm nameRow = ui.create(c4, K_PLAIN);
+  ui.setFlex(nameRow, LK_ROW, 8.);
+  ui.setJustify(nameRow, JUSTIFY_START, ALIGN_CENTER);
+  labelRow(&mut ui, nameRow, "NAME", 40.);
+  imm nameField = textField(&mut ui, nameRow, "Aria the Bold");
+  ui.setFlexChild(nameField, 1., 1., -1.);
+  imm classes = listBox(&mut ui, c4);
+  ui.setFlexChild(classes, 1., 1., -1.);
+  listAdd(&mut ui, classes, "WARRIOR");
+  listAdd(&mut ui, classes, "RANGER");
+  listAdd(&mut ui, classes, "MAGE");
+  listAdd(&mut ui, classes, "BARD");
+  listSelect(&mut ui, classes, 1i32);
+
+  // the hotbar, anchored to the bottom centre of the overlay-free layer
+  imm bar = hotbar(&mut ui, ui.root, 10u32);
+  ui.setAnchors(bar, 0.5, 1., 0.5, 1.);
+  ui.setPivot(bar, 0.5, 1.);
+  ui.setOffsets(bar, 0., -12., 0., 0.);
+  imm hs0 = hotbarSlot(&ui, bar, 0u32);
+  imm hs1 = hotbarSlot(&ui, bar, 1u32);
+  imm hs2 = hotbarSlot(&ui, bar, 2u32);
+  imm hs3 = hotbarSlot(&ui, bar, 3u32);
+  hotbarBind(&mut ui, hs0, BK_SPELL, 1u32, 110u32, 0xff9628ffu32, 4.);
+  hotbarBind(&mut ui, hs1, BK_SPELL, 2u32, 111u32, 0x96d2ffffu32, 6.);
+  hotbarBind(&mut ui, hs2, BK_SPELL, 3u32, 112u32, 0x5adc78ffu32, 10.);
+  hotbarBind(&mut ui, hs3, BK_ITEMTYPE, potion, 102u32, 0xdc3246ffu32, 1.);
+  hotbarSetCount(&mut ui, hs3, 27u32);
+  ui.setTooltip(hs2, "HEAL: 40 HP");
+  hotbarStartCooldown(&mut ui, hs2, 10.);
+
+  // the minimap
+  imm mm = minimap(&mut ui, ui.root, 150., 7u32);
+  ui.setAnchors(mm, 1., 0., 1., 0.);
+  ui.setPivot(mm, 1., 0.);
+  ui.setOffsets(mm, -24., 24., 0., 0.);
+  minimapSetShape(&mut ui, mm, MAP_CIRCLE);
+  minimapSetView(&mut ui, mm, 0.42, 0.55, 2.2);
+  minimapAddMarker(&mut ui, mm, 0.42, 0.55, 0xffffffffu32, 8.);
+  minimapAddMarker(&mut ui, mm, 0.50, 0.50, 0xe03030ffu32, 6.);
+  minimapAddMarker(&mut ui, mm, 0.36, 0.60, 0xe03030ffu32, 6.);
+  minimapAddMarker(&mut ui, mm, 0.45, 0.45, 0xffe040ffu32, 7.);
+  imm mapLabel = label(&mut ui, ui.root, "OLD WOOD");
+  ui.setAnchors(mapLabel, 1., 0., 1., 0.);
+  ui.setPivot(mapLabel, 1., 0.);
+  ui.setOffsets(mapLabel, -24., 180., 0., 0.);
+
+  // a focused text field with a selection, so the caret and the selection show
+  focusSet(&mut ui, nameField);
+  ui.fields[ui.nodes[nameField].data].anchor = 5usize;
+  ui.fields[ui.nodes[nameField].data].caret = 8usize;
+
+  // the first layout
+  mut t0 = Instant.now();
+  layout(&mut ui, &mut m);
+  imm firstNs = t0.elapsed().nanos();
+  print <- "First layout: "; print <- ui.stats.measured; print <- " nodes measured, ";
+  print <- ui.stats.arranged; print <- " arranged, "; print <- ui.stats.textMeasures; print <- " texts measured, ";
+  print <- firstNs / 1000i64; print <- " us\n";
+
+  // ---- picture A: dragging a potion stack over an empty slot ----
+  imm potionSlot = slotNode(&ui, grid, 1u32);
+  imm emptySlot = slotNode(&ui, grid, 5u32);
+  pointerMove(&mut ui, centreX(&ui, potionSlot), centreY(&ui, potionSlot));
+  pointerDown(&mut ui, BTN_LEFT);
+  pointerMove(&mut ui, centreX(&ui, emptySlot) - 6., centreY(&ui, emptySlot) + 4.);
+  t0 = Instant.now();
+  layout(&mut ui, &mut m);
+  imm secondNs = t0.elapsed().nanos();
+  print <- "Layout after the drag began: "; print <- ui.stats.measured; print <- " measured, ";
+  print <- ui.stats.arranged; print <- " arranged, "; print <- ui.stats.arrangeSkips; print <- " skipped, ";
+  print <- secondNs / 1000i64; print <- " us\n";
+  mut list = DrawList.make();
+  drawUi(&ui, &mut list);
+  print <- "Draw list: "; print <- list.len(); print <- " commands (";
+  print <- list.count(DC_RECT); print <- " rects, "; print <- list.count(DC_BORDER); print <- " borders, ";
+  print <- list.count(DC_TEXT); print <- " texts, "; print <- list.count(DC_IMAGE); print <- " images, ";
+  print <- list.count(DC_LINE); print <- " lines, "; print <- list.count(DC_ARC); print <- " arcs)\n";
+  mut canvas = Canvas.make(960, 600);
+  paintBackdrop(&mut canvas);
+  paint(&mut canvas, &list);
+  mut fileA = dir.copy();
+  fileA <- "/hud-a.bmp";
+  if !saveBmp(&fileA, &canvas) {
+    print <- "Could not write "; print <- fileA.view(); print <- "\n";
+    return 1;
+  }
+  print <- "Wrote "; print <- fileA.view(); print <- "\n";
+  pointerUp(&mut ui, BTN_LEFT);
+  ui.takeEvents();
+
+  // ---- picture B: the same potions over a stack of potions that is full ----
+  imm fullPotions = slotNode(&ui, grid, 7u32);
+  imm movedPotions = emptySlot;          // the potions of picture A are in this slot now
+  pointerMove(&mut ui, centreX(&ui, movedPotions), centreY(&ui, movedPotions));
+  pointerDown(&mut ui, BTN_LEFT);
+  pointerMove(&mut ui, centreX(&ui, fullPotions) + 8., centreY(&ui, fullPotions) + 6.);
+  layout(&mut ui, &mut m);
+  drawUi(&ui, &mut list);
+  paintBackdrop(&mut canvas);
+  paint(&mut canvas, &list);
+  mut fileB = dir.copy();
+  fileB <- "/hud-b.bmp";
+  if !saveBmp(&fileB, &canvas) {return 1;}
+  print <- "Wrote "; print <- fileB.view(); print <- "\n";
+  pointerUp(&mut ui, BTN_LEFT);
+  imm evs = ui.takeEvents();
+  mut refused = 0;
+  mut e = 0usize;
+  while e < evs.len() {
+    if evs[e].kind == UE_DROP_REFUSED {refused = refused + 1;}
+    e = e + 1usize;
+  }
+  print <- "Refused drops reported: "; print <- refused; print <- "\n";
+
+  // ---- picture C: the pointer rests on the heal spell; a tooltip appears; the field keeps its caret ----
+  focusSet(&mut ui, nameField);
+  ui.fields[ui.nodes[nameField].data].anchor = 5usize;
+  ui.fields[ui.nodes[nameField].data].caret = 8usize;
+  pointerMove(&mut ui, centreX(&ui, hs2), centreY(&ui, hs2));
+  update(&mut ui, 0.8);
+  layout(&mut ui, &mut m);
+  drawUi(&ui, &mut list);
+  paintBackdrop(&mut canvas);
+  paint(&mut canvas, &list);
+  mut fileC = dir.copy();
+  fileC <- "/hud-c.bmp";
+  if !saveBmp(&fileC, &canvas) {return 1;}
+  print <- "Wrote "; print <- fileC.view(); print <- "\n";
+  0;
+}

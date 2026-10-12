@@ -1,0 +1,324 @@
+// ======== SoftBody: particles, constraints and the world they live in ========
+
+// A stretch (distance) constraint: particles a and b held 'rest' apart, with
+// 'compliance' (the inverse of a stiffness; 0 is rigid, in metres per newton).
+// 'lambda' is XPBD's accumulated multiplier, reset every substep.
+pub struct DistanceC {
+  pub a u32;
+  pub b u32;
+  pub rest f32;
+  pub compliance f32;
+  pub lambda f32;
+}
+
+// A bending constraint across an edge: particles a and b are the shared edge,
+// c and d the far corners of the two triangles (a, b, c) and (b, a, d). 'rest'
+// is the signed dihedral angle (0: flat), in radians.
+pub struct BendC {
+  pub a u32;
+  pub b u32;
+  pub c u32;
+  pub d u32;
+  pub rest f32;
+  pub compliance f32;
+  pub lambda f32;
+}
+
+// A curvature constraint on three consecutive particles of a rope: the length of
+// q = p_a - 2 p_b + p_c (the discrete curvature vector, about the segment length
+// times the turn between segments) is held at 'rest' (0 for a rope that lies
+// straight), with 'compliance' in metres per newton.
+pub struct CurveC {
+  pub a u32;
+  pub b u32;
+  pub c u32;
+  pub rest f32;
+  pub compliance f32;
+  pub lambda f32;
+}
+
+// A long range attachment (Kim, Chentanez and Muller 2012): 'particle' may be
+// no farther than 'maxLength' from 'anchor', a pinned or attached particle. It
+// pulls, never pushes.
+pub struct TetherC {
+  pub particle u32;
+  pub anchor u32;
+  pub maxLength f32;
+}
+
+// A particle carried by the anchor frame: it sits at 'local' in the frame, and
+// follows the frame as it moves (a flagpole, the balloon's basket)
+pub struct Anchor {
+  pub particle u32;
+  pub offset Vec3;
+}
+
+// The pressure (volume) constraint of a closed, outward-wound mesh: its volume
+// held at 'target' times 'restVolume'
+pub struct PressureC {
+  pub active bool;
+  pub restVolume f32;
+  pub target f32;        // the volume wanted, as a multiple of restVolume
+  pub compliance f32;
+  pub lambda f32;
+}
+
+// A heightfield ground: heights on a regular grid in x and z, bilinear
+// between samples (a triangle pair per cell is not used: the surface is the
+// bilinear one), nothing outside the grid
+pub struct Heightfield {
+  pub originX f32;      // the x and z of sample (0, 0)
+  pub originZ f32;
+  pub cell f32;         // spacing between samples
+  pub nx u32;           // samples along x and z
+  pub nz u32;
+  pub heights List[f32];   // row by row along x, nx per row
+
+  // The height at (x, z) and whether it lies on the grid
+  pub fn heightAt(self &, x f32, z f32) (f32, bool) {
+    imm fx = (x - originX) / cell;
+    imm fz = (z - originZ) / cell;
+    if fx < 0. or fz < 0. or fx > f32.from(nx - 1u32) or fz > f32.from(nz - 1u32) { return (0., false); }
+    mut ix = usize.from(fx);
+    mut iz = usize.from(fz);
+    if ix >= usize.from(nx - 1u32) { ix = usize.from(nx - 2u32); }
+    if iz >= usize.from(nz - 1u32) { iz = usize.from(nz - 2u32); }
+    imm tx = fx - f32.from(ix);
+    imm tz = fz - f32.from(iz);
+    imm row = usize.from(nx);
+    imm h00 = *heights[iz * row + ix];
+    imm h10 = *heights[iz * row + ix + 1usize];
+    imm h01 = *heights[(iz + 1usize) * row + ix];
+    imm h11 = *heights[(iz + 1usize) * row + ix + 1usize];
+    imm hx0 = h00 + (h10 - h00) * tx;
+    imm hx1 = h01 + (h11 - h01) * tx;
+    (hx0 + (hx1 - hx0) * tz, true);
+  }
+}
+
+pub const COLLIDER_SPHERE = 1u32;
+pub const COLLIDER_CAPSULE = 2u32;
+pub const COLLIDER_BOX = 3u32;
+pub const COLLIDER_PLANE = 4u32;
+
+// A simple collision shape, stored as data so that the body owns no closure and
+// the caller moves it between steps by rewriting its fields
+pub struct Collider {
+  pub kind u32;
+  pub a Vec3;          // sphere centre; capsule start; box centre; a point on the plane
+  pub b Vec3;          // capsule end; box half extents; the plane's unit normal
+  pub radius f32;      // sphere or capsule radius
+  pub rotation Quat;   // box orientation
+
+  pub fn sphere(center Vec3, radius f32) Collider {
+    new Collider(COLLIDER_SPHERE, center, new Vec3(0., 0., 0.), radius, Quat.identity());
+  }
+
+  pub fn capsule(start Vec3, end Vec3, radius f32) Collider {
+    new Collider(COLLIDER_CAPSULE, start, end, radius, Quat.identity());
+  }
+
+  pub fn box(center Vec3, halfExtents Vec3, rotation Quat) Collider {
+    new Collider(COLLIDER_BOX, center, halfExtents, 0., rotation);
+  }
+
+  // The half space below the plane through 'point' with unit 'normal'
+  pub fn plane(point Vec3, normal Vec3) Collider {
+    new Collider(COLLIDER_PLANE, point, normal.normalize(), 0., Quat.identity());
+  }
+}
+
+// A soft body: cloth, rope, chain or pressurised envelope, simulated by
+// extended position based dynamics (XPBD; Macklin, Muller and Chentanez 2016)
+// with small steps (Muller et al. 2020): a step is cut into 'substeps' and each
+// substep solves every constraint once ('iterations' times, if asked).
+//
+// Everything is plain data. The fields are public so that a program can read
+// positions, move colliders and tune constraints between steps; the one
+// invariant is that every list indexed by particle has one entry per particle.
+pub struct SoftBody {
+  // ---- per particle ----
+  pub pos List[Vec3];
+  pub vel List[Vec3];
+  pub mass List[f32];          // kg; kept while a particle is pinned
+  pub invMass List[f32];       // 0 for a pinned or attached particle
+  pub rest List[Vec3];         // positions when built (self collision's neighbours)
+  // ---- the surface, if there is one ----
+  pub tris List[u32];          // three particles a triangle
+  pub vertexMap List[u32];     // output vertex -> particle (a mesh's seams share a particle)
+  pub vertexUvs List[Vec2];    // output vertex uvs (empty: none)
+  pub vertexTris List[u32];    // output indices, three a triangle, over output vertices
+  // ---- constraints ----
+  pub dist List[DistanceC];
+  pub bend List[BendC];
+  pub curves List[CurveC];
+  pub tethers List[TetherC];
+  pub pressure PressureC;
+  // ---- the world ----
+  pub colliders List[Collider];
+  pub heightfields List[Heightfield];
+  pub anchors List[Anchor];
+  pub frameFrom Transform3;    // the anchor frame at the start of the step
+  pub frameTo Transform3;      // and at its end
+  // ---- scratch ----
+  pub prev List[Vec3];
+  pub force List[Vec3];
+  pub cellStart List[u32];
+  pub cellItems List[u32];
+  pub cellOf List[u32];
+  pub ropeSegments List[u32];  // particle pairs, the segments wind pushes
+  // ---- settings ----
+  pub gravity Vec3 = new Vec3(0., -9.81, 0.);
+  pub damping f32 = 0.2;       // velocity damping, per second
+  pub substeps u32 = 10u32;
+  pub iterations u32 = 1u32;
+  pub strainLimit f32 = -1.;   // a stretch edge may not grow past this fraction (negative: no limit)
+  pub limitPasses u32 = 2u32;
+  pub thickness f32 = 0.01;    // a particle's radius in collisions
+  pub friction f32 = 0.3;      // Coulomb friction against colliders
+  // Wind: air density (kg/m3) times the coefficients below make the force
+  pub airDensity f32 = 1.2;
+  pub dragCoeff f32 = 1.0;     // pressure drag of a plate facing the flow
+  pub skinCoeff f32 = 0.02;    // skin friction along the surface
+  pub liftCoeff f32 = 1.0;     // lift of a plate at an angle to the flow
+  pub ropeDrag f32 = 1.0;      // cross-flow drag coefficient of a rope's segments
+  pub ropeRadius f32 = 0.0;    // 0: ropes feel no wind
+  pub selfCollide bool = false;
+  pub selfRadius f32 = 0.02;   // half the distance particles keep apart from each other
+
+  // A body with nothing in it
+  pub fn empty() SoftBody {
+    new SoftBody(List[Vec3].empty(), List[Vec3].empty(), List[f32].empty(), List[f32].empty(),
+      List[Vec3].empty(), List[u32].empty(), List[u32].empty(), List[Vec2].empty(), List[u32].empty(),
+      List[DistanceC].empty(), List[BendC].empty(), List[CurveC].empty(), List[TetherC].empty(),
+      new PressureC(false, 0., 1., 0., 0.),
+      List[Collider].empty(), List[Heightfield].empty(), List[Anchor].empty(),
+      Transform3.identity(), Transform3.identity(),
+      List[Vec3].empty(), List[Vec3].empty(), List[u32].empty(), List[u32].empty(), List[u32].empty(), List[u32].empty());
+  }
+
+  pub fn particleCount(self &) usize {pos.len();}
+
+  // Add a particle of 'm' kilograms at p, at rest; its number
+  pub fn addParticle(self &mut, p Vec3, m f32) u32 {
+    pos.push(p);
+    vel.push(new Vec3(0., 0., 0.));
+    mass.push(m);
+    invMass.push(1. / m);
+    rest.push(p);
+    prev.push(p);
+    force.push(new Vec3(0., 0., 0.));
+    u32.from(pos.len() - 1usize);
+  }
+
+  // Hold particle i where it is (infinite mass) until 'unpin'
+  pub fn pin(self &mut, i u32) {invMass.set(usize.from(i), 0.);}
+
+  pub fn unpin(self &mut, i u32) {invMass.set(usize.from(i), 1. / *mass[usize.from(i)]);}
+
+  pub fn isPinned(self &, i u32) bool {*invMass[usize.from(i)] == 0.;}
+
+  // Attach particle i to the anchor frame where it is now: it follows the frame
+  // as 'moveAnchors' moves it (the frame is the identity until moved, so a world
+  // position is also a frame position)
+  pub fn attach(self &mut, i u32) {
+    attachAt(i, frameTo.inverse().transformPoint(*pos[usize.from(i)]));
+  }
+
+  // Attach particle i to the anchor frame at 'offset' in the frame, and put it there
+  pub fn attachAt(self &mut, i u32, offset Vec3) {
+    anchors.push(new Anchor(i, offset));
+    invMass.set(usize.from(i), 0.);
+    pos.set(usize.from(i), frameTo.transformPoint(offset));
+  }
+
+  // Free particle i from the anchor frame (it keeps its place and gets its mass back)
+  pub fn detach(self &mut, i u32) {
+    mut k = 0usize;
+    while k < anchors.len() {
+      if anchors[k].particle == i {
+        anchors.swap(k, anchors.len() - 1usize);
+        anchors.truncate(anchors.len() - 1usize);
+        unpin(i);
+        return;
+      }
+      k = k + 1usize;
+    }
+  }
+
+  // The anchor frame for the next step: attached particles move to it, smoothly
+  // across the substeps (position by lerp, orientation by slerp)
+  pub fn moveAnchors(self &mut, to Transform3) {frameTo = to;}
+
+  pub fn addCollider(self &mut, c Collider) usize {
+    colliders.push(c);
+    colliders.len() - 1usize;
+  }
+
+  pub fn addHeightfield(self &mut, h Heightfield) {heightfields.push(h);}
+
+  // Add a stretch constraint between a and b, held at their present distance
+  pub fn addDistance(self &mut, a u32, b u32, compliance f32) {
+    imm d = (*pos[usize.from(a)]).distance(*pos[usize.from(b)]);
+    dist.push(new DistanceC(a, b, d, compliance, 0.));
+  }
+
+  // Add a bending constraint across edge a-b of triangles (a, b, c) and (b, a, d),
+  // held at their present dihedral angle
+  pub fn addBend(self &mut, a u32, b u32, c u32, d u32, compliance f32) {
+    imm theta = dihedralAngle(*pos[usize.from(a)], *pos[usize.from(b)], *pos[usize.from(c)], *pos[usize.from(d)]);
+    bend.push(new BendC(a, b, c, d, theta, compliance, 0.));
+  }
+
+  // Make the material 'factor' times as large in every direction: every rest
+  // length and the pressure body's rest volume (by the cube). Called a little at
+  // a time each step it inflates an envelope the way a burner does, or lets a
+  // cloth grow; one big jump (a factor of 1.5) is a violent correction that
+  // throws the particles at speed.
+  pub fn scaleRest(self &mut, factor f32) {
+    mut k = 0usize;
+    while k < dist.len() {
+      dist[k].rest = dist[k].rest * factor;
+      k = k + 1usize;
+    }
+    k = 0usize;
+    while k < curves.len() {
+      curves[k].rest = curves[k].rest * factor;
+      k = k + 1usize;
+    }
+    pressure.restVolume = pressure.restVolume * factor * factor * factor;
+  }
+
+  // Add a curvature constraint on particles a, b, c (consecutive along a rope),
+  // held at their present curvature
+  pub fn addCurve(self &mut, a u32, b u32, c u32, compliance f32) {
+    imm q = *pos[usize.from(a)] - *pos[usize.from(b)] * 2. + *pos[usize.from(c)];
+    curves.push(new CurveC(a, b, c, q.length(), compliance, 0.));
+  }
+
+  // The volume of the closed mesh the triangles make (positive when outward-wound)
+  pub fn volume(self &) f32 {meshVolume(pos.view(), tris.view());}
+
+  // The total kinetic energy, joules
+  pub fn kineticEnergy(self &) f32 {
+    mut e = 0.;
+    mut i = 0usize;
+    while i < pos.len() {
+      if *invMass[i] > 0. { e = e + 0.5 * (*mass[i]) * (*vel[i]).lengthSquared(); }
+      i = i + 1usize;
+    }
+    e;
+  }
+
+  // Advance by 'dt' seconds in 'wind' (the air's velocity, metres per second)
+  pub fn step(self &mut, dt f32, wind Vec3) {runStep(self, dt, wind, &noField, false);}
+
+  // The same, with one more collider: 'field' gives, for a point p, the unit
+  // surface normal in xyz and the signed distance to the surface in w (negative
+  // inside). A caller wraps any shape's closest-point query this way
+  // (rigidcollide's, a signed distance field), so this package imports neither
+  pub fn stepWith(self &mut, dt f32, wind Vec3, field &<fn(p Vec3) Vec4) {runStep(self, dt, wind, field, true);}
+}
+
+// The field that is nowhere
+fn noField(p Vec3) Vec4 {new Vec4(0., 1., 0., 1e30);}

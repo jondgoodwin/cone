@@ -1,0 +1,125 @@
+// Bench: a pile of 1,000 mixed shapes (boxes, spheres, capsules, cylinders and
+// convex hulls) dropped into a walled pit, and what a step costs as it falls,
+// piles up and comes to rest. Build it optimised to measure:
+//
+//   congo run --release packages/rigiddynamics/examples/bench.cone
+//
+// It prints the mean and the worst step time in milliseconds over windows of
+// the run, with the number of contact manifolds the solver had and how many
+// colours it used, and at the end how many bodies went to sleep.
+
+mod bench;
+
+import stdio use *;
+import collections use List;
+import time use Instant;
+import noise;
+import geomath use *;
+import rigidcollide use *;
+import rigiddynamics use *;
+
+struct Rng { state u32; }
+
+fn nextf(r &mut Rng) f32 {
+  r.state = noise.pcg(r.state + 1u32);
+  noise.toUnit(r.state);
+}
+
+fn rand(r &mut Rng, lo f32, hi f32) f32 { lo + (hi - lo) * nextf(r); }
+
+fn main() i32 {
+  mut rng = new Rng(12345u32);
+  mut w = World.make();
+  imm count = 1000;
+
+  // the pit: a floor and four walls
+  imm floor = w.addShape(Shape.single(Prim.box(new Vec3(8., 0.5, 8.))));
+  imm wallX = w.addShape(Shape.single(Prim.box(new Vec3(0.5, 6., 8.))));
+  imm wallZ = w.addShape(Shape.single(Prim.box(new Vec3(8., 6., 0.5))));
+  w.createBody(BodyDef.staticAt(floor, new Vec3(0., -0.5, 0.)));
+  w.createBody(BodyDef.staticAt(wallX, new Vec3(-8.5, 5., 0.)));
+  w.createBody(BodyDef.staticAt(wallX, new Vec3(8.5, 5., 0.)));
+  w.createBody(BodyDef.staticAt(wallZ, new Vec3(0., 5., -8.5)));
+  w.createBody(BodyDef.staticAt(wallZ, new Vec3(0., 5., 8.5)));
+
+  // the shapes
+  imm boxS = w.addShape(Shape.single(Prim.box(new Vec3(0.3, 0.2, 0.25))));
+  imm sphereS = w.addShape(Shape.single(Prim.sphere(0.25)));
+  imm capsuleS = w.addShape(Shape.single(Prim.capsule(0.15, 0.25)));
+  imm cylinderS = w.addShape(Shape.single(Prim.cylinder(0.2, 0.2)));
+  mut pts = List[Vec3].empty();
+  pts.push(new Vec3(-0.25, -0.2, -0.25)); pts.push(new Vec3(0.25, -0.2, -0.25)); pts.push(new Vec3(0.25, -0.2, 0.25));
+  pts.push(new Vec3(-0.25, -0.2, 0.25)); pts.push(new Vec3(0., 0.3, 0.));
+  imm hullS = w.addShape(Shape.single(convexHull(pts.view())));
+  mut kinds = List[u32].empty();
+  kinds.push(boxS); kinds.push(sphereS); kinds.push(capsuleS); kinds.push(cylinderS); kinds.push(hullS);
+
+  // a loose grid of them, above the pit, a little jittered and turned
+  mut n = 0;
+  while n < count {
+    imm cx = n % 10;
+    imm cz = (n / 10) % 10;
+    imm cy = n / 100;
+    imm shape = *kinds[usize.from(n % 5)];
+    mut bd = BodyDef.dynamicAt(shape, new Vec3(-6. + f32.from(cx) * 1.3 + rand(&mut rng, -0.1, 0.1), 1. + f32.from(cy) * 0.9,
+      -6. + f32.from(cz) * 1.3 + rand(&mut rng, -0.1, 0.1)));
+    bd.rot = Quat.angleAxis(rand(&mut rng, 0., 3.), new Vec3(rand(&mut rng, -1., 1.), 1., rand(&mut rng, -1., 1.)).normalize());
+    w.createBody(bd);
+    n = n + 1;
+  }
+
+  print <- count, " bodies, ", w.settings.substeps, " substeps, 60 steps a second\n";
+  imm windows = 6;
+  imm per = 100;
+  mut win = 0;
+  while win < windows {
+    mut total = 0.0d;
+    mut worst = 0.0d;
+    mut i = 0;
+    while i < per {
+      imm t0 = Instant.now();
+      w.step(1. / 60.);
+      imm ms = f64.from(t0.elapsed().nanos()) / 1000000.;
+      total = total + ms;
+      if ms > worst { worst = ms; }
+      i = i + 1;
+    }
+    mut asleep = 0;
+    mut b = 0usize;
+    while b < w.bodies.len() { if w.bodies[b].asleep { asleep = asleep + 1; } b = b + 1usize; }
+    print <- "steps ", win * per, " to ", (win + 1) * per, ": mean ", total / f64.from(per), " ms, worst ", worst, " ms; ",
+      w.lastPairs, " pairs, ", w.lastContacts, " manifolds, ", w.lastColors, " colours, ", asleep, " asleep\n";
+    win = win + 1;
+  }
+
+  // Where the time goes: 100 more steps with each phase timed on its own
+  mut tRefresh = 0.0d; mut tBroad = 0.0d; mut tNarrow = 0.0d; mut tBuild = 0.0d; mut tSolve = 0.0d; mut tFinal = 0.0d;
+  mut i = 0;
+  while i < 100 {
+    imm dt = 1. / 60.;
+    w.stepCount = w.stepCount + 1u32;
+    imm a = Instant.now();
+    w.refreshBodies();
+    imm b = Instant.now();
+    w.updateBroadPhase(dt);
+    imm c = Instant.now();
+    w.updateContacts(dt);
+    imm d = Instant.now();
+    w.buildConstraints();
+    imm e = Instant.now();
+    w.solve(dt);
+    imm f = Instant.now();
+    w.finalize(dt);
+    imm g = Instant.now();
+    tRefresh = tRefresh + f64.from((b.nanos() - a.nanos())) / 1000000.;
+    tBroad = tBroad + f64.from((c.nanos() - b.nanos())) / 1000000.;
+    tNarrow = tNarrow + f64.from((d.nanos() - c.nanos())) / 1000000.;
+    tBuild = tBuild + f64.from((e.nanos() - d.nanos())) / 1000000.;
+    tSolve = tSolve + f64.from((f.nanos() - e.nanos())) / 1000000.;
+    tFinal = tFinal + f64.from((g.nanos() - f.nanos())) / 1000000.;
+    i = i + 1;
+  }
+  print <- "per step, ms: refresh ", tRefresh / 100., ", broad phase ", tBroad / 100., ", narrow phase and cache ", tNarrow / 100.,
+    ", constraint list ", tBuild / 100., ", solve ", tSolve / 100., ", finalize and sleep ", tFinal / 100., "\n";
+  0i32;
+}

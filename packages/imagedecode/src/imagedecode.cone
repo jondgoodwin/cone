@@ -1,0 +1,102 @@
+// The imagedecode package: pictures out of files, in Cone. PNG and JPEG
+// decoders, the DEFLATE (zlib) reader and writer they stand on, and a PNG
+// writer, with no C library: stb_image's and libpng's jobs for the 3-D
+// browser's textures (a working name; Jon names packages).
+//
+//   import imagedecode use *;
+//
+//   match decode(bytes) {                    // a PNG or a JPEG, whichever it is
+//     case imm r Ok {
+//       // r is a Raster: r.width, r.height, RGBA, rows from the TOP down,
+//       // 8 bits a channel in r.pixels8 (16 in r.pixels16 for a 16-bit PNG)
+//       imm img = new render.Image(r.width, r.height, 4, r.bottomUp(4));
+//     }
+//     case imm e Error { /* e.reason says why */ }
+//   }
+//
+// render's Image is rows bottom-first, 8-bit, 3 or 4 channels; 'bottomUp'
+// gives exactly that, so the hook into render's 'addTexture' (sRGB colour),
+// 'addLinearTexture' and 'addNormalTexture' is the one line above, and mip
+// levels are render's own ('mips.cone'). This package does not import
+// render (that would link SDL3 into every tool that reads a picture).
+//
+// WHAT IS HERE
+//
+//   Raster         what a decode gives: always RGBA, 8 or 16 bits, colour not
+//                  premultiplied, with what the file says about its colours
+//                  (sRGB, gamma) and the Exif orientation a JPEG asked for.
+//   decode         PNG or JPEG by the file's first bytes ('sniff' says which);
+//                  BMP is render's Image.fromBmp; WebP and KTX2 are refused by
+//                  name with the reason.
+//   decodePng      every colour type at every bit depth (1, 2, 4, 8, 16),
+//                  the five filters, Adam7 interlacing, tRNS (palette alpha,
+//                  or a colour key), gAMA and sRGB recorded, every chunk's
+//                  CRC checked. 16-bit pictures decode to RGBA16.
+//   decodeJpeg     baseline, extended-sequential and progressive Huffman JPEG
+//                  of 8-bit samples, one to four components, any sampling
+//                  (4:4:4, 4:2:2, 4:2:0, 4:4:0, 4:1:1, odd ones), restart
+//                  markers, JFIF, Adobe RGB / YCbCr / CMYK / YCCK, Exif
+//                  orientation applied (or not, 'decodeJpegWith').
+//   inflate, zlibDecompress     RFC 1951 and RFC 1950: stored, fixed and
+//                  dynamic blocks; the Adler-32 checked.
+//   deflate, zlibCompress       the other way: stored, fixed-Huffman and
+//                  dynamic-Huffman at three levels (see deflate.cone).
+//   encodePng, encodePngSamples a Raster or raw samples written as a PNG, any
+//                  colour type and depth, any filter or the adaptive choice,
+//                  Adam7, tRNS, PLTE, gAMA, sRGB (so a screenshot or a baked
+//                  texture can be saved).
+//   adler32, Crc32 the checksums.
+//
+// Every decoder takes bytes (an &Array[u8], which a &str also is) and answers
+// a core Result: Ok or an Error holding a 'reason'. A damaged or hostile file
+// is refused, never a panic: the fuzz test damages valid files tens of
+// thousands of ways. A picture over 2^28 pixels, and an ask to inflate more
+// than 1 GiB, are refused, and no allocation is made on a header's word
+// before the data to fill it is seen (a PNG's inflate is limited to the size
+// its header implies, and reserves at most 64 MiB up front).
+//
+// THE METHODS (each an industry-standard one, cited in its file)
+//
+//   Huffman decode, inflate    zlib's design: a lookup table by the next 10
+//                              bits and the canonical walk (puff.c's) beyond.
+//   PNG                        the W3C specification, filters and Adam7 as
+//                              written there; one pass over the inflated
+//                              data in place.
+//   JPEG                       libjpeg's: the "islow" integer IDCT, "fancy"
+//                              (triangle) chroma upsampling and its 16-bit
+//                              fixed-point YCbCr table, decoded
+//                              coefficients first and pixels after, so
+//                              progressive files share the path. The output
+//                              is bit-identical to libjpeg-turbo's on the
+//                              reference files of the test (largest
+//                              difference 0).
+//   deflate (writing)          LZ77 with a three-byte hash chain (greedy,
+//                              zlib's deflate_fast without the tuning), Huffman
+//                              code lengths by the two-lightest merge limited
+//                              to 15 bits by flattening, per-block dynamic
+//                              tables with run-length coded lengths.
+//
+// NOT HERE: arithmetic-coded, lossless, 12-bit or hierarchical JPEG; PNG
+// APNG animation frames (the first frame decodes, as the PNG stream says);
+// colour management (an ICC profile is ignored; sRGB and gAMA are only
+// reported); GIF, WebP, KTX2, Basis.
+//
+// Speed, on a 2048 x 2048 picture (best of five, release build, i7-13700HX;
+// examples/bench.cone): a PNG of 12.6 MB filtered RGB (4.4 MB compressed) in
+// 277 ms, a 4:2:0 JPEG (0.7 MB) in 119 ms, a progressive one in 162 ms.
+//
+// Its files are one module, and only this one, the root, imports:
+//
+//   imagedecode.cone  this overview
+//   raster.cone       Raster, ColorSpace
+//   decode.cone       decode, sniff
+//   inflate.cone      inflate, zlibDecompress, Huffman, adler32, Crc32
+//   deflate.cone      deflate, zlibCompress
+//   png.cone          decodePng
+//   pngwrite.cone     PngWrite, encodePng, encodePngSamples
+//   jpeg.cone         the JPEG parser, Huffman and progressive decode
+//   jpegout.cone      the IDCT, upsampling, colour, orientation
+
+mod imagedecode;
+
+import collections use *;

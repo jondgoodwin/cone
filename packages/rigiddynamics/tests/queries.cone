@@ -1,0 +1,121 @@
+// Queries on the world: ray, shape cast and overlap against every body, with
+// layer filters, an excluded body, sensors, compounds, and a heightfield; each
+// answer worked out by hand.
+//
+// The scene: a ball (r 1) at (0, 1, 0) on layer 1; a box (half 1) at (6, 1, 0)
+// on layer 2; a sensor box (half 1) at (-6, 1, 0); a compound of two boxes
+// at (0, 1, 8); a heightfield (a 2 m ramp rising along x) under it all.
+
+mod queries;
+
+import testing use *;
+import collections use List;
+import geomath use *;
+import rigidcollide use *;
+import rigiddynamics use *;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+fn nearV(got Vec3, want Vec3, within f32, label &Array[u8]) {
+  near(got.x, want.x, within, label);
+  near(got.y, want.y, within, label);
+  near(got.z, want.z, within, label);
+}
+
+fn main() i32 {
+  mut w = World.make();
+  w.gravity = new Vec3(0., 0., 0.);
+  imm ballS = w.addShape(Shape.single(Prim.sphere(1.)));
+  imm boxS = w.addShape(Shape.single(Prim.box(new Vec3(1., 1., 1.))));
+  mut twin = Shape.compound();
+  twin.add(Prim.box(new Vec3(1., 1., 1.)), Rigid.at(new Vec3(-1.5, 0., 0.)));
+  twin.add(Prim.box(new Vec3(1., 1., 1.)), Rigid.at(new Vec3(1.5, 0., 0.)));
+  imm compS = w.addShape(twin);
+  mut ballD = BodyDef.staticAt(ballS, new Vec3(0., 1., 0.));
+  ballD.layer = 1u32;
+  imm ball = w.createBody(ballD);
+  mut boxD = BodyDef.dynamicAt(boxS, new Vec3(6., 1., 0.));
+  boxD.layer = 2u32;
+  imm box = w.createBody(boxD);
+  mut sensD = BodyDef.staticAt(boxS, new Vec3(-6., 1., 0.));
+  sensD.sensor = true;
+  imm sensor = w.createBody(sensD);
+  mut compD = BodyDef.staticAt(compS, new Vec3(0., 1., 8.));
+  compD.layer = 4u32;
+  imm comp = w.createBody(compD);
+  // a heightfield 21 x 5 samples, 1 m apart from x = -10, z = 14: a ramp rising 0.2 m per metre
+  mut hs = List[f32].empty();
+  mut r = 0u32;
+  while r < 5u32 {
+    mut c = 0u32;
+    while c < 21u32 { hs.push(0.2 * f32.from(c)); c = c + 1u32; }
+    r = r + 1u32;
+  }
+  mut hd = BodyDef.staticAt(w.addShape(Shape.single(Prim.heightfield(hs, 21u32, 5u32, 1., 1., new Vec3(-10., 0., 14.)))), new Vec3(0., 0., 0.));
+  hd.layer = 8u32;
+  imm field = w.createBody(hd);
+
+  // ---- rays ----
+  imm h1 = w.castRay(new Vec3(-10., 1., 0.), new Vec3(1., 0., 0.), 100., QueryFilter.all());
+  expectBool(h1.hit and h1.body == ball, true, "a ray along x from the left hits the ball (the sensor is skipped)");
+  near(h1.t, 9., 0.0001, "at distance 9");
+  nearV(h1.normal, new Vec3(-1., 0., 0.), 0.0001, "with the normal out of the ball");
+  nearV(h1.point, new Vec3(-1., 1., 0.), 0.0001, "and the point");
+  imm h2 = w.castRay(new Vec3(-10., 1., 0.), new Vec3(1., 0., 0.), 100., QueryFilter.all().withSensors());
+  expectBool(h2.hit and h2.body == sensor, true, "unless sensors are asked for, when the sensor is first");
+  imm h3 = w.castRay(new Vec3(-10., 1., 0.), new Vec3(1., 0., 0.), 100., QueryFilter.layers(2u32));
+  expectBool(h3.hit and h3.body == box, true, "filtered to layer 2 it hits the box beyond the ball");
+  near(h3.t, 15., 0.0001, "at 15");
+  imm h4 = w.castRay(new Vec3(-10., 1., 0.), new Vec3(1., 0., 0.), 100., QueryFilter.all().without(ball));
+  expectBool(h4.hit and h4.body == box, true, "with the ball excluded, the box");
+  imm h5 = w.castRay(new Vec3(-10., 1., 0.), new Vec3(1., 0., 0.), 5., QueryFilter.all());
+  expectBool(h5.hit, false, "short of anything: no hit");
+  imm h6 = w.castRay(new Vec3(0., 10., 0.), new Vec3(0., -1., 0.), 100., QueryFilter.layers(1u32));
+  near(h6.t, 8., 0.0001, "straight down on the ball");
+  imm h7 = w.castRay(new Vec3(1.5, 10., 8.), new Vec3(0., -1., 0.), 100., QueryFilter.all());
+  expectBool(h7.hit and h7.body == comp, true, "a ray down on the compound's right part");
+  expectUInt(u64.from(h7.part), 1u64, "names the part it hit");
+  near(h7.t, 8., 0.0001, "(top at y = 2)");
+  // the ramp: at x = 5, z = 16 the height is 0.2 * 15 = 3.0
+  imm h8 = w.castRay(new Vec3(5., 20., 16.), new Vec3(0., -1., 0.), 100., QueryFilter.all());
+  expectBool(h8.hit and h8.body == field, true, "a ray down on the heightfield");
+  near(h8.t, 17., 0.001, "meets the ramp where it is 3 m high");
+  // a sleeping body can still be hit
+  w.sleep(box);
+  expectBool(w.castRay(new Vec3(6., 10., 0.), new Vec3(0., -1., 0.), 100., QueryFilter.all()).hit, true, "a sleeping body is hit");
+
+  // ---- shape casts ----
+  imm probe = Shape.single(Prim.sphere(0.5));
+  imm c1 = w.castShape(&probe, Rigid.at(new Vec3(-10., 1., 0.)), new Vec3(20., 0., 0.), QueryFilter.all());
+  expectBool(c1.hit and c1.body == ball, true, "a small ball swept along x hits the big one");
+  near(c1.fraction * 20., 8.5, 0.01, "after 8.5 m (the two radii touch)");
+  imm c2 = w.castShape(&probe, Rigid.at(new Vec3(-10., 1., 0.)), new Vec3(20., 0., 0.), QueryFilter.layers(2u32));
+  expectBool(c2.hit and c2.body == box, true, "swept past the ball, layer 2, it hits the box");
+  near(c2.fraction * 20., 14.5, 0.01, "after 14.5 m (its centre 0.5 short of the box's face at x = 5)");
+  imm c3 = w.castShape(&probe, Rigid.at(new Vec3(-10., 4., 0.)), new Vec3(20., 0., 0.), QueryFilter.all());
+  expectBool(c3.hit, false, "swept above everything it hits nothing");
+  imm capsule = Shape.single(Prim.capsule(0.3, 0.5));
+  imm c4 = w.castShape(&capsule, Rigid.at(new Vec3(1.5, 6., 8.)), new Vec3(0., -10., 0.), QueryFilter.all());
+  expectBool(c4.hit and c4.body == comp, true, "a capsule dropped on the compound hits it");
+  near(c4.fraction * 10., 6. - 2. - 0.8, 0.01, "its end (0.8 below its centre) meeting the top at y = 2");
+
+  // ---- overlaps ----
+  mut ids = List[u32].empty();
+  w.overlapShape(&probe, Rigid.at(new Vec3(1.3, 1., 0.)), QueryFilter.all(), &mut ids);
+  expectInt(i64.from(ids.len()), 1i64, "a small ball at x = 1.3 overlaps one body");
+  expectUInt(u64.from(*ids[0usize]), u64.from(ball), "the big ball");
+  w.overlapShape(&probe, Rigid.at(new Vec3(3., 1., 0.)), QueryFilter.all(), &mut ids);
+  expectInt(i64.from(ids.len()), 0i64, "at x = 3 none");
+  imm big = Shape.single(Prim.box(new Vec3(7., 0.5, 0.5)));
+  w.overlapShape(&big, Rigid.at(new Vec3(0., 1., 0.)), QueryFilter.all(), &mut ids);
+  expectInt(i64.from(ids.len()), 2i64, "a long box along x overlaps the ball and the box (not the sensor)");
+  w.overlapShape(&big, Rigid.at(new Vec3(0., 1., 0.)), QueryFilter.all().withSensors(), &mut ids);
+  expectInt(i64.from(ids.len()), 3i64, "and the sensor if asked");
+  w.overlapPoint(new Vec3(6.5, 1.5, 0.3), QueryFilter.all(), &mut ids);
+  expectBool(ids.len() == 1usize and *ids[0usize] == box, true, "a point inside the box");
+  w.overlapPoint(new Vec3(6.5, 3.5, 0.3), QueryFilter.all(), &mut ids);
+  expectInt(i64.from(ids.len()), 0i64, "a point above it");
+  done();
+}

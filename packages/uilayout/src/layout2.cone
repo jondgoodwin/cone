@@ -1,0 +1,517 @@
+// ======== Layout, continued: grid, anchors, dock, split, scroll ========
+
+// The children of a grid and what each wants, gathered once per pass
+pub struct GridPrep {
+  pub kids List[usize];
+  pub natW List[f32];            // outer natural sizes
+  pub natH List[f32];
+  pub colKinds List[u32];
+  pub colVals List[f32];
+  pub rowKinds List[u32];
+  pub rowVals List[f32];
+}
+
+// Track sizes on one axis. 'starts', 'spans' and 'nat' are per child. Fixed tracks
+// are their value; auto tracks the largest child wholly in them; fractional tracks
+// share what is left in proportion to their weights ('exact': the grid has its
+// final size) or, to find a natural size, are each as large as their biggest
+// child needs per unit of weight
+fn solveTracks(kinds &List[u32], vals &List[f32], starts &List[u32], spans &List[u32], nat &List[f32],
+               gap f32, avail f32, exact bool) List[f32] {
+  mut n = kinds.len();
+  mut i = 0usize;
+  while i < starts.len() {
+    imm e = usize.from(*starts[i] + *spans[i]);
+    if e > n {n = e;}
+    i = i + 1usize;
+  }
+  mut size = List[f32].empty();
+  mut content = List[f32].empty();
+  mut t = 0usize;
+  while t < n {
+    imm kind = if t < kinds.len() {*kinds[t];} else {TRACK_AUTO;};
+    if kind == TRACK_FIXED {size.push(*vals[t]);} else {size.push(0.);}
+    content.push(0.);
+    t = t + 1usize;
+  }
+  // children in one track
+  i = 0usize;
+  while i < starts.len() {
+    if *spans[i] == 1u32 {
+      imm s = usize.from(*starts[i]);
+      if *nat[i] > *content[s] {content.set(s, *nat[i]);}
+    }
+    i = i + 1usize;
+  }
+  t = 0usize;
+  while t < n {
+    imm kind = if t < kinds.len() {*kinds[t];} else {TRACK_AUTO;};
+    if kind == TRACK_AUTO {size.set(t, *content[t]);}
+    t = t + 1usize;
+  }
+  // children across tracks: the excess goes to the auto tracks, else the fractional
+  i = 0usize;
+  while i < starts.len() {
+    if *spans[i] > 1u32 {
+      imm s = usize.from(*starts[i]);
+      imm e = s + usize.from(*spans[i]);
+      mut cur = gap * f32.from(e - s - 1usize);
+      mut autos = 0usize;
+      mut frs = 0usize;
+      t = s;
+      while t < e {
+        imm kind = if t < kinds.len() {*kinds[t];} else {TRACK_AUTO;};
+        cur = cur + (if kind == TRACK_FRACTION {*content[t];} else {*size[t];});
+        if kind == TRACK_AUTO {autos = autos + 1usize;}
+        if kind == TRACK_FRACTION {frs = frs + 1usize;}
+        t = t + 1usize;
+      }
+      if *nat[i] > cur {
+        imm excess = *nat[i] - cur;
+        t = s;
+        while t < e {
+          imm kind = if t < kinds.len() {*kinds[t];} else {TRACK_AUTO;};
+          if autos > 0usize and kind == TRACK_AUTO {size.set(t, *size[t] + excess / f32.from(autos));}
+          elif autos == 0usize and frs > 0usize and kind == TRACK_FRACTION {content.set(t, *content[t] + excess / f32.from(frs));}
+          t = t + 1usize;
+        }
+      }
+    }
+    i = i + 1usize;
+  }
+  // fractions
+  mut sumFr = 0.;
+  mut fixedAuto = 0.;
+  t = 0usize;
+  while t < n {
+    imm kind = if t < kinds.len() {*kinds[t];} else {TRACK_AUTO;};
+    if kind == TRACK_FRACTION {sumFr = sumFr + *vals[t];} else {fixedAuto = fixedAuto + *size[t];}
+    t = t + 1usize;
+  }
+  if sumFr > 0. {
+    mut unit = 0.;
+    if exact {
+      imm leftover = avail - gap * f32.from(maxu(n, 1usize) - 1usize) - fixedAuto;
+      if leftover > 0. {unit = leftover / sumFr;}
+    }
+    else {
+      t = 0usize;
+      while t < n {
+        imm kind = if t < kinds.len() {*kinds[t];} else {TRACK_AUTO;};
+        if kind == TRACK_FRACTION and *vals[t] > 0. {
+          imm u = *content[t] / *vals[t];
+          if u > unit {unit = u;}
+        }
+        t = t + 1usize;
+      }
+    }
+    t = 0usize;
+    while t < n {
+      imm kind = if t < kinds.len() {*kinds[t];} else {TRACK_AUTO;};
+      if kind == TRACK_FRACTION {size.set(t, unit * *vals[t]);}
+      t = t + 1usize;
+    }
+  }
+  size;
+}
+
+fn sumWithGaps(sizes &List[f32], gap f32) f32 {
+  mut s = 0.;
+  mut i = 0usize;
+  while i < sizes.len() {
+    s = s + *sizes[i];
+    i = i + 1usize;
+  }
+  if sizes.len() > 1usize {s = s + gap * f32.from(sizes.len() - 1usize);}
+  s;
+}
+
+// Where track k starts, from the start of the first
+fn trackStart(sizes &List[f32], gap f32, k usize) f32 {
+  mut s = 0.;
+  mut i = 0usize;
+  while i < k and i < sizes.len() {
+    s = s + *sizes[i] + gap;
+    i = i + 1usize;
+  }
+  s;
+}
+
+fn gridPrep[F fn(text &str, font u32, size f32) Vec2](ui &mut Ui, id usize, availW f32, availH f32, m &mut F) GridPrep {
+  mut g = new GridPrep(List[usize].empty(), List[f32].empty(), List[f32].empty(), List[u32].empty(),
+    List[f32].empty(), List[u32].empty(), List[f32].empty());
+  mut c = ui.nodes[id].first;
+  while c != NIL {
+    if isFlow(ui, c) {
+      imm o = measureOuter(ui, c, availW, availH, m);
+      g.kids.push(c);
+      g.natW.push(o.x);
+      g.natH.push(o.y);
+    }
+    c = ui.nodes[c].next;
+  }
+  mut i = 0usize;
+  while i < ui.tracks.len() {
+    if ui.tracks[i].owner == id {
+      if ui.tracks[i].axis == 0u32 {
+        g.colKinds.push(ui.tracks[i].kind);
+        g.colVals.push(ui.tracks[i].value);
+      }
+      else {
+        g.rowKinds.push(ui.tracks[i].kind);
+        g.rowVals.push(ui.tracks[i].value);
+      }
+    }
+    i = i + 1usize;
+  }
+  g;
+}
+
+// Column and row sizes of a grid
+fn gridSizes(ui &Ui, id usize, g &GridPrep, availW f32, availH f32, exact bool) GridSizes {
+  mut cs = List[u32].empty();
+  mut cp = List[u32].empty();
+  mut rs = List[u32].empty();
+  mut rp = List[u32].empty();
+  mut i = 0usize;
+  while i < g.kids.len() {
+    imm k = *g.kids[i];
+    cs.push(ui.nodes[k].gridCol);
+    cp.push(maxu32(ui.nodes[k].colSpan, 1u32));
+    rs.push(ui.nodes[k].gridRow);
+    rp.push(maxu32(ui.nodes[k].rowSpan, 1u32));
+    i = i + 1usize;
+  }
+  imm gx = ui.gapOf(id);
+  imm gy = ui.gapYOf(id);
+  imm cols = solveTracks(&g.colKinds, &g.colVals, &cs, &cp, &g.natW, gx, availW, exact);
+  imm rows = solveTracks(&g.rowKinds, &g.rowVals, &rs, &rp, &g.natH, gy, availH, exact);
+  new GridSizes(cols, rows, cs, cp, rs, rp);
+}
+
+fn gridContent[F fn(text &str, font u32, size f32) Vec2](ui &mut Ui, id usize, availW f32, availH f32, m &mut F) Vec2 {
+  imm g = gridPrep(ui, id, availW, availH, m);
+  imm s = gridSizes(ui, id, &g, availW, availH, false);
+  new Vec2(sumWithGaps(&s.cols, ui.gapOf(id)), sumWithGaps(&s.rows, ui.gapYOf(id)));
+}
+
+fn gridArrange[F fn(text &str, font u32, size f32) Vec2](ui &mut Ui, id usize, w f32, h f32, m &mut F) {
+  imm box = inner(ui, id, w, h);
+  imm l = box.min.x;
+  imm t = box.min.y;
+  imm iw = box.max.x;
+  imm ih = box.max.y;
+  imm g = gridPrep(ui, id, iw, ih, m);
+  imm s = gridSizes(ui, id, &g, iw, ih, true);
+  imm gx = ui.gapOf(id);
+  imm gy = ui.gapYOf(id);
+  mut i = 0usize;
+  while i < g.kids.len() {
+    imm k = *g.kids[i];
+    imm c0 = usize.from(*s.colStart[i]);
+    imm r0 = usize.from(*s.rowStart[i]);
+    imm c1 = c0 + usize.from(*s.colSpan[i]);
+    imm r1 = r0 + usize.from(*s.rowSpan[i]);
+    mut cellW = gx * f32.from(c1 - c0 - 1usize);
+    mut tcol = c0;
+    while tcol < c1 {
+      if tcol < s.cols.len() {cellW = cellW + *s.cols[tcol];}
+      tcol = tcol + 1usize;
+    }
+    mut cellH = gy * f32.from(r1 - r0 - 1usize);
+    mut trow = r0;
+    while trow < r1 {
+      if trow < s.rows.len() {cellH = cellH + *s.rows[trow];}
+      trow = trow + 1usize;
+    }
+    imm x0 = l + trackStart(&s.cols, gx, c0);
+    imm y0 = t + trackStart(&s.rows, gy, r0);
+    imm mw = ui.nodes[k].marL + ui.nodes[k].marR;
+    imm mh = ui.nodes[k].marT + ui.nodes[k].marB;
+    imm nat = measureNode(ui, k, 0., maxf(0., cellW - mw), 0., maxf(0., cellH - mh), m);
+    imm ax = if ui.nodes[k].alignSelf != ALIGN_AUTO {ui.nodes[k].alignSelf;} else {ui.nodes[id].alignItems;};
+    imm ay = if ui.nodes[k].alignSelfY != ALIGN_AUTO {ui.nodes[k].alignSelfY;} else {ui.nodes[id].alignItemsY;};
+    mut cw = nat.x;
+    mut ch = nat.y;
+    if ax == ALIGN_STRETCH and ui.nodes[k].prefW < 0. {cw = clampf(cellW - mw, ui.nodes[k].minW, ui.nodes[k].maxW);}
+    if ay == ALIGN_STRETCH and ui.nodes[k].prefH < 0. {ch = clampf(cellH - mh, ui.nodes[k].minH, ui.nodes[k].maxH);}
+    place(ui, k, x0 + ui.nodes[k].marL + alignedOffset(ui, ax, cellW - mw, cw),
+             y0 + ui.nodes[k].marT + alignedOffset(ui, ay, cellH - mh, ch), cw, ch, m);
+    i = i + 1usize;
+  }
+}
+
+// ---- anchors (Godot's Control anchors and offsets) ----
+//
+// Each edge's position is anchor * parent size + offset. With both anchors of an
+// axis equal, the child keeps its natural size and is placed by the pivot: the
+// fraction of the child that sits on the anchor point.
+
+fn anchorArrange[F fn(text &str, font u32, size f32) Vec2](ui &mut Ui, id usize, w f32, h f32, m &mut F) {
+  imm box = inner(ui, id, w, h);
+  imm l = box.min.x;
+  imm t = box.min.y;
+  imm iw = box.max.x;
+  imm ih = box.max.y;
+  mut c = ui.nodes[id].first;
+  while c != NIL {
+    if isFlow(ui, c) {
+      imm nat = measureNode(ui, c, 0., iw, 0., ih, m);
+      mut x = 0.;
+      mut cw = nat.x;
+      if ui.nodes[c].anchorL == ui.nodes[c].anchorR {
+        x = ui.nodes[c].anchorL * iw + ui.nodes[c].offL - ui.nodes[c].pivotX * cw;
+      }
+      else {
+        x = ui.nodes[c].anchorL * iw + ui.nodes[c].offL;
+        cw = maxf(0., ui.nodes[c].anchorR * iw + ui.nodes[c].offR - x);
+      }
+      mut y = 0.;
+      mut ch = nat.y;
+      if ui.nodes[c].anchorT == ui.nodes[c].anchorB {
+        y = ui.nodes[c].anchorT * ih + ui.nodes[c].offT - ui.nodes[c].pivotY * ch;
+      }
+      else {
+        y = ui.nodes[c].anchorT * ih + ui.nodes[c].offT;
+        ch = maxf(0., ui.nodes[c].anchorB * ih + ui.nodes[c].offB - y);
+      }
+      place(ui, c, l + x, t + y, cw, ch, m);
+    }
+    c = ui.nodes[c].next;
+  }
+}
+
+// ---- dock (WPF's DockPanel) ----
+
+fn dockContent[F fn(text &str, font u32, size f32) Vec2](ui &mut Ui, id usize, availW f32, availH f32, m &mut F) Vec2 {
+  imm gap = ui.gapOf(id);
+  mut accW = 0.;       // extent taken by left and right docks
+  mut accH = 0.;       // extent taken by top and bottom docks
+  mut maxW = 0.;
+  mut maxH = 0.;
+  mut c = ui.nodes[id].first;
+  while c != NIL {
+    if isFlow(ui, c) {
+      imm o = measureOuter(ui, c, maxf(0., availW - accW), maxf(0., availH - accH), m);
+      imm side = ui.nodes[c].dock;
+      if side == DOCK_LEFT or side == DOCK_RIGHT {
+        maxH = maxf(maxH, accH + o.y);
+        accW = accW + o.x + gap;
+      }
+      elif side == DOCK_TOP or side == DOCK_BOTTOM {
+        maxW = maxf(maxW, accW + o.x);
+        accH = accH + o.y + gap;
+      }
+      else {
+        maxW = maxf(maxW, accW + o.x);
+        maxH = maxf(maxH, accH + o.y);
+      }
+    }
+    c = ui.nodes[c].next;
+  }
+  new Vec2(maxf(maxW, accW), maxf(maxH, accH));
+}
+
+fn dockArrange[F fn(text &str, font u32, size f32) Vec2](ui &mut Ui, id usize, w f32, h f32, m &mut F) {
+  imm gap = ui.gapOf(id);
+  imm box = inner(ui, id, w, h);
+  mut rx = box.min.x;
+  mut ry = box.min.y;
+  mut rw = box.max.x;
+  mut rh = box.max.y;
+  mut c = ui.nodes[id].first;
+  while c != NIL {
+    if isFlow(ui, c) {
+      imm side = ui.nodes[c].dock;
+      imm mw = ui.nodes[c].marL + ui.nodes[c].marR;
+      imm mh = ui.nodes[c].marT + ui.nodes[c].marB;
+      if side == DOCK_FILL {
+        place(ui, c, rx + ui.nodes[c].marL, ry + ui.nodes[c].marT, maxf(0., rw - mw), maxf(0., rh - mh), m);
+        rw = 0.;
+        rh = 0.;
+      }
+      else {
+        imm nat = measureNode(ui, c, 0., maxf(0., rw - mw), 0., maxf(0., rh - mh), m);
+        if side == DOCK_LEFT {
+          imm cw = minf(nat.x + mw, rw);
+          place(ui, c, rx + ui.nodes[c].marL, ry + ui.nodes[c].marT, maxf(0., cw - mw), maxf(0., rh - mh), m);
+          rx = rx + cw + gap;
+          rw = maxf(0., rw - cw - gap);
+        }
+        elif side == DOCK_RIGHT {
+          imm cw = minf(nat.x + mw, rw);
+          place(ui, c, rx + rw - cw + ui.nodes[c].marL, ry + ui.nodes[c].marT, maxf(0., cw - mw), maxf(0., rh - mh), m);
+          rw = maxf(0., rw - cw - gap);
+        }
+        elif side == DOCK_TOP {
+          imm ch = minf(nat.y + mh, rh);
+          place(ui, c, rx + ui.nodes[c].marL, ry + ui.nodes[c].marT, maxf(0., rw - mw), maxf(0., ch - mh), m);
+          ry = ry + ch + gap;
+          rh = maxf(0., rh - ch - gap);
+        }
+        else {
+          imm ch = minf(nat.y + mh, rh);
+          place(ui, c, rx + ui.nodes[c].marL, ry + rh - ch + ui.nodes[c].marT, maxf(0., rw - mw), maxf(0., ch - mh), m);
+          rh = maxf(0., rh - ch - gap);
+        }
+      }
+    }
+    c = ui.nodes[c].next;
+  }
+}
+
+// ---- split: two panes and a divider ----
+
+fn splitKids(ui &Ui, id usize) usize {
+  // the second pane's id packed after the first: returns first, second via splitSecond
+  mut c = ui.nodes[id].first;
+  while c != NIL {
+    if isFlow(ui, c) {return c;}
+    c = ui.nodes[c].next;
+  }
+  NIL;
+}
+
+pub fn splitFirst(ui &Ui, id usize) usize {splitKids(ui, id);}
+
+pub fn splitSecond(ui &Ui, id usize) usize {
+  imm a = splitKids(ui, id);
+  if a == NIL {return NIL;}
+  mut c = ui.nodes[a].next;
+  while c != NIL {
+    if isFlow(ui, c) {return c;}
+    c = ui.nodes[c].next;
+  }
+  NIL;
+}
+
+fn splitContent[F fn(text &str, font u32, size f32) Vec2](ui &mut Ui, id usize, availW f32, availH f32, m &mut F) Vec2 {
+  imm a = splitFirst(ui, id);
+  imm b = splitSecond(ui, id);
+  imm d = ui.gapOf(id);
+  mut ow = 0.;
+  mut oh = 0.;
+  if a != NIL {
+    imm o = measureOuter(ui, a, availW, availH, m);
+    ow = o.x;
+    oh = o.y;
+  }
+  if b != NIL {
+    imm o = measureOuter(ui, b, availW, availH, m);
+    if ui.nodes[id].splitVertical {
+      ow = ow + d + o.x;
+      oh = maxf(oh, o.y);
+    }
+    else {
+      oh = oh + d + o.y;
+      ow = maxf(ow, o.x);
+    }
+  }
+  new Vec2(ow, oh);
+}
+
+// The first pane's size along the split's axis, for a split of the given inner size
+pub fn splitFirstSize(ui &Ui, id usize, innerMain f32) f32 {
+  imm a = splitFirst(ui, id);
+  imm b = splitSecond(ui, id);
+  imm d = ui.gapOf(id);
+  imm avail = maxf(0., innerMain - d);
+  imm vert = ui.nodes[id].splitVertical;
+  imm min1 = if a == NIL {0.;} else if vert {ui.nodes[a].minW;} else {ui.nodes[a].minH;};
+  imm min2 = if b == NIL {0.;} else if vert {ui.nodes[b].minW;} else {ui.nodes[b].minH;};
+  clampf(ui.nodes[id].splitRatio * avail, minf(min1, avail), maxf(minf(min1, avail), avail - min2));
+}
+
+fn splitArrange[F fn(text &str, font u32, size f32) Vec2](ui &mut Ui, id usize, w f32, h f32, m &mut F) {
+  imm box = inner(ui, id, w, h);
+  imm l = box.min.x;
+  imm t = box.min.y;
+  imm iw = box.max.x;
+  imm ih = box.max.y;
+  imm a = splitFirst(ui, id);
+  imm b = splitSecond(ui, id);
+  imm d = ui.gapOf(id);
+  imm vert = ui.nodes[id].splitVertical;
+  imm s1 = splitFirstSize(ui, id, if vert {iw;} else {ih;});
+  imm s2 = maxf(0., (if vert {iw;} else {ih;}) - d - s1);
+  if vert {
+    if a != NIL {place(ui, a, l, t, s1, ih, m);}
+    if b != NIL {place(ui, b, l + s1 + d, t, s2, ih, m);}
+  }
+  else {
+    if a != NIL {place(ui, a, l, t, iw, s1, m);}
+    if b != NIL {place(ui, b, l, t + s1 + d, iw, s2, m);}
+  }
+}
+
+// The divider's rectangle in the Ui's pixels
+pub fn dividerRect(ui &Ui, id usize) Aabb2 {
+  imm a = splitFirst(ui, id);
+  imm d = ui.gapOf(id);
+  imm vert = ui.nodes[id].splitVertical;
+  if a == NIL {return new Aabb2(new Vec2(0., 0.), new Vec2(0., 0.));}
+  if vert {
+    new Aabb2(new Vec2(ui.nodes[a].gx + ui.nodes[a].w, ui.nodes[a].gy), new Vec2(ui.nodes[a].gx + ui.nodes[a].w + d, ui.nodes[a].gy + ui.nodes[a].h));
+  }
+  else {
+    new Aabb2(new Vec2(ui.nodes[a].gx, ui.nodes[a].gy + ui.nodes[a].h), new Vec2(ui.nodes[a].gx + ui.nodes[a].w, ui.nodes[a].gy + ui.nodes[a].h + d));
+  };
+}
+
+// ---- scroll ----
+
+fn scrollChild(ui &Ui, id usize) usize {
+  mut c = ui.nodes[id].first;
+  while c != NIL {
+    if isFlow(ui, c) {return c;}
+    c = ui.nodes[c].next;
+  }
+  NIL;
+}
+
+fn scrollContent[F fn(text &str, font u32, size f32) Vec2](ui &mut Ui, id usize, availW f32, availH f32, m &mut F) Vec2 {
+  imm c = scrollChild(ui, id);
+  if c == NIL {return new Vec2(0., 0.);}
+  imm aw = if ui.nodes[id].scrollH {UNBOUNDED;} else {availW;};
+  imm ah = if ui.nodes[id].scrollV {UNBOUNDED;} else {availH;};
+  imm o = measureOuter(ui, c, aw, ah, m);
+  // a viewport shorter than its content is shaped by the room it is given
+  if (ui.nodes[id].scrollH and o.x > availW) or (ui.nodes[id].scrollV and o.y > availH) {ui.clampSeen = true;}
+  new Vec2(if ui.nodes[id].scrollH {minf(o.x, availW);} else {o.x;}, if ui.nodes[id].scrollV {minf(o.y, availH);} else {o.y;});
+}
+
+fn scrollArrange[F fn(text &str, font u32, size f32) Vec2](ui &mut Ui, id usize, w f32, h f32, m &mut F) {
+  imm box = inner(ui, id, w, h);
+  imm l = box.min.x;
+  imm t = box.min.y;
+  imm iw = box.max.x;
+  imm ih = box.max.y;
+  imm c = scrollChild(ui, id);
+  if c == NIL {
+    ui.nodes[id].contentW = 0.;
+    ui.nodes[id].contentH = 0.;
+    return;
+  }
+  imm sh = ui.nodes[id].scrollH;
+  imm sv = ui.nodes[id].scrollV;
+  imm v = measureNode(ui, c, if sh {0.;} else {iw;}, if sh {UNBOUNDED;} else {iw;}, if sv {0.;} else {ih;}, if sv {UNBOUNDED;} else {ih;}, m);
+  // the scrollable extent: the child and the padding round it
+  ui.nodes[id].contentW = maxf(l + v.x + ui.padOf(id, 2u32), w);
+  ui.nodes[id].contentH = maxf(t + v.y + ui.padOf(id, 3u32), h);
+  imm sx = clampf(ui.nodes[id].scrollX, 0., maxf(0., ui.nodes[id].contentW - w));
+  imm sy = clampf(ui.nodes[id].scrollY, 0., maxf(0., ui.nodes[id].contentH - h));
+  ui.nodes[id].scrollX = sx;
+  ui.nodes[id].scrollY = sy;
+  place(ui, c, l - sx, t - sy, v.x, v.y, m);
+}
+
+pub struct GridSizes {
+  pub cols List[f32];
+  pub rows List[f32];
+  pub colStart List[u32];
+  pub colSpan List[u32];
+  pub rowStart List[u32];
+  pub rowSpan List[u32];
+}
+
+fn maxu32(a u32, b u32) u32 inline {if a > b {a;} else {b;};}
