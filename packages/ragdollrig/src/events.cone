@@ -3,16 +3,19 @@
 // IMPACT. rigiddynamics reports that two bodies began touching (EvContactAdded) but not how hard, and its
 // speculative contacts stop a fast body at the surface in the step before it touches, so the closing speed at the
 // event is already gone. What does not depend on any of that is momentum. The joints are internal: they trade
-// momentum between the ragdoll's bodies and change the total by nothing. So the change in the ragdoll's total
-// momentum in a step, less gravity's share (m g dt), is the impulse of everything outside it (the ground, a wall,
-// a crate), and divided by the mass it is the change in the ragdoll's centre-of-mass velocity, in m/s. That is the
-// 'speed' of an Impact. A step whose change is over 'impactThreshold' makes an Impact record (with the bone and
-// point of the deepest new contact with something outside, as far as the step's events say).
+// momentum between the ragdoll's bodies and change the total by nothing. So the change in the ragdoll's centre-of-mass
+// velocity in a step is the effect of everything outside it (gravity, which in free fall changes it by g dt a step,
+// and the ground, a wall, a crate). A step is a step of IMPACT when that change is over 0.3 m/s and is not gravity's
+// alone (nor a firm support's, which changes it by nothing); over 0.5 m/s it makes an Impact record, with the size
+// of the change as its 'speed' and the bone and point of the deepest new contact with something outside, as far as
+// the step's events say.
 //
-// A LANDING is the net change of velocity over an episode of such contacts (it ends after three steps with none):
-// a ragdoll that hits the ground at 6.3 m/s (a 2 m fall) and comes to rest has landed at 6.3 m/s, however the
-// stopping is shared out between feet, hips, back and head. 'landing' is the last landing's speed, 'peak' the
-// hardest since resetPeak. A fall from height h meets the ground at sqrt(2 g h): 6.3 m/s from 2 m, 4.4 from 1.
+// A LANDING is the change of centre-of-mass velocity from before the first step of impact to after the last of an
+// episode (it ends after three steps with none): a ragdoll that hits the ground at 6.1 m/s (a 2 m fall) and comes to rest
+// has landed at about that, however the stopping is shared out between feet, hips, back and head; measured over
+// falls it is 1.1 to 1.3 times the speed the centre of mass had before the first contact, because the body then also
+// slides and tumbles a little. 'landing' is the last landing's speed, 'peak' the hardest since resetPeak. A fall
+// from height h meets the ground at sqrt(2 g h): 6.3 m/s from 2 m, 4.4 from 1.
 //
 // SETTLED. The ragdoll is settled when every body has been slower than 'settleSpeed' (the body's speed plus
 // half its spin times its reach) for 'settleTime' seconds, or when the World has put all its bodies to sleep.
@@ -137,8 +140,9 @@ pub fn endStep(rig &mut Ragdoll, w &World, events &List[Event], dt f32) {
 // Everything the ragdoll does before the World steps: note velocities, hold the swing ranges, drive the joints
 pub fn prepareStep(rig &mut Ragdoll, w &mut World, dt f32) {
   beginStep(rig, w);
-  if rig.limitsOn { enforceSwingLimits(rig, w, dt); }
   if rig.blend > 0. or rig.passiveDamping > 0. { driveJoints(rig, w, dt); }
+  // after the drive and its passive damping, which would otherwise take out the speed the limits give a swing
+  if rig.limitsOn { enforceSwingLimits(rig, w, dt); }
 }
 
 // One step of the World with the ragdoll's passes around it, for a world that holds only this ragdoll (or whose

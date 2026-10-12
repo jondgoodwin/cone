@@ -18,8 +18,13 @@
 // THE BLEND. 'blend' scales the joints' torque limits and (by its square root) their frequency; at 0 the
 // drive is off and only a light 'passiveDamping' acts (joint friction, so a limp body does not swing for
 // ever). In between is a body that can be knocked about and recovers. The pelvis has no parent, so nothing holds the
-// whole body upright unless 'rootHertz' is set; then a controller holds its orientation in the world (as an assist
-// with no reaction on anything: a hand on the character's back).
+// whole body's orientation unless 'rootHertz' is set; then a controller (the Tan-Turk-Liu form of an acceleration
+// from the pelvis' rotation error, with 'damping') turns the whole ragdoll as one rigid body about its centre of mass
+// to the target pelvis orientation (an assist that adds no momentum: a hand on the character's back). It does not
+// keep a standing body from tipping over a foot; it keeps its attitude.
+//
+// The stiffness of a joint is its torque limit over 'fullTorqueError' (0.05 rad: full torque at 3 degrees off), the
+// damping a ratio of the critical damping for the inertia the joint carries (its body and all below it).
 //
 // Apply the drive once before each World step (stepRagdoll does).
 
@@ -110,7 +115,9 @@ pub fn driveJoints(rig &mut Ragdoll, w &mut World, dt f32) {
     imm l = rig.links[k];
     if l.parent < 0i32 or l.joint == NoBody { k = k + 1usize; continue; }
     if bl > 0. {
-      w.setJointDrive(l.joint, rig.hertz * bl.sqrt(), rig.damping, l.maxTorque * bl);
+      // stiffness: the full torque at 'fullTorqueError'; damping: the ratio against the inertia the joint carries
+      imm stiff = l.maxTorque * bl / rig.fullTorqueError;
+      w.setJointDrive(l.joint, stiff, 2. * rig.damping * (stiff * subtreeInertia(rig, w, k)).sqrt(), l.maxTorque * bl);
       w.setDriveTarget(l.joint, targetBodyRelative(rig, k));
     } else {
       w.clearJointDrive(l.joint);
@@ -153,8 +160,20 @@ pub fn driveJoints(rig &mut Ragdoll, w &mut World, dt f32) {
         mut acc = (er * kpr - wv * (kpr * dt + kdr)) * (1. / (1. + kdr * dt + kpr * dt * dt));
         imm lim = 60. * bl;
         if acc.length() > lim { acc = acc * (lim / acc.length()); }
-        if er.length() > 0.001 { w.wake(rig.links[r].body); }
-        w.bodies[ir].angVel = w.bodies[ir].angVel + acc * dt;
+        if er.length() > 0.001 {
+          // the whole ragdoll is turned as one rigid body about its centre of mass: every body spins up by the same
+          // amount and moves as a point of that turn, so the assist adds no momentum
+          imm com = rig.centerOfMass(w);
+          imm dw = acc * dt;
+          mut q = 0usize;
+          while q < rig.links.len() {
+            imm iq = usize.from(rig.links[q].body);
+            w.wake(rig.links[q].body);
+            w.bodies[iq].angVel = w.bodies[iq].angVel + dw;
+            w.bodies[iq].linVel = w.bodies[iq].linVel + dw.cross(w.bodies[iq].pos - com);
+            q = q + 1usize;
+          }
+        }
       }
       r = r + 1usize;
     }

@@ -1,0 +1,126 @@
+// Impacts and settling.
+//
+//   landing   a limp ragdoll that falls feet first from 0.2 m, 1 m and 2 m reports a landing (the net change of its
+//             centre-of-mass velocity over the contacts that stop it) that grows with the height and is 0.9 to 1.4 times
+//             the speed the centre of mass had before the first contact (measured 1.30, 1.21 and 1.11 times 1.9, 4.4 and
+//             6.1 m/s: the body then slides and tumbles a little)
+//   impacts   the first impact record of the 2 m fall names a bone with a body, its normal points up and its point is at
+//             the floor; its speed (a step's change of velocity) is over 0.5 m/s
+//   settled   not settled in the air or in the step of impact, settled within 4 s of the release and still settled 2 s later
+//   resetPeak the peak is forgotten and measured again; a second drop after a reset reports its own
+//   disturbed a settled ragdoll given an impulse is not settled the next step, and settles again
+
+mod events;
+
+import testing use *;
+import collections use List;
+import geomath use *;
+import rigidcollide use *;
+import rigiddynamics use *;
+import bonepose use * but absf, clampf;
+import ragdollrig use *;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+struct Fall {
+  w World;
+  rig Ragdoll;
+  spec RigSpec;
+  skel Skeleton;
+}
+
+fn fallFrom(height f32) Fall {
+  imm skel = humanoid(1.75);
+  imm spec = humanoidSpec(&skel, 1.75, 70.);
+  mut w = World.make();
+  tuneWorld(&mut w);
+  imm ground = w.addShape(Shape.single(Prim.box(new Vec3(20., 1., 20.))));
+  w.createBody(BodyDef.staticAt(ground, new Vec3(0., -1., 0.)));
+  mut rig = Ragdoll.make(&mut w, &skel, &spec, Rigid.at(new Vec3(0., height, 0.)), 1u32);
+  rig.blend = 0.;
+  new Fall(w, rig, spec, skel);
+}
+
+fn main() i32 {
+  // ---- landings
+  mut peaks = List[f32].empty();
+  mut speeds = List[f32].empty();
+  mut hs = 0;
+  while hs < 3 {
+    imm h = if hs == 0 { 0.2; } else if hs == 1 { 1.; } else { 2.; };
+    mut f = fallFrom(h);
+    mut fastest = 0.;
+    mut touched = false;
+    mut i = 0;
+    while i < 360 {
+      if not touched { fastest = maxf(fastest, -comVelocity(&f.rig, &f.w).y); }
+      stepRagdoll(&mut f.rig, &mut f.w, 1. / 60.);
+      if lastImpactSpeed(&f.rig) > 0. { touched = true; }
+      i = i + 1;
+    }
+    peaks.push(f.rig.peak);
+    speeds.push(fastest);
+    hs = hs + 1;
+  }
+  expectBool(*peaks[0usize] < 3., true, "a fall from 0.2 m lands under 3 m/s (the fall speed is 1.9)");
+  expectBool(*peaks[0usize] > 0.9 * *speeds[0usize] and *peaks[0usize] < 1.4 * *speeds[0usize], true, "the 0.2 m landing is between 0.9 and 1.4 times its fall speed");
+  expectBool(*peaks[1usize] > 0.9 * *speeds[1usize] and *peaks[1usize] < 1.4 * *speeds[1usize], true, "the 1 m landing likewise (4.4 fall, 5.3 landing)");
+  expectBool(*peaks[2usize] > 0.9 * *speeds[2usize] and *peaks[2usize] < 1.4 * *speeds[2usize], true, "and the 2 m landing (6.1 fall, 6.8 landing)");
+  expectBool(*peaks[2usize] > *peaks[1usize] and *peaks[1usize] > *peaks[0usize], true, "and the landing grows with the height");
+
+  // ---- impact records, and settling
+  mut f = fallFrom(2.);
+  mut airSettled = false;
+  mut first = -1;
+  mut bone = 0usize;
+  mut normalY = 0.;
+  mut pointY = 10.;
+  mut firstSpeed = 0.;
+  mut settledAt = -1;
+  mut i = 0;
+  while i < 360 {
+    stepRagdoll(&mut f.rig, &mut f.w, 1. / 60.);
+    if first < 0 and f.rig.settled { airSettled = true; }
+    if first < 0 and f.rig.impacts.len() > 0usize {
+      first = i;
+      bone = f.rig.impacts[0usize].bone;
+      normalY = f.rig.impacts[0usize].normal.y;
+      pointY = f.rig.impacts[0usize].point.y;
+      firstSpeed = f.rig.impacts[0usize].speed;
+    }
+    if settledAt < 0 and f.rig.settled { settledAt = i; }
+    i = i + 1;
+  }
+  expectBool(first > 30 and first < 50, true, "the first impact record is at the landing, about step 39");
+  expectBool(f.rig.linkOfBone(bone) >= 0i32, true, "it names a bone with a body (the deepest new contact in that step)");
+  expectBool(normalY > 0.9, true, "its normal points up");
+  expectBool(pointY < 0.1, true, "its point is at the floor");
+  expectBool(firstSpeed > 0.5, true, "its speed is over 0.5 m/s");
+  expectBool(not airSettled, true, "the ragdoll was not settled in the air");
+  expectBool(settledAt > first and settledAt < 240, true, "it is settled within 4 s of the release");
+  expectBool(f.rig.settled, true, "and still settled at 6 s");
+
+  // ---- disturbed
+  imm pelvis = f.rig.bodyOfBone(PELVIS);
+  f.w.applyImpulse(pelvis, new Vec3(0., 120., 0.));
+  stepRagdoll(&mut f.rig, &mut f.w, 1. / 60.);
+  expectBool(f.rig.settled, false, "a settled ragdoll thrown up by an impulse is not settled the next step");
+  mut again = -1;
+  i = 0;
+  while i < 600 {
+    stepRagdoll(&mut f.rig, &mut f.w, 1. / 60.);
+    if again < 0 and f.rig.settled { again = i; }
+    i = i + 1;
+  }
+  expectBool(again > 0 and again < 400, true, "and settles again within 7 s");
+  expectBool(f.rig.peak > 0., true, "the peak is on record");
+  resetPeak(&mut f.rig);
+  near(f.rig.peak, 0., 0.0001, "resetPeak forgets it");
+  f.w.applyImpulse(pelvis, new Vec3(0., 120., 0.));
+  i = 0;
+  while i < 300 { stepRagdoll(&mut f.rig, &mut f.w, 1. / 60.); i = i + 1; }
+  expectBool(f.rig.peak > 0.3, true, "and the next fall is measured afresh (an impulse of 120 N s lifts the pelvis at 12 m/s, the body at about 1.7)");
+  done();
+}

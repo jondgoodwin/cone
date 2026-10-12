@@ -175,12 +175,13 @@ pub fn humanoidSpec(skel &Skeleton, height f32, totalMass f32) RigSpec {
   mut chest = boxBone(new Vec3(0., 0.055 * h, 0.), new Vec3(0.118 * h, 0.075 * h, 0.068 * h), 0.216 * m);
   coneTwist(&mut chest, up, 0.40, 0.35, 0.20, 0.30, 0.30, 200. * k, 0.);
   bones.set(CHEST, chest);
-  mut neck = capsuleBone(up, lenNeck, 0.022 * h, 0.012 * m);
-  coneTwist(&mut neck, up, 0.50, 0.45, 0.50, 0.40, 0.40, 60. * k, 0.);
+  // the neck and the head are ONE body, the head's sphere, on the neck's joint at the neck's base with the whole
+  // cervical range (flexion 45 degrees, extension 60, lateral 40, rotation 80): a separate neck of 0.84 kg between a
+  // 15 kg chest and a 4.8 kg head, on stiff joints, was the first thing in every stand to shake itself into its limits
+  mut neck = sphereBone(new Vec3(0., lenNeck + 0.065 * h, 0.), 0.065 * h, 0.081 * m);
+  coneTwist(&mut neck, up, 1.40, 0.80, 1.05, 0.70, 0.70, 100. * k, 0.);
   bones.set(NECK, neck);
-  mut head = sphereBone(new Vec3(0., 0.065 * h, 0.), 0.065 * h, 0.069 * m);
-  coneTwist(&mut head, up, 0.70, 0.50, 0.60, 0.45, 0.45, 40. * k, 0.);
-  bones.set(HEAD, head);
+  bones.set(HEAD, noBody());
 
   // ---- the arms (the clavicles stay without bodies)
   mut s = 0usize;
@@ -193,12 +194,15 @@ pub fn humanoidSpec(skel &Skeleton, height f32, totalMass f32) RigSpec {
     mut a = capsuleBone(down, lenUpperArm, 0.030 * h, 0.028 * m);
     coneTwist(&mut a, down, 1.30, 2.60, 0.90, 2.40, 0.50, 90. * k, side);
     bones.set(ua, a);
-    mut f = capsuleBone(down, lenForearm, 0.024 * h, 0.016 * m);
+    // the hand rides the forearm: a body of 0.42 kg whose spin inertia is a hundredth of its forearm's, on a joint that
+    // carries the arm's whole momentum when it lands, was the one joint that ran far past its limit in every fall
+    // (the solver's iterations cannot keep that mass ratio); so the forearm's capsule runs on over the hand and its
+    // mass includes the hand's (a compound body, a forearm with a hand box, jittered at rest and flung itself
+    // about; see the report)
+    mut f = capsuleBone(down, lenForearm + 0.108 * h, 0.024 * h, 0.022 * m);
     hingeJoint(&mut f, -0.05, 2.50, 70. * k, side);
     bones.set(fa, f);
-    mut hand = boxBone(new Vec3(0., -0.054 * h, 0.), new Vec3(0.024 * h, 0.054 * h, 0.012 * h), 0.006 * m);
-    hingeJoint(&mut hand, -1.20, 1.30, 20. * k, side);
-    bones.set(hd, hand);
+    bones.set(hd, noBody());
     s = s + 1usize;
   }
 

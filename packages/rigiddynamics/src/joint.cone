@@ -76,8 +76,8 @@ pub struct Joint {
   // 'driveTarget', its torque held to 'driveMax'; see solveDrive
   pub driveOn bool;
   pub driveTarget Quat;       // B's joint frame in A's the drive holds (identity: the pose the joint was made in)
-  pub driveHertz f32;
-  pub driveDamping f32;       // damping ratio
+  pub driveHertz f32;         // the spring's stiffness, N m per radian (named for its first form, a frequency)
+  pub driveDamping f32;       // its damping, N m s per radian
   pub driveMax f32;           // N m
   pub impDrive Vec3;
 }
@@ -272,8 +272,8 @@ fn solveOrientationBlock(w &mut World, ji usize, s &JState, useBias bool, soft S
   angApplyVec(w, s, lambda);
 }
 
-// The angular drive: the orientation block of a fixed joint, softened into a spring (the joint's own hertz and
-// damping ratio, as a distance joint's spring has) and aimed at 'driveTarget' instead of the pose the joint was
+// The angular drive: the orientation block of a fixed joint, softened into a spring (a stiffness and a damping
+// in torque units) and aimed at 'driveTarget' instead of the pose the joint was
 // made in, with the accumulated impulse held to the torque limit times the sub-step. Solved with the joint's
 // other rows in the same sweeps, so a stiff drive that carries a heavy limb (a hip holding up a body) is
 // resolved together with what loads it and does not need to be stable alone; a drive whose torque is not
@@ -281,13 +281,24 @@ fn solveOrientationBlock(w &mut World, ji usize, s &JState, useBias bool, soft S
 // idea; the soft form is Catto's, Solver2D 2024.)
 fn solveDrive(w &mut World, ji usize, s &JState, h f32) {
   imm j = &mut w.joints[ji];
-  imm sp = makeSoft(j.driveHertz, j.driveDamping, h);
   imm q0 = (relRot(s) * j.driveTarget.conjugate()).normalize();
   imm sg = if q0.w < 0. { -1.; } else { 1.; };
   imm err = (s.fa * new Vec3(q0.x, q0.y, q0.z)) * (2. * sg);
   imm jv = w.bodies[s.ib].angVel - w.bodies[s.ia].angVel;
-  imm kinv = mat3Add(s.iA, s.iB).inverse();
-  imm lambda = (kinv * (jv + err * sp.biasRate)) * (-sp.massScale) - j.impDrive * sp.impulseScale;
+  imm kmat = mat3Add(s.iA, s.iB);
+  imm kinv = kmat.inverse();
+  // a spring of stiffness k (N m per radian) and damping c (N m s per radian) as Catto's soft constraint, in torque
+  // units, so a stiff drive holds its load whatever the mass of the two bodies it joins (a frequency would give a
+  // stiffness proportional to that mass, and a foot is light): with the effective mass m of the row,
+  // gamma = 1 / (h (c + h k)), the row's mass scale is 1 / (1 + gamma m), its impulse scale gamma m / (1 + gamma m) and
+  // its bias velocity k / (c + h k) times the error
+  imm tr = kmat.cell(0usize, 0usize) + kmat.cell(1usize, 1usize) + kmat.cell(2usize, 2usize);
+  imm m = if tr > 0.0000001 { 3. / tr; } else { 0.; };
+  imm gamma = 1. / (h * (j.driveDamping + h * j.driveHertz));
+  imm ms = 1. / (1. + gamma * m);
+  imm isc = gamma * m / (1. + gamma * m);
+  imm biasRate = j.driveHertz / (j.driveDamping + h * j.driveHertz);
+  imm lambda = (kinv * (jv + err * biasRate)) * (-ms) - j.impDrive * isc;
   imm old = j.impDrive;
   mut total = old + lambda;
   imm maxI = j.driveMax * h;

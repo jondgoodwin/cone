@@ -157,7 +157,7 @@ fn standStance() Stance { Stance.rest(); }
 fn crouchStance() Stance {
   mut s = Stance.rest();
   s.pitch = -0.55;
-  s.legs(2.0, 2.3);
+  s.legs(2.0, 1.95);
   s.arms(0.9, 0.1, 0.4);
   s.trunk(0.3, 0.3, 0.1, 0.5);
   s;
@@ -220,13 +220,29 @@ pub fn getUpClips(skel &Skeleton, spec &RigSpec) GetUpClips {
   // ---- upright
   mut ur = Clip.make(1.2, false);
   s = crouchStance();
-  s.pitch = -0.35; s.legs(1.5, 1.8);
+  s.pitch = -0.35; s.legs(1.5, 1.7);
   key(&mut ur, skel, spec, 0., &s);
   s = riseStance();
   key(&mut ur, skel, spec, 0.55, &s);
   s = standStance();
   key(&mut ur, skel, spec, 1.2, &s);
-  new GetUpClips(up, dn, ur);
+  new GetUpClips(bake(&up, skel, spec), bake(&dn, skel, spec), bake(&ur, skel, spec));
+}
+
+// The clip sampled at 30 a second with every frame lowered to the floor: between two keys the limbs turn and the
+// root's height is only interpolated, so a keyed clip sinks into the floor between keys; a baked one is grounded in
+// every frame
+fn bake(clip &Clip, skel &Skeleton, spec &RigSpec) Clip {
+  mut out = Clip.make(clip.duration, false);
+  mut t = 0.;
+  while t < clip.duration - 0.001 {
+    imm p = groundPose(skel, spec, &clip.sample(t));
+    out.addKey(t, &p);
+    t = t + 1. / 30.;
+  }
+  imm last = groundPose(skel, spec, &clip.sample(clip.duration));
+  out.addKey(clip.duration, &last);
+  out;
 }
 
 // ------------------------------------------------------------------ the get-up in progress
@@ -270,8 +286,9 @@ pub fn beginGetUp(rig &Ragdoll, w &World, skel &Skeleton, base &Pose, groundY f3
   if kind == LIE_FACE_UP or (kind == LIE_SIDE and front.y >= 0.) { clip = 0; headDir = new Vec3(0., 0., 1.); }
   else if kind == LIE_FACE_DOWN or kind == LIE_SIDE { clip = 1; headDir = new Vec3(0., 0., -1.); }
   // the ragdoll's own direction: pelvis to head on the floor, or, upright, the way it faces
-  imm pelvisPos = w.positionOf(pelvisId);
-  mut h = horizontal(w.positionOf(rig.bodyOfBone(HEAD)) - pelvisPos);
+  // the pelvis bone's own place (its body's centre is above it, along its up)
+  imm pelvisPos = w.positionOf(pelvisId) - w.rotationOf(pelvisId) * rig.links[0].center;
+  mut h = horizontal(w.positionOf(rig.carrierBody(HEAD)) - pelvisPos);
   if clip == 2 or h.length() < 0.05 { h = horizontal(front); }
   if h.length() < 0.001 { h = headDir; }
   h = h.normalize();

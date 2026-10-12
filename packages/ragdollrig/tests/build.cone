@@ -3,8 +3,9 @@
 //   masses   Winter's (after Dempster's) segment fractions of the total, which sum to 1: hand 0.006, forearm 0.016,
 //            upper arm 0.028, foot 0.0145, shank 0.0465, thigh 0.100, pelvis 0.142, lumbar 0.139, thorax 0.216,
 //            head and neck 0.081 (as head 0.069 and neck 0.012); for 70 kg a thigh is 7.0 kg and a thorax 15.12 kg
-//   bodies   17: the clavicles have none; a joint to every body but the pelvis (16)
-//   joints   cone-twist at the spine, chest, neck, head, shoulders and hips, hinges at elbows, wrists, knees and
+//   bodies   14: the clavicles have none, the hands ride the forearms and the head rides the neck's body; a joint to
+//            every body but the pelvis (13)
+//   joints   cone-twist at the spine, chest, neck, head, shoulders and hips, hinges at elbows, knees and
 //            ankles, with the table's ranges; the solver's cone is the largest of a joint's four swing ranges
 //   sizes    the capsule of the thigh is as long as the bone below it (0.245 H) and the bodies stand where the
 //            rest pose has them: the head's centre 0.935 H up
@@ -31,7 +32,7 @@ fn main() i32 {
   mut rig = Ragdoll.make(&mut w, &skel, &spec, Rigid.at(new Vec3(0., 0., 0.)), 3u32);
 
   // ---- masses
-  expectInt(i64.from(rig.bodyCount()), 17, "17 bodies");
+  expectInt(i64.from(rig.bodyCount()), 14, "14 bodies");
   near(spec.massSum(), 70., 0.0005, "the recipe's masses sum to the total");
   mut sum = 0.;
   mut k = 0usize;
@@ -41,12 +42,13 @@ fn main() i32 {
   near(w.massOf(rig.bodyOfBone(SHIN_R)), 3.255, 0.001, "a shank is 0.0465");
   near(w.massOf(rig.bodyOfBone(FOOT_L)), 1.015, 0.001, "a foot is 0.0145");
   near(w.massOf(rig.bodyOfBone(UPPER_ARM_R)), 1.96, 0.001, "an upper arm is 0.028");
-  near(w.massOf(rig.bodyOfBone(FOREARM_L)), 1.12, 0.001, "a forearm is 0.016");
-  near(w.massOf(rig.bodyOfBone(HAND_R)), 0.42, 0.001, "a hand is 0.006");
+  near(w.massOf(rig.bodyOfBone(FOREARM_L)), 1.54, 0.001, "a forearm with its hand is 0.016 + 0.006");
+  expectInt(i64.from(rig.linkOfBone(HAND_R)), -1, "a hand has no body of its own");
   near(w.massOf(rig.bodyOfBone(PELVIS)), 9.94, 0.001, "the pelvis is 0.142");
   near(w.massOf(rig.bodyOfBone(SPINE)), 9.73, 0.001, "the lumbar part is 0.139");
   near(w.massOf(rig.bodyOfBone(CHEST)), 15.12, 0.001, "the thorax is 0.216");
-  near(w.massOf(rig.bodyOfBone(HEAD)) + w.massOf(rig.bodyOfBone(NECK)), 5.67, 0.001, "head and neck are 0.081");
+  near(w.massOf(rig.carrierBody(HEAD)), 5.67, 0.001, "head and neck, one body, are 0.081");
+  expectInt(i64.from(rig.linkOfBone(HEAD)), -1, "the head has no body of its own");
   expectInt(i64.from(rig.linkOfBone(CLAVICLE_L)), -1, "a clavicle has no body");
 
   // a different total scales every mass
@@ -78,9 +80,9 @@ fn main() i32 {
     }
     k = k + 1usize;
   }
-  expectInt(i64.from(joints), 16, "a joint to every body but the pelvis");
-  expectInt(i64.from(hinges), 8, "hinges: two elbows, wrists, knees and ankles");
-  expectInt(i64.from(cones), 8, "cone-twist: spine, chest, neck, head, two shoulders, two hips");
+  expectInt(i64.from(joints), 13, "a joint to every body but the pelvis");
+  expectInt(i64.from(hinges), 6, "hinges: two elbows, knees and ankles");
+  expectInt(i64.from(cones), 7, "cone-twist: spine, chest, neck (with the head), two shoulders, two hips");
   expectBool(limitsMatch, true, "every joint's limits are the table's");
 
   // spot values, from the table in spec.cone's header
@@ -96,12 +98,12 @@ fn main() i32 {
   near(ankle.lower, -0.90, 0.00001, "the ankle plantar-flexes 50 degrees");
 
   // ---- the bodies stand where the rest pose has them
-  near(w.positionOf(rig.bodyOfBone(HEAD)).y, 0.935 * height, 0.001, "the head's centre is at 0.935 H");
+  near(w.positionOf(rig.carrierBody(HEAD)).y, 0.935 * height, 0.001, "the head's centre is at 0.935 H");
   near(w.positionOf(rig.bodyOfBone(THIGH_L)).y, (0.530 - 0.1225) * height, 0.001, "the thigh's centre is half a thigh below the hip");
   near(w.positionOf(rig.bodyOfBone(THIGH_L)).x, -0.0955 * height, 0.001, "and at the hip's side");
   near(spec.bones[THIGH_L].halfLen * 2. + spec.bones[THIGH_L].radius * 2., 0.245 * height, 0.0001, "a thigh capsule is a thigh long");
   near(rig.lowestPoint(&w, &spec), 0., 0.002, "the soles are on the ground in the rest pose at the origin");
-  expectInt(i64.from(rig.linkOfBody(rig.bodyOfBone(HAND_L))), 9, "linkOfBody finds a link");
+  expectInt(i64.from(rig.linkOfBody(rig.bodyOfBone(FOREARM_L))), 6, "linkOfBody finds a link");
   expectInt(i64.from(rig.linkOfBody(NoBody)), -1, "and not a body that is not the ragdoll's");
 
   // a generic recipe for any skeleton: bodies for every bone, the mass spread over them

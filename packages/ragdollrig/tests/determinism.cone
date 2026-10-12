@@ -1,0 +1,82 @@
+// Determinism: the same scenario run twice in one process gives bit-for-bit the same bodies, impacts and flags.
+//
+// The scenario: a ragdoll driven to a crouch and pushed, then let go limp at 1 s so that it falls and tumbles down a
+// flight of three steps; its body positions and rotations are recorded every 20 steps, with its peak landing, its
+// settled flag and the number of impacts. Pairs are sorted in rigiddynamics, nothing iterates a hash map, and no
+// float is combined in an order that depends on anything but the step, so two runs agree exactly. (Agreement across
+// machines is not claimed: it depends on the C library's sin and cos.)
+
+mod determinism;
+
+import testing use *;
+import collections use List;
+import geomath use *;
+import rigidcollide use *;
+import rigiddynamics use *;
+import bonepose use * but absf, clampf;
+import ragdollrig use *;
+
+fn run() List[f32] {
+  imm skel = humanoid(1.75);
+  imm spec = humanoidSpec(&skel, 1.75, 70.);
+  mut w = World.make();
+  tuneWorld(&mut w);
+  imm floorS = w.addShape(Shape.single(Prim.box(new Vec3(20., 1., 20.))));
+  w.createBody(BodyDef.staticAt(floorS, new Vec3(0., -1., 0.)));
+  mut s = 0;
+  while s < 3 {
+    imm top = 0.45 - 0.15 * f32.from(s);
+    imm sh = w.addShape(Shape.single(Prim.box(new Vec3(0.3, top * 0.5, 2.))));
+    w.createBody(BodyDef.staticAt(sh, new Vec3(0.6 + 0.6 * f32.from(s), top * 0.5, 0.)));
+    s = s + 1;
+  }
+  mut st = Stance.rest();
+  st.pitch = -0.3;
+  st.legs(1.1, 1.2);
+  imm pose = stancePose(&skel, &st);
+  imm place = new Rigid(new Vec3(-0.2, 0.45, 0.), Quat.angleAxis(-1.5708, new Vec3(0., 1., 0.)));
+  mut rig = Ragdoll.make(&mut w, &skel, &spec, place, 1u32);
+  rig.poseToBodies(&mut w, &skel, &groundPose(&skel, &spec, &pose), place);
+  setTarget(&mut rig, &skel, &pose, place);
+  rig.blend = 1.;
+  mut out = List[f32].empty();
+  mut impacts = 0;
+  mut i = 0;
+  while i < 300 {
+    if i == 20 { w.applyImpulse(rig.bodyOfBone(CHEST), new Vec3(60., 10., 5.)); }
+    if i == 60 { rig.blend = 0.; }
+    stepRagdoll(&mut rig, &mut w, 1. / 60.);
+    impacts = impacts + i32.from(rig.impacts.len());
+    if i % 20 == 0 {
+      mut k = 0usize;
+      while k < rig.links.len() {
+        imm xf = w.transformOf(rig.links[k].body);
+        out.push(xf.pos.x); out.push(xf.pos.y); out.push(xf.pos.z);
+        out.push(xf.rot.x); out.push(xf.rot.y); out.push(xf.rot.z); out.push(xf.rot.w);
+        k = k + 1usize;
+      }
+    }
+    i = i + 1;
+  }
+  out.push(rig.peak);
+  out.push(f32.from(impacts));
+  out.push(if rig.settled { 1.; } else { 0.; });
+  out;
+}
+
+fn main() i32 {
+  imm a = run();
+  imm b = run();
+  expectInt(i64.from(a.len()), i64.from(b.len()), "the two runs record the same number of values");
+  mut same = true;
+  mut firstDiff = -1;
+  mut i = 0usize;
+  while i < a.len() and i < b.len() {
+    if *a[i] != *b[i] { same = false; if firstDiff < 0 { firstDiff = i32.from(i); } }
+    i = i + 1usize;
+  }
+  expectBool(same, true, "every recorded position, rotation, the peak and the flags agree exactly");
+  expectBool(*a[a.len() - 3usize] > 1., true, "and the scenario really fell and landed (a peak over 1 m/s)");
+  expectBool(*a[a.len() - 2usize] >= 1., true, "with at least one impact record");
+  done();
+}

@@ -5,49 +5,56 @@
 //   imm skel = humanoid(1.75);                          // bonepose's 19-bone mannequin (any Skeleton will do)
 //   imm spec = humanoidSpec(&skel, 1.75, 70.);          // capsules, masses and limits from the tables
 //   mut w = World.make();
+//   tuneWorld(&mut w);                                  // 8 sub-steps, stiff contacts: what a ragdoll needs
 //   // ... the ground ...
 //   mut rig = Ragdoll.make(&mut w, &skel, &spec, Rigid.at(at), 1u32);
 //   rig.poseToBodiesMoving(&mut w, &skel, &lastPose, lastPlacement, &pose, placement, dt, zero3());   // a hit: it falls
 //   rig.blend = 0.;                                     // limp (1: driven to the pose set with setTarget)
 //   while falling { stepRagdoll(&mut rig, &mut w, 1. / 60.); }
-//   imm hurt = rig.peak;                                // the hardest impact speed, m/s
-//   if rig.settled { ... begin a get-up ... }
+//   imm hurt = rig.peak;                                // the hardest landing, m/s of speed lost to the ground
+//   if rig.settled { ... begin a get-up (beginGetUp) ... }
 //   imm pose = rig.bodiesToPose(&w, &skel, &animatedPose, Rigid.identity());  // the pose to skin
 //
 // What it has:
 //   From a skeleton   RigSpec, the recipe: a capsule, sphere or box for each bone from the bone's length and a
 //                     thickness table; mass from a total by Dempster's segment fractions as Winter prints them; a
 //                     joint to the parent body for each (cone-twist for shoulders, hips, spine and neck, hinges for
-//                     elbows, knees, ankles and wrists) with anatomical limits from a cited table. humanoidSpec
-//                     writes it for the 19-bone humanoid; genericSpec for any skeleton, to be edited. (spec.cone)
+//                     elbows, knees and ankles) with anatomical limits from a cited table. humanoidSpec writes it for
+//                     the 19-bone humanoid, which makes 14 bodies (the clavicles ride the chest, the hands the
+//                     forearms, the head the neck); genericSpec writes one for any skeleton, to be edited. (spec.cone)
 //   The ragdoll       Ragdoll.make builds the bodies and joints in a World, collision off between joined bodies,
 //                     on between the rest if the spec says so. (rig.cone)
 //   Pose both ways    poseToBodies and poseToBodiesMoving put the bodies where a pose says (the second with the
 //                     velocities the animation had, so switching to ragdoll keeps momentum); bodiesToPose reads the
 //                     joint rotations back into a Pose for skinning. (rig.cone)
-//   Powered           setTarget names the pose; 'blend' from 0 (limp) to 1 (animated) sets the joints' strength;
-//                     a stable PD drive in each parent's frame, torque-limited. A character staggers, braces or is
-//                     hit and recovers. (drive.cone)
+//   Powered           setTarget names the pose; 'blend' from 0 (limp) to 1 (animated) sets the joints' strength. The
+//                     drive is a row of rigiddynamics' own solver (World.setJointDrive): a spring in each parent's frame
+//                     with a torque cap, solved with the joints and contacts, so a driven body stands (14 joints each
+//                     carrying what is above it) and a push beyond what the torques can answer lets it fall. A character
+//                     staggers, braces or is hit and recovers. There is no balance control: a push of 15 N s (0.2 m/s)
+//                     is answered and 30 N s topples it. (drive.cone)
 //   Limits            the solver's cone is round; limits.cone holds the swings to the elliptical ranges of the table
-//                     (flexion, extension, abduction, adduction), a pass before each step.
-//   Events            impact speed against the ground and other bodies, settled-and-still detection. (events.cone)
+//                     (flexion, extension, abduction, adduction), a pass before each step that turns the child and
+//                     everything below it about the joint. It cannot beat a body lying on a joint.
+//   Events            impacts (the change of the ragdoll's velocity by what is outside it), the speed lost in a landing,
+//                     and settled-and-still. (events.cone)
 //   Get-up            which way the ragdoll lies (face up, face down, on its side, upright) from the pelvis, the
 //                     get-up clip for it, and a blend from the ragdoll's pose into the clip's start (pose matching).
-//                     The clips are keyframed from the joint angles in getup.cone; the root is lowered to the ground
-//                     by the lowest point of the body shapes, so a key states only joint angles. (getup.cone)
+//                     The clips are keyframed from joint angles in getup.cone and baked, every frame lowered to the floor
+//                     by the lowest point of the body shapes; a being's own recorded clip replaces them. (getup.cone)
 //
 // Conventions are bonepose's and rigiddynamics's: right-handed, y up, metres, kilograms, seconds, f32; a being faces
 // -z. A ragdoll's bodies are in the world; a Pose is in the being's model space, whose placement in the world a
 // program says when it maps (the placement of a character is where it stands; pass Rigid.identity() to work in
 // model space).
 //
-// What it does not have: the per-joint torque cap is the only strength model (no muscle fatigue, no reflexes); a body
-// that is held (a hand gripping a ledge) is a kinematic body in the World and a joint to it, not a feature here;
-// collision between two ragdolls of one selfCollide setting follows the same layer; the get-up clips are for a flat
-// floor and a humanoid.
+// What it does not have: balance (stepping, ankle strategy), muscle fatigue or reflexes; a held body (a hand gripping a
+// ledge is a kinematic body in the World and a joint to it); a ragdoll against another of its own collision setting
+// (every ragdoll's bodies are on layer 2); get-up clips other than for a humanoid on a flat floor; compound bodies (a
+// forearm with a hand box jittered at rest and flung itself about; a plain capsule over the hand does not).
 //
 //   spec.cone        BoneSpec, RigSpec, the tables and humanoidSpec, genericSpec
-//   rig.cone         Link, Ragdoll, make, pose to bodies and bodies to pose
+//   rig.cone         Link, Ragdoll, make, tuneWorld, pose to bodies and bodies to pose
 //   drive.cone       the powered ragdoll
 //   limits.cone      elliptical swing ranges
 //   events.cone      impacts, settling, stepRagdoll
