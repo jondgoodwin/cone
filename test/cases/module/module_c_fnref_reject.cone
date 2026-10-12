@@ -1,0 +1,75 @@
+// A reference to a C-named function and a reference to a Cone function are
+// different types, '&fn @c (Vec3) f32' and '&fn (Vec3) f32': C passes a struct
+// by value in registers or through a pointer as its ABI says, and Cone passes
+// it its own way, so a call through the wrong one would hand the function its
+// values wrongly. Neither converts to the other, and every place one is given
+// where the other is wanted is refused where it is written -- an initializer, an
+// assignment, an argument, a returned value, a struct's field -- with no thunk
+// made to bridge them. A callable ('&<fn') calls what it holds in Cone's
+// convention, so a C-named function is not one either, and '@c' is not written
+// on it.
+mod module_c_fnref_reject;
+
+struct Vec3 { pub x f32; pub y f32; pub z f32; }
+
+// A function with a C name, C's convention: its reference is '&fn @c'
+fn @c cfun(v Vec3) f32 { v.x; }
+// Cone's own: its reference is a plain '&fn'
+fn cone(v Vec3) f32 { v.y; }
+
+struct Holder {
+  pub viaC &fn @c (Vec3) f32;
+  pub viaCone &fn(Vec3) f32;
+}
+
+fn takesC(f &fn @c (Vec3) f32) f32 { f(new Vec3(1., 2., 3.)); }
+fn takesCone(f &fn(Vec3) f32) f32 { f(new Vec3(1., 2., 3.)); }
+
+fn returnsC() &fn @c (Vec3) f32 {     //~ ErrorInvType:15 "This is the declared function's return type" follow-on
+  &cone;                             //~ ErrorFnRefConv:3 "is a reference to a Cone function"
+}
+fn returnsCone() &fn(Vec3) f32 {      //~ ErrorInvType:18 "This is the declared function's return type" follow-on
+  &cfun;                             //~ ErrorFnRefConv:3 "is a reference to a C-named function"
+}
+
+fn main() {
+  // The same kind on both sides compiles
+  imm okC &fn @c (Vec3) f32 = &cfun;
+  imm okCone &fn(Vec3) f32 = &cone;
+  takesC(&cfun);
+  takesCone(&cone);
+  imm okHolder = new Holder(&cfun, &cone);
+
+  // An initializer
+  imm a &fn @c (Vec3) f32 = &cone;    //~ ErrorFnRefConv:29 "Cone function, and `&fn @c (Vec3) f32`"
+  imm b &fn(Vec3) f32 = &cfun;        //~ ErrorFnRefConv:25 "C-named function, and `&fn(Vec3) f32`"
+
+  // An assignment
+  mut m &fn @c (Vec3) f32 = &cfun;
+  m = &cone;                          //~ ErrorFnRefConv:7 "Cone function"
+  mut n &fn(Vec3) f32 = &cone;
+  n = &cfun;                          //~ ErrorFnRefConv:7 "C-named function"
+
+  // An argument
+  takesC(&cone);                      //~ ErrorFnRefConv:10 "Cone function"
+  takesCone(&cfun);                   //~ ErrorFnRefConv:13 "C-named function"
+  takesC(okCone);                     //~ ErrorFnRefConv:10 "Cone function"
+  takesCone(okC);                     //~ ErrorFnRefConv:13 "C-named function"
+
+  // A struct's fields
+  imm h = new Holder(&cone, &cfun);   //~ ErrorFnRefConv:22 "is a reference to a Cone function"
+                                      //~^ ErrorFnRefConv:29 "is a reference to a C-named function"
+
+  // A callable calls in Cone's convention, so a C-named function is none
+  imm call &<fn(Vec3) f32 = &cfun;    //~ ErrorFnRefConv:29 "a callable"
+  imm callCone &<fn(Vec3) f32 = &cone;
+
+  // A generic's function signature, '[F fn(...)]', is a Cone function's too
+  boundCone(&cone, new Vec3(1., 2., 3.));
+  boundCone(&cfun, new Vec3(1., 2., 3.));   //~ ErrorWhereUnmet:12 "fn @c (Vec3) f32"
+}
+
+fn boundCone[F fn(v Vec3) f32](f &F, v Vec3) f32 { f(v); }
+
+// '@c' marks a plain function reference, not a callable
+fn viaCallable(f &<fn @c (Vec3) f32) {}   //~ ErrorFnRefConv:18 "A callable"

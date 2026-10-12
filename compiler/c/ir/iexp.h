@@ -89,6 +89,11 @@ int iexpMultiCoerceInfer(TypeCheckState *pstate, INode *expectType, INode **infe
 // iexpMultiCoerceInfer for an expression already type checked
 int iexpMultiCheckedCoerceInfer(INode *expectType, INode **inferredType, INode **fromexp, int oldMatch);
 
+// Report that expression 'node' was refused where 'totype' is wanted, as 'code'
+// says in 'msg' -- unless the two are function references that differ only in
+// the calling convention they are marked for, which ErrorFnRefConv says
+void iexpMismatchMsg(INode *node, INode *totype, int code, const char *msg);
+
 // Return true if an lval, and 0 if not.
 int iexpIsLval(INode *lval);
 
