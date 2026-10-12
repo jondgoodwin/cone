@@ -1,0 +1,161 @@
+mod region_flow_owner_replace;
+
+import stdio use *;
+
+// An owner stored over frees what it points at, so a borrow into what an owning
+// reference ('So', 'Rc') owns is a borrow into a value that another name for the
+// owner's place can free (refperm: "another name for the same holder could replace
+// the owner"). The borrow is allowed; it is refused when something could replace the
+// owner while it is still to be used. The owner counts as a shape-changing value:
+// a call handed a way to write an owner of the type, whose body (or what it calls)
+// stores over one, is refused (error 1339), and so is a store over one, the owner
+// held by a struct or an Option included (error 1426), as a list replaced is.
+//
+// Run, the first two printed 'final 1', then garbage read from the freed Item, then
+// 'final 9': the callee replaced the owner through the first '&mut', and read the
+// Item through the second. That a local may lend several '&mut' to one call (the 11
+// Oct 2026 rule, ref_alias_mut_success) is why the pair was accepted. Writing the
+// Item in place, a callee that only reads, and the owner replaced after the last use
+// of the borrow are accepted (region_owner_replace_success).
+
+struct Item { pub v i64; fn final(self &uni) { printStr("final "); printInt(v); printStr("\n"); } }
+struct Ship { pub fuel i64; pub it So[Item]; }
+struct Fleet { pub lead Ship; }
+struct ShipRc { pub fuel i64; pub it Rc[mut, Item]; }
+struct Slot { pub o Option[So[Item]]; }
+
+// The callees: each stores over the owner it is handed
+fn clobber(x &mut So[Item], y &mut Item) { *x = new So[Item](9); printInt(y.v); printStr("\n"); }
+fn swapIt(s &mut Ship) { s.it = new So[Item](9); }
+fn wipe(s &mut Ship) { *s = new Ship(0, new So[Item](9)); }
+fn swapRc(s &mut Rc[Item]) { *s = new Rc[Item](9); }
+
+// A local owner lent '&mut' beside a borrow of what it owns, in one call
+fn localSo() { mut s = new So[Item](1); clobber(&mut s, s); }       //~ ErrorShapeReshape
+
+// ... an element of an array of owners
+fn arrSo() { mut a = [new So[Item](1), new So[Item](2)]; clobber(&mut a[0usize], a[0usize]); }   //~ ErrorShapeReshape
+
+// Two '&mut' parameters that may be one owner: a borrow held across the call that replaces it
+fn twoParams(a &mut So[Item], b &mut So[Item]) i64 {
+  imm y = &mut **a;
+  clobber(b, y);                                                     //~ ErrorShapeReshape
+  y.v;
+}
+
+// ... a store over the other
+fn twoStore(a &mut So[Item], b &mut So[Item]) i64 {
+  imm y = &mut **a;
+  *b = new So[Item](9);                                              //~ ErrorShapeStore
+  y.v;
+}
+
+// ... the same name, in one function
+fn sameName(x &mut So[Item]) i64 {
+  imm y = &mut **x;
+  *x = new So[Item](9);                                              //~ ErrorShapeStore
+  y.v;
+}
+
+// ... the owners swapped
+fn swapped(a &mut So[Item], b &mut So[Item]) i64 {
+  imm y = &mut **a;
+  *a <=> *b;                                                         //~ ErrorShapeStore
+                                                                     //~^ ErrorShapeStore
+  y.v;
+}
+
+// The owner a field of a struct: replaced by a store through another ship, and by a call
+fn fieldStore(a &mut Ship, b &mut Ship) i64 {
+  imm y = &mut *a.it;
+  b.it = new So[Item](9);                                            //~ ErrorShapeStore
+  y.v;
+}
+
+fn fieldCall(a &mut Ship, b &mut Ship) i64 {
+  imm y = &mut *a.it;
+  swapIt(b);                                                         //~ ErrorShapeReshape
+  y.v;
+}
+
+// The whole ship replaced takes its owner with it, a ship nested in a struct as well
+fn wholeStore(a &mut Ship, b &mut Ship, s Ship) i64 {
+  imm y = &mut *a.it;
+  *b = s;                                                            //~ ErrorShapeStore
+  y.v;
+}
+
+fn wholeCall(a &mut Ship, b &mut Ship) i64 {
+  imm y = &mut *a.it;
+  wipe(b);                                                           //~ ErrorShapeReshape
+  y.v;
+}
+
+fn nested(a &mut Fleet, b &mut Fleet) i64 {
+  imm y = &mut *a.lead.it;
+  swapIt(&mut b.lead);                                               //~ ErrorShapeReshape
+  y.v;
+}
+
+// An owner in an Option stored over
+fn optionHeld(a &mut So[Item], b &mut Slot) i64 {
+  imm y = &mut **a;
+  *b = new Slot(None);                                               //~ ErrorShapeStore
+  y.v;
+}
+
+// A local ship lent whole to the call that replaces its owner
+fn localShip() i64 {
+  mut s = new Ship(0, new So[Item](1));
+  imm y = &mut *s.it;
+  swapIt(&mut s);                                                    //~ ErrorShapeReshape
+  y.v;
+}
+
+// A method of the struct that holds the owner, called while a borrow of what it owns is held
+struct Game {
+  pub fuel i64;
+  pub p So[Item];
+  fn reset(self &mut) { p = new So[Item](50); }
+  fn frame(self &mut) i64 { imm pp = &mut *p; reset(); pp.v; }      //~ ErrorShapeReshape
+}
+
+// The owners a 'Rc': the sole owner ('Rc[uni, T]', which 'Rc' means), and a shared one
+fn rcUni(a &mut Rc[Item], b &mut Rc[Item]) i64 {
+  imm y = &mut **a;
+  swapRc(b);                                                         //~ ErrorShapeReshape
+  y.v;
+}
+
+fn rcField(a &mut ShipRc, b &mut ShipRc) i64 {
+  imm y = &mut *a.it;
+  b.it = new Rc[mut, Item](9);                                       //~ ErrorShapeStore
+  y.v;
+}
+
+// An owner lent as the receiver of its own method, beside the same owner lent '&mut' to it
+struct Own {
+  pub v i64;
+  fn replace(self &mut, o &mut So[Own]) { *o = new So[Own](9); printInt(v); printStr("\n"); }
+}
+
+fn receiver() { mut s = new So[Own](1); s.replace(&mut s); }          //~ ErrorShapeReshape
+
+// A shared counted owner a local holds: the local is lent too, though others own the value
+fn clobberRc(x &mut Rc[mut, Item], y &mut Item) { *x = new Rc[mut, Item](9); printInt(y.v); printStr("\n"); }
+fn rcLocal() { mut r = new Rc[mut, Item](1); clobberRc(&mut r, r); }    //~ ErrorShapeReshape
+
+// ... and through a callee of the callee
+fn through(x &mut So[Item], y &mut Item) { clobber(x, y); }
+fn callee() { mut s = new So[Item](1); through(&mut s, s); }           //~ ErrorShapeReshape
+
+// Where the receiver exemption ends: the borrow handed beside the receiver is into an owner under the receiver's own 'child'
+struct Node {
+  pub val i64;
+  pub child So[Node];
+  fn f(self &mut, x &i64, r So[Node]) { child = r; }
+}
+
+fn grandchild(node &mut Node, r So[Node]) { node.child.f(&node.child.child.val, r); }   //~ ErrorShapeReshape
+
+fn main() {}

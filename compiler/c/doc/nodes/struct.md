@@ -1157,6 +1157,8 @@ it ([flow](../phases/flow.md), "Calls"):
   every call made while the borrow is held is asked whether it could reshape a
   value of the type, and so is every store (`ErrorShapeStore`: the whole value, a
   value holding it, or an element that owns something, found by indexing it).
+  An owning reference is asked the same of a borrow into what it owns, though it is no
+  struct (`reshapeIsOwner`; flow's "An owner is a shape-changing value too").
   An enum with a variant holding more than the fields they share is one too
   (`siSumHasPayload`): a reference narrowed into a variant, or a borrow a free function
   returns out of an enum, is asked the same, and what reshapes an enum is the whole value stored

@@ -432,7 +432,10 @@ A borrow into a value that changes shape, held through a path other references
 share, is refused only if something could reshape the value while it is still to
 be used, and the something names the code. A call that could reshape a collection (a
 list, a string) is `ErrorShapeReshape`; a store through another name that could, the
-whole collection or an element that owns something replaced, `ErrorShapeStore`; and
+whole collection or an element that owns something replaced, `ErrorShapeStore` (an
+owning reference, `So` or `Rc`, is asked the same of a borrow into what it owns: the owner
+stored over frees it, so a call whose body stores over one is `ErrorShapeReshape` and
+a store over one `ErrorShapeStore`); and
 anything that could change which variant an enum holds under a reference narrowed
 into one of its variants, call or store, `ErrorVariantReshape`. The three are
 separate because the remedies differ: a collection is cured by copying out what is

@@ -1846,6 +1846,10 @@ static void loanRootsNote(uint32_t id) {
         l->globalview = 1;
     if (p->owned || p->far) {
         l->rootsext = 1;
+        // A borrow into what an owner points at, the owner a local's own ('Rc[mut]', others may own the
+        // value too): the local is still a name the call may be lent beside the borrow (loanShapeRootVars)
+        if (reshapeIsOwner(l->shapecont) && !p->deref && !p->far && !loanVarIsGlobal(pathVars[p->var].var))
+            loanRootsAdd(l, p->var);
         return;
     }
     if (!p->deref) {
@@ -1924,7 +1928,7 @@ int loanShapeGlobalView(uint32_t loan) {
 }
 
 int loanShapeRootVars(uint32_t loan, VarDclNode **out) {
-    if (!loanShapeLocal(loan))
+    if (!loanShapeLocal(loan) && !(reshapeIsOwner(loans[loan].shapecont) && loans[loan].nroots > 0))
         return 0;
     for (uint8_t i = 0; i < loans[loan].nroots; ++i)
         out[i] = pathVars[loans[loan].roots[i]].var;
@@ -2083,7 +2087,21 @@ static char *loanShapeReason(ShapeNote *note, char *cont, int sum, char *buf, si
     return buf;
 }
 
+static int loanShapeIsOwner(uint32_t loan) {
+    return reshapeIsOwner(loans[loan].shapecont);
+}
+
 static void loanShapeContName(uint32_t loan, char *buf, size_t size) {
+    if (loanShapeIsOwner(loan)) {
+        // An owner: its region and what it points at, as written ('So[Item]')
+        RefNode *ref = (RefNode *)loans[loan].shapecont;
+        INode *region = ref->region ? itypeGetTypeDcl(ref->region) : NULL;
+        INode *pointee = ref->vtexp ? itypeGetTypeDcl(ref->vtexp) : NULL;
+        Name *rname = region ? inodeGetName(region) : NULL;
+        Name *pname = pointee ? inodeGetName(pointee) : NULL;
+        snprintf(buf, size, "'%s[%s]'", rname ? &rname->namestr : "owner", pname ? &pname->namestr : "..");
+        return;
+    }
     StructNode *st = (StructNode *)loans[loan].shapecont;
     snprintf(buf, size, "'%s'%s", st->namesym ? &st->namesym->namestr : "collection", reshapeIsSum((INode *)st) ? " value" : "");
 }
@@ -2147,6 +2165,13 @@ static void loanShapeReport(Pending *pend, INode *usenode) {
         loanShapeEmit(at, pend->loan, note->why, msg);
         return;
     }
+    if (loanShapeIsOwner(pend->loan)) {
+        snprintf(msg, sizeof(msg),
+            "This %s could replace the %s that owns what '%s' still holds a borrow into (made %s, through a path other references share), used again %s: %s. Replacing an owner frees what it points at, so the borrow would dangle. Reach it through an 'imm' or 'uni' reference, or copy what is needed out before this %s.",
+            what, cont, &holder->namesym->namestr, where, used, loanShapeReason(note, cont, 1, reason, sizeof(reason)), what);
+        loanShapeEmit(pend->access, pend->loan, note->why, msg);
+        return;
+    }
     snprintf(msg, sizeof(msg),
         "This %s could change the shape of a %s while '%s' still holds a borrow into it (made %s, through a path other references share), used again %s: %s. A %s that changes shape may move or free what it lent. Reach it through an 'imm' or 'uni' reference, or copy what is needed out before this %s.",
         what, cont, &holder->namesym->namestr, where, used, loanShapeReason(note, cont, sum, reason, sizeof(reason)), cont, what);
@@ -2169,6 +2194,10 @@ void loanShapeNow(INode *call, uint32_t loan, int why, Name *callee) {
         snprintf(msg, sizeof(msg),
             "This %s could change which variant a %s holds while a reference into one of its variants (made %s, through a path other references share) is still to be used by this %s or by a value around it: %s. A reference into a variant reads the value as that variant, so a change of variant would have it read the wrong bytes. Narrow a borrow of a local, an 'imm' or 'uni' reference, or the value.",
             what, cont, where, what, loanShapeReason(&note, cont, sum, reason, sizeof(reason)));
+    else if (loanShapeIsOwner(loan))
+        snprintf(msg, sizeof(msg),
+            "This %s could replace the %s that owns what a borrow (made %s, through a path other references share) points into, which is still to be used by this %s or by a value around it: %s. Replacing an owner frees what it points at, so the borrow would dangle. Reach it through an 'imm' or 'uni' reference, or copy what is needed out before this %s.",
+            what, cont, where, what, loanShapeReason(&note, cont, 1, reason, sizeof(reason)), what);
     else
         snprintf(msg, sizeof(msg),
             "This %s could change the shape of a %s while a borrow into it (made %s, through a path other references share) is still to be used by this %s or by a value around it: %s. A %s that changes shape may move or free what it lent. Reach it through an 'imm' or 'uni' reference, or copy what is needed out before this %s.",
