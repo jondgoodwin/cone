@@ -1,0 +1,241 @@
+// ======== WAV files: decoding and encoding ========
+//
+// Microsoft's RIFF/WAVE container (the "WAVE_FORMAT_PCM", "IEEE_FLOAT" and
+// "EXTENSIBLE" forms of the Microsoft multimedia registry): PCM of 8 (unsigned),
+// 16, 24 and 32 bits, and float of 32 and 64 bits, any channel count and rate,
+// decoded into interleaved f32. Chunks other than 'fmt ' and 'data' are
+// skipped. The encoder writes 16-bit PCM or 32-bit float.
+//
+// Ogg Vorbis and Opus are not decoded here. Opus needs an Ogg page parser,
+// then an RFC 6716 decoder (a range decoder, SILK for speech and CELT for
+// music, with an MDCT and a postfilter): around 10,000 lines of C in the
+// reference. Vorbis is smaller (codebooks, floor 1, residue, an MDCT) at
+// perhaps 2,500 lines. Either is a port of a published algorithm, so a library
+// of a few thousand lines of Cone; a vendored decoder (stb_vorbis, public
+// domain) would need Congo compiling C sources.
+
+// A decoded sound: interleaved f32 samples
+pub struct Sound {
+  pub rate u32;                // frames a second
+  pub channels u32;
+  pub samples List[f32];       // frames * channels, interleaved
+
+  pub fn frames(self &) usize {
+    if channels == 0u32 { return 0usize; }
+    samples.len() / usize.from(channels);
+  }
+
+  pub fn seconds(self &) f32 { f32.from(self.frames()) / f32.from(rate); }
+
+  // A silent sound of 'frames' frames
+  pub fn silent(rate u32, channels u32, frames usize) Sound {
+    mut s = List[f32].withCapacity(frames * usize.from(channels));
+    mut i = 0usize;
+    while i < frames * usize.from(channels) { s.push(0.); i = i + 1usize; }
+    new Sound(rate, channels, s);
+  }
+
+  // The sample of channel 'ch' in frame 'f'
+  pub fn at(self &, f usize, ch u32) f32 { *samples[f * usize.from(channels) + usize.from(ch)]; }
+
+  // A mono copy: channels averaged
+  pub fn toMono(self &) Sound {
+    mut s = List[f32].withCapacity(self.frames());
+    mut f = 0usize;
+    while f < self.frames() {
+      mut sum = 0.;
+      mut c = 0u32;
+      while c < channels { sum = sum + self.at(f, c); c = c + 1u32; }
+      s.push(sum / f32.from(channels));
+      f = f + 1usize;
+    }
+    new Sound(rate, 1u32, s);
+  }
+}
+
+// Why a file was refused
+pub struct WavError {
+  pub reason String;
+}
+
+fn wavErr(why &str) Result[Sound, WavError] {
+  Error[Sound, WavError](new WavError(String.from(why)));
+}
+
+fn u16le(b &Array[u8], at usize) u32 { u32.from(b[at]) | (u32.from(b[at + 1usize]) << 8u32); }
+fn u32le(b &Array[u8], at usize) u32 {
+  u32.from(b[at]) | (u32.from(b[at + 1usize]) << 8u32) | (u32.from(b[at + 2usize]) << 16u32) | (u32.from(b[at + 3usize]) << 24u32);
+}
+
+fn tagIs(b &Array[u8], at usize, a u8, c u8, d u8, e u8) bool {
+  b[at] == a and b[at + 1usize] == c and b[at + 2usize] == d and b[at + 3usize] == e;
+}
+
+// Decode a WAV file's bytes
+pub fn decodeWav(b &Array[u8]) Result[Sound, WavError] {
+  if b.len < 12usize { return wavErr("too short for a RIFF header"); }
+  if !tagIs(b, 0usize, 82u8, 73u8, 70u8, 70u8) { return wavErr("not a RIFF file"); }
+  if !tagIs(b, 8usize, 87u8, 65u8, 86u8, 69u8) { return wavErr("not a WAVE file"); }
+  mut format = 0u32;
+  mut channels = 0u32;
+  mut rate = 0u32;
+  mut bits = 0u32;
+  mut haveFmt = false;
+  mut dataAt = 0usize;
+  mut dataLen = 0usize;
+  mut haveData = false;
+  mut pos = 12usize;
+  while pos + 8usize <= b.len and !haveData {
+    imm size = usize.from(u32le(b, pos + 4usize));
+    imm body = pos + 8usize;
+    if tagIs(b, pos, 102u8, 109u8, 116u8, 32u8) {
+      if size < 16usize or body + 16usize > b.len { return wavErr("fmt chunk too short"); }
+      format = u16le(b, body);
+      channels = u16le(b, body + 2usize);
+      rate = u32le(b, body + 4usize);
+      bits = u16le(b, body + 14usize);
+      if format == 65534u32 {
+        if size < 26usize or body + 26usize > b.len { return wavErr("extensible fmt too short"); }
+        format = u16le(b, body + 24usize);
+      }
+      haveFmt = true;
+    } elif tagIs(b, pos, 100u8, 97u8, 116u8, 97u8) {
+      dataAt = body;
+      dataLen = size;
+      if body + dataLen > b.len { dataLen = b.len - body; }
+      haveData = true;
+    }
+    pos = body + size + (size & 1usize);
+  }
+  if !haveFmt { return wavErr("no fmt chunk"); }
+  if !haveData { return wavErr("no data chunk"); }
+  if channels == 0u32 or rate == 0u32 { return wavErr("zero channels or rate"); }
+  if format != 1u32 and format != 3u32 { return wavErr("not PCM or float"); }
+  if format == 1u32 and bits != 8u32 and bits != 16u32 and bits != 24u32 and bits != 32u32 {
+    return wavErr("PCM of an unsupported width");
+  }
+  if format == 3u32 and bits != 32u32 and bits != 64u32 { return wavErr("float of an unsupported width"); }
+  imm bytes = usize.from(bits / 8u32);
+  imm count = dataLen / bytes;
+  imm whole = count - count % usize.from(channels);
+  mut out = List[f32].withCapacity(whole);
+  mut i = 0usize;
+  while i < whole {
+    imm at = dataAt + i * bytes;
+    mut v = 0.;
+    if format == 1u32 {
+      if bits == 8u32 {
+        v = (f32.from(u32.from(b[at])) - 128.) / 128.;
+      } elif bits == 16u32 {
+        imm raw = u16le(b, at);
+        mut s = i32.from(raw);
+        if s >= 32768i32 { s = s - 65536i32; }
+        v = f32.from(s) / 32768.;
+      } elif bits == 24u32 {
+        imm raw = u32.from(b[at]) | (u32.from(b[at + 1usize]) << 8u32) | (u32.from(b[at + 2usize]) << 16u32);
+        mut s = i32.from(raw);
+        if s >= 8388608i32 { s = s - 16777216i32; }
+        v = f32.from(s) / 8388608.;
+      } else {
+        imm raw = u32le(b, at);
+        mut s = i64.from(raw);
+        if s >= 2147483648i64 { s = s - 4294967296i64; }
+        v = f32.from(s) / 2147483648.;
+      }
+    } elif bits == 32u32 {
+      v = bitsToF32(u32le(b, at));
+    } else {
+      imm lo = u64.from(u32le(b, at));
+      imm hi = u64.from(u32le(b, at + 4usize));
+      v = f32.from(bitsToF64(lo | (hi << 32u64)));
+    }
+    out.push(v);
+    i = i + 1usize;
+  }
+  Ok[Sound, WavError](new Sound(rate, channels, out));
+}
+
+// Bit patterns to floats and back (IEEE 754), by arithmetic so that no
+// pointer cast is needed
+fn bitsToF32(w u32) f32 {
+  imm sign = if (w >> 31u32) != 0u32 { -1.; } else { 1.; };
+  imm exp = i32.from((w >> 23u32) & 255u32);
+  imm frac = w & 8388607u32;
+  if exp == 0i32 { return sign * f32.from(frac) * libc.powf(2., -149.); }
+  if exp == 255i32 { return 0.; }
+  sign * (1. + f32.from(frac) / 8388608.) * libc.powf(2., f32.from(exp - 127i32));
+}
+
+fn bitsToF64(w u64) f64 {
+  imm sign = if (w >> 63u64) != 0u64 { -1.0d; } else { 1.0d; };
+  imm exp = i32.from((w >> 52u64) & 2047u64);
+  imm frac = w & 4503599627370495u64;
+  if exp == 0i32 { return 0.0d; }
+  if exp == 2047i32 { return 0.0d; }
+  sign * (1.0d + f64.from(frac) / 4503599627370496.0d) * libc.pow(2.0d, f64.from(exp - 1023i32));
+}
+
+fn put16(s &mut String, v u32) {
+  s.appendByte(u8.from(v & 255u32));
+  s.appendByte(u8.from((v >> 8u32) & 255u32));
+}
+
+fn put32(s &mut String, v u32) {
+  put16(s, v & 65535u32);
+  put16(s, v >> 16u32);
+}
+
+fn putTag(s &mut String, a u8, b u8, c u8, d u8) {
+  s.appendByte(a); s.appendByte(b); s.appendByte(c); s.appendByte(d);
+}
+
+// A float's IEEE 754 single bits, by arithmetic
+fn f32Bits(x f32) u32 {
+  if x == 0. { return 0u32; }
+  mut sign = 0u32;
+  mut a = x;
+  if a < 0. { sign = 2147483648u32; a = -a; }
+  mut e = 0i32;
+  while a >= 2. { a = a * 0.5; e = e + 1i32; }
+  while a < 1. { a = a * 2.; e = e - 1i32; }
+  if e < -126i32 { return sign; }
+  imm frac = u32.from((a - 1.) * 8388608.);
+  sign | (u32.from(e + 127i32) << 23u32) | frac;
+}
+
+// Encode as a WAV file: 16-bit PCM when 'asFloat' is false (samples clipped to
+// -1..1), else 32-bit float
+pub fn encodeWav(sound &Sound, asFloat bool) String {
+  imm width = if asFloat { 4u32; } else { 2u32; };
+  imm dataBytes = u32.from(sound.samples.len()) * width;
+  mut s = String.withCapacity(usize.from(dataBytes) + 44usize);
+  putTag(&mut s, 82u8, 73u8, 70u8, 70u8);
+  put32(&mut s, 36u32 + dataBytes);
+  putTag(&mut s, 87u8, 65u8, 86u8, 69u8);
+  putTag(&mut s, 102u8, 109u8, 116u8, 32u8);
+  put32(&mut s, 16u32);
+  put16(&mut s, if asFloat { 3u32; } else { 1u32; });
+  put16(&mut s, sound.channels);
+  put32(&mut s, sound.rate);
+  put32(&mut s, sound.rate * sound.channels * width);
+  put16(&mut s, sound.channels * width);
+  put16(&mut s, width * 8u32);
+  putTag(&mut s, 100u8, 97u8, 116u8, 97u8);
+  put32(&mut s, dataBytes);
+  mut i = 0usize;
+  while i < sound.samples.len() {
+    imm v = *sound.samples[i];
+    if asFloat {
+      put32(&mut s, f32Bits(v));
+    } else {
+      mut c = v;
+      if c > 1. { c = 1.; }
+      if c < -1. { c = -1.; }
+      mut q = i32.from(c * 32767.);
+      if c < 0. { q = i32.from(c * 32768.); }
+      put16(&mut s, u32.from(q & 65535i32));
+    }
+    i = i + 1usize;
+  }
+  s;
+}
