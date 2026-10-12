@@ -52,6 +52,11 @@ typedef struct {
     // refused where name resolution settles that it is a type (arrayRefNameRes,
     // ErrorSliceSpelling). '&[]x', the borrow of a value as a slice, is not.
     uint16_t bracketSpelled;
+    // The permission was written nowhere and is 'imm' because the type referred
+    // to declares Immutable (refTypeCheck, refImmutableDefaultPerm): '&str',
+    // 'So[str]'. The one reference `as` may make from a 'ro' one while 'trust' is
+    // not built (castRefPermCheck); a written '&imm str' is not
+    uint8_t permImmDefault;
 } RefNode;
 
 #define RefMarkSendable 1

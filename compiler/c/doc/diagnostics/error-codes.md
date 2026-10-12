@@ -478,8 +478,10 @@ An `as` from one reference to another whose permission is not the source's or a 
 check, `castRefPermCheck` in `cast.c`): between references `as` is only a legal coercion, the
 question an implicit coercion asks of the permissions (`permMatches`), and the message names both
 permissions and says the cast needs `trust`, which is not built yet ([cast](../nodes/cast.md),
-"`castTypeCheck`"). `&` as `&imm`, the way bytes are made text, is let through; a raw pointer made a
-reference, and a reference made a pointer, are not asked.
+"`castTypeCheck`"). A `&` made the `imm` a type declaring `Immutable` defaults to, with no permission written
+(`bytes as &str`, `p as So[str]`), is let through for now; the same permission written out
+(`as &imm P`, `bytes as &imm str`) is refused. A raw pointer made a reference, and a reference
+made a pointer, are not asked.
 
 A trait named as a pattern ([cast](../nodes/cast.md), "Trait patterns") has three codes. On an enum, a
 trait that no variant complies with matches nothing: `ErrorPatTraitNone` (a method over the whole enum

@@ -493,7 +493,7 @@ static char *castPermName(INode *perm) {
 // references it may only be a legal coercion (reftypesafe.html, "Type
 // Reinterpretation"): the permission is the same or a supertype of the
 // source's, the same check an implicit coercion asks (permMatches). Anything
-// else needs 'trust', which is not built yet (but for '&' to '&imm', below). A pointer 'as' a reference, which
+// else needs 'trust', which is not built yet (but for a defaulted 'imm', below). A pointer 'as' a reference, which
 // is where library code trusts memory it manages, and a reference 'as' a
 // pointer are not asked. Returns whether it reported.
 static int castRefPermCheck(CastNode *node, INode *fromtype, INode *totype) {
@@ -503,15 +503,21 @@ static int castRefPermCheck(CastNode *node, INode *fromtype, INode *totype) {
     INode *toperm = ((RefNode*)totype)->perm;
     if (permIsSame(toperm, fromperm) || permMatches(toperm, fromperm) != NoMatch)
         return 0;
-    // The one pair let through: a slice of bytes made text, 'bytes as &str'
-    // (refarrayref.html, "A String as a Slice of Bytes"), written throughout
-    // the packages and tests. It promises that nothing changes the bytes
-    // while the text is used, which is for 'trust' to guard once it is built.
-    if (itypeGetTypeDcl(fromperm) == (INode*)roPerm && itypeGetTypeDcl(toperm) == (INode*)immPerm)
+    // The one case let through, until 'trust' is built: a 'ro' reference made
+    // the 'imm' a type declaring Immutable gives a reference that writes no
+    // permission, 'bytes as &str', 'p as So[str]' (refarrayref.html, "A String as
+    // a Slice of Bytes"). The permission is the type's default, not written: a
+    // written '&imm' (or '&imm str') is checked as any other. It promises that
+    // nothing changes the bytes while the text is used, and that they are text,
+    // neither of which is checked.
+    if (itypeGetTypeDcl(fromperm) == (INode*)roPerm && itypeGetTypeDcl(toperm) == (INode*)immPerm
+        && ((RefNode*)totype)->permImmDefault)
         return 0;
     errorMsgNode(node->exp, ErrorCastPerm,
-        "`as` changes the reference's permission from %s to %s, which is not a coercion. Between references `as` may only be a legal coercion (`uni` to `mut`, `imm` or `&`; `mut` or `imm` to `&`); anything else needs `trust`, which is not built yet.",
-        castPermName(fromperm), castPermName(toperm));
+        "`as` changes the reference's permission from %s to %s, which is not a coercion. Between references `as` may only be a legal coercion (`uni` to `mut`, `imm` or `&`; `mut` or `imm` to `&`); anything else needs `trust`, which is not built yet.%s",
+        castPermName(fromperm), castPermName(toperm),
+        itypeGetTypeDcl(fromperm) == (INode*)roPerm && itypeGetTypeDcl(toperm) == (INode*)immPerm
+            ? " (The one exception is a type declaring Immutable, whose reference with no permission written is `imm`: `bytes as &str`.)" : "");
     return 1;
 }
 
