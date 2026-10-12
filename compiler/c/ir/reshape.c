@@ -165,10 +165,6 @@ static void rcWalk(INode *type, int ind) {
             // it cannot reach a local of this function
             if (rcLocalOnly && ref->region && itypeGetTypeDcl(ref->region) != borrowRef)
                 return;
-            // Asked of an owner, a virtual reference reaches no more than the object behind it: that
-            // object holds no path to the owner it lives in, and a path is something a call is handed
-            if (reshapeIsOwner(rcWant))
-                return;
             rcBits |= ReachVirtual | ReachBorrowed;
             return;
         }

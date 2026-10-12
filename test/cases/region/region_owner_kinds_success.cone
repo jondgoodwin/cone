@@ -6,9 +6,10 @@ import collections use *;
 // What region_flow_owner_kinds leaves alone: a borrow into what an owner of an array, or of a trait object,
 // owns, beside anything that cannot free it. A callee that only reads, or writes the element or the counter
 // through its borrow; the owner replaced after the borrow's last use; and, for the trait object, the owner's
-// own methods called while a borrow an earlier call lent is still to be used (they are handed the object
-// and no other name for the owner, which a method of a hidden type has no way to reach). Every value and
-// every 'final' printed is worked out by hand.
+// own methods called while a borrow an earlier call lent is still to be used. A call through a virtual
+// reference may replace an owner of the type (region_flow_owner_kinds refuses those calls), so the owners
+// of trait objects here are '+ ShapeKeeping', the promise that a call through them keeps the borrows of
+// its caller. Every value and every 'final' printed is worked out by hand.
 
 struct Item { pub v i64; fn final(self &uni) { printStr("final "); printInt(v); printStr("\n"); } }
 
@@ -24,7 +25,7 @@ struct Real is Gadget {
   fn final(self &uni) { printStr("final real "); printInt(n); printStr("\n"); }
 }
 
-struct Holder { pub g So[Gadget]; }
+struct Holder { pub g So[Gadget + ShapeKeeping]; }
 
 fn mkArr(n i64) So[Array[Item]] {
   mut l = List[Item].empty();
@@ -32,8 +33,8 @@ fn mkArr(n i64) So[Array[Item]] {
   l.push(new Item(n + 100));
   l.freeze();
 }
-fn mkG(n i64) So[Gadget] { new So[Real](new Real(n)); }
-fn mkR(n i64) Rc[mut, Gadget] { new Rc[mut, Real](new Real(n)); }
+fn mkG(n i64) So[Gadget + ShapeKeeping] { new So[Real](new Real(n)); }
+fn mkR(n i64) Rc[mut, Gadget + ShapeKeeping] { new Rc[mut, Real](new Real(n)); }
 
 fn readArr(a &mut So[Array[Item]], e &mut Item) { printInt(e.v + a[1usize].v); printStr("\n"); }
 fn writeArr(a &mut So[Array[Item]], e &mut Item) {
@@ -42,7 +43,7 @@ fn writeArr(a &mut So[Array[Item]], e &mut Item) {
   printInt(e.v + a[1usize].v);
   printStr("\n");
 }
-fn peekG(o &mut So[Gadget], c &mut i64) i64 { *c + 1; }
+fn peekG(o &mut So[Gadget + ShapeKeeping], c &mut i64) i64 { *c + 1; }
 
 // the array is 1 and 101: 102
 fn arrRead() { mut a = mkArr(1); readArr(&mut a, &mut a[0usize]); }
@@ -80,7 +81,7 @@ fn gadgetTwo() i64 {
 }
 
 // the owner is replaced after the last use of the borrow
-fn gadgetAfter(a &mut So[Gadget]) i64 {
+fn gadgetAfter(a &mut So[Gadget + ShapeKeeping]) i64 {
   imm c = a.count();
   imm n = *c;
   *a = mkG(n + 10);

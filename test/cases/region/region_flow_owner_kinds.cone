@@ -16,11 +16,13 @@ struct Item { pub v i64; fn final(self &uni) { printStr("final "); printInt(v); 
 
 trait Gadget {
   pub fn count(self &mut) &mut i64;
+  pub fn bump(self &mut);
 }
 
 struct Real is Gadget {
   pub n i64;
   pub fn count(self &mut) &mut i64 { &mut n; }
+  pub fn bump(self &mut) { n = n + 1; }
   fn final(self &uni) { printStr("final real "); printInt(n); printStr("\n"); }
 }
 
@@ -107,6 +109,49 @@ fn gadgetRc(a &mut Rc[mut, Gadget], b &mut Rc[mut, Gadget]) i64 {
   imm c = a.count();
   replaceR(b);                                                          //~ ErrorShapeReshape
   *c;
+}
+
+// ---- A call through a virtual reference may replace the owner it is lent from
+// The object behind a virtual reference is unknown, so a call through a mutable one is assumed to reach
+// any owner of the type and replace it, as it is assumed to reshape any collection (refborref,
+// "ShapeKeeping"): an owner declared '+ ShapeKeeping' is the cure (region_owner_kinds_success).
+
+// Another method of the object, called while a borrow an earlier call lent is held
+fn gadgetBump() i64 {
+  mut o = mkG(1);
+  imm c = o.count();
+  o.bump();                                                             //~ ErrorShapeReshape
+  *c;
+}
+
+// ... a second borrow of the object's state lent while the first is held
+fn gadgetSecond() i64 {
+  mut o = mkG(1);
+  imm c = o.count();
+  imm d = o.count();                                                    //~ ErrorShapeReshape
+  *c = 4;
+  *d;
+}
+
+// ... the owner in a field, and a counted one
+fn gadgetHolderBump(h &mut Holder) i64 {
+  imm c = h.g.count();
+  h.g.bump();                                                           //~ ErrorShapeReshape
+  *c;
+}
+
+fn gadgetRcBump() i64 {
+  imm p = mkR(40);
+  imm c = p.count();
+  p.bump();                                                             //~ ErrorShapeReshape
+  *c;
+}
+
+// The owner lent as a '&<mut' beside a '&<' of it, to one call
+fn both(x &<mut Gadget, y &<Gadget) { x.bump(); }
+fn bothLent() {
+  imm a So[Gadget] = mkG(1);
+  both(a, a);                                                           //~ ErrorShapeReshape
 }
 
 fn main() {}
