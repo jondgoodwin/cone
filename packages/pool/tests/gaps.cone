@@ -2,30 +2,40 @@
 // finalizing gap is left to pin: a value assigned over through '&mut pool[r]'
 // is finalized as it is replaced (finalize.cone).
 //
-// THE HOLE, which compiles today and dangles, so no check here can pin what
-// it prints. Written out so a reader knows what is not yet safe:
+// THE HOLE, which compiles today, so no check here can pin it: a Ref is not
+// paired with the pool it came from (the design's invariant lifetimes, key and
+// lock, are not built). Used with another pool of the same type it is checked
+// there like any Ref:
+//
+//   fn mixed(a &mut Pool[Pt], b &mut Pool[Pt]) i64 {
+//     imm r = a.add(new Pt(1, 2));
+//     b[r].x;                    // 'b' has no such value (a panic), or, where
+//   }                            // b's slot is at the same generation, b's
+//                                // own value: the wrong one, but a live
+//                                // value of the right type, never stray memory
+//
+// No longer a hole: a change of a pool's shape while a borrow from it is still
+// to be used. A borrow from 'pool[r]' or '&mut pool[r]', or an Option from
+// 'get' or 'getMut', held in a local freezes a local pool: 'remove', an 'add'
+// (which may move every value), and moving or dropping it are refused while
+// the borrow is live. A pool reached through a '&mut Pool' parameter, a field
+// of 'self' or a 'Rc[mut, T]' owner is not frozen against reads, but a
+// 'remove' or 'add' through the same name, through a second '&mut Pool'
+// parameter that may be the same pool at the call, or by a call whose body (or
+// a callee or global it reaches) changes a pool, is refused while the borrow
+// is still to be used (error 1339, the shape-changing rule's parts (a) and
+// (b); test/cases/region/region_flow_pool_twomut.cone and
+// region_flow_pool_freeze.cone pin them):
 //
 //   fn frozen(p &mut Pool[Pt], q &mut Pool[Pt]) i64 {
 //     imm r = p.add(new Pt(1, 2));
 //     imm x = &mut p[r];
-//     q.remove(r);               // called with one pool twice: through a
-//                                // '&mut' parameter the pool is reached by a
-//     x.x;                       // shared path, which a borrow does not
-//   }                            // freeze, so x reads a finalized value
+//     q.remove(r);               // refused: q may be p, and x reads the value
+//     x.x;                       // 'remove' would have finalized
+//   }
 //
-// It is freezing through a shared path. A borrow from 'pool[r]' or
-// '&mut pool[r]', or an Option from 'get' or 'getMut', held in a local
-// freezes a local pool: 'remove', an 'add'
-// (which may move every value), and moving or dropping it are refused while
-// the borrow is live. A pool reached through a '&mut Pool' parameter, a field
-// of 'self' or a 'Rc[mut, T]' owner is not frozen, since another reference may
-// reach it; Jon's rule refuses such a borrow ('uni' reborrowing is built, but
-// part (b) of the shape-changing rule is not enforced yet).
-// A static pool (a module's global) changed by a function called while a
-// borrow of it lives is not seen.
-//
-// No longer a hole: a borrow from a pool, bare or inside the Option 'get' and
-// 'getMut' return, carries the pool's loan wherever it goes. Returning the
+// Also no longer a hole: a borrow from a pool, bare or inside the Option 'get'
+// and 'getMut' return, carries the pool's loan wherever it goes. Returning the
 // Option from the function holding the pool, storing it through a parameter,
 // and matching the borrow out of it and returning that are refused, as
 // returning or storing away a bare 'pool[r]' is; kept in an outer variable
