@@ -696,7 +696,10 @@ fn cellGrow(a &amp;mut Cell, b &amp;mut Cell) i64 {
 	<p>A function whose body the compiler cannot read (an <span class="pre">extern</span> function, a call
 		through a function pointer or a trait, a function of another package that is no generic and no inline)
 		is assumed to reshape whatever it is handed that reaches the collection, unless the call is through a
-		virtual reference marked <a href="#shapekeeping"><span class="pre">+ ShapeKeeping</span></a>. A read-only reference
+		virtual reference marked <a href="#shapekeeping"><span class="pre">+ ShapeKeeping</span></a>. A mutable virtual
+		reference (<span class="pre">&amp;&lt;mut Trait</span>, a <span class="pre">&amp;&lt;mut fn</span> called) is assumed to
+		reach any collection even when handed nothing (<a href="refclosure.html#reshape">a visitor and its closure</a>,
+		<a href="refvirtref.html#reshape">virtual references</a>). A read-only reference
 		(<span class="pre">&amp;</span> or <span class="pre">&amp;imm</span>) cannot write what it reaches, and a
 		value the function owns whole, a local, cannot be the collection reached through a reference, so
 		neither makes a call one that could.</p>
@@ -955,6 +958,20 @@ fn visit(w &amp;mut World, f &amp;&lt;fn(x &amp;mut World)) i64 {
   e.hp;
 }
 </pre>
+	<p>A <em>mutable</em> virtual reference, <span class="pre">&amp;&lt;mut fn(...)</span> or
+			<span class="pre">&amp;&lt;mut Trait</span>, is assumed to reach the collection even when the call is handed
+			nothing that does: the closure behind it may have captured the list (by <span class="pre">&amp;mut</span>), the
+			struct behind it may hold it, and the type that says so is hidden. So a borrow into a collection reached
+			through a shared path ends at the call, however the call is spelled:</p>
+<pre>
+fn visit[T](xs &amp;List[T], f &amp;&lt;mut fn(x &amp;T)) {
+  each x in xs.iter() { f(x); }  // Error: f may be a closure that pushes to xs, which moves the block iter reads
+}
+</pre>
+	<p>A read-only virtual reference (<span class="pre">&amp;&lt;fn</span>, <span class="pre">&amp;&lt;Trait</span> with methods that
+			take <span class="pre">self &amp;</span>) can write nothing it reaches, and is not asked. A list lent
+			<span class="pre">&amp;imm</span> is one nothing can write, so <span class="pre">visit(xs &amp;imm List[T], ...)</span> is Ok (its
+			caller needs a list that is <span class="pre">imm</span>); and the mark below promises the same of the closure.</p>
 	<p>The reference can promise otherwise. <span class="pre">ShapeKeeping</span>, the twin of
 		<span class="pre">ShapeChanging</span>, is a marker the compiler finds, like <span class="pre">Shareable</span>, and is
 		written after a <span class="pre">+</span> in the type of the reference or the owner

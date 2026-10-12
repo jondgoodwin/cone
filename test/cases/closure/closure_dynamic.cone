@@ -42,8 +42,16 @@ fn countWhere[T](xs &List[T], pred &<fn(x &T) bool) i32 {
   n;
 }
 
-fn visit[T](xs &List[T], f &<mut fn(x &T)) {
+// The closure behind a '&<mut' is not known here, and may have captured the list it is
+// iterating (a push moves the block 'iter' reads), so the list is lent '&imm': nothing can write it
+fn visit[T](xs &imm List[T], f &<mut fn(x &T)) {
   each x in xs.iter() { f(x); }
+}
+
+fn numbers() List[i32] {
+  mut xs = new List[i32]();
+  xs.push(1); xs.push(5); xs.push(9); xs.push(12);
+  xs;
 }
 
 struct Tool {
@@ -118,12 +126,11 @@ fn main() {
   print <- pick((a, b) => a + b, 6), "\n";                             // 12
 
   // A signature naming a type parameter
-  mut xs = new List[i32]();
-  xs.push(1); xs.push(5); xs.push(9); xs.push(12);
+  imm xs = numbers();
   imm limit = 4;
   print <- countWhere(&xs, x => *x > limit), "\n";                     // 3
   mut seen = 0;
-  visit(&xs, fn(x &i32) { seen += *x; });
+  visit(&imm xs, fn(x &i32) { seen += *x; });
   print <- seen, "\n";                                                 // 27
 
   // Owners, made from a closure value or a struct

@@ -12,14 +12,20 @@ trait Measured {
   pub fn size(self &) i32;
 }
 
+trait Grower {
+  pub fn grow(self &mut, n i32);
+}
+
 enum Shape {
-  struct Circle is Measured {
+  struct Circle is Measured, Grower {
     pub r i32;
     pub fn size(self &) i32 {r * 10;}
+    pub fn grow(self &mut, n i32) {r = r + n;}
   }
-  struct Square is Measured {
+  struct Square is Measured, Grower {
     pub s i32;
     pub fn size(self &) i32 {s * 100;}
+    pub fn grow(self &mut, n i32) {s = s + n;}
   }
   struct Third {
     pub t i32;
@@ -56,6 +62,31 @@ fn viaStore(s &mut Shape) i32 {
     case imm m Measured {
       *s = Shape.Third(2);
       return m.size();         //~ ErrorVariantReshape "this store replaces a 'Shape' value whole"
+    }
+    else {return 0;}
+  }
+}
+
+// ... a call through the virtual reference itself, handed nothing else: the type behind it is hidden, and
+// a variant that held a pointer to the enum could store over it in 'grow', while the call uses the reference
+fn viaVirtualCall(s &mut Shape) i32 {
+  match s {
+    case imm g Grower {
+      g.grow(1);               //~ ErrorVariantReshape "its body is not visible"
+      return 1;
+    }
+    else {return 0;}
+  }
+}
+
+// ... which a Shape that is the function's own local does not have: nothing else reaches it
+fn virtualCallOnLocal(s Shape) i32 {
+  mut t = s;
+  match &mut t {
+    case imm g Grower {
+      g.grow(1);
+      g.grow(2);
+      return 1;
     }
     else {return 0;}
   }
