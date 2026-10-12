@@ -2,7 +2,7 @@
 // holding it, wait until all four are inside at once -- which could never
 // happen if a read lock shut out other readers (each gives up after two
 // seconds, and says so). Then a writer is alone: two writer threads each
-// raise a pair of plain globals, 'a' then 'b', 3000 times under the write
+// raise a pair of globals (relaxed atomics), 'a' then 'b', 3000 times under the write
 // lock, so the pair differs only inside a write; three reader threads read
 // the pair 3000 times each under a read lock and count any time they see
 // a != b, and each side counts any time it finds the other inside with it.
@@ -21,8 +21,9 @@ const rounds = 3000u64;
 imm rw Rwlock;
 
 // Guarded by rw: written only under its write lock
-mut a u64 = 0u64;
-mut b u64 = 0u64;
+// (relaxed atomics: no ordering of their own, so only the lock orders them)
+imm a Atomic[u64];
+imm b Atomic[u64];
 
 // Who is inside, and the times anything was seen that a working lock forbids
 imm readersInside Atomic[u32];
@@ -34,6 +35,8 @@ imm ready Atomic[u32];
 imm go Atomic[u32];
 
 fn @initpure init() {
+  a = Atomic[u64].of(0u64);
+  b = Atomic[u64].of(0u64);
   rw = Rwlock.make();
   readersInside = Atomic[u32].of(0u32);
   writersInside = Atomic[u32].of(0u32);
@@ -79,9 +82,9 @@ fn writer(n u64) u64 {
     if writersInside.add(1u32) != 0u32 or readersInside.load() != 0u32 {
       violations.add(1u32);
     }
-    a = a + 1u64;
+    a.storeOrdered(a.loadOrdered(MemOrder.Relaxed) + 1u64, MemOrder.Relaxed);
     thread.yieldNow();     // widen the window in which a != b
-    b = b + 1u64;
+    b.storeOrdered(b.loadOrdered(MemOrder.Relaxed) + 1u64, MemOrder.Relaxed);
     writersInside.sub(1u32);
     rw.writeUnlock();
     i = i + 1u64;
@@ -95,7 +98,7 @@ fn reader(n u64) u64 {
   while i < rounds {
     rw.readLock();
     readersInside.add(1u32);
-    if writersInside.load() != 0u32 or a != b {
+    if writersInside.load() != 0u32 or a.loadOrdered(MemOrder.Relaxed) != b.loadOrdered(MemOrder.Relaxed) {
       violations.add(1u32);
     }
     readersInside.sub(1u32);
@@ -107,8 +110,8 @@ fn reader(n u64) u64 {
 
 // One race: whether it ended with the pair right and nothing forbidden seen
 fn race() bool {
-  a = 0u64;
-  b = 0u64;
+  a.storeOrdered(0u64, MemOrder.Relaxed);
+  b.storeOrdered(0u64, MemOrder.Relaxed);
   violations.store(0u32);
   ready.store(0u32);
   go.store(0u32);
@@ -119,7 +122,7 @@ fn race() bool {
   imm r3 = thread.start(2u64, &reader);
   openGate(5u32);
   imm done = w1.join() + w2.join() + r1.join() + r2.join() + r3.join();
-  done == 5u64 * rounds and violations.load() == 0u32 and a == 2u64 * rounds and b == 2u64 * rounds;
+  done == 5u64 * rounds and violations.load() == 0u32 and a.loadOrdered(MemOrder.Relaxed) == 2u64 * rounds and b.loadOrdered(MemOrder.Relaxed) == 2u64 * rounds;
 }
 
 fn main() i32 {
@@ -141,7 +144,7 @@ fn main() i32 {
     run = run + 1;
   }
   expectUInt(good, 25u64, "races with no reader beside a writer, no two writers, and the pair whole");
-  expectUInt(a, 6000u64, "the last race's a");
+  expectUInt(a.loadOrdered(MemOrder.Relaxed), 6000u64, "the last race's a");
 
   // The try forms
   imm l = Rwlock.make();
