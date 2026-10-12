@@ -3620,6 +3620,22 @@ void fnCallVariantTermNameRes(NameResState *pstate, INode **nodep) {
     *nodep = (INode*)lit;
 }
 
+// The enum a variant belongs to, for its methods. What its 'basetrait' names is bound
+// only when the module that declares the enum is name resolved, which for an enum
+// imported from another package is after the module using it (a qualified
+// 'q.Lamp.Red.get()' asks here first), so the declaration it was written inside is
+// the answer until then.
+static StructNode *fnCallVariantEnum(StructNode *variant) {
+    INode *base = variant->basetrait;
+    if (base != NULL && base->tag == FnCallTag)
+        base = ((FnCallNode*)base)->objfn;
+    if (base != NULL && isNameUseNode(base) && nameUseGetDcl((NameUseNode*)base) == NULL) {
+        INode *owner = inodeGetOwner((INode*)variant);
+        return owner != NULL && owner->tag == StructTag && (owner->flags & EnumType) ? (StructNode*)owner : NULL;
+    }
+    return structBaseTraitDcl(variant);
+}
+
 // A method called through an empty variant's name, 'Lamp.Red.get()', 'Red.get()' after
 // a 'use', 'Pending.Waiting[i64].key()', is called on that variant constructed, as if it were
 // written '(Lamp.Red).get()': the name alone is the value (fnCallVariantTermNameRes),
@@ -3642,7 +3658,7 @@ static void fnCallVariantReceiver(FnCallNode *node) {
     INode *member = namespaceFind(&variant->namespace, methname);
     // A generic variant has no methods of its own until it is an instance: the enum it
     // belongs to has them
-    StructNode *base = member == NULL ? structBaseTraitDcl(variant) : NULL;
+    StructNode *base = member == NULL ? fnCallVariantEnum(variant) : NULL;
     if (base != NULL)
         member = namespaceFind(&base->namespace, methname);
     if (member == NULL || !fnCallNamesTemplateMethod(member, 1))

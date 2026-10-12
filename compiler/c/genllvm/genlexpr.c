@@ -2953,6 +2953,13 @@ static int genlOwnersOnly(INode *type) {
     return 1;
 }
 
+// The variable whose drop flag a store over 'var' tests and sets: a match's
+// binding by value stores into the matched value's own storage, so the
+// variable owning that value (flowMatchInPlace)
+static VarDclNode *genlStoreFlagVar(VarDclNode *var) {
+    return var->tag == VarDclTag && flowMatchInPlace(var) ? flowDropOwner(var) : var;
+}
+
 // Store 'rval' into 'lval', whose address genlAddr has taken already
 static void genlStoreTo(GenState *gen, INode *lval, LLVMValueRef lvalptr, LLVMValueRef rval);
 
@@ -2971,7 +2978,7 @@ static void genlStoreTo(GenState *gen, INode *lval, LLVMValueRef lvalptr, LLVMVa
         VarDclNode *flagvar = NULL;
         if (lval->flags & FlagDropTest)
             flagvar = isNameUseNode(lval) && isExpNode(lval)
-                ? (VarDclNode *)((NameUseNode *)lval)->dclnode : flowLvalRootVar(lval);
+                ? genlStoreFlagVar((VarDclNode *)((NameUseNode *)lval)->dclnode) : flowLvalRootVar(lval);
         LLVMBasicBlockRef endblk = flagvar && flagvar->llvmflag ? genlDropFlagIf(gen, flagvar, DropFlagWhole) : NULL;
         if (owning && genlOwnersOnly(lvaltype))
             genlReleaseOwning(gen, LLVMBuildLoad2(gen->builder, genlType(gen, genlAddrType(lval)), lvalptr, "dealiasref"), lvaltype);
@@ -2984,7 +2991,7 @@ static void genlStoreTo(GenState *gen, INode *lval, LLVMValueRef lvalptr, LLVMVa
     genlStoreBarrier(gen, lval, lvalptr);
     // A flagged variable stored over whole holds its value now
     if (isNameUseNode(lval) && isExpNode(lval) && ((NameUseNode *)lval)->dclnode->tag == VarDclTag)
-        genlDropFlagSet(gen, (VarDclNode *)((NameUseNode *)lval)->dclnode, DropFlagWhole);
+        genlDropFlagSet(gen, genlStoreFlagVar((VarDclNode *)((NameUseNode *)lval)->dclnode), DropFlagWhole);
 }
 
 // Whether the address genlAddr takes of 'lval' is reached through a reference

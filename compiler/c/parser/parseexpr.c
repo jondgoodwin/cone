@@ -507,9 +507,10 @@ static INode *parseIndexArg(ParseState *parse) {
     return parseArg(parse);
 }
 
-// Is this an argument parseIndexArg read as a lifetime?
+// Is this an argument parseIndexArg read as a lifetime? An argument that failed
+// to parse is NULL (parseTerm's reported error), and is none.
 static int parseIsLifeArg(INode *arg) {
-    return arg->tag == NameUseTag && ((NameUseNode*)arg)->namesym->namestr == '\'';
+    return arg != NULL && arg->tag == NameUseTag && ((NameUseNode*)arg)->namesym->namestr == '\'';
 }
 
 // A lifetime is named only in a type of a function's signature, or of a
