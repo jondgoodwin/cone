@@ -1807,6 +1807,82 @@ static int pwShapeBorrow(Place *recvpl, uint32_t recvloan, INode *container) {
     return !frozen;
 }
 
+// Does this struct hold values of the type 'cont' only in the block its own pointer, reference
+// or array field points at (a 'List[String]': 'ptr *String'), so that an element of it that
+// 'cont' names is in its own storage? Every field either reaches no 'cont' or is that pointer
+static int pwHoldsElements(INode *holder, INode *cont) {
+    int found = 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&((StructNode *)holder)->fields, cnt, nodesp)) {
+        INode *ft = itypeGetTypeDcl(((IExpNode *)*nodesp)->vtype);
+        if (ft == NULL)
+            return 0;
+        if (reshapeReach(ft, cont, 0) == 0)
+            continue;
+        INode *pointee = ft->tag == PtrTag ? ((StarNode *)ft)->vtexp
+            : (ft->tag == RefTag || ft->tag == ArrayRefTag) ? ((RefNode *)ft)->vtexp : NULL;
+        pointee = pointee ? itypeGetTypeDcl(pointee) : NULL;
+        if (pointee && pointee->tag == ArrayTag)
+            pointee = itypeGetTypeDcl(arrayElemType(pointee));
+        if (pointee != cont)
+            return 0;
+        found = 1;
+    }
+    return found && ((StructNode *)holder)->derived == NULL;
+}
+
+// The struct a borrow of the container 'cont' is into, when the borrow was taken through a field
+// or an element of one: a call can reshape the container only by reaching that struct, or by a
+// reference that points at a container of that type (reshapeCall). 'recv' is the receiver
+// that is lent. It is
+// - a field of a struct ('item.label' of 'item.label.view()', 'self.items'): that struct;
+// - the element a method of a struct returned ('ui.texts[id]'), where that struct holds its
+//   elements in its own block (pwHoldsElements: a 'List[String]') and the call is handed no other
+//   borrow the element could come from: that struct.
+// NULL otherwise ('s.view()', a value a call returned from somewhere else), and where the struct
+// is a trait or an enum, whose fields other types hold too, so that the borrow's value may be
+// the field of a type that implements it (reshapeIsSum)
+static INode *pwViewOwner(INode *recv, INode *cont) {
+    for (;;) {
+        if (recv->tag == CastTag && !(recv->flags & FlagConvert))
+            recv = ((CastNode *)recv)->exp;
+        else if (recv->tag == BorrowTag || recv->tag == ArrayBorrowTag)
+            recv = ((RefNode *)recv)->vtexp;
+        else if (recv->tag == DerefTag)
+            recv = ((StarNode *)recv)->vtexp;
+        else
+            break;
+    }
+    if (recv->tag == FldAccessTag) {
+        INode *parent = iexpGetTypeDcl(((FnCallNode *)recv)->objfn);
+        if (parent && (parent->tag == RefTag || parent->tag == ArrayRefTag))
+            parent = itypeGetTypeDcl(((RefNode *)parent)->vtexp);
+        if (parent == NULL || parent->tag != StructTag || (parent->flags & TraitType))
+            return NULL;
+        return parent;
+    }
+    if (recv->tag != FnCallTag)
+        return NULL;
+    FnCallNode *call = (FnCallNode *)recv;
+    if (call->args == NULL || call->args->used == 0 || (call->flags & (FlagVDisp | FlagLvalOp)))
+        return NULL;
+    INode *rt = iexpGetTypeDcl(recv);
+    if (rt->tag != RefTag || itypeGetTypeDcl(((RefNode *)rt)->vtexp) != cont)
+        return NULL;
+    INode *selft = iexpGetTypeDcl(nodesGet(call->args, 0));
+    INode *holder = selft->tag == RefTag ? itypeGetTypeDcl(((RefNode *)selft)->vtexp) : NULL;
+    if (holder == NULL || holder->tag != StructTag || (holder->flags & TraitType) || !pwHoldsElements(holder, cont))
+        return NULL;
+    for (uint32_t k = 1; k < call->args->used; ++k) {
+        // A literal, or the caller's file a default argument gives, is no storage of the list's
+        INode *arg = nodesGet(call->args, k);
+        if (arg->tag != StringLitTag && !intrinsicIsSrcDefault(arg) && pwCarries(iexpGetTypeDcl(arg)))
+            return NULL;
+    }
+    return holder;
+}
+
 // The borrow a call returned out of a container that changes shape, carrying the loan
 // 'loan' of the place 'pl' (a method's receiver, or a reference a free function was
 // handed): the place is frozen against a change through the same name
@@ -1815,32 +1891,6 @@ static int pwShapeBorrow(Place *recvpl, uint32_t recvloan, INode *container) {
 // others may write by the path (a shared one), and where the source is reached as 'uni'
 // but is lent by a 'mut' borrow (an alias loan), or a 'mut' borrow of it is held beside
 // this one. Where it is not marked, a borrow that writes freezes the place entirely.
-// The struct that holds the container a method's receiver lends as one of its fields, when the
-// receiver is that field ('item.label' for 'item.label.view()', 'self.items'): the borrow is
-// into that one value, and a call can reshape it only by reaching the struct (or a reference
-// to a container of that type: reshapeCall). NULL where the receiver is no field of a struct
-// ('s.view()', an element of a list, a value a call returned), and where the struct is a
-// trait or an enum, whose fields other types hold too, so that the borrow's value may be the
-// field of a type that implements it (reshapeIsSum)
-static INode *pwViewOwner(INode *recv) {
-    for (;;) {
-        if (recv->tag == CastTag && !(recv->flags & FlagConvert))
-            recv = ((CastNode *)recv)->exp;
-        else if (recv->tag == BorrowTag || recv->tag == ArrayBorrowTag)
-            recv = ((RefNode *)recv)->vtexp;
-        else
-            break;
-    }
-    if (recv->tag != FldAccessTag)
-        return NULL;
-    INode *parent = iexpGetTypeDcl(((FnCallNode *)recv)->objfn);
-    if (parent && (parent->tag == RefTag || parent->tag == ArrayRefTag))
-        parent = itypeGetTypeDcl(((RefNode *)parent)->vtexp);
-    if (parent == NULL || parent->tag != StructTag || (parent->flags & TraitType))
-        return NULL;
-    return parent;
-}
-
 static void pwShapeLent(Place *pl, uint32_t loan, INode *container, int ofarg) {
     int marked = 0;
     if (pl->shwrite)
@@ -2171,7 +2221,7 @@ static PathSet *pwCall(FnCallNode *call) {
             INode *container = recvtype->tag == RefTag ? itypeGetTypeDcl(((RefNode *)recvtype)->vtexp) : NULL;
             if (container && container->tag == StructTag && shapeChanging((StructNode *)container)) {
                 pwShapeLent(&recvpl, recvloan, container, 0);
-                loanShapeOwnerSet(recvloan, pwViewOwner(nodesGet(call->args, 0)));
+                loanShapeOwnerSet(recvloan, pwViewOwner(nodesGet(call->args, 0), container));
             }
         }
         result = pathSetUnion(result, fromrecv);

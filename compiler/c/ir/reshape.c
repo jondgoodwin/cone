@@ -522,10 +522,6 @@ int reshapeCall(FnCallNode *call, FnDclNode *meth, int recvunique, INode *cont, 
         while (ba->tag == CastTag && !(ba->flags & FlagConvert))
             ba = ((CastNode *)ba)->exp;
         INode *wt = reshapeParmType(callee, k, arg);
-        // A call through a virtual reference reaches its receiver as the virtual reference
-        // the caller holds, not as the trait's own 'self &mut', which names no field
-        if (k == 0 && (call->flags & FlagVDisp) && at->tag == VirtRefTag)
-            wt = at;
         unsigned bits;
         if (ba->tag == BorrowTag && at->tag == RefTag
                 && reshapeUniqueLocalExcept(((RefNode *)ba)->vtexp, mine, nmine)) {
