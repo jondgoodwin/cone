@@ -270,7 +270,7 @@ enum ComdatSupport {
 enum CAbiTarget {
     CAbiOther,      // None built: structs cross as LLVM's first-class values
     CAbiWin64,      // x86_64 Windows
-    CAbiSysV,       // x86_64 elsewhere (not built)
+    CAbiSysV,       // x86_64 elsewhere
     CAbiWasm32      // wasm32 (not built)
 };
 

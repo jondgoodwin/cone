@@ -15,7 +15,8 @@
 
 	<p style="margin-left: 40px;"><i>Note: Without a build description, a module found beside
 		the importing file is only declared, so a program importing one cannot be linked.
-		A C-named function passes a struct by value as C does on 64-bit Windows only.</i></p>
+		A C-named function passes a struct by value as C does on x86-64 (Windows, Linux and macOS) only,
+		not yet on WebAssembly.</i></p>
 
 	<p>After a program's source code gets big enough,
 		it may become easier to work with when partitioned across multiple files.
@@ -599,7 +600,15 @@ pub fn @c scaled(v Vec4, k f32) Vec4 { // C calls it: Vec4 scaled(Vec4 v, float 
 	made, and is returned through a pointer to the caller's result slot, which C
 	passes as a hidden first parameter. The <span class="pre">Vec4</span> above is
 	16 bytes, so it crosses by pointer both ways; a struct of two
-	<span class="pre">i32</span>s is one 64-bit integer. The C library's own
+	<span class="pre">i32</span>s is one 64-bit integer. On x86-64 Linux and macOS (System V)
+	a struct of up to 16 bytes is passed in registers, each eightbyte of it in an
+	integer register if any integer or pointer is in it and in a floating-point
+	register if it holds only floats: the <span class="pre">Vec4</span> above
+	travels in two floating-point registers, a struct of an
+	<span class="pre">i32</span> and an <span class="pre">f64</span> in one of each,
+	and a result likewise comes back in registers. A larger struct is copied
+	to the stack, as is one that finds too few registers left, and a larger
+	result comes back through the caller's result slot. The C library's own
 	<span class="pre">div</span> and <span class="pre">lldiv</span> return a struct each
 	way:</p>
 <pre>
@@ -629,9 +638,9 @@ extern fn @c SetWindowFullscreen(window *Window, fullscreen bool) bool;  // bool
 <p>A slice, a tuple or an array is not a C type, and passes as Cone passes it: a
 	slice's pointer and length arrive as two arguments, as a C function's
 	<span class="pre">(char *, size_t)</span> takes them.</p>
-<p style="margin-left: 40px;"><i>Note: A struct crosses as C passes it on 64-bit Windows only.
-	On every other target (x86-64 Linux and macOS, WebAssembly) a struct of more than one
-	scalar does not yet cross as C passes it. A call made through a function
+<p style="margin-left: 40px;"><i>Note: A struct crosses as C passes it on x86-64 (Windows, Linux and macOS)
+	only. On WebAssembly a struct of more than one scalar does not yet cross as C
+	passes it. A call made through a function
 	reference (<span class="pre">&amp;fn</span>) uses Cone's own convention, as does a
 	type's method named with <span class="pre">@c</span>; so a C-named function
 	taking or returning a struct by value goes wrong when it is called through a
