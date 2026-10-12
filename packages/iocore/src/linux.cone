@@ -607,7 +607,26 @@ fn lxCancel(lp &mut Loop, i u32, outcome u32) {
   imm r = lp.recAt(i) as &mut Rec;
   waitUnlink(lp, i);
   if r.kind == diag.kindConnect {lp.close(r.sock);}
+  r.dequeued = Instant.now();
   lp.decide(i, outcome, 0usize, 0u32);
+}
+
+// The cancels asked since the last wait are answered, after the events that
+// came with the wait (an operation they finished is Done, not Cancelled).
+// Each names its record by index and generation, so one answered meanwhile,
+// and its record reused, is not mistaken for another
+fn lxSettleCancels(lp &mut Loop) {
+  if isWindows() {return;}
+  mut k = 0usize;
+  while k < lp.cancels.len() {
+    imm token = *lp.cancels[k];
+    k = k + 1usize;
+    imm i = u32.from(token & 0xFFFFFFFFu64);
+    imm r = lp.recAt(i) as &mut Rec;
+    if r.gen != u32.from(token >> 32u64) or r.state != stFlight {continue;}
+    lxCancel(lp, i, if r.asked == askedDeadline {diag.outcomeTimedOut;} else {diag.outcomeCancelled;});
+  }
+  lp.cancels.clear();
 }
 
 // The file operations in flight on file handle h are asked to end, as
@@ -700,6 +719,7 @@ fn lxDequeue(lp &mut Loop, ms u32, out &mut List[Completion]) usize {
   if ms != 0u32 {lp.stats.waits = lp.stats.waits + 1u64;}
   if got <= 0i32 {
     if ms != 0u32 and ms != infinite {lp.stats.waitTimeouts = lp.stats.waitTimeouts + 1u64;}
+    lxSettleCancels(lp);
     return 0usize;
   }
   imm at = Instant.now();
@@ -726,6 +746,7 @@ fn lxDequeue(lp &mut Loop, ms u32, out &mut List[Completion]) usize {
     k = k + 1usize;
   }
   if lp.groupsDirty {lp.sweepGroups();}
+  lxSettleCancels(lp);
   n;
 }
 

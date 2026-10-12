@@ -167,6 +167,7 @@ pub struct Loop {
   grouped u32;            // records in flight in a cancel group
   groupsDirty bool;       // a group's cancel has been posted: look at the grouped records
   decided List[u32];
+  cancels List[u64];      // Linux: socket operations asked to end, answered at the next wait (linux.cone)
   heldC List[Completion]; // answers held back by a full channel...
   heldT List[Target];     // ...and where they go
   handles List[HEntry];
@@ -236,7 +237,8 @@ pub struct Loop {
       loopId: diag.nextLoopId(), port: shared, portHandle: port,
       blocks: List[*Rec].empty(), recCount: 0u32, freeRec: noEntry, kernelHeld: 0u32,
       grouped: 0u32, groupsDirty: false,
-      decided: List[u32].empty(), heldC: List[Completion].empty(), heldT: List[Target].empty(),
+      decided: List[u32].empty(), cancels: List[u64].empty(),
+      heldC: List[Completion].empty(), heldT: List[Target].empty(),
       handles: List[HEntry].empty(), freeHandle: noEntry,
       wheel: Wheel.make(Instant.now()), expiries: List[Expiry].empty(),
       entries: entries, events: events, timer: timer, packet: packet, associated: false,
@@ -545,6 +547,12 @@ pub struct Loop {
   // it: answer TimedOut now, without its buffer, which goes home when the
   // kernel gives it back
   fn abandonRec(self &mut, i u32) {
+    // Linux: nothing of a socket operation is the kernel's to give back, so
+    // it is answered TimedOut with its buffer, never promptly without it
+    if not isWindows() and socketKind((self.recAt(i) as &Rec).kind) {
+      lxCancel(self, i, diag.outcomeTimedOut);
+      return;
+    }
     self.decide(i, diag.outcomeTimedOut, 0usize, 0u32);
     (self.recAt(i) as &mut Rec).abandon = true;
   }
@@ -1195,7 +1203,10 @@ pub struct Loop {
       }
       return;
     }
-    if isWindows() {CancelIoEx(r.handle, p as *u8);} else {lxCancel(self, i, outcome);}
+    // The kernel is asked, and answers at the next wait: on Linux the loop
+    // answers it then itself (settleCancels), after the events that came with
+    // the wait, so an operation that finished first is Done, as on Windows
+    if isWindows() {CancelIoEx(r.handle, p as *u8);} else {cancels.push(self.tokenOf(i));}
   }
 
   // A cancel group has been cancelled: every operation in flight in a
@@ -1394,7 +1405,7 @@ pub struct Loop {
       // How long the kernel may keep us: not at all when answers are ready
       // or a timer is due
       mut ms = 0u32;
-      if decided.len() == 0usize and now < until {
+      if decided.len() == 0usize and cancels.len() == 0usize and now < until {
         mut wakeAt = until;
         match wheel.nextExpiry() {
           case imm s Some {if s < wakeAt {wakeAt = s;}}

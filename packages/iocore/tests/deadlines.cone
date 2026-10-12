@@ -8,7 +8,9 @@
 //    deadline and not long after.
 // 2. The same with no grace: TimedOut at the deadline itself, without the
 //    buffer; the kernel's answer to the cancel comes after, and its buffer
-//    goes home (a late return), the record free again.
+//    goes home (a late return), the record free again. (Linux: nothing of a
+//    socket operation is the kernel's to give back, so even with no grace the
+//    answer has its buffer, and there is no late return.)
 // 3. A job running past its deadline, which nothing can interrupt: TimedOut
 //    after the grace, without its buffer; when the job returns, its buffer
 //    goes home.
@@ -68,6 +70,9 @@ fn main() i32 {
     mut b = Handle.none();
     a, b = pair(&mut lp);
     imm one = addLane(new LaneConfig(name: "one", maxThreads: 1u32));
+    // Late returns so far from the socket in case 2: the kernel's (Windows)
+    mut lateBase = 0u64;
+    if isWindows() {lateBase = 1u64;}
 
     // 1. With its buffer
     {
@@ -91,14 +96,19 @@ fn main() i32 {
       waitFor(&mut lp, &mut out, 1usize);
       requireUInt(u64.from(out.len()), 1u64, "one answer");
       expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeTimedOut), "TimedOut");
-      expectUInt(u64.from(out[0usize].buf.capacity()), 0u64, "without its buffer: the kernel had not given it back");
-      expectUInt(lp.counters().promptTimeouts, 1u64, "a prompt TimedOut");
+      if isWindows() {
+        expectUInt(u64.from(out[0usize].buf.capacity()), 0u64, "without its buffer: the kernel had not given it back");
+        expectUInt(lp.counters().promptTimeouts, 1u64, "a prompt TimedOut");
+      } else {
+        expectUInt(u64.from(out[0usize].buf.capacity()), 4096u64, "with its buffer: no kernel holds it");
+        expectUInt(lp.counters().promptTimeouts, 0u64, "not a prompt one");
+      }
       expect(not lp.cancel(id), "answered: its id names nothing");
       expectUInt(lp.inFlight(), 0u64, "nothing in flight: it was answered");
       out.clear();
       lp.poll(Instant.now() + Duration.fromMillis(30i64), &mut out);
       expectUInt(u64.from(out.len()), 0u64, "and never answered again");
-      expectUInt(lp.counters().lateReturns, 1u64, "the kernel gave the buffer back after");
+      expectUInt(lp.counters().lateReturns, lateBase, "the kernel gave the buffer back after");
       expectUInt(pool.stats().lent, 0u64, "home to its pool");
       lp.setGrace(Duration.fromMillis(1i64));
     }
@@ -117,7 +127,7 @@ fn main() i32 {
       out.clear();
       lp.poll(Instant.now() + Duration.fromMillis(250i64), &mut out);
       expectUInt(u64.from(out.len()), 0u64, "the job returned, and nothing more was answered");
-      expectUInt(lp.counters().lateReturns, 2u64, "its buffer given back");
+      expectUInt(lp.counters().lateReturns, lateBase + 1u64, "its buffer given back");
       expectUInt(pool.stats().lent, 0u64, "home to its pool");
     }
 
