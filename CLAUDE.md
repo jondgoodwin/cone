@@ -690,7 +690,16 @@ Visual Studio projects stay at the root.
   queue under a Mutex and answers through `Target.Hook`; a dropped `Socket`
   closes; its finalizer, which `finalAll()` runs before `actors`', waits for
   quiet and ends the I/O, every behaviour still paused on it abandoned, its
-  record's values finalized; `render` draws lit
+  record's values finalized; `netmsg` (a working name) is a game's protocol over
+  UDP after Gaffer On Games: a sans-IO `Peer` (a 16-bit sequence, an ack and a
+  32-bit ack bitfield in every packet; reliable ordered messages kept and resent
+  until acknowledged; latest-wins values on streams, sent once, a priority
+  accumulator filling a 1200-byte packet; a two-state send rate), a stateless
+  SipHash cookie `Gate`/`Dialer` handshake, a `LinkSim` lossy link, and the
+  actors over them: a `Connection` an application sends to and a `Handler` of
+  `NetEvent`s it hears from, joined over UDP (an `Endpoint` and the thread
+  that owns its `iocore` socket), in-process (`pairInProcess`) or across a
+  simulated link (`pairSimulated`); no encryption, no fragmentation yet; `render` draws lit
   meshes through `gpu` (nothing of Vulkan's in it): a `Renderer` holding
   GPU meshes made once from a `mesh.Mesh` (a vertex buffer a stream, 32-bit
   indices, a draw a material group), textures and materials in `pool`s,

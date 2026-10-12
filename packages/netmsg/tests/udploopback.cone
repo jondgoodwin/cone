@@ -55,6 +55,15 @@ fn has(xs &List[String], t &str) bool {
   false;
 }
 
+// An application actor reading a connection's measurements: the round trip is
+// readable by an actor, with 'await'
+actor Prober {
+  pub async do ask(self, c Connection, out Sender[PeerStats]) {
+    imm s = await c.stats();
+    out.send(s);
+  }
+}
+
 fn numbered(n u64) List[u8] {
   mut s = String.empty();
   s.appendUInt(n);
@@ -131,6 +140,22 @@ fn main() i32 {
     expectUInt(n, 50u64, "50 of them");
     expect(has(&hs, "U1:5:pos"), "the latest value arrived");
     expect(has(&hc, "U1:6:snap"), "and the client's");
+
+    // An actor asks the client's connection how it is doing
+    mut txP Sender[PeerStats];
+    mut rxP Receiver[PeerStats];
+    txP, rxP = Channel[PeerStats].make();
+    imm prober = new Prober();
+    prober.ask(*cc[0usize], txP);
+    match rxP.recvTimeout(Duration.fromSeconds(5i64)) {
+      case imm st Some {
+        expect(st.packetsReceived > 0u64, "the stats say packets arrived");
+        expect(st.packetsSent > 0u64, "and were sent");
+        expect(st.rttMs >= 0i64 and st.rttMs < 500i64, "the round trip is measured, and short on loopback");
+        expect(st.good, "good conditions");
+      }
+      case is None[PeerStats] { expect(false, "the stats came"); }
+    }
 
     client.endpoint.shutdown();
     // The client's shutdown closes its connection: the server hears it
