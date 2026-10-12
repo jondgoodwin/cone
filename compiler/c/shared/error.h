@@ -331,6 +331,7 @@ enum ErrorCode {
 
     // Moving out of a field
     ErrorMoveField = 1166,      // A move-typed value moved out of a field -- a struct's or a tuple's, or what an owning reference held in one points at -- which would leave the struct with a hole in it
+    ErrorMoveElem = 1121,       // A move-typed value moved out of an indexed element of an array held by value -- a variable's, a parameter's or a temporary's -- which would leave the array with a hole in it
 
     // The built-in traits 'Move' and 'Copy'
     ErrorCopyMove = 1167,       // 'is Copy' on a type that moves: it declares 'Move' too, or has a 'final', a field that moves, or a base that moves
