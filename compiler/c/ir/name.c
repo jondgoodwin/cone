@@ -121,6 +121,7 @@ Name *integerTraitName;
 Name *pointerTraitName;
 Name *sendableTraitName;
 Name *shareableTraitName;
+Name *shapeKeepingTraitName;
 Name *sizedTraitName;
 Name *dynSizedTraitName;
 Name *immutableTraitName;

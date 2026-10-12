@@ -17,9 +17,10 @@
 		(<span class="pre">&amp;&lt;fn(x i32) i32</span>, <span class="pre">&amp;&lt;mut fn(x i32) i32</span>), the
 		owners <span class="pre">So[fn(x i32) i32]</span> and <span class="pre">Rc[fn(x i32) i32]</span> made with
 		<span class="pre">new</span>, a closure literal lent for a statement, a callable held in a field and called by its name, and
-		the markers <span class="pre">+ Sendable</span> and <span class="pre">+ Shareable</span> on a reference or an owner.
+		the markers <span class="pre">+ Sendable</span>, <span class="pre">+ Shareable</span> and
+		<span class="pre">+ ShapeKeeping</span> on a reference or an owner.
 		Not built: calling a closure once, which consumes it, through an owner; and <span class="pre">+</span> joining
-		any trait but those two markers.</i></p>
+		any trait but those three markers.</i></p>
 
 	<p>Earlier, we introduced value-based <a href="refclosure.html">closures</a>.
 		A closure is a value of a struct that has no name, and its size and fields depend on what it holds.
@@ -163,7 +164,7 @@ struct Applied[F] { pub f So[F]; }     // Applied[fn(i32) i32] holds a So[fn(i32
 		a <span class="pre">So[fn(sig)]</span> field takes <span class="pre">self &amp;mut</span>, as
 		<span class="pre">press</span> does above. The handler is replaced by assigning the field.</p>
 
-	<h2 id="marks">Saying what is behind a reference: Sendable and Shareable</h2>
+	<h2 id="marks">Saying what is behind a reference: Sendable, Shareable and ShapeKeeping</h2>
 	<p>A virtual reference hides the type behind it, so a reference to a callable or a trait is not
 		<span class="pre">Sendable</span> or <span class="pre">Shareable</span> unless it says so. The markers follow the
 		signature or the trait with a <span class="pre">+</span>, in either order:</p>
@@ -180,7 +181,17 @@ imm k = 3;
 imm c = new So[fn(x i32) i32 + Sendable](fn(x i32) [k] i32 { x * k; });   // k is listed: its own copy
 imm th = thread.start(c, &amp;work);
 </pre>
-	<p>Only <span class="pre">Sendable</span> and <span class="pre">Shareable</span> may follow the <span class="pre">+</span>.
+	<p>A third marker, <span class="pre">ShapeKeeping</span>, says that a call through the reference reshapes nothing the
+		caller holds a borrow into, so the caller's borrows of the elements of a collection survive the call
+		(<a href="refborref.html#shapekeeping">Borrowed References</a>). Unlike the other two, it is a fact of the
+		methods the reference calls rather than of the type behind it: a closure or a struct whose method pushes to
+		a list it reaches through a <span class="pre">&amp;mut</span> is refused, naming the push.</p>
+<pre>
+fn visit(w &amp;mut World, f &amp;&lt;fn(x &amp;mut World) + ShapeKeeping) i64 { ... }
+imm n = visit(w, fn (x &amp;mut World) { x.score = x.score + 1; });   // Ok: writes a field
+</pre>
+	<p>Only <span class="pre">Sendable</span>, <span class="pre">Shareable</span> and <span class="pre">ShapeKeeping</span>
+		may follow the <span class="pre">+</span>.
 		A reference to a known type takes no marker (ask the type, <span class="pre">T is Sendable</span>), and joining
 		two traits with their methods, <span class="pre">&amp;&lt;Shape + Named</span>, is not built.</p>
 

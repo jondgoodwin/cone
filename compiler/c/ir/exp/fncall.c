@@ -731,6 +731,9 @@ static void fnCallLendVirtOwner(INode **selfp, INode *parmtype) {
     if (owner->tag != VirtRefTag || itypeGetTypeDcl(owner->region) == borrowRef || parm->tag != RefTag)
         return;
     RefNode *lent = newRefNodeFull(VirtRefTag, *selfp, borrowRef, parm->perm, owner->vtexp);
+    // The owner's markers are the lent borrow's: a call through an owner marked
+    // '+ ShapeKeeping' keeps the caller's borrows
+    lent->marks = owner->marks;
     if (itypeIsMove((INode*)lent))
         return;
     iexpCoerce(selfp, (INode*)lent);
@@ -2925,13 +2928,14 @@ static INode *fnCallMarkSplit(INode *arg, uint8_t *marks) {
         INode *right = nodesGet(sum->args, 0);
         INode *rightdcl = isNameUseNode(right) ? nameUseGetDcl((NameUseNode*)right) : NULL;
         uint8_t mark = rightdcl == (INode*)sendableTrait ? RefMarkSendable
-            : rightdcl == (INode*)shareableTrait ? RefMarkShareable : 0;
+            : rightdcl == (INode*)shareableTrait ? RefMarkShareable
+            : rightdcl == (INode*)shapeKeepingTrait ? RefMarkShapeKeeping : 0;
         if (mark == 0) {
             // A sum of values: not ours. A type that is no marker is refused, and left off
             if (!(isNameUseNode(right) && rightdcl != NULL && isTypeNode(right)))
                 return arg;
             errorMsgNode(right, ErrorMarkUse,
-                "After a '+' in a reference type go the markers of the value it points at, '+ Sendable' and '+ Shareable'; other traits are not intersected yet.");
+                "After a '+' in a reference type go the markers of the value it points at, '+ Sendable', '+ Shareable' and '+ ShapeKeeping'; other traits are not intersected yet.");
         }
         *marks |= mark;
         arg = sum->objfn;
@@ -3009,7 +3013,7 @@ static void fnCallLowerManagedRef(TypeCheckState *pstate, FnCallNode **nodep) {
         errorMsgNode((INode*)node, ErrorMarkUse,
             "A marker after a '+' says what the value behind a virtual reference is, since its type is hidden: %s[...] here refers to %s, a type that is known, so ask it of the type, 'T is %s', where it is written.",
             &regname->namestr, isNameUseNode(vtype) ? &((NameUseNode*)vtype)->namesym->namestr : "a type",
-            (marks & RefMarkSendable) ? "Sendable" : "Shareable");
+            (marks & RefMarkSendable) ? "Sendable" : (marks & RefMarkShareable) ? "Shareable" : "ShapeKeeping");
         *((INode**)nodep) = newErrorNode((INode*)node);
         return;
     }

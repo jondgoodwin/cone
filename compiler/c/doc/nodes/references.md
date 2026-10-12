@@ -979,6 +979,20 @@ variable it holds or borrows, and what to list). The thread check
 A callable trait (`fnSigCallTrait`) is one struct per signature, so `cloneRefNode`
 keeps it rather than copying it into an instance of a generic.
 
+`RefMarkShapeKeeping` (`+ ShapeKeeping`) is the one mark that is a fact of methods
+rather than of the hidden type, so `refMarksUnmet` is given the trait the reference is
+to. A call through a reference carrying it keeps the caller's borrows into a
+shape-changing value: `reshapeCall` and `siCallType` answer no for it
+(`shapeKeepingCall`, which reads the mark off the receiver's type; a lent owner takes
+its owner's marks, `fnCallLendVirtOwner`). The value behind it is held to the promise
+where it becomes the reference (`shapeKeepsVia`, [flow](../phases/flow.md)); a plain
+function made one by `&name` is judged by its body at the coercion (`shapeKeepFnRef`,
+called from `iexpCoerceShape`). `ShapeKeeping` is a built-in trait (`shapeKeepingTrait`)
+for the name only: `structCheck` refuses a type declaring it (`ErrorShapeKeepingDeclared`)
+and nothing asks `T is ShapeKeeping`. The parser reads `+ ShapeKeeping` straight after
+the parameters of a `&<fn(...)` that returns nothing (`parseFnSig`: a `+` and a marker's
+name there is not a return type).
+
 ## Hazards
 
 - **A permission is not always a `PermNode`.** A lock permission is a struct,

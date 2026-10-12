@@ -56,20 +56,25 @@ typedef struct {
 
 #define RefMarkSendable 1
 #define RefMarkShareable 2
+// '+ ShapeKeeping': a call through the reference reshapes nothing the caller holds
+// a borrow into (shapeinfer.h, shapeKeepsVia). The one marker that is a fact of
+// the methods the reference dispatches to, not of the value's type alone
+#define RefMarkShapeKeeping 4
 
 // The marker a name after a '+' in a reference type stands for, a RefMark bit,
-// or 0 where it is not Sendable or Shareable
+// or 0 where it is not Sendable, Shareable or ShapeKeeping
 uint8_t refMarkOfName(Name *name);
 
-// A marker as it is written, 'Sendable' or 'Shareable' ('mark' is one RefMark bit)
+// A marker as it is written, 'Sendable', 'Shareable' or 'ShapeKeeping' ('mark' is one RefMark bit)
 char *refMarkSpell(uint8_t mark);
 
 // The markers written after a type, ' + Sendable + Shareable', appended to 'buf'
 void refMarksCat(char *buf, size_t size, uint8_t marks);
 
 // The first marker a virtual reference promises of its hidden value that 'type'
-// is not, as a RefMark bit; 0 where it is each
-uint8_t refMarksUnmet(uint8_t marks, INode *type);
+// is not, as a RefMark bit; 0 where it is each. 'trait' is what the reference
+// is to ('&<Trait'): ShapeKeeping is asked of the methods it dispatches to
+uint8_t refMarksUnmet(uint8_t marks, INode *type, INode *trait);
 
 // Create a new reference type whose info will be filled in afterwards
 RefNode *newRefNode(uint16_t tag);

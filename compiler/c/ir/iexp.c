@@ -368,12 +368,16 @@ static int iexpCoerceShape(INode **from, INode *totype) {
             errorMsgNode(*from, ErrorGpuUnavailable,
                 "In GPU code a reference to %s cannot be made a virtual reference to %s: it would be called through a table of code pointers, which a GPU has none of. Give the value to a function generic over a trait, '[S Shape]', which is inlined.",
                 itypeName(((RefNode*)iexpGetTypeDcl(*from))->vtexp), itypeName(((RefNode*)totypedcl)->vtexp));
+        // A plain function made '&<fn(...) + ShapeKeeping' is held to it: the type
+        // matched carries only its signature
+        if (totypedcl->tag == VirtRefTag && (((RefNode*)totypedcl)->marks & RefMarkShapeKeeping) && isExpNode(*from))
+            shapeKeepFnRef(*from, totypedcl);
         INode *newfrom = (INode*)newConvCastNode(*from, iexpCoerceType(*from, totypedcl));
         inodeLexCopy(newfrom, *from);
         *from = newfrom;
         return 1;
     }
-    case ConvByMeth: 
+    case ConvByMeth:
     {
         // The injected call takes the operand's position before it is lowered,
         // because lowering is what reports a private or unmatched isTrue

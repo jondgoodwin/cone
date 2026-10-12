@@ -1,0 +1,111 @@
+// '+ ShapeKeeping' on a virtual reference is a promise about the value behind it, held
+// where it becomes the reference (collection_shapekeeping_success holds what passes): a
+// call through it reshapes nothing it reaches through a shared mutable path, its
+// parameters and what it borrows or holds by reference alike. A closure or a method
+// that pushes to a list it reaches that way, or stores over one, is refused at the
+// pass, naming the push or the store. A function named with '&' is held to it by its
+// body, and a function reference held in a variable has no body to read. An unmarked
+// virtual reference still ends the borrow at the call (1339), and a type cannot
+// declare the marker.
+
+mod collection_flow_shapekeeping;
+
+import collections use *;
+
+struct Entity { pub hp i64; }
+struct World { pub score i64; pub entities List[Entity]; }
+
+trait Scorer { pub fn bump(self &mut, w &mut World); }
+
+fn throughFn(w &mut World, f &<fn(x &mut World) + ShapeKeeping) i64 {
+  imm e = w.entities[0usize];
+  f(w);
+  e.hp;
+}
+
+fn throughTrait(w &mut World, s &<mut Scorer + ShapeKeeping) i64 {
+  imm e = w.entities[0usize];
+  s.bump(w);
+  e.hp;
+}
+
+// A closure that pushes to the list the borrow is into
+fn pushingClosure(w &mut World) i64 {
+  throughFn(w, fn (x &mut World) { x.entities.push(new Entity(1)); });   //~ ErrorNotShapeKeeping "calls `push`"
+}
+
+// One that stores over it
+fn storingClosure(w &mut World) i64 {
+  throughFn(w, fn (x &mut World) { x.entities = new List[Entity](4); });   //~ ErrorNotShapeKeeping "stores over a place"
+}
+
+// One that pushes to a list it borrows: its capture is as shared as its parameter
+fn throughMutFn(w &mut World, f &<mut fn(x &mut World) + ShapeKeeping) i64 {
+  imm e = w.entities[0usize];
+  f(w);
+  e.hp;
+}
+
+fn capturingClosure(w &mut World, log &mut List[i64]) i64 {
+  throughMutFn(w, fn (x &mut World) { log.push(1); });   //~ ErrorNotShapeKeeping "calls `push`"
+}
+
+struct PushScorer {
+  pub n i64;
+  pub fn bump(self &mut, w &mut World) { w.entities.push(new Entity(n)); }
+}
+
+struct LogScorer {
+  pub log &mut List[i64];
+  pub fn bump(self &mut, w &mut World) { log.push(w.score); }
+}
+
+fn pushingMethod(w &mut World) i64 {
+  mut s = new PushScorer(1);
+  throughTrait(w, &mut s);   //~ ErrorNotShapeKeeping "PushScorer's `bump` calls `push`"
+}
+
+fn holdingMethod(w &mut World, log &mut List[i64]) i64 {
+  mut s = new LogScorer(log);
+  throughTrait(w, &mut s);   //~ ErrorNotShapeKeeping "LogScorer's `bump` calls `push`"
+}
+
+fn grow(x &mut World) { x.entities.push(new Entity(1)); }
+
+fn pushingFunction(w &mut World) i64 {
+  throughFn(w, &grow);   //~ ErrorNotShapeKeeping "the function `grow` calls `push`"
+}
+
+fn viaVariable(w &mut World, g &fn(x &mut World)) i64 {
+  throughFn(w, g);   //~ ErrorNotShapeKeeping "cannot tell what function"
+}
+
+// Unmarked, the call still ends the borrow
+fn unmarkedFn(w &mut World, f &<fn(x &mut World)) i64 {
+  imm e = w.entities[0usize];
+  f(w);   //~ ErrorShapeReshape "its body is not visible here"
+  e.hp;
+}
+
+fn unmarkedTrait(w &mut World, s &<mut Scorer) i64 {
+  imm e = w.entities[0usize];
+  s.bump(w);   //~ ErrorShapeReshape "its body is not visible here"
+  e.hp;
+}
+
+// A global is as shared as a parameter
+mut pool List[Entity];
+
+fn @initpure init() {
+  pool = List[Entity].empty();
+}
+
+fn clearPool(x &mut World) { pool.clear(); }
+
+fn viaGlobal(w &mut World) i64 {
+  throughFn(w, &clearPool);   //~ ErrorNotShapeKeeping "calls `clear`"
+}
+
+struct Claims is ShapeKeeping {   //~ ErrorShapeKeepingDeclared "may not declare ShapeKeeping"
+  pub n i64;
+}

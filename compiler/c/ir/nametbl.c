@@ -271,6 +271,7 @@ void nametblInit() {
     pointerTraitName = nametblFind("Pointer", 7);
     sendableTraitName = nametblFind("Sendable", 8);
     shareableTraitName = nametblFind("Shareable", 9);
+    shapeKeepingTraitName = nametblFind("ShapeKeeping", 12);
     sizedTraitName = nametblFind("Sized", 5);
     dynSizedTraitName = nametblFind("DynSized", 8);
     immutableTraitName = nametblFind("Immutable", 9);
