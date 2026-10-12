@@ -539,9 +539,17 @@ with a body is a default, and comes with the literal) and no field is
 The built-in marker `Shareable` has two: an unmet `T is Shareable`, or a value made a
 virtual reference marked `+ Shareable` that is not, is `ErrorNotShareable` (the
 marker `+ Sendable`, unmet, is `ErrorNotSendable`, the thread check's); and a
-`+` in a reference's type followed by anything but `Sendable` or `Shareable`, or
-marking a reference to a type that is known, is `ErrorMarkUse`
-([references](../nodes/references.md), `RefNode.marks`).
+`+` in a reference's type followed by anything but `Sendable`, `Shareable` or
+`ShapeKeeping`, or marking a reference to a type that is known, is `ErrorMarkUse`
+([references](../nodes/references.md), `RefNode.marks`). The third marker, `ShapeKeeping`,
+is held by the methods behind the reference rather than by their type: a closure,
+struct or plain function made a virtual reference marked `+ ShapeKeeping` whose method
+reshapes a shape-changing value (a list, a string) it reaches through a shared mutable
+path is `ErrorNotShapeKeeping`, the message naming the call or the store; a type
+declaring `ShapeKeeping` is `ErrorShapeKeepingDeclared` ([flow](../phases/flow.md),
+`shapeKeepsVia`). An unmarked call through a virtual reference is still
+`ErrorShapeReshape` where a borrow into a collection is held across it, and the
+message says the mark would keep the borrow.
 
 A string literal holding a NUL byte (`"ab\x00cd"`) wanted as a `cstr`, which C
 would read up to the NUL, is `ErrorCStrNul` ([literals](../nodes/literals.md)).

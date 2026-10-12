@@ -36,15 +36,17 @@ uint8_t refMarkOfName(Name *name) {
         return RefMarkSendable;
     if (name == shareableTraitName)
         return RefMarkShareable;
+    if (name == shapeKeepingTraitName)
+        return RefMarkShapeKeeping;
     return 0;
 }
 
 char *refMarkSpell(uint8_t mark) {
-    return mark == RefMarkSendable ? "Sendable" : "Shareable";
+    return mark == RefMarkSendable ? "Sendable" : mark == RefMarkShareable ? "Shareable" : "ShapeKeeping";
 }
 
 void refMarksCat(char *buf, size_t size, uint8_t marks) {
-    for (uint8_t mark = RefMarkSendable; mark <= RefMarkShareable; mark = (uint8_t)(mark << 1)) {
+    for (uint8_t mark = RefMarkSendable; mark <= RefMarkShapeKeeping; mark = (uint8_t)(mark << 1)) {
         if (marks & mark) {
             size_t used = strlen(buf);
             snprintf(buf + used, size - used, " + %s", refMarkSpell(mark));
@@ -296,6 +298,8 @@ void refPrint(RefNode *node) {
         inodeFprint(" + Sendable");
     if (node->marks & RefMarkShareable)
         inodeFprint(" + Shareable");
+    if (node->marks & RefMarkShapeKeeping)
+        inodeFprint(" + ShapeKeeping");
     inodeFprint(")");
 }
 
@@ -663,11 +667,14 @@ TypeCompare refMatches(RefNode *to, RefNode *from, SubtypeConstraint constraint)
 
 // The first marker a virtual reference promises of its hidden value that 'type'
 // is not, as a RefMark bit; 0 where it is each
-uint8_t refMarksUnmet(uint8_t marks, INode *type) {
+uint8_t refMarksUnmet(uint8_t marks, INode *type, INode *trait) {
     if ((marks & RefMarkSendable) && !genericTypeIs(type, sendableTrait))
         return RefMarkSendable;
     if ((marks & RefMarkShareable) && !genericTypeIs(type, shareableTrait))
         return RefMarkShareable;
+    if ((marks & RefMarkShapeKeeping) && type->tag == StructTag && trait && trait->tag == StructTag
+            && shapeKeepsVia((StructNode*)type, (StructNode*)trait, NULL, 0) == ShapeKeepsNo)
+        return RefMarkShapeKeeping;
     return 0;
 }
 
@@ -713,7 +720,7 @@ TypeCompare refvirtMatchesRef(RefNode *to, RefNode *from, SubtypeConstraint cons
 
     // '+ Sendable' and '+ Shareable' promise what the hidden value is: a value
     // is made one only if its type is each
-    if (refMarksUnmet(to->marks, (INode*)fromvtypedcl))
+    if (refMarksUnmet(to->marks, (INode*)fromvtypedcl, (INode*)tovtypedcl))
         return NoMatch;
 
     // When value types are equivalent, ensure it is a closed, tagged trait.

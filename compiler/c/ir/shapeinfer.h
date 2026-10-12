@@ -90,6 +90,30 @@ void shapeDeclaredCheck(void);
 // source does not? True of a type of the package the compiler found so
 int shapeRecordable(StructNode *st);
 
+// '+ ShapeKeeping' on a virtual reference: does a call through '&<Trait' on a value
+// of the struct 'impl' reshape nothing the caller may hold a borrow into? It holds
+// when no method the trait dispatches to, in its body or in anything it calls,
+// reshapes a shape-changing value reached through a shared mutable path: a
+// parameter (a '&mut', or a 'mut'/'mut1' owner) or what the value captures or
+// holds by reference. Writing fields and elements, the method's own new
+// collections, 'uni' and owned parameters, '&' and 'imm' reads are unrestricted. It is
+// reshape.c's own question, asked of the types the method reaches (shapeTypeReshapes),
+// so the coarse answer is the same: a callback that pushes to a captured list lacks it,
+// whichever list the caller borrowed from.
+// ShapeKeepsPending: a body is not type checked yet; the caller accepts the value
+// and has the check made again at the end of type check (shapeKeepDeferred).
+// 'why' (may be NULL) gets the reason on ShapeKeepsNo.
+enum { ShapeKeepsYes, ShapeKeepsNo, ShapeKeepsPending };
+int shapeKeepsVia(StructNode *impl, StructNode *trait, char *why, size_t size);
+void shapeKeepDeferred(void);
+
+// A reference to a plain function made a virtual reference marked '+ ShapeKeeping':
+// the function is held to the same (reported at 'from')
+void shapeKeepFnRef(INode *from, INode *to);
+
+// Does a call of 'call' go through a virtual reference marked '+ ShapeKeeping'?
+int shapeKeepingCall(FnCallNode *call);
+
 // Reading a typed body, shared with reshape.c. siVisit calls 'fn' on every node
 // of an expression tree, each before what it holds, and stops when 'fn' answers
 // nonzero (returned). siVisible: the compiler can read what this function does

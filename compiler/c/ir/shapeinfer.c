@@ -31,6 +31,7 @@
 #include "ir.h"
 #include "../shared/timer.h"
 
+#include <stdio.h>
 #include <string.h>
 
 enum SiAnswer {
@@ -148,6 +149,7 @@ typedef struct {
     int isref;              // it is a reference: a write through it reaches the caller's value
     INode *pointee;         // then, the type it points at
     int hit;                // a write found
+    INode *hitnode;         // the node of this body that made it (a message names it)
     int pending;            // a body that could settle it is not type checked yet
     VarDclNode *taint[SiTaintMax];  // locals holding a copy of storage read from the parameter's pointee
     int ntaint;
@@ -598,6 +600,10 @@ static void siCallType(FnCallNode *call, SiCtx *c) {
     if (callee && ((callee->dclinfo.facts & DclIntrinsic) || (callee->value && callee->value->tag == IntrinsicTag)
             || fnDclIsInit(callee)))
         return;
+    // A call through a virtual reference marked '+ ShapeKeeping' reshapes nothing
+    // (checked where the value became the reference)
+    if (shapeKeepingCall(call))
+        return;
     uint32_t nargs = call->args ? call->args->used : 0;
     if ((call->flags & FlagLvalOp) && nargs > 0 && siTypeWriteHits(nodesGet(call->args, 0), c)) {
         c->hit = 1;
@@ -744,6 +750,8 @@ static int siWalkNode(INode *node, void *vc) {
     default:
         break;
     }
+    if (c->hit && c->hitnode == NULL)
+        c->hitnode = node;
     return c->hit;
 }
 
@@ -764,6 +772,7 @@ static uint32_t siMemoCap = 0;
 static uint32_t siMemoUsed = 0;
 static uint32_t siDepth = 0;        // how many functions are being asked about
 static uint32_t siGuess = UINT32_MAX;   // the shallowest function a guess of 'no' was made for
+static INode *siHitNode = NULL;     // the node of the outermost function asked that made the answer yes, when it was worked out
 
 static uint32_t siMemoHash(FnDclNode *fn, uint32_t k, int mode, INode *cont) {
     uint64_t h = ((uint64_t)(uintptr_t)fn * 0x9E3779B97F4A7C15ull) ^ ((uint64_t)k * 0xC2B2AE3D27D4EB4Full)
@@ -853,6 +862,9 @@ static int siAsk(FnDclNode *fn, uint32_t k, int mode, INode *cont) {
     int answer = ctx.hit ? SiYes : ctx.pending ? SiPending : SiNo;
 
     --siDepth;
+    // The outermost question keeps what it found, for a message
+    if (siDepth == 0)
+        siHitNode = ctx.hit ? ctx.hitnode : NULL;
     m = siMemoFind(fn, k, mode, cont);      // the table may have grown
     if (answer == SiNo && siGuess < depth) {
         // It leaned on a guess about a function still being asked about: asked again
@@ -1276,4 +1288,429 @@ void shapeDeclaredCheck(void) {
                 &st->namesym->namestr);
     }
     siDeclaredUsed = 0;
+}
+
+// ---- '+ ShapeKeeping' ----------------------------------------------------------
+// A virtual reference marked '+ ShapeKeeping' promises that a call through it
+// reshapes nothing the caller holds a borrow into (shapeinfer.h). The question is
+// reshape.c's, put to the value behind the reference where it becomes one: for each
+// method the trait dispatches to, every shape-changing type its parameters (and, for
+// a closure, the variables it borrows) reach by a writable path is asked of the
+// method's body (SiModeType) as a call asks it of a callee. Nothing is inferred
+// anew; the coarse answer is the one a visible callee already gets.
+
+typedef struct {
+    INode *seen[1024];
+    uint8_t shared[1024];   // reached through a reference that may write by a path others share
+    int n;
+    int full;
+} SkWalk;
+
+// Does a hop through this reference reach what it points at by a shared mutable path?
+// A permission that writes and is not 'uni' (the one holder's): a '&mut', an owner
+// that may be aliased and written. A read-only reference is no hop, but what it
+// points at is still walked: Cone writes through a '&' of the value holding a '&mut'
+static int skWritingHop(RefNode *ref) {
+    if (ref->perm == NULL || ref->perm == unknownType)
+        return 0;
+    INode *perm = itypeGetTypeDcl(ref->perm);
+    return perm != (INode *)uniPerm && (permGetFlags(ref->perm) & MayWrite) != 0;
+}
+
+// Every struct a type holds or reaches, once each by way of each kind of path:
+// 'shared' is set once a reference that writes by a shared path has been passed
+static void skCollect(INode *type, int shared, SkWalk *w) {
+    if (type == NULL)
+        return;
+    switch (type->tag) {
+    case NameUseTag:
+        if (isTypeNode(type))
+            skCollect(itypeGetTypeDcl(type), shared, w);
+        return;
+    case AliasDclTag:
+        skCollect(((AliasDclNode *)type)->target, shared, w);
+        return;
+    case RefTag:
+    case ArrayRefTag:
+        skCollect(((RefNode *)type)->vtexp, shared || skWritingHop((RefNode *)type), w);
+        return;
+    case PtrTag:
+        skCollect(((StarNode *)type)->vtexp, 1, w);
+        return;
+    case ArrayTag:
+        skCollect(arrayElemType(type), shared, w);
+        return;
+    case TTupleTag:
+    {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp))
+            skCollect(*nodesp, shared, w);
+        return;
+    }
+    case StructTag:
+    {
+        for (int i = 0; i < w->n; ++i) {
+            if (w->seen[i] == type && w->shared[i] == shared)
+                return;
+        }
+        if (w->n >= 1024) {
+            w->full = 1;
+            return;
+        }
+        w->seen[w->n] = type;
+        w->shared[w->n++] = (uint8_t)shared;
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodelistFor(&((StructNode *)type)->fields, cnt, nodesp))
+            skCollect(((IExpNode *)*nodesp)->vtype, shared, w);
+        if (((StructNode *)type)->derived) {
+            for (nodesFor(((StructNode *)type)->derived, cnt, nodesp))
+                skCollect(*nodesp, shared, w);
+        }
+        return;
+    }
+    default:
+        return;
+    }
+}
+
+#define SkMax 160
+
+// The shape-changing types a method's parameters reach by a path it may write by,
+// and so share with whoever else holds the value. 'full' says too many to follow
+static int skFrom(INode *start, int shared, StructNode **out, int n, int *full, int *pending) {
+    static SkWalk skw;
+    SkWalk *w = &skw;
+    w->n = 0;
+    w->full = 0;
+    skCollect(start, shared, w);
+    if (w->full)
+        *full = 1;
+    for (int i = 0; i < w->n; ++i) {
+        StructNode *st = (StructNode *)w->seen[i];
+        if (!w->shared[i])
+            continue;
+        int shaping = siSettle(st, 0);
+        if (shaping == SiNo)
+            continue;
+        // Whether it changes shape is not settled yet (a method of its module not
+        // checked): asked again at the end of type check
+        if (shaping == SiPending) {
+            *pending = 1;
+            continue;
+        }
+        int dup = 0;
+        for (int j = 0; j < n; ++j) {
+            if (out[j] == st)
+                dup = 1;
+        }
+        if (dup)
+            continue;
+        if (n >= SkMax) {
+            *full = 1;
+            return n;
+        }
+        out[n++] = st;
+    }
+    return n;
+}
+
+static int skReached(FnDclNode *meth, StructNode **out, int *full, int *pending) {
+    FnSigNode *sig = (FnSigNode *)meth->vtype;
+    int n = 0;
+    for (uint32_t k = 0; k < sig->parms->used; ++k) {
+        VarDclNode *parm = (VarDclNode *)nodesGet(sig->parms, k);
+        INode *pt = iexpGetTypeDcl((INode *)parm);
+        if (pt == NULL)
+            continue;
+        // The receiver's own state is its own; what it holds by reference is not. A
+        // 'uni' reference is the one holder's, and a parameter held by value is owned:
+        // neither makes what it holds shared (skCollect)
+        INode *start = pt;
+        if (pt->tag == RefTag && k == 0 && parm->namesym == selfName)
+            start = itypeGetTypeDcl(((RefNode *)pt)->vtexp);
+        n = skFrom(start, 0, out, n, full, pending);
+    }
+    // A global is reachable from every function, and shared by every holder of it
+    for (uint32_t g = 0; g < reshapeGlobalCount(); ++g) {
+        INode *gt = reshapeGlobalAt(g)->vtype;
+        if (gt == NULL || gt == unknownType)
+            *pending = 1;
+        else
+            n = skFrom(gt, 1, out, n, full, pending);
+    }
+    return n;
+}
+
+// The methods of the trait a virtual reference dispatches to (structMakeVtable's
+// choice), as the value 'impl' fills them
+static int skMethods(StructNode *impl, StructNode *trait, FnDclNode **out, int max) {
+    int n = 0;
+    if (trait->callsig) {
+        INode *want = namespaceFind(&trait->namespace, parensName);
+        INode *binding = namespaceFind(&impl->namespace, parensName);
+        FnDclNode *m = want && want->tag == FnDclTag && binding ? iNsTypeFindVrefMethod(binding, (FnDclNode *)want, NULL) : NULL;
+        if (m)
+            out[n++] = m;
+        return n;
+    }
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&trait->nodelist, cnt, nodesp)) {
+        if ((*nodesp)->tag != FnDclTag || !((*nodesp)->flags & FlagMethFld) || structIsWholeEnumMethod(*nodesp))
+            continue;
+        FnDclNode *meth = (FnDclNode *)*nodesp;
+        if ((meth->value && (meth->genericinfo || meth->where || (meth->flags & FlagInline))) || inodeIsPrivate((INode *)meth))
+            continue;
+        INode *binding = namespaceFind(&impl->namespace, meth->namesym);
+        FnDclNode *m = binding ? iNsTypeFindVrefMethod(binding, meth, NULL) : NULL;
+        if (m && n < max)
+            out[n++] = m;
+    }
+    return n;
+}
+
+typedef struct {
+    StructNode *impl;
+    StructNode *trait;
+    uint8_t answer;         // ShapeKeepsYes or ShapeKeepsNo, once settled
+    char *why;
+    FnDclNode *fn;          // a deferred reference to a plain function (shapeKeepFnRef), then 'impl' is NULL
+    INode *errnode;         // ... and where the refusal is reported
+    char wanted[160];       // ... and the reference type as it is written
+} SkMemo;
+
+static SkMemo *skMemo = NULL;
+static uint32_t skMemoUsed = 0;
+static uint32_t skMemoCap = 0;
+static SkMemo *skDeferred = NULL;
+static uint32_t skDeferredUsed = 0;
+static uint32_t skDeferredCap = 0;
+
+static void skPush(SkMemo **list, uint32_t *used, uint32_t *cap, StructNode *impl, StructNode *trait, int answer, char *why) {
+    if (*used == *cap) {
+        SkMemo *old = *list;
+        *cap = *cap ? *cap * 2 : 16;
+        *list = (SkMemo *)memAllocBlk(*cap * sizeof(SkMemo));
+        if (old)
+            memcpy(*list, old, *used * sizeof(SkMemo));
+    }
+    SkMemo *m = &(*list)[(*used)++];
+    m->impl = impl;
+    m->trait = trait;
+    m->answer = (uint8_t)answer;
+    m->why = why;
+    m->fn = NULL;
+    m->errnode = NULL;
+    m->wanted[0] = '\0';
+}
+
+static char *skDup(const char *s) {
+    size_t len = strlen(s) + 1;
+    char *copy = (char *)memAllocBlk(len);
+    memcpy(copy, s, len);
+    return copy;
+}
+
+// What the method does that reshapes, in words: the node the question stopped at
+static void skSay(FnDclNode *meth, StructNode *impl, StructNode *cont, INode *hit, char *buf, size_t size) {
+    ClosureInfo *closure = impl ? closureOfStruct((INode *)impl) : NULL;
+    char who[200];
+    if (closure)
+        snprintf(who, sizeof(who), "this closure");
+    else if (impl)
+        snprintf(who, sizeof(who), "%s's `%s`", &impl->namesym->namestr, &meth->namesym->namestr);
+    else
+        snprintf(who, sizeof(who), "the function `%s`", &meth->namesym->namestr);
+    char what[200];
+    if (hit && hit->tag == FnCallTag && isNameUseNode(((FnCallNode *)hit)->objfn))
+        snprintf(what, sizeof(what), "calls `%s` (line %u)",
+            &((NameUseNode *)((FnCallNode *)hit)->objfn)->namesym->namestr, hit->linenbr);
+    else if (hit && (hit->tag == AssignTag || hit->tag == SwapTag))
+        snprintf(what, sizeof(what), "stores over a place (line %u)", hit->linenbr);
+    else
+        snprintf(what, sizeof(what), "reshapes one");
+    snprintf(buf, size,
+        "%s %s on a `%s` that it reaches through a shared mutable path (a `&mut` parameter, a variable it borrows or holds by reference, or a global), which could be a collection the caller holds a borrow into",
+        who, what, cont->namesym ? &cont->namesym->namestr : "collection");
+}
+
+// One function or method: does it reshape nothing its parameters (and what it holds)
+// reach by a shared mutable path? 'impl' is the struct it is a method of, else NULL.
+// 'final': no body will be checked later, so one not ready is taken as reshaping
+static int skMethod(FnDclNode *meth, StructNode *impl, char *why, size_t size, int final) {
+    if (!siVisible(meth)) {
+        if (why)
+            snprintf(why, size, "%s `%s` is %s whose body the compiler cannot read here (an include file left it out, an extern, a function reference held in a variable or a virtual call), so it is assumed to reshape what it reaches",
+                impl && closureOfStruct((INode *)impl) ? "this closure's" : impl ? (const char *)&impl->namesym->namestr : "the function",
+                &meth->namesym->namestr, impl ? "a method" : "a function");
+        return ShapeKeepsNo;
+    }
+    if (!siBodyReady(meth) && !structLayoutInFlight())
+        fnCallDemandCandidates((INode *)meth);
+    if (!siBodyReady(meth)) {
+        if (final && why)
+            snprintf(why, size, "`%s` could not be read", &meth->namesym->namestr);
+        return final ? ShapeKeepsNo : ShapeKeepsPending;
+    }
+    int pending = 0;
+    StructNode *reached[SkMax];
+    int full = 0;
+    int n = skReached(meth, reached, &full, &pending);
+    if (full) {
+        if (why)
+            snprintf(why, size, "`%s` reaches too many shape-changing types to follow, so it is assumed to reshape one", &meth->namesym->namestr);
+        return ShapeKeepsNo;
+    }
+    for (int i = 0; i < n; ++i) {
+        siHitNode = NULL;
+        int answer = siAsk(meth, 0, SiModeType, (INode *)reached[i]);
+        if (answer == SiYes) {
+            if (why)
+                skSay(meth, impl, reached[i], siHitNode, why, size);
+            return ShapeKeepsNo;
+        }
+        if (answer == SiPending)
+            pending = 1;
+    }
+    if (pending && final) {
+        if (why)
+            snprintf(why, size, "`%s` could not be read", &meth->namesym->namestr);
+        return ShapeKeepsNo;
+    }
+    return pending ? ShapeKeepsPending : ShapeKeepsYes;
+}
+
+static int skAsk(StructNode *impl, StructNode *trait, char *why, size_t size, int final) {
+    // A trait with variants: a call may reach any of them
+    if ((impl->flags & TraitType) && impl->derived) {
+        INode **nodesp;
+        uint32_t cnt;
+        int pending = 0;
+        for (nodesFor(impl->derived, cnt, nodesp)) {
+            if ((*nodesp)->tag != StructTag)
+                continue;
+            int a = skAsk((StructNode *)*nodesp, trait, why, size, final);
+            if (a == ShapeKeepsNo)
+                return a;
+            if (a == ShapeKeepsPending)
+                pending = 1;
+        }
+        return pending ? ShapeKeepsPending : ShapeKeepsYes;
+    }
+    FnDclNode *meths[24];
+    int nmeths = skMethods(impl, trait, meths, 24);
+    int pending = 0;
+    for (int mi = 0; mi < nmeths; ++mi) {
+        int a = skMethod(meths[mi], impl, why, size, final);
+        if (a == ShapeKeepsNo)
+            return a;
+        if (a == ShapeKeepsPending)
+            pending = 1;
+    }
+    return pending ? ShapeKeepsPending : ShapeKeepsYes;
+}
+
+int shapeKeepsVia(StructNode *impl, StructNode *trait, char *why, size_t size) {
+    for (uint32_t i = 0; i < skMemoUsed; ++i) {
+        if (skMemo[i].impl == impl && skMemo[i].trait == trait) {
+            if (why && skMemo[i].answer == ShapeKeepsNo && skMemo[i].why)
+                snprintf(why, size, "%s", skMemo[i].why);
+            return skMemo[i].answer;
+        }
+    }
+    char reason[900] = "";
+    int answer = skAsk(impl, trait, reason, sizeof(reason), 0);
+    if (answer != ShapeKeepsNo) {
+        // Accepted, and asked again at the end of type check: a body may not have been
+        // checked yet, and a global or a type that reshapes may be declared after it
+        int seen = 0;
+        for (uint32_t i = 0; i < skDeferredUsed; ++i) {
+            if (skDeferred[i].impl == impl && skDeferred[i].trait == trait)
+                seen = 1;
+        }
+        if (!seen)
+            skPush(&skDeferred, &skDeferredUsed, &skDeferredCap, impl, trait, answer, NULL);
+        if (answer == ShapeKeepsPending)
+            return answer;
+    }
+    skPush(&skMemo, &skMemoUsed, &skMemoCap, impl, trait, answer, answer == ShapeKeepsNo ? skDup(reason) : NULL);
+    if (why && answer == ShapeKeepsNo)
+        snprintf(why, size, "%s", reason);
+    return answer;
+}
+
+// The end of type check: the values accepted while a body they read was not checked
+void shapeKeepDeferred(void) {
+    // A body that failed its own check cannot be read, and says why itself
+    if (errors > 0)
+        skDeferredUsed = 0;
+    for (uint32_t i = 0; i < skDeferredUsed; ++i) {
+        StructNode *impl = skDeferred[i].impl;
+        char reason[900] = "";
+        if (skDeferred[i].fn) {
+            if (skMethod(skDeferred[i].fn, NULL, reason, sizeof(reason), 1) == ShapeKeepsNo)
+                errorMsgNode(skDeferred[i].errnode, ErrorNotShapeKeeping,
+                    "`%s` says a call through it keeps the shape of what the caller has borrowed, and %s. Leave '+ ShapeKeeping' off, which ends the caller's borrows into a collection at the call, or don't reshape it there.",
+                    skDeferred[i].wanted, reason);
+            continue;
+        }
+        if (skAsk(impl, skDeferred[i].trait, reason, sizeof(reason), 1) == ShapeKeepsNo) {
+            char wanted[200];
+            snprintf(wanted, sizeof(wanted), "%s", &skDeferred[i].trait->namesym->namestr);
+            errorMsgNode((INode *)impl, ErrorNotShapeKeeping,
+                "A reference marked `+ ShapeKeeping` to `%s` says calls through it reshape nothing the caller holds a borrow into, and %s: %s.",
+                wanted, impl->namesym ? &impl->namesym->namestr : "this value", reason);
+        }
+    }
+    skDeferredUsed = 0;
+}
+
+// A reference to a plain function, '&growWorld', made a virtual reference marked
+// '+ ShapeKeeping' (iexp.c): the reference's type carries only the signature, so the
+// function is read off the expression. A reference the compiler cannot trace to a
+// function (a parameter holding a function reference) is refused: its code is unseen
+void shapeKeepFnRef(INode *from, INode *to) {
+    INode *todcl = itypeGetTypeDcl(to);
+    if (todcl->tag != VirtRefTag || !(((RefNode *)todcl)->marks & RefMarkShapeKeeping))
+        return;
+    INode *fromtype = isExpNode(from) ? iexpGetTypeDcl(from) : NULL;
+    if (fromtype == NULL || fromtype->tag != RefTag || itypeGetTypeDcl(((RefNode *)fromtype)->vtexp)->tag != FnSigTag)
+        return;
+    char wanted[300] = "";
+    itypeSpellCat(wanted, sizeof(wanted), todcl, 0);
+    INode *e = from;
+    while (e->tag == CastTag && !(e->flags & FlagConvert))
+        e = ((CastNode *)e)->exp;
+    if (e->tag == BorrowTag || e->tag == ArrayBorrowTag)
+        e = ((RefNode *)e)->vtexp;
+    INode *dcl = isNameUseNode(e) ? ((NameUseNode *)e)->dclnode : NULL;
+    if (dcl == NULL || dcl->tag != FnDclTag) {
+        errorMsgNode(from, ErrorNotShapeKeeping,
+            "`%s` says a call through it keeps the shape of what the caller has borrowed, and the compiler cannot tell what function this reference holds, so it is assumed to reshape what it reaches. Pass the function by name, '&name', or a closure.",
+            wanted);
+        return;
+    }
+    char reason[900] = "";
+    int answer = skMethod((FnDclNode *)dcl, NULL, reason, sizeof(reason), 0);
+    if (answer == ShapeKeepsNo)
+        errorMsgNode(from, ErrorNotShapeKeeping,
+            "`%s` says a call through it keeps the shape of what the caller has borrowed, and %s. Leave '+ ShapeKeeping' off, which ends the caller's borrows into a collection at the call, or don't reshape it there.",
+            wanted, reason);
+    else {
+        // Accepted, and asked again at the end of type check (shapeKeepsVia)
+        skPush(&skDeferred, &skDeferredUsed, &skDeferredCap, NULL, NULL, answer, NULL);
+        SkMemo *m = &skDeferred[skDeferredUsed - 1];
+        m->fn = (FnDclNode *)dcl;
+        m->errnode = from;
+        snprintf(m->wanted, sizeof(m->wanted), "%s", wanted);
+    }
+}
+
+int shapeKeepingCall(FnCallNode *call) {
+    if (!(call->flags & FlagVDisp) || call->args == NULL || call->args->used == 0)
+        return 0;
+    INode *t = iexpGetTypeDcl(nodesGet(call->args, 0));
+    return t != NULL && t->tag == VirtRefTag && (((RefNode *)t)->marks & RefMarkShapeKeeping) != 0;
 }

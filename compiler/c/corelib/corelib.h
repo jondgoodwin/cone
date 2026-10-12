@@ -133,6 +133,11 @@ extern StructNode *sendableTrait;
 // each' run, or from the threads of an 'Arc'. Granted from a type's contents
 // (itypeNotShareable), and declarable
 extern StructNode *shareableTrait;
+// 'ShapeKeeping', ShapeChanging's twin, asked of the value behind a virtual
+// reference: a call through it reshapes nothing the caller holds a borrow into,
+// by a shared mutable path (shapeKeepsVia). Compiler-inferred and written only
+// after a '+' in a virtual reference's type; a type cannot declare it
+extern StructNode *shapeKeepingTrait;
 // 'Sized' and 'DynSized', which the compiler grants from a type's size: a type
 // whose size is known at compile time is Sized, and DynSized too; so is a type
 // whose size a reference to it carries, a trait (its vtable) or a body such

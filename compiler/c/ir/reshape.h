@@ -86,6 +86,9 @@ int reshapeStoreHits(INode *lval, INode *cont);
 // nothing reaching it still needs asking about
 void reshapeNoteGlobal(VarDclNode *var);
 int reshapeGlobalsReach(INode *cont);
+// The globals noted so far, for a check that must name every type one can reach
+uint32_t reshapeGlobalCount(void);
+VarDclNode *reshapeGlobalAt(uint32_t i);
 
 // Why a call could reshape
 enum ReshapeWhy {

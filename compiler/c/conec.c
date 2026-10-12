@@ -86,6 +86,9 @@ void doAnalysis(ConeOptions *opt, ProgramNode **pgm) {
     // methods say (ir/shapeinfer.c)
     shapeWalkDeferred();
     shapeDeclaredCheck();
+    // The values made virtual references marked '+ ShapeKeeping' before a body
+    // they are held to was checked (ir/shapeinfer.c)
+    shapeKeepDeferred();
     // Where a traced reference may be held: judged over the places type check
     // noted, now that every type is laid out (ir/types/region.c)
     regionTracedCheckAll();

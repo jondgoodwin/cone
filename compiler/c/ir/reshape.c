@@ -283,6 +283,14 @@ int reshapeGlobalsReach(INode *cont) {
     return m->reaches;
 }
 
+uint32_t reshapeGlobalCount(void) {
+    return rgUsed;
+}
+
+VarDclNode *reshapeGlobalAt(uint32_t i) {
+    return i < rgUsed ? rgGlobals[i] : NULL;
+}
+
 // ---- Values the function owns whole ---------------------------------------------
 
 // The local a place is of, when it is one this function owns whole, else NULL
@@ -406,6 +414,11 @@ int reshapeCall(FnCallNode *call, FnDclNode *meth, int recvunique, INode *cont, 
     // an init builds a value that has no other name yet
     if (callee && ((callee->dclinfo.facts & DclIntrinsic) || (callee->value && callee->value->tag == IntrinsicTag)
             || fnDclIsInit(callee)))
+        return 0;
+    // A call through a virtual reference marked '+ ShapeKeeping' is one the caller's
+    // borrows survive: the value behind it was held to reshape nothing it reaches
+    // through a shared mutable path where it became the reference (shapeKeepsVia)
+    if (shapeKeepingCall(call))
         return 0;
     uint32_t nargs = call->args ? call->args->used : 0;
     int visible = !(call->flags & FlagVDisp) && siVisible(callee);

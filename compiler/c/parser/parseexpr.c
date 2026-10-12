@@ -497,7 +497,7 @@ static INode *parseIndexArg(ParseState *parse) {
             if (lexIsToken(IdentToken))
                 nodesAdd(&sum->args, (INode*)parseNameUse(parse));
             else {
-                errorMsgLex(ErrorMarkUse, "After a '+' in a type go the markers of the value, '+ Sendable' and '+ Shareable'.");
+                errorMsgLex(ErrorMarkUse, "After a '+' in a type go the markers of the value, '+ Sendable', '+ Shareable' and '+ ShapeKeeping'.");
                 return sig;
             }
             sig = (INode*)sum;
@@ -772,7 +772,7 @@ static void parseRefBounds(ParseState *parse, RefNode *anode) {
         if (lexIsToken(IdentToken)) {
             uint8_t mark = refMarkOfName(lex->val.ident);
             if (mark == 0)
-                errorMsgLex(ErrorMarkUse, "After a '+' in a virtual reference's type go a lifetime bound, '+ 'a', or the markers of the value it points at, '+ Sendable' and '+ Shareable'; other traits are not intersected yet.");
+                errorMsgLex(ErrorMarkUse, "After a '+' in a virtual reference's type go a lifetime bound, '+ 'a', or the markers of the value it points at, '+ Sendable', '+ Shareable' and '+ ShapeKeeping'; other traits are not intersected yet.");
             else
                 anode->marks |= mark;
             lexNextToken();

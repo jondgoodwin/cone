@@ -578,6 +578,14 @@ static char *fnSigMarkRefusal(RefNode *toref, StructNode *target, uint8_t mark) 
     static char msg[1400];
     char wanted[300] = "", why[512] = "", what[512] = "", advice[600] = "";
     itypeSpellCat(wanted, sizeof(wanted), (INode*)toref, 0);
+    if (mark == RefMarkShapeKeeping) {
+        char reason[900] = "";
+        shapeKeepsVia(target, (StructNode*)itypeGetTypeDcl(toref->vtexp), reason, sizeof(reason));
+        snprintf(msg, sizeof(msg),
+            "`%s` says a call through it keeps the shape of what the caller has borrowed, and %s. Leave '+ ShapeKeeping' off, which ends the caller's borrows into a collection at the call, or don't reshape it there.",
+            wanted, reason);
+        return msg;
+    }
     int sendable = mark == RefMarkSendable;
     int (*bad)(INode *) = sendable ? fnSigFieldThreadBound : fnSigFieldNotShareable;
     ClosureCap *cap = closureFirstCap((INode*)target, bad);
@@ -629,13 +637,14 @@ char *fnSigCallRefusal(INode *from, INode *to, int *code) {
     if (trait->tag != StructTag)
         return NULL;
     INode *fromdcl = itypeGetTypeDcl(from);
-    // A value that is not what '+ Sendable' or '+ Shareable' promises of it
+    // A value that is not what '+ Sendable', '+ Shareable' or '+ ShapeKeeping' promises of it
     if (toref->marks && fromdcl->tag == RefTag) {
         INode *target = itypeGetTypeDcl(((RefNode*)fromdcl)->vtexp);
         uint8_t unmet = target->tag == StructTag && !(target->flags & TraitType)
-            ? refMarksUnmet(toref->marks, target) : 0;
+            ? refMarksUnmet(toref->marks, target, (INode*)trait) : 0;
         if (unmet) {
-            *code = unmet == RefMarkSendable ? ErrorNotSendable : ErrorNotShareable;
+            *code = unmet == RefMarkSendable ? ErrorNotSendable
+                : unmet == RefMarkShareable ? ErrorNotShareable : ErrorNotShapeKeeping;
             return fnSigMarkRefusal(toref, (StructNode*)target, unmet);
         }
     }
