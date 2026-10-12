@@ -815,6 +815,19 @@ the name of a node that has none"). The clause is spelled with the instance's
 arguments (`Stack[i64]`), not as written. A non-generic trait's message is
 unchanged. A failed
 instance is never memoized, so each use asking for it is refused where it is.
+**An argument that is `errorType` is refused without a report.** A type
+parameter inferred from a value whose initializer was already refused
+(`imm f = (a, b) => false;`, `ErrorClosureParm`, then `viaGen(f)` with
+`[F fn(a i64, b i64) bool]`) is bound to `errorType`, which meets no clause and
+has no name to say so with: the message asked `inodeGetName` of it and ended in
+`ErrorUnreachable`. `genericRequirementsMetIn` answers 0 for it with nothing
+printed, the report that made the value bad being the one (`closure_typecheck_cascade_imm`).
+The instance is still asked for, so a depth limit or any other refusal of the
+request itself still reports. Among an overload set of generics, no candidate
+is viable for such an argument, and `fnCallNoCandidate` makes no report for it;
+a value initialized by a call that selected nothing is `errorType` too, not
+of unknown type, so an unbounded generic inferring from it is not instantiated
+with a parameter that has no type (`generic_typecheck_cascade_arg`).
 
 **On a method of a generic type, a clause over the type's parameters is a
 condition for the method existing.** Before an instance is cloned,

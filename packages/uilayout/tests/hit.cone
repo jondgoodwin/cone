@@ -1,0 +1,92 @@
+// Hit testing at the boundaries, by hand. A box covers [x, x + w) by [y, y + h): left and top
+// edges are inside, right and bottom are outside.
+//
+//   A at (10, 10) 100 x 50:  (10, 10) hits, (109.5, 59.5) hits; x = 110 and y = 60 miss.
+//   B at (60, 30) 100 x 50 added after A (so on top): (60, 30) is B's corner, and in the
+//   overlap (70, 40) the later sibling B wins; (59.5, 30) is A's alone; (160, 40) misses B.
+//   A clipping box C at (200, 10) 50 x 50 holds D, 100 x 100: (220, 20) hits D; (260, 20) is in
+//   D's box but outside C's clip: a miss. Without the clip it hits.
+//   A node that does not take the pointer (PM_IGNORE) passes it to the node below it.
+//   The overlay is tested before the root layer: an overlay box over A's corner takes (15, 15).
+//   A hidden node is not hit. A modal node is the only place hits are found, but the overlay still works.
+
+mod hit;
+
+import testing use *;
+import geomath use *;
+import collections use *;
+import uilayout use *;
+
+fn box(ui &mut Ui, parent usize, x f32, y f32, w f32, h f32) usize {
+  imm n = ui.create(parent, K_PLAIN);
+  ui.setOffsets(n, x, y, 0., 0.);
+  ui.setSize(n, w, h);
+  ui.nodes[n].pointer = PM_STOP;
+  n;
+}
+
+fn main() i32 {
+  mut m = fn(t &str, font u32, size f32) Vec2 { new Vec2(f32.from(t.len()) * 8., 16.); };
+  mut ui = Ui.make(800., 600.);
+  imm a = box(&mut ui, ui.root, 10., 10., 100., 50.);
+  imm b = box(&mut ui, ui.root, 60., 30., 100., 50.);
+  imm c = box(&mut ui, ui.root, 200., 10., 50., 50.);
+  ui.setLayout(c, LK_ABS);
+  ui.nodes[c].clip = true;
+  ui.nodes[c].pointer = PM_IGNORE;
+  imm d = ui.create(c, K_PLAIN);
+  ui.setSize(d, 100., 100.);
+  ui.nodes[d].pointer = PM_STOP;
+  layout(&mut ui, &mut m);
+
+  expectInt(i64.from(hitTest(&ui, 10., 10.)), i64.from(a), "A's top-left corner is inside");
+  expectInt(i64.from(hitTest(&ui, 109.5, 29.5)), i64.from(a), "just inside A's far side, above B");
+  expectInt(i64.from(hitTest(&ui, 59.5, 59.5)), i64.from(a), "just inside A's bottom edge, left of B");
+  expectInt(i64.from(hitTest(&ui, 110., 20.)), 0i64, "x = A's right edge is outside");
+  expectInt(i64.from(hitTest(&ui, 20., 60.)), 0i64, "y = A's bottom edge is outside");
+  expectInt(i64.from(hitTest(&ui, 9.9, 20.)), 0i64, "left of A is outside");
+  expectInt(i64.from(hitTest(&ui, 60., 30.)), i64.from(b), "B's corner is B");
+  expectInt(i64.from(hitTest(&ui, 70., 40.)), i64.from(b), "in the overlap the later sibling is on top");
+  expectInt(i64.from(hitTest(&ui, 59.5, 30.)), i64.from(a), "just left of B is A");
+  expectInt(i64.from(hitTest(&ui, 160., 40.)), 0i64, "B's right edge is outside");
+  expectInt(i64.from(hitTest(&ui, 220., 20.)), i64.from(d), "D inside the clip");
+  expectInt(i64.from(hitTest(&ui, 260., 20.)), 0i64, "D outside its parent's clip");
+  ui.nodes[c].clip = false;
+  expectInt(i64.from(hitTest(&ui, 260., 20.)), i64.from(d), "the same without the clip");
+  expectInt(i64.from(hitTest(&ui, 205., 15.)), i64.from(d), "a node that ignores the pointer passes it to its child");
+
+  // pass-through: an ignoring node over A
+  imm veil = box(&mut ui, ui.root, 0., 0., 300., 300.);
+  ui.nodes[veil].pointer = PM_IGNORE;
+  layout(&mut ui, &mut m);
+  expectInt(i64.from(hitTest(&ui, 20., 20.)), i64.from(a), "an ignoring node on top lets A be hit");
+
+  // the overlay first
+  imm o = box(&mut ui, ui.overlay, 10., 10., 20., 20.);
+  layout(&mut ui, &mut m);
+  expectInt(i64.from(hitTest(&ui, 15., 15.)), i64.from(o), "the overlay is tested before the root");
+  expectInt(i64.from(hitTest(&ui, 40., 15.)), i64.from(a), "outside the overlay box the root layer answers");
+
+  // hidden
+  ui.setVisible(b, false);
+  layout(&mut ui, &mut m);
+  expectInt(i64.from(hitTest(&ui, 70., 40.)), i64.from(a), "B hidden: A is under it");
+  ui.setVisible(b, true);
+  layout(&mut ui, &mut m);
+
+  // modal
+  ui.input.modal = a;
+  expectInt(i64.from(hitTest(&ui, 70., 70.)), 0i64, "modal: B's area (outside A) is no longer hit");
+  expectInt(i64.from(hitTest(&ui, 20., 20.)), i64.from(o), "modal: the overlay still works");
+  expectInt(i64.from(hitTest(&ui, 40., 15.)), i64.from(a), "modal: the modal node is hit");
+  ui.input.modal = 0usize;
+
+  // nested: the deepest node
+  imm outer = box(&mut ui, ui.root, 300., 300., 100., 100.);
+  ui.setLayout(outer, LK_ANCHOR);
+  imm inner = box(&mut ui, outer, 10., 10., 20., 20.);
+  layout(&mut ui, &mut m);
+  expectInt(i64.from(hitTest(&ui, 315., 315.)), i64.from(inner), "the deepest node is the target");
+  expectInt(i64.from(hitTest(&ui, 350., 350.)), i64.from(outer), "elsewhere in the outer node");
+  done();
+}

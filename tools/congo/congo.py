@@ -2248,6 +2248,11 @@ def run_test(session: Session, file: Path, bless: bool) -> tuple[bool, str]:
             file.with_suffix(".exit").write_text(f"{ran.returncode}\n", encoding="utf-8",
                                                  newline="\n")
             note += f" and {shown(file.with_suffix('.exit'))} ({ran.returncode})"
+        elif file.with_suffix(".exit").is_file():
+            # The run ended with 0, so a .exit left from an earlier status would
+            # fail the test just blessed
+            file.with_suffix(".exit").unlink()
+            note += f" and removed the stale {shown(file.with_suffix('.exit'))}"
         return True, note + ": check it by hand against the source"
     problems = []
     want = expected_exit(file)
