@@ -1,0 +1,143 @@
+// Queries on the world: ray cast, shape cast, overlap and contact gathering
+// against every body, filtered by layer.
+//
+// Each asks the broad phase for the bodies whose boxes the ray, the swept box
+// or the box of the shape touches, then asks rigidcollide the exact question of
+// each (rayCast, shapeCast, overlaps, collide). They do not look at sleeping:
+// a sleeping body is still there to hit.
+//
+// A QueryFilter says which bodies count: those on a layer in 'mask' (a body's
+// layer bits are tested against the mask, as a body's own mask is against
+// another's layer), not the 'exclude' body (a character's own), and sensors
+// only if 'sensors' is set.
+
+pub struct QueryFilter {
+  pub mask u32;
+  pub exclude u32;
+  pub sensors bool;
+
+  pub fn all() QueryFilter { new QueryFilter(0xffffffffu32, NoBody, false); }
+  pub fn layers(mask u32) QueryFilter { new QueryFilter(mask, NoBody, false); }
+  pub fn without(self &, id u32) QueryFilter { new QueryFilter(mask, id, sensors); }
+  pub fn withSensors(self &) QueryFilter { new QueryFilter(mask, exclude, true); }
+}
+
+fn accepts(f &QueryFilter, b &Body, id u32) bool {
+  b.alive and id != f.exclude and (f.sensors or not b.sensor) and (b.layer & f.mask) != 0u32;
+}
+
+pub struct WorldRayHit {
+  pub hit bool;
+  pub body u32;
+  pub t f32;           // in multiples of the direction
+  pub point Vec3;
+  pub normal Vec3;     // out of the body
+  pub part u32;        // compound part
+  pub sub u32;         // mesh triangle, else NoSub
+}
+
+pub fn noWorldRay() WorldRayHit { new WorldRayHit(false, NoBody, bigNumber, zero3(), new Vec3(0., 1., 0.), 0u32, NoSub); }
+
+// The nearest body the ray (origin, dir) hits within maxT
+pub fn worldRayCast(w &mut World, origin Vec3, dir Vec3, maxT f32, f QueryFilter) WorldRayHit {
+  mut ids = List[u32].empty();
+  w.bp.queryRay(origin, dir, maxT, f.mask, &mut ids);
+  mut best = noWorldRay();
+  mut k = 0usize;
+  while k < ids.len() {
+    imm id = *ids[k];
+    imm b = w.bodies[usize.from(id)];
+    if accepts(&f, b, id) {
+      imm xf = new Rigid(b.pos - b.rot * b.comLocal, b.rot);
+      imm h = rayCast(w.shapes[usize.from(b.shape)], xf, origin, dir, maxT);
+      if h.hit and h.t < best.t {
+        best = new WorldRayHit(true, id, h.t, origin + dir * h.t, h.normal, h.part, h.sub);
+      }
+    }
+    k = k + 1usize;
+  }
+  best;
+}
+
+pub struct WorldCastHit {
+  pub hit bool;
+  pub body u32;
+  pub fraction f32;    // of the displacement
+  pub normal Vec3;     // at the hit, from the cast shape to the body
+  pub pointA Vec3;     // on the cast shape
+  pub pointB Vec3;     // on the body
+}
+
+pub fn noWorldCast() WorldCastHit { new WorldCastHit(false, NoBody, 1., new Vec3(0., 1., 0.), zero3(), zero3()); }
+
+// Sweep a shape along disp (translation only) and report the first body it meets. A body the
+// shape already touches at the start (within 0.1 mm) counts only if the sweep goes into it.
+pub fn worldShapeCast(w &mut World, shape &Shape, xf Rigid, disp Vec3, f QueryFilter) WorldCastHit {
+  imm swept = shape.bounds(xf).union(shape.bounds(new Rigid(xf.pos + disp, xf.rot)));
+  mut ids = List[u32].empty();
+  w.bp.queryBox(swept, f.mask, &mut ids);
+  mut best = noWorldCast();
+  mut k = 0usize;
+  while k < ids.len() {
+    imm id = *ids[k];
+    imm b = w.bodies[usize.from(id)];
+    if accepts(&f, b, id) {
+      imm bxf = new Rigid(b.pos - b.rot * b.comLocal, b.rot);
+      imm h = shapeCast(shape, xf, disp, w.shapes[usize.from(b.shape)], bxf);
+      if h.hit and not (h.fraction < 0.0001 and h.normal.dot(disp) <= 0.001 * disp.length()) {
+        if not best.hit or h.fraction < best.fraction {
+          best = new WorldCastHit(true, id, h.fraction, h.normal, h.pointA, h.pointB);
+        }
+      }
+    }
+    k = k + 1usize;
+  }
+  best;
+}
+
+// Every body the shape (placed by xf) overlaps, by id, ascending
+pub fn worldOverlap(w &mut World, shape &Shape, xf Rigid, f QueryFilter, out &mut List[u32]) {
+  out.clear();
+  mut ids = List[u32].empty();
+  w.bp.queryBox(shape.bounds(xf), f.mask, &mut ids);
+  mut k = 0usize;
+  while k < ids.len() {
+    imm id = *ids[k];
+    imm b = w.bodies[usize.from(id)];
+    if accepts(&f, b, id) {
+      imm bxf = new Rigid(b.pos - b.rot * b.comLocal, b.rot);
+      if overlaps(shape, xf, w.shapes[usize.from(b.shape)], bxf) { out.push(id); }
+    }
+    k = k + 1usize;
+  }
+}
+
+// A contact between a probe shape and a body: the manifold, its normal from the probe to the body
+pub struct BodyManifold {
+  pub body u32;
+  pub m Manifold;
+}
+
+// The manifolds of a probe shape against the world, with 'margin' of room (negative depth within it)
+pub fn worldContacts(w &mut World, shape &Shape, xf Rigid, margin f32, f QueryFilter, out &mut List[BodyManifold]) {
+  out.clear();
+  mut ids = List[u32].empty();
+  w.bp.queryBox(shape.bounds(xf).expand(margin), f.mask, &mut ids);
+  mut ms = List[Manifold].empty();
+  mut k = 0usize;
+  while k < ids.len() {
+    imm id = *ids[k];
+    imm b = w.bodies[usize.from(id)];
+    if accepts(&f, b, id) {
+      imm bxf = new Rigid(b.pos - b.rot * b.comLocal, b.rot);
+      ms.clear();
+      collide(shape, xf, w.shapes[usize.from(b.shape)], bxf, margin, &mut ms);
+      mut m = 0usize;
+      while m < ms.len() {
+        if ms[m].count > 0usize { out.push(new BodyManifold(id, *ms[m])); }
+        m = m + 1usize;
+      }
+    }
+    k = k + 1usize;
+  }
+}

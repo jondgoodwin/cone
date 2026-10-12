@@ -1,0 +1,105 @@
+// Raster's own methods and the format dispatch: 'bottomUp' (render's Image
+// layout: bottom row first, 3 or 4 bytes a pixel), 'at8' and 'at16' (a 16-bit
+// sample rounds to 8 bits as v / 257: 128 to 0, 129 to 1, 65535 to 255; an
+// 8-bit sample v is v * 257 as 16 bits), 'rgba8', 'sniff' and 'decode' on a
+// PNG, a JPEG, a BMP, a WebP, a KTX2 header and garbage.
+
+mod rastertest;
+
+import testing use *;
+import collections use *;
+import imagedecode use *;
+import fs;
+import path use Path;
+
+fn bytesOf(s &str) List[u8] {
+  mut out = List[u8].empty();
+  mut i = 0usize;
+  while i < s.len() { out.push(s[i]); i += 1usize; }
+  out;
+}
+
+fn main() i32 {
+  // A 2 x 3 picture, rows top down: pixel (x, y) is (10 x + y, 20 + y, 30 + x, 200 + x)
+  mut r = Raster.empty();
+  r.width = 2;
+  r.height = 3;
+  r.depth = 8;
+  mut y = 0;
+  while y < 3 {
+    mut x = 0;
+    while x < 2 {
+      r.pixels8.push(u8.from(10 * x + y));
+      r.pixels8.push(u8.from(20 + y));
+      r.pixels8.push(u8.from(30 + x));
+      r.pixels8.push(u8.from(200 + x));
+      x += 1;
+    }
+    y += 1;
+  }
+  expectInt(i64.from(r.at8(1, 2, 0)), 12i64, "at8 red of (1, 2)");
+  expectInt(i64.from(r.at16(1, 2, 3)), 201i64 * 257i64, "at16 of an 8-bit sample is v * 257");
+  imm up = r.bottomUp(4);
+  expectInt(i64.from(up.len()), 24i64, "bottomUp(4) has 4 bytes a pixel");
+  // The first pixel of the result is the bottom-left: (0, 2)
+  expectInt(i64.from(*up[0usize]), 2i64, "the bottom row comes first: red of (0, 2)");
+  expectInt(i64.from(*up[1usize]), 22i64, "green of (0, 2)");
+  expectInt(i64.from(*up[4usize]), 12i64, "then (1, 2)");
+  expectInt(i64.from(*up[8usize]), 1i64, "then the middle row: (0, 1)");
+  expectInt(i64.from(*up[16usize]), 0i64, "and the top row last: (0, 0)");
+  imm rgb = r.bottomUp(3);
+  expectInt(i64.from(rgb.len()), 18i64, "bottomUp(3) drops alpha");
+  expectInt(i64.from(*rgb[3usize]), 12i64, "its second pixel is (1, 2): red");
+  expectInt(i64.from(*rgb[5usize]), 31i64, "blue of (1, 2)");
+
+  // A 16-bit picture
+  mut s = Raster.empty();
+  s.width = 2;
+  s.height = 1;
+  s.depth = 16;
+  imm v Array[u16, 8] = [65535u16, 257u16, 128u16, 129u16, 0u16, 0u16, 0u16, 65535u16];
+  mut i = 0usize;
+  while i < 8usize { s.pixels16.push(v[i]); i += 1usize; }
+  expectInt(i64.from(s.at8(0, 0, 0)), 255i64, "65535 is 255");
+  expectInt(i64.from(s.at8(0, 0, 1)), 1i64, "257 is 1");
+  expectInt(i64.from(s.at8(0, 0, 2)), 0i64, "128 is 0");
+  expectInt(i64.from(s.at8(0, 0, 3)), 1i64, "129 is 1");
+  expectInt(i64.from(s.at16(1, 0, 3)), 65535i64, "at16 of a 16-bit sample is itself");
+  imm flat = s.rgba8();
+  expectInt(i64.from(flat.len()), 8i64, "rgba8 of a 16-bit picture");
+  expectInt(i64.from(*flat[7usize]), 255i64, "its last sample");
+
+  // Which format
+  imm png = bytesOf("\x89PNG\r\n\x1a\n");
+  expect(sniff(png.view()) == ImageFormat.Png, "a PNG signature");
+  mut jpg = List[u8].empty();
+  jpg.push(0xFFu8);
+  jpg.push(0xD8u8);
+  jpg.push(0xFFu8);
+  jpg.push(0xE0u8);
+  expect(sniff(jpg.view()) == ImageFormat.Jpeg, "a JPEG's first bytes");
+  expect(sniff(bytesOf("hello world").view()) == ImageFormat.Unknown, "text is neither");
+  expect(sniff(List[u8].empty().view()) == ImageFormat.Unknown, "nothing is neither");
+  imm names Array[&str, 4] = ["BM666666666666", "RIFF....WEBPVP8 ", "garbage garbage", ""];
+  imm wants Array[&str, 4] = ["BMP", "WebP", "not a PNG or a JPEG", "not a PNG or a JPEG"];
+  mut k = 0usize;
+  while k < 4usize {
+    match decode(bytesOf(names[k]).view()) {
+      case imm ok Ok { expect(false, wants[k]); }
+      case imm e Error { expect(e.reason.contains(wants[k]), wants[k]); }
+    }
+    k += 1usize;
+  }
+  // decode picks the right decoder: the test data's JPEG, through 'decode'
+  imm p = Path.from("../../../../tests/data/b420.jpg");
+  match fs.readFile(&p) {
+    case imm file Ok {
+      match decode(file.view()) {
+        case imm ok Ok { expectInt(i64.from(ok.width), 61i64, "decode reads a JPEG"); }
+        case imm e Error { expect(false, "decode reads a JPEG"); }
+      }
+    }
+    case imm e Error { expect(false, "the test JPEG is there"); }
+  }
+  done();
+}

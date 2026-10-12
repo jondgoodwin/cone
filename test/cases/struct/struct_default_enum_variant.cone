@@ -1,0 +1,95 @@
+// A variant of an enum that holds no value is a constant, the tag it is, so it may
+// be a field's default as a number or a string may: left out of 'new', the field
+// is that variant, and a value given replaces it. The same constant is a named
+// constant's value, a global's, a parameter's default and an element of an array
+// or struct literal in any of those.
+//
+// Every value is printed, because a default that compiles is not a default that
+// came out as the variant written: Kind's variants are told apart by a match, and
+// no two defaults here are the same variant.
+
+mod struct_default_enum_variant;
+
+import stdio use *;
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+enum Kind {
+  Os, Cancelled, TimedOut;
+}
+
+// A tag value written, and a width named, change nothing about being a constant
+enum Colors u32 {
+  Red = 0xFF0000,
+  Green = 0x00FF00,
+  Blue = 0x0000FF;
+}
+
+fn kindNbr(k Kind) i64 {
+  match k {
+    case Os {0;}
+    case Cancelled {1;}
+    case TimedOut {2;}
+  }
+}
+
+fn colorNbr(c Colors) i64 {
+  match c {
+    case Red {10;}
+    case Green {20;}
+    case Blue {30;}
+  }
+}
+
+struct Failure {
+  pub code u32;
+  pub kind Kind = Kind.TimedOut;
+  pub color Colors = Colors.Green;
+}
+
+// A struct and an array default holding variants
+struct Report {
+  pub failure Failure = new Failure(9u32);
+  pub history Array[Kind, 2] = [Kind.Cancelled, Kind.TimedOut];
+}
+
+const Fallback Kind = Kind.Cancelled;
+imm made Failure = new Failure(5u32);
+imm table Array[Kind, 3] = [Kind.TimedOut, Kind.Os, Kind.Cancelled];
+
+struct ByConstant {
+  pub kind Kind = Fallback;
+}
+
+fn parameter(k Kind = Kind.Cancelled) i64 {
+  kindNbr(k);
+}
+
+fn main() {
+  // The default taken, and replaced by position and by name
+  imm a = new Failure(1u32);
+  imm b = new Failure(2u32, Kind.Os, Colors.Blue);
+  imm c = new Failure(code: 3u32, color: Colors.Red);
+  show("default-field", kindNbr(a.kind));
+  show("default-field-beside-another", colorNbr(a.color));
+  show("replaced-by-position", kindNbr(b.kind) + colorNbr(b.color));
+  show("replaced-by-name-keeps-the-other-default", kindNbr(c.kind) * 100 + colorNbr(c.color));
+
+  // Inside a default, and in an array default
+  imm r = new Report();
+  show("nested-default", kindNbr(r.failure.kind));
+  show("array-default", kindNbr(r.history[0]) * 10 + kindNbr(r.history[1]));
+
+  // A global, a named constant, a global array, a parameter
+  show("global-struct", kindNbr(made.kind));
+  show("global-array", kindNbr(table[0]) * 100 + kindNbr(table[1]) * 10 + kindNbr(table[2]));
+  show("named-constant", kindNbr(Fallback));
+  show("default-is-a-named-constant", kindNbr(new ByConstant().kind));
+  show("parameter-default", parameter());
+  show("parameter-given", parameter(Kind.Os));
+}

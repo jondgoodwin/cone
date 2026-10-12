@@ -823,7 +823,11 @@ has no name to say so with: the message asked `inodeGetName` of it and ended in
 `ErrorUnreachable`. `genericRequirementsMetIn` answers 0 for it with nothing
 printed, the report that made the value bad being the one (`closure_typecheck_cascade_imm`).
 The instance is still asked for, so a depth limit or any other refusal of the
-request itself still reports.
+request itself still reports. Among an overload set of generics, no candidate
+is viable for such an argument, and `fnCallNoCandidate` makes no report for it;
+a value initialized by a call that selected nothing is `errorType` too, not
+of unknown type, so an unbounded generic inferring from it is not instantiated
+with a parameter that has no type (`generic_typecheck_cascade_arg`).
 
 **On a method of a generic type, a clause over the type's parameters is a
 condition for the method existing.** Before an instance is cloned,

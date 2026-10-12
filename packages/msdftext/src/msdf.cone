@@ -1,0 +1,458 @@
+// ======== Multi-channel signed distance field generation ========
+//
+// After Viktor Chlumsky's msdfgen (MIT licence; "Shape Decomposition for
+// Multi-channel Distance Fields", master's thesis, Czech Technical
+// University, 2015, and msdfgen's source), written again in Cone:
+//
+// - each edge has a colour (shape.cone's 'colorEdges'); a channel's distance
+//   at a texel is the signed distance to the nearest edge whose colour
+//   includes that channel, extended past an edge's end along its tangent
+//   where that is nearer (the pseudo-distance), so that a sharp corner is
+//   where two channels' edges cross;
+// - the shape's contours may overlap (a variable font's, say): msdfgen's
+//   OverlappingContourCombiner picks the right contour's distance by the
+//   contours' windings;
+// - a texel's value in a channel is distance / range + 1/2, so the shape's
+//   outline is where the MEDIAN of the three channels is 1/2, and
+//   'range' is the whole width of distances the field holds;
+// - interpolation errors are then repaired (error correction below).
+//
+// The error correction is NOT a line-by-line port of msdfgen's. It follows
+// the same plan (protect the texels that carry an edge or a colour-changing
+// corner, find pairs of neighbouring texels whose interpolation would draw an
+// edge that is not there, and replace the unprotected one by its own median
+// in all three channels, which is the ordinary single-channel distance) with
+// its own test for the second step: see 'correctErrors'.
+
+// The three channels' distances at a point
+pub struct Rgb {
+  pub r f64;
+  pub g f64;
+  pub b f64;
+
+  pub fn median(self) f64 {
+    fmax64(fmin64(r, g), fmin64(fmax64(r, g), b));
+  }
+}
+
+fn fmin64(a f64, b f64) f64 { if a < b { return a; } b; }
+fn fmax64(a f64, b f64) f64 { if a > b { return a; } b; }
+
+const FAR = 1.0e240d;
+
+// The nearest edge of each channel (by index into the shape's edges) and the
+// distance and curve parameter to it: msdfgen's MultiDistanceSelector
+struct Selector {
+  d Array[SignedDist, 3];
+  e Array[i32, 3];
+  t Array[f64, 3];
+  pseudo bool;                // resolve to the pseudo-distance (else the true distance)
+
+  fn fresh(pseudo bool) Selector {
+    imm far = new SignedDist(-FAR, 1.0d);
+    new Selector([far, far, far], [-1i32, -1i32, -1i32], [0.0d, 0.0d, 0.0d], pseudo);
+  }
+
+  fn reset(self &mut) {
+    imm far = new SignedDist(-FAR, 1.0d);
+    d = [far, far, far];
+    e = [-1i32, -1i32, -1i32];
+    t = [0.0d, 0.0d, 0.0d];
+  }
+
+  fn addEdge(self &mut, shape &Shape, index usize, p Pt) {
+    imm edge = *shape.edges[index];
+    mut param = 0.0d;
+    imm sd = edge.signedDistance(p, &mut param);
+    mut ch = 0usize;
+    while ch < 3usize {
+      if (edge.color & (1u32 << u32.from(ch))) != 0u32 and nearer(sd, d[ch]) {
+        d[ch] = sd;
+        e[ch] = i32.from(index);
+        t[ch] = param;
+      }
+      ch = ch + 1usize;
+    }
+  }
+
+  fn merge(self &mut, o &Selector) {
+    mut ch = 0usize;
+    while ch < 3usize {
+      if nearer(o.d[ch], d[ch]) {
+        d[ch] = o.d[ch];
+        e[ch] = o.e[ch];
+        t[ch] = o.t[ch];
+      }
+      ch = ch + 1usize;
+    }
+  }
+
+  // The channels' distances, with the pseudo-distance in place of the true
+  // one where the nearest point is the end of an edge
+  fn resolve(self &, shape &Shape, p Pt) Rgb {
+    mut out = new Array[f64, 3] <- fill 0.0d;
+    mut ch = 0usize;
+    while ch < 3usize {
+      mut sd = d[ch];
+      if pseudo and e[ch] >= 0i32 {
+        sd = (*shape.edges[usize.from(u32.from(e[ch]))]).toPseudoDistance(sd, p, t[ch]);
+      }
+      out[ch] = sd.d;
+      ch = ch + 1usize;
+    }
+    new Rgb(out[0], out[1], out[2]);
+  }
+}
+
+fn absf64(v f64) f64 { if v < 0.0d { return -v; } v; }
+
+// The multi-channel distance at 'p' of a shape: each contour's own, combined
+// by msdfgen's OverlappingContourCombiner. 'sels' holds a selector a
+// contour.
+fn distanceAt(shape &Shape, sels &mut List[Selector], p Pt, pseudo bool) Rgb {
+  mut shapeSel = Selector.fresh(pseudo);
+  mut innerSel = Selector.fresh(pseudo);
+  mut outerSel = Selector.fresh(pseudo);
+  imm nc = shape.contours.len();
+  mut ci = 0usize;
+  while ci < nc {
+    imm c = *shape.contours[ci];
+    mut s = &mut sels[ci];
+    s.reset();
+    mut k = 0u32;
+    while k < c.count {
+      s.addEdge(shape, usize.from(c.start + k), p);
+      k = k + 1u32;
+    }
+    imm cd = s.resolve(shape, p);
+    shapeSel.merge(s);
+    if c.winding > 0i32 and cd.median() >= 0.0d { innerSel.merge(s); }
+    if c.winding < 0i32 and cd.median() <= 0.0d { outerSel.merge(s); }
+    ci = ci + 1usize;
+  }
+  imm shapeDistance = shapeSel.resolve(shape, p);
+  imm innerDistance = innerSel.resolve(shape, p);
+  imm outerDistance = outerSel.resolve(shape, p);
+  imm inner = innerDistance.median();
+  imm outer = outerDistance.median();
+  mut distance = new Rgb(-FAR, -FAR, -FAR);
+  mut winding = 0i32;
+  if inner >= 0.0d and absf64(inner) <= absf64(outer) {
+    distance = innerDistance;
+    winding = 1i32;
+    ci = 0usize;
+    while ci < nc {
+      if (*shape.contours[ci]).winding > 0i32 {
+        imm cd = sels[ci].resolve(shape, p);
+        imm cm = cd.median();
+        if absf64(cm) < absf64(outer) and cm > distance.median() { distance = cd; }
+      }
+      ci = ci + 1usize;
+    }
+  } elif outer <= 0.0d and absf64(outer) <= absf64(inner) {
+    distance = outerDistance;
+    winding = -1i32;
+    ci = 0usize;
+    while ci < nc {
+      if (*shape.contours[ci]).winding < 0i32 {
+        imm cd = sels[ci].resolve(shape, p);
+        imm cm = cd.median();
+        if absf64(cm) < absf64(inner) and cm < distance.median() { distance = cd; }
+      }
+      ci = ci + 1usize;
+    }
+  } else {
+    return shapeDistance;
+  }
+  ci = 0usize;
+  while ci < nc {
+    if (*shape.contours[ci]).winding != winding {
+      imm cd = sels[ci].resolve(shape, p);
+      imm cm = cd.median();
+      imm dm = distance.median();
+      if cm * dm >= 0.0d and absf64(cm) < absf64(dm) { distance = cd; }
+    }
+    ci = ci + 1usize;
+  }
+  if distance.median() == shapeDistance.median() { distance = shapeDistance; }
+  distance;
+}
+
+// A field of texels, three channels each (f32, distance / range + 1/2), row 0 the top
+pub struct Field {
+  pub width u32;
+  pub height u32;
+  pub data List[f32];
+
+  pub fn texel(self &, x u32, y u32, ch u32) f32 {
+    *data[usize.from((y * width + x) * 3u32 + ch)];
+  }
+
+  pub fn median(self &, x u32, y u32) f32 {
+    imm i = usize.from((y * width + x) * 3u32);
+    imm r = *data[i];
+    imm g = *data[i + 1usize];
+    imm b = *data[i + 2usize];
+    fmaxf(fminf(r, g), fminf(fmaxf(r, g), b));
+  }
+}
+
+fn fminf(a f32, b f32) f32 { if a < b { return a; } b; }
+fn fmaxf(a f32, b f32) f32 { if a > b { return a; } b; }
+
+// How a shape sits in a field: the texel at column x, row y has its centre at
+// the shape point ((x + 1/2) / scale - tx, (height - y - 1/2) / scale - ty)
+pub struct Frame {
+  pub width u32;
+  pub height u32;
+  pub scale f64;              // texels per font unit
+  pub tx f64;                 // font units added to x before scaling
+  pub ty f64;
+  pub range f64;              // the whole width of distances the field holds, font units
+
+  // Where the shape point 'p' falls, in continuous texel coordinates where a
+  // texel's centre is at its integer index (x right, y down the rows)
+  pub fn toTexel(self &, p Pt) Pt {
+    new Pt((p.x + tx) * scale - 0.5d, f64.from(height) - 0.5d - (p.y + ty) * scale);
+  }
+
+  // The shape point at the centre of texel (x, y)
+  pub fn pointOf(self &, x f64, y f64) Pt {
+    new Pt((x + 0.5d) / scale - tx, (f64.from(height) - y - 0.5d) / scale - ty);
+  }
+}
+
+// The multi-channel field of a coloured shape
+pub fn generateMsdf(shape &Shape, frame &Frame) Field { generate(shape, frame, true); }
+
+fn generate(shape &Shape, frame &Frame, pseudo bool) Field {
+  mut data = List[f32].withCapacity(usize.from(frame.width * frame.height * 3u32));
+  mut sels = List[Selector].empty();
+  mut ci = 0usize;
+  while ci < shape.contours.len() { sels.push(Selector.fresh(pseudo)); ci = ci + 1usize; }
+  mut y = 0u32;
+  while y < frame.height {
+    mut x = 0u32;
+    while x < frame.width {
+      imm p = frame.pointOf(f64.from(x), f64.from(y));
+      imm d = distanceAt(shape, &mut sels, p, pseudo);
+      data.push(f32.from(d.r / frame.range + 0.5d));
+      data.push(f32.from(d.g / frame.range + 0.5d));
+      data.push(f32.from(d.b / frame.range + 0.5d));
+      x = x + 1u32;
+    }
+    y = y + 1u32;
+  }
+  new Field(frame.width, frame.height, data);
+}
+
+// The single-channel signed distance field of a shape (positive inside):
+// the nearest true distance, with msdfgen's contour combiner and no
+// pseudo-distance. The check the multi-channel field is compared with.
+pub fn generateSdf(shape &Shape, frame &Frame) Field {
+  mut white = Shape.empty();
+  white.contours = List[Contour].empty();
+  mut ci = 0usize;
+  while ci < shape.contours.len() { white.contours.push(*shape.contours[ci]); ci = ci + 1usize; }
+  mut ei = 0usize;
+  while ei < shape.edges.len() {
+    mut e = *shape.edges[ei];
+    e.color = COLOR_WHITE;
+    white.edges.push(e);
+    ei = ei + 1usize;
+  }
+  generate(&white, frame, false);
+}
+
+// ---- Error correction ----
+
+// Whether interpolating between two texels' channels would draw an edge the
+// shape does not have. Their medians say which side of the outline each is
+// on; the median of the interpolated channels, sampled between them, must
+// then not cross the 1/2 line where the medians do not (and cross it only
+// once where they do).
+fn clashes(f &Field, ax u32, ay u32, qx u32, qy u32) bool {
+  imm ia = usize.from((ay * f.width + ax) * 3u32);
+  imm ib = usize.from((qy * f.width + qx) * 3u32);
+  imm ma = f.median(ax, ay);
+  imm mb = f.median(qx, qy);
+  imm sideA = ma > 0.5;
+  imm sideB = mb > 0.5;
+  mut crossings = 0u32;
+  mut prev = sideA;
+  mut s = 1u32;
+  while s < 16u32 {
+    imm t = f32.from(s) / 16.0;
+    imm r = *f.data[ia] + (*f.data[ib] - *f.data[ia]) * t;
+    imm g = *f.data[ia + 1usize] + (*f.data[ib + 1usize] - *f.data[ia + 1usize]) * t;
+    imm b = *f.data[ia + 2usize] + (*f.data[ib + 2usize] - *f.data[ia + 2usize]) * t;
+    imm m = fmaxf(fminf(r, g), fminf(fmaxf(r, g), b));
+    imm side = m > 0.5;
+    if side != prev { crossings = crossings + 1u32; }
+    prev = side;
+    s = s + 1u32;
+  }
+  if sideB != prev { crossings = crossings + 1u32; }
+  if sideA == sideB { return crossings > 0u32; }
+  crossings > 1u32;
+}
+
+// The channels (a mask: red 1, green 2, blue 4) in which an edge lies between
+// two neighbouring texels, as msdfgen finds them: a channel whose value
+// crosses 1/2 between them, at a place where that channel is the median of
+// the interpolated three (else it is not the outline that crosses there).
+fn edgeBetween(f &Field, ax u32, ay u32, qx u32, qy u32) u32 {
+  imm ia = usize.from((ay * f.width + ax) * 3u32);
+  imm ib = usize.from((qy * f.width + qx) * 3u32);
+  mut mask = 0u32;
+  mut c = 0usize;
+  while c < 3usize {
+    imm va = *f.data[ia + c];
+    imm vb = *f.data[ib + c];
+    if va != vb {
+      imm t = (va - 0.5) / (va - vb);
+      if t > 0.0 and t < 1.0 {
+        imm r = *f.data[ia] + (*f.data[ib] - *f.data[ia]) * t;
+        imm g = *f.data[ia + 1usize] + (*f.data[ib + 1usize] - *f.data[ia + 1usize]) * t;
+        imm b = *f.data[ia + 2usize] + (*f.data[ib + 2usize] - *f.data[ia + 2usize]) * t;
+        imm m = fmaxf(fminf(r, g), fminf(fmaxf(r, g), b));
+        imm at = if c == 0usize { r; } elif c == 1usize { g; } else { b; };
+        if m == at { mask = mask | (1u32 << u32.from(c)); }
+      }
+    }
+    c = c + 1usize;
+  }
+  mask;
+}
+
+// Whether replacing a texel by its median would change a channel in 'mask'
+// (so it must be kept: it carries the edge)
+fn holdsEdge(f &Field, x u32, y u32, mask u32) bool {
+  imm i = usize.from((y * f.width + x) * 3u32);
+  imm m = f.median(x, y);
+  ((mask & 1u32) != 0u32 and *f.data[i] != m) or ((mask & 2u32) != 0u32 and *f.data[i + 1usize] != m)
+    or ((mask & 4u32) != 0u32 and *f.data[i + 2usize] != m);
+}
+
+// Repair a field's interpolation artifacts: along every pair of neighbouring
+// texels (right, below, and both diagonals) that 'clashes', the texels not
+// protected become their median in all three channels. Protected are, as in
+// msdfgen, the texels that carry an edge (one of the pair between which a
+// channel crosses 1/2 as the median, where replacing the texel by its median
+// would move that channel: 'edgeBetween', 'holdsEdge'), and the four texels
+// around each corner where two edges that share fewer than two channels meet.
+// Returns how many texels were replaced.
+pub fn correctErrors(f &mut Field, shape &Shape, frame &Frame) u32 {
+  imm w = f.width;
+  imm h = f.height;
+  mut protect = List[bool].withCapacity(usize.from(w * h));
+  mut i = 0usize;
+  while i < usize.from(w * h) { protect.push(false); i = i + 1usize; }
+  // Texels either side of the outline
+  mut y = 0u32;
+  while y < h {
+    mut x = 0u32;
+    while x < w {
+      mut k = 0u32;
+      while k < 4u32 {
+        // right, below, below-right, below-left
+        mut nx = i32.from(x);
+        mut ny = i32.from(y);
+        if k == 0u32 { nx = nx + 1i32; }
+        elif k == 1u32 { ny = ny + 1i32; }
+        elif k == 2u32 { nx = nx + 1i32; ny = ny + 1i32; }
+        else { nx = nx - 1i32; ny = ny + 1i32; }
+        if nx >= 0i32 and ny >= 0i32 and nx < i32.from(w) and ny < i32.from(h) {
+          imm mask = edgeBetween(f, x, y, u32.from(nx), u32.from(ny));
+          // Only where the outline passes between them: the medians are on different sides of 1/2
+          if mask != 0u32 and (f.median(x, y) > 0.5) != (f.median(u32.from(nx), u32.from(ny)) > 0.5) {
+            if holdsEdge(f, x, y, mask) { protect.set(usize.from(y * w + x), true); }
+            if holdsEdge(f, u32.from(nx), u32.from(ny), mask) { protect.set(usize.from(u32.from(ny) * w + u32.from(nx)), true); }
+          }
+        }
+        k = k + 1u32;
+      }
+      x = x + 1u32;
+    }
+    y = y + 1u32;
+  }
+  // Corners where the colours change
+  mut ci = 0usize;
+  while ci < shape.contours.len() {
+    imm c = *shape.contours[ci];
+    mut k = 0u32;
+    while k < c.count {
+      imm e0 = *shape.edges[usize.from(c.start + k)];
+      imm e1 = *shape.edges[usize.from(c.start + (k + 1u32) % c.count)];
+      imm common = e0.color & e1.color;
+      if (common & (common - 1u32)) == 0u32 {
+        imm tp = frame.toTexel(e0.c);
+        imm fx = i32.from(libc.floor(tp.x));
+        imm fy = i32.from(libc.floor(tp.y));
+        mut dy = 0i32;
+        while dy < 2i32 {
+          mut dx = 0i32;
+          while dx < 2i32 {
+            imm px = fx + dx;
+            imm py = fy + dy;
+            if px >= 0i32 and py >= 0i32 and px < i32.from(w) and py < i32.from(h) {
+              protect.set(usize.from(u32.from(py) * w + u32.from(px)), true);
+            }
+            dx = dx + 1i32;
+          }
+          dy = dy + 1i32;
+        }
+      }
+      k = k + 1u32;
+    }
+    ci = ci + 1usize;
+  }
+  // Pairs whose interpolation clashes
+  mut flag = List[bool].withCapacity(usize.from(w * h));
+  i = 0usize;
+  while i < usize.from(w * h) { flag.push(false); i = i + 1usize; }
+  y = 0u32;
+  while y < h {
+    mut x = 0u32;
+    while x < w {
+      mut k = 0u32;
+      while k < 4u32 {
+        mut nx = i32.from(x);
+        mut ny = i32.from(y);
+        if k == 0u32 { nx = nx + 1i32; }
+        elif k == 1u32 { ny = ny + 1i32; }
+        elif k == 2u32 { nx = nx + 1i32; ny = ny + 1i32; }
+        else { nx = nx - 1i32; ny = ny + 1i32; }
+        if nx >= 0i32 and ny >= 0i32 and nx < i32.from(w) and ny < i32.from(h) {
+          imm a = usize.from(y * w + x);
+          imm b = usize.from(u32.from(ny) * w + u32.from(nx));
+          if (!*protect[a] or !*protect[b]) and clashes(f, x, y, u32.from(nx), u32.from(ny)) {
+            if !*protect[a] { flag.set(a, true); }
+            if !*protect[b] { flag.set(b, true); }
+          }
+        }
+        k = k + 1u32;
+      }
+      x = x + 1u32;
+    }
+    y = y + 1u32;
+  }
+  mut fixed = 0u32;
+  y = 0u32;
+  while y < h {
+    mut x = 0u32;
+    while x < w {
+      if *flag[usize.from(y * w + x)] {
+        imm m = f.median(x, y);
+        imm at = usize.from((y * w + x) * 3u32);
+        f.data.set(at, m);
+        f.data.set(at + 1usize, m);
+        f.data.set(at + 2usize, m);
+        fixed = fixed + 1u32;
+      }
+      x = x + 1u32;
+    }
+    y = y + 1u32;
+  }
+  fixed;
+}

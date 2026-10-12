@@ -1,0 +1,124 @@
+// The inventory rules, with every state worked out by hand. Types: coin (stack 10),
+// potion (stack 5), sword (1, category 2), helmet (1, category 4), a small bag (4 slots)
+// and a large bag (8 slots). The pack is a root container of 6 slots.
+//
+//  1. Add 15 coins to an empty pack: 10 in slot 0, 5 in slot 1, nothing left over.
+//  2. Slot 1 (5) onto slot 0 (10, full): refused, DR_FULL, nothing changes.
+//  3. Slot 1 onto the empty slot 3: DR_PLACED.
+//  4. Two of slot 3's 5 onto the empty slot 4: DR_SPLIT, 3 and 2.
+//  5. Slot 4 (2) onto slot 3 (3): both fit in the room of 7: DR_MERGED, slot 3 holds 5.
+//  6. Slot 2 holds 8 coins (put there): slot 3's 5 onto it fills it to 10 and leaves 3 behind:
+//     DR_MERGED_PARTIAL.
+//  7. A small bag in slot 5. Slot 3 (3 coins) onto the bag: DR_INTO_BAG, the bag holds 3. Slot 0
+//     (10 coins) onto the bag: the stack of 3 takes 7, the other 3 go to a new slot: the bag holds
+//     10 + 3 = 13 coins in two stacks.
+//  8. A large bag in slot 3: the small bag (slot 5) onto it: the small bag goes into the large
+//     one (4 < 8) with its coins; the pack's total of coins counts the bag's contents: 13 + 10
+//     (slot 2) = 23. The reverse is refused as an insertion (8 is not smaller than 4, DR_BAG_TOO_BIG
+//     from mayStandIn), and a drop of the large bag on a small one swaps them (DR_SWAPPED).
+//  9. A bag with no room: four swords fill a small bag; a fifth sword onto it: DR_BAG_FULL.
+// 10. An equipment row of two slots accepting category 4: a sword onto it is DR_FILTER; a
+//     helmet is DR_PLACED.
+// 11. A sword onto a potion stack swaps them: DR_SWAPPED.
+// 12. A nothing: DR_NOTHING; the same slot: DR_SAME.
+
+mod inventory;
+
+import testing use *;
+import collections use *;
+import uilayout use *;
+
+fn main() i32 {
+  mut m = InvModel.make();
+  imm coin = m.defineType("coin", 0u32, 10u32, 0u32, 1u32, 0xffd700ffu32);
+  imm potion = m.defineType("potion", 0u32, 5u32, 0u32, 1u32, 0xff4040ffu32);
+  imm sword = m.defineType("sword", 0u32, 1u32, 0u32, 2u32, 0xc0c0c0ffu32);
+  imm helmet = m.defineType("helmet", 0u32, 1u32, 0u32, 4u32, 0x8080c0ffu32);
+  imm small = m.defineType("small bag", 0u32, 1u32, 4u32, 1u32, 0x806040ffu32);
+  imm large = m.defineType("large bag", 0u32, 1u32, 8u32, 1u32, 0xa07848ffu32);
+  imm pack = m.makeContainer(6u32, 0u32);
+
+  // 1
+  expectInt(i64.from(m.add(pack, coin, 15u32)), 0i64, "1: all fifteen fit");
+  expectInt(i64.from(m.countAt(pack, 0u32)), 10i64, "1: slot 0 holds 10");
+  expectInt(i64.from(m.countAt(pack, 1u32)), 5i64, "1: slot 1 holds 5");
+  // 2
+  expectInt(i64.from(m.move(pack, 1u32, pack, 0u32, 0u32)), i64.from(DR_FULL), "2: a full stack refuses");
+  expectInt(i64.from(m.countAt(pack, 1u32)), 5i64, "2: nothing changed");
+  // 3
+  expectInt(i64.from(m.move(pack, 1u32, pack, 3u32, 0u32)), i64.from(DR_PLACED), "3: into an empty slot");
+  expectInt(i64.from(m.countAt(pack, 1u32)), 0i64, "3: the old slot is empty");
+  expectInt(i64.from(m.countAt(pack, 3u32)), 5i64, "3: the new slot holds 5");
+  // 4
+  expectInt(i64.from(m.move(pack, 3u32, pack, 4u32, 2u32)), i64.from(DR_SPLIT), "4: part of a stack");
+  expectInt(i64.from(m.countAt(pack, 3u32)), 3i64, "4: 3 stay");
+  expectInt(i64.from(m.countAt(pack, 4u32)), 2i64, "4: 2 move");
+  // 5
+  expectInt(i64.from(m.move(pack, 4u32, pack, 3u32, 0u32)), i64.from(DR_MERGED), "5: join a stack");
+  expectInt(i64.from(m.countAt(pack, 3u32)), 5i64, "5: 5 again");
+  expectInt(i64.from(m.itemAt(pack, 4u32)), 0i64, "5: the source slot is empty");
+  // 6
+  imm eight = m.newItem(coin, 8u32);
+  m.put(eight, pack, 2u32);
+  expectInt(i64.from(m.move(pack, 3u32, pack, 2u32, 0u32)), i64.from(DR_MERGED_PARTIAL), "6: the stack fills, some stay");
+  expectInt(i64.from(m.countAt(pack, 2u32)), 10i64, "6: full");
+  expectInt(i64.from(m.countAt(pack, 3u32)), 3i64, "6: 3 left behind");
+  // 7
+  imm bag = m.newItem(small, 1u32);
+  m.put(bag, pack, 5u32);
+  imm bagC = m.items[usize.from(bag)].bag;
+  expectInt(i64.from(m.slotCount(bagC)), 4i64, "7: the small bag has 4 slots");
+  expectInt(i64.from(m.move(pack, 3u32, pack, 5u32, 0u32)), i64.from(DR_INTO_BAG), "7: coins into the bag");
+  expectInt(i64.from(m.countAt(bagC, 0u32)), 3i64, "7: the bag holds 3");
+  expectInt(i64.from(m.itemAt(pack, 3u32)), 0i64, "7: the slot they left is empty");
+  expectInt(i64.from(m.move(pack, 0u32, pack, 5u32, 0u32)), i64.from(DR_INTO_BAG), "7: ten more coins into the bag");
+  expectInt(i64.from(m.countAt(bagC, 0u32)), 10i64, "7: the first stack filled to 10");
+  expectInt(i64.from(m.countAt(bagC, 1u32)), 3i64, "7: the other 3 in a new slot");
+  expectInt(i64.from(m.total(bagC, coin)), 13i64, "7: 13 coins in the bag");
+  // 8
+  imm big = m.newItem(large, 1u32);
+  m.put(big, pack, 3u32);
+  imm bigC = m.items[usize.from(big)].bag;
+  expectInt(i64.from(m.move(pack, 5u32, pack, 3u32, 0u32)), i64.from(DR_INTO_BAG), "8: the small bag into the large");
+  expectInt(i64.from(m.itemAt(pack, 5u32)), 0i64, "8: it left its slot");
+  expectInt(i64.from(m.itemAt(bigC, 0u32)), i64.from(bag), "8: it is in the large bag's first slot");
+  expectInt(i64.from(m.total(pack, coin)), 23i64, "8: coins counted through both bags: 13 + 10");
+  expectInt(i64.from(m.mayStandIn(big, bagC)), i64.from(DR_BAG_TOO_BIG), "8: the large bag may not stand in the small");
+  expectInt(i64.from(m.mayStandIn(bag, bigC)), 0i64, "8: the small bag may stand in the large");
+  // the large bag onto a second small bag swaps
+  imm bag2 = m.newItem(small, 1u32);
+  m.put(bag2, pack, 1u32);
+  expectInt(i64.from(m.check(pack, 3u32, pack, 1u32, 0u32)), i64.from(DR_SWAPPED), "8: large onto a small bag swaps");
+  expectInt(i64.from(m.move(pack, 3u32, pack, 1u32, 0u32)), i64.from(DR_SWAPPED), "8: and does");
+  expectInt(i64.from(m.itemAt(pack, 1u32)), i64.from(big), "8: the large bag is in slot 1");
+  expectInt(i64.from(m.itemAt(pack, 3u32)), i64.from(bag2), "8: the small bag is in slot 3");
+  // 9
+  imm bag2C = m.items[usize.from(bag2)].bag;
+  mut k = 0u32;
+  while k < 4u32 {
+    m.put(m.newItem(sword, 1u32), bag2C, k);
+    k = k + 1u32;
+  }
+  imm fifth = m.newItem(sword, 1u32);
+  m.put(fifth, pack, 4u32);
+  expectInt(i64.from(m.check(pack, 4u32, pack, 3u32, 0u32)), i64.from(DR_BAG_FULL), "9: a full bag refuses");
+  expectInt(i64.from(m.move(pack, 4u32, pack, 3u32, 0u32)), i64.from(DR_BAG_FULL), "9: and nothing moves");
+  expectInt(i64.from(m.itemAt(pack, 4u32)), i64.from(fifth), "9: the sword is where it was");
+  // 10
+  imm gear = m.makeContainer(2u32, 4u32);
+  expectInt(i64.from(m.move(pack, 4u32, gear, 0u32, 0u32)), i64.from(DR_FILTER), "10: a sword is not a helmet");
+  imm helm = m.newItem(helmet, 1u32);
+  m.put(helm, pack, 0u32);
+  expectInt(i64.from(m.move(pack, 0u32, gear, 0u32, 0u32)), i64.from(DR_PLACED), "10: a helmet fits");
+  expectInt(i64.from(m.itemAt(gear, 0u32)), i64.from(helm), "10: it is worn");
+  // 11
+  imm pot = m.newItem(potion, 3u32);
+  m.put(pot, pack, 0u32);
+  expectInt(i64.from(m.move(pack, 4u32, pack, 0u32, 0u32)), i64.from(DR_SWAPPED), "11: a sword and a potion swap");
+  expectInt(i64.from(m.itemAt(pack, 0u32)), i64.from(fifth), "11: the sword is in slot 0");
+  expectInt(i64.from(m.itemAt(pack, 4u32)), i64.from(pot), "11: the potion is in slot 4");
+  // 12
+  expectInt(i64.from(m.check(pack, 5u32, pack, 0u32, 0u32)), i64.from(DR_NOTHING), "12: nothing to move");
+  expectInt(i64.from(m.check(pack, 0u32, pack, 0u32, 0u32)), i64.from(DR_SAME), "12: the same slot");
+  done();
+}

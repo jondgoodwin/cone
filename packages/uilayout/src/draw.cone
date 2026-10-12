@@ -1,0 +1,137 @@
+// ======== The draw list: what a renderer is handed ========
+//
+// Colours are packed 0xRRGGBBAA, non-premultiplied sRGB. Coordinates are
+// pixels of the Ui, y down, origin top left. The list is in drawing order;
+// a clip is a pair of CLIP_PUSH and CLIP_POP (nested clips intersect).
+
+pub const DC_RECT = 1u32;        // filled rectangle (radius 0) or rounded rectangle
+pub const DC_BORDER = 2u32;      // outline of width 'thick' inside the rectangle
+pub const DC_IMAGE = 3u32;       // texture 'tex' (a handle the renderer knows), uv u0 v0 u1 v1, tinted by color
+pub const DC_TEXT = 4u32;        // chars[textStart .. textStart+textLen], font, size, align
+pub const DC_LINE = 5u32;        // (x, y) to (w, h) taken as the end point, width 'thick'
+pub const DC_ARC = 6u32;         // centre (x, y), radius w, angles a0 to a1 (radians, 0 along +x, clockwise on screen), width 'thick'; thick 0 fills a pie
+pub const DC_CLIP_PUSH = 7u32;
+pub const DC_CLIP_POP = 8u32;
+
+pub const TA_LEFT = 0u32;
+pub const TA_CENTER = 1u32;
+pub const TA_RIGHT = 2u32;
+
+pub struct DrawCmd {
+  pub kind u32 = 0u32;
+  pub x f32 = 0.;
+  pub y f32 = 0.;
+  pub w f32 = 0.;
+  pub h f32 = 0.;
+  pub color u32 = 0u32;
+  pub radius f32 = 0.;
+  pub thick f32 = 0.;
+  pub tex u32 = 0u32;
+  pub u0 f32 = 0.;
+  pub v0 f32 = 0.;
+  pub u1 f32 = 1.;
+  pub v1 f32 = 1.;
+  pub a0 f32 = 0.;
+  pub a1 f32 = 0.;
+  pub textStart u32 = 0u32;
+  pub textLen u32 = 0u32;
+  pub font u32 = 0u32;
+  pub size f32 = 0.;
+  pub align u32 = 0u32;
+  pub node u32 = 0u32;           // the node it came from (for debugging and picking in the renderer)
+}
+
+pub struct DrawList {
+  pub cmds List[DrawCmd];
+  pub chars String;
+
+  pub fn make() DrawList {new DrawList(List[DrawCmd].empty(), String.empty());}
+
+  pub fn clear(self &mut) {
+    cmds.clear();
+    chars.clear();
+  }
+
+  pub fn len(self &) usize {cmds.len();}
+
+  pub fn rect(self &mut, x f32, y f32, w f32, h f32, color u32, radius f32, node usize) {
+    if (color & 255u32) == 0u32 {return;}
+    cmds.push(new DrawCmd(kind: DC_RECT, x: x, y: y, w: w, h: h, color: color, radius: radius, node: u32.from(node)));
+  }
+
+  pub fn border(self &mut, x f32, y f32, w f32, h f32, color u32, radius f32, thick f32, node usize) {
+    if (color & 255u32) == 0u32 or thick <= 0. {return;}
+    cmds.push(new DrawCmd(kind: DC_BORDER, x: x, y: y, w: w, h: h, color: color, radius: radius, thick: thick, node: u32.from(node)));
+  }
+
+  pub fn image(self &mut, x f32, y f32, w f32, h f32, tex u32, u0 f32, v0 f32, u1 f32, v1 f32, tint u32, radius f32, node usize) {
+    cmds.push(new DrawCmd(kind: DC_IMAGE, x: x, y: y, w: w, h: h, color: tint, radius: radius, tex: tex,
+      u0: u0, v0: v0, u1: u1, v1: v1, node: u32.from(node)));
+  }
+
+  pub fn line(self &mut, x0 f32, y0 f32, x1 f32, y1 f32, color u32, thick f32, node usize) {
+    cmds.push(new DrawCmd(kind: DC_LINE, x: x0, y: y0, w: x1, h: y1, color: color, thick: thick, node: u32.from(node)));
+  }
+
+  pub fn arc(self &mut, cx f32, cy f32, r f32, a0 f32, a1 f32, color u32, thick f32, node usize) {
+    cmds.push(new DrawCmd(kind: DC_ARC, x: cx, y: cy, w: r, color: color, thick: thick, a0: a0, a1: a1, node: u32.from(node)));
+  }
+
+  // Text laid in the box (x, y, w, h), vertically centred
+  pub fn text(self &mut, x f32, y f32, w f32, h f32, s &str, font u32, size f32, color u32, align u32, node usize) {
+    if s.len() == 0usize {return;}
+    imm start = u32.from(chars.len());
+    chars.append(s);
+    cmds.push(new DrawCmd(kind: DC_TEXT, x: x, y: y, w: w, h: h, color: color, textStart: start,
+      textLen: u32.from(s.len()), font: font, size: size, align: align, node: u32.from(node)));
+  }
+
+  pub fn clipPush(self &mut, x f32, y f32, w f32, h f32) {
+    cmds.push(new DrawCmd(kind: DC_CLIP_PUSH, x: x, y: y, w: w, h: h));
+  }
+
+  pub fn clipPop(self &mut) {
+    cmds.push(new DrawCmd(kind: DC_CLIP_POP));
+  }
+
+  // The text of a DC_TEXT command
+  pub fn textOf(self &, i usize) &str {
+    imm start = usize.from(cmds[i].textStart);
+    imm n = usize.from(cmds[i].textLen);
+    chars.view().slice(start, start + n);
+  }
+
+  pub fn count(self &, kind u32) usize {
+    mut n = 0usize;
+    mut i = 0usize;
+    while i < cmds.len() {
+      if cmds[i].kind == kind {n = n + 1usize;}
+      i = i + 1usize;
+    }
+    n;
+  }
+}
+
+// ---- colours ----
+pub fn rgba(r u32, g u32, b u32, a u32) u32 inline {(r << 24u32) | (g << 16u32) | (b << 8u32) | a;}
+pub fn rgb(r u32, g u32, b u32) u32 inline {(r << 24u32) | (g << 16u32) | (b << 8u32) | 255u32;}
+pub fn colorR(c u32) u32 inline {(c >> 24u32) & 255u32;}
+pub fn colorG(c u32) u32 inline {(c >> 16u32) & 255u32;}
+pub fn colorB(c u32) u32 inline {(c >> 8u32) & 255u32;}
+pub fn colorA(c u32) u32 inline {c & 255u32;}
+pub fn withAlpha(c u32, a u32) u32 inline {(c & 4294967040u32) | a;}
+
+// A mix of two colours, t = 0 giving a and t = 1 giving b, per channel
+pub fn mixColor(a u32, b u32, t f32) u32 {
+  imm s = 1. - t;
+  mut out = 0u32;
+  mut sh = 0u32;
+  while sh < 32u32 {
+    imm ca = f32.from((a >> sh) & 255u32);
+    imm cb = f32.from((b >> sh) & 255u32);
+    imm v = u32.from(clampf(ca * s + cb * t + 0.5, 0., 255.));
+    out = out | (v << sh);
+    sh = sh + 8u32;
+  }
+  out;
+}

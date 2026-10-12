@@ -1,0 +1,415 @@
+// ======== JSON: RFC 8259 ========
+//
+// A small JSON reader for glTF (there is no JSON package in Cone's
+// packages). The document is parsed into a flat arena, because a struct
+// cannot hold a List of itself yet: node 0 is the root, every node is a
+// 'JNode', and an array's or object's children are numbers in a list of
+// 'kids' (an object's kids alternate key node, value node). Numbers are f64,
+// read by this package's own decimal parser (a mantissa of up to 19 digits
+// times a power of ten, correctly rounded when the digits are 15 or fewer
+// and the exponent within 22, as glTF's are; a few units in the last place
+// otherwise). Strings are UTF-8 with the escapes decoded, \u surrogate
+// pairs joined. Nesting is limited to 256 levels, so a hostile file cannot
+// exhaust the stack. A duplicate object key is not an error: the first one
+// answers.
+
+pub const NoNode = 0xFFFFFFFFu32;
+
+pub enum JsonKind {
+  Null, Bool, Number, Text, Array, Object;
+}
+
+pub struct JNode {
+  pub kind JsonKind;
+  pub num f64;        // a number, or 1 / 0 for true / false
+  pub text String;    // a string
+  pub first usize;    // where its kids start in 'kids'
+  pub count usize;    // an array's elements, an object's entries
+}
+
+pub struct JsonError {
+  pub line u32;
+  pub column u32;
+  pub reason String;
+
+  pub fn message(self &) String {
+    mut s = String.from("json: line ");
+    s.appendUInt(u64.from(line));
+    s.append(", column ");
+    s.appendUInt(u64.from(column));
+    s.append(": ");
+    s.append(reason.view());
+    s;
+  }
+}
+
+pub struct Json {
+  pub nodes List[JNode];
+  pub kids List[u32];
+
+  pub fn kindOf(self &, n u32) JsonKind { nodes[usize.from(n)].kind; }
+  pub fn isObject(self &, n u32) bool { n != NoNode and nodes[usize.from(n)].kind == JsonKind.Object; }
+  pub fn isArray(self &, n u32) bool { n != NoNode and nodes[usize.from(n)].kind == JsonKind.Array; }
+  pub fn isNumber(self &, n u32) bool { n != NoNode and nodes[usize.from(n)].kind == JsonKind.Number; }
+  pub fn isText(self &, n u32) bool { n != NoNode and nodes[usize.from(n)].kind == JsonKind.Text; }
+
+  // An array's element count, or an object's entry count; 0 for anything else
+  pub fn len(self &, n u32) usize {
+    if n == NoNode { return 0usize; }
+    imm k = nodes[usize.from(n)].kind;
+    if k == JsonKind.Array or k == JsonKind.Object { return nodes[usize.from(n)].count; }
+    0usize;
+  }
+
+  // Element i of an array, or NoNode
+  pub fn at(self &, n u32, i usize) u32 {
+    if not self.isArray(n) or i >= nodes[usize.from(n)].count { return NoNode; }
+    *kids[nodes[usize.from(n)].first + i];
+  }
+
+  // The key and value of entry i of an object
+  pub fn keyAt(self &, n u32, i usize) u32 { *kids[nodes[usize.from(n)].first + 2usize * i]; }
+  pub fn valueAt(self &, n u32, i usize) u32 { *kids[nodes[usize.from(n)].first + 2usize * i + 1usize]; }
+
+  // The value of key in object n, or NoNode when it is not there (or n is
+  // not an object)
+  pub fn get(self &, n u32, key &str) u32 {
+    if not self.isObject(n) { return NoNode; }
+    imm cnt = nodes[usize.from(n)].count;
+    mut i = 0usize;
+    while i < cnt {
+      imm k = self.keyAt(n, i);
+      if nodes[usize.from(k)].text.view() == key { return self.valueAt(n, i); }
+      i += 1usize;
+    }
+    NoNode;
+  }
+
+  pub fn num(self &, n u32, fallback f64) f64 {
+    if not self.isNumber(n) { return fallback; }
+    nodes[usize.from(n)].num;
+  }
+
+  // An integer-valued number, truncated; the fallback for anything else
+  pub fn int(self &, n u32, fallback i64) i64 {
+    if not self.isNumber(n) { return fallback; }
+    i64.from(nodes[usize.from(n)].num);
+  }
+
+  pub fn flag(self &, n u32, fallback bool) bool {
+    if n == NoNode or nodes[usize.from(n)].kind != JsonKind.Bool { return fallback; }
+    nodes[usize.from(n)].num != 0.;
+  }
+
+  // A copy of the text of n, or fallback
+  pub fn string(self &, n u32, fallback &str) String {
+    if not self.isText(n) { return String.from(fallback); }
+    nodes[usize.from(n)].text.copy();
+  }
+
+  pub fn textView(self &, n u32) &str { nodes[usize.from(n)].text.view(); }
+
+  // Shorthands: a key of object n
+  pub fn getNum(self &, n u32, key &str, fallback f64) f64 { self.num(self.get(n, key), fallback); }
+  pub fn getInt(self &, n u32, key &str, fallback i64) i64 { self.int(self.get(n, key), fallback); }
+  // A non-negative whole number a size or offset, never past 4294967296: a
+  // negative or enormous one answers that, which every bounds check refuses,
+  // and which cannot overflow when added to another
+  pub fn getSize(self &, n u32, key &str, fallback i64) usize {
+    imm v = self.getInt(n, key, fallback);
+    if v < 0i64 or v > 4294967296i64 { return 4294967296usize; }
+    usize.from(v);
+  }
+
+  pub fn getFlag(self &, n u32, key &str, fallback bool) bool { self.flag(self.get(n, key), fallback); }
+  pub fn getStr(self &, n u32, key &str, fallback &str) String { self.string(self.get(n, key), fallback); }
+}
+
+struct JParser {
+  pub pos usize;
+  pub failed bool;
+  pub reason String;
+  pub at usize;       // where it failed
+}
+
+fn jsonFail(p &mut JParser, why &str) {
+  if p.failed { return; }
+  p.failed = true;
+  p.reason = String.from(why);
+  p.at = p.pos;
+}
+
+fn skipWs(t &Array[u8], p &mut JParser) {
+  while p.pos < t.len and (t[p.pos] == ' ' or t[p.pos] == '\t' or t[p.pos] == '\n' or t[p.pos] == '\r') {
+    p.pos += 1usize;
+  }
+}
+
+fn newNode(doc &mut Json, kind JsonKind) u32 {
+  doc.nodes.push(new JNode(kind, 0., String.empty(), 0usize, 0usize));
+  u32.from(doc.nodes.len() - 1usize);
+}
+
+fn isDigitByte(c u8) bool { c >= '0' and c <= '9'; }
+
+// 10 to the e, for e from 0 to 22, which are exact in a double
+imm pow10tab Array[f64, 23] = [1d, 10d, 100d, 1000d, 10000d, 100000d, 1000000d, 10000000d, 100000000d, 1000000000d,
+  10000000000d, 100000000000d, 1000000000000d, 10000000000000d, 100000000000000d, 1000000000000000d,
+  10000000000000000d, 100000000000000000d, 1000000000000000000d, 10000000000000000000d,
+  100000000000000000000d, 1000000000000000000000d, 10000000000000000000000d];
+
+fn scalePow10(v f64, e i32) f64 {
+  mut x = v;
+  mut k = e;
+  while k > 22i32 { x = x * 10000000000000000000000d; k -= 22i32; }
+  while k < -22i32 { x = x / 10000000000000000000000d; k += 22i32; }
+  if k >= 0i32 { return x * pow10tab[usize.from(k)]; }
+  x / pow10tab[usize.from(-k)];
+}
+
+fn parseNumber(t &Array[u8], p &mut JParser) f64 {
+  mut neg = false;
+  if p.pos < t.len and t[p.pos] == '-' { neg = true; p.pos += 1usize; }
+  if p.pos >= t.len or not isDigitByte(t[p.pos]) { jsonFail(p, "a number needs digits"); return 0.; }
+  if t[p.pos] == '0' and p.pos + 1usize < t.len and isDigitByte(t[p.pos + 1usize]) {
+    p.pos += 1usize;
+    jsonFail(p, "a number cannot have a leading zero");
+    return 0.;
+  }
+  mut mant = 0u64;
+  mut digits = 0i32;
+  mut exp10 = 0i32;
+  while p.pos < t.len and isDigitByte(t[p.pos]) {
+    if digits < 19i32 { mant = mant * 10u64 + u64.from(t[p.pos] - '0'); if mant > 0u64 { digits += 1i32; } }
+    else { exp10 += 1i32; }
+    p.pos += 1usize;
+  }
+  if p.pos < t.len and t[p.pos] == '.' {
+    p.pos += 1usize;
+    if p.pos >= t.len or not isDigitByte(t[p.pos]) { jsonFail(p, "a fraction needs digits"); return 0.; }
+    while p.pos < t.len and isDigitByte(t[p.pos]) {
+      if digits < 19i32 {
+        mant = mant * 10u64 + u64.from(t[p.pos] - '0');
+        if mant > 0u64 { digits += 1i32; }
+        exp10 -= 1i32;
+      }
+      p.pos += 1usize;
+    }
+  }
+  if p.pos < t.len and (t[p.pos] == 'e' or t[p.pos] == 'E') {
+    p.pos += 1usize;
+    mut eneg = false;
+    if p.pos < t.len and (t[p.pos] == '+' or t[p.pos] == '-') { eneg = t[p.pos] == '-'; p.pos += 1usize; }
+    if p.pos >= t.len or not isDigitByte(t[p.pos]) { jsonFail(p, "an exponent needs digits"); return 0.; }
+    mut e = 0i32;
+    while p.pos < t.len and isDigitByte(t[p.pos]) {
+      if e < 10000i32 { e = e * 10i32 + i32.from(t[p.pos] - '0'); }
+      p.pos += 1usize;
+    }
+    exp10 += if eneg {-e;} else {e;};
+  }
+  imm v = scalePow10(f64.from(mant), exp10);
+  if neg { return -v; }
+  v;
+}
+
+fn hexVal(c u8) i32 {
+  if c >= '0' and c <= '9' { return i32.from(c - '0'); }
+  if c >= 'a' and c <= 'f' { return i32.from(c - 'a') + 10i32; }
+  if c >= 'A' and c <= 'F' { return i32.from(c - 'A') + 10i32; }
+  -1i32;
+}
+
+fn hex4(t &Array[u8], at usize) i32 {
+  if at + 4usize > t.len { return -1i32; }
+  mut v = 0i32;
+  mut i = 0usize;
+  while i < 4usize {
+    imm h = hexVal(t[at + i]);
+    if h < 0i32 { return -1i32; }
+    v = v * 16i32 + h;
+    i += 1usize;
+  }
+  v;
+}
+
+fn putUtf8(s &mut String, cp u32) {
+  if cp < 0x80u32 { s.appendByte(u8.from(cp)); }
+  elif cp < 0x800u32 {
+    s.appendByte(u8.from(0xC0u32 | (cp >> 6u32)));
+    s.appendByte(u8.from(0x80u32 | (cp & 0x3Fu32)));
+  } elif cp < 0x10000u32 {
+    s.appendByte(u8.from(0xE0u32 | (cp >> 12u32)));
+    s.appendByte(u8.from(0x80u32 | ((cp >> 6u32) & 0x3Fu32)));
+    s.appendByte(u8.from(0x80u32 | (cp & 0x3Fu32)));
+  } else {
+    s.appendByte(u8.from(0xF0u32 | (cp >> 18u32)));
+    s.appendByte(u8.from(0x80u32 | ((cp >> 12u32) & 0x3Fu32)));
+    s.appendByte(u8.from(0x80u32 | ((cp >> 6u32) & 0x3Fu32)));
+    s.appendByte(u8.from(0x80u32 | (cp & 0x3Fu32)));
+  }
+}
+
+// A string, from the opening quote
+fn parseString(t &Array[u8], p &mut JParser) String {
+  mut s = String.empty();
+  p.pos += 1usize;
+  while true {
+    if p.pos >= t.len { jsonFail(p, "a string is not closed"); return s; }
+    imm c = t[p.pos];
+    if c == '"' { p.pos += 1usize; return s; }
+    if c < 0x20u8 { jsonFail(p, "a control character inside a string"); return s; }
+    if c == '\\' {
+      if p.pos + 1usize >= t.len { jsonFail(p, "a string is not closed"); return s; }
+      imm e = t[p.pos + 1usize];
+      p.pos += 2usize;
+      if e == '"' { s.appendByte('"'); }
+      elif e == '\\' { s.appendByte('\\'); }
+      elif e == '/' { s.appendByte('/'); }
+      elif e == 'b' { s.appendByte(8u8); }
+      elif e == 'f' { s.appendByte(12u8); }
+      elif e == 'n' { s.appendByte(10u8); }
+      elif e == 'r' { s.appendByte(13u8); }
+      elif e == 't' { s.appendByte(9u8); }
+      elif e == 'u' {
+        mut cp = hex4(t, p.pos);
+        if cp < 0i32 { jsonFail(p, "a bad \\u escape"); return s; }
+        p.pos += 4usize;
+        if cp >= 0xD800i32 and cp < 0xDC00i32 {
+          // A high surrogate must be followed by \u and a low one
+          if p.pos + 6usize <= t.len and t[p.pos] == '\\' and t[p.pos + 1usize] == 'u' {
+            imm lo = hex4(t, p.pos + 2usize);
+            if lo >= 0xDC00i32 and lo < 0xE000i32 {
+              cp = 0x10000i32 + ((cp - 0xD800i32) << 10i32) + (lo - 0xDC00i32);
+              p.pos += 6usize;
+            } else { jsonFail(p, "a lone surrogate in a \\u escape"); return s; }
+          } else { jsonFail(p, "a lone surrogate in a \\u escape"); return s; }
+        } elif cp >= 0xDC00i32 and cp < 0xE000i32 {
+          jsonFail(p, "a lone surrogate in a \\u escape");
+          return s;
+        }
+        putUtf8(&mut s, u32.from(cp));
+      } else { jsonFail(p, "a bad escape"); return s; }
+    } else {
+      s.appendByte(c);
+      p.pos += 1usize;
+    }
+  }
+  s;
+}
+
+fn parseValue(t &Array[u8], p &mut JParser, doc &mut Json, depth i32) u32 {
+  skipWs(t, p);
+  if p.pos >= t.len { jsonFail(p, "a value is missing"); return NoNode; }
+  if depth > 256i32 { jsonFail(p, "nested too deeply"); return NoNode; }
+  imm c = t[p.pos];
+  if c == '{' {
+    imm id = newNode(doc, JsonKind.Object);
+    p.pos += 1usize;
+    mut ids = List[u32].empty();
+    skipWs(t, p);
+    if p.pos < t.len and t[p.pos] == '}' {
+      p.pos += 1usize;
+    } else {
+      while not p.failed {
+        skipWs(t, p);
+        if p.pos >= t.len or t[p.pos] != '"' { jsonFail(p, "an object's key must be a string"); break; }
+        imm kid = newNode(doc, JsonKind.Text);
+        imm ks = parseString(t, p);
+        if p.failed { break; }
+        doc.nodes[usize.from(kid)].text = ks;
+        skipWs(t, p);
+        if p.pos >= t.len or t[p.pos] != ':' { jsonFail(p, "a ':' is missing after a key"); break; }
+        p.pos += 1usize;
+        imm v = parseValue(t, p, doc, depth + 1i32);
+        if p.failed { break; }
+        ids.push(kid);
+        ids.push(v);
+        skipWs(t, p);
+        if p.pos < t.len and t[p.pos] == ',' { p.pos += 1usize; continue; }
+        if p.pos < t.len and t[p.pos] == '}' { p.pos += 1usize; break; }
+        jsonFail(p, "expected ',' or '}'");
+      }
+    }
+    doc.nodes[usize.from(id)].first = doc.kids.len();
+    doc.nodes[usize.from(id)].count = ids.len() / 2usize;
+    mut i = 0usize;
+    while i < ids.len() { doc.kids.push(*ids[i]); i += 1usize; }
+    return id;
+  }
+  if c == '[' {
+    imm id = newNode(doc, JsonKind.Array);
+    p.pos += 1usize;
+    mut ids = List[u32].empty();
+    skipWs(t, p);
+    if p.pos < t.len and t[p.pos] == ']' {
+      p.pos += 1usize;
+    } else {
+      while not p.failed {
+        imm v = parseValue(t, p, doc, depth + 1i32);
+        if p.failed { break; }
+        ids.push(v);
+        skipWs(t, p);
+        if p.pos < t.len and t[p.pos] == ',' { p.pos += 1usize; continue; }
+        if p.pos < t.len and t[p.pos] == ']' { p.pos += 1usize; break; }
+        jsonFail(p, "expected ',' or ']'");
+      }
+    }
+    doc.nodes[usize.from(id)].first = doc.kids.len();
+    doc.nodes[usize.from(id)].count = ids.len();
+    mut i = 0usize;
+    while i < ids.len() { doc.kids.push(*ids[i]); i += 1usize; }
+    return id;
+  }
+  if c == '"' {
+    imm id = newNode(doc, JsonKind.Text);
+    imm s = parseString(t, p);
+    doc.nodes[usize.from(id)].text = s;
+    return id;
+  }
+  if c == '-' or isDigitByte(c) {
+    imm id = newNode(doc, JsonKind.Number);
+    doc.nodes[usize.from(id)].num = parseNumber(t, p);
+    return id;
+  }
+  if c == 't' and p.pos + 4usize <= t.len and t[p.pos + 1usize] == 'r' and t[p.pos + 2usize] == 'u' and t[p.pos + 3usize] == 'e' {
+    p.pos += 4usize;
+    imm id = newNode(doc, JsonKind.Bool);
+    doc.nodes[usize.from(id)].num = 1.;
+    return id;
+  }
+  if c == 'f' and p.pos + 5usize <= t.len and t[p.pos + 1usize] == 'a' and t[p.pos + 2usize] == 'l' and t[p.pos + 3usize] == 's'
+    and t[p.pos + 4usize] == 'e' {
+    p.pos += 5usize;
+    return newNode(doc, JsonKind.Bool);
+  }
+  if c == 'n' and p.pos + 4usize <= t.len and t[p.pos + 1usize] == 'u' and t[p.pos + 2usize] == 'l' and t[p.pos + 3usize] == 'l' {
+    p.pos += 4usize;
+    return newNode(doc, JsonKind.Null);
+  }
+  jsonFail(p, "not a JSON value");
+  NoNode;
+}
+
+// Read JSON text (UTF-8, a byte-order mark allowed). Node 0 is the root.
+pub fn parseJson(t &Array[u8]) Result[Json, JsonError] {
+  mut p = new JParser(0usize, false, String.empty(), 0usize);
+  if t.len >= 3usize and t[0usize] == 0xEFu8 and t[1usize] == 0xBBu8 and t[2usize] == 0xBFu8 { p.pos = 3usize; }
+  mut doc = new Json(List[JNode].empty(), List[u32].empty());
+  parseValue(t, &mut p, &mut doc, 0i32);
+  if not p.failed {
+    skipWs(t, &mut p);
+    if p.pos < t.len { jsonFail(&mut p, "text after the value"); }
+  }
+  if p.failed {
+    mut line = 1u32;
+    mut col = 1u32;
+    mut i = 0usize;
+    while i < p.at and i < t.len {
+      if t[i] == '\n' { line += 1u32; col = 1u32; } else { col += 1u32; }
+      i += 1usize;
+    }
+    return Error[Json, JsonError](new JsonError(line, col, p.reason.copy()));
+  }
+  Ok[Json, JsonError](doc);
+}

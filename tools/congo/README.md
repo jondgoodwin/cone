@@ -125,6 +125,24 @@ runtime = ["SDL3"]
 | `paths` | folders the linker searches for them first; a relative one is relative to the package folder. Optional |
 | `runtime` | the DLLs a program using the package loads when it runs, each by its bare name: `SDL3` for `SDL3.dll`. Congo copies them beside every program it links (below, "Runtime libraries"). Optional |
 
+**What differs by system goes in a section of `[link]` for that system**:
+`[link.windows]`, `[link.linux]` and `[link.macos]`, each with the same keys.
+The plain `[link]` applies on every system, and the section for the system
+Congo runs on adds to it: each list is the plain one's entries, then the
+section's. A section for another system contributes nothing (it is still
+read, so a mistake in it is found on every machine). A package with nothing
+common writes no plain `[link]`:
+
+```toml
+[link.windows]
+libraries = ["libssl", "libcrypto", "crypt32"]
+paths = ["../../deps/openssl"]
+runtime = ["libssl-3", "libcrypto-3"]
+
+[link.linux]
+libraries = ["ssl", "crypto"]
+```
+
 That is the whole manifest; any other key or table is an error. **There is no
 dependencies section**: the `import` lines in the source are the dependency
 list, and the registries say where each dependency is.
@@ -284,7 +302,8 @@ winstr/
   body too.
 - **Every library a package of the build names is linked into the executable**,
   once each, after the objects and `conestd`, in the order the objects are:
-  the program's first, then what it imports. On Windows `SDL3` becomes `SDL3.lib`
+  the program's first, then what it imports (a package's plain `[link]` ones
+  before those of its section for the system). On Windows `SDL3` becomes `SDL3.lib`
   and each path `/LIBPATH:`; elsewhere `-lSDL3` and `-L`. The linker looks in
   `[link] paths` first, then where it always looks: on Windows the folders the
   `LIB` environment variable lists, which Visual Studio's environment sets to
@@ -345,16 +364,20 @@ it, synchronization validation included, and fail on any message.
 `render`'s example `pipevk.cone`, the pipe demo, imports `sculpt` and
 `window` besides.
 
-`thread`, OS threads and the futex, is Cone code over `extern` declarations
-of the C runtime and Windows, not a C package, and names no `[link]` library.
-The futex calls `WaitOnAddress` and its wakes, which the Windows SDK's
-`Synchronization.lib` defines and the C runtime's default link line lacks; since
-`[link]` has no per-system form, Congo's Windows link line adds
-`synchronization.lib` itself, beside `msvcrt.lib`. A program that calls none of it
-takes nothing from it. The same goes for `shell32.lib`, whose `CommandLineToArgvW`
-the `process` package's `args` calls on Windows, and for `ws2_32.lib` and
-`ntdll.lib`, which `iocore`'s Windows half calls (Winsock, the wait completion
-packet).
+`sync` (the futex and the locks built on it, which `thread` imports) is Cone
+code over `extern` declarations of the C runtime and Windows, not a C package.
+Its futex calls `WaitOnAddress` and its wakes on Windows, which the Windows
+SDK's `Synchronization.lib` defines and the C runtime's default link line
+lacks; so `sync`'s own `[link.windows]` names `synchronization`, and a program
+that imports nothing that needs it takes nothing from it. The same goes for
+`process` (`shell32`, whose `CommandLineToArgvW` its `args` calls on Windows)
+and `iocore` (`ws2_32` and `ntdll`, Winsock and the wait completion packet): each names its Windows
+SDK libraries in its own `[link.windows]`. Congo's Windows link line adds
+only the C runtime's, `msvcrt.lib` and `legacy_stdio_definitions.lib`, which
+belong to the toolchain and not to any package. `tls` is the example of a
+package whose libraries differ by system, with no plain `[link]`: on Windows
+OpenSSL's import libraries and `crypt32`, on Linux the system's `ssl` and
+`crypto` (Ubuntu's `libssl-dev`).
 
 ## Runtime libraries
 

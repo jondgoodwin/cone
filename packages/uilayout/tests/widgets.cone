@@ -1,0 +1,473 @@
+// The starter widgets, driven by pointer and key events pushed into the Ui, with every result
+// worked out by hand. The text closure is 8 pixels a character, 16 high.
+//
+// SLIDER 160 x 20, thumb 16, range 0..100 step 10: the thumb centre runs over 144 px (from 8 to 152).
+//   x at 50%: 8 + 72 = 80 -> 50. x at 23.4% (8 + 33.7 = 41.7) -> 23.4 -> step 10 -> 20. Left of the
+//   track: 0, right: 100. Right arrow +10, Home 0, End 100, wheel up +10.
+// KNOB range 0..1 at 0.5: dragging up 15 px: 15 / 150 = 0.1 -> 0.6; with shift 0.01 -> 0.61;
+//   past the top it holds at 1; a double-click restores 0.5.
+// TEXT FIELD (pad 6, so the text starts 6 px into the field; 8 px a character):
+//   type "Hello": caret 5. Left: 4. Ctrl+Left: 0. Shift+End selects 0..5; Backspace clears it.
+//   Type "ab cd" (a0 b1 ' '2 c3 d4); Ctrl+Left from the end: 3; again: 0. Delete: "b cd".
+//   Ctrl+Right from 0: past 'b', then past the space: 2.
+//   Prefix widths for "b cd": 0 8 16 24 32. A click 17 px into the text is nearest 16 -> index 2; at 21: 24 -> 3.
+//   Drag from index 1 to 3 selects (1, 3). Ctrl+A, Ctrl+C, End, Ctrl+V gives "b cdb cd".
+//   'e acute' is 2 bytes in UTF-8: Left steps back 2, Backspace removes it whole.
+//   A field with maxLen 4 holds "abcd" however much is typed.
+// LIST of a, b, c: click row 1 selects 1; Down 2; Down again stays 2; Up 1; Enter activates 1; double-click activates.
+// WINDOW at (100, 100) 300 x 200, padding 4, title bar 30 tall (the 18 close box + padding 12), the close
+//   box 18 square at the right end of the bar (x 372..390, with the frame's 4 and the bar's 6 of padding):
+//   drag the bar from (200, 112) to (260, 152): the frame is at (160, 140). Right edge (x within 5 px of 400):
+//   press (399, 250), move to (449, 280): width 350. Corner (399, 299) drag (+50, +30): 350 x 230. Left edge:
+//   press (101, 200) drag to (71, 200): width 330, left 70. Narrowed past the minimum it stops at 140. The
+//   close box reports UE_CLOSE and hides the window. Pressing a lower window raises it above the other.
+// TABS: three tabs, the first selected; clicking the second shows only its page and reports UE_TAB 1;
+//   Right arrow on a tab selects the next; the last wraps to the first.
+// TOOLTIP: 0.3 s over a node with a tip shows nothing, 0.6 s shows it. At (790, 590) in 800 x 600 a tip
+//   44 x 28 ("Save" 32 + 12, 16 + 12) is shifted to x 756 and above the pointer: y 590 - 28 - 8 = 554.
+//   Moving away hides it; a press hides it and it stays hidden until the pointer visits another node.
+// SCROLL: a wheel step scrolls 40 px; the list's thumb drags the content.
+// SPLIT 410 wide, divider 10, ratio .25 -> first pane 100; drag the divider to x = 205 -> ratio (205 - 5) / 400 = .5.
+
+mod widgets;
+
+import testing use *;
+import geomath use *;
+import collections use *;
+import uilayout use *;
+
+fn near(got f32, want f32, label &Array[u8]) {
+  expectFloat(f64.from(got), f64.from(want), 0.01, label);
+}
+
+fn lastOf(ui &mut Ui, kind u32) UiEvent {
+  imm evs = ui.takeEvents();
+  mut out = new UiEvent;
+  mut i = 0usize;
+  while i < evs.len() {
+    if evs[i].kind == kind {out = *evs[i];}
+    i = i + 1usize;
+  }
+  out;
+}
+
+fn countOf(ui &mut Ui, kind u32) i64 {
+  imm evs = ui.takeEvents();
+  mut n = 0i64;
+  mut i = 0usize;
+  while i < evs.len() {
+    if evs[i].kind == kind {n = n + 1i64;}
+    i = i + 1usize;
+  }
+  n;
+}
+
+fn typeText(ui &mut Ui, s &str) {
+  mut i = 0usize;
+  while i < s.len() {
+    textInput(ui, u32.from(s[i]));
+    i = i + 1usize;
+  }
+}
+
+fn at(ui &mut Ui, x f32, y f32) {pointerMove(ui, x, y);}
+
+fn main() i32 {
+  mut m = fn(t &str, font u32, size f32) Vec2 { new Vec2(f32.from(t.len()) * 8., 16.); };
+
+  // ---- slider ----
+  {
+    mut ui = Ui.make(800., 600.);
+    imm row = ui.create(ui.root, K_PLAIN);
+    ui.setLayout(row, LK_ANCHOR);
+    ui.setOffsets(row, 100., 100., 0., 0.);
+    imm s = slider(&mut ui, row, 0., 100., 0., 10.);
+    layout(&mut ui, &mut m);
+    near(ui.nodes[s].gx, 100., "slider placed at 100");
+    at(&mut ui, 100. + 80., 110.);
+    pointerDown(&mut ui, BTN_LEFT);
+    near(sliderValue(&ui, s), 50., "slider: the middle is 50");
+    at(&mut ui, 100. + 41.7, 110.);
+    near(sliderValue(&ui, s), 20., "slider: dragging to 23.4% gives 20 (step 10)");
+    at(&mut ui, 40., 300.);
+    near(sliderValue(&ui, s), 0., "slider: past the left end holds 0 even off the track (it has the pointer)");
+    at(&mut ui, 700., 10.);
+    near(sliderValue(&ui, s), 100., "slider: past the right end holds 100");
+    pointerUp(&mut ui, BTN_LEFT);
+    expectInt(countOf(&mut ui, UE_CHANGED), 4i64, "slider: four changes reported (50, 20, 0, 100)");
+    focusSet(&mut ui, s);
+    keyDown(&mut ui, KEY_HOME, 0u32);
+    near(sliderValue(&ui, s), 0., "slider: Home");
+    keyDown(&mut ui, KEY_RIGHT, 0u32);
+    near(sliderValue(&ui, s), 10., "slider: Right adds one step");
+    keyDown(&mut ui, KEY_END, 0u32);
+    near(sliderValue(&ui, s), 100., "slider: End");
+    keyDown(&mut ui, KEY_LEFT, 0u32);
+    near(sliderValue(&ui, s), 90., "slider: Left");
+    at(&mut ui, 150., 110.);
+    wheel(&mut ui, 0., 1.);
+    near(sliderValue(&ui, s), 100., "slider: wheel up adds a step (held at the top)");
+    setSliderValue(&mut ui, s, 37.);
+    near(sliderValue(&ui, s), 40., "slider: set value is quantised");
+    near(sliderFraction(&ui, s), 0.4, "slider: fraction");
+  }
+
+  // ---- knob ----
+  {
+    mut ui = Ui.make(800., 600.);
+    imm k = knob(&mut ui, ui.root, 0., 1., 0.5, 0.);
+    layout(&mut ui, &mut m);
+    at(&mut ui, 20., 40.);
+    pointerDown(&mut ui, BTN_LEFT);
+    at(&mut ui, 20., 25.);
+    near(knobValue(&ui, k), 0.6, "knob: up 15 px is +0.1");
+    ui.input.mods = MOD_SHIFT;
+    pointerUp(&mut ui, BTN_LEFT);
+    at(&mut ui, 20., 40.);
+    pointerDown(&mut ui, BTN_LEFT);
+    // the move event carries the modifiers the host last told us about
+    keyDown(&mut ui, KEY_SPACE, MOD_SHIFT);
+    at(&mut ui, 20., 25.);
+    near(knobValue(&ui, k), 0.61, "knob: with shift the same drag is +0.01");
+    ui.input.mods = 0u32;
+    keyDown(&mut ui, KEY_SPACE, 0u32);
+    at(&mut ui, 20., -400.);
+    near(knobValue(&ui, k), 1., "knob: held at the top");
+    pointerUp(&mut ui, BTN_LEFT);
+    ui.takeEvents();
+    at(&mut ui, 20., 40.);
+    update(&mut ui, 1.);
+    pointerDown(&mut ui, BTN_LEFT);
+    pointerUp(&mut ui, BTN_LEFT);
+    update(&mut ui, 0.1);
+    pointerDown(&mut ui, BTN_LEFT);
+    pointerUp(&mut ui, BTN_LEFT);
+    near(knobValue(&ui, k), 0.5, "knob: a double-click restores the default");
+    near(knobFraction(&ui, k), 0.5, "knob: fraction");
+  }
+
+  // ---- toggle and radio ----
+  {
+    mut ui = Ui.make(800., 600.);
+    imm col = ui.create(ui.root, K_PLAIN);
+    ui.setFlex(col, LK_COLUMN, 4.);
+    imm t1 = toggle(&mut ui, col, "One", false);
+    imm r1 = toggle(&mut ui, col, "Red", true);
+    imm r2 = toggle(&mut ui, col, "Green", false);
+    setRadioGroup(&mut ui, r1, 1u32);
+    setRadioGroup(&mut ui, r2, 1u32);
+    layout(&mut ui, &mut m);
+    at(&mut ui, ui.nodes[t1].gx + 3., ui.nodes[t1].gy + 3.);
+    pointerDown(&mut ui, BTN_LEFT);
+    pointerUp(&mut ui, BTN_LEFT);
+    expect(isChecked(&ui, t1) and ui.hasState(t1, ST_CHECKED), "toggle: a click checks it");
+    expectInt(i64.from(lastOf(&mut ui, UE_TOGGLED).i), 1i64, "toggle: reported checked");
+    pointerDown(&mut ui, BTN_LEFT);
+    pointerUp(&mut ui, BTN_LEFT);
+    expect(!isChecked(&ui, t1), "toggle: a second click unchecks it");
+    at(&mut ui, ui.nodes[r2].gx + 3., ui.nodes[r2].gy + 3.);
+    pointerDown(&mut ui, BTN_LEFT);
+    pointerUp(&mut ui, BTN_LEFT);
+    expect(isChecked(&ui, r2) and !isChecked(&ui, r1), "radio: Green on, Red off");
+    pointerDown(&mut ui, BTN_LEFT);
+    pointerUp(&mut ui, BTN_LEFT);
+    expect(isChecked(&ui, r2), "radio: clicking the checked one keeps it");
+  }
+
+  // ---- text field ----
+  {
+    mut ui = Ui.make(800., 600.);
+    imm f = textField(&mut ui, ui.root, "");
+    layout(&mut ui, &mut m);
+    focusSet(&mut ui, f);
+    typeText(&mut ui, "Hello");
+    expectStr(fieldText(&ui, f), "Hello", "field: typed");
+    expectInt(i64.from(ui.fields[ui.nodes[f].data].caret), 5i64, "field: caret at the end");
+    keyDown(&mut ui, KEY_LEFT, 0u32);
+    expectInt(i64.from(ui.fields[ui.nodes[f].data].caret), 4i64, "field: Left");
+    keyDown(&mut ui, KEY_LEFT, MOD_CTRL);
+    expectInt(i64.from(ui.fields[ui.nodes[f].data].caret), 0i64, "field: Ctrl+Left to the word start");
+    keyDown(&mut ui, KEY_END, MOD_SHIFT);
+    imm sel = fieldSelection(&ui, f);
+    near(sel.x, 0., "field: selection starts at 0");
+    near(sel.y, 5., "field: and ends at 5");
+    keyDown(&mut ui, KEY_BACKSPACE, 0u32);
+    expectStr(fieldText(&ui, f), "", "field: Backspace removes the selection");
+    typeText(&mut ui, "ab cd");
+    keyDown(&mut ui, KEY_LEFT, MOD_CTRL);
+    expectInt(i64.from(ui.fields[ui.nodes[f].data].caret), 3i64, "field: Ctrl+Left to the start of cd");
+    keyDown(&mut ui, KEY_LEFT, MOD_CTRL);
+    expectInt(i64.from(ui.fields[ui.nodes[f].data].caret), 0i64, "field: and of ab");
+    keyDown(&mut ui, KEY_DELETE, 0u32);
+    expectStr(fieldText(&ui, f), "b cd", "field: Delete");
+    keyDown(&mut ui, KEY_RIGHT, MOD_CTRL);
+    expectInt(i64.from(ui.fields[ui.nodes[f].data].caret), 2i64, "field: Ctrl+Right past the word and the space");
+    layout(&mut ui, &mut m);
+    near(fieldAdvance(&ui, f, 3usize), 24., "field: prefix width of 'b c'");
+    // click to place the caret
+    imm x0 = ui.nodes[f].gx + 6.;
+    at(&mut ui, x0 + 17., ui.nodes[f].gy + 8.);
+    pointerDown(&mut ui, BTN_LEFT);
+    pointerUp(&mut ui, BTN_LEFT);
+    expectInt(i64.from(ui.fields[ui.nodes[f].data].caret), 2i64, "field: a click 17 px in is nearest index 2");
+    at(&mut ui, x0 + 21., ui.nodes[f].gy + 8.);
+    update(&mut ui, 1.);
+    pointerDown(&mut ui, BTN_LEFT);
+    pointerUp(&mut ui, BTN_LEFT);
+    expectInt(i64.from(ui.fields[ui.nodes[f].data].caret), 3i64, "field: 21 px in is index 3");
+    // drag a selection
+    at(&mut ui, x0 + 8., ui.nodes[f].gy + 8.);
+    update(&mut ui, 1.);
+    pointerDown(&mut ui, BTN_LEFT);
+    at(&mut ui, x0 + 24., ui.nodes[f].gy + 8.);
+    pointerUp(&mut ui, BTN_LEFT);
+    imm sel2 = fieldSelection(&ui, f);
+    near(sel2.x, 1., "field: dragged selection from 1");
+    near(sel2.y, 3., "field: to 3");
+    // clipboard
+    keyDown(&mut ui, KEY_A, MOD_CTRL);
+    keyDown(&mut ui, KEY_C, MOD_CTRL);
+    expectStr(ui.input.clipboard.view(), "b cd", "field: Ctrl+C copied the text");
+    keyDown(&mut ui, KEY_END, 0u32);
+    keyDown(&mut ui, KEY_V, MOD_CTRL);
+    expectStr(fieldText(&ui, f), "b cdb cd", "field: Ctrl+V pasted at the end");
+    keyDown(&mut ui, KEY_X, MOD_CTRL);
+    expectStr(fieldText(&ui, f), "b cdb cd", "field: Ctrl+X with nothing selected keeps the text");
+    // UTF-8
+    fieldSetText(&mut ui, f, "");
+    textInput(&mut ui, 233u32);
+    expectInt(i64.from(fieldText(&ui, f).len()), 2i64, "field: e-acute is two bytes");
+    keyDown(&mut ui, KEY_LEFT, 0u32);
+    expectInt(i64.from(ui.fields[ui.nodes[f].data].caret), 0i64, "field: Left steps over a whole character");
+    keyDown(&mut ui, KEY_END, 0u32);
+    keyDown(&mut ui, KEY_BACKSPACE, 0u32);
+    expectInt(i64.from(fieldText(&ui, f).len()), 0i64, "field: Backspace removes a whole character");
+    // maxLen
+    ui.fields[ui.nodes[f].data].maxLen = 4usize;
+    typeText(&mut ui, "abcdef");
+    expectStr(fieldText(&ui, f), "abcd", "field: held to maxLen");
+    ui.takeEvents();
+    keyDown(&mut ui, KEY_ENTER, 0u32);
+    expectInt(countOf(&mut ui, UE_SUBMIT), 1i64, "field: Enter submits");
+    // read only
+    ui.fields[ui.nodes[f].data].readOnly = true;
+    typeText(&mut ui, "z");
+    expectStr(fieldText(&ui, f), "abcd", "field: read only takes no typing");
+  }
+
+  // ---- list ----
+  {
+    mut ui = Ui.make(800., 600.);
+    imm l = listBox(&mut ui, ui.root);
+    ui.setSize(l, 120., 100.);
+    listAdd(&mut ui, l, "a");
+    listAdd(&mut ui, l, "b");
+    listAdd(&mut ui, l, "c");
+    layout(&mut ui, &mut m);
+    imm row1 = listRow(&ui, l, 1usize);
+    at(&mut ui, ui.nodes[row1].gx + 4., ui.nodes[row1].gy + 4.);
+    pointerDown(&mut ui, BTN_LEFT);
+    pointerUp(&mut ui, BTN_LEFT);
+    expectInt(i64.from(listSelected(&ui, l)), 1i64, "list: a click selects row 1");
+    expect(ui.hasState(row1, ST_SELECTED), "list: the row is selected");
+    expectInt(i64.from(lastOf(&mut ui, UE_SELECT).i), 1i64, "list: reported");
+    keyDown(&mut ui, KEY_DOWN, 0u32);
+    expectInt(i64.from(listSelected(&ui, l)), 2i64, "list: Down");
+    keyDown(&mut ui, KEY_DOWN, 0u32);
+    expectInt(i64.from(listSelected(&ui, l)), 2i64, "list: Down at the end stays");
+    keyDown(&mut ui, KEY_UP, 0u32);
+    expectInt(i64.from(listSelected(&ui, l)), 1i64, "list: Up");
+    ui.takeEvents();
+    keyDown(&mut ui, KEY_ENTER, 0u32);
+    expectInt(i64.from(lastOf(&mut ui, UE_ACTIVATE).i), 1i64, "list: Enter activates");
+    update(&mut ui, 1.);
+    pointerDown(&mut ui, BTN_LEFT);
+    pointerUp(&mut ui, BTN_LEFT);
+    update(&mut ui, 0.1);
+    pointerDown(&mut ui, BTN_LEFT);
+    pointerUp(&mut ui, BTN_LEFT);
+    expectInt(countOf(&mut ui, UE_ACTIVATE), 1i64, "list: a double-click activates");
+    listClear(&mut ui, l);
+    expectInt(i64.from(listCount(&ui, l)), 0i64, "list: cleared");
+  }
+
+  // ---- window ----
+  {
+    mut ui = Ui.make(800., 600.);
+    imm w = window(&mut ui, "Test", 100., 100., 300., 200.);
+    layout(&mut ui, &mut m);
+    near(ui.nodes[ui.windows[ui.nodes[w].data].titlebar].gy, 104., "window: the title bar starts after the padding");
+    near(ui.nodes[ui.windows[ui.nodes[w].data].titlebar].h, 30., "window: the title bar is 30 tall (the 18 close box and 12 of padding)");
+    near(ui.nodes[ui.windows[ui.nodes[w].data].closeBtn].gx, 372., "window: close box x (400 - 4 - 6 - 18)");
+    at(&mut ui, 200., 112.);
+    pointerDown(&mut ui, BTN_LEFT);
+    at(&mut ui, 260., 152.);
+    pointerUp(&mut ui, BTN_LEFT);
+    layout(&mut ui, &mut m);
+    near(ui.nodes[w].gx, 160., "window: dragged by the bar, x");
+    near(ui.nodes[w].gy, 140., "window: dragged by the bar, y");
+    // put it back at 100,100 and size it
+    ui.setOffsets(w, 100., 100., 0., 0.);
+    layout(&mut ui, &mut m);
+    at(&mut ui, 399., 250.);
+    pointerDown(&mut ui, BTN_LEFT);
+    at(&mut ui, 449., 280.);
+    pointerUp(&mut ui, BTN_LEFT);
+    layout(&mut ui, &mut m);
+    near(ui.nodes[w].w, 350., "window: right edge widens by 50");
+    near(ui.nodes[w].h, 200., "window: and does not change the height");
+    at(&mut ui, 449., 299.);
+    pointerDown(&mut ui, BTN_LEFT);
+    at(&mut ui, 499., 329.);
+    pointerUp(&mut ui, BTN_LEFT);
+    layout(&mut ui, &mut m);
+    near(ui.nodes[w].w, 400., "window: the corner widens again");
+    near(ui.nodes[w].h, 230., "window: and deepens by 30");
+    ui.setSize(w, 300., 200.);
+    layout(&mut ui, &mut m);
+    at(&mut ui, 101., 200.);
+    pointerDown(&mut ui, BTN_LEFT);
+    at(&mut ui, 71., 200.);
+    pointerUp(&mut ui, BTN_LEFT);
+    layout(&mut ui, &mut m);
+    near(ui.nodes[w].w, 330., "window: left edge 30 left widens by 30");
+    near(ui.nodes[w].gx, 70., "window: and moves the left edge");
+    // narrowed past the minimum
+    at(&mut ui, 399., 200.);
+    pointerDown(&mut ui, BTN_LEFT);
+    at(&mut ui, 0., 200.);
+    pointerUp(&mut ui, BTN_LEFT);
+    layout(&mut ui, &mut m);
+    near(ui.nodes[w].w, 140., "window: stops at the minimum width");
+    // close
+    ui.takeEvents();
+    imm cb = ui.windows[ui.nodes[w].data].closeBtn;
+    at(&mut ui, ui.nodes[cb].gx + 5., ui.nodes[cb].gy + 5.);
+    pointerDown(&mut ui, BTN_LEFT);
+    pointerUp(&mut ui, BTN_LEFT);
+    expectInt(countOf(&mut ui, UE_CLOSE), 1i64, "window: the close box reports");
+    expect(!ui.nodes[w].visible, "window: and hides it");
+    // raise
+    imm w1 = window(&mut ui, "One", 20., 20., 200., 150.);
+    imm w2 = window(&mut ui, "Two", 120., 80., 200., 150.);
+    layout(&mut ui, &mut m);
+    expectInt(i64.from(ui.nodes[ui.root].last), i64.from(w2), "windows: the newest is on top");
+    at(&mut ui, 40., 40.);
+    pointerDown(&mut ui, BTN_LEFT);
+    pointerUp(&mut ui, BTN_LEFT);
+    expectInt(i64.from(ui.nodes[ui.root].last), i64.from(w1), "windows: pressing the lower one raises it");
+    expect(ui.hasState(w1, ST_FOCUSED) and !ui.hasState(w2, ST_FOCUSED), "windows: and activates it");
+  }
+
+  // ---- tabs ----
+  {
+    mut ui = Ui.make(800., 600.);
+    imm t = tabs(&mut ui, ui.root);
+    ui.setSize(t, 300., 200.);
+    imm p0 = addTab(&mut ui, t, "One");
+    imm p1 = addTab(&mut ui, t, "Two");
+    imm p2 = addTab(&mut ui, t, "Three");
+    layout(&mut ui, &mut m);
+    expect(ui.nodes[p0].visible and !ui.nodes[p1].visible and !ui.nodes[p2].visible, "tabs: only the first page shows");
+    expectInt(i64.from(selectedTab(&ui, t)), 0i64, "tabs: the first is selected");
+    imm b1 = ui.childAt(ui.tabsets[ui.nodes[t].data].bar, 1usize);
+    at(&mut ui, ui.nodes[b1].gx + 5., ui.nodes[b1].gy + 5.);
+    pointerDown(&mut ui, BTN_LEFT);
+    pointerUp(&mut ui, BTN_LEFT);
+    expect(!ui.nodes[p0].visible and ui.nodes[p1].visible, "tabs: clicking the second shows its page");
+    expectInt(i64.from(lastOf(&mut ui, UE_TAB).i), 1i64, "tabs: reported 1");
+    expect(ui.hasState(b1, ST_SELECTED), "tabs: the button is selected");
+    keyDown(&mut ui, KEY_RIGHT, 0u32);
+    expectInt(i64.from(selectedTab(&ui, t)), 2i64, "tabs: Right selects the next");
+    keyDown(&mut ui, KEY_RIGHT, 0u32);
+    expectInt(i64.from(selectedTab(&ui, t)), 0i64, "tabs: and wraps");
+  }
+
+  // ---- tooltip ----
+  {
+    mut ui = Ui.make(800., 600.);
+    imm b = button(&mut ui, ui.root, "Save");
+    ui.setTooltip(b, "Save");
+    ui.setAnchors(b, 1., 1., 1., 1.);
+    ui.setPivot(b, 1., 1.);
+    layout(&mut ui, &mut m);
+    at(&mut ui, 790., 590.);
+    update(&mut ui, 0.3);
+    expect(!ui.input.tip.shown, "tooltip: not after 0.3 s");
+    update(&mut ui, 0.3);
+    expect(ui.input.tip.shown, "tooltip: shown after 0.6 s");
+    layout(&mut ui, &mut m);
+    imm tn = ui.input.tip.node;
+    near(ui.nodes[tn].w, 44., "tooltip: width is 'Save' + padding");
+    near(ui.nodes[tn].gx, 756., "tooltip: pushed left to stay inside");
+    near(ui.nodes[tn].gy, 554., "tooltip: put above the pointer when there is no room below");
+    at(&mut ui, 400., 300.);
+    expect(!ui.input.tip.shown, "tooltip: hidden when the pointer leaves");
+    at(&mut ui, 790., 590.);
+    update(&mut ui, 0.6);
+    expect(ui.input.tip.shown, "tooltip: shown again");
+    pointerDown(&mut ui, BTN_LEFT);
+    expect(!ui.input.tip.shown, "tooltip: a press hides it");
+    update(&mut ui, 2.);
+    expect(!ui.input.tip.shown, "tooltip: and it stays hidden");
+    pointerUp(&mut ui, BTN_LEFT);
+  }
+
+  // ---- scroll ----
+  {
+    mut ui = Ui.make(800., 600.);
+    imm l = listBox(&mut ui, ui.root);
+    ui.setSize(l, 100., 100.);
+    ui.setPad(l, 0.);
+    mut i = 0;
+    while i < 10 {
+      listAdd(&mut ui, l, "row");
+      i = i + 1;
+    }
+    layout(&mut ui, &mut m);
+    // each row is 16 + 2 x 4 = 24; ten rows: 240; the list pads 2 each side: viewport 100
+    near(ui.nodes[l].contentH, 240., "scroll: content height");
+    at(&mut ui, 50., 50.);
+    wheel(&mut ui, 0., -1.);
+    layout(&mut ui, &mut m);
+    near(ui.nodes[l].scrollY, 40., "scroll: one wheel step down is 40");
+    wheel(&mut ui, 0., 1.);
+    layout(&mut ui, &mut m);
+    near(ui.nodes[l].scrollY, 0., "scroll: and one up is back");
+    // drag the thumb: track 96 tall, thumb 96 * 100 / 240 = 40; travel 56 for 140 of scroll
+    imm th = scrollbarRects(&ui, l, true);
+    near(th.max.y - th.min.y, 40., "scroll: thumb length");
+    at(&mut ui, (th.min.x + th.max.x) * 0.5, (th.min.y + th.max.y) * 0.5);
+    pointerDown(&mut ui, BTN_LEFT);
+    at(&mut ui, (th.min.x + th.max.x) * 0.5, (th.min.y + th.max.y) * 0.5 + 28.);
+    pointerUp(&mut ui, BTN_LEFT);
+    layout(&mut ui, &mut m);
+    near(ui.nodes[l].scrollY, 70., "scroll: dragging the thumb halfway along its travel scrolls 70");
+    // a scroll offset beyond the end is held
+    ui.setScrollOffset(l, 0., 9999.);
+    layout(&mut ui, &mut m);
+    near(ui.nodes[l].scrollY, 140., "scroll: held to content - viewport");
+  }
+
+  // ---- split ----
+  {
+    mut ui = Ui.make(800., 600.);
+    imm sp = splitView(&mut ui, ui.root, 0.25, true);
+    ui.setSize(sp, 410., 100.);
+    ui.nodes[sp].gap = 10.;
+    imm a = ui.create(sp, K_PLAIN);
+    imm b = ui.create(sp, K_PLAIN);
+    layout(&mut ui, &mut m);
+    near(ui.nodes[a].w, 100., "split: first pane 100");
+    at(&mut ui, 105., 50.);
+    pointerDown(&mut ui, BTN_LEFT);
+    at(&mut ui, 205., 50.);
+    pointerUp(&mut ui, BTN_LEFT);
+    layout(&mut ui, &mut m);
+    near(ui.nodes[sp].splitRatio, 0.5, "split: ratio after dragging the divider centre to 205");
+    near(ui.nodes[a].w, 200., "split: first pane is 200");
+    near(ui.nodes[b].x, 210., "split: second pane starts after the divider");
+  }
+
+  done();
+}

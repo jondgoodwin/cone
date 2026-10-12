@@ -473,13 +473,6 @@ pub enum IoErrorKind {
   TimedOut;
 }
 
-// The kind an IoError is held as. A struct field's default must be a constant
-// and an enum's variant is not one, so the field is a number with these names,
-// and 'kind()' gives the IoErrorKind
-const kindOs = 0u8;
-const kindCancelled = 1u8;
-const kindTimedOut = 2u8;
-
 // Why something could not be done: for an Os error, Windows' error number, on
 // every system (Linux's errno is turned into the Windows number that names the
 // same condition, or, with none, is itself above 0x10000000). A Cancelled or
@@ -487,36 +480,32 @@ const kindTimedOut = 2u8;
 // it is. 'new IoError(code)' is an Os error
 pub struct IoError {
   pub code u32;
-  tag u8 = kindOs;
+  cause IoErrorKind = IoErrorKind.Os;
 
   // An operation ended by a cancel
-  pub fn cancelled() IoError {new IoError(0u32, kindCancelled);}
+  pub fn cancelled() IoError {new IoError(0u32, IoErrorKind.Cancelled);}
 
   // An operation ended by its deadline
-  pub fn timedOut() IoError {new IoError(0u32, kindTimedOut);}
+  pub fn timedOut() IoError {new IoError(0u32, IoErrorKind.TimedOut);}
 
   // How it came to be
-  pub fn kind(self &) IoErrorKind {
-    if tag == kindCancelled {return IoErrorKind.Cancelled;}
-    if tag == kindTimedOut {return IoErrorKind.TimedOut;}
-    IoErrorKind.Os;
-  }
+  pub fn kind(self &) IoErrorKind {cause;}
 
   // Ended by a cancel
-  pub fn isCancelled(self &) bool {tag == kindCancelled;}
+  pub fn isCancelled(self &) bool {cause == IoErrorKind.Cancelled;}
 
   // Ended by its deadline
-  pub fn isTimedOut(self &) bool {tag == kindTimedOut;}
+  pub fn isTimedOut(self &) bool {cause == IoErrorKind.TimedOut;}
 
   // The OS's text for it: Windows' in English where the system has it, the
   // C library's (strerror) on Linux; a Cancelled or TimedOut error says so
   pub fn message(self &) String {
-    if tag == kindCancelled {
+    if cause == IoErrorKind.Cancelled {
       mut s = String.empty();
       s.append("cancelled");
       return s;
     }
-    if tag == kindTimedOut {
+    if cause == IoErrorKind.TimedOut {
       mut s = String.empty();
       s.append("deadline passed");
       return s;
