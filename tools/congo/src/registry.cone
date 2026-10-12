@@ -131,60 +131,35 @@ fn manifestError(file &Path, m String) Result[Package, String] {
 // "" or what is wrong.
 fn readLink(file &Path, table &toml.Table, pkg &mut Package) String {
   imm place = native(file);
-  // Each key also in a per-system form ('windows-libraries'); only the host's
-  // is read into the package, every one is checked
-  imm kinds = new Array[&str, 3] <- "libraries", "paths", "runtime";
-  imm systems = new Array[&str, 3] <- "windows", "linux", "macos";
   imm keys = table.keys();
   mut i = 0usize;
   while i < keys.len() {
     imm key = keys[i].view();
-    mut known = false;
-    mut k = 0usize;
-    while k < 3usize {
-      if key == kinds[k] { known = true; }
-      mut s = 0usize;
-      while s < 3usize {
-        imm limited = cat(systems[s], "-", kinds[k]);
-        if key == limited.view() { known = true; }
-        s = s + 1usize;
-      }
-      k = k + 1usize;
-    }
-    if not known {
-      return cat(place.view(), ": '", key, "' is not a [link] key; the keys are libraries, paths and runtime, each also as windows-, linux- or macos- (windows-libraries)");
+    if key != "libraries" and key != "paths" and key != "runtime" {
+      return cat(place.view(), ": '", key, "' is not a [link] key; the keys are libraries, paths and runtime");
     }
     i = i + 1usize;
   }
-  imm host = if isWindows() { "windows"; } elif isMacOS() { "macos"; } else { "linux"; };
   mut libraries = List[String].empty();
   mut paths = List[String].empty();
   mut runtime = List[String].empty();
-  mut k = 0usize;
-  while k < 3usize {
-    mut s = 0usize;
-    while s < 4usize {
-      // The all-systems key, then each system's: the host's is read, the rest checked
-      imm key = if s == 0usize { String.from(kinds[k]); } else { cat(systems[s - 1usize], "-", kinds[k]); };
-      if table.has(key.view()) {
-        mut found = List[String].empty();
-        match table.getStrings(key.view()) {
-          case mut l Some { found <=> l; }
-          case is None { return cat(place.view(), ": [link] ", key.view(), " must be a list of strings"); }
-        }
-        if s == 0usize or systems[s - 1usize] == host {
-          mut j = 0usize;
-          while j < found.len() {
-            if k == 0usize { libraries.push(found[j].copy()); }
-            elif k == 1usize { paths.push(found[j].copy()); }
-            else { runtime.push(found[j].copy()); }
-            j = j + 1usize;
-          }
-        }
-      }
-      s = s + 1usize;
+  if table.has("libraries") {
+    match table.getStrings("libraries") {
+      case mut l Some { libraries <=> l; }
+      case is None { return cat(place.view(), ": [link] libraries must be a list of strings"); }
     }
-    k = k + 1usize;
+  }
+  if table.has("paths") {
+    match table.getStrings("paths") {
+      case mut l Some { paths <=> l; }
+      case is None { return cat(place.view(), ": [link] paths must be a list of strings"); }
+    }
+  }
+  if table.has("runtime") {
+    match table.getStrings("runtime") {
+      case mut l Some { runtime <=> l; }
+      case is None { return cat(place.view(), ": [link] runtime must be a list of strings"); }
+    }
   }
   i = 0usize;
   while i < libraries.len() {

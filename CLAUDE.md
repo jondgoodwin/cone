@@ -1006,9 +1006,9 @@ other object; `--nopic` opts out.
 Congo runs on Linux (`python3 tools/congo/congo.py test` in a package's folder,
 with `conec` built at `build/x64-release/conec`), and `sync`, `thread`,
 `actors`, `time`, `iobuf`, `iocore` and `aio` pass their tests there.
-(`synchronization.lib`, the Windows SDK's library, is on Congo's Windows link
-line itself, so no package's `[link]` names it; a `[link]` key limited to one
-system is `windows-libraries`, `linux-paths` and so on.) The packages built on
+(`synchronization.lib`, `ws2_32.lib` and `ntdll.lib`, the Windows SDK's
+libraries, are on Congo's Windows link line itself, so no package's `[link]`
+names them.) The packages built on
 Windows alone (`fs`, `posix`, `process`, HTTP and what imports them, `sdl` and
 what draws) do not build or run there.
 
