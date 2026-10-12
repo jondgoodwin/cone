@@ -1,0 +1,121 @@
+// '+ ShapeKeeping' on a virtual reference (the refusals are
+// collection_flow_shapekeeping). A callable or trait the compiler cannot read behind
+// a '&<' ends a borrow of an element of a collection reached through a shared path:
+// the call could reshape the list the borrow points into (error 1339). A virtual
+// reference marked '+ ShapeKeeping' promises that a call through it reshapes nothing
+// it reaches through a shared mutable path, so the borrow survives the call. The
+// value behind it is held to the promise where it becomes the reference. What
+// passes, each with the element read after the call (the call wrote it):
+// - a closure that writes a field of the world and an element of its list;
+// - a closure that changes only a number it borrows;
+// - a struct implementing the trait whose method writes fields and elements, one
+//   that pushes only to a list of its own made in the call, and one that only reads;
+// - a plain function named with '&', which does the same;
+// - a trait with two methods, both held to it.
+
+mod collection_shapekeeping_success;
+
+import stdio use *;
+import collections use *;
+
+struct Entity { pub hp i64; }
+struct World { pub score i64; pub entities List[Entity]; }
+
+trait Scorer { pub fn bump(self &mut, w &mut World); }
+trait Pair {
+  pub fn first(self &mut, w &mut World);
+  pub fn second(self &mut, w &mut World);
+}
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+// The element borrowed before the call is read after it
+fn throughFn(w &mut World, f &<fn(x &mut World) + ShapeKeeping) i64 {
+  imm e = w.entities[0usize];
+  f(w);
+  e.hp;
+}
+
+// A closure that changes what it borrows is a '&<mut'
+fn throughMutFn(w &mut World, f &<mut fn(x &mut World) + ShapeKeeping) i64 {
+  imm e = w.entities[0usize];
+  f(w);
+  e.hp;
+}
+
+fn throughTrait(w &mut World, s &<mut Scorer + ShapeKeeping) i64 {
+  imm e = w.entities[0usize];
+  s.bump(w);
+  e.hp;
+}
+
+fn throughPair(w &mut World, p &<mut Pair + ShapeKeeping) i64 {
+  imm e = w.entities[0usize];
+  p.first(w);
+  p.second(w);
+  e.hp;
+}
+
+struct FieldScorer {
+  pub n i64;
+  pub fn bump(self &mut, w &mut World) {
+    w.score = w.score + n;
+    w.entities[0usize].hp = 7;
+  }
+}
+
+// Its own list, made in the call: nobody else holds a borrow into it
+struct LocalScorer {
+  pub n i64;
+  pub fn bump(self &mut, w &mut World) {
+    mut tmp = new List[i64](4);
+    imm total = w.score + n;
+    tmp.push(total);
+    tmp.push(n);
+    w.entities[0usize].hp = total + 10;
+  }
+}
+
+struct ReadScorer {
+  pub n i64;
+  pub fn bump(self &mut, w &mut World) { n = w.score; }
+}
+
+struct Halves {
+  pub fn first(self &mut, w &mut World) { w.entities[0usize].hp = 20; }
+  pub fn second(self &mut, w &mut World) { w.score = w.score + 1; }
+}
+
+fn setHp(x &mut World) { x.entities[0usize].hp = 31; }
+
+fn world() World {
+  mut es = new List[Entity](4);
+  es.push(new Entity(5));
+  new World(1, es);
+}
+
+fn main() {
+  mut w = world();
+  mut count = 0;
+  show("closure-fields", throughFn(&mut w, fn (x &mut World) { x.score = x.score + 1; x.entities[0usize].hp = 6; }));
+  show("score-after", w.score);
+  show("closure-number", throughMutFn(&mut w, fn (x &mut World) { count = count + 1; }));
+  show("count", count);
+  mut f = new FieldScorer(10);
+  show("field-scorer", throughTrait(&mut w, &mut f));
+  show("score-field", w.score);
+  mut l = new LocalScorer(3);
+  show("local-scorer", throughTrait(&mut w, &mut l));
+  mut r = new ReadScorer(0);
+  show("read-scorer", throughTrait(&mut w, &mut r));
+  show("read-n", r.n);
+  show("plain-function", throughFn(&mut w, &setHp));
+  mut h = new Halves();
+  show("pair", throughPair(&mut w, &mut h));
+  show("score-pair", w.score);
+}

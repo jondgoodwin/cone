@@ -680,6 +680,10 @@ enum ErrorCode {
     // A '&uni' field seen through a shared path (ir/exp/fncall.c)
     ErrorUniShared = 1490,      // A field, array element or tuple element that is a '&uni' reference, read, lent or written through a '&', a '&mut', a virtual reference or an owner that is not 'uni' on the way to it: it could be another name for what holds it, and the 'uni' reference would be reached by both
 
+    // The marker 'ShapeKeeping' on a virtual reference (ir/shapeinfer.c, ir/types/fnsig.c, ir/types/struct.c)
+    ErrorNotShapeKeeping = 1500,    // A value made a virtual reference marked '+ ShapeKeeping' whose method reshapes a shape-changing value (a list, a string) it reaches through a shared mutable path: a '&mut' parameter, or a variable it borrows or holds by reference
+    ErrorShapeKeepingDeclared = 1501, // A type declaring ShapeKeeping: the compiler finds it from the methods a virtual reference marked '+ ShapeKeeping' dispatches to, where the value becomes one
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

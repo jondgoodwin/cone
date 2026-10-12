@@ -2013,6 +2013,12 @@ static char *loanShapeReason(ShapeNote *note, char *cont, int sum, char *buf, si
             snprintf(buf, size, "'%s' changes the shape of a %s through a global", name, cont);
         break;
     }
+    // A call through a virtual reference: the reference can promise what the body hides
+    if ((note->why == ReshapeUnseen || note->why == ReshapeReceiverUnseen) && note->call && note->call->tag == FnCallTag
+            && (note->call->flags & FlagVDisp)) {
+        size_t used = strlen(buf);
+        snprintf(buf + used, size - used, " (a virtual reference marked '+ ShapeKeeping' keeps the borrow across the call)");
+    }
     return buf;
 }
 
@@ -2034,7 +2040,7 @@ static void loanShapeReport(Pending *pend, INode *usenode) {
     Loan *loan = &loans[pend->loan];
     ShapeNote *note = &shapenotes[pend->other];
     char cont[100];
-    char reason[300];
+    char reason[480];
     char where[160];
     char used[160];
     loanShapeContName(pend->loan, cont, sizeof(cont));
@@ -2091,7 +2097,7 @@ void loanShapeNow(INode *call, uint32_t loan, int why, Name *callee) {
         return;
     ShapeNote note = { call, callee, (uint8_t)why };
     char cont[100];
-    char reason[300];
+    char reason[480];
     char where[160];
     loanShapeContName(loan, cont, sizeof(cont));
     loanWhere(&loans[loan], where, sizeof(where));

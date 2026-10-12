@@ -15,7 +15,9 @@
 
 	<p style="margin-left: 40px;"><i>Note: The check for changing the shape of a collection does not tell two
 			lists of one type apart, and does not follow a global changed by a function whose body the
-			compiler cannot read when that function is handed nothing that reaches the collection.</i></p>
+			compiler cannot read when that function is handed nothing that reaches the collection.
+			A value of another package cannot be put behind a <span class="pre">+ ShapeKeeping</span> reference,
+			for its include file carries no bodies to read.</i></p>
 	
 	<p>References work differently than other types.
 	The basic idea is simple: references carry an address that points to some value in memory.
@@ -693,7 +695,8 @@ fn cellGrow(a &amp;mut Cell, b &amp;mut Cell) i64 {
 		numbers, reshapes nothing.</p>
 	<p>A function whose body the compiler cannot read (an <span class="pre">extern</span> function, a call
 		through a function pointer or a trait, a function of another package that is no generic and no inline)
-		is assumed to reshape whatever it is handed that reaches the collection. A read-only reference
+		is assumed to reshape whatever it is handed that reaches the collection, unless the call is through a
+		virtual reference marked <a href="#shapekeeping"><span class="pre">+ ShapeKeeping</span></a>. A read-only reference
 		(<span class="pre">&amp;</span> or <span class="pre">&amp;imm</span>) cannot write what it reaches, and a
 		value the function owns whole, a local, cannot be the collection reached through a reference, so
 		neither makes a call one that could.</p>
@@ -909,6 +912,57 @@ fn twice(s &amp;uni String, x &amp;String) {
   appendUni(s, x);              // Ok: the first call borrowed from s, and has given it back
 }
 </pre>
+
+	<h3 id="shapekeeping">Calls through a virtual reference: ShapeKeeping</h3>
+	<p>A call through a virtual reference, <span class="pre">&amp;&lt;fn(x &amp;mut World)</span> or
+		<span class="pre">&amp;&lt;mut Scorer</span>, runs code the compiler cannot read where the call is. So it is
+		assumed to reshape whatever it is handed that reaches the collection, and the borrow ends at the call
+		(error 1339):</p>
+<pre>
+fn visit(w &amp;mut World, f &amp;&lt;fn(x &amp;mut World)) i64 {
+  imm e = w.entities[0usize];
+  f(w);                         // Error: f's body is not visible, so it may push
+  e.hp;
+}
+</pre>
+	<p>The reference can promise otherwise. <span class="pre">ShapeKeeping</span>, the twin of
+		<span class="pre">ShapeChanging</span>, is a marker the compiler finds, like <span class="pre">Shareable</span>, and is
+		written after a <span class="pre">+</span> in the type of the reference or the owner
+		(<a href="refcloref.html#marks">Closure References</a>). A call through such a reference keeps the borrows
+		of the caller:</p>
+<pre>
+fn visit(w &amp;mut World, f &amp;&lt;fn(x &amp;mut World) + ShapeKeeping) i64 {
+  imm e = w.entities[0usize];
+  f(w);                         // Ok: whatever f is, it reshapes nothing it was handed
+  e.hp;
+}
+
+fn tune(w &amp;mut World, s &amp;&lt;mut Scorer + ShapeKeeping) i64 { ... s.bump(w); ... }
+</pre>
+	<p>The promise is held by the closure or the struct put behind the reference, where it becomes one, as a
+		marker like <span class="pre">+ Shareable</span> is. It holds when nothing in the body of the closure, or of the
+		methods the trait dispatches to, or in what they call, reshapes a collection that it reaches through a path
+		others share: through a parameter that is a <span class="pre">&amp;mut</span> (or holds one), or through a
+		variable a closure borrows, or a reference a struct holds. The question is the one a call is asked above, put to the
+		body. Writing a field or an element, the method's own new collections, a parameter held by value or
+		<span class="pre">&amp;uni</span>, and reading through <span class="pre">&amp;</span> or
+		<span class="pre">&amp;imm</span> are all free:</p>
+<pre>
+visit(w, fn (x &amp;mut World) { x.score = x.score + 1; x.entities[0usize].hp = 6; });   // Ok
+
+visit(w, fn (x &amp;mut World) { x.entities.push(new Entity(1)); });
+    // Error 1500: this closure calls push on a List that it reaches through a &amp;mut parameter
+
+fn count(w &amp;mut World, log &amp;mut List[i64]) i64 {
+  visit(w, fn (x &amp;mut World) { log.push(1); });   // Error 1500: the log it borrows is as shared as w
+}
+</pre>
+	<p>The check is as coarse as the one for a call, for the same reasons. A closure that pushes to a list of
+		<span class="pre">log</span>'s type is refused even if the caller borrowed from some other list of that
+		type, and so is a method that pushes to a list the struct owns when a parameter reaches a list of that type.
+		A function named with <span class="pre">&amp;</span>, <span class="pre">&amp;grow</span>, is held by its body;
+		a function reference held in a variable has none the compiler can read, and is refused. A type does not declare
+		<span class="pre">ShapeKeeping</span>.</p>
 
 	<h3 id="notfollowed">What the check does not follow</h3>
 	<p>The check does not tell two values of one type apart. A function handed a

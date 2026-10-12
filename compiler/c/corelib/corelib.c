@@ -106,6 +106,7 @@ StructNode *integerTrait;
 StructNode *pointerTrait;
 StructNode *sendableTrait;
 StructNode *shareableTrait;
+StructNode *shapeKeepingTrait;
 StructNode *sizedTrait;
 StructNode *dynSizedTrait;
 StructNode *immutableTrait;
@@ -181,7 +182,7 @@ int corelibIsBuiltinTrait(INode *node) {
         || node == (INode*)carriesRegionTrait || node == (INode*)gcTraceElementsTrait
         || node == (INode*)atomicValueTrait || node == (INode*)integerTrait
         || node == (INode*)pointerTrait || node == (INode*)sendableTrait
-        || node == (INode*)shareableTrait
+        || node == (INode*)shareableTrait || node == (INode*)shapeKeepingTrait
         || node == (INode*)sizedTrait || node == (INode*)dynSizedTrait
         || node == (INode*)immutableTrait
         || node == (INode*)lockPermTrait;
@@ -398,6 +399,14 @@ void stdlibInit(int ptrsize) {
     // Shareable]', '&<fn() + Shareable', and it is what a 'parallel each'
     // body is held to for what it names from outside.
     shareableTrait = newBuiltinTrait(shareableTraitName);
+    // 'ShapeKeeping' [Jon 11 Oct; name ruled]: ShapeChanging's twin. A call
+    // through a virtual reference marked '+ ShapeKeeping' is one the caller's
+    // borrows survive: the closure or implementer behind it reshapes nothing it
+    // reaches through a shared mutable path, its parameters and its captures
+    // alike (shapeKeepsVia, checked where the value becomes the reference).
+    // Inferred, never declared (ErrorShapeKeepingDeclared), and written only
+    // after a '+' in a virtual reference's type.
+    shapeKeepingTrait = newBuiltinTrait(shapeKeepingTraitName);
     // 'Sized' and 'DynSized' [Jon 6 Oct]: what a type's size is. 'Sized': the
     // size is known at compile time, so a value may be held, and a reference
     // to it is one thin pointer. 'DynSized': the size is known at compile time
