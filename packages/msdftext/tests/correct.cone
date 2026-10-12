@@ -1,0 +1,164 @@
+// Error correction on real glyphs. Some hard glyphs of an installed font (sharp
+// apexes, thin joins, many contours) are made into fields at 24 texels to the
+// em with a range of 6 texels; each field is sampled between texels,
+// bilinearly as a GPU does, on a grid of fractional positions, and each
+// sample's median is compared with the side of the outline the position truly
+// is on (found by the glyph flattened to short segments, an independent
+// method). A sample is wrong when the sides differ and the position is more
+// than 'near' texels from the outline (closer, it is the outline's own
+// position between texels that is uncertain: a sharp corner is rounded within
+// its cell). Checked: no sample is wrong beyond 1.5 texels, corrected or not,
+// and correction adds none beyond 1 texel. A font that is not installed is
+// skipped. (The same on every printable ASCII glyph of Arial and of Cascadia
+// Mono was measured to hold, with texels replaced in none of them: see the
+// report; it takes over a minute in a debug build, so only these are run.)
+
+mod correct;
+
+import testing use *;
+import fs;
+import path use Path;
+import libc;
+import collections use *;
+import msdftext use *;
+
+fn flatten(shape &Shape, out &mut List[f64]) {
+  mut i = 0usize;
+  while i < shape.edges.len() {
+    imm e = *shape.edges[i];
+    imm steps = if e.kind == EDGE_LINE { 1u32; } else { 16u32; };
+    mut prev = e.point(0.0d);
+    mut s = 1u32;
+    while s <= steps {
+      imm p = e.point(f64.from(s) / f64.from(steps));
+      out.push(prev.x);
+      out.push(prev.y);
+      out.push(p.x);
+      out.push(p.y);
+      prev = p;
+      s = s + 1u32;
+    }
+    i = i + 1usize;
+  }
+}
+
+fn trueDistance(segs &List[f64], p Pt) f64 {
+  mut best = 1.0e30d;
+  mut winding = 0i32;
+  mut i = 0usize;
+  while i < segs.len() {
+    imm a = new Pt(*segs[i], *segs[i + 1usize]);
+    imm b = new Pt(*segs[i + 2usize], *segs[i + 3usize]);
+    imm ab = b - a;
+    imm ap = p - a;
+    mut t = ap.dot(ab) / ab.dot(ab);
+    if t < 0.0d { t = 0.0d; }
+    if t > 1.0d { t = 1.0d; }
+    imm d = (p - (a + ab * t)).length();
+    if d < best { best = d; }
+    if a.y <= p.y {
+      if b.y > p.y and ab.cross(ap) > 0.0d { winding = winding + 1i32; }
+    } elif b.y <= p.y and ab.cross(ap) < 0.0d {
+      winding = winding - 1i32;
+    }
+    i = i + 4usize;
+  }
+  if winding != 0i32 { return best; }
+  -best;
+}
+
+// Wrong-side samples of the glyph's field beyond 1 and 1.5 texels from the outline: uncorrected
+// (counts 0, 1) and corrected (2, 3)
+fn wrongSamples(font &Font, glyph u32, counts &mut Array[u32, 4]) {
+  imm o = font.outline(glyph);
+  mut shape = Shape.fromOutline(&o);
+  if shape.edges.len() == 0usize { return; }
+  colorEdges(&mut shape, 3.0d, 0u64);
+  mut segs = List[f64].empty();
+  flatten(&shape, &mut segs);
+  mut lo = new Pt(0.0d, 0.0d);
+  mut hi = new Pt(0.0d, 0.0d);
+  shape.bounds(&mut lo, &mut hi);
+  imm scale = 24.0d / f64.from(font.unitsPerEm);
+  imm range = 6.0d / scale;
+  imm margin = 4.0d;
+  imm w = u32.from((hi.x - lo.x) * scale + 2.0d * margin) + 1u32;
+  imm h = u32.from((hi.y - lo.y) * scale + 2.0d * margin) + 1u32;
+  imm frame = new Frame(w, h, scale, margin / scale - lo.x, margin / scale - lo.y, range);
+  imm raw = generateMsdf(&shape, &frame);
+  mut fixed = generateMsdf(&shape, &frame);
+  correctErrors(&mut fixed, &shape, &frame);
+  mut y = 0u32;
+  while y + 1u32 < h {
+    mut x = 0u32;
+    while x + 1u32 < w {
+      mut fy = 0u32;
+      while fy < 3u32 {
+        mut fx = 0u32;
+        while fx < 3u32 {
+          imm u = (f64.from(fx) + 0.5d) / 3.0d;
+          imm v = (f64.from(fy) + 0.5d) / 3.0d;
+          imm want = trueDistance(&segs, frame.pointOf(f64.from(x) + u, f64.from(y) + v));
+          imm texels = libc.fabs(want) * scale;
+          if texels > 1.0d {
+            imm rawWrong = (sampleMedian(&raw, x, y, u, v) > 0.5d) != (want > 0.0d);
+            imm fixedWrong = (sampleMedian(&fixed, x, y, u, v) > 0.5d) != (want > 0.0d);
+            if rawWrong { counts[0] = counts[0] + 1u32; }
+            if fixedWrong { counts[2] = counts[2] + 1u32; }
+            if texels > 1.5d {
+              if rawWrong { counts[1] = counts[1] + 1u32; }
+              if fixedWrong { counts[3] = counts[3] + 1u32; }
+            }
+          }
+          fx = fx + 1u32;
+        }
+        fy = fy + 1u32;
+      }
+      x = x + 1u32;
+    }
+    y = y + 1u32;
+  }
+}
+
+// The median of the bilinearly interpolated channels at (x + u, y + v)
+fn sampleMedian(field &Field, x u32, y u32, u f64, v f64) f64 {
+  mut m = new Array[f64, 3] <- fill 0.0d;
+  mut ch = 0u32;
+  while ch < 3u32 {
+    imm a = f64.from(field.texel(x, y, ch));
+    imm b = f64.from(field.texel(x + 1u32, y, ch));
+    imm c = f64.from(field.texel(x, y + 1u32, ch));
+    imm d = f64.from(field.texel(x + 1u32, y + 1u32, ch));
+    m[usize.from(ch)] = (a * (1.0d - u) + b * u) * (1.0d - v) + (c * (1.0d - u) + d * u) * v;
+    ch = ch + 1u32;
+  }
+  new Rgb(m[0], m[1], m[2]).median();
+}
+
+fn runFont(file &Path, name &Array[u8], glyphs &str) {
+  match fs.readFile(file) {
+    case imm bytes Ok {
+      match Font.load(bytes.view()) {
+        case imm f Ok {
+          mut counts = new Array[u32, 4] <- fill 0u32;
+          mut i = 0usize;
+          while i < glyphs.len {
+            wrongSamples(&f, f.glyphOf(u32.from(glyphs[i])), &mut counts);
+            i = i + 1usize;
+          }
+          expectUInt(u64.from(counts[1]), 0u64, name);
+          expectUInt(u64.from(counts[3]), 0u64, name);
+          expect(counts[2] <= counts[0], "correction adds no wrong sample");
+        }
+        case is Error { require(false, "an installed font loads"); }
+      }
+    }
+    case is Error { }
+  }
+}
+
+fn main() i32 {
+  runFont(&Path.fromLiteral("C:/Windows/Fonts/arial.ttf"), "Arial: no wrong side beyond 1.5 texels", "AVWgRS@&8%");
+  runFont(&Path.fromLiteral("C:/Windows/Fonts/CascadiaMono.ttf"), "Cascadia: no wrong side beyond 1.5 texels", "AVWgRS@&8%");
+  done();
+}

@@ -46,10 +46,11 @@ struct Selector {
   d Array[SignedDist, 3];
   e Array[i32, 3];
   t Array[f64, 3];
+  pseudo bool;                // resolve to the pseudo-distance (else the true distance)
 
-  fn fresh() Selector {
+  fn fresh(pseudo bool) Selector {
     imm far = new SignedDist(-FAR, 1.0d);
-    new Selector([far, far, far], [-1i32, -1i32, -1i32], [0.0d, 0.0d, 0.0d]);
+    new Selector([far, far, far], [-1i32, -1i32, -1i32], [0.0d, 0.0d, 0.0d], pseudo);
   }
 
   fn reset(self &mut) {
@@ -93,7 +94,7 @@ struct Selector {
     mut ch = 0usize;
     while ch < 3usize {
       mut sd = d[ch];
-      if e[ch] >= 0i32 {
+      if pseudo and e[ch] >= 0i32 {
         sd = (*shape.edges[usize.from(u32.from(e[ch]))]).toPseudoDistance(sd, p, t[ch]);
       }
       out[ch] = sd.d;
@@ -108,10 +109,10 @@ fn absf64(v f64) f64 { if v < 0.0d { return -v; } v; }
 // The multi-channel distance at 'p' of a shape: each contour's own, combined
 // by msdfgen's OverlappingContourCombiner. 'sels' holds a selector a
 // contour.
-fn distanceAt(shape &Shape, sels &mut List[Selector], p Pt) Rgb {
-  mut shapeSel = Selector.fresh();
-  mut innerSel = Selector.fresh();
-  mut outerSel = Selector.fresh();
+fn distanceAt(shape &Shape, sels &mut List[Selector], p Pt, pseudo bool) Rgb {
+  mut shapeSel = Selector.fresh(pseudo);
+  mut innerSel = Selector.fresh(pseudo);
+  mut outerSel = Selector.fresh(pseudo);
   imm nc = shape.contours.len();
   mut ci = 0usize;
   while ci < nc {
@@ -222,17 +223,19 @@ pub struct Frame {
 }
 
 // The multi-channel field of a coloured shape
-pub fn generateMsdf(shape &Shape, frame &Frame) Field {
+pub fn generateMsdf(shape &Shape, frame &Frame) Field { generate(shape, frame, true); }
+
+fn generate(shape &Shape, frame &Frame, pseudo bool) Field {
   mut data = List[f32].withCapacity(usize.from(frame.width * frame.height * 3u32));
   mut sels = List[Selector].empty();
   mut ci = 0usize;
-  while ci < shape.contours.len() { sels.push(Selector.fresh()); ci = ci + 1usize; }
+  while ci < shape.contours.len() { sels.push(Selector.fresh(pseudo)); ci = ci + 1usize; }
   mut y = 0u32;
   while y < frame.height {
     mut x = 0u32;
     while x < frame.width {
       imm p = frame.pointOf(f64.from(x), f64.from(y));
-      imm d = distanceAt(shape, &mut sels, p);
+      imm d = distanceAt(shape, &mut sels, p, pseudo);
       data.push(f32.from(d.r / frame.range + 0.5d));
       data.push(f32.from(d.g / frame.range + 0.5d));
       data.push(f32.from(d.b / frame.range + 0.5d));
@@ -258,7 +261,7 @@ pub fn generateSdf(shape &Shape, frame &Frame) Field {
     white.edges.push(e);
     ei = ei + 1usize;
   }
-  generateMsdf(&white, frame);
+  generate(&white, frame, false);
 }
 
 // ---- Error correction ----
@@ -294,12 +297,50 @@ fn clashes(f &Field, ax u32, ay u32, qx u32, qy u32) bool {
   crossings > 1u32;
 }
 
+// The channels (a mask: red 1, green 2, blue 4) in which an edge lies between
+// two neighbouring texels, as msdfgen finds them: a channel whose value
+// crosses 1/2 between them, at a place where that channel is the median of
+// the interpolated three (else it is not the outline that crosses there).
+fn edgeBetween(f &Field, ax u32, ay u32, qx u32, qy u32) u32 {
+  imm ia = usize.from((ay * f.width + ax) * 3u32);
+  imm ib = usize.from((qy * f.width + qx) * 3u32);
+  mut mask = 0u32;
+  mut c = 0usize;
+  while c < 3usize {
+    imm va = *f.data[ia + c];
+    imm vb = *f.data[ib + c];
+    if va != vb {
+      imm t = (va - 0.5) / (va - vb);
+      if t > 0.0 and t < 1.0 {
+        imm r = *f.data[ia] + (*f.data[ib] - *f.data[ia]) * t;
+        imm g = *f.data[ia + 1usize] + (*f.data[ib + 1usize] - *f.data[ia + 1usize]) * t;
+        imm b = *f.data[ia + 2usize] + (*f.data[ib + 2usize] - *f.data[ia + 2usize]) * t;
+        imm m = fmaxf(fminf(r, g), fminf(fmaxf(r, g), b));
+        imm at = if c == 0usize { r; } elif c == 1usize { g; } else { b; };
+        if m == at { mask = mask | (1u32 << u32.from(c)); }
+      }
+    }
+    c = c + 1usize;
+  }
+  mask;
+}
+
+// Whether replacing a texel by its median would change a channel in 'mask'
+// (so it must be kept: it carries the edge)
+fn holdsEdge(f &Field, x u32, y u32, mask u32) bool {
+  imm i = usize.from((y * f.width + x) * 3u32);
+  imm m = f.median(x, y);
+  ((mask & 1u32) != 0u32 and *f.data[i] != m) or ((mask & 2u32) != 0u32 and *f.data[i + 1usize] != m)
+    or ((mask & 4u32) != 0u32 and *f.data[i + 2usize] != m);
+}
+
 // Repair a field's interpolation artifacts: along every pair of neighbouring
 // texels (right, below, and both diagonals) that 'clashes', the texels not
-// protected become their median in all three channels. Protected are the
-// texels either side of an outline (their medians are on different sides of
-// 1/2), which hold the edge, and the four texels around each corner where
-// two edges that share fewer than two channels meet, which hold the corner.
+// protected become their median in all three channels. Protected are, as in
+// msdfgen, the texels that carry an edge (one of the pair between which a
+// channel crosses 1/2 as the median, where replacing the texel by its median
+// would move that channel: 'edgeBetween', 'holdsEdge'), and the four texels
+// around each corner where two edges that share fewer than two channels meet.
 // Returns how many texels were replaced.
 pub fn correctErrors(f &mut Field, shape &Shape, frame &Frame) u32 {
   imm w = f.width;
@@ -312,7 +353,6 @@ pub fn correctErrors(f &mut Field, shape &Shape, frame &Frame) u32 {
   while y < h {
     mut x = 0u32;
     while x < w {
-      imm here = f.median(x, y) > 0.5;
       mut k = 0u32;
       while k < 4u32 {
         // right, below, below-right, below-left
@@ -323,9 +363,11 @@ pub fn correctErrors(f &mut Field, shape &Shape, frame &Frame) u32 {
         elif k == 2u32 { nx = nx + 1i32; ny = ny + 1i32; }
         else { nx = nx - 1i32; ny = ny + 1i32; }
         if nx >= 0i32 and ny >= 0i32 and nx < i32.from(w) and ny < i32.from(h) {
-          if (f.median(u32.from(nx), u32.from(ny)) > 0.5) != here {
-            protect.set(usize.from(y * w + x), true);
-            protect.set(usize.from(u32.from(ny) * w + u32.from(nx)), true);
+          imm mask = edgeBetween(f, x, y, u32.from(nx), u32.from(ny));
+          // Only where the outline passes between them: the medians are on different sides of 1/2
+          if mask != 0u32 and (f.median(x, y) > 0.5) != (f.median(u32.from(nx), u32.from(ny)) > 0.5) {
+            if holdsEdge(f, x, y, mask) { protect.set(usize.from(y * w + x), true); }
+            if holdsEdge(f, u32.from(nx), u32.from(ny), mask) { protect.set(usize.from(u32.from(ny) * w + u32.from(nx)), true); }
           }
         }
         k = k + 1u32;

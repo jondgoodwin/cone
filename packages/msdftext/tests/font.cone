@@ -1,0 +1,179 @@
+// The TrueType reader checked against numbers worked out by hand from the
+// demo font's construction (tools/makedemofont.py: its glyphs are drawn on a
+// grid) and, where the machine has them, against real fonts read by an
+// independent script (python, struct): Arial's kern table, which its GPOS
+// 'kern' feature repeats, and Cascadia Mono's metrics. A real font that is
+// not installed is skipped. Only a failure prints.
+//
+// The demo font: unitsPerEm 1000, ascent 800, descent -200, line gap 100;
+// glyphs 0 .notdef, 1 space, 2 I, 3 A, 4 O, 5 i; advances 500 300 400 600 700
+// 700 (the last from the tail of hmtx, which holds only the left bearings);
+// left bearings 0 0 100 0 50 250.
+
+mod font;
+
+import testing use *;
+import fs;
+import path use Path;
+import collections use *;
+import msdftext use *;
+
+fn kernIs(f &Font, a u32, b u32, want i64, label &Array[u8]) {
+  expectInt(i64.from(f.kerning(f.glyphOf(a), f.glyphOf(b))), want, label);
+}
+
+fn checkDemo(f &Font) {
+  expectUInt(u64.from(f.unitsPerEm), 1000u64, "demo: units per em");
+  expectUInt(u64.from(f.glyphCount), 6u64, "demo: glyph count");
+  expectInt(i64.from(f.ascent), 800i64, "demo: ascent");
+  expectInt(i64.from(f.descent), -200i64, "demo: descent");
+  expectInt(i64.from(f.lineGap), 100i64, "demo: line gap");
+  // cmap format 4: delta segments, and a segment by glyph-id array (I..O)
+  expectUInt(u64.from(f.glyphOf(0x20u32)), 1u64, "demo: space");
+  expectUInt(u64.from(f.glyphOf(0x41u32)), 3u64, "demo: A");
+  expectUInt(u64.from(f.glyphOf(0x49u32)), 2u64, "demo: I through the id array");
+  expectUInt(u64.from(f.glyphOf(0x4Au32)), 0u64, "demo: J in the array's zero");
+  expectUInt(u64.from(f.glyphOf(0x4Fu32)), 4u64, "demo: O through the id array");
+  expectUInt(u64.from(f.glyphOf(0x69u32)), 5u64, "demo: i");
+  expectUInt(u64.from(f.glyphOf(0x7Au32)), 0u64, "demo: z is missing");
+  expectUInt(u64.from(f.glyphOf(0x20000u32)), 0u64, "demo: beyond the BMP");
+  // hmtx
+  expectUInt(u64.from(f.advance(0u32)), 500u64, "demo: advance .notdef");
+  expectUInt(u64.from(f.advance(1u32)), 300u64, "demo: advance space");
+  expectUInt(u64.from(f.advance(2u32)), 400u64, "demo: advance I");
+  expectUInt(u64.from(f.advance(3u32)), 600u64, "demo: advance A");
+  expectUInt(u64.from(f.advance(4u32)), 700u64, "demo: advance O");
+  expectUInt(u64.from(f.advance(5u32)), 700u64, "demo: advance i from the tail");
+  expectInt(i64.from(f.leftBearing(2u32)), 100i64, "demo: bearing I");
+  expectInt(i64.from(f.leftBearing(4u32)), 50i64, "demo: bearing O");
+  expectInt(i64.from(f.leftBearing(5u32)), 250i64, "demo: bearing i from the tail");
+  // glyph boxes
+  imm bi = f.glyphBox(2u32);
+  expectInt(i64.from(bi.xMin), 100i64, "demo: I xMin");
+  expectInt(i64.from(bi.yMax), 700i64, "demo: I yMax");
+  expectInt(i64.from(bi.xMax), 300i64, "demo: I xMax");
+  imm bo = f.glyphBox(4u32);
+  expectInt(i64.from(bo.xMin), 50i64, "demo: O xMin");
+  expectInt(i64.from(bo.xMax), 650i64, "demo: O xMax");
+  imm bs = f.glyphBox(1u32);
+  expectInt(i64.from(bs.xMax), 0i64, "demo: space has no box");
+  // outlines: points as drawn
+  imm oi = f.outline(2u32);
+  expectUInt(u64.from(oi.pointCount()), 4u64, "demo: I has 4 points");
+  expectUInt(u64.from(oi.contourCount()), 1u64, "demo: I has 1 contour");
+  expectFloat(*oi.xs[0usize], 100.0d, 0.0d, "demo: I point 0 x");
+  expectFloat(*oi.ys[1usize], 700.0d, 0.0d, "demo: I point 1 y");
+  expectFloat(*oi.xs[2usize], 300.0d, 0.0d, "demo: I point 2 x");
+  imm oo = f.outline(4u32);
+  expectUInt(u64.from(oo.pointCount()), 16u64, "demo: O has 16 points");
+  expectUInt(u64.from(oo.contourCount()), 2u64, "demo: O has 2 contours");
+  expectUInt(u64.from(*oo.ends[0usize]), 7u64, "demo: O first contour ends at 7");
+  expectUInt(u64.from(*oo.ends[1usize]), 15u64, "demo: O second contour ends at 15");
+  expect(!*oo.on[1usize], "demo: O's corner is off the curve");
+  // the composite i: the bar scaled by 1/2 and moved by (200, 0): x 250..350, y 0..350
+  imm oc = f.outline(5u32);
+  expectUInt(u64.from(oc.pointCount()), 4u64, "demo: i has the bar's 4 points");
+  expectFloat(*oc.xs[0usize], 250.0d, 0.0001d, "demo: i point 0 x");
+  expectFloat(*oc.ys[1usize], 350.0d, 0.0001d, "demo: i point 1 y");
+  expectFloat(*oc.xs[2usize], 350.0d, 0.0001d, "demo: i point 2 x");
+  expectFloat(*oc.ys[3usize], 0.0d, 0.0001d, "demo: i point 3 y");
+  // GPOS: format 1 (A, I: -60); the extension's format 2 (O, I: -30; O, A: -20)
+  kernIs(f, 0x41u32, 0x49u32, -60i64, "demo GPOS: A I");
+  kernIs(f, 0x4Fu32, 0x49u32, -30i64, "demo GPOS: O I by class");
+  kernIs(f, 0x4Fu32, 0x41u32, -20i64, "demo GPOS: O A by class");
+  kernIs(f, 0x49u32, 0x41u32, 0i64, "demo GPOS: I A has none");
+  kernIs(f, 0x41u32, 0x4Fu32, 0i64, "demo GPOS: A O has none");
+  kernIs(f, 0x4Fu32, 0x4Fu32, 0i64, "demo GPOS: O O has none");
+  // names
+  expectStr(f.nameOf(1u32).view(), "MsdfDemo", "demo: family");
+  expect(f.nameOf(13u32).view().len > 20usize, "demo: a licence is named");
+}
+
+fn checkKern(f &Font) {
+  expectUInt(u64.from(f.glyphOf(0x41u32)), 3u64, "kern font, cmap 12: A");
+  expectUInt(u64.from(f.glyphOf(0x69u32)), 5u64, "kern font, cmap 12: i");
+  expectUInt(u64.from(f.glyphOf(0x4Au32)), 0u64, "kern font, cmap 12: J");
+  expectUInt(u64.from(f.glyphOf(0x42u32)), 0u64, "kern font, cmap 12: B");
+  kernIs(f, 0x41u32, 0x49u32, -60i64, "kern table: A I");
+  kernIs(f, 0x4Fu32, 0x49u32, -30i64, "kern table: O I");
+  kernIs(f, 0x49u32, 0x41u32, 10i64, "kern table: I A");
+  kernIs(f, 0x41u32, 0x41u32, 0i64, "kern table: A A");
+}
+
+fn pairIs(f &Font, a u8, b u8, want i64) {
+  expectInt(i64.from(f.kerning(f.glyphOf(u32.from(a)), f.glyphOf(u32.from(b)))), want, "Arial pair");
+}
+
+fn checkArial(f &Font) {
+  expectUInt(u64.from(f.unitsPerEm), 2048u64, "Arial: units per em");
+  expectInt(i64.from(f.ascent), 1854i64, "Arial: ascent");
+  expectInt(i64.from(f.descent), -434i64, "Arial: descent");
+  expectInt(i64.from(f.lineGap), 67i64, "Arial: line gap");
+  expectUInt(u64.from(f.glyphOf(0x41u32)), 36u64, "Arial: A");
+  expectUInt(u64.from(f.glyphOf(0x20u32)), 3u64, "Arial: space");
+  expectUInt(u64.from(f.advance(36u32)), 1366u64, "Arial: advance A");
+  expectUInt(u64.from(f.advance(58u32)), 1933u64, "Arial: advance W");
+  expectInt(i64.from(f.leftBearing(76u32)), 136i64, "Arial: bearing i");
+  // The pairs the kern table (read by an independent script) gives, which
+  // GPOS repeats; the reader here uses GPOS since the font has it
+  pairIs(f, 'A', 'V', -152i64);
+  pairIs(f, 'A', 'T', -152i64);
+  pairIs(f, 'T', 'o', -227i64);
+  pairIs(f, 'W', 'a', -76i64);
+  pairIs(f, 'V', 'a', -152i64);
+  pairIs(f, 'A', 'v', -37i64);
+  pairIs(f, 'T', 'y', -113i64);
+  pairIs(f, 'P', ',', -264i64);
+  pairIs(f, 'A', 'A', 0i64);
+  pairIs(f, 'a', 'b', 0i64);
+}
+
+fn checkCascadia(f &Font) {
+  expectUInt(u64.from(f.unitsPerEm), 2048u64, "Cascadia Mono: units per em");
+  imm a = f.glyphOf(0x41u32);
+  imm w = f.glyphOf(0x57u32);
+  expect(a != 0u32 and w != 0u32 and a != w, "Cascadia Mono: letters are mapped");
+  expectUInt(u64.from(f.advance(a)), 1200u64, "Cascadia Mono: monospaced advance of A");
+  expectUInt(u64.from(f.advance(w)), 1200u64, "Cascadia Mono: monospaced advance of W");
+  expectUInt(u64.from(f.advance(f.glyphOf(0x20u32))), 1200u64, "Cascadia Mono: monospaced space");
+}
+
+// Read a font file and hand it to 'check' if it is there
+fn withFile(file &Path, which u32) {
+  match fs.readFile(file) {
+    case imm bytes Ok {
+      match Font.load(bytes.view()) {
+        case imm f Ok {
+          if which == 0u32 { checkArial(&f); } else { checkCascadia(&f); }
+        }
+        case imm e Error { require(false, "an installed font loads"); }
+      }
+    }
+    case is Error { }
+  }
+}
+
+fn main() i32 {
+  match Font.load(&DEMO_FONT) {
+    case imm f Ok { checkDemo(&f); }
+    case is Error { require(false, "the demo font loads"); }
+  }
+  match Font.load(&DEMO_FONT_KERN) {
+    case imm f Ok { checkKern(&f); }
+    case is Error { require(false, "the kern font loads"); }
+  }
+  // Refusals
+  imm junk = new Array[u8, 16] <- fill 7u8;
+  match Font.load(&junk) {
+    case is Ok { require(false, "junk is refused"); }
+    case imm e Error { expectUInt(u64.from(e.code), u64.from(FONT_NOT_TRUETYPE), "junk is not a TrueType font"); }
+  }
+  imm tiny = new Array[u8, 4] <- fill 0u8;
+  match Font.load(&tiny) {
+    case is Ok { require(false, "4 bytes are refused"); }
+    case imm e Error { expectUInt(u64.from(e.code), u64.from(FONT_TOO_SHORT), "4 bytes are too short"); }
+  }
+  withFile(&Path.fromLiteral("C:/Windows/Fonts/arial.ttf"), 0u32);
+  withFile(&Path.fromLiteral("C:/Windows/Fonts/CascadiaMono.ttf"), 1u32);
+  done();
+}

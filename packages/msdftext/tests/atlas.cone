@@ -1,0 +1,164 @@
+// The skyline packer and the atlas, checked by hand.
+//
+// The packer: a 100 x 100 bin takes 40 x 30 at (0, 0), 40 x 30 at (40, 0),
+// and a third 40 x 30 at (0, 30) (the second would reach x = 120); then a
+// 20 x 100 at (80, 0), the only place it fits. A rectangle larger than the bin
+// is refused. Then 300 rectangles of pseudo-random sizes are packed into a
+// 256 x 256 bin until one does not fit, and no two placed rectangles overlap
+// and all are inside (an O(n^2) check, independent of the skyline).
+//
+// The atlas, with the demo font at 50 texels to the em, a range of 8 texels:
+// a texel is 20 font units, so the bar 'I' (100..300 x 0..700) is 10 x 35
+// texels; the margin is ceil(8 / 2) + 1 = 5 texels each side, so its cell is
+// 20 x 45 texels. The quad in ems: left (100 - 5 / 0.05) / 1000 = 0, right
+// 0.4 (20 / 50), bottom (0 - 100) / 1000 = -0.1, top 0.8. The point (150, 350)
+// of the bar is texel column 7, row 22 of the cell (column (150 * 0.05) - 0.5,
+// row 45 - 0.5 - (350 + 100) * 0.05), 50 inside the left side: 1/2 + 50/160 =
+// 0.8125, byte 207; the point (50, 350) is 50 outside it: 0.1875, byte 48 (in
+// green and blue, whose nearest edge is the left side). Red has no edge on the
+// left: its nearest is the right side, 150 (inside) or 250 (outside) away, and
+// the point is on that edge's inner side either way: 1/2 + 150/160 or more,
+// above 1, byte 255. The median of the three is the green and blue value.
+
+mod atlas;
+
+import testing use *;
+import collections use *;
+import msdftext use *;
+
+fn packer() {
+  mut p = SkylinePacker.make(100u32, 100u32);
+  mut x = 0u32;
+  mut y = 0u32;
+  expect(p.pack(40u32, 30u32, &mut x, &mut y), "packer: first");
+  expectUInt(u64.from(x), 0u64, "packer: first x");
+  expectUInt(u64.from(y), 0u64, "packer: first y");
+  expect(p.pack(40u32, 30u32, &mut x, &mut y), "packer: second");
+  expectUInt(u64.from(x), 40u64, "packer: second x");
+  expectUInt(u64.from(y), 0u64, "packer: second y");
+  expect(p.pack(40u32, 30u32, &mut x, &mut y), "packer: third");
+  expectUInt(u64.from(x), 0u64, "packer: third x");
+  expectUInt(u64.from(y), 30u64, "packer: third y");
+  expect(p.pack(20u32, 100u32, &mut x, &mut y), "packer: the tall one");
+  expectUInt(u64.from(x), 80u64, "packer: tall x");
+  expectUInt(u64.from(y), 0u64, "packer: tall y");
+  expect(!p.pack(101u32, 5u32, &mut x, &mut y), "packer: wider than the bin is refused");
+  expect(!p.pack(5u32, 101u32, &mut x, &mut y), "packer: taller than the bin is refused");
+
+  // Many rectangles
+  mut q = SkylinePacker.make(256u32, 256u32);
+  mut rx = List[u32].empty();
+  mut ry = List[u32].empty();
+  mut rw = List[u32].empty();
+  mut rh = List[u32].empty();
+  mut seed = 12345u32;
+  mut n = 0u32;
+  mut failed = false;
+  while n < 300u32 and !failed {
+    seed = seed * 1664525u32 + 1013904223u32;
+    imm w = 5u32 + (seed >> 16u32) % 40u32;
+    seed = seed * 1664525u32 + 1013904223u32;
+    imm h = 5u32 + (seed >> 16u32) % 40u32;
+    mut px = 0u32;
+    mut py = 0u32;
+    if q.pack(w, h, &mut px, &mut py) {
+      rx.push(px);
+      ry.push(py);
+      rw.push(w);
+      rh.push(h);
+    } else {
+      failed = true;
+    }
+    n = n + 1u32;
+  }
+  expect(rx.len() > 40usize, "packer: dozens of rectangles fit");
+  mut inside = true;
+  mut overlap = false;
+  mut i = 0usize;
+  while i < rx.len() {
+    if *rx[i] + *rw[i] > 256u32 or *ry[i] + *rh[i] > 256u32 { inside = false; }
+    mut j = i + 1usize;
+    while j < rx.len() {
+      imm apart = *rx[i] + *rw[i] <= *rx[j] or *rx[j] + *rw[j] <= *rx[i] or *ry[i] + *rh[i] <= *ry[j]
+        or *ry[j] + *rh[j] <= *ry[i];
+      if !apart { overlap = true; }
+      j = j + 1usize;
+    }
+    i = i + 1usize;
+  }
+  expect(inside, "packer: every rectangle is inside the bin");
+  expect(!overlap, "packer: no two rectangles overlap");
+  // Efficiency: skyline packing of random rectangles fills well over half the bin before it fails
+  mut area = 0u32;
+  i = 0usize;
+  while i < rw.len() { area = area + *rw[i] * *rh[i]; i = i + 1usize; }
+  expect(area > 256u32 * 256u32 / 2u32, "packer: over half the bin is used");
+}
+
+fn texel(a &Atlas, x u32, y u32, ch u32) u32 {
+  u32.from(*a.pixels[usize.from((y * a.config.width + x) * 4u32 + ch)]);
+}
+
+fn glyphs(f &Font) {
+  mut cfg = AtlasConfig.standard();
+  cfg.emPx = 50.0d;
+  cfg.pxRange = 8.0d;
+  cfg.width = 256u32;
+  cfg.height = 256u32;
+  mut a = Atlas.create(cfg);
+  expectUInt(u64.from(a.version), 0u64, "atlas: version starts at 0");
+  imm ei = a.ensure(f, f.glyphOf(0x49u32));
+  expect(ei >= 0i32, "atlas: the bar is made");
+  imm e = a.entry(ei);
+  expectUInt(u64.from(e.w), 20u64, "bar cell width");
+  expectUInt(u64.from(e.h), 45u64, "bar cell height");
+  expectFloat(f64.from(e.left), 0.0d, 1.0e-6d, "bar quad left, ems");
+  expectFloat(f64.from(e.right), 0.4d, 1.0e-6d, "bar quad right");
+  expectFloat(f64.from(e.bottom), -0.1d, 1.0e-6d, "bar quad bottom");
+  expectFloat(f64.from(e.top), 0.8d, 1.0e-6d, "bar quad top");
+  expectFloat(f64.from(e.advance), 0.4d, 1.0e-6d, "bar advance, ems");
+  expectFloat(f64.from(e.u0), f64.from(e.x) / 256.0d, 1.0e-7d, "bar u0");
+  expectFloat(f64.from(e.v1), f64.from(e.y + e.h) / 256.0d, 1.0e-7d, "bar v1");
+  expectUInt(u64.from(a.version), 1u64, "atlas: version counts the glyph");
+  // Distance samples
+  expectUInt(u64.from(texel(&a, e.x + 7u32, e.y + 22u32, 0u32)), 255u64, "bar: inside, red's nearest edge is the right side, 150 away: above 1");
+  expect(texel(&a, e.x + 7u32, e.y + 22u32, 1u32) >= 206u32 and texel(&a, e.x + 7u32, e.y + 22u32, 1u32) <= 208u32,
+    "bar: 50 inside, green");
+  expect(texel(&a, e.x + 7u32, e.y + 22u32, 2u32) >= 206u32 and texel(&a, e.x + 7u32, e.y + 22u32, 2u32) <= 208u32,
+    "bar: 50 inside, blue");
+  imm outG = texel(&a, e.x + 2u32, e.y + 22u32, 1u32);
+  expect(outG >= 47u32 and outG <= 49u32, "bar: 50 outside the left side is byte 48 in green");
+  expectUInt(u64.from(texel(&a, e.x + 2u32, e.y + 22u32, 2u32)), u64.from(outG), "bar: 50 outside, blue as green");
+  expectUInt(u64.from(texel(&a, e.x + 2u32, e.y + 22u32, 0u32)), 255u64, "bar: 50 outside, red's nearest edge, the right side, still has this point on its inner side");
+  expectUInt(u64.from(texel(&a, e.x + 2u32, e.y + 22u32, 3u32)), 255u64, "bar: alpha is 255");
+  // Asking again is free
+  imm again = a.ensure(f, f.glyphOf(0x49u32));
+  expectInt(i64.from(again), i64.from(ei), "atlas: the same entry again");
+  expectUInt(u64.from(a.version), 1u64, "atlas: no change for a known glyph");
+  expectUInt(u64.from(a.generated), 1u64, "atlas: one glyph generated");
+  // The space has no outline
+  imm sp = a.entry(a.ensure(f, f.glyphOf(0x20u32)));
+  expect(sp.empty, "space: nothing to draw");
+  expectFloat(f64.from(sp.advance), 0.3d, 1.0e-6d, "space: advance 0.3 em");
+  expectUInt(u64.from(a.version), 1u64, "atlas: a space changes no pixel");
+  // Another glyph is placed apart from the first
+  imm o = a.entry(a.ensure(f, f.glyphOf(0x4Fu32)));
+  expect(!o.empty, "O: has an outline");
+  expect(o.x >= e.x + e.w + 1u32 or o.y >= e.y + e.h + 1u32 or e.x >= o.x + o.w + 1u32, "O: not overlapping the bar's cell");
+  // A full atlas refuses a glyph
+  mut tiny = AtlasConfig.standard();
+  tiny.width = 16u32;
+  tiny.height = 16u32;
+  mut t = Atlas.create(tiny);
+  expect(t.ensure(f, f.glyphOf(0x49u32)) < 0i32, "a 16 x 16 atlas has no room for the bar");
+  expectUInt(u64.from(t.version), 0u64, "full: unchanged");
+}
+
+fn main() i32 {
+  packer();
+  match Font.load(&DEMO_FONT) {
+    case imm f Ok { glyphs(&f); }
+    case is Error { require(false, "the demo font loads"); }
+  }
+  done();
+}
