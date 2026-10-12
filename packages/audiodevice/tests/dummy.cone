@@ -1,0 +1,42 @@
+// The device path end to end on SDL's "dummy" audio driver, which accepts
+// audio and plays nothing: the feeder thread opens a stream, keeps it fed,
+// obeys commands and quits on request. If SDL did not pick the dummy driver
+// the test stops before any sound is played.
+mod dummy;
+
+import testing use *;
+import collections use *;
+import env;
+import thread;
+import time use Duration;
+import sdl;
+import audiomixer use *;
+import audiodevice use *;
+
+fn main() i32 {
+  env.set("SDL_AUDIODRIVER", "dummy");
+  match Device.start(48000u32, 8u32, 40u32) {
+    case mut s Ok {
+      // SDL's driver must be the dummy one: "dummy" starts with 'd', 'u'
+      imm name = sdl.GetCurrentAudioDriver();
+      expect(name as usize != 0usize, "SDL has a driver");
+      requireInt(i64.from(*name), 100i64, "the driver's name starts with d");
+      requireInt(i64.from(*(name + 1usize)), 117i64, "and then u: the dummy driver");
+      mut tone = List[f32].empty();
+      mut o = Osc.make(WAVE_SINE);
+      mut i = 0usize;
+      while i < 48000usize { tone.push(o.next(440., 48000.)); i = i + 1usize; }
+      imm snd = s.control.addSound(new Sound(48000u32, 1u32, tone));
+      imm id = s.control.play(snd, BUS_EFFECTS, 0.5, 1., 0., true, 0i32);
+      s.control.playSynth(SYNTH_WIND, 3u32, BUS_AMBIENCE, 0.5, 0.5, 0., 0i32);
+      s.control.setPitch(id, 1.5);
+      thread.sleep(Duration.fromMillis(300));
+      expectUInt(u64.from(s.control.refused), 0u64, "no command refused");
+      expectInt(i64.from(s.device.stop(&mut s.control)), 0i64, "the feeder ended cleanly on a quit command");
+    }
+    case is Error {
+      require(false, "the dummy audio device opened");
+    }
+  }
+  done();
+}

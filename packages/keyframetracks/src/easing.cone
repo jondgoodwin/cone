@@ -1,0 +1,278 @@
+// Easing: a curve from 0 to 1 that reshapes a segment's progress. Each is a
+// pure function of the progress s (0 to 1) and, for a few, two numbers.
+//
+// - THE PENNER FAMILIES. Robert Penner's easing equations ("Programming
+//   Macromedia Flash MX", 2002; the algebra here is the one easings.net
+//   lists): quad, cubic, quart, quint, sine, expo, circ, back, elastic and
+//   bounce, each as 'in' (slow start), 'out' (slow end) and 'in-out'. An id is
+//   family * 3 + mode, so 3 to 32; 0 is linear.
+// - SMOOTHSTEP and SMOOTHERSTEP (Perlin's quintic) are ids 33 and 34.
+// - BEZIER EASING, CSS's cubic-bezier(x1, y1, x2, y2) (After Effects' and
+//   Figma's easing handles are the same curve): a cubic Bezier from (0,0) to
+//   (1,1) with two handles, read as y at the x equal to s. x(u) is solved by
+//   Newton's method with a bisection fallback, the way WebKit's
+//   UnitBezier does.
+// - SPRING EASING (id 35): a damped harmonic oscillator released from rest
+//   at 0 towards 1, in closed form (no stepping, so it can be scrubbed). p0 is
+//   the damping ratio zeta (below 1 it overshoots and rings, 1 is critical,
+//   above 1 it creeps), p1 the undamped angular frequency omega in radians
+//   per unit of progress. The motion has not quite settled at s = 1 (the
+//   envelope is exp(-zeta*omega)), so 'ease' returns exactly 1 there:
+//   springOmega(zeta, eps) picks the omega that leaves a residue under eps.
+//
+// 'ease(id, s, p0, p1)' takes s clamped to 0..1. A back ease reads its
+// overshoot from p0 (0 means Penner's 1.70158).
+
+pub const EASE_LINEAR = 0u32;
+pub const FAM_QUAD = 1u32;
+pub const FAM_CUBIC = 2u32;
+pub const FAM_QUART = 3u32;
+pub const FAM_QUINT = 4u32;
+pub const FAM_SINE = 5u32;
+pub const FAM_EXPO = 6u32;
+pub const FAM_CIRC = 7u32;
+pub const FAM_BACK = 8u32;
+pub const FAM_ELASTIC = 9u32;
+pub const FAM_BOUNCE = 10u32;
+pub const MODE_IN = 0u32;
+pub const MODE_OUT = 1u32;
+pub const MODE_IN_OUT = 2u32;
+pub const EASE_SMOOTHSTEP = 33u32;
+pub const EASE_SMOOTHERSTEP = 34u32;
+pub const EASE_SPRING = 35u32;
+pub const EASE_COUNT = 36u32;
+
+// The id of a family in a mode
+pub fn easeId(family u32, mode u32) u32 { family * 3u32 + mode; }
+
+pub const EASE_IN_QUAD = 3u32;
+pub const EASE_OUT_QUAD = 4u32;
+pub const EASE_IN_OUT_QUAD = 5u32;
+pub const EASE_IN_CUBIC = 6u32;
+pub const EASE_OUT_CUBIC = 7u32;
+pub const EASE_IN_OUT_CUBIC = 8u32;
+pub const EASE_IN_QUART = 9u32;
+pub const EASE_OUT_QUART = 10u32;
+pub const EASE_IN_OUT_QUART = 11u32;
+pub const EASE_IN_QUINT = 12u32;
+pub const EASE_OUT_QUINT = 13u32;
+pub const EASE_IN_OUT_QUINT = 14u32;
+pub const EASE_IN_SINE = 15u32;
+pub const EASE_OUT_SINE = 16u32;
+pub const EASE_IN_OUT_SINE = 17u32;
+pub const EASE_IN_EXPO = 18u32;
+pub const EASE_OUT_EXPO = 19u32;
+pub const EASE_IN_OUT_EXPO = 20u32;
+pub const EASE_IN_CIRC = 21u32;
+pub const EASE_OUT_CIRC = 22u32;
+pub const EASE_IN_OUT_CIRC = 23u32;
+pub const EASE_IN_BACK = 24u32;
+pub const EASE_OUT_BACK = 25u32;
+pub const EASE_IN_OUT_BACK = 26u32;
+pub const EASE_IN_ELASTIC = 27u32;
+pub const EASE_OUT_ELASTIC = 28u32;
+pub const EASE_IN_OUT_ELASTIC = 29u32;
+pub const EASE_IN_BOUNCE = 30u32;
+pub const EASE_OUT_BOUNCE = 31u32;
+pub const EASE_IN_OUT_BOUNCE = 32u32;
+
+fn clamp01(s f32) f32 { if s < 0. { 0.; } elif s > 1. { 1.; } else { s; }; }
+
+fn pw(x f32, p f32) f32 { libc.powf(x, p); }
+
+// Polynomial easing of power p
+fn polyEase(mode u32, s f32, p f32) f32 {
+  if mode == MODE_IN { return pw(s, p); }
+  if mode == MODE_OUT { return 1. - pw(1. - s, p); }
+  if s < 0.5 { return 0.5 * pw(2. * s, p); }
+  1. - 0.5 * pw(2. - 2. * s, p);
+}
+
+fn bounceOut(s f32) f32 {
+  imm n1 f32 = 7.5625;
+  imm d1 f32 = 2.75;
+  if s < 1. / d1 { return n1 * s * s; }
+  if s < 2. / d1 { imm u = s - 1.5 / d1; return n1 * u * u + 0.75; }
+  if s < 2.5 / d1 { imm u = s - 2.25 / d1; return n1 * u * u + 0.9375; }
+  imm u = s - 2.625 / d1;
+  n1 * u * u + 0.984375;
+}
+
+fn elasticIn(s f32) f32 {
+  if s <= 0. { return 0.; }
+  if s >= 1. { return 1.; }
+  imm c4 f32 = 2. * pi / 3.;
+  -pw(2., 10. * s - 10.) * sin((10. * s - 10.75) * c4);
+}
+
+fn elasticOut(s f32) f32 {
+  if s <= 0. { return 0.; }
+  if s >= 1. { return 1.; }
+  imm c4 f32 = 2. * pi / 3.;
+  pw(2., -10. * s) * sin((10. * s - 0.75) * c4) + 1.;
+}
+
+fn elasticInOut(s f32) f32 {
+  if s <= 0. { return 0.; }
+  if s >= 1. { return 1.; }
+  imm c5 f32 = 2. * pi / 4.5;
+  if s < 0.5 { return -(pw(2., 20. * s - 10.) * sin((20. * s - 11.125) * c5)) / 2.; }
+  pw(2., -20. * s + 10.) * sin((20. * s - 11.125) * c5) / 2. + 1.;
+}
+
+// The eased progress for easing 'id' at progress s; p0 and p1 are the
+// parameters of a back (p0) or spring (p0 zeta, p1 omega) ease
+pub fn ease(id u32, s0 f32, p0 f32, p1 f32) f32 {
+  imm s = clamp01(s0);
+  if id == EASE_LINEAR { return s; }
+  if id == EASE_SMOOTHSTEP { return s * s * (3. - 2. * s); }
+  if id == EASE_SMOOTHERSTEP { return s * s * s * (s * (s * 6. - 15.) + 10.); }
+  if id == EASE_SPRING {
+    if s >= 1. { return 1.; }
+    return springEase(p0, p1, s);
+  }
+  if id >= EASE_COUNT { return s; }
+  imm family = id / 3u32;
+  imm mode = id - family * 3u32;
+  if family >= FAM_QUAD and family <= FAM_QUINT {
+    return polyEase(mode, s, f32.from(family) + 1.);
+  }
+  if family == FAM_SINE {
+    if mode == MODE_IN { return 1. - cos(s * pi / 2.); }
+    if mode == MODE_OUT { return sin(s * pi / 2.); }
+    return -(cos(pi * s) - 1.) / 2.;
+  }
+  if family == FAM_EXPO {
+    if mode == MODE_IN { return if s <= 0. { 0.; } else { pw(2., 10. * s - 10.); }; }
+    if mode == MODE_OUT { return if s >= 1. { 1.; } else { 1. - pw(2., -10. * s); }; }
+    if s <= 0. { return 0.; }
+    if s >= 1. { return 1.; }
+    if s < 0.5 { return pw(2., 20. * s - 10.) / 2.; }
+    return (2. - pw(2., -20. * s + 10.)) / 2.;
+  }
+  if family == FAM_CIRC {
+    if mode == MODE_IN { return 1. - (1. - s * s).sqrt(); }
+    if mode == MODE_OUT { return (1. - (s - 1.) * (s - 1.)).sqrt(); }
+    if s < 0.5 { return (1. - (1. - 4. * s * s).sqrt()) / 2.; }
+    imm u = -2. * s + 2.;
+    return ((1. - u * u).sqrt() + 1.) / 2.;
+  }
+  if family == FAM_BACK {
+    imm c1 = if p0 == 0. { 1.70158; } else { p0; };
+    imm c2 = c1 * 1.525;
+    imm c3 = c1 + 1.;
+    if mode == MODE_IN { return c3 * s * s * s - c1 * s * s; }
+    if mode == MODE_OUT {
+      imm u = s - 1.;
+      return 1. + c3 * u * u * u + c1 * u * u;
+    }
+    if s < 0.5 { return (4. * s * s * ((c2 + 1.) * 2. * s - c2)) / 2.; }
+    imm u = 2. * s - 2.;
+    return (u * u * ((c2 + 1.) * u + c2) + 2.) / 2.;
+  }
+  if family == FAM_ELASTIC {
+    if mode == MODE_IN { return elasticIn(s); }
+    if mode == MODE_OUT { return elasticOut(s); }
+    return elasticInOut(s);
+  }
+  // bounce
+  if mode == MODE_IN { return 1. - bounceOut(1. - s); }
+  if mode == MODE_OUT { return bounceOut(s); }
+  if s < 0.5 { return (1. - bounceOut(1. - 2. * s)) / 2.; }
+  (1. + bounceOut(2. * s - 1.)) / 2.;
+}
+
+// ---------------------------------------------------------------------------
+// Bezier easing
+
+// x(u) of the cubic Bezier (0,0) (x1,y1) (x2,y2) (1,1)
+fn bezX(u f32, x1 f32, x2 f32) f32 {
+  imm v = 1. - u;
+  3. * v * v * u * x1 + 3. * v * u * u * x2 + u * u * u;
+}
+
+fn bezDX(u f32, x1 f32, x2 f32) f32 {
+  imm v = 1. - u;
+  3. * v * v * x1 + 6. * v * u * (x2 - x1) + 3. * u * u * (1. - x2);
+}
+
+// The curve parameter u (0 to 1) at which the Bezier's x equals s. x1 and x2
+// are clamped to 0..1 so x(u) is monotonic and the solution is unique
+pub fn bezierSolve(x1 f32, x2 f32, s f32) f32 {
+  imm a = clamp01(x1);
+  imm b = clamp01(x2);
+  if s <= 0. { return 0.; }
+  if s >= 1. { return 1.; }
+  // Newton from u = s
+  mut u = s;
+  mut i = 0;
+  while i < 8 {
+    imm err = bezX(u, a, b) - s;
+    if libc.fabsf(err) < 0.0000001 { return u; }
+    imm d = bezDX(u, a, b);
+    if libc.fabsf(d) < 0.000001 { i = 8; } else { u = u - err / d; i = i + 1; }
+  }
+  // Bisection (x is monotonic in u)
+  mut lo f32 = 0.;
+  mut hi f32 = 1.;
+  u = s;
+  i = 0;
+  while i < 50 {
+    imm x = bezX(u, a, b);
+    if libc.fabsf(x - s) < 0.0000001 { return u; }
+    if x < s { lo = u; } else { hi = u; }
+    u = (lo + hi) / 2.;
+    i = i + 1;
+  }
+  u;
+}
+
+// CSS cubic-bezier(x1, y1, x2, y2) at progress s. y1 and y2 may leave 0..1
+// (an overshoot)
+pub fn bezierEase(x1 f32, y1 f32, x2 f32, y2 f32, s f32) f32 {
+  if s <= 0. { return 0.; }
+  if s >= 1. { return 1.; }
+  imm u = bezierSolve(x1, x2, s);
+  imm v = 1. - u;
+  3. * v * v * u * y1 + 3. * v * u * u * y2 + u * u * u;
+}
+
+// ---------------------------------------------------------------------------
+// Damped harmonic motion
+
+// The displacement from the rest point at time t of x'' + 2 zeta omega x' +
+// omega^2 x = 0, started at displacement d0 with velocity v0. The standard
+// closed forms: underdamped (zeta < 1), critical (= 1), overdamped (> 1).
+pub fn springDisplacement(zeta f32, omega f32, d0 f32, v0 f32, t f32) f32 {
+  if t <= 0. { return d0; }
+  if zeta < 0.9999 {
+    imm wd = omega * (1. - zeta * zeta).sqrt();
+    imm decay = libc.expf(-zeta * omega * t);
+    return decay * (d0 * cos(wd * t) + ((v0 + zeta * omega * d0) / wd) * sin(wd * t));
+  }
+  if zeta <= 1.0001 {
+    return libc.expf(-omega * t) * (d0 + (v0 + omega * d0) * t);
+  }
+  imm root = (zeta * zeta - 1.).sqrt();
+  imm r1 = -omega * (zeta - root);
+  imm r2 = -omega * (zeta + root);
+  imm c2 = (v0 - r1 * d0) / (r2 - r1);
+  imm c1 = d0 - c2;
+  c1 * libc.expf(r1 * t) + c2 * libc.expf(r2 * t);
+}
+
+// A value released at 'x0' with velocity 'v0' towards 'target': where it is at t
+pub fn springValue(zeta f32, omega f32, x0 f32, v0 f32, target f32, t f32) f32 {
+  target + springDisplacement(zeta, omega, x0 - target, v0, t);
+}
+
+// The spring ease: from 0 at rest towards 1, over progress s
+pub fn springEase(zeta f32, omega f32, s f32) f32 {
+  springValue(zeta, omega, 0., 0., 1., s);
+}
+
+// The omega that leaves the oscillation's envelope under 'eps' at s = 1
+// (exp(-zeta omega) = eps)
+pub fn springOmega(zeta f32, eps f32) f32 {
+  -libc.logf(eps) / zeta;
+}

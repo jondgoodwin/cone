@@ -79,7 +79,8 @@
 //     c.outcome() c.isDone() c.count() c.record()            (ANSWERS)
 //   Outcome.Done(n)  Outcome.Failed(code)  Outcome.Cancelled  Outcome.TimedOut
 //   SocketAddr.v4(a, b, c, d, port)  .localhost(port)  .v6(bytes, port)  .v6Localhost(port)
-//   IoError: e.code, e.message()
+//   IoError: e.code, e.message(), e.kind() (IoErrorKind: Os, Cancelled, TimedOut),
+//     e.isCancelled() e.isTimedOut()  IoError.cancelled()  IoError.timedOut()
 //
 // THE LOOP. A Loop is driven by one thread: that thread submits to it and
 // polls it. It is a resource: when it dies it cancels every operation still
@@ -464,15 +465,64 @@ pub struct Handle {
   pub fn `!=`(self, o Handle) bool {index != o.index or gen != o.gen;}
 }
 
-// Why something could not be done: Windows' error number, on every system
-// (Linux's errno is turned into the Windows number that names the same
-// condition, or, with none, is itself above 0x10000000)
+// How an IoError came to be: the system failed (Os, the default), or the
+// operation was ended by a cancel (Cancelled) or by its deadline (TimedOut)
+pub enum IoErrorKind {
+  Os,
+  Cancelled,
+  TimedOut;
+}
+
+// The kind an IoError is held as. A struct field's default must be a constant
+// and an enum's variant is not one, so the field is a number with these names,
+// and 'kind()' gives the IoErrorKind
+const kindOs = 0u8;
+const kindCancelled = 1u8;
+const kindTimedOut = 2u8;
+
+// Why something could not be done: for an Os error, Windows' error number, on
+// every system (Linux's errno is turned into the Windows number that names the
+// same condition, or, with none, is itself above 0x10000000). A Cancelled or
+// TimedOut error is no system's failure: its code is 0 and its kind says what
+// it is. 'new IoError(code)' is an Os error
 pub struct IoError {
   pub code u32;
+  tag u8 = kindOs;
+
+  // An operation ended by a cancel
+  pub fn cancelled() IoError {new IoError(0u32, kindCancelled);}
+
+  // An operation ended by its deadline
+  pub fn timedOut() IoError {new IoError(0u32, kindTimedOut);}
+
+  // How it came to be
+  pub fn kind(self &) IoErrorKind {
+    if tag == kindCancelled {return IoErrorKind.Cancelled;}
+    if tag == kindTimedOut {return IoErrorKind.TimedOut;}
+    IoErrorKind.Os;
+  }
+
+  // Ended by a cancel
+  pub fn isCancelled(self &) bool {tag == kindCancelled;}
+
+  // Ended by its deadline
+  pub fn isTimedOut(self &) bool {tag == kindTimedOut;}
 
   // The OS's text for it: Windows' in English where the system has it, the
-  // C library's (strerror) on Linux
-  pub fn message(self &) String {systemText(code);}
+  // C library's (strerror) on Linux; a Cancelled or TimedOut error says so
+  pub fn message(self &) String {
+    if tag == kindCancelled {
+      mut s = String.empty();
+      s.append("cancelled");
+      return s;
+    }
+    if tag == kindTimedOut {
+      mut s = String.empty();
+      s.append("deadline passed");
+      return s;
+    }
+    systemText(code);
+  }
 }
 
 // How a file is opened

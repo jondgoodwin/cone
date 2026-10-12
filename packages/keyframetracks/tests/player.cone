@@ -1,0 +1,334 @@
+// Players: cross-fades, nested fades, queues, additive layers, rate, events.
+//
+// CROSS-FADE. A holds the value 10, B holds 20, both loops. play(A) then
+//   crossFade(B, 1 s, linear): after 0.25 s the weights are (0.75, 0.25) and the
+//   value 10 * 0.75 + 20 * 0.25 = 12.5; after 0.5 s, 15; after 1 s only B
+//   remains (one play, weight 1) and the value is 20. With a smoothstep fade
+//   the B weight at 0.25 is 3 * 0.0625 - 2 * 0.015625 = 0.15625, value
+//   11.5625.
+//   NESTED: A, then B over 1 s; at 0.5 s the weights are (0.5, 0.5); a C
+//   started now over 1 s adds a third with weight 0 and leaves them
+//   (0.5, 0.5, 0); another 0.5 s on, B is fully in (A is dropped) and C is
+//   half in: weights (B 0.5, C 0.5), the value 0.5 * 20 + 0.5 * 30 = 25. The
+//   weights sum to 1 throughout.
+// QUEUE. A is a 1 s one-shot ramp 0 to 1 (value = t), B a one-shot holding 5.
+//   Queue B behind A with a 0.5 s fade and step by 0.125 s: the fade starts
+//   when A has 0.5 s left (A at 0.5), so after one more step A is at 0.625
+//   and B has been fading in for 0.125 s (weight 0.25): value
+//   0.75 * 0.625 + 0.25 * 5 = 1.71875. A finishes at 1.0: the 'finished'
+//   event comes once, and B is fully in at the same moment (fade 0.5 s). With
+//   fade 0, stepping 0.3 s: A is at 1.2 after four steps, over by 0.2, so B
+//   starts there with 0.2 s on its clock.
+// ADDITIVE. Base x = 10 (loop), layer x going 0 to 2 over 2 s (loop): at the
+//   layer's time 1 the difference from its time-0 value is 1, so weight 0.5
+//   gives 10.5. A base rotation of 30 degrees about y with an additive layer
+//   rotating 0 to 90 degrees about x over 2 s, at 1 s (45 degrees) and
+//   weight 1 gives (45 degrees about x) * (30 degrees about y); at weight 0.5 it is 22.5.
+// RATE. Rate 2 moves a clock by 1 s for a 0.5 s update; rate 0.5 by 0.25;
+//   paused does not move; -1 moves it back.
+// EVENTS. A clip with a marker at 1 and one at 2 (loop, length 2.5), updated
+//   in 0.5 s steps for 6 s, raises each marker (at 1, 3.5 is 1 into the 2nd
+//   cycle: markers at 1, 2, 3.5, 4.5, 6 ... ) :: counted below. dispatch calls
+//   a closure with each and empties the queue.
+
+mod player;
+
+import libc;
+import testing use *;
+import collections use *;
+import geomath use *;
+import keyframetracks use *;
+
+const T1 = 1u32;
+const X = 1030u32;
+const R = 1031u32;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+fn constClip(name &str, v f32, mode u32) Clip {
+  mut c = Clip.make(name, mode);
+  mut t = Track.make(TK_F32);
+  t.addF32(0., v, INTERP_LINEAR);
+  c.addTrack(T1, X, t);
+  c.length = 4.;
+  c;
+}
+
+fn rampClip(name &str, to f32, len f32, mode u32) Clip {
+  mut c = Clip.make(name, mode);
+  mut t = Track.make(TK_F32);
+  t.addF32(0., 0., INTERP_LINEAR);
+  t.addF32(len, to, INTERP_LINEAR);
+  c.addTrack(T1, X, t);
+  c;
+}
+
+fn value(p &Player) f32 { p.evaluate().getF32(T1, X, -99.); }
+
+fn sumOf(l &List[f32]) f32 {
+  mut s f32 = 0.;
+  mut i = 0usize;
+  while i < l.len() { s = s + *l[i]; i = i + 1usize; }
+  s;
+}
+
+fn count(evs &List[Fired], id u32) i64 {
+  mut n = 0i64;
+  mut i = 0usize;
+  while i < evs.len() { if (*evs[i]).id == id { n = n + 1i64; } i = i + 1usize; }
+  n;
+}
+
+fn testFades() {
+  mut p = Player.make();
+  imm a = p.addClip(constClip("a", 10., LOOP_LOOP));
+  imm b = p.addClip(constClip("b", 20., LOOP_LOOP));
+  p.play(a);
+  p.crossFade(b, 1., EASE_LINEAR);
+  mut ws = List[f32].empty();
+  p.weights(&mut ws);
+  near(*ws[0usize], 1., 0.00001, "before any time passes: A is all");
+  p.update(0.25);
+  p.weights(&mut ws);
+  near(*ws[0usize], 0.75, 0.00001, "0.25 s: A weight");
+  near(*ws[1usize], 0.25, 0.00001, "0.25 s: B weight");
+  near(value(&p), 12.5, 0.0001, "0.25 s: value");
+  p.update(0.25);
+  near(value(&p), 15., 0.0001, "0.5 s: value");
+  p.update(0.5);
+  p.weights(&mut ws);
+  expectInt(i64.from(ws.len()), 1i64, "after the fade only B remains");
+  near(value(&p), 20., 0.0001, "and its value is 20");
+
+  mut s = Player.make();
+  imm a2 = s.addClip(constClip("a", 10., LOOP_LOOP));
+  imm b2 = s.addClip(constClip("b", 20., LOOP_LOOP));
+  s.play(a2);
+  s.crossFade(b2, 1., EASE_SMOOTHSTEP);
+  s.update(0.25);
+  near(value(&s), 11.5625, 0.0001, "a smoothstep fade at 0.25 s");
+
+  // nested
+  mut n = Player.make();
+  imm na = n.addClip(constClip("a", 10., LOOP_LOOP));
+  imm nb = n.addClip(constClip("b", 20., LOOP_LOOP));
+  imm nc = n.addClip(constClip("c", 30., LOOP_LOOP));
+  n.play(na);
+  n.crossFade(nb, 1., EASE_LINEAR);
+  n.update(0.5);
+  n.weights(&mut ws);
+  near(*ws[0usize], 0.5, 0.00001, "nested: A at 0.5 s");
+  near(*ws[1usize], 0.5, 0.00001, "nested: B at 0.5 s");
+  n.crossFade(nc, 1., EASE_LINEAR);
+  n.weights(&mut ws);
+  expectInt(i64.from(ws.len()), 3i64, "three plays");
+  near(*ws[0usize], 0.5, 0.00001, "a third fade begun: A keeps 0.5");
+  near(*ws[1usize], 0.5, 0.00001, "B keeps 0.5");
+  near(*ws[2usize], 0., 0.00001, "C has none yet");
+  n.update(0.5);
+  n.weights(&mut ws);
+  expectInt(i64.from(ws.len()), 2i64, "B is fully in: A is dropped");
+  near(*ws[0usize], 0.5, 0.00001, "B is now fading out as C fades in: 0.5");
+  near(*ws[1usize], 0.5, 0.00001, "C: 0.5");
+  near(value(&n), 25., 0.0001, "value 25");
+  near(sumOf(&ws), 1., 0.00001, "the weights sum to 1");
+
+  // sum to 1 always, through a run of overlapping fades
+  mut m = Player.make();
+  imm ma = m.addClip(constClip("a", 1., LOOP_LOOP));
+  imm mb = m.addClip(constClip("b", 2., LOOP_LOOP));
+  m.play(ma);
+  mut ok = true;
+  mut i = 0;
+  while i < 80 {
+    if i % 7 == 0 { m.crossFade(if i % 2 == 0 { ma; } else { mb; }, 0.6, EASE_SMOOTHSTEP); }
+    m.update(0.1);
+    m.weights(&mut ws);
+    if libc.fabsf(sumOf(&ws) - 1.) > 0.00001 { ok = false; }
+    mut k = 0usize;
+    while k < ws.len() { if *ws[k] < -0.00001 { ok = false; } k = k + 1usize; }
+    i = i + 1;
+  }
+  expect(ok, "weights are non-negative and sum to 1 through overlapping fades");
+  // a fade with no time is a plain switch
+  mut sw = Player.make();
+  imm sa = sw.addClip(constClip("a", 10., LOOP_LOOP));
+  imm sb = sw.addClip(constClip("b", 20., LOOP_LOOP));
+  sw.play(sa);
+  sw.crossFade(sb, 0., EASE_LINEAR);
+  near(value(&sw), 20., 0.00001, "crossFade of 0 s switches at once");
+}
+
+fn testQueue() {
+  mut p = Player.make();
+  imm a = p.addClip(rampClip("a", 1., 1., LOOP_ONCE));
+  imm b = p.addClip(constClip("b", 5., LOOP_ONCE));
+  p.play(a);
+  p.enqueue(b, 0.5, EASE_LINEAR);
+  mut evs = List[Fired].empty();
+  mut i = 0;
+  while i < 4 { p.update(0.125); i = i + 1; }
+  mut ws = List[f32].empty();
+  p.weights(&mut ws);
+  expectInt(i64.from(ws.len()), 2i64, "the fade has started with A at 0.5");
+  near(*ws[1usize], 0., 0.00001, "B has no weight yet");
+  p.update(0.125);
+  p.weights(&mut ws);
+  near(*ws[1usize], 0.25, 0.00001, "one step later B is a quarter in");
+  near(value(&p), 1.71875, 0.0001, "and the value is 1.71875");
+  i = 0;
+  while i < 3 { p.update(0.125); i = i + 1; }
+  evs = p.takeEvents();
+  expectInt(count(&evs, EVENT_FINISHED), 1i64, "A finished once");
+  p.weights(&mut ws);
+  expectInt(i64.from(ws.len()), 1i64, "B is fully in when A ends");
+  near(value(&p), 5., 0.0001, "value 5");
+  expectInt(i64.from(p.queue.len()), 0i64, "the queue is empty");
+  p.update(0.5);
+  expectInt(count(&p.takeEvents(), EVENT_FINISHED), 0i64, "no second finished event for A");
+
+  // no fade
+  mut q = Player.make();
+  imm qa = q.addClip(rampClip("a", 1., 1., LOOP_ONCE));
+  imm qb = q.addClip(rampClip("b", 10., 2., LOOP_ONCE));
+  q.play(qa);
+  q.enqueue(qb, 0., EASE_LINEAR);
+  i = 0;
+  while i < 4 { q.update(0.3); i = i + 1; }
+  near(value(&q), 1., 0.0001, "B starts over by 0.2 s: value 0.2 * 5 = 1");
+  near(f32.from(q.time()), 0.2, 0.00001, "the clock carried the leftover");
+  q.weights(&mut ws);
+  expectInt(i64.from(ws.len()), 1i64, "A is gone");
+  // a queued clip waits for a looping clip forever
+  mut w = Player.make();
+  imm wa = w.addClip(constClip("a", 1., LOOP_LOOP));
+  imm wb = w.addClip(constClip("b", 2., LOOP_ONCE));
+  w.play(wa);
+  w.enqueue(wb, 0.1, EASE_LINEAR);
+  i = 0;
+  while i < 100 { w.update(0.25); i = i + 1; }
+  near(value(&w), 1., 0.00001, "a looping clip never lets the queue through");
+  expectInt(i64.from(w.queue.len()), 1i64, "it is still queued");
+  // play clears the queue
+  w.play(wa);
+  expectInt(i64.from(w.queue.len()), 0i64, "play empties the queue");
+}
+
+fn testLayers() {
+  mut p = Player.make();
+  imm base = p.addClip(constClip("base", 10., LOOP_LOOP));
+  mut lc = Clip.make("lean", LOOP_LOOP);
+  mut lt = Track.make(TK_F32);
+  lt.addF32(0., 0., INTERP_LINEAR);
+  lt.addF32(2., 2., INTERP_LINEAR);
+  lc.addTrack(T1, X, lt);
+  imm lean = p.addClip(lc);
+  p.play(base);
+  imm layer = p.addLayer(lean, 0.5);
+  near(value(&p), 10., 0.00001, "layer at its rest: no change");
+  p.update(1.);
+  near(value(&p), 10.5, 0.00001, "layer at 1 s, weight 0.5: 10.5");
+  p.setLayerWeight(layer, 1.);
+  near(value(&p), 11., 0.00001, "weight 1: 11");
+  p.setLayerWeight(layer, 0.);
+  near(value(&p), 10., 0.00001, "weight 0: nothing");
+
+  // rotations
+  mut q = Player.make();
+  mut bc = Clip.make("stand", LOOP_LOOP);
+  mut bt = Track.make(TK_QUAT);
+  bt.addQuat(0., Quat.angleAxis(radians(30.), new Vec3(0., 1., 0.)), INTERP_LINEAR);
+  bc.addTrack(T1, R, bt);
+  bc.length = 2.;
+  imm bi = q.addClip(bc);
+  mut rc = Clip.make("bow", LOOP_LOOP);
+  mut rt = Track.make(TK_QUAT);
+  rt.addQuat(0., Quat.identity(), INTERP_LINEAR);
+  rt.addQuat(2., Quat.angleAxis(radians(90.), new Vec3(1., 0., 0.)), INTERP_LINEAR);
+  rc.addTrack(T1, R, rt);
+  imm ri = q.addClip(rc);
+  q.play(bi);
+  imm ql = q.addLayer(ri, 1.);
+  q.update(1.);
+  imm got = q.evaluate().getQuat(T1, R, Quat.identity());
+  imm want = Quat.angleAxis(radians(45.), new Vec3(1., 0., 0.)) * Quat.angleAxis(radians(30.), new Vec3(0., 1., 0.));
+  near(libc.fabsf(got.dot(want)), 1., 0.0001, "additive rotation: (45 about x) * (30 about y)");
+  near(got.length(), 1., 0.00001, "unit");
+  q.setLayerWeight(ql, 0.5);
+  imm half = q.evaluate().getQuat(T1, R, Quat.identity());
+  imm want2 = Quat.angleAxis(radians(22.5), new Vec3(1., 0., 0.)) * Quat.angleAxis(radians(30.), new Vec3(0., 1., 0.));
+  near(libc.fabsf(half.dot(want2)), 1., 0.0001, "half weight: 22.5 about x");
+}
+
+fn testRate() {
+  mut p = Player.make();
+  imm a = p.addClip(rampClip("a", 8., 8., LOOP_ONCE));
+  p.play(a);
+  p.setRate(2.);
+  p.update(0.5);
+  near(f32.from(p.time()), 1., 0.00001, "rate 2: 0.5 s moves the clock 1 s");
+  p.setRate(0.5);
+  p.update(0.5);
+  near(f32.from(p.time()), 1.25, 0.00001, "rate 0.5: moves 0.25");
+  p.pause();
+  p.update(3.);
+  near(f32.from(p.time()), 1.25, 0.00001, "paused: no movement");
+  p.resume();
+  p.setRate(-1.);
+  p.update(0.25);
+  near(f32.from(p.time()), 1., 0.00001, "rate -1 runs it back");
+  near(value(&p), 1., 0.00001, "and the value follows");
+  p.seek(5.);
+  near(value(&p), 5., 0.00001, "seek");
+  expectInt(i64.from(p.takeEvents().len()), 0i64, "a seek raises nothing");
+}
+
+fn testEvents() {
+  mut c = Clip.make("e", LOOP_LOOP);
+  c.length = 2.5;
+  c.addMarker(1., 11u32, 0.);
+  c.addMarker(2., 22u32, 0.);
+  mut p = Player.make();
+  imm ci = p.addClip(c);
+  p.play(ci);
+  mut i = 0;
+  while i < 12 { p.update(0.5); i = i + 1; }
+  // 6 s: marker 11 at 1, 3.5, 6.0; marker 22 at 2, 4.5
+  imm evs = p.takeEvents();
+  expectInt(count(&evs, 11u32), 3i64, "marker 11 fired at 1, 3.5 and 6");
+  expectInt(count(&evs, 22u32), 2i64, "marker 22 fired at 2 and 4.5");
+  expectInt(i64.from(evs.len()), 5i64, "nothing else");
+  expectFloat((*evs[0usize]).at, 1., 0.00001, "in order: 1");
+  expectFloat((*evs[1usize]).at, 2., 0.00001, "then 2");
+  expectFloat((*evs[2usize]).at, 3.5, 0.00001, "then 3.5");
+  expectInt(i64.from(p.takeEvents().len()), 0i64, "taking empties the list");
+
+  // scrub raises, seek does not
+  p.seek(0.);
+  p.scrub(2.2);
+  expectInt(i64.from(p.takeEvents().len()), 2i64, "scrub 0 -> 2.2 fires 1 and 2");
+  p.seek(0.);
+  p.seek(2.2);
+  expectInt(i64.from(p.takeEvents().len()), 0i64, "seek fires nothing");
+  p.scrub(0.5);
+  expectInt(i64.from(p.takeEvents().len()), 2i64, "scrub back 2.2 -> 0.5 fires 2 and 1");
+
+  // dispatch
+  p.seek(0.);
+  p.update(1.5);
+  mut seen = 0;
+  p.dispatch(e => seen = seen + 1);
+  expectInt(i64.from(seen), 1i64, "dispatch calls the closure with each event");
+  expectInt(i64.from(p.takeEvents().len()), 0i64, "and empties them");
+}
+
+fn main() i32 {
+  testFades();
+  testQueue();
+  testLayers();
+  testRate();
+  testEvents();
+  done();
+}
