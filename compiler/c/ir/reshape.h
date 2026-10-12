@@ -20,7 +20,10 @@
  *   an element, a variant, a pointer, a reference, an owner) through a path the
  *   callee may write by, and the callee does not provably leave it alone: its body
  *   is not visible, or it (transitively) reshapes a value of that type that is not
- *   its own local. A reference that is read-only (`&`, `&imm`) cannot write what
+ *   its own local. Where the borrow was taken through a field of a struct, or an element
+ *   of a list that holds its elements, 'cont' is that one value: an argument reaches it
+ *   by reaching that struct (the owner), or by a reference to a 'cont'; a 'cont' that
+ *   another struct holds is another value. A reference that is read-only (`&`, `&imm`) cannot write what
  *   it reaches, and a value this function owns whole is nobody else's;
  * - or, handed nothing that reaches the type, it is a callee that reshapes one
  *   through a global.
