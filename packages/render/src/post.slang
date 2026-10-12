@@ -22,10 +22,25 @@
 // - none: clamped.
 // The result is linear display light, which the sRGB target encodes.
 //
+// THE FINISH (image quality, fx.cone), all off by default, so a frame draws
+// as it did before they existed:
+// - the exposure may come from a buffer (the auto-exposure's, binding 3)
+//   instead of the immediates;
+// - a VIGNETTE darkens the frame towards its corners before it is tone
+//   mapped, as a lens does (cos^4-like: a smooth fall from 'vignetteRadius'
+//   to the corner);
+// - COLOUR GRADING after the tone map, in display-encoded (sRGB) values: a
+//   3-D lookup table (binding 4; ordinary grading LUTs are made in display
+//   space), then lift / gamma / gain (the colourist's three controls: lift
+//   raises the blacks, gain scales the whites, gamma bends the middle) and a
+//   saturation about the luma;
+// - FILM GRAIN last: a triangular-distributed noise of the pixel and the
+//   frame number, strongest in the middle tones, in display-encoded values.
+//
 // Group 0: two textures (what a pass reads; the second only by the upsample
-// and the tone map) and a linear, clamped sampler. The immediates: the
-// source's texel size, the mode, the bloom's strength, the exposure and the
-// tone mapper.
+// and the tone map) and a linear, clamped sampler, then the exposure buffer
+// and the grading table. The immediates: the source's texel size, the mode,
+// the bloom's strength, the exposure and the tone mapper, then the finish.
 
 struct PostImmediates {
     float2 texel;                  // 0: the size of a texel of 'first', in uv
@@ -34,12 +49,24 @@ struct PostImmediates {
     float exposure;                // 16
     uint toneMapper;               // 20: 0 none, 1 AgX, 2 ACES, 3 Reinhard
     float bloomScale;              // 24: what makes the chain's top its levels' mean (1 / the levels)
-    float pad;                     // 28
+    uint flags;                    // 28: 1 exposure from the buffer, 2 grading, 4 vignette, 8 grain
+    float4 lift;                   // 32: rgb lift, w the saturation
+    float4 gamma;                  // 48: rgb gamma, w the table's share (0: none)
+    float4 gain;                   // 64: rgb gain, w the table's scale (N - 1) / N
+    float4 vignette;               // 80: x strength, y radius (0 to 1 of the way to the corner), z softness, w grain strength
+    float4 extra;                  // 96: x the table's offset 0.5 / N, y the frame number
 };
+
+static const uint FINISH_EXPOSURE = 1;
+static const uint FINISH_GRADE = 2;
+static const uint FINISH_VIGNETTE = 4;
+static const uint FINISH_GRAIN = 8;
 
 [[vk::binding(0, 0)]] Texture2D first;
 [[vk::binding(1, 0)]] Texture2D second;
 [[vk::binding(2, 0)]] SamplerState linearClamp;
+[[vk::binding(3, 0)]] StructuredBuffer<float> exposureBuffer;
+[[vk::binding(4, 0)]] Texture3D gradingTable;
 [[vk::push_constant]] ConstantBuffer<PostImmediates> post;
 
 struct FullscreenOutput {
@@ -151,11 +178,48 @@ float3 acesFitted(float3 x) {
     return saturate((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14));
 }
 
+// sRGB's encoding and its inverse (IEC 61966-2-1), what a display-referred
+// table or a grain is applied in
+float3 toSrgb(float3 c) {
+    c = saturate(c);
+    float3 lo = c * 12.92;
+    float3 hi = 1.055 * pow(max(c, float3(1e-6, 1e-6, 1e-6)), float3(1.0 / 2.4, 1.0 / 2.4, 1.0 / 2.4)) - 0.055;
+    return lerp(lo, hi, step(float3(0.0031308, 0.0031308, 0.0031308), c));
+}
+
+float3 fromSrgb(float3 c) {
+    c = saturate(c);
+    float3 lo = c / 12.92;
+    float3 hi = pow((c + 0.055) / 1.055, float3(2.4, 2.4, 2.4));
+    return lerp(lo, hi, step(float3(0.04045, 0.04045, 0.04045), c));
+}
+
+// A hash of a pixel and a frame, 0 to 1 (Jarzynski and Olano, "Hash
+// Functions for GPU Rendering", 2020: PCG)
+float hash01(uint2 p, uint frameNumber) {
+    uint v = p.x * 1664525u + p.y * 1013904223u + frameNumber * 747796405u + 2891336453u;
+    uint state = v * 747796405u + 2891336453u;
+    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return float((word >> 22u) ^ word) * (1.0 / 4294967295.0);
+}
+
 [shader("fragment")]
 float4 toneMapMain(FullscreenOutput input) : SV_Target {
     float3 scene = tap(first, input.uv);
     float3 bloom = tap(second, input.uv) * post.bloomScale;
-    float3 c = lerp(scene, bloom, post.strength) * post.exposure;
+    float exposure = post.exposure;
+    if ((post.flags & FINISH_EXPOSURE) != 0) {
+        exposure = exposureBuffer[0];
+    }
+    float3 c = lerp(scene, bloom, post.strength) * exposure;
+    if ((post.flags & FINISH_VIGNETTE) != 0) {
+        // The distance to the middle, 1 at the corner; the fall begins at the
+        // radius and is smoothest over 'softness' of the way to the corner
+        float2 q = (input.uv - 0.5) * 2.0;
+        float r = length(q) * 0.70710678;
+        float t = saturate((r - post.vignette.y) / max(post.vignette.z, 1e-4));
+        c = c * (1.0 - post.vignette.x * t * t * (3.0 - 2.0 * t));
+    }
     if (post.toneMapper == 1) {
         c = agx(c);
     } else if (post.toneMapper == 2) {
@@ -164,6 +228,30 @@ float4 toneMapMain(FullscreenOutput input) : SV_Target {
         c = c / (1.0 + c);
     } else {
         c = saturate(c);
+    }
+    if ((post.flags & (FINISH_GRADE | FINISH_GRAIN)) != 0) {
+        float3 v = toSrgb(c);
+        if ((post.flags & FINISH_GRADE) != 0) {
+            if (post.gamma.w > 0.0) {
+                float3 looked = gradingTable.SampleLevel(linearClamp, v * post.gain.w + post.extra.x, 0.0).rgb;
+                v = lerp(v, looked, post.gamma.w);
+            }
+            // Lift raises the blacks (towards 1 as it grows), gain scales,
+            // gamma bends the middle (above 1 brightens it)
+            v = saturate(post.gain.rgb * (v + post.lift.rgb * (1.0 - v)));
+            v = pow(v, float3(1.0, 1.0, 1.0) / max(post.gamma.rgb, float3(1e-3, 1e-3, 1e-3)));
+            float y = dot(v, float3(0.2126, 0.7152, 0.0722));
+            v = saturate(lerp(float3(y, y, y), v, post.lift.w));
+        }
+        if ((post.flags & FINISH_GRAIN) != 0) {
+            uint2 pixel = uint2(input.position.xy);
+            uint frameNumber = uint(post.extra.y);
+            // Triangular noise, -1 to 1, strongest at the middle tones
+            float n = hash01(pixel, frameNumber) + hash01(pixel + uint2(7u, 13u), frameNumber) - 1.0;
+            float mid = 4.0 * v.g * (1.0 - v.g);
+            v = saturate(v + n * post.vignette.w * (0.35 + 0.65 * mid));
+        }
+        c = fromSrgb(v);
     }
     return float4(c, 1.0);
 }

@@ -1,0 +1,465 @@
+// imagequality: the image-quality passes (fx.cone) on a scene of a ground,
+// two rows of pillars running away from the camera, a field of spheres, a stand
+// of trees whose leaves are cut-out cards, some spheres in orbit (named to the
+// velocity pass), moss decals on the ground, under a low sun with shadows. No
+// window: it draws into a 1920 x 1080 half-float frame, tone-maps it into an
+// sRGB texture and times the GPU's whole frame (the scene, the passes and the
+// tone map) with timestamps, many frames over, for each setting in turn.
+//
+//   congo run packages/render/examples/imagequality.cone
+//   congo run packages/render/examples/imagequality.cone -- --shot C:/src/iq-shots/shot
+//
+// It prints, per setting, the GPU time in milliseconds of 'ImageFx.render' and
+// of the frame's tone map, and what the setting adds to the frame with every
+// pass off. '--shot PREFIX' also writes pictures: PREFIX-aa-none.bmp,
+// -aa-fxaa.bmp, -aa-taa.bmp (foliage edges), -fog-off.bmp, -fog-on.bmp (god
+// rays), -ssao-off.bmp, -ssao-on.bmp, -dof.bmp, -decals-off.bmp,
+// -decals-on.bmp and -all.bmp.
+//
+// GPU_POWER_PREFERENCE=low-power runs it on the integrated GPU where there are
+// two. With the Vulkan SDK, validation is on, and must say nothing.
+
+mod imagequalitydemo;
+
+import stdio use *;
+import libc;
+import geomath use *;
+import collections use *;
+import mesh use Mesh;
+import gpu use *;
+import render use *;
+import path as filepath;
+
+const W = 1920u32;
+const H = 1080u32;
+const FRAMES = 150u32;
+
+fn cstrEquals(a *u8, b &str) bool {
+  mut i = 0usize;
+  while i < b.len() {
+    if *(a + i) != b[i] { return false; }
+    i = i + 1usize;
+  }
+  *(a + b.len()) == 0u8;
+}
+
+// A small hash to scatter things: a number from 0 to 1 from 'n'
+fn scatter(n u32) f32 {
+  mut x = n * 747796405u32 + 2891336453u32;
+  x = ((x >> ((x >> 28u32) + 4u32)) ^ x) * 277803737u32;
+  x = (x >> 22u32) ^ x;
+  f32.from(x & 0xFFFFu32) / 65535.;
+}
+
+// A 64 x 64 RGBA leaf: a green disc, clear outside it
+fn leafImage() Image {
+  mut img = new Image(64, 64, 4, List[u8].empty());
+  mut y = 0;
+  while y < 64 {
+    mut x = 0;
+    while x < 64 {
+      imm dx = (f32.from(x) - 31.5) / 32.;
+      imm dy = (f32.from(y) - 31.5) / 32.;
+      imm inside = dx * dx + dy * dy < 0.9;
+      imm shade = 0.75 + 0.25 * scatter(u32.from(x * 64 + y));
+      img.pixels.push(u8.from(40. * shade));
+      img.pixels.push(u8.from(150. * shade));
+      img.pixels.push(u8.from(30. * shade));
+      img.pixels.push(if inside { 255u8; } else { 0u8; });
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  img;
+}
+
+// A 128 x 128 patch of moss: green, mottled, its alpha fading out to its edge
+fn mossImage() Image {
+  mut img = new Image(128, 128, 4, List[u8].empty());
+  mut y = 0;
+  while y < 128 {
+    mut x = 0;
+    while x < 128 {
+      imm dx = (f32.from(x) - 63.5) / 64.;
+      imm dy = (f32.from(y) - 63.5) / 64.;
+      imm r = (dx * dx + dy * dy).sqrt();
+      imm blotch = 0.5 + 0.5 * scatter(u32.from((x / 4) * 64 + y / 4));
+      imm a = (1. - r) * 2. * blotch;
+      imm alpha = if a < 0. { 0.; } elif a > 1. { 1.; } else { a; };
+      imm shade = 0.6 + 0.4 * scatter(u32.from(x * 128 + y));
+      img.pixels.push(u8.from(70. * shade));
+      img.pixels.push(u8.from(170. * shade));
+      img.pixels.push(u8.from(40. * shade));
+      img.pixels.push(u8.from(alpha * 255.));
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  img;
+}
+
+struct World {
+  list DrawList;
+  orbiters usize;                // the first item that orbits; how many follow
+  orbitCount usize;
+  decalMaterial u32;
+  plane MeshHandle;
+  sphere MeshHandle;
+  brass MaterialHandle;
+}
+
+fn buildWorld(renderer &mut Renderer, fx &mut ImageFx, device &mut Device) World {
+  mut list = DrawList.empty();
+  mut planeMesh = Mesh.plane(1, 1.);
+  imm plane = renderer.addMesh(device, &planeMesh);
+  imm cubeMesh = Mesh.cube(1.);
+  imm cube = renderer.addMesh(device, &cubeMesh);
+  imm sphereMesh = Mesh.sphere(1., 20);
+  imm sphere = renderer.addMesh(device, &sphereMesh);
+  imm groundM = renderer.addPbrMaterial(device, &PbrMaterial.standard(new Color(0.18, 0.2, 0.12, 1.), 0., 0.9));
+  imm stoneM = renderer.addPbrMaterial(device, &PbrMaterial.standard(new Color(0.55, 0.52, 0.48, 1.), 0., 0.7));
+  imm brassM = renderer.addPbrMaterial(device, &PbrMaterial.standard(new Color(0.8, 0.55, 0.2, 1.), 1., 0.35));
+  imm trunkM = renderer.addMaterial(device, &Material.plain(new Color(0.25, 0.15, 0.08, 1.)));
+  imm leafImg = leafImage();
+  imm leafTex = renderer.addCutoutTexture(device, &leafImg, 0.5);
+  mut leafLit = Material.plain(new Color(1., 1., 1., 1.));
+  leafLit.texture = leafTex;
+  leafLit.alphaMode = ALPHA_MASK;
+  leafLit.alphaCutoff = 0.5;
+  imm leafM = renderer.addMaterial(device, &leafLit);
+  mut leafPbr = PbrMaterial.standard(new Color(1., 1., 1., 1.), 0., 0.8).cutOut(0.5);
+  leafPbr.texture = leafTex;
+  imm leafPbrM = renderer.addPbrMaterial(device, &leafPbr);
+  imm mossImg = mossImage();
+  imm mossTex = renderer.addTexture(device, &mossImg);
+  imm decalMaterial = fx.addDecalMaterial(device, renderer, mossTex, TextureHandle.none(), TextureHandle.none());
+
+  list.add(plane, groundM, Mat4.fromTrs(new Vec3(0., 0., -120.), Quat.identity(), new Vec3(200., 1., 200.)));
+  mut i = 0u32;
+  while i < 24u32 {
+    imm z = 0. - 8. * f32.from(i) - 4.;
+    list.add(cube, stoneM, Mat4.fromTrs(new Vec3(-7., 3.5, z), Quat.identity(), new Vec3(1., 3.5, 1.)));
+    list.add(cube, stoneM, Mat4.fromTrs(new Vec3(7., 3.5, z), Quat.identity(), new Vec3(1., 3.5, 1.)));
+    i = i + 1u32;
+  }
+  i = 0u32;
+  while i < 300u32 {
+    imm x = (scatter(i * 3u32) - 0.5) * 90.;
+    imm z = 0. - scatter(i * 3u32 + 1u32) * 180.;
+    imm r = 0.4 + scatter(i * 3u32 + 2u32) * 0.9;
+    list.add(sphere, if i % 3u32 == 0u32 { brassM; } else { stoneM; }, Mat4.fromTrs(new Vec3(x, r, z), Quat.identity(), new Vec3(r, r, r)));
+    i = i + 1u32;
+  }
+  i = 0u32;
+  while i < 36u32 {
+    imm x = (scatter(i * 7u32 + 900u32) - 0.5) * 70.;
+    imm z = 0. - 6. - scatter(i * 7u32 + 901u32) * 150.;
+    imm h = 3. + scatter(i * 7u32 + 902u32) * 2.;
+    list.add(cube, trunkM, Mat4.fromTrs(new Vec3(x, h * 0.5, z), Quat.identity(), new Vec3(0.15, h * 0.5, 0.15)));
+    imm material = if i % 2u32 == 0u32 { leafM; } else { leafPbrM; };
+    mut c = 0u32;
+    while c < 4u32 {
+      imm turn = Quat.angleAxis(f32.from(c) * 0.785, new Vec3(0., 1., 0.));
+      list.add(plane, material, Mat4.fromTrs(new Vec3(x, h + 0.6, z), turn * Quat.angleAxis(1.2, new Vec3(1., 0., 0.)), new Vec3(1.6, 1., 1.6)));
+      list.add(plane, material, Mat4.fromTrs(new Vec3(x, h + 0.6, z), turn * Quat.angleAxis(-1.2, new Vec3(1., 0., 0.)), new Vec3(1.6, 1., 1.6)));
+      c = c + 1u32;
+    }
+    i = i + 1u32;
+  }
+  imm count = list.len();
+  new World(list, count, 24usize, decalMaterial, plane, sphere, brassM);
+}
+
+// The frame's draw list: the world's, and the orbiting spheres at time 't'
+// (and last frame's, 't' - 1/60, for the motion list), with the decals
+fn frameList(world &World, fx &mut ImageFx, t f32) DrawList {
+  mut list = DrawList.empty();
+  mut i = 0usize;
+  while i < world.list.len() {
+    imm item = world.list.items[i];
+    list.add(item.mesh, item.material, item.model);
+    i = i + 1usize;
+  }
+  mut k = 0usize;
+  while k < world.orbitCount {
+    imm phase = f32.from(k) * 0.55;
+    imm radius = 3. + f32.from(k % 5usize);
+    imm at = new Vec3(-2. + radius * cos(t * 0.9 + phase), 1.2 + 0.4 * sin(t * 1.3 + phase), -14. - f32.from(k) * 1.5 + radius * sin(t * 0.9 + phase));
+    imm before = new Vec3(-2. + radius * cos((t - 0.016667) * 0.9 + phase), 1.2 + 0.4 * sin((t - 0.016667) * 1.3 + phase),
+      -14. - f32.from(k) * 1.5 + radius * sin((t - 0.016667) * 0.9 + phase));
+    list.add(world.sphere, world.brass, Mat4.fromTrs(at, Quat.identity(), new Vec3(0.5, 0.5, 0.5)));
+    fx.motion.add(list.len() - 1usize, Mat4.fromTrs(before, Quat.identity(), new Vec3(0.5, 0.5, 0.5)));
+    k = k + 1usize;
+  }
+  list;
+}
+
+fn addDecals(world &World, fx &mut ImageFx) {
+  mut i = 0u32;
+  while i < 40u32 {
+    // On the sunlit ground to the left of the first pillars, and between the rows
+    imm x = if i % 4u32 == 3u32 { (scatter(i * 5u32 + 40u32) - 0.5) * 10.; } else { -22. + scatter(i * 5u32 + 40u32) * 14.; };
+    imm z = 0. - 4. - scatter(i * 5u32 + 41u32) * 40.;
+    imm size = 2. + scatter(i * 5u32 + 42u32) * 3.;
+    mut d = Decal.at(world.decalMaterial, Mat4.fromTrs(new Vec3(x, 0., z), Quat.angleAxis(scatter(i * 5u32 + 43u32) * 6.28, new Vec3(0., 1., 0.)),
+      new Vec3(size, 1., size)));
+    d.order = i32.from(i % 3u32);
+    fx.decals.add(d);
+    i = i + 1u32;
+  }
+}
+
+// (the device last: each field is ended in order, and the device after what it made)
+struct Run {
+  renderer Renderer;
+  post Post;
+  fx ImageFx;
+  out Texture;
+  queries QuerySet;
+  resolved Buffer;
+  readback Buffer;
+  camera Camera;
+  light Light;
+  world World;
+  device Device;
+}
+
+// Draw 'frames' frames with the settings 's'; the median GPU time (after the
+// first twelve) of 'fx.render', the scene included, in milliseconds
+fn timeSetting(run &mut Run, s &FxSettings, decals bool, frames u32) f64 {
+  run.fx.configure(s);
+  run.fx.cutHistory();
+  mut times = List[f64].empty();
+  mut f = 0u32;
+  while f < frames {
+    imm t = f32.from(f) * 0.016667;
+    run.renderer.time = t;
+    imm list = frameList(&run.world, &mut run.fx, t);
+    if decals { addDecals(&run.world, &mut run.fx); }
+    mut encoder = run.device.createCommandEncoder();
+    encoder.writeTimestamp(&run.queries, 0u32);
+    run.fx.render(&mut run.device, &mut encoder, &mut run.renderer, &mut run.post, &run.camera, &run.light, &list, &run.out);
+    encoder.writeTimestamp(&run.queries, 1u32);
+    encoder.resolveQuerySet(&run.queries, 0u32, 2u32, &run.resolved, 0u64);
+    encoder.copyBufferToBuffer(&run.resolved, 0u64, &run.readback, 0u64, 16u64);
+    run.device.queue.submit(encoder.finish());
+    run.device.endFrame();
+    run.device.waitIdle();
+    if f >= 12u32 {
+      imm ticks = run.readback.mappedRange() as *u64;
+      imm ms = f64.from(*(ticks + 1usize) - *ticks) * f64.from(run.device.timestampPeriod) * 1.0e-6d;
+      // Insertion sorted, so that the middle one is the median: a laptop's
+      // clocks move, and a mean follows the outliers
+      mut at = times.len();
+      times.push(ms);
+      while at > 0usize and *times[at - 1usize] > ms {
+        times.set(at, *times[at - 1usize]);
+        at = at - 1usize;
+      }
+      times.set(at, ms);
+    }
+    f = f + 1u32;
+  }
+  *times[times.len() / 2usize];
+}
+
+// Draw 'frames' frames with 's' and write the last as 'name'
+fn shoot(run &mut Run, s &FxSettings, decals bool, frames u32, name &String) {
+  run.fx.configure(s);
+  run.fx.cutHistory();
+  mut shot = run.device.createBuffer(u64.from(W) * u64.from(H) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  mut f = 0u32;
+  while f < frames {
+    imm t = 2. + f32.from(f) * 0.016667;
+    run.renderer.time = t;
+    imm list = frameList(&run.world, &mut run.fx, t);
+    if decals { addDecals(&run.world, &mut run.fx); }
+    mut encoder = run.device.createCommandEncoder();
+    run.fx.render(&mut run.device, &mut encoder, &mut run.renderer, &mut run.post, &run.camera, &run.light, &list, &run.out);
+    if f + 1u32 == frames { encoder.copyTextureToBuffer(&run.out, &shot); }
+    run.device.queue.submit(encoder.finish());
+    run.device.endFrame();
+    run.device.waitIdle();
+    f = f + 1u32;
+  }
+  imm image = Image.fromTexels(shot.mappedRange(), i32.from(W), i32.from(H), false);
+  imm written = image.save(&filepath.Path.from(name.view()));
+  print <- "Screenshot: "; printStr(name.view());
+  if written { print <- "\n"; } else { print <- " could NOT be written\n"; }
+}
+
+fn report(name &str, ms f64, base f64) {
+  printStr(name); print <- ": GPU "; print <- ms; print <- " ms";
+  if base > 0d { print <- " (adds "; print <- ms - base; print <- " ms)"; }
+  print <- "\n";
+}
+
+fn named(prefix &String, suffix &str) String {
+  mut name = prefix.copy();
+  name <- suffix;
+  name;
+}
+
+fn main(argc i32, argv **u8) i32 {
+  mut prefix = String.empty();
+  mut a = 1;
+  while a < argc {
+    imm arg = *(argv + usize.from(a));
+    if cstrEquals(arg, "--shot") and a + 1 < argc {
+      imm s = *(argv + usize.from(a + 1));
+      mut i = 0usize;
+      while *(s + i) != 0u8 {
+        prefix.appendByte(*(s + i));
+        i = i + 1usize;
+      }
+      a = a + 1;
+    } else {
+      print <- "Unknown argument; use --shot PREFIX\n";
+      return 2;
+    }
+    a = a + 1;
+  }
+  mut instance = Instance.create("render imagequality");
+  mut none = Surface.none();
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  if (env as usize) != 0usize {
+    if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  mut adapter = instance.requestAdapter(&none, preference);
+  if !adapter.isValid() {
+    print <- "No GPU\n";
+    return 1i32;
+  }
+  print <- "Adapter: "; printStr(adapter.name.view()); print <- "\n";
+  print <- "Validation layer: "; print <- u64.from(if instance.validation { 1u32; } else { 0u32; });
+  print <- "; synchronization validation: "; print <- u64.from(if instance.syncValidation { 1u32; } else { 0u32; }); print <- "\n";
+  mut device = adapter.requestDevice();
+  imm outDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_RGBA8_UNORM_SRGB,
+    TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  mut out = device.createTexture(&outDesc);
+  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  mut post = Post.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, W, H);
+  mut fx = ImageFx.create(&mut device, &renderer, &mut post);
+  mut queries = device.createQuerySet(QUERY_TYPE_TIMESTAMP, 2u32);
+  mut resolved = device.createBuffer(256u64, BUFFER_USAGE_QUERY_RESOLVE | BUFFER_USAGE_COPY_SRC);
+  mut readback = device.createBuffer(16u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  if !renderer.isValid() or !post.isValid() or !fx.isValid() or !queries.isValid() {
+    print <- "The renderer, the post, the passes or the timestamps could not be made\n";
+    return 1i32;
+  }
+  imm sky = Sky.dusk(radians(14.), radians(200.));
+  renderer.setSky(&mut device, &sky);
+  imm light = sky.sunLight(new Color(3.2, 2.9, 2.4, 1.), new Color(0.05, 0.06, 0.08, 1.));
+  mut camera = Camera.make();
+  camera.fov = radians(60.);
+  camera.near = 0.3;
+  camera.far = 400.;
+  camera.lookAt(new Vec3(-3., 2.2, 10.), new Vec3(2., 2.5, -40.), new Vec3(0., 1., 0.));
+  camera.background = new Color(0.4, 0.5, 0.7, 1.);
+  renderer.setShadows(&mut device, &ShadowSettings.medium());
+  imm world = buildWorld(&mut renderer, &mut fx, &mut device);
+  print <- "Scene: "; print <- u64.from(world.list.len()); print <- " draw items and "; print <- u64.from(world.orbitCount); print <- " in orbit\n";
+  mut run = new Run(renderer, post, fx, out, queries, resolved, readback, camera, light, world, device);
+
+  // The settings, one at a time, then the tiers
+  mut names = List[String].empty();
+  mut variants = List[FxSettings].empty();
+  mut withDecals = List[bool].empty();
+  names.push(String.from("everything off")); variants.push(FxSettings.off()); withDecals.push(false);
+  mut s = FxSettings.off();
+  s.aa = AA_FXAA;
+  names.push(String.from("FXAA")); variants.push(s); withDecals.push(false);
+  s = FxSettings.off();
+  s.aa = AA_TAA;
+  s.taa = TaaSettings.medium();
+  names.push(String.from("TAA, 8 samples (medium)")); variants.push(s); withDecals.push(false);
+  s.taa = TaaSettings.high();
+  names.push(String.from("TAA, 16 samples, sharpened (high)")); variants.push(s); withDecals.push(false);
+  s = FxSettings.off();
+  s.exposure = new ExposureSettings(enabled: true);
+  names.push(String.from("auto-exposure, every 2nd pixel")); variants.push(s); withDecals.push(false);
+  s.exposure = new ExposureSettings(enabled: true, stride: 4u32);
+  names.push(String.from("auto-exposure, every 4th pixel")); variants.push(s); withDecals.push(false);
+  s = FxSettings.off();
+  s.ssao = SsaoSettings.high();
+  names.push(String.from("SSAO high (3 slices of 10 steps)")); variants.push(s); withDecals.push(false);
+  s.ssao = SsaoSettings.medium();
+  names.push(String.from("SSAO medium (2 of 8)")); variants.push(s); withDecals.push(false);
+  s.ssao = SsaoSettings.low();
+  names.push(String.from("SSAO low (2 of 5)")); variants.push(s); withDecals.push(false);
+  s = FxSettings.off();
+  s.dof = DofSettings.high();
+  s.dof.focusDistance = 18.;
+  names.push(String.from("depth of field high (48 taps)")); variants.push(s); withDecals.push(false);
+  s.dof = DofSettings.medium();
+  s.dof.focusDistance = 18.;
+  names.push(String.from("depth of field medium (32)")); variants.push(s); withDecals.push(false);
+  s.dof = DofSettings.low();
+  s.dof.focusDistance = 18.;
+  names.push(String.from("depth of field low (16)")); variants.push(s); withDecals.push(false);
+  s = FxSettings.off();
+  s.fog = FogSettings.high();
+  names.push(String.from("fog high (16-pixel cells, 64 slices)")); variants.push(s); withDecals.push(false);
+  s.fog = FogSettings.medium();
+  names.push(String.from("fog medium (16, 48)")); variants.push(s); withDecals.push(false);
+  s.fog = FogSettings.low();
+  names.push(String.from("fog low (32, 32)")); variants.push(s); withDecals.push(false);
+  names.push(String.from("40 decals")); variants.push(FxSettings.off()); withDecals.push(true);
+  names.push(String.from("tier high")); variants.push(FxSettings.high()); withDecals.push(false);
+  names.push(String.from("tier medium")); variants.push(FxSettings.medium()); withDecals.push(false);
+  names.push(String.from("tier low")); variants.push(FxSettings.low()); withDecals.push(false);
+  mut all = FxSettings.high();
+  all.fog = FogSettings.high();
+  all.dof = DofSettings.high();
+  all.dof.focusDistance = 18.;
+  names.push(String.from("everything on (high, fog, depth of field, decals)")); variants.push(all); withDecals.push(true);
+
+  // The GPU's clocks rise as it works: a warm-up first, and the base measured again at the end
+  imm warm = timeSetting(&mut run, variants[0usize], false, 100u32);
+  mut base = 0d;
+  mut v = 0usize;
+  while v < variants.len() {
+    imm ms = timeSetting(&mut run, variants[v], *withDecals[v], FRAMES);
+    if v == 0usize { base = ms; }
+    report(names[v].view(), ms, if v == 0usize { 0d; } else { base; });
+    v = v + 1usize;
+  }
+  imm baseAgain = timeSetting(&mut run, variants[0usize], false, FRAMES);
+  report("everything off, measured again", baseAgain, base);
+
+  if prefix.len() > 0usize {
+    imm off = FxSettings.off();
+    shoot(&mut run, &off, false, 30u32, &named(&prefix, "-aa-none.bmp"));
+    mut fxaa = FxSettings.off();
+    fxaa.aa = AA_FXAA;
+    shoot(&mut run, &fxaa, false, 30u32, &named(&prefix, "-aa-fxaa.bmp"));
+    mut taa = FxSettings.off();
+    taa.aa = AA_TAA;
+    taa.taa = TaaSettings.high();
+    shoot(&mut run, &taa, false, 30u32, &named(&prefix, "-aa-taa.bmp"));
+    taa.taa.sharpness = 0.;
+    shoot(&mut run, &taa, false, 30u32, &named(&prefix, "-aa-taa-unsharpened.bmp"));
+    taa.taa = TaaSettings.high();
+    mut fogOn = FxSettings.off();
+    fogOn.fog = FogSettings.high();
+    fogOn.fog.density = 0.012;
+    fogOn.fog.anisotropy = 0.6;
+    shoot(&mut run, &off, false, 4u32, &named(&prefix, "-fog-off.bmp"));
+    shoot(&mut run, &fogOn, false, 20u32, &named(&prefix, "-fog-on.bmp"));
+    mut ao = FxSettings.off();
+    ao.ssao = SsaoSettings.high();
+    shoot(&mut run, &ao, false, 4u32, &named(&prefix, "-ssao-on.bmp"));
+    shoot(&mut run, &off, false, 4u32, &named(&prefix, "-ssao-off.bmp"));
+    mut dofOn = FxSettings.off();
+    dofOn.dof = DofSettings.high();
+    dofOn.dof.focusDistance = 18.;
+    shoot(&mut run, &dofOn, false, 4u32, &named(&prefix, "-dof.bmp"));
+    shoot(&mut run, &off, true, 4u32, &named(&prefix, "-decals-on.bmp"));
+    shoot(&mut run, &off, false, 4u32, &named(&prefix, "-decals-off.bmp"));
+    shoot(&mut run, &all, true, 40u32, &named(&prefix, "-all.bmp"));
+  }
+  print <- "Vulkan failures: "; print <- u64.from(failures());
+  print <- "; validation messages: "; print <- u64.from(validationMessages()); print <- "\n";
+  0i32;
+}
