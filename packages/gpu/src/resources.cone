@@ -89,6 +89,7 @@ fn descriptorType(kind u32, bufferType u32) u32 {
 
 struct BufferBackend {
   device vulkan.Device;
+  fns DevFns;
   buffer vulkan.Buffer;
   memory vulkan.DeviceMemory;
   mapped *u8;
@@ -105,7 +106,7 @@ pub struct Buffer {
 
   // No buffer: what a field holds before a buffer is made for it (not valid)
   pub fn none() Buffer {
-    new Buffer(new BufferBackend(0usize as vulkan.Device, new vulkan.Buffer(0u64), new vulkan.DeviceMemory(0u64), nullp(),
+    new Buffer(new BufferBackend(0usize as vulkan.Device, noDevFns(), new vulkan.Buffer(0u64), new vulkan.DeviceMemory(0u64), nullp(),
       true), 0u64, 0u32);
   }
 
@@ -119,7 +120,7 @@ pub struct Buffer {
   pub fn mappedRange(self &) *u8 {
     if !backend.coherent and (backend.mapped as usize) != 0usize {
       imm range = new vulkan.MappedMemoryRange(memory: backend.memory);
-      check(vulkan.invalidateMappedMemoryRanges(backend.device, 1u32, &range as *vulkan.MappedMemoryRange),
+      check(backend.fns.invalidateMappedMemoryRanges(backend.device, 1u32, &range as *vulkan.MappedMemoryRange),
         "vkInvalidateMappedMemoryRanges");
     }
     backend.mapped;
@@ -128,10 +129,10 @@ pub struct Buffer {
   // Its end, once the GPU is idle
   fn final(self &uni) {
     if backend.buffer.h != 0u64 {
-      vulkan.deviceWaitIdle(backend.device);
-      vulkan.destroyBuffer(backend.device, backend.buffer, nullp());
+      backend.fns.deviceWaitIdle(backend.device);
+      backend.fns.destroyBuffer(backend.device, backend.buffer, nullp());
     }
-    if backend.memory.h != 0u64 { vulkan.freeMemory(backend.device, backend.memory, nullp()); }
+    if backend.memory.h != 0u64 { backend.fns.freeMemory(backend.device, backend.memory, nullp()); }
   }
 }
 
@@ -147,6 +148,7 @@ pub struct Buffer {
 // must come before its Device's.
 pub struct Fence is Move, Sendable {
   device vulkan.Device;
+  fns DevFns;
   fence vulkan.Fence;
   submitted bool;
 
@@ -162,16 +164,16 @@ pub struct Fence is Move, Sendable {
   pub fn waitSignalled(self &, nanos u64) bool {
     if !submitted { return false; }
     mut f = fence;
-    vulkan.waitForFences(device, 1u32, &mut f as *vulkan.Fence, vulkan.TRUE, nanos) == vulkan.SUCCESS;
+    fns.waitForFences(device, 1u32, &mut f as *vulkan.Fence, vulkan.TRUE, nanos) == vulkan.SUCCESS;
   }
 
   fn final(self &uni) {
     if fence.h == 0u64 { return; }
     if submitted {
       mut f = fence;
-      vulkan.waitForFences(device, 1u32, &mut f as *vulkan.Fence, vulkan.TRUE, NO_TIMEOUT);
+      fns.waitForFences(device, 1u32, &mut f as *vulkan.Fence, vulkan.TRUE, NO_TIMEOUT);
     }
-    vulkan.destroyFence(device, fence, nullp());
+    fns.destroyFence(device, fence, nullp());
   }
 }
 
@@ -210,6 +212,7 @@ struct TextureBackend {
   kind u32;                    // KIND_...: the layout it rests in
   owned bool;                  // made by the device, and ended with the Texture
   device vulkan.Device;
+  fns DevFns;
   memory vulkan.DeviceMemory;
   baseMip u32 = 0u32;          // what the view sees: levels and layers
   mipCount u32 = 1u32;
@@ -311,7 +314,7 @@ pub struct Texture {
       imm vci = new vulkan.ImageViewCreateInfo(image: backend.image, viewType: viewType, format: vk,
         components: new vulkan.ComponentMapping(), subresourceRange: new vulkan.ImageSubresourceRange(aspectMask: aspectOf(vk),
         baseMipLevel: baseMip, levelCount: mips, baseArrayLayer: baseLayer, layerCount: layers));
-      if !check(vulkan.createImageView(backend.device, &vci, nullp(), &mut found), "vkCreateImageView") {
+      if !check(backend.fns.createImageView(backend.device, &vci, nullp(), &mut found), "vkCreateImageView") {
         return result;
       }
       imm slot = cache.entries + usize.from(cache.count);
@@ -331,12 +334,12 @@ pub struct Texture {
   // Its end, if the device made it, once the GPU is idle
   fn final(self &uni) {
     if backend.owned and backend.image.h != 0u64 {
-      vulkan.deviceWaitIdle(backend.device);
-      if backend.view.h != 0u64 { vulkan.destroyImageView(backend.device, backend.view, nullp()); }
-      endViews(backend.device, backend.views);
-      vulkan.destroyImage(backend.device, backend.image, nullp());
+      backend.fns.deviceWaitIdle(backend.device);
+      if backend.view.h != 0u64 { backend.fns.destroyImageView(backend.device, backend.view, nullp()); }
+      endViews(&backend.fns, backend.device, backend.views);
+      backend.fns.destroyImage(backend.device, backend.image, nullp());
     }
-    if backend.owned and backend.memory.h != 0u64 { vulkan.freeMemory(backend.device, backend.memory, nullp()); }
+    if backend.owned and backend.memory.h != 0u64 { backend.fns.freeMemory(backend.device, backend.memory, nullp()); }
   }
 }
 
@@ -356,12 +359,12 @@ fn newViews(capacity u32) *ViewCache {
 }
 
 // Destroy the views in 'cache', and free it
-fn endViews(device vulkan.Device, cache *ViewCache) {
+fn endViews(fns &DevFns, device vulkan.Device, cache *ViewCache) {
   if (cache as usize) == 0usize { return; }
   mut i = 0usize;
   while i < usize.from(cache.count) {
     imm e = cache.entries + i;
-    vulkan.destroyImageView(device, e.view, nullp());
+    fns.destroyImageView(device, e.view, nullp());
     i = i + 1usize;
   }
   libc.free(cache.entries as *u8);
@@ -399,6 +402,6 @@ pub struct SurfaceTexture {
 }
 
 fn noTexture() Texture {
-  new Texture(new TextureBackend(new vulkan.Image(0u64), new vulkan.ImageView(0u64), KIND_NONE, false, 0usize as vulkan.Device,
+  new Texture(new TextureBackend(new vulkan.Image(0u64), new vulkan.ImageView(0u64), KIND_NONE, false, 0usize as vulkan.Device, noDevFns(),
     new vulkan.DeviceMemory(0u64)), 0u32, 0u32, TEXTURE_FORMAT_UNDEFINED, 0u32);
 }

@@ -27,7 +27,7 @@ pub struct Device {
 
   // Wait until the GPU has finished everything submitted
   pub fn waitIdle(self &mut) {
-    if self.isValid() { check(vulkan.deviceWaitIdle(backend.device), "vkDeviceWaitIdle"); }
+    if self.isValid() { check(backend.fns.deviceWaitIdle(backend.device), "vkDeviceWaitIdle"); }
   }
 
   // Whether the GPU has finished frame 'frame' (the 'frameNumber' it was
@@ -45,7 +45,7 @@ pub struct Device {
     imm i = usize.from(frame % u64.from(FRAMES_IN_FLIGHT));
     if !queue.backend.frames[i].pending { return true; }
     mut fence = queue.backend.frames[i].fence;
-    vulkan.waitForFences(backend.device, 1u32, &mut fence as *vulkan.Fence, vulkan.TRUE, 0u64) == vulkan.SUCCESS;
+    backend.fns.waitForFences(backend.device, 1u32, &mut fence as *vulkan.Fence, vulkan.TRUE, 0u64) == vulkan.SUCCESS;
   }
 
   // Wait until the GPU has finished frame 'frame', and nothing submitted
@@ -55,7 +55,7 @@ pub struct Device {
     if frame >= frameNumber or self.frameDone(frame) { return; }
     imm i = usize.from(frame % u64.from(FRAMES_IN_FLIGHT));
     mut fence = queue.backend.frames[i].fence;
-    check(vulkan.waitForFences(backend.device, 1u32, &mut fence as *vulkan.Fence, vulkan.TRUE, NO_TIMEOUT),
+    check(backend.fns.waitForFences(backend.device, 1u32, &mut fence as *vulkan.Fence, vulkan.TRUE, NO_TIMEOUT),
       "vkWaitForFences");
   }
 
@@ -67,16 +67,16 @@ pub struct Device {
     mut fence = new vulkan.Fence(0u64);
     if self.isValid() {
       imm fci = new vulkan.FenceCreateInfo();
-      check(vulkan.createFence(backend.device, &fci, nullp(), &mut fence), "vkCreateFence");
+      check(backend.fns.createFence(backend.device, &fci, nullp(), &mut fence), "vkCreateFence");
     }
-    new Fence(backend.device, fence, false);
+    new Fence(backend.device, backend.fns, fence, false);
   }
 
   // A command encoder, recording into a command buffer of this frame's
   pub fn createCommandEncoder(self &mut) CommandEncoder {
     beginQueueFrame(&mut queue);
     imm cmd = nextCommandBuffer(&mut queue);
-    new CommandEncoder(new EncoderBackend(cmd));
+    new CommandEncoder(new EncoderBackend(cmd, queue.fns));
   }
 
   // A swapchain presenting to 'surface', its textures 'width' by 'height'
@@ -86,7 +86,7 @@ pub struct Device {
   // also keeps a depth texture of its size, made again with it
   // (TEXTURE_FORMAT_UNDEFINED: none). Check 'isValid'.
   pub fn createSwapChain(self &mut, surface &Surface, width u32, height u32, depthFormat u32) SwapChain {
-    mut sc = new SwapChain(new SwapChainBackend(backend.device, backend.physical, surface.backend.surface,
+    mut sc = new SwapChain(new SwapChainBackend(backend.device, backend.fns, backend.physical, backend.ifns, surface.backend.surface,
       new vulkan.SwapchainKHR(0u64), vulkan.FORMAT_UNDEFINED, 0u32, 0u32, false,
       new Array[vulkan.Image, 8] <- fill new vulkan.Image(0u64),
       new Array[vulkan.ImageView, 8] <- fill new vulkan.ImageView(0u64),
@@ -100,7 +100,7 @@ pub struct Device {
     mut i = 0usize;
     while i < 2usize {
       mut sem = new vulkan.Semaphore(0u64);
-      check(vulkan.createSemaphore(backend.device, &sci, nullp(), &mut sem), "vkCreateSemaphore");
+      check(backend.fns.createSemaphore(backend.device, &sci, nullp(), &mut sem), "vkCreateSemaphore");
       sc.backend.acquire[i] = sem;
       i = i + 1usize;
     }
@@ -126,8 +126,8 @@ pub struct Device {
     if (usage & BUFFER_USAGE_STORAGE) != 0u32 { vkUsage = vkUsage | vulkan.BUFFER_USAGE_STORAGE_BUFFER_BIT; }
     if (usage & BUFFER_USAGE_INDIRECT) != 0u32 { vkUsage = vkUsage | vulkan.BUFFER_USAGE_INDIRECT_BUFFER_BIT; }
     imm mapping = usage & (BUFFER_USAGE_MAP_READ | BUFFER_USAGE_MAP_WRITE);
-    mut b = new BufferBackend(backend.device, new vulkan.Buffer(0u64), new vulkan.DeviceMemory(0u64), nullp(), true);
-    if self.isValid() { b = allocateBuffer(backend.device, &queue.backend.memory, size, vkUsage, mapping); }
+    mut b = new BufferBackend(backend.device, backend.fns, new vulkan.Buffer(0u64), new vulkan.DeviceMemory(0u64), nullp(), true);
+    if self.isValid() { b = allocateBuffer(&backend.fns, backend.device, &queue.backend.memory, size, vkUsage, mapping); }
     new Buffer(b, size, usage);
   }
 
@@ -148,7 +148,7 @@ pub struct Device {
   // Check 'isValid'.
   pub fn createTexture(self &mut, desc &TextureDescriptor) Texture {
     mut result = new Texture(new TextureBackend(new vulkan.Image(0u64), new vulkan.ImageView(0u64), KIND_NONE, true,
-      backend.device, new vulkan.DeviceMemory(0u64)), desc.width, desc.height, desc.format, desc.usage,
+      backend.device, backend.fns, new vulkan.DeviceMemory(0u64)), desc.width, desc.height, desc.format, desc.usage,
       desc.mipLevelCount, desc.depthOrArrayLayers, desc.dimension);
     if !self.isValid() { return result; }
     imm attachment = (desc.usage & TEXTURE_USAGE_RENDER_ATTACHMENT) != 0u32;
@@ -223,7 +223,7 @@ pub struct Device {
     mut image = new vulkan.Image(0u64);
     mut memory = new vulkan.DeviceMemory(0u64);
     mut view = new vulkan.ImageView(0u64);
-    if !makeImageLevels(backend.device, &queue.backend.memory, desc.width, desc.height, format, vkUsage,
+    if !makeImageLevels(&backend.fns, backend.device, &queue.backend.memory, desc.width, desc.height, format, vkUsage,
         desc.mipLevelCount, desc.depthOrArrayLayers, flags, volume, &mut image, &mut memory, &mut view) {
       return result;
     }
@@ -237,7 +237,7 @@ pub struct Device {
     // of each level, and a few more
     result.backend.views = newViews(desc.mipLevelCount * (desc.depthOrArrayLayers + 2u32) + 8u32);
     imm cmd = uploadCommands(&mut queue);
-    if !isNull(cmd) { firstLayout(cmd, image, kind); }
+    if !isNull(cmd) { firstLayout(&backend.fns, cmd, image, kind); }
     result;
   }
 
@@ -248,9 +248,9 @@ pub struct Device {
     mut module = new vulkan.ShaderModule(0u64);
     if self.isValid() and spirv.len > 0usize and workgroupsWithinLimits(spirv) {
       imm ci = new vulkan.ShaderModuleCreateInfo(codeSize: spirv.len * 4usize, pCode: &spirv[0] as *u32);
-      check(vulkan.createShaderModule(backend.device, &ci, nullp(), &mut module), "vkCreateShaderModule");
+      check(backend.fns.createShaderModule(backend.device, &ci, nullp(), &mut module), "vkCreateShaderModule");
     }
-    new ShaderModule(new ShaderModuleBackend(backend.device, module));
+    new ShaderModule(new ShaderModuleBackend(backend.device, backend.fns, module));
   }
 
   // A bind group layout: the bindings a bind group of it has, each a
@@ -258,7 +258,7 @@ pub struct Device {
   // seen by the stages its 'visibility' names.
   // Bindings are numbered below MAX_BINDINGS. Check 'isValid'.
   pub fn createBindGroupLayout(self &, entries &Array[BindGroupLayoutEntry]) BindGroupLayout {
-    mut result = new BindGroupLayout(new BindGroupLayoutBackend(backend.device, new vulkan.DescriptorSetLayout(0u64),
+    mut result = new BindGroupLayout(new BindGroupLayoutBackend(backend.device, backend.fns, new vulkan.DescriptorSetLayout(0u64),
       new Array[u32, 16] <- fill 0u32, new Array[u32, 3] <- fill 0u32, new Array[u32, 3] <- fill 0u32));
     if !self.isValid() { return result; }
     if entries.len > usize.from(MAX_BINDINGS) {
@@ -296,7 +296,7 @@ pub struct Device {
     imm ci = new vulkan.DescriptorSetLayoutCreateInfo(bindingCount: u32.from(entries.len),
       pBindings: &bindings as *vulkan.DescriptorSetLayoutBinding);
     mut layout = new vulkan.DescriptorSetLayout(0u64);
-    check(vulkan.createDescriptorSetLayout(backend.device, &ci, nullp(), &mut layout), "vkCreateDescriptorSetLayout");
+    check(backend.fns.createDescriptorSetLayout(backend.device, &ci, nullp(), &mut layout), "vkCreateDescriptorSetLayout");
     result.backend.layout = layout;
     result;
   }
@@ -310,7 +310,7 @@ pub struct Device {
   pub fn createPipelineLayout(self &, bindGroupLayouts &Array[&BindGroupLayout], immediateSize u32) PipelineLayout {
     if bindGroupLayouts.len > usize.from(MAX_BIND_GROUPS) {
       fail("createPipelineLayout: more than 4 bind groups");
-      return new PipelineLayout(new PipelineLayoutBackend(backend.device, new vulkan.PipelineLayout(0u64)), 0u32);
+      return new PipelineLayout(new PipelineLayoutBackend(backend.device, backend.fns, new vulkan.PipelineLayout(0u64)), 0u32);
     }
     mut sets = new Array[vulkan.DescriptorSetLayout, 4] <- fill new vulkan.DescriptorSetLayout(0u64);
     mut buffers = new Array[u32, 3] <- fill 0u32;
@@ -330,18 +330,18 @@ pub struct Device {
     while s < 3usize {
       if buffers[s] > MAX_STORAGE_BUFFERS_PER_SHADER_STAGE or textures[s] > MAX_STORAGE_TEXTURES_PER_SHADER_STAGE {
         fail("createPipelineLayout: a stage sees more than 8 storage buffers or 4 storage textures (WebGPU's limits)");
-        return new PipelineLayout(new PipelineLayoutBackend(backend.device, new vulkan.PipelineLayout(0u64)), 0u32);
+        return new PipelineLayout(new PipelineLayoutBackend(backend.device, backend.fns, new vulkan.PipelineLayout(0u64)), 0u32);
       }
       s = s + 1usize;
     }
-    makePipelineLayout(backend.device, u32.from(bindGroupLayouts.len), &sets, immediateSize);
+    makePipelineLayout(&backend.fns, backend.device, u32.from(bindGroupLayouts.len), &sets, immediateSize);
   }
 
   // A pipeline layout with no bind groups, only 'immediateSize' bytes of
   // immediates (0 for none)
   pub fn createEmptyPipelineLayout(self &, immediateSize u32) PipelineLayout {
     imm sets = new Array[vulkan.DescriptorSetLayout, 4] <- fill new vulkan.DescriptorSetLayout(0u64);
-    makePipelineLayout(backend.device, 0u32, &sets, immediateSize);
+    makePipelineLayout(&backend.fns, backend.device, 0u32, &sets, immediateSize);
   }
 
   // A render pipeline, as 'desc' describes it: what its shaders are, how
@@ -351,7 +351,7 @@ pub struct Device {
   // render pass sets them to the whole target when it begins). Check
   // 'isValid'.
   pub fn createRenderPipeline(self &, desc &RenderPipelineDescriptor) RenderPipeline {
-    mut result = new RenderPipeline(new PipelineBackend(backend.device, new vulkan.Pipeline(0u64), desc.layout.backend.layout));
+    mut result = new RenderPipeline(new PipelineBackend(backend.device, backend.fns, new vulkan.Pipeline(0u64), desc.layout.backend.layout));
     if !self.isValid() { return result; }
 
     // The two stages
@@ -465,7 +465,7 @@ pub struct Device {
       layout: desc.layout.backend.layout, renderPass: new vulkan.RenderPass(0u64),
       basePipelineHandle: new vulkan.Pipeline(0u64));
     mut pipeline = new vulkan.Pipeline(0u64);
-    check(vulkan.createGraphicsPipelines(backend.device, new vulkan.PipelineCache(0u64), 1u32,
+    check(backend.fns.createGraphicsPipelines(backend.device, new vulkan.PipelineCache(0u64), 1u32,
       &ci as *vulkan.GraphicsPipelineCreateInfo, nullp(), &mut pipeline as *vulkan.Pipeline), "vkCreateGraphicsPipelines");
     result.backend.pipeline = pipeline;
     result;
@@ -474,7 +474,7 @@ pub struct Device {
   // A compute pipeline, as 'desc' describes it: its shader's entry point
   // and the layout of what it binds. Check 'isValid'.
   pub fn createComputePipeline(self &, desc &ComputePipelineDescriptor) ComputePipeline {
-    mut result = new ComputePipeline(new PipelineBackend(backend.device, new vulkan.Pipeline(0u64), desc.layout.backend.layout));
+    mut result = new ComputePipeline(new PipelineBackend(backend.device, backend.fns, new vulkan.Pipeline(0u64), desc.layout.backend.layout));
     if !self.isValid() or !desc.module.isValid() or !desc.layout.isValid() { return result; }
     mut name = String.from(desc.entryPoint);
     imm stage = new vulkan.PipelineShaderStageCreateInfo(stage: vulkan.SHADER_STAGE_COMPUTE_BIT,
@@ -482,7 +482,7 @@ pub struct Device {
     imm ci = new vulkan.ComputePipelineCreateInfo(stage: stage, layout: desc.layout.backend.layout,
       basePipelineHandle: new vulkan.Pipeline(0u64));
     mut pipeline = new vulkan.Pipeline(0u64);
-    check(vulkan.createComputePipelines(backend.device, new vulkan.PipelineCache(0u64), 1u32,
+    check(backend.fns.createComputePipelines(backend.device, new vulkan.PipelineCache(0u64), 1u32,
       &ci as *vulkan.ComputePipelineCreateInfo, nullp(), &mut pipeline as *vulkan.Pipeline), "vkCreateComputePipelines");
     result.backend.pipeline = pipeline;
     result;
@@ -494,7 +494,7 @@ pub struct Device {
   // 'encoder.resolveQuerySet'. The device must keep time
   // ('timestampPeriod' above 0). Check 'isValid'.
   pub fn createQuerySet(self &, type u32, count u32) QuerySet {
-    mut result = new QuerySet(new QuerySetBackend(backend.device, new vulkan.QueryPool(0u64)), type, count);
+    mut result = new QuerySet(new QuerySetBackend(backend.device, backend.fns, new vulkan.QueryPool(0u64)), type, count);
     if !self.isValid() { return result; }
     if type != QUERY_TYPE_TIMESTAMP or count == 0u32 or count > MAX_QUERY_COUNT or timestampPeriod <= 0. {
       fail("createQuerySet: timestamps only, 1 to 4096 of them, on a device that keeps time");
@@ -502,7 +502,7 @@ pub struct Device {
     }
     imm ci = new vulkan.QueryPoolCreateInfo(queryType: vulkan.QUERY_TYPE_TIMESTAMP, queryCount: count);
     mut pool = new vulkan.QueryPool(0u64);
-    check(vulkan.createQueryPool(backend.device, &ci, nullp(), &mut pool), "vkCreateQueryPool");
+    check(backend.fns.createQueryPool(backend.device, &ci, nullp(), &mut pool), "vkCreateQueryPool");
     result.backend.pool = pool;
     result;
   }
@@ -532,16 +532,16 @@ pub struct Device {
         ci.compareEnable = vulkan.TRUE;
         ci.compareOp = desc.compare - 1u32;      // Vulkan's order, from 0
       }
-      check(vulkan.createSampler(backend.device, &ci, nullp(), &mut sampler), "vkCreateSampler");
+      check(backend.fns.createSampler(backend.device, &ci, nullp(), &mut sampler), "vkCreateSampler");
     }
-    new Sampler(new SamplerBackend(backend.device, sampler));
+    new Sampler(new SamplerBackend(backend.device, backend.fns, sampler));
   }
 
   // A bind group of 'layout': what each of its bindings is given ('entries',
   // one for each binding the layout has, of the kind it has: a buffer, a
   // texture's view or a sampler). Check 'isValid'.
   pub fn createBindGroup(self &, layout &BindGroupLayout, entries &Array[BindGroupEntry]) BindGroup {
-    mut result = new BindGroup(new BindGroupBackend(backend.device, new vulkan.DescriptorPool(0u64), new vulkan.DescriptorSet(0u64)));
+    mut result = new BindGroup(new BindGroupBackend(backend.device, backend.fns, new vulkan.DescriptorPool(0u64), new vulkan.DescriptorSet(0u64)));
     if !self.isValid() { return result; }
     if entries.len > usize.from(MAX_BINDINGS) {
       fail("createBindGroup: more than 16 entries");
@@ -587,7 +587,7 @@ pub struct Device {
     imm pci = new vulkan.DescriptorPoolCreateInfo(maxSets: 1u32, poolSizeCount: u32.from(sizeCount),
       pPoolSizes: &sizes as *vulkan.DescriptorPoolSize);
     mut pool = new vulkan.DescriptorPool(0u64);
-    if !check(vulkan.createDescriptorPool(backend.device, &pci, nullp(), &mut pool), "vkCreateDescriptorPool") {
+    if !check(backend.fns.createDescriptorPool(backend.device, &pci, nullp(), &mut pool), "vkCreateDescriptorPool") {
       return result;
     }
     result.backend.pool = pool;
@@ -595,7 +595,7 @@ pub struct Device {
     imm ai = new vulkan.DescriptorSetAllocateInfo(descriptorPool: pool, descriptorSetCount: 1u32,
       pSetLayouts: &mut setLayout as *vulkan.DescriptorSetLayout);
     mut set = new vulkan.DescriptorSet(0u64);
-    if !check(vulkan.allocateDescriptorSets(backend.device, &ai, &mut set as *vulkan.DescriptorSet),
+    if !check(backend.fns.allocateDescriptorSets(backend.device, &ai, &mut set as *vulkan.DescriptorSet),
         "vkAllocateDescriptorSets") {
       return result;
     }
@@ -627,37 +627,37 @@ pub struct Device {
       }
       i = i + 1usize;
     }
-    vulkan.updateDescriptorSets(backend.device, u32.from(entries.len), &writes as *vulkan.WriteDescriptorSet, 0u32, nullp());
+    backend.fns.updateDescriptorSets(backend.device, u32.from(entries.len), &writes as *vulkan.WriteDescriptorSet, 0u32, nullp());
     result;
   }
 
   // Its end, after its buffers and swapchains, once the GPU is idle
   fn final(self &uni) {
     if !self.isValid() { return; }
-    vulkan.deviceWaitIdle(backend.device);
+    backend.fns.deviceWaitIdle(backend.device);
     mut i = 0usize;
     while i < 2usize {
       mut d = 0usize;
       while d < usize.from(queue.backend.frames[i].releasedCount) {
-        vulkan.destroyBuffer(backend.device, queue.backend.frames[i].released[d].buffer, nullp());
-        vulkan.freeMemory(backend.device, queue.backend.frames[i].released[d].memory, nullp());
+        backend.fns.destroyBuffer(backend.device, queue.backend.frames[i].released[d].buffer, nullp());
+        backend.fns.freeMemory(backend.device, queue.backend.frames[i].released[d].memory, nullp());
         d = d + 1usize;
       }
-      vulkan.destroyCommandPool(backend.device, queue.backend.frames[i].pool, nullp());
-      vulkan.destroyFence(backend.device, queue.backend.frames[i].fence, nullp());
+      backend.fns.destroyCommandPool(backend.device, queue.backend.frames[i].pool, nullp());
+      backend.fns.destroyFence(backend.device, queue.backend.frames[i].fence, nullp());
       mut r = 0usize;
       while r < usize.from(queue.backend.frames[i].retiredCount) {
-        vulkan.destroyBuffer(backend.device, queue.backend.frames[i].retired[r].buffer, nullp());
-        vulkan.freeMemory(backend.device, queue.backend.frames[i].retired[r].memory, nullp());
+        backend.fns.destroyBuffer(backend.device, queue.backend.frames[i].retired[r].buffer, nullp());
+        backend.fns.freeMemory(backend.device, queue.backend.frames[i].retired[r].memory, nullp());
         r = r + 1usize;
       }
       if queue.backend.frames[i].staging.buffer.h != 0u64 {
-        vulkan.destroyBuffer(backend.device, queue.backend.frames[i].staging.buffer, nullp());
-        vulkan.freeMemory(backend.device, queue.backend.frames[i].staging.memory, nullp());
+        backend.fns.destroyBuffer(backend.device, queue.backend.frames[i].staging.buffer, nullp());
+        backend.fns.freeMemory(backend.device, queue.backend.frames[i].staging.memory, nullp());
       }
       i = i + 1usize;
     }
-    vulkan.destroyDevice(backend.device, nullp());
+    backend.fns.destroyDevice(backend.device, nullp());
   }
 }
 
@@ -688,7 +688,7 @@ fn memoryType(props &vulkan.PhysicalDeviceMemoryProperties, bits u32, want u32) 
 
 // Memory of a type in 'bits' with 'want', of 'size' bytes: its own
 // allocation
-fn allocate(device vulkan.Device, props &vulkan.PhysicalDeviceMemoryProperties, req &vulkan.MemoryRequirements,
+fn allocate(fns &DevFns, device vulkan.Device, props &vulkan.PhysicalDeviceMemoryProperties, req &vulkan.MemoryRequirements,
     want u32) vulkan.DeviceMemory {
   mut memory = new vulkan.DeviceMemory(0u64);
   imm typeIndex = memoryType(props, req.memoryTypeBits, want);
@@ -697,7 +697,7 @@ fn allocate(device vulkan.Device, props &vulkan.PhysicalDeviceMemoryProperties, 
     return memory;
   }
   imm mai = new vulkan.MemoryAllocateInfo(allocationSize: req.size, memoryTypeIndex: typeIndex);
-  check(vulkan.allocateMemory(device, &mai, nullp(), &mut memory), "vkAllocateMemory");
+  check(fns.allocateMemory(device, &mai, nullp(), &mut memory), "vkAllocateMemory");
   memory;
 }
 
@@ -729,16 +729,16 @@ fn mappedMemoryType(props &vulkan.PhysicalDeviceMemoryProperties, bits u32, mapp
 // A buffer of 'size' bytes with Vulkan's 'usage', in memory of its own: the
 // CPU's, and mapped, if 'mapping' (MAP_READ, MAP_WRITE or both: how the CPU
 // uses it), else the GPU's
-fn allocateBuffer(device vulkan.Device, props &vulkan.PhysicalDeviceMemoryProperties, size u64, usage u32,
+fn allocateBuffer(fns &DevFns, device vulkan.Device, props &vulkan.PhysicalDeviceMemoryProperties, size u64, usage u32,
     mapping u32) BufferBackend {
-  mut result = new BufferBackend(device, new vulkan.Buffer(0u64), new vulkan.DeviceMemory(0u64), nullp(), true);
+  mut result = new BufferBackend(device, *fns, new vulkan.Buffer(0u64), new vulkan.DeviceMemory(0u64), nullp(), true);
   imm mapped = mapping != 0u32;
   imm bci = new vulkan.BufferCreateInfo(size: size, usage: usage, pQueueFamilyIndices: null);
   mut buffer = new vulkan.Buffer(0u64);
-  if !check(vulkan.createBuffer(device, &bci, nullp(), &mut buffer), "vkCreateBuffer") { return result; }
+  if !check(fns.createBuffer(device, &bci, nullp(), &mut buffer), "vkCreateBuffer") { return result; }
   result.buffer = buffer;
   mut req = zeroed[vulkan.MemoryRequirements]();
-  vulkan.getBufferMemoryRequirements(device, buffer, &mut req);
+  fns.getBufferMemoryRequirements(device, buffer, &mut req);
   mut memory = new vulkan.DeviceMemory(0u64);
   if mapped {
     imm typeIndex = mappedMemoryType(props, req.memoryTypeBits, mapping);
@@ -749,16 +749,16 @@ fn allocateBuffer(device vulkan.Device, props &vulkan.PhysicalDeviceMemoryProper
     result.coherent = (props.memoryTypes[usize.from(typeIndex)].propertyFlags
       & vulkan.MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0u32;
     imm mai = new vulkan.MemoryAllocateInfo(allocationSize: req.size, memoryTypeIndex: typeIndex);
-    check(vulkan.allocateMemory(device, &mai, nullp(), &mut memory), "vkAllocateMemory");
+    check(fns.allocateMemory(device, &mai, nullp(), &mut memory), "vkAllocateMemory");
   } else {
-    memory = allocate(device, props, &req, vulkan.MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    memory = allocate(fns, device, props, &req, vulkan.MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
   }
   if memory.h == 0u64 { return result; }
   result.memory = memory;
-  check(vulkan.bindBufferMemory(device, buffer, memory, 0u64), "vkBindBufferMemory");
+  check(fns.bindBufferMemory(device, buffer, memory, 0u64), "vkBindBufferMemory");
   if mapped {
     mut p = nullp();
-    if check(vulkan.mapMemory(device, memory, 0u64, vulkan.WHOLE_SIZE, 0u32, &mut p), "vkMapMemory") {
+    if check(fns.mapMemory(device, memory, 0u64, vulkan.WHOLE_SIZE, 0u32, &mut p), "vkMapMemory") {
       result.mapped = p;
     }
   }
@@ -767,15 +767,15 @@ fn allocateBuffer(device vulkan.Device, props &vulkan.PhysicalDeviceMemoryProper
 
 // A 2-D image 'width' by 'height' of 'format' and Vulkan's 'usage', in the
 // GPU's memory, of its own, and a view of all of it
-fn makeImage(device vulkan.Device, props &vulkan.PhysicalDeviceMemoryProperties, width u32, height u32,
+fn makeImage(fns &DevFns, device vulkan.Device, props &vulkan.PhysicalDeviceMemoryProperties, width u32, height u32,
     format u32, usage u32, image &mut vulkan.Image, memory &mut vulkan.DeviceMemory, view &mut vulkan.ImageView) bool {
-  makeImageLevels(device, props, width, height, format, usage, 1u32, 1u32, 0u32, false, image, memory, view);
+  makeImageLevels(fns, device, props, width, height, format, usage, 1u32, 1u32, 0u32, false, image, memory, view);
 }
 
 // The same, of 'levels' mip levels and 'layers' layers, made with 'flags'
 // (cube-compatible, say); the view is of every level and layer, 2-D or, with
 // several layers, a 2-D array. A 'volume' is 3-D, 'layers' deep, its view 3-D.
-fn makeImageLevels(device vulkan.Device, props &vulkan.PhysicalDeviceMemoryProperties, width u32, height u32,
+fn makeImageLevels(fns &DevFns, device vulkan.Device, props &vulkan.PhysicalDeviceMemoryProperties, width u32, height u32,
     format u32, usage u32, levels u32, layers u32, flags u32, volume bool, image &mut vulkan.Image,
     memory &mut vulkan.DeviceMemory, view &mut vulkan.ImageView) bool {
   mut imageType = vulkan.IMAGE_TYPE_2D;
@@ -789,24 +789,24 @@ fn makeImageLevels(device vulkan.Device, props &vulkan.PhysicalDeviceMemoryPrope
   imm ici = new vulkan.ImageCreateInfo(flags: flags, imageType: imageType, format: format,
     extent: new vulkan.Extent3D(width, height, depth), mipLevels: levels, arrayLayers: arrayLayers, usage: usage,
     pQueueFamilyIndices: null);
-  if !check(vulkan.createImage(device, &ici, nullp(), image), "vkCreateImage") { return false; }
+  if !check(fns.createImage(device, &ici, nullp(), image), "vkCreateImage") { return false; }
   mut req = zeroed[vulkan.MemoryRequirements]();
-  vulkan.getImageMemoryRequirements(device, *image, &mut req);
-  *memory = allocate(device, props, &req, vulkan.MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+  fns.getImageMemoryRequirements(device, *image, &mut req);
+  *memory = allocate(fns, device, props, &req, vulkan.MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
   if memory.h == 0u64 { return false; }
-  if !check(vulkan.bindImageMemory(device, *image, *memory, 0u64), "vkBindImageMemory") { return false; }
+  if !check(fns.bindImageMemory(device, *image, *memory, 0u64), "vkBindImageMemory") { return false; }
   mut viewType = vulkan.IMAGE_VIEW_TYPE_2D;
   if arrayLayers > 1u32 { viewType = vulkan.IMAGE_VIEW_TYPE_2D_ARRAY; }
   if volume { viewType = vulkan.IMAGE_VIEW_TYPE_3D; }
   imm vci = new vulkan.ImageViewCreateInfo(image: *image, viewType: viewType, format: format,
     components: new vulkan.ComponentMapping(), subresourceRange: new vulkan.ImageSubresourceRange(aspectMask: aspectOf(format),
     levelCount: levels, layerCount: arrayLayers));
-  check(vulkan.createImageView(device, &vci, nullp(), view), "vkCreateImageView");
+  check(fns.createImageView(device, &vci, nullp(), view), "vkCreateImageView");
 }
 
-fn makePipelineLayout(device vulkan.Device, setCount u32, sets &Array[vulkan.DescriptorSetLayout, 4],
+fn makePipelineLayout(fns &DevFns, device vulkan.Device, setCount u32, sets &Array[vulkan.DescriptorSetLayout, 4],
     immediateSize u32) PipelineLayout {
-  mut result = new PipelineLayout(new PipelineLayoutBackend(device, new vulkan.PipelineLayout(0u64)), immediateSize);
+  mut result = new PipelineLayout(new PipelineLayoutBackend(device, *fns, new vulkan.PipelineLayout(0u64)), immediateSize);
   if (device as *u8 as usize) == 0usize { return result; }
   if immediateSize > MAX_IMMEDIATE_SIZE or (immediateSize & 3u32) != 0u32 {
     fail("a pipeline layout's immediates are more than 128 bytes, or not a multiple of 4");
@@ -819,7 +819,7 @@ fn makePipelineLayout(device vulkan.Device, setCount u32, sets &Array[vulkan.Des
     pSetLayouts: sets as *vulkan.DescriptorSetLayout, pushConstantRangeCount: ranges,
     pPushConstantRanges: &range as *vulkan.PushConstantRange);
   mut layout = new vulkan.PipelineLayout(0u64);
-  check(vulkan.createPipelineLayout(device, &ci, nullp(), &mut layout), "vkCreatePipelineLayout");
+  check(fns.createPipelineLayout(device, &ci, nullp(), &mut layout), "vkCreatePipelineLayout");
   result.backend.layout = layout;
   result;
 }

@@ -78,10 +78,10 @@ extern {
   fn @c(system) RtlNtStatusToDosError(status u32) u32;
 
   // ws2_32
-  fn @c(system) WSAStartup(version u16, data *u8) i32;
-  fn @c(system) WSASocketW(af i32, kind i32, proto i32, info *u8, g u32, flags u32) usize;
-  fn @c(system) WSAGetLastError() i32;
-  fn @c(system) WSAIoctl(s usize, code u32, inBuf *u8, inLen u32, outBuf *u8, outLen u32,
+  fn @c(system) @initpure WSAStartup(version u16, data *u8) i32;
+  fn @c(system) @initpure WSASocketW(af i32, kind i32, proto i32, info *u8, g u32, flags u32) usize;
+  fn @c(system) @initpure WSAGetLastError() i32;
+  fn @c(system) @initpure WSAIoctl(s usize, code u32, inBuf *u8, inLen u32, outBuf *u8, outLen u32,
       returned &mut u32, ov *u8, completion *u8) i32;
   fn @c(system) WSARecv(s usize, bufs *WsaBuf, count u32, received *u32, flags &mut u32,
       ov *u8, completion *u8) i32;
@@ -91,7 +91,7 @@ extern {
       from *u8, fromLen &mut i32, ov *u8, completion *u8) i32;
   fn @c(system) WSASendTo(s usize, bufs *WsaBuf, count u32, sent *u32, flags u32,
       to *u8, toLen i32, ov *u8, completion *u8) i32;
-  fn @c(system) closesocket(s usize) i32;
+  fn @c(system) @initpure closesocket(s usize) i32;
   fn @c(system) bind(s usize, addr *u8, len i32) i32;
   fn @c(system) listen(s usize, backlog i32) i32;
   fn @c(system) getsockname(s usize, addr *u8, len &mut i32) i32;
@@ -202,26 +202,32 @@ const english = 0x409u32;
 // Winsock's start, once per process, and its two extension functions
 // ---------------------------------------------------------------------------
 
-imm startOnce Once;
-mut acceptExAddr usize = 0usize;
-mut connectExAddr usize = 0usize;
-mut startError u32 = 0u32;
+// What Winsock's start gave: AcceptEx's and ConnectEx's addresses (0 if it did
+// not get them) and the error that stopped it, 0 if none. Set in the module's
+// 'init' (iocore.cone) from 'startWinsock', and only read after
+struct WinsockStart {
+  acceptEx usize;
+  connectEx usize;
+  error u32;
+}
+
+imm acceptExAddr usize;
+imm connectExAddr usize;
+imm startError u32;
 
 // WSAStartup, then AcceptEx's and ConnectEx's addresses, asked of a socket
-// made for the purpose
-fn startWinsock() {
+// made for the purpose. Run by the module's 'init', so every program that
+// imports iocore has Winsock started before its 'main' and no loop starts it
+fn @initpure startWinsock() WinsockStart {
   if isWindows() {
-    imm data = libc.malloc(512usize);
-    imm r = WSAStartup(0x0202u16, data);
-    libc.free(data);
+    mut data = new Array[u64, 64] <- fill 0u64;     // WSADATA, 512 bytes
+    imm r = WSAStartup(0x0202u16, &mut data as *u8);
     if r != 0i32 {
-      startError = u32.from(r);
-      return;
+      return new WinsockStart(0usize, 0usize, u32.from(r));
     }
     imm s = WSASocketW(afInet, sockStream, ipprotoTcp, null, 0u32, wsaFlagOverlapped | wsaFlagNoHandleInherit);
     if s == invalidHandle {
-      startError = u32.from(WSAGetLastError());
-      return;
+      return new WinsockStart(0usize, 0usize, u32.from(WSAGetLastError()));
     }
     // WSAID_ACCEPTEX and WSAID_CONNECTEX
     mut accept = new Guid(0xb5367df1u32, 0xcbacu16, 0x11cfu16, new Array[u8, 8] <- fill 0u8);
@@ -237,18 +243,18 @@ fn startWinsock() {
       &mut fa as *u8, 8u32, &mut got, null, null);
     imm rc = WSAIoctl(s, sioGetExtensionFunctionPointer, &mut connect as *u8, 16u32,
       &mut fc as *u8, 8u32, &mut got, null, null);
+    mut err = 0u32;
     if ra != 0i32 or rc != 0i32 {
-      startError = u32.from(WSAGetLastError());
+      err = u32.from(WSAGetLastError());
     }
-    acceptExAddr = fa;
-    connectExAddr = fc;
     closesocket(s);
+    return new WinsockStart(fa, fc, err);
   }
+  new WinsockStart(0usize, 0usize, 0u32);
 }
 
 // Winsock started: 0, or the error that stopped it
 fn winsock() u32 {
-  startOnce.callOnce(&startWinsock);
   startError;
 }
 

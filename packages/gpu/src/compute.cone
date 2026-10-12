@@ -60,13 +60,14 @@ fn bindingWithinWebGPU(e &BindGroupLayoutEntry) bool {
 // A global barrier making what compute shaders wrote visible to everything
 // after (other dispatches, draws, indirect arguments, copies, the CPU once
 // the frame is done)
-fn afterCompute(cmd vulkan.CommandBuffer, dstStage u64) {
-  memoryBarrier(cmd, vulkan.PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, vulkan.ACCESS_2_SHADER_WRITE_BIT,
+fn afterCompute(fns &DevFns, cmd vulkan.CommandBuffer, dstStage u64) {
+  memoryBarrier(fns, cmd, vulkan.PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, vulkan.ACCESS_2_SHADER_WRITE_BIT,
     dstStage, vulkan.ACCESS_2_MEMORY_READ_BIT | vulkan.ACCESS_2_MEMORY_WRITE_BIT);
 }
 
 struct ComputePassBackend {
   cmd vulkan.CommandBuffer;
+  fns DevFns;
   open bool;
   layout vulkan.PipelineLayout;    // the bound pipeline's
   dispatched bool;                 // a dispatch since the last barrier
@@ -82,7 +83,7 @@ pub struct ComputePassEncoder {
   // Dispatch 'pipeline' from here on
   pub fn setPipeline(self &mut, pipeline &ComputePipeline) {
     if isNull(backend.cmd) { return; }
-    vulkan.cmdBindPipeline(backend.cmd, vulkan.PIPELINE_BIND_POINT_COMPUTE, pipeline.backend.pipeline);
+    backend.fns.cmdBindPipeline(backend.cmd, vulkan.PIPELINE_BIND_POINT_COMPUTE, pipeline.backend.pipeline);
     backend.layout = pipeline.backend.layout;
   }
 
@@ -94,7 +95,7 @@ pub struct ComputePassEncoder {
       return;
     }
     mut set = group.backend.set;
-    vulkan.cmdBindDescriptorSets(backend.cmd, vulkan.PIPELINE_BIND_POINT_COMPUTE, backend.layout, index, 1u32,
+    backend.fns.cmdBindDescriptorSets(backend.cmd, vulkan.PIPELINE_BIND_POINT_COMPUTE, backend.layout, index, 1u32,
       &mut set as *vulkan.DescriptorSet, 0u32, null);
   }
 
@@ -106,7 +107,7 @@ pub struct ComputePassEncoder {
       fail("setImmediates before setPipeline");
       return;
     }
-    vulkan.cmdPushConstants(backend.cmd, backend.layout, immediateStages(), offset, size, data);
+    backend.fns.cmdPushConstants(backend.cmd, backend.layout, immediateStages(), offset, size, data);
   }
 
   // Run the pipeline's shader in 'x' by 'y' by 'z' workgroups, each at most
@@ -119,7 +120,7 @@ pub struct ComputePassEncoder {
       return;
     }
     beforeDispatch(&mut backend);
-    vulkan.cmdDispatch(backend.cmd, x, y, z);
+    backend.fns.cmdDispatch(backend.cmd, x, y, z);
   }
 
   // The same, the three counts read by the GPU from 'buffer' at 'offset' (a
@@ -133,14 +134,14 @@ pub struct ComputePassEncoder {
       return;
     }
     beforeDispatch(&mut backend);
-    vulkan.cmdDispatchIndirect(backend.cmd, buffer.backend.buffer, offset);
+    backend.fns.cmdDispatchIndirect(backend.cmd, buffer.backend.buffer, offset);
   }
 
   // The end of the pass: what it wrote, visible to every command after it
   pub fn end(self &mut) {
     if !backend.open { return; }
     backend.open = false;
-    if backend.dispatched { afterCompute(backend.cmd, vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT); }
+    if backend.dispatched { afterCompute(&backend.fns, backend.cmd, vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT); }
     backend.dispatched = false;
   }
 }
@@ -149,7 +150,7 @@ pub struct ComputePassEncoder {
 // shaders and to its indirect arguments
 fn beforeDispatch(backend &mut ComputePassBackend) {
   if backend.dispatched {
-    afterCompute(backend.cmd, vulkan.PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | vulkan.PIPELINE_STAGE_2_DRAW_INDIRECT_BIT);
+    afterCompute(&backend.fns, backend.cmd, vulkan.PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | vulkan.PIPELINE_STAGE_2_DRAW_INDIRECT_BIT);
   }
   backend.dispatched = true;
 }
@@ -158,6 +159,7 @@ fn beforeDispatch(backend &mut ComputePassBackend) {
 
 struct QuerySetBackend {
   device vulkan.Device;
+  fns DevFns;
   pool vulkan.QueryPool;
 }
 
@@ -175,13 +177,13 @@ pub struct QuerySet {
   // No query set: what a variable holds on a device that keeps no time
   // (not valid)
   pub fn none() QuerySet {
-    new QuerySet(new QuerySetBackend(0usize as vulkan.Device, new vulkan.QueryPool(0u64)), QUERY_TYPE_TIMESTAMP, 0u32);
+    new QuerySet(new QuerySetBackend(0usize as vulkan.Device, noDevFns(), new vulkan.QueryPool(0u64)), QUERY_TYPE_TIMESTAMP, 0u32);
   }
 
   fn final(self &uni) {
     if self.isValid() {
-      vulkan.deviceWaitIdle(backend.device);
-      vulkan.destroyQueryPool(backend.device, backend.pool, nullp());
+      backend.fns.deviceWaitIdle(backend.device);
+      backend.fns.destroyQueryPool(backend.device, backend.pool, nullp());
     }
   }
 }
