@@ -314,6 +314,318 @@ fn instancingChecks(renderer &mut Renderer, device &mut Device, color &Texture, 
   renderer.clearScene();
 }
 
+// ---- 6. Shadows from beside the view ----
+
+fn topDown() Camera {
+  mut camera = Camera.make();
+  camera.fov = radians(40.);
+  camera.near = 0.1;
+  camera.far = 100.;
+  camera.lookAt(new Vec3(0., 12., 0.), new Vec3(0., 0., 0.), new Vec3(0., 0., -1.));
+  camera.background = new Color(0., 0., 0., 1.);
+  camera;
+}
+
+fn dark() Light {
+  Light.directional(new Vec3(0., -1., 0.), Color.gray(0.), Color.gray(0.));
+}
+
+fn shadowChecks(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer) {
+  imm ground = renderer.addMesh(device, &Mesh.plane(1, 1.));
+  imm cube = renderer.addMesh(device, &Mesh.cube(1.));
+  imm m = Material.plain(new Color(0.5, 0.5, 0.5, 1.));
+  imm lit = renderer.addMaterial(device, &m);
+  imm pm = PbrMaterial.standard(new Color(0.5, 0.5, 0.5, 1.), 0., 1.);
+  imm pbr = renderer.addPbrMaterial(device, &pm);
+  imm camera = topDown();
+  imm empty = DrawList.empty();
+  mut worst = 0.;
+  mut pass = 0;
+  while pass < 2 {
+    imm material = if pass == 0 { lit; } else { pbr; };
+    imm sunLight = sun(radians(45.), 0., 2.5132741, 0.1);
+    // The ground and, beside the view at x = 7, a box 8 high: its top edge's shadow lands at x = 6 - 8 = -2
+    mut list = DrawList.empty();
+    list.add(ground, material, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(40., 1., 40.)));
+    list.add(cube, material, Mat4.fromTrs(new Vec3(7., 4., 0.), Quat.identity(), new Vec3(1., 4., 1.)));
+    // and some small things in view and out of it, to be batched
+    mut extra = 0;
+    while extra < 12 {
+      list.add(cube, material, Mat4.fromTrs(new Vec3(f32.from(extra) * 3. - 18., 0.5, f32.from(extra % 4) * 3. - 6.), Quat.identity(), new Vec3(0.4, 0.5, 0.4)));
+      extra = extra + 1;
+    }
+    imm tiers = [ShadowSettings.high(), ShadowSettings.low()];
+    mut tier = 0usize;
+    while tier < 2usize {
+      mut s = tiers[tier];
+      s.distance = 40.;
+      renderer.setShadows(device, &s);
+      renderer.clearScene();
+      imm wantReal = pictureOf(renderer, device, color, depth, readback, &camera, &sunLight, &list);
+      mut i = 0usize;
+      while i < list.items.len() {
+        imm it = list.items[i];
+        renderer.addSceneItem(it.mesh, it.material, it.model, new Color(1., 1., 1., 1.));
+        i = i + 1usize;
+      }
+      renderer.vis.settings = new VisibilitySettings();
+      imm got = pictureOf(renderer, device, color, depth, readback, &camera, &sunLight, &empty);
+      expectUInt(u64.from(differing(&wantReal, &got, &mut worst)), 0u64, "a scene's shadows equal a list's, casters from beside the view");
+      expectUInt(u64.from(renderer.vis.stats.casterSets), u64.from(renderer.shadow.cascades.count), "each cascade gathered its own casters");
+      expect(renderer.vis.stats.casters > 0u32, "and found some");
+      renderer.vis.settings.shadowCulling = false;
+      imm lost = pictureOf(renderer, device, color, depth, readback, &camera, &sunLight, &empty);
+      imm n = differing(&wantReal, &lost, &mut worst);
+      eprint <- "measured shadows from beside the view, casters from the view's own set: "; eprint <- u64.from(n); eprint <- " bytes differ\n";
+      expect(n > 500u32, "casters taken from what the view sees lose a shadow from beside it");
+      tier = tier + 1usize;
+    }
+    renderer.clearScene();
+    pass = pass + 1;
+  }
+  renderer.disableShadows(device);
+}
+
+fn localShadowChecks(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer, pointLight bool) {
+  imm ground = renderer.addMesh(device, &Mesh.plane(1, 1.));
+  imm cube = renderer.addMesh(device, &Mesh.cube(1.));
+  imm m = Material.plain(new Color(0.5, 0.5, 0.5, 1.));
+  imm lit = renderer.addMaterial(device, &m);
+  imm camera = topDown();
+  imm empty = DrawList.empty();
+  renderer.environmentStrength = 0.;
+  renderer.lights.clear();
+  imm at = new Vec3(12., 12., 0.);
+  imm lamp = if pointLight {
+    renderer.lights.addPoint(at, Color.gray(1.), 3000., 40.);
+  } else {
+    renderer.lights.addSpot(at, new Vec3(-12., -12., 0.), Color.gray(1.), 3000., 40., radians(40.), radians(50.));
+  };
+  renderer.lights.setCastsShadow(lamp, true);
+  imm settings = LightShadowSettings.medium();
+  renderer.setLightShadows(device, &settings);
+  mut list = DrawList.empty();
+  list.add(ground, lit, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(40., 1., 40.)));
+  list.add(cube, lit, Mat4.fromTrs(new Vec3(7., 4., 0.), Quat.identity(), new Vec3(1., 4., 1.)));
+  mut i = 0usize;
+  while i < list.items.len() {
+    imm it = list.items[i];
+    renderer.addSceneItem(it.mesh, it.material, it.model, new Color(1., 1., 1., 1.));
+    i = i + 1usize;
+  }
+  renderer.vis.settings = VisibilitySettings.off();
+  imm light = dark();
+  imm want = pictureOf(renderer, device, color, depth, readback, &camera, &light, &list);
+  imm viaOff = pictureOf(renderer, device, color, depth, readback, &camera, &light, &empty);
+  mut worst = 0.;
+  expectUInt(u64.from(differing(&want, &viaOff, &mut worst)), 0u64, "a light's shadows, the scene with everything off");
+  expect(renderer.lights.isShadowed(lamp), "the light has a shadow view");
+  renderer.vis.settings = new VisibilitySettings();
+  imm got = pictureOf(renderer, device, color, depth, readback, &camera, &light, &empty);
+  expectUInt(u64.from(differing(&want, &got, &mut worst)), 0u64, "a light's shadows from a box beside the view, casters gathered by the face's volume");
+  expect(renderer.vis.stats.casterSets >= 1u32, "the light's faces gathered their own casters");
+  renderer.vis.settings.shadowCulling = false;
+  imm lost = pictureOf(renderer, device, color, depth, readback, &camera, &light, &empty);
+  expect(differing(&want, &lost, &mut worst) > 300u32, "from the view's own set the shadow is lost");
+  renderer.clearScene();
+  renderer.lights.clear();
+  imm off = LightShadowSettings.off();
+  renderer.setLightShadows(device, &off);
+  renderer.environmentStrength = 1.;
+}
+
+// ---- 7 and 8. Levels and ranges, by what share of a footprint each draws ----
+
+// A square 4 across in the plane z = 0 facing 'normal'
+fn quad(normal Vec3) Mesh {
+  mut m = Mesh.empty();
+  m.positions.push(new Vec3(-2., -2., 0.));
+  m.positions.push(new Vec3(2., -2., 0.));
+  m.positions.push(new Vec3(2., 2., 0.));
+  m.positions.push(new Vec3(-2., 2., 0.));
+  mut k = 0;
+  while k < 4 {
+    m.normals.push(normal);
+    m.uvs.push(new Vec2(0., 0.));
+    k = k + 1;
+  }
+  m.indices.push(0u32); m.indices.push(1u32); m.indices.push(2u32);
+  m.indices.push(0u32); m.indices.push(2u32); m.indices.push(3u32);
+  m;
+}
+
+fn faceCamera(distance f32) Camera {
+  mut camera = Camera.make();
+  camera.fov = radians(40.);
+  camera.near = 0.1;
+  camera.far = 400.;
+  camera.lookAt(new Vec3(0., 0., distance), new Vec3(0., 0., 0.), new Vec3(0., 1., 0.));
+  camera.background = new Color(0., 0., 0., 1.);
+  camera;
+}
+
+fn frontLight() Light {
+  Light.directional(new Vec3(0., 0., -1.), Color.gray(1.5), Color.gray(0.1));
+}
+
+// Of the pixels that 'a' and 'b' draw differently: how many 'p' draws as 'a',
+// as 'b', and as neither
+fn classify(a &List[u8], b &List[u8], p &List[u8], ofA &mut u32, ofB &mut u32, neither &mut u32) u32 {
+  mut total = 0u32;
+  *ofA = 0u32;
+  *ofB = 0u32;
+  *neither = 0u32;
+  mut i = 0usize;
+  while i < BYTES {
+    mut differs = false;
+    mut matchA = true;
+    mut matchB = true;
+    mut c = 0usize;
+    while c < 3usize {
+      if *a[i + c] != *b[i + c] { differs = true; }
+      if *p[i + c] != *a[i + c] { matchA = false; }
+      if *p[i + c] != *b[i + c] { matchB = false; }
+      c = c + 1usize;
+    }
+    if differs {
+      total = total + 1u32;
+      if matchA { *ofA = *ofA + 1u32; } elif matchB { *ofB = *ofB + 1u32; } else { *neither = *neither + 1u32; }
+    }
+    i = i + 4usize;
+  }
+  total;
+}
+
+fn levelChecks(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer) {
+  imm meshA = renderer.addMesh(device, &quad(new Vec3(0., 0., 1.)));
+  imm meshB = renderer.addMesh(device, &quad(new Vec3(0.6, 0., 0.8)));
+  imm m = Material.plain(new Color(0.9, 0.9, 0.9, 1.));
+  imm lit = renderer.addMaterial(device, &m);
+  imm light = frontLight();
+  imm empty = DrawList.empty();
+  imm model = Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(1., 1., 1.));
+  // The two levels alone, at the far distance
+  mut la = DrawList.empty();
+  la.add(meshA, lit, model);
+  mut lb = DrawList.empty();
+  lb.add(meshB, lit, model);
+  imm far = faceCamera(20.);
+  imm pictureA = pictureOf(renderer, device, color, depth, readback, &far, &light, &la);
+  imm pictureB = pictureOf(renderer, device, color, depth, readback, &far, &light, &lb);
+
+  // The chain: A while at least 120 pixels, B under
+  mut chain = LodChain.empty(0.1);
+  chain.add(meshA, 120.);
+  chain.add(meshB, 0.);
+  imm h = renderer.addSceneItem(meshA, lit, model, new Color(1., 1., 1., 1.));
+  renderer.setSceneLod(h, &chain);
+  renderer.vis.settings = new VisibilitySettings();
+  renderer.vis.settings.fadeSeconds = 0.5;
+  renderer.vis.settings.timeStep = 0.1;
+  // Near: level 0 alone, first sight (the quad is 4 across: radius 2.83, at 10 away about 199 pixels)
+  imm near10 = faceCamera(10.);
+  drawFrame(renderer, device, color, depth, readback, &near10, &light, &empty);
+  expectUInt(u64.from(renderer.instancesDrawn), 1u64, "near: one draw");
+  // Far: a cross-fade
+  mut ofA = 0u32;
+  mut ofB = 0u32;
+  mut neither = 0u32;
+  mut worstShare = 0.;
+  mut k = 1;
+  while k <= 5 {
+    imm picture = pictureOf(renderer, device, color, depth, readback, &far, &light, &empty);
+    imm total = classify(&pictureA, &pictureB, &picture, &mut ofA, &mut ofB, &mut neither);
+    imm t = f32.from(k) * 0.2;
+    imm shareA = f32.from(ofA) / f32.from(total);
+    imm shareB = f32.from(ofB) / f32.from(total);
+    eprint <- "measured cross-fade frame "; eprint <- u64.from(u32.from(k)); eprint <- ": of "; eprint <- u64.from(total);
+    eprint <- " pixels the old level draws "; eprint <- shareA; eprint <- " (want "; eprint <- (1. - t);
+    eprint <- "), the new "; eprint <- shareB; eprint <- " (want "; eprint <- t; eprint <- "), "; eprint <- u64.from(neither); eprint <- " neither\n";
+    expect(total > 3000u32, "the footprint is big enough to count");
+    expectUInt(u64.from(neither), 0u64, "every pixel is drawn by one level or the other, as one of them draws it");
+    expect(absf(shareA - (1. - t)) <= 0.03 and absf(shareB - t) <= 0.03, "the cross-fade's shares fall and rise by 0.2 a frame");
+    if k == 5 { expectUInt(u64.from(ofB), u64.from(total), "after five frames the new level alone"); }
+    expectUInt(u64.from(renderer.instancesDrawn), if k < 5 { 2u64; } else { 1u64; }, "two draws while fading, then one");
+    k = k + 1;
+  }
+  // With cross-fade off, a switch is a pop
+  renderer.vis.settings.crossFade = false;
+  drawFrame(renderer, device, color, depth, readback, &near10, &light, &empty);
+  imm popped = pictureOf(renderer, device, color, depth, readback, &far, &light, &empty);
+  imm popTotal = classify(&pictureA, &pictureB, &popped, &mut ofA, &mut ofB, &mut neither);
+  expectUInt(u64.from(ofB), u64.from(popTotal), "cross-fade off: the new level alone at once");
+  renderer.clearScene();
+}
+
+fn rangeChecks(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer) {
+  imm meshA = renderer.addMesh(device, &quad(new Vec3(0., 0., 1.)));
+  imm m = Material.plain(new Color(0.9, 0.9, 0.9, 1.));
+  imm lit = renderer.addMaterial(device, &m);
+  imm light = frontLight();
+  imm empty = DrawList.empty();
+  imm model = Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(5., 5., 5.));
+  imm h = renderer.addSceneItem(meshA, lit, model, new Color(1., 1., 1., 1.));
+  renderer.setSceneRange(h, 0., 100., 40.);
+  renderer.vis.settings = new VisibilitySettings();
+  imm bg = DrawList.empty();
+  mut ofFull = 0u32;
+  mut ofBg = 0u32;
+  mut neither = 0u32;
+  mut worst = 0.;
+  mut dists = [50., 80., 90., 101.];
+  mut wants = [1., 0.5, 0.25, 0.];
+  mut k = 0usize;
+  while k < 4usize {
+    imm camera = faceCamera(dists[k]);
+    renderer.vis.settings.ranges = false;
+    imm full = pictureOf(renderer, device, color, depth, readback, &camera, &light, &empty);
+    renderer.vis.settings.ranges = true;
+    imm got = pictureOf(renderer, device, color, depth, readback, &camera, &light, &empty);
+    // Against the picture with the quad and the picture of nothing (a blank)
+    mut blank = List[u8].empty();
+    mut i = 0usize;
+    while i < BYTES {
+      blank.push(if i % 4usize == 3usize { 255u8; } else { 0u8; });
+      i = i + 1usize;
+    }
+    imm total = classify(&full, &blank, &got, &mut ofFull, &mut ofBg, &mut neither);
+    imm share = f32.from(ofFull) / f32.from(total);
+    eprint <- "measured a range's fade at "; eprint <- dists[k]; eprint <- " away: "; eprint <- share; eprint <- " of "; eprint <- u64.from(total);
+    eprint <- " pixels drawn (want "; eprint <- wants[k]; eprint <- "), "; eprint <- u64.from(neither); eprint <- " neither\n";
+    expectUInt(u64.from(neither), 0u64, "a faded pixel is the quad's or the background's");
+    expect(absf(share - wants[k]) <= 0.04, "the share of the quad a range's fade draws");
+    k = k + 1usize;
+  }
+  expectUInt(u64.from(renderer.vis.stats.rangeCulled), 1u64, "past the end: culled");
+  renderer.clearScene();
+}
+
+// ---- 5. Layers ----
+
+fn layerChecks(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer) {
+  imm cube = renderer.addMesh(device, &Mesh.cube(1.));
+  imm m = Material.plain(new Color(0.9, 0.5, 0.2, 1.));
+  imm lit = renderer.addMaterial(device, &m);
+  imm a = renderer.addSceneItem(cube, lit, Mat4.fromTranslation(new Vec3(-3., 0., 0.)), new Color(1., 1., 1., 1.));
+  imm b = renderer.addSceneItem(cube, lit, Mat4.fromTranslation(new Vec3(3., 0., 0.)), new Color(1., 1., 1., 1.));
+  renderer.setSceneLayers(a, 2u32);
+  renderer.vis.settings = new VisibilitySettings();
+  mut view = RenderView.create(renderer, device, 64u32, 64u32);
+  imm camera = faceCamera(14.);
+  imm light = frontLight();
+  view.layerMask = 1u32;
+  view.render(renderer, device, &camera, &light, &DrawList.empty(), 1u32);
+  expectUInt(u64.from(renderer.vis.stats.drawn), 1u64, "a view on layer 1 draws the one item on layer 1");
+  expectUInt(u64.from(renderer.vis.stats.layerCulled), 1u64, "and not the one on layer 2");
+  view.layerMask = 3u32;
+  view.render(renderer, device, &camera, &light, &DrawList.empty(), 1u32);
+  expectUInt(u64.from(renderer.vis.stats.drawn), 2u64, "on layers 1 and 2: both");
+  expectUInt(u64.from(renderer.vis.layerMask), u64.from(LAYERS_ALL), "the layer mask is the view's only for its picture");
+  device.endFrame();
+  device.waitIdle();
+  renderer.clearScene();
+}
+
 fn main() i32 {
   mut instance = Instance.create("render visibility");
   require(instance.isValid(), "a Vulkan 1.3 instance");
@@ -342,8 +654,15 @@ fn main() i32 {
   instancingChecks(&mut renderer, &mut device, &color, &depth, &readback, false, "instanced equals individual draws (lit)");
   instancingChecks(&mut renderer, &mut device, &color, &depth, &readback, true, "instanced equals individual draws (physically based)");
 
+  levelChecks(&mut renderer, &mut device, &color, &depth, &readback);
+  rangeChecks(&mut renderer, &mut device, &color, &depth, &readback);
+  layerChecks(&mut renderer, &mut device, &color, &depth, &readback);
+  shadowChecks(&mut renderer, &mut device, &color, &depth, &readback);
+  localShadowChecks(&mut renderer, &mut device, &color, &depth, &readback, true);
+  localShadowChecks(&mut renderer, &mut device, &color, &depth, &readback, false);
+
   device.waitIdle();
-  eprint <- "measured validation messages: "; eprint <- u64.from(validationMessages()); eprint <- "\n";
+  eprint <- "measured validation messages: ";eprint <- u64.from(validationMessages()); eprint <- "\n";
   expectUInt(u64.from(validationMessages()), 0u64, "no validation messages");
   expectUInt(u64.from(failures()), 0u64, "no Vulkan failures");
   done();
