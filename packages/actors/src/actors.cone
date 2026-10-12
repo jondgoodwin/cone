@@ -352,11 +352,12 @@
 //
 // 'actors.stats()' answers what the workers have done so far (Stats:
 // workers; messages handled; turns, an actor taken from a queue and run;
-// steals; loop pieces stolen), counts read without stopping them; before the first actor, all
-// 0; once stopped, the run's totals. 'actors.workerIndex()' is the index of
-// the worker running the caller, 0 up to the number of workers less 1, or
-// actors.noWorker on any other thread: for tests, and for per-worker
-// tallies.
+// steals; loop pieces stolen), counts read without stopping them, safe on any
+// thread at any time, even while the stop frees the runtime (STATS, below);
+// before the first actor, all 0; once stopped, the run's totals.
+// 'actors.workerIndex()' is the index of the worker running the caller, 0 up
+// to the number of workers less 1, or actors.noWorker on any other thread: for
+// tests, and for per-worker tallies.
 //
 // HOW IT WORKS. The mailbox is Vyukov's intrusive MPSC queue, as Pony's
 // runtime has it (messageq.c): a singly linked list of nodes, each a
@@ -1260,10 +1261,8 @@ struct Worker {
   pub index u32;
   pub tick u32;
   pub rng u32;
-  pub messages u64;            // these three: Relaxed stores, for stats()
-  pub activations u64;
-  pub steals u64;
-  pub gap3 Array[u8, 64];
+  pub stat *StatSlot;          // this worker's counts for stats(), in the block that outlives the stop (STATS, below), not in this struct, which the stop frees
+  pub gap3 Array[u8, 80];
   pub ring Array[*Header, 1024];
   pub gap4 Array[u8, 64];
   pub tasks TaskDeque;         // the loop pieces this worker has split off (parallel.cone)
@@ -1291,7 +1290,6 @@ struct Sched {
   pub threads *thread.Thread[u32];
   pub extTasks TaskDeque;      // the pieces of a loop begun off the workers (parallel.cone)
   pub stealRot u32;            // where the next steal of a piece starts looking (atomic)
-  pub taskSteals u64;          // pieces stealTask took (atomic, Relaxed): the oldest of another worker's deque, or of the shared one when a worker idle of actors or a thread waiting on a loop looks there; not what a worker takes from the shared deque ahead of its actors
   pub liveScheduled u64;       // loops begun with parallelRangeThen not yet finished (atomic)
 }
 
@@ -1325,6 +1323,14 @@ fn tally(p *u64, n u64) {
 // sends, else on the inject queue
 fn schedule(h *Header) {
   imm s = running.load() as *Sched;
+  // Every caller has checked that the runtime runs (a send, a reply) or
+  // started it (a new actor), so s is 0 here only if the stop finished
+  // meanwhile on another thread: a thread that kept sending or making actors
+  // while the program ended, which the finalizer's notes say must be joined
+  // first. The same panic as the send's own check, not a null Sched.
+  if s as usize == 0usize {
+    die("actors: an actor made runnable after the runtime stopped");
+  }
   imm w = me as *Worker;
   if w as usize != 0usize and (*w).sched as usize == s as usize {
     imm startedp = &(*w).started as *u64;
@@ -1438,7 +1444,7 @@ fn stealFrom(w *Worker, v *Worker) *Header {
       if k > 1u64 {
         mem.atomicStore[u64](&(*w).tail as *u64, ot + k - 1u64, MemOrder.Release);
       }
-      tally(&(*w).steals as *u64, 1u64);
+      tally(&(*(*w).stat).steals as *u64, 1u64);
       return run;
     }
   }
@@ -1597,8 +1603,9 @@ fn runActor(w *Worker, h *Header) {
   imm s = (*w).sched;
   imm run = (*h).run;
   imm n = run(h, (*s).batch);
-  tally(&(*w).messages as *u64, u64.from(n));
-  tally(&(*w).activations as *u64, 1u64);
+  imm stat = (*w).stat;
+  tally(&(*stat).messages as *u64, u64.from(n));
+  tally(&(*stat).activations as *u64, 1u64);
   // The last behaviour began a 'parallel each' and has returned: the actor is
   // neither queued again nor marked idle, but waits for its loop, its mailbox
   // taking messages meanwhile; the loop begins now, on this worker
@@ -1744,30 +1751,27 @@ imm chosenBatch Atomic[u32];
 // Starts the workers once, however many threads start a first actor at once
 imm startOnce sync.Once;
 
-// A run's totals, each field an atomic so that 'stats' on any thread reads them
-// while the stop writes them
-struct StatsCell {
-  workers Atomic[u32];
-  messages Atomic[u64];
-  activations Atomic[u64];
-  steals Atomic[u64];
-  taskSteals Atomic[u64];
-
-  fn set(self &, st Stats) {
-    workers.store(st.workers);
-    messages.store(st.messages);
-    activations.store(st.activations);
-    steals.store(st.steals);
-    taskSteals.store(st.taskSteals);
-  }
-
-  fn get(self &) Stats {
-    new Stats(workers.load(), messages.load(), activations.load(), steals.load(), taskSteals.load());
-  }
+// STATS. 'stats' may be called on any thread at any time, including while the
+// stop frees the Sched and the Workers, so it reads nothing in them. What it
+// answers lives in memory that outlives the runtime: one StatSlot a worker,
+// in a single block the first start allocates and nothing frees (a few dozen
+// bytes a worker, in a program that starts the workers once and ends), and
+// the loop pieces stolen, which threads that are no worker count too, in one
+// atomic. A worker counts into its own slot with Relaxed stores, as it did in
+// its Worker, one tally a turn rather than a contended add a message;
+// 'stats' sums the slots. After the stop the slots are the run's totals.
+// Published slots first, then their number, both before the workers run; a
+// 'stats' that finds no number answers all 0.
+struct StatSlot {
+  pub messages u64;            // messages handled
+  pub activations u64;         // turns
+  pub steals u64;              // times a steal took actors from another worker's queue
+  pub gap Array[u8, 40];       // a slot is a cache line, so that no two workers' slots share one
 }
 
-// The run's totals, once the workers have stopped; all 0 before
-imm stoppedStats StatsCell;
+imm statSlots Atomic[usize];   // the address of the first slot, or 0 before the workers have started
+imm statWorkers Atomic[u32];   // how many slots; 0 before the workers have started
+imm taskStealsTotal Atomic[u64];   // pieces stealTask took (Relaxed): the oldest of another worker's deque, or of the shared one when a worker idle of actors or a thread waiting on a loop looks there; not what a worker takes from the shared deque ahead of its actors
 
 fn @initpure init() {
   startOnce = sync.Once.make();
@@ -1777,8 +1781,9 @@ fn @initpure init() {
   running = Atomic[usize].of(0usize);
   chosenWorkers = Atomic[u32].of(0u32);
   chosenBatch = Atomic[u32].of(defaultBatch);
-  stoppedStats = new StatsCell(Atomic[u32].of(0u32), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
-    Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+  statSlots = Atomic[usize].of(0usize);
+  statWorkers = Atomic[u32].of(0u32);
+  taskStealsTotal = Atomic[u64].of(0u64);
   futuresLive = Atomic[usize].of(0usize);
   futuresMade = Atomic[u64].of(0u64);
 }
@@ -1816,18 +1821,27 @@ fn startWorkers() {
   imm s = libc.calloc(1usize, mem.sizeof[Sched]()) as *Sched;
   imm ws = libc.calloc(usize.from(n), mem.sizeof[Worker]()) as *Worker;
   imm ts = libc.malloc(usize.from(n) * mem.sizeof[thread.Thread[u32]]()) as *thread.Thread[u32];
-  if s as usize == 0usize or ws as usize == 0usize or ts as usize == 0usize {
+  // The stats slots, zeroed, a cache line each (the block is 16-aligned, so
+  // one more line is allocated and the first slot is rounded up to a line).
+  // Never freed: stats() reads them after the stop has freed the rest.
+  imm slotBytes = mem.sizeof[StatSlot]();
+  imm block = libc.calloc(usize.from(n) + 1usize, slotBytes) as usize;
+  if s as usize == 0usize or ws as usize == 0usize or ts as usize == 0usize or block == 0usize {
     die("actors: out of memory for the runtime");
   }
+  imm slots = (block + slotBytes - 1usize) / slotBytes * slotBytes;
   (*s).nworkers = n;
   imm chosenB = chosenBatch.load();
   (*s).batch = if chosenB == 0u32 {1u32;} else {chosenB;};
   (*s).workers = ws;
   (*s).threads = ts;
+  statSlots.store(slots);
+  statWorkers.store(n);
   running.store(s as usize);
   mut i = 0u32;
   while i < n {
     imm w = workerAt(s, i);
+    (*w).stat = (slots + usize.from(i) * slotBytes) as *StatSlot;
     (*w).sched = s;
     (*w).index = i;
     (*w).rng = (2463534242u32 ^ ((i + 1u32) * 7919u32)) | 1u32;
@@ -1881,36 +1895,32 @@ fn stopWorkers() {
     t.join();
     i = i + 1u32;
   }
-  stoppedStats.set(totals(s));
   running.store(0usize);
   libc.free((*s).threads as *u8);
   libc.free((*s).workers as *u8);
   libc.free(s as *u8);
 }
 
-// The workers' counts, summed
-fn totals(s *Sched) Stats {
-  mut st = new Stats((*s).nworkers, 0u64, 0u64, 0u64,
-    mem.atomicLoad[u64](&(*s).taskSteals as *u64, MemOrder.Relaxed));
+// What the workers have done so far, read without stopping them: all 0
+// before the first actor, the run's totals once they have stopped. Only the
+// stats slots are read, never the Sched or a Worker (STATS, above), so a call
+// on any thread is safe while the stop frees them.
+pub fn stats() Stats {
+  imm n = statWorkers.load();
+  if n == 0u32 {
+    return new Stats(0u32, 0u64, 0u64, 0u64, 0u64);
+  }
+  imm slots = statSlots.load();
+  mut st = new Stats(n, 0u64, 0u64, 0u64, taskStealsTotal.loadOrdered(MemOrder.Relaxed));
   mut i = 0u32;
-  while i < (*s).nworkers {
-    imm w = workerAt(s, i);
-    st.messages = st.messages + mem.atomicLoad[u64](&(*w).messages as *u64, MemOrder.Relaxed);
-    st.activations = st.activations + mem.atomicLoad[u64](&(*w).activations as *u64, MemOrder.Relaxed);
-    st.steals = st.steals + mem.atomicLoad[u64](&(*w).steals as *u64, MemOrder.Relaxed);
+  while i < n {
+    imm slot = (slots + usize.from(i) * mem.sizeof[StatSlot]()) as *StatSlot;
+    st.messages = st.messages + mem.atomicLoad[u64](&(*slot).messages as *u64, MemOrder.Relaxed);
+    st.activations = st.activations + mem.atomicLoad[u64](&(*slot).activations as *u64, MemOrder.Relaxed);
+    st.steals = st.steals + mem.atomicLoad[u64](&(*slot).steals as *u64, MemOrder.Relaxed);
     i = i + 1u32;
   }
   st;
-}
-
-// What the workers have done so far, read without stopping them: all 0
-// before the first actor, the run's totals once they have stopped
-pub fn stats() Stats {
-  imm s = running.load() as *Sched;
-  if s as usize == 0usize {
-    return stoppedStats.get();
-  }
-  totals(s);
 }
 
 // The index of the worker running the caller, 0 up to the number of workers
