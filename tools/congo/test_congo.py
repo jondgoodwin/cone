@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 from pathlib import Path
 
@@ -1349,6 +1350,27 @@ class Scenarios(unittest.TestCase):
                                     f"{folder.name}:\n{run.stdout}{run.stderr}")
         self.assertIn("oslayer", seen)
         self.assertIn("webgl", seen)
+
+    def test_conec_reports_a_sane_compile_time(self):
+        # conec's closing line gives the time the compile took. On Linux the
+        # timer once read only the nanoseconds within the current second, so a
+        # stage that crossed a second boundary wrapped the unsigned total to
+        # 2^64 ns ("1.84467e+10 sec"). Only a boundary falling inside a timed
+        # stage wrapped (3 compiles of this program in 60 on the VM), so the
+        # compiles go on for three seconds, each a small positive time: the old
+        # timer failed this most runs, the fixed one never does
+        src = self.root / "timed.cone"
+        write(src, "mod timed;\nfn main() {}\n")
+        out = self.root / "timed-out"
+        out.mkdir()
+        until = time.monotonic() + 3.0
+        while time.monotonic() < until:
+            run = subprocess.run([str(congo.REPO_CONEC), "-o", str(out), src.name],
+                                 cwd=self.root, capture_output=True, text=True)
+            said = re.search(r"Compile finished in (\S+) sec", run.stdout + run.stderr)
+            self.assertIsNotNone(said, run.stdout + run.stderr)
+            secs = float(said.group(1))
+            self.assertTrue(0.0 <= secs < 60.0, f"conec says the compile took {secs} sec")
 
     @unittest.skipUnless(IS_WINDOWS, "libc binds the Windows C runtime")
     def test_the_geomath_example(self):
