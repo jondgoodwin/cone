@@ -436,7 +436,12 @@ own storage: generation gives it the matched value's variable's slot
 (`genlLocalVar`), read through the variant's layout, so a swap with it or a
 store over it, or over a part of it, changes the value the matched value's
 variable releases, and the store releases what it replaces as any store does
-(`assignlvalrtype`). A binding by reference holds a copy of the matched
+(`assignlvalrtype`). A store over the whole binding is a store over the matched
+value's variable for the main walk (it holds a value again, as a moved plain
+local does once assigned) and for the path walk (`pwStore` records the store on
+that variable, so whether the old value is released follows its state on each
+path and its drop flag, and generation tests and sets that flag, `genlStoreTo`).
+A binding by reference holds a copy of the matched
 reference, and a store over it releases nothing. A guard's binding
 (`case imm c Circle if g`) is a second binding of the same value, and owns
 nothing either. The match's own variable
@@ -2032,14 +2037,6 @@ droppable noted as holding nothing is never finalized.
   finalize nothing of the old field (there is none), and the variable is not
   taken to hold a value by having one field given, so the new field is never
   finalized either. Rust refuses both.
-- **A match's binding moved out and then assigned over leaks.** The store reads
-  the binding's own state, which the move left moved, so it releases nothing,
-  and it does not give the matched value's variable its value back, so that
-  variable, moved too, never releases what was stored: `case mut a A {
-  takeA(a); a = A(new Fin(2)); }` leaks the new `Fin`. Moved on some paths only, the
-  store still releases nothing, and the original leaks on the paths that kept
-  it. The binding is untracked by the path walk (`flowMatchBound`), so neither
-  the store nor the matched value's drop flag sees the other.
 - **A hollowed variable reassigned by a destructuring of one value**
   (`b, x = pair()`) leaks its old allocation: `assignMultRetFlow` has no single
   value to wrap a `HollowNode` round, so it takes the moved variable's path

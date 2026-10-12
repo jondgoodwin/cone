@@ -302,6 +302,14 @@ int assignlvalrtype(INode *lval, INode *rtype, HollowNode **hollowrel) {
         if ((flowflags & VarHollow) && !(flowflags & VarMoved) && hollowrel)
             *hollowrel = flowNewHollow(var);
         flowVarSetFlags(var, (flowflags | VarInitialized) & (0xFFFF - (VarMoved | VarHollow)), NULL);
+        // The value stored into such a binding is the matched value's variable's
+        // to release, so that variable holds a value again, as a moved plain
+        // 'mut' local does once assigned
+        if (flowMatchInPlace(var)) {
+            VarDclNode *owner = flowDropOwner(var);
+            if (owner != var)
+                flowVarSetFlags(owner, (owner->flowtempflags | VarInitialized) & (0xFFFF - (VarMoved | VarHollow)), NULL);
+        }
         flowDropNote(flowCurrent, var);
     }
     // A part of a local's own value -- a field, an element -- is stored over:
