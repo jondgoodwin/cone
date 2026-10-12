@@ -81,6 +81,11 @@ void varDclNameRes(NameResState *pstate, VarDclNode *node);
 // Type check vardcl
 void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *node);
 
+// Judge every module global type check noted (a global's type must be
+// Shareable), now that every type is laid out; called once, when type check
+// has finished
+void globalShareCheckAll();
+
 // Perform data flow analysis
 void varDclFlow(FlowState *fstate, VarDclNode **vardclnode);
 

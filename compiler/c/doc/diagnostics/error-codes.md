@@ -297,6 +297,17 @@ kernel on memory no other invocation reaches, a local or a global not
 reported by generation, at mem's call where the program wrote one, else at
 the kernel.
 
+A module global's type must be Shareable, and one code, `ErrorGlobalShare`,
+carries both causes since the remedy is a choice among the same few forms
+(`imm` of a Shareable type, `imm` holding a lock or an atomic value,
+`@threadlocal`, `@workgroup`): a plain `mut` global that is neither
+`@threadlocal` nor `@workgroup`, and an `imm` one (`extern` or not) whose type
+is not Shareable, judged by `itypeNotShareableWhy`, the question a `parallel
+each` asks of an outside value and `Arc[imm, T]` of its `T`. It is made at the
+declaration (`globalShareCheckAll`, `ir/stmt/vardcl.c`), once type check has
+finished and every struct is laid out; a function's `static` is not judged, and
+a `const` is no variable.
+
 The built-in marker `AtomicValue` takes three codes, again one per remedy.
 `ErrorAtomicValueShape` is the marker on something that is not a struct of
 exactly one field — a trait, an enum, a variant, a struct of none or several —
