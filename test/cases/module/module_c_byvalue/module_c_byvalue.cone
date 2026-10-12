@@ -4,7 +4,10 @@
 // 4 or 8 bytes as one integer, whatever its fields, any other size through a
 // pointer to a copy, and a larger return through a hidden result pointer.
 // Each is exercised both ways: Cone calling C, and C calling Cone's own
-// C-named functions, directly and through a pointer Cone hands it.
+// C-named functions, directly and through a pointer Cone hands it. A reference
+// to a C-named function has the type '&fn @c (...)', which Cone calls as C
+// passes a struct, as a direct call does, and which is what C is handed: a
+// callback parameter C calls is typed so.
 mod module_c_byvalue;
 import stdio use *;
 
@@ -38,7 +41,7 @@ extern {
   fn @c c_via_cone_ext() i32;
   fn @c c_via_cone_vec3() i32;
   fn @c c_via_cone_ext_make() i32;
-  fn @c c_apply(a i32, b i32, f &fn(e Ext2) i32) i32;
+  fn @c c_apply(a i32, b i32, f &fn @c (e Ext2) i32) i32;
 }
 
 // Cone's own C-named functions, which C calls
@@ -101,4 +104,26 @@ fn main() {
   showF("cone_vec3", r.x, r.y, r.z);
   imm m = cone_ext_make(1);
   show("cone_ext_make.b", m.b);
+
+  // Cone calls C-named functions, C's and its own, through a reference to
+  // them: the C ABI's call, as a direct call makes
+  imm viaExt &fn @c (e Ext2) i32 = &ext_code;
+  show("ref ext_code", viaExt(new Ext2(3, 4)));
+  imm viaVec3 &fn @c (v Vec3) i32 = &vec3_code;
+  show("ref vec3_code", viaVec3(new Vec3(1., 2., 3.)));
+  imm viaBig &fn @c (b Big) i64 = &big_code;
+  show("ref big_code", viaBig(new Big(5, 6)));
+  imm viaMixed &fn @c (k i32, e Ext2, s f64, v Vec3, last i8) i64 = &mixed;
+  show("ref mixed", viaMixed(1, new Ext2(2, 3), 4., new Vec3(5., 6., 7.), 8));
+  imm viaExtMake &fn @c (n i32) Ext2 = &ext_make;
+  imm xm = viaExtMake(5);
+  show("ref ext_make.a", xm.a); show("ref ext_make.b", xm.b);
+  imm viaVec3Make &fn @c (f f32) Vec3 = &vec3_make;
+  imm xv = viaVec3Make(0.5);
+  showF("ref vec3_make", xv.x, xv.y, xv.z);
+  imm viaConeExt &fn @c (e Ext2) i32 = &cone_ext;
+  show("ref cone_ext", viaConeExt(new Ext2(8, 9)));
+  imm viaConeVec3 &fn @c (v Vec3, k f32) Vec3 = &cone_vec3;
+  imm xc = viaConeVec3(new Vec3(1., 2., 3.), 2.);
+  showF("ref cone_vec3", xc.x, xc.y, xc.z);
 }
