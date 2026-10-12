@@ -1,22 +1,56 @@
-// What a client binds its UDP socket to: the loopback address of the server's
-// family when the server is on loopback (so the firewall is never asked), the
-// wildcard of that family otherwise, always port 0.
+// What a client binds its UDP socket to, read back through localAddress(): a
+// client of a loopback server binds that family's loopback (so the firewall is
+// never asked) at the port the system chose, which is 'port'. A server's
+// localAddress() is the address it listens at.
 
 mod clientbind;
 
 import testing use *;
+import collections use *;
+import sync use *;
+import time use Duration;
 import iocore use SocketAddr;
+import actors;
 import netmsg use *;
 
-fn main() i32 {
-  expectStr(clientBindAddress(&SocketAddr.localhost(4000u16)).text().view(), "127.0.0.1:0", "an IPv4 loopback server: the client binds 127.0.0.1");
-  expectStr(clientBindAddress(&SocketAddr.v4(127u8, 5u8, 6u8, 7u8, 4000u16)).text().view(), "127.0.0.1:0", "anywhere in 127.0.0.0/8 too");
-  expectStr(clientBindAddress(&SocketAddr.v6Localhost(4000u16)).text().view(), "[0:0:0:0:0:0:0:1]:0", "an IPv6 loopback server: the client binds ::1");
-  expectStr(clientBindAddress(&SocketAddr.v4(10u8, 0u8, 0u8, 7u8, 4000u16)).text().view(), "0.0.0.0:0", "another IPv4 server: the wildcard");
-  {
-    imm other6 Array[u8, 16] = [0x20u8, 0x01u8, 0x0du8, 0xb8u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 1u8];
-    expectStr(clientBindAddress(&SocketAddr.v6(&other6, 4000u16)).text().view(), "[0:0:0:0:0:0:0:0]:0", "another IPv6 server: the IPv6 wildcard");
+fn joined(rx &mut Receiver[NetEvent]) bool {
+  match rx.recvTimeout(Duration.fromSeconds(3i64)) {
+    case imm e Some { true; }
+    case is None[NetEvent] { false; }
   }
-  expect(clientBindAddress(&SocketAddr.v6Localhost(4000u16)).isV6(), "and the family is kept");
+}
+
+fn textWith(host &str, port u16) String {
+  mut s = String.from(host);
+  s.appendUInt(u64.from(port));
+  s;
+}
+
+// A server at 'listenAt' and a client of it: where each is bound
+fn check(listenAt SocketAddr, host &str, what &str) {
+  mut txS Sender[NetEvent];
+  mut rxS Receiver[NetEvent];
+  txS, rxS = Channel[NetEvent].make();
+  mut txC Sender[NetEvent];
+  mut rxC Receiver[NetEvent];
+  txC, rxC = Channel[NetEvent].make();
+  imm cfg = NetConfig.defaults();
+  imm server = mustListen(listenAt, cfg, channelHandler(txS));
+  imm client = mustConnect(server.localAddress(), cfg, channelHandler(txC));
+
+  expect(server.port != 0u16, what);
+  expectUInt(u64.from(server.localAddress().port()), u64.from(server.port), "the server's localAddress has its port");
+  expectStr(server.localAddress().text().view(), textWith(host, server.port).view(), "and the address it listens at");
+  expect(client.port != 0u16, "the client has a port of the system's choosing");
+  expectUInt(u64.from(client.localAddress().port()), u64.from(client.port), "the client's localAddress has that port");
+  expectStr(client.localAddress().text().view(), textWith(host, client.port).view(), "and the loopback address of the server's family");
+  expect(joined(&mut rxS) and joined(&mut rxC), "and they join");
+  client.endpoint.shutdown();
+  server.endpoint.shutdown();
+}
+
+fn main() i32 {
+  check(SocketAddr.localhost(0u16), "127.0.0.1:", "an IPv4 server has a port");
+  check(SocketAddr.v6Localhost(0u16), "[0:0:0:0:0:0:0:1]:", "an IPv6 server has a port");
   done();
 }

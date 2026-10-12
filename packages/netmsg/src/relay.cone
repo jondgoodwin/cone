@@ -46,12 +46,12 @@ pub struct LossyRelay {
 fn relayMain(mut a RelayArgs) u32 {
   mut lp = Loop.mustMake();
   imm front = lp.mustBindUdp(SocketAddr.localhost(0u16));
-  mut port = 0u16;
+  mut bound = SocketAddr.localhost(0u16);
   match lp.localAddr(front) {
-    case imm la Ok { port = la.port(); }
+    case imm la Ok { bound = la; }
     case imm e Error {}
   }
-  a.up.send(Started.Up(port, lp.waker()));
+  a.up.send(Started.Up(bound, lp.waker()));
   imm pool = Pool.make();
   mut legs = List[Leg].empty();
   lp.submit(Op.RecvFrom(front, pool.mustTake(recvRoom)), Target.Here(1u64));
@@ -155,7 +155,7 @@ pub fn startLossyRelay(server SocketAddr, toServer LinkConfig, toClient LinkConf
   match upRx.recv() {
     case imm s Some {
       match s {
-        case imm up Up { return new LossyRelay(up.port, up.waker, stopTx, doneRx); }
+        case imm up Up { return new LossyRelay(up.addr.port(),up.waker, stopTx, doneRx); }
         else {}
       }
     }
