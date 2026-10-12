@@ -97,7 +97,8 @@ Visual Studio projects stay at the root.
   allocator (through `RawBlocks`, its raw blocks layer); `sdl` is a C package of raw bindings to SDL3 (a window for
   Vulkan and its size in pixels, its events, the keyboard's, the mouse's,
   the wheel's and a window's, each with its nanosecond timestamp, the
-  mouse's relative mode, clocks, and loading Vulkan), linking `SDL3.lib`,
+  mouse's relative mode, clocks, loading Vulkan, and audio streams: open a
+  playback device as a push stream, put data, pause, resume, queued bytes), linking `SDL3.lib`,
   which must be on `LIB`, and its `layout` test checks every struct against
   SDL3's headers; `vulkan` is raw bindings to Vulkan 1.3 (drawing,
   compute, indirect commands and timestamp queries), written by hand from the specification (Vulkan's names without the prefix:
@@ -349,6 +350,25 @@ Visual Studio projects stay at the root.
   the pelvis moved, soles tilted to the normal), `lookAt`, `reachHand`, pose
   blends (linear, masked, weighted, additive), `Clip`, `BlendSpace1D` and an
   `Animator` state machine with timed cross-fades;
+  `audiomixer` is sound for a 3-D world, without a device or any C, over
+  `geomath`, `collections` and `sync`: a `Mixer` of a fixed number of voices
+  (samples or procedural `Synth`s; gain, pitch, pan, fades; three buses and a
+  master; voice stealing by priority) whose `render` into interleaved stereo f32
+  allocates nothing and takes no lock (counted by `noalloc`, which swaps the
+  heap region's allocate for a counter), driven by plain-data `Cmd`s through
+  sync's single-producer ring (`Control` on the game thread, `Engine` on the
+  audio thread); positional sound (`Listener`, OpenAL 1.1 inverse, linear and
+  exponent attenuation and a custom curve, the constant-power pan law, a
+  head-shadow low pass on the far ear, Doppler, an occlusion low pass and gain
+  the game sets); `Synth` recipes (wind, brook, fire, footsteps on grass, wood
+  and stone, a bird), noise, PolyBLEP oscillators and RBJ biquads; WAV decoding
+  and encoding; and offline measures (`rms`, `zeroCrossingFreq`, `fft`,
+  `spectrum`) its tests judge sound by, since nothing is played; its
+  `recipes` example writes each recipe as a WAV and describes it by spectrum,
+  its `bench` times 32 voices per 10 ms block; `audiodevice` is its output
+  over `sdl`: `Device.start` opens the default playback device as an SDL3
+  push stream and runs a feeder thread rendering `Engine` into it (a test
+  runs it on SDL's dummy driver);
   `testing` is the checks a package's tests call (`expectInt`, `require…`,
   `done`), ordinary library code the compiler knows nothing of;
   `genwalk` and `genuser` are the samples of generators across packages: `pub`

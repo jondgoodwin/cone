@@ -774,6 +774,10 @@ void lexScanNumber(char *srcp) {
         if (*srcp=='.') {
             if (afterDot)
                 break;
+            // A float takes one decimal point, and none after its exponent: a
+            // further '.' is the next member access ('5.0.sqrt()', '1e2.sqrt()')
+            if (isFloat)
+                break;
             // However, double periods is not floating point, but that subsequent token is range op
             if (*(srcp+1)=='.')
                 break;
