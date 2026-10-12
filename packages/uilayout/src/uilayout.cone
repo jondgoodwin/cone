@@ -1,0 +1,166 @@
+// The uilayout package (a working name; Jon names packages): the layout and
+// interaction core under widgets, for screen overlays and for panels placed
+// in a 3-D world. It does no drawing: it makes positioned boxes and a DrawList
+// of rectangles, borders, rounded rectangles, lines, arcs, images and text
+// runs, for a renderer to draw later. It has no window and no GPU, and does
+// not depend on the text package: text is measured through a closure
+//
+//   fn(text &str, font u32, size f32) Vec2      // the width and height
+//
+// that the caller passes to 'layout'.
+//
+// WHAT IT IS MADE OF (one module, files beside this one):
+//
+//   draw.cone      DrawCmd and DrawList, colours packed as 0xRRGGBBAA
+//   theme.cone     Theme: named styles, inheritance, state variants
+//   node.cone      Node, the retained tree in flat tables (ids, not a struct
+//                  holding a List of itself), and the Ui that owns it
+//   layout.cone    two-pass measure then arrange with caches and dirty bits
+//   input.cone     hit testing, events, capture and bubble, focus, pointer
+//   dragdrop.cone  drag sources with payloads, drop targets that accept or refuse
+//   inventory.cone InvModel: items, stacks, bags in bags, the rules
+//   widgets*.cone  label, button, toggle, slider, knob, text field, list,
+//                  window, tabs, tooltip, inventory grid, hotbar, minimap
+//   panel3d.cone   a Ui placed in 3-D as a transform: ray in, pixel out
+//
+// THE TREE. Nodes are rows of one table, named by a usize id (0 is none). A
+// node knows its parent, first and last child, previous and next sibling; no
+// node holds another. Widgets with state of their own (a slider's value, a
+// text field's caret) keep it in a table per kind, reached by the node's
+// 'data' index. What leaves the Ui is a UiEvent, a plain record naming a node.
+//
+// LAYOUT. Box constraints in the manner of Flutter's (the parent hands a child
+// a minimum and maximum width and height, the child answers a size), margins
+// and padding, and nine container modes:
+//   LK_STACK   children overlaid, aligned or filling
+//   LK_ROW, LK_COLUMN   CSS flexbox's single line: basis, grow, shrink, justify,
+//              align, gap (the 'resolve flexible lengths' loop of the CSS
+//              Flexbox Level 1 specification, section 9.7)
+//   LK_GRID    fixed, fractional and auto tracks, spans, gaps
+//   LK_ANCHOR  Godot's anchors and offsets, with a pivot
+//   LK_ABS     absolute positions
+//   LK_DOCK    WPF's DockPanel: edges in order, the last child fills
+//   LK_SPLIT   two panes and a draggable divider
+//   LK_SCROLL  a viewport over a taller or wider child
+// Any child of any container may be 'out of flow' and placed absolutely.
+//
+// DIRTY WORK. A change marks the node and its ancestors; measure results are
+// cached by node and constraint, arrange is keyed by size only (positions are
+// local to the parent, global ones come from a cheap final walk), and a node of
+// fixed size is a relayout boundary, so its ancestors are not remeasured.
+// 'Stats' counts the nodes measured and arranged by the last layout.
+
+mod uilayout;
+
+import geomath use *;
+import collections use *;
+import libc;
+
+// ---- ids and numbers ----
+pub const NIL = 0usize;
+pub const UNBOUNDED = 1000000000.;     // "no maximum" (finite, so no NaN)
+pub const AUTO = -1.;                  // a size or length not set
+
+// ---- container modes (Node.layout) ----
+pub const LK_STACK = 0u32;
+pub const LK_ROW = 1u32;
+pub const LK_COLUMN = 2u32;
+pub const LK_GRID = 3u32;
+pub const LK_ANCHOR = 4u32;
+pub const LK_ABS = 5u32;
+pub const LK_DOCK = 6u32;
+pub const LK_SPLIT = 7u32;
+pub const LK_SCROLL = 8u32;
+
+// ---- flex justification (Node.justify) and alignment (Node.alignItems, alignSelf) ----
+pub const JUSTIFY_START = 0u32;
+pub const JUSTIFY_CENTER = 1u32;
+pub const JUSTIFY_END = 2u32;
+pub const JUSTIFY_BETWEEN = 3u32;
+pub const JUSTIFY_AROUND = 4u32;
+pub const JUSTIFY_EVENLY = 5u32;
+
+pub const ALIGN_START = 0u32;
+pub const ALIGN_CENTER = 1u32;
+pub const ALIGN_END = 2u32;
+pub const ALIGN_STRETCH = 3u32;
+pub const ALIGN_AUTO = 4u32;           // alignSelf only: use the container's alignItems
+
+// ---- dock sides (Node.dock) ----
+pub const DOCK_LEFT = 0u32;
+pub const DOCK_TOP = 1u32;
+pub const DOCK_RIGHT = 2u32;
+pub const DOCK_BOTTOM = 3u32;
+pub const DOCK_FILL = 4u32;
+
+// ---- grid tracks (Track.kind) ----
+pub const TRACK_FIXED = 0u32;
+pub const TRACK_FRACTION = 1u32;
+pub const TRACK_AUTO = 2u32;
+
+// ---- widget kinds (Node.kind) ----
+pub const K_PLAIN = 0u32;
+pub const K_LABEL = 1u32;
+pub const K_BUTTON = 2u32;
+pub const K_TOGGLE = 3u32;
+pub const K_SLIDER = 4u32;
+pub const K_KNOB = 5u32;
+pub const K_TEXTFIELD = 6u32;
+pub const K_LIST = 7u32;
+pub const K_WINDOW = 8u32;
+pub const K_TITLEBAR = 9u32;
+pub const K_TABS = 10u32;
+pub const K_TAB = 11u32;
+pub const K_TOOLTIP = 12u32;
+pub const K_SLOT = 13u32;              // an inventory slot
+pub const K_HOTSLOT = 14u32;           // a hotbar slot
+pub const K_MINIMAP = 15u32;
+pub const K_ROWITEM = 16u32;           // a row of a list
+pub const K_IMAGE = 17u32;
+pub const K_GHOST = 18u32;             // the drag preview
+pub const K_PANEL = 19u32;
+pub const K_SCROLLVIEW = 20u32;
+pub const K_SPLITVIEW = 21u32;
+pub const K_CLOSE = 22u32;
+
+// ---- node state bits (Node.state), the variants a theme answers ----
+pub const ST_HOVER = 1u32;
+pub const ST_PRESSED = 2u32;
+pub const ST_DISABLED = 4u32;
+pub const ST_FOCUSED = 8u32;
+pub const ST_CHECKED = 16u32;
+pub const ST_SELECTED = 32u32;
+pub const ST_DROP_OK = 64u32;
+pub const ST_DROP_NO = 128u32;
+pub const ST_DRAGGED = 256u32;         // the source of a drag in progress
+
+// ---- modifier bits ----
+pub const MOD_SHIFT = 1u32;
+pub const MOD_CTRL = 2u32;
+pub const MOD_ALT = 4u32;
+
+// ---- keys: the integration maps its scancodes to these ----
+pub const KEY_BACKSPACE = 8u32;
+pub const KEY_TAB = 9u32;
+pub const KEY_ENTER = 13u32;
+pub const KEY_ESCAPE = 27u32;
+pub const KEY_SPACE = 32u32;
+pub const KEY_DELETE = 127u32;
+pub const KEY_LEFT = 1001u32;
+pub const KEY_RIGHT = 1002u32;
+pub const KEY_UP = 1003u32;
+pub const KEY_DOWN = 1004u32;
+pub const KEY_HOME = 1005u32;
+pub const KEY_END = 1006u32;
+pub const KEY_PAGEUP = 1007u32;
+pub const KEY_PAGEDOWN = 1008u32;
+pub const KEY_F1 = 1101u32;            // F1 .. F12 are KEY_F1 + 0 .. 11
+pub const KEY_A = 65u32;               // letters are their upper-case ASCII
+pub const KEY_C = 67u32;
+pub const KEY_V = 86u32;
+pub const KEY_X = 88u32;
+
+// ---- pointer buttons ----
+pub const BTN_LEFT = 1u32;
+pub const BTN_RIGHT = 2u32;
+pub const BTN_MIDDLE = 4u32;

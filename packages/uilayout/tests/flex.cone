@@ -1,0 +1,210 @@
+// Flex rows and columns, every number worked out by hand.
+//
+// Grow: a row 300 wide with items 50 (grow 1), 100 (grow 2), 50 (grow 0) has 100 free;
+//   the first gets 100/3 = 33.33 -> 83.33, the second 66.67 -> 166.67, the third stays 50.
+//   Positions 0, 83.33, 250.
+// Shrink: a row 200 wide of 150 (shrink 1), 150 (shrink 1), 100 (shrink 2) overflows by 200.
+//   Scaled shrink factors (shrink x base) are 150, 150, 200 (sum 500): 150 - 200*150/500 = 90,
+//   90, and 100 - 200*200/500 = 20.
+//   With the third's minimum 40, it freezes at 40 (a min violation) and the others share
+//   the remaining 160 against their 300: 150 - 140*150/300 = 80 each.
+// Justify, three items of 50 in a row of 300 (150 free):
+//   end: 150, 200, 250.  center: 75, 125, 175.  between: gap 75 -> 0, 125, 250.
+//   around: each side half of 50 -> 25, 125, 225.  evenly: 4 gaps of 37.5 -> 37.5, 125, 212.5.
+// Align in a row 100 tall, items 20 tall: start y 0, center 40, end 80, stretch (no height) 100.
+// Column, width 200, padding 10, gap 5: A 30 tall, B 40 tall with margins 4. Auto height is
+//   10 + 30 + 5 + (4 + 40 + 4) + 10 = 103. A at (10, 10, 180, 30); B at (14, 49, 172, 40).
+// Basis: an item with basis 80 and pref width 10 is 80 wide when not flexing.
+
+mod flex;
+
+import testing use *;
+import geomath use *;
+import uilayout use *;
+
+fn chk(got f32, want f32, label &Array[u8]) {
+  expectFloat(f64.from(got), f64.from(want), 0.01, label);
+}
+
+fn item(ui &mut Ui, parent usize, w f32, grow f32, shrink f32) usize {
+  imm n = ui.create(parent, K_PLAIN);
+  ui.setSize(n, w, -1.);
+  ui.setFlexChild(n, grow, shrink, -1.);
+  n;
+}
+
+fn rowOf(ui &mut Ui, w f32, h f32) usize {
+  imm r = ui.create(ui.root, K_PLAIN);
+  ui.setSize(r, w, h);
+  ui.setFlex(r, LK_ROW, 0.);
+  r;
+}
+
+fn main() i32 {
+  mut m = fn(t &str, font u32, size f32) Vec2 { new Vec2(f32.from(t.len()) * 8., 16.); };
+
+  // ---- grow ----
+  {
+    mut ui = Ui.make(800., 600.);
+    imm r = rowOf(&mut ui, 300., 100.);
+    imm a = item(&mut ui, r, 50., 1., 1.);
+    imm b = item(&mut ui, r, 100., 2., 1.);
+    imm c = item(&mut ui, r, 50., 0., 1.);
+    layout(&mut ui, &mut m);
+    chk(ui.nodes[a].w, 83.33, "grow: first width");
+    chk(ui.nodes[b].w, 166.67, "grow: second width");
+    chk(ui.nodes[c].w, 50., "grow: third keeps its width");
+    chk(ui.nodes[a].x, 0., "grow: first at 0");
+    chk(ui.nodes[b].x, 83.33, "grow: second at 83.33");
+    chk(ui.nodes[c].x, 250., "grow: third at 250");
+    chk(ui.nodes[a].h, 100., "grow: stretch fills the cross axis");
+  }
+
+  // ---- shrink ----
+  {
+    mut ui = Ui.make(800., 600.);
+    imm r = rowOf(&mut ui, 200., 50.);
+    imm a = item(&mut ui, r, 150., 0., 1.);
+    imm b = item(&mut ui, r, 150., 0., 1.);
+    imm c = item(&mut ui, r, 100., 0., 2.);
+    layout(&mut ui, &mut m);
+    chk(ui.nodes[a].w, 90., "shrink: first");
+    chk(ui.nodes[b].w, 90., "shrink: second");
+    chk(ui.nodes[c].w, 20., "shrink: third (weighted by base size)");
+    chk(ui.nodes[c].x, 180., "shrink: third's position");
+  }
+  {
+    mut ui = Ui.make(800., 600.);
+    imm r = rowOf(&mut ui, 200., 50.);
+    imm a = item(&mut ui, r, 150., 0., 1.);
+    imm b = item(&mut ui, r, 150., 0., 1.);
+    imm c = item(&mut ui, r, 100., 0., 2.);
+    ui.setMinSize(c, 40., 0.);
+    layout(&mut ui, &mut m);
+    chk(ui.nodes[c].w, 40., "shrink with a minimum: the third freezes at 40");
+    chk(ui.nodes[a].w, 80., "shrink with a minimum: first");
+    chk(ui.nodes[b].w, 80., "shrink with a minimum: second");
+  }
+
+  // ---- grow capped by a maximum ----
+  {
+    mut ui = Ui.make(800., 600.);
+    imm r = rowOf(&mut ui, 300., 50.);
+    imm a = item(&mut ui, r, 50., 1., 1.);
+    imm b = item(&mut ui, r, 50., 1., 1.);
+    ui.setMaxSize(a, 100., 1000000000.);
+    layout(&mut ui, &mut m);
+    chk(ui.nodes[a].w, 100., "grow: the first stops at its maximum");
+    chk(ui.nodes[b].w, 200., "grow: the second takes the rest");
+  }
+
+  // ---- justify ----
+  {
+    mut ui = Ui.make(800., 600.);
+    imm r = rowOf(&mut ui, 300., 100.);
+    imm a = item(&mut ui, r, 50., 0., 1.);
+    imm b = item(&mut ui, r, 50., 0., 1.);
+    imm c = item(&mut ui, r, 50., 0., 1.);
+    ui.setJustify(r, JUSTIFY_END, ALIGN_STRETCH);
+    layout(&mut ui, &mut m);
+    chk(ui.nodes[a].x, 150., "end: a");
+    chk(ui.nodes[c].x, 250., "end: c");
+    ui.setJustify(r, JUSTIFY_CENTER, ALIGN_STRETCH);
+    layout(&mut ui, &mut m);
+    chk(ui.nodes[a].x, 75., "center: a");
+    chk(ui.nodes[b].x, 125., "center: b");
+    chk(ui.nodes[c].x, 175., "center: c");
+    ui.setJustify(r, JUSTIFY_BETWEEN, ALIGN_STRETCH);
+    layout(&mut ui, &mut m);
+    chk(ui.nodes[a].x, 0., "between: a");
+    chk(ui.nodes[b].x, 125., "between: b");
+    chk(ui.nodes[c].x, 250., "between: c");
+    ui.setJustify(r, JUSTIFY_AROUND, ALIGN_STRETCH);
+    layout(&mut ui, &mut m);
+    chk(ui.nodes[a].x, 25., "around: a");
+    chk(ui.nodes[b].x, 125., "around: b");
+    chk(ui.nodes[c].x, 225., "around: c");
+    ui.setJustify(r, JUSTIFY_EVENLY, ALIGN_STRETCH);
+    layout(&mut ui, &mut m);
+    chk(ui.nodes[a].x, 37.5, "evenly: a");
+    chk(ui.nodes[b].x, 125., "evenly: b");
+    chk(ui.nodes[c].x, 212.5, "evenly: c");
+  }
+
+  // ---- align ----
+  {
+    mut ui = Ui.make(800., 600.);
+    imm r = rowOf(&mut ui, 300., 100.);
+    imm a = ui.create(r, K_PLAIN);
+    ui.setSize(a, 40., 20.);
+    imm b = ui.create(r, K_PLAIN);
+    ui.setSize(b, 40., -1.);
+    ui.setJustify(r, JUSTIFY_START, ALIGN_START);
+    layout(&mut ui, &mut m);
+    chk(ui.nodes[a].y, 0., "align start: y");
+    ui.setJustify(r, JUSTIFY_START, ALIGN_CENTER);
+    layout(&mut ui, &mut m);
+    chk(ui.nodes[a].y, 40., "align center: y");
+    ui.setJustify(r, JUSTIFY_START, ALIGN_END);
+    layout(&mut ui, &mut m);
+    chk(ui.nodes[a].y, 80., "align end: y");
+    ui.setJustify(r, JUSTIFY_START, ALIGN_STRETCH);
+    layout(&mut ui, &mut m);
+    chk(ui.nodes[b].h, 100., "align stretch: an item without a height fills");
+    chk(ui.nodes[a].h, 20., "align stretch: an item with a height keeps it");
+    ui.setAlignSelf(a, ALIGN_END, ALIGN_END);
+    layout(&mut ui, &mut m);
+    chk(ui.nodes[a].y, 80., "alignSelf overrides the container");
+  }
+
+  // ---- column with padding, gap, margins ----
+  {
+    mut ui = Ui.make(800., 600.);
+    imm col = ui.create(ui.root, K_PLAIN);
+    ui.setSize(col, 200., -1.);
+    ui.setFlex(col, LK_COLUMN, 5.);
+    ui.setPad(col, 10.);
+    imm a = ui.create(col, K_PLAIN);
+    ui.setSize(a, -1., 30.);
+    imm b = ui.create(col, K_PLAIN);
+    ui.setSize(b, -1., 40.);
+    ui.setMargins(b, 4.);
+    layout(&mut ui, &mut m);
+    chk(ui.nodes[col].h, 103., "column: auto height");
+    chk(ui.nodes[a].x, 10., "column: A x");
+    chk(ui.nodes[a].y, 10., "column: A y");
+    chk(ui.nodes[a].w, 180., "column: A stretches to the padded width");
+    chk(ui.nodes[b].x, 14., "column: B x with its margin");
+    chk(ui.nodes[b].y, 49., "column: B y");
+    chk(ui.nodes[b].w, 172., "column: B width less its margins");
+    chk(ui.nodes[b].gx, 14., "column: B global x");
+  }
+
+  // ---- basis ----
+  {
+    mut ui = Ui.make(800., 600.);
+    imm r = rowOf(&mut ui, 300., 50.);
+    imm a = item(&mut ui, r, 10., 0., 1.);
+    ui.setFlexChild(a, 0., 1., 80.);
+    layout(&mut ui, &mut m);
+    chk(ui.nodes[a].w, 80., "basis beats the preferred width");
+  }
+
+  // ---- text sizes the box ----
+  {
+    mut ui = Ui.make(800., 600.);
+    imm r = ui.create(ui.root, K_PLAIN);
+    ui.setFlex(r, LK_ROW, 4.);
+    imm l1 = ui.create(r, K_LABEL);
+    ui.setText(l1, "Hello");
+    imm l2 = ui.create(r, K_LABEL);
+    ui.setText(l2, "ab");
+    layout(&mut ui, &mut m);
+    chk(ui.nodes[l1].w, 40., "label: 5 characters of 8");
+    chk(ui.nodes[l1].h, 16., "label: height from the closure");
+    chk(ui.nodes[l2].x, 44., "label: second after the first and the gap");
+    chk(ui.nodes[r].w, 60., "row: auto width is 40 + 4 + 16");
+  }
+
+  done();
+}
