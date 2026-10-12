@@ -618,10 +618,11 @@ static void siCallType(FnCallNode *call, SiCtx *c) {
     int visible = !(call->flags & FlagVDisp) && siVisible(callee);
     // Into a borrow of a 'mut' global: a virtual call, or a call of a function value (a '&fn' held in
     // a field, a parameter, a global or a local), runs code that is not known, which may write any
-    // global without being handed it; so does an 'extern' function handed anything that can reach a
-    // '&fn', which C may call back (a named function the compiler cannot read is otherwise asked as
-    // before: of what it is handed)
-    if (c->opaque && ((call->flags & FlagVDisp) || callee == NULL || shapeExternHandsFnRef(call, callee))) {
+    // global without being handed it; so does an 'extern' function handed anything that can reach
+    // something callable (a '&fn', a virtual reference, a closure an owner holds), which C may call
+    // back (a named function the compiler cannot read is otherwise asked as before: of what it is
+    // handed)
+    if (c->opaque && ((call->flags & FlagVDisp) || callee == NULL || shapeExternHandsCallable(call, callee))) {
         c->hit = 1;
         return;
     }
@@ -923,11 +924,12 @@ int shapeTypeReshapes(FnDclNode *fn, INode *cont, int viaParams) {
     return answer != SiNo;
 }
 
-// Can a value of this type reach a '&fn' (a reference to a function): by containment, a field, an
-// element, or through a pointer or a reference? The same idea as reshapeReach, with the function
-// reference as the thing wanted. A type graph too large to follow is taken as reaching one. Only a
-// positive answer is kept, for a struct, for a negative one found beneath a struct still being
-// walked is not settled
+// Can a value of this type reach anything callable: a '&fn' (a reference to a function), a virtual
+// reference ('&<Trait', '&<fn', '&<mut ...'), or a closure or trait object an owner holds ('So[fn]',
+// 'Rc[Trait]')? By containment, a field, an element, or through a pointer or a reference: the same
+// idea as reshapeReach, with code to call as the thing wanted. A type graph too large to follow is
+// taken as reaching one. Only a positive answer is kept, for a struct, for a negative one found
+// beneath a struct still being walked is not settled
 #define SiFnSeenCap 512
 static INode *siFnSeen[SiFnSeenCap];
 static int siFnSeenN;
@@ -976,6 +978,7 @@ static int siReachesFnRef(INode *type) {
     case AliasDclTag:
         return siReachesFnRef(((AliasDclNode *)type)->target);
     case FnSigTag:
+    case VirtRefTag:
         return 1;
     case RefTag:
     case ArrayRefTag:
@@ -1031,9 +1034,9 @@ static int siReachesFnRef(INode *type) {
     }
 }
 
-// Is this an 'extern' function handed anything that can reach a '&fn' (a callback C can call back into
-// Cone with, directly or held in a struct it is handed a pointer to)?
-int shapeExternHandsFnRef(FnCallNode *call, FnDclNode *callee) {
+// Is this an 'extern' function handed anything that can reach something callable (a callback C can
+// call back into Cone with, directly or held in a struct it is handed a pointer to)?
+int shapeExternHandsCallable(FnCallNode *call, FnDclNode *callee) {
     if (callee == NULL || !(callee->flags & FlagExtern) || call->args == NULL)
         return 0;
     for (uint32_t k = 0; k < call->args->used; ++k) {

@@ -2,9 +2,10 @@
 // global by its name, so it is refused (error 1339) as one that reshapes would be:
 //   - a call through a function value, a '&fn' held anywhere (a parameter, a struct's field, a 'mut'
 //     global, a local), or through a function called with one;
-//   - an 'extern' C function handed anything whose type can reach a '&fn', directly or through a struct or
-//     a pointer: C may call it back, and it may be a function that writes the global. This holds when the
-//     callback writes nothing, for the compiler cannot tell;
+//   - an 'extern' C function handed anything whose type can reach something callable (a '&fn', a virtual
+//     reference, a closure or trait object an owner holds), directly or through a struct or a pointer: C
+//     may call it back, and it may be a function that writes the global. This holds when the callback
+//     writes nothing, for the compiler cannot tell;
 //   - any call whose callee reaches such a call, as the allocator's own calls do: 'String.from(view)' asks
 //     the heap's region, a '&fn' held in a field, to allocate. The cure for a String is to copy it by a
 //     method of the global itself ('title.copy()'), which no call is handed a view of, or to hold a
@@ -94,6 +95,26 @@ extern fn @c takesCb(cb *Cb);
 fn viaStruct(cb *Cb) usize {
   imm v = gl.items[0usize].label.view();
   takesCb(cb);                                                  //~ ErrorShapeReshape "points into a 'mut' global"
+  v.len;
+}
+
+// ... or anything else callable it can reach, by one rule: a virtual reference to a closure, and a closure an
+// owner holds, behind a read-only reference
+struct Sink { pub f &<mut fn(s &str); }
+extern fn @c takesSink(sink &Sink);
+
+fn viaSink(sink &Sink) usize {
+  imm v = gl.items[0usize].label.view();
+  takesSink(sink);                                              //~ ErrorShapeReshape "points into a 'mut' global"
+  v.len;
+}
+
+struct Owner { pub f So[fn(s &str)]; }
+extern fn @c takesOwner(o &Owner);
+
+fn viaOwner(o &Owner) usize {
+  imm v = gl.items[0usize].label.view();
+  takesOwner(o);                                                //~ ErrorShapeReshape "points into a 'mut' global"
   v.len;
 }
 

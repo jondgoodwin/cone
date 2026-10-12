@@ -1434,8 +1434,10 @@ locals, which only a call that reaches one of them is asked of):
   unmarked loan of a path does). `reshapeCall` asks the ordinary check first, then, for such a loan,
   answers yes to a call that is not exempt (`reshapeExempt`: an intrinsic, an init, `+ ShapeKeeping`)
   when its code is unknown (a virtual call or a call of a function value, a `&fn` held in a field,
-  parameter, global or local; an `extern` C function handed anything whose type can reach a `&fn`,
-  `shapeExternHandsFnRef`, which C may call back; or a Cone function whose body is not visible; any
+  parameter, global or local; an `extern` C function handed anything whose type can reach something
+  callable (a `&fn`, a virtual reference, a closure or trait object an owner holds: `FnSigTag` or
+  `VirtRefTag`, by fields, pointers, references, arrays, tuples and aliases),
+  `shapeExternHandsCallable`, which C may call back; or a Cone function whose body is not visible; any
   other `extern` names no Cone global and stays asked of what it is handed), or when the shape
   inference finds it reshapes a value of the container's type through a global, with a virtual call,
   a function value or such an extern called anywhere in its body, or in what it calls, taken to write

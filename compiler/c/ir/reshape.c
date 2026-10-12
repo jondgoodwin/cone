@@ -618,10 +618,10 @@ int reshapeCall(FnCallNode *call, FnDclNode *meth, int recvunique, INode *cont, 
     if (globalview && !reshapeExempt(call, verdict->callee)) {
         FnDclNode *callee = verdict->callee;
         // Code that could be anything: a virtual call, a function value, a Cone function whose body
-        // is not here, an 'extern' C function handed something that can reach a '&fn' it may call
-        // back. Any other 'extern' is asked as any call is, of what it is handed (the ordinary
-        // check above)
-        int opaque = (call->flags & FlagVDisp) || callee == NULL || shapeExternHandsFnRef(call, callee)
+        // is not here, an 'extern' C function handed something that can reach anything callable (a
+        // '&fn', a virtual reference, a closure an owner holds) that it may call back. Any other
+        // 'extern' is asked as any call is, of what it is handed (the ordinary check above)
+        int opaque = (call->flags & FlagVDisp) || callee == NULL || shapeExternHandsCallable(call, callee)
             || (!(callee->flags & FlagExtern) && !siVisible(callee));
         if (opaque || (!(callee->flags & FlagExtern) && shapeTypeWritesGlobal(callee, cont))) {
             verdict->why = globalview == 2 ? ReshapeGlobalMaybe : ReshapeGlobalView;
