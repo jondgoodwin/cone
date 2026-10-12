@@ -1,0 +1,186 @@
+// Contact and trigger events: a contact is reported added when two bodies begin
+// touching, persisted (if asked) every step they go on touching, removed when
+// they part; a sensor body reports the bodies that enter and leave it and does
+// not stop them.
+//
+// A ball is dropped on the ground: one 'added' event with the ground and ball
+// ids, a normal pointing from the lower-numbered body (the ground) up to the
+// ball. It bounces (restitution 0.6) and lands again, so there are two added
+// and a removed between them. With persisted events on there is one a step
+// while it rests. A sensor volume over the ground reports a falling box
+// entering and leaving it (the box does not slow down inside it), reports a
+// resting body inside it only once, and a static sensor and a kinematic one
+// both work. Destroying a touching body reports the contact removed.
+
+mod events;
+
+import testing use *;
+import collections use List;
+import geomath use *;
+import rigidcollide use *;
+import rigiddynamics use *;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+fn count(events &List[Event], kind u32) i32 {
+  mut n = 0;
+  mut i = 0usize;
+  while i < events.len() { if events[i].kind == kind { n = n + 1; } i = i + 1usize; }
+  n;
+}
+
+fn testContacts() {
+  mut w = World.make();
+  imm floorS = w.addShape(Shape.single(Prim.box(new Vec3(20., 1., 20.))));
+  imm ballS = w.addShape(Shape.single(Prim.sphere(0.25)));
+  mut fd = BodyDef.staticAt(floorS, new Vec3(0., -1., 0.));
+  fd.material = PhysMaterial.make(0.5, 0.5, 0.6);
+  imm floor = w.createBody(fd);
+  mut bd = BodyDef.dynamicAt(ballS, new Vec3(0., 1.25, 0.));
+  bd.linearDamping = 0.;
+  imm ball = w.createBody(bd);
+  mut added = 0;
+  mut removed = 0;
+  mut firstAdded = false;
+  mut i = 0;
+  mut sawBefore = false;
+  while i < 150 {
+    w.step(1. / 60.);
+    imm events = w.takeEvents();
+    mut k = 0usize;
+    while k < events.len() {
+      imm e = events[k];
+      if e.kind == EvContactAdded {
+        added = added + 1;
+        if added == 1 {
+          firstAdded = e.a == floor and e.b == ball and e.normal.y > 0.99 and absf(e.depth) < 0.03;
+          sawBefore = w.positionOf(ball).y < 0.35;
+        }
+      }
+      if e.kind == EvContactRemoved { removed = removed + 1; }
+      k = k + 1usize;
+    }
+    i = i + 1;
+  }
+  expectBool(firstAdded, true, "the first contact: ground then ball, normal up, depth near zero");
+  expectBool(sawBefore, true, "reported as the ball arrives");
+  expectBool(added >= 2, true, "it bounced and landed again: a second contact");
+  expectBool(removed >= 1, true, "with one removed in between");
+  expectBool(added - removed >= 0 and added - removed <= 1, true, "added and removed alternate");
+
+  // persisted events, off by default and on when asked
+  mut z = World.make();
+  imm zf = z.addShape(Shape.single(Prim.box(new Vec3(20., 1., 20.))));
+  imm zb = z.addShape(Shape.single(Prim.box(new Vec3(0.5, 0.5, 0.5))));
+  z.createBody(BodyDef.staticAt(zf, new Vec3(0., -1., 0.)));
+  imm zbox = z.createBody(BodyDef.dynamicAt(zb, new Vec3(0., 0.5, 0.)));
+  z.settings.sleepEnabled = false;
+  z.step(1. / 60.);
+  z.takeEvents();
+  mut j = 0;
+  while j < 10 { z.step(1. / 60.); j = j + 1; }
+  expectInt(i64.from(count(&z.takeEvents(), EvContactPersisted)), 0i64, "no persisted events unless asked");
+  z.settings.persistedEvents = true;
+  j = 0;
+  while j < 10 { z.step(1. / 60.); j = j + 1; }
+  expectInt(i64.from(count(&z.takeEvents(), EvContactPersisted)), 10i64, "one a step when asked");
+
+  // destroying a body in contact reports the contact removed
+  z.destroyBody(zbox);
+  expectInt(i64.from(count(&z.takeEvents(), EvContactRemoved)), 1i64, "destroying a touching body reports it removed");
+}
+
+fn testSensor() {
+  mut w = World.make();
+  imm floorS = w.addShape(Shape.single(Prim.box(new Vec3(20., 1., 20.))));
+  imm boxS = w.addShape(Shape.single(Prim.box(new Vec3(0.5, 0.5, 0.5))));
+  imm zoneS = w.addShape(Shape.single(Prim.box(new Vec3(3., 1., 3.))));
+  w.createBody(BodyDef.staticAt(floorS, new Vec3(0., -1., 0.)));
+  mut zd = BodyDef.staticAt(zoneS, new Vec3(0., 5., 0.));
+  zd.sensor = true;
+  imm zone = w.createBody(zd);
+  mut bd = BodyDef.dynamicAt(boxS, new Vec3(0., 9., 0.));
+  bd.linearDamping = 0.;
+  imm box = w.createBody(bd);
+  mut enterStep = -1;
+  mut exitStep = -1;
+  mut enterOk = false;
+  mut exitOk = false;
+  mut vyAfter = 0.;
+  mut yAfter = 0.;
+  mut i = 0;
+  while i < 120 {
+    w.step(1. / 60.);
+    if w.positionOf(box).y < 3.9 and vyAfter == 0. { vyAfter = w.linearVelocity(box).y; yAfter = w.positionOf(box).y; }
+    imm events = w.takeEvents();
+    mut k = 0usize;
+    while k < events.len() {
+      imm e = events[k];
+      if e.kind == EvSensorEnter { enterStep = i; enterOk = e.a == zone and e.b == box; }
+      if e.kind == EvSensorExit { exitStep = i; exitOk = e.a == zone and e.b == box; }
+      k = k + 1usize;
+    }
+    i = i + 1;
+  }
+  expectBool(enterOk, true, "the sensor reports the box entering it (sensor first)");
+  expectBool(exitOk, true, "and leaving it");
+  expectBool(exitStep > enterStep and enterStep > 0, true, "in that order");
+  // it fell through at the free-fall speed: sensors do not slow things
+  near(vyAfter, -(2. * 9.81 * (9. - yAfter)).sqrt(), 0.3, "the box fell through the sensor at the free-fall speed, v^2 = 2 g h");
+
+  // a body resting inside a sensor reports one enter only
+  mut z = World.make();
+  imm zf = z.addShape(Shape.single(Prim.box(new Vec3(20., 1., 20.))));
+  imm zb = z.addShape(Shape.single(Prim.box(new Vec3(0.5, 0.5, 0.5))));
+  imm zz = z.addShape(Shape.single(Prim.box(new Vec3(3., 2., 3.))));
+  z.createBody(BodyDef.staticAt(zf, new Vec3(0., -1., 0.)));
+  mut z2 = BodyDef.staticAt(zz, new Vec3(0., 2., 0.));
+  z2.sensor = true;
+  z.createBody(z2);
+  z.createBody(BodyDef.dynamicAt(zb, new Vec3(0., 3., 0.)));
+  mut j = 0;
+  while j < 240 { z.step(1. / 60.); j = j + 1; }
+  imm ev = z.takeEvents();
+  expectInt(i64.from(count(&ev, EvSensorEnter)), 1i64, "a box resting in a sensor enters it once");
+  expectInt(i64.from(count(&ev, EvSensorExit)), 0i64, "and does not leave");
+
+  // a moving kinematic sensor (a trigger carried by a platform) sweeps over a resting box
+  mut y = World.make();
+  imm yf = y.addShape(Shape.single(Prim.box(new Vec3(20., 1., 20.))));
+  imm yb = y.addShape(Shape.single(Prim.box(new Vec3(0.5, 0.5, 0.5))));
+  imm yz = y.addShape(Shape.single(Prim.sphere(1.)));
+  y.createBody(BodyDef.staticAt(yf, new Vec3(0., -1., 0.)));
+  imm target = y.createBody(BodyDef.dynamicAt(yb, new Vec3(5., 0.5, 0.)));
+  mut kd = BodyDef.kinematicAt(yz, new Vec3(0., 0.5, 0.));
+  kd.sensor = true;
+  imm trig = y.createBody(kd);
+  y.setLinearVelocity(trig, new Vec3(2., 0., 0.));
+  mut enters = 0;
+  mut exits = 0;
+  j = 0;
+  while j < 300 {
+    y.step(1. / 60.);
+    imm e = y.takeEvents();
+    mut q = 0usize;
+    while q < e.len() {
+      // (the sensor also overlaps the ground all along, which reports once at the start)
+      if e[q].b == target and e[q].a == trig {
+        if e[q].kind == EvSensorEnter { enters = enters + 1; }
+        if e[q].kind == EvSensorExit { exits = exits + 1; }
+      }
+      q = q + 1usize;
+    }
+    j = j + 1;
+  }
+  expectInt(i64.from(enters), 1i64, "a moving sensor passes the box once: one enter");
+  expectInt(i64.from(exits), 1i64, "and one exit");
+  near(y.positionOf(target).x, 5., 0.001, "without moving it");
+}
+
+fn main() i32 {
+  testContacts();
+  testSensor();
+  done();
+}
