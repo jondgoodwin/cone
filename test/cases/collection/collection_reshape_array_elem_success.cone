@@ -1,0 +1,112 @@
+// What the check for a borrow into a List held as an element of an array accepts (the refusals are
+// collection_flow_reshape_array_elem): the borrow used up before the list is changed, a call
+// that changes nothing the borrow points into, a read of another element, a swap of two elements,
+// two lists that are separate locals, and the lists changed once the borrow is no longer used.
+
+mod collection_reshape_array_elem_success;
+
+import stdio use *;
+import collections use *;
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+// Reads and writes through the element's borrow; grows nothing
+fn setFirst(x &mut List[i64], e &mut i64) { *e = 40i64 + i64.from(x.len()); }
+
+fn grow(x &mut List[i64], e &mut i64) { x.push(1); }
+
+struct Bag { pub arr Array[List[i64], 2]; pub n i64; }
+
+// The borrow is used up before the list grows
+fn usedUp() i64 {
+  mut ls = [List[i64].empty(), List[i64].empty()];
+  ls[0usize].push(7);
+  imm e = &mut ls[0usize][0usize];
+  *e = 9;
+  ls[0usize].push(1);
+  *ls[0usize][0usize];
+}
+
+// A callee that writes through the borrow and grows nothing
+fn callNoGrow() i64 {
+  mut ls = [List[i64].empty(), List[i64].empty()];
+  ls[0usize].push(7);
+  setFirst(&mut ls[0usize], &mut ls[0usize][0usize]);
+  *ls[0usize][0usize];
+}
+
+// Another element is read while the borrow is held: a read changes no shape
+fn readOther() i64 {
+  mut ls = [List[i64].empty(), List[i64].empty()];
+  ls[0usize].push(7);
+  ls[1usize].push(8);
+  imm e = &mut ls[0usize][0usize];
+  imm n = i64.from(ls[1usize].len());
+  *e = *e + n;
+  *e;
+}
+
+// Two elements swapped with no borrow held
+fn swapped() i64 {
+  mut ls = [List[i64].empty(), List[i64].empty()];
+  ls[0usize].push(7);
+  ls[1usize].push(8);
+  ls[1usize].push(9);
+  ls[0usize] <=> ls[1usize];
+  i64.from(ls[0usize].len());
+}
+
+// Separate lists in separate locals are apart, as the array's are not
+fn separateLocals() i64 {
+  mut a = List[i64].empty();
+  mut b = List[i64].empty();
+  a.push(7);
+  grow(&mut b, &mut a[0usize]);
+  *a[0usize] + i64.from(b.len());
+}
+
+// Each pass takes its borrow, uses it up and only then pushes
+fn loopTurns() i64 {
+  mut ls = [List[i64].empty(), List[i64].empty()];
+  mut i = 0usize;
+  while i < 2usize {
+    ls[i].push(7);
+    imm e = &mut ls[i][0usize];
+    *e = *e + 1;
+    ls[i].push(2);
+    i = i + 1usize;
+  }
+  i64.from(ls[0usize].len() + ls[1usize].len());
+}
+
+// The array held by a struct reached through a reference
+fn inStruct(b &mut Bag) i64 {
+  b.arr[0usize].push(5);
+  setFirst(&mut b.arr[0usize], &mut b.arr[0usize][0usize]);
+  *b.arr[0usize][0usize];
+}
+
+// An array reached through a '&uni' reference
+fn throughUni(ls &uni Array[List[i64]]) i64 {
+  ls[0usize].push(5);
+  setFirst(&mut ls[0usize], &mut ls[0usize][0usize]);
+  *ls[0usize][0usize];
+}
+
+fn main() {
+  show("usedUp", usedUp());
+  show("callNoGrow", callNoGrow());
+  show("readOther", readOther());
+  show("swapped", swapped());
+  show("separateLocals", separateLocals());
+  show("loopTurns", loopTurns());
+  mut b = new Bag([List[i64].empty(), List[i64].empty()], 0);
+  show("inStruct", inStruct(&mut b));
+  mut ls = [List[i64].empty(), List[i64].empty()];
+  show("throughUni", throughUni(&uni ls));
+}

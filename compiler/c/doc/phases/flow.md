@@ -1377,6 +1377,19 @@ What is not covered: a type that reshapes only through a generic free function o
 free function of a generic type, and (above) a free function of another module
 writing a public field.
 
+**A shape-changing element of an array.** `ls[i][j]`, `ls` an array of `List`s, calls the list's
+`&[]` with the receiver `ls[i]`, which `fnCallArrIndex` makes an index with `FlagBorrow`
+over the borrow of the array that it injects, `(&mut ls)[i]` (a chain of them over one borrow
+for `g[i][j][k]` of a multi-dimensional array). That receiver is lent from the array's own place
+with a `PlaceStepElem` per index, as a field is (`pwIsElemBorrow`, `pwElemBorrowPlace`, used by
+`pwLendRef` and by `pwValue` for the same index written as a borrow, `&mut ls[i]`), and not as a
+loan of the array whole with no place to follow: the list is then the container of a borrow into a
+shape-changing value (`pwShapeLent`), and the rest of this section applies to it as to a
+local's, a field's or a `&uni` reference's. The steps do not tell the elements apart, so a call
+or a store that reshapes any `ls[k]` is asked of the loan. An index holding a seam, a range
+(`&mut ls[a..<b]`, a slice) and a GPU target's run-time choice of references keep the loan of
+the array whole.
+
 ### A change through another name
 
 Part (b) of the rule (`reshape.c`, `flowpath.c`'s `pwShapeBorrow`/`pwShapeCall`,

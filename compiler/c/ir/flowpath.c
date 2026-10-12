@@ -1215,6 +1215,53 @@ static int pwReserved(int access) {
     return pwTwoPhase(access) ? AccessBorrow : access;
 }
 
+// An element of an array borrowed where it lies, '&mut ls[i]', or the receiver a method of the
+// element's type is called on ('ls[i][j]' for a list element, '&[]' the method): fnCallArrIndex
+// makes it an index with FlagBorrow of the borrow of the array that it injects, '(&mut ls)[i]'.
+// The element is lent from the array's own place with an element step, as a field is
+// ('&mut s.f'), and not the array whole: a borrow into a list that is the element is then a
+// borrow into a collection that changes shape, which the shape check follows (pwShapeLent).
+// A multi-dimensional array's 'g[i][j]' is a chain of such indexes over the one injected borrow.
+// Left to the old way where an index holds a seam, or the target chooses references at run time
+static int pwIsElemBorrow(INode *node) {
+    INode *index = node;
+    while (index->tag == ArrIndexTag && (index->flags & FlagBorrow) && !(index->flags & FlagRange)) {
+        index = ((FnCallNode *)index)->objfn;
+        if (index->tag == BorrowTag)
+            return !pathGpuChoices && !(pwSeams && awaitWithin(node));
+    }
+    return 0;
+}
+
+// The place of that element: the array's own place with a step for each index, lent with the
+// permission the array was borrowed with. 'site' returns the injected borrow, which the loan is
+// keyed by, as it was when the array was lent whole. Returns 0 if the array is no place the walk
+// tracks (then 'base' is its value)
+static int pwElemBorrowPlace(INode *node, Place *pl, PathSet **base, INode **perm, INode **site) {
+    INode *arr = ((FnCallNode *)node)->objfn;
+    if (arr->tag == BorrowTag) {
+        if (!pwPlace(&((RefNode *)arr)->vtexp, pl, base))
+            return 0;
+        *perm = ((RefNode *)iexpGetTypeDcl(arr))->perm;
+        *site = arr;
+    }
+    else if (!pwElemBorrowPlace(arr, pl, base, perm, site))
+        return 0;
+    pwStep(pl, PlaceStepElem);
+    return 1;
+}
+
+// The arguments of the indexes, the innermost first
+static void pwElemBorrowIndexes(INode *node) {
+    INode *arr = ((FnCallNode *)node)->objfn;
+    if (arr->tag != BorrowTag)
+        pwElemBorrowIndexes(arr);
+    INode **argsp;
+    uint32_t cnt;
+    for (nodesFor(((FnCallNode *)node)->args, cnt, argsp))
+        pwValue(argsp, 0);
+}
+
 // A method's receiver taken by reference: a loan of the receiver's place,
 // whether borrowed here ('list.push(x)' is '(&mut list).push(x)', the borrow
 // injected) or reached through a reference it is handed ('r.push(x)' for 'r
@@ -1249,6 +1296,19 @@ static PathSet *pwLendRef(INode **recvp, INode *selftype, int lvalop, int reserv
         INode *perm = ((RefNode *)iexpGetTypeDcl(recv))->perm;
         *access = loanBorrowAccess(perm);
         return pwLend(recv, pl, perm, reserve ? pwReserved(*access) : *access, loan);
+    }
+    // An element of an array lent where it lies ('ls[i][j]': 'ls[i]' is the receiver of the list's '&[]')
+    if (pwIsElemBorrow(recv)) {
+        INode *perm;
+        INode *site;
+        if (!pwElemBorrowPlace(recv, pl, &base, &perm, &site)) {
+            pwElemBorrowIndexes(recv);
+            return base;
+        }
+        *access = lvalop ? AccessWrite : loanBorrowAccess(perm);
+        PathSet *lent = pwLend(site, pl, perm, reserve ? pwReserved(*access) : *access, loan);
+        pwElemBorrowIndexes(recv);
+        return lent;
     }
     if (!pwIsBorrowed(iexpGetTypeDcl(recv)) || selftype->tag != RefTag)
         return pwValue(recvp, 1);
@@ -3297,6 +3357,20 @@ static PathSet *pwYield(YieldNode *node) {
 // says the value goes to a new holder, which moves it when its type moves.
 static PathSet *pwValue(INode **nodep, int move) {
     INode *node = *nodep;
+    // An element borrowed where it lies, '&mut ls[i]': a borrow of that element of the array's place
+    if (pwIsElemBorrow(node)) {
+        Place pl;
+        PathSet *base;
+        INode *perm;
+        INode *site;
+        if (!pwElemBorrowPlace(node, &pl, &base, &perm, &site)) {
+            pwElemBorrowIndexes(node);
+            return base;
+        }
+        PathSet *lent = pwLend(site, &pl, perm, loanBorrowAccess(perm), NULL);
+        pwElemBorrowIndexes(node);
+        return lent;
+    }
     if (pwNamedVar(node) || node->tag == DerefTag || node->tag == ArrIndexTag
         || node->tag == FldAccessTag)
         return pwPlaceValue(nodep, move);
