@@ -1,0 +1,73 @@
+// Look-at: turn a humanoid's head to a point, the neck and spine sharing the turn.
+//
+// The aim is the eye socket's forward (-z of the head) pointing at the
+// target. The wanted direction is expressed in the body's frame (the
+// pelvis'), and its yaw (a positive yaw turns left) and pitch are clamped to
+// the ranges a body has, so a target behind the being makes it look as far
+// round as it can and no further. The turn needed (the smallest rotation
+// from where the head points now to the clamped direction) is then split
+// among the spine, chest, neck and head by fixed fractions that sum to 1,
+// each bone taking its fraction by spherical interpolation from no turn.
+// The fractions share one axis, so they compose into exactly the whole
+// turn; a bone near the head takes more, the way a person turns the eyes
+// and head first and the trunk last. This is the "weighted joint chain"
+// look-at of game animation systems (Unreal's and Unity's both do it), done
+// by directions, not Euler angles, so there is no gimbal.
+
+pub struct LookConfig {
+  pub maxYaw f32;       // radians each side of the body's forward
+  pub maxUp f32;        // radians above level
+  pub maxDown f32;      // radians below level
+  pub spine f32;        // the turn's shares; they sum to 1
+  pub chest f32;
+  pub neck f32;
+  pub head f32;
+
+  // 80 degrees of yaw, 50 up and 45 down in all, shared 10, 20, 30 and 40 per cent
+  pub fn standard() LookConfig {
+    new LookConfig(radians(80.), radians(50.), radians(45.), 0.10, 0.20, 0.30, 0.40);
+  }
+}
+
+// What a look did: the yaw and pitch actually aimed at (after the clamp,
+// radians) and whether the target was out of range
+pub struct LookResult {
+  pub yaw f32;
+  pub pitch f32;
+  pub clamped bool;
+}
+
+// Turn 'bone' by the model-space rotation 'delta' about its own origin,
+// its children going with it. 'models' is current for the bones before it.
+fn turnBone(skel &Skeleton, pose &mut Pose, models &mut List[Transform3], bone usize, delta Quat) {
+  imm parent = usize.from(skel.parentOf(bone));
+  imm pm = (*models[parent]).rotation;
+  imm own = pose.rotation(bone);
+  pose.setRotation(bone, (pm.conjugate() * delta * pm * own).normalize());
+  skel.recompose(pose, models, bone);
+}
+
+// Aim the head at 'target' (model space). 'weight' (0 to 1) fades the turn in
+// and out. 'models' must be current for 'pose' and is brought up to date.
+pub fn lookAt(skel &Skeleton, pose &mut Pose, models &mut List[Transform3], target Vec3, weight f32,
+    cfg &LookConfig) LookResult {
+  imm eye = skel.socketModel(models, SOCKET_EYE).translation;
+  imm body = (*models[PELVIS]).rotation;
+  imm dirB = body.conjugate() * (target - eye).normalize();
+  mut yaw = atan2(-dirB.x, -dirB.z);
+  mut pitch = asin(clampf(dirB.y, -1., 1.));
+  imm y0 = yaw;
+  imm p0 = pitch;
+  yaw = clampf(yaw, -cfg.maxYaw, cfg.maxYaw);
+  pitch = clampf(pitch, -cfg.maxDown, cfg.maxUp);
+  imm wantB = new Vec3(-sin(yaw) * cos(pitch), sin(pitch), -cos(yaw) * cos(pitch));
+  imm want = body * wantB;
+  imm fwd = (*models[HEAD]).rotation * new Vec3(0., 0., -1.);
+  imm whole = Quat.identity().slerp(Quat.fromVectors(fwd, want), weight);
+  imm id = Quat.identity();
+  turnBone(skel, pose, models, SPINE, id.slerp(whole, cfg.spine));
+  turnBone(skel, pose, models, CHEST, id.slerp(whole, cfg.chest));
+  turnBone(skel, pose, models, NECK, id.slerp(whole, cfg.neck));
+  turnBone(skel, pose, models, HEAD, id.slerp(whole, cfg.head));
+  new LookResult(yaw, pitch, y0 != yaw or p0 != pitch);
+}

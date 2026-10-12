@@ -1,0 +1,45 @@
+// Hand reach and grip: a hand brought to a position with an orientation, so
+// that it can hold something.
+//
+// The target is for the GRIP SOCKET (bonepose's SOCKET_HAND_R_GRIP and
+// _L_GRIP: a point in the palm, as a sword's hilt sits): a place and a
+// rotation in model space. The wrist the arm must reach is the grip's place
+// less the socket's offset turned by the grip's rotation, so an object
+// attached to the socket lands exactly on the target. The arm is solved by the
+// limb solver (shoulder, elbow, wrist) with an elbow that cannot fold past
+// 'minElbow' or hyperextend past 'maxElbow', then the hand is turned to the
+// wanted rotation. A target out of reach brings the wrist to the nearest
+// point the arm reaches and says so; the hand's rotation is still applied.
+// 'weight' blends from the pose's own hand to the grip (reaching for, and
+// letting go of, a thing).
+
+pub struct ReachResult {
+  pub reached bool;
+  pub wrist Vec3;      // where the wrist ended, model space
+}
+
+// A direction for the elbow to bend towards: back, down and out from the body
+pub fn elbowPole(right bool) Vec3 {
+  if right { return new Vec3(0.4, -0.3, 0.8); }
+  new Vec3(-0.4, -0.3, 0.8);
+}
+
+// Bring the grip socket of the right or left hand to 'gripPos' with
+// orientation 'gripRot' (model space). 'models' must be current for 'pose'.
+pub fn reachHand(skel &Skeleton, pose &mut Pose, models &mut List[Transform3], right bool, gripPos Vec3, gripRot Quat,
+    pole Vec3, weight f32) ReachResult {
+  imm upper = if right { UPPER_ARM_R; } else { UPPER_ARM_L; };
+  imm hand = if right { HAND_R; } else { HAND_L; };
+  imm socket = if right { SOCKET_HAND_R_GRIP; } else { SOCKET_HAND_L_GRIP; };
+  imm off = (*skel.sockets[socket]).offset;
+  imm handNow = (*models[hand]).rotation;
+  imm wantHand = (gripRot * off.rotation.conjugate()).normalize();
+  imm wristWant = gripPos - wantHand * off.translation;
+  imm wristNow = (*models[hand]).translation;
+  imm wrist = wristNow + (wristWant - wristNow) * weight;
+  imm sol = aimLimbRange(skel, pose, models, upper, wrist, pole, radians(15.), pi);
+  imm handRot = handNow.slerp(wantHand, weight);
+  skel.setModelRotation(pose, models, hand, handRot);
+  skel.recompose(pose, models, hand);
+  new ReachResult(sol.reached, sol.end);
+}
