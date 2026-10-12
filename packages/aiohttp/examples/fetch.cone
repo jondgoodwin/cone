@@ -1,0 +1,100 @@
+// fetch <url>: one URL fetched by an actor, http or https, the server's
+// certificate checked by the OS's own verifier (crypt32 on Windows, OpenSSL's
+// check against the system's roots on Linux), redirects followed. The actor
+// awaits the client's fetch, given thirty seconds, and prints the URL that
+// answered, the status, every header field and the body's size, and when it
+// got there. Run it with
+//
+//   congo run packages/aiohttp/examples/fetch.cone -- https://example.com/
+//
+// It needs the network, so it is an example and never a test: 'congo test'
+// builds it and does not run it. A failure prints how it ended and why, and
+// the exit status is 1.
+
+mod fetch;
+
+import stdio use *;
+import process;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import collections use String;
+import time use Instant, Duration;
+import http use reasonPhrase;
+import actors;
+import aio use IoLimits;
+import aiohttp use Client;
+
+fn millis(d Duration) {
+  imm tenths = d.nanos() / 100000i64;
+  printInt(tenths / 10i64);
+  printStr(".");
+  printInt(tenths % 10i64);
+  printStr(" ms");
+}
+
+actor Getter {
+  client Client;
+
+  pub async do get(self, url String, status OneshotSender[i32]) {
+    imm r = await client.getIn(url.view(), IoLimits.until(Instant.now() + Duration.fromSeconds(30i64)));
+    mut code = 1i32;
+    match r {
+      case imm ok Ok {
+        printStr(ok.url.view());
+        printStr("\nHTTP/1.1 ");
+        printUInt(u64.from(ok.status));
+        printStr(" ");
+        printStr(reasonPhrase(ok.status));
+        printStr("\n");
+        mut j = 0usize;
+        while j < ok.headers.len() {
+          printStr(ok.headers.nameAt(j));
+          printStr(": ");
+          printStr(ok.headers.valueAt(j) as &str);
+          printStr("\n");
+          j = j + 1usize;
+        }
+        printStr("\n");
+        printUInt(u64.from(ok.body.len()));
+        printStr(" bytes of body; first byte after ");
+        millis(ok.timing.firstByte - ok.timing.queued);
+        printStr(", done after ");
+        millis(ok.timing.ended - ok.timing.queued);
+        printStr("; ");
+        printUInt(u64.from(ok.timing.attempts));
+        printStr(" request(s), ");
+        printUInt(u64.from(ok.timing.redirects));
+        printStr(" redirect(s)\n");
+        code = 0i32;
+      }
+      case imm e Error {
+        printStr(e.message().view());
+        printStr("\n");
+      }
+    }
+    mut s = status;
+    s.send(code);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  imm args = process.args();
+  if args.len() < 2usize {
+    printStr("usage: fetch <url>\n");
+    return 2i32;
+  }
+  mut tx OneshotSender[i32];
+  mut rx OneshotReceiver[i32];
+  tx, rx = Oneshot[i32].make();
+  {
+    imm g = new Getter(Client.standard());
+    g.get(args[1usize].copy(), tx);
+  }
+  mut code = 1i32;
+  match rx.recv() {
+    case imm c Some {code = c;}
+    case is None[i32] {}
+  }
+  finalAll();
+  code;
+}

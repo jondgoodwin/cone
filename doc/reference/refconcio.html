@@ -14,7 +14,8 @@
     <div class="text">
 
 	<p style="margin-left: 40px;"><i>Note: <span class="pre">iocore</span> (sockets, timers, files, cancel
-		groups and the blocking pool), <span class="pre">iobuf</span>, <span class="pre">aio</span> and the HTTP and
+		groups and the blocking pool), <span class="pre">iobuf</span>, <span class="pre">aio</span>,
+		<span class="pre">aiohttp</span> and the HTTP and
 		TLS packages over them run on Windows and on Linux. Batching
 		of datagrams (many in one call) is not here yet. A timer joined to a cancel group is not yet timed out by
 		the group's deadline: it answers at its own time.</i></p>
@@ -55,6 +56,10 @@
 		pauses there until the operation's answer comes, as it pauses for another
 		actor's reply (<a href="refawait.html#await">Awaiting a reply</a>; below,
 		<a href="#await-io">Awaiting I/O</a>). TCP sockets and files.</li>
+	<li><b>HTTP an actor awaits:</b> <span class="pre">aiohttp</span>. An actor's behaviour may
+		<span class="pre">await</span> <span class="pre">client.get(url)</span>, for
+		<span class="pre">http://</span> or <span class="pre">https://</span>, and gets the whole response
+		(<a href="#await-io-http">below</a>).</li>
 	</ul>
 
 	<h2 id="await-io">Awaiting I/O</h2>
@@ -297,6 +302,73 @@ actor Patcher {
 		and answer the same. <span class="pre">fileio</span>, the file service with classes and a queue-depth
 		governor, is a package of its own, to come.</p>
 
+	<h3 id="await-io-http">HTTP an actor awaits</h3>
+	<p>The <span class="pre">aiohttp</span> package makes HTTP and HTTPS fetches awaitable the same way:
+		an actor writes <span class="pre">await client.get(url)</span> and the behaviour pauses until the whole
+		response is in. The fetch is <span class="pre">httpclient</span>'s &mdash; its pools of connections per
+		server, its retries and redirects, TLS under <span class="pre">https://</span> &mdash; run on a thread of
+		<span class="pre">aiohttp</span>'s own, and the answer comes back as a message, as an
+		<span class="pre">aio</span> operation's does:</p>
+<pre>
+actor Weather {
+  client Client;
+
+  pub async do show(self, url String, done OneshotSender[u64]) {
+    // The whole response, awaited: this actor handles its other messages
+    // meanwhile. It is given ten seconds, and the answer says how it ended
+    imm r = await client.getIn(url.view(), IoLimits.until(Instant.now() + Duration.fromSeconds(10i64)));
+    match r {
+      case imm ok Ok {
+        say("status", u64.from(ok.status));
+        printStr(ok.body.view());
+        printStr("\n");
+      }
+      case imm e Error {
+        if e.isTimedOut() {printStr("too slow\n");}
+        elif e.isCancelled() {printStr("cancelled\n");}
+        else {printStr(e.message().view()); printStr("\n");}
+      }
+    }
+    mut d = done;
+    d.send(1u64);
+  }
+}
+</pre>
+	<p>The output is <span class="pre">status 200</span> and the body, <span class="pre">sunny, 21 C</span>.</p>
+	<p>A <span class="pre">Client</span> (<span class="pre">Client.standard()</span>, or
+		<span class="pre">Client.make(config, maxBody)</span> with an <span class="pre">httpclient.Config</span>
+		and the most body bytes a response may have) is a handle that moves: it may be sent in a message, and
+		<span class="pre">clone()</span> makes another handle to the same client, so any number of actors fetch
+		through one set of connection pools at once. The last handle's going ends the client, and every fetch of
+		it in flight is answered cancelled. <span class="pre">get(url)</span> and
+		<span class="pre">send(request)</span> (an <span class="pre">httpclient.Request</span>, with its method,
+		header fields, body, intent and redirect limit) answer a <span class="pre">Result</span>: the success is
+		<span class="pre">httpclient</span>'s <span class="pre">Response</span> &mdash; status, header fields, the whole
+		body as bytes, the URL that answered after any redirects, and its timing. An HTTP error status such as
+		404 is an answer, not an <span class="pre">Error</span>. The <span class="pre">Error</span> is a
+		<span class="pre">FetchError</span>: the network or the client refusing (a name not found, a refused
+		connection, a certificate refused, a body longer than the limit, a URL that does not parse), with
+		<span class="pre">httpclient</span>'s <span class="pre">Failure</span> in its
+		<span class="pre">failure</span> saying at which stage and why, or the fetch cancelled or past its deadline,
+		which <span class="pre">e.isCancelled()</span> and <span class="pre">e.isTimedOut()</span> read; never a
+		panic. <span class="pre">getIn(url, lim)</span> and <span class="pre">sendIn(request, lim)</span> take the
+		same <span class="pre">IoLimits</span> as <span class="pre">aio</span>'s operations (a cancel group and an
+		absolute deadline), and a request's own deadline is kept beside it, the tighter winning.</p>
+	<p>A program that wants one connection itself has <span class="pre">aiohttp.connect(host, port)</span> and
+		<span class="pre">aiohttp.connectSecure(host, port, tlsConfig)</span>, which answer a
+		<span class="pre">Conn</span> that moves like a <span class="pre">Socket</span>:
+		<span class="pre">conn.request(head, body)</span> writes a request head
+		(<span class="pre">RequestHead.make("GET", "/", "example.com")</span>) and a body and answers the
+		whole response; <span class="pre">conn.requestIn(head, body, lim)</span> adds limits. The connection
+		carries one exchange at a time; a request cancelled or timed out on the wire resets it (HTTP/1.1's only way
+		to stop one), and later requests on it fail as closed. A <span class="pre">connectSecure</span> connection is
+		made when the TCP connection is: the TLS handshake runs under the first request, and a certificate the
+		client's configuration refuses ends that request failed at the TLS stage. Dropping a
+		<span class="pre">Conn</span> closes the connection.</p>
+	<p>A cancel and a completion that race, and a fetch dropped with its client, are settled as an
+		<span class="pre">aio</span> operation's are: exactly one answer. At the program's end, a behaviour still paused
+		on a fetch is abandoned, as one paused on a socket is (below).</p>
+
 	<h3>The I/O thread, and the program's end</h3>
 	<p>The operations run on one thread of their own, the I/O thread, which the first operation
 		awaited starts: it waits in <span class="pre">iocore</span>'s completion loop, and hands each
@@ -317,6 +389,11 @@ actor Patcher {
 	<li>The blocking pool's other work (file metadata, name lookup), UDP, and a socket's half-close, awaited;
 		<span class="pre">fileio</span>, the file service.</li>
 	<li>More than one I/O thread.</li>
+	<li>A response's body handed to the actor as it arrives (it comes whole, up to a limit), a request's body
+		streamed from it, a server whose accepts and responses an actor awaits, and
+		<span class="pre">httpclient</span> and <span class="pre">httpconn</span> running on
+		<span class="pre">aio</span>'s own sockets (<span class="pre">aiohttp</span> keeps a thread and a loop of its
+		own).</li>
 	</ul>
 
 	<h2 id="datagrams">Datagrams (UDP)</h2>
