@@ -1,0 +1,433 @@
+// The aiohttp package: HTTP and HTTPS an actor awaits. (header to come)
+
+mod aiohttp;
+
+import libc;
+import thread;
+import sync use Mutex;
+import collections use List, String;
+import iobuf use IoBuf, Pool;
+import time use Instant, Duration;
+import iocore use Loop, Waker, Completion, SocketAddr, CancelGroup, forever;
+import http use *;
+import httpconn;
+import httpclient;
+import tls;
+import aio use IoLimits;
+import actors;
+
+fn @initpure init() {
+  svcLock = Mutex.make();
+  nextId = Atomic[u64].of(0u64);
+}
+
+// A panic, reported at the line calling 'die'
+fn die(msg &str, file &Array[u8] = srcFile(), line u32 = srcLine()) Never {
+  panic(msg, file, line);
+}
+
+// ---------------------------------------------------------------------------
+// How an awaited exchange ends
+// ---------------------------------------------------------------------------
+
+// How an exchange that did not finish ended
+pub enum FetchErrorKind {
+  Failed,        // the network, the server or the client's limits refused it: 'failure' says why
+  Cancelled,     // its cancel group was cancelled, or the handle it was on was dropped
+  TimedOut;      // its deadline passed
+}
+
+// Why an awaited exchange has no response. A failure is not a panic: a
+// cancel and a deadline are errors of a kind of their own, as iocore's
+// IoError makes them
+pub struct FetchError {
+  pub failure httpclient.Failure;   // Failed: the stage, the system's code, the HTTP error; else none
+  cause FetchErrorKind;
+
+  pub fn failed(f httpclient.Failure) FetchError {new FetchError(f, FetchErrorKind.Failed);}
+  pub fn cancelled() FetchError {new FetchError(httpclient.Failure.none(), FetchErrorKind.Cancelled);}
+  pub fn timedOut() FetchError {new FetchError(httpclient.Failure.none(), FetchErrorKind.TimedOut);}
+
+  // How it came to be
+  pub fn kind(self &) FetchErrorKind {cause;}
+
+  // Ended by a cancel
+  pub fn isCancelled(self &) bool {cause == FetchErrorKind.Cancelled;}
+
+  // Ended by its deadline
+  pub fn isTimedOut(self &) bool {cause == FetchErrorKind.TimedOut;}
+
+  // 'connect: closed: the connection could not be made (...)', or 'cancelled',
+  // or 'deadline passed'
+  pub fn message(self &) String {
+    if cause == FetchErrorKind.Cancelled {return String.from("cancelled");}
+    if cause == FetchErrorKind.TimedOut {return String.from("deadline passed");}
+    failure.message();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The service thread and its queue
+// ---------------------------------------------------------------------------
+
+// A job's header, first in its block: the next job queued, and the functions
+// made for the job's type, which take the block
+struct JobHead {
+  pub next *JobHead;
+  pub run &fn(job *u8, lp &mut Loop, sv &mut Service);
+  pub drop &fn(job *u8);
+}
+
+// A job: its header, then what it is. J has 'run(self &mut, lp &mut Loop, sv &mut Service)'
+struct Job[J] {
+  pub head JobHead;
+  pub body J;
+}
+
+// The service thread, once started: its queue, under svcLock, and its loop's
+// waker, set before 'ready' and never changed. It lives as long as the
+// process, the waker with it
+struct SvcThread {
+  pub head *JobHead;
+  pub tail *JobHead;
+  pub waker Waker;
+  pub ready Atomic[u32];       // 1 once the thread has put its waker here
+  pub os thread.Thread[u32];
+}
+
+// Guards the queue, 'svc' and 'ended'
+imm svcLock Mutex;
+
+// The service thread, or 0 before the first exchange is awaited
+mut svc = 0usize;
+
+// The program is ending: no job is taken from now on (under svcLock)
+mut ended = false;
+
+// The ids handles carry: never 0
+imm nextId Atomic[u64];
+
+fn newId() u64 {nextId.add(1u64) + 1u64;}
+
+fn nullJob() *JobHead {null;}
+
+// A job's block, its body moved in
+fn newJob[J](body J) *u8 {
+  imm p = libc.malloc(mem.sizeof[Job[J]]()) as *Job[J];
+  if p as usize == 0usize {
+    die("aiohttp: out of memory for an operation");
+  }
+  (*p).head = new JobHead(nullJob(), &runJob[J], &dropJob[J]);
+  mem.writeRaw[J](&(*p).body as *J, body);
+  p as *u8;
+}
+
+// On the service thread: the job's body moved out, its block freed, and run
+fn runJob[J](job *u8, lp &mut Loop, sv &mut Service) {
+  imm p = job as *Job[J];
+  mut body = mem.readRaw[J](&(*p).body as *J);
+  libc.free(job);
+  body.run(lp, sv);
+}
+
+// A job never run: its body dropped (an exchange's reply among it,
+// abandoning what awaits it), its block freed
+fn dropJob[J](job *u8) {
+  imm p = job as *Job[J];
+  imm body = mem.readRaw[J](&(*p).body as *J);
+  libc.free(job);
+}
+
+fn dropHead(h *JobHead) {
+  imm f = (*h).drop;
+  f(h as *u8);
+}
+
+// Queue a job for the service thread, starting the thread if this is the
+// first; once the program is ending, the job is dropped instead
+fn enqueue(job *u8) {
+  imm h = job as *JobHead;
+  svcLock.lock();
+  if ended {
+    svcLock.unlock();
+    dropHead(h);
+    return;
+  }
+  if svc == 0usize {
+    startSvc();
+  }
+  imm t = svc as *SvcThread;
+  if (*t).tail as usize == 0usize {
+    (*t).head = h;
+  } else {
+    (*(*t).tail).next = h;
+  }
+  (*t).tail = h;
+  svcLock.unlock();
+  (*t).waker.wake();
+}
+
+// What the service thread is handed: its SvcThread, where it puts its loop's waker
+struct SvcArg {
+  pub t usize;
+}
+
+// Start the service thread, under svcLock: its Loop is made on it, and its
+// waker is in place before this returns
+fn startSvc() {
+  imm t = libc.calloc(1usize, mem.sizeof[SvcThread]()) as *SvcThread;
+  if t as usize == 0usize {
+    die("aiohttp: out of memory for the service thread");
+  }
+  mem.writeRaw[thread.Thread[u32]](&(*t).os as *thread.Thread[u32],
+    thread.startWith(new thread.Options(name: "aiohttp service"), new SvcArg(t as usize), &svcMain));
+  while (*t).ready.load() == 0u32 {
+    sync.futexWait(&(*t).ready, 0u32);
+  }
+  svc = t as usize;
+}
+
+// The service thread: it takes the jobs queued and runs them, drives
+// everything they started, and waits in its Loop's poll for what completes (a
+// socket, a timer, a cancel group's cancel) or for the waker. Once the
+// program is ending it drops what is queued and dies: the Loop cancels every
+// operation in flight and closes every socket, and every exchange still
+// awaited is abandoned
+fn svcMain(arg SvcArg) u32 {
+  {
+    imm me = arg.t as *SvcThread;
+    mut lp = Loop.mustMake();
+    mem.writeRaw[Waker](&(*me).waker as *Waker, lp.waker());
+    (*me).ready.store(1u32);
+    sync.futexWake(&(*me).ready);
+    mut sv = Service.make();
+    mut comps = List[Completion].empty();
+    mut more = true;
+    while more {
+      svcLock.lock();
+      imm t = svc as *SvcThread;
+      mut h = nullJob();
+      if t as usize != 0usize {
+        h = (*t).head;
+        (*t).head = nullJob();
+        (*t).tail = nullJob();
+      }
+      imm stop = ended;
+      svcLock.unlock();
+      while h as usize != 0usize {
+        imm next = (*h).next;
+        if stop {
+          dropHead(h);
+        } else {
+          imm f = (*h).run;
+          f(h as *u8, &mut lp, &mut sv);
+        }
+        h = next;
+      }
+      if stop {
+        more = false;
+      } else {
+        sv.drive(&mut lp, &mut comps);
+      }
+    }
+  }
+  0u32;
+}
+
+// The package's finalizer, run by finalAll() before the actors package's:
+// once no actor is queued or running, the service ends, and every behaviour
+// still paused on it is abandoned (the package's header, THE PROGRAM'S END)
+fn final() {
+  actors.waitQuiet();
+  svcLock.lock();
+  ended = true;
+  imm t = svc as *SvcThread;
+  svcLock.unlock();
+  if t as usize == 0usize {
+    return;
+  }
+  (*t).waker.wake();
+  imm th = mem.readRaw[thread.Thread[u32]](&(*t).os as *thread.Thread[u32]);
+  th.join();
+}
+
+// ---------------------------------------------------------------------------
+// Awaitables
+// ---------------------------------------------------------------------------
+
+// The seam starts an operation: the reply its answer goes back in is written
+// into the job, which goes to the service thread (actors.Awaitable's closure)
+fn startJob[J](ctx *u8, rp actors.Reply) {
+  imm p = ctx as *Job[J];
+  (*p).body.reply = rp;
+  enqueue(ctx);
+}
+
+// A job's block until the 'await' starts it: 'take' hands it on, and an
+// Awaitable that dies unawaited, its closure finalized, drops the job it still
+// holds (its body dropped, an exchange's reply among it)
+struct JobHold is Move {
+  job *u8;
+
+  fn take(self &mut) *u8 {
+    imm j = job;
+    job = null;
+    j;
+  }
+
+  fn final(self &uni) {
+    if job as usize != 0usize {
+      dropHead(job as *JobHead);
+    }
+  }
+}
+
+// The operation awaited: its job, made now, started by the 'await'
+fn awaitable[J, R](body J) actors.Awaitable[R] {
+  actors.Awaitable[R].make(fn(rp actors.Reply) [mut held = new JobHold(newJob[J](body))] {
+    startJob[J](held.take(), rp);
+  });
+}
+
+// A job nothing awaits: it is queued at once
+fn post[J](body J) {
+  enqueue(newJob[J](body));
+}
+
+// ---------------------------------------------------------------------------
+// Clients
+// ---------------------------------------------------------------------------
+
+// What a client takes a body up to unless it is made with another limit
+pub const defaultMaxBody = 16777216usize;
+
+// A client of HTTP and HTTPS servers, as an actor holds one (the package's
+// header, A CLIENT): plain data naming a httpclient.Client that the service
+// thread owns, which moves, and which 'clone' makes another handle to. The
+// last handle's going ends the client
+pub struct Client is Move {
+  id u64;
+
+  // A client with httpclient's defaults, whose bodies are read up to defaultMaxBody
+  pub fn standard() Client {Client.make(httpclient.Config.make(), defaultMaxBody);}
+
+  // A client with cfg's pools, limits and TLS, whose response bodies are
+  // read up to maxBody bytes (past it the exchange fails at Stage.Limit)
+  pub fn make(cfg httpclient.Config, maxBody usize) Client {
+    imm id = newId();
+    post[CreateClientJob](new CreateClientJob(id, cfg, maxBody));
+    new Client(id);
+  }
+
+  // A Client naming nothing, which ends nothing
+  pub fn none() Client {new Client(0u64);}
+
+  pub fn isNone(self &) bool {id == 0u64;}
+
+  // Another handle to the same client, its pools and its limits
+  pub fn clone(self &) Client {
+    if id != 0u64 {
+      post[RefJob](new RefJob(id, true));
+    }
+    new Client(id);
+  }
+
+  // A GET of a URL written as text, answered with the whole response
+  pub fn get(self &, url &str) actors.Awaitable[Result[httpclient.Response, FetchError]] {
+    self.sendIn(httpclient.Request.get(url), IoLimits.none());
+  }
+
+  // A GET ended if lim says so (the package's header, CANCEL AND DEADLINES)
+  pub fn getIn(self &, url &str, lim IoLimits) actors.Awaitable[Result[httpclient.Response, FetchError]] {
+    self.sendIn(httpclient.Request.get(url), lim);
+  }
+
+  // A request, answered with the whole response. A request the client
+  // writes the framing of, or whose method is not a token, or CONNECT, is a
+  // program error: a panic at the caller's line
+  pub fn send(self &, req httpclient.Request, file &Array[u8] = srcFile(), line u32 = srcLine())
+      actors.Awaitable[Result[httpclient.Response, FetchError]] {
+    self.sendIn(req, IoLimits.none(), file, line);
+  }
+
+  // A request ended if lim says so, and its own deadline and group too: the
+  // tighter deadline, and lim's group if it has one
+  pub fn sendIn(self &, req httpclient.Request, lim IoLimits, file &Array[u8] = srcFile(), line u32 = srcLine())
+      actors.Awaitable[Result[httpclient.Response, FetchError]] {
+    checkRequest(&req, file, line);
+    mut r = req;
+    match lim.group {
+      case imm g Some {r.group = Some[CancelGroup](g);}
+      else {}
+    }
+    if lim.deadline < r.deadline {r.deadline = lim.deadline;}
+    awaitable[FetchJob, Result[httpclient.Response, FetchError]](new FetchJob(id, r, new actors.Reply()));
+  }
+
+  fn final(self &uni) {
+    if id != 0u64 {
+      post[RefJob](new RefJob(id, false));
+    }
+  }
+}
+
+// What the client would panic at, found where the call is made
+fn checkRequest(r &httpclient.Request, file &Array[u8], line u32) {
+  if not isToken(r.methodName()) {die("aiohttp: the request's method is not a token", file, line);}
+  if r.method == Method.Connect {die("aiohttp: CONNECT is not supported", file, line);}
+  if r.headers.has("Host") {die("aiohttp: Host is written from the request's URL, not its fields", file, line);}
+  if r.headers.has("Content-Length") or r.headers.has("Transfer-Encoding") {
+    die("aiohttp: framing fields are the client's to write, from the request's body", file, line);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Connections
+// ---------------------------------------------------------------------------
+
+// One HTTP/1.1 connection an actor holds (the package's header, A CONNECTION):
+// plain data naming a connection the service thread's httpconn Driver owns,
+// which moves. Dropping it closes the connection politely, or resets it if an
+// exchange is still in flight on it, which then ends Cancelled
+pub struct Conn is Move {
+  id u64;
+
+  // A Conn naming nothing, which closes nothing
+  pub fn none() Conn {new Conn(0u64);}
+
+  pub fn isNone(self &) bool {id == 0u64;}
+
+  // A request with its whole body ('' for none), on this connection: the
+  // response, whole. The head is the caller's to make, its authority the
+  // host (RequestHead.make("GET", "/", "example.com")); one request is on
+  // the wire at a time, and a second waits for it
+  pub fn request(self &, head RequestHead, body String) actors.Awaitable[Result[httpclient.Response, FetchError]] {
+    self.requestIn(head, body, IoLimits.none());
+  }
+
+  // A request ended if lim says so (the package's header, CANCEL AND DEADLINES)
+  pub fn requestIn(self &, head RequestHead, body String, lim IoLimits) actors.Awaitable[Result[httpclient.Response, FetchError]] {
+    awaitable[ExchangeJob, Result[httpclient.Response, FetchError]](
+      new ExchangeJob(id, head, body, lim.group, lim.deadline, new actors.Reply()));
+  }
+
+  fn final(self &uni) {
+    if id != 0u64 {
+      post[DropConnJob](new DropConnJob(id));
+    }
+  }
+}
+
+// A connection to host:port, plain. The host is looked up and connected by
+// httpconn's driver, bounded by its connectTimeout (10 s)
+pub fn connect(host &str, port u16) actors.Awaitable[Result[Conn, FetchError]] {
+  awaitable[ConnectJob, Result[Conn, FetchError]](
+    new ConnectJob(String.from(host), port, false, tls.ClientConfig.make(), new actors.Reply()));
+}
+
+// A connection to host:port through TLS, the server's certificate checked as
+// cfg says (the host is the name it must hold)
+pub fn connectSecure(host &str, port u16, cfg tls.ClientConfig) actors.Awaitable[Result[Conn, FetchError]] {
+  awaitable[ConnectJob, Result[Conn, FetchError]](
+    new ConnectJob(String.from(host), port, true, cfg, new actors.Reply()));
+}

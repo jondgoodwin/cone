@@ -1,0 +1,559 @@
+// A client fetched from by actors: Prober awaits one fetch after another from
+// a loopback server on a thread of its own (httpconn's Driver, its own Loop),
+// and says how each ended. Checked, in order: a GET's status and body; a POST
+// whose body comes back; HEAD, 204 and a 404 (an HTTP error status is an
+// answer, not an Error); a redirect followed and the URL that answered; five
+// GETs on one kept-alive connection (the server counted one accept); a body of
+// 300,000 bytes whole, and one past a client's limit (Failed at the limit);
+// a URL that does not parse, one that is not http, and a refused connection
+// (each Failed, none a panic); a request the client refuses to write (the
+// panic is a program error, so only its check is shown); then the limits, one
+// at a time (a group cancelled by a message to the actor while its fetch is
+// paused; a group cancelled before the fetch starts; a deadline of its own,
+// ahead and past; a group made with a deadline; a child's deadline against
+// its parent's; a request carrying its own deadline and an IoLimits beside it;
+// a cancel after the fetch finished, which does nothing); and a cloned handle
+// that outlives the first.
+
+mod fetch;
+
+import stdio use *;
+import thread;
+import time use Instant, Duration;
+import sync use Channel, Sender, Receiver, Oneshot, OneshotSender, OneshotReceiver;
+import collections use List, String;
+import iobuf use IoBuf, Pool;
+import iocore use Loop, SocketAddr, CancelGroup, forever;
+import http use *;
+import httpconn;
+import httpclient use Request, Response, Config;
+import actors;
+import aiohttp use Client, FetchError, FetchErrorKind;
+import aio use IoLimits;
+
+// ---------------------------------------------------------------------------
+// The loopback server, on a thread of its own. What it answers is chosen by
+// the request's path:
+//   /hello             200 "hello" (and any path not below)
+//   /echo              200, the method, a space, and the request's body
+//   /nobody            204
+//   /status/C          status C, body "status"
+//   /redirect/N        302 to /redirect/N-1; /redirect/0 is 200 "landed"
+//   /big/N             200, N bytes, byte i being i % 251, sent as taken
+//   /conns             200, the number of connections it has accepted
+//   /hang              nothing at all
+// ---------------------------------------------------------------------------
+
+imm halt Atomic[u32];
+
+fn @initpure init() {
+  halt = Atomic[u32].of(0u32);
+}
+
+struct Srv {
+  pub drv httpconn.Driver;
+  pub pool Pool;
+  pub accepted u64;
+  pub requests u64;
+  pub reqs List[httpconn.ReqId];
+  pub methods List[Method];
+  pub targets List[String];
+  pub bodies List[String];
+  pub streams List[httpconn.ReqId];
+  pub sent List[u64];
+  pub totals List[u64];
+}
+
+struct Report {
+  pub accepted u64;
+  pub requests u64;
+}
+
+fn reply(sv &mut Srv, req httpconn.ReqId, head bool, status u16, body &Array[u8]) {
+  sv.drv.respond(req, ResponseHead.make(status), BodyLength.sized(u64.from(body.len)));
+  if body.len > 0usize and not head {
+    mut b = sv.pool.mustTake(body.len);
+    b.append(body);
+    sv.drv.sendData(req, b);
+    sv.drv.finish(req);
+  }
+}
+
+fn number(s &str) u64 {
+  match collections.parseUInt(s) {
+    case imm v Some {v;}
+    case is None[u64] {0u64;}
+  }
+}
+
+fn dropStream(sv &mut Srv, j usize) {
+  imm last = sv.streams.len() - 1usize;
+  sv.streams.swap(j, last);
+  sv.sent.swap(j, last);
+  sv.totals.swap(j, last);
+  sv.streams.pop();
+  sv.sent.pop();
+  sv.totals.pop();
+}
+
+// Stream j's next pieces, as many as the connection takes now
+fn pumpStream(sv &mut Srv, j usize) {
+  imm req = *sv.streams[j];
+  while *sv.sent[j] < *sv.totals[j] {
+    imm at = *sv.sent[j];
+    imm left = *sv.totals[j] - at;
+    imm n = if left < 65536u64 {usize.from(left);} else {65536usize;};
+    mut b = sv.pool.mustTake(n);
+    imm s = b.spare();
+    mut i = 0usize;
+    while i < n {
+      s[i] = u8.from((at + u64.from(i)) % 251u64);
+      i = i + 1usize;
+    }
+    b.setLen(n);
+    match sv.drv.sendData(req, b) {
+      case is None[IoBuf] {sv.sent.set(j, at + u64.from(n));}
+      else {return;}
+    }
+  }
+  sv.drv.finish(req);
+  dropStream(sv, j);
+}
+
+fn findStream(sv &Srv, req httpconn.ReqId) usize {
+  mut j = 0usize;
+  while j < sv.streams.len() {
+    if *sv.streams[j] == req {return j;}
+    j = j + 1usize;
+  }
+  sv.streams.len();
+}
+
+fn findReq(sv &Srv, req httpconn.ReqId) usize {
+  mut k = 0usize;
+  while k < sv.reqs.len() {
+    if *sv.reqs[k] == req {return k;}
+    k = k + 1usize;
+  }
+  sv.reqs.len();
+}
+
+fn forget(sv &mut Srv, k usize) {
+  imm last = sv.reqs.len() - 1usize;
+  sv.reqs.swap(k, last);
+  sv.methods.swap(k, last);
+  sv.targets.swap(k, last);
+  sv.bodies.swap(k, last);
+  sv.reqs.pop();
+  sv.methods.pop();
+  sv.targets.pop();
+  sv.bodies.pop();
+}
+
+// The answer to request k, read whole
+fn answer(sv &mut Srv, k usize) {
+  imm req = *sv.reqs[k];
+  imm full = sv.targets[k].copy();
+  imm path = full.view();
+  imm head = *sv.methods[k] == Method.Head;
+  if path == "/echo" {
+    mut b = String.from(methodToken(*sv.methods[k]));
+    b.append(" ");
+    b.append(sv.bodies[k].view());
+    reply(sv, req, head, 200u16, b.view());
+  } elif path == "/nobody" {
+    reply(sv, req, head, 204u16, "");
+  } elif path == "/conns" {
+    mut b = String.empty();
+    b.appendUInt(sv.accepted);
+    reply(sv, req, head, 200u16, b.view());
+  } elif path.len > 10usize and &path[0usize ..< 10usize] == "/redirect/" {
+    imm n = number(&path[10usize ..]);
+    if n == 0u64 {
+      reply(sv, req, head, 200u16, "landed");
+    } else {
+      mut loc = String.from("/redirect/");
+      loc.appendUInt(n - 1u64);
+      mut h = ResponseHead.make(302u16);
+      h.headers.add("Location", loc.view());
+      sv.drv.respond(req, h, BodyLength.sized(5u64));
+      mut b = sv.pool.mustTake(5usize);
+      b.append("moved");
+      sv.drv.sendData(req, b);
+      sv.drv.finish(req);
+    }
+  } elif path.len > 8usize and &path[0usize ..< 8usize] == "/status/" {
+    reply(sv, req, head, u16.from(number(&path[8usize ..])), "status");
+  } elif path.len > 5usize and &path[0usize ..< 5usize] == "/big/" {
+    imm n = number(&path[5usize ..]);
+    sv.drv.respond(req, ResponseHead.make(200u16), BodyLength.sized(n));
+    sv.streams.push(req);
+    sv.sent.push(0u64);
+    sv.totals.push(n);
+    pumpStream(sv, sv.streams.len() - 1usize);
+  } elif path == "/hang" {
+  } else {
+    reply(sv, req, head, 200u16, "hello");
+  }
+}
+
+fn serveEvent(sv &mut Srv, e &mut httpconn.Event) {
+  imm kind = e.kind;
+  if kind == httpconn.EventKind.Accepted {
+    sv.accepted = sv.accepted + 1u64;
+  } elif kind == httpconn.EventKind.Request {
+    sv.requests = sv.requests + 1u64;
+    sv.reqs.push(e.req);
+    sv.methods.push(e.request.method);
+    sv.targets.push(e.request.target.copy());
+    sv.bodies.push(String.empty());
+  } elif kind == httpconn.EventKind.Data {
+    imm k = findReq(sv, e.req);
+    if k < sv.reqs.len() {(&mut sv.bodies[k]).appendBytes(e.buf.view());}
+    sv.drv.release(e.req, e.buf.len());
+  } elif kind == httpconn.EventKind.End {
+    imm k = findReq(sv, e.req);
+    if k < sv.reqs.len() {answer(sv, k);}
+  } elif kind == httpconn.EventKind.Writable {
+    imm j = findStream(sv, e.req);
+    if j < sv.streams.len() {pumpStream(sv, j);}
+  } elif e.isTerminal() {
+    imm k = findReq(sv, e.req);
+    if k < sv.reqs.len() {forget(sv, k);}
+    imm j = findStream(sv, e.req);
+    if j < sv.streams.len() {dropStream(sv, j);}
+  }
+}
+
+fn serve(portTx Sender[u16]) Report {
+  imm pool = Pool.make();
+  mut lp = Loop.mustMake();
+  mut sv = new Srv(drv: httpconn.Driver.make(httpconn.Config.make(), pool), pool: pool, accepted: 0u64,
+    requests: 0u64, reqs: List[httpconn.ReqId].empty(), methods: List[Method].empty(),
+    targets: List[String].empty(), bodies: List[String].empty(), streams: List[httpconn.ReqId].empty(),
+    sent: List[u64].empty(), totals: List[u64].empty());
+  mut port = 0u16;
+  match sv.drv.listen(&mut lp, SocketAddr.localhost(0u16), httpconn.Sink.Here(1u64)) {
+    case imm r Ok {
+      match sv.drv.localAddr(&lp, r) {
+        case imm a Ok {port = a.port();}
+        case imm e Error {}
+      }
+    }
+    case imm e Error {}
+  }
+  portTx.send(port);
+  mut events = List[httpconn.Event].empty();
+  while halt.load() == 0u32 {
+    sv.drv.poll(&mut lp, Instant.now() + Duration.fromMillis(20i64), &mut events);
+    mut k = 0usize;
+    while k < events.len() {
+      serveEvent(&mut sv, &mut events[k]);
+      k = k + 1usize;
+    }
+    events.clear();
+  }
+  sv.drv.abortAll(&mut lp);
+  new Report(sv.accepted, sv.requests);
+}
+
+// ---------------------------------------------------------------------------
+// What Prober says
+// ---------------------------------------------------------------------------
+
+fn url(port u16, path &str) String {
+  mut u = String.from("http://127.0.0.1:");
+  u.appendUInt(u64.from(port));
+  u.append(path);
+  u;
+}
+
+fn kindWord(e &FetchError) &str {
+  if e.isCancelled() {"cancelled";}
+  elif e.isTimedOut() {"timed out";}
+  else {"failed";}
+}
+
+// How a fetch ended: the status and body, or the kind of error (and stage)
+fn say(what &str, r Result[Response, FetchError]) Result[Response, FetchError] {
+  printStr(what);
+  printStr(": ");
+  match &r {
+    case imm ok &Ok {
+      printUInt(u64.from(ok.status));
+      if ok.body.len() > 40usize {
+        printStr(" ");
+        printUInt(u64.from(ok.body.len()));
+        printStr(" bytes");
+      } elif ok.body.len() > 0usize {
+        printStr(" ");
+        printStr(ok.body.view());
+      }
+      printStr("\n");
+    }
+    case imm e &Error {
+      printStr(kindWord(e));
+      if not e.isCancelled() and not e.isTimedOut() {
+        printStr(" at ");
+        printStr(httpclient.stageName(e.failure.stage));
+      }
+      printStr("\n");
+    }
+  }
+  r;
+}
+
+fn note(what &str, yes bool) {
+  printStr(what);
+  if yes {printStr(": yes\n");} else {printStr(": NO\n");}
+}
+
+fn waitedAtLeast(t0 Instant, ms i64) bool {
+  t0.elapsed() >= Duration.fromMillis(ms);
+}
+
+// Whether a body of 300,000 bytes is right: byte i is i % 251
+fn bigRight(r Result[Response, FetchError]) bool {
+  match r {
+    case imm ok Ok {
+      imm v = ok.body.view();
+      if v.len != 300000usize {return false;}
+      mut i = 0usize;
+      while i < v.len {
+        if v[i] != u8.from(u64.from(i) % 251u64) {return false;}
+        i = i + 1usize;
+      }
+      true;
+    }
+    else {false;}
+  }
+}
+
+// Whether a response answered from /redirect/0
+fn landedAt(r Result[Response, FetchError], expected &str) bool {
+  match r {
+    case imm ok Ok {ok.url.view() == expected;}
+    else {false;}
+  }
+}
+
+actor Prober {
+  client Client;
+
+  // Runs while run is paused at an await: ends the group's operations
+  pub async do stop(self, g CancelGroup) {
+    g.cancel();
+  }
+
+  pub async do run(self, port u16, done OneshotSender[u64]) {
+    // The plain ones
+    say("get", await client.get(url(port, "/hello").view()));
+    mut post = Request.make("POST", url(port, "/echo").view());
+    post.body = String.from("ping");
+    post.headers.add("Content-Type", "text/plain");
+    say("post", await client.send(post));
+    say("head", await client.send(Request.make("HEAD", url(port, "/hello").view())));
+    say("no body", await client.get(url(port, "/nobody").view()));
+    say("not found", await client.get(url(port, "/status/404").view()));
+    // The redirect: two hops to the final URL, which the response names
+    imm final = url(port, "/redirect/0");
+    imm hop = say("redirect", await client.get(url(port, "/redirect/2").view()));
+    note("  and the URL that answered is /redirect/0", landedAt(hop, final.view()));
+
+    // One kept-alive connection so far: five more GETs, then the server's count
+    mut n = 0u32;
+    while n < 5u32 {
+      imm k = await client.get(url(port, "/hello").view());
+      n = n + 1u32;
+    }
+    say("accepts so far", await client.get(url(port, "/conns").view()));
+
+    // A big body, whole; and past a limit of 1000
+    imm big = say("big", await client.get(url(port, "/big/300000").view()));
+    note("  and every byte is right", bigRight(big));
+    imm small = Client.make(Config.make(), 1000usize);
+    say("big past the limit", await small.get(url(port, "/big/300000").view()));
+    say("small enough", await small.get(url(port, "/hello").view()));
+
+    // Not fetches at all
+    say("bad url", await client.get("not a url"));
+    say("not http", await client.get("ftp://127.0.0.1/x"));
+    say("refused", await client.get("http://127.0.0.1:1/"));
+
+    // A group cancelled by a message, while the fetch is paused
+    imm g1 = CancelGroup.make();
+    imm r1 = client.getIn(url(port, "/hang").view(), IoLimits.within(g1));
+    selfactor.stop(g1);
+    say("cancel while paused", await r1);
+
+    // A group cancelled before the fetch starts: answered at once
+    imm g2 = CancelGroup.make();
+    g2.cancel();
+    say("cancelled before it starts", await client.getIn(url(port, "/hang").view(), IoLimits.within(g2)));
+
+    // A deadline of its own, ahead
+    imm t3 = Instant.now();
+    say("deadline ahead", await client.getIn(url(port, "/hang").view(), IoLimits.until(t3 + Duration.fromMillis(100i64))));
+    note("  and it had passed", waitedAtLeast(t3, 90i64));
+
+    // A deadline already past: answered at once
+    say("deadline past", await client.getIn(url(port, "/hang").view(), IoLimits.until(Instant.now())));
+
+    // A group made with a deadline
+    imm t5 = Instant.now();
+    imm g5 = CancelGroup.until(t5 + Duration.fromMillis(100i64));
+    say("group with a deadline", await client.getIn(url(port, "/hang").view(), IoLimits.within(g5)));
+    note("  and it had passed", waitedAtLeast(t5, 90i64));
+
+    // A child's deadline is the tighter of its own and its parent's, both ways
+    imm t6 = Instant.now();
+    imm p6 = CancelGroup.until(t6 + Duration.fromSeconds(30i64));
+    imm k6 = p6.childUntil(t6 + Duration.fromMillis(100i64));
+    say("child's deadline the tighter", await client.getIn(url(port, "/hang").view(), IoLimits.within(k6)));
+    note("  and the parent's 30 s did not pass", not waitedAtLeast(t6, 5000i64));
+    imm t7 = Instant.now();
+    imm p7 = CancelGroup.until(t7 + Duration.fromMillis(100i64));
+    imm k7 = p7.childUntil(t7 + Duration.fromSeconds(30i64));
+    say("parent's deadline the tighter", await client.getIn(url(port, "/hang").view(), IoLimits.within(k7)));
+    note("  and the child's 30 s did not pass", not waitedAtLeast(t7, 5000i64));
+
+    // A parent's cancel reaches its child's fetch
+    imm p8 = CancelGroup.make();
+    imm k8 = p8.child();
+    imm r8 = client.getIn(url(port, "/hang").view(), IoLimits.within(k8));
+    selfactor.stop(p8);
+    say("parent cancelled", await r8);
+
+    // A request's own deadline, and an IoLimits beside it: the tighter wins
+    mut own = Request.get(url(port, "/hang").view());
+    own.deadline = Instant.now() + Duration.fromMillis(100i64);
+    imm t9 = Instant.now();
+    say("own deadline", await client.sendIn(own, IoLimits.until(t9 + Duration.fromSeconds(30i64))));
+    note("  and it had passed", waitedAtLeast(t9, 90i64));
+    note("  and the 30 s did not", not waitedAtLeast(t9, 5000i64));
+
+    // Finished before the cancel: done, and the cancel after it does nothing
+    imm g10 = CancelGroup.make();
+    say("finished before the cancel", await client.getIn(url(port, "/hello").view(), IoLimits.within(g10)));
+    note("  cancel() found the group live", g10.cancel());
+    note("  and its second cancel found it cancelled already", not g10.cancel());
+
+    // The first handle dropped: a clone goes on
+    imm twin = client.clone();
+    client = Client.none();
+    say("clone after the first is dropped", await twin.get(url(port, "/hello").view()));
+    client = twin.clone();
+    say("and another clone", await client.get(url(port, "/hello").view()));
+
+    mut d = done;
+    d.send(1u64);
+  }
+}
+
+// Several fetches at once from one shared client: each Worker holds a clone
+// of the handle and makes POSTs whose bodies are its own, and checks that
+// each echo is the one it sent
+actor Worker {
+  client Client;
+
+  pub async do work(self, port u16, id u64, rounds u64, tally Sender[u64]) {
+    mut wrong = 0u64;
+    mut k = 0u64;
+    while k < rounds {
+      mut body = String.from("w");
+      body.appendUInt(id);
+      body.append("-");
+      body.appendUInt(k);
+      mut want = String.from("POST ");
+      want.append(body.view());
+      mut req = Request.make("POST", url(port, "/echo").view());
+      req.body = body;
+      imm r = await client.send(req);
+      match &r {
+        case imm ok &Ok {if ok.body.view() != want.view() {wrong = wrong + 1u64;}}
+        else {wrong = wrong + 1u64;}
+      }
+      k = k + 1u64;
+    }
+    tally.send(wrong);
+  }
+}
+
+// A client dropped while its fetch is paused: the fetch ends Cancelled
+actor Dropper {
+  client Client;
+
+  pub async do release(self) {
+    client = Client.none();
+  }
+
+  pub async do run(self, port u16, done OneshotSender[u64]) {
+    say("client dropped under a fetch", await client.get(url(port, "/hang").view()));
+    mut d = done;
+    d.send(1u64);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  mut portTx Sender[u16];
+  mut portRx Receiver[u16];
+  portTx, portRx = Channel[u16].make();
+  imm server = thread.start(portTx, &serve);
+  mut port = 0u16;
+  match portRx.recv() {
+    case imm p Some {port = p;}
+    case is None[u16] {}
+  }
+  mut tx OneshotSender[u64];
+  mut rx OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  {
+    imm p = new Prober(Client.standard());
+    p.run(port, tx);
+  }
+  rx.recv();
+
+  // Eight Workers at once, thirty POSTs each, over the one shared client
+  mut tallyTx Sender[u64];
+  mut tallyRx Receiver[u64];
+  tallyTx, tallyRx = Channel[u64].make();
+  {
+    imm shared = Client.standard();
+    mut w = 0u64;
+    while w < 8u64 {
+      imm wk = new Worker(shared.clone());
+      wk.work(port, w, 30u64, tallyTx.clone());
+      w = w + 1u64;
+    }
+  }
+  mut wrong = 0u64;
+  mut heard = 0u64;
+  while heard < 8u64 {
+    match tallyRx.recv() {
+      case imm n Some {wrong = wrong + n;}
+      case is None[u64] {}
+    }
+    heard = heard + 1u64;
+  }
+  printStr("workers whose echo was wrong: ");
+  printUInt(wrong);
+  printStr("\n");
+
+  // A client dropped under a fetch
+  mut tx2 OneshotSender[u64];
+  mut rx2 OneshotReceiver[u64];
+  tx2, rx2 = Oneshot[u64].make();
+  {
+    imm d = new Dropper(Client.standard());
+    d.run(port, tx2);
+    d.release();
+  }
+  rx2.recv();
+
+  halt.store(1u32);
+  imm rep = server.join();
+  finalAll();
+  printStr("end\n");
+  0i32;
+}
