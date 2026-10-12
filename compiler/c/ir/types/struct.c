@@ -74,6 +74,10 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
     // here, and a call to it finds nothing (genericReportAbsent)
     Nodes *absent = cstate->absent;
     cstate->absent = NULL;
+    // A member whose 'where' waits on an argument's layout is copied, and
+    // reported with its copy for the caller to settle (genericLateWhere)
+    Nodes *late = cstate->late;
+    cstate->late = NULL;
     memcpy(newnode, node, sizeof(StructNode));
     newnode->genericinfo = NULL;
     newnode->lifecycle = NULL;
@@ -215,6 +219,12 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
             cloneVarDclFill(cstate, (VarDclNode*)*copyp, (VarDclNode*)*nodesp);
         else if ((*nodesp)->tag != MacroDclTag)
             cloneFnDclFill(cstate, (FnDclNode*)*copyp, (FnDclNode*)*nodesp);
+        if (late && structMemberAbsent(late, *nodesp)) {
+            if (cstate->latepairs == NULL)
+                cstate->latepairs = newNodes(4);
+            nodesAdd(&cstate->latepairs, *nodesp);
+            nodesAdd(&cstate->latepairs, *copyp);
+        }
         ++copyp;
     }
     cloneDclPop(dclpos);
@@ -4096,6 +4106,62 @@ void structLayoutEnter(void) {
 
 int structLayoutInFlight(void) {
     return structLayoutDepth != 0;
+}
+
+// Is this type's layout still to finish, so that whether its values move is not
+// yet settled? A struct is settled when its check ends (the infection from its
+// fields is taken there), an enum when its variants' have.
+int structLayoutUnsettled(INode *type) {
+    INode *dcl = itypeGetTypeDcl(type);
+    if (dcl->tag != StructTag || ((StructNode*)dcl)->genericinfo)
+        return 0;
+    if (!(dcl->flags & TypeChecked))
+        return 1;
+    StructNode *node = (StructNode*)dcl;
+    if (node->derived == NULL || !(node->flags & TraitType) || !(node->flags & (HasTagField | SameSize)))
+        return 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(node->derived, cnt, nodesp)) {
+        if (!((*nodesp)->flags & TypeChecked))
+            return 1;
+    }
+    return 0;
+}
+
+// Remove a method from an instance of a generic type that was cloned with it
+void structRetireMember(StructNode *instance, INode *member) {
+    NodeList *list = &instance->nodelist;
+    uint32_t pos;
+    for (pos = 0; pos < list->used; ++pos) {
+        if (nodelistGet(list, pos) == member)
+            break;
+    }
+    if (pos < list->used) {
+        for (; pos + 1 < list->used; ++pos)
+            list->nodes[pos] = list->nodes[pos + 1];
+        --list->used;
+    }
+    FnDclNode *fn = (FnDclNode*)member;
+    if (namespaceFind(&instance->namespace, fn->namesym) == member)
+        namespaceSet(&instance->namespace, fn->namesym, NULL);
+    if (fn->overloadsym == NULL)
+        return;
+    INode *binding = namespaceFind(&instance->namespace, fn->overloadsym);
+    if (binding == NULL || binding->tag != FnOverloadDclTag)
+        return;
+    Nodes *overloads = ((FnOverloadDclNode*)binding)->overloads;
+    for (pos = 0; pos < overloads->used; ++pos) {
+        if (nodesGet(overloads, pos) == member)
+            break;
+    }
+    if (pos < overloads->used) {
+        for (; pos + 1 < overloads->used; ++pos)
+            nodesGet(overloads, pos) = nodesGet(overloads, pos + 1);
+        --overloads->used;
+    }
+    if (overloads->used == 0)
+        namespaceSet(&instance->namespace, fn->overloadsym, NULL);
 }
 
 // A layout ends. When it was the last one in flight, every waiting variant is laid

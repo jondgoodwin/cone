@@ -825,7 +825,21 @@ them: they are not in its namespace or its member list, so they are neither
 checked nor generated there, and what the instance fits structurally is what it
 has — `Cell[i32]` is an `Adder`, `Cell[bool]` is not, to a constraint and to a
 virtual reference alike. Settled before the reservation and the clone, because a
-structural clause may analyze the argument's own methods. A call on the instance
+structural clause may analyze the argument's own methods. **Except while an
+argument is still being laid out** (`structLayoutUnsettled`: a struct whose
+check has not ended, an enum with a variant not yet laid out), when whether its
+values move is not yet known: `struct Node { kids List[Node]; }` makes
+`List[Node]` inside Node's own layout, and `T is Copy` would be answered for a
+Node that has not yet found it moves. Then `genericAbsentMembers` does not
+decide the members with a clause (`late`, handed on as `CloneState.late`):
+`cloneStructNode` copies them and reports each beside its copy
+(`CloneState.latepairs`), and `genericClone` queues `genericLateWhere` as a
+check that reads layouts (`structDeferCheck`), which runs once no layout is in
+flight and before any member is checked. It lays out an argument no layout has
+reached, evaluates the clauses, and takes the members that fail out of the
+instance (`structRetireMember`: its member list, its namespace, its overload
+set). Nothing else reads those members in between, since members wait for the
+layouts to finish. The `is` entries are not deferred: they are the layout. A call on the instance
 that finds nothing asks `genericReportAbsent`, from `fnCallLowerMethod`, which
 finds the template through the instance's memo entry and reports
 `ErrorWhereAbsent` naming the unmet condition, as a requirement names it. A
