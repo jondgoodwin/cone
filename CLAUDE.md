@@ -686,11 +686,11 @@ Visual Studio projects stay at the root.
   and `iocore`: `aio.listen`, `aio.connect`, a `Socket`'s `accept`, `read`,
   `write` and `localAddr`, each an `actors.Awaitable` answering a `Result`
   (a read's success its buffer back, what arrived appended; one cancelled or
-  past its deadline an `Error` whose code `isCancelled` or `isTimedOut`
-  recognises, never a panic), done by one I/O
+  past its deadline an `Error` whose `IoErrorKind` (iocore's: `Os`, `Cancelled`, `TimedOut`)
+  `isCancelled` or `isTimedOut` reads, never a panic), done by one I/O
   thread that owns the runtime's `iocore` Loop, takes operations from a
   queue under a Mutex and answers through `Target.Hook`; the `In` forms of
-  `connect`, `accept`, `read` and `write` take `Limits`, a `CancelGroup` and
+  `connect`, `accept`, `read` and `write` take `IoLimits`, a `CancelGroup` and
   an absolute deadline, handed to `submitIn`; a dropped `Socket`
   closes, cancelling what is in flight on it; its finalizer, which `finalAll()` runs before `actors`', waits for
   quiet and ends the I/O, every behaviour still paused on it abandoned, its

@@ -53,8 +53,8 @@
 //   s.write(buf)            all of buf, an IoBuf moved in         Result[usize, IoError]
 //   s.localAddr()           the address s is bound to            Result[SocketAddr, IoError]
 //   aio.connectIn(addr, lim)  s.acceptIn(lim)  s.readIn(buf, lim)  s.writeIn(buf, lim)
-//                           the same four, limited by lim, a Limits    (CANCEL AND DEADLINES)
-//   Limits.none()  Limits.until(deadline)  Limits.within(group)  new Limits(group, deadline)
+//                           the same four, limited by lim, a IoLimits    (CANCEL AND DEADLINES)
+//   IoLimits.none()  IoLimits.until(deadline)  IoLimits.within(group)  new IoLimits(group, deadline)
 //   aio.isCancelled(e)  aio.isTimedOut(e)      what an IoError says of how an operation ended
 //   Socket.none()           a Socket naming nothing: to swap one out of a Result
 //   s.isNone()  s.handle()
@@ -79,12 +79,12 @@
 //
 // CANCEL AND DEADLINES. An operation is answered exactly once, as in iocore:
 // Done (the Result's success), Failed (its error, the system's code),
-// Cancelled or TimedOut. The last two are errors too, an IoError of a code
-// that only they carry, which 'isCancelled' and 'isTimedOut' recognise (995,
-// ERROR_OPERATION_ABORTED, which is also what ECANCELED is on Linux; and 258,
-// WAIT_TIMEOUT, which no system call of iocore's answers with). The buffer a
+// Cancelled or TimedOut. The last two are errors too, an IoError of a kind of
+// its own (iocore's IoErrorKind: Os for a failure of the system, Cancelled,
+// TimedOut), which 'isCancelled' and 'isTimedOut' read; their code is 0, and a
+// genuine system error is never mistaken for either. The buffer a
 // read or a write was given goes home to its pool. What limits an operation is
-// a Limits, given to the 'In' form of the call: a cancel group (iocore's
+// a IoLimits, given to the 'In' form of the call: a cancel group (iocore's
 // CancelGroup, a value that is copied, sent to other actors or threads, and
 // whose one 'cancel()' ends every operation in it) and an absolute deadline
 // (an Instant), the tighter of it and the group's (a group made 'until', or a
@@ -150,7 +150,7 @@ import sync use Mutex;
 import collections use List;
 import iobuf use IoBuf;
 import time use Instant;
-import iocore use Loop, Waker, Op, Target, Sink, Completion, Handle, SocketAddr, IoError, CancelGroup, forever, errorOperationAborted;
+import iocore use Loop, Waker, Op, Target, Sink, Completion, Handle, SocketAddr, IoError, CancelGroup, forever;
 import actors;
 import diag;
 
@@ -386,41 +386,33 @@ fn awaitable[J, R](body J) actors.Awaitable[R] {
 // What limits an awaited operation (the package's header, CANCEL AND
 // DEADLINES): a cancel group, one cancel of which ends it, and an absolute
 // deadline, the tighter of it and the group's. Made by 'none', 'until' or
-// 'within', or by hand: 'new Limits(Some[CancelGroup](g), d)'
-pub struct Limits {
+// 'within', or by hand: 'new IoLimits(Some[CancelGroup](g), d)'
+pub struct IoLimits {
   pub group Option[CancelGroup];
   pub deadline Instant;
 
   // Neither: the operation ends when it finishes
-  pub fn none() Limits {new Limits(None, forever());}
+  pub fn none() IoLimits {new IoLimits(None, forever());}
 
   // Answered TimedOut if not finished by deadline
-  pub fn until(deadline Instant) Limits {new Limits(None, deadline);}
+  pub fn until(deadline Instant) IoLimits {new IoLimits(None, deadline);}
 
   // Ended by the group's cancel, and by its deadline if it has one
-  pub fn within(group CancelGroup) Limits {new Limits(Some[CancelGroup](group), forever());}
+  pub fn within(group CancelGroup) IoLimits {new IoLimits(Some[CancelGroup](group), forever());}
 }
-
-// The codes an IoError carries for an operation that ended Cancelled or
-// TimedOut: Windows' ERROR_OPERATION_ABORTED (995), which Linux's ECANCELED is
-// iocore's number for as well, and WAIT_TIMEOUT (258), which no system call
-// that iocore makes answers with (ERROR_TIMEOUT, 1460, is the system's own
-// timeout of a connection, a failure)
-pub const errorCancelled = errorOperationAborted;
-pub const errorTimedOut = 258u32;
 
 // Whether an operation ended because it was cancelled: its group's cancel, or
 // its socket closed
-pub fn isCancelled(e IoError) bool {e.code == errorCancelled;}
+pub fn isCancelled(e IoError) bool {e.isCancelled();}
 
 // Whether an operation ended because its deadline passed
-pub fn isTimedOut(e IoError) bool {e.code == errorTimedOut;}
+pub fn isTimedOut(e IoError) bool {e.isTimedOut();}
 
 // An iocore operation, awaited: the Op, what limits it, the reply its answer
 // goes back in, and the function that makes the answer an R
 struct OpJob[R] {
   pub op Op;
-  pub limits Limits;
+  pub limits IoLimits;
   pub reply actors.Reply;
   pub answer &fn(c &mut Completion) R;
 
@@ -471,8 +463,8 @@ fn waiting[R](rp actors.Reply, answer &fn(c &mut Completion) R) So[fn(c Completi
 // Completion, home to its pool
 
 fn endError(c &Completion) IoError {
-  if c.status == diag.outcomeCancelled {return new IoError(errorCancelled);}
-  if c.status == diag.outcomeTimedOut {return new IoError(errorTimedOut);}
+  if c.status == diag.outcomeCancelled {return IoError.cancelled();}
+  if c.status == diag.outcomeTimedOut {return IoError.timedOut();}
   new IoError(c.code);
 }
 
@@ -499,7 +491,7 @@ fn socketAnswer(c &mut Completion) Result[Socket, IoError] {
   Error[Socket, IoError](endError(c));
 }
 
-fn opAwaitable[R](op Op, answer &fn(c &mut Completion) R, limits Limits) actors.Awaitable[R] {
+fn opAwaitable[R](op Op, answer &fn(c &mut Completion) R, limits IoLimits) actors.Awaitable[R] {
   awaitable[OpJob[R], R](new OpJob[R](op, limits, new actors.Reply(), answer));
 }
 
@@ -560,12 +552,12 @@ pub struct Socket is Move {
 
   // The next connection on this listening socket
   pub fn accept(self &) actors.Awaitable[Result[Socket, IoError]] {
-    self.acceptIn(Limits.none());
+    self.acceptIn(IoLimits.none());
   }
 
   // The next connection, ended if lim says so (the package's header, CANCEL
   // AND DEADLINES)
-  pub fn acceptIn(self &, lim Limits) actors.Awaitable[Result[Socket, IoError]] {
+  pub fn acceptIn(self &, lim IoLimits) actors.Awaitable[Result[Socket, IoError]] {
     opAwaitable[Result[Socket, IoError]](Op.Accept(h), &socketAnswer, lim);
   }
 
@@ -573,21 +565,21 @@ pub struct Socket is Move {
   // answer; at the clean end of the stream, buf comes back as it was. A buf
   // with no room fails (ERROR_INSUFFICIENT_BUFFER, 122)
   pub fn read(self &, buf IoBuf) actors.Awaitable[Result[IoBuf, IoError]] {
-    self.readIn(buf, Limits.none());
+    self.readIn(buf, IoLimits.none());
   }
 
   // A read ended if lim says so; then the buffer goes home to its pool
-  pub fn readIn(self &, buf IoBuf, lim Limits) actors.Awaitable[Result[IoBuf, IoError]] {
+  pub fn readIn(self &, buf IoBuf, lim IoLimits) actors.Awaitable[Result[IoBuf, IoError]] {
     opAwaitable[Result[IoBuf, IoError]](Op.Recv(h, buf), &readAnswer, lim);
   }
 
   // All of buf, which is moved in and goes home once sent: the count
   pub fn write(self &, buf IoBuf) actors.Awaitable[Result[usize, IoError]] {
-    self.writeIn(buf, Limits.none());
+    self.writeIn(buf, IoLimits.none());
   }
 
   // A write ended if lim says so, part of buf perhaps sent
-  pub fn writeIn(self &, buf IoBuf, lim Limits) actors.Awaitable[Result[usize, IoError]] {
+  pub fn writeIn(self &, buf IoBuf, lim IoLimits) actors.Awaitable[Result[usize, IoError]] {
     opAwaitable[Result[usize, IoError]](Op.Send(h, buf), &writeAnswer, lim);
   }
 
@@ -612,10 +604,10 @@ pub fn listen(addr SocketAddr) actors.Awaitable[Result[Socket, IoError]] {
 
 // A TCP socket connected to addr
 pub fn connect(addr SocketAddr) actors.Awaitable[Result[Socket, IoError]] {
-  connectIn(addr, Limits.none());
+  connectIn(addr, IoLimits.none());
 }
 
 // A TCP socket connected to addr, ended if lim says so
-pub fn connectIn(addr SocketAddr, lim Limits) actors.Awaitable[Result[Socket, IoError]] {
+pub fn connectIn(addr SocketAddr, lim IoLimits) actors.Awaitable[Result[Socket, IoError]] {
   opAwaitable[Result[Socket, IoError]](Op.Connect(addr), &socketAnswer, lim);
 }

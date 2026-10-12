@@ -193,19 +193,23 @@ await ...', and match on it.
 	<p>Every operation is answered exactly once, with one of four outcomes: done (the
 		<span class="pre">Ok</span> answer), failed (an <span class="pre">Error</span> whose
 		<span class="pre">code</span> is the system's), cancelled, or timed out. The last two are
-		<span class="pre">Error</span>s too, which <span class="pre">aio.isCancelled(e)</span> and
-		<span class="pre">aio.isTimedOut(e)</span> recognise: a cancelled operation's
-		<span class="pre">code</span> is 995 (<span class="pre">ERROR_OPERATION_ABORTED</span>), and a
-		timed-out one's is 258 (<span class="pre">WAIT_TIMEOUT</span>), which no failure of a system
-		call is answered with. The buffer an operation was given goes home to its pool.</p>
+		<span class="pre">Error</span>s too. An <span class="pre">IoError</span> has a
+		<span class="pre">kind()</span>, an <span class="pre">IoErrorKind</span>:
+		<span class="pre">Os</span> for a failure of the system (its <span class="pre">code</span> and
+		<span class="pre">message()</span> are the system's), <span class="pre">Cancelled</span> or
+		<span class="pre">TimedOut</span> (its <span class="pre">code</span> is 0). The kind is what
+		<span class="pre">e.isCancelled()</span> and <span class="pre">e.isTimedOut()</span> read, and
+		<span class="pre">aio.isCancelled(e)</span> and <span class="pre">aio.isTimedOut(e)</span> are the same
+		questions; so no system error, whatever its number, is taken for either. The buffer an
+		operation was given goes home to its pool.</p>
 	<p>An operation is limited by the <span class="pre">In</span> form of its call, which takes a
-		<span class="pre">Limits</span>: <span class="pre">conn.readIn(buf, lim)</span>,
+		<span class="pre">IoLimits</span>: <span class="pre">conn.readIn(buf, lim)</span>,
 		<span class="pre">conn.writeIn(buf, lim)</span>, <span class="pre">listener.acceptIn(lim)</span>
-		and <span class="pre">aio.connectIn(addr, lim)</span>. A <span class="pre">Limits</span> holds
+		and <span class="pre">aio.connectIn(addr, lim)</span>. A <span class="pre">IoLimits</span> holds
 		a <a href="#cancel-groups">cancel group</a> and an absolute deadline, an
-		<span class="pre">Instant</span>: <span class="pre">Limits.within(group)</span>,
-		<span class="pre">Limits.until(deadline)</span>, or both with
-		<span class="pre">new Limits(Some[CancelGroup](group), deadline)</span>. The operation ends
+		<span class="pre">Instant</span>: <span class="pre">IoLimits.within(group)</span>,
+		<span class="pre">IoLimits.until(deadline)</span>, or both with
+		<span class="pre">new IoLimits(Some[CancelGroup](group), deadline)</span>. The operation ends
 		when the group is cancelled, or at the deadline, the tighter of it and the group's (a group made
 		with <span class="pre">CancelGroup.until(d)</span>, or a <span class="pre">childUntil(d)</span> of
 		one, carries a deadline of its own, and a child's is never later than its parent's). A group is
@@ -217,7 +221,7 @@ actor Reader {
 
   pub async do fetch(self, conn Socket, group CancelGroup) u64 {
     imm until = Instant.now() + Duration.fromSeconds(5i64);
-    imm got = await conn.readIn(pool.mustTake(4096usize), new Limits(Some[CancelGroup](group), until));
+    imm got = await conn.readIn(pool.mustTake(4096usize), new IoLimits(Some[CancelGroup](group), until));
     match got {
       case imm b Ok {u64.from(b.len());}
       case imm e Error {
