@@ -1,0 +1,125 @@
+// The protocol on a bad link: 20% of packets lost in each direction, 40 ms
+// of delay with up to 30 ms of jitter, 5% duplicated and 5% held back 60 ms
+// so that later packets overtake them. Several seeds. Checked, both ways:
+// every reliable message arrives exactly once and in order; each latest-wins
+// stream's values arrive in increasing order, none twice, and none older
+// than one already delivered; and the connection is still up at the end.
+
+mod lossy;
+
+import testing use *;
+import collections use *;
+import time use Duration, Instant, Clock;
+import netmsg use *;
+
+struct Side {
+  pub nextExpected u64;      // the number of the next reliable message due
+  pub wrongOrder u64;        // reliable messages that were not the one due
+  pub lastA u64;             // the newest value seen on stream 1
+  pub lastB u64;             // ... and on stream 2
+  pub countA u64;
+  pub countB u64;
+  pub backwards u64;         // latest values not newer than the previous
+  pub closed u64;
+}
+
+fn numberOf(data &Array[u8]) u64 {
+  mut n = 0u64;
+  mut i = 0usize;
+  while i < data.len {
+    n = n * 10u64 + u64.from(data[i] - 48u8);
+    i = i + 1usize;
+  }
+  n;
+}
+
+fn textOf(n u64) String {
+  mut s = String.empty();
+  s.appendUInt(n);
+  s;
+}
+
+fn absorb(evs &mut List[Event], side &mut Side) {
+  each e in evs.drain() {
+    match e {
+      case imm r Reliable {
+        if numberOf(r.data.view()) != side.nextExpected {side.wrongOrder = side.wrongOrder + 1u64;}
+        side.nextExpected = side.nextExpected + 1u64;
+      }
+      case imm l Latest {
+        imm v = numberOf(l.data.view());
+        if l.stream == 1u16 {
+          if side.countA > 0u64 and v <= side.lastA {side.backwards = side.backwards + 1u64;}
+          side.lastA = v;
+          side.countA = side.countA + 1u64;
+        } else {
+          if side.countB > 0u64 and v <= side.lastB {side.backwards = side.backwards + 1u64;}
+          side.lastB = v;
+          side.countB = side.countB + 1u64;
+        }
+      }
+      case imm c Closed { side.closed = side.closed + 1u64; }
+    }
+  }
+}
+
+fn one(seed u64, total u64) i64 {
+  mut clock = Clock.synth();
+  imm link = new LinkConfig(200u32, 40i64, 30i64, 50u32, 50u32, 60i64);
+  mut p = SimPair.make(Config.defaults(), link, link, seed, clock.now());
+  mut sa = new Side(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);   // what a heard
+  mut sb = new Side(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);   // what b heard
+  mut sentA = 0u64;
+  mut sentB = 0u64;
+  mut tick = 0u64;
+  mut refused = 0u64;
+  imm limit = 600000i64;
+  mut ms = 0i64;
+  while ms < limit and (sa.nextExpected < total or sb.nextExpected < total) {
+    clock.advance(Duration.fromMillis(1i64));
+    ms = ms + 1i64;
+    // Every 10 ms each side queues a reliable message, until total; every 33 ms
+    // each sets its latest values
+    if ms % 10i64 == 0i64 {
+      if sentA < total {
+        if p.a.sendReliable(textOf(sentA).view()) {sentA = sentA + 1u64;} else {refused = refused + 1u64;}
+      }
+      if sentB < total {
+        if p.b.sendReliable(textOf(sentB).view()) {sentB = sentB + 1u64;} else {refused = refused + 1u64;}
+      }
+    }
+    if ms % 33i64 == 0i64 {
+      tick = tick + 1u64;
+      p.a.sendLatest(1u16, textOf(tick).view());
+      p.a.sendLatest(2u16, textOf(tick * 3u64).view());
+      p.b.sendLatest(1u16, textOf(tick).view());
+    }
+    p.step(clock.now());
+    absorb(&mut p.eventsA, &mut sa);
+    absorb(&mut p.eventsB, &mut sb);
+  }
+  expectUInt(sb.nextExpected, total, "b got every reliable message");
+  expectUInt(sa.nextExpected, total, "a got every reliable message");
+  expectUInt(sb.wrongOrder + sa.wrongOrder, 0u64, "each in order, none twice");
+  expectUInt(sb.backwards + sa.backwards, 0u64, "latest values never went backwards");
+  expect(sb.countA * 2u64 > tick and sa.countA * 2u64 > tick, "most latest values got through");
+  expect(sb.countA < tick, "some were lost, as the link loses");
+  expectUInt(sb.closed + sa.closed, 0u64, "the connection stayed up");
+  expectUInt(refused, 0u64, "no send refused");
+  // The loss estimate is near the link's 20%
+  imm loss = p.a.lossPermille();
+  expect(loss > 60u32 and loss < 400u32, "the loss estimate is in the right region");
+  ms;
+}
+
+fn main() i32 {
+  mut seed = 1u64;
+  mut worst = 0i64;
+  while seed <= 12u64 {
+    imm took = one(seed, 400u64);
+    if took > worst {worst = took;}
+    seed = seed + 1u64;
+  }
+  expect(worst < 40000i64, "every run finished well inside its limit");
+  done();
+}

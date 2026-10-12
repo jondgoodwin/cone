@@ -1,0 +1,48 @@
+// What the application hears from a connection, and the handler that carries
+// it there.
+//
+// Every connection, whether it crosses a network or joins two actors in one
+// process, tells the application the same few things, as NetEvents given to a
+// Handler: a closure of the application's own, which typically sends a message
+// to an application actor (or pushes the event on a channel for a thread).
+// It is called by the connection's actor, one event at a time per connection,
+// in the order they happened.
+
+// What happened on a connection. 'id' names the connection: the server numbers
+// the clients as they join, from 1; a client's one connection is 1.
+pub enum NetEvent {
+  // The connection is open: send to it through 'conn'
+  pub struct Joined {pub id u32; pub conn Connection;}
+  // It has ended. Nothing more arrives for this id
+  pub struct Left {pub id u32; pub reason CloseReason;}
+  // A reliable message from the other end: each arrives once, in the order sent
+  pub struct Message {pub id u32; pub data List[u8];}
+  // The newest value of a latest-wins stream; an older one never follows it
+  pub struct Update {pub id u32; pub stream u16; pub data List[u8];}
+}
+
+// The application's side of the events: a closure, with the one rule that it
+// does not wait (it hands the event on). One Handler serves every connection
+// of a server, so it is shared and taken under a lock; build one with
+// 'handler' or 'channelHandler'.
+pub struct Sink {
+  f So[fn(ev NetEvent) + Sendable];
+
+  fn call(self &mut, ev NetEvent) {
+    f(ev);
+  }
+}
+
+pub alias Handler = Arc[Mutex, Sink];
+
+// A Handler that calls f with each event
+pub fn handler(f So[fn(ev NetEvent) + Sendable]) Handler {
+  new Handler(new Sink(f));
+}
+
+// A Handler that puts each event on a channel, for a thread to take
+pub fn channelHandler(tx Sender[NetEvent]) Handler {
+  handler(new So[fn(ev NetEvent) + Sendable](fn(ev NetEvent) [tx] {
+    tx.send(ev);
+  }));
+}

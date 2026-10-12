@@ -1,0 +1,72 @@
+// The wire level: numbers written and read back, sequence numbers that wrap,
+// and SipHash-2-4 against the reference vectors.
+
+mod wire;
+
+import testing use *;
+import collections use *;
+import netmsg use *;
+
+fn main() i32 {
+  // Numbers round-trip in network order
+  mut b = List[u8].empty();
+  putU8(&mut b, 0xABu8);
+  putU16(&mut b, 0x1234u16);
+  putU32(&mut b, 0xDEADBEEFu32);
+  putU64(&mut b, 0x0102030405060708u64);
+  expectUInt(u64.from(b.len()), 15u64, "1 + 2 + 4 + 8 bytes");
+  expectUInt(u64.from(*b[1usize]), 0x12u64, "the high byte first");
+  mut c = Cursor.start();
+  expectUInt(u64.from(c.rdU8(b.view())), 0xABu64, "u8");
+  expectUInt(u64.from(c.rdU16(b.view())), 0x1234u64, "u16");
+  expectUInt(u64.from(c.rdU32(b.view())), 0xDEADBEEFu64, "u32");
+  expectUInt(c.rdU64(b.view()), 0x0102030405060708u64, "u64");
+  expect(c.ok, "all read inside the packet");
+  expectUInt(u64.from(c.left(b.view())), 0u64, "none left");
+  expectUInt(u64.from(c.rdU8(b.view())), 0u64, "a read past the end gives 0");
+  expect(not c.ok, "and not ok, for good");
+  expectUInt(u64.from(c.rdU8(b.view())), 0u64, "still 0");
+  expect(not c.ok, "still not ok");
+
+  // A read of exactly the bytes left is fine; one byte more is not
+  mut d = Cursor.start();
+  imm got = d.rdBytes(b.view(), 15usize);
+  expectUInt(u64.from(got.len()), 15u64, "15 bytes copied");
+  expect(d.ok, "ok");
+  mut e = Cursor.start();
+  imm none = e.rdBytes(b.view(), 16usize);
+  expectUInt(u64.from(none.len()), 0u64, "16 asked of 15 gives none");
+  expect(not e.ok, "and not ok");
+
+  // Sequence numbers wrap
+  expect(seqNewer(1u16, 0u16), "1 is newer than 0");
+  expect(not seqNewer(0u16, 1u16), "0 is not newer than 1");
+  expect(not seqNewer(5u16, 5u16), "a number is not newer than itself");
+  expect(seqNewer(0u16, 65535u16), "0 is newer than 65535: the numbers wrapped");
+  expect(not seqNewer(65535u16, 0u16), "65535 is older than 0");
+  expect(seqNewer(100u16, 65500u16), "100 is newer than 65500");
+  expect(seqNewer(32767u16, 0u16), "32767 ahead of 0 is newer");
+  expect(not seqNewer(32768u16, 0u16), "32768 ahead of 0 is older: half the range");
+  expectUInt(u64.from(seqAhead(3u16, 65534u16)), 5u64, "3 is 5 ahead of 65534");
+  expectUInt(u64.from(seqAhead(65534u16, 3u16)), 0u64, "and not the other way");
+
+  // SipHash-2-4, key 00 01 .. 0f, input 00 01 .. (n - 1): the reference vectors
+  imm k0 = 0x0706050403020100u64;
+  imm k1 = 0x0f0e0d0c0b0a0908u64;
+  mut input = List[u8].empty();
+  expectUInt(sipHash24(k0, k1, input.view()), 0x726fdb47dd0e0e31u64, "empty");
+  input.push(0u8);
+  expectUInt(sipHash24(k0, k1, input.view()), 0x74f839c593dc67fdu64, "1 byte");
+  mut i = 1u8;
+  while input.len() < 8usize {
+    input.push(i);
+    i = i + 1u8;
+  }
+  expectUInt(sipHash24(k0, k1, input.view()), 0x93f5f5799a932462u64, "8 bytes");
+  while input.len() < 15usize {
+    input.push(i);
+    i = i + 1u8;
+  }
+  expectUInt(sipHash24(k0, k1, input.view()), 0xa129ca6149be45e5u64, "15 bytes");
+  done();
+}

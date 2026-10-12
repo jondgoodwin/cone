@@ -1,0 +1,122 @@
+// Two connection cores over a perfect link with a 10 ms delay each way, on a
+// synthetic clock: reliable messages arrive once and in order; of several
+// values set on a latest-wins stream before a packet goes, only the newest is
+// sent; the round trip is measured; an idle connection is kept alive and then
+// times out when the other end goes silent; close tells the other end.
+
+mod basic;
+
+import testing use *;
+import collections use *;
+import time use Duration, Instant, Clock;
+import netmsg use *;
+
+struct Heard {
+  pub reliable List[String];
+  pub latest List[String];
+  pub closed List[u32];
+}
+
+fn absorb(evs &mut List[Event], h &mut Heard) {
+  each e in evs.drain() {
+    match e {
+      case imm r Reliable { h.reliable.push(String.fromBytes(r.data.view())); }
+      case imm l Latest {
+        mut s = String.empty();
+        s.appendUInt(u64.from(l.stream));
+        s.append(":");
+        s.append(String.fromBytes(l.data.view()).view());
+        h.latest.push(s);
+      }
+      case imm c Closed {
+        h.closed.push(match c.reason {
+          case is Local {1u32;}
+          case is Remote {2u32;}
+          case is TimedOut {3u32;}
+          else {9u32;}
+        });
+      }
+    }
+  }
+}
+
+// Run the pair for 'ms' milliseconds, a step a millisecond
+fn run(p &mut SimPair, clock &mut Clock, ms i64, ha &mut Heard, hb &mut Heard) {
+  mut i = 0i64;
+  while i < ms {
+    clock.advance(Duration.fromMillis(1i64));
+    p.step(clock.now());
+    absorb(&mut p.eventsA, ha);
+    absorb(&mut p.eventsB, hb);
+    i = i + 1i64;
+  }
+}
+
+fn main() i32 {
+  mut clock = Clock.synth();
+  mut p = SimPair.make(Config.defaults(), LinkConfig.lossy(0u32, 10i64, 0i64), LinkConfig.lossy(0u32, 10i64, 0i64), 1u64, clock.now());
+  mut ha = new Heard(List[String].empty(), List[String].empty(), List[u32].empty());
+  mut hb = new Heard(List[String].empty(), List[String].empty(), List[u32].empty());
+
+  expect(p.a.sendReliable("one"), "queued one");
+  expect(p.a.sendReliable("two"), "queued two");
+  expect(p.a.sendReliable("three"), "queued three");
+  expect(p.a.sendLatest(7u16, "v1"), "a value for stream 7");
+  expect(p.a.sendLatest(7u16, "v2"), "replaced before it went");
+  expect(p.a.sendLatest(7u16, "v3"), "replaced again");
+  expect(p.a.sendLatest(8u16, "other"), "a value for stream 8");
+  expectUInt(u64.from(p.a.reliablePending()), 3u64, "three waiting");
+
+  run(&mut p, &mut clock, 60i64, &mut ha, &mut hb);
+  expectUInt(u64.from(hb.reliable.len()), 3u64, "three reliable messages arrived");
+  expectStr(hb.reliable[0usize].view(), "one", "first");
+  expectStr(hb.reliable[1usize].view(), "two", "second");
+  expectStr(hb.reliable[2usize].view(), "three", "third");
+  expectUInt(u64.from(hb.latest.len()), 2u64, "one value per stream arrived");
+  expectStr(hb.latest[0usize].view(), "7:v3", "stream 7 got its newest value only");
+  expectStr(hb.latest[1usize].view(), "8:other", "stream 8 its own");
+  expectUInt(u64.from(ha.reliable.len() + ha.latest.len()), 0u64, "a heard nothing");
+
+  // The acknowledgement came back: nothing is pending, the round trip known
+  run(&mut p, &mut clock, 200i64, &mut ha, &mut hb);
+  expectUInt(u64.from(p.a.reliablePending()), 0u64, "all acknowledged");
+  imm rttMs = p.a.rtt().millis();
+  expect(rttMs >= 20i64 and rttMs <= 80i64, "a round trip of 20 ms plus a send interval is measured");
+  expectUInt(u64.from(p.a.lossPermille()), 0u64, "no loss on a perfect link");
+  expect(p.a.isGood(), "good rate");
+  expectUInt(p.a.stats().reliableResent, 0u64, "nothing needed resending");
+  expectUInt(u64.from(hb.latest.len()), 2u64, "stream values were not repeated");
+
+  // An idle connection stays up: keep-alives both ways
+  run(&mut p, &mut clock, 5000i64, &mut ha, &mut hb);
+  expect(p.a.isActive() and p.b.isActive(), "still connected after 5 s of silence");
+  expectUInt(u64.from(hb.closed.len() + ha.closed.len()), 0u64, "no close");
+  expect(p.a.stats().packetsReceived > 30u64, "keep-alives came");
+
+  // Latest-wins values keep coming
+  p.a.sendLatest(7u16, "v4");
+  run(&mut p, &mut clock, 100i64, &mut ha, &mut hb);
+  expectStr(hb.latest[2usize].view(), "7:v4", "a newer value arrives");
+
+  // close: the other end hears it
+  p.a.close();
+  run(&mut p, &mut clock, 100i64, &mut ha, &mut hb);
+  expect(p.a.isClosed(), "a closed");
+  expectUInt(u64.from(ha.closed.len()), 1u64, "a hears Closed once");
+  expectUInt(u64.from(*ha.closed[0usize]), 1u64, "locally");
+  expectUInt(u64.from(hb.closed.len()), 1u64, "b hears Closed once");
+  expectUInt(u64.from(*hb.closed[0usize]), 2u64, "because the other end closed it");
+  expect(p.b.isClosed(), "b closed");
+
+  // A connection whose peer goes silent times out
+  mut clock2 = Clock.synth();
+  mut q = SimPair.make(Config.defaults(), LinkConfig.lossy(1000u32, 10i64, 0i64), LinkConfig.lossy(1000u32, 10i64, 0i64), 2u64, clock2.now());
+  mut hc = new Heard(List[String].empty(), List[String].empty(), List[u32].empty());
+  mut hd = new Heard(List[String].empty(), List[String].empty(), List[u32].empty());
+  run(&mut q, &mut clock2, 9000i64, &mut hc, &mut hd);
+  expectUInt(u64.from(hc.closed.len()), 0u64, "alive at 9 s");
+  run(&mut q, &mut clock2, 1500i64, &mut hc, &mut hd);
+  expectUInt(u64.from(hc.closed.len()), 1u64, "timed out after 10 s of silence");
+  expectUInt(u64.from(*hc.closed[0usize]), 3u64, "as a timeout");
+  done();
+}
