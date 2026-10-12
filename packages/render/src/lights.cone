@@ -1,0 +1,888 @@
+// Point and spot lights: real light sources, found by clustered forward
+// shading.
+//
+// THE METHODS, named (the choices are listed in Design\render.md):
+// - CLUSTERED FORWARD SHADING (Olsson, Billeter and Assarsson, "Clustered
+//   Deferred and Forward Shading", HPG 2012; Persson, "Practical Clustered
+//   Shading", Avalanche Studios, 2015; Doom 2016, Sousa and Geoffroy, "The
+//   Devil is in the Details", SIGGRAPH 2016; Godot 4's renderer): the view
+//   frustum is cut into a grid of froxels, 16 tiles across, 9 down, and 24
+//   slices of depth (3,456 clusters); the CPU assigns each light to the
+//   froxels it reaches and writes the lists to one buffer; the lit and the
+//   physically based material loop over the lights of the fragment's own
+//   cluster (locallights.slang), and over nothing at all in a scene without
+//   lights. The grid is 16 x 9, not finer, because a tile of 120 pixels
+//   keeps the lists short for a cluster's light count to be mostly under ten
+//   in a scene of many lights, and the assignment cheap; depth is exponential
+//   (the slice of depth d is floor(ln(d / near) x slices / ln(far / near)),
+//   Doom's), so a slice is as deep in proportion at 1 m as at 100 m.
+// - The ASSIGNMENT is on the CPU (a compute pass is the step for tens of
+//   thousands of lights): a light is a sphere (its range; a spot light's
+//   sphere is its cone's bounding sphere, Persson's, the apex and the rim
+//   of the cone's base on its surface), tested against each froxel's
+//   view-space bounding box (the least box about the cell's eight corners)
+//   by the distance from the sphere's centre to the box. Only the froxels
+//   in the sphere's projected rectangle are tested, slice by slice (the
+//   sphere's box projected through the slice's depth range). The boxes are
+//   made once for a projection, near and far, and widened by a thousandth,
+//   so that a fragment whose depth rounds into the next slice is still
+//   reached. A cluster holds at most 64 lights (MAX_LIGHTS_PER_CLUSTER); a
+//   light that finds one full is dropped from it (counted in
+//   'overflowed'). A scene holds at most 1,024 lights.
+// - THE FALLOFF, Karis ("Real Shading in Unreal Engine 4", SIGGRAPH 2013
+//   notes): inverse square times saturate(1 - (d / range)^4)^2, so a light
+//   ends at its range, smoothly; a spot light's cone, a smooth ramp between
+//   its inner and outer half-angles (Filament's, Frostbite's: the square of
+//   the saturated linear ramp in the cosine); a source with a radius is the
+//   sphere light of Karis's representative point, for the highlight. See
+//   locallights.slang.
+//
+// THE UNITS. A light's intensity is in CANDELA (lumens per steradian), so at
+// distance d it gives d^-2 times that in lux, as the sun's 'color' is lux
+// (renderframe.slang): a scene in physical units lights with candela and
+// exposes with 'exposureFromEv100'; one in display units uses small numbers
+// and an exposure of 1. 'candelaOfPointLumens' and 'candelaOfSpotLumens' turn
+// a bulb's rated lumens into candela. A white diffuse surface facing a point
+// light of I candela at d metres has a radiance of I / d^2 / pi nits.
+//
+// THE API. Lights live in the renderer's 'lights' (a LightSet) and are named
+// by LightHandles (a slot and a generation: one removed is not reached). Add,
+// remove, move, aim, recolour and re-intensify by handle: each is a few
+// floats written into the light's row, and the whole table goes to the GPU
+// in one write at the next render, so a flicker of 30 lanterns costs nothing
+// a program notices. 'lights.prepare' (called by 'Renderer.render') does the
+// assignment and the writes.
+//
+// LAYERS. A light has a mask of layers (bits 0 to 23) and so does a material
+// ('lightLayers'); a light reaches a material only where they share a bit.
+// Both start as bit 0 alone. A lantern's bulb on layer 1, lighting the
+// lantern's own materials (layers 0 and 1), lights its inside and not the
+// path: a light that is "local only".
+//
+// WHAT IT DOES NOT DO YET: point and spot lights cast no shadows (a spot's is
+// one perspective view into an atlas tile, a point's six; see shadow.cone for
+// what they need from this light list); the foliage's light through a leaf is
+// the sun's and the sky's; a light is not reached by a view's other frame
+// uniforms (like the frame, the cluster lists are one buffer a render, so a
+// submission with several cameras shares the last one's).
+
+// The most lights a scene holds, the grid, and the most lights a cluster
+// holds
+pub const MAX_LIGHTS = 1024u32;
+pub const LIGHT_GRID_X = 16u32;
+pub const LIGHT_GRID_Y = 9u32;
+pub const LIGHT_GRID_Z = 24u32;
+pub const MAX_LIGHTS_PER_CLUSTER = 64u32;
+
+// Layer 0: the one both a light and a material start on
+pub const LIGHT_LAYER_DEFAULT = 1u32;
+pub const LIGHT_LAYER_ALL = 16777215u32;
+
+// 16 * 9 * 24
+const CLUSTER_COUNT = 3456usize;
+const LIGHT_FLOATS = 16usize;
+const LIGHT_BYTES = 64u64;
+const LIGHT_PARAMS_BYTES = 48u64;
+const NO_LIGHT = 4294967295u32;
+// How much the froxels are widened, so that a fragment whose depth or
+// pixel rounds into the next one is still found (a thousandth of a slice's
+// depth; a half percent of a cell's size)
+const SLICE_WIDEN = 0.001;
+const BOX_WIDEN = 0.005;
+// The cluster buffer's first capacity, in entries (the headers and the lists)
+const FIRST_CLUSTER_ENTRIES = 16384u32;
+
+// The luminous intensity of a point source of 'lumens', which radiates all
+// round: lumens / 4 pi candela
+pub fn candelaOfPointLumens(lumens f32) f32 {
+  lumens / (4. * pi);
+}
+
+// The same of a spot source of 'lumens' spread over a cone of half-angle
+// 'outerAngle' (radians): lumens / the cone's solid angle, 2 pi (1 - cos)
+pub fn candelaOfSpotLumens(lumens f32, outerAngle f32) f32 {
+  lumens / (2. * pi * (1. - cos(outerAngle)));
+}
+
+// The falloff of a light of 'range' and source 'radius' at squared distance
+// 'd2': locallights.slang's pointFalloff (the irradiance on a surface facing
+// the light is the light's intensity times this)
+pub fn pointFalloff(d2 f32, range f32, radius f32) f32 {
+  imm x = d2 / (range * range);
+  mut window = 1. - x * x;
+  if window < 0. { window = 0.; }
+  if window > 1. { window = 1.; }
+  imm denominator = if d2 > 0.0001 + radius * radius { d2; } else { 0.0001 + radius * radius; };
+  window * window / denominator;
+}
+
+// A spot light's ramp for the cosine 'cosAngle' of the angle from its axis,
+// locallights.slang's spotFalloff
+pub fn spotFalloff(cosAngle f32, scale f32, offset f32) f32 {
+  mut t = cosAngle * scale + offset;
+  if t < 0. { t = 0.; }
+  if t > 1. { t = 1.; }
+  t * t;
+}
+
+// The ramp's scale and offset for a cone of 'innerAngle' (full light
+// inside it) and 'outerAngle' (none beyond it), half-angles in radians
+pub fn spotRamp(innerAngle f32, outerAngle f32, scale &mut f32, offset &mut f32) {
+  imm cosInner = cos(innerAngle);
+  imm cosOuter = cos(outerAngle);
+  mut span = cosInner - cosOuter;
+  if span < 0.0001 { span = 0.0001; }
+  *scale = 1. / span;
+  *offset = 0. - cosOuter * (1. / span);
+}
+
+fn lmin(a f32, b f32) f32 { if a < b { a; } else { b; }; }
+fn lmax(a f32, b f32) f32 { if a > b { a; } else { b; }; }
+
+// A light: a slot and a generation, so one removed is not reached by a
+// handle that outlives it
+pub struct LightHandle {
+  pub slot u32;
+  pub gen u32;
+
+  pub fn none() LightHandle { new LightHandle(0u32, 0u32); }
+  pub fn isNone(self) bool { gen == 0u32; }
+  pub fn `==`(self, other LightHandle) bool { slot == other.slot and gen == other.gen; }
+}
+
+// The scene's point and spot lights, the grid they are assigned to and the
+// GPU buffers that hold both (see the comment at the head of this file)
+pub struct LightSet {
+  // The lights, dense (a removed light's row is filled by the last): a row
+  // is locallights.slang's four float4s -- 0..2 position, 3 range; 4..6
+  // colour times candela, 7 source radius; 8..10 axis, 11 kind (0 point,
+  // 1 spot); 12 the cone's scale, 13 its offset, 14 the layers, 15 the cone's
+  // outer half-angle
+  pub rows List[f32];
+  pub colors List[f32];            // four floats a light: its colour (rgb) and its candela
+  pub owners List[u32];            // the slot of each
+  pub slotRow List[u32];           // each slot's row, or NO_LIGHT
+  pub slotGen List[u32];
+  pub freeSlots List[u32];
+  // The GPU's: the rows, the clusters (headers, then lists), the parameters
+  pub rowBuffer Buffer;
+  pub clusterBuffer Buffer;
+  pub clusterCapacity u32;         // how many entries the cluster buffer holds
+  pub paramsBuffer Buffer;
+  // The grid: each froxel's view-space box (min xyz, max xyz), valid for
+  // the projection and depths in 'boxKey'
+  pub boxes List[f32];
+  pub boxKey Array[f32, 8];
+  pub boxesMade bool;
+  // The lists being built: a count a cluster and room for the most it holds
+  pub counts List[u32];
+  pub lists List[u32];
+  pub staging List[u32];           // what is written to the cluster buffer
+  // The most distant the grid's slices reach (0: the camera's far plane);
+  // beyond it the last slice goes on to the far plane
+  pub clusterFar f32 = 0.;
+  // What the last 'prepare' used: the camera, and the slices (the CPU's twin
+  // of the shader's lookup; 'clusterAt' uses it)
+  pub eye Vec3;
+  pub forward Vec3;
+  pub gridNear f32;
+  pub gridScale f32;
+  pub gridFar f32;
+  pub targetWidth f32;
+  pub targetHeight f32;
+  // What the last 'prepare' found
+  pub active u32;                  // the lights that reach some cluster
+  pub pairs u32;                   // the (light, cluster) pairs
+  pub overflowed u32;              // the pairs dropped for a full cluster
+  pub assigned bool;               // the lists were made (there was a light to reach)
+  // What 'prepare' need not redo: the lists depend on the lights' places,
+  // ranges and cones, whether each gives light at all, and the camera (their
+  // key, 'frameKey'); a flicker of intensities rewrites the table alone
+  pub assignDirty bool;
+  pub rowsDirty bool;
+  pub frameKey Array[f32, 25];
+  pub assignments u32;             // how many times the lists were made
+  // Whether the lights give highlights (specular lobes) as well as diffuse
+  // light; false is the cheap setting (Lambert alone), for an integrated GPU
+  // with many lights
+  pub specular bool;
+  gpuRows List[f32];               // the table as the shader reads it (locallights.slang's row), made at the upload
+
+  // An empty set, its buffers made; check 'isValid'
+  pub fn create(device &mut Device) LightSet {
+    mut rowBuffer = device.createBuffer(u64.from(MAX_LIGHTS) * LIGHT_BYTES, BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST);
+    mut clusterBuffer = device.createBuffer(u64.from(FIRST_CLUSTER_ENTRIES) * 4u64,
+      BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST);
+    mut paramsBuffer = device.createBuffer(LIGHT_PARAMS_BYTES, BUFFER_USAGE_UNIFORM | BUFFER_USAGE_COPY_DST);
+    mut counts = List[u32].empty();
+    counts.resize(CLUSTER_COUNT, 0u32);
+    mut lists = List[u32].empty();
+    lists.resize(CLUSTER_COUNT * usize.from(MAX_LIGHTS_PER_CLUSTER), 0u32);
+    new LightSet(List[f32].empty(), List[f32].empty(), List[u32].empty(), List[u32].empty(), List[u32].empty(),
+      List[u32].empty(), rowBuffer, clusterBuffer, FIRST_CLUSTER_ENTRIES, paramsBuffer, List[f32].empty(),
+      new Array[f32, 8] <- fill 0f, false, counts, lists, List[u32].empty(), 0., new Vec3(0., 0., 0.),
+      new Vec3(0., 0., -1.), 0.1, 1., 1000., 1., 1., 0u32, 0u32, 0u32, false, true, true,
+      new Array[f32, 25] <- fill 0f, 0u32, true, List[f32].empty());
+  }
+
+  pub fn isValid(self &) bool {
+    rowBuffer.isValid() and clusterBuffer.isValid() and paramsBuffer.isValid();
+  }
+
+  // How many lights the scene holds
+  pub fn count(self &) u32 { u32.from(owners.len()); }
+
+  // Whether 'h' names a light still in the scene
+  pub fn alive(self &, h LightHandle) bool {
+    if h.gen == 0u32 or usize.from(h.slot) >= slotGen.len() { return false; }
+    *slotGen[usize.from(h.slot)] == h.gen and *slotRow[usize.from(h.slot)] != NO_LIGHT;
+  }
+
+  fn rowOf(self &, h LightHandle) usize { usize.from(*slotRow[usize.from(h.slot)]); }
+
+  // A new light in a row of the table, a point light unless 'spot'; none if
+  // the scene is full
+  fn insert(self &mut, position Vec3, color Color, candela f32, range f32, spot bool, axis Vec3,
+      innerAngle f32, outerAngle f32) LightHandle {
+    if owners.len() >= usize.from(MAX_LIGHTS) { return LightHandle.none(); }
+    mut slot = 0u32;
+    if freeSlots.len() > 0usize {
+      slot = *freeSlots[freeSlots.len() - 1usize];
+      freeSlots.pop();
+    } else {
+      slot = u32.from(slotRow.len());
+      slotRow.push(NO_LIGHT);
+      slotGen.push(1u32);
+    }
+    imm row = owners.len();
+    slotRow.set(usize.from(slot), u32.from(row));
+    owners.push(slot);
+    mut scale = 0.;
+    mut offset = 0.;
+    if spot { spotRamp(innerAngle, outerAngle, &mut scale, &mut offset); }
+    imm a = axis.normalize();
+    imm kind = if spot { 1.; } else { 0.; };
+    rows.push(position.x);
+    rows.push(position.y);
+    rows.push(position.z);
+    rows.push(range);
+    rows.push(color.red * candela);
+    rows.push(color.green * candela);
+    rows.push(color.blue * candela);
+    rows.push(0.);
+    rows.push(a.x);
+    rows.push(a.y);
+    rows.push(a.z);
+    rows.push(kind);
+    rows.push(scale);
+    rows.push(offset);
+    rows.push(f32.from(LIGHT_LAYER_DEFAULT));
+    rows.push(outerAngle);
+    colors.push(color.red);
+    colors.push(color.green);
+    colors.push(color.blue);
+    colors.push(candela);
+    assignDirty = true;
+    rowsDirty = true;
+    new LightHandle(slot, *slotGen[usize.from(slot)]);
+  }
+
+  // A point light at 'position', of 'color' (linear) and 'candela', reaching
+  // 'range' metres. None if the scene already holds MAX_LIGHTS.
+  pub fn addPoint(self &mut, position Vec3, color Color, candela f32, range f32) LightHandle {
+    self.insert(position, color, candela, range, false, new Vec3(0., 0., -1.), 0., 0.);
+  }
+
+  // A spot light at 'position' shining along 'direction', full inside
+  // 'innerAngle' of its axis and none beyond 'outerAngle' (half-angles in
+  // radians, the outer under pi / 2), reaching 'range' metres
+  pub fn addSpot(self &mut, position Vec3, direction Vec3, color Color, candela f32, range f32,
+      innerAngle f32, outerAngle f32) LightHandle {
+    self.insert(position, color, candela, range, true, direction, innerAngle, outerAngle);
+  }
+
+  // Take the light out of the scene (its row is filled by the last light's)
+  pub fn remove(self &mut, h LightHandle) bool {
+    if !self.alive(h) { return false; }
+    assignDirty = true;
+    rowsDirty = true;
+    imm row = self.rowOf(h);
+    imm last = owners.len() - 1usize;
+    if row != last {
+      mut k = 0usize;
+      while k < LIGHT_FLOATS {
+        rows.set(row * LIGHT_FLOATS + k, *rows[last * LIGHT_FLOATS + k]);
+        k = k + 1usize;
+      }
+      k = 0usize;
+      while k < 4usize {
+        colors.set(row * 4usize + k, *colors[last * 4usize + k]);
+        k = k + 1usize;
+      }
+      imm moved = *owners[last];
+      owners.set(row, moved);
+      slotRow.set(usize.from(moved), u32.from(row));
+    }
+    rows.truncate(last * LIGHT_FLOATS);
+    colors.truncate(last * 4usize);
+    owners.truncate(last);
+    slotRow.set(usize.from(h.slot), NO_LIGHT);
+    slotGen.set(usize.from(h.slot), h.gen + 1u32);
+    freeSlots.push(h.slot);
+    true;
+  }
+
+  // Take every light out
+  pub fn clear(self &mut) {
+    mut i = 0usize;
+    while i < slotRow.len() {
+      if *slotRow[i] != NO_LIGHT {
+        slotGen.set(i, *slotGen[i] + 1u32);
+        slotRow.set(i, NO_LIGHT);
+        freeSlots.push(u32.from(i));
+      }
+      i = i + 1usize;
+    }
+    rows.clear();
+    colors.clear();
+    owners.clear();
+    assignDirty = true;
+    rowsDirty = true;
+  }
+
+  // Move the light to 'position'
+  pub fn move(self &mut, h LightHandle, position Vec3) bool {
+    if !self.alive(h) { return false; }
+    assignDirty = true;
+    rowsDirty = true;
+    imm base = self.rowOf(h) * LIGHT_FLOATS;
+    rows.set(base, position.x);
+    rows.set(base + 1usize, position.y);
+    rows.set(base + 2usize, position.z);
+    true;
+  }
+
+  // Turn a spot light to shine along 'direction'
+  pub fn aim(self &mut, h LightHandle, direction Vec3) bool {
+    if !self.alive(h) { return false; }
+    assignDirty = true;
+    rowsDirty = true;
+    imm base = self.rowOf(h) * LIGHT_FLOATS;
+    imm a = direction.normalize();
+    rows.set(base + 8usize, a.x);
+    rows.set(base + 9usize, a.y);
+    rows.set(base + 10usize, a.z);
+    true;
+  }
+
+  // Whether the light in 'row' gives any light (a dark one is left out of the
+  // assignment)
+  fn isLit(self &, row usize) bool {
+    imm b = row * 4usize;
+    *colors[b + 3usize] > 0. and (*colors[b] > 0. or *colors[b + 1usize] > 0. or *colors[b + 2usize] > 0.);
+  }
+
+  // The table's colour times candela of 'row' made again from the two; 'was'
+  // whether it gave light before (the lists change only if that does)
+  fn writeIntensity(self &mut, row usize, was bool) {
+    imm c = *colors[row * 4usize + 3usize];
+    rows.set(row * LIGHT_FLOATS + 4usize, *colors[row * 4usize] * c);
+    rows.set(row * LIGHT_FLOATS + 5usize, *colors[row * 4usize + 1usize] * c);
+    rows.set(row * LIGHT_FLOATS + 6usize, *colors[row * 4usize + 2usize] * c);
+    rowsDirty = true;
+    if was != self.isLit(row) { assignDirty = true; }
+  }
+
+  // Change the light's colour (linear), keeping its candela
+  pub fn setColor(self &mut, h LightHandle, color Color) bool {
+    if !self.alive(h) { return false; }
+    imm row = self.rowOf(h);
+    imm was = self.isLit(row);
+    colors.set(row * 4usize, color.red);
+    colors.set(row * 4usize + 1usize, color.green);
+    colors.set(row * 4usize + 2usize, color.blue);
+    self.writeIntensity(row, was);
+    true;
+  }
+
+  // Change the light's intensity in candela, keeping its colour (0: dark,
+  // and left out of the assignment)
+  pub fn setIntensity(self &mut, h LightHandle, candela f32) bool {
+    if !self.alive(h) { return false; }
+    imm row = self.rowOf(h);
+    imm was = self.isLit(row);
+    colors.set(row * 4usize + 3usize, candela);
+    self.writeIntensity(row, was);
+    true;
+  }
+
+  // Change both at once
+  pub fn setLight(self &mut, h LightHandle, color Color, candela f32) bool {
+    if !self.alive(h) { return false; }
+    imm row = self.rowOf(h);
+    imm was = self.isLit(row);
+    colors.set(row * 4usize, color.red);
+    colors.set(row * 4usize + 1usize, color.green);
+    colors.set(row * 4usize + 2usize, color.blue);
+    colors.set(row * 4usize + 3usize, candela);
+    self.writeIntensity(row, was);
+    true;
+  }
+
+  // Change how far the light reaches
+  pub fn setRange(self &mut, h LightHandle, range f32) bool {
+    if !self.alive(h) { return false; }
+    assignDirty = true;
+    rowsDirty = true;
+    rows.set(self.rowOf(h) * LIGHT_FLOATS + 3usize, range);
+    true;
+  }
+
+  // The radius of the light's source, a sphere (a bulb: 0.015 m): it softens
+  // the nearest falloff and gives the highlight its size
+  pub fn setSourceRadius(self &mut, h LightHandle, radius f32) bool {
+    if !self.alive(h) { return false; }
+    rowsDirty = true;
+    rows.set(self.rowOf(h) * LIGHT_FLOATS + 7usize, if radius > 0. { radius; } else { 0.; });
+    true;
+  }
+
+  // Change a spot light's cone
+  pub fn setCone(self &mut, h LightHandle, innerAngle f32, outerAngle f32) bool {
+    if !self.alive(h) { return false; }
+    assignDirty = true;
+    rowsDirty = true;
+    imm base = self.rowOf(h) * LIGHT_FLOATS;
+    mut scale = 0.;
+    mut offset = 0.;
+    spotRamp(innerAngle, outerAngle, &mut scale, &mut offset);
+    rows.set(base + 12usize, scale);
+    rows.set(base + 13usize, offset);
+    rows.set(base + 15usize, outerAngle);
+    true;
+  }
+
+  // The layers the light is on (bits 0 to 23): it reaches the materials that
+  // share one
+  pub fn setLayers(self &mut, h LightHandle, mask u32) bool {
+    if !self.alive(h) { return false; }
+    rowsDirty = true;
+    rows.set(self.rowOf(h) * LIGHT_FLOATS + 14usize, f32.from(mask & LIGHT_LAYER_ALL));
+    true;
+  }
+
+  // Where the light is
+  pub fn position(self &, h LightHandle) Vec3 {
+    if !self.alive(h) { return new Vec3(0., 0., 0.); }
+    imm base = self.rowOf(h) * LIGHT_FLOATS;
+    new Vec3(*rows[base], *rows[base + 1usize], *rows[base + 2usize]);
+  }
+
+  // How far the light reaches, or 0 if there is none
+  pub fn range(self &, h LightHandle) f32 {
+    if !self.alive(h) { return 0.; }
+    *rows[self.rowOf(h) * LIGHT_FLOATS + 3usize];
+  }
+
+  // The light's row in the table: the index the clusters' lists hold
+  pub fn rowIndex(self &, h LightHandle) u32 {
+    if !self.alive(h) { return NO_LIGHT; }
+    *slotRow[usize.from(h.slot)];
+  }
+
+  // ---- The grid ----
+
+  // The depth at which slice 'i' begins (slice 0 begins at 0, and the first
+  // boundary is the grid's near)
+  fn sliceLo(self &, i usize) f32 {
+    if i == 0usize { return 0.; }
+    gridNear * libc.powf(gridFar / gridNear, f32.from(i) / f32.from(LIGHT_GRID_Z));
+  }
+
+  // The depth at which slice 'i' ends; the last goes on to 'farPlane'
+  fn sliceHi(self &, i usize, farPlane f32) f32 {
+    if i + 1usize >= usize.from(LIGHT_GRID_Z) { return farPlane; }
+    self.sliceLo(i + 1usize);
+  }
+
+  // The slice of depth 'd', as the shader finds it
+  pub fn sliceOf(self &, d f32) u32 {
+    if d <= gridNear { return 0u32; }
+    imm s = libc.floorf(libc.logf(d / gridNear) * gridScale);
+    if s < 0. { return 0u32; }
+    if s > f32.from(LIGHT_GRID_Z - 1u32) { return LIGHT_GRID_Z - 1u32; }
+    u32.from(s);
+  }
+
+  // The cluster a point at 'world' seen at pixel (x, y) of the last
+  // 'prepare''s target is in, as the shader finds it
+  pub fn clusterAt(self &, world Vec3, x f32, y f32) u32 {
+    imm depth = (world - eye).dot(forward);
+    imm s = self.sliceOf(depth);
+    mut tx = u32.from(lmax(x, 0.) / targetWidth * f32.from(LIGHT_GRID_X));
+    mut ty = u32.from(lmax(y, 0.) / targetHeight * f32.from(LIGHT_GRID_Y));
+    if tx > LIGHT_GRID_X - 1u32 { tx = LIGHT_GRID_X - 1u32; }
+    if ty > LIGHT_GRID_Y - 1u32 { ty = LIGHT_GRID_Y - 1u32; }
+    (s * LIGHT_GRID_Y + ty) * LIGHT_GRID_X + tx;
+  }
+
+  // The lights assigned to cluster 'c': how many, and the row of the 'k'-th
+  pub fn clusterCount(self &, c u32) u32 { *counts[usize.from(c)]; }
+  pub fn clusterLight(self &, c u32, k u32) u32 {
+    *lists[usize.from(c) * usize.from(MAX_LIGHTS_PER_CLUSTER) + usize.from(k)];
+  }
+
+  // The view-space box of cluster 'c' ('lo' and 'hi' its corners), for the
+  // projection of the last 'prepare'
+  pub fn clusterBox(self &, c u32, lo &mut Vec3, hi &mut Vec3) {
+    imm b = usize.from(c) * 6usize;
+    *lo = new Vec3(*boxes[b], *boxes[b + 1usize], *boxes[b + 2usize]);
+    *hi = new Vec3(*boxes[b + 3usize], *boxes[b + 4usize], *boxes[b + 5usize]);
+  }
+
+  // The bounding sphere of light 'i' (a row) in world coordinates: its range
+  // about its position; a spot's cone's, the least sphere that holds the
+  // cone cut off at its range (Persson): for a half-angle up to 45 degrees,
+  // the sphere through the apex and the rim of the base, otherwise the one
+  // about the base's middle
+  pub fn lightSphere(self &, i usize, center &mut Vec3, radius &mut f32) {
+    imm b = i * LIGHT_FLOATS;
+    imm p = new Vec3(*rows[b], *rows[b + 1usize], *rows[b + 2usize]);
+    imm range = *rows[b + 3usize];
+    if *rows[b + 11usize] < 0.5 {
+      *center = p;
+      *radius = range;
+      return;
+    }
+    imm axis = new Vec3(*rows[b + 8usize], *rows[b + 9usize], *rows[b + 10usize]);
+    imm outer = *rows[b + 15usize];
+    imm c = cos(outer);
+    if c * c >= 0.5 {
+      imm t = range / (2. * c);
+      *center = p + axis * t;
+      *radius = t;
+    } else {
+      *center = p + axis * (range * c);
+      *radius = range * sin(outer);
+    }
+  }
+
+  // Make the froxels' boxes for the projection 'proj' (geomath's matrix),
+  // grid depths from 'near' to 'gridFarDepth' and the last slice on to
+  // 'farPlane'
+  fn makeBoxes(self &mut, proj &Mat4, farPlane f32) {
+    imm ortho = proj.m[11] > -0.5;
+    boxes.clear();
+    mut tz = 0usize;
+    while tz < usize.from(LIGHT_GRID_Z) {
+      imm d0 = self.sliceLo(tz) * (1. - SLICE_WIDEN);
+      imm d1 = self.sliceHi(tz, farPlane) * (1. + SLICE_WIDEN);
+      mut ty = 0usize;
+      while ty < usize.from(LIGHT_GRID_Y) {
+        // Row 0 is the top of the screen, where the clip space's y is +1
+        imm yTop = 1. - 2. * f32.from(ty) / f32.from(LIGHT_GRID_Y);
+        imm yBottom = 1. - 2. * f32.from(ty + 1usize) / f32.from(LIGHT_GRID_Y);
+        mut tx = 0usize;
+        while tx < usize.from(LIGHT_GRID_X) {
+          imm xLeft = -1. + 2. * f32.from(tx) / f32.from(LIGHT_GRID_X);
+          imm xRight = -1. + 2. * f32.from(tx + 1usize) / f32.from(LIGHT_GRID_X);
+          mut minX = 1000000.;
+          mut maxX = -1000000.;
+          mut minY = 1000000.;
+          mut maxY = -1000000.;
+          mut e = 0usize;
+          while e < 2usize {
+            imm d = if e == 0usize { d0; } else { d1; };
+            imm sx = if ortho { 1. / proj.m[0]; } else { d / proj.m[0]; };
+            imm sy = if ortho { 1. / proj.m[5]; } else { d / proj.m[5]; };
+            imm ox = if ortho { 0. - proj.m[12] / proj.m[0]; } else { 0.; };
+            imm oy = if ortho { 0. - proj.m[13] / proj.m[5]; } else { 0.; };
+            minX = lmin(minX, lmin(xLeft * sx, xRight * sx) + ox);
+            maxX = lmax(maxX, lmax(xLeft * sx, xRight * sx) + ox);
+            minY = lmin(minY, lmin(yTop * sy, yBottom * sy) + oy);
+            maxY = lmax(maxY, lmax(yTop * sy, yBottom * sy) + oy);
+            e = e + 1usize;
+          }
+          imm padX = (maxX - minX) * BOX_WIDEN;
+          imm padY = (maxY - minY) * BOX_WIDEN;
+          boxes.push(minX - padX);
+          boxes.push(minY - padY);
+          boxes.push(0. - d1);
+          boxes.push(maxX + padX);
+          boxes.push(maxY + padY);
+          boxes.push(0. - d0);
+          tx = tx + 1usize;
+        }
+        ty = ty + 1usize;
+      }
+      tz = tz + 1usize;
+    }
+  }
+
+  // Put light row 'light' into cluster 'cluster', if it has room
+  fn addToCluster(self &mut, cluster usize, light u32) bool {
+    imm n = *counts[cluster];
+    if n >= MAX_LIGHTS_PER_CLUSTER {
+      overflowed = overflowed + 1u32;
+      return false;
+    }
+    lists.set(cluster * usize.from(MAX_LIGHTS_PER_CLUSTER) + usize.from(n), light);
+    counts.set(cluster, n + 1u32);
+    pairs = pairs + 1u32;
+    true;
+  }
+
+  // Assign light row 'i', a sphere of 'r' about 'c' (view space), to the
+  // froxels it reaches; how many it reached
+  fn assignLight(self &mut, i u32, c Vec3, r f32, proj &Mat4, farPlane f32) u32 {
+    imm ortho = proj.m[11] > -0.5;
+    imm zc = 0. - c.z;
+    if zc + r < 0. or zc - r > farPlane { return 0u32; }
+    imm nx = f32.from(LIGHT_GRID_X);
+    imm ny = f32.from(LIGHT_GRID_Y);
+    imm s0 = self.sliceOf(lmax(zc - r, 0.));
+    imm s1 = self.sliceOf(zc + r);
+    mut reached = 0u32;
+    mut s = s0;
+    while s <= s1 {
+      imm dlo = lmax(zc - r, self.sliceLo(usize.from(s)) * (1. - SLICE_WIDEN));
+      imm dhi = lmin(zc + r, self.sliceHi(usize.from(s), farPlane) * (1. + SLICE_WIDEN));
+      if dlo <= dhi {
+        // The sphere's box projected through the depths [dlo, dhi]: a clip
+        // coordinate x m0 / d moves one way with d, so its least and most are
+        // at the ends
+        imm dn = lmax(dlo, 0.0001);
+        mut x0 = 0.;
+        mut x1 = 0.;
+        mut y0 = 0.;
+        mut y1 = 0.;
+        if ortho {
+          x0 = (c.x - r) * proj.m[0] + proj.m[12];
+          x1 = (c.x + r) * proj.m[0] + proj.m[12];
+          y0 = (c.y - r) * proj.m[5] + proj.m[13];
+          y1 = (c.y + r) * proj.m[5] + proj.m[13];
+        } else {
+          x0 = lmin((c.x - r) * proj.m[0] / dn, (c.x - r) * proj.m[0] / dhi);
+          x1 = lmax((c.x + r) * proj.m[0] / dn, (c.x + r) * proj.m[0] / dhi);
+          y0 = lmin((c.y - r) * proj.m[5] / dn, (c.y - r) * proj.m[5] / dhi);
+          y1 = lmax((c.y + r) * proj.m[5] / dn, (c.y + r) * proj.m[5] / dhi);
+        }
+        if x1 >= -1. and x0 <= 1. and y1 >= -1. and y0 <= 1. {
+          imm tx0 = u32.from(lmax(libc.floorf((lmax(x0, -1.) + 1.) * 0.5 * nx), 0.));
+          imm tx1 = u32.from(lmin(libc.floorf((lmin(x1, 1.) + 1.) * 0.5 * nx), nx - 1.));
+          imm ty0 = u32.from(lmax(libc.floorf((1. - lmin(y1, 1.)) * 0.5 * ny), 0.));
+          imm ty1 = u32.from(lmin(libc.floorf((1. - lmax(y0, -1.)) * 0.5 * ny), ny - 1.));
+          mut ty = ty0;
+          while ty <= ty1 {
+            mut tx = tx0;
+            while tx <= tx1 {
+              imm cluster = usize.from((s * LIGHT_GRID_Y + ty) * LIGHT_GRID_X + tx);
+              if self.sphereTouchesBox(cluster, c, r) {
+                if self.addToCluster(cluster, i) { reached = reached + 1u32; }
+              }
+              tx = tx + 1u32;
+            }
+            ty = ty + 1u32;
+          }
+        }
+      }
+      s = s + 1u32;
+    }
+    reached;
+  }
+
+  // Whether the sphere of 'r' about 'c' (view space) touches cluster
+  // 'cluster''s box
+  pub fn sphereTouchesBox(self &, cluster usize, c Vec3, r f32) bool {
+    imm b = cluster * 6usize;
+    imm dx = lmax(lmax(*boxes[b] - c.x, c.x - *boxes[b + 3usize]), 0.);
+    imm dy = lmax(lmax(*boxes[b + 1usize] - c.y, c.y - *boxes[b + 4usize]), 0.);
+    imm dz = lmax(lmax(*boxes[b + 2usize] - c.z, c.z - *boxes[b + 5usize]), 0.);
+    dx * dx + dy * dy + dz * dz <= r * r;
+  }
+
+  // The table written to the GPU in the shader's form: each row's range as 1 /
+  // range^2, a point light's axis zero, the layers beside the axis, a point
+  // light's cone zero
+  fn writeRows(self &mut, device &mut Device) {
+    imm n = owners.len();
+    gpuRows.clear();
+    mut i = 0usize;
+    while i < n {
+      imm b = i * LIGHT_FLOATS;
+      imm range = *rows[b + 3usize];
+      gpuRows.push(*rows[b]);
+      gpuRows.push(*rows[b + 1usize]);
+      gpuRows.push(*rows[b + 2usize]);
+      gpuRows.push(if range > 0. { 1. / (range * range); } else { 0.; });
+      gpuRows.push(*rows[b + 4usize]);
+      gpuRows.push(*rows[b + 5usize]);
+      gpuRows.push(*rows[b + 6usize]);
+      gpuRows.push(*rows[b + 7usize]);
+      imm spot = *rows[b + 11usize] > 0.5;
+      gpuRows.push(if spot { *rows[b + 8usize]; } else { 0.; });
+      gpuRows.push(if spot { *rows[b + 9usize]; } else { 0.; });
+      gpuRows.push(if spot { *rows[b + 10usize]; } else { 0.; });
+      gpuRows.push(*rows[b + 14usize]);
+      gpuRows.push(if spot { *rows[b + 12usize]; } else { 0.; });
+      gpuRows.push(if spot { *rows[b + 13usize]; } else { 0.; });
+      gpuRows.push(0.);
+      gpuRows.push(0.);
+      i = i + 1usize;
+    }
+    imm rv = gpuRows.view();
+    device.queue.writeBuffer(&rowBuffer, 0u64, &rv[0] as *u8, u64.from(n) * LIGHT_BYTES);
+  }
+
+  // Everything a render needs of the lights, ahead of its submission: the
+  // grid for 'camera' drawing into a target 'width' x 'height' (aspect
+  // 'aspect'), every light assigned to the froxels it reaches, and the table,
+  // the lists and the parameters written to the GPU. True if the cluster
+  // buffer was made larger (so the frame group must be made again). With no
+  // light that reaches anything, only the parameters (a count of 0) are
+  // written, and the shaders loop over nothing.
+  pub fn prepare(self &mut, device &mut Device, camera &Camera, aspect f32, width u32, height u32) bool {
+    imm view = camera.viewMatrix();
+    imm proj = camera.projectionMatrix(aspect);
+    imm place = camera.placement();
+    eye = place.translation();
+    forward = new Vec3(-place.m[8], -place.m[9], -place.m[10]).normalize();
+    targetWidth = f32.from(width);
+    targetHeight = f32.from(height);
+    imm farPlane = camera.far;
+    imm near = lmax(camera.near, 0.001);
+    mut reach = farPlane;
+    if clusterFar > near * 2. and clusterFar < farPlane { reach = clusterFar; }
+    if reach < near * 1.01 { reach = near * 1.01; }
+    gridNear = near;
+    gridFar = reach;
+    gridScale = f32.from(LIGHT_GRID_Z) / libc.logf(reach / near);
+
+    // Whether the lists must be made again: the lights' places, ranges and
+    // cones changed, or the camera (its view, its projection, the target)
+    mut fk = new Array[f32, 25] <- fill 0f;
+    mut q = 0usize;
+    while q < 16usize {
+      fk[q] = view.m[q];
+      q = q + 1usize;
+    }
+    fk[16] = proj.m[0];
+    fk[17] = proj.m[5];
+    fk[18] = proj.m[11];
+    fk[19] = proj.m[12];
+    fk[20] = proj.m[13];
+    fk[21] = near;
+    fk[22] = reach;
+    fk[23] = farPlane;
+    fk[24] = targetWidth * 8192. + targetHeight;
+    mut keyChanged = false;
+    q = 0usize;
+    while q < 25usize {
+      if fk[q] != frameKey[q] { keyChanged = true; }
+      q = q + 1usize;
+    }
+    frameKey = fk;
+    imm needAssign = assignDirty or keyChanged;
+    mut grew = false;
+
+    imm n = owners.len();
+    if n == 0usize {
+      active = 0u32;
+      pairs = 0u32;
+      overflowed = 0u32;
+      assigned = false;
+      assignDirty = false;
+      rowsDirty = false;
+    } elif !needAssign {
+      // The lists stand; a change of intensity or layers rewrites the table
+      if rowsDirty and assigned { self.writeRows(device); }
+      rowsDirty = false;
+    } else {
+      active = 0u32;
+      pairs = 0u32;
+      overflowed = 0u32;
+      assigned = false;
+      assignments = assignments + 1u32;
+      assignDirty = false;
+      rowsDirty = false;
+      // The boxes, for this projection
+      imm key = [proj.m[0], proj.m[5], proj.m[11], proj.m[12], proj.m[13], near, gridFar, farPlane];
+      mut same = boxesMade;
+      mut k = 0usize;
+      while same and k < 8usize {
+        if key[k] != boxKey[k] { same = false; }
+        k = k + 1usize;
+      }
+      if !same {
+        self.makeBoxes(&proj, farPlane);
+        boxKey = key;
+        boxesMade = true;
+      }
+      mut c = 0usize;
+      while c < CLUSTER_COUNT {
+        counts.set(c, 0u32);
+        c = c + 1usize;
+      }
+      mut i = 0usize;
+      while i < n {
+        imm b = i * 4usize;
+        imm lit = *colors[b + 3usize] > 0. and (*colors[b] > 0. or *colors[b + 1usize] > 0. or *colors[b + 2usize] > 0.);
+        if lit {
+          mut center = new Vec3(0., 0., 0.);
+          mut radius = 0.;
+          self.lightSphere(i, &mut center, &mut radius);
+          imm viewCenter = view * center;
+          if self.assignLight(u32.from(i), viewCenter, radius, &proj, farPlane) > 0u32 { active = active + 1u32; }
+        }
+        i = i + 1usize;
+      }
+      if active > 0u32 {
+        assigned = true;
+        // The headers (offset, count), then the lists, side by side
+        staging.clear();
+        staging.resize(CLUSTER_COUNT * 2usize, 0u32);
+        mut total = u32.from(CLUSTER_COUNT * 2usize);
+        c = 0usize;
+        while c < CLUSTER_COUNT {
+          imm cnt = *counts[c];
+          staging.set(c * 2usize, total);
+          staging.set(c * 2usize + 1usize, cnt);
+          mut j = 0u32;
+          while j < cnt {
+            staging.push(*lists[c * usize.from(MAX_LIGHTS_PER_CLUSTER) + usize.from(j)]);
+            j = j + 1u32;
+          }
+          total = total + cnt;
+          c = c + 1usize;
+        }
+        if total > clusterCapacity {
+          mut capacity = clusterCapacity;
+          while capacity < total { capacity = capacity * 2u32; }
+          device.queue.releaseBuffer(&mut clusterBuffer);
+          clusterBuffer = device.createBuffer(u64.from(capacity) * 4u64, BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST);
+          clusterCapacity = capacity;
+          grew = true;
+        }
+        imm sv = staging.view();
+        device.queue.writeBuffer(&clusterBuffer, 0u64, &sv[0] as *u8, u64.from(total) * 4u64);
+        self.writeRows(device);
+      }
+    }
+
+    // The parameters: the camera's forward, the grid, the slices; the count
+    // of lights worth looping over (0: the shaders skip the loop)
+    mut params = new Array[f32, 12] <- fill 0f;
+    params[0] = forward.x;
+    params[1] = forward.y;
+    params[2] = forward.z;
+    params[4] = f32.from(LIGHT_GRID_X);
+    params[5] = f32.from(LIGHT_GRID_Y);
+    params[6] = f32.from(LIGHT_GRID_Z);
+    params[7] = if assigned { f32.from(active); } else { 0.; };
+    params[8] = gridNear;
+    params[9] = gridScale;
+    params[10] = if specular { 1.; } else { 0.; };
+    device.queue.writeBuffer(&paramsBuffer, 0u64, &params as *u8, LIGHT_PARAMS_BYTES);
+    grew;
+  }
+}

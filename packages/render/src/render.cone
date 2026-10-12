@@ -312,6 +312,8 @@ pub struct Renderer {
   pub pbrSwayPipeline RenderPipeline;
   // The sun's shadows (shadow.cone): off until 'setShadows'
   pub shadow ShadowState;
+  // The point and spot lights (lights.cone): none until some are added
+  pub lights LightSet;
   // Store the depth buffer at the end of 'render' (it is discarded
   // otherwise), so that a later pass into the same target -- glowing
   // particles drawn additively, say -- is depth tested against the scene
@@ -342,7 +344,12 @@ pub struct Renderer {
       new BindGroupLayoutEntry(binding: 4u32, visibility: SHADER_STAGE_VERTEX | SHADER_STAGE_FRAGMENT),
       new BindGroupLayoutEntry(binding: 5u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE,
         viewDimension: TEXTURE_VIEW_DIMENSION_2D_ARRAY, sampleType: TEXTURE_SAMPLE_TYPE_DEPTH),
-      new BindGroupLayoutEntry(binding: 6u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_SAMPLER)];
+      new BindGroupLayoutEntry(binding: 6u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_SAMPLER),
+      // and the point and spot lights (locallights.slang): the clusters'
+      // parameters, the lights, and the clusters' lists
+      new BindGroupLayoutEntry(binding: 7u32, visibility: SHADER_STAGE_FRAGMENT),
+      new BindGroupLayoutEntry(binding: 8u32, visibility: SHADER_STAGE_FRAGMENT, bufferType: BUFFER_BINDING_TYPE_READ_ONLY_STORAGE),
+      new BindGroupLayoutEntry(binding: 9u32, visibility: SHADER_STAGE_FRAGMENT, bufferType: BUFFER_BINDING_TYPE_READ_ONLY_STORAGE)];
     mut frameLayout = device.createBindGroupLayout(&frameEntries);
     imm materialEntries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_FRAGMENT),
       new BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE),
@@ -475,10 +482,12 @@ pub struct Renderer {
     mut shadow = ShadowState.create(device, &materialLayout, &pbrMaterialLayout, &frameUniforms, &instances, &bones,
       &boneBases);
     imm shadowView = shadow.arrayView();
+    mut lights = LightSet.create(device);
     imm frameGroupEntries = [BindGroupEntry.buffer(0u32, &frameUniforms), BindGroupEntry.buffer(1u32, &instances),
       BindGroupEntry.buffer(2u32, &bones), BindGroupEntry.buffer(3u32, &boneBases),
       BindGroupEntry.buffer(4u32, &shadow.params), BindGroupEntry.texture(5u32, &shadowView),
-      BindGroupEntry.sampler(6u32, &shadow.sampler)];
+      BindGroupEntry.sampler(6u32, &shadow.sampler), BindGroupEntry.buffer(7u32, &lights.paramsBuffer),
+      BindGroupEntry.buffer(8u32, &lights.rowBuffer), BindGroupEntry.buffer(9u32, &lights.clusterBuffer)];
     mut frameGroup = device.createBindGroup(&frameLayout, &frameGroupEntries);
     // Trilinear, and anisotropic to 16 where the device does it (fewer
     // where it does less; none where it does none)
@@ -494,7 +503,7 @@ pub struct Renderer {
       instances, FIRST_INSTANCES, List[f32].empty(), List[DrawKey].empty(), List[DrawBatch].empty(), 0u32,
       Pool[PipelineSlot].empty(), litSkinnedPipeline, pbrSkinnedPipeline, bones, FIRST_BONES, boneBases,
       List[u32].empty(), 0u32, litBlendPipeline, pbrBlendPipeline, litSkinnedBlendPipeline, pbrSkinnedBlendPipeline, 0u32,
-      pbrSwayPipeline, shadow);
+      pbrSwayPipeline, shadow, lights);
     mut w = new Image(1, 1, 3, List[u8].empty());
     w.pixels.push(255u8);
     w.pixels.push(255u8);
@@ -510,7 +519,7 @@ pub struct Renderer {
       and instances.isValid() and litSkinnedPipeline.isValid() and pbrSkinnedPipeline.isValid() and bones.isValid()
       and boneBases.isValid() and litBlendPipeline.isValid() and pbrBlendPipeline.isValid()
       and litSkinnedBlendPipeline.isValid() and pbrSkinnedBlendPipeline.isValid() and pbrSwayPipeline.isValid()
-      and shadow.isValid();
+      and shadow.isValid() and lights.isValid();
   }
 
   // The frame's group made again, after a buffer in it was replaced
@@ -519,7 +528,8 @@ pub struct Renderer {
     imm entries = [BindGroupEntry.buffer(0u32, &frameUniforms), BindGroupEntry.buffer(1u32, &instances),
       BindGroupEntry.buffer(2u32, &bones), BindGroupEntry.buffer(3u32, &boneBases),
       BindGroupEntry.buffer(4u32, &shadow.params), BindGroupEntry.texture(5u32, &shadowView),
-      BindGroupEntry.sampler(6u32, &shadow.sampler)];
+      BindGroupEntry.sampler(6u32, &shadow.sampler), BindGroupEntry.buffer(7u32, &lights.paramsBuffer),
+      BindGroupEntry.buffer(8u32, &lights.rowBuffer), BindGroupEntry.buffer(9u32, &lights.clusterBuffer)];
     frameGroup = device.createBindGroup(&frameLayout, &entries);
     shadow.remakeCasterGroup(device, &frameUniforms, &instances, &bones, &boneBases);
   }
@@ -917,6 +927,7 @@ pub struct Renderer {
     slot.params.emissive = material.emissive;
     slot.params.alphaMode = material.alphaMode;
     slot.params.alphaCutoff = material.alphaCutoff;
+    slot.params.lightLayers = material.lightLayers;
     slot.blend = material.alphaMode == ALPHA_BLEND;
     true;
   }
@@ -1120,6 +1131,11 @@ pub struct Renderer {
     frame[51] = environmentStrength;
     frame[52] = exposure;
     device.queue.writeBuffer(&frameUniforms, 0u64, &frame as *u8, FRAME_BYTES);
+
+    // The point and spot lights: assigned to this camera's clusters, and
+    // written (lights.cone); the frame group is made again if the lists'
+    // buffer had to grow
+    if lights.prepare(device, camera, aspect, target.width, target.height) { self.remakeFrameGroup(device); }
 
     // The batches, front to back, and their instances and bones written
     self.gatherBatches(list, eye);
@@ -1488,7 +1504,7 @@ fn materialParams(material &Material) Array[f32, 16] {
   [material.baseColor.red, material.baseColor.green, material.baseColor.blue, material.baseColor.alpha,
     material.specular.red, material.specular.green, material.specular.blue, material.shininess,
     material.emissive.red, material.emissive.green, material.emissive.blue, 0.,
-    f32.from(material.alphaMode), material.alphaCutoff, 0., 0.];
+    f32.from(material.alphaMode), material.alphaCutoff, f32.from(material.lightLayers & 16777215u32), 0.];
 }
 
 // What a draw list holds: a mesh, the material it is drawn with (not used
