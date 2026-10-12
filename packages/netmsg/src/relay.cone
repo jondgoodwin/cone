@@ -1,0 +1,165 @@
+// A relay that makes a real network behave badly: it takes datagrams from
+// clients on a UDP port of its own, passes each to the server through a
+// LinkSim, and brings the server's answers back the same way, so a client and
+// a server on loopback meet loss, delay, jitter, duplication and reordering
+// with real sockets and the real protocol, in both directions. For tests and
+// demos; it is not part of the protocol.
+//
+//   imm relay = startLossyRelay(SocketAddr.localhost(server.port),
+//                          LinkConfig.lossy(200u32, 30i64, 20i64), LinkConfig.lossy(200u32, 30i64, 20i64), 1u64);
+//   // clients connect to SocketAddr.localhost(relay.port)
+//   ...
+//   relay.stop();
+
+struct Leg {
+  client SocketAddr;
+  key String;
+  up Handle;                 // the socket this client's datagrams reach the server from
+  toServer LinkSim;
+  toClient LinkSim;
+}
+
+struct RelayArgs is Sendable {
+  pub server SocketAddr;
+  pub toServer LinkConfig;
+  pub toClient LinkConfig;
+  pub seed u64;
+  pub up Sender[Started];
+  pub stop Receiver[u32];
+  pub done Sender[u32];
+}
+
+pub struct LossyRelay {
+  pub port u16;
+  waker Waker;
+  stopTx Sender[u32];
+  doneRx Receiver[u32];
+
+  // Stop the relay and wait for its thread
+  pub fn stop(self &mut) {
+    stopTx.send(1u32);
+    waker.wake();
+    doneRx.recv();
+  }
+}
+
+fn relayMain(mut a RelayArgs) u32 {
+  mut lp = Loop.mustMake();
+  imm front = lp.mustBindUdp(SocketAddr.localhost(0u16));
+  mut port = 0u16;
+  match lp.localAddr(front) {
+    case imm la Ok { port = la.port(); }
+    case imm e Error {}
+  }
+  a.up.send(Started.Up(port, lp.waker()));
+  imm pool = Pool.make();
+  mut legs = List[Leg].empty();
+  lp.submit(Op.RecvFrom(front, pool.mustTake(recvRoom)), Target.Here(1u64));
+  mut out = List[Completion].empty();
+  mut running = true;
+  while running {
+    // Wake when the next datagram held back is due, or in 20 ms
+    mut until = Instant.now() + Duration.fromMillis(20i64);
+    mut i = 0usize;
+    while i < legs.len() {
+      match legs[i].toServer.nextDue() {
+        case imm t Some { if t < until {until = t;} }
+        case is None[Instant] {}
+      }
+      match legs[i].toClient.nextDue() {
+        case imm t Some { if t < until {until = t;} }
+        case is None[Instant] {}
+      }
+      i = i + 1usize;
+    }
+    lp.poll(until, &mut out);
+    imm now = Instant.now();
+    each c in out.drain() {
+      if c.token == 1u64 {
+        // A datagram from a client
+        if c.isDone() {
+          imm key = c.peer.text();
+          mut k = 0usize;
+          mut found = legs.len();
+          while k < legs.len() {
+            if legs[k].key == key.view() {found = k;}
+            k = k + 1usize;
+          }
+          if found == legs.len() {
+            imm up = lp.mustBindUdp(SocketAddr.localhost(0u16));
+            imm n = u64.from(legs.len());
+            legs.push(new Leg(c.peer, key, up,
+              LinkSim.make(a.toServer, a.seed + 2u64 * n), LinkSim.make(a.toClient, a.seed + 2u64 * n + 1u64)));
+            lp.submit(Op.RecvFrom(up, pool.mustTake(recvRoom)), Target.Here(100u64 + n));
+          }
+          imm lg = &mut legs[found];
+          lg.toServer.send(now, copyBytes(c.buf.view()));
+        }
+        lp.submit(Op.RecvFrom(front, pool.mustTake(recvRoom)), Target.Here(1u64));
+      } elif c.token >= 100u64 {
+        // A datagram from the server, to the client of that leg
+        imm n = usize.from(c.token - 100u64);
+        if c.isDone() and n < legs.len() {
+          imm lg = &mut legs[n];
+          lg.toClient.send(now, copyBytes(c.buf.view()));
+        }
+        if n < legs.len() {
+          lp.submit(Op.RecvFrom(legs[n].up, pool.mustTake(recvRoom)), Target.Here(c.token));
+        }
+      }
+    }
+    // What is due goes out
+    mut d = List[List[u8]].empty();
+    i = 0usize;
+    while i < legs.len() {
+      imm lg = &mut legs[i];
+      lg.toServer.deliver(now, &mut d);
+      each p in d.drain() {
+        mut b = pool.mustTake(max(p.len(), 1usize));
+        b.append(p.view());
+        lp.submit(Op.SendTo(lg.up, a.server, b), Target.Here(2u64));
+      }
+      lg.toClient.deliver(now, &mut d);
+      each p in d.drain() {
+        mut b = pool.mustTake(max(p.len(), 1usize));
+        b.append(p.view());
+        lp.submit(Op.SendTo(front, lg.client, b), Target.Here(2u64));
+      }
+      i = i + 1usize;
+    }
+    match a.stop.tryRecv() {
+      case imm s Some { running = false; }
+      case is None[u32] {}
+    }
+  }
+  a.done.send(1u32);
+  0u32;
+}
+
+// Start a relay to the server at 'server': 'toServer' is what happens to the
+// clients' datagrams, 'toClient' to the server's answers. The seed makes the
+// losses repeatable. Clients connect to localhost at 'port'.
+pub fn startLossyRelay(server SocketAddr, toServer LinkConfig, toClient LinkConfig, seed u64) LossyRelay {
+  mut upTx Sender[Started];
+  mut upRx Receiver[Started];
+  upTx, upRx = Channel[Started].make();
+  mut stopTx Sender[u32];
+  mut stopRx Receiver[u32];
+  stopTx, stopRx = Channel[u32].make();
+  mut doneTx Sender[u32];
+  mut doneRx Receiver[u32];
+  doneTx, doneRx = Channel[u32].make();
+  mut th = thread.startWith(new thread.Options(name: "netmsg relay"),
+    new RelayArgs(server, toServer, toClient, seed, upTx, stopRx, doneTx), &relayMain);
+  th.detach();
+  match upRx.recv() {
+    case imm s Some {
+      match s {
+        case imm up Up { return new LossyRelay(up.port, up.waker, stopTx, doneRx); }
+        else {}
+      }
+    }
+    case is None[Started] {}
+  }
+  panic("netmsg: the relay could not start");
+}

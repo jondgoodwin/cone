@@ -1,0 +1,78 @@
+// A calculator's parser written with function patterns [match: topic 8a]: 'expr := num (('+' | '-') num)*'.
+// A pattern tests the text that is left and hands back what is left after it (`lit` for a sign,
+// `digits` for a number) or says whether it has run out (`atEnd`); a pattern never advances
+// anything, the arm moves on by taking the rest. `expr` is the parser, and is all that `using`
+// is shown in.
+//
+// The expected output is worked out by hand:
+//   "12 + 30"      12 + 30                = 42
+//   "100-1 - 2+3"  100 - 1 - 2 + 3        = 100
+//   "7 +"          a sign with no number    : syntax error
+//   "abc"          not a number             : syntax error
+//   "5 5"          no sign between numbers  : syntax error
+
+mod enum_match_using_calc;
+
+import stdio use *;
+
+// ---- the matchers: what is left of the text after them, or None; or whether it is all used ----
+fn lit(s &str, p &str) Option[&str] {
+  if s.startsWith(p) { Some(&s[p.len ..]); } else { None[&str]; }
+}
+fn digits(s &str) Option[&str] {
+  mut i = 0usize;
+  while i < s.len and s[i] >= '0' and s[i] <= '9' { i = i + 1; }
+  if i > 0usize { Some(&s[i ..]); } else { None[&str]; }
+}
+fn atEnd(s &str) bool { s.len == 0usize; }
+fn blank(s &str) &str {
+  mut i = 0usize;
+  while i < s.len and s[i] == ' ' { i = i + 1; }
+  &s[i ..];
+}
+// The number written in the first characters of `s`, up to where `rest` begins
+fn value(s &str, rest &str) i64 {
+  mut v = 0i64;
+  mut i = 0usize;
+  while i < s.len - rest.len { v = v * 10 + (i64.from(s[i]) - 48); i = i + 1; }
+  v;
+}
+
+// ---- the parser ----
+fn expr(text &str) Option[i64] {
+  mut rest = blank(text);
+  mut acc = 0i64;
+  mut sign = 1i64;                 // the sign before the number that is due
+  mut open = true;
+  while open {
+    match rest {
+      case imm after using digits() { acc = acc + sign * value(rest, after); rest = blank(after); }
+      else { return None[i64]; }
+    }
+    match rest {
+      case imm p using lit("+") { sign = 1; rest = blank(p); }
+      case imm p using lit("-") { sign = -1; rest = blank(p); }
+      case using atEnd() { open = false; }
+      else { return None[i64]; }
+    }
+  }
+  Some(acc);
+}
+
+fn show(s &str) {
+  printStr(s); printStr(" => ");
+  match expr(s) {
+    case imm v Some { printInt(v); }
+    case is None { printStr("syntax error"); }
+  }
+  printStr("\n");
+}
+
+fn main() i32 {
+  show("12 + 30");
+  show("100-1 - 2+3");
+  show("7 +");
+  show("abc");
+  show("5 5");
+  0i32;
+}

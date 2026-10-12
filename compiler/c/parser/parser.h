@@ -105,6 +105,7 @@ typedef struct ParseState {
     int typed;              // A variable: its type is written
     char *typep;            // A variable: where its type is written, and just past it; NULL where none is
     char *typeendp;
+    int usingdcl;           // A variable: parseVarDcl read it as bound by a 'using' pattern (its type is the Some it takes the payload of, its value the call)
     // Where a struct's header ends and where its 'is' list does, for the span
     // of the struct just parsed (dclspan.h); written as parseStruct returns
     char *hdrendp;
@@ -169,6 +170,7 @@ enum ParseFlags {
     ParseMayFold = 0x0400,        // The variable may carry a fold clause: a module's global
     ParseInList = 0x0200,         // A comma ends the value: a parameter, whose list the comma continues
     ParseMayThreadLocal = 0x0100, // The variable may be '@threadlocal' or '@workgroup': a module's global
+    ParseMayUsing = 0x0080,       // The variable may be bound by a pattern a function runs: a local, 'imm rest using prefix("GET ") = line'
 };
 
 // parsebuild.c
@@ -265,6 +267,14 @@ INode *parseDotCall(ParseState *parse, INode *node, uint16_t flags);
 INode *parseTerm(ParseState *parse);
 // Parse a prefix operator
 INode *parsePrefix(ParseState *parse);
+// Parse a term and its suffixes: a name, a call, a member of one
+INode *parseSuffixTerm(ParseState *parse);
+// A pattern a function runs, with the lexer on 'using' (parsefnflow.c): the call after it, or NULL.
+// parseUsingMatchee puts the matched value in as the call's first argument
+FnCallNode *parseUsingCall(ParseState *parse);
+void parseUsingMatchee(FnCallNode *call, INode *matchee);
+// The type a 'using' binding takes: the Some of the Option its function gives
+INode *parseUsingSome(FnCallNode *call);
 
 // parsetype.c
 INode *parsePerm();

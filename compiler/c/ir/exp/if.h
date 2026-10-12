@@ -20,6 +20,13 @@ typedef struct IfNode {
 // The 'if' that 'imm n Ok = r else {...};' is de-sugared into: its 'else' must leave,
 // since the binding that follows it takes the variant the test found
 #define FlagIfLetElse 0x0002        // If
+// The cases of a match after one that binds with a function's pattern (parseBoundMatch): the
+// chain goes on in an 'else' block that holds the function's result, so these are an 'if' of
+// their own. The match's coverage is judged on the first (FlagIfMatch), which ends in that 'else'.
+#define FlagIfMatchTail 0x0004      // If
+// A match with a case that uses a function's pattern, which is required to end in 'else'
+// whether or not its other cases cover every value, so an 'else' that cannot run is no error
+#define FlagIfMatchUsing 0x0008     // If
 #define MatchMaxColumns 8           // the values a 'match a, b, ...' may take
 // The logic nodes of a match's conditions: the 'and' that joins the patterns of one
 // row of 'match a, b' (one per column), and the 'and' that adds an 'if' guard to the

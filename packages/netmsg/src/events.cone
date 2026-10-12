@@ -1,0 +1,60 @@
+// What the application hears from a connection, and the handler that carries
+// it there.
+//
+// Every connection, whether it crosses a network or joins two actors in one
+// process, tells the application the same few things, as NetEvents given to an
+// EventHandler: a closure of the application's own, which typically sends a message
+// to an application actor (or pushes the event on a channel for a thread).
+// It is called by the connection's actor, one event at a time per connection,
+// in the order they happened.
+
+// Why a send was refused
+pub enum RefusalKind {
+  TooLarge,         // over maxReliableBytes (a message) or maxLatestBytes (a value)
+  TooManyStreams;   // a 65th latest-wins stream
+}
+
+// What happened on a connection. 'id' names the connection: the server numbers
+// the clients as they join, from 1; a client's one connection is 1.
+pub enum NetEvent {
+  // The connection is open: send to it through 'conn'
+  pub struct Joined {pub id u32; pub conn Connection;}
+  // It has ended. Nothing more arrives for this id
+  pub struct Left {pub id u32; pub reason CloseReason;}
+  // A send was refused and nothing was sent: the message or value is bigger
+  // than one packet carries (fragmentation is not built), or the connection
+  // already has the most streams. It comes to the handler of the connection
+  // that was sent on, once for each refusal; the connection goes on. 'size' is
+  // the bytes offered and 'limit' the most allowed.
+  pub struct Refused {pub id u32; pub reliable bool; pub stream u16; pub why RefusalKind; pub size usize; pub limit usize;}
+  // A reliable message from the other end: each arrives once, in the order sent
+  pub struct Message {pub id u32; pub data List[u8];}
+  // The newest value of a latest-wins stream; an older one never follows it
+  pub struct Update {pub id u32; pub stream u16; pub data List[u8];}
+}
+
+// The application's side of the events: a closure, with the one rule that it
+// does not wait (it hands the event on). One EventHandler serves every connection
+// of a server, so it is shared and taken under a lock; build one with
+// 'eventHandler' or 'channelHandler'.
+pub struct EventSink {
+  f So[fn(ev NetEvent) + Sendable];
+
+  fn call(self &mut, ev NetEvent) {
+    f(ev);
+  }
+}
+
+pub alias EventHandler = Arc[Mutex, EventSink];
+
+// An EventHandler that calls f with each event
+pub fn eventHandler(f So[fn(ev NetEvent) + Sendable]) EventHandler {
+  new EventHandler(new EventSink(f));
+}
+
+// An EventHandler that puts each event on a channel, for a thread to take
+pub fn channelHandler(tx Sender[NetEvent]) EventHandler {
+  eventHandler(new So[fn(ev NetEvent) + Sendable](fn(ev NetEvent) [tx] {
+    tx.send(ev);
+  }));
+}

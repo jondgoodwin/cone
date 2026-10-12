@@ -366,6 +366,11 @@ category = "run"
 description = "A match on a place takes only what its arm binds: a binding of plain data copies it and the place is matched again after the arm, a guard on a binding takes nothing whatever the payload (a failing guard leaves the place whole for the cases after it), and an arm that binds a payload that moves takes it and finalizes it as the arm ends"
 tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
 
+[scenario.enum_match_guard_held]
+category = "run"
+description = "A guard on a binding of a payload that moves, where the matched value is a call's answer held in the match's own hidden variable: the guard takes nothing, so a failing guard leaves the payload whole for the cases after it (a second guard, an 'else', the arm that binds it), and the arm that binds takes it and finalizes it as the arm ends; a 'mut' binding, a payload passed on, a named local and a copy payload alike"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
 [scenario.enum_let_else]
 category = "run"
 description = "let-else, 'imm n Ok = r else {...};': the binding of 'if imm n Ok = r' declared where it stands, whose 'else' leaves ('return', 'break', 'continue'); it takes what a binding takes (a copy of plain data that leaves the place whole, a move of an owner, a reference into a borrowed value) and may be 'mut'"
@@ -396,6 +401,27 @@ diagnostics = 7
 [scenario.enum_match_cover]
 category = "run"
 description = "A match that names every variant of an enum or both values of a bool needs no 'else', statement or value, an 'or' naming several at once, and 'match a, b' matches several values with a pattern for each and '_' for any: the combinations covered, a column of numbers needing the 'else', a guarded case not counting, the values evaluated once each in the order written"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.enum_match_using]
+category = "run"
+description = "A function's pattern: 'case imm rest using prefix(\"GET \")' binds the Option the function gives back and 'case using isOdd()' tests with its bool, a method's after 'self' (the matched value is the first argument); cases are tried top to bottom and the function is called once, only when its case is reached, with cases of other kinds before and after it, a guard, tests joined by 'or', a matched value that is a call made once, a bound value that owns something finalized as its arm ends; and the same binding in an 'if', an 'elif' and a let-else with the matched value after '='"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+# The cases before the first function's pattern are one switch; from that case on, the chain, the
+# function called when its case is reached and the cases after it tested in order
+[[scenario.enum_match_using.check]]
+name = "the-cases-before-a-pattern-are-a-switch-and-the-rest-the-chain"
+target = "preir"
+contains = [
+  "switch i32 %n1, label %ifnext [\n    i32 0, label %ifblk\n    i32 1, label %ifblk2\n  ]",
+  "%1 = call i1 @isOdd(i32 %n5)\n  br i1 %1, label %ifblk4, label %ifnext3",
+  "icmp eq i32 %n8, 4",
+]
+
+[scenario.enum_match_using_calc]
+category = "run"
+description = "A calculator's parser in 17 lines of function patterns (`case imm after using digits()`, `case imm p using lit(\"+\")`, `case using atEnd()`), each pattern handing back the text that is left and the arm moving on, over the text of a sum"
 tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
 
 [scenario.enum_match_switch]
@@ -445,6 +471,18 @@ category = "reject"
 description = "What a match must cover: a statement or value match leaving out a variant, a numbers-only match, one bool value, a guarded case, an 'or' or a combination of columns not covered, a match with no cases, and what may not repeat: a variant, a bool value or a combination named twice, an 'else' after the cases cover everything"
 tags = ["typecheck"]
 diagnostics = 21
+
+[scenario.enum_parse_match_using]
+category = "reject"
+description = "A function's pattern written wrongly: a match with a 'using' case that does not end in 'else', 'using' without the call of a function, a binding in a column of 'match a, b', a binding by 'using' as a declaration with no 'else'"
+tags = ["parse"]
+diagnostics = 5
+
+[scenario.enum_typecheck_match_using]
+category = "reject"
+description = "What a function's pattern gives back: a binding by a function giving a bool or nothing (in a match and in an 'if'), a test by a function giving an Option, a call with too few arguments after the matched value"
+tags = ["typecheck"]
+diagnostics = 5
 
 [scenario.enum_extends]
 category = "run"
