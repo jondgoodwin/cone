@@ -567,11 +567,11 @@ binds each place afresh. A generic's type arguments carrying brands are kept
 on the instance's use (`lifeUseInstance`), a function's as well as a type's.
 
 **Set position.** `x[i] = v`, `x[i].f = v`, an operator changing it in place,
-a `&mut` borrow of a place through an index, and a `self &mut` method whose
-receiver is `x[i]` or a field of it ask the type's `&[]` for the element's
+a `&mut` borrow of a place through an index, either side of a swap, and a
+`self &mut` method whose receiver is `x[i]` or a field of it ask the type's `&[]` for the element's
 mutable borrow, as Rust's `IndexMut` is chosen for a place written to, for
 every index in the chain of field and index steps the place is, whatever its
-depth: `assignTypeCheck`, an `FlagLvalOp` call and `borrowTypeCheck` mark the
+depth: `assignTypeCheck`, `swapTypeCheck` (each side), an `FlagLvalOp` call and `borrowTypeCheck` mark the
 indexes of the place (`fnCallSetPlace`), which `fnCallTypeCheck` lowers with
 `FlagBorrow`; a method that writes its receiver is known to only once it is
 selected, so `fnCallBorrowReceiver` and `fnCallIndexAsMut` lower the receiver's
