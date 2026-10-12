@@ -802,11 +802,12 @@ place (`genlNewFill`), or the value made or finished is stored there, no
 value init running, or an array's contents (`FlagAllocFill`, the literal
 not evaluated before `alloc`) fill it in place, element by element and run by
 run (`genlArrayLitInto`), each value evaluated then; then the reference
-goes to its destination. A declared init fills in place in two other places:
-a local it initializes, and a construction written raw,
+goes to its destination. A declared init fills in place in three other places:
+a local it initializes, a construction written raw,
 `mem.writeRaw[T](p, new T(...))`, whose init is called with `p` as its `self`
 (`genlFnCall`) -- how an actor's state is made in its block, so that its init
-runs on the state where it stays. A `trynew`'s contents are therefore evaluated only
+runs on the state where it stays -- and the argument of an inline function that
+writes its parameter that way (next). A `trynew`'s contents are therefore evaluated only
 on the path where the memory was had. A traced region's `alloc` may collect, so the
 arguments' traced parts are births ("Roots", below), rooted while it runs.
 And `alloc` links the new block into the collector's heap, where an `init`
@@ -822,6 +823,33 @@ barrier only where a region's or permission's `init` ran in between, since
 otherwise nothing can have marked the block yet. Once filled, the slot is
 nulled and the reference becomes the allocation's birth, or the local it is
 given to, so the block lives no longer than its owners.
+
+**A construction built where an inline function puts it**
+(`genlDeferCall`, `genlInlineParm`). An inline function that takes room and
+then moves its parameter into it, as an arena's `alloc` does (`mem.writeRaw(at
+as *T, value)` after the room is taken), would be handed `new T(...)` as a
+value built in a temporary and copied. Instead the call evaluates its
+arguments in order, the construction's own included (`genlNewArgs`), and leaves
+the construction itself waiting: the function's parameter is a
+`GenDeferredParm` while the expansion's body is generated, with no value stored
+in it. The body runs up to its write, and `genlFnCall`, finding the write's
+value to be a waiting parameter, calls the init with the write's address as its
+`self` (`genlNewFill`), as it does for a construction written there. The room
+is therefore taken after the arguments and before the init, and nothing is
+copied. A parameter waits only if its function says so by what it does with it
+(`genlInlineParm`): the parameter's one use (`VarDclNode.nuses`, counted by type
+check) is the value of a `writeRaw` that is a statement of the function's own
+block, reached through no branch or loop (`genlStraightUse` looks through calls,
+casts, declarations and the function's final return), in a function with no
+return before its end, or an argument to
+another inline function whose parameter waits in turn, as `DynArena.alloc`
+passes its parameter to `Arena.alloc`. A construction whose type holds a traced
+reference does not wait, and neither does one on a GPU target or in a split
+method. A waiting parameter used anywhere else is built in its own storage at
+that use (`genlVarSym`), so a function that reads it first sees a built value;
+one never written is reported (`errorUnreachable`) rather than left unbuilt.
+A value that is not a construction by a declared init (a struct literal, a
+variable, a finished value) is passed as before.
 
 `So` and `Rc` are declared in Cone source in the core package,
 `packages/core/src/core.cone` ([What a region is](../nodes/module.md)). Their

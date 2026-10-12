@@ -101,12 +101,21 @@
 // is when the Arena is moved, returned or stored with the lists in it.
 //   - allocate bumps, as 'alloc' does;
 //   - resize grows a block in place when it is the last thing the arena
-//     allocated and the room is there (in the arena's 4096-byte block: a lone
-//     list outgrows it, then copies at each doubling). Otherwise it copies and abandons
-//     the old one, which the arena does nothing more with until it dies: arenas
-//     leak by design, and the larger the block a list outgrows, the more is held
-//     (two lists pushed in turn copy at every growth);
+//     allocated and the room is there. Otherwise it copies and abandons the old
+//     one, which the arena does nothing more with until it dies: arenas leak by
+//     design, and the larger the block a list outgrows, the more is held (two
+//     lists pushed in turn copy at every growth). When the arena's current block
+//     has no room for the new place, the block taken for it is twice the size
+//     asked, so a lone list that keeps doubling finds the room for its next
+//     doubling where it is, and is copied once for every block it fills, not at
+//     every doubling (100,000 values of 8 bytes: five copies, six blocks);
 //   - release does nothing.
+// 'new a[T](...)' builds the value where it stays in the arena: the arguments of
+// the construction are evaluated, the room is taken, and the construction runs
+// there (see 'alloc'). So what the construction itself allocates in the arena, a
+// list's block, comes after the value in memory, and a list made with a starting
+// size has its block last, where it grows in place.
+//
 // A collection in an arena is finalized by the arena's list of finalizers, like
 // any value: its 'final' gives its own elements' memory back to wherever it
 // came from (a 'List[String]' whose strings came from the heap frees them when
@@ -117,7 +126,10 @@
 // the same bump: the next header in the arena's list, and a pointer to the
 // function that finalizes a T at a given address. The arena keeps the list
 // newest first, so teardown walks it in reverse order of allocation, as a
-// function's locals die in reverse order of declaration. That function is the
+// function's locals die in reverse order of declaration. (The header goes on the
+// list when the value has been built, so a value is newer on the list than
+// anything its construction or its arguments allocated in the arena, though it
+// lies before them in memory.) That function is the
 // finalizer in T's type record ('mem.typeRecord[T]().finalize'), which runs
 // what 'mem.finalize[T]' runs: the
 // same death the compiler runs for a T anywhere, the value's own 'final', then
@@ -206,21 +218,27 @@ struct ArenaCore is GcTraceElements {
     self.bump(0usize, align, size) as *u8;
   }
 
-  // Room for a value of 'size' bytes aligned to 'align' whose death is
-  // 'run', called with its address when the arena dies: that address. The
-  // caller writes a live value there before anything else can reach the
-  // arena, since from here on its teardown will finalize it.
-  fn placeFinal(self &mut, size usize, align usize, run &fn(p *u8)) *u8 {
+  // Room for a value of 'size' bytes aligned to 'align' whose death the
+  // arena will run (linkFinal), with room for its header just before it: its
+  // address. The header is not on the list yet, so the value is built in
+  // place first. Whatever that construction allocates in the arena lies after
+  // the value in memory and goes onto the list before it, so it is finalized
+  // after the value, as a value it was built from is.
+  fn reserveFinal(self &mut, size usize, align usize) *u8 {
     imm hdr = mem.sizeof[FinalNode]();
     mut al = align;
     if al < mem.alignof[FinalNode]() { al = mem.alignof[FinalNode](); }
-    imm at = self.bump(hdr, al, size);
-    // The newest header goes at the front of the list: it is finalized first
-    imm node = (at - hdr) as *FinalNode;
+    self.bump(hdr, al, size) as *u8;
+  }
+
+  // The value at 'at', which reserveFinal made room for and which is built
+  // now, is put on the list of values the arena finalizes, first: its death is
+  // 'run', called with its address when the arena dies.
+  fn linkFinal(self &mut, at *u8, run &fn(p *u8)) {
+    imm node = (at as usize - mem.sizeof[FinalNode]()) as *FinalNode;
     mem.writeRaw(node, new FinalNode(finals, run));
     finals = node;
     nfinals = nfinals + 1usize;
-    at as *u8;
   }
 
   // The values it holds that need tracing, for a collector (see Arena.gcTraceElements)
@@ -274,12 +292,19 @@ struct ArenaCore is GcTraceElements {
   // resize). The last thing the arena allocated grows, or shrinks, where it
   // is, if the room is there. Any other is allocated again, the bytes copied,
   // and the old one abandoned: the arena does nothing more with it until it dies.
+  // When the new place does not fit the current block, the block taken for it is
+  // twice the request, so a block that keeps growing finds the room for its next
+  // doubling where it is, and is copied once for every block it fills, not at
+  // every growth.
   fn resize(self &mut, block *u8, oldBytes usize, newBytes usize, align usize) *u8 {
     if block as usize == 0usize { return self.place(newBytes, align); }
     imm at = block as usize;
     if at + oldBytes == top and at + newBytes <= limit {
       top = at + newBytes;
       return block;
+    }
+    if roundUp(top, align) + newBytes > limit {
+      self.grow(doubled(newBytes + align));
     }
     imm moved = self.place(newBytes, align);
     mut n = oldBytes;
@@ -348,18 +373,31 @@ pub struct Arena is NoLoanMut, GcTraceElements {
 
   // Move value into the arena, and a reference to it there. The reference is
   // good for as long as the arena lives, and is checked as any borrow is, with
-  // the holes the top of this file lists. The placing is done by the two
-  // methods of ArenaCore, which are not generic, so each instance of this one
-  // is only the few lines that differ by T.
-  pub fn alloc[T](self &mut, value T) &mut T {
+  // the holes the top of this file lists. The placing is done by the methods of
+  // ArenaCore, which are not generic, so each instance of this one is only the
+  // few lines that differ by T.
+  //
+  // This is 'inline' so that a value that is a construction, 'a.alloc(new
+  // Node(1))' and so 'new a[Node](1)', is built where it stays: the call's
+  // arguments are evaluated, the room is reserved, and the construction runs in
+  // that room, so there is no copy of the value from somewhere else into the
+  // arena. (The compiler does this for an inline function's parameter that the
+  // function uses once, as the value of a mem.writeRaw statement of its own:
+  // the construction waits for that statement. compiler/c/doc/phases/generation.md,
+  // "A construction built where an inline function puts it".) The value is put on
+  // the finalizer list after it is built, so the list's order is what it was.
+  pub fn alloc[T](self &mut, value T) &mut T inline {
     imm core = coreOf(region);
     imm at = if mem.needsFinal[T]() {
-      core.placeFinal(mem.sizeof[T](), mem.alignof[T](), (mem.typeRecord[T]() as &TypeRecord).finalize);
+      core.reserveFinal(mem.sizeof[T](), mem.alignof[T]());
     }
     else {
       core.place(mem.sizeof[T](), mem.alignof[T]());
     };
     mem.writeRaw(at as *T, value);
+    if mem.needsFinal[T]() {
+      core.linkFinal(at, (mem.typeRecord[T]() as &TypeRecord).finalize);
+    }
     // A value holding a traced reference is put on the list a collector walks
     if mem.holdsTraced[T]() {
       core.noteTraced(at, mem.typeRecord[T]());
@@ -410,7 +448,7 @@ pub struct DynArena['=a] is NoLoanMut {
 
   // Move value into the arena, and a key to it there: good for as long as
   // the arena lives, wherever it goes, and only through this arena
-  pub fn alloc[T](self &mut, value T) &'=a mut T {
+  pub fn alloc[T](self &mut, value T) &'=a mut T inline {
     (ar.alloc(value) as *T) as &'=a mut T;
   }
 
@@ -434,6 +472,11 @@ pub struct DynArena['=a] is NoLoanMut {
 // The room a new block gets: a block's worth, or 'need' if that is more
 fn blockRoom(need usize) usize {
   if need > blockBytes {need;} else {blockBytes;};
+}
+
+// Twice n, or the most a usize holds if that is more
+fn doubled(n usize) usize {
+  if n > (0usize - 1usize) / 2usize {0usize - 1usize;} else {n * 2usize;};
 }
 
 // A new block with 'room' bytes after its header, the block before it 'prev'.

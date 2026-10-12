@@ -69,7 +69,20 @@ static LLVMValueRef genlFlatAddr(GenState *gen, LLVMValueRef global) {
     return global;
 }
 
+static GenDeferredNew *genlDeferredFind(GenState *gen, VarDclNode *var);
+static void genlDeferredPush(GenState *gen, VarDclNode *var, GenDeferredNew *wait);
+
 static LLVMValueRef genlVarSym(GenState *gen, VarDclNode *var) {
+    // An inline function's parameter whose construction waits (genlDeferCall) is
+    // used here other than where the function writes it: the construction runs
+    // in the parameter's own storage now
+    if (gen->deferredcnt) {
+        GenDeferredNew *wait = genlDeferredFind(gen, var);
+        if (wait) {
+            genlNewFill(gen, wait->ctor, wait->initargs, var->llvmvar);
+            wait->done = 1;
+        }
+    }
     if (var->llvmvar == NULL && var->scope == 0)
         genlGloVarName(gen, var);
     // In a parallel each's piece, a variable of the function it is written in is
@@ -667,24 +680,43 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
     }
 
     if (fndcl->flags & FlagInline) {
+        // The parameters whose construction waits (genlDeferCall) are for this
+        // expansion alone, not for any call its body makes
+        GenDeferredNew **deferin = gen->deferin;
+        gen->deferin = NULL;
+        uint32_t defermark = gen->deferredcnt;
         // For inline functions, first generate call args as local "parameter" variables
         if (fnargcnt > 0) {
             FnSigNode *fnsig = (FnSigNode*)fndcl->vtype;
             uint32_t cnt;
             INode **nodesp;
+            uint32_t parmidx = 0;
             for (nodesFor(fnsig->parms, cnt, nodesp)) {
                 VarDclNode* var = (VarDclNode*)*nodesp;
                 assert(var->tag == VarDclTag);
                 // We always alloca in case variable is mutable or we want to take address of its value
                 var->llvmvar = genlAlloca(gen, genlType(gen, var->vtype), &var->namesym->namestr);
                 genlRootNote(gen, var->llvmvar, var->vtype);
-                LLVMBuildStore(gen->builder, *fnargs++, var->llvmvar);
+                if (deferin && deferin[parmidx]) {
+                    genlDeferredPush(gen, var, deferin[parmidx]);
+                    ++fnargs;
+                }
+                else
+                    LLVMBuildStore(gen->builder, *fnargs++, var->llvmvar);
                 genlDropFlagBegin(gen, var, DropFlagWhole);
+                ++parmidx;
             }
         }
 
         // Now generate function's block, as if any block, returning block's value
-        return genlBlock(gen, (BlockNode *)fndcl->value);
+        LLVMValueRef inlined = genlBlock(gen, (BlockNode *)fndcl->value);
+        // A construction that waited must have run where the body wrote it
+        for (uint32_t i = defermark; i < gen->deferredcnt; ++i) {
+            if (!gen->deferred[i].wait->done)
+                errorUnreachable((INode *)fndcl, "an inline function's parameter whose construction never ran");
+        }
+        gen->deferredcnt = defermark;
+        return inlined;
     }
 
     LLVMValueRef fncallret = NULL;
@@ -1023,6 +1055,179 @@ int genlNewInto(GenState *gen, INode *exp, LLVMValueRef dest) {
     return 1;
 }
 
+// ---- A construction built where an inline function puts it ------------------
+//
+// An inline function that places memory and then moves its parameter into it,
+// as a region's 'alloc' does (reserve the room, 'mem.writeRaw(place, value)'),
+// would be handed a construction, 'a.alloc(new Node(1))', as a value built in a
+// temporary of the caller's and copied into the place. Instead the call's
+// arguments (the construction's too) are evaluated, as any call's are, and
+// the construction itself waits until the function's statement writes its
+// parameter: it then runs with the place as its self, as 'mem.writeRaw(p, new
+// T(...))' does, and nothing is copied. The function's parameter is a
+// 'GenDeferredParm' while its body is generated.
+//
+// Which parameter waits is decided by what the function does with it
+// (genlInlineParm): its one use is the value of a writeRaw that is a statement of
+// the function's own block, directly or through the calls and casts of one
+// statement, or an argument to another inline function whose parameter waits
+// the same way (a function forwarding the value on). Any other use (genlVarSym)
+// builds the value in the parameter's own storage at that use.
+
+static FnDclNode *genlCalleeDcl(INode *objfn) {
+    if (objfn->tag == FnDclTag)
+        return (FnDclNode *)objfn;
+    if (isNameUseNode(objfn) && ((NameUseNode *)objfn)->dclnode && ((NameUseNode *)objfn)->dclnode->tag == FnDclTag)
+        return (FnDclNode *)((NameUseNode *)objfn)->dclnode;
+    return NULL;
+}
+
+static int genlInlineParm(FnDclNode *fn, uint32_t idx);
+
+// Does evaluating 'node' use the variable exactly where it is certain to be
+// used once -- the value of a writeRaw, or the argument of an inline function
+// that is handed it on the same way -- looking only through the calls, casts
+// and declarations that are evaluated whenever 'node' is
+static int genlStraightUse(INode *node, VarDclNode *var) {
+    switch (node->tag) {
+    case CastTag:
+        return genlStraightUse(((CastNode *)node)->exp, var);
+    case ReturnTag:     // A function's last expression is its return
+        return ((BreakRetNode *)node)->exp && genlStraightUse(((BreakRetNode *)node)->exp, var);
+    case VarDclTag:
+        return ((VarDclNode *)node)->value && genlStraightUse(((VarDclNode *)node)->value, var);
+    case FnCallTag: {
+        FnCallNode *call = (FnCallNode *)node;
+        if (call->args == NULL || (call->flags & (FlagNew | FlagVDisp)))
+            return 0;
+        INode *callee = call->objfn;
+        FnDclNode *fn = genlCalleeDcl(callee);
+        if (fn == NULL)
+            return 0;
+        uint32_t i = 0;
+        INode **argp;
+        uint32_t cnt;
+        for (nodesFor(call->args, cnt, argp)) {
+            INode *arg = *argp;
+            int isvar = isNameUseNode(arg) && isExpNode(arg) && ((NameUseNode *)arg)->dclnode == (INode *)var;
+            if (isvar) {
+                if (call->args->used == 2 && i == 1 && intrinsicCallIs(call, WriteRawIntrinsic))
+                    return 1;
+                return genlInlineParm(fn, i);
+            }
+            if (genlStraightUse(arg, var))
+                return 1;
+            ++i;
+        }
+        return 0;
+    }
+    default:
+        return 0;
+    }
+}
+
+// Does the inline function's parameter 'idx' wait for its construction? It is
+// used once in the body, and that use is a statement's write of it (above)
+static int genlInlineParm(FnDclNode *fn, uint32_t idx) {
+    if (!(fn->flags & FlagInline) || fn->value == NULL || fn->value->tag != BlockTag)
+        return 0;
+    FnSigNode *sig = (FnSigNode *)fn->vtype;
+    if (sig->tag != FnSigTag || idx >= sig->parms->used)
+        return 0;
+    VarDclNode *var = (VarDclNode *)nodesGet(sig->parms, idx);
+    if (var->tag != VarDclTag || var->nuses != 1)
+        return 0;
+    // The body is left only at its end: a return before the write would leave
+    // the construction unbuilt, and unfinalized, on that path
+    BlockNode *body = (BlockNode *)fn->value;
+    if (body->breaks && body->breaks->used > 0
+        && (body->breaks->used > 1 || nodesGet(body->breaks, 0) != nodesLast(body->stmts)))
+        return 0;
+    INode **stmtp;
+    uint32_t cnt;
+    for (nodesFor(body->stmts, cnt, stmtp)) {
+        if (genlStraightUse(*stmtp, var))
+            return 1;
+    }
+    return 0;
+}
+
+// The construction an inline body's parameter is waiting for, or NULL
+static GenDeferredNew *genlDeferredFind(GenState *gen, VarDclNode *var) {
+    for (uint32_t i = gen->deferredcnt; i-- > 0; ) {
+        if (gen->deferred[i].var == var)
+            return gen->deferred[i].wait->done ? NULL : gen->deferred[i].wait;
+    }
+    return NULL;
+}
+
+static void genlDeferredPush(GenState *gen, VarDclNode *var, GenDeferredNew *wait) {
+    if (gen->deferredcnt == gen->deferredmax) {
+        uint32_t newmax = gen->deferredmax ? gen->deferredmax * 2 : 8;
+        GenDeferredParm *parms = (GenDeferredParm *)memAllocBlk(newmax * sizeof(GenDeferredParm));
+        if (gen->deferredcnt)
+            memcpy(parms, gen->deferred, gen->deferredcnt * sizeof(GenDeferredParm));
+        gen->deferred = parms;
+        gen->deferredmax = newmax;
+    }
+    gen->deferred[gen->deferredcnt].var = var;
+    gen->deferred[gen->deferredcnt++].wait = wait;
+}
+
+// A call of an inline function whose parameter waits for its argument, a
+// construction by a declared init (or a parameter of the caller's that waits
+// itself): the arguments are evaluated, in order, the waiting ones' own
+// arguments in their place, and the call is expanded with them waiting. Answers
+// 0 with nothing generated when no argument waits.
+static int genlDeferCall(GenState *gen, FnCallNode *fncall, int dispatch, LLVMValueRef *result) {
+    if (fncall->args == NULL || fncall->args->used == 0 || gen->opt->gpu || gen->seams || (fncall->flags & FlagVDisp))
+        return 0;
+    FnDclNode *inl = genlCalleeDcl(fncall->objfn);
+    if (inl == NULL || !(inl->flags & FlagInline))
+        return 0;
+    uint32_t n = fncall->args->used;
+    uint8_t *waits = (uint8_t *)memAllocBlk(n);
+    int anywait = 0;
+    for (uint32_t i = 0; i < n; ++i) {
+        INode *arg = nodesGet(fncall->args, i);
+        waits[i] = 0;
+        if (arg->tag == FnCallTag && (arg->flags & FlagNew))
+            waits[i] = !itypeHoldsTraced(((FnCallNode *)arg)->vtype) && genlInlineParm(inl, i);
+        else if (isNameUseNode(arg) && isExpNode(arg) && ((NameUseNode *)arg)->dclnode->tag == VarDclTag
+                 && genlDeferredFind(gen, (VarDclNode *)((NameUseNode *)arg)->dclnode))
+            waits[i] = genlInlineParm(inl, i);
+        anywait |= waits[i];
+    }
+    if (!anywait)
+        return 0;
+    GenDeferredNew **defer = (GenDeferredNew **)memAllocBlk(n * sizeof(GenDeferredNew *));
+    LLVMValueRef *fnargs = (LLVMValueRef *)memAllocBlk(n * sizeof(LLVMValueRef));
+    for (uint32_t i = 0; i < n; ++i) {
+        INode *arg = nodesGet(fncall->args, i);
+        defer[i] = NULL;
+        if (!waits[i]) {
+            fnargs[i] = genlExpr(gen, arg);
+            continue;
+        }
+        fnargs[i] = NULL;
+        if (arg->tag == FnCallTag && (arg->flags & FlagNew)) {
+            GenDeferredNew *wait = (GenDeferredNew *)memAllocBlk(sizeof(GenDeferredNew));
+            wait->ctor = (FnCallNode *)arg;
+            wait->initargs = genlNewArgs(gen, (FnCallNode *)arg);
+            wait->done = 0;
+            defer[i] = wait;
+        }
+        else {
+            defer[i] = genlDeferredFind(gen, (VarDclNode *)((NameUseNode *)arg)->dclnode);
+            genlDropFlagUse(gen, arg);
+        }
+    }
+    gen->deferin = defer;
+    INode *selftype = ((IExpNode *)nodesGet(fncall->args, 0))->vtype;
+    *result = genlFnCallInternal(gen, dispatch, fncall->objfn, n, fnargs, selftype);
+    return 1;
+}
+
 // ---- Lending a place to a call ----------------------------------------------
 //
 // An argument passed by value is the language's promise, and a struct passed
@@ -1256,7 +1461,25 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
             genlNewInto(gen, value, dest);
             return NULL;
         }
+        // The parameter of an inline function whose construction waits for
+        // this write: it runs here, its arguments already evaluated
+        if (isNameUseNode(value) && isExpNode(value) && ((NameUseNode *)value)->dclnode->tag == VarDclTag) {
+            GenDeferredNew *wait = genlDeferredFind(gen, (VarDclNode *)((NameUseNode *)value)->dclnode);
+            if (wait) {
+                LLVMValueRef dest = genlExpr(gen, nodesGet(fncall->args, 0));
+                genlNewFill(gen, wait->ctor, wait->initargs, dest);
+                wait->done = 1;
+                genlDropFlagUse(gen, value);
+                return NULL;
+            }
+        }
     }
+
+    // An inline function that writes its parameter into memory it has placed
+    // is handed a construction as it is, to build there (genlDeferCall)
+    LLVMValueRef deferred;
+    if (genlDeferCall(gen, fncall, dispatch, &deferred))
+        return deferred;
 
     // Get count and Valuerefs for all the arguments to pass to the function
     uint32_t fnargcnt = fncall->args->used;
