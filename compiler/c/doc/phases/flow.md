@@ -1513,6 +1513,29 @@ locals, which only a call that reaches one of them is asked of):
   (`flowGateShapeStore`) sets `FlowGateShape` for a store into a struct-typed place that is no
   local named whole, in a function that has lent.
 
+**An owner is a shape-changing value too.** Storing over an owning reference (`So`, `Rc`, `Arc`, a
+program's region) frees what it points at, so a borrow into what an owner owns (`&mut *s`, a field of the
+pointee, an owner lent where a borrow of its contents is wanted: a place that dereferences an owner,
+`Place.ownertype`) is marked for the same check, with the owner's reference type as its container
+(`pwOwnerLent`, called from `pwLend` for every such loan; `reshapeOwnerCont` gives one node per type,
+which the inference's memo keys by). The marking is `pwShapeLent`'s without its freezing: marked at once
+where the place is reached through a path others write by (`shwrite`), lazily where a `mut` borrow of a
+`uni` place makes it an alias loan, so a local owner lent `&mut` beside a borrow of its contents (an
+alias event, `loanAliasMet`) is asked and a plain local with one borrow is not. Where the borrow is
+also into a collection (`pwShapeLent` marks it after), the collection is the container, and the
+owner of the collection is asked by the store rule above (`ReachOwned`). Nothing else differs, the
+rules reading the container through `reshapeIsOwner`: a call reshapes it when it is handed a path it
+may write to a place holding one (`rcWalk` matches the reference type with `itypeIsSame`) and its body
+stores over one (`siTypeWriteHits`, which does not count a field of the pointee, or the pointee
+written in place, as a header write); a store does when it replaces one whole or a value holding one
+by value or through owners alone (`reshapeStoreHits`). A local holding an owning reference is the
+owner's own place (`reshapeUniqueLocalOf`), reached by no other name but a borrow of it: a loan's own
+root variables are listed beside the loan even where the owner is shared (`loanRootsNote`), so
+`&mut r` lent to the call that replaces `r` is asked. The receiver's own borrow of an owner
+(`left.insert(v)`: an owner lent as `self`, the loan `recvloan`) is the value the method works on, so
+only its other arguments are asked (`reshapeCall`'s `skiprecv`), and a replacement they make is
+reported at the call (`loanShapeNow`). The check does not tell two owners of one type apart.
+
 **A reference a call returned** is held by a stand-in variable (`pwStandIn`) when a method
 that returns a borrow, on a container that changes shape, is called on a place reached
 through it (`pwStandInOn`, set around the receiver in `pwCall`; `pwThrough` makes the

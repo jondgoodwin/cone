@@ -643,6 +643,7 @@ static PathDelta *pathDeltaPush(PathDelta *list, PathDelta *delta) {
 static PathSet *pwValue(INode **nodep, int move);
 static PathSet *pwBlock(BlockNode *blk, int fnblock, int move);
 static PathSet *pwLend(INode *site, Place *pl, INode *perm, int access, uint32_t *loan);
+static void pwOwnerLent(Place *pl, uint32_t loan);
 static void pwHolderDies(uint32_t var);
 static PathSet *pwPlaceSlots(Place *pl, PathSet *holds);
 static int pwIsGuard(VarDclNode *var);
@@ -904,6 +905,7 @@ static int pwThrough(INode **refp, Place *pl, PathSet **base) {
         refpl.owned = 0;
         refpl.far = 0;
         refpl.use = *refp;
+        refpl.ownertype = NULL;
         refpl.referent = NULL;
         refpl.slotted = NULL;
         refpl.slots = 0;
@@ -922,6 +924,7 @@ static int pwThrough(INode **refp, Place *pl, PathSet **base) {
         pl->shwrite = pwMayAliasWritten(reftype);
         pl->owned = 0;
         pl->far = refpl.deref;
+        pl->ownertype = NULL;
         pl->referent = refpl.nsteps == 0 && !refpl.deref ? ((RefNode *)reftype)->vtexp : NULL;
         // A reference read from a field of a struct declaring lifetimes
         // reaches only what that field's slots hold
@@ -930,6 +933,7 @@ static int pwThrough(INode **refp, Place *pl, PathSet **base) {
         return 1;
     }
     *pl = refpl;
+    pl->ownertype = reftype->tag == RefTag ? reftype : NULL;
     if (pwMayAlias(reftype))
         pl->owned = 1;
     if (pwMayAliasWritten(reftype))
@@ -976,6 +980,7 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
         pl->owned = 0;
         pl->far = 0;
         pl->use = node;
+        pl->ownertype = NULL;
         pl->referent = NULL;
         pl->slotted = NULL;
         pl->slots = 0;
@@ -992,6 +997,7 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
         pl->owned = 0;
         pl->far = 0;
         pl->use = node;
+        pl->ownertype = NULL;
         pl->referent = NULL;
         pl->slotted = NULL;
         pl->slots = 0;
@@ -1141,6 +1147,9 @@ static PathSet *pwLend(INode *site, Place *pl, INode *perm, int access, uint32_t
     uint32_t id = loanMake(site, &lent, perm);
     if (loan)
         *loan = id;
+    // A borrow into what an owner points at: the owner stored over frees it (pwOwnerLent)
+    if (pl->ownertype && id)
+        pwOwnerLent(pl, id);
     // Only a holder holds loans, but for an operator's temporary (pwVarDcl).
     // The new loan is near: the borrow points at its place. What the root
     // holds is held there, so a borrow of the root's own storage ('&mut q',
@@ -1982,6 +1991,27 @@ static void pwShapeLent(Place *pl, uint32_t loan, INode *container, int ofarg) {
     }
 }
 
+// A borrow into what an owning reference points at ('&mut *s', a field of what 'so' owns, the
+// owner lent where a borrow of its contents is wanted), the place reached through the owner
+// 'pl.ownertype' dereferenced. Storing over the owner frees what the borrow points at, as a
+// list replaced frees its block, and another name for the owner's place can do it (a second
+// '&mut' parameter, an alias loan of a local lent beside it). So the loan is marked for the
+// shape check as a borrow into a collection through a shared path is, with the owner as its
+// container (reshape.h, reshapeOwnerCont): every later call that is handed a way to write an
+// owner of the type and stores over one, and every store over one, is asked while the borrow
+// is used. Unlike a collection's borrow it freezes nothing more than the loan already does.
+static void pwOwnerLent(Place *pl, uint32_t loan) {
+    INode *cont = reshapeOwnerCont(pl->ownertype);
+    if (pl->shwrite)
+        pwShapeBorrow(pl, loan, cont);
+    else if (!pl->shared) {
+        if (loanAliasedAt(pl) || loanIsAliased(loan))
+            loanShapeMark(loan, cont);
+        else if (loanUniqAlias(loan))
+            loanShapeLazy(loan, cont);
+    }
+}
+
 // A call is made. Each marked loan is asked whether the call could reshape the
 // collection it points into: reported at once if the borrow is handed to this very
 // call or waits in flight for the call around it; otherwise a pending conflict for
@@ -2011,6 +2041,7 @@ static void pwShapeCall(FnCallNode *call, FnDclNode *meth, Place *recvpl, PathSe
     INode *owners[4];
     int rus[4];
     int gvs[4];
+    int sks[4];
     ReshapeVerdict verdicts[4];
     uint8_t answers[4];
     uint32_t ncont = 0;
@@ -2027,7 +2058,10 @@ static void pwShapeCall(FnCallNode *call, FnDclNode *meth, Place *recvpl, PathSe
         if (local && meth && loanShapeReaches(loan, &recvreach))
             ru = 0;
         VarDclNode *mine[3];
-        int nmine = local ? loanShapeRootVars(loan, mine) : 0;
+        int nmine = loanShapeRootVars(loan, mine);
+        // An owner lent as the receiver of its own method: the borrow is the receiver, which is not
+        // another name for the owner (a node's method called through its owner, 'left.insert(v)')
+        int sk = loan == recvloan && reshapeIsOwner(cont);
         int gv = loanShapeGlobalView(loan);
         // A method lending a borrow from a place reached through this loan's own borrow ('view' in
         // 'gl.items[0].label.view()') reads through it: the call that lends is not a call that
@@ -2037,7 +2071,8 @@ static void pwShapeCall(FnCallNode *call, FnDclNode *meth, Place *recvpl, PathSe
         uint32_t c = 0;
         // The answer is the same for the loans of one type, unless the loan's own locals
         // change what it is
-        while (c < ncont && (conts[c] != cont || owners[c] != owner || rus[c] != ru || gvs[c] != gv || local))
+        while (c < ncont && (conts[c] != cont || owners[c] != owner || rus[c] != ru || gvs[c] != gv || sks[c] != sk
+                || local || nmine))
             ++c;
         if (c == ncont) {
             if (ncont == 4) {
@@ -2049,8 +2084,9 @@ static void pwShapeCall(FnCallNode *call, FnDclNode *meth, Place *recvpl, PathSe
             owners[c] = owner;
             rus[c] = ru;
             gvs[c] = gv;
+            sks[c] = sk;
             uint32_t unsettled = shapeUnsettled;
-            answers[c] = (uint8_t)reshapeCall(call, meth, ru, cont, owner, gv, &verdicts[c], mine, nmine);
+            answers[c] = (uint8_t)reshapeCall(call, meth, ru, cont, owner, gv, &verdicts[c], mine, nmine, sk);
             // A body this leans on is not checked yet: the verdict waits for the
             // walk made again at the end of type check
             if (shapeUnsettled != unsettled && !flowWalkFinal) {
@@ -2058,7 +2094,7 @@ static void pwShapeCall(FnCallNode *call, FnDclNode *meth, Place *recvpl, PathSe
                 answers[c] = 0;
             }
             ncont = c + 1;
-            if (local)
+            if (local || nmine)
                 rus[c] = -1;        // not kept for another loan
         }
         if (!answers[c])
@@ -2074,7 +2110,7 @@ static void pwShapeCall(FnCallNode *call, FnDclNode *meth, Place *recvpl, PathSe
         Name *callee = verdicts[c].callee ? verdicts[c].callee->namesym : NULL;
         // The borrow handed to this very call, beside whatever could reshape its collection
         int own = 0;
-        for (uint32_t j = 0; loan != recvloan && j < nargs; ++j) {
+        for (uint32_t j = 0; (loan != recvloan || sk) && j < nargs; ++j) {
             if (argsets[j] && argsets[j] != &pathSetAll && pathSetHasLoan(argsets[j], loan))
                 own = 1;
         }
@@ -2124,7 +2160,7 @@ static PathSet *pwNarrowShared(CastNode *cast) {
 static void pwShapeStore(INode *lval, Place *pl) {
     // A local stored over has no other name -- but for a loan that points into it, which a
     // 'mut' borrow of it is (it is an alias loan: the local is not frozen against a store)
-    int unique = reshapeUniqueLocal(lval);
+    int uniquecont = reshapeUniqueLocal(lval);
     LoanReach reach;
     loanReachInit(&reach);
     if (pl) {
@@ -2137,6 +2173,8 @@ static void pwShapeStore(INode *lval, Place *pl) {
     for (uint32_t i = 0; i < loanShapeCount(); ++i) {
         uint32_t loan = loanShapeId(i);
         int local = loanShapeLocal(loan);
+        // (a local owning reference is its own place only to a loan into what an owner frees)
+        int unique = uniquecont || (reshapeIsOwner(loanShapeContainer(loan)) && reshapeUniqueLocalOf(lval, loanShapeContainer(loan)));
         if (unique && !(local && pl && loanShapeReaches(loan, &reach)))
             continue;
         // A store that reaches only other locals cannot change what the loan points into
@@ -2443,6 +2481,7 @@ static void pwSwap(SwapNode *node) {
             pl->owned = 0;
             pl->far = 0;
             pl->use = *sides[i];
+            pl->ownertype = NULL;
             pl->referent = NULL;
             pl->slotted = NULL;
             pl->slots = 0;

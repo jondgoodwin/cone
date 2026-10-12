@@ -942,6 +942,56 @@ fn otherStruct(l &amp;mut List[String], g &amp;mut Log, s String) usize {
 }
 </pre>
 
+	<h3 id="owners">An owner stored over</h3>
+	<p>The same rule covers what an owning reference (<span class="pre">So</span>, <span class="pre">Rc</span>,
+		<span class="pre">Arc</span>, or a region a program declares) owns. Storing over an owner frees what it
+		points at, as replacing a list frees its block, so the owner is the shape-changing value of a borrow
+		into its contents: <span class="pre">&amp;mut *s</span>, a field of what it owns, or the owner itself
+		lent where a borrow of its contents is wanted. <a href="refperm.html">Another name for the same
+		holder</a> can replace the owner: a second <span class="pre">&amp;mut</span> parameter, or a local lent
+		<span class="pre">&amp;mut</span> beside a borrow of what it owns (a local may be lent
+		<span class="pre">&amp;mut</span> more than once to one call). The borrow is allowed, and refused when
+		something could replace the owner while it is still to be used. A call handed a way to write an
+		owner of that type, whose body (or something it calls) stores over one, is refused with error 1339,
+		and a store over an owner, or over a struct, an array or an <span class="pre">Option</span> that holds one
+		by value, with error 1426:</p>
+<pre>
+struct Item { pub v i64; }
+struct Ship { pub fuel i64; pub it So[Item]; }
+
+fn clobber(x &amp;mut So[Item], y &amp;mut Item) {
+  *x = new So[Item](9);         // the old Item is freed
+  y.v;                          // and read
+}
+
+fn local() {
+  mut s = new So[Item](1);
+  clobber(&amp;mut s, s);           // Error: clobber stores over the owner it is handed, beside a borrow of its contents
+}
+
+fn field(a &amp;mut Ship, b &amp;mut Ship) i64 {
+  imm y = &amp;mut *a.it;
+  b.it = new So[Item](9);       // Error: b may be a
+  y.v;
+}
+</pre>
+	<p>Writing the value the owner points at, a field of it, or the whole value in place, replaces
+		nothing the owner frees, so a callee that only reads, or writes through the borrow, is accepted, as is
+		an owner of another type, another field of the ship, and an owner stored over after the borrow's last use:</p>
+<pre>
+fn writes(x &amp;mut So[Item], y &amp;mut Item) {
+  x.v = 5;                      // Ok: a field of the Item
+  **x = new Item(7);            // Ok: the Item replaced in place, at the same address
+  y.v;
+}
+
+fn after(a &amp;mut So[Item]) i64 {
+  imm n = (**a).v;
+  *a = new So[Item](n + 1);     // Ok: the borrow was used up first
+  n;
+}
+</pre>
+
 	<h3 id="cures">The cures</h3>
 	<p>A refusal is cured in one of three ways, each of which keeps the borrow:</p>
 	<ul>
@@ -1125,6 +1175,10 @@ fn ownedFresh(l &amp;mut List[Pt], p Pt) i64 {
   e.x;
 }
 </pre>
+	<p>The same holds of owners (<a href="#owners">above</a>): a callee that replaces some
+		<span class="pre">So[Node]</span> is taken to replace the one a borrow is into, though it replaces a
+		different node's. A borrow into the owner a method is called through is its receiver and no other
+		name for the owner, so <span class="pre">left.insert(v)</span> is asked only of the other arguments.</p>
 	<p>Nor does it tell which global a function writes: a borrow of a collection a <span class="pre">mut</span>
 		global could be is refused across a call that reshapes a collection of that type through any global, or
 		that runs code it cannot read (<a href="#globalview">above</a>), even when the global it writes is
