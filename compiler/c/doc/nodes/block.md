@@ -261,7 +261,16 @@ stands, with no borrow written (`l.mutItems()` on a `&mut List` parameter, `bump
 has no borrow node to see, so `parCheckLentArgs` looks at the calls: an argument that is a
 `&mut` place rooted outside the loop, to a parameter that is a `&mut`, is the same
 `ErrorParWrite` (a place `parCheckAlias` already refused is not reported twice; the
-actor's allocator is `ErrorActorGcPiece`'s). The loop is the block's last
+actor's allocator is `ErrorActorGcPiece`'s). A call whose callee's body the compiler
+can read (`siVisible`) is noted (`parNoteHelperCalls`), and once every body is checked
+(`parallelHelperGlobalsCheckAll`, after type check in `conec.c`) the bodies it reaches are
+read, each once: one that assigns to or swaps a place of a shared `mut` global, or lends
+one for writing (a method that changes it, a `&mut` of it), makes the call the same
+`ErrorParWrite`, naming the global and the function that writes it. A `@threadlocal` or
+`@workgroup` global is not shared; a borrow made a raw pointer on the spot is an address and
+no write. What is not followed writes nothing as far as this check can tell: a virtual
+call, a call of a function value, an `extern` function and a function of another package
+(its body is not in this compile), and a write through a raw pointer. The loop is the block's last
 statement, so type check has made it the value of a `blockret` (`parLoopOf`
 looks through it).
 

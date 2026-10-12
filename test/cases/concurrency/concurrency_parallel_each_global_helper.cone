@@ -1,0 +1,169 @@
+// A 'parallel each' body may not write a 'mut' global (refparallel.html, "What the body
+// may do": what is declared outside the loop is read-only in it, and a global is the most
+// outside of them). Writing it by name was refused; calling a function that writes it was
+// not, though the passes then write it at the same time exactly as before (measured: 4000
+// passes each adding 1000 to a global gave 1032954, not 4000000). A call of a function whose
+// body the compiler can read is followed through the bodies it reaches, and refused where
+// any of them assigns to, swaps or lends for writing a place of a global (ErrorParWrite).
+//
+// Refused here: the direct write (as before); a helper that assigns the global; one that
+// reaches it through a helper of its own, and through two; a method whose body writes it;
+// a helper that changes a global list by a method, an element or a field of a global
+// struct, or swaps two globals; recursion on the way. Allowed beside them: a helper that
+// only reads a 'mut' or an 'imm' global, one that counts in an Atomic, one that writes a
+// '@threadlocal' global (each thread's own copy), one that writes only a local or the
+// pass's own item, and the same writing helper called outside any parallel loop.
+//
+// What is not followed: a call through a virtual reference or a function value, an
+// 'extern' function and a function of another package (its body is not here) are taken as
+// they were. refparallel.html says so.
+
+mod concurrency_parallel_each_global_helper;
+
+import collections use *;
+import actors;
+
+struct Item { pub n i64; }
+
+mut counter i64 = 0i64;
+mut other i64 = 0i64;
+mut table Array[i64, 4] = [0i64, 0i64, 0i64, 0i64];
+mut items List[Item];
+mut box Item = new Item(0i64);
+mut @threadlocal depth i64 = 0i64;
+imm limit i64 = 10i64;
+imm hits Atomic[i64];
+
+fn @initpure init() {
+  items = List[Item].empty();
+  hits = Atomic[i64].of(0i64);
+}
+
+// ---- writers
+
+fn assign() { counter = counter + 1i64; }
+fn viaAssign() { assign(); }
+fn viaTwo() { viaAssign(); }
+fn element() { table[1usize] = 5i64; }
+fn field() { box.n = box.n + 1i64; }
+fn swapping() { counter <=> other; }
+fn grow() { items.push(new Item(1i64)); }
+
+// two functions that call each other, one of which writes
+fn ping(n i64) { if n > 0i64 { pong(n - 1i64); } }
+fn pong(n i64) { counter = n; ping(n); }
+
+struct Meter {
+  pub reads i64;
+  pub fn tick(self &mut) { counter = counter + 1i64; }
+}
+
+// ---- readers and others
+
+fn peek() i64 { counter + table[0usize] + i64.from(items.len()) + box.n; }
+fn peekLimit() i64 { limit; }
+fn count() { hits.add(1i64); }
+fn mine() i64 { mut k = 0i64; k = k + 1i64; k; }
+fn threadOwn() { depth = depth + 1i64; }
+fn ownItem(it &mut Item) { it.n = it.n + 1i64; }
+
+// ---- the loops
+
+fn direct(n usize) {
+  parallel each i in 0usize ..< n {
+    counter = counter + 1i64;                  //~ ErrorParWrite "may not write counter"
+  }
+}
+
+fn byHelper(n usize) {
+  parallel each i in 0usize ..< n {
+    assign();                                  //~ ErrorParWrite "may not call 'assign', which writes the global 'counter'"
+  }
+}
+
+fn byTwo(n usize) {
+  parallel each i in 0usize ..< n {
+    viaTwo();                                  //~ ErrorParWrite "may not call 'viaTwo', which calls 'assign', which writes the global 'counter'"
+  }
+}
+
+fn byElement(n usize) {
+  parallel each i in 0usize ..< n {
+    element();                                 //~ ErrorParWrite "which writes the global 'table'"
+  }
+}
+
+fn byField(n usize) {
+  parallel each i in 0usize ..< n {
+    field();                                   //~ ErrorParWrite "which writes the global 'box'"
+  }
+}
+
+fn bySwap(n usize) {
+  parallel each i in 0usize ..< n {
+    swapping();                                //~ ErrorParWrite "which writes the global"
+  }
+}
+
+fn byMethodOnGlobal(n usize) {
+  parallel each i in 0usize ..< n {
+    grow();                                    //~ ErrorParWrite "which writes the global 'items'"
+  }
+}
+
+fn byRecursion(n usize) {
+  parallel each i in 0usize ..< n {
+    ping(3i64);                                //~ ErrorParWrite "which writes the global 'counter'"
+  }
+}
+
+fn byMethod(n usize) {
+  parallel each i in 0usize ..< n {
+    mut mine = new Meter(0i64);
+    mine.tick();                               //~ ErrorParWrite "which writes the global 'counter'"
+  }
+}
+
+// A helper that writes through a '&mut' parameter is still refused as before (#510)
+fn byParam(l &mut List[Item], n usize) {
+  parallel each i in 0usize ..< n {
+    ownItem(&mut l[0usize]);                   //~ ErrorParWrite "may not lend for writing l"
+  }
+}
+
+// ---- allowed
+
+fn reads(n usize) {
+  parallel each i in 0usize ..< n {
+    imm a = peek();
+    imm b = peekLimit();
+    imm c = mine();
+  }
+}
+
+fn atomics(n usize) {
+  parallel each i in 0usize ..< n {
+    count();
+  }
+}
+
+fn threadLocals(n usize) {
+  parallel each i in 0usize ..< n {
+    threadOwn();
+  }
+}
+
+fn ownItems(l &uni List[Item]) {
+  parallel each x in l.mutItems() {
+    x.n = x.n + 1i64;
+  }
+}
+
+// the writing helpers outside a parallel loop are the ordinary single-thread code
+fn sequential(n usize) {
+  each i in 0usize ..< n {
+    assign();
+    viaTwo();
+    grow();
+  }
+}

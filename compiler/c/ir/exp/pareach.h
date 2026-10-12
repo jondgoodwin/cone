@@ -92,6 +92,10 @@ void parallelEachLeave();
 // nothing declared outside the loop is written or lent for writing
 void parallelEachCheckBody(TypeCheckState *pstate, BlockNode *outer);
 
+// Once every body is type checked: a call a body makes of a function (whose body is
+// here) that writes a global, itself or through what it calls, is ErrorParWrite
+void parallelHelperGlobalsCheckAll(void);
+
 // The stopgap that keeps a 'Gc' out of actors and parallel loops (ErrorGcStopgap):
 // a collector that runs whenever a program says. The body's allocations, calls
 // and literals of a type holding a reference into a traced region that is not
