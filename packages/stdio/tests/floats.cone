@@ -1,0 +1,85 @@
+// The text of a float, as C's '%g' writes it, over 4000 numbers: the values that
+// are edges of the format (zero, the infinities, ties at the sixth digit, the
+// switch to exponent form at 10^6 and 10^-4, the smallest and largest doubles),
+// then four kinds from a generator: doubles of any bit pattern, doubles of
+// moderate size, integers up to 2^53, and fractions n / 2^k (many of which are
+// exact ties). floats.out was written by Python's '%g', which rounds the exact
+// value of the double to nearest, a tie to the even digit, as C's printf does on
+// glibc; the program's text must equal it on every OS.
+//
+// A NaN is "nan" here whatever its sign (C's printf says "-nan" or "-nan(ind)"
+// for some), and is checked in values.cone.
+
+mod floats;
+
+import stdio use *;
+
+fn fromBits(bits u64) f64 {
+  mut b = bits;
+  *(&mut b as *f64);
+}
+
+// xorshift64*: the next number of a stream whose state is held in 'state'
+fn next(state &mut u64) u64 {
+  mut x = *state;
+  x = x ^ (x >> 12u64);
+  x = x ^ (x << 25u64);
+  x = x ^ (x >> 27u64);
+  *state = x;
+  x * 2685821657736338717u64;
+}
+
+fn line(index i64, x f64) {
+  printInt(index);
+  printStr(" ");
+  printFloat(x);
+  printStr("\n");
+}
+
+fn main() i32 {
+  // The edges
+  imm edges = new Array[f64, 40] <- 0.0d, 1.0d, -1.0d, 0.5d, 0.1d, 100000.0d, 999999.0d, 999999.5d,
+    1000000.0d, 1000005.0d, 1000015.0d, 1000025.0d, 100000.5d, 100001.5d, 123456.5d, 1234565.0d,
+    0.0001d, 0.00009999995d, 0.0001234565d, 0.000099999949999d, 1e-5d, 12345678.0d, 1e15d, 1e16d,
+    1e22d, 1e23d, 1.7976931348623157e308d, 2.2250738585072014e-308d, 2.225073858507201e-308d,
+    4.9406564584124654e-324d, 1e-323d, 1.5e-323d, 123456789012345678.0d, 0.3d, 2.675d, 1.005d,
+    8.5d, 9.5d, 99999.95d, 99999.949999999d;
+  mut index = 0i64;
+  while index < 40i64 {
+    line(index, edges[usize.from(index)]);
+    index = index + 1i64;
+  }
+
+  // Generated
+  mut state = 88172645463325252u64;
+  while index < 4000i64 {
+    imm kind = index % 4i64;
+    imm r = next(&mut state);
+    mut x f64 = 0.0d;
+    if kind == 0i64 {
+      // Any bits, but not an infinity or a NaN
+      mut bits = r;
+      if ((bits >> 52u64) & 0x7FFu64) == 0x7FFu64 {bits = bits ^ 0x4000000000000000u64;}
+      x = fromBits(bits);
+    }
+    else if kind == 1i64 {
+      // An exponent within 40 of 1, any mantissa, either sign
+      imm e = 1023u64 - 40u64 + (r >> 52u64) % 81u64;
+      imm m = next(&mut state) & 0xFFFFFFFFFFFFFu64;
+      x = fromBits(((r >> 63u64) << 63u64) | (e << 52u64) | m);
+    }
+    else if kind == 2i64 {
+      // An integer up to 2^53
+      x = f64.from(r >> 11u64);
+    }
+    else {
+      // n / 2^k, n of 21 bits and k from 0 to 30
+      imm n = (r >> 20u64) & 0x1FFFFFu64;
+      imm k = (r >> 5u64) % 31u64;
+      x = f64.from(n) / f64.from(1u64 << k);
+    }
+    line(index, x);
+    index = index + 1i64;
+  }
+  0i32;
+}

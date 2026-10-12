@@ -652,16 +652,15 @@ packages/geomath/
    needs ends with 0xC0000135 and Congo says so, rather than the loader's
    modal dialog stopping it on the desktop.
 3. **Compares** what the test printed with `tests/<name>.out`, line ends and
-   trailing blank lines aside (or with `tests/<name>.<host>.out`, the host
-   `windows`, `linux` or `macos`, where the test has a file for the system it
-   runs on: for a test that cannot print the same on every system, though it is
-   better written to print the same by asking `isWindows()` for what
-   differs), and its exit status with 0, or with the number
+   trailing blank lines aside, and its exit status with 0, or with the number
    in `tests/<name>.exit` where there is one. A test that writes to stderr on
    purpose -- a panic's line, whose exit status is abort's, 3221226505 on
    Windows (read as death by SIGABRT, -6, elsewhere) -- pins that too, in `tests/<name>.err`, written by hand; without
-   one, stderr is not compared. A mismatch prints a diff of the output, or
-   both statuses.
+   one, stderr is not compared. A test whose text must differ by OS, where
+   the OS itself makes it differ, has a file of its own for that host,
+   `tests/<name>.linux.out` (`windows` and `macos` likewise, and `.err`), which is
+   compared in place of the plain one on that host: the compiler suite's rule.
+   A mismatch prints a diff of the output, or both statuses.
 4. **Builds each example**, `examples/<name>.cone`, the same way, and does not
    run it. An example that does not build is a failure.
 

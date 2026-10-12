@@ -70,7 +70,8 @@ from pathlib import Path
 
 IS_WINDOWS = os.name == "nt"
 # The host's name in a platform's own expectation file: ``name.linux.out`` is
-# what a test must print on Linux where it cannot print the same everywhere
+# what a test prints on Linux where the OS differs from the one ``name.out``
+# pins (see ``expectation_file``)
 HOST_OS = "windows" if IS_WINDOWS else ("macos" if sys.platform == "darwin" else "linux")
 CONGO_DIR = Path(__file__).resolve().parent
 # Congo lives at tools/congo/ in the Cone repository, beside packages/ and the
@@ -2015,12 +2016,13 @@ def normalized_lines(text: str) -> list[str]:
 
 
 def expectation_file(program: Path, suffix: str) -> Path:
-    """The file a test's stdout (``.out``) is compared with on this host:
-    ``name.out`` unless the test has a file of its own for this host,
-    ``name.<host>.out`` (``windows``, ``linux`` or ``macos``), which is for a
-    test that cannot print the same on every system."""
+    """The file a test's stdout (``.out``) or stderr (``.err``) is compared with
+    on this host: ``tests/<name>.out`` unless the test has a file of its own for
+    this host, ``tests/<name>.<host>.out`` (``windows``, ``linux`` or ``macos``),
+    which is for the one thing the OS makes differ where the program cannot print
+    the same on all. The same rule as the compiler suite's (test/run.py)."""
     own = program.with_suffix(f".{HOST_OS}{suffix}")
-    return own if own.is_file() else program.with_suffix(suffix)
+    return own if own.exists() else program.with_suffix(suffix)
 
 
 def expected_exit(program: Path) -> int:
@@ -2256,7 +2258,7 @@ def run_test(session: Session, file: Path, bless: bool) -> tuple[bool, str]:
     # tests/<name>.err, written by hand, holds what the program must write to
     # stderr, where it writes there on purpose: a panic's line. Without one,
     # stderr is not compared
-    err_path = file.with_suffix(".err")
+    err_path = expectation_file(file, ".err")
     err_checked = err_path.is_file()
     if err_checked:
         expected_err = normalized_lines(err_path.read_text(encoding="utf-8"))

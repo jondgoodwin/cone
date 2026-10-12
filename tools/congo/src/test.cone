@@ -116,18 +116,17 @@ fn withSuffix(file &Path, suffix &str) Path {
   folder.join(name.view());
 }
 
-// The file a test's stdout is compared with on this host: tests/a.out unless
-// the test has a file of its own for this host, tests/a.linux.out (windows,
-// linux or macos), which is for a test that cannot print the same on every
-// system
-fn expectationFile(program &Path, suffix &str) Path {
-  mut host = String.from(".macos");
-  if isWindows() { host = String.from(".windows"); }
-  elif isLinux() { host = String.from(".linux"); }
-  host <- suffix;
-  imm own = withSuffix(program, host.view());
+// The file a test's stdout (".out") or stderr (".err") is compared with on this
+// host: tests/a.out unless the test has a file of its own for this host,
+// tests/a.linux.out ("windows", "linux" or "macos"), for the one thing the OS
+// makes differ where the program cannot print the same on all. congo.py's
+// 'expectation_file' and the compiler suite's, the same rule
+fn expectationFile(file &Path, suffix &str) Path {
+  imm host = if isWindows() {".windows";} elif isLinux() {".linux";} else {".macos";};
+  imm hostSuffix = cat(host, suffix);
+  imm own = withSuffix(file, hostSuffix.view());
   if fs.isFile(&own) { return own; }
-  withSuffix(program, suffix);
+  withSuffix(file, suffix);
 }
 
 // A file's whole text, or Congo stops, as congo.py stops at a file it cannot
@@ -380,7 +379,7 @@ fn runTest(s &mut Session, file &Path, bless bool) Verdict {
   // tests/<name>.err, written by hand, holds what the program must write to
   // stderr, where it writes there on purpose: a panic's line. Without one,
   // stderr is not compared
-  imm errPath = withSuffix(file, ".err");
+  imm errPath = expectationFile(file, ".err");
   imm errChecked = fs.isFile(&errPath);
   if errChecked {
     imm errText = readAll(&errPath);

@@ -1,0 +1,286 @@
+// floatfmt: a float as text, the way C's '%g' writes it, in Cone.
+//
+// 'printFloat' and 'eprintFloat' write six significant digits, correctly
+// rounded from the number's exact value (a tie going to the even digit),
+// with the trailing zeros and a bare '.' left off: fixed notation ("0.0001",
+// "123456", "3.14159") when the decimal exponent X of the rounded number is
+// from -4 to 5, and otherwise the exponent form ("1.23457e+06", "1e-05",
+// "4.94066e-324"), its exponent a sign and at least two digits. Zero is "0" or
+// "-0". An infinity is "inf" or "-inf". Every NaN is "nan", whatever its sign
+// bit or payload: the sign of a NaN is not a property of the number, and it
+// differs between processors and between a value folded at compile time and one
+// computed at run time (C's printf writes "-nan" for one, "-nan(ind)" for the
+// Windows runtime's, and "nan" for another).
+//
+// It does not call the C library's printf, whose text differs between C
+// libraries, so a program prints the same text on every OS. The digits are
+// found exactly, by Steele and White's and Dragon4's way (the digits of
+// numerator over denominator, one at a time, each a count of subtractions)
+// over a number of 32-bit words large enough for the biggest double.
+
+// Words of a Big: 48 * 32 = 1536 bits. The largest number met is 2^1074 times
+// ten (a denormal's denominator) or a 53-bit mantissa times 10^324 (its
+// numerator), under 1200 bits
+struct Big {
+  len usize;
+  w Array[u32, 48];
+
+  // The number v. Zero is one zero word
+  fn set(self &mut, v u64) {
+    w[0] = u32.from(v & 0xFFFFFFFFu64);
+    w[1] = u32.from(v >> 32u64);
+    len = 2usize;
+    self.trim();
+  }
+
+  // Drop the words that are zero above the top one, keeping one
+  fn trim(self &mut) {
+    while len > 1usize and w[len - 1usize] == 0u32 {
+      len = len - 1usize;
+    }
+  }
+
+  fn copyFrom(self &mut, o &Big) {
+    mut i = 0usize;
+    while i < o.len {
+      w[i] = o.w[i];
+      i = i + 1usize;
+    }
+    len = o.len;
+  }
+
+  // self * m
+  fn mulSmall(self &mut, m u32) {
+    mut carry = 0u64;
+    mut i = 0usize;
+    while i < len {
+      imm t = u64.from(w[i]) * u64.from(m) + carry;
+      w[i] = u32.from(t & 0xFFFFFFFFu64);
+      carry = t >> 32u64;
+      i = i + 1usize;
+    }
+    if carry != 0u64 {
+      w[len] = u32.from(carry);
+      len = len + 1usize;
+    }
+  }
+
+  // self * 10^k
+  fn mulPow10(self &mut, k usize) {
+    mut left = k;
+    while left >= 9usize {
+      self.mulSmall(1000000000u32);
+      left = left - 9usize;
+    }
+    while left > 0usize {
+      self.mulSmall(10u32);
+      left = left - 1usize;
+    }
+  }
+
+  // self * 2^n
+  fn shiftLeft(self &mut, n usize) {
+    imm ws = n / 32usize;
+    imm bs = u32.from(n % 32usize);
+    imm newLen = len + ws + 1usize;
+    mut j = newLen;
+    while j > 0usize {
+      j = j - 1usize;
+      mut word = 0u32;
+      if j >= ws {
+        imm s = j - ws;
+        if s < len {
+          word = w[s] << bs;
+        }
+        if bs > 0u32 and s >= 1usize and s - 1usize < len {
+          word = word | (w[s - 1usize] >> (32u32 - bs));
+        }
+      }
+      w[j] = word;
+    }
+    len = newLen;
+    self.trim();
+  }
+
+  // -1, 0 or 1 as self is less than, equal to or greater than o
+  fn cmp(self &, o &Big) i32 {
+    if len != o.len {
+      if len > o.len {return 1i32;}
+      return -1i32;
+    }
+    mut i = len;
+    while i > 0usize {
+      i = i - 1usize;
+      if w[i] != o.w[i] {
+        if w[i] > o.w[i] {return 1i32;}
+        return -1i32;
+      }
+    }
+    0i32;
+  }
+
+  // self - o, where self is not less than o
+  fn sub(self &mut, o &Big) {
+    mut borrow = 0u64;
+    mut i = 0usize;
+    while i < len {
+      imm ov = if i < o.len {u64.from(o.w[i]);} else {0u64;};
+      imm t = u64.from(w[i]) + 0x100000000u64 - ov - borrow;
+      w[i] = u32.from(t & 0xFFFFFFFFu64);
+      borrow = if t < 0x100000000u64 {1u64;} else {0u64;};
+      i = i + 1usize;
+    }
+    self.trim();
+  }
+}
+
+// A float as C's '%g' writes it, onto 'out'
+fn floatText(out &mut Text, x f64) {
+  mut v = x;
+  imm bits = *(&mut v as *u64);
+  imm negative = (bits >> 63u64) != 0u64;
+  imm biased = (bits >> 52u64) & 0x7FFu64;
+  imm fraction = bits & 0xFFFFFFFFFFFFFu64;
+  if biased == 0x7FFu64 {
+    if fraction != 0u64 {
+      out.text("nan");
+      return;
+    }
+    if negative {out.byte('-');}
+    out.text("inf");
+    return;
+  }
+  if negative {out.byte('-');}
+  if biased == 0u64 and fraction == 0u64 {
+    out.byte('0');
+    return;
+  }
+
+  // The number is mantissa * 2^e2, the mantissa an integer under 2^53
+  imm mantissa = if biased == 0u64 {fraction;} else {fraction | 0x10000000000000u64;};
+  imm e2 = (if biased == 0u64 {1i64;} else {i64.from(biased);}) - 1075i64;
+
+  // Its decimal exponent X (the number is d.ddd * 10^X) is about log10 of its
+  // power of two, found as an integer: log10(2) is 1292913986 / 2^32, and a
+  // guess a step off is put right by the two loops below
+  imm p = i64.from(63u32 - mantissa.leadingZeros()) + e2;
+  mut exp10 = (p * 1292913986i64) / 4294967296i64;
+
+  // r / s is the number divided by 10^exp10; r holds the numerator, s the
+  // denominator, and s10 is ten times s
+  mut r = new Big(0usize, new Array[u32, 48] <- fill 0u32);
+  mut s = new Big(0usize, new Array[u32, 48] <- fill 0u32);
+  mut s10 = new Big(0usize, new Array[u32, 48] <- fill 0u32);
+  r.set(mantissa);
+  s.set(1u64);
+  if e2 >= 0i64 {r.shiftLeft(usize.from(e2));} else {s.shiftLeft(usize.from(0i64 - e2));}
+  if exp10 >= 0i64 {s.mulPow10(usize.from(exp10));} else {r.mulPow10(usize.from(0i64 - exp10));}
+  while r.cmp(&s) < 0i32 {
+    r.mulSmall(10u32);
+    exp10 = exp10 - 1i64;
+  }
+  s10.copyFrom(&s);
+  s10.mulSmall(10u32);
+  while r.cmp(&s10) >= 0i32 {
+    s.copyFrom(&s10);
+    s10.mulSmall(10u32);
+    exp10 = exp10 + 1i64;
+  }
+
+  // Six digits, each the number of times s goes into r, then r made ten times as large
+  mut digits = new Array[u8, 6] <- fill 0u8;
+  mut i = 0usize;
+  while i < 6usize {
+    mut d = 0u8;
+    while r.cmp(&s) >= 0i32 {
+      r.sub(&s);
+      d = d + 1u8;
+    }
+    digits[i] = d;
+    i = i + 1usize;
+    if i < 6usize {r.mulSmall(10u32);}
+  }
+
+  // Round to nearest by what is left of r: more than half of s goes up, exactly
+  // half to the even digit
+  r.shiftLeft(1usize);
+  imm c = r.cmp(&s);
+  if c > 0i32 or (c == 0i32 and (digits[5] & 1u8) == 1u8) {
+    mut j = 6usize;
+    mut carrying = true;
+    while carrying and j > 0usize {
+      j = j - 1usize;
+      if digits[j] == 9u8 {
+        digits[j] = 0u8;
+      }
+      else {
+        digits[j] = digits[j] + 1u8;
+        carrying = false;
+      }
+    }
+    if carrying {
+      digits[0] = 1u8;
+      exp10 = exp10 + 1i64;
+    }
+  }
+
+  // The digits kept: no trailing zeros
+  mut count = 6usize;
+  while count > 1usize and digits[count - 1usize] == 0u8 {
+    count = count - 1usize;
+  }
+
+  if exp10 < -4i64 or exp10 >= 6i64 {
+    out.byte(digits[0] + '0');
+    if count > 1usize {
+      out.byte('.');
+      mut k = 1usize;
+      while k < count {
+        out.byte(digits[k] + '0');
+        k = k + 1usize;
+      }
+    }
+    out.byte('e');
+    mut mag = exp10;
+    if exp10 < 0i64 {
+      out.byte('-');
+      mag = 0i64 - exp10;
+    }
+    else {
+      out.byte('+');
+    }
+    if mag < 10i64 {out.byte('0');}
+    out.decimal(u64.from(mag));
+  }
+  else if exp10 >= 0i64 {
+    // The integer part is digits 0 to exp10, zeros after the last digit kept
+    imm whole = usize.from(exp10) + 1usize;
+    mut k = 0usize;
+    while k < whole {
+      out.byte(if k < count {digits[k] + '0';} else {'0';});
+      k = k + 1usize;
+    }
+    if count > whole {
+      out.byte('.');
+      k = whole;
+      while k < count {
+        out.byte(digits[k] + '0');
+        k = k + 1usize;
+      }
+    }
+  }
+  else {
+    out.byte('0');
+    out.byte('.');
+    mut zeros = usize.from(0i64 - exp10) - 1usize;
+    while zeros > 0usize {
+      out.byte('0');
+      zeros = zeros - 1usize;
+    }
+    mut k = 0usize;
+    while k < count {
+      out.byte(digits[k] + '0');
+      k = k + 1usize;
+    }
+  }
+}
