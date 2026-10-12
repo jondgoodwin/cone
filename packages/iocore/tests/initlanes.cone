@@ -1,0 +1,22 @@
+// The blocking pool's default lanes and Winsock's start are made by the module's
+// initializer, before 'main': nothing here has made a Loop or submitted a job,
+// and the lanes are there, with their bounds, and a lane added after them takes
+// the next number.
+
+mod initlanes;
+
+import testing use *;
+import iocore use *;
+
+fn main() i32 {
+  imm general = Lane.general().stats();
+  expectUInt(u64.from(general.maxThreads), 4u64, "the general lane is there before any loop: up to 4 threads");
+  expectUInt(u64.from(general.threads), 0u64, "and keeps no thread until it has work");
+  expectUInt(u64.from(Lane.dns().stats().maxThreads), 2u64, "the DNS lane: up to 2 threads");
+
+  imm added = addLane(new LaneConfig(name: "added", maxThreads: 3u32));
+  // Windows has two default lanes, Linux a third for files
+  expectUInt(u64.from(added.id), if isWindows() {2u64;} else {3u64;}, "an added lane takes the next number");
+  expectUInt(u64.from(added.stats().maxThreads), 3u64, "with its own bound");
+  done();
+}

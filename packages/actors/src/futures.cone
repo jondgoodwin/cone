@@ -83,20 +83,21 @@ struct Futures is RegionRef, ThreadSafe {
     last;
   }
   fn free(self &uni Futures) {
-    mem.atomicSub[usize](&mut futuresLive as *usize, 1usize, MemOrder.Relaxed);
+    futuresLive.subOrdered(1usize, MemOrder.Relaxed);
     libc.free(self as *u8);
   }
 }
 
 // How many futures are allocated and not yet freed: for tests, and for
-// finding leaks
-mut futuresLive = 0usize;
+// finding leaks. Futures are made and freed on any worker, so it is an atomic
+// held by an 'imm' global, set to 0 in the module's 'init' (actors.cone)
+imm futuresLive Atomic[usize];
 
-// The number given the next future's request, for 'owes'
-mut futuresMade = 0u64;
+// The number given the next future's request, for 'owes': an atomic too
+imm futuresMade Atomic[u64];
 
 pub fn liveFutures() usize {
-  mem.atomicLoad[usize](&mut futuresLive as *usize, MemOrder.Acquire);
+  futuresLive.loadOrdered(MemOrder.Acquire);
 }
 
 // A future's state
@@ -161,14 +162,14 @@ pub fn futureFor[T, M Sendable](mb &opaq Mailbox[M]) Future[T] {
   if block as usize == 0usize {
     die("actors: out of memory for a future");
   }
-  mem.atomicAdd[usize](&mut futuresLive as *usize, 1usize, MemOrder.Relaxed);
+  futuresLive.addOrdered(1usize, MemOrder.Relaxed);
   *(block as *usize) = 1usize;
   imm c = (block + off) as *FutureCell[T];
   (*c).state = futPending;
   (*c).waiters = null;
   (*c).value = block + off + voff;
   (*c).owesActor = mb as *Header as usize;
-  (*c).owesId = mem.atomicAdd[u64](&mut futuresMade as *u64, 1u64, MemOrder.Relaxed) + 1u64;
+  (*c).owesId = futuresMade.addOrdered(1u64, MemOrder.Relaxed) + 1u64;
   (*c).release = &futureRelease[T];
   new Future[T]((block as usize + off) as Futures[opaq, FutureCell[T]]);
 }
