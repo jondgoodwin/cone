@@ -88,6 +88,7 @@ import libc;
 import posix;
 import collections use String, List;
 import path use Path;
+import sync;
 import time;
 
 // -------- failure --------
@@ -158,14 +159,21 @@ fn cText(path &Path) String { String.from(path.view()); }
 
 // -------- UTF-8 names --------
 
-mut utf8Checked = false;
+// Run by the first call that needs it. A thread that arrives meanwhile waits
+// until it is done, so none reaches the C runtime before the names are set
+imm utf8Once sync.Once;
+
+fn @initpure init() {
+  utf8Once = sync.Once.make();
+}
 
 // Make the C runtime read names as UTF-8, unless the program has chosen a
-// character type of its own. Once is enough; two threads doing it at once
-// set the same thing.
+// character type of its own. Once is enough.
 fn useUtf8() {
-  if utf8Checked { return; }
-  utf8Checked = true;
+  utf8Once.callOnce(&setUtf8);
+}
+
+fn setUtf8() {
   // POSIX hands a name's bytes to the system as they are
   if not isWindows() { return; }
   imm now = libc.setlocale(libc.LC_CTYPE, null);
