@@ -1,0 +1,587 @@
+// The render package's scene of proxies (visibility.cone), on the CPU, with
+// no GPU: what a camera is given of a scene, checked against brute force and
+// against levels, ranges and fades worked out by hand. Only a failure prints.
+//
+//  1. The fade code (fade.slang's word): a fade written and read back; none
+//     is NO_BONES; the pair of a cross-fade at one share is an exact
+//     complement for every pixel noise; the noise itself covers 0 to 1 evenly
+//     (a quarter of 4096 pixels below 0.25).
+//  2. selectLod, the stateless choice, equals LodChain.selectBySize over 3000
+//     random sizes, hysteresis and all.
+//  3. A visibility range's share: min 10, max 100, margin 20 is 0 at 10, 1/2
+//     at 20, 1 from 30 to 80, 1/2 at 90, 0 from 100.
+//  4. Culling against brute force: 3000 random items (random size, turn and
+//     scale) and 40 random cameras, perspective of any field of view and
+//     aspect and orthogonal: the items collected are exactly those whose
+//     world box the frustum does not rule out (geomath's test, item by item),
+//     in slot order. Again after 800 moves (some far, some by a hair), 400
+//     removals and 300 additions into the freed slots; a handle of a removed
+//     item reaches nothing, its slot reused has another generation. Layers:
+//     the items a mask meets, and with culling off every live item.
+//  5. Casters: a sun's volume (an orthogonal window, its near plane taken
+//     away) holds the item far towards the sun beyond the window's near plane
+//     and not the one past its far plane or outside its sides; against brute
+//     force too.
+//  6. Levels, by hand: a three-level chain (least sizes 200 and 80, hysteresis
+//     0.1) on an item whose bounding sphere has radius 1 seen from 16 degrees
+//     of half field of view: a size of s pixels in a 1000-pixel viewport is
+//     at a distance of 1000 / (2 s tan(8 degrees))... the test places the
+//     camera by the size it wants. 300 draws level 0; 150 begins a cross-fade
+//     to level 1 over five frames (fade 0.5 s at 0.1 s a frame): the old level
+//     with fade t and the new with fade -t, t = 0.2, 0.4, ... 1, then level 1
+//     alone; 210 stays at level 1 (not above 220); 230 goes to level 0; an
+//     item unseen for frames starts at its level, unfaded; the camera's bias
+//     0.5 sees the same item as half the size.
+//  7. A range at work: min 10, max 100, margin 20, seen from 5 (dropped), 20
+//     (one entry, fade 0.5) and 50 (whole).
+
+mod visibility;
+
+import testing use *;
+import stdio use *;
+import collections use *;
+import geomath use *;
+import pool use *;
+import render use *;
+
+struct Rng {
+  s u64;
+  fn next(self &mut) u64 {
+    s = s ^ (s >> 12u64);
+    s = s ^ (s << 25u64);
+    s = s ^ (s >> 27u64);
+    s * 2685821657736338717u64;
+  }
+  // A float in [0, 1)
+  fn unit(self &mut) f32 { f32.from(next() >> 40u64) / 16777216.; }
+  fn range(self &mut, lo f32, hi f32) f32 { lo + (hi - lo) * unit(); }
+}
+
+fn v3(x f32, y f32, z f32) Vec3 { new Vec3(x, y, z); }
+
+fn absf(x f32) f32 { if x < 0. { 0. - x; } else { x; }; }
+
+fn mesh(slot u32) MeshHandle { new MeshHandle(Ref[MeshSlot].of(slot, 1u32)); }
+
+// ---- 1. The fade code ----
+
+fn fadeChecks() {
+  mut worst = 0.;
+  mut f = -0.999;
+  while f < 1. {
+    imm back = fadeOfCode(fadeCode(f));
+    if absf(back - f) > worst { worst = absf(back - f); }
+    f = f + 0.0137;
+  }
+  expect(worst < 0.00002, "a fade read back from its code to 1/32767");
+  expectUInt(u64.from(fadeCode(0.)), u64.from(NO_BONES), "no fade is NO_BONES");
+  expect(fadeCode(0.2) >> 16u32 == 0xFADEu32, "a fade's high half is the tag");
+  expect(fadeCode(0.00001) != NO_BONES and fadeOfCode(fadeCode(0.00001)) > 0., "a tiny fade is not rounded to none");
+  expect(fadeCode(-0.00001) != NO_BONES and fadeOfCode(fadeCode(-0.00001)) < 0., "nor a tiny fade in");
+  expectFloat(f64.from(fadeOfCode(NO_BONES)), 0., 0.0000001d, "a bone base is no fade");
+  expectFloat(f64.from(fadeOfCode(7u32)), 0., 0.0000001d, "nor a small one");
+  // The pair: at one share, out by +t and in by -t, every pixel in exactly one
+  mut both = 0u32;
+  mut neither = 0u32;
+  mut below = 0u32;
+  mut total = 0u32;
+  mut y = 0;
+  while y < 64 {
+    mut x = 0;
+    while x < 64 {
+      imm n = fadeNoise(f32.from(x) + 0.5, f32.from(y) + 0.5);
+      if n < 0.25 { below = below + 1u32; }
+      total = total + 1u32;
+      mut t = 0.05;
+      while t < 1. {
+        imm a = fadeKeeps(t, n);
+        imm b = fadeKeeps(0. - t, n);
+        if a and b { both = both + 1u32; }
+        if !a and !b { neither = neither + 1u32; }
+        t = t + 0.1;
+      }
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  expectUInt(u64.from(both), 0u64, "a cross-fade's two levels never both draw a pixel");
+  expectUInt(u64.from(neither), 0u64, "nor leave one undrawn");
+  expectFloat(f64.from(below) / f64.from(total), 0.25d, 0.02d, "a quarter of the pixels' noise is below 0.25");
+}
+
+// ---- 2. The levels' rule ----
+
+fn chainOf() LodChain {
+  mut chain = LodChain.empty(0.1);
+  chain.add(mesh(10u32), 200.);
+  chain.add(mesh(11u32), 80.);
+  chain.add(mesh(12u32), 0.);
+  chain;
+}
+
+fn selectChecks() {
+  mut a = LodChain.empty(0.15);
+  a.add(mesh(1u32), 400.);
+  a.add(mesh(2u32), 200.);
+  a.add(mesh(3u32), 100.);
+  a.add(mesh(4u32), 30.);
+  a.add(mesh(5u32), 0.);
+  mut rng = new Rng(88172645463325252u64);
+  mut current = 0usize;
+  mut differ = 0u32;
+  mut changes = 0u32;
+  mut i = 0;
+  while i < 3000 {
+    // Sizes that wander, so the levels keep changing, with the occasional jump
+    imm size = rng.range(0., 600.);
+    imm theirs = a.selectBySize(size);
+    imm ours = selectLod(&a, size, current);
+    if theirs != ours { differ = differ + 1u32; }
+    if ours != current { changes = changes + 1u32; }
+    current = ours;
+    i = i + 1;
+  }
+  expectUInt(u64.from(differ), 0u64, "selectLod equals LodChain.selectBySize over 3000 sizes");
+  expect(changes > 500u32, "and the sizes did change levels");
+}
+
+// ---- 3. Ranges ----
+
+fn rangeChecks() {
+  imm lc = v3(0., 0., 0.);
+  imm lh = v3(1., 1., 1.);
+  mut vis = Visibility.create(0.1);
+  imm h = vis.addItem(mesh(1u32), MaterialHandle.none(), Mat4.identity(), new Color(1., 1., 1., 1.), lc, lh, 1.7);
+  vis.setRange(h, 10., 100., 20.);
+  imm it = *vis.items[usize.from(h.slot)];
+  expectFloat(f64.from(rangeShare(&it, 5.)), 0., 0.00001d, "before the range: none");
+  expectFloat(f64.from(rangeShare(&it, 10.)), 0., 0.00001d, "at its start: none");
+  expectFloat(f64.from(rangeShare(&it, 20.)), 0.5, 0.00001d, "half way up the ramp: 1/2");
+  expectFloat(f64.from(rangeShare(&it, 30.)), 1., 0.00001d, "past the ramp: whole");
+  expectFloat(f64.from(rangeShare(&it, 80.)), 1., 0.00001d, "whole up to the far margin");
+  expectFloat(f64.from(rangeShare(&it, 90.)), 0.5, 0.00001d, "half way down: 1/2");
+  expectFloat(f64.from(rangeShare(&it, 100.)), 0., 0.00001d, "at its end: none");
+  expectFloat(f64.from(rangeShare(&it, 500.)), 0., 0.00001d, "past it: none");
+  vis.setRange(h, 0., 0., 0.);
+  imm free = *vis.items[usize.from(h.slot)];
+  expectFloat(f64.from(rangeShare(&free, 5000.)), 1., 0.00001d, "no range: whole at any distance");
+}
+
+// ---- 4. Culling against brute force ----
+
+fn randomModel(rng &mut Rng, world f32) Mat4 {
+  imm p = v3(rng.range(-world, world), rng.range(-world * 0.2, world * 0.2), rng.range(-world, world));
+  imm axis = v3(rng.range(-1., 1.), rng.range(-1., 1.), rng.range(0.1, 1.)).normalize();
+  imm q = Quat.angleAxis(rng.range(0., 6.28), axis);
+  imm s = rng.range(0.4, 4.);
+  Mat4.fromTrs(p, q, v3(s, s * rng.range(0.5, 2.), s));
+}
+
+fn randomCamera(rng &mut Rng, world f32) Camera {
+  mut cam = Camera.make();
+  cam.fov = radians(rng.range(20., 110.));
+  cam.near = rng.range(0.1, 2.);
+  cam.far = rng.range(60., 600.);
+  if rng.unit() < 0.2 {
+    cam.projection = Orthogonal;
+    cam.viewHeight = rng.range(10., 120.);
+  }
+  imm eye = v3(rng.range(-world, world), rng.range(-5., 40.), rng.range(-world, world));
+  imm target = v3(rng.range(-world, world), rng.range(-10., 10.), rng.range(-world, world));
+  cam.lookAt(eye, target, v3(0., 1., 0.));
+  cam;
+}
+
+// The slots (in the tint's red) of the items 'out' holds
+fn slotsOf(out &List[DrawItem]) List[u32] {
+  mut r = List[u32].empty();
+  mut i = 0usize;
+  while i < out.len() {
+    r.push(u32.from(out[i].tint.red));
+    i = i + 1usize;
+  }
+  r;
+}
+
+// The slots the frustum does not rule out, by brute force over every live item, in slot order
+fn bruteForce(vis &Visibility, f &Frustum, mask u32) List[u32] {
+  mut r = List[u32].empty();
+  mut i = 0usize;
+  while i < vis.items.len() {
+    imm it = vis.items[i];
+    if it.alive and (it.layers & mask) != 0u32 {
+      if f.testAabb(Aabb3.fromCenter(it.center, it.half)) != Outside { r.push(u32.from(i)); }
+    }
+    i = i + 1usize;
+  }
+  r;
+}
+
+fn sameList(a &List[u32], b &List[u32]) bool {
+  if a.len() != b.len() { return false; }
+  mut i = 0usize;
+  while i < a.len() {
+    if *a[i] != *b[i] { return false; }
+    i = i + 1usize;
+  }
+  true;
+}
+
+fn addRandom(vis &mut Visibility, rng &mut Rng, world f32) SceneHandle {
+  imm model = randomModel(rng, world);
+  imm lh = v3(rng.range(0.3, 3.), rng.range(0.3, 6.), rng.range(0.3, 3.));
+  imm lc = v3(rng.range(-1., 1.), rng.range(-1., 1.), rng.range(-1., 1.));
+  imm h = vis.addItem(mesh(1u32), MaterialHandle.none(), model, new Color(0., 0., 0., 1.), lc, lh, lh.length());
+  // The slot rides in the tint
+  vis.setTint(h, new Color(f32.from(h.slot), 0., 0., 1.));
+  h;
+}
+
+fn cullRounds(vis &mut Visibility, rng &mut Rng, world f32, rounds i32, label &Array[u8]) u32 {
+  mut bad = 0u32;
+  mut visibleTotal = 0u32;
+  mut r = 0;
+  while r < rounds {
+    imm cam = randomCamera(rng, world);
+    imm aspect = rng.range(0.6, 2.4);
+    imm f = Frustum.fromMatrix(cam.projectionMatrix(aspect) * cam.viewMatrix());
+    mut out = List[DrawItem].empty();
+    vis.collect(&cam, aspect, 720., &mut out);
+    imm got = slotsOf(&out);
+    imm want = bruteForce(vis, &f, 0xFFFFFFFFu32);
+    visibleTotal = visibleTotal + u32.from(want.len());
+    if !sameList(&got, &want) {
+      bad = bad + 1u32;
+      if bad == 1u32 {
+        eprint <- "debug: got "; eprint <- u64.from(got.len()); eprint <- " want "; eprint <- u64.from(want.len());
+        eprint <- " candidates "; eprint <- u64.from(vis.stats.candidates); eprint <- "\n";
+      }
+    }
+    r = r + 1;
+  }
+  expectUInt(u64.from(bad), 0u64, label);
+  visibleTotal;
+}
+
+fn cullChecks() {
+  mut rng = new Rng(2685821657736338717u64);
+  mut vis = Visibility.create(0.2);
+  vis.settings.lod = false;
+  vis.settings.ranges = false;
+  mut handles = List[SceneHandle].empty();
+  mut i = 0;
+  while i < 3000 {
+    handles.push(addRandom(&mut vis, &mut rng, 250.));
+    i = i + 1;
+  }
+  expectUInt(u64.from(vis.count()), 3000u64, "3000 items");
+  imm seen = cullRounds(&mut vis, &mut rng, 250., 40, "the culled set equals brute force over 3000 items");
+  expect(seen > 5000u32 and seen < 40u32 * 2600u32, "and the cameras saw some of them, not all");
+
+  // Moves: far, by a hair (inside the fat box), and by a little
+  i = 0;
+  while i < 800 {
+    imm k = usize.from(rng.next() % 3000u64);
+    imm h = *handles[k];
+    if vis.alive(h) {
+      imm old = vis.items[usize.from(h.slot)].model;
+      mut m = old;
+      imm kind = i % 3;
+      if kind == 0 {
+        m = randomModel(&mut rng, 250.);
+      } elif kind == 1 {
+        m.m[12] = m.m[12] + 0.003;
+      } else {
+        m.m[12] = m.m[12] + rng.range(-4., 4.);
+        m.m[14] = m.m[14] + rng.range(-4., 4.);
+      }
+      vis.move(h, m);
+    }
+    i = i + 1;
+  }
+  cullRounds(&mut vis, &mut rng, 250., 30, "after 800 moves it still equals brute force");
+
+  // Removals, additions into the freed slots
+  mut stale = List[SceneHandle].empty();
+  i = 0;
+  while i < 400 {
+    imm k = usize.from(rng.next() % 3000u64);
+    imm h = *handles[k];
+    if vis.alive(h) {
+      vis.remove(h);
+      stale.push(h);
+    }
+    i = i + 1;
+  }
+  expectUInt(u64.from(vis.count()), u64.from(3000usize - stale.len()), "removals count");
+  mut dead = 0u32;
+  mut s = 0usize;
+  while s < stale.len() {
+    if vis.alive(*stale[s]) { dead = dead + 1u32; }
+    if vis.move(*stale[s], Mat4.identity()) { dead = dead + 1u32; }
+    s = s + 1usize;
+  }
+  expectUInt(u64.from(dead), 0u64, "a removed item's handle reaches nothing");
+  cullRounds(&mut vis, &mut rng, 250., 20, "after removals");
+  i = 0;
+  while i < 300 {
+    handles.push(addRandom(&mut vis, &mut rng, 250.));
+    i = i + 1;
+  }
+  imm reused = *stale[stale.len() - 1usize];
+  mut sameSlot = false;
+  s = 3000usize;
+  while s < handles.len() {
+    if handles[s].slot == reused.slot { sameSlot = true; }
+    s = s + 1usize;
+  }
+  expect(sameSlot, "additions take the freed slots");
+  expect(!vis.alive(reused), "a freed slot reused is another generation: the old handle reaches nothing");
+  cullRounds(&mut vis, &mut rng, 250., 30, "after 300 additions");
+
+  // Layers
+  mut k2 = 0usize;
+  while k2 < handles.len() {
+    if vis.alive(*handles[k2]) { vis.setLayers(*handles[k2], if k2 % 3usize == 0usize { 1u32; } elif k2 % 3usize == 1usize { 2u32; } else { 5u32; }); }
+    k2 = k2 + 1usize;
+  }
+  vis.layerMask = 2u32;
+  {
+    imm cam = randomCamera(&mut rng, 250.);
+    imm f = Frustum.fromMatrix(cam.projectionMatrix(1.5) * cam.viewMatrix());
+    mut out = List[DrawItem].empty();
+    vis.collect(&cam, 1.5, 720., &mut out);
+    imm got = slotsOf(&out);
+    imm want = bruteForce(&vis, &f, 2u32);
+    expect(sameList(&got, &want) and want.len() > 0usize, "a layer mask keeps the items it meets");
+  }
+  vis.layerMask = 0xFFFFFFFFu32;
+
+  // Culling off: every live item
+  vis.settings.frustumCulling = false;
+  {
+    imm cam = randomCamera(&mut rng, 250.);
+    mut out = List[DrawItem].empty();
+    vis.collect(&cam, 1.5, 720., &mut out);
+    expectUInt(u64.from(out.len()), u64.from(vis.count()), "with culling off every live item is drawn");
+    imm got = slotsOf(&out);
+    mut ascending = true;
+    mut j = 1usize;
+    while j < got.len() {
+      if *got[j] <= *got[j - 1usize] { ascending = false; }
+      j = j + 1usize;
+    }
+    expect(ascending, "in slot order");
+  }
+  vis.settings.frustumCulling = true;
+  vis.clear();
+  expectUInt(u64.from(vis.count()), 0u64, "cleared");
+}
+
+// ---- 5. Casters ----
+
+fn casterChecks() {
+  // A sun's window: an orthogonal box 20 across looking down -z from z = 0
+  // to z = -50 (depth 0 to 1); the sun is up the +z axis. An item at z = +500
+  // is between the window and the sun; one at z = -80 is past the far plane.
+  imm window = Mat4.orthographic(-10., 10., -10., 10., 0., 50.) * Mat4.lookAt(v3(0., 0., 0.), v3(0., 0., -1.), v3(0., 1., 0.));
+  imm volume = casterVolume(&window);
+  mut vis = Visibility.create(0.1);
+  imm lc = v3(0., 0., 0.);
+  imm lh = v3(1., 1., 1.);
+  imm nearSun = vis.addItem(mesh(1u32), MaterialHandle.none(), Mat4.fromTranslation(v3(2., 3., 500.)), new Color(1., 1., 1., 1.), lc, lh, 1.7);
+  imm inside = vis.addItem(mesh(1u32), MaterialHandle.none(), Mat4.fromTranslation(v3(-4., 1., -20.)), new Color(1., 1., 1., 1.), lc, lh, 1.7);
+  imm pastFar = vis.addItem(mesh(1u32), MaterialHandle.none(), Mat4.fromTranslation(v3(0., 0., -80.)), new Color(1., 1., 1., 1.), lc, lh, 1.7);
+  imm aside = vis.addItem(mesh(1u32), MaterialHandle.none(), Mat4.fromTranslation(v3(30., 0., -20.)), new Color(1., 1., 1., 1.), lc, lh, 1.7);
+  imm doesNotCast = vis.addItem(mesh(1u32), MaterialHandle.none(), Mat4.fromTranslation(v3(0., 0., -10.)), new Color(1., 1., 1., 1.), lc, lh, 1.7);
+  vis.setCastsShadow(doesNotCast, false);
+  mut cam = Camera.make();
+  cam.lookAt(v3(0., 0., 100.), v3(0., 0., 0.), v3(0., 1., 0.));
+  mut out = List[DrawItem].empty();
+  vis.collectCasters(&volume, &cam, 720., &mut out);
+  expectUInt(u64.from(out.len()), 2u64, "the casters of a sun's window: the one towards the sun and the one inside");
+  expect(out[0].model.translation().z > 400. and out[1].model.translation().z < 0., "the one 500 towards the sun is held, the one past the far plane and beside it are not");
+  expectUInt(u64.from(vis.stats.casters), 2u64, "counted");
+
+  // And against brute force, items all over
+  mut rng = new Rng(77162534u64);
+  mut many = Visibility.create(0.2);
+  many.settings.lod = false;
+  many.settings.ranges = false;
+  mut i = 0;
+  while i < 2000 {
+    imm h = many.addItem(mesh(1u32), MaterialHandle.none(), randomModel(&mut rng, 60.), new Color(0., 0., 0., 1.), lc, v3(rng.range(0.3, 2.), 1., 1.), 2.);
+    many.setTint(h, new Color(f32.from(h.slot), 0., 0., 1.));
+    i = i + 1;
+  }
+  mut bad = 0u32;
+  mut taken = 0u32;
+  mut r = 0;
+  while r < 20 {
+    imm w = Mat4.orthographic(-rng.range(5., 30.), rng.range(5., 30.), -rng.range(5., 30.), rng.range(5., 30.), 0., rng.range(20., 120.))
+      * Mat4.lookAt(v3(rng.range(-20., 20.), 0., rng.range(-20., 20.)), v3(0., 0., 0.), v3(0., 1., 0.));
+    imm vol = casterVolume(&w);
+    mut got = List[DrawItem].empty();
+    many.collectCasters(&vol, &cam, 720., &mut got);
+    mut want = List[u32].empty();
+    mut j = 0usize;
+    while j < many.items.len() {
+      imm it = many.items[j];
+      if vol.testAabb(Aabb3.fromCenter(it.center, it.half)) != Outside { want.push(u32.from(j)); }
+      j = j + 1usize;
+    }
+    imm gotSlots = slotsOf(&got);
+    taken = taken + u32.from(want.len());
+    if !sameList(&gotSlots, &want) { bad = bad + 1u32; }
+    r = r + 1;
+  }
+  expectUInt(u64.from(bad), 0u64, "a volume's casters equal brute force");
+  expect(taken > 100u32, "and it caught some");
+}
+
+// ---- 6. Levels and cross-fades ----
+
+// A camera at distance 'd' down +z from the origin, looking at it, 16 degrees of field of view
+fn cameraAt(d f32) Camera {
+  mut cam = Camera.make();
+  cam.fov = radians(16.);
+  cam.near = 0.1;
+  cam.far = 5000.;
+  cam.lookAt(v3(0., 0., d), v3(0., 0., 0.), v3(0., 1., 0.));
+  cam;
+}
+
+// The distance a sphere of radius 1 is 'size' pixels across in a 1000-pixel viewport at
+fn distanceFor(size f32) f32 { 1000. / (size * tan(radians(8.))); }
+
+fn levelsOf(out &List[DrawItem]) List[u32] {
+  mut r = List[u32].empty();
+  mut i = 0usize;
+  while i < out.len() {
+    r.push(out[i].mesh.slot.slot());
+    i = i + 1usize;
+  }
+  r;
+}
+
+fn levelChecks() {
+  mut vis = Visibility.create(0.1);
+  vis.settings.fadeSeconds = 0.5;
+  vis.settings.timeStep = 0.1;
+  imm h = vis.addItem(mesh(10u32), MaterialHandle.none(), Mat4.identity(), new Color(1., 1., 1., 1.),
+    v3(0., 0., 0.), v3(0.6, 0.6, 0.6), 1.);
+  imm chain = chainOf();
+  vis.setChain(h, &chain);
+  mut out = List[DrawItem].empty();
+
+  // 300 pixels: level 0, a first sight: not faded
+  vis.collect(&cameraAt(distanceFor(300.)), 1., 1000., &mut out);
+  expectUInt(u64.from(out.len()), 1u64, "300 pixels: one entry");
+  expectUInt(u64.from(out[0].mesh.slot.slot()), 10u64, "level 0");
+  expectFloat(f64.from(out[0].fade), 0., 0.000001d, "first sight: whole");
+
+  // 150: level 1, a cross-fade over five frames
+  mut t = 0.2;
+  mut frame = 0;
+  while frame < 5 {
+    out.clear();
+    vis.collect(&cameraAt(distanceFor(150.)), 1., 1000., &mut out);
+    if frame < 4 {
+      expectUInt(u64.from(out.len()), 2u64, "mid-fade: two entries");
+      imm levels = levelsOf(&out);
+      expect(*levels[0] == 10u32 and *levels[1] == 11u32, "the old level, then the new");
+      expectFloat(f64.from(out[0].fade), f64.from(t), 0.0001d, "the old level fades out by t");
+      expectFloat(f64.from(out[1].fade), f64.from(0. - t), 0.0001d, "the new fades in by -t");
+    } else {
+      expectUInt(u64.from(out.len()), 1u64, "after five frames: one entry");
+      expectUInt(u64.from(out[0].mesh.slot.slot()), 11u64, "level 1 alone");
+      expectFloat(f64.from(out[0].fade), 0., 0.000001d, "whole");
+    }
+    t = t + 0.2;
+    frame = frame + 1;
+  }
+  expectUInt(u64.from(vis.stats.lodSwitches), 0u64, "(the switch was counted in its own frame)");
+
+  // 210: inside the hysteresis, 230: back to level 0
+  out.clear();
+  vis.collect(&cameraAt(distanceFor(210.)), 1., 1000., &mut out);
+  expectUInt(u64.from(out.len()), 1u64, "210: no change");
+  expectUInt(u64.from(out[0].mesh.slot.slot()), 11u64, "210 pixels stays at level 1 (not past 220)");
+  out.clear();
+  vis.collect(&cameraAt(distanceFor(230.)), 1., 1000., &mut out);
+  expectUInt(u64.from(vis.stats.lodSwitches), 1u64, "230 switches");
+  expectUInt(u64.from(out.len()), 2u64, "230 pixels begins a fade back");
+  expectUInt(u64.from(out[1].mesh.slot.slot()), 10u64, "to level 0");
+
+  // Let it finish, then look away for frames and come back at 20 pixels (level 2): no fade
+  mut j = 0;
+  while j < 5 {
+    out.clear();
+    vis.collect(&cameraAt(distanceFor(230.)), 1., 1000., &mut out);
+    j = j + 1;
+  }
+  expectUInt(u64.from(out.len()), 1u64, "the fade done");
+  j = 0;
+  while j < 6 {
+    out.clear();
+    mut away = cameraAt(distanceFor(230.));
+    away.lookAt(v3(0., 0., distanceFor(230.)), v3(0., 0., 5000.), v3(0., 1., 0.));
+    vis.collect(&away, 1., 1000., &mut out);
+    j = j + 1;
+  }
+  expectUInt(u64.from(out.len()), 0u64, "looking away: nothing");
+  out.clear();
+  vis.collect(&cameraAt(distanceFor(20.)), 1., 1000., &mut out);
+  expectUInt(u64.from(out.len()), 1u64, "back at 20 pixels: one entry, not a fade");
+  expectUInt(u64.from(out[0].mesh.slot.slot()), 12u64, "level 2");
+
+  // The camera's bias: the same distance seen as half the size: 150 pixels as 75 -> level 2
+  vis.settings.crossFade = false;
+  vis.cameraBias = 0.5;
+  out.clear();
+  vis.collect(&cameraAt(distanceFor(150.)), 1., 1000., &mut out);
+  expectUInt(u64.from(out[0].mesh.slot.slot()), 12u64, "a bias of 0.5 sees 150 pixels as 75: level 2");
+  vis.cameraBias = 1.;
+  out.clear();
+  vis.collect(&cameraAt(distanceFor(150.)), 1., 1000., &mut out);
+  expectUInt(u64.from(out[0].mesh.slot.slot()), 11u64, "at bias 1 it is level 1 (a pop: cross-fade off)");
+  expectUInt(u64.from(out.len()), 1u64, "one entry");
+  vis.settings.lod = false;
+  out.clear();
+  vis.collect(&cameraAt(distanceFor(20.)), 1., 1000., &mut out);
+  expectUInt(u64.from(out[0].mesh.slot.slot()), 10u64, "with levels off: level 0 at any size");
+}
+
+// ---- 7. A range at work ----
+
+fn rangeWork() {
+  mut vis = Visibility.create(0.1);
+  imm h = vis.addItem(mesh(10u32), MaterialHandle.none(), Mat4.identity(), new Color(1., 1., 1., 1.),
+    v3(0., 0., 0.), v3(0.6, 0.6, 0.6), 1.);
+  vis.setRange(h, 10., 100., 20.);
+  mut out = List[DrawItem].empty();
+  vis.collect(&cameraAt(5.), 1., 1000., &mut out);
+  expectUInt(u64.from(out.len()), 0u64, "5 away: dropped");
+  expectUInt(u64.from(vis.stats.rangeCulled), 1u64, "and counted");
+  vis.collect(&cameraAt(20.), 1., 1000., &mut out);
+  expectUInt(u64.from(out.len()), 1u64, "20 away: drawn");
+  expectFloat(f64.from(out[0].fade), 0.5, 0.0001d, "by half");
+  out.clear();
+  vis.collect(&cameraAt(50.), 1., 1000., &mut out);
+  expectFloat(f64.from(out[0].fade), 0., 0.000001d, "50 away: whole");
+  out.clear();
+  vis.settings.ranges = false;
+  vis.collect(&cameraAt(500.), 1., 1000., &mut out);
+  expectUInt(u64.from(out.len()), 1u64, "ranges off: drawn at 500");
+}
+
+fn main() i32 {
+  fadeChecks();
+  selectChecks();
+  rangeChecks();
+  cullChecks();
+  casterChecks();
+  levelChecks();
+  rangeWork();
+  done();
+}

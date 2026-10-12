@@ -75,6 +75,11 @@ pub struct RenderView {
   pub drawn u32 = 0u32;        // how many times it has been drawn
   pub drawCalls u32 = 0u32;    // the draws of its last picture
   pub triangles u64 = 0u64;
+  // Which of the scene's cameras it is, for the levels of detail an item keeps
+  // a hysteresis for (1 to 3; the main view is 0), and its bias: the
+  // multiplier of the projected size a small picture wants (visibility.cone)
+  pub lodSlot usize = 1usize;
+  pub lodBias f32 = 1.;
 
   // A view of 'width' by 'height' texels: the picture a texture of 'renderer''s
   // colour format (sampled by materials, copied from with COPY_SRC), and a
@@ -120,7 +125,14 @@ pub struct RenderView {
     imm depthView = depth.createView();
     mut encoder = device.createCommandEncoder();
     if queries.isValid() { encoder.writeTimestamp(&queries, 0u32); }
+    // The scene (visibility.cone) is seen through the same layers, by this view's own camera
+    renderer.vis.layerMask = layerMask;
+    renderer.vis.lodSlot = lodSlot;
+    renderer.vis.cameraBias = lodBias;
     renderer.renderTo(device, &mut encoder, target, depthView, camera, light, &sub);
+    renderer.vis.layerMask = LAYERS_ALL;
+    renderer.vis.lodSlot = 0usize;
+    renderer.vis.cameraBias = 1.;
     if queries.isValid() {
       encoder.writeTimestamp(&queries, 1u32);
       encoder.resolveQuerySet(&queries, 0u32, 2u32, &resolved, 0u64);
