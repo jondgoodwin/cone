@@ -51,7 +51,7 @@ Anything else -- a call, a borrow (`&r`, `&mut r`), a literal -- is evaluated on
 into an anonymous variable, which every test and binding reads through one shared
 name use. A reference is such a value: its copy is the reference. A guard's
 binding reads the value before the arm is chosen, so it takes nothing from a place
-the arms after it test (see [cast](cast.md), "What a binding takes from a place").
+or a held value the arms after it test (see [cast](cast.md), "What a binding takes from a place").
 
 **A bound pattern match is de-sugared**: `if imm c Circle = value {…}` becomes the
 `is` condition and a variable bound to a cast inserted at index 0 of the arm. For
@@ -111,6 +111,34 @@ check refuses an `else` that does not jump (`ifBlockJumps`, `ErrorLetElse`); bec
 jumps, the `if`'s path out is the test holding, so the narrowing after it
 ([narrow](narrow.md)) is the variant. The hidden names are recognized as a match's own
 (`nameIsMatchHolder`) wherever flow asks whether a variable is one.
+
+**A function's pattern, `using`, is the call of that function with the matched value put in
+as its first argument** (`parseUsingCall` reads the call after `using`, a suffix term that must be a
+call with parentheses; `parseUsingMatchee` inserts the value at index 0 of its arguments, so a method's
+comes after the receiver). It is read in three places.
+
+- *A test*, `case using isOdd()`, is a pattern of `parseMatchPattern`: the call is the condition, like any
+  other call a case may hold, so it can be joined by `or`, be a column's pattern and take a guard. A
+  call giving an Option is `ErrorUsingForm` (`ifTypeCheck`), not a condition that is not a bool.
+- *A binding in a match*, `case imm rest using prefix("GET ")`, must run the call once and read its result
+  twice (the test and the binding), which one condition of the flat chain cannot do. So the chain goes on
+  in the `else` of the cases before it, which holds the call's result in a variable and the cases after, as
+  an `elif imm x Some = call` does (`parseBoundMatch`, `usingarm`): `[…, elseCond, { imm -using1 =
+  prefix(matchee, "GET "); if -using1 is Some { imm rest = [Some]-using1; … } elif … }]`. The cases
+  after it are an `IfNode` of their own, marked `FlagIfMatchTail`, which `parseMatch` goes on adding to;
+  it is not a match for `ifMatchCover`, which judges the first `IfNode`, whose last arm is that `else`. The
+  variable is named `-using` and a number, one of a match's own names (`nameIsMatchHolder`).
+  `varDclTypeCheck` asks the variable of that name for an Option, `ErrorUsingForm`, and gives it the error
+  type otherwise, which `castIsTypeCheck` leaves unreported.
+- *A binding in an `if`, an `elif` and a let-else*, `imm rest using prefix("GET ") = line`, reads the call
+  where a type would stand (`parseBindVarDcl`; `parseVarDcl` with `ParseMayUsing`, and `ParseState.usingdcl`
+  to say it did), and the value after `=` becomes its first argument: `imm rest Some = prefix(line, "GET ")`,
+  held and bound as any bound `if` is. A declaration of this kind with no `else` is `ErrorUsingForm`.
+
+The variable takes `Some` (`parseUsingSome`), so the binding is what a variant declared as a type binds: the
+contents. A match with a `using` anywhere in it (`parseUsingSeen`, saved around each match) must end in
+`else`, `ErrorMatchUsing` at parse, and its `IfNode` is marked `FlagIfMatchUsing` so that `ifMatchCover` does
+not call that `else` unreachable when the other cases cover every value.
 
 **A bound pattern to a variant declared as a type binds what it holds**, not the
 variant: type check hoists a hidden local holding the converted value before the
@@ -223,7 +251,9 @@ at the first uncovered combination, which `ErrorMatchNotExhaustive` names (a sin
 names every variant missing).
 *Unreachable?* (`matchUseless`) asks the same of a pure row against the counted rows before
 it, over only the values the row takes: if every combination is taken already, the case is
-`ErrorMatchUnreachable`, and so is an `else` after cases that cover everything.
+`ErrorMatchUnreachable`, and so is an `else` after cases that cover everything, unless the match
+is marked `FlagIfMatchUsing`, which must end in an `else` whatever its other cases cover. The `else` that
+holds the cases after a binding by `using` is reported as the case it is.
 
 A match with no `else` that is covered has its **last case rewritten to `elseCond`**, as
 `ifExhaustCheck` did, so the value of a match needs no other. One that is not covered is
@@ -283,13 +313,15 @@ is the expression the first test reads, generated once before the `switch`
 is the enum's tag field, read through the reference if the matched value is one
 (`genlTagLoad`, which `genlIsVariant` uses too). The plan stops at the first arm that is
 `elseCond`, is not such a test (a guard — the `and` flagged `FlagMatchGuard` —, a `match a, b` row, another
-comparison, a call, a string, a float), tests a different kind of value than the first, holds a
+comparison, a call, which a function's pattern is, a string, a float), tests a different kind of value than the first, holds a
 nullable-pointer variant or a virtual reference, or would take the switch past `SwitchMaxLabels` (512) labels;
 fewer than `SwitchMinArms` (2) arms stay a chain. A value an earlier arm already has keeps that arm
 (LLVM refuses a label twice). Each arm's block is generated as the chain's are (`genlIfArm`): a binding is
 the first statements of the block, not part of the test. The `switch`'s default is the `ifnext` where
 the chain carries on from the first arm not taken, so an `else`, which a match that covers an enum has
-as its last case after `ifMatchCover`, is the default. The only difference from the chain is that the matched
+as its last case after `ifMatchCover`, is the default. A case that tests with a function's pattern is a call,
+so it and the cases after it are that chain; one that binds with it is the `else` that holds the rest of the
+match (Parse), so the cases before it are the `switch` and the rest is its default. The only difference from the chain is that the matched
 value is read once, which no arm could have changed before it was chosen. A debug build's `simplifycfg`
 makes a `switch` of a chain of `==` or of tag tests too, but not of ranges, and a chain it cannot make
 one of costs a compare for each arm; the plan makes the `switch` before any pass, in every build.

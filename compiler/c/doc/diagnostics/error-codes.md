@@ -132,6 +132,13 @@ codes because the remedies are opposite (add a case or an `else`; delete one). A
 the columns of `match a, b` (a `_` in a match of one value, too few or too many patterns in a
 case, a column that binds a variable) is `ErrorMatchColumn`, at parse.
 
+`ErrorMatchUsing` and `ErrorUsingForm` are about a pattern a function runs, `using f(args)`. A match
+with one that does not end in `else` is `ErrorMatchUsing`, at parse: what a function matches only
+running it says, so the rest is the writer's to say. Every other misuse is `ErrorUsingForm`: `using`
+without the call of a function, a binding by `using` that is a declaration with no `else`, and a function
+that gives the wrong thing, which type check finds (a binding whose function gives no Option, a test
+whose function gives an Option). A binding in a column of `match a, b` is still `ErrorMatchColumn`.
+
 `ErrorRegionMark`, `ErrorRegionNew` and `ErrorRegionHead` are about a type's memory region. A
 type declaring `CarriesRegion` that declares no init, or an init whose last parameter is not
 `region *MemRegion`, is `ErrorRegionMark` (name resolution). An allocation in a region,

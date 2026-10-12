@@ -740,7 +740,16 @@ Visual Studio projects stay at the root.
   an absolute deadline, handed to `submitIn`; a dropped `Socket`
   closes, cancelling what is in flight on it; its finalizer, which `finalAll()` runs before `actors`', waits for
   quiet and ends the I/O, every behaviour still paused on it abandoned, its
-  record's values finalized; `render` draws lit
+  record's values finalized; `netmsg` (a working name) is a game's protocol over
+  UDP after Gaffer On Games: a sans-IO `ConnectionCore` (a 16-bit sequence, an ack and a
+  32-bit ack bitfield in every packet; reliable ordered messages kept and resent
+  until acknowledged; latest-wins values on streams, sent once, a priority
+  accumulator filling a 1200-byte packet; a two-state send rate), a stateless
+  SipHash cookie `ChallengeGate`/`ClientHandshake` handshake, a `LinkSim` lossy link, and the
+  actors over them: a `Connection` an application sends to and an `EventHandler` of
+  `NetEvent`s it hears from, joined over UDP (an `Endpoint` and the thread
+  that owns its `iocore` socket), in-process (`pairInProcess`) or across a
+  simulated link (`pairSimulated`); no encryption, no fragmentation yet; `render` draws lit
   meshes through `gpu` (nothing of Vulkan's in it): a `Renderer` holding
   GPU meshes made once from a `mesh.Mesh` (a vertex buffer a stream, 32-bit
   indices, a draw a material group), textures and materials in `pool`s,
@@ -748,7 +757,17 @@ Visual Studio projects stay at the root.
   (swapped in at the next frame, the old buffers released after the frames
   that drew them), `LodChain` (levels of detail chosen by index or by
   projected size, with hysteresis), `Camera` (depth 0 to 1) and `Light`
-  (one directional light and ambient), one lighting convention for every
+  (one directional light and ambient), point and spot lights by handle
+  (`src/lights.cone`, `src/locallights.slang`: candela, a falloff windowed
+  to a range, a spot's cone, a source radius, layer masks, clustered
+  forward shading over a 16 x 9 x 24 froxel grid assigned on the CPU, 1,024
+  lights, 64 to a cluster; the lit and physically based materials loop over
+  their cluster's lights; their shadows (`src/lightshadow.cone`: a spot
+  light one perspective view, a point light six, layers of a depth texture
+  array given to the best ranked lights, drawn by the sun's casters);
+  tests `lights.cone`, `lightshadows.cone` and `lightsoff.cone`, which
+  checks that a scene without reachable lights is bit for bit as it was;
+  example `lanterns.cone`), one lighting convention for every
   material (`src/renderframe.slang`: the light's colour an irradiance, lux
   in physical units, ambient, sky and emissive colours radiance, nits, and
   everything drawn multiplied by the renderer's `exposure`, which

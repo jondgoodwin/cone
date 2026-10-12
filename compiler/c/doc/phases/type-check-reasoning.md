@@ -567,13 +567,16 @@ binds each place afresh. A generic's type arguments carrying brands are kept
 on the instance's use (`lifeUseInstance`), a function's as well as a type's.
 
 **Set position.** `x[i] = v`, `x[i].f = v`, an operator changing it in place,
-and a `self &mut` method whose receiver is `x[i]` ask the type's `&[]` for
-the element's mutable borrow, as Rust's `IndexMut` is chosen for a place
-written to: `assignTypeCheck` and an `FlagLvalOp` call mark the index at the
-place's root (`fnCallSetIndexRoot`, `fnCallSetIndex`), which `fnCallTypeCheck`
-lowers with `FlagBorrow`, and `fnCallIndexAsMut` lowers a receiver again
-where no method takes the read-only element. This is what makes
-`arena[key] = v` a write through the arena.
+a `&mut` borrow of a place through an index, and a `self &mut` method whose
+receiver is `x[i]` or a field of it ask the type's `&[]` for the element's
+mutable borrow, as Rust's `IndexMut` is chosen for a place written to, for
+every index in the chain of field and index steps the place is, whatever its
+depth: `assignTypeCheck`, an `FlagLvalOp` call and `borrowTypeCheck` mark the
+indexes of the place (`fnCallSetPlace`), which `fnCallTypeCheck` lowers with
+`FlagBorrow`; a method that writes its receiver is known to only once it is
+selected, so `fnCallBorrowReceiver` and `fnCallIndexAsMut` lower the receiver's
+indexes again where no method takes the read-only element (`fnCallPlaceAsMut`).
+This is what makes `arena[key] = v` a write through the arena.
 
 Nothing here is a solver: every check is two names compared, after at most
 one binding of each.

@@ -682,18 +682,6 @@ CastNode *castNarrowRef(INode *exp, RefNode *to) {
     return cast;
 }
 
-// Is this the use of a hidden variable a match keeps its value in (the anonymous
-// one, or a later column's)?
-static int castIsHeldUse(INode *exp) {
-    if (!isNameUseNode(exp) || !isExpNode(exp))
-        return 0;
-    INode *dcl = ((NameUseNode *)exp)->dclnode;
-    if (dcl == NULL || dcl->tag != VarDclTag)
-        return 0;
-    Name *name = ((VarDclNode *)dcl)->namesym;
-    return name == anonName || (&name->namestr)[0] == '-';
-}
-
 // Is a variant plain data: nothing in it to move, finalize, count or trace? Reading
 // its bytes out of a place is a copy of it, and the place keeps its own.
 static int castVariantIsPlain(StructNode *variant) {
@@ -702,14 +690,13 @@ static int castVariantIsPlain(StructNode *variant) {
         && !flowIsRcRef(type) && !flowHeldCounted(type);
 }
 
-// A guard's binding reads the matched place before the arm is chosen, so it takes
-// nothing from it. What the pattern binds is copied if it is plain data, and where it
-// moves (an owner) the guard is shown it through a read-only borrow of the place, so
+// A guard's binding reads the matched value before the arm is chosen, so it takes
+// nothing from it, whether it is a place or held in a hidden variable. What the pattern binds is copied if it is plain data, and where it
+// moves (an owner) the guard is shown it through a read-only borrow of the value, so
 // that a guard which fails leaves the place whole for the cases after it. The
 // pattern's type node is the 'is' test's, bound by the test before the guard.
 static void castGuardBorrow(CastNode *cast) {
-    if (!(cast->flags & FlagMatchGuardBind) || castPatternPending(cast->typ) || !isTypeNode(cast->typ)
-        || castIsHeldUse(cast->exp))
+    if (!(cast->flags & FlagMatchGuardBind) || castPatternPending(cast->typ) || !isTypeNode(cast->typ))
         return;
     INode *variant = itypeGetTypeDcl(cast->typ);
     if (variant->tag != StructTag || castVariantIsPlain((StructNode *)variant))
@@ -894,6 +881,15 @@ void castIsTypeCheck(TypeCheckState *pstate, CastNode *node) {
     node->vtype = (INode*)boolType;
     iexpTypeCheckAny(pstate, &node->exp);
     narrowNoteTest((INode*)node);
+    // A value already reported has no variants to name, so the pattern says nothing of it
+    if (isExpNode(node->exp) && ((IExpNode*)node->exp)->vtype == errorType) {
+        NameUseNode *root = castPatternName(node->typ, NULL);
+        if (root) {
+            root->flags &= 0xFFFF - FlagPattern;
+            root->dclnode = errorType;
+        }
+        return;
+    }
     if (!castPatternBind(node, 1))
         return;
     itypeTypeCheck(pstate, &node->typ);

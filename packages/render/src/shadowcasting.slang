@@ -27,9 +27,17 @@ struct CasterImmediates {
 
 [[vk::push_constant]] ConstantBuffer<CasterImmediates> casterDraw;
 
-// The clip position of the world point 'world' in the cascade being drawn
+// The clip position of the world point 'world' in the view being drawn: the
+// immediate 0 to 3 is a cascade of the sun's, 4 and on a point or spot
+// light's view (lightshadow.cone)
 float4 casterClip(float3 world) {
-    float4 clip = mul(shadowParams.cascade[casterDraw.cascade], float4(world, 1.0));
+    uint view = casterDraw.cascade;
+    float4 clip;
+    if (view < 4) {
+        clip = mul(shadowParams.cascade[view], float4(world, 1.0));
+    } else {
+        clip = mul(shadowParams.localView[view - 4], float4(world, 1.0));
+    }
     clip.z = max(clip.z, 0.0);
     return clip;
 }

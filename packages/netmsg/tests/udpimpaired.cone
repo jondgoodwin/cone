@@ -1,0 +1,180 @@
+// A server and two clients over real UDP sockets on loopback, with a relay
+// between them that loses 20% of the datagrams each way, delays them by 20 ms
+// plus up to 10 ms of jitter, and duplicates and reorders some. Each client
+// and the server send 150 reliable messages, and values on latest-wins
+// streams while they wait. Every reliable message arrives exactly once and in
+// order, in both directions, for both clients; the values never go backwards;
+// and the clients measured a round trip.
+
+mod udpimpaired;
+
+import testing use *;
+import collections use *;
+import sync use *;
+import time use Duration, Instant;
+import iocore use SocketAddr;
+import actors;
+import netmsg use *;
+
+const total = 150u64;
+
+struct Tally {
+  pub next u64;          // the reliable message due next
+  pub wrong u64;
+  pub lastValue u64;
+  pub values u64;
+  pub backwards u64;
+  pub left u64;
+  pub refused u64;       // sends refused for being over one packet
+}
+
+fn numberOf(data &Array[u8]) u64 {
+  mut n = 0u64;
+  mut i = 0usize;
+  while i < data.len {
+    n = (n << 8u64) | u64.from(data[i]);
+    i = i + 1usize;
+  }
+  n;
+}
+
+fn numberBytes(n u64) List[u8] {
+  mut b = List[u8].empty();
+  putU32(&mut b, u32.from(n));
+  b;
+}
+
+// Count one event into a tally; a Joined's connection is handed back
+fn note(e &NetEvent, t &mut Tally, joined &mut List[Connection]) {
+  match e {
+    case imm j &Joined { joined.push(j.conn); }
+    case imm m &Message {
+      if numberOf(m.data.view()) != t.next {t.wrong = t.wrong + 1u64;}
+      t.next = t.next + 1u64;
+    }
+    case imm u &Update {
+      imm v = numberOf(u.data.view());
+      if t.values > 0u64 and v <= t.lastValue {t.backwards = t.backwards + 1u64;}
+      t.lastValue = v;
+      t.values = t.values + 1u64;
+    }
+    case imm l &Left { t.left = t.left + 1u64; }
+    case imm r &Refused { if r.size > r.limit {t.refused = t.refused + 1u64;} }
+  }
+}
+
+fn big(n usize) List[u8] {
+  mut b = List[u8].empty();
+  mut i = 0usize;
+  while i < n {
+    b.push(7u8);
+    i = i + 1usize;
+  }
+  b;
+}
+
+fn newTally() Tally {new Tally(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);}
+
+fn main() i32 {
+  mut txS Sender[NetEvent];
+  mut rxS Receiver[NetEvent];
+  txS, rxS = Channel[NetEvent].make();
+  mut txA Sender[NetEvent];
+  mut rxA Receiver[NetEvent];
+  txA, rxA = Channel[NetEvent].make();
+  mut txB Sender[NetEvent];
+  mut rxB Receiver[NetEvent];
+  txB, rxB = Channel[NetEvent].make();
+  {
+    mut cfg = NetConfig.defaults();
+    cfg.timeoutMs = 20000i64;
+    imm server = mustListen(SocketAddr.localhost(0u16), cfg, channelHandler(txS));
+    imm link = new LinkConfig(200u32, 20i64, 10i64, 30u32, 30u32, 25i64);
+    mut relay = startLossyRelay(SocketAddr.localhost(server.port), link, link, 5u64);
+    imm clientA = mustConnect(SocketAddr.localhost(relay.port), cfg, channelHandler(txA));
+    imm clientB = mustConnect(SocketAddr.localhost(relay.port), cfg, channelHandler(txB));
+
+    // The server hears from two clients, told apart by id; the clients from one
+    mut tS1 = newTally();            // what the server heard from the first client to join
+    mut tS2 = newTally();
+    mut tA = newTally();
+    mut tB = newTally();
+    mut connsS = List[Connection].empty();
+    mut connA = List[Connection].empty();
+    mut connB = List[Connection].empty();
+    mut sentA = 0u64;
+    mut sentB = 0u64;
+    mut sentS1 = 0u64;
+    mut sentS2 = 0u64;
+    mut tick = 0u64;
+    imm until = Instant.now() + Duration.fromSeconds(60i64);
+    mut doneAll = false;
+    mut settle = until;          // when everything has arrived, a little longer for the values
+    while Instant.now() < settle {
+      // Everyone listens a little
+      match rxS.recvTimeout(Duration.fromMillis(3i64)) {
+        case imm e Some {
+          match &e {
+            case imm m &Message {
+              if m.id == 1u32 {note(&e, &mut tS1, &mut connsS);} else {note(&e, &mut tS2, &mut connsS);}
+            }
+            case imm u &Update {
+              if u.id == 1u32 {note(&e, &mut tS1, &mut connsS);} else {note(&e, &mut tS2, &mut connsS);}
+            }
+            else { note(&e, &mut tS1, &mut connsS); }
+          }
+        }
+        case is None[NetEvent] {}
+      }
+      match rxA.tryRecv() {
+        case imm e Some { note(&e, &mut tA, &mut connA); }
+        case is None[NetEvent] {}
+      }
+      match rxB.tryRecv() {
+        case imm e Some { note(&e, &mut tB, &mut connB); }
+        case is None[NetEvent] {}
+      }
+      // Once they are all joined, everyone sends everything, and values as time goes
+      if connA.len() == 1usize and connB.len() == 1usize and connsS.len() == 2usize {
+        while sentA < total {
+          connA[0usize].sendReliable(numberBytes(sentA));
+          connB[0usize].sendReliable(numberBytes(sentA));
+          connsS[0usize].sendReliable(numberBytes(sentA));
+          connsS[1usize].sendReliable(numberBytes(sentA));
+          if sentA == 75u64 {
+            // Over one packet: refused to each sender, sent to nobody, the numbering unbroken
+            connA[0usize].sendReliable(big(1174usize));
+            connB[0usize].sendReliable(big(2000usize));
+            connsS[0usize].sendLatest(2u16, big(1172usize));
+          }
+          sentA = sentA + 1u64;
+        }
+        tick = tick + 1u64;
+        connA[0usize].sendLatest(1u16, numberBytes(tick));
+        connB[0usize].sendLatest(1u16, numberBytes(tick));
+        connsS[0usize].sendLatest(2u16, numberBytes(tick));
+        connsS[1usize].sendLatest(2u16, numberBytes(tick));
+      }
+      if not doneAll and tS1.next == total and tS2.next == total and tA.next == total and tB.next == total {
+        doneAll = true;
+        settle = Instant.now() + Duration.fromMillis(1500i64);
+      }
+    }
+    expect(doneAll, "everything arrived inside a minute");
+    expectUInt(tS1.next + tS2.next, 2u64 * total, "the server heard 150 messages from each client");
+    expectUInt(tA.next, total, "client A heard 150 from the server");
+    expectUInt(tB.next, total, "client B heard 150 from the server");
+    expectUInt(tS1.wrong + tS2.wrong + tA.wrong + tB.wrong, 0u64, "each once, in order");
+    expectUInt(tS1.backwards + tS2.backwards + tA.backwards + tB.backwards, 0u64, "values never went backwards");
+    expect(tA.values > 0u64 and tB.values > 0u64 and tS1.values > 0u64, "values arrived");
+    expectUInt(tS1.left + tS2.left + tA.left + tB.left, 0u64, "nobody was disconnected");
+    expectUInt(tA.refused, 1u64, "client A's message over a packet was refused, and A heard so");
+    expectUInt(tB.refused, 1u64, "so was client B's");
+    expectUInt(tS1.refused + tS2.refused, 1u64, "and the server's value over a packet");
+    clientA.endpoint.shutdown();
+    clientB.endpoint.shutdown();
+    server.endpoint.shutdown();
+    relay.stop();
+  }
+  done();
+}

@@ -859,6 +859,32 @@ static int pwMayAliasWritten(INode *reftype) {
 // raw pointer, or through a reference that is not read from a variable. A
 // reference that may alias makes the path shared from there on.
 static int pwIsOwnedLent(CastNode *cast);
+
+// Set while the receiver of a method returning a borrow, on a container that changes
+// shape, is walked: a reference a call returns, read through on the way to that
+// receiver ('ui.items[0].label.view()'), is held by a stand-in variable (pwStandIn), as the
+// name it would be given ('imm item = ui.items[0]; item.label.view()') would hold it
+static int pwStandInOn = 0;
+
+// A stand-in variable for the reference a call returned: it holds what the call carries, and
+// ends with the statement as a temporary does (pwTempsEnd)
+static uint32_t pwStandIn(INode *call, PathSet *holds) {
+    VarDclNode *var = newVarDclFull(tempName, VarDclTag, ((IExpNode *)call)->vtype, (INode *)immPerm, NULL);
+    inodeLexCopy((INode *)var, call);
+    var->scope = 2;
+    var->flowtracked = 1;
+    uint32_t index = pathVar(var);
+    PathVar *pv = &pathVars[index];
+    pv->temp = 1;
+    pv->holder = pwCarries(var->vtype);
+    if (pv->holder)
+        pathSetFacts(index, holds, NULL);
+    if (ntemps == tempcap)
+        temps = (uint32_t *)pathGrow(temps, &tempcap, sizeof(uint32_t));
+    temps[ntemps++] = index;
+    return index;
+}
+
 static int pwThrough(INode **refp, Place *pl, PathSet **base) {
     INode *reftype = iexpGetTypeDcl(*refp);
     if (reftype->tag != RefTag && reftype->tag != ArrayRefTag && reftype->tag != VirtRefTag) {
@@ -866,8 +892,22 @@ static int pwThrough(INode **refp, Place *pl, PathSet **base) {
         return 0;
     }
     Place refpl;
-    if (!pwPlace(refp, &refpl, base))
-        return 0;
+    if (!pwPlace(refp, &refpl, base)) {
+        if (!pwStandInOn || (*refp)->tag != FnCallTag || reftype->tag != RefTag || !pwIsBorrowed(reftype))
+            return 0;
+        refpl.var = pwStandIn(*refp, *base);
+        refpl.deref = 0;
+        refpl.nsteps = 0;
+        refpl.shared = 0;
+        refpl.sharedlen = 0;
+        refpl.shwrite = 0;
+        refpl.owned = 0;
+        refpl.far = 0;
+        refpl.use = *refp;
+        refpl.referent = NULL;
+        refpl.slotted = NULL;
+        refpl.slots = 0;
+    }
     if (pwIsBorrowed(reftype)) {
         // The reference itself is read: a variable it is read from that some
         // path reaching here did not give a value is refused
@@ -2015,7 +2055,18 @@ static PathSet *pwCall(FnCallNode *call) {
         INode **argsp = &nodesGet(call->args, argi);
         PathSet *carried;
         if (meth && argi == 0) {
+            // A borrow this method returns out of a container that changes shape, the container
+            // reached through a reference another call returned, is followed as if that reference
+            // were held by a name (pwStandIn)
+            int savedstandin = pwStandInOn;
+            pwStandInOn = 0;
+            if (carries && pathLoans) {
+                INode *selftype = iexpGetTypeDcl(nodesGet(((FnSigNode *)meth->vtype)->parms, 0));
+                INode *selfcont = selftype->tag == RefTag ? itypeGetTypeDcl(((RefNode *)selftype)->vtexp) : NULL;
+                pwStandInOn = selfcont && selfcont->tag == StructTag && shapeChanging((StructNode *)selfcont);
+            }
             carried = pwReceiver(call, meth, &recvpl, &recvloan, &recvaccess);
+            pwStandInOn = savedstandin;
             twophase = recvloan && pwTwoPhase(recvaccess);
             loanFlightPushOf(carried, twophase ? recvloan : 0, *argsp);
             recvholds = carried;

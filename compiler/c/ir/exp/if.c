@@ -532,11 +532,22 @@ static int ifMatchCover(IfNode *ifnode, int clean) {
             INode *armcond = nodesGet(ifnode->condblk, i * 2);
             if (row->pure && ncounted > 0 && matchUseless(rows, counted, ncounted, row, 0, ncols, cols)) {
                 INode *where = armcond == elseCond ? nodesGet(ifnode->condblk, i * 2 + 1) : matchCaseStart(armcond);
-                if (armcond == elseCond)
+                // The 'else' that holds the cases after one binding with a function's pattern is that case
+                INode *tail = where->tag == BlockTag && ((BlockNode*)where)->stmts && ((BlockNode*)where)->stmts->used
+                    ? nodesLast(((BlockNode*)where)->stmts) : NULL;
+                if (armcond == elseCond && tail && tail->tag == IfTag && (tail->flags & FlagIfMatchTail)) {
+                    errorMsgNode(tail, ErrorMatchUnreachable, "This case can never run: the cases before it cover every value.");
+                    reported = 1;
+                }
+                // (a match with a function's pattern must end in 'else' whatever the other cases cover)
+                else if (armcond == elseCond && !(ifnode->flags & FlagIfMatchUsing)) {
                     errorMsgNode(where, ErrorMatchUnreachable, "This 'else' can never run: the cases before it cover every value.");
-                else
+                    reported = 1;
+                }
+                else if (armcond != elseCond) {
                     errorMsgNode(where, ErrorMatchUnreachable, "This case can never run: the cases before it match every value it matches.");
-                reported = 1;
+                    reported = 1;
+                }
             }
             if (row->pure && !row->guarded)
                 counted[ncounted++] = (int)i;
@@ -638,8 +649,15 @@ void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode, INode *expectType) {
             ifExhaustCheck(ifnode, (CastNode*)*nodesp);
 
         if (*nodesp != elseCond) {
-            if (0 == iexpCoerce(nodesp, (INode*)boolType))
-                errorMsgNode(*nodesp, ErrorInvType, "Conditional expression requires true/false value (possibly via implicit .isTrue).");
+            if (0 == iexpCoerce(nodesp, (INode*)boolType)) {
+                // A case that tests with a function's pattern, 'case using f()', wants a bool; an Option is bound
+                INode *given = isExpNode(*nodesp) ? iexpGetTypeDcl(*nodesp) : NULL;
+                if ((ifnode->flags & (FlagIfMatch | FlagIfMatchTail)) && given && given->tag == StructTag && ((StructNode*)given)->namesym == optionName)
+                    errorMsgNode(*nodesp, ErrorUsingForm,
+                        "A case that only tests with a function's pattern, 'case using f()', needs a function giving a bool, and this one gives an Option. An Option is bound: 'case imm x using f()'.");
+                else
+                    errorMsgNode(*nodesp, ErrorInvType, "Conditional expression requires true/false value (possibly via implicit .isTrue).");
+            }
             NarrowEnv *aftercond = narrowSave();
             narrowAssume(*nodesp, 0);
             pathenv = narrowSave();

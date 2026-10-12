@@ -1,0 +1,108 @@
+// A limp ragdoll dropped from 2 m onto the ground (the soles 2 m up, the rest pose): every step the joints are
+// checked, and the fall's impact and rest are measured.
+//
+//   joints   no joint's two anchors are ever 8 cm apart (6 cm is the worst measured, at the ankles on landing),
+//            no hinge is past its limit by more than 0.1 rad (6 degrees), no cone-twist is past its cone by more
+//            than 0.1 rad or its twist range by more than 0.1 rad. The solver's limits are soft rows (a stiff
+//            spring, rigiddynamics' jointHertz), so a 6 m/s landing goes a little past them for a few steps.
+//            The elliptical swing ranges are held by a pass that nudges the swing back each step and cannot beat a
+//            body lying on a joint, so the check is only that no swing is past its range by more than the solver's
+//            round cone's: the ellipse measure (u/a)^2 + (v/b)^2 under 3 (the cone is 2.5 times the spine's
+//            extension range, the worst case).
+//   impact   a fall from 2 m meets the ground at sqrt(2 g h) = 6.26 m/s (less a little to the damping); the
+//            ragdoll's centre-of-mass speed before the first contact is measured and the landing the events report is
+//            within 20% of it: 'peak', the net change of velocity over the landing, is more than that speed because
+//            the body then collapses and lands again on its hips
+//   rest     it is settled (every body under 0.15 m/s for 0.4 s) within 4 s of the release, ends lying with the
+//            pelvis under 0.3 m high, and no body is ever lower than the ground by more than 2 cm
+//   world    all of it on tuneWorld's settings (8 sub-steps, contacts at 120 Hz), the ones measured in its comment
+
+mod drop;
+
+import testing use *;
+import collections use List;
+import geomath use *;
+import rigidcollide use *;
+import rigiddynamics use *;
+import bonepose use * but absf, clampf;
+import ragdollrig use *;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+fn twistAbout(q0 Quat) f32 {
+  imm sg = if q0.w < 0. { -1.; } else { 1.; };
+  wrapAngle(2. * atan2(q0.x * sg, q0.w * sg));
+}
+
+fn main() i32 {
+  imm skel = humanoid(1.75);
+  imm spec = humanoidSpec(&skel, 1.75, 70.);
+  mut w = World.make();
+  tuneWorld(&mut w);
+  imm ground = w.addShape(Shape.single(Prim.box(new Vec3(20., 1., 20.))));
+  w.createBody(BodyDef.staticAt(ground, new Vec3(0., -1., 0.)));
+  mut rig = Ragdoll.make(&mut w, &skel, &spec, Rigid.at(new Vec3(0., 2., 0.)), 1u32);
+  rig.blend = 0.;
+  mut worstAnchor = 0.;
+  mut worstHinge = 0.;
+  mut worstCone = 0.;
+  mut worstTwist = 0.;
+  mut worstEllipse = 0.;
+  mut deepest = 0.;
+  mut finite = true;
+  mut fastest = 0.;
+  mut firstImpact = -1;
+  mut settledAt = -1;
+  mut i = 0;
+  while i < 360 {
+    imm before = comVelocity(&rig, &w);
+    if firstImpact < 0 { fastest = maxf(fastest, -before.y); }
+    stepRagdoll(&mut rig, &mut w, 1. / 60.);
+    if firstImpact < 0 and lastImpactSpeed(&rig) > 0. { firstImpact = i; }
+    if settledAt < 0 and rig.settled { settledAt = i; }
+    deepest = minf(deepest, rig.lowestPoint(&w, &spec));
+    mut k = 0usize;
+    while k < rig.links.len() {
+      imm l = rig.links[k];
+      imm p = w.positionOf(l.body);
+      if not (p.x < 1000. and p.x > -1000. and p.y < 1000. and p.y > -1000.) { finite = false; }
+      if l.joint != NoBody {
+        imm j = w.joints[usize.from(l.joint)];
+        worstAnchor = maxf(worstAnchor, w.jointError(l.joint));
+        if l.kind == JOINT_HINGE {
+          imm a = w.hingeAngleOf(l.joint);
+          worstHinge = maxf(worstHinge, maxf(l.lo - a, a - l.hi));
+        } else {
+          imm pl = rig.links[usize.from(l.parent)];
+          imm fa = (w.rotationOf(pl.body) * j.fa).normalize();
+          imm fb = (w.rotationOf(l.body) * j.fb).normalize();
+          imm swing = acos(clampf((fa * new Vec3(1., 0., 0.)).dot(fb * new Vec3(1., 0., 0.)), -1., 1.));
+          worstCone = maxf(worstCone, swing - l.cone);
+          imm tw = twistAbout((fa.conjugate() * fb).normalize());
+          worstTwist = maxf(worstTwist, maxf(l.lo - tw, tw - l.hi));
+          worstEllipse = maxf(worstEllipse, swingMeasure(&rig, &w, k));
+        }
+      }
+      k = k + 1usize;
+    }
+    i = i + 1;
+  }
+  expectBool(finite, true, "every body stays finite");
+  expectBool(worstAnchor < 0.08, true, "no joint's anchors are ever 8 cm apart, in 360 steps");
+  expectBool(worstHinge < 0.1, true, "no hinge is ever 0.1 rad past its limit");
+  expectBool(worstCone < 0.1, true, "no cone-twist is ever 0.1 rad past its cone");
+  expectBool(worstTwist < 0.1, true, "no cone-twist is ever 0.1 rad past its twist range");
+  expectBool(worstEllipse < 3.0, true, "no swing is past the round cone's worst case of the elliptical range");
+  expectBool(deepest > -0.02, true, "nothing sinks more than 2 cm into the ground (1.3 measured)");
+  // the impact
+  expectBool(firstImpact > 30 and firstImpact < 50, true, "the first contact is at about 0.65 s (step 39)");
+  near(fastest, 6.1, 0.5, "the fall's speed before the first contact is about sqrt(2 g h), less damping");
+  expectBool(rig.peak > 0.8 * fastest and rig.peak < 1.35 * fastest, true, "the landing the events report is about the speed it fell at");
+  // the rest
+  expectBool(settledAt > 0 and settledAt < 240, true, "it is settled within 4 s");
+  expectBool(rig.settled, true, "and is still settled at 6 s");
+  expectBool(w.positionOf(rig.bodyOfBone(PELVIS)).y < 0.3, true, "it ends lying, the pelvis under 0.3 m");
+  done();
+}
