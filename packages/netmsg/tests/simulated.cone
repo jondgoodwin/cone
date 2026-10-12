@@ -23,6 +23,16 @@ fn numberOf(data &Array[u8]) u64 {
   n;
 }
 
+fn big(n usize) List[u8] {
+  mut b = List[u8].empty();
+  mut i = 0usize;
+  while i < n {
+    b.push(7u8);
+    i = i + 1usize;
+  }
+  b;
+}
+
 fn numberBytes(n u64) List[u8] {
   mut b = List[u8].empty();
   putU32(&mut b, u32.from(n));
@@ -37,6 +47,8 @@ struct Tally {
   pub backwards u64;
   pub left u64;
   pub firstAt Instant;
+  pub refused u64;
+  pub refusedWrong u64;
 }
 
 fn note(e &NetEvent, t &mut Tally, joined &mut List[Connection]) {
@@ -54,6 +66,11 @@ fn note(e &NetEvent, t &mut Tally, joined &mut List[Connection]) {
       t.values = t.values + 1u64;
     }
     case imm l &Left { t.left = t.left + 1u64; }
+    case imm r &Refused {
+      // Only the oversize message and value this test offers are refused, with the limits the default packet gives
+      if r.limit == (if r.reliable {1173usize;} else {1171usize;}) and r.size == r.limit + 1usize {t.refused = t.refused + 1u64;}
+      else {t.refusedWrong = t.refusedWrong + 1u64;}
+    }
   }
 }
 
@@ -67,8 +84,8 @@ fn main() i32 {
   {
     imm link = new LinkConfig(200u32, 30i64, 20i64, 20u32, 20u32, 40i64);
     mut pair = pairSimulated(NetConfig.defaults(), link, link, 11u64, channelHandler(txA), 1u32, channelHandler(txB), 1u32);
-    mut ta = new Tally(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, Instant.now());
-    mut tb = new Tally(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, Instant.now());
+    mut ta = new Tally(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, Instant.now(), 0u64, 0u64);
+    mut tb = new Tally(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, Instant.now(), 0u64, 0u64);
     mut ca = List[Connection].empty();
     mut cb = List[Connection].empty();
     imm started = Instant.now();
@@ -95,6 +112,9 @@ fn main() i32 {
             cb[0usize].sendReliable(numberBytes(i));
             i = i + 1u64;
           }
+          // One message over a packet from a, one value from b: refused, not sent, no panic
+          ca[0usize].sendReliable(big(1174usize));
+          cb[0usize].sendLatest(1u16, big(1172usize));
         }
         tick = tick + 1u64;
         ca[0usize].sendLatest(1u16, numberBytes(tick));
@@ -111,6 +131,9 @@ fn main() i32 {
     expect(ta.values > 0u64 and tb.values > 0u64, "values arrived");
     expect((tb.firstAt - started).millis() >= 30i64, "the first message took at least the link's delay");
     expectUInt(ta.left + tb.left, 0u64, "still connected");
+    expectUInt(ta.refused, 1u64, "a's message over one packet was refused, and a heard so");
+    expectUInt(tb.refused, 1u64, "b's value over one packet likewise");
+    expectUInt(ta.refusedWrong + tb.refusedWrong, 0u64, "with the sizes and limits of the default packet");
     pair.stop();
     pair.a.close();
   }

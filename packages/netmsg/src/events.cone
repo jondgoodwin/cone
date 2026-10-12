@@ -8,6 +8,12 @@
 // It is called by the connection's actor, one event at a time per connection,
 // in the order they happened.
 
+// Why a send was refused
+pub enum RefusalKind {
+  TooLarge,         // over maxReliableBytes (a message) or maxLatestBytes (a value)
+  TooManyStreams;   // a 65th latest-wins stream
+}
+
 // What happened on a connection. 'id' names the connection: the server numbers
 // the clients as they join, from 1; a client's one connection is 1.
 pub enum NetEvent {
@@ -15,6 +21,12 @@ pub enum NetEvent {
   pub struct Joined {pub id u32; pub conn Connection;}
   // It has ended. Nothing more arrives for this id
   pub struct Left {pub id u32; pub reason CloseReason;}
+  // A send was refused and nothing was sent: the message or value is bigger
+  // than one packet carries (fragmentation is not built), or the connection
+  // already has the most streams. It comes to the handler of the connection
+  // that was sent on, once for each refusal; the connection goes on. 'size' is
+  // the bytes offered and 'limit' the most allowed.
+  pub struct Refused {pub id u32; pub reliable bool; pub stream u16; pub why RefusalKind; pub size usize; pub limit usize;}
   // A reliable message from the other end: each arrives once, in the order sent
   pub struct Message {pub id u32; pub data List[u8];}
   // The newest value of a latest-wins stream; an older one never follows it

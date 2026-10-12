@@ -25,6 +25,7 @@ struct Tally {
   pub values u64;
   pub backwards u64;
   pub left u64;
+  pub refused u64;       // sends refused for being over one packet
 }
 
 fn numberOf(data &Array[u8]) u64 {
@@ -58,10 +59,21 @@ fn note(e &NetEvent, t &mut Tally, joined &mut List[Connection]) {
       t.values = t.values + 1u64;
     }
     case imm l &Left { t.left = t.left + 1u64; }
+    case imm r &Refused { if r.size > r.limit {t.refused = t.refused + 1u64;} }
   }
 }
 
-fn newTally() Tally {new Tally(0u64, 0u64, 0u64, 0u64, 0u64, 0u64);}
+fn big(n usize) List[u8] {
+  mut b = List[u8].empty();
+  mut i = 0usize;
+  while i < n {
+    b.push(7u8);
+    i = i + 1usize;
+  }
+  b;
+}
+
+fn newTally() Tally {new Tally(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);}
 
 fn main() i32 {
   mut txS Sender[NetEvent];
@@ -129,6 +141,12 @@ fn main() i32 {
           connB[0usize].sendReliable(numberBytes(sentA));
           connsS[0usize].sendReliable(numberBytes(sentA));
           connsS[1usize].sendReliable(numberBytes(sentA));
+          if sentA == 75u64 {
+            // Over one packet: refused to each sender, sent to nobody, the numbering unbroken
+            connA[0usize].sendReliable(big(1174usize));
+            connB[0usize].sendReliable(big(2000usize));
+            connsS[0usize].sendLatest(2u16, big(1172usize));
+          }
           sentA = sentA + 1u64;
         }
         tick = tick + 1u64;
@@ -150,6 +168,9 @@ fn main() i32 {
     expectUInt(tS1.backwards + tS2.backwards + tA.backwards + tB.backwards, 0u64, "values never went backwards");
     expect(tA.values > 0u64 and tB.values > 0u64 and tS1.values > 0u64, "values arrived");
     expectUInt(tS1.left + tS2.left + tA.left + tB.left, 0u64, "nobody was disconnected");
+    expectUInt(tA.refused, 1u64, "client A's message over a packet was refused, and A heard so");
+    expectUInt(tB.refused, 1u64, "so was client B's");
+    expectUInt(tS1.refused + tS2.refused, 1u64, "and the server's value over a packet");
     clientA.endpoint.shutdown();
     clientB.endpoint.shutdown();
     server.endpoint.shutdown();

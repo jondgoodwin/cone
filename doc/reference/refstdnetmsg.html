@@ -87,12 +87,13 @@ fn main() {
 		twice.</p>
 	<p>The pieces:</p>
 	<ul>
-	<li><span class="pre">NetEvent</span> has four variants. <span class="pre">Joined{id, conn}</span>: the connection is open,
+	<li><span class="pre">NetEvent</span> has five variants. <span class="pre">Joined{id, conn}</span>: the connection is open,
 		and <span class="pre">conn</span> is the actor to send through. <span class="pre">Left{id, reason}</span>: it has ended, for a
 		<span class="pre">CloseReason</span> (<span class="pre">Local</span>, <span class="pre">Remote</span>,
 		<span class="pre">TimedOut</span>, <span class="pre">Overflow</span>, <span class="pre">Refused</span> or
 		<span class="pre">NoAnswer</span>); nothing more arrives for that id. <span class="pre">Message{id, data}</span>: a reliable
-		message. <span class="pre">Update{id, stream, data}</span>: the newest value of a stream. A connection's events arrive
+		message. <span class="pre">Update{id, stream, data}</span>: the newest value of a stream. <span class="pre">Refused{id, reliable, stream, why, size, limit}</span>: a send of
+			this connection's was refused and nothing was sent (below). A connection's events arrive
 		one at a time, in the order they happened. A server numbers its clients from 1; a client's one connection is 1.</li>
 	<li><span class="pre">eventHandler(f)</span> makes an <span class="pre">EventHandler</span> of a closure
 		(<span class="pre">So[fn(ev NetEvent) + Sendable]</span>); <span class="pre">channelHandler(tx)</span> makes one that puts
@@ -115,12 +116,17 @@ fn main() {
 	<p>A <span class="pre">Connection</span> is an actor handle, Sendable like any, with these behaviours:</p>
 	<ul>
 	<li><span class="pre">sendReliable(data)</span>, <span class="pre">data</span> a <span class="pre">List[u8]</span> of at most
-		<span class="pre">maxReliableBytes(cfg)</span> bytes (1,173 with the default packet size). A message over that is a
-		panic: fragmentation is not built. If <span class="pre">reliableWindow</span> (1,024) messages are already
+		<span class="pre">maxReliableBytes(cfg)</span> bytes (1,173 with the default packet size). A message over that is
+		refused: nothing is sent, the connection goes on, and its own handler hears <span class="pre">Refused</span> (with
+		<span class="pre">why</span> <span class="pre">TooLarge</span>, the <span class="pre">size</span> offered and the
+		<span class="pre">limit</span>). The same on every kind of connection, in-process included; fragmentation is not built.
+		(A send is a message to an actor and answers nothing, so the refusal comes as an event, where the application
+		already hears everything else; a caller that wants to know first compares with <span class="pre">maxReliableBytes</span>.) If <span class="pre">reliableWindow</span> (1,024) messages are already
 		waiting, the peer is not keeping up and the connection ends with <span class="pre">Overflow</span>.</li>
 	<li><span class="pre">sendLatest(stream, data)</span>: sets the value of stream number <span class="pre">stream</span> (a
 		<span class="pre">u16</span>), at most <span class="pre">maxLatestBytes(cfg)</span> bytes (1,171). A connection carries 64
-		streams. A newer value replaces one still waiting; the receiver never gets an older value after a newer one, so
+		streams. A value over that, or for a 65th stream, is refused as a message is
+		(<span class="pre">TooLarge</span>, <span class="pre">TooManyStreams</span>). A newer value replaces one still waiting; the receiver never gets an older value after a newer one, so
 		two streams, or one stream's values over a lossy link, cannot overtake each other.</li>
 	<li><span class="pre">setStreamWeight(stream, weight)</span>: when a packet cannot carry every waiting value, each
 		waiting stream's priority grows by its weight with every packet it waits through (1 by default), and the

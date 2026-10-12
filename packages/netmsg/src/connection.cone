@@ -49,22 +49,24 @@ pub actor Connection {
   // What the application sends
   // ------------------------------------------------------------------
 
-  // A reliable message: it arrives once, in order. At most maxReliable bytes
-  // (1173 with the default packet size); a larger one is a program error
-  // (fragmentation is not built). If so many are waiting that the window is
-  // full, the peer is not keeping up and the connection ends with
-  // CloseReason.Overflow.
+  // A reliable message: it arrives once, in order. At most maxReliableBytes
+  // (1173 with the default packet size). A larger one is refused: nothing is
+  // sent and this connection's handler hears NetEvent.Refused (fragmentation
+  // is not built; the connection goes on). The same on every kind of
+  // connection. If so many messages are waiting that the window is full, the
+  // peer is not keeping up and the connection ends with CloseReason.Overflow.
   pub async do sendReliable(self, data List[u8]) {
     if not open {return;}
+    if data.len() > peer.maxReliable() {
+      self.refuse(true, 0u16, RefusalKind.TooLarge, data.len(), peer.maxReliable());
+      return;
+    }
     if kind == connDirect {
       match &partner {
         case imm p &Some[Connection] { p.inMessage(data); }
         else {}
       }
       return;
-    }
-    if data.len() > peer.maxReliable() {
-      panic("netmsg: a reliable message is bigger than one packet carries (fragmentation is not built)");
     }
     if not peer.sendReliable(data.view()) {
       self.fail(CloseReason.Overflow);
@@ -75,9 +77,14 @@ pub actor Connection {
 
   // The newest value of a latest-wins stream: sent in the next packet with
   // room unless a newer value replaces it first, and never resent. At most
-  // maxLatest bytes (1171 by default).
+  // maxLatestBytes (1171 by default); a larger value, or one for a 65th
+  // stream, is refused as a message is (NetEvent.Refused).
   pub async do sendLatest(self, stream u16, data List[u8]) {
     if not open {return;}
+    if data.len() > peer.maxLatest() {
+      self.refuse(false, stream, RefusalKind.TooLarge, data.len(), peer.maxLatest());
+      return;
+    }
     if kind == connDirect {
       match &partner {
         case imm p &Some[Connection] { p.inUpdate(stream, data); }
@@ -85,11 +92,8 @@ pub actor Connection {
       }
       return;
     }
-    if data.len() > peer.maxLatest() {
-      panic("netmsg: a latest-wins value is bigger than one packet carries");
-    }
     if not peer.sendLatest(stream, data.view()) {
-      self.fail(CloseReason.Overflow);
+      self.refuse(false, stream, RefusalKind.TooManyStreams, data.len(), maxStreams);
       return;
     }
     self.reschedule();
@@ -169,6 +173,11 @@ pub actor Connection {
   // ------------------------------------------------------------------
   // Inside
   // ------------------------------------------------------------------
+
+  // Tell the application a send was refused
+  fn refuse(self, reliable bool, stream u16, why RefusalKind, size usize, limit usize) {
+    (&mut *handler).call(NetEvent.Refused(id, reliable, stream, why, size, limit));
+  }
 
   fn announce(self) {
     (&mut *handler).call(NetEvent.Joined(id, selfactor));
