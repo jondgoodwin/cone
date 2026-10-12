@@ -14,11 +14,14 @@ pub struct Foot {
   pub pitch f32;          // the foot's pitch now, toe up positive
   pub t f32;              // fraction through the stance or the swing
   pub calm bool;          // this swing began with the walker stopped: it lands beside the pelvis
+  pub u0 f32;             // how far through the swing it already was when it began (0, but for a walk's first step)
+  pub back bool;          // this stance's roll is the backward walk's (the forefoot lands first)
+  pub landBack bool;      // the roll this swing will land in
 }
 
 fn newFoot() Foot {
   imm z = new Vec3(0., 0., 0.);
-  new Foot(false, z, 0., z, 0., 0., z, 0., z, 0., 0., false);
+  new Foot(false, z, 0., z, 0., 0., z, 0., z, 0., 0., false, 0., false, false);
 }
 
 pub struct Walker {
@@ -111,12 +114,17 @@ pub struct Walker {
   // Begin a swing for 'foot' ('side' -1 left, 1 right): where it will land,
   // from the body at 'at' going 'dir' (+1 forward) at the stride 'stride'
   // with duty 'duty', facing 'yaw'
-  fn beginSwing(self &, foot &mut Foot, side f32, at Vec3, yaw f32, dir f32, stride f32, duty f32, ground &<fn(x f32, z f32) f32) {
+  // 'u0' is how far through the swing the foot is as it begins: 0 in a walk's
+  // steady cycle, but half way for the first step from standing, which starts
+  // with the other foot at mid-stance (below)
+  fn beginSwing(self &, foot &mut Foot, side f32, at Vec3, yaw f32, dir f32, stride f32, duty f32, u0 f32,
+      ground &<fn(x f32, z f32) f32) {
     foot.swinging = true;
     foot.liftAnkle = foot.ankle;
     foot.liftPitch = foot.pitch;
     foot.liftYaw = foot.yaw;
-    self.aimLanding(foot, side, at, yaw, dir, stride, duty, 0., ground);
+    foot.u0 = u0;
+    self.aimLanding(foot, side, at, yaw, dir, stride, duty, u0, ground);
   }
 
   // Where 'foot''s swing will land, from the body as it is now: aimed again
@@ -140,6 +148,7 @@ pub struct Walker {
     imm hz = at.z + rz * hip + fz * (ahead - hb);
     foot.landHeel = new Vec3(hx, ground(hx, hz), hz);
     foot.landYaw = yaw;
+    foot.landBack = dir < 0.;
   }
 
   // One foot placed for this step. 'phi' is the foot's own phase in cycles.
@@ -147,25 +156,30 @@ pub struct Walker {
       moving bool, ground &<fn(x f32, z f32) f32) {
     imm swingNow = phi >= duty;
     if swingNow and !foot.swinging {
-      self.beginSwing(foot, side, at, yaw, dir, stride, duty, ground);
+      self.beginSwing(foot, side, at, yaw, dir, stride, duty, (phi - duty) / (1. - duty), ground);
     } elif !swingNow and foot.swinging {
       foot.swinging = false;
       foot.heel = foot.landHeel;
       foot.yaw = foot.landYaw;
+      foot.back = foot.landBack;
       if foot.calm { stillSteps = stillSteps + 1i32; }
     }
     if swingNow {
       imm u = (phi - duty) / (1. - duty);
       if foot.swinging { self.aimLanding(foot, side, at, yaw, dir, stride, duty, u, ground); }
       foot.t = u;
-      imm s = smoothstep(0., 1., u);
-      imm r0 = rocker(height, 0.);
+      // The swing's progress, eased in from where it began: a swing that
+      // began part way through (the first step from standing) goes from the
+      // ankle it was at, not from a jump
+      imm uRest = if foot.u0 < 0.999 { clampf((u - foot.u0) / (1. - foot.u0), 0., 1.); } else { 1.; };
+      imm s = smoothstep(0., 1., uRest);
+      imm r0 = if foot.landBack { rockerBack(height, 0.); } else { rocker(height, 0.); };
       imm fx = 0. - sin(foot.landYaw);
       imm fz = 0. - cos(foot.landYaw);
       imm landAnkle = new Vec3(foot.landHeel.x + fx * r0.x, foot.landHeel.y + r0.y, foot.landHeel.z + fz * r0.x);
       mut p = foot.liftAnkle.lerp(landAnkle, s);
       imm clearance = height * (0.012 + 0.018 * clampf(speed / REF_SPEED, 0., 1.5));
-      p = new Vec3(p.x, p.y + clearance * sin(pi * u), p.z);
+      p = new Vec3(p.x, p.y + clearance * sin(pi * uRest), p.z);
       foot.ankle = p;
       foot.pitch = foot.liftPitch + (r0.z - foot.liftPitch) * s;
       // The heading turns by the shortest way
@@ -176,7 +190,7 @@ pub struct Walker {
     } else {
       imm t = phi / duty;
       foot.t = t;
-      imm r = rocker(height, t);
+      imm r = if foot.back { rockerBack(height, t); } else { rocker(height, t); };
       imm rest = rocker(height, 0.3);
       imm fx = 0. - sin(foot.yaw);
       imm fz = 0. - cos(foot.yaw);
@@ -210,6 +224,13 @@ pub struct Walker {
     imm moving = speed > 0.08 or turning or v > 0.08;
     if grounded {
       if moving {
+        // Setting off from standing, both feet are beside the pelvis, which is
+        // where a foot is at mid-stance (and the other at mid-swing). A phase
+        // of 0 would put the left at the start of its stance with the whole
+        // stance, behind (or, going back, ahead of) the pelvis, still to
+        // travel: past the leg's reach, and the pelvis would plunge to
+        // find it. So the walk starts at mid-stance of the left foot.
+        if frozen { phase = duty * 0.5; }
         frozen = false;
         stillSteps = 0i32;
         if v > 0.08 or speed > 0.08 {
@@ -293,7 +314,9 @@ pub struct Walker {
     pose.setTranslation(PELVIS, new Vec3(sway, pelvisY, 0.));
     pose.setRotation(PELVIS, Quat.angleAxis(pelvisYaw, yAxis) * Quat.angleAxis(pelvisList, zAxis));
     // The spine and chest turn the other way; the head keeps its heading
-    imm lean = 0. - 0.0523599 * clampf(speed / REF_SPEED, 0., 2.) * smoothstep(0.05, 0.5, speed);
+    // The trunk leans into the way it goes: forward, walking forward; upright going backward
+    // (a forward lean there is a stoop away from the way it goes)
+    imm lean = 0. - 0.0523599 * clampf(speed / REF_SPEED, 0., 2.) * smoothstep(0.05, 0.5, speed) * (if dir > 0. { 1.; } else { 0.; });
     imm breathePitch = radians(1.) * breath * breathW;
     pose.setRotation(SPINE, Quat.angleAxis(1.1 * PELVIS_YAW * amp * cos(cyc) , yAxis) * Quat.angleAxis(0. - pelvisList * 0.5 - shift * 0.06, zAxis)
       * Quat.angleAxis(lean * 0.5 + breathePitch * 0.4, xAxis));
