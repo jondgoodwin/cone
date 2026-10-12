@@ -1,0 +1,277 @@
+// Grid, anchors, stack, absolute, dock, split and scroll, worked by hand.
+//
+// GRID 350 x 200, gaps 10. Columns: fixed 50, fraction 1, fraction 2. The gaps take 20,
+//   the fixed column 50, so 280 is shared 1:2: 93.33 and 186.67. Column starts 0, 60, 163.33.
+//   Rows: fixed 40 and fraction 1: 200 - 10 - 40 = 150 for the second; row starts 0 and 50.
+//   A cell (0,0) of 20 x 20 aligned to the start sits at (0, 0); B spans columns 1-2 so is
+//   93.33 + 10 + 186.67 = 290 wide at x = 60, 40 tall (stretched); C spans all three
+//   columns: 350 wide, 150 tall at y = 50.
+// AUTO GRID: columns auto, auto, gap 4; labels "ab" (16 wide) and "abcdef" (48) in column 0,
+//   "xyz" (24) in column 1: column 0 is 48 wide, column 1 starts at 52, the grid is 76 wide.
+// A FRACTION GRID with no room to share (auto width) takes each fraction track as wide as its
+//   biggest child needs per unit of weight: columns 1fr and 2fr holding 30 and 40 wide boxes:
+//   the unit is max(30/1, 40/2) = 30, so the columns are 30 and 60.
+// ANCHORS in 400 x 300: anchors (0,0,1,1) with offsets (10, 20, -30, -40): x 10, y 20,
+//   width 400 - 30 - 10 = 360, height 300 - 40 - 20 = 240. A 100 x 50 child at the centre
+//   anchor (.5,.5) with pivot (.5,.5): x 150, y 125. A 40 x 20 child at the bottom right
+//   anchor with pivot (1,1) and offsets (-8,-8): x 352, y 272.
+// STACK: children overlaid: one stretched (0,0,w,h), one centred 100 x 40 in 300 x 200 at
+//   (100, 80).
+// DOCK 400 x 300: top 30 -> (0,0,400,30); left 80 -> (0,30,80,270); fill -> (80,30,320,270).
+//   With a gap of 10: top (0,0,400,30), left (0,40,80,260), fill (90,40,310,260).
+// SPLIT 410 x 100, divider 10, ratio .25: 400 shared: first 100 at 0, second 300 at 110.
+//   With the first's minimum width 150: 150 and 250 (at 160).
+// SCROLL 100 x 100 over a column of five items 40 tall: content 200 tall, 100 wide (it
+//   fills the viewport across). Offset 70: the child is at y -70, item 3 at 80 - 70 = 10.
+//   Offset 500 is held to 100 (200 - 100).
+// ABSOLUTE: a child taken out of a row's flow sits at its (x, y) and takes no room.
+
+mod containers;
+
+import testing use *;
+import geomath use *;
+import collections use *;
+import uilayout use *;
+
+fn chk(got f32, want f32, label &Array[u8]) {
+  expectFloat(f64.from(got), f64.from(want), 0.01, label);
+}
+
+fn box(ui &mut Ui, parent usize, w f32, h f32) usize {
+  imm n = ui.create(parent, K_PLAIN);
+  ui.setSize(n, w, h);
+  n;
+}
+
+fn main() i32 {
+  mut m = fn(t &str, font u32, size f32) Vec2 { new Vec2(f32.from(t.len()) * 8., 16.); };
+
+  // ---- grid ----
+  {
+    mut ui = Ui.make(800., 600.);
+    imm g = box(&mut ui, ui.root, 350., 200.);
+    ui.setGap(g, 10., 10.);
+    ui.addTrack(g, 0u32, TRACK_FIXED, 50.);
+    ui.addTrack(g, 0u32, TRACK_FRACTION, 1.);
+    ui.addTrack(g, 0u32, TRACK_FRACTION, 2.);
+    ui.addTrack(g, 1u32, TRACK_FIXED, 40.);
+    ui.addTrack(g, 1u32, TRACK_FRACTION, 1.);
+    imm a = box(&mut ui, g, 20., 20.);
+    ui.setCell(a, 0u32, 0u32, 1u32, 1u32);
+    ui.setAlignSelf(a, ALIGN_START, ALIGN_START);
+    imm b = ui.create(g, K_PLAIN);
+    ui.setCell(b, 1u32, 0u32, 2u32, 1u32);
+    imm c = ui.create(g, K_PLAIN);
+    ui.setCell(c, 0u32, 1u32, 3u32, 1u32);
+    layout(&mut ui, &mut m);
+    chk(ui.nodes[a].x, 0., "grid: A x");
+    chk(ui.nodes[a].w, 20., "grid: A keeps its 20");
+    chk(ui.nodes[b].x, 60., "grid: B x (after the fixed column and a gap)");
+    chk(ui.nodes[b].w, 290., "grid: B spans the fractions: 93.33 + 10 + 186.67");
+    chk(ui.nodes[b].h, 40., "grid: B stretches to the 40 row");
+    chk(ui.nodes[c].y, 50., "grid: C y (40 + 10)");
+    chk(ui.nodes[c].w, 350., "grid: C spans everything");
+    chk(ui.nodes[c].h, 150., "grid: C fills the fractional row");
+  }
+  {
+    mut ui = Ui.make(800., 600.);
+    imm g = ui.create(ui.root, K_PLAIN);
+    ui.setGap(g, 4., 4.);
+    ui.addTrack(g, 0u32, TRACK_AUTO, 0.);
+    ui.addTrack(g, 0u32, TRACK_AUTO, 0.);
+    imm l1 = ui.create(g, K_LABEL);
+    ui.setText(l1, "ab");
+    ui.setCell(l1, 0u32, 0u32, 1u32, 1u32);
+    imm l2 = ui.create(g, K_LABEL);
+    ui.setText(l2, "abcdef");
+    ui.setCell(l2, 0u32, 1u32, 1u32, 1u32);
+    imm l3 = ui.create(g, K_LABEL);
+    ui.setText(l3, "xyz");
+    ui.setCell(l3, 1u32, 0u32, 1u32, 1u32);
+    ui.setAlignSelf(l1, ALIGN_START, ALIGN_START);
+    layout(&mut ui, &mut m);
+    chk(ui.nodes[g].w, 76., "auto grid: 48 + 4 + 24");
+    chk(ui.nodes[g].h, 36., "auto grid: two rows of 16 and a gap of 4");
+    chk(ui.nodes[l3].x, 52., "auto grid: second column starts at 48 + 4");
+    chk(ui.nodes[l1].w, 16., "auto grid: A keeps its text width when aligned to the start");
+    chk(ui.nodes[l2].w, 48., "auto grid: the long label fills its column");
+  }
+  {
+    mut ui = Ui.make(800., 600.);
+    imm g = ui.create(ui.root, K_PLAIN);
+    ui.addTrack(g, 0u32, TRACK_FRACTION, 1.);
+    ui.addTrack(g, 0u32, TRACK_FRACTION, 2.);
+    imm a = box(&mut ui, g, 30., 10.);
+    ui.setCell(a, 0u32, 0u32, 1u32, 1u32);
+    imm b = box(&mut ui, g, 40., 10.);
+    ui.setCell(b, 1u32, 0u32, 1u32, 1u32);
+    layout(&mut ui, &mut m);
+    chk(ui.nodes[g].w, 90., "fractions of an auto grid: 30 + 60");
+    chk(ui.nodes[b].x, 30., "fractions of an auto grid: second at 30");
+  }
+
+  // ---- anchors ----
+  {
+    mut ui = Ui.make(400., 300.);
+    imm a = ui.create(ui.root, K_PLAIN);
+    ui.setAnchors(a, 0., 0., 1., 1.);
+    ui.setOffsets(a, 10., 20., -30., -40.);
+    imm b = box(&mut ui, ui.root, 100., 50.);
+    ui.setAnchors(b, 0.5, 0.5, 0.5, 0.5);
+    ui.setPivot(b, 0.5, 0.5);
+    imm c = box(&mut ui, ui.root, 40., 20.);
+    ui.setAnchors(c, 1., 1., 1., 1.);
+    ui.setPivot(c, 1., 1.);
+    ui.setOffsets(c, -8., -8., 0., 0.);
+    layout(&mut ui, &mut m);
+    chk(ui.nodes[a].x, 10., "anchor: stretched x");
+    chk(ui.nodes[a].y, 20., "anchor: stretched y");
+    chk(ui.nodes[a].w, 360., "anchor: stretched w");
+    chk(ui.nodes[a].h, 240., "anchor: stretched h");
+    chk(ui.nodes[b].x, 150., "anchor: centre x");
+    chk(ui.nodes[b].y, 125., "anchor: centre y");
+    chk(ui.nodes[c].x, 352., "anchor: bottom right x");
+    chk(ui.nodes[c].y, 272., "anchor: bottom right y");
+    ui.setViewport(800., 600.);
+    layout(&mut ui, &mut m);
+    chk(ui.nodes[a].w, 760., "anchor: follows the viewport (w)");
+    chk(ui.nodes[c].x, 752., "anchor: follows the viewport (corner x)");
+  }
+
+  // ---- stack ----
+  {
+    mut ui = Ui.make(800., 600.);
+    imm s = box(&mut ui, ui.root, 300., 200.);
+    ui.setLayout(s, LK_STACK);
+    imm a = ui.create(s, K_PLAIN);
+    imm b = box(&mut ui, s, 100., 40.);
+    ui.setAlignSelf(b, ALIGN_CENTER, ALIGN_CENTER);
+    layout(&mut ui, &mut m);
+    chk(ui.nodes[a].w, 300., "stack: stretched w");
+    chk(ui.nodes[a].h, 200., "stack: stretched h");
+    chk(ui.nodes[b].x, 100., "stack: centred x");
+    chk(ui.nodes[b].y, 80., "stack: centred y");
+  }
+
+  // ---- dock ----
+  {
+    mut ui = Ui.make(800., 600.);
+    imm d = box(&mut ui, ui.root, 400., 300.);
+    ui.setLayout(d, LK_DOCK);
+    ui.setGap(d, 0., 0.);
+    imm top = box(&mut ui, d, -1., 30.);
+    ui.setDock(top, DOCK_TOP);
+    imm left = box(&mut ui, d, 80., -1.);
+    ui.setDock(left, DOCK_LEFT);
+    imm fill = ui.create(d, K_PLAIN);
+    ui.setDock(fill, DOCK_FILL);
+    layout(&mut ui, &mut m);
+    chk(ui.nodes[top].w, 400., "dock: top spans");
+    chk(ui.nodes[top].h, 30., "dock: top height");
+    chk(ui.nodes[left].y, 30., "dock: left starts below the top");
+    chk(ui.nodes[left].h, 270., "dock: left height");
+    chk(ui.nodes[fill].x, 80., "dock: fill x");
+    chk(ui.nodes[fill].y, 30., "dock: fill y");
+    chk(ui.nodes[fill].w, 320., "dock: fill w");
+    chk(ui.nodes[fill].h, 270., "dock: fill h");
+    ui.setGap(d, 10., 10.);
+    layout(&mut ui, &mut m);
+    chk(ui.nodes[left].y, 40., "dock with gap: left y");
+    chk(ui.nodes[left].h, 260., "dock with gap: left h");
+    chk(ui.nodes[fill].x, 90., "dock with gap: fill x");
+    chk(ui.nodes[fill].w, 310., "dock with gap: fill w");
+  }
+
+  // ---- split ----
+  {
+    mut ui = Ui.make(800., 600.);
+    imm sp = box(&mut ui, ui.root, 410., 100.);
+    ui.setGap(sp, 10., 10.);
+    imm a = ui.create(sp, K_PLAIN);
+    imm b = ui.create(sp, K_PLAIN);
+    ui.setSplit(sp, 0.25, true);
+    layout(&mut ui, &mut m);
+    chk(ui.nodes[a].w, 100., "split: first pane");
+    chk(ui.nodes[b].x, 110., "split: second pane x");
+    chk(ui.nodes[b].w, 300., "split: second pane w");
+    chk(ui.nodes[a].h, 100., "split: panes fill the cross axis");
+    ui.setMinSize(a, 150., 0.);
+    layout(&mut ui, &mut m);
+    chk(ui.nodes[a].w, 150., "split: the first pane's minimum");
+    chk(ui.nodes[b].x, 160., "split: second pane moves with it");
+    chk(ui.nodes[b].w, 250., "split: second pane shrinks");
+    imm dv = dividerRect(&ui, sp);
+    chk(dv.min.x, 150., "split: divider left");
+    chk(dv.max.x, 160., "split: divider right");
+  }
+
+  // ---- scroll ----
+  {
+    mut ui = Ui.make(800., 600.);
+    imm sc = box(&mut ui, ui.root, 100., 100.);
+    ui.setScroll(sc, false, true);
+    imm col = ui.create(sc, K_PLAIN);
+    ui.setFlex(col, LK_COLUMN, 0.);
+    mut items = List[usize].empty();
+    mut k = 0;
+    while k < 5 {
+      items.push(box(&mut ui, col, -1., 40.));
+      k = k + 1;
+    }
+    layout(&mut ui, &mut m);
+    chk(ui.nodes[sc].contentH, 200., "scroll: content height");
+    chk(ui.nodes[sc].contentW, 100., "scroll: content fills the width");
+    chk(ui.nodes[col].w, 100., "scroll: the column fills the viewport across");
+    ui.setScrollOffset(sc, 0., 70.);
+    layout(&mut ui, &mut m);
+    chk(ui.nodes[col].y, -70., "scroll: the child moves up by the offset");
+    chk(ui.nodes[*items[2usize]].gy, 10., "scroll: item 3 is at 80 - 70");
+    ui.setScrollOffset(sc, 0., 500.);
+    layout(&mut ui, &mut m);
+    chk(ui.nodes[sc].scrollY, 100., "scroll: the offset is held to the content");
+    chk(ui.nodes[col].y, -100., "scroll: the child at the end");
+  }
+
+  // ---- absolute: out of the flow ----
+  {
+    mut ui = Ui.make(800., 600.);
+    imm r = box(&mut ui, ui.root, 300., 100.);
+    ui.setFlex(r, LK_ROW, 0.);
+    imm a = box(&mut ui, r, 50., -1.);
+    imm f = box(&mut ui, r, 25., 25.);
+    ui.setAbsolute(f, 200., 60.);
+    imm b = box(&mut ui, r, 50., -1.);
+    layout(&mut ui, &mut m);
+    chk(ui.nodes[b].x, 50., "out of flow: the next sibling takes its place");
+    chk(ui.nodes[f].x, 200., "out of flow: x");
+    chk(ui.nodes[f].y, 60., "out of flow: y");
+    chk(ui.nodes[f].w, 25., "out of flow: keeps its size");
+  }
+
+  // ---- nesting: a row in a column in a padded panel ----
+  {
+    mut ui = Ui.make(800., 600.);
+    imm panel = box(&mut ui, ui.root, 300., 200.);
+    ui.setFlex(panel, LK_COLUMN, 10.);
+    ui.setPad(panel, 20.);
+    imm top = ui.create(panel, K_PLAIN);
+    ui.setFlex(top, LK_ROW, 0.);
+    ui.setFlexChild(top, 1., 1., -1.);          // takes the column's free height
+    imm l = box(&mut ui, top, 60., -1.);
+    imm r = box(&mut ui, top, -1., -1.);
+    ui.setFlexChild(r, 1., 1., -1.);
+    imm bottom = box(&mut ui, panel, -1., 30.);
+    layout(&mut ui, &mut m);
+    // inner 260 x 160: bottom 30, gap 10, top gets 120
+    chk(ui.nodes[top].h, 120., "nesting: top takes the free height");
+    chk(ui.nodes[top].w, 260., "nesting: top stretches across");
+    chk(ui.nodes[bottom].y, 150., "nesting: bottom at 20 + 120 + 10");
+    chk(ui.nodes[r].w, 200., "nesting: the inner row's grower takes 260 - 60");
+    chk(ui.nodes[r].h, 120., "nesting: and stretches to the row's height");
+    chk(ui.nodes[r].gx, 80., "nesting: global x is 20 + 60");
+    chk(ui.nodes[r].gy, 20., "nesting: global y");
+    chk(ui.nodes[l].gx, 20., "nesting: left global x");
+  }
+
+  done();
+}

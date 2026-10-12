@@ -1,0 +1,70 @@
+// A stack of ten boxes stands with warm starting and falls without it, which is
+// why the contact cache exists; and a heavier stack still stands.
+//
+// Ten 1 m boxes at density 1000 are built touching, with sleeping off so that
+// the solver must hold them for 12 seconds (720 steps). With warm starting the
+// top box stays within 2 cm of straight over the bottom one and sags only the
+// few millimetres a soft contact leaves at each joint (10 joints, under 3 mm
+// each). Without it, each sub-step's solve starts from nothing: the impulses
+// it needs to hold the column up are far more than one Gauss-Seidel pass finds,
+// and the column sinks and slides apart (Catto, "Iterative Dynamics with
+// Temporal Coherence", GDC 2005, makes the same point for sequential
+// impulses). One sub-step with warm starting is also tried, to show that Soft
+// Step's sub-stepping is the other half of what holds a tall stack.
+
+mod stacks;
+
+import testing use *;
+import collections use List;
+import geomath use *;
+import rigidcollide use *;
+import rigiddynamics use *;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+// Build a stack of n boxes of side 1 and run it; the top box's position
+fn run(n i32, steps i32, warm bool, substeps i32) Vec3 {
+  mut w = World.make();
+  w.settings.sleepEnabled = false;
+  w.settings.warmStart = warm;
+  w.settings.substeps = substeps;
+  imm floorS = w.addShape(Shape.single(Prim.box(new Vec3(20., 1., 20.))));
+  imm boxS = w.addShape(Shape.single(Prim.box(new Vec3(0.5, 0.5, 0.5))));
+  w.createBody(BodyDef.staticAt(floorS, new Vec3(0., -1., 0.)));
+  mut top = 0u32;
+  mut k = 0;
+  while k < n {
+    mut bd = BodyDef.dynamicAt(boxS, new Vec3(0., 0.5 + f32.from(k), 0.));
+    bd.linearDamping = 0.; bd.angularDamping = 0.;
+    top = w.createBody(bd);
+    k = k + 1;
+  }
+  mut i = 0;
+  while i < steps { w.step(1. / 60.); i = i + 1; }
+  w.positionOf(top);
+}
+
+fn main() i32 {
+  imm standing = run(10, 720, true, 4);
+  expectBool(absf(standing.x) < 0.02 and absf(standing.z) < 0.02, true, "ten boxes with warm starting: the top is straight over the bottom");
+  near(standing.y, 9.5, 0.04, "and sags by only a few millimetres a joint");
+
+  imm fallen = run(10, 720, false, 4);
+  expectBool(fallen.y < 3., true, "without warm starting the stack has fallen");
+  expectBool(absf(fallen.x) + absf(fallen.z) > 0.5, true, "and the top has slid well away");
+
+  imm coarse = run(10, 720, true, 1);
+  expectBool(coarse.y < 3., true, "one sub-step a step with warm starting is not enough for ten");
+
+  imm three = run(3, 720, false, 4);
+  near(three.y, 2.5, 0.03, "three boxes stand even without warm starting");
+  imm four = run(4, 720, false, 4);
+  expectBool(four.y < 1., true, "four do not: the need for the contact cache shows at once");
+
+  imm tall = run(16, 720, true, 4);
+  near(tall.y, 15.5, 0.1, "sixteen boxes still stand with warm starting");
+  expectBool(absf(tall.x) < 0.01 and absf(tall.z) < 0.01, true, "and straight to within a centimetre");
+  done();
+}

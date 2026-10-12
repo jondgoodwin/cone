@@ -1,0 +1,258 @@
+// Event order, hover, clicks, focus and Tab order, by hand.
+//
+// The tree: root > P > Q > T, each taking the pointer, nested at (10,10) so T is the deepest.
+// Listeners record into the trace (node, phase) in the order they run.
+//
+//  1. A press on T: capture at P then Q (outermost first), T itself (target), then bubble Q, then P.
+//     trace: (P cap) (Q cap) (T target) (Q bubble) (P bubble).
+//  2. The same with a stop at Q's bubble listener: (P cap) (Q cap) (T target) (Q bubble).
+//  3. With a consuming listener at P's capture: only (P cap).
+//  4. A stop at Q's capture: (P cap) (Q cap): T never sees it.
+//  5. Hover: moving the pointer onto T enters P, Q, T in that order (outermost first); moving away
+//     from all leaves T, Q, P (deepest first). While over T all three are in ST_HOVER.
+//  6. Click: a press and release on T clicks T; a press on T and release on Q (outside T) clicks Q,
+//     the nearest node holding both.
+//  7. Two clicks within 0.4 s and 5 px on one node make a double-click; after 1 s they do not.
+//  8. Tab order: four focusable buttons A B C D in tree order, D given tabIndex 1 and B tabIndex 2
+//     visits D, B, A, C; a disabled one, an invisible one and a negative tabIndex are skipped;
+//     Shift+Tab goes back; both wrap.
+//  9. A press on a non-focusable label inside a focusable panel focuses the panel; a press outside
+//     everything blurs and reports an unhandled press for the world.
+// 10. A key goes to the focused node and bubbles; a consuming listener makes keyDown return true,
+//     else Tab moves the focus.
+
+mod events;
+
+import testing use *;
+import geomath use *;
+import collections use *;
+import uilayout use *;
+
+fn box(ui &mut Ui, parent usize, x f32, y f32, w f32, h f32) usize {
+  imm n = ui.create(parent, K_PLAIN);
+  ui.setLayout(n, LK_ANCHOR);
+  ui.setOffsets(n, x, y, 0., 0.);
+  ui.setSize(n, w, h);
+  ui.nodes[n].pointer = PM_STOP;
+  n;
+}
+
+fn traceString(ui &Ui, p usize, q usize, t usize) String {
+  mut s = String.empty();
+  mut i = 0usize;
+  while i < ui.input.trace.len() {
+    imm e = ui.input.trace[i];
+    if e.node == p {s.append("P");} elif e.node == q {s.append("Q");} elif e.node == t {s.append("T");} else {s.append("?");}
+    s.append(if e.phase == PH_CAPTURE {"c ";} elif e.phase == PH_TARGET {"t ";} else {"b ";});
+    i = i + 1usize;
+  }
+  s;
+}
+
+fn tagsOf(evs &List[UiEvent], kind u32) String {
+  mut s = String.empty();
+  mut i = 0usize;
+  while i < evs.len() {
+    if evs[i].kind == kind {
+      s.appendInt(i64.from(evs[i].i));
+      s.append(" ");
+    }
+    i = i + 1usize;
+  }
+  s;
+}
+
+fn main() i32 {
+  mut m = fn(t &str, font u32, size f32) Vec2 { new Vec2(f32.from(t.len()) * 8., 16.); };
+  mut ui = Ui.make(800., 600.);
+  imm p = box(&mut ui, ui.root, 100., 100., 300., 300.);
+  imm q = box(&mut ui, p, 10., 10., 200., 200.);
+  imm t = box(&mut ui, q, 10., 10., 100., 100.);
+  layout(&mut ui, &mut m);
+  // T covers (120,120)-(220,220)
+  ui.input.tracing = true;
+
+  // 1
+  listen(&mut ui, p, EK_DOWN, LP_CAPTURE, 1u32, 0u32);
+  listen(&mut ui, q, EK_DOWN, LP_CAPTURE, 2u32, 0u32);
+  listen(&mut ui, t, EK_DOWN, LP_BUBBLE, 3u32, 0u32);
+  listen(&mut ui, q, EK_DOWN, LP_BUBBLE, 4u32, 0u32);
+  listen(&mut ui, p, EK_DOWN, LP_BUBBLE, 5u32, 0u32);
+  pointerMove(&mut ui, 150., 150.);
+  ui.takeEvents();
+  pointerDown(&mut ui, BTN_LEFT);
+  expectStr(traceString(&ui, p, q, t).view(), "Pc Qc Tt Qb Pb ", "1: capture, target, bubble order");
+  imm evs = ui.takeEvents();
+  expectStr(tagsOf(&evs, UE_LISTENER).view(), "1 2 3 4 5 ", "1: the listeners reported in the same order");
+  pointerUp(&mut ui, BTN_LEFT);
+  ui.takeEvents();
+
+  // 2: stop at Q's bubble
+  unlisten(&mut ui, q);
+  listen(&mut ui, q, EK_DOWN, LP_CAPTURE, 2u32, 0u32);
+  listen(&mut ui, q, EK_DOWN, LP_BUBBLE, 4u32, LF_STOP);
+  ui.input.trace.clear();
+  pointerDown(&mut ui, BTN_LEFT);
+  expectStr(traceString(&ui, p, q, t).view(), "Pc Qc Tt Qb ", "2: a stop at Q's bubble keeps P's bubble from running");
+  pointerUp(&mut ui, BTN_LEFT);
+
+  // 3: consume at P's capture
+  unlisten(&mut ui, p);
+  unlisten(&mut ui, q);
+  listen(&mut ui, p, EK_DOWN, LP_CAPTURE, 1u32, LF_CONSUME);
+  listen(&mut ui, q, EK_DOWN, LP_CAPTURE, 2u32, 0u32);
+  ui.input.trace.clear();
+  pointerDown(&mut ui, BTN_LEFT);
+  expectStr(traceString(&ui, p, q, t).view(), "Pc ", "3: a consuming capture listener ends it at once");
+  pointerUp(&mut ui, BTN_LEFT);
+
+  // 4: stop at Q's capture
+  unlisten(&mut ui, p);
+  unlisten(&mut ui, q);
+  listen(&mut ui, p, EK_DOWN, LP_CAPTURE, 1u32, 0u32);
+  listen(&mut ui, q, EK_DOWN, LP_CAPTURE, 2u32, LF_STOP);
+  ui.input.trace.clear();
+  pointerDown(&mut ui, BTN_LEFT);
+  expectStr(traceString(&ui, p, q, t).view(), "Pc Qc ", "4: a stop at Q's capture hides the event from T");
+  pointerUp(&mut ui, BTN_LEFT);
+  unlisten(&mut ui, p);
+  unlisten(&mut ui, q);
+  unlisten(&mut ui, t);
+
+  // 5: hover
+  pointerMove(&mut ui, 10., 10.);
+  ui.takeEvents();
+  listen(&mut ui, p, EK_ENTER, LP_BUBBLE, 11u32, 0u32);
+  listen(&mut ui, q, EK_ENTER, LP_BUBBLE, 12u32, 0u32);
+  listen(&mut ui, t, EK_ENTER, LP_BUBBLE, 13u32, 0u32);
+  listen(&mut ui, p, EK_LEAVE, LP_BUBBLE, 21u32, 0u32);
+  listen(&mut ui, q, EK_LEAVE, LP_BUBBLE, 22u32, 0u32);
+  listen(&mut ui, t, EK_LEAVE, LP_BUBBLE, 23u32, 0u32);
+  pointerMove(&mut ui, 150., 150.);
+  expectStr(tagsOf(&ui.events, UE_LISTENER).view(), "11 12 13 ", "5: enter goes outermost first");
+  expect(ui.hasState(p, ST_HOVER) and ui.hasState(q, ST_HOVER) and ui.hasState(t, ST_HOVER), "5: all three are hovered");
+  ui.takeEvents();
+  pointerMove(&mut ui, 5., 5.);
+  expectStr(tagsOf(&ui.events, UE_LISTENER).view(), "23 22 21 ", "5: leave goes deepest first");
+  expect(!ui.hasState(p, ST_HOVER) and !ui.hasState(t, ST_HOVER), "5: none is hovered after");
+  ui.takeEvents();
+  // moving from T to Q's part leaves only T
+  pointerMove(&mut ui, 150., 150.);
+  ui.takeEvents();
+  pointerMove(&mut ui, 300., 150.);
+  expectStr(tagsOf(&ui.events, UE_LISTENER).view(), "23 ", "5: moving from T to Q leaves only T");
+  ui.takeEvents();
+  unlisten(&mut ui, p);
+  unlisten(&mut ui, q);
+  unlisten(&mut ui, t);
+
+  // 6: clicks
+  listen(&mut ui, t, EK_CLICK, LP_BUBBLE, 31u32, 0u32);
+  listen(&mut ui, q, EK_CLICK, LP_BUBBLE, 32u32, 0u32);
+  listen(&mut ui, p, EK_CLICK, LP_BUBBLE, 33u32, 0u32);
+  pointerMove(&mut ui, 150., 150.);
+  ui.takeEvents();
+  pointerDown(&mut ui, BTN_LEFT);
+  pointerUp(&mut ui, BTN_LEFT);
+  expectStr(tagsOf(&ui.events, UE_LISTENER).view(), "31 32 33 ", "6: a click on T bubbles through Q and P");
+  ui.takeEvents();
+  pointerDown(&mut ui, BTN_LEFT);
+  pointerMove(&mut ui, 300., 150.);
+  pointerUp(&mut ui, BTN_LEFT);
+  expectStr(tagsOf(&ui.events, UE_LISTENER).view(), "32 33 ", "6: press on T, release on Q: Q is clicked, T is not");
+  ui.takeEvents();
+  unlisten(&mut ui, p);
+  unlisten(&mut ui, q);
+  unlisten(&mut ui, t);
+
+  // 7: double-click
+  listen(&mut ui, t, EK_DBLCLICK, LP_BUBBLE, 41u32, 0u32);
+  pointerMove(&mut ui, 150., 150.);
+  ui.takeEvents();
+  update(&mut ui, 1.);
+  pointerDown(&mut ui, BTN_LEFT);
+  pointerUp(&mut ui, BTN_LEFT);
+  update(&mut ui, 0.2);
+  pointerDown(&mut ui, BTN_LEFT);
+  pointerUp(&mut ui, BTN_LEFT);
+  expectStr(tagsOf(&ui.events, UE_LISTENER).view(), "41 ", "7: two clicks 0.2 s apart are a double-click");
+  ui.takeEvents();
+  update(&mut ui, 1.);
+  pointerDown(&mut ui, BTN_LEFT);
+  pointerUp(&mut ui, BTN_LEFT);
+  expectStr(tagsOf(&ui.events, UE_LISTENER).view(), "", "7: a third click a second later is not");
+  ui.takeEvents();
+  unlisten(&mut ui, t);
+
+  // 8: Tab order
+  mut ui2 = Ui.make(800., 600.);
+  imm row = ui2.create(ui2.root, K_PLAIN);
+  ui2.setFlex(row, LK_ROW, 4.);
+  imm ba = button(&mut ui2, row, "A");
+  imm bb = button(&mut ui2, row, "B");
+  imm bc = button(&mut ui2, row, "C");
+  imm bd = button(&mut ui2, row, "D");
+  imm be = button(&mut ui2, row, "E");
+  imm bf = button(&mut ui2, row, "F");
+  ui2.nodes[bd].tabIndex = 1i32;
+  ui2.nodes[bb].tabIndex = 2i32;
+  ui2.nodes[be].tabIndex = -1i32;           // not reached by Tab
+  ui2.setEnabled(bc, false);                // disabled
+  ui2.setVisible(bf, false);                // hidden
+  layout(&mut ui2, &mut m);
+  imm order = tabOrder(&ui2);
+  expectInt(i64.from(order.len()), 3i64, "8: three nodes are reached");
+  expectInt(i64.from(*order[0usize]), i64.from(bd), "8: tabIndex 1 first");
+  expectInt(i64.from(*order[1usize]), i64.from(bb), "8: tabIndex 2 next");
+  expectInt(i64.from(*order[2usize]), i64.from(ba), "8: then tree order");
+  keyDown(&mut ui2, KEY_TAB, 0u32);
+  expectInt(i64.from(ui2.input.focus), i64.from(bd), "8: Tab with nothing focused goes to the first");
+  keyDown(&mut ui2, KEY_TAB, 0u32);
+  expectInt(i64.from(ui2.input.focus), i64.from(bb), "8: Tab again");
+  keyDown(&mut ui2, KEY_TAB, 0u32);
+  expectInt(i64.from(ui2.input.focus), i64.from(ba), "8: and again");
+  keyDown(&mut ui2, KEY_TAB, 0u32);
+  expectInt(i64.from(ui2.input.focus), i64.from(bd), "8: wraps to the first");
+  keyDown(&mut ui2, KEY_TAB, MOD_SHIFT);
+  expectInt(i64.from(ui2.input.focus), i64.from(ba), "8: Shift+Tab wraps backwards");
+  keyDown(&mut ui2, KEY_TAB, MOD_SHIFT);
+  expectInt(i64.from(ui2.input.focus), i64.from(bb), "8: Shift+Tab");
+  expect(ui2.hasState(bb, ST_FOCUSED) and !ui2.hasState(ba, ST_FOCUSED), "8: only the focused node has the state");
+  imm fev = ui2.takeEvents();
+  expect(tagsOf(&fev, UE_FOCUS).len() > 0usize and tagsOf(&fev, UE_BLUR).len() > 0usize, "8: focus and blur were reported");
+
+  // 9: focus by pressing
+  mut ui3 = Ui.make(800., 600.);
+  imm pan = ui3.create(ui3.root, K_PLAIN);
+  ui3.setLayout(pan, LK_ANCHOR);
+  ui3.setSize(pan, 200., 100.);
+  ui3.nodes[pan].pointer = PM_STOP;
+  ui3.nodes[pan].focusable = true;
+  imm lab = ui3.create(pan, K_LABEL);
+  ui3.nodes[lab].pointer = PM_STOP;
+  ui3.setSize(lab, 50., 20.);
+  layout(&mut ui3, &mut m);
+  pointerMove(&mut ui3, 10., 10.);
+  pointerDown(&mut ui3, BTN_LEFT);
+  pointerUp(&mut ui3, BTN_LEFT);
+  expectInt(i64.from(ui3.input.focus), i64.from(pan), "9: pressing a label focuses the focusable panel above it");
+  pointerMove(&mut ui3, 500., 500.);
+  ui3.takeEvents();
+  pointerDown(&mut ui3, BTN_LEFT);
+  pointerUp(&mut ui3, BTN_LEFT);
+  expectInt(i64.from(ui3.input.focus), 0i64, "9: pressing outside blurs");
+  imm uev = ui3.takeEvents();
+  expectInt(i64.from(uev.len()), 2i64, "9: a blur and an unhandled press");
+  expectInt(i64.from(uev[1usize].kind), i64.from(UE_UNHANDLED_POINTER), "9: the world gets the press");
+
+  // 10: keys
+  focusSet(&mut ui3, pan);
+  listen(&mut ui3, pan, EK_KEY_DOWN, LP_BUBBLE, 51u32, LF_CONSUME);
+  ui3.takeEvents();
+  expect(keyDown(&mut ui3, KEY_ENTER, 0u32), "10: a consumed key returns true");
+  expectStr(tagsOf(&ui3.events, UE_LISTENER).view(), "51 ", "10: the key went to the focused node's listener");
+  unlisten(&mut ui3, pan);
+  expect(!keyDown(&mut ui3, KEY_ENTER, 0u32), "10: an unconsumed key returns false");
+
+  done();
+}

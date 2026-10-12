@@ -408,6 +408,77 @@ fn clusterChecks(renderer &mut Renderer, device &mut Device) {
   renderer.lights.clear();
 }
 
+// 4b. A camera that sees in a mirror (camera.cone's 'reflectedAbout': the world
+// reflected about x = 0, an oblique near plane, the clip space's x flipped): the
+// same sample of points through the camera's own matrices (a point is found by
+// unprojecting a pixel and a depth through the inverse of its projection times
+// its view), every light that reaches one in the list of its cluster
+fn mirrorClusters(renderer &mut Renderer, device &mut Device) {
+  renderer.lights.clear();
+  mut placed = new Placed(List[Vec3].empty(), List[Vec3].empty(), List[f32].empty(), List[bool].empty(),
+    List[f32].empty(), List[f32].empty());
+  mut seed = 4242u32;
+  mut i = 0u32;
+  while i < 120u32 {
+    imm pos = new Vec3((rnd(&mut seed) - 0.5) * 60., rnd(&mut seed) * 6., 10. - rnd(&mut seed) * 90.);
+    imm range = 1.5 + rnd(&mut seed) * 8.;
+    renderer.lights.addPoint(pos, Color.gray(1.), 5., range);
+    placed.pos.push(pos);
+    placed.axis.push(new Vec3(0., 0., -1.));
+    placed.range.push(range);
+    placed.spot.push(false);
+    placed.outer.push(0.);
+    placed.inner.push(0.);
+    i = i + 1u32;
+  }
+  mut camera = sceneCamera();
+  camera.lookAt(new Vec3(6., 2., 12.), new Vec3(6., 2., -40.), new Vec3(0., 1., 0.));
+  mut mirrored = camera.reflectedAbout(new Vec4(1., 0., 0., 0.));
+  // (Without the oblique near plane the whole of the frustum is in view: with it, the points on
+  // the camera's axis are behind the mirror and clipped, and the sample would not find them. The
+  // oblique plane changes the depth row of the projection only, which the lists do not use.)
+  mirrored.clipped = false;
+  imm aspect = 16. / 9.;
+  renderer.lights.prepare(device, &mirrored, aspect, 1920u32, 1080u32);
+  imm view = mirrored.viewMatrix();
+  imm proj = mirrored.projectionMatrix(aspect);
+  imm inverse = (proj * view).inverse();
+  mut missed = 0u32;
+  mut tested = 0u32;
+  mut s = 0u32;
+  while s < 20000u32 {
+    imm px = rnd(&mut seed) * 1920.;
+    imm py = rnd(&mut seed) * 1080.;
+    imm depth = 0.2 * libc.powf(500., rnd(&mut seed));
+    imm onAxis = proj * new Vec4(0., 0., 0. - depth, 1.);
+    imm ndcz = onAxis.z / onAxis.w;
+    if ndcz > 0. and ndcz < 1. {
+      imm w = inverse * new Vec4(px / 1920. * 2. - 1., 1. - py / 1080. * 2., ndcz, 1.);
+      imm p = new Vec3(w.x / w.w, w.y / w.w, w.z / w.w);
+      imm cluster = renderer.lights.clusterAt(p, px, py);
+      mut l = 0usize;
+      while l < 120usize {
+        if influences(&placed, l, p) {
+          tested = tested + 1u32;
+          mut found = false;
+          mut k = 0u32;
+          while k < renderer.lights.clusterCount(cluster) {
+            if renderer.lights.clusterLight(cluster, k) == u32.from(l) { found = true; }
+            k = k + 1u32;
+          }
+          if !found { missed = missed + 1u32; }
+        }
+        l = l + 1usize;
+      }
+    }
+    s = s + 1u32;
+  }
+  expectUInt(u64.from(missed), 0u64, "a mirror camera: no light that reaches a sampled point is missing from its cluster");
+  expect(tested > 100u32, "the mirror camera's samples met lights");
+  eprint <- "measured mirror camera: "; eprint <- u64.from(tested); eprint <- " (point, light) pairs sampled, none missed\n";
+  renderer.lights.clear();
+}
+
 // 6. Lists that outgrow the first buffer
 fn growth(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer, scene &Scene) {
   renderer.lights.clear();
@@ -664,8 +735,12 @@ fn layerChecks(renderer &mut Renderer, device &mut Device, color &Texture, depth
   renderer.lights.clear();
 }
 
-// 11. 200 lights, seen from the side
-fn crowd(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer, scene &Scene) {
+// 11. 200 lights, seen from the side, and again by a camera that sees in a mirror
+// (the world reflected about x = 0, clip x flipped, nothing at x < 0 drawn): each
+// sampled pixel's point on the plane found by unprojecting the pixel through the
+// inverse of the camera's own projection times view, the lights found there
+fn crowd(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer, scene &Scene,
+    camera &Camera, minX f32, label &Array[u8]) {
   imm p = readback.mappedRange();
   renderer.lights.clear();
   mut placed = new Placed(List[Vec3].empty(), List[Vec3].empty(), List[f32].empty(), List[bool].empty(),
@@ -681,18 +756,8 @@ fn crowd(renderer &mut Renderer, device &mut Device, color &Texture, depth &Text
     placed.range.push(range);
     i = i + 1u32;
   }
-  mut camera = Camera.make();
-  camera.fov = radians(40.);
-  camera.near = 0.1;
-  camera.far = 100.;
-  camera.lookAt(new Vec3(0., 6., 10.), new Vec3(0., 0., 0.), new Vec3(0., 1., 0.));
-  camera.background = new Color(0., 0., 0., 1.);
-  imm place = camera.placement();
-  imm eye = place.translation();
-  imm forward = new Vec3(-place.m[8], -place.m[9], -place.m[10]).normalize();
-  imm right = new Vec3(place.m[0], place.m[1], place.m[2]).normalize();
-  imm upv = new Vec3(place.m[4], place.m[5], place.m[6]).normalize();
-  imm tanY = tan(camera.fov * 0.5);
+  imm vp = camera.projectionMatrix(1.) * camera.viewMatrix();
+  imm inverse = vp.inverse();
   // The first pass at intensity 1, to scale the brightest sample to 0.85
   mut peak = 0.;
   mut pass = 0u32;
@@ -709,7 +774,7 @@ fn crowd(renderer &mut Renderer, device &mut Device, color &Texture, depth &Text
     }
     imm light = dark();
     imm list = groundList(scene, scene.lit);
-    drawFrame(renderer, device, color, depth, readback, &camera, &light, &list);
+    drawFrame(renderer, device, color, depth, readback, camera, &light, &list);
     mut compared = 0u32;
     mut bad = 0u32;
     mut worst = 0.;
@@ -721,10 +786,16 @@ fn crowd(renderer &mut Renderer, device &mut Device, color &Texture, depth &Text
         imm pyl = sy * 8usize + 4usize;
         imm ndcx = (f32.from(pxl) + 0.5) / 128. - 1.;
         imm ndcy = 1. - (f32.from(pyl) + 0.5) / 128.;
-        imm dir = (forward + right * (ndcx * tanY) + upv * (ndcy * tanY)).normalize();
-        if dir.y < -0.001 {
-          imm t = (0. - eye.y) / dir.y;
-          imm world = eye + dir * t;
+        imm nearW = inverse * new Vec4(ndcx, ndcy, 0., 1.);
+        imm farW = inverse * new Vec4(ndcx, ndcy, 1., 1.);
+        imm origin = new Vec3(nearW.x / nearW.w, nearW.y / nearW.w, nearW.z / nearW.w);
+        imm dir = (new Vec3(farW.x / farW.w, farW.y / farW.w, farW.z / farW.w) - origin).normalize();
+        imm t = (0. - origin.y) / dir.y;
+        imm world = origin + dir * t;
+        // The ray meets the plane y = 0 somewhere along its line; it is seen at this pixel if the
+        // point is in front of the camera and inside its depth range
+        imm hit = vp * new Vec4(world.x, world.y, world.z, 1.);
+        if absf(dir.y) > 0.001 and hit.w > 0. and hit.z / hit.w > 0. and hit.z / hit.w < 1. and world.x >= minX {
           mut expected = 0.;
           mut l = 0usize;
           while l < 200usize {
@@ -748,9 +819,9 @@ fn crowd(renderer &mut Renderer, device &mut Device, color &Texture, depth &Text
       sy = sy + 1usize;
     }
     if pass == 1u32 {
-      expectUInt(u64.from(bad), 0u64, "200 lights: every sampled pixel is the brute-force sum");
-      expect(compared > 500u32, "and a good share of the picture was compared");
-      eprint <- "measured 200 lights: "; eprint <- u64.from(compared); eprint <- " pixels compared, the largest difference ";
+      expectUInt(u64.from(bad), 0u64, label);
+      expect(compared > 300u32, label);
+      eprint <- "measured "; eprintStr(label as &str); eprint <- ": "; eprint <- u64.from(compared); eprint <- " pixels compared, the largest difference ";
       eprint <- worst * 255.; eprint <- " of 255; ";
       eprint <- u64.from(renderer.lights.active); eprint <- " lights active, "; eprint <- u64.from(renderer.lights.pairs);
       eprint <- " pairs\n";
@@ -788,10 +859,27 @@ fn main() i32 {
 
   handleChecks(&mut renderer);
   clusterChecks(&mut renderer, &mut device);
+  mirrorClusters(&mut renderer, &mut device);
   lightChecks(&mut renderer, &mut device, &color, &depth, &readback, &scene);
   highlightChecks(&mut renderer, &mut device, &color, &depth, &readback);
   layerChecks(&mut renderer, &mut device, &color, &depth, &readback, &scene);
-  crowd(&mut renderer, &mut device, &color, &depth, &readback, &scene);
+  mut side = Camera.make();
+  side.fov = radians(40.);
+  side.near = 0.1;
+  side.far = 100.;
+  side.lookAt(new Vec3(0., 6., 10.), new Vec3(0., 0., 0.), new Vec3(0., 1., 0.));
+  side.background = new Color(0., 0., 0., 1.);
+  crowd(&mut renderer, &mut device, &color, &depth, &readback, &scene, &side, -1000., "200 lights: every sampled pixel is the brute-force sum");
+  mut seen = Camera.make();
+  seen.fov = radians(40.);
+  seen.near = 0.1;
+  seen.far = 100.;
+  // A viewer at x = 8 looking at the mirror (the plane x = 0) in front of it, down at the ground; the
+  // camera that sees the reflection looks the other way, at the ground at x > 0, from x = -8
+  seen.lookAt(new Vec3(8., 6., 6.), new Vec3(-2., 0., 0.), new Vec3(0., 1., 0.));
+  seen.background = new Color(0., 0., 0., 1.);
+  imm inMirror = seen.reflectedAbout(new Vec4(1., 0., 0., 0.));
+  crowd(&mut renderer, &mut device, &color, &depth, &readback, &scene, &inMirror, 0.3, "200 lights seen in a mirror: every sampled pixel is the brute-force sum");
   growth(&mut renderer, &mut device, &color, &depth, &readback, &scene);
 
   expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");

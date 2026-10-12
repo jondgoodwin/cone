@@ -1,0 +1,769 @@
+// ======== Widgets, part 2: text field, list, window, tabs, tooltip ========
+
+// ---- UTF-8 helpers ----
+
+fn prevChar(s &str, i usize) usize {
+  if i == 0usize {return 0usize;}
+  mut j = i - 1usize;
+  while j > 0usize and !s.isCharBoundary(j) {j = j - 1usize;}
+  j;
+}
+
+fn nextChar(s &str, i usize) usize {
+  imm n = s.len();
+  if i >= n {return n;}
+  mut j = i + 1usize;
+  while j < n and !s.isCharBoundary(j) {j = j + 1usize;}
+  j;
+}
+
+fn isWordByte(b u8) bool {
+  (b >= 48u8 and b <= 57u8) or (b >= 65u8 and b <= 90u8) or (b >= 97u8 and b <= 122u8) or b == 95u8 or b >= 128u8;
+}
+
+fn prevWord(s &str, i usize) usize {
+  mut j = i;
+  while j > 0usize and !isWordByte(s[prevChar(s, j)]) {j = prevChar(s, j);}
+  while j > 0usize and isWordByte(s[prevChar(s, j)]) {j = prevChar(s, j);}
+  j;
+}
+
+fn nextWord(s &str, i usize) usize {
+  imm n = s.len();
+  mut j = i;
+  while j < n and isWordByte(s[j]) {j = nextChar(s, j);}
+  while j < n and !isWordByte(s[j]) {j = nextChar(s, j);}
+  j;
+}
+
+// A code point as UTF-8
+fn utf8Of(cp u32) String {
+  mut s = String.empty();
+  if cp < 128u32 {s.appendByte(u8.from(cp));}
+  elif cp < 2048u32 {
+    s.appendByte(u8.from(192u32 | (cp >> 6u32)));
+    s.appendByte(u8.from(128u32 | (cp & 63u32)));
+  }
+  elif cp < 65536u32 {
+    s.appendByte(u8.from(224u32 | (cp >> 12u32)));
+    s.appendByte(u8.from(128u32 | ((cp >> 6u32) & 63u32)));
+    s.appendByte(u8.from(128u32 | (cp & 63u32)));
+  }
+  else {
+    s.appendByte(u8.from(240u32 | (cp >> 18u32)));
+    s.appendByte(u8.from(128u32 | ((cp >> 12u32) & 63u32)));
+    s.appendByte(u8.from(128u32 | ((cp >> 6u32) & 63u32)));
+    s.appendByte(u8.from(128u32 | (cp & 63u32)));
+  }
+  s;
+}
+
+// ================= text field =================
+
+pub fn textField(ui &mut Ui, parent usize, text &str) usize {
+  imm id = made(ui, parent, K_TEXTFIELD, "textfield");
+  ui.nodes[id].pointer = PM_STOP;
+  ui.nodes[id].focusable = true;
+  ui.nodes[id].clip = true;
+  ui.setText(id, text);
+  ui.nodes[id].data = ui.fields.len();
+  imm n = text.len();
+  ui.fields.push(new FieldData(node: id, caret: n, anchor: n, adv: List[f32].empty(), placeholder: String.empty()));
+  imm fs = ui.theme.num(ui.nodes[id].style, P_FONT_SIZE, 0u32, 14.);
+  imm pad = ui.theme.num(ui.nodes[id].style, P_PAD, 0u32, 6.);
+  ui.setSize(id, 180., fs * 1.3 + pad * 2.);
+  id;
+}
+
+pub fn fieldText(ui &Ui, id usize) &str {ui.texts[id].view();}
+
+// Replaces the text; the caret goes to the end
+pub fn fieldSetText(ui &mut Ui, id usize, text &str) {
+  ui.texts[id].clear();
+  ui.texts[id].append(text);
+  imm d = ui.nodes[id].data;
+  ui.fields[d].caret = text.len();
+  ui.fields[d].anchor = text.len();
+  ui.fields[d].advValid = false;
+  ui.nodes[id].tValid = false;
+}
+
+pub fn fieldPlaceholder(ui &mut Ui, id usize, text &str) {
+  imm d = ui.nodes[id].data;
+  ui.fields[d].placeholder = String.from(text);
+}
+
+// The selected range as (low, high) byte offsets
+pub fn fieldSelection(ui &Ui, id usize) Vec2 {
+  imm d = ui.nodes[id].data;
+  imm a = ui.fields[d].anchor;
+  imm c = ui.fields[d].caret;
+  if a < c {new Vec2(f32.from(a), f32.from(c));} else {new Vec2(f32.from(c), f32.from(a));};
+}
+
+fn fieldLo(ui &Ui, d usize) usize {minu(ui.fields[d].caret, ui.fields[d].anchor);}
+fn fieldHi(ui &Ui, d usize) usize {maxu(ui.fields[d].caret, ui.fields[d].anchor);}
+
+fn fieldTouched(ui &mut Ui, node usize, d usize) {
+  ui.fields[d].advValid = false;
+  ui.fields[d].blink = 0.;
+  ui.emit(UE_TEXT, node, NIL, 0., 0., 0i32, 0u32);
+}
+
+fn fieldDeleteSelection(ui &mut Ui, node usize, d usize) bool {
+  if ui.fields[d].caret == ui.fields[d].anchor {return false;}
+  imm lo = fieldLo(ui, d);
+  imm hi = fieldHi(ui, d);
+  ui.texts[node].remove(lo, hi);
+  ui.fields[d].caret = lo;
+  ui.fields[d].anchor = lo;
+  true;
+}
+
+fn fieldInsert(ui &mut Ui, node usize, d usize, s &str) {
+  if ui.fields[d].readOnly {return;}
+  fieldDeleteSelection(ui, node, d);
+  if ui.texts[node].len() + s.len() > ui.fields[d].maxLen {
+    fieldTouched(ui, node, d);
+    return;
+  }
+  ui.texts[node].insert(ui.fields[d].caret, s);
+  ui.fields[d].caret = ui.fields[d].caret + s.len();
+  ui.fields[d].anchor = ui.fields[d].caret;
+  fieldTouched(ui, node, d);
+}
+
+// The byte offset nearest to an x position (in the Ui's pixels)
+fn fieldIndexAt(ui &Ui, node usize, d usize, x f32) usize {
+  imm pad = ui.theme.num(ui.nodes[node].style, P_PAD, 0u32, 6.);
+  imm loc = x - (ui.nodes[node].gx + pad) + ui.fields[d].scroll;
+  imm s = ui.texts[node].view();
+  if ui.fields[d].adv.len() != s.len() + 1usize {return s.len();}
+  mut best = 0usize;
+  mut bestDist = 1000000000.;
+  mut i = 0usize;
+  while i <= s.len() {
+    if s.isCharBoundary(i) {
+      imm dist = absf(*ui.fields[d].adv[i] - loc);
+      if dist < bestDist {
+        bestDist = dist;
+        best = i;
+      }
+    }
+    i = i + 1usize;
+  }
+  best;
+}
+
+// The x of byte offset i from the left of the text (before scrolling)
+pub fn fieldAdvance(ui &Ui, node usize, i usize) f32 {
+  imm d = ui.nodes[node].data;
+  if i < ui.fields[d].adv.len() {*ui.fields[d].adv[i];} else {0.;};
+}
+
+fn fieldMove(ui &mut Ui, d usize, to usize, extend bool) {
+  ui.fields[d].caret = to;
+  if !extend {ui.fields[d].anchor = to;}
+  ui.fields[d].blink = 0.;
+}
+
+fn fieldEvent(ui &mut Ui, node usize, ev &Ev) bool {
+  imm d = ui.nodes[node].data;
+  if ev.kind == EK_DOWN and ev.button == BTN_LEFT {
+    imm pos = fieldIndexAt(ui, node, d, ev.x);
+    fieldMove(ui, d, pos, (ev.mods & MOD_SHIFT) != 0u32);
+    ui.fields[d].selecting = true;
+    ui.input.capture = node;
+    return true;
+  }
+  if ev.kind == EK_MOVE and ui.input.capture == node and ui.fields[d].selecting {
+    fieldMove(ui, d, fieldIndexAt(ui, node, d, ev.x), true);
+    return true;
+  }
+  if ev.kind == EK_UP {
+    ui.fields[d].selecting = false;
+    return false;
+  }
+  if ev.kind == EK_DBLCLICK {
+    imm s = ui.texts[node].view();
+    imm c = ui.fields[d].caret;
+    imm lo = prevWord(s, nextChar(s, c));
+    mut hi = lo;
+    while hi < s.len() and isWordByte(s[hi]) {hi = nextChar(s, hi);}
+    ui.fields[d].anchor = lo;
+    ui.fields[d].caret = if hi > lo {hi;} else {c;};
+    return true;
+  }
+  if ev.kind == EK_TEXT {
+    if ev.code >= 32u32 and ev.code != 127u32 {
+      imm t = utf8Of(ev.code);
+      fieldInsert(ui, node, d, t.view());
+    }
+    return true;
+  }
+  if ev.kind == EK_KEY_DOWN {
+    imm shift = (ev.mods & MOD_SHIFT) != 0u32;
+    imm ctrl = (ev.mods & MOD_CTRL) != 0u32;
+    imm s = ui.texts[node].view();
+    imm c = ui.fields[d].caret;
+    if ev.code == KEY_LEFT {
+      if !shift and ui.fields[d].caret != ui.fields[d].anchor {fieldMove(ui, d, fieldLo(ui, d), false);}
+      else {fieldMove(ui, d, if ctrl {prevWord(s, c);} else {prevChar(s, c);}, shift);}
+      return true;
+    }
+    if ev.code == KEY_RIGHT {
+      if !shift and ui.fields[d].caret != ui.fields[d].anchor {fieldMove(ui, d, fieldHi(ui, d), false);}
+      else {fieldMove(ui, d, if ctrl {nextWord(s, c);} else {nextChar(s, c);}, shift);}
+      return true;
+    }
+    if ev.code == KEY_HOME {fieldMove(ui, d, 0usize, shift); return true;}
+    if ev.code == KEY_END {fieldMove(ui, d, s.len(), shift); return true;}
+    if ev.code == KEY_BACKSPACE and !ui.fields[d].readOnly {
+      if !fieldDeleteSelection(ui, node, d) {
+        imm from = if ctrl {prevWord(s, c);} else {prevChar(s, c);};
+        if from < c {
+          ui.texts[node].remove(from, c);
+          ui.fields[d].caret = from;
+          ui.fields[d].anchor = from;
+        }
+      }
+      fieldTouched(ui, node, d);
+      return true;
+    }
+    if ev.code == KEY_DELETE and !ui.fields[d].readOnly {
+      if !fieldDeleteSelection(ui, node, d) {
+        imm to = if ctrl {nextWord(s, c);} else {nextChar(s, c);};
+        if to > c {ui.texts[node].remove(c, to);}
+      }
+      fieldTouched(ui, node, d);
+      return true;
+    }
+    if ev.code == KEY_ENTER {
+      ui.emit(UE_SUBMIT, node, NIL, 0., 0., 0i32, 0u32);
+      return true;
+    }
+    if ctrl and ev.code == KEY_A {
+      ui.fields[d].anchor = 0usize;
+      ui.fields[d].caret = s.len();
+      return true;
+    }
+    if ctrl and (ev.code == KEY_C or ev.code == KEY_X) {
+      if ui.fields[d].caret != ui.fields[d].anchor {
+        ui.input.clipboard.clear();
+        ui.input.clipboard.append(s.slice(fieldLo(ui, d), fieldHi(ui, d)));
+        if ev.code == KEY_X and !ui.fields[d].readOnly {
+          fieldDeleteSelection(ui, node, d);
+          fieldTouched(ui, node, d);
+        }
+      }
+      return true;
+    }
+    if ctrl and ev.code == KEY_V {
+      imm clip = ui.input.clipboard.copy();
+      fieldInsert(ui, node, d, clip.view());
+      return true;
+    }
+    // everything else printable is for the EK_TEXT that follows
+    return ev.code >= 32u32 and ev.code < 127u32 and !ctrl;
+  }
+  false;
+}
+
+// After a layout: the field's prefix widths, and the scroll that keeps the caret in view.
+// Done here, once the text can be measured, so an edit costs one pass of the closure
+fn refreshFields[F fn(text &str, font u32, size f32) Vec2](ui &mut Ui, m &mut F) {
+  mut i = 0usize;
+  while i < ui.fields.len() {
+    imm node = ui.fields[i].node;
+    if ui.alive(node) and ui.nodes[node].kind == K_TEXTFIELD and ui.nodes[node].visible {
+      imm font = u32.from(ui.theme.num(ui.nodes[node].style, P_FONT, 0u32, 0.));
+      imm size = ui.theme.num(ui.nodes[node].style, P_FONT_SIZE, 0u32, 14.);
+      if !ui.fields[i].advValid {
+        imm n = ui.texts[node].len();
+        mut adv = List[f32].empty();
+        mut b = 0usize;
+        mut last = 0.;
+        while b <= n {
+          if b == 0usize {last = 0.;}
+          elif ui.texts[node].view().isCharBoundary(b) {
+            last = m(ui.texts[node].view().slice(0usize, b), font, size).x;
+            ui.stats.textMeasures = ui.stats.textMeasures + 1u32;
+          }
+          adv.push(last);
+          b = b + 1usize;
+        }
+        ui.fields[i].adv = adv;
+        ui.fields[i].advValid = true;
+      }
+      // keep the caret in view
+      imm pad = ui.theme.num(ui.nodes[node].style, P_PAD, 0u32, 6.);
+      imm vw = maxf(1., ui.nodes[node].w - pad * 2.);
+      imm total = if ui.fields[i].adv.len() > 0usize {*ui.fields[i].adv[ui.fields[i].adv.len() - 1usize];} else {0.;};
+      imm cx = if ui.fields[i].caret < ui.fields[i].adv.len() {*ui.fields[i].adv[ui.fields[i].caret];} else {0.;};
+      mut sc = ui.fields[i].scroll;
+      if cx - sc > vw {sc = cx - vw;}
+      if cx - sc < 0. {sc = cx;}
+      sc = clampf(sc, 0., maxf(0., total - vw + 2.));
+      ui.fields[i].scroll = sc;
+    }
+    i = i + 1usize;
+  }
+}
+
+// ================= list box =================
+
+pub fn listBox(ui &mut Ui, parent usize) usize {
+  imm id = made(ui, parent, K_LIST, "list");
+  ui.nodes[id].pointer = PM_STOP;
+  ui.nodes[id].focusable = true;
+  ui.setScroll(id, false, true);
+  imm col = made(ui, id, K_PLAIN, "list");
+  ui.nodes[col].style = 0usize;
+  ui.setFlex(col, LK_COLUMN, 0.);
+  ui.setPad(col, 0.);
+  ui.nodes[id].data = ui.lists.len();
+  ui.lists.push(new ListData(selected: -1i32, column: col));
+  id;
+}
+
+pub fn listAdd(ui &mut Ui, list usize, text &str) usize {
+  imm col = ui.lists[ui.nodes[list].data].column;
+  imm row = made(ui, col, K_ROWITEM, "list.item");
+  ui.nodes[row].pointer = PM_STOP;
+  ui.nodes[row].tag = ui.nodes[col].nkids - 1u32;
+  ui.setText(row, text);
+  row;
+}
+
+pub fn listClear(ui &mut Ui, list usize) {
+  imm d = ui.nodes[list].data;
+  imm col = ui.lists[d].column;
+  while ui.nodes[col].first != NIL {ui.destroy(ui.nodes[col].first);}
+  ui.lists[d].selected = -1i32;
+}
+
+pub fn listCount(ui &Ui, list usize) usize {usize.from(ui.nodes[ui.lists[ui.nodes[list].data].column].nkids);}
+pub fn listSelected(ui &Ui, list usize) i32 {ui.lists[ui.nodes[list].data].selected;}
+
+pub fn listRow(ui &Ui, list usize, index usize) usize {
+  ui.childAt(ui.lists[ui.nodes[list].data].column, index);
+}
+
+pub fn listSelect(ui &mut Ui, list usize, index i32) {
+  imm d = ui.nodes[list].data;
+  imm count = listCount(ui, list);
+  mut idx = index;
+  if idx >= i32.from(count) {idx = i32.from(count) - 1i32;}
+  if idx < -1i32 {idx = -1i32;}
+  if idx == ui.lists[d].selected {return;}
+  if ui.lists[d].selected >= 0i32 {ui.setState(listRow(ui, list, usize.from(ui.lists[d].selected)), ST_SELECTED, false);}
+  ui.lists[d].selected = idx;
+  if idx >= 0i32 {
+    imm row = listRow(ui, list, usize.from(idx));
+    ui.setState(row, ST_SELECTED, true);
+    listReveal(ui, list, row);
+  }
+  ui.emit(UE_SELECT, list, NIL, 0., 0., idx, 0u32);
+}
+
+// Scrolls so the row is in view (using the last layout)
+fn listReveal(ui &mut Ui, list usize, row usize) {
+  imm top = ui.nodes[row].y;
+  imm bottom = top + ui.nodes[row].h;
+  mut sy = ui.nodes[list].scrollY;
+  if top < sy {sy = top;}
+  if bottom > sy + ui.nodes[list].h {sy = bottom - ui.nodes[list].h;}
+  if sy != ui.nodes[list].scrollY {ui.setScrollOffset(list, ui.nodes[list].scrollX, maxf(0., sy));}
+}
+
+fn listOf(ui &Ui, row usize) usize {
+  imm col = ui.nodes[row].parent;
+  if col == NIL {return NIL;}
+  ui.nodes[col].parent;
+}
+
+fn rowEvent(ui &mut Ui, node usize, ev &Ev) bool {
+  imm list = listOf(ui, node);
+  if list == NIL or ui.nodes[list].kind != K_LIST {return false;}
+  if ev.kind == EK_CLICK {
+    listSelect(ui, list, i32.from(ui.nodes[node].tag));
+    return true;
+  }
+  if ev.kind == EK_DBLCLICK {
+    ui.emit(UE_ACTIVATE, list, node, 0., 0., i32.from(ui.nodes[node].tag), 0u32);
+    return true;
+  }
+  false;
+}
+
+fn listEvent(ui &mut Ui, node usize, ev &Ev) bool {
+  if ev.kind == EK_KEY_DOWN and ui.input.focus == node {
+    imm d = ui.nodes[node].data;
+    imm sel = ui.lists[d].selected;
+    imm count = i32.from(listCount(ui, node));
+    if ev.code == KEY_DOWN {listSelect(ui, node, if sel < 0i32 {0i32;} else {sel + 1i32;}); return true;}
+    if ev.code == KEY_UP {listSelect(ui, node, if sel <= 0i32 {0i32;} else {sel - 1i32;}); return true;}
+    if ev.code == KEY_HOME {listSelect(ui, node, 0i32); return true;}
+    if ev.code == KEY_END {listSelect(ui, node, count - 1i32); return true;}
+    if ev.code == KEY_PAGEDOWN {listSelect(ui, node, sel + 5i32); return true;}
+    if ev.code == KEY_PAGEUP {listSelect(ui, node, if sel - 5i32 < 0i32 {0i32;} else {sel - 5i32;}); return true;}
+    if ev.code == KEY_ENTER and sel >= 0i32 {
+      ui.emit(UE_ACTIVATE, node, listRow(ui, node, usize.from(sel)), 0., 0., sel, 0u32);
+      return true;
+    }
+  }
+  false;
+}
+
+// ================= windows =================
+
+pub fn window(ui &mut Ui, title &str, x f32, y f32, w f32, h f32) usize {
+  imm id = made(ui, ui.root, K_WINDOW, "window");
+  ui.nodes[id].pointer = PM_STOP;
+  ui.setLayout(id, LK_COLUMN);
+  ui.setAnchors(id, 0., 0., 0., 0.);
+  ui.setOffsets(id, x, y, 0., 0.);
+  ui.setSize(id, w, h);
+  imm bar = made(ui, id, K_TITLEBAR, "window.title");
+  ui.nodes[bar].pointer = PM_STOP;
+  ui.setFlex(bar, LK_ROW, 4.);
+  ui.setJustify(bar, JUSTIFY_START, ALIGN_CENTER);
+  imm t = label(ui, bar, title);
+  ui.setFlexChild(t, 1., 1., -1.);
+  imm close = made(ui, bar, K_CLOSE, "window.close");
+  ui.nodes[close].pointer = PM_STOP;
+  ui.setSize(close, 18., 18.);
+  imm content = made(ui, id, K_PANEL, "base");
+  ui.nodes[content].pointer = PM_IGNORE;
+  ui.setFlex(content, LK_COLUMN, 6.);
+  ui.setPad(content, 6.);
+  ui.setFlexChild(content, 1., 1., -1.);
+  ui.nodes[content].clip = true;
+  ui.nodes[id].data = ui.windows.len();
+  ui.windows.push(new WindowData(frame: id, titlebar: bar, title: t, closeBtn: close, content: content));
+  activateWindow(ui, id);
+  id;
+}
+
+pub fn windowContent(ui &Ui, win usize) usize {ui.windows[ui.nodes[win].data].content;}
+
+pub fn windowSetTitle(ui &mut Ui, win usize, title &str) {
+  ui.setText(ui.windows[ui.nodes[win].data].title, title);
+}
+
+pub fn windowSetClosable(ui &mut Ui, win usize, closable bool) {
+  ui.windows[ui.nodes[win].data].closable = closable;
+  ui.setVisible(ui.windows[ui.nodes[win].data].closeBtn, closable);
+}
+
+pub fn windowSetResizable(ui &mut Ui, win usize, on bool) {ui.windows[ui.nodes[win].data].resizable = on;}
+pub fn windowSetMovable(ui &mut Ui, win usize, on bool) {ui.windows[ui.nodes[win].data].movable = on;}
+
+fn windowOf(ui &Ui, node usize) usize {
+  mut n = node;
+  while n != NIL {
+    if ui.nodes[n].kind == K_WINDOW {return n;}
+    n = ui.nodes[n].parent;
+  }
+  NIL;
+}
+
+// The active window is drawn on top, its title bar lit
+pub fn activateWindow(ui &mut Ui, win usize) {
+  if win == NIL {return;}
+  imm old = ui.input.activeWindow;
+  if old != win {
+    if old != NIL and ui.alive(old) {
+      ui.setState(old, ST_FOCUSED, false);
+      ui.setState(ui.windows[ui.nodes[old].data].titlebar, ST_FOCUSED, false);
+    }
+    ui.input.activeWindow = win;
+    ui.setState(win, ST_FOCUSED, true);
+    ui.setState(ui.windows[ui.nodes[win].data].titlebar, ST_FOCUSED, true);
+  }
+  ui.raise(win);
+}
+
+fn activateWindowAt(ui &mut Ui, hit usize) {
+  imm w = windowOf(ui, hit);
+  if w != NIL {activateWindow(ui, w);}
+}
+
+fn closeWindowOf(ui &mut Ui, node usize) {
+  imm w = windowOf(ui, node);
+  if w == NIL {return;}
+  ui.emit(UE_CLOSE, w, NIL, 0., 0., 0i32, 0u32);
+  if ui.windows[ui.nodes[w].data].closable {ui.setVisible(w, false);}
+}
+
+// Edges of the frame the point is within 5 pixels of: 1 left, 2 right, 4 top, 8 bottom
+fn windowEdges(ui &Ui, win usize, x f32, y f32) u32 {
+  imm n = ui.nodes[win];
+  if x < n.gx - 1. or x > n.gx + n.w + 1. or y < n.gy - 1. or y > n.gy + n.h + 1. {return 0u32;}
+  mut e = 0u32;
+  if x - n.gx < 5. {e = e | 1u32;}
+  if n.gx + n.w - x <= 5. {e = e | 2u32;}
+  if y - n.gy < 5. {e = e | 4u32;}
+  if n.gy + n.h - y <= 5. {e = e | 8u32;}
+  e;
+}
+
+fn windowEvent(ui &mut Ui, node usize, ev &Ev) bool {
+  imm d = ui.nodes[node].data;
+  if ev.kind == EK_DOWN and ev.button == BTN_LEFT {
+    imm edges = windowEdges(ui, node, ev.x, ev.y);
+    if edges != 0u32 and ui.windows[d].resizable {
+      ui.input.win.mode = 2u32;
+      ui.input.win.node = node;
+      ui.input.win.edges = edges;
+      ui.input.win.grabX = ev.x;
+      ui.input.win.grabY = ev.y;
+      ui.input.win.startX = ui.nodes[node].offL;
+      ui.input.win.startY = ui.nodes[node].offT;
+      ui.input.win.startW = ui.nodes[node].w;
+      ui.input.win.startH = ui.nodes[node].h;
+      ui.input.capture = node;
+      return true;
+    }
+    if ui.windows[d].movable and ui.isWithin(ev.target, ui.windows[d].titlebar) and !ui.isWithin(ev.target, ui.windows[d].closeBtn) {
+      ui.input.win.mode = 1u32;
+      ui.input.win.node = node;
+      ui.input.win.grabX = ev.x - ui.nodes[node].gx;
+      ui.input.win.grabY = ev.y - ui.nodes[node].gy;
+      ui.input.win.startX = ui.nodes[node].offL;
+      ui.input.win.startY = ui.nodes[node].offT;
+      ui.input.capture = node;
+      return true;
+    }
+    return false;
+  }
+  if ev.kind == EK_MOVE and ui.input.capture == node and ui.input.win.node == node {
+    if ui.input.win.mode == 1u32 {
+      imm nl = clampf(ev.x - ui.input.win.grabX, 40. - ui.nodes[node].w, ui.width - 40.);
+      imm nt = clampf(ev.y - ui.input.win.grabY, 0., ui.height - 24.);
+      ui.setOffsets(node, nl, nt, 0., 0.);
+      return true;
+    }
+    if ui.input.win.mode == 2u32 {
+      imm e = ui.input.win.edges;
+      imm dx = ev.x - ui.input.win.grabX;
+      imm dy = ev.y - ui.input.win.grabY;
+      mut nw = ui.input.win.startW;
+      mut nh = ui.input.win.startH;
+      mut nl = ui.input.win.startX;
+      mut nt = ui.input.win.startY;
+      if (e & 1u32) != 0u32 {
+        nw = maxf(ui.windows[d].minW, ui.input.win.startW - dx);
+        nl = ui.input.win.startX + (ui.input.win.startW - nw);
+      }
+      if (e & 2u32) != 0u32 {nw = maxf(ui.windows[d].minW, ui.input.win.startW + dx);}
+      if (e & 4u32) != 0u32 {
+        nh = maxf(ui.windows[d].minH, ui.input.win.startH - dy);
+        nt = ui.input.win.startY + (ui.input.win.startH - nh);
+      }
+      if (e & 8u32) != 0u32 {nh = maxf(ui.windows[d].minH, ui.input.win.startH + dy);}
+      ui.setSize(node, nw, nh);
+      ui.setOffsets(node, nl, nt, 0., 0.);
+      return true;
+    }
+  }
+  if ev.kind == EK_UP and ui.input.win.node == node and (ui.input.win.mode == 1u32 or ui.input.win.mode == 2u32) {
+    ui.emit(if ui.input.win.mode == 1u32 {UE_WINDOW_MOVED;} else {UE_WINDOW_RESIZED;}, node, NIL, ui.nodes[node].offL, ui.nodes[node].offT, 0i32, 0u32);
+    ui.input.win.mode = 0u32;
+    return false;
+  }
+  false;
+}
+
+// The cursor to show where the pointer is: resizing at a window's edge, the text bar over a
+// field, a hand over a button
+fn windowCursor(ui &mut Ui, hit usize, x f32, y f32) {
+  mut n = hit;
+  while n != NIL {
+    imm k = ui.nodes[n].kind;
+    if k == K_TEXTFIELD {
+      ui.input.cursor = CURSOR_TEXT;
+      return;
+    }
+    if k == K_BUTTON or k == K_TAB or k == K_CLOSE or k == K_TOGGLE {
+      ui.input.cursor = CURSOR_HAND;
+      return;
+    }
+    if k == K_SPLITVIEW {
+      splitCursor(ui, n, x, y);
+      return;
+    }
+    if k == K_WINDOW {
+      imm e = windowEdges(ui, n, x, y);
+      if ui.windows[ui.nodes[n].data].resizable and e != 0u32 {
+        if e == 1u32 or e == 2u32 {ui.input.cursor = CURSOR_RESIZE_H;}
+        elif e == 4u32 or e == 8u32 {ui.input.cursor = CURSOR_RESIZE_V;}
+        elif e == 5u32 or e == 10u32 {ui.input.cursor = CURSOR_RESIZE_NWSE;}
+        else {ui.input.cursor = CURSOR_RESIZE_NESW;}
+      }
+      return;
+    }
+    n = ui.nodes[n].parent;
+  }
+}
+
+// ================= tabs =================
+
+pub fn tabs(ui &mut Ui, parent usize) usize {
+  imm id = made(ui, parent, K_TABS, "base");
+  ui.setFlex(id, LK_COLUMN, 0.);
+  ui.setPad(id, 0.);
+  imm bar = made(ui, id, K_PLAIN, "base");
+  ui.setFlex(bar, LK_ROW, 2.);
+  ui.setPad(bar, 0.);
+  imm pages = made(ui, id, K_PANEL, "panel");
+  ui.setLayout(pages, LK_STACK);
+  ui.setFlexChild(pages, 1., 1., -1.);
+  ui.nodes[id].data = ui.tabsets.len();
+  ui.tabsets.push(new TabsData(bar: bar, pages: pages));
+  id;
+}
+
+// Adds a tab; returns the page, a container for the tab's contents
+pub fn addTab(ui &mut Ui, tabsNode usize, title &str) usize {
+  imm d = ui.nodes[tabsNode].data;
+  imm bar = ui.tabsets[d].bar;
+  imm pages = ui.tabsets[d].pages;
+  imm index = ui.nodes[bar].nkids;
+  imm btn = made(ui, bar, K_TAB, "tab");
+  ui.setText(btn, title);
+  ui.nodes[btn].pointer = PM_STOP;
+  ui.nodes[btn].focusable = true;
+  ui.nodes[btn].tag = index;
+  imm page = made(ui, pages, K_PANEL, "base");
+  ui.setFlex(page, LK_COLUMN, 6.);
+  ui.setPad(page, 6.);
+  ui.nodes[page].tag = index;
+  ui.tabpages.push(new TabPage(tabsNode, btn, page));
+  ui.setVisible(page, false);
+  if ui.tabsets[d].selected < 0i32 {selectTab(ui, tabsNode, 0i32);}
+  page;
+}
+
+pub fn selectTab(ui &mut Ui, tabsNode usize, index i32) {
+  imm d = ui.nodes[tabsNode].data;
+  mut found = false;
+  mut i = 0usize;
+  while i < ui.tabpages.len() {
+    if ui.tabpages[i].tabs == tabsNode {
+      imm on = i32.from(ui.nodes[ui.tabpages[i].button].tag) == index;
+      ui.setState(ui.tabpages[i].button, ST_SELECTED, on);
+      ui.setVisible(ui.tabpages[i].panel, on);
+      if on {found = true;}
+    }
+    i = i + 1usize;
+  }
+  if !found {return;}
+  imm changed = ui.tabsets[d].selected != index;
+  ui.tabsets[d].selected = index;
+  if changed {ui.emit(UE_TAB, tabsNode, NIL, 0., 0., index, 0u32);}
+}
+
+pub fn selectedTab(ui &Ui, tabsNode usize) i32 {ui.tabsets[ui.nodes[tabsNode].data].selected;}
+
+fn tabsOf(ui &Ui, btn usize) usize {
+  imm bar = ui.nodes[btn].parent;
+  if bar == NIL {return NIL;}
+  ui.nodes[bar].parent;
+}
+
+fn tabClicked(ui &mut Ui, btn usize) {
+  imm t = tabsOf(ui, btn);
+  if t != NIL {selectTab(ui, t, i32.from(ui.nodes[btn].tag));}
+}
+
+fn tabStep(ui &mut Ui, btn usize, forward bool) {
+  imm t = tabsOf(ui, btn);
+  if t == NIL {return;}
+  imm n = i32.from(ui.nodes[ui.tabsets[ui.nodes[t].data].bar].nkids);
+  mut idx = i32.from(ui.nodes[btn].tag) + (if forward {1i32;} else {-1i32;});
+  if idx < 0i32 {idx = n - 1i32;}
+  if idx >= n {idx = 0i32;}
+  selectTab(ui, t, idx);
+  focusSet(ui, ui.childAt(ui.tabsets[ui.nodes[t].data].bar, usize.from(idx)));
+}
+
+// ================= tooltip =================
+
+pub struct TipState {
+  pub target usize = 0usize;
+  pub timer f32 = 0.;
+  pub shown bool = false;
+  pub suppressed bool = false;      // dismissed by a press: not again until the pointer moves to another node
+  pub node usize = 0usize;
+  pub delay f32 = 0.5;
+
+  pub fn make() TipState {new TipState;}
+}
+
+fn tipTargetOf(ui &Ui, hit usize) usize {
+  mut n = hit;
+  while n != NIL {
+    if ui.tips[n].len() > 0usize {return n;}
+    n = ui.nodes[n].parent;
+  }
+  NIL;
+}
+
+fn tooltipHide(ui &mut Ui) {
+  if ui.input.tip.shown {
+    ui.setVisible(ui.input.tip.node, false);
+    ui.input.tip.shown = false;
+  }
+  ui.input.tip.suppressed = ui.input.tip.target != NIL;
+  ui.input.tip.timer = 0.;
+}
+
+fn tooltipMoved(ui &mut Ui, hit usize) {
+  imm t = tipTargetOf(ui, hit);
+  if t != ui.input.tip.target {
+    if ui.input.tip.shown {
+      ui.setVisible(ui.input.tip.node, false);
+      ui.input.tip.shown = false;
+    }
+    ui.input.tip.target = t;
+    ui.input.tip.timer = 0.;
+    ui.input.tip.suppressed = false;
+  }
+}
+
+fn tooltipUpdate(ui &mut Ui, dt f32) {
+  if ui.input.tip.target == NIL or ui.input.tip.shown or ui.input.tip.suppressed {return;}
+  ui.input.tip.timer = ui.input.tip.timer + dt;
+  if ui.input.tip.timer < ui.input.tip.delay {return;}
+  if ui.input.tip.node == NIL {
+    imm tn = made(ui, ui.overlay, K_TOOLTIP, "tooltip");
+    ui.nodes[tn].pointer = PM_IGNORE;
+    ui.setAnchors(tn, 0., 0., 0., 0.);
+    ui.input.tip.node = tn;
+  }
+  imm tn = ui.input.tip.node;
+  ui.setText(tn, ui.tips[ui.input.tip.target].view());
+  ui.setOffsets(tn, ui.input.px + 14., ui.input.py + 20., 0., 0.);
+  ui.setVisible(tn, true);
+  ui.raise(tn);
+  ui.input.tip.shown = true;
+  ui.emit(UE_TOOLTIP, ui.input.tip.target, tn, ui.input.px, ui.input.py, 0i32, 0u32);
+}
+
+// After a layout: keep a shown tooltip inside the viewport (it is now measured)
+fn placeTooltip[F fn(text &str, font u32, size f32) Vec2](ui &mut Ui, m &mut F) {
+  if !ui.input.tip.shown {return;}
+  imm tn = ui.input.tip.node;
+  imm w = ui.nodes[tn].w;
+  imm h = ui.nodes[tn].h;
+  mut x = ui.input.px + 14.;
+  mut y = ui.input.py + 20.;
+  if x + w > ui.width {x = maxf(0., ui.width - w);}
+  if y + h > ui.height {y = maxf(0., ui.input.py - h - 8.);}
+  if x != ui.nodes[tn].offL or y != ui.nodes[tn].offT {
+    ui.setOffsets(tn, x, y, 0., 0.);
+    arrangeNode(ui, ui.overlay, ui.width, ui.height, m);
+    updateGlobals(ui, ui.overlay, 0., 0.);
+  }
+}

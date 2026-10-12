@@ -1,0 +1,86 @@
+// The rigiddynamics package (a working name; Jon names packages): the solver half of a
+// Jolt-like rigid-body physics engine. A program reaches it with 'import rigiddynamics'
+// (and 'import rigidcollide' for the shapes it is given), and gets a World of bodies,
+// joints and queries that it steps at a fixed rate:
+//
+//   mut w = World.make();
+//   imm ground = w.addShape(Shape.single(Prim.box(new Vec3(20., 1., 20.))));   // rigidcollide's
+//   imm crate  = w.addShape(Shape.single(Prim.box(new Vec3(0.5, 0.5, 0.5))));
+//   w.createBody(BodyDef.staticAt(ground, new Vec3(0., -1., 0.)));
+//   mut def = BodyDef.dynamicAt(crate, new Vec3(0., 3., 0.));
+//   def.material = PhysMaterial.ice();                                          // slips
+//   imm id = w.createBody(def);
+//   w.step(1. / 60.);                         // or w.advance(frameSeconds): fixed steps, Fiedler's way
+//   imm xf = w.transformOf(id);               // place the mesh by it: a Rigid (position, rotation)
+//   imm events = w.takeEvents();              // contacts added and removed, sensors, sleep and wake
+//
+// What it has:
+//   Bodies        static, kinematic (driven by velocity or moveKinematic) and dynamic; mass and
+//                 inertia from the shape and a density (or a mass), with a centre of mass off the
+//                 shape's origin (compounds, off-centre hulls); linear and angular velocity, damping,
+//                 gravity factor, forces, torques and impulses; layers and masks; sensors; a material
+//                 each (friction sliding and static, restitution, rolling resistance).
+//   Contacts      sequential impulses with accumulated, clamped impulses; warm starting from a
+//                 persistent contact cache (points matched by position); a friction cone at the
+//                 manifold's centre with two tangents, a twist row and rolling resistance;
+//                 restitution above a speed threshold; Soft Step for position correction;
+//                 speculative contacts from the narrow phase's margin.
+//   Joints        point, fixed, hinge (limits, motor), slider (limits, motor), distance (rod, rope,
+//                 spring) and cone-twist (swing cone, twist range).
+//   Sleeping      islands by union-find over contacts and joints; sleep after half a second of stillness;
+//                 woken by contact with something awake, a joint, an impulse or a kinematic body.
+//   CCD           a body that moves more than half its size in a step is swept (rigidcollide's shape
+//                 cast) against static bodies, or against all if it is a 'bullet'.
+//   Character     a kinematic capsule (character.cone): slides along walls, climbs steps, refuses and
+//                 slides down steep slopes, follows the ground down, stands on and is carried by moving
+//                 bodies, pushes light ones, reports its ground.
+//   Queries       ray cast, shape cast, overlap and point queries against every body, filtered by layer,
+//                 with an excluded body and optional sensors (query.cone).
+//   Events        contact added, persisted (if asked) and removed; sensor enter and exit; sleep and wake.
+//
+// Conventions: geomath's and rigidcollide's (right-handed, y up, metres, kilograms, seconds, f32). A body's
+// id is its index in the world's table (a u32; slots are reused). A body's position is where its shape's
+// origin is (World.transformOf); it is the centre of mass that the solver moves (World.centerOfMass).
+// Shapes are registered once (World.addShape) and shared by every body that names them.
+//
+// Method choices (each a published algorithm, cited where it is coded):
+//   integration         semi-implicit Euler, 4 sub-steps a step (Catto's Soft Step); the gyroscopic term
+//                       solved implicitly with one Newton step (Catto, "Numerical Methods", GDC 2015)
+//   contact solver      sequential impulses (Catto, GDC 2005 and 2006), warm started; friction after
+//                       the normal rows; points swept forward and then back, contacts in graph-colour order
+//   position correction Soft Step: soft constraints in implicit form, separation tracked through the
+//                       sub-step, a relax pass without bias (Catto, Solver2D 2024; Box2D v3). Not
+//                       Baumgarte (it adds energy) and not split impulse (it needs a second velocity set)
+//   friction            Jolt's centre-of-manifold two-tangent cone with a twist row, Box2D v3's rolling
+//                       resistance; Coulomb with a static and a dynamic coefficient
+//   restitution         Newton's law at the end of the step, over a speed threshold (Box2D v3)
+//   speculative contact Catto, "Continuous Collision", GDC 2013 (the margin grows with speed, to a limit)
+//   joints              Jolt's and Box2D's rows (see joint.cone), soft in Soft Step's way
+//   sleeping            islands by union-find; Box2D's speed measure (speed, or spin times radius)
+//   broad phase         rigidcollide's sweep and prune, behind its BroadPhase trait (see below)
+//   continuous          Box2D v3's sweep to the time of impact, body put back and left to the contacts
+//   character           collide and slide (Fauerby 2003) as Jolt's CharacterVirtual
+//   graph colouring     greedy, dynamic-against-dynamic contacts first, contacts against static last
+//
+// What is not here (yet): a second broad phase (spatialindex's dynamic BVH would replace sweep and prune
+// at tens of thousands of bodies; the World holds a SweepAndPrune), threads or SIMD (the colours are
+// computed and the solve is in colour order, so that is a swap and not a rewrite), a six-degree-of-freedom
+// joint, joint breaking, soft bodies, stale-id detection (ids are indices, not generation-tagged), rotation
+// in a shape cast, a world save and restore, a character that is also a rigid body, and a determinism proof
+// across machines (one run is deterministic bit for bit: pairs are sorted, nothing iterates a hash map; no
+// float is combined in an order that depends on a thread).
+//
+//   common.cone      constants, PhysMaterial, Settings, Event, Softness, small maths
+//   body.cone        BodyDef, Body
+//   contact.cone     the contact cache and the contact solver
+//   manifolds.cone   tidying the narrow phase's manifolds for meshes and heightfields
+//   joint.cone       joints and their rows
+//   world.cone       the World: bodies, joints, the step, the broad phase, sleeping, CCD
+//   query.cone       ray, shape and overlap queries, QueryFilter
+//   character.cone   the character controller
+
+mod rigiddynamics;
+
+import collections use *;
+import geomath use *;
+import rigidcollide use *;

@@ -685,16 +685,27 @@ pub struct LightSet {
         mut x1 = 0.;
         mut y0 = 0.;
         mut y1 = 0.;
+        // (the x and y scales may be negative: a camera that sees in a mirror has
+        // its clip x flipped; so every corner of the box is taken, not the two
+        // that a positive scale would make the least and the most)
         if ortho {
-          x0 = (c.x - r) * proj.m[0] + proj.m[12];
-          x1 = (c.x + r) * proj.m[0] + proj.m[12];
-          y0 = (c.y - r) * proj.m[5] + proj.m[13];
-          y1 = (c.y + r) * proj.m[5] + proj.m[13];
+          imm xa = (c.x - r) * proj.m[0] + proj.m[12];
+          imm xb = (c.x + r) * proj.m[0] + proj.m[12];
+          imm ya = (c.y - r) * proj.m[5] + proj.m[13];
+          imm yb = (c.y + r) * proj.m[5] + proj.m[13];
+          x0 = lmin(xa, xb);
+          x1 = lmax(xa, xb);
+          y0 = lmin(ya, yb);
+          y1 = lmax(ya, yb);
         } else {
-          x0 = lmin((c.x - r) * proj.m[0] / dn, (c.x - r) * proj.m[0] / dhi);
-          x1 = lmax((c.x + r) * proj.m[0] / dn, (c.x + r) * proj.m[0] / dhi);
-          y0 = lmin((c.y - r) * proj.m[5] / dn, (c.y - r) * proj.m[5] / dhi);
-          y1 = lmax((c.y + r) * proj.m[5] / dn, (c.y + r) * proj.m[5] / dhi);
+          imm xa = (c.x - r) * proj.m[0];
+          imm xb = (c.x + r) * proj.m[0];
+          imm ya = (c.y - r) * proj.m[5];
+          imm yb = (c.y + r) * proj.m[5];
+          x0 = lmin(lmin(xa / dn, xa / dhi), lmin(xb / dn, xb / dhi));
+          x1 = lmax(lmax(xa / dn, xa / dhi), lmax(xb / dn, xb / dhi));
+          y0 = lmin(lmin(ya / dn, ya / dhi), lmin(yb / dn, yb / dhi));
+          y1 = lmax(lmax(ya / dn, ya / dhi), lmax(yb / dn, yb / dhi));
         }
         if x1 >= -1. and x0 <= 1. and y1 >= -1. and y0 <= 1. {
           imm tx0 = u32.from(lmax(libc.floorf((lmax(x0, -1.) + 1.) * 0.5 * nx), 0.));
@@ -775,8 +786,11 @@ pub struct LightSet {
     imm view = camera.viewMatrix();
     imm proj = camera.projectionMatrix(aspect);
     imm place = camera.placement();
-    eye = place.translation();
-    forward = new Vec3(-place.m[8], -place.m[9], -place.m[10]).normalize();
+    // A camera that sees in a mirror sees the world reflected: its eye is
+    // the reflection of its own, and its forward too
+    eye = camera.position();
+    imm placedForward = new Vec3(-place.m[8], -place.m[9], -place.m[10]).normalize();
+    forward = if camera.reflected { camera.reflectionMatrix().transformVector(placedForward).normalize(); } else { placedForward; };
     targetWidth = f32.from(width);
     targetHeight = f32.from(height);
     imm farPlane = camera.far;

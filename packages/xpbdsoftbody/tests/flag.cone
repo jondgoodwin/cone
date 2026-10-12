@@ -1,0 +1,82 @@
+// A flag on a pole in a steady wind flutters and stays bounded.
+//
+// A flag 1.2 m long and 0.8 m tall, light cloth (0.2 kg per square metre, so
+// 0.19 kg), its left edge pinned to a vertical pole, in a steady wind of 6 m/s
+// along the flag with a 0.3 m/s cross component. Over 10,000 steps (167 s) of
+// 1/60 s it must
+//  - never blow up: every particle within the flag's own length of the pole
+//    (the cloth is nearly inextensible, so reach is bounded by the geometry
+//    and any more is a failure), kinetic energy under 5 J (the flag weighs
+//    0.19 kg: 5 J would be 7 m/s all over);
+//  - flutter: the mid-edge's sideways travel (z) is at least 0.1 m in both
+//    the third and the fourth quarter of the run, so it is not a decaying
+//    shake or a static billow;
+//  - be steady: the mean kinetic energy and the sideways travel of the last
+//    quarter are each within a factor of 3 of those of the third.
+// The same wind and the same flag give the same run (the determinism test is
+// in cloth.cone).
+
+mod flag;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import xpbdsoftbody use *;
+
+fn main() i32 {
+  imm nx = 16u32;
+  imm ny = 10u32;
+  mut flag = clothGrid(new Vec3(0., 0.8, 0.), new Vec3(1.2, 0., 0.), new Vec3(0., -0.8, 0.), nx, ny, &Fabric.light());
+  mut j = 0u32;
+  while j <= ny {
+    flag.pin(j * (nx + 1u32));
+    j = j + 1u32;
+  }
+  flag.substeps = 10u32;
+  flag.damping = 0.1;
+  imm mid = usize.from(nx + (ny / 2u32) * (nx + 1u32));
+  mut maxReach = 0.;
+  mut maxKe = 0.;
+  mut zlo = List[f32].empty();
+  mut zhi = List[f32].empty();
+  mut keSum = List[f32].empty();
+  mut q = 0;
+  while q < 4 {
+    zlo.push(1e9);
+    zhi.push(-1e9);
+    keSum.push(0.);
+    q = q + 1;
+  }
+  mut s = 0;
+  while s < 10000 {
+    flag.step(1. / 60., new Vec3(6., 0., 0.3));
+    imm quarter = usize.from(s / 2500);
+    imm z = (*flag.pos[mid]).z;
+    if z < *zlo[quarter] { zlo.set(quarter, z); }
+    if z > *zhi[quarter] { zhi.set(quarter, z); }
+    imm ke = flag.kineticEnergy();
+    keSum.set(quarter, *keSum[quarter] + ke);
+    if ke > maxKe { maxKe = ke; }
+    if s % 10 == 0 {
+      mut i = 0usize;
+      while i < flag.pos.len() {
+        imm r = (*flag.pos[i] - new Vec3(0., 0.4, 0.)).length();
+        if r > maxReach { maxReach = r; }
+        i = i + 1usize;
+      }
+    }
+    s = s + 1;
+  }
+  expectBool(maxReach < 1.5, true, "every particle stays within 1.5 m of the pole's middle (the flag is 1.2 m long)");
+  expectBool(maxKe < 5., true, "kinetic energy stays under 5 J");
+  imm range3 = *zhi[2usize] - *zlo[2usize];
+  imm range4 = *zhi[3usize] - *zlo[3usize];
+  expectBool(range3 > 0.1, true, "it flutters through the third quarter: sideways travel over 0.1 m");
+  expectBool(range4 > 0.1, true, "and the fourth");
+  expectBool(range4 < 3. * range3 and range3 < 3. * range4, true, "the amplitude is steady, not growing or dying");
+  imm ke3 = *keSum[2usize];
+  imm ke4 = *keSum[3usize];
+  expectBool(ke4 < 3. * ke3 and ke3 < 3. * ke4, true, "and so is the mean kinetic energy");
+  expectBool(ke4 > 0., true, "which is not zero");
+  done();
+}

@@ -1,0 +1,252 @@
+// ======== What a glTF file loads into ========
+//
+// Plain data, owned by a 'Gltf'. Nothing here draws or simulates; the
+// browser (or a tool) takes what it wants: meshes into render's GPU meshes,
+// materials into its PbrMaterial, a skin into bonepose's Skeleton, an
+// animation into keyframe clips. Everything refers to everything else by
+// index into the Gltf's lists, as the file does (-1 for none).
+//
+// Conventions: glTF's and geomath's are the same (right-handed, +y up, a
+// triangle faces the side from which it runs counterclockwise, matrices are
+// column-major). The one change is the texture coordinate: glTF's v runs
+// DOWN the image from the top, mesh's runs up, so every uv is stored as
+// (u, 1 - v); an image is a Raster, top row first, which is the same texel.
+// Lengths are metres, angles radians, colours linear (a base colour factor
+// and the texture's own sRGB bytes are what the file says; the sRGB decode
+// is the renderer's, as 'Raster' notes).
+
+// Where a texture is read for a material slot, with KHR_texture_transform
+pub struct TextureRef {
+  pub texture i32;        // an index into Gltf.textures, -1 for none
+  pub texCoord u32;       // which uv set (0 or 1)
+  pub offset Vec2;        // KHR_texture_transform: uv' = offset + R(rotation) * (scale * uv), in glTF's uv
+  pub rotation f32;
+  pub scale Vec2;
+  pub hasTransform bool;
+
+  pub fn none() TextureRef {
+    new TextureRef(-1, 0u32, new Vec2(0., 0.), 0., new Vec2(1., 1.), false);
+  }
+
+  pub fn isNone(self) bool { texture < 0; }
+}
+
+// A material, glTF's metallic-roughness model. 'alphaMode' is render's
+// ALPHA_OPAQUE (0), ALPHA_MASK (1) or ALPHA_BLEND (2).
+pub struct GltfMaterial {
+  pub name String;
+  pub baseColor Color;              // the factor, linear
+  pub baseColorTexture TextureRef;  // sRGB
+  pub metallic f32;
+  pub roughness f32;
+  pub metallicRoughnessTexture TextureRef;  // green roughness, blue metallic; linear
+  pub normalTexture TextureRef;     // tangent space, linear
+  pub normalScale f32;
+  pub occlusionTexture TextureRef;  // red; linear
+  pub occlusionStrength f32;
+  pub emissive Color;               // the factor, linear rgb
+  pub emissiveStrength f32;         // KHR_materials_emissive_strength (1 when absent)
+  pub emissiveTexture TextureRef;   // sRGB
+  pub alphaMode u32;
+  pub alphaCutoff f32;
+  pub doubleSided bool;
+  pub unlit bool;                   // KHR_materials_unlit
+
+  pub fn standard() GltfMaterial {
+    // glTF's default material: white, fully metallic and rough
+    new GltfMaterial(String.empty(), new Color(1., 1., 1., 1.), TextureRef.none(), 1., 1., TextureRef.none(),
+      TextureRef.none(), 1., TextureRef.none(), 1., new Color(0., 0., 0., 1.), 1., TextureRef.none(), 0u32, 0.5,
+      false, false);
+  }
+}
+
+// A sampler: glTF's numbers, which are OpenGL's (9728 nearest, 9729 linear,
+// 9984 to 9987 the mipmap filters; wrap 33071 clamp, 33648 mirror, 10497 repeat)
+pub struct GltfSampler {
+  pub magFilter u32;   // 0 when not given
+  pub minFilter u32;
+  pub wrapS u32;
+  pub wrapT u32;
+}
+
+pub struct GltfTexture {
+  pub source i32;      // an index into Gltf.images, -1 for none
+  pub sampler i32;
+}
+
+// An image, decoded unless the load was asked not to ('decodeImages')
+pub struct GltfImage {
+  pub name String;
+  pub uri String;        // empty for an embedded or buffer-view image
+  pub mimeType String;
+  pub raster Raster;     // empty when not decoded or it failed
+  pub error String;      // why it failed, or ""
+}
+
+// A morph target's data: displacements added to the base mesh (weights are
+// not applied here)
+pub struct MorphTarget {
+  pub positions List[Vec3];
+  pub normals List[Vec3];
+  pub tangents List[Vec3];
+}
+
+// One primitive of a mesh: a triangle list. Strips and fans are turned into
+// lists; points and lines are not loaded and are named in 'warnings'.
+pub struct GltfPrimitive {
+  pub mesh Mesh;                  // positions, normals, uvs (set 0), colours, tangents, indices
+  pub material i32;               // an index into Gltf.materials, -1 for none (the default material)
+  pub uvs1 List[Vec2];            // the second uv set, if any
+  pub joints List[u32];           // JOINTS_0: four joint numbers a vertex, or empty
+  pub weights List[Vec4];         // WEIGHTS_0, normalised to sum 1, or empty
+  pub targets List[MorphTarget];
+  pub generatedNormals bool;      // the file had none; they were made
+}
+
+pub struct GltfMesh {
+  pub name String;
+  pub primitives List[GltfPrimitive];
+  pub weights List[f32];          // the default morph weights
+}
+
+pub struct GltfNode {
+  pub name String;
+  pub children List[u32];
+  pub parent i32;                 // -1 for a root
+  pub mesh i32;
+  pub skin i32;
+  pub camera i32;
+  pub light i32;                  // KHR_lights_punctual
+  pub trs Transform3;           // translation, rotation, scale (a matrix is decomposed)
+  pub matrix Mat4;                // the local matrix as given or composed
+  pub usesMatrix bool;            // the file gave 'matrix' (local is its decomposition)
+  pub weights List[f32];          // morph weights overriding the mesh's, or empty
+}
+
+pub struct GltfScene {
+  pub name String;
+  pub nodes List[u32];            // the roots
+}
+
+pub struct GltfSkin {
+  pub name String;
+  pub joints List[u32];           // node numbers, in the order a vertex's JOINTS_0 indexes
+  pub inverseBind List[Mat4];     // one a joint (identity when the file gives none)
+  pub skeleton i32;               // the root joint's node, -1 when not given
+}
+
+// What a channel animates
+pub const PathTranslation = 0u32;
+pub const PathRotation = 1u32;
+pub const PathScale = 2u32;
+pub const PathWeights = 3u32;
+
+// How a sampler's keys are joined
+pub const InterpLinear = 0u32;
+pub const InterpStep = 1u32;
+pub const InterpCubic = 2u32;      // CUBICSPLINE: each key has an in-tangent, a value, an out-tangent
+
+pub struct AnimSampler {
+  pub times List[f32];            // strictly increasing
+  pub values List[f32];           // flat: 3 (translation, scale), 4 (rotation) or 'targets' (weights) a key, times 3 for cubic
+  pub interpolation u32;
+  pub stride u32;                 // floats a key's value has
+}
+
+pub struct GltfChannel {
+  pub sampler u32;                // an index into the animation's samplers
+  pub node i32;                   // the node animated
+  pub path u32;
+}
+
+pub struct GltfAnimation {
+  pub name String;
+  pub samplers List[AnimSampler];
+  pub channels List[GltfChannel];
+  pub duration f32;               // the last key time of any sampler
+}
+
+pub struct GltfCamera {
+  pub name String;
+  pub perspective bool;
+  pub yfov f32;                   // perspective: vertical field of view, radians
+  pub aspect f32;                 // 0 when not given
+  pub xmag f32;                   // orthographic half-widths
+  pub ymag f32;
+  pub znear f32;
+  pub zfar f32;                   // 0: infinite (perspective only)
+}
+
+pub struct GltfLight {
+  pub name String;
+  pub kind u32;                   // 0 directional, 1 point, 2 spot
+  pub color Color;
+  pub intensity f32;              // lux for a sun, candela for a point or spot
+  pub range f32;                  // 0: unbounded
+  pub innerCone f32;
+  pub outerCone f32;
+}
+
+// The loaded file
+pub struct Gltf {
+  pub generator String;
+  pub copyright String;
+  pub scene i32;                  // the default scene, -1 when none
+  pub scenes List[GltfScene];
+  pub nodes List[GltfNode];
+  pub meshes List[GltfMesh];
+  pub materials List[GltfMaterial];
+  pub textures List[GltfTexture];
+  pub samplers List[GltfSampler];
+  pub images List[GltfImage];
+  pub skins List[GltfSkin];
+  pub animations List[GltfAnimation];
+  pub cameras List[GltfCamera];
+  pub lights List[GltfLight];
+  pub extensionsUsed List[String];
+  pub warnings List[String];      // what was skipped or approximated, in words
+
+  pub fn empty() Gltf {
+    new Gltf(String.empty(), String.empty(), -1, List[GltfScene].empty(), List[GltfNode].empty(), List[GltfMesh].empty(),
+      List[GltfMaterial].empty(), List[GltfTexture].empty(), List[GltfSampler].empty(), List[GltfImage].empty(),
+      List[GltfSkin].empty(), List[GltfAnimation].empty(), List[GltfCamera].empty(), List[GltfLight].empty(),
+      List[String].empty(), List[String].empty());
+  }
+
+  // Each node's matrix in the model: its own local matrix composed down from
+  // its root (parents are not necessarily numbered before their children,
+  // so this walks from the roots)
+  pub fn worldMatrices(self &) List[Mat4] {
+    mut out = List[Mat4].empty();
+    mut i = 0usize;
+    while i < nodes.len() { out.push(Mat4.identity()); i += 1usize; }
+    mut done = List[bool].empty();
+    i = 0usize;
+    while i < nodes.len() { done.push(false); i += 1usize; }
+    i = 0usize;
+    while i < nodes.len() {
+      self.worldOf(i, &mut out, &mut done);
+      i += 1usize;
+    }
+    out;
+  }
+
+  fn worldOf(self &, i usize, out &mut List[Mat4], done &mut List[bool]) {
+    if *done[i] { return; }
+    imm p = nodes[i].parent;
+    imm lm = nodes[i].matrix;
+    if p < 0i32 {
+      out.set(i, lm);
+    } else {
+      self.worldOf(usize.from(p), out, done);
+      out.set(i, (*out[usize.from(p)]) * lm);
+    }
+    done.set(i, true);
+  }
+}
+
+pub struct GltfError {
+  pub reason String;
+
+  pub fn message(self &) String { reason.copy(); }
+}

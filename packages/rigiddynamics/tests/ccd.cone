@@ -1,0 +1,90 @@
+// Continuous collision: a fast body does not pass through a thin wall.
+//
+// A ball (r 0.1) is shot at a wall 0.1 m thick at 200 m/s, 3.3 m a step. With
+// continuous collision off the step carries it from one side to the other, and
+// it tunnels (Settings.maxSpeculative stops the speculative margin growing
+// that large). With it on the sweep finds the wall, and the ball ends against
+// its face, 4.85 m from the start (the face is at 4.95). At 20 m/s (0.33 m a
+// step) the speculative contact catches it with CCD off as well. A box thrown
+// down at a thin floor does the same. A fast body sliding along the ground is
+// not held back by it, a bullet can hit another dynamic body that a plain fast
+// body would pass, and a slow body is not swept at all (the cost is only for
+// bodies that move more than half their own size in a step).
+
+mod ccd;
+
+import testing use *;
+import collections use List;
+import geomath use *;
+import rigidcollide use *;
+import rigiddynamics use *;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+fn shoot(ccd bool, speed f32, bullet bool, wallDynamic bool) Vec3 {
+  mut w = World.make();
+  w.gravity = new Vec3(0., 0., 0.);
+  w.settings.ccd = ccd;
+  imm wallS = w.addShape(Shape.single(Prim.box(new Vec3(0.05, 3., 5.))));
+  imm ballS = w.addShape(Shape.single(Prim.sphere(0.1)));
+  mut wd = if wallDynamic { BodyDef.dynamicAt(wallS, new Vec3(5., 0., 0.)); } else { BodyDef.staticAt(wallS, new Vec3(5., 0., 0.)); };
+  wd.linearDamping = 0.;
+  w.createBody(wd);
+  mut bd = BodyDef.dynamicAt(ballS, new Vec3(0., 0., 0.));
+  bd.linVel = new Vec3(speed, 0., 0.);
+  bd.linearDamping = 0.;
+  bd.bullet = bullet;
+  imm b = w.createBody(bd);
+  mut i = 0;
+  while i < 60 { w.step(1. / 60.); i = i + 1; }
+  w.positionOf(b);
+}
+
+fn main() i32 {
+  imm off = shoot(false, 200., false, false);
+  expectBool(off.x > 100., true, "without CCD a 200 m/s ball tunnels through a 10 cm wall");
+  imm on = shoot(true, 200., false, false);
+  near(on.x, 4.85, 0.01, "with CCD it stops against the wall's face");
+  imm slowOff = shoot(false, 20., false, false);
+  near(slowOff.x, 4.85, 0.01, "at 20 m/s the speculative contact alone holds it");
+  imm slowOn = shoot(true, 20., false, false);
+  near(slowOn.x, 4.85, 0.01, "and CCD changes nothing");
+
+  // a dynamic wall is passed by a plain fast body but caught by a bullet (its wall is lighter than the ball, so it is pushed on)
+  imm plain = shoot(true, 200., false, true);
+  expectBool(plain.x > 100., true, "CCD of a plain body is against static bodies only: a dynamic wall is tunnelled");
+  imm bullet = shoot(true, 200., true, true);
+  expectBool(bullet.x < 100., true, "a bullet is stopped by a dynamic wall too (it is a lighter wall, so it is carried off)");
+
+  // a box falling fast on a thin floor
+  mut w = World.make();
+  imm floorS = w.addShape(Shape.single(Prim.box(new Vec3(10., 0.05, 10.))));
+  imm boxS = w.addShape(Shape.single(Prim.box(new Vec3(0.3, 0.3, 0.3))));
+  w.createBody(BodyDef.staticAt(floorS, new Vec3(0., 0., 0.)));
+  mut bd = BodyDef.dynamicAt(boxS, new Vec3(0., 3., 0.));
+  bd.linVel = new Vec3(0., -120., 0.);
+  imm b = w.createBody(bd);
+  mut i = 0;
+  while i < 120 { w.step(1. / 60.); i = i + 1; }
+  near(w.positionOf(b).y, 0.35, 0.02, "a box thrown at a thin floor at 120 m/s lands on it and rests");
+
+  // sliding along the ground at 60 m/s is not stopped by the floor under it
+  mut z = World.make();
+  imm zf = z.addShape(Shape.single(Prim.box(new Vec3(500., 0.5, 10.))));
+  imm zb = z.addShape(Shape.single(Prim.box(new Vec3(0.2, 0.2, 0.2))));
+  mut zfd = BodyDef.staticAt(zf, new Vec3(0., -0.5, 0.));
+  zfd.material = PhysMaterial.make(0., 0., 0.);
+  z.createBody(zfd);
+  mut sd = BodyDef.dynamicAt(zb, new Vec3(0., 0.2, 0.));
+  sd.linVel = new Vec3(60., 0., 0.);
+  sd.linearDamping = 0.;
+  sd.material = PhysMaterial.make(0., 0., 0.);
+  imm s = z.createBody(sd);
+  i = 0;
+  while i < 60 { z.step(1. / 60.); i = i + 1; }
+  near(z.positionOf(s).x, 60., 0.5, "a fast box sliding on frictionless ground is not held back by it");
+  near(z.positionOf(s).y, 0.2, 0.01, "and stays on it");
+  done();
+}
