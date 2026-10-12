@@ -385,6 +385,27 @@ pub struct World {
     mut k = 0usize;
     while k < joints.len() { if joints[k].alive and not joints[k].collide { noCollideJoints = true; } k = k + 1usize; }
   }
+  // Drive a point, hinge or cone-twist joint's relative rotation to a target as a stiff spring (hertz, damping
+  // ratio) whose torque is at most maxTorque N m (see solveDrive). The target starts as the pose the joint was
+  // made in; set it with setDriveTarget.
+  pub fn setJointDrive(self &mut, j u32, hertz f32, damping f32, maxTorque f32) {
+    joints[usize.from(j)].driveOn = true;
+    joints[usize.from(j)].driveHertz = hertz;
+    joints[usize.from(j)].driveDamping = damping;
+    joints[usize.from(j)].driveMax = maxTorque;
+    self.wake(joints[usize.from(j)].a);
+    self.wake(joints[usize.from(j)].b);
+  }
+  pub fn clearJointDrive(self &mut, j u32) {
+    joints[usize.from(j)].driveOn = false;
+    joints[usize.from(j)].impDrive = zero3();
+  }
+  // The target as the rotation of B's body relative to A's body (A's rotation inverse times B's) that the drive
+  // should hold, converted into the joint's own frames
+  pub fn setDriveTarget(self &mut, j u32, bodyRelative Quat) {
+    imm jj = joints[usize.from(j)];
+    joints[usize.from(j)].driveTarget = (jj.fa.conjugate() * bodyRelative * jj.fb).normalize();
+  }
   pub fn removeJoint(self &mut, j u32) { joints[usize.from(j)].alive = false; }
   pub fn hingeAngleOf(self &, j u32) f32 { hingeAngle(self, joints[usize.from(j)]); }
   // How far apart the joint's two anchors are now (zero when it is satisfied), metres

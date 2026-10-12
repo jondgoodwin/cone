@@ -1,0 +1,163 @@
+// Impacts and settling, and the step that runs the ragdoll's passes around the World's.
+//
+// IMPACT. rigiddynamics reports that two bodies began touching (EvContactAdded) but not how hard, and its
+// speculative contacts stop a fast body at the surface in the step before it touches, so the closing speed at the
+// event is already gone. What does not depend on any of that is momentum. The joints are internal: they trade
+// momentum between the ragdoll's bodies and change the total by nothing. So the change in the ragdoll's total
+// momentum in a step, less gravity's share (m g dt), is the impulse of everything outside it (the ground, a wall,
+// a crate), and divided by the mass it is the change in the ragdoll's centre-of-mass velocity, in m/s. That is the
+// 'speed' of an Impact. A step whose change is over 'impactThreshold' makes an Impact record (with the bone and
+// point of the deepest new contact with something outside, as far as the step's events say).
+//
+// A LANDING is the net change of velocity over an episode of such contacts (it ends after three steps with none):
+// a ragdoll that hits the ground at 6.3 m/s (a 2 m fall) and comes to rest has landed at 6.3 m/s, however the
+// stopping is shared out between feet, hips, back and head. 'landing' is the last landing's speed, 'peak' the
+// hardest since resetPeak. A fall from height h meets the ground at sqrt(2 g h): 6.3 m/s from 2 m, 4.4 from 1.
+//
+// SETTLED. The ragdoll is settled when every body has been slower than 'settleSpeed' (the body's speed plus
+// half its spin times its reach) for 'settleTime' seconds, or when the World has put all its bodies to sleep.
+// That is the cue to start a get-up, and (the World's sleep being the stronger) to stop simulating.
+
+// Forget the events so far and note the bodies' velocities (after a pose has been put into the bodies)
+pub fn resetEvents(rig &mut Ragdoll, w &World) {
+  rig.impacts.clear();
+  rig.stillTime = 0.;
+  rig.settled = false;
+  rig.episodeOn = false;
+  rig.quiet = 0;
+  mut k = 0usize;
+  while k < rig.links.len() {
+    rig.prevLin.set(k, w.linearVelocity(rig.links[k].body));
+    k = k + 1usize;
+  }
+}
+
+// The hardest landing since the last resetPeak is forgotten
+pub fn resetPeak(rig &mut Ragdoll) { rig.peak = 0.; rig.landing = 0.; }
+
+// The largest impact speed of the last step, m/s (0 if none)
+pub fn lastImpactSpeed(rig &Ragdoll) f32 {
+  mut m = 0.;
+  mut k = 0usize;
+  while k < rig.impacts.len() { m = maxf(m, rig.impacts[k].speed); k = k + 1usize; }
+  m;
+}
+
+// The ragdoll's velocity (mass weighted)
+pub fn comVelocity(rig &Ragdoll, w &World) Vec3 {
+  mut p = zero3();
+  mut k = 0usize;
+  while k < rig.links.len() {
+    p = p + w.linearVelocity(rig.links[k].body) * rig.links[k].mass;
+    k = k + 1usize;
+  }
+  p * (1. / rig.totalMass);
+}
+
+// Note the velocities before a World step
+pub fn beginStep(rig &mut Ragdoll, w &World) {
+  mut k = 0usize;
+  while k < rig.links.len() {
+    rig.prevLin.set(k, w.linearVelocity(rig.links[k].body));
+    k = k + 1usize;
+  }
+  rig.impacts.clear();
+}
+
+// Read the step's events (from World.takeEvents) and update the impacts and the settled state
+pub fn endStep(rig &mut Ragdoll, w &World, events &List[Event], dt f32) {
+  rig.steps = rig.steps + 1u32;
+  // the change in the ragdoll's velocity that is not gravity's
+  mut before = zero3();
+  mut k = 0usize;
+  while k < rig.links.len() {
+    before = before + (*rig.prevLin[k]) * rig.links[k].mass;
+    k = k + 1usize;
+  }
+  before = before * (1. / rig.totalMass);
+  imm after = comVelocity(rig, w);
+  imm dv = after - before;
+  imm dvLen = dv.length();
+  // a step of impact: the velocity changed by more than free fall or a firm support would change it
+  imm active = dvLen > 0.3 and (dv - w.gravity * dt).length() > 0.3;
+  if active {
+    if not rig.episodeOn { rig.episodeOn = true; rig.episode = before; }
+    rig.episodeEnd = after;
+    rig.quiet = 0;
+  } else {
+    rig.quiet = rig.quiet + 1;
+    if rig.quiet >= 3 and rig.episodeOn {
+      rig.landing = (rig.episodeEnd - rig.episode).length();
+      rig.peak = maxf(rig.peak, rig.landing);
+      rig.episodeOn = false;
+    }
+  }
+  if dvLen > 0.5 and active {
+    // where: the deepest new contact with something outside
+    mut bone = 0usize;
+    mut point = zero3();
+    mut normal = new Vec3(0., 1., 0.);
+    mut deepest = -1.;
+    mut e = 0usize;
+    while e < events.len() {
+      imm ev = events[e];
+      if ev.kind == EvContactAdded {
+        imm la = rig.linkOfBody(ev.a);
+        imm lb = rig.linkOfBody(ev.b);
+        if (la >= 0i32) != (lb >= 0i32) and ev.depth > deepest {
+          deepest = ev.depth;
+          bone = rig.links[if la >= 0i32 { usize.from(la); } else { usize.from(lb); }].bone;
+          point = ev.point;
+          normal = if la >= 0i32 { ev.normal * -1.; } else { ev.normal; };
+        }
+      }
+      e = e + 1usize;
+    }
+    rig.impacts.push(new Impact(0usize, bone, dvLen, dvLen * rig.totalMass, point, normal));
+  }
+  // still?
+  mut fastest = 0.;
+  mut allAsleep = true;
+  k = 0usize;
+  while k < rig.links.len() {
+    imm id = rig.links[k].body;
+    if not w.isAsleep(id) {
+      allAsleep = false;
+      fastest = maxf(fastest, w.linearVelocity(id).length() + 0.5 * w.angularVelocity(id).length() * rig.links[k].radius);
+    }
+    k = k + 1usize;
+  }
+  if allAsleep { rig.settled = true; rig.stillTime = maxf(rig.stillTime, rig.settleTime); return; }
+  if fastest < rig.settleSpeed { rig.stillTime = rig.stillTime + dt; } else { rig.stillTime = 0.; }
+  rig.settled = rig.stillTime >= rig.settleTime;
+}
+
+// ------------------------------------------------------------------ stepping
+
+// Everything the ragdoll does before the World steps: note velocities, hold the swing ranges, drive the joints
+pub fn prepareStep(rig &mut Ragdoll, w &mut World, dt f32) {
+  beginStep(rig, w);
+  if rig.limitsOn { enforceSwingLimits(rig, w, dt); }
+  if rig.blend > 0. or rig.passiveDamping > 0. { driveJoints(rig, w, dt); }
+}
+
+// One step of the World with the ragdoll's passes around it, for a world that holds only this ragdoll (or whose
+// other users read their events from the same World.takeEvents): prepareStep, World.step, endStep
+pub fn stepRagdoll(rig &mut Ragdoll, w &mut World, dt f32) {
+  prepareStep(rig, w, dt);
+  w.step(dt);
+  imm ev = w.takeEvents();
+  endStep(rig, w, &ev, dt);
+}
+
+// A frame's time in fixed steps (the World's own fixedDt and accumulator, Fiedler's way); the steps taken
+pub fn advanceRagdoll(rig &mut Ragdoll, w &mut World, frameDt f32) i32 {
+  w.accumulator = w.accumulator + minf(frameDt, 0.25);
+  mut n = 0;
+  while w.accumulator >= w.fixedDt {
+    stepRagdoll(rig, w, w.fixedDt);
+    w.accumulator = w.accumulator - w.fixedDt;
+    n = n + 1;
+  }
+  n;
+}
