@@ -37,6 +37,7 @@ pub struct GjkResult {
   pub pa Vec3;
   pub pb Vec3;
   pub simplex Simplex;
+  pub borderline bool;     // 'intersect' only because the nearest point is too close to the origin to tell (see gjk)
 }
 
 struct SimplexPoint {
@@ -47,7 +48,16 @@ struct SimplexPoint {
 
 // Barycentric weights of the point of triangle a, b, c nearest the origin
 // (Ericson 5.1.5, the origin as the query point)
-fn triWeights(a Vec3, b Vec3, c Vec3) Array[f32, 3] {
+//
+// Done in 64 bits: the products d1 * d4 - d3 * d2 cancel almost completely for a
+// long thin triangle of the difference (a 40 m triangle against a box makes a sliver
+// tens of metres long whose nearest point to the origin is millimetres away), and in
+// 32 bits the weights came out wrong and GJK stopped with the origin outside a
+// difference that held it.
+fn triWeights(a0 Vec3, b0 Vec3, c0 Vec3) Array[f32, 3] {
+  imm a = DVec3.from(a0);
+  imm b = DVec3.from(b0);
+  imm c = DVec3.from(c0);
   imm ab = b - a;
   imm ac = c - a;
   imm d1 = ab.dot(-a);
@@ -59,7 +69,7 @@ fn triWeights(a Vec3, b Vec3, c Vec3) Array[f32, 3] {
   imm vc = d1 * d4 - d3 * d2;
   if vc <= 0. and d1 >= 0. and d3 <= 0. {
     imm v = d1 / (d1 - d3);
-    return [1. - v, v, 0.];
+    return [f32.from(1.0f64 - v), f32.from(v), 0.];
   }
   imm d5 = ab.dot(-c);
   imm d6 = ac.dot(-c);
@@ -67,28 +77,31 @@ fn triWeights(a Vec3, b Vec3, c Vec3) Array[f32, 3] {
   imm vb = d5 * d2 - d1 * d6;
   if vb <= 0. and d2 >= 0. and d6 <= 0. {
     imm w = d2 / (d2 - d6);
-    return [1. - w, 0., w];
+    return [f32.from(1.0f64 - w), 0., f32.from(w)];
   }
   imm va = d3 * d6 - d5 * d4;
   if va <= 0. and (d4 - d3) >= 0. and (d5 - d6) >= 0. {
     imm w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
-    return [0., 1. - w, w];
+    return [0., f32.from(1.0f64 - w), f32.from(w)];
   }
   imm sum = va + vb + vc;
-  if absf(sum) < 1.0e-30 { return [1., 0., 0.]; }
-  imm denom = 1. / sum;
+  if sum < 1.0e-300f64 and sum > -1.0e-300f64 { return [1., 0., 0.]; }
+  imm denom = 1.0f64 / sum;
   imm v = vb * denom;
   imm w = vc * denom;
-  [1. - v - w, v, w];
+  [f32.from(1.0f64 - v - w), f32.from(v), f32.from(w)];
 }
 
-fn segWeights(a Vec3, b Vec3) Array[f32, 2] {
-  imm ab = b - a;
+fn segWeights(a0 Vec3, b0 Vec3) Array[f32, 2] {
+  imm a = DVec3.from(a0);
+  imm ab = DVec3.from(b0) - a;
   imm l2 = ab.dot(ab);
-  if l2 < 1.0e-30 { return [1., 0.]; }
-  imm t = clampf(-a.dot(ab) / l2, 0., 1.);
+  if l2 < 1.0e-30f64 { return [1., 0.]; }
+  imm t = f32.from(clampd(-a.dot(ab) / l2, 0.0f64, 1.0f64));
   [1. - t, t];
 }
+
+fn clampd(v f64, lo f64, hi f64) f64 { if v < lo { lo; } else if v > hi { hi; } else { v; }; }
 
 // The point of the simplex nearest the origin, with the simplex cut down to
 // the vertices that support it (weight zero vertices dropped)
@@ -139,7 +152,7 @@ fn reduceSimplex(s &mut Simplex) SimplexPoint {
   }
   // Keep the supporting vertices
   mut out = new Simplex(0usize, s.w, s.pa, s.pb);
-  mut v = new Vec3(0., 0., 0.);
+  mut vd = new DVec3(0., 0., 0.);
   mut i = 0usize;
   while i < s.n {
     if lam[i] > 0. or inside {
@@ -152,9 +165,9 @@ fn reduceSimplex(s &mut Simplex) SimplexPoint {
     i = i + 1usize;
   }
   i = 0usize;
-  while i < out.n { v = v + out.w[i] * lam[i]; i = i + 1usize; }
+  while i < out.n { vd = vd + DVec3.from(out.w[i]) * f64.from(lam[i]); i = i + 1usize; }
   *s = out;
-  new SimplexPoint(v, inside, lam);
+  new SimplexPoint(vd.toVec3(), inside, lam);
 }
 
 // GJK on the cores of a and b. Stops early ('far') when the cores are
@@ -173,6 +186,7 @@ pub fn gjk(a &Prim, xa Rigid, b &Prim, xb Rigid, maxDist f32) GjkResult {
   mut iter = 0u32;
   mut hit = false;
   mut far = false;
+  mut wmax2 = s.w[0usize].lengthSquared();
   while iter < 64u32 {
     iter = iter + 1u32;
     imm v2 = v.lengthSquared();
@@ -181,11 +195,15 @@ pub fn gjk(a &Prim, xa Rigid, b &Prim, xb Rigid, maxDist f32) GjkResult {
     imm pa = supportWorld(a, xa, dir);
     imm pb = supportWorld(b, xb, -dir);
     imm w = pa - pb;
+    wmax2 = maxf(wmax2, w.lengthSquared());
     imm vw = v.dot(w);
     // The plane through w perpendicular to v separates the origin from the
     // difference: the distance is at least vw / |v|
     if vw > 0. and vw * vw > maxDist * maxDist * v2 { far = true; break; }
-    if v2 - vw <= 1.0e-6 * v2 + 1.0e-10 { break; }
+    // No progress, counting the rounding in v.w itself (it grows with the size of w: a
+    // triangle tens of metres across made the old absolute test stop on noise, millimetres
+    // from an origin that was inside)
+    if v2 - vw <= 1.0e-6 * v2 + 1.0e-10 + 1.0e-6 * v.length() * w.length() { break; }
     // a vertex already in the simplex means no progress
     mut dup = false;
     mut i = 0usize;
@@ -203,6 +221,11 @@ pub fn gjk(a &Prim, xa Rigid, b &Prim, xb Rigid, maxDist f32) GjkResult {
     lam = cl.lam;
     if cl.inside { hit = true; break; }
   }
+  // Stopped with the nearest point within the rounding of the difference's own size
+  // (about 3e-5 of its largest vertex, the f32 floor of a long sliver simplex): it cannot
+  // be told from the origin, so the cores overlap or touch and EPA decides
+  mut borderline = false;
+  if not hit and not far and v.lengthSquared() <= 1.0e-9 * wmax2 { hit = true; borderline = true; }
   // The weights belonging to the simplex that reduced to v
   mut pa = new Vec3(0., 0., 0.);
   mut pb = new Vec3(0., 0., 0.);
@@ -212,7 +235,7 @@ pub fn gjk(a &Prim, xa Rigid, b &Prim, xb Rigid, maxDist f32) GjkResult {
     pb = pb + s.pb[i] * lam[i];
     i = i + 1usize;
   }
-  new GjkResult(hit, far, v.length(), pa, pb, s);
+  new GjkResult(hit, far, v.length(), pa, pb, s, borderline);
 }
 
 // ---------------------------------------------------------------------------
@@ -431,6 +454,65 @@ pub fn convexPenetration(a &Prim, xa Rigid, b &Prim, xb Rigid, maxGap f32) Penet
     return new Penetration(true, nrm, ra + rb - g.dist, g.pa + nrm * ra, g.pb - nrm * rb);
   }
   imm e = epa(a, xa, b, xb, g.simplex);
-  if not e.ok { return miss; }
-  new Penetration(true, e.normal, e.depth + ra + rb, e.pa + e.normal * ra, e.pb - e.normal * rb);
+  if e.ok {
+    // The cores cannot overlap by more than their widths together along the normal; a depth
+    // beyond that is EPA having lost its way on a thin or very large core (one box on a flat
+    // triangle came out 2.7 m deep when the box is 0.87 m across)
+    imm wid = coreWidth(a, xa, e.normal) + coreWidth(b, xb, e.normal);
+    if e.depth <= wid + 1.0e-3 * wid + 1.0e-4 {
+      return new Penetration(true, e.normal, e.depth + ra + rb, e.pa + e.normal * ra, e.pb - e.normal * rb);
+    }
+  }
+  if g.borderline {
+    // too close to tell touching from overlapping, and EPA has no polytope to grow: a touch
+    imm nrm = (g.pb - g.pa).normalize();
+    return new Penetration(true, nrm, ra + rb - g.dist, g.pa + nrm * ra, g.pb - nrm * rb);
+  }
+  penetrationByAxes(a, xa, b, xb, e, ra, rb);
+}
+
+// How far the core of p, placed by x, reaches along unit n, from its farthest point to its nearest
+fn coreWidth(p &Prim, x Rigid, n Vec3) f32 {
+  supportWorld(p, x, n).dot(n) + supportWorld(p, x, -n).dot(-n);
+}
+
+// The fallback when EPA fails: the least overlap of the two cores along a few candidate axes
+// (the separating axis idea; every axis gives an upper bound of the true depth, and the
+// best of the triangle's normal, EPA's own direction, the line between the shapes and the
+// world axes is right for the flat, large and symmetric cases that defeat EPA). No overlap
+// along some axis means the shapes are apart.
+fn penetrationByAxes(a &Prim, xa Rigid, b &Prim, xb Rigid, e EpaResult, ra f32, rb f32) Penetration {
+  imm miss = new Penetration(false, new Vec3(0., 1., 0.), 0., new Vec3(0., 0., 0.), new Vec3(0., 0., 0.));
+  mut axes = new Array[Vec3, 8] <- fill new Vec3(0., 1., 0.);
+  mut na = 0usize;
+  if a.kind == KTriangle {
+    axes[na] = xa.rotate((a.b - a.a).cross(a.c - a.a)).normalize(); na = na + 1usize;
+  }
+  if b.kind == KTriangle {
+    axes[na] = xb.rotate((b.b - b.a).cross(b.c - b.a)).normalize(); na = na + 1usize;
+  }
+  if e.ok { axes[na] = e.normal; na = na + 1usize; }
+  imm between = xb.pos - xa.pos;
+  if between.lengthSquared() > 1.0e-10 { axes[na] = between.normalize(); na = na + 1usize; }
+  axes[na] = new Vec3(0., 1., 0.); na = na + 1usize;
+  axes[na] = new Vec3(1., 0., 0.); na = na + 1usize;
+  axes[na] = new Vec3(0., 0., 1.); na = na + 1usize;
+  mut best = bigNumber;
+  mut bestN = new Vec3(0., 1., 0.);
+  mut k = 0usize;
+  while k < na {
+    mut s = 0;
+    while s < 2 {
+      imm n = if s == 0 { axes[k]; } else { -axes[k]; };
+      // the overlap pushing B along n: A's far side past B's near side
+      imm depth = supportWorld(a, xa, n).dot(n) - supportWorld(b, xb, -n).dot(n);
+      if depth < best { best = depth; bestN = n; }
+      s = s + 1;
+    }
+    k = k + 1usize;
+  }
+  if best < -1.0e-4 { return miss; }
+  imm pa = supportWorld(a, xa, bestN);
+  imm pb = supportWorld(b, xb, -bestN);
+  new Penetration(true, bestN, best + ra + rb, pa + bestN * ra, pb - bestN * rb);
 }

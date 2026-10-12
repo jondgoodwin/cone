@@ -78,11 +78,31 @@ fn flipManifold(m Manifold) Manifold {
 // ---------------------------------------------------------------------------
 // Supporting faces
 
+// A polygon (or an edge, or a point) held inline: at most PolyMax corners, so
+// clipping and manifold building allocate nothing. A face of more than
+// PolyMax corners, or a clip that would grow past it, loses the extra corners
+// (a box face has 4, a triangle 3, a cylinder cap 12; a clip adds at most one
+// corner for each side of the reference face).
+pub const PolyMax = 16usize;
+
+pub struct Poly {
+  pub n usize;
+  pub p Array[Vec3, 16];
+
+  pub fn add(self &mut, v Vec3) {
+    if n < 16usize { p[n] = v; n = n + 1usize; }
+  }
+}
+
+pub fn newPoly() Poly {
+  new Poly(0usize, new Array[Vec3, 16] <- fill new Vec3(0., 0., 0.));
+}
+
 // The polygon, edge or point of the shape that faces along dir (world space),
 // as a list of 1, 2 or more points. A face counts only if dir is close enough
 // to its normal (a box edge pointing at the other shape is a point).
-pub fn supportingFace(p &Prim, x Rigid, dir Vec3) List[Vec3] {
-  mut out = List[Vec3].empty();
+pub fn supportingFace(p &Prim, x Rigid, dir Vec3) Poly {
+  mut out = newPoly();
   imm ld = x.unrotate(dir);
   if p.kind == KBox {
     mut ax = 0usize;
@@ -103,7 +123,7 @@ pub fn supportingFace(p &Prim, x Rigid, dir Vec3) List[Vec3] {
       q = vecSet(q, ax, hn);
       q = vecSet(q, u, su);
       q = vecSet(q, v, sv);
-      out.push(x.apply(q));
+      out.add(x.apply(q));
       k = k + 1usize;
     }
     return out;
@@ -121,7 +141,7 @@ pub fn supportingFace(p &Prim, x Rigid, dir Vec3) List[Vec3] {
       imm f = p.faces[best];
       mut k = 0usize;
       while k < usize.from(f.count) {
-        out.push(x.apply(*p.verts[usize.from(*p.faceIdx[usize.from(f.start) + k])]));
+        out.add(x.apply(*p.verts[usize.from(*p.faceIdx[usize.from(f.start) + k])]));
         k = k + 1usize;
       }
       return out;
@@ -130,7 +150,7 @@ pub fn supportingFace(p &Prim, x Rigid, dir Vec3) List[Vec3] {
   if p.kind == KTriangle {
     imm tn = (p.b - p.a).cross(p.c - p.a).normalize();
     if absf(tn.dot(ld)) > 0.9 * ld.length() {
-      out.push(x.apply(p.a)); out.push(x.apply(p.b)); out.push(x.apply(p.c));
+      out.add(x.apply(p.a)); out.add(x.apply(p.b)); out.add(x.apply(p.c));
       return out;
     }
   }
@@ -138,8 +158,8 @@ pub fn supportingFace(p &Prim, x Rigid, dir Vec3) List[Vec3] {
     if absf(ld.y) < 0.15 * ld.length() {
       imm lp = ld.normalize();
       imm off = new Vec3(lp.x * p.radius, 0., lp.z * p.radius);
-      out.push(x.apply(new Vec3(0., p.half.y, 0.) + off));
-      out.push(x.apply(new Vec3(0., -p.half.y, 0.) + off));
+      out.add(x.apply(new Vec3(0., p.half.y, 0.) + off));
+      out.add(x.apply(new Vec3(0., -p.half.y, 0.) + off));
       return out;
     }
   }
@@ -150,7 +170,7 @@ pub fn supportingFace(p &Prim, x Rigid, dir Vec3) List[Vec3] {
       mut k = 0usize;
       while k < 12usize {
         imm ang = f32.from(k) * (2. * pi / 12.) * (if ld.y < 0. { -1.; } else { 1.; });
-        out.push(x.apply(new Vec3(p.radius * cos(ang), y, p.radius * sin(ang))));
+        out.add(x.apply(new Vec3(p.radius * cos(ang), y, p.radius * sin(ang))));
         k = k + 1usize;
       }
       return out;
@@ -159,117 +179,128 @@ pub fn supportingFace(p &Prim, x Rigid, dir Vec3) List[Vec3] {
       imm h = (ld.x * ld.x + ld.z * ld.z).sqrt();
       imm ux = ld.x / h * p.radius;
       imm uz = ld.z / h * p.radius;
-      out.push(x.apply(new Vec3(ux, p.half.y, uz)));
-      out.push(x.apply(new Vec3(ux, -p.half.y, uz)));
+      out.add(x.apply(new Vec3(ux, p.half.y, uz)));
+      out.add(x.apply(new Vec3(ux, -p.half.y, uz)));
       return out;
     }
   }
-  out.push(x.apply(p.support(ld)));
+  out.add(x.apply(p.support(ld)));
   out;
 }
 
 // ---------------------------------------------------------------------------
 // Clipping
 
-fn polyCentroid(poly &List[Vec3]) Vec3 {
+fn polyCentroid(poly &Poly) Vec3 {
   mut c = new Vec3(0., 0., 0.);
   mut i = 0usize;
-  while i < poly.len() { c = c + *poly[i]; i = i + 1usize; }
-  c * (1. / f32.from(poly.len()));
+  while i < poly.n { c = c + poly.p[i]; i = i + 1usize; }
+  c * (1. / f32.from(poly.n));
 }
 
 // Sutherland-Hodgman: 'poly' (3 or more points) cut by the side planes of
 // 'ref' (the planes through each edge of ref, parallel to n); a segment
 // (2 points) is cut parametrically
-fn clipToSides(poly &List[Vec3], ref &List[Vec3], n Vec3) List[Vec3] {
-  mut cur = List[Vec3].empty();
-  mut i = 0usize;
-  while i < poly.len() { cur.push(*poly[i]); i = i + 1usize; }
+fn clipToSides(poly &Poly, ref &Poly, n Vec3) Poly {
+  mut cur = *poly;
   imm centre = polyCentroid(ref);
   mut e = 0usize;
-  while e < ref.len() {
-    imm r0 = *ref[e];
-    imm r1 = *ref[(e + 1usize) % ref.len()];
+  while e < ref.n {
+    imm r0 = ref.p[e];
+    imm r1 = ref.p[(e + 1usize) % ref.n];
     mut side = (r1 - r0).cross(n);
     if side.lengthSquared() < 1.0e-14 { e = e + 1usize; continue; }
     side = side.normalize();
     if side.dot(centre - r0) > 0. { side = -side; }   // outward
-    mut next = List[Vec3].empty();
-    if cur.len() == 2usize {
-      imm d0 = side.dot(*cur[0usize] - r0);
-      imm d1 = side.dot(*cur[1usize] - r0);
+    mut next = newPoly();
+    if cur.n == 2usize {
+      imm d0 = side.dot(cur.p[0usize] - r0);
+      imm d1 = side.dot(cur.p[1usize] - r0);
       if d0 <= 0. and d1 <= 0. {
-        next.push(*cur[0usize]); next.push(*cur[1usize]);
+        next.add(cur.p[0usize]); next.add(cur.p[1usize]);
       } else if d0 > 0. and d1 > 0. {
         // gone
       } else {
         imm t = d0 / (d0 - d1);
-        imm hit = (*cur[0usize]).lerp(*cur[1usize], t);
-        if d0 <= 0. { next.push(*cur[0usize]); next.push(hit); } else { next.push(hit); next.push(*cur[1usize]); }
+        imm hit = cur.p[0usize].lerp(cur.p[1usize], t);
+        if d0 <= 0. { next.add(cur.p[0usize]); next.add(hit); } else { next.add(hit); next.add(cur.p[1usize]); }
       }
     } else {
       mut k = 0usize;
-      while k < cur.len() {
-        imm a = *cur[k];
-        imm b = *cur[(k + 1usize) % cur.len()];
+      while k < cur.n {
+        imm a = cur.p[k];
+        imm b = cur.p[(k + 1usize) % cur.n];
         imm da = side.dot(a - r0);
         imm db = side.dot(b - r0);
-        if da <= 0. { next.push(a); }
+        if da <= 0. { next.add(a); }
         if (da < 0. and db > 0.) or (da > 0. and db < 0.) {
-          next.push(a.lerp(b, da / (da - db)));
+          next.add(a.lerp(b, da / (da - db)));
         }
         k = k + 1usize;
       }
     }
     cur = next;
-    if cur.len() == 0usize { return cur; }
+    if cur.n == 0usize { return cur; }
     e = e + 1usize;
   }
   cur;
 }
 
+// A few contact points held inline (a clip of two faces leaves at most PolyMax)
+struct PointBuf {
+  n usize;
+  c Array[ContactPoint, 16];
+
+  fn add(self &mut, v ContactPoint) {
+    if n < 16usize { c[n] = v; n = n + 1usize; }
+  }
+}
+
+fn newPointBuf() PointBuf {
+  new PointBuf(0usize, new Array[ContactPoint, 16] <- fill zeroPoint());
+}
+
 // Cut a set of contact points to four (Jolt's PruneContactPoints)
-fn reducePoints(pts &List[ContactPoint], n Vec3) Manifold {
+fn reducePoints(pts &PointBuf, n Vec3) Manifold {
   mut m = emptyManifold();
   m.normal = n;
-  imm cnt = pts.len();
+  imm cnt = pts.n;
   if cnt <= 4usize {
     mut i = 0usize;
-    while i < cnt { m.points[i] = *pts[i]; i = i + 1usize; }
+    while i < cnt { m.points[i] = pts.c[i]; i = i + 1usize; }
     m.count = cnt;
     return m;
   }
-  mut used = List[bool].empty();
+  mut used = new Array[bool, 16] <- fill false;
   mut i = 0usize;
-  while i < cnt { used.push(false); i = i + 1usize; }
   // 1: the deepest
   mut i1 = 0usize;
   i = 1usize;
-  while i < cnt { if pts[i].depth > pts[i1].depth { i1 = i; } i = i + 1usize; }
-  used.set(i1, true);
-  imm p1 = pts[i1].onA;
+  while i < cnt { if pts.c[i].depth > pts.c[i1].depth { i1 = i; } i = i + 1usize; }
+  used[i1] = true;
+  imm p1 = pts.c[i1].onA;
   // 2: the farthest from it
   mut i2 = i1;
   mut bd = -1.;
   i = 0usize;
   while i < cnt {
-    imm d = (pts[i].onA - p1).lengthSquared();
-    if not *used[i] and d > bd { bd = d; i2 = i; }
+    imm d = (pts.c[i].onA - p1).lengthSquared();
+    if not used[i] and d > bd { bd = d; i2 = i; }
     i = i + 1usize;
   }
-  used.set(i2, true);
-  imm p2 = pts[i2].onA;
+  used[i2] = true;
+  imm p2 = pts.c[i2].onA;
   // 3: the largest triangle with them
   mut i3 = i2;
   bd = -1.;
   i = 0usize;
   while i < cnt {
-    imm ar = absf((p2 - p1).cross(pts[i].onA - p1).dot(n));
-    if not *used[i] and ar > bd { bd = ar; i3 = i; }
+    imm ar = absf((p2 - p1).cross(pts.c[i].onA - p1).dot(n));
+    if not used[i] and ar > bd { bd = ar; i3 = i; }
     i = i + 1usize;
   }
-  used.set(i3, true);
-  imm p3 = pts[i3].onA;
+  used[i3] = true;
+  imm p3 = pts.c[i3].onA;
   // 4: the one that adds most area on the outside of the triangle
   imm orient = (p2 - p1).cross(p3 - p1).dot(n);
   imm sgn = if orient < 0. { -1.; } else { 1.; };
@@ -277,8 +308,8 @@ fn reducePoints(pts &List[ContactPoint], n Vec3) Manifold {
   bd = -bigNumber;
   i = 0usize;
   while i < cnt {
-    if not *used[i] {
-      imm q = pts[i].onA;
+    if not used[i] {
+      imm q = pts.c[i].onA;
       imm g1 = maxf(0., -sgn * (p2 - p1).cross(q - p1).dot(n));
       imm g2 = maxf(0., -sgn * (p3 - p2).cross(q - p2).dot(n));
       imm g3 = maxf(0., -sgn * (p1 - p3).cross(q - p3).dot(n));
@@ -287,10 +318,10 @@ fn reducePoints(pts &List[ContactPoint], n Vec3) Manifold {
     }
     i = i + 1usize;
   }
-  m.points[0usize] = *pts[i1];
-  m.points[1usize] = *pts[i2];
-  m.points[2usize] = *pts[i3];
-  m.points[3usize] = *pts[i4];
+  m.points[0usize] = pts.c[i1];
+  m.points[1usize] = pts.c[i2];
+  m.points[2usize] = pts.c[i3];
+  m.points[3usize] = pts.c[i4];
   m.count = 4usize;
   m;
 }
@@ -299,30 +330,37 @@ fn reducePoints(pts &List[ContactPoint], n Vec3) Manifold {
 // the face with three or more points is the reference, the other is clipped
 // to it. Points more than 'margin' apart along n are dropped. Returns a
 // manifold with no points if nothing is left.
-pub fn clipFaces(faceA &List[Vec3], faceB &List[Vec3], n Vec3, margin f32) Manifold {
-  mut out = List[ContactPoint].empty();
-  if faceA.len() >= 3usize {
+pub fn clipFaces(faceA &Poly, faceB &Poly, n Vec3, margin f32) Manifold {
+  clipFacesRef(faceA, faceB, n, margin, faceA.n >= 3usize);
+}
+
+// The same with the reference face chosen by the caller (the face whose plane
+// the contact normal belongs to: a box face for a face axis, the triangle for
+// the triangle's normal)
+pub fn clipFacesRef(faceA &Poly, faceB &Poly, n Vec3, margin f32, refIsA bool) Manifold {
+  mut out = newPointBuf();
+  if refIsA and faceA.n >= 3usize {
     imm clipped = clipToSides(faceB, faceA, n);
-    imm a0 = *faceA[0usize];
+    imm a0 = faceA.p[0usize];
     mut i = 0usize;
-    while i < clipped.len() {
-      imm q = *clipped[i];
+    while i < clipped.n {
+      imm q = clipped.p[i];
       imm depth = n.dot(a0 - q);
-      if depth >= -margin { out.push(new ContactPoint(q + n * depth, q, depth)); }
+      if depth >= -margin { out.add(new ContactPoint(q + n * depth, q, depth)); }
       i = i + 1usize;
     }
-  } else if faceB.len() >= 3usize {
+  } else if faceB.n >= 3usize {
     imm clipped = clipToSides(faceA, faceB, n);
-    imm b0 = *faceB[0usize];
+    imm b0 = faceB.p[0usize];
     mut i = 0usize;
-    while i < clipped.len() {
-      imm q = *clipped[i];
+    while i < clipped.n {
+      imm q = clipped.p[i];
       imm depth = n.dot(q - b0);
-      if depth >= -margin { out.push(new ContactPoint(q, q - n * depth, depth)); }
+      if depth >= -margin { out.add(new ContactPoint(q, q - n * depth, depth)); }
       i = i + 1usize;
     }
   }
-  if out.len() == 0usize { return emptyManifold(); }
+  if out.n == 0usize { return emptyManifold(); }
   reducePoints(&out, n);
 }
 
@@ -336,7 +374,7 @@ fn collideGeneric(a &Prim, xa Rigid, b &Prim, xb Rigid, margin f32) Manifold {
   if not p.hit { return emptyManifold(); }
   imm fa = supportingFace(a, xa, p.normal);
   imm fb = supportingFace(b, xb, -p.normal);
-  if fa.len() >= 3usize or fb.len() >= 3usize {
+  if fa.n >= 3usize or fb.n >= 3usize {
     imm m = clipFaces(&fa, &fb, p.normal, margin);
     if m.count > 0usize { return m; }
   }
@@ -591,6 +629,135 @@ fn collideBoxBox(a &Prim, xa Rigid, b &Prim, xb Rigid, margin f32) Manifold {
 }
 
 // ---------------------------------------------------------------------------
+// Box against triangle: the separating axis test over 13 axes (Akenine-Moller,
+// "Fast 3D Triangle-Box Overlap Testing", 2001; Ericson 5.2.9): the triangle's
+// normal, the box's three face axes and the nine cross products of a box edge
+// direction with a triangle edge. A large flat triangle makes GJK/EPA lose its
+// footing (the Minkowski difference is a slab tens of metres across and the
+// origin sits on a fold of it), so the pair with the commonest triangle
+// partner gets the exact answer instead.
+
+struct TriSat {
+  hit bool;
+  n Vec3;       // from the box to the triangle
+  sep f32;      // signed gap along n (negative: overlap)
+  kind i32;     // 0: the triangle's face, 1: a box face, 2: an edge pair
+  ia usize;     // box axis (face or edge)
+  ib usize;     // triangle edge
+}
+
+// The gap along a unit axis between the box (radius r about the origin) and a
+// triangle whose corners project to p0, p1, p2; the axis is turned to point at the triangle
+struct AxisGap {
+  gap f32;
+  flip bool;
+}
+
+fn axisGap(r f32, p0 f32, p1 f32, p2 f32) AxisGap {
+  imm lo = minf(p0, minf(p1, p2));
+  imm hi = maxf(p0, maxf(p1, p2));
+  if lo + hi >= 0. { return new AxisGap(lo - r, false); }
+  new AxisGap(-hi - r, true);
+}
+
+fn satBoxTriangle(bx &Prim, xb Rigid, a Vec3, b Vec3, c Vec3, margin f32) TriSat {
+  imm none = new TriSat(false, new Vec3(0., 1., 0.), 0., 0, 0usize, 0usize);
+  imm ax = boxAxes(xb);
+  imm h = [bx.half.x, bx.half.y, bx.half.z];
+  imm v0 = a - xb.pos;
+  imm v1 = b - xb.pos;
+  imm v2 = c - xb.pos;
+  imm ed = [v1 - v0, v2 - v1, v0 - v2];
+  imm tc = ed[0usize].cross(ed[1usize]);
+  imm tl = tc.length();
+  if tl < 1.0e-12 { return none; }
+  imm tn = tc * (1. / tl);
+  // the triangle's face
+  mut rt = 0.;
+  mut k = 0usize;
+  while k < 3usize { rt = rt + h[k] * absf(ax[k].dot(tn)); k = k + 1usize; }
+  imm gt = axisGap(rt, v0.dot(tn), v1.dot(tn), v2.dot(tn));
+  if gt.gap > margin { return none; }
+  imm tAxis = if gt.flip { -tn; } else { tn; };
+  // the box's faces
+  mut bestFace = -bigNumber;
+  mut faceAxis = ax[0usize];
+  mut faceI = 0usize;
+  k = 0usize;
+  while k < 3usize {
+    imm g = axisGap(h[k], v0.dot(ax[k]), v1.dot(ax[k]), v2.dot(ax[k]));
+    if g.gap > margin { return none; }
+    if g.gap > bestFace { bestFace = g.gap; faceAxis = if g.flip { -ax[k]; } else { ax[k]; }; faceI = k; }
+    k = k + 1usize;
+  }
+  // the edge pairs
+  mut bestEdge = -bigNumber;
+  mut edgeAxis = ax[0usize];
+  mut ei = 0usize;
+  mut ej = 0usize;
+  mut i = 0usize;
+  while i < 3usize {
+    mut j = 0usize;
+    while j < 3usize {
+      imm cr = ax[i].cross(ed[j]);
+      imm l2 = cr.lengthSquared();
+      if l2 > 1.0e-10 * ed[j].lengthSquared() {
+        imm axis = cr * (1. / l2.sqrt());
+        mut r = 0.;
+        k = 0usize;
+        while k < 3usize { if k != i { r = r + h[k] * absf(ax[k].dot(axis)); } k = k + 1usize; }
+        imm g = axisGap(r, v0.dot(axis), v1.dot(axis), v2.dot(axis));
+        if g.gap > margin { return none; }
+        if g.gap > bestEdge { bestEdge = g.gap; edgeAxis = if g.flip { -axis; } else { axis; }; ei = i; ej = j; }
+      }
+      j = j + 1usize;
+    }
+    i = i + 1usize;
+  }
+  // The triangle's own normal wins a near tie (a flat mesh gives the same normal to every contact)
+  // and faces win unless an edge axis is clearly less penetrating
+  imm bestFaceAll = maxf(gt.gap, bestFace);
+  if bestEdge > bestFaceAll + 0.002 + 0.02 * absf(bestFaceAll) {
+    return new TriSat(true, edgeAxis, bestEdge, 2, ei, ej);
+  }
+  if gt.gap >= bestFace - 0.0005 { return new TriSat(true, tAxis, gt.gap, 0, 0usize, 0usize); }
+  new TriSat(true, faceAxis, bestFace, 1, faceI, 0usize);
+}
+
+// The box is A and the triangle B (the normal runs from the box to the triangle)
+fn collideBoxTriangle(bx &Prim, xb Rigid, tr &Prim, xt Rigid, margin f32) Manifold {
+  imm a = xt.apply(tr.a);
+  imm b = xt.apply(tr.b);
+  imm c = xt.apply(tr.c);
+  imm r = satBoxTriangle(bx, xb, a, b, c, margin);
+  if not r.hit { return emptyManifold(); }
+  imm depth = -r.sep;
+  if r.kind != 2 {
+    imm fa = supportingFace(bx, xb, r.n);
+    mut fb = newPoly();
+    fb.add(a); fb.add(b); fb.add(c);
+    imm m = clipFacesRef(&fa, &fb, r.n, margin, r.kind == 1);
+    if m.count > 0usize { return m; }
+    // nothing within reach of the reference face: the box's deepest corner
+    imm pa = xb.apply(bx.supportCore(xb.unrotate(r.n)));
+    return singleContact(r.n, pa, pa - r.n * depth, depth);
+  }
+  // edge against edge: the box edge that faces the triangle, the triangle edge j
+  imm ax = boxAxes(xb);
+  mut base = xb.pos;
+  mut k = 0usize;
+  while k < 3usize {
+    if k != r.ia { base = base + ax[k] * (if ax[k].dot(r.n) > 0. { vecGet(bx.half, k); } else { -vecGet(bx.half, k); }); }
+    k = k + 1usize;
+  }
+  imm hl = vecGet(bx.half, r.ia);
+  imm t0 = if r.ib == 0usize { a; } else if r.ib == 1usize { b; } else { c; };
+  imm t1 = if r.ib == 0usize { b; } else if r.ib == 1usize { c; } else { a; };
+  imm sp = closestSegments(base - ax[r.ia] * hl, base + ax[r.ia] * hl, t0, t1);
+  singleContact(r.n, sp.c1, sp.c2, depth);
+}
+
+// ---------------------------------------------------------------------------
 // Dispatch
 
 // Two convex prims: a manifold with count 0 if they are further apart than
@@ -603,6 +770,8 @@ pub fn collideConvex(a &Prim, xa Rigid, b &Prim, xb Rigid, margin f32) Manifold 
   if ka == KCapsule and kb == KSphere { return flipManifold(collideSphereCapsule(b, xb, a, xa, margin)); }
   if ka == KCapsule and kb == KCapsule { return collideCapsuleCapsule(a, xa, b, xb, margin); }
   if ka == KBox and kb == KBox { return collideBoxBox(a, xa, b, xb, margin); }
+  if ka == KBox and kb == KTriangle { return collideBoxTriangle(a, xa, b, xb, margin); }
+  if ka == KTriangle and kb == KBox { return flipManifold(collideBoxTriangle(b, xb, a, xa, margin)); }
   collideGeneric(a, xa, b, xb, margin);
 }
 
@@ -651,6 +820,9 @@ fn collideConcave(conc &Prim, xc Rigid, cvx &Prim, xv Rigid, margin f32, partC u
       dropGhostPoints(&mut m, xc.apply(t.a), xc.apply(t.b), xc.apply(t.c), *flags[i], not swapped);
     }
     if m.count > 0usize {
+      snapToFaceNormal(&mut m, xc.rotate((t.b - t.a).cross(t.c - t.a).normalize()));
+    }
+    if m.count > 0usize {
       if swapped { m.partA = partV; m.partB = partC; m.subA = NoSub; m.subB = *ids[i]; }
       else { m.partA = partC; m.partB = partV; m.subA = *ids[i]; m.subB = NoSub; }
       out.push(m);
@@ -658,6 +830,74 @@ fn collideConcave(conc &Prim, xc Rigid, cvx &Prim, xv Rigid, margin f32, partC u
     i = i + 1usize;
   }
   dropDuplicatePoints(out, firstNew);
+  mergeFlatPatches(out, firstNew);
+}
+
+// Cosine of the angle within which a contact normal is taken to be its triangle's own
+// (8 degrees): a shape resting on the face of a triangle gets exactly the face's normal,
+// not whatever GJK/EPA or the clip came out with, and so does its neighbour triangle's
+// manifold on a flat patch, which is what lets the two be one (Jolt's way: contacts with
+// the face of a mesh triangle report the face normal, and the manifolds of one body pair
+// whose normals agree are merged into a single manifold of at most four points).
+const FaceSnapCos = 0.99;
+
+// Contacts within about 8 degrees of the triangle's normal take it (each depth measured
+// again along it); the others, edge and vertex contacts, keep what the narrow phase found
+fn snapToFaceNormal(m &mut Manifold, faceNormal Vec3) {
+  imm aligned = if faceNormal.dot(m.normal) >= 0. { faceNormal; } else { -faceNormal; };
+  if aligned.dot(m.normal) < FaceSnapCos { return; }
+  m.normal = aligned;
+  mut k = 0usize;
+  while k < m.count {
+    m.points[k].depth = (m.points[k].onA - m.points[k].onB).dot(aligned);
+    k = k + 1usize;
+  }
+}
+
+// The manifolds that one convex shape makes with the triangles of one flat patch of a
+// mesh or heightfield (same compound parts, normals within 2 degrees) become one: the
+// points of all of them, a point two triangles both report once, cut to the four that
+// span the patch. The merged manifold keeps the first one's triangle.
+fn mergeFlatPatches(out &mut List[Manifold], first usize) {
+  if out.len() < first + 2usize { return; }
+  mut w = first;
+  mut r = first;
+  while r < out.len() {
+    imm m = *out[r];
+    mut g = first;
+    mut found = false;
+    while g < w {
+      imm acc = out[g];
+      if acc.partA == m.partA and acc.partB == m.partB and acc.normal.dot(m.normal) > 0.9994 { found = true; break; }
+      g = g + 1usize;
+    }
+    if not found {
+      out.set(w, m);
+      w = w + 1usize;
+    } else {
+      mut acc = *out[g];
+      mut pts = newPointBuf();
+      mut q = 0usize;
+      while q < acc.count { pts.add(acc.points[q]); q = q + 1usize; }
+      q = 0usize;
+      while q < m.count {
+        mut dup = false;
+        mut e = 0usize;
+        while e < acc.count {
+          if acc.points[e].onA.distance(m.points[q].onA) < 0.002 { dup = true; }
+          e = e + 1usize;
+        }
+        if not dup { pts.add(m.points[q]); }
+        q = q + 1usize;
+      }
+      imm merged = reducePoints(&pts, acc.normal);
+      acc.points = merged.points;
+      acc.count = merged.count;
+      out.set(g, acc);
+    }
+    r = r + 1usize;
+  }
+  out.truncate(w);
 }
 
 fn distToSegment(p Vec3, a Vec3, b Vec3) f32 { p.distance(nearestOnSegment(p, a, b)); }
