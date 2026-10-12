@@ -30,7 +30,7 @@ import httpconn;
 import httpclient use Response;
 import tls;
 import actors;
-import aiohttp use Client, Conn, FetchError;
+import actorhttp use Client, Conn, FetchError;
 import aio use IoLimits;
 
 // ---------------------------------------------------------------------------
@@ -361,7 +361,7 @@ fn refusedTls(r Result[Response, FetchError]) bool {
   match &r {
     case imm e &Error {
       imm s = e.failure.stage;
-      e.kind() == aiohttp.FetchErrorKind.Failed and (s == httpclient.Stage.Tls or s == httpclient.Stage.Read or
+      e.kind() == actorhttp.FetchErrorKind.Failed and (s == httpclient.Stage.Tls or s == httpclient.Stage.Read or
         s == httpclient.Stage.Closed);
     }
     else {false;}
@@ -422,7 +422,7 @@ actor Prober {
 
   pub async do run(self, port u16, goodPort u16, untrustedPort u16, done OneshotSender[u64]) {
     // A plain connection: two requests on it, one server accept
-    imm c = connOf("connect", await aiohttp.connect("127.0.0.1", port));
+    imm c = connOf("connect", await actorhttp.connect("127.0.0.1", port));
     say("get", await c.request(get("/hello"), String.empty()));
     say("accepts so far", await c.request(get("/conns"), String.empty()));
     mut ping = RequestHead.make("POST", "/echo", "127.0.0.1");
@@ -437,11 +437,11 @@ actor Prober {
     say("a request after it", await c.request(get("/hello"), String.empty()));
 
     // A deadline ahead, then one past, on new connections
-    imm c2 = connOf("connect again", await aiohttp.connect("127.0.0.1", port));
+    imm c2 = connOf("connect again", await actorhttp.connect("127.0.0.1", port));
     imm t2 = Instant.now();
     say("deadline ahead", await c2.requestIn(get("/hang"), String.empty(), IoLimits.until(t2 + Duration.fromMillis(100i64))));
     note("  and it had passed", waitedAtLeast(t2, 90i64));
-    imm c3 = connOf("connect a third", await aiohttp.connect("127.0.0.1", port));
+    imm c3 = connOf("connect a third", await actorhttp.connect("127.0.0.1", port));
     say("deadline past", await c3.requestIn(get("/hello"), String.empty(), IoLimits.until(Instant.now())));
     say("and the connection is still good", await c3.request(get("/hello"), String.empty()));
     imm g4 = CancelGroup.make();
@@ -449,13 +449,13 @@ actor Prober {
     say("group cancelled before it starts", await c3.requestIn(get("/hello"), String.empty(), IoLimits.within(g4)));
 
     // A connection that cannot be made
-    imm none = connOf("refused", await aiohttp.connect("127.0.0.1", 1u16));
+    imm none = connOf("refused", await actorhttp.connect("127.0.0.1", 1u16));
 
     // TLS: a server the test's root vouches for
     mut cfg = tls.ClientConfig.make();
     cfg.verify = tls.Verifier.roots(readText("ca.pem").view());
     cfg.offline = true;
-    imm s1 = connOf("secure connect", await aiohttp.connectSecure("127.0.0.1", goodPort, cfg));
+    imm s1 = connOf("secure connect", await actorhttp.connectSecure("127.0.0.1", goodPort, cfg));
     say("secure get", await s1.request(get("/hello"), String.empty()));
     say("secure again", await s1.request(get("/hello"), String.empty()));
 
@@ -463,14 +463,14 @@ actor Prober {
     mut cfg2 = tls.ClientConfig.make();
     cfg2.verify = tls.Verifier.roots(readText("ca.pem").view());
     cfg2.offline = true;
-    imm s2 = connOf("untrusted connect", await aiohttp.connectSecure("127.0.0.1", untrustedPort, cfg2));
+    imm s2 = connOf("untrusted connect", await actorhttp.connectSecure("127.0.0.1", untrustedPort, cfg2));
     note("untrusted get failed at the handshake", refusedTls(await s2.request(get("/hello"), String.empty())));
 
     // The same two servers through a Client, whose config carries the root
     mut hcfg = httpclient.Config.make();
     hcfg.tlsConfig.verify = tls.Verifier.roots(readText("ca.pem").view());
     hcfg.tlsConfig.offline = true;
-    imm hc = Client.make(hcfg, aiohttp.defaultMaxBody);
+    imm hc = Client.make(hcfg, actorhttp.defaultMaxBody);
     say("https get", await hc.get(secure(goodPort, "/hello").view()));
     say("https again", await hc.get(secure(goodPort, "/hello").view()));
     say("https untrusted", await hc.get(secure(untrustedPort, "/hello").view()));
@@ -487,7 +487,7 @@ actor Dropper {
   conn Conn;
 
   pub async do connect(self, port u16, ready OneshotSender[u64]) {
-    conn = connOf("dropper connects", await aiohttp.connect("127.0.0.1", port));
+    conn = connOf("dropper connects", await actorhttp.connect("127.0.0.1", port));
     mut r = ready;
     r.send(1u64);
   }

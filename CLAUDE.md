@@ -740,13 +740,13 @@ Visual Studio projects stay at the root.
   an absolute deadline, handed to `submitIn`; a dropped `Socket`
   closes, cancelling what is in flight on it; its finalizer, which `finalAll()` runs before `actors`', waits for
   quiet and ends the I/O, every behaviour still paused on it abandoned, its
-  record's values finalized; `aiohttp` is HTTP an actor awaits, over `actors`, `aio`'s
+  record's values finalized; `actorhttp` (a working name) is HTTP an actor awaits, over `actors`, `aio`'s
   `IoLimits`, `httpclient`, `httpconn` and `tls`: `Client.standard()` and
   `Client.make(config, maxBody)` (a handle that moves and `clone`s, naming an
   `httpclient.Client`), whose `get`, `send` and their `In` forms (`getIn`, `sendIn`, an
   `IoLimits`) each answer a `Result` of the whole `httpclient.Response` or a `FetchError`
   (`Failed` with httpclient's `Failure`, `Cancelled` or `TimedOut`, never a panic), and
-  `aiohttp.connect`, `connectSecure` and a `Conn`'s `request` and `requestIn` for one
+  `actorhttp.connect`, `connectSecure` and a `Conn`'s `request` and `requestIn` for one
   httpconn connection, done by one service thread that owns its own `iocore` Loop, every
   client and one `httpconn.Driver`, takes jobs from a queue under a Mutex as `aio`'s I/O
   thread does, and answers each exchange's final event through its reply; its finalizer
@@ -1114,7 +1114,7 @@ other object; `--nopic` opts out.
 Congo runs on Linux (`python3 tools/congo/congo.py test` in a package's folder,
 with `conec` built at `build/x64-release/conec`), and `sync`, `thread`,
 `actors`, `time`, `path`, `env`, `fs`, `posix`, `process`, `iobuf`, `iocore`,
-`aio` and `aiohttp` pass their tests there. (`synchronization.lib`, `shell32.lib`,
+`aio` and `actorhttp` pass their tests there. (`synchronization.lib`, `shell32.lib`,
 `ws2_32.lib` and `ntdll.lib`, the Windows SDK's, are named by the
 `[link.windows]` of `sync`, `process` and `iocore`; a package's manifest has
 a section for each system, `[link.windows]`, `[link.linux]` and

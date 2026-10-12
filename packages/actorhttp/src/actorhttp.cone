@@ -1,5 +1,5 @@
-// The aiohttp package: HTTP and HTTPS an actor awaits. A behaviour of an
-// actor writes
+// The actorhttp package: HTTP and HTTPS an actor awaits. (netmsg-style working
+// name; the final name is Jon's.) A behaviour of an actor writes
 //
 //   imm r = await client.get("https://example.com/");
 //
@@ -14,7 +14,7 @@
 //   mod weather;
 //   import httpclient use Response;
 //   import actors;
-//   import aiohttp use Client, FetchError;
+//   import actorhttp use Client, FetchError;
 //
 //   actor Weather {
 //     client Client;
@@ -39,7 +39,7 @@
 //   c.get(url)                    a GET of a URL as text        Result[Response, FetchError]
 //   c.send(request)               a Request                     Result[Response, FetchError]
 //   c.getIn(url, lim)  c.sendIn(request, lim)     the same two, limited by lim, an IoLimits
-//   aiohttp.connect(host, port)  aiohttp.connectSecure(host, port, tlsConfig)
+//   actorhttp.connect(host, port)  actorhttp.connectSecure(host, port, tlsConfig)
 //                                 a connection, plain or through TLS    Result[Conn, FetchError]
 //   conn.request(head, body)  conn.requestIn(head, body, lim)    (A CONNECTION)
 //                                 a request on it, body a String ("" for none)
@@ -155,7 +155,7 @@
 // connect with an 'In' form, and httpclient and httpconn running on aio's
 // own sockets.
 
-mod aiohttp;
+mod actorhttp;
 
 import libc;
 import thread;
@@ -270,7 +270,7 @@ fn nullJob() *JobHead {null;}
 fn newJob[J](body J) *u8 {
   imm p = libc.malloc(mem.sizeof[Job[J]]()) as *Job[J];
   if p as usize == 0usize {
-    die("aiohttp: out of memory for an operation");
+    die("actorhttp: out of memory for an operation");
   }
   (*p).head = new JobHead(nullJob(), &runJob[J], &dropJob[J]);
   mem.writeRaw[J](&(*p).body as *J, body);
@@ -332,10 +332,10 @@ struct SvcArg {
 fn startSvc() {
   imm t = libc.calloc(1usize, mem.sizeof[SvcThread]()) as *SvcThread;
   if t as usize == 0usize {
-    die("aiohttp: out of memory for the service thread");
+    die("actorhttp: out of memory for the service thread");
   }
   mem.writeRaw[thread.Thread[u32]](&(*t).os as *thread.Thread[u32],
-    thread.startWith(new thread.Options(name: "aiohttp service"), new SvcArg(t as usize), &svcMain));
+    thread.startWith(new thread.Options(name: "actorhttp service"), new SvcArg(t as usize), &svcMain));
   while (*t).ready.load() == 0u32 {
     sync.futexWait(&(*t).ready, 0u32);
   }
@@ -528,13 +528,13 @@ pub struct Client is Move {
 
 // What httpconn would panic at in a request's head, found where the call is made
 fn checkHead(h &RequestHead, file &Array[u8], line u32) {
-  if not isToken(h.methodName()) {die("aiohttp: the request's method is not a token", file, line);}
-  if h.method == Method.Connect {die("aiohttp: CONNECT is not supported", file, line);}
-  if not isVisible(h.target.view()) {die("aiohttp: the request's target is empty or holds a space or a control character", file, line);}
-  if not isVisible(h.authority.view()) {die("aiohttp: a request needs an authority, written as Host, without spaces", file, line);}
-  if h.headers.has("Host") {die("aiohttp: Host is written from the head's authority, not its fields", file, line);}
+  if not isToken(h.methodName()) {die("actorhttp: the request's method is not a token", file, line);}
+  if h.method == Method.Connect {die("actorhttp: CONNECT is not supported", file, line);}
+  if not isVisible(h.target.view()) {die("actorhttp: the request's target is empty or holds a space or a control character", file, line);}
+  if not isVisible(h.authority.view()) {die("actorhttp: a request needs an authority, written as Host, without spaces", file, line);}
+  if h.headers.has("Host") {die("actorhttp: Host is written from the head's authority, not its fields", file, line);}
   if h.headers.has("Content-Length") or h.headers.has("Transfer-Encoding") {
-    die("aiohttp: framing fields are the core's to write; a body's length is its String's", file, line);
+    die("actorhttp: framing fields are the core's to write; a body's length is its String's", file, line);
   }
 }
 
@@ -550,11 +550,11 @@ fn isVisible(s &Array[u8]) bool {
 
 // What the client would panic at, found where the call is made
 fn checkRequest(r &httpclient.Request, file &Array[u8], line u32) {
-  if not isToken(r.methodName()) {die("aiohttp: the request's method is not a token", file, line);}
-  if r.method == Method.Connect {die("aiohttp: CONNECT is not supported", file, line);}
-  if r.headers.has("Host") {die("aiohttp: Host is written from the request's URL, not its fields", file, line);}
+  if not isToken(r.methodName()) {die("actorhttp: the request's method is not a token", file, line);}
+  if r.method == Method.Connect {die("actorhttp: CONNECT is not supported", file, line);}
+  if r.headers.has("Host") {die("actorhttp: Host is written from the request's URL, not its fields", file, line);}
   if r.headers.has("Content-Length") or r.headers.has("Transfer-Encoding") {
-    die("aiohttp: framing fields are the client's to write, from the request's body", file, line);
+    die("actorhttp: framing fields are the client's to write, from the request's body", file, line);
   }
 }
 
