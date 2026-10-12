@@ -61,7 +61,17 @@ counter(2);        // 3
 		The list may be left out. The brackets sit after the parameters because a bracket never begins a type,
 		so they cannot be taken for the return type.</p>
 	<p>A parameter's type may be left out where the closure is given to something that says what the signature is
-		(<span class="pre">fn(x) { x + 1; }</span>, below); nothing else may leave a type out.</p>
+		(<span class="pre">fn(x) { x + 1; }</span>, below); nothing else may leave a type out.
+		Three places say it: a parameter taken by <span class="pre">&amp;&lt;fn(sig)</span> or
+		<span class="pre">&amp;&lt;mut fn(sig)</span> (<a href="refcloref.html#lent">a closure literal, lent</a>), a
+		generic parameter bound <span class="pre">F fn(sig)</span>, and
+		<span class="pre">new So[fn(sig)](...)</span> (<a href="refcloref.html#owner">an owner of a closure</a>).
+		A parameter of type <span class="pre">So[fn(sig)]</span> does not: it takes an owner, and a closure literal is
+		not one, so a literal given straight to it is refused (for an untyped one, error 1391, "The type of a is not
+		written, and nothing here says what it is"). Wrap it:
+		<span class="pre">c.set(new So[fn(a i64, b i64) bool]((a, b) =&gt; a &lt; b))</span>. An
+		<span class="pre">imm</span> given an untyped closure is refused the same way, even where the
+		<span class="pre">imm</span> is written with a <span class="pre">&amp;&lt;fn(sig)</span> type.</p>
 
 	<h3 id="short">The short form</h3>
 	<p>For a small closure the short form puts the parameter names, an arrow, and the body:</p>
@@ -213,7 +223,16 @@ early(3);      // 5
 	<p>A closure is a value of a struct of what it holds and borrows, so where it can go is decided by the rules for
 		its fields, with nothing special for closures. A closure that borrows a variable cannot outlive it:</p>
 	<ul>
-		<li><b>Down a call</b>, passed to a function that uses it and returns, it is free to borrow anything.</li>
+		<li><b>Down a call</b>, passed to a function that uses it and returns, it may borrow any variable of the
+			function around it, with one exception: a call that is also handed a <span class="pre">&amp;mut</span>
+			(or <span class="pre">&amp;uni</span>) borrow, a method's receiver among them, of something that can hold
+			borrows (a struct with a borrowed-reference field, a list of borrowed references) that the caller
+			lent, since the call could store the closure's borrow there, where it would outlive the variable. That
+			call is refused (error 1085) when the closure borrows a local of the function, or another argument is a
+			borrow of a local, even though the callee only reads the closure. The error names the variable. A
+			closure lists the variable, <span class="pre">fn(x &amp;i64) [k] bool { *x &gt; k; }</span>, to hold its
+			own copy and borrow nothing. A receiver the function owns is not refused, and nor is one that cannot
+			hold a borrow, such as a <span class="pre">List[i64]</span>.</li>
 		<li><b>Kept in a local</b>, it blocks moving or reshaping what it borrows until its last use.</li>
 		<li><b>Stored past the function or returned</b> (in a field, in an owner such as
 			<span class="pre">So[fn(sig)]</span>, or as a returned borrow), it is refused if it borrows a local.
@@ -239,6 +258,40 @@ fn returned() So[fn(x i32) i32] {
 fn listed() So[fn(x i32) i32] {
   imm k = 3;
   return new So[fn(x i32) i32](fn(x i32) [k] i32 { x * k; });   // its own copy of k
+}
+</pre>
+	<p>The exception for a call down a function, with a holder of borrows that the caller lent:</p>
+<pre>
+struct Seen {
+  pub items List[&amp;i64];
+  pub fn count[F fn(x &amp;i64) bool](self &amp;mut, f F) i64 {
+    mut n = 0i64;
+    mut i = 0usize;
+    while i &lt; self.items.len() {
+      if f(*self.items[i]) { n = n + 1; }
+      i = i + 1usize;
+    }
+    n;
+  }
+}
+
+fn refused(seen &amp;mut Seen) i64 {
+  imm k = 3i64;
+  // ERROR 1085: seen holds borrows and the call could store the closure's borrow of 'k' in it
+  seen.count(x =&gt; *x &gt; k);
+}
+
+fn listed(seen &amp;mut Seen) i64 {
+  imm k = 3i64;
+  seen.count(fn(x &amp;i64) [k] bool { *x &gt; k; });   // its own copy of k: nothing borrowed
+}
+
+fn owned() i64 {
+  imm base = 5i64;
+  imm k = 3i64;
+  mut seen = new Seen(List[&amp;i64].empty());
+  seen.items.push(&amp;base);
+  seen.count(x =&gt; *x &gt; k);   // fine: this function owns seen
 }
 </pre>
 

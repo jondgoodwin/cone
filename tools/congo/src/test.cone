@@ -342,14 +342,20 @@ fn runTest(s &mut Session, file &Path, bless bool) Verdict {
     text <- "\n";
     writeAll(&expectedPath, text.view());
     mut note = cat("blessed ", expectedShown.view());
+    imm exitPath = withSuffix(file, ".exit");
     if code != 0u32 {
-      imm exitPath = withSuffix(file, ".exit");
       mut status = String.empty();
       status <- u64.from(code);
       imm statusLine = cat(status.view(), "\n");
       writeAll(&exitPath, statusLine.view());
       imm exitShown = shown(&exitPath);
       note <- " and ", exitShown.view(), " (", status.view(), ")";
+    } elif fs.isFile(&exitPath) {
+      // The run ended with 0, so a .exit left from an earlier status would
+      // fail the test just blessed
+      removeIfThere(&exitPath);
+      imm staleShown = shown(&exitPath);
+      note <- " and removed the stale ", staleShown.view();
     }
     note <- ": check it by hand against the source";
     return new Verdict(true, note);

@@ -2180,6 +2180,17 @@ static int genericRequirementsMetIn(FnCallNode *srcgencall, INode *generic, Gene
         return 1;
     }
     genericWhereOwner = NULL;
+    // A type argument already reported as bad (a value whose initializer was
+    // refused, handed to the call) meets nothing, and has no name to say so
+    // with: the report that made it bad is the one, so this one is not made
+    if (srcgencall->args) {
+        INode **argp;
+        uint32_t argcnt;
+        for (nodesFor(srcgencall->args, argcnt, argp)) {
+            if (*argp == errorType)
+                return 0;
+        }
+    }
     // A condition joined by 'or' or 'and' is false as a whole, and named whole
     if (cond->tag != IsTag) {
         char text[256] = "";

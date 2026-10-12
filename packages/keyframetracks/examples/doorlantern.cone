@@ -1,0 +1,323 @@
+// doorlantern: a door that swings open on a spring and closes, a lantern that
+// lights and flickers, and a sky that fades to night in two colour spaces,
+// all as clips sampled at times of the program's choosing.
+//
+//   congo run packages/keyframetracks/examples/doorlantern.cone
+//   congo run packages/keyframetracks/examples/doorlantern.cone -- --out graph.bmp
+//
+// Without '--out' it prints sampled values. With it, it also draws a 900 x 600
+// graph: the door's angle (top), the lantern's glow (middle), and the sky
+// colour as two strips (bottom, OKLab above, linear light below).
+//
+// THE DOOR (target DOOR, property ANGLE, degrees). A Tween: a spring swing
+// open to 95 degrees over 1.4 s (damping ratio 0.55, so it overshoots and
+// rings, landing exactly), a pause of 1 s, then a close over 0.9 s with
+// cubic in-out. Total 3.3 s.
+//
+// THE LANTERN (target LAMP). 'ignite' is a Tween: the glow's envelope goes
+// 0 to 1 over 2 s with out-quad. 'flicker' is a clip of its own, a ring of
+// Catmull-Rom keys every 0.12 s around 1 (the last key is the first, so the
+// loop shows no seam), looped by the clip. The glow the renderer would use is
+// the product of the two, each sampled at the one time; evaluating them
+// separately is why scrubbing to 4.31 s needs no earlier state.
+//
+// THE SKY (target SKY, property COLOR). A Tween fading a day blue to a night
+// blue over 4 s, once in OKLab and once in linear light (two properties of
+// the same clip). Linear light darkens through a muddy grey; OKLab goes
+// steadily darker at the same hue.
+//
+// It checks what it should: the door overshoots 95 and ends at 0, the
+// lantern's flicker is the same at any time given the same time mod 1.2
+// (purity), the glow envelope is 1 after 2 s, and the two sky mixes differ.
+
+mod doorlantern;
+
+import stdio use *;
+import fs;
+import path use Path;
+import collections use *;
+import geomath use *;
+import libc;
+import keyframetracks use *;
+
+const DOOR = 1u32;
+const LAMP = 2u32;
+const SKY = 3u32;
+const ANGLE = 1030u32;
+const GLOW = 1031u32;
+const COLOR_OKLAB = 1032u32;
+const COLOR_LINEAR = 1033u32;
+
+const W = 900;
+const H = 600;
+
+struct Canvas {
+  px List[u8];
+
+  fn make() Canvas {
+    mut px = List[u8].withCapacity(usize.from(W * H * 3));
+    mut i = 0;
+    while i < W * H {
+      px.push(250u8); px.push(248u8); px.push(244u8);
+      i = i + 1;
+    }
+    new Canvas(px);
+  }
+
+  fn set(self &mut, x i32, y i32, r u8, g u8, b u8) {
+    if x < 0 or y < 0 or x >= W or y >= H { return; }
+    imm p = usize.from((y * W + x) * 3);
+    px.set(p, r); px.set(p + 1usize, g); px.set(p + 2usize, b);
+  }
+
+  fn rect(self &mut, x0 i32, y0 i32, x1 i32, y1 i32, r u8, g u8, b u8) {
+    mut y = y0;
+    while y <= y1 {
+      mut x = x0;
+      while x <= x1 { self.set(x, y, r, g, b); x = x + 1; }
+      y = y + 1;
+    }
+  }
+
+  // Bresenham, two pixels thick
+  fn line(self &mut, x0 i32, y0 i32, x1 i32, y1 i32, r u8, g u8, b u8) {
+    mut x = x0;
+    mut y = y0;
+    imm dx = if x1 > x0 { x1 - x0; } else { x0 - x1; };
+    imm dy = if y1 > y0 { y0 - y1; } else { y1 - y0; };
+    imm sx = if x0 < x1 { 1; } else { -1; };
+    imm sy = if y0 < y1 { 1; } else { -1; };
+    mut err = dx + dy;
+    mut going = true;
+    while going {
+      self.set(x, y, r, g, b);
+      self.set(x, y + 1, r, g, b);
+      if x == x1 and y == y1 { going = false; }
+      else {
+        imm e2 = 2 * err;
+        if e2 >= dy { err = err + dy; x = x + sx; }
+        if e2 <= dx { err = err + dx; y = y + sy; }
+      }
+    }
+  }
+
+  fn toBmp(self &) List[u8] {
+    mut out = List[u8].withCapacity(usize.from(54 + W * H * 3));
+    out.push('B'); out.push('M');
+    put32(&mut out, u32.from(54 + W * H * 3));
+    put32(&mut out, 0u32);
+    put32(&mut out, 54u32);
+    put32(&mut out, 40u32);
+    put32(&mut out, u32.from(W));
+    put32(&mut out, u32.from(H));
+    out.push(1u8); out.push(0u8); out.push(24u8); out.push(0u8);
+    put32(&mut out, 0u32);
+    put32(&mut out, u32.from(W * H * 3));
+    put32(&mut out, 2835u32);
+    put32(&mut out, 2835u32);
+    put32(&mut out, 0u32);
+    put32(&mut out, 0u32);
+    mut y = H - 1;
+    while y >= 0 {
+      mut x = 0;
+      while x < W {
+        imm p = usize.from((y * W + x) * 3);
+        out.push(*px[p + 2usize]); out.push(*px[p + 1usize]); out.push(*px[p]);
+        x = x + 1;
+      }
+      y = y - 1;
+    }
+    out;
+  }
+}
+
+fn put32(out &mut List[u8], v u32) {
+  out.push(u8.from(v & 0xFFu32));
+  out.push(u8.from((v >> 8u32) & 0xFFu32));
+  out.push(u8.from((v >> 16u32) & 0xFFu32));
+  out.push(u8.from((v >> 24u32) & 0xFFu32));
+}
+
+fn cstrEquals(a *u8, b &Array[u8]) bool {
+  mut i = 0usize;
+  while i < b.len {
+    if *(a + i) != b[i] { return false; }
+    i = i + 1usize;
+  }
+  *(a + b.len) == 0u8;
+}
+
+fn cstrString(s *u8) String {
+  mut out = String.empty();
+  mut i = 0usize;
+  while *(s + i) != 0u8 {
+    out.appendByte(*(s + i));
+    i = i + 1usize;
+  }
+  out;
+}
+
+// sRGB encoding of a linear value, 0..255
+fn encode(v f32) u8 {
+  imm c = if v < 0. { 0.; } elif v > 1. { 1.; } else { v; };
+  imm e = if c <= 0.0031308 { c * 12.92; } else { 1.055 * libc.powf(c, 1. / 2.4) - 0.055; };
+  u8.from(i32.from(e * 255. + 0.5));
+}
+
+fn doorClip() Clip {
+  Tween.make("door").spring(0.55, 13.).toF32(DOOR, ANGLE, 0., 95., 1.4)
+    .gap(1.).ease(EASE_IN_OUT_CUBIC).toF32(DOOR, ANGLE, 95., 0., 0.9).build();
+}
+
+fn igniteClip() Clip {
+  Tween.make("ignite").ease(EASE_OUT_QUAD).toF32(LAMP, GLOW, 0., 1., 2.).build();
+}
+
+// A ring of keys around 1, every 0.12 s, the last equal to the first
+fn flickerClip() Clip {
+  imm vals = new Array[f32, 11] <- 1.00, 0.86, 1.12, 0.94, 1.18, 0.82, 1.06, 0.90, 1.14, 0.88, 1.00;
+  mut tr = Track.make(TK_F32);
+  mut i = 0usize;
+  while i < 11usize {
+    tr.addF32(0.12 * f32.from(i), vals[i], INTERP_CATMULL);
+    i = i + 1usize;
+  }
+  mut c = Clip.make("flicker", LOOP_LOOP);
+  c.addTrack(LAMP, GLOW, tr);
+  c;
+}
+
+fn skyClip() Clip {
+  imm day = new Color(0.05, 0.20, 0.80);
+  imm night = new Color(0.002, 0.004, 0.02);
+  Tween.make("sky").toColor(SKY, COLOR_OKLAB, day, night, SPACE_OKLAB, 4.)
+    .alongside().toColor(SKY, COLOR_LINEAR, day, night, SPACE_LINEAR, 4.).build();
+}
+
+fn glowAt(ignite &Clip, flicker &Clip, t f32) f32 {
+  ignite.sample(t).getF32(LAMP, GLOW, 0.) * flicker.sample(t).getF32(LAMP, GLOW, 1.);
+}
+
+fn main(argc i32, argv **u8) i32 {
+  mut outFile = String.empty();
+  mut a = 1;
+  while a < argc {
+    imm arg = *(argv + usize.from(a));
+    if cstrEquals(arg, "--out") and a + 1 < argc {
+      outFile = cstrString(*(argv + usize.from(a + 1)));
+      a = a + 1;
+    } else {
+      print <- "Use --out FILE.bmp\n";
+      return 2;
+    }
+    a = a + 1;
+  }
+
+  imm door = doorClip();
+  imm ignite = igniteClip();
+  imm flicker = flickerClip();
+  imm sky = skyClip();
+
+  print <- "door clip: ", door.length, " s, ignite: ", ignite.length, " s, flicker: ", flicker.length, " s (loops), sky: ", sky.length, " s\n";
+  print <- "\n  t      door deg   glow     sky OKLab (r g b)         sky linear (r g b)\n";
+  // the times are not in order on purpose: a clip needs no earlier state
+  imm times = new Array[f32, 12] <- 0.0, 3.3, 0.35, 1.0, 1.4, 2.0, 0.7, 2.6, 4.31, 1.7, 3.0, 0.1;
+  mut i = 0usize;
+  while i < 12usize {
+    imm t = times[i];
+    imm angle = door.sample(t).getF32(DOOR, ANGLE, 0.);
+    imm glow = glowAt(&ignite, &flicker, t);
+    imm so = sky.sample(t).getColor(SKY, COLOR_OKLAB, new Color(0., 0., 0.));
+    imm sl = sky.sample(t).getColor(SKY, COLOR_LINEAR, new Color(0., 0., 0.));
+    print <- "  ", t, "   ", angle, "   ", glow, "   ", so.red, " ", so.green, " ", so.blue, "   ", sl.red, " ", sl.green, " ", sl.blue, "\n";
+    i = i + 1usize;
+  }
+
+  // checks
+  mut peak f32 = 0.;
+  mut n = 0;
+  while n <= 330 {
+    imm v = door.sample(f32.from(n) * 0.01).getF32(DOOR, ANGLE, 0.);
+    if v > peak { peak = v; }
+    n = n + 1;
+  }
+  imm endAngle = door.sample(3.3).getF32(DOOR, ANGLE, -1.);
+  imm g1 = flicker.sample(4.31).getF32(LAMP, GLOW, 0.);
+  imm g2 = flicker.sample(4.31 - 3.6).getF32(LAMP, GLOW, 0.);
+  imm env = ignite.sample(2.5).getF32(LAMP, GLOW, 0.);
+  imm so = sky.sample(2.).getColor(SKY, COLOR_OKLAB, new Color(0., 0., 0.));
+  imm sl = sky.sample(2.).getColor(SKY, COLOR_LINEAR, new Color(0., 0., 0.));
+  print <- "\ndoor peak ", peak, " deg (target 95), ends at ", endAngle, "\n";
+  print <- "flicker at 4.31 and 0.71 (3 periods apart): ", g1, " and ", g2, "\n";
+  mut ok = true;
+  if peak <= 95. or endAngle != 0. { ok = false; print <- "FAIL: the door\n"; }
+  if libc.fabsf(g1 - g2) > 0.00001 { ok = false; print <- "FAIL: the flicker is not periodic\n"; }
+  if env != 1. { ok = false; print <- "FAIL: the envelope\n"; }
+  if libc.fabsf(so.green - sl.green) < 0.01 { ok = false; print <- "FAIL: the two colour spaces agree\n"; }
+
+  if outFile.len() > 0usize {
+    mut canvas = Canvas.make();
+    imm x0 = 40;
+    imm x1 = 860;
+    // axes and a grid
+    mut p = 0;
+    while p < 3 {
+      imm top = 20 + p * 190;
+      canvas.line(x0, top + 150, x1, top + 150, 120u8, 120u8, 120u8);
+      canvas.line(x0, top, x0, top + 150, 120u8, 120u8, 120u8);
+      p = p + 1;
+    }
+    // door: 0..3.6 s across, 0..110 degrees up; 95 as a dotted line
+    mut k = 0;
+    while k < x1 - x0 {
+      if (k / 6) % 2 == 0 { canvas.set(x0 + k, 20 + 150 - i32.from(95. / 110. * 150.), 200u8, 120u8, 120u8); }
+      k = k + 1;
+    }
+    mut prevX = x0;
+    mut prevY = 20 + 150;
+    k = 0;
+    while k <= x1 - x0 {
+      imm t = f32.from(k) / f32.from(x1 - x0) * 3.6;
+      imm v = door.sample(t).getF32(DOOR, ANGLE, 0.);
+      imm y = 20 + 150 - i32.from(v / 110. * 150.);
+      canvas.line(prevX, prevY, x0 + k, y, 30u8, 80u8, 180u8);
+      prevX = x0 + k;
+      prevY = y;
+      k = k + 1;
+    }
+    // lantern: 0..6 s, glow 0..1.4; the envelope in grey, the product in orange
+    imm top2 = 20 + 190;
+    prevX = x0;
+    prevY = top2 + 150;
+    k = 0;
+    while k <= x1 - x0 {
+      imm t = f32.from(k) / f32.from(x1 - x0) * 6.;
+      imm e = ignite.sample(t).getF32(LAMP, GLOW, 0.);
+      canvas.set(x0 + k, top2 + 150 - i32.from(e / 1.4 * 150.), 150u8, 150u8, 150u8);
+      canvas.set(x0 + k, top2 + 151 - i32.from(e / 1.4 * 150.), 150u8, 150u8, 150u8);
+      imm g = glowAt(&ignite, &flicker, t);
+      imm y = top2 + 150 - i32.from(g / 1.4 * 150.);
+      canvas.line(prevX, prevY, x0 + k, y, 220u8, 110u8, 20u8);
+      prevX = x0 + k;
+      prevY = y;
+      k = k + 1;
+    }
+    // sky strips, 0..4 s
+    imm top3 = 20 + 380;
+    k = 0;
+    while k < x1 - x0 {
+      imm t = f32.from(k) / f32.from(x1 - x0) * 4.;
+      imm s = sky.sample(t);
+      imm co = s.getColor(SKY, COLOR_OKLAB, new Color(0., 0., 0.));
+      imm cl = s.getColor(SKY, COLOR_LINEAR, new Color(0., 0., 0.));
+      canvas.rect(x0 + k, top3, x0 + k, top3 + 70, encode(co.red), encode(co.green), encode(co.blue));
+      canvas.rect(x0 + k, top3 + 80, x0 + k, top3 + 150, encode(cl.red), encode(cl.green), encode(cl.blue));
+      k = k + 1;
+    }
+    imm bmp = canvas.toBmp();
+    imm file = Path.from(outFile.view());
+    if fs.writeFile(&file, bmp.view()) is Ok { print <- "wrote the graph\n"; }
+    else { print <- "could not write the graph\n"; return 1; }
+  }
+  if ok { 0; } else { 1; }
+}
