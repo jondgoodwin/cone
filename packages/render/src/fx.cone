@@ -123,6 +123,13 @@ pub struct ImageFx {
   pub jitterPixelsX f32 = 0.;      // the last frame's jitter, in pixels
   pub jitterPixelsY f32 = 0.;
   pub velocityDrawn bool = false;  // the last frame had moving objects drawn
+  // What 'renderScene' leaves for 'renderFinish': the seconds the frame lasted, its unjittered
+  // view-projection (the next frame's "previous"), and the camera the scene was drawn
+  // with (jittered, when temporal AA is on), for anything the program draws into
+  // 'post.hdr' between the two (particles: see 'renderScene')
+  pub sceneDt f32 = 0.016666668;
+  pub sceneViewProjection Mat4;
+  pub sceneCamera Camera;
 
   // The passes for frames of 'post''s size, all off. They are made lazily:
   // textures only for what 'configure' turns on.
@@ -141,7 +148,8 @@ pub struct ImageFx {
     mut dof = DofPass.create(device, &frameBuffer, &tinyHdrView, &tinyDepthView);
     mut fog = FogPass.create(device, &renderer.shadow, &frameBuffer, &tinyDepthView);
     mut fx = new ImageFx(new FxSettings(), 0u32, 0u32, post.outputFormat, depth, frameBuffer, taa, fxaa, exposure, ssao,
-      decalPass, dof, fog, DecalList.empty(), List[PostSource].empty(), MotionList.empty(), 0u32, Mat4.identity(), false, 0u32, true, true, 0.);
+      decalPass, dof, fog, DecalList.empty(), List[PostSource].empty(), MotionList.empty(), 0u32, Mat4.identity(), false, 0u32, true, true, 0.,
+      sceneViewProjection: Mat4.identity(), sceneCamera: Camera.make());
     fx.remake(device, renderer, post);
     fx;
   }
@@ -227,6 +235,19 @@ pub struct ImageFx {
   // 'post' is sized to it). See the head of this file.
   pub fn render(self &mut, device &mut Device, encoder &mut CommandEncoder, renderer &mut Renderer, post &mut Post,
       camera &Camera, light &Light, list &DrawList, target &Texture) {
+    self.renderScene(device, encoder, renderer, post, camera, light, list);
+    self.renderFinish(device, encoder, renderer, post, list, target);
+  }
+
+  // The first half of 'render': the scene into 'post.hdr' (jittered when temporal
+  // AA is on), its depth kept in 'depth', the decals and the occlusion. A program
+  // that draws more into the frame (particles, which no pass here knows) does it
+  // now, into 'post.hdr', tested against 'self.depth' and through 'self.sceneCamera'
+  // (the jittered camera, so that temporal AA resolves them with the scene), then
+  // calls 'renderFinish' with the same 'list' and 'post'. Nothing it draws is moving as
+  // far as temporal AA knows: its history is clipped away where it changed.
+  pub fn renderScene(self &mut, device &mut Device, encoder &mut CommandEncoder, renderer &mut Renderer, post &mut Post,
+      camera &Camera, light &Light, list &DrawList) {
     if dirty or width != post.width or height != post.height or postRevision != post.revision {
       self.remake(device, renderer, post);
     }
@@ -328,6 +349,20 @@ pub struct ImageFx {
     // Ambient occlusion darkens the frame where the depth says it is creased
     if s.ssao.enabled { ssao.record(encoder, &post.hdr, &s.ssao, frameNumber, taaOn); }
 
+    sceneDt = dt;
+    sceneViewProjection = viewProjection;
+    sceneCamera = jittered;
+  }
+
+  // The second half of 'render': the fog, depth of field, temporal AA, the
+  // exposure, and the tone map into 'target' (see 'renderScene')
+  pub fn renderFinish(self &mut, device &mut Device, encoder &mut CommandEncoder, renderer &mut Renderer, post &mut Post,
+      list &DrawList, target &Texture) {
+    imm s = settings;
+    imm taaOn = s.aa == AA_TAA;
+    imm fxaaOn = s.aa == AA_FXAA;
+    imm dt = sceneDt;
+
     // Fog: the light scattered along each pixel's ray, over the frame
     if s.fog.enabled {
       imm depthSample = depth.createView();
@@ -368,7 +403,7 @@ pub struct ImageFx {
       if source == SOURCE_HDR { post.apply(encoder, target); } else { post.applyFrom(encoder, target, sources[usize.from(source - 1u32)]); }
     }
 
-    previousViewProjection = viewProjection;
+    previousViewProjection = sceneViewProjection;
     havePrevious = true;
     cut = false;
     frameNumber = frameNumber + 1u32;
