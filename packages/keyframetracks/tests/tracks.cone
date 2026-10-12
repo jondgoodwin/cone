@@ -1,0 +1,379 @@
+// Tracks: what a value does between its keys. Every expected number is worked
+// out by hand or by an independent computation.
+//
+// LINEAR f32 keys (0: 0) (1: 10) (3: 20): at 0.5, 5; at 2, 10 + 5 = 15; before the
+//   first key 0 and after the last 20.
+// STEP: (0: 1) (1: 2) (2: 3) holds 1 until just before 1, is 2 from 1.
+// EASED linear: 0 to 8 over t in 0..2 with in-quad; at t = 1, progress 0.5,
+//   eased 0.25, value 2.
+// BEZIER: 0 to 1 with CSS 'ease' handles; at progress 0.5 the value is 0.8024.
+// HERMITE: v0 = 0, tangent out 2, v1 = 1, tangent in 0 on t in 0..2. At s = 0.5:
+//   h00 = 0.5, h10 = 0.125, h01 = 0.5, h11 = -0.125, so
+//   0 + 0.125 * 2 * 2 + 0.5 + 0 = 1.0. With both tangents 0 on 0..1 it is
+//   smoothstep: 3s^2 - 2s^3 = 0.15625 at 0.25.
+// glTF CUBICSPLINE sampler for a scalar, times [0, 1], output [in0 v0 out0
+//   in1 v1 out1] = [0 0 2, 4 1 5]: at s = 0.5, 0.5*0 + 0.125*1*2 + 0.5*1 -
+//   0.125*1*4 = 0.25. glTF's STEP and LINEAR samplers map to the step and
+//   linear keys.
+// CATMULL-ROM: keys on a line v = t (times 0, 1, 3) stay on it (every
+//   finite-difference tangent is 1): at t = 2, 2. A zigzag (times 0..3,
+//   values 0 1 0 1): the tangent at key 1 is (0 - 0)/2 = 0 and at key 2 is
+//   (1 - 1)/2 = 0, so between them (s = 0.5) it is 0.5 exactly; the end
+//   tangent at key 0 is one-sided, (1 - 0)/1 = 1, so at t = 0.5 it is
+//   0.125 * 1 + 0.5 = 0.625. It passes through every key.
+// QUATERNIONS: from the identity to 190 degrees about y is the same turn as
+//   -170 degrees; the shortest arc goes through -85 degrees at the half:
+//   the vector (1,0,0) turned by a about y is (cos a, 0, -sin a) =
+//   (0.087156, 0, 0.996195). A 90 degree turn at t = 0.25 is 22.5 degrees
+//   (angle = 2 acos w); extrapolated to t = 1.5 it is 135 degrees. Every
+//   result has length 1.
+// COLOUR: linear red is OKLab (0.62796, 0.22486, 0.12585), green (0.86644,
+//   -0.23389, 0.17950), blue (0.45201, -0.03246, -0.31153) (Ottosson's
+//   published values); white to black half way is L = 0.5, i.e. linear light
+//   0.5^3 = 0.125, where mixing linear light gives 0.5.
+
+mod tracks;
+
+import libc;
+import testing use *;
+import collections use *;
+import geomath use *;
+import keyframetracks use *;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+fn floats(a f32, b f32, c f32, d f32) List[f32] {
+  mut l = List[f32].empty();
+  l.push(a); l.push(b); l.push(c); l.push(d);
+  l;
+}
+
+fn angleOf(q Quat) f32 {
+  imm w = if q.w < 0. { -q.w; } else { q.w; };
+  2. * acos(if w > 1. { 1.; } else { w; });
+}
+
+fn testBasic() {
+  mut t = Track.make(TK_F32);
+  t.addF32(3., 20., INTERP_LINEAR);   // out of order on purpose
+  t.addF32(0., 0., INTERP_LINEAR);
+  t.addF32(1., 10., INTERP_LINEAR);
+  expectInt(i64.from(t.len()), 3i64, "three keys");
+  near(t.evalF32(0.5), 5., 0.00001, "linear at 0.5");
+  near(t.evalF32(2.), 15., 0.00001, "linear at 2");
+  near(t.evalF32(-1.), 0., 0.00001, "holds the first value before");
+  near(t.evalF32(5.), 20., 0.00001, "holds the last value after");
+  near(t.endTime(), 3., 0.00001, "end time");
+  // a key at an existing time replaces it
+  t.addF32(1., 4., INTERP_LINEAR);
+  expectInt(i64.from(t.len()), 3i64, "still three keys");
+  near(t.evalF32(1.), 4., 0.00001, "replaced");
+  near(t.evalF32(0.5), 2., 0.00001, "and the segment follows");
+
+  mut e = Track.make(TK_F32);
+  expectFloat(f64.from(e.evalF32(1.)), 0., 0.00001, "an empty track is 0");
+  imm qe = Track.make(TK_QUAT);
+  near(qe.evalQuat(1.).w, 1., 0.00001, "an empty quaternion track is the identity");
+  imm te = Track.make(TK_TRANSFORM);
+  near(te.evalTransform(1.).scale.y, 1., 0.00001, "an empty transform track has scale 1");
+  mut one = Track.make(TK_F32);
+  one.addF32(2., 7., INTERP_LINEAR);
+  near(one.evalF32(-5.), 7., 0.00001, "one key: its value everywhere");
+  near(one.evalF32(9.), 7., 0.00001, "and after");
+
+  mut s = Track.make(TK_F32);
+  s.addF32(0., 1., INTERP_STEP);
+  s.addF32(1., 2., INTERP_STEP);
+  s.addF32(2., 3., INTERP_STEP);
+  near(s.evalF32(0.99), 1., 0.00001, "step holds");
+  near(s.evalF32(1.), 2., 0.00001, "step changes at the key");
+  near(s.evalF32(1.99), 2., 0.00001, "step holds again");
+  near(s.evalF32(2.), 3., 0.00001, "last key");
+
+  mut q = Track.make(TK_F32);
+  imm k0 = q.addF32(0., 0., INTERP_LINEAR);
+  q.setEase(k0, EASE_IN_QUAD, 0., 0.);
+  q.addF32(2., 8., INTERP_LINEAR);
+  near(q.evalF32(1.), 2., 0.00001, "in-quad at the half: 0.25 * 8");
+  near(q.evalF32(0.5), 0.5, 0.00001, "in-quad at 0.25: 0.0625 * 8");
+
+  mut b = Track.make(TK_F32);
+  imm bk = b.addF32(0., 0., INTERP_LINEAR);
+  b.setBezier(bk, 0.25, 0.1, 0.25, 1.);
+  b.addF32(1., 1., INTERP_LINEAR);
+  near(b.evalF32(0.5), 0.8024034, 0.00003, "CSS ease at the half");
+  near(b.evalF32(0.25), 0.4085106, 0.00003, "CSS ease at a quarter");
+  // a later segment with different interpolation is independent
+  b.addF32(2., 5., INTERP_LINEAR);
+  near(b.evalF32(1.5), 3., 0.00001, "the next segment is linear");
+
+  mut sp = Track.make(TK_F32);
+  imm sk = sp.addF32(0., 0., INTERP_LINEAR);
+  sp.setEase(sk, EASE_SPRING, 0.3, 14.);
+  sp.addF32(1., 10., INTERP_LINEAR);
+  expect(sp.evalF32(0.2) > 10., "a spring key overshoots its target");
+  near(sp.evalF32(1.), 10., 0.00001, "and lands on it");
+}
+
+fn testSplines() {
+  mut h = Track.make(TK_F32);
+  imm h0 = h.addF32(0., 0., INTERP_HERMITE);
+  h.setTangents(h0, &floats(0., 0., 0., 0.), &floats(2., 0., 0., 0.));
+  imm h1 = h.addF32(2., 1., INTERP_HERMITE);
+  h.setTangents(h1, &floats(0., 0., 0., 0.), &floats(0., 0., 0., 0.));
+  near(h.evalF32(1.), 1., 0.00001, "hermite with tangent 2 at the half");
+  near(h.evalF32(0.), 0., 0.00001, "hermite starts at its first key");
+  near(h.evalF32(2.), 1., 0.00001, "and reaches the second");
+
+  mut sm = Track.make(TK_F32);
+  sm.addF32(0., 0., INTERP_HERMITE);
+  sm.addF32(1., 1., INTERP_HERMITE);   // zero tangents: smoothstep
+  near(sm.evalF32(0.25), 0.15625, 0.00001, "zero-tangent hermite is smoothstep");
+  near(sm.evalF32(0.5), 0.5, 0.00001, "and 0.5 at the half");
+
+  // glTF cubic spline
+  imm times = floats(0., 1., 0., 0.);
+  mut tms = List[f32].empty();
+  tms.push(0.); tms.push(1.);
+  mut out = List[f32].empty();
+  out.push(0.); out.push(0.); out.push(2.);
+  out.push(4.); out.push(1.); out.push(5.);
+  imm g = trackFromGltf(TK_VECN, 1usize, GLTF_CUBICSPLINE, &tms, &out);
+  near(g.evalF32(0.5), 0.25, 0.00001, "glTF cubic spline at the half");
+  near(g.evalF32(0.), 0., 0.00001, "glTF cubic spline at the first key");
+  near(g.evalF32(1.), 1., 0.00001, "and the second");
+  expectInt(i64.from(*g.interps[0usize]), i64.from(INTERP_HERMITE), "cubic spline keys are hermite keys");
+  // glTF cubic spline over rotations is normalised
+  mut qo = List[f32].empty();
+  // key 0: identity, key 1: 90 degrees about z; tangents zero
+  qo.push(0.); qo.push(0.); qo.push(0.); qo.push(0.);
+  qo.push(0.); qo.push(0.); qo.push(0.); qo.push(1.);
+  qo.push(0.); qo.push(0.); qo.push(0.); qo.push(0.);
+  qo.push(0.); qo.push(0.); qo.push(0.); qo.push(0.);
+  qo.push(0.); qo.push(0.); qo.push(0.7071068); qo.push(0.7071068);
+  qo.push(0.); qo.push(0.); qo.push(0.); qo.push(0.);
+  imm gq = trackFromGltf(TK_QUAT, 4usize, GLTF_CUBICSPLINE, &tms, &qo);
+  mut ok = true;
+  mut i = 0;
+  while i <= 20 {
+    imm q = gq.evalQuat(f32.from(i) / 20.);
+    if libc.fabsf(q.length() - 1.) > 0.00001 { ok = false; }
+    i = i + 1;
+  }
+  expect(ok, "cubic spline rotations are unit length");
+  near(angleOf(gq.evalQuat(0.5)), pi / 4., 0.0001, "and the half is 45 degrees (smoothstep of equal tangents is symmetric)");
+  // STEP and LINEAR samplers
+  mut vo = List[f32].empty();
+  vo.push(0.); vo.push(0.); vo.push(0.);
+  vo.push(2.); vo.push(4.); vo.push(6.);
+  imm gl = trackFromGltf(TK_VEC3, 3usize, GLTF_LINEAR, &tms, &vo);
+  near(gl.evalVec3(0.5).y, 2., 0.00001, "glTF linear vec3");
+  imm gs = trackFromGltf(TK_VEC3, 3usize, GLTF_STEP, &tms, &vo);
+  near(gs.evalVec3(0.5).y, 0., 0.00001, "glTF step vec3 holds");
+  near(gs.evalVec3(1.).z, 6., 0.00001, "and changes at the key");
+
+  // Catmull-Rom
+  mut c = Track.make(TK_F32);
+  c.addF32(0., 0., INTERP_CATMULL);
+  c.addF32(1., 1., INTERP_CATMULL);
+  c.addF32(3., 3., INTERP_CATMULL);
+  near(c.evalF32(0.5), 0.5, 0.00001, "catmull on a line: 0.5");
+  near(c.evalF32(2.), 2., 0.00001, "catmull on a line: 2 (uneven spacing)");
+  near(c.evalF32(2.7), 2.7, 0.00001, "catmull on a line: 2.7");
+  mut z = Track.make(TK_F32);
+  z.addF32(0., 0., INTERP_CATMULL);
+  z.addF32(1., 1., INTERP_CATMULL);
+  z.addF32(2., 0., INTERP_CATMULL);
+  z.addF32(3., 1., INTERP_CATMULL);
+  near(z.evalF32(1.5), 0.5, 0.00001, "zigzag mid segment");
+  near(z.evalF32(0.5), 0.625, 0.00001, "zigzag first segment with the one-sided end tangent");
+  near(z.evalF32(1.), 1., 0.00001, "passes through key 1");
+  near(z.evalF32(2.), 0., 0.00001, "passes through key 2");
+  near(z.evalF32(3.), 1., 0.00001, "passes through key 3");
+  // two interpolation kinds in one track: the key says how it leaves
+  mut mx = Track.make(TK_F32);
+  mx.addF32(0., 0., INTERP_LINEAR);
+  mx.addF32(1., 1., INTERP_STEP);
+  mx.addF32(2., 5., INTERP_LINEAR);
+  mx.addF32(3., 0., INTERP_LINEAR);
+  near(mx.evalF32(0.5), 0.5, 0.00001, "linear leg");
+  near(mx.evalF32(1.5), 1., 0.00001, "step leg");
+  near(mx.evalF32(2.5), 2.5, 0.00001, "linear leg again");
+}
+
+fn testQuats() {
+  imm up = new Vec3(0., 1., 0.);
+  mut t = Track.make(TK_QUAT);
+  t.addQuat(0., Quat.identity(), INTERP_LINEAR);
+  t.addQuat(1., Quat.angleAxis(radians(190.), up), INTERP_LINEAR);
+  imm mid = t.evalQuat(0.5);
+  imm v = mid * new Vec3(1., 0., 0.);
+  near(v.x, 0.087156, 0.0001, "shortest arc: x");
+  near(v.y, 0., 0.0001, "shortest arc: y");
+  near(v.z, 0.996195, 0.0001, "shortest arc: z (turned -85 degrees, not +95)");
+  // the same with the end quaternion negated: the same rotation
+  mut n = Track.make(TK_QUAT);
+  n.addQuat(0., Quat.identity(), INTERP_LINEAR);
+  imm e = Quat.angleAxis(radians(190.), up);
+  n.addQuat(1., new Quat(-e.x, -e.y, -e.z, -e.w), INTERP_LINEAR);
+  imm v2 = n.evalQuat(0.5) * new Vec3(1., 0., 0.);
+  near(v2.x, 0.087156, 0.0001, "a negated end key gives the same rotation: x");
+  near(v2.z, 0.996195, 0.0001, "z");
+  // unit length everywhere, constant angular rate
+  mut ok = true;
+  mut i = 0;
+  while i <= 1000 {
+    imm tt = f32.from(i) / 1000.;
+    if libc.fabsf(t.evalQuat(tt).length() - 1.) > 0.00001 { ok = false; }
+    i = i + 1;
+  }
+  expect(ok, "slerp keeps unit length at 1001 samples");
+  mut r = Track.make(TK_QUAT);
+  r.addQuat(0., Quat.identity(), INTERP_LINEAR);
+  r.addQuat(1., Quat.angleAxis(pi / 2., new Vec3(0., 0., 1.)), INTERP_LINEAR);
+  near(angleOf(r.evalQuat(0.25)), pi / 8., 0.0001, "constant rate: 22.5 degrees at a quarter");
+  near(angleOf(r.evalQuat(0.5)), pi / 4., 0.0001, "45 degrees at the half");
+  near(angleOf(r.evalQuat(0.75)), 3. * pi / 8., 0.0001, "67.5 degrees at three quarters");
+  // eased progress beyond 1 extrapolates along the great circle
+  mut ex = Track.make(TK_QUAT);
+  imm k = ex.addQuat(0., Quat.identity(), INTERP_LINEAR);
+  ex.setEase(k, EASE_OUT_BACK, 0., 0.);
+  ex.addQuat(1., Quat.angleAxis(pi / 2., new Vec3(0., 0., 1.)), INTERP_LINEAR);
+  imm over = ex.evalQuat(0.5);
+  near(over.length(), 1., 0.00001, "overshooting ease: still unit");
+  near(angleOf(over), pi / 2. * 1.0876975, 0.001, "overshoot: 1.0877 of the way");
+  // catmull and hermite over quaternions are normalised, and take the short way
+  mut cm = Track.make(TK_QUAT);
+  cm.addQuat(0., Quat.identity(), INTERP_CATMULL);
+  imm k1 = Quat.angleAxis(radians(100.), up);
+  cm.addQuat(1., new Quat(-k1.x, -k1.y, -k1.z, -k1.w), INTERP_CATMULL);
+  cm.addQuat(2., Quat.angleAxis(radians(200.), up), INTERP_CATMULL);
+  cm.addQuat(3., Quat.angleAxis(radians(300.), up), INTERP_CATMULL);
+  ok = true;
+  i = 0;
+  while i <= 60 {
+    imm tt = f32.from(i) / 20.;
+    if libc.fabsf(cm.evalQuat(tt).length() - 1.) > 0.00001 { ok = false; }
+    i = i + 1;
+  }
+  expect(ok, "catmull rotations are unit length");
+  imm c1 = cm.evalQuat(1.) * new Vec3(1., 0., 0.);
+  near(c1.x, cos(radians(100.)), 0.0001, "a catmull rotation passes through its key");
+  // between keys 0 and 1 (0 to 100 degrees) the rotation about y is monotonic: sample 0.5 is between
+  imm cmid = cm.evalQuat(0.5) * new Vec3(1., 0., 0.);
+  expect(cmid.x < 1. and cmid.x > cos(radians(100.)), "and does not swing the long way round between keys");
+}
+
+fn testColors() {
+  imm red = linearToOklab(new Color(1., 0., 0.));
+  near(red.x, 0.62796, 0.0002, "red L");
+  near(red.y, 0.22486, 0.0002, "red a");
+  near(red.z, 0.12585, 0.0002, "red b");
+  imm green = linearToOklab(new Color(0., 1., 0.));
+  near(green.x, 0.86644, 0.0002, "green L");
+  near(green.y, -0.23389, 0.0002, "green a");
+  near(green.z, 0.17950, 0.0002, "green b");
+  imm blue = linearToOklab(new Color(0., 0., 1.));
+  near(blue.x, 0.45201, 0.0002, "blue L");
+  near(blue.y, -0.03246, 0.0002, "blue a");
+  near(blue.z, -0.31153, 0.0002, "blue b");
+  imm white = linearToOklab(new Color(1., 1., 1.));
+  near(white.x, 1., 0.0002, "white L");
+  near(white.y, 0., 0.0002, "white a");
+  near(white.z, 0., 0.0002, "white b");
+  // round trip
+  imm back = oklabToLinear(linearToOklab(new Color(0.2, 0.5, 0.9, 0.4)));
+  near(back.red, 0.2, 0.0002, "round trip r");
+  near(back.green, 0.5, 0.0002, "round trip g");
+  near(back.blue, 0.9, 0.0002, "round trip b");
+  near(back.alpha, 0.4, 0.00001, "round trip alpha");
+
+  mut ok = Track.makeColor(SPACE_OKLAB);
+  ok.addColor(0., new Color(1., 1., 1.), INTERP_LINEAR);
+  ok.addColor(1., new Color(0., 0., 0.), INTERP_LINEAR);
+  near(ok.evalColor(0.5).red, 0.125, 0.0005, "white to black in OKLab: linear light 0.125 at the half");
+  near(ok.evalColor(0.5).blue, 0.125, 0.0005, "blue channel too");
+  near(ok.evalColor(0.).red, 1., 0.0005, "starts white");
+  near(ok.evalColor(1.).red, 0., 0.0005, "ends black");
+  mut lin = Track.makeColor(SPACE_LINEAR);
+  lin.addColor(0., new Color(1., 1., 1.), INTERP_LINEAR);
+  lin.addColor(1., new Color(0., 0., 0.), INTERP_LINEAR);
+  near(lin.evalColor(0.5).red, 0.5, 0.00001, "white to black in linear light: 0.5");
+  // alpha is mixed straight in both
+  mut al = Track.makeColor(SPACE_OKLAB);
+  al.addColor(0., new Color(1., 0., 0., 0.), INTERP_LINEAR);
+  al.addColor(1., new Color(1., 0., 0., 1.), INTERP_LINEAR);
+  near(al.evalColor(0.25).alpha, 0.25, 0.00001, "alpha is mixed straight");
+  near(al.evalColor(0.25).red, 1., 0.0005, "the same colour stays the same colour");
+  // mixColor agrees with the track
+  imm m = mixColor(new Color(1., 0., 0.), new Color(0., 0., 1.), 0.5, SPACE_OKLAB);
+  mut rb = Track.makeColor(SPACE_OKLAB);
+  rb.addColor(0., new Color(1., 0., 0.), INTERP_LINEAR);
+  rb.addColor(1., new Color(0., 0., 1.), INTERP_LINEAR);
+  near(rb.evalColor(0.5).red, m.red, 0.00001, "mixColor agrees with a track: r");
+  near(rb.evalColor(0.5).blue, m.blue, 0.00001, "mixColor agrees with a track: b");
+  // the OKLab midpoint of red and blue is not the linear one
+  expect(libc.fabsf(m.red - 0.5) > 0.02, "OKLab and linear light disagree on a red-blue mix");
+}
+
+fn testOthers() {
+  mut b = Track.make(TK_BOOL);
+  b.addBool(0., false);
+  b.addBool(1., true);
+  b.addBool(2., false);
+  expect(!b.evalBool(0.5), "bool before");
+  expect(b.evalBool(1.), "bool at its key");
+  expect(b.evalBool(1.9), "bool holds");
+  expect(!b.evalBool(2.), "bool off again");
+  mut d = Track.make(TK_DISCRETE);
+  d.addInt(0., 3);
+  d.addInt(1., -2);
+  d.addInt(2., 7);
+  expectInt(i64.from(d.evalInt(0.5)), 3i64, "discrete holds");
+  expectInt(i64.from(d.evalInt(1.5)), -2i64, "discrete negative");
+  expectInt(i64.from(d.evalInt(9.)), 7i64, "discrete last");
+
+  mut v2 = Track.make(TK_VEC2);
+  v2.addVec2(0., new Vec2(0., 10.), INTERP_LINEAR);
+  v2.addVec2(2., new Vec2(4., 0.), INTERP_LINEAR);
+  near(v2.evalVec2(1.).x, 2., 0.00001, "vec2 x");
+  near(v2.evalVec2(1.).y, 5., 0.00001, "vec2 y");
+  mut v3 = Track.make(TK_VEC3);
+  v3.addVec3(0., new Vec3(0., 0., 0.), INTERP_LINEAR);
+  v3.addVec3(4., new Vec3(8., -4., 2.), INTERP_LINEAR);
+  near(v3.evalVec3(1.).x, 2., 0.00001, "vec3 x");
+  near(v3.evalVec3(1.).y, -1., 0.00001, "vec3 y");
+  near(v3.evalVec3(1.).z, 0.5, 0.00001, "vec3 z");
+
+  mut tr = Track.make(TK_TRANSFORM);
+  tr.addTransform(0., Transform3.identity(), INTERP_LINEAR);
+  tr.addTransform(2., new Transform3(new Vec3(4., 0., 0.), Quat.angleAxis(pi / 2., new Vec3(0., 1., 0.)), new Vec3(3., 3., 3.)), INTERP_LINEAR);
+  imm x = tr.evalTransform(1.);
+  near(x.translation.x, 2., 0.00001, "transform translation");
+  near(x.scale.x, 2., 0.00001, "transform scale");
+  near(angleOf(x.rotation), pi / 4., 0.0001, "transform rotation: 45 degrees");
+  near(x.rotation.length(), 1., 0.00001, "unit");
+
+  mut w = Track.makeVecN(3usize);
+  mut a = List[f32].empty(); a.push(0.); a.push(1.); a.push(0.5);
+  mut z = List[f32].empty(); z.push(1.); z.push(0.); z.push(0.5);
+  w.addVecN(0., &a, INTERP_LINEAR);
+  w.addVecN(2., &z, INTERP_LINEAR);
+  mut o = List[f32].empty();
+  w.evalRaw(0.5, &mut o);
+  near(*o[0usize], 0.25, 0.00001, "morph weight 0");
+  near(*o[1usize], 0.75, 0.00001, "morph weight 1");
+  near(*o[2usize], 0.5, 0.00001, "morph weight 2");
+  expectInt(i64.from(o.len()), 3i64, "three weights");
+}
+
+fn main() i32 {
+  testBasic();
+  testSplines();
+  testQuats();
+  testColors();
+  testOthers();
+  done();
+}

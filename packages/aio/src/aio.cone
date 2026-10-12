@@ -52,6 +52,10 @@
 //                                                                Result[IoBuf, IoError]
 //   s.write(buf)            all of buf, an IoBuf moved in         Result[usize, IoError]
 //   s.localAddr()           the address s is bound to            Result[SocketAddr, IoError]
+//   aio.connectIn(addr, lim)  s.acceptIn(lim)  s.readIn(buf, lim)  s.writeIn(buf, lim)
+//                           the same four, limited by lim, a IoLimits    (CANCEL AND DEADLINES)
+//   IoLimits.none()  IoLimits.until(deadline)  IoLimits.within(group)  new IoLimits(group, deadline)
+//   aio.isCancelled(e)  aio.isTimedOut(e)      what an IoError says of how an operation ended
 //   Socket.none()           a Socket naming nothing: to swap one out of a Result
 //   s.isNone()  s.handle()
 //
@@ -73,12 +77,26 @@
 // a swap ('s <=> ok.value', with 's' a Socket.none()), since Cone does not
 // yet move a value out of a matched variant's field.
 //
-// An operation that did not finish -- cancelled, or past a deadline (iocore's
-// Cancelled and TimedOut) -- has no result to give: the 'await' panics, at
-// the line that made the operation. Nothing here attaches a cancel or a
-// deadline to an awaited operation, so the one way a running program meets
-// that panic is a socket closed while an operation on it is still in flight:
-// a Socket moved out of the behaviour awaiting on it, and dropped.
+// CANCEL AND DEADLINES. An operation is answered exactly once, as in iocore:
+// Done (the Result's success), Failed (its error, the system's code),
+// Cancelled or TimedOut. The last two are errors too, an IoError of a kind of
+// its own (iocore's IoErrorKind: Os for a failure of the system, Cancelled,
+// TimedOut), which 'isCancelled' and 'isTimedOut' read; their code is 0, and a
+// genuine system error is never mistaken for either. The buffer a
+// read or a write was given goes home to its pool. What limits an operation is
+// a IoLimits, given to the 'In' form of the call: a cancel group (iocore's
+// CancelGroup, a value that is copied, sent to other actors or threads, and
+// whose one 'cancel()' ends every operation in it) and an absolute deadline
+// (an Instant), the tighter of it and the group's (a group made 'until', or a
+// 'childUntil' of one, carries its own). From a group's cancel on, an
+// operation started in it is answered Cancelled at once; a deadline already
+// past answers TimedOut at once. A cancel and a completion that race are
+// settled by iocore: the answer is whichever came first (the Done, if the
+// operation had finished), and there is never a second. A socket dropped
+// while an operation on it is in flight ends it Cancelled, as a cancel does.
+// The operation is one the I/O thread starts when the 'await' does, so a
+// cancel from another actor or thread may arrive before it has started: the
+// group's state, not the order of the calls, decides.
 //
 // A SOCKET is a handle on one of the I/O thread's sockets, plain data, which
 // moves (it may be sent in a message, to another actor). Dropping it closes
@@ -120,10 +138,9 @@
 // finalizer waits for quiet again (a finalizer that ran may have sent a
 // message) and stops the workers.
 //
-// Windows only, as iocore is; TCP only, one operation at a time per socket
-// direction, as iocore's sockets are. Not here: a cancel or a deadline on an
-// awaited operation, files, the blocking pool, UDP, and a socket's
-// half-close.
+// On Windows and Linux, as iocore is; TCP only, one operation at a time per
+// socket direction, as iocore's sockets are. Not here: files, the blocking
+// pool, UDP, and a socket's half-close.
 
 mod aio;
 
@@ -132,7 +149,8 @@ import thread;
 import sync use Mutex;
 import collections use List;
 import iobuf use IoBuf;
-import iocore use Loop, Waker, Op, Target, Sink, Completion, Handle, SocketAddr, IoError, forever;
+import time use Instant;
+import iocore use Loop, Waker, Op, Target, Sink, Completion, Handle, SocketAddr, IoError, CancelGroup, forever;
 import actors;
 import diag;
 
@@ -365,56 +383,71 @@ fn awaitable[J, R](body J) actors.Awaitable[R] {
   });
 }
 
-// Where an operation was made, for the panic if it does not finish: a
-// srcFile() slice, which is static, kept as its parts: Sendable on trust, as
-// the text it points at lives for the whole program
-struct Site is Sendable {
-  pub file *u8;
-  pub len usize;
-  pub line u32;
+// What limits an awaited operation (the package's header, CANCEL AND
+// DEADLINES): a cancel group, one cancel of which ends it, and an absolute
+// deadline, the tighter of it and the group's. Made by 'none', 'until' or
+// 'within', or by hand: 'new IoLimits(Some[CancelGroup](g), d)'
+pub struct IoLimits {
+  pub group Option[CancelGroup];
+  pub deadline Instant;
 
-  fn at(file &Array[u8], line u32) Site {new Site(&file[0usize] as *u8, file.len, line);}
+  // Neither: the operation ends when it finishes
+  pub fn none() IoLimits {new IoLimits(None, forever());}
+
+  // Answered TimedOut if not finished by deadline
+  pub fn until(deadline Instant) IoLimits {new IoLimits(None, deadline);}
+
+  // Ended by the group's cancel, and by its deadline if it has one
+  pub fn within(group CancelGroup) IoLimits {new IoLimits(Some[CancelGroup](group), forever());}
 }
 
-// An iocore operation, awaited: the Op, the reply its answer goes back in,
-// and the function that makes the answer an R
+// Whether an operation ended because it was cancelled: its group's cancel, or
+// its socket closed
+pub fn isCancelled(e IoError) bool {e.isCancelled();}
+
+// Whether an operation ended because its deadline passed
+pub fn isTimedOut(e IoError) bool {e.isTimedOut();}
+
+// An iocore operation, awaited: the Op, what limits it, the reply its answer
+// goes back in, and the function that makes the answer an R
 struct OpJob[R] {
   pub op Op;
+  pub limits IoLimits;
   pub reply actors.Reply;
   pub answer &fn(c &mut Completion) R;
-  pub site Site;
 
   // Start the operation on the I/O thread's Loop, its answer to a hook that
-  // holds the reply
+  // holds the reply, in its group if it has one
   fn run(self &mut, lp &mut Loop) {
     mut rp = new actors.Reply();
     rp <=> reply;
     mut o Op = Op.RecvReady(Handle.none());
     o <=> op;
-    lp.submit(o, Target.Hook(0u64, Sink.make(waiting[R](rp, answer, site))));
+    imm to = Target.Hook(0u64, Sink.make(waiting[R](rp, answer)));
+    match limits.group {
+      case imm g Some {lp.submitIn(o, to, g, limits.deadline);}
+      else {
+        if limits.deadline < forever() {
+          lp.submitBy(o, to, limits.deadline);
+        } else {
+          lp.submit(o, to);
+        }
+      }
+    }
   }
 }
 
-// The hook an operation in flight holds: a closure that keeps the reply, the
-// function that makes the answer an R and where the operation was made. It
-// runs on the I/O thread with the operation's answer: it makes its R and writes
-// it into the reply, which goes to the actor awaiting it. One that did not
-// finish panics at the line that made it; once the Loop is dying, the answer
-// is dropped, and what awaits it abandoned (the reply's envelope dropped with
-// the hook). A hook that dies undelivered abandons what awaits it the same
-// way, the reply it holds dying with it
-fn waiting[R](rp actors.Reply, answer &fn(c &mut Completion) R, site Site) So[fn(c Completion) + Sendable] {
-  new So[fn(c Completion) + Sendable](fn(c Completion) [mut reply = rp, answer, site] {
+// The hook an operation in flight holds: a closure that keeps the reply and
+// the function that makes the answer an R. It runs on the I/O thread with the
+// operation's one answer, whichever of the four it is: it makes its R and
+// writes it into the reply, which goes to the actor awaiting it. Once the
+// Loop is dying, the answer is dropped, and what awaits it abandoned (the
+// reply's envelope dropped with the hook). A hook that dies undelivered
+// abandons what awaits it the same way, the reply it holds dying with it
+fn waiting[R](rp actors.Reply, answer &fn(c &mut Completion) R) So[fn(c Completion) + Sendable] {
+  new So[fn(c Completion) + Sendable](fn(c Completion) [mut reply = rp, answer] {
     if abandoning {
       return;
-    }
-    if c.status == diag.outcomeCancelled {
-      panic("aio: an awaited operation did not finish: it was cancelled, its socket closed while it was in flight",
-        mem.sliceFromParts[u8](site.file, site.len), site.line);
-    }
-    if c.status == diag.outcomeTimedOut {
-      panic("aio: an awaited operation did not finish: its deadline passed",
-        mem.sliceFromParts[u8](site.file, site.len), site.line);
     }
     mut done = c;
     imm v = answer(&mut done);
@@ -424,8 +457,16 @@ fn waiting[R](rp actors.Reply, answer &fn(c &mut Completion) R, site Site) So[fn
   });
 }
 
-// Each operation's answer, from its Completion: Done is the success, Failed
-// the system's failure (Cancelled and TimedOut never reach here)
+// Each operation's answer, from its Completion: Done is the success, and
+// anything else the error, Failed's the system's code, Cancelled's and
+// TimedOut's their own. A buffer the answer does not hand on dies with the
+// Completion, home to its pool
+
+fn endError(c &Completion) IoError {
+  if c.status == diag.outcomeCancelled {return IoError.cancelled();}
+  if c.status == diag.outcomeTimedOut {return IoError.timedOut();}
+  new IoError(c.code);
+}
 
 fn readAnswer(c &mut Completion) Result[IoBuf, IoError] {
   if c.status == diag.outcomeDone {
@@ -433,25 +474,25 @@ fn readAnswer(c &mut Completion) Result[IoBuf, IoError] {
     b <=> c.buf;
     return Ok[IoBuf, IoError](b);
   }
-  Error[IoBuf, IoError](new IoError(c.code));
+  Error[IoBuf, IoError](endError(c));
 }
 
 fn writeAnswer(c &mut Completion) Result[usize, IoError] {
   if c.status == diag.outcomeDone {
     return Ok[usize, IoError](c.n);
   }
-  Error[usize, IoError](new IoError(c.code));
+  Error[usize, IoError](endError(c));
 }
 
 fn socketAnswer(c &mut Completion) Result[Socket, IoError] {
   if c.status == diag.outcomeDone {
     return Ok[Socket, IoError](new Socket(c.handle));
   }
-  Error[Socket, IoError](new IoError(c.code));
+  Error[Socket, IoError](endError(c));
 }
 
-fn opAwaitable[R](op Op, answer &fn(c &mut Completion) R, file &Array[u8], line u32) actors.Awaitable[R] {
-  awaitable[OpJob[R], R](new OpJob[R](op, new actors.Reply(), answer, Site.at(file, line)));
+fn opAwaitable[R](op Op, answer &fn(c &mut Completion) R, limits IoLimits) actors.Awaitable[R] {
+  awaitable[OpJob[R], R](new OpJob[R](op, limits, new actors.Reply(), answer));
 }
 
 // A listening socket, made on the I/O thread's Loop, which holds it
@@ -510,20 +551,36 @@ pub struct Socket is Move {
   pub fn handle(self &) Handle {h;}
 
   // The next connection on this listening socket
-  pub fn accept(self &, file &Array[u8] = srcFile(), line u32 = srcLine()) actors.Awaitable[Result[Socket, IoError]] {
-    opAwaitable[Result[Socket, IoError]](Op.Accept(h), &socketAnswer, file, line);
+  pub fn accept(self &) actors.Awaitable[Result[Socket, IoError]] {
+    self.acceptIn(IoLimits.none());
+  }
+
+  // The next connection, ended if lim says so (the package's header, CANCEL
+  // AND DEADLINES)
+  pub fn acceptIn(self &, lim IoLimits) actors.Awaitable[Result[Socket, IoError]] {
+    opAwaitable[Result[Socket, IoError]](Op.Accept(h), &socketAnswer, lim);
   }
 
   // What arrives, appended to buf, which is moved in and comes back in the
   // answer; at the clean end of the stream, buf comes back as it was. A buf
   // with no room fails (ERROR_INSUFFICIENT_BUFFER, 122)
-  pub fn read(self &, buf IoBuf, file &Array[u8] = srcFile(), line u32 = srcLine()) actors.Awaitable[Result[IoBuf, IoError]] {
-    opAwaitable[Result[IoBuf, IoError]](Op.Recv(h, buf), &readAnswer, file, line);
+  pub fn read(self &, buf IoBuf) actors.Awaitable[Result[IoBuf, IoError]] {
+    self.readIn(buf, IoLimits.none());
+  }
+
+  // A read ended if lim says so; then the buffer goes home to its pool
+  pub fn readIn(self &, buf IoBuf, lim IoLimits) actors.Awaitable[Result[IoBuf, IoError]] {
+    opAwaitable[Result[IoBuf, IoError]](Op.Recv(h, buf), &readAnswer, lim);
   }
 
   // All of buf, which is moved in and goes home once sent: the count
-  pub fn write(self &, buf IoBuf, file &Array[u8] = srcFile(), line u32 = srcLine()) actors.Awaitable[Result[usize, IoError]] {
-    opAwaitable[Result[usize, IoError]](Op.Send(h, buf), &writeAnswer, file, line);
+  pub fn write(self &, buf IoBuf) actors.Awaitable[Result[usize, IoError]] {
+    self.writeIn(buf, IoLimits.none());
+  }
+
+  // A write ended if lim says so, part of buf perhaps sent
+  pub fn writeIn(self &, buf IoBuf, lim IoLimits) actors.Awaitable[Result[usize, IoError]] {
+    opAwaitable[Result[usize, IoError]](Op.Send(h, buf), &writeAnswer, lim);
   }
 
   // The address the socket is bound to: a listening socket's port, where the
@@ -546,6 +603,11 @@ pub fn listen(addr SocketAddr) actors.Awaitable[Result[Socket, IoError]] {
 }
 
 // A TCP socket connected to addr
-pub fn connect(addr SocketAddr, file &Array[u8] = srcFile(), line u32 = srcLine()) actors.Awaitable[Result[Socket, IoError]] {
-  opAwaitable[Result[Socket, IoError]](Op.Connect(addr), &socketAnswer, file, line);
+pub fn connect(addr SocketAddr) actors.Awaitable[Result[Socket, IoError]] {
+  connectIn(addr, IoLimits.none());
+}
+
+// A TCP socket connected to addr, ended if lim says so
+pub fn connectIn(addr SocketAddr, lim IoLimits) actors.Awaitable[Result[Socket, IoError]] {
+  opAwaitable[Result[Socket, IoError]](Op.Connect(addr), &socketAnswer, lim);
 }
