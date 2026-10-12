@@ -1,0 +1,182 @@
+// Curves as data: a clip with every kind of track (a Hermite scalar with
+// tangents, a Bezier-eased vector, a spring-eased scalar, an OKLab colour, a
+// quaternion, a transform, a bool and a vector of four, plus markers) is
+// written to bytes and read back.
+//
+// - The round trip gives a clip that evaluates bit for bit the same at 300
+//   times (including across the loop seam), whose markers and length and
+//   mode and name match, and which written again gives the same bytes.
+// - The size is what the format says: a two-key f32 track with only linear keys
+//   is 1 + 1 + 2 + 4 header bytes plus, per key, 4 time + 1 interp + 1 ease + 1
+//   flags + 4 value = 11 bytes; the whole track is 8 + 22 = 30 bytes.
+// - Every truncation of the bytes, and a wrong magic, is refused (None).
+
+mod codec;
+
+import libc;
+import testing use *;
+import collections use *;
+import geomath use *;
+import keyframetracks use *;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+fn floats(a f32, b f32, c f32, d f32) List[f32] {
+  mut l = List[f32].empty();
+  l.push(a); l.push(b); l.push(c); l.push(d);
+  l;
+}
+
+fn build() Clip {
+  mut c = Clip.make("everything", LOOP_PINGPONG);
+  mut h = Track.make(TK_F32);
+  imm h0 = h.addF32(0., 1., INTERP_HERMITE);
+  h.setTangents(h0, &floats(0., 0., 0., 0.), &floats(3., 0., 0., 0.));
+  imm h1 = h.addF32(2., 4., INTERP_HERMITE);
+  h.setTangents(h1, &floats(-1., 0., 0., 0.), &floats(0.5, 0., 0., 0.));
+  h.addF32(3., 2., INTERP_STEP);
+  c.addTrack(1u32, 1030u32, h);
+  mut v = Track.make(TK_VEC3);
+  imm v0 = v.addVec3(0., new Vec3(0., 1., 2.), INTERP_LINEAR);
+  v.setBezier(v0, 0.25, 0.1, 0.25, 1.);
+  v.addVec3(1.5, new Vec3(4., -1., 0.5), INTERP_CATMULL);
+  v.addVec3(3., new Vec3(1., 1., 1.), INTERP_LINEAR);
+  c.addTrack(1u32, PROP_TRANSLATION, v);
+  mut s = Track.make(TK_F32);
+  imm s0 = s.addF32(0., 0., INTERP_LINEAR);
+  s.setEase(s0, EASE_SPRING, 0.4, 12.);
+  s.addF32(1., 5., INTERP_LINEAR);
+  imm s1 = s.addF32(2., 0., INTERP_LINEAR);
+  s.setEase(s1, EASE_OUT_BACK, 2.5, 0.);
+  s.addF32(3., 1., INTERP_LINEAR);
+  c.addTrack(2u32, 1031u32, s);
+  mut col = Track.makeColor(SPACE_OKLAB);
+  col.addColor(0., new Color(1., 0.2, 0.1, 1.), INTERP_LINEAR);
+  col.addColor(3., new Color(0.1, 0.3, 1., 0.5), INTERP_LINEAR);
+  c.addTrack(2u32, 1032u32, col);
+  mut q = Track.make(TK_QUAT);
+  q.addQuat(0., Quat.identity(), INTERP_LINEAR);
+  q.addQuat(1., Quat.angleAxis(2., new Vec3(0., 0., 1.)), INTERP_LINEAR);
+  q.addQuat(3., Quat.angleAxis(4., new Vec3(1., 0., 0.)), INTERP_CATMULL);
+  c.addTrack(3u32, PROP_ROTATION, q);
+  mut tr = Track.make(TK_TRANSFORM);
+  tr.addTransform(0., Transform3.identity(), INTERP_LINEAR);
+  tr.addTransform(3., new Transform3(new Vec3(1., 2., 3.), Quat.angleAxis(1., new Vec3(0., 1., 0.)), new Vec3(2., 2., 2.)), INTERP_LINEAR);
+  c.addTrack(3u32, PROP_TRANSFORM, tr);
+  mut b = Track.make(TK_BOOL);
+  b.addBool(0., false);
+  b.addBool(1., true);
+  b.addBool(2., false);
+  c.addTrack(4u32, 1033u32, b);
+  mut w = Track.makeVecN(4usize);
+  w.addVecN(0., &floats(0., 0.25, 0.5, 1.), INTERP_LINEAR);
+  w.addVecN(3., &floats(1., 0., 0.5, 0.), INTERP_LINEAR);
+  c.addTrack(4u32, PROP_WEIGHTS, w);
+  // a jump: two keys at one time
+  mut j = Track.make(TK_F32);
+  j.addF32(0., 0., INTERP_LINEAR);
+  imm a = j.appendBlank(1.);
+  j.values.set(a, 1.);
+  imm bb = j.appendBlank(1.);
+  j.values.set(bb, 5.);
+  imm cc = j.appendBlank(2.);
+  j.values.set(cc, 6.);
+  c.addTrack(5u32, 1034u32, j);
+  c.addMarker(0.5, 7u32, 1.25);
+  c.addMarker(2.5, 8u32, -3.);
+  c;
+}
+
+fn same(a &Clip, b &Clip, t f32) bool {
+  imm sa = a.sample(t);
+  imm sb = b.sample(t);
+  if sa.len() != sb.len() { return false; }
+  mut i = 0usize;
+  while i < sa.data.len() {
+    if *sa.data[i] != *sb.data[i] { return false; }
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < sa.targets.len() {
+    if *sa.targets[i] != *sb.targets[i] or *sa.props[i] != *sb.props[i] or *sa.kinds[i] != *sb.kinds[i] { return false; }
+    i = i + 1usize;
+  }
+  true;
+}
+
+fn main() i32 {
+  imm clip = build();
+  imm bytes = encodeClip(&clip);
+  match decodeClip(&bytes) {
+    case imm back Some {
+      expect(String.from(back.name.view()) == String.from("everything"), "the name");
+      near(back.length, clip.length, 0.0, "the length");
+      expectInt(i64.from(back.mode), i64.from(LOOP_PINGPONG), "the mode");
+      expectInt(i64.from(back.bindings.len()), i64.from(clip.bindings.len()), "the binding count");
+      expectInt(i64.from(back.markers.len()), 2i64, "two markers");
+      near((*back.markers[1usize]).arg, -3., 0.0, "the second marker's argument");
+      expectInt(i64.from((*back.markers[0usize]).id), 7i64, "the first marker's id");
+      mut ok = true;
+      mut i = 0;
+      while i < 300 {
+        // across several cycles of the ping-pong, including its turns
+        if !same(&clip, &back, f32.from(i) * 0.1 - 3.) { ok = false; }
+        i = i + 1;
+      }
+      expect(ok, "300 samples agree bit for bit");
+      imm again = encodeClip(&back);
+      expectInt(i64.from(again.len()), i64.from(bytes.len()), "re-encoded: same length");
+      mut sameBytes = true;
+      mut bi = 0usize;
+      while bi < bytes.len() and bi < again.len() {
+        if *bytes[bi] != *again[bi] { sameBytes = false; }
+        bi = bi + 1usize;
+      }
+      expect(sameBytes, "re-encoded: same bytes");
+      // the jump survives
+      near(back.sample(0.999).getF32(5u32, 1034u32, -9.), 0.999, 0.001, "jump: before");
+      near(back.sample(1.).getF32(5u32, 1034u32, -9.), 5., 0.00001, "jump: after");
+    }
+    case None { expect(false, "the clip decodes"); }
+  }
+
+  // exact size of a small track
+  mut small = Track.make(TK_F32);
+  small.addF32(0., 0., INTERP_LINEAR);
+  small.addF32(1., 1., INTERP_LINEAR);
+  mut sb = List[u8].empty();
+  encodeTrack(&small, &mut sb);
+  expectInt(i64.from(sb.len()), 30i64, "a two-key linear f32 track is 30 bytes");
+  mut pos = 0usize;
+  match decodeTrack(&sb, &mut pos) {
+    case imm t Some { near(t.evalF32(0.25), 0.25, 0.000001, "a decoded track evaluates"); }
+    case None { expect(false, "the small track decodes"); }
+  }
+  expectInt(i64.from(pos), 30i64, "and the cursor ends after it");
+
+  // truncations and bad magic
+  mut refused = 0;
+  mut cut = 0usize;
+  while cut < bytes.len() {
+    mut part = List[u8].empty();
+    mut k = 0usize;
+    while k < cut { part.push(*bytes[k]); k = k + 1usize; }
+    match decodeClip(&part) {
+      case imm c Some { }
+      case None { refused = refused + 1; }
+    }
+    cut = cut + 1usize;
+  }
+  expectInt(i64.from(refused), i64.from(bytes.len()), "every truncation is refused");
+  mut bad = List[u8].empty();
+  mut k = 0usize;
+  while k < bytes.len() { bad.push(*bytes[k]); k = k + 1usize; }
+  bad.set(0usize, 'X');
+  match decodeClip(&bad) {
+    case imm c Some { expect(false, "a wrong magic is refused"); }
+    case None { expect(true, "a wrong magic is refused"); }
+  }
+  done();
+}

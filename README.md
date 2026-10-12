@@ -88,8 +88,10 @@ with the X86, WebAssembly and SPIR-V targets from [apt.llvm.org][aptllvm] (its
 
 A plain program compiles, links and runs, and so do threads, the `sync`
 package's locks and channels, and actors (the `thread`, `sync` and `actors`
-packages bind pthreads and the futex); what is built on the rest of the OS
-(`iocore`, `process`, `fs` and `posix` beyond `libc`) is still Windows only.
+packages bind pthreads and the futex), and so does what is built on the rest
+of the OS: `fs`, `path`, `env`, `process` and `posix` over POSIX calls, and
+`iocore` (sockets, UDP, timers, files) over epoll, with `aio`, `http1` and
+`httpconn` on top. TLS on Linux is not built yet.
 `conec` makes position-independent
 code by default on Linux, as the usual `cc` links position-independent
 executables (`--nopic` opts out). Linking LLVM's static components takes about

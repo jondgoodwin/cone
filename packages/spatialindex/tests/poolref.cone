@@ -1,0 +1,79 @@
+// The handle of an item may be a pool.Ref: a BVH, an octree and a grid each
+// hold Refs to creatures in a pool, find them by ray, box and nearest, and
+// after a creature is removed from the pool and its box from the index, a
+// stale Ref no longer reaches anything in the pool while the index's own
+// Proxy is dead too. Expected values worked out by hand:
+//   creatures at x = 0, 10, 20 (boxes 2 wide on each axis, centred on y = z = 0);
+//   a ray along +x from x = -5 enters the first at t = 4 (its face is at -1);
+//   the nearest to (12, 0, 0) is the one at 10 (face at 11, distance 1).
+
+mod poolref;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import pool use *;
+import spatialindex use *;
+
+struct Npc {
+  pub hp i64;
+}
+
+fn box(x f32) Aabb3 {Aabb3.fromCenter(new Vec3(x, 0., 0.), new Vec3(1., 1., 1.));}
+
+fn main() i32 {
+  mut world = Pool[Npc].empty();
+  imm a = world.add(new Npc(10i64));
+  imm b = world.add(new Npc(20i64));
+  imm c = world.add(new Npc(30i64));
+
+  mut bvh = Bvh[Ref[Npc]].create(0.);
+  mut oct = LooseOctree[Ref[Npc]].create(new Vec3(10., 0., 0.), 32., 5i32, 2.);
+  mut grid = HashGrid[Ref[Npc]].create(4.);
+  imm ba = bvh.insert(box(0.), a);
+  bvh.insert(box(10.), b);
+  bvh.insert(box(20.), c);
+  imm oa = oct.insert(box(0.), a);
+  oct.insert(box(10.), b);
+  oct.insert(box(20.), c);
+  imm ga = grid.insert(box(0.), a);
+  grid.insert(box(10.), b);
+  grid.insert(box(20.), c);
+
+  imm ray = new Ray3(new Vec3(-5., 0., 0.), new Vec3(1., 0., 0.));
+  match bvh.rayNearest(ray, 100.) {
+    case imm h Some {
+      expectFloat(h.t, 4., 0.00001, "bvh ray enters at 4");
+      expectInt(world[h.handle].hp, 10i64, "bvh ray finds the first creature through its Ref");
+    }
+    case is None { expect(false, "bvh ray hits"); }
+  }
+  match oct.rayNearest(ray, 100.) {
+    case imm h Some { expectInt(world[h.handle].hp, 10i64, "octree ray finds the first creature"); }
+    case is None { expect(false, "octree ray hits"); }
+  }
+  match grid.rayNearest(ray, 100.) {
+    case imm h Some { expectInt(world[h.handle].hp, 10i64, "grid ray finds the first creature"); }
+    case is None { expect(false, "grid ray hits"); }
+  }
+
+  mut near = List[Neighbor[Ref[Npc]]].empty();
+  bvh.nearest(new Vec3(12., 0., 0.), 1usize, &mut near);
+  expectInt(world[near[0usize].handle].hp, 20i64, "bvh nearest to x = 12 is the creature at 10");
+  expectFloat(near[0usize].distSq, 1., 0.00001, "one away");
+  oct.nearest(new Vec3(12., 0., 0.), 1usize, &mut near);
+  expectInt(world[near[0usize].handle].hp, 20i64, "octree nearest");
+  grid.nearest(new Vec3(12., 0., 0.), 1usize, &mut near);
+  expectInt(world[near[0usize].handle].hp, 20i64, "grid nearest");
+
+  // the first creature dies: out of the pool and out of the indexes
+  expect(world.remove(a), "removed from the pool");
+  expect(bvh.remove(ba) and oct.remove(oa) and grid.remove(ga), "removed from the indexes");
+  expect(!world.alive(a), "the Ref is dead in the pool");
+  expect(!bvh.contains(ba) and !oct.contains(oa) and !grid.contains(ga), "the Proxies are dead");
+  match bvh.rayNearest(ray, 100.) {
+    case imm h Some { expectInt(world[h.handle].hp, 20i64, "the ray now meets the second"); }
+    case is None { expect(false, "ray still hits"); }
+  }
+  done();
+}

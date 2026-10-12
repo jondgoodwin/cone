@@ -1,0 +1,76 @@
+// Recipes: renders every procedural recipe offline, writes each as a 16-bit
+// mono WAV into the folder 'build/recipes' (made under the current folder; run
+// it from the package folder, so it lands in the package's ignored build
+// folder, inside the worktree) and prints what the
+// sound is, from its numbers: loudness, the strongest frequency, the
+// spectral centroid (brightness), and how the power divides between the
+// bass (under 250 Hz), the middle (250 Hz to 2 kHz), the presence (2 to 5
+// kHz) and the air (over 5 kHz). Nobody listens in a build, so a recipe is
+// judged by this.
+//
+//   congo run examples/recipes.cone
+
+mod recipes;
+
+import stdio use *;
+import collections use *;
+import path use Path;
+import fs;
+import audiomixer use *;
+
+const RATE = 44100.;
+
+fn describe(name &str, x &Array[f32], n usize) {
+  imm spec = spectrum(x, 16384usize);
+  printStr(name);
+  printStr(": ");
+  printFloat(f64.from(f32.from(n) / RATE));
+  printStr(" s, rms ");
+  printFloat(f64.from(rms(x)));
+  printStr(", peak ");
+  printFloat(f64.from(peak(x)));
+  printStr(", strongest ");
+  printFloat(f64.from(dominantFreq(&spec, 16384usize, RATE)));
+  printStr(" Hz, centroid ");
+  printFloat(f64.from(centroid(&spec, 16384usize, RATE)));
+  printStr(" Hz\n    power: bass ");
+  printFloat(f64.from(bandFraction(&spec, 16384usize, RATE, 0., 250.)));
+  printStr(" middle ");
+  printFloat(f64.from(bandFraction(&spec, 16384usize, RATE, 250., 2000.)));
+  printStr(" presence ");
+  printFloat(f64.from(bandFraction(&spec, 16384usize, RATE, 2000., 5000.)));
+  printStr(" air ");
+  printFloat(f64.from(bandFraction(&spec, 16384usize, RATE, 5000., 22050.)));
+  printStr("\n");
+}
+
+// Render 'seconds' of a synth (or until it is done), write it, describe it
+fn recipe(name &str, synth Synth, seconds f32) {
+  mut s = synth;
+  mut samples = List[f32].empty();
+  imm n = usize.from(seconds * RATE);
+  mut i = 0usize;
+  while i < n and !s.done { samples.push(s.next()); i = i + 1usize; }
+  // a one-shot is padded with a little silence so its end is heard
+  mut sound = new Sound(44100u32, 1u32, samples);
+  imm text = encodeWav(&sound, false);
+  imm dir = Path.from("build/recipes");
+  fs.makeDirAll(&dir);
+  imm file = dir.join(name);
+  fs.writeFile(&file, text.view());
+  describe(name, sound.samples.view(), sound.samples.len());
+}
+
+fn main() i32 {
+  recipe("wind-breeze.wav", Synth.wind(RATE, 1u32, 0.25), 8.);
+  recipe("wind-gale.wav", Synth.wind(RATE, 2u32, 1.), 8.);
+  recipe("brook-trickle.wav", Synth.water(RATE, 3u32, 0.2), 6.);
+  recipe("brook-stream.wav", Synth.water(RATE, 4u32, 0.9), 6.);
+  recipe("campfire.wav", Synth.fire(RATE, 5u32, 0.6, 0.1), 8.);
+  recipe("burner.wav", Synth.fire(RATE, 6u32, 0.2, 1.), 5.);
+  recipe("step-grass.wav", Synth.step(RATE, 7u32, MATERIAL_GRASS, 0.8), 1.);
+  recipe("step-wood.wav", Synth.step(RATE, 8u32, MATERIAL_WOOD, 0.8), 1.);
+  recipe("step-stone.wav", Synth.step(RATE, 9u32, MATERIAL_STONE, 0.8), 1.);
+  recipe("bird.wav", Synth.bird(RATE, 10u32, 4200.), 2.);
+  0i32;
+}

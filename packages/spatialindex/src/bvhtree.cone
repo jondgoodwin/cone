@@ -1,0 +1,427 @@
+// ======== The BVH's topology, with no handles in it ========
+//
+// A binary tree of boxes. A leaf holds one item's (fat) box and the item's
+// slot; an internal node holds the union of its two children's boxes.
+// Nodes live in one list and are named by index.
+//
+// Two ways to make and keep a tree, both standard:
+//  - Dynamic insertion and removal, as Box2D's b2DynamicTree and Bullet's
+//    btDbvt do (Catto, "Dynamic Bounding Volume Hierarchies", GDC 2019):
+//    a new leaf descends to the sibling that adds least surface area (the
+//    surface area heuristic, branch by branch), and tree rotations on the way
+//    back up keep the heights balanced (Box2D 2.4's Balance).
+//  - Bulk build by binned SAH (Wald, "On fast construction of SAH-based
+//    bounding volume hierarchies", 2007; 16 bins, all three axes), one item
+//    to a leaf.
+
+struct BvhNode {
+  box Aabb3;
+  parent u32;   // the parent; for a free node, the next free node
+  a u32;        // child 1; for a leaf, the item slot
+  b u32;        // child 2; NONE for a leaf
+  height i32;   // 0 for a leaf
+}
+
+// What a bulk build works on: a leaf and where its box centre is
+struct BuildItem {
+  node u32;
+  cent Vec3;
+  box Aabb3;
+}
+
+struct BvhTree {
+  nodes List[BvhNode];
+  root u32;
+  free u32;
+
+  fn create() BvhTree {new BvhTree(List[BvhNode].empty(), NONE, NONE);}
+
+  fn isLeaf(self &, n u32) bool {nodes[usize.from(n)].b == NONE;}
+
+  fn alloc(self &mut) u32 {
+    if free != NONE {
+      imm n = free;
+      free = nodes[usize.from(n)].parent;
+      nodes[usize.from(n)].parent = NONE;
+      nodes[usize.from(n)].a = NONE;
+      nodes[usize.from(n)].b = NONE;
+      nodes[usize.from(n)].height = 0i32;
+      return n;
+    }
+    imm n = u32.from(nodes.len());
+    nodes.push(new BvhNode(Aabb3.empty(), NONE, NONE, NONE, 0i32));
+    n;
+  }
+
+  fn release(self &mut, n u32) {
+    nodes[usize.from(n)].parent = free;
+    nodes[usize.from(n)].height = -1i32;
+    free = n;
+  }
+
+  fn clear(self &mut) {
+    nodes.clear();
+    root = NONE;
+    free = NONE;
+  }
+
+  fn newLeaf(self &mut, slot u32, fat Aabb3) u32 {
+    imm n = alloc();
+    nodes[usize.from(n)].box = fat;
+    nodes[usize.from(n)].a = slot;
+    nodes[usize.from(n)].b = NONE;
+    nodes[usize.from(n)].height = 0i32;
+    n;
+  }
+
+  // ---- dynamic insertion and removal ----
+
+  // Puts a leaf (already holding its box) into the tree
+  fn insertLeaf(self &mut, leaf u32) {
+    if root == NONE {
+      root = leaf;
+      nodes[usize.from(leaf)].parent = NONE;
+      return;
+    }
+    imm lbox = nodes[usize.from(leaf)].box;
+    // descend to the sibling of least added surface area
+    mut index = root;
+    while nodes[usize.from(index)].b != NONE {
+      imm c1 = nodes[usize.from(index)].a;
+      imm c2 = nodes[usize.from(index)].b;
+      imm ibox = nodes[usize.from(index)].box;
+      imm a = area(ibox);
+      imm combined = area(ibox.union(lbox));
+      // the cost of making this node the sibling, against pushing the leaf down
+      imm cost = 2. * combined;
+      imm inherit = 2. * (combined - a);
+      imm b1 = nodes[usize.from(c1)].box;
+      imm b2 = nodes[usize.from(c2)].box;
+      imm cost1 = if nodes[usize.from(c1)].b == NONE {area(b1.union(lbox)) + inherit;}
+        else {area(b1.union(lbox)) - area(b1) + inherit;};
+      imm cost2 = if nodes[usize.from(c2)].b == NONE {area(b2.union(lbox)) + inherit;}
+        else {area(b2.union(lbox)) - area(b2) + inherit;};
+      if cost < cost1 and cost < cost2 {break;}
+      index = if cost1 < cost2 {c1;} else {c2;};
+    }
+    imm sibling = index;
+    imm oldParent = nodes[usize.from(sibling)].parent;
+    imm newParent = alloc();
+    nodes[usize.from(newParent)].parent = oldParent;
+    nodes[usize.from(newParent)].box = lbox.union(nodes[usize.from(sibling)].box);
+    nodes[usize.from(newParent)].height = nodes[usize.from(sibling)].height + 1i32;
+    nodes[usize.from(newParent)].a = sibling;
+    nodes[usize.from(newParent)].b = leaf;
+    nodes[usize.from(sibling)].parent = newParent;
+    nodes[usize.from(leaf)].parent = newParent;
+    if oldParent != NONE {
+      if nodes[usize.from(oldParent)].a == sibling {nodes[usize.from(oldParent)].a = newParent;}
+      else {nodes[usize.from(oldParent)].b = newParent;}
+    }
+    else {root = newParent;}
+    walkUp(nodes[usize.from(leaf)].parent);
+  }
+
+  // From a node to the root: rebalance, then refit height and box
+  fn walkUp(self &mut, from u32) {
+    mut index = from;
+    while index != NONE {
+      index = balance(index);
+      imm c1 = nodes[usize.from(index)].a;
+      imm c2 = nodes[usize.from(index)].b;
+      nodes[usize.from(index)].height = 1i32 + maxi(nodes[usize.from(c1)].height, nodes[usize.from(c2)].height);
+      nodes[usize.from(index)].box = nodes[usize.from(c1)].box.union(nodes[usize.from(c2)].box);
+      index = nodes[usize.from(index)].parent;
+    }
+  }
+
+  // Takes a leaf out of the tree (the leaf node stays allocated)
+  fn removeLeaf(self &mut, leaf u32) {
+    if leaf == root {
+      root = NONE;
+      return;
+    }
+    imm parent = nodes[usize.from(leaf)].parent;
+    imm grand = nodes[usize.from(parent)].parent;
+    imm sibling = if nodes[usize.from(parent)].a == leaf {nodes[usize.from(parent)].b;}
+      else {nodes[usize.from(parent)].a;};
+    if grand != NONE {
+      if nodes[usize.from(grand)].a == parent {nodes[usize.from(grand)].a = sibling;}
+      else {nodes[usize.from(grand)].b = sibling;}
+      nodes[usize.from(sibling)].parent = grand;
+      release(parent);
+      walkUp(grand);
+    }
+    else {
+      root = sibling;
+      nodes[usize.from(sibling)].parent = NONE;
+      release(parent);
+    }
+    nodes[usize.from(leaf)].parent = NONE;
+  }
+
+  // Box2D 2.4's rotation: if one child of 'ia' is two taller than the other,
+  // lift the taller one over 'ia' (swapping 'ia' with it) and keep, of the
+  // lifted node's children, the taller under it. Returns the new top.
+  fn balance(self &mut, ia u32) u32 {
+    imm a = usize.from(ia);
+    if nodes[a].b == NONE or nodes[a].height < 2i32 {return ia;}
+    imm ib = nodes[a].a;
+    imm ic = nodes[a].b;
+    imm b = usize.from(ib);
+    imm c = usize.from(ic);
+    imm bal = nodes[c].height - nodes[b].height;
+    if bal > 1i32 {
+      // rotate C up
+      imm iff = nodes[c].a;
+      imm ig = nodes[c].b;
+      imm f = usize.from(iff);
+      imm g = usize.from(ig);
+      nodes[c].a = ia;
+      nodes[c].parent = nodes[a].parent;
+      nodes[a].parent = ic;
+      imm cp = nodes[c].parent;
+      if cp != NONE {
+        if nodes[usize.from(cp)].a == ia {nodes[usize.from(cp)].a = ic;}
+        else {nodes[usize.from(cp)].b = ic;}
+      }
+      else {root = ic;}
+      if nodes[f].height > nodes[g].height {
+        nodes[c].b = iff;
+        nodes[a].b = ig;
+        nodes[g].parent = ia;
+        nodes[a].box = nodes[b].box.union(nodes[g].box);
+        nodes[c].box = nodes[a].box.union(nodes[f].box);
+        nodes[a].height = 1i32 + maxi(nodes[b].height, nodes[g].height);
+        nodes[c].height = 1i32 + maxi(nodes[a].height, nodes[f].height);
+      }
+      else {
+        nodes[c].b = ig;
+        nodes[a].b = iff;
+        nodes[f].parent = ia;
+        nodes[a].box = nodes[b].box.union(nodes[f].box);
+        nodes[c].box = nodes[a].box.union(nodes[g].box);
+        nodes[a].height = 1i32 + maxi(nodes[b].height, nodes[f].height);
+        nodes[c].height = 1i32 + maxi(nodes[a].height, nodes[g].height);
+      }
+      return ic;
+    }
+    if bal < -1i32 {
+      // rotate B up
+      imm id = nodes[b].a;
+      imm ie = nodes[b].b;
+      imm d = usize.from(id);
+      imm e = usize.from(ie);
+      nodes[b].a = ia;
+      nodes[b].parent = nodes[a].parent;
+      nodes[a].parent = ib;
+      imm bp = nodes[b].parent;
+      if bp != NONE {
+        if nodes[usize.from(bp)].a == ia {nodes[usize.from(bp)].a = ib;}
+        else {nodes[usize.from(bp)].b = ib;}
+      }
+      else {root = ib;}
+      if nodes[d].height > nodes[e].height {
+        nodes[b].b = id;
+        nodes[a].a = ie;
+        nodes[e].parent = ia;
+        nodes[a].box = nodes[c].box.union(nodes[e].box);
+        nodes[b].box = nodes[a].box.union(nodes[d].box);
+        nodes[a].height = 1i32 + maxi(nodes[c].height, nodes[e].height);
+        nodes[b].height = 1i32 + maxi(nodes[a].height, nodes[d].height);
+      }
+      else {
+        nodes[b].b = ie;
+        nodes[a].a = id;
+        nodes[d].parent = ia;
+        nodes[a].box = nodes[c].box.union(nodes[d].box);
+        nodes[b].box = nodes[a].box.union(nodes[e].box);
+        nodes[a].height = 1i32 + maxi(nodes[c].height, nodes[d].height);
+        nodes[b].height = 1i32 + maxi(nodes[a].height, nodes[e].height);
+      }
+      return ib;
+    }
+    ia;
+  }
+
+  // ---- refit ----
+
+  // Recomputes the boxes of every ancestor of a leaf from its children
+  fn refitUp(self &mut, from u32) {
+    mut index = from;
+    while index != NONE {
+      imm c1 = nodes[usize.from(index)].a;
+      imm c2 = nodes[usize.from(index)].b;
+      nodes[usize.from(index)].box = nodes[usize.from(c1)].box.union(nodes[usize.from(c2)].box);
+      index = nodes[usize.from(index)].parent;
+    }
+  }
+
+  // Recomputes every internal node's box, children before parents, given the
+  // leaf boxes as they now stand. Heights are left as they are.
+  fn refitAll(self &mut) {
+    if root == NONE {return;}
+    mut order = List[u32].empty();
+    mut stack = List[u32].empty();
+    stack.push(root);
+    while stack.len() > 0usize {
+      imm n = popU32(&mut stack);
+      if nodes[usize.from(n)].b != NONE {
+        order.push(n);
+        stack.push(nodes[usize.from(n)].a);
+        stack.push(nodes[usize.from(n)].b);
+      }
+    }
+    mut i = order.len();
+    while i > 0usize {
+      i = i - 1usize;
+      imm n = usize.from(*order[i]);
+      nodes[n].box = nodes[usize.from(nodes[n].a)].box.union(nodes[usize.from(nodes[n].b)].box);
+    }
+  }
+
+  // The SAH cost of the tree: the internal nodes' areas over the root's
+  // (Macdonald and Booth), lower is better; 0 for no tree
+  fn sahCost(self &) f32 {
+    if root == NONE {return 0.;}
+    mut total = 0.;
+    mut stack = List[u32].empty();
+    stack.push(root);
+    while stack.len() > 0usize {
+      imm n = popU32(&mut stack);
+      if nodes[usize.from(n)].b != NONE {
+        total = total + area(nodes[usize.from(n)].box);
+        stack.push(nodes[usize.from(n)].a);
+        stack.push(nodes[usize.from(n)].b);
+      }
+    }
+    imm ra = area(nodes[usize.from(root)].box);
+    if ra > 0. {total / ra;} else {total;};
+  }
+
+  // ---- bulk build ----
+
+  // Throws the tree away and builds one over the given leaves (nodes already
+  // allocated with their boxes) by binned SAH
+  fn buildFrom(self &mut, work &mut List[BuildItem]) {
+    if work.len() == 0usize {
+      root = NONE;
+      return;
+    }
+    root = buildRange(work, 0usize, work.len());
+    nodes[usize.from(root)].parent = NONE;
+  }
+
+  fn buildRange(self &mut, work &mut List[BuildItem], lo usize, hi usize) u32 {
+    if hi - lo == 1usize {return work[lo].node;}
+    // bounds of the centroids
+    mut cb = Aabb3.empty();
+    mut i = lo;
+    while i < hi {
+      cb = cb.enclose(work[i].cent);
+      i = i + 1usize;
+    }
+    imm ext = cb.max - cb.min;
+    mut mid = lo + (hi - lo) / 2usize;
+    mut done = false;
+    if ext.x > 0. or ext.y > 0. or ext.z > 0. {
+      // binned SAH over the three axes
+      mut bestCost = FAR;
+      mut bestAxis = 0i32;
+      mut bestSplit = 0usize;
+      mut axis = 0i32;
+      while axis < 3i32 {
+        imm lenA = axisOf(ext, axis);
+        if lenA > 0. {
+          imm lo0 = axisOf(cb.min, axis);
+          imm scale = 16. / lenA;
+          mut counts = new Array[u32, 16] <- fill 0u32;
+          mut boxes = new Array[Aabb3, 16] <- fill Aabb3.empty();
+          i = lo;
+          while i < hi {
+            imm bin = binOf(axisOf(work[i].cent, axis), lo0, scale);
+            counts[bin] = counts[bin] + 1u32;
+            boxes[bin] = boxes[bin].union(work[i].box);
+            i = i + 1usize;
+          }
+          // right-to-left areas of the bins from k to 15
+          mut rightArea = new Array[f32, 16] <- fill 0.;
+          mut rightCount = new Array[u32, 16] <- fill 0u32;
+          mut acc = Aabb3.empty();
+          mut cnt = 0u32;
+          mut k = 15usize;
+          while k > 0usize {
+            acc = acc.union(boxes[k]);
+            cnt = cnt + counts[k];
+            rightArea[k] = if cnt > 0u32 {area(acc);} else {0.;};
+            rightCount[k] = cnt;
+            k = k - 1usize;
+          }
+          // left-to-right; split between bin s-1 and s
+          mut la = Aabb3.empty();
+          mut lc = 0u32;
+          mut s = 1usize;
+          while s < 16usize {
+            la = la.union(boxes[s - 1usize]);
+            lc = lc + counts[s - 1usize];
+            if lc > 0u32 and rightCount[s] > 0u32 {
+              imm cost = area(la) * f32.from(lc) + rightArea[s] * f32.from(rightCount[s]);
+              if cost < bestCost {
+                bestCost = cost;
+                bestAxis = axis;
+                bestSplit = s;
+              }
+            }
+            s = s + 1usize;
+          }
+        }
+        axis = axis + 1i32;
+      }
+      if bestCost < FAR {
+        // partition: bins below bestSplit first
+        imm lo0 = axisOf(cb.min, bestAxis);
+        imm scale = 16. / axisOf(ext, bestAxis);
+        mut l = lo;
+        mut r = hi;
+        while l < r {
+          if binOf(axisOf(work[l].cent, bestAxis), lo0, scale) < bestSplit {
+            l = l + 1usize;
+          }
+          else {
+            r = r - 1usize;
+            work.swap(l, r);
+          }
+        }
+        if l > lo and l < hi {
+          mid = l;
+          done = true;
+        }
+      }
+    }
+    if !done {
+      // all centroids alike, or no useful split: halve by index
+      mid = lo + (hi - lo) / 2usize;
+    }
+    imm left = buildRange(work, lo, mid);
+    imm right = buildRange(work, mid, hi);
+    imm n = alloc();
+    nodes[usize.from(n)].a = left;
+    nodes[usize.from(n)].b = right;
+    nodes[usize.from(n)].box = nodes[usize.from(left)].box.union(nodes[usize.from(right)].box);
+    nodes[usize.from(n)].height = 1i32 + maxi(nodes[usize.from(left)].height, nodes[usize.from(right)].height);
+    nodes[usize.from(left)].parent = n;
+    nodes[usize.from(right)].parent = n;
+    n;
+  }
+}
+
+fn maxi(a i32, b i32) i32 inline {if a > b {a;} else {b;};}
+
+fn axisOf(v Vec3, axis i32) f32 inline {
+  if axis == 0i32 {v.x;} else if axis == 1i32 {v.y;} else {v.z;};
+}
+
+fn binOf(c f32, lo f32, scale f32) usize inline {
+  imm k = i32.from((c - lo) * scale);
+  if k < 0i32 {0usize;} else if k > 15i32 {15usize;} else {usize.from(k);};
+}

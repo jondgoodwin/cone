@@ -1,0 +1,114 @@
+// The procedural recipes judged by their spectra and levels: nobody listens,
+// so a wind must put its power low, a brook above it, a campfire must be
+// spiky, a wooden step must ring at a board's frequency and a stone one at a
+// kilohertz, a bird must whistle in the 3 to 5 kHz range and stop.
+mod synth;
+
+import testing use *;
+import collections use *;
+import audiomixer use *;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+fn run(synth Synth, n usize) List[f32] {
+  mut s = synth;
+  mut out = List[f32].withCapacity(n);
+  mut i = 0usize;
+  while i < n and !s.done { out.push(s.next()); i = i + 1usize; }
+  out;
+}
+
+const R = 44100.;
+const N = 16384usize;
+
+fn main() i32 {
+  // Wind: power low, a gale louder and brighter than a breeze
+  imm breeze = run(Synth.wind(R, 1u32, 0.25), 132300usize);
+  imm gale = run(Synth.wind(R, 2u32, 1.), 132300usize);
+  imm sb = spectrum(breeze.view(), N);
+  imm sg = spectrum(gale.view(), N);
+  expect(bandFraction(&sb, N, R, 0., 2000.) > 0.9, "breeze: 90% of its power under 2 kHz");
+  expect(bandFraction(&sg, N, R, 0., 2000.) > 0.9, "gale: 90% of its power under 2 kHz");
+  expect(centroid(&sg, N, R) > centroid(&sb, N, R), "a gale is brighter than a breeze");
+  expect(rms(gale.view()) > 2. * rms(breeze.view()), "a gale is much louder");
+  expect(peak(gale.view()) < 1., "wind does not clip");
+  // the gusts: the level moves. Compare the quietest and loudest half-second
+  mut lo = 100.;
+  mut hi = 0.;
+  mut k = 0usize;
+  while k + 22050usize <= gale.len() {
+    mut e = 0.;
+    mut j = 0usize;
+    while j < 22050usize { e = e + (*gale[k + j]) * (*gale[k + j]); j = j + 1usize; }
+    if e < lo { lo = e; }
+    if e > hi { hi = e; }
+    k = k + 22050usize;
+  }
+  expect(hi > 1.5 * lo, "gusts: the loudest half second is 1.5x the quietest in power");
+
+  // Same seed, same wind; another seed, another wind
+  imm again = run(Synth.wind(R, 2u32, 1.), 1000usize);
+  imm other = run(Synth.wind(R, 3u32, 1.), 1000usize);
+  mut same = true;
+  mut differ = false;
+  k = 0usize;
+  while k < 1000usize {
+    if (*again[k]) != (*gale[k]) { same = false; }
+    if (*other[k]) != (*gale[k]) { differ = true; }
+    k = k + 1usize;
+  }
+  expect(same, "the same seed gives the same samples");
+  expect(differ, "another seed gives other samples");
+
+  // Brook: brighter than wind, with more air; a stream busier than a trickle
+  imm trickle = run(Synth.water(R, 3u32, 0.2), 132300usize);
+  imm stream = run(Synth.water(R, 4u32, 0.9), 132300usize);
+  imm st = spectrum(trickle.view(), N);
+  imm ss = spectrum(stream.view(), N);
+  expect(centroid(&ss, N, R) > centroid(&sg, N, R), "a stream is brighter than a gale");
+  expect(bandFraction(&ss, N, R, 2000., 22050.) > 0.05, "a stream has air above 2 kHz");
+  expect(rms(stream.view()) > rms(trickle.view()), "a stream is louder than a trickle");
+  expect(centroid(&ss, N, R) > centroid(&st, N, R), "a stream is brighter than a trickle");
+  expect(peak(stream.view()) < 1., "water does not clip");
+
+  // Fire: crackles make it spiky (crest factor = peak / rms)
+  imm camp = run(Synth.fire(R, 5u32, 0.6, 0.1), 176400usize);
+  imm burner = run(Synth.fire(R, 6u32, 0.2, 1.), 132300usize);
+  expect(peak(camp.view()) / rms(camp.view()) > 8., "a campfire is spiky: crest factor over 8");
+  expect(peak(camp.view()) < 1., "fire does not clip");
+  expect(peak(burner.view()) < 1., "burner does not clip");
+  imm sbn = spectrum(burner.view(), N);
+  expect(bandFraction(&sbn, N, R, 250., 5000.) > 0.6, "burner: its roar sits in the middle");
+  expect(rms(burner.view()) > rms(camp.view()) * 1.3, "burner roar is louder than a campfire");
+  expect(peak(burner.view()) / rms(burner.view()) < peak(camp.view()) / rms(camp.view()), "burner is steadier than a campfire");
+
+  // Steps: one-shots that end
+  imm wood = run(Synth.step(R, 8u32, MATERIAL_WOOD, 0.8), 44100usize);
+  imm stone = run(Synth.step(R, 9u32, MATERIAL_STONE, 0.8), 44100usize);
+  imm grass = run(Synth.step(R, 7u32, MATERIAL_GRASS, 0.8), 44100usize);
+  expect(wood.len() < 20000usize and stone.len() < 15000usize and grass.len() < 17000usize, "steps end by themselves in under 0.45 s");
+  imm sw = spectrum(wood.view(), 8192usize);
+  imm sst = spectrum(stone.view(), 8192usize);
+  imm sgr = spectrum(grass.view(), 8192usize);
+  imm fw = dominantFreq(&sw, 8192usize, R);
+  expect(fw > 120. and fw < 260., "wood rings at a board's frequency, 120 to 260 Hz");
+  imm fs = dominantFreq(&sst, 8192usize, R);
+  expect(fs > 800. and fs < 1500., "stone rings near a kilohertz");
+  expect(bandFraction(&sgr, 8192usize, R, 2000., 22050.) > 0.6, "grass is a hiss: 60% above 2 kHz");
+  expect(centroid(&sgr, 8192usize, R) > centroid(&sw, 8192usize, R), "grass is brighter than wood");
+  expect(peak(wood.view()) < 1. and peak(stone.view()) < 1. and peak(grass.view()) < 1., "steps do not clip");
+  imm light = run(Synth.step(R, 8u32, MATERIAL_WOOD, 0.1), 44100usize);
+  expect(rms(light.view()) < rms(wood.view()), "a light step is quieter than a heavy one");
+
+  // Bird: whistles at its pitch, 2 to 4 syllables, ends
+  imm bird = run(Synth.bird(R, 10u32, 4200.), 44100usize);
+  imm sbird = spectrum(bird.view(), 8192usize);
+  imm fb = dominantFreq(&sbird, 8192usize, R);
+  expect(fb > 3000. and fb < 5500., "the bird whistles between 3 and 5.5 kHz");
+  expect(bird.len() > 8000usize and bird.len() < 22050usize, "a chirp lasts 0.2 to 0.5 s");
+  expect(bandFraction(&sbird, 8192usize, R, 3000., 11000.) > 0.95, "the bird's power is up there");
+  expect(peak(bird.view()) < 1., "the bird does not clip");
+  done();
+}

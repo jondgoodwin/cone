@@ -1,0 +1,89 @@
+// The navmesh package: finding the way. A program reaches it with 'import
+// navmesh', and gets two things.
+//
+// 1. A navigation mesh of a 3-D world and the queries that use it, after
+//    Recast and Detour (Mikko Mononen, recastnavigation, zlib licence), written
+//    again in Cone from the published algorithms and Mononen's own notes:
+//
+//    - Input (input.cone): walkable triangles (a mesh, loose triangles, a
+//      heightfield made into triangles), each with an area; obstacles, a
+//      vertical circle or a box with a yaw between two heights, like the
+//      browser's solids, that block or that mark an area (a door, mud, water);
+//      the agent (radius, height, highest climb, steepest slope) and the
+//      resolution (cell size and height, tile size).
+//    - Generation, by tiles, each built alone from the input (the stages of
+//      Recast): voxelise into columns of spans (voxel.cone), filter spans for
+//      low obstacles, ledges and low ceilings (voxel.cone), join the open
+//      spans, erode by the agent's radius, paint areas, partition into
+//      regions (compact.cone, monotone partitioning), trace and simplify the
+//      region outlines (contour.cone), triangulate by ear clipping and merge
+//      into convex polygons of up to 6 vertices with their neighbours
+//      (polymesh.cone), then place the tile in the mesh and link it to its
+//      neighbours' portals (tile.cone, build.cone). One tile is rebuilt when
+//      something in it changes: 'rebuildDirty'.
+//    - Queries (query.cone, after Detour): the nearest polygon and the
+//      closest point on one, A* over the polygons with a cost for each area
+//      (an open or shut door area, mud, water are a query filter's
+//      business, no rebuild needed), the funnel algorithm for the straight
+//      path through the polygons it chose, a raycast along the mesh, moving
+//      along the surface sliding on walls.
+//    - Off-mesh connections (build.cone): a door, a ladder, a jump, joining
+//      the polygons nearest its two ends, one way or two, switched on and off
+//      while the program runs. A route through one has its two ends marked.
+//    - Steering (steer.cone): a path corridor (Detour's) that follows an
+//      agent along the mesh and shortcuts; the look-ahead point; arrival;
+//      a Follower that walks a route; the walls near a point, for the
+//      avoidance layer, which is not here.
+//    - Looking (draw.cone): a top-down picture of a mesh and a path as a BMP,
+//      and the mesh and path as line segments for a renderer's line drawing.
+//
+// 2. A grid pathfinder for tile worlds (grid.cone): A* with weights and
+//    optional diagonals, and jump point search for the uniform case.
+//
+// How a door works: three ways, by what changes. A door that is solid geometry
+// is an obstacle switched off and on ('NavInput.setObstacleEnabled' then
+// 'rebuildDirty': only the tiles it touches rebuild, and references into them
+// become stale, which 'NavMesh.isValid' and 'Corridor.isValid' tell). A door
+// whose doorway has an area of its own (an obstacle that marks AreaDoor) is
+// opened or shut in the query filter ('QueryFilter.setPassable'), with no
+// rebuild. A door that is a link between two places is an off-mesh connection
+// ('setOffMeshEnabled').
+//
+// Conventions are geomath's: right-handed, y up, metres, f32. Triangles are
+// counterclockwise seen from above; polygons of the mesh are the same way.
+// A flat floor's polygons are at the top of its voxels: heights are
+// quantised to the cell height (0.2 m by default) and rounded up, and a
+// polygon's surface is the one its vertices make (there is no detail mesh), so
+// a corner's height can differ from the true ground by a voxel.
+//
+// A reference to a polygon is a 'u64' (NoRef is 0): its tile's salt, tile and
+// number. A reference survives its tile's rebuild only as a stale one.
+//
+// Where it differs from Recast and Detour (all of it is listed in the design
+// note, Design\navmesh.md): monotone partitioning only (no watershed, no
+// layers); small islands dropped but small regions not merged into their
+// neighbours; no holes in contours (monotone regions have none); no detail
+// mesh; no BVH inside a tile (a query scans its tile's polygons); off-mesh
+// connections are kept beside the tiles, not as polygons in them, and found by
+// scanning; no crowd (that is the behave package's).
+//
+//   navmesh.cone   this overview
+//   util.cone      small scalar helpers
+//   input.cone     NavParams, Obstacle, NavInput
+//   voxel.cone     the span heightfield, rasterising triangles and solids, the filters
+//   compact.cone   open spans, erosion, areas, monotone regions
+//   contour.cone   region outlines
+//   polymesh.cone  ear clipping, merging, welding, adjacency, portals
+//   tile.cone      Tile, NavMesh, building a tile, linking tiles
+//   build.cone     building the whole mesh, rebuilding, off-mesh connections
+//   query.cone     QueryFilter, nearest, A*, the funnel, raycast, moveAlongSurface
+//   steer.cone     Corridor, look-ahead, arrival, Follower, local walls
+//   draw.cone      Canvas, drawing a mesh and a path
+//   grid.cone      the grid A* and jump point search
+//   heap.cone      the binary heap
+
+mod navmesh;
+
+import libc;
+import collections use *;
+import geomath use *;

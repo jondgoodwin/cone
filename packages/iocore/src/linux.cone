@@ -88,6 +88,8 @@ extern {
   fn @c("connect") sysConnect(fd i32, addr *u8, len u32) i32;
   fn @c("recv") sysRecv(fd i32, buf *u8, n usize, flags i32) i64;
   fn @c("send") sysSend(fd i32, buf *u8, n usize, flags i32) i64;
+  fn @c("recvfrom") sysRecvfrom(fd i32, buf *u8, n usize, flags i32, addr *u8, len *u32) i64;
+  fn @c("sendto") sysSendto(fd i32, buf *u8, n usize, flags i32, addr *u8, len u32) i64;
   fn @c("getsockopt") sysGetsockopt(fd i32, level i32, name i32, val *u8, len *u32) i32;
   fn @c("open") sysOpen(path *u8, flags i32, mode u32) i32;
   fn @c("fcntl") sysFcntl(fd i32, cmd i32, arg i32) i32;
@@ -125,6 +127,7 @@ const soError = 4i32;
 const soLingerLx = 13i32;
 const msgNoSignal = 0x4000i32;
 const msgPeek = 2i32;
+const msgTrunc = 0x20i32;                           // recvfrom answers the datagram's whole length, even when it was cut
 const shutWr = 1i32;
 const inprogress = 115i32;
 
@@ -171,6 +174,7 @@ fn errnoCode(e i32) u32 {
   elif e == 97i32 {10047u32;}                       // EAFNOSUPPORT: WSAEAFNOSUPPORT
   elif e == enotconn {10057u32;}                    // ENOTCONN: WSAENOTCONN
   elif e == 108i32 {10058u32;}                      // ESHUTDOWN: WSAESHUTDOWN
+  elif e == 90i32 {errorMsgSize;}                   // EMSGSIZE: WSAEMSGSIZE
   elif e == 125i32 {995u32;}                        // ECANCELED: ERROR_OPERATION_ABORTED
   else {errnoBase + u32.from(e);}
 }
@@ -198,6 +202,7 @@ fn codeErrno(code u32) i32 {
   elif code == 10047u32 {97i32;}
   elif code == 10057u32 {107i32;}
   elif code == 10058u32 {108i32;}
+  elif code == errorMsgSize {90i32;}
   elif code == 995u32 {125i32;}
   else {0i32;}
 }
@@ -299,7 +304,7 @@ const sideSend = 2u32;
 // Whether kind k waits on its handle's queues
 fn socketKind(k u32) bool {
   k == diag.kindConnect or k == diag.kindAccept or k == diag.kindRecv
-    or k == diag.kindRecvReady or k == diag.kindSend;
+    or k == diag.kindRecvReady or k == diag.kindSend or k == diag.kindRecvFrom or k == diag.kindSendTo;
 }
 
 // Record i waits at the end of the queue of its handle's entry, for its side
@@ -443,6 +448,53 @@ fn lxTry(lp &mut Loop, i u32, at Instant) u32 {
     }
     return triedDone;
   }
+  if k == diag.kindRecvFrom {
+    // One datagram. MSG_TRUNC makes the answer its whole length, so a cut one
+    // is told from one that fitted exactly
+    imm room = r.buf.room();
+    r.peer.size = 28i32;
+    mut n = sysRecvfrom(fd, r.buf.base() + r.buf.len(), room, msgTrunc, &mut r.peer as *u8, &mut r.peer.size as *u32);
+    while n < 0i64 and lastErrno() == eintr {
+      r.peer.size = 28i32;
+      n = sysRecvfrom(fd, r.buf.base() + r.buf.len(), room, msgTrunc, &mut r.peer as *u8, &mut r.peer.size as *u32);
+    }
+    if n >= 0i64 {
+      r.dequeued = at;
+      waitUnlink(lp, i);
+      if usize.from(n) > room {
+        // The room is filled, the rest of the datagram lost: WSAEMSGSIZE, as on Windows
+        r.buf.setLen(r.buf.len() + room);
+        lp.decide(i, diag.outcomeFailed, 0usize, errorMsgSize);
+      } else {
+        r.buf.setLen(r.buf.len() + usize.from(n));
+        lp.decide(i, diag.outcomeDone, usize.from(n), 0u32);
+      }
+      return triedDone;
+    }
+    imm e = lastErrno();
+    if e == eagain {return triedWait;}
+    r.dequeued = at;
+    waitUnlink(lp, i);
+    lp.decide(i, diag.outcomeFailed, 0usize, errnoCode(e));
+    return triedDone;
+  }
+  if k == diag.kindSendTo {
+    // One datagram, whole or not at all
+    imm len = r.buf.len();
+    mut n = sysSendto(fd, r.buf.base(), len, msgNoSignal, &mut r.peer as *u8, u32.from(r.peer.size));
+    while n < 0i64 and lastErrno() == eintr {
+      n = sysSendto(fd, r.buf.base(), len, msgNoSignal, &mut r.peer as *u8, u32.from(r.peer.size));
+    }
+    if n < 0i64 and lastErrno() == eagain {return triedWait;}
+    r.dequeued = at;
+    waitUnlink(lp, i);
+    if n < 0i64 {
+      lp.decide(i, diag.outcomeFailed, 0usize, errnoCode(lastErrno()));
+    } else {
+      lp.decide(i, diag.outcomeDone, usize.from(n), 0u32);
+    }
+    return triedDone;
+  }
   if k == diag.kindAccept {
     mut s = sysAccept4(fd, null, null, nonBlock | epollCloexec);
     while s < 0i32 and (lastErrno() == eintr or lastErrno() == econnaborted) {
@@ -554,6 +606,23 @@ fn lxStartSend(lp &mut Loop, p *Rec) u32 {
   if isWindows() {return errorInvalidParameter;}
   imm r = p as &mut Rec;
   if lp.rawOf(r.sock, hSocket) == invalidHandle {return errorInvalidHandle;}
+  lxQueue(lp, r.index, sideSend);
+}
+
+// A RecvFrom
+fn lxStartRecvFrom(lp &mut Loop, p *Rec) u32 {
+  if isWindows() {return errorInvalidParameter;}
+  imm r = p as &mut Rec;
+  if lp.rawOf(r.sock, hDatagram) == invalidHandle {return errorInvalidHandle;}
+  if r.buf.room() == 0usize {return errorInsufficientBuffer;}
+  lxQueue(lp, r.index, sideRecv);
+}
+
+// A SendTo
+fn lxStartSendTo(lp &mut Loop, p *Rec) u32 {
+  if isWindows() {return errorInvalidParameter;}
+  imm r = p as &mut Rec;
+  if lp.rawOf(r.sock, hDatagram) == invalidHandle {return errorInvalidHandle;}
   lxQueue(lp, r.index, sideSend);
 }
 

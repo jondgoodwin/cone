@@ -1,0 +1,36 @@
+// An IoError has a kind: Os, the default, for a failure of the system, whose
+// code and message are the system's; Cancelled and TimedOut, for an operation
+// ended by a cancel or by its deadline, whose code is 0. A system error is
+// never taken for either, whatever its number: Windows answers 995
+// (ERROR_OPERATION_ABORTED) itself, for one, when the thread that issued an
+// operation exits, and 258 is WAIT_TIMEOUT.
+
+mod ioerror;
+
+import testing use *;
+import iocore use IoError, IoErrorKind;
+
+fn main() i32 {
+  imm os = new IoError(5u32);
+  expect(os.kind() == IoErrorKind.Os, "new IoError(code) is an Os error");
+  expectUInt(u64.from(os.code), 5u64, "and keeps its code");
+  expect(not os.isCancelled() and not os.isTimedOut(), "an Os error is neither");
+
+  imm c = IoError.cancelled();
+  expect(c.kind() == IoErrorKind.Cancelled, "a cancelled error's kind");
+  expect(c.isCancelled() and not c.isTimedOut(), "is cancelled and not timed out");
+  expectUInt(u64.from(c.code), 0u64, "and its code is 0");
+  expect(c.message().view() == "cancelled", "and it says so");
+
+  imm t = IoError.timedOut();
+  expect(t.kind() == IoErrorKind.TimedOut, "a timed-out error's kind");
+  expect(t.isTimedOut() and not t.isCancelled(), "is timed out and not cancelled");
+  expectUInt(u64.from(t.code), 0u64, "and its code is 0");
+  expect(t.message().view() == "deadline passed", "and it says so");
+
+  imm a = new IoError(995u32);
+  imm w = new IoError(258u32);
+  expect(not a.isCancelled() and a.kind() == IoErrorKind.Os, "a system error numbered 995 is not Cancelled");
+  expect(not w.isTimedOut() and w.kind() == IoErrorKind.Os, "a system error numbered 258 is not TimedOut");
+  done();
+}

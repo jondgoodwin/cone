@@ -1,0 +1,136 @@
+// Utility AI: pick the action that scores highest. After Dave Mark's "infinite
+// axis utility system" (Behavioral Mathematics for Game AI, 2009; the GDC
+// 2013 talks "Improving AI Decision Modeling Through Utility Theory" and
+// "Building a Better Centaur"):
+//
+//   - An action has considerations. A consideration reads one number from the
+//     blackboard (distance to an enemy, health), maps it from its range
+//     [lo, hi] onto 0..1, and shapes it with a response curve; its score is
+//     that, 0..1.
+//   - An action's score is the product of its considerations' scores (so any
+//     score of 0 vetoes it), corrected for the number of considerations n: a
+//     product shrinks with each factor, so each is given back
+//     'makeUp = 1 - 1/n' of what it took, score + (1 - score) * makeUp *
+//     score (Mark's compensation factor), and then multiplied by the action's
+//     weight.
+//   - The current action's score gets 'inertia' added when choosing, so two
+//     close scores do not make the character flip between them every tick.
+//
+// Curves ('Curve.eval' clamps its answer to 0..1; x is the mapped input):
+//   LINEAR     m * (x - c) + b
+//   POLYNOMIAL m * (x - c)^k + b          (k 2 for quadratic: slow, then fast)
+//   LOGISTIC   k / (1 + e^(-m * (x - c))) + b   (an S; c is its middle,
+//                                          m how steep, k its height)
+// The inverse of a rising curve is the same with m negated and b raised, as
+// 'Curve.linear(-1, 1)' is "less is better".
+//
+// Fixed storage after set-up: 'choose' allocates nothing.
+
+pub const UTILITY_NONE = 4294967295u32;
+pub const CURVE_LINEAR = 0u32;
+pub const CURVE_POLYNOMIAL = 1u32;
+pub const CURVE_LOGISTIC = 2u32;
+
+pub struct Curve {
+  pub kind u32;
+  pub m f32;
+  pub k f32;
+  pub b f32;
+  pub c f32;
+
+  // y = m x + b
+  pub fn linear(m f32, b f32) Curve { new Curve(CURVE_LINEAR, m, 1., b, 0.); }
+  // y = m (x - c)^k + b, with x - c held at 0 or more
+  pub fn polynomial(m f32, k f32, b f32, c f32) Curve { new Curve(CURVE_POLYNOMIAL, m, k, b, c); }
+  // y = k / (1 + e^(-m (x - c))) + b
+  pub fn logistic(m f32, k f32, b f32, c f32) Curve { new Curve(CURVE_LOGISTIC, m, k, b, c); }
+
+  pub fn eval(self, x f32) f32 {
+    mut y = 0.;
+    if kind == CURVE_LINEAR { y = m * (x - c) + b; }
+    elif kind == CURVE_POLYNOMIAL {
+      imm base = if x - c > 0. { x - c; } else { 0.; };
+      y = m * libc.powf(base, k) + b;
+    }
+    else { y = k / (1. + libc.expf(-m * (x - c))) + b; }
+    clampf(y, 0., 1.);
+  }
+}
+
+pub struct Consideration {
+  pub slot usize;       // the blackboard float it reads
+  pub lo f32;           // the input that maps to 0
+  pub hi f32;           // the input that maps to 1
+  pub curve Curve;
+
+  pub fn score(self, bb &Blackboard) f32 {
+    imm span = hi - lo;
+    imm x = if span != 0. { clampf((bb.getF(slot) - lo) / span, 0., 1.); } else { 0.; };
+    curve.eval(x);
+  }
+}
+
+struct UtilityAction {
+  weight f32;
+  first usize;
+  count usize;
+}
+
+pub struct UtilitySelector {
+  cons List[Consideration];
+  actions List[UtilityAction];
+  scores List[f32];
+  pub current u32;       // the action chosen last, UTILITY_NONE before the first choice
+  pub inertia f32;
+
+  pub fn make(inertia f32) UtilitySelector {
+    new UtilitySelector(List[Consideration].empty(), List[UtilityAction].empty(), List[f32].empty(), 4294967295u32, inertia);
+  }
+
+  // A new action with these considerations and a weight (1 is neutral): its number
+  pub fn addAction(self &mut, weight f32, considerations &Array[Consideration]) u32 {
+    imm id = u32.from(actions.len());
+    actions.push(new UtilityAction(weight, cons.len(), considerations.len()));
+    mut i = 0usize;
+    while i < considerations.len() {
+      cons.push(considerations[i]);
+      i = i + 1usize;
+    }
+    scores.push(0.);
+    id;
+  }
+
+  // The score of action 'id' as of the last 'choose'
+  pub fn score(self &, id u32) f32 { *scores[usize.from(id)]; }
+
+  // Scores every action against the blackboard and answers the best (the
+  // first of equals), the current one favoured by 'inertia'; NONE if there
+  // are no actions
+  pub fn choose(self &mut, bb &Blackboard) u32 {
+    mut best = UTILITY_NONE;
+    mut bestScore = -1.;
+    mut a = 0usize;
+    while a < actions.len() {
+      imm act = *actions[a];
+      mut product = 1.;
+      mut i = 0usize;
+      while i < act.count {
+        product = product * (*cons[act.first + i]).score(bb);
+        i = i + 1usize;
+      }
+      mut s = 0.;
+      if act.count > 0usize {
+        imm makeUp = 1. - 1. / f32.from(act.count);
+        s = (product + (1. - product) * makeUp * product) * act.weight;
+      } else {
+        s = act.weight;
+      }
+      scores.set(a, s);
+      imm biased = if u32.from(a) == current { s + inertia; } else { s; };
+      if biased > bestScore { bestScore = biased; best = u32.from(a); }
+      a = a + 1usize;
+    }
+    current = best;
+    best;
+  }
+}
