@@ -829,7 +829,7 @@ C, declared in its `pub extern` block, each function marked `@c` so that it
 takes its C name rather than `stdio`'s Cone one, and supplied by `conestd`.
 `libc` and `posix` are C packages ("How a C library becomes a Cone package",
 below): raw bindings to the ISO C library and to the POSIX functions beyond
-it, Windows first, `posix` built on `libc`, and supplied by the C runtime every
+it, `posix` built on `libc`, and supplied by the C runtime or C library every
 link names. `geomath` is a Cone package over `libc`: 2-D and
 3-D math as value types (`module_package_geomath`), with its example programs in its own `examples/`
 folder and its tests in its own `tests/`, neither of which any compile of the
@@ -2514,18 +2514,29 @@ module is what gives it something to check.
 
 **The packages folder holds two C packages, `libc` and `posix`** [Jon 25–26
 Sep]: raw bindings, C names, C types and C strings, with the Cone-flavoured
-layer over them in packages of their own (`fs`, `path` and `env`), and Windows
-first, since nothing yet chooses declarations by target. Neither names a
-`[link]` library: the C runtime they bind is the one every link already names.
-`posix` presents POSIX names: bound straight to the Windows runtime's spelling
-with a function's own `@c("_mkdir")` where the arguments agree, and an
-`inline` function with POSIX's signature calling the runtime's where they do
-not, so that `libc`'s object defines nothing; what Windows lacks altogether,
-`opendir`, `readdir`, `closedir` and `lstat`, `posix` defines in Cone over the
-runtime's own `_findfirst64` family, which it also binds under its own names,
-and those four are the only symbols its object defines. The structs they
-declare (`posix.Stat`, `posix.FindData64`) are the runtime's layouts, measured
-against its headers (`posix`'s own test, `packages/posix/tests/`). `stdio` still holds its C
+layer over them in packages of their own (`fs`, `path` and `env`). Neither
+names a `[link]` library: the C runtime or C library they bind is the one every
+link already names. `libc`, which `core` imports, cannot choose by target; `posix`
+imports `core` and does, by `core.isWindows()` (a C-named module gets no
+prelude), so each of its functions calls the target's own and the other
+system's calls are not generated (every `extern` is declared on every
+platform). `posix` presents POSIX names. On Linux each is the C library's
+function, bound under a Cone name of its own where the Cone function of the
+POSIX name would define the C library's symbol (a Cone function named `stat`,
+in a C-named module, is the symbol `stat`): a function that fills in `posix`'s
+own layouts (`Stat`, `dirent`, `DIR`) from the system's is a Cone function under
+a symbol of its own (`@c("cone_posix_stat")`), and a simple one is an `inline`
+function. On Windows a name is bound straight to the runtime's spelling where
+the arguments agree, as the target of such a function, and an `inline` function
+with POSIX's signature calls the runtime's where they do not; what Windows lacks
+altogether, `opendir`, `readdir`, `closedir` and `lstat`, `posix` defines in Cone
+over the runtime's own `_findfirst64` family, which it also binds under its own
+names. The raw structs (`posix.WinStat64`, `posix.LinuxStat`,
+`posix.LinuxDirent`, `posix.FindData64`) are the systems' layouts, measured
+against their headers (`posix`'s own test, `packages/posix/tests/`), and
+`posix.Stat` is the one struct they are converted to. The two error numbers
+that differ by C library (`ENAMETOOLONG`, `ENOTEMPTY`) are `extern imm`
+globals that conestd's `cnames.c` defines from `errno.h`. `stdio` still holds its C
 declarations inside its Cone-named module, each function marked `@c`, and
 `core` holds none: its allocator is the raw blocks layer's, over `libc`'s. `libc`'s math.h functions are
 declared in both forms; the one the UCRT has only as an inline function on x64,

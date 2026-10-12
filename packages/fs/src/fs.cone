@@ -43,7 +43,8 @@
 // file takes a '&Path', and nothing else. A string literal written where one
 // is wanted is made one ('fs.readFile("notes.txt")'), and a 'Path' in a
 // variable is lent, not given away: the call leaves it as it was. Any other
-// text is made a Path first, 'Path.from(s)'. '/' and '\' both separate. A path
+// text is made a Path first, 'Path.from(s)'. '/' separates names, and on Windows
+// '\' too (the 'path' package's rules for the system). A path
 // the package makes (a listed entry's 'path', and each one 'walk' gives) is the
 // folder's path as given joined to the name by 'Path.join', a '/' between them
 // unless the folder's path ends in a separator; 'currentDir' and 'absolute'
@@ -56,7 +57,8 @@
 // left it at C's default, "C". On Windows that is what makes the runtime read
 // and answer file names as UTF-8 (without it, 'é' names some other file);
 // it changes nothing else: numbers, dates and sorting keep C's own forms.
-// A program that has chosen a character type of its own keeps it.
+// A program that has chosen a character type of its own keeps it. On POSIX
+// a name is its bytes, which the system takes as they are, and nothing is set.
 //
 // **Links.** 'stat', 'isDir' and 'isFile' follow a symbolic link to what it
 // names, as POSIX's 'stat' does. A listing does not: an entry that is a link
@@ -66,16 +68,19 @@
 // symbolic link or a directory junction, and also some cloud-storage
 // placeholders, which are then left whole.
 //
-// **What is Windows-only.** The package itself is written over ISO C (libc's
-// 'fopen', 'fread', 'fwrite', 'remove', 'rename') and POSIX (posix's 'stat',
-// 'lstat', 'mkdir', 'rmdir', 'getcwd', 'chdir', 'realpath', 'opendir',
-// 'readdir'), and holds nothing of Windows' own. What is Windows' is beneath
-// it: the posix package maps those names onto the Windows C runtime, and its
+// **What differs by system.** The package itself is written over ISO C (libc's
+// 'fopen', 'fread', 'fwrite', 'rename') and POSIX (posix's 'stat', 'lstat',
+// 'unlink', 'mkdir', 'rmdir', 'getcwd', 'chdir', 'realpath', 'opendir',
+// 'readdir'), and holds nothing of Windows' own, except 'absolute' on POSIX,
+// which reads the path's text (below). What is Windows' is beneath it: the
+// posix package maps those names onto the Windows C runtime, and its
 // 'opendir', 'readdir' and 'lstat' are written over the runtime's
-// '_findfirst64'. The 'path' rules it relies on are Windows' too (drive
-// letters, shares, '\'). Where Windows behaves differently from POSIX it is
-// said beside the function: 'rename' does not replace, and 'modified' (a
-// time.Timestamp) is in whole seconds.
+// '_findfirst64'. The 'path' rules it relies on are the system's own (drive
+// letters, shares and '\' on Windows). Where Windows behaves differently from
+// POSIX it is said beside the function: 'rename' replaces an existing file on
+// POSIX and is refused on Windows, a name is one name whatever its ASCII case
+// on Windows only, and 'modified' (a time.Timestamp) is in whole seconds on
+// both.
 
 mod fs;
 
@@ -161,6 +166,8 @@ mut utf8Checked = false;
 fn useUtf8() {
   if utf8Checked { return; }
   utf8Checked = true;
+  // POSIX hands a name's bytes to the system as they are
+  if not isWindows() { return; }
   imm now = libc.setlocale(libc.LC_CTYPE, null);
   if now != null and libc.strcmp(cstr.fromPtr(now), "C") == 0i32 {
     libc.setlocale(libc.LC_CTYPE, &".UTF-8" as *u8);
@@ -182,7 +189,7 @@ pub struct FileInfo {
 }
 
 fn emptyStat() posix.Stat {
-  new posix.Stat(0u32, 0u16, 0u16, 0i16, 0i16, 0i16, 0u32, 0i64, 0i64, 0i64, 0i64);
+  new posix.Stat(0u64, 0u64, 0u16, 0u32, 0u32, 0u32, 0u64, 0i64, 0i64, 0i64, 0i64);
 }
 
 // The size, time and kind of what a path names, following a link
@@ -204,6 +211,15 @@ fn kindOf(path &Path) u16 {
   mut c = cText(path);
   mut st = emptyStat();
   if posix.stat(c.cstr(), &mut st) != 0i32 { return 0u16; }
+  st.st_mode & posix.S_IFMT;
+}
+
+// The file-type bits of what a path names, not following a link, or 0 when
+// it cannot be seen
+fn linkKindOf(path &Path) u16 {
+  mut c = cText(path);
+  mut st = emptyStat();
+  if posix.lstat(c.cstr(), &mut st) != 0i32 { return 0u16; }
   st.st_mode & posix.S_IFMT;
 }
 
@@ -298,7 +314,7 @@ pub fn removeFile(path &Path) Result[void, FsError] {
   if hasNul(path) { return fail[void]("removeFile", path, posix.EINVAL); }
   useUtf8();
   mut c = cText(path);
-  if libc.remove(c.cstr()) != 0i32 { return fail[void]("removeFile", path, openErrno(path)); }
+  if posix.unlink(c.cstr()) != 0i32 { return fail[void]("removeFile", path, openErrno(path)); }
   succeeded();
 }
 
@@ -378,8 +394,16 @@ pub fn readDir(path &Path) Result[List[DirEntry], FsError] {
     imm np *u8 = &[]entry.d_name as *u8;
     imm name = cstr.fromPtr(np).view();
     if name != "." and name != ".." {
-      imm t = entry.d_type;
-      out.push(new DirEntry(String.from(name), path.join(name),
+      mut t = entry.d_type;
+      imm full = path.join(name);
+      // A file system that does not say what an entry is (POSIX allows it)
+      // is asked, by the entry's own status, link or not
+      if t == posix.DT_UNKNOWN {
+        imm kind = linkKindOf(&full);
+        t = if kind == posix.S_IFLNK {posix.DT_LNK;} elif kind == posix.S_IFDIR {posix.DT_DIR;}
+          elif kind == posix.S_IFREG {posix.DT_REG;} else {posix.DT_UNKNOWN;};
+      }
+      out.push(new DirEntry(String.from(name), full,
         t == posix.DT_DIR, t == posix.DT_REG, t == posix.DT_LNK));
     }
     e = posix.readdir(dir);
@@ -470,7 +494,7 @@ fn removeTree(path &Path, kind u16) Result[void, FsError] {
   if kind == posix.S_IFLNK { return removeLink(path); }
   if kind != posix.S_IFDIR {
     mut c = cText(path);
-    if libc.remove(c.cstr()) != 0i32 { return fail[void]("removeAll", path, lastErrno()); }
+    if posix.unlink(c.cstr()) != 0i32 { return fail[void]("removeAll", path, lastErrno()); }
     return succeeded();
   }
   match readDir(path) {
@@ -498,11 +522,11 @@ fn removeTree(path &Path, kind u16) Result[void, FsError] {
 }
 
 // Remove a link itself: a link to a folder goes by rmdir on Windows, and a
-// link to a file by remove
+// link to a file, or any link on POSIX, by unlink
 fn removeLink(path &Path) Result[void, FsError] {
   mut c = cText(path);
   if posix.rmdir(c.cstr()) == 0i32 { return succeeded(); }
-  if libc.remove(c.cstr()) == 0i32 { return succeeded(); }
+  if posix.unlink(c.cstr()) == 0i32 { return succeeded(); }
   fail[void]("removeAll", path, lastErrno());
 }
 
@@ -536,6 +560,20 @@ pub fn setCurrentDir(path &Path) Result[void, FsError] {
 pub fn absolute(path &Path) Result[Path, FsError] {
   if hasNul(path) { return fail[Path]("absolute", path, posix.EINVAL); }
   if path.isEmpty() { return currentDir(); }
+  if not isWindows() {
+    // POSIX's realpath asks the file system (the path must be there, links
+    // are followed); this reads the text alone, as Windows' does: the
+    // current folder, then the path, normalized
+    match currentDir() {
+      case imm here Ok { return Ok[Path, FsError](here.join(path).normalize()); }
+      case mut e Error {
+        mut err = failure("", "", 0i32);
+        err <=> e;
+        err.op = String.from("absolute");
+        return Error[Path, FsError](err);
+      }
+    }
+  }
   useUtf8();
   mut c = cText(path);
   imm got = posix.realpath(c.cstr(), null);

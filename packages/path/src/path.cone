@@ -24,9 +24,19 @@
 // 'fs' and 'process' take a '&Path' (a string literal where one is wanted is
 // made one), and answer a 'Path' where they answer a path.
 //
-// **Windows' rules.** The paths read here are Windows' paths, as the rest of
-// the OS layer is Windows' for now; a POSIX version of this package would
-// read only '/' as a separator and have no drive letters or shares.
+// **Two systems' rules.** A path is read by the rules of the system the
+// program is built for ('isWindows()', a constant of the compile, chooses),
+// since a path means what its system says.
+//
+// **POSIX's rules** (Linux, and any system but Windows):
+// - Only '/' separates names; '\' is an ordinary byte of a name.
+// - A path has no volume. A leading '/' is its root, and a path is absolute
+//   when it has one. Several separators together are one, wherever they are:
+//   '//x' is the root and 'x'.
+// - 'volume' is always "". 'parts' gives the root, '/', as its first piece
+//   when there is one.
+//
+// **Windows' rules.**
 // - Both '/' and '\' separate names, and either may be written anywhere.
 // - A path may start with a volume: a drive, 'C:', or a share, '\\server\share'
 //   (or '//server/share'), which needs both its server and its share; '\\'
@@ -42,8 +52,8 @@
 // bytes as written. Two functions write separators: 'join' puts '/' between
 // the two paths it joins, and 'normalize' writes every separator as '/'.
 // Windows takes '/' everywhere a path goes (the C runtime, the system's
-// calls, a UNC share), and a normalized path is spelled one way, so two of
-// them compare as bytes. A program handing a path to something that reads
+// calls, a UNC share), and POSIX knows no other; a normalized path is
+// spelled one way, so two of them compare as bytes. A program handing a path to something that reads
 // only '\' (some of cmd.exe's commands) turns it round with the String's
 // 'replaceByte('/', '\\')'.
 //
@@ -57,8 +67,8 @@ mod path;
 
 import collections use String, List;
 
-// Whether a byte separates names: '/' or '\'
-pub fn isSeparator(b u8) bool { b == '/' or b == '\\'; }
+// Whether a byte separates names: '/', and on Windows '\' too
+pub fn isSeparator(b u8) bool { b == '/' or (isWindows() and b == '\\'); }
 
 // How a path starts: the length of its volume ('C:' is 2, '\\server\share'
 // its whole length), and the length of the volume and the root together,
@@ -71,6 +81,11 @@ struct Prefix {
 fn isLetter(b u8) bool { (b >= 'a' and b <= 'z') or (b >= 'A' and b <= 'Z'); }
 
 fn prefixOf(p &Array[u8]) Prefix {
+  // POSIX: no volume, and a root alone
+  if not isWindows() {
+    if p.len >= 1usize and p[0usize] == '/' { return new Prefix(0usize, 1usize); }
+    return new Prefix(0usize, 0usize);
+  }
   // A share: two separators, a server, a separator, a share
   if p.len >= 2usize and isSeparator(p[0usize]) and isSeparator(p[1usize]) {
     mut i = 2usize;
@@ -101,9 +116,10 @@ fn prefixOf(p &Array[u8]) Prefix {
 fn isShare(p &Array[u8], pre &Prefix) bool { pre.volume > 2usize; }
 
 // Whether a path is absolute: a drive and a root ('C:\x'), or a share
-// ('\\server\share\x')
+// ('\\server\share\x'); on POSIX, a root
 fn absoluteOf(p &Array[u8]) bool {
   imm pre = prefixOf(p);
+  if not isWindows() { return pre.whole == 1usize; }
   isShare(p, &pre) or (pre.volume == 2usize and pre.whole == 3usize);
 }
 
@@ -255,7 +271,7 @@ fn normalizeOf(p &Array[u8]) String {
 
 // -------- Path --------
 
-// A file path: text, Windows' syntax (see the top of this file), owned. It
+// A file path: text, read by the build system's rules (see the top of this file), owned. It
 // holds the text as written and never asks the file system anything. Where a
 // 'Path' is wanted by value a string literal is made one ('fromLiteral'), so
 // 'imm dir Path = "C:\\work"' and a function taking a 'Path' is given
@@ -287,10 +303,12 @@ pub struct Path is Hash {
 
   pub fn isEmpty(self &) bool { text.len() == 0usize; }
 
-  // Whether it is absolute: a drive and a root ('C:\x'), or a share
+  // Whether it is absolute: a drive and a root ('C:\x'), or a share; on
+  // POSIX, a root
   pub fn isAbsolute(self &) bool { absoluteOf(text.view()); }
 
   // The volume it starts with, 'C:' or '\\server\share' as written, or ""
+  // (always "" on POSIX)
   pub fn volume(self &) &str {
     imm b &Array[u8] = text.view();
     imm pre = prefixOf(b);

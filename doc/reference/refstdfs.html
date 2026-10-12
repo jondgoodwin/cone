@@ -32,13 +32,17 @@
 	</ul>
 	<p>A program reaches them with <span class="pre">import fs;</span>,
 		<span class="pre">import path use Path;</span>, <span class="pre">import env;</span> and
-		<span class="pre">import process;</span>. They run on Windows only, for now. The interfaces
-		belong to no one system, but what is beneath them does: <span class="pre">path</span> reads
-		Windows' path syntax (drive letters, shares, both separators);
+		<span class="pre">import process;</span>. They run on Windows and on Linux. The interfaces
+		belong to no one system, but what is beneath them differs by system: <span class="pre">path</span> reads
+		the paths of the system the program is built for (Windows' drive letters, shares and both separators; or
+		POSIX's one separator and root);
 		<span class="pre">fs</span> and <span class="pre">env</span> are written over ISO C and the
-		<a href="#posix">posix package</a>, which maps the POSIX names onto the Windows C runtime; and
-		<span class="pre">process</span> is written directly over <span class="pre">kernel32</span>.
-		A version for another system changes the insides, not what a program calls.</p>
+		<a href="#posix">posix package</a>, which is the C library's own POSIX functions on Linux and maps
+		the POSIX names onto the Windows C runtime on Windows; and
+		<span class="pre">process</span> is written directly over <span class="pre">kernel32</span> on Windows
+		and over <span class="pre">posix_spawn</span>, pipes and <span class="pre">poll</span> on Linux.
+		Where the two behave differently it is said where the function is described; a version for another system
+		(macOS) changes the insides, not what a program calls.</p>
 
 	<p>Every example below is a complete program that was compiled and run. Those that write to disk work
 		in a folder of their own beside the program and remove it again. Their output is shown after them.</p>
@@ -71,8 +75,19 @@
 		<a href="#path-normalize">normalized</a>. A <span class="pre">Path</span> is hashable, so it can be a
 		<span class="pre">Dict</span> key.</p>
 
-	<h3 id="path-syntax">Windows' path syntax</h3>
-	<p>The paths read are Windows' paths.</p>
+	<h3 id="path-syntax">Path syntax</h3>
+	<p>A path is read by the rules of the system the program is built for, since a path means what its
+		system says. <b>On POSIX</b> (Linux):</p>
+	<ul>
+	<li>Only <span class="pre">/</span> separates names; <span class="pre">\</span> is an ordinary byte of a name
+		(<span class="pre">C:\x</span> is one name). <span class="pre">path.isSeparator(b)</span> asks it of one byte.</li>
+	<li>A path has no volume. A leading <span class="pre">/</span> is its <b>root</b>, and a path is
+		<b>absolute</b> when it has one. Several separators together are one, wherever they are:
+		<span class="pre">//x</span> is the root and <span class="pre">x</span>.</li>
+	<li><span class="pre">volume()</span> is always <span class="pre">""</span>; <span class="pre">parts()</span>
+		gives the root, <span class="pre">/</span>, as its first piece when there is one.</li>
+	</ul>
+	<p><b>On Windows</b>:</p>
 	<ul>
 	<li>Both <span class="pre">/</span> and <span class="pre">\</span> separate names, and either may be
 		written anywhere. <span class="pre">path.isSeparator(b)</span> asks it of one byte.</li>
@@ -231,7 +246,9 @@ normalized they meet
 		<span class="pre">Path.join</span>. The paths <span class="pre">currentDir</span> and
 		<span class="pre">absolute</span> answer are normalized, every separator
 		<span class="pre">/</span>: <span class="pre">C:/work/notes.txt</span>, which the C runtime and Windows
-		take everywhere.</p>
+		take everywhere (<span class="pre">/work/notes.txt</span> on POSIX). <span class="pre">absolute</span> reads
+		a path's text alone on both systems: the current folder, then the path, normalized, whether or not
+		anything is there and without following a link.</p>
 
 	<h3 id="fs-failure">Failure: Result and FsError</h3>
 	<p>Everything that can fail answers a <a href="refresult.html">Result</a>: <span class="pre">Ok</span> with the
@@ -514,7 +531,8 @@ removed again, nothing there
 		entry that is a link says so (<span class="pre">isLink</span>) and is then neither a folder nor a file.
 		<span class="pre">walk</span> never goes down into a linked folder, and <span class="pre">removeAll</span>
 		removes a link itself, never what it leads to. On Windows a link is any reparse point: a symbolic link
-		or a directory junction, and also some cloud-storage placeholders, which are then left whole.</p>
+		or a directory junction, and also some cloud-storage placeholders, which are then left whole. On POSIX
+		a link is a symbolic link, to a file or to a folder.</p>
 
 	<h3 id="fs-cwd">The current folder</h3>
 	<ul>
@@ -602,13 +620,14 @@ setCurrentDir no such folder: No such file or directory
 		type (<span class="pre">LC_CTYPE</span>) to UTF-8 when the program has left it at C's default,
 		<span class="pre">"C"</span>. On Windows that is what makes the runtime read and answer file names as
 		UTF-8 (without it, an "é" names some other file). It changes nothing else: numbers, dates and sorting
-		keep C's own forms, and a program that has chosen a character type of its own keeps it.</p>
+		keep C's own forms, and a program that has chosen a character type of its own keeps it. On POSIX a name
+		is its bytes, which the system takes as they are, and nothing is set.</p>
 
 	<h2 id="env">Environment variables: the env package</h2>
 	<p>The program's environment variables, read, set and removed. A program it starts inherits them as they
 		are when it starts. Names and values are text (<span class="pre">&amp;str</span>), UTF-8, whatever
 		locale the program has set: a variable inherited beyond ASCII reads as the UTF-8 of what Windows
-		holds, and one set reaches a child as that.</p>
+		holds (on POSIX, as the bytes the system holds), and one set reaches a child as that.</p>
 	<ul>
 	<li><span class="pre">env.get(name)</span> answers an <span class="pre">Option[String]</span>: the value, or
 		<span class="pre">None</span> when the variable is not set. A variable not being set is not a failure.
@@ -624,11 +643,15 @@ setCurrentDir no such folder: No such file or directory
 		variables before starting threads.</p>
 	<p>Windows differs from POSIX in two ways the package does not hide:</p>
 	<ul>
-	<li>names are compared without regard to ASCII case: <span class="pre">Path</span> and
-		<span class="pre">PATH</span> are one variable;</li>
-	<li>a variable cannot be set to the empty value: <span class="pre">env.set(name, "")</span> removes it,
-		and <span class="pre">get</span> then answers <span class="pre">None</span>.</li>
+	<li>on Windows names are compared without regard to ASCII case: <span class="pre">Path</span> and
+		<span class="pre">PATH</span> are one variable; on POSIX they are two;</li>
+	<li>on Windows a variable cannot be set to the empty value: <span class="pre">env.set(name, "")</span>
+		removes it, and <span class="pre">get</span> then answers <span class="pre">None</span>; on POSIX it is
+		set, to the empty text.</li>
 	</ul>
+	<p>The output shown below is Windows'; on POSIX the <span class="pre">show</span> of
+		<span class="pre">Cone_Doc_Example</span> prints <span class="pre">not set</span>, and the empty value
+		prints as <span class="pre">[]</span>.</p>
 	<pre>
 imm name = "CONE_DOC_EXAMPLE";
 env.unset(name);
@@ -691,20 +714,26 @@ panic at envpanic.cone:8: env: a variable's name may not hold '='
 	<ul>
 	<li><span class="pre">exitCode</span>: the exit code, all 32 bits of it, a <span class="pre">u32</span>: 0, 1,
 		255, or a status such as 3221225477 (0xC0000005, an access violation) or 3221226505
-		(0xC0000409), what a Cone panic ends with on Windows.</li>
+		(0xC0000409), what a Cone panic ends with on Windows. On POSIX a program that exits answers its status, 0
+		to 255, and one a signal ended answers 128 plus the signal, as a shell reports it: 134 for
+		<span class="pre">abort</span>, which a Cone panic ends in, and 139 for a segmentation fault.</li>
+	<li><span class="pre">signal</span>: on POSIX the signal that ended the child, when one did (6 for
+		<span class="pre">abort</span>, 9 for <span class="pre">SIGKILL</span>), else 0; always 0 on Windows. A
+		child killed by signal 9 has exit code 137, as one that exits 137 does: this tells them apart.</li>
 	<li><span class="pre">timedOut</span>: whether it was stopped because its time ran out; its exit code is
 		then 1.</li>
 	<li><span class="pre">stdout</span> and <span class="pre">stderr</span>: what it wrote to its standard output
 		and its standard error, two <span class="pre">String</span>s, kept apart, byte for byte; empty when it
-		inherited them. A C program's text mode writes <span class="pre">\n</span> as
+		inherited them. On Windows a C program's text mode writes <span class="pre">\n</span> as
 		<span class="pre">\r\n</span>, and that is what comes back.</li>
 	<li><span class="pre">success()</span>: exit code 0 within the time.</li>
 	</ul>
 	<p><b>The exit code is a value, not an error.</b> A nonzero exit is the answer, which the caller reads, as
 		in Python's <span class="pre">run</span> and Rust's <span class="pre">output</span>. An
 		<span class="pre">Error</span> is only a program that could not be started: none of that name, a folder that
-		is not there, an argument Windows cannot be given.</p>
-	<p>By default the child reads its standard input from NUL (it finds nothing there, never this program's
+		is not there, an argument the system cannot be given.</p>
+	<p>By default the child reads its standard input from NUL (<span class="pre">/dev/null</span> on POSIX; it
+		finds nothing there, never this program's
 		keyboard). Both captured streams are read at once, so a child that writes a great deal to both never stalls
 		on a full pipe. A child shares this program's console, where it has one, so Ctrl+C reaches both; from a
 		program with no console, a console child is started so that no window opens for it.</p>
@@ -812,14 +841,21 @@ notFound: yes, code 2
 		working folder given. A batch file (<span class="pre">.bat</span>, <span class="pre">.cmd</span>) is run
 		by <span class="pre">cmd.exe</span>, which reads its line by its own rules, not the ones below: an argument
 		from outside the program is not safe on a batch file's line.</p>
+	<p>On POSIX the program is found as <span class="pre">execvp</span> finds it: a name with a
+		<span class="pre">/</span> in it is a path, read from this program's current folder (never from the working
+		folder given), and a name without one is looked for in each folder on <span class="pre">PATH</span>. A
+		working folder that is not there or not a folder fails with <span class="pre">ENOENT</span> or
+		<span class="pre">ENOTDIR</span> before anything is started.</p>
 
 	<h3 id="process-timeout">The time limit</h3>
 	<p>With a <span class="pre">timeout</span> above zero, the child is stopped when that long has passed since
 		it started (measured on the <span class="pre">time</span> package's steady clock, and waited for in whole
 		milliseconds, rounded up), and so is every program it has started and not yet seen end: it runs in a
-		Windows job object of its own, and the whole job is ended. The <span class="pre">Output</span> then says
+		Windows job object of its own, and the whole job is ended (on POSIX it runs in a process group of its own,
+		and every process of the group is killed with <span class="pre">SIGKILL</span>, those that left the group
+		excepted). The <span class="pre">Output</span> then says
 		<span class="pre">timedOut</span>, its exit code is 1, and what it wrote until then is kept. With no limit
-		nothing is put in a job, and a program it starts that is still running when it ends is left running. A child
+		nothing is put in a job or a group, and a program it starts that is still running when it ends is left running. A child
 		that ends, though, while a program it started still holds its output open has not finished writing:
 		<span class="pre">run</span> waits for that too, which only a time limit cuts short.</p>
 	<pre>
@@ -934,7 +970,9 @@ captured nothing: yes
 		the exceptions it handles itself are its own, the programs it starts are no debugger's, and its heap is the
 		one it would have had (Windows gives a program started under a debugger its checking debug heap, so its
 		environment has <span class="pre">_NO_DEBUG_HEAP=1</span> added, where that is not set already). No other
-		debugger can attach to such a child.</p>
+		debugger can attach to such a child. On POSIX a crash is a signal, which ends the child as its exit code
+		says; what the system does besides is a core dump, which a crash reporter may take on, so with
+		<span class="pre">crashReport: false</span> the child is started with core dumps off.</p>
 
 	<h3 id="process-args">Arguments and the command line</h3>
 	<p>Windows hands a program one command line, and the program splits it. <span class="pre">run</span>
@@ -955,6 +993,12 @@ captured nothing: yes
 	<p>An argument that is not UTF-8 is refused (error 1113, ERROR_NO_UNICODE_TRANSLATION), as is one holding a
 		NUL (error 87, ERROR_INVALID_PARAMETER); an empty <span class="pre">args</span> or a program name
 		holding a <span class="pre">"</span> is refused too.</p>
+	<p>On POSIX a program is given its arguments as a list, so <span class="pre">run</span> does no quoting:
+		every string, with a space, a quote, a line break or none at all, reaches the child as it is (bytes; one
+		holding a NUL, which ends a C string, is refused with <span class="pre">EINVAL</span>, as is an empty
+		<span class="pre">args</span>), and <span class="pre">commandLine</span> is Windows' text and nothing
+		<span class="pre">run</span> reads there. <span class="pre">runLine</span> runs
+		<span class="pre">/bin/sh -c</span> with the line.</p>
 	<pre>
 // The line run hands Windows for some awkward arguments
 mut args = List[String].empty();
@@ -1000,17 +1044,21 @@ runLine: hello from cmd
 		(<span class="pre">runLine</span>'s whole line).</li>
 	<li><span class="pre">dir</span>: the <span class="pre">Path</span> of the working folder it was to start in,
 		or <span class="pre">""</span>.</li>
-	<li><span class="pre">code</span>: Windows' error number (<span class="pre">GetLastError</span>'s), a
-		<span class="pre">u32</span>. The package names the ones it gives or reads:
+	<li><span class="pre">code</span>: the system's error number, a <span class="pre">u32</span>: on Windows
+		<span class="pre">GetLastError</span>'s, on POSIX <span class="pre">errno</span>'s (<span class="pre">ENOENT</span>
+		2, <span class="pre">ENOTDIR</span> 20, <span class="pre">EINVAL</span> 22, ...). The package names the
+		Windows ones it gives or reads:
 		<span class="pre">process.errorFileNotFound</span> (2), <span class="pre">errorPathNotFound</span> (3),
 		<span class="pre">errorInvalidParameter</span> (87), <span class="pre">errorInvalidName</span> (123),
 		<span class="pre">errorDirectory</span> (267) and <span class="pre">errorNoUnicodeTranslation</span>
 		(1113).</li>
-	<li><span class="pre">message()</span>: one line for a person, in Windows' own words (in English where the
-		system has them): <span class="pre">run nosuch: The system cannot find the file specified</span>, or
-		<span class="pre">run conec in build/x: The directory name is invalid</span>.</li>
+	<li><span class="pre">message()</span>: one line for a person, in the system's own words (on Windows in
+		English where it has them): <span class="pre">run nosuch: The system cannot find the file specified</span>,
+		or <span class="pre">run conec in build/x: The directory name is invalid</span>; on POSIX
+		<span class="pre">run nosuch: No such file or directory</span>.</li>
 	<li><span class="pre">notFound()</span>: whether there was no such program (or no folder on its path),
-		ERROR_FILE_NOT_FOUND or ERROR_PATH_NOT_FOUND.</li>
+		ERROR_FILE_NOT_FOUND or ERROR_PATH_NOT_FOUND; on POSIX <span class="pre">ENOENT</span>, which a missing
+		working folder gives as well.</li>
 	</ul>
 
 	<h3 id="process-self">This program: args and currentExe</h3>
@@ -1018,7 +1066,7 @@ runLine: hello from cmd
 	<li><span class="pre">process.args()</span> answers a <span class="pre">List[String]</span>: this program's own
 		arguments, its name first, in UTF-8 whatever the system's code page, as Windows' parser splits them.
 		<span class="pre">main</span>'s <span class="pre">argv</span> says the same for ASCII, and loses whatever
-		the code page cannot hold.</li>
+		the code page cannot hold. On POSIX they are <span class="pre">argv</span>'s own bytes.</li>
 	<li><span class="pre">process.currentExe()</span> answers a <span class="pre">Result[Path, ProcessError]</span>:
 		the path of this program's executable, normalized, every separator
 		<span class="pre">/</span>.</li>
@@ -1071,15 +1119,21 @@ running myargs.exe (absolute: yes)
 		<span class="pre">FsError</span>'s <span class="pre">code</span> is compared with
 		(<span class="pre">posix.ENOENT</span>, <span class="pre">posix.EEXIST</span>,
 		<span class="pre">posix.EISDIR</span>, ...).</p>
-	<p>Cone cannot yet choose declarations by target, so this version binds the Windows C runtime, which is not
-		a POSIX system. Where the runtime's function takes POSIX's arguments in POSIX's order, the POSIX name binds
-		straight to the runtime's symbol (<span class="pre">stat</span> to <span class="pre">_stat64</span>);
-		where the arguments differ (<span class="pre">mkdir</span>'s mode, <span class="pre">setenv</span>'s
-		overwrite flag, <span class="pre">realpath</span>'s order), the POSIX name is a small function that calls
-		the runtime's; and where the runtime has no equivalent, the function is written in Cone over what it does
-		have: <span class="pre">opendir</span>, <span class="pre">readdir</span> and
-		<span class="pre">lstat</span> over the runtime's <span class="pre">_findfirst64</span>. This is why
-		<span class="pre">fs</span> and <span class="pre">env</span> run on Windows only for now.</p>
+	<p>On Linux each name is the C library's own function. On Windows, which is not a POSIX system, the package
+		maps the names onto the C runtime: where the runtime's function takes POSIX's arguments in POSIX's order,
+		the POSIX name is a small function over the runtime's symbol (<span class="pre">stat</span> over
+		<span class="pre">_stat64</span>); where the arguments differ (<span class="pre">mkdir</span>'s mode,
+		<span class="pre">setenv</span>'s overwrite flag, <span class="pre">realpath</span>'s order), it is a small
+		function that calls the runtime's; and where the runtime has no equivalent, the function is written in Cone
+		over what it does have: <span class="pre">opendir</span>, <span class="pre">readdir</span> and
+		<span class="pre">lstat</span> over the runtime's <span class="pre">_findfirst64</span>. The target
+		chooses (<span class="pre">isWindows()</span>, a constant of the compile), so only the target's calls are
+		generated; <span class="pre">Stat</span> is one structure of the package's, filled in from the system's
+		own, and the Windows-only names (<span class="pre">_findfirst64</span> and its kin) are declared
+		everywhere and callable on Windows alone. The error numbers are the same on both systems but two,
+		<span class="pre">posix.ENAMETOOLONG</span> (38 on Windows, 36 on Linux) and
+		<span class="pre">posix.ENOTEMPTY</span> (41 and 39), which each program reads from its C library's own
+		header.</p>
 
 	<p style="text-align: right; margin-top: 2em;">
 		<a href="refstdtime.html"><img alt="_" src="next.png" /></a>
