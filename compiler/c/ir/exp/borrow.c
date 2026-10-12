@@ -574,7 +574,23 @@ void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
         return;
     }
 
-    if (iexpTypeCheckAny(pstate, &node->vtexp) == 0)
+    // '&mut u.fields[i].adv': a borrow that may write reaches the indexes in its
+    // place through their '&[]', the elements' mutable borrows, as an assignment
+    // to the place does (fnCallSetPlace). A place that is itself an index is
+    // borrowed by its '&[]' (borrowReassocIndex), unless it is the receiver of
+    // the index this borrow is the inner link of.
+    INode *writes = NULL;
+    if (node->perm != unknownType && isTypeNode(node->perm) && (permGetFlags(node->perm) & MayWrite)) {
+        writes = node->vtexp;
+        if (!(node->flags & FlagSuffix) && writes->tag == FnCallTag && (writes->flags & FlagIndex)
+            && ((FnCallNode*)writes)->methfld == NULL)
+            writes = ((FnCallNode*)writes)->objfn;
+    }
+    uint32_t setmark = writes ? fnCallSetPlace(writes) : 0;
+    int placed = iexpTypeCheckAny(pstate, &node->vtexp);
+    if (writes)
+        fnCallSetPlaceEnd(setmark);
+    if (placed == 0)
         return;
 
     // A written borrow of a string literal, '&"text"', borrows the bytes the
