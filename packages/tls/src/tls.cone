@@ -1,5 +1,5 @@
 // The tls package: TLS 1.2 and 1.3 for the async I/O runtime, client and
-// server, over OpenSSL 3.5, with a server's certificate checked by the
+// server, over OpenSSL 3, with a server's certificate checked by the
 // operating system. It is sans-IO: a TLS session never touches a socket.
 // Its owner (a connection, an actor, a test) hands it the bytes that came
 // off the wire and takes back the bytes to send and the plaintext that came
@@ -107,7 +107,9 @@
 //   the data can be had) and judged by the SSL policy for the name asked for
 //   (CertVerifyCertificateChainPolicy, CERT_CHAIN_POLICY_SSL): the same
 //   answer the browser on the machine gives, with the machine's own roots,
-//   policy and enterprise settings. It may fetch over the network, so it
+//   policy and enterprise settings. On Linux it is OpenSSL's own check
+//   against the system's roots (see WINDOWS AND LINUX below). It may fetch
+//   over the network, so it
 //   never runs on the loop's thread: OpenSSL stops the handshake
 //   (SSL_set_retry_verify), the session says VerifyNeeded, its owner runs
 //   'verifyOp' on the blocking pool (or 'verifyNow' where blocking is fine),
@@ -152,9 +154,21 @@
 // 'text()' says it in a line, which is what a Stream's 'describe' gives
 // httpconn's 'layerInfo'.
 //
-// Windows only: the OS's verifier is crypt32's (SecTrust on macOS and the
-// system bundle on Linux to come), and OpenSSL's DLLs come from
-// tools/deps/fetch.py, copied beside each program by Congo ([link.windows] runtime).
+// WINDOWS AND LINUX. The OS's verifier is crypt32's on Windows (SecTrust on
+// macOS to come), and OpenSSL's DLLs come from tools/deps/fetch.py, copied
+// beside each program by Congo ([link.windows] runtime). On Linux the
+// package links the system's OpenSSL 3 (libssl-dev; [link.linux]), which is
+// also the OS's verifier there: the chain is judged by OpenSSL's own check
+// (X509_verify_cert) as a server's, for the name or address asked for,
+// against the system's roots (the file and folder SSL_CERT_FILE and
+// SSL_CERT_DIR name, else OpenSSL's defaults, /etc/ssl/certs on Ubuntu),
+// loaded once. It fetches nothing and reads no revocation data, so 'offline'
+// changes nothing there. Its answer is mapped to the Windows error the
+// package reports for that failure (verify.cone), so a TlsError reads the
+// same on both systems: CERT_E_UNTRUSTEDROOT for a chain that ends short of a
+// root the system holds, CERT_E_CN_NO_MATCH, CERT_E_EXPIRED, and E_FAIL for
+// any other reason. Windows bundles OpenSSL 3.5; the package uses nothing
+// newer than 3.0 (Ubuntu 24.04's), so it runs on either.
 //
 // MEASURED, release, an i7-13700HX on Windows 11, other work on the machine
 // (examples/bench.cone, ECDSA P-256 certificates, OpenSSL 3.5's default key
@@ -194,6 +208,7 @@ import iocore use Op, Completion, Outcome, Lane, LaneConfig, IoError, addLane;
 fn @initpure init() {
   laneOnce = Once.make();
   slotOnce = Once.make();
+  storeOnce = Once.make();
   nHandshakes = Atomic[u64].of(0u64);
   nResumed = Atomic[u64].of(0u64);
   nFailures = Atomic[u64].of(0u64);
