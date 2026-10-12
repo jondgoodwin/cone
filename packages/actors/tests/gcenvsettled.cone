@@ -1,0 +1,47 @@
+// A program's own choice of stress settles the environment variable
+// CONE_ACTORGC_STRESS: the variable is set to turn stress on, 'setStress(false)'
+// is called before the first actor, and the variable is not read afterwards, so
+// stress stays off. Nothing allocated reaches the 64 KiB floor, so no
+// collection runs ('gcenvstress' is the same without the call: 3).
+
+mod gcenvsettled;
+
+import actors;
+import env;
+import stdio use *;
+
+struct Node {
+  pub n i64;
+  pub next Option[ActorGc[mut, Node]];
+}
+
+actor Keeper {
+  head Option[ActorGc[mut, Node]];
+
+  fn init(self &new) {
+    *self = new Self(None[ActorGc[mut, Node]]);
+  }
+
+  pub async do push(self, n i64) {
+    head = Some[ActorGc[mut, Node]](new self[Node](n, head));
+  }
+
+  pub async do report(self) {
+    imm st = self.allocRegion().stats();
+    printStr("collections ");
+    printInt(i64.from(st.collections));
+    printStr("\n");
+  }
+}
+
+fn main() {
+  env.set("CONE_ACTORGC_STRESS", "1");
+  actors.setStress(false);
+  {
+    imm k = new Keeper();
+    k.push(1i64);
+    k.push(2i64);
+    k.push(3i64);
+    k.report();
+  }
+}

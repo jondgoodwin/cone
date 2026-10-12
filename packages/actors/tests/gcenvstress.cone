@@ -1,0 +1,51 @@
+// The environment variable CONE_ACTORGC_STRESS turns stress mode on (a
+// collection after every message) for a run, when the program has made no
+// choice of its own: it is read once, when the first actor starts. This test
+// sets it in main, before any actor, and chooses nothing; 'gcenvsettled'
+// is the same with the program's choice made first.
+//
+//   push(1..3)  after each, stress collects: 3 collections
+//   report      reads the stats before its own collection runs: 3 collections
+//               (the same program with stress off has 0: nothing allocated
+//               reaches the floor)
+
+mod gcenvstress;
+
+import actors;
+import env;
+import stdio use *;
+
+struct Node {
+  pub n i64;
+  pub next Option[ActorGc[mut, Node]];
+}
+
+actor Keeper {
+  head Option[ActorGc[mut, Node]];
+
+  fn init(self &new) {
+    *self = new Self(None[ActorGc[mut, Node]]);
+  }
+
+  pub async do push(self, n i64) {
+    head = Some[ActorGc[mut, Node]](new self[Node](n, head));
+  }
+
+  pub async do report(self) {
+    imm st = self.allocRegion().stats();
+    printStr("collections ");
+    printInt(i64.from(st.collections));
+    printStr("\n");
+  }
+}
+
+fn main() {
+  env.set("CONE_ACTORGC_STRESS", "1");
+  {
+    imm k = new Keeper();
+    k.push(1i64);
+    k.push(2i64);
+    k.push(3i64);
+    k.report();
+  }
+}
