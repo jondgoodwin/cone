@@ -10,7 +10,9 @@
  * systems, and the process-wide memory barrier a system call with a fallback
  * when the kernel refuses it. This file is those, each under the name the
  * packages bind: 'cone_futexWait', 'cone_futexWake', 'cone_threadId',
- * 'cone_processors' and 'cone_flushProcessWriteBuffers'. Everything else the
+ * 'cone_processors' and 'cone_flushProcessWriteBuffers', and the process
+ * package's 'cone_environ' (the variable 'environ', which Cone cannot name).
+ * Everything else the
  * packages need on Linux (pthread_create and pthread_join, sched_yield,
  * nanosleep) is POSIX, and the packages bind it by name; those are shared with
  * macOS, which this file's Linux half is not: macOS has no futex, so its
@@ -71,6 +73,15 @@ void cone_futexWake(uint32_t *word, int count) {
 // The kernel's id for the calling thread, which is never 0
 uint32_t cone_threadId(void) {
     return (uint32_t)syscall(SYS_gettid);
+}
+
+// The environment as the C library holds it now, an array of 'NAME=value'
+// strings ending in a null pointer: 'environ' is a variable Cone cannot
+// name, and setenv may have moved it since the program started. The process
+// package passes it to the program it starts with posix_spawn.
+char **cone_environ(void) {
+    extern char **environ;
+    return environ;
 }
 
 // How many logical processors are online, at least 1

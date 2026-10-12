@@ -1127,11 +1127,11 @@ class Scenarios(unittest.TestCase):
         self.assertEqual([u.pkg.name for u in congo.build_order(core, registry)],
                          ["libc", "core"])
 
-    @unittest.skipUnless(IS_WINDOWS, "libc and posix bind the Windows C runtime")
     def test_the_os_layer_sample(self):
         # samples/oslayer, copied here and run: libc and posix from the
         # repository's packages, posix importing libc. Each step prints 'ok' when
-        # what it checked held; the program exits with the count that did not
+        # what it checked held; the program exits with the count that did not.
+        # The same program and the same output on Windows and on Linux
         sample = self.root / "oslayer"
         shutil.copytree(congo.REPO / "samples" / "oslayer", sample,
                         ignore=shutil.ignore_patterns("build"))
@@ -1151,10 +1151,10 @@ class Scenarios(unittest.TestCase):
             directories
               ok    mkdir made sub
               ok    chdir went into sub
-              ok    getcwd there is getcwd here with \\sub after it
+              ok    getcwd there is getcwd here with a separator and sub after it
               ok    chdir came back out
-              ok    realpath of sub/../notes.txt is here with \\notes.txt after it
-              ok    listing found two entries: notes.txt (23 bytes) and sub (a directory)
+              ok    realpath of sub/../notes.txt is here with a separator and notes.txt after it
+              ok    listing found two entries: notes.txt (a file) and sub (a directory)
             processes and the environment
               ok    setenv set OSLAYER_GREETING
               ok    getenv reads it back

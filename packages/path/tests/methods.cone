@@ -8,12 +8,18 @@
 // - 'parent', 'join' and 'normalize' answer a new Path; 'name', 'stem',
 //   'extension' and 'volume' answer a piece of the path's own text;
 // - two Paths are equal when their text is the same bytes, and hash alike.
+//
+// Where Windows' rules and POSIX's differ (a drive, a share and '\'), each
+// case gives both answers, 'os(windows, posix)'; see 'lexical'.
 
 mod methods;
 
 import testing use *;
 import collections use *;
 import path use Path;
+
+// The answer for this system: Windows' or POSIX's
+fn os(windows &str, posix &str) &str { if isWindows() {windows;} else {posix;}; }
 
 // A literal given where a Path is wanted
 fn lenOf(p Path) usize { p.view().len(); }
@@ -74,33 +80,33 @@ fn main() i32 {
   imm dup = declared.copy();
   expectStr(dup.view(), "C:\\work\\a.txt", "a copy holds the same text");
 
-  // isAbsolute and volume
-  expectBool(Path.from("C:\\x").isAbsolute(), true, "C:\\x is absolute");
+  // isAbsolute and volume (POSIX: a root only, and no volume)
+  expectBool(Path.from("C:\\x").isAbsolute(), isWindows(), "C:\\x is absolute on Windows only");
   expectBool(Path.from("C:").isAbsolute(), false, "C: alone is not");
   expectBool(Path.from("\\x").isAbsolute(), false, "\\x is not (no drive)");
   expectBool(Path.from("x/y").isAbsolute(), false, "x/y is not");
-  expectBool(Path.from("\\\\server\\share").isAbsolute(), true, "a share is");
-  expectStr(Path.from("C:\\x").volume(), "C:", "the volume of C:\\x");
-  expectStr(Path.from("//server/share/x").volume(), "//server/share", "the volume of a share, as written");
+  expectBool(Path.from("\\\\server\\share").isAbsolute(), isWindows(), "a share is, on Windows");
+  expectStr(Path.from("C:\\x").volume(), os("C:", ""), "the volume of C:\\x");
+  expectStr(Path.from("//server/share/x").volume(), os("//server/share", ""), "the volume of a share, as written");
   expectStr(Path.from("x/y").volume(), "", "no volume");
 
   // parent: C:\a\b.txt is in C:\a; a root is its own parent; a bare name is
   // in the current folder, ""
-  parentIs("C:\\a\\b.txt", "C:\\a");
+  parentIs("C:\\a\\b.txt", os("C:\\a", ""));
   parentIs("a/b/c.txt", "a/b");
   parentIs("a/b/", "a");
-  parentIs("C:\\x", "C:\\");
-  parentIs("C:\\", "C:\\");
+  parentIs("C:\\x", os("C:\\", ""));
+  parentIs("C:\\", os("C:\\", ""));
   parentIs("c.txt", "");
   imm grand = Path.from("a/b/c.txt").parent().parent();
   expectStr(grand.view(), "a", "parent chains: a/b/c.txt, a/b, a");
 
   // name, stem and extension: the last dot splits the name
-  nameIs("C:\\a\\b.txt", "b.txt", "b", ".txt");
+  nameIs("C:\\a\\b.txt", os("b.txt", "C:\\a\\b.txt"), os("b", "C:\\a\\b"), ".txt");
   nameIs("a/b.tar.gz", "b.tar.gz", "b.tar", ".gz");
   nameIs(".profile", ".profile", ".profile", "");
   nameIs("a/b/", "b", "b", "");
-  nameIs("C:\\", "", "", "");
+  nameIs("C:\\", os("", "C:\\"), os("", "C:\\"), "");
   nameIs("é/日本.txt", "日本.txt", "日本", ".txt");
 
   // join: a '/' between, unless the left ends in a separator; a right side
@@ -109,8 +115,8 @@ fn main() i32 {
   joinIs("a", "b", "a/b");
   joinIs("a/", "b", "a/b");
   joinIs("C:\\work", "src/main.cone", "C:\\work/src/main.cone");
-  joinIs("C:\\a", "D:\\b", "D:\\b");
-  joinIs("C:\\a", "\\b", "C:\\b");
+  joinIs("C:\\a", "D:\\b", os("D:\\b", "C:\\a/D:\\b"));
+  joinIs("C:\\a", "\\b", os("C:\\b", "C:\\a/\\b"));
   joinIs("a/b", "/c", "/c");
   joinIs("a", "../b", "a/../b");
   joinIs("", "b", "b");
@@ -121,17 +127,17 @@ fn main() i32 {
 
   // parts: the volume and root as one piece, then each name
   partsAre("a/b/c", "a|b|c");
-  partsAre("C:\\a\\b", "C:\\|a|b");
+  partsAre("C:\\a\\b", os("C:\\|a|b", "C:\\a\\b"));
   partsAre("/a//b/", "/|a|b");
   partsAre("a/./../b", "a|.|..|b");
   partsAre("", "");
 
   // normalize: one separator, no '.', a '..' drops the name before it
   normalIs("a/./b/.", "a/b");
-  normalIs("a\\b", "a/b");
+  normalIs("a\\b", os("a/b", "a\\b"));
   normalIs("a/b/../../..", "..");
-  normalIs("C:\\a\\..\\..\\b", "C:/b");
-  normalIs("C:\\", "C:/");
+  normalIs("C:\\a\\..\\..\\b", os("C:/b", "C:\\a\\..\\..\\b"));
+  normalIs("C:\\", os("C:/", "C:\\"));
   normalIs("a/..", ".");
   normalIs("../a", "../a");
 
@@ -145,7 +151,7 @@ fn main() i32 {
   expectUInt(hashOf(&one), hashOf(&same), "equal paths hash alike");
   expectBool(hashOf(&one) != hashOf(&other), true, "another spelling hashes apart");
   imm back = other.normalize();
-  expectBool(back == &one, true, "normalized, the two spellings meet");
+  expectBool(back == &one, isWindows(), "normalized, the two spellings meet only where '\\' separates");
   mut seen = Dict[Path, i64].empty();
   seen.insert(Path.from("a/b"), 7);
   expectBool(seen.contains(&one), true, "a Path is a Dict key");

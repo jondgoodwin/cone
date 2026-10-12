@@ -351,8 +351,10 @@ The futex calls `WaitOnAddress` and its wakes, which the Windows SDK's
 `Synchronization.lib` defines and the C runtime's default link line lacks; since
 `[link]` has no per-system form, Congo's Windows link line adds
 `synchronization.lib` itself, beside `msvcrt.lib`. A program that calls none of it
-takes nothing from it. The same goes for `iocore`, whose Windows half calls
-Winsock and ntdll: Congo's Windows link line adds `ws2_32.lib` and `ntdll.lib`.
+takes nothing from it. The same goes for `shell32.lib`, whose `CommandLineToArgvW`
+the `process` package's `args` calls on Windows, and for `ws2_32.lib` and
+`ntdll.lib`, which `iocore`'s Windows half calls (Winsock, the wait completion
+packet).
 
 ## Runtime libraries
 

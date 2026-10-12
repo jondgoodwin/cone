@@ -4,12 +4,14 @@
 // not there, a folder where a file was wanted, a name already taken, a NUL
 // in a path. A UTF-8 name (é, 日本) is written and read too.
 //
-// It works in a folder of its own under TEMP, 'cone-fs-test-files', which it
-// clears if an interrupted run left it, makes, and removes at the end. Every
-// path it touches is built from that folder, and nothing is removed until
-// the folder's path has been checked to be TEMP's, absolute, with that name
-// after it. Paths are printed with the folder shown as '<root>', so the
-// output is the same on every machine.
+// It works in a folder of its own under TEMP (TMPDIR or /tmp on POSIX),
+// 'cone-fs-test-files', which it clears if an interrupted run left it, makes,
+// and removes at the end. Every path it touches is built from that folder,
+// and nothing is removed until the folder's path has been checked to be
+// TEMP's, absolute, with that name after it. Paths are printed with the
+// folder shown as '<root>', so the output is the same on every machine. What
+// differs by system (Windows refuses to rename onto a file, POSIX replaces
+// it) is checked the way each system does it, in the same number of checks.
 //
 // Every path is a 'Path', lent to fs with '&'; a variable's is used again
 // after the call (literals.cone checks that no function consumes it, and that
@@ -28,9 +30,11 @@ import time use Duration, Timestamp;
 // The test's folder: TEMP's absolute path and the name, after checking
 // that it is that and nothing shorter
 fn makeRoot(name &str) Path {
-  imm temp = libc.getenv("TEMP");
-  require(temp != null, "TEMP is set");
-  imm tempPath = Path.from(cstr.fromPtr(temp).view());
+  mut variable cstr = "TMPDIR";
+  if isWindows() { variable = "TEMP"; }
+  imm temp = libc.getenv(variable);
+  require(temp != null or not isWindows(), "TEMP is set");
+  imm tempPath = if temp != null {Path.from(cstr.fromPtr(temp).view());} else {Path.from("/tmp");};
   mut root = Path.from("");
   match fs.absolute(&tempPath) {
     case imm t Ok { root = t.join(name); }
@@ -200,16 +204,24 @@ fn renaming(root &Path) {
   imm got = contents(&b);
   expectStr(got.view(), "A", "b holds what a did");
 
-  // Windows refuses to rename onto a file that is there
+  // Windows refuses to rename onto a file that is there; POSIX replaces it
+  // (and it is put back, so the rest reads the same)
   ok(fs.writeFile(&c, "C"), "write c");
-  failsWith(root, fs.rename(&b, &c),
-    "rename <root>/b.txt to <root>/c.txt: File exists", "Windows: rename onto a file refused");
-  match fs.rename(&b, &c) {
-    case imm e Error {
-      expect(e.alreadyExists(), "rename onto a file is alreadyExists");
-      expect(e.path.view() == b.view() and e.other.view() == c.view(), "the error holds both paths");
+  if isWindows() {
+    failsWith(root, fs.rename(&b, &c),
+      "rename <root>/b.txt to <root>/c.txt: File exists", "Windows: rename onto a file refused");
+    match fs.rename(&b, &c) {
+      case imm e Error {
+        expect(e.alreadyExists(), "rename onto a file is alreadyExists");
+        expect(e.path.view() == b.view() and e.other.view() == c.view(), "the error holds both paths");
+      }
+      case is Ok { expect(false, "rename onto a file fails"); }
     }
-    case is Ok { expect(false, "rename onto a file fails"); }
+  } else {
+    ok(fs.rename(&b, &c), "POSIX: rename onto a file replaces it");
+    imm replaced = contents(&c);
+    expectStr(replaced.view(), "A", "the replaced file holds what b did");
+    ok(fs.rename(&c, &b), "and back again");
   }
   imm missing = root.join("missing.txt");
   imm d = root.join("d.txt");

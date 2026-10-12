@@ -92,7 +92,8 @@ Visual Studio projects stay at the root.
   `clearBarrierHook`, whose work is conestd's);
   `stdio` prints;
   `libc` and `posix` are C packages of raw bindings to the C library and the
-  POSIX functions beyond it (Windows first), and `core` imports `libc` for its
+  POSIX functions beyond it (the C library's own on Linux, a mapping onto the C
+  runtime on Windows, chosen by `isWindows()`), and `core` imports `libc` for its
   allocator (through `RawBlocks`, its raw blocks layer); `sdl` is a C package of raw bindings to SDL3 (a window for
   Vulkan and its size in pixels, its events, the keyboard's, the mouse's,
   the wheel's and a window's, each with its nanosecond timestamp, the
@@ -366,13 +367,17 @@ Visual Studio projects stay at the root.
   file takes a `&Path` and nothing else, and a path it answers is a `Path`),
   each failure a core `Result` holding an `FsError` (what, which `Path`, the
   errno); `path` is `Path`, a
-  file path as owned text, Windows' syntax (a literal becomes one where a
+  file path as owned text, read by the build system's rules (Windows' drive
+  letters, shares and both separators, or POSIX's `/` alone; a literal becomes
+  one where a
   `Path` is wanted by value, through `fromLiteral`, and a temporary one where
   a `&Path` is; methods `parent`, `join`,
   `normalize`, `name`, `stem`, `extension`, `volume`, `parts`, `isAbsolute`,
   `==` and `Hash`; `/` out); `env` is environment variables (get, set, unset);
   what is Windows-only beneath them is `posix`'s mapping onto the C runtime
-  and its `opendir`, `readdir` and `lstat`, written over `_findfirst64`;
+  and its `opendir`, `readdir` and `lstat`, written over `_findfirst64`
+  (on Linux they are the C library's, `Stat` and `dirent` filled in from
+  glibc's layouts);
   `process` runs a program and waits for it (`run`: a list of arguments, an
   working folder, a `&Path` defaulting to "", the current folder (a
   parameter of `run` and `runLine`, not a field of `Options`), a time limit that stops the child and everything it
@@ -381,10 +386,12 @@ Visual Studio projects stay at the root.
   `inherit`; `crashReport: false`, a crash ended at once and unreported,
   as test runners run their programs; `runLine` for a line written by
   hand, `commandLine`, `args` and `currentExe`, a `Path`), a failure to start a
-  `ProcessError`; its interface is no OS's, its insides Windows only
-  (`kernel32`'s `CreateProcessW`, overlapped pipes, a job object and the
-  debugging functions, `shell32`'s `CommandLineToArgvW`), a
-  POSIX one to come with Linux;
+  `ProcessError`; its interface is no OS's, its insides one per OS: on Windows
+  `kernel32`'s `CreateProcessW`, overlapped pipes, a job object and the
+  debugging functions, `shell32`'s `CommandLineToArgvW` (which Congo's
+  Windows link line names), on Linux `posix_spawn` with pipes read by `poll`,
+  a process group stopped by `SIGKILL`, and `/proc/self` for `args` and
+  `currentExe`;
   `iobuf` is owned buffers for I/O, the async I/O runtime's first package:
   `IoBuf`, a 4 KiB-aligned block of whole pages and its length, a move type
   lent to an operation by moving it (never a borrow) and Sendable, whose
@@ -805,7 +812,8 @@ Visual Studio projects stay at the root.
   target with `isWindows()`, as the hash seed's `rand_s` or `getentropy`,
   all of which Cone cannot say; and `oscalls.c`, the Linux system calls `sync`
   and `thread` need that Cone cannot call (the futex's wait and wake, the
-  thread's kernel id, the processor count, the process-wide memory barrier),
+  thread's kernel id, the processor count, the process-wide memory barrier,
+  the `environ` the `process` package passes to the programs it starts),
   empty on Windows, whose macOS half is to come.
   Not a Congo package: nothing imports it.
 - `doc/design/`: the language design notes — what Cone is aiming at and how far
@@ -977,10 +985,11 @@ Cone is compiled by the `conec` the same build makes, so the library follows
 the compiler. It binds the Windows C runtime or the C library of Linux, a
 call at a time (`cnames.c`, and `isWindows()` in the Cone), so a plain
 program compiles, links and runs on both, and so do threads, `sync` and actors
-(pthreads and the futex system call, through `oscalls.c`), and so do `iobuf`
-(`mmap`) and `iocore` (epoll, with an eventfd and a timerfd; `linux.cone` beside
-`windows.cone`, which keeps the completion port); what is built on the rest of
-the OS (`process`, the `posix` and `fs` beyond `libc`, HTTP and TLS) is Windows
+(pthreads and the futex system call, through `oscalls.c`), and so do `fs`,
+`path`, `env`, `process` and `posix` (the C library's POSIX functions, and
+`posix_spawn` for `process`), `iobuf` (`mmap`) and `iocore` (epoll, with an
+eventfd and a timerfd; `linux.cone` beside `windows.cone`, which keeps the
+completion port); what is built on the rest of the OS (HTTP and TLS) is Windows
 only for now, and the suite's tests of it fail to link on Linux.
 
 #### Building on Linux
@@ -1007,12 +1016,15 @@ other object; `--nopic` opts out.
 
 Congo runs on Linux (`python3 tools/congo/congo.py test` in a package's folder,
 with `conec` built at `build/x64-release/conec`), and `sync`, `thread`,
-`actors`, `time`, `iobuf`, `iocore` and `aio` pass their tests there.
-(`synchronization.lib`, `ws2_32.lib` and `ntdll.lib`, the Windows SDK's
-libraries, are on Congo's Windows link line itself, so no package's `[link]`
-names them.) The packages built on
-Windows alone (`fs`, `posix`, `process`, HTTP and what imports them, `sdl` and
-what draws) do not build or run there.
+`actors`, `time`, `path`, `env`, `fs`, `posix`, `process`, `iobuf`, `iocore` and
+`aio` pass their tests there. (`synchronization.lib`, `shell32.lib`,
+`ws2_32.lib` and `ntdll.lib`, the Windows SDK's, are on Congo's Windows link
+line itself, so no package's `[link]` names them.) The packages built on
+Windows alone (HTTP's `httpconn` examples and `httpclient`, `tls`, `sdl` and
+what draws) do not build or run there. A test whose output differs by system has a
+file of its own for the host, `name.linux.out` beside `name.out` (Congo reads
+`name.<host>.out` before `name.out`); a test is written to print the same
+everywhere where it can, asking `isWindows()` for the values that differ.
 
 ## Validating a change
 

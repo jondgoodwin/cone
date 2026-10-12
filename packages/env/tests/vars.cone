@@ -1,9 +1,9 @@
 // The env package against the program's own environment: a variable not
 // set, set, replaced, removed and removed again; a name and a value in
 // UTF-8 (é, 日本); a child started after a 'set' seeing it; and, pinned
-// because they are Windows', a name read without regard to ASCII case and an
-// empty value removing the variable. Every variable is named CONE_ENV_TEST_*
-// and removed again before the end.
+// because they differ by system, a name read without regard to ASCII case and
+// an empty value removing the variable (Windows), or neither (POSIX). Every
+// variable is named CONE_ENV_TEST_* and removed again before the end.
 
 mod vars;
 
@@ -50,9 +50,16 @@ fn main() i32 {
   valueIs("", "<none>", "empty name");
   valueIs("CONE_ENV=TEST", "<none>", "name with '='");
 
-  // A child sees what was set before it started: cmd exits 7 when it does
+  // A child sees what was set before it started: the shell exits 7 when it
+  // does (cmd on Windows; on POSIX 'system' answers the wait status, the code
+  // in its second byte)
   env.set("CONE_ENV_TEST_CHILD", "seen");
-  imm status = libc.system("if \"%CONE_ENV_TEST_CHILD%\"==\"seen\" (exit 7) else (exit 3)");
+  mut status = 0i32;
+  if isWindows() {
+    status = libc.system("if \"%CONE_ENV_TEST_CHILD%\"==\"seen\" (exit 7) else (exit 3)");
+  } else {
+    status = libc.system("if [ \"$CONE_ENV_TEST_CHILD\" = seen ]; then exit 7; else exit 3; fi") >> 8i32;
+  }
   expectInt(i64.from(status), 7, "child sees the variable");
   env.unset("CONE_ENV_TEST_CHILD");
 
@@ -65,15 +72,19 @@ fn main() i32 {
   env.unset(full.view());
   valueIs(full.view(), "<none>", "unset with a String's view");
 
-  // Windows: a name is read without regard to ASCII case
+  // Windows: a name is read without regard to ASCII case; POSIX: it is not,
+  // and unsetting the other case leaves the variable
   env.set("Cone_Env_Test_Case", "mixed");
-  valueIs("CONE_ENV_TEST_CASE", "mixed", "Windows: ASCII case does not matter");
+  valueIs("CONE_ENV_TEST_CASE", if isWindows() {"mixed";} else {"<none>";}, "ASCII case matters only on POSIX");
   env.unset("CONE_ENV_TEST_CASE");
-  valueIs("Cone_Env_Test_Case", "<none>", "Windows: unset by the other case");
+  valueIs("Cone_Env_Test_Case", if isWindows() {"<none>";} else {"mixed";}, "unset by the other case");
+  env.unset("Cone_Env_Test_Case");
+  valueIs("Cone_Env_Test_Case", "<none>", "unset by its own case");
 
-  // Windows: an empty value removes the variable
+  // Windows: an empty value removes the variable; POSIX: it is set, empty
   env.set(name, "something");
   env.set(name, "");
-  valueIs(name, "<none>", "Windows: an empty value removes it");
+  valueIs(name, if isWindows() {"<none>";} else {"";}, "an empty value removes it only on Windows");
+  env.unset(name);
   done();
 }

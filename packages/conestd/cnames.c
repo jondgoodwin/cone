@@ -30,10 +30,14 @@ FILE *cone_stderr(void) { return stderr; }
 int *cone_errno(void) { return &errno; }
 
 // The numbers that differ by C library (the UCRT's EILSEQ is 42 and glibc's 84,
-// its LC_ALL 0 and glibc's 6), which libc declares as globals of their own names.
+// its LC_ALL 0 and glibc's 6; the UCRT's ENAMETOOLONG is 38 and glibc's 36, its
+// ENOTEMPTY 41 and glibc's 39), which libc (and, for the last two, posix)
+// declares as globals of their own names.
 // Each is a macro, so the header's value is taken first and the macro removed
 // before its name is used for the global
 enum {
+    cone_value_ENAMETOOLONG = ENAMETOOLONG,
+    cone_value_ENOTEMPTY = ENOTEMPTY,
     cone_value_EILSEQ = EILSEQ,
     cone_value_LC_ALL = LC_ALL,
     cone_value_LC_COLLATE = LC_COLLATE,
@@ -42,6 +46,8 @@ enum {
     cone_value_LC_NUMERIC = LC_NUMERIC,
     cone_value_LC_TIME = LC_TIME
 };
+#undef ENAMETOOLONG
+#undef ENOTEMPTY
 #undef EILSEQ
 #undef LC_ALL
 #undef LC_COLLATE
@@ -49,6 +55,8 @@ enum {
 #undef LC_MONETARY
 #undef LC_NUMERIC
 #undef LC_TIME
+const int ENAMETOOLONG = cone_value_ENAMETOOLONG;
+const int ENOTEMPTY = cone_value_ENOTEMPTY;
 const int EILSEQ = cone_value_EILSEQ;
 const int LC_ALL = cone_value_LC_ALL;
 const int LC_COLLATE = cone_value_LC_COLLATE;
