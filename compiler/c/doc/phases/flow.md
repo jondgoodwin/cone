@@ -1849,6 +1849,16 @@ All four are `ErrorInitSelf`. What is not checked: a method called on a filled
 `self` may do with its own borrowed self what any method may, and a store of a
 filled `self`'s fields is an ordinary store.
 
+`self` is never drop-tracked (`flowDropTracked`, by `flowNewSelfVar`). It is a
+`&new` reference, so the use that hands it to a method or to `<Actor>.self'`
+reads as a move to the move rules, and `nameuseFlow` returns before it looks at
+the moved flags. A tracked `self` would have run right until a use stood in an
+`if`, a `while` or a `match` arm: the use deeper than the declaration opens the
+drop walk for the function (`flowDropNote`), and the walk then honours the
+move marks, refusing the call (and any later use, the actor's own fields
+included) as 1048 "may have been moved out". Fill and use are tracked by
+`VarUnfilled` alone, on every path shape.
+
 ## 7. What it decides, and what it does not
 
 | Analysis | In flow? | Enforced | Not enforced |

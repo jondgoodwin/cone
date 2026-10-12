@@ -1,0 +1,131 @@
+// An actor's init may call a synchronous method of its own once '*self = ...'
+// has filled the state, wherever that call stands after the fill: in an 'if',
+// in both arms of an 'if/else', in a loop, in a 'match' arm, in a nested
+// branch. The fill is one fact the branches inherit, not something each branch
+// has to establish. Each actor prints its state at the end of its init.
+
+mod concurrency_actor_init_branch_sync;
+
+import stdio use *;
+import actors;
+
+fn say(s &str, n u64) {printStr(s); printStr(" "); printUInt(n); printStr("\n");}
+
+actor InIf {
+  n u64;
+
+  fn init(self &new, go bool) {
+    *self = new Self(n: 5u64);
+    if go {
+      self.bump();
+    }
+    say("InIf", n);
+  }
+
+  fn bump(self) {n = n + 1u64;}
+}
+
+actor InElse {
+  n u64;
+
+  fn init(self &new, go bool) {
+    *self = new Self(n: 5u64);
+    if go {
+      self.bump();
+    }
+    else {
+      self.bump();
+      self.bump();
+    }
+    say("InElse", n);
+  }
+
+  fn bump(self) {n = n + 1u64;}
+}
+
+actor InLoop {
+  n u64;
+
+  fn init(self &new, times u64) {
+    *self = new Self(n: 5u64);
+    mut i = 0u64;
+    while i < times {
+      self.bump();
+      i = i + 1u64;
+    }
+    say("InLoop", n);
+  }
+
+  fn bump(self) {n = n + 1u64;}
+}
+
+actor InNested {
+  n u64;
+
+  fn init(self &new, a bool, b bool) {
+    *self = new Self(n: 5u64);
+    if a {
+      if b {
+        self.bump();
+      }
+      self.bump();
+    }
+    say("InNested", n);
+  }
+
+  fn bump(self) {n = n + 1u64;}
+}
+
+actor InMatch {
+  n u64;
+
+  fn init(self &new, k u64) {
+    *self = new Self(n: 5u64);
+    match k {
+      case 1u64 { self.bump(); }
+      else {
+        self.bump();
+        self.bump();
+      }
+    }
+    say("InMatch", n);
+  }
+
+  fn bump(self) {n = n + 1u64;}
+}
+
+actor FilledInBranch {
+  n u64;
+
+  fn init(self &new, go bool) {
+    if go {
+      *self = new Self(n: 5u64);
+    }
+    else {
+      *self = new Self(n: 50u64);
+    }
+    self.bump();
+    say("FilledInBranch", n);
+  }
+
+  fn bump(self) {n = n + 1u64;}
+}
+
+fn main() {
+  initAll();
+  {
+    imm a = new InIf(true);
+    imm b = new InIf(false);
+    imm c = new InElse(true);
+    imm d = new InElse(false);
+    imm e = new InLoop(3u64);
+    imm f = new InNested(true, true);
+    imm g = new InNested(true, false);
+    imm h = new InNested(false, true);
+    imm i = new InMatch(1u64);
+    imm j = new InMatch(2u64);
+    imm k = new FilledInBranch(true);
+    imm l = new FilledInBranch(false);
+  }
+  finalAll();
+}
