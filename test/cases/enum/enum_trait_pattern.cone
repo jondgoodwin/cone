@@ -75,13 +75,26 @@ fn measure(s &Shape) i32 {
   }
 }
 
-// A '&mut' matched gives a writable virtual reference: 'grow' needs 'self &mut'.
+// A '&mut' matched gives a writable virtual reference: 'grow' needs 'self &mut'. The Shape is a
+// local of the function: through a '&mut' parameter another name could reach it, and a call through
+// the virtual reference, whose type is hidden, could store over it (enum_flow_trait_pattern).
 // Circle(3) grown by 5 is r = 8, size 80; Third gives 0
-fn grew(s &mut Shape) i32 {
-  match s {
+fn grew(s Shape) i32 {
+  mut t = s;
+  match &mut t {
     case imm g Grower {g.grow(5); g.size();}
     case is Third {0;}
   }
+}
+
+// The growth stays in the Shape: Circle(3) grown by 5, then measured, is 80
+fn grewThenMeasured(s Shape) i32 {
+  mut t = s;
+  match &mut t {
+    case imm g Grower {g.grow(5);}
+    else {}
+  }
+  measure(&t);
 }
 
 // A guard may name the binding. Circle(3): size 30 is not over 50, so the Circle arm: 2.
@@ -165,13 +178,13 @@ fn main() i32 {
   show("square-size", i64.from(measure(&sq)));       // 2 * 100
   show("third-arm", i64.from(measure(&th)));         // the arm after the trait's
 
-  mut gc Shape = Shape.Circle(3);
-  show("circle-grown", i64.from(grew(&mut gc)));     // (3 + 5) * 10
-  show("circle-after", i64.from(measure(&gc)));      // the growth stayed: 80
-  mut gs Shape = Shape.Square(1);
-  show("square-grown", i64.from(grew(&mut gs)));     // (1 + 5) * 100
-  mut gt Shape = Shape.Third(9);
-  show("third-not-grown", i64.from(grew(&mut gt)));  // the other arm: 0
+  imm gc Shape = Shape.Circle(3);
+  show("circle-grown", i64.from(grew(gc)));          // (3 + 5) * 10
+  show("circle-after", i64.from(grewThenMeasured(gc)));  // the growth stayed: 80
+  imm gs Shape = Shape.Square(1);
+  show("square-grown", i64.from(grew(gs)));          // (1 + 5) * 100
+  imm gt Shape = Shape.Third(9);
+  show("third-not-grown", i64.from(grew(gt)));       // the other arm: 0
 
   show("guard-fails-circle", i64.from(guarded(&c)));   // 30 is not over 50
   show("guard-holds-square", i64.from(guarded(&sq)));  // 200 is

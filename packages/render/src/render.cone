@@ -76,6 +76,18 @@
 //   normal offset, blending cascades at their seams. Cut-out, skinned and
 //   flutter meshes cast what they show; see-through and custom-pipeline
 //   draws cast nothing, nor does an item marked 'dontCastShadow'.
+// - The scene (visibility.cone, hiz.cone, fade.slang, hiz.slang): things that
+//   stay, added with 'addSceneItem' (a SceneHandle each, a proxy in a
+//   spatialindex.Bvh, refitted by 'moveSceneItem') and culled for every camera
+//   that draws -- the main view, each shadow cascade, each local light's shadow
+//   face, each RenderView, each reflection probe face -- with batches gathered
+//   from what that camera sees alone. Levels of detail by projected size (the
+//   item's LodChain, hysteresis, a bias a camera and a shadow pass can set) that
+//   change by a dithered cross-fade; visibility ranges whose edges fade; and
+//   occlusion by a hierarchical depth pyramid in two passes, the survivors
+//   compacted on the GPU and drawn by indirect draws. 'renderer.vis.settings'
+//   switches each off, and with all off the scene draws what a DrawList of its
+//   items would. A DrawList still draws whole beside it.
 // - Point and spot lights (lights.cone, locallights.slang): real light
 //   sources, in 'renderer.lights', named by handles and cheap to add, move,
 //   aim, recolour and re-intensify every frame (a flicker). Intensity in
@@ -220,6 +232,9 @@
 //                  ssao.cone, dof.cone, fog.cone, decal.cone: each pass and its settings, with its shader's SPIR-V
 //                  (taa.slang, taavelocity*.slang, fxaa.slang, autoexposure.slang, ssao.slang, dof.slang,
 //                  fog.slang, decal.slang; the modules fxcommon and velocitycommon)
+//   visibility.cone  Visibility (the scene, its hierarchy and levels), SceneHandle, VisibilitySettings, the fade code
+//   hiz.cone       HiZ: the depth pyramid, its buffers and passes; hiz.slang's SPIR-V (fade.slang is the module
+//                  lit.slang and pbr.slang import for the dither)
 //   lights.cone    LightSet, LightHandle: point and spot lights, the froxel grid, the assignment and the
 //                  GPU buffers (locallights.slang is the shaders' side of it)
 //
@@ -242,6 +257,7 @@ import collections use *;
 import pool use *;
 import mesh use Mesh, PolyMesh, Group;
 import path use Path;
+import spatialindex use Bvh, Proxy;
 
 // Report a problem to stderr
 fn logLine(msg &str) {
@@ -374,6 +390,11 @@ pub struct Renderer {
   // The reflection probes ('addProbe', views.cone): a physically based copy
   // inside a probe's box is lit by that probe's cubes instead of the sky's
   pub probes List[ProbeSlot];
+  // The scene: things that stay, culled for each camera and drawn at a level
+  // of detail chosen by their size (visibility.cone)
+  pub vis Visibility;
+  // The depth pyramid that culls it (hiz.cone): none until occlusion is first on
+  pub hiz List[HiZ];
   // Store the depth buffer at the end of 'render' (it is discarded
   // otherwise), so that a later pass into the same target -- glowing
   // particles drawn additively, say -- is depth tested against the scene
@@ -384,6 +405,9 @@ pub struct Renderer {
   // lit in display units; 'exposureFromEv100' for one in physical units
   // (the light in lux, ambient, sky and emissive in nits).
   pub exposure f32 = 1.;
+  // A set of more keys than this is grouped by hash, not sorted (gatherSet): the
+  // same batches, their copies in list order instead of nearest first
+  pub bucketMin usize = 2048usize;
 
   // A renderer drawing into targets of 'colorFormat', with a depth texture
   // of 'depthFormat' (TEXTURE_FORMAT_DEPTH32_FLOAT). For physically based
@@ -568,7 +592,7 @@ pub struct Renderer {
       instances, FIRST_INSTANCES, List[f32].empty(), List[DrawKey].empty(), List[DrawBatch].empty(), 0u32,
       Pool[PipelineSlot].empty(), litSkinnedPipeline, pbrSkinnedPipeline, bones, FIRST_BONES, boneBases,
       List[u32].empty(), 0u32, litBlendPipeline, pbrBlendPipeline, litSkinnedBlendPipeline, pbrSkinnedBlendPipeline, 0u32,
-      pbrSwayPipeline, shadow, lights, List[ProbeSlot].empty());
+      pbrSwayPipeline, shadow, lights, List[ProbeSlot].empty(), Visibility.create(0.25), List[HiZ].empty());
     mut w = new Image(1, 1, 3, List[u8].empty());
     w.pixels.push(255u8);
     w.pixels.push(255u8);
@@ -704,6 +728,66 @@ pub struct Renderer {
     *radius = m.radius;
   }
 
+  // ---- The scene (visibility.cone) ----
+
+  // Add a thing to the scene: 'mesh' drawn with 'material' placed by 'model',
+  // its color multiplied by 'tint'. Its bounds are the mesh's, now. A
+  // SceneHandle names it from then on; it is drawn, culled and levelled by
+  // every camera that renders. None for a mesh that is gone, skinned or lines.
+  pub fn addSceneItem(self &mut, mesh MeshHandle, material MaterialHandle, model Mat4, tint Color) SceneHandle {
+    if !meshes.alive(mesh.slot) { return SceneHandle.none(); }
+    imm m = meshes[mesh.slot].current();
+    if !m.isValid() or m.topology == PRIMITIVE_TOPOLOGY_LINE_LIST or m.isSkinned() { return SceneHandle.none(); }
+    imm c = m.center;
+    imm h = m.half;
+    imm r = m.radius;
+    vis.addItem(mesh, material, model, tint, c, h, r);
+  }
+
+  // Place a scene item anew (its proxy in the hierarchy follows)
+  pub fn moveSceneItem(self &mut, h SceneHandle, model Mat4) bool { vis.move(h, model); }
+
+  pub fn removeSceneItem(self &mut, h SceneHandle) bool { vis.remove(h); }
+
+  pub fn clearScene(self &mut) { vis.clear(); }
+
+  // Give a scene item the levels of 'chain' (the LodChain is copied; its
+  // level 0 is the item's mesh and sets its bounds)
+  pub fn setSceneLod(self &mut, h SceneHandle, chain &LodChain) bool {
+    if chain.levels.len() == 0usize or !meshes.alive(chain.levels[0usize].slot) { return false; }
+    imm m = meshes[chain.levels[0usize].slot].current();
+    imm c = m.center;
+    imm half = m.half;
+    imm r = m.radius;
+    if !vis.setChain(h, chain) { return false; }
+    vis.setBounds(h, c, half, r);
+  }
+
+  // The bounds of an item's mesh taken again (after 'replaceMesh' gave it other bounds)
+  pub fn refreshSceneItem(self &mut, h SceneHandle) bool {
+    if !vis.alive(h) { return false; }
+    imm it = vis.items[usize.from(h.slot)];
+    imm mesh = it.mesh;
+    if !meshes.alive(mesh.slot) { return false; }
+    imm m = meshes[mesh.slot].current();
+    imm c = m.center;
+    imm half = m.half;
+    imm r = m.radius;
+    vis.setBounds(h, c, half, r);
+  }
+
+  // Visible from 'minDistance' to 'maxDistance' from the camera (0: no limit),
+  // each edge fading by dither over 'margin'
+  pub fn setSceneRange(self &mut, h SceneHandle, minDistance f32, maxDistance f32, margin f32) bool {
+    vis.setRange(h, minDistance, maxDistance, margin);
+  }
+
+  pub fn setSceneLayers(self &mut, h SceneHandle, layers u32) bool { vis.setLayers(h, layers); }
+  pub fn setSceneCastsShadow(self &mut, h SceneHandle, casts bool) bool { vis.setCastsShadow(h, casts); }
+  pub fn setSceneTint(self &mut, h SceneHandle, tint Color) bool { vis.setTint(h, tint); }
+  pub fn setSceneMaterial(self &mut, h SceneHandle, material MaterialHandle) bool { vis.setMaterial(h, material); }
+  pub fn setSceneOccludable(self &mut, h SceneHandle, occludable bool) bool { vis.setOccludable(h, occludable); }
+
   // Lines to draw: 'positions', and 'indices' two to a line (a wireframe:
   // 'polyEdges' makes them of a PolyMesh's edges)
   pub fn addLines(self &mut, device &mut Device, positions &Array[Vec3], indices &Array[u32]) MeshHandle {
@@ -832,6 +916,7 @@ pub struct Renderer {
       }
     }
     boundingSphere(m.positions.view(), &mut slot.a.center, &mut slot.a.radius);
+    slot.a.half = boundingHalf(m.positions.view());
     true;
   }
 
@@ -1182,7 +1267,10 @@ pub struct Renderer {
       camera &Camera, light &Light, list &DrawList) {
     imm targetView = target.createView();
     imm depthView = depth.createView();
+    // The depth pyramid reads the depth buffer, if it can be sampled
+    vis.depthSampled = (depth.usage & TEXTURE_USAGE_TEXTURE_BINDING) != 0u32;
     self.renderTo(device, encoder, targetView, depthView, camera, light, list);
+    vis.depthSampled = false;
   }
 
   // The same into views of the target and its depth (a view of a texture
@@ -1194,7 +1282,6 @@ pub struct Renderer {
     triangles = 0u64;
     instancesDrawn = 0u32;
     if target.width == 0u32 or target.height == 0u32 { return; }
-    if drawSky or self.drawsPbr(list) { environment.bake(encoder); }
 
     // The frame's uniforms: the camera and the light
     imm aspect = f32.from(target.width) / f32.from(target.height);
@@ -1240,42 +1327,141 @@ pub struct Renderer {
     // buffer had to grow
     if lights.prepare(device, camera, aspect, target.width, target.height) { self.remakeFrameGroup(device); }
 
-    // The batches, front to back, and their instances and bones written
-    self.gatherBatches(list, eye);
-    self.writeInstances(device, list);
-    self.writeBones(device, list);
-
-    // The sun's shadows: the cascades fitted to this camera, their
-    // parameters written for every material to read, and, if they are on, a
-    // depth pass for each cascade before the scene is drawn
+    // The sun's cascades fitted to this camera (a function of the camera
+    // alone, so the casters of each can be gathered before the batches)
     imm shadowsOn = shadow.settings.enabled;
     if shadowsOn { shadow.cascades = computeCascades(camera, aspect, light.direction, &shadow.settings); }
+
+    // The scene (visibility.cone): what this camera sees of it, added to the
+    // draw list's items in a list of this render's, and, for each shadow
+    // pass that is on, the casters that reach its volume, each after the
+    // last. Without a scene the draw list itself is the list.
+    mut sceneList = DrawList.empty();
+    imm sceneOn = vis.active();
+    mut mainItems = list.items.len();
+    mut itemSets = List[SetRange].empty();
+    if sceneOn {
+      mut k = 0usize;
+      while k < list.items.len() {
+        sceneList.items.push(*list.items[k]);
+        k = k + 1usize;
+      }
+      k = 0usize;
+      while k < list.bones.len() {
+        sceneList.bones.push(*list.bones[k]);
+        k = k + 1usize;
+      }
+      vis.collect(camera, aspect, f32.from(target.height), &mut sceneList.items);
+      mainItems = sceneList.items.len();
+      if vis.settings.shadowCulling {
+        imm localViews = lights.shadows.viewsUsed;
+        imm cascadeCount = if shadowsOn { shadow.cascades.count; } else { 0u32; };
+        mut c = 0u32;
+        while c < cascadeCount {
+          imm first = sceneList.items.len();
+          self.appendCasters(&mut sceneList, list);
+          imm matrix = shadow.cascades.matrices[usize.from(c)];
+          imm volume = casterVolume(&matrix);
+          vis.collectCasters(&volume, camera, f32.from(target.height), &mut sceneList.items);
+          itemSets.push(new SetRange(first, sceneList.items.len()));
+          c = c + 1u32;
+        }
+        mut v = 0u32;
+        while v < localViews {
+          imm first = sceneList.items.len();
+          self.appendCasters(&mut sceneList, list);
+          mut matrix = Mat4.identity();
+          k = 0usize;
+          while k < 16usize {
+            matrix.m[k] = *lights.shadows.views[usize.from(v) * 16usize + k];
+            k = k + 1usize;
+          }
+          imm volume = Frustum.fromMatrix(matrix);
+          vis.collectCasters(&volume, camera, f32.from(target.height), &mut sceneList.items);
+          itemSets.push(new SetRange(first, sceneList.items.len()));
+          v = v + 1u32;
+        }
+      }
+    }
+    imm drawList &DrawList = if sceneOn { &sceneList; } else { list; };
+
+    // The batches, front to back, of the main view and then of each shadow
+    // pass, and their instances and bones written
+    keys.clear();
+    batches.clear();
+    vis.sets.clear();
+    // The depth pyramid culls scene items (hiz.cone) if asked to and the depth can be sampled
+    imm occluding = sceneOn and vis.settings.occlusion and vis.depthSampled;
+    if occluding {
+      if hiz.len() == 0usize { hiz.push(HiZ.create(device, &instances, &boneBases, target.width, target.height)); }
+      hiz[0usize].ensurePyramid(device, target.width, target.height);
+    }
+    self.gatherSet(drawList, 0usize, mainItems, eye, false, occluding);
+    vis.sets.push(new SetRange(0usize, batches.len()));
+    {
+      mut s = 0usize;
+      while s < itemSets.len() {
+        imm firstBatch = batches.len();
+        self.gatherSet(drawList, itemSets[s].first, itemSets[s].end, eye, true, false);
+        vis.sets.push(new SetRange(firstBatch, batches.len()));
+        s = s + 1usize;
+      }
+    }
+    if drawSky or self.drawsPbr(drawList) { environment.bake(encoder); }
+    self.writeInstances(device, drawList, occluding);
+    self.writeBones(device, drawList);
+    if occluding and hiz[0usize].candidateCount > 0u32 {
+      mut hz = &mut hiz[0usize];
+      hz.upload(device, &instances, &boneBases, instanceCapacity, &viewProjection);
+    }
+
+    // The sun's shadows: their parameters written for every material to
+    // read, and, if they are on, a depth pass for each cascade before the
+    // scene is drawn
     {
       imm place = camera.placement();
       imm forward = new Vec3(-place.m[8], -place.m[9], -place.m[10]).normalize();
       imm shadowFloats = shadowParamsFloats(&shadow.cascades, &shadow.settings, forward, shadowsOn);
       device.queue.writeBuffer(&shadow.params, 0u64, &shadowFloats as *u8, SHADOW_SUN_BYTES);
     }
-    if shadowsOn { recordShadowPasses(self, device, encoder, list); }
+    if shadowsOn { recordShadowPasses(self, device, encoder, drawList); }
     // And those of the point and spot lights that were given views
-    recordLocalShadowPasses(self, device, encoder, list);
+    recordLocalShadowPasses(self, device, encoder, drawList);
 
     // The background is light too: exposed like the rest
     imm bg = camera.background;
     imm clear = new Color(bg.red * exposure, bg.green * exposure, bg.blue * exposure, bg.alpha);
-    imm color = new RenderPassColorAttachment(view: target, clearValue: clear);
-    imm depthStore = if keepDepth { STORE_OP_STORE; } else { STORE_OP_DISCARD; };
-    imm depthAttachment = new RenderPassDepthStencilAttachment(view: depth, depthStoreOp: depthStore);
+    blendedDrawn = 0u32;
+    imm mainEnd = vis.sets[0usize].end;
+    // With the depth pyramid, the view is drawn in two render passes with the
+    // pyramid built between them (hiz.cone); otherwise in one
+    imm occActive = occluding and hiz[0usize].candidateCount > 0u32;
+    imm phases = if occActive { 2u32; } else { 1u32; };
+    if occActive { hiz[0usize].recordFirst(encoder); }
+    mut phase = 0u32;
+    while phase < phases {
+    imm lastPhase = phase + 1u32 == phases;
+    imm color = new RenderPassColorAttachment(view: target, clearValue: clear,
+      loadOp: if phase == 0u32 { LOAD_OP_CLEAR; } else { LOAD_OP_LOAD; });
+    imm depthStore = if keepDepth or !lastPhase { STORE_OP_STORE; } else { STORE_OP_DISCARD; };
+    imm depthAttachment = new RenderPassDepthStencilAttachment(view: depth, depthStoreOp: depthStore,
+      depthLoadOp: if phase == 0u32 { LOAD_OP_CLEAR; } else { LOAD_OP_LOAD; });
     mut pass = encoder.beginRenderPassWithDepth(&color, &depthAttachment);
     mut bound = BOUND_NONE;
     mut boundMaterial = Ref[MaterialSlot].none();
     mut boundPipeline = Ref[PipelineSlot].none();
     mut boundProbe = 0u32;           // the probe whose group is group 2 (0: the sky's)
     mut skyDrawn = !drawSky;
-    blendedDrawn = 0u32;
     mut b = 0usize;
-    while b < batches.len() {
+    while b < mainEnd {
       imm batch = *batches[b];
+      b = b + 1usize;
+      // The first pass of two draws the opaque batches; the second draws the
+      // culled ones' second set and everything after them
+      if occActive {
+        if phase == 0u32 and batch.layer != LAYER_OPAQUE { continue; }
+        if phase == 1u32 and batch.layer == LAYER_OPAQUE and batch.occ == 0u32 { continue; }
+      }
       // The sky, where nothing opaque was drawn, before anything
       // see-through (which writes no depth for it to be tested against)
       if batch.layer == LAYER_BLEND and !skyDrawn {
@@ -1285,8 +1471,8 @@ pub struct Renderer {
         boundMaterial = Ref[MaterialSlot].none();
       }
       imm first = *keys[usize.from(batch.first)];
-      imm item = list.items[usize.from(first.item)];
-      // gatherBatches kept only items whose mesh (and material) are alive
+      imm item = drawList.items[usize.from(first.item)];
+      // gatherSet kept only items whose mesh (and material) are alive
       imm slot = meshes[item.mesh.slot];
       imm m = slot.current();
       imm lines = batch.layer == LAYER_LINES;
@@ -1399,6 +1585,14 @@ pub struct Renderer {
         if lines {
           pass.drawIndexed(group.count, 1u32, group.start, 0i32, 0u32);
           triangles = triangles + u64.from(group.count / 2u32);
+        } elif batch.occ != 0u32 {
+          // A batch the pyramid culls: the survivors' count is the GPU's, an indirect draw (hiz.cone);
+          // 'triangles' counts all its candidates, an upper bound
+          imm hz = hiz[0usize];
+          imm draw = u64.from(*hz.batchData[usize.from(batch.occ - 1u32) * 4usize + 2usize]) + u64.from(g);
+          imm offset = (u64.from(phase) * u64.from(hz.drawCount) + draw) * 20u64;
+          pass.drawIndexedIndirect(&hz.args, offset);
+          if phase == 0u32 { triangles = triangles + u64.from(group.count / 3u32) * u64.from(batch.count); }
         } else {
           pass.drawIndexed(group.count, batch.count, group.start, 0i32, batch.firstInstance);
           triangles = triangles + u64.from(group.count / 3u32) * u64.from(batch.count);
@@ -1406,13 +1600,24 @@ pub struct Renderer {
         drawCalls = drawCalls + 1u32;
         g = g + 1usize;
       }
-      instancesDrawn = instancesDrawn + batch.count;
+      if phase == 0u32 or batch.occ == 0u32 { instancesDrawn = instancesDrawn + batch.count; }
       if blend { blendedDrawn = blendedDrawn + batch.count; }
-      b = b + 1usize;
     }
     // The sky, where nothing was drawn, if nothing see-through came
-    if !skyDrawn { self.recordSky(&mut pass); }
+    if !skyDrawn and lastPhase { self.recordSky(&mut pass); }
     pass.end();
+    if occActive and phase == 0u32 {
+      // The pyramid of what the first pass drew, and the second set of survivors
+      mut hz = &mut hiz[0usize];
+      hz.recordSecond(device, encoder, &depth, target.width, target.height);
+    }
+    phase = phase + 1u32;
+    }
+    if occActive {
+      mut hz = &mut hiz[0usize];
+      hz.finishFrame(&viewProjection);
+      if vis.settings.occlusionStats { hz.copyStats(device, encoder); }
+    }
   }
 
   // Draw the sky into 'pass': one triangle at the far plane, where nothing
@@ -1475,63 +1680,198 @@ pub struct Renderer {
   // ones and lines nearest first (by the nearest of their models' origins),
   // so nearer surfaces fill the depth buffer first; the see-through ones keep
   // their order, back to front.
-  fn gatherBatches(self &mut, list &DrawList, eye Vec3) {
-    keys.clear();
-    batches.clear();
-    imm n = list.items.len();
-    mut i = 0usize;
-    while i < n {
+  //
+  // Only the items 'itemFirst' to 'itemEnd' are gathered, their keys and
+  // batches added after those already there (each set sorted by itself): the
+  // main view's, then a shadow pass's, which 'shadowOnly' limits to what
+  // casts a shadow (no lines, nothing see-through or custom).
+  fn gatherSet(self &mut, list &DrawList, itemFirst usize, itemEnd usize, eye Vec3, shadowOnly bool, occlusion bool) {
+    mut setKeys = List[DrawKey].withCapacity(itemEnd - itemFirst);
+    mut i = itemFirst;
+    while i < itemEnd {
       imm item = list.items[i];
       imm cast = if item.castsShadow { 1u32; } else { 0u32; };
       if meshes.alive(item.mesh.slot) {
         imm m = meshes[item.mesh.slot].current();
         if m.isValid() {
-          if m.topology == PRIMITIVE_TOPOLOGY_LINE_LIST {
+          if shadowOnly {
+            if m.topology != PRIMITIVE_TOPOLOGY_LINE_LIST and materials.alive(item.material.slot)
+                and casterKindOf(self, item, m) != CASTER_NONE {
+              imm d = item.model.translation().distanceSquared(eye);
+              setKeys.push(new DrawKey(LAYER_OPAQUE, item.material.slot.slot(), item.mesh.slot.slot(), u32.from(i), 1u32, d, 0u32));
+            }
+          } elif m.topology == PRIMITIVE_TOPOLOGY_LINE_LIST {
             imm d = item.model.translation().distanceSquared(eye);
-            keys.push(new DrawKey(LAYER_LINES, u32.from(i), item.mesh.slot.slot(), u32.from(i), 0u32, d, 0u32));
+            setKeys.push(new DrawKey(LAYER_LINES, u32.from(i), item.mesh.slot.slot(), u32.from(i), 0u32, d, 0u32));
           } elif materials.alive(item.material.slot) {
             imm probe = self.probeFor(item.model.translation());
             if materials[item.material.slot].blend {
               imm d = (item.model * m.center).distanceSquared(eye);
-              keys.push(new DrawKey(LAYER_BLEND, item.material.slot.slot(), item.mesh.slot.slot(), u32.from(i), 0u32, d, probe));
+              setKeys.push(new DrawKey(LAYER_BLEND, item.material.slot.slot(), item.mesh.slot.slot(), u32.from(i), 0u32, d, probe));
             } else {
               imm d = item.model.translation().distanceSquared(eye);
-              keys.push(new DrawKey(LAYER_OPAQUE, item.material.slot.slot(), item.mesh.slot.slot(), u32.from(i), cast, d, probe));
+              // The depth pyramid may cull an unskinned lit or physically based copy the scene marked so
+              imm occ = if occlusion and item.occludable and !m.isSkinned() and materials[item.material.slot].kind != MATERIAL_CUSTOM
+                { 1u32; } else { 0u32; };
+              setKeys.push(new DrawKey(LAYER_OPAQUE, item.material.slot.slot(), item.mesh.slot.slot(), u32.from(i), cast, d, probe, occ));
             }
           }
         }
       }
       i = i + 1usize;
     }
-    keys.sortBy(&byBatch);
+    // A big set (thousands of scene items in a handful of batches) is grouped
+    // by (material, mesh, ...) with a hash, a counting sort, in a pass; the
+    // comparison sort below would cost n log n compares of 40-byte keys. Only
+    // opaque keys group this way: they keep their order in the list within
+    // a batch (not nearest first, which only helps early depth rejection),
+    // each batch's distance the nearest of its keys'. Everything else, and a
+    // small set, sorts as ever.
+    mut placed = List[DrawKey].empty();
+    mut groupCount = List[u32].empty();
+    mut groupNear = List[f32].empty();
+    mut groupRep = List[DrawKey].empty();
+    mut groupOffset = List[u32].empty();
+    if setKeys.len() > bucketMin {
+      mut rest = List[DrawKey].empty();
+      mut big = List[DrawKey].withCapacity(setKeys.len());
+      mut s = 0usize;
+      while s < setKeys.len() {
+        imm key = *setKeys[s];
+        if key.layer == LAYER_OPAQUE and key.material < 1048576u32 and key.mesh < 1048576u32 and key.probe < 4096u32 {
+          big.push(key);
+        } else {
+          rest.push(key);
+        }
+        s = s + 1usize;
+      }
+      setKeys = rest;
+      mut ids = Dict[u64, u32].empty();
+      mut groupOf = List[u32].withCapacity(big.len());
+      s = 0usize;
+      while s < big.len() {
+        imm key = *big[s];
+        imm packed = (u64.from(key.material) << 44u64) | (u64.from(key.mesh) << 24u64) | (u64.from(key.probe) << 12u64)
+          | (u64.from(key.cast & 1u32) << 1u64) | u64.from(key.occ & 1u32);
+        mut id = 0u32;
+        if ids.containsKey(&packed) {
+          id = *ids[&packed];
+          groupCount.set(usize.from(id), *groupCount[usize.from(id)] + 1u32);
+          if key.distance < *groupNear[usize.from(id)] { groupNear.set(usize.from(id), key.distance); }
+        } else {
+          id = u32.from(groupCount.len());
+          ids.insert(packed, id);
+          groupCount.push(1u32);
+          groupNear.push(key.distance);
+          groupRep.push(key);
+        }
+        groupOf.push(id);
+        s = s + 1usize;
+      }
+      mut running = 0u32;
+      s = 0usize;
+      while s < groupCount.len() {
+        groupOffset.push(running);
+        running = running + *groupCount[s];
+        s = s + 1usize;
+      }
+      if big.len() > 0usize {
+        placed = List[DrawKey].withCapacity(big.len());
+        placed.resize(big.len(), *big[0usize]);
+        mut cursor = List[u32].withCapacity(groupOffset.len());
+        s = 0usize;
+        while s < groupOffset.len() {
+          cursor.push(*groupOffset[s]);
+          s = s + 1usize;
+        }
+        s = 0usize;
+        while s < big.len() {
+          imm g = usize.from(*groupOf[s]);
+          placed.set(usize.from(*cursor[g]), *big[s]);
+          cursor.set(g, *cursor[g] + 1u32);
+          s = s + 1usize;
+        }
+      }
+    }
+    setKeys.sortBy(&byBatch);
     // Runs of one material and mesh
+    imm keyBase = keys.len();
+    mut setBatches = List[DrawBatch].empty();
     mut k = 0usize;
-    while k < keys.len() {
-      imm first = *keys[k];
+    while k < setKeys.len() {
+      imm first = *setKeys[k];
       mut end = k + 1usize;
-      while end < keys.len() and keys[end].layer == first.layer and keys[end].material == first.material
-          and keys[end].mesh == first.mesh and keys[end].cast == first.cast and keys[end].probe == first.probe {
+      while end < setKeys.len() and setKeys[end].layer == first.layer and setKeys[end].material == first.material
+          and setKeys[end].mesh == first.mesh and setKeys[end].cast == first.cast and setKeys[end].probe == first.probe
+          and setKeys[end].occ == first.occ {
         end = end + 1usize;
       }
       // The keys of a run are sorted nearest first (or, see-through,
       // farthest first)
-      batches.push(new DrawBatch(u32.from(k), u32.from(end - k), 0u32, first.distance, first.layer, u32.from(k),
-        first.layer == LAYER_OPAQUE and first.cast == 0u32, first.probe));
+      setBatches.push(new DrawBatch(u32.from(keyBase + k), u32.from(end - k), 0u32, first.distance, first.layer,
+        u32.from(keyBase + k), first.layer == LAYER_OPAQUE and first.cast == 0u32, first.probe, first.occ));
       k = end;
     }
-    batches.sortBy(&byDistance);
+    // The grouped keys' batches, their keys after the sorted ones
+    k = 0usize;
+    while k < groupCount.len() {
+      imm rep = *groupRep[k];
+      imm at = u32.from(keyBase + setKeys.len()) + *groupOffset[k];
+      setBatches.push(new DrawBatch(at, *groupCount[k], 0u32, *groupNear[k], LAYER_OPAQUE, at, rep.cast == 0u32,
+        rep.probe, rep.occ));
+      k = k + 1usize;
+    }
+    setBatches.sortBy(&byDistance);
+    k = 0usize;
+    while k < setKeys.len() {
+      keys.push(*setKeys[k]);
+      k = k + 1usize;
+    }
+    k = 0usize;
+    while k < placed.len() {
+      keys.push(*placed[k]);
+      k = k + 1usize;
+    }
+    k = 0usize;
+    while k < setBatches.len() {
+      batches.push(*setBatches[k]);
+      k = k + 1usize;
+    }
+  }
+
+  // The items of 'list' that cast a shadow, copied onto the end of 'frame'
+  // (a shadow pass's set holds the draw list's own items whole, beside the
+  // scene's it gathers)
+  fn appendCasters(self &, frame &mut DrawList, list &DrawList) {
+    mut k = 0usize;
+    while k < list.items.len() {
+      imm it = list.items[k];
+      if it.castsShadow { frame.items.push(*it); }
+      k = k + 1usize;
+    }
   }
 
   // Write every batch's copies (model matrix and tint) into the instance
   // buffer side by side, in the order the batches are drawn, and give each
   // batch its first instance; the buffer is made larger first if it must be
-  fn writeInstances(self &mut, device &mut Device, list &DrawList) {
+  //
+  // With the depth pyramid on ('occluding'), the copies of a batch it may cull
+  // do not go in here: they are the candidates of its culling pass (hiz.cone),
+  // and the batch has two places in the buffer after all the others, one for
+  // each draw, for the GPU to fill with the survivors.
+  fn writeInstances(self &mut, device &mut Device, list &DrawList, occluding bool) {
     instanceData.clear();
     boneBaseData.clear();
     mut count = 0u32;
     mut b = 0usize;
+    mut occTotal = 0u32;
     while b < batches.len() {
       mut batch = *batches[b];
+      if batch.occ != 0u32 {
+        occTotal = occTotal + batch.count;
+        b = b + 1usize;
+        continue;
+      }
       batch.firstInstance = count;
       batches.set(b, batch);
       mut j = 0u32;
@@ -1546,11 +1886,46 @@ pub struct Renderer {
         instanceData.push(item.tint.green);
         instanceData.push(item.tint.blue);
         instanceData.push(item.tint.alpha);
-        boneBaseData.push(item.bones);
+        // An unskinned copy's word carries its fade, if it has one (fade.slang)
+        boneBaseData.push(if item.fade != 0. and item.bones == NO_BONES { fadeCode(item.fade); } else { item.bones; });
         j = j + 1u32;
       }
       count = count + batch.count;
       b = b + 1usize;
+    }
+    imm plain = count;
+    if occTotal > 0u32 and occluding {
+      // The culled batches: two places each after the rest, a candidate for each copy
+      mut place0 = plain;
+      mut place1 = plain + occTotal;
+      mut hz = &mut hiz[0usize];
+      hz.beginFrame();
+      b = 0usize;
+      while b < batches.len() {
+        mut batch = *batches[b];
+        if batch.occ != 0u32 {
+          imm firstItem = list.items[usize.from(keys[usize.from(batch.first)].item)];
+          imm gm = meshes[firstItem.mesh.slot].current();
+          imm index = hz.addBatch(place0, place1, gm);
+          batch.occ = index + 1u32;
+          batch.firstInstance = place0;
+          batch.dest2 = place1;
+          batches.set(b, batch);
+          mut j = 0u32;
+          while j < batch.count {
+            imm item = list.items[usize.from(keys[usize.from(batch.first + j)].item)];
+            imm mm = meshes[item.mesh.slot].current();
+            imm box = Aabb3.fromCenter(mm.center, mm.half).transformed(item.model);
+            imm word = if item.fade != 0. and item.bones == NO_BONES { fadeCode(item.fade); } else { item.bones; };
+            hz.addCandidate(index, box.center(), box.halfExtents(), &item.model, item.tint, word);
+            j = j + 1u32;
+          }
+          place0 = place0 + batch.count;
+          place1 = place1 + batch.count;
+        }
+        b = b + 1usize;
+      }
+      count = plain + 2u32 * occTotal;
     }
     if count == 0u32 { return; }
     if count > instanceCapacity {
@@ -1563,10 +1938,12 @@ pub struct Renderer {
       instanceCapacity = capacity;
       self.remakeFrameGroup(device);
     }
-    imm v = instanceData.view();
-    device.queue.writeBuffer(&instances, 0u64, &v[0] as *u8, u64.from(count) * INSTANCE_BYTES);
-    imm bv = boneBaseData.view();
-    device.queue.writeBuffer(&boneBases, 0u64, &bv[0] as *u8, u64.from(count) * 4u64);
+    if plain > 0u32 {
+      imm v = instanceData.view();
+      device.queue.writeBuffer(&instances, 0u64, &v[0] as *u8, u64.from(plain) * INSTANCE_BYTES);
+      imm bv = boneBaseData.view();
+      device.queue.writeBuffer(&boneBases, 0u64, &bv[0] as *u8, u64.from(plain) * 4u64);
+    }
   }
 
   // Write the draw list's bones (every skinned copy's skinning matrices,
@@ -1599,6 +1976,7 @@ pub struct DrawKey {
   // see-through, its bounding sphere's centre's
   distance f32;
   probe u32;                   // the reflection probe that lights it, 1 + its index; 0: the sky's
+  occ u32 = 0u32;              // 1 if the depth pyramid may cull it (hiz.cone): a batch holds all or none
 }
 
 // One instanced draw: 'count' keys from 'first', drawn as the instances
@@ -1612,6 +1990,8 @@ pub struct DrawBatch {
   order u32;                   // its first key's place among the sorted keys
   noShadow bool;               // its copies cast no shadow
   probe u32;                   // its copies' reflection probe (DrawKey)
+  occ u32 = 0u32;              // 1 + its place among the batches the depth pyramid culls (hiz.cone); 0: not culled
+  dest2 u32 = 0u32;            // the second draw's first instance, for such a batch (firstInstance is the first draw's)
 }
 
 fn byBatch(a &DrawKey, b &DrawKey) i32 {
@@ -1626,6 +2006,7 @@ fn byBatch(a &DrawKey, b &DrawKey) i32 {
   if a.mesh != b.mesh { return if a.mesh < b.mesh { -1i32; } else { 1i32; }; }
   if a.cast != b.cast { return if a.cast < b.cast { -1i32; } else { 1i32; }; }
   if a.probe != b.probe { return if a.probe < b.probe { -1i32; } else { 1i32; }; }
+  if a.occ != b.occ { return if a.occ < b.occ { -1i32; } else { 1i32; }; }
   if a.distance < b.distance { return -1i32; }
   if a.distance > b.distance { return 1i32; }
   0i32;
@@ -1664,6 +2045,13 @@ pub struct DrawItem {
   // Whether it casts the sun's shadow (shadow.cone), if it is the kind that
   // does: an opaque or cut-out lit or physically based mesh
   pub castsShadow bool = true;
+  // How much of it is drawn, by dither (fade.slang): 0 whole; above 0 fading
+  // out by that share; below 0 fading in to that share. Visibility sets it
+  // for a cross-fade between levels and a visibility range's edge; it rides
+  // in the instance's per-instance word, so it is for an unskinned copy.
+  pub fade f32 = 0.;
+  // Whether the depth pyramid may cull it (hiz.cone)
+  pub occludable bool = false;
 }
 
 // What a render pass draws: its items, and the skinned ones' bones, each

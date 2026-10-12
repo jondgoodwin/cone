@@ -1,0 +1,148 @@
+// Edge and corner contacts on a large floor. A face contact reads its depth from the reference face's plane (see
+// bigfloor.cone); these are the contacts where the feature touching the floor is not a face: a capsule's end or
+// side, a hull's corner or edge. Each case lies on a floor 100 m across, a box or a two-triangle mesh, with its
+// lowest point a fixed 0.4 mm below the top, and the depth must come out exactly that (to a micron), whatever
+// the pose. Before:
+//
+//  - a capsule within 8.6 degrees of lying down took its two contact points from the side of the cylinder, up to
+//    1 mm off the lowest point of its end caps (depth wrong by 0.96 mm);
+//  - a capsule end or a hull corner near the shared diagonal of two mesh triangles got a second, phantom
+//    manifold from the triangle it was not on: tilted 16 degrees, the depth taken to a plane square to that
+//    normal through a corner 50 m away: 6 mm for a capsule, 23 mm for a hull;
+//  - a hull resting on an edge, its face past 25 degrees from flat, was given one contact, the nearer of the
+//    edge's two corners, and which one was noise: a different corner each step, so the hull rocked on the
+//    floor, and a pile of such hulls would not go to sleep.
+
+mod edgecontacts;
+
+import testing use *;
+import collections use List;
+import geomath use *;
+import rigidcollide use *;
+
+const Sink = 0.0004;
+
+fn boxFloor() Shape { Shape.single(Prim.box(new Vec3(50., 1., 50.))); }
+
+// top at y = 0
+fn meshFloor() Shape {
+  mut verts = List[Vec3].empty();
+  verts.push(new Vec3(-50., 0., -50.)); verts.push(new Vec3(50., 0., -50.)); verts.push(new Vec3(50., 0., 50.)); verts.push(new Vec3(-50., 0., 50.));
+  mut idx = List[u32].empty();
+  idx.push(0u32); idx.push(3u32); idx.push(2u32); idx.push(0u32); idx.push(2u32); idx.push(1u32);
+  Shape.single(meshPrim(verts, idx));
+}
+
+fn floorShape(mesh bool) Shape { if mesh { meshFloor(); } else { boxFloor(); }; }
+
+fn floorAt(mesh bool) Rigid { if mesh { Rigid.at(new Vec3(0., 0., 0.)); } else { Rigid.at(new Vec3(0., -1., 0.)); }; }
+
+// kind 0: a capsule; 1: a square pyramid with its apex down; 2: the same pyramid, base down
+fn bodyPrim(kind i32) Prim {
+  if kind == 0 { return Prim.capsule(0.05, 0.12); }
+  mut pts = List[Vec3].empty();
+  pts.push(new Vec3(-0.25, -0.2, -0.25)); pts.push(new Vec3(0.25, -0.2, -0.25)); pts.push(new Vec3(0.25, -0.2, 0.25));
+  pts.push(new Vec3(-0.25, -0.2, 0.25)); pts.push(new Vec3(0., 0.3, 0.));
+  convexHull(pts.view());
+}
+
+// Contacts of the body in pose 'rot' with its lowest point 'Sink' below the floor's top, at (x, z) over the floor,
+// with the floor first in the call or second. The manifolds come back in 'out'.
+fn place(mesh bool, kind i32, rot Quat, x f32, z f32, floorFirst bool, out &mut List[Manifold]) {
+  imm fl = floorShape(mesh);
+  imm pr = bodyPrim(kind);
+  imm rg = new Rigid(new Vec3(0., 0., 0.), rot);
+  imm low = rg.apply(pr.support(rg.unrotate(new Vec3(0., -1., 0.)))).y;
+  imm s = Shape.single(pr);
+  imm xb = new Rigid(new Vec3(x, -low - Sink, z), rot);
+  if floorFirst {
+    collide(&fl, floorAt(mesh), &s, xb, 0.02, out);
+  } else {
+    collide(&s, xb, &fl, floorAt(mesh), 0.02, out);
+  }
+}
+
+// One manifold, one point, the floor's own normal, the exact depth
+fn singleOne(label &Array[u8], mesh bool, kind i32, rot Quat, x f32, z f32, floorFirst bool) {
+  mut out = List[Manifold].empty();
+  place(mesh, kind, rot, x, z, floorFirst, &mut out);
+  if not expectInt(i64.from(out.len()), 1, label) { return; }
+  imm m = out[0usize];
+  imm ny = if floorFirst { m.normal.y; } else { -m.normal.y; };
+  expectFloat(f64.from(m.deepest()), f64.from(Sink), 0.000001, label);
+  expectFloat(f64.from(ny), 1., 0.0000001, "and the normal is the floor's");
+}
+
+fn single(label &Array[u8], mesh bool, kind i32, rot Quat, x f32, z f32) {
+  singleOne(label, mesh, kind, rot, x, z, true);
+  singleOne(label, mesh, kind, rot, x, z, false);
+}
+
+// A pyramid tipped onto one base edge (its base 'tilt' radians from flat, about the edge's own direction, then
+// turned about the vertical): both corners of the edge touch, to the same depth. The edge's height is nudged
+// by 'twist' radians about the vertical-and-across axis, so one corner is lower than the other by up to 0.1 mm.
+fn onEdge(label &Array[u8], mesh bool, tilt f32, twist f32, yawBy f32) {
+  imm rot = Quat.angleAxis(yawBy, new Vec3(0., 1., 0.)) * Quat.angleAxis(twist, new Vec3(0., 0., 1.)) * Quat.angleAxis(tilt, new Vec3(1., 0., 0.));
+  mut k = 0;
+  while k < 2 {
+    imm floorFirst = k == 0;
+    mut out = List[Manifold].empty();
+    place(mesh, 2, rot, 0.013, -0.007, floorFirst, &mut out);
+    if expectInt(i64.from(out.len()), 1, label) {
+      imm m = out[0usize];
+      // (on the mesh the pyramid may straddle the shared diagonal, where each triangle's clip adds points on it, a
+      // few millimetres above the floor: so there the two corners are among the points, and none is deeper)
+      mut atDepth = 0;
+      mut p = 0usize;
+      while p < m.count {
+        if absf(m.points[p].depth - Sink) < 0.0002 { atDepth = atDepth + 1; }
+        p = p + 1usize;
+      }
+      expectBool(atDepth >= 2, true, label);
+      if not mesh { expectInt(i64.from(m.count), 2, label); }
+      expectFloat(f64.from(m.deepest()), f64.from(Sink), 0.0002, label);
+    }
+    k = k + 1;
+  }
+}
+
+fn main() i32 {
+  imm yaw = Quat.angleAxis(0.7, new Vec3(0., 1., 0.));
+  // capsule standing on its end, upright and leaning (a lean of up to 60 degrees keeps the end lowest)
+  mut s = 0;
+  while s < 2 {
+    imm mesh = s == 1;
+    single("capsule on its end, upright", mesh, 0, Quat.identity(), 0.013, -0.007);
+    single("capsule on its end, leaning 5 degrees", mesh, 0, Quat.angleAxis(0.0873, new Vec3(0.3, 0., 1.).normalize()), 0.013, -0.007);
+    single("capsule on its end, leaning 30 degrees", mesh, 0, Quat.angleAxis(0.5236, new Vec3(1., 0., 0.4).normalize()), 20.013, 17.007);
+    // within 8.6 degrees of lying down, the contact is the line of the side: the lowest point of each end cap
+    single("capsule nearly lying down", mesh, 0, Quat.angleAxis(1.5708 - 0.1, new Vec3(0.4, 0., 1.).normalize()) * yaw, 0.013, -0.007);
+    s = s + 1;
+  }
+  // a pyramid on its apex, upright and tilted (the apex stays lowest)
+  s = 0;
+  while s < 2 {
+    imm mesh = s == 1;
+    single("hull apex down, upright", mesh, 1, Quat.angleAxis(3.14159265, new Vec3(1., 0., 0.)), 0.013, -0.007);
+    single("hull apex down, tilted", mesh, 1, Quat.angleAxis(3.14159265 - 0.3, new Vec3(1., 0., 0.2).normalize()) * yaw, 0.013, -0.007);
+    single("hull apex down, tilted the other way", mesh, 1, Quat.angleAxis(2.8, new Vec3(0.3, 0., 1.).normalize()), -30.013, 12.007);
+    s = s + 1;
+  }
+  // the mesh's shared diagonal runs from (-50, -50) to (50, 50): a capsule end 14 mm from it touches the triangle
+  // it is over, and the other triangle's edge is further than the capsule's radius from the capsule's core, so the
+  // second triangle has no contact to report
+  single("capsule end beside the mesh's diagonal", true, 0, Quat.identity(), 0.013, -0.007);
+  single("capsule end on the mesh's diagonal", true, 0, Quat.identity(), 0.003, 0.003);
+  single("hull apex beside the mesh's diagonal", true, 1, Quat.angleAxis(3.14159265, new Vec3(1., 0., 0.)), 0.02, -0.007);
+  // the pyramid's base face tipped past the angle (25 degrees) a face counts as facing the floor: on an edge
+  s = 0;
+  while s < 2 {
+    imm mesh = s == 1;
+    onEdge("pyramid on a base edge, base 41 degrees up", mesh, 0.7156, 0., 0.3);
+    onEdge("pyramid on a base edge, base 30 degrees up", mesh, 0.5236, 0., 1.9);
+    onEdge("pyramid on a base edge, base 41 degrees up, the edge off level by 0.1 mm", mesh, 0.7156, 0.0002, 0.3);
+    onEdge("pyramid on a base edge, the other way off level", mesh, 0.7156, -0.0002, 2.5);
+    s = s + 1;
+  }
+  done();
+}
