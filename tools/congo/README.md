@@ -696,8 +696,9 @@ so, and still builds its examples.
 
 - **`congo test <text>`** runs only the tests and examples whose file name
   contains the text. One that matches nothing is an error.
-- **`--bless`** writes `tests/<name>.out` (and `.exit`, if the status is not 0)
-  from a run, for a test that has **no** expected file yet. It never rewrites
+- **`--bless`** writes `tests/<name>.out` from a run, for a test that has **no**
+  expected file yet, and makes `.exit` match that run: written if the status is
+  not 0, removed if it is 0 and an older status is left there. It never rewrites
   one that exists: to change an expected file, edit it, or delete it and bless
   again. **Blessed output is a claim that the package is right; check every
   line of it by hand against the source before committing it.** A value worked

@@ -1777,6 +1777,28 @@ class Testing(unittest.TestCase):
         self.assertEqual((pkg / "tests" / "wrong.out").read_text(), "5\n")
         self.congo("test", "doubles", cwd=pkg)
 
+    def test_bless_makes_the_exit_file_match_the_run(self):
+        pkg = self.counter(self.root)
+        tests = pkg / "tests"
+        # A test that once ended with 1 and now ends with 0: blessing it again
+        # (its .out deleted) removes the stale .exit, or the next run would fail
+        (tests / "doubles.exit").write_text("1\n")
+        (tests / "doubles.out").unlink()
+        run = self.congo("test", "doubles", "--bless", cwd=pkg)
+        self.assertIn("blessed", run.stdout)
+        self.assertIn("removed the stale", run.stdout)
+        self.assertEqual((tests / "doubles.out").read_bytes(), b"42\n")
+        self.assertFalse((tests / "doubles.exit").exists())
+        self.congo("test", "doubles", cwd=pkg)
+        # One that ends with a status gets its .exit written, over a stale one
+        (tests / "status.exit").write_text("9\n")
+        (tests / "status.out").unlink()
+        run = self.congo("test", "status", "--bless", cwd=pkg)
+        self.assertIn("status.exit", run.stdout)
+        self.assertNotIn("removed the stale", run.stdout)
+        self.assertEqual((tests / "status.exit").read_text(), "3\n")
+        self.congo("test", "status", cwd=pkg)
+
     def halver(self, root: Path) -> Path:
         """A library whose one function checks its argument in a debug build
         only; a test of it that passes in either build, and one, marked

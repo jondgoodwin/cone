@@ -1,0 +1,337 @@
+// ======== Building blocks: random numbers, oscillators, filters, envelopes ========
+//
+// Every unit is a small struct with its state in it, stepped one sample at a
+// time by a method taking `&mut`: nothing here allocates, so all of it may
+// run in the audio callback.
+
+// -------- random numbers --------
+
+// A white-noise source: O'Neill's PCG (the 32-bit RXS-M-XS output over a
+// linear congruential state), the same hash noise's `pcg` uses
+pub struct Rng {
+  pub state u32;
+
+  pub fn seeded(seed u32) Rng { new Rng(seed * 2891336453u32 + 747796405u32); }
+
+  // The next 32 random bits
+  pub fn nextU32(self &mut) u32 {
+    state = state * 747796405u32 + 2891336453u32;
+    imm word = ((state >> ((state >> 28u32) + 4u32)) ^ state) * 277803737u32;
+    (word >> 22u32) ^ word;
+  }
+
+  // A uniform number in [0, 1)
+  pub fn unit(self &mut) f32 {
+    f32.from(self.nextU32() >> 8u32) * (1. / 16777216.);
+  }
+
+  // A uniform number in [-1, 1)
+  pub fn signed(self &mut) f32 { self.unit() * 2. - 1.; }
+
+  // A uniform number in [lo, hi)
+  pub fn range(self &mut, lo f32, hi f32) f32 { lo + (hi - lo) * self.unit(); }
+}
+
+// -------- colored noise --------
+
+// Pink noise (power falling 3 dB an octave): Paul Kellet's "refined" filter
+// over white noise, from the musicdsp.org archive; accurate to about 0.05 dB
+// from 10 Hz to Nyquist at 44.1 kHz
+pub struct PinkNoise {
+  pub rng Rng;
+  pub b0 f32;
+  pub b1 f32;
+  pub b2 f32;
+  pub b3 f32;
+  pub b4 f32;
+  pub b5 f32;
+  pub b6 f32;
+
+  pub fn seeded(seed u32) PinkNoise {
+    new PinkNoise(Rng.seeded(seed), 0., 0., 0., 0., 0., 0., 0.);
+  }
+
+  pub fn next(self &mut) f32 {
+    imm w = rng.signed();
+    b0 = 0.99886 * b0 + w * 0.0555179;
+    b1 = 0.99332 * b1 + w * 0.0750759;
+    b2 = 0.96900 * b2 + w * 0.1538520;
+    b3 = 0.86650 * b3 + w * 0.3104856;
+    b4 = 0.55000 * b4 + w * 0.5329522;
+    b5 = -0.7616 * b5 - w * 0.0168980;
+    imm out = b0 + b1 + b2 + b3 + b4 + b5 + b6 + w * 0.5362;
+    b6 = w * 0.115926;
+    out * 0.11;
+  }
+}
+
+// Brown (red) noise, power falling 6 dB an octave: white noise through a leaky
+// integrator
+pub struct BrownNoise {
+  pub rng Rng;
+  pub last f32;
+
+  pub fn seeded(seed u32) BrownNoise { new BrownNoise(Rng.seeded(seed), 0.); }
+
+  pub fn next(self &mut) f32 {
+    imm w = rng.signed();
+    last = (last + 0.02 * w) / 1.02;
+    last * 3.5;
+  }
+}
+
+// -------- oscillators --------
+
+pub const WAVE_SINE = 0u32;
+pub const WAVE_TRIANGLE = 1u32;
+pub const WAVE_SAW = 2u32;
+pub const WAVE_SQUARE = 3u32;
+
+// PolyBLEP, the correction that removes most of a step's aliasing (Valimaki
+// and Huovilainen, "Antialiasing oscillators in subtractive synthesis", IEEE
+// Signal Processing Magazine, 2007): t is the phase in [0, 1), dt the phase
+// step per sample
+fn polyBlep(t f32, dt f32) f32 {
+  if t < dt {
+    imm x = t / dt;
+    return x + x - x * x - 1.;
+  }
+  if t > 1. - dt {
+    imm x = (t - 1.) / dt;
+    return x * x + x + x + 1.;
+  }
+  0.;
+}
+
+// A phase-accumulating oscillator, band limited by PolyBLEP (the triangle is
+// the integral of the band-limited square, leaky)
+pub struct Osc {
+  pub wave u32;
+  pub phase f32;            // cycles, 0 to 1
+  pub tri f32;              // the triangle's integrator
+
+  pub fn make(wave u32) Osc { new Osc(wave, 0., 0.); }
+
+  // The next sample at 'freq' Hz when the sample rate is 'rate'
+  pub fn next(self &mut, freq f32, rate f32) f32 {
+    imm dt = freq / rate;
+    mut out = 0.;
+    if wave == WAVE_SINE {
+      out = (phase * TAU).sin();
+    } elif wave == WAVE_SAW {
+      out = 2. * phase - 1. - polyBlep(phase, dt);
+    } else {
+      mut sq = 1.;
+      if phase >= 0.5 { sq = -1.; }
+      sq = sq + polyBlep(phase, dt);
+      mut p2 = phase + 0.5;
+      if p2 >= 1. { p2 = p2 - 1.; }
+      sq = sq - polyBlep(p2, dt);
+      if wave == WAVE_SQUARE {
+        out = sq;
+      } else {
+        tri = dt * 4. * sq + (1. - dt * 0.5) * tri;
+        out = tri;
+      }
+    }
+    phase = phase + dt;
+    if phase >= 1. { phase = phase - 1.; }
+    out;
+  }
+}
+
+// -------- filters --------
+
+pub const FILTER_LOWPASS = 0u32;
+pub const FILTER_HIGHPASS = 1u32;
+pub const FILTER_BANDPASS = 2u32;      // constant 0 dB peak gain
+pub const FILTER_NOTCH = 3u32;
+pub const FILTER_PEAK = 4u32;
+pub const FILTER_LOWSHELF = 5u32;
+pub const FILTER_HIGHSHELF = 6u32;
+
+// A biquad filter, the coefficients from Robert Bristow-Johnson's "Audio EQ
+// Cookbook", run in transposed direct form II (two state variables)
+pub struct Biquad {
+  pub b0 f32;
+  pub b1 f32;
+  pub b2 f32;
+  pub a1 f32;
+  pub a2 f32;
+  pub z1 f32;
+  pub z2 f32;
+
+  // The filter of 'kind' at 'freq' Hz, quality 'q' (the cookbook's Q; 0.7071
+  // is maximally flat for a low or high pass), 'gainDb' for peak and shelves,
+  // at sample rate 'rate'
+  pub fn design(kind u32, freq f32, q f32, gainDb f32, rate f32) Biquad {
+    mut f = freq;
+    if f > rate * 0.49 { f = rate * 0.49; }
+    if f < 1. { f = 1.; }
+    imm w0 = TAU * f / rate;
+    imm cw = w0.cos();
+    imm sw = w0.sin();
+    imm alpha = sw / (2. * q);
+    imm amp = libc.powf(10., gainDb / 40.);
+    mut b0 = 1.;
+    mut b1 = 0.;
+    mut b2 = 0.;
+    mut a0 = 1.;
+    mut a1 = 0.;
+    mut a2 = 0.;
+    if kind == FILTER_LOWPASS {
+      b0 = (1. - cw) * 0.5; b1 = 1. - cw; b2 = b0;
+      a0 = 1. + alpha; a1 = -2. * cw; a2 = 1. - alpha;
+    } elif kind == FILTER_HIGHPASS {
+      b0 = (1. + cw) * 0.5; b1 = -(1. + cw); b2 = b0;
+      a0 = 1. + alpha; a1 = -2. * cw; a2 = 1. - alpha;
+    } elif kind == FILTER_BANDPASS {
+      b0 = alpha; b1 = 0.; b2 = -alpha;
+      a0 = 1. + alpha; a1 = -2. * cw; a2 = 1. - alpha;
+    } elif kind == FILTER_NOTCH {
+      b0 = 1.; b1 = -2. * cw; b2 = 1.;
+      a0 = 1. + alpha; a1 = -2. * cw; a2 = 1. - alpha;
+    } elif kind == FILTER_PEAK {
+      b0 = 1. + alpha * amp; b1 = -2. * cw; b2 = 1. - alpha * amp;
+      a0 = 1. + alpha / amp; a1 = -2. * cw; a2 = 1. - alpha / amp;
+    } elif kind == FILTER_LOWSHELF {
+      imm sq = 2. * amp.sqrt() * alpha;
+      b0 = amp * ((amp + 1.) - (amp - 1.) * cw + sq);
+      b1 = 2. * amp * ((amp - 1.) - (amp + 1.) * cw);
+      b2 = amp * ((amp + 1.) - (amp - 1.) * cw - sq);
+      a0 = (amp + 1.) + (amp - 1.) * cw + sq;
+      a1 = -2. * ((amp - 1.) + (amp + 1.) * cw);
+      a2 = (amp + 1.) + (amp - 1.) * cw - sq;
+    } else {
+      imm sq = 2. * amp.sqrt() * alpha;
+      b0 = amp * ((amp + 1.) + (amp - 1.) * cw + sq);
+      b1 = -2. * amp * ((amp - 1.) + (amp + 1.) * cw);
+      b2 = amp * ((amp + 1.) + (amp - 1.) * cw - sq);
+      a0 = (amp + 1.) - (amp - 1.) * cw + sq;
+      a1 = 2. * ((amp - 1.) - (amp + 1.) * cw);
+      a2 = (amp + 1.) - (amp - 1.) * cw - sq;
+    }
+    imm inv = 1. / a0;
+    new Biquad(b0 * inv, b1 * inv, b2 * inv, a1 * inv, a2 * inv, 0., 0.);
+  }
+
+  // A filter that passes everything
+  pub fn through() Biquad { new Biquad(1., 0., 0., 0., 0., 0., 0.); }
+
+  // New coefficients from 'o', the state kept (a filter swept without clicks)
+  pub fn retune(self &mut, o Biquad) {
+    b0 = o.b0; b1 = o.b1; b2 = o.b2; a1 = o.a1; a2 = o.a2;
+  }
+
+  pub fn process(self &mut, x f32) f32 {
+    imm y = b0 * x + z1;
+    z1 = b1 * x - a1 * y + z2;
+    z2 = b2 * x - a2 * y;
+    y;
+  }
+
+  // The exact gain of the filter at 'freq' Hz: |H(e^jw)|
+  pub fn magnitude(self &, freq f32, rate f32) f32 {
+    imm w = TAU * freq / rate;
+    imm c1 = w.cos();
+    imm s1 = w.sin();
+    imm c2 = (2. * w).cos();
+    imm s2 = (2. * w).sin();
+    imm nr = b0 + b1 * c1 + b2 * c2;
+    imm ni = -(b1 * s1 + b2 * s2);
+    imm dr = 1. + a1 * c1 + a2 * c2;
+    imm di = -(a1 * s1 + a2 * s2);
+    ((nr * nr + ni * ni) / (dr * dr + di * di)).sqrt();
+  }
+}
+
+// A one-pole low pass, y += k (x - y), k from a cutoff: cheap smoothing and
+// the head-shadow filter
+pub struct OnePole {
+  pub k f32;
+  pub y f32;
+
+  pub fn cutoff(freq f32, rate f32) OnePole {
+    new OnePole(1. - libc.expf(-TAU * freq / rate), 0.);
+  }
+
+  pub fn setCutoff(self &mut, freq f32, rate f32) { k = 1. - libc.expf(-TAU * freq / rate); }
+
+  pub fn process(self &mut, x f32) f32 {
+    y = y + k * (x - y);
+    y;
+  }
+}
+
+// -------- envelopes --------
+
+pub const ENV_IDLE = 0u32;
+pub const ENV_ATTACK = 1u32;
+pub const ENV_DECAY = 2u32;
+pub const ENV_SUSTAIN = 3u32;
+pub const ENV_RELEASE = 4u32;
+
+// A linear attack-decay-sustain-release envelope, 0 to 1. Times are seconds.
+pub struct Adsr {
+  pub attack f32;
+  pub decay f32;
+  pub sustain f32;
+  pub release f32;
+  pub stage u32;
+  pub level f32;
+
+  pub fn make(attack f32, decay f32, sustain f32, release f32) Adsr {
+    new Adsr(attack, decay, sustain, release, ENV_IDLE, 0.);
+  }
+
+  pub fn gateOn(self &mut) { stage = ENV_ATTACK; }
+  pub fn gateOff(self &mut) {
+    if stage != ENV_IDLE { stage = ENV_RELEASE; }
+  }
+  pub fn isIdle(self &) bool { stage == ENV_IDLE; }
+
+  // The next level; 'rate' is the sample rate
+  pub fn next(self &mut, rate f32) f32 {
+    if stage == ENV_ATTACK {
+      level = level + 1. / (attack * rate + 1.);
+      if level >= 1. { level = 1.; stage = ENV_DECAY; }
+    } elif stage == ENV_DECAY {
+      level = level - (1. - sustain) / (decay * rate + 1.);
+      if level <= sustain { level = sustain; stage = ENV_SUSTAIN; }
+    } elif stage == ENV_RELEASE {
+      level = level - 1. / (release * rate + 1.);
+      if level <= 0. { level = 0.; stage = ENV_IDLE; }
+    }
+    level;
+  }
+}
+
+// A gain that approaches its target in a straight line over a number of
+// samples: fades and parameter smoothing
+pub struct Ramp {
+  pub value f32;
+  pub target f32;
+  pub step f32;             // change per sample (zero when arrived)
+
+  pub fn at(v f32) Ramp { new Ramp(v, v, 0.); }
+
+  // Head for 't' over 'seconds'
+  pub fn to(self &mut, t f32, seconds f32, rate f32) {
+    target = t;
+    imm n = seconds * rate;
+    if n < 1. { value = t; step = 0.; } else { step = (t - value) / n; }
+  }
+
+  pub fn arrived(self &) bool { step == 0.; }
+
+  pub fn next(self &mut) f32 {
+    if step != 0. {
+      value = value + step;
+      if (step > 0. and value >= target) or (step < 0. and value <= target) {
+        value = target;
+        step = 0.;
+      }
+    }
+    value;
+  }
+}

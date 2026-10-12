@@ -1,0 +1,153 @@
+// ======== The game thread's handle and the audio thread's engine ========
+//
+// Two ends of a lock-free single-producer, single-consumer queue of `Cmd`s
+// (sync's `Channel.spsc`, a ring of fixed slots: sending and receiving
+// allocate nothing and take no lock when the ring has room):
+//
+// - `Control`, on the game thread: plays, stops and moves voices by sending
+//   commands, and owns the decoded sounds the mixer reads from. A voice's id
+//   is made here, so `play` answers at once, with no round trip.
+// - `Engine`, on the audio thread: drains the queue at the start of every
+//   block, then renders. If the game thread is faster than the audio thread
+//   the ring fills and further commands are refused (counted in
+//   `Control.refused`), never waited for: the game does not block on audio.
+//
+// A sound's samples are read by the audio thread through the address the
+// command carried, so the `Sound` must not move or die while it is in the
+// mixer's table: `Control` takes ownership of every sound added and keeps
+// it for its own life. Keep the `Control` alive until the audio thread has
+// stopped.
+
+pub const DEFAULT_QUEUE = 1024u64;
+
+pub struct Control {
+  tx SoloSender[Cmd];
+  nextId u32;
+  sounds List[Sound];
+  pub refused u32;             // commands the full ring turned away
+
+  fn made(tx SoloSender[Cmd]) Control {
+    new Control(tx, 0u32, List[Sound].empty(), 0u32);
+  }
+
+  // Send one command; false if the ring was full
+  pub fn send(self &mut, c Cmd) bool {
+    match tx.trySend(c) {
+      case is Some[Cmd] { refused = refused + 1u32; false; }
+      case is None[Cmd] { true; }
+    }
+  }
+
+  // Hand a decoded sound over; its table number for `play`
+  pub fn addSound(self &mut, s Sound) u32 {
+    imm slot = u32.from(sounds.len());
+    sounds.push(s);
+    self.send(Cmd.addSound(slot, sounds[usize.from(slot)]));
+    slot;
+  }
+
+  fn fresh(self &mut) u32 {
+    nextId = nextId + 1u32;
+    nextId;
+  }
+
+  // Play table sound 'sound' on 'bus' at 'gain' and 'pitch' (1 is the sound's
+  // own), 'pan' -1 to 1; a looping sound plays until stopped; a higher
+  // 'priority' outlasts a lower one when voices run out. The voice's id.
+  pub fn play(self &mut, sound u32, bus u32, gain f32, pitch f32, pan f32, loops bool, priority i32) u32 {
+    imm id = self.fresh();
+    self.send(Cmd.play(id, sound, bus, gain, pitch, pan, loops, priority, 0.));
+    id;
+  }
+
+  // The same, fading in over 'fadeIn' seconds
+  pub fn playFading(self &mut, sound u32, bus u32, gain f32, pitch f32, pan f32, loops bool, priority i32, fadeIn f32) u32 {
+    imm id = self.fresh();
+    self.send(Cmd.play(id, sound, bus, gain, pitch, pan, loops, priority, fadeIn));
+    id;
+  }
+
+  // Play table sound 'sound' as a 3-D source at 'pos' moving at 'vel'
+  pub fn playAt(self &mut, sound u32, bus u32, gain f32, loops bool, priority i32, pos Vec3, vel Vec3, att &Attenuation) u32 {
+    imm id = self.fresh();
+    self.send(Cmd.play(id, sound, bus, gain, 1., 0., loops, priority, 0.));
+    self.send(Cmd.spatial(id, pos, vel));
+    self.send(Cmd.attenuation(id, att));
+    id;
+  }
+
+  // A procedural recipe (SYNTH_...): 'p0' and 'p1' are its parameters (wind,
+  // water: intensity; fire: crackle, roar; step: material, weight; bird:
+  // pitch Hz). A one-shot (step, bird) ends by itself.
+  pub fn playSynth(self &mut, recipe u32, seed u32, bus u32, gain f32, p0 f32, p1 f32, priority i32) u32 {
+    imm id = self.fresh();
+    self.send(Cmd.playSynth(id, recipe, seed, bus, gain, p0, p1, priority));
+    id;
+  }
+
+  // The same as a 3-D source
+  pub fn playSynthAt(self &mut, recipe u32, seed u32, bus u32, gain f32, p0 f32, p1 f32, priority i32, pos Vec3, vel Vec3, att &Attenuation) u32 {
+    imm id = self.fresh();
+    self.send(Cmd.playSynth(id, recipe, seed, bus, gain, p0, p1, priority));
+    self.send(Cmd.spatial(id, pos, vel));
+    self.send(Cmd.attenuation(id, att));
+    id;
+  }
+
+  // Ask the engine's feeding loop to end (the device does this when stopped)
+  pub fn quit(self &mut) bool { self.send(Cmd.of(CMD_QUIT, 0u32)); }
+
+  pub fn stop(self &mut, id u32, fade f32) { self.send(Cmd.stop(id, fade)); }
+  pub fn stopAll(self &mut, fade f32) { self.send(Cmd.stopAll(fade)); }
+  pub fn setGain(self &mut, id u32, gain f32, seconds f32) { self.send(Cmd.gain(id, gain, seconds)); }
+  pub fn setPitch(self &mut, id u32, ratio f32) { self.send(Cmd.pitch(id, ratio)); }
+  pub fn setPan(self &mut, id u32, pan f32) { self.send(Cmd.pan(id, pan)); }
+  // Move a source (call it every frame for a moving one; give the velocity for Doppler)
+  pub fn setPosition(self &mut, id u32, pos Vec3, vel Vec3) { self.send(Cmd.spatial(id, pos, vel)); }
+  pub fn setAttenuation(self &mut, id u32, att &Attenuation) { self.send(Cmd.attenuation(id, att)); }
+  // The game's occlusion hook: 0 clear to 1 blocked (from a ray cast, say)
+  pub fn setOcclusion(self &mut, id u32, amount f32) { self.send(Cmd.occlusion(id, amount)); }
+  // The listener rides the camera
+  pub fn setListener(self &mut, l &Listener) { self.send(Cmd.listener(l)); }
+  pub fn setBusGain(self &mut, bus u32, gain f32, seconds f32) { self.send(Cmd.busGain(bus, gain, seconds)); }
+  pub fn setEnvironment(self &mut, headShadow bool, dopplerFactor f32) { self.send(Cmd.environment(headShadow, dopplerFactor)); }
+}
+
+// The queue: the game's end and the audio thread's end
+pub fn commandQueue(slots u64) Control, Receiver[Cmd] {
+  mut tx SoloSender[Cmd];
+  mut rx Receiver[Cmd];
+  tx, rx = Channel[Cmd].spsc(slots);
+  Control.made(tx), rx;
+}
+
+// Commands taken from the ring in one block at most, so a flood cannot hold
+// the audio thread
+const DRAIN_LIMIT = 512u32;
+
+pub struct Engine {
+  pub mixer Mixer;
+  rx Receiver[Cmd];
+
+  pub quit bool;             // a CMD_QUIT arrived: the feeding loop should end
+
+  pub fn make(rate f32, maxVoices usize, rx Receiver[Cmd]) Engine {
+    new Engine(Mixer.make(rate, maxVoices), rx, false);
+  }
+
+  // Take the waiting commands, then render 'frames' stereo frames into 'out'
+  pub fn render(self &mut, out &mut Array[f32], frames usize) {
+    mut more = true;
+    mut taken = 0u32;
+    while more and taken < DRAIN_LIMIT {
+      match rx.tryRecv() {
+        case imm c Some {
+          if c.kind == CMD_QUIT { quit = true; } else { mixer.apply(&c); }
+          taken = taken + 1u32;
+        }
+        case is None[Cmd] { more = false; }
+      }
+    }
+    mixer.render(out, frames);
+  }
+}
