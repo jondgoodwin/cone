@@ -53,13 +53,25 @@
 // otherwise; a bulb given bit 1, lighting the lantern's own materials (which
 // have bits 0 and 1), lights its inside and not the whole path.
 
+// SHADOWS (lightshadow.cone). A light that was given shadow views has the
+// first of them in its row (a spot light's one, a point light's six, the
+// faces +x, -x, +y, -y, +z, -z); 'localShadow' looks the point up in the map
+// of views (binding 10), through the sun's comparison sampler, filtered as the
+// sun's is, biased in texels at the receiver. The lookup is for a surface
+// that faces the light, after the cosine has turned the rest away.
+
 import renderframe;
+import shadowparams;
+import shadowing;
+
+[[vk::binding(10, 0)]] Texture2DArray<float> localShadowMap;
 
 struct LightParams {
     float4 forward;                // 0: xyz the camera's forward, unit length
     float4 grid;                   // 16: x tiles across, y tiles down, z slices of depth, w the lights in the scene (0: none, nothing to loop)
     float4 slices;                 // 32: x the depth at which slice 1 begins (the grid's near), y the slice scale, slices / ln(far / near),
-                                   //     z 1 if the lights give highlights too (0: Lambert diffuse alone, the cheap setting)
+                                   //     z 1 if the lights give highlights too (0: Lambert diffuse alone, the cheap setting),
+                                   //     w 1 if any light has shadow views this frame
 };
 
 [[vk::binding(7, 0)]] ConstantBuffer<LightParams> lightParams;
@@ -76,6 +88,7 @@ struct LocalLight {
     bool spot;
     float spotScale;               // the cone's ramp: saturate(cos * scale + offset)
     float spotOffset;
+    float shadowView;              // its first shadow view, or -1: none
 };
 
 // A light's row: float4 (position, 1 / range^2), (intensity, radius), (axis,
@@ -95,12 +108,74 @@ LocalLight loadLocalLight(uint i) {
     l.spot = dot(c.xyz, c.xyz) > 0.5;
     l.spotScale = 0.0;
     l.spotOffset = 0.0;
-    if (l.spot) {
+    l.shadowView = -1.0;
+    if (l.spot || lightParams.slices.w > 0.5) {
         float4 d = lightData[i * 4 + 3];
         l.spotScale = d.x;
         l.spotOffset = d.y;
+        l.shadowView = d.z;
     }
     return l;
+}
+
+// How much of the light 'l' reaches 'world', on a surface of geometric normal
+// 'ng' (any side), seen at the pixel 'pixel': 1 where the light is open, 0
+// in full shadow. The view is the spot's own, or, for a point light, the
+// face its direction from the light is greatest along.
+float localShadow(LocalLight l, float3 world, float3 ng, float2 pixel) {
+    if (l.shadowView < -0.5) {
+        return 1.0;
+    }
+    float3 rel = world - l.position;
+    uint layer = uint(l.shadowView + 0.5);
+    if (!l.spot) {
+        float3 a = abs(rel);
+        uint face = 0;
+        if (a.x >= a.y && a.x >= a.z) {
+            face = rel.x >= 0.0 ? 0 : 1;
+        } else if (a.y >= a.z) {
+            face = rel.y >= 0.0 ? 2 : 3;
+        } else {
+            face = rel.z >= 0.0 ? 4 : 5;
+        }
+        layer += face;
+    }
+    float4x4 m = shadowParams.localView[layer];
+    float size = shadowParams.localConfig.x;
+    float4 c0 = mul(m, float4(world, 1.0));
+    if (c0.w <= 0.0) {
+        return 1.0;
+    }
+    // A texel of the view at the receiver: 2 w / (the matrix's x row's length x size)
+    float texel = 2.0 * c0.w / (length(float3(m[0][0], m[0][1], m[0][2])) * size);
+    float3 toLight = normalize(l.position - world);
+    float3 n = dot(ng, toLight) >= 0.0 ? ng : -ng;
+    float sinAngle = saturate(1.0 - dot(n, toLight));
+    float3 p = world + n * (shadowParams.localConfig.w * texel * sinAngle);
+    // The constant bias moves the point towards the light
+    float3 biased = p + toLight * (shadowParams.localConfig.z * texel);
+    float4 clip = mul(m, float4(p, 1.0));
+    float4 clipBiased = mul(m, float4(biased, 1.0));
+    if (clip.w <= 0.0 || clipBiased.w <= 0.0) {
+        return 1.0;
+    }
+    float2 uv = float2(clip.x / clip.w * 0.5 + 0.5, 0.5 - clip.y / clip.w * 0.5);
+    float depth = clipBiased.z / clipBiased.w;
+    if (depth > 1.0 || depth < 0.0) {
+        return 1.0;
+    }
+    float radius = shadowParams.localConfig.y / size;
+    int taps = int(shadowParams.localMore.x);
+    float turn = 6.2831853 * interleavedGradientNoise(pixel);
+    float sn = sin(turn);
+    float cs = cos(turn);
+    float sum = 0.0;
+    for (int i = 0; i < taps; i++) {
+        float2 d = POISSON[i];
+        float2 offset = float2(d.x * cs - d.y * sn, d.x * sn + d.y * cs) * radius;
+        sum += localShadowMap.SampleCmpLevelZero(shadowSampler, float3(uv + offset, float(layer)), depth);
+    }
+    return sum / float(max(taps, 1));
 }
 
 // The cone's share for the cosine 'cosAngle' of the angle from the axis
@@ -188,6 +263,13 @@ void litLocalLights(float3 world, float3 n, float3 v, float shininess, float2 pi
         float nol = dot(n, hit.toLight);
         if (nol <= 0.0) {
             continue;
+        }
+        if (l.shadowView > -0.5) {
+            float visible = localShadow(l, world, n, pixel);
+            if (visible <= 0.0) {
+                continue;
+            }
+            hit.irradiance *= visible;
         }
         diffuse += hit.irradiance * nol;
         if (withSpecular) {

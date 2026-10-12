@@ -29,7 +29,10 @@
 //   glows like stained glass); and FLUTTER, each leaf of a tree turning a few
 //   degrees about its stem on its own phase, in the vertex stage.
 //
-// Lit by the one directional light, and by the sky through image-based
+// Lit by the one directional light, by the scene's point and spot lights (the
+// lights of the fragment's cluster, locallights.slang: the same lobes, the
+// base's and the coat's, for each, the highlight about the point of a
+// bulb's sphere nearest the reflection), and by the sky through image-based
 // lighting: a diffuse cube (irradiance), a specular cube prefiltered by
 // roughness, one level a roughness step, and the split sum's table.
 //
@@ -324,6 +327,13 @@ float4 fragmentMain(VertexOutput input) : SV_Target {
                 continue;
             }
             float lnol = saturate(dot(n, hit.toLight));
+            if (light.shadowView > -0.5 && (lnol > 0.0 || withSpecular)) {
+                float lightVisible = localShadow(light, input.world, normalize(input.normal), input.position.xy);
+                if (lightVisible <= 0.0) {
+                    continue;
+                }
+                hit.irradiance *= lightVisible;
+            }
             if (!withSpecular) {
                 // The cheap setting: Lambert alone
                 float3 plain = diffuseColor * (1.0 / PI) * lnol * hit.irradiance;

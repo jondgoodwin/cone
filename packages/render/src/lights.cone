@@ -59,12 +59,14 @@
 // lantern's own materials (layers 0 and 1), lights its inside and not the
 // path: a light that is "local only".
 //
-// WHAT IT DOES NOT DO YET: point and spot lights cast no shadows (a spot's is
-// one perspective view into an atlas tile, a point's six; see shadow.cone for
-// what they need from this light list); the foliage's light through a leaf is
-// the sun's and the sky's; a light is not reached by a view's other frame
-// uniforms (like the frame, the cluster lists are one buffer a render, so a
-// submission with several cameras shares the last one's).
+// SHADOWS (lightshadow.cone): a light marked 'setCastsShadow' casts one if
+// the renderer's 'setLightShadows' gave the map layers for it: a spot light's
+// is one perspective view, a point light's six; the best ranked by size and
+// nearness get the layers.
+//
+// WHAT IT DOES NOT DO YET: the foliage's light through a leaf is the sun's and
+// the sky's; the cluster lists are one buffer a render, like the frame's
+// uniforms, so a submission with several cameras shares the last one's.
 
 // The most lights a scene holds, the grid, and the most lights a cluster
 // holds
@@ -207,6 +209,10 @@ pub struct LightSet {
   // with many lights
   pub specular bool;
   gpuRows List[f32];               // the table as the shader reads it (locallights.slang's row), made at the upload
+  // How many clusters each light (a row) reached in the last assignment, and
+  // the shadows of lights (lightshadow.cone)
+  pub reachRows List[u32];
+  pub shadows LocalShadows;
 
   // An empty set, its buffers made; check 'isValid'
   pub fn create(device &mut Device) LightSet {
@@ -222,7 +228,7 @@ pub struct LightSet {
       List[u32].empty(), rowBuffer, clusterBuffer, FIRST_CLUSTER_ENTRIES, paramsBuffer, List[f32].empty(),
       new Array[f32, 8] <- fill 0f, false, counts, lists, List[u32].empty(), 0., new Vec3(0., 0., 0.),
       new Vec3(0., 0., -1.), 0.1, 1., 1000., 1., 1., 0u32, 0u32, 0u32, false, true, true,
-      new Array[f32, 25] <- fill 0f, 0u32, true, List[f32].empty());
+      new Array[f32, 25] <- fill 0f, 0u32, true, List[f32].empty(), List[u32].empty(), LocalShadows.create(device));
   }
 
   pub fn isValid(self &) bool {
@@ -282,6 +288,7 @@ pub struct LightSet {
     colors.push(color.green);
     colors.push(color.blue);
     colors.push(candela);
+    shadows.flags.push(0u32);
     assignDirty = true;
     rowsDirty = true;
     new LightHandle(slot, *slotGen[usize.from(slot)]);
@@ -319,12 +326,14 @@ pub struct LightSet {
         colors.set(row * 4usize + k, *colors[last * 4usize + k]);
         k = k + 1usize;
       }
+      shadows.flags.set(row, *shadows.flags[last]);
       imm moved = *owners[last];
       owners.set(row, moved);
       slotRow.set(usize.from(moved), u32.from(row));
     }
     rows.truncate(last * LIGHT_FLOATS);
     colors.truncate(last * 4usize);
+    shadows.flags.truncate(last);
     owners.truncate(last);
     slotRow.set(usize.from(h.slot), NO_LIGHT);
     slotGen.set(usize.from(h.slot), h.gen + 1u32);
@@ -346,8 +355,28 @@ pub struct LightSet {
     rows.clear();
     colors.clear();
     owners.clear();
+    shadows.flags.clear();
     assignDirty = true;
     rowsDirty = true;
+  }
+
+  // Whether the light casts a shadow, if it can (the renderer's
+  // 'setLightShadows' gives the budget): a point light's is six views of a
+  // map, a spot's one. Off to start.
+  pub fn setCastsShadow(self &mut, h LightHandle, casts bool) bool {
+    if !self.alive(h) { return false; }
+    imm row = self.rowOf(h);
+    imm flag = *shadows.flags[row];
+    shadows.flags.set(row, if casts { flag | 1u32; } else { flag & 2u32; });
+    rowsDirty = true;
+    true;
+  }
+
+  // Whether the light was given shadow views for the last render
+  pub fn isShadowed(self &, h LightHandle) bool {
+    if !self.alive(h) { return false; }
+    imm row = self.rowOf(h);
+    row < shadows.base.len() and *shadows.base[row] != NO_VIEW;
   }
 
   // Move the light to 'position'
@@ -726,7 +755,8 @@ pub struct LightSet {
       gpuRows.push(*rows[b + 14usize]);
       gpuRows.push(if spot { *rows[b + 12usize]; } else { 0.; });
       gpuRows.push(if spot { *rows[b + 13usize]; } else { 0.; });
-      gpuRows.push(0.);
+      // The first of its shadow views, or -1
+      gpuRows.push(if i < shadows.base.len() and *shadows.base[i] != NO_VIEW { f32.from(*shadows.base[i]); } else { -1.; });
       gpuRows.push(0.);
       i = i + 1usize;
     }
@@ -784,6 +814,7 @@ pub struct LightSet {
     frameKey = fk;
     imm needAssign = assignDirty or keyChanged;
     mut grew = false;
+    mut listsMade = false;
 
     imm n = owners.len();
     if n == 0usize {
@@ -792,19 +823,15 @@ pub struct LightSet {
       overflowed = 0u32;
       assigned = false;
       assignDirty = false;
-      rowsDirty = false;
-    } elif !needAssign {
-      // The lists stand; a change of intensity or layers rewrites the table
-      if rowsDirty and assigned { self.writeRows(device); }
-      rowsDirty = false;
-    } else {
+    } elif needAssign {
       active = 0u32;
       pairs = 0u32;
       overflowed = 0u32;
       assigned = false;
       assignments = assignments + 1u32;
       assignDirty = false;
-      rowsDirty = false;
+      reachRows.clear();
+      reachRows.resize(n, 0u32);
       // The boxes, for this projection
       imm key = [proj.m[0], proj.m[5], proj.m[11], proj.m[12], proj.m[13], near, gridFar, farPlane];
       mut same = boxesMade;
@@ -832,7 +859,9 @@ pub struct LightSet {
           mut radius = 0.;
           self.lightSphere(i, &mut center, &mut radius);
           imm viewCenter = view * center;
-          if self.assignLight(u32.from(i), viewCenter, radius, &proj, farPlane) > 0u32 { active = active + 1u32; }
+          imm reached = self.assignLight(u32.from(i), viewCenter, radius, &proj, farPlane);
+          reachRows.set(i, reached);
+          if reached > 0u32 { active = active + 1u32; }
         }
         i = i + 1usize;
       }
@@ -865,9 +894,15 @@ pub struct LightSet {
         }
         imm sv = staging.view();
         device.queue.writeBuffer(&clusterBuffer, 0u64, &sv[0] as *u8, u64.from(total) * 4u64);
-        self.writeRows(device);
+        listsMade = true;
       }
     }
+
+    // The lights that cast shadows this frame (lightshadow.cone), and the
+    // table, written when anything in it changed
+    if selectLocalShadows(self) { rowsDirty = true; }
+    if assigned and (rowsDirty or listsMade) { self.writeRows(device); }
+    rowsDirty = false;
 
     // The parameters: the camera's forward, the grid, the slices; the count
     // of lights worth looping over (0: the shaders skip the loop)
@@ -882,6 +917,7 @@ pub struct LightSet {
     params[8] = gridNear;
     params[9] = gridScale;
     params[10] = if specular { 1.; } else { 0.; };
+    params[11] = if shadows.viewsUsed > 0u32 { 1.; } else { 0.; };
     device.queue.writeBuffer(&paramsBuffer, 0u64, &params as *u8, LIGHT_PARAMS_BYTES);
     grew;
   }

@@ -1,0 +1,445 @@
+// Shadows of point and spot lights.
+//
+// THE METHODS, named:
+// - A SPOT LIGHT's shadow is one perspective view from the light, of a field
+//   of view of its outer cone plus a guard band, drawn depth only into one
+//   layer of a depth texture array (a "tile": Godot and Unreal pack theirs
+//   into an atlas; a texture array of equal tiles is the same with no packing
+//   to do, and WebGPU has both). A POINT LIGHT's is six such views of 94
+//   degrees, one each way along the axes, the six layers of a cube's faces
+//   (cube-map shadows, Williams 1978's depth map for each face; "omnidirectional
+//   shadow mapping"); the receiver chooses the face by the greatest axis of
+//   its direction from the light. The guard band (the views are wider than the
+//   90 degrees a face needs, by 4) keeps the filter on a face from reading
+//   past its edge.
+// - THE FILTER and the bias are the sun's (shadowing.slang): percentage-closer
+//   filtering (Reeves et al. 1987) over a Poisson disk of 'pcfRadius' texels,
+//   turned by Jimenez's interleaved gradient noise, through the same
+//   comparison sampler; a normal offset (Holbert 2011) along the geometric
+//   normal and a constant bias, both in texels of the view AT THE RECEIVER (a
+//   perspective texel grows with distance: 2 w / (m00 size)), the bias moving
+//   the point towards the light, so it holds at every depth where a depth
+//   bias in the view's non-linear depth would not.
+// - THE BUDGET. A map holds 'maxViews' layers (24 at most): a spot light takes
+//   one and a point light six. Each frame the lights that are marked to cast
+//   ('setCastsShadow') and reach the view are ranked by range squared over
+//   one plus their squared distance from the camera (what a light that is
+//   large and near looks like), a light already shadowed last frame with a
+//   bonus (so a light does not flicker in and out of the budget as two swap
+//   places), and the best are given views while layers last. A light that
+//   does not get one lights unshadowed.
+// - THE CASTERS are the sun's: the batches the main pass gathered, drawn
+//   depth only through the same eight pipelines (cut-out, skinned and flutter
+//   casters cast what they show; see-through and custom draws and items
+//   marked 'dontCastShadow' cast nothing), a batch left out of a view none of
+//   whose copies' bounding spheres touch the view's frustum.
+//   shadowcasting.slang's immediate 4 + i draws view i, whose matrix is in
+//   the shadow parameters' 'localView'.
+//
+// WHAT IT DOES NOT DO: lights shadowed are chosen by the camera's distance, not
+// by what is visible (a light behind a wall costs its views); the maps are not
+// cached from frame to frame, a view is drawn again every frame even if
+// nothing near the light moved (static casters' maps would be a cache the
+// scene's changes invalidate); no contact-hardening (a penumbra of fixed size);
+// the interior ("local only") lights of a lantern are unshadowed by their
+// small range.
+
+// How many layers the map can have (shadowparams.slang's localView)
+pub const MAX_LOCAL_SHADOW_VIEWS = 24u32;
+const NO_VIEW = 4294967295u32;
+// How much wider than a cube face's 90 degrees each view of a point light is
+const FACE_GUARD = 4.;
+
+// How the point and spot lights' shadows are made: a quality tier is a
+// settings value, as the sun's is (shadow.cone). 'Renderer.setLightShadows'
+// takes it.
+pub struct LightShadowSettings {
+  pub enabled bool = false;
+  // The side of each view's tile, in texels (a tile is 32-bit depth: 1024 is
+  // 4 MB a layer)
+  pub tileSize u32 = 512u32;
+  // How many layers (1 to 24): a spot light's view is one, a point light's six
+  pub maxViews u32 = 24u32;
+  // The filter: taps (1 to 16) over a disk of 'pcfRadius' texels
+  pub pcfTaps u32 = 8u32;
+  pub pcfRadius f32 = 1.5;
+  // The constant bias and the normal offset, in texels at the receiver
+  pub bias f32 = 2.0;
+  pub normalOffset f32 = 1.5;
+  // The views' near plane
+  pub near f32 = 0.03;
+
+  pub fn off() LightShadowSettings { new LightShadowSettings(); }
+
+  // 24 layers of 1024, 12 taps: a discrete GPU
+  pub fn high() LightShadowSettings {
+    new LightShadowSettings(enabled: true, tileSize: 1024u32, maxViews: 24u32, pcfTaps: 12u32);
+  }
+
+  // 24 layers of 512, 8 taps
+  pub fn medium() LightShadowSettings {
+    new LightShadowSettings(enabled: true, tileSize: 512u32, maxViews: 24u32, pcfTaps: 8u32);
+  }
+
+  // 12 layers of 256, 4 taps: an integrated GPU
+  pub fn low() LightShadowSettings {
+    new LightShadowSettings(enabled: true, tileSize: 256u32, maxViews: 12u32, pcfTaps: 4u32, pcfRadius: 1.25);
+  }
+}
+
+fn clampLightShadowSettings(s &LightShadowSettings) LightShadowSettings {
+  mut c = *s;
+  if c.tileSize < 64u32 { c.tileSize = 64u32; }
+  if c.tileSize > 4096u32 { c.tileSize = 4096u32; }
+  c.tileSize = c.tileSize & 0xFFFFFFFEu32;
+  if c.maxViews < 1u32 { c.maxViews = 1u32; }
+  if c.maxViews > MAX_LOCAL_SHADOW_VIEWS { c.maxViews = MAX_LOCAL_SHADOW_VIEWS; }
+  if c.pcfTaps < 1u32 { c.pcfTaps = 1u32; }
+  if c.pcfTaps > 16u32 { c.pcfTaps = 16u32; }
+  if c.pcfRadius < 0. { c.pcfRadius = 0.; }
+  if c.near < 0.001 { c.near = 0.001; }
+  c;
+}
+
+// The lights' shadows: the settings, the map (a depth texture array, a layer
+// a view; one 1 x 1 layer while they are off), which lights cast and which
+// were chosen this frame, and the views made for them
+pub struct LocalShadows {
+  pub settings LightShadowSettings;
+  pub map Texture;
+  pub flags List[u32];             // a row each: bit 0 casts a shadow if it can, bit 1 was given views last frame
+  pub base List[u32];              // a row each: its first view this frame, or NO_VIEW
+  pub views List[f32];             // 16 floats (a matrix) a view in use
+  pub viewRow List[u32];           // the row of the light each view belongs to
+  pub candRows List[u32];          // scratch: the candidates
+  pub candScore List[f32];
+  pub viewsUsed u32;
+  pub lightsShadowed u32;
+  pub passes u32;                  // how many passes the last render made
+  pub drawCalls u32;
+  pub triangles u64;
+
+  pub fn create(device &mut Device) LocalShadows {
+    imm mapDesc = new TextureDescriptor(1u32, 1u32, TEXTURE_FORMAT_DEPTH32_FLOAT,
+      TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING, 1u32, 1u32);
+    mut map = device.createTexture(&mapDesc);
+    new LocalShadows(new LightShadowSettings(), map, List[u32].empty(), List[u32].empty(), List[f32].empty(),
+      List[u32].empty(), List[u32].empty(), List[f32].empty(), 0u32, 0u32, 0u32, 0u32, 0u64);
+  }
+
+  pub fn isValid(self &) bool { map.isValid(); }
+
+  // A view of the whole map as an array, what the frame group binds
+  pub fn arrayView(self &) TextureView {
+    imm desc = new TextureViewDescriptor(dimension: TEXTURE_VIEW_DIMENSION_2D_ARRAY);
+    map.createViewWith(&desc);
+  }
+
+  // The map made again: 'layers' layers of 'size' square, or, for 0 layers,
+  // the 1 x 1 stand-in
+  pub fn remakeMap(self &mut, device &mut Device, size u32, layers u32) {
+    mut side = size;
+    mut count = layers;
+    if count == 0u32 {
+      side = 1u32;
+      count = 1u32;
+    }
+    imm desc = new TextureDescriptor(side, side, TEXTURE_FORMAT_DEPTH32_FLOAT,
+      TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING, 1u32, count);
+    // See ShadowState.remakeMap: submit what the frame has recorded first
+    mut flush = device.createCommandEncoder();
+    device.queue.submit(flush.finish());
+    map = device.createTexture(&desc);
+  }
+}
+
+// A light's view matrix and projection, world to clip: from 'eye' along
+// 'dir' ('up' not parallel to it), 'fov' radians across, depths 'near' to
+// 'far' mapped to 0 to 1
+fn viewMatrixOf(eye Vec3, dir Vec3, up Vec3, fov f32, near f32, far f32) Mat4 {
+  imm view = Mat4.lookAt(eye, eye + dir, up);
+  imm proj = Mat4.perspective(fov, 1., near, far);
+  proj * view;
+}
+
+fn pushMatrix(out &mut List[f32], m &Mat4) {
+  mut k = 0usize;
+  while k < 16usize {
+    out.push(m.m[k]);
+    k = k + 1usize;
+  }
+}
+
+// The faces of a point light's cube, in the order the receiver counts them:
+// +x, -x, +y, -y, +z, -z
+fn faceDirection(face u32) Vec3 {
+  if face == 0u32 { return new Vec3(1., 0., 0.); }
+  if face == 1u32 { return new Vec3(-1., 0., 0.); }
+  if face == 2u32 { return new Vec3(0., 1., 0.); }
+  if face == 3u32 { return new Vec3(0., -1., 0.); }
+  if face == 4u32 { return new Vec3(0., 0., 1.); }
+  new Vec3(0., 0., -1.);
+}
+
+fn faceUp(face u32) Vec3 {
+  if face == 2u32 { return new Vec3(0., 0., 1.); }
+  if face == 3u32 { return new Vec3(0., 0., -1.); }
+  new Vec3(0., 1., 0.);
+}
+
+// Choose which lights cast a shadow this frame, and make their views (see the
+// budget, at the head of this file); true if the choice is not what it was
+// last frame (the lights' table must be written again)
+fn selectLocalShadows(ls &mut LightSet) bool {
+  imm n = ls.owners.len();
+  imm s = ls.shadows.settings;
+  // Last frame's choice, kept in each row's flag
+  mut previous = List[u32].empty();
+  mut i = 0usize;
+  while i < n {
+    previous.push(if i < ls.shadows.base.len() { *ls.shadows.base[i]; } else { NO_VIEW; });
+    i = i + 1usize;
+  }
+  ls.shadows.base.clear();
+  ls.shadows.base.resize(n, NO_VIEW);
+  ls.shadows.views.clear();
+  ls.shadows.viewRow.clear();
+  ls.shadows.candRows.clear();
+  ls.shadows.candScore.clear();
+  ls.shadows.viewsUsed = 0u32;
+  ls.shadows.lightsShadowed = 0u32;
+  if !s.enabled {
+    mut same = true;
+    i = 0usize;
+    while i < n {
+      if *previous[i] != NO_VIEW { same = false; }
+      i = i + 1usize;
+    }
+    return !same;
+  }
+  // The candidates: lights that may cast, give light and reach something in view
+  i = 0usize;
+  while i < n {
+    imm flag = *ls.shadows.flags[i];
+    if (flag & 1u32) != 0u32 and ls.isLit(i) and i < ls.reachRows.len() and *ls.reachRows[i] > 0u32 {
+      imm b = i * LIGHT_FLOATS;
+      imm p = new Vec3(*ls.rows[b], *ls.rows[b + 1usize], *ls.rows[b + 2usize]);
+      imm range = *ls.rows[b + 3usize];
+      mut score = range * range / (1. + (p - ls.eye).lengthSquared());
+      if *previous[i] != NO_VIEW { score = score * 1.4; }
+      ls.shadows.candRows.push(u32.from(i));
+      ls.shadows.candScore.push(score);
+    }
+    i = i + 1usize;
+  }
+  // The best first, while layers last
+  mut used = 0u32;
+  mut taken = 0usize;
+  while taken < ls.shadows.candRows.len() {
+    mut best = 0usize;
+    mut bestScore = -1.;
+    mut k = 0usize;
+    while k < ls.shadows.candRows.len() {
+      if *ls.shadows.candScore[k] > bestScore {
+        bestScore = *ls.shadows.candScore[k];
+        best = k;
+      }
+      k = k + 1usize;
+    }
+    if bestScore < 0. { break; }
+    ls.shadows.candScore.set(best, -2.);
+    taken = taken + 1usize;
+    imm row = usize.from(*ls.shadows.candRows[best]);
+    imm b = row * LIGHT_FLOATS;
+    imm spot = *ls.rows[b + 11usize] > 0.5;
+    imm need = if spot { 1u32; } else { 6u32; };
+    if used + need > s.maxViews { continue; }
+    imm p = new Vec3(*ls.rows[b], *ls.rows[b + 1usize], *ls.rows[b + 2usize]);
+    imm range = *ls.rows[b + 3usize];
+    ls.shadows.base.set(row, used);
+    if spot {
+      imm axis = new Vec3(*ls.rows[b + 8usize], *ls.rows[b + 9usize], *ls.rows[b + 10usize]);
+      imm up = if axis.y > 0.99 or axis.y < -0.99 { new Vec3(1., 0., 0.); } else { new Vec3(0., 1., 0.); };
+      mut fov = 2. * *ls.rows[b + 15usize] + radians(FACE_GUARD);
+      if fov > radians(170.) { fov = radians(170.); }
+      imm m = viewMatrixOf(p, axis, up, fov, s.near, range);
+      pushMatrix(&mut ls.shadows.views, &m);
+      ls.shadows.viewRow.push(u32.from(row));
+    } else {
+      mut face = 0u32;
+      while face < 6u32 {
+        imm m = viewMatrixOf(p, faceDirection(face), faceUp(face), radians(90. + FACE_GUARD), s.near, range);
+        pushMatrix(&mut ls.shadows.views, &m);
+        ls.shadows.viewRow.push(u32.from(row));
+        face = face + 1u32;
+      }
+    }
+    used = used + need;
+    ls.shadows.lightsShadowed = ls.shadows.lightsShadowed + 1u32;
+  }
+  ls.shadows.viewsUsed = used;
+  mut changed = false;
+  i = 0usize;
+  while i < n {
+    if *previous[i] != *ls.shadows.base[i] { changed = true; }
+    // Remember who has views, for the bonus
+    imm flag = *ls.shadows.flags[i];
+    ls.shadows.flags.set(i, if *ls.shadows.base[i] != NO_VIEW { flag | 2u32; } else { flag & 1u32; });
+    i = i + 1usize;
+  }
+  changed;
+}
+
+// Whether the sphere of 'r' about 'c' is not wholly outside the clip volume
+// of the matrix 'm' (world to clip, depth 0 to 1): the six planes of its
+// frustum, from the matrix's rows (Gribb and Hartmann, "Fast Extraction of
+// Viewing Frustum Planes from the World-View-Projection Matrix", 2001)
+fn sphereInView(m &Mat4, c Vec3, r f32) bool {
+  mut p = 0u32;
+  while p < 6u32 {
+    // The plane's coefficients: row 3 plus or minus a row, row 2 alone for the near plane
+    mut a = 0.;
+    mut b = 0.;
+    mut cc = 0.;
+    mut d = 0.;
+    imm col0 = m.m[3];
+    imm col1 = m.m[7];
+    imm col2 = m.m[11];
+    imm col3 = m.m[15];
+    if p == 0u32 {
+      a = col0 + m.m[0]; b = col1 + m.m[4]; cc = col2 + m.m[8]; d = col3 + m.m[12];
+    } elif p == 1u32 {
+      a = col0 - m.m[0]; b = col1 - m.m[4]; cc = col2 - m.m[8]; d = col3 - m.m[12];
+    } elif p == 2u32 {
+      a = col0 + m.m[1]; b = col1 + m.m[5]; cc = col2 + m.m[9]; d = col3 + m.m[13];
+    } elif p == 3u32 {
+      a = col0 - m.m[1]; b = col1 - m.m[5]; cc = col2 - m.m[9]; d = col3 - m.m[13];
+    } elif p == 4u32 {
+      a = m.m[2]; b = m.m[6]; cc = m.m[10]; d = m.m[14];
+    } else {
+      a = col0 - m.m[2]; b = col1 - m.m[6]; cc = col2 - m.m[10]; d = col3 - m.m[14];
+    }
+    imm len = (a * a + b * b + cc * cc).sqrt();
+    if len > 0. and (a * c.x + b * c.y + cc * c.z + d) / len < 0. - r { return false; }
+    p = p + 1u32;
+  }
+  true;
+}
+
+// Whether any copy in the batch has a bounding sphere in view 'view' of
+// the lights' views (a matrix as 'viewMatrix' made it)
+fn batchInView(r &Renderer, list &DrawList, batch &DrawBatch, m &Mat4) bool {
+  mut j = 0u32;
+  while j < batch.count {
+    imm item = list.items[usize.from(r.keys[usize.from(batch.first + j)].item)];
+    imm mesh = r.meshes[item.mesh.slot].current();
+    imm center = item.model * mesh.center;
+    imm sx = item.model.transformVector(new Vec3(1., 0., 0.)).length();
+    imm sy = item.model.transformVector(new Vec3(0., 1., 0.)).length();
+    imm sz = item.model.transformVector(new Vec3(0., 0., 1.)).length();
+    mut s = sx;
+    if sy > s { s = sy; }
+    if sz > s { s = sz; }
+    if sphereInView(m, center, mesh.radius * s) { return true; }
+    j = j + 1u32;
+  }
+  false;
+}
+
+// Record the lights' shadow passes of 'list': the views' matrices and the
+// filter written to the shadow parameters, then one depth-only pass a view
+// into the map. Nothing if no light was given a view.
+fn recordLocalShadowPasses(r &mut Renderer, device &mut Device, encoder &mut CommandEncoder, list &DrawList) {
+  r.lights.shadows.passes = 0u32;
+  r.lights.shadows.drawCalls = 0u32;
+  r.lights.shadows.triangles = 0u64;
+  imm views = r.lights.shadows.viewsUsed;
+  if views == 0u32 { return; }
+  imm s = r.lights.shadows.settings;
+  mut data = new Array[f32, 392] <- fill 0f;
+  data[0] = f32.from(s.tileSize);
+  data[1] = s.pcfRadius;
+  data[2] = s.bias;
+  data[3] = s.normalOffset;
+  data[4] = f32.from(s.pcfTaps);
+  mut k = 0usize;
+  while k < usize.from(views) * 16usize {
+    data[8usize + k] = *r.lights.shadows.views[k];
+    k = k + 1usize;
+  }
+  device.queue.writeBuffer(&r.shadow.params, SHADOW_SUN_BYTES, &data as *u8, 1568u64);
+  mut v = 0u32;
+  while v < views {
+    imm viewDesc = new TextureViewDescriptor(dimension: TEXTURE_VIEW_DIMENSION_2D, baseArrayLayer: v, arrayLayerCount: 1u32);
+    imm attachment = new RenderPassDepthStencilAttachment(view: r.lights.shadows.map.createViewWith(&viewDesc),
+      depthLoadOp: LOAD_OP_CLEAR, depthStoreOp: STORE_OP_STORE);
+    mut pass = encoder.beginDepthPass(&attachment);
+    imm immediate = 4u32 + v;
+    mut matrix = Mat4.identity();
+    k = 0usize;
+    while k < 16usize {
+      matrix.m[k] = *r.lights.shadows.views[usize.from(v) * 16usize + k];
+      k = k + 1usize;
+    }
+    mut bound = CASTER_NONE;
+    mut boundMaterial = Ref[MaterialSlot].none();
+    mut b = 0usize;
+    while b < r.batches.len() {
+      imm batch = *r.batches[b];
+      b = b + 1usize;
+      if batch.layer != LAYER_OPAQUE or batch.noShadow { continue; }
+      imm first = *r.keys[usize.from(batch.first)];
+      imm item = list.items[usize.from(first.item)];
+      imm m = r.meshes[item.mesh.slot].current();
+      imm kind = casterKindOf(r, item, m);
+      if kind == CASTER_NONE { continue; }
+      if !batchInView(r, list, &batch, &matrix) { continue; }
+      if bound != kind {
+        if kind == CASTER_OPAQUE { pass.setPipeline(&r.shadow.casters.opaque); }
+        elif kind == CASTER_OPAQUE_SKINNED { pass.setPipeline(&r.shadow.casters.opaqueSkinned); }
+        elif kind == CASTER_LIT_CUT { pass.setPipeline(&r.shadow.casters.litCut); }
+        elif kind == CASTER_LIT_CUT_SKINNED { pass.setPipeline(&r.shadow.casters.litCutSkinned); }
+        elif kind == CASTER_PBR_CUT { pass.setPipeline(&r.shadow.casters.pbrCut); }
+        elif kind == CASTER_PBR_CUT_SKINNED { pass.setPipeline(&r.shadow.casters.pbrCutSkinned); }
+        elif kind == CASTER_SWAY { pass.setPipeline(&r.shadow.casters.sway); }
+        else { pass.setPipeline(&r.shadow.casters.swayCut); }
+        pass.setBindGroup(0u32, &r.shadow.casterGroup);
+        pass.setImmediates(0u32, &immediate as *u8, 4u32);
+        bound = kind;
+        boundMaterial = Ref[MaterialSlot].none();
+      }
+      if kind != CASTER_OPAQUE and kind != CASTER_OPAQUE_SKINNED and !(boundMaterial == item.material.slot) {
+        pass.setBindGroup(1u32, &r.materials[item.material.slot].group);
+        boundMaterial = item.material.slot;
+      }
+      pass.setVertexBuffer(0u32, &m.positions, 0u64);
+      if kind == CASTER_OPAQUE_SKINNED {
+        pass.setVertexBuffer(1u32, &m.joints, 0u64);
+        pass.setVertexBuffer(2u32, &m.weights, 0u64);
+      } elif kind == CASTER_LIT_CUT or kind == CASTER_PBR_CUT {
+        pass.setVertexBuffer(1u32, &m.uvs, 0u64);
+      } elif kind == CASTER_LIT_CUT_SKINNED or kind == CASTER_PBR_CUT_SKINNED {
+        pass.setVertexBuffer(1u32, &m.uvs, 0u64);
+        pass.setVertexBuffer(2u32, &m.joints, 0u64);
+        pass.setVertexBuffer(3u32, &m.weights, 0u64);
+      } elif kind == CASTER_SWAY {
+        pass.setVertexBuffer(1u32, &m.sway, 0u64);
+      } elif kind == CASTER_SWAY_CUT {
+        pass.setVertexBuffer(1u32, &m.uvs, 0u64);
+        pass.setVertexBuffer(2u32, &m.sway, 0u64);
+      }
+      pass.setIndexBuffer(&m.indices, INDEX_FORMAT_UINT32, 0u64);
+      mut g = 0usize;
+      while g < m.groups.len() {
+        imm group = m.groups[g];
+        pass.drawIndexed(group.count, batch.count, group.start, 0i32, batch.firstInstance);
+        r.lights.shadows.triangles = r.lights.shadows.triangles + u64.from(group.count / 3u32) * u64.from(batch.count);
+        r.lights.shadows.drawCalls = r.lights.shadows.drawCalls + 1u32;
+        g = g + 1usize;
+      }
+    }
+    pass.end();
+    r.lights.shadows.passes = r.lights.shadows.passes + 1u32;
+    v = v + 1u32;
+  }
+}

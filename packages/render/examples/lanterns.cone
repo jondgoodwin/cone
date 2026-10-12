@@ -9,10 +9,13 @@
 //   congo run packages/render/examples/lanterns.cone
 //   congo run packages/render/examples/lanterns.cone -- --shot lanterns
 //
-// It prints, for 0, 16, 64 and 256 lights in the scene, the GPU time in
-// milliseconds of 'render' (the mean of 60 frames after 10), the CPU time of
-// the light assignment ('lights.prepare', microseconds), the lights that
-// reach the view, the (light, cluster) pairs and the most a cluster holds.
+// It prints, for 0, 16, 24 (the lanterns), 64 and 256 lights in the scene, the
+// GPU time in milliseconds of 'render' (the mean of 60 frames after 10), the
+// CPU time of 'lights.prepare' in microseconds (with the camera turning, so
+// that the lists are made each time, and with it still, so that they stand
+// and only the table is written), the lights that reach the view, the
+// (light, cluster) pairs and the most a cluster holds. '--diffuse' sets
+// 'lights.specular' false (the cheap setting: Lambert alone).
 // The first 24 lights are the lanterns' (two each: the pool light, which
 // lights everything near, and the interior light, which is "local only":
 // layer 1, a range of 0.35 m, lighting the lantern's own frame and roof);
@@ -137,6 +140,7 @@ struct Planned {
   range f32;
   radius f32;
   layers u32;
+  casts bool;                  // casts a shadow if there are layers for it
 }
 
 struct World {
@@ -155,6 +159,9 @@ fn addLantern(list &mut DrawList, m &Meshes, mat &Materials, x f32, z f32, plann
   imm c = m.cube;
   list.add(c, mat.frame, Mat4.fromTrs(new Vec3(x, 0.15, z), Quat.identity(), new Vec3(0.012, 0.15, 0.012)));
   list.add(c, mat.frame, Mat4.fromTrs(new Vec3(x, 0.315, z), Quat.identity(), new Vec3(0.095, 0.015, 0.095)));
+  // The base plate would shade the ground under a bulb above it (a real one lets
+  // the light through its glass), and the bulb its own light: neither casts
+  list.dontCastShadow();
   // The glass: a box, and the posts at its corners
   list.add(c, mat.glass, Mat4.fromTrs(new Vec3(x, 0.42, z), Quat.identity(), new Vec3(0.075, 0.09, 0.075)));
   mut k = 0u32;
@@ -168,10 +175,11 @@ fn addLantern(list &mut DrawList, m &Meshes, mat &Materials, x f32, z f32, plann
   list.add(c, mat.frame, Mat4.fromTrs(new Vec3(x, 0.55, z), Quat.identity(), new Vec3(0.085, 0.014, 0.085)));
   list.add(c, mat.panel, Mat4.fromTrs(new Vec3(x, 0.566, z), Quat.identity(), new Vec3(0.07, 0.003, 0.07)));
   list.add(m.bulb, mat.bulb, Mat4.fromTranslation(new Vec3(x, 0.42, z)));
+  list.dontCastShadow();
   // The pool light: everything near, down to the grass; the interior one:
   // layer 1 only, a short range, the lantern's own parts
-  planned.push(new Planned(new Vec3(x, 0.42, z), lampColor(), 3.2, 5.5, 0.02, 1u32));
-  planned.push(new Planned(new Vec3(x, 0.42, z), lampColor(), 1.6, 0.35, 0.02, 2u32));
+  planned.push(new Planned(new Vec3(x, 0.42, z), lampColor(), 3.2, 5.5, 0.02, 1u32, true));
+  planned.push(new Planned(new Vec3(x, 0.42, z), lampColor(), 1.6, 0.35, 0.02, 2u32, false));
 }
 
 fn buildWorld(renderer &mut Renderer, device &mut Device) World {
@@ -264,15 +272,16 @@ fn buildWorld(renderer &mut Renderer, device &mut Device) World {
     imm y = 0.3 + scatter(i * 7u32 + 102u32);
     imm t = scatter(i * 7u32 + 103u32);
     imm warm = new Color(1., 0.397 + 0.4 * t, 0.0953 + 0.6 * t * t, 1.);
-    planned.push(new Planned(new Vec3(x, y, z), warm, 1.5 + scatter(i * 7u32 + 104u32) * 2., 2.5 + scatter(i * 7u32 + 105u32) * 2.5, 0.02, 1u32));
+    planned.push(new Planned(new Vec3(x, y, z), warm, 1.5 + scatter(i * 7u32 + 104u32) * 2., 2.5 + scatter(i * 7u32 + 105u32) * 2.5, 0.02, 1u32, false));
     i = i + 1u32;
   }
   new World(list, planned, lanternLights);
 }
 
 // The first 'n' planned lights, and no others, in the renderer; the interior
-// ones (layer 1) left out if 'interior' is false
-fn useLights(renderer &mut Renderer, world &World, n usize, interior bool) {
+// ones (layer 1) left out if 'interior' is false; the lanterns' pool lights
+// marked to cast a shadow if 'shadows' is
+fn useLights(renderer &mut Renderer, world &World, n usize, interior bool, shadows bool) {
   renderer.lights.clear();
   mut i = 0usize;
   while i < n {
@@ -281,6 +290,7 @@ fn useLights(renderer &mut Renderer, world &World, n usize, interior bool) {
       imm h = renderer.lights.addPoint(p.position, p.color, p.candela, p.range);
       renderer.lights.setSourceRadius(h, p.radius);
       renderer.lights.setLayers(h, p.layers);
+      if shadows and p.casts { renderer.lights.setCastsShadow(h, true); }
     }
     i = i + 1usize;
   }
@@ -406,11 +416,13 @@ fn main(argc i32, argv **u8) i32 {
   mut counts = [0usize, 16usize, 24usize, 64usize, 256usize];
   mut ci = 0usize;
   mut baseMs = 0d;
+  mut lanternMs = 0d;
   while ci < 5usize {
     imm n = counts[ci];
-    useLights(&mut renderer, &world, n, true);
+    useLights(&mut renderer, &world, n, true, false);
     imm ms = timeFrames(&mut device, &mut renderer, &mut post, &out, &depth, &queries, &resolved, &readback, &camera, &light, &world);
     if ci == 0usize { baseMs = ms; }
+    if n == 24usize { lanternMs = ms; }
     // The assignment's CPU time: 200 calls, the camera turning a little each
     // time (so the lists are made again every time), and 200 calls of the
     // camera still (the lists stand: the flicker of a lantern's intensity
@@ -448,22 +460,48 @@ fn main(argc i32, argv **u8) i32 {
     ci = ci + 1usize;
   }
 
+  // The lanterns' 24 lights again, the twelve pool lights casting shadows: the
+  // nearest four (24 layers) are given views, at each tier
+  imm tiers = [LightShadowSettings.low(), LightShadowSettings.medium(), LightShadowSettings.high()];
+  imm tierNames = ["low (12 layers of 256)", "medium (24 of 512)", "high (24 of 1024)"];
+  mut t = 0usize;
+  while t < 3usize {
+    useLights(&mut renderer, &world, usize.from(world.lanternLights), true, true);
+    imm tier = tiers[t];
+    renderer.setLightShadows(&mut device, &tier);
+    imm ms = timeFrames(&mut device, &mut renderer, &mut post, &out, &depth, &queries, &resolved, &readback, &camera, &light, &world);
+    print <- "24 lights, shadows "; printStr(tierNames[t]); print <- ": GPU "; print <- ms; print <- " ms ("; print <- ms - lanternMs;
+    print <- " over the same lights unshadowed); "; print <- u64.from(renderer.lights.shadows.lightsShadowed);
+    print <- " lights shadowed, "; print <- u64.from(renderer.lights.shadows.passes); print <- " passes, ";
+    print <- u64.from(renderer.lights.shadows.drawCalls); print <- " draws, "; print <- renderer.lights.shadows.triangles;
+    print <- " triangles\n";
+    t = t + 1usize;
+  }
+  renderer.disableLightShadows(&mut device);
+
   if prefix.len() > 0usize {
     mut name = prefix.copy();
     name <- "-on.bmp";
-    useLights(&mut renderer, &world, usize.from(world.lanternLights), true);
+    useLights(&mut renderer, &world, usize.from(world.lanternLights), true, false);
     shoot(&mut device, &mut renderer, &mut post, &out, &depth, &camera, &light, &world, &name);
+    name = prefix.copy();
+    name <- "-shadows.bmp";
+    useLights(&mut renderer, &world, usize.from(world.lanternLights), true, true);
+    imm tier = LightShadowSettings.high();
+    renderer.setLightShadows(&mut device, &tier);
+    shoot(&mut device, &mut renderer, &mut post, &out, &depth, &camera, &light, &world, &name);
+    renderer.disableLightShadows(&mut device);
     name = prefix.copy();
     name <- "-off.bmp";
     renderer.lights.clear();
     shoot(&mut device, &mut renderer, &mut post, &out, &depth, &camera, &light, &world, &name);
     name = prefix.copy();
     name <- "-nointerior.bmp";
-    useLights(&mut renderer, &world, usize.from(world.lanternLights), false);
+    useLights(&mut renderer, &world, usize.from(world.lanternLights), false, false);
     shoot(&mut device, &mut renderer, &mut post, &out, &depth, &camera, &light, &world, &name);
     name = prefix.copy();
     name <- "-crowd.bmp";
-    useLights(&mut renderer, &world, 256usize, true);
+    useLights(&mut renderer, &world, 256usize, true, false);
     shoot(&mut device, &mut renderer, &mut post, &out, &depth, &camera, &light, &world, &name);
   }
   print <- "Vulkan failures: "; print <- u64.from(failures());

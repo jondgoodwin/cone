@@ -16,6 +16,11 @@ struct ShadowParams {
     float4 config;                 // 320: x the cascades' count (0: no shadows), y the map's size in texels, z 0, w the filter's radius in texels
     float4 bias;                   // 336: x the constant depth bias (texels), y the normal offset (texels), z the filter's taps, w 0
     float4 forward;                // 352: xyz the camera's forward, unit length
+    // The point and spot lights' shadow views (lightshadow.cone, localshadow.slang):
+    float4 localConfig;            // 368: x the view's side in texels, y the filter's radius in texels, z the constant bias (texels), w the normal offset (texels)
+    float4 localMore;              // 384: x the filter's taps
+    float4x4 localView[24];        // 400: world coordinates to the view's clip space (a perspective view from the light), as a cascade's; a
+                                   //      caster draws view i as the immediate 4 + i
 };
 
 [[vk::binding(4, 0)]] ConstantBuffer<ShadowParams> shadowParams;
