@@ -1,0 +1,158 @@
+// A 'parallel each' that changes the items of a source (mutItems, mutArrays, mutChunks,
+// a '&mut' slice, in the header or inside a zip) lends them only from something exclusive:
+// a local, a field of one held by value, a '&uni' parameter, or the 'self' of an actor's
+// behaviour. Anything else could have another name while the passes run (a caller passing
+// the list twice, a zip reading it beside the writer, another thread), and a pass could
+// read or write an item another is writing (ErrorParRoot). Here is what it refuses:
+//
+//   - the measured race: a zip reads a list beside the one a '&mut' parameter writes, and
+//     a caller passes the one list as both
+//   - a '&mut' parameter, one reached through a struct it points to, a '&mut' slice as
+//     the source itself, a sync method's '&mut self' (an actor's too), an Rc, a global
+//   - a local that holds a '&mut' borrow
+//   - a writable cursor held in a variable whose origin the loop cannot follow: a 'mut'
+//     one, a parameter, a field, and one built from a '&mut' parameter first
+//
+// concurrency_parallel_root holds what it accepts.
+
+mod concurrency_parallel_root_refused;
+
+import collections use *;
+import actors;
+
+struct Item { pub n i64; }
+
+// The measured race: a read source and a writable one that are the same list under two names
+fn readBesideWrite(a &List[Item], b &mut List[Item]) {
+  parallel each i, x, pair in a.iter().zip(b.mutArrays[2usize]().mutItems()).indexed() {   //~ ErrorParRoot "reached through a '&mut' reference (b)"
+    pair[0usize].n = x.n + 1000;
+  }
+}
+
+// A '&mut' parameter; and a struct it points to
+fn viaParameter(l &mut List[Item]) {
+  parallel each x in l.mutItems() {                                  //~ ErrorParRoot "reached through a '&mut' reference (l)"
+    x.n = x.n + 1;
+  }
+}
+
+struct Holder { pub items List[Item]; }
+
+fn viaHolder(h &mut Holder) {
+  parallel each x in h.items.mutItems() {                            //~ ErrorParRoot "reached through a '&mut' reference (h)"
+    x.n = x.n + 1;
+  }
+}
+
+// A '&mut' slice as the source itself
+fn viaSlice(s &mut Array[Item]) {
+  parallel each x in s {                                             //~ ErrorParRoot "reached through a '&mut' reference (s)"
+    x.n = x.n + 1;
+  }
+}
+
+// A field that is itself a '&mut', though the struct is lent '&uni'
+struct Lent { pub items &mut Array[Item]; }
+
+fn viaFieldRef(g &uni Lent) {
+  parallel each x in g.items {                                       //~ ErrorParRoot "reached through a '&mut' reference (g)"
+    x.n = x.n + 1;
+  }
+}
+
+// A sync method's '&mut self' is not exclusive; an actor's behaviour is (see the run test)
+struct World {
+  items List[Item];
+
+  pub fn step(self &mut) {
+    parallel each x in items.mutItems() {                            //~ ErrorParRoot "reached through a '&mut' reference (self)"
+      x.n = x.n + 1;
+    }
+  }
+}
+
+actor Grid {
+  items List[Item];
+
+  fn init(self &new) {
+    *self = new Self(items: new List[Item]);
+  }
+
+  fn sync(self) {
+    parallel each x in items.mutItems() {                            //~ ErrorParRoot "reached through a '&mut' reference (self)"
+      x.n = x.n + 1;
+    }
+  }
+}
+
+// An owner that can be shared
+fn viaRc(r Rc[mut, Holder]) {
+  parallel each x in r.items.mutItems() {                            //~ ErrorParRoot "an owner that can be shared, such as an Rc (r)"
+    x.n = x.n + 1;
+  }
+}
+
+// Taken as '&uni' the same function is accepted (concurrency_parallel_root), and the caller
+// that passes the one list under two names is refused where it calls
+fn lift(a &List[Item], b &uni List[Item]) {
+  parallel each i, x, pair in a.iter().zip(b.mutArrays[2usize]().mutItems()).indexed() {
+    pair[0usize].n = x.n + 1000;
+  }
+}
+
+fn twoNames() {
+  mut l = new List[Item];
+  lift(&l, &uni l);                                                  //~ ErrorFrozen
+}
+
+// A global
+mut shared List[Item];
+
+fn @initpure init() { shared = List[Item].empty(); }
+
+fn viaGlobal() {
+  parallel each x in shared.mutItems() {                             //~ ErrorParRoot "reached through a global (shared)"
+    x.n = x.n + 1;
+  }
+}
+
+// A local that holds a '&mut' borrow is a name for what it borrows
+fn viaLocalBorrow() {
+  mut l = new List[Item];
+  imm r = &mut l;
+  parallel each x in r.mutItems() {                                  //~ ErrorParRoot "reached through a '&mut' reference (r)"
+    x.n = x.n + 1;
+  }
+}
+
+// A writable cursor held in a variable: the loop follows an 'imm' one to the call that
+// made it, and that call is judged as if written in the header
+fn cursorFromParameter(b &mut List[Item]) {
+  imm c = b.mutArrays[2usize]().mutItems();
+  parallel each x in c {                                             //~ ErrorParRoot "reached through a '&mut' reference (b)"
+    x[0usize].n = 1;
+  }
+}
+
+// ... one it cannot follow is refused where it is named
+fn cursorMut() {
+  mut l = new List[Item];
+  mut c = l.mutItems();
+  parallel each x in c {                                             //~ ErrorParRoot "a cursor held in 'c'"
+    x.n = 1;
+  }
+}
+
+fn cursorParameter(c ArrayMutItems[Item]) {
+  parallel each x in c {                                             //~ ErrorParRoot "a cursor held in 'c'"
+    x.n = 1;
+  }
+}
+
+struct Cursed { pub c ArrayMutItems[Item]; }
+
+fn cursorField(k Cursed) {
+  parallel each x in k.c {                                           //~ ErrorParRoot "a cursor held in 'k'"
+    x.n = 1;
+  }
+}

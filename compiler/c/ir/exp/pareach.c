@@ -555,10 +555,30 @@ static int parPathsOverlap(ParPath *a, ParPath *b) {
 
 typedef struct {
     ParPath lent[ParLentMax];   // The places the items are lent from: those of each source of a zip
-    uint8_t viaref[ParLentMax]; // The place is a '&mut' held in a variable (a parameter, say)
+    uint8_t writable[ParLentMax]; // The source it is for lends its items '&mut'
+    INode *place[ParLentMax];   // The place as written, to judge what it is reached through
     uint32_t nlent;
     ParSet reported;
 } ParAlias;
+
+static void parWrittenElems(INode *type, INode **elems, uint32_t *n);
+
+// Does a cursor, or a '&mut' slice, of this type lend its items '&mut'?
+static int parLendsMut(INode *node) {
+    if (node == NULL || !isExpNode(node))
+        return 0;
+    INode *elems[24];           // (ParAliasMax, defined below)
+    uint32_t n = 0;
+    parWrittenElems(iexpGetTypeDcl(node), elems, &n);
+    return n > 0;
+}
+
+// Is this type a cursor that holds two or three sources (a zip, indexed or not)?
+static int parIsZipType(INode *type) {
+    type = type != NULL ? itypeGetTypeDcl(type) : NULL;
+    return parIsCore(type, "Zip", 3) || parIsCore(type, "Zip3", 4)
+        || parIsCore(type, "ZipIndexed", 10) || parIsCore(type, "Zip3Indexed", 11);
+}
 
 // Can this expression name or lend from a place of the caller's: a name, a field, an
 // element, a dereference, a call made of such, or a borrow of one? Not a literal, nor
@@ -592,10 +612,151 @@ static int parArgLends(INode *arg) {
     return type != NULL && itypeCarriesBorrow(type);
 }
 
+// ---- A writable source is rooted in something exclusive ---------------------------
+//
+// Cone lets a '&mut' (and an 'Rc[mut, T]') be one of several names for a list, so a
+// loop that changes the items of a source, lent from a place reached through one,
+// does not know that nothing else names the list while its passes run: a caller may
+// pass it under two names, a zip may read it beside the writer, another thread may
+// hold it. The source must be rooted in something that is the one name: a local, a
+// field of one held by value, a '&uni' parameter (or 'self' as a '&uni'), or the 'self'
+// of an actor's behaviour.
+
+// Why a value of this type is not the one name for what it reaches, or NULL where
+// it is (not a reference, a '&uni', an owner that cannot be copied)
+static const char *parRefWhy(INode *type) {
+    type = type != NULL ? itypeGetTypeDcl(type) : NULL;
+    if (type == NULL || (type->tag != RefTag && type->tag != ArrayRefTag && type->tag != VirtRefTag))
+        return NULL;
+    RefNode *ref = (RefNode *)type;
+    INode *region = ref->region && isTypeNode(ref->region) ? itypeGetTypeDcl(ref->region) : ref->region;
+    if (region != borrowRef)
+        return regionIsMove(ref->region) ? NULL : "an owner that can be shared, such as an Rc";
+    if (ref->perm == NULL || ref->perm == (INode *)unknownType)
+        return NULL;
+    int flags = permGetFlags(ref->perm);
+    if (!(flags & MayAlias))
+        return NULL;                // '&uni'
+    return (flags & MayWrite) ? "a '&mut' reference" : "a '&' reference";
+}
+
+static const char *parCursorWhy = "a cursor held in a variable whose origin the loop cannot follow";
+
+static int parIsRefType(INode *type) {
+    type = type != NULL ? itypeGetTypeDcl(type) : NULL;
+    return type != NULL && (type->tag == RefTag || type->tag == ArrayRefTag || type->tag == VirtRefTag);
+}
+
+// Is this type a cursor (not a reference) that lends its items '&mut'?
+static int parIsCursorType(INode *type) {
+    INode *elems[24];
+    uint32_t n = 0;
+    if (type == NULL || parIsRefType(type))
+        return 0;
+    parWrittenElems(type, elems, &n);
+    return n > 0;
+}
+
+// The loop being checked is written directly in an actor's behaviour, whose 'self' is
+// the one name for the state while its passes run
+static int parSelfIsBehaviour;
+static uint32_t parBodiesIn(FnDclNode *fn);
+
+// Why the place a source lends from is not exclusive: what it is reached through (a
+// reference that is not '&uni', a shared owner, a global), or NULL where it is. '*root' is
+// the variable the place starts at.
+static const char *parNotExclusive(INode *node, VarDclNode **root) {
+    const char *why;
+    int depth = 0;
+    while (node != NULL) {
+        if (isNameUseNode(node)) {
+            INode *dcl = ((NameUseNode*)node)->dclnode;
+            if (dcl == NULL || dcl->tag != VarDclTag)
+                return NULL;
+            VarDclNode *var = (VarDclNode *)dcl;
+            *root = var;
+            if (var->scope == 0 || (var->flags & FlagStatic))
+                return "a global";
+            // The one name for what an actor's behaviour reaches through 'self': a behaviour
+            // runs alone on its actor (nothing else holds the state while it does, and its
+            // parameters cannot be borrows). A sync method's '&mut self' is not so.
+            if (var->namesym == selfName && parSelfIsBehaviour)
+                return NULL;
+            // A cursor held in a variable lends from what it was made from: a variable declared
+            // 'imm' with its value is that value; any other cursor (a 'mut' one, which may be
+            // assigned, a parameter, a field) has an origin the loop cannot follow
+            if (var->vtype != NULL && parIsCursorType(var->vtype)) {
+                if (var->value == NULL || var->perm == NULL || (permGetFlags(var->perm) & MayWrite)
+                    || ++depth > 8)
+                    return parCursorWhy;
+                node = var->value;
+                continue;
+            }
+            return parRefWhy(var->vtype);
+        }
+        INode *obj;
+        switch (node->tag) {
+        case FldAccessTag:
+        case ArrIndexTag:
+            // (a cursor taken out of a field or an element has no origin to follow either)
+            if (isExpNode(node) && parIsCursorType(iexpGetTypeDcl(node)))
+                return parCursorWhy;
+            // (a field or element that is itself a reference is a name for what it points at)
+            if (isExpNode(node) && (why = parRefWhy(iexpGetTypeDcl(node))) != NULL) {
+                ParPath path;
+                if (parPathOf(node, &path))
+                    *root = path.root;
+                return why;
+            }
+            obj = ((FnCallNode*)node)->objfn;
+            break;
+        case DerefTag:
+            obj = ((StarNode*)node)->vtexp;
+            break;
+        case BorrowTag:
+        case ArrayBorrowTag:
+            node = ((RefNode*)node)->vtexp;
+            continue;
+        case CastTag:
+            node = ((CastNode*)node)->exp;
+            continue;
+        case FnCallTag: {
+            // A method called on a place: the place is its receiver
+            Nodes *args = ((FnCallNode*)node)->args;
+            if (args == NULL || args->used < 1)
+                return NULL;
+            node = nodesGet(args, 0);
+            continue;
+        }
+        default:
+            return NULL;
+        }
+        // (what is reached by a field, an element or a dereference of obj: obj's own type
+        // says whether it is the one name for it)
+        if (obj != NULL && isExpNode(obj) && obj->tag != BorrowTag && obj->tag != ArrayBorrowTag
+            && !isNameUseNode(obj)) {
+            why = parRefWhy(iexpGetTypeDcl(obj));
+            if (why != NULL) {
+                // (the root, for the message)
+                ParPath path;
+                if (parPathOf(obj, &path))
+                    *root = path.root;
+                return why;
+            }
+        }
+        node = obj;
+    }
+    return NULL;
+}
+
 // The places a source lends from: for a call, those of every argument that holds a
 // borrow (a zip is given two cursors, not one), else the path of the place named.
 // Nothing here reads a function's name: what a call lends from is what it is given
-static void parLentPaths(INode *node, ParAlias *alias) {
+// 'lends' says the call this is an argument of lends its items '&mut' (a cursor's own type
+// says so, and a place given to one is what it lends from); a zip says nothing of its
+// arguments, each of which is judged by its own type.
+static void parLentPaths(INode *node, ParAlias *alias, int lends) {
+    int own = parLendsMut(node);
     while (node != NULL && (node->tag == BorrowTag || node->tag == ArrayBorrowTag))
         node = ((RefNode*)node)->vtexp;
     if (node == NULL)
@@ -605,18 +766,20 @@ static void parLentPaths(INode *node, ParAlias *alias) {
         Nodes *args = ((FnCallNode*)node)->args;
         if (fn != NULL && isNameUseNode(fn) && ((NameUseNode*)fn)->dclnode != NULL
             && ((NameUseNode*)fn)->dclnode->tag == FnDclTag && args != NULL) {
+            int callmut = parLendsMut(node);
+            int inherit = parIsZipType(iexpGetTypeDcl(node)) ? 0 : callmut;
             for (uint32_t i = 0; i < args->used; ++i) {
                 if (parArgLends(nodesGet(args, i)))
-                    parLentPaths(nodesGet(args, i), alias);
+                    parLentPaths(nodesGet(args, i), alias, inherit);
             }
         }
         return;
     }
     ParPath path;
+    INode *placenode = node;
     if (parPathOf(node, &path) && alias->nlent < ParLentMax) {
-        // (a source reached from a variable that is a '&mut', a parameter for one, may be the
-        // buffer another '&mut' reaches: Cone lets two of them point at the one list)
-        alias->viaref[alias->nlent] = path.root->vtype != NULL && parIsWritableBorrow(path.root->vtype);
+        alias->writable[alias->nlent] = own || lends;
+        alias->place[alias->nlent] = placenode;
         alias->lent[alias->nlent++] = path;
     }
 }
@@ -1319,6 +1482,7 @@ static int parPlaceReaches(INode **chain, uint32_t n, ParAliasOuter *ctx) {
 }
 
 static ParSet parOuterReported;
+static ParSet parRootReported;
 
 static int parCheckOuterAlias(INode *node, void *ctxp) {
     ParAliasOuter *ctx = (ParAliasOuter *)ctxp;
@@ -1603,9 +1767,38 @@ void parallelEachCheckBody(TypeCheckState *pstate, BlockNode *outer) {
         INode *stmt = nodesGet(outer->stmts, i);
         if (stmt->tag == VarDclTag && ((VarDclNode*)stmt)->namesym == parSliceMutName) {
             if (((VarDclNode*)stmt)->value != NULL)
-                parLentPaths(((VarDclNode*)stmt)->value, &alias);
+                parLentPaths(((VarDclNode*)stmt)->value, &alias, 0);
             if (alias.nlent > 0)
                 parWalk((INode*)loop, parCheckAlias, &alias);
+
+            // A source that lends its items to be changed is rooted in something exclusive:
+            // else the list may have another name (a caller passing it twice, a zip reading
+            // it beside the writer) that reads or writes an item while a pass changes it
+            int unrooted = 0;
+            // (this loop's own body is the one being checked: a second is a loop inside another)
+            parSelfIsBehaviour = pstate->fn != NULL && parBodiesIn(pstate->fn) <= 1
+                && actorOfBehaviour(pstate->fn) != NULL;
+            for (uint32_t i = 0; i < alias.nlent && !unrooted; ++i) {
+                VarDclNode *rootvar = alias.lent[i].root;
+                const char *why = alias.writable[i] ? parNotExclusive(alias.place[i], &rootvar) : NULL;
+                if (why == NULL)
+                    continue;
+                unrooted = 1;
+                // (once for the loop's source, however many times the checker reaches it)
+                if (parSetHas(&parRootReported, ((VarDclNode*)stmt)->value))
+                    break;
+                parSetAdd(&parRootReported, ((VarDclNode*)stmt)->value);
+                char *rootname = rootvar == NULL || rootvar->namesym == anonName ? "a value" : &rootvar->namesym->namestr;
+                if (why == parCursorWhy) {
+                    errorMsgNode(((VarDclNode*)stmt)->value, ErrorParRoot,
+                        "A 'parallel each' that changes the items of a source may lend them only from something exclusive, and this source is a cursor held in '%s', a variable (or field) the loop cannot trace to the place it was made from: it could lend from a list with another name while the passes run. Make the cursor in the loop's header ('parallel each x in list.mutItems()', or in a zip written there), or in an 'imm' variable whose value is that call.",
+                        rootname);
+                    break;
+                }
+                errorMsgNode(((VarDclNode*)stmt)->value, ErrorParRoot,
+                    "A 'parallel each' that changes the items of a source may lend them only from something exclusive, and this source is reached through %s (%s): the list could have another name while the passes run (a caller may pass it under two names, or a zip may read it beside the writer), and then a pass could read or write an item another pass is writing. Take the list as a '&uni' parameter ('%s &uni List[...]', or 'self &uni'), which no other name can reach, or lend from a local, or a field of one held by value.",
+                    why, rootname, rootname);
+            }
 
             // Two sources of a zip lend from the same buffer: a pass is given a part of each
             // and writes one of them, so two passes may write the same part at once. A 'mut'
@@ -1617,15 +1810,6 @@ void parallelEachCheckBody(TypeCheckState *pstate, BlockNode *outer) {
                         errorMsgNode(((VarDclNode*)stmt)->value, ErrorParSources,
                             "The sources of this zip lend from the same buffer, '%s', and the loop changes what it lends: the passes are given parts of each source, so two passes could write the same part at the same time. Zip two different buffers, or cut the buffer into parts that do not overlap first.",
                             &alias.lent[i].root->namesym->namestr);
-                        i = alias.nlent;
-                        break;
-                    }
-                    // Two different '&mut' (parameters, say) may be the one buffer: the caller
-                    // may have passed it twice
-                    if (alias.viaref[i] && alias.viaref[j] && alias.lent[i].root != alias.lent[j].root) {
-                        errorMsgNode(((VarDclNode*)stmt)->value, ErrorParSources,
-                            "The sources of this zip lend from '%s' and '%s', both '&mut' references, and the loop changes what they lend: nothing stops a caller passing the one buffer as both, and then two passes could write the same part at the same time. Zip buffers this function owns (locals, or the fields of one value it is lent), or cut one buffer into parts that do not overlap first.",
-                            &alias.lent[i].root->namesym->namestr, &alias.lent[j].root->namesym->namestr);
                         i = alias.nlent;
                         break;
                     }
@@ -1839,6 +2023,17 @@ void parallelEachEnter(TypeCheckState *pstate) {
 
 void parallelEachLeave() {
     --parBodyDepth;
+}
+
+// How many parallel each bodies are being checked at once in this function (one: the loop's
+// own, two: a loop inside another's body)
+static uint32_t parBodiesIn(FnDclNode *fn) {
+    uint32_t cnt = 0;
+    for (uint32_t i = 0; i < parBodyDepth && i < ParBodyMax; ++i) {
+        if (parBodyFns[i] == fn)
+            ++cnt;
+    }
+    return cnt;
 }
 
 // Is a parallel each's body being checked in this function?

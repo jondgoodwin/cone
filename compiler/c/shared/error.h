@@ -675,7 +675,8 @@ enum ErrorCode {
     ErrorPatTraitBind = 1472,   // A trait pattern that binds a virtual reference where the matched value is no borrowed reference (a value, an owner), or where the pattern is written as a plain reference
 
     // A 'parallel each' over a zip (ir/exp/pareach.c)
-    ErrorParSources = 1480,     // The sources of a zip a 'parallel each' walks lend from the same buffer (or from two '&mut' parameters, which may be one) while the loop changes what they lend: two passes could write the same part at once
+    ErrorParSources = 1480,     // The sources of a zip a 'parallel each' walks lend from the same buffer while the loop changes what they lend: two passes could write the same part at once
+    ErrorParRoot = 1481,        // A 'parallel each' that changes the items of a source (mutItems, mutArrays, mutChunks, a '&mut' slice, in the header or in a zip) lends them from something that is not exclusive: reached through a '&mut' or '&' reference (a parameter, 'self'), a shared owner (an Rc) or a global, which could have another name while the passes run
 
     // A '&uni' field seen through a shared path (ir/exp/fncall.c)
     ErrorUniShared = 1490,      // A field, array element or tuple element that is a '&uni' reference, read, lent or written through a '&', a '&mut', a virtual reference or an owner that is not 'uni' on the way to it: it could be another name for what holds it, and the 'uni' reference would be reached by both

@@ -449,9 +449,17 @@ A `parallel each` over a zip of cursors that lend from the same buffer, where th
 changes what they lend, is `ErrorParSources` (type check, `pareach.c`): two passes could
 be given the same part and write it at the same time. A `mut` borrow of a local is an alias
 loan, so the loan walk no longer refuses the second cursor as a second borrow of what is
-mutably borrowed. The sources need not share a name: two different variables that are
-each a `&mut` (two parameters) may be the one buffer, since the caller may pass it twice,
-so `ErrorParSources` is also reported for them (`ParAlias.viaref`).
+mutably borrowed.
+
+A `parallel each` that changes the items of a source (`mutItems`, `mutArrays`, `mutChunks`, a
+`&mut` slice, in the header or inside a zip) lends them only from something exclusive, and one
+lent from anything else is `ErrorParRoot` (type check, `parNotExclusive` in `pareach.c`): a
+`&mut` or `&` reference (a parameter, a sync method's `self`, a field that is one), an owner that
+can be shared (an `Rc`), a global, or a writable cursor held in a variable the check cannot trace
+to the call that made it. Such a list could have another name while the passes run: a caller may
+pass it twice, so two different `&mut` parameters may be the one buffer, or a zip may read it
+beside the writer. A local, a field of one held by value, a `&uni` parameter and the `self` of
+an actor's behaviour are exclusive. The message says to take the list as `&uni`.
 
 A field, array element or tuple element that is a `&uni` reference (borrow, slice or virtual
 reference), named through a reference on the way to it that is not `uni` (a `&`, a `&mut`, a
