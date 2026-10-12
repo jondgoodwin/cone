@@ -38,16 +38,18 @@
 	</ul>
 	<p>A program reaches them with <span class="pre">import url use *;</span>, <span class="pre">import http use *;</span>,
 		<span class="pre">import httpconn use *;</span> and so on. <span class="pre">httpconn</span>,
-		<span class="pre">httpclient</span> and <span class="pre">tls</span> run on Windows only, for now:
-		<span class="pre">httpconn</span> is written over <span class="pre">iocore</span>'s completion port and
-		Winsock (<a href="refconcio.html">I/O and Concurrency</a> and
+		<span class="pre">httpclient</span> and <span class="pre">tls</span> run on Windows and on Linux:
+		<span class="pre">httpconn</span> is written over <span class="pre">iocore</span>'s loop (the completion port and
+		Winsock on Windows, epoll on Linux; <a href="refconcio.html">I/O and Concurrency</a> and
 		<a href="refstdtime.html#io-timers">Timers, deadlines and cancelling in I/O</a> describe the loop and its deadlines),
-		and <span class="pre">tls</span> asks Windows' own certificate verifier
-		(<span class="pre">crypt32</span>) whether a server is who it says it is.
+		and <span class="pre">tls</span> asks the operating system whether a server is who it says it is: on Windows
+		its certificate verifier (<span class="pre">crypt32</span>), on Linux OpenSSL's own check against the
+		system's roots (<a href="#tls-verify">below</a>).
 		<span class="pre">httpclient</span> uses both. <span class="pre">url</span>, <span class="pre">http</span> and
-		<span class="pre">http1</span> call nothing of the operating system's. Congo copies OpenSSL's two
+		<span class="pre">http1</span> call nothing of the operating system's. On Windows, Congo copies OpenSSL's two
 		libraries beside any program that imports <span class="pre">tls</span> or
-		<span class="pre">httpclient</span>. Where a program imports both <span class="pre">httpconn</span> and
+		<span class="pre">httpclient</span>; on Linux those programs link the system's OpenSSL 3
+		(<span class="pre">libssl-dev</span> on Ubuntu). Where a program imports both <span class="pre">httpconn</span> and
 		<span class="pre">httpclient</span>, each has a <span class="pre">Config</span>, a <span class="pre">Sink</span>,
 		an <span class="pre">Event</span> and so on, so it writes <span class="pre">import httpconn;</span> and says
 		<span class="pre">httpconn.Driver</span> and <span class="pre">httpconn.Event</span>.</p>
@@ -1246,7 +1248,8 @@ fn main() {
 	<h2 id="tls">TLS: the tls package</h2>
 	<p>A TLS <span class="pre">Session</span> is one connection's state and never touches a socket: its owner hands
 		it the bytes that came off the wire, and takes back the bytes to send and the plaintext that came out. TLS 1.2
-		and 1.3 are done by OpenSSL 3.5 (<span class="pre">tls.backendVersion()</span> names it), and a server's
+		and 1.3 are done by OpenSSL 3 (<span class="pre">tls.backendVersion()</span> names it: 3.5 bundled on Windows, the
+		system's on Linux), and a server's
 		certificate is judged by the operating system. A program rarely calls a <span class="pre">Session</span>
 		directly: <span class="pre">httpclient</span> uses <span class="pre">tls</span> for every
 		<span class="pre">https://</span> URL, and a server uses it through <span class="pre">httpconn</span>'s layers.</p>
@@ -1344,7 +1347,17 @@ asking the OS: Failed, tls: closed: certificate untrusted (Windows error 2148204
 	<li><span class="pre">Verifier.platform()</span>, the default: the operating system. On Windows the chain the server
 		sent goes to the certificate chain engine and is judged by the SSL policy for the name asked for, as the
 		browser on the machine would judge it, with the machine's own roots and policy. It may fetch over the network,
-		so it never runs on the loop's thread. Revocation that cannot be checked does not refuse a server.</li>
+		so it never runs on the loop's thread. Revocation that cannot be checked does not refuse a server. On Linux the
+		chain goes to OpenSSL's own check, as a server's chain for the name asked for (a DNS name or an address),
+		against the system's roots: the file and folder <span class="pre">SSL_CERT_FILE</span> and
+		<span class="pre">SSL_CERT_DIR</span> name when they are set, else OpenSSL's default places
+		(<span class="pre">/etc/ssl/certs</span> on Ubuntu), read once for the process. It fetches nothing and
+		reads no revocation data, so <span class="pre">offline</span> changes nothing there, and it runs on the same
+		pool lane. Its verdict is reported as the Windows error that stands for it, so a program reads the same
+		<span class="pre">TlsError</span> on both systems: <span class="pre">CERT_E_UNTRUSTEDROOT</span> (0x800B0109)
+		for a chain that ends short of a root the system holds, <span class="pre">CERT_E_CN_NO_MATCH</span>
+		(0x800B010F) for another name, <span class="pre">CERT_E_EXPIRED</span> (0x800B0101) for an expired or
+		not-yet-valid certificate, and <span class="pre">E_FAIL</span> (0x80004005) for any other reason.</li>
 	<li><span class="pre">Verifier.roots(pem)</span>: for development. The chain is checked against these roots
 		alone, and the name; the machine's roots are not used.</li>
 	<li><span class="pre">Verifier.pinnedSha256(hex)</span>: for development. The server is accepted when the SHA-256 of
@@ -1518,7 +1531,8 @@ tls: certificate name mismatch: hostname mismatch (OpenSSL's verify result 62)
 		<span class="pre">ProtocolVersion</span>, <span class="pre">NoAlpnMatch</span>, <span class="pre">Alert</span>,
 		<span class="pre">Protocol</span>, <span class="pre">Config</span> or <span class="pre">Backend</span>),
 		<span class="pre">code</span> (the back end's or the system's own number), <span class="pre">osError</span>
-		(Windows' error number when the system gave the reason), and <span class="pre">detail</span>.
+		(Windows' error number when the system gave the reason; on Linux the Windows number that OpenSSL's
+		verdict maps to), and <span class="pre">detail</span>.
 		<span class="pre">message()</span> joins them as <span class="pre">tls: certificate untrusted: ...</span>, and
 		<span class="pre">errorName(kind)</span> names a kind.</p>
 	<p><span class="pre">s.info()</span> gives a <span class="pre">TlsInfo</span> of what a session negotiated:
