@@ -1,0 +1,77 @@
+// The send rate: 30 packets a second while the round trip is short, 10 once
+// the smoothed round trip goes over 250 ms, and back to 30 only after the
+// round trip has stayed short for a penalty time (Fiedler's two-state
+// controller). An idle connection sends keep-alives, 10 a second.
+
+mod ratecontrol;
+
+import testing use *;
+import collections use *;
+import time use Duration, Instant, Clock;
+import netmsg use *;
+
+fn drain(evs &mut List[Event]) {
+  evs.clear();
+}
+
+// Run for 'ms', with a reliable message each 50 ms so there is always something to send
+fn run(p &mut SimPair, clock &mut Clock, ms i64) {
+  mut i = 0i64;
+  while i < ms {
+    clock.advance(Duration.fromMillis(1i64));
+    i = i + 1i64;
+    if i % 5i64 == 0i64 {
+      p.a.sendReliable("tick");
+      p.a.sendLatest(1u16, "v");
+    }
+    p.step(clock.now());
+    drain(&mut p.eventsA);
+    drain(&mut p.eventsB);
+  }
+}
+
+fn main() i32 {
+  mut clock = Clock.synth();
+  mut p = SimPair.make(Config.defaults(), LinkConfig.lossy(0u32, 20i64, 0i64), LinkConfig.lossy(0u32, 20i64, 0i64), 1u64, clock.now());
+
+  // A short round trip: the good rate
+  run(&mut p, &mut clock, 5000i64);
+  expect(p.a.isGood(), "good at 40 ms");
+  imm sent1 = p.a.stats().packetsSent;
+  run(&mut p, &mut clock, 5000i64);
+  imm per5s = p.a.stats().packetsSent - sent1;
+  expect(per5s >= 140u64 and per5s <= 160u64, "30 packets a second when there is data");
+
+  // A long round trip: 150 ms each way
+  p.ab.setConfig(LinkConfig.lossy(0u32, 150i64, 0i64));
+  p.ba.setConfig(LinkConfig.lossy(0u32, 150i64, 0i64));
+  run(&mut p, &mut clock, 6000i64);
+  expect(not p.a.isGood(), "bad at 300 ms");
+  expect(p.a.rtt().millis() > 250i64, "the smoothed round trip says so");
+  imm sent2 = p.a.stats().packetsSent;
+  run(&mut p, &mut clock, 5000i64);
+  imm slow = p.a.stats().packetsSent - sent2;
+  expect(slow >= 45u64 and slow <= 55u64, "10 packets a second now");
+
+  // The link recovers: not good at once, but within the penalty
+  p.ab.setConfig(LinkConfig.lossy(0u32, 20i64, 0i64));
+  p.ba.setConfig(LinkConfig.lossy(0u32, 20i64, 0i64));
+  run(&mut p, &mut clock, 2000i64);
+  expect(not p.a.isGood(), "still careful 2 s after the round trip came down");
+  run(&mut p, &mut clock, 20000i64);
+  expect(p.a.isGood(), "good again after the penalty");
+
+  // An idle connection: keep-alives only, 10 a second each way
+  mut q = SimPair.make(Config.defaults(), LinkConfig.lossy(0u32, 20i64, 0i64), LinkConfig.lossy(0u32, 20i64, 0i64), 2u64, clock.now());
+  mut i = 0i64;
+  while i < 10000i64 {
+    clock.advance(Duration.fromMillis(1i64));
+    i = i + 1i64;
+    q.step(clock.now());
+  }
+  imm idle = q.a.stats().packetsSent;
+  expect(idle >= 95u64 and idle <= 105u64, "an idle connection sends 10 packets a second");
+  expect(q.a.isActive() and q.b.isActive(), "and stays up");
+  expect(q.a.rtt().millis() > 0i64, "and measures its round trip from them");
+  done();
+}

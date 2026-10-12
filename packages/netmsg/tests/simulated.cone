@@ -1,0 +1,118 @@
+// The in-process pair with the simulated link in its path: the real protocol
+// between two actors in one process, no socket. The link loses 20% of the
+// packets each way and delays them 30 ms plus up to 20 ms. Every reliable
+// message still arrives once and in order, each takes at least the link's
+// delay, and the values arrive in increasing order.
+
+mod simulated;
+
+import testing use *;
+import collections use *;
+import sync use *;
+import time use Duration, Instant;
+import actors;
+import netmsg use *;
+
+fn numberOf(data &Array[u8]) u64 {
+  mut n = 0u64;
+  mut i = 0usize;
+  while i < data.len {
+    n = (n << 8u64) | u64.from(data[i]);
+    i = i + 1usize;
+  }
+  n;
+}
+
+fn numberBytes(n u64) List[u8] {
+  mut b = List[u8].empty();
+  putU32(&mut b, u32.from(n));
+  b;
+}
+
+struct Tally {
+  pub next u64;
+  pub wrong u64;
+  pub lastValue u64;
+  pub values u64;
+  pub backwards u64;
+  pub left u64;
+  pub firstAt Instant;
+}
+
+fn note(e &NetEvent, t &mut Tally, joined &mut List[Connection]) {
+  match e {
+    case imm j &Joined { joined.push(j.conn); }
+    case imm m &Message {
+      if t.next == 0u64 {t.firstAt = Instant.now();}
+      if numberOf(m.data.view()) != t.next {t.wrong = t.wrong + 1u64;}
+      t.next = t.next + 1u64;
+    }
+    case imm u &Update {
+      imm v = numberOf(u.data.view());
+      if t.values > 0u64 and v <= t.lastValue {t.backwards = t.backwards + 1u64;}
+      t.lastValue = v;
+      t.values = t.values + 1u64;
+    }
+    case imm l &Left { t.left = t.left + 1u64; }
+  }
+}
+
+fn main() i32 {
+  mut txA Sender[NetEvent];
+  mut rxA Receiver[NetEvent];
+  txA, rxA = Channel[NetEvent].make();
+  mut txB Sender[NetEvent];
+  mut rxB Receiver[NetEvent];
+  txB, rxB = Channel[NetEvent].make();
+  {
+    imm link = new LinkConfig(200u32, 30i64, 20i64, 20u32, 20u32, 40i64);
+    mut pair = pairSimulated(Config.defaults(), link, link, 11u64, channelHandler(txA), 1u32, channelHandler(txB), 1u32);
+    mut ta = new Tally(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, Instant.now());
+    mut tb = new Tally(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, Instant.now());
+    mut ca = List[Connection].empty();
+    mut cb = List[Connection].empty();
+    imm started = Instant.now();
+    mut sent = false;
+    mut tick = 0u64;
+    imm until = started + Duration.fromSeconds(60i64);
+    mut settle = until;
+    mut all = false;
+    while Instant.now() < settle {
+      match rxA.recvTimeout(Duration.fromMillis(3i64)) {
+        case imm e Some { note(&e, &mut ta, &mut ca); }
+        case is None[NetEvent] {}
+      }
+      match rxB.tryRecv() {
+        case imm e Some { note(&e, &mut tb, &mut cb); }
+        case is None[NetEvent] {}
+      }
+      if ca.len() == 1usize and cb.len() == 1usize {
+        if not sent {
+          sent = true;
+          mut i = 0u64;
+          while i < 100u64 {
+            ca[0usize].sendReliable(numberBytes(i));
+            cb[0usize].sendReliable(numberBytes(i));
+            i = i + 1u64;
+          }
+        }
+        tick = tick + 1u64;
+        ca[0usize].sendLatest(1u16, numberBytes(tick));
+        cb[0usize].sendLatest(1u16, numberBytes(tick));
+      }
+      if not all and ta.next == 100u64 and tb.next == 100u64 {
+        all = true;
+        settle = Instant.now() + Duration.fromMillis(800i64);
+      }
+    }
+    expect(all, "all 100 messages arrived both ways inside a minute");
+    expectUInt(ta.wrong + tb.wrong, 0u64, "each once, in order");
+    expectUInt(ta.backwards + tb.backwards, 0u64, "values never went backwards");
+    expect(ta.values > 0u64 and tb.values > 0u64, "values arrived");
+    expect((tb.firstAt - started).millis() >= 30i64, "the first message took at least the link's delay");
+    expectUInt(ta.left + tb.left, 0u64, "still connected");
+    pair.stop();
+    pair.a.close();
+  }
+  done();
+}
