@@ -1745,6 +1745,7 @@ int itypeIsImmutable(INode *type) {
 #define NoSizeChainMax 8
 
 static INode *itypeNoSizeField(INode *dcltype, uint32_t depth);
+static INode *itypeNoSizeElem(INode *dcltype, uint32_t depth);
 
 // Is this an enum with a variant still being laid out?
 //
@@ -1887,8 +1888,28 @@ static INode *itypeNoSizeField(INode *dcltype, uint32_t depth) {
     for (nodelistFor(&((StructNode*)dcltype)->fields, cnt, nodesp)) {
         INode *fldtype = itypeGetTypeDcl(((IExpNode*)*nodesp)->vtype);
         if (itypeNoSizeOwnCause(fldtype, depth + 1) != NULL
-            || itypeNoSizeField(fldtype, depth + 1) != NULL)
+            || itypeNoSizeField(fldtype, depth + 1) != NULL
+            || itypeNoSizeElem(fldtype, depth + 1) != NULL)
             return *nodesp;
+    }
+    return NULL;
+}
+
+// The first element of this tuple whose own type has no size, as the type it
+// names, or NULL if none does or this is not a tuple. A tuple holds each element
+// by value and is part of whatever holds it, so it is a hop the walk crosses like
+// a field, but it has no declaration of its own to be the cause.
+static INode *itypeNoSizeElem(INode *dcltype, uint32_t depth) {
+    if (dcltype->tag != TTupleTag || depth >= NoSizeChainMax)
+        return NULL;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(((TupleNode*)dcltype)->elems, cnt, nodesp)) {
+        INode *elemtype = itypeGetTypeDcl(*nodesp);
+        if (itypeNoSizeOwnCause(elemtype, depth + 1) != NULL
+            || itypeNoSizeField(elemtype, depth + 1) != NULL
+            || itypeNoSizeElem(elemtype, depth + 1) != NULL)
+            return elemtype;
     }
     return NULL;
 }
@@ -1898,6 +1919,7 @@ char *itypeNoSizeCause(INode *type, INode **rootp) {
     INode *dcltype = itypeGetTypeDcl(type);
     // The types passed through to the cause, for a cycle's message
     INode *passed[NoSizeChainMax];
+    uint32_t npassed = 0;
     uint32_t hops = 0;
     while (++hops <= NoSizeChainMax) {
         char *own = itypeNoSizeOwnCause(dcltype, 0);
@@ -1909,15 +1931,22 @@ char *itypeNoSizeCause(INode *type, INode **rootp) {
             // from the layouts in flight: "A contains B contains A by value"
             char *cycle = NULL;
             if (own == itypeInFlightCause)
-                cycle = structLayoutCycle(dcltype, dcltype, passed, hops - 1);
+                cycle = structLayoutCycle(dcltype, dcltype, passed, npassed);
             else if (own == itypeVariantPendingCause)
-                cycle = structLayoutCycle(dcltype, itypeVariantPending(dcltype), passed, hops - 1);
+                cycle = structLayoutCycle(dcltype, itypeVariantPending(dcltype), passed, npassed);
             return cycle ? cycle : own;
+        }
+        // A tuple is part of the type holding it and is not named: the walk
+        // goes straight to its element
+        INode *elem = itypeNoSizeElem(dcltype, 0);
+        if (elem != NULL) {
+            dcltype = elem;
+            continue;
         }
         INode *fld = itypeNoSizeField(dcltype, 0);
         if (fld == NULL)
             return NULL;
-        passed[hops - 1] = dcltype;
+        passed[npassed++] = dcltype;
         dcltype = itypeGetTypeDcl(((IExpNode*)fld)->vtype);
     }
     if (rootp)
@@ -1934,6 +1963,11 @@ void itypeNoSizeExplain(INode *type) {
         // rather than repeating it
         if (itypeNoSizeOwnCause(dcltype, 0) != NULL)
             return;
+        INode *elem = itypeNoSizeElem(dcltype, 0);
+        if (elem != NULL) {
+            dcltype = elem;
+            continue;
+        }
         INode *fld = itypeNoSizeField(dcltype, 0);
         if (fld == NULL)
             return;

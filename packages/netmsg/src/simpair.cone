@@ -1,0 +1,44 @@
+// Two connection cores joined by two simulated links, on a clock the caller
+// moves: the whole protocol with no socket and no thread, in virtual time.
+// It is how the protocol's tests run, and what the in-process pair puts in a
+// connection's path.
+
+pub struct SimPair {
+  pub a ConnectionCore;
+  pub b ConnectionCore;
+  pub ab LinkSim;               // a to b
+  pub ba LinkSim;               // b to a
+  pub eventsA List[CoreEvent];      // what a has heard, not yet taken
+  pub eventsB List[CoreEvent];
+
+  // Two connections that begin at 'now', on a session both know, joined by
+  // links that do 'toB' to what a sends and 'toA' to what b sends
+  pub fn make(cfg NetConfig, toB LinkConfig, toA LinkConfig, seed u64, now Instant) SimPair {
+    new SimPair(ConnectionCore.make(cfg, 0x1122334455667788u64, now), ConnectionCore.make(cfg, 0x1122334455667788u64, now),
+      LinkSim.make(toB, seed), LinkSim.make(toA, seed ^ 0xA5A5A5A5A5A5A5A5u64),
+      List[CoreEvent].empty(), List[CoreEvent].empty());
+  }
+
+  // Everything that happens at 'now': packets that are due arrive, then each
+  // end is polled and what it sends goes into its link
+  pub fn step(self &mut, now Instant) {
+    mut arrived = List[List[u8]].empty();
+    ab.deliver(now, &mut arrived);
+    each p in arrived.drain() {
+      b.receive(p.view(), now, &mut eventsB);
+    }
+    ba.deliver(now, &mut arrived);
+    each p in arrived.drain() {
+      a.receive(p.view(), now, &mut eventsA);
+    }
+    mut out = List[List[u8]].empty();
+    a.poll(now, &mut out, &mut eventsA);
+    each p in out.drain() {
+      ab.send(now, p);
+    }
+    b.poll(now, &mut out, &mut eventsB);
+    each p in out.drain() {
+      ba.send(now, p);
+    }
+  }
+}

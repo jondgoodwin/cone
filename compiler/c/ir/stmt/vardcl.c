@@ -630,6 +630,20 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
             errorMsgNode((INode*)name, ErrorNotLit, "Variable may only be initialized with a literal value.");
     }
 
+    // The variable the parser names '-using' holds what a pattern's function gave back, and a
+    // binding takes the payload of an Option. Anything else is reported here, ahead of the
+    // binding's own reports, and the variable is left with the error type
+    if (name->value && name->namesym && name->namesym->namesz > 6 && memcmp(&name->namesym->namestr, "-using", 6) == 0
+        && name->vtype != unknownType && name->vtype != errorType) {
+        INode *given = itypeGetTypeDcl(name->vtype);
+        if (given->tag != StructTag || ((StructNode*)given)->namesym != optionName) {
+            errorMsgNode(name->value, ErrorUsingForm,
+                "A 'using' pattern that binds is a function giving an Option, whose payload is bound, and this one does not. A function giving a bool only tests: 'case using f()'.");
+            name->vtype = errorType;
+            return;
+        }
+    }
+
     // A local declared with a variant of its enum is that variant until it changes
     // (narrow.h)
     if (name->value && name->scope >= 2 && !(name->flags & FlagStatic) && name->vtype != errorType)

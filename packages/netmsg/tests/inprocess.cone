@@ -1,0 +1,122 @@
+// Two connections joined in one process, with no socket and no packets: what
+// one sends, the other's handler hears, in order, through the same events a
+// UDP connection gives. This is single player.
+
+mod inprocess;
+
+import testing use *;
+import collections use *;
+import sync use *;
+import time use Duration;
+import actors;
+import netmsg use *;
+
+fn reasonText(r CloseReason) &str {
+  match r {
+    case is Local {"local";}
+    case is Remote {"remote";}
+    case is TimedOut {"timeout";}
+    case is Overflow {"overflow";}
+    case is Refused {"refused";}
+    case is NoAnswer {"noanswer";}
+  }
+}
+
+// An event as text: J1, L1:reason, M1:text, U1:stream:text
+fn describe(e NetEvent) String {
+  mut s = String.empty();
+  match e {
+    case imm j Joined { s.append("J"); s.appendUInt(u64.from(j.id)); }
+    case imm l Left { s.append("L"); s.appendUInt(u64.from(l.id)); s.append(":"); s.append(reasonText(l.reason)); }
+    case imm m Message {
+      s.append("M"); s.appendUInt(u64.from(m.id)); s.append(":");
+      s.append(String.fromBytes(m.data.view()).view());
+    }
+    case imm u Update {
+      s.append("U"); s.appendUInt(u64.from(u.id)); s.append(":"); s.appendUInt(u64.from(u.stream));
+      s.append(":"); s.append(String.fromBytes(u.data.view()).view());
+    }
+    case imm r Refused {
+      s.append("R"); s.appendUInt(u64.from(r.id)); s.append(if r.reliable {":message";} else {":value";});
+      s.append(match r.why {
+        case is TooLarge {":large";}
+        case is TooManyStreams {":streams";}
+      });
+      s.append(":"); s.appendUInt(u64.from(r.size)); s.append(":"); s.appendUInt(u64.from(r.limit));
+    }
+  }
+  s;
+}
+
+// The next event as text, or "none" if none comes in a second
+fn next(rx &mut Receiver[NetEvent]) String {
+  match rx.recvTimeout(Duration.fromSeconds(1i64)) {
+    case imm e Some { return describe(e); }
+    case is None[NetEvent] {}
+  }
+  String.from("none");
+}
+
+fn filled(n usize) List[u8] {
+  mut b = List[u8].empty();
+  mut i = 0usize;
+  while i < n {
+    b.push(120u8);
+    i = i + 1usize;
+  }
+  b;
+}
+
+fn bytes(s &str) List[u8] {
+  mut b = List[u8].empty();
+  putBytes(&mut b, s);
+  b;
+}
+
+fn main() i32 {
+  mut txA Sender[NetEvent];
+  mut rxA Receiver[NetEvent];
+  txA, rxA = Channel[NetEvent].make();
+  mut txB Sender[NetEvent];
+  mut rxB Receiver[NetEvent];
+  txB, rxB = Channel[NetEvent].make();
+  {
+    imm pair = pairInProcess(channelHandler(txA), 1u32, channelHandler(txB), 7u32);
+    expectStr(next(&mut rxA).view(), "J1", "a hears it is joined, under its id");
+    expectStr(next(&mut rxB).view(), "J7", "so does b, under its own");
+
+    pair.a.sendReliable(bytes("hello"));
+    pair.a.sendReliable(bytes("world"));
+    pair.a.sendLatest(3u16, bytes("p1"));
+    pair.a.sendLatest(3u16, bytes("p2"));
+    expectStr(next(&mut rxB).view(), "M7:hello", "reliable, in order");
+    expectStr(next(&mut rxB).view(), "M7:world", "second");
+    expectStr(next(&mut rxB).view(), "U7:3:p1", "latest-wins values arrive as they are sent");
+    expectStr(next(&mut rxB).view(), "U7:3:p2", "newest last");
+    pair.b.sendReliable(bytes("back"));
+    pair.b.sendLatest(9u16, bytes("x"));
+    expectStr(next(&mut rxA).view(), "M1:back", "and the other way");
+    expectStr(next(&mut rxA).view(), "U1:9:x", "a stream of its own");
+
+    // A message over one packet is refused, not a panic: the sender hears it,
+    // the other end hears nothing, and the connection goes on
+    pair.a.sendReliable(filled(1174usize));
+    expectStr(next(&mut rxA).view(), "R1:message:large:1174:1173", "a message one byte over is refused");
+    pair.a.sendLatest(4u16, filled(1172usize));
+    expectStr(next(&mut rxA).view(), "R1:value:large:1172:1171", "so is a value");
+    pair.a.sendReliable(bytes("ok"));
+    expectStr(next(&mut rxB).view(), "M7:ok", "the other end heard nothing of them, and the connection goes on");
+    pair.a.sendReliable(filled(1173usize));
+    pair.a.sendReliable(bytes("after"));
+    imm big = next(&mut rxB);
+    expect(big.view().startsWith("M7:xxxx") and big.len() == 1176usize, "the largest message is carried whole");
+    expectStr(next(&mut rxB).view(), "M7:after", "and the next follows");
+
+    pair.a.close();
+    expectStr(next(&mut rxA).view(), "L1:local", "a is told it closed");
+    expectStr(next(&mut rxB).view(), "L7:remote", "b is told the other end closed");
+    pair.a.sendReliable(bytes("ignored"));
+    expectStr(next(&mut rxB).view(), "none", "nothing after the close");
+  }
+  done();
+}
