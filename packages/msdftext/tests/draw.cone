@@ -344,6 +344,65 @@ fn world(device &mut Device, text &mut TextRenderer, atlas &mut Atlas, font &Fon
   expectFloat(signRatio, 0.5d * inkW / inkH, 0.15d * (inkW / inkH), "a fixed sign turned 60 degrees is half as wide");
 }
 
+// Text into an rgba16float texture (the format of render's HDR frame), which is also
+// made sampleable (a texture the text is drawn into can be read by a later pass). A
+// half float 1.0 is 0x3C00, and the fill of the bar is 1.0 in all three channels,
+// alpha 1; a half float 0 is 0.
+fn hdr(device &mut Device, atlas &mut Atlas, font &Font) {
+  imm size = 128u32;
+  imm desc = new TextureDescriptor(size, size, TEXTURE_FORMAT_RGBA16_FLOAT,
+    TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC | TEXTURE_USAGE_TEXTURE_BINDING);
+  mut target = device.createTexture(&desc);
+  imm depthDesc = new TextureDescriptor(size, size, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  mut depth = device.createTexture(&depthDesc);
+  mut readback = device.createBuffer(u64.from(size * size * 8u32), BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  imm q = readback.mappedRange();
+  mut text = TextRenderer.create(device, atlas, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_RGBA16_FLOAT,
+    TEXTURE_FORMAT_DEPTH32_FLOAT);
+  require(text.isValid(), "the half-float text renderer");
+  imm layout = layoutText(font, atlas, "I", &LayoutOptions.make(100.0));
+  imm white = TextStyle.plain(new Color(1., 1., 1., 1.));
+  imm overlay = text.addText(device, SPACE_OVERLAY);
+  // The bar: x 20 + 10 to 20 + 30, y 10 + 80 - 70 = 20 to 90
+  text.set(device, overlay, &layout, &white, overlayTransform(f32.from(size), f32.from(size), 20., 10.));
+  text.syncAtlas(device, atlas);
+  mut encoder = device.createCommandEncoder();
+  clearAll(&mut encoder, &target, &depth, 1.);
+  text.renderOverlay(&mut encoder, &target);
+  encoder.copyTextureToBuffer(&target, &readback);
+  device.queue.submit(encoder.finish());
+  device.endFrame();
+  device.waitIdle();
+  // A texel's four halves, 8 bytes; the pixel (40, 55) is inside the bar, (5, 55) outside it
+  imm inside = q + usize.from((55u32 * size + 40u32) * 8u32);
+  imm outside = q + usize.from((55u32 * size + 5u32) * 8u32);
+  mut c = 0usize;
+  while c < 4usize {
+    expectUInt(u64.from(*(inside + c * 2usize)) + 256u64 * u64.from(*(inside + c * 2usize + 1usize)), 0x3C00u64,
+      "half-float frame: the fill is 1.0 in every channel and alpha");
+    expectUInt(u64.from(*(outside + c * 2usize)) + 256u64 * u64.from(*(outside + c * 2usize + 1usize)), 0u64,
+      "half-float frame: outside is 0");
+    c = c + 1usize;
+  }
+  // World text into it too (a placement in front of a camera, depth cleared to 1)
+  mut camera = Camera.make();
+  camera.lookAt(new Vec3(0., 0., 5.), new Vec3(0., 0., 0.), new Vec3(0., 1., 0.));
+  imm vp = camera.projectionMatrix(1.) * camera.viewMatrix();
+  imm world = text.addText(device, SPACE_WORLD);
+  imm sign = layoutText(font, atlas, "I", &LayoutOptions.make(2.0));
+  text.clearText(overlay);
+  text.set(device, world, &sign, &white, worldTransform(vp, Mat4.identity(), &sign, 0.5, 0.5));
+  mut encoder2 = device.createCommandEncoder();
+  clearAll(&mut encoder2, &target, &depth, 1.);
+  text.renderWorld(&mut encoder2, &target, &depth);
+  encoder2.copyTextureToBuffer(&target, &readback);
+  device.queue.submit(encoder2.finish());
+  device.endFrame();
+  device.waitIdle();
+  imm middle = q + usize.from((64u32 * size + 64u32) * 8u32);
+  expectUInt(u64.from(*middle) + 256u64 * u64.from(*(middle + 1usize)), 0x3C00u64, "half-float frame: world text in the middle");
+}
+
 fn main() i32 {
   mut instance = Instance.create("msdftext draw");
   require(instance.isValid(), "a Vulkan 1.3 instance");
@@ -467,6 +526,9 @@ fn main() i32 {
       expectFloat(chan(p, 150u32, 186u32, 2u32), 1.0d, 0.03d, "shadow: blue below the bar");
       expectFloat(chan(p, 125u32, 186u32, 2u32), 0.0d, 0.03d, "shadow: not left of the shifted shadow");
       text.clearText(fx);
+
+      // 2b. Into render's half-float HDR frame, overlay and world, as before tone mapping
+      hdr(&mut device, &mut atlas, &font);
 
       // 3. World text
       world(&mut device, &mut text, &mut atlas, &font, &target, &depth, &readback, p);
