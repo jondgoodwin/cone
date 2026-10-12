@@ -60,6 +60,13 @@ import sky;
 import noise;
 import renderframe;
 import skinning;
+import shadowing;
+import flutter;
+
+// The sun's light (the direct terms and the foliage's light through a leaf,
+// not the environment's) is multiplied by how much of the sun reaches the
+// point, from the cascaded shadow map (shadowing.slang): 1 when shadows
+// are off.
 
 struct PbrParams {
     float4 baseColor;              // 0: rgba, linear
@@ -87,7 +94,36 @@ static const uint ALPHA_BLEND = 2;
 [[vk::binding(3, 1)]] Texture2D metallicRoughnessTexture;
 [[vk::binding(4, 1)]] Texture2D normalTexture;
 [[vk::binding(5, 1)]] Texture2D occlusionTexture;
-[[vk::binding(0, 2)]] ConstantBuffer<SkyParams> skyParams;
+// Group 2's uniform buffer: the sky's parameters, then, for a reflection
+// probe's group (views.cone), its box and position. boxMin.w is 1 for a
+// probe and 0 for the sky's own group (all of these zero).
+struct EnvParams {
+    SkyParams sky;
+    float4 boxMin;                 // 144: xyz the probe's box, its minimum corner; w 1: box projection on
+    float4 boxMax;                 // 160: xyz the maximum corner
+    float4 probePosition;          // 176: xyz where the cube was captured
+};
+[[vk::binding(0, 2)]] ConstantBuffer<EnvParams> envParams;
+
+// The direction 'r' read from a probe's cube for a reflection leaving the
+// world point 'p': the ray p + t r is carried to where it leaves the
+// probe's box, and the cube is read towards that point from where it was
+// captured (box-projected parallax correction: Lagarde, "Image-based
+// Lighting approaches and parallax-corrected cubemap", SIGGRAPH 2012 course
+// notes, after Bjorke's "Image-Based Lighting", GPU Gems 2000). The sky's
+// own group is unprojected.
+float3 probeDirection(float3 r, float3 p) {
+    if (envParams.boxMin.w < 0.5) {
+        return r;
+    }
+    float3 safe = float3(abs(r.x) < 1e-6 ? 1e-6 : r.x, abs(r.y) < 1e-6 ? 1e-6 : r.y, abs(r.z) < 1e-6 ? 1e-6 : r.z);
+    float3 first = (envParams.boxMax.xyz - p) / safe;
+    float3 second = (envParams.boxMin.xyz - p) / safe;
+    float3 farthest = max(first, second);
+    float t = min(min(farthest.x, farthest.y), farthest.z);
+    float3 hit = p + r * t;
+    return normalize(hit - envParams.probePosition.xyz);
+}
 [[vk::binding(1, 2)]] TextureCube irradianceCube;
 [[vk::binding(2, 2)]] TextureCube specularCube;
 [[vk::binding(3, 2)]] Texture2D brdfTable;
@@ -147,18 +183,9 @@ VertexOutput vertexSkinned(SkinnedVertexInput input, uint id : SV_VulkanInstance
 
 // ---- Flutter ----
 //
-// A mesh drawn with a flutter material carries, in a fourth vertex stream
-// (location 3, the mesh's colors, gpumesh.cone), for each vertex: xyz its
-// offset from its leaf's pivot (the leaf's stem), in model coordinates, and
-// w the leaf's phase in turns, one number for the whole leaf. Each leaf is
-// turned about its pivot by a small rotation vector w: a turn about a
-// horizontal axis of its own (an azimuth from its phase) and a slower sway
-// about the vertical, each a sine of the frame's time, on the leaf's own
-// period (0.6 to 1.8 seconds, from its phase) and phase. For turns of a few degrees the
-// displacement of a vertex is w x offset (the small-angle rotation, which
-// needs no matrix), and the normal turns by w x n so the light catches and
-// loses the leaf as it moves. A vertex at the pivot (a stem's end) stays.
-// Model space is y up, which is how a tree stands.
+// A mesh drawn with a flutter material carries a fourth vertex stream
+// (location 3, the mesh's colors, gpumesh.cone): each leaf's turn about its
+// pivot, 'flutterLeaf' in flutter.slang, which the shadow's casters share.
 
 struct SwayInput {
     float3 position : POSITION;
@@ -166,19 +193,6 @@ struct SwayInput {
     float2 uv : TEXCOORD;
     float4 sway : COLOR;
 };
-
-void flutterLeaf(float3 offset, float phase, float amount, float time, inout float3 position, inout float3 normal) {
-    float period = 0.6 + 1.2 * frac(phase * 13.7);
-    float s1 = sin(6.2831853 * frac(time / period + phase));
-    float s2 = sin(6.2831853 * frac(time / (period * 1.7) + phase * 3.1));
-    // The same axis for every vertex of the leaf (from its phase), so it
-    // turns as one piece and is not bent
-    float azimuth = 6.2831853 * frac(phase * 7.7);
-    float3 pitch = float3(cos(azimuth), 0.0, sin(azimuth));
-    float3 turn = amount * (s1 * pitch + (0.6 * s2) * float3(0.0, 1.0, 0.0));
-    position += cross(turn, offset);
-    normal += cross(turn, normal);
-}
 
 [shader("vertex")]
 VertexOutput vertexSway(SwayInput input, uint id : SV_VulkanInstanceID) {
@@ -252,13 +266,16 @@ float4 fragmentMain(VertexOutput input) : SV_Target {
     }
     nov = clamp(nov, 1e-4, 1.0);
     float3 l = frame.lightDirection.xyz;
+    // The geometric normal, before the normal map and the silhouette's turn
+    // have moved it, is the one the shadow's offset goes along
+    float visible = sunVisibility(input.world, normalize(input.normal), l, input.position.xy);
     float3 h = normalize(l + v);
     float nol = saturate(dot(n, l));
     float noh = saturate(dot(n, h));
     float loh = saturate(dot(l, h));
-    float3 r = reflect(-v, n);
+    float3 r = probeDirection(reflect(-v, n), input.world);
 
-    float4 base = material.baseColor * baseTexture.Sample(baseSampler, input.uv) * input.tint;
+    float4 base =material.baseColor * baseTexture.Sample(baseSampler, input.uv) * input.tint;
     uint alphaMode = uint(material.maps.z + 0.5);
     if (alphaMode == ALPHA_MASK) {
         if (base.a < material.maps.w) {
@@ -309,8 +326,8 @@ float4 fragmentMain(VertexOutput input) : SV_Target {
         float3 diffuse = diffuseColor * (1.0 / PI);
         float3 baseLobe = (diffuse + specular) * (1.0 - coatFl);
         float3 coatLobe = distributionGGX(noh, coatA) * visibilityKelemen(loh) * coatFl;
-        direct = (baseLobe + coatLobe) * frame.lightColor.rgb * nol;
-        directDiffuse = diffuse * (1.0 - coatFl) * frame.lightColor.rgb * nol;
+        direct = (baseLobe + coatLobe) * frame.lightColor.rgb * (nol * visible);
+        directDiffuse = diffuse * (1.0 - coatFl) * frame.lightColor.rgb * (nol * visible);
     }
 
     // The sky
@@ -354,7 +371,7 @@ float4 fragmentMain(VertexOutput input) : SV_Target {
         float back = saturate(dot(-n, l));
         float3 bent = normalize(l + n * 0.2);
         float lobe = pow(saturate(dot(v, -bent)), material.foliage.y);
-        float3 sunThrough = frame.lightColor.rgb * (back * (0.4 + 1.6 * lobe) * (1.0 / PI));
+        float3 sunThrough = frame.lightColor.rgb * (back * (0.4 + 1.6 * lobe) * (1.0 / PI) * visible);
         float3 skyThrough = irradianceCube.SampleLevel(environmentSampler, -n, 0.0).rgb * (0.4 * strength * occlusion);
         float3 through = pow(max(base.rgb, 0.0), 1.5);
         color += through * (1.0 - metallic) * material.foliage.x * (sunThrough + skyThrough);
@@ -392,5 +409,5 @@ float4 backgroundFragment(SkyOutput input) : SV_Target {
         1.0 - input.position.y / frame.viewport.y * 2.0);
     float4 far = mul(frame.inverseViewProjection, float4(ndc, 1.0, 1.0));
     float3 dir = far.xyz / far.w - frame.cameraPosition.xyz;
-    return float4(skyRadiance(dir, skyParams, true) * frame.exposure.x, 1.0);
+    return float4(skyRadiance(dir, envParams.sky, true) * frame.exposure.x, 1.0);
 }

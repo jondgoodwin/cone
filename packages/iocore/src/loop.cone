@@ -127,6 +127,7 @@ const hFree = 0u32;
 const hSocket = 1u32;
 const hListener = 2u32;
 const hFile = 3u32;
+const hDatagram = 4u32;       // a bound UDP socket
 
 // An entry of the handle table
 struct HEntry {
@@ -310,6 +311,47 @@ pub struct Loop {
     code, h = lxAdopt(self, s, hListener, addr.family());
     if code != 0u32 {return Error[Handle, IoError](new IoError(code));}
     Ok[Handle, IoError](h);
+  }
+
+  // A UDP socket bound to addr, for RecvFrom and SendTo; addr's port 0 has
+  // the OS choose one, which localAddr tells. It is not connected: every
+  // datagram it sends names its destination, and every one it receives
+  // names its sender
+  pub fn bindUdp(self &mut, addr SocketAddr) Result[Handle, IoError] {
+    imm s = udpSocket(addr.family());
+    if s == invalidHandle {return Error[Handle, IoError](new IoError(wsaError()));}
+    mut a = addr;
+    if bind(s, &mut a as *u8, a.size) != 0i32 {
+      imm code = wsaError();
+      closeRaw(hDatagram, s);
+      return Error[Handle, IoError](new IoError(code));
+    }
+    if isWindows() {
+      // An ICMP "port unreachable" for a datagram sent earlier must not make
+      // a later receive on this socket fail (Winsock's default)
+      mut off = 0i32;
+      mut got = 0u32;
+      WSAIoctl(s, sioUdpConnReset, &mut off as *u8, 4u32, null, 0u32, &mut got, null, null);
+      if CreateIoCompletionPort(s, portHandle, keyIo, 0u32) == 0usize {
+        imm code = GetLastError();
+        closesocket(s);
+        return Error[Handle, IoError](new IoError(code));
+      }
+      return Ok[Handle, IoError](self.register(s, hDatagram, addr.family()));
+    }
+    mut code = 0u32;
+    mut h = Handle.none();
+    code, h = lxAdopt(self, s, hDatagram, addr.family());
+    if code != 0u32 {return Error[Handle, IoError](new IoError(code));}
+    Ok[Handle, IoError](h);
+  }
+
+  // A bound UDP socket; a panic, at the caller's line, if there can be none
+  pub fn mustBindUdp(self &mut, addr SocketAddr, file &Array[u8] = srcFile(), line u32 = srcLine()) Handle {
+    match self.bindUdp(addr) {
+      case imm r Ok {r;}
+      case imm e Error {panic("iocore: bindUdp failed", file, line);}
+    }
   }
 
   // A listening socket; a panic, at the caller's line, if there can be none
@@ -512,6 +554,7 @@ pub struct Loop {
     r.dequeued = r.submitted;
     r.newSock = invalidHandle;
     r.newHandle = Handle.none();
+    r.peer.size = 0i32;
     r.timer = TimerId.none();
     r.job = null;
     stats.submit();
@@ -570,6 +613,14 @@ pub struct Loop {
       r.bytes = None;
     }
     if r.abandon {stats.promptTimeouts = stats.promptTimeouts + 1u64;}
+    // The address the answer names: a datagram's sender or destination, a
+    // connection's; none (an address of size 0) for the rest, and for a
+    // receive that took no datagram (a truncated one did)
+    mut peer = new SocketAddr(new Array[u8, 28] <- fill 0u8, 0i32);
+    if r.peer.size > 0i32
+        and (r.kind != diag.kindRecvFrom or r.status == diag.outcomeDone or r.code == errorMsgSize) {
+      peer = r.peer;
+    }
     mut t Target = Target.Here(0u64);
     t <=> r.target;
     mut g Option[CancelGroup] = None;
@@ -579,7 +630,7 @@ pub struct Loop {
       else {grouped = grouped - 1u32;}
     }
     imm c = new Completion(loopId, new OpId(i, r.gen), r.token, r.kind, r.status, r.n, r.code,
-      b, r.newHandle, r.submitted, r.dequeued, at);
+      b, r.newHandle, peer, r.submitted, r.dequeued, at);
     stats.count(r.status);
     // Its id names nothing from now on
     r.gen = if r.gen == 0xFFFFFFFFu32 {1u32;} else {r.gen + 1u32;};
@@ -935,6 +986,17 @@ pub struct Loop {
         r.work = o.work;
         r.at = o.arg;
       }
+      case mut o RecvFrom {
+        r.kind = diag.kindRecvFrom;
+        r.buf <=> o.buf;
+        r.sock = o.sock;
+      }
+      case mut o SendTo {
+        r.kind = diag.kindSendTo;
+        r.buf <=> o.buf;
+        r.sock = o.sock;
+        r.peer = o.addr;
+      }
     }
     imm gen = r.gen;
     // Its deadline: the tighter of its own and its group's
@@ -992,6 +1054,8 @@ pub struct Loop {
       }
       return self.startSend(p, r.sock, r.buf.base(), r.buf.len());
     }
+    if k == diag.kindRecvFrom {return self.startRecvFrom(p, r.sock);}
+    if k == diag.kindSendTo {return self.startSendTo(p, r.sock);}
     if k == diag.kindReadAt {return self.startFile(p, r.sock, r.at, false);}
     if k == diag.kindWriteAt {return self.startFile(p, r.sock, r.at, true);}
     self.startCall(p);
@@ -1108,6 +1172,51 @@ pub struct Loop {
       0u32;
     } else {
       lxStartSend(self, p);
+    }
+  }
+
+  // One datagram into the buffer's room, the sender into the record's 'peer'
+  fn startRecvFrom(self &mut, p *Rec, sock Handle) u32 {
+    imm r = p as &mut Rec;
+    if isWindows() {
+      imm raw = self.rawOf(sock, hDatagram);
+      if raw == invalidHandle {return errorInvalidHandle;}
+      imm room = r.buf.room();
+      if room == 0usize {return errorInsufficientBuffer;}
+      r.handle = raw;
+      r.wsa.len = if room > 0xFFFFFFFFusize {0xFFFFFFFFu32;} else {u32.from(room);};
+      r.wsa.buf = r.buf.base() + r.buf.len();
+      r.flags = 0u32;
+      r.peer.size = 28i32;
+      if WSARecvFrom(raw, &mut r.wsa as *WsaBuf, 1u32, null, &mut r.flags, &mut r.peer as *u8,
+          &mut r.peer.size, p as *u8, null) != 0i32 {
+        imm code = wsaError();
+        if code != errorIoPending {return code;}
+      }
+      0u32;
+    } else {
+      lxStartRecvFrom(self, p);
+    }
+  }
+
+  // The buffer as one datagram to the address in the record's 'peer'
+  fn startSendTo(self &mut, p *Rec, sock Handle) u32 {
+    imm r = p as &mut Rec;
+    if isWindows() {
+      imm raw = self.rawOf(sock, hDatagram);
+      if raw == invalidHandle {return errorInvalidHandle;}
+      if r.buf.len() > 0xFFFFFFFFusize {return errorInvalidParameter;}
+      r.handle = raw;
+      r.wsa.len = u32.from(r.buf.len());
+      r.wsa.buf = r.buf.base();
+      if WSASendTo(raw, &mut r.wsa as *WsaBuf, 1u32, null, 0u32, &mut r.peer as *u8, r.peer.size,
+          p as *u8, null) != 0i32 {
+        imm code = wsaError();
+        if code != errorIoPending {return code;}
+      }
+      0u32;
+    } else {
+      lxStartSendTo(self, p);
     }
   }
 
@@ -1258,8 +1367,15 @@ pub struct Loop {
       r.dequeued = at;
       imm status = r.ov.internal & 0xFFFFFFFFusize;
       imm n = usize.from(bytes);
+      if status == statusBufferOverflow and r.kind == diag.kindRecvFrom {
+        // The datagram was longer than the buffer's room: the room is filled,
+        // the rest of it is lost, and the answer says so (WSAEMSGSIZE)
+        r.buf.setLen(r.buf.len() + n);
+        self.decide(r.index, diag.outcomeFailed, 0usize, errorMsgSize);
+        return;
+      }
       if status == statusSuccess {
-        if r.kind == diag.kindRecv or r.kind == diag.kindReadAt {
+        if r.kind == diag.kindRecv or r.kind == diag.kindReadAt or r.kind == diag.kindRecvFrom {
           r.buf.setLen(r.buf.len() + n);
         }
         if r.kind == diag.kindAccept or r.kind == diag.kindConnect {
@@ -1284,6 +1400,9 @@ pub struct Loop {
         }
       } elif status == statusEndOfFile {
         self.decide(r.index, diag.outcomeDone, 0usize, 0u32);
+      } elif status == statusInvalidBufferSize and r.kind == diag.kindSendTo {
+        // A datagram larger than UDP carries: what Winsock's own call calls WSAEMSGSIZE
+        self.decide(r.index, diag.outcomeFailed, 0usize, errorMsgSize);
       } else {
         self.decide(r.index, diag.outcomeFailed, 0usize, RtlNtStatusToDosError(u32.from(status)));
       }

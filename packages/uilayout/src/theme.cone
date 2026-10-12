@@ -1,0 +1,268 @@
+// ======== Themes: named styles, inheritance, state variants ========
+//
+// A style has a name, a parent (0 for none) and properties. A property is a
+// (property, state mask) pair with a value: a number or a packed colour. Mask 0
+// is the base value; a nonzero mask is a variant that applies when the node's
+// state has every bit of the mask (hover, pressed, disabled, focused, checked,
+// selected, drop-ok, drop-refused).
+//
+// RESOLUTION (the rule the tests pin, after CSS's cascade): among every value
+// for the property in the style and its ancestors whose mask is a subset of the
+// node's state, the winner is the one with the most mask bits (the most
+// specific state); a tie goes to the style nearest the node's own, and a tie
+// within one style to the one set last. So a "danger" button that sets only its
+// base colour still gets the generic button's hover colour when hovered, unless
+// it sets its own hover.
+//
+// What may vary by state: colours, border width and radius. Properties that
+// change the size of a box (font, font size, padding, spacing, 'size') are
+// read at layout with state 0, so a state change never needs a relayout.
+
+pub const P_BG = 1u32;            // colour: the fill
+pub const P_FG = 2u32;            // colour: text and icons
+pub const P_BORDER = 3u32;        // colour: the outline
+pub const P_ACCENT = 4u32;        // colour: a fill that shows a value (slider, selection, checked)
+pub const P_TRACK = 5u32;         // colour: the groove behind an accent fill
+pub const P_BORDER_W = 6u32;      // number
+pub const P_RADIUS = 7u32;        // number: corner radius
+pub const P_FONT = 8u32;          // number: a font id for the text package
+pub const P_FONT_SIZE = 9u32;     // number
+pub const P_PAD = 10u32;          // number: padding all round, when the node sets none
+pub const P_SPACING = 11u32;      // number: the gap between children, when the node sets none
+pub const P_SIZE = 12u32;         // number: a control's natural size (slot, thumb, scrollbar)
+pub const P_SHADOW = 13u32;       // colour: a drop shadow's colour (0 for none)
+
+pub struct StyleProp {
+  pub style usize;
+  pub prop u32;
+  pub mask u32;
+  pub num f32;
+  pub color u32;
+}
+
+pub struct Theme {
+  pub names List[String];
+  pub parents List[usize];
+  pub props List[StyleProp];
+
+  pub fn empty() Theme {
+    mut t = new Theme(List[String].empty(), List[usize].empty(), List[StyleProp].empty());
+    t.names.push(String.from("(none)"));      // id 0
+    t.parents.push(0usize);
+    t;
+  }
+
+  // The id of the named style, made if it is new. 'parent' is 0 or a style id
+  pub fn style(self &mut, name &str, parent usize) usize {
+    imm found = find(name);
+    if found != 0usize {
+      parents.set(found, parent);
+      return found;
+    }
+    names.push(String.from(name));
+    parents.push(parent);
+    names.len() - 1usize;
+  }
+
+  // 0 when there is no such style
+  pub fn find(self &, name &str) usize {
+    mut i = 1usize;
+    while i < names.len() {
+      if names[i].view() == name {return i;}
+      i = i + 1usize;
+    }
+    0usize;
+  }
+
+  pub fn parentOf(self &, style usize) usize {
+    if style >= parents.len() {return 0usize;}
+    *parents[style];
+  }
+
+  pub fn setColor(self &mut, style usize, prop u32, mask u32, color u32) {
+    props.push(new StyleProp(style, prop, mask, 0., color));
+  }
+
+  pub fn setNum(self &mut, style usize, prop u32, mask u32, num f32) {
+    props.push(new StyleProp(style, prop, mask, num, 0u32));
+  }
+
+  // The winning property entry's index, or the props' length for none
+  fn pick(self &, style usize, prop u32, state u32) usize {
+    mut best = props.len();
+    mut bestBits = -1i32;
+    mut bestDepth = 0i32;
+    mut s = style;
+    mut depth = 0i32;
+    while s != 0usize and depth < 16i32 {
+      mut i = 0usize;
+      while i < props.len() {
+        if props[i].style == s and props[i].prop == prop and (props[i].mask & (state ^ 4294967295u32)) == 0u32 {
+          imm bits = popcount(props[i].mask);
+          if bits > bestBits or (bits == bestBits and depth <= bestDepth) {
+            best = i;
+            bestBits = bits;
+            bestDepth = depth;
+          }
+        }
+        i = i + 1usize;
+      }
+      s = parentOf(s);
+      depth = depth + 1i32;
+    }
+    best;
+  }
+
+  pub fn color(self &, style usize, prop u32, state u32, fallback u32) u32 {
+    imm i = pick(style, prop, state);
+    if i == props.len() {fallback;} else {props[i].color;};
+  }
+
+  pub fn num(self &, style usize, prop u32, state u32, fallback f32) f32 {
+    imm i = pick(style, prop, state);
+    if i == props.len() {fallback;} else {props[i].num;};
+  }
+
+  // ---- the standard theme: a dark one for a game's overlay ----
+  pub fn standard() Theme {
+    mut t = Theme.empty();
+    imm text = rgb(230u32, 232u32, 235u32);
+    imm accent = rgb(76u32, 141u32, 255u32);
+    imm panel = rgb(35u32, 38u32, 43u32);
+    imm face = rgb(58u32, 63u32, 71u32);
+    imm faceHover = rgb(74u32, 80u32, 90u32);
+    imm facePressed = rgb(44u32, 48u32, 54u32);
+    imm edge = rgb(90u32, 96u32, 107u32);
+    imm green = rgb(80u32, 200u32, 120u32);
+    imm red = rgb(230u32, 80u32, 80u32);
+
+    imm base = t.style("base", 0usize);
+    t.setColor(base, P_FG, 0u32, text);
+    t.setColor(base, P_FG, ST_DISABLED, rgb(130u32, 134u32, 140u32));
+    t.setColor(base, P_ACCENT, 0u32, accent);
+    t.setColor(base, P_BORDER, 0u32, edge);
+    t.setColor(base, P_BORDER, ST_FOCUSED, accent);
+    t.setNum(base, P_FONT, 0u32, 0.);
+    t.setNum(base, P_FONT_SIZE, 0u32, 14.);
+    t.setNum(base, P_PAD, 0u32, 6.);
+    t.setNum(base, P_SPACING, 0u32, 6.);
+    t.setNum(base, P_RADIUS, 0u32, 4.);
+    t.setNum(base, P_BORDER_W, 0u32, 1.);
+    t.setNum(base, P_SIZE, 0u32, 20.);
+
+    imm panelS = t.style("panel", base);
+    t.setColor(panelS, P_BG, 0u32, panel);
+    t.setNum(panelS, P_PAD, 0u32, 8.);
+
+    imm labelS = t.style("label", base);
+    t.setNum(labelS, P_PAD, 0u32, 0.);
+
+    imm button = t.style("button", base);
+    t.setColor(button, P_BG, 0u32, face);
+    t.setColor(button, P_BG, ST_HOVER, faceHover);
+    t.setColor(button, P_BG, ST_PRESSED, facePressed);
+    t.setColor(button, P_BG, ST_PRESSED | ST_HOVER, facePressed);
+    t.setColor(button, P_BG, ST_DISABLED, rgb(46u32, 49u32, 54u32));
+    t.setNum(button, P_PAD, 0u32, 8.);
+
+    imm danger = t.style("danger", button);
+    t.setColor(danger, P_BG, 0u32, rgb(150u32, 50u32, 50u32));
+
+    imm toggle = t.style("toggle", button);
+    t.setColor(toggle, P_BG, ST_CHECKED, accent);
+    t.setColor(toggle, P_BG, ST_CHECKED | ST_HOVER, rgb(105u32, 160u32, 255u32));
+
+    imm slider = t.style("slider", base);
+    t.setColor(slider, P_TRACK, 0u32, rgb(28u32, 30u32, 34u32));
+    t.setColor(slider, P_BG, 0u32, rgb(210u32, 214u32, 220u32));
+    t.setColor(slider, P_BG, ST_HOVER, rgb(235u32, 238u32, 242u32));
+    t.setColor(slider, P_BG, ST_PRESSED, accent);
+    t.setNum(slider, P_SIZE, 0u32, 16.);
+
+    imm knob = t.style("knob", slider);
+    t.setColor(knob, P_BG, 0u32, face);
+    t.setColor(knob, P_BG, ST_HOVER, faceHover);
+    t.setNum(knob, P_SIZE, 0u32, 44.);
+
+    imm field = t.style("textfield", base);
+    t.setColor(field, P_BG, 0u32, rgb(24u32, 26u32, 30u32));
+    t.setColor(field, P_ACCENT, 0u32, rgb(60u32, 100u32, 180u32));
+    t.setNum(field, P_PAD, 0u32, 6.);
+
+    imm list = t.style("list", panelS);
+    t.setColor(list, P_BG, 0u32, rgb(24u32, 26u32, 30u32));
+    t.setNum(list, P_PAD, 0u32, 2.);
+    t.setNum(list, P_SPACING, 0u32, 0.);
+    imm item = t.style("list.item", base);
+    t.setColor(item, P_BG, ST_HOVER, rgb(46u32, 50u32, 58u32));
+    t.setColor(item, P_BG, ST_SELECTED, rgb(60u32, 100u32, 180u32));
+    t.setNum(item, P_PAD, 0u32, 4.);
+
+    imm window = t.style("window", panelS);
+    t.setColor(window, P_BORDER, 0u32, edge);
+    t.setColor(window, P_SHADOW, 0u32, rgba(0u32, 0u32, 0u32, 90u32));
+    t.setNum(window, P_PAD, 0u32, 4.);
+    t.setNum(window, P_SPACING, 0u32, 4.);
+    t.setNum(window, P_RADIUS, 0u32, 6.);
+    imm title = t.style("window.title", base);
+    t.setColor(title, P_BG, 0u32, rgb(48u32, 53u32, 62u32));
+    t.setColor(title, P_BG, ST_FOCUSED, rgb(54u32, 78u32, 120u32));
+    t.setNum(title, P_PAD, 0u32, 6.);
+    imm close = t.style("window.close", button);
+    t.setColor(close, P_BG, ST_HOVER, red);
+    t.setNum(close, P_PAD, 0u32, 2.);
+
+    imm tab = t.style("tab", button);
+    t.setColor(tab, P_BG, ST_SELECTED, accent);
+    t.setColor(tab, P_BG, ST_SELECTED | ST_HOVER, rgb(105u32, 160u32, 255u32));
+
+    imm tip = t.style("tooltip", base);
+    t.setColor(tip, P_BG, 0u32, rgb(20u32, 22u32, 26u32));
+    t.setColor(tip, P_BORDER, 0u32, edge);
+    t.setNum(tip, P_PAD, 0u32, 6.);
+
+    imm slot = t.style("slot", base);
+    t.setColor(slot, P_BG, 0u32, rgb(28u32, 30u32, 35u32));
+    t.setColor(slot, P_BG, ST_HOVER, rgb(44u32, 48u32, 56u32));
+    t.setColor(slot, P_BORDER, 0u32, rgb(84u32, 90u32, 100u32));
+    t.setColor(slot, P_BORDER, ST_DROP_OK, green);
+    t.setColor(slot, P_BORDER, ST_DROP_NO, red);
+    t.setColor(slot, P_BG, ST_DROP_OK, rgb(36u32, 64u32, 46u32));
+    t.setColor(slot, P_BG, ST_DROP_NO, rgb(70u32, 34u32, 34u32));
+    t.setNum(slot, P_SIZE, 0u32, 44.);
+    t.setNum(slot, P_RADIUS, 0u32, 3.);
+    t.setNum(slot, P_PAD, 0u32, 2.);
+    t.setNum(slot, P_SPACING, 0u32, 3.);
+    t.setNum(slot, P_BORDER_W, 0u32, 2.);
+    t.style("hotbar", slot);
+
+    imm map = t.style("minimap", base);
+    t.setColor(map, P_BG, 0u32, rgb(12u32, 14u32, 18u32));
+    t.setColor(map, P_BORDER, 0u32, rgb(150u32, 156u32, 168u32));
+    t.setNum(map, P_BORDER_W, 0u32, 2.);
+    t.setNum(map, P_RADIUS, 0u32, 6.);
+
+    imm ghost = t.style("ghost", base);
+    t.setColor(ghost, P_BG, 0u32, rgba(40u32, 44u32, 52u32, 200u32));
+    t.setColor(ghost, P_BORDER, 0u32, accent);
+    t.setNum(ghost, P_RADIUS, 0u32, 3.);
+
+    imm scroll = t.style("scrollbar", base);
+    t.setColor(scroll, P_TRACK, 0u32, rgba(0u32, 0u32, 0u32, 60u32));
+    t.setColor(scroll, P_BG, 0u32, rgba(200u32, 204u32, 210u32, 120u32));
+    t.setColor(scroll, P_BG, ST_HOVER, rgba(220u32, 224u32, 230u32, 190u32));
+    t.setNum(scroll, P_SIZE, 0u32, 8.);
+
+    t;
+  }
+}
+
+fn popcount(v u32) i32 {
+  mut n = 0i32;
+  mut x = v;
+  while x != 0u32 {
+    n = n + i32.from(x & 1u32);
+    x = x >> 1u32;
+  }
+  n;
+}

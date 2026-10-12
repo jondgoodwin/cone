@@ -145,6 +145,39 @@ fn sizes() {
   expectFloat(c.projectedSize(new Vec3(0., 0., 0.), 1., 600.), 60., near, "orthogonal");
 }
 
+// A camera at (0, 0, 4) looking down -z, seen in the mirror z = 0 (normal +z,
+// offset 0): it is reflected to (0, 0, -4), the reflection of a point is
+// (x, y, -z), and with the oblique near plane a point is clipped (clip z
+// below 0) when it lies behind the mirror and kept when in front of it
+fn mirrors() {
+  mut c = Camera.make();
+  c.lookAt(new Vec3(0., 0., 4.), new Vec3(0., 0., 0.), new Vec3(0., 1., 0.));
+  imm m = c.reflectedAbout(new Vec4(0., 0., 1., 0.));
+  point(m.position(), 0., 0., -4., "the reflected camera's position");
+  imm r = m.reflectionMatrix();
+  point(r * new Vec3(1., 2., 3.), 1., 2., -3., "the reflection of a point");
+  point(r * new Vec3(1., 2., 0.), 1., 2., 0., "a point on the plane stays");
+  imm vp = m.projectionMatrix(1.) * m.viewMatrix();
+  // A point in front (z = 1) is seen from the reflected camera at depth 5: kept
+  imm front = vp * new Vec4(0.2, 0.1, 1., 1.);
+  expectBool(front.z >= 0. and front.z <= front.w, true, "a point in front of the mirror: inside the depth range");
+  imm behind = vp * new Vec4(0.2, 0.1, -1., 1.);
+  expectBool(behind.z < 0., true, "a point behind the mirror: clipped by the near plane");
+  imm onPlane = vp * new Vec4(0.2, 0.1, 0., 1.);
+  expectFloat(onPlane.z, 0., 0.0001d, "a point on the mirror: depth 0, on the near plane");
+  // Without the clip the oblique plane is the ordinary near plane
+  mut plain = m;
+  plain.clipped = false;
+  imm vp2 = plain.projectionMatrix(1.) * plain.viewMatrix();
+  imm behind2 = vp2 * new Vec4(0.2, 0.1, -1., 1.);
+  expectBool(behind2.z > 0., true, "without the clip the point behind is in the frustum");
+  // x is flipped (the winding turned back): a point to the right of the real camera appears at the left
+  imm real = c.projectionMatrix(1.) * c.viewMatrix();
+  imm a = real * new Vec4(1., 0., 1., 1.);
+  imm b = vp2 * new Vec4(1., 0., -1., 1.);
+  expectBool(a.x / a.w > 0. and b.x / b.w < 0., true, "the reflected camera's picture is flipped in x");
+}
+
 fn lights() {
   imm d = Light.directional(new Vec3(0., -2., 0.), new Color(1., 1., 1., 1.), Color.gray(0.1));
   point(d.direction, 0., -1., 0., "a directional light's direction, made unit");
@@ -161,6 +194,7 @@ fn main() i32 {
   views();
   lookAts();
   sizes();
+  mirrors();
   lights();
   done();
 }

@@ -102,6 +102,17 @@ stops at a `.` and reads no exponent, and `t.1.0` is element 0 of element 1 and
 `y.0.len()` a method call on element 0, not the floats `1.0` and `0.`.
 `core_tuple_dot_chain` holds it, with the float literals it leaves alone.
 
+**A float literal takes one `.`, and none after its exponent.** Once `lexScanNumber` has
+taken a decimal point or an exponent (`isFloat` is set) a further `.` ends the number, so the
+`.` of `25.0.sqrt()`, `1e2.sqrt()` and `0x1p4.sqrt()` is the method call's. A `.` straight
+after integer digits is a decimal point (`3.` is the float 3.0) unless `lexDotStartsMember`
+sees another `.` or a name after it: `1..4` is a range and `4.sqrt()`, `3.e5` and `1_000.abs`
+are calls. A float suffix is no name (`1.d`, `0.f`, `1.f32` and `1.f64` stay floats, which
+packages use widely). In a hex literal a name of hex digits alone is a call (`0x1f.foo`)
+unless the hex float's `p` follows it (`0x1.Ep2` is a float). `lexical_float_method` holds
+the floats and `lexical_reject_int_method` the calls (integers have no such methods, so it
+is refused at the name).
+
 **One `Lexer` per source, on a linked list.** `lexPush` pushes, `lexPop`
 restores. **Blocks are never recycled**, deliberately: every IR node stores the
 `Lexer` current when it was built and reads `url` from it whenever a diagnostic

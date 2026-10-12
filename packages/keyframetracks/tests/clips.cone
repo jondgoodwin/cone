@@ -1,0 +1,283 @@
+// Clips: loop boundaries, purity, markers.
+//
+// The clip: x goes 0 to 4 linearly over 2 s (so x = 2t).
+//   ONCE:     t = -1 gives 0; 1 gives 2; 2 gives 4; 3 gives 4 (held).
+//   LOOP:     period 2: t = 2 is back at the start, 0; 2.5 gives 1; 5 is
+//             5 - 4 = 1 into the cycle, 2; -0.5 is 1.5 into the cycle, 3.
+//   PINGPONG: period 4 (there and back): t = 2 is the turn, 4; 3 is on the
+//             way back at 2 * 2 - 3 = 1 into it, value 2; 4 is home, 0; 5
+//             is 1, 2; -1 is 3 into the cycle, so 2 * 2 - 3 = 1 on the way
+//             back, 2.
+//
+// PURITY. Playing a clip to a time by stepping a Player, or putting the
+// Player there with seek, or asking the clip directly, gives the same value:
+// bit for bit when the steps are binary fractions (0.125), and to a hair
+// when they are not (0.1), in all three modes, forwards, backwards (rate -1)
+// and by scrubbing to times in a scrambled order.
+//
+// MARKERS. A clip of length 4 with markers at 1, 2 and 4:
+//   forward 0 -> 3 fires 1 then 2 (not 4); 0 -> 1 fires the one at 1 (the end
+//   counts); 1 -> 2 fires only 2 (the start does not); backward 3 -> 0 fires 2
+//   then 1; backward 2 -> 1 fires 2 and not 1 (it is not left); 1 -> 0.5 fires 1.
+//   Scrubbing back and forth across the marker at 1 through the positions
+//   0, 0.5, 1, 1, 1.5, 0.9, 1, 1.01, 0.99, 2.2, 0 flips the state "at or past
+//   1" six times (F-T at the first 1, T-F going to 0.9, F-T back to 1, T-F
+//   going to 0.99, F-T going to 2.2, T-F going to 0): 6 events, exactly one
+//   per crossing.
+//   LOOP, length 4, marker at 1 fires at 1, 5 and 9 over 0 -> 10, and 9, 5, 1
+//   back; a marker at 0 fires at 0, 4, 8 over -0.5 -> 8.5; so does one at the
+//   length 4. PINGPONG, marker at 1: 1, 7, 9, 15 over 0 -> 16, with the
+//   clip's own time running backward at 7 and 15; a marker at the turn (4)
+//   fires once per turn, 4 and 12; one at 0 fires at 8 and 16 (not at 0, the
+//   start). ONCE with a marker at its end fires once at 4 over 3 -> 9.
+
+mod clips;
+
+import libc;
+import testing use *;
+import collections use *;
+import geomath use *;
+import keyframetracks use *;
+
+const T1 = 1u32;
+const X = 1030u32;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+fn rampClip(mode u32) Clip {
+  mut c = Clip.make("ramp", mode);
+  mut t = Track.make(TK_F32);
+  t.addF32(0., 0., INTERP_LINEAR);
+  t.addF32(2., 4., INTERP_LINEAR);
+  c.addTrack(T1, X, t);
+  c;
+}
+
+fn at(c &Clip, t f32) f32 { c.sample(t).getF32(T1, X, -99.); }
+
+fn markerClip(mode u32) Clip {
+  mut c = Clip.make("marked", mode);
+  c.length = 4.;
+  c;
+}
+
+fn ids(fired &List[Fired]) i64 {
+  // the fired ids as digits, in order: 10, 20, 40 as 1, 2, 4
+  mut n = 0i64;
+  mut i = 0usize;
+  while i < fired.len() {
+    n = n * 10i64 + i64.from((*fired[i]).id / 10u32);
+    i = i + 1usize;
+  }
+  n;
+}
+
+fn cross(c &Clip, a f64, b f64) List[Fired] {
+  mut out = List[Fired].empty();
+  c.crossings(a, b, 0u32, &mut out);
+  out;
+}
+
+fn testModes() {
+  imm once = rampClip(LOOP_ONCE);
+  near(at(&once, -1.), 0., 0.00001, "once: before the start");
+  near(at(&once, 1.), 2., 0.00001, "once: 1");
+  near(at(&once, 2.), 4., 0.00001, "once: at the end it shows the end value");
+  near(at(&once, 3.), 4., 0.00001, "once: held");
+  near(once.length, 2., 0.00001, "length from the last key");
+  imm lp = rampClip(LOOP_LOOP);
+  near(at(&lp, 2.), 0., 0.00001, "loop: at the length it is back at the start");
+  near(at(&lp, 1.999), 3.998, 0.0001, "loop: just before the end");
+  near(at(&lp, 2.5), 1., 0.00001, "loop: 2.5");
+  near(at(&lp, 5.), 2., 0.00001, "loop: 5");
+  near(at(&lp, -0.5), 3., 0.00001, "loop: negative time wraps");
+  near(at(&lp, 100.25), 0.5, 0.0001, "loop: far out");
+  imm pp = rampClip(LOOP_PINGPONG);
+  near(at(&pp, 1.), 2., 0.00001, "pingpong: out");
+  near(at(&pp, 2.), 4., 0.00001, "pingpong: at the turn it shows the end value");
+  near(at(&pp, 3.), 2., 0.00001, "pingpong: coming back");
+  near(at(&pp, 4.), 0., 0.00001, "pingpong: home");
+  near(at(&pp, 5.), 2., 0.00001, "pingpong: out again");
+  near(at(&pp, -1.), 2., 0.00001, "pingpong: negative");
+  near(at(&pp, 3.5), 1., 0.00001, "pingpong: three quarters of the way back");
+  near(loopTime(7., 2., LOOP_PINGPONG), 1., 0.00001, "loopTime pingpong 7");
+  near(loopTime(2., 0., LOOP_LOOP), 0., 0.00001, "a zero length clip is at 0");
+}
+
+fn purity(mode u32, label &Array[u8]) {
+  imm clip = rampClip(mode);
+  mut pl = Player.make();
+  imm ci = pl.addClip(clip.copy());
+  pl.play(ci);
+  mut allSame = true;
+  mut n = 0;
+  while n <= 100 {
+    // 0.125 steps: exact
+    imm direct = clip.sample(f32.from(n) * 0.125).getF32(T1, X, -99.);
+    imm played = pl.evaluate().getF32(T1, X, -98.);
+    if direct != played { allSame = false; }
+    pl.update(0.125);
+    n = n + 1;
+  }
+  expect(allSame, label);
+  // 0.1 steps against the clip, to a hair
+  mut pl2 = Player.make();
+  imm c2 = pl2.addClip(clip.copy());
+  pl2.play(c2);
+  mut worst f32 = 0.;
+  n = 0;
+  while n <= 200 {
+    imm direct = clip.sample(f32.from(n) * 0.1).getF32(T1, X, -99.);
+    imm played = pl2.evaluate().getF32(T1, X, -98.);
+    imm d = libc.fabsf(direct - played);
+    if d > worst { worst = d; }
+    pl2.update(0.1);
+    n = n + 1;
+  }
+  near(worst, 0., 0.0001, "stepping by 0.1 agrees with the clip");
+  // seek and scrub to scrambled times
+  mut pl3 = Player.make();
+  imm c3 = pl3.addClip(clip.copy());
+  pl3.play(c3);
+  mut same3 = true;
+  mut k = 0;
+  while k < 60 {
+    imm t = f64.from((k * 37) % 29) * 0.3 - 2.;
+    pl3.seek(t);
+    imm a = pl3.evaluate().getF32(T1, X, -98.);
+    imm b = clip.sample(f32.from(t)).getF32(T1, X, -99.);
+    if libc.fabsf(a - b) > 0.00001 { same3 = false; }
+    pl3.scrub(t + 1.5);
+    imm a2 = pl3.evaluate().getF32(T1, X, -98.);
+    imm b2 = clip.sample(f32.from(t + 1.5)).getF32(T1, X, -99.);
+    if libc.fabsf(a2 - b2) > 0.00001 { same3 = false; }
+    k = k + 1;
+  }
+  expect(same3, "seek and scrub to scrambled times give the clip's value");
+  // backwards: rate -1 from t = 10 walks the same values
+  mut pl4 = Player.make();
+  imm c4 = pl4.addClip(clip.copy());
+  pl4.play(c4);
+  pl4.seek(10.);
+  pl4.setRate(-1.);
+  mut back = true;
+  n = 0;
+  while n <= 80 {
+    imm direct = clip.sample(10. - f32.from(n) * 0.125).getF32(T1, X, -99.);
+    imm played = pl4.evaluate().getF32(T1, X, -98.);
+    if direct != played { back = false; }
+    pl4.update(0.125);
+    n = n + 1;
+  }
+  expect(back, "playing backwards gives the same values");
+}
+
+fn testMarkers() {
+  mut c = markerClip(LOOP_ONCE);
+  c.addMarker(1., 10u32, 0.);
+  c.addMarker(2., 20u32, 0.);
+  c.addMarker(4., 40u32, 0.);
+  expectInt(ids(&cross(&c, 0.0f64, 3.0f64)), 12i64, "0 -> 3: 1 then 2");
+  expectInt(ids(&cross(&c, 0.0f64, 1.0f64)), 1i64, "0 -> 1: the end counts");
+  expectInt(ids(&cross(&c, 1.0f64, 2.0f64)), 2i64, "1 -> 2: the start does not");
+  expectInt(ids(&cross(&c, 3.0f64, 0.0f64)), 21i64, "3 -> 0: 2 then 1");
+  expectInt(ids(&cross(&c, 2.0f64, 1.0f64)), 2i64, "2 -> 1: leaving 2, not reaching 1");
+  expectInt(ids(&cross(&c, 1.0f64, 0.5f64)), 1i64, "1 -> 0.5 fires 1");
+  expectInt(ids(&cross(&c, 0.0f64, 4.0f64)), 124i64, "0 -> 4 fires all three, the end marker last");
+  expectInt(ids(&cross(&c, 5.0f64, 0.0f64)), 421i64, "5 -> 0 fires all three in reverse");
+  expectInt(i64.from(cross(&c, 1.0f64, 1.0f64).len()), 0i64, "no move, no events");
+  imm back = cross(&c, 3.0f64, 0.0f64);
+  expect((*back[0usize]).backward, "backward crossings say so");
+  imm fwd = cross(&c, 0.0f64, 3.0f64);
+  expect(!(*fwd[0usize]).backward, "forward ones do not");
+  near((*fwd[1usize]).clipTime, 2., 0.00001, "and carry the clip time");
+  expectFloat((*fwd[1usize]).at, 2., 0.00001, "and the unwrapped time");
+
+  // exactly once per crossing: count against an independent flip count
+  mut m = markerClip(LOOP_ONCE);
+  m.addMarker(1., 10u32, 0.);
+  imm pos = new Array[f64, 11] <- 0.0f64, 0.5f64, 1.0f64, 1.0f64, 1.5f64, 0.9f64, 1.0f64, 1.01f64, 0.99f64, 2.2f64, 0.0f64;
+  mut fires = 0usize;
+  mut flips = 0usize;
+  mut i = 1usize;
+  while i < 11usize {
+    fires = fires + cross(&m, pos[i - 1usize], pos[i]).len();
+    imm was = pos[i - 1usize] >= 1.0f64;
+    imm now = pos[i] >= 1.0f64;
+    if was != now { flips = flips + 1usize; }
+    i = i + 1usize;
+  }
+  expectInt(i64.from(fires), i64.from(flips), "once per crossing, however it is scrubbed");
+  expectInt(i64.from(fires), 6i64, "six crossings in the scrub");
+
+  mut lp = markerClip(LOOP_LOOP);
+  lp.addMarker(1., 10u32, 0.);
+  imm l1 = cross(&lp, 0.0f64, 10.0f64);
+  expectInt(i64.from(l1.len()), 3i64, "loop: 1, 5, 9");
+  expectFloat((*l1[0usize]).at, 1., 0.00001, "loop: first at 1");
+  expectFloat((*l1[1usize]).at, 5., 0.00001, "loop: second at 5");
+  expectFloat((*l1[2usize]).at, 9., 0.00001, "loop: third at 9");
+  imm l2 = cross(&lp, 10.0f64, 0.0f64);
+  expectFloat((*l2[0usize]).at, 9., 0.00001, "loop back: 9 first");
+  expectFloat((*l2[2usize]).at, 1., 0.00001, "loop back: 1 last");
+  mut l0 = markerClip(LOOP_LOOP);
+  l0.addMarker(0., 10u32, 0.);
+  imm z = cross(&l0, -0.5f64, 8.5f64);
+  expectInt(i64.from(z.len()), 3i64, "loop marker at 0: 0, 4, 8");
+  expectFloat((*z[0usize]).at, 0., 0.00001, "first at 0");
+  expectFloat((*z[2usize]).at, 8., 0.00001, "last at 8");
+  mut le = markerClip(LOOP_LOOP);
+  le.addMarker(4., 10u32, 0.);
+  imm ze = cross(&le, -0.5f64, 8.5f64);
+  expectInt(i64.from(ze.len()), 3i64, "loop marker at the length: the same 0, 4, 8");
+
+  mut pp = markerClip(LOOP_PINGPONG);
+  pp.addMarker(1., 10u32, 0.);
+  imm p1 = cross(&pp, 0.0f64, 16.0f64);
+  expectInt(i64.from(p1.len()), 4i64, "pingpong: 1, 7, 9, 15");
+  expectFloat((*p1[0usize]).at, 1., 0.00001, "at 1");
+  expectFloat((*p1[1usize]).at, 7., 0.00001, "at 7");
+  expectFloat((*p1[2usize]).at, 9., 0.00001, "at 9");
+  expectFloat((*p1[3usize]).at, 15., 0.00001, "at 15");
+  expect(!(*p1[0usize]).backward and (*p1[1usize]).backward and !(*p1[2usize]).backward and (*p1[3usize]).backward,
+    "the clip's own time runs backward on the return legs");
+  imm p1b = cross(&pp, 16.0f64, 0.0f64);
+  expectInt(i64.from(p1b.len()), 4i64, "pingpong scrubbed back: four");
+  expect(!(*p1b[0usize]).backward, "scrubbing backward over a return leg runs the clip forward: 15");
+  expect((*p1b[1usize]).backward, "and over an outward leg backward: 9");
+  mut pt = markerClip(LOOP_PINGPONG);
+  pt.addMarker(4., 10u32, 0.);
+  expectInt(i64.from(cross(&pt, 0.0f64, 16.0f64).len()), 2i64, "pingpong marker at the turn: once per turn");
+  mut p0 = markerClip(LOOP_PINGPONG);
+  p0.addMarker(0., 10u32, 0.);
+  imm z0 = cross(&p0, 0.0f64, 16.0f64);
+  expectInt(i64.from(z0.len()), 2i64, "pingpong marker at 0: 8 and 16");
+  expectFloat((*z0[0usize]).at, 8., 0.00001, "at 8");
+
+  mut oe = markerClip(LOOP_ONCE);
+  oe.addMarker(4., 10u32, 0.);
+  expectInt(i64.from(cross(&oe, 3.0f64, 9.0f64).len()), 1i64, "once: a marker at the end fires once");
+  expectInt(i64.from(cross(&oe, 5.0f64, 9.0f64).len()), 0i64, "and not after it");
+
+  // markers are kept in order and the argument is carried
+  mut o = Clip.make("order", LOOP_ONCE);
+  o.addMarker(3., 3u32, 0.5);
+  o.addMarker(1., 1u32, 1.5);
+  o.addMarker(2., 2u32, 2.5);
+  expectInt(i64.from((*o.markers[0usize]).id), 1i64, "sorted: first");
+  expectInt(i64.from((*o.markers[2usize]).id), 3i64, "sorted: last");
+  near(o.length, 3., 0.00001, "a marker later than the tracks grows the length");
+  imm oc = cross(&o, 0.0f64, 3.0f64);
+  near((*oc[1usize]).arg, 2.5, 0.00001, "the argument is carried");
+}
+
+fn main() i32 {
+  testModes();
+  purity(LOOP_ONCE, "once: playing to a time is the clip at that time (exact for binary steps)");
+  purity(LOOP_LOOP, "loop: playing to a time is the clip at that time (exact for binary steps)");
+  purity(LOOP_PINGPONG, "pingpong: playing to a time is the clip at that time (exact for binary steps)");
+  testMarkers();
+  done();
+}

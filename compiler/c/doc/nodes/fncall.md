@@ -745,6 +745,12 @@ the refusal is the same. Before any candidate is tried, a character literal that
 is a binary operator's receiver, beside a `u8` argument, is retyped `u8`
 (`litAdoptCharBesideByte`), so `'0' + digit` selects the byte's `+`.
 
+A call that selects nothing, a method's or an overload set's, is `errorType`
+from then on: a variable it initializes, a condition it is, or a generic
+argument it is says nothing more of it. A no-candidate report is not made at
+all where an argument is already `errorType` (`fnCallNoCandidate`), the report
+that made it bad being the one; an ambiguity is still reported.
+
 ### The list after `<-`
 
 `contentsLower` (`ir/exp/contents.c`) takes apart a `<-` whose argument is a

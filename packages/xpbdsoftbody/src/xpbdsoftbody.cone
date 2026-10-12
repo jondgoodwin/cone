@@ -1,0 +1,64 @@
+// The xpbdsoftbody package: cloth, ropes, chains and inflated envelopes by
+// extended position based dynamics (XPBD). A program reaches it with
+// 'import xpbdsoftbody'.
+//
+// Uses in a scene: a flag in the wind, a hot-air balloon's envelope and its
+// cables, curtains, a rope bridge, a lantern swinging on a chain, a cloak.
+//
+// Method: Macklin, Muller and Chentanez, "XPBD: Position-Based Simulation of
+// Compliant Constrained Dynamics" (Motion in Games 2016) for the constraint
+// solve, with Muller, Macklin, Chentanez, Jeschke and Kim, "Detailed Rigid
+// Body Simulation with Extended Position Based Dynamics" (2020) for its way of
+// stepping: many small substeps, one solve each, rather than many iterations
+// of one big step. A compliance is the inverse of a stiffness, so a stiffness
+// does not depend on the step or the iteration count, and 0 is a rigid
+// constraint.
+//
+// - body.cone      SoftBody: particles (position, velocity, mass; pinned;
+//                  attached to a moving frame), the constraint records, the
+//                  colliders and the settings; Collider and Heightfield
+// - solve.cone     the step, and the stretch, bending (dihedral), rope
+//                  curvature, long range tether and pressure projections,
+//                  and strain limiting
+// - wind.cone      aerodynamic drag and lift on each triangle (and drag on a
+//                  rope's segments), from a wind velocity the caller passes
+// - collide.cone   contacts against spheres, capsules, boxes, planes, a
+//                  heightfield and a caller's field closure, with friction;
+//                  optional self collision in a hash grid
+// - generate.cone  clothGrid, fromMesh (welded vertices, edges to constraints),
+//                  rope, ropeBetween, chain, pressureBody, addTethers
+// - output.cone    writeMesh and writeTube: positions and normals into a
+//                  mesh.Mesh, to go to render's writeDynamicMesh
+//
+// Conventions are geomath's: right-handed, y up, metres, kilograms, seconds,
+// f32. A cloth's front is the side its triangles run counterclockwise from.
+//
+//   mut flag = clothGrid(origin, across, down, 24u32, 16u32, &Fabric.light());
+//   flag.pin(0u32);  flag.pin(...);               // the pole edge
+//   flag.step(1. / 60., new Vec3(6., 0., 1.));      // each frame, wind a vector
+//   writeMesh(&flag, &mut mesh, true, &mut scratch);
+//
+// Settings that matter (SoftBody's fields): 'substeps' (10 by default; the
+// stretch left in a loaded cloth falls fast as it rises) and 'iterations' (1;
+// a pressure body wants 2 or 3), 'strainLimit' (a hard cap on stretch, a
+// fraction, for a cloth or rope that must not stretch), 'addTethers' (long
+// range attachments, for hanging cloth), 'damping', 'friction', 'thickness',
+// the wind coefficients and 'selfCollide'.
+//
+// What is not here: collisions between a cloth's triangles and a shape (only
+// particles collide: the thickness is the margin), tearing, or the plasticity
+// of a rope; self collision is particle against particle and only on request;
+// the step is one thread's, in order, and not yet SIMD or coloured for threads.
+
+mod xpbdsoftbody;
+
+import libc;
+import collections use *;
+import geomath use *;
+import mesh use Mesh;
+
+fn fabs(a f32) f32 inline {libc.fabsf(a);}
+fn fmin(a f32, b f32) f32 inline {if a < b {a;} else {b;};}
+fn fmax(a f32, b f32) f32 inline {if a > b {a;} else {b;};}
+fn fclamp(v f32, lo f32, hi f32) f32 inline {if v < lo {lo;} elif v > hi {hi;} else {v;};}
+fn floorf(a f32) f32 inline {libc.floorf(a);}

@@ -97,7 +97,8 @@ Visual Studio projects stay at the root.
   allocator (through `RawBlocks`, its raw blocks layer); `sdl` is a C package of raw bindings to SDL3 (a window for
   Vulkan and its size in pixels, its events, the keyboard's, the mouse's,
   the wheel's and a window's, each with its nanosecond timestamp, the
-  mouse's relative mode, clocks, and loading Vulkan), linking `SDL3.lib`,
+  mouse's relative mode, clocks, loading Vulkan, and audio streams: open a
+  playback device as a push stream, put data, pause, resume, queued bytes), linking `SDL3.lib`,
   which must be on `LIB`, and its `layout` test checks every struct against
   SDL3's headers; `vulkan` is raw bindings to Vulkan 1.3 (drawing,
   compute, indirect commands and timestamp queries), written by hand from the specification (Vulkan's names without the prefix:
@@ -349,6 +350,25 @@ Visual Studio projects stay at the root.
   the pelvis moved, soles tilted to the normal), `lookAt`, `reachHand`, pose
   blends (linear, masked, weighted, additive), `Clip`, `BlendSpace1D` and an
   `Animator` state machine with timed cross-fades;
+  `audiomixer` is sound for a 3-D world, without a device or any C, over
+  `geomath`, `collections` and `sync`: a `Mixer` of a fixed number of voices
+  (samples or procedural `Synth`s; gain, pitch, pan, fades; three buses and a
+  master; voice stealing by priority) whose `render` into interleaved stereo f32
+  allocates nothing and takes no lock (counted by `noalloc`, which swaps the
+  heap region's allocate for a counter), driven by plain-data `Cmd`s through
+  sync's single-producer ring (`Control` on the game thread, `Engine` on the
+  audio thread); positional sound (`Listener`, OpenAL 1.1 inverse, linear and
+  exponent attenuation and a custom curve, the constant-power pan law, a
+  head-shadow low pass on the far ear, Doppler, an occlusion low pass and gain
+  the game sets); `Synth` recipes (wind, brook, fire, footsteps on grass, wood
+  and stone, a bird), noise, PolyBLEP oscillators and RBJ biquads; WAV decoding
+  and encoding; and offline measures (`rms`, `zeroCrossingFreq`, `fft`,
+  `spectrum`) its tests judge sound by, since nothing is played; its
+  `recipes` example writes each recipe as a WAV and describes it by spectrum,
+  its `bench` times 32 voices per 10 ms block; `audiodevice` is its output
+  over `sdl`: `Device.start` opens the default playback device as an SDL3
+  push stream and runs a feeder thread rendering `Engine` into it (a test
+  runs it on SDL's dummy driver);
   `testing` is the checks a package's tests call (`expectInt`, `require…`,
   `done`), ordinary library code the compiler knows nothing of;
   `genwalk` and `genuser` are the samples of generators across packages: `pub`
@@ -443,7 +463,8 @@ Visual Studio projects stay at the root.
   `iocore` is the runtime's completion loop, over `iobuf`, `timewheel`,
   `time`, `sync` and `diag`: a `Loop` per driving thread, handed an `Op`
   (TCP `Connect`, `Accept`, `Recv`, the zero-byte `RecvReady`, `Send`,
-  `SendBytes`; file `ReadAt` and `WriteAt`), each taking an owned `IoBuf` or
+  `SendBytes`; file `ReadAt` and `WriteAt`; UDP `RecvFrom` and `SendTo` on a
+  `bindUdp` socket, one datagram each, the sender in the answer's `peer`), each taking an owned `IoBuf` or
   shared `Bytes`, never a borrow (`test/cases/concurrency/
   concurrency_iocore_submit.cone`), and a `Target` (`Here`, or `Post` to
   another loop's `Waker`), and giving exactly one `Completion` (`Done`,
@@ -684,10 +705,14 @@ Visual Studio projects stay at the root.
   `aio` is the I/O an actor's behaviour awaits, over `actors`
   and `iocore`: `aio.listen`, `aio.connect`, a `Socket`'s `accept`, `read`,
   `write` and `localAddr`, each an `actors.Awaitable` answering a `Result`
-  (a read's success its buffer back, what arrived appended), done by one I/O
+  (a read's success its buffer back, what arrived appended; one cancelled or
+  past its deadline an `Error` whose `IoErrorKind` (iocore's: `Os`, `Cancelled`, `TimedOut`)
+  `isCancelled` or `isTimedOut` reads, never a panic), done by one I/O
   thread that owns the runtime's `iocore` Loop, takes operations from a
-  queue under a Mutex and answers through `Target.Hook`; a dropped `Socket`
-  closes; its finalizer, which `finalAll()` runs before `actors`', waits for
+  queue under a Mutex and answers through `Target.Hook`; the `In` forms of
+  `connect`, `accept`, `read` and `write` take `IoLimits`, a `CancelGroup` and
+  an absolute deadline, handed to `submitIn`; a dropped `Socket`
+  closes, cancelling what is in flight on it; its finalizer, which `finalAll()` runs before `actors`', waits for
   quiet and ends the I/O, every behaviour still paused on it abandoned, its
   record's values finalized; `render` draws lit
   meshes through `gpu` (nothing of Vulkan's in it): a `Renderer` holding
@@ -780,7 +805,16 @@ Visual Studio projects stay at the root.
   view, rise, look), and `CameraControls`, both on the standard bindings
   (`CameraActions.bind`), toggled by C; each gives a `Pose` (origin and
   orientation, its view by `Mat4.lookAt`) that the program applies to
-  `render`'s `Camera`, so no controller owns a camera.
+  `render`'s `Camera`, so no controller owns a camera;
+  `uilayout` is the layout and interaction core under UI widgets, over `geomath` and `collections` only,
+  no window or GPU: a retained tree of nodes in flat tables named by id, box-constraint layout (two passes,
+  cached, only dirty nodes redone; flex, stack, grid, anchors, dock, split, scroll), hit testing and
+  events (capture, target and bubble by id, enter and leave, focus and Tab order), themes (named
+  styles with inheritance and state variants), drag and drop, an inventory model (stacks, bags in
+  bags), a starter widget set (label, button, toggle, slider, knob, text field, list, window, tabs,
+  tooltip, inventory grid, hotbar, minimap frame) and a draw list of rectangles, borders, images, lines,
+  arcs and text runs for a renderer, text measured through a caller's closure; `Panel3d` places a Ui in the
+  world as a transform (a ray in, a pixel out); its example `hud.cone` paints the draw list into BMPs.
   A package's example programs live in its own `examples/` folder, each run
   with `congo run packages/<name>/examples/<file>.cone`, and its tests in its
   own `tests/` folder, one program each beside the output it must print;

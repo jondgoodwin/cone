@@ -1,0 +1,172 @@
+// Steering: arrival, the follower walking a path round a corner, the corridor
+// noticing a rebuilt tile, the walls near a point.
+
+mod steer;
+
+import testing use *;
+import collections use List;
+import geomath use *;
+import navmesh use *;
+
+fn absf(a f32) f32 { if a < 0. { return -a; } a; }
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+fn addFloor(input &mut NavInput, x0 f32, z0 f32, x1 f32, z1 f32, y f32) {
+  input.addTriangle(new Vec3(x0, y, z0), new Vec3(x0, y, z1), new Vec3(x1, y, z0), AreaGround);
+  input.addTriangle(new Vec3(x1, y, z0), new Vec3(x0, y, z1), new Vec3(x1, y, z1), AreaGround);
+}
+
+fn pathLen(pts &List[StraightPoint]) f32 {
+  mut len = 0.;
+  mut i = 1usize;
+  while i < pts.len() {
+    len = len + (*pts[i]).pos.distance((*pts[i - 1usize]).pos);
+    i = i + 1usize;
+  }
+  len;
+}
+
+fn testArrive() {
+  imm o = new Vec3(0., 0., 0.);
+  // far: full speed towards the target
+  imm v1 = arrive(o, new Vec3(10., 0., 0.), 4., 2., 0.1);
+  near(v1.x, 4., 0.0001, "far away: full speed");
+  near(v1.z, 0., 0.0001, "straight");
+  // 1 m out with a 2 m slowing radius: half speed
+  imm v2 = arrive(o, new Vec3(1., 0., 0.), 4., 2., 0.1);
+  near(v2.x, 2., 0.0001, "half way into the slowing radius: half speed");
+  // within the stopping radius: stopped
+  imm v3 = arrive(o, new Vec3(0.05, 0., 0.), 4., 2., 0.1);
+  near(v3.x, 0., 0.0001, "inside the stopping radius: still");
+  // diagonal: speed split by direction
+  imm v4 = arrive(o, new Vec3(30., 0., 40.), 5., 2., 0.1);
+  near(v4.x, 3., 0.0001, "direction 3-4-5: x");
+  near(v4.z, 4., 0.0001, "z");
+  near(seek(o, new Vec3(0., 0., -7.), 2.).z, -2., 0.0001, "seek at full speed");
+}
+
+fn testFollower() {
+  mut input = NavInput.empty();
+  addFloor(&mut input, 0., 0., 14., 12., 0.);
+  input.addBoxObstacle(7., 3., 1., 3., 0., 0., 3., AreaNull);
+  imm params = NavParams.standard();
+  imm nav = buildNavMesh(&mut input, &params);
+  imm filter = QueryFilter.standard();
+  imm half = new Vec3(1., 3., 1.);
+  imm r = findRoute(&nav, new Vec3(2., 0., 3.), new Vec3(12., 0., 3.), half, &filter);
+  expectBool(r.found, true, "a route to follow");
+  imm routeLen = pathLen(&r.points);
+  mut f = Follower.make(3.);
+  f.begin(*r.polys[0usize], (*r.points[0usize]).pos, (*r.points[r.points.len() - 1usize]).pos, &r.polys);
+  mut walked = 0.;
+  mut steps = 0i32;
+  mut offMesh = 0i32;
+  while !f.arrived and steps < 2000i32 {
+    imm before = f.corridor.pos;
+    f.step(&nav, &filter, 0.05);
+    walked = walked + before.distance(f.corridor.pos);
+    steps = steps + 1i32;
+    // always on the mesh: the nearest mesh point is itself in x and z
+    imm n = findNearestPoly(&nav, f.corridor.pos, 0.5, 3., 0.5, &filter);
+    if absf(n.pos.x - f.corridor.pos.x) > 0.001 or absf(n.pos.z - f.corridor.pos.z) > 0.001 { offMesh = offMesh + 1i32; }
+  }
+  expectBool(f.arrived, true, "the follower arrived");
+  expectInt(i64.from(offMesh), 0, "and was on the mesh at every step");
+  imm end = (*r.points[r.points.len() - 1usize]).pos;
+  near(f.corridor.pos.x, end.x, 0.1, "at the goal: x");
+  near(f.corridor.pos.z, end.z, 0.1, "z");
+  // it followed the funnel path to within a few percent (a corner is passed at speed, and
+  // the shortcut makes it no longer than the path)
+  expectBool(walked >= routeLen * 0.97 and walked <= routeLen * 1.03, true, "it walked the path's length, within 3 percent");
+  // time: at least the length over the speed, not more than that plus the slow-down
+  expectBool(steps >= i32.from(routeLen / 3. / 0.05) - 2i32, true, "no faster than its speed");
+  expectBool(steps <= i32.from(routeLen / 3. / 0.05) + 100i32, true, "and not much slower");
+}
+
+fn testCorridorValid() {
+  mut input = NavInput.empty();
+  addFloor(&mut input, 0., 0., 50., 10., 0.);
+  input.addBoxObstacle(25., 0.5, 0.3, 0.5, 0., 0., 3., AreaNull);
+  input.addBoxObstacle(25., 5.5, 0.3, 2.5, 0., 0., 3., AreaNull);
+  imm door = input.addBoxObstacle(25., 2., 0.3, 1., 0., 0., 2.2, AreaNull);
+  input.setObstacleEnabled(door, false);
+  imm params = NavParams.standard();
+  mut nav = buildNavMesh(&mut input, &params);
+  imm filter = QueryFilter.standard();
+  imm half = new Vec3(1., 3., 1.);
+  imm r = findRoute(&nav, new Vec3(5., 0., 2.), new Vec3(45., 0., 2.), half, &filter);
+  expectBool(r.found, true, "through the open door");
+  mut c = Corridor.empty();
+  c.reset(*r.polys[0usize], (*r.points[0usize]).pos);
+  c.setPath((*r.points[r.points.len() - 1usize]).pos, &r.polys);
+  expectBool(c.isValid(&nav, 100usize, &filter), true, "the corridor is valid");
+  // the corners ahead: the end of a straight path
+  imm cs = c.corners(&nav, 3usize);
+  expectInt(i64.from(cs.len()), 1, "a straight path has one corner: its end");
+  near((*cs[0usize]).pos.x, 45., 0.1, "at the goal");
+  // the look-ahead is the end
+  imm st = lookAhead(&nav, &c, 0.3);
+  expectBool(st.found and st.last, true, "the look-ahead is the end");
+  // shut the door: the tile is rebuilt and the corridor's polygons are gone
+  input.setObstacleEnabled(door, true);
+  rebuildDirty(&mut nav, &mut input);
+  expectBool(c.isValid(&nav, 100usize, &filter), false, "after the door shuts the corridor is no longer valid");
+  // a filter that refuses an area also invalidates it
+  mut input2 = NavInput.empty();
+  addFloor(&mut input2, 0., 0., 16., 8., 0.);
+  input2.addBoxObstacle(8., 4., 1., 6., 0., -1., 1., AreaDoor);
+  imm nav2 = buildNavMesh(&mut input2, &params);
+  mut f2 = QueryFilter.standard();
+  imm r2 = findRoute(&nav2, new Vec3(2., 0., 4.), new Vec3(14., 0., 4.), half, &f2);
+  mut c2 = Corridor.empty();
+  c2.reset(*r2.polys[0usize], (*r2.points[0usize]).pos);
+  c2.setPath((*r2.points[r2.points.len() - 1usize]).pos, &r2.polys);
+  expectBool(c2.isValid(&nav2, 100usize, &f2), true, "valid while the door area is open");
+  f2.setPassable(AreaDoor, false);
+  expectBool(c2.isValid(&nav2, 100usize, &f2), false, "not when it is shut");
+  // moving the position along the corridor keeps it on the mesh and advances its start
+  f2.setPassable(AreaDoor, true);
+  mut moved = c2.movePosition(&nav2, new Vec3(6., 0., 4.), &f2);
+  expectBool(moved, true, "moved");
+  near(c2.pos.x, 6., 0.001, "to where asked");
+  expectBool(nav2.isValid(c2.firstPoly()), true, "its first polygon is the one it stands in");
+  imm hp = polyHeightAt(&nav2, c2.firstPoly(), c2.pos);
+  expectBool(hp.ok, true, "which contains it");
+}
+
+fn testWalls() {
+  mut input = NavInput.empty();
+  addFloor(&mut input, 0., 0., 10., 10., 0.);
+  imm params = NavParams.standard();
+  imm nav = buildNavMesh(&mut input, &params);
+  imm filter = QueryFilter.standard();
+  imm mid = findNearestPoly(&nav, new Vec3(5., 0., 5.), 1., 3., 1., &filter);
+  imm none = localWalls(&nav, mid.ref, mid.pos, 2., &filter);
+  expectInt(i64.from(none.len()), 0, "no wall within 2 m of the middle");
+  imm edge = findNearestPoly(&nav, new Vec3(9., 0., 5.), 1., 3., 1., &filter);
+  imm some = localWalls(&nav, edge.ref, edge.pos, 1., &filter);
+  expectBool(some.len() >= 1usize, true, "the east edge is a wall near (9, 5)");
+  mut allNear = true;
+  mut allEast = true;
+  mut i = 0usize;
+  while i < some.len() {
+    imm w = *some[i];
+    imm sd = w.a.distance(w.b);
+    if sd <= 0. { allNear = false; }
+    if absf(w.a.x - w.b.x) > 0.001 or w.a.x < 9. { allEast = false; }
+    i = i + 1usize;
+  }
+  expectBool(allNear, true, "segments have length");
+  expectBool(allEast, true, "and are the east edge (x = const > 9)");
+}
+
+fn main() i32 {
+  testArrive();
+  testFollower();
+  testCorridorValid();
+  testWalls();
+  done();
+}

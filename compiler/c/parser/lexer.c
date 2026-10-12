@@ -732,6 +732,37 @@ double lexToFloat(char *srcp, char *srcend) {
     return atof(number);
 }
 
+/** Does the '.' at p, read straight after integer digits, start a member access
+ * rather than a decimal point? It does when a name follows (a letter, '_' or a
+ * UTF-8 lead byte). In a hex literal the letters a-f are digits, so a name that
+ * is hex digits only starts a member access too, unless the 'p' of a hex float's
+ * exponent follows them: '0x1.Ep2' is a float, '0x1f.abs' a call on 0x1f.
+ * A decimal's float suffix is no name: '1.d', '0.f' and '1.f32' stay floats. */
+static int lexDotStartsMember(char *p, uint64_t base) {
+    char *q = p + 1;
+    if (!((*q>='a' && *q<='z') || (*q>='A' && *q<='Z') || *q=='_' || (unsigned char)*q>=0x80))
+        return 0;
+    if (base == 10) {
+        // '1.d', '0.f32': the point and a float suffix, which is a float
+        // literal and not a call of a method named d or f32
+        char *r = q + 1;
+        if (*q=='d' || *q=='f') {
+            if (*q=='f' && ((r[0]=='3' && r[1]=='2') || (r[0]=='6' && r[1]=='4')))
+                r += 2;
+            if (!((*r>='a' && *r<='z') || (*r>='A' && *r<='Z') || (*r>='0' && *r<='9') || *r=='_' || (unsigned char)*r>=0x80))
+                return 0;
+        }
+    }
+    if (base == 16) {
+        char *r = q;
+        while ((*r>='0' && *r<='9') || (*r>='a' && *r<='f') || (*r>='A' && *r<='F') || *r=='_')
+            r++;
+        if (*r=='p' || *r=='P')
+            return 0;
+    }
+    return 1;
+}
+
 /** Tokenize an integer or floating point number */
 void lexScanNumber(char *srcp) {
 
@@ -774,8 +805,16 @@ void lexScanNumber(char *srcp) {
         if (*srcp=='.') {
             if (afterDot)
                 break;
+            // A float takes one decimal point, and none after its exponent: a
+            // further '.' is the next member access ('5.0.sqrt()', '1e2.sqrt()')
+            if (isFloat)
+                break;
             // However, double periods is not floating point, but that subsequent token is range op
             if (*(srcp+1)=='.')
+                break;
+            // A '.' after integer digits and before a name is a method call
+            // ('4.sqrt()', '3.e5'), not a decimal point; '3.' alone is a float
+            if (lexDotStartsMember(srcp, base))
                 break;
             srcp++;
             isFloat = '.';

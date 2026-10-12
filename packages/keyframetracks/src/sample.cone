@@ -1,0 +1,246 @@
+// Sample: the values of a set of properties at one instant, the output of
+// evaluating a clip (or a blend of clips) at a time. It is plain data: a list
+// of bindings, each a target id, a property key, a kind and its floats. A
+// consumer reads the properties it cares about ('getVec3(door, PROP_POSITION,
+// fallback)') and applies them; nothing here points at an object.
+//
+// BLENDING. 'accumulate' mixes a second sample in at a weight, progressively:
+// each property's running weight is kept, and the new value is mixed in by
+// weight / (running weight + weight), so weights need not sum to 1 and a
+// property that only some of the samples animate is normalised over those
+// (a clip that does not touch a property neither pulls it to zero nor
+// dilutes the others). Floats and vectors mix linearly, quaternions by exact
+// spherical interpolation along the shortest arc, colours linearly in linear
+// light, and a bool or discrete value takes whichever side has the larger
+// share (a step has no in-between). A transform mixes its three parts.
+//
+// ADDITIVE. 'addOnto' puts the difference of a sample from a reference
+// sample on top of a base at a weight: the usual additive layer (a lean, a
+// flinch, a breathing cycle). Numbers add the difference; a quaternion is
+// slerp(identity, clip * reference^-1, weight) * base; a transform does each
+// part so (its scale adds the difference); a bool or discrete value is
+// replaced by the layer's when the weight reaches a half and the layer
+// differs from its reference.
+
+pub struct Sample {
+  pub targets List[u32];
+  pub props List[u32];
+  pub kinds List[u32];
+  pub counts List[usize];
+  pub offs List[usize];
+  pub weights List[f32];
+  pub data List[f32];
+
+  pub fn empty() Sample {
+    new Sample(List[u32].empty(), List[u32].empty(), List[u32].empty(), List[usize].empty(), List[usize].empty(),
+      List[f32].empty(), List[f32].empty());
+  }
+
+  pub fn copy(self &) Sample {
+    mut s = Sample.empty();
+    mut i = 0usize;
+    while i < targets.len() {
+      s.targets.push(*targets[i]); s.props.push(*props[i]); s.kinds.push(*kinds[i]);
+      s.counts.push(*counts[i]); s.offs.push(*offs[i]); s.weights.push(ld(&weights, i));
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < data.len() { s.data.push(ld(&data, i)); i = i + 1usize; }
+    s;
+  }
+
+  pub fn len(self &) usize { targets.len(); }
+
+  pub fn clear(self &mut) {
+    targets.clear(); props.clear(); kinds.clear(); counts.clear(); offs.clear(); weights.clear(); data.clear();
+  }
+
+  // The binding of a property, or -1
+  pub fn find(self &, target u32, prop u32) i64 {
+    mut i = 0usize;
+    while i < targets.len() {
+      if *targets[i] == target and *props[i] == prop { return i64.from(i); }
+      i = i + 1usize;
+    }
+    -1i64;
+  }
+
+  // A new binding with 'vals' (count floats), at weight w
+  pub fn push(self &mut, target u32, prop u32, kind u32, vals &List[f32], w f32) {
+    targets.push(target); props.push(prop); kinds.push(kind); counts.push(vals.len());
+    offs.push(data.len()); weights.push(w);
+    mut c = 0usize;
+    while c < vals.len() { data.push(ld(vals, c)); c = c + 1usize; }
+  }
+
+  // Set a property's floats, adding the binding if it is new
+  pub fn put(self &mut, target u32, prop u32, kind u32, vals &List[f32]) {
+    imm i = self.find(target, prop);
+    if i < 0i64 { self.push(target, prop, kind, vals, 1.); return; }
+    imm o = *offs[usize.from(i)];
+    mut c = 0usize;
+    while c < vals.len() and c < *counts[usize.from(i)] { data.set(o + c, ld(vals, c)); c = c + 1usize; }
+  }
+
+  // The floats of a property into 'out' (false if it is not there)
+  pub fn raw(self &, target u32, prop u32, out &mut List[f32]) bool {
+    imm i = self.find(target, prop);
+    if i < 0i64 { return false; }
+    out.clear();
+    imm o = *offs[usize.from(i)];
+    mut c = 0usize;
+    while c < *counts[usize.from(i)] { out.push(ld(&data, o + c)); c = c + 1usize; }
+    true;
+  }
+
+  pub fn has(self &, target u32, prop u32) bool { self.find(target, prop) >= 0i64; }
+
+  pub fn getF32(self &, target u32, prop u32, fallback f32) f32 {
+    imm i = self.find(target, prop);
+    if i < 0i64 { return fallback; }
+    ld(&data, *offs[usize.from(i)]);
+  }
+
+  pub fn getVec2(self &, target u32, prop u32, fallback Vec2) Vec2 {
+    imm i = self.find(target, prop);
+    if i < 0i64 { return fallback; }
+    imm o = *offs[usize.from(i)];
+    new Vec2(ld(&data, o), ld(&data, o + 1usize));
+  }
+
+  pub fn getVec3(self &, target u32, prop u32, fallback Vec3) Vec3 {
+    imm i = self.find(target, prop);
+    if i < 0i64 { return fallback; }
+    imm o = *offs[usize.from(i)];
+    new Vec3(ld(&data, o), ld(&data, o + 1usize), ld(&data, o + 2usize));
+  }
+
+  pub fn getQuat(self &, target u32, prop u32, fallback Quat) Quat {
+    imm i = self.find(target, prop);
+    if i < 0i64 { return fallback; }
+    imm o = *offs[usize.from(i)];
+    new Quat(ld(&data, o), ld(&data, o + 1usize), ld(&data, o + 2usize), ld(&data, o + 3usize));
+  }
+
+  // The colour, in linear sRGB, as the track's space was undone at evaluation
+  pub fn getColor(self &, target u32, prop u32, fallback Color) Color {
+    imm i = self.find(target, prop);
+    if i < 0i64 { return fallback; }
+    imm o = *offs[usize.from(i)];
+    new Color(ld(&data, o), ld(&data, o + 1usize), ld(&data, o + 2usize), ld(&data, o + 3usize));
+  }
+
+  pub fn getBool(self &, target u32, prop u32, fallback bool) bool {
+    imm i = self.find(target, prop);
+    if i < 0i64 { return fallback; }
+    ld(&data, *offs[usize.from(i)]) >= 0.5;
+  }
+
+  pub fn getInt(self &, target u32, prop u32, fallback i32) i32 {
+    imm i = self.find(target, prop);
+    if i < 0i64 { return fallback; }
+    i32.from(libc.floorf(ld(&data, *offs[usize.from(i)]) + 0.5));
+  }
+
+  pub fn getTransform(self &, target u32, prop u32, fallback Transform3) Transform3 {
+    imm i = self.find(target, prop);
+    if i < 0i64 { return fallback; }
+    imm o = *offs[usize.from(i)];
+    new Transform3(new Vec3(ld(&data, o), ld(&data, o + 1usize), ld(&data, o + 2usize)),
+      new Quat(ld(&data, o + 3usize), ld(&data, o + 4usize), ld(&data, o + 5usize), ld(&data, o + 6usize)),
+      new Vec3(ld(&data, o + 7usize), ld(&data, o + 8usize), ld(&data, o + 9usize)));
+  }
+
+  fn quatAt(self &, o usize) Quat {
+    new Quat(ld(&data, o), ld(&data, o + 1usize), ld(&data, o + 2usize), ld(&data, o + 3usize));
+  }
+
+  fn setQuat(self &mut, o usize, q Quat) {
+    data.set(o, q.x); data.set(o + 1usize, q.y); data.set(o + 2usize, q.z); data.set(o + 3usize, q.w);
+  }
+
+  // Mix 'other' into this sample at 'weight'
+  pub fn accumulate(self &mut, other &Sample, weight f32) {
+    if weight <= 0. { return; }
+    mut j = 0usize;
+    while j < other.targets.len() {
+      imm kind = *other.kinds[j];
+      imm n = *other.counts[j];
+      imm po = *other.offs[j];
+      imm i = self.find(*other.targets[j], *other.props[j]);
+      if i < 0i64 {
+        mut v = List[f32].empty();
+        mut c = 0usize;
+        while c < n { v.push(ld(&other.data, po + c)); c = c + 1usize; }
+        self.push(*other.targets[j], *other.props[j], kind, &v, weight);
+      } else {
+        imm ii = usize.from(i);
+        imm o = *offs[ii];
+        imm total = ld(&weights, ii) + weight;
+        imm t = weight / total;
+        weights.set(ii, total);
+        imm qo = quatOffset(kind);
+        if kind == TK_BOOL or kind == TK_DISCRETE {
+          if t > 0.5 { data.set(o, ld(&other.data, po)); }
+        } else {
+          mut c = 0usize;
+          while c < n {
+            imm a = ld(&data, o + c);
+            data.set(o + c, a + (ld(&other.data, po + c) - a) * t);
+            c = c + 1usize;
+          }
+          if qo < 99usize {
+            imm q = slerpQuat(self.quatAt(o + qo), other.quatAt(po + qo), t);
+            self.setQuat(o + qo, q);
+          }
+        }
+      }
+      j = j + 1usize;
+    }
+  }
+
+  // This sample's bindings with 'clip' minus 'ref' added at 'weight' (see the
+  // header). A binding the base lacks is made from the reference and the layer.
+  pub fn addOnto(self &mut, clip &Sample, rest &Sample, weight f32) {
+    if weight <= 0. { return; }
+    mut j = 0usize;
+    while j < clip.targets.len() {
+      imm target = *clip.targets[j];
+      imm prop = *clip.props[j];
+      imm kind = *clip.kinds[j];
+      imm n = *clip.counts[j];
+      imm co = *clip.offs[j];
+      imm r = rest.find(target, prop);
+      if r >= 0i64 {
+        imm rb = *rest.offs[usize.from(r)];
+        mut i = self.find(target, prop);
+        if i < 0i64 {
+          mut v = List[f32].empty();
+          mut c = 0usize;
+          while c < n { v.push(ld(&rest.data, rb + c)); c = c + 1usize; }
+          self.push(target, prop, kind, &v, 1.);
+          i = self.find(target, prop);
+        }
+        imm o = *offs[usize.from(i)];
+        imm qo = quatOffset(kind);
+        if kind == TK_BOOL or kind == TK_DISCRETE {
+          if weight >= 0.5 and ld(&clip.data, co) != ld(&rest.data, rb) { data.set(o, ld(&clip.data, co)); }
+        } else {
+          mut c = 0usize;
+          while c < n {
+            if !(qo < 99usize and c >= qo and c < qo + 4usize) {
+              data.set(o + c, ld(&data, o + c) + weight * (ld(&clip.data, co + c) - ld(&rest.data, rb + c)));
+            }
+            c = c + 1usize;
+          }
+          if qo < 99usize {
+            imm delta = clip.quatAt(co + qo) * rest.quatAt(rb + qo).conjugate();
+            imm q = slerpQuat(Quat.identity(), delta, weight) * self.quatAt(o + qo);
+            self.setQuat(o + qo, q.normalize());
+          }
+        }
+      }
+      j = j + 1usize;
+    }
+  }
+}
