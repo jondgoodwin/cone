@@ -1,0 +1,294 @@
+// render's views, planar mirrors, water and reflection probes, on a real GPU
+// with no window, into a 64 x 64 rgba8unorm texture (a channel v stored as
+// v x 255, rounded, no sRGB curve), read back and checked. The camera is
+// at (0, 0, 3) looking at the origin, 50 degrees of field of view, unless
+// said; the lit material of a colour c, under a light of 0.6 pi head on
+// and ambient 0.2, gives 0.8 c on a face the light meets, 0.2 c on one it
+// does not. Only a failure prints.
+//
+// 1. A view on a quad: a second camera at (10, 0, 3) looks at a red cube
+//    (half-size 0.5) at (10, 0, 0) with a small yellow one above it at
+//    (10, 0.8, 0), into a 32 x 32 view; a screen (a quad, 2 across, in the
+//    plane z = 0) shows the view's picture. The picture's middle is the
+//    red cube's lit face, (204, 0, 0); the yellow cube is in the upper
+//    half of the screen, not the lower (the orientation of the picture),
+//    at row 18; the screen's corner is the view camera's background.
+// 2. Layers: with the yellow cube on a layer the view's mask leaves out, the
+//    picture has no yellow at row 18.
+// 3. Nesting: a view two deep is not drawn with a limit of one, and is with
+//    a limit of two; the view of nest 1 is drawn with the default limit.
+// 4. A mirror: the plane z = 0, a quad 3 across; a red cube (half-size 0.4)
+//    at (-1, 0, 2) between the camera at (0, 0, 4) and the mirror, out of
+//    the camera's sight to the left; the reflected camera's picture of it
+//    (the light travels +z, so its face towards the mirror is lit, 0.8)
+//    appears on the mirror at x = -1 / 6 over tan 25 degrees across: pixel
+//    x 20.6 (the cube is half-size 0.4 at depth 6: 5.5 pixels either way),
+//    row 32, (204, 0, 0); and not at the mirrored pixel 43.4, which shows
+//    the reflection's background.
+// 5. The oblique clip: a blue cube at (0.4, 0, -2), behind the mirror, is in
+//    the reflected camera's way: with the mirror plane as the near plane no
+//    blue pixel is drawn; without it the cube leaks into the mirror.
+// 6. Water: head on, at Fresnel's f0 of 0.02, the water is 98% its body
+//    colour and 2% the reflection.
+// 7. A reflection probe (an rgba16float renderer, a Post into rgba8): a
+//    white metal floor at y = -2, a red glowing patch on the ceiling
+//    (y = 4, half-size 0.5) at the origin; a probe at the origin whose box
+//    is x and z from -6 to 6, y from -2.5 to 4. A camera at (3, 0, 6) looks
+//    at the floor: the patch's mirror image is at (0, -8, 0), the pixel of
+//    the floor point where the camera's ray to it crosses y = -2, (2.25,
+//    -2, 4.5). Before the probe the floor shows the sky there; after, it
+//    shows the red patch (box-projected: read straight from the probe's
+//    centre the direction would miss the patch), and a pixel well off shows
+//    none.
+//
+// It needs a GPU driver with Vulkan 1.3 and SDL3.dll; with the Vulkan SDK,
+// validation and synchronization validation are on, and must say nothing.
+
+mod views;
+
+import testing use *;
+import libc;
+import geomath use *;
+import collections use *;
+import mesh use Mesh;
+import gpu use *;
+import render use *;
+
+// Channel 'c' of pixel ('x', 'y') of a 64 x 64 rgba8 image at 'p'
+fn px(p *u8, x usize, y usize, c usize) i64 { i64.from(*(p + (y * 64usize + x) * 4usize + c)); }
+
+fn expectPixel(p *u8, x usize, y usize, r i64, g i64, b i64, d f64, label &Array[u8]) {
+  expectFloat(f64.from(px(p, x, y, 0usize)), f64.from(r), d, label);
+  expectFloat(f64.from(px(p, x, y, 1usize)), f64.from(g), d, label);
+  expectFloat(f64.from(px(p, x, y, 2usize)), f64.from(b), d, label);
+}
+
+// How many pixels are blue and nothing else: a lit blue cube
+fn countBlue(p *u8) u32 {
+  mut n = 0u32;
+  mut y = 0usize;
+  while y < 64usize {
+    mut x = 0usize;
+    while x < 64usize {
+      if px(p, x, y, 2usize) > 30i64 and px(p, x, y, 0usize) < 30i64 and px(p, x, y, 1usize) < 30i64 { n = n + 1u32; }
+      x = x + 1usize;
+    }
+    y = y + 1usize;
+  }
+  n;
+}
+
+fn drawFrame(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer,
+    camera &Camera, light &Light, list &DrawList) {
+  mut encoder = device.createCommandEncoder();
+  renderer.render(device, &mut encoder, color, depth, camera, light, list);
+  encoder.copyTextureToBuffer(color, readback);
+  device.queue.submit(encoder.finish());
+  device.endFrame();
+  device.waitIdle();
+}
+
+fn main() i32 {
+  mut instance = Instance.create("render views");
+  require(instance.isValid(), "a Vulkan 1.3 instance");
+  mut none = Surface.none();
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  if (env as usize) != 0usize {
+    if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  mut adapter = instance.requestAdapter(&none, preference);
+  require(adapter.isValid(), "an adapter");
+  mut device = adapter.requestDevice();
+  require(device.isValid(), "a device");
+  imm target = new TextureDescriptor(64u32, 64u32, TEXTURE_FORMAT_RGBA8_UNORM,
+    TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  mut color = device.createTexture(&target);
+  imm depthDesc = new TextureDescriptor(64u32, 64u32, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  mut depth = device.createTexture(&depthDesc);
+  mut readback = device.createBuffer(16384u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  imm p = readback.mappedRange();
+  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  require(renderer.isValid(), "a renderer");
+  mut viewMats = ViewMaterials.create(&mut renderer, &mut device);
+  require(viewMats.isValid(&renderer), "the view materials made");
+
+  imm up = new Vec3(0., 1., 0.);
+  imm headOn = Light.directional(new Vec3(0., 0., -1.), Color.gray(1.8849556), Color.gray(0.2));
+  imm cube1 = renderer.addMesh(&mut device, &Mesh.cube(0.5));
+  imm cubeSmall = renderer.addMesh(&mut device, &Mesh.cube(0.12));
+  imm cube4 = renderer.addMesh(&mut device, &Mesh.cube(0.4));
+  imm quad = renderer.addMesh(&mut device, &Mesh.plane(1, 1.));
+  imm redMaterial = Material.plain(new Color(1., 0., 0., 1.));
+  imm yellowMaterial = Material.plain(new Color(1., 1., 0., 1.));
+  imm blueMaterial = Material.plain(new Color(0., 0., 1., 1.));
+  imm red = renderer.addMaterial(&mut device, &redMaterial);
+  imm yellow = renderer.addMaterial(&mut device, &yellowMaterial);
+  imm blue = renderer.addMaterial(&mut device, &blueMaterial);
+  // A quad in the plane z = 0 facing +z, 'half' across each way
+  imm facing = Quat.angleAxis(radians(90.), new Vec3(1., 0., 0.));
+  imm screenModel = Mat4.fromTrs(new Vec3(0., 0., 0.), facing, new Vec3(1., 1., 1.));
+  imm mirrorModel = Mat4.fromTrs(new Vec3(0., 0., 0.), facing, new Vec3(1.5, 1.5, 1.5));
+  mut camera = Camera.make();
+  camera.lookAt(new Vec3(0., 0., 3.), new Vec3(0., 0., 0.), up);
+  camera.background = new Color(0.9, 0.9, 0.2, 1.);
+
+  // ---- 1. A view on a quad ----
+  mut scene = DrawList.empty();
+  scene.add(cube1, red, Mat4.fromTranslation(new Vec3(10., 0., 0.)));
+  scene.add(cubeSmall, yellow, Mat4.fromTranslation(new Vec3(10., 0.8, 0.)));
+  mut view = RenderView.create(&mut renderer, &mut device, 32u32, 32u32);
+  require(view.isValid(), "a view made");
+  mut viewCamera = Camera.make();
+  viewCamera.lookAt(new Vec3(10., 0., 3.), new Vec3(10., 0., 0.), up);
+  viewCamera.background = new Color(0.2, 0.4, 0.6, 1.);
+  expectBool(view.render(&mut renderer, &mut device, &viewCamera, &headOn, &scene, DEFAULT_MAX_NEST), true, "the view drawn");
+  imm screen = viewMats.screenMaterial(&mut renderer, &mut device, view.color, Color.gray(1.));
+  mut list = DrawList.empty();
+  list.add(quad, screen, screenModel);
+  drawFrame(&mut renderer, &mut device, &color, &depth, &readback, &camera, &headOn, &list);
+  expectPixel(p, 32usize, 32usize, 204, 0, 0, 2d, "the screen's middle: the red cube's lit face");
+  expectPixel(p, 32usize, 18usize, 204, 204, 0, 2d, "the yellow cube, in the upper half of the screen");
+  expectPixel(p, 32usize, 45usize, 51, 102, 153, 2d, "and not in the lower: the view's background");
+  expectPixel(p, 12usize, 12usize, 51, 102, 153, 2d, "the screen's corner: the view camera's background");
+  expectPixel(p, 2usize, 2usize, 230, 230, 51, 2d, "outside the screen: the main camera's background");
+
+  // ---- 2. Layers ----
+  mut layered = DrawList.empty();
+  layered.add(cube1, red, Mat4.fromTranslation(new Vec3(10., 0., 0.)));
+  layered.add(cubeSmall, yellow, Mat4.fromTranslation(new Vec3(10., 0.8, 0.)));
+  layered.setLayers(1usize, 2u32);
+  view.layerMask = 1u32;
+  view.render(&mut renderer, &mut device, &viewCamera, &headOn, &layered, DEFAULT_MAX_NEST);
+  drawFrame(&mut renderer, &mut device, &color, &depth, &readback, &camera, &headOn, &list);
+  expectPixel(p, 32usize, 32usize, 204, 0, 0, 2d, "layer mask 1: the red cube drawn");
+  expectPixel(p, 32usize, 18usize, 51, 102, 153, 2d, "the yellow cube, on layer 2, not drawn");
+  view.layerMask = 3u32;
+  view.render(&mut renderer, &mut device, &viewCamera, &headOn, &layered, DEFAULT_MAX_NEST);
+  drawFrame(&mut renderer, &mut device, &color, &depth, &readback, &camera, &headOn, &list);
+  expectPixel(p, 32usize, 18usize, 204, 204, 0, 2d, "layer mask 3: both drawn");
+
+  // ---- 3. Nesting ----
+  mut deep = RenderView.create(&mut renderer, &mut device, 16u32, 16u32);
+  deep.nest = 2u32;
+  expectBool(deep.render(&mut renderer, &mut device, &viewCamera, &headOn, &scene, 1u32), false, "two deep, limit one: not drawn");
+  expectUInt(u64.from(deep.drawn), 0u64, "and not counted");
+  expectBool(deep.render(&mut renderer, &mut device, &viewCamera, &headOn, &scene, 2u32), true, "two deep, limit two: drawn");
+  deep.nest = 1u32;
+  expectBool(deep.render(&mut renderer, &mut device, &viewCamera, &headOn, &scene, DEFAULT_MAX_NEST), true,
+    "one deep, the default limit: drawn");
+  device.endFrame();
+  device.waitIdle();
+
+  // ---- 4. A mirror ----
+  // The light travels +z: the faces towards the mirror are lit
+  imm lightBack = Light.directional(new Vec3(0., 0., 1.), Color.gray(1.8849556), Color.gray(0.2));
+  mut mirrorCamera = Camera.make();
+  mirrorCamera.lookAt(new Vec3(0., 0., 4.), new Vec3(0., 0., 0.), up);
+  mirrorCamera.background = new Color(0.2, 0.4, 0.6, 1.);
+  imm plane = mirrorPlane(new Vec3(0., 0., 0.), new Vec3(0., 0., 1.), mirrorCamera.position());
+  imm reflected = mirrorCamera.reflectedAbout(plane);
+  mut world = DrawList.empty();
+  world.add(cube4, red, Mat4.fromTranslation(new Vec3(-1., 0., 2.)));
+  mut reflection = RenderView.create(&mut renderer, &mut device, 64u32, 64u32);
+  reflection.layerMask = 1u32;
+  expectBool(reflection.render(&mut renderer, &mut device, &reflected, &lightBack, &world, DEFAULT_MAX_NEST), true,
+    "the reflection drawn");
+  imm mirrorM = viewMats.mirrorMaterial(&mut renderer, &mut device, reflection.color, Color.gray(1.));
+  mut mirrorList = DrawList.empty();
+  mirrorList.add(cube4, red, Mat4.fromTranslation(new Vec3(-1., 0., 2.)));
+  mirrorList.add(quad, mirrorM, mirrorModel);
+  mirrorList.setLayers(1usize, 2u32);
+  drawFrame(&mut renderer, &mut device, &color, &depth, &readback, &mirrorCamera, &lightBack, &mirrorList);
+  expectPixel(p, 20usize, 32usize, 204, 0, 0, 3d, "the mirror shows the cube at its reflected place");
+  expectPixel(p, 43usize, 32usize, 51, 102, 153, 3d, "and not at the mirrored place");
+  expectPixel(p, 32usize, 10usize, 51, 102, 153, 3d, "the rest of the mirror: the reflection's background");
+
+  // ---- 5. The oblique clip ----
+  mut behind = DrawList.empty();
+  behind.add(cube4, blue, Mat4.fromTranslation(new Vec3(0.4, 0., -2.)));
+  mut mirrorOnly = DrawList.empty();
+  mirrorOnly.add(quad, mirrorM, mirrorModel);
+  mirrorOnly.setLayers(0usize, 2u32);
+  reflection.render(&mut renderer, &mut device, &reflected, &lightBack, &behind, DEFAULT_MAX_NEST);
+  // The blue cube is behind the mirror in the real world too: draw it with the mirror in front
+  mut blueAndMirror = DrawList.empty();
+  blueAndMirror.add(cube4, blue, Mat4.fromTranslation(new Vec3(0.4, 0., -2.)));
+  blueAndMirror.add(quad, mirrorM, mirrorModel);
+  blueAndMirror.setLayers(1usize, 2u32);
+  drawFrame(&mut renderer, &mut device, &color, &depth, &readback, &mirrorCamera, &lightBack, &blueAndMirror);
+  expectUInt(u64.from(countBlue(p)), 0u64, "behind the mirror, clipped: nothing blue drawn");
+  mut unclipped = reflected;
+  unclipped.clipped = false;
+  reflection.render(&mut renderer, &mut device, &unclipped, &lightBack, &behind, DEFAULT_MAX_NEST);
+  drawFrame(&mut renderer, &mut device, &color, &depth, &readback, &mirrorCamera, &lightBack, &blueAndMirror);
+  expectBool(countBlue(p) > 20u32, true, "the same without the clip: the cube leaks into the mirror");
+
+  // ---- 6. Water ----
+  imm waterM = viewMats.waterMaterial(&mut renderer, &mut device, reflection.color, TextureHandle.none(),
+    new Color(0., 0.4, 0.6, 1.), 0.02, 0., 1., 0., 0.);
+  mut waterList = DrawList.empty();
+  waterList.add(quad, waterM, mirrorModel);
+  reflection.render(&mut renderer, &mut device, &reflected, &lightBack, &world, DEFAULT_MAX_NEST);
+  drawFrame(&mut renderer, &mut device, &color, &depth, &readback, &mirrorCamera, &lightBack, &waterList);
+  expectPixel(p, 32usize, 10usize, 1, 102, 156, 3d, "water head on: its body colour and 2% reflection");
+
+  expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
+  expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
+
+  // ---- 7. A reflection probe ----
+  mut hdr = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  mut post = Post.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM, 64u32, 64u32);
+  require(hdr.isValid() and post.isValid(), "an hdr renderer and its post-processing");
+  post.bloom = 0.;
+  post.toneMapper = TONE_MAP_NONE;
+  imm dusk = Sky.dusk(radians(30.), 0.);
+  hdr.setSky(&mut device, &dusk);
+  imm floorMesh = hdr.addMesh(&mut device, &Mesh.plane(1, 1.));
+  imm floorMaterial = PbrMaterial.standard(new Color(1., 1., 1., 1.), 1., 0.045);
+  imm floorM = hdr.addPbrMaterial(&mut device, &floorMaterial);
+  imm patchMaterial = PbrMaterial.standard(new Color(0., 0., 0., 1.), 0., 1.).glowing(new Color(1., 0., 0., 1.), 1.);
+  imm patchM = hdr.addPbrMaterial(&mut device, &patchMaterial);
+  mut room = DrawList.empty();
+  room.add(floorMesh, floorM, Mat4.fromTrs(new Vec3(0., -2., 0.), Quat.identity(), new Vec3(8., 8., 8.)));
+  room.add(floorMesh, patchM, Mat4.fromTrs(new Vec3(0., 4., -7.), Quat.angleAxis(radians(180.), new Vec3(1., 0., 0.)),
+    new Vec3(0.6, 0.6, 0.6)));
+  mut probeCamera = Camera.make();
+  probeCamera.lookAt(new Vec3(0., 1., 5.), new Vec3(0., -2., 0.), up);
+  imm noLight = Light.directional(new Vec3(0., -1., 0.), Color.gray(0.), Color.gray(0.));
+  // Where the camera sees the patch's reflection: the floor point (0, -2, 1)
+  imm vp = probeCamera.projectionMatrix(1.) * probeCamera.viewMatrix();
+  imm ndc = vp.projectPoint(new Vec3(0., -2., 1.));
+  imm sx = usize.from(i64.from((ndc.x * 0.5 + 0.5) * 64.));
+  imm sy = usize.from(i64.from((0.5 - ndc.y * 0.5) * 64.));
+  mut hdrFrame = device.createCommandEncoder();
+  hdr.render(&mut device, &mut hdrFrame, &post.hdr, &depth, &probeCamera, &noLight, &room);
+  post.apply(&mut hdrFrame, &color);
+  hdrFrame.copyTextureToBuffer(&color, &readback);
+  device.queue.submit(hdrFrame.finish());
+  device.endFrame();
+  device.waitIdle();
+  require(sx < 60usize and sy < 60usize, "the mirror image's pixel on the screen");
+  imm skyRed = px(p, sx, sy, 0usize);
+  imm skyGreen = px(p, sx, sy, 1usize);
+  expectBool(skyRed < 100i64 or skyRed < skyGreen + 20i64, true, "before the probe: the floor shows the sky, not the patch");
+  imm probe = addProbe(&mut hdr, &mut device, new Vec3(0., 0., 0.), new Vec3(-8., -2.5, -8.), new Vec3(8., 4., 8.),
+    new Color(0., 0., 0., 1.), &noLight, &room);
+  require(probe.isValid(), "the probe made");
+  expectUInt(u64.from(probe.bakes), 1u64, "and captured");
+  mut hdrFrame2 = device.createCommandEncoder();
+  hdr.render(&mut device, &mut hdrFrame2, &post.hdr, &depth, &probeCamera, &noLight, &room);
+  post.apply(&mut hdrFrame2, &color);
+  hdrFrame2.copyTextureToBuffer(&color, &readback);
+  device.queue.submit(hdrFrame2.finish());
+  device.endFrame();
+  device.waitIdle();
+  expectBool(px(p, sx, sy, 0usize) > 120i64 and px(p, sx, sy, 1usize) < 60i64, true,
+    "with the probe: the floor shows the red patch where the mirror image is");
+  expectBool(px(p, sx - 10usize, sy, 0usize) < 100i64 or px(p, sx - 10usize, sy, 1usize) > 60i64, true,
+    "and not ten pixels along");
+
+  expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed in the probe either");
+  expectUInt(u64.from(validationMessages()), 0u64, "no validation message in the probe either");
+  done();
+}
