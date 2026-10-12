@@ -3,12 +3,21 @@
 // relative and absolute paths, '.' and '..', separators doubled and
 // trailing, both separators mixed, drive letters ('C:\', 'C:' alone, 'C:x')
 // and UNC shares ('\\server\share'), and names in UTF-8 (é, 日本).
+//
+// A path is read by the rules of the system the program is built for, so
+// where those rules differ each case gives both answers, 'os(windows, posix)':
+// Windows' reading of a drive, a share and '\', and POSIX's, which has none of
+// them (only '/' separates, a leading '/' is the root, and 'C:\x' is one
+// name). The same cases, the same number of checks, on both.
 
 mod lexical;
 
 import testing use *;
 import collections use *;
 import path use Path;
+
+// The answer for this system: Windows' or POSIX's
+fn os(windows &str, posix &str) &str { if isWindows() {windows;} else {posix;}; }
 
 fn joinIs(a &str, b &str, want &str) {
   imm base = Path.from(a);
@@ -59,77 +68,79 @@ fn partsAre(p &str, want &str) {
   expectStr(got.view(), want, label.view());
 }
 
-fn absoluteIs(p &str, want bool, vol &str) {
+// Whether it is absolute, and its volume; POSIX has no volume, so only
+// whether it is absolute differs there
+fn absoluteIs(p &str, windows bool, posix bool, vol &str) {
   imm given = Path.from(p);
   mut label = String.from("isAbsolute ");
   label.append(p);
-  expectBool(given.isAbsolute(), want, label.view());
+  expectBool(given.isAbsolute(), if isWindows() {windows;} else {posix;}, label.view());
   label = String.from("volume ");
   label.append(p);
-  expectStr(given.volume(), vol, label.view());
+  expectStr(given.volume(), os(vol, ""), label.view());
 }
 
 fn main() i32 {
   // isAbsolute and volume
-  absoluteIs("C:\\x", true, "C:");
-  absoluteIs("c:/x", true, "c:");
-  absoluteIs("C:\\", true, "C:");
-  absoluteIs("C:", false, "C:");
-  absoluteIs("C:x", false, "C:");
-  absoluteIs("\\x", false, "");
-  absoluteIs("/x", false, "");
-  absoluteIs("x/y", false, "");
-  absoluteIs("", false, "");
-  absoluteIs("\\\\server\\share", true, "\\\\server\\share");
-  absoluteIs("//server/share/x", true, "//server/share");
-  absoluteIs("\\\\server", false, "");
-  absoluteIs("\\\\server\\", false, "");
-  absoluteIs("1:/x", false, "");
+  absoluteIs("C:\\x", true, false, "C:");
+  absoluteIs("c:/x", true, false, "c:");
+  absoluteIs("C:\\", true, false, "C:");
+  absoluteIs("C:", false, false, "C:");
+  absoluteIs("C:x", false, false, "C:");
+  absoluteIs("\\x", false, false, "");
+  absoluteIs("/x", false, true, "");
+  absoluteIs("x/y", false, false, "");
+  absoluteIs("", false, false, "");
+  absoluteIs("\\\\server\\share", true, false, "\\\\server\\share");
+  absoluteIs("//server/share/x", true, true, "//server/share");
+  absoluteIs("\\\\server", false, false, "");
+  absoluteIs("\\\\server\\", false, false, "");
+  absoluteIs("1:/x", false, false, "");
 
   // join
   joinIs("a", "b", "a/b");
   joinIs("a/", "b", "a/b");
-  joinIs("a\\", "b", "a\\b");
+  joinIs("a\\", "b", os("a\\b", "a\\/b"));
   joinIs("C:\\work", "src/main.cone", "C:\\work/src/main.cone");
   joinIs("a", "", "a");
   joinIs("", "b", "b");
   joinIs("", "", "");
   joinIs("a", "../b", "a/../b");
-  joinIs("C:", "x", "C:x");
-  joinIs("C:\\a", "D:\\b", "D:\\b");
-  joinIs("C:\\a", "D:b", "D:b");
-  joinIs("C:\\a", "\\b", "C:\\b");
+  joinIs("C:", "x", os("C:x", "C:/x"));
+  joinIs("C:\\a", "D:\\b", os("D:\\b", "C:\\a/D:\\b"));
+  joinIs("C:\\a", "D:b", os("D:b", "C:\\a/D:b"));
+  joinIs("C:\\a", "\\b", os("C:\\b", "C:\\a/\\b"));
   joinIs("a/b", "/c", "/c");
-  joinIs("\\\\server\\share\\a", "/b", "\\\\server\\share/b");
-  joinIs("C:\\a", "\\\\server\\share", "\\\\server\\share");
+  joinIs("\\\\server\\share\\a", "/b", os("\\\\server\\share/b", "/b"));
+  joinIs("C:\\a", "\\\\server\\share", os("\\\\server\\share", "C:\\a/\\\\server\\share"));
   joinIs("\\\\server\\share", "x", "\\\\server\\share/x");
   joinIs("é", "日本.txt", "é/日本.txt");
 
   // parent
   parentIs("a/b/c.txt", "a/b");
-  parentIs("a\\b\\c.txt", "a\\b");
+  parentIs("a\\b\\c.txt", os("a\\b", ""));
   parentIs("a/b/", "a");
   parentIs("a//b", "a");
   parentIs("c.txt", "");
   parentIs("", "");
   parentIs("/", "/");
   parentIs("/x", "/");
-  parentIs("C:\\", "C:\\");
-  parentIs("C:\\x", "C:\\");
-  parentIs("C:\\x\\", "C:\\");
-  parentIs("C:x", "C:");
-  parentIs("C:", "C:");
+  parentIs("C:\\", os("C:\\", ""));
+  parentIs("C:\\x", os("C:\\", ""));
+  parentIs("C:\\x\\", os("C:\\", ""));
+  parentIs("C:x", os("C:", ""));
+  parentIs("C:", os("C:", ""));
   parentIs("a/..", "a");
   parentIs("..", "");
-  parentIs("\\\\server\\share\\x", "\\\\server\\share\\");
-  parentIs("\\\\server\\share", "\\\\server\\share");
+  parentIs("\\\\server\\share\\x", os("\\\\server\\share\\", ""));
+  parentIs("\\\\server\\share", os("\\\\server\\share", ""));
   parentIs("é/日本", "é");
 
-  // name, stem and extension
+  // name, stem and extension: on POSIX a path with no '/' is one name
   nameIs("a/b/c.txt", "c.txt", "c", ".txt");
   nameIs("a/b.tar.gz", "b.tar.gz", "b.tar", ".gz");
   nameIs("a/b/", "b", "b", "");
-  nameIs("a\\b\\\\", "b", "b", "");
+  nameIs("a\\b\\\\", os("b", "a\\b\\\\"), os("b", "a\\b\\\\"), "");
   nameIs(".profile", ".profile", ".profile", "");
   nameIs("a/.profile.bak", ".profile.bak", ".profile", ".bak");
   nameIs("b.", "b.", "b", ".");
@@ -138,23 +149,23 @@ fn main() i32 {
   nameIs("a/..", "..", "..", "");
   nameIs("", "", "", "");
   nameIs("/", "", "", "");
-  nameIs("C:\\", "", "", "");
-  nameIs("C:", "", "", "");
-  nameIs("C:x.cone", "x.cone", "x", ".cone");
-  nameIs("\\\\server\\share", "", "", "");
-  nameIs("\\\\server\\share\\x.y", "x.y", "x", ".y");
+  nameIs("C:\\", os("", "C:\\"), os("", "C:\\"), "");
+  nameIs("C:", os("", "C:"), os("", "C:"), "");
+  nameIs("C:x.cone", os("x.cone", "C:x.cone"), os("x", "C:x"), ".cone");
+  nameIs("\\\\server\\share", os("", "\\\\server\\share"), os("", "\\\\server\\share"), "");
+  nameIs("\\\\server\\share\\x.y", os("x.y", "\\\\server\\share\\x.y"), os("x", "\\\\server\\share\\x"), ".y");
   nameIs("d.ir/file", "file", "file", "");
   nameIs("é/日本.txt", "日本.txt", "日本", ".txt");
 
   // parts
   partsAre("a/b/c", "a|b|c");
-  partsAre("C:\\a\\b", "C:\\|a|b");
+  partsAre("C:\\a\\b", os("C:\\|a|b", "C:\\a\\b"));
   partsAre("/a//b/", "/|a|b");
-  partsAre("C:a", "C:|a");
+  partsAre("C:a", os("C:|a", "C:a"));
   partsAre("a/./../b", "a|.|..|b");
-  partsAre("\\\\server\\share\\x", "\\\\server\\share\\|x");
+  partsAre("\\\\server\\share\\x", os("\\\\server\\share\\|x", "\\\\server\\share\\x"));
   partsAre("", "");
-  partsAre("é\\日本", "é|日本");
+  partsAre("é\\日本", os("é|日本", "é\\日本"));
 
   // normalize
   normalIs("", ".");
@@ -163,7 +174,7 @@ fn main() i32 {
   normalIs("a", "a");
   normalIs("a/", "a");
   normalIs("a//b", "a/b");
-  normalIs("a\\b", "a/b");
+  normalIs("a\\b", os("a/b", "a\\b"));
   normalIs("a/./b/.", "a/b");
   normalIs("a/b/../c", "a/c");
   normalIs("a/..", ".");
@@ -171,25 +182,25 @@ fn main() i32 {
   normalIs("../a", "../a");
   normalIs("../../a/..", "../..");
   normalIs("/", "/");
-  normalIs("\\", "/");
+  normalIs("\\", os("/", "\\"));
   normalIs("/..", "/");
   normalIs("/../a", "/a");
-  normalIs("C:\\", "C:/");
-  normalIs("C:\\..\\x", "C:/x");
-  normalIs("C:\\a\\.\\b\\..\\c\\", "C:/a/c");
+  normalIs("C:\\", os("C:/", "C:\\"));
+  normalIs("C:\\..\\x", os("C:/x", "C:\\..\\x"));
+  normalIs("C:\\a\\.\\b\\..\\c\\", os("C:/a/c", "C:\\a\\.\\b\\..\\c\\"));
   normalIs("c:/A/B", "c:/A/B");
   normalIs("C:", "C:");
-  normalIs("C:.", "C:");
-  normalIs("C:a\\..\\..", "C:..");
-  normalIs("\\\\server\\share", "//server/share/");
-  normalIs("\\\\server\\share\\..\\x", "//server/share/x");
+  normalIs("C:.", os("C:", "C:."));
+  normalIs("C:a\\..\\..", os("C:..", "C:a\\..\\.."));
+  normalIs("\\\\server\\share", os("//server/share/", "\\\\server\\share"));
+  normalIs("\\\\server\\share\\..\\x", os("//server/share/x", "\\\\server\\share\\..\\x"));
   normalIs("//server//share", "/server/share");
-  normalIs("\\\\server", "/server");
+  normalIs("\\\\server", os("/server", "\\\\server"));
   normalIs("é/./日本/../x", "é/x");
 
   // isSeparator
   expectBool(path.isSeparator('/'), true, "slash separates");
-  expectBool(path.isSeparator('\\'), true, "backslash separates");
+  expectBool(path.isSeparator('\\'), isWindows(), "backslash separates only on Windows");
   expectBool(path.isSeparator(':'), false, "colon does not separate");
   done();
 }

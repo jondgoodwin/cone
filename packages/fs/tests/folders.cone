@@ -1,17 +1,20 @@
 // Folders: made one at a time and with their parents, refused where they
 // cannot be made, listed in name order (UTF-8 names among them), walked,
-// and removed, empty and whole; a directory junction (Windows' link to a
-// folder, made with cmd's 'mklink /J') listed as a link, not walked into,
-// and removed without what it leads to; the guards 'removeAll' keeps; and
-// the current folder read, changed, used and restored, with 'absolute'
-// read from it.
+// and removed, empty and whole; a link to a folder (a directory junction on
+// Windows, made with cmd's 'mklink /J'; a symbolic link on POSIX, made with
+// 'ln -s') listed as a link, not walked into, and removed without what it
+// leads to; the guards 'removeAll' keeps; and the current folder read,
+// changed, used and restored, with 'absolute' read from it. What differs by
+// system (a '\' separates names only on Windows, as does a drive; names
+// differing only in ASCII case are one name only on Windows) is checked the
+// way each system does it, in the same number of checks.
 //
-// It works in a folder of its own under TEMP, 'cone-fs-test-folders', which
-// it clears if an interrupted run left it, makes, and removes at the end.
-// Every path it touches is built from that folder, and nothing is removed
-// until the folder's path has been checked to be TEMP's, absolute, with that
-// name after it. The junction leads to a folder inside it too. Paths are
-// printed with the folder shown as '<root>'.
+// It works in a folder of its own under TEMP (TMPDIR or /tmp on POSIX),
+// 'cone-fs-test-folders', which it clears if an interrupted run left it,
+// makes, and removes at the end. Every path it touches is built from that
+// folder, and nothing is removed until the folder's path has been checked to
+// be TEMP's, absolute, with that name after it. The link leads to a folder
+// inside it too. Paths are printed with the folder shown as '<root>'.
 
 mod folders;
 
@@ -25,9 +28,11 @@ import fs;
 // The test's folder: TEMP's absolute path and the name, after checking
 // that it is that and nothing shorter
 fn makeRoot(name &str) Path {
-  imm temp = libc.getenv("TEMP");
-  require(temp != null, "TEMP is set");
-  imm tempPath = Path.from(cstr.fromPtr(temp).view());
+  mut variable cstr = "TMPDIR";
+  if isWindows() { variable = "TEMP"; }
+  imm temp = libc.getenv(variable);
+  require(temp != null or not isWindows(), "TEMP is set");
+  imm tempPath = if temp != null {Path.from(cstr.fromPtr(temp).view());} else {Path.from("/tmp");};
   mut root = Path.from("");
   match fs.absolute(&tempPath) {
     case imm t Ok { root = t.join(name); }
@@ -119,7 +124,7 @@ fn making(root &Path) {
   ok(fs.makeDirAll(&deep), "makeDirAll");
   expect(fs.isDir(&deep), "made with its parents");
   ok(fs.makeDirAll(&deep), "makeDirAll of a folder there is success");
-  imm trailing = root.join("five\\six\\");
+  imm trailing = root.join(if isWindows() {"five\\six\\";} else {"five/six/";});
   ok(fs.makeDirAll(&trailing), "makeDirAll with a trailing separator");
   imm six = root.join("five/six");
   expect(fs.isDir(&six), "made through a trailing separator");
@@ -169,10 +174,17 @@ fn listing(root &Path) {
   ok(fs.makeDir(&nested), "make é/日本");
   touch(&deeper);
 
-  // Windows: names are one name whatever their ASCII case
+  // Windows: names are one name whatever their ASCII case; POSIX: 'B' is
+  // another folder (made, then removed, so the listings below read the same)
   imm capitalB = list.join("B");
-  failsWith(root, fs.makeDir(&capitalB), "makeDir <root>/list/B: File exists",
-    "Windows: 'B' is the folder 'b'");
+  if isWindows() {
+    failsWith(root, fs.makeDir(&capitalB), "makeDir <root>/list/B: File exists",
+      "Windows: 'B' is the folder 'b'");
+    expect(fs.isDir(&capitalB), "Windows: 'B' names a folder");
+  } else {
+    ok(fs.makeDir(&capitalB), "POSIX: 'B' is another folder");
+    ok(fs.removeDir(&capitalB), "and is removed again");
+  }
 
   // Byte order: capitals before small letters, UTF-8 after ASCII
   listingIs(root, &list,
@@ -184,9 +196,10 @@ fn listing(root &Path) {
   listingIs(root, &aTxt, "readDir <root>/list/a.txt: Not a directory", "readDir of a file");
   imm none = list.join("none");
   listingIs(root, &none, "readDir <root>/list/none: No such file or directory", "readDir of nothing");
-  // A trailing separator, and '\'
-  imm slashed = list.join("a\\");
-  listingIs(root, &slashed, "<root>/list/a\\inner.txt ", "readDir with a trailing '\\'");
+  // A trailing separator ('\' on Windows, where it separates)
+  imm slashed = list.join(if isWindows() {"a\\";} else {"a/";});
+  listingIs(root, &slashed, if isWindows() {"<root>/list/a\\inner.txt ";} else {"<root>/list/a/inner.txt ";},
+    "readDir with a trailing separator");
 
   walkIs(root, &list,
     "<root>/list/Big/ <root>/list/Z.txt <root>/list/a/ <root>/list/a/inner.txt <root>/list/a.txt <root>/list/b/ <root>/list/é/ <root>/list/é/日本/ <root>/list/é/日本/deep.txt <root>/list/日本/ ",
@@ -198,16 +211,26 @@ fn listing(root &Path) {
   expect(not fs.exists(&list), "listed tree gone");
 }
 
-// A junction, Windows' link to a folder, made by cmd. Both paths are inside
-// the test's folder, and quoted, since TEMP may hold a space
+// A link to a folder: a junction, Windows', made by cmd, or a symbolic link,
+// made by the shell's 'ln -s'. Both paths are inside the test's folder, and
+// quoted, since TEMP may hold a space
 fn junction(link &Path, target &Path) bool {
-  mut paths = String.from(link.view());
-  paths.append("\" \"");
-  paths.append(target.view());
-  paths.replaceByte('/', '\\');
-  mut command = String.from("mklink /J \"");
-  command.append(paths.view());
-  command.append("\" >nul");
+  mut command = String.empty();
+  if isWindows() {
+    mut paths = String.from(link.view());
+    paths.append("\" \"");
+    paths.append(target.view());
+    paths.replaceByte('/', '\\');
+    command.append("mklink /J \"");
+    command.append(paths.view());
+    command.append("\" >nul");
+  } else {
+    command.append("ln -s '");
+    command.append(target.view());
+    command.append("' '");
+    command.append(link.view());
+    command.append("'");
+  }
   libc.system(command.cstr()) == 0i32;
 }
 
@@ -248,11 +271,22 @@ fn guards(root &Path) {
   failsWith(root, fs.removeAll(".."), "removeAll ..: Invalid argument", "removeAll of '..'");
   failsWith(root, fs.removeAll("x/.."), "removeAll x/..: Invalid argument", "removeAll of a path coming to '.'");
   failsWith(root, fs.removeAll("../.."), "removeAll ../..: Invalid argument", "removeAll ending in '..'");
-  failsWith(root, fs.removeAll("C:\\"), "removeAll C:\\: Invalid argument", "removeAll of a drive's root");
-  failsWith(root, fs.removeAll("C:"), "removeAll C:: Invalid argument", "removeAll of a drive");
+  // A drive's root, a drive and a share are Windows'; POSIX has the root
+  // spelled other ways instead
+  if isWindows() {
+    failsWith(root, fs.removeAll("C:\\"), "removeAll C:\\: Invalid argument", "removeAll of a drive's root");
+    failsWith(root, fs.removeAll("C:"), "removeAll C:: Invalid argument", "removeAll of a drive");
+  } else {
+    failsWith(root, fs.removeAll("//"), "removeAll //: Invalid argument", "removeAll of a root written twice");
+    failsWith(root, fs.removeAll("/."), "removeAll /.: Invalid argument", "removeAll of a root's '.'");
+  }
   failsWith(root, fs.removeAll("/"), "removeAll /: Invalid argument", "removeAll of a root");
-  failsWith(root, fs.removeAll("\\\\server\\share"), "removeAll \\\\server\\share: Invalid argument",
-    "removeAll of a share");
+  if isWindows() {
+    failsWith(root, fs.removeAll("\\\\server\\share"), "removeAll \\\\server\\share: Invalid argument",
+      "removeAll of a share");
+  } else {
+    failsWith(root, fs.removeAll("/.."), "removeAll /..: Invalid argument", "removeAll of a root's '..'");
+  }
   imm withDot = root.join("x/.");
   failsWith(root, fs.removeAll(&withDot), "removeAll <root>/x/.: Invalid argument", "removeAll ending in '.'");
 }
@@ -289,7 +323,8 @@ fn currentFolder(root &Path) {
     case imm a Ok { expectStr(a.view(), wantRel.view(), "absolute of a name"); }
     case is Error { expect(false, "absolute of a name"); }
   }
-  match fs.absolute("sub\\..\\.\\rel.txt") {
+  imm dotted = Path.from(if isWindows() {"sub\\..\\.\\rel.txt";} else {"sub/.././rel.txt";});
+  match fs.absolute(&dotted) {
     case imm a Ok { expectStr(a.view(), wantRel.view(), "absolute reads '.' and '..'"); }
     case is Error { expect(false, "absolute with '..'"); }
   }
@@ -311,8 +346,9 @@ fn currentFolder(root &Path) {
     }
     case is Error { expect(false, "absolute of '..'"); }
   }
-  match fs.absolute("C:\\Some\\..\\Where") {
-    case imm a Ok { expectStr(a.view(), "C:/Where", "absolute of an absolute path"); }
+  imm elsewhere = Path.from(if isWindows() {"C:\\Some\\..\\Where";} else {"/Some/../Where";});
+  match fs.absolute(&elsewhere) {
+    case imm a Ok { expectStr(a.view(), if isWindows() {"C:/Where";} else {"/Where";}, "absolute of an absolute path"); }
     case is Error { expect(false, "absolute of an absolute path"); }
   }
   imm missing = root.join("missing");
