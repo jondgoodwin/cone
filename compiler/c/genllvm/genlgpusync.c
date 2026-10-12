@@ -141,12 +141,15 @@ static unsigned genlGpuSemantics(LLVMAtomicOrdering order, unsigned sc) {
 // A compare-and-swap as 'llvm.spv.cmpxchg': its pointer, the value expected,
 // the value to store, then the scope and the two semantics, answering the
 // value seen. Whether it stored is whether that is the value expected.
-static void genlGpuCompareSwap(GenState *gen, LLVMValueRef cx, unsigned space) {
+// Answers whether it replaced the instruction: it erases 'cx' and the
+// extractvalues taking the pair apart, so the caller must not hold any
+// instruction that followed 'cx' (the next one is very likely one of them).
+static int genlGpuCompareSwap(GenState *gen, LLVMValueRef cx, unsigned space) {
     LLVMValueRef ptr = LLVMGetOperand(cx, 0);
     LLVMValueRef expected = LLVMGetOperand(cx, 1);
     LLVMTypeRef i32 = LLVMInt32TypeInContext(gen->context);
     if (LLVMTypeOf(expected) != i32)
-        return;     // On memory no other invocation reaches, refused already
+        return 0;   // On memory no other invocation reaches, refused already
     unsigned sc = space == GenlWorkgroup ? SpvSemWorkgroupMemory : SpvSemUniformMemory;
     LLVMTypeRef ptrtype = LLVMTypeOf(ptr);
     unsigned id = LLVMLookupIntrinsicID("llvm.spv.cmpxchg", 16);
@@ -177,6 +180,7 @@ static void genlGpuCompareSwap(GenState *gen, LLVMValueRef cx, unsigned space) {
     if (pair)
         LLVMReplaceAllUsesWith(cx, pair);
     LLVMInstructionEraseFromParent(cx);
+    return 1;
 }
 
 // Mark an atomic instruction with the call it was made for, so that one on
@@ -296,7 +300,14 @@ int genlGpuAtomics(GenState *gen, LLVMValueRef fn, FnDclNode *kernel) {
                 continue;
             }
             if (LLVMIsAAtomicCmpXchgInst(inst)) {
-                genlGpuCompareSwap(gen, inst, space);
+                // The pair's extractvalues, which usually follow the
+                // instruction, are erased with it, so 'next' may be gone:
+                // go on from what is left after the instruction before it
+                // (the new instructions, which are no atomics, are walked
+                // over)
+                LLVMValueRef before = LLVMGetPreviousInstruction(inst);
+                if (genlGpuCompareSwap(gen, inst, space))
+                    next = before ? LLVMGetNextInstruction(before) : LLVMGetFirstInstruction(blk);
                 inst = next;
                 continue;
             }
