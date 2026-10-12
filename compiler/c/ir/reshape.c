@@ -27,6 +27,12 @@ static int rcWritable;
 static int rcLocalOnly;     // a value lent from a local: an owning virtual reference holds no borrow of one
 static int rcMode;          // what the kept answers are kept by: rcWritable and rcLocalOnly
 static int rcLow;           // the lowest stack position a struct below reached back to
+// Asked about an owner (reshapeReachOwner): rcWant is the struct that holds the collection as a
+// field, and this the collection. The collection reached inside any other struct is another
+// value than the one the borrow is into, and is not reached; it is reached through a reference
+// or pointer that points at it (or at an array of it), which may point at that very one.
+// NULL where the collection itself is asked for
+static INode *rcDirect;
 
 // What one struct reaches, kept: asked of nearly every call made while a borrow is
 // held, and the same types come round. Kept only where the answer was settled
@@ -34,6 +40,7 @@ static int rcLow;           // the lowest stack position a struct below reached 
 typedef struct {
     INode *st;
     INode *want;
+    INode *direct;
     uint8_t writable;
     uint8_t ind;
     uint8_t bits;
@@ -44,18 +51,19 @@ static RcMemo *rcMemo = NULL;
 static uint32_t rcMemoCap = 0;
 static uint32_t rcMemoUsed = 0;
 
-static uint32_t rcMemoHash(INode *st, INode *want, int writable, int ind) {
+static uint32_t rcMemoHash(INode *st, INode *want, INode *direct, int writable, int ind) {
     uint64_t h = ((uint64_t)(uintptr_t)st * 0x9E3779B97F4A7C15ull) ^ ((uint64_t)(uintptr_t)want * 0xC2B2AE3D27D4EB4Full)
-        ^ ((uint64_t)writable << 3) ^ ((uint64_t)ind << 5);
+        ^ ((uint64_t)(uintptr_t)direct * 0xD6E8FEB86659FD93ull) ^ ((uint64_t)writable << 3) ^ ((uint64_t)ind << 5);
     return (uint32_t)(h >> 32);
 }
 
 static RcMemo *rcMemoFind(INode *st, INode *want, int writable, int ind) {
     if (rcMemoCap == 0)
         return NULL;
-    uint32_t at = rcMemoHash(st, want, writable, ind) & (rcMemoCap - 1);
+    uint32_t at = rcMemoHash(st, want, rcDirect, writable, ind) & (rcMemoCap - 1);
     while (rcMemo[at].used) {
-        if (rcMemo[at].st == st && rcMemo[at].want == want && rcMemo[at].writable == writable && rcMemo[at].ind == ind)
+        if (rcMemo[at].st == st && rcMemo[at].want == want && rcMemo[at].direct == rcDirect
+                && rcMemo[at].writable == writable && rcMemo[at].ind == ind)
             return &rcMemo[at];
         at = (at + 1) & (rcMemoCap - 1);
     }
@@ -72,22 +80,42 @@ static void rcMemoPut(INode *st, INode *want, int writable, int ind, unsigned bi
         for (uint32_t i = 0; i < oldcap; ++i) {
             if (!old[i].used)
                 continue;
-            uint32_t at = rcMemoHash(old[i].st, old[i].want, old[i].writable, old[i].ind) & (rcMemoCap - 1);
+            uint32_t at = rcMemoHash(old[i].st, old[i].want, old[i].direct, old[i].writable, old[i].ind) & (rcMemoCap - 1);
             while (rcMemo[at].used)
                 at = (at + 1) & (rcMemoCap - 1);
             rcMemo[at] = old[i];
         }
     }
-    uint32_t at = rcMemoHash(st, want, writable, ind) & (rcMemoCap - 1);
+    uint32_t at = rcMemoHash(st, want, rcDirect, writable, ind) & (rcMemoCap - 1);
     while (rcMemo[at].used)
         at = (at + 1) & (rcMemoCap - 1);
     rcMemo[at].st = st;
     rcMemo[at].want = want;
+    rcMemo[at].direct = rcDirect;
     rcMemo[at].writable = (uint8_t)writable;
     rcMemo[at].ind = (uint8_t)ind;
     rcMemo[at].bits = (uint8_t)bits;
     rcMemo[at].used = 1;
     ++rcMemoUsed;
+}
+
+// Asked about an owner: does a reference or pointer point at the collection itself, or at an
+// array of it? Such a reference may point at the very value the borrow is into, whatever struct
+// holds it. A reference to a struct that holds one as a field does not, unless that struct is the
+// owner (rcWant), which the walk meets on its own.
+static int rcPointsAtDirect(INode *pointee) {
+    if (rcDirect == NULL || pointee == NULL)
+        return 0;
+    INode *t = itypeGetTypeDcl(pointee);
+    if (t && t->tag == ArrayTag)
+        t = itypeGetTypeDcl(arrayElemType(t));
+    return t == rcDirect;
+}
+
+// The collection reached through a reference, as the walk reaches a struct it wants
+static void rcReachDirect(int ind) {
+    if (!(ind & 2))
+        rcBits |= ReachBorrowed | ((ind & 4) ? 0 : ReachOwned);
 }
 
 // 'ind': bit 0, a reference or pointer has been passed through on the way; bit 1, the walk is
@@ -138,10 +166,19 @@ static void rcWalk(INode *type, int ind) {
         // An owning reference ('So', 'Rc', 'Arc', a user region) keeps what it points at alive:
         // the walk stays 'owned' through it (ReachOwned); a borrow does not
         int owning = ref->region && itypeGetTypeDcl(ref->region) != borrowRef;
-        rcWalk(ref->vtexp, 1 | (owning ? (ind & 4) : 4) | ((ind & 2) && !(pflags & MayAliasWrite) ? 2 : 0));
+        int nind = 1 | (owning ? (ind & 4) : 4) | ((ind & 2) && !(pflags & MayAliasWrite) ? 2 : 0);
+        if (rcPointsAtDirect(ref->vtexp)) {
+            rcReachDirect(nind);
+            return;
+        }
+        rcWalk(ref->vtexp, nind);
         return;
     }
     case PtrTag:
+        if (rcPointsAtDirect(((StarNode *)type)->vtexp)) {
+            rcReachDirect(1 | 4 | (ind & 2));
+            return;
+        }
         rcWalk(((StarNode *)type)->vtexp, 1 | 4 | (ind & 2));
         return;
     case ArrayTag:
@@ -215,16 +252,26 @@ static void rcWalk(INode *type, int ind) {
     }
 }
 
-static unsigned reshapeReachMode(INode *type, INode *cont, int writable, int local) {
+// 'owner' (or NULL): the struct that holds the collection 'cont' as a field, where a borrow
+// into the collection was taken through that field. The value the borrow is into is then
+// reached by reaching the owner, or by a reference that points at a collection of that
+// type; the same type held as a field of any other struct is another value (rcDirect)
+static unsigned reshapeReachOwnerMode(INode *type, INode *cont, INode *owner, int writable, int local) {
     rcN = 0;
     rcBits = 0;
     rcLow = RcSeenCap;
-    rcWant = cont;
+    rcWant = owner ? owner : cont;
+    rcDirect = owner ? cont : NULL;
     rcWritable = writable;
     rcLocalOnly = local;
     rcMode = (writable ? 1 : 0) | (local ? 2 : 0);
     rcWalk(type, 0);
+    rcDirect = NULL;
     return rcBits;
+}
+
+static unsigned reshapeReachMode(INode *type, INode *cont, int writable, int local) {
+    return reshapeReachOwnerMode(type, cont, NULL, writable, local);
 }
 
 unsigned reshapeReach(INode *type, INode *cont, int writable) {
@@ -403,7 +450,7 @@ static INode *reshapeParmType(FnDclNode *callee, uint32_t k, INode *arg) {
     return iexpGetTypeDcl(arg);
 }
 
-int reshapeCall(FnCallNode *call, FnDclNode *meth, int recvunique, INode *cont, ReshapeVerdict *verdict,
+int reshapeCall(FnCallNode *call, FnDclNode *meth, int recvunique, INode *cont, INode *owner, ReshapeVerdict *verdict,
         VarDclNode **mine, int nmine) {
     INode *fnn = call->objfn;
     FnDclNode *callee = isNameUseNode(fnn) && ((NameUseNode *)fnn)->dclnode && ((NameUseNode *)fnn)->dclnode->tag == FnDclTag
@@ -475,6 +522,10 @@ int reshapeCall(FnCallNode *call, FnDclNode *meth, int recvunique, INode *cont, 
         while (ba->tag == CastTag && !(ba->flags & FlagConvert))
             ba = ((CastNode *)ba)->exp;
         INode *wt = reshapeParmType(callee, k, arg);
+        // A call through a virtual reference reaches its receiver as the virtual reference
+        // the caller holds, not as the trait's own 'self &mut', which names no field
+        if (k == 0 && (call->flags & FlagVDisp) && at->tag == VirtRefTag)
+            wt = at;
         unsigned bits;
         if (ba->tag == BorrowTag && at->tag == RefTag
                 && reshapeUniqueLocalExcept(((RefNode *)ba)->vtexp, mine, nmine)) {
@@ -483,13 +534,13 @@ int reshapeCall(FnCallNode *call, FnDclNode *meth, int recvunique, INode *cont, 
             INode *wp = wt->tag == RefTag ? (((RefNode *)wt)->perm == unknownType ? (INode *)roPerm
                 : itypeGetTypeDcl(((RefNode *)wt)->perm)) : NULL;
             bits = wp == (INode *)immPerm ? 0
-                : wp == (INode *)roPerm ? (nmine > 0 ? reshapeReachMode(wt, cont, 1, 1) & (ReachBorrowed | ReachVirtual) : 0)
-                : reshapeReachMode(((RefNode *)at)->vtexp, cont, 1, nmine > 0) & (ReachBorrowed | ReachVirtual);
+                : wp == (INode *)roPerm ? (nmine > 0 ? reshapeReachOwnerMode(wt, cont, owner, 1, 1) & (ReachBorrowed | ReachVirtual) : 0)
+                : reshapeReachOwnerMode(((RefNode *)at)->vtexp, cont, owner, 1, nmine > 0) & (ReachBorrowed | ReachVirtual);
         }
         else if (at->tag != RefTag && at->tag != ArrayRefTag && at->tag != VirtRefTag && at->tag != PtrTag)
-            bits = reshapeReachMode(wt, cont, 1, nmine > 0) & (ReachBorrowed | ReachVirtual);
+            bits = reshapeReachOwnerMode(wt, cont, owner, 1, nmine > 0) & (ReachBorrowed | ReachVirtual);
         else
-            bits = reshapeReachMode(wt, cont, 1, nmine > 0);
+            bits = reshapeReachOwnerMode(wt, cont, owner, 1, nmine > 0);
         if (bits)
             writable = 1;
     }

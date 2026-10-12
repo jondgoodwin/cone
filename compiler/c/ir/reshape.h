@@ -111,8 +111,11 @@ typedef struct {
 // the receiver's place is reached by no shared path, so no other name for it
 // exists. 'mine' are the 'nmine' locals the borrow being asked of points into: a local
 // lent whole to the call is no excuse for them, as it is for any other. Fills 'verdict'
-// when it answers yes.
-int reshapeCall(FnCallNode *call, FnDclNode *meth, int recvunique, INode *cont, ReshapeVerdict *verdict,
+// when it answers yes. 'owner' is the struct holding 'cont' as a field when the borrow was
+// taken through that field (NULL otherwise): the borrow is then into that one value, and an
+// argument reaches it only by reaching the owner, or by a reference that points at a 'cont'
+// (which may be that very one); a 'cont' held as a field of any other struct is another value.
+int reshapeCall(FnCallNode *call, FnDclNode *meth, int recvunique, INode *cont, INode *owner, ReshapeVerdict *verdict,
     VarDclNode **mine, int nmine);
 
 #endif

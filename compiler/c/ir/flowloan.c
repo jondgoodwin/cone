@@ -38,7 +38,9 @@ typedef struct {
     uint8_t writes;     // the borrow may write, for the message
     uint8_t part;       // a caller loan: the part of its parameter it lends (LifePart)
     INode *shapecont;   // a borrow into a shape-changing value through a shared path: its struct, else NULL
-    uint32_t source;    // a reference narrowed into an enum's variant, read from a hidden variable that holds one
+    INode *shapeowner;  // then, the struct that holds that value as one of its fields, where the borrow was taken
+                        // through that field ('x.label.view()': x's struct), else NULL (loanShapeOwnerSet)
+    uint32_t source;   // a reference narrowed into an enum's variant, read from a hidden variable that holds one
                         // borrow: that borrow's loan, which says where the enum is (loanShapeSource), else 0
     uint8_t uniq;       // a 'mut' borrow of a place reached as 'uni', held as an alias loan: others (the source by
                         // name, another such borrow) may reach it too
@@ -279,6 +281,7 @@ uint32_t loanMake(INode *site, Place *pl, INode *perm) {
     loan->writes = (permGetFlags(perm) & MayWrite) != 0;
     loan->part = 0;
     loan->shapecont = NULL;
+    loan->shapeowner = NULL;
     loan->source = 0;
     loan->uniq = loan->kind == LoanAlias && !pl->shared;
     // Another name for the source met by the access that made this borrow: it is one of several
@@ -324,6 +327,7 @@ uint32_t loanCaller(uint32_t var, uint32_t part) {
     loan->writes = 0;
     loan->part = (uint8_t)part;
     loan->shapecont = NULL;
+    loan->shapeowner = NULL;
     loan->source = 0;
     loan->uniq = 0;
     loan->aliased = 0;
@@ -1957,6 +1961,14 @@ uint32_t loanShapeId(uint32_t i) {
 
 INode *loanShapeContainer(uint32_t loan) {
     return loans[loan].shapecont;
+}
+
+void loanShapeOwnerSet(uint32_t loan, INode *owner) {
+    loans[loan].shapeowner = owner;
+}
+
+INode *loanShapeOwner(uint32_t loan) {
+    return loans[loan].shapeowner;
 }
 
 int loanShapeInFlight(uint32_t loan) {
