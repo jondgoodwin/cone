@@ -1,0 +1,101 @@
+// A '&uni' borrow of a 'mut' local freezes it against everything but the borrow
+// until the borrow's last use (refborref.html, "Freezing access to the source of a
+// borrow"): it may not be read, borrowed, changed, moved or ended meanwhile, and
+// nothing else may be lent '&uni' beside it. What a lend allows, and after its
+// last use, is ref_unilocal. One function per touch, so that one borrow's
+// conflict cannot stand in for another's.
+
+mod ref_flow_unilocal;
+
+import stdio use *;
+import collections use *;
+
+struct H { pub items List[i64]; pub n i64; }
+
+fn pushOne(l &uni List[i64]) { l.push(7); }
+fn pushTwo(a &uni List[i64], b &uni List[i64]) { a.push(1); b.push(2); }
+fn bumpN(n &uni i64) { *n = *n + 1; }
+fn consume(l List[i64]) {}
+
+// A read-only borrow still to be used
+fn afterShared() {
+  mut l = List[i64].empty();
+  imm r = &l;
+  pushOne(&uni l);                    //~ ErrorFrozen:11 "may not be borrowed as 'uni'"
+  printInt(i64.from(r.len()));
+}
+
+// A mutable borrow still to be used
+fn afterMutable() {
+  mut l = List[i64].empty();
+  imm r = &mut l;
+  pushOne(&uni l);                    //~ ErrorFrozen:11 "may not be borrowed as 'uni'"
+  r.push(3);
+}
+
+// Another '&uni' of the same local, in one call and held in a local
+fn twoInOneCall() {
+  mut l = List[i64].empty();
+  pushTwo(&uni l, &uni l);            //~ ErrorFrozen:19 "may not be borrowed as 'uni'"
+}
+
+fn twoHeld() {
+  mut l = List[i64].empty();
+  imm u = &uni l;
+  pushOne(&uni l);                    //~ ErrorFrozen:11 "may not be borrowed as 'uni'"
+  u.push(1);
+}
+
+// The same field of a local lent twice
+fn sameField() {
+  mut h = new H(List[i64].empty(), 0);
+  imm r = &uni h.items;
+  pushOne(&uni h.items);              //~ ErrorFrozen:11 "may not be borrowed as 'uni'"
+  r.push(1);
+}
+
+// A lent local read, borrowed by a method, changed, moved, and replaced
+fn readUnder() {
+  mut n i64 = 1;
+  imm u = &uni n;
+  printInt(n);                        //~ ErrorFrozen:12 "may not be read"
+  *u = 2;
+}
+
+fn methodUnder() {
+  mut l = List[i64].empty();
+  imm u = &uni l;
+  printInt(i64.from(l.len()));        //~ ErrorFrozen:21 "may not be borrowed"
+  u.push(2);
+}
+
+fn changedUnder() {
+  mut n i64 = 1;
+  imm u = &uni n;
+  n = 5;                              //~ ErrorFrozen:3 "may not be changed"
+  *u = 2;
+}
+
+fn movedUnder() {
+  mut l = List[i64].empty();
+  imm u = &uni l;
+  consume(l);                         //~ ErrorFrozen:11 "may not be moved"
+  u.push(2);
+}
+
+fn replacedUnder() {
+  mut l = List[i64].empty();
+  imm u = &uni l;
+  l = List[i64].empty();              //~ ErrorFrozen:3 "may not be changed"
+  u.push(2);
+}
+
+// The whole local read while one of its fields is lent
+fn wholeUnderField() {
+  mut h = new H(List[i64].empty(), 0);
+  imm r = &uni h.items;
+  imm w = &h;                         //~ ErrorFrozen:11 "may not be borrowed"
+  r.push(1);
+}
+
+fn main() {}

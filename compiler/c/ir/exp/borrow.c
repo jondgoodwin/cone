@@ -539,6 +539,26 @@ uint16_t borrowTempScope(TypeCheckState *pstate) {
     return (uint16_t)pstate->scope;
 }
 
+// A 'mut' local variable, or a part of one held by value, lends '&uni': a source
+// reached as 'uni' is what a local variable is (refperm.html, "From 'uni'"). The
+// stack alone owns it, so nothing else can name it, and the loan walk freezes it
+// against reading and changing until the borrow's last use (refborref.html,
+// "Freezing access to the source of a borrow"). Nothing is reached through a
+// reference that is not 'uni' on the way (iexpPathNonUniLink), and the variable
+// is not a global, which others may name. An 'imm' local promises no change and
+// lends no '&uni'. 'lvalperm' is what the place grants (a local's own 'mut');
+// 'refperm' the permission asked.
+static int borrowLocalLendsUni(INode *lval, INode *lvalperm, uint16_t scope, INode *refperm) {
+    if (itypeGetTypeDcl(refperm) != (INode *)uniPerm || itypeGetTypeDcl(lvalperm) != (INode *)mutPerm || scope == 0)
+        return 0;
+    INode *root = lval;
+    while (root->tag == FldAccessTag || root->tag == ArrIndexTag)
+        root = ((FnCallNode *)root)->objfn;
+    if (!nameUseNames(root, VarDclTag) || iexpPathNonUniLink(lval))
+        return 0;
+    return 1;
+}
+
 // Analyze borrow node
 void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     RefNode *node = *nodep;
@@ -698,7 +718,7 @@ void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
         refused = 1;
         refperm = newPermUseNode(immPerm);
     }
-    if (!refused && !permMatches(refperm, lvalperm))
+    if (!refused && !permMatches(refperm, lvalperm) && !borrowLocalLendsUni(lval, lvalperm, scope, refperm))
         errorMsgNode((INode *)node, ErrorBadPerm, "Borrowed reference cannot obtain this permission");
 
     RefNode *reftype = newRefNodeFull(tag, (INode*)node, borrowRef, refperm, refvtype);

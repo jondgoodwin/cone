@@ -1,0 +1,43 @@
+// A local lends '&uni' (ref_unilocal), and only a local: a source that promises
+// no change ('imm'), one others may name (a global), and one reached through a
+// reference that is not 'uni' (a '&mut' parameter's field, what a '&mut' held in a
+// local points at) are refused, as they were. The touches that are refused while a
+// lend is live are ref_flow_unilocal's.
+
+mod ref_typecheck_unilocal;
+
+import stdio use *;
+import collections use *;
+
+struct P { pub x i64; }
+
+mut counter i64 = 0;
+
+fn pushOne(l &uni List[i64]) { l.push(7); }
+fn bumpN(n &uni i64) { *n = *n + 1; }
+
+fn immLocal() {
+  imm l = List[i64].empty();
+  pushOne(&uni l);                    //~ ErrorBadPerm:11 "cannot obtain this permission"
+}
+
+fn immField() {
+  imm p = new P(1);
+  bumpN(&uni p.x);                    //~ ErrorBadPerm:9 "cannot obtain this permission"
+}
+
+fn global() {
+  bumpN(&uni counter);                //~ ErrorBadPerm:9 "cannot obtain this permission"
+}
+
+fn throughMutParam(p &mut P) {
+  bumpN(&uni p.x);                    //~ ErrorBadPerm:9 "cannot obtain this permission"
+}
+
+fn throughHeldMut() {
+  mut a i64 = 1;
+  mut r = &mut a;
+  bumpN(&uni *r);                     //~ ErrorBadPerm:9 "cannot obtain this permission"
+}
+
+fn main() {}
