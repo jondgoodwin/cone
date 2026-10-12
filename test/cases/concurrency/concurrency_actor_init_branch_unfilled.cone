@@ -1,0 +1,73 @@
+// A call on an init's 'self' stays refused until '*self = ...' has filled the
+// state on every path, wherever the call stands: in an 'if', in the arms of an
+// 'if/else', in a loop, and after a fill made in only one arm
+// (concurrency_actor_init_branch_sync has the calls after the fill, which are
+// good). The refusal is ErrorInitSelf, never a move error: the branch does not
+// change what 'self' is.
+
+mod concurrency_actor_init_branch_unfilled;
+
+import actors;
+
+actor BeforeInIf {
+  n u64;
+
+  fn init(self &new, go bool) {
+    if go {
+      self.bump();               //~ ErrorInitSelf "self holds no value until '*self = value' fills it"
+    }
+    *self = new Self(n: 5u64);
+  }
+
+  fn bump(self) {n = n + 1u64;}
+}
+
+actor BeforeInArms {
+  n u64;
+
+  fn init(self &new, go bool) {
+    if go {
+      self.bump();               //~ ErrorInitSelf "self holds no value until '*self = value' fills it"
+    }
+    else {
+      self.bump();               //~ ErrorInitSelf "self holds no value until '*self = value' fills it"
+    }
+    *self = new Self(n: 5u64);
+  }
+
+  fn bump(self) {n = n + 1u64;}
+}
+
+actor BeforeInLoop {
+  n u64;
+
+  fn init(self &new, times u64) {
+    mut i = 0u64;
+    while i < times {
+      self.bump();               //~ ErrorInitSelf "self holds no value until '*self = value' fills it"
+      i = i + 1u64;
+    }
+    *self = new Self(n: 5u64);
+  }
+
+  fn bump(self) {n = n + 1u64;}
+}
+
+actor FilledInOneArm {
+  n u64;
+
+  fn init(self &new, go bool) {
+    if go {
+      *self = new Self(n: 5u64);
+    }
+    self.bump();                 //~ ErrorInitSelf "self holds no value until '*self = value' fills it"
+    *self = new Self(n: 6u64);
+  }
+
+  fn bump(self) {n = n + 1u64;}
+}
+
+fn main() {
+  initAll();
+  finalAll();
+}
