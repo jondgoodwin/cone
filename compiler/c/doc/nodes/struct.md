@@ -1333,7 +1333,11 @@ mechanism, in `structFoldExpand` and what reads its results.
 module's global became the clause's second kind of source: the declaration behind
 a type expression (`foldSourceDcl`), a star clause's items and its `but`
 (`foldStarItems`, `foldExcluded`), and which members a star admits
-(`foldAdmitsOwn`). What stays here is what the *site* decides — the copy with its
+(`foldAdmitsOwn`). A `but` is checked against the same predicate: a name the star
+would not admit (private, a lifecycle method, a static in a member fold, a field or
+alias in a sibling fold) is an error, since there is nothing to leave out; a private
+name a sibling has from the base is reported as the base's (`foldStarItems`' `base`).
+What stays here is what the *site* decides — the copy with its
 hop, the receiver shift, the eligibility rules — because that is where the sites
 differ.
 
