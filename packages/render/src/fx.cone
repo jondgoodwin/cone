@@ -5,7 +5,7 @@
 //
 //   mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
 //   mut post = Post.create(&mut device, swapchain.format, width, height);
-//   mut fx = ImageFx.create(&mut device, &renderer, &post);
+//   mut fx = ImageFx.create(&mut device, &renderer, &mut post);
 //   fx.configure(&FxSettings.high());                     // once, or when the settings change
 //   ...
 //   post.resize(&mut device, frame.texture.width, frame.texture.height);
@@ -14,25 +14,40 @@
 // 'fx.render' replaces the two calls 'renderer.render(..., &post.hdr, ...)' and
 // 'post.apply(..., target)': it draws the scene, runs the passes that are on,
 // and finishes with Post. The depth buffer is its own (sampled by the passes
-// that need it), so the program passes none.
+// that need it), so the program passes none. Each frame the program may fill
+// 'fx.motion' (what moves, for temporal AA) and 'fx.decals'; 'render' empties
+// them.
 //
 // THE PASSES, in the order a frame runs them (each file has its method):
 //   scene                       renderer.render, jittered when temporal AA is on
+//   decals     (decal.cone)     box-projected, lit by the sun and the environment
+//   SSAO       (ssao.cone)      GTAO at half resolution, a bilateral blur, a multiplier
+//   fog        (fog.cone)       a froxel volume lit through the cascades: god rays, height fog
+//   depth of field (dof.cone)   a bokeh gather by the circle of confusion
 //   velocity   (taa.cone)       the objects the program names as moving, drawn again
 //   temporal AA (taa.cone)      reproject, clip, blend, sharpen
 //   auto-exposure (exposure.cone)  histogram of the frame, adapted exposure
 //   bloom, tone map, grading, vignette, grain (post.cone, Post.finish)
 //   FXAA       (fxaa.cone)      on the finished picture, the cheap tier
+// Anti-aliasing is one of none, FXAA and temporal (a setting, 'aa'); MSAA is
+// not offered: 'gpu' has no multisampled textures, resolve or sample count on
+// a pipeline, it would cost 4 times the colour and depth bandwidth (the
+// integrated GPU shares main memory) and, with alpha-cutout foliage, would
+// still need alpha-to-coverage, which temporal AA does without.
 //
-// QUALITY TIERS. 'FxSettings.high()' is for a discrete GPU, 'medium()' for a
-// middling one, 'low()' for an integrated one (the Intel UHD must stay
-// usable): temporal AA with 16 samples, then with 8, then FXAA. Every field
-// is a setting; the tiers are starting points that the cost table in
-// Design\render.md puts numbers to.
+// QUALITY TIERS. 'FxSettings.high()' is for a discrete GPU (temporal AA with 16
+// samples, auto-exposure, SSAO of 3 slices), 'medium()' for a middling one (8
+// samples, SSAO of 2 slices), 'low()' for an integrated one (the Intel UHD
+// must stay usable): FXAA and a cheap auto-exposure. Fog, depth of field and
+// decals are the program's to turn on (each has its own 'high()', 'medium()'
+// and 'low()'); depth of field is off by default. Every field is a setting;
+// the tiers are starting points that the cost table in Design\render.md puts
+// numbers to.
 
 // How the passes are set: the antialiasing (AA_NONE, AA_FXAA or AA_TAA, only
-// one) and the auto-exposure. The grading, vignette and grain are Post's own
-// ('post.finish'), since they need nothing but the tone map.
+// one), the auto-exposure, SSAO, depth of field and fog. The grading,
+// vignette and grain are Post's own ('post.finish'), since they need nothing
+// but the tone map; decals are listed each frame.
 pub struct FxSettings {
   pub aa u32 = AA_NONE;
   pub taa TaaSettings = new TaaSettings();
@@ -131,7 +146,10 @@ pub struct ImageFx {
     fx;
   }
 
-  pub fn isValid(self &) bool { depth.isValid() and frameBuffer.isValid() and taa.isValid() and fxaa.isValid() and exposure.isValid(); }
+  pub fn isValid(self &) bool {
+    depth.isValid() and frameBuffer.isValid() and taa.isValid() and fxaa.isValid() and exposure.isValid()
+      and ssao.isValid() and decalPass.isValid() and dof.isValid() and fog.isValid();
+  }
 
   // Set the passes. Switching a pass on or off, or the antialiasing, makes
   // its textures (waiting for the GPU) at the next frame; the rest of the

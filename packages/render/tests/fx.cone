@@ -15,10 +15,30 @@
 //    the CPU (a 64-sample supersample). The TAA picture after 40 static frames
 //    is within a small error of it, and much nearer than the unjittered
 //    picture is.
+//    Moving objects: a sphere moving 3 pixels a frame, rigid and skinned, is
+//    cleaner when the motion list names it (the velocity pass writes its
+//    motion in uv: 0.1 along x at 5 away is -0.0275) than when it does not.
 // 3. FXAA brings the edges nearer the same reference.
 // 4. Auto-exposure: a frame of one known luminance L settles to 0.18 / L
 //    (the formula), within the histogram's bin, and obeys the clamps and the
-//    compensation.
+//    compensation; the adaptation follows the exponential in log space.
+// 5. Grading, vignette, grain: gain, lift, gamma, saturation and a table that
+//    inverts, against the formulas in display-encoded values; the corner
+//    darker than the middle; grain's spread and mean.
+// 6. SSAO darkens the crease of a floor and a wall and leaves a flat plane
+//    (and the floor far from the wall) alone.
+// 7. Decals: a red decal's box lands on the projected pixels (its edges at
+//    x = 0 and 2 within a pixel), a fade of a half shows half, a surface
+//    turned away from the decal's up does not take it, a turned box lands,
+//    and a decal lands at a grazing angle and on a physically based floor
+//    under a sky and shadows.
+// 8. Depth of field: a lamp at the focus stays sharp and keeps its light; one
+//    far behind it is blurred (its peak falls) and keeps its light (energy
+//    within 12%).
+// 9. Fog: Beer-Lambert's law through 12 metres of a medium of extinction 0.1
+//    (the ground dimmed by exp(-1.2)), the ambient light scattered in
+//    (ground x T + radiance x (1 - T)), the sky taking the whole volume's,
+//    and a shaft: a plate's shadow darkens the fog it falls through.
 
 mod fx;
 
@@ -861,6 +881,70 @@ fn decalTest(device &mut Device) {
   drawScene(device, &mut rig, &camera, &light, &list);
   imm rejected = grab(p);
   expect(rms(&rejected, &baseline) < 0.001, "a surface turned away from the decal's up does not take it");
+
+  // A turned box: the red lands in its middle, and its corner reaches where an unturned one's would not
+  rig.fx.decals.clear();
+  mut turned = Decal.at(material, Mat4.fromTrs(new Vec3(1., 0., 0.), Quat.angleAxis(0.7853982, new Vec3(0., 1., 0.)), new Vec3(2., 1., 2.)));
+  rig.fx.decals.add(turned);
+  drawScene(device, &mut rig, &camera, &light, &list);
+  imm turnedPicture = grab(p);
+  expect(*turnedPicture[at] > 0.8 and *turnedPicture[at + 1usize] < 0.1, "a decal turned about its up lands in its box");
+  // Its corner at x = 1 + 1.414 = 2.41 on the middle row: past the unturned box's edge at x = 2
+  imm cornerAt = (64usize * SIDEZ + 98usize) * 3usize;
+  expect(*turnedPicture[cornerAt] > 0.7, "and its corner reaches past the unturned box's edge");
+
+  // The same from a low camera, the floor seen at a grazing angle
+  rig.fx.decals.clear();
+  mut low = Camera.make();
+  low.fov = radians(60.);
+  low.near = 0.3;
+  low.far = 400.;
+  low.lookAt(new Vec3(0., 2., 8.), new Vec3(0., 0., -6.), new Vec3(0., 1., 0.));
+  low.background = new Color(0., 0., 0., 1.);
+  mut patch = Decal.at(material, Mat4.fromTrs(new Vec3(0., 0., -6.), Quat.identity(), new Vec3(4., 1., 4.)));
+  rig.fx.decals.add(patch);
+  drawScene(device, &mut rig, &low, &light, &list);
+  shot(p, "decal-low");
+  mut lx = 0usize;
+  mut ly = 0usize;
+  pixelOf(&low, new Vec3(0., 0., -6.), &mut lx, &mut ly);
+  imm lowAt = (ly * SIDEZ + lx) * 3usize;
+  eprint <- "measured: a decal seen at a grazing angle: red "; eprint <- *grab(p)[lowAt]; eprint <- " green "; eprint <- *grab(p)[lowAt + 1usize]; eprint <- "\n";
+  expect(*grab(p)[lowAt] > 0.8 and *grab(p)[lowAt + 1usize] < 0.1, "a decal on a floor seen at a grazing angle still lands");
+
+  // With a sky, shadows and a physically based floor, as a scene has
+  imm groundPbr = rig.renderer.addPbrMaterial(device, &PbrMaterial.standard(new Color(0.18, 0.2, 0.12, 1.), 0., 0.9));
+  imm sky = Sky.dusk(radians(14.), radians(200.));
+  rig.renderer.setSky(device, &sky);
+  rig.renderer.setShadows(device, &ShadowSettings.medium());
+  imm sunLight = sky.sunLight(new Color(3.2, 2.9, 2.4, 1.), new Color(0.05, 0.06, 0.08, 1.));
+  mut pbrList = DrawList.empty();
+  pbrList.add(plane, groundPbr, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(40., 1., 40.)));
+  drawScene(device, &mut rig, &low, &sunLight, &pbrList);
+  imm pbrBefore = grab(p);
+  rig.fx.decals.add(patch);
+  drawScene(device, &mut rig, &low, &sunLight, &pbrList);
+  imm pbrAfter = grab(p);
+  shot(p, "decal-pbr");
+  eprint <- "measured: a decal on a physically based floor under a sky: changed the picture by "; eprint <- rms(&pbrBefore, &pbrAfter); eprint <- "\n";
+  expect(rms(&pbrBefore, &pbrAfter) > 0.005, "a decal lands on a physically based floor under a sky and shadows");
+
+  // From the camera the example uses, a decal 15 metres ahead
+  mut ahead = Camera.make();
+  ahead.fov = radians(60.);
+  ahead.near = 0.3;
+  ahead.far = 400.;
+  ahead.lookAt(new Vec3(-3., 2.2, 10.), new Vec3(2., 2.5, -40.), new Vec3(0., 1., 0.));
+  ahead.background = new Color(0.4, 0.5, 0.7, 1.);
+  rig.fx.decals.clear();
+  drawScene(device, &mut rig, &ahead, &sunLight, &pbrList);
+  imm aheadBefore = grab(p);
+  rig.fx.decals.add(Decal.at(material, Mat4.fromTrs(new Vec3(-1., 0., -5.), Quat.identity(), new Vec3(3., 1., 3.))));
+  drawScene(device, &mut rig, &ahead, &sunLight, &pbrList);
+  imm aheadAfter = grab(p);
+  shot(p, "decal-ahead");
+  eprint <- "measured: a decal 15 m ahead of the example's camera changed the picture by "; eprint <- rms(&aheadBefore, &aheadAfter); eprint <- "\n";
+  expect(rms(&aheadBefore, &aheadAfter) > 0.005, "a decal lands 15 metres ahead of the example's camera");
 }
 
 // ---- 5. Grading, vignette and grain ----
