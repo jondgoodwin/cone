@@ -13,10 +13,10 @@
 
     <div class="text">
 
-  <p style="margin-left: 40px;"><i>Note: Not implemented: partial matches that test the values inside an array, a string,
-    a struct or a variant (<span class="pre">case is "Judy"</span>, <span class="pre">case is [1, _]</span>,
-    <span class="pre">case is Point[0., _]</span>, <span class="pre">SomeInt[&lt;0]</span>), and first-class patterns
-    (<span class="pre">using</span>). The square brackets those partial patterns are written with here are provisional:
+  <p style="margin-left: 40px;"><i>Note: Not implemented: partial matches that test the values inside an array,
+    a struct or a variant (<span class="pre">case is [1, _]</span>,
+    <span class="pre">case is Point[0., _]</span>, <span class="pre">SomeInt[&lt;0]</span>). The square brackets
+    those partial patterns are written with here are provisional:
     how a pattern spells a type or a construction is an open design question, as is how a variant is constructed.</i></p>
 
   <p>As with <span class="pre">if</span>, pattern matching is about deciding
@@ -70,6 +70,10 @@ fn power(n i32, pow i32) i32 {
   try to prove it covers them all. End such a match with <span class="pre">else</span>, which may
   say only that no other value can happen: <span class="pre">else {}</span>.</li>
   </ul>
+  <p>A match with a case that uses a <a href="#using">function's pattern</a> always ends in
+  <span class="pre">else</span>, whatever its other cases cover: which values a function matches only running
+  it says, and the compiler does not try to prove it. The <span class="pre">else</span> may say that no other
+  value can happen, and is not an error when the other cases already cover every value.</p>
   <p>A match that is not covered is an error that names what is missing, so a statement match
   that handles some variants needs <span class="pre">else {}</span> to say the rest need no action.
   The opposite is an error too: a case that can never run, because the cases before it match every
@@ -92,8 +96,8 @@ fn side(n i32) i32 {
   }
 }
 </pre>
-  <p>A versatile range of patterns are supported, 
-  able to match wholly to specified values, partially, or using a first-class pattern.
+  <p>A versatile range of patterns are supported,
+  able to match wholly to specified values, partially, or using a <a href="#using">first-class pattern</a>.
   Pattern matching also supports de-structuring portions of the original value
   into bound variables.</p>
 
@@ -134,8 +138,8 @@ fn side(n i32) i32 {
   on an enum, a variant, a binding of one, and a trait that names variants
   (<a href="#traitpat">Trait patterns</a>). Those cases are the <span class="pre">switch</span>; the rest, from the first
   case with an <span class="pre">if</span> guard, a comparison such as <span class="pre">&gt; 3</span>, a text or a
-  range too wide to list (more than 128 values), or from the <span class="pre">else</span>, is tried in order as
-  the default. A match that covers an enum with no <span class="pre">else</span> has its last case as the default.
+  range too wide to list (more than 128 values), a <a href="#using">function's pattern</a>, or from the
+  <span class="pre">else</span>, is tried in order as the default. A match that covers an enum with no <span class="pre">else</span> has its last case as the default.
   Cases are still tried top to bottom: a value two cases share belongs to the first.</p>
 <pre>
 fn kind(c char) i32 {
@@ -325,16 +329,8 @@ match opt {
     Additional specifics of the pattern vary by type.</p>
 
   <h3 id="array">Collection partial matches</h3>
-  <p>The simplest partial match checks whether an array (or array reference) begins with
-    certain elements:</p>
-<pre>
-match name {
-  case is "Judy" { judy; } // Matches if name string begins with "Judy"
-  case is "Frank" { frank; }
-  else { noone; }
-}
-</pre>
-  <p>Alternatively, one can specify matching patterns for the first few elements:</p>
+  <p>A partial match can check whether an array (or array reference) begins with
+    elements that match patterns:</p>
 <pre>
 match numbers {
   case is [1, _] { 1; }
@@ -615,35 +611,105 @@ fn measure(s &amp;Shape) i32 {
   <span class="pre">&amp;&lt;Measured</span> can be narrowed to the concrete type it was made from, and only to that
   (<a href="refvirtref.html">Virtual references</a>).</p>
 
-  <h2>First-class patterns</h2>
+  <h2 id="using">First-class patterns</h2>
   <p>Whole and partial matching patterns handle many situations, but not all.
   First-class patterns make it possible to support more sophisticated matching
-  algorithms.
-  Such algorithms are implemented in a callable function or method
-  that returns true for a successful match.
-  <p>Use of a first-class pattern is signaled using the <span class="pre">using</span> keyword.
-  The matchee value is implicitly included as part of the call
-  (essentially, the first parameter for a function and the second for a method call):</p>
+  algorithms: a pattern is an ordinary function, or a method, that tests the matched value,
+  and nothing about it is special to the language. Nothing is declared to make a function
+  a pattern, and a library's patterns are written and used the same way as one's own.</p>
+  <p>A pattern is used with the <span class="pre">using</span> keyword and the call of the function,
+  written without the matched value: the matched value is the first argument of the function, and,
+  of a method, the argument after <span class="pre">self</span>. The arguments written are the
+  ones that follow. What the function gives back says what the pattern does:</p>
+  <ul>
+  <li>a <b>bool</b> only tests. <span class="pre">case using isOdd()</span> calls
+  <span class="pre">isOdd(n)</span>, and the case is taken when it is true;</li>
+  <li>an <b>Option</b> tests and binds. <span class="pre">case imm rest using prefix("GET ")</span>
+  calls <span class="pre">prefix(line, "GET ")</span>, and the case is taken when it gives
+  <span class="pre">Some</span>, <span class="pre">rest</span> being what it holds. The name comes first, as in
+  <span class="pre">case imm n Ok</span>, and may be <span class="pre">mut</span>.</li>
+  </ul>
 <pre>
-match n {
-  case using isPrime() { 0; } // invokes isPrime(n)
-  case using isOdd() { 1; } // invokes isOdd(n)
-  else { 2; }
+fn prefix(s &amp;str, p &amp;str) Option[&amp;str] {
+  if s.startsWith(p) { Some(&amp;s[p.len ..]); } else { None[&amp;str]; }
+}
+fn isOdd(n i32) bool { n % 2 == 1; }
+
+fn route(line &amp;str) i32 {
+  match line {
+    case imm path using prefix("GET ") { get(path); }   // prefix(line, "GET ")
+    case imm path using prefix("PUT ") { put(path); }
+    case "HEAD" { head(); }
+    else { 0; }
+  }
+}
+
+fn kind(n i32) i32 {
+  match n {
+    case 0 { 100; }
+    case using isOdd() { 1; }          // isOdd(n)
+    case using between(10, 20) { 2; }  // between(n, 10, 20)
+    else { 3; }
+  }
 }
 </pre>
-  <p>This technique can be quite powerful, 
-  as it makes it possible to support a broad range of complex
-  pattern matching strategies, such as regular expressions, parsing, etc.
-  A first-class pattern can be an object with state that changes as a result of
-  a successful match. As part of the match, data can be extracted from the
-  matchee value and preserved for later use by the match block.</p>
-  
-  <p><b>Note:</b> A first class pattern can also be applied to any arbitrary value as part of
-  an <span class="pre">if</span> statement:</p>
+  <p><b>A binding gets what the function gave back,</b> as a variant's does: the contents of the
+  <span class="pre">Some</span>, a copy of plain data, a move of what owns something (which is finalized as the
+  arm ends, as any bound value is). A pattern with several results gives them as a struct, bound whole and read by
+  field name, or a tuple, read by position, <span class="pre">m.left</span> or <span class="pre">f.0</span>;
+  a function with several outcomes gives an enum, matched as any is.</p>
+  <p><b>Cases are tried from the top, and a function runs only when its case is reached,</b> at most once for it.
+  A case of another kind before it that matches means it is never called, and the cases after it are tried
+  when it does not match. What a pattern costs shows where it is declared, not at the case, and whether a
+  pattern is <span class="pre">inline</span> is its author's choice. A method pattern may keep a state that its
+  calls change, since each call is made as written, in this order.</p>
+  <p><b>A pattern never advances anything.</b> It tests the matched value and gives back what is left of it,
+  as <span class="pre">prefix</span> does, and the case moves on, by assigning the rest
+  (<span class="pre">text = rest;</span>), as it would change any state. Nothing is half consumed by a
+  pattern that did not match.</p>
+  <p>A bool test may be joined to other patterns with <span class="pre">or</span>
+  (<span class="pre">case using isOdd() or using isPrime()</span>) and followed by an
+  <span class="pre">if</span> <a href="#guards">guard</a>, as any pattern is; a case that binds stands alone and may have a guard that
+  uses the binding. A <span class="pre">match a, b</span> may test a column with a function but binds nothing in
+  it. The matched value of a bound case may be a call, which is made once, as for every pattern.</p>
+  <p><b>A match with a function's pattern ends in <span class="pre">else</span>,</b> whatever its other cases cover
+  (<a href="#cover">Covering every value</a>): which values a function matches only running it says. It may say
+  that nothing else can happen, <span class="pre">else {}</span>. A match as a jump table
+  (<a href="#switch">Jump tables</a>) takes its cases up to the first function's pattern, and the pattern and the
+  cases after it are tried in order.</p>
+  <p>The same patterns bind in an <span class="pre">if</span>, an <span class="pre">elif</span>, and a declaration
+  that leaves when it does not match, with the matched value after the <span class="pre">=</span>, as the
+  variants' bindings do (<a href="#letelse">Binding past an early exit</a>); a function that only
+  tests is simply the condition of the <span class="pre">if</span>, <span class="pre">if isOdd(n) { ++nbr; }</span>:</p>
 <pre>
-if isOdd(n) { ++nbr; }
+if imm rest using prefix("GET ") = line { get(rest); }
+elif imm other using prefix("DEL ") = line { del(other); }
+imm path using prefix("PUT ") = line else { return -1; };   // leaves unless it matches
 </pre>
-    
+  <p>That is what lets a parser be written as a match over the text that is left. Each case below
+  tests a sign or a number, hands back the rest, and the case moves on:</p>
+<pre>
+fn expr(text &amp;str) Option[i64] {
+  mut rest = blank(text);
+  mut acc = 0i64;
+  mut sign = 1i64;                 // the sign before the number that is due
+  mut open = true;
+  while open {
+    match rest {
+      case imm after using digits() { acc = acc + sign * value(rest, after); rest = blank(after); }
+      else { return None[i64]; }
+    }
+    match rest {
+      case imm p using lit("+") { sign = 1; rest = blank(p); }
+      case imm p using lit("-") { sign = -1; rest = blank(p); }
+      case using atEnd() { open = false; }
+      else { return None[i64]; }
+    }
+  }
+  Some(acc);
+}
+</pre>
+
     <p style="text-align: right; margin-top: 2em;">
       <a href="refwhile.html"><img alt="_" src="next.png" /></a>
     </p>

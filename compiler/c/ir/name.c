@@ -18,7 +18,8 @@
 Name *anonName;
 
 int nameIsMatchHolder(Name *name) {
-    return name == anonName || strncmp(&name->namestr, "-held", 5) == 0 || strncmp(&name->namestr, "-arm", 4) == 0;
+    return name == anonName || strncmp(&name->namestr, "-held", 5) == 0 || strncmp(&name->namestr, "-arm", 4) == 0
+        || strncmp(&name->namestr, "-using", 6) == 0;
 }
 
 Name *tempName;

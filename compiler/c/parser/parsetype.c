@@ -123,7 +123,14 @@ VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
 
     // Get value type, if provided
     char *typep = lex->tokp;
-    varnode->vtype = parseType(parse);
+    // A local may be bound by a pattern a function runs, 'imm rest using prefix("GET ") = line': the
+    // call stands where the type does, and becomes the value once the matched value after '=' is known
+    FnCallNode *usingcall = NULL;
+    parse->usingdcl = 0;
+    if ((flags & ParseMayUsing) && lexIsToken(UsingToken))
+        usingcall = parseUsingCall(parse);
+    else
+        varnode->vtype = parseType(parse);
     int typed = varnode->vtype != unknownType;
     char *typeendp = lex->prevend;
 
@@ -149,6 +156,17 @@ VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
     else {
         if (!(flags&ParseMaySig))
             errorMsgLex(ErrorNoInit, "Must specify default/initial value.");
+    }
+    if (usingcall) {
+        if (varnode->value == NULL)
+            errorMsgNode((INode*)usingcall, ErrorUsingForm,
+                "A binding by 'using' names the value to match after the call: 'imm rest using prefix(\"GET \") = line else {...};'.");
+        else {
+            parseUsingMatchee(usingcall, varnode->value);
+            varnode->value = (INode*)usingcall;
+            varnode->vtype = parseUsingSome(usingcall);
+            parse->usingdcl = 1;
+        }
     }
 
     // A field folds, and so does a module's global: a global is the one-instance
