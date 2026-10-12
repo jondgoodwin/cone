@@ -72,11 +72,20 @@ pub struct Joint {
   pub impSwing f32;
   pub impTwistLo f32;
   pub impTwistHi f32;
+  // angular drive (point, hinge and cone-twist joints): a stiff spring of the joint's relative rotation to
+  // 'driveTarget', its torque held to 'driveMax'; see solveDrive
+  pub driveOn bool;
+  pub driveTarget Quat;       // B's joint frame in A's the drive holds (identity: the pose the joint was made in)
+  pub driveHertz f32;         // the spring's stiffness, N m per radian (named for its first form, a frequency)
+  pub driveDamping f32;       // its damping, N m s per radian
+  pub driveMax f32;           // N m
+  pub impDrive Vec3;
 }
 
 pub fn blankJoint(kind i32, a u32, b u32) Joint {
   new Joint(true, kind, a, b, false, zero3(), zero3(), Quat.identity(), Quat.identity(), false, 0., 0., false, 0., 0.,
-    0., 0., 0., 0.7853982, -0.7853982, 0.7853982, zero3(), zero3(), 0., 0., 0., 0., 0., 0., 0.);
+    0., 0., 0., 0.7853982, -0.7853982, 0.7853982, zero3(), zero3(), 0., 0., 0., 0., 0., 0., 0.,
+    false, Quat.identity(), 0., 1., 0., zero3());
 }
 
 // The joint's geometry at this moment
@@ -211,6 +220,7 @@ pub fn warmStartJoint(w &mut World, ji usize) {
   if j.kind == JointFixed or j.kind == JointSlider or j.kind == JointHinge {
     angApplyVec(w, &s, j.impAng);
   }
+  if j.driveOn { angApplyVec(w, &s, j.impDrive); }
   if j.kind == JointHinge {
     angApply(w, &s, ax, j.impLo - j.impHi + j.impMotor);
   }
@@ -260,6 +270,42 @@ fn solveOrientationBlock(w &mut World, ji usize, s &JState, useBias bool, soft S
   imm lambda = (kinv * (jv + bias)) * (-ms) - j.impAng * isc;
   j.impAng = j.impAng + lambda;
   angApplyVec(w, s, lambda);
+}
+
+// The angular drive: the orientation block of a fixed joint, softened into a spring (a stiffness and a damping
+// in torque units) and aimed at 'driveTarget' instead of the pose the joint was
+// made in, with the accumulated impulse held to the torque limit times the sub-step. Solved with the joint's
+// other rows in the same sweeps, so a stiff drive that carries a heavy limb (a hip holding up a body) is
+// resolved together with what loads it and does not need to be stable alone; a drive whose torque is not
+// enough yields, as a muscle does. (Jolt's SwingTwistConstraint and Box2D v3's joint motors are the same
+// idea; the soft form is Catto's, Solver2D 2024.)
+fn solveDrive(w &mut World, ji usize, s &JState, h f32) {
+  imm j = &mut w.joints[ji];
+  imm q0 = (relRot(s) * j.driveTarget.conjugate()).normalize();
+  imm sg = if q0.w < 0. { -1.; } else { 1.; };
+  imm err = (s.fa * new Vec3(q0.x, q0.y, q0.z)) * (2. * sg);
+  imm jv = w.bodies[s.ib].angVel - w.bodies[s.ia].angVel;
+  imm kmat = mat3Add(s.iA, s.iB);
+  imm kinv = kmat.inverse();
+  // a spring of stiffness k (N m per radian) and damping c (N m s per radian) as Catto's soft constraint, in torque
+  // units, so a stiff drive holds its load whatever the mass of the two bodies it joins (a frequency would give a
+  // stiffness proportional to that mass, and a foot is light): with the effective mass m of the row,
+  // gamma = 1 / (h (c + h k)), the row's mass scale is 1 / (1 + gamma m), its impulse scale gamma m / (1 + gamma m) and
+  // its bias velocity k / (c + h k) times the error
+  imm tr = kmat.cell(0usize, 0usize) + kmat.cell(1usize, 1usize) + kmat.cell(2usize, 2usize);
+  imm m = if tr > 0.0000001 { 3. / tr; } else { 0.; };
+  imm gamma = 1. / (h * (j.driveDamping + h * j.driveHertz));
+  imm ms = 1. / (1. + gamma * m);
+  imm isc = gamma * m / (1. + gamma * m);
+  imm biasRate = j.driveHertz / (j.driveDamping + h * j.driveHertz);
+  imm lambda = (kinv * (jv + err * biasRate)) * (-ms) - j.impDrive * isc;
+  imm old = j.impDrive;
+  mut total = old + lambda;
+  imm maxI = j.driveMax * h;
+  imm tl = total.length();
+  if tl > maxI { total = total * (maxI / tl); }
+  j.impDrive = total;
+  angApplyVec(w, s, total - old);
 }
 
 // A hinge keeps its two axes together: two angular rows perpendicular to A's axis
@@ -435,6 +481,9 @@ fn solveConeTwist(w &mut World, ji usize, s &JState, useBias bool, soft Softness
 pub fn solveJoint(w &mut World, ji usize, useBias bool, invH f32, h f32, soft Softness) {
   imm kind = w.joints[ji].kind;
   imm s = jointState(w, w.joints[ji]);
+  if w.joints[ji].driveOn and kind != JointFixed and kind != JointSlider and kind != JointDistance {
+    solveDrive(w, ji, &s, h);
+  }
   if kind == JointPoint {
     solvePointBlock(w, ji, &s, useBias, soft);
   } else if kind == JointFixed {

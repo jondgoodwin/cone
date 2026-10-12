@@ -1,0 +1,168 @@
+// Lying, the get-up clips and the pose-matching blend.
+//
+//   lying      the pelvis turned a quarter turn about x (its front up) is face up, the other way face down, upright
+//              is upright, a quarter turn about z is on its side
+//   clips      each get-up clip's first key is on the floor (the lowest point of its shapes at 0 to a millimetre), its
+//              last is the standing rest pose (the pelvis at 0.53 H, the feet flat, within a millimetre), and no knee,
+//              elbow or ankle in it is past its table limit by more than 0.05 rad
+//   choosing   a ragdoll put into the face-up clip's first pose, placed in the world turned by 1.0 rad and moved to
+//              (2, 0, 3), is face up, gets the face-up clip, and the clip is placed under its pelvis turned so that
+//              the head points the way the ragdoll's does; likewise face down with -2.0 rad
+//   matching   the pose at t = 0 is the ragdoll's own pose, at matchTime it is the clip's, and between is neither
+//   end        the get-up is done after the clip's duration and its last pose is standing
+//   settled    a ragdoll dropped and come to rest is classified by the way its pelvis' front leans
+
+mod getup;
+
+import testing use *;
+import collections use List;
+import geomath use *;
+import rigidcollide use *;
+import rigiddynamics use *;
+import bonepose use * but absf, clampf;
+import poseik use blendPoses;
+import ragdollrig use *;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+fn poseDiff(a &Pose, b &Pose) f32 {
+  mut worst = 0.;
+  mut i = 0usize;
+  while i < a.count() {
+    worst = maxf(worst, rotVec(a.rotation(i) * b.rotation(i).conjugate()).length());
+    worst = maxf(worst, ((*a.locals[i]).translation - (*b.locals[i]).translation).length());
+    i = i + 1usize;
+  }
+  worst;
+}
+
+// How far a knee, elbow or ankle of the pose is past its table limit (the hinge angle is its local rotation about x)
+fn pastLimits(skel &Skeleton, spec &RigSpec, p &Pose) f32 {
+  mut worst = 0.;
+  mut b = 0usize;
+  while b < skel.boneCount() {
+    imm bs = spec.bones[b];
+    if bs.joint == JOINT_HINGE {
+      imm q = p.rotation(b);
+      imm a = wrapAngle(2. * atan2(q.x, q.w));
+      worst = maxf(worst, maxf(bs.lo - a, a - bs.hi));
+    }
+    b = b + 1usize;
+  }
+  worst;
+}
+
+fn main() i32 {
+  imm skel = humanoid(1.75);
+  imm spec = humanoidSpec(&skel, 1.75, 70.);
+  imm x = new Vec3(1., 0., 0.);
+  imm y = new Vec3(0., 1., 0.);
+  imm z = new Vec3(0., 0., 1.);
+
+  // ---- lying
+  expectInt(i64.from(lyingFrom(Quat.angleAxis(1.5708, x))), i64.from(LIE_FACE_UP), "a pelvis turned +90 degrees about x is face up");
+  expectInt(i64.from(lyingFrom(Quat.angleAxis(-1.5708, x))), i64.from(LIE_FACE_DOWN), "-90 is face down");
+  expectInt(i64.from(lyingFrom(Quat.identity())), i64.from(LIE_UPRIGHT), "no turn is upright");
+  expectInt(i64.from(lyingFrom(Quat.angleAxis(0.5, x))), i64.from(LIE_UPRIGHT), "a lean of 29 degrees is still upright");
+  expectInt(i64.from(lyingFrom(Quat.angleAxis(1.5708, z))), i64.from(LIE_SIDE), "a quarter turn about z is on its side");
+  expectInt(i64.from(lyingFrom(Quat.angleAxis(1.2, x))), i64.from(LIE_FACE_UP), "69 degrees back is face up");
+  expectInt(i64.from(lyingFrom(Quat.angleAxis(-1.0, x))), i64.from(LIE_FACE_DOWN), "57 degrees forward is face down");
+  expectInt(i64.from(lyingFrom(Quat.angleAxis(3.1, x))), i64.from(LIE_SIDE), "upside down, the front level, is on its side");
+
+  // ---- clips
+  imm clips = getUpClips(&skel, &spec);
+  mut c = 0;
+  while c < 3 {
+    imm clip = if c == 0 { &clips.faceUp; } else if c == 1 { &clips.faceDown; } else { &clips.upright; };
+    imm first = clip.sample(0.);
+    imm last = clip.sample(clip.duration);
+    mut models = List[Transform3].empty();
+    skel.modelTransforms(&first, &mut models);
+    near(lowestOfPose(&skel, &spec, &first), 0., 0.001, "the clip's first pose is on the floor");
+    skel.modelTransforms(&last, &mut models);
+    near((*models[PELVIS]).translation.y, 0.53 * 1.75, 0.001, "its last pose has the pelvis at standing height");
+    near(lowestOfPose(&skel, &spec, &last), 0., 0.001, "and the soles on the floor");
+    near(((*models[FOOT_L]).rotation * new Vec3(0., 0., -1.)).y, 0., 0.001, "and the feet flat");
+    mut worst = 0.;
+    mut t = 0.;
+    while t <= clip.duration {
+      imm p = clip.sample(t);
+      worst = maxf(worst, pastLimits(&skel, &spec, &p));
+      // the lowest point never goes under the floor between keys by more than a few centimetres
+      worst = maxf(worst, -lowestOfPose(&skel, &spec, &p) - 0.05);
+      t = t + 0.1;
+    }
+    expectBool(worst < 0.05, true, "no hinge in the clip is past its table limit by 0.05 rad, nor the body under the floor by 5 cm");
+    c = c + 1;
+  }
+  near(clips.faceUp.duration, 3.4, 0.0001, "the face-up clip is 3.4 s");
+  near(clips.faceDown.duration, 3.3, 0.0001, "the face-down clip is 3.3 s");
+  near(clips.upright.duration, 1.2, 0.0001, "the upright clip is 1.2 s");
+
+  // ---- choosing and placing
+  mut w = World.make();
+  w.gravity = new Vec3(0., 0., 0.);
+  mut rig = Ragdoll.make(&mut w, &skel, &spec, Rigid.at(new Vec3(0., 0., 0.)), 1u32);
+  imm rest = skel.restPose();
+  mut which = 0;
+  while which < 2 {
+    imm up = which == 0;
+    imm yaw = if up { 1.0; } else { -2.0; };
+    imm at = new Vec3(2., 0., 3.);
+    imm clip = if up { &clips.faceUp; } else { &clips.faceDown; };
+    imm lyingPose = clip.sample(0.);
+    imm place = new Rigid(at, Quat.angleAxis(yaw, y));
+    rig.poseToBodies(&mut w, &skel, &lyingPose, place);
+    expectInt(i64.from(lying(&rig, &w)), if up { i64.from(LIE_FACE_UP); } else { i64.from(LIE_FACE_DOWN); }, "the ragdoll in the clip's pose lies the way the clip does");
+    mut gu = beginGetUp(&rig, &w, &skel, &rest, 0., 0.3);
+    expectInt(i64.from(gu.clip), if up { 0i64; } else { 1i64; }, "and gets the clip for it");
+    // the placement is where the ragdoll was placed
+    near(gu.placement.pos.x, 2., 0.01, "the clip is placed under the pelvis, x");
+    near(gu.placement.pos.z, 3., 0.01, "and z");
+    imm faceWas = place.rot * new Vec3(0., 0., -1.);
+    imm faceNow = gu.placement.rot * new Vec3(0., 0., -1.);
+    near(faceNow.x, faceWas.x, 0.02, "turned to the way the ragdoll faces, x");
+    near(faceNow.z, faceWas.z, 0.02, "and z");
+    // matching
+    imm now = rig.bodiesToPose(&w, &skel, &rest, gu.placement);
+    gu.t = 0.;
+    imm p0 = gu.pose(&clips);
+    near(poseDiff(&p0, &now), 0., 0.0001, "at t = 0 the pose shown is the ragdoll's own");
+    gu.t = 0.3;
+    imm p1 = gu.pose(&clips);
+    imm c1 = clip.sample(0.3);
+    near(poseDiff(&p1, &c1), 0., 0.0001, "at matchTime it is the clip's");
+    gu.t = 0.15;
+    imm pm = gu.pose(&clips);
+    imm cm = clip.sample(0.15);
+    imm half = blendPoses(&now, &cm, 0.5);
+    near(poseDiff(&pm, &half), 0., 0.0001, "half way through the match (smoothstep 0.5 at 0.15 s) it is the half blend of the two");
+    expectBool(not gu.done(&clips), true, "the get-up is not done at 0.15 s");
+    gu.advance(clip.duration);
+    expectBool(gu.done(&clips), true, "it is done after the clip's duration");
+    imm endPose = gu.pose(&clips);
+    mut models = List[Transform3].empty();
+    skel.modelTransforms(&endPose, &mut models);
+    near((*models[PELVIS]).translation.y, 0.53 * 1.75, 0.001, "and its pose is standing");
+    which = which + 1;
+  }
+
+  // ---- a ragdoll that fell
+  mut w2 = World.make();
+  tuneWorld(&mut w2);
+  imm ground = w2.addShape(Shape.single(Prim.box(new Vec3(20., 1., 20.))));
+  w2.createBody(BodyDef.staticAt(ground, new Vec3(0., -1., 0.)));
+  mut rig2 = Ragdoll.make(&mut w2, &skel, &spec, Rigid.at(new Vec3(0., 1., 0.)), 1u32);
+  rig2.blend = 0.;
+  mut i = 0;
+  while i < 300 { stepRagdoll(&mut rig2, &mut w2, 1. / 60.); i = i + 1; }
+  expectBool(rig2.settled, true, "the dropped ragdoll is settled");
+  imm front = (w2.rotationOf(rig2.bodyOfBone(PELVIS)) * rig2.links[0].shapeRot.conjugate()) * new Vec3(0., 0., -1.);
+  imm lie = lying(&rig2, &w2);
+  expectBool((front.y > 0.5 and lie == LIE_FACE_UP) or (front.y < -0.5 and lie == LIE_FACE_DOWN) or (absf(front.y) <= 0.5 and lie == LIE_SIDE), true, "it is classified by its pelvis' front");
+  imm gu2 = beginGetUp(&rig2, &w2, &skel, &rest, 0., 0.3);
+  expectBool(gu2.clip == 0 or gu2.clip == 1, true, "and gets a lying get-up clip");
+  done();
+}
