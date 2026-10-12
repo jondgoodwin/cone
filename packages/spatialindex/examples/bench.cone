@@ -1,0 +1,552 @@
+// Benchmarks for the spatial indexes: BVH, loose octree and hash grid, on the
+// same random boxes, uniform and clustered, at 10,000 and 100,000 boxes.
+// Build it optimised and run it:
+//
+//   congo run --release packages/spatialindex/examples/bench.cone
+//
+// For each structure and scene it prints the cost per operation (ns/op;
+// "ops" is what the time is divided by) and a count that must be the same
+// for all three structures (the number of hits found), so the run checks
+// agreement as it measures. It also times the BVH's bulk SAH build.
+//
+// The scenes: boxes of half-size 0.5 to 1.5; uniform ones fill a cube whose
+// side is 10 * cuberoot(n) (density 0.001 a unit volume); clustered ones put
+// the same number into 25 Gaussian-like clumps of radius 2% of that side.
+// Queries: boxes of half-size 4, balls of radius 5, rays of reach one world
+// side (nearest) and a quarter (all), 8 nearest of random points, frusta
+// (60 degrees, far plane at half the side).
+//
+// This file is generated: bench_part (the per-structure run) was copied once
+// for each structure with its type and constructor filled in. Edit the first
+// copy and copy it again, not the three by hand.
+
+mod bench;
+
+import libc;
+import stdio use *;
+import time use Instant;
+import collections use *;
+import geomath use *;
+import spatialindex use *;
+
+struct Rng {
+  s u64;
+  fn next(self &mut) u64 {
+    s = s ^ (s >> 12u64);
+    s = s ^ (s << 25u64);
+    s = s ^ (s >> 27u64);
+    s * 2685821657736338717u64;
+  }
+  fn unit(self &mut) f32 {f32.from(next() >> 40u64) / 16777216.;}
+  fn range(self &mut, lo f32, hi f32) f32 {lo + (hi - lo) * unit();}
+}
+
+struct Queries {
+  boxes List[Aabb3];
+  spheres List[Sphere];
+  rays List[Ray3];
+  points List[Vec3];
+  frusta List[Frustum];
+}
+
+fn report(structure &str, scene &str, what &str, ns i64, ops usize, count i64) {
+  printStr(structure);
+  printStr(" | ");
+  printStr(scene);
+  printStr(" | ");
+  printStr(what);
+  printStr(": ");
+  printInt(ns / i64.from(ops));
+  printStr(" ns/op, total ");
+  printInt(ns / 1000i64);
+  printStr(" us, count ");
+  printInt(count);
+  printStr("\n");
+}
+
+fn v3(x f32, y f32, z f32) Vec3 {new Vec3(x, y, z);}
+
+fn uniformScene(rng &mut Rng, n usize, world f32) List[Aabb3] {
+  mut out = List[Aabb3].withCapacity(n);
+  mut i = 0usize;
+  while i < n {
+    imm c = v3(rng.range(0., world), rng.range(0., world), rng.range(0., world));
+    out.push(Aabb3.fromCenter(c, v3(rng.range(0.5, 1.5), rng.range(0.5, 1.5), rng.range(0.5, 1.5))));
+    i = i + 1usize;
+  }
+  out;
+}
+
+fn clusteredScene(rng &mut Rng, n usize, world f32) List[Aabb3] {
+  mut centres = List[Vec3].empty();
+  mut k = 0;
+  while k < 25 {
+    centres.push(v3(rng.range(0., world), rng.range(0., world), rng.range(0., world)));
+    k = k + 1;
+  }
+  imm r = world * 0.02;
+  mut out = List[Aabb3].withCapacity(n);
+  mut i = 0usize;
+  while i < n {
+    imm cc = *centres[usize.from(rng.next() % 25u64)];
+    // the sum of three uniforms: a bell
+    imm c = cc + v3((rng.unit() + rng.unit() + rng.unit() - 1.5) * r, (rng.unit() + rng.unit() + rng.unit() - 1.5) * r,
+      (rng.unit() + rng.unit() + rng.unit() - 1.5) * r);
+    out.push(Aabb3.fromCenter(c, v3(rng.range(0.5, 1.5), rng.range(0.5, 1.5), rng.range(0.5, 1.5))));
+    i = i + 1usize;
+  }
+  out;
+}
+
+fn makeQueries(rng &mut Rng, world f32, count usize) Queries {
+  mut q = new Queries(List[Aabb3].empty(), List[Sphere].empty(), List[Ray3].empty(), List[Vec3].empty(), List[Frustum].empty());
+  mut i = 0usize;
+  while i < count {
+    imm c = v3(rng.range(0., world), rng.range(0., world), rng.range(0., world));
+    q.boxes.push(Aabb3.fromCenter(c, v3(4., 4., 4.)));
+    q.spheres.push(new Sphere(c, 5.));
+    imm d = v3(rng.range(-1., 1.), rng.range(-1., 1.), rng.range(-1., 1.)).normalize();
+    q.rays.push(new Ray3(c, d));
+    q.points.push(v3(rng.range(0., world), rng.range(0., world), rng.range(0., world)));
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < 100usize {
+    imm eye = v3(rng.range(0., world), rng.range(0., world), rng.range(0., world));
+    imm target = v3(rng.range(0., world), rng.range(0., world), rng.range(0., world));
+    imm vp = Mat4.perspective(1.0472, 1.5, 1., world * 0.5) * Mat4.lookAt(eye, target, v3(0., 1., 0.));
+    q.frusta.push(Frustum.fromMatrix(vp));
+    i = i + 1usize;
+  }
+  q;
+}
+
+// The BVH's other way in: the whole scene at once, built by binned SAH
+fn bulkBvh(scene &str, boxes &List[Aabb3], q &Queries, world f32) {
+  mut idx = Bvh[u64].create(0.);
+  mut handles = List[u64].withCapacity(boxes.len());
+  mut i = 0usize;
+  while i < boxes.len() {
+    handles.push(u64.from(i));
+    i = i + 1usize;
+  }
+  mut proxies = List[Proxy].empty();
+  imm t = Instant.now();
+  idx.insertBulk(boxes.view(), handles.view(), &mut proxies);
+  report("BVH", scene, "bulk SAH build", t.elapsed().nanos(), boxes.len(), i64.from(idx.len()));
+  mut hits = 0i64;
+  mut cb = fn(h u64, p Proxy) bool { hits = hits + 1i64; true; };
+  imm t2 = Instant.now();
+  i = 0usize;
+  while i < q.boxes.len() {
+    idx.overlapAabb(*q.boxes[i], &mut cb);
+    i = i + 1usize;
+  }
+  report("BVH", scene, "box overlap after bulk build", t2.elapsed().nanos(), q.boxes.len(), hits);
+  printStr("BVH | ");
+  printStr(scene);
+  printStr(" | SAH cost of the bulk tree (internal areas / root area, x1000): ");
+  printInt(i64.from(idx.sahCost() * 1000.));
+  printStr("\n");
+}
+
+// The dynamic tree's shape against the bulk one: built by inserts in random
+// order, its quality and query cost, then after 'rebuild' (binned SAH again)
+fn dynamicBvh(scene &str, boxes &List[Aabb3], q &Queries) {
+  mut idx = Bvh[u64].create(0.);
+  mut i = 0usize;
+  while i < boxes.len() {
+    idx.insert(*boxes[i], u64.from(i));
+    i = i + 1usize;
+  }
+  printStr("BVH | ");
+  printStr(scene);
+  printStr(" | SAH cost of the inserted tree (x1000): ");
+  printInt(i64.from(idx.sahCost() * 1000.));
+  printStr(", height ");
+  printInt(i64.from(idx.height()));
+  printStr("\n");
+  mut hits = 0i64;
+  mut cb = fn(h u64, p Proxy) bool { hits = hits + 1i64; true; };
+  imm t1 = Instant.now();
+  i = 0usize;
+  while i < q.boxes.len() {
+    idx.overlapAabb(*q.boxes[i], &mut cb);
+    i = i + 1usize;
+  }
+  report("BVH", scene, "box overlap, inserted tree", t1.elapsed().nanos(), q.boxes.len(), hits);
+  imm t2 = Instant.now();
+  idx.rebuild();
+  report("BVH", scene, "rebuild", t2.elapsed().nanos(), boxes.len(), i64.from(idx.len()));
+  hits = 0i64;
+  imm t3 = Instant.now();
+  i = 0usize;
+  while i < q.boxes.len() {
+    idx.overlapAabb(*q.boxes[i], &mut cb);
+    i = i + 1usize;
+  }
+  report("BVH", scene, "box overlap, after rebuild", t3.elapsed().nanos(), q.boxes.len(), hits);
+}
+
+fn scene(rng &mut Rng, name &str, n usize, clustered bool, pairsToo bool) {
+  imm world = 10. * libc.powf(f32.from(n), 0.33333334);
+  imm boxes = if clustered {clusteredScene(rng, n, world);} else {uniformScene(rng, n, world);};
+  imm q = makeQueries(rng, world, 10000usize);
+  printStr("---- ");
+  printStr(name);
+  printStr(": ");
+  printInt(i64.from(n));
+  printStr(" boxes, side ");
+  printInt(i64.from(world));
+  printStr(" ----\n");
+  driveBvh(name, &boxes, world, &q, pairsToo);
+  bulkBvh(name, &boxes, &q, world);
+  dynamicBvh(name, &boxes, &q);
+  driveOctree(name, &boxes, world, &q, pairsToo);
+  driveGrid(name, &boxes, world, &q, pairsToo);
+}
+
+fn main() i32 {
+  mut rng = new Rng(88172645463325252u64);
+  scene(&mut rng, "uniform 10k", 10000usize, false, true);
+  scene(&mut rng, "clustered 10k", 10000usize, true, true);
+  scene(&mut rng, "uniform 100k", 100000usize, false, true);
+  scene(&mut rng, "clustered 100k", 100000usize, true, false);
+  0i32;
+}
+// One structure's run over one scene: build, then each kind of query, then
+// moving a tenth of the items, then pair finding. 'Bvh' and 'Bvh[u64]' and
+// 'Bvh[u64].create(0.)' are filled in by the generator that wrote this copy.
+fn driveBvh(scene &str, boxes &List[Aabb3], world f32, q &Queries, pairsToo bool) {
+  mut idx = Bvh[u64].create(0.);
+  imm n = boxes.len();
+  mut proxies = List[Proxy].withCapacity(n);
+  mut t = Instant.now();
+  mut i = 0usize;
+  while i < n {
+    proxies.push(idx.insert(*boxes[i], u64.from(i)));
+    i = i + 1usize;
+  }
+  report("Bvh", scene, "build (inserts)", t.elapsed().nanos(), n, i64.from(idx.len()));
+
+  // boxes
+  mut hits = 0i64;
+  mut cb = fn(h u64, p Proxy) bool { hits = hits + 1i64; true; };
+  t = Instant.now();
+  i = 0usize;
+  while i < q.boxes.len() {
+    idx.overlapAabb(*q.boxes[i], &mut cb);
+    i = i + 1usize;
+  }
+  report("Bvh", scene, "box overlap", t.elapsed().nanos(), q.boxes.len(), hits);
+
+  hits = 0i64;
+  t = Instant.now();
+  i = 0usize;
+  while i < q.spheres.len() {
+    idx.overlapSphere(*q.spheres[i], &mut cb);
+    i = i + 1usize;
+  }
+  report("Bvh", scene, "sphere overlap", t.elapsed().nanos(), q.spheres.len(), hits);
+
+  mut found = 0i64;
+  t = Instant.now();
+  i = 0usize;
+  while i < q.rays.len() {
+    match idx.rayNearest(*q.rays[i], world) {
+      case imm h Some { found = found + 1i64; }
+      case is None { }
+    }
+    i = i + 1usize;
+  }
+  report("Bvh", scene, "ray nearest", t.elapsed().nanos(), q.rays.len(), found);
+
+  mut rhits = 0i64;
+  mut rcb = fn(h u64, p Proxy, t f32) bool { rhits = rhits + 1i64; true; };
+  t = Instant.now();
+  i = 0usize;
+  while i < q.rays.len() {
+    idx.rayAll(*q.rays[i], world * 0.25, &mut rcb);
+    i = i + 1usize;
+  }
+  report("Bvh", scene, "ray all (reach world/4)", t.elapsed().nanos(), q.rays.len(), rhits);
+
+  mut near = List[Neighbor[u64]].empty();
+  mut got = 0i64;
+  t = Instant.now();
+  i = 0usize;
+  while i < q.points.len() {
+    idx.nearest(*q.points[i], 8usize, &mut near);
+    got = got + i64.from(near.len());
+    i = i + 1usize;
+  }
+  report("Bvh", scene, "8 nearest", t.elapsed().nanos(), q.points.len(), got);
+
+  hits = 0i64;
+  t = Instant.now();
+  i = 0usize;
+  while i < q.frusta.len() {
+    idx.frustum(q.frusta[i], &mut cb);
+    i = i + 1usize;
+  }
+  report("Bvh", scene, "frustum", t.elapsed().nanos(), q.frusta.len(), hits);
+
+  // pairs: all of them, then the tracker's first update (everything is new)
+  mut ev = PairEvents[u64].create();
+  if pairsToo {
+    mut all = List[Pair[u64]].empty();
+    t = Instant.now();
+    idx.allPairs(&mut all);
+    report("Bvh", scene, "all pairs", t.elapsed().nanos(), n, i64.from(all.len()));
+    t = Instant.now();
+    idx.updatePairs(&mut ev);
+    report("Bvh", scene, "first pair update (all new)", t.elapsed().nanos(), n, i64.from(ev.added.len()));
+    ev.clear();
+  }
+
+  // a tenth of the items nudge
+  t = Instant.now();
+  mut moves = 0usize;
+  i = 0usize;
+  while i < n {
+    if i % 10usize == 0usize {
+      imm b = *boxes[i];
+      imm d = new Vec3(0.3, -0.2, 0.25);
+      idx.move(*proxies[i], new Aabb3(b.min + d, b.max + d), d);
+      moves = moves + 1usize;
+    }
+    i = i + 1usize;
+  }
+  report("Bvh", scene, "move 10% by 0.4", t.elapsed().nanos(), moves, 0i64);
+
+  if pairsToo {
+    t = Instant.now();
+    idx.updatePairs(&mut ev);
+    report("Bvh", scene, "incremental pair update (10% moved)", t.elapsed().nanos(), n / 10usize,
+      i64.from(ev.added.len()) + i64.from(ev.removed.len()));
+  }
+}
+// One structure's run over one scene: build, then each kind of query, then
+// moving a tenth of the items, then pair finding. 'Octree' and 'LooseOctree[u64]' and
+// 'LooseOctree[u64].create(v3(world * 0.5, world * 0.5, world * 0.5), world * 0.55, 10i32, 2.)' are filled in by the generator that wrote this copy.
+fn driveOctree(scene &str, boxes &List[Aabb3], world f32, q &Queries, pairsToo bool) {
+  mut idx = LooseOctree[u64].create(v3(world * 0.5, world * 0.5, world * 0.5), world * 0.55, 10i32, 2.);
+  imm n = boxes.len();
+  mut proxies = List[Proxy].withCapacity(n);
+  mut t = Instant.now();
+  mut i = 0usize;
+  while i < n {
+    proxies.push(idx.insert(*boxes[i], u64.from(i)));
+    i = i + 1usize;
+  }
+  report("Octree", scene, "build (inserts)", t.elapsed().nanos(), n, i64.from(idx.len()));
+
+  // boxes
+  mut hits = 0i64;
+  mut cb = fn(h u64, p Proxy) bool { hits = hits + 1i64; true; };
+  t = Instant.now();
+  i = 0usize;
+  while i < q.boxes.len() {
+    idx.overlapAabb(*q.boxes[i], &mut cb);
+    i = i + 1usize;
+  }
+  report("Octree", scene, "box overlap", t.elapsed().nanos(), q.boxes.len(), hits);
+
+  hits = 0i64;
+  t = Instant.now();
+  i = 0usize;
+  while i < q.spheres.len() {
+    idx.overlapSphere(*q.spheres[i], &mut cb);
+    i = i + 1usize;
+  }
+  report("Octree", scene, "sphere overlap", t.elapsed().nanos(), q.spheres.len(), hits);
+
+  mut found = 0i64;
+  t = Instant.now();
+  i = 0usize;
+  while i < q.rays.len() {
+    match idx.rayNearest(*q.rays[i], world) {
+      case imm h Some { found = found + 1i64; }
+      case is None { }
+    }
+    i = i + 1usize;
+  }
+  report("Octree", scene, "ray nearest", t.elapsed().nanos(), q.rays.len(), found);
+
+  mut rhits = 0i64;
+  mut rcb = fn(h u64, p Proxy, t f32) bool { rhits = rhits + 1i64; true; };
+  t = Instant.now();
+  i = 0usize;
+  while i < q.rays.len() {
+    idx.rayAll(*q.rays[i], world * 0.25, &mut rcb);
+    i = i + 1usize;
+  }
+  report("Octree", scene, "ray all (reach world/4)", t.elapsed().nanos(), q.rays.len(), rhits);
+
+  mut near = List[Neighbor[u64]].empty();
+  mut got = 0i64;
+  t = Instant.now();
+  i = 0usize;
+  while i < q.points.len() {
+    idx.nearest(*q.points[i], 8usize, &mut near);
+    got = got + i64.from(near.len());
+    i = i + 1usize;
+  }
+  report("Octree", scene, "8 nearest", t.elapsed().nanos(), q.points.len(), got);
+
+  hits = 0i64;
+  t = Instant.now();
+  i = 0usize;
+  while i < q.frusta.len() {
+    idx.frustum(q.frusta[i], &mut cb);
+    i = i + 1usize;
+  }
+  report("Octree", scene, "frustum", t.elapsed().nanos(), q.frusta.len(), hits);
+
+  // pairs: all of them, then the tracker's first update (everything is new)
+  mut ev = PairEvents[u64].create();
+  if pairsToo {
+    mut all = List[Pair[u64]].empty();
+    t = Instant.now();
+    idx.allPairs(&mut all);
+    report("Octree", scene, "all pairs", t.elapsed().nanos(), n, i64.from(all.len()));
+    t = Instant.now();
+    idx.updatePairs(&mut ev);
+    report("Octree", scene, "first pair update (all new)", t.elapsed().nanos(), n, i64.from(ev.added.len()));
+    ev.clear();
+  }
+
+  // a tenth of the items nudge
+  t = Instant.now();
+  mut moves = 0usize;
+  i = 0usize;
+  while i < n {
+    if i % 10usize == 0usize {
+      imm b = *boxes[i];
+      imm d = new Vec3(0.3, -0.2, 0.25);
+      idx.move(*proxies[i], new Aabb3(b.min + d, b.max + d), d);
+      moves = moves + 1usize;
+    }
+    i = i + 1usize;
+  }
+  report("Octree", scene, "move 10% by 0.4", t.elapsed().nanos(), moves, 0i64);
+
+  if pairsToo {
+    t = Instant.now();
+    idx.updatePairs(&mut ev);
+    report("Octree", scene, "incremental pair update (10% moved)", t.elapsed().nanos(), n / 10usize,
+      i64.from(ev.added.len()) + i64.from(ev.removed.len()));
+  }
+}
+// One structure's run over one scene: build, then each kind of query, then
+// moving a tenth of the items, then pair finding. 'Grid' and 'HashGrid[u64]' and
+// 'HashGrid[u64].create(3.)' are filled in by the generator that wrote this copy.
+fn driveGrid(scene &str, boxes &List[Aabb3], world f32, q &Queries, pairsToo bool) {
+  mut idx = HashGrid[u64].create(3.);
+  imm n = boxes.len();
+  mut proxies = List[Proxy].withCapacity(n);
+  mut t = Instant.now();
+  mut i = 0usize;
+  while i < n {
+    proxies.push(idx.insert(*boxes[i], u64.from(i)));
+    i = i + 1usize;
+  }
+  report("Grid", scene, "build (inserts)", t.elapsed().nanos(), n, i64.from(idx.len()));
+
+  // boxes
+  mut hits = 0i64;
+  mut cb = fn(h u64, p Proxy) bool { hits = hits + 1i64; true; };
+  t = Instant.now();
+  i = 0usize;
+  while i < q.boxes.len() {
+    idx.overlapAabb(*q.boxes[i], &mut cb);
+    i = i + 1usize;
+  }
+  report("Grid", scene, "box overlap", t.elapsed().nanos(), q.boxes.len(), hits);
+
+  hits = 0i64;
+  t = Instant.now();
+  i = 0usize;
+  while i < q.spheres.len() {
+    idx.overlapSphere(*q.spheres[i], &mut cb);
+    i = i + 1usize;
+  }
+  report("Grid", scene, "sphere overlap", t.elapsed().nanos(), q.spheres.len(), hits);
+
+  mut found = 0i64;
+  t = Instant.now();
+  i = 0usize;
+  while i < q.rays.len() {
+    match idx.rayNearest(*q.rays[i], world) {
+      case imm h Some { found = found + 1i64; }
+      case is None { }
+    }
+    i = i + 1usize;
+  }
+  report("Grid", scene, "ray nearest", t.elapsed().nanos(), q.rays.len(), found);
+
+  mut rhits = 0i64;
+  mut rcb = fn(h u64, p Proxy, t f32) bool { rhits = rhits + 1i64; true; };
+  t = Instant.now();
+  i = 0usize;
+  while i < q.rays.len() {
+    idx.rayAll(*q.rays[i], world * 0.25, &mut rcb);
+    i = i + 1usize;
+  }
+  report("Grid", scene, "ray all (reach world/4)", t.elapsed().nanos(), q.rays.len(), rhits);
+
+  mut near = List[Neighbor[u64]].empty();
+  mut got = 0i64;
+  t = Instant.now();
+  i = 0usize;
+  while i < q.points.len() {
+    idx.nearest(*q.points[i], 8usize, &mut near);
+    got = got + i64.from(near.len());
+    i = i + 1usize;
+  }
+  report("Grid", scene, "8 nearest", t.elapsed().nanos(), q.points.len(), got);
+
+  hits = 0i64;
+  t = Instant.now();
+  i = 0usize;
+  while i < q.frusta.len() {
+    idx.frustum(q.frusta[i], &mut cb);
+    i = i + 1usize;
+  }
+  report("Grid", scene, "frustum", t.elapsed().nanos(), q.frusta.len(), hits);
+
+  // pairs: all of them, then the tracker's first update (everything is new)
+  mut ev = PairEvents[u64].create();
+  if pairsToo {
+    mut all = List[Pair[u64]].empty();
+    t = Instant.now();
+    idx.allPairs(&mut all);
+    report("Grid", scene, "all pairs", t.elapsed().nanos(), n, i64.from(all.len()));
+    t = Instant.now();
+    idx.updatePairs(&mut ev);
+    report("Grid", scene, "first pair update (all new)", t.elapsed().nanos(), n, i64.from(ev.added.len()));
+    ev.clear();
+  }
+
+  // a tenth of the items nudge
+  t = Instant.now();
+  mut moves = 0usize;
+  i = 0usize;
+  while i < n {
+    if i % 10usize == 0usize {
+      imm b = *boxes[i];
+      imm d = new Vec3(0.3, -0.2, 0.25);
+      idx.move(*proxies[i], new Aabb3(b.min + d, b.max + d), d);
+      moves = moves + 1usize;
+    }
+    i = i + 1usize;
+  }
+  report("Grid", scene, "move 10% by 0.4", t.elapsed().nanos(), moves, 0i64);
+
+  if pairsToo {
+    t = Instant.now();
+    idx.updatePairs(&mut ev);
+    report("Grid", scene, "incremental pair update (10% moved)", t.elapsed().nanos(), n / 10usize,
+      i64.from(ev.added.len()) + i64.from(ev.removed.len()));
+  }
+}
