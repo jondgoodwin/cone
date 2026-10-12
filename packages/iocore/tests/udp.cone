@@ -1,0 +1,309 @@
+// UDP on one Loop: two datagram sockets bound to 127.0.0.1, one datagram an
+// operation, the peer's address in the answer.
+//
+// 1. SendTo and RecvFrom: the datagram arrives whole, in the receive's
+//    buffer, and the answer names its sender (the sending socket's address).
+// 2. An empty datagram is a datagram: Done(0), the sender named. (A TCP
+//    receive that says Done(0) is the end of a stream; this is not.)
+// 3. A datagram longer than the receive's room is cut: the answer is Failed
+//    with WSAEMSGSIZE (10040) on both systems, the room filled with its first
+//    bytes, the sender named, the rest lost; the next datagram is whole.
+// 4. A receive with no room is refused (ERROR_INSUFFICIENT_BUFFER); a stream
+//    operation on a datagram socket, a datagram operation on a listener, and
+//    one on a closed handle, fail with ERROR_INVALID_HANDLE.
+// 5. A receive with a deadline, the deadline a cancel group's: TimedOut with
+//    its buffer, not before the deadline; the socket works after.
+// 6. A receive cancelled by lp.cancel, by its group's cancel, and by the
+//    handle's close: Cancelled, each with its buffer.
+// 7. A datagram sent to a port nobody holds does not poison the sender's next
+//    receive (Winsock's SIO_UDP_CONNRESET turned off): the receive just waits.
+// 8. Several datagrams queued at a socket come out one an operation, in the
+//    order sent.
+
+mod udp;
+
+import testing use *;
+import collections use List;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use *;
+import diag;
+
+const notFound = 0xFFFFFFFFusize;
+
+fn find(out &List[Completion], tok u64) usize {
+  mut k = 0usize;
+  while k < out.len() {
+    if out[k].token == tok {return k;}
+    k = k + 1usize;
+  }
+  notFound;
+}
+
+// Poll until the answer with token tok is in out (or 3 s pass): its index
+fn await1(lp &mut Loop, out &mut List[Completion], tok u64) usize {
+  imm until = Instant.now() + Duration.fromSeconds(3i64);
+  mut k = find(out, tok);
+  while k == notFound and Instant.now() < until {
+    lp.poll(until, out);
+    k = find(out, tok);
+  }
+  k;
+}
+
+fn portOf(lp &Loop, h Handle) u16 {
+  mut port = 0u16;
+  match lp.localAddr(h) {
+    case imm a Ok {port = a.port();}
+    case imm e Error {}
+  }
+  port;
+}
+
+fn byteOf(seed u64, j usize) u8 {u8.from((seed * 37u64 + u64.from(j) * 3u64) % 251u64);}
+
+// n bytes of seed's pattern, as the buffer's whole contents
+fn fill(b &mut IoBuf, n usize, seed u64) {
+  imm w = b.whole();
+  mut j = 0usize;
+  while j < n {
+    w[j] = byteOf(seed, j);
+    j = j + 1usize;
+  }
+  b.setLen(n);
+}
+
+// Whether b holds, from 'from' on, n bytes of seed's pattern
+fn holds(b &IoBuf, from usize, n usize, seed u64) bool {
+  imm v = b.view();
+  if v.len < from + n {return false;}
+  mut j = 0usize;
+  while j < n {
+    if v[from + j] != byteOf(seed, j) {return false;}
+    j = j + 1usize;
+  }
+  true;
+}
+
+// Send n bytes of seed's pattern from 'from' to port, and wait for the answer
+fn sendTo(lp &mut Loop, out &mut List[Completion], pool &Pool, from Handle, port u16, n usize, seed u64, tok u64) bool {
+  mut s = pool.mustTake(2048usize);
+  fill(&mut s, n, seed);
+  lp.submit(Op.SendTo(from, SocketAddr.localhost(port), s), Target.Here(tok));
+  imm k = await1(lp, out, tok);
+  if k == notFound {return false;}
+  imm ok = out[k].isDone() and out[k].count() == n;
+  ok;
+}
+
+fn main() i32 {
+  imm pool = Pool.make();
+  {
+    mut lp = Loop.mustMake();
+    mut out = List[Completion].empty();
+    imm a = lp.mustBindUdp(SocketAddr.localhost(0u16));
+    imm b = lp.mustBindUdp(SocketAddr.localhost(0u16));
+    imm pa = portOf(&lp, a);
+    imm pb = portOf(&lp, b);
+    expect(pa != 0u16 and pb != 0u16 and pa != pb, "two sockets, two ports the system chose");
+    imm textA = SocketAddr.localhost(pa).text();
+
+    // 1. A datagram and its sender
+    {
+      lp.submit(Op.RecvFrom(b, pool.mustTake(4096usize)), Target.Here(2u64));
+      require(sendTo(&mut lp, &mut out, &pool, a, pb, 40usize, 1u64, 1u64), "1: the datagram is sent, whole");
+      imm k = await1(&mut lp, &mut out, 2u64);
+      requireUInt(u64.from(k != notFound), 1u64, "1: the receive answers");
+      imm c = &mut out[k];
+      expect(c.isDone(), "1: Done");
+      expectUInt(u64.from(c.n), 40u64, "1: all 40 bytes");
+      expectUInt(u64.from(c.buf.len()), 40u64, "1: in the buffer, its length 40");
+      expect(holds(&c.buf, 0usize, 40usize, 1u64), "1: the bytes are the ones sent");
+      expectUInt(u64.from(c.kind), u64.from(diag.kindRecvFrom), "1: of kind recvFrom");
+      expectUInt(u64.from(c.peer.port()), u64.from(pa), "1: the sender's port");
+      expectStr(c.peer.text().view(), textA.view(), "1: the sender's address, as text");
+      expect(not c.peer.isV6(), "1: an IPv4 sender");
+      out.clear();
+    }
+
+    // 2. An empty datagram
+    {
+      lp.submit(Op.RecvFrom(b, pool.mustTake(4096usize)), Target.Here(4u64));
+      require(sendTo(&mut lp, &mut out, &pool, a, pb, 0usize, 2u64, 3u64), "2: an empty datagram is sent");
+      imm k = await1(&mut lp, &mut out, 4u64);
+      requireUInt(u64.from(k != notFound), 1u64, "2: the receive answers");
+      imm c = &mut out[k];
+      expect(c.isDone() and c.n == 0usize, "2: Done(0)");
+      expectUInt(u64.from(c.peer.port()), u64.from(pa), "2: the sender named all the same");
+      out.clear();
+    }
+
+    // 3. A datagram longer than the room
+    {
+      // 100 bytes into a buffer with room for 8 after 4 already in it
+      mut r = pool.mustTake(64usize);
+      fill(&mut r, 4usize, 9u64);
+      imm cap = r.capacity();
+      r.setLen(cap - 8usize);
+      imm held = r.len();
+      lp.submit(Op.RecvFrom(b, r), Target.Here(6u64));
+      require(sendTo(&mut lp, &mut out, &pool, a, pb, 100usize, 3u64, 5u64), "3: 100 bytes are sent");
+      imm k = await1(&mut lp, &mut out, 6u64);
+      requireUInt(u64.from(k != notFound), 1u64, "3: the receive answers");
+      imm c = &mut out[k];
+      expectUInt(u64.from(c.status), u64.from(diag.outcomeFailed), "3: Failed");
+      expectUInt(u64.from(c.code), 10040u64, "3: WSAEMSGSIZE, on both systems");
+      expectUInt(u64.from(c.buf.len()), u64.from(held + 8usize), "3: the room is filled");
+      expect(holds(&c.buf, held, 8usize, 3u64), "3: with the datagram's first bytes");
+      expectUInt(u64.from(c.peer.port()), u64.from(pa), "3: the sender named");
+      out.clear();
+      // The cut datagram is gone: the next one is whole
+      lp.submit(Op.RecvFrom(b, pool.mustTake(4096usize)), Target.Here(8u64));
+      require(sendTo(&mut lp, &mut out, &pool, a, pb, 30usize, 4u64, 7u64), "3: another is sent");
+      imm k2 = await1(&mut lp, &mut out, 8u64);
+      requireUInt(u64.from(k2 != notFound), 1u64, "3: and received");
+      expect(out[k2].isDone() and out[k2].n == 30usize and holds(&out[k2].buf, 0usize, 30usize, 4u64),
+        "3: whole, the cut one not left behind");
+      out.clear();
+    }
+
+    // 4. Refusals
+    {
+      mut full = pool.mustTake(64usize);
+      imm cap = full.capacity();
+      full.setLen(cap);
+      lp.submit(Op.RecvFrom(b, full), Target.Here(10u64));
+      imm k = await1(&mut lp, &mut out, 10u64);
+      requireUInt(u64.from(k != notFound), 1u64, "4: a receive with no room answers");
+      expectUInt(u64.from(out[k].code), u64.from(errorInsufficientBuffer), "4: ERROR_INSUFFICIENT_BUFFER");
+      expectUInt(u64.from(out[k].buf.len()), u64.from(cap), "4: its buffer back");
+      out.clear();
+
+      lp.submit(Op.Recv(b, pool.mustTake(64usize)), Target.Here(11u64));
+      imm k1 = await1(&mut lp, &mut out, 11u64);
+      requireUInt(u64.from(k1 != notFound), 1u64, "4: a stream receive on a datagram socket answers");
+      expectUInt(u64.from(out[k1].code), u64.from(errorInvalidHandle), "4: it fails, ERROR_INVALID_HANDLE");
+      out.clear();
+
+      imm listener = lp.mustListen(SocketAddr.localhost(0u16));
+      lp.submit(Op.RecvFrom(listener, pool.mustTake(64usize)), Target.Here(12u64));
+      imm k2 = await1(&mut lp, &mut out, 12u64);
+      requireUInt(u64.from(k2 != notFound), 1u64, "4: a datagram receive on a listener answers");
+      expectUInt(u64.from(out[k2].code), u64.from(errorInvalidHandle), "4: it fails the same way");
+      out.clear();
+      lp.close(listener);
+
+      mut s = pool.mustTake(64usize);
+      fill(&mut s, 4usize, 1u64);
+      lp.submit(Op.SendTo(listener, SocketAddr.localhost(pb), s), Target.Here(13u64));
+      imm k3 = await1(&mut lp, &mut out, 13u64);
+      requireUInt(u64.from(k3 != notFound), 1u64, "4: a send on a closed handle answers");
+      expectUInt(u64.from(out[k3].code), u64.from(errorInvalidHandle), "4: ERROR_INVALID_HANDLE");
+      expectUInt(u64.from(out[k3].buf.len()), 4u64, "4: its buffer back");
+      out.clear();
+    }
+
+    // 5. A deadline, a cancel group's
+    {
+      imm t0 = Instant.now();
+      imm g = CancelGroup.until(t0 + Duration.fromMillis(50i64));
+      lp.submitIn(Op.RecvFrom(b, pool.mustTake(4096usize)), Target.Here(20u64), g, forever());
+      imm k = await1(&mut lp, &mut out, 20u64);
+      requireUInt(u64.from(k != notFound), 1u64, "5: the receive answers");
+      expectUInt(u64.from(out[k].status), u64.from(diag.outcomeTimedOut), "5: TimedOut");
+      expectUInt(u64.from(out[k].buf.capacity()), 4096u64, "5: with its buffer");
+      expect(out[k].dequeued >= t0 + Duration.fromMillis(50i64), "5: not before the deadline");
+      expect(out[k].delivered < t0 + Duration.fromMillis(500i64), "5: and not long after");
+      expectUInt(u64.from(out[k].peer.port()), 0u64, "5: no sender named");
+      out.clear();
+      // The socket works after it
+      lp.submit(Op.RecvFrom(b, pool.mustTake(4096usize)), Target.Here(21u64));
+      require(sendTo(&mut lp, &mut out, &pool, a, pb, 12usize, 5u64, 22u64), "5: a datagram is sent after");
+      imm k2 = await1(&mut lp, &mut out, 21u64);
+      requireUInt(u64.from(k2 != notFound), 1u64, "5: and received");
+      expect(out[k2].isDone() and out[k2].n == 12usize, "5: Done after the timeout");
+      out.clear();
+    }
+
+    // 6. Cancels
+    {
+      imm id = lp.submit(Op.RecvFrom(b, pool.mustTake(4096usize)), Target.Here(30u64));
+      expect(lp.cancel(id), "6: lp.cancel asks");
+      imm k = await1(&mut lp, &mut out, 30u64);
+      requireUInt(u64.from(k != notFound), 1u64, "6: it answers");
+      expectUInt(u64.from(out[k].status), u64.from(diag.outcomeCancelled), "6: Cancelled");
+      expectUInt(u64.from(out[k].buf.capacity()), 4096u64, "6: with its buffer");
+      out.clear();
+
+      imm g = CancelGroup.make();
+      lp.submitIn(Op.RecvFrom(b, pool.mustTake(4096usize)), Target.Here(31u64), g, forever());
+      lp.submitIn(Op.RecvFrom(a, pool.mustTake(4096usize)), Target.Here(32u64), g, forever());
+      g.cancel();
+      imm k1 = await1(&mut lp, &mut out, 31u64);
+      imm k2 = await1(&mut lp, &mut out, 32u64);
+      requireUInt(u64.from(k1 != notFound and k2 != notFound), 1u64, "6: both answer");
+      expectUInt(u64.from(out[k1].status), u64.from(diag.outcomeCancelled), "6: the group's cancel: Cancelled");
+      expectUInt(u64.from(out[k2].status), u64.from(diag.outcomeCancelled), "6: ...for both sockets");
+      expectUInt(u64.from(out[k1].buf.capacity() + out[k2].buf.capacity()), 8192u64, "6: each with its buffer");
+      out.clear();
+      // Submitted into the cancelled group: answered at once, never started
+      lp.submitIn(Op.RecvFrom(b, pool.mustTake(4096usize)), Target.Here(33u64), g, forever());
+      imm k4 = await1(&mut lp, &mut out, 33u64);
+      requireUInt(u64.from(k4 != notFound), 1u64, "6: answered");
+      expectUInt(u64.from(out[k4].status), u64.from(diag.outcomeCancelled), "6: Cancelled, never started");
+      out.clear();
+
+      // The handle's close
+      imm c = lp.mustBindUdp(SocketAddr.localhost(0u16));
+      lp.submit(Op.RecvFrom(c, pool.mustTake(4096usize)), Target.Here(34u64));
+      expect(lp.close(c), "6: the handle closes");
+      imm k5 = await1(&mut lp, &mut out, 34u64);
+      requireUInt(u64.from(k5 != notFound), 1u64, "6: the receive on it answers");
+      expectUInt(u64.from(out[k5].status), u64.from(diag.outcomeCancelled), "6: Cancelled by the close");
+      expectUInt(u64.from(out[k5].buf.capacity()), 4096u64, "6: with its buffer");
+      out.clear();
+    }
+
+    // 7. A datagram to a port nobody holds
+    {
+      imm gone = lp.mustBindUdp(SocketAddr.localhost(0u16));
+      imm pg = portOf(&lp, gone);
+      lp.close(gone);
+      require(sendTo(&mut lp, &mut out, &pool, a, pg, 20usize, 6u64, 40u64), "7: sent to a closed port: Done all the same");
+      out.clear();
+      // (the port-unreachable that comes back must not fail the next receive)
+      imm g = CancelGroup.until(Instant.now() + Duration.fromMillis(100i64));
+      lp.submitIn(Op.RecvFrom(a, pool.mustTake(4096usize)), Target.Here(41u64), g, forever());
+      imm k = await1(&mut lp, &mut out, 41u64);
+      requireUInt(u64.from(k != notFound), 1u64, "7: the receive answers");
+      expectUInt(u64.from(out[k].status), u64.from(diag.outcomeTimedOut), "7: it only timed out; it was not failed by the unreachable port");
+      out.clear();
+    }
+
+    // 8. Several queued, one an operation, in order
+    {
+      mut i = 0u64;
+      while i < 5u64 {
+        require(sendTo(&mut lp, &mut out, &pool, a, pb, 10usize + usize.from(i), 10u64 + i, 50u64 + i), "8: a datagram is sent");
+        i = i + 1u64;
+      }
+      out.clear();
+      i = 0u64;
+      while i < 5u64 {
+        lp.submit(Op.RecvFrom(b, pool.mustTake(4096usize)), Target.Here(60u64 + i));
+        imm k = await1(&mut lp, &mut out, 60u64 + i);
+        requireUInt(u64.from(k != notFound), 1u64, "8: a receive answers");
+        expect(out[k].isDone() and out[k].n == 10usize + usize.from(i) and holds(&out[k].buf, 0usize, 10usize + usize.from(i), 10u64 + i),
+          "8: in the order sent");
+        out.clear();
+        i = i + 1u64;
+      }
+    }
+
+    imm counts = lp.counters();
+    expectUInt(counts.submitted, counts.delivered + counts.inFlight, "every operation answered once or still in flight");
+    expectUInt(lp.inFlight(), 0u64, "nothing in flight");
+  }
+  expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");
+  done();
+}

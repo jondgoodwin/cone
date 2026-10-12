@@ -87,6 +87,10 @@ extern {
       ov *u8, completion *u8) i32;
   fn @c(system) WSASend(s usize, bufs *WsaBuf, count u32, sent *u32, flags u32,
       ov *u8, completion *u8) i32;
+  fn @c(system) WSARecvFrom(s usize, bufs *WsaBuf, count u32, received *u32, flags &mut u32,
+      from *u8, fromLen &mut i32, ov *u8, completion *u8) i32;
+  fn @c(system) WSASendTo(s usize, bufs *WsaBuf, count u32, sent *u32, flags u32,
+      to *u8, toLen i32, ov *u8, completion *u8) i32;
   fn @c(system) closesocket(s usize) i32;
   fn @c(system) bind(s usize, addr *u8, len i32) i32;
   fn @c(system) listen(s usize, backlog i32) i32;
@@ -132,6 +136,7 @@ const infinite = 0xFFFFFFFFu32;                     // INFINITE
 const statusSuccess = 0usize;
 const statusCancelled = 0xC0000120usize;            // STATUS_CANCELLED
 const statusEndOfFile = 0xC0000011usize;            // STATUS_END_OF_FILE
+const statusBufferOverflow = 0x80000005usize;       // STATUS_BUFFER_OVERFLOW: a datagram longer than the buffer
 
 // Windows' error numbers iocore gives or reads
 pub const errorFileNotFound = 2u32;                 // ERROR_FILE_NOT_FOUND
@@ -147,6 +152,7 @@ pub const errorNotFound = 1168u32;                  // ERROR_NOT_FOUND
 pub const errorConnectionRefused = 1225u32;         // ERROR_CONNECTION_REFUSED
 pub const errorNetnameDeleted = 64u32;              // ERROR_NETNAME_DELETED: how a receive or send reads a reset
 pub const errorNoUnicodeTranslation = 1113u32;      // ERROR_NO_UNICODE_TRANSLATION
+pub const errorMsgSize = 10040u32;                  // WSAEMSGSIZE: a datagram longer than the buffer that took it (EMSGSIZE)
 
 // Files
 const genericRead = 0x80000000u32;
@@ -166,7 +172,10 @@ const genericAll = 0x10000000u32;                   // GENERIC_ALL
 const afInet = 2i32;
 const afInet6 = 23i32;
 const sockStream = 1i32;
+const sockDgram = 2i32;                             // the same number on Linux
 const ipprotoTcp = 6i32;
+const ipprotoUdp = 17i32;
+const sioUdpConnReset = 0x9800000Cu32;              // SIO_UDP_CONNRESET
 const wsaFlagOverlapped = 0x01u32;
 const wsaFlagNoHandleInherit = 0x80u32;
 const solSocket = 0xFFFFi32;
@@ -266,6 +275,16 @@ fn tcpSocket(family u16) usize {
     WSASocketW(i32.from(family), sockStream, ipprotoTcp, null, 0u32, wsaFlagOverlapped | wsaFlagNoHandleInherit);
   } else {
     imm s = sysSocket(i32.from(family), sockStreamLx | nonBlock | epollCloexec, 0i32);
+    if s < 0i32 {invalidHandle;} else {usize.from(s);};
+  }
+}
+
+// A new UDP socket for the family; invalidHandle on failure. As tcpSocket
+fn udpSocket(family u16) usize {
+  if isWindows() {
+    WSASocketW(i32.from(family), sockDgram, ipprotoUdp, null, 0u32, wsaFlagOverlapped | wsaFlagNoHandleInherit);
+  } else {
+    imm s = sysSocket(i32.from(family), sockDgram | nonBlock | epollCloexec, 0i32);
     if s < 0i32 {invalidHandle;} else {usize.from(s);};
   }
 }
