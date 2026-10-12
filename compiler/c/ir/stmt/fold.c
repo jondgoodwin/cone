@@ -75,7 +75,7 @@ static int foldStarAdmits(INode *member, int admit) {
 // its values' lifecycle. A module's star clause is made pass by pass instead,
 // since a module whose own folds waited holds more in a later pass
 // (importFoldStar).
-void foldStarItems(Namespace *ns, Name *srcname, FoldClause *fold, int admit) {
+void foldStarItems(Namespace *ns, Name *srcname, FoldClause *fold, int admit, StructNode *base) {
     INode **nodesp;
     uint32_t cnt;
     if (fold->excludes) {
@@ -86,9 +86,23 @@ void foldStarItems(Namespace *ns, Name *srcname, FoldClause *fold, int admit) {
                 errorMsgNode(*nodesp, ErrorNoMbr, "%s has no member named %s to leave out.",
                     &srcname->namestr, &name->namestr);
             // Seen from the fold, a private name is as absent as a missing one:
-            // the star never admits it, so leaving it out says nothing
+            // the star never admits it, so leaving it out says nothing. A sibling
+            // has the base's private members too, but they are the base's, and
+            // it is the base that keeps them private (an enrichment may not
+            // override, so a name the base has is the base's)
             else if (inodeIsPrivate(found))
                 errorMsgNode(*nodesp, ErrorNotPublic, "%s is private to %s, so '*' never folds it; there is nothing to leave out.",
+                    &name->namestr, (base && namespaceFind(&base->namespace, name))
+                        ? &base->namesym->namestr : &srcname->namestr);
+            // A public name the star passes over for a reason of its own is as
+            // absent, and gets the refusal a listed fold gives that name
+            else if (name == finalName || name == cloneName)
+                errorMsgNode(*nodesp, ErrorBadFold, "%s belongs to %s's own values' lifecycle, so '*' never folds it; there is nothing to leave out.",
+                    &name->namestr, &srcname->namestr);
+            else if (!foldStarAdmits(found, admit))
+                errorMsgNode(*nodesp, ErrorBadFold, admit == FoldAdmitOwn
+                    ? "%s comes to %s from the base they share, so '*' never folds it; there is nothing to leave out."
+                    : "%s is a static of %s, reached through the type and not through a value, so '*' never folds it; there is nothing to leave out.",
                     &name->namestr, &srcname->namestr);
         }
     }
@@ -226,7 +240,7 @@ void foldGlobalExpand(NameResState *pstate, ModuleNode *mod, VarDclNode *global)
         return;
     }
     if (fold->star)
-        foldStarItems(&src->namespace, src->namesym, fold, FoldAdmitMembers);
+        foldStarItems(&src->namespace, src->namesym, fold, FoldAdmitMembers, NULL);
     INode **itemp;
     uint32_t cnt;
     for (nodesFor(fold->items, cnt, itemp))
