@@ -1,0 +1,188 @@
+// Queries: overlap, closest points, and shape cast.
+//
+// Shape cast is GJK ray casting (van den Bergen, "Ray Casting against General
+// Convex Objects with Application to Continuous Collision Detection", 2004),
+// which is conservative advancement for a translating shape: the cast shape
+// A is moved by 'disp' over the cast, t from 0 to 1; at each step GJK/EPA
+// gives the distance and the direction n from A to B, and A advances by
+// distance / (disp . n), a step that cannot pass B because the Minkowski
+// difference is convex. A shape that is not convex (compound, mesh,
+// heightfield) is cast one convex piece at a time and the earliest hit kept.
+
+// The nearest points of two shapes: 'dist' is 0 when they overlap
+pub struct Closest {
+  pub found bool;
+  pub dist f32;
+  pub normal Vec3;      // from a towards b (at an overlap, the direction of least penetration)
+  pub pointA Vec3;
+  pub pointB Vec3;
+  pub partA u32;
+  pub partB u32;
+  pub sub u32;          // the mesh triangle or heightfield cell triangle of b, or NoSub
+}
+
+fn noClosest() Closest {
+  new Closest(false, bigNumber, new Vec3(0., 1., 0.), new Vec3(0., 0., 0.), new Vec3(0., 0., 0.), 0u32, 0u32, NoSub);
+}
+
+// Two convex prims, rounding included
+fn closestConvex(a &Prim, xa Rigid, b &Prim, xb Rigid, maxDist f32) Closest {
+  imm p = convexPenetration(a, xa, b, xb, maxDist);
+  if not p.hit { return noClosest(); }
+  new Closest(true, maxf(0., -p.depth), p.normal, p.pointA, p.pointB, 0u32, 0u32, NoSub);
+}
+
+fn betterClosest(a Closest, b Closest) Closest {
+  if b.found and (not a.found or b.dist < a.dist) { b; } else { a; };
+}
+
+// Whichever of the pair is concave is broken into the triangles in reach; the
+// nearest answer wins
+fn closestPrims(a &Prim, xa Rigid, b &Prim, xb Rigid, maxDist f32) Closest {
+  if a.isConvex() and b.isConvex() { return closestConvex(a, xa, b, xb, maxDist); }
+  if not a.isConvex() and not b.isConvex() { return noClosest(); }
+  imm swap = not b.isConvex();
+  imm conc = if swap { a; } else { b; };
+  imm xc = if swap { xa; } else { xb; };
+  imm cvx = if swap { b; } else { a; };
+  imm xv = if swap { xb; } else { xa; };
+  imm lb = boundsOf(cvx.bounds(xv).expand(maxDist), xc.inverse());
+  mut ids = List[u32].empty();
+  mut tris = List[Tri].empty();
+  mut flags = List[u8].empty();
+  concaveTriangles(conc, lb, &mut ids, &mut tris, &mut flags);
+  mut best = noClosest();
+  mut i = 0usize;
+  while i < tris.len() {
+    imm t = tris[i];
+    imm tp = Prim.triangle(t.a, t.b, t.c);
+    mut c = noClosest();
+    if swap {
+      // a is concave: the triangle is a, the convex shape is b
+      c = closestConvex(&tp, xc, cvx, xv, maxDist);
+      if c.found { c.sub = NoSub; }
+    } else {
+      c = closestConvex(cvx, xv, &tp, xc, maxDist);
+      if c.found { c.sub = *ids[i]; }
+    }
+    best = betterClosest(best, c);
+    i = i + 1usize;
+  }
+  best;
+}
+
+// The nearest points of two shapes (compounds too), if they are within maxDist
+pub fn closestPoints(a &Shape, xa Rigid, b &Shape, xb Rigid, maxDist f32) Closest {
+  if a.parts.len() == 0usize and b.parts.len() == 0usize { return closestPrims(&a.prim, xa, &b.prim, xb, maxDist); }
+  mut best = noClosest();
+  mut i = 0usize;
+  while i < a.partCount() {
+    mut j = 0usize;
+    while j < b.partCount() {
+      imm pa = if a.parts.len() > 0usize { &a.parts[i].prim; } else { &a.prim; };
+      imm pb = if b.parts.len() > 0usize { &b.parts[j].prim; } else { &b.prim; };
+      imm xai = if a.parts.len() > 0usize { xa * a.parts[i].xf; } else { xa; };
+      imm xbj = if b.parts.len() > 0usize { xb * b.parts[j].xf; } else { xb; };
+      mut c = closestPrims(pa, xai, pb, xbj, maxDist);
+      if c.found { c.partA = u32.from(i); c.partB = u32.from(j); }
+      best = betterClosest(best, c);
+      j = j + 1usize;
+    }
+    i = i + 1usize;
+  }
+  best;
+}
+
+// Do the two shapes overlap (touching counts)?
+pub fn overlaps(a &Shape, xa Rigid, b &Shape, xb Rigid) bool {
+  imm c = closestPoints(a, xa, b, xb, 0.0001);
+  c.found and c.dist <= 0.0001;
+}
+
+// Is the point inside the shape (convex and compound shapes; a mesh or
+// heightfield has no inside here)?
+pub fn containsPoint(s &Shape, x Rigid, p Vec3) bool {
+  imm probe = Shape.single(Prim.sphere(0.));
+  overlaps(s, x, &probe, Rigid.at(p));
+}
+
+// ---------------------------------------------------------------------------
+// Shape cast
+
+pub struct CastHit {
+  pub hit bool;
+  pub fraction f32;     // of the displacement, 0 to 1
+  pub normal Vec3;      // at the hit, from the cast shape to the target
+  pub pointA Vec3;      // on the cast shape at the hit
+  pub pointB Vec3;
+  pub partA u32;
+  pub partB u32;
+  pub sub u32;
+}
+
+pub fn noCast() CastHit {
+  new CastHit(false, 1., new Vec3(0., 1., 0.), new Vec3(0., 0., 0.), new Vec3(0., 0., 0.), 0u32, 0u32, NoSub);
+}
+
+fn castConvex(a &Prim, xa Rigid, disp Vec3, b &Prim, xb Rigid) CastHit {
+  mut t = 0.;
+  mut iter = 0u32;
+  while iter < 64u32 {
+    iter = iter + 1u32;
+    imm at = new Rigid(xa.pos + disp * t, xa.rot);
+    imm p = convexPenetration(a, at, b, xb, 1.0e6);
+    if not p.hit { return noCast(); }
+    if p.depth >= -0.0001 {
+      return new CastHit(true, t, p.normal, p.pointA, p.pointB, 0u32, 0u32, NoSub);
+    }
+    imm rate = disp.dot(p.normal);
+    if rate <= 1.0e-9 { return noCast(); }
+    t = t + (-p.depth) / rate;
+    if t > 1. { return noCast(); }
+  }
+  noCast();
+}
+
+fn castPrims(a &Prim, xa Rigid, disp Vec3, b &Prim, xb Rigid) CastHit {
+  if a.isConvex() and b.isConvex() { return castConvex(a, xa, disp, b, xb); }
+  if not b.isConvex() and a.isConvex() {
+    imm swept = a.bounds(xa).union(a.bounds(new Rigid(xa.pos + disp, xa.rot)));
+    imm lb = boundsOf(swept, xb.inverse());
+    mut ids = List[u32].empty();
+    mut tris = List[Tri].empty();
+    mut flags = List[u8].empty();
+    concaveTriangles(b, lb, &mut ids, &mut tris, &mut flags);
+    mut best = noCast();
+    mut i = 0usize;
+    while i < tris.len() {
+      imm t = tris[i];
+      imm tp = Prim.triangle(t.a, t.b, t.c);
+      mut h = castConvex(a, xa, disp, &tp, xb);
+      if h.hit and (not best.hit or h.fraction < best.fraction) { h.sub = *ids[i]; best = h; }
+      i = i + 1usize;
+    }
+    return best;
+  }
+  noCast();
+}
+
+// Move shape a (placed by xa) along 'disp' and report the first contact with b
+// (placed by xb, held still). The rotation of a is held fixed during the cast.
+pub fn shapeCast(a &Shape, xa Rigid, disp Vec3, b &Shape, xb Rigid) CastHit {
+  mut best = noCast();
+  mut i = 0usize;
+  while i < a.partCount() {
+    mut j = 0usize;
+    while j < b.partCount() {
+      imm pa = if a.parts.len() > 0usize { &a.parts[i].prim; } else { &a.prim; };
+      imm pb = if b.parts.len() > 0usize { &b.parts[j].prim; } else { &b.prim; };
+      imm xai = if a.parts.len() > 0usize { xa * a.parts[i].xf; } else { xa; };
+      imm xbj = if b.parts.len() > 0usize { xb * b.parts[j].xf; } else { xb; };
+      mut h = castPrims(pa, xai, disp, pb, xbj);
+      if h.hit and (not best.hit or h.fraction < best.fraction) { h.partA = u32.from(i); h.partB = u32.from(j); best = h; }
+      j = j + 1usize;
+    }
+    i = i + 1usize;
+  }
+  best;
+}
