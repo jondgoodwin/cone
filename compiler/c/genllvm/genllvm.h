@@ -223,7 +223,31 @@ typedef struct GenState {
     uint32_t entrycnt;
     uint32_t entrymax;
     Nodes *gpusites;
+
+    // A construction an inline function builds where it puts it (genlInlineParm):
+    // the parameters of the inline bodies being generated that are waiting for
+    // theirs, innermost last, and for the one call about to expand a body, which
+    // of its arguments wait
+    struct GenDeferredParm *deferred;
+    uint32_t deferredcnt;
+    uint32_t deferredmax;
+    struct GenDeferredNew **deferin;
 } GenState;
+
+// A construction by a declared init that an inline function's parameter stands
+// for, whose arguments are evaluated and which has not run yet: it runs, in the
+// place the function writes the parameter to, when that statement is generated
+typedef struct GenDeferredNew {
+    FnCallNode *ctor;           // The construction
+    LLVMValueRef *initargs;     // Its arguments (genlNewArgs), the first slot left for its self
+    int done;                   // It has run
+} GenDeferredNew;
+
+// An inline function's parameter waiting for its construction
+typedef struct GenDeferredParm {
+    VarDclNode *var;
+    GenDeferredNew *wait;
+} GenDeferredParm;
 
 // A compute entry point's kernel (genlgpu.c): the LLVM function a dispatch
 // runs, the binding its error buffer takes, and its declaration
