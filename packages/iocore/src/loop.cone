@@ -86,6 +86,11 @@ struct Rec {
   target Target;
   group Option[CancelGroup];
   addr Array[u8, 96];     // AcceptEx's two addresses; Connect's address
+  // Linux: where a socket operation waits when it would block (linux.cone)
+  side u32;               // sideRecv or sideSend while it waits in a handle's queue
+  waitNext u32;
+  waitPrev u32;
+  done usize;             // a send's bytes sent so far
 }
 
 fn blankRec(index u32, next u32) Rec {
@@ -103,14 +108,19 @@ fn blankRec(index u32, next u32) Rec {
     status: 0u32, n: 0usize, code: 0u32,
     buf: IoBuf.empty(), bytes: None, target: Target.Here(0u64),
     group: None,
-    addr: new Array[u8, 96] <- fill 0u8);
+    addr: new Array[u8, 96] <- fill 0u8,
+    side: 0u32, waitNext: noEntry, waitPrev: noEntry, done: 0usize);
 }
 
 const recsPerBlock = 64u32;
 
 // Whether an operation of kind k is held in a JobBox: a pool job, or an
-// external operation
-fn boxed(k u32) bool {k == diag.kindCall or k == diag.kindExternal;}
+// external operation; on Linux a file operation too, which is a job of the
+// pool (linux.cone)
+fn boxed(k u32) bool {
+  k == diag.kindCall or k == diag.kindExternal
+    or (not isWindows() and (k == diag.kindReadAt or k == diag.kindWriteAt));
+}
 
 // What a handle is
 const hFree = 0u32;
@@ -120,11 +130,17 @@ const hFile = 3u32;
 
 // An entry of the handle table
 struct HEntry {
-  pub raw usize;
+  pub raw usize;          // the OS's: Windows' handle or socket, Linux's descriptor
   pub gen u32;
   pub kind u32;
   pub family u16;
   pub nextFree u32;
+  // Linux: the operations that would block on it, receives (and accepts) and
+  // sends (and a connect), as the records at each queue's ends (linux.cone)
+  pub recvHead u32;
+  pub recvTail u32;
+  pub sendHead u32;
+  pub sendTail u32;
 }
 
 // The most completions one wait takes from the kernel
@@ -157,10 +173,11 @@ pub struct Loop {
   freeHandle u32;
   wheel Wheel;
   expiries List[Expiry];
-  entries *OverlappedEntry;
-  timer usize;            // the high-resolution waitable timer
-  packet usize;           // its wait completion packet, or 0 when none could be made
-  associated bool;        // the packet is associated, and not yet taken from the port
+  entries *OverlappedEntry;   // Windows: what one wait takes from the port
+  events *EpollEvent;     // Linux: what one wait takes from epoll
+  timer usize;            // Windows: the high-resolution waitable timer. Linux: the timerfd
+  packet usize;           // its wait completion packet, or 0 when none could be made (Windows)
+  associated bool;        // the packet is associated, and not yet taken from the port; Linux: the timerfd is armed and not yet taken
   armedFor Instant;       // the instant the timer is set for
   woken bool;
   grace Duration;         // after a deadline, how long the kernel has to give the buffer back
@@ -171,10 +188,12 @@ pub struct Loop {
   // A new loop for the calling thread, or the reason there is none
   pub fn make() Result[Loop, IoError] {
     mut port = 0usize;
+    mut wake = 0usize;
+    mut tick = 0usize;
     mut code = 0u32;
-    code, port = openPort();
+    code, port, wake, tick = openPort();
     if code != 0u32 {return Error[Loop, IoError](new IoError(code));}
-    Ok[Loop, IoError](Loop.assemble(port));
+    Ok[Loop, IoError](Loop.assemble(port, wake, tick));
   }
 
   // A new loop; a panic, at the caller's line, if there can be none. (It
@@ -182,26 +201,37 @@ pub struct Loop {
   // variant's field, and a Loop has no empty value to swap in)
   pub fn mustMake(file &Array[u8] = srcFile(), line u32 = srcLine()) Loop {
     mut port = 0usize;
+    mut wake = 0usize;
+    mut tick = 0usize;
     mut code = 0u32;
-    code, port = openPort();
+    code, port, wake, tick = openPort();
     if code != 0u32 {panic("iocore: Loop.make failed: no completion port", file, line);}
-    Loop.assemble(port);
+    Loop.assemble(port, wake, tick);
   }
 
-  // The loop around a new port
-  fn assemble(port usize) Loop {
-    // The high-resolution timer (Windows 10 1803 on); an ordinary one, as
-    // fine as the system's tick, before it
-    mut timer = CreateWaitableTimerExW(null, null, timerHighResolution, timerAllAccess);
-    if timer == 0usize {
-      timer = CreateWaitableTimerExW(null, null, 0u32, timerAllAccess);
-    }
+  // The loop around a new port (Linux: the epoll instance, and the eventfd
+  // and timerfd it watches)
+  fn assemble(port usize, wake usize, tick usize) Loop {
+    mut timer = tick;
     mut packet = 0usize;
-    if NtCreateWaitCompletionPacket(&mut packet, genericAll, null) != 0i32 {
-      packet = 0usize;
+    mut entries = null as *OverlappedEntry;
+    mut events = null as *EpollEvent;
+    if isWindows() {
+      // The high-resolution timer (Windows 10 1803 on); an ordinary one, as
+      // fine as the system's tick, before it
+      timer = CreateWaitableTimerExW(null, null, timerHighResolution, timerAllAccess);
+      if timer == 0usize {
+        timer = CreateWaitableTimerExW(null, null, 0u32, timerAllAccess);
+      }
+      if NtCreateWaitCompletionPacket(&mut packet, genericAll, null) != 0i32 {
+        packet = 0usize;
+      }
+      entries = libc.malloc(usize.from(batch) * mem.sizeof[OverlappedEntry]()) as *OverlappedEntry;
+    } else {
+      events = libc.malloc(usize.from(batch) * mem.sizeof[EpollEvent]()) as *EpollEvent;
     }
-    imm entries = libc.malloc(usize.from(batch) * mem.sizeof[OverlappedEntry]()) as *OverlappedEntry;
-    imm shared = new Arc[imm, Port](new Port(port, Atomic[bool].of(false)));
+    imm shared = new Arc[imm, Port](new Port(if isWindows() {port;} else {wake;}, Atomic[bool].of(false),
+      Atomic[u32].of(0u32), Mutex.make(), null, null));
     new Loop(
       loopId: diag.nextLoopId(), port: shared, portHandle: port,
       blocks: List[*Rec].empty(), recCount: 0u32, freeRec: noEntry, kernelHeld: 0u32,
@@ -209,7 +239,7 @@ pub struct Loop {
       decided: List[u32].empty(), heldC: List[Completion].empty(), heldT: List[Target].empty(),
       handles: List[HEntry].empty(), freeHandle: noEntry,
       wheel: Wheel.make(Instant.now()), expiries: List[Expiry].empty(),
-      entries: entries, timer: timer, packet: packet, associated: false,
+      entries: entries, events: events, timer: timer, packet: packet, associated: false,
       armedFor: new Instant(), woken: false, grace: Duration.fromMillis(1i64),
       stats: diag.Counters.zero(), sub: &diag.noSubscriber, subscribed: false);
   }
@@ -254,17 +284,30 @@ pub struct Loop {
     mut a = addr;
     // Winsock's listen, named through the module: Loop's own 'listen' is
     // the bare name here
+    if not isWindows() {
+      // A restarted server may bind its port again while old connections linger
+      mut one = 1i32;
+      setsockopt(s, solSocketLx, soReuseAddr, &mut one as *u8, 4i32);
+    }
     if bind(s, &mut a as *u8, a.size) != 0i32 or iocore.listen(s, backlog) != 0i32 {
       imm code = wsaError();
-      closesocket(s);
+      closeRaw(hSocket, s);
       return Error[Handle, IoError](new IoError(code));
     }
-    if CreateIoCompletionPort(s, portHandle, keyIo, 0u32) == 0usize {
-      imm code = GetLastError();
-      closesocket(s);
-      return Error[Handle, IoError](new IoError(code));
+    if isWindows() {
+      if CreateIoCompletionPort(s, portHandle, keyIo, 0u32) == 0usize {
+        imm code = GetLastError();
+        closesocket(s);
+        return Error[Handle, IoError](new IoError(code));
+      }
+      return Ok[Handle, IoError](self.register(s, hListener, addr.family()));
     }
-    Ok[Handle, IoError](self.register(s, hListener, addr.family()));
+    // Linux: epoll is told of it once it is a handle
+    mut code = 0u32;
+    mut h = Handle.none();
+    code, h = lxAdopt(self, s, hListener, addr.family());
+    if code != 0u32 {return Error[Handle, IoError](new IoError(code));}
+    Ok[Handle, IoError](h);
   }
 
   // A listening socket; a panic, at the caller's line, if there can be none
@@ -305,24 +348,40 @@ pub struct Loop {
   // A file, for ReadAt and WriteAt
   pub fn openFile(self &mut, path &Path, access Access) Result[Handle, IoError] {
     imm text &Array[u8] = path.view();
-    imm w = widen(text);
-    if w as usize == 0usize {return Error[Handle, IoError](new IoError(errorNoUnicodeTranslation));}
-    mut want = genericRead;
-    mut how = openExisting;
-    match access {
-      case is Access.Read {}
-      case is Access.Create {want = genericRead | genericWrite; how = createAlways;}
-      case is Access.Update {want = genericRead | genericWrite; how = openAlways;}
+    if isWindows() {
+      imm w = widen(text);
+      if w as usize == 0usize {return Error[Handle, IoError](new IoError(errorNoUnicodeTranslation));}
+      mut want = genericRead;
+      mut how = openExisting;
+      match access {
+        case is Access.Read {}
+        case is Access.Create {want = genericRead | genericWrite; how = createAlways;}
+        case is Access.Update {want = genericRead | genericWrite; how = openAlways;}
+      }
+      imm h = CreateFileW(w, want, shareAll, null, how, flagOverlapped, 0usize);
+      libc.free(w as *u8);
+      if h == invalidHandle {return Error[Handle, IoError](new IoError(GetLastError()));}
+      if CreateIoCompletionPort(h, portHandle, keyIo, 0u32) == 0usize {
+        imm code = GetLastError();
+        CloseHandle(h);
+        return Error[Handle, IoError](new IoError(code));
+      }
+      Ok[Handle, IoError](self.register(h, hFile, 0u16));
+    } else {
+      // Not epoll's: a file is read and written by the pool's threads
+      imm p = cstrCopy(text);
+      if p as usize == 0usize {return Error[Handle, IoError](new IoError(errorNotEnoughMemory));}
+      mut flags = oRdonly;
+      match access {
+        case is Access.Read {}
+        case is Access.Create {flags = oRdwr | oCreat | oTrunc;}
+        case is Access.Update {flags = oRdwr | oCreat;}
+      }
+      imm fd = sysOpen(p, flags | epollCloexec, 438u32);      // 0666, less the umask
+      libc.free(p);
+      if fd < 0i32 {return Error[Handle, IoError](new IoError(errnoCode(lastErrno())));}
+      Ok[Handle, IoError](self.register(usize.from(fd), hFile, 0u16));
     }
-    imm h = CreateFileW(w, want, shareAll, null, how, flagOverlapped, 0usize);
-    libc.free(w as *u8);
-    if h == invalidHandle {return Error[Handle, IoError](new IoError(GetLastError()));}
-    if CreateIoCompletionPort(h, portHandle, keyIo, 0u32) == 0usize {
-      imm code = GetLastError();
-      CloseHandle(h);
-      return Error[Handle, IoError](new IoError(code));
-    }
-    Ok[Handle, IoError](self.register(h, hFile, 0u16));
   }
 
   // Whether h names something this loop holds
@@ -334,9 +393,13 @@ pub struct Loop {
   pub fn close(self &mut, h Handle) bool {
     imm i = self.handleIndex(h);
     if i == noEntry {return false;}
+    // Linux: what waits on it is answered Cancelled now (a job already
+    // queued on a file is cancelled by the pool's own record)
+    lxCancelAll(self, i);
+    lxCancelFiles(self, h);
     imm e = &mut handles[usize.from(i)];
-    CancelIoEx(e.raw, null);
-    if e.kind == hFile {CloseHandle(e.raw);} else {closesocket(e.raw);}
+    if isWindows() {CancelIoEx(e.raw, null);}
+    closeRaw(e.kind, e.raw);
     e.kind = hFree;
     e.raw = 0usize;
     e.gen = if e.gen == 0xFFFFFFFFu32 {1u32;} else {e.gen + 1u32;};
@@ -363,9 +426,10 @@ pub struct Loop {
   pub fn reset(self &mut, h Handle) bool {
     imm i = self.handleIndex(h);
     if i == noEntry {return false;}
+    if handles[usize.from(i)].kind != hSocket {return false;}
+    lxCancelAll(self, i);
     imm e = &mut handles[usize.from(i)];
-    if e.kind != hSocket {return false;}
-    CancelIoEx(e.raw, null);
+    if isWindows() {CancelIoEx(e.raw, null);}
     resetSocket(e.raw);
     e.kind = hFree;
     e.raw = 0usize;
@@ -377,7 +441,7 @@ pub struct Loop {
 
   fn register(self &mut, raw usize, kind u32, family u16) Handle {
     if freeHandle == noEntry {
-      handles.push(new HEntry(0usize, 1u32, hFree, 0u16, noEntry));
+      handles.push(new HEntry(0usize, 1u32, hFree, 0u16, noEntry, noEntry, noEntry, noEntry, noEntry));
       freeHandle = u32.from(handles.len() - 1usize);
     }
     imm i = freeHandle;
@@ -387,6 +451,10 @@ pub struct Loop {
     e.kind = kind;
     e.family = family;
     e.nextFree = noEntry;
+    e.recvHead = noEntry;
+    e.recvTail = noEntry;
+    e.sendHead = noEntry;
+    e.sendTail = noEntry;
     new Handle(i, e.gen);
   }
 
@@ -885,8 +953,10 @@ pub struct Loop {
     } elif code != 0u32 {
       stats.atSubmit = stats.atSubmit + 1u64;
       self.decide(i, diag.outcomeFailed, 0usize, code);
-    } else {
-      if r.kind != diag.kindCall {kernelHeld = kernelHeld + 1u32;}
+    } elif r.state == stFlight {
+      // (Linux: an operation the socket took at once is decided already, and
+      // needs neither a deadline nor the kernel's holding)
+      if isWindows() and r.kind != diag.kindCall {kernelHeld = kernelHeld + 1u32;}
       if dl < forever() {
         r.timer = wheel.insert(dl, self.tokenOf(i));
       }
@@ -925,121 +995,141 @@ pub struct Loop {
 
   fn startConnect(self &mut, p *Rec, addr SocketAddr) u32 {
     imm r = p as &mut Rec;
-    if connectExAddr == 0usize {return errorInvalidParameter;}
-    imm s = tcpSocket(addr.family());
-    if s == invalidHandle {return wsaError();}
-    mut here = addr.wildcard();
-    if bind(s, &mut here as *u8, here.size) != 0i32 {
-      imm code = wsaError();
-      closesocket(s);
-      return code;
-    }
-    if CreateIoCompletionPort(s, portHandle, keyIo, 0u32) == 0usize {
-      imm code = GetLastError();
-      closesocket(s);
-      return code;
-    }
-    r.newSock = s;
-    r.handle = s;
-    r.family = addr.family();
-    mut a = addr;
-    libc.memcpy(&mut r.addr as *u8, &mut a as *u8, 28usize);
-    imm connectEx = connectExAddr as *u8 as ConnectExFn;
-    if connectEx(s, &mut r.addr as *u8, a.size, null, 0u32, null, p as *u8) == 0i32 {
-      imm code = wsaError();
-      if code != errorIoPending {
+    if isWindows() {
+      if connectExAddr == 0usize {return errorInvalidParameter;}
+      imm s = tcpSocket(addr.family());
+      if s == invalidHandle {return wsaError();}
+      mut here = addr.wildcard();
+      if bind(s, &mut here as *u8, here.size) != 0i32 {
+        imm code = wsaError();
         closesocket(s);
-        r.newSock = invalidHandle;
         return code;
       }
+      if CreateIoCompletionPort(s, portHandle, keyIo, 0u32) == 0usize {
+        imm code = GetLastError();
+        closesocket(s);
+        return code;
+      }
+      r.newSock = s;
+      r.handle = s;
+      r.family = addr.family();
+      mut a = addr;
+      libc.memcpy(&mut r.addr as *u8, &mut a as *u8, 28usize);
+      imm connectEx = connectExAddr as *u8 as ConnectExFn;
+      if connectEx(s, &mut r.addr as *u8, a.size, null, 0u32, null, p as *u8) == 0i32 {
+        imm code = wsaError();
+        if code != errorIoPending {
+          closesocket(s);
+          r.newSock = invalidHandle;
+          return code;
+        }
+      }
+      0u32;
+    } else {
+      lxStartConnect(self, p, addr);
     }
-    0u32;
   }
 
   fn startAccept(self &mut, p *Rec, listener Handle) u32 {
     imm r = p as &mut Rec;
-    if acceptExAddr == 0usize {return errorInvalidParameter;}
-    imm li = self.handleIndex(listener);
-    if li == noEntry {return errorInvalidHandle;}
-    imm e = handles[usize.from(li)];
-    if e.kind != hListener {return errorInvalidHandle;}
-    imm s = tcpSocket(e.family);
-    if s == invalidHandle {return wsaError();}
-    r.newSock = s;
-    r.handle = e.raw;
-    r.family = e.family;
-    imm acceptEx = acceptExAddr as *u8 as AcceptExFn;
-    if acceptEx(e.raw, s, &mut r.addr as *u8, 0u32, acceptAddrLen, acceptAddrLen, null, p as *u8) == 0i32 {
-      imm code = wsaError();
-      if code != errorIoPending {
-        closesocket(s);
-        r.newSock = invalidHandle;
-        return code;
+    if isWindows() {
+      if acceptExAddr == 0usize {return errorInvalidParameter;}
+      imm li = self.handleIndex(listener);
+      if li == noEntry {return errorInvalidHandle;}
+      imm e = handles[usize.from(li)];
+      if e.kind != hListener {return errorInvalidHandle;}
+      imm s = tcpSocket(e.family);
+      if s == invalidHandle {return wsaError();}
+      r.newSock = s;
+      r.handle = e.raw;
+      r.family = e.family;
+      imm acceptEx = acceptExAddr as *u8 as AcceptExFn;
+      if acceptEx(e.raw, s, &mut r.addr as *u8, 0u32, acceptAddrLen, acceptAddrLen, null, p as *u8) == 0i32 {
+        imm code = wsaError();
+        if code != errorIoPending {
+          closesocket(s);
+          r.newSock = invalidHandle;
+          return code;
+        }
       }
+      0u32;
+    } else {
+      lxStartAccept(self, p);
     }
-    0u32;
   }
 
   fn startRecv(self &mut, p *Rec, sock Handle, ready bool) u32 {
     imm r = p as &mut Rec;
-    imm raw = self.rawOf(sock, hSocket);
-    if raw == invalidHandle {return errorInvalidHandle;}
-    r.handle = raw;
-    if ready {
-      r.wsa.len = 0u32;
-      r.wsa.buf = null;
+    if isWindows() {
+      imm raw = self.rawOf(sock, hSocket);
+      if raw == invalidHandle {return errorInvalidHandle;}
+      r.handle = raw;
+      if ready {
+        r.wsa.len = 0u32;
+        r.wsa.buf = null;
+      } else {
+        imm room = r.buf.room();
+        if room == 0usize {return errorInsufficientBuffer;}
+        r.wsa.len = if room > 0xFFFFFFFFusize {0xFFFFFFFFu32;} else {u32.from(room);};
+        r.wsa.buf = r.buf.base() + r.buf.len();
+      }
+      r.flags = 0u32;
+      if WSARecv(raw, &mut r.wsa as *WsaBuf, 1u32, null, &mut r.flags, p as *u8, null) != 0i32 {
+        imm code = wsaError();
+        if code != errorIoPending {return code;}
+      }
+      0u32;
     } else {
-      imm room = r.buf.room();
-      if room == 0usize {return errorInsufficientBuffer;}
-      r.wsa.len = if room > 0xFFFFFFFFusize {0xFFFFFFFFu32;} else {u32.from(room);};
-      r.wsa.buf = r.buf.base() + r.buf.len();
+      lxStartRecv(self, p, ready);
     }
-    r.flags = 0u32;
-    if WSARecv(raw, &mut r.wsa as *WsaBuf, 1u32, null, &mut r.flags, p as *u8, null) != 0i32 {
-      imm code = wsaError();
-      if code != errorIoPending {return code;}
-    }
-    0u32;
   }
 
   fn startSend(self &mut, p *Rec, sock Handle, data *u8, len usize) u32 {
     imm r = p as &mut Rec;
-    imm raw = self.rawOf(sock, hSocket);
-    if raw == invalidHandle {return errorInvalidHandle;}
-    if len > 0xFFFFFFFFusize {return errorInvalidParameter;}
-    r.handle = raw;
-    r.wsa.len = u32.from(len);
-    r.wsa.buf = data;
-    if WSASend(raw, &mut r.wsa as *WsaBuf, 1u32, null, 0u32, p as *u8, null) != 0i32 {
-      imm code = wsaError();
-      if code != errorIoPending {return code;}
+    if isWindows() {
+      imm raw = self.rawOf(sock, hSocket);
+      if raw == invalidHandle {return errorInvalidHandle;}
+      if len > 0xFFFFFFFFusize {return errorInvalidParameter;}
+      r.handle = raw;
+      r.wsa.len = u32.from(len);
+      r.wsa.buf = data;
+      if WSASend(raw, &mut r.wsa as *WsaBuf, 1u32, null, 0u32, p as *u8, null) != 0i32 {
+        imm code = wsaError();
+        if code != errorIoPending {return code;}
+      }
+      0u32;
+    } else {
+      lxStartSend(self, p);
     }
-    0u32;
   }
 
   fn startFile(self &mut, p *Rec, file Handle, at u64, write bool) u32 {
     imm r = p as &mut Rec;
-    imm raw = self.rawOf(file, hFile);
-    if raw == invalidHandle {return errorInvalidHandle;}
-    r.handle = raw;
-    r.ov.offset = u32.from(at & 0xFFFFFFFFu64);
-    r.ov.offsetHigh = u32.from(at >> 32u64);
-    mut ok = 0i32;
-    if write {
-      imm len = r.buf.len();
-      if len > 0xFFFFFFFFusize {return errorInvalidParameter;}
-      ok = WriteFile(raw, r.buf.base(), u32.from(len), null, p as *u8);
+    if isWindows() {
+      imm raw = self.rawOf(file, hFile);
+      if raw == invalidHandle {return errorInvalidHandle;}
+      r.handle = raw;
+      r.ov.offset = u32.from(at & 0xFFFFFFFFu64);
+      r.ov.offsetHigh = u32.from(at >> 32u64);
+      mut ok = 0i32;
+      if write {
+        imm len = r.buf.len();
+        if len > 0xFFFFFFFFusize {return errorInvalidParameter;}
+        ok = WriteFile(raw, r.buf.base(), u32.from(len), null, p as *u8);
+      } else {
+        imm room = r.buf.room();
+        if room == 0usize {return errorInsufficientBuffer;}
+        imm want = if room > 0xFFFFFFFFusize {0xFFFFFFFFu32;} else {u32.from(room);};
+        ok = ReadFile(raw, r.buf.base() + r.buf.len(), want, null, p as *u8);
+      }
+      if ok == 0i32 {
+        imm code = GetLastError();
+        if code != errorIoPending {return code;}
+      }
+      0u32;
     } else {
-      imm room = r.buf.room();
-      if room == 0usize {return errorInsufficientBuffer;}
-      imm want = if room > 0xFFFFFFFFusize {0xFFFFFFFFu32;} else {u32.from(room);};
-      ok = ReadFile(raw, r.buf.base() + r.buf.len(), want, null, p as *u8);
+      lxStartFile(self, p, write);
     }
-    if ok == 0i32 {
-      imm code = GetLastError();
-      if code != errorIoPending {return code;}
-    }
-    0u32;
   }
 
   // A job for the blocking pool: boxed with a waker of this loop, its
@@ -1096,7 +1186,7 @@ pub struct Loop {
       if r.job as usize != 0usize {(*r.job).asked.store(1u32);}
       return;
     }
-    if r.kind == diag.kindCall {
+    if boxed(r.kind) {
       if r.job as usize != 0usize and removeBox(r.job) {
         r.buf <=> (r.job as &mut JobBox).buf;
         dropBox(r.job);
@@ -1105,7 +1195,7 @@ pub struct Loop {
       }
       return;
     }
-    CancelIoEx(r.handle, p as *u8);
+    if isWindows() {CancelIoEx(r.handle, p as *u8);} else {lxCancel(self, i, outcome);}
   }
 
   // A cancel group has been cancelled: every operation in flight in a
@@ -1136,53 +1226,56 @@ pub struct Loop {
   // -------------------------------------------------------------------------
 
   // The kernel has completed record p, moving 'bytes'
+  // (Windows only: Linux's operations are tried by linux.cone, not completed)
   fn complete(self &mut, p *Rec, bytes u32, at Instant) {
-    imm r = p as &mut Rec;
-    kernelHeld = kernelHeld - 1u32;
-    if r.state == stAbandoned {
-      // Its answer went long ago: the buffer goes home, the record is free
+    if isWindows() {
+      imm r = p as &mut Rec;
+      kernelHeld = kernelHeld - 1u32;
+      if r.state == stAbandoned {
+        // Its answer went long ago: the buffer goes home, the record is free
+        if r.newSock != invalidHandle {
+          closesocket(r.newSock);
+          r.newSock = invalidHandle;
+        }
+        mut b = IoBuf.empty();
+        b <=> r.buf;
+        r.bytes = None;
+        stats.lateReturns = stats.lateReturns + 1u64;
+        self.freeRecord(r.index);
+        return;
+      }
+      r.dequeued = at;
+      imm status = r.ov.internal & 0xFFFFFFFFusize;
+      imm n = usize.from(bytes);
+      if status == statusSuccess {
+        if r.kind == diag.kindRecv or r.kind == diag.kindReadAt {
+          r.buf.setLen(r.buf.len() + n);
+        }
+        if r.kind == diag.kindAccept or r.kind == diag.kindConnect {
+          imm code = self.adopt(p);
+          if code != 0u32 {
+            self.decide(r.index, diag.outcomeFailed, 0usize, code);
+            return;
+          }
+        }
+        self.decide(r.index, diag.outcomeDone, n, 0u32);
+        return;
+      }
       if r.newSock != invalidHandle {
         closesocket(r.newSock);
         r.newSock = invalidHandle;
       }
-      mut b = IoBuf.empty();
-      b <=> r.buf;
-      r.bytes = None;
-      stats.lateReturns = stats.lateReturns + 1u64;
-      self.freeRecord(r.index);
-      return;
-    }
-    r.dequeued = at;
-    imm status = r.ov.internal & 0xFFFFFFFFusize;
-    imm n = usize.from(bytes);
-    if status == statusSuccess {
-      if r.kind == diag.kindRecv or r.kind == diag.kindReadAt {
-        r.buf.setLen(r.buf.len() + n);
-      }
-      if r.kind == diag.kindAccept or r.kind == diag.kindConnect {
-        imm code = self.adopt(p);
-        if code != 0u32 {
-          self.decide(r.index, diag.outcomeFailed, 0usize, code);
-          return;
+      if status == statusCancelled {
+        if r.asked == askedDeadline {
+          self.decide(r.index, diag.outcomeTimedOut, 0usize, 0u32);
+        } else {
+          self.decide(r.index, diag.outcomeCancelled, 0usize, 0u32);
         }
-      }
-      self.decide(r.index, diag.outcomeDone, n, 0u32);
-      return;
-    }
-    if r.newSock != invalidHandle {
-      closesocket(r.newSock);
-      r.newSock = invalidHandle;
-    }
-    if status == statusCancelled {
-      if r.asked == askedDeadline {
-        self.decide(r.index, diag.outcomeTimedOut, 0usize, 0u32);
+      } elif status == statusEndOfFile {
+        self.decide(r.index, diag.outcomeDone, 0usize, 0u32);
       } else {
-        self.decide(r.index, diag.outcomeCancelled, 0usize, 0u32);
+        self.decide(r.index, diag.outcomeFailed, 0usize, RtlNtStatusToDosError(u32.from(status)));
       }
-    } elif status == statusEndOfFile {
-      self.decide(r.index, diag.outcomeDone, 0usize, 0u32);
-    } else {
-      self.decide(r.index, diag.outcomeFailed, 0usize, RtlNtStatusToDosError(u32.from(status)));
     }
   }
 
@@ -1215,30 +1308,35 @@ pub struct Loop {
 
   // An accepted or connected socket is finished and registered: 0, or the
   // error that stopped it (the socket is then closed)
+  // (Windows only: Linux adopts a socket where it makes or accepts it)
   fn adopt(self &mut, p *Rec) u32 {
-    imm r = p as &mut Rec;
-    imm s = r.newSock;
-    r.newSock = invalidHandle;
-    mut rc = 0i32;
-    if r.kind == diag.kindAccept {
-      mut listener = r.handle;
-      rc = setsockopt(s, solSocket, soUpdateAcceptContext, &mut listener as *u8, 8i32);
-      if rc == 0i32 and CreateIoCompletionPort(s, portHandle, keyIo, 0u32) == 0usize {
-        imm code = GetLastError();
+    if isWindows() {
+      imm r = p as &mut Rec;
+      imm s = r.newSock;
+      r.newSock = invalidHandle;
+      mut rc = 0i32;
+      if r.kind == diag.kindAccept {
+        mut listener = r.handle;
+        rc = setsockopt(s, solSocket, soUpdateAcceptContext, &mut listener as *u8, 8i32);
+        if rc == 0i32 and CreateIoCompletionPort(s, portHandle, keyIo, 0u32) == 0usize {
+          imm code = GetLastError();
+          closesocket(s);
+          return code;
+        }
+      } else {
+        rc = setsockopt(s, solSocket, soUpdateConnectContext, null, 0i32);
+      }
+      if rc != 0i32 {
+        imm code = wsaError();
         closesocket(s);
         return code;
       }
+      noDelay(s);
+      r.newHandle = self.register(s, hSocket, r.family);
+      0u32;
     } else {
-      rc = setsockopt(s, solSocket, soUpdateConnectContext, null, 0i32);
+      errorInvalidParameter;
     }
-    if rc != 0i32 {
-      imm code = wsaError();
-      closesocket(s);
-      return code;
-    }
-    noDelay(s);
-    r.newHandle = self.register(s, hSocket, r.family);
-    0u32;
   }
 
   // Fire what the wheel says is due by now: a timer answers Done; an
@@ -1328,74 +1426,93 @@ pub struct Loop {
   // when wakeAt never comes
   fn armFor(self &mut, wakeAt Instant, now Instant) u32 {
     if wakeAt >= forever() {return infinite;}
-    imm left = (wakeAt - now).nanos();
-    if packet != 0usize and (not associated or armedFor != wakeAt) {
-      // Relative, in 100 ns units: negative
-      mut due = 0i64 - (left + 99i64) / 100i64;
-      SetWaitableTimer(timer, &due, 0i32, null, null, 0i32);
-      armedFor = wakeAt;
-      if not associated {
-        mut already = 0u8;
-        if NtAssociateWaitCompletionPacket(packet, portHandle, timer, keyTimer as *u8, null,
-            0i32, 0usize, &mut already as *u8) == 0i32 {
-          associated = true;
+    if isWindows() {
+      imm left = (wakeAt - now).nanos();
+      if packet != 0usize and (not associated or armedFor != wakeAt) {
+        // Relative, in 100 ns units: negative
+        mut due = 0i64 - (left + 99i64) / 100i64;
+        SetWaitableTimer(timer, &due, 0i32, null, null, 0i32);
+        armedFor = wakeAt;
+        if not associated {
+          mut already = 0u8;
+          if NtAssociateWaitCompletionPacket(packet, portHandle, timer, keyTimer as *u8, null,
+              0i32, 0usize, &mut already as *u8) == 0i32 {
+            associated = true;
+          }
         }
       }
+      imm ms = (left + 999999i64) / 1000000i64 + 1i64;
+      if ms >= i64.from(infinite) {infinite - 1u32;} else {u32.from(ms);};
+    } else {
+      lxArm(self, wakeAt, now);
     }
-    imm ms = (left + 999999i64) / 1000000i64 + 1i64;
-    if ms >= i64.from(infinite) {infinite - 1u32;} else {u32.from(ms);};
   }
 
   // One wait in the kernel, for at most ms, and what it brought processed:
   // how many answers posted by other loops went to out
   fn dequeue(self &mut, ms u32, out &mut List[Completion]) usize {
-    mut got = 0u32;
-    imm ok = GetQueuedCompletionStatusEx(portHandle, entries, batch, &mut got, ms, 0i32);
-    if ms != 0u32 {stats.waits = stats.waits + 1u64;}
-    if ok == 0i32 or got == 0u32 {
-      if ms != 0u32 and ms != infinite {stats.waitTimeouts = stats.waitTimeouts + 1u64;}
-      return 0usize;
-    }
-    imm at = Instant.now();
-    stats.dequeued = stats.dequeued + u64.from(got);
-    if u64.from(got) > stats.largestBatch {stats.largestBatch = u64.from(got);}
-    mut n = 0usize;
-    mut k = 0usize;
-    while k < usize.from(got) {
-      imm e = entries + k;
-      imm key = (*e).key;
-      if key == keyIo {
-        self.complete((*e).ov as *Rec, (*e).bytes, at);
-      } elif key == keyJob {
-        self.completeJob((*e).ov as *JobBox, at);
-      } elif key == keyTimer {
-        associated = false;
-        stats.timerExpiries = stats.timerExpiries + 1u64;
-      } elif key == keyWake {
-        woken = true;
-        stats.wakes = stats.wakes + 1u64;
-      } elif key == keyCancel {
-        imm number = u64.from((*e).ov as usize);
-        stats.remoteCancels = stats.remoteCancels + 1u64;
-        self.cancel(new OpId(u32.from(number & 0xFFFFFFFFu64), u32.from(number >> 32u64)));
-      } elif key == keyGroup {
-        groupsDirty = true;
-      } elif key == keyPost {
-        imm block = (*e).ov as *Completion;
-        mut c = mem.readRaw[Completion](block);
-        libc.free(block as *u8);
-        c.delivered = at;
-        stats.postsReceived = stats.postsReceived + 1u64;
-        if subscribed {
-          imm rec = c.record();
-          (sub)(&rec);
-        }
-        out.push(c);
-        n = n + 1usize;
+    if isWindows() {
+      mut got = 0u32;
+      imm ok = GetQueuedCompletionStatusEx(portHandle, entries, batch, &mut got, ms, 0i32);
+      if ms != 0u32 {stats.waits = stats.waits + 1u64;}
+      if ok == 0i32 or got == 0u32 {
+        if ms != 0u32 and ms != infinite {stats.waitTimeouts = stats.waitTimeouts + 1u64;}
+        return 0usize;
       }
-      k = k + 1usize;
+      imm at = Instant.now();
+      stats.dequeued = stats.dequeued + u64.from(got);
+      if u64.from(got) > stats.largestBatch {stats.largestBatch = u64.from(got);}
+      mut n = 0usize;
+      mut k = 0usize;
+      while k < usize.from(got) {
+        imm e = entries + k;
+        imm key = (*e).key;
+        if key == keyIo {
+          self.complete((*e).ov as *Rec, (*e).bytes, at);
+        } elif key == keyTimer {
+          associated = false;
+          stats.timerExpiries = stats.timerExpiries + 1u64;
+        } else {
+          n = n + self.handlePacket(key, (*e).ov, at, out);
+        }
+        k = k + 1usize;
+      }
+      if groupsDirty {self.sweepGroups();}
+      n;
+    } else {
+      lxDequeue(self, ms, out);
     }
-    if groupsDirty {self.sweepGroups();}
+  }
+
+  // A packet another thread posted to the loop (the same on both systems):
+  // a job come home, a wake, a cancel, a cancelled group, an answer for this
+  // loop. How many answers went to out
+  fn handlePacket(self &mut, key usize, ov *u8, at Instant, out &mut List[Completion]) usize {
+    mut n = 0usize;
+    if key == keyJob {
+      self.completeJob(ov as *JobBox, at);
+    } elif key == keyWake {
+      woken = true;
+      stats.wakes = stats.wakes + 1u64;
+    } elif key == keyCancel {
+      imm number = u64.from(ov as usize);
+      stats.remoteCancels = stats.remoteCancels + 1u64;
+      self.cancel(new OpId(u32.from(number & 0xFFFFFFFFu64), u32.from(number >> 32u64)));
+    } elif key == keyGroup {
+      groupsDirty = true;
+    } elif key == keyPost {
+      imm block = ov as *Completion;
+      mut c = mem.readRaw[Completion](block);
+      libc.free(block as *u8);
+      c.delivered = at;
+      stats.postsReceived = stats.postsReceived + 1u64;
+      if subscribed {
+        imm rec = c.record();
+        (sub)(&rec);
+      }
+      out.push(c);
+      n = 1usize;
+    }
     n;
   }
 
@@ -1410,14 +1527,16 @@ pub struct Loop {
     // stream, not as the cancel it is), then every handle closed
     mut h = 0usize;
     while h < handles.len() {
-      if handles[h].kind != hFree {CancelIoEx(handles[h].raw, null);}
+      if handles[h].kind != hFree {
+        if isWindows() {CancelIoEx(handles[h].raw, null);} else {lxCancelAll(self, u32.from(h));}
+      }
       h = h + 1usize;
     }
     h = 0usize;
     while h < handles.len() {
       imm e = &mut handles[h];
       if e.kind != hFree {
-        if e.kind == hFile {CloseHandle(e.raw);} else {closesocket(e.raw);}
+        closeRaw(e.kind, e.raw);
         e.kind = hFree;
       }
       h = h + 1usize;
@@ -1440,10 +1559,12 @@ pub struct Loop {
           }
           r.job = null;
           self.decide(i, diag.outcomeCancelled, 0usize, 0u32);
-        } elif r.kind == diag.kindConnect and r.newSock != invalidHandle {
-          CancelIoEx(r.newSock, null);
-        } else {
-          CancelIoEx(r.handle, p as *u8);
+        } elif isWindows() {
+          if r.kind == diag.kindConnect and r.newSock != invalidHandle {
+            CancelIoEx(r.newSock, null);
+          } else {
+            CancelIoEx(r.handle, p as *u8);
+          }
         }
       }
       i = i + 1u32;
@@ -1464,11 +1585,18 @@ pub struct Loop {
     stats.handedDropped = stats.handedDropped + u64.from(heldC.len());
     heldC.clear();
     heldT.clear();
-    if packet != 0usize {
-      NtCancelWaitCompletionPacket(packet, 1u8);
-      CloseHandle(packet);
+    if isWindows() {
+      if packet != 0usize {
+        NtCancelWaitCompletionPacket(packet, 1u8);
+        CloseHandle(packet);
+      }
+      if timer != 0usize {CloseHandle(timer);}
+    } else {
+      // The timerfd and the epoll instance (the eventfd is the Port's, closed
+      // by its last owner)
+      sysClose(fdOf(timer));
+      sysClose(fdOf(portHandle));
     }
-    if timer != 0usize {CloseHandle(timer);}
     // The table's blocks, every record's empty values with them
     mut b = 0usize;
     while b < blocks.len() {
@@ -1482,5 +1610,6 @@ pub struct Loop {
       b = b + 1usize;
     }
     libc.free(entries as *u8);
+    libc.free(events as *u8);
   }
 }

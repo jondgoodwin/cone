@@ -435,7 +435,11 @@ pub enum Access {
 // Addresses
 // ---------------------------------------------------------------------------
 
-// An IPv4 or IPv6 address and a port, as Winsock's sockaddr holds them
+// AF_INET6, the family of an IPv6 address: Windows' number is 23, Linux's 10
+// (AF_INET is 2 on both)
+fn afInet6Tag() u8 {if isWindows() {23u8;} else {10u8;}}
+
+// An IPv4 or IPv6 address and a port, as the OS's sockaddr holds them
 pub struct SocketAddr {
   raw Array[u8, 28];
   size i32;
@@ -459,7 +463,7 @@ pub struct SocketAddr {
   // [addr]:port, addr its 16 bytes
   pub fn v6(addr &Array[u8], port u16) SocketAddr {
     mut s = new SocketAddr(new Array[u8, 28] <- fill 0u8, 28i32);
-    s.raw[0usize] = 23u8;
+    s.raw[0usize] = afInet6Tag();
     s.setPort(port);
     mut i = 0usize;
     while i < 16usize and i < addr.len {
@@ -472,14 +476,14 @@ pub struct SocketAddr {
   // [::1]:port
   pub fn v6Localhost(port u16) SocketAddr {
     mut s = new SocketAddr(new Array[u8, 28] <- fill 0u8, 28i32);
-    s.raw[0usize] = 23u8;
+    s.raw[0usize] = afInet6Tag();
     s.setPort(port);
     s.raw[23usize] = 1u8;
     s;
   }
 
   pub fn port(self &) u16 {(u16.from(raw[2usize]) << 8u16) | u16.from(raw[3usize]);}
-  pub fn isV6(self &) bool {raw[0usize] == 23u8;}
+  pub fn isV6(self &) bool {raw[0usize] == afInet6Tag();}
   pub fn family(self &) u16 {u16.from(raw[0usize]);}
 
   fn setPort(self &mut, port u16) {
@@ -637,33 +641,94 @@ fn blankCompletion() Completion {
 // Sendable, a promise taken on trust: the port's handle is safe to use from
 // any thread, which is what a port is for
 struct Port is Sendable {
-  handle usize;
+  handle usize;           // Windows: the completion port. Linux: the eventfd that wakes the loop
   closed Atomic[bool];    // its loop has gone: nobody will take what is posted
+  // Linux: the packets other threads have posted (the OS holds them on
+  // Windows), under 'lock'; 'pending' says the eventfd has been written to
+  // since the loop last took them
+  pending Atomic[u32];
+  lock Mutex;
+  head *Packet;
+  tail *Packet;
+
+  // Its queue, changed under its lock through a shared reference
+  fn lists(self &) &mut Port {
+    imm p = self as *Port;
+    p as &mut Port;
+  }
+
+  // Post a packet for the loop to take: its key, and a pointer that means
+  // what the key says. False if it could not be queued
+  fn send(self &, key usize, ov *u8) bool {
+    if isWindows() {
+      PostQueuedCompletionStatus(handle, 0u32, key, ov) != 0i32;
+    } else {
+      imm node = libc.malloc(mem.sizeof[Packet]()) as *Packet;
+      if node as usize == 0usize {return false;}
+      (*node).key = key;
+      (*node).ov = ov;
+      (*node).next = null;
+      imm st = self.lists();
+      st.lock.lock();
+      if st.tail as usize == 0usize {st.head = node;} else {(*st.tail).next = node;}
+      st.tail = node;
+      st.lock.unlock();
+      // One write wakes the loop for all the packets queued before it takes them
+      if pending.swap(1u32) == 0u32 {
+        mut one = 1u64;
+        sysWrite(fdOf(handle), &mut one as *u8, 8usize);
+      }
+      true;
+    }
+  }
 
   // The last owner has gone: answers posted since the loop died are
   // dropped (their buffers go home), and the port closed
   fn final(self &uni) {
-    imm entries = libc.malloc(64usize * mem.sizeof[OverlappedEntry]()) as *OverlappedEntry;
-    while true {
-      mut got = 0u32;
-      if GetQueuedCompletionStatusEx(handle, entries, 64u32, &mut got, 0u32, 0i32) == 0i32 or got == 0u32 {
-        break;
-      }
-      mut k = 0usize;
-      while k < usize.from(got) {
-        imm e = entries + k;
-        if (*e).key == keyPost {
-          mem.finalize[Completion]((*e).ov as *Completion);
-          libc.free((*e).ov);
-        } elif (*e).key == keyJob {
-          dropBox((*e).ov as *JobBox);
+    if isWindows() {
+      imm entries = libc.malloc(64usize * mem.sizeof[OverlappedEntry]()) as *OverlappedEntry;
+      while true {
+        mut got = 0u32;
+        if GetQueuedCompletionStatusEx(handle, entries, 64u32, &mut got, 0u32, 0i32) == 0i32 or got == 0u32 {
+          break;
         }
-        k = k + 1usize;
+        mut k = 0usize;
+        while k < usize.from(got) {
+          imm e = entries + k;
+          if (*e).key == keyPost {
+            mem.finalize[Completion]((*e).ov as *Completion);
+            libc.free((*e).ov);
+          } elif (*e).key == keyJob {
+            dropBox((*e).ov as *JobBox);
+          }
+          k = k + 1usize;
+        }
       }
+      libc.free(entries as *u8);
+      CloseHandle(handle);
+    } else {
+      mut node = head;
+      while node as usize != 0usize {
+        imm next = (*node).next;
+        if (*node).key == keyPost {
+          mem.finalize[Completion]((*node).ov as *Completion);
+          libc.free((*node).ov);
+        } elif (*node).key == keyJob {
+          dropBox((*node).ov as *JobBox);
+        }
+        libc.free(node as *u8);
+        node = next;
+      }
+      sysClose(fdOf(handle));
     }
-    libc.free(entries as *u8);
-    CloseHandle(handle);
   }
+}
+
+// A packet in the queue of a Linux Port
+struct Packet {
+  key usize;
+  ov *u8;
+  next *Packet;
 }
 
 // What wakes a loop's poll from any thread, and what Target.Post delivers
@@ -674,7 +739,7 @@ pub struct Waker {
   // End the loop's current or next poll: false if the loop has gone
   pub fn wake(self &) bool {
     if port.closed.load() {return false;}
-    PostQueuedCompletionStatus(port.handle, 0u32, keyWake, null) != 0i32;
+    port.send(keyWake, null);
   }
 
   // Post an answer to the loop: false, and the answer dropped (its buffer
@@ -683,7 +748,7 @@ pub struct Waker {
     if port.closed.load() {return false;}
     imm block = libc.malloc(mem.sizeof[Completion]()) as *Completion;
     mem.writeRaw[Completion](block, c);
-    if PostQueuedCompletionStatus(port.handle, 0u32, keyPost, block as *u8) == 0i32 {
+    if not port.send(keyPost, block as *u8) {
       mem.finalize[Completion](block);
       libc.free(block as *u8);
       return false;
@@ -698,20 +763,20 @@ pub struct Waker {
   // has gone
   fn signal(self &, key usize) bool {
     if port.closed.load() {return false;}
-    PostQueuedCompletionStatus(port.handle, 0u32, key, null) != 0i32;
+    port.send(key, null);
   }
 
   // Ask the loop to cancel operation id: false if the loop has gone
   fn postCancel(self &, id OpId) bool {
     if port.closed.load() {return false;}
-    PostQueuedCompletionStatus(port.handle, 0u32, keyCancel, usize.from(id.number()) as *u8) != 0i32;
+    port.send(keyCancel, usize.from(id.number()) as *u8);
   }
 
   // Hand a job that has run back to its loop: false, and the box still the
   // caller's, if the loop has gone
   fn postJob(self &, b *JobBox) bool {
     if port.closed.load() {return false;}
-    PostQueuedCompletionStatus(port.handle, 0u32, keyJob, b as *u8) != 0i32;
+    port.send(keyJob, b as *u8);
   }
 }
 

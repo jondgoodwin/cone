@@ -125,6 +125,12 @@ runtime = ["SDL3"]
 | `paths` | folders the linker searches for them first; a relative one is relative to the package folder. Optional |
 | `runtime` | the DLLs a program using the package loads when it runs, each by its bare name: `SDL3` for `SDL3.dll`. Congo copies them beside every program it links (below, "Runtime libraries"). Optional |
 
+Each of the three keys also has a per-system form, `windows-libraries`,
+`linux-paths`, `macos-runtime` and so on, for what only one system's build needs
+(Windows' `ws2_32` is no library on Linux). Congo reads the all-systems key's
+list and then the host's per-system list, and ignores the other systems' (their
+names are still checked).
+
 That is the whole manifest; any other key or table is an error. **There is no
 dependencies section**: the `import` lines in the source are the dependency
 list, and the registries say where each dependency is.
@@ -348,10 +354,9 @@ it, synchronization validation included, and fail on any message.
 `thread`, OS threads and the futex, is Cone code over `extern` declarations
 of the C runtime and Windows, not a C package, and names no `[link]` library.
 The futex calls `WaitOnAddress` and its wakes, which the Windows SDK's
-`Synchronization.lib` defines and the C runtime's default link line lacks; since
-`[link]` has no per-system form, Congo's Windows link line adds
-`synchronization.lib` itself, beside `msvcrt.lib`. A program that calls none of it
-takes nothing from it.
+`Synchronization.lib` defines and the C runtime's default link line lacks, so
+Congo's Windows link line adds `synchronization.lib` itself, beside `msvcrt.lib`. A
+program that calls none of it takes nothing from it.
 
 ## Runtime libraries
 

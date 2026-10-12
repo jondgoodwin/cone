@@ -1318,6 +1318,16 @@ class Scenarios(unittest.TestCase):
                       self.congo("build", cwd=pkg, ok=False).stderr)
         write(pkg / "congo.toml", head + '[link]\nlibraries = ["SDL2"]\npaths = ["x"]\n')
         self.congo("build", cwd=pkg)     # a library links nothing, so names are only read
+        # ...and each key has a per-system form: the host's is read (and
+        # checked like any), the other systems' are not, though their names are
+        host, other = ("windows", "macos") if congo.IS_WINDOWS else ("linux", "windows")
+        write(pkg / "congo.toml", head + f'[link]\n{other}-libraries = ["SDL2.lib"]\n')
+        self.congo("build", cwd=pkg)
+        write(pkg / "congo.toml", head + f'[link]\n{host}-libraries = ["SDL2.lib"]\n')
+        self.assertIn("bare name", self.congo("build", cwd=pkg, ok=False).stderr)
+        write(pkg / "congo.toml", head + '[link]\nbsd-libraries = ["SDL2"]\n')
+        self.assertIn("'bsd-libraries' is not a [link] key",
+                      self.congo("build", cwd=pkg, ok=False).stderr)
 
     def test_a_keyword_cannot_name_a_lone_file(self):
         # Wherever Congo takes a module's name from a file or a folder, a word

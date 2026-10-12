@@ -1,0 +1,881 @@
+// Linux: everything iocore asks of the OS, in one place, beside windows.cone.
+// The loop is an epoll instance, with an eventfd that other threads wake it
+// by (their packets wait in a queue of the Port, under a lock, and the
+// eventfd says there are some) and a timerfd that ends its wait on time.
+//
+// The model differs from Windows' in one way that shapes the rest. A
+// completion port is told "do this" and later "it is done"; epoll is told
+// "tell me when this socket can" and the program does the call itself. So a
+// socket operation here is tried at once, without waiting (every socket is
+// non-blocking); if the kernel says it would block, the operation waits in a
+// queue of its handle, receives in one and sends and connects in the other,
+// and when epoll says the socket is ready the head of the queue is tried
+// again, in order, until one would block. The sockets are registered edge
+// triggered, once, for reading and writing both, which is what makes this
+// cheap: nothing is re-armed, and an event arrives for every change from not
+// ready to ready, so an operation tried and told to wait cannot miss the
+// change that follows. A cancel or a deadline needs no help from the kernel:
+// the operation is taken out of its queue and answered then and there, its
+// buffer with it, so a Linux loop has nothing it must wait for at its death
+// and never answers a TimedOut without the buffer.
+//
+// Files are not epoll's: a regular file is always "ready", and reading it can
+// still block on a disk. ReadAt and WriteAt run as jobs on a lane of the
+// blocking pool of their own ('pread' and 'pwrite' on a duplicate of the
+// descriptor, so that closing the handle while a job runs is harmless), and
+// answer through the loop like any pool job. io_uring would give files the
+// completion form Windows has, and was not chosen: it is blocked by default
+// in the seccomp profile of Docker and of the container runtimes built on it
+// (where the playground and any server of ours will run), and a ring is a
+// larger thing to build from Cone alone than the epoll calls are.
+//
+// The numbers an error is given. An IoError's code is Windows' error number
+// on every system, so that a program and its tests read the same codes
+// everywhere: Linux's errno values are turned into the Windows number that
+// names the same condition (ECONNREFUSED is ERROR_CONNECTION_REFUSED, 1225;
+// a reset is ERROR_NETNAME_DELETED, 64), and one without such a number is its
+// errno above 'errnoBase'. 'systemText' turns either back into the C
+// library's words.
+
+// epoll's struct epoll_event on x86-64, where it is packed: 12 bytes, the
+// events and then the 64-bit datum as two words
+struct EpollEvent {
+  pub events u32;
+  pub lo u32;
+  pub hi u32;
+}
+
+// struct itimerspec: a timer's period, then its first expiry, each seconds
+// and nanoseconds
+struct ItimerSpec {
+  pub intervalSec i64;
+  pub intervalNsec i64;
+  pub valueSec i64;
+  pub valueNsec i64;
+}
+
+// struct linger
+struct LingerLx {
+  pub onoff i32;
+  pub secs i32;
+}
+
+// struct addrinfo, as getaddrinfo's results are linked
+struct AddrInfoLx {
+  pub flags i32;
+  pub family i32;
+  pub socktype i32;
+  pub protocol i32;
+  pub addrlen u32;
+  pub pad u32;
+  pub addr *u8;
+  pub canonname *u8;
+  pub next *AddrInfoLx;
+}
+
+extern {
+  fn @c epoll_create1(flags i32) i32;
+  fn @c epoll_ctl(epfd i32, op i32, fd i32, ev *EpollEvent) i32;
+  fn @c epoll_wait(epfd i32, events *EpollEvent, max i32, timeout i32) i32;
+  fn @c eventfd(initial u32, flags i32) i32;
+  fn @c timerfd_create(clock i32, flags i32) i32;
+  fn @c timerfd_settime(fd i32, flags i32, spec *ItimerSpec, old *ItimerSpec) i32;
+  fn @c("read") sysRead(fd i32, buf *u8, n usize) i64;
+  fn @c("write") sysWrite(fd i32, buf *u8, n usize) i64;
+  fn @c("close") sysClose(fd i32) i32;
+  fn @c("socket") sysSocket(domain i32, kind i32, proto i32) i32;
+  fn @c("accept4") sysAccept4(fd i32, addr *u8, len *u32, flags i32) i32;
+  fn @c("connect") sysConnect(fd i32, addr *u8, len u32) i32;
+  fn @c("recv") sysRecv(fd i32, buf *u8, n usize, flags i32) i64;
+  fn @c("send") sysSend(fd i32, buf *u8, n usize, flags i32) i64;
+  fn @c("getsockopt") sysGetsockopt(fd i32, level i32, name i32, val *u8, len *u32) i32;
+  fn @c("open") sysOpen(path *u8, flags i32, mode u32) i32;
+  fn @c("fcntl") sysFcntl(fd i32, cmd i32, arg i32) i32;
+  fn @c("pread") sysPread(fd i32, buf *u8, n usize, at i64) i64;
+  fn @c("pwrite") sysPwrite(fd i32, buf *u8, n usize, at i64) i64;
+  fn @c("stat") sysStat(path *u8, st *u8) i32;
+  fn @c("getaddrinfo") sysGetaddrinfo(node *u8, service *u8, hints *AddrInfoLx, res &mut *AddrInfoLx) i32;
+  fn @c("freeaddrinfo") sysFreeaddrinfo(res *AddrInfoLx);
+}
+
+// epoll
+const epollCtlAdd = 1i32;
+const epollIn = 1u32;
+const epollOut = 4u32;
+const epollErr = 8u32;
+const epollHup = 16u32;
+const epollRdHup = 0x2000u32;
+const epollEt = 0x80000000u32;
+const epollCloexec = 0x80000i32;                    // EPOLL_CLOEXEC, EFD_CLOEXEC, TFD_CLOEXEC, SOCK_CLOEXEC, O_CLOEXEC
+const nonBlock = 0x800i32;                          // EFD_NONBLOCK, TFD_NONBLOCK, SOCK_NONBLOCK, O_NONBLOCK
+const clockMonotonic = 1i32;
+
+// What an epoll datum names: a handle's entry in the low word and its
+// generation in the high one (never 0), or, with a high word of 0, one of
+// the loop's own descriptors
+const datumWake = 1u32;
+const datumTimer = 2u32;
+
+// Sockets
+const afInetLx = 2i32;
+const sockStreamLx = 1i32;
+const solSocketLx = 1i32;
+const soReuseAddr = 2i32;
+const soError = 4i32;
+const soLingerLx = 13i32;
+const msgNoSignal = 0x4000i32;
+const msgPeek = 2i32;
+const shutWr = 1i32;
+const inprogress = 115i32;
+
+// Files
+const oRdonly = 0i32;
+const oRdwr = 2i32;
+const oCreat = 0x40i32;
+const oTrunc = 0x200i32;
+const fDupfdCloexec = 1030i32;
+const sIfmt = 0xF000u32;
+const sIfdir = 0x4000u32;
+
+// errno values the loop tells apart
+const eintr = 4i32;
+const eagain = 11i32;
+const econnaborted = 103i32;
+const enotconn = 107i32;
+
+// Errors without a Windows number are their errno above this
+const errnoBase = 0x10000000u32;
+
+// The errno of the call that has just failed
+fn lastErrno() i32 {*libc.errno();}
+
+// The Windows error number for an errno (see the top of this file)
+fn errnoCode(e i32) u32 {
+  if e == 2i32 {2u32;}                              // ENOENT: ERROR_FILE_NOT_FOUND
+  elif e == 1i32 or e == 13i32 {5u32;}              // EPERM, EACCES: ERROR_ACCESS_DENIED
+  elif e == 9i32 {6u32;}                            // EBADF: ERROR_INVALID_HANDLE
+  elif e == 12i32 {8u32;}                           // ENOMEM: ERROR_NOT_ENOUGH_MEMORY
+  elif e == 24i32 {4u32;}                           // EMFILE: ERROR_TOO_MANY_OPEN_FILES
+  elif e == 17i32 {80u32;}                          // EEXIST: ERROR_FILE_EXISTS
+  elif e == 22i32 {87u32;}                          // EINVAL: ERROR_INVALID_PARAMETER
+  elif e == 28i32 {112u32;}                         // ENOSPC: ERROR_DISK_FULL
+  elif e == 39i32 {145u32;}                         // ENOTEMPTY: ERROR_DIR_NOT_EMPTY
+  elif e == 36i32 {206u32;}                         // ENAMETOOLONG: ERROR_FILENAME_EXCED_RANGE
+  elif e == 32i32 or e == 104i32 or e == econnaborted {64u32;}  // EPIPE, ECONNRESET, ECONNABORTED: ERROR_NETNAME_DELETED
+  elif e == 111i32 {1225u32;}                       // ECONNREFUSED: ERROR_CONNECTION_REFUSED
+  elif e == 110i32 {1460u32;}                       // ETIMEDOUT: ERROR_TIMEOUT
+  elif e == 101i32 {1231u32;}                       // ENETUNREACH: ERROR_NETWORK_UNREACHABLE
+  elif e == 113i32 {1232u32;}                       // EHOSTUNREACH: ERROR_HOST_UNREACHABLE
+  elif e == 98i32 {10048u32;}                       // EADDRINUSE: WSAEADDRINUSE
+  elif e == 99i32 {10049u32;}                       // EADDRNOTAVAIL: WSAEADDRNOTAVAIL
+  elif e == 97i32 {10047u32;}                       // EAFNOSUPPORT: WSAEAFNOSUPPORT
+  elif e == enotconn {10057u32;}                    // ENOTCONN: WSAENOTCONN
+  elif e == 108i32 {10058u32;}                      // ESHUTDOWN: WSAESHUTDOWN
+  elif e == 125i32 {995u32;}                        // ECANCELED: ERROR_OPERATION_ABORTED
+  else {errnoBase + u32.from(e);}
+}
+
+// The errno an error number stands for, or 0 when it names none
+fn codeErrno(code u32) i32 {
+  if code >= errnoBase {return i32.from(code - errnoBase);}
+  if code == 2u32 {2i32;}
+  elif code == 5u32 {13i32;}
+  elif code == 6u32 {9i32;}
+  elif code == 8u32 {12i32;}
+  elif code == 4u32 {24i32;}
+  elif code == 80u32 {17i32;}
+  elif code == 87u32 {22i32;}
+  elif code == 112u32 {28i32;}
+  elif code == 145u32 {39i32;}
+  elif code == 206u32 {36i32;}
+  elif code == 64u32 {104i32;}
+  elif code == 1225u32 {111i32;}
+  elif code == 1460u32 {110i32;}
+  elif code == 1231u32 {101i32;}
+  elif code == 1232u32 {113i32;}
+  elif code == 10048u32 {98i32;}
+  elif code == 10049u32 {99i32;}
+  elif code == 10047u32 {97i32;}
+  elif code == 10057u32 {107i32;}
+  elif code == 10058u32 {108i32;}
+  elif code == 995u32 {125i32;}
+  else {0i32;}
+}
+
+// The C library's words for an error number, 'Error N' where it has none
+fn lxSystemText(code u32) String {
+  mut out = String.empty();
+  imm e = codeErrno(code);
+  if e == 0i32 {
+    out.append("Error ");
+    out.appendUInt(u64.from(code));
+    return out;
+  }
+  imm text = libc.strerror(e);
+  out.appendBytes(mem.sliceFromParts(text.ptr(), text.len()));
+  out;
+}
+
+// A getaddrinfo failure as a Winsock error number: WSAHOST_NOT_FOUND,
+// WSATRY_AGAIN, WSANO_RECOVERY or WSANO_DATA
+fn gaiCode(rc i32) u32 {
+  if rc == 0i32 - 3i32 {11002u32;}                   // EAI_AGAIN
+  elif rc == 0i32 - 4i32 {11003u32;}                 // EAI_FAIL
+  elif rc == 0i32 - 5i32 {11004u32;}                 // EAI_NODATA
+  else {11001u32;}
+}
+
+// A NUL-terminated copy of a path's bytes, in a block from libc's malloc the
+// caller frees; null when there is no room
+fn cstrCopy(s &Array[u8]) *u8 {
+  imm p = libc.malloc(s.len + 1usize);
+  if p as usize == 0usize {return null;}
+  libc.memcpy(p, s as *u8, s.len);
+  *(p + s.len) = 0u8;
+  p;
+}
+
+// ---------------------------------------------------------------------------
+// The loop's descriptors
+// ---------------------------------------------------------------------------
+
+// A descriptor, as the loop's tables hold it
+fn fdOf(raw usize) i32 {i32.from(raw);}
+
+// Add fd to the loop's epoll instance for the datum: edge triggered for
+// reading and writing both, and for the peer's close; a socket
+fn lxWatch(epfd usize, fd usize, entry u32, gen u32) u32 {
+  if isWindows() {return errorInvalidParameter;}
+  mut ev = new EpollEvent(epollIn | epollOut | epollRdHup | epollEt, entry, gen);
+  if epoll_ctl(fdOf(epfd), epollCtlAdd, fdOf(fd), &mut ev as *EpollEvent) != 0i32 {return errnoCode(lastErrno());}
+  0u32;
+}
+
+// A level-triggered watch on a descriptor of the loop's own
+fn lxWatchOwn(epfd usize, fd usize, datum u32) bool {
+  if isWindows() {return false;}
+  mut ev = new EpollEvent(epollIn, datum, 0u32);
+  epoll_ctl(fdOf(epfd), epollCtlAdd, fdOf(fd), &mut ev as *EpollEvent) == 0i32;
+}
+
+// The epoll instance, an eventfd to wake it by and a timerfd to end its wait
+// on time, the last two watched: 0 and the three descriptors, or the error
+// number that stopped them and zeros. (Each is closed by whoever fails here.)
+fn lxOpen() u32, usize, usize, usize {
+  if isWindows() {return errorInvalidParameter, 0usize, 0usize, 0usize;}
+  imm ep = epoll_create1(epollCloexec);
+  if ep < 0i32 {return errnoCode(lastErrno()), 0usize, 0usize, 0usize;}
+  imm ev = eventfd(0u32, nonBlock | epollCloexec);
+  if ev < 0i32 {
+    imm code = errnoCode(lastErrno());
+    sysClose(ep);
+    return code, 0usize, 0usize, 0usize;
+  }
+  imm tm = timerfd_create(clockMonotonic, nonBlock | epollCloexec);
+  if tm < 0i32 {
+    imm code = errnoCode(lastErrno());
+    sysClose(ev);
+    sysClose(ep);
+    return code, 0usize, 0usize, 0usize;
+  }
+  if not lxWatchOwn(usize.from(ep), usize.from(ev), datumWake) or not lxWatchOwn(usize.from(ep), usize.from(tm), datumTimer) {
+    imm code = errnoCode(lastErrno());
+    sysClose(tm);
+    sysClose(ev);
+    sysClose(ep);
+    return code, 0usize, 0usize, 0usize;
+  }
+  0u32, usize.from(ep), usize.from(ev), usize.from(tm);
+}
+
+// ---------------------------------------------------------------------------
+// Handle wait queues: operations that would block, in order, on a socket
+// ---------------------------------------------------------------------------
+
+const sideNone = 0u32;
+const sideRecv = 1u32;
+const sideSend = 2u32;
+
+// Whether kind k waits on its handle's queues
+fn socketKind(k u32) bool {
+  k == diag.kindConnect or k == diag.kindAccept or k == diag.kindRecv
+    or k == diag.kindRecvReady or k == diag.kindSend;
+}
+
+// Record i waits at the end of the queue of its handle's entry, for its side
+fn waitPush(lp &mut Loop, i u32, side u32) {
+  imm r = lp.recAt(i) as &mut Rec;
+  imm e = &mut lp.handles[usize.from(r.sock.index)];
+  r.side = side;
+  r.waitNext = noEntry;
+  if side == sideRecv {
+    r.waitPrev = e.recvTail;
+    if e.recvTail == noEntry {e.recvHead = i;} else {(lp.recAt(e.recvTail) as &mut Rec).waitNext = i;}
+    e.recvTail = i;
+  } else {
+    r.waitPrev = e.sendTail;
+    if e.sendTail == noEntry {e.sendHead = i;} else {(lp.recAt(e.sendTail) as &mut Rec).waitNext = i;}
+    e.sendTail = i;
+  }
+}
+
+// Record i leaves the queue it waits in, if it waits in one
+fn waitUnlink(lp &mut Loop, i u32) {
+  imm r = lp.recAt(i) as &mut Rec;
+  if r.side == sideNone {return;}
+  imm e = &mut lp.handles[usize.from(r.sock.index)];
+  imm prev = r.waitPrev;
+  imm next = r.waitNext;
+  if r.side == sideRecv {
+    if prev == noEntry {e.recvHead = next;} else {(lp.recAt(prev) as &mut Rec).waitNext = next;}
+    if next == noEntry {e.recvTail = prev;} else {(lp.recAt(next) as &mut Rec).waitPrev = prev;}
+  } else {
+    if prev == noEntry {e.sendHead = next;} else {(lp.recAt(prev) as &mut Rec).waitNext = next;}
+    if next == noEntry {e.sendTail = prev;} else {(lp.recAt(next) as &mut Rec).waitPrev = prev;}
+  }
+  r.side = sideNone;
+  r.waitNext = noEntry;
+  r.waitPrev = noEntry;
+}
+
+// ---------------------------------------------------------------------------
+// Trying an operation
+// ---------------------------------------------------------------------------
+
+const triedDone = 0u32;       // answered (decided), and out of its queue
+const triedWait = 1u32;       // it would block: it stays where it is
+
+// The bytes a send is sending: the owned buffer's, or the shared ones'
+fn sendData(r &mut Rec) *u8, usize {
+  match r.bytes {
+    case imm b Some {
+      imm v = b.view();
+      return v as *u8, v.len;
+    }
+    else {}
+  }
+  r.buf.base(), r.buf.len();
+}
+
+// A socket made, closed with the loop's entry for it: a descriptor adopted
+// into the handle table and watched. 0 and the handle, or the error number
+// (the descriptor is then closed)
+fn lxAdopt(lp &mut Loop, fd usize, kind u32, family u16) u32, Handle {
+  if isWindows() {return errorInvalidParameter, Handle.none();}
+  imm h = lp.register(fd, kind, family);
+  imm code = lxWatch(lp.portHandle, fd, h.index, h.gen);
+  if code != 0u32 {
+    lp.close(h);
+    return code, Handle.none();
+  }
+  0u32, h;
+}
+
+// Try record i's operation now. The record is the head of its queue, or has
+// just been made and is about to be put in one
+fn lxTry(lp &mut Loop, i u32, at Instant) u32 {
+  if isWindows() {return triedDone;}
+  imm r = lp.recAt(i) as &mut Rec;
+  imm ei = lp.handleIndex(r.sock);
+  if ei == noEntry {
+    waitUnlink(lp, i);
+    lp.decide(i, diag.outcomeFailed, 0usize, errorInvalidHandle);
+    return triedDone;
+  }
+  imm fd = fdOf(lp.handles[usize.from(ei)].raw);
+  imm k = r.kind;
+  if k == diag.kindRecv {
+    mut n = sysRecv(fd, r.buf.base() + r.buf.len(), r.buf.room(), 0i32);
+    while n < 0i64 and lastErrno() == eintr {n = sysRecv(fd, r.buf.base() + r.buf.len(), r.buf.room(), 0i32);}
+    if n >= 0i64 {
+      r.dequeued = at;
+      r.buf.setLen(r.buf.len() + usize.from(n));
+      waitUnlink(lp, i);
+      lp.decide(i, diag.outcomeDone, usize.from(n), 0u32);
+      return triedDone;
+    }
+    imm e = lastErrno();
+    if e == eagain {return triedWait;}
+    r.dequeued = at;
+    waitUnlink(lp, i);
+    lp.decide(i, diag.outcomeFailed, 0usize, errnoCode(e));
+    return triedDone;
+  }
+  if k == diag.kindRecvReady {
+    // Data to read, or the end of the stream, without taking either
+    mut probe = 0u8;
+    mut n = sysRecv(fd, &mut probe as *u8, 1usize, msgPeek);
+    while n < 0i64 and lastErrno() == eintr {n = sysRecv(fd, &mut probe as *u8, 1usize, msgPeek);}
+    if n >= 0i64 {
+      r.dequeued = at;
+      waitUnlink(lp, i);
+      lp.decide(i, diag.outcomeDone, 0usize, 0u32);
+      return triedDone;
+    }
+    imm e = lastErrno();
+    if e == eagain {return triedWait;}
+    r.dequeued = at;
+    waitUnlink(lp, i);
+    lp.decide(i, diag.outcomeFailed, 0usize, errnoCode(e));
+    return triedDone;
+  }
+  if k == diag.kindSend {
+    mut data = null as *u8;
+    mut len = 0usize;
+    data, len = sendData(r);
+    mut failed = 0i32;
+    while r.done < len and failed == 0i32 {
+      imm n = sysSend(fd, data + r.done, len - r.done, msgNoSignal);
+      if n >= 0i64 {
+        r.done = r.done + usize.from(n);
+      } else {
+        imm e = lastErrno();
+        if e != eintr {failed = e;}
+      }
+    }
+    if failed == eagain {return triedWait;}
+    r.dequeued = at;
+    waitUnlink(lp, i);
+    if failed != 0i32 {
+      lp.decide(i, diag.outcomeFailed, 0usize, errnoCode(failed));
+    } else {
+      lp.decide(i, diag.outcomeDone, len, 0u32);
+    }
+    return triedDone;
+  }
+  if k == diag.kindAccept {
+    mut s = sysAccept4(fd, null, null, nonBlock | epollCloexec);
+    while s < 0i32 and (lastErrno() == eintr or lastErrno() == econnaborted) {
+      s = sysAccept4(fd, null, null, nonBlock | epollCloexec);
+    }
+    if s >= 0i32 {
+      r.dequeued = at;
+      waitUnlink(lp, i);
+      imm sock = usize.from(s);
+      // noDelay first, as the Windows side does for the sockets it adopts
+      noDelay(sock);
+      mut code = 0u32;
+      mut h = Handle.none();
+      code, h = lxAdopt(lp, sock, hSocket, lp.handles[usize.from(ei)].family);
+      if code != 0u32 {
+        lp.decide(i, diag.outcomeFailed, 0usize, code);
+      } else {
+        r.newHandle = h;
+        lp.decide(i, diag.outcomeDone, 0usize, 0u32);
+      }
+      return triedDone;
+    }
+    imm e = lastErrno();
+    if e == eagain {return triedWait;}
+    r.dequeued = at;
+    waitUnlink(lp, i);
+    lp.decide(i, diag.outcomeFailed, 0usize, errnoCode(e));
+    return triedDone;
+  }
+  if k == diag.kindConnect {
+    // Writable, or failed: SO_ERROR says which. Not yet connected is no answer
+    mut err = 0i32;
+    mut len = 4u32;
+    if sysGetsockopt(fd, solSocketLx, soError, &mut err as *u8, &mut len as *u32) != 0i32 {
+      err = lastErrno();
+    }
+    if err == 0i32 {
+      mut a = new Array[u8, 28] <- fill 0u8;
+      mut alen = 28i32;
+      if getpeername(usize.from(fd), &mut a as *u8, &mut alen) != 0i32 {
+        if lastErrno() == enotconn {return triedWait;}
+        err = lastErrno();
+      }
+    }
+    r.dequeued = at;
+    waitUnlink(lp, i);
+    if err == 0i32 {
+      noDelay(usize.from(fd));
+      r.newHandle = r.sock;
+      lp.decide(i, diag.outcomeDone, 0usize, 0u32);
+    } else {
+      // The socket was only for this connection
+      lp.close(r.sock);
+      lp.decide(i, diag.outcomeFailed, 0usize, errnoCode(err));
+    }
+    return triedDone;
+  }
+  triedDone;
+}
+
+// Try the operations waiting on one side of entry ei, in order, until one
+// would block
+fn lxRun(lp &mut Loop, ei u32, side u32, at Instant) {
+  if isWindows() {return;}
+  while true {
+    imm head = if side == sideRecv {lp.handles[usize.from(ei)].recvHead;} else {lp.handles[usize.from(ei)].sendHead;};
+    if head == noEntry {break;}
+    if lxTry(lp, head, at) == triedWait {break;}
+  }
+}
+
+// epoll says handle entry ei (generation gen) has events
+fn lxEvent(lp &mut Loop, ei u32, gen u32, events u32, at Instant) {
+  if isWindows() {return;}
+  if usize.from(ei) >= lp.handles.len() {return;}
+  imm e = lp.handles[usize.from(ei)];
+  if e.gen != gen or e.kind == hFree {return;}
+  if (events & (epollIn | epollErr | epollHup | epollRdHup)) != 0u32 {lxRun(lp, ei, sideRecv, at);}
+  // The operations may have closed it (a failed connect does): look again
+  imm again = lp.handles[usize.from(ei)];
+  if again.gen != gen or again.kind == hFree {return;}
+  if (events & (epollOut | epollErr | epollHup)) != 0u32 {lxRun(lp, ei, sideSend, at);}
+}
+
+// Start record i's operation on its socket: it is tried at once, and waits in
+// its handle's queue if it would block
+fn lxQueue(lp &mut Loop, i u32, side u32) u32 {
+  if isWindows() {return errorInvalidParameter;}
+  imm r = lp.recAt(i) as &mut Rec;
+  imm ei = lp.handleIndex(r.sock);
+  if ei == noEntry {return errorInvalidHandle;}
+  r.done = 0usize;
+  waitPush(lp, i, side);
+  lxRun(lp, ei, side, Instant.now());
+  0u32;
+}
+
+// A Recv or a RecvReady
+fn lxStartRecv(lp &mut Loop, p *Rec, ready bool) u32 {
+  if isWindows() {return errorInvalidParameter;}
+  imm r = p as &mut Rec;
+  if lp.rawOf(r.sock, hSocket) == invalidHandle {return errorInvalidHandle;}
+  if not ready and r.buf.room() == 0usize {return errorInsufficientBuffer;}
+  lxQueue(lp, r.index, sideRecv);
+}
+
+// A Send or a SendBytes
+fn lxStartSend(lp &mut Loop, p *Rec) u32 {
+  if isWindows() {return errorInvalidParameter;}
+  imm r = p as &mut Rec;
+  if lp.rawOf(r.sock, hSocket) == invalidHandle {return errorInvalidHandle;}
+  lxQueue(lp, r.index, sideSend);
+}
+
+fn lxStartAccept(lp &mut Loop, p *Rec) u32 {
+  if isWindows() {return errorInvalidParameter;}
+  imm r = p as &mut Rec;
+  if lp.rawOf(r.sock, hListener) == invalidHandle {return errorInvalidHandle;}
+  lxQueue(lp, r.index, sideRecv);
+}
+
+// A Connect: the socket is made and connected (non-blocking) before epoll
+// is told of it, so that the readiness it reports is the connection's, and
+// is a handle of the table until the operation ends; it is exposed in the
+// answer if it connects
+fn lxStartConnect(lp &mut Loop, p *Rec, addr SocketAddr) u32 {
+  if isWindows() {return errorInvalidParameter;}
+  imm r = p as &mut Rec;
+  imm s = tcpSocket(addr.family());
+  if s == invalidHandle {return wsaError();}
+  mut a = addr;
+  imm rc = sysConnect(fdOf(s), &mut a as *u8, u32.from(a.size));
+  mut e = 0i32;
+  if rc != 0i32 {
+    e = lastErrno();
+    if e != inprogress {
+      sysClose(fdOf(s));
+      return errnoCode(e);
+    }
+  }
+  mut code = 0u32;
+  mut h = Handle.none();
+  code, h = lxAdopt(lp, s, hSocket, addr.family());
+  if code != 0u32 {return code;}
+  r.sock = h;
+  r.family = addr.family();
+  // Connected already, or waiting for the socket to become writable
+  waitPush(lp, r.index, sideSend);
+  if rc == 0i32 {lxRun(lp, h.index, sideSend, Instant.now());}
+  0u32;
+}
+
+// ---------------------------------------------------------------------------
+// Cancel
+// ---------------------------------------------------------------------------
+
+// A socket operation is asked to end: it is taken out of its queue and
+// answered at once, its buffer with it. A connection being made loses its
+// socket
+fn lxCancel(lp &mut Loop, i u32, outcome u32) {
+  if isWindows() {return;}
+  imm r = lp.recAt(i) as &mut Rec;
+  waitUnlink(lp, i);
+  if r.kind == diag.kindConnect {lp.close(r.sock);}
+  lp.decide(i, outcome, 0usize, 0u32);
+}
+
+// The file operations in flight on file handle h are asked to end, as
+// Windows' CancelIoEx asks them: one still queued is answered Cancelled, one
+// running ends as it ends
+fn lxCancelFiles(lp &mut Loop, h Handle) {
+  if isWindows() {return;}
+  if lp.handles[usize.from(h.index)].kind != hFile {return;}
+  mut i = 0u32;
+  while i < lp.recCount {
+    imm r = lp.recAt(i) as &mut Rec;
+    if r.state == stFlight and r.asked == askedNone and (r.kind == diag.kindReadAt or r.kind == diag.kindWriteAt)
+        and r.sock == h {
+      lp.askCancel(i, askedCancel);
+    }
+    i = i + 1u32;
+  }
+}
+
+// Every operation waiting on handle entry ei is answered Cancelled
+fn lxCancelAll(lp &mut Loop, ei u32) {
+  if isWindows() {return;}
+  while true {
+    imm head = lp.handles[usize.from(ei)].recvHead;
+    if head == noEntry {break;}
+    waitUnlink(lp, head);
+    lp.decide(head, diag.outcomeCancelled, 0usize, 0u32);
+  }
+  while true {
+    imm head = lp.handles[usize.from(ei)].sendHead;
+    if head == noEntry {break;}
+    waitUnlink(lp, head);
+    lp.decide(head, diag.outcomeCancelled, 0usize, 0u32);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The wait
+// ---------------------------------------------------------------------------
+
+// Arm the timer for wakeAt (unless it already is) and answer the wait's own
+// timeout in milliseconds, a backstop a millisecond past it; 'infinite' when
+// wakeAt never comes
+fn lxArm(lp &mut Loop, wakeAt Instant, now Instant) u32 {
+  if isWindows() {return 0u32;}
+  if wakeAt >= forever() {return infinite;}
+  imm left = (wakeAt - now).nanos();
+  if not lp.associated or lp.armedFor != wakeAt {
+    imm ns = if left < 1i64 {1i64;} else {left;};
+    mut spec = new ItimerSpec(0i64, 0i64, ns / 1000000000i64, ns % 1000000000i64);
+    timerfd_settime(fdOf(lp.timer), 0i32, &mut spec as *ItimerSpec, null);
+    lp.armedFor = wakeAt;
+    lp.associated = true;
+  }
+  imm ms = (left + 999999i64) / 1000000i64 + 1i64;
+  if ms >= i64.from(infinite) {infinite - 1u32;} else {u32.from(ms);};
+}
+
+// Take what the other threads have posted: the eventfd is reset and the
+// queue emptied, each packet handled. How many answers went to out
+fn lxDrain(lp &mut Loop, at Instant, out &mut List[Completion]) usize {
+  if isWindows() {return 0usize;}
+  mut counter = 0u64;
+  sysRead(fdOf(lp.port.handle), &mut counter as *u8, 8usize);
+  // Cleared before the queue is taken: a poster after this writes again, and
+  // one before it has its packet in the queue taken below
+  lp.port.pending.store(0u32);
+  imm st = lp.port.lists();
+  st.lock.lock();
+  mut node = st.head;
+  st.head = null;
+  st.tail = null;
+  st.lock.unlock();
+  mut n = 0usize;
+  while node as usize != 0usize {
+    imm next = (*node).next;
+    n = n + lp.handlePacket((*node).key, (*node).ov, at, out);
+    libc.free(node as *u8);
+    node = next;
+  }
+  n;
+}
+
+// One wait in epoll, for at most ms, and what it brought processed: how many
+// answers posted by other loops went to out
+fn lxDequeue(lp &mut Loop, ms u32, out &mut List[Completion]) usize {
+  if isWindows() {return 0usize;}
+  imm timeout = if ms == infinite {0i32 - 1i32;} elif ms > 0x7FFFFFFFu32 {0x7FFFFFFFi32;} else {i32.from(ms);};
+  imm got = epoll_wait(fdOf(lp.portHandle), lp.events, i32.from(batch), timeout);
+  if ms != 0u32 {lp.stats.waits = lp.stats.waits + 1u64;}
+  if got <= 0i32 {
+    if ms != 0u32 and ms != infinite {lp.stats.waitTimeouts = lp.stats.waitTimeouts + 1u64;}
+    return 0usize;
+  }
+  imm at = Instant.now();
+  lp.stats.dequeued = lp.stats.dequeued + u64.from(got);
+  if u64.from(got) > lp.stats.largestBatch {lp.stats.largestBatch = u64.from(got);}
+  mut n = 0usize;
+  mut k = 0usize;
+  while k < usize.from(got) {
+    imm ev = lp.events + k;
+    imm entry = (*ev).lo;
+    imm gen = (*ev).hi;
+    if gen == 0u32 {
+      if entry == datumWake {
+        n = n + lxDrain(lp, at, out);
+      } elif entry == datumTimer {
+        mut expirations = 0u64;
+        sysRead(fdOf(lp.timer), &mut expirations as *u8, 8usize);
+        lp.associated = false;
+        lp.stats.timerExpiries = lp.stats.timerExpiries + 1u64;
+      }
+    } else {
+      lxEvent(lp, entry, gen, (*ev).events, at);
+    }
+    k = k + 1usize;
+  }
+  if lp.groupsDirty {lp.sweepGroups();}
+  n;
+}
+
+// ---------------------------------------------------------------------------
+// Files, as jobs of the blocking pool
+// ---------------------------------------------------------------------------
+
+// A ReadAt or WriteAt: a job on the files lane, holding a duplicate of the
+// descriptor
+fn lxStartFile(lp &mut Loop, p *Rec, write bool) u32 {
+  if isWindows() {return errorInvalidParameter;}
+  imm r = p as &mut Rec;
+  imm raw = lp.rawOf(r.sock, hFile);
+  if raw == invalidHandle {return errorInvalidHandle;}
+  if not write and r.buf.room() == 0usize {return errorInsufficientBuffer;}
+  imm l = laneAt(filesLane);
+  if l as usize == 0usize {return errorInvalidParameter;}
+  imm dup = sysFcntl(fdOf(raw), fDupfdCloexec, 0i32);
+  if dup < 0i32 {return errnoCode(lastErrno());}
+  imm b = newBox(&noWork, r.at, new Waker(lp.port), r.index, r.gen, l);
+  (b as &mut JobBox).buf <=> r.buf;
+  (*b).fd = dup;
+  (*b).write = write;
+  if not enqueueBox(b) {
+    r.buf <=> (b as &mut JobBox).buf;
+    dropBox(b);
+    return errorBusy;
+  }
+  r.job = b;
+  0u32;
+}
+
+// A file job, run on a thread of the pool: the whole of a write, as much as
+// there is of a read (up to the buffer's room), at the offset in 'arg'
+fn lxFileJob(j &mut JobBox) Outcome {
+  if isWindows() {return Outcome.Failed(errorInvalidParameter);}
+  if j.write {
+    imm len = j.buf.len();
+    mut done = 0usize;
+    mut failed = 0i32;
+    while done < len and failed == 0i32 {
+      imm n = sysPwrite(j.fd, j.buf.base() + done, len - done, i64.from(j.arg + u64.from(done)));
+      if n >= 0i64 {
+        done = done + usize.from(n);
+      } else {
+        imm e = lastErrno();
+        if e != eintr {failed = e;}
+      }
+    }
+    if failed != 0i32 {return Outcome.Failed(errnoCode(failed));}
+    return Outcome.Done(len);
+  }
+  imm room = j.buf.room();
+  mut n = sysPread(j.fd, j.buf.base() + j.buf.len(), room, i64.from(j.arg));
+  while n < 0i64 and lastErrno() == eintr {
+    n = sysPread(j.fd, j.buf.base() + j.buf.len(), room, i64.from(j.arg));
+  }
+  if n < 0i64 {return Outcome.Failed(errnoCode(lastErrno()));}
+  j.buf.setLen(j.buf.len() + usize.from(n));
+  Outcome.Done(usize.from(n));
+}
+
+// ---------------------------------------------------------------------------
+// Work for the pool: a name looked up, a file's metadata, a file read
+// ---------------------------------------------------------------------------
+
+fn lxResolve(arg u64, buf &mut IoBuf) Outcome {
+  if isWindows() {return Outcome.Failed(errorInvalidParameter);}
+  imm name = cstrCopy(buf.view());
+  if name as usize == 0usize {return Outcome.Failed(errorNotEnoughMemory);}
+  mut hints = new AddrInfoLx(0i32, 0i32, sockStreamLx, 6i32, 0u32, 0u32, null, null, null);
+  mut res = null as *AddrInfoLx;
+  imm rc = sysGetaddrinfo(name, null, &mut hints as *AddrInfoLx, &mut res);
+  libc.free(name);
+  if rc != 0i32 {return Outcome.Failed(gaiCode(rc));}
+  buf.clear();
+  mut count = 0usize;
+  mut a = res;
+  imm recSize = mem.sizeof[SocketAddr]();
+  while a as usize != 0usize {
+    if (*a).addrlen <= 28u32 and buf.room() >= recSize {
+      mut s = new SocketAddr(new Array[u8, 28] <- fill 0u8, i32.from((*a).addrlen));
+      libc.memcpy(&mut s.raw as *u8, (*a).addr, usize.from((*a).addrlen));
+      s.setPort(u16.from(arg));
+      buf.append(mem.sliceFromParts(&mut s as *u8, recSize));
+      count = count + 1usize;
+    }
+    a = (*a).next;
+  }
+  sysFreeaddrinfo(res);
+  Outcome.Done(count);
+}
+
+// A file's metadata in the shape a statOp's buffer has on every system
+// (WIN32_FILE_ATTRIBUTE_DATA's): the attributes, three FILETIMEs, the size's
+// high word and its low word
+fn lxStat(arg u64, buf &mut IoBuf) Outcome {
+  if isWindows() {return Outcome.Failed(errorInvalidParameter);}
+  imm path = cstrCopy(buf.view());
+  if path as usize == 0usize {return Outcome.Failed(errorNotEnoughMemory);}
+  // struct stat on x86-64 is 144 bytes: st_mode at 24, st_size at 48 and
+  // st_mtim at 88
+  mut st = new Array[u64, 18] <- fill 0u64;
+  imm rc = sysStat(path, &mut st as *u8);
+  libc.free(path);
+  if rc != 0i32 {return Outcome.Failed(errnoCode(lastErrno()));}
+  imm mode = u32.from(st[3usize] & 0xFFFFFFFFu64);
+  imm size = st[6usize];
+  imm sec = i64.from(st[11usize]);
+  imm nsec = i64.from(st[12usize]);
+  mut attributes = if (mode & sIfmt) == sIfdir {0x10u32;} else {0x80u32;};
+  if (mode & 0x92u32) == 0u32 {attributes = attributes | 1u32;}
+  // A FILETIME counts 100 ns from 1601
+  imm filetime = u64.from(sec * 10000000i64 + nsec / 100i64 + 116444736000000000i64);
+  mut data = new Array[u32, 9] <- fill 0u32;
+  data[0usize] = attributes;
+  data[5usize] = u32.from(filetime & 0xFFFFFFFFu64);
+  data[6usize] = u32.from(filetime >> 32u64);
+  data[7usize] = u32.from(size >> 32u64);
+  data[8usize] = u32.from(size & 0xFFFFFFFFu64);
+  buf.clear();
+  buf.append(mem.sliceFromParts(&mut data as *u8, 36usize));
+  Outcome.Done(36usize);
+}
+
+// A file opened, read from 'arg' as far as the buffer's room goes, and closed
+fn lxReadFile(arg u64, buf &mut IoBuf) Outcome {
+  if isWindows() {return Outcome.Failed(errorInvalidParameter);}
+  imm path = cstrCopy(buf.view());
+  if path as usize == 0usize {return Outcome.Failed(errorNotEnoughMemory);}
+  imm fd = sysOpen(path, oRdonly | epollCloexec, 0u32);
+  libc.free(path);
+  if fd < 0i32 {return Outcome.Failed(errnoCode(lastErrno()));}
+  buf.clear();
+  imm room = buf.room();
+  mut got = 0usize;
+  mut failed = 0u32;
+  while got < room {
+    imm n = sysPread(fd, buf.base() + got, room - got, i64.from(arg + u64.from(got)));
+    if n < 0i64 {
+      imm e = lastErrno();
+      if e == eintr {continue;}
+      failed = errnoCode(e);
+      break;
+    }
+    if n == 0i64 {break;}
+    got = got + usize.from(n);
+  }
+  sysClose(fd);
+  if failed != 0u32 {return Outcome.Failed(failed);}
+  buf.setLen(got);
+  Outcome.Done(got);
+}

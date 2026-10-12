@@ -156,10 +156,11 @@
 // of the pool's lock; a chain's writer side lending the room left in its
 // last segment to the next read.
 //
-// What is Windows-only: the blocks come from VirtualAlloc and go back with
-// VirtualFree (kernel32, on every link line), its only calls to the OS; a
-// POSIX side (mmap, or posix_memalign) is to come beside them. Everything
-// else is plain Cone over core's 'mem' and the sync package's Arc and Mutex.
+// What depends on the OS: the blocks come from VirtualAlloc and go back with
+// VirtualFree on Windows (kernel32, on every link line), from anonymous mmap
+// and back with munmap on Linux (the C library): its only calls to the OS.
+// Everything else is plain Cone over core's 'mem' and the sync package's Arc
+// and Mutex.
 //
 // How it is built. The pool's state is an 'Arc[Mutex, PoolState]', the sync
 // package's lock permission: every reach into it is a borrow that takes the
@@ -188,18 +189,28 @@ import libc;
 import sync use Arc, Mutex;
 
 // ---------------------------------------------------------------------------
-// Windows: the blocks come from the OS, VirtualAlloc and VirtualFree
+// The blocks come from the OS: VirtualAlloc and VirtualFree on Windows, mmap
+// and munmap on Linux. 'isWindows()', a constant of the compile, chooses, so
+// only the target's calls are generated; every extern is declared everywhere
 // ---------------------------------------------------------------------------
 
 extern {
   fn @c(system) VirtualAlloc(addr *u8, size usize, kind u32, protect u32) *u8;
   fn @c(system) VirtualFree(addr *u8, size usize, kind u32) i32;
+  fn @c mmap(addr *u8, size usize, protect i32, flags i32, fd i32, offset i64) *u8;
+  fn @c munmap(addr *u8, size usize) i32;
 }
 
 const memCommit = 0x1000u32;
 const memReserve = 0x2000u32;
 const memRelease = 0x8000u32;
 const pageReadWrite = 0x04u32;
+
+// Linux: readable and writable, private and anonymous; mmap answers (void*)-1
+// when it fails
+const protReadWrite = 3i32;
+const mapPrivateAnonymous = 0x22i32;
+const mapFailed = 0xFFFFFFFFFFFFFFFFusize;
 
 // Blocks and bytes held from the OS by every pool of the program, for leak
 // checks
@@ -215,7 +226,13 @@ pub fn osBlocks() u64 {liveBlocks.load();}
 pub fn osBytes() u64 {liveBytes.load();}
 
 fn osAlloc(size usize) *u8 {
-  imm b = VirtualAlloc(null, size, memCommit | memReserve, pageReadWrite);
+  mut b = null as *u8;
+  if isWindows() {
+    b = VirtualAlloc(null, size, memCommit | memReserve, pageReadWrite);
+  } else {
+    b = mmap(null, size, protReadWrite, mapPrivateAnonymous, 0i32 - 1i32, 0i64);
+    if b as usize == mapFailed {b = null;}
+  }
   if b as usize != 0usize {
     liveBlocks.addOrdered(1u64, MemOrder.Relaxed);
     liveBytes.addOrdered(u64.from(size), MemOrder.Relaxed);
@@ -224,7 +241,7 @@ fn osAlloc(size usize) *u8 {
 }
 
 fn osFree(block *u8, size usize) {
-  VirtualFree(block, 0usize, memRelease);
+  if isWindows() {VirtualFree(block, 0usize, memRelease);} else {munmap(block, size);}
   liveBlocks.subOrdered(1u64, MemOrder.Relaxed);
   liveBytes.subOrdered(u64.from(size), MemOrder.Relaxed);
 }
