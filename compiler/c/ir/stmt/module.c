@@ -1261,6 +1261,18 @@ void modInitFlowEnd(ModuleNode *mod, uint16_t *saved) {
     }
 }
 
+// A module's 'init', 'final' and 'drop' are Cone's, whatever the module's
+// naming: a C-named module names the functions it owns by their bare names, so
+// a lifecycle function left C-named would be the symbol 'init' of every such
+// module in a program. The symbol is spelled after the module as any module's
+// is ('lib.init'), and the function is called in Cone's convention.
+static void modLifecycleCone(FnDclNode *fn) {
+    fn->dclinfo.facts &= ~(DclCName | DclSystemCC);
+    fn->dclinfo.cname = NULL;
+    if (fn->vtype != NULL && fn->vtype->tag == FnSigTag)
+        ((FnSigNode*)fn->vtype)->ccall = 0;
+}
+
 // Find the module's own declaration of 'init' or 'final', and check that it is
 // declared as the one the program's stitched init or final calls:
 // 'fn @initpure init()' or 'fn final()', a function of no parameters returning
@@ -1304,6 +1316,7 @@ static FnDclNode *modLifecycleFn(ModuleNode *mod, Name *name) {
         return NULL;
     }
     fn->dclinfo.facts |= DclLifecycle;
+    modLifecycleCone(fn);
     return fn;
 }
 
@@ -1367,6 +1380,7 @@ static FnDclNode *modGiveDrop(ModuleNode *mod, FnDclNode *final) {
             inodeLexCopy((INode*)dropfn, (INode*)mod);
             dclInfoJoin((INode*)dropfn, (INode*)mod);
             dropfn->dclinfo.facts |= DclLifecycle;
+            modLifecycleCone(dropfn);
             dropfn->flags |= TypeChecked;
             if (final) {
                 FnCallNode *finalcall = newFnCallLower((INode*)var, (INode*)final, 1);

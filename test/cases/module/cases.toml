@@ -3626,3 +3626,38 @@ name = "the-program-declares-and-does-not-define-them"
 target = "symbols"
 contains = ["declare lib.Handle.final", "declare lib.Pair.final"]
 excludes = ["define lib.Handle.final", "define lib.Pair.final"]
+
+[scenario.module_c_init_link]
+category = "run"
+description = "Two separately compiled C-named libraries the program never imports, each with an 'init', reached only by the C names of their functions: the C runtime runs each 'init' before 'main' (7 and 8 stored), and each is the Cone symbol of its module, not a bare 'init' the two would share"
+tags = ["genllvm", "runtime"]
+link = ["cla/cla.conebuild", "clb/clb.conebuild"]
+
+[[scenario.module_c_init_link.check]]
+name = "a-c-named-modules-init-is-spelled-after-its-module"
+target = "symbols"
+object = "cla"
+contains = ["define cla.init"]
+excludes = ["define init"]
+
+[scenario.module_c_init_sub]
+category = "run"
+description = "A C-named submodule with an 'init' in the program's own compile: it runs before the program's stitched init, which reads its value in the root's 'init', and is not called by the stitched init"
+tags = ["genllvm", "runtime"]
+
+[[scenario.module_c_init_sub.check]]
+name = "a-c-named-modules-init-is-a-static-constructor"
+target = "preir"
+contains = ["@llvm.global_ctors = appending global", "define internal void @cone.ctor", "call %void @_CNvC4csub4init()"]
+
+[scenario.module_c_init_import]
+category = "run"
+description = "A C-named package with an 'init', imported through its include file: its object runs the 'init' once, before the program's stitched init, which does not call it again"
+tags = ["genllvm", "runtime"]
+link = ["package/cimp.conebuild"]
+include = ["include/cimp.cone"]
+
+[scenario.module_c_init_reject]
+category = "reject"
+description = "A C-named module's 'init' runs before the program starts, ahead of every Cone module's, so a C-named module with an 'init' that imports a Cone module with an 'init' of its own is refused"
+tags = ["typecheck"]

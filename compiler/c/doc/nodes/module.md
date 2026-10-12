@@ -1983,8 +1983,9 @@ of its own is `ErrorModLifecycle`: both would be one symbol.
 
 **The stitched pair** (`genlStitch`, `genllvm/genllvm.c`) is two functions of the
 object being generated: `cone.initAll`, calling `initfn` of each module in
-`pgm->initorder` that has one, and `cone.finalAll`, calling `finalfn` of each in
-the reverse. A module with neither gets no call. Each is internal, made only
+`pgm->initorder` that has one (a C-named module's is the C runtime's, below), and
+`cone.finalAll`, calling `finalfn` of each in the reverse. A module with neither
+gets no call. Each is internal, made only
 when something asks for it (`genlStitchFn`), and built last, after every module's
 bodies. **The entry runs them** [Jon 23 Sep]: for an executable the compiler
 builds the C `main` itself (`genlEntry`), which calls `cone.initAll`, the
@@ -2006,6 +2007,31 @@ does nothing on a program already live and the final nothing on one that is not,
 so a call after the entry's runs nothing, and a program that finalizes and
 initializes again runs both again. A library called from C gets no entry, and the
 C caller sets it up.
+
+**A C-named module's `init` is a static constructor, not a stitched call**
+(`genlInitByCtor`, `genlCtors`). A module reached by its C names is reached by
+the linker: a program's compile need not import it, so no include file tells that
+compile the module exists, and a stitched init could never call it (conestd's is
+the case: every program links it, nothing imports it). The object that generates
+a C-named module with an `init` (`FlagGenMod`) holds `cone.ctor`, an internal
+function calling each such module's `init` in that compile's module order,
+registered in `llvm.global_ctors` at priority 1000, so the C runtime runs it as
+the object loads, before `main` and ahead of constructors of the default
+priority. Linking the object is the membership: it runs once however many
+programs link it. The stitched init skips a C-named module's `init` wherever the
+module appears, so a program that imports a C-named package through its include
+file does not run it a second time. Its `final` is unchanged: the stitched final
+calls it where the program knows the module. A WebAssembly or GPU target has no C
+runtime to start it and keeps the stitched call. Because the constructor runs
+ahead of every stitched `init`, a C-named module's `init` may not depend on a
+module with a Cone-named `init` (`pgmCInitCheck`, `ErrorModLifecycle`); one that
+depends on another C-named module with an `init` is fine, that one running first
+in the same function. Where the two are in separately compiled objects, their
+constructors' order is the linker's. **A module's `init`, `final` and `drop` are
+Cone-named whatever its naming** (`modLifecycleCone`): a C-named module spells the
+functions it owns by their bare names, which would make every such module's `init`
+the one symbol `init`, so these three are spelled after the module and called in
+Cone's convention.
 
 **Across separately compiled packages**, a package's `init`, `final` and `drop`
 keep the package's Cone names (`lib.init`, `lib.drop`), and a library compile

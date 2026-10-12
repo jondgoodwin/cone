@@ -1188,6 +1188,60 @@ LLVMValueRef genlStitchFn(GenState *gen, int16_t intrinsic) {
     return gen->stitch[which];
 }
 
+// Is this module's 'init' run by the C runtime as its object loads, rather than
+// by a stitched init? A module reached by its C names is reached by the linker,
+// not by an import, so no program's compile need know of it: the object that
+// holds it registers its 'init' as a static constructor (genlCtors), and the
+// stitched init of a program that does import it leaves the call out. A target
+// with no C runtime to start it (WebAssembly, a GPU) keeps the stitched call.
+static int genlInitByCtor(GenState *gen, ModuleNode *mod) {
+    return (mod->dclinfo.facts & DclCName) && mod->initfn != NULL && !gen->opt->wasm && !gen->opt->gpu;
+}
+
+// The static constructor of the C-named modules this object defines: one
+// function calling each such module's 'init' in the module order, which the
+// C runtime runs before 'main' (llvm.global_ctors). The priority puts it ahead
+// of constructors of the default priority, as the stitched init is ahead of
+// the program, so that a runtime's init such as conestd's is the first Cone
+// code to run.
+static void genlCtors(GenState *gen) {
+    Nodes *order = gen->pgm->initorder;
+    uint32_t pos;
+    LLVMValueRef fn = NULL;
+    LLVMBuilderRef builder = NULL;
+    for (pos = 0; pos < order->used; ++pos) {
+        ModuleNode *mod = (ModuleNode*)nodesGet(order, pos);
+        if (!genlInitByCtor(gen, mod) || !(mod->flags & FlagGenMod) || mod->initfn->value == NULL)
+            continue;
+        if (fn == NULL) {
+            LLVMTypeRef fntype = LLVMFunctionType(LLVMVoidTypeInContext(gen->context), NULL, 0, 0);
+            fn = LLVMAddFunction(gen->module, "cone.ctor", fntype);
+            genlLinkage(fn, NULL, GenlDefined);
+            genlComdat(gen, fn);
+            builder = LLVMCreateBuilderInContext(gen->context);
+            LLVMPositionBuilderAtEnd(builder, LLVMAppendBasicBlockInContext(gen->context, fn, "entry"));
+        }
+        if (mod->initfn->llvmvar == NULL)
+            genlGloFnName(gen, mod->initfn);
+        LLVMBuildCall2(builder, genlType(gen, mod->initfn->vtype), mod->initfn->llvmvar, NULL, 0, "");
+    }
+    if (fn == NULL)
+        return;
+    LLVMBuildRetVoid(builder);
+    LLVMDisposeBuilder(builder);
+
+    LLVMContextRef context = gen->context;
+    LLVMTypeRef i32type = LLVMInt32TypeInContext(context);
+    LLVMTypeRef ptrtype = LLVMPointerTypeInContext(context, 0);
+    LLVMTypeRef fields[3] = { i32type, ptrtype, ptrtype };
+    LLVMTypeRef entrytype = LLVMStructTypeInContext(context, fields, 3, 0);
+    LLVMValueRef values[3] = { LLVMConstInt(i32type, 1000, 0), fn, LLVMConstNull(ptrtype) };
+    LLVMValueRef entry = LLVMConstStructInContext(context, values, 3, 0);
+    LLVMValueRef ctors = LLVMAddGlobal(gen->module, LLVMArrayType(entrytype, 1), "llvm.global_ctors");
+    LLVMSetLinkage(ctors, LLVMAppendingLinkage);
+    LLVMSetInitializer(ctors, LLVMConstArray(entrytype, &entry, 1));
+}
+
 static void genlStitch(GenState *gen, int which) {
     LLVMValueRef fn = gen->stitch[which];
     if (fn == NULL)
@@ -1226,7 +1280,7 @@ static void genlStitch(GenState *gen, int which) {
     for (pos = 0; pos < count; ++pos) {
         ModuleNode *mod = (ModuleNode*)nodesGet(order, which == 0 ? pos : count - 1 - pos);
         FnDclNode *lifefn = which == 0 ? mod->initfn : mod->finalfn;
-        if (lifefn == NULL)
+        if (lifefn == NULL || (which == 0 && genlInitByCtor(gen, mod)))
             continue;
         if (lifefn->llvmvar == NULL)
             genlGloFnName(gen, lifefn);
@@ -1358,6 +1412,7 @@ void genlProgram(GenState *gen, ProgramNode *pgm) {
     // final it and any call asked for, once every module's lifecycle functions
     // have their symbols
     genlEntry(gen);
+    genlCtors(gen);
     genlStitch(gen, 0);
     genlStitch(gen, 1);
 

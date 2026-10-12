@@ -86,7 +86,10 @@ Then, **the program's entry** (`genlEntry`) and **its stitched init and final**
 (`genlStitch`), which the entry or a call to `initAll()` or `finalAll()` asked
 for (`genlStitchFn`, from the entry and from the intrinsic's case in
 `genlFnCallInternal`): `cone.initAll` calls each module's `initfn` in
-`pgm->initorder`, and `cone.finalAll` each module's `finalfn` in the reverse,
+`pgm->initorder` (a C-named module's is left to `cone.ctor`, a static constructor
+in `llvm.global_ctors` that `genlCtors` builds beside the entry, for the C-named
+modules this object generates; [Module](../nodes/module.md), "Init and final"),
+and `cone.finalAll` each module's `finalfn` in the reverse,
 declaring the symbol of one this object does not define. They are built last
 because they call what the passes above named. Both are internal, and share a
 flag, `cone.live`, swapped atomically as each one's first act: the init runs only
@@ -2351,6 +2354,7 @@ variables.
 | | `genlProgram` | create the module with the target's triple and data layout, the two-pass symbols-then-implementations walk, then the entry and the stitched pair |
 | | `genlIsEntryMain`, `genlEntry` | the program's own `main` (renamed `cone.main`), and the C `main` built round it: stitched init, `cone.main`, stitched final, its result the exit status |
 | | `genlStitchFn`, `genlStitch` | the program's stitched init and final: declared by the entry or on the first call to `initAll()` or `finalAll()`, built last, every module's `init` in the module order and every finalizer in the reverse, each guarded by the `cone.live` flag |
+| | `genlInitByCtor`, `genlCtors` | a C-named module's `init` as a static constructor: `cone.ctor`, calling each such module this object generates in the module order, registered in `llvm.global_ctors` at priority 1000; the stitched init leaves those out |
 | | `genlGlobalSyms`, `genlGlobalImpl` | declare a node's symbol; emit its body |
 | | `genlImportedInstances` | emit the bodies of the instances this compile made of a module it does not generate |
 | | `genlFn`, `genlParmVar`, `genlAlloca` | function body (a split method's first half, then its second halves), parameter allocas, entry-block alloca placement |

@@ -6,9 +6,11 @@
  * starting thread's identity must be taken on it, before 'main' runs and
  * before any other thread exists. C has a way to run a function then: an
  * entry in the C runtime's table of initializers, '.CRT$XCU' (or a
- * constructor, outside Microsoft's C). Cone has none: no attribute places a
- * global in a named section or marks a function a constructor, and a
- * module's 'init' runs only when the program calls 'initAll()'.
+ * constructor, outside Microsoft's C). Cone has no attribute to place a
+ * global in a named section or mark a function a constructor. The compiler
+ * registers a C-named module's 'init' as one (conestd.cone's 'init' is run so),
+ * at a priority of its own, and this entry is left as it was: it records the
+ * thread with no Cone code run before it.
  *
  * panic.cone reads 'cone_mainThread', which is also what makes the linker
  * take this object, and with it the initializer, out of conestd.lib.
