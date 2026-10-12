@@ -33,9 +33,9 @@
 #   points at, and a call's returned borrow shares the lifetime of the narrowest
 #   borrow it was handed -- are asserted in ref_flow, ref_flow_return and
 #   ref_flow_call.
-# - 'uni' and 'mut1' permissions on a borrow. They are named in the permission
-#   table but a borrow of a local variable can never obtain them, so there is
-#   nothing to establish here that is not region's move semantics.
+# - 'mut1' on a borrow of a local variable, which can never obtain it, so there
+#   is nothing to establish here that is not region's move semantics. A local
+#   lends '&uni': ref_unilocal, ref_flow_unilocal and ref_typecheck_unilocal.
 # - Freezing through a borrow held inside another value (a struct field, an
 #   'Option'). Only a borrow held in a local whose type is a borrowed
 #   reference freezes its source so far. What is built is ref_flow_freeze,
@@ -144,6 +144,25 @@ diagnostics = 3
 category = "run"
 description = "What one call may still be handed: '&uni' of distinct fields of a struct and of two different references, one '&uni' element in two calls, two '&mut' and two '&' of the same element; values checked"
 tags = ["typecheck", "flow", "genllvm", "runtime"]
+
+# A 'mut' local is a source reached as 'uni': it lends '&uni' while nothing else
+# borrows it, and is frozen against all else until the borrow's last use.
+[scenario.ref_unilocal]
+category = "run"
+description = "A 'mut' local (a collection, a struct, an integer, an owner, a held reference), a field and an element of one, and two of its fields at once lent '&uni'; lent again, held and used, in a loop, with the sibling field changed, and used directly after the last use; values checked"
+tags = ["typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.ref_flow_unilocal]
+category = "reject"
+description = "A local lent '&uni' and lent '&uni' again (in one call, held, one of its fields), borrowed '&' or '&mut' beforehand, read, borrowed by a method, changed, moved or replaced, and the whole local borrowed while a field of it is lent"
+tags = ["flow"]
+diagnostics = 11
+
+[scenario.ref_typecheck_unilocal]
+category = "reject"
+description = "'&uni' of what a local does not lend it from: an 'imm' local or field, a global, a field of a '&mut' parameter, what a '&mut' held in a local points at"
+tags = ["typecheck"]
+diagnostics = 5
 
 [scenario.ref_alias_mut_success]
 category = "run"

@@ -294,7 +294,12 @@ again; retag a
 whole-value `&[]` that dispatches to a method so the checks below are the ones a
 hand-written `&mut value` gets; auto-deref a suffixed borrow through a
 reference; extract lval, permission and scope with `iexpGetLvalInfo`; infer the
-value type; check the requested permission with `permMatches`; build the result
+value type; check the requested permission with `permMatches`, or accept `&uni`
+of a `mut` local (`borrowLocalLendsUni`: a variable that is no global, or a part
+of one held by value, with no reference that is not `uni` on the way,
+`iexpPathNonUniLink`; an `imm` local, a global and a place reached through a `&mut` stay
+refused with `ErrorBadPerm`), which the loan walk then freezes as an exclusive loan
+(`ref_unilocal`, `ref_flow_unilocal`, `ref_typecheck_unilocal`); build the result
 `RefNode` carrying `borrowRef` and the lval's scope.
 
 Two details worth keeping: an unspecified permission becomes `ro` for a concrete
