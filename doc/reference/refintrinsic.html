@@ -463,6 +463,27 @@ imm level = definedInt("LEVEL");
 		comparison of one, <span class="pre">definedInt("LEVEL") &gt; 2</span>, is not
 		itself such a condition: both its sides are generated, though an optimized build
 		may fold it.</p>
+	<p>The same holds for the functions a side calls, however far down. A function that
+		no live code reaches is not part of the object, in a debug build as in a release
+		one. What is live is what the object makes visible and what that reaches:
+		<span class="pre">main</span>; in a library, every <span class="pre">pub</span>
+		function, and in any compile a <span class="pre">pub</span> function with a C name;
+		the function behind every address taken (<span class="pre">&amp;name</span>, a
+		closure), every trait's vtable slot and every finalizer that live code can run. So
+		a platform's calls can be gathered in a function of their own, called from the
+		branch for that platform only:</p>
+<pre>
+fn waitWindows(word *u32, ms u32) bool {WaitOnAddress(word, ...) != 0i32;}
+fn waitLinux(word *u32, ns u64) bool {cone_futexWait(word, ...) != 0i32;}
+fn wait(word *u32, ns u64) bool {
+  if isWindows() {waitWindows(word, msCeil(ns));} else {waitLinux(word, ns);}
+}
+</pre>
+	<p>On Linux <span class="pre">waitWindows</span> is not emitted, so the program does
+		not need <span class="pre">WaitOnAddress</span>. A <span class="pre">pub</span>
+		function of a library is live whatever calls it: one holding only another
+		platform's calls is in the library's object, and the program that links the
+		library needs what it calls.</p>
 	<p>These are core's, found bare through the prelude. A
 		<a href="refinclude.html#cnaming">C-named module</a> has no prelude, so it
 		imports <span class="pre">core</span> and writes
