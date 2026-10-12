@@ -1437,6 +1437,20 @@ locals, which only a call that reaches one of them is asked of):
   (`flowGateShapeStore`) sets `FlowGateShape` for a store into a struct-typed place that is no
   local named whole, in a function that has lent.
 
+**A reference a call returned** is held by a stand-in variable (`pwStandIn`) when a method
+that returns a borrow, on a container that changes shape, is called on a place reached
+through it (`pwStandInOn`, set around the receiver in `pwCall`; `pwThrough` makes the
+stand-in). `ui.items[0usize].label.view()`: a `List`'s `[]` is a call, so the place
+`.label` is read through the reference it returned, which `pwPlace` does not track, and the
+`view` had no loan on the `String` at all (only the `[]` loan on the `List`, marked for the
+`List`'s shape, which a call that grows a `String` does not change). The stand-in is a
+temporary (`pwTempsEnd`) that holds what the call carries, so the walk goes on as for
+`imm item = ui.items[0usize]; item.label.view()`: the place is the reference's referent,
+shared and written by the reference's permission, and its loan is marked for the `String`.
+Only a method's receiver is followed so, not a free function's borrowed argument.
+`collection_flow_reshape_through_call` pins the refusals and
+`collection_reshape_through_call_success` what stays accepted.
+
 **An enum** is a marked loan's container too. A reference narrowed from an enum to one
 of its variants through a path others share, or from a `&mut` borrow of a local (an alias
 loan; a `&`, `&imm` or `&uni` one freezes the local, `castBorrowsUni`)

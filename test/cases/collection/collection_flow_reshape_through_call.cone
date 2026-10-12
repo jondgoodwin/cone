@@ -1,0 +1,70 @@
+// A reference a call returned, read through to a String ('ui.items[0usize].label'), is
+// followed as the name it would be given is: a view of that String, handed to a call
+// that could reshape a String through another name, is refused (collection_flow_reshape
+// refuses the same through a name: 'imm item = ui.items[0usize]; ...item.label.view()').
+// A 'List[Item]' element is reached by '[]', a call, so the view had no loan on the String
+// and the call that grew the very String went unchecked: with 'ed' and 'src' one value,
+// 'ed.grow(src.items[0usize].label.view())' read the old block after it was freed.
+// collection_reshape_through_call_success holds what is accepted beside each refusal.
+
+mod collection_flow_reshape_through_call;
+
+import collections use *;
+
+struct Item { pub label String; pub n i32; }
+
+struct Ed {
+  pub items List[Item];
+
+  // Appends s to the first label: the label's block may move
+  pub fn grow(self &mut, s &str) {
+    imm r = &mut items[0usize];
+    r.label.append(s);
+  }
+}
+
+struct Dl {
+  pub chars String;
+  pub fn text(self &mut, s &str) { chars.append(s); }
+}
+
+struct Ui {
+  pub items List[Item];
+  pub dl Dl;
+
+  fn go(self &mut) {
+    dl.text(items[0usize].label.view());      //~ ErrorShapeReshape:7 "'text' is handed something that reaches a 'String'"
+  }
+}
+
+// Through two parameters of one type: the caller may have made them one value
+fn twoParams(ed &mut Ed, src &mut Ed) {
+  ed.grow(src.items[0usize].label.view());    //~ ErrorShapeReshape:5 "'grow' is handed something that reaches a 'String'"
+}
+
+// Through a reference that reads the list only
+fn readOnlySource(dl &mut Dl, ui &Ui) {
+  dl.text(ui.items[0usize].label.view());     //~ ErrorShapeReshape:5 "'text' is handed something that reaches a 'String'"
+}
+
+// The same through a name, as it was refused already
+fn named(ed &mut Ed, src &mut Ed) {
+  imm item = src.items[0usize];
+  ed.grow(item.label.view());                 //~ ErrorShapeReshape:5 "'grow' is handed something that reaches a 'String'"
+}
+
+// In a loop
+fn eachLabel(dl &mut Dl, ui &Ui) {
+  mut k = 0usize;
+  while k < ui.items.len() {
+    dl.text(ui.items[k].label.view());        //~ ErrorShapeReshape:7 "'text' is handed something that reaches a 'String'"
+    k = k + 1usize;
+  }
+}
+
+// A String that grows from a view of another String reached the same way
+fn appendTo(out &mut String, ui &Ui) {
+  out.append(ui.items[0usize].label.view());  //~ ErrorShapeReshape:6 "'append' reshapes the 'String' it is called on"
+}
+
+fn main() {}
