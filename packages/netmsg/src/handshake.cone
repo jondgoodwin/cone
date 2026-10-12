@@ -1,0 +1,235 @@
+// Opening a connection: Fiedler's challenge handshake ("Client Server
+// Connection"), so that a spoofed source address cannot open one and a server
+// cannot be used to amplify an attack. Sans-IO like the rest of the core.
+//
+//   client                                      server
+//   Request   {client salt}, padded to 1200  ->
+//                                            <- Challenge {client salt, cookie}
+//   Response  {client salt, cookie}, padded  ->
+//                                            <- Accept    {session}
+//   Payload packets, each carrying the session, both ways
+//
+// The cookie is a keyed hash (SipHash-2-4) of the client's address, its salt
+// and the time (in ten-second steps, the last two honoured), under a key only
+// the server holds. So the server holds nothing for a client that has only
+// sent a Request: it recomputes the cookie when the Response comes and
+// believes the client can receive at the address it claims only if it sent
+// the right one. Both ends then know the session, the client's salt xor the
+// cookie, which every later packet carries; a packet with another session is
+// dropped. The Request and the Response are padded to 1200 bytes and the
+// Challenge is 21: an attacker's spoofed Request makes the server send a
+// reply a sixtieth the size of what was sent to it.
+//
+// No encryption in v1: the session is a shared secret between the ends, and
+// an attacker who can read the packets can read and forge everything. The
+// place for it is here: the Accept and each payload packet are where a key
+// agreed in the handshake would be used.
+
+// The least size of a Request or a Response
+pub const handshakeSize = 1200usize;
+
+const epochNs = 10000000000i64;
+const msNs2 = 1000000i64;
+
+// A fresh 64-bit number from a generator seeded from the OS: client salts
+pub fn freshSeed() u64 {
+  processSeed() ^ u64.from(Instant.now().nanos());
+}
+
+// What the ChallengeGate decided about a datagram from an address it knows nothing
+// about yet
+pub enum GateVerdict {
+  Ignore;                                  // not for it
+  Reply;                                   // send the reply it wrote back to the address
+  pub struct Accept {pub session u64;}     // a client proved its address: here is its session; the reply is its Accept
+}
+
+// The server's side of the handshake, holding one secret key
+pub struct ChallengeGate {
+  k0 u64;
+  k1 u64;
+
+  // A gate with a key of 128 bits made from 'seed', which should be secret and
+  // unpredictable (freshSeed())
+  pub fn make(seed u64) ChallengeGate {
+    mut rng = Rng.make(seed);
+    new ChallengeGate(rng.next(), rng.next());
+  }
+
+  fn cookie(self &, addr &str, salt u64, epoch i64) u64 {
+    mut m = List[u8].empty();
+    putU64(&mut m, salt);
+    putU64(&mut m, u64.from(epoch));
+    putBytes(&mut m, addr);
+    sipHash24(k0, k1, m.view());
+  }
+
+  // Look at a datagram that came from 'addr' (its address as text) and is
+  // not part of a connection. 'reply' is cleared and, for Reply and Accept,
+  // holds the datagram to send back.
+  pub fn handle(self &, addr &str, data &Array[u8], now Instant, reply &mut List[u8]) GateVerdict {
+    reply.clear();
+    mut c = PacketReader.start();
+    imm magic = c.rdU32(data);
+    imm kind = c.rdU8(data);
+    imm salt = c.rdU64(data);
+    if not c.ok or magic != protocolId {return GateVerdict.Ignore;}
+    imm epoch = now.nanos() / epochNs;
+    if kind == kindRequest {
+      if data.len < handshakeSize {return GateVerdict.Ignore;}
+      putU32(reply, protocolId);
+      putU8(reply, kindChallenge);
+      putU64(reply, salt);
+      putU64(reply, self.cookie(addr, salt, epoch));
+      return GateVerdict.Reply;
+    }
+    if kind == kindResponse {
+      if data.len < handshakeSize {return GateVerdict.Ignore;}
+      imm got = c.rdU64(data);
+      if not c.ok {return GateVerdict.Ignore;}
+      if got != self.cookie(addr, salt, epoch) and got != self.cookie(addr, salt, epoch - 1i64) {return GateVerdict.Ignore;}
+      imm session = salt ^ got;
+      putU32(reply, protocolId);
+      putU8(reply, kindAccept);
+      putU64(reply, session);
+      return GateVerdict.Accept(session);
+    }
+    GateVerdict.Ignore;
+  }
+
+  // The datagram that tells a client its connection was refused (the server
+  // is full)
+  pub fn denied(salt u64) List[u8] {
+    mut p = List[u8].withCapacity(13usize);
+    putU32(&mut p, protocolId);
+    putU8(&mut p, kindDenied);
+    putU64(&mut p, salt);
+    p;
+  }
+
+  // The client salt in a Response datagram, or 0 if it is not one
+  pub fn saltOf(data &Array[u8]) u64 {
+    mut c = PacketReader.start();
+    imm magic = c.rdU32(data);
+    imm kind = c.rdU8(data);
+    imm salt = c.rdU64(data);
+    if not c.ok or magic != protocolId or kind != kindResponse {return 0u64;}
+    salt;
+  }
+}
+
+// Where a client's connection attempt stands
+pub enum HandshakeState {
+  Requesting,     // sending Requests, waiting for the Challenge
+  Responding,     // sending Responses, waiting for the Accept
+  Connected,
+  Failed;
+}
+
+// What a datagram told the client
+pub enum HandshakeEvent {
+  Nothing,
+  Connected,
+  Refused;
+}
+
+// The client's side of the handshake
+pub struct ClientHandshake {
+  cfg NetConfig;
+  salt u64;
+  cookie u64;
+  session u64;
+  state HandshakeState;
+  startedAt i64;
+  lastSent i64;
+  refused bool;
+
+  // A connection attempt that begins now, under 'salt' (freshSeed())
+  pub fn make(cfg NetConfig, salt u64, now Instant) ClientHandshake {
+    new ClientHandshake(cfg, salt, 0u64, 0u64, HandshakeState.Requesting, now.nanos(), now.nanos() - cfg.connectRetryMs * msNs2, false);
+  }
+
+  pub fn handshakeState(self &) HandshakeState {state;}
+  pub fn isConnected(self &) bool {state == HandshakeState.Connected;}
+  pub fn isFailed(self &) bool {state == HandshakeState.Failed;}
+  pub fn wasRefused(self &) bool {refused;}
+  pub fn sessionId(self &) u64 {session;}
+
+  // When to call poll next: the next Request or Response is due, or the
+  // attempt times out
+  pub fn nextDeadline(self &) Instant {
+    mut at = startedAt + cfg.connectTimeoutMs * msNs2;
+    if state == HandshakeState.Requesting or state == HandshakeState.Responding {
+      imm retry = lastSent + cfg.connectRetryMs * msNs2;
+      if retry < at {at = retry;}
+    }
+    Instant.fromNanos(at);
+  }
+
+  // Append the datagram due, if any: a Request or a Response (each repeated
+  // every connectRetryMs until answered). The attempt fails when
+  // connectTimeoutMs pass with no Accept.
+  pub fn poll(self &mut, now Instant, out &mut List[List[u8]]) {
+    imm t = now.nanos();
+    if state != HandshakeState.Requesting and state != HandshakeState.Responding {return;}
+    if t - startedAt >= cfg.connectTimeoutMs * msNs2 {
+      state = HandshakeState.Failed;
+      return;
+    }
+    if t - lastSent < cfg.connectRetryMs * msNs2 {return;}
+    lastSent = t;
+    mut p = List[u8].withCapacity(handshakeSize);
+    putU32(&mut p, protocolId);
+    if state == HandshakeState.Requesting {
+      putU8(&mut p, kindRequest);
+      putU64(&mut p, salt);
+    } else {
+      putU8(&mut p, kindResponse);
+      putU64(&mut p, salt);
+      putU64(&mut p, cookie);
+    }
+    putZeros(&mut p, handshakeSize - p.len());
+    out.push(p);
+  }
+
+  // A datagram from the server. A Challenge moves on to the Responses; an
+  // Accept connects; a Denied is a refusal. A payload packet of the right
+  // session also connects (the Accept may have been lost): the caller gives
+  // that packet to the connection, too.
+  pub fn receive(self &mut, data &Array[u8]) HandshakeEvent {
+    if state != HandshakeState.Requesting and state != HandshakeState.Responding {return HandshakeEvent.Nothing;}
+    mut c = PacketReader.start();
+    imm magic = c.rdU32(data);
+    imm kind = c.rdU8(data);
+    if not c.ok or magic != protocolId {return HandshakeEvent.Nothing;}
+    if kind == kindChallenge {
+      imm s = c.rdU64(data);
+      imm ck = c.rdU64(data);
+      if c.ok and s == salt and state == HandshakeState.Requesting {
+        cookie = ck;
+        session = salt ^ ck;
+        state = HandshakeState.Responding;
+        lastSent = startedAt - cfg.connectRetryMs * msNs2;     // answer at once
+      }
+      return HandshakeEvent.Nothing;
+    }
+    if state != HandshakeState.Responding {return HandshakeEvent.Nothing;}
+    if kind == kindAccept or kind == kindPayload {
+      imm s = c.rdU64(data);
+      if c.ok and s == session {
+        state = HandshakeState.Connected;
+        return HandshakeEvent.Connected;
+      }
+      return HandshakeEvent.Nothing;
+    }
+    if kind == kindDenied {
+      imm s = c.rdU64(data);
+      if c.ok and s == salt {
+        state = HandshakeState.Failed;
+        refused = true;
+        return HandshakeEvent.Refused;
+      }
+    }
+    HandshakeEvent.Nothing;
+  }
+}

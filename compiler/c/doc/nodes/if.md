@@ -51,7 +51,7 @@ Anything else -- a call, a borrow (`&r`, `&mut r`), a literal -- is evaluated on
 into an anonymous variable, which every test and binding reads through one shared
 name use. A reference is such a value: its copy is the reference. A guard's
 binding reads the value before the arm is chosen, so it takes nothing from a place
-the arms after it test (see [cast](cast.md), "What a binding takes from a place").
+or a held value the arms after it test (see [cast](cast.md), "What a binding takes from a place").
 
 **A bound pattern match is de-sugared**: `if imm c Circle = value {…}` becomes the
 `is` condition and a variable bound to a cast inserted at index 0 of the arm. For

@@ -257,9 +257,16 @@ int flowNoDeath(INode *type) {
 
 // Asked once per variable, and remembered: at every store in a loop or a
 // branch the question would otherwise walk the type again
+//
+// An init's 'self &new' is never tracked: it is a reference that is reached only
+// through itself (flowNewSelf) and never moved, passed, or dropped, whatever the
+// use that hands it to a method or to 'selfactor' looks like to the move rules.
+// Tracked, a use inside a branch or a loop would turn the drop walk on for it
+// and refuse the next use, or the first, as moved.
 int flowDropTracked(VarDclNode *var) {
     if (var->flowtracked == 0) {
         var->flowtracked = var->scope > 0 && !(var->flags & FlagStatic) && var->vtype
+            && !flowNewSelfVar(var)
             && !flowNoDeath(var->vtype)
             && (itypeIsMove(var->vtype) || itypeNeedsFinal(var->vtype)) ? 2 : 1;
     }
@@ -1329,16 +1336,20 @@ void flowLoadThroughRef(FlowState *fstate, INode **refp) {
 // is refused, as it would let the reference outlive the init.
 int flowThroughSelf = 0;
 
+int flowNewSelfVar(VarDclNode *var) {
+    if (var == NULL || var->tag != VarDclTag || var->namesym != selfName || var->vtype == NULL)
+        return 0;
+    RefNode *type = (RefNode *)itypeGetTypeDcl(var->vtype);
+    return type->tag == RefTag && type->perm && itypeGetTypeDcl(type->perm) == (INode *)newPerm;
+}
+
 VarDclNode *flowNewSelf(INode *node) {
     while (node->tag == CastTag)
         node = ((CastNode *)node)->exp;
     if (!isNameUseNode(node) || !isExpNode(node))
         return NULL;
     VarDclNode *var = (VarDclNode *)((NameUseNode *)node)->dclnode;
-    if (var == NULL || var->tag != VarDclTag || var->namesym != selfName)
-        return NULL;
-    RefNode *type = (RefNode *)itypeGetTypeDcl(var->vtype);
-    return type->tag == RefTag && type->perm && itypeGetTypeDcl(type->perm) == (INode *)newPerm ? var : NULL;
+    return flowNewSelfVar(var) ? var : NULL;
 }
 
 void flowNewSelfThrough(FlowState *fstate, INode **selfp) {

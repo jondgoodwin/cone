@@ -1,0 +1,96 @@
+// What the check for a view taken through a reference a call returned accepts
+// (the refusals are collection_flow_reshape_through_call): the view copied out first,
+// handed to a call that reads only or that grows nothing the view points into, used up
+// before the call, and taken from a list the function owns.
+
+mod collection_reshape_through_call_success;
+
+import stdio use *;
+import collections use *;
+
+struct Item { pub label String; pub n i32; }
+
+struct Ed {
+  pub items List[Item];
+
+  // Appends s to the first label: the label's block may move
+  pub fn grow(self &mut, s &str) {
+    imm r = &mut items[0usize];
+    r.label.append(s);
+  }
+}
+
+struct Dl {
+  pub chars String;
+  pub cmds List[u32];
+  pub fn text(self &mut, s &str) { chars.append(s); cmds.push(1u32); }
+  pub fn textLen(self &mut, s &str) { cmds.push(u32.from(s.len)); }
+  pub fn total(self &, s &str) usize { chars.view().len + s.len; }
+}
+
+struct Ui {
+  pub items List[Item];
+  pub dl Dl;
+}
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn show2(label &str, s &str) {
+  printStr(label);
+  printStr(" = ");
+  printStr(s);
+  printStr("\n");
+}
+
+// Copied out first: no borrow is left to wait
+fn copyFirst(ed &mut Ed, src &mut Ed) {
+  imm c = String.from(src.items[0usize].label.view());
+  ed.grow(c.view());
+}
+
+// A callee that grows nothing the view points into
+fn countOnly(dl &mut Dl, ui &Ui) {
+  dl.textLen(ui.items[0usize].label.view());
+}
+
+// A callee that only reads
+fn readOnly(dl &Dl, ui &Ui) usize {
+  dl.total(ui.items[0usize].label.view());
+}
+
+// The view used up before the call that grows
+fn usedUp(dl &mut Dl, ui &Ui) {
+  imm n = i64.from(ui.items[0usize].label.view().len);
+  dl.text("next");
+  show("usedUp", n);
+}
+
+// A list this function owns cannot be reached by another name
+fn ownList(dl &mut Dl) {
+  mut items = List[Item].empty();
+  items.push(new Item(String.from("own"), 1));
+  dl.text(items[0usize].label.view());
+}
+
+fn main() i32 {
+  mut ed = new Ed(List[Item].empty());
+  ed.items.push(new Item(String.from("ab"), 1));
+  copyFirst(&mut ed, &mut ed);
+  show2("copyFirst", ed.items[0usize].label.view());
+
+  mut ui = new Ui(List[Item].empty(), new Dl(String.empty(), List[u32].empty()));
+  ui.items.push(new Item(String.from("hello"), 2));
+  mut dl = new Dl(String.empty(), List[u32].empty());
+  countOnly(&mut dl, &ui);
+  show("countOnly", i64.from(*dl.cmds[0usize]));
+  show("readOnly", i64.from(readOnly(&dl, &ui)));
+  usedUp(&mut dl, &ui);
+  ownList(&mut dl);
+  show2("ownList", dl.chars.view());
+  0;
+}
