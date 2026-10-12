@@ -1,0 +1,361 @@
+// A cancel racing a completion, through the client: however they fall, an
+// awaited fetch is answered exactly once, with the whole response or with
+// Cancelled, and never a second time or a panic.
+//
+// Racer makes 300 rounds against a loopback server on a thread of its own.
+// Each round it makes a group and a fetch within it, which it has not started,
+// and sends itself one message, 'stop', which cancels the group (the stop
+// message is sent before the 'await' starts the fetch on odd rounds, and the
+// two then run on other workers, the cancel arriving before, during or after
+// the exchange). The fetch ends Done (the body is "hello") or Cancelled; a
+// cancel that reset a connection leaves the client to open another for the
+// next round. What is checked: every round was answered (the loop ran to its
+// end, each await once), each answer was Done with the right body or
+// Cancelled and none failed, and a last fetch with no group still works. Both
+// outcomes happen on a quiet machine; the test does not require it, since
+// which wins is the point of a race. The suite runs it once; run it
+// repeatedly to hunt for a lost or doubled answer (a doubled reply would be a
+// panic, a lost one a hang).
+
+mod race;
+
+import stdio use *;
+import thread;
+import time use Instant, Duration;
+import sync use Channel, Sender, Receiver, Oneshot, OneshotSender, OneshotReceiver;
+import collections use List, String;
+import iobuf use IoBuf, Pool;
+import iocore use Loop, SocketAddr, CancelGroup, forever;
+import http use *;
+import httpconn;
+import httpclient use Request, Response, Config;
+import actors;
+import aiohttp use Client, FetchError;
+import aio use IoLimits;
+
+// ---------------------------------------------------------------------------
+// The loopback server, on a thread of its own. What it answers is chosen by
+// the request's path:
+//   /hello             200 "hello" (and any path not below)
+//   /echo              200, the method, a space, and the request's body
+//   /nobody            204
+//   /status/C          status C, body "status"
+//   /redirect/N        302 to /redirect/N-1; /redirect/0 is 200 "landed"
+//   /big/N             200, N bytes, byte i being i % 251, sent as taken
+//   /conns             200, the number of connections it has accepted
+//   /hang              nothing at all
+// ---------------------------------------------------------------------------
+
+imm halt Atomic[u32];
+
+fn @initpure init() {
+  halt = Atomic[u32].of(0u32);
+  spun = Atomic[u64].of(0u64);
+}
+
+struct Srv {
+  pub drv httpconn.Driver;
+  pub pool Pool;
+  pub accepted u64;
+  pub requests u64;
+  pub reqs List[httpconn.ReqId];
+  pub methods List[Method];
+  pub targets List[String];
+  pub bodies List[String];
+  pub streams List[httpconn.ReqId];
+  pub sent List[u64];
+  pub totals List[u64];
+}
+
+struct Report {
+  pub accepted u64;
+  pub requests u64;
+}
+
+fn reply(sv &mut Srv, req httpconn.ReqId, head bool, status u16, body &Array[u8]) {
+  sv.drv.respond(req, ResponseHead.make(status), BodyLength.sized(u64.from(body.len)));
+  if body.len > 0usize and not head {
+    mut b = sv.pool.mustTake(body.len);
+    b.append(body);
+    sv.drv.sendData(req, b);
+    sv.drv.finish(req);
+  }
+}
+
+fn number(s &str) u64 {
+  match collections.parseUInt(s) {
+    case imm v Some {v;}
+    case is None[u64] {0u64;}
+  }
+}
+
+fn dropStream(sv &mut Srv, j usize) {
+  imm last = sv.streams.len() - 1usize;
+  sv.streams.swap(j, last);
+  sv.sent.swap(j, last);
+  sv.totals.swap(j, last);
+  sv.streams.pop();
+  sv.sent.pop();
+  sv.totals.pop();
+}
+
+// Stream j's next pieces, as many as the connection takes now
+fn pumpStream(sv &mut Srv, j usize) {
+  imm req = *sv.streams[j];
+  while *sv.sent[j] < *sv.totals[j] {
+    imm at = *sv.sent[j];
+    imm left = *sv.totals[j] - at;
+    imm n = if left < 65536u64 {usize.from(left);} else {65536usize;};
+    mut b = sv.pool.mustTake(n);
+    imm s = b.spare();
+    mut i = 0usize;
+    while i < n {
+      s[i] = u8.from((at + u64.from(i)) % 251u64);
+      i = i + 1usize;
+    }
+    b.setLen(n);
+    match sv.drv.sendData(req, b) {
+      case is None[IoBuf] {sv.sent.set(j, at + u64.from(n));}
+      else {return;}
+    }
+  }
+  sv.drv.finish(req);
+  dropStream(sv, j);
+}
+
+fn findStream(sv &Srv, req httpconn.ReqId) usize {
+  mut j = 0usize;
+  while j < sv.streams.len() {
+    if *sv.streams[j] == req {return j;}
+    j = j + 1usize;
+  }
+  sv.streams.len();
+}
+
+fn findReq(sv &Srv, req httpconn.ReqId) usize {
+  mut k = 0usize;
+  while k < sv.reqs.len() {
+    if *sv.reqs[k] == req {return k;}
+    k = k + 1usize;
+  }
+  sv.reqs.len();
+}
+
+fn forget(sv &mut Srv, k usize) {
+  imm last = sv.reqs.len() - 1usize;
+  sv.reqs.swap(k, last);
+  sv.methods.swap(k, last);
+  sv.targets.swap(k, last);
+  sv.bodies.swap(k, last);
+  sv.reqs.pop();
+  sv.methods.pop();
+  sv.targets.pop();
+  sv.bodies.pop();
+}
+
+// The answer to request k, read whole
+fn answer(sv &mut Srv, k usize) {
+  imm req = *sv.reqs[k];
+  imm full = sv.targets[k].copy();
+  imm path = full.view();
+  imm head = *sv.methods[k] == Method.Head;
+  if path == "/echo" {
+    mut b = String.from(methodToken(*sv.methods[k]));
+    b.append(" ");
+    b.append(sv.bodies[k].view());
+    reply(sv, req, head, 200u16, b.view());
+  } elif path == "/nobody" {
+    reply(sv, req, head, 204u16, "");
+  } elif path == "/conns" {
+    mut b = String.empty();
+    b.appendUInt(sv.accepted);
+    reply(sv, req, head, 200u16, b.view());
+  } elif path.len > 10usize and &path[0usize ..< 10usize] == "/redirect/" {
+    imm n = number(&path[10usize ..]);
+    if n == 0u64 {
+      reply(sv, req, head, 200u16, "landed");
+    } else {
+      mut loc = String.from("/redirect/");
+      loc.appendUInt(n - 1u64);
+      mut h = ResponseHead.make(302u16);
+      h.headers.add("Location", loc.view());
+      sv.drv.respond(req, h, BodyLength.sized(5u64));
+      mut b = sv.pool.mustTake(5usize);
+      b.append("moved");
+      sv.drv.sendData(req, b);
+      sv.drv.finish(req);
+    }
+  } elif path.len > 8usize and &path[0usize ..< 8usize] == "/status/" {
+    reply(sv, req, head, u16.from(number(&path[8usize ..])), "status");
+  } elif path.len > 5usize and &path[0usize ..< 5usize] == "/big/" {
+    imm n = number(&path[5usize ..]);
+    sv.drv.respond(req, ResponseHead.make(200u16), BodyLength.sized(n));
+    sv.streams.push(req);
+    sv.sent.push(0u64);
+    sv.totals.push(n);
+    pumpStream(sv, sv.streams.len() - 1usize);
+  } elif path == "/hang" {
+  } else {
+    reply(sv, req, head, 200u16, "hello");
+  }
+}
+
+fn serveEvent(sv &mut Srv, e &mut httpconn.Event) {
+  imm kind = e.kind;
+  if kind == httpconn.EventKind.Accepted {
+    sv.accepted = sv.accepted + 1u64;
+  } elif kind == httpconn.EventKind.Request {
+    sv.requests = sv.requests + 1u64;
+    sv.reqs.push(e.req);
+    sv.methods.push(e.request.method);
+    sv.targets.push(e.request.target.copy());
+    sv.bodies.push(String.empty());
+  } elif kind == httpconn.EventKind.Data {
+    imm k = findReq(sv, e.req);
+    if k < sv.reqs.len() {(&mut sv.bodies[k]).appendBytes(e.buf.view());}
+    sv.drv.release(e.req, e.buf.len());
+  } elif kind == httpconn.EventKind.End {
+    imm k = findReq(sv, e.req);
+    if k < sv.reqs.len() {answer(sv, k);}
+  } elif kind == httpconn.EventKind.Writable {
+    imm j = findStream(sv, e.req);
+    if j < sv.streams.len() {pumpStream(sv, j);}
+  } elif e.isTerminal() {
+    imm k = findReq(sv, e.req);
+    if k < sv.reqs.len() {forget(sv, k);}
+    imm j = findStream(sv, e.req);
+    if j < sv.streams.len() {dropStream(sv, j);}
+  }
+}
+
+fn url(port u16, path &str) String {
+  mut u = String.from("http://127.0.0.1:");
+  u.appendUInt(u64.from(port));
+  u.append(path);
+  u;
+}
+
+fn serve(portTx Sender[u16]) Report {
+  imm pool = Pool.make();
+  mut lp = Loop.mustMake();
+  mut sv = new Srv(drv: httpconn.Driver.make(httpconn.Config.make(), pool), pool: pool, accepted: 0u64,
+    requests: 0u64, reqs: List[httpconn.ReqId].empty(), methods: List[Method].empty(),
+    targets: List[String].empty(), bodies: List[String].empty(), streams: List[httpconn.ReqId].empty(),
+    sent: List[u64].empty(), totals: List[u64].empty());
+  mut port = 0u16;
+  match sv.drv.listen(&mut lp, SocketAddr.localhost(0u16), httpconn.Sink.Here(1u64)) {
+    case imm r Ok {
+      match sv.drv.localAddr(&lp, r) {
+        case imm a Ok {port = a.port();}
+        case imm e Error {}
+      }
+    }
+    case imm e Error {}
+  }
+  portTx.send(port);
+  mut events = List[httpconn.Event].empty();
+  while halt.load() == 0u32 {
+    sv.drv.poll(&mut lp, Instant.now() + Duration.fromMillis(20i64), &mut events);
+    mut k = 0usize;
+    while k < events.len() {
+      serveEvent(&mut sv, &mut events[k]);
+      k = k + 1usize;
+    }
+    events.clear();
+  }
+  sv.drv.abortAll(&mut lp);
+  new Report(sv.accepted, sv.requests);
+}
+
+const rounds = 300u64;
+
+// What spinFor adds to, so that it is not optimised away
+imm spun Atomic[u64];
+
+// Wait a while, in a way the compiler leaves alone
+fn spinFor(n u64) {
+  mut k = 0u64;
+  while k < n {
+    spun.add(1u64);
+    k = k + 1u64;
+  }
+}
+
+actor Racer {
+  client Client;
+
+  // Runs once the behaviour is paused on its fetch, after spinning a while
+  pub async do stop(self, g CancelGroup, spin u64) {
+    spinFor(spin);
+    g.cancel();
+  }
+
+  pub async do run(self, port u16, done OneshotSender[u64]) {
+    mut answered = 0u64;
+    mut ok = 0u64;
+    mut cancelled = 0u64;
+    mut other = 0u64;
+    mut wrongBody = 0u64;
+    mut round = 0u64;
+    while round < rounds {
+      imm g = CancelGroup.make();
+      imm r = client.getIn(url(port, "/hello").view(), IoLimits.within(g));
+      selfactor.stop(g, (round * 911u64) % 40000u64);
+      imm a = await r;
+      answered = answered + 1u64;
+      match &a {
+        case imm good &Ok {
+          if good.status == 200u16 and good.body.view() == "hello" {ok = ok + 1u64;} else {wrongBody = wrongBody + 1u64;}
+        }
+        case imm e &Error {
+          if e.isCancelled() {cancelled = cancelled + 1u64;} else {other = other + 1u64;}
+        }
+      }
+      round = round + 1u64;
+    }
+    // One with no group still works after all that
+    imm last = await client.get(url(port, "/hello").view());
+    mut lastGood = false;
+    match &last {
+      case imm good &Ok {lastGood = good.body.view() == "hello";}
+      else {}
+    }
+    printStr("every round answered once: ");
+    printStr(if answered == rounds {"yes";} else {"NO";});
+    printStr("\n");
+    printStr("every answer Done or Cancelled: ");
+    printStr(if ok + cancelled == rounds and other == 0u64 and wrongBody == 0u64 {"yes";} else {"NO";});
+    printStr("\n");
+    printStr("a fetch with no group after them: ");
+    printStr(if lastGood {"yes";} else {"NO";});
+    printStr("\n");
+    mut d = done;
+    d.send(1u64);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  mut portTx Sender[u16];
+  mut portRx Receiver[u16];
+  portTx, portRx = Channel[u16].make();
+  imm server = thread.start(portTx, &serve);
+  mut port = 0u16;
+  match portRx.recv() {
+    case imm p Some {port = p;}
+    case is None[u16] {}
+  }
+  mut tx OneshotSender[u64];
+  mut rx OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  {
+    imm r = new Racer(Client.standard());
+    r.run(port, tx);
+  }
+  rx.recv();
+  halt.store(1u32);
+  imm rep = server.join();
+  finalAll();
+  printStr("end\n");
+  0i32;
+}

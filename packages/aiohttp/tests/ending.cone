@@ -1,0 +1,125 @@
+// The program ends with actors paused on HTTP: Lister listens (with aio) on a
+// socket nobody accepts from, so a connection to it is made by the system and
+// then says nothing. Waiter awaits a fetch from it through a client; Holder
+// connects the same way and awaits a request on its connection. finalAll()
+// waits until no actor is queued or running -- the paused actors are neither
+// -- and then ends the service: its loop cancels the exchanges and closes
+// the sockets, and their answers are not delivered. Each paused behaviour is
+// abandoned: its reply's envelope is dropped, which lets go of the last count
+// of its actor, which dies; its pending table drops the record, so 'keep' is
+// finalized and the rest of the behaviour never runs ('answered' is never
+// printed). Main prints 'end' after.
+
+mod ending;
+
+import stdio use *;
+import thread;
+import time use Duration;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import collections use String;
+import iocore use SocketAddr, IoError;
+import http use RequestHead;
+import actors;
+import aio use Socket;
+import aiohttp use Client, Conn, FetchError;
+
+struct Note {
+  pub n u64;
+  fn final(self &uni) {printStr("  drop "); printUInt(n); printStr("\n");}
+}
+
+fn socketOf(r Result[Socket, IoError]) Socket {
+  mut res = r;
+  mut s = Socket.none();
+  match &mut res {
+    case mut ok &mut Ok {s <=> *ok;}
+    else {}
+  }
+  s;
+}
+
+fn connOf(r Result[Conn, FetchError]) Conn {
+  mut res = r;
+  mut c = Conn.none();
+  match &mut res {
+    case mut ok &mut Ok {c <=> *ok;}
+    else {}
+  }
+  c;
+}
+
+// Listens, and keeps the socket open (and unaccepted) for as long as it lives
+actor Lister {
+  sock Socket;
+
+  pub async do listen(self, port OneshotSender[u16]) {
+    sock = socketOf(await aio.listen(SocketAddr.localhost(0u16)));
+    mut p = 0u16;
+    match await sock.localAddr() {
+      case imm a Ok {p = a.port();}
+      else {}
+    }
+    mut tx = port;
+    tx.send(p);
+  }
+}
+
+actor Waiter {
+  client Client;
+
+  pub async do serve(self, port u16, ready OneshotSender[u64]) {
+    imm keep = new Note(1u64);
+    mut u = String.from("http://127.0.0.1:");
+    u.appendUInt(u64.from(port));
+    u.append("/");
+    mut r = ready;
+    r.send(1u64);
+    imm answer = await client.get(u.view());
+    printStr("answered\n");
+  }
+}
+
+actor Holder {
+  pub async do hold(self, port u16, ready OneshotSender[u64]) {
+    imm keep = new Note(2u64);
+    imm c = connOf(await aiohttp.connect("127.0.0.1", port));
+    mut r = ready;
+    r.send(1u64);
+    imm answer = await c.request(RequestHead.make("GET", "/", "127.0.0.1"), String.empty());
+    printStr("answered\n");
+  }
+}
+
+fn main() {
+  initAll();
+  mut ptx OneshotSender[u16];
+  mut prx OneshotReceiver[u16];
+  ptx, prx = Oneshot[u16].make();
+  imm lister = new Lister(Socket.none());
+  lister.listen(ptx);
+  mut port = 0u16;
+  match prx.recv() {
+    case imm p Some {port = p;}
+    case is None[u16] {}
+  }
+  printStr("listening\n");
+
+  mut wtx OneshotSender[u64];
+  mut wrx OneshotReceiver[u64];
+  wtx, wrx = Oneshot[u64].make();
+  mut htx OneshotSender[u64];
+  mut hrx OneshotReceiver[u64];
+  htx, hrx = Oneshot[u64].make();
+  {
+    imm w = new Waiter(Client.standard());
+    w.serve(port, wtx);
+    imm h = new Holder();
+    h.hold(port, htx);
+  }
+  wrx.recv();
+  hrx.recv();
+
+  thread.sleep(Duration.fromMillis(200i64));
+  finalAll();
+  printStr("end\n");
+}

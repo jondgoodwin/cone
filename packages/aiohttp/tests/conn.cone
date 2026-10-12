@@ -1,0 +1,530 @@
+// A connection an actor holds: Prober connects to a loopback server on a
+// thread of its own (httpconn's Driver, its own Loop), and awaits requests on
+// the connection one after another. Checked, in order: a GET, then a second
+// request on the same connection (the server counted one accept); a POST whose
+// body comes back; a request over its connection's cancel group, cancelled
+// while paused, which resets the connection and ends the request Cancelled,
+// and a request on it after, which fails (it is closed); a deadline ahead and
+// one past, each ending TimedOut, the first resetting the connection; a
+// refused connection; then TLS: a connection to a server whose certificate
+// the test's root vouches for, a GET over it, and a connection to one it does
+// not (the connection is made, the first request fails at the handshake,
+// Stage.Tls); and a Conn dropped under a request in flight, which ends it
+// Cancelled.
+
+mod conn;
+
+import stdio use *;
+import thread;
+import fs;
+import path use Path;
+import time use Instant, Duration;
+import sync use Channel, Sender, Receiver, Oneshot, OneshotSender, OneshotReceiver;
+import collections use List, String;
+import iobuf use IoBuf, Pool;
+import iocore use Loop, SocketAddr, CancelGroup, forever;
+import http use *;
+import httpconn;
+import httpclient use Response;
+import tls;
+import actors;
+import aiohttp use Client, Conn, FetchError;
+import aio use IoLimits;
+
+// ---------------------------------------------------------------------------
+// The loopback server, on a thread of its own. What it answers is chosen by
+// the request's path:
+//   /hello             200 "hello" (and any path not below)
+//   /echo              200, the method, a space, and the request's body
+//   /nobody            204
+//   /status/C          status C, body "status"
+//   /redirect/N        302 to /redirect/N-1; /redirect/0 is 200 "landed"
+//   /big/N             200, N bytes, byte i being i % 251, sent as taken
+//   /conns             200, the number of connections it has accepted
+//   /hang              nothing at all
+// ---------------------------------------------------------------------------
+
+imm halt Atomic[u32];
+
+fn @initpure init() {
+  halt = Atomic[u32].of(0u32);
+}
+
+struct Srv {
+  pub drv httpconn.Driver;
+  pub pool Pool;
+  pub accepted u64;
+  pub requests u64;
+  pub reqs List[httpconn.ReqId];
+  pub methods List[Method];
+  pub targets List[String];
+  pub bodies List[String];
+  pub streams List[httpconn.ReqId];
+  pub sent List[u64];
+  pub totals List[u64];
+}
+
+struct Report {
+  pub accepted u64;
+  pub requests u64;
+}
+
+fn reply(sv &mut Srv, req httpconn.ReqId, head bool, status u16, body &Array[u8]) {
+  sv.drv.respond(req, ResponseHead.make(status), BodyLength.sized(u64.from(body.len)));
+  if body.len > 0usize and not head {
+    mut b = sv.pool.mustTake(body.len);
+    b.append(body);
+    sv.drv.sendData(req, b);
+    sv.drv.finish(req);
+  }
+}
+
+fn number(s &str) u64 {
+  match collections.parseUInt(s) {
+    case imm v Some {v;}
+    case is None[u64] {0u64;}
+  }
+}
+
+fn dropStream(sv &mut Srv, j usize) {
+  imm last = sv.streams.len() - 1usize;
+  sv.streams.swap(j, last);
+  sv.sent.swap(j, last);
+  sv.totals.swap(j, last);
+  sv.streams.pop();
+  sv.sent.pop();
+  sv.totals.pop();
+}
+
+// Stream j's next pieces, as many as the connection takes now
+fn pumpStream(sv &mut Srv, j usize) {
+  imm req = *sv.streams[j];
+  while *sv.sent[j] < *sv.totals[j] {
+    imm at = *sv.sent[j];
+    imm left = *sv.totals[j] - at;
+    imm n = if left < 65536u64 {usize.from(left);} else {65536usize;};
+    mut b = sv.pool.mustTake(n);
+    imm s = b.spare();
+    mut i = 0usize;
+    while i < n {
+      s[i] = u8.from((at + u64.from(i)) % 251u64);
+      i = i + 1usize;
+    }
+    b.setLen(n);
+    match sv.drv.sendData(req, b) {
+      case is None[IoBuf] {sv.sent.set(j, at + u64.from(n));}
+      else {return;}
+    }
+  }
+  sv.drv.finish(req);
+  dropStream(sv, j);
+}
+
+fn findStream(sv &Srv, req httpconn.ReqId) usize {
+  mut j = 0usize;
+  while j < sv.streams.len() {
+    if *sv.streams[j] == req {return j;}
+    j = j + 1usize;
+  }
+  sv.streams.len();
+}
+
+fn findReq(sv &Srv, req httpconn.ReqId) usize {
+  mut k = 0usize;
+  while k < sv.reqs.len() {
+    if *sv.reqs[k] == req {return k;}
+    k = k + 1usize;
+  }
+  sv.reqs.len();
+}
+
+fn forget(sv &mut Srv, k usize) {
+  imm last = sv.reqs.len() - 1usize;
+  sv.reqs.swap(k, last);
+  sv.methods.swap(k, last);
+  sv.targets.swap(k, last);
+  sv.bodies.swap(k, last);
+  sv.reqs.pop();
+  sv.methods.pop();
+  sv.targets.pop();
+  sv.bodies.pop();
+}
+
+// The answer to request k, read whole
+fn answer(sv &mut Srv, k usize) {
+  imm req = *sv.reqs[k];
+  imm full = sv.targets[k].copy();
+  imm path = full.view();
+  imm head = *sv.methods[k] == Method.Head;
+  if path == "/echo" {
+    mut b = String.from(methodToken(*sv.methods[k]));
+    b.append(" ");
+    b.append(sv.bodies[k].view());
+    reply(sv, req, head, 200u16, b.view());
+  } elif path == "/nobody" {
+    reply(sv, req, head, 204u16, "");
+  } elif path == "/conns" {
+    mut b = String.empty();
+    b.appendUInt(sv.accepted);
+    reply(sv, req, head, 200u16, b.view());
+  } elif path.len > 10usize and &path[0usize ..< 10usize] == "/redirect/" {
+    imm n = number(&path[10usize ..]);
+    if n == 0u64 {
+      reply(sv, req, head, 200u16, "landed");
+    } else {
+      mut loc = String.from("/redirect/");
+      loc.appendUInt(n - 1u64);
+      mut h = ResponseHead.make(302u16);
+      h.headers.add("Location", loc.view());
+      sv.drv.respond(req, h, BodyLength.sized(5u64));
+      mut b = sv.pool.mustTake(5usize);
+      b.append("moved");
+      sv.drv.sendData(req, b);
+      sv.drv.finish(req);
+    }
+  } elif path.len > 8usize and &path[0usize ..< 8usize] == "/status/" {
+    reply(sv, req, head, u16.from(number(&path[8usize ..])), "status");
+  } elif path.len > 5usize and &path[0usize ..< 5usize] == "/big/" {
+    imm n = number(&path[5usize ..]);
+    sv.drv.respond(req, ResponseHead.make(200u16), BodyLength.sized(n));
+    sv.streams.push(req);
+    sv.sent.push(0u64);
+    sv.totals.push(n);
+    pumpStream(sv, sv.streams.len() - 1usize);
+  } elif path == "/hang" {
+  } else {
+    reply(sv, req, head, 200u16, "hello");
+  }
+}
+
+fn serveEvent(sv &mut Srv, e &mut httpconn.Event) {
+  imm kind = e.kind;
+  if kind == httpconn.EventKind.Accepted {
+    sv.accepted = sv.accepted + 1u64;
+  } elif kind == httpconn.EventKind.Request {
+    sv.requests = sv.requests + 1u64;
+    sv.reqs.push(e.req);
+    sv.methods.push(e.request.method);
+    sv.targets.push(e.request.target.copy());
+    sv.bodies.push(String.empty());
+  } elif kind == httpconn.EventKind.Data {
+    imm k = findReq(sv, e.req);
+    if k < sv.reqs.len() {(&mut sv.bodies[k]).appendBytes(e.buf.view());}
+    sv.drv.release(e.req, e.buf.len());
+  } elif kind == httpconn.EventKind.End {
+    imm k = findReq(sv, e.req);
+    if k < sv.reqs.len() {answer(sv, k);}
+  } elif kind == httpconn.EventKind.Writable {
+    imm j = findStream(sv, e.req);
+    if j < sv.streams.len() {pumpStream(sv, j);}
+  } elif e.isTerminal() {
+    imm k = findReq(sv, e.req);
+    if k < sv.reqs.len() {forget(sv, k);}
+    imm j = findStream(sv, e.req);
+    if j < sv.streams.len() {dropStream(sv, j);}
+  }
+}
+
+// The tls package's test certificates
+fn certs(name &str) Path {
+  mut p = String.from("../../../../../tls/tests/certs/");
+  p.append(name);
+  Path.fromString(p);
+}
+
+fn readText(name &str) String {
+  mut out = String.empty();
+  imm file = certs(name);
+  match fs.readFile(&file) {
+    case mut r Ok {out <=> r;}
+    case imm e Error {}
+  }
+  out;
+}
+
+// The listener's layers: a TLS server session each, from one context
+struct TlsMaker {
+  server tls.Server;
+  pool Pool;
+
+  pub fn make(self &mut) So[httpconn.Layer] {new So[tls.Stream](server.stream(pool));}
+}
+
+fn tlsServer(cert &str, key &str) tls.Server {
+  imm certFile = certs(cert);
+  imm keyFile = certs(key);
+  match tls.Server.make(tls.ServerConfig.make(&certFile, &keyFile)) {
+    case imm r Ok {
+      imm s = r;
+      return s;
+    }
+    case imm e Error {}
+  }
+  panic("no TLS server: run the test from its build folder");
+}
+
+// A listening port: plain if s is None, else through TLS
+fn listenOn(sv &mut Srv, lp &mut Loop, s Option[tls.Server]) u16 {
+  mut port = 0u16;
+  mut r Result[httpconn.ListenerId, iocore.IoError] = Error[httpconn.ListenerId, iocore.IoError](iocore.IoError.cancelled());
+  match s {
+    case imm t Some {
+      r = sv.drv.listenWith(lp, SocketAddr.localhost(0u16), new So[TlsMaker](new TlsMaker(t, sv.pool)),
+        httpconn.Sink.Here(1u64));
+    }
+    else {r = sv.drv.listen(lp, SocketAddr.localhost(0u16), httpconn.Sink.Here(1u64));}
+  }
+  match r {
+    case imm l Ok {
+      match sv.drv.localAddr(lp, l) {
+        case imm a Ok {port = a.port();}
+        case imm e Error {}
+      }
+    }
+    case imm e Error {}
+  }
+  port;
+}
+
+fn serve(portTx Sender[u16]) Report {
+  imm pool = Pool.make();
+  mut lp = Loop.mustMake();
+  mut sv = new Srv(drv: httpconn.Driver.make(httpconn.Config.make(), pool), pool: pool, accepted: 0u64,
+    requests: 0u64, reqs: List[httpconn.ReqId].empty(), methods: List[Method].empty(),
+    targets: List[String].empty(), bodies: List[String].empty(), streams: List[httpconn.ReqId].empty(),
+    sent: List[u64].empty(), totals: List[u64].empty());
+  portTx.send(listenOn(&mut sv, &mut lp, None));
+  portTx.send(listenOn(&mut sv, &mut lp, Some[tls.Server](tlsServer("server.pem", "server.key"))));
+  portTx.send(listenOn(&mut sv, &mut lp, Some[tls.Server](tlsServer("untrusted.pem", "untrusted.key"))));
+  mut events = List[httpconn.Event].empty();
+  while halt.load() == 0u32 {
+    sv.drv.poll(&mut lp, Instant.now() + Duration.fromMillis(20i64), &mut events);
+    mut k = 0usize;
+    while k < events.len() {
+      serveEvent(&mut sv, &mut events[k]);
+      k = k + 1usize;
+    }
+    events.clear();
+  }
+  sv.drv.abortAll(&mut lp);
+  new Report(sv.accepted, sv.requests);
+}
+
+// ---------------------------------------------------------------------------
+// What Prober says
+// ---------------------------------------------------------------------------
+
+fn kindWord(e &FetchError) &str {
+  if e.isCancelled() {"cancelled";}
+  elif e.isTimedOut() {"timed out";}
+  else {"failed";}
+}
+
+// How an exchange ended: the status and body, or the kind of error (and stage)
+fn say(what &str, r Result[Response, FetchError]) {
+  printStr(what);
+  printStr(": ");
+  match &r {
+    case imm ok &Ok {
+      printUInt(u64.from(ok.status));
+      if ok.body.len() > 0usize {
+        printStr(" ");
+        printStr(ok.body.view());
+      }
+      printStr("\n");
+    }
+    case imm e &Error {
+      printStr(kindWord(e));
+      if not e.isCancelled() and not e.isTimedOut() {
+        printStr(" at ");
+        printStr(httpclient.stageName(e.failure.stage));
+      }
+      printStr("\n");
+    }
+  }
+}
+
+fn note(what &str, yes bool) {
+  printStr(what);
+  if yes {printStr(": yes\n");} else {printStr(": NO\n");}
+}
+
+fn waitedAtLeast(t0 Instant, ms i64) bool {
+  t0.elapsed() >= Duration.fromMillis(ms);
+}
+
+// The Conn an answer holds, swapped out of it: Conn.none() if it failed, and
+// what a failure says is printed
+fn connOf(what &str, r Result[Conn, FetchError]) Conn {
+  mut res = r;
+  mut c = Conn.none();
+  match &mut res {
+    case mut ok &mut Ok {
+      c <=> *ok;
+      printStr(what);
+      printStr(": connected\n");
+    }
+    case imm e &mut Error {
+      printStr(what);
+      printStr(": ");
+      printStr(kindWord(e));
+      printStr(" at ");
+      printStr(httpclient.stageName(e.failure.stage));
+      printStr("\n");
+    }
+  }
+  c;
+}
+
+fn get(path &str) RequestHead {RequestHead.make("GET", path, "127.0.0.1");}
+
+fn secure(port u16, path &str) String {
+  mut u = String.from("https://127.0.0.1:");
+  u.appendUInt(u64.from(port));
+  u.append(path);
+  u;
+}
+
+fn plain(port u16, path &str) String {
+  mut u = String.from("http://127.0.0.1:");
+  u.appendUInt(u64.from(port));
+  u.append(path);
+  u;
+}
+
+actor Prober {
+  // Runs while run is paused at an await, after a while (the request is on
+  // the wire by then, so the cancel has a connection to reset): ends the
+  // group's operations
+  pub async do stop(self, g CancelGroup) {
+    thread.sleep(Duration.fromMillis(100i64));
+    g.cancel();
+  }
+
+  pub async do run(self, port u16, goodPort u16, untrustedPort u16, done OneshotSender[u64]) {
+    // A plain connection: two requests on it, one server accept
+    imm c = connOf("connect", await aiohttp.connect("127.0.0.1", port));
+    say("get", await c.request(get("/hello"), String.empty()));
+    say("accepts so far", await c.request(get("/conns"), String.empty()));
+    mut ping = RequestHead.make("POST", "/echo", "127.0.0.1");
+    ping.headers.add("Content-Type", "text/plain");
+    say("post", await c.request(ping, String.from("ping")));
+
+    // A request cancelled while paused: the connection is reset
+    imm g1 = CancelGroup.make();
+    imm r1 = c.requestIn(get("/hang"), String.empty(), IoLimits.within(g1));
+    selfactor.stop(g1);
+    say("cancel while paused", await r1);
+    say("a request after it", await c.request(get("/hello"), String.empty()));
+
+    // A deadline ahead, then one past, on new connections
+    imm c2 = connOf("connect again", await aiohttp.connect("127.0.0.1", port));
+    imm t2 = Instant.now();
+    say("deadline ahead", await c2.requestIn(get("/hang"), String.empty(), IoLimits.until(t2 + Duration.fromMillis(100i64))));
+    note("  and it had passed", waitedAtLeast(t2, 90i64));
+    imm c3 = connOf("connect a third", await aiohttp.connect("127.0.0.1", port));
+    say("deadline past", await c3.requestIn(get("/hello"), String.empty(), IoLimits.until(Instant.now())));
+    say("and the connection is still good", await c3.request(get("/hello"), String.empty()));
+    imm g4 = CancelGroup.make();
+    g4.cancel();
+    say("group cancelled before it starts", await c3.requestIn(get("/hello"), String.empty(), IoLimits.within(g4)));
+
+    // A connection that cannot be made
+    imm none = connOf("refused", await aiohttp.connect("127.0.0.1", 1u16));
+
+    // TLS: a server the test's root vouches for
+    mut cfg = tls.ClientConfig.make();
+    cfg.verify = tls.Verifier.roots(readText("ca.pem").view());
+    cfg.offline = true;
+    imm s1 = connOf("secure connect", await aiohttp.connectSecure("127.0.0.1", goodPort, cfg));
+    say("secure get", await s1.request(get("/hello"), String.empty()));
+    say("secure again", await s1.request(get("/hello"), String.empty()));
+
+    // ...and one it does not: the connection is made, the first request fails
+    mut cfg2 = tls.ClientConfig.make();
+    cfg2.verify = tls.Verifier.roots(readText("ca.pem").view());
+    cfg2.offline = true;
+    imm s2 = connOf("untrusted connect", await aiohttp.connectSecure("127.0.0.1", untrustedPort, cfg2));
+    say("untrusted get", await s2.request(get("/hello"), String.empty()));
+
+    // The same two servers through a Client, whose config carries the root
+    mut hcfg = httpclient.Config.make();
+    hcfg.tlsConfig.verify = tls.Verifier.roots(readText("ca.pem").view());
+    hcfg.tlsConfig.offline = true;
+    imm hc = Client.make(hcfg, aiohttp.defaultMaxBody);
+    say("https get", await hc.get(secure(goodPort, "/hello").view()));
+    say("https again", await hc.get(secure(goodPort, "/hello").view()));
+    say("https untrusted", await hc.get(secure(untrustedPort, "/hello").view()));
+    say("https untrusted, a second time", await hc.get(secure(untrustedPort, "/hello").view()));
+    say("https beside http", await hc.get(plain(port, "/hello").view()));
+
+    mut d = done;
+    d.send(1u64);
+  }
+}
+
+// A Conn dropped while a request is in flight on it
+actor Dropper {
+  conn Conn;
+
+  pub async do connect(self, port u16, ready OneshotSender[u64]) {
+    conn = connOf("dropper connects", await aiohttp.connect("127.0.0.1", port));
+    mut r = ready;
+    r.send(1u64);
+  }
+
+  pub async do release(self) {
+    conn = Conn.none();
+  }
+
+  pub async do run(self, done OneshotSender[u64]) {
+    say("conn dropped under a request", await conn.request(get("/hang"), String.empty()));
+    mut d = done;
+    d.send(1u64);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  mut portTx Sender[u16];
+  mut portRx Receiver[u16];
+  portTx, portRx = Channel[u16].make();
+  imm server = thread.start(portTx, &serve);
+  mut ports = List[u16].empty();
+  while ports.len() < 3usize {
+    match portRx.recv() {
+      case imm p Some {ports.push(p);}
+      case is None[u16] {}
+    }
+  }
+  mut tx OneshotSender[u64];
+  mut rx OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  {
+    imm p = new Prober();
+    p.run(*ports[0usize], *ports[1usize], *ports[2usize], tx);
+  }
+  rx.recv();
+
+  // A Conn dropped under a request
+  mut rtx OneshotSender[u64];
+  mut rrx OneshotReceiver[u64];
+  rtx, rrx = Oneshot[u64].make();
+  mut tx2 OneshotSender[u64];
+  mut rx2 OneshotReceiver[u64];
+  tx2, rx2 = Oneshot[u64].make();
+  {
+    imm d = new Dropper(Conn.none());
+    d.connect(*ports[0usize], rtx);
+    rrx.recv();
+    d.run(tx2);
+    d.release();
+  }
+  rx2.recv();
+
+  halt.store(1u32);
+  imm rep = server.join();
+  finalAll();
+  printStr("end\n");
+  0i32;
+}
