@@ -20,6 +20,8 @@
 // each from the C library's own header: this module is C-named, so it gets no
 // prelude and cannot choose a declaration by target (that is core's
 // 'isWindows()' and its kin, and core imports this module, not the other way).
+// The numbers that differ by C library (EILSEQ and the locale categories) are
+// globals of cnames.c, taken from the C library's own headers.
 // The POSIX functions, which the ISO C library lacks, are the posix package's,
 // which is built on this one.
 //
@@ -83,13 +85,15 @@ pub extern {
 // 'errno' is a macro or a call that answers where this thread's number is
 // kept (the UCRT's '_errno', glibc's '__errno_location'); 'errno()' is that
 // expansion, from cnames.c, read with '*libc.errno()' and set with
-// '*libc.errno() = 0i32'. The ISO C names follow, with the UCRT's numbers
-// (glibc's EILSEQ is 84); the POSIX names, more of them, are posix's.
+// '*libc.errno() = 0i32'. The ISO C names follow; the POSIX names, more of
+// them, are posix's. EDOM and ERANGE are the same number in every C library
+// Cone targets; EILSEQ is not (the UCRT's 42, glibc's 84), so it is a global
+// that cnames.c defines from errno.h's own value, read as a constant is.
 extern fn cone_errno() *i32;
 pub fn errno() *i32 inline {cone_errno();}
 pub const EDOM = 33i32;
 pub const ERANGE = 34i32;
-pub const EILSEQ = 42i32;
+pub extern imm EILSEQ i32;
 
 // time.h: the time now, in seconds since 1970 (UTC), also stored where 't'
 // points unless it is null. 'time_t' is 64 bits; cnames.c's 'cone_time' is C's
@@ -135,19 +139,21 @@ pub fn stderr() *FILE inline {cone_stderr();}
 // category, or all of them, to the locale named, and answers that locale's
 // name, or null when it cannot set it; a null name only asks, answering the
 // name in force. The answer is the C library's, good until the next call.
-// The categories are the UCRT's numbers (glibc's differ: LC_ALL is 6).
+// The categories are the target C library's numbers, which differ (the UCRT's
+// LC_ALL is 0 and LC_CTYPE 2, glibc's 6 and 0): globals that cnames.c defines
+// from locale.h's own values, read as constants are.
 //
 // On Windows the narrow file functions ('fopen', 'remove', and posix's
 // 'mkdir' and folder listing) read a name in the locale's code page, the
 // system's ANSI one (1252, say) under "C", so a UTF-8 name with a byte above
 // 127 names some other file. 'setlocale(LC_ALL, cstr.fromLiteral(".UTF-8").ptr())' makes them
 // read and answer names as UTF-8, and refuse a name that is not UTF-8.
-pub const LC_ALL = 0i32;
-pub const LC_COLLATE = 1i32;
-pub const LC_CTYPE = 2i32;
-pub const LC_MONETARY = 3i32;
-pub const LC_NUMERIC = 4i32;
-pub const LC_TIME = 5i32;
+pub extern imm LC_ALL i32;
+pub extern imm LC_COLLATE i32;
+pub extern imm LC_CTYPE i32;
+pub extern imm LC_MONETARY i32;
+pub extern imm LC_NUMERIC i32;
+pub extern imm LC_TIME i32;
 pub extern {
   // 'locale' may be null, which only asks, so it stays a '*u8'
   fn setlocale(category i32, locale *u8) *u8;

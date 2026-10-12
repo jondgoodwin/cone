@@ -798,8 +798,10 @@ Visual Studio projects stay at the root.
   heap's region (core's `heapRegion()`), a static object of function addresses,
   `cnames.c`, the C library's names that differ by platform or that Cone
   cannot spell (`stdin`, `stdout`, `stderr`, `errno`, `time`, `timespec_get`,
-  and a variadic print of a float), which `libc` and the printing bind, so
-  that they take them from the C library's own header; the rest it chooses by
+  and `EILSEQ` and the locale categories, whose numbers differ by C library),
+  which `libc` binds, so that it takes them from the C library's own header
+  (a float's text is Cone's own, `floatfmt.cone`: C's `%g`, the same on every
+  OS); the rest it chooses by
   target with `isWindows()`, as the hash seed's `rand_s` or `getentropy`,
   all of which Cone cannot say; and `oscalls.c`, the Linux system calls `sync`
   and `thread` need that Cone cannot call (the futex's wait and wake, the

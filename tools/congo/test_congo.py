@@ -1446,6 +1446,50 @@ class Testing(unittest.TestCase):
         self.assertTrue((build / "tests" / "doubles" / f"doubles{congo.EXE_EXT}").is_file())
         self.assertFalse((build / "examples" / "broken" / f"broken{congo.EXE_EXT}").exists())
 
+    def test_a_test_has_expected_files_of_its_own_for_a_host(self):
+        # tests/<name>.<host>.out (and .err) is compared in place of
+        # tests/<name>.out where it exists for the running host, as the
+        # compiler suite's run.py does; another host's file is not looked at
+        pkg = self.root / "perhost"
+        write(pkg / "congo.toml",
+              '[package]\nname = "perhost"\nversion = "0.1.0"\noutput = "library"\n')
+        write(pkg / "src" / "perhost.cone", """
+            mod perhost;
+
+            pub fn one() i64 {
+              1i64;
+            }
+            """)
+        write(pkg / "tests" / "says.cone", """
+            mod says;
+
+            import stdio use *;
+            import perhost;
+
+            fn main() i32 {
+              printInt(perhost.one());
+              printStr(" on this host\\n");
+              eprintStr("note\\n");
+              0i32;
+            }
+            """)
+        other = "macos" if congo.HOST_OS != "macos" else "windows"
+        write(pkg / "tests" / "says.out", "plain file, wrong here\n")
+        write(pkg / "tests" / f"says.{congo.HOST_OS}.out", "1 on this host\n")
+        write(pkg / "tests" / f"says.{other}.out", "another host's file\n")
+        write(pkg / "tests" / "says.err", "plain file, wrong here\n")
+        write(pkg / "tests" / f"says.{congo.HOST_OS}.err", "note\n")
+        run = self.congo("test", cwd=pkg, ok=False)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertIn("test says ... ok", run.stdout)
+        # With the host's files gone, the plain ones are compared, and fail
+        (pkg / "tests" / f"says.{congo.HOST_OS}.out").unlink()
+        (pkg / "tests" / f"says.{congo.HOST_OS}.err").unlink()
+        run = self.congo("test", cwd=pkg, ok=False)
+        self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
+        self.assertIn("test says ... FAILED", run.stdout)
+        self.assertIn("plain file, wrong here", run.stdout)
+
     def test_a_package_exports_an_actor(self):
         # A library declaring a public actor and a private one: its include file
         # holds each actor whole, the importer generates their declarations
