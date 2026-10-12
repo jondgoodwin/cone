@@ -22,8 +22,22 @@ mod gcfinals;
 import actors;
 import stdio use *;
 
-mut log = 0i64;
-fn note(d i64) { log = log * 10 + d; }
+// Finals run on whichever worker collects, so the log is an atomic, appended to by
+// a compare-and-swap that retries.
+imm log Atomic[i64];
+
+fn @initpure init() {
+  log = Atomic[i64].of(0i64);
+}
+
+fn note(d i64) {
+  mut seen = log.load();
+  mut swapped = false;
+  while !swapped {
+    imm was = seen;
+    seen, swapped = log.compareSwap(was, was * 10 + d);
+  }
+}
 
 struct ResValue {
   pub n i64;
@@ -68,7 +82,7 @@ actor Holder {
   pub async do report(self, tag i64) {
     imm st = self.allocRegion().stats();
     line("report", tag);
-    line("  log", log);
+    line("  log", log.load());
     line("  objects", i64.from(st.objects));
     line("  finalized", i64.from(st.finalized));
   }
@@ -92,6 +106,7 @@ actor Keeper {
 }
 
 fn main() {
+  initAll();
   actors.setStress(true);
   {
     imm h = new Holder();
@@ -107,5 +122,5 @@ fn main() {
     k.fill();
   }
   actors.waitQuiet();
-  line("after the deaths", log);
+  line("after the deaths", log.load());
 }

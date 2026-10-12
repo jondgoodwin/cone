@@ -1,6 +1,7 @@
 // Once. Four threads, let through a starting gate together, each call
 // callOnce on one Once whose function counts its runs, sleeps 10 ms (so the
-// others arrive while it runs, and must wait) and then sets a plain global.
+// others arrive while it runs, and must wait) and then sets a global (an atomic used relaxed,
+// so only the Once orders it).
 // Each thread then reads the global: all four see what the function set, and
 // it ran exactly once. Run 25 times, each with a fresh Once. Then
 // callOnceWith hands its function a value, and a second call on the same
@@ -14,48 +15,58 @@ import thread;
 import sync use *;
 import time use Duration;
 
-// Remade for each run: nothing else touches them then
-mut setUpOnce Once;
-mut value u64 = 0u64;
+// Reset for each run: nothing else touches it then
+imm value Atomic[u64];
 
 imm runs Atomic[u32];
 imm ready Atomic[u32];
 imm go Atomic[u32];
 
 fn @initpure init() {
-  setUpOnce = Once.make();
+  value = Atomic[u64].of(0u64);
   runs = Atomic[u32].of(0u32);
   ready = Atomic[u32].of(0u32);
   go = Atomic[u32].of(0u32);
 }
 
+// value is read and written relaxed, with no ordering of its own: what makes the
+// function's write visible to the callers is the Once
+fn getValue() u64 {
+  value.loadOrdered(MemOrder.Relaxed);
+}
+
+fn setValue(v u64) {
+  value.storeOrdered(v, MemOrder.Relaxed);
+}
+
 fn setUp() {
   runs.add(1u32);
   thread.sleep(Duration.fromMillis(10));
-  value = 42u64;
+  setValue(42u64);
 }
 
 // Call once, then answer what the function set
-fn racer(n u32) u64 {
+fn racer(setUpOnce Arc[imm, Once]) u64 {
   ready.add(1u32);
   while go.load() == 0u32 {
     sync.futexWait(&go, 0u32);
   }
   setUpOnce.callOnce(&setUp);
-  value;
+  getValue();
 }
 
 // One race: whether the function ran once and all four saw what it did
 fn race() bool {
-  setUpOnce = Once.make();
-  value = 0u64;
+  // A fresh Once for each run, held by an Arc that each thread is handed a copy of
+  imm setUpOnce = new Arc[imm, Once](Once.make());
+  setValue(0u64);
   runs.store(0u32);
   ready.store(0u32);
   go.store(0u32);
-  imm a = thread.start(0u32, &racer);
-  imm b = thread.start(0u32, &racer);
-  imm c = thread.start(0u32, &racer);
-  imm d = thread.start(0u32, &racer);
+  imm a = thread.start(setUpOnce, &racer);
+  imm b = thread.start(setUpOnce, &racer);
+  imm c = thread.start(setUpOnce, &racer);
+  imm d = thread.start(setUpOnce, &racer);
   while ready.load() < 4u32 { thread.yieldNow(); }
   go.store(1u32);
   sync.futexWakeAll(&go);
@@ -64,11 +75,11 @@ fn race() bool {
 }
 
 fn addTo(n u64) {
-  value = value + n;
+  setValue(getValue() + n);
 }
 
 // An owned value whose death is counted
-mut deaths u32 = 0u32;
+mut @threadlocal deaths u32 = 0u32;
 
 struct CountedValue {
   pub n u64;
@@ -79,7 +90,7 @@ struct CountedValue {
 alias Counted = So[CountedValue];
 
 fn addCounted(c Counted) {
-  value = value + c.n;
+  setValue(getValue() + c.n);
 }
 
 fn main() i32 {
@@ -94,23 +105,23 @@ fn main() i32 {
 
   // callOnceWith, and the calls after the first
   imm o = Once.make();
-  value = 0u64;
+  setValue(0u64);
   expect(!o.isCompleted(), "a new Once has not run");
   o.callOnceWith(5u64, &addTo);
-  expectUInt(value, 5u64, "callOnceWith handed its function the value");
+  expectUInt(getValue(), 5u64, "callOnceWith handed its function the value");
   expect(o.isCompleted(), "and has run");
   o.callOnceWith(7u64, &addTo);
   o.callOnce(&setUp);
-  expectUInt(value, 5u64, "later calls on the same Once run nothing");
+  expectUInt(getValue(), 5u64, "later calls on the same Once run nothing");
 
   // An owned value is moved in: used and dropped by the call that runs the
   // function, dropped unused by a call that does not
   imm p = Once.make();
   p.callOnceWith(new Counted(3u64), &addCounted);
-  expectUInt(value, 8u64, "the owned value reached the function");
+  expectUInt(getValue(), 8u64, "the owned value reached the function");
   expectUInt(u64.from(deaths), 1u64, "and died there");
   p.callOnceWith(new Counted(4u64), &addCounted);
-  expectUInt(value, 8u64, "the second call ran nothing");
+  expectUInt(getValue(), 8u64, "the second call ran nothing");
   expectUInt(u64.from(deaths), 2u64, "and dropped its value unused");
 
   // A closure is run the same way: it changes a variable it borrows, and a

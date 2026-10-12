@@ -42,7 +42,11 @@ struct Wide {
 }
 alias WideRef = ActorGc[mut, Wide];
 
-mut bigAt = 0usize;
+imm bigAt Atomic[usize];
+
+fn @initpure init() {
+  bigAt = Atomic[usize].of(0usize);
+}
 
 fn line(label &str, n i64) {
   printStr(label);
@@ -73,7 +77,7 @@ actor Keeper {
   pub async do makeBig(self) {
     imm b = self.allocRegion().alloc(new Array[i64, 1000] <- fill 7i64);
     b[3usize] = 99i64;
-    bigAt = &*b as *u8 as usize;
+    bigAt.store(&*b as *u8 as usize);
     big = Some[Big](b);
   }
 
@@ -103,7 +107,7 @@ actor Keeper {
     match big {
       case imm b Some[Big] {
         line("  elements 0 + 3", b[0usize] + b[3usize]);
-        line("  stayed", if bigAt == (&*b as *u8 as usize) {1;} else {0;});
+        line("  stayed", if bigAt.load() == (&*b as *u8 as usize) {1;} else {0;});
       }
       else { }
     }
@@ -133,6 +137,7 @@ actor Keeper {
 }
 
 fn main() {
+  initAll();
   actors.setStress(true);
   {
     imm k = new Keeper();

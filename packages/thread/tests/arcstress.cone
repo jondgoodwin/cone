@@ -6,8 +6,8 @@
 // main allocates the value and starts four workers, each handed an owner
 // (thread.start copies main's). Each worker, and main after them, makes a
 // copy of its owner and drops it, 200000 times, reading through each copy;
-// then each worker writes its own slot of a plain array -- no atomic
-// operation -- and returns, dropping its owner. main's owner goes at the end
+// then each worker writes its own slot of an array of atomics -- a relaxed
+// store, which orders nothing -- and returns, dropping its owner. main's owner goes at the end
 // of the block that started them. Whichever thread drops the last owner runs
 // the value's 'final', which reads the four slots: Arc's Release decrements
 // and the last owner's Acquire load make every worker's write happen before
@@ -28,18 +28,20 @@ import sync use *;
 imm finals Atomic[u32];
 imm seen Atomic[u32];
 
-// Each worker's slot, written plainly as it finishes
-mut slots Array[u32, 4] = [0u32, 0u32, 0u32, 0u32];
+// Each worker's slot, written as it finishes with a relaxed store, which orders
+// nothing of its own: what makes it visible to the final is the Arc
+imm slots Array[Atomic[u32], 4];
 
 fn @initpure init() {
   finals = Atomic[u32].of(0u32);
   seen = Atomic[u32].of(0u32);
+  slots = [Atomic[u32].of(0u32), Atomic[u32].of(0u32), Atomic[u32].of(0u32), Atomic[u32].of(0u32)];
 }
 
 struct SharedValue {
   pub id u64;
   fn final(self &uni) {
-    seen.store(slots[0] + slots[1] + slots[2] + slots[3]);
+    seen.store(slots[0].loadOrdered(MemOrder.Relaxed) + slots[1].loadOrdered(MemOrder.Relaxed) + slots[2].loadOrdered(MemOrder.Relaxed) + slots[3].loadOrdered(MemOrder.Relaxed));
     finals.add(1u32);
   }
 }
@@ -65,7 +67,7 @@ struct Job {
 
 fn work(j Job) u64 {
   imm sum = churn(j.s);
-  slots[j.slot] = 1u32;
+  slots[j.slot].storeOrdered(1u32, MemOrder.Relaxed);
   sum;
 }   // this thread's owner goes here, with j
 
