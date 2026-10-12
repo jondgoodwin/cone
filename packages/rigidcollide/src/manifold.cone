@@ -129,15 +129,37 @@ pub fn supportingFace(p &Prim, x Rigid, dir Vec3) Poly {
     return out;
   }
   if p.kind == KHull {
+    // The face is the one most nearly square to dir among those meeting at the support vertex, whatever the angle
+    // (Jolt's ConvexHullShape::GetSupportingFace). The clip then keeps only the corners within the speculative
+    // distance of the other shape, so a hull resting on an edge or on a corner gives its edge or its corner. A
+    // cutoff on the angle (this was 0.9) gave a corner instead of an edge once the face tilted past 25 degrees,
+    // and which of the edge's two corners came out was decided by noise, a different one every step.
+    mut sv = 0usize;
+    mut sd = -bigNumber;
+    mut vi = 0usize;
+    while vi < p.verts.len() {
+      imm d = (*p.verts[vi]).dot(ld);
+      if d > sd { sd = d; sv = vi; }
+      vi = vi + 1usize;
+    }
     mut best = 0usize;
     mut bd = -bigNumber;
     mut i = 0usize;
     while i < p.faces.len() {
-      imm d = p.faces[i].normal.dot(ld);
-      if d > bd { bd = d; best = i; }
+      imm f = p.faces[i];
+      mut has = false;
+      mut k = 0usize;
+      while k < usize.from(f.count) {
+        if usize.from(*p.faceIdx[usize.from(f.start) + k]) == sv { has = true; }
+        k = k + 1usize;
+      }
+      if has {
+        imm d = f.normal.dot(ld);
+        if d > bd { bd = d; best = i; }
+      }
       i = i + 1usize;
     }
-    if p.faces.len() > 0usize and bd > 0.9 * ld.length() {
+    if p.faces.len() > 0usize and bd > -bigNumber {
       imm f = p.faces[best];
       mut k = 0usize;
       while k < usize.from(f.count) {
@@ -156,8 +178,10 @@ pub fn supportingFace(p &Prim, x Rigid, dir Vec3) Poly {
   }
   if p.kind == KCapsule {
     if absf(ld.y) < 0.15 * ld.length() {
+      // each end's own deepest point along dir (the cap's surface point, tilt included), not the point on the
+      // cylinder's side line: the side line is up to radius * (1 - cos tilt) too high or low at a tilt of 8 degrees
       imm lp = ld.normalize();
-      imm off = new Vec3(lp.x * p.radius, 0., lp.z * p.radius);
+      imm off = lp * p.radius;
       out.add(x.apply(new Vec3(0., p.half.y, 0.) + off));
       out.add(x.apply(new Vec3(0., -p.half.y, 0.) + off));
       return out;
@@ -332,7 +356,21 @@ fn reducePoints(pts &PointBuf, n Vec3) Manifold {
 // to it. Points more than 'margin' apart along n are dropped. Returns a
 // manifold with no points if nothing is left.
 pub fn clipFaces(faceA &Poly, faceB &Poly, n Vec3, margin f32) Manifold {
+  // Of two polygons, the one whose plane is the more nearly square to the normal is the reference (the other,
+  // clipped to its sides, is the incident face)
+  if faceA.n >= 3usize and faceB.n >= 3usize {
+    imm ca = absf(polyNormal(faceA).dot(n));
+    imm cb = absf(polyNormal(faceB).dot(n));
+    return clipFacesRef(faceA, faceB, n, margin, ca >= cb);
+  }
   clipFacesRef(faceA, faceB, n, margin, faceA.n >= 3usize);
+}
+
+// The unit normal of a polygon of three or more points (zero if it has none)
+fn polyNormal(f &Poly) Vec3 {
+  imm c = (f.p[1usize] - f.p[0usize]).cross(f.p[2usize] - f.p[0usize]);
+  imm l = c.length();
+  if l > 0.0000001 { c * (1. / l); } else { new Vec3(0., 0., 0.); }
 }
 
 // The same with the reference face chosen by the caller (the face whose plane
@@ -344,8 +382,10 @@ pub fn clipFacesRef(faceA &Poly, faceB &Poly, n0 Vec3, margin f32, refIsA bool) 
   // different error at every pose, and a body resting on it bobs by it. When the normal is within 2.5 degrees of
   // the reference face's own, the face's normal is the contact normal (Jolt does the same for a face contact).
   mut n = n0;
+  mut fUnit = new Vec3(0., 0., 0.);
   imm refFace = if refIsA and faceA.n >= 3usize { faceA; } else { faceB; };
   if refFace.n >= 3usize {
+    fUnit = polyNormal(refFace);
     imm fnorm = (refFace.p[1usize] - refFace.p[0usize]).cross(refFace.p[2usize] - refFace.p[0usize]);
     imm fl = fnorm.length();
     if fl > 0.0000001 {
@@ -374,7 +414,7 @@ pub fn clipFacesRef(faceA &Poly, faceB &Poly, n0 Vec3, margin f32, refIsA bool) 
   mut kept = 0usize;
   mut i = 0usize;
   while i < clipped.n {
-    imm cp = facePoint(clipped.p[i], r0, n, aRef);
+    imm cp = facePoint(clipped.p[i], r0, n, fUnit, aRef);
     if cp.depth >= -margin {
       if kept < 4usize { m.points[kept] = cp; }
       kept = kept + 1usize;
@@ -385,20 +425,24 @@ pub fn clipFacesRef(faceA &Poly, faceB &Poly, n0 Vec3, margin f32, refIsA bool) 
   mut buf = newPointBuf();
   i = 0usize;
   while i < clipped.n {
-    imm cp = facePoint(clipped.p[i], r0, n, aRef);
+    imm cp = facePoint(clipped.p[i], r0, n, fUnit, aRef);
     if cp.depth >= -margin { buf.add(cp); }
     i = i + 1usize;
   }
   reducePoints(&buf, n);
 }
 
-// The contact of a clipped corner q against the reference plane through r0
-fn facePoint(q Vec3, r0 Vec3, n Vec3, refIsA bool) ContactPoint {
+// The contact of a clipped corner q against the reference plane through r0, whose unit normal is fn: q's distance
+// along the contact normal n to that plane. For a face contact n is fn and this is the plane's own distance. For
+// a tilted one (an edge or a corner met by a face) it is the distance to the face's real plane; a plane square to
+// n through r0 is wrong by the tilt times the distance from r0, and r0 may be metres away on a floor.
+fn facePoint(q Vec3, r0 Vec3, n Vec3, fu Vec3, refIsA bool) ContactPoint {
+  imm c = fu.dot(n);
   if refIsA {
-    imm depth = n.dot(r0 - q);
+    imm depth = if absf(c) > 0.2 { fu.dot(r0 - q) / c; } else { n.dot(r0 - q); };
     return new ContactPoint(q + n * depth, q, depth);
   }
-  imm depth = n.dot(q - r0);
+  imm depth = if absf(c) > 0.2 { fu.dot(q - r0) / c; } else { n.dot(q - r0); };
   new ContactPoint(q, q - n * depth, depth);
 }
 

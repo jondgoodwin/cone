@@ -2,8 +2,8 @@
 //
 //   a pile      eighty boxes, spheres, capsules, cylinders and hulls dropped into a
 //               walled pit settle: none falls through the floor or out of the pit,
-//               none is left moving, they go to sleep, and no two overlap deeper
-//               than a centimetre
+//               none is left moving, all eighty go to sleep (four different drops),
+//               and no two overlap deeper than a centimetre
 //   terrain     a box rests on a heightfield and on a triangle mesh, a ball rolls
 //               down a heightfield slope at the rate g sin(theta) / (1 + 2/5) of a
 //               rolling sphere (the solver's friction keeps it from sliding)
@@ -44,8 +44,8 @@ fn pit(w &mut World) {
 }
 
 // Eighty bodies in a loose grid above the pit, the same every time
-fn fill(w &mut World, count i32) {
-  mut rng = new Rng(777u32);
+fn fill(w &mut World, count i32, seed u32) {
+  mut rng = new Rng(seed);
   imm boxS = w.addShape(Shape.single(Prim.box(new Vec3(0.3, 0.2, 0.25))));
   imm sphereS = w.addShape(Shape.single(Prim.sphere(0.25)));
   imm capsuleS = w.addShape(Shape.single(Prim.capsule(0.15, 0.25)));
@@ -67,10 +67,10 @@ fn fill(w &mut World, count i32) {
   }
 }
 
-fn testPile() {
+fn testPile(seed u32) {
   mut w = World.make();
   pit(&mut w);
-  fill(&mut w, 80);
+  fill(&mut w, 80, seed);
   mut i = 0;
   while i < 60 * 25 { w.step(1. / 60.); i = i + 1; }
   mut inside = true;
@@ -86,9 +86,10 @@ fn testPile() {
   }
   expectBool(inside, true, "every body is still in the pit, on the floor");
   expectInt(i64.from(moving), 0i64, "none is moving after 25 s");
-  // (with face-exact contact normals one pyramid ends wedged among its neighbours, creeping at 3 cm/s, and keeps
-  // its island and five bodies beside it awake: 74 of 80 asleep; no ball is among the awake)
-  expectBool(asleep >= 72, true, "nearly all eighty are asleep: rolling resistance and twist friction stop the balls");
+  // (A hull pyramid propped on one base edge by its neighbours was given a single contact: whichever of the edge's
+  // two corners rounding made lower, a different one every step. It rocked at 3 cm/s and kept its island awake.
+  // Seeds 777, 783, 784 and 787 left 74, 78, 77 and 71 of the eighty asleep before an edge gave both corners.)
+  expectInt(i64.from(asleep), 80i64, "all eighty are asleep: rolling resistance and twist friction stop the balls, edges hold");
   // penetration: the deepest contact in the cache
   mut deepest = -100.;
   mut c = 0usize;
@@ -170,7 +171,7 @@ fn testDeterminism() {
   mut a = World.make();
   mut b = World.make();
   pit(&mut a); pit(&mut b);
-  fill(&mut a, 60); fill(&mut b, 60);
+  fill(&mut a, 60, 777u32); fill(&mut b, 60, 777u32);
   mut i = 0;
   while i < 400 { a.step(1. / 60.); b.step(1. / 60.); i = i + 1; }
   mut same = true;
@@ -188,7 +189,10 @@ fn testDeterminism() {
 }
 
 fn main() i32 {
-  testPile();
+  testPile(777u32);
+  testPile(783u32);
+  testPile(784u32);
+  testPile(787u32);
   testTerrain();
   testMesh();
   testDeterminism();
