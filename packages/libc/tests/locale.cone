@@ -1,20 +1,26 @@
-// setlocale, from locale.h, and what it does to file names on Windows. Each
-// line is one fact the C library established, printed as a number:
+// setlocale, from locale.h, and what it does to file names. Each line is one
+// fact the C library established, printed as a number:
 //
 // - a program starts in the "C" locale, and a null name only asks;
 // - a locale the library does not know is refused with null, and the one in
 //   force stays;
-// - ".UTF-8" is set, and the name it answers is the system language's with
-//   ".utf8" after it ("English_United States.utf8"), so only that ending is
-//   compared; asking one category, LC_CTYPE, answers the same;
-// - under it, the narrow file functions read a name as UTF-8: a file named
-//   with "é" (0xC3 0xA9) and "日" (0xE6 0x97 0xA5) is written, read back and
-//   removed, and a name holding 0xE9 alone, which is not UTF-8, is refused
-//   ('fopen' answers null): the name is decoded as UTF-8, and that byte
-//   cannot be;
+// - a UTF-8 locale is set (Windows' ".UTF-8", glibc's "C.UTF-8"), and the name
+//   it answers ends ".utf8" (Windows: "English_United States.utf8") or ".UTF-8"
+//   (glibc: "C.UTF-8"), so only that ending is compared; asking one category,
+//   LC_CTYPE, answers the same (this also checks that LC_ALL and LC_CTYPE are
+//   the numbers of the C library the program is linked with);
+// - under it, a file named with "é" (0xC3 0xA9) and "日" (0xE6 0x97 0xA5) is
+//   written, read back and removed, as UTF-8 bytes on Windows (whose narrow file
+//   functions read a name in the locale's code page unless the locale is
+//   UTF-8) and on Linux (whose names are bytes);
+// - a name holding 0xE9 alone, which is not UTF-8, is refused ('fopen' answers
+//   null) on Windows, which decodes the name as UTF-8 and cannot decode that
+//   byte; Linux names are any bytes, so there 'fopen' makes the file (which the
+//   test removes). The line says 1 when the platform did its own one of the two;
 // - setting "C" again answers "C".
 //
-// The file is 'module_package_libc_é日.tmp' in the folder TEMP names.
+// The file is 'module_package_libc_é日.tmp' in the folder TEMP names (on Linux
+// TMPDIR, else /tmp).
 
 mod locale;
 
@@ -42,12 +48,20 @@ fn endsWith(p *u8, end cstr) bool {
   m <= n and strcmp(cstr.fromPtr(p + (n - m)), end) == 0i32;
 }
 
-// TEMP, a '\', and the name, NUL included, into buf
+// The folder for temporary files: Windows' TEMP, Linux's TMPDIR or /tmp
+fn tempFolder() *u8 {
+  if isWindows() {return getenv("TEMP");}
+  imm dir = getenv("TMPDIR");
+  if dir == null {return &"/tmp" as *u8;}
+  dir;
+}
+
+// The temporary folder, a separator, and the name, NUL included, into buf
 fn tempPath(buf *u8, name cstr) {
-  imm temp = getenv("TEMP");
+  imm temp = tempFolder();
   imm templen = strlen(cstr.fromPtr(temp));
   memcpy(buf, temp, templen);
-  buf[templen] = '\\';
+  buf[templen] = if isWindows() {'\\';} else {'/';};
   memcpy(buf + templen + 1usize, name.ptr(), strlen(name) + 1usize);
 }
 
@@ -57,10 +71,11 @@ fn main() i32 {
   show("unknown-null", isNull(setlocale(LC_ALL, lit("no-such-locale"))));
   show("still-C", yes(strcmp(cstr.fromPtr(setlocale(LC_ALL, asking)), "C") == 0i32));
 
-  imm utf8 = setlocale(LC_ALL, lit(".UTF-8"));
+  imm utf8 = setlocale(LC_ALL, if isWindows() {lit(".UTF-8");} else {lit("C.UTF-8");});
   show("utf8-null", isNull(utf8));
-  show("utf8-ends-utf8", yes(endsWith(utf8, ".utf8")));
-  show("ctype-ends-utf8", yes(endsWith(setlocale(LC_CTYPE, asking), ".utf8")));
+  show("utf8-ends-utf8", yes(endsWith(utf8, ".utf8") or endsWith(utf8, ".UTF-8")));
+  imm ctype = setlocale(LC_CTYPE, asking);
+  show("ctype-ends-utf8", yes(endsWith(ctype, ".utf8") or endsWith(ctype, ".UTF-8")));
 
   mut path = new Array[u8, 512] <- fill 0u8;
   imm name *u8 = &[]path as *u8;
@@ -81,7 +96,12 @@ fn main() i32 {
   mut bad = new Array[u8, 512] <- fill 0u8;
   imm badName *u8 = &[]bad as *u8;
   tempPath(badName, "module_package_libc_\xE9.tmp");
-  show("not-utf8-name-fopen-null", isNull(fopen(cstr.fromPtr(badName), "wb") as *u8));
+  imm made = fopen(cstr.fromPtr(badName), "wb");
+  show("not-utf8-name-platform-rule", if isWindows() {isNull(made as *u8);} else {1i64 - isNull(made as *u8);});
+  if (made as *u8) != null {
+    fclose(made);
+    remove(cstr.fromPtr(badName));
+  }
 
   show("back-to-C", yes(strcmp(cstr.fromPtr(setlocale(LC_ALL, lit("C"))), "C") == 0i32));
   0i32;

@@ -655,8 +655,11 @@ packages/geomath/
    in `tests/<name>.exit` where there is one. A test that writes to stderr on
    purpose -- a panic's line, whose exit status is abort's, 3221226505 on
    Windows (read as death by SIGABRT, -6, elsewhere) -- pins that too, in `tests/<name>.err`, written by hand; without
-   one, stderr is not compared. A mismatch prints a diff of the output, or
-   both statuses.
+   one, stderr is not compared. A test whose text must differ by OS, where
+   the OS itself makes it differ, has a file of its own for that host,
+   `tests/<name>.linux.out` (`windows` and `macos` likewise, and `.err`), which is
+   compared in place of the plain one on that host: the compiler suite's rule.
+   A mismatch prints a diff of the output, or both statuses.
 4. **Builds each example**, `examples/<name>.cone`, the same way, and does not
    run it. An example that does not build is a failure.
 
