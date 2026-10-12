@@ -307,47 +307,97 @@ pub fn polyhedronProps(tris List[Tri]) MassProps {
   new MassProps(vol, com, new Mat3([ixx, ixy, ixz, ixy, iyy, iyz, ixz, iyz, izz]));
 }
 
-// A part of a compound: a prim and where it sits in the compound's space
+// A part of a compound: where it sits in its parent's space, which of the
+// compound's 'leaves' it covers (leaves first .. first + count), and, if it is a
+// compound itself, its own parts. A recursive type (it holds a list of itself,
+// which Cone builds since #548), so compounds nest to any depth.
 pub struct Part {
+  pub xf Rigid;
+  pub first usize;
+  pub count usize;
+  pub kids List[Part];
+}
+
+fn shiftParts(ps &mut List[Part], offset usize) {
+  mut i = 0usize;
+  while i < ps.len() {
+    imm r = &mut ps[i];
+    r.first = r.first + offset;
+    shiftParts(&mut r.kids, offset);
+    i = i + 1usize;
+  }
+}
+
+// A prim and where it sits in the outermost compound's space: what the
+// narrow phase and the queries walk, with every nested transform composed
+pub struct Leaf {
   pub xf Rigid;
   pub prim Prim;
 }
 
-// What a body holds: one prim, or a compound of prims each with a local
-// transform. (A compound cannot hold a compound: Cone cannot yet build a type
-// that contains a list of itself, so a nested compound is added flattened,
-// each part's transform composed.)
+// What a body holds: one prim, or a compound whose parts may be compounds in
+// turn. 'leaves' holds the prims of the whole nesting in depth-first order,
+// each with its transform composed from the root, kept up to date by 'add' and
+// 'addShape'; a compound's part numbers in manifolds, casts and queries are
+// indices into it. 'parts' keeps the nesting itself (each Part names the run of
+// leaves it covers). Both are empty for a plain shape.
 pub struct Shape {
   pub prim Prim;
   pub parts List[Part];
+  pub leaves List[Leaf];
 
-  pub fn single(p Prim) Shape { new Shape(p, List[Part].empty()); }
-  pub fn compound() Shape { new Shape(Prim.blank(KSphere), List[Part].empty()); }
-  pub fn isCompound(self &) bool { parts.len() > 0usize; }
-  pub fn add(self &mut, p Prim, xf Rigid) { parts.push(new Part(xf, p)); }
-  pub fn partCount(self &) usize { if parts.len() > 0usize { parts.len(); } else { 1usize; }; }
+  pub fn single(p Prim) Shape { new Shape(p, List[Part].empty(), List[Leaf].empty()); }
+  pub fn compound() Shape { new Shape(Prim.blank(KSphere), List[Part].empty(), List[Leaf].empty()); }
+  pub fn isCompound(self &) bool { leaves.len() > 0usize; }
+  pub fn add(self &mut, p Prim, xf Rigid) {
+    imm first = leaves.len();
+    leaves.push(new Leaf(xf, p));
+    parts.push(new Part(xf, first, 1usize, List[Part].empty()));
+  }
+  // A shape, itself a prim or a compound, placed in this one (it is consumed)
+  pub fn addShape(self &mut, s Shape, xf Rigid) {
+    mut src = s;
+    if src.leaves.len() == 0usize {
+      mut tmp = Prim.blank(KSphere);
+      tmp <=> src.prim;
+      add(tmp, xf);
+      return;
+    }
+    imm first = leaves.len();
+    imm n = src.leaves.len();
+    each lf in src.leaves.drain() {
+      mut m = lf;
+      m.xf = xf * m.xf;
+      leaves.push(m);
+    }
+    mut kids = List[Part].empty();
+    kids <=> src.parts;
+    shiftParts(&mut kids, first);
+    parts.push(new Part(xf, first, n, kids));
+  }
+  pub fn partCount(self &) usize { if leaves.len() > 0usize { leaves.len(); } else { 1usize; }; }
 
   pub fn bounds(self &, x Rigid) Aabb3 {
-    if parts.len() == 0usize { return prim.bounds(x); }
+    if leaves.len() == 0usize { return prim.bounds(x); }
     mut b = Aabb3.empty();
     mut i = 0usize;
-    while i < parts.len() {
-      imm pt = parts[i];
+    while i < leaves.len() {
+      imm pt = leaves[i];
       b = b.union(pt.prim.bounds(x * pt.xf));
       i = i + 1usize;
     }
     b;
   }
 
-  // Mass properties of the whole (parts' volumes added, the inertia moved to
+  // Mass properties of the whole (leaves' volumes added, the inertia moved to
   // the common centre of mass by the parallel-axis theorem)
   pub fn massProps(self &) MassProps {
-    if parts.len() == 0usize { return prim.massProps(); }
+    if leaves.len() == 0usize { return prim.massProps(); }
     mut vol = 0.;
     mut sum = new Vec3(0., 0., 0.);
     mut i = 0usize;
-    while i < parts.len() {
-      imm pt = parts[i];
+    while i < leaves.len() {
+      imm pt = leaves[i];
       imm mp = pt.prim.massProps();
       vol = vol + mp.volume;
       sum = sum + pt.xf.apply(mp.com) * mp.volume;
@@ -357,8 +407,8 @@ pub struct Shape {
     imm com = sum * (1. / vol);
     mut inertia = mat3Diag(0., 0., 0.);
     i = 0usize;
-    while i < parts.len() {
-      imm pt = parts[i];
+    while i < leaves.len() {
+      imm pt = leaves[i];
       imm mp = pt.prim.massProps();
       imm r = Mat3.fromQuat(pt.xf.rot);
       imm ib = r * mp.inertia * r.transpose();

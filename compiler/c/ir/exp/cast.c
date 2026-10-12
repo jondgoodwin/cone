@@ -894,6 +894,15 @@ void castIsTypeCheck(TypeCheckState *pstate, CastNode *node) {
     node->vtype = (INode*)boolType;
     iexpTypeCheckAny(pstate, &node->exp);
     narrowNoteTest((INode*)node);
+    // A value already reported has no variants to name, so the pattern says nothing of it
+    if (isExpNode(node->exp) && ((IExpNode*)node->exp)->vtype == errorType) {
+        NameUseNode *root = castPatternName(node->typ, NULL);
+        if (root) {
+            root->flags &= 0xFFFF - FlagPattern;
+            root->dclnode = errorType;
+        }
+        return;
+    }
     if (!castPatternBind(node, 1))
         return;
     itypeTypeCheck(pstate, &node->typ);
