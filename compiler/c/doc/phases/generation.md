@@ -388,7 +388,7 @@ kernels are settled.
 | **`&str`, `So[str]`, `Rc[str]`** (any reference whose target carries its length, `refIsFat`) | **anonymous `{ ptr, usize }`**, as a slice's, in every region and for a borrow |
 | **`&Array[T]`** | **anonymous `{ ptr, usize }`** — element pointer at 0, element **count** at 1 |
 | **`&<Trait`** | **named `{ ptr, ptr }`** — the object, then its vtable |
-| `fn` signature | `LLVMFunctionType`, never varargs; a `&fn` is a `ptr` to it. A C-named function's structs are lowered to the C ABI's shape ("C-named functions and the C ABI", below) |
+| `fn` signature | `LLVMFunctionType`, never varargs; a `&fn` is a `ptr` to it. A signature marked `ccall` (a C-named function's, and the pointee of `&fn @c`) has its structs lowered to the C ABI's shape ("C-named functions and the C ABI", below) |
 | struct / trait | named struct, fields in declaration order. **A trait's body is its own fields**, which are a prefix of every implementer's, so `&Trait` points at the trait's layout and reaches the fields the trait declares. Only a type declared `@opaque` is left an opaque LLVM struct, and `DeclaredOpaque` — not `OpaqueType` — is what says so: a trait carries `OpaqueType` because it has no size as a *value*, which does not mean it has no fields |
 | enum | `i8`…`i64` by `EnumNode.bytes` |
 | tuple | anonymous struct |
@@ -449,6 +449,22 @@ signature (`genlCAbiPlan`) is made where it is needed, from the types alone, in
 `genlFnDclType`, the declaration's marks, a call, a prologue and a return,
 which therefore agree. **wasm32 is not built**: its structs still cross whole,
 which matches its C ABI only for a struct of one scalar.
+
+**The convention is part of a function reference's type.** A function a module
+gives a C name has `FnSigNode.ccall` set (`dclInfoJoin`, the same condition as
+`genlIsCAbiFn`), and a written `&fn @c (...)` sets it on the signature after the
+`&fn` (`parseFn`, `parseAmper`). `fnSigEqual` and `fnSigMatches` compare it, so
+`&f` of a C-named function and `&fn @c (...)` are one type, `&f` of a Cone
+function and `&fn(...)` another, and neither coerces to the other nor to a
+callable (`&<fn`; `refvirtMatchesRef`); the mismatch is refused where it is
+written under `ErrorFnRefConv` (`fnSigConvRefusal`, reached from the sites that
+report a failed coercion, `iexpMismatchMsg`). There is no thunk. A signature
+with `ccall` is typed as the C ABI passes it (`genlCAbiFnType`, from
+`genltype.c`), and a call through a reference to it is made in that
+convention (`genlFnPtrCall`), exactly as a direct call to the function is. A
+type's method stays Cone's even when `@c` names it, so a reference to a method
+is a plain `&fn`. A symbol spelled from such a signature carries a `C`
+(`nameType`).
 
 An **integer narrower than C's `int`** keeps its LLVM type, but carries the
 widening C's convention gives it in its register (`genlCAbiExtend`), on the
@@ -2373,7 +2389,7 @@ variables.
 | `genllvm/genlcabi.c` | `genlCAbiTarget`, `genlIsCAbiFn`, `genlCAbiPlan`, `genlCAbiPassOne` | which C ABI the target follows, which functions cross by it, and how each value of a signature crosses (direct, coerced to one or two scalars, through a pointer, `byval`) |
 | | `genlCAbiWalk`, `genlCAbiClassify`, `genlCAbiEightbyte` | SysV x86-64's classification of a struct of up to 16 bytes: its scalars, the class of each eightbyte, the scalar each crosses as |
 | | `genlCAbiExtend`, `genlCAbiMark` | the `zeroext` or `signext` a narrow integer crosses with, and the `sret` and `byval` marks, put on a declaration or a call |
-| | `genlFnDclType`, `genlCAbiDeclare`, `genlFnDclCall`, `genlFnDclParm`, `genlFnDclReturn` | a declared function's LLVM type, its marks (and the `"cone-cabi"` mark `genlAggCopies` leaves alone), a direct call to it, its prologue's parameters and its returns — lowered for a C-named one |
+| | `genlFnDclType`, `genlCAbiFnType`, `genlCAbiDeclare`, `genlFnDclCall`, `genlFnPtrCall`, `genlFnDclParm`, `genlFnDclReturn` | a declared function's LLVM type (and a `ccall` signature's), its marks (and the `"cone-cabi"` mark `genlAggCopies` leaves alone), a direct call to it and a call through a reference to it, its prologue's parameters and its returns — lowered for a C-named one |
 | `genllvm/genlaggcopy.c` | `genlAggCopies`, `genlAggFn`, `genlAggRetClass` | once the module is generated, every struct, array or tuple of more than `GenlAggCopyMin` bytes moved into memory, function by function, and every smaller aggregate result returned as a vector, as integers or through a slot (section 6, "Large aggregates") |
 | | `genlAggRetype`, `genlAggSig`, `genlAggCall` | a function taking or returning one remade with pointer parameters and a result slot first; each call to that type passing homes |
 | | `genlAggInst`, `genlAggHomeOf`, `genlAggReadInPlace` | each instruction making or taking one, rewritten to copy between homes; a value's home, made where it is; a load read where it lies when nothing between could change it |
