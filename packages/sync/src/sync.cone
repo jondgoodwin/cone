@@ -413,8 +413,9 @@ pub struct Arc is RegionRef, ThreadSafe {
 // and wake are what differ between Linux and macOS, which has no futex, so
 // those, the barrier and the thread identity are the C file's, one set a
 // system; sched_yield is POSIX's, the same on both. 'isWindows()' is a
-// constant of the compile, so only the target's calls are generated; every
-// extern is declared on every platform.
+// constant of the compile, so only the target's calls are generated, and a
+// function only the other system's branch calls is not part of the program;
+// every extern is declared on every platform.
 // ---------------------------------------------------------------------------
 
 extern {
@@ -484,19 +485,22 @@ pub fn futexWakeAll(word &opaq Atomic[u32]) {
 
 // The same three on the word's address, as the locks reach their own words
 fn rawWait(word *u32, expected u32, timeoutNs u64) bool {
-  if isWindows() {
-    imm ms = if timeoutNs == forever {infinite;} else {msCeil(timeoutNs);};
-    mut compare = expected;
-    if WaitOnAddress(word, &mut compare as *u32, 4usize, ms) != 0i32 {
-      true;
-    }
-    else {
-      GetLastError() != errorTimeout;
-    }
+  if isWindows() {windowsWait(word, expected, timeoutNs);} else {linuxWait(word, expected, timeoutNs);}
+}
+
+// Each system's calls are a function of their own, called from the branch for
+// that system alone: on the other system it is not part of the program
+fn windowsWait(word *u32, expected u32, timeoutNs u64) bool {
+  imm ms = if timeoutNs == forever {infinite;} else {msCeil(timeoutNs);};
+  mut compare = expected;
+  if WaitOnAddress(word, &mut compare as *u32, 4usize, ms) != 0i32 {
+    return true;
   }
-  else {
-    cone_futexWait(word, expected, timeoutNs) != 0i32;
-  }
+  GetLastError() != errorTimeout;
+}
+
+fn linuxWait(word *u32, expected u32, timeoutNs u64) bool {
+  cone_futexWait(word, expected, timeoutNs) != 0i32;
 }
 
 fn rawWake(word *u32) {

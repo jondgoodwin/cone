@@ -197,7 +197,9 @@ import time;
 //
 // Each call below is made through a small function, 'osThreadId', 'osJoin' and
 // so on, choosing by 'isWindows()', a constant of the compile, so only the
-// target's calls are generated; every extern is declared on every platform.
+// target's calls are generated, and a function only the other system's branch
+// calls ('launchWindows', 'sleepPosix') is not part of the program; every
+// extern is declared on every platform.
 // ---------------------------------------------------------------------------
 
 // A thread's entry, as '_beginthreadex' calls it: its argument, and the exit
@@ -435,38 +437,48 @@ fn leave() {
 // the thread to store it, which is the first thing it does.
 fn launch(entry Entry, pkt *u8, info *Info, stackSize usize) usize {
   if isWindows() {
-    imm stack = if stackSize > 0xFFFFFFFFusize {0xFFFFFFFFu32;} else {u32.from(stackSize);};
-    mut id = 0u32;
-    imm handle = _beginthreadex(null, stack, entry, pkt, stackIsReservation, &mut id as *u32);
-    (*info).id.storeOrdered(id, MemOrder.Relaxed);
-    handle;
+    launchWindows(entry, pkt, info, stackSize);
   }
   else {
-    mut handle = 0usize;
-    mut result = 0i32;
-    if stackSize == 0usize {
-      result = pthread_create(&mut handle as *usize, null, entry, pkt);
-    }
-    else {
-      mut attr = new PthreadAttr(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
-      pthread_attr_init(&mut attr as *PthreadAttr);
-      imm size = if stackSize < minPosixStack {minPosixStack;} else {stackSize;};
-      result = pthread_attr_setstacksize(&mut attr as *PthreadAttr, size);
-      if result == 0i32 {
-        result = pthread_create(&mut handle as *usize, &mut attr as *PthreadAttr, entry, pkt);
-      }
-      pthread_attr_destroy(&mut attr as *PthreadAttr);
-    }
-    if result != 0i32 {
-      handle = 0usize;
-    }
-    else {
-      while (*info).id.loadOrdered(MemOrder.Acquire) == 0u32 {
-        sched_yield();
-      }
-    }
-    handle;
+    launchPosix(entry, pkt, info, stackSize);
   }
+}
+
+// Each system's calls are a function of their own, called from the branch for
+// that system alone: on the other system it is not part of the program
+fn launchWindows(entry Entry, pkt *u8, info *Info, stackSize usize) usize {
+  imm stack = if stackSize > 0xFFFFFFFFusize {0xFFFFFFFFu32;} else {u32.from(stackSize);};
+  mut id = 0u32;
+  imm handle = _beginthreadex(null, stack, entry, pkt, stackIsReservation, &mut id as *u32);
+  (*info).id.storeOrdered(id, MemOrder.Relaxed);
+  handle;
+}
+
+fn launchPosix(entry Entry, pkt *u8, info *Info, stackSize usize) usize {
+  mut handle = 0usize;
+  mut result = 0i32;
+  if stackSize == 0usize {
+    result = pthread_create(&mut handle as *usize, null, entry, pkt);
+  }
+  else {
+    mut attr = new PthreadAttr(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
+    pthread_attr_init(&mut attr as *PthreadAttr);
+    imm size = if stackSize < minPosixStack {minPosixStack;} else {stackSize;};
+    result = pthread_attr_setstacksize(&mut attr as *PthreadAttr, size);
+    if result == 0i32 {
+      result = pthread_create(&mut handle as *usize, &mut attr as *PthreadAttr, entry, pkt);
+    }
+    pthread_attr_destroy(&mut attr as *PthreadAttr);
+  }
+  if result != 0i32 {
+    handle = 0usize;
+  }
+  else {
+    while (*info).id.loadOrdered(MemOrder.Acquire) == 0u32 {
+      sched_yield();
+    }
+  }
+  handle;
 }
 
 // How to start a thread, for 'startWith': its name, and the bytes to reserve
@@ -614,29 +626,32 @@ pub fn sleep(d time.Duration) {
     return;
   }
   imm ns = u64.from(d.nanos());
-  if isWindows() {
-    mut slept = false;
-    imm timer = CreateWaitableTimerExW(null, null, timerHighResolution, timerAllAccess);
-    if timer != 0usize {
-      // Relative (negative), in 100 ns units, rounded up
-      mut due = 0i64 - i64.from((ns + 99u64) / 100u64);
-      if SetWaitableTimer(timer, &mut due as *i64, 0i32, null, null, 0i32) != 0i32 {
-        WaitForSingleObject(timer, infinite);
-        slept = true;
-      }
-      CloseHandle(timer);
+  if isWindows() {sleepWindows(ns);} else {sleepPosix(ns);}
+}
+
+fn sleepWindows(ns u64) {
+  mut slept = false;
+  imm timer = CreateWaitableTimerExW(null, null, timerHighResolution, timerAllAccess);
+  if timer != 0usize {
+    // Relative (negative), in 100 ns units, rounded up
+    mut due = 0i64 - i64.from((ns + 99u64) / 100u64);
+    if SetWaitableTimer(timer, &mut due as *i64, 0i32, null, null, 0i32) != 0i32 {
+      WaitForSingleObject(timer, infinite);
+      slept = true;
     }
-    if !slept {
-      Sleep(msCeil(ns));
-    }
+    CloseHandle(timer);
   }
-  else {
-    // POSIX's nanosleep, resumed for the time left when a signal ends it early
-    mut request = new Timespec(i64.from(ns / nsPerSecond), i64.from(ns % nsPerSecond));
-    mut left = new Timespec(0i64, 0i64);
-    while nanosleep(&mut request as *Timespec, &mut left as *Timespec) != 0i32 and *libc.errno() == eintr {
-      request = left;
-    }
+  if !slept {
+    Sleep(msCeil(ns));
+  }
+}
+
+// POSIX's nanosleep, resumed for the time left when a signal ends it early
+fn sleepPosix(ns u64) {
+  mut request = new Timespec(i64.from(ns / nsPerSecond), i64.from(ns % nsPerSecond));
+  mut left = new Timespec(0i64, 0i64);
+  while nanosleep(&mut request as *Timespec, &mut left as *Timespec) != 0i32 and *libc.errno() == eintr {
+    request = left;
   }
 }
 

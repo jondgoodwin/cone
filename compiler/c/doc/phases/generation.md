@@ -352,10 +352,29 @@ operation fast-math or contractable, so a vectorizer widens only what keeps
 each lane's operations in their written order (a loop scaling a slice, a
 matrix's columns), never a sum over a loop, and no multiply and add are fused,
 whatever the CPU. A `--debug` build runs only
-`function(mem2reg,reassociate,gvn,simplifycfg)`, with no target machine, and
-turns off the code generator's optimization and enables DWARF. A GPU target's
-pipeline is its own, at every level (section 7). **There is no `--release`
-flag** — release is the default and `--debug` turns it off.
+`globaldce,function(mem2reg,reassociate,gvn,simplifycfg)`, with no target
+machine, and turns off the code generator's optimization and enables DWARF. A
+GPU target's pipeline is its own, at every level (section 7). **There is no
+`--release` flag** — release is the default and `--debug` turns it off.
+
+**Only what live code reaches is emitted**, in a debug build as in a release
+one. `.preir` is what generation wrote, every function included; the `globaldce`
+that opens the debug pipeline (it is in `default<O2>` already) deletes each
+definition with internal, private or `linkonce` linkage that nothing refers to,
+and then whatever only it referred to, before anything else runs, so `.ir`
+and the object have only what live code reaches. The roots are the symbols the
+object makes visible, which `genlLinkage` decided — `main` and a public C-named
+definition, a library's exports (`GenlExported`), and so a library's module
+lifecycle functions its importers call by name — and everything they refer to:
+a function whose address is taken, a closure, a vtable and the thunks in its
+slots, a type record, a finalizer a live drop calls. No list of roots is kept
+here, so nothing a live symbol refers to can be dropped. It exists for the
+constants of the build: the untaken side of an `if` on one is not generated
+(section 6), and a helper holding only that side's calls, called from nowhere
+else, is dropped with it, with its calls to symbols the target does not have.
+The dead bodies are generated first, so this saves the object and the linker
+the work, not the compiler. A GPU target runs its own `globaldce`, after its
+kernels are settled.
 
 ## 3. Type lowering
 
@@ -1124,7 +1143,9 @@ generation.** `genlIf` asks `intrinsicBuildConst` of each condition:
 arm generates nothing, not even its test; a true one generates its body as the
 `else` would and ends the chain, the arms after it generating nothing. A call
 on an untaken side therefore never reaches the object, in either build, and an
-`extern` only that side names is declared and never referenced. Everything
+`extern` only that side names is declared and never referenced, and a function
+only that side calls is not emitted (section 2, "Only what live code reaches
+is emitted"). Everything
 before generation still sees both sides ([intrinsic](../nodes/intrinsic.md),
 "Constants of the build drop the untaken side at generation").
 
@@ -2407,7 +2428,8 @@ variables.
 | `packages/conestd/barrier.cone` | `cone_barrierHook`, `cone_barrierCtx`, `cone_setBarrierHook`, `cone_clearBarrierHook` | the thread's barrier hook and its context, which a barrier on the CPU calls, and core's `setBarrierHook` and `clearBarrierHook` |
 | `packages/conestd/rawblocks.cone` | `cone_rawBlockAlloc`, `cone_rawBlockResize`, `cone_rawBlockRelease` | the raw blocks layer, `libc`'s `malloc`, `realloc` and `free` and nothing more: core's `RawBlocks`, which the regions of `So`, `Rc` and `Arc`, the heap region (`heapregion.c`), the collections' `freeze`, an arena's blocks and an actor's chunks go through |
 | `packages/conestd/hash.cone` | `cone_hashSeed` | the process's hash seed, 64 random bits from the OS (the C runtime's `rand_s` on Windows, `getentropy` elsewhere) drawn once, the first time core's `processSeed` asks, from any thread: what `Hasher.seeded()` starts from |
-| `packages/conestd/cnames.c` | `cone_stdin`, `cone_stdout`, `cone_stderr`, `cone_errno`, `cone_time`, `cone_timespec_get`, `cone_fprintFloat` | the C library's names that differ by platform or that Cone cannot spell, each answered from the C library's own header, which `libc`'s `stdin()`, `stdout()`, `stderr()`, `errno()`, `time` and `timespec_get` bind (`libc` is C-named, with no prelude and so no `isWindows()`), and which conestd's printing of a float calls |
+| `packages/conestd/cnames.c` | `cone_stdin`, `cone_stdout`, `cone_stderr`, `cone_errno`, `cone_time`, `cone_timespec_get`; the globals `EILSEQ`, `LC_ALL`, `LC_COLLATE`, `LC_CTYPE`, `LC_MONETARY`, `LC_NUMERIC`, `LC_TIME` | the C library's names that differ by platform or that Cone cannot spell, each answered from the C library's own header, which `libc`'s `stdin()`, `stdout()`, `stderr()`, `errno()`, `time`, `timespec_get`, `EILSEQ` and the locale categories bind (`libc` is C-named, with no prelude and so no `isWindows()`, so a number that differs by C library is a global read as a constant is) |
+| `packages/conestd/floatfmt.cone` | `floatText` (private; `printFloat` and `eprintFloat` call it) | a float as C's `%g` writes it: six significant digits of the exact value, correctly rounded (a tie to the even digit), the digits found over a 1536-bit integer so no C library's `printf` is involved, an infinity as `inf` and every NaN as `nan`; the text is the same on every OS |
 | `packages/conestd/oscalls.c` | `cone_futexWait`, `cone_futexWake`, `cone_threadId`, `cone_processors`, `cone_flushProcessWriteBuffers` | Linux's system calls the `sync` and `thread` packages need and Cone cannot call (the futex is one variadic `syscall`), empty on Windows, whose kernel32 those packages bind directly: the futex's wait and wake on a 32-bit word, the kernel's thread id, the online processors, and the process-wide memory barrier (`membarrier`, or a protection change on a dirty page when the kernel refuses it); the packages choose by `isWindows()`, and POSIX's `pthread_create`, `sched_yield` and `nanosleep` they bind by name |
 | `ir/types/reference.h` | `enum ManagedRefFields` | `RegionField`, `PermField`, `ValueField` |
 | `ir/name.c` | `nameSymbol`, `nameType`, `nameVtable`, `nameVtableImpl`, `nameVtableList` | spelling a symbol from a node's owner chain and facts, and a type argument within it — the rules are in [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Symbols" |

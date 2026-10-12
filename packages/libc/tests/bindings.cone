@@ -15,7 +15,8 @@
 //   timespec_get answers TIME_UTC with the same seconds and nanoseconds
 //   below a second;
 // - getenv answers null for a variable no one sets; system returns the
-//   command's exit status;
+//   command's exit status (on Linux the C library answers a wait status, with
+//   the exit code in its second byte, which the test takes out);
 // - strlen, strcmp, memcpy and memset, and a string literal passed as a C
 //   string, since it carries its NUL;
 // - math.h's functions, double and float, each at a value known exactly;
@@ -24,8 +25,9 @@
 // - exit ends the program with the status given, flushing what was written:
 //   main returns 1, which the runner would report, after a call that exits 0.
 //
-// The file it writes is 'module_package_libc.tmp' in the folder TEMP names,
-// its path joined with strlen and memcpy, and it removes the file.
+// The file it writes is 'module_package_libc.tmp' in the folder TEMP names
+// (on Linux TMPDIR, else /tmp), its path joined with strlen and memcpy, and it
+// removes the file.
 
 mod bindings;
 
@@ -65,15 +67,27 @@ fn memory() {
   free(q);
 }
 
+// The folder for temporary files: Windows' TEMP, Linux's TMPDIR or /tmp
+fn tempFolder() *u8 {
+  if isWindows() {return getenv("TEMP");}
+  imm dir = getenv("TMPDIR");
+  if dir == null {return &"/tmp" as *u8;}
+  dir;
+}
+
 fn files() {
-  // TEMP, a '\', and the file's name, with the NUL the literal carries
+  // The temporary folder, a separator, and the file's name, with the NUL the literal carries
   mut path = new Array[u8, 512] <- fill 0u8;
   imm name *u8 = &[]path as *u8;
   imm cname = cstr.fromPtr(name);
-  imm temp = getenv("TEMP");
+  imm temp = tempFolder();
   imm templen = strlen(cstr.fromPtr(temp));
   memcpy(name, temp, templen);
-  memcpy(name + templen, &"\\module_package_libc.tmp" as *u8, 25usize);
+  if isWindows() {
+    memcpy(name + templen, &"\\module_package_libc.tmp" as *u8, 25usize);
+  } else {
+    memcpy(name + templen, &"/module_package_libc.tmp" as *u8, 25usize);
+  }
   show("path-length", i64.from(strlen(cname) - templen));
 
   imm out = fopen(cname, "wb");
@@ -141,7 +155,11 @@ fn clock() {
 
 fn process() {
   show("getenv-unset-null", isNull(getenv("CONE_LIBC_NEVER_SET")));
-  show("system-status", i64.from(system("exit /b 3")));
+  if isWindows() {
+    show("system-status", i64.from(system("exit /b 3")));
+  } else {
+    show("system-status", i64.from((system("exit 3") >> 8i32) & 255i32));
+  }
 }
 
 fn strings() {
