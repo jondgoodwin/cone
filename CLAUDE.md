@@ -727,13 +727,16 @@ Visual Studio projects stay at the root.
   state, the value and the parked waiters in its payload; `liveFutures`);
   `aio` is the I/O an actor's behaviour awaits, over `actors`
   and `iocore`: `aio.listen`, `aio.connect`, a `Socket`'s `accept`, `read`,
-  `write` and `localAddr`, each an `actors.Awaitable` answering a `Result`
+  `write` and `localAddr`, and `aio.openFile` with a `File`'s `readAt` and
+  `writeAt` (iocore's `ReadAt` and `WriteAt` at a byte offset; a `File` moves
+  and closes on drop as a `Socket` does), each an `actors.Awaitable` answering a `Result`
   (a read's success its buffer back, what arrived appended; one cancelled or
   past its deadline an `Error` whose `IoErrorKind` (iocore's: `Os`, `Cancelled`, `TimedOut`)
   `isCancelled` or `isTimedOut` reads, never a panic), done by one I/O
   thread that owns the runtime's `iocore` Loop, takes operations from a
   queue under a Mutex and answers through `Target.Hook`; the `In` forms of
-  `connect`, `accept`, `read` and `write` take `IoLimits`, a `CancelGroup` and
+  `connect`, `accept`, `read` and `write` (and a file's `readAtIn` and
+  `writeAtIn`; `openFile` has none) take `IoLimits`, a `CancelGroup` and
   an absolute deadline, handed to `submitIn`; a dropped `Socket`
   closes, cancelling what is in flight on it; its finalizer, which `finalAll()` runs before `actors`', waits for
   quiet and ends the I/O, every behaviour still paused on it abandoned, its
@@ -745,7 +748,17 @@ Visual Studio projects stay at the root.
   (swapped in at the next frame, the old buffers released after the frames
   that drew them), `LodChain` (levels of detail chosen by index or by
   projected size, with hysteresis), `Camera` (depth 0 to 1) and `Light`
-  (one directional light and ambient), one lighting convention for every
+  (one directional light and ambient), point and spot lights by handle
+  (`src/lights.cone`, `src/locallights.slang`: candela, a falloff windowed
+  to a range, a spot's cone, a source radius, layer masks, clustered
+  forward shading over a 16 x 9 x 24 froxel grid assigned on the CPU, 1,024
+  lights, 64 to a cluster; the lit and physically based materials loop over
+  their cluster's lights; their shadows (`src/lightshadow.cone`: a spot
+  light one perspective view, a point light six, layers of a depth texture
+  array given to the best ranked lights, drawn by the sun's casters);
+  tests `lights.cone`, `lightshadows.cone` and `lightsoff.cone`, which
+  checks that a scene without reachable lights is bit for bit as it was;
+  example `lanterns.cone`), one lighting convention for every
   material (`src/renderframe.slang`: the light's colour an irradiance, lux
   in physical units, ambient, sky and emissive colours radiance, nits, and
   everything drawn multiplied by the renderer's `exposure`, which
