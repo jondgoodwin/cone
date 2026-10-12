@@ -1,0 +1,47 @@
+// A call to another package's function or method, whose body this program does not hold, made while a
+// borrow into a 'mut' global is held, or one a caller lent that may point into one. Package q is compiled
+// on its own (cases.toml 'link'); its include file declares each function 'extern' and says nothing of
+// its body, with a Cone path as its symbol. That is a Cone function, not C: it is asked of what it is
+// handed, as a call in this program is, and it is not a C function that may call back the '&fn' its
+// 'Buf' holds (as every collection's region holds three), which collection_flow_reshape_global_opaque
+// keeps refused for a true 'extern' C function. Every value is worked out by hand and written at its line.
+
+mod prog;
+
+import stdio use *;
+import q;
+
+mut gl q.Buf;
+
+fn @initpure init() { gl = q.Buf.make(); }
+
+fn note(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+// A borrow reached through a reference a caller lent, which may be the global, held across q's methods
+// and q's function
+fn lent(b &mut q.Buf) {
+  imm v = b.first();                                  // the first byte: 7
+  note("len", i64.from(b.len()));                     // 8
+  note("at", i64.from(b.at(1usize)));                 // the second byte: 9
+  note("measure", i64.from(q.measure(b)));            // 8
+  note("first", i64.from(*v));                        // 7
+}
+
+// The same borrow of the global itself
+fn direct() {
+  imm v = gl.first();                                 // 7
+  note("direct-len", i64.from(gl.len()));             // 8
+  note("direct-measure", i64.from(q.measure(&gl)));   // 8
+  note("direct-first", i64.from(*v));                 // 7
+}
+
+fn main() i32 {
+  lent(&mut gl);
+  direct();
+  0;
+}

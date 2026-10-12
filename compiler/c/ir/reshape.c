@@ -613,14 +613,18 @@ int reshapeCall(FnCallNode *call, FnDclNode *meth, int recvunique, INode *cont, 
         return 1;
     // The borrow points into a 'mut' global, or into something reached from one: a call that may
     // reshape the container's type through a global does, by the inference that judges every call
-    // (shapeTypeWritesGlobal). A callee whose body cannot be read (extern, virtual, a function value,
-    // another package's) may do anything. No summary is made of which global a function writes.
+    // (shapeTypeWritesGlobal). A callee whose code cannot be known (a C function handed a callback,
+    // virtual, a function value) may do anything. A Cone function of another package, its body not
+    // here (its include file declares it 'extern' with a Cone symbol), is asked of what it is handed,
+    // as the ordinary check does. No summary is made of which global a function writes.
     if (globalview && !reshapeExempt(call, verdict->callee)) {
         FnDclNode *callee = verdict->callee;
         // Code that could be anything: a virtual call, a function value, a Cone function whose body
-        // is not here, an 'extern' C function handed something that can reach anything callable (a
-        // '&fn', a virtual reference, a closure an owner holds) that it may call back. Any other
-        // 'extern' is asked as any call is, of what it is handed (the ordinary check above)
+        // is not here and is no 'extern' of an include file, an 'extern' C function handed something
+        // that can reach anything callable (a '&fn', a virtual reference, a closure an owner holds)
+        // that it may call back. Any other 'extern', a C function handed nothing callable or a Cone
+        // function cut to an 'extern' by an include file, is asked as any call is, of what it is
+        // handed (the ordinary check above)
         int opaque = (call->flags & FlagVDisp) || callee == NULL || shapeExternHandsCallable(call, callee)
             || (!(callee->flags & FlagExtern) && !siVisible(callee));
         if (opaque || (!(callee->flags & FlagExtern) && shapeTypeWritesGlobal(callee, cont))) {

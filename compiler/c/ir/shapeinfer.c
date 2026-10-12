@@ -1034,10 +1034,13 @@ static int siReachesFnRef(INode *type) {
     }
 }
 
-// Is this an 'extern' function handed anything that can reach something callable (a callback C can
-// call back into Cone with, directly or held in a struct it is handed a pointer to)?
+// Is this an 'extern' C function handed anything that can reach something callable (a callback C can
+// call back into Cone with, directly or held in a struct it is handed a pointer to)? A Cone function
+// an include file cut to an 'extern' (its symbol is a Cone path, nameIsCSymbol) is not C: it is Cone
+// code, which any collection's region (it holds '&fn's) would otherwise make unknown for every call
+// handed a String or a List. It is asked of what it is handed, like any call.
 int shapeExternHandsCallable(FnCallNode *call, FnDclNode *callee) {
-    if (callee == NULL || !(callee->flags & FlagExtern) || call->args == NULL)
+    if (callee == NULL || !(callee->flags & FlagExtern) || call->args == NULL || !nameIsCSymbol((INode *)callee))
         return 0;
     for (uint32_t k = 0; k < call->args->used; ++k) {
         siFnSeenN = 0;

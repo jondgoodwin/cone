@@ -199,6 +199,10 @@ typedef struct VarDclNode VarDclNode;
 // of a generic. Empty for an unnamed fn.
 char *nameSymbol(char *buf, INode *dclnode);
 
+// Is the symbol of this declaration C's (a stated C name, or a root declaration's own name), not a
+// Cone path? Tells a C function an 'extern' declares from a Cone function an include file cut to one.
+int nameIsCSymbol(INode *dclnode);
+
 // Spell a type into the buffer, returning the position after it. Where an
 // instance of a generic carries its type arguments.
 char *nameType(char *bufp, INode *vtype);

@@ -1437,8 +1437,12 @@ locals, which only a call that reaches one of them is asked of):
   parameter, global or local; an `extern` C function handed anything whose type can reach something
   callable (a `&fn`, a virtual reference, a closure or trait object an owner holds: `FnSigTag` or
   `VirtRefTag`, by fields, pointers, references, arrays, tuples and aliases),
-  `shapeExternHandsCallable`, which C may call back; or a Cone function whose body is not visible; any
-  other `extern` names no Cone global and stays asked of what it is handed), or when the shape
+  `shapeExternHandsCallable`, which C may call back, where C is a function whose symbol is C's
+  (`nameIsCSymbol`: a stated `@c` name, or a root declaration's own name), not a Cone function another
+  package's include file cut to an `extern`, whose symbol is a Cone path and which is asked of what it
+  is handed like any call, because every String and List holds a region of `&fn`s; or a Cone function
+  whose body is not visible and is not such an `extern`; any other `extern` names no Cone global and
+  stays asked of what it is handed), or when the shape
   inference finds it reshapes a value of the container's type through a global, with a virtual call,
   a function value or such an extern called anywhere in its body, or in what it calls, taken to write
   any global (`shapeTypeWritesGlobal`: `SiModeOutG`/`SiModeTypeG`, the global-only and type modes
@@ -1447,7 +1451,9 @@ locals, which only a call that reaches one of them is asked of):
   callee's write through a global (`SiModeOut`); only the opaque call is new, and nothing else asks
   the new modes. Not followed: a global of a C-named module (`mod @c`) is an external symbol, which C
   can write from an `extern` function handed nothing; any other global's symbol is internal
-  (`genlLinkage`).
+  (`genlLinkage`). Not followed either: a function of package Q that the program holds only by its
+  include file, which writes by name a `pub mut` global of package G that both import, called while
+  the program holds a view into that global (measured: accepted, and the view dangles).
   The call that lends the borrow from the place the loan was reached through (`view` in that chain:
   the loan is held by its receiver's root) is not asked. An `imm` global is no global view: nothing
   writes it.

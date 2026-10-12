@@ -562,6 +562,15 @@ char *nameSymbol(char *buf, INode *dclnode) {
     return buf;
 }
 
+// Is this declaration's symbol spelled the way C's is: a stated C name ('@c'), or a root declaration
+// that is not an instance of a generic, which is its declared name alone? Else the symbol is a Cone
+// path ('_C...'), and whatever defines it is Cone code. An 'extern' one is how a package's include
+// file cuts a Cone function whose body an importer does not hold: it is not C.
+int nameIsCSymbol(INode *dclnode) {
+    DclInfo *dclinfo = inodeGetDclInfo(dclnode);
+    return (dclinfo->facts & DclCName) || (nameChainIsEmpty(dclinfo->owner) && nameOwnTypeArgs(dclnode) == NULL);
+}
+
 // Spell the name of a trait's vtable into buf, which is returned: '<Trait>:Vtable'.
 // It names both the vtable's LLVM type and the virtual reference's -- LLVM type
 // names, not object-file symbols, so they are not encoded.

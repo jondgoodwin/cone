@@ -137,9 +137,10 @@ int shapeTypeReshapes(FnDclNode *fn, INode *cont, int viaparams);
 // a virtual call or a call of a function value in the body (or in what it calls) is taken to
 // write any global, whatever it is handed
 int shapeTypeWritesGlobal(FnDclNode *fn, INode *cont);
-// An 'extern' function handed an argument whose type can reach something callable (a '&fn', a virtual
+// An 'extern' C function handed an argument whose type can reach something callable (a '&fn', a virtual
 // reference, a closure or trait object an owner holds): C may call it back into Cone code that writes
-// a global
+// a global. A Cone function an include file cut to an 'extern' (its symbol a Cone path, not C's:
+// nameIsCSymbol) is not C and answers no here: it is asked of what it is handed
 int shapeExternHandsCallable(FnCallNode *call, FnDclNode *callee);
 
 #endif
