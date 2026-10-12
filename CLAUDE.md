@@ -987,8 +987,10 @@ call at a time (`cnames.c`, and `isWindows()` in the Cone), so a plain
 program compiles, links and runs on both, and so do threads, `sync` and actors
 (pthreads and the futex system call, through `oscalls.c`), and so do `fs`,
 `path`, `env`, `process` and `posix` (the C library's POSIX functions, and
-`posix_spawn` for `process`); what is built on the rest of the OS (`iocore`) is
-Windows only for now, and the suite's tests of it fail to link on Linux.
+`posix_spawn` for `process`), `iobuf` (`mmap`) and `iocore` (epoll, with an
+eventfd and a timerfd; `linux.cone` beside `windows.cone`, which keeps the
+completion port); what is built on the rest of the OS (HTTP and TLS) is Windows
+only for now, and the suite's tests of it fail to link on Linux.
 
 #### Building on Linux
 
@@ -1014,11 +1016,12 @@ other object; `--nopic` opts out.
 
 Congo runs on Linux (`python3 tools/congo/congo.py test` in a package's folder,
 with `conec` built at `build/x64-release/conec`), and `sync`, `thread`,
-`actors`, `time`, `path`, `env`, `fs`, `posix` and `process` pass their tests
-there. (`synchronization.lib` and `shell32.lib`, the Windows SDK's, are on
-Congo's Windows link line itself, so no package's `[link]` names them.) The
-packages built on Windows alone (`iocore` and what imports them, `sdl` and what
-draws) do not build or run there. A test whose output differs by system has a
+`actors`, `time`, `path`, `env`, `fs`, `posix`, `process`, `iobuf`, `iocore` and
+`aio` pass their tests there. (`synchronization.lib`, `shell32.lib`,
+`ws2_32.lib` and `ntdll.lib`, the Windows SDK's, are on Congo's Windows link
+line itself, so no package's `[link]` names them.) The packages built on
+Windows alone (HTTP's `httpconn` examples and `httpclient`, `tls`, `sdl` and
+what draws) do not build or run there. A test whose output differs by system has a
 file of its own for the host, `name.linux.out` beside `name.out` (Congo reads
 `name.<host>.out` before `name.out`); a test is written to print the same
 everywhere where it can, asking `isWindows()` for the values that differ.

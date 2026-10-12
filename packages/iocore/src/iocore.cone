@@ -4,7 +4,9 @@
 // and later gets exactly one answer for it, carrying the buffer back. The
 // one place anything waits is 'poll', which waits in the kernel until an
 // answer arrives, a timer is due, another thread wakes it, or the time it
-// was given comes. Windows only for now: the loop is an I/O completion port.
+// was given comes. On Windows the loop is an I/O completion port; on Linux
+// it is epoll (windows.cone and linux.cone are everything beneath the
+// interface; the interface and its answers are the same).
 //
 //   mod echo;
 //   import collections use List;
@@ -154,11 +156,13 @@
 //
 // ANSWERS. Every operation gets exactly one terminal answer, a Completion
 // (I1): its OpId, its token, its kind (diag's kind numbers), its outcome --
-// Done with a count, Failed with Windows' error number, Cancelled, or
+// Done with a count, Failed with Windows' error number (on Linux, the one
+// that names the same condition as the errno; see linux.cone), Cancelled, or
 // TimedOut -- the buffer back ('c.buf', IoBuf.empty() when it had none), the
 // handle Connect or Accept made, and three instants: submitted, dequeued
 // (when the loop took it from the kernel's queue: IOCP does not say when the
-// kernel finished, so this is the earliest the loop can know) and delivered
+// kernel finished, so this is the earliest the loop can know; on Linux, when
+// the loop tried the operation and it was done or failed) and delivered
 // (when poll handed it over, or the loop it was posted to took it). The
 // outcome is in plain fields ('c.status', a diag outcome number, 'c.n',
 // 'c.code'), and 'c.outcome()' gives it as the Outcome enum, to match on. A
@@ -283,6 +287,8 @@
 // for that instant and has the kernel deliver its expiry to the port as a
 // completion (a wait completion packet, NtAssociateWaitCompletionPacket):
 // the wait ends on time without raising the whole system's timer resolution.
+// On Linux the same is a timerfd, armed for that instant and watched by the
+// epoll instance, which ends the wait on time to the nanosecond.
 //
 // WAKERS. 'lp.waker()' is a Waker: Sendable, copied to share, and 'wake()'
 // from any thread ends the loop's current or next poll. It is also how
@@ -353,14 +359,22 @@
 // a wait on a Windows handle through the port (an event, a fence exported
 // as one), interrupting a running pool job (CancelSynchronousIo), priority
 // within a lane, IoRing and socket notifications (Windows 11 accelerators,
-// detected at run time behind this interface), and Linux and the browser.
+// detected at run time behind this interface), and the browser.
 //
-// What is Windows-only: everything beneath the interface (windows.cone),
-// which is kernel32's completion port, overlapped files, waitable timer and
-// file attributes, ntdll's wait completion packet, and Winsock, AcceptEx and
-// ConnectEx reached through WSAIoctl and called through function pointers,
-// and GetAddrInfoW, all from Cone with no C between; the pool's threads and
-// locks are the thread and sync packages'.
+// What depends on the OS: everything beneath the interface. On Windows
+// (windows.cone), kernel32's completion port, overlapped files, waitable timer
+// and file attributes, ntdll's wait completion packet, and Winsock, AcceptEx
+// and ConnectEx reached through WSAIoctl and called through function
+// pointers, and GetAddrInfoW. On Linux (linux.cone), epoll with an eventfd
+// (how other threads wake the loop) and a timerfd, non-blocking sockets and
+// accept4, getaddrinfo and stat on the pool's threads, and a lane of the pool
+// for ReadAt and WriteAt (pread and pwrite). All from Cone with no C between;
+// the pool's threads and locks are the thread and sync packages'. Where the
+// two differ in what a program can see: a Linux loop holds no operation's
+// buffer in the kernel, so a deadline or a cancel of a socket operation is
+// answered with the buffer even when the grace is zero (a Windows loop may
+// answer TimedOut without it: the prompt TimedOut); and the socket calls take
+// the same arguments and make the same answers.
 
 mod iocore;
 
@@ -416,11 +430,14 @@ pub struct Handle {
   pub fn `!=`(self, o Handle) bool {index != o.index or gen != o.gen;}
 }
 
-// Why something could not be done: Windows' error number
+// Why something could not be done: Windows' error number, on every system
+// (Linux's errno is turned into the Windows number that names the same
+// condition, or, with none, is itself above 0x10000000)
 pub struct IoError {
   pub code u32;
 
-  // Windows' text for it, in English where the system has it
+  // The OS's text for it: Windows' in English where the system has it, the
+  // C library's (strerror) on Linux
   pub fn message(self &) String {systemText(code);}
 }
 
@@ -435,7 +452,11 @@ pub enum Access {
 // Addresses
 // ---------------------------------------------------------------------------
 
-// An IPv4 or IPv6 address and a port, as Winsock's sockaddr holds them
+// AF_INET6, the family of an IPv6 address: Windows' number is 23, Linux's 10
+// (AF_INET is 2 on both)
+fn afInet6Tag() u8 {if isWindows() {23u8;} else {10u8;}}
+
+// An IPv4 or IPv6 address and a port, as the OS's sockaddr holds them
 pub struct SocketAddr {
   raw Array[u8, 28];
   size i32;
@@ -459,7 +480,7 @@ pub struct SocketAddr {
   // [addr]:port, addr its 16 bytes
   pub fn v6(addr &Array[u8], port u16) SocketAddr {
     mut s = new SocketAddr(new Array[u8, 28] <- fill 0u8, 28i32);
-    s.raw[0usize] = 23u8;
+    s.raw[0usize] = afInet6Tag();
     s.setPort(port);
     mut i = 0usize;
     while i < 16usize and i < addr.len {
@@ -472,14 +493,14 @@ pub struct SocketAddr {
   // [::1]:port
   pub fn v6Localhost(port u16) SocketAddr {
     mut s = new SocketAddr(new Array[u8, 28] <- fill 0u8, 28i32);
-    s.raw[0usize] = 23u8;
+    s.raw[0usize] = afInet6Tag();
     s.setPort(port);
     s.raw[23usize] = 1u8;
     s;
   }
 
   pub fn port(self &) u16 {(u16.from(raw[2usize]) << 8u16) | u16.from(raw[3usize]);}
-  pub fn isV6(self &) bool {raw[0usize] == 23u8;}
+  pub fn isV6(self &) bool {raw[0usize] == afInet6Tag();}
   pub fn family(self &) u16 {u16.from(raw[0usize]);}
 
   fn setPort(self &mut, port u16) {
@@ -637,33 +658,94 @@ fn blankCompletion() Completion {
 // Sendable, a promise taken on trust: the port's handle is safe to use from
 // any thread, which is what a port is for
 struct Port is Sendable {
-  handle usize;
+  handle usize;           // Windows: the completion port. Linux: the eventfd that wakes the loop
   closed Atomic[bool];    // its loop has gone: nobody will take what is posted
+  // Linux: the packets other threads have posted (the OS holds them on
+  // Windows), under 'lock'; 'pending' says the eventfd has been written to
+  // since the loop last took them
+  pending Atomic[u32];
+  lock Mutex;
+  head *Packet;
+  tail *Packet;
+
+  // Its queue, changed under its lock through a shared reference
+  fn lists(self &) &mut Port {
+    imm p = self as *Port;
+    p as &mut Port;
+  }
+
+  // Post a packet for the loop to take: its key, and a pointer that means
+  // what the key says. False if it could not be queued
+  fn send(self &, key usize, ov *u8) bool {
+    if isWindows() {
+      PostQueuedCompletionStatus(handle, 0u32, key, ov) != 0i32;
+    } else {
+      imm node = libc.malloc(mem.sizeof[Packet]()) as *Packet;
+      if node as usize == 0usize {return false;}
+      (*node).key = key;
+      (*node).ov = ov;
+      (*node).next = null;
+      imm st = self.lists();
+      st.lock.lock();
+      if st.tail as usize == 0usize {st.head = node;} else {(*st.tail).next = node;}
+      st.tail = node;
+      st.lock.unlock();
+      // One write wakes the loop for all the packets queued before it takes them
+      if pending.swap(1u32) == 0u32 {
+        mut one = 1u64;
+        sysWrite(fdOf(handle), &mut one as *u8, 8usize);
+      }
+      true;
+    }
+  }
 
   // The last owner has gone: answers posted since the loop died are
   // dropped (their buffers go home), and the port closed
   fn final(self &uni) {
-    imm entries = libc.malloc(64usize * mem.sizeof[OverlappedEntry]()) as *OverlappedEntry;
-    while true {
-      mut got = 0u32;
-      if GetQueuedCompletionStatusEx(handle, entries, 64u32, &mut got, 0u32, 0i32) == 0i32 or got == 0u32 {
-        break;
-      }
-      mut k = 0usize;
-      while k < usize.from(got) {
-        imm e = entries + k;
-        if (*e).key == keyPost {
-          mem.finalize[Completion]((*e).ov as *Completion);
-          libc.free((*e).ov);
-        } elif (*e).key == keyJob {
-          dropBox((*e).ov as *JobBox);
+    if isWindows() {
+      imm entries = libc.malloc(64usize * mem.sizeof[OverlappedEntry]()) as *OverlappedEntry;
+      while true {
+        mut got = 0u32;
+        if GetQueuedCompletionStatusEx(handle, entries, 64u32, &mut got, 0u32, 0i32) == 0i32 or got == 0u32 {
+          break;
         }
-        k = k + 1usize;
+        mut k = 0usize;
+        while k < usize.from(got) {
+          imm e = entries + k;
+          if (*e).key == keyPost {
+            mem.finalize[Completion]((*e).ov as *Completion);
+            libc.free((*e).ov);
+          } elif (*e).key == keyJob {
+            dropBox((*e).ov as *JobBox);
+          }
+          k = k + 1usize;
+        }
       }
+      libc.free(entries as *u8);
+      CloseHandle(handle);
+    } else {
+      mut node = head;
+      while node as usize != 0usize {
+        imm next = (*node).next;
+        if (*node).key == keyPost {
+          mem.finalize[Completion]((*node).ov as *Completion);
+          libc.free((*node).ov);
+        } elif (*node).key == keyJob {
+          dropBox((*node).ov as *JobBox);
+        }
+        libc.free(node as *u8);
+        node = next;
+      }
+      sysClose(fdOf(handle));
     }
-    libc.free(entries as *u8);
-    CloseHandle(handle);
   }
+}
+
+// A packet in the queue of a Linux Port
+struct Packet {
+  key usize;
+  ov *u8;
+  next *Packet;
 }
 
 // What wakes a loop's poll from any thread, and what Target.Post delivers
@@ -674,7 +756,7 @@ pub struct Waker {
   // End the loop's current or next poll: false if the loop has gone
   pub fn wake(self &) bool {
     if port.closed.load() {return false;}
-    PostQueuedCompletionStatus(port.handle, 0u32, keyWake, null) != 0i32;
+    port.send(keyWake, null);
   }
 
   // Post an answer to the loop: false, and the answer dropped (its buffer
@@ -683,7 +765,7 @@ pub struct Waker {
     if port.closed.load() {return false;}
     imm block = libc.malloc(mem.sizeof[Completion]()) as *Completion;
     mem.writeRaw[Completion](block, c);
-    if PostQueuedCompletionStatus(port.handle, 0u32, keyPost, block as *u8) == 0i32 {
+    if not port.send(keyPost, block as *u8) {
       mem.finalize[Completion](block);
       libc.free(block as *u8);
       return false;
@@ -698,20 +780,20 @@ pub struct Waker {
   // has gone
   fn signal(self &, key usize) bool {
     if port.closed.load() {return false;}
-    PostQueuedCompletionStatus(port.handle, 0u32, key, null) != 0i32;
+    port.send(key, null);
   }
 
   // Ask the loop to cancel operation id: false if the loop has gone
   fn postCancel(self &, id OpId) bool {
     if port.closed.load() {return false;}
-    PostQueuedCompletionStatus(port.handle, 0u32, keyCancel, usize.from(id.number()) as *u8) != 0i32;
+    port.send(keyCancel, usize.from(id.number()) as *u8);
   }
 
   // Hand a job that has run back to its loop: false, and the box still the
   // caller's, if the loop has gone
   fn postJob(self &, b *JobBox) bool {
     if port.closed.load() {return false;}
-    PostQueuedCompletionStatus(port.handle, 0u32, keyJob, b as *u8) != 0i32;
+    port.send(keyJob, b as *u8);
   }
 }
 

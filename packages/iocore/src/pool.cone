@@ -53,6 +53,11 @@ struct JobBox {
   prev *JobBox;
   next *JobBox;
   queuedAt Instant;
+  // Linux: a file operation, run by the lane's thread on this descriptor (a
+  // duplicate of the handle's, closed with the box) at the offset 'arg'; -1
+  // for every other job
+  fd i32;
+  write bool;
 }
 
 fn newBox(work WorkFn, arg u64, w Waker, rec u32, gen u32, lane *LaneState) *JobBox {
@@ -60,12 +65,17 @@ fn newBox(work WorkFn, arg u64, w Waker, rec u32, gen u32, lane *LaneState) *Job
   if b as usize == 0usize {panic("iocore: out of memory for a blocking job");}
   mem.writeRaw[JobBox](b, new JobBox(work: work, arg: arg, buf: IoBuf.empty(),
     waker: Some[Waker](w), rec: rec, gen: gen, lane: lane, asked: Atomic[u32].of(0u32), state: boxQueued,
-    status: 0u32, n: 0usize, code: 0u32, prev: null, next: null, queuedAt: Instant.now()));
+    status: 0u32, n: 0usize, code: 0u32, prev: null, next: null, queuedAt: Instant.now(),
+    fd: 0i32 - 1i32, write: false));
   b;
 }
 
-// A box's end: its buffer goes home, its waker (if it still has one) goes
+// A box's end: its buffer goes home, its waker (if it still has one) goes,
+// and so does its file descriptor
 fn dropBox(b *JobBox) {
+  if not isWindows() {
+    if (*b).fd >= 0i32 {sysClose((*b).fd);}
+  }
   mem.finalize[JobBox](b);
   libc.free(b as *u8);
 }
@@ -169,7 +179,15 @@ fn makeDefaultLanes() {
   laneTable = libc.calloc(usize.from(maxLanes), 8usize) as *usize;
   addLaneLocked(new LaneConfig(name: "iocore general", maxThreads: 4u32, queueBound: 1024u32));
   addLaneLocked(new LaneConfig(name: "iocore dns", maxThreads: 2u32, queueBound: 256u32));
+  // Linux: the files' own, for ReadAt and WriteAt (linux.cone); its queue is
+  // deep, since a refused file operation is no one's to retry
+  if not isWindows() {
+    addLaneLocked(new LaneConfig(name: "iocore files", maxThreads: 4u32, queueBound: 65536u32));
+  }
 }
+
+// The lane Linux's file operations run on
+const filesLane = 2u32;
 
 // A new lane of the blocking pool. At most 64 lanes, the two every process
 // has among them; one more is a panic
@@ -274,7 +292,7 @@ fn worker(a WorkerArg) {
 // Run a job and post it to its loop; drop it when its loop has gone
 fn runBox(b *JobBox) {
   imm j = b as &mut JobBox;
-  imm o = (j.work)(j.arg, &mut j.buf);
+  imm o = if j.fd >= 0i32 {lxFileJob(j);} else {(j.work)(j.arg, &mut j.buf);};
   settleBox(b, o);
 }
 
@@ -383,29 +401,33 @@ pub fn addressesIn(buf &IoBuf) List[SocketAddr] {
 }
 
 fn resolveWork(arg u64, buf &mut IoBuf) Outcome {
-  imm w = widen(buf.view());
-  if w as usize == 0usize {return Outcome.Failed(errorNoUnicodeTranslation);}
-  mut hints = new AddrInfo(0i32, 0i32, sockStream, ipprotoTcp, 0usize, null, null, null);
-  mut res = null as *AddrInfo;
-  imm rc = GetAddrInfoW(w, null, &mut hints as *AddrInfo, &mut res);
-  libc.free(w as *u8);
-  if rc != 0i32 {return Outcome.Failed(u32.from(rc));}
-  buf.clear();
-  mut count = 0usize;
-  mut a = res;
-  imm recSize = mem.sizeof[SocketAddr]();
-  while a as usize != 0usize {
-    if (*a).addrlen <= 28usize and buf.room() >= recSize {
-      mut s = new SocketAddr(new Array[u8, 28] <- fill 0u8, i32.from((*a).addrlen));
-      libc.memcpy(&mut s.raw as *u8, (*a).addr, (*a).addrlen);
-      s.setPort(u16.from(arg));
-      buf.append(mem.sliceFromParts(&mut s as *u8, recSize));
-      count = count + 1usize;
+  if isWindows() {
+    imm w = widen(buf.view());
+    if w as usize == 0usize {return Outcome.Failed(errorNoUnicodeTranslation);}
+    mut hints = new AddrInfo(0i32, 0i32, sockStream, ipprotoTcp, 0usize, null, null, null);
+    mut res = null as *AddrInfo;
+    imm rc = GetAddrInfoW(w, null, &mut hints as *AddrInfo, &mut res);
+    libc.free(w as *u8);
+    if rc != 0i32 {return Outcome.Failed(u32.from(rc));}
+    buf.clear();
+    mut count = 0usize;
+    mut a = res;
+    imm recSize = mem.sizeof[SocketAddr]();
+    while a as usize != 0usize {
+      if (*a).addrlen <= 28usize and buf.room() >= recSize {
+        mut s = new SocketAddr(new Array[u8, 28] <- fill 0u8, i32.from((*a).addrlen));
+        libc.memcpy(&mut s.raw as *u8, (*a).addr, (*a).addrlen);
+        s.setPort(u16.from(arg));
+        buf.append(mem.sliceFromParts(&mut s as *u8, recSize));
+        count = count + 1usize;
+      }
+      a = (*a).next;
     }
-    a = (*a).next;
+    FreeAddrInfoW(res);
+    Outcome.Done(count);
+  } else {
+    lxResolve(arg, buf);
   }
-  FreeAddrInfoW(res);
-  Outcome.Done(count);
 }
 
 // A file's metadata, as a statOp's buffer holds it
@@ -442,15 +464,19 @@ pub fn fileStatIn(buf &IoBuf) FileStat {
 }
 
 fn statWork(arg u64, buf &mut IoBuf) Outcome {
-  imm w = widen(buf.view());
-  if w as usize == 0usize {return Outcome.Failed(errorNoUnicodeTranslation);}
-  mut data = new Array[u32, 9] <- fill 0u32;
-  imm ok = GetFileAttributesExW(w, 0i32, &mut data as *u8);
-  libc.free(w as *u8);
-  if ok == 0i32 {return Outcome.Failed(GetLastError());}
-  buf.clear();
-  buf.append(mem.sliceFromParts(&mut data as *u8, 36usize));
-  Outcome.Done(36usize);
+  if isWindows() {
+    imm w = widen(buf.view());
+    if w as usize == 0usize {return Outcome.Failed(errorNoUnicodeTranslation);}
+    mut data = new Array[u32, 9] <- fill 0u32;
+    imm ok = GetFileAttributesExW(w, 0i32, &mut data as *u8);
+    libc.free(w as *u8);
+    if ok == 0i32 {return Outcome.Failed(GetLastError());}
+    buf.clear();
+    buf.append(mem.sliceFromParts(&mut data as *u8, 36usize));
+    Outcome.Done(36usize);
+  } else {
+    lxStat(arg, buf);
+  }
 }
 
 // An operation reading a file on lane, from byte 'at', as much as buf's
@@ -467,22 +493,26 @@ pub fn readFileOp(path &Path, at u64, lane Lane, buf IoBuf) Op {
 }
 
 fn readFileWork(arg u64, buf &mut IoBuf) Outcome {
-  imm w = widen(buf.view());
-  if w as usize == 0usize {return Outcome.Failed(errorNoUnicodeTranslation);}
-  imm h = CreateFileW(w, genericRead, shareAll, null, openExisting, 0u32, 0usize);
-  libc.free(w as *u8);
-  if h == invalidHandle {return Outcome.Failed(GetLastError());}
-  buf.clear();
-  imm room = buf.room();
-  imm want = if room > 0xFFFFFFFFusize {0xFFFFFFFFu32;} else {u32.from(room);};
-  // A handle opened without FILE_FLAG_OVERLAPPED reads at the OVERLAPPED's
-  // offset and returns when the read is done
-  mut ov = new Overlapped(0usize, 0usize, u32.from(arg & 0xFFFFFFFFu64), u32.from(arg >> 32u64), 0usize);
-  mut got = 0u32;
-  imm ok = ReadFile(h, buf.base(), want, &mut got as *u32, &mut ov as *u8);
-  imm code = if ok == 0i32 {GetLastError();} else {0u32;};
-  CloseHandle(h);
-  if ok == 0i32 and code != errorHandleEof {return Outcome.Failed(code);}
-  buf.setLen(usize.from(got));
-  Outcome.Done(usize.from(got));
+  if isWindows() {
+    imm w = widen(buf.view());
+    if w as usize == 0usize {return Outcome.Failed(errorNoUnicodeTranslation);}
+    imm h = CreateFileW(w, genericRead, shareAll, null, openExisting, 0u32, 0usize);
+    libc.free(w as *u8);
+    if h == invalidHandle {return Outcome.Failed(GetLastError());}
+    buf.clear();
+    imm room = buf.room();
+    imm want = if room > 0xFFFFFFFFusize {0xFFFFFFFFu32;} else {u32.from(room);};
+    // A handle opened without FILE_FLAG_OVERLAPPED reads at the OVERLAPPED's
+    // offset and returns when the read is done
+    mut ov = new Overlapped(0usize, 0usize, u32.from(arg & 0xFFFFFFFFu64), u32.from(arg >> 32u64), 0usize);
+    mut got = 0u32;
+    imm ok = ReadFile(h, buf.base(), want, &mut got as *u32, &mut ov as *u8);
+    imm code = if ok == 0i32 {GetLastError();} else {0u32;};
+    CloseHandle(h);
+    if ok == 0i32 and code != errorHandleEof {return Outcome.Failed(code);}
+    buf.setLen(usize.from(got));
+    Outcome.Done(usize.from(got));
+  } else {
+    lxReadFile(arg, buf);
+  }
 }
