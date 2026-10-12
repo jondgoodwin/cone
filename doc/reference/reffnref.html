@@ -91,8 +91,63 @@ struct Applier {
 			which is compiled for each type it is given and is given <span class="pre">&amp;byName</span>, a closure, or a struct
 			(<a href="refgeneric.html#sigbound">A function signature as a constraint</a>).</li>
 	</ul>
-	<p>The one-word <span class="pre">&amp;fn(sig)</span> stays what it is, and is what a C library's
-		callback parameter takes.</p>
+	<p>The one-word <span class="pre">&amp;fn(sig)</span> stays what it is, and is what another Cone function
+		taking a function takes. A C library's callback parameter takes the reference to a
+		<a href="#cnamed">C-named function</a> instead, <span class="pre">&amp;fn @c (sig)</span>.</p>
+
+	<h2 id="cnamed">A reference to a C-named function</h2>
+	<p>A Cone function and a <a href="refinclude.html#cnaming">C-named</a> one (an <span class="pre">extern</span>
+		function C defines, a <span class="pre">fn @c</span>, a function of an <span class="pre">@c</span> module)
+		are called differently: C passes a struct by value in registers or through a pointer
+		as its ABI says
+		(<a href="refinclude.html#cabi">Structs by value</a>), and Cone keeps its own convention for its own functions.
+		So the calling convention is part of a function reference's type. A reference to a C-named function has the type
+		<span class="pre">&amp;fn @c (Vec3) f32</span>, marked as <span class="pre">fn @c</span> marks a function; a
+		reference to a Cone function is the plain <span class="pre">&amp;fn(Vec3) f32</span>.
+		In a declaration a name always follows the attribute, and in a type it never does, so in a type a
+		<span class="pre">(</span> after <span class="pre">@c</span> opens the parameters: the type's
+		<span class="pre">@c</span> takes no arguments. If a second C convention is ever needed, it gets its own attribute
+		name, not <span class="pre">@c(...)</span> arguments in a type; <span class="pre">&amp;fn @c(system)</span> is not
+		a spelling.</p>
+	<p>For example:</p>
+<pre>
+struct Vec3 { pub x f32; pub y f32; pub z f32; }
+
+extern fn @c vec3_len(v Vec3) f32;          // defined by C
+fn @c doubled(v Vec3) f32 { v.x * 2.; }     // a Cone function C may call
+fn sum(v Vec3) f32 { v.x + v.y + v.z; }     // Cone's own
+
+fn doit(v Vec3) {
+  imm a &amp;fn @c (Vec3) f32 = &amp;vec3_len;     // a C-named function's reference
+  imm b &amp;fn @c (Vec3) f32 = &amp;doubled;      // so is this
+  imm c &amp;fn(Vec3) f32 = &amp;sum;              // a Cone function's
+  a(v);                                    // called as C passes a struct
+  c(v);                                    // called as Cone does
+}
+</pre>
+	<p>Neither converts to the other, and there is no thunk to bridge them: giving one where the other is wanted,
+		in an initializer, an assignment, an argument, a returned value or a struct's field, is a compile error,
+		so a call through a reference never passes its values the wrong way. A C library's callback parameter
+		is typed <span class="pre">&amp;fn @c</span>, and the Cone function handed to it is written
+		<span class="pre">fn @c</span>; handing C a plain Cone function is refused.</p>
+<pre>
+extern fn @c c_apply(n i32, f &amp;fn @c (Vec3) f32) f32;   // C calls f
+
+fn @c scale(v Vec3) f32 { v.x * 3.; }      // C-named, so C may call it
+fn twice(v Vec3) f32 { v.x * 2.; }
+
+fn doit() {
+  c_apply(1, &amp;scale);      // fine
+  c_apply(1, &amp;twice);      // error: a Cone function, where a C-named one is wanted
+}
+</pre>
+	<p>A <a href="refclosure.html">closure</a> has no C form, so it is never <span class="pre">@c</span>, and an
+		anonymous function with a body has no name for <span class="pre">@c</span> to give C spelling to.
+		A type's method keeps Cone's convention even when <span class="pre">@c</span> names its symbol (a vtable
+		calls it by its Cone signature), so a reference to a method is a plain <span class="pre">&amp;fn</span>.
+		A closure reference (<span class="pre">&amp;&lt;fn</span>, <span class="pre">So[fn]</span>) calls what it holds in
+		Cone's convention, so a C-named function's reference is not accepted where one is wanted:
+		call the C function from a Cone function and make that the callable.</p>
 
 	<h2>Anonymous Functions</h2>
 	<p>When the function you want to get a reference to is small,

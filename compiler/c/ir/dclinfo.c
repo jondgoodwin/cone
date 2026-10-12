@@ -44,6 +44,14 @@ void dclInfoJoin(INode *node, INode *owner) {
         }
     }
     dclinfo->facts = facts;
+
+    // A C-named function a module owns is called in C's convention, so a
+    // reference to it has the type '&fn @c (...)', one no Cone function's has
+    // (genlIsCAbiFn). A type's method is called through a vtable by its Cone
+    // signature, so it keeps Cone's even when '@c' names it
+    if (node->tag == FnDclTag && (facts & DclCName) && owner != NULL && owner->tag == ModuleTag
+        && ((FnDclNode*)node)->vtype != NULL && ((FnDclNode*)node)->vtype->tag == FnSigTag)
+        ((FnSigNode*)((FnDclNode*)node)->vtype)->ccall = 1;
 }
 
 // The nearest module enclosing a declaration, or NULL

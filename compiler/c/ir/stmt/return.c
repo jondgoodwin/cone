@@ -186,7 +186,7 @@ void returnTypeCheck(TypeCheckState *tstate, BreakRetNode *retnode) {
         INode **retnodesp = &nodesGet(retnodes, 0);
         for (nodesFor(rettypes, retcnt, rettypesp)) {
             if (!iexpTypeCheckCoerce(tstate, *rettypesp, retnodesp++))
-                errorMsgNode(*(retnodesp - 1), ErrorInvType, "Return value's type does not match fn return type");
+                iexpMismatchMsg(*(retnodesp - 1), *rettypesp, ErrorInvType, "Return value's type does not match fn return type");
         }
         // Establish the type of the tuple (from the expected return value types)
         ((TupleNode *)retnode->exp)->vtype = fnsig->rettype;
@@ -215,7 +215,11 @@ void returnTypeCheck(TypeCheckState *tstate, BreakRetNode *retnode) {
         else if (tstate->fn && tstate->fn->closure && errors > tstate->fn->closure->errbase)
             ;
         else if (!iexpCheckedCoerce(fnsig->rettype, &retnode->exp)) {
-            errorMsgNode((INode*)retnode, ErrorInvType, "Return expression type does not match return type on function");
+            char *why = isExpNode(retnode->exp) ? fnSigConvRefusal(((IExpNode*)retnode->exp)->vtype, fnsig->rettype) : NULL;
+            if (why)
+                errorMsgNode((INode*)retnode, ErrorFnRefConv, "%s", why);
+            else
+                errorMsgNode((INode*)retnode, ErrorInvType, "Return expression type does not match return type on function");
             errorMsgNode((INode*)fnsig->rettype, ErrorInvType, "This is the declared function's return type");
         }
     }

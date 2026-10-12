@@ -499,6 +499,8 @@ char *nameType(char *bufp, INode *vtype) {
         INode **nodesp;
         uint32_t cnt;
         *bufp++ = 'F';
+        if (fnsig->ccall)
+            *bufp++ = 'C';
         bufp = lifeSigSpell(bufp, fnsig);
         for (nodesFor(fnsig->parms, cnt, nodesp))
             bufp = nameType(bufp, ((IExpNode *)*nodesp)->vtype);

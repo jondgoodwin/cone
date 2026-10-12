@@ -1,0 +1,170 @@
+// ======== Items and pair bookkeeping shared by the three indexes ========
+
+// One item: its box and handle, a generation that tells a stale Proxy from
+// a live one (odd while the slot holds an item, even while it is free), and
+// three words each index uses as it likes (the BVH keeps the leaf node in
+// 'x'; the octree keeps node, next and previous in x, y, z; the grid keeps
+// its cell count in x and its place in the oversize list in y). 'moved' says
+// a pair update is owed.
+struct Item[T Copy] {
+  box Aabb3;
+  handle T;
+  gen u32;
+  moved bool;
+  x u32;
+  y u32;
+  z u32;
+}
+
+// A slot array of items with a free list, never shrunk; slots are dense, so
+// per-item side tables can be indexed by slot
+struct Items[T Copy] {
+  list List[Item[T]];
+  free u32;     // head of the free list, through the free slots' 'x'
+  count usize;
+
+  fn create() Items[T] {new Items[T](List[Item[T]].empty(), NONE, 0usize);}
+
+  fn add(self &mut, box Aabb3, handle T) Proxy {
+    count = count + 1usize;
+    if free != NONE {
+      imm slot = free;
+      imm si = usize.from(slot);
+      free = list[si].x;
+      list[si].box = box;
+      list[si].handle = handle;
+      list[si].gen = list[si].gen + 1u32;
+      list[si].moved = false;
+      list[si].x = NONE;
+      list[si].y = NONE;
+      list[si].z = NONE;
+      return new Proxy(slot, list[si].gen);
+    }
+    imm slot = u32.from(list.len());
+    list.push(new Item[T](box, handle, 1u32, false, NONE, NONE, NONE));
+    new Proxy(slot, 1u32);
+  }
+
+  fn alive(self &, p Proxy) bool {
+    if p.slot == NONE or usize.from(p.slot) >= list.len() {return false;}
+    list[usize.from(p.slot)].gen == p.gen;
+  }
+
+  // Frees the slot of a live proxy
+  fn release(self &mut, slot u32) {
+    imm si = usize.from(slot);
+    list[si].gen = list[si].gen + 1u32;
+    list[si].x = free;
+    free = slot;
+    count = count - 1usize;
+  }
+
+  fn isLive(self &, slot usize) bool {(list[slot].gen & 1u32) == 1u32;}
+
+  fn proxyOf(self &, slot u32) Proxy {new Proxy(slot, list[usize.from(slot)].gen);}
+}
+
+// ---- pairs ----
+//
+// Each item's current overlap partners, kept symmetric, so that after an
+// item moves its new partners can be diffed against its old ones in time
+// proportional to their number. 'sync' is given the slots that now overlap
+// item 'm' and reports which pairs are new and which have ended.
+struct PairBook {
+  partners List[List[u32]];
+  mark List[u32];
+  oldMark List[u32];
+  stamp u32;
+
+  fn create() PairBook {
+    new PairBook(List[List[u32]].empty(), List[u32].empty(), List[u32].empty(), 0u32);
+  }
+
+  fn ensure(self &mut, slot u32) {
+    while partners.len() <= usize.from(slot) {
+      partners.push(List[u32].empty());
+      mark.push(0u32);
+      oldMark.push(0u32);
+    }
+  }
+
+  fn removeFrom(self &mut, owner u32, other u32) {
+    imm oi = usize.from(owner);
+    mut i = 0usize;
+    while i < partners[oi].len() {
+      if *partners[oi][i] == other {
+        imm last = partners[oi].len() - 1usize;
+        partners[oi].swap(i, last);
+        partners[oi].truncate(last);
+        return;
+      }
+      i = i + 1usize;
+    }
+  }
+
+  fn sync(self &mut, m u32, found &List[u32], added &mut List[u32], ended &mut List[u32]) {
+    ensure(m);
+    stamp = stamp + 1u32;
+    imm s = stamp;
+    imm mi = usize.from(m);
+    mut i = 0usize;
+    while i < found.len() {
+      imm o = *found[i];
+      if o != m {
+        ensure(o);
+        mark.set(usize.from(o), s);
+      }
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < partners[mi].len() {
+      oldMark.set(usize.from(*partners[mi][i]), s);
+      i = i + 1usize;
+    }
+    // ended: old partners no longer found
+    mut keep = 0usize;
+    imm n = partners[mi].len();
+    i = 0usize;
+    while i < n {
+      imm o = *partners[mi][i];
+      if *mark[usize.from(o)] == s {
+        partners[mi].set(keep, o);
+        keep = keep + 1usize;
+      }
+      else {
+        ended.push(o);
+        removeFrom(o, m);
+      }
+      i = i + 1usize;
+    }
+    partners[mi].truncate(keep);
+    // added: found and not old (a duplicate in 'found' is added once: the
+    // old mark is set as it is added)
+    i = 0usize;
+    while i < found.len() {
+      imm o = *found[i];
+      if o != m and *oldMark[usize.from(o)] != s {
+        oldMark.set(usize.from(o), s);
+        added.push(o);
+        partners[mi].push(o);
+        partners[usize.from(o)].push(m);
+      }
+      i = i + 1usize;
+    }
+  }
+
+  // Item 'm' is leaving: gives its partners (to report the pairs ending) and
+  // forgets the pairs
+  fn forget(self &mut, m u32, ended &mut List[u32]) {
+    if usize.from(m) >= partners.len() {return;}
+    imm mi = usize.from(m);
+    mut i = 0usize;
+    while i < partners[mi].len() {
+      imm o = *partners[mi][i];
+      ended.push(o);
+      removeFrom(o, m);
+      i = i + 1usize;
+    }
+    partners[mi].clear();
+  }
+}

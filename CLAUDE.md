@@ -342,7 +342,13 @@ Visual Studio projects stay at the root.
   that rolls heel, flat and toe, landing places asked of the ground by a
   function, two-bone IK on the legs, the pelvis as high as the legs allow,
   arms against legs, an idle layer (breathing, weight shift) and a
-  hard-landing crouch (`Walker.update`, `Walker.impact`);
+  hard-landing crouch (`Walker.update`, `Walker.impact`); `poseik` is inverse
+  kinematics and blending over `bonepose`: a two-bone limb with an interior
+  angle range (`solveLimb`, `aimLimbRange`), FABRIK and CCD over chains with
+  cone and hinge limits, `FootPlacer` (feet planted on a ground-height query,
+  the pelvis moved, soles tilted to the normal), `lookAt`, `reachHand`, pose
+  blends (linear, masked, weighted, additive), `Clip`, `BlendSpace1D` and an
+  `Animator` state machine with timed cross-fades;
   `testing` is the checks a package's tests call (`expectInt`, `require…`,
   `done`), ordinary library code the compiler knows nothing of;
   `genwalk` and `genuser` are the samples of generators across packages: `pub`

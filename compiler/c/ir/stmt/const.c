@@ -56,7 +56,7 @@ void constDclTypeCheck(TypeCheckState *pstate, ConstDclNode *name) {
     // An initializer need not be specified, but if not, it must have a declared type
     // Verify that declared type and initial value type match
     if (!iexpTypeCheckCoerce(pstate, name->vtype, &name->value))
-        errorMsgNode(name->value, ErrorInvType, "Initialization value's type does not match named constant's declared type");
+        iexpMismatchMsg(name->value, name->vtype, ErrorInvType, "Initialization value's type does not match named constant's declared type");
     else if (name->vtype == unknownType)
         name->vtype = ((IExpNode *)name->value)->vtype;
     // Every use of a const is a fresh copy of its literal, so an atomic value

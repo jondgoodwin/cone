@@ -1,0 +1,157 @@
+// The worldinteract package (a working name; Jon names packages): action
+// scenarios for a world, as pure logic with no window and no GPU. Doors that
+// open, targeting and lock-on, characters holding things (a bag in a hand,
+// keys in a pocket), properties on things, and events, triggers and rules that
+// can be added and changed while the world runs.
+//
+// It is independent of the browser. It works on ids (a u32 per thing, 0 for
+// none), transforms and simple shapes, and asks the caller for anything that
+// belongs to another system as a closure: a ray cast for line of sight, a
+// skeleton's bone pose for a socket. It holds no reference to anything it did
+// not make, so what crosses to or from another owner is an id, a number or an
+// 'Event' record, all plain values that can later cross an actor boundary.
+//
+// The shape of a program that uses it (see examples/scenario.cone):
+//
+//   mut w = World.make();
+//   imm door = w.create(CLASS_DOOR);                 // or w.adopt(partId, ...)
+//   w.addDoor(door, Door.hinged(...));               // a door is a component
+//   w.addInteractable(door, 2.5, ...);               // can be used (E, click)
+//   w.activate(player, door);                        // a verb arrives, by id
+//   w.step(dt);                                      // time passes
+//   mut ev = w.takeEvents();                         // what happened, by id
+//
+// The world sends requests and gets messages, as the browser's scene does: a
+// click the browser reports as Message.Clicked(part) becomes 'activate(player,
+// part)' (or 'setHover', 'grabStart'); what the library decides comes back as
+// 'Event' records the browser turns into requests (a Place of the door's new
+// pose, a Platform change, an item's Show or Hide). Nothing here calls the
+// browser.
+//
+// Names follow the scene description format's behaviour layer (Research\
+// scene-description-format.md section 4): a property is 'state', a 'Rule' is
+// "on event [if condition]: actions" with a closed action list, and a named
+// message handed to the rest of the program is a 'signal'.
+//
+// Methods chosen (the report names each):
+//   door animation     smoothstep of the time since the toggle, closed form
+//   grab spring        critically damped spring, w = 2 pi f, semi-implicit
+//                      Euler in fixed substeps (Catto, GDC 2011 "Soft
+//                      constraints" gives the same damped form)
+//   targeting          cone and range filter, cost = weighted angle and
+//                      distance with a hysteresis bonus for the current target
+//                      (the lock-on found in action games; no single paper)
+//   lock-on switching  bearing about the up axis, nearest neighbour on the
+//                      asked side
+//   trigger volumes    point-in-shape in the volume's local frame, enter and
+//                      exit by set difference per step
+//
+//   worldinteract.cone  this overview and the constants
+//   value.cone          Value, Event
+//   door.cone           Door and its closed-form pose
+//   targeting.cone      candidates, scoring, lock-on, switching, aim assist
+//   grab.cone           the held-point spring
+//   world.cone          World: everything above wired together
+
+mod worldinteract;
+
+import collections use *;
+import geomath use *;
+
+// Kinds of Value
+pub const VK_NONE = 0u32;
+pub const VK_NUM = 1u32;
+pub const VK_BOOL = 2u32;
+pub const VK_STR = 3u32;       // an interned name: the 'id' field holds the symbol
+pub const VK_ID = 4u32;
+
+// Kinds of Event
+pub const EV_PROP_CHANGED = 1u32;     // subject entity, key property, value new, old
+pub const EV_USED = 2u32;             // subject the thing used, other the actor
+pub const EV_USE_DENIED = 3u32;       // subject, other, value.num one of DENY_*
+pub const EV_HOVER = 4u32;            // subject hovered, other the viewer
+pub const EV_UNHOVER = 5u32;
+pub const EV_FOCUS = 6u32;            // subject focused for use, other the viewer
+pub const EV_UNFOCUS = 7u32;
+pub const EV_GRAB = 8u32;             // subject grabbed, other the holder
+pub const EV_RELEASE = 9u32;          // value.num 1 when the spring broke
+pub const EV_DOOR_OPENING = 10u32;
+pub const EV_DOOR_OPENED = 11u32;
+pub const EV_DOOR_CLOSING = 12u32;
+pub const EV_DOOR_CLOSED = 13u32;
+pub const EV_DOOR_LOCKED = 14u32;
+pub const EV_DOOR_UNLOCKED = 15u32;   // other the actor whose key did it, or 0
+pub const EV_PASSABILITY = 16u32;     // subject the door, value.num 1 passable: a navmesh listens
+pub const EV_PICKED_UP = 17u32;       // subject the item entity, other the new owner, key item kind, value.num count
+pub const EV_DROPPED = 18u32;         // subject the item entity (new if a stack was split), other the dropper
+pub const EV_GIVEN = 19u32;           // subject the giver, other the receiver, key item kind, value.num count
+pub const EV_ATTACHED = 20u32;        // subject child, other parent, key bone
+pub const EV_DETACHED = 21u32;
+pub const EV_ENTER = 22u32;           // subject the trigger, other the entity entering
+pub const EV_STAY = 23u32;            // value.num seconds inside
+pub const EV_EXIT = 24u32;
+pub const EV_TIMER = 25u32;           // key the timer's name, subject its owner
+pub const EV_SIGNAL = 26u32;          // key the signal's name, subject the target
+pub const EV_LOCK_ON = 27u32;
+pub const EV_LOCK_OFF = 28u32;
+pub const EV_ITEM_ADDED = 29u32;      // subject owner, key item kind, value.num count
+pub const EV_ITEM_REMOVED = 30u32;
+pub const EV_OVERFLOW = 31u32;        // rules fed each other without end: the pump stopped
+
+// Why a use was refused (value.num of EV_USE_DENIED)
+pub const DENY_RANGE = 1u32;
+pub const DENY_FACING = 2u32;
+pub const DENY_LOCKED = 3u32;
+pub const DENY_DISABLED = 4u32;
+pub const DENY_FULL = 5u32;
+
+// Verbs an interactable accepts (a bit mask)
+pub const VERB_USE = 1u32;
+pub const VERB_GRAB = 2u32;
+pub const VERB_HOVER = 4u32;
+
+// Entity classes (a bit mask; a world may add its own above these)
+pub const CLASS_NONE = 0u32;
+pub const CLASS_CHARACTER = 1u32;
+pub const CLASS_DOOR = 2u32;
+pub const CLASS_ITEM = 4u32;
+pub const CLASS_TRIGGER = 8u32;
+pub const CLASS_PROP = 16u32;
+
+// Comparison operators in a condition
+pub const OP_EQ = 0u32;
+pub const OP_NE = 1u32;
+pub const OP_LT = 2u32;
+pub const OP_LE = 3u32;
+pub const OP_GT = 4u32;
+pub const OP_GE = 5u32;
+
+// Condition kinds
+pub const COND_PROP_NUM = 1u32;       // entity.key OP num
+pub const COND_PROP_BOOL = 2u32;      // entity.key == (num != 0)
+pub const COND_HAS_ITEM = 3u32;       // entity holds at least num of item kind 'key'
+pub const COND_DOOR_OPEN = 4u32;      // door 'entity' is open (target open) == (num != 0)
+pub const COND_DOOR_LOCKED = 5u32;    // door 'entity' is locked == (num != 0)
+
+// Action kinds: the closed list a rule may use
+pub const ACT_SET_PROP = 1u32;
+pub const ACT_ADD_PROP = 2u32;        // number property += num
+pub const ACT_TOGGLE_DOOR = 3u32;
+pub const ACT_OPEN_DOOR = 4u32;
+pub const ACT_CLOSE_DOOR = 5u32;
+pub const ACT_LOCK_DOOR = 6u32;
+pub const ACT_UNLOCK_DOOR = 7u32;
+pub const ACT_GIVE_ITEM = 8u32;       // target owner, key item kind, num count
+pub const ACT_START_TIMER = 9u32;     // key name, num delay, num2 repeat
+pub const ACT_SIGNAL = 10u32;         // key name, target subject
+pub const ACT_ENABLE_RULE = 11u32;    // target a rule id
+pub const ACT_DISABLE_RULE = 12u32;
+pub const ACT_ENABLE_TRIGGER = 13u32; // target the trigger's entity
+pub const ACT_DISABLE_TRIGGER = 14u32;
+
+// In a condition or action, these stand for the event being handled
+pub const ENT_SUBJECT = 4294967041u32;   // the event's subject
+pub const ENT_OTHER = 4294967042u32;     // the event's other
+
+// Not found
+pub const NONE_INDEX = 4294967295usize;

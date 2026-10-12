@@ -205,7 +205,7 @@ import time;
 // A thread's entry, as '_beginthreadex' calls it: its argument, and the exit
 // code. POSIX's 'pthread_create' takes the same function, returning a pointer
 // whose value nothing reads (the thread is joined for its end alone)
-alias Entry = &fn(arg *u8) u32;
+alias Entry = &fn @c (arg *u8) u32;
 
 extern fn @c _beginthreadex(security *u8, stack u32, entry Entry, arg *u8, flags u32, id *u32) usize;
 
@@ -390,9 +390,27 @@ fn unparkInfo(p *Info) {
 struct Packet[A, R] {
   pub refs Atomic[u32];    // 2 while both thread and handle hold it
   pub info *Info;
+  pub run &fn(p *u8) u32;  // this packet's 'entry[A, R]', which 'threadStart' calls
   pub result R;
   pub f &fn(a A) R;
   pub arg A;
+}
+
+// The part of every packet that does not depend on A and R, which is where the
+// new thread finds the function to run
+struct PacketHead {
+  pub refs Atomic[u32];
+  pub info *Info;
+  pub run &fn(p *u8) u32;
+}
+
+// What the operating system calls on the new thread: a C-named function, since
+// the system calls it as C does. A generic function has no one symbol for '@c'
+// to name, so the packet carries the Cone function for this A and R and this
+// calls it.
+fn @c threadStart(p *u8) u32 {
+  imm run = (*(p as *PacketHead)).run;
+  run(p);
 }
 
 // Let go of a packet, whatever its argument's type, since 'refs' is its first
@@ -503,9 +521,10 @@ pub fn startWith[A Sendable + 'static, R Sendable + 'static](opts Options, arg A
   imm info = infoNew(opts.name, 2u32, 0u32);
   (*pk).refs = Atomic[u32].of(2u32);
   (*pk).info = info;
+  (*pk).run = &entry[A, R];
   (*pk).f = f;
   mem.writeRaw[A](&(*pk).arg as *A, arg);
-  imm handle = launch(&entry[A, R], pk as *u8, info, opts.stackSize);
+  imm handle = launch(&threadStart, pk as *u8, info, opts.stackSize);
   if handle == 0usize {
     die("thread: the thread could not be started");
   }
