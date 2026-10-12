@@ -431,16 +431,6 @@ signature (`genlCAbiPlan`) is made where it is needed, from the types alone, in
 which therefore agree. **wasm32 is not built**: its structs still cross whole,
 which matches its C ABI only for a struct of one scalar.
 
-A **reference** to a C-named function (`&f`) is a Cone value, and a call
-through it passes Cone's convention. So where the function's C signature
-differs from its Cone one (a struct that does not cross whole, or a value
-widened by its register's mark), `&f` is the address of a thunk
-(`genlCAbiFnRef`): a private function `<symbol>.coneref` with the Cone
-signature that calls `f` with the C convention, made at the first `&f` of the
-object and shared by every other. An `&f` that is itself an argument of a call
-to a C-named function (`gen->cabiargs`) is `f`, the callback C will call as C.
-A reference to any other function is the function.
-
 An **integer narrower than C's `int`** keeps its LLVM type, but carries the
 widening C's convention gives it in its register (`genlCAbiExtend`), on the
 declaration or definition and at each direct call (`genlCAbiMark`), as
@@ -2358,7 +2348,6 @@ variables.
 | | `genlCAbiWalk`, `genlCAbiClassify`, `genlCAbiEightbyte` | SysV x86-64's classification of a struct of up to 16 bytes: its scalars, the class of each eightbyte, the scalar each crosses as |
 | | `genlCAbiExtend`, `genlCAbiMark` | the `zeroext` or `signext` a narrow integer crosses with, and the `sret` and `byval` marks, put on a declaration or a call |
 | | `genlFnDclType`, `genlCAbiDeclare`, `genlFnDclCall`, `genlFnDclParm`, `genlFnDclReturn` | a declared function's LLVM type, its marks (and the `"cone-cabi"` mark `genlAggCopies` leaves alone), a direct call to it, its prologue's parameters and its returns — lowered for a C-named one |
-| | `genlCAbiFnRef` | the thunk `&f` of a C-named function is, when its C signature differs from its Cone one |
 | `genllvm/genlaggcopy.c` | `genlAggCopies`, `genlAggFn`, `genlAggRetClass` | once the module is generated, every struct, array or tuple of more than `GenlAggCopyMin` bytes moved into memory, function by function, and every smaller aggregate result returned as a vector, as integers or through a slot (section 6, "Large aggregates") |
 | | `genlAggRetype`, `genlAggSig`, `genlAggCall` | a function taking or returning one remade with pointer parameters and a result slot first; each call to that type passing homes |
 | | `genlAggInst`, `genlAggHomeOf`, `genlAggReadInPlace` | each instruction making or taking one, rewritten to copy between homes; a value's home, made where it is; a load read where it lies when nothing between could change it |

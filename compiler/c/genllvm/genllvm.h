@@ -161,7 +161,6 @@ typedef struct GenState {
     FnDclNode *fndcl;       // The function being generated, whose returns genlFnDclReturn makes
     int exitzero;           // The function generated is a 'main' returning nothing, whose returns return i32 0
     int cabi;               // enum CAbiTarget, the C ABI a C-named function's values cross by (genlcabi.c)
-    Nodes *cabiargs;        // While a call to a C-named function's arguments are generated: those arguments, else NULL
     GenBlockState *blockstack;
     uint32_t blockstackcnt;
     GenTemp *temps;         // The temporaries waiting to be finalized, oldest first
@@ -520,10 +519,6 @@ int genlIsCAbiFn(FnDclNode *fndcl);
 // The LLVM function type of a declared function: its Cone signature, lowered
 // to the C ABI for one that crosses to C
 LLVMTypeRef genlFnDclType(GenState *gen, FnDclNode *fndcl);
-// The address '&f' is for a function 'fndcl' whose symbol is 'fn': 'fn', or for a
-// C-named function whose C signature differs from its Cone one, the thunk that
-// takes Cone's convention and calls it as C
-LLVMValueRef genlCAbiFnRef(GenState *gen, FnDclNode *fndcl, LLVMValueRef fn);
 // Mark a just-declared function's hidden result slot ('sret'), if it has one
 void genlCAbiDeclare(GenState *gen, FnDclNode *fndcl, LLVMValueRef fn);
 // Call a declared function with Cone argument values, returning its Cone value

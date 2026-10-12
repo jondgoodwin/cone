@@ -1665,7 +1665,7 @@ link = ["cside.c"]
 
 [scenario.module_c_byvalue_sysv_shape]
 category = "compile"
-description = "A C-named function's structs take the SysV x86-64 C ABI's shape, as clang gives it: each eightbyte of up to 16 bytes one scalar, a larger struct 'byval', a larger return 'sret', a struct that finds no registers left on the stack; a reference to it is a thunk, made once, except as an argument to a C-named function"
+description = "A C-named function's structs take the SysV x86-64 C ABI's shape, as clang gives it: each eightbyte of up to 16 bytes one scalar, a larger struct 'byval', a larger return 'sret', a struct that finds no registers left on the stack; a reference to it is the function itself"
 tags = ["genllvm"]
 
 [[scenario.module_c_byvalue_sysv_shape.run]]
@@ -1724,24 +1724,17 @@ name = "a-slice-and-a-plain-cone-function-are-untouched"
 target = "preir"
 contains = ["declare %void @text({ ptr, i64 }, i64)", "define internal %Ext2 @plain(%Ext2 %0)"]
 
-# '&f' of a C-named function whose C signature differs is the address of a
-# thunk in Cone's convention, one for the function however often it is
-# written; a plain function's reference is the function; and a reference handed
-# straight to a C-named function is the function itself
+# '&f' of a C-named function is the function itself, bound or handed straight
+# to C, which calls it as C
 [[scenario.module_c_byvalue_sysv_shape.check]]
-name = "a-reference-is-a-thunk-in-cones-convention"
+name = "a-reference-to-a-c-named-function-is-the-function"
 target = "preir"
 contains = [
-  "define private i32 @cone_ext.coneref(%Ext2 %0)",
-  "call i32 @cone_ext(i64 ",
-  "define private %DblInt @cone_dblint.coneref(%DblInt %0)",
-  "define private void @big3_make.coneref(ptr noalias sret(%Big3) %sret, i32 %0)",
-  "store ptr @cone_ext.coneref, ptr %r1",
-  "store ptr @cone_ext.coneref, ptr %r2",
-  "store ptr @plain, ptr %r5",
+  "store ptr @cone_ext, ptr %cb",
   "call i32 @c_apply(i32 5, ptr @cone_ext)",
+  "call i32 @c_apply(i32 6, ptr %",
 ]
-excludes = [".coneref.1", "@plain.coneref"]
+excludes = ["coneref"]
 
 [scenario.module_c_byvalue_shape]
 category = "compile"
@@ -1780,18 +1773,6 @@ contains = ["call float @v4_sum(ptr %carg", "call void @v4_make(ptr sret(%Vec4) 
 name = "a-slice-and-a-plain-cone-function-are-untouched"
 target = "preir"
 contains = ["declare %void @text({ ptr, i64 }, i64)", "define internal %Ext2 @plain(%Ext2 %0)"]
-
-# '&f' of a C-named function is the address of a thunk in Cone's convention
-# that calls it as C
-[[scenario.module_c_byvalue_shape.check]]
-name = "a-reference-is-a-thunk-in-cones-convention"
-target = "preir"
-contains = [
-  "define private %Ext2 @cone_ext.coneref(%Ext2 %0)",
-  "call i64 @cone_ext(i64 ",
-  "@cone_v4.coneref(%Vec4 %0, float %1) {",
-  "store ptr @cone_ext.coneref, ptr %g",
-]
 
 [scenario.module_c_bool]
 category = "run"

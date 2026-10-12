@@ -145,3 +145,10 @@ int64_t c_apply_big3(Big3Fn f) {
     Big3 r = f(v, 3);
     return r.a * 10000 + r.b * 100 + r.c;
 }
+/* C builds the struct itself and calls the callback with it, so no register
+ * holds its fields by luck; the unused leading arguments move what is left
+ * of the argument registers */
+typedef int32_t (*Vec4Fn)(Vec4);
+int32_t c_apply_vec4(int32_t unused, Vec4Fn f) { Vec4 v = { 1, 2, 3, 4 }; return f(v); }
+typedef int32_t (*Ext2Fn)(Ext2);
+int32_t c_apply_ext(int64_t junk1, int64_t junk2, Ext2Fn f) { Ext2 e = { 7, 9 }; return f(e); }

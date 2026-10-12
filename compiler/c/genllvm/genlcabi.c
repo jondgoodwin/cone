@@ -35,13 +35,6 @@
  * length arrive as two arguments, as a C function's '(char *, size_t)'
  * takes them.
  *
- * A reference to such a function ('&f') is a Cone value, and a call through it
- * passes Cone's own convention. So where a C-named function's C signature
- * differs from its Cone one, '&f' is the address of a thunk with the Cone
- * signature that calls it as C (genlCAbiFnRef) -- except as a direct argument
- * of a call to a C-named function, where it is the function itself, a
- * callback C will call as C.
- *
  * This source file is part of the Cone Programming Language C compiler
  * See Copyright Notice in conec.h
 */
@@ -676,80 +669,3 @@ void genlFnDclReturn(GenState *gen, FnDclNode *fndcl, LLVMValueRef retval) {
     }
 }
 
-// ---- A reference to a C-named function ---------------------------------------------
-
-// Whether a C-named function's C signature differs from its Cone one: a struct
-// crosses other than whole, or a value is widened by its register's mark
-static int genlCAbiDiffers(GenState *gen, FnDclNode *fndcl) {
-    if (!genlIsCAbiFn(fndcl))
-        return 0;
-    FnSigNode *fnsig = (FnSigNode*)itypeGetTypeDcl(fndcl->vtype);
-    CAbiPlan plan;
-    genlCAbiPlan(gen, fnsig, &plan);
-    if (plan.ret.pass != CAbiDirect || genlCAbiExtend(gen, fnsig->rettype))
-        return 1;
-    for (uint32_t i = 0; i < plan.nparms; ++i) {
-        if (plan.parms[i].pass != CAbiDirect
-            || genlCAbiExtend(gen, ((IExpNode *)nodesGet(fnsig->parms, i))->vtype))
-            return 1;
-    }
-    return 0;
-}
-
-// The address '&f' is, where 'fn' is the function 'fndcl'. A call through a
-// reference is made in Cone's convention, so for a C-named function whose C
-// signature differs from its Cone one the reference is a thunk with the Cone
-// signature that calls the function as C: one private thunk for the function
-// in this object, made at the first '&' and shared by every other.
-LLVMValueRef genlCAbiFnRef(GenState *gen, FnDclNode *fndcl, LLVMValueRef fn) {
-    if (!genlCAbiDiffers(gen, fndcl))
-        return fn;
-    size_t namelen;
-    const char *name = LLVMGetValueName2(fn, &namelen);
-    char *thunkname = (char *)memAllocBlk(namelen + sizeof(".coneref"));
-    memcpy(thunkname, name, namelen);
-    strcpy(thunkname + namelen, ".coneref");
-    LLVMValueRef thunk = LLVMGetNamedFunction(gen->module, thunkname);
-    if (thunk)
-        return thunk;
-
-    LLVMTypeRef thunktype = genlType(gen, fndcl->vtype);
-    thunk = LLVMAddFunction(gen->module, thunkname, thunktype);
-    LLVMSetLinkage(thunk, LLVMPrivateLinkage);
-
-    // Generated as a function of its own, so the state of the function being
-    // generated is set aside around it
-    LLVMValueRef svfn = gen->fn;
-    LLVMBuilderRef svbuilder = gen->builder;
-    LLVMValueRef svallocaPoint = gen->allocaPoint;
-    INode *svfnblock = gen->fnblock;
-    int svexitzero = gen->exitzero;
-    GenRoots svroots;
-    genlRootsSave(gen, &svroots);
-    gen->fn = thunk;
-    gen->fnblock = NULL;
-    gen->exitzero = 0;
-    gen->builder = LLVMCreateBuilderInContext(gen->context);
-    LLVMPositionBuilderAtEnd(gen->builder, LLVMAppendBasicBlockInContext(gen->context, thunk, "entry"));
-    gen->allocaPoint = LLVMBuildAlloca(gen->builder, LLVMInt32TypeInContext(gen->context), "alloca_point");
-
-    uint32_t argcnt = LLVMCountParams(thunk);
-    LLVMValueRef *args = (LLVMValueRef *)memAllocBlk((argcnt + 1) * sizeof(LLVMValueRef));
-    for (uint32_t i = 0; i < argcnt; ++i)
-        args[i] = LLVMGetParam(thunk, i);
-    LLVMValueRef result = genlFnDclCall(gen, fndcl, fn, args, argcnt);
-    if (LLVMGetTypeKind(LLVMGetReturnType(thunktype)) == LLVMVoidTypeKind)
-        LLVMBuildRetVoid(gen->builder);
-    else
-        LLVMBuildRet(gen->builder, result);
-
-    LLVMInstructionEraseFromParent(gen->allocaPoint);
-    LLVMDisposeBuilder(gen->builder);
-    gen->builder = svbuilder;
-    gen->fn = svfn;
-    gen->allocaPoint = svallocaPoint;
-    gen->fnblock = svfnblock;
-    gen->exitzero = svexitzero;
-    genlRootsRestore(gen, &svroots);
-    return thunk;
-}
