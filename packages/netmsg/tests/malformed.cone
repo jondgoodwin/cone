@@ -15,13 +15,13 @@ fn at(ms i64) Instant {Instant.fromNanos(ms * 1000000i64);}
 
 // A packet from a connection with a reliable message and two values waiting
 fn sample() List[u8] {
-  mut a = Peer.make(Config.defaults(), 0x5555u64, at(0i64));
+  mut a = ConnectionCore.make(NetConfig.defaults(), 0x5555u64, at(0i64));
   a.sendReliable("first");
   a.sendReliable("second");
   a.sendLatest(1u16, "alpha");
   a.sendLatest(2u16, "beta");
   mut pk = List[List[u8]].empty();
-  mut evs = List[Event].empty();
+  mut evs = List[CoreEvent].empty();
   a.poll(at(5i64), &mut pk, &mut evs);
   mut r = List[u8].empty();
   match pk.pop() {
@@ -31,14 +31,14 @@ fn sample() List[u8] {
   r;
 }
 
-fn fresh() Peer {Peer.make(Config.defaults(), 0x5555u64, at(0i64));}
+fn fresh() ConnectionCore {ConnectionCore.make(NetConfig.defaults(), 0x5555u64, at(0i64));}
 
 fn main() i32 {
   imm good = sample();
   expectUInt(u64.from(good.len()), 23u64 + (4u64 + 5u64) + (4u64 + 6u64) + (6u64 + 5u64) + (6u64 + 4u64), "the sample packet is the size the layout says");
 
   // The good packet delivers its four things
-  mut evs = List[Event].empty();
+  mut evs = List[CoreEvent].empty();
   mut b = fresh();
   expect(b.receive(good.view(), at(6i64), &mut evs), "a good packet is taken");
   expectUInt(u64.from(evs.len()), 4u64, "two messages and two values");
@@ -48,7 +48,7 @@ fn main() i32 {
   mut n = 0usize;
   while n < good.len() {
     mut c = fresh();
-    mut e2 = List[Event].empty();
+    mut e2 = List[CoreEvent].empty();
     mut cut = copyBytes(good.view());
     cut.truncate(n);
     if c.receive(cut.view(), at(6i64), &mut e2) or e2.len() != 0usize {refusedAll = false;}
@@ -60,7 +60,7 @@ fn main() i32 {
   mut longer = copyBytes(good.view());
   longer.push(0u8);
   mut d = fresh();
-  mut e3 = List[Event].empty();
+  mut e3 = List[CoreEvent].empty();
   expect(not d.receive(longer.view(), at(6i64), &mut e3), "a packet with a byte added is refused");
 
   // The reserved bits of a message's length
@@ -72,7 +72,7 @@ fn main() i32 {
 
   // The same packet twice
   mut g = fresh();
-  mut e4 = List[Event].empty();
+  mut e4 = List[CoreEvent].empty();
   g.receive(good.view(), at(6i64), &mut e4);
   imm first = e4.len();
   expect(g.receive(good.view(), at(7i64), &mut e4), "a repeated packet is valid");
@@ -82,7 +82,7 @@ fn main() i32 {
   // Noise: random bytes, and the good packet with random bytes changed
   mut rng = Rng.make(99u64);
   mut h = fresh();
-  mut e5 = List[Event].empty();
+  mut e5 = List[CoreEvent].empty();
   mut accepted = 0u32;
   mut i = 0u32;
   while i < 20000u32 {

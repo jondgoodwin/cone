@@ -2,8 +2,8 @@
 // it there.
 //
 // Every connection, whether it crosses a network or joins two actors in one
-// process, tells the application the same few things, as NetEvents given to a
-// Handler: a closure of the application's own, which typically sends a message
+// process, tells the application the same few things, as NetEvents given to an
+// EventHandler: a closure of the application's own, which typically sends a message
 // to an application actor (or pushes the event on a channel for a thread).
 // It is called by the connection's actor, one event at a time per connection,
 // in the order they happened.
@@ -22,10 +22,10 @@ pub enum NetEvent {
 }
 
 // The application's side of the events: a closure, with the one rule that it
-// does not wait (it hands the event on). One Handler serves every connection
+// does not wait (it hands the event on). One EventHandler serves every connection
 // of a server, so it is shared and taken under a lock; build one with
-// 'handler' or 'channelHandler'.
-pub struct Sink {
+// 'eventHandler' or 'channelHandler'.
+pub struct EventSink {
   f So[fn(ev NetEvent) + Sendable];
 
   fn call(self &mut, ev NetEvent) {
@@ -33,16 +33,16 @@ pub struct Sink {
   }
 }
 
-pub alias Handler = Arc[Mutex, Sink];
+pub alias EventHandler = Arc[Mutex, EventSink];
 
-// A Handler that calls f with each event
-pub fn handler(f So[fn(ev NetEvent) + Sendable]) Handler {
-  new Handler(new Sink(f));
+// An EventHandler that calls f with each event
+pub fn eventHandler(f So[fn(ev NetEvent) + Sendable]) EventHandler {
+  new EventHandler(new EventSink(f));
 }
 
-// A Handler that puts each event on a channel, for a thread to take
-pub fn channelHandler(tx Sender[NetEvent]) Handler {
-  handler(new So[fn(ev NetEvent) + Sendable](fn(ev NetEvent) [tx] {
+// An EventHandler that puts each event on a channel, for a thread to take
+pub fn channelHandler(tx Sender[NetEvent]) EventHandler {
+  eventHandler(new So[fn(ev NetEvent) + Sendable](fn(ev NetEvent) [tx] {
     tx.send(ev);
   }));
 }

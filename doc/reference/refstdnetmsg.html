@@ -14,7 +14,7 @@
     <div class="text">
 
 	<p style="margin-left: 40px;"><i>Note: Not built yet: reliable messages larger than one packet (the header and the API leave
-		room for fragmentation; a message over <span class="pre">maxReliable()</span> is refused); encryption and
+		room for fragmentation; a message over <span class="pre">maxReliableBytes(cfg)</span> is refused); encryption and
 		authentication (the handshake proves a client's address, nothing more; anyone who can read the packets can
 		read and forge them); congestion control beyond a two-state send rate; a datagram batch (<span class="pre">recvmmsg</span>)
 		on the socket; a fixed key schedule or connect tokens; and the final name of the package, which is a working name
@@ -42,7 +42,7 @@
 	<h2 id="using">Using it</h2>
 	<p>An application talks to a connection as an actor talks to any actor: it sends messages to a
 		<span class="pre">Connection</span>, and what the other end sends arrives as events at a
-		<span class="pre">Handler</span>, a closure of the application's own that hands each event on, usually as a message to
+		<span class="pre">EventHandler</span>, a closure of the application's own that hands each event on, usually as a message to
 		an application actor. A server's one handler serves all its clients, told apart by the id each event carries.</p>
 <pre>
 mod hello;
@@ -75,9 +75,9 @@ fn bytes(s &amp;str) List[u8] {
 
 fn main() {
   imm g = new Greeter();
-  imm h = handler(new So[fn(ev NetEvent) + Sendable](fn(ev NetEvent) [g] { g.onNet(ev); }));
-  imm server = mustListen(SocketAddr.localhost(0u16), Config.defaults(), h);
-  imm client = mustConnect(SocketAddr.localhost(server.port), Config.defaults(), h);
+  imm h = eventHandler(new So[fn(ev NetEvent) + Sendable](fn(ev NetEvent) [g] { g.onNet(ev); }));
+  imm server = mustListen(SocketAddr.localhost(0u16), NetConfig.defaults(), h);
+  imm client = mustConnect(SocketAddr.localhost(server.port), NetConfig.defaults(), h);
   thread.sleep(Duration.fromMillis(500i64));      // the program runs
   client.endpoint.shutdown();                     // before the program ends
   server.endpoint.shutdown();
@@ -94,7 +94,7 @@ fn main() {
 		<span class="pre">NoAnswer</span>); nothing more arrives for that id. <span class="pre">Message{id, data}</span>: a reliable
 		message. <span class="pre">Update{id, stream, data}</span>: the newest value of a stream. A connection's events arrive
 		one at a time, in the order they happened. A server numbers its clients from 1; a client's one connection is 1.</li>
-	<li><span class="pre">handler(f)</span> makes a <span class="pre">Handler</span> of a closure
+	<li><span class="pre">eventHandler(f)</span> makes an <span class="pre">EventHandler</span> of a closure
 		(<span class="pre">So[fn(ev NetEvent) + Sendable]</span>); <span class="pre">channelHandler(tx)</span> makes one that puts
 		each event on a <span class="pre">Sender[NetEvent]</span>, for a thread that is not an actor (a frame loop drains the
 		receiving end each frame). The closure must not wait. It is called under a lock, so one handler shared by
@@ -102,9 +102,9 @@ fn main() {
 	<li><span class="pre">mustListen(addr, cfg, h)</span> binds a UDP socket and accepts clients;
 		<span class="pre">mustConnect(addr, cfg, h)</span> dials a server, the handshake running in the background (the handler
 		hears <span class="pre">Joined</span>, or <span class="pre">Left</span> with <span class="pre">NoAnswer</span> or
-		<span class="pre">Refused</span>). Each gives a <span class="pre">Bound</span>: its <span class="pre">endpoint</span> (an actor)
+		<span class="pre">Refused</span>). Each gives a <span class="pre">BoundEndpoint</span>: its <span class="pre">endpoint</span> (an actor)
 		and the <span class="pre">port</span> the socket has (port 0 asks the system to choose). <span class="pre">listen</span> and
-		<span class="pre">connect</span> give a <span class="pre">Result[Bound, IoError]</span> instead of a panic when the socket
+		<span class="pre">connect</span> give a <span class="pre">Result[BoundEndpoint, IoError]</span> instead of a panic when the socket
 		cannot be bound.</li>
 	<li><span class="pre">endpoint.shutdown()</span> closes every connection (each tells its peer), sends what is queued, and
 		stops the socket's thread. Call it before the program ends: that thread sends messages, which must stop before the
@@ -115,11 +115,11 @@ fn main() {
 	<p>A <span class="pre">Connection</span> is an actor handle, Sendable like any, with these behaviours:</p>
 	<ul>
 	<li><span class="pre">sendReliable(data)</span>, <span class="pre">data</span> a <span class="pre">List[u8]</span> of at most
-		<span class="pre">maxReliable</span> bytes (1,173 with the default packet size). A message over that is a panic, at the
-		line that sent it: fragmentation is not built. If <span class="pre">reliableWindow</span> (1,024) messages are already
+		<span class="pre">maxReliableBytes(cfg)</span> bytes (1,173 with the default packet size). A message over that is a
+		panic: fragmentation is not built. If <span class="pre">reliableWindow</span> (1,024) messages are already
 		waiting, the peer is not keeping up and the connection ends with <span class="pre">Overflow</span>.</li>
 	<li><span class="pre">sendLatest(stream, data)</span>: sets the value of stream number <span class="pre">stream</span> (a
-		<span class="pre">u16</span>), at most <span class="pre">maxLatest</span> bytes (1,171). A connection carries 64
+		<span class="pre">u16</span>), at most <span class="pre">maxLatestBytes(cfg)</span> bytes (1,171). A connection carries 64
 		streams. A newer value replaces one still waiting; the receiver never gets an older value after a newer one, so
 		two streams, or one stream's values over a lossy link, cannot overtake each other.</li>
 	<li><span class="pre">setStreamWeight(stream, weight)</span>: when a packet cannot carry every waiting value, each
@@ -127,7 +127,7 @@ fn main() {
 		highest goes first; a stream that did not fit keeps what it gathered, so everything is sent eventually and the
 		important streams often (Fiedler's priority accumulator).</li>
 	<li><span class="pre">close()</span>: the other end is told (the disconnect packet is sent five times).</li>
-	<li><span class="pre">await stats()</span> answers a <span class="pre">PeerStats</span>: <span class="pre">rttMs</span> and
+	<li><span class="pre">await stats()</span> answers a <span class="pre">ConnectionStats</span>: <span class="pre">rttMs</span> and
 		<span class="pre">rttVarMs</span> (the smoothed round trip time, for clock synchronisation and an interpolation delay),
 		<span class="pre">lossPermille</span>, <span class="pre">good</span> (sending at the good rate), and counts of packets and
 		messages. All zero for an in-process pair, which has no link.</li>
@@ -151,14 +151,14 @@ fn main() {
 		<span class="pre">duplicatePermille</span>, <span class="pre">reorderPermille</span> and <span class="pre">reorderMs</span> (a
 		packet held back this long, so later ones pass it). <span class="pre">LinkConfig.perfect()</span> does nothing;
 		<span class="pre">LinkConfig.lossy(loss, latency, jitter)</span> loses, delays and jitters.</p>
-	<p><span class="pre">startRelay(server, toServer, toClient, seed)</span> does the same to real sockets: a thread that takes
+	<p><span class="pre">startLossyRelay(server, toServer, toClient, seed)</span> does the same to real sockets: a thread that takes
 		datagrams from clients on a port of its own (<span class="pre">relay.port</span>, on 127.0.0.1) and passes them to the
 		server, and the server's answers back, through a <span class="pre">LinkSim</span> each way for each client. A client that
 		connects to the relay's port meets loss, delay, duplication and reordering with the real protocol on real UDP.
 		<span class="pre">relay.stop()</span> ends it.</p>
 
 	<h2 id="config">Configuration</h2>
-	<p>A <span class="pre">Config</span>, the same on both ends (<span class="pre">Config.defaults()</span>, whose fields are public),
+	<p>A <span class="pre">NetConfig</span>, the same on both ends (<span class="pre">NetConfig.defaults()</span>, whose fields are public),
 		holds: <span class="pre">maxPacket</span> (the largest datagram sent, 1,200 bytes, so that a packet and its headers fit
 		the smallest IPv6 path), <span class="pre">goodRate</span> (30 packets a second) and <span class="pre">badRate</span> (10),
 		<span class="pre">badRttMs</span> (250), <span class="pre">keepAliveMs</span> (100), <span class="pre">timeoutMs</span> (10,000),
@@ -227,21 +227,21 @@ fn main() {
 
 	<h2 id="core">The sans-IO core</h2>
 	<p>The protocol is plain data and functions, with no socket, no clock and no thread, so it runs inside an actor,
-		on an OS thread, or in a test on a synthetic clock. A <span class="pre">Peer</span> is one connection's half:
-		<span class="pre">Peer.make(cfg, session, now)</span>; <span class="pre">sendReliable(bytes)</span> and
+		on an OS thread, or in a test on a synthetic clock. A <span class="pre">ConnectionCore</span> is one connection's half:
+		<span class="pre">ConnectionCore.make(cfg, session, now)</span>; <span class="pre">sendReliable(bytes)</span> and
 		<span class="pre">sendLatest(stream, bytes)</span> (each answers false when refused);
 		<span class="pre">receive(packet, now, events)</span> acts on one datagram (false if it is not this connection's or is
 		malformed); <span class="pre">poll(now, out, events)</span> appends the packets to send and the events that happened;
 		<span class="pre">nextDeadline()</span> says when to call <span class="pre">poll</span> next; and
 		<span class="pre">rtt()</span>, <span class="pre">lossPermille()</span>, <span class="pre">stats()</span>, <span class="pre">close()</span>. The
-		events are <span class="pre">Event.Reliable{data}</span>, <span class="pre">Event.Latest{stream, data}</span> and
-		<span class="pre">Event.Closed{reason}</span>. <span class="pre">Gate</span> is the server's side of the handshake
-		(<span class="pre">handle(addr, datagram, now, reply)</span> answers a <span class="pre">Verdict</span>) and
-		<span class="pre">Dialer</span> the client's. <span class="pre">SimPair</span> joins two Peers across two
+		events are <span class="pre">CoreEvent.Reliable{data}</span>, <span class="pre">CoreEvent.Latest{stream, data}</span> and
+		<span class="pre">CoreEvent.Closed{reason}</span>. <span class="pre">ChallengeGate</span> is the server's side of the handshake
+		(<span class="pre">handle(addr, datagram, now, reply)</span> answers a <span class="pre">GateVerdict</span>) and
+		<span class="pre">ClientHandshake</span> the client's. <span class="pre">SimPair</span> joins two ConnectionCores across two
 		<span class="pre">LinkSim</span>s on a clock the caller moves, which is how the protocol's tests run:</p>
 <pre>
 mut clock = Clock.synth();
-mut p = SimPair.make(Config.defaults(), LinkConfig.lossy(200u32, 40i64, 30i64),
+mut p = SimPair.make(NetConfig.defaults(), LinkConfig.lossy(200u32, 40i64, 30i64),
                      LinkConfig.lossy(200u32, 40i64, 30i64), 1u64, clock.now());
 p.a.sendReliable("one");
 mut ms = 0i64;
@@ -252,17 +252,17 @@ while ms &lt; 3000i64 {
   // p.eventsB holds what b has heard
 }
 </pre>
-	<p>The wire level is public too (<span class="pre">putU16</span> and the rest, <span class="pre">Cursor</span>,
+	<p>The wire level is public too (<span class="pre">putU16</span> and the rest, <span class="pre">PacketReader</span>,
 		<span class="pre">seqNewer</span>, <span class="pre">sipHash24</span>), and so are the actors a socket needs:
 		<span class="pre">Endpoint</span> owns the socket's thread and routes each datagram to the
-		<span class="pre">Connection</span> it belongs to, and <span class="pre">Outbox</span> and <span class="pre">Cmd</span> are how
+		<span class="pre">Connection</span> it belongs to, and <span class="pre">PumpOutbox</span> and <span class="pre">PumpCommand</span> are how
 		the actors reach that thread. None of them is for an application to use.</p>
 
 	<h2 id="threads">What runs where</h2>
 	<p>A UDP endpoint has a thread of its own, running an <span class="pre">iocore</span> Loop: it receives datagrams and
 		hands each to the endpoint actor as a message, sends the datagrams connections give it, and wakes the endpoint at
 		the earliest deadline any connection has (there is no fixed tick). Each connection is an actor that drives its
-		<span class="pre">Peer</span>. Nothing waits in an actor. On Windows the loop is an I/O completion port, on Linux epoll;
+		<span class="pre">ConnectionCore</span>. Nothing waits in an actor. On Windows the loop is an I/O completion port, on Linux epoll;
 		<span class="pre">netmsg</span> binds no operating system call of its own. (<span class="pre">aio</span>, which lets an
 		actor await an operation, has no datagrams yet; the socket thread is what stands in for it.)</p>
 

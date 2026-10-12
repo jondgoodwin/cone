@@ -236,7 +236,7 @@ actor Player {
       }
       case imm u Update {
         // The snapshot's tick and the first body's position
-        mut c = Cursor.start();
+        mut c = PacketReader.start();
         lastTick = c.rdU32(u.data.view());
         c.skip(u.data.view(), 2usize);
         lastX = i32.from(c.rdU32(u.data.view()));
@@ -295,12 +295,12 @@ actor Player {
   }
 }
 
-fn eventHandler(srv GameServer) Handler {
-  handler(new So[fn(ev NetEvent) + Sendable](fn(ev NetEvent) [srv] { srv.onNet(ev); }));
+fn serverHandler(srv GameServer) EventHandler {
+  eventHandler(new So[fn(ev NetEvent) + Sendable](fn(ev NetEvent) [srv] { srv.onNet(ev); }));
 }
 
-fn playerHandler(p Player) Handler {
-  handler(new So[fn(ev NetEvent) + Sendable](fn(ev NetEvent) [p] { p.onNet(ev); }));
+fn playerHandler(p Player) EventHandler {
+  eventHandler(new So[fn(ev NetEvent) + Sendable](fn(ev NetEvent) [p] { p.onNet(ev); }));
 }
 
 // ---------------------------------------------------------------------------
@@ -343,8 +343,8 @@ fn inProcess() {
     imm srv = new GameServer();
     imm ann = new Player(String.from("Ann"), tx.clone());
     imm bob = new Player(String.from("Bob"), tx.clone());
-    imm pairA = pairInProcess(eventHandler(srv), 1u32, playerHandler(ann), 1u32);
-    imm pairB = pairInProcess(eventHandler(srv), 2u32, playerHandler(bob), 1u32);
+    imm pairA = pairInProcess(serverHandler(srv), 1u32, playerHandler(ann), 1u32);
+    imm pairB = pairInProcess(serverHandler(srv), 2u32, playerHandler(bob), 1u32);
     play(srv, ann, bob, 3i64);
     ann.finish();
     bob.finish();
@@ -362,10 +362,10 @@ fn overLoopback() {
   tx, rx = Channel[String].make();
   {
     imm srv = new GameServer();
-    imm cfg = Config.defaults();
-    imm server = mustListen(SocketAddr.localhost(0u16), cfg, eventHandler(srv));
+    imm cfg = NetConfig.defaults();
+    imm server = mustListen(SocketAddr.localhost(0u16), cfg, serverHandler(srv));
     imm link = new LinkConfig(200u32, 25i64, 10i64, 20u32, 20u32, 30i64);
-    mut relay = startRelay(SocketAddr.localhost(server.port), link, link, 3u64);
+    mut relay = startLossyRelay(SocketAddr.localhost(server.port), link, link, 3u64);
     imm ann = new Player(String.from("Ann"), tx.clone());
     imm bob = new Player(String.from("Bob"), tx.clone());
     imm ca = mustConnect(SocketAddr.localhost(relay.port), cfg, playerHandler(ann));
@@ -405,7 +405,7 @@ fn serve(port u16) {
   print <- "== serving on UDP port ", u64.from(port), " for 60 seconds ==\n";
   {
     imm srv = new GameServer();
-    imm server = mustListen(SocketAddr.v4(0u8, 0u8, 0u8, 0u8, port), Config.defaults(), eventHandler(srv));
+    imm server = mustListen(SocketAddr.v4(0u8, 0u8, 0u8, 0u8, port), NetConfig.defaults(), serverHandler(srv));
     mut i = 0i64;
     while i < 60i64 * 30i64 {
       srv.tick();
@@ -423,7 +423,7 @@ fn connectTo(host &str, port u16, name &str) {
   tx, rx = Channel[String].make();
   {
     imm me = new Player(String.from(name), tx);
-    imm c = mustConnect(parseAddress(host, port), Config.defaults(), playerHandler(me));
+    imm c = mustConnect(parseAddress(host, port), NetConfig.defaults(), playerHandler(me));
     mut i = 0i64;
     while i < 8i64 * 30i64 {
       if i % 15i64 == 3i64 {me.steer(25i32, i32.from((i % 9i64) * 10i64 - 40i64));}

@@ -58,7 +58,7 @@ fn has(xs &List[String], t &str) bool {
 // An application actor reading a connection's measurements: the round trip is
 // readable by an actor, with 'await'
 actor Prober {
-  pub async do ask(self, c Connection, out Sender[PeerStats]) {
+  pub async do ask(self, c Connection, out Sender[ConnectionStats]) {
     imm s = await c.stats();
     out.send(s);
   }
@@ -95,7 +95,7 @@ fn main() i32 {
   mut rxC Receiver[NetEvent];
   txC, rxC = Channel[NetEvent].make();
   {
-    imm cfg = Config.defaults();
+    imm cfg = NetConfig.defaults();
     imm server = mustListen(SocketAddr.localhost(0u16), cfg, channelHandler(txS));
     expect(server.port != 0u16, "the server has a port");
     imm client = mustConnect(SocketAddr.localhost(server.port), cfg, channelHandler(txC));
@@ -142,9 +142,9 @@ fn main() i32 {
     expect(has(&hc, "U1:6:snap"), "and the client's");
 
     // An actor asks the client's connection how it is doing
-    mut txP Sender[PeerStats];
-    mut rxP Receiver[PeerStats];
-    txP, rxP = Channel[PeerStats].make();
+    mut txP Sender[ConnectionStats];
+    mut rxP Receiver[ConnectionStats];
+    txP, rxP = Channel[ConnectionStats].make();
     imm prober = new Prober();
     prober.ask(*cc[0usize], txP);
     match rxP.recvTimeout(Duration.fromSeconds(5i64)) {
@@ -154,7 +154,7 @@ fn main() i32 {
         expect(st.rttMs >= 0i64 and st.rttMs < 500i64, "the round trip is measured, and short on loopback");
         expect(st.good, "good conditions");
       }
-      case is None[PeerStats] { expect(false, "the stats came"); }
+      case is None[ConnectionStats] { expect(false, "the stats came"); }
     }
 
     client.endpoint.shutdown();

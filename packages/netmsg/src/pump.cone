@@ -5,11 +5,11 @@
 // be woken. Nothing of the protocol is here; it only moves bytes and time
 // between the socket and the actors.
 //
-//   actors -> pump:  a Sender[Cmd] and the Waker of the pump's Loop (Outbox)
+//   actors -> pump:  a Sender[PumpCommand] and the Waker of the pump's Loop (PumpOutbox)
 //   pump -> actors:  messages to the Endpoint actor
 
 // What the pump is told to do
-pub enum Cmd {
+pub enum PumpCommand {
   pub struct Send {pub addr SocketAddr; pub data List[u8];}   // one datagram to addr
   pub struct Wake {pub at i64;}                                // call the endpoint's tick at this instant
   Stop;                                                        // send what is queued, then end
@@ -17,24 +17,24 @@ pub enum Cmd {
 
 // How actors reach the pump: its command channel and the waker that makes
 // its Loop look at it
-pub struct Outbox is Sendable {
-  tx Sender[Cmd];
+pub struct PumpOutbox is Sendable {
+  tx Sender[PumpCommand];
   waker Waker;
 
-  pub fn clone(self &) Outbox {new Outbox(tx.clone(), self.waker);}
+  pub fn clone(self &) PumpOutbox {new PumpOutbox(tx.clone(), self.waker);}
 
   pub fn send(self &, addr SocketAddr, data List[u8]) {
-    tx.send(Cmd.Send(addr, data));
+    tx.send(PumpCommand.Send(addr, data));
     waker.wake();
   }
 
   pub fn wakeAt(self &, at i64) {
-    tx.send(Cmd.Wake(at));
+    tx.send(PumpCommand.Wake(at));
     waker.wake();
   }
 
   pub fn stop(self &) {
-    tx.send(Cmd.Stop);
+    tx.send(PumpCommand.Stop);
     waker.wake();
   }
 }
@@ -47,7 +47,7 @@ enum Started {
 
 struct PumpArgs is Sendable {
   pub bind SocketAddr;
-  pub cmds Receiver[Cmd];
+  pub cmds Receiver[PumpCommand];
   pub started Sender[Started];
   pub epRx Receiver[Endpoint];
 }
@@ -128,7 +128,7 @@ fn pumpMain(a &mut PumpArgs) u32 {
             case is Stop { running = false; }
           }
         }
-        case is None[Cmd] { break; }
+        case is None[PumpCommand] { break; }
       }
     }
     if wakeAt >= 0i64 and Instant.now().nanos() >= wakeAt {

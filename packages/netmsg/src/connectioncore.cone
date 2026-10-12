@@ -1,8 +1,8 @@
 // The connection core: one connection's half of the protocol, with no socket,
-// no clock and no thread. A Peer takes the packets that arrived (with the
+// no clock and no thread. A ConnectionCore takes the packets that arrived (with the
 // time) and the data the application wants sent, and gives back the packets
 // to send, the events to tell the application, and the time it next needs
-// to be called. The same Peer runs inside an actor, inside a test on a
+// to be called. The same ConnectionCore runs inside an actor, inside a test on a
 // synthetic clock, and on either side of a connection.
 //
 // The design is Glenn Fiedler's (Gaffer On Games): every packet carries its
@@ -62,7 +62,7 @@ const notFound = 0xFFFFFFFFusize;
 // ---------------------------------------------------------------------------
 
 // The knobs of a connection, the same on both ends
-pub struct Config {
+pub struct NetConfig {
   pub maxPacket usize;       // the largest datagram sent, bytes (1200)
   pub goodRate u32;          // packets a second sent in good conditions (30)
   pub badRate u32;           // ... when the round trip is long (10)
@@ -74,8 +74,8 @@ pub struct Config {
   pub connectTimeoutMs i64;  // a handshake that takes this long has failed (5000)
   pub maxClients usize;      // a server's connections (64)
 
-  pub fn defaults() Config {
-    new Config(1200usize, 30u32, 10u32, 250i64, 100i64, 10000i64, 40i64, 250i64, 5000i64, 64usize);
+  pub fn defaults() NetConfig {
+    new NetConfig(1200usize, 30u32, 10u32, 250i64, 100i64, 10000i64, 40i64, 250i64, 5000i64, 64usize);
   }
 }
 
@@ -90,14 +90,14 @@ pub enum CloseReason {
 }
 
 // What happened that the application should hear of
-pub enum Event {
+pub enum CoreEvent {
   pub struct Reliable {pub data List[u8];}                      // a reliable message, in order
   pub struct Latest {pub stream u16; pub data List[u8];}        // the newest value of a stream
   pub struct Closed {pub reason CloseReason;}                   // the connection ended
 }
 
 // What a connection has measured
-pub struct PeerStats {
+pub struct ConnectionStats {
   pub packetsSent u64;
   pub packetsReceived u64;       // valid, new packets
   pub packetsDuplicate u64;      // valid packets that had arrived before
@@ -119,6 +119,11 @@ pub struct PeerStats {
 // ---------------------------------------------------------------------------
 // The state of a connection
 // ---------------------------------------------------------------------------
+
+// The largest reliable message, and the largest latest-wins value, a
+// connection with this configuration carries, in bytes
+pub fn maxReliableBytes(cfg NetConfig) usize {cfg.maxPacket - headerSize - reliableOverhead;}
+pub fn maxLatestBytes(cfg NetConfig) usize {cfg.maxPacket - headerSize - latestOverhead;}
 
 // A packet sent: kept until the ring slot is needed again
 struct SentSlot {
@@ -176,15 +181,15 @@ struct LatestItem {
   data List[u8];
 }
 
-pub enum PeerState {
+pub enum CoreState {
   Active, Closing, Closed;
 }
 
 // One connection's half of the protocol
-pub struct Peer {
-  cfg Config;
+pub struct ConnectionCore {
+  cfg NetConfig;
   session u64;
-  state PeerState;
+  state CoreState;
   closeReason CloseReason;
 
   // packets
@@ -224,10 +229,10 @@ pub struct Peer {
   goodSince i64;             // when the round trip last became acceptable; -1
   penalty i64;               // how long it must stay acceptable to go back to good
   lastPenaltyAt i64;
-  st PeerStats;
+  st ConnectionStats;
 
   // A new connection that begins now, with the session both ends know
-  pub fn make(cfg Config, session u64, now Instant) Peer {
+  pub fn make(cfg NetConfig, session u64, now Instant) ConnectionCore {
     mut sent = List[SentSlot].withCapacity(ringSize);
     mut seen = List[u32].withCapacity(ringSize);
     mut rel = List[RelSlot].withCapacity(ringSize);
@@ -241,18 +246,18 @@ pub struct Peer {
       i = i + 1usize;
     }
     imm t = now.nanos();
-    new Peer(cfg, session, PeerState.Active, CloseReason.Local,
+    new ConnectionCore(cfg, session, CoreState.Active, CloseReason.Local,
       0u16, sent, seen, 65535u16, false, 0u16, 0u16, false,
       rel, 0u16, 0u16, recv, 0u16,
       List[StreamOut].empty(), List[StreamIn].empty(),
       t, t - cfg.keepAliveMs * msNs, t, false, false,
       false, 0i64, 0i64, 0i64, true, -1i64, 4i64 * secNs, t,
-      new PeerStats(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0i64, 0i64, 0u32, true));
+      new ConnectionStats(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0i64, 0i64, 0u32, true));
   }
 
   pub fn sessionId(self &) u64 {session;}
-  pub fn isActive(self &) bool {state == PeerState.Active;}
-  pub fn isClosed(self &) bool {state == PeerState.Closed;}
+  pub fn isActive(self &) bool {state == CoreState.Active;}
+  pub fn isClosed(self &) bool {state == CoreState.Closed;}
 
   // The largest reliable message, in bytes
   pub fn maxReliable(self &) usize {cfg.maxPacket - headerSize - reliableOverhead;}
@@ -270,7 +275,7 @@ pub struct Peer {
   // what to do about a peer that is not keeping up. A message of no bytes is
   // a message.
   pub fn sendReliable(self &mut, data &Array[u8]) bool {
-    if state != PeerState.Active or data.len > self.maxReliable() {return false;}
+    if state != CoreState.Active or data.len > self.maxReliable() {return false;}
     imm waiting = usize.from(relNext - relOldest);
     if waiting >= reliableWindow {return false;}
     imm s = &mut rel[usize.from(relNext) % ringSize];
@@ -292,7 +297,7 @@ pub struct Peer {
   // when the value is bigger than maxLatest() or the connection already has
   // maxStreams() streams.
   pub fn sendLatest(self &mut, stream u16, data &Array[u8]) bool {
-    if state != PeerState.Active or data.len > self.maxLatest() {return false;}
+    if state != CoreState.Active or data.len > self.maxLatest() {return false;}
     mut k = self.findOut(stream);
     if k == notFound {
       if outs.len() >= maxStreams {return false;}
@@ -340,8 +345,8 @@ pub struct Peer {
   // Ask for the connection to end: the next poll sends the disconnect packets
   // and gives the Closed event
   pub fn close(self &mut) {
-    if state == PeerState.Active {
-      state = PeerState.Closing;
+    if state == CoreState.Active {
+      state = CoreState.Closing;
     }
   }
 
@@ -361,7 +366,7 @@ pub struct Peer {
   // Sending at the good rate (false: the round trip is long)
   pub fn isGood(self &) bool {good;}
 
-  pub fn stats(self &) PeerStats {
+  pub fn stats(self &) ConnectionStats {
     mut s = st;
     s.rttMs = srtt / msNs;
     s.rttVarMs = rttvar / msNs;
@@ -413,7 +418,7 @@ pub struct Peer {
   // first: the moment it may send a packet it wants to send, or the time it
   // gives up on the peer. After that call, ask again.
   pub fn nextDeadline(self &) Instant {
-    if state != PeerState.Active {return Instant.fromNanos(lastSend);}
+    if state != CoreState.Active {return Instant.fromNanos(lastSend);}
     mut at = lastRecv + cfg.timeoutMs * msNs;
     // When a packet could carry something
     mut want = lastSend + cfg.keepAliveMs * msNs;
@@ -446,10 +451,10 @@ pub struct Peer {
   // Move time on to 'now': appends to 'out' the packets to send (none, one,
   // or the disconnect copies) and to 'events' what happened. Call it when
   // nextDeadline says, after a packet arrives, and after sending.
-  pub fn poll(self &mut, now Instant, out &mut List[List[u8]], events &mut List[Event]) {
+  pub fn poll(self &mut, now Instant, out &mut List[List[u8]], events &mut List[CoreEvent]) {
     imm t = now.nanos();
-    if state == PeerState.Closed {return;}
-    if state == PeerState.Closing {
+    if state == CoreState.Closed {return;}
+    if state == CoreState.Closing {
       if not closeSent {
         mut c = 0usize;
         while c < disconnectCopies {
@@ -458,15 +463,15 @@ pub struct Peer {
         }
         closeSent = true;
       }
-      state = PeerState.Closed;
+      state = CoreState.Closed;
       closeReason = CloseReason.Local;
-      events.push(Event.Closed(CloseReason.Local));
+      events.push(CoreEvent.Closed(CloseReason.Local));
       return;
     }
     if t - lastRecv >= cfg.timeoutMs * msNs {
-      state = PeerState.Closed;
+      state = CoreState.Closed;
       closeReason = CloseReason.TimedOut;
-      events.push(Event.Closed(CloseReason.TimedOut));
+      events.push(CoreEvent.Closed(CloseReason.TimedOut));
       return;
     }
     self.updateMode(t);
@@ -643,9 +648,9 @@ pub struct Peer {
   // packet of this session, malformed. A good one is acted on: its
   // acknowledgements, its reliable messages (given to 'events' in order) and
   // its latest-wins values (given if newer than any delivered)
-  pub fn receive(self &mut, data &Array[u8], now Instant, events &mut List[Event]) bool {
-    if state != PeerState.Active {return false;}
-    mut c = Cursor.start();
+  pub fn receive(self &mut, data &Array[u8], now Instant, events &mut List[CoreEvent]) bool {
+    if state != CoreState.Active {return false;}
+    mut c = PacketReader.start();
     imm magic = c.rdU32(data);
     imm kind = c.rdU8(data);
     imm sess = c.rdU64(data);
@@ -659,9 +664,9 @@ pub struct Peer {
         st.packetsInvalid = st.packetsInvalid + 1u64;
         return false;
       }
-      state = PeerState.Closed;
+      state = CoreState.Closed;
       closeReason = CloseReason.Remote;
-      events.push(Event.Closed(CloseReason.Remote));
+      events.push(CoreEvent.Closed(CloseReason.Remote));
       return true;
     }
     mut pk = new Parsed(c.rdU16(data), c.rdU16(data), c.rdU32(data), List[RelRecv].empty(), List[LatestItem].empty());
@@ -742,7 +747,7 @@ pub struct Peer {
         ins[j].seq = item.seq;
         mut d = List[u8].empty();
         d <=> item.data;
-        events.push(Event.Latest(item.stream, d));
+        events.push(CoreEvent.Latest(item.stream, d));
         st.latestDelivered = st.latestDelivered + 1u64;
       } else {
         st.latestStale = st.latestStale + 1u64;
@@ -764,14 +769,14 @@ pub struct Peer {
   }
 
   // Give the application every reliable message that is next in order
-  fn deliverReliable(self &mut, events &mut List[Event]) {
+  fn deliverReliable(self &mut, events &mut List[CoreEvent]) {
     while true {
       imm s = &mut recv[usize.from(relDeliver) % ringSize];
       if not s.used or s.id != relDeliver {return;}
       mut d = List[u8].empty();
       d <=> s.data;
       s.used = false;
-      events.push(Event.Reliable(d));
+      events.push(CoreEvent.Reliable(d));
       st.reliableDelivered = st.reliableDelivered + 1u64;
       relDeliver = relDeliver + 1u16;
     }

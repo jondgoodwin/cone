@@ -1,10 +1,10 @@
 // A UDP endpoint: the actor that owns a socket (through the pump thread),
 // opens connections, and routes each datagram to the actor of the connection
 // it belongs to. A server's endpoint accepts any number of clients (up to
-// Config.maxClients); a client's has the one connection it dialed.
+// NetConfig.maxClients); a client's has the one connection it dialed.
 //
-//   imm server = mustListen(SocketAddr.localhost(0u16), Config.defaults(), handler);
-//   imm client = mustConnect(SocketAddr.localhost(server.port), Config.defaults(), handler2);
+//   imm server = mustListen(SocketAddr.localhost(0u16), NetConfig.defaults(), handler);
+//   imm client = mustConnect(SocketAddr.localhost(server.port), NetConfig.defaults(), handler2);
 //   ...
 //   server.endpoint.shutdown();
 //   client.endpoint.shutdown();
@@ -24,31 +24,31 @@ const farFuture = 0x7FFFFFFFFFFFFFFFi64;
 
 pub actor Endpoint {
   server bool;
-  cfg Config;
-  handler Handler;
-  outbox Outbox;
+  cfg NetConfig;
+  handler EventHandler;
+  outbox PumpOutbox;
   done Receiver[u32];          // the pump says it has ended
-  gate Gate;
+  gate ChallengeGate;
   slots List[ConnectionSlot];
   nextId u32;
   armed i64;                   // the instant the pump will next wake us; -1 none
   stopped bool;
 
   // a client's
-  dialer Dialer;
+  dialer ClientHandshake;
   dialing bool;
   remote SocketAddr;
   remoteKey String;
 
-  fn init(self &new, server bool, cfg Config, handler Handler, outbox Outbox, done Receiver[u32],
+  fn init(self &new, server bool, cfg NetConfig, handler EventHandler, outbox PumpOutbox, done Receiver[u32],
       remote SocketAddr, seed u64) {
     mut rng = Rng.make(seed);
     imm salt = rng.next();
     imm gateSeed = rng.next();
     *self = new Self(server: server, cfg: cfg, handler: handler, outbox: outbox, done: done,
-      gate: Gate.make(gateSeed), slots: List[ConnectionSlot].empty(), nextId: 1u32,
+      gate: ChallengeGate.make(gateSeed), slots: List[ConnectionSlot].empty(), nextId: 1u32,
       armed: -1i64, stopped: false,
-      dialer: Dialer.make(cfg, salt, Instant.now()), dialing: not server,
+      dialer: ClientHandshake.make(cfg, salt, Instant.now()), dialing: not server,
       remote: remote, remoteKey: remote.text());
     if not server {
       self.begin();
@@ -220,13 +220,13 @@ pub actor Endpoint {
       slots.swap(k, slots.len() - 1usize);
       slots.pop();
     } elif slots.len() >= cfg.maxClients {
-      self.transmit(from, Gate.denied(Gate.saltOf(response)));
+      self.transmit(from, ChallengeGate.denied(ChallengeGate.saltOf(response)));
       return;
     }
     imm id = nextId;
     nextId = nextId + 1u32;
     imm conn = new Connection(connUdp, id, handler, cfg, session, from,
-      Some[Outbox](outbox.clone()), Some[Endpoint](selfactor), LinkConfig.perfect(), 0u64);
+      Some[PumpOutbox](outbox.clone()), Some[Endpoint](selfactor), LinkConfig.perfect(), 0u64);
     slots.push(new ConnectionSlot(String.from(key), id, conn, session, Instant.now().nanos()));
     self.transmit(from, accept);
   }
@@ -238,7 +238,7 @@ pub actor Endpoint {
       case is Connected {
         imm id = 1u32;
         imm conn = new Connection(connUdp, id, handler, cfg, dialer.sessionId(), remote,
-          Some[Outbox](outbox.clone()), Some[Endpoint](selfactor), LinkConfig.perfect(), 0u64);
+          Some[PumpOutbox](outbox.clone()), Some[Endpoint](selfactor), LinkConfig.perfect(), 0u64);
         slots.push(new ConnectionSlot(String.from(remoteKey.view()), id, conn, dialer.sessionId(), Instant.now().nanos()));
         dialing = false;
         // The datagram that connected us may be a payload packet
@@ -259,7 +259,7 @@ pub actor Endpoint {
 
 // An endpoint bound to a UDP port: the actor to shut down, and the port the
 // socket has (the system's choice when port 0 was asked)
-pub struct Bound {
+pub struct BoundEndpoint {
   pub endpoint Endpoint;
   pub port u16;
 }
@@ -278,10 +278,10 @@ fn pumpThread(mut r PumpRun) u32 {
 
 // Start the pump thread: the error that stopped it binding (0 for none), the
 // port, how to reach it, how to hear it end, and where to hand it its endpoint
-fn startPump(bind SocketAddr) u32, u16, Option[Outbox], Receiver[u32], Sender[Endpoint] {
-  mut cmdTx Sender[Cmd];
-  mut cmdRx Receiver[Cmd];
-  cmdTx, cmdRx = Channel[Cmd].make();
+fn startPump(bind SocketAddr) u32, u16, Option[PumpOutbox], Receiver[u32], Sender[Endpoint] {
+  mut cmdTx Sender[PumpCommand];
+  mut cmdRx Receiver[PumpCommand];
+  cmdTx, cmdRx = Channel[PumpCommand].make();
   mut upTx Sender[Started];
   mut upRx Receiver[Started];
   upTx, upRx = Channel[Started].make();
@@ -296,14 +296,14 @@ fn startPump(bind SocketAddr) u32, u16, Option[Outbox], Receiver[u32], Sender[En
   th.detach();
   mut code = 1u32;
   mut port = 0u16;
-  mut outbox Option[Outbox] = None;
+  mut outbox Option[PumpOutbox] = None;
   match upRx.recv() {
     case imm s Some {
       match s {
         case imm up Up {
           code = 0u32;
           port = up.port;
-          outbox = Some[Outbox](new Outbox(cmdTx, up.waker));
+          outbox = Some[PumpOutbox](new PumpOutbox(cmdTx, up.waker));
         }
         case imm down Down { code = down.code; }
       }
@@ -313,9 +313,9 @@ fn startPump(bind SocketAddr) u32, u16, Option[Outbox], Receiver[u32], Sender[En
   code, port, outbox, doneRx, epTx;
 }
 
-fn outboxOf(o &Option[Outbox]) Outbox {
+fn outboxOf(o &Option[PumpOutbox]) PumpOutbox {
   match o {
-    case imm x &Some[Outbox] { return x.clone(); }
+    case imm x &Some[PumpOutbox] { return x.clone(); }
     else {}
   }
   panic("netmsg: no outbox");
@@ -335,46 +335,46 @@ fn anyAddress(like &SocketAddr) SocketAddr {
 // Listen for clients at 'bind' (port 0 has the system choose one: 'port'
 // says which). Every client's events go to 'h'. Call 'endpoint.shutdown()'
 // before the program ends.
-pub fn listen(bind SocketAddr, cfg Config, h Handler) Result[Bound, IoError] {
+pub fn listen(bind SocketAddr, cfg NetConfig, h EventHandler) Result[BoundEndpoint, IoError] {
   mut code = 0u32;
   mut port = 0u16;
-  mut outbox Option[Outbox] = None;
+  mut outbox Option[PumpOutbox] = None;
   mut done Receiver[u32];
   mut epTx Sender[Endpoint];
   code, port, outbox, done, epTx = startPump(bind);
   if code != 0u32 {
-    return Error[Bound, IoError](new IoError(code));
+    return Error[BoundEndpoint, IoError](new IoError(code));
   }
   imm ep = new Endpoint(true, cfg, h, outboxOf(&outbox), done, bind, freshSeed());
   epTx.send(ep);
-  Ok[Bound, IoError](new Bound(ep, port));
+  Ok[BoundEndpoint, IoError](new BoundEndpoint(ep, port));
 }
 
 // Connect to the server at 'server': the handshake runs in the background,
 // and 'h' hears Joined when it is done, or Left (NoAnswer or Refused) if it
 // fails. Call 'endpoint.shutdown()' before the program ends.
-pub fn connect(server SocketAddr, cfg Config, h Handler) Result[Bound, IoError] {
+pub fn connect(server SocketAddr, cfg NetConfig, h EventHandler) Result[BoundEndpoint, IoError] {
   mut code = 0u32;
   mut port = 0u16;
-  mut outbox Option[Outbox] = None;
+  mut outbox Option[PumpOutbox] = None;
   mut done Receiver[u32];
   mut epTx Sender[Endpoint];
   code, port, outbox, done, epTx = startPump(anyAddress(&server));
   if code != 0u32 {
-    return Error[Bound, IoError](new IoError(code));
+    return Error[BoundEndpoint, IoError](new IoError(code));
   }
   imm ep = new Endpoint(false, cfg, h, outboxOf(&outbox), done, server, freshSeed());
   epTx.send(ep);
-  Ok[Bound, IoError](new Bound(ep, port));
+  Ok[BoundEndpoint, IoError](new BoundEndpoint(ep, port));
 }
 
 // Like listen and connect, but a panic if the socket cannot be bound. (They do
 // not unwrap the Result: Cone moves no value out of a matched variant's
 // field.)
-pub fn mustListen(bind SocketAddr, cfg Config, h Handler) Bound {
+pub fn mustListen(bind SocketAddr, cfg NetConfig, h EventHandler) BoundEndpoint {
   mut code = 0u32;
   mut port = 0u16;
-  mut outbox Option[Outbox] = None;
+  mut outbox Option[PumpOutbox] = None;
   mut done Receiver[u32];
   mut epTx Sender[Endpoint];
   code, port, outbox, done, epTx = startPump(bind);
@@ -383,13 +383,13 @@ pub fn mustListen(bind SocketAddr, cfg Config, h Handler) Bound {
   }
   imm ep = new Endpoint(true, cfg, h, outboxOf(&outbox), done, bind, freshSeed());
   epTx.send(ep);
-  new Bound(ep, port);
+  new BoundEndpoint(ep, port);
 }
 
-pub fn mustConnect(server SocketAddr, cfg Config, h Handler) Bound {
+pub fn mustConnect(server SocketAddr, cfg NetConfig, h EventHandler) BoundEndpoint {
   mut code = 0u32;
   mut port = 0u16;
-  mut outbox Option[Outbox] = None;
+  mut outbox Option[PumpOutbox] = None;
   mut done Receiver[u32];
   mut epTx Sender[Endpoint];
   code, port, outbox, done, epTx = startPump(anyAddress(&server));
@@ -398,5 +398,5 @@ pub fn mustConnect(server SocketAddr, cfg Config, h Handler) Bound {
   }
   imm ep = new Endpoint(false, cfg, h, outboxOf(&outbox), done, server, freshSeed());
   epTx.send(ep);
-  new Bound(ep, port);
+  new BoundEndpoint(ep, port);
 }

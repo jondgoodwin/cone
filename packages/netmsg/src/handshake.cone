@@ -36,24 +36,24 @@ pub fn freshSeed() u64 {
   processSeed() ^ u64.from(Instant.now().nanos());
 }
 
-// What the Gate decided about a datagram from an address it knows nothing
+// What the ChallengeGate decided about a datagram from an address it knows nothing
 // about yet
-pub enum Verdict {
+pub enum GateVerdict {
   Ignore;                                  // not for it
   Reply;                                   // send the reply it wrote back to the address
   pub struct Accept {pub session u64;}     // a client proved its address: here is its session; the reply is its Accept
 }
 
 // The server's side of the handshake, holding one secret key
-pub struct Gate {
+pub struct ChallengeGate {
   k0 u64;
   k1 u64;
 
   // A gate with a key of 128 bits made from 'seed', which should be secret and
   // unpredictable (freshSeed())
-  pub fn make(seed u64) Gate {
+  pub fn make(seed u64) ChallengeGate {
     mut rng = Rng.make(seed);
-    new Gate(rng.next(), rng.next());
+    new ChallengeGate(rng.next(), rng.next());
   }
 
   fn cookie(self &, addr &str, salt u64, epoch i64) u64 {
@@ -67,34 +67,34 @@ pub struct Gate {
   // Look at a datagram that came from 'addr' (its address as text) and is
   // not part of a connection. 'reply' is cleared and, for Reply and Accept,
   // holds the datagram to send back.
-  pub fn handle(self &, addr &str, data &Array[u8], now Instant, reply &mut List[u8]) Verdict {
+  pub fn handle(self &, addr &str, data &Array[u8], now Instant, reply &mut List[u8]) GateVerdict {
     reply.clear();
-    mut c = Cursor.start();
+    mut c = PacketReader.start();
     imm magic = c.rdU32(data);
     imm kind = c.rdU8(data);
     imm salt = c.rdU64(data);
-    if not c.ok or magic != protocolId {return Verdict.Ignore;}
+    if not c.ok or magic != protocolId {return GateVerdict.Ignore;}
     imm epoch = now.nanos() / epochNs;
     if kind == kindRequest {
-      if data.len < handshakeSize {return Verdict.Ignore;}
+      if data.len < handshakeSize {return GateVerdict.Ignore;}
       putU32(reply, protocolId);
       putU8(reply, kindChallenge);
       putU64(reply, salt);
       putU64(reply, self.cookie(addr, salt, epoch));
-      return Verdict.Reply;
+      return GateVerdict.Reply;
     }
     if kind == kindResponse {
-      if data.len < handshakeSize {return Verdict.Ignore;}
+      if data.len < handshakeSize {return GateVerdict.Ignore;}
       imm got = c.rdU64(data);
-      if not c.ok {return Verdict.Ignore;}
-      if got != self.cookie(addr, salt, epoch) and got != self.cookie(addr, salt, epoch - 1i64) {return Verdict.Ignore;}
+      if not c.ok {return GateVerdict.Ignore;}
+      if got != self.cookie(addr, salt, epoch) and got != self.cookie(addr, salt, epoch - 1i64) {return GateVerdict.Ignore;}
       imm session = salt ^ got;
       putU32(reply, protocolId);
       putU8(reply, kindAccept);
       putU64(reply, session);
-      return Verdict.Accept(session);
+      return GateVerdict.Accept(session);
     }
-    Verdict.Ignore;
+    GateVerdict.Ignore;
   }
 
   // The datagram that tells a client its connection was refused (the server
@@ -109,7 +109,7 @@ pub struct Gate {
 
   // The client salt in a Response datagram, or 0 if it is not one
   pub fn saltOf(data &Array[u8]) u64 {
-    mut c = Cursor.start();
+    mut c = PacketReader.start();
     imm magic = c.rdU32(data);
     imm kind = c.rdU8(data);
     imm salt = c.rdU64(data);
@@ -119,7 +119,7 @@ pub struct Gate {
 }
 
 // Where a client's connection attempt stands
-pub enum DialState {
+pub enum HandshakeState {
   Requesting,     // sending Requests, waiting for the Challenge
   Responding,     // sending Responses, waiting for the Accept
   Connected,
@@ -127,31 +127,31 @@ pub enum DialState {
 }
 
 // What a datagram told the client
-pub enum DialEvent {
+pub enum HandshakeEvent {
   Nothing,
   Connected,
   Refused;
 }
 
 // The client's side of the handshake
-pub struct Dialer {
-  cfg Config;
+pub struct ClientHandshake {
+  cfg NetConfig;
   salt u64;
   cookie u64;
   session u64;
-  state DialState;
+  state HandshakeState;
   startedAt i64;
   lastSent i64;
   refused bool;
 
   // A connection attempt that begins now, under 'salt' (freshSeed())
-  pub fn make(cfg Config, salt u64, now Instant) Dialer {
-    new Dialer(cfg, salt, 0u64, 0u64, DialState.Requesting, now.nanos(), now.nanos() - cfg.connectRetryMs * msNs2, false);
+  pub fn make(cfg NetConfig, salt u64, now Instant) ClientHandshake {
+    new ClientHandshake(cfg, salt, 0u64, 0u64, HandshakeState.Requesting, now.nanos(), now.nanos() - cfg.connectRetryMs * msNs2, false);
   }
 
-  pub fn dialState(self &) DialState {state;}
-  pub fn isConnected(self &) bool {state == DialState.Connected;}
-  pub fn isFailed(self &) bool {state == DialState.Failed;}
+  pub fn handshakeState(self &) HandshakeState {state;}
+  pub fn isConnected(self &) bool {state == HandshakeState.Connected;}
+  pub fn isFailed(self &) bool {state == HandshakeState.Failed;}
   pub fn wasRefused(self &) bool {refused;}
   pub fn sessionId(self &) u64 {session;}
 
@@ -159,7 +159,7 @@ pub struct Dialer {
   // attempt times out
   pub fn nextDeadline(self &) Instant {
     mut at = startedAt + cfg.connectTimeoutMs * msNs2;
-    if state == DialState.Requesting or state == DialState.Responding {
+    if state == HandshakeState.Requesting or state == HandshakeState.Responding {
       imm retry = lastSent + cfg.connectRetryMs * msNs2;
       if retry < at {at = retry;}
     }
@@ -171,16 +171,16 @@ pub struct Dialer {
   // connectTimeoutMs pass with no Accept.
   pub fn poll(self &mut, now Instant, out &mut List[List[u8]]) {
     imm t = now.nanos();
-    if state != DialState.Requesting and state != DialState.Responding {return;}
+    if state != HandshakeState.Requesting and state != HandshakeState.Responding {return;}
     if t - startedAt >= cfg.connectTimeoutMs * msNs2 {
-      state = DialState.Failed;
+      state = HandshakeState.Failed;
       return;
     }
     if t - lastSent < cfg.connectRetryMs * msNs2 {return;}
     lastSent = t;
     mut p = List[u8].withCapacity(handshakeSize);
     putU32(&mut p, protocolId);
-    if state == DialState.Requesting {
+    if state == HandshakeState.Requesting {
       putU8(&mut p, kindRequest);
       putU64(&mut p, salt);
     } else {
@@ -196,40 +196,40 @@ pub struct Dialer {
   // Accept connects; a Denied is a refusal. A payload packet of the right
   // session also connects (the Accept may have been lost): the caller gives
   // that packet to the connection, too.
-  pub fn receive(self &mut, data &Array[u8]) DialEvent {
-    if state != DialState.Requesting and state != DialState.Responding {return DialEvent.Nothing;}
-    mut c = Cursor.start();
+  pub fn receive(self &mut, data &Array[u8]) HandshakeEvent {
+    if state != HandshakeState.Requesting and state != HandshakeState.Responding {return HandshakeEvent.Nothing;}
+    mut c = PacketReader.start();
     imm magic = c.rdU32(data);
     imm kind = c.rdU8(data);
-    if not c.ok or magic != protocolId {return DialEvent.Nothing;}
+    if not c.ok or magic != protocolId {return HandshakeEvent.Nothing;}
     if kind == kindChallenge {
       imm s = c.rdU64(data);
       imm ck = c.rdU64(data);
-      if c.ok and s == salt and state == DialState.Requesting {
+      if c.ok and s == salt and state == HandshakeState.Requesting {
         cookie = ck;
         session = salt ^ ck;
-        state = DialState.Responding;
+        state = HandshakeState.Responding;
         lastSent = startedAt - cfg.connectRetryMs * msNs2;     // answer at once
       }
-      return DialEvent.Nothing;
+      return HandshakeEvent.Nothing;
     }
-    if state != DialState.Responding {return DialEvent.Nothing;}
+    if state != HandshakeState.Responding {return HandshakeEvent.Nothing;}
     if kind == kindAccept or kind == kindPayload {
       imm s = c.rdU64(data);
       if c.ok and s == session {
-        state = DialState.Connected;
-        return DialEvent.Connected;
+        state = HandshakeState.Connected;
+        return HandshakeEvent.Connected;
       }
-      return DialEvent.Nothing;
+      return HandshakeEvent.Nothing;
     }
     if kind == kindDenied {
       imm s = c.rdU64(data);
       if c.ok and s == salt {
-        state = DialState.Failed;
+        state = HandshakeState.Failed;
         refused = true;
-        return DialEvent.Refused;
+        return HandshakeEvent.Refused;
       }
     }
-    DialEvent.Nothing;
+    HandshakeEvent.Nothing;
   }
 }

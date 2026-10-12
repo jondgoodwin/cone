@@ -5,7 +5,7 @@
 // with real sockets and the real protocol, in both directions. For tests and
 // demos; it is not part of the protocol.
 //
-//   imm relay = startRelay(SocketAddr.localhost(server.port),
+//   imm relay = startLossyRelay(SocketAddr.localhost(server.port),
 //                          LinkConfig.lossy(200u32, 30i64, 20i64), LinkConfig.lossy(200u32, 30i64, 20i64), 1u64);
 //   // clients connect to SocketAddr.localhost(relay.port)
 //   ...
@@ -29,7 +29,7 @@ struct RelayArgs is Sendable {
   pub done Sender[u32];
 }
 
-pub struct Relay {
+pub struct LossyRelay {
   pub port u16;
   waker Waker;
   stopTx Sender[u32];
@@ -139,7 +139,7 @@ fn relayMain(mut a RelayArgs) u32 {
 // Start a relay to the server at 'server': 'toServer' is what happens to the
 // clients' datagrams, 'toClient' to the server's answers. The seed makes the
 // losses repeatable. Clients connect to localhost at 'port'.
-pub fn startRelay(server SocketAddr, toServer LinkConfig, toClient LinkConfig, seed u64) Relay {
+pub fn startLossyRelay(server SocketAddr, toServer LinkConfig, toClient LinkConfig, seed u64) LossyRelay {
   mut upTx Sender[Started];
   mut upRx Receiver[Started];
   upTx, upRx = Channel[Started].make();
@@ -155,7 +155,7 @@ pub fn startRelay(server SocketAddr, toServer LinkConfig, toClient LinkConfig, s
   match upRx.recv() {
     case imm s Some {
       match s {
-        case imm up Up { return new Relay(up.port, up.waker, stopTx, doneRx); }
+        case imm up Up { return new LossyRelay(up.port, up.waker, stopTx, doneRx); }
         else {}
       }
     }
