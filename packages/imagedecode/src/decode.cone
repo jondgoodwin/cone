@@ -1,0 +1,36 @@
+// ======== Which format? ========
+
+// What a file's first bytes say it is
+pub enum ImageFormat {
+  Png, Jpeg, Unknown;
+}
+
+pub fn sniff(data &Array[u8]) ImageFormat {
+  if data.len >= 8usize and data[0usize] == 137u8 and data[1usize] == 80u8 and data[2usize] == 78u8 and data[3usize] == 71u8 {
+    return ImageFormat.Png;
+  }
+  if data.len >= 3usize and data[0usize] == 0xFFu8 and data[1usize] == 0xD8u8 and data[2usize] == 0xFFu8 {
+    return ImageFormat.Jpeg;
+  }
+  ImageFormat.Unknown;
+}
+
+// Decode a PNG or a JPEG, whichever the bytes are (a JPEG with its Exif
+// orientation applied). BMP is render's Image.fromBmp; anything else is
+// refused by name.
+pub fn decode(data &Array[u8]) Result[Raster, DecodeError] {
+  imm f = sniff(data);
+  if f == ImageFormat.Png { return decodePng(data); }
+  if f == ImageFormat.Jpeg { return decodeJpeg(data); }
+  if data.len >= 2usize and data[0usize] == 'B' and data[1usize] == 'M' {
+    return Error[Raster, DecodeError](new DecodeError(String.from("image: a BMP; render's Image.fromBmp reads those")));
+  }
+  if data.len >= 12usize and data[0usize] == 'R' and data[1usize] == 'I' and data[2usize] == 'F' and data[3usize] == 'F'
+    and data[8usize] == 'W' and data[9usize] == 'E' and data[10usize] == 'B' and data[11usize] == 'P' {
+    return Error[Raster, DecodeError](new DecodeError(String.from("image: WebP is not supported (it needs a VP8 decoder)")));
+  }
+  if data.len >= 12usize and data[0usize] == 0xABu8 and data[1usize] == 'K' and data[2usize] == 'T' and data[3usize] == 'X' {
+    return Error[Raster, DecodeError](new DecodeError(String.from("image: KTX2 is not supported (GPU-compressed textures need their transcoder)")));
+  }
+  Error[Raster, DecodeError](new DecodeError(String.from("image: not a PNG or a JPEG")));
+}

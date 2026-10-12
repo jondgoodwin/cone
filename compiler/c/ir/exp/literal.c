@@ -756,6 +756,41 @@ static int litIsConstCast(CastNode *node) {
         || (exp->tag == CastTag && litIsConstCast((CastNode*)exp));
 }
 
+// Does this struct hold nothing but its enum's tag? An enum's tag field is the only
+// one a variant of such an enum has: no field of its own, and none spliced in from
+// the enum.
+static int litIsTagOnly(StructNode *variant) {
+    INode **fldp;
+    uint32_t cnt;
+    for (nodelistFor(&variant->fields, cnt, fldp))
+        if (!((*fldp)->flags & IsTagField))
+            return 0;
+    return 1;
+}
+
+// A payload-less variant standing as its enum, 'Kind.Os' wanted as a 'Kind', is a
+// constant: the tag it carries. Type check makes it the recast of the variant's
+// literal, which holds the tag alone, to the enum. Only when every variant of the
+// enum is that, so the enum is its tag and no more -- the variant and the enum are
+// then one LLVM layout, and generation re-types the constant (genlRecast). A
+// variant with a payload, or any variant of an enum that has one in another, is
+// not (its enum's layout is wider than the variant, padded out).
+static int litIsEnumVariant(CastNode *node) {
+    if (node->flags & (FlagConvert | 0x00FF) || node->exp->tag != TypeLitTag
+        || node->vtype == NULL || !isTypeNode(node->vtype))
+        return 0;
+    INode *enumdcl = itypeGetTypeDcl(node->vtype);
+    if (enumdcl->tag != StructTag || !(enumdcl->flags & EnumType)
+        || ((StructNode*)enumdcl)->derived == NULL || ((StructNode*)enumdcl)->derived->used == 0)
+        return 0;
+    INode **variantp;
+    uint32_t cnt;
+    for (nodesFor(((StructNode*)enumdcl)->derived, cnt, variantp))
+        if ((*variantp)->tag != StructTag || !litIsTagOnly((StructNode*)*variantp))
+            return 0;
+    return typeLitIsLiteral((FnCallNode*)node->exp);
+}
+
 // A string literal wanted as a '&Array[u8]' is the literal reinterpreted (a recast of
 // the '&imm str' it is), and as constant as it is.
 static int litIsTextAsBytes(CastNode *node) {
@@ -782,6 +817,7 @@ int litIsLiteral(INode* node) {
         || nameUseNames(node, ConstDclTag)
         || (node->tag == CastTag && litIsConstCast((CastNode*)node))
         || (node->tag == CastTag && litIsTextAsBytes((CastNode*)node))
+        || (node->tag == CastTag && litIsEnumVariant((CastNode*)node))
         );
 }
 

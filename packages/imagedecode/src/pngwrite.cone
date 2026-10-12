@@ -1,0 +1,245 @@
+// ======== PNG, writing ========
+//
+// A PNG encoder over 'deflate': any colour type and bit depth, the five
+// filters or the adaptive choice (the minimum-sum-of-absolute-differences
+// heuristic the specification suggests, section 12.8), Adam7 interlacing,
+// PLTE, tRNS, gAMA and sRGB. It exists so a screenshot or a baked texture
+// can be saved, and so the decoder's tests make PNGs of every kind without
+// a file to download.
+
+// How to write the file. Fill in with 'PngWrite.make' and change fields.
+pub struct PngWrite {
+  pub colorType u8;       // 0 grey, 2 RGB, 3 palette, 4 grey+alpha, 6 RGBA
+  pub depth u8;           // 1, 2, 4, 8 or 16, as the colour type allows
+  pub interlace bool;     // Adam7
+  pub filter i32;         // 0 to 4 for every scanline, 5 to choose per scanline
+  pub level i32;          // deflate's level, 0 to 2
+  pub palette List[u8];   // RGB triples, for type 3
+  pub trns List[u8];      // palette alphas, for type 3
+  pub hasKey bool;        // a transparent colour for types 0 and 2 ...
+  pub keyR u16;           // ... its samples (grey in keyR)
+  pub keyG u16;
+  pub keyB u16;
+  pub gamma u32;          // the gAMA chunk's value (gamma * 100000), 0 for none
+  pub srgb bool;          // write an sRGB chunk
+
+  pub fn make(colorType u8, depth u8) PngWrite {
+    new PngWrite(colorType, depth, false, 5, 2, List[u8].empty(), List[u8].empty(), false, 0u16, 0u16, 0u16, 0u32, false);
+  }
+}
+
+fn putBe32(out &mut List[u8], v u32) {
+  out.push(u8.from(v >> 24u32));
+  out.push(u8.from((v >> 16u32) & 255u32));
+  out.push(u8.from((v >> 8u32) & 255u32));
+  out.push(u8.from(v & 255u32));
+}
+
+// One chunk: length, the four letters, data, CRC of letters and data
+fn putChunk(out &mut List[u8], crc &Crc32, tag u32, body &Array[u8]) {
+  putBe32(out, u32.from(body.len));
+  imm at = out.len();
+  putBe32(out, tag);
+  mut i = 0usize;
+  while i < body.len { out.push(body[i]); i += 1usize; }
+  imm c = crc.update(0u32, out.view(), at, out.len());
+  putBe32(out, c);
+}
+
+// The filtered form of a scanline (filter byte first) in 'dst'
+fn filterRow(ft u8, cur &Array[u8], prev &Array[u8], hasPrev bool, len usize, bpp usize, dst &mut List[u8]) {
+  dst.clear();
+  dst.push(ft);
+  mut i = 0usize;
+  while i < len {
+    imm a = if i >= bpp {i32.from(cur[i - bpp]);} else {0i32;};
+    imm b = if hasPrev {i32.from(prev[i]);} else {0i32;};
+    imm c = if i >= bpp and hasPrev {i32.from(prev[i - bpp]);} else {0i32;};
+    imm x = i32.from(cur[i]);
+    mut p = 0i32;
+    if ft == 0u8 { p = 0i32; }
+    elif ft == 1u8 { p = a; }
+    elif ft == 2u8 { p = b; }
+    elif ft == 3u8 { p = (a + b) / 2i32; }
+    else { p = paeth(a, b, c); }
+    dst.push(u8.from((x - p) & 255i32));
+    i += 1usize;
+  }
+}
+
+// Pack one scanline of 'n' pixels from samples[at ...] into bytes
+fn packRow(samples &Array[u16], at usize, n usize, channels usize, depth u8, out &mut List[u8]) {
+  out.clear();
+  imm count = n * channels;
+  if depth == 8u8 {
+    mut i = 0usize;
+    while i < count { out.push(u8.from(samples[at + i] & 255u16)); i += 1usize; }
+  } elif depth == 16u8 {
+    mut i = 0usize;
+    while i < count {
+      out.push(u8.from(samples[at + i] >> 8u16));
+      out.push(u8.from(samples[at + i] & 255u16));
+      i += 1usize;
+    }
+  } else {
+    imm d = u32.from(depth);
+    mut cur = 0u32;
+    mut bits = 0u32;
+    mut i = 0usize;
+    while i < count {
+      cur = (cur << d) | u32.from(samples[at + i]);
+      bits += d;
+      if bits == 8u32 { out.push(u8.from(cur)); cur = 0u32; bits = 0u32; }
+      i += 1usize;
+    }
+    if bits > 0u32 { out.push(u8.from(cur << (8u32 - bits))); }
+  }
+}
+
+// Encode a picture given as samples: width * height pixels, row-major, top
+// row first, each pixel the colour type's channels (grey; red, green, blue;
+// palette index; grey, alpha; red, green, blue, alpha) as numbers below
+// 2^depth. Returns the file's bytes.
+pub fn encodePngSamples(width i32, height i32, samples &Array[u16], o &PngWrite) List[u8] {
+  imm crc = Crc32.make();
+  mut out = List[u8].empty();
+  imm sig Array[u8, 8] = [137u8, 80u8, 78u8, 71u8, 13u8, 10u8, 26u8, 10u8];
+  mut s = 0usize;
+  while s < 8usize { out.push(sig[s]); s += 1usize; }
+  mut ihdr = List[u8].empty();
+  putBe32(&mut ihdr, u32.from(width));
+  putBe32(&mut ihdr, u32.from(height));
+  ihdr.push(o.depth);
+  ihdr.push(o.colorType);
+  ihdr.push(0u8);
+  ihdr.push(0u8);
+  ihdr.push(if o.interlace {1u8;} else {0u8;});
+  putChunk(&mut out, &crc, 0x49484452u32, ihdr.view());
+  if o.srgb {
+    mut b = List[u8].empty();
+    b.push(0u8);
+    putChunk(&mut out, &crc, 0x73524742u32, b.view());
+  }
+  if o.gamma > 0u32 {
+    mut b = List[u8].empty();
+    putBe32(&mut b, o.gamma);
+    putChunk(&mut out, &crc, 0x67414D41u32, b.view());
+  }
+  if o.colorType == 3u8 { putChunk(&mut out, &crc, 0x504C5445u32, o.palette.view()); }
+  if o.colorType == 3u8 and o.trns.len() > 0usize {
+    putChunk(&mut out, &crc, 0x74524E53u32, o.trns.view());
+  } elif o.hasKey and o.colorType == 0u8 {
+    mut b = List[u8].empty();
+    b.push(u8.from(o.keyR >> 8u16));
+    b.push(u8.from(o.keyR & 255u16));
+    putChunk(&mut out, &crc, 0x74524E53u32, b.view());
+  } elif o.hasKey and o.colorType == 2u8 {
+    mut b = List[u8].empty();
+    b.push(u8.from(o.keyR >> 8u16));
+    b.push(u8.from(o.keyR & 255u16));
+    b.push(u8.from(o.keyG >> 8u16));
+    b.push(u8.from(o.keyG & 255u16));
+    b.push(u8.from(o.keyB >> 8u16));
+    b.push(u8.from(o.keyB & 255u16));
+    putChunk(&mut out, &crc, 0x74524E53u32, b.view());
+  }
+
+  imm channels = pngChannels(o.colorType);
+  imm bitsPerPixel = channels * usize.from(o.depth);
+  imm bpp = if bitsPerPixel >= 8usize {bitsPerPixel / 8usize;} else {1usize;};
+  imm w = usize.from(width);
+  imm h = usize.from(height);
+
+  mut filtered = List[u8].empty();
+  mut cur = List[u8].empty();
+  mut prev = List[u8].empty();
+  mut trial = List[u8].empty();
+  mut best = List[u8].empty();
+  imm passes = if o.interlace {7usize;} else {1usize;};
+  mut p = 0usize;
+  while p < passes {
+    imm x0 = if o.interlace {usize.from(adamX0[p]);} else {0usize;};
+    imm y0 = if o.interlace {usize.from(adamY0[p]);} else {0usize;};
+    imm dx = if o.interlace {usize.from(adamDx[p]);} else {1usize;};
+    imm dy = if o.interlace {usize.from(adamDy[p]);} else {1usize;};
+    imm pw = if w > x0 {(w - x0 + dx - 1usize) / dx;} else {0usize;};
+    imm ph = if h > y0 {(h - y0 + dy - 1usize) / dy;} else {0usize;};
+    if pw > 0usize and ph > 0usize {
+      mut hasPrev = false;
+      mut y = 0usize;
+      while y < ph {
+        // Gather this pass row's samples into a row buffer
+        mut rowSamples = List[u16].empty();
+        mut x = 0usize;
+        while x < pw {
+          imm px = x0 + x * dx;
+          imm py = y0 + y * dy;
+          mut c = 0usize;
+          while c < channels {
+            rowSamples.push(samples[(py * w + px) * channels + c]);
+            c += 1usize;
+          }
+          x += 1usize;
+        }
+        packRow(rowSamples.view(), 0usize, pw, channels, o.depth, &mut cur);
+        if o.filter >= 0 and o.filter <= 4 {
+          filterRow(u8.from(o.filter), cur.view(), prev.view(), hasPrev, cur.len(), bpp, &mut best);
+        } else {
+          mut bestSum = 0xFFFFFFFFFFFFFFFFu64;
+          mut ft = 0u8;
+          while ft < 5u8 {
+            filterRow(ft, cur.view(), prev.view(), hasPrev, cur.len(), bpp, &mut trial);
+            mut sum = 0u64;
+            mut i = 1usize;
+            while i < trial.len() {
+              imm v = i32.from(*trial[i]);
+              sum += u64.from(if v < 128i32 {v;} else {256i32 - v;});
+              i += 1usize;
+            }
+            if sum < bestSum {
+              bestSum = sum;
+              best.clear();
+              i = 0usize;
+              while i < trial.len() { best.push(*trial[i]); i += 1usize; }
+            }
+            ft += 1u8;
+          }
+        }
+        mut i = 0usize;
+        while i < best.len() { filtered.push(*best[i]); i += 1usize; }
+        prev.clear();
+        i = 0usize;
+        while i < cur.len() { prev.push(*cur[i]); i += 1usize; }
+        hasPrev = true;
+        y += 1usize;
+      }
+    }
+    p += 1usize;
+  }
+  imm z = zlibCompress(filtered.view(), o.level);
+  putChunk(&mut out, &crc, 0x49444154u32, z.view());
+  putChunk(&mut out, &crc, 0x49454E44u32, List[u8].empty().view());
+  out;
+}
+
+// A Raster as a PNG file: RGBA at its depth (8 or 16 bits), or RGB when
+// 'hasAlpha' is false and every alpha is full. An sRGB chunk if the raster's
+// colour space is sRGB.
+pub fn encodePng(r &Raster, level i32) List[u8] {
+  imm n = usize.from(r.width) * usize.from(r.height);
+  imm rgba = r.hasAlpha;
+  mut o = PngWrite.make(if rgba {6u8;} else {2u8;}, if r.depth == 16 {16u8;} else {8u8;});
+  o.level = level;
+  o.srgb = r.colorSpace == ColorSpace.Srgb;
+  mut samples = List[u16].withCapacity(n * 4usize);
+  mut i = 0usize;
+  while i < n {
+    mut c = 0usize;
+    while c < (if rgba {4usize;} else {3usize;}) {
+      samples.push(if r.depth == 16 {*r.pixels16[i * 4usize + c];} else {u16.from(*r.pixels8[i * 4usize + c]);});
+      c += 1usize;
+    }
+    i += 1usize;
+  }
+  encodePngSamples(r.width, r.height, samples.view(), &o);
+}

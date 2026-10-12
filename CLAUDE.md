@@ -369,6 +369,29 @@ Visual Studio projects stay at the root.
   over `sdl`: `Device.start` opens the default playback device as an SDL3
   push stream and runs a feeder thread rendering `Engine` into it (a test
   runs it on SDL's dummy driver);
+  `imagedecode` is pictures out of files, with no C library: `decode` reads a
+  PNG (every colour type and bit depth, filters, Adam7, tRNS; 16-bit to RGBA16)
+  or a JPEG (baseline and progressive Huffman, any sampling, restart markers,
+  Adobe colour, Exif orientation; libjpeg's "islow" IDCT and fancy upsampling, so
+  its pixels equal libjpeg-turbo's) into a `Raster` (always RGBA, rows from the
+  top; `bottomUp` is render's `Image` layout), a damaged file an `Error` never a
+  panic (fuzz-tested); under them `inflate`/`zlibDecompress` (stored, fixed and
+  dynamic Huffman; zlib's table-by-bits decoder) and `deflate`/`zlibCompress`
+  (stored, fixed, dynamic: LZ77 hash chains), `encodePng`/`encodePngSamples`
+  (any type and depth, adaptive filters, Adam7), and the checksums; its
+  `bench` example times the decoders; `gltfimport` is glTF 2.0 into plain
+  data over `mesh`, `geomath`, `bonepose` and `imagedecode` (no `render`):
+  `.gltf` with its `.bin` and images or embedded, and `.glb`, through a small
+  JSON reader of its own (`parseJson`, a flat arena), into a `Gltf` of
+  `Mesh` primitives (positions, normals, tangents, two uv sets, colours,
+  joints and weights, morph targets kept unapplied; strips and fans listed;
+  sparse and interleaved accessors), materials (metallic-roughness, emissive
+  strength, texture transform), a node tree, scenes, cameras, lights,
+  skins (`skeletonOf` onto bonepose's `Skeleton`, `poseAt`, `jointMatrices`)
+  and animations (translation, rotation, scale, weights; step, linear,
+  cubic spline; `sampleQuat`, `evaluate`), Draco and meshopt refused by name
+  with what they would take; its `view` example loads a model and renders it
+  through `render`;
   `testing` is the checks a package's tests call (`expectInt`, `require…`,
   `done`), ordinary library code the compiler knows nothing of;
   `genwalk` and `genuser` are the samples of generators across packages: `pub`
