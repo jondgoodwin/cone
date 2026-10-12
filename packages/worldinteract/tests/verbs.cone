@@ -1,0 +1,138 @@
+// Hover, focus, grab and drag with a spring, properties and timers.
+//
+// Grab: the holder is at the origin, the crate at (0, 0, 1) (range 2), held
+// by a point 1 m above its origin (hand at (0, 1, 1), so the anchor is
+// (0, 1, 0)). The hand moves to (3, 1, 1): the crate's goal is (3, 0, 1). A
+// critically damped spring at 4 Hz (w = 25.13 rad/s) has error
+// e^(-wt) (1 + wt) of the start: at 1 s 25.13 gives 1.2e-10 of 3 m. It never
+// overshoots. With a break distance of 5 m a hand jerked 27 m away breaks it (3 m of lag does not).
+//
+// Focus: two usable things ahead, 4 m (id P) and 6 m (id Q), P on the left,
+// Q dead ahead of an eye at the origin looking down +z; costs with the
+// focus params (range 50, half angle pi, weights 4 and 1, sticky 0.75):
+//   Q: 0 + 6/50 = 0.12;  P at x = 2: angle atan(2/4) = 0.4636, 4 * 0.4636/pi
+//   + 4.47/50 = 0.59 + 0.09 = 0.68  so Q is the focus; a wall at z = 5 hides Q
+//   from the eye (not P, which is nearer than the wall) so then P is.
+//
+// Timers: a timer of 1.5 s rings at the first step at or after 1.5 s; a
+// repeating one of 1 s rings at 1, 2, 3 (three times in 3.5 s).
+
+mod verbs;
+
+import collections use *;
+import testing use *;
+import geomath use *;
+import worldinteract use *;
+
+fn count(evs &List[Event], kind u32) i64 {
+  mut n = 0i64;
+  mut i = 0usize;
+  while i < evs.len() {
+    if (*evs[i]).kind == kind { n = n + 1i64; }
+    i = i + 1usize;
+  }
+  n;
+}
+
+fn wall(o Vec3, d Vec3, m f32) RayHit {
+  if d.z > 0.0001 and m > 5. {
+    return new RayHit(true, 5. / d.z, 99u32);
+  }
+  new RayHit(false, 0., 0u32);
+}
+
+fn main() i32 {
+  mut w = World.make();
+  imm me = w.create(CLASS_CHARACTER);
+  imm crate = w.create(CLASS_PROP);
+  w.setPosition(crate, new Vec3(0., 0., 1.));
+  w.addInteractable(crate, 2., -1., false, new Vec3(0., 0., 0.), VERB_USE | VERB_GRAB | VERB_HOVER);
+
+  w.setHover(me, crate);
+  w.setHover(me, crate);
+  w.setHover(me, 0u32);
+  mut ev = w.takeEvents();
+  expectInt(count(&ev, EV_HOVER), 1i64, "one hover event, not repeated");
+  expectInt(count(&ev, EV_UNHOVER), 1i64, "one unhover");
+
+  expect(w.grabStart(me, crate, new Vec3(0., 1., 1.), 4., 5.), "grab the crate");
+  expect(w.heldBy(me) == crate, "held");
+  mut worst = 0.;
+  mut s = 0;
+  while s < 120 {
+    w.grabUpdate(me, new Vec3(3., 1., 1.), 1. / 60.);
+    imm x = w.positionOf(crate).x;
+    if x > worst { worst = x; }
+    s = s + 1;
+  }
+  expectFloat(f64.from(w.positionOf(crate).x), 3., 0.001, "after 2 s the crate is at the goal: x");
+  expectFloat(f64.from(w.positionOf(crate).y), 0., 0.001, "y: the anchor keeps the held point in the hand");
+  expect(worst <= 3.0005, "the spring does not overshoot");
+  w.grabUpdate(me, new Vec3(30., 1., 1.), 1. / 60.);
+  expect(w.heldBy(me) == 0u32, "a jerk past the break distance lets go");
+  mut ev2 = w.takeEvents();
+  expectInt(count(&ev2, EV_RELEASE), 1i64, "one release event");
+  expectFloat(f64.from((*ev2[ev2.len() - 1usize]).value.num), 1., 0.0001, "marked as broken");
+
+  // focus
+  mut f = World.make();
+  imm viewer = f.create(CLASS_CHARACTER);
+  imm p = f.create(CLASS_PROP);
+  f.setPosition(p, new Vec3(2., 0., 4.));
+  f.addInteractable(p, 20., -1., false, new Vec3(0., 0., 0.), VERB_USE);
+  imm q = f.create(CLASS_PROP);
+  f.setPosition(q, new Vec3(0., 0., 6.));
+  f.addInteractable(q, 20., -1., false, new Vec3(0., 0., 0.), VERB_USE);
+  imm open = fn(o Vec3, d Vec3, m f32) RayHit { new RayHit(false, 0., 0u32); };
+  imm eye = new Vec3(0., 0., 0.);
+  imm fwd = new Vec3(0., 0., 1.);
+  expect(f.updateFocus(viewer, eye, fwd, &open) == q, "the one dead ahead is the focus");
+  expect(f.updateFocus(viewer, eye, fwd, &wall) == p, "with a wall hiding it the other one");
+  mut fe = f.takeEvents();
+  expectInt(count(&fe, EV_FOCUS), 2i64, "two focus events");
+  expectInt(count(&fe, EV_UNFOCUS), 1i64, "one unfocus");
+
+  // properties
+  mut pr = World.make();
+  imm lamp = pr.create(CLASS_PROP);
+  imm lit = pr.sym("lit");
+  imm name = pr.sym("name");
+  pr.setProp(lamp, lit, Value.boolean(true));
+  pr.setProp(lamp, lit, Value.boolean(true));
+  pr.setProp(lamp, lit, Value.boolean(false));
+  pr.setProp(lamp, name, Value.name(pr.sym("brass lamp")));
+  pr.setProp(lamp, pr.sym("owner"), Value.entity(lamp));
+  mut pe = pr.takeEvents();
+  expectInt(count(&pe, EV_PROP_CHANGED), 4i64, "four changes (the repeat is not one)");
+  expectFloat(f64.from((*pe[1]).old.num), 1., 0.0001, "the second change knew the old value");
+  expect(not pr.getBool(lamp, lit), "lit is false");
+  expect(pr.nameOf(pr.getProp(lamp, name).id).equals("brass lamp"), "a string property is an interned name");
+  expectInt(i64.from(pr.getProp(lamp, pr.sym("owner")).id), i64.from(lamp), "an id property");
+  expectInt(i64.from(pr.sym("lit")), i64.from(lit), "a name is interned once");
+
+  // timers
+  mut t = World.make();
+  imm clock = t.create(CLASS_PROP);
+  imm once = t.sym("once");
+  imm tick = t.sym("tick");
+  t.startTimer(clock, once, 1.5, 0.);
+  t.startTimer(clock, tick, 1., 1.);
+  mut onceAt = -1.;
+  mut ticks = 0i64;
+  mut n = 0;
+  while n < 14 {
+    t.step(0.25);
+    mut te = t.takeEvents();
+    mut i = 0usize;
+    while i < te.len() {
+      imm e = *te[i];
+      if e.kind == EV_TIMER and e.key == once { onceAt = e.time; }
+      if e.kind == EV_TIMER and e.key == tick { ticks = ticks + 1i64; }
+      i = i + 1usize;
+    }
+    n = n + 1;
+  }
+  expectFloat(f64.from(onceAt), 1.5, 0.0001, "the one-shot rang at 1.5 s");
+  expectInt(ticks, 3i64, "the repeating one rang at 1, 2 and 3 s");
+  done();
+}
