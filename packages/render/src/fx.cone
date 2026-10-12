@@ -39,6 +39,7 @@ pub struct FxSettings {
   pub fxaa FxaaSettings = new FxaaSettings();
   pub exposure ExposureSettings = new ExposureSettings();
   pub ssao SsaoSettings = new SsaoSettings();
+  pub dof DofSettings = new DofSettings();
 
   // Everything off
   pub fn off() FxSettings { new FxSettings(); }
@@ -72,6 +73,7 @@ const SOURCE_HDR = 0u32;
 const SOURCE_HISTORY0 = 1u32;
 const SOURCE_HISTORY1 = 2u32;
 const SOURCE_SHARP = 3u32;
+const SOURCE_DOF = 4u32;
 
 pub struct ImageFx {
   pub settings FxSettings;
@@ -85,6 +87,7 @@ pub struct ImageFx {
   pub exposure ExposurePass;
   pub ssao SsaoPass;
   pub decalPass DecalPass;
+  pub dof DofPass;
   // The decals of this frame (decal.cone): filled by the program, emptied by 'render'
   pub decals DecalList;
   pub sources List[PostSource];    // Post's groups for the frames the passes make (SOURCE_HISTORY0 and on, less one)
@@ -117,8 +120,10 @@ pub struct ImageFx {
     imm tinyDepthView = depth.createView();
     mut ssao = SsaoPass.create(device, &frameBuffer, &tinyDepthView);
     mut decalPass = DecalPass.create(device, &renderer.frameLayout, &renderer.environmentLayout, &frameBuffer, &tinyDepthView);
+    imm tinyHdrView = post.hdr.createView();
+    mut dof = DofPass.create(device, &frameBuffer, &tinyHdrView, &tinyDepthView);
     mut fx = new ImageFx(new FxSettings(), 0u32, 0u32, post.outputFormat, depth, frameBuffer, taa, fxaa, exposure, ssao,
-      decalPass, DecalList.empty(), List[PostSource].empty(), MotionList.empty(), 0u32, Mat4.identity(), false, 0u32, true, true, 0.);
+      decalPass, dof, DecalList.empty(), List[PostSource].empty(), MotionList.empty(), 0u32, Mat4.identity(), false, 0u32, true, true, 0.);
     fx.remake(device, renderer, post);
     fx;
   }
@@ -132,7 +137,7 @@ pub struct ImageFx {
     imm sharpWas = settings.taa.sharpness > 0.;
     imm sharpNow = s.taa.sharpness > 0.;
     if s.aa != settings.aa or s.exposure.enabled != settings.exposure.enabled or sharpWas != sharpNow
-        or s.ssao.enabled != settings.ssao.enabled {
+        or s.ssao.enabled != settings.ssao.enabled or s.dof.enabled != settings.dof.enabled {
       dirty = true;
     }
     settings = *s;
@@ -160,7 +165,15 @@ pub struct ImageFx {
     imm fxaaOn = settings.aa == AA_FXAA;
     imm hdrView = post.hdr.createView();
     imm depthView = depth.createView();
-    taa.remake(device, taaOn, w, h, &hdrView, &depthView, &frameBuffer, settings.taa.sharpness);
+    imm dofOn = settings.dof.enabled;
+    dof.remake(device, dofOn, w, h, &frameBuffer, &hdrView, &depthView);
+    imm dofView = dof.output.createView();
+    // Temporal AA resolves the frame as the depth of field made it, if it did
+    if dofOn {
+      taa.remake(device, taaOn, w, h, &dofView, &depthView, &frameBuffer, settings.taa.sharpness);
+    } else {
+      taa.remake(device, taaOn, w, h, &hdrView, &depthView, &frameBuffer, settings.taa.sharpness);
+    }
     fxaa.remake(device, fxaaOn, w, h, post.outputFormat);
     ssao.remake(device, settings.ssao.enabled, w, h, &depthView, &frameBuffer);
     decalPass.remake(device, &frameBuffer, &depthView);
@@ -174,9 +187,11 @@ pub struct ImageFx {
     sources.push(post.sourceGroups(device, &h0));
     sources.push(post.sourceGroups(device, &h1));
     sources.push(post.sourceGroups(device, &sh));
+    sources.push(post.sourceGroups(device, &dofView));
     exposure.addSource(device, &h0, &post.exposureBuffer);
     exposure.addSource(device, &h1, &post.exposureBuffer);
     exposure.addSource(device, &sh, &post.exposureBuffer);
+    exposure.addSource(device, &dofView, &post.exposureBuffer);
     exposure.snap = true;
     postRevision = post.revision;
     dirty = false;
@@ -277,7 +292,7 @@ pub struct ImageFx {
 
     // The scene, its depth kept for the passes that read it
     imm decalsOn = decals.len() > 0usize;
-    if taaOn or s.ssao.enabled or decalsOn { renderer.keepDepth = true; }
+    if taaOn or s.ssao.enabled or decalsOn or s.dof.enabled { renderer.keepDepth = true; }
     renderer.render(device, encoder, &post.hdr, &depth, &jittered, light, list);
 
     // Decals, lit by the sun and the environment, before the occlusion
@@ -291,6 +306,10 @@ pub struct ImageFx {
 
     // Temporal AA: the objects that move, then the resolve
     mut source = SOURCE_HDR;
+    if s.dof.enabled {
+      dof.record(encoder, &s.dof, height, frameNumber, taaOn);
+      source = SOURCE_DOF;
+    }
     velocityDrawn = false;
     if taaOn {
       mut moving = false;

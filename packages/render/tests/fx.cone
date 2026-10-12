@@ -485,6 +485,81 @@ fn ambientOcclusion(device &mut Device) {
   expect(rms(&cornerOff, &cornerOn) > 0.001, "the corner picture changed");
 }
 
+// ---- 8. Depth of field ----
+
+// The sum and the greatest of the green channel in the 25 x 25 window about (cx, cy)
+fn windowOf(g &List[f32], cx usize, cy usize, sum &mut f32, peak &mut f32) {
+  *sum = 0.;
+  *peak = 0.;
+  mut y = cy - 12usize;
+  while y <= cy + 12usize {
+    mut x = cx - 12usize;
+    while x <= cx + 12usize {
+      imm v = *g[(y * SIDEZ + x) * 3usize + 1usize];
+      *sum = *sum + v;
+      if v > *peak { *peak = v; }
+      x = x + 1usize;
+    }
+    y = y + 1usize;
+  }
+}
+
+fn depthOfField(device &mut Device) {
+  mut rig = makeRig(device);
+  imm p = rig.readback.mappedRange();
+  rig.post.toneMapper = TONE_MAP_NONE;
+  rig.post.bloom = 0.;
+  mut sphereMesh = Mesh.sphere(1., 24);
+  imm sphere = rig.renderer.addMesh(device, &sphereMesh);
+  imm glowing = rig.renderer.addMaterial(device, &Material.plain(new Color(0., 0., 0., 1.)).glowing(new Color(1., 1., 1., 1.), 0.7));
+  imm light = Light.directional(new Vec3(0., -1., 0.), new Color(0., 0., 0., 1.), new Color(0., 0., 0., 1.));
+  mut camera = Camera.make();
+  camera.fov = radians(40.);
+  camera.near = 0.1;
+  camera.far = 100.;
+  camera.lookAt(new Vec3(0., 0., 0.), new Vec3(0., 0., -1.), new Vec3(0., 1., 0.));
+  camera.background = new Color(0., 0., 0., 1.);
+  // Two lamps the same size on the screen, one at the focus (5), one far (30)
+  imm near = new Vec3(-0.9, 0., -5.);
+  imm far = new Vec3(5.4, 0., -30.);
+  mut list = DrawList.empty();
+  list.add(sphere, glowing, Mat4.fromTrs(near, Quat.identity(), new Vec3(0.06, 0.06, 0.06)));
+  list.add(sphere, glowing, Mat4.fromTrs(far, Quat.identity(), new Vec3(0.36, 0.36, 0.36)));
+  drawScene(device, &mut rig, &camera, &light, &list);
+  imm sharp = grab(p);
+  shot(p, "dof-off");
+  mut s = FxSettings.off();
+  s.dof = new DofSettings(enabled: true, focusDistance: 5., aperture: 1.4, focalLength: 0.1, maxCoc: 90., taps: 48u32);
+  rig.fx.configure(&s);
+  drawScene(device, &mut rig, &camera, &light, &list);
+  imm blurred = grab(p);
+  shot(p, "dof-on");
+  mut nx = 0usize;
+  mut ny = 0usize;
+  mut fx0 = 0usize;
+  mut fy0 = 0usize;
+  pixelOf(&camera, near, &mut nx, &mut ny);
+  pixelOf(&camera, far, &mut fx0, &mut fy0);
+  mut nearSum = 0.;
+  mut nearPeak = 0.;
+  mut nearSumOn = 0.;
+  mut nearPeakOn = 0.;
+  mut farSum = 0.;
+  mut farPeak = 0.;
+  mut farSumOn = 0.;
+  mut farPeakOn = 0.;
+  windowOf(&sharp, nx, ny, &mut nearSum, &mut nearPeak);
+  windowOf(&blurred, nx, ny, &mut nearSumOn, &mut nearPeakOn);
+  windowOf(&sharp, fx0, fy0, &mut farSum, &mut farPeak);
+  windowOf(&blurred, fx0, fy0, &mut farSumOn, &mut farPeakOn);
+  eprint <- "measured: depth of field: the lamp in focus peak "; eprint <- nearPeakOn / nearPeak; eprint <- " of what it was, the far one's peak ";
+  eprint <- farPeakOn / farPeak; eprint <- ", its energy "; eprint <- farSumOn / farSum; eprint <- "\n";
+  expect(nearPeakOn > nearPeak * 0.9, "the lamp at the focus distance stays sharp");
+  expect(absf(nearSumOn / nearSum - 1.) < 0.08, "and keeps its light");
+  expect(farPeakOn < farPeak * 0.5, "the lamp far behind it is blurred: its peak falls");
+  expect(absf(farSumOn / farSum - 1.) < 0.12, "by spreading its light, not losing it");
+}
+
 // ---- 7. Decals ----
 
 fn decalTest(device &mut Device) {
@@ -745,6 +820,7 @@ fn main() i32 {
   ambientOcclusion(&mut device);
   finish(&mut device);
   decalTest(&mut device);
+  depthOfField(&mut device);
   expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
   expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
   done();
