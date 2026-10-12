@@ -838,10 +838,12 @@ that reaches one of those locals (`LoanReach`, `loanShapeReaches`: the loans its
 operands carry), so a call handed only other storage is not asked, and the excuse a
 local lent whole has -- it can reach a collection only through a reference it holds --
 does not apply to a local the loan points into (`reshapeCall`'s `mine`). In that
-mode (`reshapeReachMode`) a read-only reference is followed to the `mut` references it
-holds -- conservatively: a `&Guard` lends only `&` of the `&mut List` it holds, so no code
-can push through it ([references](../nodes/references.md), viewpoint adaptation) -- and an owning virtual reference,
-which names no lifetime and so holds no borrow of a local, is not followed. Two more
+mode (`reshapeReachMode`) an owning virtual reference, which names no lifetime and so
+holds no borrow of a local, is not followed. A read-only reference is followed to the
+`mut` references it holds in every mode -- conservatively: a `&Guard` lends only `&` of
+the `&mut List` it holds, so no code can push through it ([references](../nodes/references.md),
+viewpoint adaptation), but a generic closure that captured a `&mut Ed` holds it as a
+`& &mut Ed` and its call writes through it. Two more
 cases an exclusive loan covered: an access that changes a collection *held by value*
 inside the loan's container (a struct whose method lent an element: `w.entities.push(x)`)
 is refused where the loan is (`loanInnerChange`), since the shape check asks about
@@ -1398,7 +1400,8 @@ locals, which only a call that reaches one of them is asked of):
 - **The other arguments**: one that can reach the type (`reshapeReach`: by
   containment, field, element, variant, pointer, reference, owner; a virtual
   reference counts as reaching) by a path the callee's parameter may write (a
-  read-only `&` or `&imm` is not followed) — except a local this function owns
+  read-only `&` is followed only to the `mut` references it holds; `&imm` is not
+  followed) — except a local this function owns
   whole, lent or handed over, which can reach it only through a reference it holds
   — makes the call one that reshapes when its body is not visible, or when the
   callee reshapes a value of the type that is not its own local
@@ -2069,7 +2072,7 @@ droppable noted as holding nothing is never finalized.
 | | `siParamWrites`, `siCall`, `siWriteHits`, `siReadsStorage`, `siRooted`, `siHoldsStorage`, `siVisible` | whether a function's body writes storage through one of its parameters: its own assignments, what it lends writable to its callees (asked in turn), storage handed to code it cannot read; memoised, a recursion guessed no |
 | | `siAsk`, `shapeParamReshapes`, `shapeTypeReshapes`, `siCallType`, `siTypeWriteHits`, `shapeDemandCallees`, `shapeUnsettled` | the same engine in its other modes (`SiMode`): any field of a parameter's pointee written (a method reshapes); a value of a collection type that is no local replaced, a header field written, or reshaped by a callee, through a parameter or only through a global (a call reshapes). Memoised by function, parameter, mode and type; callees never asked for are checked first; a body not checked yet answers not yet |
 | | `shapeKeepsVia`, `shapeKeepFnRef`, `shapeKeepDeferred`, `shapeKeepingCall`, `skMethod`, `skReached`, `skCollect` | `+ ShapeKeeping` on a virtual reference: where a closure, struct or plain function becomes one, each method the trait dispatches to is asked (`SiModeType`) of every shape-changing type its parameters, and for a closure what it borrows, reach through a reference that writes by a shared path (`skWritingHop`: not `uni`, not read-only; the receiver's own state is its own); one that reshapes one is `ErrorNotShapeKeeping` naming the call or store (`siHitNode`). A body not checked yet, or a type whose shape is not settled, accepts and asks again at the end of type check (`conec.c`); the answer for a pair is kept |
-| `ir/reshape.c` | `reshapeCall`, `reshapeReach`, `reshapeReachMode`, `reshapeUniqueLocal`, `reshapeStoreHits`, `reshapeIsSum` | could this call reshape a value of a collection type or an enum: its receiver, its other arguments by what their types reach, a global; could this store; a read-only reference not followed, a local the function owns whole excused ([A change through another name](#a-change-through-another-name)) |
+| `ir/reshape.c` | `reshapeCall`, `reshapeReach`, `reshapeReachMode`, `reshapeUniqueLocal`, `reshapeStoreHits`, `reshapeIsSum` | could this call reshape a value of a collection type or an enum: its receiver, its other arguments by what their types reach, a global; could this store; a read-only reference followed only to the `mut` references it holds, a local the function owns whole excused ([A change through another name](#a-change-through-another-name)) |
 | `ir/flowpath.c` | `pwShapeBorrow`, `pwShapeCall`, `pwShapeStore`, `pwNarrowShared`, `Place.shwrite`, `flowWalkFinal`, `flowShapeRetry` | mark a borrow into a shape-changing value, or a reference narrowed into an enum's variant, through a path others may write by; ask every call and store made while it is held; a verdict that waits for an unchecked body |
 | `ir/flowloan.c` | `loanShapeMark`, `loanShapePend`, `loanShapeNow`, `loanShapeInFlight`, `loanShapeSamePlace`, `loanShapeFrozen`, `loanExcludesWriters` | the marked loans, the pending conflict (`PendingShape`) or immediate report (`ErrorShapeReshape`, `ErrorShapeStore`, `ErrorVariantReshape`) of a call or store that could reshape one |
 | | `Loan.uniq`, `loanAliasMet`, `loanAliasLets`, `loanShapeLazy`, `loanShapePromote`, `loanInnerChange`, `LoanReach`, `loanShapeReaches`, `loanFlightOwnRo` | a `mut` borrow of a `uni` place as an alias loan: the other name for its source that marks the lazy loans, the accesses it lets through, a change to a collection held inside the container, what a call can reach of the locals, a read-only operand beside a `mut` one |

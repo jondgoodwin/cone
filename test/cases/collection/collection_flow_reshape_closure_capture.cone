@@ -1,0 +1,44 @@
+// A view of a String handed to a generic closure that captured the struct holding it: the closure
+// is called through 'F fn(&str)', and holds the captured '&mut Ed' as a '& &mut Ed', a read-only
+// reference to a value holding a 'mut' reference. A read-only reference to a '&mut' still reaches a
+// writable path, so the call can grow the String the view points into, which moves its block.
+//
+// When it was accepted this program read freed memory: 'go' hands 'run' a closure that calls
+// 'src.growFirst', and 'run' calls it with a view of the very label 'growFirst' appends to.
+// (A view copied out first, or a closure that captured only what it reads, stays accepted:
+// collection_reshape_through_call_success.)
+
+mod collection_flow_reshape_closure_capture;
+
+import collections use *;
+
+struct Item { pub label String; }
+
+struct Ed {
+  pub items List[Item];
+  pub fn growFirst(self &mut, s &str) {
+    imm r = &mut items[0usize];
+    r.label.append(s);
+  }
+}
+
+// The closure is handed the view, and holds the struct that owns it by '&mut'
+fn run[F fn(s &str)](f &mut F, src &mut Ed) {
+  f(src.items[0usize].label.view());                          //~ ErrorShapeReshape
+}
+
+fn go(src &mut Ed) {
+  mut grow = fn(s &str) { src.growFirst(s); };
+  run(&mut grow, src);
+}
+
+// The same with the view held in a name
+fn runNamed[F fn(s &str)](f &mut F, src &mut Ed) {
+  imm v = src.items[0usize].label.view();
+  f(v);                                                       //~ ErrorShapeReshape
+}
+
+fn goNamed(src &mut Ed) {
+  mut grow = fn(s &str) { src.growFirst(s); };
+  runNamed(&mut grow, src);
+}
