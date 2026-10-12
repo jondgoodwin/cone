@@ -295,6 +295,36 @@ fn owned() i64 {
 }
 </pre>
 
+	<h2 id="reshape">Calling a closure while a collection is borrowed</h2>
+	<p>A call through a mutable virtual reference, a <span class="pre">&amp;&lt;mut fn(sig)</span> parameter, is assumed able to
+		reshape any container, because the closure behind it may have captured one. A live view into a container
+		that another path reaches (a <span class="pre">&amp;mut</span> parameter, a field of <span class="pre">self</span>) is
+		refused across the call (error 1339). A visitor that iterates a list while its closure may push to that list
+		moves the block the iteration reads:</p>
+<pre>
+fn visit[T](xs &amp;List[T], f &amp;&lt;mut fn(x &amp;T)) {
+  each x in xs.iter() { f(x); }          // Error 1339: f may push to xs
+}
+fn grow(list &amp;mut List[i64]) {
+  mut push = fn(x &amp;i64) { list.push(*x); };
+  visit(list, &amp;mut push);
+}
+</pre>
+	<p>Lending the list <span class="pre">&amp;imm</span> cures it: nothing can write it, so no closure handed in can have
+		captured it by <span class="pre">&amp;mut</span> (the caller's list is an <span class="pre">imm</span> variable).
+		Marking the closure <span class="pre">+ ShapeKeeping</span>, or copying what is needed out before the call,
+		also works. A read-only <span class="pre">&amp;&lt;fn</span> is not affected.</p>
+<pre>
+fn visit[T](xs &amp;imm List[T], f &amp;&lt;mut fn(x &amp;T)) {
+  each x in xs.iter() { f(x); }          // Ok
+}
+imm nums = numbers();
+mut sum = 0i64;
+visit(&amp;imm nums, fn(x &amp;i64) { sum += *x; });   // sum is 27 for 1, 5, 9, 12
+</pre>
+	<p>See <a href="refborref.html#shapechanging">Elements of a collection and changing its shape</a> and
+		<a href="refvirtref.html#reshape">Virtual References</a>.</p>
+
 	<h2>Rules that follow</h2>
 	<ul>
 		<li><b>A closure cannot call itself.</b> The variable it is the value of is not a name inside it. Recursion

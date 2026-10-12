@@ -1,0 +1,91 @@
+// What a view held across a virtual call is let through (collection_flow_reshape_virtual holds the
+// refusals). A mutable virtual call ('&<mut Trait', a '&<mut fn') hides the type behind it, so it is
+// asked of every container a view is held into, through a shared path. It is let through where
+//   - the call is read-only (a '&<Trait' whose methods take 'self &', a '&<fn'): it can write nothing
+//     it reaches;
+//   - the list is lent '&imm', which nothing can write: the cure for a visitor that takes a '&<mut fn';
+//   - the reference is marked '+ ShapeKeeping', a promise held where the value becomes the reference;
+//   - the view is of a String the function made itself, which no closure handed in could have captured.
+// Every value is worked out by hand and written at its line.
+
+mod collection_reshape_virtual_success;
+
+import stdio use *;
+import collections use *;
+
+struct Item { pub label String; }
+struct Ed { pub items List[Item]; }
+
+trait Reader { pub fn width(self &, s &str) i64; }
+
+struct Plain is Reader {
+  pub k i64;
+  pub fn width(self &, s &str) i64 { i64.from(s.len) + k; }
+}
+
+// A read-only virtual receiver
+fn viaReadOnly(r &<Reader, src &mut Ed) i64 {
+  r.width(src.items[0usize].label.view());
+}
+
+// A '&<fn' closure
+fn viaReadOnlyFn(f &<fn(s &str) i64, src &mut Ed) i64 {
+  f(src.items[0usize].label.view());
+}
+
+// A mutable one, handed a view of a String this function made
+fn viaOwnCopy(f &<mut fn(s &str), src &mut Ed) {
+  imm copy = String.from(src.items[0usize].label.view());
+  f(copy.view());
+}
+
+// The list lent '&imm', which a closure that pushes cannot be given
+fn visit[T](xs &imm List[T], f &<mut fn(x &T)) {
+  each x in xs.iter() { f(x); }
+}
+
+// The closure held to change no list it reaches through a shared path
+fn visitKeeping[T](xs &List[T], f &<mut fn(x &T) + ShapeKeeping) {
+  each x in xs.iter() { f(x); }
+}
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn numbers() List[i64] {
+  mut xs = new List[i64]();
+  xs.push(1i64); xs.push(5i64); xs.push(9i64); xs.push(12i64);
+  xs;
+}
+
+fn main() i32 {
+  mut e = new Ed(new List[Item]());
+  e.items.push(new Item(String.from("hello")));
+
+  imm plain = new Plain(100i64);
+  show("read-only-trait", viaReadOnly(&plain, &mut e));              // 5 + 100
+  imm base = 1000i64;
+  show("read-only-fn", viaReadOnlyFn(fn(s &str) i64 { i64.from(s.len) + base; }, &mut e));  // 5 + 1000
+
+  mut seen = 0i64;
+  mut note = fn(s &str) { seen += i64.from(s.len); };
+  viaOwnCopy(&mut note, &mut e);
+  show("own-copy", seen);                                            // 5
+
+  imm xs = numbers();
+  mut sum = 0i64;
+  visit(&imm xs, fn(x &i64) { sum += *x; });
+  show("imm-visitor", sum);                                          // 1 + 5 + 9 + 12
+
+  mut ys = numbers();
+  mut total = 0i64;
+  visitKeeping(&ys, fn(x &i64) { total += *x; });
+  show("keeping-visitor", total);                                    // 27
+  ys.push(1i64);
+  show("keeping-after", i64.from(ys.len()));                         // 5
+  0;
+}

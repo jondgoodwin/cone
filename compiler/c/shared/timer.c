@@ -28,10 +28,12 @@ uint64_t timerTick() {
 }
 #else
 #include <time.h>
+// Nanoseconds on the monotonic clock, seconds included: tv_nsec alone restarts
+// every second, so a stage that crossed a second boundary went backwards
 uint64_t timerGet() {
     struct timespec tp;
-    clock_gettime(CLOCK_REALTIME, &tp);
-    return (uint64_t)tp.tv_nsec;
+    clock_gettime(CLOCK_MONOTONIC, &tp);
+    return (uint64_t)tp.tv_sec * 1000000000u + (uint64_t)tp.tv_nsec;
 }
 uint64_t timerTick() {
     return 1000000000;

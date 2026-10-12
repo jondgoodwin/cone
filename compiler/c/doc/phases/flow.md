@@ -1407,6 +1407,15 @@ locals, which only a call that reaches one of them is asked of):
   callee reshapes a value of the type that is not its own local
   (`shapeTypeReshapes`, `SiModeType`: a whole value replaced, a header field of one
   written, or a call that reshapes one, asked in turn).
+- **A mutable virtual call** (a receiver that is a `&<mut Trait`, which a `&<mut fn` called is:
+  `FlagVDisp`, the virtual reference its first argument) hides the type behind it. The trait
+  method's declared `self &mut Trait` names no fields, so `reshapeCall` walks the virtual
+  reference the call was made through instead (`reshapeReachOwnerMode`), and that reaches any
+  container (`ReachVirtual`): the call is handed something that may reach it, and its body is not
+  visible. A closure that captured the list by `&mut`, or a struct that holds it, is the case; a
+  read-only virtual reference writes nothing it reaches and is not asked. The same for a
+  reference narrowed into an enum's variant (a trait pattern's binding), whose call may store
+  over the enum.
 - **A call through a virtual reference marked `+ ShapeKeeping`** reshapes nothing
   (`shapeKeepingCall`, tested first in `reshapeCall` and in `siCallType`): the value behind the
   reference was held to it where it became one (`shapeKeepsVia`, below), so a borrow into a
