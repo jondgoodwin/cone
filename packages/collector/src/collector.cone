@@ -27,13 +27,15 @@
 //     Gc.collect();                    // Leaf 1's 'final' runs here
 //   }
 //
-// ONE THREAD. The collector is single threaded: its roots are one chain (a
-// global in conestd's roots.cone), and nothing here is synchronized. A 'Gc'
-// reference made, held, reached or dropped on a thread the 'thread' package
-// started corrupts it. The compiler refuses a 'Gc' made or held inside an
-// actor or a 'parallel each' (ErrorGcStopgap): an actor has a collector of its
-// own, the actors package's, and this one is for code outside actors; nothing
-// yet guards a plain thread.
+// ONE THREAD. The collector is single threaded: each thread has a collector of
+// its own (its lists, counters and settings, and its roots, a chain in
+// conestd's roots.cone, are all thread-local globals), and nothing here is
+// synchronized. A 'Gc' reference is for the thread that made it: held, reached
+// or dropped on another thread, the object is outside that thread's lists, and
+// the thread that made it may free it while the reference lives. The compiler
+// refuses a 'Gc' made or held inside an actor or a 'parallel each'
+// (ErrorGcStopgap): an actor has a collector of its own, the actors package's,
+// and this one is for code outside actors; nothing yet guards a plain thread.
 //
 // THE NAME. The package is 'collector' and its region ref is 'Gc'. The 'mod'
 // line below makes 'Gc' the package's default fold, so a bare
@@ -231,55 +233,60 @@ const stepSize = 8192usize;
 // Bytes of work a step does for each byte allocated since the last one
 const stepMul = 2usize;
 
+// All of the collector's state below is @threadlocal: each thread has its own
+// lists, phase, counters and settings, all starting from the values written
+// here, so a thread's collector never sees another's objects. An object is
+// reached only by the thread that made it.
+//
 // Every header is linked into exactly one of these lists (each a header's
 // address, 0 for empty, newest first):
-mut allgc = 0usize;        // objects with nothing to finalize, or finalized
-mut finobj = 0usize;       // objects to finalize when unreachable
-mut tobefnz = 0usize;      // unreachable, awaiting their finalizer
-mut grays = 0usize;        // during marking: gray objects, through 'gray'
+mut @threadlocal allgc = 0usize;        // objects with nothing to finalize, or finalized
+mut @threadlocal finobj = 0usize;       // objects to finalize when unreachable
+mut @threadlocal tobefnz = 0usize;      // unreachable, awaiting their finalizer
+mut @threadlocal grays = 0usize;        // during marking: gray objects, through 'gray'
 
-mut curWhite = 1u32;       // what a new object is born, and a survivor made
-mut gcPhase = 0u32;        // where the collection is: pausePhase, ...
-mut sweepList = 0u32;      // sweeping allgc (0), finobj (1), tobefnz (2)
-mut sweepAt = 0usize;      // the object last kept there: the next is its next; 0, the list's head
-mut stepping = false;      // collection work (or a finalizer) is running
-mut debt = 0usize;         // bytes allocated, and not yet paid for by a step
-mut estimate = 0usize;     // bytes live at the flip, less what the sweep frees
-mut autoOn = true;         // Gc.stop() / Gc.start()
-mut stressOn = false;
-mut stressFull = false;    // CONE_GC_STRESS=full: a whole collection at every allocation
-mut envRead = false;
-mut maxBytes = 0usize;     // Gc.setLimit; 0 is none
+mut @threadlocal curWhite = 1u32;       // what a new object is born, and a survivor made
+mut @threadlocal gcPhase = 0u32;        // where the collection is: pausePhase, ...
+mut @threadlocal sweepList = 0u32;      // sweeping allgc (0), finobj (1), tobefnz (2)
+mut @threadlocal sweepAt = 0usize;      // the object last kept there: the next is its next; 0, the list's head
+mut @threadlocal stepping = false;      // collection work (or a finalizer) is running
+mut @threadlocal debt = 0usize;         // bytes allocated, and not yet paid for by a step
+mut @threadlocal estimate = 0usize;     // bytes live at the flip, less what the sweep frees
+mut @threadlocal autoOn = true;         // Gc.stop() / Gc.start()
+mut @threadlocal stressOn = false;
+mut @threadlocal stressFull = false;    // CONE_GC_STRESS=full: a whole collection at every allocation
+mut @threadlocal envRead = false;
+mut @threadlocal maxBytes = 0usize;     // Gc.setLimit; 0 is none
 
 // Generational running (see THE GENERATIONS)
-mut genOn = false;         // Gc.setGenerational, or CONE_GC_MODE
-mut barrierOn = false;     // the barrier shades: while marking, and between generational collections
-mut oldGen = false;        // the last sweep left its survivors black and old: the next marking is minor
-mut minorMark = false;     // this collection's marking is minor: the old generation is not traced
-mut sweepGen = false;      // this collection's sweep promotes its survivors, and stops at the first old one
-mut keeping = false;       // the atomic step is marking what finalizable garbage reaches
-mut sinceFull = 0usize;    // bytes promoted by minor collections since the last full marking
-mut oldLimit = 262144usize; // when sinceFull reaches it, the next marking is full
-mut fullEstimate = 0usize; // the estimate after the last full marking: what was live
-mut markedBytes = 0usize;  // bytes this collection's marking made black (not those it keeps for finalizers)
-mut oldGenBytes = 0usize;  // bytes of old objects
-mut backoff = 0usize;      // full collections to run before the next generational sweep
-mut backoffNext = 1usize;  // the backoff an unproductive minor collection sets: doubled each time, to 64
+mut @threadlocal genOn = false;         // Gc.setGenerational, or CONE_GC_MODE
+mut @threadlocal barrierOn = false;     // the barrier shades: while marking, and between generational collections
+mut @threadlocal oldGen = false;        // the last sweep left its survivors black and old: the next marking is minor
+mut @threadlocal minorMark = false;     // this collection's marking is minor: the old generation is not traced
+mut @threadlocal sweepGen = false;      // this collection's sweep promotes its survivors, and stops at the first old one
+mut @threadlocal keeping = false;       // the atomic step is marking what finalizable garbage reaches
+mut @threadlocal sinceFull = 0usize;    // bytes promoted by minor collections since the last full marking
+mut @threadlocal oldLimit = 262144usize; // when sinceFull reaches it, the next marking is full
+mut @threadlocal fullEstimate = 0usize; // the estimate after the last full marking: what was live
+mut @threadlocal markedBytes = 0usize;  // bytes this collection's marking made black (not those it keeps for finalizers)
+mut @threadlocal oldGenBytes = 0usize;  // bytes of old objects
+mut @threadlocal backoff = 0usize;      // full collections to run before the next generational sweep
+mut @threadlocal backoffNext = 1usize;  // the backoff an unproductive minor collection sets: doubled each time, to 64
 
-mut totalBytes = 0usize;   // bytes held by 'Gc' objects, headers included
-mut trigger = 262144usize; // start a collection when an allocation would pass this
-mut nobjects = 0usize;
-mut ncollections = 0usize;
-mut nfinalized = 0usize;
-mut nfreed = 0usize;
-mut nsteps = 0usize;
-mut maxStep = 0usize;      // the most work one automatic step did
-mut nminor = 0usize;       // minor collections: a minor marking, and a generational sweep
-mut nmarked = 0usize;      // objects made black
-mut nswept = 0usize;       // objects the sweep freed or kept
-mut npromoted = 0usize;    // bytes promoted by minor collections
-mut nwork = 0usize;        // bytes of work done, by every step and whole collection
-mut nminorWork = 0usize;   // of that, the work of minor collections
+mut @threadlocal totalBytes = 0usize;   // bytes held by 'Gc' objects, headers included
+mut @threadlocal trigger = 262144usize; // start a collection when an allocation would pass this
+mut @threadlocal nobjects = 0usize;
+mut @threadlocal ncollections = 0usize;
+mut @threadlocal nfinalized = 0usize;
+mut @threadlocal nfreed = 0usize;
+mut @threadlocal nsteps = 0usize;
+mut @threadlocal maxStep = 0usize;      // the most work one automatic step did
+mut @threadlocal nminor = 0usize;       // minor collections: a minor marking, and a generational sweep
+mut @threadlocal nmarked = 0usize;      // objects made black
+mut @threadlocal nswept = 0usize;       // objects the sweep freed or kept
+mut @threadlocal npromoted = 0usize;    // bytes promoted by minor collections
+mut @threadlocal nwork = 0usize;        // bytes of work done, by every step and whole collection
+mut @threadlocal nminorWork = 0usize;   // of that, the work of minor collections
 
 // The header before every 'Gc' value: the region ref. Its fields are public
 // because a private field is reached only through 'self', and the collector

@@ -21,9 +21,11 @@ srcdir = os.path.join(here, '..', 'src')
 # The package's files, in the order their structs are listed: every one of
 # them, so a file added to src/ must be added here too
 files = ['vulkan.cone', 'handles.cone', 'constants.cone', 'structs.cone',
-         'commandstructs.cone', 'pipelinestructs.cone', 'fntypes.cone',
-         'load.cone', 'functions.cone']
-assert sorted(files) == sorted(f for f in os.listdir(srcdir) if f.endswith('.cone')), \
+         'commandstructs.cone', 'pipelinestructs.cone', 'fntypes.cone']
+# The files of functions: no C struct is declared in them (the tables of
+# addresses, whose fields are usize), so layout has nothing to check there
+function_files = ['load.cone', 'instancefns.cone', 'devicefns.cone']
+assert sorted(files + function_files) == sorted(f for f in os.listdir(srcdir) if f.endswith('.cone')), \
     'layout.py lists a different set of files than src/ holds'
 src = ''
 for name in files:
