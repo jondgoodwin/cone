@@ -419,6 +419,12 @@ fn main() i32 {
     imm closedBefore = s3.closed;
     imm tid = cl.get(&mut lp, "http://127.0.0.1:1/x", Sink.Here(2u64));
     finishOf(&mut cl, &mut sv, &mut lp, tid, &mut t);
+    // Linux refuses the connect at once, so the idle connection's close may
+    // still be on its way when the fetch has failed: drive until it lands
+    imm landBy = Instant.now() + Duration.fromSeconds(2i64);
+    while cl.stats().closed - closedBefore < 2u64 and Instant.now() < landBy {
+      idleFor(&mut cl, &mut sv, &mut lp, Duration.fromMillis(5i64));
+    }
     expectUInt(cl.stats().closed - closedBefore, 2u64, "an idle connection closed to make room, and the failed one");
     expect(t.last == EventKind.Failed and t.stage == Stage.Connect, "nothing listens on port 1: Failed connecting");
     finish(&mut cl, &mut sv, &mut lp);

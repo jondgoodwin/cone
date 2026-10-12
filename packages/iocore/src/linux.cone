@@ -35,7 +35,8 @@
 // names the same condition (ECONNREFUSED is ERROR_CONNECTION_REFUSED, 1225;
 // a reset is ERROR_NETNAME_DELETED, 64), and one without such a number is its
 // errno above 'errnoBase'. 'systemText' turns either back into the C
-// library's words.
+// library's words. The certificate errors tls reports (Windows' CERT_E_*)
+// are Windows' numbers here too, and have Windows' words ('certificateWords').
 
 // epoll's struct epoll_event on x86-64, where it is packed: 12 bytes, the
 // events and then the 64-bit datum as two words
@@ -181,7 +182,7 @@ fn errnoCode(e i32) u32 {
 
 // The errno an error number stands for, or 0 when it names none
 fn codeErrno(code u32) i32 {
-  if code >= errnoBase {return i32.from(code - errnoBase);}
+  if code >= errnoBase and code < errnoBase + 0x10000u32 {return i32.from(code - errnoBase);}
   if code == 2u32 {2i32;}
   elif code == 5u32 {13i32;}
   elif code == 6u32 {9i32;}
@@ -207,9 +208,29 @@ fn codeErrno(code u32) i32 {
   else {0i32;}
 }
 
-// The C library's words for an error number, 'Error N' where it has none
+// Windows' own words (no line end, no full stop) for the certificate errors
+// the tls package reports with Windows' numbers on every system, since Linux
+// has no message table of its own to find them in; "" for any other number
+fn certificateWords(code u32) &str {
+  if code == 0x800B0101u32 {"A required certificate is not within its validity period when verifying against the current system clock or the timestamp in the signed file";}
+  elif code == 0x800B0109u32 {"A certificate chain processed, but terminated in a root certificate which is not trusted by the trust provider";}
+  elif code == 0x800B010Au32 {"A certificate chain could not be built to a trusted root authority";}
+  elif code == 0x800B010Fu32 {"The certificate's CN name does not match the passed value";}
+  elif code == 0x80092010u32 {"The certificate is revoked";}
+  elif code == 0x800B0100u32 {"No signature was present in the subject";}
+  elif code == 0x80004005u32 {"Unspecified error";}
+  else {"";}
+}
+
+// The C library's words for an error number (Windows' for a certificate
+// error), 'Error N' where it has none
 fn lxSystemText(code u32) String {
   mut out = String.empty();
+  imm words = certificateWords(code);
+  if words.len() > 0usize {
+    out.append(words);
+    return out;
+  }
   imm e = codeErrno(code);
   if e == 0i32 {
     out.append("Error ");
