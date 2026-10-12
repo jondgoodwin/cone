@@ -3,8 +3,9 @@
 // local's initializer extends it to the end of the block), as a literal given
 // where a Path is wanted by value is made one (methods.cone). Each expected
 // value is worked out from the path's own rules (methods.cone):
-// - the name of 'C:\work\a.txt' is 'a.txt', five bytes;
-// - 'C:\x' and a share are absolute, 'x/y' is not;
+// - the name of 'work/a.txt' is 'a.txt', five bytes;
+// - 'C:\x' and a share are absolute on Windows, and not on POSIX, which has
+//   no drive or share; 'x/y' is not on either;
 // - the name of 'a/b.tar.gz' is 'b.tar.gz', and the result, a piece of the
 //   temporary's text, is read within the statement that made it;
 // - a local '&Path' takes the extension '.txt' of the path it was given.
@@ -22,7 +23,7 @@ fn bothNames(a &Path, b &Path) usize { a.name().len() + b.name().len(); }
 // A parameter whose default is a literal: each call that omits the argument is
 // lent a temporary Path of its own, as if it had written the literal. By value,
 // the default is a Path made for the call.
-fn defaultedName(p &Path = "C:\\work\\a.txt") usize { p.name().len(); }
+fn defaultedName(p &Path = "work/a.txt") usize { p.name().len(); }
 fn defaultedAbsolute(p Path = "C:\\x") bool { p.isAbsolute(); }
 fn emptyDir(dir &Path = "") bool { dir.isEmpty(); }
 
@@ -34,13 +35,13 @@ struct Located {
 }
 
 fn main() i32 {
-  imm loc = new Located("C:\\work\\a.txt");
+  imm loc = new Located("work/a.txt");
   expectUInt(u64.from(loc.nameLen), 5, "a literal lent to an init's &Path");
 
-  expectUInt(u64.from(nameLen("C:\\work\\a.txt")), 5, "a literal lent as a &Path");
-  expectBool(absolute("C:\\x"), true, "C:\\x is absolute");
+  expectUInt(u64.from(nameLen("work/a.txt")), 5, "a literal lent as a &Path");
+  expectBool(absolute("C:\\x"), isWindows(), "C:\\x is absolute on Windows only");
   expectBool(absolute("x/y"), false, "x/y is not");
-  expectBool(absolute("\\\\server\\share"), true, "a share is");
+  expectBool(absolute("\\\\server\\share"), isWindows(), "a share is, on Windows");
   expectStr(nameOf("a/b.tar.gz"), "b.tar.gz", "a piece of the temporary, read in the statement");
   expectUInt(u64.from(bothNames("a/xy", "b/zzz")), 5, "two literals lent in one call");
 
@@ -49,12 +50,12 @@ fn main() i32 {
   imm given = Path.from("x/yz");
   expectUInt(u64.from(defaultedName(&given)), 2, "a variable lent in place of it");
   expectBool(given.view() == "x/yz", true, "and the variable is as it was");
-  expectBool(defaultedAbsolute(), true, "a Path default by value: C:\\x is absolute");
+  expectBool(defaultedAbsolute(), isWindows(), "a Path default by value: C:\\x is absolute on Windows only");
   expectBool(defaultedAbsolute("x/y"), false, "a literal given by value instead");
   expectBool(emptyDir(), true, "an empty literal default is an empty Path");
   expectBool(emptyDir("d"), false, "and a Path given is not");
 
-  imm p &Path = "C:\\work\\a.txt";
+  imm p &Path = "work/a.txt";
   expectStr(p.extension(), ".txt", "a local &Path keeps the temporary to the block's end");
   expectStr(p.name(), "a.txt", "and again, on a later line");
 
