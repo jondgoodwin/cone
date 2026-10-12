@@ -203,6 +203,7 @@ fn polyCentroid(poly &Poly) Vec3 {
 // (2 points) is cut parametrically
 fn clipToSides(poly &Poly, ref &Poly, n Vec3) Poly {
   mut cur = *poly;
+  mut next = newPoly();
   imm centre = polyCentroid(ref);
   mut e = 0usize;
   while e < ref.n {
@@ -212,7 +213,7 @@ fn clipToSides(poly &Poly, ref &Poly, n Vec3) Poly {
     if side.lengthSquared() < 1.0e-14 { e = e + 1usize; continue; }
     side = side.normalize();
     if side.dot(centre - r0) > 0. { side = -side; }   // outward
-    mut next = newPoly();
+    next.n = 0usize;
     if cur.n == 2usize {
       imm d0 = side.dot(cur.p[0usize] - r0);
       imm d1 = side.dot(cur.p[1usize] - r0);
@@ -338,30 +339,52 @@ pub fn clipFaces(faceA &Poly, faceB &Poly, n Vec3, margin f32) Manifold {
 // the contact normal belongs to: a box face for a face axis, the triangle for
 // the triangle's normal)
 pub fn clipFacesRef(faceA &Poly, faceB &Poly, n Vec3, margin f32, refIsA bool) Manifold {
-  mut out = newPointBuf();
+  mut clipped = newPoly();
+  mut r0 = new Vec3(0., 0., 0.);
+  mut aRef = false;
   if refIsA and faceA.n >= 3usize {
-    imm clipped = clipToSides(faceB, faceA, n);
-    imm a0 = faceA.p[0usize];
-    mut i = 0usize;
-    while i < clipped.n {
-      imm q = clipped.p[i];
-      imm depth = n.dot(a0 - q);
-      if depth >= -margin { out.add(new ContactPoint(q + n * depth, q, depth)); }
-      i = i + 1usize;
-    }
+    clipped = clipToSides(faceB, faceA, n);
+    r0 = faceA.p[0usize];
+    aRef = true;
   } else if faceB.n >= 3usize {
-    imm clipped = clipToSides(faceA, faceB, n);
-    imm b0 = faceB.p[0usize];
-    mut i = 0usize;
-    while i < clipped.n {
-      imm q = clipped.p[i];
-      imm depth = n.dot(q - b0);
-      if depth >= -margin { out.add(new ContactPoint(q, q - n * depth, depth)); }
-      i = i + 1usize;
-    }
+    clipped = clipToSides(faceA, faceB, n);
+    r0 = faceB.p[0usize];
+  } else {
+    return emptyManifold();
   }
-  if out.n == 0usize { return emptyManifold(); }
-  reducePoints(&out, n);
+  // Up to four points go straight into the manifold; only a clip of more (a long polygon
+  // reference) goes through the pruning buffer
+  mut m = emptyManifold();
+  m.normal = n;
+  mut kept = 0usize;
+  mut i = 0usize;
+  while i < clipped.n {
+    imm cp = facePoint(clipped.p[i], r0, n, aRef);
+    if cp.depth >= -margin {
+      if kept < 4usize { m.points[kept] = cp; }
+      kept = kept + 1usize;
+    }
+    i = i + 1usize;
+  }
+  if kept <= 4usize { m.count = kept; return m; }
+  mut buf = newPointBuf();
+  i = 0usize;
+  while i < clipped.n {
+    imm cp = facePoint(clipped.p[i], r0, n, aRef);
+    if cp.depth >= -margin { buf.add(cp); }
+    i = i + 1usize;
+  }
+  reducePoints(&buf, n);
+}
+
+// The contact of a clipped corner q against the reference plane through r0
+fn facePoint(q Vec3, r0 Vec3, n Vec3, refIsA bool) ContactPoint {
+  if refIsA {
+    imm depth = n.dot(r0 - q);
+    return new ContactPoint(q + n * depth, q, depth);
+  }
+  imm depth = n.dot(q - r0);
+  new ContactPoint(q, q - n * depth, depth);
 }
 
 // ---------------------------------------------------------------------------
@@ -606,9 +629,15 @@ fn collideBoxBox(a &Prim, xa Rigid, b &Prim, xb Rigid, margin f32) Manifold {
     k = k + 1usize;
   }
   if not r.edge {
-    // fall back to the deepest point if the clip left nothing
-    imm p = convexPenetration(a, xa, b, xb, margin);
-    return singleContact(r.n, p.pointA, p.pointB, -r.sep);
+    // The clip left nothing within reach of the reference face (a box tilted on it): the other
+    // box's deepest corner, against the reference face's plane
+    imm depth = -r.sep;
+    if r.ib == 0usize {
+      imm pb = xb.apply(b.supportCore(xb.unrotate(-r.n)));
+      return singleContact(r.n, pb + r.n * depth, pb, depth);
+    }
+    imm pa = xa.apply(a.supportCore(xa.unrotate(r.n)));
+    return singleContact(r.n, pa, pa - r.n * depth, depth);
   }
   imm ea = ax[r.ia];
   imm eb = bx[r.ib];
@@ -978,7 +1007,7 @@ fn dropDuplicatePoints(out &mut List[Manifold], first usize) {
 // 'out'. 'margin' is the speculative distance: pairs that are apart by less
 // are reported with a negative depth.
 pub fn collide(a &Shape, xa Rigid, b &Shape, xb Rigid, margin f32, out &mut List[Manifold]) {
-  if a.parts.len() == 0usize and b.parts.len() == 0usize {
+  if a.leaves.len() == 0usize and b.leaves.len() == 0usize {
     collidePrims(&a.prim, xa, &b.prim, xb, margin, 0u32, 0u32, out);
     return;
   }
@@ -988,14 +1017,14 @@ pub fn collide(a &Shape, xa Rigid, b &Shape, xb Rigid, margin f32, out &mut List
   while i < na {
     mut j = 0usize;
     while j < nb {
-      imm xai = if a.parts.len() > 0usize { xa * a.parts[i].xf; } else { xa; };
-      imm xbj = if b.parts.len() > 0usize { xb * b.parts[j].xf; } else { xb; };
-      if a.parts.len() > 0usize and b.parts.len() > 0usize {
-        collidePrims(&a.parts[i].prim, xai, &b.parts[j].prim, xbj, margin, u32.from(i), u32.from(j), out);
-      } else if a.parts.len() > 0usize {
-        collidePrims(&a.parts[i].prim, xai, &b.prim, xbj, margin, u32.from(i), 0u32, out);
+      imm xai = if a.leaves.len() > 0usize { xa * a.leaves[i].xf; } else { xa; };
+      imm xbj = if b.leaves.len() > 0usize { xb * b.leaves[j].xf; } else { xb; };
+      if a.leaves.len() > 0usize and b.leaves.len() > 0usize {
+        collidePrims(&a.leaves[i].prim, xai, &b.leaves[j].prim, xbj, margin, u32.from(i), u32.from(j), out);
+      } else if a.leaves.len() > 0usize {
+        collidePrims(&a.leaves[i].prim, xai, &b.prim, xbj, margin, u32.from(i), 0u32, out);
       } else {
-        collidePrims(&a.prim, xai, &b.parts[j].prim, xbj, margin, 0u32, u32.from(j), out);
+        collidePrims(&a.prim, xai, &b.leaves[j].prim, xbj, margin, 0u32, u32.from(j), out);
       }
       j = j + 1usize;
     }
