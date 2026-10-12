@@ -1317,6 +1317,39 @@ class Scenarios(unittest.TestCase):
         self.assertRegex((out / "posix.conebuild").read_text(),
                          r'\nimport libc: ".*/libc\.cone"\nimport core: ".*/core\.cone"\n')
 
+    def test_every_sample_compiles(self):
+        # Every program under samples/ is compiled for its own target, so none
+        # can rot unseen (webgl did, from #393 until 016a0e83). A sample with a
+        # congo.toml is a package: copied here and built by Congo. Any other is
+        # a lone program, its designated file named for its folder, compiled by
+        # conec alone; one holding wasm.syms (the browser's imports) is for
+        # WebAssembly. A folder with no .cone file at all (a retired sample's
+        # leftover build folder) is passed over
+        samples = congo.REPO / "samples"
+        seen = []
+        for folder in sorted(p for p in samples.iterdir() if p.is_dir()):
+            if not any(folder.rglob("*.cone")):
+                continue
+            seen.append(folder.name)
+            with self.subTest(sample=folder.name):
+                if (folder / "congo.toml").is_file():
+                    copy = self.root / "samples" / folder.name
+                    shutil.copytree(folder, copy, ignore=shutil.ignore_patterns("build"))
+                    self.congo("build", cwd=copy)
+                    continue
+                main = folder / f"{folder.name}.cone"
+                self.assertTrue(main.is_file(), f"{folder.name} has no {main.name}")
+                target = ["--wasm"] if (folder / "wasm.syms").is_file() else []
+                out = self.root / "samples-out" / folder.name
+                out.mkdir(parents=True)
+                run = subprocess.run([str(congo.REPO_CONEC), *target, "-o", str(out), main.name],
+                                     cwd=folder, capture_output=True, text=True)
+                self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+                self.assertNotRegex(run.stdout + run.stderr, r"(?m)^Error \d+",
+                                    f"{folder.name}:\n{run.stdout}{run.stderr}")
+        self.assertIn("oslayer", seen)
+        self.assertIn("webgl", seen)
+
     @unittest.skipUnless(IS_WINDOWS, "libc binds the Windows C runtime")
     def test_the_geomath_example(self):
         # packages/geomath/examples/tour.cone, run where it stands as a lone

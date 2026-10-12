@@ -982,7 +982,10 @@ Visual Studio projects stay at the root.
 - `samples/`: sample Cone programs. `oslayer` tours the `libc` and `posix`
   packages and is built and run by `test_congo.py`, as is `geomath`'s example,
   `packages/geomath/examples/tour.cone`. `webgl` draws through WebGL from
-  WebAssembly, with its own bindings; the test suite does not build it.
+  WebAssembly, with its own bindings. `test_congo.py`'s
+  `test_every_sample_compiles` compiles every sample for its own target (a
+  package by Congo; a lone program by conec, `--wasm` when its folder holds
+  `wasm.syms`), so a new sample is covered without listing it.
 - `workitems/`: the plan and backlog are kept by the project owner outside this
   repository; `workitems/_index.md` says so. `workitems/done/` holds completed
   items.
