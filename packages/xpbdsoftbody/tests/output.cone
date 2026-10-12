@@ -1,0 +1,98 @@
+// The output meshes: positions, normals, indices, double sidedness, a welded
+// mesh's seams, and a rope's tube.
+
+mod output;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import mesh use Mesh;
+import xpbdsoftbody use *;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+fn main() i32 {
+  // a flat 2 x 2 cloth in the xy plane, front towards -z (across x down = (1,0,0) x (0,-1,0) = (0,0,-1))
+  mut cloth = clothGrid(new Vec3(0., 1., 0.), new Vec3(1., 0., 0.), new Vec3(0., -1., 0.), 2u32, 2u32, &Fabric.light());
+  mut out = Mesh.empty();
+  mut scratch = List[Vec3].empty();
+  writeMesh(&cloth, &mut out, false, &mut scratch);
+  expectInt(i64.from(out.positions.len()), 9i64, "one vertex a particle");
+  expectInt(i64.from(out.indices.len()), 24i64, "8 triangles");
+  expectInt(i64.from(out.uvs.len()), 9i64, "and uvs");
+  near(out.normals[4usize].z, -1., 0.0001, "front normal is across x down, -z");
+  near(out.normals[4usize].x, 0., 0.0001, "and nothing else");
+  // each triangle's own normal (right hand rule on its winding) agrees with the vertex normals
+  mut agree = 0;
+  mut t = 0usize;
+  while t < out.triangleCount() {
+    if out.triangleNormal(t).dot(*out.normals[usize.from(*out.indices[3usize * t])]) > 0.99 { agree = agree + 1; }
+    t = t + 1usize;
+  }
+  expectInt(i64.from(agree), 8i64, "winding agrees with the normals on every triangle");
+  near((*out.uvs[8usize]).x, 1., 0.0001, "far corner uv u");
+  near((*out.uvs[8usize]).y, 1., 0.0001, "and v");
+
+  // double sided: a second set of vertices, normals negated, triangles reversed
+  mut both = Mesh.empty();
+  writeMesh(&cloth, &mut both, true, &mut scratch);
+  expectInt(i64.from(both.positions.len()), 18i64, "double sided: twice the vertices");
+  expectInt(i64.from(both.indices.len()), 48i64, "and twice the indices");
+  near(both.normals[13usize].z, 1., 0.0001, "the back copy faces +z");
+  mut backAgree = 0;
+  t = 8usize;
+  while t < both.triangleCount() {
+    if both.triangleNormal(t).dot(*both.normals[usize.from(*both.indices[3usize * t])]) > 0.99 { backAgree = backAgree + 1; }
+    t = t + 1usize;
+  }
+  expectInt(i64.from(backAgree), 8i64, "and its triangles are wound to match");
+  expectInt(i64.from(outputVertexCount(&cloth, true)), 18i64, "outputVertexCount");
+  expectInt(i64.from(outputIndexCount(&cloth, true)), 48i64, "outputIndexCount");
+
+  // the mesh is rewritten in place: move a particle and write again, the counts hold
+  cloth.pos.set(4usize, new Vec3(0.5, 0.5, -0.3));
+  writeMesh(&cloth, &mut both, true, &mut scratch);
+  expectInt(i64.from(both.positions.len()), 18i64, "rewritten in place");
+  near(both.positions[4usize].z, -0.3, 0.0001, "with the new position");
+  expectBool(both.normals[4usize].z < -0.5 and both.normals[4usize].x == 0., true, "and a new normal (the centre now bulges towards the front)");
+
+  // a welded mesh keeps the source mesh's vertices, seams included
+  imm sphere = Mesh.sphere(1., 8);
+  mut body = fromMesh(&sphere, &Fabric.light(), 0.0001, 1.);
+  mut sOut = Mesh.empty();
+  writeMesh(&body, &mut sOut, false, &mut scratch);
+  expectInt(i64.from(sOut.positions.len()), i64.from(sphere.positions.len()), "a sphere's output has the mesh's vertex count, seam copies and all");
+  expectBool(body.particleCount() < sphere.positions.len(), true, "though fewer particles");
+  near((*sOut.positions[9usize] - *sphere.positions[9usize]).length(), 0., 0.0001, "at the same places before a step");
+  near((*sOut.normals[20usize]).length(), 1., 0.0001, "with unit normals");
+  expectBool((*sOut.normals[20usize]).dot(*sphere.normals[20usize]) > 0.95, true, "that point outward as the sphere's own do");
+
+  // a rope as a tube
+  mut pts = List[Vec3].empty();
+  mut i = 0;
+  while i <= 4 {
+    pts.push(new Vec3(f32.from(i), 0., 0.));
+    i = i + 1;
+  }
+  imm rope = chain(pts.view(), 0.1, 0., 0.05);
+  mut tube = Mesh.empty();
+  writeTube(&rope, &mut tube, 0.05, 6u32);
+  expectInt(i64.from(tube.positions.len()), 30i64, "5 rings of 6");
+  expectInt(i64.from(tube.indices.len()), 4i64 * 6i64 * 6i64, "4 segments of 6 quads");
+  mut worst = 0.;
+  mut v = 0usize;
+  while v < tube.positions.len() {
+    imm p = *tube.positions[v];
+    imm r = new Vec2(p.y, p.z).length();
+    if libcAbs(r - 0.05) > worst { worst = libcAbs(r - 0.05); }
+    if libcAbs((*tube.normals[v]).length() - 1.) > worst { worst = libcAbs((*tube.normals[v]).length() - 1.); }
+    if libcAbs((*tube.normals[v]).x) > worst { worst = libcAbs((*tube.normals[v]).x); }
+    v = v + 1usize;
+  }
+  near(worst, 0., 0.0001, "every ring vertex 0.05 m from the axis, normals unit and radial");
+  done();
+}
+
+fn libcAbs(a f32) f32 {if a < 0. {-a;} else {a;};}

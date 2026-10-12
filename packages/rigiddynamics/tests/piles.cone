@@ -1,0 +1,194 @@
+// Robustness: many mixed shapes, ground that is not a box, and determinism.
+//
+//   a pile      eighty boxes, spheres, capsules, cylinders and hulls dropped into a
+//               walled pit settle: none falls through the floor or out of the pit,
+//               none is left moving, they go to sleep, and no two overlap deeper
+//               than a centimetre
+//   terrain     a box rests on a heightfield and on a triangle mesh, a ball rolls
+//               down a heightfield slope at the rate g sin(theta) / (1 + 2/5) of a
+//               rolling sphere (the solver's friction keeps it from sliding)
+//   determinism two worlds built the same way and stepped the same way hold
+//               bit-for-bit the same state
+
+mod piles;
+
+import testing use *;
+import collections use List;
+import geomath use *;
+import rigidcollide use *;
+import rigiddynamics use *;
+import noise;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+struct Rng { state u32; }
+
+fn nextf(r &mut Rng) f32 {
+  r.state = noise.pcg(r.state + 1u32);
+  noise.toUnit(r.state);
+}
+
+fn rand(r &mut Rng, lo f32, hi f32) f32 { lo + (hi - lo) * nextf(r); }
+
+fn pit(w &mut World) {
+  imm floorS = w.addShape(Shape.single(Prim.box(new Vec3(4., 0.5, 4.))));
+  imm wallX = w.addShape(Shape.single(Prim.box(new Vec3(0.5, 3., 4.))));
+  imm wallZ = w.addShape(Shape.single(Prim.box(new Vec3(4., 3., 0.5))));
+  w.createBody(BodyDef.staticAt(floorS, new Vec3(0., -0.5, 0.)));
+  w.createBody(BodyDef.staticAt(wallX, new Vec3(-4.5, 2.5, 0.)));
+  w.createBody(BodyDef.staticAt(wallX, new Vec3(4.5, 2.5, 0.)));
+  w.createBody(BodyDef.staticAt(wallZ, new Vec3(0., 2.5, -4.5)));
+  w.createBody(BodyDef.staticAt(wallZ, new Vec3(0., 2.5, 4.5)));
+}
+
+// Eighty bodies in a loose grid above the pit, the same every time
+fn fill(w &mut World, count i32) {
+  mut rng = new Rng(777u32);
+  imm boxS = w.addShape(Shape.single(Prim.box(new Vec3(0.3, 0.2, 0.25))));
+  imm sphereS = w.addShape(Shape.single(Prim.sphere(0.25)));
+  imm capsuleS = w.addShape(Shape.single(Prim.capsule(0.15, 0.25)));
+  imm cylinderS = w.addShape(Shape.single(Prim.cylinder(0.2, 0.2)));
+  mut pts = List[Vec3].empty();
+  pts.push(new Vec3(-0.25, -0.2, -0.25)); pts.push(new Vec3(0.25, -0.2, -0.25)); pts.push(new Vec3(0.25, -0.2, 0.25));
+  pts.push(new Vec3(-0.25, -0.2, 0.25)); pts.push(new Vec3(0., 0.3, 0.));
+  imm hullS = w.addShape(Shape.single(convexHull(pts.view())));
+  mut kinds = List[u32].empty();
+  kinds.push(boxS); kinds.push(sphereS); kinds.push(capsuleS); kinds.push(cylinderS); kinds.push(hullS);
+  mut n = 0;
+  while n < count {
+    imm shape = *kinds[usize.from(n % 5)];
+    mut bd = BodyDef.dynamicAt(shape, new Vec3(-3. + f32.from(n % 5) * 1.4 + rand(&mut rng, -0.1, 0.1), 1. + f32.from(n / 25) * 1.2,
+      -3. + f32.from((n / 5) % 5) * 1.4 + rand(&mut rng, -0.1, 0.1)));
+    bd.rot = Quat.angleAxis(rand(&mut rng, 0., 3.), new Vec3(rand(&mut rng, -1., 1.), 1., rand(&mut rng, -1., 1.)).normalize());
+    w.createBody(bd);
+    n = n + 1;
+  }
+}
+
+fn testPile() {
+  mut w = World.make();
+  pit(&mut w);
+  fill(&mut w, 80);
+  mut i = 0;
+  while i < 60 * 25 { w.step(1. / 60.); i = i + 1; }
+  mut inside = true;
+  mut asleep = 0;
+  mut moving = 0;
+  mut b = 5usize;
+  while b < w.bodies.len() {
+    imm p = w.bodies[b].pos;
+    if p.y < 0. or absf(p.x) > 4. or absf(p.z) > 4. or p.y > 4. { inside = false; }
+    if w.bodies[b].asleep { asleep = asleep + 1; }
+    if w.bodies[b].linVel.length() > 0.05 { moving = moving + 1; }
+    b = b + 1usize;
+  }
+  expectBool(inside, true, "every body is still in the pit, on the floor");
+  expectInt(i64.from(moving), 0i64, "none is moving after 25 s");
+  expectInt(i64.from(asleep), 80i64, "all eighty are asleep: rolling resistance and twist friction stop the balls");
+  // penetration: the deepest contact in the cache
+  mut deepest = -100.;
+  mut c = 0usize;
+  while c < w.cache.len() {
+    imm ct = w.cache[c];
+    mut k = 0usize;
+    while k < ct.count { deepest = maxf(deepest, ct.pts[k].depth); k = k + 1usize; }
+    c = c + 1usize;
+  }
+  expectBool(deepest < 0.01, true, "no contact is deeper than a centimetre");
+}
+
+fn testTerrain() {
+  // a heightfield tilted by 0.2 per metre along x (11.3 degrees); a box rests on it, a ball rolls down it
+  mut w = World.make();
+  w.settings.sleepEnabled = false;
+  mut hs = List[f32].empty();
+  mut r = 0u32;
+  while r < 11u32 {
+    mut c = 0u32;
+    while c < 41u32 { hs.push(8. - 0.2 * f32.from(c)); c = c + 1u32; }
+    r = r + 1u32;
+  }
+  imm field = w.addShape(Shape.single(Prim.heightfield(hs, 41u32, 11u32, 1., 1., new Vec3(-20., 0., -5.))));
+  w.createBody(BodyDef.staticAt(field, new Vec3(0., 0., 0.)));
+  imm boxS = w.addShape(Shape.single(Prim.box(new Vec3(0.5, 0.5, 0.5))));
+  imm ballS = w.addShape(Shape.single(Prim.sphere(0.5)));
+  // friction 0.5 > tan(11.3 degrees) = 0.2: the box stays where it lands
+  mut bd = BodyDef.dynamicAt(boxS, new Vec3(-10., 8. - 0.2 * 10. + 1., 0.));
+  imm boxId = w.createBody(bd);
+  mut sd = BodyDef.dynamicAt(ballS, new Vec3(-5., 8. - 0.2 * 15. + 1., 2.));
+  sd.material = PhysMaterial.make(0.5, 0.5, 0.);
+  sd.linearDamping = 0.; sd.angularDamping = 0.;
+  imm ballId = w.createBody(sd);
+  mut i = 0;
+  while i < 150 { w.step(1. / 60.); i = i + 1; }
+  imm x0 = w.positionOf(boxId).x;
+  imm bx0 = w.positionOf(ballId).x;
+  imm bt0 = w.linearVelocity(ballId).length();
+  while i < 270 { w.step(1. / 60.); i = i + 1; }
+  near(w.positionOf(boxId).x, x0, 0.01, "a box stays on a heightfield slope of 11 degrees");
+  // the slope under the box: y = 8 - 0.2 (x + 20), the box's centre half a metre up along the normal
+  imm bp = w.positionOf(boxId);
+  near(bp.y, 8. - 0.2 * (bp.x + 20.) + 0.5 * 1.0198, 0.03, "resting on the surface");
+  // the ball: rolls with a = g (sin(theta) - rolling cos(theta) / r) / (1 + I/(m r^2)) = ... / 1.4 along the slope
+  // (rolling resistance 0.01 m, radius 0.5 m: the torque that slows it is 0.01 m times the normal force)
+  imm theta = atan2(0.2, 1.);
+  imm a = 9.81 * (sin(theta) - 0.01 * cos(theta) / 0.5) / 1.4;
+  imm v1 = w.linearVelocity(ballId).length();
+  near((v1 - bt0) / 2., a, 0.05, "a ball rolls down a heightfield at g (sin - rolling cos / r) / 1.4");
+  expectBool(w.positionOf(ballId).x > bx0 + 1., true, "and travels down it");
+}
+
+fn testMesh() {
+  // a box on a tilted triangle-mesh plane (two triangles), friction holds it
+  mut w = World.make();
+  imm tilt = 0.2;
+  mut verts = List[Vec3].empty();
+  verts.push(new Vec3(-20., 0., -20.)); verts.push(new Vec3(20., 0., -20.)); verts.push(new Vec3(20., 0., 20.)); verts.push(new Vec3(-20., 0., 20.));
+  mut tris = List[u32].empty();
+  tris.push(0u32); tris.push(2u32); tris.push(1u32); tris.push(0u32); tris.push(3u32); tris.push(2u32);
+  imm meshS = w.addShape(Shape.single(meshPrim(verts, tris)));
+  mut md = BodyDef.staticAt(meshS, new Vec3(0., 0., 0.));
+  md.rot = Quat.angleAxis(tilt, new Vec3(0., 0., 1.));
+  w.createBody(md);
+  imm boxS = w.addShape(Shape.single(Prim.box(new Vec3(0.5, 0.5, 0.5))));
+  imm n = Quat.angleAxis(tilt, new Vec3(0., 0., 1.)) * new Vec3(0., 1., 0.);
+  mut bd = BodyDef.dynamicAt(boxS, n * 0.505);
+  bd.rot = Quat.angleAxis(tilt, new Vec3(0., 0., 1.));
+  imm b = w.createBody(bd);
+  mut i = 0;
+  while i < 240 { w.step(1. / 60.); i = i + 1; }
+  near(w.positionOf(b).x, 0.505 * (-sin(tilt)), 0.01, "a box set on a tilted triangle mesh stays where it is put");
+  near(w.linearVelocity(b).length(), 0., 0.001, "at rest");
+  near((w.positionOf(b)).dot(n) - 0.5, 0., 0.002, "its bottom on the mesh's plane");
+}
+
+fn testDeterminism() {
+  mut a = World.make();
+  mut b = World.make();
+  pit(&mut a); pit(&mut b);
+  fill(&mut a, 60); fill(&mut b, 60);
+  mut i = 0;
+  while i < 400 { a.step(1. / 60.); b.step(1. / 60.); i = i + 1; }
+  mut same = true;
+  mut k = 0usize;
+  while k < a.bodies.len() {
+    imm p = a.bodies[k].pos;
+    imm q = b.bodies[k].pos;
+    imm ra = a.bodies[k].rot;
+    imm rb = b.bodies[k].rot;
+    if p.x != q.x or p.y != q.y or p.z != q.z or ra.x != rb.x or ra.w != rb.w { same = false; }
+    k = k + 1usize;
+  }
+  expectBool(same, true, "two identical worlds stepped identically are bit-for-bit the same");
+  expectInt(i64.from(a.lastContacts), i64.from(b.lastContacts), "with the same contacts");
+}
+
+fn main() i32 {
+  testPile();
+  testTerrain();
+  testMesh();
+  testDeterminism();
+  done();
+}

@@ -1,0 +1,308 @@
+// ======== Animations and skins as data ========
+//
+// Sampling a clip at a time (glTF 2.0 section 3.11, "Animations"), and
+// mapping a skin onto bonepose's skeleton. Nothing here advances time or
+// owns a player; the browser decides when, and how clips blend (poseik's
+// Animator, or its own).
+
+// The key interval holding t: the number k with times[k] <= t < times[k + 1]
+// (the last interval for t at or past the end), and the fraction through it;
+// 'before' is true when t is before the first key and 'after' at or past the
+// last (the clip holds its end values outside its range).
+fn keyAt(times &List[f32], t f32, frac &mut f32) usize {
+  imm n = times.len();
+  if t <= *times[0usize] { *frac = 0.; return 0usize; }
+  if t >= *times[n - 1usize] { *frac = 1.; return if n >= 2usize {n - 2usize;} else {0usize;}; }
+  // Binary search for the last key not after t
+  mut lo = 0usize;
+  mut hi = n - 1usize;
+  while hi - lo > 1usize {
+    imm mid = (lo + hi) / 2usize;
+    if *times[mid] <= t { lo = mid; } else { hi = mid; }
+  }
+  *frac = (t - *times[lo]) / (*times[lo + 1usize] - *times[lo]);
+  lo;
+}
+
+// Component c of the value of key k (for cubic splines the middle of the
+// three: in-tangent, value, out-tangent)
+fn keyValue(s &AnimSampler, k usize, c usize) f32 {
+  imm st = usize.from(s.stride);
+  if s.interpolation == InterpCubic { return *s.values[(k * 3usize + 1usize) * st + c]; }
+  *s.values[k * st + c];
+}
+
+// Cubic Hermite spline (glTF Appendix C): the value at fraction 'f' of an
+// interval of length 'dt' from key k to key k + 1, component c
+fn cubicAt(s &AnimSampler, k usize, f f32, dt f32, c usize) f32 {
+  imm st = usize.from(s.stride);
+  imm v0 = *s.values[(k * 3usize + 1usize) * st + c];
+  imm b0 = *s.values[(k * 3usize + 2usize) * st + c] * dt;           // the out-tangent of key k
+  imm a1 = *s.values[((k + 1usize) * 3usize) * st + c] * dt;         // the in-tangent of key k + 1
+  imm v1 = *s.values[((k + 1usize) * 3usize + 1usize) * st + c];
+  imm f2 = f * f;
+  imm f3 = f2 * f;
+  (2. * f3 - 3. * f2 + 1.) * v0 + (f3 - 2. * f2 + f) * b0 + (-2. * f3 + 3. * f2) * v1 + (f3 - f2) * a1;
+}
+
+// One component of a sampler at time t, by its interpolation (rotations are
+// joined by 'sampleQuat', which turns the shortest way)
+fn sampleComp(s &AnimSampler, t f32, c usize) f32 {
+  mut f = 0.;
+  imm k = keyAt(&s.times, t, &mut f);
+  imm n = s.times.len();
+  if n == 1usize { return keyValue(s, 0usize, c); }
+  if s.interpolation == InterpStep {
+    // Step holds key k until the next key's time
+    return if t >= *s.times[k + 1usize] {keyValue(s, k + 1usize, c);} else {keyValue(s, k, c);};
+  }
+  if s.interpolation == InterpCubic {
+    if t <= *s.times[0usize] { return keyValue(s, 0usize, c); }
+    if t >= *s.times[n - 1usize] { return keyValue(s, n - 1usize, c); }
+    return cubicAt(s, k, f, *s.times[k + 1usize] - *s.times[k], c);
+  }
+  keyValue(s, k, c) * (1. - f) + keyValue(s, k + 1usize, c) * f;
+}
+
+// A translation or scale sampler at time t
+pub fn sampleVec3(s &AnimSampler, t f32) Vec3 {
+  new Vec3(sampleComp(s, t, 0usize), sampleComp(s, t, 1usize), sampleComp(s, t, 2usize));
+}
+
+fn quatKey(s &AnimSampler, k usize) Quat {
+  new Quat(keyValue(s, k, 0usize), keyValue(s, k, 1usize), keyValue(s, k, 2usize), keyValue(s, k, 3usize));
+}
+
+// A rotation sampler at time t: linear is the spherical interpolation along
+// the shorter arc; step holds; cubic spline is the Hermite curve on the four
+// components, normalised
+pub fn sampleQuat(s &AnimSampler, t f32) Quat {
+  mut f = 0.;
+  imm k = keyAt(&s.times, t, &mut f);
+  imm n = s.times.len();
+  if n == 1usize { return normQuat(quatKey(s, 0usize)); }
+  if s.interpolation == InterpStep {
+    return normQuat(if t >= *s.times[k + 1usize] {quatKey(s, k + 1usize);} else {quatKey(s, k);});
+  }
+  if s.interpolation == InterpCubic {
+    if t <= *s.times[0usize] { return normQuat(quatKey(s, 0usize)); }
+    if t >= *s.times[n - 1usize] { return normQuat(quatKey(s, n - 1usize)); }
+    imm dt = *s.times[k + 1usize] - *s.times[k];
+    return normQuat(new Quat(cubicAt(s, k, f, dt, 0usize), cubicAt(s, k, f, dt, 1usize), cubicAt(s, k, f, dt, 2usize),
+      cubicAt(s, k, f, dt, 3usize)));
+  }
+  slerp(normQuat(quatKey(s, k)), normQuat(quatKey(s, k + 1usize)), f);
+}
+
+// Spherical linear interpolation along the shorter arc (Shoemake 1985); near
+// parallel it falls back to normalised linear interpolation
+pub fn slerp(a Quat, b Quat, t f32) Quat {
+  mut dot = a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w;
+  mut q = b;
+  if dot < 0. { q = new Quat(-b.x, -b.y, -b.z, -b.w); dot = -dot; }
+  if dot > 0.9995 {
+    return normQuat(new Quat(a.x + (q.x - a.x) * t, a.y + (q.y - a.y) * t, a.z + (q.z - a.z) * t, a.w + (q.w - a.w) * t));
+  }
+  imm theta = acos(dot);
+  imm sinT = sin(theta);
+  imm wa = sin((1. - t) * theta) / sinT;
+  imm wb = sin(t * theta) / sinT;
+  new Quat(a.x * wa + q.x * wb, a.y * wa + q.y * wb, a.z * wa + q.z * wb, a.w * wa + q.w * wb);
+}
+
+// A weights sampler at time t: one weight per morph target into 'out'
+pub fn sampleWeights(s &AnimSampler, t f32, out &mut List[f32]) {
+  out.clear();
+  mut c = 0usize;
+  while c < usize.from(s.stride) {
+    out.push(sampleComp(s, t, c));
+    c += 1usize;
+  }
+}
+
+// Every node's rest transform (the file's translation, rotation and scale)
+pub fn restTransforms(g &Gltf) List[Transform3] {
+  mut out = List[Transform3].withCapacity(g.nodes.len());
+  mut i = 0usize;
+  while i < g.nodes.len() { out.push(g.nodes[i].trs); i += 1usize; }
+  out;
+}
+
+// Evaluate an animation at time t. 'locals' holds one transform per node
+// (start it from 'restTransforms'); the channels that move a node's
+// translation, rotation or scale replace that part. 'weights' is one list per
+// node (empty lists to start); a weights channel fills its node's. The clip
+// does not loop; t outside [0, duration] holds the end values.
+pub fn evaluate(g &Gltf, anim &GltfAnimation, t f32, locals &mut List[Transform3], weights &mut List[List[f32]]) {
+  mut c = 0usize;
+  while c < anim.channels.len() {
+    imm ch = anim.channels[c];
+    imm node = usize.from(ch.node);
+    imm s = anim.samplers[usize.from(ch.sampler)];
+    if ch.path == PathTranslation {
+      imm cur = *locals[node];
+      locals.set(node, new Transform3(sampleVec3(s, t), cur.rotation, cur.scale));
+    } elif ch.path == PathRotation {
+      imm cur = *locals[node];
+      locals.set(node, new Transform3(cur.translation, sampleQuat(s, t), cur.scale));
+    } elif ch.path == PathScale {
+      imm cur = *locals[node];
+      locals.set(node, new Transform3(cur.translation, cur.rotation, sampleVec3(s, t)));
+    } else {
+      sampleWeights(s, t, &mut weights[node]);
+    }
+    c += 1usize;
+  }
+}
+
+// ======== A skin as a bonepose skeleton ========
+
+// A skin turned into a Skeleton. glTF's joints are nodes in any order; a
+// Skeleton's bones come parents first, so the bones are the joints sorted
+// that way. 'boneOfJoint[j]' is the bone of the skin's joint j (the number a
+// vertex's JOINTS_0 holds), 'jointOfBone[b]' the other way.
+pub struct SkinMap {
+  pub skeleton Skeleton;
+  pub boneOfJoint List[u32];
+  pub jointOfBone List[u32];
+  pub nodeOfBone List[u32];
+}
+
+// Whether node n is one of the skin's joints (answering its joint number)
+fn jointNumber(skin &GltfSkin, n i32) i32 {
+  mut j = 0usize;
+  while j < skin.joints.len() {
+    if i32.from(*skin.joints[j]) == n { return i32.from(j); }
+    j += 1usize;
+  }
+  -1i32;
+}
+
+// Node n's rest transform relative to the nearest ancestor that is a joint
+// (or relative to the model, for a root joint): the locals of the nodes
+// between, composed. 'parentJoint' receives that ancestor's joint number or -1.
+fn restRelative(g &Gltf, skin &GltfSkin, n usize, parentJoint &mut i32) Transform3 {
+  mut t = g.nodes[n].trs;
+  mut p = g.nodes[n].parent;
+  while p >= 0i32 {
+    imm j = jointNumber(skin, p);
+    if j >= 0i32 { *parentJoint = j; return t; }
+    t = g.nodes[usize.from(p)].trs * t;
+    p = g.nodes[usize.from(p)].parent;
+  }
+  *parentJoint = -1i32;
+  t;
+}
+
+pub fn skeletonOf(g &Gltf, skinIndex usize) SkinMap {
+  imm skin = g.skins[skinIndex];
+  imm nj = skin.joints.len();
+  // Parent joint of each joint
+  mut parentJoint = List[i32].empty();
+  mut rest = List[Transform3].empty();
+  mut j = 0usize;
+  while j < nj {
+    mut pj = -1i32;
+    rest.push(restRelative(g, skin, usize.from(*skin.joints[j]), &mut pj));
+    parentJoint.push(pj);
+    j += 1usize;
+  }
+  // Order parents first: repeatedly take the joints whose parent is placed
+  mut map = new SkinMap(Skeleton.empty(), List[u32].empty(), List[u32].empty(), List[u32].empty());
+  mut placed = List[bool].empty();
+  mut boneOf = List[i32].empty();
+  j = 0usize;
+  while j < nj { placed.push(false); boneOf.push(-1i32); map.boneOfJoint.push(0u32); j += 1usize; }
+  mut count = 0usize;
+  mut guard = 0usize;
+  while count < nj and guard <= nj {
+    j = 0usize;
+    while j < nj {
+      if not *placed[j] and (*parentJoint[j] < 0i32 or *placed[usize.from(*parentJoint[j])]) {
+        imm pb = if *parentJoint[j] < 0i32 {-1i32;} else {*boneOf[usize.from(*parentJoint[j])];};
+        imm b = map.skeleton.addBone(pb, *rest[j]);
+        boneOf.set(j, i32.from(b));
+        map.boneOfJoint.set(j, u32.from(b));
+        map.jointOfBone.push(u32.from(j));
+        map.nodeOfBone.push(*skin.joints[j]);
+        placed.set(j, true);
+        count += 1usize;
+      }
+      j += 1usize;
+    }
+    guard += 1usize;
+  }
+  map;
+}
+
+// The skeleton's pose with the animation at time t: each bone's local
+// transform, composed through any nodes between joints
+pub fn poseAt(g &Gltf, map &SkinMap, skinIndex usize, anim &GltfAnimation, t f32) Pose {
+  imm skin = g.skins[skinIndex];
+  mut locals = restTransforms(g);
+  mut weights = List[List[f32]].empty();
+  mut i = 0usize;
+  while i < g.nodes.len() { weights.push(List[f32].empty()); i += 1usize; }
+  evaluate(g, anim, t, &mut locals, &mut weights);
+  mut pose = Pose.empty();
+  mut b = 0usize;
+  while b < map.skeleton.boneCount() {
+    imm n = usize.from(*map.nodeOfBone[b]);
+    // Compose from the nearest joint ancestor down
+    mut tr = *locals[n];
+    mut p = g.nodes[n].parent;
+    while p >= 0i32 and jointNumber(skin, p) < 0i32 {
+      tr = (*locals[usize.from(p)]) * tr;
+      p = g.nodes[usize.from(p)].parent;
+    }
+    pose.locals.push(tr);
+    b += 1usize;
+  }
+  pose;
+}
+
+// The matrices that skin a vertex: for joint j, its node's world matrix times
+// its inverse bind matrix (glTF 3.7.3.3, with the mesh node's inverse left
+// out, as a vertex is taken to model space), in the skin's joint order.
+// 'worlds' is the node world matrices (Gltf.worldMatrices, or recomputed for
+// an animated pose).
+pub fn jointMatrices(g &Gltf, skinIndex usize, worlds &List[Mat4]) List[Mat4] {
+  imm skin = g.skins[skinIndex];
+  mut out = List[Mat4].empty();
+  mut j = 0usize;
+  while j < skin.joints.len() {
+    out.push((*worlds[usize.from(*skin.joints[j])]) * (*skin.inverseBind[j]));
+    j += 1usize;
+  }
+  out;
+}
+
+// World matrices from the node transforms (an animation's output)
+pub fn worldsOf(g &Gltf, locals &List[Transform3]) List[Mat4] {
+  imm n = g.nodes.len();
+  mut out = List[Mat4].empty();
+  mut i = 0usize;
+  while i < n { out.push(Mat4.identity()); i += 1usize; }
+  mut done = List[bool].empty();
+  i = 0usize;
+  while i < n { done.push(false); i += 1usize; }
+  i = 0usize;
+  while i < n {
+    worldFrom(g, locals, i, &mut out, &mut done);
+    i += 1usize;
+  }
+  out;
+}
+
+fn worldFrom(g &Gltf, locals &List[Transform3], i usize, out &mut List[Mat4], done &mut List[bool]) {
+  if *done[i] { return; }
+  imm p = g.nodes[i].parent;
+  imm lm = (*locals[i]).toMat4();
+  if p < 0i32 {
+    out.set(i, lm);
+  } else {
+    worldFrom(g, locals, usize.from(p), out, done);
+    out.set(i, (*out[usize.from(p)]) * lm);
+  }
+  done.set(i, true);
+}

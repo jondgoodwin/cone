@@ -1,0 +1,265 @@
+// Views, a planar mirror, reflective water, a security-camera screen and a
+// reflection probe, in one scene, drawn offscreen (no window) in HDR,
+// tone-mapped (AgX) and saved; then what a view costs on the GPU.
+//
+//   congo run packages/render/examples/views.cone -- --screenshot views.bmp
+//   congo run packages/render/examples/views.cone -- --cost
+//
+// The scene: a dark ground under the dusk sky; a red ball, a green cube and a
+// glowing orange patch; a polished chrome ball lit by a reflection probe
+// captured at its centre; a pool of water in front (a view of the camera
+// reflected about the water's plane, a scrolling ripple map shifting what
+// the reflection is read at); a tall mirror on the back wall (a second
+// reflected camera); and a monitor on the left showing a security camera
+// that looks down at the balls from above (a view, drawn at 320 x 200).
+//
+// '--cost' draws one view of the scene at three sizes, a few dozen times
+// each, and prints the GPU time of one (timestamps round its pass). GPU_POWER_PREFERENCE=low-power
+// picks the Intel GPU.
+
+mod views;
+
+import stdio use *;
+import libc;
+import collections use *;
+import geomath use *;
+import mesh use Mesh;
+import gpu use *;
+import render use *;
+import path as filepath;
+
+// A tangent-space normal map of gentle ripples, 'size' texels a side, which tiles
+fn rippleMap(size i32) Image {
+  mut img = new Image(size, size, 3, List[u8].withCapacity(usize.from(size * size * 3)));
+  mut y = 0;
+  while y < size {
+    mut x = 0;
+    while x < size {
+      imm fx = f32.from(x) / f32.from(size) * 2. * pi;
+      imm fy = f32.from(y) / f32.from(size) * 2. * pi;
+      // h = sin(3 fx + 2 fy) + 0.6 sin(5 fy - 2 fx): the slope in x and y
+      imm dx = 3. * cos(3. * fx + 2. * fy) - 1.2 * cos(5. * fy - 2. * fx);
+      imm dy = 2. * cos(3. * fx + 2. * fy) + 3. * cos(5. * fy - 2. * fx);
+      imm n = new Vec3(-dx * 0.12, -dy * 0.12, 1.).normalize();
+      img.pixels.push(u8.from(i32.from((n.x * 0.5 + 0.5) * 255.)));
+      img.pixels.push(u8.from(i32.from((n.y * 0.5 + 0.5) * 255.)));
+      img.pixels.push(u8.from(i32.from((n.z * 0.5 + 0.5) * 255.)));
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  img;
+}
+
+fn cstrEquals(a *u8, b &str) bool {
+  mut i = 0usize;
+  while i < b.len() {
+    if *(a + i) != b[i] { return false; }
+    i = i + 1usize;
+  }
+  *(a + b.len()) == 0u8;
+}
+
+fn nanoseconds(view &RenderView, device &Device) f64 { view.gpuNanoseconds(device); }
+
+fn main(argc i32, argv **u8) i32 {
+  mut screenshot = String.empty();
+  mut cost = false;
+  mut a = 1;
+  while a < argc {
+    imm arg = *(argv + usize.from(a));
+    if cstrEquals(arg, "--cost") {
+      cost = true;
+    } elif cstrEquals(arg, "--screenshot") and a + 1 < argc {
+      imm s = *(argv + usize.from(a + 1));
+      mut i = 0usize;
+      while *(s + i) != 0u8 {
+        screenshot.appendByte(*(s + i));
+        i = i + 1usize;
+      }
+      a = a + 1;
+    } else {
+      print <- "Use --screenshot FILE and/or --cost\n";
+      return 2;
+    }
+    a = a + 1;
+  }
+
+  mut instance = Instance.create("render views");
+  if !instance.isValid() {
+    print <- "No Vulkan 1.3 instance could be made\n";
+    return 1;
+  }
+  mut none = Surface.none();
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  imm powerEnv = libc.getenv("GPU_POWER_PREFERENCE");
+  if (powerEnv as usize) != 0usize {
+    if libc.strcmp(cstr.fromPtr(powerEnv), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  mut adapter = instance.requestAdapter(&none, preference);
+  if !adapter.isValid() {
+    print <- "No GPU\n";
+    return 1;
+  }
+  print <- "Adapter: "; printStr(adapter.name.view()); print <- "\n";
+  mut device = adapter.requestDevice();
+  imm w = 768u32;
+  imm h = 512u32;
+  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  mut post = Post.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM, w, h);
+  if !renderer.isValid() or !post.isValid() {
+    print <- "The renderer could not be made\n";
+    return 1;
+  }
+  imm outDesc = new TextureDescriptor(w, h, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  mut out = device.createTexture(&outDesc);
+  imm depthDesc = new TextureDescriptor(w, h, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  mut depth = device.createTexture(&depthDesc);
+  mut readback = device.createBuffer(u64.from(w * h * 4u32), BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  post.bloom = 0.;
+  imm sky = Sky.dusk(radians(22.), radians(35.));
+  renderer.setSky(&mut device, &sky);
+  imm light = sky.sunLight(new Color(3.2, 1.9, 1.1, 1.), new Color(0.05, 0.05, 0.08, 1.));
+  post.exposure = 1.6;
+  imm up = new Vec3(0., 1., 0.);
+
+  // Meshes and materials
+  imm plane = renderer.addMesh(&mut device, &Mesh.plane(1, 1.));
+  imm ball = renderer.addMesh(&mut device, &Mesh.sphere(0.5, 40));
+  imm box = renderer.addMesh(&mut device, &Mesh.cube(0.5));
+  imm groundM = renderer.addPbrMaterial(&mut device, &PbrMaterial.standard(new Color(0.08, 0.07, 0.07, 1.), 0., 0.7));
+  imm redM = renderer.addPbrMaterial(&mut device, &PbrMaterial.standard(new Color(0.8, 0.05, 0.04, 1.), 0., 0.35));
+  imm greenM = renderer.addPbrMaterial(&mut device, &PbrMaterial.standard(new Color(0.1, 0.6, 0.15, 1.), 0., 0.5));
+  imm chromeM = renderer.addPbrMaterial(&mut device, &PbrMaterial.standard(new Color(0.95, 0.95, 0.95, 1.), 1., 0.06));
+  imm patchM = renderer.addPbrMaterial(&mut device,
+    &PbrMaterial.standard(new Color(0., 0., 0., 1.), 0., 1.).glowing(new Color(1., 0.45, 0.1, 1.), 3.));
+  imm ripples = renderer.addNormalTexture(&mut device, &rippleMap(64));
+  mut viewMats = ViewMaterials.create(&mut renderer, &mut device);
+
+  // The scene (layer 1), without what shows a view
+  mut scene = DrawList.empty();
+  scene.add(plane, groundM, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(14., 1., 14.)));
+  scene.add(ball, redM, Mat4.fromTranslation(new Vec3(-0.8, 0.5, -0.5)));
+  scene.add(box, greenM, Mat4.fromTrs(new Vec3(0.6, 0.5, -2.2), Quat.angleAxis(radians(25.), up), new Vec3(1., 1., 1.)));
+  scene.add(plane, patchM, Mat4.fromTrs(new Vec3(1.5, 2.6, -4.9),
+    Quat.angleAxis(radians(90.), new Vec3(1., 0., 0.)), new Vec3(0.5, 1., 0.4)));
+  // The chrome ball is lit by the probe: it is a part of the scene for the others' views, and in the main one
+  imm chromeAt = Mat4.fromTranslation(new Vec3(2.2, 0.5, -0.8));
+
+  // The camera
+  mut camera = Camera.make();
+  camera.fov = radians(50.);
+  camera.near = 0.1;
+  camera.far = 80.;
+  camera.lookAt(new Vec3(0.4, 1.7, 5.6), new Vec3(0.2, 0.9, -1.), up);
+  camera.background = new Color(0.02, 0.03, 0.06, 1.);
+
+  // The probe: captured at the chrome ball's centre; the room's box, the ground to the sky
+  imm facing = Quat.angleAxis(radians(90.), new Vec3(1., 0., 0.));
+  imm probeAt = new Vec3(2.2, 0.5, -0.8);
+  imm probe = addProbe(&mut renderer, &mut device, probeAt, new Vec3(-10., -0.2, -6.), new Vec3(10., 9., 10.),
+    new Color(0.02, 0.03, 0.06, 1.), &light, &scene);
+  print <- "The reflection probe: "; if probe.isValid() { print <- "captured\n"; } else { print <- "NOT made\n"; }
+
+  // The water (y = 0.01, in front) and the mirror (the back wall, z = -5.5)
+  imm waterPlane = mirrorPlane(new Vec3(0., 0.01, 0.), up, camera.position());
+  imm mirrorNormal = new Vec3(0., 0., 1.);
+  imm mirrorPlane1 = mirrorPlane(new Vec3(0., 0., -5.5), mirrorNormal, camera.position());
+  mut waterView = RenderView.create(&mut renderer, &mut device, w, h);
+  mut mirrorView = RenderView.create(&mut renderer, &mut device, w, h);
+  waterView.layerMask = 1u32;
+  mirrorView.layerMask = 1u32;
+  imm waterM = viewMats.waterMaterial(&mut renderer, &mut device, waterView.color, ripples, new Color(0.004, 0.02, 0.03, 1.),
+    0.02, 0.025, 3., 0.03, 0.02);
+  imm mirrorM = viewMats.mirrorMaterial(&mut renderer, &mut device, mirrorView.color, new Color(0.9, 0.92, 0.95, 1.));
+  // The security camera: a screen on the left, 320 x 200
+  mut securityView = RenderView.create(&mut renderer, &mut device, 320u32, 200u32);
+  securityView.layerMask = 1u32;
+  mut securityCamera = Camera.make();
+  securityCamera.fov = radians(60.);
+  securityCamera.lookAt(new Vec3(0.6, 6., 1.), new Vec3(0.3, 0., -1.), new Vec3(0., 0., -1.));
+  securityCamera.background = new Color(0.02, 0.03, 0.06, 1.);
+  imm screenM = viewMats.screenMaterial(&mut renderer, &mut device, securityView.color, Color.gray(0.9));
+
+  // What the main camera draws: the scene, the chrome ball, and what shows a view (layers 2 and 4)
+  mut mainList = DrawList.empty();
+  mainList.add(plane, groundM, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(14., 1., 14.)));
+  mainList.add(ball, redM, Mat4.fromTranslation(new Vec3(-0.8, 0.5, -0.5)));
+  mainList.add(box, greenM, Mat4.fromTrs(new Vec3(0.6, 0.5, -2.2), Quat.angleAxis(radians(25.), up), new Vec3(1., 1., 1.)));
+  mainList.add(plane, patchM, Mat4.fromTrs(new Vec3(1.5, 2.6, -4.9), Quat.angleAxis(radians(90.), new Vec3(1., 0., 0.)),
+    new Vec3(0.5, 1., 0.4)));
+  mainList.add(ball, chromeM, chromeAt);
+  mainList.add(plane, waterM, Mat4.fromTrs(new Vec3(-2.6, 0.01, 2.2), Quat.identity(), new Vec3(2.4, 1., 1.6)));
+  mainList.setLayers(mainList.len() - 1usize, 2u32);
+  mainList.add(plane, mirrorM, Mat4.fromTrs(new Vec3(0.2, 1.9, -5.5), facing, new Vec3(2.4, 1., 1.5)));
+  mainList.setLayers(mainList.len() - 1usize, 2u32);
+  mainList.add(plane, screenM, Mat4.fromTrs(new Vec3(-4.4, 1.4, -2.), Quat.angleAxis(radians(40.), up) * facing,
+    new Vec3(1.2, 1., 0.75)));
+  mainList.setLayers(mainList.len() - 1usize, 4u32);
+
+  // The views' scene: the chrome ball too, and the main list's layer 1 only (a view's mask does it)
+  mut sceneList = DrawList.empty();
+  sceneList.add(plane, groundM, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(14., 1., 14.)));
+  sceneList.add(ball, redM, Mat4.fromTranslation(new Vec3(-0.8, 0.5, -0.5)));
+  sceneList.add(box, greenM, Mat4.fromTrs(new Vec3(0.6, 0.5, -2.2), Quat.angleAxis(radians(25.), up), new Vec3(1., 1., 1.)));
+  sceneList.add(plane, patchM, Mat4.fromTrs(new Vec3(1.5, 2.6, -4.9), Quat.angleAxis(radians(90.), new Vec3(1., 0., 0.)),
+    new Vec3(0.5, 1., 0.4)));
+  sceneList.add(ball, chromeM, chromeAt);
+
+  // The frame: the views first, then the main pass
+  mut frame = 0u32;
+  while frame < 3u32 {
+    renderer.time = f32.from(frame) * 0.4;
+    mut waterCamera = camera.reflectedAbout(waterPlane);
+    mut mirrorCamera = camera.reflectedAbout(mirrorPlane1);
+    waterView.render(&mut renderer, &mut device, &waterCamera, &light, &sceneList, DEFAULT_MAX_NEST);
+    mirrorView.render(&mut renderer, &mut device, &mirrorCamera, &light, &sceneList, DEFAULT_MAX_NEST);
+    securityView.render(&mut renderer, &mut device, &securityCamera, &light, &sceneList, DEFAULT_MAX_NEST);
+    mut encoder = device.createCommandEncoder();
+    renderer.render(&mut device, &mut encoder, &post.hdr, &depth, &camera, &light, &mainList);
+    post.apply(&mut encoder, &out);
+    encoder.copyTextureToBuffer(&out, &readback);
+    device.queue.submit(encoder.finish());
+    device.endFrame();
+    device.waitIdle();
+    frame = frame + 1u32;
+  }
+  print <- "Main pass: "; print <- renderer.drawCalls; print <- " draws, "; print <- renderer.triangles; print <- " triangles\n";
+  if screenshot.len() > 0usize {
+    imm shot = Image.fromTexels(readback.mappedRange(), i32.from(w), i32.from(h), false);
+    imm written = shot.save(&filepath.Path.from(screenshot.view()));
+    print <- "Screenshot: "; printStr(screenshot.view());
+    if written { print <- "\n"; } else { print <- " could NOT be written\n"; }
+  }
+
+  if cost {
+    // One view of the scene, at three sizes
+    imm sizes Array[u32, 3] = [512u32, 1024u32, 1920u32];
+    imm heights Array[u32, 3] = [512u32, 1024u32, 1080u32];
+    mut s = 0usize;
+    while s < 3usize {
+      mut v = RenderView.create(&mut renderer, &mut device, sizes[s], heights[s]);
+      if !v.enableTiming(&mut device) {
+        print <- "No timestamps on this device\n";
+        return 1;
+      }
+      mut total = 0d;
+      mut counted = 0u32;
+      mut f = 0u32;
+      while f < 40u32 {
+        v.render(&mut renderer, &mut device, &camera, &light, &sceneList, DEFAULT_MAX_NEST);
+        device.endFrame();
+        device.waitIdle();
+        if f >= 8u32 {
+          total = total + nanoseconds(&v, &device);
+          counted = counted + 1u32;
+        }
+        f = f + 1u32;
+      }
+      print <- "One view, "; print <- sizes[s]; print <- " x "; print <- heights[s]; print <- ": ";
+      print <- total / f64.from(counted) / 1000000d; print <- " ms on the GPU ("; print <- v.drawCalls; print <- " draws)\n";
+      s = s + 1usize;
+    }
+  }
+  0;
+}

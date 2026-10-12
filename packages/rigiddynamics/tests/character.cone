@@ -1,0 +1,280 @@
+// The character controller: a capsule (0.3 m radius, 1.8 m tall) walking.
+//
+//   stands, falls and lands, reports its ground (body, normal, velocity)
+//   climbs a 0.3 m step and refuses a 0.6 m one (the step height is 0.4 m)
+//   walks up a 30 degree ramp at its walking speed, and slides back off a 50
+//   degree one (the maximum walkable slope is 45 degrees); refuses to climb it
+//   stays on the ground walking down a slope and off a ledge it may step down
+//   slides along a wall it walks into at an angle
+//   jumps to v^2 / 2g and lands
+//   is carried by a platform moving under it, and walks relative to it
+//   pushes a light crate and not a heavy one
+//
+// The ground is a slab with its top at y = 0; every scenario starts the
+// character at x = 0 and walks it along +x unless said otherwise.
+
+mod character;
+
+import testing use *;
+import collections use List;
+import geomath use *;
+import rigidcollide use *;
+import rigiddynamics use *;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+fn newWorld() World {
+  mut w = World.make();
+  imm ground = w.addShape(Shape.single(Prim.box(new Vec3(60., 0.5, 40.))));
+  w.createBody(BodyDef.staticAt(ground, new Vec3(0., -0.5, 0.)));
+  w;
+}
+
+fn person(at Vec3) Character { Character.make(CharacterSettings.person(0.3, 1.8), at); }
+
+fn walk(w &mut World, ch &mut Character, wish Vec3, frames i32) {
+  mut i = 0;
+  while i < frames {
+    w.step(1. / 60.);
+    updateCharacter(w, ch, wish, 0., 1. / 60.);
+    i = i + 1;
+  }
+}
+
+fn testStandAndFall() {
+  mut w = newWorld();
+  mut ch = person(new Vec3(0., 2., 0.));
+  mut grounded = -1;
+  mut landSpeed = 0.;
+  mut i = 0;
+  while i < 120 {
+    w.step(1. / 60.);
+    updateCharacter(&mut w, &mut ch, new Vec3(0., 0., 0.), 0., 1. / 60.);
+    if ch.grounded and grounded < 0 { grounded = i; landSpeed = ch.landSpeed; }
+    i = i + 1;
+  }
+  // v = sqrt(2 g h) with h = 1.98 m (the fall to a standing position 0.02 above the ground): 6.2 m/s
+  near(landSpeed, 6.2, 0.3, "it lands at the speed of a fall, v = sqrt(2 g h)");
+  // 2 m of free fall takes sqrt(2 * 2 / 9.81) = 0.64 s = 38 frames
+  expectBool(grounded > 34 and grounded < 44, true, "it falls 2 m in about 0.64 s and lands");
+  near(ch.pos.y, 0.02, 0.005, "standing a skin's width above the ground");
+  near(ch.landSpeed, 0., 0.0001, "(the landing speed is reported in the update it lands, and is 0 after)");
+  expectBool(ch.grounded, true, "grounded");
+  near(ch.groundNormal.y, 1., 0.0001, "on level ground");
+  near(ch.groundVelocity.length(), 0., 0.0001, "which does not move");
+  expectUInt(u64.from(ch.groundBody), 0u64, "the ground is body 0");
+  near(ch.pos.x, 0., 0.0001, "and it has not wandered");
+}
+
+fn testSteps() {
+  // a step of 'h' with its front face at x = 2
+  mut results = List[f32].empty();
+  imm heights = [0.3, 0.6];
+  mut k = 0usize;
+  while k < 2usize {
+    mut w = newWorld();
+    imm h = heights[k];
+    imm bs = w.addShape(Shape.single(Prim.box(new Vec3(10., h * 0.5, 5.))));
+    w.createBody(BodyDef.staticAt(bs, new Vec3(12., h * 0.5, 0.)));
+    mut ch = person(new Vec3(0., 0.02, 0.));
+    walk(&mut w, &mut ch, new Vec3(2., 0., 0.), 180);
+    results.push(ch.pos.x);
+    results.push(ch.pos.y);
+    k = k + 1usize;
+  }
+  near(*results[0usize], 6., 0.2, "a 0.3 m step is climbed and the walk goes on over it (2 m/s for 3 s)");
+  near(*results[1usize], 0.32, 0.005, "standing on top of it");
+  expectBool(*results[2usize] < 1.75, true, "a 0.6 m step is not climbed");
+  near(*results[3usize], 0.02, 0.01, "the character stays on the ground in front of it");
+}
+
+fn ramp(deg f32, startAlong f32, wishX f32, frames i32) Character {
+  mut w = newWorld();
+  imm a = radians(deg);
+  imm rs = w.addShape(Shape.single(Prim.box(new Vec3(8., 0.25, 4.))));
+  imm n = new Vec3(-sin(a), cos(a), 0.);
+  imm along = new Vec3(cos(a), sin(a), 0.);
+  imm base = new Vec3(2., 0., 0.);
+  mut rd = BodyDef.staticAt(rs, base + along * 8. - n * 0.25);
+  rd.rot = Quat.angleAxis(a, new Vec3(0., 0., 1.));
+  w.createBody(rd);
+  mut ch = person(base + along * startAlong + n * 0.03);
+  walk(&mut w, &mut ch, new Vec3(wishX, 0., 0.), frames);
+  ch;
+}
+
+fn testRamps() {
+  // 30 degrees: walks up at 2 m/s horizontally for 2 s from the foot (x = 2)
+  imm up = ramp(30., 0., 2., 120);
+  near(up.pos.x, 2. + 4., 0.4, "it walks up a 30 degree ramp at its walking speed");
+  near(up.pos.y, (up.pos.x - 2.) * 0.57735, 0.1, "and has climbed with the ramp");
+  expectBool(up.grounded, true, "grounded on it");
+  near(up.groundNormal.y, 0.8660254, 0.01, "reporting the ramp's normal");
+  near(up.groundNormal.x, -0.5, 0.01, "tilted back towards -x");
+
+  // 50 degrees: too steep to climb
+  imm steepUp = ramp(50., 0., 2., 120);
+  expectBool(steepUp.pos.x < 2.2, true, "it cannot walk up a 50 degree ramp");
+  expectBool(steepUp.pos.y < 0.2, true, "it stays at the foot");
+
+  // placed on a 50 degree ramp, it slides down: starts 4 m up the slope, 3.06 m high
+  imm slid = ramp(50., 4., 0., 120);
+  expectBool(slid.pos.y < 0.3, true, "put on a 50 degree ramp it slides all the way down");
+  expectBool(slid.pos.x < 2.5, true, "to the foot");
+  expectBool(slid.grounded, true, "and stands on the ground there");
+
+  // partway: still sliding, not grounded, touching a steep surface
+  imm part = ramp(50., 4., 0., 20);
+  expectBool(part.grounded, false, "while sliding it is not grounded");
+  expectBool(part.onSteep, true, "it is touching a surface too steep to stand on");
+  expectBool(part.vel.y < -0.5, true, "and moving down");
+  near(part.steepNormal.y, 0.6427876, 0.02, "whose normal is the ramp's");
+}
+
+fn testWalkDown() {
+  // down a 30 degree slope without ever leaving the ground
+  mut w = newWorld();
+  imm a = radians(30.);
+  imm rs = w.addShape(Shape.single(Prim.box(new Vec3(8., 0.25, 4.))));
+  imm n = new Vec3(sin(a), cos(a), 0.);
+  imm along = new Vec3(cos(a), -sin(a), 0.);
+  // a slab descending towards +x from (0, 4.5, 0)
+  mut rd = BodyDef.staticAt(rs, new Vec3(0., 4.5, 0.) + along * 8. - n * 0.25);
+  rd.rot = Quat.angleAxis(-a, new Vec3(0., 0., 1.));
+  w.createBody(rd);
+  mut ch = person(new Vec3(0., 4.5, 0.) + n * 0.03);
+  mut airborne = 0;
+  mut i = 0;
+  while i < 120 {
+    w.step(1. / 60.);
+    updateCharacter(&mut w, &mut ch, new Vec3(2., 0., 0.), 0., 1. / 60.);
+    if i > 5 and not ch.grounded { airborne = airborne + 1; }
+    i = i + 1;
+  }
+  expectInt(i64.from(airborne), 0i64, "walking down a 30 degree slope it never leaves the ground");
+  expectBool(ch.pos.y < 3.5, true, "and went down it");
+
+  // off a ledge 0.3 m high it steps down and stays grounded
+  mut z = newWorld();
+  imm ls = z.addShape(Shape.single(Prim.box(new Vec3(5., 0.15, 5.))));
+  z.createBody(BodyDef.staticAt(ls, new Vec3(0., 0.15, 0.)));
+  mut c2 = person(new Vec3(-3., 0.32, 0.));
+  mut grounded = true;
+  i = 0;
+  while i < 360 {
+    z.step(1. / 60.);
+    updateCharacter(&mut z, &mut c2, new Vec3(2., 0., 0.), 0., 1. / 60.);
+    if i > 5 and not c2.grounded { grounded = false; }
+    i = i + 1;
+  }
+  expectBool(grounded, true, "walking off a 0.3 m ledge it follows the ground down");
+  near(c2.pos.y, 0.02, 0.01, "to the floor");
+}
+
+fn testWall() {
+  // a wall at x = 3 (a slab 0.5 thick); walking at it at 45 degrees slides along it
+  mut w = newWorld();
+  imm ws = w.addShape(Shape.single(Prim.box(new Vec3(0.25, 2., 20.))));
+  w.createBody(BodyDef.staticAt(ws, new Vec3(3.25, 2., 0.)));
+  mut ch = person(new Vec3(0., 0.02, 0.));
+  walk(&mut w, &mut ch, new Vec3(2., 0., 2.), 180);
+  expectBool(ch.pos.x < 3. - 0.3 + 0.001, true, "it does not pass into the wall");
+  expectBool(ch.pos.x > 2.6, true, "it comes up to the wall");
+  expectBool(ch.pos.z > 4., true, "and slides along it (2 m/s along z for most of 3 s)");
+}
+
+fn testJump() {
+  mut w = newWorld();
+  mut ch = person(new Vec3(0., 0.02, 0.));
+  walk(&mut w, &mut ch, new Vec3(0., 0., 0.), 10);
+  mut peak = 0.;
+  mut i = 0;
+  mut landed = -1;
+  while i < 120 {
+    w.step(1. / 60.);
+    updateCharacter(&mut w, &mut ch, new Vec3(0., 0., 0.), if i == 0 { 4.2; } else { 0.; }, 1. / 60.);
+    peak = maxf(peak, ch.pos.y);
+    if i > 10 and ch.grounded and landed < 0 { landed = i; }
+    i = i + 1;
+  }
+  near(peak, 0.02 + 4.2 * 4.2 / (2. * 9.81), 0.06, "a jump at 4.2 m/s rises v^2 / 2g = 0.9 m");
+  expectBool(landed > 40 and landed < 60, true, "and comes back down in about 0.86 s");
+  expectBool(ch.grounded, true, "landed");
+}
+
+fn testPlatform() {
+  mut w = newWorld();
+  imm ps = w.addShape(Shape.single(Prim.box(new Vec3(3., 0.25, 3.))));
+  imm plat = w.createBody(BodyDef.kinematicAt(ps, new Vec3(0., 0.25, 0.)));
+  w.setLinearVelocity(plat, new Vec3(1., 0., 0.));
+  mut ch = person(new Vec3(0., 0.52, 0.));
+  walk(&mut w, &mut ch, new Vec3(0., 0., 0.), 120);
+  imm px = w.positionOf(plat).x;
+  near(ch.pos.x, px, 0.05, "standing still on a platform that moves at 1 m/s it is carried with it");
+  expectBool(ch.grounded and ch.groundBody == plat, true, "and reports the platform as its ground");
+  near(ch.groundVelocity.x, 1., 0.01, "and its velocity");
+  // walking at 1 m/s relative to it adds
+  imm x0 = ch.pos.x;
+  imm p0 = w.positionOf(plat).x;
+  walk(&mut w, &mut ch, new Vec3(0.5, 0., 0.), 60);
+  near((ch.pos.x - x0) - (w.positionOf(plat).x - p0), 0.5, 0.05, "walking at 0.5 m/s on it adds to the platform's movement");
+
+  // a turning platform turns it with it
+  mut z = newWorld();
+  imm ts = z.addShape(Shape.single(Prim.box(new Vec3(3., 0.25, 3.))));
+  imm table = z.createBody(BodyDef.kinematicAt(ts, new Vec3(0., 0.25, 0.)));
+  z.setAngularVelocity(table, new Vec3(0., 0.5, 0.));
+  mut c2 = person(new Vec3(2., 0.52, 0.));
+  mut yaw = 0.;
+  mut i = 0;
+  while i < 120 {
+    z.step(1. / 60.);
+    updateCharacter(&mut z, &mut c2, new Vec3(0., 0., 0.), 0., 1. / 60.);
+    yaw = yaw + c2.platformYaw;
+    i = i + 1;
+  }
+  near(yaw, 1., 0.05, "a platform turning at 0.5 rad/s reports its yaw to the character");
+  imm r = (c2.pos.x * c2.pos.x + c2.pos.z * c2.pos.z).sqrt();
+  near(r, 2., 0.1, "which stays at its distance from the centre");
+  near(atan2(-c2.pos.z, c2.pos.x), 1., 0.1, "having gone round with it");
+}
+
+fn testPush() {
+  // a 20 kg crate in front of it is pushed; a 2000 kg one hardly moves
+  mut w = newWorld();
+  imm cs = w.addShape(Shape.single(Prim.box(new Vec3(0.4, 0.4, 0.4))));
+  mut light = BodyDef.dynamicAt(cs, new Vec3(1.5, 0.4, 0.));
+  light.mass = 20.;
+  light.material = PhysMaterial.make(0.5, 0.5, 0.);
+  mut heavy = BodyDef.dynamicAt(cs, new Vec3(1.5, 0.4, 5.));
+  heavy.mass = 2000.;
+  heavy.material = PhysMaterial.make(0.5, 0.5, 0.);
+  imm lid = w.createBody(light);
+  imm hid = w.createBody(heavy);
+  mut c1 = person(new Vec3(0., 0.02, 0.));
+  mut c2 = person(new Vec3(0., 0.02, 5.));
+  mut i = 0;
+  while i < 120 {
+    w.step(1. / 60.);
+    updateCharacter(&mut w, &mut c1, new Vec3(1.5, 0., 0.), 0., 1. / 60.);
+    updateCharacter(&mut w, &mut c2, new Vec3(1.5, 0., 0.), 0., 1. / 60.);
+    i = i + 1;
+  }
+  expectBool(w.positionOf(lid).x > 3., true, "a light crate is pushed along ahead of it");
+  expectBool(w.positionOf(hid).x < 1.8, true, "a heavy crate hardly moves");
+  expectBool(c2.pos.x < 1.1, true, "and holds the character back");
+}
+
+fn main() i32 {
+  testStandAndFall();
+  testSteps();
+  testRamps();
+  testWalkDown();
+  testWall();
+  testJump();
+  testPlatform();
+  testPush();
+  done();
+}

@@ -1,0 +1,542 @@
+// Text drawn on a real GPU with no window (validation and synchronization
+// validation on where the Vulkan SDK is, and silent). The demo font's glyphs
+// are drawn white onto black into a 640 x 300 rgba8unorm texture, read back,
+// and measured against what the font's numbers say (1000 units to the em):
+//
+// 1. Overlay text "AIOi" at 200 px and at 12 px (top left at pixel (20, 10) and
+//    (20, 240)). A pixel's coverage is its red value, so the sum of coverage
+//    over a glyph is its inked area in square pixels, and over a row or a
+//    column a length in pixels. By hand, with k = size / 1000:
+//    - bar I: 200 k wide and 700 k high (140000 k^2); its left edge at
+//      pen + 100 k and its top at baseline - 700 k;
+//    - triangle A: 175000 k^2 (half 500 by 700): an apex that is rounded would
+//      lose area;
+//    - O: its outer outline, four quadratics from edge middle to edge middle
+//      with the rectangle's corner for control point, is the 600 x 700 box less
+//      four corners of 17500 each (a triangle of 52500, less the 2/3 of it
+//      the parabola cuts back): 350000; the counter, the same of 300 x 400
+//      (corners 5000): 100000; so 250000 k^2;
+//    - i, a composite (the bar at half size moved by 200): 35000 k^2.
+//    Each measured within 2% (and 0.4 square pixel), at both sizes.
+//    Sharp: the left edge of the bar goes from black to white over at most 2
+//    pixels (those between 10% and 90%), at 12 px and at 200 px; and the
+//    bar's bottom left corner pixel holds the product of its two edges'
+//    coverages (a square corner; a rounded one would hold less).
+//    Ink where the layout says: the glyph's ink spans, in x and y, the
+//    font's box scaled and placed by the layout, within 1 pixel; and no ink
+//    lies outside the glyphs' quads.
+// 2. Effects: the bar at 200 px with a 10 px red outline and a blue shadow
+//    8 px right and 8 px down: red 5 px outside its left edge, black 15 px
+//    outside it, blue in the shadow beyond the outline.
+// 3. World text, depth tested against a depth texture cleared to the depth of
+//    the origin: text in front of it is drawn, text behind it is not; and a
+//    spherical billboard seen from the side keeps its proportions where a
+//    fixed sign turned 60 degrees is narrowed, its middle at the projected
+//    anchor.
+//
+// GPU_POWER_PREFERENCE=low-power tests the integrated GPU. MSDFTEXT_SHOTS=<folder>
+// writes each frame as a .bmp there. Needs a driver with Vulkan 1.3 and SDL3.dll.
+
+mod draw;
+
+import testing use *;
+import libc;
+import fs;
+import path use Path;
+import collections use *;
+import geomath use *;
+import gpu use *;
+import render use Camera;
+import msdftext use *;
+
+const W = 640u32;
+const H = 300u32;
+
+fn absf(v f64) f64 { if v < 0.0d { return -v; } v; }
+
+// Red channel of pixel (x, y) as coverage, 0 to 1
+fn cov(p *u8, x u32, y u32) f64 {
+  if x >= W or y >= H { return 0.0d; }
+  f64.from(*(p + usize.from((y * W + x) * 4u32))) / 255.0d;
+}
+
+fn chan(p *u8, x u32, y u32, c u32) f64 {
+  f64.from(*(p + usize.from((y * W + x) * 4u32 + c))) / 255.0d;
+}
+
+// The sum of coverage over the box [x0, x1) x [y0, y1)
+fn area(p *u8, x0 u32, y0 u32, x1 u32, y1 u32) f64 {
+  mut sum = 0.0d;
+  mut y = y0;
+  while y < y1 {
+    mut x = x0;
+    while x < x1 { sum = sum + cov(p, x, y); x = x + 1u32; }
+    y = y + 1u32;
+  }
+  sum;
+}
+
+fn floorU(v f64) u32 { if v < 0.0d { return 0u32; } u32.from(libc.floor(v)); }
+
+fn near(got f64, want f64, rel f64, slack f64, label &Array[u8]) {
+  expectFloat(got, want, rel * want + slack, label);
+}
+
+// Write the frame as a 24-bit .bmp when MSDFTEXT_SHOTS names a folder
+fn shot(p *u8, name &str) {
+  imm env = libc.getenv("MSDFTEXT_SHOTS");
+  if (env as usize) == 0usize { return; }
+  mut file = String.fromCStr(env);
+  file.append(name);
+  imm rowBytes = W * 3u32;
+  imm pad = (4u32 - rowBytes % 4u32) % 4u32;
+  imm size = 54u32 + (rowBytes + pad) * H;
+  mut b = List[u8].withCapacity(usize.from(size));
+  b.push('B');
+  b.push('M');
+  // File header (after 'BM'): size, reserved, offset; info header: 40, w, h, planes 1 + bpp 24, then zeros
+  mut words = new Array[u32, 13] <- fill 0u32;
+  words[0] = size;
+  words[2] = 54u32;
+  words[3] = 40u32;
+  words[4] = W;
+  words[5] = H;
+  words[6] = 0x00180001u32;
+  mut w = 0usize;
+  while w < 13usize {
+    b.push(u8.from(words[w] & 255u32));
+    b.push(u8.from((words[w] >> 8u32) & 255u32));
+    b.push(u8.from((words[w] >> 16u32) & 255u32));
+    b.push(u8.from((words[w] >> 24u32) & 255u32));
+    w = w + 1usize;
+  }
+  mut y = H;
+  while y > 0u32 {
+    y = y - 1u32;
+    mut x = 0u32;
+    while x < W {
+      imm at = p + usize.from((y * W + x) * 4u32);
+      b.push(*(at + 2usize));
+      b.push(*(at + 1usize));
+      b.push(*at);
+      x = x + 1u32;
+    }
+    mut q = 0u32;
+    while q < pad { b.push(0u8); q = q + 1u32; }
+  }
+  imm out = Path.fromLiteral(file.view());
+  fs.writeFile(&out, b.view());
+}
+
+fn finish(device &mut Device, encoder &mut CommandEncoder, target &Texture, readback &Buffer) {
+  encoder.copyTextureToBuffer(target, readback);
+  device.queue.submit(encoder.finish());
+  device.endFrame();
+  device.waitIdle();
+}
+
+// A pass that clears the target to black and the depth to 'z'
+fn clearAll(encoder &mut CommandEncoder, target &Texture, depth &Texture, z f32) {
+  imm color = new RenderPassColorAttachment(view: target.createView(), loadOp: LOAD_OP_CLEAR,
+    clearValue: new Color(0., 0., 0., 0.));
+  imm d = new RenderPassDepthStencilAttachment(view: depth.createView(), depthLoadOp: LOAD_OP_CLEAR,
+    depthStoreOp: STORE_OP_STORE, depthClearValue: z);
+  mut pass = encoder.beginRenderPassWithDepth(&color, &d);
+  pass.end();
+}
+
+// The ink of the box [x0, x1) x [y0, y1): the least and greatest column and row holding coverage above 'level'
+fn inkBox(p *u8, x0 u32, y0 u32, x1 u32, y1 u32, level f64, minX &mut u32, maxX &mut u32, minY &mut u32, maxY &mut u32) bool {
+  *minX = 100000u32;
+  *minY = 100000u32;
+  *maxX = 0u32;
+  *maxY = 0u32;
+  mut any = false;
+  mut y = y0;
+  while y < y1 {
+    mut x = x0;
+    while x < x1 {
+      if cov(p, x, y) > level {
+        any = true;
+        if x < *minX { *minX = x; }
+        if x > *maxX { *maxX = x; }
+        if y < *minY { *minY = y; }
+        if y > *maxY { *maxY = y; }
+      }
+      x = x + 1u32;
+    }
+    y = y + 1u32;
+  }
+  any;
+}
+
+// How many pixels of the row y, from x0 to x1, lie between 10% and 90% coverage
+fn rampWidth(p *u8, y u32, x0 u32, x1 u32) u32 {
+  mut n = 0u32;
+  mut x = x0;
+  while x < x1 {
+    imm c = cov(p, x, y);
+    if c > 0.1d and c < 0.9d { n = n + 1u32; }
+    x = x + 1u32;
+  }
+  n;
+}
+
+// The glyph with codepoint 'cp' in a layout: its placement
+fn placed(layout &TextLayout, i usize) PlacedGlyph { *layout.glyphs[i]; }
+
+// Checks of the overlay text at one size, drawn with its top left at (ox, oy)
+fn checkText(p *u8, font &Font, layout &TextLayout, ox f64, oy f64, size f64, tag &Array[u8]) {
+  imm k = size / 1000.0d;
+  // Per glyph: the box, the area in k^2 units
+  mut gi = 0usize;
+  while gi < 4usize {
+    imm g = placed(layout, gi);
+    imm box = font.glyphBox(g.glyph);
+    imm pen = ox + f64.from(g.x);
+    imm base = oy + f64.from(g.baseline);
+    imm left = pen + f64.from(box.xMin) * k;
+    imm right = pen + f64.from(box.xMax) * k;
+    imm top = base - f64.from(box.yMax) * k;
+    imm bottom = base - f64.from(box.yMin) * k;
+    // The pixels the glyph's ink can touch (its edges ramp over half a pixel each side): at 12 px the
+    // glyphs are a pixel or two apart, so no more
+    imm x0 = floorU(left - 0.5d);
+    imm x1 = floorU(right + 0.5d) + 1u32;
+    imm y0 = floorU(top - 0.5d);
+    imm y1 = floorU(bottom + 0.5d) + 1u32;
+    imm want = if gi == 0usize { 175000.0d; } elif gi == 1usize { 140000.0d; } elif gi == 2usize { 250000.0d; } else { 35000.0d; };
+    near(area(p, x0, y0, x1, y1), want * k * k, 0.02d, 0.4d, tag);
+    mut ax = 0u32;
+    mut bx = 0u32;
+    mut ay = 0u32;
+    mut yb = 0u32;
+    imm any = inkBox(p, x0, y0, x1, y1, 0.1d, &mut ax, &mut bx, &mut ay, &mut yb);
+    expect(any, tag);
+    // The ink's first and last pixel column and row (above a tenth of coverage) lie within a pixel of the font's
+    // box. The triangle's apex is the exception at the top: a point narrower than an atlas texel (1/48 em)
+    // is cut short, by up to 5% of the em (measured: about 1.5 texels).
+    expectFloat(f64.from(ax), left, 1.0d, tag);
+    expectFloat(f64.from(bx) + 1.0d, right, 1.0d, tag);
+    imm cut = if gi == 0usize { 0.05d * size; } else { 0.0d; };
+    expectFloat(f64.from(ay), top - 0.5d + cut * 0.5d, 0.51d + cut * 0.5d, tag);
+    expectFloat(f64.from(yb) + 1.0d, bottom, 1.0d, tag);
+    gi = gi + 1usize;
+  }
+  // The bar: an edge ramp of at most 2 pixels, a square corner, exact lengths
+  imm bar = placed(layout, 1usize);
+  imm pen = ox + f64.from(bar.x);
+  imm base = oy + f64.from(bar.baseline);
+  imm left = pen + 100.0d * k;
+  imm right = pen + 300.0d * k;
+  imm bottom = base;
+  imm midY = floorU(base - 350.0d * k);
+  expect(rampWidth(p, midY, floorU(left - 1.0d), floorU(left) + 2u32) <= 2u32, tag);
+  expect(rampWidth(p, midY, floorU(right) - 1u32, floorU(right + 1.0d) + 1u32) <= 2u32, tag);
+  // Row length: the width of the bar
+  near(area(p, floorU(left - 0.5d), midY, floorU(right + 0.5d) + 1u32, midY + 1u32), 200.0d * k, 0.015d, 0.15d, tag);
+  // The corner pixel (the one holding the bottom left corner): the product of the two edges' coverages
+  imm cx = floorU(left);
+  imm cy = floorU(bottom);
+  imm fx = (f64.from(cx) + 1.0d) - left;       // how much of the pixel is right of the left edge, if the edge is in it
+  imm fy = bottom - f64.from(cy);              // how much of the pixel is above the bottom edge
+  if fx > 0.0d and fx < 1.0d and fy > 0.0d and fy < 1.0d {
+    // (the shader's coverage is from the distance, not the area: within 0.15 of the product)
+    expectFloat(cov(p, cx, cy), fx * fy, 0.15d, tag);
+  }
+  // Well inside, solid; well outside, black
+  expectFloat(cov(p, floorU(left + 0.5d * 200.0d * k), midY), 1.0d, 0.02d, tag);
+  expectFloat(cov(p, floorU(left - 2.0d), midY), 0.0d, 0.02d, tag);
+}
+
+fn world(device &mut Device, text &mut TextRenderer, atlas &mut Atlas, font &Font, target &Texture, depth &Texture,
+    readback &Buffer, p *u8) {
+  imm aspect = f32.from(W) / f32.from(H);
+  mut camera = Camera.make();
+  camera.lookAt(new Vec3(0., 0., 5.), new Vec3(0., 0., 0.), new Vec3(0., 1., 0.));
+  imm vp = camera.projectionMatrix(aspect) * camera.viewMatrix();
+  // The depth of the origin: what the scene left
+  imm wall = vp.projectPoint(new Vec3(0., 0., 0.)).z;
+  imm opts = LayoutOptions.make(1.0);
+  imm layout = layoutText(font, atlas, "AI", &opts);
+  imm white = TextStyle.plain(new Color(1., 1., 1., 1.));
+  // In front of the wall (z = 3, left) and behind it (z = -2, right)
+  imm front = text.addText(device, SPACE_WORLD);
+  imm hidden = text.addText(device, SPACE_WORLD);
+  imm frontAt = Mat4.fromTranslation(new Vec3(-1.4, 0., 3.));
+  imm hiddenAt = Mat4.fromTranslation(new Vec3(1.4, 0., -2.));
+  text.set(device, front, &layout, &white, worldTransform(vp, frontAt, &layout, 0.5, 0.5));
+  text.set(device, hidden, &layout, &white, worldTransform(vp, hiddenAt, &layout, 0.5, 0.5));
+  text.syncAtlas(device, atlas);
+  mut encoder = device.createCommandEncoder();
+  clearAll(&mut encoder, target, depth, wall);
+  text.renderWorld(&mut encoder, target, depth);
+  finish(device, &mut encoder, target, readback);
+  shot(p, "world.bmp");
+  imm leftInk = area(p, 0u32, 0u32, W / 2u32, H);
+  imm rightInk = area(p, W / 2u32, 0u32, W, H);
+  expect(leftInk > 400.0d, "world text in front of the wall is drawn");
+  expectFloat(rightInk, 0.0d, 0.001d, "world text behind the wall is not");
+  // Its middle is where the anchor projects
+  imm centre = vp.projectPoint(new Vec3(-1.4, 0., 3.));
+  mut ax = 0u32;
+  mut bx = 0u32;
+  mut ay = 0u32;
+  mut yb = 0u32;
+  inkBox(p, 0u32, 0u32, W / 2u32, H, 0.5d, &mut ax, &mut bx, &mut ay, &mut yb);
+  imm px = (f64.from(centre.x) + 1.0d) * 0.5d * f64.from(W);
+  imm py = (1.0d - f64.from(centre.y)) * 0.5d * f64.from(H);
+  // The ink is the box of A's left to I's right and A's bottom to its top, not the layout's block, so the
+  // anchor lands within the block: compare the layout block's middle with the same projection of the ink
+  expectFloat(f64.from(ax + bx) * 0.5d, px, 0.12d * f64.from(bx - ax), "world text: centred horizontally on its anchor");
+  expectFloat(f64.from(ay + yb) * 0.5d, py, 0.2d * f64.from(yb - ay), "world text: centred vertically on its anchor");
+  text.clearText(front);
+  text.clearText(hidden);
+
+  // Billboards: the camera off to the side
+  camera.lookAt(new Vec3(5., 2., 4.), new Vec3(0., 0., 0.), new Vec3(0., 1., 0.));
+  imm vp2 = camera.projectionMatrix(aspect) * camera.viewMatrix();
+  imm farZ = 1.0f;
+  imm billboard = text.addText(device, SPACE_WORLD);
+  imm sign = text.addText(device, SPACE_WORLD);
+  // The billboard at the origin; the sign (fixed, turned 60 degrees about y) beside it
+  imm facing = billboardPlacement(&camera, new Vec3(0., 0., 0.), false);
+  text.set(device, billboard, &layout, &white, worldTransform(vp2, facing, &layout, 0.5, 0.5));
+  mut encoder2 = device.createCommandEncoder();
+  clearAll(&mut encoder2, target, depth, farZ);
+  text.renderWorld(&mut encoder2, target, depth);
+  finish(device, &mut encoder2, target, readback);
+  shot(p, "billboard.bmp");
+  mut bx0 = 0u32;
+  mut bx1 = 0u32;
+  mut by0 = 0u32;
+  mut by1 = 0u32;
+  expect(inkBox(p, 0u32, 0u32, W, H, 0.5d, &mut bx0, &mut bx1, &mut by0, &mut by1), "billboard: ink");
+  // Ink extents in the text's metres: A's left (0) to I's right (the second glyph's pen + 300 k), A's bottom to its top (700)
+  imm i1 = placed(&layout, 1usize);
+  imm inkW = f64.from(i1.x) + 0.3d;
+  imm inkH = 0.7d;
+  imm ratio = f64.from(bx1 - bx0 + 1u32) / f64.from(by1 - by0 + 1u32);
+  expectFloat(ratio, inkW / inkH, 0.06d * (inkW / inkH), "spherical billboard keeps the text's proportions seen from the side");
+  imm c2 = vp2.projectPoint(new Vec3(0., 0., 0.));
+  imm px2 = (f64.from(c2.x) + 1.0d) * 0.5d * f64.from(W);
+  imm py2 = (1.0d - f64.from(c2.y)) * 0.5d * f64.from(H);
+  expectFloat(f64.from(bx0 + bx1) * 0.5d, px2, 0.12d * f64.from(bx1 - bx0), "billboard centred on its anchor");
+
+  // The same text as a fixed sign turned 60 degrees about y, and seen head-on
+  text.clearText(billboard);
+  camera.lookAt(new Vec3(0., 0., 5.), new Vec3(0., 0., 0.), new Vec3(0., 1., 0.));
+  imm vp3 = camera.projectionMatrix(aspect) * camera.viewMatrix();
+  imm turned = Mat4.fromQuat(Quat.angleAxis(radians(60.), new Vec3(0., 1., 0.)));
+  text.set(device, sign, &layout, &white, worldTransform(vp3, turned, &layout, 0.5, 0.5));
+  mut encoder3 = device.createCommandEncoder();
+  clearAll(&mut encoder3, target, depth, farZ);
+  text.renderWorld(&mut encoder3, target, depth);
+  finish(device, &mut encoder3, target, readback);
+  shot(p, "sign.bmp");
+  mut sx0 = 0u32;
+  mut sx1 = 0u32;
+  mut sy0 = 0u32;
+  mut sy1 = 0u32;
+  expect(inkBox(p, 0u32, 0u32, W, H, 0.5d, &mut sx0, &mut sx1, &mut sy0, &mut sy1), "sign: ink");
+  imm signRatio = f64.from(sx1 - sx0 + 1u32) / f64.from(sy1 - sy0 + 1u32);
+  // Foreshortened by cos 60 = 1/2 (a little off for perspective)
+  expectFloat(signRatio, 0.5d * inkW / inkH, 0.15d * (inkW / inkH), "a fixed sign turned 60 degrees is half as wide");
+}
+
+// Text into an rgba16float texture (the format of render's HDR frame), which is also
+// made sampleable (a texture the text is drawn into can be read by a later pass). A
+// half float 1.0 is 0x3C00, and the fill of the bar is 1.0 in all three channels,
+// alpha 1; a half float 0 is 0.
+fn hdr(device &mut Device, atlas &mut Atlas, font &Font) {
+  imm size = 128u32;
+  imm desc = new TextureDescriptor(size, size, TEXTURE_FORMAT_RGBA16_FLOAT,
+    TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC | TEXTURE_USAGE_TEXTURE_BINDING);
+  mut target = device.createTexture(&desc);
+  imm depthDesc = new TextureDescriptor(size, size, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  mut depth = device.createTexture(&depthDesc);
+  mut readback = device.createBuffer(u64.from(size * size * 8u32), BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  imm q = readback.mappedRange();
+  mut text = TextRenderer.create(device, atlas, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_RGBA16_FLOAT,
+    TEXTURE_FORMAT_DEPTH32_FLOAT);
+  require(text.isValid(), "the half-float text renderer");
+  imm layout = layoutText(font, atlas, "I", &LayoutOptions.make(100.0));
+  imm white = TextStyle.plain(new Color(1., 1., 1., 1.));
+  imm overlay = text.addText(device, SPACE_OVERLAY);
+  // The bar: x 20 + 10 to 20 + 30, y 10 + 80 - 70 = 20 to 90
+  text.set(device, overlay, &layout, &white, overlayTransform(f32.from(size), f32.from(size), 20., 10.));
+  text.syncAtlas(device, atlas);
+  mut encoder = device.createCommandEncoder();
+  clearAll(&mut encoder, &target, &depth, 1.);
+  text.renderOverlay(&mut encoder, &target);
+  encoder.copyTextureToBuffer(&target, &readback);
+  device.queue.submit(encoder.finish());
+  device.endFrame();
+  device.waitIdle();
+  // A texel's four halves, 8 bytes; the pixel (40, 55) is inside the bar, (5, 55) outside it
+  imm inside = q + usize.from((55u32 * size + 40u32) * 8u32);
+  imm outside = q + usize.from((55u32 * size + 5u32) * 8u32);
+  mut c = 0usize;
+  while c < 4usize {
+    expectUInt(u64.from(*(inside + c * 2usize)) + 256u64 * u64.from(*(inside + c * 2usize + 1usize)), 0x3C00u64,
+      "half-float frame: the fill is 1.0 in every channel and alpha");
+    expectUInt(u64.from(*(outside + c * 2usize)) + 256u64 * u64.from(*(outside + c * 2usize + 1usize)), 0u64,
+      "half-float frame: outside is 0");
+    c = c + 1usize;
+  }
+  // World text into it too (a placement in front of a camera, depth cleared to 1)
+  mut camera = Camera.make();
+  camera.lookAt(new Vec3(0., 0., 5.), new Vec3(0., 0., 0.), new Vec3(0., 1., 0.));
+  imm vp = camera.projectionMatrix(1.) * camera.viewMatrix();
+  imm world = text.addText(device, SPACE_WORLD);
+  imm sign = layoutText(font, atlas, "I", &LayoutOptions.make(2.0));
+  text.clearText(overlay);
+  text.set(device, world, &sign, &white, worldTransform(vp, Mat4.identity(), &sign, 0.5, 0.5));
+  mut encoder2 = device.createCommandEncoder();
+  clearAll(&mut encoder2, &target, &depth, 1.);
+  text.renderWorld(&mut encoder2, &target, &depth);
+  encoder2.copyTextureToBuffer(&target, &readback);
+  device.queue.submit(encoder2.finish());
+  device.endFrame();
+  device.waitIdle();
+  imm middle = q + usize.from((64u32 * size + 64u32) * 8u32);
+  expectUInt(u64.from(*middle) + 256u64 * u64.from(*(middle + 1usize)), 0x3C00u64, "half-float frame: world text in the middle");
+}
+
+fn main() i32 {
+  mut instance = Instance.create("msdftext draw");
+  require(instance.isValid(), "a Vulkan 1.3 instance");
+  mut none = Surface.none();
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  if (env as usize) != 0usize {
+    if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  mut adapter = instance.requestAdapter(&none, preference);
+  require(adapter.isValid(), "an adapter");
+  mut device = adapter.requestDevice();
+  require(device.isValid(), "a device");
+
+  imm targetDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_RGBA8_UNORM,
+    TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  mut target = device.createTexture(&targetDesc);
+  imm depthDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  mut depth = device.createTexture(&depthDesc);
+  mut readback = device.createBuffer(u64.from(W * H * 4u32), BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  imm p = readback.mappedRange();
+
+  match Font.load(&DEMO_FONT) {
+    case imm font Ok {
+      mut atlas = Atlas.create(AtlasConfig.standard());
+      mut text = TextRenderer.create(&mut device, &atlas, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_FORMAT_RGBA8_UNORM,
+        TEXTURE_FORMAT_DEPTH32_FLOAT);
+      require(text.isValid(), "the text renderer");
+      imm big = layoutText(&font, &mut atlas, "AIOi", &LayoutOptions.make(200.0));
+      imm small = layoutText(&font, &mut atlas, "AIOi", &LayoutOptions.make(12.0));
+      imm white = TextStyle.plain(new Color(1., 1., 1., 1.));
+      imm hBig = text.addText(&mut device, SPACE_OVERLAY);
+      imm hSmall = text.addText(&mut device, SPACE_OVERLAY);
+      text.set(&mut device, hBig, &big, &white, overlayTransform(f32.from(W), f32.from(H), 20., 10.));
+      text.set(&mut device, hSmall, &small, &white, overlayTransform(f32.from(W), f32.from(H), 20., 240.));
+      text.syncAtlas(&mut device, &atlas);
+      mut encoder = device.createCommandEncoder();
+      clearAll(&mut encoder, &target, &depth, 1.);
+      text.renderOverlay(&mut encoder, &target);
+      finish(&mut device, &mut encoder, &target, &readback);
+      shot(p, "overlay.bmp");
+      expectUInt(u64.from(text.drawCalls), 2u64, "two draws");
+      expectUInt(u64.from(text.glyphs), 8u64, "eight glyphs");
+      checkText(p, &font, &big, 20.0d, 10.0d, 200.0d, "200 px text");
+      checkText(p, &font, &small, 20.0d, 240.0d, 12.0d, "12 px text");
+      // No ink beyond the quads: the pixels outside every glyph's quad (a pixel's slack) are black
+      mut stray = 0.0d;
+      mut y = 0u32;
+      while y < H {
+        mut x = 0u32;
+        while x < W {
+          mut inside = false;
+          mut t = 0usize;
+          while t < 2usize {
+            imm l = if t == 0usize { &big; } else { &small; };
+            imm ox = 20.0d;
+            imm oy = if t == 0usize { 10.0d; } else { 240.0d; };
+            mut q = 0usize;
+            while q < l.quads.len() {
+              imm quad = *l.quads[q];
+              if f64.from(x) >= ox + f64.from(quad.x0) - 1.0d and f64.from(x) <= ox + f64.from(quad.x1) + 1.0d
+                  and f64.from(y) >= oy + f64.from(quad.y0) - 1.0d and f64.from(y) <= oy + f64.from(quad.y1) + 1.0d {
+                inside = true;
+              }
+              q = q + 1usize;
+            }
+            t = t + 1usize;
+          }
+          if !inside { stray = stray + cov(p, x, y); }
+          x = x + 1u32;
+        }
+        y = y + 1u32;
+      }
+      expectFloat(stray, 0.0d, 0.0001d, "no ink outside the glyphs' quads");
+      text.clearText(hBig);
+      text.clearText(hSmall);
+
+      // 2. Effects
+      imm one = layoutText(&font, &mut atlas, "I", &LayoutOptions.make(200.0));
+      mut style = TextStyle.plain(new Color(1., 1., 1., 1.));
+      style.outlineColor = new Color(1., 0., 0., 1.);
+      style.outlineWidth = 10.;
+      style.shadowColor = new Color(0., 0., 1., 1.);
+      style.shadowOffset = new Vec2(8., 8.);
+      imm fx = text.addText(&mut device, SPACE_OVERLAY);
+      text.set(&mut device, fx, &one, &style, overlayTransform(f32.from(W), f32.from(H), 100., 20.));
+      text.syncAtlas(&mut device, &atlas);
+      mut encoder1 = device.createCommandEncoder();
+      clearAll(&mut encoder1, &target, &depth, 1.);
+      text.renderOverlay(&mut encoder1, &target);
+      finish(&mut device, &mut encoder1, &target, &readback);
+      shot(p, "effects.bmp");
+      // The bar: left edge at 100 + 20 = 120, right 160, top 20 + 160 - 140 = 40, bottom 180
+      imm midY = 110u32;
+      expectFloat(chan(p, 140u32, midY, 0u32), 1.0d, 0.02d, "effects: the fill is white (red)");
+      expectFloat(chan(p, 140u32, midY, 2u32), 1.0d, 0.02d, "effects: the fill is white (blue)");
+      expectFloat(chan(p, 115u32, midY, 0u32), 1.0d, 0.03d, "effects: 5 px outside the left edge is outline red");
+      expectFloat(chan(p, 115u32, midY, 1u32), 0.0d, 0.03d, "effects: outline has no green");
+      expectFloat(chan(p, 115u32, midY, 2u32), 0.0d, 0.03d, "effects: outline has no blue");
+      expectFloat(chan(p, 105u32, midY, 0u32) + chan(p, 105u32, midY, 2u32), 0.0d, 0.03d, "effects: 15 px outside is black");
+      // The shadow falls 8 right: the outline reaches 10 beyond the right edge (170), the shadow's own outline-less
+      // edge 8 + 0 beyond 160 = 168: inside the outline. Below the bar: the bottom edge is 180, the shadow 188,
+      // the outline reaches 190: blue shows only where the outline does not cover: none here. Shadow beyond
+      // the outline needs a larger offset; check it separately.
+      text.clearText(fx);
+      mut style2 = TextStyle.plain(new Color(1., 1., 1., 1.));
+      style2.shadowColor = new Color(0., 0., 1., 1.);
+      style2.shadowOffset = new Vec2(12., 12.);
+      text.set(&mut device, fx, &one, &style2, overlayTransform(f32.from(W), f32.from(H), 100., 20.));
+      mut encoder2 = device.createCommandEncoder();
+      clearAll(&mut encoder2, &target, &depth, 1.);
+      text.renderOverlay(&mut encoder2, &target);
+      finish(&mut device, &mut encoder2, &target, &readback);
+      shot(p, "shadow.bmp");
+      // Right of the bar (160) the shadow runs to 172; at y just below the middle
+      expectFloat(chan(p, 166u32, midY, 2u32), 1.0d, 0.03d, "shadow: blue 6 px beyond the right edge");
+      expectFloat(chan(p, 166u32, midY, 0u32), 0.0d, 0.03d, "shadow: only blue");
+      expectFloat(chan(p, 176u32, midY, 2u32), 0.0d, 0.03d, "shadow: nothing beyond it");
+      expectFloat(chan(p, 140u32, midY, 0u32), 1.0d, 0.02d, "shadow: the fill stays over it");
+      // Below the bottom edge (180) the shadow runs to 192 (the bar at x 120..160 shifted right: 132..172)
+      expectFloat(chan(p, 150u32, 186u32, 2u32), 1.0d, 0.03d, "shadow: blue below the bar");
+      expectFloat(chan(p, 125u32, 186u32, 2u32), 0.0d, 0.03d, "shadow: not left of the shifted shadow");
+      text.clearText(fx);
+
+      // 2b. Into render's half-float HDR frame, overlay and world, as before tone mapping
+      hdr(&mut device, &mut atlas, &font);
+
+      // 3. World text
+      world(&mut device, &mut text, &mut atlas, &font, &target, &depth, &readback, p);
+    }
+    case is Error { require(false, "the demo font loads"); }
+  }
+
+  expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
+  expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
+  done();
+}

@@ -1,0 +1,106 @@
+// ======== Raster: what a decode gives ========
+
+// How the file says its colours are to be read
+pub enum ColorSpace {
+  // Nothing said. A viewer treats colour as sRGB, which is what nearly every
+  // such file is.
+  Unspecified,
+  // sRGB (a PNG with an sRGB chunk; a JPEG is sRGB unless it says otherwise,
+  // and says so only by an ICC profile this package does not read)
+  Srgb,
+  // Gamma 1.0: the samples are linear light
+  Linear,
+  // A PNG gAMA chunk other than sRGB's or 1.0: 'gamma' holds it
+  Gamma;
+}
+
+// A decoded picture: always four channels (red, green, blue, alpha), rows
+// from the TOP down (the order every file stores them in; render's Image
+// wants the bottom row first, which 'bottomUp' gives), pixels of 'depth' bits
+// a channel: 8 in 'pixels8', or 16 in 'pixels16' (a PNG whose samples are 16
+// bits). Only the list for its depth holds anything. Colour is NOT
+// premultiplied by alpha. Greyscale and palette pictures are expanded to
+// colour, and a picture with no alpha has alpha full (255 or 65535).
+pub struct Raster {
+  pub width i32;
+  pub height i32;
+  pub depth i32;
+  pub pixels8 List[u8];
+  pub pixels16 List[u16];
+  // Whether the file had an alpha channel or a transparency key/table: when
+  // false every alpha is full, and a texture can be uploaded as RGB
+  pub hasAlpha bool;
+  pub colorSpace ColorSpace;
+  // A PNG's gAMA value as the specification states it: the encoding's
+  // exponent (light raised to it to make the stored value), 0.45455 for the
+  // sRGB-like files, 1 for linear; 0 when the file does not say
+  pub gamma f32;
+  // EXIF orientation (1 to 8) the file asked for, 1 when none. A JPEG decode
+  // applies it by default, so the pixels are upright, and this keeps what it
+  // was
+  pub orientation i32;
+
+  pub fn empty() Raster {
+    new Raster(0, 0, 8, List[u8].empty(), List[u16].empty(), false, ColorSpace.Unspecified, 0., 1);
+  }
+
+  pub fn isEmpty(self &) bool { width == 0 or height == 0; }
+
+  // Channel c (0 red, 1 green, 2 blue, 3 alpha) of the pixel x from the left
+  // and y from the top, as 8 bits (a 16-bit sample is rounded down to 8)
+  pub fn at8(self &, x i32, y i32, c i32) u8 {
+    imm i = usize.from((y * width + x) * 4 + c);
+    if depth == 16 { return to8(*pixels16[i]); }
+    *pixels8[i];
+  }
+
+  // Channel c as 16 bits (an 8-bit sample v is v * 257, which maps 255 to 65535)
+  pub fn at16(self &, x i32, y i32, c i32) u16 {
+    imm i = usize.from((y * width + x) * 4 + c);
+    if depth == 16 { return *pixels16[i]; }
+    u16.from(*pixels8[i]) * 257u16;
+  }
+
+  // All the pixels as 8-bit RGBA, top row first (the list itself when the
+  // picture is 8-bit, a rounded copy otherwise)
+  pub fn rgba8(self &) List[u8] {
+    mut out = List[u8].withCapacity(pixels8.len() + pixels16.len());
+    if depth == 16 {
+      mut i = 0usize;
+      while i < pixels16.len() { out.push(to8(*pixels16[i])); i += 1usize; }
+    } else {
+      mut i = 0usize;
+      while i < pixels8.len() { out.push(*pixels8[i]); i += 1usize; }
+    }
+    out;
+  }
+
+  // The pixels in render's Image layout: rows from the BOTTOM up, 8 bits,
+  // 'channels' bytes a pixel (3 drops alpha, 4 keeps it).
+  // `new render.Image(r.width, r.height, 4, r.bottomUp(4))` is the hook.
+  pub fn bottomUp(self &, channels i32) List[u8] {
+    imm w = usize.from(width);
+    imm h = usize.from(height);
+    imm ch = usize.from(channels);
+    mut out = List[u8].withCapacity(w * h * ch);
+    mut y = 0usize;
+    while y < h {
+      imm row = (h - 1usize - y) * w * 4usize;
+      mut x = 0usize;
+      while x < w {
+        imm p = row + x * 4usize;
+        mut c = 0usize;
+        while c < ch {
+          if depth == 16 { out.push(to8(*pixels16[p + c])); } else { out.push(*pixels8[p + c]); }
+          c += 1usize;
+        }
+        x += 1usize;
+      }
+      y += 1usize;
+    }
+    out;
+  }
+}
+
+// 16 bits to 8, rounded: v / 257
+fn to8(v u16) u8 { u8.from((u32.from(v) * 255u32 + 32767u32) / 65535u32); }

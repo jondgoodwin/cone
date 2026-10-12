@@ -1,0 +1,770 @@
+// ======== The retained tree and the Ui that owns it ========
+//
+// Nodes are rows of a table named by usize ids; slot 0 is the null node. A node
+// holds ids of other nodes (parent, first, last, prev, next), never another
+// node, so there is no recursive struct. Freed slots are reused. Text lives in
+// a table parallel to the nodes (a label's text, a tooltip), widget state in a
+// table per widget kind reached through Node.data.
+
+// ---- dirty bits (Node.dirty) ----
+pub const D_MEASURE = 1u32;      // my natural size may have changed
+pub const D_ARRANGE = 2u32;      // my children must be placed again
+pub const D_SUB = 4u32;          // something below me is dirty
+
+// ---- pointer modes (Node.pointer) ----
+pub const PM_IGNORE = 0u32;      // never the target of a pointer event (its children may be)
+pub const PM_STOP = 1u32;        // the target if it is hit and no child is
+
+// A grid track: owned by a node, on an axis (0 columns, 1 rows)
+pub struct Track {
+  pub owner usize;
+  pub axis u32;
+  pub kind u32;                  // TRACK_FIXED (value pixels), TRACK_FRACTION (value a weight), TRACK_AUTO
+  pub value f32;
+}
+
+pub struct Node {
+  // ---- the tree ----
+  pub alive bool = false;
+  pub parent usize = 0usize;
+  pub first usize = 0usize;
+  pub last usize = 0usize;
+  pub prev usize = 0usize;
+  pub next usize = 0usize;
+  pub nkids u32 = 0u32;
+  // ---- identity and look ----
+  pub kind u32 = 0u32;
+  pub data usize = 0usize;       // row in the table of this kind's state
+  pub tag u32 = 0u32;            // the application's own number for this node
+  pub style usize = 0usize;
+  pub state u32 = 0u32;
+  // ---- behaviour ----
+  pub visible bool = true;
+  pub enabled bool = true;
+  pub focusable bool = false;
+  pub clip bool = false;
+  pub pointer u32 = 0u32;
+  pub tabIndex i32 = 0i32;       // 0: in tree order; >0: first, in this order; <0: not reached by Tab
+  pub dragKind u32 = 0u32;       // nonzero: a drag source of this payload kind
+  pub dragA u32 = 0u32;
+  pub dragB u32 = 0u32;
+  pub dropMask u32 = 0u32;       // payload kinds (bit k for kind k) a drop here accepts; 0 is no drop target
+  // ---- layout, as asked ----
+  pub layout u32 = 0u32;
+  pub prefW f32 = -1.;
+  pub prefH f32 = -1.;
+  pub minW f32 = 0.;
+  pub minH f32 = 0.;
+  pub maxW f32 = 1000000000.;
+  pub maxH f32 = 1000000000.;
+  pub padL f32 = -1.;            // negative: the style's padding
+  pub padT f32 = -1.;
+  pub padR f32 = -1.;
+  pub padB f32 = -1.;
+  pub marL f32 = 0.;
+  pub marT f32 = 0.;
+  pub marR f32 = 0.;
+  pub marB f32 = 0.;
+  pub grow f32 = 0.;
+  pub shrink f32 = 1.;
+  pub basis f32 = -1.;
+  pub justify u32 = 0u32;
+  pub alignItems u32 = 3u32;
+  pub alignItemsY u32 = 3u32;
+  pub alignSelf u32 = 4u32;
+  pub alignSelfY u32 = 4u32;
+  pub gap f32 = -1.;             // between children; negative: the style's spacing
+  pub gapY f32 = -1.;            // a grid's row gap; negative: the same as gap
+  pub outOfFlow bool = false;
+  pub absX f32 = 0.;
+  pub absY f32 = 0.;
+  pub anchorL f32 = 0.;
+  pub anchorT f32 = 0.;
+  pub anchorR f32 = 0.;
+  pub anchorB f32 = 0.;
+  pub offL f32 = 0.;
+  pub offT f32 = 0.;
+  pub offR f32 = 0.;
+  pub offB f32 = 0.;
+  pub pivotX f32 = 0.;
+  pub pivotY f32 = 0.;
+  pub gridCol u32 = 0u32;
+  pub gridRow u32 = 0u32;
+  pub colSpan u32 = 1u32;
+  pub rowSpan u32 = 1u32;
+  pub dock u32 = 0u32;
+  pub splitRatio f32 = 0.5;
+  pub splitVertical bool = true;   // true: the divider is vertical, the panes side by side
+  pub scrollH bool = false;
+  pub scrollV bool = false;
+  pub scrollX f32 = 0.;
+  pub scrollY f32 = 0.;
+  pub contentW f32 = 0.;
+  pub contentH f32 = 0.;
+  // ---- layout caches ----
+  pub dirty u32 = 7u32;
+  pub cValid bool = false;
+  pub cMinW f32 = 0.;
+  pub cMaxW f32 = 0.;
+  pub cMinH f32 = 0.;
+  pub cMaxH f32 = 0.;
+  pub cW f32 = 0.;
+  pub cH f32 = 0.;
+  pub cConstrained bool = true;    // a bound shaped the cached size (see cacheFits)
+  pub aValid bool = false;
+  pub aW f32 = 0.;
+  pub aH f32 = 0.;
+  pub tValid bool = false;       // text measure cache
+  pub tW f32 = 0.;
+  pub tH f32 = 0.;
+  pub tFont u32 = 0u32;
+  pub tSize f32 = 0.;
+  // ---- result: the border box ----
+  pub x f32 = 0.;                // relative to the parent's border box
+  pub y f32 = 0.;
+  pub w f32 = 0.;
+  pub h f32 = 0.;
+  pub gx f32 = 0.;               // in the Ui's pixels
+  pub gy f32 = 0.;
+}
+
+// What the last layout did, in nodes
+pub struct Stats {
+  pub measured u32 = 0u32;       // measure bodies run
+  pub measureHits u32 = 0u32;    // measure answered from the cache
+  pub arranged u32 = 0u32;       // arrange bodies run
+  pub arrangeSkips u32 = 0u32;   // arrange skipped (same size, nothing dirty)
+  pub textMeasures u32 = 0u32;   // calls of the caller's text closure
+}
+
+// ---- events the application receives (Ui.takeEvents) ----
+pub const UE_CLICK = 1u32;            // node clicked (button, row, tab ...); i = button
+pub const UE_CHANGED = 2u32;          // a slider, knob or scroll moved: a = value
+pub const UE_TOGGLED = 3u32;          // i = 1 checked
+pub const UE_TEXT = 4u32;             // a text field's text changed
+pub const UE_SUBMIT = 5u32;           // Enter in a text field
+pub const UE_SELECT = 6u32;           // a list's selection: i = row
+pub const UE_ACTIVATE = 7u32;         // a list row double-clicked or Enter: i = row
+pub const UE_CLOSE = 8u32;            // a window's close button
+pub const UE_TAB = 9u32;              // a tab chosen: i = index
+pub const UE_DRAG_BEGIN = 10u32;      // node = source
+pub const UE_DRAG_END = 11u32;        // node = source, i = 1 if dropped on a target that accepted
+pub const UE_DROP = 12u32;            // node = target, other = source, i = outcome (DR_*), j = payload kind
+pub const UE_DROP_REFUSED = 13u32;    // node = target, other = source, i = reason (DR_*)
+pub const UE_HOTBAR_USE = 14u32;      // node = the slot, i = slot index, j = what is bound there
+pub const UE_HOTBAR_BUSY = 15u32;     // pressed while cooling down: a = seconds left
+pub const UE_HOTBAR_BOUND = 16u32;    // a binding changed: i = slot index, j = new binding id (0 for none)
+pub const UE_MAP_CLICK = 17u32;       // a, b = 0..1 across and down the map's visible window
+pub const UE_MAP_ZOOM = 18u32;        // a = new zoom
+pub const UE_INVENTORY = 19u32;       // an inventory changed (a drop was done): i = container
+pub const UE_FOCUS = 20u32;
+pub const UE_BLUR = 21u32;
+pub const UE_SCROLLED = 22u32;        // a = x, b = y
+pub const UE_LISTENER = 23u32;        // a registered listener fired: i = its tag, j = the event kind
+pub const UE_TOOLTIP = 24u32;         // a tooltip appeared for node
+pub const UE_WINDOW_MOVED = 25u32;
+pub const UE_WINDOW_RESIZED = 26u32;
+pub const UE_UNHANDLED_POINTER = 27u32;  // a press that hit no node: the world can have it
+
+pub struct UiEvent {
+  pub kind u32 = 0u32;
+  pub node usize = 0usize;
+  pub other usize = 0usize;
+  pub a f32 = 0.;
+  pub b f32 = 0.;
+  pub i i32 = 0i32;
+  pub j u32 = 0u32;
+}
+
+pub struct Ui {
+  pub nodes List[Node];
+  pub texts List[String];            // parallel to nodes
+  pub tips List[String];             // parallel to nodes
+  pub free List[usize];
+  pub tracks List[Track];
+  pub theme Theme;
+  pub root usize;
+  pub overlay usize;
+  pub width f32;
+  pub height f32;
+  pub stats Stats;
+  pub events List[UiEvent];
+  pub time f32 = 0.;
+
+  // widget state, a table per kind
+  pub sliders List[SliderData];
+  pub knobs List[KnobData];
+  pub fields List[FieldData];
+  pub lists List[ListData];
+  pub windows List[WindowData];
+  pub tabsets List[TabsData];
+  pub tabpages List[TabPage];
+  pub toggles List[ToggleData];
+  pub slots List[SlotData];
+  pub invgrids List[InvGridData];
+  pub hotslots List[HotSlotData];
+  pub minimaps List[MinimapData];
+  pub markers List[MapMarker];
+
+  // the inventory model this Ui's slots show
+  pub inv InvModel;
+
+  // input state (input.cone, dragdrop.cone)
+  pub input InputState;
+
+  // set while measuring: some child's size was shaped by a bound (layout.cone)
+  pub clampSeen bool = false;
+
+  pub fn make(width f32, height f32) Ui {
+    mut ui = new Ui(List[Node].empty(), List[String].empty(), List[String].empty(), List[usize].empty(),
+      List[Track].empty(), Theme.standard(), 0usize, 0usize, width, height, new Stats,
+      List[UiEvent].empty(), 0.,
+      List[SliderData].empty(), List[KnobData].empty(), List[FieldData].empty(), List[ListData].empty(),
+      List[WindowData].empty(), List[TabsData].empty(), List[TabPage].empty(), List[ToggleData].empty(),
+      List[SlotData].empty(), List[InvGridData].empty(), List[HotSlotData].empty(), List[MinimapData].empty(),
+      List[MapMarker].empty(), InvModel.make(), InputState.make());
+    ui.nodes.push(new Node);          // slot 0: the null node
+    ui.texts.push(String.empty());
+    ui.tips.push(String.empty());
+    ui.root = ui.allocNode(K_PLAIN);
+    ui.overlay = ui.allocNode(K_PLAIN);
+    ui.nodes[ui.root].layout = LK_ANCHOR;
+    ui.nodes[ui.overlay].layout = LK_ANCHOR;
+    ui.nodes[ui.root].prefW = width;
+    ui.nodes[ui.root].prefH = height;
+    ui.nodes[ui.overlay].prefW = width;
+    ui.nodes[ui.overlay].prefH = height;
+    ui.nodes[ui.root].style = ui.theme.find("base");
+    ui.nodes[ui.overlay].style = ui.theme.find("base");
+    ui.nodes[ui.root].padL = 0.;
+    ui.nodes[ui.root].padT = 0.;
+    ui.nodes[ui.root].padR = 0.;
+    ui.nodes[ui.root].padB = 0.;
+    ui.nodes[ui.overlay].padL = 0.;
+    ui.nodes[ui.overlay].padT = 0.;
+    ui.nodes[ui.overlay].padR = 0.;
+    ui.nodes[ui.overlay].padB = 0.;
+    ui.nodes[ui.root].gap = 0.;
+    ui.nodes[ui.overlay].gap = 0.;
+    ui;
+  }
+
+  // ---- allocating and linking nodes ----
+
+  fn allocNode(self &mut, kind u32) usize {
+    mut id = 0usize;
+    if free.len() > 0usize {
+      match free.pop() {
+        case imm v Some { id = v; }
+        else {}
+      }
+      nodes.set(id, new Node);
+      texts[id].clear();
+      tips[id].clear();
+    }
+    else {
+      id = nodes.len();
+      nodes.push(new Node);
+      texts.push(String.empty());
+      tips.push(String.empty());
+    }
+    nodes[id].alive = true;
+    nodes[id].kind = kind;
+    id;
+  }
+
+  // A new node, last child of 'parent' (0 for none: detached)
+  pub fn create(self &mut, parent usize, kind u32) usize {
+    imm id = allocNode(kind);
+    if parent != NIL {append(parent, id);}
+    id;
+  }
+
+  // A node is going: nothing may keep its id (the focus, a held press, a drag, a listener)
+  fn forgetNode(self &mut, id usize) {
+    if input.focus == id {input.focus = NIL;}
+    if input.pressed == id {input.pressed = NIL;}
+    if input.capture == id {input.capture = NIL;}
+    if input.modal == id {input.modal = NIL;}
+    if input.hover == id {input.hover = NIL;}
+    if input.clickNode == id {input.clickNode = NIL;}
+    if input.activeWindow == id {input.activeWindow = NIL;}
+    if input.drag.candidate == id {input.drag.candidate = NIL;}
+    if input.drag.target == id {input.drag.target = NIL;}
+    if input.drag.source == id and input.drag.active {dragCancel(self);}
+    if input.tip.target == id {
+      input.tip.target = NIL;
+      input.tip.shown = false;
+    }
+    if input.tip.node == id {
+      input.tip.node = NIL;
+      input.tip.shown = false;
+    }
+    if input.win.node == id {input.win.mode = 0u32;}
+    unlisten(self, id);
+    mut i = 0usize;
+    while i < input.hoverChain.len() {
+      if *input.hoverChain[i] == id {
+        input.hoverChain.set(i, NIL);
+      }
+      i = i + 1usize;
+    }
+  }
+
+  pub fn setFocus(self &mut, id usize) {
+    focusSet(self, id);
+  }
+
+  pub fn alive(self &, id usize) bool {id != NIL and id < nodes.len() and nodes[id].alive;}
+
+  // Makes 'child' the last child of 'parent'; it leaves its old parent
+  pub fn append(self &mut, parent usize, child usize) {
+    detach(child);
+    nodes[child].parent = parent;
+    imm l = nodes[parent].last;
+    nodes[child].prev = l;
+    nodes[child].next = NIL;
+    if l != NIL {nodes[l].next = child;} else {nodes[parent].first = child;}
+    nodes[parent].last = child;
+    nodes[parent].nkids = nodes[parent].nkids + 1u32;
+    markMeasure(parent);
+  }
+
+  // Places 'child' as the child of 'parent' just before 'before' (0: last)
+  pub fn insertBefore(self &mut, parent usize, child usize, before usize) {
+    if before == NIL {append(parent, child); return;}
+    detach(child);
+    imm p = nodes[before].prev;
+    nodes[child].parent = parent;
+    nodes[child].prev = p;
+    nodes[child].next = before;
+    nodes[before].prev = child;
+    if p != NIL {nodes[p].next = child;} else {nodes[parent].first = child;}
+    nodes[parent].nkids = nodes[parent].nkids + 1u32;
+    markMeasure(parent);
+  }
+
+  // Takes a node out of its parent's list (it keeps its own children)
+  pub fn detach(self &mut, id usize) {
+    imm p = nodes[id].parent;
+    if p == NIL {return;}
+    imm pr = nodes[id].prev;
+    imm nx = nodes[id].next;
+    if pr != NIL {nodes[pr].next = nx;} else {nodes[p].first = nx;}
+    if nx != NIL {nodes[nx].prev = pr;} else {nodes[p].last = pr;}
+    nodes[p].nkids = nodes[p].nkids - 1u32;
+    nodes[id].parent = NIL;
+    nodes[id].prev = NIL;
+    nodes[id].next = NIL;
+    markMeasure(p);
+  }
+
+  // Frees a node and everything below it. Ids of freed nodes are reused
+  pub fn destroy(self &mut, id usize) {
+    if !alive(id) {return;}
+    detach(id);
+    mut c = nodes[id].first;
+    while c != NIL {
+      imm n = nodes[c].next;
+      nodes[c].parent = NIL;
+      destroyBelow(c);
+      c = n;
+    }
+    forgetNode(id);
+    nodes[id].alive = false;
+    nodes[id].first = NIL;
+    nodes[id].last = NIL;
+    free.push(id);
+  }
+
+  fn destroyBelow(self &mut, id usize) {
+    mut c = nodes[id].first;
+    while c != NIL {
+      imm n = nodes[c].next;
+      destroyBelow(c);
+      c = n;
+    }
+    forgetNode(id);
+    nodes[id].alive = false;
+    nodes[id].first = NIL;
+    nodes[id].last = NIL;
+    free.push(id);
+  }
+
+  // Moves a child to the end of its parent's list: drawn last, hit first
+  pub fn raise(self &mut, id usize) {
+    imm p = nodes[id].parent;
+    if p == NIL or nodes[p].last == id {return;}
+    append(p, id);
+  }
+
+  pub fn parentOf(self &, id usize) usize {nodes[id].parent;}
+  pub fn firstChild(self &, id usize) usize {nodes[id].first;}
+  pub fn nextSibling(self &, id usize) usize {nodes[id].next;}
+  pub fn childCount(self &, id usize) usize {usize.from(nodes[id].nkids);}
+
+  // The n-th child (0 based), or 0
+  pub fn childAt(self &, id usize, n usize) usize {
+    mut c = nodes[id].first;
+    mut k = 0usize;
+    while c != NIL and k < n {
+      c = nodes[c].next;
+      k = k + 1usize;
+    }
+    c;
+  }
+
+  // Whether 'a' is 'b' or below it
+  pub fn isWithin(self &, a usize, b usize) bool {
+    mut n = a;
+    while n != NIL {
+      if n == b {return true;}
+      n = nodes[n].parent;
+    }
+    false;
+  }
+
+  // ---- dirty marking ----
+
+  // My natural size may have changed. Ancestors are remeasured up to the first
+  // node of fixed size (a relayout boundary), and everything above is noted
+  pub fn markMeasure(self &mut, id usize) {
+    if id == NIL {return;}
+    nodes[id].dirty = nodes[id].dirty | D_MEASURE | D_ARRANGE;
+    nodes[id].cValid = false;
+    mut n = id;
+    mut climbing = !isBoundary(id);
+    while nodes[n].parent != NIL {
+      imm p = nodes[n].parent;
+      if climbing {
+        if isBoundary(p) {
+          // p keeps its size but must place its children again
+          nodes[p].dirty = nodes[p].dirty | D_ARRANGE | D_SUB;
+          climbing = false;
+        }
+        else {
+          if (nodes[p].dirty & D_MEASURE) != 0u32 and (nodes[p].dirty & D_SUB) != 0u32 {
+            return;
+          }
+          nodes[p].dirty = nodes[p].dirty | D_MEASURE | D_ARRANGE | D_SUB;
+          nodes[p].cValid = false;
+        }
+      }
+      else {
+        if (nodes[p].dirty & D_SUB) != 0u32 {return;}
+        nodes[p].dirty = nodes[p].dirty | D_SUB;
+      }
+      n = p;
+    }
+  }
+
+  // My placement of my children, or my own position in my parent, changed
+  pub fn markArrange(self &mut, id usize) {
+    if id == NIL {return;}
+    imm p = nodes[id].parent;
+    if p == NIL {touchArrange(id);} else {touchArrange(p);}
+  }
+
+  // 'id' must place its children again; everything above is noted
+  pub fn touchArrange(self &mut, id usize) {
+    if id == NIL {return;}
+    nodes[id].dirty = nodes[id].dirty | D_ARRANGE;
+    mut n = id;
+    while nodes[n].parent != NIL {
+      imm q = nodes[n].parent;
+      if (nodes[q].dirty & D_SUB) != 0u32 {return;}
+      nodes[q].dirty = nodes[q].dirty | D_SUB;
+      n = q;
+    }
+  }
+
+  // Size does not depend on the content: fixed on both axes
+  fn isBoundary(self &, id usize) bool {
+    nodes[id].prefW >= 0. and nodes[id].prefH >= 0.;
+  }
+
+  // Everything must be measured again (a new theme, a new font)
+  pub fn invalidateAll(self &mut) {
+    mut i = 1usize;
+    while i < nodes.len() {
+      nodes[i].dirty = 7u32;
+      nodes[i].cValid = false;
+      nodes[i].aValid = false;
+      nodes[i].tValid = false;
+      i = i + 1usize;
+    }
+  }
+
+  // ---- properties that mark what they must ----
+
+  pub fn setText(self &mut, id usize, s &str) {
+    if texts[id].view() == s {return;}
+    texts[id].clear();
+    texts[id].append(s);
+    nodes[id].tValid = false;
+    markMeasure(id);
+  }
+
+  pub fn text(self &, id usize) &str {texts[id].view();}
+
+  pub fn setTooltip(self &mut, id usize, s &str) {
+    tips[id].clear();
+    tips[id].append(s);
+  }
+
+  pub fn setSize(self &mut, id usize, w f32, h f32) {
+    nodes[id].prefW = w;
+    nodes[id].prefH = h;
+    markSize(id);
+  }
+
+  pub fn setMinSize(self &mut, id usize, w f32, h f32) {
+    nodes[id].minW = w;
+    nodes[id].minH = h;
+    markSize(id);
+  }
+
+  pub fn setMaxSize(self &mut, id usize, w f32, h f32) {
+    nodes[id].maxW = w;
+    nodes[id].maxH = h;
+    markSize(id);
+  }
+
+  // My own size or margins changed: my parent must lay out again too
+  pub fn markSize(self &mut, id usize) {
+    markMeasure(id);
+    markMeasure(nodes[id].parent);
+  }
+
+  pub fn setPadding(self &mut, id usize, l f32, t f32, r f32, b f32) {
+    nodes[id].padL = l;
+    nodes[id].padT = t;
+    nodes[id].padR = r;
+    nodes[id].padB = b;
+    markMeasure(id);
+  }
+
+  pub fn setPad(self &mut, id usize, all f32) {setPadding(id, all, all, all, all);}
+
+  pub fn setMargin(self &mut, id usize, l f32, t f32, r f32, b f32) {
+    nodes[id].marL = l;
+    nodes[id].marT = t;
+    nodes[id].marR = r;
+    nodes[id].marB = b;
+    markMeasure(nodes[id].parent);
+    markArrange(id);
+    markMeasure(id);
+  }
+
+  pub fn setMargins(self &mut, id usize, all f32) {setMargin(id, all, all, all, all);}
+
+  pub fn setLayout(self &mut, id usize, mode u32) {
+    nodes[id].layout = mode;
+    markMeasure(id);
+  }
+
+  // A container in a row or column, with its gap
+  pub fn setFlex(self &mut, id usize, mode u32, gap f32) {
+    nodes[id].layout = mode;
+    nodes[id].gap = gap;
+    markMeasure(id);
+  }
+
+  pub fn setJustify(self &mut, id usize, justify u32, align u32) {
+    nodes[id].justify = justify;
+    nodes[id].alignItems = align;
+    markMeasure(id);
+  }
+
+  pub fn setGap(self &mut, id usize, gap f32, gapY f32) {
+    nodes[id].gap = gap;
+    nodes[id].gapY = gapY;
+    markMeasure(id);
+  }
+
+  // A child's flex properties
+  pub fn setFlexChild(self &mut, id usize, grow f32, shrink f32, basis f32) {
+    nodes[id].grow = grow;
+    nodes[id].shrink = shrink;
+    nodes[id].basis = basis;
+    markMeasure(nodes[id].parent);
+    markMeasure(id);
+  }
+
+  pub fn setAlignSelf(self &mut, id usize, x u32, y u32) {
+    nodes[id].alignSelf = x;
+    nodes[id].alignSelfY = y;
+    markMeasure(nodes[id].parent);
+  }
+
+  // Godot's anchors (fractions of the parent's content box) and offsets (pixels
+  // from each anchor), with the pivot: the point of the child that sits at a
+  // point anchor
+  pub fn setAnchors(self &mut, id usize, l f32, t f32, r f32, b f32) {
+    nodes[id].anchorL = l;
+    nodes[id].anchorT = t;
+    nodes[id].anchorR = r;
+    nodes[id].anchorB = b;
+    markMeasure(nodes[id].parent);
+  }
+
+  pub fn setOffsets(self &mut, id usize, l f32, t f32, r f32, b f32) {
+    nodes[id].offL = l;
+    nodes[id].offT = t;
+    nodes[id].offR = r;
+    nodes[id].offB = b;
+    markArrange(id);
+    if nodes[id].parent != NIL and nodes[nodes[id].parent].layout == LK_ANCHOR and !isBoundary(nodes[id].parent) {
+      markMeasure(nodes[id].parent);
+    }
+  }
+
+  pub fn setPivot(self &mut, id usize, px f32, py f32) {
+    nodes[id].pivotX = px;
+    nodes[id].pivotY = py;
+    markArrange(id);
+  }
+
+  // Takes the node out of its container's flow and puts it at (x, y) from the container's corner
+  pub fn setAbsolute(self &mut, id usize, x f32, y f32) {
+    nodes[id].outOfFlow = true;
+    nodes[id].absX = x;
+    nodes[id].absY = y;
+    markMeasure(nodes[id].parent);
+    markArrange(id);
+  }
+
+  // A cell of a grid
+  pub fn setCell(self &mut, id usize, col u32, row u32, colSpan u32, rowSpan u32) {
+    nodes[id].gridCol = col;
+    nodes[id].gridRow = row;
+    nodes[id].colSpan = colSpan;
+    nodes[id].rowSpan = rowSpan;
+    markMeasure(nodes[id].parent);
+  }
+
+  // Adds a track to a grid on axis 0 (a column) or 1 (a row)
+  pub fn addTrack(self &mut, grid usize, axis u32, kind u32, value f32) {
+    tracks.push(new Track(grid, axis, kind, value));
+    nodes[grid].layout = LK_GRID;
+    markMeasure(grid);
+  }
+
+  pub fn setDock(self &mut, id usize, side u32) {
+    nodes[id].dock = side;
+    markMeasure(nodes[id].parent);
+  }
+
+  pub fn setSplit(self &mut, id usize, ratio f32, vertical bool) {
+    nodes[id].layout = LK_SPLIT;
+    nodes[id].splitRatio = ratio;
+    nodes[id].splitVertical = vertical;
+    touchArrange(id);
+    markMeasure(id);
+  }
+
+  pub fn setScroll(self &mut, id usize, h bool, v bool) {
+    nodes[id].layout = LK_SCROLL;
+    nodes[id].scrollH = h;
+    nodes[id].scrollV = v;
+    nodes[id].clip = true;
+    markMeasure(id);
+  }
+
+  // Scrolls a LK_SCROLL node; clamped when laid out
+  pub fn setScrollOffset(self &mut, id usize, x f32, y f32) {
+    if nodes[id].scrollX == x and nodes[id].scrollY == y {return;}
+    nodes[id].scrollX = x;
+    nodes[id].scrollY = y;
+    touchArrange(id);
+  }
+
+  pub fn setVisible(self &mut, id usize, v bool) {
+    if nodes[id].visible == v {return;}
+    nodes[id].visible = v;
+    markMeasure(nodes[id].parent);
+    if !v and input.focus != NIL and isWithin(input.focus, id) {setFocus(NIL);}
+  }
+
+  pub fn setEnabled(self &mut, id usize, e bool) {
+    nodes[id].enabled = e;
+    if e {nodes[id].state = nodes[id].state & (ST_DISABLED ^ 4294967295u32);}
+    else {nodes[id].state = nodes[id].state | ST_DISABLED;}
+  }
+
+  pub fn setStyle(self &mut, id usize, name &str) {
+    imm s = theme.find(name);
+    if s != nodes[id].style {
+      nodes[id].style = s;
+      nodes[id].tValid = false;
+      markMeasure(id);
+    }
+  }
+
+  pub fn setViewport(self &mut, w f32, h f32) {
+    width = w;
+    height = h;
+    setSize(root, w, h);
+    setSize(overlay, w, h);
+  }
+
+  pub fn setState(self &mut, id usize, bit u32, on bool) {
+    if on {nodes[id].state = nodes[id].state | bit;}
+    else {nodes[id].state = nodes[id].state & (bit ^ 4294967295u32);}
+  }
+
+  pub fn hasState(self &, id usize, bit u32) bool {(nodes[id].state & bit) != 0u32;}
+
+  pub fn emit(self &mut, kind u32, node usize, other usize, a f32, b f32, i i32, j u32) {
+    events.push(new UiEvent(kind, node, other, a, b, i, j));
+  }
+
+  // The events since the last call, oldest first
+  pub fn takeEvents(self &mut) List[UiEvent] {
+    mut out = List[UiEvent].empty();
+    mut k = 0usize;
+    while k < events.len() {
+      out.push(*events[k]);
+      k = k + 1usize;
+    }
+    events.clear();
+    out;
+  }
+
+  // ---- style lookups at a node ----
+
+  pub fn styleColor(self &, id usize, prop u32, fallback u32) u32 {
+    theme.color(nodes[id].style, prop, nodes[id].state, fallback);
+  }
+
+  pub fn styleNum(self &, id usize, prop u32, fallback f32) f32 {
+    theme.num(nodes[id].style, prop, nodes[id].state, fallback);
+  }
+
+  // Layout-affecting numbers are read with state 0
+  pub fn styleNum0(self &, id usize, prop u32, fallback f32) f32 {
+    theme.num(nodes[id].style, prop, 0u32, fallback);
+  }
+
+  // Padding, with the style's value for any side the node leaves unset
+  pub fn padOf(self &, id usize, side u32) f32 {
+    mut v = nodes[id].padL;
+    if side == 1u32 {v = nodes[id].padT;}
+    if side == 2u32 {v = nodes[id].padR;}
+    if side == 3u32 {v = nodes[id].padB;}
+    if v >= 0. {v;} else {styleNum0(id, P_PAD, 0.);};
+  }
+
+  pub fn gapOf(self &, id usize) f32 {
+    if nodes[id].gap >= 0. {nodes[id].gap;} else {styleNum0(id, P_SPACING, 0.);};
+  }
+
+  pub fn gapYOf(self &, id usize) f32 {
+    if nodes[id].gapY >= 0. {nodes[id].gapY;} else {gapOf(id);};
+  }
+
+  // The border box in the Ui's pixels
+  pub fn rectOf(self &, id usize) Aabb2 {
+    new Aabb2(new Vec2(nodes[id].gx, nodes[id].gy), new Vec2(nodes[id].gx + nodes[id].w, nodes[id].gy + nodes[id].h));
+  }
+}

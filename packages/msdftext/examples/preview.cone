@@ -1,0 +1,86 @@
+// Generates one glyph's multi-channel field and prints its median as
+// characters: '#' well inside, '+' just inside, '-' just outside, '.' far outside.
+// Usage: congo run examples/preview.cone -- <font.ttf | demo> <character> [raw]
+// ('demo' is the built-in demo font; 'raw' skips error correction)
+mod preview;
+
+import fs;
+import path use Path;
+import stdio use *;
+import collections use *;
+import msdftext use *;
+import process;
+
+fn show(f &Font, code u32, raw bool, dump bool) {
+  imm g = f.glyphOf(code);
+  imm o = f.outline(g);
+  mut shape = Shape.fromOutline(&o);
+  imm resolved = shape.resolveOverlaps();
+  print <- "overlaps resolved: ", if resolved { "yes"; } else { "no"; }, "\n";
+  if dump {
+    mut c = 0usize;
+    while c < shape.contours.len() {
+      imm ct = *shape.contours[c];
+      print <- "contour ", u64.from(c), " winding ", i64.from(ct.winding), "\n";
+      mut k = 0u32;
+      while k < ct.count {
+        imm e = *shape.edges[usize.from(ct.start + k)];
+        print <- "  edge ", u64.from(e.kind), " (", e.a.x, ",", e.a.y, ") (", e.b.x, ",", e.b.y, ") (", e.c.x, ",", e.c.y, ")\n";
+        k = k + 1u32;
+      }
+      c = c + 1usize;
+    }
+  }
+  colorEdges(&mut shape, 3.0d, 0u64);
+  imm box = f.glyphBox(g);
+  imm px = 48.0d / f64.from(f.unitsPerEm);
+  imm pad = 5.0d;
+  imm w = u32.from((f64.from(box.xMax - box.xMin) * px) + 2.0d * pad + 1.0d);
+  imm h = u32.from((f64.from(box.yMax - box.yMin) * px) + 2.0d * pad + 1.0d);
+  imm frame = new Frame(w, h, px, pad / px - f64.from(box.xMin), pad / px - f64.from(box.yMin), 6.0d / px);
+  mut field = generateMsdf(&shape, &frame);
+  mut fixed = 0u32;
+  if !raw { fixed = correctErrors(&mut field, &shape, &frame); }
+  print <- "glyph ", u64.from(g), " ", u64.from(w), "x", u64.from(h), " contours ", u64.from(shape.contours.len()),
+    " edges ", u64.from(shape.edges.len()), " fixed ", u64.from(fixed), "\n";
+  mut y = 0u32;
+  while y < h {
+    mut x = 0u32;
+    while x < w {
+      imm m = field.median(x, y);
+      if m > 0.75 { print <- "#"; }
+      elif m > 0.5 { print <- "+"; }
+      elif m > 0.25 { print <- "-"; }
+      else { print <- "."; }
+      x = x + 1u32;
+    }
+    print <- "\n";
+    y = y + 1u32;
+  }
+}
+
+fn main() i32 {
+  imm args = process.args();
+  if args.len() < 3usize { print <- "usage: preview <font.ttf|demo> <char> [raw]\n"; return 1; }
+  imm code = u32.from((*args[2usize])[0usize]);
+  imm raw = args.len() > 3usize and (*args[3usize]).view() == "raw";
+  imm dump = args.len() > 3usize and (*args[3usize]).view() == "dump";
+  if (*args[1usize]).view() == "demo" {
+    match Font.load(&DEMO_FONT) {
+      case imm f Ok { show(&f, code, raw, dump); }
+      case is Error { print <- "demo font failed\n"; }
+    }
+    return 0;
+  }
+  imm p = Path.fromLiteral((*args[1usize]).view());
+  match fs.readFile(&p) {
+    case imm bytes Ok {
+      match Font.load(bytes.view()) {
+        case imm f Ok { show(&f, code, raw, dump); }
+        case imm e Error { print <- e.message(), "\n"; }
+      }
+    }
+    case imm e Error { print <- "no file\n"; }
+  }
+  0;
+}

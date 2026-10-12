@@ -1,0 +1,659 @@
+// ======== Font: a TrueType file read in place ========
+//
+// The tables read are the ones a plain left-to-right line needs, from
+// Microsoft's OpenType specification: head (units per em, the loca format),
+// maxp (glyph count), hhea and hmtx (the ascent, descent, line gap and each
+// glyph's advance), cmap (formats 0, 4, 6 and 12: character to glyph), loca
+// and glyf (a glyph's quadratic outline, simple or composite), kern (format 0)
+// and GPOS (the 'kern' feature's pair adjustments, lookup types 2 and 9,
+// both pair formats). Every read is bounds-checked and answers 0 beyond the
+// file, so a damaged font gives a wrong glyph, never a crash.
+//
+// NOT READ: CFF outlines ('OTTO' files, cubic splines): 'load' refuses them
+// by name; variations (the default instance is drawn); composites placed by
+// matching points rather than offsets (placed at 0); GPOS device and variation
+// tables; GSUB (ligatures and other substitutions are shaping).
+
+// Why a font was refused
+pub const FONT_OK = 0u32;
+pub const FONT_TOO_SHORT = 1u32;
+pub const FONT_NOT_TRUETYPE = 2u32;       // not a TrueType or TrueType collection file
+pub const FONT_CFF = 3u32;                // CFF outlines: cubic splines, not read yet
+pub const FONT_MISSING_TABLE = 4u32;      // head, maxp, hhea, hmtx, loca, glyf or cmap is not there
+pub const FONT_NO_CMAP = 5u32;            // no cmap subtable of a format read
+
+pub struct FontError {
+  pub code u32;
+
+  pub fn message(self &) &str {
+    if code == FONT_TOO_SHORT { return "the file is too short"; }
+    if code == FONT_NOT_TRUETYPE { return "not a TrueType font"; }
+    if code == FONT_CFF { return "CFF outlines are not read yet"; }
+    if code == FONT_MISSING_TABLE { return "a required table is missing"; }
+    if code == FONT_NO_CMAP { return "no usable cmap subtable"; }
+    "no error";
+  }
+}
+
+// Big-endian reads from font bytes; beyond the end, 0
+pub fn rdU8(d &Array[u8], o usize) u32 {
+  if o >= d.len { return 0u32; }
+  u32.from(d[o]);
+}
+
+pub fn rdU16(d &Array[u8], o usize) u32 {
+  (rdU8(d, o) << 8u32) | rdU8(d, o + 1usize);
+}
+
+pub fn rdU32(d &Array[u8], o usize) u32 {
+  (rdU16(d, o) << 16u32) | rdU16(d, o + 2usize);
+}
+
+// A 16-bit two's complement number
+pub fn rdI16(d &Array[u8], o usize) i32 {
+  imm v = i32.from(rdU16(d, o));
+  if v >= 32768i32 { return v - 65536i32; }
+  v;
+}
+
+fn tagOf(a u8, b u8, c u8, e u8) u32 {
+  (u32.from(a) << 24u32) | (u32.from(b) << 16u32) | (u32.from(c) << 8u32) | u32.from(e);
+}
+
+// The bounding box of a glyph, in font units
+pub struct GlyphBox {
+  pub xMin i32;
+  pub yMin i32;
+  pub xMax i32;
+  pub yMax i32;
+}
+
+// A glyph's points as the glyf table gives them, in font units (y up):
+// 'ends' holds the index of each contour's last point
+pub struct Outline {
+  pub xs List[f64];
+  pub ys List[f64];
+  pub on List[bool];
+  pub ends List[u32];
+
+  pub fn empty() Outline {
+    new Outline(List[f64].empty(), List[f64].empty(), List[bool].empty(), List[u32].empty());
+  }
+
+  pub fn contourCount(self &) usize { ends.len(); }
+  pub fn pointCount(self &) usize { xs.len(); }
+}
+
+pub struct Font {
+  data List[u8];
+  pub unitsPerEm u32;
+  pub glyphCount u32;
+  pub ascent i32;                // hhea, font units, above the baseline
+  pub descent i32;               // below it, negative
+  pub lineGap i32;
+  locaFormat u32;                // 0: short offsets (halved), 1: long
+  numHMetrics u32;
+  tGlyf u32;
+  tLoca u32;
+  tHmtx u32;
+  tKern u32;
+  tGpos u32;
+  tName u32;
+  cmapOffset u32;                // the chosen subtable
+  cmapFormat u32;
+  kernLookups List[u32];         // GPOS lookup offsets (from the lookup list) of every 'kern' feature
+
+  // The table 'tag' of the font at 'base' in 'd': its offset, or 0
+  fn findTable(d &Array[u8], base usize, tag u32) u32 {
+    imm n = usize.from(rdU16(d, base + 4usize));
+    mut i = 0usize;
+    while i < n {
+      imm rec = base + 12usize + i * 16usize;
+      if rdU32(d, rec) == tag { return rdU32(d, rec + 8usize); }
+      i = i + 1usize;
+    }
+    0u32;
+  }
+
+  // A font from the bytes of a .ttf (or the first font of a .ttc), copied.
+  pub fn load(bytes &Array[u8]) Result[Font, FontError] {
+    if bytes.len < 12usize { return Error[Font, FontError](new FontError(FONT_TOO_SHORT)); }
+    mut base = 0usize;
+    mut sfnt = rdU32(bytes, 0usize);
+    if sfnt == tagOf('t', 't', 'c', 'f') {
+      base = usize.from(rdU32(bytes, 12usize));
+      sfnt = rdU32(bytes, base);
+    }
+    if sfnt == tagOf('O', 'T', 'T', 'O') { return Error[Font, FontError](new FontError(FONT_CFF)); }
+    if sfnt != 0x00010000u32 and sfnt != tagOf('t', 'r', 'u', 'e') {
+      return Error[Font, FontError](new FontError(FONT_NOT_TRUETYPE));
+    }
+    imm head = Font.findTable(bytes, base, tagOf('h', 'e', 'a', 'd'));
+    imm maxp = Font.findTable(bytes, base, tagOf('m', 'a', 'x', 'p'));
+    imm hhea = Font.findTable(bytes, base, tagOf('h', 'h', 'e', 'a'));
+    imm hmtx = Font.findTable(bytes, base, tagOf('h', 'm', 't', 'x'));
+    imm loca = Font.findTable(bytes, base, tagOf('l', 'o', 'c', 'a'));
+    imm glyf = Font.findTable(bytes, base, tagOf('g', 'l', 'y', 'f'));
+    imm cmap = Font.findTable(bytes, base, tagOf('c', 'm', 'a', 'p'));
+    if head == 0u32 or maxp == 0u32 or hhea == 0u32 or hmtx == 0u32 or loca == 0u32 or glyf == 0u32 or cmap == 0u32 {
+      return Error[Font, FontError](new FontError(FONT_MISSING_TABLE));
+    }
+    mut data = List[u8].withCapacity(bytes.len);
+    mut i = 0usize;
+    while i < bytes.len { data.push(bytes[i]); i = i + 1usize; }
+    imm d = bytes;
+    mut font = new Font(data, rdU16(d, usize.from(head) + 18usize), rdU16(d, usize.from(maxp) + 4usize),
+      rdI16(d, usize.from(hhea) + 4usize), rdI16(d, usize.from(hhea) + 6usize), rdI16(d, usize.from(hhea) + 8usize),
+      rdU16(d, usize.from(head) + 50usize), rdU16(d, usize.from(hhea) + 34usize), glyf, loca, hmtx,
+      Font.findTable(d, base, tagOf('k', 'e', 'r', 'n')), Font.findTable(d, base, tagOf('G', 'P', 'O', 'S')),
+      Font.findTable(d, base, tagOf('n', 'a', 'm', 'e')), 0u32, 0u32, List[u32].empty());
+    if font.unitsPerEm == 0u32 { font.unitsPerEm = 1000u32; }
+    if !font.chooseCmap(usize.from(cmap)) { return Error[Font, FontError](new FontError(FONT_NO_CMAP)); }
+    font.readKernFeature();
+    Ok[Font, FontError](font);
+  }
+
+  // Choose the cmap subtable: Unicode full repertoire (format 12) first,
+  // then Unicode BMP, then anything of a format read
+  fn chooseCmap(self &mut, cmap usize) bool {
+    imm d = data.view();
+    imm n = usize.from(rdU16(d, cmap + 2usize));
+    mut best = 0u32;
+    mut bestScore = 0u32;
+    mut i = 0usize;
+    while i < n {
+      imm rec = cmap + 4usize + i * 8usize;
+      imm platform = rdU16(d, rec);
+      imm encoding = rdU16(d, rec + 2usize);
+      imm off = rdU32(d, rec + 4usize);
+      imm fmt = rdU16(d, cmap + usize.from(off));
+      mut score = 0u32;
+      if fmt == 12u32 or fmt == 4u32 or fmt == 6u32 or fmt == 0u32 {
+        score = 1u32;
+        if platform == 3u32 and encoding == 10u32 and fmt == 12u32 { score = 6u32; }
+        elif platform == 0u32 and fmt == 12u32 { score = 5u32; }
+        elif platform == 3u32 and encoding == 1u32 and fmt == 4u32 { score = 4u32; }
+        elif platform == 0u32 and fmt == 4u32 { score = 3u32; }
+        elif platform == 3u32 { score = 2u32; }
+      }
+      if score > bestScore { bestScore = score; best = off; }
+      i = i + 1usize;
+    }
+    if bestScore == 0u32 { return false; }
+    cmapOffset = u32.from(cmap) + best;
+    cmapFormat = rdU16(d, usize.from(cmapOffset));
+    true;
+  }
+
+  // The glyph for a Unicode code point; 0, the missing glyph, if there is none
+  pub fn glyphOf(self &, cp u32) u32 {
+    imm d = data.view();
+    imm t = usize.from(cmapOffset);
+    if cmapFormat == 0u32 {
+      if cp > 255u32 { return 0u32; }
+      return rdU8(d, t + 6usize + usize.from(cp));
+    }
+    if cmapFormat == 6u32 {
+      imm first = rdU16(d, t + 6usize);
+      imm count = rdU16(d, t + 8usize);
+      if cp < first or cp >= first + count { return 0u32; }
+      return rdU16(d, t + 10usize + usize.from(cp - first) * 2usize);
+    }
+    if cmapFormat == 12u32 {
+      mut lo = 0u32;
+      mut hi = rdU32(d, t + 12usize);
+      while lo < hi {
+        imm mid = (lo + hi) / 2u32;
+        imm g = t + 16usize + usize.from(mid) * 12usize;
+        if cp < rdU32(d, g) { hi = mid; }
+        elif cp > rdU32(d, g + 4usize) { lo = mid + 1u32; }
+        else { return rdU32(d, g + 8usize) + (cp - rdU32(d, g)); }
+      }
+      return 0u32;
+    }
+    // format 4: segments of the BMP
+    if cp > 65535u32 { return 0u32; }
+    imm segX2 = rdU16(d, t + 6usize);
+    imm segs = segX2 / 2u32;
+    imm endCodes = t + 14usize;
+    imm startCodes = endCodes + usize.from(segX2) + 2usize;
+    imm deltas = startCodes + usize.from(segX2);
+    imm rangeOffsets = deltas + usize.from(segX2);
+    mut lo = 0u32;
+    mut hi = segs;
+    while lo < hi {
+      imm mid = (lo + hi) / 2u32;
+      imm m = usize.from(mid) * 2usize;
+      if cp > rdU16(d, endCodes + m) { lo = mid + 1u32; }
+      elif cp < rdU16(d, startCodes + m) { hi = mid; }
+      else {
+        imm rof = rdU16(d, rangeOffsets + m);
+        imm delta = rdU16(d, deltas + m);
+        if rof == 0u32 { return (cp + delta) & 0xFFFFu32; }
+        imm at = rangeOffsets + m + usize.from(rof) + usize.from(cp - rdU16(d, startCodes + m)) * 2usize;
+        imm g = rdU16(d, at);
+        if g == 0u32 { return 0u32; }
+        return (g + delta) & 0xFFFFu32;
+      }
+    }
+    0u32;
+  }
+
+  // A glyph's advance width, in font units
+  pub fn advance(self &, glyph u32) u32 {
+    imm d = data.view();
+    mut g = glyph;
+    if g >= numHMetrics { g = numHMetrics - 1u32; }
+    rdU16(d, usize.from(tHmtx) + usize.from(g) * 4usize);
+  }
+
+  // A glyph's left side bearing, in font units
+  pub fn leftBearing(self &, glyph u32) i32 {
+    imm d = data.view();
+    if glyph < numHMetrics { return rdI16(d, usize.from(tHmtx) + usize.from(glyph) * 4usize + 2usize); }
+    rdI16(d, usize.from(tHmtx) + usize.from(numHMetrics) * 4usize + usize.from(glyph - numHMetrics) * 2usize);
+  }
+
+  // Where glyph 'glyph''s data starts in the glyf table and its length (0: no outline)
+  fn glyphRange(self &, glyph u32, start &mut usize) usize {
+    if glyph >= glyphCount { return 0usize; }
+    imm d = data.view();
+    mut a = 0u32;
+    mut b = 0u32;
+    if locaFormat == 0u32 {
+      a = rdU16(d, usize.from(tLoca) + usize.from(glyph) * 2usize) * 2u32;
+      b = rdU16(d, usize.from(tLoca) + usize.from(glyph) * 2usize + 2usize) * 2u32;
+    } else {
+      a = rdU32(d, usize.from(tLoca) + usize.from(glyph) * 4usize);
+      b = rdU32(d, usize.from(tLoca) + usize.from(glyph) * 4usize + 4usize);
+    }
+    if b <= a { return 0usize; }
+    *start = usize.from(tGlyf) + usize.from(a);
+    usize.from(b - a);
+  }
+
+  // A glyph's bounding box from its header; all 0 for a glyph with no outline
+  pub fn glyphBox(self &, glyph u32) GlyphBox {
+    mut s = 0usize;
+    if self.glyphRange(glyph, &mut s) == 0usize { return new GlyphBox(0i32, 0i32, 0i32, 0i32); }
+    imm d = data.view();
+    new GlyphBox(rdI16(d, s + 2usize), rdI16(d, s + 4usize), rdI16(d, s + 6usize), rdI16(d, s + 8usize));
+  }
+
+  // Add glyph 'glyph''s points to 'out', transformed by the 2 x 2 matrix
+  // (a b; c d) (x' = a x + c y + dx, y' = b x + d y + dy), as a composite's
+  // component asks. 'depth' bounds the nesting of composites.
+  fn addGlyph(self &, glyph u32, out &mut Outline, a f64, b f64, c f64, e f64, dx f64, dy f64, depth u32) {
+    if depth > 6u32 { return; }
+    mut s = 0usize;
+    imm len = self.glyphRange(glyph, &mut s);
+    if len == 0usize { return; }
+    imm d = data.view();
+    imm contours = rdI16(d, s);
+    if contours >= 0i32 {
+      imm n = usize.from(u32.from(contours));
+      mut p = s + 10usize;
+      imm firstPoint = out.xs.len();
+      mut lastEnd = 0u32;
+      mut k = 0usize;
+      while k < n {
+        lastEnd = rdU16(d, p + k * 2usize);
+        out.ends.push(u32.from(firstPoint) + lastEnd);
+        k = k + 1usize;
+      }
+      imm count = if n == 0usize { 0usize; } else { usize.from(lastEnd) + 1usize; };
+      p = p + n * 2usize;
+      imm instr = usize.from(rdU16(d, p));
+      p = p + 2usize + instr;
+      // Flags, with repeats
+      mut flags = List[u8].withCapacity(count);
+      while flags.len() < count {
+        imm f = rdU8(d, p);
+        p = p + 1usize;
+        flags.push(u8.from(f));
+        if (f & 8u32) != 0u32 {
+          mut r = rdU8(d, p);
+          p = p + 1usize;
+          while r > 0u32 and flags.len() < count { flags.push(u8.from(f)); r = r - 1u32; }
+        }
+      }
+      // x then y coordinates, deltas
+      mut xs = List[f64].withCapacity(count);
+      mut cur = 0i32;
+      k = 0usize;
+      while k < count {
+        imm f = u32.from(*flags[k]);
+        if (f & 2u32) != 0u32 {
+          imm v = i32.from(rdU8(d, p));
+          p = p + 1usize;
+          if (f & 16u32) != 0u32 { cur = cur + v; } else { cur = cur - v; }
+        } elif (f & 16u32) == 0u32 {
+          cur = cur + rdI16(d, p);
+          p = p + 2usize;
+        }
+        xs.push(f64.from(cur));
+        k = k + 1usize;
+      }
+      cur = 0i32;
+      k = 0usize;
+      while k < count {
+        imm f = u32.from(*flags[k]);
+        mut y = 0.0d;
+        if (f & 4u32) != 0u32 {
+          imm v = i32.from(rdU8(d, p));
+          p = p + 1usize;
+          if (f & 32u32) != 0u32 { cur = cur + v; } else { cur = cur - v; }
+        } elif (f & 32u32) == 0u32 {
+          cur = cur + rdI16(d, p);
+          p = p + 2usize;
+        }
+        y = f64.from(cur);
+        imm x = *xs[k];
+        out.xs.push(a * x + c * y + dx);
+        out.ys.push(b * x + e * y + dy);
+        out.on.push((f & 1u32) != 0u32);
+        k = k + 1usize;
+      }
+      return;
+    }
+    // Composite: components one after another
+    mut p = s + 10usize;
+    mut more = true;
+    while more {
+      imm flags = rdU16(d, p);
+      imm gi = rdU16(d, p + 2usize);
+      p = p + 4usize;
+      mut ax = 0.0d;
+      mut ay = 0.0d;
+      if (flags & 1u32) != 0u32 {
+        if (flags & 2u32) != 0u32 { ax = f64.from(rdI16(d, p)); ay = f64.from(rdI16(d, p + 2usize)); }
+        p = p + 4usize;
+      } else {
+        if (flags & 2u32) != 0u32 {
+          mut vx = i32.from(rdU8(d, p));
+          mut vy = i32.from(rdU8(d, p + 1usize));
+          if vx >= 128i32 { vx = vx - 256i32; }
+          if vy >= 128i32 { vy = vy - 256i32; }
+          ax = f64.from(vx);
+          ay = f64.from(vy);
+        }
+        p = p + 2usize;
+      }
+      mut ma = 1.0d;
+      mut mb = 0.0d;
+      mut mc = 0.0d;
+      mut md = 1.0d;
+      if (flags & 8u32) != 0u32 {
+        ma = f64.from(rdI16(d, p)) / 16384.0d;
+        md = ma;
+        p = p + 2usize;
+      } elif (flags & 0x40u32) != 0u32 {
+        ma = f64.from(rdI16(d, p)) / 16384.0d;
+        md = f64.from(rdI16(d, p + 2usize)) / 16384.0d;
+        p = p + 4usize;
+      } elif (flags & 0x80u32) != 0u32 {
+        ma = f64.from(rdI16(d, p)) / 16384.0d;
+        mb = f64.from(rdI16(d, p + 2usize)) / 16384.0d;
+        mc = f64.from(rdI16(d, p + 4usize)) / 16384.0d;
+        md = f64.from(rdI16(d, p + 6usize)) / 16384.0d;
+        p = p + 8usize;
+      }
+      // The component's matrix (ma mb; mc md) then the parent's: x' = ma x + mc y, y' = mb x + md y
+      imm na = a * ma + c * mb;
+      imm nb = b * ma + e * mb;
+      imm nc = a * mc + c * md;
+      imm ne = b * mc + e * md;
+      self.addGlyph(gi, out, na, nb, nc, ne, a * ax + c * ay + dx, b * ax + e * ay + dy, depth + 1u32);
+      more = (flags & 0x20u32) != 0u32;
+    }
+  }
+
+  // The outline of 'glyph' in font units, composites resolved
+  pub fn outline(self &, glyph u32) Outline {
+    mut out = Outline.empty();
+    self.addGlyph(glyph, &mut out, 1.0d, 0.0d, 0.0d, 1.0d, 0.0d, 0.0d, 0u32);
+    out;
+  }
+
+  // ---- Kerning ----
+
+  // Gather the GPOS lookups of every 'kern' feature, for 'kerning'
+  fn readKernFeature(self &mut) {
+    if tGpos == 0u32 { return; }
+    imm d = data.view();
+    imm g = usize.from(tGpos);
+    imm featureList = g + usize.from(rdU16(d, g + 6usize));
+    imm lookupList = g + usize.from(rdU16(d, g + 8usize));
+    imm nf = usize.from(rdU16(d, featureList));
+    mut i = 0usize;
+    while i < nf {
+      imm rec = featureList + 2usize + i * 6usize;
+      if rdU32(d, rec) == tagOf('k', 'e', 'r', 'n') {
+        imm feature = featureList + usize.from(rdU16(d, rec + 4usize));
+        imm nl = usize.from(rdU16(d, feature + 2usize));
+        mut j = 0usize;
+        while j < nl {
+          imm index = usize.from(rdU16(d, feature + 4usize + j * 2usize));
+          imm off = u32.from(lookupList + usize.from(rdU16(d, lookupList + 2usize + index * 2usize)));
+          // Once only
+          mut seen = false;
+          mut q = 0usize;
+          while q < kernLookups.len() { if *kernLookups[q] == off { seen = true; } q = q + 1usize; }
+          if !seen { kernLookups.push(off); }
+          j = j + 1usize;
+        }
+      }
+      i = i + 1usize;
+    }
+  }
+
+  // The class of glyph 'glyph' in the ClassDef table at 'cd'
+  fn classOf(self &, cd usize, glyph u32) u32 {
+    imm d = data.view();
+    imm fmt = rdU16(d, cd);
+    if fmt == 1u32 {
+      imm start = rdU16(d, cd + 2usize);
+      imm n = rdU16(d, cd + 4usize);
+      if glyph < start or glyph >= start + n { return 0u32; }
+      return rdU16(d, cd + 6usize + usize.from(glyph - start) * 2usize);
+    }
+    if fmt == 2u32 {
+      mut lo = 0u32;
+      mut hi = rdU16(d, cd + 2usize);
+      while lo < hi {
+        imm mid = (lo + hi) / 2u32;
+        imm r = cd + 4usize + usize.from(mid) * 6usize;
+        if glyph < rdU16(d, r) { hi = mid; }
+        elif glyph > rdU16(d, r + 2usize) { lo = mid + 1u32; }
+        else { return rdU16(d, r + 4usize); }
+      }
+    }
+    0u32;
+  }
+
+  // Whether the coverage table at 'cov' covers 'glyph': its index, or -1
+  fn coverageIndex(self &, cov usize, glyph u32) i32 {
+    imm d = data.view();
+    imm fmt = rdU16(d, cov);
+    imm n = rdU16(d, cov + 2usize);
+    if fmt == 1u32 {
+      mut lo = 0u32;
+      mut hi = n;
+      while lo < hi {
+        imm mid = (lo + hi) / 2u32;
+        imm v = rdU16(d, cov + 4usize + usize.from(mid) * 2usize);
+        if glyph < v { hi = mid; }
+        elif glyph > v { lo = mid + 1u32; }
+        else { return i32.from(mid); }
+      }
+      return -1i32;
+    }
+    if fmt == 2u32 {
+      mut lo = 0u32;
+      mut hi = n;
+      while lo < hi {
+        imm mid = (lo + hi) / 2u32;
+        imm r = cov + 4usize + usize.from(mid) * 6usize;
+        if glyph < rdU16(d, r) { hi = mid; }
+        elif glyph > rdU16(d, r + 2usize) { lo = mid + 1u32; }
+        else { return i32.from(rdU16(d, r + 4usize) + (glyph - rdU16(d, r))); }
+      }
+    }
+    -1i32;
+  }
+
+  // The XAdvance of a value record of format 'vf' at 'at' (0 if it has none)
+  fn xAdvanceOf(self &, vf u32, at usize) i32 {
+    if (vf & 4u32) == 0u32 { return 0i32; }
+    mut skip = 0usize;
+    if (vf & 1u32) != 0u32 { skip = skip + 2usize; }
+    if (vf & 2u32) != 0u32 { skip = skip + 2usize; }
+    rdI16(data.view(), at + skip);
+  }
+
+  // The bytes a value record of format 'vf' takes
+  fn valueSize(vf u32) usize {
+    mut n = 0usize;
+    mut v = vf & 0xFFu32;
+    while v != 0u32 { if (v & 1u32) != 0u32 { n = n + 2usize; } v = v >> 1u32; }
+    n;
+  }
+
+  // One pair-adjustment subtable at 'st': whether it covers (left, right), and the adjustment
+  fn pairPos(self &, st usize, left u32, right u32, found &mut bool) i32 {
+    imm d = data.view();
+    imm fmt = rdU16(d, st);
+    imm ci = self.coverageIndex(st + usize.from(rdU16(d, st + 2usize)), left);
+    if ci < 0i32 { return 0i32; }
+    imm vf1 = rdU16(d, st + 4usize);
+    imm vf2 = rdU16(d, st + 6usize);
+    imm s1 = Font.valueSize(vf1);
+    imm s2 = Font.valueSize(vf2);
+    if fmt == 1u32 {
+      imm n = usize.from(rdU16(d, st + 8usize));
+      if usize.from(u32.from(ci)) >= n { return 0i32; }
+      imm set = st + usize.from(rdU16(d, st + 10usize + usize.from(u32.from(ci)) * 2usize));
+      imm count = rdU16(d, set);
+      imm rec = 2usize + s1 + s2;
+      mut lo = 0u32;
+      mut hi = count;
+      while lo < hi {
+        imm mid = (lo + hi) / 2u32;
+        imm r = set + 2usize + usize.from(mid) * rec;
+        imm second = rdU16(d, r);
+        if right < second { hi = mid; }
+        elif right > second { lo = mid + 1u32; }
+        else { *found = true; return self.xAdvanceOf(vf1, r + 2usize); }
+      }
+      return 0i32;
+    }
+    if fmt == 2u32 {
+      imm cd1 = st + usize.from(rdU16(d, st + 8usize));
+      imm cd2 = st + usize.from(rdU16(d, st + 10usize));
+      imm n1 = rdU16(d, st + 12usize);
+      imm n2 = rdU16(d, st + 14usize);
+      imm c1 = self.classOf(cd1, left);
+      imm c2 = self.classOf(cd2, right);
+      if c1 >= n1 or c2 >= n2 { return 0i32; }
+      imm rec = s1 + s2;
+      imm r = st + 16usize + (usize.from(c1) * usize.from(n2) + usize.from(c2)) * rec;
+      *found = true;
+      return self.xAdvanceOf(vf1, r);
+    }
+    0i32;
+  }
+
+  // The horizontal adjustment to add to the advance of 'left' when 'right'
+  // follows, in font units (negative closes the gap): the GPOS 'kern' feature
+  // where the font has one, else the 'kern' table
+  pub fn kerning(self &, left u32, right u32) i32 {
+    imm d = data.view();
+    if kernLookups.len() > 0usize {
+      mut total = 0i32;
+      mut i = 0usize;
+      while i < kernLookups.len() {
+        imm lk = usize.from(*kernLookups[i]);
+        mut kind = rdU16(d, lk);
+        imm sub = usize.from(rdU16(d, lk + 4usize));
+        mut j = 0usize;
+        mut found = false;
+        while j < sub and !found {
+          mut st = lk + usize.from(rdU16(d, lk + 6usize + j * 2usize));
+          mut k = kind;
+          if kind == 9u32 {
+            k = rdU16(d, st + 2usize);
+            st = st + usize.from(rdU32(d, st + 4usize));
+          }
+          if k == 2u32 { total = total + self.pairPos(st, left, right, &mut found); }
+          j = j + 1usize;
+        }
+        i = i + 1usize;
+      }
+      return total;
+    }
+    if tKern == 0u32 { return 0i32; }
+    imm kt = usize.from(tKern);
+    if rdU16(d, kt) != 0u32 { return 0i32; }
+    imm tables = rdU16(d, kt + 2usize);
+    mut total = 0i32;
+    mut p = kt + 4usize;
+    mut t = 0u32;
+    while t < tables {
+      imm length = usize.from(rdU16(d, p + 2usize));
+      imm coverage = rdU16(d, p + 4usize);
+      // Format 0, horizontal, not cross-stream
+      if (coverage >> 8u32) == 0u32 and (coverage & 1u32) != 0u32 and (coverage & 4u32) == 0u32 {
+        imm pairs = rdU16(d, p + 6usize);
+        imm key = (left << 16u32) | right;
+        mut lo = 0u32;
+        mut hi = pairs;
+        while lo < hi {
+          imm mid = (lo + hi) / 2u32;
+          imm r = p + 14usize + usize.from(mid) * 6usize;
+          imm k = rdU32(d, r);
+          if key < k { hi = mid; }
+          elif key > k { lo = mid + 1u32; }
+          else {
+            if (coverage & 8u32) != 0u32 { total = rdI16(d, r + 4usize); }
+            else { total = total + rdI16(d, r + 4usize); }
+            lo = hi;
+          }
+        }
+      }
+      p = p + length;
+      t = t + 1u32;
+    }
+    total;
+  }
+
+  // ---- Names ----
+
+  // The English name record 'id' (1 family, 2 style, 13 licence, 14 licence URL)
+  // as text, non-ASCII characters replaced by '?'; empty if there is none
+  pub fn nameOf(self &, id u32) String {
+    mut out = String.empty();
+    if tName == 0u32 { return out; }
+    imm d = data.view();
+    imm t = usize.from(tName);
+    imm n = usize.from(rdU16(d, t + 2usize));
+    imm strings = t + usize.from(rdU16(d, t + 4usize));
+    mut i = 0usize;
+    while i < n {
+      imm r = t + 6usize + i * 12usize;
+      imm platform = rdU16(d, r);
+      if rdU16(d, r + 6usize) == id and (platform == 3u32 or platform == 0u32) {
+        imm len = usize.from(rdU16(d, r + 8usize));
+        imm off = strings + usize.from(rdU16(d, r + 10usize));
+        mut k = 0usize;
+        while k + 1usize < len {
+          imm cu = rdU16(d, off + k);
+          if cu < 128u32 { out.appendByte(u8.from(cu)); } else { out.appendByte('?'); }
+          k = k + 2usize;
+        }
+        return out;
+      }
+      i = i + 1usize;
+    }
+    out;
+  }
+}
