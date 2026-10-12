@@ -1,0 +1,101 @@
+// A List held as an element of an array is a collection that changes shape, as one held by a
+// plain local or a field is: a borrow into it ('&mut ls[0usize][0usize]', the element of the
+// list that is the element of the array) is refused when a call or a store could reshape the
+// list (move or free the block the borrow points into) while the borrow is still to be used.
+// An array's elements are not told apart by their index (refborref, "Borrowing an element of
+// an array freezes the whole array"), so a change to any element of the array is a change that
+// could reach the one the borrow is into. The array is an owner's array, a multi-dimensional one,
+// an array held by a struct, or the slice or '&uni' reference a parameter is; the owner and the
+// borrow are reached by the same name here and by two names there.
+// collection_reshape_array_elem_success holds what is accepted beside each refusal.
+
+mod collection_flow_reshape_array_elem;
+
+import collections use *;
+
+// Reshapes the list it is handed, which the other reference may point at
+fn grow(x &mut List[i64], e &mut i64) { x.push(1); }
+
+struct Bag { pub arr Array[List[i64], 2]; pub n i64; }
+
+// The same list lent to the callee twice, once as the element's borrow
+fn viaCall() {
+  mut ls = [List[i64].empty(), List[i64].empty()];
+  ls[0usize].push(7);
+  grow(&mut ls[0usize], &mut ls[0usize][0usize]);   //~ ErrorShapeReshape "'grow' is handed something that reaches a 'List'"
+}
+
+// The borrow held in a name, the list pushed onto through the array's own name
+fn viaHeld() i64 {
+  mut ls = [List[i64].empty(), List[i64].empty()];
+  ls[0usize].push(7);
+  imm e = &mut ls[0usize][0usize];
+  ls[0usize].push(1);                               //~ ErrorShapeReshape "'push' reshapes the 'List' it is called on"
+  *e;
+}
+
+// The list that is pushed onto is another element: the compiler cannot tell the index apart
+fn viaOtherElement() i64 {
+  mut ls = [List[i64].empty(), List[i64].empty()];
+  ls[0usize].push(7);
+  imm e = &mut ls[0usize][0usize];
+  ls[1usize].push(1);                               //~ ErrorShapeReshape "'push' reshapes the 'List' it is called on"
+  *e;
+}
+
+// A store that replaces an element frees the list it held
+fn viaStore() i64 {
+  mut ls = [List[i64].empty(), List[i64].empty()];
+  ls[0usize].push(7);
+  imm e = &mut ls[0usize][0usize];
+  ls[1usize] = List[i64].empty();                   //~ ErrorShapeStore "this store replaces a 'List'"
+  *e;
+}
+
+// An array reached through a '&uni' reference, and through a '&mut' slice
+fn viaUniParam(ls &uni Array[List[i64]]) i64 {
+  ls[0usize].push(7);
+  imm e = &mut ls[0usize][0usize];
+  ls[0usize].push(1);                               //~ ErrorShapeReshape "'push' reshapes the 'List' it is called on"
+  *e;
+}
+
+fn viaUniParamCall(ls &uni Array[List[i64]]) {
+  grow(&mut ls[0usize], &mut ls[0usize][0usize]);   //~ ErrorShapeReshape "'grow' is handed something that reaches a 'List'"
+}
+
+fn viaSliceParam(ls &mut Array[List[i64]]) i64 {
+  ls[0usize].push(7);
+  imm e = &mut ls[0usize][0usize];
+  ls[0usize].push(1);                               //~ ErrorShapeReshape "'push' reshapes the 'List' it is called on"
+  *e;
+}
+
+fn viaSliceParamCall(ls &mut Array[List[i64]]) {
+  grow(&mut ls[0usize], &mut ls[0usize][0usize]);   //~ ErrorShapeReshape "'grow' is handed something that reaches a 'List'"
+}
+
+// An array held by a struct: owned here, and reached through a reference
+fn viaStructCall() {
+  mut b = new Bag([List[i64].empty(), List[i64].empty()], 0);
+  b.arr[0usize].push(7);
+  grow(&mut b.arr[0usize], &mut b.arr[0usize][0usize]);   //~ ErrorShapeReshape "'grow' is handed something that reaches a 'List'"
+}
+
+fn viaStructHeld(b &mut Bag) i64 {
+  b.arr[0usize].push(7);
+  imm e = &mut b.arr[0usize][0usize];
+  b.arr[0usize].push(1);                            //~ ErrorShapeReshape "'push' reshapes the 'List' it is called on"
+  *e;
+}
+
+// A multi-dimensional array: one step per index
+fn viaTwoDimensions() i64 {
+  mut g = [[List[i64].empty(), List[i64].empty()], [List[i64].empty(), List[i64].empty()]];
+  g[0usize][0usize].push(7);
+  imm e = &mut g[0usize][0usize][0usize];
+  g[1usize][1usize].push(1);                        //~ ErrorShapeReshape "'push' reshapes the 'List' it is called on"
+  *e;
+}
+
+fn main() {}
