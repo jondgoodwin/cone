@@ -3,9 +3,11 @@
 // grows the block. Every expected value is worked out by hand from the arena's
 // rules:
 // - allocate bumps; resize grows a block IN PLACE when it is the last thing the
-//   arena allocated and the room is there; otherwise it bumps a new block, copies
-//   the values and abandons the old one (arenas leak by design); release does
-//   nothing;
+//   arena allocated and the room is there; otherwise it bumps a new block (twice
+//   the size asked, when the arena's current block has no room for it), copies the
+//   values and abandons the old one (arenas leak by design); release does nothing;
+// - a value made with 'new a[T](...)' is built where it stays, so what its
+//   construction allocates in the arena (a list's block) lies after it;
 // - a List[i32] has its block of 4 values first, then doubles (4, 8, ... 256), so
 //   pushing 200 values grows the block six times after the first allocation. The
 //   list's four words (and a finalizer header, since a list has a 'final') come
@@ -109,11 +111,9 @@ fn lone() {
   expectUInt(u64.from(a.blockCount()), 1, "and the arena still has its one block");
 }
 
-// With a starting size, 'new a[List[i32]](16)': the list is built before it is
-// placed, so its block of 16 is allocated first and the list's words come after
-// it. The block is not the last, so the first growth copies it (the arena
-// abandons the 64 bytes); the block it moves to is the last, and every growth
-// after that is in place
+// With a starting size, 'new a[List[i32]](16)': the list is built where it
+// stays, so its words are placed first and its block of 16 is allocated after
+// them. The block is the last thing allocated, and every growth is in place
 fn sized() {
   mut a = Arena.empty();
   imm l = new a[List[i32]](16usize);
@@ -121,14 +121,45 @@ fn sized() {
   mut i = 0;
   while i < 16 { l.push(i); i = i + 1; }
   imm start = at(l);
-  l.push(16);
-  i = 17;
-  expect(at(l) != start, "the first growth moved the block, the list's words coming after it");
-  imm moved = at(l);
   while i < 200 { l.push(i); i = i + 1; }
-  expect(at(l) == moved, "and the growths after it were in place");
-  expectInt(*l[0usize], 0, "the first value survived the move");
+  expect(at(l) == start, "the block grew in place at each of its four doublings, the list's words coming before it");
+  expectInt(*l[0usize], 0, "the first value is as pushed");
   expectInt(*l[199usize], 199, "and the last");
+  expectUInt(u64.from(a.blockCount()), 1, "and the arena still has its one block");
+}
+
+// A lone list pushed far past the arena's first block of 4096 bytes. A block
+// taken because a resize outgrew the current one is twice the size asked, so a
+// list that doubles finds the room for its next doubling where it is, and is
+// copied once for every block it fills, not at every doubling. By hand: a
+// List[i64] places 48 bytes (its four words and a finalizer header) and then its
+// block, 32 bytes for 4 values, doubling. The block grows in place through 2048
+// bytes (the first arena block has 4096 bytes after its own 8-byte header, 48 of
+// them the list's, leaving 4048). At 4096 it no longer fits: a new block of 2 * (4096 + 8)
+// = 8208 is taken and the list copied to it (move 1), and 8192 fits there. 16384
+// takes a block of 32784 (move 2), and 32768 fits; 65536 takes 131088 (move 3),
+// 131072 fits; 262144 takes 524304 (move 4), 524288 fits; 1048576 takes 2097168
+// (move 5), which holds the list's last size, 131072 values, the capacity 100000
+// need. So the arena has 6 blocks and the list moved 5 times (it moved 9 times,
+// through 10 blocks, when a block was sized to the request)
+fn grows() {
+  mut a = Arena.empty();
+  imm l = new a[List[i64]]();
+  l.push(0i64);
+  mut last = (l[0usize] as *i64) as usize;
+  mut moves = 0u64;
+  mut i = 1i64;
+  while i < 100000i64 {
+    l.push(i);
+    imm now = (l[0usize] as *i64) as usize;
+    if now != last { moves = moves + 1u64; last = now; }
+    i = i + 1i64;
+  }
+  expectUInt(moves, 5, "the list moved once for each block it filled: five times");
+  expectUInt(u64.from(a.blockCount()), 6, "through six blocks: the first, and one for each move");
+  expectUInt(u64.from(l.capacity()), 131072, "its capacity doubled to 131072 values");
+  expectInt(*l[0usize], 0, "the first value survived the moves");
+  expectInt(*l[99999usize], 99999, "and the last is as pushed");
 }
 
 // Two lists pushed in turn: each growth finds the other's block last
@@ -235,6 +266,7 @@ fn dynamic() {
 fn main() {
   lone();
   sized();
+  grows();
   interleaved();
   strings();
   composition();
