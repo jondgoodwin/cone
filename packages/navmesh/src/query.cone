@@ -1,0 +1,821 @@
+// ======== Queries: nearest point, A*, the funnel, raycast, moving along the surface ========
+//
+// Detour's dtNavMeshQuery (Mikko Mononen, recastnavigation), written again in
+// Cone: 'findPath' is A* over the graph of polygons (a node is a polygon,
+// positioned at the midpoint of the edge it was entered by, the first
+// start position at the start; the cost of a step is the distance between the
+// two positions times the cost of the area of the polygon crossed;
+// the heuristic is the straight distance times 0.999), 'findStraightPath' is
+// the "simple stupid funnel algorithm" over the portals of that path
+// (Mononen 2010, after Lee and Preparata 1984), 'raycast' walks a segment
+// through the polygons it crosses, 'moveAlongSurface' slides a point along
+// walls.
+
+pub const StraightStart u8 = 1u8;
+pub const StraightEnd u8 = 2u8;
+pub const StraightOffMesh u8 = 4u8;
+
+// What a query may walk on and what it costs. An area is walkable when its
+// bit is in 'allow' and not in 'deny'; the cost of walking a distance
+// in an area is the distance times its cost. Toggling a door area here
+// needs no rebuild: the next query sees it
+pub struct QueryFilter {
+  pub allow u32;
+  pub deny u32;
+  pub cost List[f32];     // sixteen areas
+
+  pub fn standard() QueryFilter {
+    mut f = new QueryFilter(65535u32, 0u32, List[f32].withCapacity(16usize));
+    mut i = 0usize;
+    while i < 16usize { f.cost.push(1.); i = i + 1usize; }
+    f;
+  }
+
+  pub fn passable(self &, area u8) bool {
+    if area == AreaNull { return false; }
+    imm bit = 1u32 << u32.from(area);
+    (allow & bit) != 0u32 and (deny & bit) == 0u32;
+  }
+
+  pub fn setCost(self &mut, area u8, c f32) { cost.set(usize.from(area), c); }
+  pub fn areaCost(self &, area u8) f32 { *cost[usize.from(area)]; }
+
+  // Let queries through an area, or not
+  pub fn setPassable(self &mut, area u8, ok bool) {
+    imm bit = 1u32 << u32.from(area);
+    if ok { deny = deny & ~bit; } else { deny = deny | bit; }
+  }
+}
+
+// ---- geometry in x and z ----
+
+fn triArea2D(a Vec3, b Vec3, c Vec3) f32 inline {
+  imm ax = b.x - a.x;
+  imm az = b.z - a.z;
+  imm bx = c.x - a.x;
+  imm bz = c.z - a.z;
+  bx * az - ax * bz;
+}
+
+fn dist2D(a Vec3, b Vec3) f32 inline {
+  imm dx = b.x - a.x;
+  imm dz = b.z - a.z;
+  (dx * dx + dz * dz).sqrt();
+}
+
+fn polyPointInside(tile &Tile, p usize, pos Vec3) bool {
+  imm nv = usize.from(*tile.pcount[p]);
+  mut c = false;
+  mut i = 0usize;
+  mut j = nv - 1usize;
+  while i < nv {
+    imm vi = tile.vertOf(p, i);
+    imm vj = tile.vertOf(p, j);
+    if (vi.z > pos.z) != (vj.z > pos.z) {
+      if pos.x < (vj.x - vi.x) * (pos.z - vi.z) / (vj.z - vi.z) + vi.x { c = !c; }
+    }
+    j = i;
+    i = i + 1usize;
+  }
+  c;
+}
+
+// The height of a polygon's surface at (x, z), by the triangle fan from its
+// first vertex; false when (x, z) is in none
+pub struct HeightHit {
+  pub ok bool;
+  pub y f32;
+}
+
+fn polyHeight(tile &Tile, p usize, x f32, z f32) HeightHit {
+  imm nv = usize.from(*tile.pcount[p]);
+  imm v0 = tile.vertOf(p, 0usize);
+  mut k = 1usize;
+  while k + 1usize < nv {
+    imm v1 = tile.vertOf(p, k);
+    imm v2 = tile.vertOf(p, k + 1usize);
+    // barycentric in x and z
+    imm d00x = v1.x - v0.x; imm d00z = v1.z - v0.z;
+    imm d01x = v2.x - v0.x; imm d01z = v2.z - v0.z;
+    imm px = x - v0.x; imm pz = z - v0.z;
+    imm den = d00x * d01z - d00z * d01x;
+    if absf(den) > 0.0000001 {
+      imm u = (px * d01z - pz * d01x) / den;
+      imm v = (d00x * pz - d00z * px) / den;
+      imm e = 0.0001;
+      if u >= -e and v >= -e and u + v <= 1. + e {
+        return new HeightHit(true, v0.y + (v1.y - v0.y) * u + (v2.y - v0.y) * v);
+      }
+    }
+    k = k + 1usize;
+  }
+  new HeightHit(false, 0.);
+}
+
+pub struct ClosestPoint {
+  pub pos Vec3;
+  pub over bool;       // the point is above or below the polygon (inside it in x and z)
+}
+
+// The closest point of the polygon to 'pos': straight above or below when
+// pos is over it, else on its boundary
+fn closestOnPoly(tile &Tile, p usize, pos Vec3) ClosestPoint {
+  if polyPointInside(tile, p, pos) {
+    imm h = polyHeight(tile, p, pos.x, pos.z);
+    if h.ok { return new ClosestPoint(new Vec3(pos.x, h.y, pos.z), true); }
+  }
+  imm nv = usize.from(*tile.pcount[p]);
+  mut best = 3.4e38;
+  mut bp = pos;
+  mut i = 0usize;
+  mut j = nv - 1usize;
+  while i < nv {
+    imm vi = tile.vertOf(p, i);
+    imm vj = tile.vertOf(p, j);
+    imm sd = distPtSegXZ(pos, vj, vi);
+    if sd.d2 < best {
+      best = sd.d2;
+      bp = vj.lerp(vi, sd.t);
+    }
+    j = i;
+    i = i + 1usize;
+  }
+  new ClosestPoint(bp, false);
+}
+
+pub struct Nearest {
+  pub found bool;
+  pub ref u64;
+  pub pos Vec3;
+}
+
+// The polygon nearest 'center' within the box of half extents (hx, hy, hz)
+// whatever its area
+pub fn nearestPolyRaw(nav &NavMesh, center Vec3, hx f32, hy f32, hz f32) Nearest {
+  mut best = new Nearest(false, NoRef, center);
+  mut bestD = 3.4e38;
+  imm tw = nav.tileWorld();
+  imm tx0 = imax(0i32, i32.from(floorf((center.x - hx - nav.origin.x) / tw)));
+  imm tx1 = imin(nav.tilesW - 1i32, i32.from(floorf((center.x + hx - nav.origin.x) / tw)));
+  imm tz0 = imax(0i32, i32.from(floorf((center.z - hz - nav.origin.z) / tw)));
+  imm tz1 = imin(nav.tilesH - 1i32, i32.from(floorf((center.z + hz - nav.origin.z) / tw)));
+  mut tz = tz0;
+  while tz <= tz1 {
+    mut tx = tx0;
+    while tx <= tx1 {
+      imm ti = tz * nav.tilesW + tx;
+      imm tile = nav.tiles[usize.from(ti)];
+      if tile.built {
+        mut p = 0usize;
+        while p < tile.polyCount() {
+          imm lo = *tile.pbmin[p];
+          imm hi = *tile.pbmax[p];
+          if hi.x >= center.x - hx and lo.x <= center.x + hx and hi.y >= center.y - hy and lo.y <= center.y + hy
+             and hi.z >= center.z - hz and lo.z <= center.z + hz {
+            imm cp = closestOnPoly(tile, p, center);
+            mut d = 0.;
+            if cp.over {
+              // straight above or below: how far beyond the climb
+              d = absf(center.y - cp.pos.y) - nav.params.agentMaxClimb;
+              d = if d > 0. { d * d; } else { 0.; };
+            } else {
+              d = (cp.pos - center).lengthSquared();
+            }
+            if d < bestD {
+              bestD = d;
+              best = new Nearest(true, nav.makeRef(ti, p), cp.pos);
+            }
+          }
+          p = p + 1usize;
+        }
+      }
+      tx = tx + 1i32;
+    }
+    tz = tz + 1i32;
+  }
+  best;
+}
+
+// As above, but only polygons the filter lets through
+pub fn findNearestPoly(nav &NavMesh, center Vec3, hx f32, hy f32, hz f32, filter &QueryFilter) Nearest {
+  mut best = new Nearest(false, NoRef, center);
+  mut bestD = 3.4e38;
+  imm tw = nav.tileWorld();
+  imm tx0 = imax(0i32, i32.from(floorf((center.x - hx - nav.origin.x) / tw)));
+  imm tx1 = imin(nav.tilesW - 1i32, i32.from(floorf((center.x + hx - nav.origin.x) / tw)));
+  imm tz0 = imax(0i32, i32.from(floorf((center.z - hz - nav.origin.z) / tw)));
+  imm tz1 = imin(nav.tilesH - 1i32, i32.from(floorf((center.z + hz - nav.origin.z) / tw)));
+  mut tz = tz0;
+  while tz <= tz1 {
+    mut tx = tx0;
+    while tx <= tx1 {
+      imm ti = tz * nav.tilesW + tx;
+      imm tile = nav.tiles[usize.from(ti)];
+      if tile.built {
+        mut p = 0usize;
+        while p < tile.polyCount() {
+          imm lo = *tile.pbmin[p];
+          imm hi = *tile.pbmax[p];
+          if filter.passable(*tile.parea[p]) and hi.x >= center.x - hx and lo.x <= center.x + hx
+             and hi.y >= center.y - hy and lo.y <= center.y + hy and hi.z >= center.z - hz and lo.z <= center.z + hz {
+            imm cp = closestOnPoly(tile, p, center);
+            mut d = 0.;
+            if cp.over {
+              d = absf(center.y - cp.pos.y) - nav.params.agentMaxClimb;
+              d = if d > 0. { d * d; } else { 0.; };
+            } else {
+              d = (cp.pos - center).lengthSquared();
+            }
+            if d < bestD {
+              bestD = d;
+              best = new Nearest(true, nav.makeRef(ti, p), cp.pos);
+            }
+          }
+          p = p + 1usize;
+        }
+      }
+      tx = tx + 1i32;
+    }
+    tz = tz + 1i32;
+  }
+  best;
+}
+
+// The closest point of polygon 'r' to 'pos'
+pub fn closestPointOnPoly(nav &NavMesh, r u64, pos Vec3) ClosestPoint {
+  closestOnPoly(nav.tiles[usize.from(nav.refTile(r))], nav.refPoly(r), pos);
+}
+
+// The point of polygon 'r' straight above or below 'pos' with its height, if it is inside
+pub fn polyHeightAt(nav &NavMesh, r u64, pos Vec3) HeightHit {
+  polyHeight(nav.tiles[usize.from(nav.refTile(r))], nav.refPoly(r), pos.x, pos.z);
+}
+
+// ---- links ----
+
+pub struct Portal {
+  pub left Vec3;
+  pub right Vec3;
+  pub off bool;     // the move is through an off-mesh connection: a point
+  pub to u64;       // the polygon entered
+}
+
+// Where polygon 'from' joins polygon 'to': the edge's two ends, narrowed to
+// the overlap across a tile's portal. found false when no link joins them
+pub struct PortalFound {
+  pub ok bool;
+  pub left Vec3;
+  pub right Vec3;
+  pub off bool;
+  pub conn i32;      // the off-mesh connection used, -1
+}
+
+fn offMeshBetween(nav &NavMesh, from u64, to u64) i32 {
+  mut i = 0usize;
+  while i < nav.off.len() {
+    imm c = nav.off[i];
+    if c.enabled {
+      if c.refA == from and c.refB == to { return i32.from(i); }
+      if c.bidirectional and c.refB == from and c.refA == to { return i32.from(i); }
+    }
+    i = i + 1usize;
+  }
+  -1i32;
+}
+
+pub fn getPortal(nav &NavMesh, from u64, to u64) PortalFound {
+  imm tile = nav.tiles[usize.from(nav.refTile(from))];
+  imm p = nav.refPoly(from);
+  imm nv = usize.from(*tile.pcount[p]);
+  mut k = *tile.linkStart[p];
+  while k < *tile.linkStart[p + 1usize] {
+    imm l = tile.links[usize.from(k)];
+    if l.to == to {
+      imm v0 = tile.vertOf(p, usize.from(l.edge));
+      imm v1 = tile.vertOf(p, (usize.from(l.edge) + 1usize) % nv);
+      if l.side >= 0i32 and (l.tmin > 0. or l.tmax < 1.) {
+        return new PortalFound(true, v0.lerp(v1, l.tmin), v0.lerp(v1, l.tmax), false, -1i32);
+      }
+      return new PortalFound(true, v0, v1, false, -1i32);
+    }
+    k = k + 1i32;
+  }
+  imm oc = offMeshBetween(nav, from, to);
+  if oc >= 0i32 {
+    imm c = nav.off[usize.from(oc)];
+    return new PortalFound(true, c.posA, c.posB, true, oc);
+  }
+  new PortalFound(false, new Vec3(0., 0., 0.), new Vec3(0., 0., 0.), false, -1i32);
+}
+
+// ---- A* ----
+
+pub struct PathResult {
+  pub found bool;          // a path to the end polygon
+  pub partial bool;        // only as near to the end as the mesh gets
+  pub polys List[u64];
+  pub cost f32;
+
+  pub fn none() PathResult { new PathResult(false, false, List[u64].empty(), 0.); }
+}
+
+struct Node {
+  pos Vec3;
+  cost f32;
+  total f32;
+  parent i32;
+  ref u64;
+  closed bool;
+}
+
+// The cheapest path of polygons from the one holding 'startPos' to the one
+// holding 'endPos' (A*, Hart, Nilsson and Raphael 1968). If the end cannot
+// be reached, the path goes as near it as it can, 'partial'
+pub fn findPath(nav &NavMesh, startRef u64, endRef u64, startPos Vec3, endPos Vec3, filter &QueryFilter) PathResult {
+  mut res = PathResult.none();
+  if !nav.isValid(startRef) or !nav.isValid(endRef) { return res; }
+  if startRef == endRef {
+    res.found = true;
+    res.polys.push(startRef);
+    res.cost = dist2D(startPos, endPos) * filter.areaCost(nav.polyArea(startRef));
+    return res;
+  }
+  mut nodes = List[Node].empty();
+  mut index = Dict[u64, i32].empty();
+  mut open = MinHeap.empty();
+  imm hScale = 0.999;
+  nodes.push(new Node(startPos, 0., startPos.distance(endPos) * hScale, -1i32, startRef, false));
+  index.insert(startRef, 0i32);
+  open.push((*nodes[0usize]).total, 0u32);
+  mut lastBest = 0i32;
+  mut lastBestH = startPos.distance(endPos) * hScale;
+  mut endNode = -1i32;
+  while !open.isEmpty() {
+    imm top = open.pop();
+    imm ci = usize.from(top.id);
+    if (*nodes[ci]).closed { continue; }
+    nodes.set(ci, new Node((*nodes[ci]).pos, (*nodes[ci]).cost, (*nodes[ci]).total, (*nodes[ci]).parent, (*nodes[ci]).ref, true));
+    imm cur = *nodes[ci];
+    if cur.ref == endRef { endNode = i32.from(ci); break; }
+    imm tile = nav.tiles[usize.from(nav.refTile(cur.ref))];
+    imm cp = nav.refPoly(cur.ref);
+    imm curArea = *tile.parea[cp];
+    imm nv = usize.from(*tile.pcount[cp]);
+    // the polygons beyond: tile links, then off-mesh connections
+    mut k = *tile.linkStart[cp];
+    imm kend = *tile.linkStart[cp + 1usize];
+    imm noff = nav.off.len();
+    mut oi = 0usize;
+    while k < kend or oi < noff {
+      mut nref = NoRef;
+      mut npos = cur.pos;
+      mut stepCost = 0.;
+      if k < kend {
+        imm l = tile.links[usize.from(k)];
+        k = k + 1i32;
+        nref = l.to;
+        if !nav.isValid(nref) { continue; }
+        if !filter.passable(nav.polyArea(nref)) { continue; }
+        imm v0 = tile.vertOf(cp, usize.from(l.edge));
+        imm v1 = tile.vertOf(cp, (usize.from(l.edge) + 1usize) % nv);
+        mut a = v0;
+        mut b = v1;
+        if l.side >= 0i32 and (l.tmin > 0. or l.tmax < 1.) { a =v0.lerp(v1, l.tmin); b = v0.lerp(v1, l.tmax); }
+        npos = a.lerp(b, 0.5);
+        stepCost = cur.pos.distance(npos) * filter.areaCost(curArea);
+      } else {
+        imm c = nav.off[oi];
+        oi = oi + 1usize;
+        if !c.enabled or !filter.passable(c.area) { continue; }
+        mut from = c.refA;
+        mut to = c.refB;
+        mut pa = c.posA;
+        mut pb = c.posB;
+        if cur.ref != from {
+          if c.bidirectional and cur.ref == c.refB { from = c.refB; to = c.refA; pa = c.posB; pb = c.posA; }
+          else { continue; }
+        }
+        if !nav.isValid(to) or !filter.passable(nav.polyArea(to)) { continue; }
+        nref = to;
+        npos = pb;
+        stepCost = cur.pos.distance(pa) * filter.areaCost(curArea) + pa.distance(pb) * filter.areaCost(c.area);
+      }
+      if nref == NoRef { continue; }
+      // the parent's parent is never worth returning to
+      if cur.parent >= 0i32 and (*nodes[usize.from(cur.parent)]).ref == nref { continue; }
+      mut cost = cur.cost + stepCost;
+      mut heuristic = 0.;
+      if nref == endRef {
+        cost = cost + npos.distance(endPos) * filter.areaCost(nav.polyArea(nref));
+      } else {
+        heuristic = npos.distance(endPos) * hScale;
+      }
+      imm total = cost + heuristic;
+      mut ni = -1i32;
+      match index.get(&nref) {
+        case imm v Some { ni = *v; }
+        else {}
+      }
+      if ni >= 0i32 {
+        imm old = *nodes[usize.from(ni)];
+        if total >= old.total { continue; }
+        nodes.set(usize.from(ni), new Node(npos, cost, total, i32.from(ci), nref, false));
+      } else {
+        ni = i32.from(nodes.len());
+        nodes.push(new Node(npos, cost, total, i32.from(ci), nref, false));
+        index.insert(nref, ni);
+      }
+      open.push(total, u32.from(ni));
+      if heuristic < lastBestH {
+        lastBestH = heuristic;
+        lastBest = ni;
+      }
+    }
+  }
+  mut at = endNode;
+  if endNode < 0i32 {
+    // nowhere to go: as near as it got
+    if lastBest == 0i32 { return res; }
+    at = lastBest;
+    res.partial = true;
+  } else {
+    res.cost = (*nodes[usize.from(endNode)]).cost;
+  }
+  res.found = true;
+  mut rev = List[u64].empty();
+  while at >= 0i32 {
+    rev.push((*nodes[usize.from(at)]).ref);
+    at = (*nodes[usize.from(at)]).parent;
+  }
+  mut q = rev.len();
+  while q > 0usize { q = q - 1usize; res.polys.push(*rev[q]); }
+  res;
+}
+
+// ---- the funnel ----
+
+pub struct StraightPoint {
+  pub pos Vec3;
+  pub flags u8;      // StraightStart, StraightEnd, StraightOffMesh
+  pub ref u64;       // the polygon the walk enters at this point (the last, for the end)
+}
+
+struct FunnelPortal {
+  left Vec3;
+  right Vec3;
+  off bool;
+  ref u64;
+}
+
+// The shortest way through the polygons of 'path' from 'start' to 'end',
+// as the corners it bends at (the simple stupid funnel algorithm). The ends
+// are pulled onto the first and last polygon. 'maxPoints' caps the result
+pub fn findStraightPath(nav &NavMesh, start Vec3, end Vec3, path &List[u64], maxPoints usize) List[StraightPoint] {
+  mut out = List[StraightPoint].empty();
+  if path.len() == 0usize { return out; }
+  imm cs = closestPointOnPoly(nav, *path[0usize], start).pos;
+  imm ce = closestPointOnPoly(nav, *path[path.len() - 1usize], end).pos;
+  out.push(new StraightPoint(cs, StraightStart, *path[0usize]));
+  if path.len() == 1usize {
+    out.push(new StraightPoint(ce, StraightEnd, NoRef));
+    return out;
+  }
+  // the portals, an off-mesh move being two points
+  mut portals = List[FunnelPortal].empty();
+  mut i = 0usize;
+  while i + 1usize < path.len() {
+    imm pf = getPortal(nav, *path[i], *path[i + 1usize]);
+    if !pf.ok { break; }
+    if pf.off {
+      portals.push(new FunnelPortal(pf.left, pf.left, true, *path[i + 1usize]));
+      portals.push(new FunnelPortal(pf.right, pf.right, true, *path[i + 1usize]));
+    } else {
+      portals.push(new FunnelPortal(pf.left, pf.right, false, *path[i + 1usize]));
+    }
+    i = i + 1usize;
+  }
+  portals.push(new FunnelPortal(ce, ce, false, NoRef));
+  mut apex = cs;
+  mut left = cs;
+  mut right = cs;
+  mut apexIndex = 0usize;
+  mut leftIndex = 0usize;
+  mut rightIndex = 0usize;
+  i = 0usize;
+  while i < portals.len() and out.len() < maxPoints - 1usize {
+    imm pl = (*portals[i]).left;
+    imm pr = (*portals[i]).right;
+    // an off-mesh portal is a point that must be visited
+    if (*portals[i]).off {
+      addStraight(&mut out, pl, StraightOffMesh, (*portals[i]).ref);
+      apex = pl; left = pl; right = pl;
+      apexIndex = i; leftIndex = i; rightIndex = i;
+      i = i + 1usize;
+      continue;
+    }
+    // starting really close to the portal: move on
+    if i == 0usize {
+      imm sd = distPtSegXZ(apex, pl, pr);
+      if sd.d2 < 0.000001 { i = i + 1usize; continue; }
+    }
+    // right vertex
+    if triArea2D(apex, right, pr) <= 0. {
+      if apex.distanceSquared(right) < 0.000001 or triArea2D(apex, left, pr) > 0. {
+        right = pr;
+        rightIndex = i;
+      } else {
+        // right over left: left is a corner
+        addStraight(&mut out, left, 0u8, (*portals[leftIndex]).ref);
+        apex = left; apexIndex = leftIndex;
+        left = apex; right = apex;
+        leftIndex = apexIndex; rightIndex = apexIndex;
+        i = apexIndex + 1usize;
+        continue;
+      }
+    }
+    // left vertex
+    if triArea2D(apex, left, pl) >= 0. {
+      if apex.distanceSquared(left) < 0.000001 or triArea2D(apex, right, pl) < 0. {
+        left = pl;
+        leftIndex = i;
+      } else {
+        addStraight(&mut out, right, 0u8, (*portals[rightIndex]).ref);
+        apex = right; apexIndex = rightIndex;
+        left = apex; right = apex;
+        leftIndex = apexIndex; rightIndex = apexIndex;
+        i = apexIndex + 1usize;
+        continue;
+      }
+    }
+    i = i + 1usize;
+  }
+  addStraight(&mut out, ce, StraightEnd, NoRef);
+  out;
+}
+
+// A corner added, unless it is where the last one is (then its flags and
+// polygon are merged into that one)
+fn addStraight(out &mut List[StraightPoint], pos Vec3, flags u8, ref u64) {
+  if out.len() > 0usize {
+    imm last = *out[out.len() - 1usize];
+    if last.pos.distanceSquared(pos) < 0.000001 {
+      out.set(out.len() - 1usize, new StraightPoint(last.pos, last.flags | flags, ref));
+      return;
+    }
+  }
+  out.push(new StraightPoint(pos, flags, ref));
+}
+
+// The whole thing from two points: nearest polygons, A*, the funnel. The
+// corners from start to end, or none when there is no route; 'partial' is
+// set when the route stops short
+pub struct Route {
+  pub found bool;
+  pub partial bool;
+  pub points List[StraightPoint];
+  pub polys List[u64];
+  pub cost f32;
+}
+
+pub fn findRoute(nav &NavMesh, start Vec3, end Vec3, halfExtents Vec3, filter &QueryFilter) Route {
+  mut r = new Route(false, false, List[StraightPoint].empty(), List[u64].empty(), 0.);
+  imm s = findNearestPoly(nav, start, halfExtents.x, halfExtents.y, halfExtents.z, filter);
+  imm e = findNearestPoly(nav, end, halfExtents.x, halfExtents.y, halfExtents.z, filter);
+  if !s.found or !e.found { return r; }
+  imm pr = findPath(nav, s.ref, e.ref, s.pos, e.pos, filter);
+  if !pr.found { return r; }
+  r.found = true;
+  r.partial = pr.partial;
+  r.cost = pr.cost;
+  r.points = findStraightPath(nav, s.pos, e.pos, &pr.polys, 256usize);
+  mut q = 0usize;
+  while q < pr.polys.len() { r.polys.push(*pr.polys[q]); q = q + 1usize; }
+  r;
+}
+
+// ---- raycast ----
+
+pub struct RayHit {
+  pub t f32;            // the fraction of the segment reached; 3.4e38 when it got to the end unhindered
+  pub normal Vec3;      // of the wall hit
+  pub hit bool;
+  pub polys List[u64];  // the polygons passed through
+}
+
+struct SegPoly {
+  ok bool;
+  tmin f32;
+  tmax f32;
+  segMin i32;
+  segMax i32;
+}
+
+fn segmentPoly2D(p Vec3, q Vec3, tile &Tile, poly usize) SegPoly {
+  imm nv = usize.from(*tile.pcount[poly]);
+  mut tmin = 0.;
+  mut tmax = 1.;
+  mut segMin = -1i32;
+  mut segMax = -1i32;
+  imm dx = q.x - p.x;
+  imm dz = q.z - p.z;
+  mut i = 0usize;
+  mut j = nv - 1usize;
+  while i < nv {
+    imm vi = tile.vertOf(poly, i);
+    imm vj = tile.vertOf(poly, j);
+    imm ex = vi.x - vj.x;
+    imm ez = vi.z - vj.z;
+    imm ddx = p.x - vj.x;
+    imm ddz = p.z - vj.z;
+    imm n = ez * ddx - ex * ddz;
+    imm d = dz * ex - dx * ez;
+    if absf(d) < 0.000001 {
+      if n < 0. { return new SegPoly(false, 0., 0., -1i32, -1i32); }
+    } else {
+      imm t = n / d;
+      if d < 0. {
+        if t > tmin {
+          tmin = t;
+          segMin = i32.from(j);
+          if tmin > tmax { return new SegPoly(false, 0., 0., -1i32, -1i32); }
+        }
+      } else {
+        if t < tmax {
+          tmax = t;
+          segMax = i32.from(j);
+          if tmax < tmin { return new SegPoly(false, 0., 0., -1i32, -1i32); }
+        }
+      }
+    }
+    j = i;
+    i = i + 1usize;
+  }
+  new SegPoly(true, tmin, tmax, segMin, segMax);
+}
+
+// A segment from 'start' (in polygon 'startRef') to 'end' walked through
+// the polygons it crosses until a wall (or an area the filter refuses)
+// stops it. Detour's dtNavMeshQuery::raycast without the cost
+pub fn raycast(nav &NavMesh, startRef u64, start Vec3, end Vec3, filter &QueryFilter) RayHit {
+  mut hit = new RayHit(3.4e38, new Vec3(0., 0., 0.), false, List[u64].empty());
+  if !nav.isValid(startRef) { return hit; }
+  mut cur = startRef;
+  mut guard = 0i32;
+  while cur != NoRef and guard < 512i32 {
+    guard = guard + 1i32;
+    imm ti = nav.refTile(cur);
+    imm tile = nav.tiles[usize.from(ti)];
+    imm p = nav.refPoly(cur);
+    imm sp = segmentPoly2D(start, end, tile, p);
+    hit.polys.push(cur);
+    if !sp.ok {
+      // the start is outside the first polygon: no ray
+      hit.t = 0.;
+      hit.hit = true;
+      return hit;
+    }
+    imm tmax = sp.tmax;
+    if sp.segMax < 0i32 {
+      // the segment ends inside this polygon
+      hit.t = 3.4e38;
+      return hit;
+    }
+    // the neighbour through the edge it leaves by
+    mut next = NoRef;
+    imm nv = usize.from(*tile.pcount[p]);
+    mut k = *tile.linkStart[p];
+    while k < *tile.linkStart[p + 1usize] {
+      imm l = tile.links[usize.from(k)];
+      k = k + 1i32;
+      if l.edge != sp.segMax { continue; }
+      if !nav.isValid(l.to) or !filter.passable(nav.polyArea(l.to)) { continue; }
+      if l.side >= 0i32 {
+        // across a portal the exit must be within the overlap
+        imm v0 = tile.vertOf(p, usize.from(l.edge));
+        imm v1 = tile.vertOf(p, (usize.from(l.edge) + 1usize) % nv);
+        imm hx = start.x + (end.x - start.x) * tmax;
+        imm hz = start.z + (end.z - start.z) * tmax;
+        mut s = 0.;
+        if absf(v1.x - v0.x) > absf(v1.z - v0.z) {
+          s = (hx - v0.x) / (v1.x - v0.x);
+        } else {
+          s = (hz - v0.z) / (v1.z - v0.z);
+        }
+        if s < l.tmin - 0.0001 or s > l.tmax + 0.0001 { continue; }
+      }
+      next = l.to;
+      k = *tile.linkStart[p + 1usize];
+    }
+    if next == NoRef {
+      // a wall: its normal points out of the polygon
+      imm v0 = tile.vertOf(p, usize.from(sp.segMax));
+      imm v1 = tile.vertOf(p, (usize.from(sp.segMax) + 1usize) % nv);
+      imm ex = v1.x - v0.x;
+      imm ez = v1.z - v0.z;
+      imm len = (ex * ex + ez * ez).sqrt();
+      // the polygon winds counterclockwise seen from above, so the outward normal of
+      // an edge is its direction turned a quarter the other way
+      hit.normal = new Vec3(-ez / len, 0., ex / len);
+      hit.t = tmax;
+      hit.hit = true;
+      return hit;
+    }
+    cur = next;
+  }
+  hit;
+}
+
+// Whether the straight segment from a to b stays on walkable mesh
+pub fn isVisible(nav &NavMesh, startRef u64, a Vec3, b Vec3, filter &QueryFilter) bool {
+  imm h = raycast(nav, startRef, a, b, filter);
+  !h.hit;
+}
+
+// ---- moving along the surface ----
+
+pub struct MoveResult {
+  pub pos Vec3;
+  pub visited List[u64];     // polygons passed, from the start to the one the point ends in
+}
+
+// The point reached by moving from 'startPos' towards 'endPos' along the
+// mesh, sliding along walls, and the polygons passed (Detour's moveAlongSurface)
+pub fn moveAlongSurface(nav &NavMesh, startRef u64, startPos Vec3, endPos Vec3, filter &QueryFilter, maxVisited usize) MoveResult {
+  mut res = new MoveResult(startPos, List[u64].empty());
+  if !nav.isValid(startRef) { return res; }
+  imm searchPos = startPos.lerp(endPos, 0.5);
+  imm searchRad = startPos.distance(endPos) * 0.5 + 0.001;
+  imm searchRad2 = searchRad * searchRad;
+  mut refs = List[u64].empty();
+  mut parent = List[i32].empty();
+  refs.push(startRef);
+  parent.push(-1i32);
+  mut head = 0usize;
+  mut bestPos = startPos;
+  mut bestDist = 3.4e38;
+  mut bestNode = 0i32;
+  while head < refs.len() {
+    imm cur = *refs[head];
+    imm node = head;
+    head = head + 1usize;
+    imm tile = nav.tiles[usize.from(nav.refTile(cur))];
+    imm p = nav.refPoly(cur);
+    imm nv = usize.from(*tile.pcount[p]);
+    if polyPointInside(tile, p, endPos) {
+      bestNode = i32.from(node);
+      bestPos = endPos;
+      break;
+    }
+    mut j = nv - 1usize;
+    mut i = 0usize;
+    while i < nv {
+      imm vj = tile.vertOf(p, j);
+      imm vi = tile.vertOf(p, i);
+      // the polygons through edge j (links leave by edge index j)
+      mut nn = 0i32;
+      mut k = *tile.linkStart[p];
+      while k < *tile.linkStart[p + 1usize] {
+        imm l = tile.links[usize.from(k)];
+        k = k + 1i32;
+        if usize.from(l.edge) == j and nav.isValid(l.to) and filter.passable(nav.polyArea(l.to)) {
+          nn = nn + 1i32;
+          mut seen = false;
+          mut q = 0usize;
+          while q < refs.len() { if *refs[q] == l.to { seen = true; } q = q + 1usize; }
+          if !seen and refs.len() < maxVisited {
+            imm sd = distPtSegXZ(searchPos, vj, vi);
+            if sd.d2 <= searchRad2 {
+              refs.push(l.to);
+              parent.push(i32.from(node));
+            }
+          }
+        }
+      }
+      if nn == 0i32 {
+        // a wall edge: how near the target gets along it
+        imm sd = distPtSegXZ(endPos, vj, vi);
+        if sd.d2 < bestDist {
+          bestDist = sd.d2;
+          bestPos = vj.lerp(vi, sd.t);
+          bestNode = i32.from(node);
+        }
+      }
+      j = i;
+      i = i + 1usize;
+    }
+  }
+  // the polygons from the start to the one it ended in
+  mut rev = List[u64].empty();
+  mut at = bestNode;
+  while at >= 0i32 {
+    rev.push(*refs[usize.from(at)]);
+    at = *parent[usize.from(at)];
+  }
+  mut q = rev.len();
+  while q > 0usize { q = q - 1usize; res.visited.push(*rev[q]); }
+  // the height of the surface there
+  imm last = *res.visited[res.visited.len() - 1usize];
+  imm hh = polyHeightAt(nav, last, bestPos);
+  res.pos = if hh.ok { new Vec3(bestPos.x, hh.y, bestPos.z); } else { bestPos; };
+  res;
+}

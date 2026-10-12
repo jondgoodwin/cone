@@ -1,0 +1,394 @@
+// ======== Grid pathfinding: A* and jump point search ========
+//
+// For simple tile worlds (a maze, a labyrinth, a board). A grid of cells,
+// each walkable or blocked, a walkable one with a weight (1 is plain ground,
+// 3 is mud: a step into the cell costs the weight times the step's length).
+//
+// Moves are the four sides, and with 'diagonal' the four corners too. A
+// diagonal step is refused when either of the two cells it passes between is
+// blocked ("no corner cutting", the usual rule, and the one the jump point
+// search below is defined for). A side step costs 1 and a diagonal one
+// sqrt(2), times the weight of the cell entered.
+//
+// 'gridAStar' is Hart, Nilsson and Raphael's A* (1968) over that graph with a
+// binary heap open list, the octile distance as its heuristic (the Manhattan
+// distance when there are no diagonals), which never overestimates, so the
+// path is the cheapest. 'gridJps' is Harabor and Grastien's jump point search
+// (AAAI 2011; the no-corner-cutting pruning rules of their 2014 revision),
+// which finds the same cheapest length on a grid of equal weights by jumping
+// along straight and diagonal lines to the next cell where the best route
+// could turn, expanding far fewer cells; it needs diagonals on and weights
+// all 1 (it is refused otherwise: 'found' false and 'refused' true).
+//
+// Ties between equal routes are broken the same way every run (the heap pops
+// the lower cell number first), so a search is deterministic.
+
+pub struct Cell {
+  pub x i32;
+  pub y i32;
+}
+
+pub struct GridPath {
+  pub found bool;
+  pub refused bool;       // the search was not run (see gridJps)
+  pub cost f32;           // the path's total cost
+  pub cells List[Cell];   // start to goal, every cell passed, start first (A*);
+                          // for gridJps the jump points only, until 'expandJumps'
+  pub expanded u32;       // cells taken off the open list: the work done
+
+  pub fn none() GridPath { new GridPath(false, false, 0., List[Cell].empty(), 0u32); }
+}
+
+pub struct Grid {
+  pub w i32;
+  pub h i32;
+  pub walk List[bool];
+  pub weight List[f32];
+
+  pub fn make(w i32, h i32) Grid {
+    mut g = new Grid(w, h, List[bool].empty(), List[f32].empty());
+    imm n = usize.from(w) * usize.from(h);
+    g.walk.reserve(n);
+    g.weight.reserve(n);
+    mut i = 0usize;
+    while i < n { g.walk.push(true); g.weight.push(1.); i = i + 1usize; }
+    g;
+  }
+
+  // From text rows: '#' blocked, anything else open; a digit 2 to 9 is open
+  // with that weight. Rows are the grid's y from 0 down the page
+  pub fn fromRows(rows &Array[&str]) Grid {
+    imm h = i32.from(rows.len);
+    mut w = 0i32;
+    mut r = 0usize;
+    while r < rows.len {
+      imm n = i32.from(rows[r].len());
+      if n > w { w = n; }
+      r = r + 1usize;
+    }
+    mut g = Grid.make(w, h);
+    r = 0usize;
+    while r < rows.len {
+      imm row = rows[r];
+      mut c = 0usize;
+      while c < row.len() {
+        imm ch = row[c];
+        if ch == '#' { g.setBlocked(i32.from(c), i32.from(r), true); }
+        if ch >= '2' and ch <= '9' { g.setWeight(i32.from(c), i32.from(r), f32.from(ch - '0')); }
+        c = c + 1usize;
+      }
+      r = r + 1usize;
+    }
+    g;
+  }
+
+  fn index(self &, x i32, y i32) usize inline { usize.from(y) * usize.from(w) + usize.from(x); }
+
+  pub fn inside(self &, x i32, y i32) bool inline { x >= 0i32 and y >= 0i32 and x < w and y < h; }
+
+  pub fn isWalkable(self &, x i32, y i32) bool {
+    if !self.inside(x, y) { return false; }
+    *walk[self.index(x, y)];
+  }
+
+  pub fn setBlocked(self &mut, x i32, y i32, blocked bool) {
+    walk.set(self.index(x, y), !blocked);
+  }
+
+  pub fn setWeight(self &mut, x i32, y i32, wt f32) {
+    weight.set(self.index(x, y), wt);
+  }
+
+  pub fn weightAt(self &, x i32, y i32) f32 { *weight[self.index(x, y)]; }
+
+  // Whether a step from (x, y) by (dx, dy) is allowed: the cell entered open
+  // and, on a diagonal, both cells it passes between
+  pub fn canStep(self &, x i32, y i32, dx i32, dy i32) bool {
+    if !self.isWalkable(x + dx, y + dy) { return false; }
+    if dx != 0i32 and dy != 0i32 {
+      if !self.isWalkable(x + dx, y) or !self.isWalkable(x, y + dy) { return false; }
+    }
+    true;
+  }
+}
+
+fn gabs(a i32) i32 inline { if a < 0i32 { return -a; } a; }
+
+// The octile distance: sides and diagonals with no obstacles, weights 1
+fn octile(dx i32, dy i32, diagonal bool) f32 {
+  imm ax = gabs(dx);
+  imm ay = gabs(dy);
+  if !diagonal { return f32.from(ax + ay); }
+  imm lo = if ax < ay { ax; } else { ay; };
+  imm hi = if ax < ay { ay; } else { ax; };
+  f32.from(hi - lo) + f32.from(lo) * 1.4142135;
+}
+
+fn stepLength(dx i32, dy i32) f32 inline {
+  if dx != 0i32 and dy != 0i32 { return 1.4142135; }
+  1.;
+}
+
+// The cheapest path from (sx, sy) to (gx, gy), by A*. 'found' false when
+// either end is blocked or outside, or no route exists
+pub fn gridAStar(g &Grid, sx i32, sy i32, gx i32, gy i32, diagonal bool) GridPath {
+  mut res = GridPath.none();
+  if !g.isWalkable(sx, sy) or !g.isWalkable(gx, gy) { return res; }
+  imm n = usize.from(g.w) * usize.from(g.h);
+  mut gcost = List[f32].withCapacity(n);
+  mut parent = List[i32].withCapacity(n);
+  mut closed = List[bool].withCapacity(n);
+  mut i = 0usize;
+  while i < n { gcost.push(3.4e38); parent.push(-1i32); closed.push(false); i = i + 1usize; }
+  mut open = MinHeap.empty();
+  imm start = usize.from(sy) * usize.from(g.w) + usize.from(sx);
+  gcost.set(start, 0.);
+  open.push(octile(gx - sx, gy - sy, diagonal), u32.from(start));
+  imm goal = usize.from(gy) * usize.from(g.w) + usize.from(gx);
+  mut found = false;
+  while !open.isEmpty() {
+    imm top = open.pop();
+    imm cur = usize.from(top.id);
+    if *closed[cur] { continue; }
+    closed.set(cur, true);
+    res.expanded = res.expanded + 1u32;
+    if cur == goal { found = true; break; }
+    imm cx = i32.from(cur % usize.from(g.w));
+    imm cy = i32.from(cur / usize.from(g.w));
+    imm cg = *gcost[cur];
+    mut d = 0i32;
+    while d < 8i32 {
+      // sides first (0 to 3), then corners
+      mut dx = 0i32;
+      mut dy = 0i32;
+      if d == 0i32 { dx = 1i32; }
+      if d == 1i32 { dx = -1i32; }
+      if d == 2i32 { dy = 1i32; }
+      if d == 3i32 { dy = -1i32; }
+      if d == 4i32 { dx = 1i32; dy = 1i32; }
+      if d == 5i32 { dx = -1i32; dy = 1i32; }
+      if d == 6i32 { dx = 1i32; dy = -1i32; }
+      if d == 7i32 { dx = -1i32; dy = -1i32; }
+      d = d + 1i32;
+      if dx != 0i32 and dy != 0i32 and !diagonal { continue; }
+      if !g.canStep(cx, cy, dx, dy) { continue; }
+      imm nx = cx + dx;
+      imm ny = cy + dy;
+      imm ni = usize.from(ny) * usize.from(g.w) + usize.from(nx);
+      if *closed[ni] { continue; }
+      imm ng = cg + stepLength(dx, dy) * g.weightAt(nx, ny);
+      if ng < *gcost[ni] {
+        gcost.set(ni, ng);
+        parent.set(ni, i32.from(cur));
+        open.push(ng + octile(gx - nx, gy - ny, diagonal), u32.from(ni));
+      }
+    }
+  }
+  if !found { return res; }
+  res.found = true;
+  res.cost = *gcost[goal];
+  // Walk back from the goal, then reverse
+  mut rev = List[Cell].empty();
+  mut at = i32.from(goal);
+  while at >= 0i32 {
+    imm a = usize.from(at);
+    rev.push(new Cell(i32.from(a % usize.from(g.w)), i32.from(a / usize.from(g.w))));
+    at = *parent[a];
+  }
+  mut k = rev.len();
+  while k > 0usize { k = k - 1usize; res.cells.push(*rev[k]); }
+  res;
+}
+
+// ---- jump point search ----
+
+// The jump point reached from (x, y) going (dx, dy): the first cell along
+// that line that is the goal or has a forced neighbour (or, on a diagonal,
+// from which a straight jump finds one); none (found false) when the line
+// ends in a wall first
+struct Jump {
+  found bool;
+  x i32;
+  y i32;
+}
+
+fn jumpStraight(g &Grid, x i32, y i32, dx i32, dy i32, gx i32, gy i32) Jump {
+  mut cx = x;
+  mut cy = y;
+  while true {
+    if !g.canStep(cx, cy, dx, dy) { return new Jump(false, 0i32, 0i32); }
+    cx = cx + dx;
+    cy = cy + dy;
+    if cx == gx and cy == gy { return new Jump(true, cx, cy); }
+    // Forced neighbours, no-corner-cutting rule: a side cell is open while
+    // the cell behind it (opposite to the direction of travel) is blocked
+    if dy == 0i32 {
+      if (g.isWalkable(cx, cy + 1i32) and !g.isWalkable(cx - dx, cy + 1i32))
+        or (g.isWalkable(cx, cy - 1i32) and !g.isWalkable(cx - dx, cy - 1i32)) {
+        return new Jump(true, cx, cy);
+      }
+    } else {
+      if (g.isWalkable(cx + 1i32, cy) and !g.isWalkable(cx + 1i32, cy - dy))
+        or (g.isWalkable(cx - 1i32, cy) and !g.isWalkable(cx - 1i32, cy - dy)) {
+        return new Jump(true, cx, cy);
+      }
+    }
+  }
+  new Jump(false, 0i32, 0i32);
+}
+
+fn jumpDiagonal(g &Grid, x i32, y i32, dx i32, dy i32, gx i32, gy i32) Jump {
+  mut cx = x;
+  mut cy = y;
+  while true {
+    if !g.canStep(cx, cy, dx, dy) { return new Jump(false, 0i32, 0i32); }
+    cx = cx + dx;
+    cy = cy + dy;
+    if cx == gx and cy == gy { return new Jump(true, cx, cy); }
+    // A diagonal run stops where a straight jump from here would find one
+    if jumpStraight(g, cx, cy, dx, 0i32, gx, gy).found { return new Jump(true, cx, cy); }
+    if jumpStraight(g, cx, cy, 0i32, dy, gx, gy).found { return new Jump(true, cx, cy); }
+  }
+  new Jump(false, 0i32, 0i32);
+}
+
+fn jumpFrom(g &Grid, x i32, y i32, dx i32, dy i32, gx i32, gy i32) Jump {
+  if dx != 0i32 and dy != 0i32 { return jumpDiagonal(g, x, y, dx, dy, gx, gy); }
+  jumpStraight(g, x, y, dx, dy, gx, gy);
+}
+
+// The same cheapest length as 'gridAStar' on a grid of equal weights, by jump
+// point search. 'cells' holds the jump points (start, turning cells, goal);
+// 'expandJumps' fills in the cells between
+pub fn gridJps(g &Grid, sx i32, sy i32, gx i32, gy i32) GridPath {
+  mut res = GridPath.none();
+  mut r = 0usize;
+  while r < g.weight.len() {
+    if *g.weight[r] != 1. { res.refused = true; return res; }
+    r = r + 1usize;
+  }
+  if !g.isWalkable(sx, sy) or !g.isWalkable(gx, gy) { return res; }
+  imm w = usize.from(g.w);
+  imm n = w * usize.from(g.h);
+  mut gcost = List[f32].withCapacity(n);
+  mut parent = List[i32].withCapacity(n);
+  mut closed = List[bool].withCapacity(n);
+  mut i = 0usize;
+  while i < n { gcost.push(3.4e38); parent.push(-1i32); closed.push(false); i = i + 1usize; }
+  mut open = MinHeap.empty();
+  imm start = usize.from(sy) * w + usize.from(sx);
+  imm goal = usize.from(gy) * w + usize.from(gx);
+  gcost.set(start, 0.);
+  open.push(octile(gx - sx, gy - sy, true), u32.from(start));
+  mut found = false;
+  while !open.isEmpty() {
+    imm top = open.pop();
+    imm cur = usize.from(top.id);
+    if *closed[cur] { continue; }
+    closed.set(cur, true);
+    res.expanded = res.expanded + 1u32;
+    if cur == goal { found = true; break; }
+    imm cx = i32.from(cur % w);
+    imm cy = i32.from(cur / w);
+    imm cg = *gcost[cur];
+    // The direction travelled to get here, unit steps
+    mut pdx = 0i32;
+    mut pdy = 0i32;
+    imm pp = *parent[cur];
+    if pp >= 0i32 {
+      imm px = i32.from(usize.from(pp) % w);
+      imm py = i32.from(usize.from(pp) / w);
+      if cx > px { pdx = 1i32; }
+      if cx < px { pdx = -1i32; }
+      if cy > py { pdy = 1i32; }
+      if cy < py { pdy = -1i32; }
+    }
+    mut d = 0i32;
+    while d < 8i32 {
+      mut dx = 0i32;
+      mut dy = 0i32;
+      if d == 0i32 { dx = 1i32; }
+      if d == 1i32 { dx = -1i32; }
+      if d == 2i32 { dy = 1i32; }
+      if d == 3i32 { dy = -1i32; }
+      if d == 4i32 { dx = 1i32; dy = 1i32; }
+      if d == 5i32 { dx = -1i32; dy = 1i32; }
+      if d == 6i32 { dx = 1i32; dy = -1i32; }
+      if d == 7i32 { dx = -1i32; dy = -1i32; }
+      d = d + 1i32;
+      if pp >= 0i32 {
+        // Prune to the natural and forced neighbours of the travel direction
+        mut keep = false;
+        if pdx != 0i32 and pdy != 0i32 {
+          keep = (dx == pdx and dy == 0i32) or (dx == 0i32 and dy == pdy) or (dx == pdx and dy == pdy);
+        } else {
+          if pdy == 0i32 {
+            // travelling along x: straight on, or a diagonal off a forced side
+            // (with no corner cutting the side cell itself is forced too)
+            keep = dx == pdx and dy == 0i32;
+            if dy != 0i32 and (dx == pdx or dx == 0i32) {
+              keep = g.isWalkable(cx, cy + dy) and !g.isWalkable(cx - pdx, cy + dy);
+            }
+          } else {
+            keep = dy == pdy and dx == 0i32;
+            if dx != 0i32 and (dy == pdy or dy == 0i32) {
+              keep = g.isWalkable(cx + dx, cy) and !g.isWalkable(cx + dx, cy - pdy);
+            }
+          }
+        }
+        if !keep { continue; }
+      }
+      imm j = jumpFrom(g, cx, cy, dx, dy, gx, gy);
+      if !j.found { continue; }
+      imm ji = usize.from(j.y) * w + usize.from(j.x);
+      if *closed[ji] { continue; }
+      imm ng = cg + octile(j.x - cx, j.y - cy, true);
+      if ng < *gcost[ji] {
+        gcost.set(ji, ng);
+        parent.set(ji, i32.from(cur));
+        open.push(ng + octile(gx - j.x, gy - j.y, true), u32.from(ji));
+      }
+    }
+  }
+  if !found { return res; }
+  res.found = true;
+  res.cost = *gcost[goal];
+  mut rev = List[Cell].empty();
+  mut at = i32.from(goal);
+  while at >= 0i32 {
+    imm a = usize.from(at);
+    rev.push(new Cell(i32.from(a % w), i32.from(a / w)));
+    at = *parent[a];
+  }
+  mut k = rev.len();
+  while k > 0usize { k = k - 1usize; res.cells.push(*rev[k]); }
+  res;
+}
+
+// Jump points (each in line with the next) as every cell between: the form
+// 'gridAStar' gives
+pub fn expandJumps(p &GridPath) List[Cell] {
+  mut out = List[Cell].empty();
+  if p.cells.len() == 0usize { return out; }
+  out.push(*p.cells[0usize]);
+  mut i = 1usize;
+  while i < p.cells.len() {
+    imm a = *p.cells[i - 1usize];
+    imm b = *p.cells[i];
+    mut dx = 0i32;
+    mut dy = 0i32;
+    if b.x > a.x { dx = 1i32; }
+    if b.x < a.x { dx = -1i32; }
+    if b.y > a.y { dy = 1i32; }
+    if b.y < a.y { dy = -1i32; }
+    mut cx = a.x;
+    mut cy = a.y;
+    while cx != b.x or cy != b.y {
+      cx = cx + dx;
+      cy = cy + dy;
+      out.push(new Cell(cx, cy));
+    }
+    i = i + 1usize;
+  }
+  out;
+}
