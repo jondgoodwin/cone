@@ -37,6 +37,17 @@ fn testNumbers() {
   imm r4 = rocker(1.75, 0.5501);
   near(r3.x, r4.x, 0.001, "flat meets toe rocker: x");
   near(r3.y, r4.y, 0.001, "and y");
+  // The backward roll is joined the same way, lands toe down and leaves toe up
+  imm b1 = rockerBack(1.75, 0.1199);
+  imm b2 = rockerBack(1.75, 0.1201);
+  near(b1.x, b2.x, 0.001, "backward roll meets flat: x");
+  near(b1.y, b2.y, 0.001, "and y");
+  imm b3 = rockerBack(1.75, 0.5499);
+  imm b4 = rockerBack(1.75, 0.5501);
+  near(b3.x, b4.x, 0.001, "flat meets the heel pivot: x");
+  near(b3.y, b4.y, 0.001, "and y");
+  near(rockerBack(1.75, 0.).z, -0.2094395, 0.0001, "backward, a foot lands toe down 12 degrees");
+  near(rockerBack(1.75, 1.).z, 0.6108652, 0.0001, "and leaves toe up 35 degrees");
   // Flat: the ankle 0.039 H above the sole and 0.04 H ahead of the heel
   imm flat = rocker(1.75, 0.3);
   near(flat.x, 0.04 * 1.75, 0.0001, "flat foot: the ankle 0.04 H ahead of the heel");
@@ -207,5 +218,50 @@ fn main() i32 {
   }
   near((*ms[FOOT_L]).translation.y - (*mf[FOOT_L]).translation.y, 0.093, 0.005, "a closure ground: the left ankle stands 9.3 cm higher on the slope");
   near((*ms[FOOT_R]).translation.y - (*mf[FOOT_R]).translation.y, 0.093, 0.005, "and the right");
+
+  // Setting off from standing, forward and backward, at a body's own ramp
+  // (12 m/s^2 up to 1.8 m/s): the pelvis never plunges (the first stance
+  // used to leave a foot 1 m behind the body, out of the leg's reach: the
+  // pelvis fell by 56 cm forward and 68 cm backward), and no foot jumps
+  mut dirI = 0;
+  while dirI < 2 {
+    imm dir = if dirI == 0 { 1.; } else { -1.; };
+    mut wg = Walker.make(h, 7u32);
+    mut pg = skel.restPose();
+    mut mg = List[Transform3].empty();
+    mut sp = 0.;
+    mut zg = 0.;
+    mut n = 0;
+    mut lowestG = 10.;
+    mut jump = 0.;
+    mut lastAnkle = new Vec3(0., 0., 0.);
+    mut lastStep = new Vec3(0., 0., 0.);
+    mut steadyJump = 0.;
+    while n < 180 {
+      sp = if sp < 1.8 { sp + 12. * dt; } else { 1.8; };
+      zg = zg - dir * sp * dt;
+      imm atG = new Vec3(0., 0., zg);
+      wg.update(&skel, &mut pg, &mut mg, atG, 0., dir * sp, 0., true, &flatGround, dt);
+      imm py = (*mg[PELVIS]).translation.y;
+      imm an = (*mg[FOOT_R]).translation + atG;
+      if n > 1 {
+        if py < lowestG { lowestG = py; }
+        // the change in a foot's step from one frame to the next: a pop shows
+        // here, and a steady swing's is small
+        imm stepV = an - lastAnkle;
+        imm dAcc = (stepV - lastStep).length();
+        if n > 3 and n < 120 and dAcc > jump { jump = dAcc; }
+        if n >= 120 and dAcc > steadyJump { steadyJump = dAcc; }
+        lastStep = stepV;
+      }
+      lastAnkle = an;
+      n = n + 1;
+    }
+    imm drop = wg.standingPelvis() - lowestG;
+    expectBool(drop < 0.14, true, "setting off the pelvis never drops more than 14 cm (forward or backward)");
+    // The first swing covers its ground in half the time, so it is sharper than a steady one, but not a jump
+    expectBool(jump < 3. * steadyJump, true, "and no foot pops: its change of step in the first steps is within 3 times a steady walk's");
+    dirI = dirI + 1;
+  }
   done();
 }
