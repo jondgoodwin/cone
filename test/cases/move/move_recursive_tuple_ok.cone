@@ -1,0 +1,64 @@
+// A tuple may hold a type that holds the tuple, wherever the type is reached
+// through a pointer or a reference, and a tuple of other types is as before
+// (move_typecheck_recursive_tuple refuses the ones that hold the type by value):
+//
+// - a List of tuples of the struct, in the struct;
+// - an Option of a reference to the struct, in the struct, and a tuple of an
+//   unrelated struct beside it;
+// - a tuple of a reference to the struct, and an array of such tuples, in a
+//   struct that is not the struct itself.
+
+mod move_recursive_tuple_ok;
+
+import stdio use *;
+import collections use *;
+
+struct Plain {
+  pub v i64;
+}
+
+struct Node {
+  pub id i64;
+  pub kids List[(i32, Node)];
+}
+
+struct Ring {
+  pub id i64;
+  pub maybe ?&Ring;
+  pub plain (i32, Plain);
+}
+
+struct Cursor {
+  pub at (i32, &Ring);
+  pub pairs Array[(i32, &Ring), 2];
+}
+
+fn say(n i64) {
+  printInt(n);
+  printStr("\n");
+}
+
+fn main() {
+  mut root = new Node(1, List[(i32, Node)].empty());
+  root.kids.push((7i32, new Node(2, List[(i32, Node)].empty())));
+  say(root.id);
+  say(i64.from(root.kids.len()));
+  each k in root.kids {
+    say(i64.from(k.0));
+    say(k.1.id);
+  }
+
+  imm base = new Ring(10, None[&Ring], (6i32, new Plain(60)));
+  imm top = new Ring(11, Some[&Ring](&base),(2i32, new Plain(20)));
+  say(top.id);
+  if imm m Some = top.maybe {
+    say(m.id);
+  }
+  say(top.plain.1.v);
+  imm cur = new Cursor((3i32, &top), [(4i32, &base), (5i32, &top)]);
+  say(i64.from(cur.at.0));
+  say(cur.at.1.id);
+  say(i64.from(cur.pairs[0].0));
+  say(cur.pairs[0].1.id);
+  say(cur.pairs[1].1.id);
+}
