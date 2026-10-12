@@ -460,7 +460,8 @@ static LLVMValueRef genlDeclaredIntrinsic(GenState *gen, FnDclNode *fndcl, LLVMV
 
     // A slice is the {pointer, length} pair; the pointer is the first element's
     case SliceFromPartsIntrinsic:
-    case SliceFromPartsMutIntrinsic: {
+    case SliceFromPartsMutIntrinsic:
+    case SliceFromPartsUniIntrinsic: {
         LLVMTypeRef slicetype = genlType(gen, ((FnSigNode *)fndcl->vtype)->rettype);
         LLVMValueRef slice = LLVMGetUndef(slicetype);
         slice = LLVMBuildInsertValue(gen->builder, slice, fnargs[0], 0, "sliceptr");

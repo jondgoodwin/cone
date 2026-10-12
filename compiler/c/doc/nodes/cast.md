@@ -186,6 +186,34 @@ to a struct, which is not checked here at all, because `castBitsize` knows
 nothing of field layout, padding or alignment. That check is deferred to
 generation, where the data layout exists.
 
+**Between two references, `as` may only be a legal coercion of the permission**
+(`castRefPermCheck`, before the size test; any kind of reference counts: a
+borrow, a slice, an owner, a virtual reference). The target's permission must be
+the source's or a supertype of it, which is the question an implicit coercion
+asks (`permMatches`): `uni` to `mut`, `imm`, `&`; `mut` and `imm` to `&`; the
+same to the same. Anything else, `&` to `&mut`, `&imm` to `&uni`, `&mut` to
+`&uni`, is `ErrorCastPerm`, whose message names both permissions and says it
+needs `trust`, which is not built yet. Reinterpretation is trusted
+([reftrust.html](../../../../doc/reference/reftrust.html), "Type
+Reinterpretation"), but a reference's permission is what flow, the loan walk and
+the checks of `parallel each` rest on, so a cast that changed it would be a way
+round every one (`&mut` as `&uni` slips past `ErrorParRoot`; `&` as `&mut`
+writes through a read-only view). **A raw pointer `as` a reference is not asked**
+(it is how a collection, an actor or the collector hands out memory it manages:
+`(ptr + i) as &mut T`), nor is a reference `as` a pointer, and a library that
+needs a `&uni` slice of memory it owns calls `mem.sliceFromPartsUni`, not a cast.
+**One case is let through for now: a `ro` source made the `imm` a type
+declaring `Immutable` gives a reference that writes no permission**, which is how
+a slice of bytes is made text (`bytes as &str`, `p as So[str]`, documented in
+refarrayref.html). It is keyed on the target being *defaulted*, not written:
+`refTypeCheck` sets `RefNode.permImmDefault` when it replaces the unwritten
+permission with `refImmutableDefaultPerm`, and `castRefPermCheck` asks it of the
+target. A permission written out (`as &imm P` from a `&`, `bytes as &imm str`,
+`So[imm, str]`) is checked as any other and is `ErrorCastPerm`; so is `&mut` as
+`&imm`. The name `str` appears nowhere in the test. The cast promises that the
+bytes are text and that nothing changes them while the text is used, neither of
+which is checked, so it is for `trust` to guard too once that is built.
+
 **`usize` and `isize` are pointer-sized**, and a pointer's width is the
 target's, so no reinterpretation joins either of them to a fixed-width number
 (`i64`, `u32`, `f64`, ...) in either direction, even where the widths agree:

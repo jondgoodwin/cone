@@ -685,6 +685,9 @@ enum ErrorCode {
     ErrorNotShapeKeeping = 1500,    // A value made a virtual reference marked '+ ShapeKeeping' whose method reshapes a shape-changing value (a list, a string) it reaches through a shared mutable path: a '&mut' parameter, or a variable it borrows or holds by reference
     ErrorShapeKeepingDeclared = 1501, // A type declaring ShapeKeeping: the compiler finds it from the methods a virtual reference marked '+ ShapeKeeping' dispatches to, where the value becomes one
 
+    // 'as' between references (ir/exp/cast.c)
+    ErrorCastPerm = 1502,       // 'as' from one reference to another whose permission is not the same as the source's or a supertype of it (the coercions a type check allows): reinterpretation between references is only a legal coercion, and anything else needs 'trust', which is not built yet
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

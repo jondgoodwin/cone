@@ -28,6 +28,7 @@ RefNode *newRefNode(uint16_t tag) {
     refnode->capture = 0;
     refnode->plusSpelled = 0;
     refnode->bracketSpelled = 0;
+    refnode->permImmDefault = 0;
     return refnode;
 }
 
@@ -497,6 +498,7 @@ void refTypeCheck(TypeCheckState *pstate, RefNode *node) {
     if (immperm == NULL && !permunwritten && refImmutableBan((INode*)node, node->perm, node->vtexp))
         immperm = newPermUseNode(immPerm);
     if (immperm) {
+        node->permImmDefault = permunwritten;
         node->perm = immperm;
         itypeTypeCheck(pstate, (INode**)&node->perm);
     }

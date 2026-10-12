@@ -51,6 +51,7 @@ typedef enum {
     ShapePtrT,          // *T
     ShapeSliceT,        // &Array[T]: a borrowed slice, read only
     ShapeSliceMutT,     // &mut Array[T]: a borrowed slice, writable
+    ShapeSliceUniT,     // &uni Array[T]: a borrowed slice, writable and the only way to reach its values
     ShapePtrTypeRecord, // *TypeRecord: core's type record (typeRecordIsPtr)
     ShapeU32,           // u32
     ShapeOrder,         // MemOrder: core's enum of atomic orderings, a constant at each call
@@ -108,6 +109,8 @@ static IntrinsicSpec intrinsicRegistry[] = {
         1, 2, {ShapePtrT, ShapeUsize}, ShapeSliceT, 1, 0, PhaseExpansion, 1},
     {"sliceFromPartsMut", SliceFromPartsMutIntrinsic, "sliceFromPartsMut[T](p *T, len usize) &mut Array[T]",
         1, 2, {ShapePtrT, ShapeUsize}, ShapeSliceMutT, 1, 0, PhaseExpansion, 1},
+    {"sliceFromPartsUni", SliceFromPartsUniIntrinsic, "sliceFromPartsUni[T](p *T, len usize) &uni Array[T]",
+        1, 2, {ShapePtrT, ShapeUsize}, ShapeSliceUniT, 1, 0, PhaseExpansion, 1},
     {"readRaw", ReadRawIntrinsic, "readRaw[T](p *T) T",
         1, 1, {ShapePtrT}, ShapeT, 1, 1, PhaseExpansion, 1},
     {"writeRaw", WriteRawIntrinsic, "writeRaw[T](p *T, value T)",
@@ -253,7 +256,8 @@ static int intrinsicShapeIs(INode *type, IntrinsicShape shape, INode *tparm) {
         return (type->tag == PtrTag || type->tag == DerefTag)
             && intrinsicIsTParm(((StarNode *)type)->vtexp, tparm);
     case ShapeSliceT:
-    case ShapeSliceMutT: {
+    case ShapeSliceMutT:
+    case ShapeSliceUniT: {
         // Held as a borrow in a template for the same reason (cloneRefNode)
         if (type->tag != ArrayRefTag && type->tag != ArrayBorrowTag)
             return 0;
@@ -262,7 +266,7 @@ static int intrinsicShapeIs(INode *type, IntrinsicShape shape, INode *tparm) {
             return 0;
         // An unwritten permission is a borrowed reference's default, 'ro'
         INode *perm = ref->perm == unknownType ? (INode *)roPerm : itypeGetTypeDcl(ref->perm);
-        return perm == (INode *)(shape == ShapeSliceT ? roPerm : mutPerm);
+        return perm == (INode *)(shape == ShapeSliceT ? roPerm : shape == ShapeSliceMutT ? mutPerm : uniPerm);
     }
     case ShapeSliceU8: {
         if (type->tag != ArrayRefTag && type->tag != ArrayBorrowTag)

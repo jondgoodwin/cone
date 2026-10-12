@@ -13,7 +13,7 @@
 
     <div class="text">
 	
-	<p style="margin-left: 40px;"><i>Note: None of this is implemented, except the <span class="pre">as</span> operator and the rule for its sizes, under Type Reinterpretation.</i></p>
+	<p style="margin-left: 40px;"><i>Note: None of this is implemented, except the <span class="pre">as</span> operator, the rule for its sizes, and the rule that between references it may only be a legal coercion, under Type Reinterpretation. <span class="pre">trust</span> itself is not built yet, so a reinterpretation that needs it is refused.</i></p>
 	
 	<p>Safety is enriched when the programmer and the compiler work together
 		towards that end, each bringing different gifts to bear on the problem.
@@ -52,7 +52,7 @@
 		that the programmer, who has the ultimate responsibility for safety,
 		may very clearly see what the compiler cannot.</p>
 
-	<h2>Type Reinterpretation</h2>
+	<h2 id="reinterpret">Type Reinterpretation</h2>
 	<p>Reinterpretation takes some existing encoded value and allows
 		it to be re-cast and manipulated as if it were 
 		a value of a different, but same-sized type.
@@ -95,6 +95,32 @@ imm wide = u64.from(count);      // not count as u64
 <pre>
 imm someref = trust {nullref as &amp;i32};
 </pre>
+	<p>Between two references, a reference's permission is the one thing
+		<span class="pre">as</span> may not change except as a coercion does:
+		the permission it gives must be the source's or a supertype of it.
+		<span class="pre">&amp;uni</span> may be cast <span class="pre">&amp;mut</span>,
+		<span class="pre">&amp;imm</span> or <span class="pre">&amp;</span>, and
+		<span class="pre">&amp;mut</span> or <span class="pre">&amp;imm</span> may be cast
+		<span class="pre">&amp;</span>; a slice or a virtual reference is no different.
+		The others would write through a reference that promised not to
+		(<span class="pre">&amp;</span> as <span class="pre">&amp;mut</span>), or make a reference that
+		other names reach the only one (<span class="pre">&amp;mut</span> as <span class="pre">&amp;uni</span>),
+		and are refused, with a message naming both permissions. They need
+		<span class="pre">trust</span>, which is not built yet:</p>
+<pre>
+fn poke(r &amp;P) { imm m = r as &amp;mut P; m.x = 99; }   // **ERROR** & to mut is not a coercion
+fn share(r &amp;mut P) &amp;uni P { r as &amp;uni P; }       // **ERROR** mut to uni is not a coercion
+</pre>
+	<p>A raw pointer cast to a reference is not asked this (it is how a library hands out
+		memory it manages), and neither is a reference cast to a pointer. The one other exception,
+		for now, is the <span class="pre">imm</span> that a type declaring <span class="pre">Immutable</span>
+		gives a reference written with no permission: <span class="pre">&amp;</span> may be cast to it, which is how
+		a slice of bytes becomes text (<span class="pre">bytes as &amp;str</span>, <span class="pre">p as So[str]</span>;
+		see <a href="refarrayref.html#bytes">A String as a Slice of Bytes</a>).
+		A permission written out is checked like any other, so <span class="pre">bytes as &amp;imm str</span>
+		and <span class="pre">r as &amp;imm P</span> from a <span class="pre">&amp;</span> are refused. The cast promises
+		that the bytes are text and that nothing changes them while the text is used, which only the programmer can
+		know and the compiler does not check, so it is for <span class="pre">trust</span> too once that is built.</p>
 	<p>Although reinterpretation is mostly used with references and pointers,
 		other valid uses are possible.
 		For example, a IEEE 754-compliant floating-point number can be
