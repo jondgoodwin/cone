@@ -1,0 +1,40 @@
+// A type argument in a pattern binding that is no term. The parser reports the
+// bad term and the unclosed bracket, and goes on; the argument it could not read
+// is a null node that nothing after the parser may be handed, so this crashed
+// the compiler while it looked for a lifetime among the arguments.
+//
+// Parse stage only. Each case is in its own function so the parser's
+// resynchronization from one cannot reach the next. The match arm is the shape
+// found in the field; the 'if' form and a plain declaration go through the same
+// type reader.
+
+mod enum_parse_pattern_typearg;
+
+enum Odd {
+  SomeInt(i32);
+  None;
+}
+use Odd;
+
+// A match arm whose binding's type argument begins with a comparison
+fn inArm(o Odd) i32 {
+  match o {
+    case imm intval SomeInt[<0] {1;}   //~ ErrorBadTerm:29 "Invalid term"
+                                       //~^ ErrorNoRParen:30 follow-on
+    case imm intval SomeInt {2;}
+    else {4;}
+  }
+}
+
+// The same binding in the single-pattern 'if' form
+fn inIf(o Odd) i32 {
+  if imm intval SomeInt[<0] = o {1;}   //~ ErrorBadTerm:25 "Invalid term"
+                                       //~^ ErrorNoRParen:26 follow-on
+  else {4;}
+}
+
+// And in an ordinary declaration
+fn inDecl() {
+  imm x Foo[<0] = 1;                   //~ ErrorBadTerm:13 "Invalid term"
+                                       //~^ ErrorNoRParen:14 follow-on
+}

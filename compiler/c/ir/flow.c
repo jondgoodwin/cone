@@ -603,6 +603,19 @@ static void flowMoveSource(INode *node, Nodes **moved, INode *top, MoveParts *pa
             flowTempHollow((TempNode *)objfn, moved, top);
             return;
         }
+        // An element of an array held by value: moving it out would leave the
+        // array with a hole in it, which it could neither be used with nor
+        // finalized with. (An array reached through a field, another element
+        // or a dereference is refused by that arm; a global, above.)
+        if (iexpGetTypeDcl(objfn)->tag == ArrayTag
+            && objfn->tag != FldAccessTag && objfn->tag != ArrIndexTag
+            && objfn->tag != DerefTag && objfn->tag != CastTag
+            && !(isNameUseNode(objfn) && isExpNode(objfn)
+                && ((VarDclNode *)((NameUseNode *)objfn)->dclnode)->scope == 0)) {
+            errorMsgNode(top, ErrorMoveElem,
+                "May not move a value out of an element of an array, which would be left with a hole in it. Swap a value in with '<=>', or move the whole array.");
+            return;
+        }
         flowMoveSource(objfn, moved, top, parts);
         break;
     }
