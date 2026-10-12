@@ -1,0 +1,234 @@
+// ======== The atlas: glyph fields packed into one texture ========
+//
+// Each glyph is generated once, at 'emPx' texels to the em, into a cell of one
+// RGBA8 image (the multi-channel field in red, green and blue; alpha 255,
+// reserved), found by a skyline packer. A glyph is generated when first asked
+// for, on the CPU, and the atlas counts its changes in 'version' so a renderer
+// knows to upload it again. When the image is full a glyph is not made (the
+// text draws without it); a larger 'width' and 'height' is the remedy.
+
+// Atlas settings
+pub struct AtlasConfig {
+  pub emPx f64;              // texels to the em
+  pub pxRange f64;           // the whole width of distances a field holds, in texels
+  pub width u32;
+  pub height u32;
+  pub cornerAngle f64;       // radians: a turn beyond this is a corner (msdfgen's default 3)
+
+  pub fn standard() AtlasConfig { new AtlasConfig(48.0d, 6.0d, 1024u32, 1024u32, 3.0d); }
+}
+
+// Where a glyph is in the atlas and how it is drawn. The quad is in ems from
+// the pen position on the baseline, y up, and holds the glyph with the margin
+// the field's range needs; its uv is the cell.
+pub struct GlyphEntry {
+  pub glyph u32;
+  pub empty bool;            // no outline (a space): nothing to draw
+  pub x u32;
+  pub y u32;
+  pub w u32;
+  pub h u32;
+  pub u0 f32;
+  pub v0 f32;
+  pub u1 f32;
+  pub v1 f32;
+  pub left f32;
+  pub bottom f32;
+  pub right f32;
+  pub top f32;
+  pub advance f32;           // ems
+}
+
+struct SkyNode {
+  x u32;
+  y u32;
+  w u32;
+}
+
+// A skyline bottom-left packer: Jukka Jylanki's "A Thousand Ways to Pack the
+// Bin" (2010), the skyline bottom-left variant, as in stb_rect_pack.
+// Rectangles are placed where the skyline is lowest.
+pub struct SkylinePacker {
+  pub width u32;
+  pub height u32;
+  nodes List[SkyNode];
+
+  pub fn make(width u32, height u32) SkylinePacker {
+    mut nodes = List[SkyNode].empty();
+    nodes.push(new SkyNode(0u32, 0u32, width));
+    new SkylinePacker(width, height, nodes);
+  }
+
+  // The y a w x h rectangle would rest at starting at node i, or the height of the bin plus one if it does not fit
+  fn fitAt(self &, i usize, w u32, h u32) u32 {
+    imm n = *nodes[i];
+    if n.x + w > width { return height + 1u32; }
+    mut y = n.y;
+    mut remaining = w;
+    mut k = i;
+    while remaining > 0u32 {
+      if k >= nodes.len() { return height + 1u32; }
+      imm nk = *nodes[k];
+      if nk.y > y { y = nk.y; }
+      if y + h > height { return height + 1u32; }
+      if nk.w >= remaining { remaining = 0u32; } else { remaining = remaining - nk.w; }
+      k = k + 1usize;
+    }
+    y;
+  }
+
+  // Place a w x h rectangle; false if there is no room. Its corner is left in 'px', 'py'.
+  pub fn pack(self &mut, w u32, h u32, px &mut u32, py &mut u32) bool {
+    mut bestI = nodes.len();
+    mut bestTop = height + 1u32;
+    mut bestW = width + 1u32;
+    mut bestY = 0u32;
+    mut i = 0usize;
+    while i < nodes.len() {
+      imm y = self.fitAt(i, w, h);
+      if y <= height {
+        imm top = y + h;
+        imm nw = (*nodes[i]).w;
+        if top < bestTop or (top == bestTop and nw < bestW) {
+          bestTop = top;
+          bestW = nw;
+          bestI = i;
+          bestY = y;
+        }
+      }
+      i = i + 1usize;
+    }
+    if bestI >= nodes.len() { return false; }
+    imm x = (*nodes[bestI]).x;
+    // The new level: insert before node bestI, then trim what it covers
+    mut rebuilt = List[SkyNode].empty();
+    i = 0usize;
+    while i < bestI { rebuilt.push(*nodes[i]); i = i + 1usize; }
+    rebuilt.push(new SkyNode(x, bestY + h, w));
+    while i < nodes.len() {
+      imm n = *nodes[i];
+      if n.x + n.w <= x + w {
+        // wholly covered
+      } elif n.x < x + w {
+        rebuilt.push(new SkyNode(x + w, n.y, n.x + n.w - (x + w)));
+      } else {
+        rebuilt.push(n);
+      }
+      i = i + 1usize;
+    }
+    // Merge neighbours of equal height
+    mut merged = List[SkyNode].empty();
+    i = 0usize;
+    while i < rebuilt.len() {
+      imm n = *rebuilt[i];
+      if merged.len() > 0usize and (*merged[merged.len() - 1usize]).y == n.y {
+        imm last = *merged[merged.len() - 1usize];
+        merged.set(merged.len() - 1usize, new SkyNode(last.x, last.y, last.w + n.w));
+      } else {
+        merged.push(n);
+      }
+      i = i + 1usize;
+    }
+    nodes = merged;
+    *px = x;
+    *py = bestY;
+    true;
+  }
+}
+
+pub struct Atlas {
+  pub config AtlasConfig;
+  pub pixels List[u8];             // RGBA8, width x height, row 0 the top
+  pub entries List[GlyphEntry];
+  slots List[i32];                 // by glyph number: index into entries, -1 not made, -2 made but full
+  packer SkylinePacker;
+  pub version u32;                 // counts changes to 'pixels'
+  pub generated u32;               // glyph fields generated
+  pub fixedTexels u32;             // texels error correction replaced
+
+  pub fn create(config AtlasConfig) Atlas {
+    mut pixels = List[u8].withCapacity(usize.from(config.width * config.height * 4u32));
+    mut i = 0usize;
+    // Opaque black: outside (all channels 0)
+    while i < usize.from(config.width * config.height) {
+      pixels.push(0u8);
+      pixels.push(0u8);
+      pixels.push(0u8);
+      pixels.push(255u8);
+      i = i + 1usize;
+    }
+    new Atlas(config, pixels, List[GlyphEntry].empty(), List[i32].empty(), SkylinePacker.make(config.width, config.height),
+      0u32, 0u32, 0u32);
+  }
+
+  // The entry for 'glyph' of 'font', generated if it is new. -1 if the atlas is full.
+  pub fn ensure(self &mut, font &Font, glyph u32) i32 {
+    if slots.len() == 0usize {
+      mut i = 0u32;
+      while i < font.glyphCount { slots.push(-1i32); i = i + 1u32; }
+    }
+    if glyph >= font.glyphCount { return -1i32; }
+    imm s = *slots[usize.from(glyph)];
+    if s != -1i32 { return s; }
+    imm made = self.generate(font, glyph);
+    slots.set(usize.from(glyph), made);
+    made;
+  }
+
+  // The entry at index 'i' of a successful ensure
+  pub fn entry(self &, i i32) GlyphEntry { *entries[usize.from(u32.from(i))]; }
+
+  fn generate(self &mut, font &Font, glyph u32) i32 {
+    imm em = f64.from(font.unitsPerEm);
+    imm advance = f32.from(f64.from(font.advance(glyph)) / em);
+    imm o = font.outline(glyph);
+    mut shape = Shape.fromOutline(&o);
+    if shape.edges.len() == 0usize {
+      entries.push(new GlyphEntry(glyph, true, 0u32, 0u32, 0u32, 0u32, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, advance));
+      return i32.from(entries.len() - 1usize);
+    }
+    colorEdges(&mut shape, config.cornerAngle, 0u64);
+    mut lo = new Pt(0.0d, 0.0d);
+    mut hi = new Pt(0.0d, 0.0d);
+    shape.bounds(&mut lo, &mut hi);
+    imm s = config.emPx / em;                          // texels per font unit
+    imm margin = libc.ceil(config.pxRange * 0.5d) + 1.0d;
+    imm w = u32.from(libc.ceil((hi.x - lo.x) * s + 2.0d * margin));
+    imm h = u32.from(libc.ceil((hi.y - lo.y) * s + 2.0d * margin));
+    mut cx = 0u32;
+    mut cy = 0u32;
+    // One texel of gap on the right and below, so linear filtering never reads a neighbour
+    if !packer.pack(w + 1u32, h + 1u32, &mut cx, &mut cy) { return -2i32; }
+    imm frame = new Frame(w, h, s, margin / s - lo.x, margin / s - lo.y, config.pxRange / s);
+    mut field = generateMsdf(&shape, &frame);
+    fixedTexels = fixedTexels + correctErrors(&mut field, &shape, &frame);
+    mut y = 0u32;
+    while y < h {
+      mut x = 0u32;
+      while x < w {
+        imm at = usize.from(((cy + y) * config.width + cx + x) * 4u32);
+        mut ch = 0u32;
+        while ch < 3u32 {
+          mut v = field.texel(x, y, ch) * 255.0 + 0.5;
+          if v < 0.0 { v = 0.0; }
+          if v > 255.0 { v = 255.0; }
+          pixels.set(at + usize.from(ch), u8.from(v));
+          ch = ch + 1u32;
+        }
+        pixels.set(at + 3usize, 255u8);
+        x = x + 1u32;
+      }
+      y = y + 1u32;
+    }
+    version = version + 1u32;
+    generated = generated + 1u32;
+    imm aw = f32.from(config.width);
+    imm ah = f32.from(config.height);
+    imm left = f32.from((lo.x - margin / s) / em);
+    imm bottom = f32.from((lo.y - margin / s) / em);
+    entries.push(new GlyphEntry(glyph, false, cx, cy, w, h,
+      f32.from(cx) / aw, f32.from(cy) / ah, f32.from(cx + w) / aw, f32.from(cy + h) / ah,
+      left, bottom, left + f32.from(f64.from(w) / config.emPx), bottom + f32.from(f64.from(h) / config.emPx), advance));
+    i32.from(entries.len() - 1usize);
+  }
+}

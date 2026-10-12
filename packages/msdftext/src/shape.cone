@@ -1,0 +1,517 @@
+// ======== Shape: a glyph outline as coloured edges ========
+//
+// A glyph is a set of closed contours of straight lines and quadratic
+// Beziers (TrueType's), in font units, y up. Everything here is f64: the
+// distance tests below solve cubics and compare nearly equal distances.
+//
+// The signed distance has msdfgen's sign (Chlumsky's, MIT licence): positive
+// INSIDE, which for a TrueType glyph, whose outer contours run clockwise, is
+// the right of an edge's direction. A contour's winding is +1 for the
+// clockwise direction (the sign of the shoelace sum of (bx - ax)(ay + by)),
+// -1 for counter-clockwise: an outer contour of a TrueType glyph has +1, a
+// hole -1.
+
+pub const EDGE_LINE = 0u32;
+pub const EDGE_QUAD = 1u32;
+
+// Edge colours are channel masks: red 1, green 2, blue 4
+pub const COLOR_BLACK = 0u32;
+pub const COLOR_RED = 1u32;
+pub const COLOR_GREEN = 2u32;
+pub const COLOR_YELLOW = 3u32;
+pub const COLOR_BLUE = 4u32;
+pub const COLOR_MAGENTA = 5u32;
+pub const COLOR_CYAN = 6u32;
+pub const COLOR_WHITE = 7u32;
+
+pub struct Pt {
+  pub x f64;
+  pub y f64;
+
+  pub fn add overload `+`(self, o Pt) Pt inline { new Pt(x + o.x, y + o.y); }
+  pub fn sub overload `-`(self, o Pt) Pt inline { new Pt(x - o.x, y - o.y); }
+  pub fn scale overload `*`(self, s f64) Pt inline { new Pt(x * s, y * s); }
+  pub fn dot(self, o Pt) f64 inline { x * o.x + y * o.y; }
+  pub fn cross(self, o Pt) f64 inline { x * o.y - y * o.x; }
+  pub fn length(self) f64 inline { libc.sqrt(x * x + y * y); }
+  pub fn lengthSquared(self) f64 inline { x * x + y * y; }
+  // The unit vector; (0, 1) for a zero vector, as msdfgen
+  pub fn normalized(self) Pt {
+    imm l = libc.sqrt(x * x + y * y);
+    if l == 0.0d { return new Pt(0.0d, 1.0d); }
+    new Pt(x / l, y / l);
+  }
+}
+
+// A distance to an edge and, to break ties between edges at a corner, how
+// head-on the nearest point is (0: the point is straight out from the edge)
+pub struct SignedDist {
+  pub d f64;
+  pub dot f64;
+}
+
+pub fn nonZeroSign(v f64) f64 {
+  if v > 0.0d { return 1.0d; }
+  -1.0d;
+}
+
+// Whether 'a' is nearer than 'b': smaller magnitude, a tie going to the one with the smaller dot
+pub fn nearer(a SignedDist, b SignedDist) bool {
+  imm fa = libc.fabs(a.d);
+  imm fb = libc.fabs(b.d);
+  fa < fb or (fa == fb and a.dot < b.dot);
+}
+
+// msdfgen's equation solvers (Chlumsky; after Numerical Recipes' cubic).
+// The roots go in 'x'; the count is returned (-1: every x).
+fn solveQuadratic(x &mut Array[f64, 3], a f64, b f64, c f64) i32 {
+  if a == 0.0d or libc.fabs(b) > 1.0e12d * libc.fabs(a) {
+    if b == 0.0d {
+      if c == 0.0d { return -1i32; }
+      return 0i32;
+    }
+    x[0] = -c / b;
+    return 1i32;
+  }
+  mut dscr = b * b - 4.0d * a * c;
+  if dscr > 0.0d {
+    dscr = libc.sqrt(dscr);
+    x[0] = (-b + dscr) / (2.0d * a);
+    x[1] = (-b - dscr) / (2.0d * a);
+    return 2i32;
+  }
+  if dscr == 0.0d {
+    x[0] = -b / (2.0d * a);
+    return 1i32;
+  }
+  0i32;
+}
+
+fn solveCubicNormed(x &mut Array[f64, 3], a f64, b f64, c f64) i32 {
+  imm a2 = a * a;
+  mut q = (a2 - 3.0d * b) / 9.0d;
+  imm r = (a * (2.0d * a2 - 9.0d * b) + 27.0d * c) / 54.0d;
+  imm r2 = r * r;
+  imm q3 = q * q * q;
+  mut shift = a;
+  if r2 < q3 {
+    mut t = r / libc.sqrt(q3);
+    if t < -1.0d { t = -1.0d; }
+    if t > 1.0d { t = 1.0d; }
+    t = libc.acos(t);
+    shift = shift / 3.0d;
+    q = -2.0d * libc.sqrt(q);
+    x[0] = q * libc.cos(t / 3.0d) - shift;
+    x[1] = q * libc.cos((t + 2.0d * PI64) / 3.0d) - shift;
+    x[2] = q * libc.cos((t - 2.0d * PI64) / 3.0d) - shift;
+    return 3i32;
+  }
+  mut aa = -libc.pow(libc.fabs(r) + libc.sqrt(r2 - q3), 1.0d / 3.0d);
+  if r < 0.0d { aa = -aa; }
+  imm bb = if aa == 0.0d { 0.0d; } else { q / aa; };
+  shift = shift / 3.0d;
+  x[0] = (aa + bb) - shift;
+  x[1] = -0.5d * (aa + bb) - shift;
+  x[2] = 0.5d * 1.7320508075688772d * (aa - bb);
+  if libc.fabs(x[2]) < 1.0e-14d { return 2i32; }
+  1i32;
+}
+
+fn solveCubic(x &mut Array[f64, 3], a f64, b f64, c f64, d f64) i32 {
+  if a != 0.0d {
+    imm bn = b / a;
+    if libc.fabs(bn) < 1.0e6d { return solveCubicNormed(x, bn, c / a, d / a); }
+  }
+  solveQuadratic(x, b, c, d);
+}
+
+pub const PI64 = 3.14159265358979323846d;
+
+// One segment of a contour: a line from 'a' to 'c' ('b' unused), or a
+// quadratic Bezier from 'a' to 'c' with control point 'b'
+pub struct Edge {
+  pub kind u32;
+  pub a Pt;
+  pub b Pt;
+  pub c Pt;
+  pub color u32;
+
+  pub fn line(a Pt, c Pt) Edge { new Edge(EDGE_LINE, a, (a + c) * 0.5d, c, COLOR_WHITE); }
+  pub fn quad(a Pt, b Pt, c Pt) Edge { new Edge(EDGE_QUAD, a, b, c, COLOR_WHITE); }
+
+  pub fn point(self &, t f64) Pt {
+    if kind == EDGE_LINE { return a + (c - a) * t; }
+    imm u = 1.0d - t;
+    a * (u * u) + b * (2.0d * u * t) + c * (t * t);
+  }
+
+  // The derivative at t (not normalised)
+  pub fn direction(self &, t f64) Pt {
+    if kind == EDGE_LINE { return c - a; }
+    (b - a) * (1.0d - t) + (c - b) * t;
+  }
+
+  // The nearest point of the edge to p: the signed distance (msdfgen's: the
+  // true distance, signed by the side of the edge's direction, positive on the right) and the curve parameter, which is
+  // outside [0, 1] where the nearest point is an end, then the end's tangent decides
+  pub fn signedDistance(self &, p Pt, param &mut f64) SignedDist {
+    if kind == EDGE_LINE {
+      imm aq = p - a;
+      imm ab = c - a;
+      imm abab = ab.dot(ab);
+      *param = if abab == 0.0d { 0.0d; } else { aq.dot(ab) / abab; };
+      imm eq = p - (if *param > 0.5d { c; } else { a; });
+      imm endpointDistance = eq.length();
+      if *param > 0.0d and *param < 1.0d {
+        imm ortho = aq.cross(ab) / ab.length();
+        if libc.fabs(ortho) < endpointDistance { return new SignedDist(ortho, 0.0d); }
+      }
+      return new SignedDist(nonZeroSign(aq.cross(ab)) * endpointDistance,
+        libc.fabs(ab.normalized().dot(eq.normalized())));
+    }
+    imm qa = a - p;
+    imm ab = b - a;
+    imm br = a + c - b - b;
+    imm qa1 = qa;
+    mut roots = new Array[f64, 3] <- fill 0.0d;
+    imm n = solveCubic(&mut roots, br.dot(br), 3.0d * ab.dot(br), 2.0d * ab.dot(ab) + qa1.dot(br), qa1.dot(ab));
+    mut minDistance = nonZeroSign(ab.cross(qa)) * qa.length();
+    imm abab = ab.dot(ab);
+    *param = if abab == 0.0d { 0.0d; } else { -qa.dot(ab) / abab; };
+    {
+      imm cp = c - p;
+      imm distance = cp.length();
+      if distance < libc.fabs(minDistance) {
+        imm bc = c - b;
+        minDistance = nonZeroSign(bc.cross(cp)) * distance;
+        imm bcbc = bc.dot(bc);
+        *param = if bcbc == 0.0d { 1.0d; } else { (p - b).dot(bc) / bcbc; };
+      }
+    }
+    mut i = 0i32;
+    while i < n and i < 3i32 {
+      imm t = roots[usize.from(u32.from(i))];
+      if t > 0.0d and t < 1.0d {
+        imm tangent = ab + br * t;
+        imm qe = a + ab * (2.0d * t) + br * (t * t) - p;
+        imm distance = nonZeroSign(tangent.cross(qe)) * qe.length();
+        if libc.fabs(distance) <= libc.fabs(minDistance) {
+          minDistance = distance;
+          *param = t;
+        }
+      }
+      i = i + 1i32;
+    }
+    if *param >= 0.0d and *param <= 1.0d { return new SignedDist(minDistance, 0.0d); }
+    if *param < 0.5d {
+      return new SignedDist(minDistance, libc.fabs(ab.normalized().dot(qa.normalized())));
+    }
+    new SignedDist(minDistance, libc.fabs((c - b).normalized().dot((c - p).normalized())));
+  }
+
+  // The distance extended past an end along the end's tangent (the pseudo-
+  // distance of Chlumsky's multi-channel field), where that is nearer than
+  // the end itself and the point lies beyond the end; 'dist' is replaced
+  pub fn toPseudoDistance(self &, dist SignedDist, p Pt, param f64) SignedDist {
+    if param < 0.0d {
+      imm dir = self.direction(0.0d).normalized();
+      imm aq = p - a;
+      if aq.dot(dir) < 0.0d {
+        imm pseudo = aq.cross(dir);
+        if libc.fabs(pseudo) <= libc.fabs(dist.d) { return new SignedDist(pseudo, 0.0d); }
+      }
+    } elif param > 1.0d {
+      imm dir = self.direction(1.0d).normalized();
+      imm bq = p - c;
+      if bq.dot(dir) > 0.0d {
+        imm pseudo = bq.cross(dir);
+        if libc.fabs(pseudo) <= libc.fabs(dist.d) { return new SignedDist(pseudo, 0.0d); }
+      }
+    }
+    dist;
+  }
+
+  // The edge cut into thirds (a line's, or a quadratic's by de Casteljau)
+  pub fn third(self &, k u32) Edge {
+    imm t0 = f64.from(k) / 3.0d;
+    imm t1 = f64.from(k + 1u32) / 3.0d;
+    if kind == EDGE_LINE { return new Edge(EDGE_LINE, self.point(t0), self.point((t0 + t1) * 0.5d), self.point(t1), color); }
+    // The control point of the piece [t0, t1]: the curve's tangents at the ends meet there
+    imm p0 = self.point(t0);
+    imm p1 = self.point(t1);
+    imm d0 = self.direction(t0);
+    imm d1 = self.direction(t1);
+    imm cr = d0.cross(d1);
+    mut ctrl = (p0 + p1) * 0.5d;
+    if libc.fabs(cr) > 1.0e-12d {
+      imm s = (p1 - p0).cross(d1) / cr;
+      ctrl = p0 + d0 * s;
+    }
+    new Edge(EDGE_QUAD, p0, ctrl, p1, color);
+  }
+}
+
+// A closed contour: edges [start, start + count) of its shape
+pub struct Contour {
+  pub start u32;
+  pub count u32;
+  pub winding i32;
+}
+
+pub struct Shape {
+  pub edges List[Edge];
+  pub contours List[Contour];
+
+  pub fn empty() Shape { new Shape(List[Edge].empty(), List[Contour].empty()); }
+
+  // The shape of a glyph's outline: each contour's points become lines and
+  // quadratics by TrueType's rule (two off-curve points in a row imply an
+  // on-curve point halfway; a contour with no on-curve point starts at
+  // such a midpoint). Zero-length edges are dropped.
+  pub fn fromOutline(o &Outline) Shape {
+    mut shape = Shape.empty();
+    mut first = 0usize;
+    mut ci = 0usize;
+    while ci < o.ends.len() {
+      imm last = usize.from(*o.ends[ci]);
+      if last >= first and last < o.xs.len() {
+        // Expand: implied on-curve midpoints between off-curve neighbours
+        mut px = List[f64].empty();
+        mut py = List[f64].empty();
+        mut pon = List[bool].empty();
+        imm n = last - first + 1usize;
+        mut k = 0usize;
+        while k < n {
+          imm i = first + k;
+          imm j = first + (k + 1usize) % n;
+          px.push(*o.xs[i]);
+          py.push(*o.ys[i]);
+          pon.push(*o.on[i]);
+          if !*o.on[i] and !*o.on[j] {
+            px.push((*o.xs[i] + *o.xs[j]) * 0.5d);
+            py.push((*o.ys[i] + *o.ys[j]) * 0.5d);
+            pon.push(true);
+          }
+          k = k + 1usize;
+        }
+        // Start at an on-curve point
+        mut s = 0usize;
+        while s < pon.len() and !*pon[s] { s = s + 1usize; }
+        if s < pon.len() and pon.len() >= 2usize {
+          imm m = pon.len();
+          imm begin = shape.edges.len();
+          mut i = 0usize;
+          while i < m {
+            imm i0 = (s + i) % m;
+            imm i1 = (s + i + 1usize) % m;
+            imm p0 = new Pt(*px[i0], *py[i0]);
+            imm p1 = new Pt(*px[i1], *py[i1]);
+            if *pon[i1] {
+              if p0.x != p1.x or p0.y != p1.y { shape.edges.push(Edge.line(p0, p1)); }
+              i = i + 1usize;
+            } else {
+              imm i2 = (s + i + 2usize) % m;
+              imm p2 = new Pt(*px[i2], *py[i2]);
+              if p0.x != p2.x or p0.y != p2.y or p0.x != p1.x or p0.y != p1.y { shape.edges.push(Edge.quad(p0, p1, p2)); }
+              i = i + 2usize;
+            }
+          }
+          imm count = shape.edges.len() - begin;
+          if count > 0usize {
+            shape.contours.push(new Contour(u32.from(begin), u32.from(count), 1i32));
+          }
+        }
+      }
+      first = last + 1usize;
+      ci = ci + 1usize;
+    }
+    shape.setWindings();
+    shape;
+  }
+
+  // Each contour's winding: the sign of the shoelace sum over its edges'
+  // end points and quadratic control points (+1 clockwise)
+  pub fn setWindings(self &mut) {
+    mut ci = 0usize;
+    while ci < contours.len() {
+      imm c = *contours[ci];
+      mut total = 0.0d;
+      mut i = 0u32;
+      while i < c.count {
+        imm e = *edges[usize.from(c.start + i)];
+        if e.kind == EDGE_QUAD {
+          total = total + (e.b.x - e.a.x) * (e.a.y + e.b.y) + (e.c.x - e.b.x) * (e.b.y + e.c.y);
+        } else {
+          total = total + (e.c.x - e.a.x) * (e.a.y + e.c.y);
+        }
+        i = i + 1u32;
+      }
+      imm w = if total > 0.0d { 1i32; } elif total < 0.0d { -1i32; } else { 0i32; };
+      contours.set(ci, new Contour(c.start, c.count, w));
+      ci = ci + 1usize;
+    }
+  }
+
+  // The bounding box of the edges' end points and control points: min, max
+  pub fn bounds(self &, lo &mut Pt, hi &mut Pt) {
+    mut x0 = 1.0e30d;
+    mut y0 = 1.0e30d;
+    mut x1 = -1.0e30d;
+    mut y1 = -1.0e30d;
+    mut i = 0usize;
+    while i < edges.len() {
+      imm e = *edges[i];
+      mut pts = new Array[Pt, 3] <- fill e.a;
+      pts[1] = e.b;
+      pts[2] = e.c;
+      mut k = 0usize;
+      while k < 3usize {
+        if pts[k].x < x0 { x0 = pts[k].x; }
+        if pts[k].x > x1 { x1 = pts[k].x; }
+        if pts[k].y < y0 { y0 = pts[k].y; }
+        if pts[k].y > y1 { y1 = pts[k].y; }
+        k = k + 1usize;
+      }
+      i = i + 1usize;
+    }
+    *lo = new Pt(x0, y0);
+    *hi = new Pt(x1, y1);
+  }
+}
+
+// ---- Edge colouring: msdfgen's edgeColoringSimple (Chlumsky) ----
+
+// The next colour of a cycle: from white or black, the seed picks cyan,
+// magenta or yellow; otherwise the colour's bits rotate, the seed picking
+// the direction; 'banned' (a single channel) is avoided
+fn switchColor(color u32, seed &mut u64, banned u32) u32 {
+  imm combined = color & banned;
+  if combined == COLOR_RED or combined == COLOR_GREEN or combined == COLOR_BLUE {
+    return combined ^ COLOR_WHITE;
+  }
+  if color == COLOR_BLACK or color == COLOR_WHITE {
+    imm pick = *seed % 3u64;
+    *seed = *seed / 3u64;
+    if pick == 0u64 { return COLOR_CYAN; }
+    if pick == 1u64 { return COLOR_MAGENTA; }
+    return COLOR_YELLOW;
+  }
+  imm shifted = color << (1u32 + u32.from(*seed & 1u64));
+  *seed = *seed >> 1u64;
+  (shifted | (shifted >> 3u32)) & COLOR_WHITE;
+}
+
+// Whether the corner between directions a and b (unit vectors) is sharp
+fn isCorner(a Pt, b Pt, crossThreshold f64) bool {
+  a.dot(b) <= 0.0d or libc.fabs(a.cross(b)) > crossThreshold;
+}
+
+// Colours a shape's edges so that every sharp corner (turning more than
+// 'angleThreshold' radians) is where two edges of different colours meet
+// (Chlumsky's method, "Shape Decomposition for Multi-channel Distance
+// Fields", 2015): a contour with no corner is all white, with one it is
+// three colours in the teardrop pattern (an edge cut in thirds if it has
+// fewer than three), else the colour cycles through cyan, magenta and
+// yellow at each corner. 'seed' varies the cycle. Edges are split in place
+// where the pattern needs it, so contour ranges change.
+pub fn colorEdges(shape &mut Shape, angleThreshold f64, seed0 u64) {
+  imm crossThreshold = libc.sin(angleThreshold);
+  mut seed = seed0;
+  mut outEdges = List[Edge].empty();
+  mut outContours = List[Contour].empty();
+  mut ci = 0usize;
+  while ci < shape.contours.len() {
+    imm c = *shape.contours[ci];
+    imm m = usize.from(c.count);
+    imm begin = usize.from(c.start);
+    // Corners: the index of each edge whose start is a sharp corner
+    mut corners = List[usize].empty();
+    mut prev = (*shape.edges[begin + m - 1usize]).direction(1.0d).normalized();
+    mut i = 0usize;
+    while i < m {
+      imm e = *shape.edges[begin + i];
+      if isCorner(prev, e.direction(0.0d).normalized(), crossThreshold) { corners.push(i); }
+      prev = e.direction(1.0d).normalized();
+      i = i + 1usize;
+    }
+    imm outBegin = outEdges.len();
+    if corners.len() == 0usize {
+      i = 0usize;
+      while i < m {
+        mut e = *shape.edges[begin + i];
+        e.color = COLOR_WHITE;
+        outEdges.push(e);
+        i = i + 1usize;
+      }
+    } elif corners.len() == 1usize {
+      mut c0 = switchColor(COLOR_WHITE, &mut seed, COLOR_BLACK);
+      imm c2 = switchColor(c0, &mut seed, COLOR_BLACK);
+      imm corner = *corners[0];
+      if m >= 3usize {
+        // colors + 1 indexes [-1, 0, 1]: first colour, white, second
+        i = 0usize;
+        while i < m {
+          imm slot = i32.from(3.0d + 2.875d * f64.from(i) / f64.from(m - 1usize) - 1.4375d + 0.5d) - 3i32;
+          mut e = *shape.edges[begin + (corner + i) % m];
+          e.color = if slot < 0i32 { c0; } elif slot == 0i32 { COLOR_WHITE; } else { c2; };
+          outEdges.push(e);
+          i = i + 1usize;
+        }
+      } else {
+        // Fewer than three edges: split in thirds
+        mut parts = List[Edge].empty();
+        imm e0 = *shape.edges[begin];
+        if m == 1usize {
+          mut k = 0u32;
+          while k < 3u32 { parts.push(e0.third(k)); k = k + 1u32; }
+          mut p = 0usize;
+          while p < 3usize {
+            mut pe = *parts[p];
+            pe.color = if p == 0usize { c0; } elif p == 1usize { COLOR_WHITE; } else { c2; };
+            outEdges.push(pe);
+            p = p + 1usize;
+          }
+        } else {
+          // Two edges: the corner edge's thirds first
+          imm e1 = *shape.edges[begin + 1usize];
+          imm first = if corner == 0usize { e0; } else { e1; };
+          imm second = if corner == 0usize { e1; } else { e0; };
+          mut k = 0u32;
+          while k < 3u32 { parts.push(first.third(k)); k = k + 1u32; }
+          k = 0u32;
+          while k < 3u32 { parts.push(second.third(k)); k = k + 1u32; }
+          mut p = 0usize;
+          while p < 6usize {
+            mut pe = *parts[p];
+            pe.color = if p < 2usize { c0; } elif p < 4usize { COLOR_WHITE; } else { c2; };
+            outEdges.push(pe);
+            p = p + 1usize;
+          }
+        }
+      }
+    } else {
+      imm cornerCount = corners.len();
+      mut spline = 0usize;
+      imm start = *corners[0];
+      mut color = switchColor(COLOR_WHITE, &mut seed, COLOR_BLACK);
+      imm initial = color;
+      i = 0usize;
+      while i < m {
+        imm index = (start + i) % m;
+        if spline + 1usize < cornerCount and *corners[spline + 1usize] == index {
+          spline = spline + 1usize;
+          imm banned = if spline == cornerCount - 1usize { initial; } else { COLOR_BLACK; };
+          color = switchColor(color, &mut seed, banned);
+        }
+        mut e = *shape.edges[begin + index];
+        e.color = color;
+        outEdges.push(e);
+        i = i + 1usize;
+      }
+    }
+    outContours.push(new Contour(u32.from(outBegin), u32.from(outEdges.len() - outBegin), c.winding));
+    ci = ci + 1usize;
+  }
+  shape.edges = outEdges;
+  shape.contours = outContours;
+}

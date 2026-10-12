@@ -1,0 +1,247 @@
+// ======== Layout: text into glyph quads ========
+//
+// Left-to-right text, one code point to one glyph (no shaping), a pair kerning
+// adjustment between neighbours, lines broken at a width and aligned. The
+// result is in 'block space': x to the right, y DOWN, the origin at the
+// block's top left, in the units of 'size' (the em). The first baseline is
+// one ascent down; each next line 'lineAdvance' further.
+//
+// WHAT SHAPING WOULD TAKE (out of scope here): text shaping, as HarfBuzz
+// (MIT) does it, runs the font's GSUB and GPOS lookups per script and
+// language: ligatures and contextual forms (Arabic's initial, medial and
+// final forms, Indic conjuncts, Thai's mark stacking), mark positioning,
+// and reordering; around it, Unicode bidirectional ordering (UAX #9), line
+// breaking by UAX #14 and segmentation by UAX #29, a font fallback chain
+// for code points the font lacks, and the atlas keyed by glyph, not code
+// point, which it already is. HarfBuzz compiles to wasm; the work is a Cone
+// binding or a port of its GSUB/GPOS engine, then replacing 'layoutText''s
+// code-point loop with a run of (glyph, advance, offset) it returns.
+
+pub const ALIGN_LEFT = 0u32;
+pub const ALIGN_CENTER = 1u32;
+pub const ALIGN_RIGHT = 2u32;
+
+pub struct LayoutOptions {
+  pub size f32;              // the em, in the output's units (pixels, metres)
+  pub maxWidth f32;          // lines break to fit this; 0: only at newlines
+  pub align u32;             // ALIGN_...
+  pub lineHeight f32;        // times the font's own line advance (ascent - descent + line gap)
+  pub kerning bool;
+
+  pub fn make(size f32) LayoutOptions { new LayoutOptions(size, 0.0, ALIGN_LEFT, 1.0, true); }
+}
+
+// A glyph set at a pen position
+pub struct PlacedGlyph {
+  pub codepoint u32;
+  pub glyph u32;
+  pub x f32;                 // the pen: where its origin is, left to right
+  pub baseline f32;          // block space y of the line's baseline
+  pub advance f32;
+  pub line u32;
+  pub quad i32;              // index into the layout's quads; -1: draws nothing
+}
+
+// The rectangle a glyph's field is drawn into, block space, and where in the atlas
+pub struct GlyphQuad {
+  pub x0 f32;
+  pub y0 f32;                // top
+  pub x1 f32;
+  pub y1 f32;                // bottom
+  pub u0 f32;
+  pub v0 f32;
+  pub u1 f32;
+  pub v1 f32;
+}
+
+pub struct LineInfo {
+  pub baseline f32;
+  pub x f32;                 // where the line starts (alignment)
+  pub width f32;             // its ink advance, trailing spaces left out
+  pub first u32;             // its first glyph, an index into 'glyphs'
+  pub count u32;
+}
+
+pub struct TextLayout {
+  pub glyphs List[PlacedGlyph];
+  pub quads List[GlyphQuad];
+  pub lines List[LineInfo];
+  pub width f32;             // of the block: maxWidth if it was given, else the widest line
+  pub height f32;
+  pub lineAdvance f32;
+  pub size f32;
+}
+
+// Decode UTF-8 into code points; a bad sequence becomes U+FFFD
+pub fn decodeUtf8(s &str) List[u32] {
+  mut out = List[u32].empty();
+  mut i = 0usize;
+  while i < s.len {
+    imm b = u32.from(s[i]);
+    mut cp = 0xFFFDu32;
+    mut n = 1usize;
+    if b < 0x80u32 { cp = b; }
+    elif b >= 0xC2u32 and b < 0xE0u32 and i + 1usize < s.len and (u32.from(s[i + 1usize]) & 0xC0u32) == 0x80u32 {
+      cp = ((b & 0x1Fu32) << 6u32) | (u32.from(s[i + 1usize]) & 0x3Fu32);
+      n = 2usize;
+    } elif b >= 0xE0u32 and b < 0xF0u32 and i + 2usize < s.len and (u32.from(s[i + 1usize]) & 0xC0u32) == 0x80u32
+        and (u32.from(s[i + 2usize]) & 0xC0u32) == 0x80u32 {
+      cp = ((b & 0x0Fu32) << 12u32) | ((u32.from(s[i + 1usize]) & 0x3Fu32) << 6u32) | (u32.from(s[i + 2usize]) & 0x3Fu32);
+      n = 3usize;
+    } elif b >= 0xF0u32 and b < 0xF5u32 and i + 3usize < s.len and (u32.from(s[i + 1usize]) & 0xC0u32) == 0x80u32
+        and (u32.from(s[i + 2usize]) & 0xC0u32) == 0x80u32 and (u32.from(s[i + 3usize]) & 0xC0u32) == 0x80u32 {
+      cp = ((b & 0x07u32) << 18u32) | ((u32.from(s[i + 1usize]) & 0x3Fu32) << 12u32)
+        | ((u32.from(s[i + 2usize]) & 0x3Fu32) << 6u32) | (u32.from(s[i + 3usize]) & 0x3Fu32);
+      n = 4usize;
+    }
+    out.push(cp);
+    i = i + n;
+  }
+  out;
+}
+
+// An item between layout and placement: a glyph and the advance it takes after its predecessor
+struct Item {
+  cp u32;
+  glyph u32;
+  adv f32;                   // the glyph's advance
+  kern f32;                  // the kerning with the item before, if on the same line
+  space bool;
+  newline bool;
+}
+
+// Lay out 'text' in 'font' with the glyph fields made in 'atlas' as needed
+pub fn layoutText(font &Font, atlas &mut Atlas, text &str, opts &LayoutOptions) TextLayout {
+  imm upem = f32.from(font.unitsPerEm);
+  imm k = opts.size / upem;
+  imm cps = decodeUtf8(text);
+  mut items = List[Item].empty();
+  mut i = 0usize;
+  mut prev = 0u32;
+  mut havePrev = false;
+  while i < cps.len() {
+    imm cp = *cps[i];
+    if cp == 10u32 {
+      items.push(new Item(cp, 0u32, 0.0, 0.0, false, true));
+      havePrev = false;
+    } elif cp == 13u32 {
+      // ignored
+    } elif cp == 9u32 {
+      imm g = font.glyphOf(32u32);
+      items.push(new Item(cp, g, f32.from(font.advance(g)) * 4.0 * k, 0.0, true, false));
+      prev = g;
+      havePrev = true;
+    } elif cp >= 32u32 {
+      imm g = font.glyphOf(cp);
+      mut kern = 0.0;
+      if opts.kerning and havePrev { kern = f32.from(font.kerning(prev, g)) * k; }
+      items.push(new Item(cp, g, f32.from(font.advance(g)) * k, kern, cp == 32u32 or cp == 0xA0u32 or cp == 0x3000u32, false));
+      prev = g;
+      havePrev = true;
+    }
+    i = i + 1usize;
+  }
+  // Break into lines: ranges of items
+  mut starts = List[usize].empty();
+  mut ends = List[usize].empty();           // exclusive; trailing spaces are in the line
+  imm limit = opts.maxWidth;
+  mut lineStart = 0usize;
+  mut width = 0.0;                          // up to the last non-space item
+  mut pen = 0.0;
+  mut lastBreak = 0usize;                   // the item after the last space (0: none)
+  i = 0usize;
+  while i < items.len() {
+    imm it = *items[i];
+    if it.newline {
+      starts.push(lineStart);
+      ends.push(i);
+      lineStart = i + 1usize;
+      pen = 0.0;
+      lastBreak = 0usize;
+      i = i + 1usize;
+    } else {
+      imm gap = if i == lineStart { 0.0; } else { it.kern; };
+      imm next = pen + gap + it.adv;
+      if limit > 0.0 and !it.space and next > limit and i > lineStart {
+        // Too wide: break after the last space if there is one on this line, else here
+        mut cut = i;
+        if lastBreak > lineStart { cut = lastBreak; }
+        starts.push(lineStart);
+        ends.push(cut);
+        lineStart = cut;
+        pen = 0.0;
+        lastBreak = 0usize;
+        i = cut;
+      } else {
+        pen = next;
+        if it.space { lastBreak = i + 1usize; }
+        i = i + 1usize;
+      }
+    }
+  }
+  if lineStart < items.len() or starts.len() == 0usize or (items.len() > 0usize and (*items[items.len() - 1usize]).newline) {
+    starts.push(lineStart);
+    ends.push(items.len());
+  }
+  // Place each line
+  imm ascent = f32.from(font.ascent) * k;
+  imm descent = f32.from(font.descent) * k;
+  imm lineAdvance = f32.from(font.ascent - font.descent + font.lineGap) * k * opts.lineHeight;
+  mut glyphs = List[PlacedGlyph].empty();
+  mut quads = List[GlyphQuad].empty();
+  mut lines = List[LineInfo].empty();
+  mut lineWidths = List[f32].empty();
+  mut widest = 0.0;
+  // First pass: widths
+  mut li = 0usize;
+  while li < starts.len() {
+    mut p = 0.0;
+    mut inkEnd = 0.0;
+    mut j = *starts[li];
+    while j < *ends[li] {
+      imm it = *items[j];
+      imm gap = if j == *starts[li] { 0.0; } else { it.kern; };
+      p = p + gap + it.adv;
+      if !it.space { inkEnd = p; }
+      j = j + 1usize;
+    }
+    lineWidths.push(inkEnd);
+    if inkEnd > widest { widest = inkEnd; }
+    li = li + 1usize;
+  }
+  imm blockWidth = if limit > 0.0 { limit; } else { widest; };
+  li = 0usize;
+  while li < starts.len() {
+    imm baseline = ascent + f32.from(li) * lineAdvance;
+    imm lw = *lineWidths[li];
+    mut x0 = 0.0;
+    if opts.align == ALIGN_CENTER { x0 = (blockWidth - lw) * 0.5; }
+    elif opts.align == ALIGN_RIGHT { x0 = blockWidth - lw; }
+    imm firstGlyph = glyphs.len();
+    mut p = x0;
+    mut j = *starts[li];
+    while j < *ends[li] {
+      imm it = *items[j];
+      if j > *starts[li] { p = p + it.kern; }
+      mut quad = -1i32;
+      if !it.space {
+        imm e = atlas.ensure(font, it.glyph);
+        if e >= 0i32 {
+          imm en = atlas.entry(e);
+          if !en.empty {
+            quads.push(new GlyphQuad(p + en.left * opts.size, baseline - en.top * opts.size, p + en.right * opts.size,
+              baseline - en.bottom * opts.size, en.u0, en.v0, en.u1, en.v1));
+            quad = i32.from(quads.len() - 1usize);
+          }
+        }
+      }
+      glyphs.push(new PlacedGlyph(it.cp, it.glyph, p, baseline, it.adv, u32.from(li), quad));
+      p = p + it.adv;
+      j = j + 1usize;
+    }
+    lines.push(new LineInfo(baseline, x0, lw, u32.from(firstGlyph), u32.from(glyphs.len() - firstGlyph)));
+    li = li + 1usize;
+  }
+  imm height = ascent - descent + f32.from(starts.len() - 1usize) * lineAdvance;
+  new TextLayout(glyphs, quads, lines, blockWidth, height, lineAdvance, opts.size);
+}
