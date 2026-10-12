@@ -1,0 +1,68 @@
+// Restitution: a ball dropped from height H onto ground rebounds to e^2 H (it
+// leaves at e times the speed it arrived with, and rises v^2 / 2g). With e =
+// 0.5 from 2 m that is 0.5 m, a quarter of the height. Restitution combines as
+// the larger of the two bodies' coefficients; an impact slower than the
+// threshold (1 m/s) does not bounce; and a box dropped flat bounces too.
+
+mod restitution;
+
+import testing use *;
+import collections use List;
+import geomath use *;
+import rigidcollide use *;
+import rigiddynamics use *;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+// Drop a body from 'height' (its bottom above the ground) and return the
+// height its bottom reaches after the first bounce, or -1 if it never rose
+fn rebound(kind i32, height f32, floorE f32, bodyE f32) f32 {
+  mut w = World.make();
+  w.settings.sleepEnabled = false;
+  imm floorS = w.addShape(Shape.single(Prim.box(new Vec3(20., 1., 20.))));
+  imm halfHeight = if kind == 0 { 0.25; } else { 0.5; };
+  imm bodyS = w.addShape(if kind == 0 { Shape.single(Prim.sphere(0.25)); } else { Shape.single(Prim.box(new Vec3(0.5, 0.5, 0.5))); });
+  mut fd = BodyDef.staticAt(floorS, new Vec3(0., -1., 0.));
+  fd.material = PhysMaterial.make(0.5, 0.5, floorE);
+  w.createBody(fd);
+  mut bd = BodyDef.dynamicAt(bodyS, new Vec3(0., halfHeight + height, 0.));
+  bd.material = PhysMaterial.make(0.5, 0.5, bodyE);
+  bd.linearDamping = 0.; bd.angularDamping = 0.;
+  imm b = w.createBody(bd);
+  mut i = 0;
+  mut falling = true;
+  mut peak = -1.;
+  mut prevVy = 0.;
+  while i < 400 {
+    w.step(1. / 60.);
+    imm vy = w.linearVelocity(b).y;
+    imm bottom = w.positionOf(b).y - halfHeight;
+    if prevVy < -0.5 and vy > 0.1 { falling = false; peak = 0.; }
+    if not falling and bottom > peak { peak = bottom; }
+    if not falling and vy < -0.1 and peak > 0. { break; }
+    prevVy = vy;
+    i = i + 1;
+  }
+  peak;
+}
+
+fn main() i32 {
+  imm half = rebound(0, 2., 0.5, 0.5);
+  near(half, 0.5, 0.03, "a ball dropped from 2 m at e = 0.5 rebounds to 0.5 m, a quarter of the height");
+  imm high = rebound(0, 2., 0.9, 0.9);
+  near(high, 2. * 0.81, 0.08, "at e = 0.9 it rebounds to 0.81 of the height");
+  imm none = rebound(0, 2., 0., 0.);
+  expectBool(none < 0., true, "at e = 0 it does not bounce");
+  // combine: the larger coefficient decides
+  imm mixed = rebound(0, 2., 0.1, 0.5);
+  near(mixed, 0.5, 0.03, "restitution combines as the larger of the pair");
+  // slow impacts stay put: dropped from 3 cm the arrival speed is 0.77 m/s, under the 1 m/s threshold
+  imm slow = rebound(0, 0.03, 0.9, 0.9);
+  expectBool(slow < 0.03, true, "an impact under the threshold does not bounce");
+  // a box falls flat and bounces
+  imm boxBounce = rebound(1, 2., 0.5, 0.5);
+  near(boxBounce, 0.5, 0.06, "a box dropped flat rebounds to a quarter of the height too");
+  done();
+}

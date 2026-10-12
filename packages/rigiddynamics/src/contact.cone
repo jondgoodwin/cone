@@ -1,0 +1,390 @@
+// Contact constraints: the persistent contact cache and the sequential-impulse
+// solver for it.
+//
+// The cache keeps one 'Contact' per manifold the narrow phase finds (a pair of
+// bodies, and the pair of compound parts or mesh triangles in contact). It
+// survives from step to step: the points of a new manifold are matched to the
+// old ones by position in body A's frame, and a matched point inherits its
+// accumulated impulses, which warm-starts the solver (Catto, "Iterative
+// Dynamics with Temporal Coherence", GDC 2005; "Fast and Simple Physics using
+// Sequential Impulses", GDC 2006).
+//
+// Method (each sub-step; see World.step): accumulated impulses clamped to be
+// non-negative (the normal) or inside a friction cone (the tangents), solved
+// by Gauss-Seidel one row at a time. Position error is cured by Soft Step
+// (Catto, Solver2D 2024; Box2D v3): the contact is a damped spring in the
+// solver's implicit form, its separation tracked through the sub-step from the
+// accumulated displacement of both bodies, and a "relax" pass after the
+// positions move that removes the bias velocity again, so the correction adds
+// no energy. A contact that has not touched yet (positive separation) is
+// speculative: it lets the bodies close by exactly the gap and no more
+// (Catto, "Continuous Collision", GDC 2013).
+//
+// Friction is Jolt's: two tangent rows and one twist row for the whole
+// manifold, at its centre, limited by mu times the sum of the points' normal
+// impulses (a friction cone: the two tangent impulses together are held in a
+// circle), not a pair of rows at every corner. A corner row for each of four
+// corners couples sliding to rocking and spinning so strongly that a tall
+// stack of boxes does not hold; the centre row does not. The twist row resists
+// spinning about the normal, with the limit scaled by how far the points lie
+// from the centre (a single point, a ball on a floor, has no twist friction).
+
+// One point of a manifold with what the solver keeps for it
+pub struct CPoint {
+  pub spot Vec3;       // the point on body A, in A's shape frame (matches it to last step's)
+  pub rA Vec3;         // from A's centre of mass to the point, world, at the step's start
+  pub rB Vec3;
+  pub depth f32;       // as the narrow phase found it (negative: apart)
+  pub baseSep f32;     // the separation less what the anchors' offset adds; see solveContact
+  pub nImp f32;        // accumulated normal impulse, per sub-step
+  pub nMass f32;       // effective mass
+  pub relVel f32;      // the closing speed before the solve, for restitution (negative: approaching)
+  pub maxN f32;        // the largest normal impulse this step
+}
+
+pub fn blankPoint() CPoint {
+  new CPoint(zero3(), zero3(), zero3(), 0., 0., 0., 0., 0., 0.);
+}
+
+// A manifold of up to four points between two bodies
+pub struct Contact {
+  pub a u32;
+  pub b u32;
+  pub partA u32;
+  pub partB u32;
+  pub subA u32;
+  pub subB u32;
+  pub normal Vec3;       // from a to b
+  pub t1 Vec3;
+  pub t2 Vec3;
+  pub count usize;
+  pub pts Array[CPoint, 4];
+  pub friction f32;
+  pub staticFriction f32;
+  pub restitution f32;
+  pub touching bool;     // for events: with hysteresis
+  pub sensor bool;       // reports overlap only
+  pub stamp u32;         // the step that last refreshed it
+  // friction at the manifold's centre
+  pub cA Vec3;
+  pub cB Vec3;
+  pub f1 f32;            // accumulated impulses along the tangents, and about the normal
+  pub f2 f32;
+  pub ft f32;
+  pub fm1 f32;           // effective masses
+  pub fm2 f32;
+  pub fmt f32;
+  pub mu f32;            // the coefficient in force this step
+  pub rho f32;           // the points' mean distance from the centre, across the normal
+  pub rolling f32;       // rolling resistance (a length)
+  pub r1 f32;            // accumulated rolling impulses about the tangents
+  pub r2 f32;
+  pub rm1 f32;           // and their effective masses
+  pub rm2 f32;
+}
+
+pub fn blankContact(a u32, b u32) Contact {
+  imm p = blankPoint();
+  new Contact(a, b, 0u32, 0u32, NoSub, NoSub, new Vec3(0., 1., 0.), new Vec3(1., 0., 0.), new Vec3(0., 0., 1.), 0usize,
+    [p, p, p, p], 0.5, 0.6, 0., false, false, 0u32, zero3(), zero3(), 0., 0., 0., 0., 0., 0., 0.5, 0., 0.01, 0., 0., 0., 0.);
+}
+
+// Do two contacts describe the same pair of pieces?
+pub fn sameKey(c &Contact, a u32, b u32, pa u32, pb u32, sa u32, sb u32) bool {
+  c.a == a and c.b == b and c.partA == pa and c.partB == pb and c.subA == sa and c.subB == sb;
+}
+
+// ---------------------------------------------------------------------------
+// Preparing
+
+// Effective masses, the base separation and the closing speed for a contact's
+// points, from the bodies as the step begins. Needs the bodies' world inverse
+// inertia (refreshed by the step).
+pub fn prepareContact(w &mut World, ci usize) {
+  imm c = &mut w.cache[ci];
+  imm bA = w.bodies[usize.from(c.a)];
+  imm bB = w.bodies[usize.from(c.b)];
+  imm mA = bA.invMass;
+  imm mB = bB.invMass;
+  imm iA = bA.invInertia;
+  imm iB = bB.invInertia;
+  imm vA = bA.linVel;
+  imm wA = bA.angVel;
+  imm vB = bB.linVel;
+  imm wB = bB.angVel;
+  imm n = c.normal;
+  c.t1 = perpendicular(n);
+  c.t2 = n.cross(c.t1);
+  imm t1 = c.t1;
+  imm t2 = c.t2;
+  mut sumA = zero3();
+  mut sumB = zero3();
+  mut k = 0usize;
+  while k < c.count {
+    imm rA = c.pts[k].rA;
+    imm rB = c.pts[k].rB;
+    sumA = sumA + rA;
+    sumB = sumB + rB;
+    c.pts[k].baseSep = -c.pts[k].depth - (rB - rA).dot(n);
+    imm rnA = rA.cross(n);
+    imm rnB = rB.cross(n);
+    imm kn = mA + mB + rnA.dot(iA * rnA) + rnB.dot(iB * rnB);
+    c.pts[k].nMass = if kn > 0. { 1. / kn; } else { 0.; };
+    imm dv = vB + wB.cross(rB) - vA - wA.cross(rA);
+    c.pts[k].relVel = dv.dot(n);
+    c.pts[k].maxN = 0.;
+    k = k + 1usize;
+  }
+  imm inv = 1. / f32.from(c.count);
+  c.cA = sumA * inv;
+  c.cB = sumB * inv;
+  imm cA = c.cA;
+  imm cB = c.cB;
+  // friction rows at the centre
+  imm r1A = cA.cross(t1);
+  imm r1B = cB.cross(t1);
+  imm k1 = mA + mB + r1A.dot(iA * r1A) + r1B.dot(iB * r1B);
+  c.fm1 = if k1 > 0. { 1. / k1; } else { 0.; };
+  imm r2A = cA.cross(t2);
+  imm r2B = cB.cross(t2);
+  imm k2 = mA + mB + r2A.dot(iA * r2A) + r2B.dot(iB * r2B);
+  c.fm2 = if k2 > 0. { 1. / k2; } else { 0.; };
+  imm kt = n.dot(iA * n) + n.dot(iB * n);
+  c.fmt = if kt > 0. { 1. / kt; } else { 0.; };
+  imm kr1 = t1.dot(iA * t1) + t1.dot(iB * t1);
+  imm kr2 = t2.dot(iA * t2) + t2.dot(iB * t2);
+  c.rm1 = if kr1 > 0. { 1. / kr1; } else { 0.; };
+  c.rm2 = if kr2 > 0. { 1. / kr2; } else { 0.; };
+  // static friction while the contact is not sliding
+  imm dvc = vB + wB.cross(cB) - vA - wA.cross(cA);
+  imm vt = dvc - n * dvc.dot(n);
+  imm ss = w.settings.staticSpeed;
+  c.mu = if vt.dot(vt) < ss * ss { c.staticFriction; } else { c.friction; };
+  // how far the points lie from the centre
+  mut sr = 0.;
+  k = 0usize;
+  while k < c.count {
+    imm d = c.pts[k].rA - cA;
+    imm dt = d - n * d.dot(n);
+    sr = sr + dt.length();
+    k = k + 1usize;
+  }
+  // (a real contact is never a point: a ball spinning on a floor is stopped by its patch's friction)
+  c.rho = maxf(sr * inv, w.settings.patchRadius);
+}
+
+// Apply last step's impulses (or this sub-step's predecessor's) to the bodies
+pub fn warmStartContact(w &mut World, ci usize) {
+  imm c = w.cache[ci];
+  imm ia = usize.from(c.a);
+  imm ib = usize.from(c.b);
+  imm mA = w.bodies[ia].invMass;
+  imm mB = w.bodies[ib].invMass;
+  imm iA = w.bodies[ia].invInertia;
+  imm iB = w.bodies[ib].invInertia;
+  mut vA = w.bodies[ia].linVel;
+  mut wA = w.bodies[ia].angVel;
+  mut vB = w.bodies[ib].linVel;
+  mut wB = w.bodies[ib].angVel;
+  mut k = 0usize;
+  while k < c.count {
+    imm rA = c.pts[k].rA;
+    imm rB = c.pts[k].rB;
+    imm p = c.normal * c.pts[k].nImp;
+    vA = vA - p * mA;
+    wA = wA - iA * rA.cross(p);
+    vB = vB + p * mB;
+    wB = wB + iB * rB.cross(p);
+    k = k + 1usize;
+  }
+  imm pf = c.t1 * c.f1 + c.t2 * c.f2;
+  imm roll = c.t1 * c.r1 + c.t2 * c.r2;
+  vA = vA - pf * mA;
+  wA = wA - iA * (c.cA.cross(pf) + c.normal * c.ft + roll);
+  vB = vB + pf * mB;
+  wB = wB + iB * (c.cB.cross(pf) + c.normal * c.ft + roll);
+  w.bodies[ia].linVel = vA;
+  w.bodies[ia].angVel = wA;
+  w.bodies[ib].linVel = vB;
+  w.bodies[ib].angVel = wB;
+}
+
+// ---------------------------------------------------------------------------
+// Solving
+
+// One Gauss-Seidel pass over a contact: non-penetration at each point, then
+// friction at the centre. 'useBias' is true in the main solve and false in
+// the relax pass.
+pub fn solveContact(w &mut World, ci usize, useBias bool, reverse bool, invH f32, soft Softness, softStatic Softness) {
+  imm c = &mut w.cache[ci];
+  imm ia = usize.from(c.a);
+  imm ib = usize.from(c.b);
+  imm mA = w.bodies[ia].invMass;
+  imm mB = w.bodies[ib].invMass;
+  imm iA = w.bodies[ia].invInertia;
+  imm iB = w.bodies[ib].invInertia;
+  imm dpA = w.bodies[ia].dpos;
+  imm dpB = w.bodies[ib].dpos;
+  imm dqA = w.bodies[ia].dq;
+  imm dqB = w.bodies[ib].dq;
+  mut vA = w.bodies[ia].linVel;
+  mut wA = w.bodies[ia].angVel;
+  mut vB = w.bodies[ib].linVel;
+  mut wB = w.bodies[ib].angVel;
+  imm n = c.normal;
+  imm t1 = c.t1;
+  imm t2 = c.t2;
+  imm s = if mA == 0. or mB == 0. { softStatic; } else { soft; };
+  imm maxPush = w.settings.maxPush;
+  imm slop = w.settings.linearSlop;
+
+  // Non-penetration
+  mut k = 0usize;
+  mut sumN = 0.;
+  mut pass = 0;
+  while pass < 2 {
+  k = 0usize;
+  sumN = 0.;
+  while k < c.count {
+    // the points in order, or in reverse on alternate passes (a symmetric sweep: a fixed order
+    // favours the point solved last and walks a stack of boxes sideways)
+    imm kk = if reverse != (pass == 1) { c.count - 1usize - k; } else { k; };
+    imm rA = c.pts[kk].rA;
+    imm rB = c.pts[kk].rB;
+    // the separation now: its value when the manifold was made, moved by how
+    // far the two bodies have since gone apart at their anchors
+    imm d = (dpB - dpA) + (dqB * rB - dqA * rA);
+    imm sep = d.dot(n) + c.pts[kk].baseSep;
+    mut bias = 0.;
+    mut massScale = 1.;
+    mut impulseScale = 0.;
+    if sep > 0. {
+      bias = sep * invH;
+    } else if useBias {
+      bias = maxf(s.biasRate * minf(sep + slop, 0.), -maxPush);
+      massScale = s.massScale;
+      impulseScale = s.impulseScale;
+    }
+    imm dv = vB + wB.cross(rB) - vA - wA.cross(rA);
+    imm vn = dv.dot(n);
+    imm old = c.pts[kk].nImp;
+    imm raw = -c.pts[kk].nMass * massScale * (vn + bias) - impulseScale * old;
+    imm newImp = maxf(old + raw, 0.);
+    imm delta = newImp - old;
+    c.pts[kk].nImp = newImp;
+    c.pts[kk].maxN = maxf(c.pts[kk].maxN, newImp);
+    sumN = sumN + newImp;
+    imm p = n * delta;
+    vA = vA - p * mA;
+    wA = wA - iA * rA.cross(p);
+    vB = vB + p * mB;
+    wB = wB + iB * rB.cross(p);
+    k = k + 1usize;
+  }
+  pass = pass + 1;
+  }
+
+  // Friction at the centre: two tangent rows whose accumulated pair is held in a
+  // circle of radius mu * the sum of the normal impulses, and a twist row about
+  // the normal held to that times the points' spread
+  imm cA = c.cA;
+  imm cB = c.cB;
+  imm maxF = c.mu * sumN;
+  imm dv = vB + wB.cross(cB) - vA - wA.cross(cA);
+  imm old1 = c.f1;
+  imm old2 = c.f2;
+  mut a1 = old1 - c.fm1 * dv.dot(t1);
+  mut a2 = old2 - c.fm2 * dv.dot(t2);
+  imm l2 = a1 * a1 + a2 * a2;
+  if l2 > maxF * maxF {
+    imm sc = if l2 > 0. { maxF / l2.sqrt(); } else { 0.; };
+    a1 = a1 * sc;
+    a2 = a2 * sc;
+  }
+  c.f1 = a1;
+  c.f2 = a2;
+  imm pf = t1 * (a1 - old1) + t2 * (a2 - old2);
+  vA = vA - pf * mA;
+  wA = wA - iA * cA.cross(pf);
+  vB = vB + pf * mB;
+  wB = wB + iB * cB.cross(pf);
+  imm maxT = maxF * c.rho;
+  imm oldT = c.ft;
+  imm relSpin = n.dot(wB - wA);
+  imm newT = clampf(oldT - c.fmt * relSpin, -maxT, maxT);
+  c.ft = newT;
+  imm dT = newT - oldT;
+  wA = wA - iA * n * dT;
+  wB = wB + iB * n * dT;
+
+  // Rolling resistance (Box2D v3): the spin of one body relative to the other about the surface, about
+  // the two tangents, is slowed by a torque of at most 'rolling' times the sum of the normal impulses
+  if c.rolling > 0. {
+    imm maxR = c.rolling * sumN;
+    imm wrel = wB - wA;
+    imm oldR1 = c.r1;
+    imm oldR2 = c.r2;
+    mut b1 = oldR1 - c.rm1 * wrel.dot(t1);
+    mut b2 = oldR2 - c.rm2 * wrel.dot(t2);
+    imm rl2 = b1 * b1 + b2 * b2;
+    if rl2 > maxR * maxR {
+      imm sc = if rl2 > 0. { maxR / rl2.sqrt(); } else { 0.; };
+      b1 = b1 * sc;
+      b2 = b2 * sc;
+    }
+    c.r1 = b1;
+    c.r2 = b2;
+    imm dr = t1 * (b1 - oldR1) + t2 * (b2 - oldR2);
+    wA = wA - iA * dr;
+    wB = wB + iB * dr;
+  }
+
+  w.bodies[ia].linVel = vA;
+  w.bodies[ia].angVel = wA;
+  w.bodies[ib].linVel = vB;
+  w.bodies[ib].angVel = wB;
+}
+
+// Bounce: after the sub-steps, give a point that was closing faster than the
+// threshold the speed it would have kept times the restitution (Newton's law),
+// by one more impulse on top of the solved ones.
+pub fn applyRestitution(w &mut World, ci usize, threshold f32) {
+  imm c = &mut w.cache[ci];
+  if c.restitution == 0. { return; }
+  imm ia = usize.from(c.a);
+  imm ib = usize.from(c.b);
+  imm mA = w.bodies[ia].invMass;
+  imm mB = w.bodies[ib].invMass;
+  imm iA = w.bodies[ia].invInertia;
+  imm iB = w.bodies[ib].invInertia;
+  mut vA = w.bodies[ia].linVel;
+  mut wA = w.bodies[ia].angVel;
+  mut vB = w.bodies[ib].linVel;
+  mut wB = w.bodies[ib].angVel;
+  imm n = c.normal;
+  mut k = 0usize;
+  while k < c.count {
+    if c.pts[k].relVel <= -threshold and c.pts[k].maxN > 0. {
+      imm rA = c.pts[k].rA;
+      imm rB = c.pts[k].rB;
+      imm dv = vB + wB.cross(rB) - vA - wA.cross(rA);
+      imm vn = dv.dot(n);
+      imm old = c.pts[k].nImp;
+      imm raw = -c.pts[k].nMass * (vn + c.restitution * c.pts[k].relVel);
+      imm newImp = maxf(old + raw, 0.);
+      imm delta = newImp - old;
+      c.pts[k].nImp = newImp;
+      c.pts[k].maxN = maxf(c.pts[k].maxN, newImp);
+      imm p = n * delta;
+      vA = vA - p * mA;
+      wA = wA - iA * rA.cross(p);
+      vB = vB + p * mB;
+      wB = wB + iB * rB.cross(p);
+    }
+    k = k + 1usize;
+  }
+  w.bodies[ia].linVel = vA;
+  w.bodies[ia].angVel = wA;
+  w.bodies[ib].linVel = vB;
+  w.bodies[ib].angVel = wB;
+}

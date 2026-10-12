@@ -1,0 +1,387 @@
+// Joints, each against a closed form or a limit it must hold.
+//
+//   pendulum   a ball on a hinge keeps the period T = 2 pi sqrt(I / (m g L)) of a
+//              compound pendulum, I = 2/5 m r^2 + m L^2 about the pivot, for a
+//              small swing (T0 = 2.0101 s at L = 1, r = 0.1)
+//   point      the anchor stays within a millimetre of its fixed partner
+//   fixed      the body keeps its place and orientation under gravity
+//   hinge      limits stop the swing near the limit, a motor reaches its speed,
+//              and a motor with a limited torque accelerates at torque / inertia
+//   slider     travel stops at its limits, a motor reaches its speed, and the
+//              body neither falls nor turns off the axis
+//   distance   a rod keeps its length, a rope only its maximum, a spring rings at
+//              the frequency it was given
+//   cone-twist the swing and twist stop at their limits
+//   chain      five links hang straight below the anchor and keep their spacing
+//   no-collide a joint's two bodies may overlap, or may not
+//
+// The anchor is a static box 5 m up; the body is a box of half-size 0.25 (125
+// kg at density 1000) 1 m from it, along +x, unless said otherwise.
+
+mod joints;
+
+import testing use *;
+import collections use List;
+import geomath use *;
+import rigidcollide use *;
+import rigiddynamics use *;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+struct Rig {
+  w World;
+  anchor u32;
+  body u32;
+}
+
+fn rig(gravity bool) Rig {
+  mut w = World.make();
+  w.settings.sleepEnabled = false;
+  if not gravity { w.gravity = new Vec3(0., 0., 0.); }
+  imm sa = w.addShape(Shape.single(Prim.box(new Vec3(0.2, 0.2, 0.2))));
+  imm sb = w.addShape(Shape.single(Prim.box(new Vec3(0.25, 0.25, 0.25))));
+  imm a = w.createBody(BodyDef.staticAt(sa, new Vec3(0., 5., 0.)));
+  mut bd = BodyDef.dynamicAt(sb, new Vec3(1., 5., 0.));
+  bd.linearDamping = 0.; bd.angularDamping = 0.;
+  imm b = w.createBody(bd);
+  new Rig(w, a, b);
+}
+
+fn run(w &mut World, steps i32) {
+  mut i = 0;
+  while i < steps { w.step(1. / 60.); i = i + 1; }
+}
+
+fn pivot() Vec3 { new Vec3(0., 5., 0.); }
+
+fn testPendulum() {
+  mut w = World.make();
+  w.settings.sleepEnabled = false;
+  imm anchorS = w.addShape(Shape.single(Prim.box(new Vec3(0.1, 0.1, 0.1))));
+  imm bobS = w.addShape(Shape.single(Prim.sphere(0.1)));
+  imm p = pivot();
+  imm a = w.createBody(BodyDef.staticAt(anchorS, p));
+  imm th0 = 0.1;
+  mut bd = BodyDef.dynamicAt(bobS, p + new Vec3(sin(th0), -cos(th0), 0.));
+  bd.linearDamping = 0.; bd.angularDamping = 0.;
+  imm b = w.createBody(bd);
+  imm j = w.addHinge(a, b, p, new Vec3(0., 0., 1.));
+  w.setJointCollide(j, false);
+  mut crossings = List[f32].empty();
+  mut prevX = w.positionOf(b).x;
+  mut i = 0;
+  while i < 60 * 12 {
+    w.step(1. / 60.);
+    imm x = w.positionOf(b).x;
+    if prevX > 0. and x <= 0. { crossings.push((f32.from(i) + prevX / (prevX - x) - 1.) / 60.); }
+    prevX = x;
+    i = i + 1;
+  }
+  expectBool(crossings.len() >= 5usize, true, "the pendulum completes five swings in twelve seconds");
+  imm n = crossings.len();
+  imm period = (*crossings[n - 1usize] - *crossings[0usize]) / f32.from(n - 1usize);
+  imm formula = 2. * pi * ((0.4 * 0.01 + 1.) / 9.81).sqrt();
+  near(period, formula, 0.01 * formula, "its period is the compound pendulum's within 1%");
+  near((w.positionOf(b) - p).length(), 1., 0.002, "the arm keeps its length");
+}
+
+fn testPoint() {
+  mut r = rig(true);
+  imm j = r.w.addPointJoint(r.anchor, r.body, pivot());
+  run(&mut r.w, 300);
+  near((r.w.positionOf(r.body) - pivot()).length(), 1., 0.002, "a point joint keeps the arm's length as the body swings");
+  // it swings down and across: after 5 s still on the circle, below the anchor at times
+  expectBool(r.w.positionOf(r.body).y < 5.1, true, "and the body has swung down under gravity");
+}
+
+fn testFixed() {
+  mut r = rig(true);
+  imm j = r.w.addFixedJoint(r.anchor, r.body, new Vec3(0.5, 5., 0.));
+  run(&mut r.w, 240);
+  imm p = r.w.positionOf(r.body);
+  near(p.x, 1., 0.003, "a fixed joint holds the body's x under gravity");
+  near(p.y, 5., 0.003, "and its height");
+  near(r.w.rotationOf(r.body).w, 1., 0.0001, "and its orientation");
+  // a sideways kick does not set it moving
+  r.w.applyImpulse(r.body, new Vec3(0., 0., 5000.));
+  run(&mut r.w, 120);
+  near(r.w.positionOf(r.body).z, 0., 0.01, "a push is taken up by the joint");
+}
+
+fn testHingeLimits() {
+  // a body at x = 1 falls about z: negative angles; limits -0.5 and 0.5
+  mut r = rig(true);
+  imm j = r.w.addHinge(r.anchor, r.body, pivot(), new Vec3(0., 0., 1.));
+  r.w.setHingeLimits(j, -0.5, 0.5);
+  mut minA = 10.;
+  mut maxA = -10.;
+  mut i = 0;
+  while i < 360 {
+    r.w.step(1. / 60.);
+    imm a = r.w.hingeAngleOf(j);
+    minA = minf(minA, a);
+    maxA = maxf(maxA, a);
+    i = i + 1;
+  }
+  expectBool(minA > -0.54, true, "the lower limit stops the swing within 0.04 rad of -0.5");
+  expectBool(maxA < 0.002, true, "it never rises above where it began");
+  near(r.w.hingeAngleOf(j), -0.5, 0.025, "and it hangs against the limit");
+  // the upper limit: a body on the other side falls the other way
+  mut s = rig(true);
+  s.w.setTransform(s.body, new Vec3(-1., 5., 0.), Quat.identity());
+  imm k = s.w.addHinge(s.anchor, s.body, pivot(), new Vec3(0., 0., 1.));
+  s.w.setHingeLimits(k, -0.5, 0.5);
+  run(&mut s.w, 360);
+  near(s.w.hingeAngleOf(k), 0.5, 0.025, "the upper limit holds the other way");
+  // the hinge only turns about its axis: the body does not leave the plane
+  near(s.w.positionOf(s.body).z, 0., 0.002, "the body stays in the plane of the swing");
+}
+
+fn testHingeMotor() {
+  mut r = rig(false);
+  imm j = r.w.addHinge(r.anchor, r.body, pivot(), new Vec3(0., 0., 1.));
+  r.w.setMotor(j, 2., 100000.);
+  run(&mut r.w, 60);
+  near(r.w.angularVelocity(r.body).z, 2., 0.01, "a strong motor reaches its speed of 2 rad/s");
+  expectBool(r.w.hingeAngleOf(j) > 1.5, true, "and has turned the hinge");
+
+  // a motor limited to 50 N m on the body's inertia about the hinge: 125 kg * (1 m)^2 + 125 (0.5^2 + 0.5^2) / 12 = 130.208
+  mut s = rig(false);
+  imm k = s.w.addHinge(s.anchor, s.body, pivot(), new Vec3(0., 0., 1.));
+  s.w.setMotor(k, 100., 50.);
+  run(&mut s.w, 60);
+  near(s.w.angularVelocity(s.body).z, 50. / 130.208, 0.005, "a motor limited to 50 N m accelerates at torque / inertia");
+}
+
+fn testSlider() {
+  // along x through the anchor; gravity pulls the box down, the slider must hold it
+  mut r = rig(true);
+  imm j = r.w.addSlider(r.anchor, r.body, new Vec3(0.5, 5., 0.), new Vec3(1., 0., 0.));
+  r.w.setSliderLimits(j, -0.5, 1.);
+  r.w.setMotor(j, 1., 100000.);
+  run(&mut r.w, 240);
+  imm p = r.w.positionOf(r.body);
+  near(r.w.sliderOffsetOf(j), 1., 0.01, "a motor drives the slider to its upper limit");
+  near(p.x, 2., 0.01, "(x = 1 + 1)");
+  near(p.y, 5., 0.003, "the slider holds the body up against gravity");
+  near(r.w.rotationOf(r.body).w, 1., 0.0001, "and keeps its orientation");
+  r.w.setMotor(j, -1., 100000.);
+  run(&mut r.w, 360);
+  near(r.w.sliderOffsetOf(j), -0.5, 0.01, "reversed, it travels to the lower limit");
+
+  mut s = rig(false);
+  imm k = s.w.addSlider(s.anchor, s.body, new Vec3(0.5, 5., 0.), new Vec3(1., 0., 0.));
+  s.w.setMotor(k, 0.5, 100000.);
+  run(&mut s.w, 120);
+  near(s.w.linearVelocity(s.body).x, 0.5, 0.005, "a slider motor reaches its speed");
+  near(s.w.sliderOffsetOf(k), 1., 0.02, "and has gone 0.5 m/s for two seconds");
+}
+
+fn testDistance() {
+  mut r = rig(true);
+  imm j = r.w.addDistance(r.anchor, r.body, pivot(), new Vec3(1., 5., 0.));
+  run(&mut r.w, 300);
+  near((r.w.positionOf(r.body) - pivot()).length(), 1., 0.002, "a rod keeps its length");
+
+  // a rope: free inside its range, taut at the end. The body hangs from the anchor starting 0.5 m out.
+  mut s = rig(true);
+  s.w.setTransform(s.body, new Vec3(0., 4.5, 0.), Quat.identity());
+  imm k = s.w.addDistance(s.anchor, s.body, pivot(), new Vec3(0., 4.5, 0.));
+  s.w.setDistanceRange(k, 0., 1.);
+  run(&mut s.w, 12);
+  // 0.2 s of free fall: 4.9 * 0.04 = 0.196 m (the rope is still slack)
+  near(s.w.positionOf(s.body).y, 4.5 - 0.5 * 9.81 * 0.04, 0.01, "a rope lets the body fall freely while it is slack");
+  run(&mut s.w, 180);
+  expectBool((s.w.positionOf(s.body) - pivot()).length() < 1.005, true, "and stops it at its length");
+  expectBool((s.w.positionOf(s.body) - pivot()).length() > 0.99, true, "hanging taut");
+
+  // a spring: 1 Hz, rest length 0.5, started at 1.0 in no gravity; the length crosses 0.5 upward once a period
+  mut t = rig(false);
+  imm sp = t.w.addDistance(t.anchor, t.body, pivot(), new Vec3(1., 5., 0.));
+  t.w.setDistanceSpring(sp, 0.5, 1., 0.);
+  mut prev = 1.;
+  mut first = -1.;
+  mut last = -1.;
+  mut crossings = 0;
+  mut i = 0;
+  while i < 600 {
+    t.w.step(1. / 60.);
+    imm d = (t.w.positionOf(t.body) - pivot()).length();
+    if prev < 0.5 and d >= 0.5 {
+      if first < 0. { first = f32.from(i); }
+      last = f32.from(i);
+      crossings = crossings + 1;
+    }
+    prev = d;
+    i = i + 1;
+  }
+  expectBool(crossings >= 5, true, "the spring oscillates");
+  near((last - first) / 60. / f32.from(crossings - 1), 1., 0.03, "at the 1 Hz it was given");
+}
+
+fn testConeTwist() {
+  mut r = rig(true);
+  imm j = r.w.addConeTwist(r.anchor, r.body, pivot(), new Vec3(1., 0., 0.), 0.5);
+  r.w.setTwistLimits(j, -0.3, 0.3);
+  mut maxSwing = 0.;
+  mut i = 0;
+  while i < 360 {
+    r.w.step(1. / 60.);
+    imm p = r.w.positionOf(r.body) - pivot();
+    maxSwing = maxf(maxSwing, atan2(-p.y, p.x));
+    i = i + 1;
+  }
+  expectBool(maxSwing < 0.55, true, "the swing is stopped within 0.05 rad of the cone's 0.5");
+  expectBool(maxSwing > 0.45, true, "and does reach it");
+  near((r.w.positionOf(r.body) - pivot()).length(), 1., 0.003, "the shoulder keeps the arm's length");
+
+  // twist: spin the body about the twist axis; it stops near 0.3
+  mut s = rig(false);
+  imm k = s.w.addConeTwist(s.anchor, s.body, pivot(), new Vec3(1., 0., 0.), 0.5);
+  s.w.setTwistLimits(k, -0.3, 0.3);
+  s.w.setAngularVelocity(s.body, new Vec3(2., 0., 0.));
+  run(&mut s.w, 120);
+  imm q = s.w.rotationOf(s.body);
+  imm twist = 2. * atan2(q.x, q.w);
+  near(twist, 0.3, 0.03, "a twist is stopped at its limit");
+}
+
+fn testChain() {
+  mut w = World.make();
+  w.settings.sleepEnabled = false;
+  imm sa = w.addShape(Shape.single(Prim.box(new Vec3(0.2, 0.2, 0.2))));
+  imm link = w.addShape(Shape.single(Prim.sphere(0.15)));
+  imm anchor = w.createBody(BodyDef.staticAt(sa, new Vec3(0., 10., 0.)));
+  mut prev = anchor;
+  mut ids = List[u32].empty();
+  mut k = 0;
+  while k < 5 {
+    mut bd = BodyDef.dynamicAt(link, new Vec3(0.5 * f32.from(k + 1), 10., 0.));
+    bd.linearDamping = 0.5; bd.angularDamping = 0.5;
+    imm id = w.createBody(bd);
+    imm a = w.positionOf(prev);
+    imm j = w.addPointJoint(prev, id, new Vec3(0.5 * f32.from(k), 10., 0.));
+    w.setJointCollide(j, false);
+    ids.push(id);
+    prev = id;
+    k = k + 1;
+  }
+  run(&mut w, 60 * 20);
+  // the swing has died down under damping: the chain hangs below the anchor
+  mut straight = true;
+  mut spacing = true;
+  k = 0;
+  mut before = new Vec3(0., 10., 0.);
+  while k < 5 {
+    imm p = w.positionOf(*ids[usize.from(k)]);
+    if absf(p.x) > 0.1 { straight = false; }
+    if absf((p - before).length() - 0.5) > 0.01 { spacing = false; }
+    before = p;
+    k = k + 1;
+  }
+  expectBool(straight, true, "five links hang straight below the anchor");
+  expectBool(spacing, true, "and keep their half-metre spacing");
+  near(w.positionOf(*ids[4usize]).y, 10. - 2.5, 0.05, "the last is 2.5 m down");
+}
+
+// A ragdoll: a torso, a head on a ball joint, arms on cone-twist shoulders, legs on hinges with knee-like
+// limits, dropped from 3 m onto the ground. It must stay together, not blow up, come to rest and sleep.
+fn testRagdoll() {
+  mut w = World.make();
+  imm floorS = w.addShape(Shape.single(Prim.box(new Vec3(20., 1., 20.))));
+  imm torsoS = w.addShape(Shape.single(Prim.box(new Vec3(0.2, 0.3, 0.12))));
+  imm headS = w.addShape(Shape.single(Prim.sphere(0.12)));
+  imm armS = w.addShape(Shape.single(Prim.capsule(0.06, 0.2)));
+  imm legS = w.addShape(Shape.single(Prim.capsule(0.08, 0.3)));
+  w.createBody(BodyDef.staticAt(floorS, new Vec3(0., -1., 0.)));
+  imm y0 = 4.;
+  mut torsoD = BodyDef.dynamicAt(torsoS, new Vec3(0., y0, 0.));
+  torsoD.rot = Quat.angleAxis(0.4, new Vec3(1., 0., 0.));
+  imm torso = w.createBody(torsoD);
+  imm head = w.createBody(BodyDef.dynamicAt(headS, new Vec3(0., y0 + 0.45, 0.)));
+  imm armL = w.createBody(BodyDef.dynamicAt(armS, new Vec3(-0.5, y0 + 0.2, 0.)));
+  imm armR = w.createBody(BodyDef.dynamicAt(armS, new Vec3(0.5, y0 + 0.2, 0.)));
+  imm legL = w.createBody(BodyDef.dynamicAt(legS, new Vec3(-0.1, y0 - 0.9, 0.)));
+  imm legR = w.createBody(BodyDef.dynamicAt(legS, new Vec3(0.1, y0 - 0.9, 0.)));
+  mut joints = List[u32].empty();
+  joints.push(w.addPointJoint(torso, head, new Vec3(0., y0 + 0.33, 0.)));
+  imm sl = w.addConeTwist(torso, armL, new Vec3(-0.22, y0 + 0.2, 0.), new Vec3(-1., 0., 0.), 1.2);
+  w.setTwistLimits(sl, -0.8, 0.8);
+  joints.push(sl);
+  imm sr = w.addConeTwist(torso, armR, new Vec3(0.22, y0 + 0.2, 0.), new Vec3(1., 0., 0.), 1.2);
+  w.setTwistLimits(sr, -0.8, 0.8);
+  joints.push(sr);
+  imm hl = w.addHinge(torso, legL, new Vec3(-0.1, y0 - 0.3, 0.), new Vec3(1., 0., 0.));
+  w.setHingeLimits(hl, -1.0, 1.0);
+  joints.push(hl);
+  imm hr = w.addHinge(torso, legR, new Vec3(0.1, y0 - 0.3, 0.), new Vec3(1., 0., 0.));
+  w.setHingeLimits(hr, -1.0, 1.0);
+  joints.push(hr);
+  mut worst = 0.;
+  mut finite = true;
+  mut i = 0;
+  while i < 60 * 8 {
+    w.step(1. / 60.);
+    mut k = 0usize;
+    while k < joints.len() {
+      imm e = w.jointError(*joints[k]);
+      worst = maxf(worst, e);
+      if not (e < 1000.) { finite = false; }
+      k = k + 1usize;
+    }
+    i = i + 1;
+  }
+  expectBool(finite, true, "no joint's error is ever infinite or not a number");
+  expectBool(worst < 0.06, true, "the ragdoll stays together through the fall and landing: no anchor is ever 6 cm out (3 cm at the landing)");
+  mut final = 0.;
+  mut q = 0usize;
+  while q < joints.len() { final = maxf(final, w.jointError(*joints[q])); q = q + 1usize; }
+  expectBool(final < 0.003, true, "and at rest every joint is within 3 mm");
+  expectBool(w.positionOf(torso).y < 0.6, true, "it ends on the ground");
+  expectBool(w.isAsleep(torso) and w.isAsleep(head) and w.isAsleep(armL) and w.isAsleep(legR), true, "and comes to rest and sleeps, all of it together");
+}
+
+fn testNoCollide() {
+  // two overlapping boxes joined by a rope of any length to 3 m: by default (collision off between the
+  // joined bodies) they stay overlapped; with collision on they are pushed apart
+  mut w = World.make();
+  w.gravity = new Vec3(0., 0., 0.);
+  imm bs = w.addShape(Shape.single(Prim.box(new Vec3(0.5, 0.5, 0.5))));
+  mut d1 = BodyDef.dynamicAt(bs, new Vec3(0., 0., 0.));
+  d1.linearDamping = 0.;
+  mut d2 = BodyDef.dynamicAt(bs, new Vec3(0.6, 0., 0.));
+  d2.linearDamping = 0.;
+  imm a = w.createBody(d1);
+  imm b = w.createBody(d2);
+  imm j = w.addDistance(a, b, new Vec3(0., 0., 0.), new Vec3(0.6, 0., 0.));
+  w.setDistanceRange(j, 0., 3.);
+  run(&mut w, 60);
+  near((w.positionOf(b) - w.positionOf(a)).length(), 0.6, 0.01, "bodies joined with collision off pass through each other");
+  mut z = World.make();
+  z.gravity = new Vec3(0., 0., 0.);
+  imm zs = z.addShape(Shape.single(Prim.box(new Vec3(0.5, 0.5, 0.5))));
+  imm za = z.createBody(d1);
+  imm zb = z.createBody(d2);
+  imm zj = z.addDistance(za, zb, new Vec3(0., 0., 0.), new Vec3(0.6, 0., 0.));
+  z.setDistanceRange(zj, 0., 3.);
+  z.setJointCollide(zj, true);
+  run(&mut z, 60);
+  expectBool((z.positionOf(zb) - z.positionOf(za)).length() > 0.95, true, "with collision on they are pushed apart");
+}
+
+fn main() i32 {
+  testPendulum();
+  testPoint();
+  testFixed();
+  testHingeLimits();
+  testHingeMotor();
+  testSlider();
+  testDistance();
+  testConeTwist();
+  testChain();
+  testRagdoll();
+  testNoCollide();
+  done();
+}

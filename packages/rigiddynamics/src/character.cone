@@ -1,0 +1,346 @@
+// The character controller: a kinematic capsule that walks the world.
+//
+// It is not a rigid body (Jolt, Bullet and Godot agree that a walking character
+// is not rigid-body physics). Nothing pushes it but its own velocity: it
+// casts its capsule through the world's shapes and slides along what it hits.
+// It is Jolt's CharacterVirtual in what it does, built from rigidcollide's
+// shape cast and manifolds:
+//
+//   - collide and slide (Kasper Fauerby, "Improved Collision detection and
+//     Response", 2003; Jolt's CharacterVirtual::MoveShape): sweep the capsule
+//     along the wanted move; at a hit stop a skin's width short and slide the
+//     rest of the move along the surface, keeping every surface already met
+//     honoured, a crease slid along;
+//   - a walkable slope has a normal within the maximum slope angle of up. A
+//     steeper one is a wall: a move along it that would climb is turned into
+//     one along the vertical wall, and gravity slides the character down it;
+//   - stairs (Jolt's WalkStairs): when a move on the ground is blocked, lift
+//     the capsule by the step height, make the move over the top, drop back to
+//     the floor, and keep the result if the new floor is walkable and the
+//     character got further. The floor is tested a radius ahead of the move, as
+//     Jolt's forward test does, because at the very edge of a step the capsule's
+//     contact is with the edge and its normal leans;
+//   - stick to floor: after a move on the ground with no jump, drop up to
+//     stickDistance, so walking down slopes and off steps stays on the ground;
+//   - the ground is found by a short cast down; its body, normal, contact point
+//     and the velocity of the body's material there are reported;
+//   - a ground body that moves (a platform) carries the character by the
+//     velocity at the contact point times the step, and turns it by the
+//     platform's spin about up;
+//   - a dynamic body hit is pushed by an impulse of the character's mass times
+//     the speed into it, and one stood on is loaded with the character's weight.
+//
+// The capsule stands upright (+y is up). 'pos' is the point under the feet.
+
+pub struct CharacterSettings {
+  pub radius f32;
+  pub halfHeight f32;       // half the length of the capsule's straight part
+  pub maxSlope f32;         // radians from up: steeper ground is a wall
+  pub stepHeight f32;       // the highest step it climbs
+  pub skin f32;             // the gap it keeps from surfaces
+  pub stickDistance f32;    // how far it follows the ground down
+  pub mask u32;             // the layers it collides with
+  pub mass f32;             // for pushing bodies and standing on them
+  pub gravity f32;          // m/s^2
+  pub maxFallSpeed f32;
+  pub pushStrength f32;     // 0 to not push bodies, 1 to push with its mass
+
+  // A person-sized capsule: 'height' tall in all, 'radius' round, climbing steps of 0.4 m and slopes to 45 degrees
+  pub fn person(radius f32, height f32) CharacterSettings {
+    new CharacterSettings(radius, maxf(0.01, height * 0.5 - radius), 0.7853982, 0.4, 0.02, 0.35, 0xffffffffu32, 70., 9.81, 55., 1.);
+  }
+}
+
+pub struct Character {
+  pub s CharacterSettings;
+  pub shape Shape;
+  pub pos Vec3;                 // under the feet
+  pub vel Vec3;                 // its velocity as it moved last update (relative to the ground when on it: zero)
+  pub grounded bool;
+  pub groundBody u32;
+  pub groundNormal Vec3;
+  pub groundPoint Vec3;
+  pub groundVelocity Vec3;      // the ground's velocity under the feet
+  pub onSteep bool;             // touching ground too steep to stand on
+  pub steepNormal Vec3;
+  pub platformYaw f32;          // the turn the ground gave it this update, about up
+  pub moved Vec3;               // how far it went this update
+
+  pub fn make(s CharacterSettings, pos Vec3) Character {
+    new Character(s, Shape.single(Prim.capsule(s.radius, s.halfHeight)), pos, zero3(), false, NoBody, new Vec3(0., 1., 0.), pos,
+      zero3(), false, new Vec3(0., 1., 0.), 0., zero3());
+  }
+
+  // The capsule's placement with its feet at 'at'
+  pub fn placement(self &, at Vec3) Rigid { Rigid.at(at + new Vec3(0., s.halfHeight + s.radius, 0.)); }
+  // The point at the middle of the capsule
+  pub fn center(self &) Vec3 { pos + new Vec3(0., s.halfHeight + s.radius, 0.); }
+  pub fn teleport(self &mut, p Vec3) { pos = p; vel = zero3(); grounded = false; groundBody = NoBody; }
+}
+
+// ---------------------------------------------------------------------------
+
+fn upV() Vec3 { new Vec3(0., 1., 0.); }
+fn downV() Vec3 { new Vec3(0., -1., 0.); }
+
+// The nearest hit of the capsule moved from 'from' by 'disp'
+fn sweepCapsule(w &mut World, ch &Character, from Vec3, disp Vec3) WorldCastHit {
+  imm f = new QueryFilter(ch.s.mask, NoBody, false);
+  worldShapeCast(w, &ch.shape, ch.placement(from), disp, f);
+}
+
+// Push the capsule out of whatever it overlaps (a platform moving into it, a spawn in a wall)
+fn depenetrate(w &mut World, ch &mut Character) {
+  imm f = new QueryFilter(ch.s.mask, NoBody, false);
+  mut it = 0;
+  mut cs = List[BodyManifold].empty();
+  // surfaces nearer than a quarter of the skin are pushed back to half of it
+  imm near = -ch.s.skin * 0.25;
+  imm gap = ch.s.skin * 0.5;
+  while it < 4 {
+    worldContacts(w, &ch.shape, ch.placement(ch.pos), ch.s.skin, f, &mut cs);
+    mut deepest = near;
+    mut push = zero3();
+    mut k = 0usize;
+    while k < cs.len() {
+      imm bm = cs[k];
+      imm d = bm.m.deepest();
+      if d > deepest { deepest = d; push = bm.m.normal * (-(d + gap)); }
+      k = k + 1usize;
+    }
+    if deepest <= near { break; }
+    ch.pos = ch.pos + push;
+    it = it + 1;
+  }
+}
+
+// Move from 'start' by 'disp', sliding along what is in the way; where it ends up.
+// 'push' lets it shove dynamic bodies.
+fn slideMove(w &mut World, ch &Character, start Vec3, disp Vec3, push bool, dt f32) Vec3 {
+  imm cosSlope = cos(ch.s.maxSlope);
+  imm skin = ch.s.skin;
+  mut pos = start;
+  mut remaining = disp;
+  mut planes = List[Vec3].empty();
+  mut it = 0;
+  while it < 6 {
+    imm len = remaining.length();
+    if len < 0.00001 { break; }
+    imm dir = remaining * (1. / len);
+    imm hit = sweepCapsule(w, ch, pos, remaining);
+    if not hit.hit {
+      pos = pos + remaining;
+      break;
+    }
+    imm nS = hit.normal * -1.;
+    imm toward = maxf(-dir.dot(nS), 0.05);
+    imm adv = maxf(0., hit.fraction * len - skin / toward);
+    pos = pos + dir * adv;
+    remaining = dir * (len - adv);
+    // shove a dynamic body: the character's momentum into it
+    if push and ch.s.pushStrength > 0. and dt > 0. {
+      imm b = w.bodies[usize.from(hit.body)];
+      if b.motion == MotionDynamic {
+        imm speedInto = maxf(0., -remaining.dot(nS) / dt);
+        w.applyImpulseAt(hit.body, nS * (-ch.s.mass * ch.s.pushStrength * speedInto), hit.pointB);
+      }
+    }
+    // slide along the surface; a steep one is a wall for any move that would climb it
+    mut slid = remaining - nS * remaining.dot(nS);
+    if nS.y < cosSlope and nS.y > 0.0001 and slid.y > 0. {
+      imm hn = new Vec3(nS.x, 0., nS.z);
+      imm hl = hn.length();
+      if hl > 0.0001 {
+        imm hnn = hn * (1. / hl);
+        slid = remaining - hnn * minf(remaining.dot(hnn), 0.);
+      }
+    }
+    remaining = slid;
+    // keep the surfaces met before honoured; in a crease slide along it
+    mut p = 0usize;
+    while p < planes.len() {
+      imm pn = *planes[p];
+      if remaining.dot(pn) < -0.0001 {
+        imm along = nS.cross(pn);
+        imm al = along.length();
+        if al > 0.0001 {
+          imm ad = along * (1. / al);
+          remaining = ad * remaining.dot(ad);
+        } else if nS.dot(pn) < -0.99 {
+          remaining = zero3();
+        } else {
+          remaining = remaining - pn * remaining.dot(pn);
+        }
+      }
+      p = p + 1usize;
+    }
+    planes.push(nS);
+    it = it + 1;
+  }
+  pos;
+}
+
+// Try to climb a step: up, over, down. On success, where the feet end up and the floor's body.
+fn tryStep(w &mut World, ch &Character, start Vec3, dispH Vec3, dt f32, out &mut Vec3, floorBody &mut u32) bool {
+  imm cosSlope = cos(ch.s.maxSlope);
+  imm skin = ch.s.skin;
+  imm stepH = ch.s.stepHeight;
+  // up
+  imm upHit = sweepCapsule(w, ch, start, upV() * stepH);
+  imm raise = if upHit.hit { maxf(0., upHit.fraction * stepH - skin); } else { stepH; };
+  if raise < 0.01 { return false; }
+  imm raised = start + upV() * raise;
+  // over: the move asked for, and a test a radius ahead of it, where the floor is found
+  imm hl = dispH.length();
+  imm dirH = dispH * (1. / hl);
+  imm testLen = maxf(hl, ch.s.radius);
+  imm over = slideMove(w, ch, raised, dispH, false, dt);
+  if (over - raised).length() < hl - 0.002 { return false; }
+  imm ahead = slideMove(w, ch, raised, dirH * testLen, false, dt);
+  if (ahead - raised).length() < testLen - 0.002 { return false; }
+  // down onto the floor
+  imm dropMax = raise + skin * 2.;
+  imm downHit = sweepCapsule(w, ch, ahead, downV() * dropMax);
+  if not downHit.hit { return false; }
+  imm nS = downHit.normal * -1.;
+  if nS.y < cosSlope { return false; }
+  imm drop = maxf(0., downHit.fraction * dropMax - skin);
+  *out = new Vec3(over.x, ahead.y - drop, over.z);
+  *floorBody = downHit.body;
+  true;
+}
+
+// Move the character for one step of 'dt'. 'wish' is the horizontal velocity it
+// wants (its y is ignored), relative to the ground it stands on; 'jump' is an
+// upward speed to jump with if it is on the ground (0 for none).
+pub fn updateCharacter(w &mut World, ch &mut Character, wish Vec3, jump f32, dt f32) {
+  imm cosSlope = cos(ch.s.maxSlope);
+  imm up = upV();
+  imm start = ch.pos;
+  imm wasGrounded = ch.grounded;
+  imm wasSteep = ch.onSteep;
+  ch.platformYaw = 0.;
+
+  // carried by the ground it stood on
+  if ch.grounded and w.isAlive(ch.groundBody) {
+    imm gv = w.pointVelocity(ch.groundBody, ch.groundPoint);
+    ch.groundVelocity = gv;
+    ch.platformYaw = w.angularVelocity(ch.groundBody).y * dt;
+    ch.pos = slideMove(w, ch, ch.pos, gv * dt, false, dt);
+  } else {
+    ch.groundVelocity = zero3();
+  }
+  depenetrate(w, ch);
+
+  // what it wants to do
+  imm wishH = new Vec3(wish.x, 0., wish.z);
+  mut jumped = false;
+  mut v = zero3();
+  if wasGrounded {
+    if jump > 0. {
+      v = wishH + up * jump;
+      jumped = true;
+    } else if ch.groundNormal.y > 0.2 {
+      // along the ground it stands on, at the same horizontal speed
+      v = wishH + up * (-wishH.dot(ch.groundNormal) / ch.groundNormal.y);
+    } else {
+      v = wishH;
+    }
+  } else if wasSteep {
+    // sliding down a wall of a slope: keep the speed it has and let gravity add to it
+    v = ch.vel + up * (-ch.s.gravity * dt);
+  } else {
+    v = new Vec3(wishH.x, maxf(ch.vel.y - ch.s.gravity * dt, -ch.s.maxFallSpeed), wishH.z);
+  }
+  imm rising = jumped or (not wasGrounded and not wasSteep and v.y > 0.0001);
+  imm stepStart = ch.pos;
+  mut end = slideMove(w, ch, stepStart, v * dt, true, dt);
+  mut vel = (end - stepStart) * (1. / dt);
+  mut floorBody = NoBody;
+
+  // stairs: on the ground, asked to walk, got less far than asked
+  imm dispH = wishH * dt;
+  mut stepped = false;
+  if wasGrounded and not jumped and dispH.length() > 0.0001 {
+    imm gotH = new Vec3(end.x - stepStart.x, 0., end.z - stepStart.z).length();
+    if gotH < dispH.length() - 0.002 {
+      mut at = zero3();
+      if tryStep(w, ch, stepStart, dispH, dt, &mut at, &mut floorBody) {
+        imm gotStep = new Vec3(at.x - stepStart.x, 0., at.z - stepStart.z).length();
+        if gotStep > gotH + 0.002 { end = at; stepped = true; vel = new Vec3(wishH.x, 0., wishH.z); }
+      }
+    }
+  }
+  ch.pos = end;
+
+  // stick to the floor it was on
+  if wasGrounded and not jumped and not stepped {
+    mut snapped = false;
+    imm hit = sweepCapsule(w, ch, ch.pos, downV() * ch.s.stickDistance);
+    if hit.hit {
+      imm nS = hit.normal * -1.;
+      if nS.y >= cosSlope {
+        ch.pos = ch.pos - up * maxf(0., hit.fraction * ch.s.stickDistance - ch.s.skin);
+        vel = new Vec3(vel.x, 0., vel.z);
+        snapped = true;
+      }
+    }
+    // Past the edge of a ledge or a step down the capsule's round foot rests on the edge, whose normal leans too
+    // far to stand on. If that edge is behind the foot (its normal leans the way it is walking: it is leaving the
+    // edge) a ray straight down from the middle of the foot finds the floor below; follow it down, sliding off.
+    // (An edge ahead of the foot, on the climb to a step, must not do this: its normal leans back.)
+    imm leaving = not hit.hit or (hit.normal * -1.).dot(wishH) > 0.;
+    if not snapped and leaving {
+      imm rayHit = worldRayCast(w, ch.pos + up * 0.05, downV(), ch.s.stickDistance + 0.05, new QueryFilter(ch.s.mask, NoBody, false));
+      if rayHit.hit and rayHit.normal.y >= cosSlope {
+        imm drop = rayHit.t - 0.05 - ch.s.skin;
+        if drop > 0.001 {
+          ch.pos = slideMove(w, ch, ch.pos, downV() * drop, false, dt);
+          vel = new Vec3(vel.x, 0., vel.z);
+          // the slide off the edge may leave it short of the floor: finish the drop
+          imm again = sweepCapsule(w, ch, ch.pos, downV() * ch.s.stickDistance);
+          if again.hit and again.normal.y <= -cosSlope {
+            ch.pos = ch.pos - up * maxf(0., again.fraction * ch.s.stickDistance - ch.s.skin);
+          }
+        }
+      }
+    }
+  }
+
+  // look for ground
+  ch.grounded = false;
+  ch.onSteep = false;
+  ch.groundBody = NoBody;
+  ch.groundNormal = up;
+  imm probe = ch.s.skin * 2. + 0.01;
+  imm gh = sweepCapsule(w, ch, ch.pos, downV() * probe);
+  if stepped {
+    // standing at the edge of a step it just climbed (its contact there leans): the floor found ahead stands
+    ch.grounded = true;
+    ch.groundBody = floorBody;
+    ch.groundNormal = up;
+    ch.groundPoint = ch.pos;
+    ch.groundVelocity = w.pointVelocity(floorBody, ch.pos);
+  } else if gh.hit {
+    imm nS = gh.normal * -1.;
+    if nS.y >= cosSlope and not rising {
+      ch.grounded = true;
+      ch.groundBody = gh.body;
+      ch.groundNormal = nS;
+      ch.groundPoint = gh.pointB;
+      ch.groundVelocity = w.pointVelocity(gh.body, gh.pointB);
+    } else if nS.y < cosSlope and nS.y > 0.0001 and not rising {
+      ch.onSteep = true;
+      ch.steepNormal = nS;
+    }
+  }
+  if ch.grounded {
+    vel = zero3();
+    // loads a dynamic body it stands on with its weight
+    if w.bodies[usize.from(ch.groundBody)].motion == MotionDynamic {
+      w.applyForceAt(ch.groundBody, up * (-ch.s.mass * ch.s.gravity), ch.groundPoint);
+    }
+  }
+  ch.vel = vel;
+  ch.moved = ch.pos - start;
+}
