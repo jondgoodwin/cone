@@ -19,7 +19,12 @@
 //   death. Made without a region it is handed the heap's, outside an arena; in
 //   one it is handed the arena's (an arena is a region: tests/inarena.cone).
 // - in a DynArena the answer is a key: read and written through the arena,
-//   and a chain of nodes holding each other's keys is built with it.
+//   and a chain of nodes holding each other's keys is built with it;
+// - the value is built where it stays in the arena, not built elsewhere and copied
+//   in: the arguments of its construction are evaluated first, then its room is
+//   taken, then it is built there, so what the construction allocates in the arena
+//   lies after the value, and the value goes on the arena's list of finalizers
+//   last of what was made for it.
 
 mod newin;
 
@@ -106,6 +111,53 @@ fn plain() {
   expectInt(r.sum(), 11, "and it is what a.alloc(new Pt(5, 6)) gives");
   expectUInt(u64.from(a.finalizers()), 0, "a Pt needs no finalizer header");
   expectUInt(u64.from(a.blockCount()), 1, "and the three share a block");
+}
+
+// A value built where it stays: a Mesh's init allocates the blocks of its two
+// lists in the arena, and they lie after the Mesh, in the order they were asked
+// for (built first and copied in, the Mesh would lie after both). The arena has
+// room for all three in its one block, so the order of the addresses is the order
+// of the bumps
+fn fill(m &mut Mesh) {
+  m.pts.push(1.5f32);
+  m.ids.push(7u32);
+}
+
+fn inplace() {
+  mut a = Arena.withRoom(4000usize);
+  imm m = new a[Mesh](8usize);
+  fill(m);
+  imm mat = (m as *Mesh) as usize;
+  imm pat = (m.pts[0usize] as *f32) as usize;
+  imm iat = (m.ids[0usize] as *u32) as usize;
+  expect(mat < pat and pat < iat, "a Mesh made in an arena lies before the blocks its init allocated there");
+  expectUInt(u64.from(a.blockCount()), 1, "in the one block");
+  mut d = DynArena.withRoom(4000usize);
+  imm k = new d[Mesh](8usize);
+  fill(&mut d[k]);
+  imm dmat = (d[k] as *Mesh) as usize;
+  imm dpat = (d[k].pts[0usize] as *f32) as usize;
+  imm diat = (d[k].ids[0usize] as *u32) as usize;
+  expect(dmat < dpat and dpat < diat, "and so does one made in a dynamic arena");
+  expectUInt(u64.from(d.blockCount()), 1, "in its one block");
+}
+
+// A value with a 'final' that another construction is built from: that one is
+// made first and is finalized last
+struct Wrap {
+  pub v i64;
+  fn final(self &uni) { note(v); }
+}
+
+fn argsFirst() {
+  log = 0;
+  {
+    mut a = Arena.empty();
+    imm w = new a[Wrap]((new a[Fin](1)).n + 1);
+    expectInt(w.v, 2, "the construction made for an argument is made before the value, and is read");
+    expectUInt(u64.from(a.finalizers()), 2, "both have a header");
+  }
+  expectInt(log, 21, "the Wrap, made last, died first");
 }
 
 // A value with a 'final' dies with the arena, newest first
@@ -209,6 +261,8 @@ fn main() {
   log = 0;
   dies();
   expectInt(log, 321, "the values with a 'final' died newest first");
+  inplace();
+  argsFirst();
   listInArena();
   composition();
   keys();

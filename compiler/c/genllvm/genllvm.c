@@ -2409,6 +2409,10 @@ static void genlLLVMOptions(int gpu) {
 void genSetup(GenState *gen, ConeOptions *opt) {
     gen->opt = opt;
     gen->libroot = NULL;
+    gen->deferred = NULL;
+    gen->deferredcnt = 0;
+    gen->deferredmax = 0;
+    gen->deferin = NULL;
     // A SPIR-V triple is a GPU target (the default triple is the host's, never
     // one). Type check's flow reads this before anything is generated.
     opt->gpu = opt->triple != NULL && strncmp(opt->triple, "spirv", 5) == 0;

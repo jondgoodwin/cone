@@ -510,6 +510,8 @@ void nameUseTypeCheck(TypeCheckState *pstate, NameUseNode **namep) {
     }
 
     name->vtype = ((IExpNode*)dcl)->vtype;
+    if (dcl->tag == VarDclTag && ((VarDclNode*)dcl)->nuses < 255)
+        ((VarDclNode*)dcl)->nuses++;
 }
 
 // Handle type check for type name use references
