@@ -1,0 +1,238 @@
+// Behaviour trees, after Isla's "Handling Complexity in the Halo 2 AI" (GDC
+// 2005) and Champandard's "AI Game Development" (2003): a tree of nodes
+// ticked from the root, each answering SUCCESS, FAILURE or RUNNING.
+//
+// The tree is built once (a few calls to 'leaf', 'sequence', ... each answer
+// the new node's number, children before parents) and stored flat, as lists
+// of numbers, so a tick walks it by index and allocates nothing. What a leaf
+// does is the program's: a tick is given one closure, 'fn(id u32, bb &mut
+// Blackboard) u32', called with the number the leaf was made with, and its
+// answer is the leaf's. (Leaves read and write the blackboard; the character
+// reads what they wrote after the tick. The closure is borrowed for the tick,
+// not kept.)
+//
+//   leaf(id)               calls the closure
+//   sequence(kids)         with memory: runs its children in order, and when
+//                          one answers RUNNING the next tick resumes at that
+//                          child; fails at the first failure, succeeds after
+//                          the last
+//   selector(kids)         the same for the first success
+//   reactiveSequence(kids) without memory: every tick starts again at the
+//                          first child, so an earlier condition is re-checked
+//                          while a later action runs (a running action is
+//                          abandoned when a condition fails)
+//   reactiveSelector(kids) the same for a selector (a higher priority branch
+//                          that becomes possible pre-empts a running lower one)
+//   parallel(kids, all)    ticks every child that has not finished each tick;
+//                          with 'all' it succeeds when all have, and fails at
+//                          the first failure; without, it succeeds at the first
+//                          success and fails when all have failed
+//   inverter(child)        SUCCESS and FAILURE swapped
+//   succeeder(child)       SUCCESS whatever the child finished with
+//   repeat(child, n)       runs the child n times in a row (0 is for ever),
+//                          RUNNING between runs; a failure ends it with FAILURE
+//   cooldown(child, s)     after the child finishes, FAILURE without running
+//                          it for s seconds
+//   timeout(child, s)      FAILURE (and the child abandoned) if it has been
+//                          RUNNING for more than s seconds
+//
+// A running node is resumed, not restarted: the child a memory composite
+// stopped at, a repeat's count, a timeout's start are kept in lists beside the
+// nodes. Abandoning a running branch (a reactive node pre-empting it, a
+// timeout) does not tell its leaves; a leaf that keeps state clears it when it
+// is next started, or the program calls 'reset'.
+
+pub const NODE_LEAF = 0u32;
+pub const NODE_SEQUENCE = 1u32;
+pub const NODE_SELECTOR = 2u32;
+pub const NODE_REACTIVE_SEQUENCE = 3u32;
+pub const NODE_REACTIVE_SELECTOR = 4u32;
+pub const NODE_PARALLEL_ALL = 5u32;
+pub const NODE_PARALLEL_ONE = 6u32;
+pub const NODE_INVERTER = 7u32;
+pub const NODE_SUCCEEDER = 8u32;
+pub const NODE_REPEAT = 9u32;
+pub const NODE_COOLDOWN = 10u32;
+pub const NODE_TIMEOUT = 11u32;
+
+// A parallel's note that a child has not finished yet (or not started)
+const NOT_DONE = 3u32;
+
+struct BtNode {
+  kind u32;
+  leaf u32;       // for a leaf, its id
+  first u32;      // into the 'kids' list
+  count u32;
+  param f32;      // seconds, for a cooldown or timeout
+  times u32;      // for a repeat
+}
+
+pub struct BehaviorTree {
+  nodes List[BtNode];
+  kids List[u32];
+  cursor List[u32];      // the child a memory composite is at; 1 while a cooldown's or timeout's child runs
+  counter List[u32];     // a repeat's completed runs
+  stamp List[f32];       // a timeout's start, a cooldown's ready time
+  done List[u32];        // each node's last answer while its parent, a parallel, is waiting on it
+  pub root u32;
+  pub time f32;          // the tree's own clock: the sum of the dt it was ticked with
+  pub ticks u32;
+
+  pub fn make() BehaviorTree {
+    new BehaviorTree(List[BtNode].empty(), List[u32].empty(), List[u32].empty(), List[u32].empty(),
+      List[f32].empty(), List[u32].empty(), 0u32, 0., 0u32);
+  }
+
+  fn add(self &mut, n BtNode) u32 {
+    imm id = u32.from(nodes.len());
+    nodes.push(n);
+    cursor.push(0u32);
+    counter.push(0u32);
+    stamp.push(0.);
+    done.push(NOT_DONE);
+    root = id;
+    id;
+  }
+
+  pub fn leaf(self &mut, id u32) u32 { self.add(new BtNode(NODE_LEAF, id, 0u32, 0u32, 0., 0u32)); }
+
+  fn composite(self &mut, kind u32, children &Array[u32]) u32 {
+    imm first = u32.from(kids.len());
+    mut i = 0usize;
+    while i < children.len() {
+      kids.push(children[i]);
+      i = i + 1usize;
+    }
+    self.add(new BtNode(kind, 0u32, first, u32.from(children.len()), 0., 0u32));
+  }
+
+  fn decorator(self &mut, kind u32, child u32, param f32, times u32) u32 {
+    imm first = u32.from(kids.len());
+    kids.push(child);
+    self.add(new BtNode(kind, 0u32, first, 1u32, param, times));
+  }
+
+  pub fn sequence(self &mut, children &Array[u32]) u32 { self.composite(NODE_SEQUENCE, children); }
+  pub fn selector(self &mut, children &Array[u32]) u32 { self.composite(NODE_SELECTOR, children); }
+  pub fn reactiveSequence(self &mut, children &Array[u32]) u32 { self.composite(NODE_REACTIVE_SEQUENCE, children); }
+  pub fn reactiveSelector(self &mut, children &Array[u32]) u32 { self.composite(NODE_REACTIVE_SELECTOR, children); }
+  pub fn parallel(self &mut, children &Array[u32], all bool) u32 {
+    self.composite(if all { NODE_PARALLEL_ALL; } else { NODE_PARALLEL_ONE; }, children);
+  }
+  pub fn inverter(self &mut, child u32) u32 { self.decorator(NODE_INVERTER, child, 0., 0u32); }
+  pub fn succeeder(self &mut, child u32) u32 { self.decorator(NODE_SUCCEEDER, child, 0., 0u32); }
+  pub fn repeat(self &mut, child u32, times u32) u32 { self.decorator(NODE_REPEAT, child, 0., times); }
+  pub fn cooldown(self &mut, child u32, seconds f32) u32 { self.decorator(NODE_COOLDOWN, child, seconds, 0u32); }
+  pub fn timeout(self &mut, child u32, seconds f32) u32 { self.decorator(NODE_TIMEOUT, child, seconds, 0u32); }
+
+  // Which node a tick starts at; a built tree's root is the last node made
+  pub fn setRoot(self &mut, node u32) { root = node; }
+
+  // Forget every running node: the next tick starts from the root. (A
+  // cooldown's remaining time is kept.)
+  pub fn reset(self &mut) {
+    mut i = 0usize;
+    while i < nodes.len() {
+      cursor.set(i, 0u32);
+      counter.set(i, 0u32);
+      done.set(i, NOT_DONE);
+      i = i + 1usize;
+    }
+  }
+
+  // One tick, 'dt' seconds after the last: the root's answer
+  pub fn tick(self &mut, dt f32, bb &mut Blackboard, leaf &<mut fn(id u32, bb &mut Blackboard) u32) u32 {
+    time = time + dt;
+    ticks = ticks + 1u32;
+    self.tickNode(root, bb, leaf);
+  }
+
+  fn child(self &, n u32, k u32) u32 { *kids[usize.from(nodes[usize.from(n)].first + k)]; }
+
+  fn tickNode(self &mut, n u32, bb &mut Blackboard, leaf &<mut fn(id u32, bb &mut Blackboard) u32) u32 {
+    imm i = usize.from(n);
+    imm node = *nodes[i];
+    mut result = FAILURE;
+    if node.kind == NODE_LEAF {
+      result = leaf(node.leaf, bb);
+    } elif node.kind == NODE_SEQUENCE or node.kind == NODE_SELECTOR or node.kind == NODE_REACTIVE_SEQUENCE or node.kind == NODE_REACTIVE_SELECTOR {
+      // A sequence goes on past SUCCESS and stops at FAILURE; a selector the other way round
+      imm isSeq = node.kind == NODE_SEQUENCE or node.kind == NODE_REACTIVE_SEQUENCE;
+      imm memory = node.kind == NODE_SEQUENCE or node.kind == NODE_SELECTOR;
+      imm goOn = if isSeq { SUCCESS; } else { FAILURE; };
+      mut k = if memory { *cursor[i]; } else { 0u32; };
+      mut finished = true;
+      result = goOn;
+      while k < node.count and finished {
+        imm s = self.tickNode(self.child(n, k), bb, leaf);
+        if s == RUNNING {
+          if memory { cursor.set(i, k); }
+          result = RUNNING;
+          finished = false;
+        } elif s != goOn {
+          result = s;
+          finished = false;
+        } else {
+          k = k + 1u32;
+        }
+      }
+      if finished or result != RUNNING { cursor.set(i, 0u32); }
+    } elif node.kind == NODE_PARALLEL_ALL or node.kind == NODE_PARALLEL_ONE {
+      imm all = node.kind == NODE_PARALLEL_ALL;
+      mut succeeded = 0u32;
+      mut failed = 0u32;
+      mut k = 0u32;
+      while k < node.count {
+        imm c = self.child(n, k);
+        mut s = *done[usize.from(c)];
+        if s == NOT_DONE or s == RUNNING { s = self.tickNode(c, bb, leaf); done.set(usize.from(c), s); }
+        if s == SUCCESS { succeeded = succeeded + 1u32; }
+        if s == FAILURE { failed = failed + 1u32; }
+        k = k + 1u32;
+      }
+      result = RUNNING;
+      if all and failed > 0u32 { result = FAILURE; }
+      elif all and succeeded == node.count { result = SUCCESS; }
+      elif not all and succeeded > 0u32 { result = SUCCESS; }
+      elif not all and failed == node.count { result = FAILURE; }
+      if result != RUNNING {
+        k = 0u32;
+        while k < node.count { done.set(usize.from(self.child(n, k)), NOT_DONE); k = k + 1u32; }
+      }
+    } elif node.kind == NODE_INVERTER {
+      imm s = self.tickNode(self.child(n, 0u32), bb, leaf);
+      result = if s == SUCCESS { FAILURE; } elif s == FAILURE { SUCCESS; } else { RUNNING; };
+    } elif node.kind == NODE_SUCCEEDER {
+      imm s = self.tickNode(self.child(n, 0u32), bb, leaf);
+      result = if s == RUNNING { RUNNING; } else { SUCCESS; };
+    } elif node.kind == NODE_REPEAT {
+      imm s = self.tickNode(self.child(n, 0u32), bb, leaf);
+      if s == RUNNING { result = RUNNING; }
+      elif s == FAILURE { counter.set(i, 0u32); result = FAILURE; }
+      else {
+        imm c = *counter[i] + 1u32;
+        if node.times != 0u32 and c >= node.times { counter.set(i, 0u32); result = SUCCESS; }
+        else { counter.set(i, c); result = RUNNING; }
+      }
+    } elif node.kind == NODE_COOLDOWN {
+      if *cursor[i] == 0u32 and time < *stamp[i] {
+        result = FAILURE;
+      } else {
+        imm s = self.tickNode(self.child(n, 0u32), bb, leaf);
+        if s == RUNNING { cursor.set(i, 1u32); result = RUNNING; }
+        else { cursor.set(i, 0u32); stamp.set(i, time + node.param); result = s; }
+      }
+    } elif node.kind == NODE_TIMEOUT {
+      if *cursor[i] == 0u32 { stamp.set(i, time); }
+      imm s = self.tickNode(self.child(n, 0u32), bb, leaf);
+      if s == RUNNING {
+        if time - *stamp[i] > node.param { cursor.set(i, 0u32); result = FAILURE; }
+        else { cursor.set(i, 1u32); result = RUNNING; }
+      } else {
+        cursor.set(i, 0u32);
+        result = s;
+      }
+    }
+    result;
+  }
+}
