@@ -1,0 +1,711 @@
+// ======== JPEG: ITU-T T.81 (ISO/IEC 10918-1), with JFIF and Exif ========
+//
+// Baseline (SOF0) and extended sequential (SOF1) Huffman JPEG of 8-bit
+// samples, and progressive (SOF2) Huffman JPEG with spectral selection and
+// successive approximation, in one to four components, any sampling factors
+// (4:4:4, 4:2:2, 4:2:0, 4:4:0, 4:1:1 and the odd ones), restart intervals,
+// 16-bit quantisation tables, JFIF and Adobe colour (RGB, YCbCr, and the
+// Adobe CMYK and YCCK of Photoshop), and the Exif orientation, which the
+// decode applies unless asked not to. Refused with a message: arithmetic
+// coding, lossless and hierarchical JPEG, 12-bit samples, a frame that is
+// not 8-bit, a file that ends inside a scan.
+//
+// THE METHODS, chosen to give the same pixels as the libjpeg that Pillow,
+// browsers and nearly every other program decode with, since that is what a
+// picture "should" look like:
+// - Huffman decoding as T.81 Annex F describes it, with a 9-bit lookahead
+//   table and the code-length walk of the Annex's DECODE for longer codes
+//   (libjpeg's jdhuff.c); progressive scans as libjpeg's jdphuff.c does them
+//   (DC first and refinement, AC first with end-of-band runs, and the
+//   refinement of already-nonzero coefficients), which the standard's
+//   Annex G describes.
+// - All coefficients of a frame are decoded first, into one array of
+//   16-bit values a component, and transformed afterwards (progressive
+//   files need that; baseline shares the path).
+// - The inverse DCT is libjpeg's "islow" (jidctint.c, the Independent JPEG
+//   Group's): the Loeffler, Ligtenberg and Moschytz factorisation in 13-bit
+//   fixed point, accurate to the standard's ±1 test, with a shortcut for a
+//   block of the DC alone. Chosen over AAN (which is about a third faster
+//   but off by up to two levels) so that the output matches libjpeg's
+//   default to the bit, up to rounding at the colour step.
+// - Chroma is upsampled with libjpeg's "fancy upsampling": a triangle
+//   filter (3/4 of the nearer sample and 1/4 of the further) for 2:1
+//   horizontally (h2v1), 2:1 both ways (h2v2) and 2:1 vertically (h1v2);
+//   other ratios replicate samples. The edge samples clamp to the
+//   component's own edge, not the padding of its last block.
+// - YCbCr to RGB with libjpeg's 16-bit fixed point tables (jdcolor.c):
+//   R = Y + 1.402 Cr, G = Y - 0.34414 Cb - 0.71414 Cr, B = Y + 1.772 Cb.
+
+// Zigzag order to natural (row-major) position in the 8 x 8 block. The 16
+// extra 63s are libjpeg's guard against a corrupt run length stepping past
+// the end.
+imm zigzag Array[u8, 80] = [0u8, 1u8, 8u8, 16u8, 9u8, 2u8, 3u8, 10u8, 17u8, 24u8, 32u8, 25u8, 18u8, 11u8, 4u8, 5u8,
+  12u8, 19u8, 26u8, 33u8, 40u8, 48u8, 41u8, 34u8, 27u8, 20u8, 13u8, 6u8, 7u8, 14u8, 21u8, 28u8,
+  35u8, 42u8, 49u8, 56u8, 57u8, 50u8, 43u8, 36u8, 29u8, 22u8, 15u8, 23u8, 30u8, 37u8, 44u8, 51u8,
+  58u8, 59u8, 52u8, 45u8, 38u8, 31u8, 39u8, 46u8, 53u8, 60u8, 61u8, 54u8, 47u8, 55u8, 62u8, 63u8,
+  63u8, 63u8, 63u8, 63u8, 63u8, 63u8, 63u8, 63u8, 63u8, 63u8, 63u8, 63u8, 63u8, 63u8, 63u8, 63u8];
+
+// A Huffman table ready to decode
+struct JHuff {
+  pub look List[u16];     // 512 entries by the next 9 bits: length * 256 + symbol, 0 if longer
+  pub maxcode List[i32];  // the largest code of each length 1 to 16 (-1 for none), 17 entries
+  pub valoff List[i32];   // index of the first symbol of a length minus its first code
+  pub vals List[u8];
+  pub present bool;
+
+  pub fn empty() JHuff {
+    new JHuff(List[u16].empty(), List[i32].empty(), List[i32].empty(), List[u8].empty(), false);
+  }
+
+  // From the DHT counts of codes of each length and the symbols. false if the
+  // counts cannot be a prefix code.
+  pub fn build(self &mut, counts &Array[u8], symbols &Array[u8]) bool {
+    look.clear();
+    maxcode.clear();
+    valoff.clear();
+    vals.clear();
+    mut i = 0usize;
+    while i < 512usize { look.push(0u16); i += 1usize; }
+    i = 0usize;
+    while i < 17usize { maxcode.push(-1i32); valoff.push(0i32); i += 1usize; }
+    i = 0usize;
+    while i < symbols.len { vals.push(symbols[i]); i += 1usize; }
+    mut code = 0i32;
+    mut k = 0i32;
+    mut len = 1usize;
+    while len <= 16usize {
+      imm n = i32.from(counts[len - 1usize]);
+      if n > 0i32 {
+        // More codes of this length than there are strings of it left
+        if code + n > (1i32 << i32.from(len)) { return false; }
+        valoff.set(len, k - code);
+        mut j = 0i32;
+        while j < n {
+          if len <= 9usize {
+            // Fill every 9-bit string that starts with this code
+            imm shift = 9usize - len;
+            imm base = usize.from(code) << shift;
+            mut f = 0usize;
+            while f < (1usize << shift) {
+              look.set(base + f, u16.from(len) * 256u16 + u16.from(*vals[usize.from(k)]));
+              f += 1usize;
+            }
+          }
+          code += 1i32;
+          k += 1i32;
+          j += 1i32;
+        }
+        maxcode.set(len, code - 1i32);
+        if code > (1i32 << i32.from(len)) { return false; }
+      }
+      code = code << 1i32;
+      len += 1usize;
+    }
+    present = true;
+    true;
+  }
+}
+
+// The entropy-coded data's bit reader: most significant bit first, with the
+// byte stuffing (an FF is followed by a 00) removed. A marker ends the data;
+// past it, and past the end of the file, it supplies zero bits and counts
+// them.
+struct JBits {
+  pub pos usize;
+  pub acc u64;        // the next bits at the top
+  pub n u32;          // how many bits it holds
+  pub marker u32;     // the marker found (0 none)
+  pub fake u32;       // zero bytes supplied past the data
+  pub bad bool;
+}
+
+fn jFill(b &mut JBits, d &Array[u8]) {
+  while b.n <= 56u32 {
+    mut byte = 0u64;
+    if b.marker == 0u32 and b.pos < d.len {
+      imm c = d[b.pos];
+      if c == 0xFFu8 {
+        mut p = b.pos + 1usize;
+        // Fill bytes: any number of FFs before a marker's code
+        while p < d.len and d[p] == 0xFFu8 { p += 1usize; }
+        if p >= d.len {
+          b.marker = 0xD9u32;
+          b.pos = d.len;
+        } elif d[p] == 0u8 {
+          byte = 0xFFu64;
+          b.pos = p + 1usize;
+        } else {
+          b.marker = u32.from(d[p]);
+          b.pos = p - 1usize;
+        }
+      } else {
+        byte = u64.from(c);
+        b.pos += 1usize;
+      }
+    } else {
+      b.fake += 1u32;
+    }
+    b.acc = b.acc | (byte << u64.from(56u32 - b.n));
+    b.n += 8u32;
+  }
+}
+
+// n (0 to 16) bits
+fn jGet(b &mut JBits, d &Array[u8], n u32) i32 {
+  if n == 0u32 { return 0i32; }
+  if b.n < n { jFill(b, d); }
+  imm v = i32.from(b.acc >> u64.from(64u32 - n));
+  b.acc = b.acc << u64.from(n);
+  b.n -= n;
+  v;
+}
+
+fn jBit(b &mut JBits, d &Array[u8]) i32 {
+  if b.n < 1u32 { jFill(b, d); }
+  imm v = i32.from(b.acc >> 63u64);
+  b.acc = b.acc << 1u64;
+  b.n -= 1u32;
+  v;
+}
+
+// The next Huffman symbol, or -1 on a code that is not in the table
+fn jDecode(b &mut JBits, d &Array[u8], h &JHuff) i32 {
+  if b.n < 16u32 { jFill(b, d); }
+  imm e = *h.look[usize.from(b.acc >> 55u64)];
+  if e != 0u16 {
+    imm l = u32.from(e >> 8u16);
+    b.acc = b.acc << u64.from(l);
+    b.n -= l;
+    return i32.from(e & 255u16);
+  }
+  imm top = i32.from(b.acc >> 48u64);
+  mut len = 10usize;
+  while len <= 16usize {
+    imm code = top >> i32.from(16usize - len);
+    if code <= *h.maxcode[len] {
+      b.acc = b.acc << u64.from(len);
+      b.n -= u32.from(len);
+      imm idx = *h.valoff[len] + code;
+      if idx < 0i32 or usize.from(idx) >= h.vals.len() { return -1i32; }
+      return i32.from(*h.vals[usize.from(idx)]);
+    }
+    len += 1usize;
+  }
+  b.bad = true;
+  -1i32;
+}
+
+// T.81 F.2.2.1: the value of an s-bit number v, signed by its top bit
+fn jExtend(v i32, s i32) i32 {
+  if v < (1i32 << (s - 1i32)) { return v - (1i32 << s) + 1i32; }
+  v;
+}
+
+// One component of the frame
+struct JComp {
+  pub id u8;
+  pub h usize;
+  pub v usize;
+  pub tq usize;
+  pub bw usize;        // blocks per row, padded to a whole MCU
+  pub bh usize;        // block rows, padded
+  pub w usize;         // the component's own width in samples (not padded)
+  pub hgt usize;       // and height
+  pub coefs List[i16]; // bw * bh blocks of 64, natural order
+  pub plane List[u8];  // samples after the inverse DCT: bw * 8 wide
+}
+
+struct JFrame {
+  pub width usize;
+  pub height usize;
+  pub progressive bool;
+  pub comps List[JComp];
+  pub hmax usize;
+  pub vmax usize;
+  pub mcusX usize;
+  pub mcusY usize;
+}
+
+fn jFail(why &str) Result[Raster, DecodeError] {
+  Error[Raster, DecodeError](new DecodeError(String.from(why)));
+}
+
+fn be16u(d &Array[u8], at usize) usize { usize.from(d[at]) * 256usize + usize.from(d[at + 1usize]); }
+
+// ---- the decode of one block ----
+
+// A baseline block (T.81 F.2.2): DC difference, then the AC run/size pairs
+fn blockBaseline(d &Array[u8], b &mut JBits, dc &JHuff, ac &JHuff, pred &mut i32, c &mut Array[i16], off usize) bool {
+  imm t = jDecode(b, d, dc);
+  if t < 0i32 or t > 15i32 { return false; }
+  imm diff = if t == 0i32 {0i32;} else {jExtend(jGet(b, d, u32.from(t)), t);};
+  *pred = *pred + diff;
+  c[off] = i16.from(*pred);
+  mut k = 1usize;
+  while k < 64usize {
+    imm rs = jDecode(b, d, ac);
+    if rs < 0i32 { return false; }
+    imm r = usize.from(rs >> 4i32);
+    imm s = rs & 15i32;
+    if s != 0i32 {
+      k += r;
+      if k > 63usize { return false; }
+      imm v = jExtend(jGet(b, d, u32.from(s)), s);
+      c[off + usize.from(zigzag[k])] = i16.from(v);
+      k += 1usize;
+    } else {
+      if r != 15usize { break; }
+      k += 16usize;
+    }
+  }
+  true;
+}
+
+// Progressive DC first (G.1.2.1): the difference, shifted up by Al
+fn blockDcFirst(d &Array[u8], b &mut JBits, dc &JHuff, pred &mut i32, c &mut Array[i16], off usize, al i32) bool {
+  imm t = jDecode(b, d, dc);
+  if t < 0i32 or t > 15i32 { return false; }
+  imm diff = if t == 0i32 {0i32;} else {jExtend(jGet(b, d, u32.from(t)), t);};
+  *pred = *pred + diff;
+  c[off] = i16.from(*pred << al);
+  true;
+}
+
+// DC refinement: one bit, ORed in at position Al
+fn blockDcRefine(d &Array[u8], b &mut JBits, c &mut Array[i16], off usize, al i32) {
+  if jBit(b, d) != 0i32 { c[off] = c[off] | i16.from(1i32 << al); }
+}
+
+// AC first (G.1.2.2): runs and sizes of coefficients Ss to Se, shifted up by
+// Al, with the end-of-band run shared across blocks
+fn blockAcFirst(d &Array[u8], b &mut JBits, ac &JHuff, c &mut Array[i16], off usize, ss usize, se usize, al i32,
+  eobrun &mut i32) bool {
+  if *eobrun > 0i32 { *eobrun = *eobrun - 1i32; return true; }
+  mut k = ss;
+  while k <= se {
+    imm rs = jDecode(b, d, ac);
+    if rs < 0i32 { return false; }
+    imm r = rs >> 4i32;
+    imm s = rs & 15i32;
+    if s != 0i32 {
+      k += usize.from(r);
+      if k > 63usize { return false; }
+      imm v = jExtend(jGet(b, d, u32.from(s)), s);
+      c[off + usize.from(zigzag[k])] = i16.from(v << al);
+    } else {
+      if r == 15i32 {
+        k += 15usize;
+      } else {
+        *eobrun = 1i32 << r;
+        if r > 0i32 { *eobrun = *eobrun + jGet(b, d, u32.from(r)); }
+        *eobrun = *eobrun - 1i32;
+        break;
+      }
+    }
+    k += 1usize;
+  }
+  true;
+}
+
+// AC refinement (G.1.2.3, libjpeg's decode_mcu_AC_refine): new coefficients
+// of magnitude 1 << Al among the zeros, and a correction bit for each one
+// already nonzero that is passed
+fn blockAcRefine(d &Array[u8], b &mut JBits, ac &JHuff, c &mut Array[i16], off usize, ss usize, se usize, al i32,
+  eobrun &mut i32) bool {
+  imm p1 = 1i32 << al;
+  imm m1 = -1i32 << al;
+  mut k = ss;
+  if *eobrun == 0i32 {
+    while k <= se {
+      imm rs = jDecode(b, d, ac);
+      if rs < 0i32 { return false; }
+      mut r = rs >> 4i32;
+      mut s = rs & 15i32;
+      if s != 0i32 {
+        // A new coefficient: its sign comes next
+        s = if jBit(b, d) != 0i32 {p1;} else {m1;};
+      } else {
+        if r != 15i32 {
+          *eobrun = 1i32 << r;
+          if r > 0i32 { *eobrun = *eobrun + jGet(b, d, u32.from(r)); }
+          break;
+        }
+      }
+      // Skip over the nonzero coefficients (correcting them) and r zeros
+      while k <= se {
+        imm pos = off + usize.from(zigzag[k]);
+        imm cv = i32.from(c[pos]);
+        if cv != 0i32 {
+          if jBit(b, d) != 0i32 {
+            if (cv & p1) == 0i32 {
+              c[pos] = i16.from(if cv >= 0i32 {cv + p1;} else {cv + m1;});
+            }
+          }
+        } else {
+          r -= 1i32;
+          if r < 0i32 { break; }
+        }
+        k += 1usize;
+      }
+      if s != 0i32 and k <= 63usize {
+        c[off + usize.from(zigzag[k])] = i16.from(s);
+      }
+      k += 1usize;
+    }
+  }
+  if *eobrun > 0i32 {
+    // The rest of the band: only corrections
+    while k <= se {
+      imm pos = off + usize.from(zigzag[k]);
+      imm cv = i32.from(c[pos]);
+      if cv != 0i32 {
+        if jBit(b, d) != 0i32 {
+          if (cv & p1) == 0i32 {
+            c[pos] = i16.from(if cv >= 0i32 {cv + p1;} else {cv + m1;});
+          }
+        }
+      }
+      k += 1usize;
+    }
+    *eobrun = *eobrun - 1i32;
+  }
+  true;
+}
+
+// ---- the whole decode ----
+
+// The decoder's state across markers
+struct JState {
+  pub frame JFrame;
+  pub quant List[i32];         // 4 tables of 64, natural order
+  pub hasQuant List[bool];
+  pub dc List[JHuff];          // 4
+  pub ac List[JHuff];
+  pub restart usize;
+  pub adobe bool;
+  pub adobeTransform u8;
+  pub jfif bool;
+  pub orientation i32;
+  pub sawFrame bool;
+  pub scans usize;
+}
+
+// The Exif orientation in an APP1 segment's body (after the length), or 0
+fn exifOrientation(d &Array[u8], start usize, end usize) i32 {
+  // "Exif\0\0" then a TIFF header
+  if end < start + 14usize { return 0i32; }
+  if d[start] != 'E' or d[start + 1usize] != 'x' or d[start + 2usize] != 'i' or d[start + 3usize] != 'f' { return 0i32; }
+  imm t = start + 6usize;
+  imm little = d[t] == 'I' and d[t + 1usize] == 'I';
+  imm big = d[t] == 'M' and d[t + 1usize] == 'M';
+  if not little and not big { return 0i32; }
+  imm ifd = t + readU32(d, t + 4usize, little);
+  if ifd + 2usize > end { return 0i32; }
+  imm count = readU16(d, ifd, little);
+  mut i = 0usize;
+  while i < count {
+    imm e = ifd + 2usize + i * 12usize;
+    if e + 12usize > end { return 0i32; }
+    if readU16(d, e, little) == 0x0112usize {
+      imm v = i32.from(readU16(d, e + 8usize, little));
+      if v >= 1i32 and v <= 8i32 { return v; }
+      return 0i32;
+    }
+    i += 1usize;
+  }
+  0i32;
+}
+
+fn readU16(d &Array[u8], at usize, little bool) usize {
+  if little { return usize.from(d[at]) + usize.from(d[at + 1usize]) * 256usize; }
+  usize.from(d[at]) * 256usize + usize.from(d[at + 1usize]);
+}
+
+fn readU32(d &Array[u8], at usize, little bool) usize {
+  if little { return readU16(d, at, true) + readU16(d, at + 2usize, true) * 65536usize; }
+  readU16(d, at, false) * 65536usize + readU16(d, at + 2usize, false);
+}
+
+// Decode a JPEG file. 'orient': apply the Exif orientation to the pixels.
+pub fn decodeJpegWith(data &Array[u8], orient bool) Result[Raster, DecodeError] {
+  if data.len < 4usize or data[0usize] != 0xFFu8 or data[1usize] != 0xD8u8 {
+    return jFail("jpeg: not a JPEG file (no SOI marker)");
+  }
+  mut st = new JState(new JFrame(0usize, 0usize, false, List[JComp].empty(), 1usize, 1usize, 0usize, 0usize),
+    List[i32].empty(), List[bool].empty(), List[JHuff].empty(), List[JHuff].empty(), 0usize, false, 0u8, false, 1i32,
+    false, 0usize);
+  mut i = 0usize;
+  while i < 256usize { st.quant.push(0i32); i += 1usize; }
+  i = 0usize;
+  while i < 4usize { st.hasQuant.push(false); st.dc.push(JHuff.empty()); st.ac.push(JHuff.empty()); i += 1usize; }
+
+  mut pos = 2usize;
+  mut done = false;
+  while not done {
+    // Find the next marker: FF then a code that is not 0 or FF
+    while pos + 1usize < data.len and not (data[pos] == 0xFFu8 and data[pos + 1usize] != 0u8 and data[pos + 1usize] != 0xFFu8) {
+      pos += 1usize;
+    }
+    if pos + 1usize >= data.len { return jFail("jpeg: the file ends before the image does"); }
+    imm m = data[pos + 1usize];
+    pos += 2usize;
+    if m == 0xD9u8 { done = true; }
+    elif m == 0x01u8 or (m >= 0xD0u8 and m <= 0xD8u8) {
+      // standalone: TEM, RSTn (stray), SOI
+    } else {
+      if pos + 2usize > data.len { return jFail("jpeg: a marker segment is cut off"); }
+      imm len = be16u(data, pos);
+      if len < 2usize or pos + len > data.len { return jFail("jpeg: a marker segment is cut off"); }
+      imm body = pos + 2usize;
+      imm end = pos + len;
+      if m == 0xDBu8 {
+        // DQT
+        mut p = body;
+        while p < end {
+          imm pq = usize.from(data[p] >> 4u8);
+          imm tq = usize.from(data[p] & 15u8);
+          p += 1usize;
+          if tq > 3usize or pq > 1usize { return jFail("jpeg: bad quantisation table"); }
+          if p + 64usize * (pq + 1usize) > end { return jFail("jpeg: bad quantisation table"); }
+          mut k = 0usize;
+          while k < 64usize {
+            imm v = if pq == 0usize {usize.from(data[p + k]);} else {be16u(data, p + k * 2usize);};
+            st.quant.set(tq * 64usize + usize.from(zigzag[k]), i32.from(v));
+            k += 1usize;
+          }
+          st.hasQuant.set(tq, true);
+          p += 64usize * (pq + 1usize);
+        }
+      } elif m == 0xC4u8 {
+        // DHT
+        mut p = body;
+        while p < end {
+          if p + 17usize > end { return jFail("jpeg: bad Huffman table"); }
+          imm tc = usize.from(data[p] >> 4u8);
+          imm th = usize.from(data[p] & 15u8);
+          if tc > 1usize or th > 3usize { return jFail("jpeg: bad Huffman table"); }
+          mut total = 0usize;
+          mut k = 0usize;
+          while k < 16usize { total += usize.from(data[p + 1usize + k]); k += 1usize; }
+          if total > 256usize or p + 17usize + total > end { return jFail("jpeg: bad Huffman table"); }
+          mut h = JHuff.empty();
+          if not h.build(&data[p + 1usize..<p + 17usize], &data[p + 17usize..<p + 17usize + total]) {
+            return jFail("jpeg: a Huffman table is not a prefix code");
+          }
+          if tc == 0usize { st.dc.set(th, h); } else { st.ac.set(th, h); }
+          p += 17usize + total;
+        }
+      } elif m == 0xDDu8 {
+        if len != 4usize { return jFail("jpeg: bad restart interval"); }
+        st.restart = be16u(data, body);
+      } elif m == 0xE1u8 {
+        imm o = exifOrientation(data, body, end);
+        if o > 0i32 { st.orientation = o; }
+      } elif m == 0xE0u8 {
+        if len >= 7usize and data[body] == 'J' and data[body + 1usize] == 'F' { st.jfif = true; }
+      } elif m == 0xEEu8 {
+        if len >= 14usize and data[body] == 'A' and data[body + 1usize] == 'd' and data[body + 2usize] == 'o'
+          and data[body + 3usize] == 'b' and data[body + 4usize] == 'e' {
+          st.adobe = true;
+          st.adobeTransform = data[body + 11usize];
+        }
+      } elif m == 0xC0u8 or m == 0xC1u8 or m == 0xC2u8 {
+        if st.sawFrame { return jFail("jpeg: a second frame header"); }
+        st.sawFrame = true;
+        if data[body] != 8u8 { return jFail("jpeg: only 8-bit samples are supported (not 12-bit)"); }
+        st.frame.progressive = m == 0xC2u8;
+        st.frame.height = be16u(data, body + 1usize);
+        st.frame.width = be16u(data, body + 3usize);
+        imm nc = usize.from(data[body + 5usize]);
+        if st.frame.width == 0usize or st.frame.height == 0usize {
+          return jFail("jpeg: a picture with no size (or a height set by a later DNL marker)");
+        }
+        if nc < 1usize or nc > 4usize or len != 8usize + 3usize * nc { return jFail("jpeg: bad frame header"); }
+        if st.frame.width * st.frame.height > maxPixels { return jFail("jpeg: the picture is too large"); }
+        mut c = 0usize;
+        while c < nc {
+          imm q = body + 6usize + c * 3usize;
+          imm h = usize.from(data[q + 1usize] >> 4u8);
+          imm v = usize.from(data[q + 1usize] & 15u8);
+          imm tq = usize.from(data[q + 2usize]);
+          if h < 1usize or h > 4usize or v < 1usize or v > 4usize or tq > 3usize {
+            return jFail("jpeg: bad component in the frame header");
+          }
+          st.frame.comps.push(new JComp(data[q], h, v, tq, 0usize, 0usize, 0usize, 0usize, List[i16].empty(), List[u8].empty()));
+          if h > st.frame.hmax { st.frame.hmax = h; }
+          if v > st.frame.vmax { st.frame.vmax = v; }
+          c += 1usize;
+        }
+        // Geometry
+        imm mcuW = 8usize * st.frame.hmax;
+        imm mcuH = 8usize * st.frame.vmax;
+        st.frame.mcusX = (st.frame.width + mcuW - 1usize) / mcuW;
+        st.frame.mcusY = (st.frame.height + mcuH - 1usize) / mcuH;
+        c = 0usize;
+        while c < nc {
+          imm bw = st.frame.mcusX * st.frame.comps[c].h;
+          imm bh = st.frame.mcusY * st.frame.comps[c].v;
+          imm cw = (st.frame.width * st.frame.comps[c].h + st.frame.hmax - 1usize) / st.frame.hmax;
+          imm ch = (st.frame.height * st.frame.comps[c].v + st.frame.vmax - 1usize) / st.frame.vmax;
+          imm cp = &mut st.frame.comps[c];
+          cp.bw = bw;
+          cp.bh = bh;
+          cp.w = cw;
+          cp.hgt = ch;
+          cp.coefs.resize(bw * bh * 64usize, 0i16);
+          c += 1usize;
+        }
+      } elif m == 0xC3u8 or (m >= 0xC5u8 and m <= 0xC7u8) or (m >= 0xC9u8 and m <= 0xCFu8 and m != 0xCCu8) {
+        if m >= 0xC9u8 { return jFail("jpeg: arithmetic coding is not supported"); }
+        return jFail("jpeg: lossless and hierarchical JPEG are not supported");
+      } elif m == 0xDAu8 {
+        if not st.sawFrame { return jFail("jpeg: a scan before the frame header"); }
+        imm ns = usize.from(data[body]);
+        if ns < 1usize or ns > 4usize or len != 6usize + 2usize * ns { return jFail("jpeg: bad scan header"); }
+        mut scanComp = List[usize].empty();
+        mut dcT = List[usize].empty();
+        mut acT = List[usize].empty();
+        mut s = 0usize;
+        while s < ns {
+          imm cid = data[body + 1usize + s * 2usize];
+          imm tt = data[body + 2usize + s * 2usize];
+          mut found = false;
+          mut ci = 0usize;
+          while ci < st.frame.comps.len() {
+            if st.frame.comps[ci].id == cid { scanComp.push(ci); found = true; }
+            ci += 1usize;
+          }
+          if not found { return jFail("jpeg: a scan names a component the frame does not have"); }
+          dcT.push(usize.from(tt >> 4u8) & 3usize);
+          acT.push(usize.from(tt & 15u8) & 3usize);
+          s += 1usize;
+        }
+        imm ss = usize.from(data[body + 1usize + ns * 2usize]);
+        imm se = usize.from(data[body + 2usize + ns * 2usize]);
+        imm ah = i32.from(data[body + 3usize + ns * 2usize] >> 4u8);
+        imm al = i32.from(data[body + 3usize + ns * 2usize] & 15u8);
+        if st.frame.progressive {
+          if ss > se or se > 63usize or al > 13i32 { return jFail("jpeg: bad progressive scan parameters"); }
+          if ss == 0usize and se != 0usize { return jFail("jpeg: a progressive DC scan with AC coefficients"); }
+          if ss > 0usize and ns != 1usize { return jFail("jpeg: a progressive AC scan with several components"); }
+        }
+        imm r = decodeScan(data, end, &mut st, &scanComp, &dcT, &acT, ss, se, ah, al);
+        if r < 0i32 { return jFail("jpeg: bad or truncated entropy-coded data"); }
+        st.scans += 1usize;
+        pos = usize.from(r);
+        continue;
+      }
+      pos = end;
+    }
+  }
+  if not st.sawFrame or st.scans == 0usize { return jFail("jpeg: no image data"); }
+  finishJpeg(&mut st, orient);
+}
+
+// Decode a JPEG file, the Exif orientation applied
+pub fn decodeJpeg(data &Array[u8]) Result[Raster, DecodeError] { decodeJpegWith(data, true); }
+
+// One scan: the entropy-coded segment from 'start'. Answers the position
+// after the data, or -1 if the data are bad.
+fn decodeScan(d &Array[u8], start usize, st &mut JState, scanComp &List[usize], dcT &List[usize], acT &List[usize],
+  ss usize, se usize, ah i32, al i32) i32 {
+  imm progressive = st.frame.progressive;
+  imm ns = scanComp.len();
+  mut b = new JBits(start, 0u64, 0u32, 0u32, 0u32, false);
+  mut pred = List[i32].empty();
+  mut k = 0usize;
+  while k < 4usize { pred.push(0i32); k += 1usize; }
+  mut eobrun = 0i32;
+  // 0 baseline, 1 DC first, 2 DC refine, 3 AC first, 4 AC refine
+  imm mode = if not progressive {0i32;} elif ss == 0usize {if ah == 0i32 {1i32;} else {2i32;};}
+    elif ah == 0i32 {3i32;} else {4i32;};
+  // The scan's MCUs: for a single component the blocks in raster order over
+  // the component's own size; otherwise the frame's MCUs
+  mut mcusX = st.frame.mcusX;
+  mut mcusY = st.frame.mcusY;
+  if ns == 1usize {
+    imm c0 = *scanComp[0usize];
+    mcusX = (st.frame.comps[c0].w + 7usize) / 8usize;
+    mcusY = (st.frame.comps[c0].hgt + 7usize) / 8usize;
+  }
+  imm total = mcusX * mcusY;
+  // The tables the scan needs must have been defined
+  mut s0 = 0usize;
+  while s0 < ns {
+    imm needDc = mode == 0i32 or mode == 1i32;
+    imm needAc = mode == 0i32 or mode == 3i32 or mode == 4i32;
+    if needDc and not st.dc[*dcT[s0]].present { return -1i32; }
+    if needAc and not st.ac[*acT[s0]].present { return -1i32; }
+    s0 += 1usize;
+  }
+  mut count = 0usize;
+  mut my = 0usize;
+  while my < mcusY {
+    mut mx = 0usize;
+    while mx < mcusX {
+      if st.restart > 0usize and count > 0usize and count % st.restart == 0usize {
+        // A restart marker: byte-align, find and skip it, reset the predictors
+        if b.fake * 8u32 > b.n { return -1i32; }
+        b.fake = 0u32;
+        b.acc = 0u64;
+        b.n = 0u32;
+        b.marker = 0u32;
+        mut p = b.pos;
+        while p + 1usize < d.len and not (d[p] == 0xFFu8 and d[p + 1usize] >= 0xD0u8 and d[p + 1usize] <= 0xD7u8) {
+          // Another marker ends the scan early
+          if d[p] == 0xFFu8 and d[p + 1usize] != 0u8 and d[p + 1usize] != 0xFFu8 { return -1i32; }
+          p += 1usize;
+        }
+        if p + 1usize >= d.len { return -1i32; }
+        b.pos = p + 2usize;
+        k = 0usize;
+        while k < 4usize { pred.set(k, 0i32); k += 1usize; }
+        eobrun = 0i32;
+      }
+      mut s = 0usize;
+      while s < ns {
+        imm ci = *scanComp[s];
+        imm h = if ns == 1usize {1usize;} else {st.frame.comps[ci].h;};
+        imm v = if ns == 1usize {1usize;} else {st.frame.comps[ci].v;};
+        imm bw = st.frame.comps[ci].bw;
+        mut brow = 0usize;
+        while brow < v {
+          mut bx = 0usize;
+          while bx < h {
+            imm blockX = mx * h + bx;
+            imm blockY = my * v + brow;
+            imm off = (blockY * bw + blockX) * 64usize;
+            imm dt = *dcT[s];
+            imm at = *acT[s];
+            mut ok = true;
+            if mode == 0i32 {
+              ok = blockBaseline(d, &mut b, st.dc[dt], st.ac[at], &mut pred[ci],
+                (&mut st.frame.comps[ci]).coefs.viewMut(), off);
+            } elif mode == 1i32 {
+              ok = blockDcFirst(d, &mut b, st.dc[dt], &mut pred[ci], (&mut st.frame.comps[ci]).coefs.viewMut(), off, al);
+            } elif mode == 2i32 {
+              blockDcRefine(d, &mut b, (&mut st.frame.comps[ci]).coefs.viewMut(), off, al);
+            } elif mode == 3i32 {
+              ok = blockAcFirst(d, &mut b, st.ac[at], (&mut st.frame.comps[ci]).coefs.viewMut(), off, ss, se, al, &mut eobrun);
+            } else {
+              ok = blockAcRefine(d, &mut b, st.ac[at], (&mut st.frame.comps[ci]).coefs.viewMut(), off, ss, se, al, &mut eobrun);
+            }
+            if not ok or b.bad { return -1i32; }
+            bx += 1usize;
+          }
+          brow += 1usize;
+        }
+        s += 1usize;
+      }
+      count += 1usize;
+      mx += 1usize;
+    }
+    my += 1usize;
+  }
+  // Data supplied past the end of the real data means a truncated scan
+  if b.fake * 8u32 > b.n { return -1i32; }
+  // Unread whole bytes in the accumulator are put back (bits are not)
+  mut p = b.pos;
+  if b.marker != 0u32 { p = b.pos; }
+  i32.from(p);
+}

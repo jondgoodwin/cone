@@ -1,0 +1,104 @@
+// The gltfimport package: glTF 2.0 models into plain data, in Cone, with no C
+// library (cgltf's job). A working name; Jon names packages. It reads
+// what a model is and hands it over as data (meshes, materials, a node
+// tree, skins, animations); it draws nothing, simulates nothing, and does not
+// import render, so a tool can read a model without linking SDL3. The
+// browser takes what it wants from a 'Gltf'.
+//
+//   import gltfimport use *;
+//
+//   match loadGltf(path, true) {               // .gltf or .glb; true: decode the images
+//     case imm g Ok {
+//       // g.meshes[i].primitives[j].mesh      a mesh.Mesh (positions, normals,
+//       //                                     uvs, colours, tangents, indices)
+//       // g.materials[k]                      metallic-roughness, normal, occlusion, emissive
+//       // g.images[n].raster                  an imagedecode.Raster
+//       // meshInstances(g)                    every node with a mesh, with its world matrix
+//     }
+//     case imm e Error { /* e.reason says why */ }
+//   }
+//
+// Also 'loadGltfBytes' (a .glb or a .gltf's JSON text in memory, no external
+// files) and 'loadGltfBytesIn' (with a folder for the .bin and image files).
+//
+// WHAT IS READ
+//
+//   Files        .gltf with a .bin and images beside it (relative uris,
+//                percent-decoded), .gltf with everything embedded (data: uris
+//                of base64), and .glb (the JSON chunk, the BIN chunk, images
+//                as buffer views). Unreadable files and bad data are errors
+//                that say what and where; an image that will not decode is a
+//                warning, not a failure, and its Raster stays empty.
+//   Accessors    every component type, normalised or not, vectors and
+//                matrices (MAT2 and MAT3 with their column padding),
+//                interleaved buffer views (byteStride), sparse accessors
+//                (with and without a base), checked against their buffers
+//                before a byte is read.
+//   Meshes       triangle lists, strips and fans (turned into lists), indexed
+//                or not; POSITION, NORMAL, TANGENT, TEXCOORD_0 and _1,
+//                COLOR_0 (RGB or RGBA), JOINTS_0 and WEIGHTS_0 (weights
+//                normalised), morph targets (position, normal and tangent
+//                displacements, read and kept, not applied). Points and
+//                lines are named in 'warnings' and skipped. Missing normals are
+//                made (flat, as the specification says; smooth where the
+//                primitive has per-vertex data a split would strand).
+//                Texture coordinates are stored (u, 1 - v): glTF's v runs down
+//                the image, mesh's up.
+//   Materials    metallic-roughness with its three maps, normal scale,
+//                occlusion strength, emissive and its map, alpha mode and
+//                cut-off, double-sided; KHR_materials_emissive_strength,
+//                KHR_texture_transform (kept per texture slot;
+//                'bakeTextureTransform' puts a transform into a mesh's uvs
+//                for a renderer with none of its own), KHR_materials_unlit.
+//                The render hook is a PbrMaterial from the factors and
+//                textures: examples/view.cone does it in fifteen lines.
+//   Nodes        translation, rotation, scale or a matrix (decomposed), the
+//                tree checked (one parent, no cycle), world matrices
+//                ('Gltf.worldMatrices', 'worldsOf' for an animated pose).
+//   Skins        joints, inverse bind matrices; 'skeletonOf' maps a skin onto
+//                bonepose's Skeleton (joints sorted parents-first, with the
+//                joint-to-bone permutation so a vertex's JOINTS_0 still
+//                finds its bone), 'poseAt' gives a bonepose Pose at a time,
+//                'jointMatrices' the matrices that skin a vertex.
+//   Animations   translation, rotation, scale and weights channels with
+//                linear, step and cubic-spline samplers, as plain data;
+//                'sampleVec3', 'sampleQuat' (shortest-arc slerp),
+//                'sampleWeights' and 'evaluate' sample them at a time. Nothing
+//                plays or loops them.
+//   Also         cameras, KHR_lights_punctual lights, scenes, samplers.
+//
+// REFUSED, by name and with what it would take: KHR_draco_mesh_compression
+// (Draco's decoder is about ten thousand lines of C++ with no small part to
+// port; its own lane in Cone, or a vendored copy, a new C++ dependency Jon
+// would approve) and EXT_meshopt_compression (about six hundred lines of C; a
+// day to port). A file that uses one with uncompressed fallback accessors
+// loads from the fallback with a warning. Any other extension a file
+// REQUIRES that is not listed above is refused; one it merely uses is
+// skipped with a warning where it would change a material.
+//
+// THE METHODS. JSON: a small recursive-descent reader into a flat node
+// arena (a struct cannot hold a List of itself yet). Accessors and the
+// skinning and animation maths follow the glTF 2.0 specification (sections 3.6
+// and 3.7, 3.11, appendix C for the Hermite spline). Quaternion
+// interpolation is Shoemake's slerp, falling to normalised lerp when
+// nearly parallel.
+//
+// Its files are one module, and only this one, the root, imports:
+//
+//   gltfimport.cone  this overview
+//   json.cone        the JSON reader
+//   gltf.cone        the data types a load gives, Gltf
+//   gltfbuf.cone     base64, uris, buffer views, accessors
+//   gltfload.cone    the document into a Gltf, the entry points
+//   gltfanim.cone    sampling clips, skeletonOf, poseAt, jointMatrices
+//   gltfhelp.cone    bakeTextureTransform, meshInstances, copyMesh
+
+mod gltfimport;
+
+import collections use *;
+import geomath use *;
+import mesh use *;
+import bonepose use *;
+import imagedecode use *;
+import fs;
+import path use Path;

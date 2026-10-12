@@ -1,0 +1,315 @@
+// A glTF asset of a two-joint skin, an animation, morph targets, a sparse
+// accessor and the strip and fan topologies, hand-built here, loaded and
+// checked against values worked out by hand.
+//
+// Nodes: 0 "J0" (the root joint, at the origin) with child 1 "J1" (a move of
+// (0, 1, 0) up the bone), 2 the skinned quad, 3 a triangle strip, 4 a fan, 5 a
+// triangle with a sparse position. The skin lists its joints as [J1, J0], the
+// reverse of bone order, so the sort into bonepose's parents-first bones has
+// work to do: joint 0 is node 1 (inverse bind: a move of (0, -1, 0)), joint
+// 1 is node 0 (identity).
+//
+// The quad (0,0) (1,0) (0,2) (1,2) hangs on the joints: its bottom two
+// vertices wholly on J0, its top-left half on each, its top-right wholly on
+// J1. Normalised weights of 128 and 127 over 255 sum to 1, so are kept.
+//
+// The animation "wave" (3 samplers, 3 channels):
+//   J1's rotation, LINEAR, times 0, 1, 2: none, a quarter turn about z, none.
+//     At 0.5 the shorter-arc interpolation is an eighth of a turn:
+//     (0, 0, sin(22.5 deg), cos(22.5 deg)) = (0, 0, 0.3826834, 0.9238795).
+//   J0's translation, STEP, times 0, 1: (0, 0, 0) then (4, 0, 0): held until 1.
+//   the skinned node's morph weights, CUBICSPLINE, times 0, 1, two targets,
+//     keys (in-tangent, value, out-tangent) per target: target 0 (0, 0, 2) then
+//     (0.4, 1, 0), target 1 (0, 1, 0) then (0, 0, 0). The Hermite curve of
+//     Appendix C at the middle of a unit interval is
+//     0.5 v0 + 0.125 out0 + 0.5 v1 - 0.125 in1: 0 + 0.25 + 0.5 - 0.05 = 0.7 for
+//     target 0 and 0.5 for target 1.
+//
+// At t = 1 the quad's top-right vertex (0, 2, 0), wholly on J1 whose
+// bind pose has it at the bone's top (0, 1, 0) after the inverse bind, is
+// turned a quarter about z to (-1, 0, 0), moved up the bone by (0, 1, 0) to
+// (-1, 1, 0) and carried by J0's move to (3, 1, 0). (The quad's other top
+// vertex (1,2,0) goes to (-1+...): checked likewise below.)
+
+mod gltfskin;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import bonepose use *;
+import gltfimport use *;
+
+struct Bin {
+  pub b List[u8];
+
+  pub fn putU8(self &mut, v u8) { b.push(v); }
+  pub fn putU16(self &mut, v u32) { b.push(u8.from(v & 255u32)); b.push(u8.from((v >> 8u32) & 255u32)); }
+  pub fn putU32(self &mut, v u32) { self.putU16(v & 0xFFFFu32); self.putU16(v >> 16u32); }
+  pub fn putF32(self &mut, v f32) { self.putU32(v as u32); }
+  pub fn align4(self &mut) { while b.len() % 4usize != 0usize { b.push(0u8); } }
+}
+
+// Mark the bytes since 'start' as the next buffer view
+fn view(b &mut Bin, views &mut String, count &mut usize, start usize) {
+  if *count > 0usize { views.append(","); }
+  views.append("{\"buffer\":0,\"byteOffset\":");
+  views.appendInt(i64.from(start));
+  views.append(",\"byteLength\":");
+  views.appendInt(i64.from(b.b.len() - start));
+  views.append("}");
+  *count = *count + 1usize;
+  b.align4();
+}
+
+fn vec3(b &mut Bin, x f32, y f32, z f32) { b.putF32(x); b.putF32(y); b.putF32(z); }
+
+fn build(json &mut String, bin &mut Bin) {
+  mut views = String.empty();
+  mut nv = 0usize;
+  mut s = 0usize;
+  // V0 quad positions
+  s = bin.b.len(); vec3(bin, 0., 0., 0.); vec3(bin, 1., 0., 0.); vec3(bin, 0., 2., 0.); vec3(bin, 1., 2., 0.); view(bin, &mut views, &mut nv, s);
+  // V1 joints (u8 x4), V2 weights (normalised u8 x4), V3 indices (u8)
+  s = bin.b.len();
+  bin.putU8(1u8); bin.putU8(0u8); bin.putU8(0u8); bin.putU8(0u8);
+  bin.putU8(1u8); bin.putU8(0u8); bin.putU8(0u8); bin.putU8(0u8);
+  bin.putU8(0u8); bin.putU8(1u8); bin.putU8(0u8); bin.putU8(0u8);
+  bin.putU8(0u8); bin.putU8(0u8); bin.putU8(0u8); bin.putU8(0u8);
+  view(bin, &mut views, &mut nv, s);
+  s = bin.b.len();
+  bin.putU8(255u8); bin.putU8(0u8); bin.putU8(0u8); bin.putU8(0u8);
+  bin.putU8(255u8); bin.putU8(0u8); bin.putU8(0u8); bin.putU8(0u8);
+  bin.putU8(128u8); bin.putU8(127u8); bin.putU8(0u8); bin.putU8(0u8);
+  bin.putU8(255u8); bin.putU8(0u8); bin.putU8(0u8); bin.putU8(0u8);
+  view(bin, &mut views, &mut nv, s);
+  s = bin.b.len();
+  bin.putU8(0u8); bin.putU8(1u8); bin.putU8(2u8); bin.putU8(2u8); bin.putU8(1u8); bin.putU8(3u8);
+  view(bin, &mut views, &mut nv, s);
+  // V4, V5 morph target displacements
+  s = bin.b.len(); vec3(bin, 0., 0., 1.); vec3(bin, 0., 0., 1.); vec3(bin, 0., 0., 1.); vec3(bin, 0., 0., 1.); view(bin, &mut views, &mut nv, s);
+  s = bin.b.len(); vec3(bin, 1., 0., 0.); vec3(bin, 2., 0., 0.); vec3(bin, 3., 0., 0.); vec3(bin, 4., 0., 0.); view(bin, &mut views, &mut nv, s);
+  // V6 inverse bind matrices: joint 0 (J1) a move of (0, -1, 0); joint 1 (J0) none
+  s = bin.b.len();
+  bin.putF32(1.); bin.putF32(0.); bin.putF32(0.); bin.putF32(0.);
+  bin.putF32(0.); bin.putF32(1.); bin.putF32(0.); bin.putF32(0.);
+  bin.putF32(0.); bin.putF32(0.); bin.putF32(1.); bin.putF32(0.);
+  bin.putF32(0.); bin.putF32(-1.); bin.putF32(0.); bin.putF32(1.);
+  bin.putF32(1.); bin.putF32(0.); bin.putF32(0.); bin.putF32(0.);
+  bin.putF32(0.); bin.putF32(1.); bin.putF32(0.); bin.putF32(0.);
+  bin.putF32(0.); bin.putF32(0.); bin.putF32(1.); bin.putF32(0.);
+  bin.putF32(0.); bin.putF32(0.); bin.putF32(0.); bin.putF32(1.);
+  view(bin, &mut views, &mut nv, s);
+  // V7, V8: J1's rotation keys
+  s = bin.b.len(); bin.putF32(0.); bin.putF32(1.); bin.putF32(2.); view(bin, &mut views, &mut nv, s);
+  s = bin.b.len();
+  bin.putF32(0.); bin.putF32(0.); bin.putF32(0.); bin.putF32(1.);
+  bin.putF32(0.); bin.putF32(0.); bin.putF32(0.70710678); bin.putF32(0.70710678);
+  bin.putF32(0.); bin.putF32(0.); bin.putF32(0.); bin.putF32(1.);
+  view(bin, &mut views, &mut nv, s);
+  // V9, V10: J0's translation keys
+  s = bin.b.len(); bin.putF32(0.); bin.putF32(1.); view(bin, &mut views, &mut nv, s);
+  s = bin.b.len(); vec3(bin, 0., 0., 0.); vec3(bin, 4., 0., 0.); view(bin, &mut views, &mut nv, s);
+  // V11, V12: morph weights, cubic: per key in, value, out of both targets
+  s = bin.b.len(); bin.putF32(0.); bin.putF32(1.); view(bin, &mut views, &mut nv, s);
+  s = bin.b.len();
+  bin.putF32(0.); bin.putF32(0.);  bin.putF32(0.); bin.putF32(1.);  bin.putF32(2.); bin.putF32(0.);
+  bin.putF32(0.4); bin.putF32(0.);  bin.putF32(1.); bin.putF32(0.);  bin.putF32(0.); bin.putF32(0.);
+  view(bin, &mut views, &mut nv, s);
+  // V13: strip positions
+  s = bin.b.len();
+  vec3(bin, 0., 0., 0.); vec3(bin, 1., 0., 0.); vec3(bin, 0., 1., 0.); vec3(bin, 1., 1., 0.); vec3(bin, 0., 2., 0.);
+  view(bin, &mut views, &mut nv, s);
+  // V14: the fan's positions, as sparse values; V15 their indices (u8)
+  s = bin.b.len();
+  vec3(bin, 0., 0., 0.); vec3(bin, 1., 0., 0.); vec3(bin, 1., 1., 0.); vec3(bin, 0., 1., 0.); vec3(bin, -1., 1., 0.);
+  view(bin, &mut views, &mut nv, s);
+  s = bin.b.len(); bin.putU8(0u8); bin.putU8(1u8); bin.putU8(2u8); bin.putU8(3u8); bin.putU8(4u8); view(bin, &mut views, &mut nv, s);
+  // V16: three positions; V17: a sparse index (u16 1); V18: its value
+  s = bin.b.len(); vec3(bin, 0., 0., 0.); vec3(bin, 1., 0., 0.); vec3(bin, 0., 1., 0.); view(bin, &mut views, &mut nv, s);
+  s = bin.b.len(); bin.putU16(1u32); view(bin, &mut views, &mut nv, s);
+  s = bin.b.len(); vec3(bin, 5., 6., 7.); view(bin, &mut views, &mut nv, s);
+
+  *json = String.from("{\"asset\":{\"version\":\"2.0\"},\"scene\":0,\"scenes\":[{\"nodes\":[0,2,3,4,5]}],");
+  json.append("\"nodes\":[{\"name\":\"J0\",\"children\":[1]},{\"name\":\"J1\",\"translation\":[0,1,0]},");
+  json.append("{\"name\":\"skinned\",\"mesh\":0,\"skin\":0},{\"mesh\":1},{\"mesh\":2},{\"mesh\":3}],");
+  json.append("\"skins\":[{\"name\":\"arm\",\"joints\":[1,0],\"inverseBindMatrices\":6,\"skeleton\":0}],");
+  json.append("\"meshes\":[{\"weights\":[0.25,0.75],\"primitives\":[{\"attributes\":{\"POSITION\":0,\"JOINTS_0\":1,\"WEIGHTS_0\":2},\"indices\":3,");
+  json.append("\"targets\":[{\"POSITION\":4},{\"POSITION\":5}]}]},");
+  json.append("{\"primitives\":[{\"attributes\":{\"POSITION\":13},\"mode\":5}]},");
+  json.append("{\"primitives\":[{\"attributes\":{\"POSITION\":14},\"mode\":6}]},");
+  json.append("{\"primitives\":[{\"attributes\":{\"POSITION\":15}}]}],");
+  json.append("\"animations\":[{\"name\":\"wave\",\"samplers\":[{\"input\":7,\"output\":8},{\"input\":9,\"output\":10,\"interpolation\":\"STEP\"},");
+  json.append("{\"input\":11,\"output\":12,\"interpolation\":\"CUBICSPLINE\"}],");
+  json.append("\"channels\":[{\"sampler\":0,\"target\":{\"node\":1,\"path\":\"rotation\"}},{\"sampler\":1,\"target\":{\"node\":0,\"path\":\"translation\"}},");
+  json.append("{\"sampler\":2,\"target\":{\"node\":2,\"path\":\"weights\"}}]}],");
+  json.append("\"buffers\":[{\"byteLength\":");
+  json.appendInt(i64.from(bin.b.len()));
+  json.append(",\"uri\":\"data:application/octet-stream;base64,@@\"}],\"bufferViews\":[");
+  json.append(views.view());
+  json.append("],\"accessors\":[");
+  json.append("{\"bufferView\":0,\"componentType\":5126,\"count\":4,\"type\":\"VEC3\"},");
+  json.append("{\"bufferView\":1,\"componentType\":5121,\"count\":4,\"type\":\"VEC4\"},");
+  json.append("{\"bufferView\":2,\"componentType\":5121,\"normalized\":true,\"count\":4,\"type\":\"VEC4\"},");
+  json.append("{\"bufferView\":3,\"componentType\":5121,\"count\":6,\"type\":\"SCALAR\"},");
+  json.append("{\"bufferView\":4,\"componentType\":5126,\"count\":4,\"type\":\"VEC3\"},");
+  json.append("{\"bufferView\":5,\"componentType\":5126,\"count\":4,\"type\":\"VEC3\"},");
+  json.append("{\"bufferView\":6,\"componentType\":5126,\"count\":2,\"type\":\"MAT4\"},");
+  json.append("{\"bufferView\":7,\"componentType\":5126,\"count\":3,\"type\":\"SCALAR\"},");
+  json.append("{\"bufferView\":8,\"componentType\":5126,\"count\":3,\"type\":\"VEC4\"},");
+  json.append("{\"bufferView\":9,\"componentType\":5126,\"count\":2,\"type\":\"SCALAR\"},");
+  json.append("{\"bufferView\":10,\"componentType\":5126,\"count\":2,\"type\":\"VEC3\"},");
+  json.append("{\"bufferView\":11,\"componentType\":5126,\"count\":2,\"type\":\"SCALAR\"},");
+  json.append("{\"bufferView\":12,\"componentType\":5126,\"count\":12,\"type\":\"SCALAR\"},");
+  json.append("{\"bufferView\":13,\"componentType\":5126,\"count\":5,\"type\":\"VEC3\"},");
+  json.append("{\"componentType\":5126,\"count\":5,\"type\":\"VEC3\",\"sparse\":{\"count\":5,\"indices\":{\"bufferView\":15,\"componentType\":5121},\"values\":{\"bufferView\":14}}},");
+  json.append("{\"bufferView\":16,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\",\"sparse\":{\"count\":1,\"indices\":{\"bufferView\":17,\"componentType\":5123},\"values\":{\"bufferView\":18}}}]}");
+}
+
+fn base64(d &Array[u8]) String {
+  imm tab = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  mut out = String.empty();
+  mut i = 0usize;
+  while i < d.len {
+    imm a = u32.from(d[i]);
+    imm b = if i + 1usize < d.len {u32.from(d[i + 1usize]);} else {0u32;};
+    imm c = if i + 2usize < d.len {u32.from(d[i + 2usize]);} else {0u32;};
+    imm v = (a << 16u32) | (b << 8u32) | c;
+    out.appendByte(tab[usize.from((v >> 18u32) & 63u32)]);
+    out.appendByte(tab[usize.from((v >> 12u32) & 63u32)]);
+    out.appendByte(if i + 1usize < d.len {tab[usize.from((v >> 6u32) & 63u32)];} else {'=';});
+    out.appendByte(if i + 2usize < d.len {tab[usize.from(v & 63u32)];} else {'=';});
+    i += 3usize;
+  }
+  out;
+}
+
+fn near(a f32, b f32) bool { imm d = a - b; d < 0.0005 and d > -0.0005; }
+
+fn main() i32 {
+  mut json = String.empty();
+  mut bin = new Bin(List[u8].empty());
+  build(&mut json, &mut bin);
+  json.replace("@@", base64(bin.b.view()).view());
+  mut loaded = Gltf.empty();
+  match loadGltfBytes(json.view(), true) {
+    case mut ok Ok { loaded <=> ok; }
+    case imm e Error { expect(false, e.reason.view()); return done(); }
+  }
+  imm g = &loaded;
+  expectInt(i64.from(g.nodes.len()), 6i64, "nodes");
+  expectInt(i64.from(g.skins.len()), 1i64, "skins");
+  expectInt(i64.from(g.animations.len()), 1i64, "animations");
+  expectInt(i64.from(g.warnings.len()), 0i64, "no warnings");
+
+  // The skinned quad
+  imm p = g.meshes[0usize].primitives[0usize];
+  expectInt(i64.from(p.mesh.positions.len()), 4i64, "quad vertices");
+  expectInt(i64.from(p.mesh.triangleCount()), 2i64, "quad triangles");
+  expectInt(i64.from(p.joints.len()), 16i64, "four joints a vertex");
+  expectInt(i64.from(*p.joints[0usize]), 1i64, "vertex 0 joint");
+  expectInt(i64.from(*p.joints[8usize + 1usize]), 1i64, "vertex 2's second joint");
+  expectFloat(f64.from(p.weights[2usize].x), 128. / 255., 0.0001, "vertex 2 weight 0");
+  expectFloat(f64.from(p.weights[2usize].y), 127. / 255., 0.0001, "vertex 2 weight 1");
+  expectFloat(f64.from(p.weights[0usize].x), 1., 0.0001, "vertex 0 weight");
+  expectInt(i64.from(p.targets.len()), 2i64, "two morph targets");
+  expectFloat(f64.from(p.targets[0usize].positions[3usize].z), 1., 0.0001, "morph 0 displacement");
+  expectFloat(f64.from(p.targets[1usize].positions[3usize].x), 4., 0.0001, "morph 1 displacement");
+  expect(p.generatedNormals, "normals were made");
+  expectInt(i64.from(p.mesh.normals.len()), 4i64, "smooth normals (the vertices were not split, there is skin data)");
+  expectFloat(f64.from(p.mesh.normals[1usize].z), 1., 0.0001, "the quad's normal faces +z");
+  expectFloat(f64.from(*g.meshes[0usize].weights[1usize]), 0.75, 0.0001, "default morph weight");
+
+  // The skeleton: bones parents first, the joints' order undone
+  imm map = skeletonOf(g, 0usize);
+  expectInt(i64.from(map.skeleton.boneCount()), 2i64, "two bones");
+  expectInt(i64.from(map.skeleton.parentOf(0usize)), -1i64, "bone 0 is the root");
+  expectInt(i64.from(map.skeleton.parentOf(1usize)), 0i64, "bone 1's parent is bone 0");
+  expectFloat(f64.from(map.skeleton.restOf(1usize).translation.y), 1., 0.0001, "bone 1 rests a move up");
+  expectInt(i64.from(*map.boneOfJoint[0usize]), 1i64, "joint 0 (J1) is bone 1");
+  expectInt(i64.from(*map.boneOfJoint[1usize]), 0i64, "joint 1 (J0) is bone 0");
+  expectInt(i64.from(*map.jointOfBone[0usize]), 1i64, "bone 0 is joint 1");
+  expectInt(i64.from(*map.nodeOfBone[1usize]), 1i64, "bone 1 is node 1");
+
+  // At rest the skin matrices are the identity: a vertex stays put
+  imm rest = restTransforms(g);
+  imm restWorlds = worldsOf(g, &rest);
+  imm jm = jointMatrices(g, 0usize, &restWorlds);
+  imm at = (*jm[0usize]) * new Vec3(0., 2., 0.);
+  expectFloat(f64.from(at.y), 2., 0.0001, "rest skin matrix leaves (0,2,0) y");
+  expectFloat(f64.from(at.x), 0., 0.0001, "rest skin matrix leaves (0,2,0) x");
+
+  // The animation
+  imm anim = g.animations[0usize];
+  expectStr(anim.name.view(), "wave", "animation name");
+  expectFloat(f64.from(anim.duration), 2., 0.0001, "duration is the last key time");
+  expectInt(i64.from(anim.channels.len()), 3i64, "three channels");
+  imm rotS = anim.samplers[0usize];
+  imm q0 = sampleQuat(rotS, 0.5);
+  expectFloat(f64.from(q0.z), 0.3826834, 0.0001, "slerp at 0.5: z");
+  expectFloat(f64.from(q0.w), 0.9238795, 0.0001, "slerp at 0.5: w");
+  imm q1 = sampleQuat(rotS, 1.);
+  expectFloat(f64.from(q1.z), 0.70710678, 0.0001, "the key at 1");
+  imm q2 = sampleQuat(rotS, 5.);
+  expectFloat(f64.from(q2.w), 1., 0.0001, "held past the end");
+  imm qm = sampleQuat(rotS, -1.);
+  expectFloat(f64.from(qm.w), 1., 0.0001, "held before the start");
+  imm stepS = anim.samplers[1usize];
+  expectFloat(f64.from(sampleVec3(stepS, 0.99).x), 0., 0.0001, "step holds the first key");
+  expectFloat(f64.from(sampleVec3(stepS, 1.).x), 4., 0.0001, "step takes the next key at its time");
+  imm cubS = anim.samplers[2usize];
+  mut w = List[f32].empty();
+  sampleWeights(cubS, 0.5, &mut w);
+  expectInt(i64.from(w.len()), 2i64, "two weights");
+  expectFloat(f64.from(*w[0usize]), 0.7, 0.0001, "cubic spline target 0 at 0.5");
+  expectFloat(f64.from(*w[1usize]), 0.5, 0.0001, "cubic spline target 1 at 0.5");
+  sampleWeights(cubS, 0., &mut w);
+  expectFloat(f64.from(*w[1usize]), 1., 0.0001, "cubic spline starts at its first value");
+  sampleWeights(cubS, 1., &mut w);
+  expectFloat(f64.from(*w[0usize]), 1., 0.0001, "cubic spline ends at its last value");
+
+  // The pose at t = 1 and the skinned vertex
+  imm pose = poseAt(g, &map, 0usize, anim, 1.);
+  expectFloat(f64.from(pose.locals[0usize].translation.x), 4., 0.0001, "bone 0 moved by the step channel");
+  expectFloat(f64.from(pose.locals[1usize].rotation.z), 0.70710678, 0.0001, "bone 1 turned");
+  expectFloat(f64.from(pose.locals[1usize].translation.y), 1., 0.0001, "bone 1 keeps its rest move");
+  mut locals = restTransforms(g);
+  mut weights = List[List[f32]].empty();
+  mut i = 0usize;
+  while i < g.nodes.len() { weights.push(List[f32].empty()); i += 1usize; }
+  evaluate(g, anim, 1., &mut locals, &mut weights);
+  imm worlds = worldsOf(g, &locals);
+  imm skin = jointMatrices(g, 0usize, &worlds);
+  imm top = (*skin[0usize]) * new Vec3(0., 2., 0.);
+  expectFloat(f64.from(top.x), 3., 0.001, "the top vertex turned and carried, x");
+  expectFloat(f64.from(top.y), 1., 0.001, "the top vertex turned and carried, y");
+  expectFloat(f64.from(top.z), 0., 0.001, "the top vertex turned and carried, z");
+  expectFloat(f64.from(*weights[2usize][1usize]), 0., 0.0001, "the weights channel filled its node's list at t=1: target 1 reaches 0");
+  expectFloat(f64.from(*weights[2usize][0usize]), 1., 0.0001, "and target 0 reaches 1");
+
+  // The strip: three triangles, every one facing +z (the odd one's winding turned)
+  imm strip = &g.meshes[1usize].primitives[0usize].mesh;
+  expectInt(i64.from(strip.triangleCount()), 3i64, "strip triangles");
+  mut up = 0usize;
+  i = 0usize;
+  while i < strip.normals.len() { if strip.normals[i].z > 0.99 { up += 1usize; } i += 1usize; }
+  expectInt(i64.from(up), 9i64, "every strip triangle faces +z");
+  // The fan, from a sparse accessor with no base data
+  imm fan = &g.meshes[2usize].primitives[0usize].mesh;
+  expectInt(i64.from(fan.triangleCount()), 3i64, "fan triangles");
+  mut fanUp = 0usize;
+  i = 0usize;
+  while i < fan.normals.len() { if fan.normals[i].z > 0.99 { fanUp += 1usize; } i += 1usize; }
+  expectInt(i64.from(fanUp), 9i64, "every fan triangle faces +z");
+  mut sawLeft = false;
+  i = 0usize;
+  while i < fan.positions.len() { if near(fan.positions[i].x, -1.) and near(fan.positions[i].y, 1.) { sawLeft = true; } i += 1usize; }
+  expect(sawLeft, "the sparse values arrived (vertex 4 at (-1, 1))");
+  // A sparse accessor over base data replaces one element
+  imm sp = &g.meshes[3usize].primitives[0usize].mesh;
+  expectInt(i64.from(sp.positions.len()), 3i64, "sparse triangle vertices");
+  expectFloat(f64.from(sp.positions[0usize].x), 0., 0.0001, "the base data kept (vertex 0)");
+  expectFloat(f64.from(sp.positions[1usize].x), 5., 0.0001, "vertex 1 replaced x");
+  expectFloat(f64.from(sp.positions[1usize].z), 7., 0.0001, "vertex 1 replaced z");
+  done();
+}
