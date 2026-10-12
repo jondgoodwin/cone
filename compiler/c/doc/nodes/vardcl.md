@@ -29,7 +29,7 @@ copies the initializer, and marks it initialized. Generation allocas.
 | `llvmvar` | alloca or global | none | **none** |
 | `flowtempflags` | `VarInitialized`, `VarMoved`, `VarHollow`, `VarDropFlag` | none | none |
 | `flowdepth` | the conditional depth it was declared at, for the drop gate ([Flow Analysis](../phases/flow.md), "Drop flags") | none | none |
-| `hollowed` | on a local owning reference, each move that took what it points at, or an element of it, out ([Flow Analysis](../phases/flow.md), "A move out through a sole owner"); `hollowall`, every such move in the function, on any path | none | none |
+| `hollowed` | on a local owning reference, each move that took what it points at out ([Flow Analysis](../phases/flow.md), "A move out through a sole owner"); `hollowall`, every such move in the function, on any path | none | none |
 | `llvmflag` | its drop flag's `i8` slot, for a variable with `VarDropFlag` | none | none |
 | `flowflags` | **dead** — zeroed twice, never read | none | none |
 

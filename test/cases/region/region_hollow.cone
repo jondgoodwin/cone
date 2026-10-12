@@ -7,13 +7,10 @@
 // - The value moved out through an owning reference that is the owner's value
 //   ('**b'): that allocation dies hollow in turn, before the outer one's
 //   memory is freed.
-// - An element moved out of the array a sole owner points at ('s[0]'): the
-//   memory is freed. Which elements moved is not tracked, so the ones that did
-//   not are not finalized either (Fin 25 below): they leak rather than one
-//   being finalized twice.
 //
-// Nothing moves out of a field (move_flow_field), so no struct dies with a
-// hole in it.
+// Nothing moves out of a field (move_flow_field), nor out of an element of an
+// array, held by value or by a sole owner (move_flow_elem), so no struct or
+// array dies with a hole in it.
 //
 // The regions here print when they free, and the counted one when it is
 // asked, so the output is the whole assertion: what was freed, what was
@@ -107,10 +104,13 @@ fn cond(c bool) {
   printStr("end of cond\n");
 }
 
-fn element() {
-  printStr("-- an array's element\n");
+// The whole array moves out of the owner: its holder finalizes both elements
+// at its end, and the owner frees only the memory. (One element cannot move
+// out of it: move_flow_elem.)
+fn wholeArray() {
+  printStr("-- an array moved out whole\n");
   imm s = new One[Array[Fin, 2]]([new Fin(24i32), new Fin(25i32)]);
-  imm c = s[0];
+  imm c = *s;
   printStr("moved\n");
 }
 
@@ -128,7 +128,7 @@ fn main() i32 {
   cond(true);
   printStr("-- moved on one path, not taken\n");
   cond(false);
-  element();
+  wholeArray();
   printStr("-- end\n");
   0i32;
 }
