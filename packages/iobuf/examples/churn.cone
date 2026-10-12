@@ -3,7 +3,8 @@
 // - a warm take and drop on one thread: the block comes from the pool's idle
 //   list and goes back to it, no call to the OS;
 // - a cold one: a block got from the OS and given back (VirtualAlloc and
-//   VirtualFree), beside the C runtime's _aligned_malloc and _aligned_free
+//   VirtualFree; mmap and munmap on Linux), beside the C runtime's
+//   _aligned_malloc and _aligned_free (aligned_alloc and free on Linux)
 //   for the same 4 KiB and 64 KiB, which is the other way the pool could get
 //   its blocks;
 // - buffers taken on one thread and dropped on another, as completions will
@@ -23,29 +24,26 @@ import stdio use *;
 import thread;
 import sync use *;
 import iobuf use *;
+import time use Instant;
+import libc;
 
+// The OS's block is VirtualAlloc's on Windows and mmap's on Linux; the C
+// runtime's aligned one is _aligned_malloc's and aligned_alloc's
 extern {
-  fn @c(system) QueryPerformanceCounter(count *i64) i32;
-  fn @c(system) QueryPerformanceFrequency(freq *i64) i32;
   fn @c(system) VirtualAlloc(addr *u8, size usize, kind u32, protect u32) *u8;
   fn @c(system) VirtualFree(addr *u8, size usize, kind u32) i32;
   fn _aligned_malloc(size usize, align usize) *u8;
   fn _aligned_free(p *u8);
+  fn @c mmap(addr *u8, size usize, protect i32, flags i32, fd i32, offset i64) *u8;
+  fn @c munmap(addr *u8, size usize) i32;
+  fn @c aligned_alloc(align usize, size usize) *u8;
 }
 
 const cycles = 1000000u64;
 const coldCycles = 20000u64;
 const perProducer = 250000u64;
 
-fn nowNs() u64 {
-  mut count = 0i64;
-  mut freq = 0i64;
-  QueryPerformanceCounter(&mut count as *i64);
-  QueryPerformanceFrequency(&mut freq as *i64);
-  imm c = u64.from(count);
-  imm f = u64.from(freq);
-  (c / f) * 1000000000u64 + (c % f) * 1000000000u64 / f;
-}
+fn nowNs() u64 {u64.from(Instant.now().nanos());}
 
 fn report(what &str, ns u64, n u64) {
   printStr(what);
@@ -59,9 +57,15 @@ fn coldOs(size usize) u64 {
   imm t0 = nowNs();
   mut i = 0u64;
   while i < coldCycles {
-    imm b = VirtualAlloc(null, size, 0x3000u32, 0x04u32);
-    *b = 1u8;
-    VirtualFree(b, 0usize, 0x8000u32);
+    if isWindows() {
+      imm b = VirtualAlloc(null, size, 0x3000u32, 0x04u32);
+      *b = 1u8;
+      VirtualFree(b, 0usize, 0x8000u32);
+    } else {
+      imm b = mmap(null, size, 3i32, 0x22i32, 0i32 - 1i32, 0i64);
+      *b = 1u8;
+      munmap(b, size);
+    }
     i = i + 1u64;
   }
   nowNs() - t0;
@@ -71,9 +75,15 @@ fn coldCrt(size usize) u64 {
   imm t0 = nowNs();
   mut i = 0u64;
   while i < coldCycles {
-    imm b = _aligned_malloc(size, 4096usize);
-    *b = 1u8;
-    _aligned_free(b);
+    if isWindows() {
+      imm b = _aligned_malloc(size, 4096usize);
+      *b = 1u8;
+      _aligned_free(b);
+    } else {
+      imm b = aligned_alloc(4096usize, size);
+      *b = 1u8;
+      libc.free(b);
+    }
     i = i + 1u64;
   }
   nowNs() - t0;
