@@ -1,0 +1,118 @@
+mod region_owner_kinds_success;
+
+import stdio use *;
+import collections use *;
+
+// What region_flow_owner_kinds leaves alone: a borrow into what an owner of an array, or of a trait object,
+// owns, beside anything that cannot free it. A callee that only reads, or writes the element or the counter
+// through its borrow; the owner replaced after the borrow's last use; and, for the trait object, the owner's
+// own methods called while a borrow an earlier call lent is still to be used. A call through a virtual
+// reference may replace an owner of the type (region_flow_owner_kinds refuses those calls), so the owners
+// of trait objects here are '+ ShapeKeeping', the promise that a call through them keeps the borrows of
+// its caller. Every value and every 'final' printed is worked out by hand.
+
+struct Item { pub v i64; fn final(self &uni) { printStr("final "); printInt(v); printStr("\n"); } }
+
+trait Gadget {
+  pub fn count(self &mut) &mut i64;
+  pub fn bump(self &mut);
+}
+
+struct Real is Gadget {
+  pub n i64;
+  pub fn count(self &mut) &mut i64 { &mut n; }
+  pub fn bump(self &mut) { n = n + 1; }
+  fn final(self &uni) { printStr("final real "); printInt(n); printStr("\n"); }
+}
+
+struct Holder { pub g So[Gadget + ShapeKeeping]; }
+
+fn mkArr(n i64) So[Array[Item]] {
+  mut l = List[Item].empty();
+  l.push(new Item(n));
+  l.push(new Item(n + 100));
+  l.freeze();
+}
+fn mkG(n i64) So[Gadget + ShapeKeeping] { new So[Real](new Real(n)); }
+fn mkR(n i64) Rc[mut, Gadget + ShapeKeeping] { new Rc[mut, Real](new Real(n)); }
+
+fn readArr(a &mut So[Array[Item]], e &mut Item) { printInt(e.v + a[1usize].v); printStr("\n"); }
+fn writeArr(a &mut So[Array[Item]], e &mut Item) {
+  e.v = e.v + 1;
+  a[1usize].v = 7;
+  printInt(e.v + a[1usize].v);
+  printStr("\n");
+}
+fn peekG(o &mut So[Gadget + ShapeKeeping], c &mut i64) i64 { *c + 1; }
+
+// the array is 1 and 101: 102
+fn arrRead() { mut a = mkArr(1); readArr(&mut a, &mut a[0usize]); }
+
+// the elements are 11 and 111, set to 12 and 7 through the owner and the borrow: 19
+fn arrWrite() { mut a = mkArr(11); writeArr(&mut a, &mut a[0usize]); }
+
+// the owner is replaced after the last use of the element's borrow
+fn arrAfter(a &mut So[Array[Item]]) i64 {
+  imm e = &mut a[0usize];
+  imm n = e.v;
+  *a = mkArr(n + 10);
+  n;
+}
+
+// the counter is 1, read through the borrow its own method lent: 2
+fn gadgetRead() i64 { mut o = mkG(1); peekG(&mut o, o.count()); }
+
+// the counter is 2, bumped by the object's other method while the borrow is held: 3 + 10
+fn gadgetBump() i64 {
+  mut o = mkG(2);
+  imm c = o.count();
+  o.bump();
+  *c = *c + 10;
+  *c;
+}
+
+// two borrows of the one counter, written through one and read through the other: 4
+fn gadgetTwo() i64 {
+  mut o = mkG(5);
+  imm c = o.count();
+  imm d = o.count();
+  *c = 4;
+  *d;
+}
+
+// the owner is replaced after the last use of the borrow
+fn gadgetAfter(a &mut So[Gadget + ShapeKeeping]) i64 {
+  imm c = a.count();
+  imm n = *c;
+  *a = mkG(n + 10);
+  n;
+}
+
+// an owner held in a field, and a counted one
+fn gadgetHolder() i64 {
+  mut h = new Holder(mkG(7));
+  imm c = h.g.count();
+  h.g.bump();
+  *c;
+}
+
+fn gadgetRc() i64 {
+  imm p = mkR(40);
+  imm c = p.count();
+  p.bump();
+  *c;
+}
+
+fn main() {
+  arrRead();
+  arrWrite();
+  mut a = mkArr(30);
+  printInt(arrAfter(&mut a)); printStr("\n");
+  printInt(gadgetRead()); printStr("\n");
+  printInt(gadgetBump()); printStr("\n");
+  printInt(gadgetTwo()); printStr("\n");
+  mut g = mkG(20);
+  printInt(gadgetAfter(&mut g)); printStr("\n");
+  printInt(gadgetHolder()); printStr("\n");
+  printInt(gadgetRc()); printStr("\n");
+}
