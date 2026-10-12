@@ -184,7 +184,8 @@
 // folder, under a time limit. On POSIX it is posix_spawn with pipes read by
 // poll (a process group stopped by a signal, a working folder set by
 // posix_spawn's own file action, an argument list that needs no quoting, an
-// exit code of 0 to 255 and a signal beside it), with nothing of Windows'.
+// exit code of 0 to 255, and beside it in the Output the signal that ended the
+// child, if one did), with nothing of Windows'.
 
 mod process;
 
@@ -638,6 +639,10 @@ pub struct Output {
   // Its exit code, all 32 bits: 0, 1, 255, or 3221226505 (0xC0000409),
   // what a Cone panic exits with on Windows
   pub exitCode u32;
+  // The signal that ended it, on POSIX, when one did (9 for SIGKILL, 6 for
+  // abort's SIGABRT), else 0; always 0 on Windows. A child killed by signal 9
+  // has exit code 137, as one that exits 137 does: this tells them apart
+  pub signal u32;
   // Whether it was stopped because its time ran out; its exit code is then 1
   pub timedOut bool;
   // What it wrote to its standard output and its standard error, apart,
@@ -1135,7 +1140,7 @@ fn start(op &str, program &str, line &str, dir &Path, opts Options) Result[Outpu
   mut err = String.empty();
   out <=> so.data;
   err <=> se.data;
-  Ok[Output, ProcessError](new Output(exitCode, timedOut, out, err));
+  Ok[Output, ProcessError](new Output(exitCode, 0u32, timedOut, out, err));
 }
 
 // ---------------------------------------------------------------------------
@@ -1170,6 +1175,10 @@ fn exitStatus(status i32) u32 {
   if signal == 0i32 { return u32.from((status >> 8i32) & 0xFFi32); }
   u32.from(128i32 + signal);
 }
+
+// The signal that ended a child, from the status waitpid gave: 0 for one that
+// exited
+fn signalOf(status i32) u32 { u32.from(status & 0x7Fi32); }
 
 // A copy of the bytes with a NUL after them, in a block from malloc
 fn copyCString(s &Array[u8]) *u8 {
@@ -1392,7 +1401,7 @@ fn startPosix(op &str, program &str, args &Array[String], dir &Path, opts Option
   out <=> so.data;
   err <=> se.data;
   imm exitCode = if timedOut {stoppedCode;} else {exitStatus(status);};
-  Ok[Output, ProcessError](new Output(exitCode, timedOut, out, err));
+  Ok[Output, ProcessError](new Output(exitCode, signalOf(status), timedOut, out, err));
 }
 
 // ---------------------------------------------------------------------------

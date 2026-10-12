@@ -340,7 +340,7 @@ fn childCommand(exe &str, mode &str) List[String] {
 }
 
 fn emptyOutput() process.Output {
-  new process.Output(0u32, false, String.empty(), String.empty());
+  new process.Output(0u32, 0u32, false, String.empty(), String.empty());
 }
 
 // The Output of a run that must have started
@@ -394,6 +394,9 @@ fn exitsWith(exe &str, code u64) {
   label.append(n.view());
   imm o = ran(process.run(c.view()), label.view());
   expectUInt(u64.from(o.exitCode), code, label.view());
+  // It exited: no signal ended it, whatever the code (139 is a status here,
+  // not the segmentation fault's signal)
+  expectUInt(u64.from(o.signal), 0u64, label.view());
   expectBool(o.success(), code == 0u64, label.view());
   expectStr(o.stdout.view(), "", label.view());
 }
@@ -414,6 +417,9 @@ fn panics(exe &str) {
   // abort, which a Cone panic ends in: the fast-fail code, 0xC0000409; on
   // POSIX SIGABRT, 128 and 6
   expectUInt(u64.from(o.exitCode), osCode(3221226505u64, 134u64), "a panic's exit code");
+  // On POSIX abort is the signal 6, and the exit code 134 says it as a shell
+  // does; on Windows there are no signals
+  expectUInt(u64.from(o.signal), osCode(0u64, 6u64), "a panic's signal");
   expectStr(o.stdout.view(), os("before the panic\r\n", "before the panic\n"), "what it wrote before the panic");
   expectBool(o.stderr.startsWith("panic at "), true, "the panic's line on stderr");
   expectBool(o.stderr.contains("on purpose"), true, "the panic's message on stderr");
@@ -508,6 +514,8 @@ fn timesOut(exe &str) {
   imm took = began.elapsed();
   expectBool(o.timedOut, true, "a sleeping child stopped by its time limit");
   expectUInt(u64.from(o.exitCode), 1u64, "a stopped child's exit code");
+  // On POSIX it was killed by SIGKILL, 9 (the exit code says 1 on both)
+  expectUInt(u64.from(o.signal), osCode(0u64, 9u64), "a stopped child's signal");
   expectStr(o.stdout.view(), "", "a stopped child never woke");
   expectBool(took >= Duration.fromMillis(300) and took < Duration.fromSeconds(5), true, "stopped after 300 ms, not 10 s");
   expectBool(o.success(), false, "a stopped child is no success");
