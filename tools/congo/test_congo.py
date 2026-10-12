@@ -1097,6 +1097,150 @@ class Scenarios(unittest.TestCase):
         # 3 * 14 = 42
         self.assertEqual(self.program_output(run), "42\n")
 
+    def tri_package(self, packages: Path, link: str) -> Path:
+        """The C package 'tri' over tri3, a C library built here into its clib/
+        folder ('triple' multiplies by three), with the [link] text link, and an
+        app.cone calling triple(14)."""
+        pkg = packages / "tri"
+        write(pkg / "csrc" / "triple.c", "int triple(int n) { return 3 * n; }\n")
+        (pkg / "clib").mkdir()
+        if congo.IS_WINDOWS:
+            env = congo.Linker.vs_environment()
+            for tool, *args in (["cl", "/nologo", "/c", "/Fo:triple.obj", "triple.c"],
+                                ["lib", "/nologo", "triple.obj", "/OUT:../clib/tri3.lib"]):
+                found = shutil.which(tool, path=env["PATH"])
+                subprocess.run([found, *args], cwd=pkg / "csrc", env=env, check=True,
+                               capture_output=True)
+        else:
+            for command in (["cc", "-c", "-fPIC", "-o", "triple.o", "triple.c"],
+                            ["ar", "rcs", "../clib/libtri3.a", "triple.o"]):
+                subprocess.run(command, cwd=pkg / "csrc", check=True, capture_output=True)
+        write(pkg / "congo.toml",
+              '[package]\nname = "tri"\nversion = "0.1.0"\noutput = "library"\n' + link)
+        write(pkg / "src" / "tri.cone", "mod @c tri;\n\npub extern fn triple(n i32) i32;\n")
+        write(self.root / "app.cone", """
+            mod app;
+
+            import stdio;
+            import tri;
+
+            fn main() i32 {
+              stdio.print <- tri.triple(14i32);
+              stdio.print <- "\\n";
+              0i32;
+            }
+            """)
+        return pkg
+
+    def test_a_link_section_adds_to_the_plain_link_on_its_system(self):
+        # The plain [link] applies on every system, and this system's section
+        # adds to it. A section for another system is ignored: naming a library
+        # that is nowhere would fail the link, if it were used.
+        packages = self.root / "cpkgs"
+        self.registry(packages)
+        here = congo.HOST_OS
+        others = [s for s in ("windows", "linux", "macos") if s != here]
+        elsewhere = "".join(f'\n[link.{s}]\nlibraries = ["nosuchlib_{s}"]\n' for s in others)
+        # The library is in the section, the folder it is in is the plain table's
+        pkg = self.tri_package(packages, f'\n[link]\npaths = ["clib"]\n\n[link.{here}]\n'
+                               f'libraries = ["tri3"]\n{elsewhere}')
+        run = self.congo("run", "app.cone", cwd=self.root)
+        self.assertEqual(self.program_output(run), "42\n")        # 3 * 14
+        # The reverse: the library in the plain table, the folder in the section
+        head = '[package]\nname = "tri"\nversion = "0.1.0"\noutput = "library"\n'
+        write(pkg / "congo.toml", head + f'\n[link]\nlibraries = ["tri3"]\n\n[link.{here}]\n'
+              f'paths = ["clib"]\n{elsewhere}')
+        run = self.congo("run", "app.cone", cwd=self.root)
+        self.assertEqual(self.program_output(run), "42\n")
+        # And no plain [link] at all
+        write(pkg / "congo.toml", head + f'\n[link.{here}]\nlibraries = ["tri3"]\n'
+              f'paths = ["clib"]\n{elsewhere}')
+        run = self.congo("run", "app.cone", cwd=self.root)
+        self.assertEqual(self.program_output(run), "42\n")
+
+    def test_a_systems_libraries_follow_the_plain_ones(self):
+        # Lists are concatenated, the plain table's first: the note after a
+        # failed link names the libraries in that order, though the section is
+        # written first, and another system's section adds none
+        packages = self.root / "cpkgs"
+        self.registry(packages)
+        here = congo.HOST_OS
+        other = "linux" if here != "linux" else "windows"
+        self.tri_package(packages, f'\n[link.{here}]\nlibraries = ["nosuchlib_b", "nosuchlib_c"]\n'
+                         f'\n[link]\nlibraries = ["nosuchlib_a"]\n\n[link.{other}]\n'
+                         'libraries = ["nosuchlib_x"]\n')
+        run = self.congo("run", "app.cone", cwd=self.root, ok=False)
+        self.assertEqual(run.returncode, 1)
+        self.assertIn("tri names nosuchlib_a, nosuchlib_b, nosuchlib_c", run.stderr)
+        self.assertNotIn("nosuchlib_x", run.stderr)
+        if congo.IS_WINDOWS:
+            # The Windows SDK's libraries a package calls are named by that
+            # package's [link.windows]; Congo's own link line has the C runtime's only
+            line = next(l for l in run.stderr.splitlines() if "/SUBSYSTEM:CONSOLE" in l)
+            self.assertIn("msvcrt.lib legacy_stdio_definitions.lib", line)
+            for lib in ("synchronization", "shell32", "ws2_32", "ntdll"):
+                self.assertNotIn(f"{lib}.lib", line)
+
+    def test_link_sections_are_checked_on_every_system(self):
+        # A section is read, whether or not it is this system's, so a mistake
+        # in it is found on any machine; a library only reads its manifest
+        self.congo("new", "lib1", "--lib", cwd=self.root)
+        pkg = self.root / "lib1"
+        head = '[package]\nname = "lib1"\nversion = "1.0.0"\noutput = "library"\n'
+
+        def refused(link: str, want: str) -> None:
+            write(pkg / "congo.toml", head + link)
+            run = self.congo("build", cwd=pkg, ok=False)
+            self.assertEqual(run.returncode, 1, link)
+            self.assertIn(want, run.stderr, link)
+
+        for system in ("windows", "linux", "macos"):
+            refused(f'[link.{system}]\nlibraries = ["SDL2.lib"]\n',
+                    f'[link.{system}] library "SDL2.lib" must be the library\'s bare name')
+            refused(f'[link.{system}]\nlibs = ["SDL2"]\n',
+                    f"'libs' is not a [link.{system}] key; the keys are libraries, paths"
+                    " and runtime")
+            refused(f'[link.{system}]\nruntime = "SDL2"\n',
+                    f"[link.{system}] runtime must be a list of strings")
+            refused(f'[link.{system}]\npaths = "clib"\n',
+                    f"[link.{system}] paths must be a list of strings")
+            refused(f'[link]\nlibraries = ["a"]\n[link.{system}]\nruntime = ["x.dll"]\n',
+                    f'[link.{system}] runtime "x.dll" must be the DLL\'s bare name')
+            refused(f'[link]\n{system} = ["x"]\n',
+                    f"[link] {system} must be a table: write it as [link.{system}]")
+        sections = ("[link.freebsd] is not a link section; the sections are [link.windows],"
+                    " [link.linux] and [link.macos]")
+        refused('[link.freebsd]\nlibraries = ["a"]\n', sections)
+        refused('[link]\nlibraries = ["a"]\n[link.freebsd]\nlibraries = ["a"]\n', sections)
+        refused('[link.windows]\nlibraries = ["a"]\n[link.windows.x]\nlibraries = ["a"]\n',
+                "[link.windows.x] is not a link section; the sections are")
+        # The plain table's own errors are as they were
+        refused('[link]\nlibraries = ["SDL2.lib"]\n[link.linux]\nlibraries = ["a"]\n',
+                '[link] library "SDL2.lib" must be the library\'s bare name')
+        refused('[link]\nlibs = ["SDL2"]\n', "'libs' is not a [link] key")
+        # All three at once, with the same keys as [link], is fine (a library
+        # links nothing, so the names are only read)
+        write(pkg / "congo.toml", head + '\n[link]\nlibraries = ["z"]\n'
+              '\n[link.windows]\nlibraries = ["user32"]\npaths = ["w"]\nruntime = ["w3"]\n'
+              '\n[link.linux]\nlibraries = ["ssl", "crypto"]\npaths = ["l"]\n'
+              '\n[link.macos]\nlibraries = ["objc"]\n')
+        self.congo("build", cwd=pkg)
+
+    def test_a_dotted_table_is_part_of_the_table_it_starts_with(self):
+        # [link.linux] does not make an unknown table of the manifest a known
+        # one, and [package.x] is a [package] key that is not one
+        self.congo("new", "lib1", "--lib", cwd=self.root)
+        pkg = self.root / "lib1"
+        head = '[package]\nname = "lib1"\nversion = "1.0.0"\noutput = "library"\n'
+        write(pkg / "congo.toml", head + '[link.linux]\nlibraries = ["a"]\n[extra.linux]\n')
+        run = self.congo("build", cwd=pkg, ok=False)
+        self.assertIn("[extra] is not part of a Congo manifest, which holds [package] and"
+                      " [link].", run.stderr)
+        write(pkg / "congo.toml", head + '[package.x]\nk = 1\n')
+        run = self.congo("build", cwd=pkg, ok=False)
+        self.assertIn("'x' is not a [package] key; the keys are name, version, output and"
+                      " targets", run.stderr)
+
     def test_the_prelude_rests_on_libc(self):
         # core imports libc, a C package the compiler gives no prelude, so libc
         # is compiled first, with no package line for core, whose include file
@@ -1855,6 +1999,33 @@ class RuntimeLibraries(unittest.TestCase):
         run = self.congo("run", "app.cone", cwd=self.root, ok=False)
         self.assertIn("'runtimes' is not a [link] key; the keys are libraries, paths and"
                       " runtime", run.stderr)
+
+    def test_a_runtime_dll_may_be_named_by_the_windows_section(self):
+        # [link.windows] holds the same keys as [link]: its library, folder and
+        # DLL are added to the plain table's (here, none), and a mistake in
+        # its runtime list is named by the section
+        packages = self.root / "cpkgs"
+        self.registry(packages)
+        pkg = self.tri(packages, None)
+        self.app()
+        write(pkg / "congo.toml", self.TRI_HEAD + '\n[link.windows]\nlibraries = ["tri3"]\n'
+              'paths = ["clib"]\nruntime = ["tri3"]\n\n[link.linux]\nruntime = ["nosuch"]\n')
+        run = self.congo("run", "app.cone", cwd=self.root)
+        self.assertEqual(self.program_output(run), "42\n")
+        out = next((self.root / "home" / "lone").glob("app-*")) / "debug"
+        source = pkg / "clib" / "tri3.dll"
+        self.assertEqual((out / "tri3.dll").read_bytes(), source.read_bytes())
+        # A DLL that is nowhere is named with the package, whichever table
+        # held it
+        write(pkg / "congo.toml", self.TRI_HEAD + '\n[link]\nruntime = ["tri3"]\n'
+              '\n[link.windows]\nlibraries = ["tri3"]\npaths = ["clib"]\nruntime = ["nosuch"]\n')
+        run = self.congo("run", "app.cone", cwd=self.root, ok=False)
+        self.assertIn("congo: error: tri's [link] runtime names nosuch, but nosuch.dll is in"
+                      " none of the folders Congo looks in: [link] paths (", run.stderr)
+        write(pkg / "congo.toml", self.TRI_HEAD + '\n[link.windows]\nruntime = ["tri3.dll"]\n')
+        run = self.congo("run", "app.cone", cwd=self.root, ok=False)
+        self.assertIn("[link.windows] runtime \"tri3.dll\" must be the DLL's bare name",
+                      run.stderr)
 
     def test_a_test_missing_its_dll_names_the_program(self):
         # 'congo test' runs the program as a debuggee; with no dialog, the

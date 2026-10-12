@@ -7,10 +7,11 @@
 // are read too when they are there.
 //
 // What Congo asks of a manifest (tools/congo/congo.py, 'read_manifest'):
-// only the tables [package] and [link]; [package] holding only name,
+// only the tables [package] and [link] (and [link.windows], [link.linux]
+// and [link.macos], a system's own part of it); [package] holding only name,
 // version and output, each a string, and targets, a list naming "native"
-// and perhaps "gpu"; [link] holding only libraries, paths
-// and runtime, each a list of strings. Every repository manifest keeps to that,
+// and perhaps "gpu"; [link] and each of its sections holding only libraries,
+// paths and runtime, each a list of strings. Every repository manifest keeps to that,
 // and here each must also be named for its folder and build a library or an
 // executable. A manifest that does not is printed with what is wrong.
 
@@ -83,7 +84,7 @@ fn checkManifest(file &Path, folder &str) String {
   imm names = doc.names();
   mut i = 0usize;
   while i < names.len() {
-    if not oneOf(names[i].view(), "package", "link") {
+    if not (oneOf(names[i].view(), "package", "link") or isLinkSection(names[i].view())) {
       mut m = String.from("a table that is not Congo's: ");
       m.append(names[i].view());
       return m;
@@ -121,21 +122,31 @@ fn checkManifest(file &Path, folder &str) String {
   if version.equals("<none>") { return String.from("no version string"); }
   imm output = strValue(pkg, "output");
   if not oneOf(output.view(), "library", "executable") { return String.from("no output"); }
-  if doc.has("link") {
-    imm link = doc["link"];
-    imm lkeys = link.keys();
-    i = 0usize;
-    while i < lkeys.len() {
-      if not (oneOf(lkeys[i].view(), "libraries", "paths") or lkeys[i].equals("runtime")) {
-        return String.from("a [link] key that is not Congo's");
+  // [link], and the sections for each system, hold the same keys
+  i = 0usize;
+  while i < names.len() {
+    if names[i].equals("link") or isLinkSection(names[i].view()) {
+      imm link = doc[names[i].view()];
+      imm lkeys = link.keys();
+      mut j = 0usize;
+      while j < lkeys.len() {
+        if not (oneOf(lkeys[j].view(), "libraries", "paths") or lkeys[j].equals("runtime")) {
+          return String.from("a [link] key that is not Congo's");
+        }
+        if link.getStrings(lkeys[j].view()) is None {
+          return String.from("a [link] key that is not a list of strings");
+        }
+        j = j + 1usize;
       }
-      if link.getStrings(lkeys[i].view()) is None {
-        return String.from("a [link] key that is not a list of strings");
-      }
-      i = i + 1usize;
     }
+    i = i + 1usize;
   }
   String.empty();
+}
+
+// Whether name is a system's section of [link]
+fn isLinkSection(name &str) bool {
+  name == "link.windows" or name == "link.linux" or name == "link.macos";
 }
 
 // Check every folder of registry holding a congo.toml; how many there were
@@ -222,9 +233,17 @@ fn repository() {
   isList(sdl["link"], "runtime", "SDL3", "sdl has SDL3.dll copied beside its programs");
   isStr(sdl["package"], "output", "library", "sdl is a library");
   imm process = readPackage(&packages, "process");
-  expect(not process.has("link"), "process names no library: Congo links Windows' shell32 itself");
+  expect(not process.has("link"), "process has no plain [link]: shell32 is Windows only");
+  isList(process["link.windows"], "libraries", "shell32", "process links Windows' shell32");
   imm sync = readPackage(&packages, "sync");
-  expect(not sync.has("link"), "sync names no library: Congo links Windows' synchronization itself");
+  expect(not sync.has("link"), "sync has no plain [link]: synchronization is Windows only");
+  isList(sync["link.windows"], "libraries", "synchronization", "sync links Windows' synchronization");
+  imm iocore = readPackage(&packages, "iocore");
+  isList(iocore["link.windows"], "libraries", "ws2_32|ntdll", "iocore links Winsock and ntdll on Windows");
+  imm tls = readPackage(&packages, "tls");
+  expect(not tls.has("link"), "tls has no plain [link]: each system's libraries differ");
+  isList(tls["link.windows"], "libraries", "libssl|libcrypto|crypt32", "tls on Windows");
+  isList(tls["link.linux"], "libraries", "ssl|crypto", "tls on Linux");
   imm geomath = readPackage(&packages, "geomath");
   isList(geomath["package"], "targets", "native|gpu", "geomath is marked for the GPU");
   imm own = readPackage(&packages, "toml");
@@ -261,6 +280,9 @@ fn congoTexts() {
   imm readme = parsed("[link]\nlibraries = [\"SDL3\", \"user32\"]\npaths = [\"clib\"]\nruntime = [\"SDL3\"]\n", "the README's [link]");
   isList(readme["link"], "libraries", "SDL3|user32", "the README's libraries");
   isList(readme["link"], "runtime", "SDL3", "the README's runtime");
+  imm systems = parsed("[link]\nlibraries = [\"z\"]\n\n[link.windows]\nlibraries = [\"user32\"]\n\n[link.linux]\nlibraries = [\"ssl\", \"crypto\"]\n", "the README's per-system sections");
+  isList(systems["link.windows"], "libraries", "user32", "the README's Windows section");
+  isList(systems["link.linux"], "libraries", "ssl|crypto", "the README's Linux section");
   // Read, and then refused by Congo for what they hold
   imm deps = parsed("[package]\nname = \"lib1\"\nversion = \"1.0.0\"\noutput = \"library\"\n[dependencies]\nstdio = \"1\"\n", "[dependencies]");
   imm names = deps.names();
