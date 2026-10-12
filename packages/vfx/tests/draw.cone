@@ -18,6 +18,8 @@
 //    bloom is off, so light does not spread onto the cube.
 // 3. The hidden cloud moved in front of the cube: the cube's middle
 //    brightens (so the check above can fail).
+// 3b. Smoke (STYLE_SMOKE) in front of the cube darkens its middle: blended
+//    over what is behind it, not added to it.
 // 4. The counts: a cloud of 50 a second living a second draws 52 particles
 //    (the window: every index that might be alive).
 // 5. No Vulkan call failed, and the validation layer said nothing.
@@ -114,6 +116,12 @@ fn main() i32 {
   rising.fadeOut = 0.;
   rising.trailTime = 0.5;
   rising.colors = cloud.colors;
+  // Smoke: nearly black, opaque, a cloud in front of the cube (STYLE_SMOKE draws
+  // over what is behind it, so the cube's middle darkens: light added could not)
+  mut puff = cloud;
+  puff.colors = [new Color(0.02, 0.02, 0.02, 1.), new Color(0.02, 0.02, 0.02, 1.), new Color(0.02, 0.02, 0.02, 1.),
+    new Color(0.02, 0.02, 0.02, 1.)];
+  imm smoke = particles.addEmitter(&mut device, STYLE_SMOKE);
   imm glow = particles.addEmitter(&mut device, STYLE_SPRITES);
   imm hidden = particles.addEmitter(&mut device, STYLE_SPRITES);
   imm trails = particles.addEmitter(&mut device, STYLE_TRAILS);
@@ -142,8 +150,16 @@ fn main() i32 {
   mut before Array[i64, 3] = [0i64, 0i64, 0i64];
   mut after Array[i64, 3] = [0i64, 0i64, 0i64];
   mut front Array[i64, 3] = [0i64, 0i64, 0i64];
+  mut dark Array[i64, 3] = [0i64, 0i64, 0i64];
   mut pass = 0;
-  while pass < 3 {
+  while pass < 4 {
+    // 4. The cloud behind the cube again, and smoke in front of it: the cube's middle darkens
+    if pass == 3 {
+      imm behindEvent = Event.at(2u32, 0d, Mat4.fromTranslation(new Vec3(0., 0., -1.5)));
+      particles.update(&mut device, hidden, &cloud, &behindEvent, 2d);
+      imm smokeEvent = Event.at(4u32, 0d, Mat4.fromTranslation(new Vec3(0., 0., 1.5)));
+      particles.update(&mut device, smoke, &puff, &smokeEvent, 2d);
+    }
     // 3. The hidden cloud moved in front of the cube: now it shows
     if pass == 2 {
       imm frontEvent = Event.at(2u32, 0d, Mat4.fromTranslation(new Vec3(0., 0., 1.5)));
@@ -158,7 +174,7 @@ fn main() i32 {
     device.endFrame();
     device.waitIdle();
     mut got Array[i64, 3] = [luma(p, gx, gy), luma(p, tx, ty), luma(p, cx, cy)];
-    if pass == 0 { before = got; } elif pass == 1 { after = got; } else { front = got; }
+    if pass == 0 { before = got; } elif pass == 1 { after = got; } elif pass == 2 { front = got; } else { dark = got; }
     pass = pass + 1;
   }
   expect(before[0] < 10i64, "black where the glow will be");
@@ -167,8 +183,9 @@ fn main() i32 {
   expect(after[0] > 300i64, "the glow bright");
   expect(after[1] > 150i64, "the trails' path lit");
   expectInt(after[2], before[2], "the cube's middle as before: the hidden cloud behind it");
-  expectUInt(u64.from(particles.drawCalls), 3u64, "three draws");
   expect(front[2] > before[2] + 60i64, "the cloud in front of the cube shows");
+  expectUInt(u64.from(particles.drawCalls), 4u64, "four draws, the smoke's too");
+  expect(dark[2] < before[2] - 20i64, "smoke in front of the cube darkens it: drawn over, not added");
 
   expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
   expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
