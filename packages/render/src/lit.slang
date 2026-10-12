@@ -22,9 +22,14 @@
 // Group 0 is the frame's (renderframe.slang): the frame's uniforms and the
 // instances, each copy's model matrix and a tint the color (and the
 // emissive color) is multiplied by; group 1 is the material's.
+//
+// The sun's light (the Lambert term and the highlight, not the ambient
+// light) is multiplied by how much of the sun reaches the point: the
+// cascaded shadow map (shadowing.slang), 1 when shadows are off.
 
 import renderframe;
 import skinning;
+import shadowing;
 
 struct MaterialParams {
     float4 baseColor;              // 0: rgba, linear
@@ -89,11 +94,14 @@ float4 fragmentMain(VertexOutput input) : SV_Target {
     float3 n = normalize(input.normal);
     float3 l = frame.lightDirection.xyz;
     float3 v = normalize(frame.cameraPosition.xyz - input.world);
-    float diffuse = max(dot(n, l), 0.0);
+    // How much of the sun arrives (the derivatives it takes need every
+    // pixel of a quad to call it)
+    float visible = sunVisibility(input.world, n, l, input.position.xy);
+    float diffuse = max(dot(n, l), 0.0) * visible;
     float specular = 0.0;
     if (diffuse > 0.0) {
         float3 h = normalize(l + v);
-        specular = pow(max(dot(n, h), 0.0), material.specular.w);
+        specular = pow(max(dot(n, h), 0.0), material.specular.w) * visible;
     }
     float4 base = material.baseColor * baseTexture.Sample(baseSampler, input.uv) * input.tint;
     uint mode = uint(material.alpha.x + 0.5);

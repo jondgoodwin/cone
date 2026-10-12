@@ -1,0 +1,726 @@
+// The render package's sun shadows (shadow.cone), on a real GPU with no
+// window: scenes drawn into a 256 x 256 rgba8unorm target (a channel v
+// stored as v x 255), read back and checked against geometry worked out by
+// hand. It needs a GPU driver with Vulkan 1.3 and SDL3.dll; with the Vulkan
+// SDK, validation and synchronization validation are on, and must say
+// nothing. GPU_POWER_PREFERENCE=low-power runs it on the integrated GPU.
+// Only a failure prints (and a few measurements, marked "measured").
+//
+// On the CPU, no GPU needed:
+//  1. The practical split scheme's splits for n = 1, f = 100, four cascades,
+//     lambda 0.5, from the formula by hand.
+//  2. The least sphere about a frustum slice: a = 1, b = 10, tan = 1,
+//     aspect 1 has k^2 = 2, an optimal centre at 16.5 past the far plane, so
+//     the centre is on the far plane and the radius 10 sqrt 2.
+//  3. Every corner of every cascade's slice of a camera's frustum is inside
+//     the cascade's window (x and y in -1..1, depth in 0..1).
+//  4. Texel snapping: a point moved with the camera by a fraction of a texel
+//     is at the same place within the texel of the map, as the lattice
+//     keeps it.
+//
+// On the GPU. The scene of 5 to 8: a ground plane in y = 0, a box (Mesh.cube
+// 1, reaching 1 each way, centred 1 up, so y from 0 to 2 and x and z from
+// -1 to 1), the sun shining along (-1, -1, 0)/sqrt 2: from 45 degrees up,
+// from the +x side. The box's top edges at x = +-1, y = 2 cast onto the
+// ground at x - y: -3 and -1 for the one at x = -1 and 1... the shadow on
+// the ground, where the box does not hide it, runs from x = -3 (the far
+// edge of the top's shadow: x = -1 at y = 2 lands at -3) to the box's
+// foot at x = -1, between z = -1 and z = 1. The camera, 12 above the
+// ground looking straight down (up is -z), fov 40 degrees, sees 12 tan 20 =
+// 4.3676 each way of the middle at the ground, so the target's pixel u is x
+// = (u - 128) / 128 x 4.3676.
+//  5. The shadow's far edge across the middle row: at x = -3 within a texel
+//     of the cascade the ground is in (its width on the ground: 'texelWorld'),
+//     found as the 50% crossing between the lit level and the shadow level,
+//     interpolated between pixels. And its sides at z = -1 and +1, by
+//     column. For one cascade, for four, for the low tier (two cascades
+//     of 1024), and with the physically based material.
+//  6. No acne: a lit ground drawn with shadows on equals the same drawn with
+//     them off, within one level, at sun elevations of 12, 45 and 80 degrees,
+//     for four cascades and for the low tier, with both materials; a sphere
+//     alone, lit on one side, the same.
+//  7. Cascade seams: a long thin wall along z casts a stripe across the
+//     ground to the horizon, its far edge the line x = -3.25 (the wall's top
+//     at x = -0.25 and y = 3 lands at -3.25) crossing all four cascades. At
+//     every row where the line is in view, the stripe's edge is within a
+//     pixel of where the camera projects the line, and between neighbouring
+//     rows the error does not jump.
+//  8. Cut-out: a quad of alpha opaque on its left half and cut out on its
+//     right half, 2 up in a sun that lands its halves' shadows 3 to the side,
+//     casts a shadow of its opaque half only: lit and physically based.
+//  9. Skinned: a box posed 4 along z by its bone casts its shadow there and
+//     not where it was modelled.
+// 10. Flutter and its cut-out variant draw without a validation message, and
+//     cast a shadow where a leaf is.
+// 11. A draw item marked 'dontCastShadow', a see-through one and a custom
+//     one cast none; shadows switched off again draw as before.
+
+mod shadows;
+
+import testing use *;
+import stdio use *;
+import libc;
+import geomath use *;
+import collections use *;
+import mesh use Mesh;
+import gpu use *;
+import render use *;
+
+const SIDE = 256u32;
+const SIDEZ = 256usize;
+// The camera above the ground: 12 up, field of view 40 degrees; the ground
+// seen 4.3676 each way of the middle
+const HEIGHT = 12.;
+const HALF_VIEW = 4.3676;
+
+fn near(a f32, b f32, within f32) bool { (if a > b { a - b; } else { b - a; }) <= within; }
+
+fn absf(x f32) f32 { if x < 0. { 0. - x; } else { x; }; }
+
+// Channel 0 of the pixel (x, y) of the target at 'p'
+fn px(p *u8, x usize, y usize) f32 { f32.from(*(p + (y * SIDEZ + x) * 4usize)); }
+
+// The first place along row 'y' from 'from' to 'to' (a column each) where
+// the level crosses 'mid', from above to below if 'falling', else from
+// below to above, interpolated between the two pixels: the column in pixel
+// centres (a pixel i is at i + 0.5), or -1 if it never does
+fn crossRow(p *u8, y usize, from usize, to usize, mid f32, falling bool) f32 {
+  mut x = from;
+  while x < to {
+    imm a = px(p, x, y);
+    imm b = px(p, x + 1usize, y);
+    if (falling and a > mid and b <= mid) or (!falling and a < mid and b >= mid) {
+      return f32.from(x) + 0.5 + (a - mid) / (a - b);
+    }
+    x = x + 1usize;
+  }
+  -1.;
+}
+
+// The same down column 'x' from row 'from' to 'to'
+fn crossColumn(p *u8, x usize, from usize, to usize, mid f32, falling bool) f32 {
+  mut y = from;
+  while y < to {
+    imm a = px(p, x, y);
+    imm b = px(p, x, y + 1usize);
+    if (falling and a > mid and b <= mid) or (!falling and a < mid and b >= mid) {
+      return f32.from(y) + 0.5 + (a - mid) / (a - b);
+    }
+    y = y + 1usize;
+  }
+  -1.;
+}
+
+// One frame: draw 'list' into 'color' and read it back into 'readback'
+fn drawFrame(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer,
+    camera &Camera, light &Light, list &DrawList) {
+  mut encoder = device.createCommandEncoder();
+  renderer.render(device, &mut encoder, color, depth, camera, light, list);
+  encoder.copyTextureToBuffer(color, readback);
+  device.queue.submit(encoder.finish());
+  device.endFrame();
+  device.waitIdle();
+}
+
+// The sun, from 'elevation' radians up, from the direction of azimuth
+// 'azimuth' (0: from +x; pi / 2: from +z), as a light
+fn sunFrom(elevation f32, azimuth f32, intensity f32, ambient f32) Light {
+  imm c = cos(elevation);
+  imm toSun = new Vec3(c * cos(azimuth), sin(elevation), c * sin(azimuth));
+  Light.directional(new Vec3(0., 0., 0.) - toSun, Color.gray(intensity), Color.gray(ambient));
+}
+
+// The camera above the ground looking straight down, up being -z
+fn topDown() Camera {
+  mut camera = Camera.make();
+  camera.fov = radians(40.);
+  camera.near = 0.1;
+  camera.far = 100.;
+  camera.lookAt(new Vec3(0., HEIGHT, 0.), new Vec3(0., 0., 0.), new Vec3(0., 0., -1.));
+  camera.background = new Color(0., 0., 0., 1.);
+  camera;
+}
+
+// ---- The CPU's checks ----
+
+fn cpuChecks() {
+  // 1. The splits
+  imm ends = cascadeSplits(1., 100., 4u32, 0.5);
+  // 0.5 n (f/n)^(i/4) + 0.5 (n + (f - n) i/4), by hand: f/n = 100,
+  // 100^0.25 = 3.1622777, 100^0.5 = 10, 100^0.75 = 31.622777
+  expectFloat(f64.from(ends[0]), 0.5 * 3.1622777 + 0.5 * 25.75, 0.0001d, "the first split");
+  expectFloat(f64.from(ends[1]), 0.5 * 10. + 0.5 * 50.5, 0.0001d, "the second split");
+  expectFloat(f64.from(ends[2]), 0.5 * 31.622777 + 0.5 * 75.25, 0.0001d, "the third split");
+  expectFloat(f64.from(ends[3]), 100., 0.00001d, "the last at the far plane");
+  imm one = cascadeSplits(0.5, 40., 1u32, 0.75);
+  expectFloat(f64.from(one[0]), 40., 0.00001d, "one cascade covers it all");
+  imm logOnly = cascadeSplits(1., 16., 2u32, 1.);
+  expectFloat(f64.from(logOnly[0]), 4., 0.0001d, "the logarithmic split of 1 to 16 in two: 4");
+  imm uniformOnly = cascadeSplits(1., 17., 4u32, 0.);
+  expectFloat(f64.from(uniformOnly[1]), 9., 0.0001d, "the uniform split of 1 to 17 in four: 5, 9, 13");
+
+  // 2. The sphere
+  mut center = 0.;
+  imm radius = sliceSphere(1., 10., 1., 1., &mut center);
+  expectFloat(f64.from(center), 10., 0.0001d, "the centre held at the far plane");
+  expectFloat(f64.from(radius), 14.142136, 0.0001d, "and the radius 10 sqrt 2");
+  // A short slice: a = 9, b = 10, tan 0.1, aspect 1: k^2 = 0.02, the optimal
+  // centre 0.5 x 19 x 1.02 = 9.69, radius sqrt(100 x 0.02 + 0.31^2)
+  imm radius2 = sliceSphere(9., 10., 0.1, 1., &mut center);
+  expectFloat(f64.from(center), 9.69, 0.0001d, "a short slice's centre between its planes");
+  expectFloat(f64.from(radius2), (2.0 + 0.0961).sqrt(), 0.0001d, "and its radius");
+
+  // 3. The corners of every slice inside its window
+  mut camera = Camera.make();
+  camera.fov = radians(60.);
+  camera.near = 0.5;
+  camera.far = 300.;
+  camera.lookAt(new Vec3(3., 5., -2.), new Vec3(40., 1., 70.), new Vec3(0., 1., 0.));
+  mut settings = ShadowSettings.high();
+  settings.distance = 200.;
+  imm aspect = 16. / 9.;
+  imm sun = sunFrom(radians(35.), radians(110.), 1., 0.1);
+  imm set = computeCascades(&camera, aspect, sun.direction, &settings);
+  expectUInt(u64.from(set.count), 4u64, "four cascades");
+  imm place = camera.placement();
+  imm eye = place.translation();
+  imm right = new Vec3(place.m[0], place.m[1], place.m[2]).normalize();
+  imm up = new Vec3(place.m[4], place.m[5], place.m[6]).normalize();
+  imm forward = new Vec3(-place.m[8], -place.m[9], -place.m[10]).normalize();
+  imm tanY = tan(camera.fov * 0.5);
+  mut inside = true;
+  mut c = 0usize;
+  while c < 4usize {
+    mut corner = 0u32;
+    while corner < 8u32 {
+      imm d = if (corner & 1u32) == 0u32 { set.splitNear[c]; } else { set.splitFar[c]; };
+      imm sx = if (corner & 2u32) == 0u32 { -1.; } else { 1.; };
+      imm sy = if (corner & 4u32) == 0u32 { -1.; } else { 1.; };
+      imm world = eye + forward * d + right * (sx * d * tanY * aspect) + up * (sy * d * tanY);
+      imm clip = set.matrices[c] * world;
+      if absf(clip.x) > 1. or absf(clip.y) > 1. or clip.z < 0. or clip.z > 1. { inside = false; }
+      corner = corner + 1u32;
+    }
+    c = c + 1usize;
+  }
+  expect(inside, "every corner of every cascade's slice is inside its window");
+  expect(set.splitNear[1] < set.splitFar[0], "a cascade begins before the one before ends (the blend)");
+
+  // 4. Snapping: the camera moves 0.3 of a texel along x; the map's texel
+  // coordinate of a fixed world point moves by whole texels only
+  mut cam2 = camera;
+  imm texel = set.texelWorld[1];
+  imm sunView = Mat4.lookAt(new Vec3(0., 0., 0.) - sun.direction, new Vec3(0., 0., 0.), new Vec3(0., 1., 0.));
+  imm side = sunView.inverse().transformVector(new Vec3(1., 0., 0.));
+  cam2.origin = camera.origin + side * (0.3 * texel);
+  imm set2 = computeCascades(&cam2, aspect, sun.direction, &settings);
+  imm probe = new Vec3(12., 3., 20.);
+  imm a = set.matrices[1] * probe;
+  imm b = set2.matrices[1] * probe;
+  imm half = f32.from(settings.mapSize) * 0.5;
+  imm ua = a.x * half;
+  imm ub = b.x * half;
+  imm va = a.y * half;
+  imm vb = b.y * half;
+  // The coordinates are in texels from the map's corner, and a snapped
+  // window moves by whole texels only: the fraction of a texel the point is
+  // at does not change (a move of 0.3 of a texel moves the window by none
+  // or one)
+  imm du = ub - ua;
+  imm dv = vb - va;
+  expectFloat(f64.from(du - libc.floorf(du + 0.5)), 0., 0.001d, "snapped: u moves by whole texels (0 or 1 for 0.3 of one)");
+  expectFloat(f64.from(dv - libc.floorf(dv + 0.5)), 0., 0.001d, "and v");
+  mut free = settings;
+  free.stabilize = false;
+  imm free1 = computeCascades(&camera, aspect, sun.direction, &free);
+  imm free2 = computeCascades(&cam2, aspect, sun.direction, &free);
+  imm fa = free1.matrices[1] * probe;
+  imm fb = free2.matrices[1] * probe;
+  imm fu = (fb.x - fa.x) * half;
+  expect(absf(fu - libc.floorf(fu + 0.5)) > 0.05, "unsnapped, the same move shifts the point by a fraction of a texel (the shimmer)");
+}
+
+// ---- The scene of 5 ----
+
+struct Scene {
+  ground MeshHandle;
+  box MeshHandle;
+  lit MaterialHandle;
+  pbr MaterialHandle;
+}
+
+fn makeScene(renderer &mut Renderer, device &mut Device) Scene {
+  mut plane = Mesh.plane(1, 1.);
+  imm ground = renderer.addMesh(device, &plane);
+  imm cube = Mesh.cube(1.);
+  imm box = renderer.addMesh(device, &cube);
+  imm litM = Material.plain(new Color(0.5, 0.5, 0.5, 1.));
+  imm lit = renderer.addMaterial(device, &litM);
+  imm pbrM = PbrMaterial.standard(new Color(0.5, 0.5, 0.5, 1.), 0., 1.);
+  imm pbr = renderer.addPbrMaterial(device, &pbrM);
+  new Scene(ground, box, lit, pbr);
+}
+
+// The ground (40 across each way) and the box on it, in 'material'
+fn boxList(scene &Scene, material MaterialHandle) DrawList {
+  mut list = DrawList.empty();
+  list.add(scene.ground, material, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(40., 1., 40.)));
+  list.add(scene.box, material, Mat4.fromTranslation(new Vec3(0., 1., 0.)));
+  list;
+}
+
+// The ground pixel column for a world x, and the row for a world z, of the
+// top-down camera (pixel centres)
+fn columnOf(x f32) f32 { 128. + x / HALF_VIEW * 128.; }
+fn rowOf(z f32) f32 { 128. + z / HALF_VIEW * 128.; }
+fn worldX(u f32) f32 { (u - 128.) / 128. * HALF_VIEW; }
+fn worldZ(v f32) f32 { (v - 128.) / 128. * HALF_VIEW; }
+
+// 5. The box's shadow, in 'material', under 'settings'
+fn boxShadow(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer,
+    scene &Scene, material MaterialHandle, settings &ShadowSettings, label &Array[u8]) {
+  imm p = readback.mappedRange();
+  renderer.setShadows(device, settings);
+  imm camera = topDown();
+  imm sun = sunFrom(radians(45.), 0., 2.5132741, 0.1);
+  imm list = boxList(scene, material);
+  drawFrame(renderer, device, color, depth, readback, &camera, &sun, &list);
+  // The lit and shadow levels, from pixels well inside each
+  imm lit = px(p, usize.from(u32.from(columnOf(-3.9))), 128usize);
+  imm shadow = px(p, usize.from(u32.from(columnOf(-2.0))), 128usize);
+  expect(lit > shadow + 10., label);
+  imm mid = (lit + shadow) * 0.5;
+  // Which cascade the ground is in (12 from the camera) and its texel
+  mut c = 0usize;
+  while c + 1usize < usize.from(renderer.shadow.cascades.count) and renderer.shadow.cascades.splitFar[c] < HEIGHT {
+    c = c + 1usize;
+  }
+  // The edge is found to a fraction of a pixel (0.034 of the ground), so a
+  // finer cascade than that is held to 0.3 of a pixel
+  imm texelOfMap = renderer.shadow.cascades.texelWorld[c];
+  imm texel = if texelOfMap > 0.3 * HALF_VIEW / 128. { texelOfMap; } else { 0.3 * HALF_VIEW / 128.; };
+  imm far = crossRow(p, 128usize, usize.from(u32.from(columnOf(-3.9))), usize.from(u32.from(columnOf(-2.0))), mid, true);
+  expect(far > 0., label);
+  imm farError = worldX(far) - (-3.);
+  eprint <- "measured "; eprintStr(label as &str); eprint <- ": the far edge at x = "; eprint <- worldX(far);
+  eprint <- " (error "; eprint <- farError; eprint <- ", texel "; eprint <- texel; eprint <- ", cascade "; eprint <- u64.from(c); eprint <- ")\n";
+  expect(absf(farError) <= texel, label);
+  // The sides: column x = -2, rows from the top down to the middle, the
+  // shadow beginning at z = -1; and from the bottom up to the middle, ending at z = 1
+  imm col = usize.from(u32.from(columnOf(-2.)));
+  imm sideA = crossColumn(p, col, 20usize, 128usize, mid, true);
+  imm sideB = crossColumn(p, col, 128usize, 236usize, mid, false);
+  expect(sideA > 0. and sideB > 0., label);
+  imm errA = worldZ(sideA) - (-1.);
+  imm errB = worldZ(sideB) - 1.;
+  eprint <- "measured "; eprintStr(label as &str); eprint <- ": the sides at z = "; eprint <- worldZ(sideA); eprint <- " and ";
+  eprint <- worldZ(sideB); eprint <- "\n";
+  expect(absf(errA) <= texel, label);
+  expect(absf(errB) <= texel, label);
+  // The shadow is darker than the lit ground by about the sun's share
+  // lit 0.5 x (0.1 + 0.8 x 0.7071) = 0.3328 -> 84.9; shadow 0.05 -> 12.75 (the lit material)
+}
+
+// ---- 6. No acne ----
+
+fn maxDifference(a &List[u8], b *u8) f32 {
+  mut worst = 0.;
+  mut i = 0usize;
+  while i < 262144usize {
+    imm d = absf(f32.from(*a[i]) - f32.from(*(b + i)));
+    if d > worst { worst = d; }
+    i = i + 1usize;
+  }
+  worst;
+}
+
+fn snapshot(p *u8) List[u8] {
+  mut out = List[u8].withCapacity(262144usize);
+  mut i = 0usize;
+  while i < 262144usize {
+    out.push(*(p + i));
+    i = i + 1usize;
+  }
+  out;
+}
+
+// A lit ground and the same with its own shadow on: they must agree
+fn acne(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer, scene &Scene,
+    material MaterialHandle, settings &ShadowSettings, elevation f32, label &Array[u8]) {
+  imm p = readback.mappedRange();
+  mut camera = Camera.make();
+  camera.fov = radians(60.);
+  camera.near = 0.2;
+  camera.far = 200.;
+  camera.lookAt(new Vec3(0., 2.5, 8.), new Vec3(0., 0., -30.), new Vec3(0., 1., 0.));
+  camera.background = new Color(0., 0., 0., 1.);
+  imm sun = sunFrom(elevation, radians(55.), 2.5132741, 0.1);
+  mut list = DrawList.empty();
+  list.add(scene.ground, material, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(200., 1., 200.)));
+  renderer.disableShadows(device);
+  drawFrame(renderer, device, color, depth, readback, &camera, &sun, &list);
+  imm unshadowed = snapshot(p);
+  renderer.setShadows(device, settings);
+  drawFrame(renderer, device, color, depth, readback, &camera, &sun, &list);
+  imm worst = maxDifference(&unshadowed, p);
+  eprint <- "measured "; eprintStr(label as &str); eprint <- ": acne, the largest difference "; eprint <- worst; eprint <- " of 255\n";
+  expect(worst <= 1., label);
+}
+
+// A sphere lit on one side, shadows on and off: they must agree to the
+// terminator
+fn acneSphere(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer,
+    material MaterialHandle, settings &ShadowSettings, label &Array[u8]) {
+  imm p = readback.mappedRange();
+  imm sphereMesh = Mesh.sphere(1.5, 32);
+  imm sphere = renderer.addMesh(device, &sphereMesh);
+  mut camera = Camera.make();
+  camera.fov = radians(40.);
+  camera.lookAt(new Vec3(0., 0., 9.), new Vec3(0., 0., 0.), new Vec3(0., 1., 0.));
+  camera.background = new Color(0., 0., 0., 1.);
+  imm sun = sunFrom(radians(30.), radians(40.), 2.5132741, 0.1);
+  mut list = DrawList.empty();
+  list.add(sphere, material, Mat4.identity());
+  renderer.disableShadows(device);
+  drawFrame(renderer, device, color, depth, readback, &camera, &sun, &list);
+  imm unshadowed = snapshot(p);
+  renderer.setShadows(device, settings);
+  drawFrame(renderer, device, color, depth, readback, &camera, &sun, &list);
+  imm worst = maxDifference(&unshadowed, p);
+  eprint <- "measured "; eprintStr(label as &str); eprint <- ": the sphere, the largest difference "; eprint <- worst; eprint <- " of 255\n";
+  // At the terminator the sun's cosine is small, and a pixel in or out of
+  // shadow there differs by a few levels at most
+  expect(worst <= 4., label);
+  renderer.removeMesh(device, sphere);
+}
+
+// ---- 7. Cascade seams ----
+
+fn seams(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer, scene &Scene,
+    material MaterialHandle, settings &ShadowSettings, label &Array[u8]) {
+  imm p = readback.mappedRange();
+  renderer.setShadows(device, settings);
+  mut camera = Camera.make();
+  camera.fov = radians(50.);
+  camera.near = 0.2;
+  camera.far = 200.;
+  camera.lookAt(new Vec3(-6., 4., 10.), new Vec3(-3., 0., -40.), new Vec3(0., 1., 0.));
+  camera.background = new Color(0., 0., 0., 1.);
+  // The sun from 45 degrees up on the +x side again: the stripe's far edge
+  // is at x = -0.25 - 3 = -3.25
+  imm sun = sunFrom(radians(45.), 0., 2.5132741, 0.1);
+  mut list = DrawList.empty();
+  list.add(scene.ground, material, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(300., 1., 300.)));
+  // The wall, 0.5 thick, 3 high, 160 long, from z = 20 back to -140
+  list.add(scene.box, material, Mat4.fromTrs(new Vec3(0., 1.5, -60.), Quat.identity(), new Vec3(0.25, 1.5, 80.)));
+  drawFrame(renderer, device, color, depth, readback, &camera, &sun, &list);
+  imm viewProjection = camera.projectionMatrix(1.) * camera.viewMatrix();
+  // The levels, from pixels known to be lit and in shadow: the ground far
+  // left of the edge and the ground just right of it, near the camera
+  imm nearLeft = viewProjection.projectPoint(new Vec3(-8., 0., 0.));
+  imm nearShadow = viewProjection.projectPoint(new Vec3(-2., 0., 0.));
+  imm lit = px(p, usize.from(u32.from((nearLeft.x * 0.5 + 0.5) * 256.)), usize.from(u32.from((0.5 - nearLeft.y * 0.5) * 256.)));
+  imm shadow = px(p, usize.from(u32.from((nearShadow.x * 0.5 + 0.5) * 256.)), usize.from(u32.from((0.5 - nearShadow.y * 0.5) * 256.)));
+  expect(lit > shadow + 10., label);
+  imm mid = (lit + shadow) * 0.5;
+  // The edge line (-3.25, 0, z) is a straight line on the screen: from where
+  // the camera projects it at z = 2 to z = -100. At each pixel row between,
+  // where the line crosses the row's centre is the edge's expected column.
+  imm start = viewProjection.projectPoint(new Vec3(-3.25, 0., 2.));
+  imm end = viewProjection.projectPoint(new Vec3(-3.25, 0., -100.));
+  imm u0 = (start.x * 0.5 + 0.5) * 256.;
+  imm v0 = (0.5 - start.y * 0.5) * 256.;
+  imm u1 = (end.x * 0.5 + 0.5) * 256.;
+  imm v1 = (0.5 - end.y * 0.5) * 256.;
+  imm slope = (u1 - u0) / (v1 - v0);
+  mut count = 0u32;
+  mut worstError = 0.;
+  mut worstJump = 0.;
+  mut previous = 0.;
+  mut havePrevious = false;
+  // (v0, at z = 2, is lower on the screen than v1)
+  mut row = i32.from(v1) + 1;
+  while f32.from(row) + 0.5 < v0 and row < 254 {
+    imm center = f32.from(row) + 0.5;
+    imm u = u0 + slope * (center - v0);
+    if u > 12. and u < 244. {
+      imm found = crossRow(p, usize.from(u32.from(row)), usize.from(u32.from(u - 10.)), usize.from(u32.from(u + 10.)), mid, true);
+      if found > 0. {
+        imm err = found - u;
+        if absf(err) > worstError { worstError = absf(err); }
+        if havePrevious and absf(err - previous) > worstJump { worstJump = absf(err - previous); }
+        previous = err;
+        havePrevious = true;
+        count = count + 1u32;
+      }
+    }
+    row = row + 1;
+  }
+  eprint <- "measured "; eprintStr(label as &str); eprint <- ": the stripe's edge over "; eprint <- u64.from(count);
+  eprint <- " rows, the largest error "; eprint <- worstError; eprint <- " px, the largest jump between rows "; eprint <- worstJump; eprint <- " px\n";
+  expect(count > 60u32, label);
+  expect(worstError <= 1.5, label);
+  expect(worstJump <= 1.0, label);
+}
+
+// ---- 8. Cut-out ----
+
+// A 4 x 4 image with alpha, opaque on its left half and clear on its right
+fn halfCutImage() Image {
+  mut img = new Image(4, 4, 4, List[u8].empty());
+  mut y = 0;
+  while y < 4 {
+    mut x = 0;
+    while x < 4 {
+      img.pixels.push(255u8);
+      img.pixels.push(255u8);
+      img.pixels.push(255u8);
+      img.pixels.push(if x < 2 { 255u8; } else { 0u8; });
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  img;
+}
+
+// A quad 2 across at height 2 (a plane's mesh), in 'material', over the
+// ground, in a sun whose shadows land 3 to the -x side: elevation with
+// tan = 1/1.5, so 33.69 degrees
+fn cutout(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer, scene &Scene,
+    material MaterialHandle, settings &ShadowSettings, label &Array[u8]) {
+  imm p = readback.mappedRange();
+  renderer.setShadows(device, settings);
+  imm camera = topDown();
+  imm sun = sunFrom(atan2(1., 1.5), 0., 2.5132741, 0.1);
+  mut list = DrawList.empty();
+  list.add(scene.ground, scene.lit, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(40., 1., 40.)));
+  mut quadMesh = Mesh.plane(1, 1.);
+  imm quad = renderer.addMesh(device, &quadMesh);
+  list.add(quad, material, Mat4.fromTranslation(new Vec3(0., 2., 0.)));
+  drawFrame(renderer, device, color, depth, readback, &camera, &sun, &list);
+  // Where the opaque half (x from -1 to 0 at y = 2) lands: x - 3, from -4
+  // to -3; the clear half's: -3 to -2, lit. Row 128 is z = 0.
+  imm lit = px(p, usize.from(u32.from(columnOf(-4.2))), 128usize);
+  imm underOpaque = px(p, usize.from(u32.from(columnOf(-3.5))), 128usize);
+  imm underClear = px(p, usize.from(u32.from(columnOf(-2.5))), 128usize);
+  eprint <- "measured "; eprintStr(label as &str); eprint <- ": lit "; eprint <- lit; eprint <- ", under the opaque half "; eprint <- underOpaque;
+  eprint <- ", under the clear half "; eprint <- underClear; eprint <- "\n";
+  expect(underOpaque < lit * 0.5, label);
+  expect(near(underClear, lit, 2.), label);
+  renderer.removeMesh(device, quad);
+}
+
+// ---- 9. Skinned ----
+
+fn skinned(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer, scene &Scene,
+    material MaterialHandle, settings &ShadowSettings, label &Array[u8]) {
+  imm p = readback.mappedRange();
+  renderer.setShadows(device, settings);
+  imm camera = topDown();
+  imm sun = sunFrom(radians(45.), 0., 2.5132741, 0.1);
+  mut boxMesh = Mesh.cube(0.5);
+  mut skin = Skin.empty();
+  mut v = 0usize;
+  while v < boxMesh.positions.len() {
+    skin.push(0u32, 0u32, 0u32, 0u32, 1., 0., 0., 0.);
+    v = v + 1usize;
+  }
+  imm h = renderer.addSkinnedMesh(device, &boxMesh, &skin);
+  // The box a metre up, posed 4 along +z by its bone: its shadow on the
+  // ground is the box's x - y, from -2 to 0, at z from 3.5 to 4.5
+  imm pose = [Mat4.fromTranslation(new Vec3(0., 0., 4.))];
+  mut list = DrawList.empty();
+  list.add(scene.ground, scene.lit, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(40., 1., 40.)));
+  list.addSkinned(h, material, Mat4.fromTranslation(new Vec3(0., 1., 0.)), &pose);
+  drawFrame(renderer, device, color, depth, readback, &camera, &sun, &list);
+  imm lit = px(p, usize.from(u32.from(columnOf(-3.5))), usize.from(u32.from(rowOf(4.))));
+  imm posed = px(p, usize.from(u32.from(columnOf(-1.5))), usize.from(u32.from(rowOf(4.))));
+  imm unposed = px(p, usize.from(u32.from(columnOf(-1.5))), usize.from(u32.from(rowOf(0.))));
+  eprint <- "measured "; eprintStr(label as &str); eprint <- ": lit "; eprint <- lit; eprint <- ", the posed shadow "; eprint <- posed;
+  eprint <- ", where it was modelled "; eprint <- unposed; eprint <- "\n";
+  expect(posed < lit * 0.5, label);
+  expect(near(unposed, lit, 2.), label);
+  renderer.removeMesh(device, h);
+}
+
+// ---- 10. Flutter ----
+
+// A leaf: a square of 2 x 2 facing up at its pivot's origin, its mesh's
+// colors holding each vertex's offset from the pivot and the leaf's phase
+fn leaf() Mesh {
+  mut m = Mesh.plane(1, 1.);
+  mut i = 0usize;
+  while i < m.positions.len() {
+    imm c = *m.positions[i];
+    m.colors.push(new Color(c.x, c.y, c.z, 0.3));
+    i = i + 1usize;
+  }
+  m;
+}
+
+fn flutter(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer, scene &Scene,
+    settings &ShadowSettings, label &Array[u8]) {
+  imm p = readback.mappedRange();
+  renderer.setShadows(device, settings);
+  imm camera = topDown();
+  imm sun = sunFrom(atan2(1., 1.5), 0., 2.5132741, 0.1);
+  imm leafMesh = leaf();
+  imm h = renderer.addMesh(device, &leafMesh);
+  mut opaque = PbrMaterial.standard(new Color(0.5, 0.5, 0.5, 1.), 0., 1.);
+  opaque.flutter = 0.01;
+  imm opaqueM = renderer.addPbrMaterial(device, &opaque);
+  imm img = halfCutImage();
+  imm tex = renderer.addCutoutTexture(device, &img, 0.5);
+  mut cut = PbrMaterial.standard(new Color(0.5, 0.5, 0.5, 1.), 0., 1.).cutOut(0.5);
+  cut.texture = tex;
+  cut.flutter = 0.01;
+  imm cutM = renderer.addPbrMaterial(device, &cut);
+  // The leaf 2 up: its shadow lands 3 to the side, x from -4 to -2 for the
+  // opaque leaf; the cut-out one, only x from -4 to -3
+  mut list = DrawList.empty();
+  list.add(scene.ground, scene.lit, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(40., 1., 40.)));
+  list.add(h, opaqueM, Mat4.fromTranslation(new Vec3(0., 2., 3.)));
+  list.add(h, cutM, Mat4.fromTranslation(new Vec3(0., 2., -3.)));
+  renderer.time = 0.2;
+  drawFrame(renderer, device, color, depth, readback, &camera, &sun, &list);
+  imm lit = px(p, usize.from(u32.from(columnOf(-4.2))), usize.from(u32.from(rowOf(3.))));
+  imm underOpaque = px(p, usize.from(u32.from(columnOf(-2.5))), usize.from(u32.from(rowOf(3.))));
+  imm underCutOpaque = px(p, usize.from(u32.from(columnOf(-3.5))), usize.from(u32.from(rowOf(-3.))));
+  imm underCutClear = px(p, usize.from(u32.from(columnOf(-2.5))), usize.from(u32.from(rowOf(-3.))));
+  eprint <- "measured "; eprintStr(label as &str); eprint <- ": lit "; eprint <- lit; eprint <- ", under the flutter leaf "; eprint <- underOpaque;
+  eprint <- ", under the cut-out one's opaque half "; eprint <- underCutOpaque; eprint <- ", its clear half "; eprint <- underCutClear; eprint <- "\n";
+  expect(underOpaque < lit * 0.5, label);
+  expect(underCutOpaque < lit * 0.5, label);
+  expect(near(underCutClear, lit, 3.), label);
+  renderer.time = 0.;
+  renderer.removeMesh(device, h);
+}
+
+// ---- 11. What casts nothing ----
+
+fn castsNothing(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer, scene &Scene,
+    settings &ShadowSettings) {
+  imm p = readback.mappedRange();
+  renderer.setShadows(device, settings);
+  imm camera = topDown();
+  imm sun = sunFrom(radians(45.), 0., 2.5132741, 0.1);
+  mut list = boxList(scene, scene.lit);
+  drawFrame(renderer, device, color, depth, readback, &camera, &sun, &list);
+  imm lit = px(p, usize.from(u32.from(columnOf(-3.9))), 128usize);
+  imm shadowed = px(p, usize.from(u32.from(columnOf(-2.))), 128usize);
+  expect(shadowed < lit * 0.5, "the box casts a shadow");
+  // The same box marked as casting none
+  list.clear();
+  list.add(scene.ground, scene.lit, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(40., 1., 40.)));
+  list.dontCastShadow();
+  list.add(scene.box, scene.lit, Mat4.fromTranslation(new Vec3(0., 1., 0.)));
+  list.dontCastShadow();
+  drawFrame(renderer, device, color, depth, readback, &camera, &sun, &list);
+  imm noShadow = px(p, usize.from(u32.from(columnOf(-2.))), 128usize);
+  expect(near(noShadow, lit, 2.), "a box marked dontCastShadow casts none");
+  // A see-through box
+  imm glass = Material.plain(new Color(0.5, 0.5, 0.5, 1.)).translucent(0.5);
+  imm glassM = renderer.addMaterial(device, &glass);
+  list.clear();
+  list.add(scene.ground, scene.lit, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(40., 1., 40.)));
+  list.add(scene.box, glassM, Mat4.fromTranslation(new Vec3(0., 1., 0.)));
+  drawFrame(renderer, device, color, depth, readback, &camera, &sun, &list);
+  imm glassShadow = px(p, usize.from(u32.from(columnOf(-2.))), 128usize);
+  expect(near(glassShadow, lit, 2.), "a see-through box casts none");
+  // Shadows switched off again: the plain box draws as it did before
+  renderer.disableShadows(device);
+  list = boxList(scene, scene.lit);
+  drawFrame(renderer, device, color, depth, readback, &camera, &sun, &list);
+  imm off = px(p, usize.from(u32.from(columnOf(-2.))), 128usize);
+  expect(near(off, lit, 2.), "shadows off: no shadow");
+  expectUInt(u64.from(renderer.shadow.map.depthOrArrayLayers), 1u64, "and the map is the one-texel stand-in");
+}
+
+fn main() i32 {
+  cpuChecks();
+
+  mut instance = Instance.create("render shadows");
+  require(instance.isValid(), "a Vulkan 1.3 instance");
+  mut none = Surface.none();
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  if (env as usize) != 0usize {
+    if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  mut adapter = instance.requestAdapter(&none, preference);
+  require(adapter.isValid(), "an adapter");
+  mut device = adapter.requestDevice();
+  require(device.isValid(), "a device");
+  eprint <- "measured adapter: "; eprintStr(adapter.name.view()); eprint <- "\n";
+  imm targetDesc = new TextureDescriptor(SIDE, SIDE, TEXTURE_FORMAT_RGBA8_UNORM,
+    TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  mut color = device.createTexture(&targetDesc);
+  imm depthDesc = new TextureDescriptor(SIDE, SIDE, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  mut depth = device.createTexture(&depthDesc);
+  mut readback = device.createBuffer(262144u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  require(renderer.isValid(), "a renderer");
+  imm scene = makeScene(&mut renderer, &mut device);
+
+  mut one = ShadowSettings.high();
+  one.cascades = 1u32;
+  one.mapSize = 1024u32;
+  one.distance = 30.;
+  mut four = ShadowSettings.high();
+  four.distance = 40.;
+  imm low = ShadowSettings.low();
+
+  // 5. The box's edge
+  boxShadow(&mut renderer, &mut device, &color, &depth, &readback, &scene, scene.lit, &one, "box edge, lit, one cascade");
+  boxShadow(&mut renderer, &mut device, &color, &depth, &readback, &scene, scene.lit, &four, "box edge, lit, four cascades");
+  boxShadow(&mut renderer, &mut device, &color, &depth, &readback, &scene, scene.lit, &low, "box edge, lit, the low tier");
+  boxShadow(&mut renderer, &mut device, &color, &depth, &readback, &scene, scene.pbr, &four, "box edge, physically based, four cascades");
+
+  // 6. No acne
+  mut elevations = [radians(12.), radians(45.), radians(80.)];
+  mut e = 0usize;
+  while e < 3usize {
+    acne(&mut renderer, &mut device, &color, &depth, &readback, &scene, scene.lit, &four, elevations[e], "no acne, lit, four cascades");
+    acne(&mut renderer, &mut device, &color, &depth, &readback, &scene, scene.pbr, &four, elevations[e], "no acne, physically based, four cascades");
+    acne(&mut renderer, &mut device, &color, &depth, &readback, &scene, scene.lit, &low, elevations[e], "no acne, lit, the low tier");
+    acne(&mut renderer, &mut device, &color, &depth, &readback, &scene, scene.pbr, &low, elevations[e], "no acne, physically based, the low tier");
+    e = e + 1usize;
+  }
+  acneSphere(&mut renderer, &mut device, &color, &depth, &readback, scene.lit, &four, "a lit sphere, four cascades");
+  acneSphere(&mut renderer, &mut device, &color, &depth, &readback, scene.pbr, &four, "a physically based sphere, four cascades");
+  acneSphere(&mut renderer, &mut device, &color, &depth, &readback, scene.pbr, &low, "a physically based sphere, the low tier");
+
+  // 7. Seams
+  mut wide = ShadowSettings.high();
+  wide.distance = 120.;
+  seams(&mut renderer, &mut device, &color, &depth, &readback, &scene, scene.lit, &wide, "cascade seams, lit");
+  seams(&mut renderer, &mut device, &color, &depth, &readback, &scene, scene.pbr, &wide, "cascade seams, physically based");
+
+  // 8. Cut-out
+  imm img = halfCutImage();
+  imm tex = renderer.addCutoutTexture(&mut device, &img, 0.5);
+  mut cutLitM = Material.plain(new Color(0.5, 0.5, 0.5, 1.));
+  cutLitM.texture = tex;
+  cutLitM.alphaMode = ALPHA_MASK;
+  cutLitM.alphaCutoff = 0.5;
+  imm cutLit = renderer.addMaterial(&mut device, &cutLitM);
+  mut cutPbrM = PbrMaterial.standard(new Color(0.5, 0.5, 0.5, 1.), 0., 1.).cutOut(0.5);
+  cutPbrM.texture = tex;
+  imm cutPbr = renderer.addPbrMaterial(&mut device, &cutPbrM);
+  cutout(&mut renderer, &mut device, &color, &depth, &readback, &scene, cutLit, &four, "cut-out, lit");
+  cutout(&mut renderer, &mut device, &color, &depth, &readback, &scene, cutPbr, &four, "cut-out, physically based");
+
+  // 9. Skinned
+  skinned(&mut renderer, &mut device, &color, &depth, &readback, &scene, scene.lit, &four, "skinned, lit");
+  skinned(&mut renderer, &mut device, &color, &depth, &readback, &scene, scene.pbr, &four, "skinned, physically based");
+
+  // 10. Flutter
+  flutter(&mut renderer, &mut device, &color, &depth, &readback, &scene, &four, "flutter");
+
+  // 11. What casts nothing
+  castsNothing(&mut renderer, &mut device, &color, &depth, &readback, &scene, &four);
+
+  expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
+  expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
+  done();
+}
