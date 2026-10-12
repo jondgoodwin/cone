@@ -258,38 +258,38 @@ import diag;
 
 fn @initpure init() {
   numberLock = Mutex.make();
+  numberBits = libc.calloc(usize.from(maxDrivers / 64u32), 8usize) as *u64;
+  if numberBits as usize == 0usize {
+    panic("httpconn: out of memory for the driver numbers");
+  }
+  numberNext = Atomic[u32].of(0u32);
 }
 
 // Driver numbers. Every live Driver holds one of 'maxDrivers', the mark in
 // its tokens, so no two live drivers can claim each other's completions
-// (a bit apiece in 'numberBits', under 'numberLock'). A number is taken in
+// (a bit apiece in 'numberBits', a block made in 'init', and 'numberNext' is
+// an atomic, both changed only under 'numberLock'). A number is taken in
 // turn from 'numberNext' on, not the lowest free, so a dead driver's is not
 // handed out again at once: the loop may still answer operations that
 // driver had in flight. One driver more than 'maxDrivers' alive at once in
 // the process is a panic.
 const maxDrivers = 1024u32;
 imm numberLock Mutex;
-mut numberBits *u64 = null;
-mut numberNext u32 = 0u32;
+imm numberBits *u64;
+imm numberNext Atomic[u32];
 
 fn takeNumber(file &Array[u8], line u32) u32 {
   numberLock.lock();
-  if numberBits as usize == 0usize {
-    numberBits = libc.calloc(usize.from(maxDrivers / 64u32), 8usize) as *u64;
-    if numberBits as usize == 0usize {
-      numberLock.unlock();
-      panic("httpconn: out of memory for the driver numbers", file, line);
-    }
-  }
+  imm start = numberNext.load();
   mut k = 0u32;
   while k < maxDrivers {
-    imm n = (numberNext + k) % maxDrivers;
+    imm n = (start + k) % maxDrivers;
     imm word = numberBits + usize.from(n / 64u32);
     imm bit = 1u64 << u64.from(n % 64u32);
     imm held = mem.readRaw[u64](word);
     if (held & bit) == 0u64 {
       mem.writeRaw[u64](word, held | bit);
-      numberNext = (n + 1u32) % maxDrivers;
+      numberNext.store((n + 1u32) % maxDrivers);
       numberLock.unlock();
       return n;
     }

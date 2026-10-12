@@ -153,20 +153,24 @@ fn osVerify(job &Array[u8], offline bool) u32 {
 // ---------------------------------------------------------------------------
 
 imm storeOnce Once;
-mut storeMade usize = 0usize;
+imm storeMade Atomic[usize];
 
 // The system's roots, once for the process: the file or folder SSL_CERT_FILE
 // and SSL_CERT_DIR name when they are set, else OpenSSL's default places
-// (Ubuntu's /etc/ssl/certs). An X509_STORE is safe to share between threads
+// (Ubuntu's /etc/ssl/certs). Made on the first verification, not in 'init':
+// they are read from the environment then, which a program may set in 'main'
+// first, and a program that never verifies a chain this way (Windows never
+// does) reads no certificates. The Once makes it and an atomic holds its
+// address. An X509_STORE is safe to share between threads
 fn makeStore() {
   imm s = X509_STORE_new();
   if s as usize != 0usize {X509_STORE_set_default_paths(s);}
-  storeMade = s as usize;
+  storeMade.store(s as usize);
 }
 
 fn systemStore() *u8 {
   storeOnce.callOnce(&makeStore);
-  storeMade as *u8;
+  storeMade.load() as *u8;
 }
 
 // The job's chain judged by OpenSSL for the name asked for, as a server's
