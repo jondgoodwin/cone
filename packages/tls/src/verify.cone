@@ -12,6 +12,12 @@
 //   its length and its DER bytes, the server's own first
 //
 // and the answer, Done[4]: the four bytes of Windows' error (0: trusted).
+//
+// Windows' verifier is crypt32's chain engine. Linux has no such engine, so
+// there OpenSSL's own check (X509_verify_cert) judges the chain against the
+// system's roots, and its verify result is mapped to the Windows error the
+// package reports for that failure (certError): the same codes, kinds and
+// words on every OS, whichever verifier answered.
 
 // OpenSSL calls this when the server's chain has come, in place of its own
 // check (SSL_CTX_set_cert_verify_callback). It reads the session's verdict
@@ -26,7 +32,7 @@ fn @c("coneTlsVerifyChain") verifyChain(store *u8, arg *u8) i32 {
     X509_STORE_CTX_set_error(store, x509ApplicationVerification);
     return 0i32;
   }
-  if SSL_ctrl(ssl, ctrlSetRetryVerify, 0i32, null) > 0i32 {1i32;} else {0i32;}
+  if SSL_ctrl(ssl, ctrlSetRetryVerify, 0i64, null) > 0i32 {1i32;} else {0i32;}
 }
 
 // The OS's verifier as pool work: the job in buf, its verdict back in it.
@@ -131,9 +137,128 @@ const cryptRevoked = 0x80092010u32;           // CRYPT_E_REVOKED
 const trustNoSigner = 0x800B0100u32;          // TRUST_E_NOSIGNATURE
 const genericFailure = 0x80004005u32;         // E_FAIL
 
-// The OS's verdict on a job: 0 trusted, else Windows' error. It blocks
-// while the chain engine fetches, unless offline
+// The OS's verdict on a job: 0 trusted, else Windows' error. On Windows it
+// blocks while the chain engine fetches, unless offline; on Linux it fetches
+// nothing and reads the system's roots once
 fn osVerify(job &Array[u8], offline bool) u32 {
+  if isWindows() {
+    crypt32Verify(job, offline);
+  } else {
+    opensslVerify(job);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// OpenSSL's own check against the system's roots (Linux)
+// ---------------------------------------------------------------------------
+
+imm storeOnce Once;
+mut storeMade usize = 0usize;
+
+// The system's roots, once for the process: the file or folder SSL_CERT_FILE
+// and SSL_CERT_DIR name when they are set, else OpenSSL's default places
+// (Ubuntu's /etc/ssl/certs). An X509_STORE is safe to share between threads
+fn makeStore() {
+  imm s = X509_STORE_new();
+  if s as usize != 0usize {X509_STORE_set_default_paths(s);}
+  storeMade = s as usize;
+}
+
+fn systemStore() *u8 {
+  storeOnce.callOnce(&makeStore);
+  storeMade as *u8;
+}
+
+// The job's chain judged by OpenSSL for the name asked for, as a server's
+// chain: 0 trusted, else the Windows error that stands for OpenSSL's verify
+// result. The certificates the server sent are untrusted intermediates; only
+// the system's roots anchor a chain. No revocation data is read
+fn opensslVerify(job &Array[u8]) u32 {
+  if job.len < 8usize {return genericFailure;}
+  imm base = &job[0usize] as *u8;
+  imm hostLen = usize.from(readU32(base));
+  if 4usize + hostLen + 4usize > job.len {return genericFailure;}
+  if hostLen == 0usize {return certCnNoMatch;}
+  mut at = 4usize + hostLen;
+  imm count = readU32(base + at);
+  at = at + 4usize;
+  if count == 0u32 {return trustNoSigner;}
+  mut leaf = null as *u8;
+  imm others = OPENSSL_sk_new_null();
+  mut i = 0u32;
+  mut bad = false;
+  while i < count and not bad {
+    if at + 4usize > job.len {
+      bad = true;
+      break;
+    }
+    imm len = usize.from(readU32(base + at));
+    at = at + 4usize;
+    if at + len > job.len or len == 0usize {
+      bad = true;
+      break;
+    }
+    mut p = base + at;
+    imm x = d2i_X509(null, &mut p, i64.from(len));
+    if x as usize == 0usize {
+      bad = true;
+      break;
+    }
+    if i == 0u32 {leaf = x;} else {OPENSSL_sk_push(others, x);}
+    at = at + len;
+    i = i + 1u32;
+  }
+  mut code = genericFailure;
+  imm store = systemStore();
+  imm ctx = X509_STORE_CTX_new();
+  if not bad and leaf as usize != 0usize and store as usize != 0usize and ctx as usize != 0usize {
+    if X509_STORE_CTX_init(ctx, store, leaf, others) == 1i32 {
+      // A server's chain: its certificate must allow server authentication
+      X509_STORE_CTX_set_default(ctx, &"ssl_server" as *u8);
+      imm param = X509_STORE_CTX_get0_param(ctx);
+      mut name = String.empty();
+      name.appendBytes(mem.sliceFromParts(base + 4usize, hostLen));
+      imm cname = name.cstr();
+      if isAddress(name.view()) {
+        X509_VERIFY_PARAM_set1_ip_asc(param, cname.ptr());
+      } else {
+        X509_VERIFY_PARAM_set1_host(param, base + 4usize, hostLen);
+      }
+      if X509_verify_cert(ctx) == 1i32 {
+        code = 0u32;
+      } else {
+        code = windowsCodeOfVerifyResult(X509_STORE_CTX_get_error(ctx));
+      }
+    }
+  }
+  if ctx as usize != 0usize {X509_STORE_CTX_free(ctx);}
+  if leaf as usize != 0usize {X509_free(leaf);}
+  imm n = OPENSSL_sk_num(others);
+  mut k = 0i32;
+  while k < n {
+    X509_free(OPENSSL_sk_value(others, k));
+    k = k + 1i32;
+  }
+  OPENSSL_sk_free(others);
+  ERR_clear_error();
+  code;
+}
+
+// The Windows error this package reports for an OpenSSL verify result
+// (X509_V_ERR_...). A chain that stops short of a root the system holds is
+// untrusted, as crypt32 says for the test chains whose root it does not know
+fn windowsCodeOfVerifyResult(vr i32) u32 {
+  if vr == x509Expired or vr == x509NotYetValid {return certExpired;}
+  if vr == x509HostnameMismatch or vr == x509IpMismatch {return certCnNoMatch;}
+  if vr == x509UnableToGetIssuer or vr == x509UnableToGetIssuerLocally or
+      vr == x509UnableToVerifyLeafSignature or vr == x509DepthZeroSelfSigned or
+      vr == x509SelfSignedInChain {return certUntrustedRoot;}
+  if vr == x509Revoked {return cryptRevoked;}
+  genericFailure;
+}
+
+// Windows' verdict on a job: the chain engine and the SSL policy above
+fn crypt32Verify(job &Array[u8], offline bool) u32 {
   if job.len < 8usize {return genericFailure;}
   imm base = &job[0usize] as *u8;
   imm hostLen = usize.from(readU32(base));
@@ -225,9 +350,31 @@ fn certError(code u32) TlsError {
   elif code == certCnNoMatch {k = TlsErrorKind.CertNameMismatch;}
   elif code == certUntrustedRoot or code == certChaining {k = TlsErrorKind.CertUntrusted;}
   elif code == cryptRevoked {k = TlsErrorKind.CertRevoked;}
-  mut e = osError(code, "");
+  mut e = if isWindows() {osError(code, "");} else {certWordsError(code);};
   e.kind = k;
   e;
+}
+
+// Windows' words for the certificate errors the verifiers above answer with,
+// for an OS that has none: what Windows' FormatMessage gives for each, so a
+// refusal reads the same on every OS
+fn certWords(code u32) &str {
+  if code == certExpired {"A required certificate is not within its validity period when verifying against the current system clock or the timestamp in the signed file.";}
+  elif code == certUntrustedRoot {"A certificate chain processed, but terminated in a root certificate which is not trusted by the trust provider.";}
+  elif code == certChaining {"A certificate chain could not be built to a trusted root authority.";}
+  elif code == certCnNoMatch {"The certificate's CN name does not match the passed value.";}
+  elif code == cryptRevoked {"The certificate is revoked.";}
+  elif code == trustNoSigner {"No signature was present in the subject.";}
+  else {"Unspecified error";}
+}
+
+// A TlsError for a Windows certificate error code, its words from the table
+fn certWordsError(code u32) TlsError {
+  mut d = String.from(certWords(code));
+  d.append(" (Windows 0x");
+  d.appendHex(u64.from(code), 8usize);
+  d.append(")");
+  new TlsError(TlsErrorKind.CertOther, code, code, d);
 }
 
 // Windows' error code as a TlsError: its text and its number

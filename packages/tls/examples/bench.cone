@@ -30,6 +30,7 @@
 mod bench;
 
 import stdio use *;
+import libc;
 import fs;
 import path use Path;
 import collections use List, String;
@@ -47,13 +48,42 @@ extern {
   fn @c(system) K32GetProcessMemoryInfo(process usize, counters *u8, cb u32) i32;
 }
 
-// PROCESS_MEMORY_COUNTERS_EX's PrivateUsage
+// The bytes the process has committed for itself: Windows' PrivateUsage
+// (PROCESS_MEMORY_COUNTERS_EX), Linux's data size (VmData)
 fn privateBytes() u64 {
-  mut c = new Array[usize, 10] <- fill 0usize;
-  imm p = &mut c as *u8;
-  *(p as *u32) = 80u32;
-  K32GetProcessMemoryInfo(GetCurrentProcess(), p, 80u32);
-  u64.from(c[9usize]);
+  if isWindows() {
+    mut c = new Array[usize, 10] <- fill 0usize;
+    imm p = &mut c as *u8;
+    *(p as *u32) = 80u32;
+    K32GetProcessMemoryInfo(GetCurrentProcess(), p, 80u32);
+    u64.from(c[9usize]);
+  } else {
+    dataBytes();
+  }
+}
+
+// Linux: the sixth number of /proc/self/statm (size resident shared text lib
+// data dt), in 4096-byte pages: the process's writable private memory
+fn dataBytes() u64 {
+  imm f = libc.fopen("/proc/self/statm", "rb");
+  if f == null {return 0u64;}
+  mut buf = new Array[u8, 256] <- fill 0u8;
+  imm bp *u8 = &[]buf as *u8;
+  imm n = libc.fread(bp, 1usize, 255usize, f);
+  libc.fclose(f);
+  mut field = 0u32;
+  mut value = 0u64;
+  mut k = 0usize;
+  while k < n {
+    imm c = buf[k];
+    if c >= '0' and c <= '9' {
+      if field == 5u32 {value = value * 10u64 + u64.from(c - '0');}
+    } else {
+      field = field + 1u32;
+    }
+    k = k + 1usize;
+  }
+  value * 4096u64;
 }
 
 const tokServer = 0x10000000u64;
