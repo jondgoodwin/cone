@@ -29,7 +29,10 @@
 //   glows like stained glass); and FLUTTER, each leaf of a tree turning a few
 //   degrees about its stem on its own phase, in the vertex stage.
 //
-// Lit by the one directional light, and by the sky through image-based
+// Lit by the one directional light, by the scene's point and spot lights (the
+// lights of the fragment's cluster, locallights.slang: the same lobes, the
+// base's and the coat's, for each, the highlight about the point of a
+// bulb's sphere nearest the reflection), and by the sky through image-based
 // lighting: a diffuse cube (irradiance), a specular cube prefiltered by
 // roughness, one level a roughness step, and the split sum's table.
 //
@@ -62,6 +65,7 @@ import renderframe;
 import skinning;
 import shadowing;
 import flutter;
+import locallights;
 
 // The sun's light (the direct terms and the foliage's light through a leaf,
 // not the environment's) is multiplied by how much of the sun reaches the
@@ -76,7 +80,7 @@ struct PbrParams {
     float4 wet;                    // 64: where the coat lies: fBm's scale (0: everywhere), level, softness, seed
     float4 maps;                   // 80: the normal map's scale (0: no normal map), the occlusion map's strength,
                                    //     the alpha mode (0 opaque, 1 cut out, 2 see-through), the cut-off
-    float4 emissive;               // 96: rgb radiance (nits in physical units), its strength multiplied in
+    float4 emissive;               // 96: rgb radiance (nits in physical units), its strength multiplied in; w the light layers (locallights.slang)
     float4 foliage;                // 112: the translucency (0: none), its lobe's exponent, the flutter's most turn (radians, 0: none),
                                    //      and w, the base's specular scale (1: as a dielectric's; a conifer's cards 0: see below)
 };
@@ -328,6 +332,76 @@ float4 fragmentMain(VertexOutput input) : SV_Target {
         float3 coatLobe = distributionGGX(noh, coatA) * visibilityKelemen(loh) * coatFl;
         direct = (baseLobe + coatLobe) * frame.lightColor.rgb * (nol * visible);
         directDiffuse = diffuse * (1.0 - coatFl) * frame.lightColor.rgb * (nol * visible);
+    }
+
+    // The point and spot lights of the fragment's cluster (locallights.slang),
+    // each the sun's terms again with its own direction and irradiance. The
+    // diffuse term is Lambert's about the direction to the light's centre;
+    // the specular lobes (base and coat) are found about the direction to
+    // the point of the light's sphere nearest the reflection, widened by
+    // Karis's normalisation, for a source with a radius. None of them is
+    // shadowed (the sun's shadow map is the sun's). The foliage's light
+    // through a leaf is the sun's and the sky's alone.
+    if (lightParams.grid.w > 0.5) {
+        uint materialLayers = uint(material.emissive.w + 0.5);
+        uint2 cluster = fragmentCluster(input.world, input.position.xy);
+        bool withSpecular = lightParams.slices.z > 0.5;
+        for (uint k = 0; k < cluster.y; k++) {
+            LocalLight light = loadLocalLight(lightClusters[cluster.x + k]);
+            if (!lightReaches(light, materialLayers)) {
+                continue;
+            }
+            LightHit hit;
+            if (!lightAt(light, input.world, hit)) {
+                continue;
+            }
+            float lnol = saturate(dot(n, hit.toLight));
+            if (light.shadowView > -0.5 && (lnol > 0.0 || withSpecular)) {
+                float lightVisible = localShadow(light, input.world, normalize(input.normal), input.position.xy);
+                if (lightVisible <= 0.0) {
+                    continue;
+                }
+                hit.irradiance *= lightVisible;
+            }
+            if (!withSpecular) {
+                // The cheap setting: Lambert alone
+                float3 plain = diffuseColor * (1.0 / PI) * lnol * hit.irradiance;
+                direct += plain;
+                directDiffuse += plain;
+                continue;
+            }
+            // A source's size changes the highlight only where the lobe is
+            // narrow beside it: a rough surface sees a point (the
+            // representative point and its normalisation are the costliest
+            // part of the loop)
+            float spread = light.radius / (2.0 * hit.dist);
+            bool sized = spread > 0.1 * a;
+            float3 ls = sized ? representativeDirection(light, input.world, hit.toLight, hit.dist, r) : hit.toLight;
+            float3 lh = normalize(ls + v);
+            float lnolSpec = saturate(dot(n, ls));
+            if (lnol <= 0.0 && lnolSpec <= 0.0) {
+                continue;
+            }
+            float lnoh = saturate(dot(n, lh));
+            float lloh = saturate(dot(ls, lh));
+            float widen = saturate(a + spread);
+            float norm = sized ? (a / widen) * (a / widen) : 1.0;
+            float3 lcoat = float3(0.0, 0.0, 0.0);
+            float3 lcoatLobe = float3(0.0, 0.0, 0.0);
+            if (coat > 0.0) {
+                lcoat = (film ? thinFilmReflectance(lloh, material.film.z, COAT_IOR, thickness)
+                    : float3(1.0, 1.0, 1.0) * fresnelSchlick1(coatF0, lloh)) * coat;
+                float widenCoat = saturate(coatA + spread);
+                float normCoat = (spread > 0.1 * coatA) ? (coatA / widenCoat) * (coatA / widenCoat) : 1.0;
+                lcoatLobe = distributionGGX(lnoh, coatA) * normCoat * visibilityKelemen(lloh) * lcoat;
+            }
+            float3 lf = fresnelSchlick(f0, lloh);
+            float3 lspecular = distributionGGX(lnoh, a) * norm * visibilitySmithGGX(nov, max(lnolSpec, 1e-4), a)
+                * lf * energy * material.foliage.w;
+            float3 ldiffuse = diffuseColor * (1.0 / PI) * (1.0 - lcoat);
+            direct += (ldiffuse * lnol + (lspecular * (1.0 - lcoat) + lcoatLobe) * lnolSpec) * hit.irradiance;
+            directDiffuse += ldiffuse * lnol * hit.irradiance;
+        }
     }
 
     // The sky
