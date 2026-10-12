@@ -1,0 +1,39 @@
+// A closure with untyped parameters, bound to an imm where nothing says the types, is
+// refused where it is written and is a bad value from then on. Handed to a generic
+// bounded by a signature it leaves the call nothing to infer from, so the call is given
+// up without a second report (it ended in "Compiler defect: a request for the name of
+// a node that has none", ErrorUnreachable, after the real diagnostic). The generic is
+// a function taking it by value, a function taking a borrow of it, and a method.
+
+mod closure_typecheck_cascade_imm;
+
+fn viaValue[F fn(a i64, b i64) bool](f F) bool { f(1, 2); }
+
+fn viaBorrow[F fn(a i64, b i64) bool](f &F) bool { f(1, 2); }
+
+struct Holder {
+  pub n i64;
+  pub fn run[F fn(a i64, b i64) bool](self &, f F) bool { f(self.n, 2); }
+}
+
+fn byValue() bool {
+  imm f = (a, b) => false;   //~ ErrorClosureParm:12 "The type of a is not written"
+  viaValue(f);
+}
+
+fn byBorrow() bool {
+  imm f = fn(a, b) { false; };   //~ ErrorClosureParm:14 "The type of a is not written"
+  viaBorrow(&f);
+}
+
+fn byMethod() bool {
+  imm h = new Holder(1);
+  imm f = (a, b) => false;   //~ ErrorClosureParm:12 "The type of a is not written"
+  h.run(f);
+}
+
+fn main() {
+  byValue();
+  byBorrow();
+  byMethod();
+}

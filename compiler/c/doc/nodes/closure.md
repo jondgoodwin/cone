@@ -284,7 +284,11 @@ it is refused at the call, as a struct's is.
 **A closure that fails stops its call.** A literal that failed to type check as an
 argument of a generic call leaves the call nothing to infer from; `fnCallClosureArgs`
 gives the call up (the failed literal's lent borrow, left behind, reached
-generic substitution as a node with no name). A closure whose body already failed
+generic substitution as a node with no name). A literal first bound to an `imm`
+and refused there leaves the variable of the error type; handed to a generic with a
+signature bound, `f` or `&f` binds the type parameter to `errorType`, which
+`genericRequirementsMetIn` refuses without a second report, as the
+[generic](generic.md) note says. A closure whose body already failed
 reports no return mismatch of its own (`ClosureInfo.errbase`, `returnTypeCheck`).
 
 ## Where a closure may go
