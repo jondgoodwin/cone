@@ -49,6 +49,10 @@
  * call, and is asked the same (reshapeStoreHits, flowpath.c pwShapeStore): 'm[0] = s'
  * finalizes the element it replaces.
  *
+ * An owner is asked the same of a borrow into what it owns: a store over an owning reference
+ * frees what it points at (reshapeOwnerCont, reshapeIsOwner), so a callee that stores over an owner
+ * of the type, or any store that does, is a change of the container.
+ *
  * An enum is asked the same of a reference narrowed into one of its variants: the
  * borrow is allowed, and refused only if something could change which variant the
  * value holds while the narrowed reference is used (reshapeIsSum). What reshapes an
@@ -81,6 +85,9 @@ unsigned reshapeReach(INode *type, INode *cont, int writable);
 // that is no reference, and a field or array element of one? Nothing else can
 // reach it, so it is no other name for a value reached through a shared path.
 int reshapeUniqueLocal(INode *place);
+// The same, asked for a container that may be an owner (reshapeIsOwner): a local holding an
+// owning reference is then the owner's own place, which nothing else reaches
+int reshapeUniqueLocalOf(INode *place, INode *cont);
 
 // Is this type an enum (or a tagged trait): a value that holds one of several variants?
 // A reference narrowed into one of its variants is a borrow into it, and what reshapes
@@ -97,6 +104,17 @@ int reshapeIsSum(INode *type);
 // element written that owns nothing, and a field of a struct that merely holds a String
 // reshape nothing.
 int reshapeStoreHits(INode *lval, INode *cont);
+
+// The container may be an owner instead of a struct: a borrow into what an owning reference
+// ('So', 'Rc', 'Arc', a region a program declares) points at is a borrow into a value that is
+// freed when the owner is stored over, by this name or another, in the function or in a callee.
+// The container is then the owner's reference type, one node for all the same types
+// (reshapeOwnerCont); a call reshapes it when it is handed a path it may write to a place
+// holding one and stores over it, and a store does when it replaces one whole or a value
+// holding one by value or through owners alone. Writing the value the owner points at in
+// place, or a field of it, reshapes nothing.
+int reshapeIsOwner(INode *cont);
+INode *reshapeOwnerCont(INode *ownertype);
 
 // A global (a module-level variable, or a static) has been type checked. Whether
 // any global can reach a collection type decides whether a call that is handed
@@ -138,7 +156,10 @@ typedef struct {
 // 'globalview' says the borrow points into a 'mut' global, or into anything reached from one: every
 // call is then taken to be able to write that global, but for the intrinsics, an init and a call
 // through a virtual reference marked '+ ShapeKeeping'.
+// 'skiprecv' says the borrow the loan is of is the receiver's own, an owner lent as the 'self' of
+// the method called: the receiver is then the borrow and no other name for the owner, and only
+// the other arguments are asked.
 int reshapeCall(FnCallNode *call, FnDclNode *meth, int recvunique, INode *cont, INode *owner, int globalview,
-    ReshapeVerdict *verdict, VarDclNode **mine, int nmine);
+    ReshapeVerdict *verdict, VarDclNode **mine, int nmine, int skiprecv);
 
 #endif

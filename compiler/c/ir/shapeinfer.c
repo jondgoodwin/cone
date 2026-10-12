@@ -454,13 +454,14 @@ static int siTypeWriteHits(INode *lval, SiCtx *c) {
         }
         return 0;
     }
-    if (reshapeUniqueLocal(lval))
+    if (reshapeUniqueLocalOf(lval, c->cont))
         return 0;
     // The place's value stored over: the collection or enum itself, a value holding one
     // by value, or an element that owns what a borrow may point at (reshapeStoreHits);
     // or, for a collection, one of its header fields written. An enum's common field,
     // or a field of its variant, is written within the variant: no reshape
-    if (!reshapeStoreHits(lval, c->cont) && (reshapeIsSum(c->cont) || !siPlaceInCont(lval, c->cont)))
+    if (!reshapeStoreHits(lval, c->cont)
+            && (reshapeIsSum(c->cont) || reshapeIsOwner(c->cont) || !siPlaceInCont(lval, c->cont)))
         return 0;
     return c->mode != SiModeOut || siRooted(lval, c);
 }
@@ -633,7 +634,8 @@ static void siCallType(FnCallNode *call, SiCtx *c) {
         while (ba->tag == CastTag && !(ba->flags & FlagConvert))
             ba = ((CastNode *)ba)->exp;
         // A value the function owns whole, lent or handed over, is nobody else's
-        if ((ba->tag == BorrowTag && reshapeUniqueLocal(((RefNode *)ba)->vtexp)) || reshapeUniqueLocal(ba))
+        if ((ba->tag == BorrowTag && reshapeUniqueLocalOf(((RefNode *)ba)->vtexp, c->cont))
+                || reshapeUniqueLocalOf(ba, c->cont))
             continue;
         if (c->mode == SiModeOut && !siRooted(ba, c))
             continue;

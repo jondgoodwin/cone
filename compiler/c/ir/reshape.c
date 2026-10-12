@@ -138,6 +138,12 @@ static void rcWalk(INode *type, int ind) {
     case VirtRefTag:
     {
         RefNode *ref = (RefNode *)type;
+        // The owner itself is what is wanted (reshapeOwnerCont): reached as a struct is
+        if (type->tag == RefTag && rcWant && rcWant->tag == RefTag && itypeIsSame(type, rcWant)) {
+            if (!(ind & 2))
+                rcBits |= (ind & 1) ? (ReachBorrowed | ((ind & 4) ? 0 : ReachOwned)) : ReachContained;
+            return;
+        }
         INode *perm = ref->perm == unknownType ? (INode *)roPerm : itypeGetTypeDcl(ref->perm);
         // A read-only reference cannot write what it reaches, however many others may; but
         // a 'mut' reference it reaches (a field of a struct it points at: 'Guard' holding a
@@ -375,7 +381,7 @@ VarDclNode *reshapeGlobalAt(uint32_t i) {
 // ---- Values the function owns whole ---------------------------------------------
 
 // The local a place is of, when it is one this function owns whole, else NULL
-static VarDclNode *reshapeLocalRoot(INode *e) {
+static VarDclNode *reshapeLocalRoot(INode *e, INode *cont) {
     for (;;) {
         if (e->tag == CastTag && !(e->flags & FlagConvert))
             e = ((CastNode *)e)->exp;
@@ -390,17 +396,26 @@ static VarDclNode *reshapeLocalRoot(INode *e) {
     if (!var || var->scope == 0 || (var->flags & FlagStatic))
         return NULL;
     INode *t = iexpGetTypeDcl(e);
+    // A local holding an owning reference is the owner's own place, when the container asked of
+    // is an owner: no other name reaches it but a borrow of it (the loan's own, 'mine' below)
+    if (reshapeIsOwner(cont) && t->tag == RefTag && ((RefNode *)t)->region
+            && itypeGetTypeDcl(((RefNode *)t)->region) != borrowRef)
+        return var;
     return t->tag != RefTag && t->tag != ArrayRefTag && t->tag != VirtRefTag && t->tag != PtrTag ? var : NULL;
 }
 
+int reshapeUniqueLocalOf(INode *e, INode *cont) {
+    return reshapeLocalRoot(e, cont) != NULL;
+}
+
 int reshapeUniqueLocal(INode *e) {
-    return reshapeLocalRoot(e) != NULL;
+    return reshapeLocalRoot(e, NULL) != NULL;
 }
 
 // The same, but not one of the locals 'mine' (n of them): a local a loan points into has
 // other names, the loan's own borrow among them
-static int reshapeUniqueLocalExcept(INode *e, VarDclNode **mine, int n) {
-    VarDclNode *var = reshapeLocalRoot(e);
+static int reshapeUniqueLocalExcept(INode *e, VarDclNode **mine, int n, INode *cont) {
+    VarDclNode *var = reshapeLocalRoot(e, cont);
     for (int i = 0; var && i < n; ++i) {
         if (mine[i] == var)
             return 0;
@@ -456,8 +471,46 @@ static int reshapeElementOf(INode *e, INode *cont) {
     }
 }
 
+// ---- An owner as the container ----------------------------------------------------
+
+int reshapeIsOwner(INode *cont) {
+    return cont && cont->tag == RefTag;
+}
+
+// A borrow into what an owning reference ('So', 'Rc', 'Arc', a program's region) points at
+// is a borrow into a value the owner frees when it is stored over, as a list is when its
+// block is replaced. The owner's type stands for it, one node for all the types that are
+// the same (the inference keeps its answers by the node)
+static INode **roConts = NULL;
+static uint32_t roUsed = 0;
+static uint32_t roCap = 0;
+
+INode *reshapeOwnerCont(INode *ownertype) {
+    for (uint32_t i = 0; i < roUsed; ++i) {
+        if (roConts[i] == ownertype || itypeIsSame(roConts[i], ownertype))
+            return roConts[i];
+    }
+    if (roUsed == roCap) {
+        INode **old = roConts;
+        roCap = roCap ? roCap * 2 : 64;
+        roConts = (INode **)memAllocBlk(roCap * sizeof(INode *));
+        if (old)
+            memcpy(roConts, old, roUsed * sizeof(INode *));
+    }
+    roConts[roUsed++] = ownertype;
+    return ownertype;
+}
+
 int reshapeStoreHits(INode *lval, INode *cont) {
     INode *stored = iexpGetTypeDcl(lval);
+    if (stored != NULL && reshapeIsOwner(cont)) {
+        // The owner replaced whole, or a value holding it by value or through owners alone
+        return (stored->tag == RefTag && itypeIsSame(stored, cont))
+            || ((stored->tag == StructTag || stored->tag == ArrayTag || stored->tag == TTupleTag
+                || (stored->tag == RefTag && ((RefNode *)stored)->region
+                    && itypeGetTypeDcl(((RefNode *)stored)->region) != borrowRef))
+                && (reshapeReach(stored, cont, 0) & (ReachContained | ReachOwned)) != 0);
+    }
     if (stored == NULL || stored == cont)
         return stored != NULL;
     if (stored->tag != StructTag && stored->tag != ArrayTag && stored->tag != TTupleTag
@@ -503,7 +556,7 @@ static int reshapeExempt(FnCallNode *call, FnDclNode *callee) {
 }
 
 static int reshapeCallBody(FnCallNode *call, FnDclNode *meth, int recvunique, INode *cont, INode *owner,
-        ReshapeVerdict *verdict, VarDclNode **mine, int nmine) {
+        ReshapeVerdict *verdict, VarDclNode **mine, int nmine, int skiprecv) {
     FnDclNode *callee = reshapeCallee(call);
     verdict->why = ReshapeNot;
     verdict->callee = callee;
@@ -511,12 +564,14 @@ static int reshapeCallBody(FnCallNode *call, FnDclNode *meth, int recvunique, IN
         return 0;
     uint32_t nargs = call->args ? call->args->used : 0;
     int visible = !(call->flags & FlagVDisp) && siVisible(callee);
-    uint32_t first = 0;
+    // 'skiprecv': the borrow is the receiver's own (an owner lent to its method as 'self'), which is
+    // the value the method works on and no other name for the owner
+    uint32_t first = skiprecv && nargs > 0 ? 1 : 0;
 
     // A call handed nothing it could write through (a read-only reference, a number)
     // can reshape only through a global: most calls, dismissed at once
     int capable = 0;
-    for (uint32_t k = 0; k < nargs && !capable; ++k) {
+    for (uint32_t k = first; k < nargs && !capable; ++k) {
         INode *t = iexpGetTypeDcl(nodesGet(call->args, k));
         // A read-only reference to a value holding borrows can write through a 'mut' one it holds
         INode *pointee = nmine > 0 && (t->tag == RefTag || t->tag == ArrayRefTag) ? itypeGetTypeDcl(((RefNode *)t)->vtexp) : NULL;
@@ -572,7 +627,7 @@ static int reshapeCallBody(FnCallNode *call, FnDclNode *meth, int recvunique, IN
             wt = at;
         unsigned bits;
         if (ba->tag == BorrowTag && at->tag == RefTag
-                && reshapeUniqueLocalExcept(((RefNode *)ba)->vtexp, mine, nmine)) {
+                && reshapeUniqueLocalExcept(((RefNode *)ba)->vtexp, mine, nmine, cont)) {
             // The callee may write what the borrow lends only if its parameter says so: a
             // read-only one, through what the local holds by a 'mut' reference
             INode *wp = wt->tag == RefTag ? (((RefNode *)wt)->perm == unknownType ? (INode *)roPerm
@@ -608,8 +663,8 @@ static int reshapeCallBody(FnCallNode *call, FnDclNode *meth, int recvunique, IN
 }
 
 int reshapeCall(FnCallNode *call, FnDclNode *meth, int recvunique, INode *cont, INode *owner, int globalview,
-        ReshapeVerdict *verdict, VarDclNode **mine, int nmine) {
-    if (reshapeCallBody(call, meth, recvunique, cont, owner, verdict, mine, nmine))
+        ReshapeVerdict *verdict, VarDclNode **mine, int nmine, int skiprecv) {
+    if (reshapeCallBody(call, meth, recvunique, cont, owner, verdict, mine, nmine, skiprecv))
         return 1;
     // The borrow points into a 'mut' global, or into something reached from one: a call that may
     // reshape the container's type through a global does, by the inference that judges every call

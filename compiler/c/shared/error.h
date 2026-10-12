@@ -551,7 +551,7 @@ enum ErrorCode {
 
     // Shape-changing types (ir/shapeinfer.c, ir/reshape.c)
     ErrorShapeMark = 1338,      // A type declaring 'ShapeChanging' that the compiler does not find so from its methods: none writes storage the type owns and lends a borrow. A declaration may only assert what is found
-    ErrorShapeReshape = 1339,   // A call that could change the shape of a shape-changing value (a list, a string) while a borrow into it, reached through a path other references share, is still to be used: the change could come through another name for the same value
+    ErrorShapeReshape = 1339,   // A call that could change the shape of a shape-changing value (a list, a string, an owner such as a 'So', whose replacing frees what it owns) while a borrow into it, reached through a path other references share, is still to be used: the change could come through another name for the same value
 
     // 'each' over cursors (ir/exp/each.c)
     ErrorEachItem = 1340,       // What an 'each' takes out of its cursor cannot be given to its variables: a 'next' that does not answer an Option, an 'iter' giving something with no 'next', variables that do not unpack the tuple item, or an item that moves
@@ -655,7 +655,7 @@ enum ErrorCode {
 
     // An enum under the collection rule (ir/reshape.c, ir/flowpath.c, ir/flowloan.c)
     ErrorVariantReshape = 1425,     // A call, or a store through another name, that could change which variant an enum holds while a reference narrowed into one of its variants, through a path other references share, is still to be used
-    ErrorShapeStore = 1426,         // A store through another name that replaces a shape-changing value whole (a list, a string), or an element of one that owns something, while a borrow into it, through a path other references share, is still to be used
+    ErrorShapeStore = 1426,         // A store through another name that replaces a shape-changing value whole (a list, a string, an owner such as a 'So'), or an element of one that owns something, while a borrow into it, through a path other references share, is still to be used
 
     // What a collector reaches in memory a type points to (ir/types/struct.c, region.c)
     ErrorGcTraceElementsShape = 1440,  // A type declaring GcTraceElements whose 'gcTraceElements' is not 'fn gcTraceElements(self &mut) I', I a cursor declaring 'is Iterator[&mut E]' with E a sized type
