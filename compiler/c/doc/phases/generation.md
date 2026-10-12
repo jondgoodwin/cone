@@ -2198,7 +2198,12 @@ origin's space:
   instruction emission makes of a `cmpxchg`, takes the pointer, the value
   expected, the value to store, the scope and the two semantics, written here
   (the failure's acquire, or none for relaxed), and answers the value seen;
-  whether it stored is that value compared with the one expected;
+  whether it stored is that value compared with the one expected. The
+  replacement erases the `cmpxchg` and the `extractvalue`s that take its pair
+  apart, which usually follow it, so the walk over the block goes on from the
+  instruction before the `cmpxchg` and not from one held beforehand (a read of
+  freed memory there crashed `module_target_spirv_atomics` on Linux with
+  signal 11 in `LLVMGetNextInstruction`; it was never LLVM's backend);
 - **in a kernel, one on memory no other invocation reaches** (a local
   `Atomic`, a global not `@workgroup`, the Private space 10) is refused,
   `ErrorGpuAtomicPlace`, at mem's call where the program wrote one, else once
