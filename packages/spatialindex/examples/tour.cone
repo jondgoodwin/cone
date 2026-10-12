@@ -1,0 +1,69 @@
+// A short tour of spatialindex: a BVH of three boxes asked a ray, a ball and a
+// nearest question, a box moved, a pair watched begin and end. Run it with
+// 'congo run packages/spatialindex/examples/tour.cone'.
+
+mod tour;
+
+import stdio use *;
+import collections use *;
+import geomath use *;
+import spatialindex use *;
+
+fn box(x f32, y f32) Aabb3 {Aabb3.fromCenter(new Vec3(x, y, 0.), new Vec3(1., 1., 1.));}
+
+fn main() i32 {
+  mut tree = Bvh[u64].create(0.);
+  imm a = tree.insert(box(0., 0.), 100u64);
+  imm b = tree.insert(box(5., 0.), 200u64);
+  tree.insert(box(10., 0.), 300u64);
+
+  match tree.rayNearest(new Ray3(new Vec3(-5., 0., 0.), new Vec3(1., 0., 0.)), 100.) {
+    case imm h Some {
+      printStr("the ray first meets item ");
+      printInt(i64.from(h.handle));
+      printStr(" at t = ");
+      printInt(i64.from(h.t));
+      printStr("\n");
+    }
+    case is None { printStr("the ray meets nothing\n"); }
+  }
+
+  mut inBall = 0i64;
+  mut count = fn(h u64, p Proxy) bool { inBall = inBall + 1i64; true; };
+  tree.overlapSphere(new Sphere(new Vec3(2.5, 0., 0.), 2.), &mut count);
+  printStr("items touching the ball: ");
+  printInt(inBall);
+  printStr("\n");
+
+  mut near = List[Neighbor[u64]].empty();
+  tree.nearest(new Vec3(8., 0., 0.), 2usize, &mut near);
+  printStr("two nearest to x = 8: ");
+  printInt(i64.from(near[0usize].handle));
+  printStr(" and ");
+  printInt(i64.from(near[1usize].handle));
+  printStr("\n");
+
+  // pairs: none at first; move b against a and a pair begins; move it away and it ends
+  mut ev = PairEvents[u64].create();
+  tree.updatePairs(&mut ev);
+  printStr("pairs at first: ");
+  printInt(i64.from(ev.added.len()));
+  printStr("\n");
+  ev.clear();
+  tree.move(b, box(1.5, 0.), new Vec3(-3.5, 0., 0.));
+  tree.updatePairs(&mut ev);
+  printStr("after moving b next to a, pairs begun: ");
+  printInt(i64.from(ev.added.len()));
+  printStr("\n");
+  ev.clear();
+  tree.move(b, box(5., 0.), new Vec3(3.5, 0., 0.));
+  tree.updatePairs(&mut ev);
+  printStr("after moving it back, pairs ended: ");
+  printInt(i64.from(ev.removed.len()));
+  printStr("\n");
+  tree.remove(a);
+  printStr("a removed; a's proxy is alive: ");
+  printStr(if tree.contains(a) {"yes";} else {"no";});
+  printStr("\n");
+  0i32;
+}
