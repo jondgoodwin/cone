@@ -1,0 +1,458 @@
+// ======== Buffers, base64 and accessors ========
+
+// The loader's state. Its fields are public only so the functions beside it
+// can reach them.
+struct Ld {
+  pub json Json;
+  pub root u32;
+  pub buffers List[List[u8]];      // each buffer's bytes (empty when it has none to give)
+  pub available List[bool];        // whether the buffer's bytes were loaded
+  pub baseDir Path;
+  pub canReadFiles bool;
+  pub decodeImages bool;
+  pub gltf Gltf;
+  pub failed bool;
+  pub reason String;
+}
+
+fn ldFail(ld &mut Ld, why &str) {
+  if ld.failed { return; }
+  ld.failed = true;
+  ld.reason = String.from(why);
+}
+
+fn ldFail2(ld &mut Ld, a &str, b &str) {
+  if ld.failed { return; }
+  mut s = String.from(a);
+  s.append(b);
+  ld.failed = true;
+  ld.reason = s;
+}
+
+fn ldFailIdx(ld &mut Ld, a &str, i usize, b &str) {
+  if ld.failed { return; }
+  mut s = String.from(a);
+  s.appendUInt(u64.from(i));
+  s.append(b);
+  ld.failed = true;
+  ld.reason = s;
+}
+
+fn ldWarn(ld &mut Ld, w &str) {
+  ld.gltf.warnings.push(String.from(w));
+}
+
+// The root's array called key (accessors, bufferViews, ...), or NoNode
+fn rootArray(ld &Ld, key &str) u32 { ld.json.get(ld.root, key); }
+
+// ---- base64 (RFC 4648) ----
+
+fn b64Val(c u8) i32 {
+  if c >= 'A' and c <= 'Z' { return i32.from(c - 'A'); }
+  if c >= 'a' and c <= 'z' { return i32.from(c - 'a') + 26i32; }
+  if c >= '0' and c <= '9' { return i32.from(c - '0') + 52i32; }
+  if c == '+' or c == '-' { return 62i32; }
+  if c == '/' or c == '_' { return 63i32; }
+  -1i32;
+}
+
+// The bytes of base64 text from 'start'; false on a character that is not
+// base64 (whitespace is skipped, '=' padding ends the data)
+fn base64Decode(t &Array[u8], start usize, out &mut List[u8]) bool {
+  mut acc = 0u32;
+  mut bits = 0u32;
+  mut i = start;
+  while i < t.len {
+    imm c = t[i];
+    if c == '=' { break; }
+    if c == ' ' or c == '\n' or c == '\r' or c == '\t' { i += 1usize; continue; }
+    imm v = b64Val(c);
+    if v < 0i32 { return false; }
+    acc = (acc << 6u32) | u32.from(v);
+    bits += 6u32;
+    if bits >= 8u32 {
+      bits -= 8u32;
+      out.push(u8.from((acc >> bits) & 255u32));
+    }
+    i += 1usize;
+  }
+  true;
+}
+
+// %XX escapes decoded, as a relative uri's file name needs
+fn percentDecode(s &str) String {
+  mut out = String.empty();
+  mut i = 0usize;
+  while i < s.len() {
+    imm c = s[i];
+    if c == '%' and i + 2usize < s.len() + 0usize and hexVal(s[i + 1usize]) >= 0i32 and hexVal(s[i + 2usize]) >= 0i32 {
+      out.appendByte(u8.from(hexVal(s[i + 1usize]) * 16i32 + hexVal(s[i + 2usize])));
+      i += 3usize;
+    } else {
+      out.appendByte(c);
+      i += 1usize;
+    }
+  }
+  out;
+}
+
+// The bytes a uri names: a data: uri (base64 only), or a file beside the
+// asset. false when it cannot be had; 'why' says.
+fn loadUri(ld &Ld, uri &str, out &mut List[u8], why &mut String) bool {
+  if uri.startsWith("data:") {
+    // data:[<mediatype>][;base64],<data>
+    mut comma = 5usize;
+    while comma < uri.len() and uri[comma] != ',' { comma += 1usize; }
+    if comma >= uri.len() { *why = String.from("a data uri with no comma"); return false; }
+    imm head = uri.slice(5usize, comma);
+    if not head.endsWith(";base64") {
+      *why = String.from("a data uri that is not base64");
+      return false;
+    }
+    if not base64Decode(uri, comma + 1usize, out) { *why = String.from("bad base64 in a data uri"); return false; }
+    return true;
+  }
+  if not ld.canReadFiles {
+    mut m = String.from("the external file ");
+    m.append(uri);
+    m.append(" cannot be read, because this load has no folder (use loadGltf or loadGltfBytesIn)");
+    *why = m;
+    return false;
+  }
+  if uri.startsWith("http://") or uri.startsWith("https://") {
+    *why = String.from("a uri on the network");
+    return false;
+  }
+  imm file = ld.baseDir.join(percentDecode(uri).view());
+  match fs.readFile(&file) {
+    case mut ok Ok {
+      mut s = String.empty();
+      s <=> ok;
+      mut i = 0usize;
+      out.reserve(s.len());
+      while i < s.len() { out.push(s[i]); i += 1usize; }
+      return true;
+    }
+    case imm e Error {
+      mut m = String.from("cannot read ");
+      m.append(file.view());
+      *why = m;
+      return false;
+    }
+  }
+}
+
+// ---- buffer views and accessors ----
+
+const CtI8 = 5120u32;
+const CtU8 = 5121u32;
+const CtI16 = 5122u32;
+const CtU16 = 5123u32;
+const CtU32 = 5125u32;
+const CtF32 = 5126u32;
+
+fn compBytes(ct u32) usize {
+  if ct == CtI8 or ct == CtU8 { return 1usize; }
+  if ct == CtI16 or ct == CtU16 { return 2usize; }
+  if ct == CtU32 or ct == CtF32 { return 4usize; }
+  0usize;
+}
+
+// glTF's accessor type names: components per element, and for a matrix its
+// columns and rows
+fn typeShape(t &str, cols &mut usize, rows &mut usize) bool {
+  *cols = 1usize;
+  if t == "SCALAR" { *rows = 1usize; return true; }
+  if t == "VEC2" { *rows = 2usize; return true; }
+  if t == "VEC3" { *rows = 3usize; return true; }
+  if t == "VEC4" { *rows = 4usize; return true; }
+  if t == "MAT2" { *cols = 2usize; *rows = 2usize; return true; }
+  if t == "MAT3" { *cols = 3usize; *rows = 3usize; return true; }
+  if t == "MAT4" { *cols = 4usize; *rows = 4usize; return true; }
+  false;
+}
+
+// Where an accessor's elements are
+struct Lay {
+  pub ok bool;
+  pub count usize;
+  pub cols usize;
+  pub rows usize;
+  pub ct u32;
+  pub normalized bool;
+  pub hasView bool;
+  pub buf usize;
+  pub start usize;      // byte offset of element 0 in the buffer
+  pub stride usize;
+  pub colBytes usize;   // a matrix column's bytes, padded to 4
+}
+
+fn noLay() Lay { new Lay(false, 0usize, 1usize, 1usize, 0u32, false, false, 0usize, 0usize, 0usize, 0usize); }
+
+// A buffer view's place: its buffer, offset, length and stride; false on a
+// bad view (reported)
+fn viewPlace(ld &mut Ld, vi usize, buf &mut usize, off &mut usize, len &mut usize, stride &mut usize) bool {
+  imm views = rootArray(ld, "bufferViews");
+  imm v = ld.json.at(views, vi);
+  if v == NoNode { ldFailIdx(ld, "buffer view ", vi, " does not exist"); return false; }
+  imm b = ld.json.getInt(v, "buffer", -1i64);
+  if b < 0i64 or usize.from(b) >= ld.buffers.len() { ldFailIdx(ld, "buffer view ", vi, " names a missing buffer"); return false; }
+  *buf = usize.from(b);
+  *off = ld.json.getSize(v, "byteOffset", 0i64);
+  *len = ld.json.getSize(v, "byteLength", 0i64);
+  *stride = ld.json.getSize(v, "byteStride", 0i64);
+  if not *ld.available[*buf] {
+    // A buffer with no bytes: only meshopt's or Draco's fallback has none
+    refuseCompressed(ld, "EXT_meshopt_compression");
+    return false;
+  }
+  if *off + *len > ld.buffers[*buf].len() { ldFailIdx(ld, "buffer view ", vi, " reaches past the end of its buffer"); return false; }
+  true;
+}
+
+// The accessor's layout, checked against its buffer
+fn layoutOf(ld &mut Ld, ai usize) Lay {
+  imm accs = rootArray(ld, "accessors");
+  imm a = ld.json.at(accs, ai);
+  if a == NoNode { ldFailIdx(ld, "accessor ", ai, " does not exist"); return noLay(); }
+  mut l = noLay();
+  imm rawCount = ld.json.getInt(a, "count", 0i64);
+  if rawCount < 0i64 or rawCount > 268435456i64 { ldFailIdx(ld, "accessor ", ai, " has an impossible count"); return noLay(); }
+  l.count = usize.from(rawCount);
+  l.ct = u32.from(ld.json.getInt(a, "componentType", 0i64));
+  l.normalized = ld.json.getFlag(a, "normalized", false);
+  imm tname = ld.json.getStr(a, "type", "");
+  if not typeShape(tname.view(), &mut l.cols, &mut l.rows) { ldFailIdx(ld, "accessor ", ai, " has an unknown type"); return noLay(); }
+  imm cb = compBytes(l.ct);
+  if cb == 0usize { ldFailIdx(ld, "accessor ", ai, " has an unknown component type"); return noLay(); }
+  l.colBytes = (l.rows * cb + 3usize) / 4usize * 4usize;
+  if l.cols == 1usize { l.colBytes = l.rows * cb; }
+  imm elem = l.cols * l.colBytes;
+  imm vi = ld.json.getInt(a, "bufferView", -1i64);
+  if vi >= 0i64 {
+    mut buf = 0usize;
+    mut off = 0usize;
+    mut len = 0usize;
+    mut stride = 0usize;
+    if not viewPlace(ld, usize.from(vi), &mut buf, &mut off, &mut len, &mut stride) { return noLay(); }
+    l.hasView = true;
+    l.buf = buf;
+    l.start = off + ld.json.getSize(a, "byteOffset", 0i64);
+    l.stride = if stride > 0usize {stride;} else {elem;};
+    if l.count > 0usize and (l.start + l.stride * (l.count - 1usize) + elem > off + len) {
+      ldFailIdx(ld, "accessor ", ai, " reaches past its buffer view");
+      return noLay();
+    }
+  }
+  l.ok = true;
+  l;
+}
+
+fn le16(d &Array[u8], at usize) u32 { u32.from(d[at]) | (u32.from(d[at + 1usize]) << 8u32); }
+fn le32(d &Array[u8], at usize) u32 {
+  u32.from(d[at]) | (u32.from(d[at + 1usize]) << 8u32) | (u32.from(d[at + 2usize]) << 16u32) | (u32.from(d[at + 3usize]) << 24u32);
+}
+
+// One component at byte offset 'at' as a float (normalised if asked: the
+// signed formulas of the glTF specification, c / 127 floored at -1, and so on)
+fn compAsFloat(d &Array[u8], at usize, ct u32, normalized bool) f32 {
+  if ct == CtF32 { return le32(d, at) as f32; }
+  if ct == CtU8 {
+    imm v = f32.from(u32.from(d[at]));
+    return if normalized {v / 255.;} else {v;};
+  }
+  if ct == CtI8 {
+    imm v = f32.from(i32.from(i8.from(d[at])));
+    if not normalized { return v; }
+    imm n = v / 127.;
+    return if n < -1. {-1.;} else {n;};
+  }
+  if ct == CtU16 {
+    imm v = f32.from(le16(d, at));
+    return if normalized {v / 65535.;} else {v;};
+  }
+  if ct == CtI16 {
+    imm v = f32.from(i32.from(i16.from(le16(d, at))));
+    if not normalized { return v; }
+    imm n = v / 32767.;
+    return if n < -1. {-1.;} else {n;};
+  }
+  f32.from(le32(d, at));
+}
+
+// All of an accessor as floats, element after element, each 'cols * rows'
+// numbers (a matrix column by column), into 'out' (cleared first). The
+// sparse substitution is applied. false if it fails (reported).
+fn readFloats(ld &mut Ld, ai usize, out &mut List[f32], per &mut usize) bool {
+  out.clear();
+  imm l = layoutOf(ld, ai);
+  if not l.ok { return false; }
+  imm n = l.cols * l.rows;
+  *per = n;
+  imm cb = compBytes(l.ct);
+  if not l.hasView and l.count * n > 67108864usize { ldFailIdx(ld, "accessor ", ai, " has no data and is too large to make zeros for"); return false; }
+  out.reserve(l.count * n);
+  if l.hasView {
+    imm d = ld.buffers[l.buf].view();
+    mut e = 0usize;
+    while e < l.count {
+      imm base = l.start + e * l.stride;
+      mut c = 0usize;
+      while c < l.cols {
+        mut r = 0usize;
+        while r < l.rows {
+          out.push(compAsFloat(d, base + c * l.colBytes + r * cb, l.ct, l.normalized));
+          r += 1usize;
+        }
+        c += 1usize;
+      }
+      e += 1usize;
+    }
+  } else {
+    mut i = 0usize;
+    while i < l.count * n { out.push(0.); i += 1usize; }
+  }
+  applySparseFloats(ld, ai, &l, n, out);
+  not ld.failed;
+}
+
+// The same for integer accessors (indices, joints), unnormalised
+fn readUints(ld &mut Ld, ai usize, out &mut List[u32], per &mut usize) bool {
+  out.clear();
+  imm l = layoutOf(ld, ai);
+  if not l.ok { return false; }
+  if l.ct == CtF32 or l.ct == CtI8 or l.ct == CtI16 { ldFailIdx(ld, "accessor ", ai, " must hold unsigned integers"); return false; }
+  imm n = l.cols * l.rows;
+  *per = n;
+  imm cb = compBytes(l.ct);
+  if not l.hasView and l.count * n > 67108864usize { ldFailIdx(ld, "accessor ", ai, " has no data and is too large to make zeros for"); return false; }
+  out.reserve(l.count * n);
+  if l.hasView {
+    imm d = ld.buffers[l.buf].view();
+    mut e = 0usize;
+    while e < l.count {
+      imm base = l.start + e * l.stride;
+      mut r = 0usize;
+      while r < n {
+        imm at = base + r * cb;
+        out.push(if l.ct == CtU8 {u32.from(d[at]);} elif l.ct == CtU16 {le16(d, at);} else {le32(d, at);});
+        r += 1usize;
+      }
+      e += 1usize;
+    }
+  } else {
+    mut i = 0usize;
+    while i < l.count * n { out.push(0u32); i += 1usize; }
+  }
+  // Sparse integer accessors are rare; applied through the float path's index list
+  applySparseUints(ld, ai, &l, n, out);
+  not ld.failed;
+}
+
+// The sparse description of accessor ai: its count, and where indices and
+// values are. 'count' 0 when it has none.
+struct Sparse {
+  pub count usize;
+  pub idxView usize;
+  pub idxOff usize;
+  pub idxType u32;
+  pub valView usize;
+  pub valOff usize;
+}
+
+fn sparseOf(ld &Ld, ai usize) Sparse {
+  imm a = ld.json.at(rootArray(ld, "accessors"), ai);
+  imm sp = ld.json.get(a, "sparse");
+  if sp == NoNode { return new Sparse(0usize, 0usize, 0usize, 0u32, 0usize, 0usize); }
+  imm si = ld.json.get(sp, "indices");
+  imm sv = ld.json.get(sp, "values");
+  new Sparse(ld.json.getSize(sp, "count", 0i64), usize.from(ld.json.getInt(si, "bufferView", 0i64)),
+    ld.json.getSize(si, "byteOffset", 0i64), u32.from(ld.json.getInt(si, "componentType", 0i64)),
+    usize.from(ld.json.getInt(sv, "bufferView", 0i64)), ld.json.getSize(sv, "byteOffset", 0i64));
+}
+
+// The index of sparse entry k
+fn sparseIndex(ld &mut Ld, s &Sparse, k usize) usize {
+  mut buf = 0usize;
+  mut off = 0usize;
+  mut len = 0usize;
+  mut stride = 0usize;
+  if not viewPlace(ld, s.idxView, &mut buf, &mut off, &mut len, &mut stride) { return 0xFFFFFFFFusize; }
+  imm d = ld.buffers[buf].view();
+  imm cb = compBytes(s.idxType);
+  imm at = off + s.idxOff + k * cb;
+  if cb == 0usize or at + cb > off + len { ldFail(ld, "a sparse accessor's indices run past their buffer view"); return 0xFFFFFFFFusize; }
+  if s.idxType == CtU8 { return usize.from(d[at]); }
+  if s.idxType == CtU16 { return usize.from(le16(d, at)); }
+  usize.from(le32(d, at));
+}
+
+fn applySparseFloats(ld &mut Ld, ai usize, l &Lay, n usize, out &mut List[f32]) {
+  imm s = sparseOf(ld, ai);
+  if s.count == 0usize { return; }
+  mut buf = 0usize;
+  mut off = 0usize;
+  mut len = 0usize;
+  mut stride = 0usize;
+  if not viewPlace(ld, s.valView, &mut buf, &mut off, &mut len, &mut stride) { return; }
+  imm cb = compBytes(l.ct);
+  imm elem = l.cols * l.colBytes;
+  if s.valOff + s.count * elem > len { ldFail(ld, "a sparse accessor's values run past their buffer view"); return; }
+  mut k = 0usize;
+  while k < s.count and not ld.failed {
+    imm idx = sparseIndex(ld, &s, k);
+    if ld.failed { return; }
+    if idx >= l.count { ldFail(ld, "a sparse accessor names an element past its count"); return; }
+    imm d = ld.buffers[buf].view();
+    mut c = 0usize;
+    while c < l.cols {
+      mut r = 0usize;
+      while r < l.rows {
+        out.set(idx * n + c * l.rows + r, compAsFloat(d, off + s.valOff + k * elem + c * l.colBytes + r * cb, l.ct, l.normalized));
+        r += 1usize;
+      }
+      c += 1usize;
+    }
+    k += 1usize;
+  }
+}
+
+fn applySparseUints(ld &mut Ld, ai usize, l &Lay, n usize, out &mut List[u32]) {
+  imm s = sparseOf(ld, ai);
+  if s.count == 0usize { return; }
+  mut buf = 0usize;
+  mut off = 0usize;
+  mut len = 0usize;
+  mut stride = 0usize;
+  if not viewPlace(ld, s.valView, &mut buf, &mut off, &mut len, &mut stride) { return; }
+  imm cb = compBytes(l.ct);
+  if s.valOff + s.count * n * cb > len { ldFail(ld, "a sparse accessor's values run past their buffer view"); return; }
+  mut k = 0usize;
+  while k < s.count and not ld.failed {
+    imm idx = sparseIndex(ld, &s, k);
+    if ld.failed { return; }
+    if idx >= l.count { ldFail(ld, "a sparse accessor names an element past its count"); return; }
+    imm d = ld.buffers[buf].view();
+    mut r = 0usize;
+    while r < n {
+      imm at = off + s.valOff + (k * n + r) * cb;
+      out.set(idx * n + r, if l.ct == CtU8 {u32.from(d[at]);} elif l.ct == CtU16 {le16(d, at);} else {le32(d, at);});
+      r += 1usize;
+    }
+    k += 1usize;
+  }
+}
+
+// Say, clearly, what a compressed file would take
+fn refuseCompressed(ld &mut Ld, ext &str) {
+  if ld.failed { return; }
+  mut m = String.from(ext);
+  m.append(" is not supported. ");
+  if ext == "KHR_draco_mesh_compression" {
+    m.append("Draco's decoder is Google's edgebreaker connectivity coder, its prediction schemes and its rANS entropy coder, about ten thousand lines of C++ with no small part to port; it would take its own lane in Cone, or a vendored copy of Google's decoder, which is a new C++ dependency for Jon to approve. Re-export the model without Draco (gltf-transform's 'decompress' command does it).");
+  } else {
+    m.append("meshopt's decoder is about six hundred lines of C (the vertex and index codecs and the octahedral, quaternion and exponential filters of meshoptimizer's decoder), which a port to Cone would take about a day for; it is not in this package yet. Re-export the model without meshopt (gltf-transform's 'decompress' or 'gltfpack' without -c).");
+  }
+  ld.failed = true;
+  ld.reason = m;
+}

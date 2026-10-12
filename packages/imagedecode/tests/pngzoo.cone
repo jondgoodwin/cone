@@ -1,0 +1,75 @@
+// PNG files written by something else. tests/data/pngzoo.bin holds 30 PNGs
+// made by a PNG writer in Python (zlib for the compression; the recipe is
+// every colour type with every bit depth it allows, each plain and Adam7
+// interlaced, scanline filters chosen at random for every row, the data split
+// over several IDAT chunks, a tRNS table or colour key where there is one),
+// each followed by the RGBA pixels the specification says it holds, worked
+// out in the writer. Pillow, reading the 8-bit files, agrees with those
+// pixels. Each file here is decoded and every channel of every pixel must be
+// the same.
+//
+// The file is a count, then each record: width and height (16 bits each,
+// little-endian), the depth of the decoded pixels (8 or 16), a pad byte, the
+// PNG's length (32 bits), the PNG, and width x height x 4 samples (a 16-bit
+// sample big-endian).
+// Regenerate with "python make_pngzoo.py > pngzoo.bin" in tests/data (standard library only).
+
+mod pngzoo;
+
+import testing use *;
+import collections use *;
+import imagedecode use *;
+import fs;
+import path use Path;
+
+fn le16(s &String, at usize) usize { usize.from(s[at]) + usize.from(s[at + 1usize]) * 256usize; }
+
+fn main() i32 {
+  imm path = Path.from("../../../../tests/data/pngzoo.bin");
+  mut data = String.empty();
+  match fs.readFile(&path) {
+    case mut ok Ok { data <=> ok; }
+    case imm e Error { expect(false, "the data file is there"); return done(); }
+  }
+  imm count = le16(&data, 0usize) + le16(&data, 2usize) * 65536usize;
+  expectInt(i64.from(count), 30i64, "records in the file");
+  mut at = 4usize;
+  mut r = 0usize;
+  mut wrong = 0usize;
+  mut refused = 0usize;
+  while r < count {
+    imm w = le16(&data, at);
+    imm h = le16(&data, at + 2usize);
+    imm depth = usize.from(data[at + 4usize]);
+    imm pngLen = le16(&data, at + 6usize) + le16(&data, at + 8usize) * 65536usize;
+    at += 10usize;
+    imm png = &data.view().bytes()[at..<at + pngLen];
+    at += pngLen;
+    imm bytes = depth / 8usize;
+    imm expected = at;
+    at += w * h * 4usize * bytes;
+    match decodePng(png) {
+      case imm ok Ok {
+        if ok.width != i32.from(w) or ok.height != i32.from(h) or ok.depth != i32.from(depth) {
+          wrong += 1usize;
+        } else {
+          mut bad = false;
+          mut i = 0usize;
+          while i < w * h * 4usize {
+            imm want = if depth == 16usize {u32.from(data[expected + i * 2usize]) * 256u32 + u32.from(data[expected + i * 2usize + 1usize]);}
+              else {u32.from(data[expected + i]);};
+            imm got = if depth == 16usize {u32.from(*ok.pixels16[i]);} else {u32.from(*ok.pixels8[i]);};
+            if want != got { bad = true; break; }
+            i += 1usize;
+          }
+          if bad { wrong += 1usize; }
+        }
+      }
+      case imm e Error { refused += 1usize; }
+    }
+    r += 1usize;
+  }
+  expectInt(i64.from(refused), 0i64, "files refused");
+  expectInt(i64.from(wrong), 0i64, "files that decode to other pixels than the specification gives");
+  done();
+}
