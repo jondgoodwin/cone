@@ -1,0 +1,138 @@
+// The audiodevice package (a working name): audiomixer's output to the
+// speakers, over SDL3's audio streams. A program reaches it with 'import
+// audiodevice' and gets `Device.start`, which opens the system's default
+// playback device (or whichever SDL_AUDIODRIVER names; "dummy" plays
+// nothing) and starts a feeder thread that runs audiomixer's `Engine`.
+//
+// The model, and why: SDL3 offers a callback or a push stream. A callback is
+// a C function pointer that SDL calls from its own audio thread; Cone has
+// no way to hand one over yet, and would put Cone code on a thread the
+// runtime does not know. The push stream needs none: the feeder thread, a
+// Cone thread, asks `GetAudioStreamQueued` how many bytes wait in the
+// stream, and while fewer than 'ahead' milliseconds' worth do, drains the
+// command queue, renders a block of the mixer and `PutAudioStreamData`s it.
+// SDL's own audio thread copies from the stream to the device. The price is
+// latency: 'ahead' (40 ms is fair, one block is 10 ms) plus the device's
+// buffer. The mixer's render never allocates; this loop allocates its block
+// buffer once. It sleeps (2 ms) when the stream is full enough, which is
+// also what lets a build run it as a test with the dummy driver.
+//
+// The Control that talks to the mixer is returned by `start` and belongs to
+// the game thread. Stop the device with `Device.stop` before dropping the
+// Control, since the mixer reads the sounds the Control owns.
+
+mod audiodevice;
+
+import libc;
+import sdl;
+import thread;
+import collections use *;
+import sync use Receiver, Oneshot, OneshotSender, OneshotReceiver;
+import time use Duration;
+import audiomixer use *;
+
+// Frames the feeder renders at a time: 10 ms at 48 kHz
+const BLOCK_FRAMES = 480usize;
+
+// Why a device did not start
+pub struct DeviceError {
+  pub reason i32;      // 1: SDL's audio would not start, 2: the stream would not open, 3: the feeder died
+}
+
+struct Feed is Sendable {
+  rate u32;
+  voices u32;
+  aheadMs u32;
+  engine Engine;
+  status OneshotSender[i32];
+}
+
+// The feeder thread: opens the stream, reports 0 (or a reason) through
+// 'status', renders and pushes until a quit command, and closes
+fn feeder(init Feed) i32 {
+  mut f = init;
+  if !sdl.InitSubSystem(sdl.INIT_AUDIO) {
+    f.status.send(1i32);
+    return 1i32;
+  }
+  imm spec = new sdl.AudioSpec(sdl.AUDIO_F32, 2i32, i32.from(f.rate));
+  imm stream = sdl.OpenAudioDeviceStream(sdl.AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, null, null);
+  if stream as usize == 0usize {
+    sdl.QuitSubSystem(sdl.INIT_AUDIO);
+    f.status.send(2i32);
+    return 2i32;
+  }
+  sdl.ResumeAudioStreamDevice(stream);
+  f.status.send(0i32);
+  mut buf = List[f32].withCapacity(BLOCK_FRAMES * 2usize);
+  mut i = 0usize;
+  while i < BLOCK_FRAMES * 2usize { buf.push(0.); i = i + 1usize; }
+  imm blockBytes = i32.from(BLOCK_FRAMES * 8usize);
+  imm wantBytes = i32.from(f.rate / 1000u32 * f.aheadMs) * 8i32;
+  while !f.engine.quit {
+    if sdl.GetAudioStreamQueued(stream) < wantBytes {
+      f.engine.render(buf.viewMut(), BLOCK_FRAMES);
+      imm v = buf.view();
+      sdl.PutAudioStreamData(stream, (&v[0usize] as *u8), blockBytes);
+    } else {
+      thread.sleep(Duration.fromMillis(2));
+    }
+  }
+  sdl.DestroyAudioStream(stream);
+  sdl.QuitSubSystem(sdl.INIT_AUDIO);
+  0i32;
+}
+
+// A running device and the game thread's way to drive it
+pub struct Started {
+  pub device Device;
+  pub control Control;
+}
+
+pub struct Device {
+  worker Option[thread.Thread[i32]];
+  pub rate u32;
+
+  // Open the default playback device at 'rate' Hz stereo and start feeding
+  // it from a mixer of 'voices' voices, keeping 'aheadMs' of sound queued.
+  // Answers the device and the game thread's Control, or why not.
+  pub fn start(rate u32, voices u32, aheadMs u32) Result[Started, DeviceError] {
+    mut c Control;
+    mut rx Receiver[Cmd];
+    c, rx = commandQueue(DEFAULT_QUEUE);
+    mut st OneshotSender[i32];
+    mut sr OneshotReceiver[i32];
+    st, sr = Oneshot[i32].make();
+    imm engine = Engine.make(f32.from(rate), usize.from(voices), rx);
+    imm worker = thread.start(new Feed(rate, voices, aheadMs, engine, st), &feeder);
+    imm got = sr.recv();
+    mut code = 3i32;
+    match got {
+      case imm v Some { code = v; }
+      case is None[i32] {}
+    }
+    if code != 0i32 {
+      worker.join();
+      return Error[Started, DeviceError](new DeviceError(code));
+    }
+    Ok[Started, DeviceError](new Started(new Device(Some(worker), rate), c));
+  }
+
+  // Stop feeding, close the device and wait for the feeder to end. 'control'
+  // must be the one `start` gave; its sounds may be dropped afterwards.
+  pub fn stop(self &mut, control &mut Control) i32 {
+    mut sent = false;
+    while !sent {
+      sent = control.quit();
+      if !sent { thread.yieldNow(); }
+    }
+    mut w Option[thread.Thread[i32]] = None[thread.Thread[i32]];
+    w <=> worker;
+    mut status = 0i32;
+    match w {
+      case mut t Some { status = t.join(); }
+      case is None[thread.Thread[i32]] {}
+    }
+    status;
+  }
+}

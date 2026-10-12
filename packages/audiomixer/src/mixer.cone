@@ -1,0 +1,590 @@
+// ======== The mixer: voices, buses, fades, priorities, and the block renderer ========
+//
+// `Mixer.render` fills a stereo interleaved f32 buffer. It is the whole of
+// the audio callback's work, and it allocates nothing and takes no lock: the
+// voices, the sound table and the bus buffers are all made when the mixer is
+// (the voice count and the sound-table size are fixed), and the game thread
+// changes it only by `Cmd` values, applied between blocks (see engine.cone
+// for the lock-free queue that carries them).
+//
+// Model: a voice plays a sound (samples, looped or not) or a procedural
+// `Synth`, through gain, pitch and pan (or, when spatial, the 3-D rules of
+// spatial.cone), into one of three buses (music, effects, ambience); the
+// buses sum through their own gains into the master gain. Gain changes,
+// fades and the buses' gains move in straight lines per sample, and the pan
+// and spatial gains are interpolated across each block, so nothing zippers.
+// When every voice is busy a new one takes the lowest-priority voice (the
+// quietest, then the oldest, among equals), or is dropped if all are of
+// higher priority: voice stealing as FMOD and Wwise do it.
+//
+// Resampling is linear interpolation (an honest, cheap choice; cubic or
+// sinc is a later upgrade). Output is hard-limited to -1..1.
+
+pub const BUS_MASTER = 0u32;
+pub const BUS_MUSIC = 1u32;
+pub const BUS_EFFECTS = 2u32;
+pub const BUS_AMBIENCE = 3u32;
+const BUSES = 4usize;
+
+// Frames rendered per inner block
+pub const BLOCK = 256usize;
+
+// The sound table's size
+pub const MAX_SOUNDS = 256usize;
+
+pub const SRC_SAMPLE = 0u32;
+pub const SRC_SYNTH = 1u32;
+
+// The commands the game thread sends
+pub const CMD_NONE = 0u32;
+pub const CMD_ADD_SOUND = 1u32;      // a: slot, p0: data address, p1: frames, b: channels, c: rate
+pub const CMD_PLAY = 2u32;           // id, a: sound, b: bus, c: flags (1 loop, 2 spatial); f0 gain, f1 pitch, f2 pan, f3 fade in s, f4 priority
+pub const CMD_PLAY_SYNTH = 3u32;     // id, a: SYNTH_..., b: bus, c: seed; f0 gain, f3 fade in s, f4 priority, f5 f6 f7: recipe parameters
+pub const CMD_STOP = 4u32;           // id; f0 fade out s
+pub const CMD_GAIN = 5u32;           // id; f0 target, f1 over s
+pub const CMD_PITCH = 6u32;          // id; f0
+pub const CMD_PAN = 7u32;            // id; f0
+pub const CMD_SPATIAL = 8u32;        // id; f0 f1 f2 position, f3 f4 f5 velocity (and the voice is now spatial)
+pub const CMD_ATTEN = 9u32;          // id, a: model; f0 ref, f1 max, f2 rolloff, f3..f10 custom curve
+pub const CMD_OCCLUSION = 10u32;     // id; f0 0..1
+pub const CMD_LISTENER = 11u32;      // f0..2 position, f3..5 forward, f6..8 up, f9..11 velocity
+pub const CMD_BUS_GAIN = 12u32;      // a: bus; f0 gain, f1 over s
+pub const CMD_STOP_ALL = 13u32;      // f0 fade out s
+pub const CMD_ENV = 14u32;           // a: head shadow on (1), f0 Doppler factor
+pub const CMD_QUIT = 15u32;          // the engine's feeder should end (the mixer itself ignores it)
+
+pub struct Cmd {
+  pub kind u32;
+  pub id u32;
+  pub a u32;
+  pub b u32;
+  pub c u32;
+  pub f0 f32;
+  pub f1 f32;
+  pub f2 f32;
+  pub f3 f32;
+  pub f4 f32;
+  pub f5 f32;
+  pub f6 f32;
+  pub f7 f32;
+  pub f8 f32;
+  pub f9 f32;
+  pub f10 f32;
+  pub f11 f32;
+  pub p0 usize;
+  pub p1 usize;
+
+  pub fn of(kind u32, id u32) Cmd {
+    new Cmd(kind, id, 0u32, 0u32, 0u32, 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0usize, 0usize);
+  }
+
+  // Put sample data in the table at 'slot' (the data stays the game side's)
+  pub fn addSound(slot u32, sound &Sound) Cmd {
+    mut c = Cmd.of(CMD_ADD_SOUND, 0u32);
+    c.a = slot;
+    c.b = sound.channels;
+    c.c = sound.rate;
+    if sound.samples.len() > 0usize {
+      imm v = sound.samples.view();
+      c.p0 = (&v[0usize] as *f32) as usize;
+    }
+    c.p1 = sound.frames();
+    c;
+  }
+
+  // Play table sound 'sound' as voice 'id' on 'bus'
+  pub fn play(id u32, sound u32, bus u32, gain f32, pitch f32, pan f32, loops bool, priority i32, fadeIn f32) Cmd {
+    mut c = Cmd.of(CMD_PLAY, id);
+    c.a = sound;
+    c.b = bus;
+    if loops { c.c = 1u32; }
+    c.f0 = gain; c.f1 = pitch; c.f2 = pan; c.f3 = fadeIn; c.f4 = f32.from(priority);
+    c;
+  }
+
+  // Play a recipe (SYNTH_...) as voice 'id'; 'p0' and 'p1' are its parameters
+  // (intensity; crackle and roar; material and weight; pitch)
+  pub fn playSynth(id u32, recipe u32, seed u32, bus u32, gain f32, p0 f32, p1 f32, priority i32) Cmd {
+    mut c = Cmd.of(CMD_PLAY_SYNTH, id);
+    c.a = recipe;
+    c.b = bus;
+    c.c = seed & 0x7fffffffu32;
+    c.f0 = gain; c.f4 = f32.from(priority); c.f5 = p0; c.f6 = p1;
+    c;
+  }
+
+  pub fn stop(id u32, fade f32) Cmd {
+    mut c = Cmd.of(CMD_STOP, id);
+    c.f0 = fade;
+    c;
+  }
+
+  pub fn gain(id u32, target f32, seconds f32) Cmd {
+    mut c = Cmd.of(CMD_GAIN, id);
+    c.f0 = target; c.f1 = seconds;
+    c;
+  }
+
+  pub fn pitch(id u32, ratio f32) Cmd {
+    mut c = Cmd.of(CMD_PITCH, id);
+    c.f0 = ratio;
+    c;
+  }
+
+  pub fn pan(id u32, pan f32) Cmd {
+    mut c = Cmd.of(CMD_PAN, id);
+    c.f0 = pan;
+    c;
+  }
+
+  // Make voice 'id' spatial, at 'pos' moving at 'vel'
+  pub fn spatial(id u32, pos Vec3, vel Vec3) Cmd {
+    mut c = Cmd.of(CMD_SPATIAL, id);
+    c.f0 = pos.x; c.f1 = pos.y; c.f2 = pos.z; c.f3 = vel.x; c.f4 = vel.y; c.f5 = vel.z;
+    c;
+  }
+
+  pub fn attenuation(id u32, att &Attenuation) Cmd {
+    mut c = Cmd.of(CMD_ATTEN, id);
+    c.a = att.model;
+    c.f0 = att.refDist; c.f1 = att.maxDist; c.f2 = att.rolloff;
+    c.f3 = att.curve[0]; c.f4 = att.curve[1]; c.f5 = att.curve[2]; c.f6 = att.curve[3];
+    c.f7 = att.curve[4]; c.f8 = att.curve[5]; c.f9 = att.curve[6]; c.f10 = att.curve[7];
+    c;
+  }
+
+  pub fn occlusion(id u32, amount f32) Cmd {
+    mut c = Cmd.of(CMD_OCCLUSION, id);
+    c.f0 = amount;
+    c;
+  }
+
+  pub fn listener(l &Listener) Cmd {
+    mut c = Cmd.of(CMD_LISTENER, 0u32);
+    c.f0 = l.position.x; c.f1 = l.position.y; c.f2 = l.position.z;
+    c.f3 = l.forward.x; c.f4 = l.forward.y; c.f5 = l.forward.z;
+    c.f6 = l.up.x; c.f7 = l.up.y; c.f8 = l.up.z;
+    c.f9 = l.velocity.x; c.f10 = l.velocity.y; c.f11 = l.velocity.z;
+    c;
+  }
+
+  pub fn busGain(bus u32, gain f32, seconds f32) Cmd {
+    mut c = Cmd.of(CMD_BUS_GAIN, 0u32);
+    c.a = bus; c.f0 = gain; c.f1 = seconds;
+    c;
+  }
+
+  pub fn stopAll(fade f32) Cmd {
+    mut c = Cmd.of(CMD_STOP_ALL, 0u32);
+    c.f0 = fade;
+    c;
+  }
+
+  // 'head' switches the head-shadow filter, 'doppler' the Doppler factor
+  pub fn environment(head bool, doppler f32) Cmd {
+    mut c = Cmd.of(CMD_ENV, 0u32);
+    if head { c.a = 1u32; }
+    c.f0 = doppler;
+    c;
+  }
+}
+
+// A sound in the mixer's table: samples owned by the game side, which must
+// outlive the mixer
+pub struct SoundRef {
+  pub data usize;            // address of interleaved f32 frames
+  pub frames usize;
+  pub channels u32;
+  pub rate u32;
+}
+
+pub struct Voice {
+  pub active bool;
+  pub id u32;
+  pub source u32;
+  pub bus u32;
+  pub sound u32;
+  pub pos f64;               // frames into the sound
+  pub loops bool;
+  pub priority i32;
+  pub order u32;             // when it started: lower is older
+  pub gain Ramp;
+  pub pitch f32;
+  pub pan f32;
+  pub stopping bool;
+  pub spatial bool;
+  pub position Vec3;
+  pub velocity Vec3;
+  pub att Attenuation;
+  pub occlusion f32;
+  pub lpL OnePole;
+  pub lpR OnePole;
+  pub lpOcc OnePole;
+  pub prevGL f32;
+  pub prevGR f32;
+  pub started bool;          // its first block has been rendered
+  pub synth Synth;
+}
+
+fn idleVoice(rate f32) Voice {
+  new Voice(false, 0u32, SRC_SAMPLE, BUS_EFFECTS, 0u32, 0d, false, 0i32, 0u32, Ramp.at(1.), 1., 0., false, false,
+    new Vec3(0., 0., 0.), new Vec3(0., 0., 0.), Attenuation.inverse(1., 100., 1.), 0.,
+    OnePole.cutoff(20000., rate), OnePole.cutoff(20000., rate), OnePole.cutoff(20000., rate), 0., 0., false,
+    Synth.wind(rate, 1u32, 0.));
+}
+
+pub struct Mixer {
+  pub rate f32;
+  pub voices List[Voice];
+  pub sounds List[SoundRef];
+  pub buses List[Ramp];        // master, music, effects, ambience
+  pub busBuf List[f32];        // per bus: BLOCK left then BLOCK right
+  pub listener Listener;
+  pub dopplerFactor f32;
+  pub headShadow bool;
+  pub counter u32;
+  pub stolen u32;              // voices cut off for a higher-priority one
+  pub dropped u32;             // plays refused for want of a voice
+  pub rendered u64;            // frames rendered so far
+
+  // A mixer of 'maxVoices' voices at sample rate 'rate'
+  pub fn make(rate f32, maxVoices usize) Mixer {
+    mut voices = List[Voice].withCapacity(maxVoices);
+    mut i = 0usize;
+    while i < maxVoices { voices.push(idleVoice(rate)); i = i + 1usize; }
+    mut sounds = List[SoundRef].withCapacity(MAX_SOUNDS);
+    i = 0usize;
+    while i < MAX_SOUNDS { sounds.push(new SoundRef(0usize, 0usize, 1u32, 44100u32)); i = i + 1usize; }
+    mut buses = List[Ramp].withCapacity(BUSES);
+    i = 0usize;
+    while i < BUSES { buses.push(Ramp.at(1.)); i = i + 1usize; }
+    mut buf = List[f32].withCapacity(BUSES * BLOCK * 2usize);
+    i = 0usize;
+    while i < BUSES * BLOCK * 2usize { buf.push(0.); i = i + 1usize; }
+    new Mixer(rate, voices, sounds, buses, buf, Listener.make(), 1., true, 0u32, 0u32, 0u32, 0u64);
+  }
+
+  // Voices playing now
+  pub fn activeVoices(self &) usize {
+    mut n = 0usize;
+    mut i = 0usize;
+    while i < voices.len() {
+      if (*voices[i]).active { n = n + 1usize; }
+      i = i + 1usize;
+    }
+    n;
+  }
+
+  // The slot of the voice with this id, or the length when none
+  pub fn find(self &, id u32) usize {
+    mut i = 0usize;
+    while i < voices.len() {
+      imm v = voices[i];
+      if v.active and v.id == id { return i; }
+      i = i + 1usize;
+    }
+    voices.len();
+  }
+
+  // A slot for a new voice of 'priority': a free one, else the weakest
+  // voice if it is no stronger than the newcomer; the length when refused
+  fn allocate(self &mut, priority i32) usize {
+    mut victim = voices.len();
+    mut i = 0usize;
+    while i < voices.len() {
+      if !(*voices[i]).active { return i; }
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < voices.len() {
+      imm v = voices[i];
+      if victim == voices.len() {
+        victim = i;
+      } else {
+        imm w = voices[victim];
+        // lowest priority; then quietest; then oldest
+        if v.priority < w.priority
+          or (v.priority == w.priority and v.gain.value < w.gain.value)
+          or (v.priority == w.priority and v.gain.value == w.gain.value and v.order < w.order) {
+          victim = i;
+        }
+      }
+      i = i + 1usize;
+    }
+    if victim == voices.len() { dropped = dropped + 1u32; return voices.len(); }
+    if (*voices[victim]).priority > priority {
+      dropped = dropped + 1u32;
+      return voices.len();
+    }
+    stolen = stolen + 1u32;
+    victim;
+  }
+
+  fn begin(self &mut, slot usize, cmd &Cmd, source u32) {
+    counter = counter + 1u32;
+    mut v = idleVoice(rate);
+    v.active = true;
+    v.id = cmd.id;
+    v.source = source;
+    v.bus = cmd.b;
+    if v.bus < 1u32 or v.bus > 3u32 { v.bus = BUS_EFFECTS; }
+    v.priority = i32.from(cmd.f4);
+    v.order = counter;
+    imm fadeIn = cmd.f3;
+    if fadeIn > 0. {
+      v.gain = Ramp.at(0.);
+      v.gain.to(cmd.f0, fadeIn, rate);
+    } else {
+      v.gain = Ramp.at(cmd.f0);
+    }
+    voices.set(slot, v);
+  }
+
+  // Apply one command from the game thread
+  pub fn apply(self &mut, cmd &Cmd) {
+    imm k = cmd.kind;
+    if k == CMD_ADD_SOUND {
+      if usize.from(cmd.a) < MAX_SOUNDS {
+        sounds.set(usize.from(cmd.a), new SoundRef(cmd.p0, cmd.p1, cmd.b, cmd.c));
+      }
+    } elif k == CMD_PLAY {
+      if usize.from(cmd.a) >= MAX_SOUNDS { return; }
+      imm slot = self.allocate(i32.from(cmd.f4));
+      if slot == voices.len() { return; }
+      self.begin(slot, cmd, SRC_SAMPLE);
+      mut v = &mut voices[slot];
+      v.sound = cmd.a;
+      v.loops = (cmd.c & 1u32) != 0u32;
+      v.spatial = (cmd.c & 2u32) != 0u32;
+      v.pitch = cmd.f1;
+      v.pan = cmd.f2;
+    } elif k == CMD_PLAY_SYNTH {
+      imm slot = self.allocate(i32.from(cmd.f4));
+      if slot == voices.len() { return; }
+      self.begin(slot, cmd, SRC_SYNTH);
+      mut v = &mut voices[slot];
+      v.spatial = (cmd.c & 0x80000000u32) != 0u32;
+      imm seed = cmd.c & 0x7fffffffu32;
+      if cmd.a == SYNTH_WIND { v.synth = Synth.wind(rate, seed, cmd.f5); }
+      elif cmd.a == SYNTH_WATER { v.synth = Synth.water(rate, seed, cmd.f5); }
+      elif cmd.a == SYNTH_FIRE { v.synth = Synth.fire(rate, seed, cmd.f5, cmd.f6); }
+      elif cmd.a == SYNTH_STEP { v.synth = Synth.step(rate, seed, u32.from(cmd.f5), cmd.f6); }
+      else { v.synth = Synth.bird(rate, seed, cmd.f5); }
+    } elif k == CMD_LISTENER {
+      listener = new Listener(new Vec3(cmd.f0, cmd.f1, cmd.f2), new Vec3(cmd.f9, cmd.f10, cmd.f11),
+        new Vec3(cmd.f3, cmd.f4, cmd.f5), new Vec3(cmd.f6, cmd.f7, cmd.f8));
+    } elif k == CMD_BUS_GAIN {
+      if usize.from(cmd.a) < BUSES {
+        mut b = &mut buses[usize.from(cmd.a)];
+        b.to(cmd.f0, cmd.f1, rate);
+      }
+    } elif k == CMD_STOP_ALL {
+      mut i = 0usize;
+      while i < voices.len() {
+        mut v = &mut voices[i];
+        if v.active { stopVoice(v, cmd.f0, rate); }
+        i = i + 1usize;
+      }
+    } elif k == CMD_ENV {
+      headShadow = cmd.a != 0u32;
+      dopplerFactor = cmd.f0;
+    } else {
+      imm slot = self.find(cmd.id);
+      if slot == voices.len() { return; }
+      mut v = &mut voices[slot];
+      if k == CMD_STOP { stopVoice(v, cmd.f0, rate); }
+      elif k == CMD_GAIN { v.gain.to(cmd.f0, cmd.f1, rate); }
+      elif k == CMD_PITCH { v.pitch = cmd.f0; }
+      elif k == CMD_PAN { v.pan = cmd.f0; }
+      elif k == CMD_SPATIAL {
+        v.spatial = true;
+        v.position = new Vec3(cmd.f0, cmd.f1, cmd.f2);
+        v.velocity = new Vec3(cmd.f3, cmd.f4, cmd.f5);
+      } elif k == CMD_ATTEN {
+        v.att = new Attenuation(cmd.a, cmd.f0, cmd.f1, cmd.f2, [cmd.f3, cmd.f4, cmd.f5, cmd.f6, cmd.f7, cmd.f8, cmd.f9, cmd.f10]);
+      } elif k == CMD_OCCLUSION {
+        v.occlusion = cmd.f0;
+      }
+    }
+  }
+
+  // Render 'frames' frames of stereo interleaved samples into 'out' (which
+  // must hold 2 x frames). Allocates nothing.
+  pub fn render(self &mut, out &mut Array[f32], frames usize) {
+    mut done = 0usize;
+    while done < frames {
+      mut n = frames - done;
+      if n > BLOCK { n = BLOCK; }
+      self.block(out, done, n);
+      done = done + n;
+    }
+    rendered = rendered + u64.from(frames);
+  }
+
+  fn block(self &mut, out &mut Array[f32], at usize, n usize) {
+    imm lis = listener;
+    imm doppler = dopplerFactor;
+    imm head = headShadow;
+    imm sr = rate;
+    mut bb = busBuf.viewMut();
+    mut i = 0usize;
+    while i < BUSES * BLOCK * 2usize { bb[i] = 0.; i = i + 1usize; }
+    mut vi = 0usize;
+    while vi < voices.len() {
+      mut v = &mut voices[vi];
+      if v.active {
+        imm snd = *sounds[usize.from(v.sound) % MAX_SOUNDS];
+        voiceBlock(v, snd, &lis, doppler, head, sr, bb, n);
+      }
+      vi = vi + 1usize;
+    }
+    // sum the buses through their gains and the master's
+    mut master = &mut buses[0];
+    i = 0usize;
+    while i < n {
+      imm mg = master.next();
+      mut l = 0.;
+      mut r = 0.;
+      mut b = 1usize;
+      while b < BUSES {
+        mut rb = &mut buses[b];
+        imm g = rb.next();
+        l = l + bb[b * BLOCK * 2usize + i] * g;
+        r = r + bb[b * BLOCK * 2usize + BLOCK + i] * g;
+        b = b + 1usize;
+      }
+      out[(at + i) * 2usize] = clampf(l * mg, -1., 1.);
+      out[(at + i) * 2usize + 1usize] = clampf(r * mg, -1., 1.);
+      i = i + 1usize;
+    }
+  }
+}
+
+fn stopVoice(v &mut Voice, fade f32, rate f32) {
+  if fade <= 0. {
+    v.active = false;
+  } else {
+    v.stopping = true;
+    v.gain.to(0., fade, rate);
+  }
+}
+
+// One voice for 'n' frames, mixed into its bus
+fn voiceBlock(v &mut Voice, snd SoundRef, lis &Listener, doppler f32, head bool, rate f32, bb &mut Array[f32], n usize) {
+  // where its sound goes this block
+  mut gl1 = 0.;
+  mut gr1 = 0.;
+  mut pitch = v.pitch;
+  mut occ = false;
+  mut cutL = 20000.;
+  mut cutR = 20000.;
+  mut cutO = 20000.;
+  mut stereoSrc = false;
+  if v.source == SRC_SAMPLE and snd.channels >= 2u32 { stereoSrc = true; }
+  if v.spatial {
+    imm sp = spatialize(lis, v.position, v.velocity, &v.att, v.occlusion, doppler, head);
+    gl1 = sp.gainL;
+    gr1 = sp.gainR;
+    pitch = pitch * sp.pitch;
+    cutL = sp.cutoffL;
+    cutR = sp.cutoffR;
+    cutO = sp.cutoffOcc;
+    occ = v.occlusion > 0.0001;
+    stereoSrc = false;
+  } else {
+    imm pg = panGains(v.pan);
+    if stereoSrc {
+      gl1 = pg.x * 1.4142135;
+      gr1 = pg.y * 1.4142135;
+    } else {
+      gl1 = pg.x;
+      gr1 = pg.y;
+    }
+  }
+  imm headOn = cutL < 19999. or cutR < 19999.;
+  v.lpL.setCutoff(cutL, rate);
+  v.lpR.setCutoff(cutR, rate);
+  v.lpOcc.setCutoff(cutO, rate);
+  mut gl0 = v.prevGL;
+  mut gr0 = v.prevGR;
+  if !v.started { gl0 = gl1; gr0 = gr1; v.started = true; }
+  imm advance = f64.from(pitch * (f32.from(snd.rate) / rate));
+  imm base = usize.from(v.bus) * BLOCK * 2usize;
+  mut ended = false;
+  mut i = 0usize;
+  while i < n {
+    imm t = f32.from(i + 1usize) / f32.from(n);
+    imm gl = gl0 + (gl1 - gl0) * t;
+    imm gr = gr0 + (gr1 - gr0) * t;
+    imm vg = v.gain.next();
+    mut sl = 0.;
+    mut sr = 0.;
+    if v.source == SRC_SYNTH {
+      if v.synth.done {
+        ended = true;
+      } else {
+        imm x = v.synth.next();
+        sl = x;
+        sr = x;
+      }
+    } elif !ended {
+      // linear interpolation between frames
+      mut idx = usize.from(v.pos);
+      imm frac = f32.from(v.pos - f64.from(idx));
+      if idx >= snd.frames {
+        ended = true;
+      } else {
+        imm p = snd.data as *f32;
+        imm ch = usize.from(snd.channels);
+        mut nxt = idx + 1usize;
+        if nxt >= snd.frames {
+          if v.loops { nxt = 0usize; } else { nxt = idx; }
+        }
+        if stereoSrc {
+          imm a0 = *(p + idx * ch);
+          imm a1 = *(p + nxt * ch);
+          imm b0 = *(p + idx * ch + 1usize);
+          imm b1 = *(p + nxt * ch + 1usize);
+          sl = a0 + (a1 - a0) * frac;
+          sr = b0 + (b1 - b0) * frac;
+        } else {
+          mut m0 = 0.;
+          mut m1 = 0.;
+          mut c = 0usize;
+          while c < ch {
+            m0 = m0 + *(p + idx * ch + c);
+            m1 = m1 + *(p + nxt * ch + c);
+            c = c + 1usize;
+          }
+          imm inv = 1. / f32.from(ch);
+          sl = (m0 + (m1 - m0) * frac) * inv;
+          sr = sl;
+        }
+        v.pos = v.pos + advance;
+        if v.pos >= f64.from(snd.frames) {
+          if v.loops { v.pos = v.pos - f64.from(snd.frames); } else { ended = true; }
+        }
+      }
+    }
+    if occ {
+      sl = v.lpOcc.process(sl);
+      sr = sl;
+    }
+    mut outL = sl * gl * vg;
+    mut outR = sr * gr * vg;
+    if headOn {
+      outL = v.lpL.process(outL);
+      outR = v.lpR.process(outR);
+    } else {
+      v.lpL.y = outL;
+      v.lpR.y = outR;
+    }
+    bb[base + i] = bb[base + i] + outL;
+    bb[base + BLOCK + i] = bb[base + BLOCK + i] + outR;
+    i = i + 1usize;
+  }
+  v.prevGL = gl1;
+  v.prevGR = gr1;
+  if ended { v.active = false; }
+  if v.stopping and v.gain.arrived() { v.active = false; }
+}
