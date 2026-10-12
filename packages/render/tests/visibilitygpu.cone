@@ -626,6 +626,113 @@ fn layerChecks(renderer &mut Renderer, device &mut Device, color &Texture, depth
   renderer.clearScene();
 }
 
+// ---- 10. Occlusion by the depth pyramid ----
+
+fn boxesCamera(x f32, y f32) Camera {
+  mut camera = Camera.make();
+  camera.fov = radians(50.);
+  camera.near = 0.5;
+  camera.far = 200.;
+  camera.lookAt(new Vec3(x, y, 20.), new Vec3(0., 0., -5.), new Vec3(0., 1., 0.));
+  camera.background = new Color(0.05, 0.05, 0.1, 1.);
+  camera;
+}
+
+fn occlusionChecks(renderer &mut Renderer, device &mut Device, color &Texture, readback &Buffer, pbr bool) {
+  // A depth buffer the pyramid may sample
+  imm depthDesc = new TextureDescriptor(SIDE, SIDE, TEXTURE_FORMAT_DEPTH32_FLOAT,
+    TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING);
+  mut depth = device.createTexture(&depthDesc);
+  imm cube = renderer.addMesh(device, &Mesh.cube(1.));
+  imm gray = new Color(0.7, 0.4, 0.2, 1.);
+  imm wallColor = new Color(0.3, 0.5, 0.7, 1.);
+  mut boxMaterial = MaterialHandle.none();
+  mut wallMaterial = MaterialHandle.none();
+  if pbr {
+    imm a = PbrMaterial.standard(gray, 0., 0.6);
+    imm b = PbrMaterial.standard(wallColor, 0., 0.6);
+    boxMaterial = renderer.addPbrMaterial(device, &a);
+    wallMaterial = renderer.addPbrMaterial(device, &b);
+  } else {
+    imm a = Material.plain(gray);
+    imm b = Material.plain(wallColor);
+    boxMaterial = renderer.addMaterial(device, &a);
+    wallMaterial = renderer.addMaterial(device, &b);
+  }
+  imm light = sun(radians(50.), radians(30.), 3., 0.2);
+  imm empty = DrawList.empty();
+  // The wall, 12 across and 12 high, at z = 0; behind it, 10 back, a box hidden by it (x = 0),
+  // one that peeks round its edge (x from 8 to 10: the wall's edge is at 0.3 of the way
+  // to the side and the box spans 0.267 to 0.333), one wholly beside it, and
+  // a row of hidden ones; in front, one visible box
+  imm wall = renderer.addSceneItem(cube, wallMaterial, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(6., 6., 0.25)),
+    new Color(1., 1., 1., 1.));
+  renderer.setSceneOccludable(wall, false);
+  imm hidden = renderer.addSceneItem(cube, boxMaterial, Mat4.fromTranslation(new Vec3(0., 0., -10.)), new Color(1., 1., 1., 1.));
+  imm peeking = renderer.addSceneItem(cube, boxMaterial, Mat4.fromTranslation(new Vec3(9., 0., -10.)), new Color(1., 1., 1., 1.));
+  imm beside = renderer.addSceneItem(cube, boxMaterial, Mat4.fromTranslation(new Vec3(-14., 0., -10.)), new Color(1., 1., 1., 1.));
+  imm front = renderer.addSceneItem(cube, boxMaterial, Mat4.fromTranslation(new Vec3(0., -2., 10.)), new Color(1., 1., 1., 1.));
+  mut row = 0;
+  while row < 5 {
+    renderer.addSceneItem(cube, boxMaterial, Mat4.fromTranslation(new Vec3(f32.from(row) * 2. - 4., f32.from(row % 2) * 2. - 1., -20.)),
+      new Color(1., 1., 1., 1.));
+    row = row + 1;
+  }
+  expectUInt(u64.from(renderer.vis.count()), 10u64, "ten items");
+  if renderer.hiz.len() > 0usize { renderer.hiz[0usize].valid = false; }
+  mut worst = 0.;
+  imm cameraA = boxesCamera(0., 0.);
+  imm cameraB = boxesCamera(0., 30.);
+  renderer.vis.settings = new VisibilitySettings();
+  imm offA = pictureOf(renderer, device, color, &depth, readback, &cameraA, &light, &empty);
+  imm offB = pictureOf(renderer, device, color, &depth, readback, &cameraB, &light, &empty);
+  expect(differing(&offA, &offB, &mut worst) > 1000u32, "(the two cameras see different pictures)");
+  renderer.vis.settings.occlusion = true;
+  renderer.vis.settings.occlusionStats = true;
+
+  // Frame 1: no pyramid yet: everything passes the first test
+  imm on1 = pictureOf(renderer, device, color, &depth, readback, &cameraA, &light, &empty);
+  renderer.hiz[0usize].readStats();
+  expectUInt(u64.from(renderer.hiz[0usize].candidateCount), 9u64, "nine candidates: every box but the wall");
+  expectUInt(u64.from(renderer.hiz[0usize].passed0), 9u64, "the first frame has no pyramid: all nine pass the first test");
+  expectUInt(u64.from(differing(&offA, &on1, &mut worst)), 0u64, "and draw the picture occlusion off draws");
+  // Frame 2: the pyramid of frame 1 hides the box behind the wall and the row
+  imm on2 = pictureOf(renderer, device, color, &depth, readback, &cameraA, &light, &empty);
+  renderer.hiz[0usize].readStats();
+  eprint <- "measured occlusion, second frame: "; eprint <- u64.from(renderer.hiz[0usize].passed0); eprint <- " pass the first test, ";
+  eprint <- u64.from(renderer.hiz[0usize].passed1); eprint <- " the retest, of 9\n";
+  expectUInt(u64.from(differing(&offA, &on2, &mut worst)), 0u64, "the picture is the one occlusion off draws, the hidden ones culled");
+  expect(renderer.hiz[0usize].passed0 + renderer.hiz[0usize].passed1 <= 5u32, "at most the front, the peeking and the beside box (and not the hidden box or the row) are drawn");
+  expect(renderer.hiz[0usize].passed0 >= 3u32, "the front, the peeking and the beside box pass the first test");
+  expect(renderer.hiz[0usize].passed0 + renderer.hiz[0usize].passed1 >= 3u32, "none of the visible ones is lost");
+  // A third frame, the same
+  imm on3 = pictureOf(renderer, device, color, &depth, readback, &cameraA, &light, &empty);
+  expectUInt(u64.from(differing(&offA, &on3, &mut worst)), 0u64, "a third frame draws the same");
+
+  // The camera moves up over the wall: the box it hid is in view. The old
+  // pyramid hides it in the first test; the retest after the new depth finds it
+  imm moved = pictureOf(renderer, device, color, &depth, readback, &cameraB, &light, &empty);
+  renderer.hiz[0usize].readStats();
+  eprint <- "measured occlusion, camera moved: "; eprint <- u64.from(renderer.hiz[0usize].passed0); eprint <- " pass the first test, ";
+  eprint <- u64.from(renderer.hiz[0usize].passed1); eprint <- " the retest\n";
+  expectUInt(u64.from(differing(&offB, &moved, &mut worst)), 0u64, "false negatives are retested: the camera moved and the picture is the one occlusion off draws");
+  expect(renderer.hiz[0usize].passed1 >= 1u32, "the box the old pyramid hid is drawn by the second draw");
+  // And the next frame has the new pyramid
+  imm moved2 = pictureOf(renderer, device, color, &depth, readback, &cameraB, &light, &empty);
+  expectUInt(u64.from(differing(&offB, &moved2, &mut worst)), 0u64, "and the one after");
+
+  // A box moved behind the wall is culled; moved out again, it is back
+  renderer.moveSceneItem(front, Mat4.fromTranslation(new Vec3(0., 0., -3.)));
+  pictureOf(renderer, device, color, &depth, readback, &cameraA, &light, &empty);
+  imm hiddenFront = pictureOf(renderer, device, color, &depth, readback, &cameraA, &light, &empty);
+  renderer.hiz[0usize].readStats();
+  expect(renderer.hiz[0usize].passed0 + renderer.hiz[0usize].passed1 <= 4u32, "a box moved behind the wall is culled too");
+  renderer.vis.settings.occlusion = false;
+  imm hiddenOff = pictureOf(renderer, device, color, &depth, readback, &cameraA, &light, &empty);
+  expectUInt(u64.from(differing(&hiddenOff, &hiddenFront, &mut worst)), 0u64, "and the picture is unchanged");
+  renderer.clearScene();
+}
+
 fn main() i32 {
   mut instance = Instance.create("render visibility");
   require(instance.isValid(), "a Vulkan 1.3 instance");
@@ -654,6 +761,8 @@ fn main() i32 {
   instancingChecks(&mut renderer, &mut device, &color, &depth, &readback, false, "instanced equals individual draws (lit)");
   instancingChecks(&mut renderer, &mut device, &color, &depth, &readback, true, "instanced equals individual draws (physically based)");
 
+  occlusionChecks(&mut renderer, &mut device, &color, &readback, false);
+  occlusionChecks(&mut renderer, &mut device, &color, &readback, true);
   levelChecks(&mut renderer, &mut device, &color, &depth, &readback);
   rangeChecks(&mut renderer, &mut device, &color, &depth, &readback);
   layerChecks(&mut renderer, &mut device, &color, &depth, &readback);
