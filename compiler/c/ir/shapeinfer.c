@@ -616,10 +616,12 @@ static void siCallType(FnCallNode *call, SiCtx *c) {
         return;
     }
     int visible = !(call->flags & FlagVDisp) && siVisible(callee);
-    // Into a borrow of a 'mut' global: a virtual call, or a call of a function value, runs code that
-    // is not known, which may write any global without being handed it (a named function the
-    // compiler cannot read is asked as before: of what it is handed)
-    if (c->opaque && (call->flags & FlagVDisp)) {
+    // Into a borrow of a 'mut' global: a virtual call, or a call of a function value (a '&fn' held in
+    // a field, a parameter, a global or a local), runs code that is not known, which may write any
+    // global without being handed it; so does an 'extern' function handed anything that can reach a
+    // '&fn', which C may call back (a named function the compiler cannot read is otherwise asked as
+    // before: of what it is handed)
+    if (c->opaque && ((call->flags & FlagVDisp) || callee == NULL || shapeExternHandsFnRef(call, callee))) {
         c->hit = 1;
         return;
     }
@@ -919,6 +921,127 @@ int shapeTypeReshapes(FnDclNode *fn, INode *cont, int viaParams) {
     if (answer == SiPending)
         ++shapeUnsettled;
     return answer != SiNo;
+}
+
+// Can a value of this type reach a '&fn' (a reference to a function): by containment, a field, an
+// element, or through a pointer or a reference? The same idea as reshapeReach, with the function
+// reference as the thing wanted. A type graph too large to follow is taken as reaching one. Only a
+// positive answer is kept, for a struct, for a negative one found beneath a struct still being
+// walked is not settled
+#define SiFnSeenCap 512
+static INode *siFnSeen[SiFnSeenCap];
+static int siFnSeenN;
+static INode **siFnYes = NULL;
+static uint32_t siFnYesCap = 0;
+static uint32_t siFnYesUsed = 0;
+
+static int siFnYesHas(INode *st) {
+    if (siFnYesCap == 0)
+        return 0;
+    uint32_t at = (uint32_t)(((uintptr_t)st >> 4) * 2654435761u) & (siFnYesCap - 1);
+    while (siFnYes[at]) {
+        if (siFnYes[at] == st)
+            return 1;
+        at = (at + 1) & (siFnYesCap - 1);
+    }
+    return 0;
+}
+
+static void siFnYesPut(INode *st) {
+    if ((siFnYesUsed + 1) * 2 > siFnYesCap) {
+        INode **old = siFnYes;
+        uint32_t oldcap = siFnYesCap;
+        siFnYesCap = oldcap ? oldcap * 2 : 256;
+        siFnYes = (INode **)memAllocBlk(siFnYesCap * sizeof(INode *));
+        memset(siFnYes, 0, siFnYesCap * sizeof(INode *));
+        siFnYesUsed = 0;
+        for (uint32_t i = 0; i < oldcap; ++i) {
+            if (old[i])
+                siFnYesPut(old[i]);
+        }
+    }
+    uint32_t at = (uint32_t)(((uintptr_t)st >> 4) * 2654435761u) & (siFnYesCap - 1);
+    while (siFnYes[at])
+        at = (at + 1) & (siFnYesCap - 1);
+    siFnYes[at] = st;
+    ++siFnYesUsed;
+}
+
+static int siReachesFnRef(INode *type) {
+    if (type == NULL)
+        return 0;
+    switch (type->tag) {
+    case NameUseTag:
+        return isTypeNode(type) ? siReachesFnRef(itypeGetTypeDcl(type)) : 0;
+    case AliasDclTag:
+        return siReachesFnRef(((AliasDclNode *)type)->target);
+    case FnSigTag:
+        return 1;
+    case RefTag:
+    case ArrayRefTag:
+        return siReachesFnRef(((RefNode *)type)->vtexp);
+    case PtrTag:
+        return siReachesFnRef(((StarNode *)type)->vtexp);
+    case ArrayTag:
+        return siReachesFnRef(arrayElemType(type));
+    case TTupleTag:
+    {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp)) {
+            if (siReachesFnRef(*nodesp))
+                return 1;
+        }
+        return 0;
+    }
+    case StructTag:
+    {
+        if (siFnYesHas(type))
+            return 1;
+        for (int i = 0; i < siFnSeenN; ++i) {
+            if (siFnSeen[i] == type)
+                return 0;
+        }
+        if (siFnSeenN >= SiFnSeenCap)
+            return 1;
+        siFnSeen[siFnSeenN++] = type;
+        INode **nodesp;
+        uint32_t cnt;
+        int found = 0;
+        for (nodelistFor(&((StructNode *)type)->fields, cnt, nodesp)) {
+            if (siReachesFnRef(((IExpNode *)*nodesp)->vtype)) {
+                found = 1;
+                break;
+            }
+        }
+        if (!found && ((StructNode *)type)->derived) {
+            for (nodesFor(((StructNode *)type)->derived, cnt, nodesp)) {
+                if (siReachesFnRef(*nodesp)) {
+                    found = 1;
+                    break;
+                }
+            }
+        }
+        if (found)
+            siFnYesPut(type);
+        return found;
+    }
+    default:
+        return 0;
+    }
+}
+
+// Is this an 'extern' function handed anything that can reach a '&fn' (a callback C can call back into
+// Cone with, directly or held in a struct it is handed a pointer to)?
+int shapeExternHandsFnRef(FnCallNode *call, FnDclNode *callee) {
+    if (callee == NULL || !(callee->flags & FlagExtern) || call->args == NULL)
+        return 0;
+    for (uint32_t k = 0; k < call->args->used; ++k) {
+        siFnSeenN = 0;
+        if (siReachesFnRef(iexpGetTypeDcl(nodesGet(call->args, k))))
+            return 1;
+    }
+    return 0;
 }
 
 // The same, asked of a call made while a borrow into a 'mut' global is held (reshape.h,

@@ -1,8 +1,10 @@
 // What a 'mut' global's views are let through (collection_flow_reshape_global holds the refusals). A
 // borrow into a 'mut' global is refused across a call that may reshape the container's type, judged by the
 // shape inference, a callee the compiler cannot read counting as one that does. So it is let through where
-//   - the call reshapes nothing: a length, a copy, a function that writes a number or prints, an
-//     'extern' function handed the view to read;
+//   - the call reshapes nothing and runs no code the compiler cannot follow: a length, a copy made by a
+//     method of the global itself, a function that writes a number or prints, an 'extern' function
+//     handed the view to read (a call through a function value, or an extern handed a '&fn', is
+//     refused: collection_flow_reshape_global_opaque);
 //   - the global is 'imm', which no call can change;
 //   - the global is read into a local first, a copy of its String or a number;
 //   - the view is used by no call at all (a comparison), or the call is a virtual one marked
@@ -109,10 +111,8 @@ fn listElem() {
   note("list-len", i64.from(nums.len()));         // 2
 }
 
-// A view handed to a function that copies it, and to a print
-fn viaCopy() {
-  imm c = String.from(title.view());
-  note("from-view", i64.from(c.view().len));      // "heading": 7
+// A view handed to a print (an 'extern' handed a '&str', which reaches no '&fn')
+fn viaPrint() {
   printStr(title.view());                         // heading
   printStr("\n");
 }
@@ -133,7 +133,7 @@ fn main() i32 {
   localView();
   viewAcross();
   listElem();
-  viaCopy();
+  viaPrint();
   mut small = List[i64].empty();
   small.push(40i64);
   small.push(2i64);

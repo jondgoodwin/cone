@@ -1433,14 +1433,19 @@ locals, which only a call that reaches one of them is asked of):
   loan for the check though its path is not shared (it still freezes against the same name, as any
   unmarked loan of a path does). `reshapeCall` asks the ordinary check first, then, for such a loan,
   answers yes to a call that is not exempt (`reshapeExempt`: an intrinsic, an init, `+ ShapeKeeping`)
-  when its code is unknown (a virtual call or a call of a function value, or a Cone function whose
-  body is not visible; an `extern` C function names no Cone global and stays asked of what it is
-  handed), or when the shape inference finds it reshapes a value of the container's type through a
-  global, with a virtual call or a function value called anywhere in its body, or in what it calls,
-  taken to write any global (`shapeTypeWritesGlobal`: `SiModeOutG`/`SiModeTypeG`, the global-only and
-  type modes with `SiCtx.opaque`; only a virtual call counts, not a call through a function
-  pointer, for the allocator is called through one). The inference already counts a callee's write
-  through a global (`SiModeOut`); only the opaque call is new, and nothing else asks the new modes.
+  when its code is unknown (a virtual call or a call of a function value, a `&fn` held in a field,
+  parameter, global or local; an `extern` C function handed anything whose type can reach a `&fn`,
+  `shapeExternHandsFnRef`, which C may call back; or a Cone function whose body is not visible; any
+  other `extern` names no Cone global and stays asked of what it is handed), or when the shape
+  inference finds it reshapes a value of the container's type through a global, with a virtual call,
+  a function value or such an extern called anywhere in its body, or in what it calls, taken to write
+  any global (`shapeTypeWritesGlobal`: `SiModeOutG`/`SiModeTypeG`, the global-only and type modes
+  with `SiCtx.opaque`). So the allocator's call of a region's `&fn` (`MemRegion.allocFn`, core.cone)
+  makes `String.from(view)` one that is refused, which nothing names. The inference already counts a
+  callee's write through a global (`SiModeOut`); only the opaque call is new, and nothing else asks
+  the new modes. Not followed: a global of a C-named module (`mod @c`) is an external symbol, which C
+  can write from an `extern` function handed nothing; any other global's symbol is internal
+  (`genlLinkage`).
   The call that lends the borrow from the place the loan was reached through (`view` in that chain:
   the loan is held by its receiver's root) is not asked. An `imm` global is no global view: nothing
   writes it.

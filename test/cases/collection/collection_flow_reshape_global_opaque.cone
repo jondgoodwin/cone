@@ -1,0 +1,104 @@
+// A view held in a 'mut' global across a call into code the compiler cannot follow. Such a call may write the
+// global by its name, so it is refused (error 1339) as one that reshapes would be:
+//   - a call through a function value, a '&fn' held anywhere (a parameter, a struct's field, a 'mut'
+//     global, a local), or through a function called with one;
+//   - an 'extern' C function handed anything whose type can reach a '&fn', directly or through a struct or
+//     a pointer: C may call it back, and it may be a function that writes the global. This holds when the
+//     callback writes nothing, for the compiler cannot tell;
+//   - any call whose callee reaches such a call, as the allocator's own calls do: 'String.from(view)' asks
+//     the heap's region, a '&fn' held in a field, to allocate. The cure for a String is to copy it by a
+//     method of the global itself ('title.copy()'), which no call is handed a view of, or to hold a
+//     number or a copy read out of the global first.
+// collection_reshape_global_success holds what is accepted beside each refusal.
+//
+// Each function is a program that read freed memory when it was accepted, but for the 'quiet' ones,
+// which are refused as well: 'growFirst' appends to the big String the view points into.
+
+mod collection_flow_reshape_global_opaque;
+
+import collections use *;
+
+struct Item { pub label String; }
+
+struct Ed {
+  pub items List[Item];
+  pub fn growFirst(self &mut, s &str) {
+    imm r = &mut items[0usize];
+    r.label.append(s);
+  }
+}
+
+mut gl Ed;
+mut title String;
+fn grower(s &str) { gl.growFirst(s); }
+fn quiet(s &str) { }
+mut hook &fn(s &str);
+
+fn @initpure init() {
+  gl = new Ed(List[Item].empty());
+  title = String.from("heading");
+  hook = &quiet;
+}
+
+// A function value passed down with the view
+fn callIt(f &fn(s &str), s &str) { f(s); }
+
+fn viaParam() {
+  callIt(&grower, gl.items[0usize].label.view());               //~ ErrorShapeReshape "points into a 'mut' global"
+}
+
+// The function value held in a struct's field
+struct H { pub f &fn(s &str); }
+fn useIt(h &H, s &str) { h.f(s); }
+
+fn viaField(h &H) {
+  useIt(h, gl.items[0usize].label.view());                      //~ ErrorShapeReshape "points into a 'mut' global"
+}
+
+// ... held in a 'mut' global
+fn useHook(s &str) { hook(s); }
+
+fn viaGlobalPtr() {
+  useHook(gl.items[0usize].label.view());                       //~ ErrorShapeReshape "points into a 'mut' global"
+}
+
+// ... a local, called here
+fn viaLocal() {
+  imm f = &grower;
+  f(gl.items[0usize].label.view());                             //~ ErrorShapeReshape "points into a 'mut' global"
+}
+
+// A C function handed a callback that C calls back (qsort's comparator). The compiler cannot tell what the
+// comparator does, so one that writes the global ('loud') and one that writes nothing ('silent') are
+// refused alike
+extern fn @c qsort(base *u8, n usize, size usize, cmp &fn @c (a *u8, b *u8) i32);
+fn @c loud(a *u8, b *u8) i32 { gl.growFirst("zz"); 0i32; }
+fn @c silent(a *u8, b *u8) i32 { 0i32; }
+
+fn viaCLoud(buf *u8) usize {
+  imm v = gl.items[0usize].label.view();
+  qsort(buf, 2usize, 1usize, &loud);                            //~ ErrorShapeReshape "points into a 'mut' global"
+  v.len;
+}
+
+fn viaCQuiet(buf *u8) usize {
+  imm v = gl.items[0usize].label.view();
+  qsort(buf, 2usize, 1usize, &silent);                          //~ ErrorShapeReshape "points into a 'mut' global"
+  v.len;
+}
+
+// An extern handed a struct that holds a '&fn', not the '&fn' itself
+struct Cb { pub f &fn(s &str); pub n i64; }
+extern fn @c takesCb(cb *Cb);
+
+fn viaStruct(cb *Cb) usize {
+  imm v = gl.items[0usize].label.view();
+  takesCb(cb);                                                  //~ ErrorShapeReshape "points into a 'mut' global"
+  v.len;
+}
+
+// The allocator's own call: a String made from a view of a 'mut' global's String
+fn viaAllocator() usize {
+  imm c = String.from(title.view());                            //~ ErrorShapeReshape "points into a 'mut' global"
+  c.view().len;
+}
