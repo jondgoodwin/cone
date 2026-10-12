@@ -1,0 +1,173 @@
+// Damaged files must be refused, never crash. Valid files (a zlib stream, PNGs
+// of several kinds from this package's own writer, and the JPEGs in
+// tests/data, baseline, progressive and with restart markers) are damaged
+// thousands of ways by a fixed pseudo-random generator: one byte changed, a
+// run of bytes changed, the file cut short, bytes removed from the middle.
+// Every decoder must come back (an Ok or an Error; a panic or a crash ends
+// the program and fails this test). A damaged picture that still decodes is
+// fine: all that is checked is that the decoder returns, and that what it
+// returns is consistent (a Raster's pixel count matches its size).
+
+mod fuzz;
+
+import testing use *;
+import collections use *;
+import imagedecode use *;
+import fs;
+import path use Path;
+import libc;
+
+// FUZZ_SEED and FUZZ_SCALE in the environment run other damage, or more of it
+fn envNumber(name &str, fallback u64) u64 {
+  mut nm = String.from(name);
+  imm e = libc.getenv(nm.cstr());
+  if (e as usize) == 0usize { return fallback; }
+  mut n = 0u64;
+  mut i = 0usize;
+  while *(e + i) != 0u8 { n = n * 10u64 + u64.from(*(e + i) - 48u8); i += 1usize; }
+  n;
+}
+
+fn nextRand(s &mut u64) u64 {
+  *s = (*s * 6364136223846793005u64 + 1442695040888963407u64);
+  *s >> 33u64;
+}
+
+fn readData(name &str) List[u8] {
+  mut p = String.from("../../../../tests/data/");
+  p.append(name);
+  imm path = Path.from(p.view());
+  mut out = List[u8].empty();
+  match fs.readFile(&path) {
+    case mut ok Ok {
+      mut s = String.empty();
+      s <=> ok;
+      mut i = 0usize;
+      while i < s.len() { out.push(s[i]); i += 1usize; }
+    }
+    case imm e Error { }
+  }
+  out;
+}
+
+// A damaged copy of 'src'
+fn damage(src &List[u8], rng &mut u64) List[u8] {
+  mut out = List[u8].empty();
+  imm n = src.len();
+  imm kind = nextRand(rng) % 5u64;
+  if kind == 0u64 {
+    // One byte changed
+    mut i = 0usize;
+    while i < n { out.push(*src[i]); i += 1usize; }
+    imm at = usize.from(nextRand(rng) % u64.from(n));
+    out.set(at, u8.from(nextRand(rng) & 255u64));
+  } elif kind == 1u64 {
+    // A run of bytes changed
+    mut i = 0usize;
+    while i < n { out.push(*src[i]); i += 1usize; }
+    imm at = usize.from(nextRand(rng) % u64.from(n));
+    imm len = usize.from(nextRand(rng) % 16u64) + 1usize;
+    mut k = 0usize;
+    while k < len and at + k < n { out.set(at + k, u8.from(nextRand(rng) & 255u64)); k += 1usize; }
+  } elif kind == 2u64 {
+    // Cut short
+    imm keep = usize.from(nextRand(rng) % u64.from(n));
+    mut i = 0usize;
+    while i < keep { out.push(*src[i]); i += 1usize; }
+  } elif kind == 3u64 {
+    // A piece removed
+    imm at = usize.from(nextRand(rng) % u64.from(n));
+    imm len = usize.from(nextRand(rng) % 32u64) + 1usize;
+    mut i = 0usize;
+    while i < n { if i < at or i >= at + len { out.push(*src[i]); } i += 1usize; }
+  } else {
+    // A bit flipped in the first 200 bytes (headers and tables)
+    mut i = 0usize;
+    while i < n { out.push(*src[i]); i += 1usize; }
+    imm lim = if n < 200usize {n;} else {200usize;};
+    imm at = usize.from(nextRand(rng) % u64.from(lim));
+    out.set(at, *out[at] ^ u8.from(1u64 << (nextRand(rng) % 8u64)));
+  }
+  out;
+}
+
+fn consistent(r &Raster) bool {
+  imm n = usize.from(r.width) * usize.from(r.height) * 4usize;
+  if r.depth == 16 { return r.pixels16.len() == n; }
+  r.pixels8.len() == n;
+}
+
+fn main() i32 {
+  mut rng = envNumber("FUZZ_SEED", 12345u64);
+  imm scale = usize.from(envNumber("FUZZ_SCALE", 1u64));
+  mut bad = 0usize;
+  mut decodedPng = 0usize;
+  mut decodedJpeg = 0usize;
+  mut refusedAll = 0usize;
+
+  // PNGs of several kinds
+  mut pngs = List[List[u8]].empty();
+  mut ct = 0usize;
+  imm cts Array[u8, 5] = [0u8, 2u8, 3u8, 4u8, 6u8];
+  while ct < 5usize {
+    mut o = PngWrite.make(cts[ct], if cts[ct] == 3u8 {4u8;} else {8u8;});
+    o.interlace = ct % 2usize == 1usize;
+    if cts[ct] == 3u8 { mut i = 0usize; while i < 48usize { o.palette.push(u8.from(i * 5usize)); i += 1usize; } }
+    imm ch = if cts[ct] == 2u8 {3usize;} elif cts[ct] == 4u8 {2usize;} elif cts[ct] == 6u8 {4usize;} else {1usize;};
+    mut samples = List[u16].empty();
+    mut i = 0usize;
+    while i < 17usize * 13usize * ch { samples.push(u16.from((i * 7usize + i / 5usize) % (if cts[ct] == 3u8 {16usize;} else {256usize;}))); i += 1usize; }
+    pngs.push(encodePngSamples(17, 13, samples.view(), &o));
+    ct += 1usize;
+  }
+  // A zlib stream
+  mut raw = List[u8].empty();
+  mut i = 0usize;
+  while i < 3000usize { raw.push(u8.from((i * i / 7usize + i % 13usize) & 255usize)); i += 1usize; }
+  imm z = zlibCompress(raw.view(), 2);
+
+  mut p = 0usize;
+  while p < pngs.len() {
+    mut k = 0usize;
+    while k < 700usize * scale {
+      imm d = damage(pngs[p], &mut rng);
+      match decodePng(d.view()) {
+        case imm ok Ok { decodedPng += 1usize; if not consistent(&ok) { bad += 1usize; } }
+        case imm e Error { refusedAll += 1usize; }
+      }
+      k += 1usize;
+    }
+    p += 1usize;
+  }
+  mut k = 0usize;
+  while k < 2000usize * scale {
+    imm d = damage(&z, &mut rng);
+    match zlibDecompress(d.view(), 0usize) {
+      case imm ok Ok { }
+      case imm e Error { refusedAll += 1usize; }
+    }
+    k += 1usize;
+  }
+
+  // JPEGs
+  imm names Array[&str, 8] = ["b420.jpg", "p420.jpg", "rst420.jpg", "rstp420.jpg", "gray.jpg", "b411.jpg", "pgray.jpg", "orient6.jpg"];
+  mut j = 0usize;
+  while j < 8usize {
+    imm src = readData(names[j]);
+    if not expect(src.len() > 0usize, names[j]) { return done(); }
+    k = 0usize;
+    while k < 400usize * scale {
+      imm d = damage(&src, &mut rng);
+      match decodeJpeg(d.view()) {
+        case imm ok Ok { decodedJpeg += 1usize; if not consistent(&ok) { bad += 1usize; } }
+        case imm e Error { refusedAll += 1usize; }
+      }
+      k += 1usize;
+    }
+    j += 1usize;
+  }
+  expectInt(i64.from(bad), 0i64, "every picture that decoded is consistent");
+  expect(refusedAll > 1000usize, "most damage is noticed");
+  expect(decodedPng > 0usize and decodedJpeg > 0usize, "some damage (in the pixels) is not an error");
+  done();
+}

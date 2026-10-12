@@ -1,0 +1,184 @@
+// ======== Output: positions and normals into a mesh.Mesh ========
+//
+// The mesh is rewritten in place each step. The first time (or when the body
+// changed shape: a different vertex count) the indices and uvs are made; after
+// that only positions and normals are written, so the lists keep their
+// storage. The result goes straight to render's 'writeDynamicMesh' (a dynamic
+// mesh sized for 'outputVertexCount' and 'outputIndexCount').
+
+// Particle normals: the sum of the area-weighted normals of the triangles
+// around each particle, made unit length (zero for a particle with no area)
+pub fn particleNormals(b &SoftBody, out &mut List[Vec3]) {
+  imm n = b.pos.len();
+  out.clear();
+  mut i = 0usize;
+  while i < n {
+    out.push(zero3());
+    i = i + 1usize;
+  }
+  mut t = 0usize;
+  while t + 2usize < b.tris.len() {
+    imm ia = usize.from(*b.tris[t]);
+    imm ib = usize.from(*b.tris[t + 1usize]);
+    imm ic = usize.from(*b.tris[t + 2usize]);
+    t = t + 3usize;
+    imm pa = *b.pos[ia];
+    imm cr = (*b.pos[ib] - pa).cross(*b.pos[ic] - pa);
+    out.set(ia, *out[ia] + cr);
+    out.set(ib, *out[ib] + cr);
+    out.set(ic, *out[ic] + cr);
+  }
+  i = 0usize;
+  while i < n {
+    imm v = *out[i];
+    imm l = v.length();
+    if l > 1e-12 { out.set(i, v * (1. / l)); }
+    i = i + 1usize;
+  }
+}
+
+// How many vertices and indices 'writeMesh' produces
+pub fn outputVertexCount(b &SoftBody, doubleSided bool) usize {
+  if doubleSided {b.vertexMap.len() * 2usize;} else {b.vertexMap.len();};
+}
+
+pub fn outputIndexCount(b &SoftBody, doubleSided bool) usize {
+  if doubleSided {b.vertexTris.len() * 2usize;} else {b.vertexTris.len();};
+}
+
+// Write the surface into 'out': one vertex for each of the source mesh's (the
+// particles, for a cloth grid), smooth normals, the source's uvs and indices.
+// 'doubleSided' adds a second copy facing the other way (the lit pipeline culls
+// back faces, and a flag has two sides): vertices after the first set, with
+// reversed triangles and negated normals.
+pub fn writeMesh(b &SoftBody, out &mut Mesh, doubleSided bool, normals &mut List[Vec3]) {
+  imm nv = b.vertexMap.len();
+  imm total = outputVertexCount(b, doubleSided);
+  particleNormals(b, normals);
+  if out.positions.len() != total {
+    out.positions.clear();
+    out.normals.clear();
+    out.uvs.clear();
+    out.indices.clear();
+    out.colors.clear();
+    out.tangents.clear();
+    out.groups.clear();
+    mut copies = 1usize;
+    if doubleSided { copies = 2usize; }
+    mut c = 0usize;
+    while c < copies {
+      mut i = 0usize;
+      while i < nv {
+        out.positions.push(zero3());
+        out.normals.push(zero3());
+        if b.vertexUvs.len() == nv { out.uvs.push(*b.vertexUvs[i]); }
+        i = i + 1usize;
+      }
+      c = c + 1usize;
+    }
+    mut t = 0usize;
+    while t + 2usize < b.vertexTris.len() {
+      out.indices.push(*b.vertexTris[t]);
+      out.indices.push(*b.vertexTris[t + 1usize]);
+      out.indices.push(*b.vertexTris[t + 2usize]);
+      t = t + 3usize;
+    }
+    if doubleSided {
+      imm off = u32.from(nv);
+      t = 0usize;
+      while t + 2usize < b.vertexTris.len() {
+        out.indices.push(*b.vertexTris[t] + off);
+        out.indices.push(*b.vertexTris[t + 2usize] + off);
+        out.indices.push(*b.vertexTris[t + 1usize] + off);
+        t = t + 3usize;
+      }
+    }
+  }
+  mut i = 0usize;
+  while i < nv {
+    imm k = usize.from(*b.vertexMap[i]);
+    imm p = *b.pos[k];
+    imm n = *normals[k];
+    out.positions.set(i, p);
+    out.normals.set(i, n);
+    if doubleSided {
+      out.positions.set(nv + i, p);
+      out.normals.set(nv + i, -n);
+    }
+    i = i + 1usize;
+  }
+}
+
+// A rope as a tube of 'radius' with 'sides' faces round, rewritten in place like
+// writeMesh: rings at the particles in order, their frames carried along the
+// rope (parallel transport, so a ring does not twist), uvs (round, length in
+// metres)
+pub fn writeTube(b &SoftBody, out &mut Mesh, radius f32, sides u32) {
+  imm n = b.pos.len();
+  imm ns = usize.from(sides);
+  imm total = n * ns;
+  if n < 2usize or sides < 3u32 { return; }
+  if out.positions.len() != total {
+    out.positions.clear();
+    out.normals.clear();
+    out.uvs.clear();
+    out.indices.clear();
+    out.colors.clear();
+    out.tangents.clear();
+    out.groups.clear();
+    mut i = 0usize;
+    while i < total {
+      out.positions.push(zero3());
+      out.normals.push(zero3());
+      out.uvs.push(new Vec2(0., 0.));
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i + 1usize < n {
+      mut k = 0usize;
+      while k < ns {
+        imm k1 = (k + 1usize) % ns;
+        imm a = u32.from(i * ns + k);
+        imm bb = u32.from(i * ns + k1);
+        imm c = u32.from((i + 1usize) * ns + k);
+        imm d = u32.from((i + 1usize) * ns + k1);
+        out.indices.push(a);
+        out.indices.push(c);
+        out.indices.push(bb);
+        out.indices.push(bb);
+        out.indices.push(c);
+        out.indices.push(d);
+        k = k + 1usize;
+      }
+      i = i + 1usize;
+    }
+  }
+  mut nrm = zero3();
+  mut length = 0.;
+  mut i = 0usize;
+  while i < n {
+    imm lo = if i == 0usize {0usize;} else {i - 1usize;};
+    imm hi = if i + 1usize == n {i;} else {i + 1usize;};
+    imm tang = (*b.pos[hi] - *b.pos[lo]).normalize();
+    if i == 0usize {
+      // any direction not along the tangent
+      imm helper = if fabs(tang.y) < 0.9 {new Vec3(0., 1., 0.);} else {new Vec3(1., 0., 0.);};
+      nrm = tang.cross(helper).normalize();
+    } else {
+      imm cand = nrm - tang * nrm.dot(tang);
+      if cand.lengthSquared() > 1e-12 { nrm = cand.normalize(); }
+    }
+    imm bin = tang.cross(nrm);
+    if i > 0usize { length = length + (*b.pos[i] - *b.pos[i - 1usize]).length(); }
+    mut k = 0usize;
+    while k < ns {
+      imm ang = 2. * pi * f32.from(k) / f32.from(ns);
+      imm dir = nrm * cos(ang) + bin * sin(ang);
+      out.positions.set(i * ns + k, *b.pos[i] + dir * radius);
+      out.normals.set(i * ns + k, dir);
+      out.uvs.set(i * ns + k, new Vec2(f32.from(k) / f32.from(ns), length));
+      k = k + 1usize;
+    }
+    i = i + 1usize;
+  }
+}

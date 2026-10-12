@@ -1,0 +1,200 @@
+// PNG: every colour type at every bit depth the specification allows, every
+// scanline filter and the adaptive choice, with and without Adam7
+// interlacing, written by this package's own encoder and read back by its
+// decoder, against a reference expansion written here from the
+// specification (not the decoder's code):
+//
+//   grey 1, 2, 4, 8, 16 bits   expands to R = G = B = the sample, scaled to
+//                              8 bits by v * 255 / (2^depth - 1) (replicating
+//                              the bits), or kept at 16
+//   RGB 8, 16                  as it is
+//   palette 1, 2, 4, 8         the palette's entry; alpha from the tRNS table
+//                              (entries past its end are opaque)
+//   grey+alpha 8, 16, RGBA 8, 16
+//
+// plus a colour key (tRNS) on grey and RGB pictures, which makes the pixels
+// that match it fully transparent. Sizes are 1 x 1, 13 x 11 (odd, so the
+// Adam7 passes have different sizes and some are empty at 1 x 1) and 8 x 8.
+// A pixel is checked by its four channels. The file's bytes are also fed
+// through damage (a bad signature, a cut file, a flipped byte, an unknown
+// critical chunk), which must all be refused with a reason.
+
+mod pngroundtrip;
+
+import testing use *;
+import collections use *;
+import imagedecode use *;
+
+fn nextRand(s &mut u64) u64 {
+  *s = (*s * 1103515245u64 + 12345u64) & 0x7FFFFFFFu64;
+  *s >> 8u64;
+}
+
+fn channelsOf(ct u8) usize {
+  if ct == 2u8 { return 3usize; }
+  if ct == 4u8 { return 2usize; }
+  if ct == 6u8 { return 4usize; }
+  1usize;
+}
+
+// What the picture's pixel k should decode to, at the Raster's depth
+fn reference(ct u8, depth u8, samples &Array[u16], k usize, o &PngWrite, out &mut Array[u32]) {
+  imm ch = channelsOf(ct);
+  imm b = k * ch;
+  imm full = if depth == 16u8 {65535u32;} else {255u32;};
+  imm maxv = (1u32 << u32.from(depth)) - 1u32;
+  if ct == 3u8 {
+    imm i = usize.from(samples[b]);
+    out[0usize] = u32.from(*o.palette[i * 3usize]);
+    out[1usize] = u32.from(*o.palette[i * 3usize + 1usize]);
+    out[2usize] = u32.from(*o.palette[i * 3usize + 2usize]);
+    out[3usize] = if i < o.trns.len() {u32.from(*o.trns[i]);} else {255u32;};
+    return;
+  }
+  if ct == 0u8 or ct == 4u8 {
+    imm g = u32.from(samples[b]) * full / maxv;
+    out[0usize] = g;
+    out[1usize] = g;
+    out[2usize] = g;
+    out[3usize] = if ct == 4u8 {u32.from(samples[b + 1usize]) * full / maxv;}
+      elif o.hasKey and samples[b] == o.keyR {0u32;} else {full;};
+    return;
+  }
+  out[0usize] = u32.from(samples[b]) * full / maxv;
+  out[1usize] = u32.from(samples[b + 1usize]) * full / maxv;
+  out[2usize] = u32.from(samples[b + 2usize]) * full / maxv;
+  out[3usize] = if ct == 6u8 {u32.from(samples[b + 3usize]) * full / maxv;}
+    elif o.hasKey and samples[b] == o.keyR and samples[b + 1usize] == o.keyG and samples[b + 2usize] == o.keyB {0u32;}
+    else {full;};
+}
+
+// Make a picture, encode it, decode it, and count the pixels that differ
+fn trial(ct u8, depth u8, w i32, h i32, interlace bool, filter i32, key bool, seed u64) usize {
+  mut s = seed;
+  imm ch = channelsOf(ct);
+  imm n = usize.from(w) * usize.from(h);
+  imm maxv = (1u32 << u32.from(depth)) - 1u32;
+  mut o = PngWrite.make(ct, depth);
+  o.interlace = interlace;
+  o.filter = filter;
+  o.level = 2;
+  if ct == 3u8 {
+    imm entries = usize.from(maxv) + 1usize;
+    mut i = 0usize;
+    while i < entries * 3usize { o.palette.push(u8.from(nextRand(&mut s) & 255u64)); i += 1usize; }
+    i = 0usize;
+    while i < entries / 2usize + 1usize { o.trns.push(u8.from(nextRand(&mut s) & 255u64)); i += 1usize; }
+  }
+  mut samples = List[u16].empty();
+  mut i = 0usize;
+  while i < n * ch {
+    imm limit = if ct == 3u8 {u64.from(maxv) + 1u64;} else {u64.from(maxv) + 1u64;};
+    // Smooth runs as well as noise, so the filters have something to predict
+    imm v = if (i / ch) % 3usize == 0usize {nextRand(&mut s) % limit;} else {u64.from(*samples[i - ch]);};
+    samples.push(u16.from(v));
+    i += 1usize;
+  }
+  if key and (ct == 0u8 or ct == 2u8) and n > 3usize {
+    o.hasKey = true;
+    o.keyR = *samples[3usize * ch];
+    if ct == 2u8 { o.keyG = *samples[3usize * ch + 1usize]; o.keyB = *samples[3usize * ch + 2usize]; }
+  }
+  imm file = encodePngSamples(w, h, samples.view(), &o);
+  mut bad = 0usize;
+  match decodePng(file.view()) {
+    case imm ok Ok {
+      if ok.width != w or ok.height != h { return n; }
+      if ok.depth != (if depth == 16u8 {16;} else {8;}) { return n; }
+      mut expected = List[u32].empty();
+      expected.resize(4usize, 0u32);
+      mut k = 0usize;
+      while k < n {
+        reference(ct, depth, samples.view(), k, &o, expected.viewMut());
+        mut c = 0usize;
+        while c < 4usize {
+          imm got = if depth == 16u8 {u32.from(*ok.pixels16[k * 4usize + c]);} else {u32.from(*ok.pixels8[k * 4usize + c]);};
+          if got != *expected[c] { bad += 1usize; break; }
+          c += 1usize;
+        }
+        k += 1usize;
+      }
+    }
+    case imm e Error { return n; }
+  }
+  bad;
+}
+
+fn refused(file &Array[u8], label &str) {
+  match decodePng(file) {
+    case imm ok Ok { expect(false, label); }
+    case imm e Error { expect(e.reason.len() > 0usize, label); }
+  }
+}
+
+fn main() i32 {
+  imm cts Array[u8, 5] = [0u8, 2u8, 3u8, 4u8, 6u8];
+  mut combos = 0usize;
+  mut failedCombos = 0usize;
+  mut c = 0usize;
+  while c < 5usize {
+    imm ct = cts[c];
+    imm depths Array[u8, 5] = [1u8, 2u8, 4u8, 8u8, 16u8];
+    mut d = 0usize;
+    while d < 5usize {
+      imm depth = depths[d];
+      imm valid = if ct == 0u8 {true;} elif ct == 3u8 {depth <= 8u8;} else {depth >= 8u8;};
+      if valid {
+        mut size = 0usize;
+        while size < 3usize {
+          imm w = if size == 0usize {1;} elif size == 1usize {13;} else {8;};
+          imm h = if size == 0usize {1;} elif size == 1usize {11;} else {8;};
+          mut il = 0usize;
+          while il < 2usize {
+            mut f = 0i32;
+            while f < 6i32 {
+              imm seed = u64.from(c * 1000usize + d * 100usize + size * 10usize + il) + u64.from(f) * 7919u64;
+              imm bad = trial(ct, depth, w, h, il == 1usize, f, (f % 2) == 1, seed);
+              combos += 1usize;
+              if bad != 0usize {
+                failedCombos += 1usize;
+                if failedCombos < 6usize {
+                  expect(false, "a PNG round trip (colour type / depth / size / interlace / filter in the seed)");
+                }
+              }
+              f += 1i32;
+            }
+            il += 1usize;
+          }
+          size += 1usize;
+        }
+      }
+      d += 1usize;
+    }
+    c += 1usize;
+  }
+  expectInt(i64.from(combos), 15i64 * 0i64 + 3i64 * (5i64 + 2i64 + 4i64 + 2i64 + 2i64) * 2i64 * 6i64, "round trips run");
+  expectInt(i64.from(failedCombos), 0i64, "round trips that differ");
+
+  // Damage
+  mut o = PngWrite.make(6u8, 8u8);
+  mut samples = List[u16].empty();
+  mut i = 0usize;
+  while i < 16usize * 16usize * 4usize { samples.push(u16.from((i * 7usize) & 255usize)); i += 1usize; }
+  imm file = encodePngSamples(16, 16, samples.view(), &o);
+  mut f1 = List[u8].empty();
+  i = 0usize;
+  while i < file.len() { f1.push(*file[i]); i += 1usize; }
+  f1.set(1usize, 0u8);
+  refused(f1.view(), "a bad signature");
+  mut f2 = List[u8].empty();
+  i = 0usize;
+  while i < file.len() - 20usize { f2.push(*file[i]); i += 1usize; }
+  refused(f2.view(), "a cut file");
+  mut f3 = List[u8].empty();
+  i = 0usize;
+  while i < file.len() { f3.push(*file[i]); i += 1usize; }
+  f3.set(60usize, *f3[60usize] ^ 0x10u8);
+  refused(f3.view(), "a flipped byte in the data (the CRC)");
+  refused(List[u8].empty().view(), "an empty file");
+  done();
+}

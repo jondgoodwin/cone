@@ -250,9 +250,10 @@ package, and `sliceEqDclNameRes` holds the declaration to that one signature
   there.** Type check and generation each look through the coercion to
   `MemOrder` and any `const` to a variant's literal (`intrinsicOrderOf`); a
   change that folded or hoisted the argument into something else would make
-  generation's `errorUnreachable` fire rather than a diagnostic. A default
-  ordering is not possible yet: a parameter's default must be a literal, and a
-  variant coerced to its enum is not one (`litIsLiteral`).
+  generation's `errorUnreachable` fire rather than a diagnostic. No intrinsic
+  declares a default ordering. A parameter's default may now be a variant of a
+  payload-less enum such as `MemOrder` (`litIsEnumVariant`), so one could; that
+  has not been tried against `intrinsicOrderOf`.
 - **`mem` is a struct because a submodule of core cannot be reached**, measured:
   a direct compile finds core on the package search path as the one file
   `core/src/core.cone`, and the sweep reads no file beside it (its folder is

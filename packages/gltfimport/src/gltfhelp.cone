@@ -1,0 +1,67 @@
+// ======== Helpers for hooking a Gltf onto a renderer ========
+
+// KHR_texture_transform, baked into a mesh's uvs: each uv (in this package's
+// convention, v up) goes through the transform the extension defines on
+// glTF's own uv (v down): uv' = offset + R * (scale * uv), R the matrix
+// [[cos, sin], [-sin, cos]]. A renderer with no uv transform of its own
+// applies a material's base colour transform this way, to the primitive
+// that uses the material (one primitive, one material; a mesh shared by
+// materials with different transforms needs a copy of its uvs each).
+pub fn bakeTextureTransform(m &mut Mesh, t &TextureRef) {
+  if not t.hasTransform { return; }
+  imm c = cos(t.rotation);
+  imm s = sin(t.rotation);
+  mut i = 0usize;
+  while i < m.uvs.len() {
+    imm uv = *m.uvs[i];
+    // To glTF's v (down), transform, and back
+    imm x = t.scale.x * uv.x;
+    imm y = t.scale.y * (1. - uv.y);
+    imm u2 = c * x + s * y + t.offset.x;
+    imm v2 = -s * x + c * y + t.offset.y;
+    m.uvs.set(i, new Vec2(u2, 1. - v2));
+    i += 1usize;
+  }
+}
+
+// The nodes that draw something: each node with a mesh, with its matrix in
+// the model, in node order. A consumer draws mesh 'mesh' of node 'node'
+// (primitive after primitive) at 'world'.
+pub struct MeshInstance {
+  pub node usize;
+  pub mesh usize;
+  pub world Mat4;
+}
+
+pub fn meshInstances(g &Gltf) List[MeshInstance] {
+  imm worlds = g.worldMatrices();
+  mut out = List[MeshInstance].empty();
+  mut i = 0usize;
+  while i < g.nodes.len() {
+    imm m = g.nodes[i].mesh;
+    if m >= 0i32 { out.push(new MeshInstance(i, usize.from(m), *worlds[i])); }
+    i += 1usize;
+  }
+  out;
+}
+
+// A copy of a mesh, to be changed (bakeTextureTransform, a transform) without
+// touching the loaded one
+pub fn copyMesh(m &Mesh) Mesh {
+  mut out = Mesh.empty();
+  mut i = 0usize;
+  while i < m.positions.len() { out.positions.push(*m.positions[i]); i += 1usize; }
+  i = 0usize;
+  while i < m.normals.len() { out.normals.push(*m.normals[i]); i += 1usize; }
+  i = 0usize;
+  while i < m.uvs.len() { out.uvs.push(*m.uvs[i]); i += 1usize; }
+  i = 0usize;
+  while i < m.colors.len() { out.colors.push(*m.colors[i]); i += 1usize; }
+  i = 0usize;
+  while i < m.tangents.len() { out.tangents.push(*m.tangents[i]); i += 1usize; }
+  i = 0usize;
+  while i < m.indices.len() { out.indices.push(*m.indices[i]); i += 1usize; }
+  i = 0usize;
+  while i < m.groups.len() { out.groups.push(*m.groups[i]); i += 1usize; }
+  out;
+}

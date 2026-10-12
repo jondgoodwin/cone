@@ -1,0 +1,540 @@
+// ======== Widgets, part 1: state tables, builders, the event switch, buttons, sliders ========
+//
+// A widget is a node of some kind (K_*) with a style, plus a row in the table of its
+// kind where it has state of its own. A builder makes the nodes and the row; the
+// widget's logic is the function the event switch 'builtin' calls for its kind. A
+// widget draws only through the draw list (render.cone).
+//
+// Widgets tell the application what happened with UiEvent records (UE_*): a button
+// clicked, a slider moved, a window closed.
+
+pub struct ToggleData {
+  pub checked bool = false;
+  pub group u32 = 0u32;           // nonzero: a radio group, one checked at a time among siblings
+}
+
+pub struct SliderData {
+  pub min f32 = 0.;
+  pub max f32 = 1.;
+  pub value f32 = 0.;
+  pub step f32 = 0.;              // 0: continuous
+  pub vertical bool = false;
+}
+
+pub struct KnobData {
+  pub min f32 = 0.;
+  pub max f32 = 1.;
+  pub value f32 = 0.;
+  pub step f32 = 0.;
+  pub def f32 = 0.;               // double-click goes back to this
+  pub dragY f32 = 0.;
+  pub dragValue f32 = 0.;
+}
+
+pub struct FieldData {
+  pub node usize = 0usize;
+  pub caret usize = 0usize;       // byte offsets into the text, on character boundaries
+  pub anchor usize = 0usize;      // the selection runs from anchor to caret
+  pub scroll f32 = 0.;            // pixels the text is shifted left
+  pub adv List[f32];              // adv[i]: the width of the text before byte i
+  pub advValid bool = false;
+  pub maxLen usize = 256usize;
+  pub readOnly bool = false;
+  pub blink f32 = 0.;
+  pub selecting bool = false;
+  pub placeholder String;
+}
+
+pub struct ListData {
+  pub selected i32 = -1i32;
+  pub column usize = 0usize;
+}
+
+pub struct WindowData {
+  pub frame usize = 0usize;
+  pub titlebar usize = 0usize;
+  pub title usize = 0usize;
+  pub closeBtn usize = 0usize;
+  pub content usize = 0usize;
+  pub closable bool = true;
+  pub resizable bool = true;
+  pub movable bool = true;
+  pub minW f32 = 140.;
+  pub minH f32 = 80.;
+}
+
+pub struct TabsData {
+  pub bar usize = 0usize;
+  pub pages usize = 0usize;
+  pub selected i32 = -1i32;
+}
+
+pub struct TabPage {
+  pub tabs usize;
+  pub button usize;
+  pub panel usize;
+}
+
+// What a pointer operation under way is: moving or resizing a window, dragging a
+// scrollbar thumb or a split divider
+pub struct WinOp {
+  pub mode u32 = 0u32;            // 0 none, 1 move, 2 resize, 3 scrollbar, 4 divider
+  pub node usize = 0usize;
+  pub edges u32 = 0u32;           // resize: 1 left, 2 right, 4 top, 8 bottom
+  pub grabX f32 = 0.;
+  pub grabY f32 = 0.;
+  pub startX f32 = 0.;
+  pub startY f32 = 0.;
+  pub startW f32 = 0.;
+  pub startH f32 = 0.;
+  pub vertical bool = true;
+
+  pub fn make() WinOp {new WinOp;}
+}
+
+// ---- making nodes ----
+
+fn made(ui &mut Ui, parent usize, kind u32, style &str) usize {
+  imm id = ui.create(parent, kind);
+  ui.nodes[id].style = ui.theme.find(style);
+  id;
+}
+
+// A plain container with a style (a panel has a background)
+pub fn panel(ui &mut Ui, parent usize, style &str) usize {
+  imm id = made(ui, parent, K_PANEL, style);
+  ui.nodes[id].pointer = PM_STOP;
+  id;
+}
+
+pub fn label(ui &mut Ui, parent usize, text &str) usize {
+  imm id = made(ui, parent, K_LABEL, "label");
+  ui.setText(id, text);
+  id;
+}
+
+pub fn button(ui &mut Ui, parent usize, text &str) usize {
+  imm id = made(ui, parent, K_BUTTON, "button");
+  ui.setText(id, text);
+  ui.nodes[id].pointer = PM_STOP;
+  ui.nodes[id].focusable = true;
+  id;
+}
+
+pub fn toggle(ui &mut Ui, parent usize, text &str, checked bool) usize {
+  imm id = made(ui, parent, K_TOGGLE, "toggle");
+  ui.setText(id, text);
+  ui.nodes[id].pointer = PM_STOP;
+  ui.nodes[id].focusable = true;
+  ui.nodes[id].data = ui.toggles.len();
+  ui.toggles.push(new ToggleData(checked: checked));
+  ui.setState(id, ST_CHECKED, checked);
+  id;
+}
+
+pub fn isChecked(ui &Ui, id usize) bool {ui.toggles[ui.nodes[id].data].checked;}
+
+pub fn setChecked(ui &mut Ui, id usize, on bool) {
+  if ui.toggles[ui.nodes[id].data].checked == on {return;}
+  ui.toggles[ui.nodes[id].data].checked = on;
+  ui.setState(id, ST_CHECKED, on);
+  ui.emit(UE_TOGGLED, id, NIL, 0., 0., if on {1i32;} else {0i32;}, 0u32);
+}
+
+// A group of toggles under one parent behaves as radio buttons
+pub fn setRadioGroup(ui &mut Ui, id usize, group u32) {
+  ui.toggles[ui.nodes[id].data].group = group;
+}
+
+pub fn image(ui &mut Ui, parent usize, tex u32, w f32, h f32) usize {
+  imm id = made(ui, parent, K_IMAGE, "base");
+  ui.nodes[id].tag = tex;
+  ui.setSize(id, w, h);
+  id;
+}
+
+pub fn scrollView(ui &mut Ui, parent usize, horizontal bool, vertical bool) usize {
+  imm id = made(ui, parent, K_SCROLLVIEW, "panel");
+  ui.nodes[id].pointer = PM_STOP;
+  ui.setScroll(id, horizontal, vertical);
+  id;
+}
+
+// Two panes (the first two children, added after) and a divider the user drags
+pub fn splitView(ui &mut Ui, parent usize, ratio f32, vertical bool) usize {
+  imm id = made(ui, parent, K_SPLITVIEW, "base");
+  ui.nodes[id].pointer = PM_STOP;
+  ui.setSplit(id, ratio, vertical);
+  ui.setPad(id, 0.);
+  ui.nodes[id].gap = 6.;
+  id;
+}
+
+pub fn slider(ui &mut Ui, parent usize, min f32, max f32, value f32, step f32) usize {
+  imm id = made(ui, parent, K_SLIDER, "slider");
+  ui.nodes[id].pointer = PM_STOP;
+  ui.nodes[id].focusable = true;
+  ui.nodes[id].data = ui.sliders.len();
+  ui.sliders.push(new SliderData(min: min, max: max, value: value, step: step));
+  ui.setSize(id, 160., 20.);
+  id;
+}
+
+pub fn knob(ui &mut Ui, parent usize, min f32, max f32, value f32, step f32) usize {
+  imm id = made(ui, parent, K_KNOB, "knob");
+  ui.nodes[id].pointer = PM_STOP;
+  ui.nodes[id].focusable = true;
+  ui.nodes[id].data = ui.knobs.len();
+  ui.knobs.push(new KnobData(min: min, max: max, value: value, step: step, def: value));
+  imm s = ui.theme.num(ui.nodes[id].style, P_SIZE, 0u32, 44.);
+  ui.setSize(id, s, s);
+  id;
+}
+
+// ---- values of sliders and knobs ----
+
+fn quantize(v f32, min f32, max f32, step f32) f32 {
+  mut r = v;
+  if step > 0. {r = min + roundf((v - min) / step) * step;}
+  clampf(r, min, max);
+}
+
+pub fn sliderValue(ui &Ui, id usize) f32 {ui.sliders[ui.nodes[id].data].value;}
+pub fn knobValue(ui &Ui, id usize) f32 {ui.knobs[ui.nodes[id].data].value;}
+
+pub fn setSliderValue(ui &mut Ui, id usize, v f32) {
+  imm d = ui.nodes[id].data;
+  imm q = quantize(v, ui.sliders[d].min, ui.sliders[d].max, ui.sliders[d].step);
+  if q != ui.sliders[d].value {
+    ui.sliders[d].value = q;
+    ui.emit(UE_CHANGED, id, NIL, q, 0., 0i32, 0u32);
+  }
+}
+
+pub fn setKnobValue(ui &mut Ui, id usize, v f32) {
+  imm d = ui.nodes[id].data;
+  imm q = quantize(v, ui.knobs[d].min, ui.knobs[d].max, ui.knobs[d].step);
+  if q != ui.knobs[d].value {
+    ui.knobs[d].value = q;
+    ui.emit(UE_CHANGED, id, NIL, q, 0., 0i32, 0u32);
+  }
+}
+
+// The value as a fraction of the range
+pub fn sliderFraction(ui &Ui, id usize) f32 {
+  imm d = ui.nodes[id].data;
+  imm span = ui.sliders[d].max - ui.sliders[d].min;
+  if span == 0. {0.;} else {(ui.sliders[d].value - ui.sliders[d].min) / span;};
+}
+
+pub fn knobFraction(ui &Ui, id usize) f32 {
+  imm d = ui.nodes[id].data;
+  imm span = ui.knobs[d].max - ui.knobs[d].min;
+  if span == 0. {0.;} else {(ui.knobs[d].value - ui.knobs[d].min) / span;};
+}
+
+// A knob's value runs through 270 degrees clockwise from the lower left (135 degrees on
+// the screen, measured clockwise from +x) to the lower right
+pub const KNOB_START = 2.3561945;
+pub const KNOB_SWEEP = 4.712389;
+
+// The size of the slider's thumb
+fn thumbSize(ui &Ui, id usize) f32 {
+  ui.theme.num(ui.nodes[id].style, P_SIZE, 0u32, 16.);
+}
+
+fn sliderSetFromPointer(ui &mut Ui, id usize, x f32, y f32) {
+  imm d = ui.nodes[id].data;
+  imm ts = thumbSize(ui, id);
+  mut t = 0.;
+  if ui.sliders[d].vertical {
+    imm usable = maxf(1., ui.nodes[id].h - ts);
+    t = 1. - (y - ui.nodes[id].gy - ts * 0.5) / usable;
+  }
+  else {
+    imm usable = maxf(1., ui.nodes[id].w - ts);
+    t = (x - ui.nodes[id].gx - ts * 0.5) / usable;
+  }
+  t = clampf(t, 0., 1.);
+  setSliderValue(ui, id, ui.sliders[d].min + t * (ui.sliders[d].max - ui.sliders[d].min));
+}
+
+// Arrow keys and the like, for a slider or a knob: the amount of one step
+fn keyStep(min f32, max f32, step f32, big bool) f32 {
+  imm s = if step > 0. {step;} else {(max - min) / 20.;};
+  if big {s * 5.;} else {s;};
+}
+
+// ---- the event switch ----
+
+fn isPointerEvent(kind u32) bool {
+  kind == EK_DOWN or kind == EK_UP or kind == EK_CLICK or kind == EK_DBLCLICK or kind == EK_WHEEL;
+}
+
+fn builtin(ui &mut Ui, node usize, ev &Ev, phase u32) bool {
+  imm k = ui.nodes[node].kind;
+  if (ui.nodes[node].state & ST_DISABLED) != 0u32 {
+    return k != K_PLAIN and k != K_LABEL and k != K_PANEL and (isPointerEvent(ev.kind) or ev.kind == EK_KEY_DOWN);
+  }
+  mut handled = false;
+  if k == K_BUTTON or k == K_TAB or k == K_CLOSE {handled = buttonEvent(ui, node, ev);}
+  elif k == K_TOGGLE {handled = toggleEvent(ui, node, ev);}
+  elif k == K_SLIDER {handled = sliderEvent(ui, node, ev);}
+  elif k == K_KNOB {handled = knobEvent(ui, node, ev);}
+  elif k == K_TEXTFIELD {handled = fieldEvent(ui, node, ev);}
+  elif k == K_ROWITEM {handled = rowEvent(ui, node, ev);}
+  elif k == K_LIST {handled = listEvent(ui, node, ev);}
+  elif k == K_WINDOW {handled = windowEvent(ui, node, ev);}
+  elif k == K_SLOT {handled = slotEvent(ui, node, ev);}
+  elif k == K_HOTSLOT {handled = hotSlotEvent(ui, node, ev);}
+  elif k == K_MINIMAP {handled = minimapEvent(ui, node, ev);}
+  elif k == K_SPLITVIEW {handled = splitEvent(ui, node, ev);}
+  if !handled and ui.nodes[node].layout == LK_SCROLL {handled = scrollEvent(ui, node, ev);}
+  handled;
+}
+
+// ---- button, tab, close box ----
+
+fn buttonEvent(ui &mut Ui, node usize, ev &Ev) bool {
+  imm k = ui.nodes[node].kind;
+  if ev.kind == EK_CLICK {
+    if k == K_CLOSE {
+      closeWindowOf(ui, node);
+      return true;
+    }
+    if k == K_TAB {
+      tabClicked(ui, node);
+      return true;
+    }
+    ui.emit(UE_CLICK, node, NIL, ev.x, ev.y, i32.from(ev.button), 0u32);
+    return true;
+  }
+  if ev.kind == EK_KEY_DOWN and ui.input.focus == node {
+    if ev.code == KEY_ENTER or ev.code == KEY_SPACE {
+      if k == K_TAB {tabClicked(ui, node);} else {ui.emit(UE_CLICK, node, NIL, 0., 0., 0i32, 0u32);}
+      return true;
+    }
+    if k == K_TAB and (ev.code == KEY_LEFT or ev.code == KEY_RIGHT) {
+      tabStep(ui, node, ev.code == KEY_RIGHT);
+      return true;
+    }
+  }
+  // a press on the button is the button's: the window behind it does not take it for a drag
+  ev.kind == EK_DOWN;
+}
+
+// ---- toggle ----
+
+fn toggleEvent(ui &mut Ui, node usize, ev &Ev) bool {
+  if ev.kind == EK_CLICK or (ev.kind == EK_KEY_DOWN and ui.input.focus == node and (ev.code == KEY_SPACE or ev.code == KEY_ENTER)) {
+    imm d = ui.nodes[node].data;
+    imm group = ui.toggles[d].group;
+    if group != 0u32 {
+      // a radio: this one on, the others of its group off
+      mut s = ui.nodes[ui.nodes[node].parent].first;
+      while s != NIL {
+        if s != node and ui.nodes[s].kind == K_TOGGLE and ui.toggles[ui.nodes[s].data].group == group {
+          if ui.toggles[ui.nodes[s].data].checked {setChecked(ui, s, false);}
+        }
+        s = ui.nodes[s].next;
+      }
+      setChecked(ui, node, true);
+    }
+    else {setChecked(ui, node, !ui.toggles[d].checked);}
+    return true;
+  }
+  ev.kind == EK_DOWN;
+}
+
+// ---- slider ----
+
+fn sliderEvent(ui &mut Ui, node usize, ev &Ev) bool {
+  imm d = ui.nodes[node].data;
+  if ev.kind == EK_DOWN and ev.button == BTN_LEFT {
+    ui.input.capture = node;
+    sliderSetFromPointer(ui, node, ev.x, ev.y);
+    return true;
+  }
+  if ev.kind == EK_MOVE and ui.input.capture == node {
+    sliderSetFromPointer(ui, node, ev.x, ev.y);
+    return true;
+  }
+  if ev.kind == EK_WHEEL {
+    imm s = keyStep(ui.sliders[d].min, ui.sliders[d].max, ui.sliders[d].step, false);
+    setSliderValue(ui, node, ui.sliders[d].value + (if ev.dy > 0. {s;} else {-s;}));
+    return true;
+  }
+  if ev.kind == EK_KEY_DOWN and ui.input.focus == node {
+    imm s = keyStep(ui.sliders[d].min, ui.sliders[d].max, ui.sliders[d].step, false);
+    if ev.code == KEY_LEFT or ev.code == KEY_DOWN {setSliderValue(ui, node, ui.sliders[d].value - s); return true;}
+    if ev.code == KEY_RIGHT or ev.code == KEY_UP {setSliderValue(ui, node, ui.sliders[d].value + s); return true;}
+    if ev.code == KEY_PAGEDOWN {setSliderValue(ui, node, ui.sliders[d].value - s * 5.); return true;}
+    if ev.code == KEY_PAGEUP {setSliderValue(ui, node, ui.sliders[d].value + s * 5.); return true;}
+    if ev.code == KEY_HOME {setSliderValue(ui, node, ui.sliders[d].min); return true;}
+    if ev.code == KEY_END {setSliderValue(ui, node, ui.sliders[d].max); return true;}
+  }
+  false;
+}
+
+// ---- knob: a vertical drag turns it (150 pixels for the whole range, a tenth of that
+// with shift); the wheel and keys step it; a double-click restores the default ----
+
+fn knobEvent(ui &mut Ui, node usize, ev &Ev) bool {
+  imm d = ui.nodes[node].data;
+  if ev.kind == EK_DOWN and ev.button == BTN_LEFT {
+    ui.input.capture = node;
+    ui.knobs[d].dragY = ev.y;
+    ui.knobs[d].dragValue = ui.knobs[d].value;
+    return true;
+  }
+  if ev.kind == EK_MOVE and ui.input.capture == node {
+    imm range = ui.knobs[d].max - ui.knobs[d].min;
+    imm fine = if (ev.mods & MOD_SHIFT) != 0u32 {0.1;} else {1.;};
+    setKnobValue(ui, node, ui.knobs[d].dragValue + (ui.knobs[d].dragY - ev.y) / 150. * range * fine);
+    return true;
+  }
+  if ev.kind == EK_DBLCLICK {
+    setKnobValue(ui, node, ui.knobs[d].def);
+    return true;
+  }
+  if ev.kind == EK_WHEEL {
+    imm s = keyStep(ui.knobs[d].min, ui.knobs[d].max, ui.knobs[d].step, false);
+    setKnobValue(ui, node, ui.knobs[d].value + (if ev.dy > 0. {s;} else {-s;}));
+    return true;
+  }
+  if ev.kind == EK_KEY_DOWN and ui.input.focus == node {
+    imm s = keyStep(ui.knobs[d].min, ui.knobs[d].max, ui.knobs[d].step, false);
+    if ev.code == KEY_LEFT or ev.code == KEY_DOWN {setKnobValue(ui, node, ui.knobs[d].value - s); return true;}
+    if ev.code == KEY_RIGHT or ev.code == KEY_UP {setKnobValue(ui, node, ui.knobs[d].value + s); return true;}
+    if ev.code == KEY_HOME {setKnobValue(ui, node, ui.knobs[d].min); return true;}
+    if ev.code == KEY_END {setKnobValue(ui, node, ui.knobs[d].max); return true;}
+  }
+  false;
+}
+
+// ---- scrolling: any LK_SCROLL node ----
+
+// The scrollbar's track and thumb in the Ui's pixels, for the vertical bar (vertical) or the
+// horizontal one. An empty box when there is nothing to scroll
+pub fn scrollbarRects(ui &Ui, node usize, vertical bool) Aabb2 {
+  imm none = new Aabb2(new Vec2(0., 0.), new Vec2(0., 0.));
+  imm n = ui.nodes[node];
+  imm sz = ui.theme.num(ui.theme.find("scrollbar"), P_SIZE, 0u32, 8.);
+  if vertical {
+    if !n.scrollV or n.contentH <= n.h + 0.5 {return none;}
+    imm trackH = n.h - 4.;
+    imm thumbH = maxf(20., trackH * n.h / n.contentH);
+    imm travel = maxf(0., trackH - thumbH);
+    imm span = maxf(1., n.contentH - n.h);
+    imm top = n.gy + 2. + travel * n.scrollY / span;
+    return new Aabb2(new Vec2(n.gx + n.w - sz - 2., top), new Vec2(n.gx + n.w - 2., top + thumbH));
+  }
+  if !n.scrollH or n.contentW <= n.w + 0.5 {return none;}
+  imm trackW = n.w - 4.;
+  imm thumbW = maxf(20., trackW * n.w / n.contentW);
+  imm travel = maxf(0., trackW - thumbW);
+  imm span = maxf(1., n.contentW - n.w);
+  imm left = n.gx + 2. + travel * n.scrollX / span;
+  new Aabb2(new Vec2(left, n.gy + n.h - sz - 2.), new Vec2(left + thumbW, n.gy + n.h - 2.));
+}
+
+fn scrollTo(ui &mut Ui, node usize, x f32, y f32) bool {
+  imm maxX = maxf(0., ui.nodes[node].contentW - ui.nodes[node].w);
+  imm maxY = maxf(0., ui.nodes[node].contentH - ui.nodes[node].h);
+  imm nx = if ui.nodes[node].scrollH {clampf(x, 0., maxX);} else {0.;};
+  imm ny = if ui.nodes[node].scrollV {clampf(y, 0., maxY);} else {0.;};
+  if nx == ui.nodes[node].scrollX and ny == ui.nodes[node].scrollY {return false;}
+  ui.setScrollOffset(node, nx, ny);
+  ui.emit(UE_SCROLLED, node, NIL, nx, ny, 0i32, 0u32);
+  true;
+}
+
+fn scrollEvent(ui &mut Ui, node usize, ev &Ev) bool {
+  if ev.kind == EK_WHEEL {
+    imm moved = scrollTo(ui, node, ui.nodes[node].scrollX - ev.dx * 40., ui.nodes[node].scrollY - ev.dy * 40.);
+    return moved;
+  }
+  if ev.kind == EK_DOWN and ev.button == BTN_LEFT {
+    imm th = scrollbarRects(ui, node, true);
+    if th.max.x > th.min.x and ev.x >= th.min.x - 2. and ev.x <= th.max.x + 2. {
+      if ev.y >= th.min.y and ev.y <= th.max.y {
+        ui.input.win.mode = 3u32;
+        ui.input.win.node = node;
+        ui.input.win.vertical = true;
+        ui.input.win.grabY = ev.y - th.min.y;
+        ui.input.capture = node;
+      }
+      else {
+        // a click in the groove pages toward it
+        imm page = ui.nodes[node].h * 0.9;
+        scrollTo(ui, node, ui.nodes[node].scrollX, ui.nodes[node].scrollY + (if ev.y < th.min.y {-page;} else {page;}));
+      }
+      return true;
+    }
+    imm hh = scrollbarRects(ui, node, false);
+    if hh.max.x > hh.min.x and ev.y >= hh.min.y - 2. and ev.y <= hh.max.y + 2. {
+      if ev.x >= hh.min.x and ev.x <= hh.max.x {
+        ui.input.win.mode = 3u32;
+        ui.input.win.node = node;
+        ui.input.win.vertical = false;
+        ui.input.win.grabX = ev.x - hh.min.x;
+        ui.input.capture = node;
+      }
+      return true;
+    }
+  }
+  if ev.kind == EK_MOVE and ui.input.capture == node and ui.input.win.mode == 3u32 and ui.input.win.node == node {
+    imm n = ui.nodes[node];
+    if ui.input.win.vertical {
+      imm trackH = n.h - 4.;
+      imm thumbH = maxf(20., trackH * n.h / n.contentH);
+      imm travel = maxf(1., trackH - thumbH);
+      imm t = clampf((ev.y - ui.input.win.grabY - n.gy - 2.) / travel, 0., 1.);
+      scrollTo(ui, node, n.scrollX, t * (n.contentH - n.h));
+    }
+    else {
+      imm trackW = n.w - 4.;
+      imm thumbW = maxf(20., trackW * n.w / n.contentW);
+      imm travel = maxf(1., trackW - thumbW);
+      imm t = clampf((ev.x - ui.input.win.grabX - n.gx - 2.) / travel, 0., 1.);
+      scrollTo(ui, node, t * (n.contentW - n.w), n.scrollY);
+    }
+    return true;
+  }
+  false;
+}
+
+// ---- split view: the divider is dragged ----
+
+fn splitEvent(ui &mut Ui, node usize, ev &Ev) bool {
+  if ev.kind == EK_DOWN and ev.button == BTN_LEFT {
+    imm dv = dividerRect(ui, node);
+    if ev.x >= dv.min.x - 2. and ev.x <= dv.max.x + 2. and ev.y >= dv.min.y - 2. and ev.y <= dv.max.y + 2. {
+      ui.input.win.mode = 4u32;
+      ui.input.win.node = node;
+      ui.input.capture = node;
+      return true;
+    }
+  }
+  if ev.kind == EK_MOVE and ui.input.capture == node and ui.input.win.mode == 4u32 {
+    imm vert = ui.nodes[node].splitVertical;
+    imm box = inner(ui, node, ui.nodes[node].w, ui.nodes[node].h);
+    imm d = ui.gapOf(node);
+    imm origin = if vert {ui.nodes[node].gx + box.min.x;} else {ui.nodes[node].gy + box.min.y;};
+    imm avail = maxf(1., (if vert {box.max.x;} else {box.max.y;}) - d);
+    imm pos = (if vert {ev.x;} else {ev.y;}) - origin - d * 0.5;
+    ui.nodes[node].splitRatio = clampf(pos / avail, 0., 1.);
+    ui.touchArrange(node);
+    return true;
+  }
+  false;
+}
+
+// ---- hover cursors for dividers (called on pointer moves) ----
+
+fn splitCursor(ui &mut Ui, node usize, x f32, y f32) {
+  imm dv = dividerRect(ui, node);
+  if x >= dv.min.x - 2. and x <= dv.max.x + 2. and y >= dv.min.y - 2. and y <= dv.max.y + 2. {
+    ui.input.cursor = if ui.nodes[node].splitVertical {CURSOR_RESIZE_H;} else {CURSOR_RESIZE_V;};
+  }
+}

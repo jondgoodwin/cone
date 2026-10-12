@@ -1,0 +1,166 @@
+// Cloth: a pinned square hangs with its stretch bounded, a sheet dropped on a
+// sphere drapes without a particle inside it, and the cloth is deterministic.
+//
+// Hanging square: 1 m square, 32 x 32 squares, 0.2 kg per square metre (0.2 kg
+// in all), the top row pinned. A column of 33 particles carries about 0.2 kg /
+// 33 of the weight to its pin: 0.059 N at the top link. With a stretch
+// compliance of alpha (metres per newton) a link stretches by alpha * tension,
+// which is at most 0.059 alpha, i.e. 1.9 alpha as a fraction of the 0.03125 m
+// rest length. Diagonals (shear, same compliance) share the load, so the
+// measured strain is below that bound: for alpha = 4e-3 the bound is 0.76%.
+
+mod cloth;
+
+import testing use *;
+import libc;
+import collections use *;
+import geomath use *;
+import xpbdsoftbody use *;
+
+// the longest an edge has grown past its rest length, as a fraction
+fn maxStrain(b &SoftBody) f32 {
+  mut worst = 0.;
+  mut k = 0usize;
+  while k < b.dist.len() {
+    imm c = *b.dist[k];
+    imm len = (*b.pos[usize.from(c.a)] - *b.pos[usize.from(c.b)]).length();
+    imm s = (len - c.rest) / c.rest;
+    if s > worst { worst = s; }
+    k = k + 1usize;
+  }
+  worst;
+}
+
+// the mean stretch of all edges, as a fraction
+fn meanStrain(b &SoftBody) f32 {
+  mut sum = 0.;
+  mut k = 0usize;
+  while k < b.dist.len() {
+    imm c = *b.dist[k];
+    sum = sum + ((*b.pos[usize.from(c.a)] - *b.pos[usize.from(c.b)]).length() - c.rest) / c.rest;
+    k = k + 1usize;
+  }
+  sum / f32.from(b.dist.len());
+}
+
+fn hashBody(b &SoftBody) u32 {
+  mut h = 2166136261u32;
+  mut i = 0usize;
+  while i < b.pos.len() {
+    imm p = *b.pos[i];
+    h = (h ^ (p.x as u32)) * 16777619u32;
+    h = (h ^ (p.y as u32)) * 16777619u32;
+    h = (h ^ (p.z as u32)) * 16777619u32;
+    i = i + 1usize;
+  }
+  h;
+}
+
+fn hanging() {
+  mut f = Fabric.light();
+  f.stretch = 4e-3;
+  f.shear = 4e-3;
+  mut cloth = clothGrid(new Vec3(0., 0., 0.), new Vec3(1., 0., 0.), new Vec3(0., -1., 0.), 32u32, 32u32, &f);
+  expectInt(i64.from(cloth.particleCount()), 1089i64, "33 x 33 particles");
+  mut total = 0.;
+  mut i = 0usize;
+  while i < cloth.mass.len() {
+    total = total + *cloth.mass[i];
+    i = i + 1usize;
+  }
+  expectFloat(f64.from(total), 0.2, 0.0001, "mass is density times area");
+  i = 0usize;
+  while i <= 32usize {
+    cloth.pin(u32.from(i));
+    i = i + 1usize;
+  }
+  cloth.substeps = 20u32;
+  cloth.damping = 2.;
+  mut s = 0;
+  while s < 500 {
+    cloth.step(1. / 60., new Vec3(0., 0., 0.));
+    s = s + 1;
+  }
+  imm strain = maxStrain(&cloth);
+  expectBool(strain < 0.02, true, "stretch under 2%");
+  imm mean = meanStrain(&cloth);
+  expectBool(mean < 0.0077, true, "the mean stretch is under the bound alpha * weight / rest length, 0.77%");
+  expectBool(mean > 0.0005, true, "but it does stretch (the compliance is not ignored)");
+  imm bottom = (*cloth.pos[32usize * 33usize + 16usize]).y;
+  expectFloat(f64.from(bottom), -1.0, 0.03, "bottom edge hangs about one cloth length down");
+  expectBool(bottom < -0.99, true, "and no shorter than the cloth");
+  expectFloat(f64.from(cloth.kineticEnergy()), 0.0, 0.0001, "at rest");
+  expectFloat(f64.from((*cloth.pos[16usize * 33usize + 16usize]).z), 0.0, 0.01, "it hangs flat, in its plane");
+}
+
+fn drape() {
+  imm c = new Vec3(0., 0.5, 0.);
+  imm radius = 0.4;
+  mut cloth = clothGrid(new Vec3(-0.6, 1.0, -0.6), new Vec3(1.2, 0., 0.), new Vec3(0., 0., 1.2), 24u32, 24u32, &Fabric.heavy());
+  cloth.addCollider(Collider.sphere(c, radius));
+  cloth.addCollider(Collider.plane(new Vec3(0., 0., 0.), new Vec3(0., 1., 0.)));
+  cloth.substeps = 10u32;
+  cloth.damping = 1.;
+  cloth.thickness = 0.01;
+  cloth.strainLimit = 0.01;
+  mut s = 0;
+  while s < 600 {
+    cloth.step(1. / 60., new Vec3(0., 0., 0.));
+    s = s + 1;
+  }
+  mut inside = 0;
+  mut nearest = 1e9;
+  mut lowest = 1e9;
+  mut i = 0usize;
+  while i < cloth.pos.len() {
+    imm p = *cloth.pos[i];
+    imm d = (p - c).length();
+    // outside the sphere, within its thickness margin; and above the floor
+    if d < radius + 0.01 - 0.0005 and p.y > 0.05 { inside = inside + 1; }
+    if p.y > 0.2 and d < nearest { nearest = d; }
+    if p.y < lowest { lowest = p.y; }
+    i = i + 1usize;
+  }
+  expectInt(i64.from(inside), 0i64, "no particle inside the sphere");
+  expectFloat(f64.from(nearest), 0.41, 0.003, "the nearest rests one thickness off the surface");
+  // the middle of the sheet sits on top of the sphere, its edges have fallen well below
+  imm mid = *cloth.pos[12usize * 25usize + 12usize];
+  expectFloat(f64.from(mid.y), 0.5 + 0.4 + 0.01, 0.01, "the centre rests on the top of the sphere");
+  imm edge = *cloth.pos[12usize];
+  expectBool(edge.y < mid.y - 0.15, true, "the middle of an edge has dropped well below the top");
+  expectBool((*cloth.pos[0usize]).y < 0.4, true, "and a corner is below the sphere's equator");
+  expectBool(lowest >= 0.01 - 0.0005, true, "nothing through the floor");
+  expectFloat(f64.from(cloth.kineticEnergy()), 0.0, 0.01, "settled");
+  expectBool(maxStrain(&cloth) < 0.02, true, "stretch under 2% while draping");
+}
+
+fn deterministic() {
+  mut hs = List[u32].empty();
+  mut run = 0;
+  while run < 2 {
+    mut cloth = clothGrid(new Vec3(0., 1., 0.), new Vec3(1., 0., 0.), new Vec3(0., -0.6, 0.), 20u32, 12u32, &Fabric.light());
+    mut i = 0u32;
+    while i <= 20u32 {
+      cloth.pin(i * 1u32);
+      i = i + 5u32;
+    }
+    cloth.addCollider(Collider.sphere(new Vec3(0.5, 0.5, 0.1), 0.2));
+    cloth.selfCollide = true;
+    mut s = 0;
+    while s < 200 {
+      cloth.step(1. / 60., new Vec3(3., 0., 1. + libc.sinf(0.1 * f32.from(s))));
+      s = s + 1;
+    }
+    hs.push(hashBody(&cloth));
+    run = run + 1;
+  }
+  expectUInt(u64.from(*hs[0usize]), u64.from(*hs[1usize]), "two runs, the same bits");
+  expectBool(*hs[0usize] != 2166136261u32, true, "and the hash is not the empty hash");
+}
+
+fn main() i32 {
+  hanging();
+  drape();
+  deterministic();
+  done();
+}
