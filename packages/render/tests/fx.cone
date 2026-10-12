@@ -30,9 +30,28 @@ import collections use *;
 import mesh use Mesh;
 import gpu use *;
 import render use *;
+import path as filepath;
 
 const SIDE = 128u32;
 const SIDEZ = 128usize;
+
+// If FX_SHOTS names a folder, the 128 x 128 image at 'p' is written there as
+// 'name'.bmp, to be looked at
+fn shot(p *u8, name &str) {
+  imm folder = libc.getenv("FX_SHOTS");
+  if (folder as usize) == 0usize { return; }
+  mut path = String.empty();
+  mut i = 0usize;
+  while *(folder + i) != 0u8 {
+    path.appendByte(*(folder + i));
+    i = i + 1usize;
+  }
+  path <- "/";
+  path <- name;
+  path <- ".bmp";
+  imm image = Image.fromTexels(p, i32.from(SIDE), i32.from(SIDE), false);
+  image.save(&filepath.Path.from(path.view()));
+}
 
 fn absf(x f32) f32 { if x < 0. { 0. - x; } else { x; }; }
 
@@ -347,6 +366,232 @@ fn settle(device &mut Device, rig &mut Rig, back &Buffer, level f32, s &Exposure
   readExposure(device, rig, back);
 }
 
+// The pixel (as x and y) a world point lands on, seen by 'camera'
+fn pixelOf(camera &Camera, world Vec3, x &mut usize, y &mut usize) {
+  imm clip = (camera.projectionMatrix(1.) * camera.viewMatrix()) * new Vec4(world.x, world.y, world.z, 1.);
+  imm nx = clip.x / clip.w;
+  imm ny = clip.y / clip.w;
+  *x = usize.from(u32.from((nx * 0.5 + 0.5) * f32.from(SIDE)));
+  *y = usize.from(u32.from((0.5 - ny * 0.5) * f32.from(SIDE)));
+}
+
+// ---- 6. Ambient occlusion ----
+
+fn ambientOcclusion(device &mut Device) {
+  mut rig = makeRig(device);
+  imm p = rig.readback.mappedRange();
+  rig.post.toneMapper = TONE_MAP_NONE;
+  rig.post.bloom = 0.;
+  mut planeMesh = Mesh.plane(1, 1.);
+  imm plane = rig.renderer.addMesh(device, &planeMesh);
+  imm gray = rig.renderer.addMaterial(device, &Material.plain(new Color(0.5, 0.5, 0.5, 1.)));
+  imm light = Light.directional(new Vec3(0., -1., 0.), new Color(0., 0., 0., 1.), new Color(1., 1., 1., 1.));
+  mut camera = Camera.make();
+  camera.fov = radians(50.);
+  camera.near = 0.3;
+  camera.far = 60.;
+  camera.lookAt(new Vec3(0., 3., 5.), new Vec3(0., 0., -2.), new Vec3(0., 1., 0.));
+  camera.background = new Color(0., 0., 0., 1.);
+  // A floor, and a wall across it at z = -3: a corner
+  mut corner = DrawList.empty();
+  corner.add(plane, gray, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(20., 1., 20.)));
+  corner.add(plane, gray, Mat4.fromTrs(new Vec3(0., 0., -3.), Quat.angleAxis(1.5707964, new Vec3(1., 0., 0.)), new Vec3(20., 1., 20.)));
+  // The floor alone
+  mut flat = DrawList.empty();
+  flat.add(plane, gray, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(20., 1., 20.)));
+
+  drawScene(device, &mut rig, &camera, &light, &corner);
+  imm cornerOff = grab(p);
+  shot(p, "ssao-corner-off");
+  drawScene(device, &mut rig, &camera, &light, &flat);
+  imm flatOff = grab(p);
+  mut s = FxSettings.off();
+  s.ssao = SsaoSettings.high();
+  rig.fx.configure(&s);
+  drawScene(device, &mut rig, &camera, &light, &corner);
+  imm cornerOn = grab(p);
+  shot(p, "ssao-corner-on");
+  drawScene(device, &mut rig, &camera, &light, &flat);
+  imm flatOn = grab(p);
+  shot(p, "ssao-flat-on");
+
+  // The crease: just in front of the wall's foot on the floor
+  mut cx = 0usize;
+  mut cy = 0usize;
+  pixelOf(&camera, new Vec3(0., 0., -2.88), &mut cx, &mut cy);
+  imm creaseOff = *cornerOff[(cy * SIDEZ + cx) * 3usize + 1usize];
+  imm creaseOn = *cornerOn[(cy * SIDEZ + cx) * 3usize + 1usize];
+  eprint <- "measured: SSAO at the crease "; eprint <- creaseOn / creaseOff; eprint <- " of the unoccluded\n";
+  // (a crease a few pixels wide in a 128-pixel picture, in a half-resolution
+  // pass: the dip is 8 pixels wide and goes to 0.83)
+  expect(creaseOn < creaseOff * 0.88, "ambient occlusion darkens the crease where floor and wall meet");
+  // The floor far from the wall, and the same floor with no wall at all
+  mut fx0 = 0usize;
+  mut fy0 = 0usize;
+  pixelOf(&camera, new Vec3(0., 0., 2.), &mut fx0, &mut fy0);
+  imm farOff = *cornerOff[(fy0 * SIDEZ + fx0) * 3usize + 1usize];
+  imm farOn = *cornerOn[(fy0 * SIDEZ + fx0) * 3usize + 1usize];
+  expect(farOn > farOff * 0.97, "and leaves the floor far from the wall alone");
+  // A flat plane is not darkened anywhere
+  mut worst = 1.;
+  mut worstAt = 0usize;
+  mut count = 0usize;
+  mut y = 0usize;
+  while y < SIDEZ {
+    mut x = 0usize;
+    while x < SIDEZ {
+      imm at = (y * SIDEZ + x) * 3usize + 1usize;
+      if *flatOff[at] > 0.01 {
+        imm ratio = *flatOn[at] / *flatOff[at];
+        if ratio < worst {
+          worst = ratio;
+          worstAt = y * SIDEZ + x;
+        }
+        count = count + 1usize;
+      }
+      x = x + 1usize;
+    }
+    y = y + 1usize;
+  }
+  eprint <- "measured: the darkest flat-plane pixel is "; eprint <- worst; eprint <- " of the unoccluded, over "; eprint <- u64.from(count); eprint <- " pixels, at x "; eprint <- u64.from(worstAt % SIDEZ); eprint <- " y "; eprint <- u64.from(worstAt / SIDEZ); eprint <- "\n";
+  expect(count > 4000usize, "the flat plane covers the picture");
+  expect(worst > 0.94, "ambient occlusion leaves a flat plane alone (the darkest pixel within 6%)");
+  mut v = 0u32;
+  while v < 4u32 {
+    mut t = s;
+    if v == 1u32 { t.ssao.slices = 6u32; t.ssao.steps = 16u32; }
+    if v == 2u32 { t.ssao.power = 1.; }
+    if v == 3u32 { t.ssao.radius = 1.5; }
+    rig.fx.configure(&t);
+    drawScene(device, &mut rig, &camera, &light, &flat);
+    imm g = grab(p);
+    mut sum = 0.;
+    mut mn = 1.;
+    mut n = 0usize;
+    mut q = 0usize;
+    while q < g.len() {
+      if *flatOff[q] > 0.01 {
+        imm r = *g[q] / *flatOff[q];
+        sum = sum + r;
+        if r < mn { mn = r; }
+        n = n + 1usize;
+      }
+      q = q + 3usize;
+    }
+    eprint <- "measured: flat-plane variant "; eprint <- u64.from(v); eprint <- " mean "; eprint <- sum / f32.from(n); eprint <- " min "; eprint <- mn; eprint <- "\n";
+    v = v + 1u32;
+  }
+  // The off picture is untouched by the AO's machinery
+  expect(rms(&cornerOff, &cornerOn) > 0.001, "the corner picture changed");
+}
+
+// ---- 5. Grading, vignette and grain ----
+
+// A uniform frame of 'color' drawn with Post's finish as it is
+fn drawFlat(device &mut Device, rig &mut Rig, color Color) {
+  mut camera = Camera.make();
+  camera.background = color;
+  imm light = Light.directional(new Vec3(0., -1., 0.), new Color(0., 0., 0., 1.), new Color(0., 0., 0., 1.));
+  imm list = DrawList.empty();
+  drawScene(device, rig, &camera, &light, &list);
+}
+
+fn finish(device &mut Device) {
+  mut rig = makeRig(device);
+  imm p = rig.readback.mappedRange();
+  rig.post.toneMapper = TONE_MAP_NONE;
+  rig.post.bloom = 0.;
+  // The expected linear value of a display-encoded v
+  imm base = new Color(0.3, 0.3, 0.3, 1.);
+  drawFlat(device, &mut rig, base);
+  imm plain = px(p, 64usize, 64usize, 0usize);
+  expect(absf(plain - 0.3) < 0.003, "no finish: the frame is shown as it is");
+  imm srgb = 1.055 * libc.powf(0.3, 1. / 2.4) - 0.055;
+  // Gain 1.2 on red: in display-encoded values
+  rig.post.finish.grade = true;
+  rig.post.finish.gain = new Vec3(1.2, 1., 1.);
+  drawFlat(device, &mut rig, base);
+  expect(absf(px(p, 64usize, 64usize, 0usize) - decode(srgb * 1.2)) < 0.004, "gain scales the whites (red, in display-encoded values)");
+  expect(absf(px(p, 64usize, 64usize, 1usize) - 0.3) < 0.003, "and the other channels are left");
+  rig.post.finish.gain = new Vec3(1., 1., 1.);
+  rig.post.finish.lift = new Vec3(0.1, 0.1, 0.1);
+  drawFlat(device, &mut rig, base);
+  expect(absf(px(p, 64usize, 64usize, 1usize) - decode(srgb + 0.1 * (1. - srgb))) < 0.004, "lift raises the blacks: v + lift (1 - v)");
+  rig.post.finish.lift = new Vec3(0., 0., 0.);
+  rig.post.finish.gamma = new Vec3(2., 2., 2.);
+  drawFlat(device, &mut rig, base);
+  expect(absf(px(p, 64usize, 64usize, 1usize) - decode(libc.sqrtf(srgb))) < 0.004, "gamma 2 brightens the middle: v^(1/2)");
+  rig.post.finish.gamma = new Vec3(1., 1., 1.);
+  rig.post.finish.saturation = 0.;
+  drawFlat(device, &mut rig, new Color(0.6, 0.2, 0.1, 1.));
+  expect(absf(px(p, 64usize, 64usize, 0usize) - px(p, 64usize, 64usize, 2usize)) < 0.004, "saturation 0: red and blue come out the same (grey)");
+  rig.post.finish.saturation = 1.;
+  // The table: a size-2 table that inverts display-encoded values
+  mut table = List[u8].empty();
+  mut b = 0u32;
+  while b < 2u32 {
+    mut g = 0u32;
+    while g < 2u32 {
+      mut r = 0u32;
+      while r < 2u32 {
+        table.push(if r == 0u32 { 255u8; } else { 0u8; });
+        table.push(if g == 0u32 { 255u8; } else { 0u8; });
+        table.push(if b == 0u32 { 255u8; } else { 0u8; });
+        table.push(255u8);
+        r = r + 1u32;
+      }
+      g = g + 1u32;
+    }
+    b = b + 1u32;
+  }
+  imm tv = table.view();
+  rig.post.setTable(device, 2u32, tv);
+  rig.post.finish.tableStrength = 1.;
+  drawFlat(device, &mut rig, base);
+  expect(absf(px(p, 64usize, 64usize, 1usize) - decode(1. - srgb)) < 0.004, "a table that inverts, read at the display-encoded colour");
+  rig.post.finish.tableStrength = 0.;
+  rig.post.finish.grade = false;
+  // Vignette: the corners darker, the middle not
+  rig.post.finish.vignette = 0.5;
+  drawFlat(device, &mut rig, base);
+  imm middle = px(p, 64usize, 64usize, 0usize);
+  imm corner = px(p, 0usize, 0usize, 0usize);
+  expect(absf(middle - 0.3) < 0.003, "the vignette leaves the middle");
+  expect(corner < middle * 0.72 and corner > middle * 0.6, "and darkens the corner by about a third");
+  rig.post.finish.vignette = 0.;
+  // Grain: a spread about the same mean
+  rig.post.finish.grain = 0.05;
+  drawFlat(device, &mut rig, base);
+  mut sum = 0.;
+  mut sumSquares = 0.;
+  mut n = 0.;
+  mut y = 20usize;
+  while y < 100usize {
+    mut x = 20usize;
+    while x < 100usize {
+      imm v = px(p, x, y, 1usize);
+      sum = sum + v;
+      sumSquares = sumSquares + v * v;
+      n = n + 1.;
+      x = x + 1usize;
+    }
+    y = y + 1usize;
+  }
+  imm mean = sum / n;
+  imm spread = (sumSquares / n - mean * mean).sqrt();
+  eprint <- "measured: grain 0.05: mean "; eprint <- mean; eprint <- " spread "; eprint <- spread; eprint <- "\n";
+  expect(absf(mean - 0.3) < 0.006 and spread > 0.01, "film grain spreads the values and keeps the mean");
+  rig.post.finish.grain = 0.;
+  drawFlat(device, &mut rig, base);
+  expect(absf(px(p, 10usize, 10usize, 1usize) - px(p, 90usize, 70usize, 1usize)) < 0.0001, "and with the grain off the frame is uniform again");
+}
+
+// The linear light of a display-encoded value
+fn decode(v f32) f32 {
+  if v <= 0.04045 { return v / 12.92; }
+  libc.powf((v + 0.055) / 1.055, 2.4);
+}
+
 fn log2of(x f32) f32 { libc.logf(x) / 0.6931472; }
 
 fn exposure(device &mut Device) {
@@ -418,6 +663,8 @@ fn main() i32 {
   identity(&mut device, &adapter.name);
   antialiasing(&mut device);
   exposure(&mut device);
+  ambientOcclusion(&mut device);
+  finish(&mut device);
   expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
   expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
   done();

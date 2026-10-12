@@ -38,18 +38,22 @@ pub struct FxSettings {
   pub taa TaaSettings = new TaaSettings();
   pub fxaa FxaaSettings = new FxaaSettings();
   pub exposure ExposureSettings = new ExposureSettings();
+  pub ssao SsaoSettings = new SsaoSettings();
 
   // Everything off
   pub fn off() FxSettings { new FxSettings(); }
 
-  // For a discrete GPU: temporal AA (16 samples, sharpened) and auto-exposure
+  // For a discrete GPU: temporal AA (16 samples, sharpened), auto-exposure
+  // and ambient occlusion
   pub fn high() FxSettings {
-    new FxSettings(aa: AA_TAA, taa: TaaSettings.high(), exposure: new ExposureSettings(enabled: true));
+    new FxSettings(aa: AA_TAA, taa: TaaSettings.high(), exposure: new ExposureSettings(enabled: true),
+      ssao: SsaoSettings.high());
   }
 
-  // For a middling GPU: temporal AA of 8 samples and auto-exposure
+  // For a middling GPU: temporal AA of 8 samples, auto-exposure, cheaper AO
   pub fn medium() FxSettings {
-    new FxSettings(aa: AA_TAA, taa: TaaSettings.medium(), exposure: new ExposureSettings(enabled: true, stride: 3u32));
+    new FxSettings(aa: AA_TAA, taa: TaaSettings.medium(), exposure: new ExposureSettings(enabled: true, stride: 3u32),
+      ssao: SsaoSettings.medium());
   }
 
   // For an integrated GPU: FXAA and a cheap auto-exposure
@@ -79,6 +83,7 @@ pub struct ImageFx {
   pub taa TaaPass;
   pub fxaa FxaaPass;
   pub exposure ExposurePass;
+  pub ssao SsaoPass;
   pub sources List[PostSource];    // Post's groups for the frames the passes make (SOURCE_HISTORY0 and on, less one)
   // What is moving this frame (taa.cone): the program fills it after adding
   // the items to the draw list; it is emptied by 'render'
@@ -106,7 +111,9 @@ pub struct ImageFx {
     mut taa = TaaPass.create(device, &renderer.frameLayout, &renderer.materialLayout, &renderer.pbrMaterialLayout, &frameBuffer);
     mut fxaa = FxaaPass.create(device, post.outputFormat);
     mut exposure = ExposurePass.create(device);
-    mut fx = new ImageFx(new FxSettings(), 0u32, 0u32, post.outputFormat, depth, frameBuffer, taa, fxaa, exposure,
+    imm tinyDepthView = depth.createView();
+    mut ssao = SsaoPass.create(device, &frameBuffer, &tinyDepthView);
+    mut fx = new ImageFx(new FxSettings(), 0u32, 0u32, post.outputFormat, depth, frameBuffer, taa, fxaa, exposure, ssao,
       List[PostSource].empty(), MotionList.empty(), 0u32, Mat4.identity(), false, 0u32, true, true, 0.);
     fx.remake(device, renderer, post);
     fx;
@@ -120,7 +127,8 @@ pub struct ImageFx {
   pub fn configure(self &mut, s &FxSettings) {
     imm sharpWas = settings.taa.sharpness > 0.;
     imm sharpNow = s.taa.sharpness > 0.;
-    if s.aa != settings.aa or s.exposure.enabled != settings.exposure.enabled or sharpWas != sharpNow {
+    if s.aa != settings.aa or s.exposure.enabled != settings.exposure.enabled or sharpWas != sharpNow
+        or s.ssao.enabled != settings.ssao.enabled {
       dirty = true;
     }
     settings = *s;
@@ -150,6 +158,7 @@ pub struct ImageFx {
     imm depthView = depth.createView();
     taa.remake(device, taaOn, w, h, &hdrView, &depthView, &frameBuffer, settings.taa.sharpness);
     fxaa.remake(device, fxaaOn, w, h, post.outputFormat);
+    ssao.remake(device, settings.ssao.enabled, w, h, &depthView, &frameBuffer);
     // Post's groups for what the passes make, and the exposure's
     sources = List[PostSource].empty();
     exposure.groups = List[BindGroup].empty();
@@ -262,8 +271,11 @@ pub struct ImageFx {
     device.queue.writeBuffer(&frameBuffer, 0u64, &data as *u8, FX_FRAME_BYTES);
 
     // The scene, its depth kept for the passes that read it
-    if taaOn { renderer.keepDepth = true; }
+    if taaOn or s.ssao.enabled { renderer.keepDepth = true; }
     renderer.render(device, encoder, &post.hdr, &depth, &jittered, light, list);
+
+    // Ambient occlusion darkens the frame where the depth says it is creased
+    if s.ssao.enabled { ssao.record(encoder, &post.hdr, &s.ssao, frameNumber, taaOn); }
 
     // Temporal AA: the objects that move, then the resolve
     mut source = SOURCE_HDR;
