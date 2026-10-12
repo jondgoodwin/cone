@@ -74,7 +74,11 @@
 // ready); a completion that is not the driver's is then dropped, counted in
 // 'stats().unclaimed'. A program that also submits its own operations to
 // the loop must keep its tokens clear of the driver's (the driver's have
-// the top bit set) and use complete and pump; the layer above a driver
+// the top bit set) and use complete and pump. Several drivers may share a
+// loop, each completion offered to one after another until one says true:
+// every live driver has a number of its own in its tokens (at most 1024
+// drivers alive at once; one more is a panic), so none says true of
+// another's. The layer above a driver
 // (httpclient) submits its own with 'upperToken(kind, n)', tokens in the
 // driver's space whose completions its 'complete' leaves (false), for that
 // layer to take. 'wakeAt()' is the latest
@@ -245,7 +249,7 @@ mod httpconn;
 import libc;
 import collections use List, String;
 import time use Instant, Duration;
-import sync use Sender;
+import sync use Sender, Mutex;
 import iobuf use IoBuf, Pool, Chain;
 import iocore use Loop, Op, Target, Completion, Outcome, Lane, Handle, OpId, SocketAddr, CancelGroup, IoError, forever, resolveOp, addressesIn;
 import http use *;
@@ -253,10 +257,57 @@ import http1;
 import diag;
 
 fn @initpure init() {
-  driverSeq = Atomic[u32].of(0u32);
+  numberLock = Mutex.make();
 }
 
-imm driverSeq Atomic[u32];
+// Driver numbers. Every live Driver holds one of 'maxDrivers', the mark in
+// its tokens, so no two live drivers can claim each other's completions
+// (a bit apiece in 'numberBits', under 'numberLock'). A number is taken in
+// turn from 'numberNext' on, not the lowest free, so a dead driver's is not
+// handed out again at once: the loop may still answer operations that
+// driver had in flight. One driver more than 'maxDrivers' alive at once in
+// the process is a panic.
+const maxDrivers = 1024u32;
+imm numberLock Mutex;
+mut numberBits *u64 = null;
+mut numberNext u32 = 0u32;
+
+fn takeNumber(file &Array[u8], line u32) u32 {
+  numberLock.lock();
+  if numberBits as usize == 0usize {
+    numberBits = libc.calloc(usize.from(maxDrivers / 64u32), 8usize) as *u64;
+    if numberBits as usize == 0usize {
+      numberLock.unlock();
+      panic("httpconn: out of memory for the driver numbers", file, line);
+    }
+  }
+  mut k = 0u32;
+  while k < maxDrivers {
+    imm n = (numberNext + k) % maxDrivers;
+    imm word = numberBits + usize.from(n / 64u32);
+    imm bit = 1u64 << u64.from(n % 64u32);
+    imm held = mem.readRaw[u64](word);
+    if (held & bit) == 0u64 {
+      mem.writeRaw[u64](word, held | bit);
+      numberNext = (n + 1u32) % maxDrivers;
+      numberLock.unlock();
+      return n;
+    }
+    k = k + 1u32;
+  }
+  numberLock.unlock();
+  panic("httpconn: more than 1024 drivers alive at once (the cap is per process)", file, line);
+  0u32;
+}
+
+// A dead driver's number, free to be taken again
+fn giveNumber(n u32) {
+  numberLock.lock();
+  imm word = numberBits + usize.from(n / 64u32);
+  imm bit = 1u64 << u64.from(n % 64u32);
+  mem.writeRaw[u64](word, (mem.readRaw[u64](word) | bit) ^ bit);
+  numberLock.unlock();
+}
 
 const noEntry = 4294967295u32;
 
