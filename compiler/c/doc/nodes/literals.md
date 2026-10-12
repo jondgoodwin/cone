@@ -507,6 +507,20 @@ folded by the builder into a constant (`ptr null` for zero). The count of
 (`contentsConstCount`): type check reads the count from a `ULitTag`, and a cast
 has not been generated yet.
 
+**A payload-less variant standing as its enum is a constant**
+(`litIsEnumVariant`): `Kind.Os` wanted as a `Kind` is type check's plain recast
+of the variant's type literal, which holds only the tag, to the enum. It is
+accepted only when every variant of the enum holds nothing but the tag
+(`IsTagField`): an enum with a field in common, or with a variant that holds a
+value, is padded wider than the variant, so the two are not one LLVM layout and
+`None` of an `Option` is not a constant. Where the two are one layout,
+`genlRecast` of a constant struct in a global's initializer (no function, so no
+stack slot) re-types the constant's fields as the enum's (`LLVMConstNamedStruct`);
+inside a function it keeps the store and load it always had, so no generated
+code there changed. This is what lets the variant be a named constant's, a
+global's, a parameter's or a field's default, and an element of an array or
+struct literal in those, wherever `litIsLiteral` is asked.
+
 **A borrowed constant array literal is a constant, as a borrowed string literal
 is.** Neither is an lval of a variable, so `borrowTypeCheck` asks
 `borrowIsConstLit` before refusing its operand as a temporary, and gives the

@@ -772,6 +772,28 @@ category = "run"
 description = "The code of a type's module reaching a private method or field through any value of the type -- a local, a parameter, a borrow written out, a by-value call, a field written -- from the type's own methods and static functions, a generic instance through another value of itself, another type's method, a function of the module, an anonymous function, a construction by position and by name, a private init and a field's default"
 tags = ["typecheck", "runtime"]
 
+# A payload-less enum variant as a constant: a field's default (left out of 'new',
+# replaced by position and by name, nested in a struct default and in an array
+# one), a named constant's value, a global's and a parameter's default. Its own
+# file because the claim is the value the constant came out as, in the global
+# initializer that has no stack to build an enum in as well as in a function. What
+# is refused (a variant holding a value, an enum with one beside an empty variant)
+# is in struct_typecheck_decl.
+[scenario.struct_default_enum_variant]
+category = "run"
+description = "A variant of an enum that holds no value as a constant: a field's default (taken, replaced by position and by name, in a struct and an array default), a named constant, a global, a global array and a parameter's default"
+tags = ["typecheck", "genllvm", "runtime"]
+
+# A global holding variants is one constant, the variants' tags in it, not code
+# run to fill it in
+[[scenario.struct_default_enum_variant.check]]
+name = "globals-holding-variants-are-constants"
+target = "preir"
+contains = [
+  "@made = internal constant %Failure { i32 5, %Kind { i8 2 }, %Colors { i32 65280 } }",
+  "@table = internal constant [3 x %Kind] [%Kind { i8 2 }, %Kind zeroinitializer, %Kind { i8 1 }]",
+]
+
 # Construction, 'new T(...)', and the inits it runs: the implicit field-wise
 # one and those a struct declares, which fill the value in place. Its own file
 # because its claims are which init the arguments selected and where the value
@@ -892,9 +914,9 @@ diagnostics = 4
 
 [scenario.struct_typecheck_decl]
 category = "reject"
-description = "Struct declarations rejected for what they declare, including a field name with no self to reach it through and a default that is not a constant: a sibling field, a reinterpreted global, a call, and a construction or an array holding a call"
+description = "Struct declarations rejected for what they declare, including a field name with no self to reach it through and a default that is not a constant: a sibling field, a reinterpreted global, a call, and a construction or an array holding a call, and an enum's variant that holds a value, that has one beside it, or whose enum has a field in common"
 tags = ["typecheck"]
-diagnostics = 10
+diagnostics = 14
 
 [scenario.struct_typecheck_member_module]
 category = "reject"
