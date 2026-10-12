@@ -56,6 +56,18 @@
 // - Post, from HDR light to the display (post.slang, post.cone): the
 //   half-float frame the renderer draws into, Jimenez's bloom chain, and
 //   tone mapping by AgX (or ACES's fit, Reinhard, none).
+// - Sun shadows (shadow.cone, shadowing.slang): 'setShadows' with a
+//   ShadowSettings ('high', 'medium', 'low', 'off': 1 to 4 cascades, the
+//   map's size, the filter) switches on cascaded shadow maps for the
+//   directional light. Each cascade is the sun's orthographic view of a
+//   slice of the camera's frustum (the practical split scheme, fitted to a
+//   bounding sphere, snapped to texels so edges do not shimmer), drawn
+//   depth only into one layer of a depth texture array before the scene;
+//   the lit and physically based materials read it with percentage-closer
+//   filtering over a rotated Poisson disk, receiver-plane depth bias and a
+//   normal offset, blending cascades at their seams. Cut-out, skinned and
+//   flutter meshes cast what they show; see-through and custom-pipeline
+//   draws cast nothing, nor does an item marked 'dontCastShadow'.
 // - DrawList: what is drawn this frame, each a mesh, a material and a model
 //   matrix (and a tint), drawn in one render pass.
 // - Skinning (skin.cone, skinning.slang): a mesh bound to a skeleton's bones
@@ -98,7 +110,12 @@
 // (skinning.slang), the bones (a storage buffer of every skinned copy's
 // skinning matrices, 48 bytes a bone, each copy's run side by side) and the
 // bone bases (a storage buffer of a u32 an instance: where its copy's bones
-// start, or NO_BONES), both written once a render too. Group 1 is the material's: its parameters in a
+// start, or NO_BONES), both written once a render too; then the sun's
+// shadows (shadowparams.slang, shadowing.slang): their parameters in a
+// uniform buffer (binding 4), the cascades' depth texture array (5) and the
+// comparison sampler that reads it (6), a one-texel stand-in while shadows
+// are off. The shadow passes bind a group of their own (bindings 0 to 4,
+// without the map they draw into). Group 1 is the material's: its parameters in a
 // uniform buffer of its own, its texture and the renderer's sampler; for
 // the physically based material, its metallic-roughness, normal and
 // occlusion maps after them (its own layout, 'pbrMaterialLayout'); for a
@@ -146,10 +163,13 @@
 //   post.cone      Post: the HDR frame, bloom, tone mapping; post.slang's SPIR-V
 //   camera.cone    Camera, Light
 //   image.cone     Image
+//   shadow.cone    ShadowSettings, the cascades' maths, the shadow map and its casters' pipelines and passes;
+//                  shadowcast.slang's, shadowcutlit.slang's and shadowcutpbr.slang's SPIR-V
 //
 // and its shaders, Slang: lit, lines, pbr, ibl and post, and the modules
-// brdf, sky, renderframe and skinning they import (pbr imports the noise
-// package's too).
+// brdf, sky, renderframe, skinning, flutter, shadowparams, shadowing and
+// shadowcasting they import (pbr imports the noise package's too); the
+// shadow casters shadowcast, shadowcutlit and shadowcutpbr draw depth only.
 //
 // Coordinates are geomath's and gpu's: right-handed, y up, the camera looking
 // down its -z, clip space's y up and depth from 0 to 1. Faces wind
