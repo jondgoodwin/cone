@@ -75,18 +75,29 @@ fn game() i64 {
 }
 
 // an owner lent as the receiver of its own method: the borrow is the 'self' the method works on, no
-// other name for the owner, though the method stores over an owner of its own type in a field (1)
+// other name for the owner, though the method stores over an owner of its own type in a field and
+// the call is handed another borrow (the tally's)
+struct Tally { pub v i64; }
 struct Chain {
   pub n i64;
   pub next Option[So[Chain]];
-  fn add(self &mut, x i64) { next = Some(new So[Chain](x, None)); }
+  fn addAfter(self &mut, x i64, log &mut Tally) { next = Some(new So[Chain](x, None)); log.v = log.v + 1; }
 }
 
-fn chain() i64 {
+// the head is 1, the tally 5 + 2
+fn chainLocal(log &mut Tally) i64 {
   mut head = new So[Chain](1, None);
-  head.add(5);
-  head.add(6);
+  imm l = &mut *log;
+  head.addAfter(5, l);
+  head.addAfter(6, l);
   head.n;
+}
+
+// the head is 2, the tally one more
+fn chainParam(h &mut So[Chain], log &mut Tally) i64 {
+  imm l = &mut *log;
+  h.addAfter(7, l);
+  h.n;
 }
 
 // a counted owner replaced after the last use of the borrow
@@ -109,8 +120,13 @@ fn main() {
   printInt(lastUse(&mut a)); printStr("\n");
   printInt(localOther(&mut a)); printStr("\n");
   printInt(game()); printStr("\n");
-  printInt(chain()); printStr("\n");
-  mut r =new ShipRc(0, new Rc[mut, Item](60));
+  mut tally = new Tally(5);
+  printInt(chainLocal(&mut tally)); printStr("\n");
+  printInt(tally.v); printStr("\n");
+  mut h = new So[Chain](2, None);
+  printInt(chainParam(&mut h, &mut tally)); printStr("\n");
+  printInt(tally.v); printStr("\n");
+  mut r = new ShipRc(0, new Rc[mut, Item](60));
   mut q = new ShipRc(0, new Rc[mut, Item](70));
   printInt(rcAfter(&mut r, &mut q)); printStr("\n");
   printInt(q.it.v); printStr("\n");
