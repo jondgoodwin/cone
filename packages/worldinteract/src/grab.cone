@@ -1,0 +1,42 @@
+// Grab and drag: a part held at a hand point by a spring. The held thing's
+// origin follows 'handPoint - anchor' (the anchor is where on the thing it was
+// grabbed, so it stays in the hand where it was taken) as a critically damped
+// spring, x'' = w^2 (goal - x) - 2 w x', w = 2 pi frequency. Critical damping
+// is the fastest approach with no overshoot, and it is the form Catto's soft
+// constraints reduce to (GDC 2011). It is integrated in substeps of at most
+// 1/240 s by semi-implicit Euler (velocity first), which is stable for
+// w * h well under 2. The grab breaks when the thing lags its goal by more
+// than 'breakDistance' (a wall in the way, a door too heavy).
+//
+// The browser applies 'pos' as the part's placement every frame, or a physics
+// body is driven toward the goal with the force a * mass; the library does not
+// choose.
+
+pub struct Grab {
+  pub holder u32;
+  pub target u32;
+  pub anchor Vec3;          // from the target's origin to the point it is held by
+  pub pos Vec3;             // the target's origin now
+  pub vel Vec3;
+  pub frequency f32;        // Hz; 4 is firm, 1.5 is a heavy lag
+  pub breakDistance f32;
+  pub alive bool;
+
+  // Advance by dt toward the hand point. Returns true while the grab holds.
+  pub fn step(self &mut, handPoint Vec3, dt f32) bool {
+    imm goal = handPoint - anchor;
+    imm w = 2. * pi * frequency;
+    mut left = dt;
+    while left > 0.000001 {
+      imm h = if left > 0.0041666 { 0.0041666; } else { left; };
+      imm acc = (goal - pos) * (w * w) - vel * (2. * w);
+      vel = vel + acc * h;
+      pos = pos + vel * h;
+      left = left - h;
+    }
+    (goal - pos).length() <= breakDistance;
+  }
+
+  // Where the held point is, to compare with the hand
+  pub fn heldPoint(self) Vec3 { pos + anchor; }
+}
