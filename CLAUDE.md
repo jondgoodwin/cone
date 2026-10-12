@@ -437,7 +437,8 @@ Visual Studio projects stay at the root.
   `iocore` is the runtime's completion loop, over `iobuf`, `timewheel`,
   `time`, `sync` and `diag`: a `Loop` per driving thread, handed an `Op`
   (TCP `Connect`, `Accept`, `Recv`, the zero-byte `RecvReady`, `Send`,
-  `SendBytes`; file `ReadAt` and `WriteAt`), each taking an owned `IoBuf` or
+  `SendBytes`; file `ReadAt` and `WriteAt`; UDP `RecvFrom` and `SendTo` on a
+  `bindUdp` socket, one datagram each, the sender in the answer's `peer`), each taking an owned `IoBuf` or
   shared `Bytes`, never a borrow (`test/cases/concurrency/
   concurrency_iocore_submit.cone`), and a `Target` (`Here`, or `Post` to
   another loop's `Waker`), and giving exactly one `Completion` (`Done`,

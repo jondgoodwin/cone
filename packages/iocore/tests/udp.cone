@@ -201,6 +201,17 @@ fn main() i32 {
       expectUInt(u64.from(out[k3].code), u64.from(errorInvalidHandle), "4: ERROR_INVALID_HANDLE");
       expectUInt(u64.from(out[k3].buf.len()), 4u64, "4: its buffer back");
       out.clear();
+
+      // A datagram too large for UDP (65,507 bytes at most over IPv4)
+      mut big = pool.mustTake(70000usize);
+      fill(&mut big, 70000usize, 1u64);
+      lp.submit(Op.SendTo(a, SocketAddr.localhost(pb), big), Target.Here(14u64));
+      imm k4 = await1(&mut lp, &mut out, 14u64);
+      requireUInt(u64.from(k4 != notFound), 1u64, "4: a send of 70,000 bytes answers");
+      expectUInt(u64.from(out[k4].status), u64.from(diag.outcomeFailed), "4: it fails");
+      expectUInt(u64.from(out[k4].code), 10040u64, "4: WSAEMSGSIZE, on both systems");
+      expectUInt(u64.from(out[k4].buf.len()), 70000u64, "4: its buffer back");
+      out.clear();
     }
 
     // 5. A deadline, a cancel group's
