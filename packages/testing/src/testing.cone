@@ -67,9 +67,15 @@ mod testing;
 import stdio;
 import libc;
 
-// How many checks have run, and how many of them failed
-mut checks = 0u64;
-mut failures = 0u64;
+// How many checks have run, and how many of them failed. A check may run on
+// any thread, so each count is an atomic held by an 'imm' global
+imm checks Atomic[u64];
+imm failures Atomic[u64];
+
+fn @initpure init() {
+  checks = Atomic[u64].of(0u64);
+  failures = Atomic[u64].of(0u64);
+}
 
 // -------- checks that record a failure and go on --------
 
@@ -200,20 +206,20 @@ pub fn requireBool(got bool, want bool, label &Array[u8]) bool {
 // status for 'main' to return: 0 when every check passed, 1 when any failed.
 pub fn done() i32 {
   summary();
-  if failures == 0u64 {0i32;} else {1i32;};
+  if failures.load() == 0u64 {0i32;} else {1i32;};
 }
 
 // -------- inside the package --------
 
 fn pass() bool {
-  checks = checks + 1u64;
+  checks.add(1u64);
   true;
 }
 
 // Counts a failure and starts its line with the label
 fn fail(label &Array[u8]) {
-  checks = checks + 1u64;
-  failures = failures + 1u64;
+  checks.add(1u64);
+  failures.add(1u64);
   stdio.printStr(label as &str);
   stdio.printStr(": ");
 }
@@ -228,13 +234,15 @@ fn stop() bool {
 }
 
 fn summary() {
-  stdio.printUInt(checks);
-  if checks == 1u64 {stdio.printStr(" check");} else {stdio.printStr(" checks");};
-  if failures == 0u64 {
+  imm ran = checks.load();
+  imm failed = failures.load();
+  stdio.printUInt(ran);
+  if ran == 1u64 {stdio.printStr(" check");} else {stdio.printStr(" checks");};
+  if failed == 0u64 {
     stdio.printStr(" passed\n");
   } else {
     stdio.printStr(", ");
-    stdio.printUInt(failures);
+    stdio.printUInt(failed);
     stdio.printStr(" failed\n");
   };
 }
