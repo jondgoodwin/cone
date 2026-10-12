@@ -1592,7 +1592,12 @@ What it does not follow: types are compared as types, so two `List[Pt]` are not 
 (the point: it is never a proof of aliasing, only that nothing proves it absent);
 which global a function writes (a borrow a `mut` global could be is refused across a call that
 reshapes its type through any global, or runs code it cannot read, even if the global it writes
-is another); and a raw pointer inside a local this function owns is
+is another: no per-function record of the globals it writes is kept, so this walk cannot say
+which; the one walk that does look for a global written, `parallel each`'s check of the calls in
+a loop's body (`parallelHelperGlobalsCheckAll`, [Block](../nodes/block.md)), follows only the
+bodies it can read, and takes a virtual call, a call of a function value, an `extern` function
+and a function of another package, whose bodies are not here, as writing nothing); and a raw
+pointer inside a local this function owns is
 counted as reaching what it points at (a local `List[List[Pt]]` handed writable
 reaches a `List[Pt]` through its block), since nothing checks the convention that
 a collection owns its block.

@@ -878,6 +878,219 @@ static int parCheckLentArgs(INode *node, void *ctxp) {
     return 1;
 }
 
+// ---- A visible helper that writes a global ----------------------------------------
+//
+// The body may not write a 'mut' global by name (parCheckWrites), and a call it makes is no
+// different: 'bump()' that does it, or a helper that calls one, writes it from every pass
+// at once. Outside variables are read-only for the loop, and a global is the most outside
+// of them. Type check notes each call the body makes of a function whose body the compiler
+// can read (a call through a virtual reference or a function value, an 'extern' function
+// and a function of another package, whose body is not here, are not noted: the check does
+// not see through them). Once every body is checked, parallelHelperGlobalsCheckAll follows
+// those calls through the bodies they reach, and refuses the call of a function that
+// writes a global: an assignment or a swap over a place of one, or a borrow that may write
+// it (which is what a method that changes it is handed). A '@threadlocal' global is each
+// thread's own and a '@workgroup' one a GPU workgroup's, and are let.
+
+typedef struct {
+    FnCallNode *call;       // the call in the loop's body
+    FnDclNode *callee;
+} ParHelperCall;
+
+static ParHelperCall *parHelperCalls = NULL;
+static uint32_t parHelperUsed = 0;
+static uint32_t parHelperCap = 0;
+
+// The function a call names when it is a direct call of a function whose body is here, else NULL
+static FnDclNode *parVisibleCallee(FnCallNode *call) {
+    INode *dcl = call->objfn != NULL && isNameUseNode(call->objfn) ? ((NameUseNode *)call->objfn)->dclnode : NULL;
+    if (dcl == NULL || dcl->tag != FnDclTag || (call->flags & FlagVDisp) || !siVisible((FnDclNode *)dcl))
+        return NULL;
+    return (FnDclNode *)dcl;
+}
+
+static int parNoteHelperCalls(INode *node, void *ctxp) {
+    if (node->tag != FnCallTag)
+        return 1;
+    FnDclNode *callee = parVisibleCallee((FnCallNode *)node);
+    if (callee == NULL)
+        return 1;
+    if (parHelperUsed == parHelperCap) {
+        ParHelperCall *old = parHelperCalls;
+        parHelperCap = parHelperCap ? parHelperCap * 2 : 64;
+        parHelperCalls = (ParHelperCall *)memAllocBlk(parHelperCap * sizeof(ParHelperCall));
+        if (old != NULL)
+            memcpy(parHelperCalls, old, parHelperUsed * sizeof(ParHelperCall));
+    }
+    parHelperCalls[parHelperUsed].call = (FnCallNode *)node;
+    parHelperCalls[parHelperUsed].callee = callee;
+    ++parHelperUsed;
+    return 1;
+}
+
+// The functions one question has reached, so each is read once however the calls loop
+typedef struct {
+    FnDclNode *fn;
+    uint32_t gen;
+} ParReached;
+
+static ParReached *parReached = NULL;
+static uint32_t parReachedCap = 0;
+static uint32_t parReachedGen = 0;
+
+static uint32_t parReachedHash(FnDclNode *fn) {
+    return (uint32_t)(((uint64_t)(uintptr_t)fn * 0x9E3779B97F4A7C15ull) >> 32);
+}
+
+// Notes the function as reached in this question ('nreached' so far); 0 where it already
+// was. A slot of an earlier question counts as free
+static int parReachedAdd(FnDclNode *fn, uint32_t nreached) {
+    if ((nreached + 1) * 2 > parReachedCap) {
+        ParReached *old = parReached;
+        uint32_t oldcap = parReachedCap;
+        parReachedCap = oldcap ? oldcap * 2 : 1024;
+        parReached = (ParReached *)memAllocBlk(parReachedCap * sizeof(ParReached));
+        memset(parReached, 0, parReachedCap * sizeof(ParReached));
+        for (uint32_t i = 0; i < oldcap; ++i) {
+            if (old[i].fn == NULL || old[i].gen != parReachedGen)
+                continue;
+            uint32_t to = parReachedHash(old[i].fn) & (parReachedCap - 1);
+            while (parReached[to].fn != NULL)
+                to = (to + 1) & (parReachedCap - 1);
+            parReached[to] = old[i];
+        }
+    }
+    uint32_t at = parReachedHash(fn) & (parReachedCap - 1);
+    while (parReached[at].fn != NULL && parReached[at].gen == parReachedGen) {
+        if (parReached[at].fn == fn)
+            return 0;
+        at = (at + 1) & (parReachedCap - 1);
+    }
+    parReached[at].fn = fn;
+    parReached[at].gen = parReachedGen;
+    return 1;
+}
+
+// Is this a 'mut' global that every thread shares: a module-level variable (or a static)
+// that can be written, and is neither one copy a thread nor one a workgroup?
+static int parIsSharedMutGlobal(VarDclNode *var) {
+    if (var == NULL || !(var->scope == 0 || (var->flags & FlagStatic)))
+        return 0;
+    if (var->dclinfo.facts & (DclThreadLocal | DclWorkgroup))
+        return 0;
+    return var->perm != NULL && var->perm != (INode *)unknownType && (permGetFlags(var->perm) & MayWrite);
+}
+
+typedef struct {
+    VarDclNode *global;     // the global written, when found
+    FnDclNode *in;          // the function whose body writes it
+    FnDclNode *cur;         // the body being read
+    INode *address;         // a borrow just made a raw pointer, which writes nothing itself
+    FnDclNode **queue;     // the functions reached and not yet read
+    uint32_t nqueue;
+    uint32_t capqueue;
+    uint32_t nreached;
+} ParGlobalWalk;
+
+static int parGlobalWritten(ParGlobalWalk *w, INode *place) {
+    VarDclNode *root = parWriteRoot(place);
+    if (!parIsSharedMutGlobal(root))
+        return 0;
+    w->global = root;
+    w->in = w->cur;
+    return 1;
+}
+
+static int parWalkGlobalWrites(INode *node, void *wp) {
+    ParGlobalWalk *w = (ParGlobalWalk *)wp;
+    switch (node->tag) {
+    case AssignTag:
+        return parGlobalWritten(w, ((AssignNode *)node)->lval);
+    case SwapTag:
+        return parGlobalWritten(w, ((SwapNode *)node)->lval) || parGlobalWritten(w, ((SwapNode *)node)->rval);
+    case CastTag:
+        // A borrow made a raw pointer on the spot ('&mut cone_heapRegion as *MemRegion', core's
+        // heapRegion) is the address of the global and no write: what is written through a raw
+        // pointer is not checked, as in the body itself
+        if (((CastNode *)node)->exp != NULL && (((CastNode *)node)->exp->tag == BorrowTag || ((CastNode *)node)->exp->tag == ArrayBorrowTag)
+                && isExpNode(node) && iexpGetTypeDcl(node) != NULL && iexpGetTypeDcl(node)->tag == PtrTag)
+            w->address = ((CastNode *)node)->exp;
+        return 0;
+    case BorrowTag:
+    case ArrayBorrowTag: {
+        if (node == w->address)
+            return 0;
+        INode *perm = ((RefNode *)node)->perm;
+        if (perm != NULL && perm != (INode *)unknownType && (permGetFlags(perm) & MayWrite))
+            return parGlobalWritten(w, ((RefNode *)node)->vtexp);
+        return 0;
+    }
+    case FnCallTag: {
+        FnDclNode *callee = parVisibleCallee((FnCallNode *)node);
+        if (callee == NULL)
+            return 0;
+        if (parReachedAdd(callee, w->nreached) != 1)
+            return 0;
+        ++w->nreached;
+        if (w->nqueue == w->capqueue) {
+            FnDclNode **old = w->queue;
+            w->capqueue = w->capqueue ? w->capqueue * 2 : 64;
+            w->queue = (FnDclNode **)memAllocBlk(w->capqueue * sizeof(FnDclNode *));
+            if (old != NULL)
+                memcpy(w->queue, old, w->nqueue * sizeof(FnDclNode *));
+        }
+        w->queue[w->nqueue++] = callee;
+        return 0;
+    }
+    default:
+        return 0;
+    }
+}
+
+// Does this function, or one it calls whose body is here, write a shared 'mut' global?
+static int parFnWritesGlobal(FnDclNode *fn, ParGlobalWalk *w) {
+    ++parReachedGen;
+    memset(w, 0, sizeof(*w));
+    parReachedAdd(fn, 0);
+    w->nreached = 1;
+    w->queue = (FnDclNode **)memAllocBlk(64 * sizeof(FnDclNode *));
+    w->capqueue = 64;
+    w->queue[w->nqueue++] = fn;
+    while (w->nqueue > 0) {
+        w->cur = w->queue[--w->nqueue];
+        if (siBodyReady(w->cur) && siVisit(w->cur->value, parWalkGlobalWrites, w))
+            return 1;
+    }
+    return 0;
+}
+
+// Once every body is type checked: refuse each noted call whose callee writes a global
+void parallelHelperGlobalsCheckAll(void) {
+    for (uint32_t i = 0; i < parHelperUsed; ++i) {
+        FnCallNode *call = parHelperCalls[i].call;
+        FnDclNode *callee = parHelperCalls[i].callee;
+        int again = 0;
+        for (uint32_t j = 0; j < i && !again; ++j)
+            again = parHelperCalls[j].call == call;      // (a loop checked twice)
+        if (again)
+            continue;
+        ParGlobalWalk found;
+        if (!parFnWritesGlobal(callee, &found))
+            continue;
+        char *gname = &found.global->namesym->namestr;
+        if (found.in == callee) {
+            errorMsgNode((INode *)call, ErrorParWrite,
+                "A 'parallel each' body may not call '%s', which writes the global '%s': the passes run at the same time. Outside variables, a global above all, are read-only for the loop. Hand results back with the parallel builder, or 'mutItems()' on the items, or count with an Atomic.",
+                &callee->namesym->namestr, gname);
+        }
+        else {
+            errorMsgNode((INode *)call, ErrorParWrite,
+                "A 'parallel each' body may not call '%s', which calls '%s', which writes the global '%s': the passes run at the same time. Outside variables, a global above all, are read-only for the loop. Hand results back with the parallel builder, or 'mutItems()' on the items, or count with an Atomic.",
+                &callee->namesym->namestr, &found.in->namesym->namestr, gname);
+        }
+    }
+}
+
 // ---- Copies that write a count the passes share --------------------------------
 //
 // Outside variables are read-only for the loop, and copying a counted owner
@@ -1843,6 +2056,9 @@ void parallelEachCheckBody(TypeCheckState *pstate, BlockNode *outer) {
     lentargs.writes = &ctx;
     lentargs.named = &alias.reported;
     parWalk((INode*)loop, parCheckLentArgs, &lentargs);
+
+    // Nor calls a function that writes a global: judged once every body is checked
+    parWalk((INode*)loop, parNoteHelperCalls, NULL);
 }
 
 // ---- The loop ------------------------------------------------------------------

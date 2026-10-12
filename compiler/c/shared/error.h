@@ -574,7 +574,7 @@ enum ErrorCode {
     // 'parallel each' (ir/exp/pareach.c)
     ErrorParSource = 1380,      // A 'parallel each' over a source that cannot be split into independent pieces and report its size (a cursor, a generator, a file, a channel), or whose pieces the compiler cannot yet walk
     ErrorParControl = 1381,     // A 'break', 'return' or 'await', or a 'continue' of an outer loop, in a 'parallel each' body
-    ErrorParWrite = 1382,       // A 'parallel each' body writes something declared outside the loop (or lends it for writing), which its pieces would do at the same time
+    ErrorParWrite = 1382,       // A 'parallel each' body writes something declared outside the loop (or lends it for writing, or calls a function whose body writes a global), which its pieces would do at the same time
     ErrorParRuntime = 1383,     // A 'parallel each' in a module that does not import the actors package its pieces run on, or in a generator (not built)
     ErrorParElse = 1384,        // A 'parallel each' with an 'else': its passes run at the same time and give no value
     ErrorParCopy = 1385,        // A 'parallel each' body copies a value that is not the pass's own and holds a counted owner whose count is not atomic (an Rc): the copy would write a count the passes share

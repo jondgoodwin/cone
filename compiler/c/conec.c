@@ -98,6 +98,9 @@ void doAnalysis(ConeOptions *opt, ProgramNode **pgm) {
     // What a message or an actor's initializer carries to the actor's thread
     // (ir/types/actor.c)
     actorCheckAll();
+    // The calls a 'parallel each' body made of a function that writes a global
+    // (ir/exp/pareach.c)
+    parallelHelperGlobalsCheckAll();
 
     if (opt->check_tree)
         inodeCheckTree((INode*)*pgm);
