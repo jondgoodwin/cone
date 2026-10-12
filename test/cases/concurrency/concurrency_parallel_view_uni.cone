@@ -1,0 +1,133 @@
+// A list lends a uni slice of its items, 'viewUni', and that slice is the exclusive source a
+// 'parallel each' that changes its items needs (concurrency_parallel_view_uni_refused has
+// what it refuses). A list reached only by a '&uni' lends it the way a list reached by a
+// '&mut' lends 'viewMut': a '&uni' parameter by 'l.viewUni()', a local or a field of a '&uni'
+// struct by '(&uni list).viewUni()'. Each case is worked out by hand; items start at 0.
+//
+//   - a '&uni' list parameter, pass i writing i + 1 to item i: with 100000 items the sum
+//     is 100000 * 100001 / 2 = 5,000,050,000, item 0 is 1 and item 99999 is 100000
+//   - a local lent '&uni' as the slice, to a function taking '&uni Array[Item]', 100 items,
+//     the same numbering: 100 * 101 / 2 = 5050
+//   - the same slice as the source itself, every item set to 7: 700; the list then pushed
+//     onto, once the slice's last use is past: item 100 is 300, so 101 items sum to 1000
+//   - the slice cut in rows of 10, row y and column x written y * 10 + x: 1000 items, the
+//     sum 0 + ... + 999 = 499,500, item 999 is 999
+//   - a list that is a field of a struct lent '&uni': 100 items, 5050
+//   - an empty list: the loop has no pass, 0 items, sum 0
+//   - a String's bytes, which it lends the same way: "hello world" (11 bytes) with every
+//     byte set to 'x' (120) reads "xxxxxxxxxxx", length 11
+
+mod concurrency_parallel_view_uni;
+
+import stdio use *;
+import collections use *;
+import actors;
+
+struct Item { pub n i64; }
+
+// The list taken as '&uni', its slice lent by 'viewUni'
+fn numberList(l &uni List[Item]) {
+  parallel each i, x in l.viewUni().mutItems().indexed() {
+    x.n = i64.from(i) + 1;
+  }
+}
+
+// The slice taken as '&uni'
+fn numberSlice(s &uni Array[Item]) {
+  parallel each i, x in s.mutItems().indexed() {
+    x.n = i64.from(i) + 1;
+  }
+}
+
+// The slice as the source itself
+fn setAll(s &uni Array[Item], value i64) {
+  parallel each x in s {
+    x.n = value;
+  }
+}
+
+// Rows of 10, a row to a pass
+fn rows(s &uni Array[Item]) {
+  parallel each y, row in s.mutChunks(10usize).indexed() {
+    each x, p in row.mutItems().indexed() {
+      p.n = i64.from(y * 10usize + x);
+    }
+  }
+}
+
+// Every byte set to 'x' (120)
+fn upperX(s &uni Array[u8]) {
+  parallel each b in s {
+    *b = 120u8;
+  }
+}
+
+struct Grid {
+  pub cells List[Item];
+}
+
+// A field of a struct lent '&uni'
+fn numberGrid(g &uni Grid) {
+  numberSlice((&uni g.cells).viewUni());
+}
+
+fn total(l &List[Item]) i64 {
+  mut sum = 0i64;
+  each x in l { sum = sum + x.n; }
+  sum;
+}
+
+fn filled(count usize) List[Item] {
+  mut l = new List[Item];
+  each i in 0usize ..< count { l.push(new Item(0)); }
+  l;
+}
+
+fn main() {
+  initAll();
+  actors.configure(new actors.Options(workers: 4u32));
+
+  // ---- a '&uni' list parameter ----
+  mut big = filled(100000usize);
+  numberList(&uni big);
+  printInt(total(&big)); printStr(" big sum (expect 5000050000)\n");
+  printInt(big[0usize].n); printStr(" "); printInt(big[99999usize].n);
+  printStr(" big[0] big[99999] (expect 1 100000)\n");
+
+  // ---- a local lent '&uni' as the slice ----
+  mut mine = filled(100usize);
+  numberSlice((&uni mine).viewUni());
+  printInt(total(&mine)); printStr(" local slice (expect 5050)\n");
+
+  // ---- the slice as the source itself, then the list pushed onto ----
+  setAll((&uni mine).viewUni(), 7i64);
+  printInt(total(&mine)); printStr(" set all (expect 700)\n");
+  mine.push(new Item(300));
+  printInt(total(&mine)); printStr(" "); printInt(i64.from(mine.len()));
+  printStr(" pushed sum, length (expect 1000 101)\n");
+
+  // ---- rows of 10 ----
+  mut grid1000 = filled(1000usize);
+  rows((&uni grid1000).viewUni());
+  printInt(total(&grid1000)); printStr(" "); printInt(grid1000[999usize].n);
+  printStr(" rows sum, last (expect 499500 999)\n");
+
+  // ---- a field of a struct lent '&uni' ----
+  mut grid = new Grid(filled(100usize));
+  numberGrid(&uni grid);
+  printInt(total(&grid.cells)); printStr(" field of a struct (expect 5050)\n");
+
+  // ---- an empty list ----
+  mut none = new List[Item];
+  numberSlice((&uni none).viewUni());
+  printInt(total(&none)); printStr(" "); printInt(i64.from(none.len()));
+  printStr(" empty sum, length (expect 0 0)\n");
+
+  // ---- a String's bytes ----
+  mut word = String.from("hello world");
+  upperX((&uni word).viewUni());
+  printStr(word.view()); printStr(" "); printInt(i64.from(word.len()));
+  printStr(" string bytes, length (expect xxxxxxxxxxx 11)\n");
+
+  finalAll();
+}
