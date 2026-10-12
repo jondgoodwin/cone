@@ -1,0 +1,364 @@
+// glTF loading against a hand-built asset, in the three ways a model comes:
+// a .gltf with its buffer and image embedded as base64 (data: uris), a .glb
+// (one file, the buffer its BIN chunk, the image a buffer view), and a .gltf
+// with a .bin and a .png beside it. All three describe the same model, built
+// below from numbers worked out by hand, and must load to the same checks:
+//
+// - mesh 0: a cube with 24 vertices, mesh package's cube(1), its positions and
+//   normals interleaved in one buffer view (byteStride 24), uvs in another,
+//   16-bit indices; glTF's v runs down the image, mesh's up, so a loaded uv
+//   is (u, 1 - v).
+// - mesh 1: one triangle in KHR_mesh_quantization's form: positions as
+//   16-bit integers (0,0,0) (100,0,0) (0,100,0), uvs as normalised unsigned
+//   16-bit, no normals (so they are made: flat, (0, 0, 1)) and no indices.
+// - material 0: base colour (0.8, 0.2, 0.1, 0.5), metallic 0.25, roughness
+//   0.5, an emissive (0.1, 0.2, 0.3) with KHR_materials_emissive_strength 5,
+//   alpha blend, double sided; a base colour texture with a KHR_texture_transform
+//   (offset (0.5, 0.25), rotation 0.5, scale (2, 3), uv set 1); a normal
+//   map with scale 0.8; an occlusion map with strength 0.6. Material 1 is empty:
+//   it takes glTF's defaults (white, metallic 1, roughness 1, opaque).
+// - nodes: "parent" (translation (1, 2, 3), a quarter turn about y, scale 2)
+//   with children "child" (the cube, given as a matrix: a quarter turn about x
+//   then a move of (0, 1, 0)) and "tri" (the triangle, scaled 0.01). The
+//   child's point (1, 2, 3) is (1, -2, 2) in the parent (the quarter turn
+//   about x sends (x, y, z) to (x, -z, y): (1, -3, 2), then + (0, 1, 0)) and
+//   (5, -2, 1) in the model (scaled 2: (2, -4, 4); a quarter turn about y sends
+//   (x, y, z) to (z, y, -x): (4, -4, -2); + (1, 2, 3)).
+// - one 2 x 2 RGBA PNG: red, green at alpha 128 / blue, white at alpha 0.
+
+mod gltfcube;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import imagedecode use *;
+import gltfimport use *;
+import fs;
+import path use Path;
+
+// ---- building the asset ----
+
+struct Bin {
+  pub b List[u8];
+
+  pub fn putU8(self &mut, v u8) { b.push(v); }
+  pub fn putU16(self &mut, v u32) { b.push(u8.from(v & 255u32)); b.push(u8.from((v >> 8u32) & 255u32)); }
+  pub fn putI16(self &mut, v i32) { self.putU16(u32.from(v) & 0xFFFFu32); }
+  pub fn putU32(self &mut, v u32) { self.putU16(v & 0xFFFFu32); self.putU16(v >> 16u32); }
+  pub fn putF32(self &mut, v f32) { self.putU32(v as u32); }
+  pub fn align4(self &mut) { while b.len() % 4usize != 0usize { b.push(0u8); } }
+}
+
+fn base64(d &Array[u8]) String {
+  imm tab = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  mut out = String.empty();
+  mut i = 0usize;
+  while i < d.len {
+    imm a = u32.from(d[i]);
+    imm b = if i + 1usize < d.len {u32.from(d[i + 1usize]);} else {0u32;};
+    imm c = if i + 2usize < d.len {u32.from(d[i + 2usize]);} else {0u32;};
+    imm v = (a << 16u32) | (b << 8u32) | c;
+    out.appendByte(tab[usize.from((v >> 18u32) & 63u32)]);
+    out.appendByte(tab[usize.from((v >> 12u32) & 63u32)]);
+    out.appendByte(if i + 1usize < d.len {tab[usize.from((v >> 6u32) & 63u32)];} else {'=';});
+    out.appendByte(if i + 2usize < d.len {tab[usize.from(v & 63u32)];} else {'=';});
+    i += 3usize;
+  }
+  out;
+}
+
+fn num(s &mut String, v i64) { s.appendInt(v); }
+
+fn pngBytes() List[u8] {
+  mut o = PngWrite.make(6u8, 8u8);
+  o.level = 0;
+  imm px Array[u16, 16] = [255u16, 0u16, 0u16, 255u16,  0u16, 255u16, 0u16, 128u16,
+    0u16, 0u16, 255u16, 255u16,  255u16, 255u16, 255u16, 0u16];
+  mut samples = List[u16].empty();
+  mut i = 0usize;
+  while i < 16usize { samples.push(px[i]); i += 1usize; }
+  encodePngSamples(2, 2, samples.view(), &o);
+}
+
+// The binary buffer: views 0 to 4 as described above, then (variant 1) the
+// PNG as view 5
+fn buildBuffer(variant i32) Bin {
+  mut b = new Bin(List[u8].empty());
+  imm cube = Mesh.cube(1.);
+  mut v = 0usize;
+  while v < 24usize {
+    imm p = *cube.positions[v];
+    imm n = *cube.normals[v];
+    b.putF32(p.x); b.putF32(p.y); b.putF32(p.z);
+    b.putF32(n.x); b.putF32(n.y); b.putF32(n.z);
+    v += 1usize;
+  }
+  v = 0usize;
+  while v < 24usize {
+    imm t = *cube.uvs[v];
+    b.putF32(t.x); b.putF32(t.y);
+    v += 1usize;
+  }
+  v = 0usize;
+  while v < 36usize { b.putU16(*cube.indices[v]); v += 1usize; }
+  // The triangle: i16 vec3 padded to a stride of 8, then normalised u16 uvs
+  b.putI16(0); b.putI16(0); b.putI16(0); b.putI16(0);
+  b.putI16(100); b.putI16(0); b.putI16(0); b.putI16(0);
+  b.putI16(0); b.putI16(100); b.putI16(0); b.putI16(0);
+  b.putU16(0u32); b.putU16(0u32);
+  b.putU16(65535u32); b.putU16(0u32);
+  b.putU16(0u32); b.putU16(65535u32);
+  if variant == 1 {
+    imm png = pngBytes();
+    mut i = 0usize;
+    while i < png.len() { b.putU8(*png[i]); i += 1usize; }
+    b.align4();
+  }
+  b;
+}
+
+fn buildJson(variant i32, bufferLen usize, pngLen usize, bufferB64 &str) String {
+  mut s = String.from("{\"asset\":{\"version\":\"2.0\",\"generator\":\"gltfimport test\",\"copyright\":\"none\"},");
+  s.append("\"extensionsUsed\":[\"KHR_texture_transform\",\"KHR_materials_emissive_strength\",\"KHR_mesh_quantization\"],");
+  s.append("\"scene\":0,\"scenes\":[{\"name\":\"main\",\"nodes\":[0]}],");
+  s.append("\"nodes\":[{\"name\":\"parent\",\"translation\":[1,2,3],\"rotation\":[0,0.70710678,0,0.70710678],\"scale\":[2,2,2],\"children\":[1,2]},");
+  s.append("{\"name\":\"child\",\"mesh\":0,\"matrix\":[1,0,0,0, 0,0,1,0, 0,-1,0,0, 0,1,0,1]},");
+  s.append("{\"name\":\"tri\",\"mesh\":1,\"scale\":[0.01,0.01,0.01]}],");
+  s.append("\"meshes\":[{\"name\":\"cube\",\"primitives\":[{\"attributes\":{\"POSITION\":0,\"NORMAL\":1,\"TEXCOORD_0\":2},\"indices\":3,\"material\":0}]},");
+  s.append("{\"name\":\"tri\",\"primitives\":[{\"attributes\":{\"POSITION\":4,\"TEXCOORD_0\":5},\"material\":1}]}],");
+  s.append("\"materials\":[{\"name\":\"shiny\",\"pbrMetallicRoughness\":{\"baseColorFactor\":[0.8,0.2,0.1,0.5],\"metallicFactor\":0.25,\"roughnessFactor\":0.5,");
+  s.append("\"baseColorTexture\":{\"index\":0,\"texCoord\":0,\"extensions\":{\"KHR_texture_transform\":{\"offset\":[0.5,0.25],\"rotation\":0.5,\"scale\":[2,3],\"texCoord\":1}}}},");
+  s.append("\"normalTexture\":{\"index\":0,\"scale\":0.8},\"occlusionTexture\":{\"index\":0,\"strength\":0.6},");
+  s.append("\"emissiveFactor\":[0.1,0.2,0.3],\"alphaMode\":\"BLEND\",\"doubleSided\":true,");
+  s.append("\"extensions\":{\"KHR_materials_emissive_strength\":{\"emissiveStrength\":5}}},{}],");
+  s.append("\"textures\":[{\"source\":0,\"sampler\":0}],");
+  s.append("\"samplers\":[{\"magFilter\":9728,\"minFilter\":9987,\"wrapS\":33071,\"wrapT\":33648}],");
+  s.append("\"images\":[{");
+  if variant == 0 {
+    mut png = pngBytes();
+    s.append("\"uri\":\"data:image/png;base64,");
+    s.append(base64(png.view()).view());
+    s.append("\"");
+  } elif variant == 1 {
+    s.append("\"bufferView\":5,\"mimeType\":\"image/png\"");
+  } else {
+    s.append("\"uri\":\"tex.png\"");
+  }
+  s.append("}],");
+  s.append("\"buffers\":[{\"byteLength\":");
+  num(&mut s, i64.from(bufferLen));
+  if variant == 0 {
+    s.append(",\"uri\":\"data:application/octet-stream;base64,");
+    s.append(bufferB64);
+    s.append("\"");
+  } elif variant == 2 {
+    s.append(",\"uri\":\"cube.bin\"");
+  }
+  s.append("}],");
+  s.append("\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":576,\"byteStride\":24},");
+  s.append("{\"buffer\":0,\"byteOffset\":576,\"byteLength\":192},{\"buffer\":0,\"byteOffset\":768,\"byteLength\":72},");
+  s.append("{\"buffer\":0,\"byteOffset\":840,\"byteLength\":24,\"byteStride\":8},{\"buffer\":0,\"byteOffset\":864,\"byteLength\":12}");
+  if variant == 1 {
+    s.append(",{\"buffer\":0,\"byteOffset\":876,\"byteLength\":");
+    num(&mut s, i64.from(pngLen));
+    s.append("}");
+  }
+  s.append("],");
+  s.append("\"accessors\":[{\"bufferView\":0,\"byteOffset\":0,\"componentType\":5126,\"count\":24,\"type\":\"VEC3\"},");
+  s.append("{\"bufferView\":0,\"byteOffset\":12,\"componentType\":5126,\"count\":24,\"type\":\"VEC3\"},");
+  s.append("{\"bufferView\":1,\"componentType\":5126,\"count\":24,\"type\":\"VEC2\"},");
+  s.append("{\"bufferView\":2,\"componentType\":5123,\"count\":36,\"type\":\"SCALAR\"},");
+  s.append("{\"bufferView\":3,\"componentType\":5122,\"count\":3,\"type\":\"VEC3\"},");
+  s.append("{\"bufferView\":4,\"componentType\":5123,\"normalized\":true,\"count\":3,\"type\":\"VEC2\"}]}");
+  s;
+}
+
+// A GLB container: header, the JSON chunk padded with spaces, the BIN chunk
+fn glb(json &String, bin &List[u8]) List[u8] {
+  mut js = json.copy();
+  while js.len() % 4usize != 0usize { js.appendByte(' '); }
+  mut b = new Bin(List[u8].empty());
+  imm total = 12usize + 8usize + js.len() + 8usize + bin.len();
+  b.putU32(0x46546C67u32);
+  b.putU32(2u32);
+  b.putU32(u32.from(total));
+  b.putU32(u32.from(js.len()));
+  b.putU32(0x4E4F534Au32);
+  mut i = 0usize;
+  while i < js.len() { b.putU8(js[i]); i += 1usize; }
+  b.putU32(u32.from(bin.len()));
+  b.putU32(0x004E4942u32);
+  i = 0usize;
+  while i < bin.len() { b.putU8(*bin[i]); i += 1usize; }
+  mut out = List[u8].empty();
+  out <=> b.b;
+  out;
+}
+
+// ---- the checks, the same for each way in ----
+
+fn close(a f32, b f32) bool { imm d = a - b; d < 0.0001 and d > -0.0001; }
+
+fn checkModel(g &Gltf, label &str) {
+  mut tag = String.from(label);
+  tag.append(": ");
+  expectInt(i64.from(g.scenes.len()), 1i64, label);
+  expectInt(i64.from(g.scene), 0i64, "default scene");
+  expectInt(i64.from(g.nodes.len()), 3i64, "node count");
+  expectInt(i64.from(g.meshes.len()), 2i64, "mesh count");
+  expectInt(i64.from(g.materials.len()), 2i64, "material count");
+  expectInt(i64.from(g.textures.len()), 1i64, "texture count");
+  expectInt(i64.from(g.images.len()), 1i64, "image count");
+  expectInt(i64.from(g.warnings.len()), 0i64, "no warnings");
+  expectStr(g.generator.view(), "gltfimport test", "generator");
+
+  // The cube
+  if not require(g.meshes[0usize].primitives.len() == 1usize, "the cube has a primitive") { return; }
+  imm cube = Mesh.cube(1.);
+  imm m = &g.meshes[0usize].primitives[0usize].mesh;
+  expectInt(i64.from(m.positions.len()), 24i64, "cube vertices");
+  expectInt(i64.from(m.triangleCount()), 12i64, "cube triangles");
+  expectInt(i64.from(g.meshes[0usize].primitives[0usize].material), 0i64, "cube material");
+  mut bad = 0usize;
+  mut v = 0usize;
+  while v < 24usize {
+    if not (m.positions[v].equals(*cube.positions[v]) and m.normals[v].equals(*cube.normals[v])) { bad += 1usize; }
+    if not close(m.uvs[v].x, cube.uvs[v].x) or not close(m.uvs[v].y, 1. - cube.uvs[v].y) { bad += 1usize; }
+    v += 1usize;
+  }
+  expectInt(i64.from(bad), 0i64, "cube positions, normals and flipped uvs match the source");
+  mut badIdx = 0usize;
+  v = 0usize;
+  while v < 36usize { if *m.indices[v] != *cube.indices[v] { badIdx += 1usize; } v += 1usize; }
+  expectInt(i64.from(badIdx), 0i64, "cube indices");
+  expect(not g.meshes[0usize].primitives[0usize].generatedNormals, "the cube's normals came from the file");
+
+  // The triangle
+  imm t = &g.meshes[1usize].primitives[0usize].mesh;
+  expectInt(i64.from(t.positions.len()), 3i64, "triangle vertices");
+  expectFloat(f64.from(t.positions[1usize].x), 100., 0.0001, "quantised position is the integer");
+  expectFloat(f64.from(t.positions[2usize].y), 100., 0.0001, "quantised position y");
+  expectFloat(f64.from(t.uvs[1usize].x), 1., 0.0001, "normalised uv u");
+  expectFloat(f64.from(t.uvs[1usize].y), 1., 0.0001, "normalised uv v flipped (0 becomes 1)");
+  expectFloat(f64.from(t.uvs[2usize].y), 0., 0.0001, "normalised uv v flipped (1 becomes 0)");
+  expect(g.meshes[1usize].primitives[0usize].generatedNormals, "the triangle's normals were made");
+  expectFloat(f64.from(t.normals[0usize].z), 1., 0.0001, "generated flat normal z");
+  expectInt(i64.from(t.indices.len()), 3i64, "triangle indices made");
+
+  // Materials
+  imm a = g.materials[0usize];
+  expectStr(a.name.view(), "shiny", "material name");
+  expectFloat(f64.from(a.baseColor.red), 0.8, 0.0001, "base colour red");
+  expectFloat(f64.from(a.baseColor.alpha), 0.5, 0.0001, "base colour alpha");
+  expectFloat(f64.from(a.metallic), 0.25, 0.0001, "metallic");
+  expectFloat(f64.from(a.roughness), 0.5, 0.0001, "roughness");
+  expectFloat(f64.from(a.emissive.blue), 0.3, 0.0001, "emissive blue");
+  expectFloat(f64.from(a.emissiveStrength), 5., 0.0001, "emissive strength");
+  expectInt(i64.from(a.alphaMode), 2i64, "alpha blend");
+  expect(a.doubleSided, "double sided");
+  expectFloat(f64.from(a.normalScale), 0.8, 0.0001, "normal scale");
+  expectFloat(f64.from(a.occlusionStrength), 0.6, 0.0001, "occlusion strength");
+  expectInt(i64.from(a.baseColorTexture.texture), 0i64, "base colour texture");
+  expect(a.baseColorTexture.hasTransform, "texture transform present");
+  expectFloat(f64.from(a.baseColorTexture.offset.x), 0.5, 0.0001, "transform offset x");
+  expectFloat(f64.from(a.baseColorTexture.offset.y), 0.25, 0.0001, "transform offset y");
+  expectFloat(f64.from(a.baseColorTexture.rotation), 0.5, 0.0001, "transform rotation");
+  expectFloat(f64.from(a.baseColorTexture.scale.y), 3., 0.0001, "transform scale y");
+  expectInt(i64.from(a.baseColorTexture.texCoord), 1i64, "transform uv set override");
+  expect(a.metallicRoughnessTexture.isNone(), "no metallic-roughness map");
+  expect(not a.normalTexture.isNone() and not a.occlusionTexture.isNone(), "normal and occlusion maps");
+  imm d = g.materials[1usize];
+  expectFloat(f64.from(d.baseColor.green), 1., 0.0001, "default base colour");
+  expectFloat(f64.from(d.metallic), 1., 0.0001, "default metallic is 1");
+  expectFloat(f64.from(d.roughness), 1., 0.0001, "default roughness is 1");
+  expectFloat(f64.from(d.emissiveStrength), 1., 0.0001, "default emissive strength");
+  expectInt(i64.from(d.alphaMode), 0i64, "default opaque");
+  expectFloat(f64.from(d.alphaCutoff), 0.5, 0.0001, "default cutoff");
+
+  // Sampler
+  expectInt(i64.from(g.samplers[0usize].magFilter), 9728i64, "sampler mag filter");
+  expectInt(i64.from(g.samplers[0usize].wrapT), 33648i64, "sampler wrap t");
+
+  // The image
+  if not require(g.images.len() == 1usize, "an image") { return; }
+  imm r = &g.images[0usize].raster;
+  expectInt(i64.from(r.width), 2i64, "image width");
+  expectInt(i64.from(r.height), 2i64, "image height");
+  expectInt(i64.from(r.at8(0, 0, 0)), 255i64, "image red pixel");
+  expectInt(i64.from(r.at8(1, 0, 1)), 255i64, "image green pixel");
+  expectInt(i64.from(r.at8(1, 0, 3)), 128i64, "image green pixel alpha");
+  expectInt(i64.from(r.at8(0, 1, 2)), 255i64, "image blue pixel (bottom row)");
+  expectInt(i64.from(r.at8(1, 1, 3)), 0i64, "image white pixel alpha");
+
+  // The hierarchy
+  expectStr(g.nodes[0usize].name.view(), "parent", "parent node name");
+  expectInt(i64.from(g.nodes[0usize].children.len()), 2i64, "parent's children");
+  expectInt(i64.from(g.nodes[1usize].parent), 0i64, "child's parent");
+  expectInt(i64.from(g.nodes[0usize].parent), -1i64, "root has no parent");
+  expectFloat(f64.from(g.nodes[0usize].trs.translation.z), 3., 0.0001, "parent translation");
+  expectFloat(f64.from(g.nodes[0usize].trs.rotation.y), 0.70710678, 0.0001, "parent rotation");
+  expectFloat(f64.from(g.nodes[0usize].trs.scale.x), 2., 0.0001, "parent scale");
+  expect(g.nodes[1usize].usesMatrix, "the child gave a matrix");
+  expectFloat(f64.from(g.nodes[1usize].trs.translation.y), 1., 0.0001, "decomposed translation");
+  expectFloat(f64.from(g.nodes[1usize].trs.rotation.x), 0.70710678, 0.0001, "decomposed rotation x");
+  expectFloat(f64.from(g.nodes[1usize].trs.rotation.w), 0.70710678, 0.0001, "decomposed rotation w");
+  expectFloat(f64.from(g.nodes[1usize].trs.scale.z), 1., 0.0001, "decomposed scale");
+  imm worlds = g.worldMatrices();
+  imm p = (*worlds[1usize]) * new Vec3(1., 2., 3.);
+  expectFloat(f64.from(p.x), 5., 0.001, "child point in the model x");
+  expectFloat(f64.from(p.y), -2., 0.001, "child point in the model y");
+  expectFloat(f64.from(p.z), 1., 0.001, "child point in the model z");
+  imm q = (*worlds[2usize]) * new Vec3(100., 0., 0.);
+  // 100 * 0.01 = 1, scaled 2 = 2, then a quarter turn about y: (x, y, z) -> (z, y, -x)
+  expectFloat(f64.from(q.x), 1., 0.001, "triangle vertex in the model x");
+  expectFloat(f64.from(q.z), 3. - 2., 0.001, "triangle vertex in the model z");
+}
+
+fn main() i32 {
+  // 0: embedded base64
+  imm bin0 = buildBuffer(0);
+  imm json0 = buildJson(0, bin0.b.len(), 0usize, base64(bin0.b.view()).view());
+  match loadGltfBytes(json0.view(), true) {
+    case imm g Ok { checkModel(&g, "embedded"); }
+    case imm e Error { expect(false, e.reason.view()); }
+  }
+  // Skipping the image decode leaves the pixels out
+  match loadGltfBytes(json0.view(), false) {
+    case imm g Ok { expect(g.images[0usize].raster.isEmpty(), "images not decoded when asked not to"); }
+    case imm e Error { expect(false, e.reason.view()); }
+  }
+
+  // 1: a .glb
+  imm bin1 = buildBuffer(1);
+  imm png = pngBytes();
+  imm json1 = buildJson(1, bin1.b.len(), png.len(), "");
+  imm file1 = glb(&json1, &bin1.b);
+  match loadGltfBytes(file1.view(), true) {
+    case imm g Ok { checkModel(&g, "glb"); }
+    case imm e Error { expect(false, e.reason.view()); }
+  }
+
+  // 2: a .gltf with a .bin and a .png beside it, in a folder made here
+  imm dir = Path.from("gltfcube_files");
+  fs.makeDirAll(&dir);
+  imm binPath = dir.join("cube.bin");
+  imm pngPath = dir.join("tex.png");
+  imm gltfPath = dir.join("cube.gltf");
+  imm bin2 = buildBuffer(0);
+  imm json2 = buildJson(2, bin2.b.len(), 0usize, "");
+  fs.writeFile(&binPath, bin2.b.view());
+  fs.writeFile(&pngPath, png.view());
+  fs.writeFile(&gltfPath, json2.view());
+  match loadGltf(&gltfPath, true) {
+    case imm g Ok { checkModel(&g, "files"); }
+    case imm e Error { expect(false, e.reason.view()); }
+  }
+  // The same without a folder to read from is a failure that names the file
+  match loadGltfBytes(json2.view(), true) {
+    case imm g Ok { expect(false, "external files without a folder"); }
+    case imm e Error { expect(e.reason.contains("cube.bin"), "the failure names the missing file"); }
+  }
+  fs.removeAll(&dir);
+  done();
+}

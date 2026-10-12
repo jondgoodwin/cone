@@ -1,0 +1,470 @@
+// ======== DEFLATE and zlib: RFC 1951 and RFC 1950 ========
+//
+// Inflate in Cone: stored, fixed-Huffman and dynamic-Huffman blocks. The
+// Huffman decoder is zlib's idea in a simpler dress: a table indexed by the
+// next FastBits bits of input answers every code of that many bits or fewer
+// with its symbol and length at once; a longer code falls to the canonical
+// walk of RFC 1951 section 3.2.2 (Mark Adler's puff.c), one length at a
+// time over the count of codes of each length. Deflate packs Huffman codes
+// most-significant bit first into a stream read least-significant bit
+// first, so the table is indexed by the code with its bits reversed.
+
+// How many bits the first-level table is indexed by. 10 covers nearly every
+// literal and length code of real data, in a 2 KiB table that stays in cache.
+const FastBits = 10u32;
+
+// Lengths 3 to 258: the base of each of the 29 codes (257 to 285) and how
+// many extra bits follow it (RFC 1951 section 3.2.5)
+imm lenBase Array[u16, 29] = [3u16, 4u16, 5u16, 6u16, 7u16, 8u16, 9u16, 10u16, 11u16, 13u16, 15u16, 17u16,
+  19u16, 23u16, 27u16, 31u16, 35u16, 43u16, 51u16, 59u16, 67u16, 83u16, 99u16, 115u16, 131u16, 163u16,
+  195u16, 227u16, 258u16];
+imm lenExtra Array[u8, 29] = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 1u8, 1u8, 1u8, 1u8, 2u8, 2u8, 2u8, 2u8,
+  3u8, 3u8, 3u8, 3u8, 4u8, 4u8, 4u8, 4u8, 5u8, 5u8, 5u8, 5u8, 0u8];
+// Distances 1 to 32768: 30 codes
+imm distBase Array[u16, 30] = [1u16, 2u16, 3u16, 4u16, 5u16, 7u16, 9u16, 13u16, 17u16, 25u16, 33u16, 49u16,
+  65u16, 97u16, 129u16, 193u16, 257u16, 385u16, 513u16, 769u16, 1025u16, 1537u16, 2049u16, 3073u16,
+  4097u16, 6145u16, 8193u16, 12289u16, 16385u16, 24577u16];
+imm distExtra Array[u8, 30] = [0u8, 0u8, 0u8, 0u8, 1u8, 1u8, 2u8, 2u8, 3u8, 3u8, 4u8, 4u8, 5u8, 5u8, 6u8, 6u8,
+  7u8, 7u8, 8u8, 8u8, 9u8, 9u8, 10u8, 10u8, 11u8, 11u8, 12u8, 12u8, 13u8, 13u8];
+// The order the code-length code's lengths are sent in
+imm clOrder Array[u8, 19] = [16u8, 17u8, 18u8, 0u8, 8u8, 7u8, 9u8, 6u8, 10u8, 5u8, 11u8, 4u8, 12u8, 3u8, 13u8,
+  2u8, 14u8, 1u8, 15u8];
+
+// ======== Huffman tables ========
+
+// A canonical Huffman code ready to decode: 'fast' is indexed by the next
+// FastBits bits (low bit first) and holds symbol * 16 + length for a code
+// that short, else 0; 'count' is the number of codes of each length 0 to 15
+// and 'symbols' the symbols in order of code (by length, then value), for the
+// longer codes' walk.
+pub struct Huffman {
+  pub fast List[u16];
+  pub count List[u16];
+  pub symbols List[u16];
+  pub maxLen u32;
+
+  pub fn empty() Huffman {
+    new Huffman(List[u16].empty(), List[u16].empty(), List[u16].empty(), 0u32);
+  }
+
+  // A table from the code lengths of symbols 0 to n - 1 (0: unused). false
+  // when the lengths are over-subscribed (more codes than bits allow).
+  // An incomplete code is allowed only when it holds at most one code
+  // (RFC 1951 permits a single distance code); a longer incomplete code is
+  // refused, as zlib does.
+  pub fn build(self &mut, lengths &Array[u8], n usize) bool {
+    fast.clear();
+    count.clear();
+    symbols.clear();
+    mut i = 0usize;
+    while i < 16usize { count.push(0u16); i = i + 1usize; }
+    i = 0usize;
+    while i < (1usize << usize.from(FastBits)) { fast.push(0u16); i = i + 1usize; }
+    i = 0usize;
+    while i < n {
+      count.set(usize.from(lengths[i]), *count[usize.from(lengths[i])] + 1u16);
+      i = i + 1usize;
+    }
+    imm total = n - usize.from(*count[0usize]);
+    count.set(0usize, 0u16);
+    // Over-subscribed or incomplete?
+    mut left = 1i32;
+    mut len = 1usize;
+    maxLen = 0u32;
+    while len < 16usize {
+      left = left * 2i32 - i32.from(*count[len]);
+      if left < 0i32 { return false; }
+      if *count[len] > 0u16 { maxLen = u32.from(len); }
+      len = len + 1usize;
+    }
+    if left > 0i32 and total > 1usize { return false; }
+    // Where each length's first symbol goes in 'symbols'
+    mut offs = List[u16].withCapacity(16usize);
+    offs.push(0u16);
+    offs.push(0u16);
+    len = 1usize;
+    while len < 15usize {
+      offs.push(*offs[len] + *count[len]);
+      len = len + 1usize;
+    }
+    i = 0usize;
+    while i < total { symbols.push(0u16); i = i + 1usize; }
+    i = 0usize;
+    while i < n {
+      imm l = usize.from(lengths[i]);
+      if l != 0usize {
+        symbols.set(usize.from(*offs[l]), u16.from(i));
+        offs.set(l, *offs[l] + 1u16);
+      }
+      i = i + 1usize;
+    }
+    // The first-level table: assign the canonical codes, reversed
+    mut code = 0u32;
+    mut k = 0usize;       // index in 'symbols'
+    len = 1usize;
+    while len <= usize.from(FastBits) {
+      mut c = 0u16;
+      while c < *count[len] {
+        imm sym = *symbols[k];
+        // The code's bits reversed into a 'len'-bit number
+        mut rev = 0u32;
+        mut b = 0usize;
+        while b < len {
+          rev = (rev << 1u32) | ((code >> u32.from(b)) & 1u32);
+          b = b + 1usize;
+        }
+        mut e = usize.from(rev);
+        while e < (1usize << usize.from(FastBits)) {
+          fast.set(e, sym * 16u16 + u16.from(len));
+          e = e + (1usize << len);
+        }
+        code = code + 1u32;
+        k = k + 1usize;
+        c = c + 1u16;
+      }
+      code = code << 1u32;
+      len = len + 1usize;
+    }
+    true;
+  }
+}
+
+// ======== the decoder ========
+
+// What stopped a decode
+pub struct DecodeError {
+  pub reason String;
+
+  pub fn message(self &) String { reason.copy(); }
+}
+
+// The bit reader and what it is decoding into. A bit buffer of 64 bits is
+// refilled a byte at a time from 'pos'; reading past the end supplies zeros
+// and is caught afterwards by 'overrun', so the hot loop has no end test.
+struct Inflater {
+  pub pos usize;
+  pub bits u64;
+  pub nbits u32;
+  pub failed bool;
+  pub reason String;
+}
+
+fn failInflate(st &mut Inflater, why &str) {
+  if st.failed { return; }
+  st.failed = true;
+  st.reason = String.from(why);
+}
+
+// Top up the bit buffer to at least 32 bits
+fn refill(st &mut Inflater, data &Array[u8]) {
+  while st.nbits <= 56u32 {
+    imm b = if st.pos < data.len {u64.from(data[st.pos]);} else {0u64;};
+    st.bits = st.bits | (b << u64.from(st.nbits));
+    st.pos = st.pos + 1usize;
+    st.nbits = st.nbits + 8u32;
+  }
+}
+
+// Take n (0 to 32) bits
+fn getBits(st &mut Inflater, data &Array[u8], n u32) u32 {
+  if st.nbits < n { refill(st, data); }
+  imm v = u32.from(st.bits & ((1u64 << u64.from(n)) - 1u64));
+  st.bits = st.bits >> u64.from(n);
+  st.nbits = st.nbits - n;
+  v;
+}
+
+// Whether more bytes were consumed than the input holds
+fn overrun(st &Inflater, data &Array[u8]) bool {
+  // bytes really consumed = pos - the whole bytes still in the buffer
+  st.pos - usize.from(st.nbits / 8u32) > data.len;
+}
+
+// Decode one symbol with a table. -1 on a bad code.
+fn decodeSym(st &mut Inflater, data &Array[u8], h &Huffman) i32 {
+  if st.nbits < 16u32 { refill(st, data); }
+  imm e = *h.fast[usize.from(st.bits & ((1u64 << u64.from(FastBits)) - 1u64))];
+  if e != 0u16 {
+    imm l = u32.from(e & 15u16);
+    st.bits = st.bits >> u64.from(l);
+    st.nbits = st.nbits - l;
+    return i32.from(e >> 4u16);
+  }
+  // Slow: canonical walk, one bit at a time
+  mut code = 0i32;
+  mut first = 0i32;
+  mut index = 0i32;
+  mut len = 1u32;
+  mut b = st.bits;
+  while len <= 15u32 {
+    code = code | i32.from(b & 1u64);
+    b = b >> 1u64;
+    imm cnt = i32.from(*h.count[usize.from(len)]);
+    if code - cnt < first {
+      st.bits = st.bits >> u64.from(len);
+      st.nbits = st.nbits - len;
+      return i32.from(*h.symbols[usize.from(index + (code - first))]);
+    }
+    index = index + cnt;
+    first = (first + cnt) << 1i32;
+    code = code << 1i32;
+    len = len + 1u32;
+  }
+  -1i32;
+}
+
+// One compressed block's symbols until the end-of-block code
+fn inflateCodes(st &mut Inflater, data &Array[u8], out &mut List[u8], lit &Huffman, dist &Huffman, limit usize) {
+  while not st.failed {
+    imm sym = decodeSym(st, data, lit);
+    if sym < 0i32 { failInflate(st, "invalid Huffman code"); return; }
+    if sym < 256i32 {
+      out.push(u8.from(sym));
+    } elif sym == 256i32 {
+      return;
+    } else {
+      imm li = usize.from(sym - 257i32);
+      if li >= 29usize { failInflate(st, "invalid length code"); return; }
+      imm len = usize.from(lenBase[li]) + usize.from(getBits(st, data, u32.from(lenExtra[li])));
+      imm ds = decodeSym(st, data, dist);
+      if ds < 0i32 or ds >= 30i32 { failInflate(st, "invalid distance code"); return; }
+      imm di = usize.from(ds);
+      imm d = usize.from(distBase[di]) + usize.from(getBits(st, data, u32.from(distExtra[di])));
+      if d > out.len() { failInflate(st, "distance reaches before the start of the output"); return; }
+      if out.len() + len > limit { failInflate(st, "output larger than expected"); return; }
+      mut from = out.len() - d;
+      mut k = 0usize;
+      while k < len {
+        out.push(*out[from]);
+        from = from + 1usize;
+        k = k + 1usize;
+      }
+    }
+    if st.pos > data.len + 16usize { failInflate(st, "the compressed data ends early"); return; }
+  }
+}
+
+// The fixed Huffman code of RFC 1951 section 3.2.6
+fn fixedTables(lit &mut Huffman, dist &mut Huffman) {
+  mut l = List[u8].withCapacity(288usize);
+  mut i = 0usize;
+  while i < 288usize {
+    l.push(if i < 144usize {8u8;} elif i < 256usize {9u8;} elif i < 280usize {7u8;} else {8u8;});
+    i = i + 1usize;
+  }
+  lit.build(l.view(), 288usize);
+  mut d = List[u8].withCapacity(30usize);
+  i = 0usize;
+  // 32 five-bit codes; 30 and 31 are in the code but never valid (checked in
+  // 'inflateCodes')
+  while i < 32usize { d.push(5u8); i = i + 1usize; }
+  dist.build(d.view(), 32usize);
+}
+
+// A dynamic block's code tables read from the stream (RFC 1951 3.2.7)
+fn dynamicTables(st &mut Inflater, data &Array[u8], lit &mut Huffman, dist &mut Huffman) {
+  imm nlen = usize.from(getBits(st, data, 5u32)) + 257usize;
+  imm ndist = usize.from(getBits(st, data, 5u32)) + 1usize;
+  imm ncode = usize.from(getBits(st, data, 4u32)) + 4usize;
+  if nlen > 286usize or ndist > 30usize { failInflate(st, "too many length or distance codes"); return; }
+  mut lengths = List[u8].withCapacity(320usize);
+  mut i = 0usize;
+  while i < 320usize { lengths.push(0u8); i = i + 1usize; }
+  i = 0usize;
+  while i < ncode {
+    lengths.set(usize.from(clOrder[i]), u8.from(getBits(st, data, 3u32)));
+    i = i + 1usize;
+  }
+  mut cl = Huffman.empty();
+  if not cl.build(lengths.view(), 19usize) { failInflate(st, "bad code-length code"); return; }
+  // Read nlen + ndist lengths, with the run-length codes 16, 17 and 18
+  i = 0usize;
+  while i < 320usize { lengths.set(i, 0u8); i = i + 1usize; }
+  mut idx = 0usize;
+  while idx < nlen + ndist {
+    imm sym = decodeSym(st, data, &cl);
+    if sym < 0i32 { failInflate(st, "invalid code-length symbol"); return; }
+    if sym < 16i32 {
+      lengths.set(idx, u8.from(sym));
+      idx = idx + 1usize;
+    } else {
+      mut rep = 0usize;
+      mut val = 0u8;
+      if sym == 16i32 {
+        if idx == 0usize { failInflate(st, "repeat with no previous length"); return; }
+        val = *lengths[idx - 1usize];
+        rep = 3usize + usize.from(getBits(st, data, 2u32));
+      } elif sym == 17i32 {
+        rep = 3usize + usize.from(getBits(st, data, 3u32));
+      } else {
+        rep = 11usize + usize.from(getBits(st, data, 7u32));
+      }
+      if idx + rep > nlen + ndist { failInflate(st, "code lengths overflow"); return; }
+      mut r = 0usize;
+      while r < rep {
+        lengths.set(idx, val);
+        idx = idx + 1usize;
+        r = r + 1usize;
+      }
+    }
+    if st.pos > data.len + 16usize { failInflate(st, "the compressed data ends early"); return; }
+  }
+  if *lengths[256usize] == 0u8 { failInflate(st, "no end-of-block code"); return; }
+  if not lit.build(lengths.view(), nlen) { failInflate(st, "bad literal/length code"); return; }
+  // The distance lengths start at nlen
+  mut dl = List[u8].withCapacity(ndist);
+  i = 0usize;
+  while i < ndist { dl.push(*lengths[nlen + i]); i = i + 1usize; }
+  if not dist.build(dl.view(), ndist) { failInflate(st, "bad distance code"); return; }
+}
+
+// Decompress raw DEFLATE data (RFC 1951) starting at 'start'. 'expected' is
+// the output size if known (it reserves room and bounds the output), else 0,
+// which bounds the output by 1 GiB. Answers the bytes and, in 'used', how many
+// input bytes the stream took.
+pub fn inflate(data &Array[u8], start usize, expected usize, used &mut usize) Result[List[u8], DecodeError] {
+  mut st = new Inflater(start, 0u64, 0u32, false, String.empty());
+  // Room for the expected size, but never more than 64 MiB up front: a header can claim anything
+  mut out = List[u8].withCapacity(if expected > 0usize {if expected < 67108864usize {expected;} else {67108864usize;};} else {65536usize;});
+  imm limit = if expected > 0usize {expected;} else {1073741824usize;};
+  mut lit = Huffman.empty();
+  mut dist = Huffman.empty();
+  mut last = false;
+  while not last and not st.failed {
+    last = getBits(&mut st, data, 1u32) == 1u32;
+    imm kind = getBits(&mut st, data, 2u32);
+    if kind == 0u32 {
+      // Stored: drop to a byte boundary, LEN, NLEN, then LEN raw bytes
+      imm drop = st.nbits % 8u32;
+      st.bits = st.bits >> u64.from(drop);
+      st.nbits = st.nbits - drop;
+      imm len = usize.from(getBits(&mut st, data, 16u32));
+      imm nlen = usize.from(getBits(&mut st, data, 16u32));
+      if len != (nlen ^ 0xFFFFusize) { failInflate(&mut st, "stored block length check failed"); }
+      else {
+        // Return any whole bytes the buffer holds to the input
+        st.pos = st.pos - usize.from(st.nbits / 8u32);
+        st.bits = 0u64;
+        st.nbits = 0u32;
+        if st.pos + len > data.len { failInflate(&mut st, "stored block runs past the data"); }
+        elif out.len() + len > limit { failInflate(&mut st, "output larger than expected"); }
+        else {
+          mut k = 0usize;
+          while k < len {
+            out.push(data[st.pos + k]);
+            k = k + 1usize;
+          }
+          st.pos = st.pos + len;
+        }
+      }
+    } elif kind == 1u32 {
+      fixedTables(&mut lit, &mut dist);
+      inflateCodes(&mut st, data, &mut out, &lit, &dist, limit);
+    } elif kind == 2u32 {
+      dynamicTables(&mut st, data, &mut lit, &mut dist);
+      if not st.failed { inflateCodes(&mut st, data, &mut out, &lit, &dist, limit); }
+    } else {
+      failInflate(&mut st, "invalid block type");
+    }
+  }
+  if not st.failed and overrun(&st, data) { failInflate(&mut st, "the compressed data ends early"); }
+  if st.failed {
+    return Error[List[u8], DecodeError](new DecodeError(st.reason.copy()));
+  }
+  *used = st.pos - usize.from(st.nbits / 8u32) - start;
+  Ok[List[u8], DecodeError](out);
+}
+
+// Decompress a zlib stream (RFC 1950): a two-byte header, DEFLATE data and
+// the Adler-32 of the output. 'expected' as for 'inflate'. A preset
+// dictionary is refused. The checksum is verified.
+pub fn zlibDecompress(data &Array[u8], expected usize) Result[List[u8], DecodeError] {
+  if data.len < 6usize {
+    return Error[List[u8], DecodeError](new DecodeError(String.from("zlib: the stream is too short")));
+  }
+  imm cmf = u32.from(data[0usize]);
+  imm flg = u32.from(data[1usize]);
+  if (cmf & 15u32) != 8u32 or (cmf >> 4u32) > 7u32 {
+    return Error[List[u8], DecodeError](new DecodeError(String.from("zlib: not deflate with a window of 32 KiB or less")));
+  }
+  if (cmf * 256u32 + flg) % 31u32 != 0u32 {
+    return Error[List[u8], DecodeError](new DecodeError(String.from("zlib: the header check failed")));
+  }
+  if (flg & 32u32) != 0u32 {
+    return Error[List[u8], DecodeError](new DecodeError(String.from("zlib: a preset dictionary is not supported")));
+  }
+  mut used = 0usize;
+  match inflate(data, 2usize, expected, &mut used) {
+    case mut ok Ok {
+      if 2usize + used + 4usize > data.len {
+        return Error[List[u8], DecodeError](new DecodeError(String.from("zlib: the Adler-32 is missing")));
+      }
+      imm at = 2usize + used;
+      imm want = (u32.from(data[at]) << 24u32) | (u32.from(data[at + 1usize]) << 16u32)
+        | (u32.from(data[at + 2usize]) << 8u32) | u32.from(data[at + 3usize]);
+      mut out = List[u8].empty();
+      out <=> ok;
+      if adler32(out.view()) != want {
+        return Error[List[u8], DecodeError](new DecodeError(String.from("zlib: the Adler-32 does not match")));
+      }
+      return Ok[List[u8], DecodeError](out);
+    }
+    case imm e Error {
+      return Error[List[u8], DecodeError](new DecodeError(e.reason.copy()));
+    }
+  }
+}
+
+// ======== checksums ========
+
+// Adler-32 (RFC 1950): two sums modulo 65521, the second of the first
+pub fn adler32(data &Array[u8]) u32 {
+  mut a = 1u32;
+  mut b = 0u32;
+  mut i = 0usize;
+  while i < data.len {
+    // 5552 bytes cannot overflow 32 bits before the modulo
+    imm stop = if i + 5552usize < data.len {i + 5552usize;} else {data.len;};
+    while i < stop {
+      a = a + u32.from(data[i]);
+      b = b + a;
+      i = i + 1usize;
+    }
+    a = a % 65521u32;
+    b = b % 65521u32;
+  }
+  (b << 16u32) | a;
+}
+
+// CRC-32 (PNG's and zlib's, polynomial 0xEDB88320 reflected), by a table of
+// 256 entries made on first use
+pub struct Crc32 {
+  pub table List[u32];
+
+  pub fn make() Crc32 {
+    mut t = List[u32].withCapacity(256usize);
+    mut n = 0u32;
+    while n < 256u32 {
+      mut c = n;
+      mut k = 0u32;
+      while k < 8u32 {
+        c = if (c & 1u32) != 0u32 {0xEDB88320u32 ^ (c >> 1u32);} else {c >> 1u32;};
+        k = k + 1u32;
+      }
+      t.push(c);
+      n = n + 1u32;
+    }
+    new Crc32(t);
+  }
+
+  // The CRC of data[from, to), continuing from 'crc' (0 to start)
+  pub fn update(self &, crc u32, data &Array[u8], from usize, to usize) u32 {
+    mut c = crc ^ 0xFFFFFFFFu32;
+    mut i = from;
+    while i < to {
+      c = *table[usize.from((c ^ u32.from(data[i])) & 0xFFu32)] ^ (c >> 8u32);
+      i = i + 1usize;
+    }
+    c ^ 0xFFFFFFFFu32;
+  }
+}

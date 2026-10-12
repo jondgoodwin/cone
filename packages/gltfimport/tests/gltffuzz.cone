@@ -1,0 +1,281 @@
+// Damaged glTF files must be refused, never crash. The skin, animation, morph
+// and sparse asset of gltfskin.cone is damaged thousands of ways by a fixed
+// pseudo-random generator (a character of the JSON changed, a run of bytes
+// changed, the text cut short, a piece removed, a number replaced by another,
+// the same for a .glb wrapping it) and loaded; every load must come back with
+// an Ok or an Error. A panic or a crash ends the program and fails the test.
+// FUZZ_SEED and FUZZ_SCALE in the environment run other damage, or more.
+
+mod gltffuzz;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import gltfimport use *;
+import libc;
+import stdio use *;
+
+struct Bin {
+  pub b List[u8];
+
+  pub fn putU8(self &mut, v u8) { b.push(v); }
+  pub fn putU16(self &mut, v u32) { b.push(u8.from(v & 255u32)); b.push(u8.from((v >> 8u32) & 255u32)); }
+  pub fn putU32(self &mut, v u32) { self.putU16(v & 0xFFFFu32); self.putU16(v >> 16u32); }
+  pub fn putF32(self &mut, v f32) { self.putU32(v as u32); }
+  pub fn align4(self &mut) { while b.len() % 4usize != 0usize { b.push(0u8); } }
+}
+
+// Mark the bytes since 'start' as the next buffer view
+fn view(b &mut Bin, views &mut String, count &mut usize, start usize) {
+  if *count > 0usize { views.append(","); }
+  views.append("{\"buffer\":0,\"byteOffset\":");
+  views.appendInt(i64.from(start));
+  views.append(",\"byteLength\":");
+  views.appendInt(i64.from(b.b.len() - start));
+  views.append("}");
+  *count = *count + 1usize;
+  b.align4();
+}
+
+fn vec3(b &mut Bin, x f32, y f32, z f32) { b.putF32(x); b.putF32(y); b.putF32(z); }
+
+fn build(json &mut String, bin &mut Bin) {
+  mut views = String.empty();
+  mut nv = 0usize;
+  mut s = 0usize;
+  // V0 quad positions
+  s = bin.b.len(); vec3(bin, 0., 0., 0.); vec3(bin, 1., 0., 0.); vec3(bin, 0., 2., 0.); vec3(bin, 1., 2., 0.); view(bin, &mut views, &mut nv, s);
+  // V1 joints (u8 x4), V2 weights (normalised u8 x4), V3 indices (u8)
+  s = bin.b.len();
+  bin.putU8(1u8); bin.putU8(0u8); bin.putU8(0u8); bin.putU8(0u8);
+  bin.putU8(1u8); bin.putU8(0u8); bin.putU8(0u8); bin.putU8(0u8);
+  bin.putU8(0u8); bin.putU8(1u8); bin.putU8(0u8); bin.putU8(0u8);
+  bin.putU8(0u8); bin.putU8(0u8); bin.putU8(0u8); bin.putU8(0u8);
+  view(bin, &mut views, &mut nv, s);
+  s = bin.b.len();
+  bin.putU8(255u8); bin.putU8(0u8); bin.putU8(0u8); bin.putU8(0u8);
+  bin.putU8(255u8); bin.putU8(0u8); bin.putU8(0u8); bin.putU8(0u8);
+  bin.putU8(128u8); bin.putU8(127u8); bin.putU8(0u8); bin.putU8(0u8);
+  bin.putU8(255u8); bin.putU8(0u8); bin.putU8(0u8); bin.putU8(0u8);
+  view(bin, &mut views, &mut nv, s);
+  s = bin.b.len();
+  bin.putU8(0u8); bin.putU8(1u8); bin.putU8(2u8); bin.putU8(2u8); bin.putU8(1u8); bin.putU8(3u8);
+  view(bin, &mut views, &mut nv, s);
+  // V4, V5 morph target displacements
+  s = bin.b.len(); vec3(bin, 0., 0., 1.); vec3(bin, 0., 0., 1.); vec3(bin, 0., 0., 1.); vec3(bin, 0., 0., 1.); view(bin, &mut views, &mut nv, s);
+  s = bin.b.len(); vec3(bin, 1., 0., 0.); vec3(bin, 2., 0., 0.); vec3(bin, 3., 0., 0.); vec3(bin, 4., 0., 0.); view(bin, &mut views, &mut nv, s);
+  // V6 inverse bind matrices: joint 0 (J1) a move of (0, -1, 0); joint 1 (J0) none
+  s = bin.b.len();
+  bin.putF32(1.); bin.putF32(0.); bin.putF32(0.); bin.putF32(0.);
+  bin.putF32(0.); bin.putF32(1.); bin.putF32(0.); bin.putF32(0.);
+  bin.putF32(0.); bin.putF32(0.); bin.putF32(1.); bin.putF32(0.);
+  bin.putF32(0.); bin.putF32(-1.); bin.putF32(0.); bin.putF32(1.);
+  bin.putF32(1.); bin.putF32(0.); bin.putF32(0.); bin.putF32(0.);
+  bin.putF32(0.); bin.putF32(1.); bin.putF32(0.); bin.putF32(0.);
+  bin.putF32(0.); bin.putF32(0.); bin.putF32(1.); bin.putF32(0.);
+  bin.putF32(0.); bin.putF32(0.); bin.putF32(0.); bin.putF32(1.);
+  view(bin, &mut views, &mut nv, s);
+  // V7, V8: J1's rotation keys
+  s = bin.b.len(); bin.putF32(0.); bin.putF32(1.); bin.putF32(2.); view(bin, &mut views, &mut nv, s);
+  s = bin.b.len();
+  bin.putF32(0.); bin.putF32(0.); bin.putF32(0.); bin.putF32(1.);
+  bin.putF32(0.); bin.putF32(0.); bin.putF32(0.70710678); bin.putF32(0.70710678);
+  bin.putF32(0.); bin.putF32(0.); bin.putF32(0.); bin.putF32(1.);
+  view(bin, &mut views, &mut nv, s);
+  // V9, V10: J0's translation keys
+  s = bin.b.len(); bin.putF32(0.); bin.putF32(1.); view(bin, &mut views, &mut nv, s);
+  s = bin.b.len(); vec3(bin, 0., 0., 0.); vec3(bin, 4., 0., 0.); view(bin, &mut views, &mut nv, s);
+  // V11, V12: morph weights, cubic: per key in, value, out of both targets
+  s = bin.b.len(); bin.putF32(0.); bin.putF32(1.); view(bin, &mut views, &mut nv, s);
+  s = bin.b.len();
+  bin.putF32(0.); bin.putF32(0.);  bin.putF32(0.); bin.putF32(1.);  bin.putF32(2.); bin.putF32(0.);
+  bin.putF32(0.4); bin.putF32(0.);  bin.putF32(1.); bin.putF32(0.);  bin.putF32(0.); bin.putF32(0.);
+  view(bin, &mut views, &mut nv, s);
+  // V13: strip positions
+  s = bin.b.len();
+  vec3(bin, 0., 0., 0.); vec3(bin, 1., 0., 0.); vec3(bin, 0., 1., 0.); vec3(bin, 1., 1., 0.); vec3(bin, 0., 2., 0.);
+  view(bin, &mut views, &mut nv, s);
+  // V14: the fan's positions, as sparse values; V15 their indices (u8)
+  s = bin.b.len();
+  vec3(bin, 0., 0., 0.); vec3(bin, 1., 0., 0.); vec3(bin, 1., 1., 0.); vec3(bin, 0., 1., 0.); vec3(bin, -1., 1., 0.);
+  view(bin, &mut views, &mut nv, s);
+  s = bin.b.len(); bin.putU8(0u8); bin.putU8(1u8); bin.putU8(2u8); bin.putU8(3u8); bin.putU8(4u8); view(bin, &mut views, &mut nv, s);
+  // V16: three positions; V17: a sparse index (u16 1); V18: its value
+  s = bin.b.len(); vec3(bin, 0., 0., 0.); vec3(bin, 1., 0., 0.); vec3(bin, 0., 1., 0.); view(bin, &mut views, &mut nv, s);
+  s = bin.b.len(); bin.putU16(1u32); view(bin, &mut views, &mut nv, s);
+  s = bin.b.len(); vec3(bin, 5., 6., 7.); view(bin, &mut views, &mut nv, s);
+
+  *json = String.from("{\"asset\":{\"version\":\"2.0\"},\"scene\":0,\"scenes\":[{\"nodes\":[0,2,3,4,5]}],");
+  json.append("\"nodes\":[{\"name\":\"J0\",\"children\":[1]},{\"name\":\"J1\",\"translation\":[0,1,0]},");
+  json.append("{\"name\":\"skinned\",\"mesh\":0,\"skin\":0},{\"mesh\":1},{\"mesh\":2},{\"mesh\":3}],");
+  json.append("\"skins\":[{\"name\":\"arm\",\"joints\":[1,0],\"inverseBindMatrices\":6,\"skeleton\":0}],");
+  json.append("\"meshes\":[{\"weights\":[0.25,0.75],\"primitives\":[{\"attributes\":{\"POSITION\":0,\"JOINTS_0\":1,\"WEIGHTS_0\":2},\"indices\":3,");
+  json.append("\"targets\":[{\"POSITION\":4},{\"POSITION\":5}]}]},");
+  json.append("{\"primitives\":[{\"attributes\":{\"POSITION\":13},\"mode\":5}]},");
+  json.append("{\"primitives\":[{\"attributes\":{\"POSITION\":14},\"mode\":6}]},");
+  json.append("{\"primitives\":[{\"attributes\":{\"POSITION\":15}}]}],");
+  json.append("\"animations\":[{\"name\":\"wave\",\"samplers\":[{\"input\":7,\"output\":8},{\"input\":9,\"output\":10,\"interpolation\":\"STEP\"},");
+  json.append("{\"input\":11,\"output\":12,\"interpolation\":\"CUBICSPLINE\"}],");
+  json.append("\"channels\":[{\"sampler\":0,\"target\":{\"node\":1,\"path\":\"rotation\"}},{\"sampler\":1,\"target\":{\"node\":0,\"path\":\"translation\"}},");
+  json.append("{\"sampler\":2,\"target\":{\"node\":2,\"path\":\"weights\"}}]}],");
+  json.append("\"buffers\":[{\"byteLength\":");
+  json.appendInt(i64.from(bin.b.len()));
+  json.append(",\"uri\":\"data:application/octet-stream;base64,@@\"}],\"bufferViews\":[");
+  json.append(views.view());
+  json.append("],\"accessors\":[");
+  json.append("{\"bufferView\":0,\"componentType\":5126,\"count\":4,\"type\":\"VEC3\"},");
+  json.append("{\"bufferView\":1,\"componentType\":5121,\"count\":4,\"type\":\"VEC4\"},");
+  json.append("{\"bufferView\":2,\"componentType\":5121,\"normalized\":true,\"count\":4,\"type\":\"VEC4\"},");
+  json.append("{\"bufferView\":3,\"componentType\":5121,\"count\":6,\"type\":\"SCALAR\"},");
+  json.append("{\"bufferView\":4,\"componentType\":5126,\"count\":4,\"type\":\"VEC3\"},");
+  json.append("{\"bufferView\":5,\"componentType\":5126,\"count\":4,\"type\":\"VEC3\"},");
+  json.append("{\"bufferView\":6,\"componentType\":5126,\"count\":2,\"type\":\"MAT4\"},");
+  json.append("{\"bufferView\":7,\"componentType\":5126,\"count\":3,\"type\":\"SCALAR\"},");
+  json.append("{\"bufferView\":8,\"componentType\":5126,\"count\":3,\"type\":\"VEC4\"},");
+  json.append("{\"bufferView\":9,\"componentType\":5126,\"count\":2,\"type\":\"SCALAR\"},");
+  json.append("{\"bufferView\":10,\"componentType\":5126,\"count\":2,\"type\":\"VEC3\"},");
+  json.append("{\"bufferView\":11,\"componentType\":5126,\"count\":2,\"type\":\"SCALAR\"},");
+  json.append("{\"bufferView\":12,\"componentType\":5126,\"count\":12,\"type\":\"SCALAR\"},");
+  json.append("{\"bufferView\":13,\"componentType\":5126,\"count\":5,\"type\":\"VEC3\"},");
+  json.append("{\"componentType\":5126,\"count\":5,\"type\":\"VEC3\",\"sparse\":{\"count\":5,\"indices\":{\"bufferView\":15,\"componentType\":5121},\"values\":{\"bufferView\":14}}},");
+  json.append("{\"bufferView\":16,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\",\"sparse\":{\"count\":1,\"indices\":{\"bufferView\":17,\"componentType\":5123},\"values\":{\"bufferView\":18}}}]}");
+}
+
+fn base64(d &Array[u8]) String {
+  imm tab = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  mut out = String.empty();
+  mut i = 0usize;
+  while i < d.len {
+    imm a = u32.from(d[i]);
+    imm b = if i + 1usize < d.len {u32.from(d[i + 1usize]);} else {0u32;};
+    imm c = if i + 2usize < d.len {u32.from(d[i + 2usize]);} else {0u32;};
+    imm v = (a << 16u32) | (b << 8u32) | c;
+    out.appendByte(tab[usize.from((v >> 18u32) & 63u32)]);
+    out.appendByte(tab[usize.from((v >> 12u32) & 63u32)]);
+    out.appendByte(if i + 1usize < d.len {tab[usize.from((v >> 6u32) & 63u32)];} else {'=';});
+    out.appendByte(if i + 2usize < d.len {tab[usize.from(v & 63u32)];} else {'=';});
+    i += 3usize;
+  }
+  out;
+}
+
+fn envNumber(name &str, fallback u64) u64 {
+  mut nm = String.from(name);
+  imm e = libc.getenv(nm.cstr());
+  if (e as usize) == 0usize { return fallback; }
+  mut n = 0u64;
+  mut i = 0usize;
+  while *(e + i) != 0u8 { n = n * 10u64 + u64.from(*(e + i) - 48u8); i += 1usize; }
+  n;
+}
+
+fn nextRand(s &mut u64) u64 {
+  *s = (*s * 6364136223846793005u64 + 1442695040888963407u64);
+  *s >> 33u64;
+}
+
+// A damaged copy of the bytes of 'src'
+fn damage(src &String, rng &mut u64) String {
+  mut out = String.empty();
+  imm n = src.len();
+  imm kind = nextRand(rng) % 6u64;
+  mut i = 0usize;
+  if kind == 0u64 {
+    while i < n { out.appendByte(src[i]); i += 1usize; }
+    imm at = usize.from(nextRand(rng) % u64.from(n));
+    out.replaceByte(src[at], u8.from(32u64 + nextRand(rng) % 90u64));
+  } elif kind == 1u64 {
+    imm at = usize.from(nextRand(rng) % u64.from(n));
+    imm len = usize.from(nextRand(rng) % 12u64) + 1usize;
+    while i < n {
+      if i >= at and i < at + len { out.appendByte(u8.from(32u64 + nextRand(rng) % 90u64)); } else { out.appendByte(src[i]); }
+      i += 1usize;
+    }
+  } elif kind == 2u64 {
+    imm keep = usize.from(nextRand(rng) % u64.from(n));
+    while i < keep { out.appendByte(src[i]); i += 1usize; }
+  } elif kind == 3u64 {
+    imm at = usize.from(nextRand(rng) % u64.from(n));
+    imm len = usize.from(nextRand(rng) % 24u64) + 1usize;
+    while i < n { if i < at or i >= at + len { out.appendByte(src[i]); } i += 1usize; }
+  } elif kind == 4u64 {
+    // A digit becomes another digit: indices and counts go wrong
+    while i < n { out.appendByte(src[i]); i += 1usize; }
+    mut tries = 0usize;
+    while tries < 200usize {
+      imm at = usize.from(nextRand(rng) % u64.from(n));
+      if src[at] >= '0' and src[at] <= '9' {
+        out.replaceByte(src[at], u8.from(48u64 + nextRand(rng) % 10u64));
+        break;
+      }
+      tries += 1usize;
+    }
+  } else {
+    // A digit becomes a big number: a count or an offset past everything
+    while i < n {
+      out.appendByte(src[i]);
+      if src[i] == ':' and nextRand(rng) % 40u64 == 0u64 { out.append("99999999999"); i += 1usize; while i < n and src[i] >= '0' and src[i] <= '9' { i += 1usize; } continue; }
+      i += 1usize;
+    }
+  }
+  out;
+}
+
+fn consistent(g &Gltf) bool {
+  mut m = 0usize;
+  while m < g.meshes.len() {
+    mut p = 0usize;
+    while p < g.meshes[m].primitives.len() {
+      imm pr = g.meshes[m].primitives[p];
+      imm n = pr.mesh.positions.len();
+      mut i = 0usize;
+      while i < pr.mesh.indices.len() { if usize.from(*pr.mesh.indices[i]) >= n { return false; } i += 1usize; }
+      if pr.mesh.normals.len() != 0usize and pr.mesh.normals.len() != n { return false; }
+      if pr.mesh.uvs.len() != 0usize and pr.mesh.uvs.len() != n { return false; }
+      p += 1usize;
+    }
+    m += 1usize;
+  }
+  mut i = 0usize;
+  while i < g.nodes.len() {
+    if g.nodes[i].mesh >= i32.from(g.meshes.len()) { return false; }
+    i += 1usize;
+  }
+  true;
+}
+
+fn main() i32 {
+  mut json = String.empty();
+  mut bin = new Bin(List[u8].empty());
+  build(&mut json, &mut bin);
+  json.replace("@@", base64(bin.b.view()).view());
+  mut rng = envNumber("FUZZ_SEED", 777u64);
+  imm scale = usize.from(envNumber("FUZZ_SCALE", 1u64));
+  imm trace = envNumber("FUZZ_TRACE", 0u64) == 1u64;
+  mut loaded = 0usize;
+  mut refused = 0usize;
+  mut bad = 0usize;
+  mut k = 0usize;
+  while k < 6000usize * scale {
+    imm d = damage(&json, &mut rng);
+    if trace { printInt(i64.from(k)); printStr(": "); printStr(d.view()); printStr("
+"); print.flush(); }
+    match loadGltfBytes(d.view(), true) {
+      case imm g Ok {
+        loaded += 1usize;
+        if not consistent(&g) { bad += 1usize; }
+        // Using a loaded model must not crash either: its animation and its skeleton
+        if g.animations.len() > 0usize and g.skins.len() > 0usize {
+          imm map = skeletonOf(&g, 0usize);
+          imm pose = poseAt(&g, &map, 0usize, g.animations[0usize], 0.5);
+        }
+      }
+      case imm e Error { refused += 1usize; }
+    }
+    k += 1usize;
+  }
+  expectInt(i64.from(bad), 0i64, "every model that loaded is consistent");
+  expect(refused > 1000usize, "most damage is noticed");
+  expect(loaded > 0usize, "some damage (in a number) is harmless");
+  done();
+}

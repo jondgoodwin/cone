@@ -1,0 +1,96 @@
+// The package's DEFLATE writer against its reader, over data of many shapes
+// and sizes at all three levels. Writer and reader could share a mistake,
+// so the writer's streams were also checked, once, against Python's zlib
+// (all 12 of 4 kinds x 3 levels at 200,000 bytes decompress to the original);
+// the reader is checked against zlib's streams in inflate.cone.
+//
+// Shapes: random bytes (no matches to find), long runs (maximum-length
+// matches at distance 1), a repeat 251 bytes long with noise, a six-letter
+// alphabet (dynamic Huffman pays), and a repeat at the window's far edge
+// (distance exactly 32768). Sizes around the places a codec's edges are: 0,
+// 1, 2, 3, 257, 258, 259, 65535, 65536, 65537, 100000. A level that is no
+// smaller than storing must still be the right bytes; data that does not
+// compress is stored, so no stream is more than 5 bytes a 64 KiB block above
+// the data.
+
+mod deflateroundtrip;
+
+import testing use *;
+import collections use *;
+import imagedecode use *;
+
+fn data(kind i32, n usize) List[u8] {
+  mut d = List[u8].empty();
+  mut s = 12345u64;
+  mut i = 0usize;
+  while i < n {
+    s = s * 6364136223846793005u64 + 1442695040888963407u64;
+    if kind == 0 { d.push(u8.from((s >> 40u64) & 255u64)); }
+    elif kind == 1 { d.push(u8.from((i / 100usize) & 255usize)); }
+    elif kind == 2 { d.push(u8.from(((i * 7usize) % 251usize) + (if (s >> 60u64) == 0u64 {1usize;} else {0usize;}))); }
+    elif kind == 3 { d.push(u8.from(97u64 + ((s >> 50u64) % 6u64))); }
+    else {
+      // 32768 random bytes, then the same again: a match at distance 32768
+      if i < 32768usize { d.push(u8.from((s >> 40u64) & 255u64)); } else { d.push(*d[i - 32768usize]); }
+    }
+    i += 1usize;
+  }
+  d;
+}
+
+fn same(a &Array[u8], b &Array[u8]) bool {
+  if a.len != b.len { return false; }
+  mut i = 0usize;
+  while i < a.len { if a[i] != b[i] { return false; } i += 1usize; }
+  true;
+}
+
+fn main() i32 {
+  imm sizes Array[usize, 11] = [0usize, 1usize, 2usize, 3usize, 257usize, 258usize, 259usize, 65535usize, 65536usize, 65537usize, 100000usize];
+  mut failures = 0usize;
+  mut count = 0usize;
+  mut oversize = 0usize;
+  mut kind = 0;
+  while kind < 5 {
+    mut si = 0usize;
+    while si < 11usize {
+      imm d = data(kind, sizes[si]);
+      mut level = 0;
+      while level < 3 {
+        imm z = zlibCompress(d.view(), level);
+        count += 1usize;
+        match zlibDecompress(z.view(), d.len()) {
+          case imm ok Ok { if not same(ok.view(), d.view()) { failures += 1usize; } }
+          case imm e Error { failures += 1usize; }
+        }
+        // Without the size given, too
+        match zlibDecompress(z.view(), 0usize) {
+          case imm ok Ok { if not same(ok.view(), d.view()) { failures += 1usize; } }
+          case imm e Error { failures += 1usize; }
+        }
+        if z.len() > d.len() + 6usize + 5usize * (d.len() / 65535usize + 1usize) + 4usize { oversize += 1usize; }
+        level += 1;
+      }
+      si += 1usize;
+    }
+    kind += 1;
+  }
+  expectInt(i64.from(count), 165i64, "streams made");
+  expectInt(i64.from(failures), 0i64, "streams that did not decode to their data");
+  expectInt(i64.from(oversize), 0i64, "streams larger than storing the data");
+
+  // What compression is worth
+  imm runs = data(1, 100000usize);
+  imm l1 = zlibCompress(runs.view(), 1);
+  imm l2 = zlibCompress(runs.view(), 2);
+  expect(l1.len() < 6000usize, "runs shrink by 94 percent at level 1");
+  expect(l2.len() <= l1.len() + 16usize, "and dynamic Huffman is not worse");
+  imm letters = data(3, 100000usize);
+  imm m1 = zlibCompress(letters.view(), 1);
+  imm m2 = zlibCompress(letters.view(), 2);
+  expect(m2.len() < m1.len(), "six letters: dynamic Huffman beats the fixed code");
+  expect(m2.len() < 100000usize * 13usize / 32usize, "six letters take about three bits a letter (a greedy parse and no cost model: the entropy is 2.58)");
+  imm far = data(4, 65536usize);
+  expect(zlibCompress(far.view(), 2).len() < 33500usize, "the repeat at distance 32768 is found");
+  done();
+}

@@ -1726,6 +1726,24 @@ LLVMValueRef genlRecast(GenState *gen, INode* exp, INode* to) {
     // the value is already what is wanted.
     if (totype->tag == ArrayTag && LLVMTypeOf(genexp) == genlType(gen, totype))
         return genexp;
+    // In a global's initializer, which has no memory to reinterpret a value through,
+    // a constant struct wanted as another struct of the same fields, a payload-less
+    // variant as its enum, is that constant re-typed (litIsEnumVariant)
+    if (gen->fn == NULL && totype->tag == StructTag && LLVMIsConstant(genexp) && LLVMGetTypeKind(LLVMTypeOf(genexp)) == LLVMStructTypeKind) {
+        LLVMTypeRef tollvm = genlType(gen, totype);
+        unsigned nfields = LLVMCountStructElementTypes(tollvm);
+        if (LLVMCountStructElementTypes(LLVMTypeOf(genexp)) == nfields) {
+            LLVMValueRef *elems = (LLVMValueRef *)memAllocBlk((nfields ? nfields : 1) * sizeof(LLVMValueRef));
+            int same = 1;
+            for (unsigned i = 0; i < nfields; ++i) {
+                elems[i] = LLVMGetAggregateElement(genexp, i);
+                if (elems[i] == NULL || LLVMTypeOf(elems[i]) != LLVMStructGetTypeAtIndex(tollvm, i))
+                    same = 0;
+            }
+            if (same)
+                return LLVMConstNamedStruct(tollvm, elems, nfields);
+        }
+    }
     if (totype->tag == StructTag || totype->tag == ArrayTag) {
         // refrust.html: a reinterpretation re-casts a value "as if it were a
         // value of a different, but same-sized type". castTypeCheck enforces
