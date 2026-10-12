@@ -231,24 +231,20 @@ pub struct Edge {
     dist;
   }
 
-  // The edge cut into thirds (a line's, or a quadratic's by de Casteljau)
-  pub fn third(self &, k u32) Edge {
-    imm t0 = f64.from(k) / 3.0d;
-    imm t1 = f64.from(k + 1u32) / 3.0d;
-    if kind == EDGE_LINE { return new Edge(EDGE_LINE, self.point(t0), self.point((t0 + t1) * 0.5d), self.point(t1), color); }
-    // The control point of the piece [t0, t1]: the curve's tangents at the ends meet there
+  // The part of the edge from parameter t0 to t1, as an edge of the same
+  // kind and colour. A quadratic's piece has the curve's own points at its
+  // ends and, for its control point, the point t0 plus the tangent there
+  // times the length of the piece: the two tangents of a parabola's arc meet
+  // halfway along the parameter.
+  pub fn sub(self &, t0 f64, t1 f64) Edge {
     imm p0 = self.point(t0);
     imm p1 = self.point(t1);
-    imm d0 = self.direction(t0);
-    imm d1 = self.direction(t1);
-    imm cr = d0.cross(d1);
-    mut ctrl = (p0 + p1) * 0.5d;
-    if libc.fabs(cr) > 1.0e-12d {
-      imm s = (p1 - p0).cross(d1) / cr;
-      ctrl = p0 + d0 * s;
-    }
-    new Edge(EDGE_QUAD, p0, ctrl, p1, color);
+    if kind == EDGE_LINE { return new Edge(EDGE_LINE, p0, (p0 + p1) * 0.5d, p1, color); }
+    new Edge(EDGE_QUAD, p0, p0 + self.direction(t0) * (t1 - t0), p1, color);
   }
+
+  // The edge cut into thirds
+  pub fn third(self &, k u32) Edge { self.sub(f64.from(k) / 3.0d, f64.from(k + 1u32) / 3.0d); }
 }
 
 // A closed contour: edges [start, start + count) of its shape
@@ -376,6 +372,279 @@ pub struct Shape {
     }
     *lo = new Pt(x0, y0);
     *hi = new Pt(x1, y1);
+  }
+
+  // The winding number of the contours round p, by a ray towards +x: not
+  // zero inside the filled area (TrueType's rule)
+  pub fn windingAt(self &, p Pt) i32 {
+    // A ray a hair above p, so that a vertex on it is not counted twice or not at all
+    imm y = p.y + 1.0e-7d;
+    mut w = 0i32;
+    mut i = 0usize;
+    while i < edges.len() {
+      imm e = *edges[i];
+      if e.kind == EDGE_LINE {
+        if (e.a.y <= y) != (e.c.y <= y) {
+          imm x = e.a.x + (y - e.a.y) / (e.c.y - e.a.y) * (e.c.x - e.a.x);
+          if x > p.x {
+            if e.c.y > e.a.y { w = w + 1i32; } else { w = w - 1i32; }
+          }
+        }
+      } else {
+        imm qa = e.a.y - 2.0d * e.b.y + e.c.y;
+        imm qb = 2.0d * (e.b.y - e.a.y);
+        mut roots = new Array[f64, 3] <- fill 0.0d;
+        imm n = solveQuadratic(&mut roots, qa, qb, e.a.y - y);
+        mut k = 0i32;
+        while k < n and k < 2i32 {
+          imm t = roots[usize.from(u32.from(k))];
+          if t >= 0.0d and t < 1.0d {
+            imm dy = 2.0d * qa * t + qb;
+            if libc.fabs(dy) > 1.0e-12d and e.point(t).x > p.x {
+              if dy > 0.0d { w = w + 1i32; } else { w = w - 1i32; }
+            }
+          }
+          k = k + 1i32;
+        }
+      }
+      i = i + 1usize;
+    }
+    w;
+  }
+
+  // Whether the point 'e' has at parameter t is on the boundary of the
+  // filled area: the material (the right of the edge's direction) is on one
+  // side only
+  fn onBoundary(self &, e Edge, t f64) bool {
+    imm p = e.point(t);
+    imm d = e.direction(t).normalized();
+    imm right = new Pt(d.y, -d.x) * 0.25d;
+    self.windingAt(p + right) != 0i32 and self.windingAt(p - right) == 0i32;
+  }
+
+  // The parameters at which edge number 'ei' crosses another edge, found by
+  // cutting each other edge into short straight segments (a line is one; a
+  // quadratic 16) and solving the edge against each segment exactly (a line:
+  // linearly; a quadratic: a quadratic equation). Unsorted.
+  fn crossings(self &, ei usize, out &mut List[f64]) {
+    imm e = *edges[ei];
+    mut fi = 0usize;
+    while fi < edges.len() {
+      if fi != ei {
+        imm f = *edges[fi];
+        // A line also gets cut where another edge's end lies on it (the
+        // other edge may run along it, which a crossing does not show)
+        if e.kind == EDGE_LINE {
+          imm ab = e.c - e.a;
+          imm abab = ab.dot(ab);
+          mut end = 0u32;
+          while end < 2u32 {
+            imm p = if end == 0u32 { f.a; } else { f.c; };
+            imm t = (p - e.a).dot(ab) / abab;
+            if t > 0.0d and t < 1.0d and (e.a + ab * t - p).length() < 0.01d { out.push(t); }
+            end = end + 1u32;
+          }
+        }
+        imm steps = if f.kind == EDGE_LINE { 1u32; } else { 16u32; };
+        mut prev = f.a;
+        mut s = 1u32;
+        while s <= steps {
+          imm cur = f.point(f64.from(s) / f64.from(steps));
+          imm dir = cur - prev;
+          imm dd = dir.dot(dir);
+          if dd > 0.0d {
+            if e.kind == EDGE_LINE {
+              imm ab = e.c - e.a;
+              imm denom = ab.cross(dir);
+              if libc.fabs(denom) > 1.0e-12d {
+                imm t = (prev - e.a).cross(dir) / denom;
+                imm u = (prev - e.a).cross(ab) / denom;
+                if t > 0.0d and t < 1.0d and u >= 0.0d and u <= 1.0d { out.push(t); }
+              }
+            } else {
+              // cross(e(t) - prev, dir) = c0 + c1 t + c2 t^2
+              imm c0 = (e.a - prev).cross(dir);
+              imm c1 = 2.0d * (e.b - e.a).cross(dir);
+              imm c2 = (e.a - e.b - e.b + e.c).cross(dir);
+              mut roots = new Array[f64, 3] <- fill 0.0d;
+              imm n = solveQuadratic(&mut roots, c2, c1, c0);
+              mut k = 0i32;
+              while k < n and k < 2i32 {
+                imm t = roots[usize.from(u32.from(k))];
+                if t > 0.0d and t < 1.0d {
+                  imm u = (e.point(t) - prev).dot(dir) / dd;
+                  if u >= 0.0d and u <= 1.0d { out.push(t); }
+                }
+                k = k + 1i32;
+              }
+            }
+          }
+          prev = cur;
+          s = s + 1u32;
+        }
+      }
+      fi = fi + 1usize;
+    }
+  }
+
+  // When contours overlap, or one crosses itself, some edges run inside the
+  // filled area, where a distance field would measure to them as if they
+  // were an outline (a hole in a stroke where it crosses another). This
+  // replaces the edges by the pieces of them that lie on the boundary of the
+  // filled area: each edge is cut where it crosses another ('crossings') and
+  // a piece is kept if, at three points along it, the material (the right of
+  // its direction) is inside the fill and the other side outside it, by the
+  // winding number. The pieces are linked end to start into closed contours
+  // again (each contour of the union's boundary), their windings set, ready
+  // for 'colorEdges', which then finds the new corners where edges cross.
+  // Answers whether it changed anything: a shape with no edge inside is left
+  // as it was. Call it before 'colorEdges'.
+  pub fn resolveOverlaps(self &mut) bool {
+    mut kept = List[Edge].empty();
+    mut parent = List[usize].empty();         // for each kept piece: its edge, and the parameters it spans
+    mut starts = List[f64].empty();
+    mut stops = List[f64].empty();
+    mut changed = false;
+    mut i = 0usize;
+    while i < edges.len() {
+      imm e = *edges[i];
+      mut cuts = List[f64].empty();
+      cuts.push(0.0d);
+      self.crossings(i, &mut cuts);
+      cuts.push(1.0d);
+      // Sorted by insertion
+      mut a = 1usize;
+      while a < cuts.len() {
+        imm v = *cuts[a];
+        mut b = a;
+        while b > 0usize and *cuts[b - 1usize] > v { cuts.set(b, *cuts[b - 1usize]); b = b - 1usize; }
+        cuts.set(b, v);
+        a = a + 1usize;
+      }
+      // Pieces between cuts: those on the boundary are kept
+      mut k = 0usize;
+      while k + 1usize < cuts.len() {
+        imm t0 = *cuts[k];
+        imm t1 = *cuts[k + 1usize];
+        if t1 - t0 > 1.0e-9d {
+          mut on = 0u32;
+          mut s = 1u32;
+          while s < 4u32 {
+            if self.onBoundary(e, t0 + (t1 - t0) * f64.from(s) / 4.0d) { on = on + 1u32; }
+            s = s + 1u32;
+          }
+          if on >= 2u32 {
+            kept.push(e.sub(t0, t1));
+            parent.push(i);
+            starts.push(t0);
+            stops.push(t1);
+          } else {
+            changed = true;
+          }
+        }
+        k = k + 1usize;
+      }
+      i = i + 1usize;
+    }
+    if !changed { return false; }
+    // Two contours along one line (a serif's top and a stem's) leave the same
+    // piece twice: keep one
+    mut unique = List[bool].empty();
+    i = 0usize;
+    while i < kept.len() {
+      imm e = *kept[i];
+      mut seen = false;
+      mut j = 0usize;
+      while j < i {
+        if *unique[j] {
+          imm u = *kept[j];
+          if (u.a - e.a).length() < 0.01d and (u.c - e.c).length() < 0.01d and (u.b - e.b).length() < 0.05d { seen = true; }
+        }
+        j = j + 1usize;
+      }
+      unique.push(!seen);
+      i = i + 1usize;
+    }
+    // Pieces that follow one another along one edge join up again
+    mut joined = List[Edge].empty();
+    i = 0usize;
+    while i < kept.len() {
+      if *unique[i] {
+        mut stop = *stops[i];
+        imm p = *parent[i];
+        mut j = i + 1usize;
+        mut more = true;
+        while more and j < kept.len() {
+          if !*unique[j] { j = j + 1usize; }
+          elif *parent[j] == p and *starts[j] == stop { stop = *stops[j]; j = j + 1usize; }
+          else { more = false; }
+        }
+        joined.push(if *starts[i] == 0.0d and stop == 1.0d { *edges[p]; } else { (*edges[p]).sub(*starts[i], stop); });
+        i = j;
+      } else {
+        i = i + 1usize;
+      }
+    }
+    kept = joined;
+    // Link the pieces end to start into closed contours again (a piece
+    // begins within 'tol' of where its predecessor ends: the cuts were found
+    // against short segments, not the curves), snapping each start to the
+    // end before it so that the corners are exact
+    mut lo = new Pt(0.0d, 0.0d);
+    mut hi = new Pt(0.0d, 0.0d);
+    self.bounds(&mut lo, &mut hi);
+    imm tol = fmax64(hi.x - lo.x, hi.y - lo.y) * 0.003d;
+    mut used = List[bool].empty();
+    i = 0usize;
+    while i < kept.len() { used.push(false); i = i + 1usize; }
+    mut linked = List[Edge].empty();
+    mut made = List[Contour].empty();
+    i = 0usize;
+    while i < kept.len() {
+      if !*used[i] {
+        used.set(i, true);
+        imm begin = linked.len();
+        imm startPoint = (*kept[i]).a;
+        linked.push(*kept[i]);
+        mut cur = (*kept[i]).c;
+        mut going = true;
+        while going {
+          if (cur - startPoint).length() < tol and linked.len() - begin >= 2usize {
+            // closed: the last end is the first start
+            mut last = *linked[linked.len() - 1usize];
+            last.c = startPoint;
+            linked.set(linked.len() - 1usize, last);
+            going = false;
+          } else {
+            mut best = kept.len();
+            mut bestDistance = tol;
+            mut j = 0usize;
+            while j < kept.len() {
+              if !*used[j] {
+                imm d = ((*kept[j]).a - cur).length();
+                if d < bestDistance { bestDistance = d; best = j; }
+              }
+              j = j + 1usize;
+            }
+            if best >= kept.len() {
+              going = false;
+            } else {
+              used.set(best, true);
+              mut next = *kept[best];
+              next.a = cur;
+              linked.push(next);
+              cur = next.c;
+            }
+          }
+        }
+        made.push(new Contour(u32.from(begin), u32.from(linked.len() - begin), 1i32));
+      }
+      i = i + 1usize;
+    }
+    edges = linked;
+    contours = made;
+    self.setWindings();
+    true;
   }
 }
 

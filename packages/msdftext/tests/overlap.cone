@@ -1,0 +1,204 @@
+// Overlapping contours resolved to the boundary of the filled area, checked by
+// hand and against the winding number.
+//
+// Two squares of 100 (clockwise, as TrueType's outer contours), the second moved by
+// (50, 50): their union is an L-shaped octagon of area 100^2 + 100^2 - 50^2 =
+// 17500 whose corners are (0,0) (0,100) (50,100) (50,150) (150,150) (150,50)
+// (100,50) (100,0): eight edges in one contour of winding +1, and the point
+// (75, 75) in it, (25, 125) and (125, 25) out of it.
+//
+// Two rectangles side by side that share the line along their bottoms and tops
+// ((0,0)-(100,100) and (50,0)-(150,100)): the union is one 150 x 100
+// rectangle of area 15000 whose bottom and top each have the other's piece
+// along the shared stretch twice over (the same piece from both); resolved,
+// one contour, no edge left inside, area 15000.
+//
+// A shape with nothing inside it (one square) is left as it was.
+//
+// And Cascadia Mono's 'e', 'r', 'g', 'a' and '&', where installed (their outlines
+// cross themselves): after resolving, the winding number's zero-or-not at points
+// of a grid agrees with the original outline's but within 2 units of an edge.
+
+mod overlap;
+
+import testing use *;
+import fs;
+import path use Path;
+import libc;
+import collections use *;
+import msdftext use *;
+
+fn square(o &mut Outline, x f64, y f64, size f64) {
+  imm first = o.xs.len();
+  // Clockwise: up the left, across the top, down the right
+  o.xs.push(x);
+  o.ys.push(y);
+  o.on.push(true);
+  o.xs.push(x);
+  o.ys.push(y + size);
+  o.on.push(true);
+  o.xs.push(x + size);
+  o.ys.push(y + size);
+  o.on.push(true);
+  o.xs.push(x + size);
+  o.ys.push(y);
+  o.on.push(true);
+  o.ends.push(u32.from(first + 3usize));
+}
+
+fn rectangle(o &mut Outline, x f64, y f64, w f64, h f64) {
+  imm first = o.xs.len();
+  o.xs.push(x);
+  o.ys.push(y);
+  o.on.push(true);
+  o.xs.push(x);
+  o.ys.push(y + h);
+  o.on.push(true);
+  o.xs.push(x + w);
+  o.ys.push(y + h);
+  o.on.push(true);
+  o.xs.push(x + w);
+  o.ys.push(y);
+  o.on.push(true);
+  o.ends.push(u32.from(first + 3usize));
+}
+
+// The area enclosed by the shape's contours by the shoelace formula (positive for clockwise)
+fn areaOf(shape &Shape) f64 {
+  mut total = 0.0d;
+  mut i = 0usize;
+  while i < shape.edges.len() {
+    imm e = *shape.edges[i];
+    if e.kind == EDGE_LINE {
+      total = total + (e.c.x - e.a.x) * (e.a.y + e.c.y) * 0.5d;
+    } else {
+      // A quadratic's: the chord's trapezoid less the parabola's segment, 2/3 of the control triangle
+      total = total + (e.c.x - e.a.x) * (e.a.y + e.c.y) * 0.5d;
+      total = total - (e.b - e.a).cross(e.c - e.a) * (1.0d / 3.0d);
+    }
+    i = i + 1usize;
+  }
+  total;
+}
+
+fn squares() {
+  mut o = Outline.empty();
+  square(&mut o, 0.0d, 0.0d, 100.0d);
+  square(&mut o, 50.0d, 50.0d, 100.0d);
+  mut shape = Shape.fromOutline(&o);
+  expectUInt(u64.from(shape.edges.len()), 8u64, "two squares: 8 edges before");
+  expect(shape.resolveOverlaps(), "two squares: overlaps found");
+  expectUInt(u64.from(shape.edges.len()), 8u64, "union: 8 edges");
+  expectUInt(u64.from(shape.contours.len()), 1u64, "union: one contour");
+  expectInt(i64.from((*shape.contours[0usize]).winding), 1i64, "union: winding +1");
+  expectFloat(areaOf(&shape), 17500.0d, 0.01d, "union: area 17500");
+  expect(shape.windingAt(new Pt(75.0d, 75.0d)) != 0i32, "union: (75, 75) inside");
+  expectInt(i64.from(shape.windingAt(new Pt(25.0d, 125.0d))), 0i64, "union: (25, 125) outside");
+  expectInt(i64.from(shape.windingAt(new Pt(125.0d, 25.0d))), 0i64, "union: (125, 25) outside");
+  // The corners are where they should be
+  mut found = 0u32;
+  mut i = 0usize;
+  while i < shape.edges.len() {
+    imm e = *shape.edges[i];
+    if (libc.fabs(e.a.x - 50.0d) < 0.01d and libc.fabs(e.a.y - 100.0d) < 0.01d) or
+        (libc.fabs(e.a.x - 100.0d) < 0.01d and libc.fabs(e.a.y - 50.0d) < 0.01d) { found = found + 1u32; }
+    i = i + 1usize;
+  }
+  expectUInt(u64.from(found), 2u64, "union: the two inner corners (50, 100) and (100, 50) start an edge");
+}
+
+fn shared() {
+  mut o = Outline.empty();
+  rectangle(&mut o, 0.0d, 0.0d, 100.0d, 100.0d);
+  rectangle(&mut o, 50.0d, 0.0d, 100.0d, 100.0d);
+  mut shape = Shape.fromOutline(&o);
+  expect(shape.resolveOverlaps(), "side by side: overlaps found");
+  expectUInt(u64.from(shape.contours.len()), 1u64, "side by side: one contour");
+  expectFloat(areaOf(&shape), 15000.0d, 0.01d, "side by side: area 15000");
+  expect(shape.windingAt(new Pt(75.0d, 50.0d)) != 0i32, "side by side: the shared part is inside");
+  // No edge lies along x = 100 or x = 50 inside the rectangle
+  mut inside = 0u32;
+  mut i = 0usize;
+  while i < shape.edges.len() {
+    imm e = *shape.edges[i];
+    if libc.fabs(e.a.x - e.c.x) < 0.001d and e.a.x > 1.0d and e.a.x < 149.0d { inside = inside + 1u32; }
+    i = i + 1usize;
+  }
+  expectUInt(u64.from(inside), 0u64, "side by side: no edge left inside");
+}
+
+fn alone() {
+  mut o = Outline.empty();
+  square(&mut o, 0.0d, 0.0d, 100.0d);
+  mut shape = Shape.fromOutline(&o);
+  expect(!shape.resolveOverlaps(), "one square: nothing to resolve");
+  expectUInt(u64.from(shape.edges.len()), 4u64, "one square: unchanged");
+}
+
+// Winding zero-or-not of the original and the resolved outline, at grid points
+fn sameFill(font &Font, cp u32, label &Array[u8]) {
+  imm o = font.outline(font.glyphOf(cp));
+  imm original = Shape.fromOutline(&o);
+  mut resolved = Shape.fromOutline(&o);
+  resolved.resolveOverlaps();
+  mut lo = new Pt(0.0d, 0.0d);
+  mut hi = new Pt(0.0d, 0.0d);
+  original.bounds(&mut lo, &mut hi);
+  mut mismatches = 0u32;
+  mut total = 0u32;
+  mut y = lo.y + 3.0d;
+  while y < hi.y {
+    mut x = lo.x + 3.0d;
+    while x < hi.x {
+      imm p = new Pt(x, y);
+      total = total + 1u32;
+      if (original.windingAt(p) != 0i32) != (resolved.windingAt(p) != 0i32) { mismatches = mismatches + 1u32; }
+      x = x + 17.0d;
+    }
+    y = y + 17.0d;
+  }
+  expect(total > 500u32, label);
+  // Points within a few units of an edge may differ by the cuts' precision
+  expect(mismatches * 500u32 <= total, label);
+  // Closed contours: every piece's end meets the next one's start
+  mut gaps = 0u32;
+  mut c = 0usize;
+  while c < resolved.contours.len() {
+    imm ct = *resolved.contours[c];
+    mut k = 0u32;
+    while k < ct.count {
+      imm e = *resolved.edges[usize.from(ct.start + k)];
+      imm next = *resolved.edges[usize.from(ct.start + (k + 1u32) % ct.count)];
+      if (e.c - next.a).length() > 0.01d { gaps = gaps + 1u32; }
+      k = k + 1u32;
+    }
+    c = c + 1usize;
+  }
+  expectUInt(u64.from(gaps), 0u64, label);
+}
+
+fn cascadia() {
+  match fs.readFile(&Path.fromLiteral("C:/Windows/Fonts/CascadiaMono.ttf")) {
+    case imm bytes Ok {
+      match Font.load(bytes.view()) {
+        case imm f Ok {
+          sameFill(&f, 0x65u32, "Cascadia e: the same filled area after resolving, contours closed");
+          sameFill(&f, 0x72u32, "Cascadia r: the same filled area after resolving, contours closed");
+          sameFill(&f, 0x67u32, "Cascadia g: the same filled area after resolving, contours closed");
+          sameFill(&f, 0x61u32, "Cascadia a: the same filled area after resolving, contours closed");
+          sameFill(&f, 0x26u32, "Cascadia &: the same filled area after resolving, contours closed");
+        }
+        case is Error { require(false, "Cascadia Mono loads"); }
+      }
+    }
+    case is Error { }
+  }
+}
+
+fn main() i32 {
+  squares();
+  shared();
+  alone();
+  cascadia();
+  done();
+}
