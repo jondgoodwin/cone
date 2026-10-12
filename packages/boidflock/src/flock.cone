@@ -101,13 +101,13 @@ pub struct Flock {
       imm uk = u32.from(k);
       // A flock starts about a point 40 m from home, round it by group
       imm ga = f32.from(group) * 2.2 + 0.5;
-      imm cx = params.home.x + 40. * cos(ga);
-      imm cz = params.home.z + 40. * sin(ga);
+      imm cx = params.home.x + 40. * cosRounded(ga);
+      imm cz = params.home.z + 40. * sinRounded(ga);
       imm px = cx + (unit(seed, uk, 1u32) - 0.5) * 16.;
       imm pz = cz + (unit(seed, uk, 2u32) - 0.5) * 16.;
       imm py = ground(px, pz) + params.cruiseHeight + (unit(seed, uk, 3u32) - 0.5) * 8.;
       imm heading = unit(seed, uk, 4u32) * 2. * pi;
-      imm dir = new Vec3(cos(heading), 0., sin(heading));
+      imm dir = new Vec3(cosRounded(heading), 0., sinRounded(heading));
       imm sb = 0.9 + 0.2 * unit(seed, uk, 5u32);
       imm v = dir * (params.cruiseSpeed * sb);
       f.birds.push(new Bird(new Vec3(px, py, pz), v, dir, 0., group, sb, 0.85 + 0.3 * unit(seed, uk, 6u32),
@@ -127,10 +127,10 @@ pub struct Flock {
     right = if right.length() < 0.0001 { new Vec3(1., 0., 0.); } else { right.normalize(); };
     imm level = right.cross(b.forward).normalize();
     // Leaning into a turn: up tilts towards the side the bird turns to
-    imm up = (level * cos(b.bank) + right * sin(b.bank)).normalize();
+    imm up = (level * cosRounded(b.bank) + right * sinRounded(b.bank)).normalize();
     imm r2 = b.forward.cross(up).normalize();
     // A small bob with each beat
-    imm bob = 0.025 * sin(b.phase) * b.amp;
+    imm bob = 0.025 * sinRounded(b.phase) * b.amp;
     new BirdPose(b.pos + level * bob, b.forward, up, r2, b.phase, b.amp, b.rate, b.mode);
   }
 
@@ -166,8 +166,8 @@ pub struct Flock {
         imm ug = u32.from(g);
         imm angle = unit(seed, ug + steps * 7u32, 100u32) * 2. * pi;
         imm radius = params.homeRadius * 0.7 * unit(seed, ug + steps * 7u32, 101u32).sqrt();
-        imm x = params.home.x + radius * cos(angle);
-        imm z = params.home.z + radius * sin(angle);
+        imm x = params.home.x + radius * cosRounded(angle);
+        imm z = params.home.z + radius * sinRounded(angle);
         imm y = ground(x, z) + params.cruiseHeight + (unit(seed, ug + steps * 7u32, 102u32) - 0.3) * 10.;
         waypoints.set(g, new Vec3(x, y, z));
         waypointTimers.set(g, 25. + 15. * unit(seed, ug + steps * 7u32, 103u32));
@@ -242,7 +242,7 @@ pub struct Flock {
     imm goal = wp - b.pos;
     if goal.length() > 0.01 { a = a + goal.normalize() * 2.2; }
     b.wander = b.wander + (unit(seed, ui + steps * 131u32, 200u32) - 0.5) * 2.4 * dt * 6.;
-    a = a + new Vec3(cos(b.wander), 0.25 * sin(b.wander * 2.), sin(b.wander)) * 0.8;
+    a = a + new Vec3(cosRounded(b.wander), 0.25 * sinRounded(b.wander * 2.), sinRounded(b.wander)) * 0.8;
     a = a * b.weightBias;
     // ---- home: a soft leash ----
     imm toHome = new Vec3(p.home.x - b.pos.x, 0., p.home.z - b.pos.z);
@@ -292,7 +292,7 @@ pub struct Flock {
     b.pos = b.pos + b.vel * dt;
     // ---- orientation ----
     imm fwd = b.vel.normalize();
-    imm blend = 1. - libc.expf(-8. * dt);
+    imm blend = 1. - expRounded(-8. * dt);
     imm sm = b.forward * (1. - blend) + fwd * blend;
     b.forward = if sm.length() > 0.001 { sm.normalize(); } else { fwd; };
     imm worldUp = new Vec3(0., 1., 0.);
@@ -300,7 +300,7 @@ pub struct Flock {
     right = if right.length() < 0.0001 { new Vec3(1., 0., 0.); } else { right.normalize(); };
     imm lateral = a.dot(right);
     imm bankTarget = clampf(lateral * 0.08, -0.9, 0.9);
-    b.bank = b.bank + (bankTarget - b.bank) * (1. - libc.expf(-dt / 0.15));
+    b.bank = b.bank + (bankTarget - b.bank) * (1. - expRounded(-dt / 0.15));
     // ---- the wings ----
     imm speed = b.vel.length();
     imm climb = b.vel.y;
@@ -328,12 +328,30 @@ pub struct Flock {
     // Flapping: 7 Hz level, up to 13 Hz climbing hard, 4.5 Hz diving; gliding: wings held out with a slow slight beat
     imm rateTarget = if b.mode == MODE_FLAP { 7. + 6. * up01 - 2.5 * down01; } else { 1.5; };
     imm ampTarget = if b.mode == MODE_FLAP { 0.75 + 0.25 * up01; } else { 0.15; };
-    b.rate = b.rate + (rateTarget - b.rate) * (1. - libc.expf(-dt * 6.));
-    b.amp = b.amp + (ampTarget - b.amp) * (1. - libc.expf(-dt * 10.));
+    b.rate = b.rate + (rateTarget - b.rate) * (1. - expRounded(-dt * 6.));
+    b.amp = b.amp + (ampTarget - b.amp) * (1. - expRounded(-dt * 10.));
     b.phase = b.phase + 2. * pi * b.rate * dt;
     if b.phase > 2. * pi { b.phase = b.phase - 2. * pi; }
     b;
   }
+}
+
+// sin, cos and exp of an f32, the double precision function's result rounded to
+// f32: nearly always the correctly rounded value, so a flock flies the same
+// flight with every C library. The f32 functions (the compiler's built-in
+// 'x.sin()' and libc's 'expf') differ in the last bit between the Windows
+// runtime and glibc, and a flock's thousands of steps magnify that
+// into different flights.
+fn sinRounded(x f32) f32 {
+  f32.from(libc.sin(f64.from(x)));
+}
+
+fn cosRounded(x f32) f32 {
+  f32.from(libc.cos(f64.from(x)));
+}
+
+fn expRounded(x f32) f32 {
+  f32.from(libc.exp(f64.from(x)));
 }
 
 fn clampf(v f32, lo f32, hi f32) f32 {
