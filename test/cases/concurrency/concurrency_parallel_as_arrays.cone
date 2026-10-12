@@ -39,8 +39,9 @@ fn channel(x usize, y usize, k usize) u8 {
   u8.from((x * 3usize + y * 5usize + k) % 251usize);
 }
 
-// The picture through the view, a row to a pass
-fn bakeView(pixels &mut Array[u8], width usize) {
+// The picture through the view, a row to a pass (the buffer is taken as '&uni': the one name
+// for the bytes while the passes write them; a list is lent as '&uni' to its own twin below)
+fn bakeView(pixels &uni Array[u8], width usize) {
   parallel each y, line in pixels.mutArrays[3]().mutChunks(width).indexed() {
     each x in 0usize ..< width {
       line[x][0] = channel(x, y, 0usize);
@@ -51,7 +52,28 @@ fn bakeView(pixels &mut Array[u8], width usize) {
 }
 
 // The picture through the flat buffer, a row to a pass
-fn bakeFlat(pixels &mut Array[u8], width usize) {
+fn bakeFlat(pixels &uni Array[u8], width usize) {
+  parallel each y, line in pixels.mutChunks(width * 3usize).indexed() {
+    each x in 0usize ..< width {
+      line[x * 3usize] = channel(x, y, 0usize);
+      line[x * 3usize + 1usize] = channel(x, y, 1usize);
+      line[x * 3usize + 2usize] = channel(x, y, 2usize);
+    }
+  }
+}
+
+// The two walks over a list, lent as '&uni'
+fn bakeViewList(pixels &uni List[u8], width usize) {
+  parallel each y, line in pixels.mutArrays[3]().mutChunks(width).indexed() {
+    each x in 0usize ..< width {
+      line[x][0] = channel(x, y, 0usize);
+      line[x][1] = channel(x, y, 1usize);
+      line[x][2] = channel(x, y, 2usize);
+    }
+  }
+}
+
+fn bakeFlatList(pixels &uni List[u8], width usize) {
   parallel each y, line in pixels.mutChunks(width * 3usize).indexed() {
     each x in 0usize ..< width {
       line[x * 3usize] = channel(x, y, 0usize);
@@ -73,14 +95,14 @@ fn bakeSerial(pixels &mut Array[u8], width usize) {
 }
 
 // The two pictures, held together: the zip's two buffers are fields of one struct this
-// function is lent, for two '&mut' parameters could be the one buffer (ErrorParSources)
+// function is lent as '&uni', for two '&mut' parameters could be the one buffer (ErrorParRoot)
 struct Pair {
   first Array[u8, 105];
   second Array[u8, 105];
 }
 
 // Two pictures in one pass, as surfacepatterns bakes its maps: the second has the channels reversed
-fn bakeZip(pair &mut Pair, width usize) {
+fn bakeZip(pair &uni Pair, width usize) {
   parallel each y, la, lb in pair.first.mutArrays[3]().mutChunks(width).zip(pair.second.mutArrays[3]().mutChunks(width)).indexed() {
     each x in 0usize ..< width {
       each k in 0usize ..< 3usize {
@@ -119,8 +141,8 @@ fn main() {
     flatList.push(0u8);
     serialList.push(0u8);
   }
-  bakeView(viewList.viewMut(), 5usize);
-  bakeFlat(flatList.viewMut(), 5usize);
+  bakeViewList(&uni viewList, 5usize);
+  bakeFlatList(&uni flatList, 5usize);
   bakeSerial(serialList.viewMut(), 5usize);
   show("view sum", total(viewList.view()));
   show("flat sum", total(flatList.view()));
@@ -143,16 +165,16 @@ fn main() {
   // ---- an array's slice, wide, 64 x 48 ----
   mut wideView Array[u8, 9216];
   mut wideFlat Array[u8, 9216];
+  bakeView(&uni wideView, 64usize);
+  bakeFlat(&uni wideFlat, 64usize);
   mut wv &mut Array[u8] = &mut wideView;
   mut wf &mut Array[u8] = &mut wideFlat;
-  bakeView(wv, 64usize);
-  bakeFlat(wf, 64usize);
   show("wide view against flat", mismatches(wv, wf));
   show("wide pixel (63, 47) channel 0", u64.from(wv[9213usize]));
 
   // ---- two pictures zipped, a row of each to a pass ----
   mut zip Pair;
-  bakeZip(&mut zip, 5usize);
+  bakeZip(&uni zip, 5usize);
   mut sa &mut Array[u8] = &mut zip.first;
   mut sb &mut Array[u8] = &mut zip.second;
   show("zip first sum", total(sa));

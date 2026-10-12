@@ -1,10 +1,10 @@
 // A picture of pixels that are arrays, written a row to a pass: a slice of
-// arrays, '&mut Array[Array[u8, 3]]', is cut into rows by 'mutChunks(width)',
-// each row a slice no other pass can reach, and a pixel's channels are written
-// through the item, '(*p)[k]'. The same walk by 'each' is the serial twin the
-// parallel one is compared with, byte for byte, over an array's slice and over
-// a list of arrays; 'mutItems().indexed()' and indexing the slice are the
-// other ways to the same pixels.
+// arrays, '&uni Array[Array[u8, 3]]' (a list's own 'mutChunks' for a list), is
+// cut into rows by 'mutChunks(width)', each row a slice no other pass can reach,
+// and a pixel's channels are written through the item, '(*p)[k]'. The same walk
+// by 'each' is the serial twin the parallel one is compared with, byte for byte,
+// over an array's slice and over a list of arrays; 'mutItems().indexed()' and
+// indexing the slice are the other ways to the same pixels.
 //
 // Pixel (x, y), channel k is 3x + 5y + k, in 5 columns and 7 rows. The sum:
 //
@@ -33,8 +33,18 @@ fn channel(x usize, y usize, k usize) u8 {
   u8.from(x * 3usize + y * 5usize + k);
 }
 
-// The picture a row to a pass
-fn bakeParallel(pixels &mut Array[Array[u8, 3]], width usize) {
+// The picture a row to a pass: the slice is taken as '&uni', the one name for the pixels
+// while the passes write them
+fn bakeParallel(pixels &uni Array[Array[u8, 3]], width usize) {
+  parallel each y, row in pixels.mutChunks(width).indexed() {
+    each x, p in row.mutItems().indexed() {
+      each k in 0usize ..< 3usize { (*p)[k] = channel(x, y, k); }
+    }
+  }
+}
+
+// The same for a list, lent as the slice by its own 'mutChunks'
+fn bakeParallelList(pixels &uni List[Array[u8, 3]], width usize) {
   parallel each y, row in pixels.mutChunks(width).indexed() {
     each x, p in row.mutItems().indexed() {
       each k in 0usize ..< 3usize { (*p)[k] = channel(x, y, k); }
@@ -75,9 +85,9 @@ fn main() {
   // ---- a fixed array's slice ----
   mut parallelArr Array[Array[u8, 3], 35];
   mut serialArr Array[Array[u8, 3], 35];
+  bakeParallel(&uni parallelArr, 5usize);
   mut s1 &mut Array[Array[u8, 3]] = &mut parallelArr;
   mut s2 &mut Array[Array[u8, 3]] = &mut serialArr;
-  bakeParallel(s1, 5usize);
   bakeSerial(s2, 5usize);
   show("array sum", total(s1));
   show("array serial sum", total(s2));
@@ -91,15 +101,16 @@ fn main() {
     parallelList.push([0u8, 0u8, 0u8]);
     serialList.push([0u8, 0u8, 0u8]);
   }
-  bakeParallel(parallelList.viewMut(), 5usize);
+  bakeParallelList(&uni parallelList, 5usize);
   bakeSerial(serialList.viewMut(), 5usize);
   show("list sum", total(parallelList.viewMut()));
   show("list mismatches", mismatches(parallelList.viewMut(), serialList.viewMut()));
 
   // ---- a pass per pixel ----
-  parallel each i, p in s1.mutItems().indexed() {
+  parallel each i, p in parallelArr.mutItems().indexed() {
     (*p)[0] = u8.from(i);
   }
-  show("pixel 34 channel 0", u64.from(s1[34][0]));
-  show("pixel 34 channel 1", u64.from(s1[34][1]));
+  imm after &Array[Array[u8, 3]] = &parallelArr;
+  show("pixel 34 channel 0", u64.from(after[34][0]));
+  show("pixel 34 channel 1", u64.from(after[34][1]));
 }

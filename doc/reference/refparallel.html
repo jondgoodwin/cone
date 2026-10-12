@@ -136,6 +136,9 @@ fn total(xs &amp;Array[u64]) u64 {
 			the list (or slice, or the struct holding it, or what is inside the place the items are lent from) as well:
 			<span class="pre">&amp;mut</span> is shared in Cone, so another pass may be changing the item it would read.
 			Another field of the same struct is free.</li>
+		<li>The items a loop changes are lent only from <b>something exclusive</b>: a local, a field of one, a
+			<span class="pre">&amp;uni</span> parameter, or the <span class="pre">self</span> of a behaviour
+			(<a href="#parallelroot">below</a>).</li>
 		<li><span class="pre">continue</span> skips the rest of a pass. A <span class="pre">break</span> or
 			<span class="pre">continue</span> of a loop <i>inside</i> the body is the pass's own. A
 			<span class="pre">break</span> and a <span class="pre">return</span> are refused (which items had run by then would vary
@@ -144,6 +147,40 @@ fn total(xs &amp;Array[u64]) u64 {
 			sent after the loop, by the code that wrote it, in iteration order &mdash; the first pass's, then the second's &mdash; so
 			an actor sees the same order every run. A loop inside a pass's body is gathered into that pass in the same way.</li>
 	</ul>
+
+	<h3 id="parallelroot">Where a loop that changes its items may lend them from</h3>
+	<p>A loop that changes the items of its source (<span class="pre">mutItems</span>, <span class="pre">mutArrays</span>,
+		<span class="pre">mutChunks</span>, a <span class="pre">&amp;mut</span> slice, in the header or inside a zip) must lend
+		them from something <b>exclusive</b>, a place that no other name reaches while the passes run:</p>
+	<ul>
+		<li>a local of the function, or a field of one held by value (<span class="pre">grid.cells.mutItems()</span>);</li>
+		<li>a <span class="pre">&amp;uni</span> parameter, or a field of one held by value, taken
+			<span class="pre">fn fill(out &amp;uni List[T])</span> and called with <span class="pre">fill(&amp;uni out)</span>
+			(a <span class="pre">mut</span> local lends itself <span class="pre">&amp;uni</span>);</li>
+		<li>the <span class="pre">self</span> of an actor's behaviour, which runs alone on its actor (its parameters cannot be
+			borrows) and whose state the passes borrow for the loop.</li>
+	</ul>
+	<p>A list reached through a <span class="pre">&amp;mut</span> or <span class="pre">&amp;</span> reference (a parameter,
+		the <span class="pre">&amp;mut self</span> of a synchronous method, a field that is one, a local that holds one), an
+		<span class="pre">Rc</span>, or a global is refused, since <span class="pre">&amp;mut</span> is one of several names
+		for a list: a caller may pass the one list as two parameters, a zip may read it beside the writer, another thread may hold
+		it, and a pass would read or write an item another pass is writing. Take the list as
+		<span class="pre">&amp;uni</span> instead, which no other name can reach, so the function that passes the one list
+		under two names is refused where it calls; a global is copied or moved into a local first. Only the sources the
+		loop writes are judged: a source that only reads, beside the writer in a zip, may be anything, but it
+		cannot be a second name for the written list.</p>
+<pre>
+fn lift(a &amp;List[Item], b &amp;uni List[Item]) {
+  parallel each i, x, pair in a.iter().zip(b.mutArrays[2usize]().mutItems()).indexed() {
+    pair[0usize].n = x.n + 1000;     // b is the one name for what the passes write
+  }
+}
+lift(&amp;l, &amp;uni m);                  // l and m are different lists; lift(&amp;l, &amp;uni l) is refused
+</pre>
+	<p>A cursor held in a variable is followed to the call that made it when the variable is <span class="pre">imm</span>
+		and has its value (<span class="pre">imm c = list.mutItems();</span> then <span class="pre">parallel each x in c</span> lends from
+		<span class="pre">list</span>). A cursor the loop cannot trace, a <span class="pre">mut</span> variable that may be
+		assigned, a parameter or a field holding one, is refused: build a writable cursor in the loop's header.</p>
 
 	<h2 id="parallelfill">Filling a buffer: indexed, chunks and mutChunks</h2>
 	<p>A counting range cannot write the elements of a buffer by position (<span class="pre">out[i] = &hellip;</span> writes
@@ -186,8 +223,9 @@ parallel each y, ra, rb in a.mutChunks(n).zip(b.mutChunks(3usize * n)).indexed()
 		own parts of them at the same time; naming a buffer is refused even when its source only reads), and a zip of two cursors over the
 		same buffer, where the loop changes what they lend, is refused (two passes could be given the same part, and write it at the same time).
 		Two different <span class="pre">&amp;mut</span> references, two parameters say, may be the one buffer, because the caller may pass it
-		twice, so a zip whose sources are reached from two of them is refused too, when the loop changes what they lend. Zip buffers the
-		function owns, or the fields of one value it is lent (<span class="pre">p.first.mutChunks(n).zip(p.second.mutChunks(n))</span>).</p>
+		twice, so a source the loop changes may not be reached from one (<a href="#parallelroot">above</a>): take it as
+			<span class="pre">&amp;uni</span>. Zip buffers the
+		function owns, or the fields of one value it is lent (<span class="pre">p.first.mutChunks(n).zip(p.second.mutChunks(n))</span>, with <span class="pre">p &amp;uni</span>).</p>
 	<p>A zip takes a third source with its own <span class="pre">zip</span>, a flat triple, three variables (four with
 		<span class="pre">indexed()</span>, the position first). It is as long as the shortest, cut at the same place in all three,
 		and the rules above hold for all three buffers:</p>

@@ -359,6 +359,25 @@ variable and the fields named from it, through references and a method's receive
 and any place that is that place, or inside it, or holds it) as well
 (`ErrorParWrite`).
 
+The place the items are lent from must also be **exclusive** (`ErrorParRoot`,
+`parNotExclusive`, run on the `place` that `parLentPaths` records for each writable source,
+a source of a zip included; a read-only source is not judged): `&mut` is one of several
+names for a list, so a loop that changes items lent through one cannot know that nothing
+else (a caller passing the list twice, a zip reading it beside the writer, another thread)
+names the list while its passes run. The walk goes from the source down the receivers of
+calls, fields, elements, borrows and dereferences to the variable at the root, and refuses
+a root that is a global, a reference that is not `&uni` (`parRefWhy`: a `&mut`, a `&`, an
+owner that can be shared), or any field or element on the way that is itself such a
+reference. A local, a field of one held by value, a `&uni` parameter, and the `self` of an
+actor's behaviour pass: `parSelfIsBehaviour` is set from `actorOfBehaviour` for a loop
+written directly in a behaviour (`parBodiesIn` counts one), whose `self` is the one name
+for the state because the behaviour runs alone on its actor and its parameters cannot be
+borrows; a sync method's `&mut self` is refused. A cursor held in a variable is followed to
+the call that made it when the variable is `imm` and has its value (`var->value` is judged
+as if written in the header); a `mut` one, a parameter, or a field holding a cursor has no
+origin to follow and is refused (`parCursorWhy`), so a writable cursor named as a source
+must be built in the loop's header or in an `imm` variable.
+
 **Cursors in a `parallel each`** (`parCursorOf`). A source of core's cursor types
 (`ArrayChunks`, `ArrayMutChunks`, `ArrayMutItems`, and the `ArrayIndexed`,
 `ChunksIndexed`, `MutChunksIndexed`, `MutItemsIndexed` their `indexed()` and an
