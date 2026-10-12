@@ -1,0 +1,136 @@
+// What goes in a packet: the size limits, the priority of latest-wins streams
+// when a packet cannot carry them all, reliable messages ahead of values, and
+// the window of reliable messages a silent peer can leave waiting.
+
+mod budget;
+
+import testing use *;
+import collections use *;
+import time use Duration, Instant, Clock;
+import netmsg use *;
+
+fn filled(n usize, b u8) List[u8] {
+  mut d = List[u8].empty();
+  mut i = 0usize;
+  while i < n {
+    d.push(b);
+    i = i + 1usize;
+  }
+  d;
+}
+
+// What b has heard: reliable messages, and latest values per stream (1 and 2)
+struct Counts {
+  pub reliable u64;
+  pub s1 u64;
+  pub s2 u64;
+  pub other u64;
+}
+
+fn absorb(evs &mut List[Event], c &mut Counts) {
+  each e in evs.drain() {
+    match e {
+      case imm r Reliable { c.reliable = c.reliable + 1u64; }
+      case imm l Latest {
+        if l.stream == 1u16 {c.s1 = c.s1 + 1u64;}
+        elif l.stream == 2u16 {c.s2 = c.s2 + 1u64;}
+        else {c.other = c.other + 1u64;}
+      }
+      case imm c2 Closed {}
+    }
+  }
+}
+
+// Let 'ms' pass, and the pair do what happens then
+fn go(p &mut SimPair, clock &mut Clock, ms i64, got &mut Counts) {
+  clock.advance(Duration.fromMillis(ms));
+  p.step(clock.now());
+  absorb(&mut p.eventsB, got);
+}
+
+fn main() i32 {
+  imm cfg = Config.defaults();
+  mut clock = Clock.synth();
+  mut p = SimPair.make(cfg, LinkConfig.perfect(), LinkConfig.perfect(), 1u64, clock.now());
+  mut got = new Counts(0u64, 0u64, 0u64, 0u64);
+
+  // The largest message that fits one packet, and one byte more
+  expectUInt(u64.from(p.a.maxReliable()), 1173u64, "1200 less 23 of header and 4 of the message's own");
+  expectUInt(u64.from(p.a.maxLatest()), 1171u64, "and 6 of the value's own");
+  expect(p.a.sendReliable(filled(1173usize, 7u8).view()), "a reliable message of the largest size");
+  expect(not p.a.sendReliable(filled(1174usize, 7u8).view()), "one byte more is refused");
+  expect(p.a.sendReliable(filled(0usize, 0u8).view()), "an empty message is a message");
+  expect(p.a.sendLatest(1u16, filled(1171usize, 7u8).view()), "a value of the largest size");
+  expect(not p.a.sendLatest(1u16, filled(1172usize, 7u8).view()), "one byte more is refused");
+
+  // Reliable messages go first. The first fills a packet; the empty one and the
+  // value are too much for the second (27 + 1177 > 1200), so the value gets the third
+  go(&mut p, &mut clock, 1i64, &mut got);
+  go(&mut p, &mut clock, 1i64, &mut got);
+  expectUInt(got.reliable, 1u64, "the full-size message filled the first packet");
+  expectUInt(got.s1, 0u64, "and the value waited");
+  go(&mut p, &mut clock, 40i64, &mut got);
+  go(&mut p, &mut clock, 1i64, &mut got);
+  expectUInt(got.reliable, 2u64, "the empty message went in the second");
+  expectUInt(got.s1, 0u64, "the value did not fit beside it");
+  go(&mut p, &mut clock, 40i64, &mut got);
+  go(&mut p, &mut clock, 1i64, &mut got);
+  expectUInt(got.s1, 1u64, "the value went in the third");
+
+  // Priority: two values of 700 bytes, only one fits a packet. Stream 1 counts
+  // ten times as much as stream 2, so it goes ten times in eleven, and stream
+  // 2 is not starved
+  p.a.setStreamWeight(1u16, 10u32);
+  p.a.setStreamWeight(2u16, 1u32);
+  imm base1 = got.s1;
+  imm base2 = got.s2;
+  mut i = 0u32;
+  while i < 220u32 {
+    p.a.sendLatest(1u16, filled(700usize, 1u8).view());
+    p.a.sendLatest(2u16, filled(700usize, 2u8).view());
+    go(&mut p, &mut clock, 34i64, &mut got);
+    i = i + 1u32;
+  }
+  go(&mut p, &mut clock, 1i64, &mut got);
+  imm s1 = got.s1 - base1;
+  imm s2 = got.s2 - base2;
+  expectUInt(s1 + s2, 220u64, "one value in every packet");
+  expect(s1 >= 195u64 and s1 <= 205u64, "stream 1 about 10 in 11");
+  expect(s2 >= 15u64 and s2 <= 25u64, "stream 2 about 1 in 11, never starved");
+
+  // Streams are limited
+  mut q = SimPair.make(cfg, LinkConfig.perfect(), LinkConfig.perfect(), 2u64, clock.now());
+  mut ok = 0u32;
+  mut s = 0u16;
+  while s < 70u16 {
+    if q.a.sendLatest(100u16 + s, filled(1usize, 1u8).view()) {ok = ok + 1u32;}
+    s = s + 1u16;
+  }
+  expectUInt(u64.from(ok), 64u64, "a connection carries 64 streams");
+
+  // The window of reliable messages: a peer that hears nothing leaves them
+  // waiting, and the sender is refused at 1024
+  imm dead = LinkConfig.lossy(1000u32, 0i64, 0i64);
+  mut w = SimPair.make(cfg, dead, LinkConfig.perfect(), 3u64, clock.now());
+  mut queued = 0u32;
+  mut n = 0u32;
+  while n < 1100u32 {
+    if w.a.sendReliable(filled(10usize, 9u8).view()) {queued = queued + 1u32;}
+    n = n + 1u32;
+  }
+  expectUInt(u64.from(queued), 1024u64, "1024 reliable messages wait, no more");
+  expectUInt(u64.from(w.a.reliablePending()), 1024u64, "pending says so");
+  // The link recovers: every one arrives, and the window opens again
+  w.ab.setConfig(LinkConfig.perfect());
+  mut recovered = new Counts(0u64, 0u64, 0u64, 0u64);
+  mut ms = 0i64;
+  while ms < 20000i64 and recovered.reliable < 1024u64 {
+    go(&mut w, &mut clock, 5i64, &mut recovered);
+    ms = ms + 5i64;
+  }
+  expectUInt(recovered.reliable, 1024u64, "all 1024 arrived once the link was back");
+  go(&mut w, &mut clock, 500i64, &mut recovered);
+  go(&mut w, &mut clock, 500i64, &mut recovered);
+  expect(w.a.sendReliable(filled(10usize, 9u8).view()), "and there is room again");
+  done();
+}
