@@ -63,6 +63,7 @@ import sky;
 import noise;
 import renderframe;
 import skinning;
+import fade;
 import shadowing;
 import flutter;
 import locallights;
@@ -150,6 +151,7 @@ struct VertexOutput {
     float2 uv : TEXCOORD;
     float3 local : TEXCOORD1;      // the model's own coordinates, where the film's noise is read
     nointerpolation float4 tint : COLOR;
+    nointerpolation float fade : TEXCOORD7;   // fade.slang: a copy fading in or out (0: whole)
 };
 
 [shader("vertex")]
@@ -163,6 +165,7 @@ VertexOutput vertexMain(VertexInput input, uint id : SV_VulkanInstanceID) {
     output.uv = input.uv;
     output.local = input.position;
     output.tint = inst.tint;
+    output.fade = instanceFade(id);
     return output;
 }
 
@@ -182,6 +185,7 @@ VertexOutput vertexSkinned(SkinnedVertexInput input, uint id : SV_VulkanInstance
     output.uv = input.uv;
     output.local = input.position;
     output.tint = inst.tint;
+    output.fade = 0.0;
     return output;
 }
 
@@ -212,6 +216,7 @@ VertexOutput vertexSway(SwayInput input, uint id : SV_VulkanInstanceID) {
     output.uv = input.uv;
     output.local = input.position;
     output.tint = inst.tint;
+    output.fade = instanceFade(id);
     return output;
 }
 
@@ -257,6 +262,7 @@ float3 mapNormal(float3 n, float3 world, float2 uv) {
 
 [shader("fragment")]
 float4 fragmentMain(VertexOutput input) : SV_Target {
+    fadeClip(input.fade, input.position.xy);
     float3 n = normalize(input.normal);
     if (material.maps.x > 0.0) {
         n = mapNormal(n, input.world, input.uv);

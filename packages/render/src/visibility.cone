@@ -1,0 +1,642 @@
+// Visibility: which of the scene's things a camera draws, and how.
+//
+// The renderer draws what a DrawList holds, however many items that is. A
+// SCENE is the other way to give it things: items that stay, each with a
+// stable handle (a slot and a generation), a proxy in a bounding volume
+// hierarchy (spatialindex's Bvh), moved when the thing moves. For each camera
+// that draws (the main view, each shadow cascade, each local light's shadow
+// face, each RenderView, each reflection probe face) the renderer asks the
+// hierarchy what the camera can see, chooses a level of detail for each,
+// and gathers batches from that alone.
+//
+//   imm tree = renderer.addSceneItem(treeMesh, bark, Mat4.fromTranslation(p), white);
+//   renderer.moveSceneItem(tree, Mat4.fromTranslation(q));     // the proxy is refitted
+//   renderer.setSceneLod(tree, &chain);                         // a LodChain: its levels by projected size
+//   renderer.setSceneRange(tree, 0., 300., 40.);                // visible from 0 to 300 away, fading over 40
+//   renderer.removeSceneItem(tree);
+//
+// A DrawList passed to 'render' still draws as before, whole, beside the scene.
+// With the scene empty, and with every switch of VisibilitySettings off, the
+// bytes drawn are those the DrawList alone would draw.
+//
+// THE METHODS, each the published one:
+//
+// - FRUSTUM CULLING over a dynamic AABB tree (Box2D's and Jolt's broad phase:
+//   spatialindex.Bvh, fat boxes so a small move changes nothing, a frustum
+//   walk that carries the plane mask down: a subtree wholly inside a plane
+//   needs no further test of it; Assarsson and Moller, "Optimized
+//   View Frustum Culling Algorithms for Bounding Boxes", JGT 2000). The boxes
+//   are the item's mesh's bounding box carried through its model matrix
+//   (Arvo's method), not its bounding sphere, which would be 1.7 times too
+//   big for a cube.
+// - SHADOW CASTERS are culled the same way, by each cascade's or face's
+//   own volume: a cascade's is its window extruded without limit towards
+//   the sun (a caster outside the camera's view, or behind it, still casts into
+//   it), a local light's face its own frustum. Each pass gets its own batches,
+//   its own instances.
+// - LEVEL OF DETAIL by projected screen size (the diameter of the item's
+//   bounding sphere in pixels, as Unreal's screen size and Unity's LOD group
+//   take it) through the item's LodChain, with the chain's hysteresis, and a
+//   bias (a multiplier of the size) a camera can set: a shadow pass is
+//   coarser (VisibilitySettings.shadowLodBias). A change of level is a
+//   CROSS-FADE: for 'fadeSeconds' both levels are drawn, the old one by a
+//   falling share of the pixels and the new one by a rising share, the two
+//   exactly complementary (fade.slang: the interleaved gradient noise at the
+//   pixel, Unreal's dithered LOD transitions and Unity's cross-fade), so both
+//   write depth like opaque draws and need no sorting, and nothing pops. A
+//   level chosen for a thing newly in view is not faded in.
+// - VISIBILITY RANGES (Godot's visibility_range_begin and _end): an item is
+//   drawn from 'min' to 'max' away from the camera, its edges fading over
+//   'margin' by the same dither, from a function of the distance alone.
+// - OCCLUSION by a depth pyramid: see hiz.cone.
+//
+// WHAT AN ITEM IS. A mesh, a material, a model matrix, a tint, a layer mask,
+// whether it casts shadows, and optionally a LodChain and a range. An item
+// with a chain draws the chain's levels (its own 'mesh' is level 0's); the
+// bounds are those of level 0, so a chain's levels should fit inside it. The
+// bounds are taken when the item is added or moved or its chain set: a mesh
+// replaced under its handle with one of other bounds needs 'refreshSceneItem'.
+// Skinned meshes and lines belong in a DrawList, which draws them whole.
+
+const SCENE_NONE = 0xFFFFFFFFu32;
+// The cameras whose level-of-detail hysteresis an item keeps: the main view,
+// and three more (a RenderView says which it is)
+pub const LOD_SLOTS = 4usize;
+const FADE_TAG = 0xFADE0000u32;
+
+// An item of the scene: a slot of the renderer's scene and the generation of
+// what lives there. Nothing reached by one that is removed.
+pub struct SceneHandle {
+  pub slot u32;
+  pub gen u32;
+
+  pub fn none() SceneHandle { new SceneHandle(SCENE_NONE, 0u32); }
+  pub fn isNone(self &) bool { slot == SCENE_NONE; }
+}
+
+// The code a fade of 'f' (-1 to 1) is written into an instance's per-instance
+// word as (fade.slang); NO_BONES for none
+pub fn fadeCode(f f32) u32 {
+  mut q = i32.from(f * 32767.);
+  if q > 32767i32 { q = 32767i32; }
+  if q < -32767i32 { q = -32767i32; }
+  if q == 0i32 {
+    if f > 0. { q = 1i32; } elif f < 0. { q = -1i32; } else { return NO_BONES; }
+  }
+  FADE_TAG | (u32.from(q + 65536i32) & 0xFFFFu32);
+}
+
+// The fade a code holds, as fade.slang's 'instanceFade' reads it: 0 for none
+pub fn fadeOfCode(code u32) f32 {
+  if (code >> 16u32) != 0xFADEu32 { return 0.; }
+  mut q = i32.from(code & 0xFFFFu32);
+  if q >= 32768i32 { q = q - 65536i32; }
+  f32.from(q) / 32767.;
+}
+
+// Whether a pixel whose fade noise is 'noise' (0 to 1) is drawn at fade 'f'
+// (fade.slang's 'fadeClip', as the CPU's twin)
+pub fn fadeKeeps(f f32, noise f32) bool {
+  if f == 0. { return true; }
+  if f > 0. { return noise >= f; }
+  noise < -f;
+}
+
+// The interleaved gradient noise at the pixel (x, y), 0 to 1: fade.slang's
+// 'fadeNoise'
+pub fn fadeNoise(x f32, y f32) f32 {
+  imm a = 0.06711056 * x + 0.00583715 * y;
+  imm b = 52.9829189 * (a - libc.floorf(a));
+  b - libc.floorf(b);
+}
+
+// What the visibility system does; each switch can be turned off by itself.
+// All off, the scene draws as a DrawList of the same items in the same order.
+pub struct VisibilitySettings {
+  pub frustumCulling bool = true;   // cull by the camera's frustum through the hierarchy (off: every item is a candidate)
+  pub lod bool = true;              // choose levels by projected size (off: level 0)
+  pub crossFade bool = true;        // fade between levels by dither (off: a switch is a pop)
+  pub ranges bool = true;           // honour items' visibility ranges
+  pub shadowCulling bool = true;    // gather each shadow pass's casters from the hierarchy
+  pub occlusion bool = false;       // hierarchical-Z occlusion culling (hiz.cone)
+  pub lodBias f32 = 1.;             // the main camera's multiplier of the projected size (above 1: finer levels)
+  pub shadowLodBias f32 = 0.5;      // and a shadow pass's: its casters are coarser
+  pub fadeSeconds f32 = 0.4;        // how long a cross-fade lasts
+  pub timeStep f32 = 0.0166667;     // seconds a frame advances the fades: set it from the frame's time
+  pub margin f32 = 0.25;            // the hierarchy's fat boxes reach this far (a move inside it changes nothing)
+
+  // Everything off
+  pub fn off() VisibilitySettings {
+    new VisibilitySettings(false, false, false, false, false, false, 1., 0.5, 0.4, 0.0166667, 0.25);
+  }
+}
+
+// What the last collection did, for tests and a program's overlay
+pub struct VisibilityStats {
+  pub items u32 = 0u32;             // items in the scene
+  pub candidates u32 = 0u32;        // those the frustum let through (or all, with culling off)
+  pub drawn u32 = 0u32;             // items put to draw: after layers, ranges and fades (a cross-fade is two)
+  pub rangeCulled u32 = 0u32;       // dropped by their visibility range
+  pub layerCulled u32 = 0u32;       // dropped by the view's layer mask
+  pub lodSwitches u32 = 0u32;       // items that changed level
+  pub fading u32 = 0u32;            // items drawn twice, in a cross-fade
+  pub casterSets u32 = 0u32;        // shadow passes that gathered their own casters
+  pub casters u32 = 0u32;           // and the items they gathered, summed
+  pub occluded u32 = 0u32;          // instances the depth pyramid culled (hiz.cone), a frame late
+}
+
+// A thing in the scene
+pub struct SceneItem {
+  pub alive bool;
+  pub gen u32;
+  pub mesh MeshHandle;
+  pub material MaterialHandle;
+  pub model Mat4;
+  pub tint Color;
+  pub layers u32;
+  pub castsShadow bool;
+  pub occludable bool;
+  pub center Vec3;                 // the world box's centre, and half its size (what the hierarchy holds)
+  pub half Vec3;
+  pub sphereCenter Vec3;           // the bounding sphere in the world: the mesh's, carried by the model
+  pub radius f32;
+  pub localCenter Vec3;            // the mesh's bounds as modelled
+  pub localHalf Vec3;
+  pub localRadius f32;
+  pub proxy Proxy;
+  pub chain i32;                   // its LodChain's place in the scene's, or -1
+  pub rangeMin f32;                // visible from here away (0: from the camera)
+  pub rangeMax f32;                // to here (0: for ever)
+  pub rangeMargin f32;             // the width of each edge's fade
+}
+
+// What an item keeps of a camera's level of detail: the level drawn, the one
+// it is fading from, how far the fade is (1: done), and the frame it was
+// last used (a camera that has not seen it lately starts it afresh)
+struct LodSlot {
+  level u32;
+  prev u32;
+  t f32;
+  stamp u32;
+}
+
+// The batches a pass draws, as a range of the renderer's batches
+pub struct SetRange {
+  pub first usize;
+  pub end usize;
+}
+
+pub struct Visibility {
+  pub settings VisibilitySettings;
+  pub items List[SceneItem];
+  pub free List[u32];
+  pub tree Bvh[u32];
+  pub chains List[LodChain];
+  lodSlots List[LodSlot];
+  pub frame u32;
+  pub stats VisibilityStats;
+  // The batch ranges of the sets the last render gathered: the main view's, then each cascade's and each local
+  // light face's (empty when there was no scene)
+  pub sets List[SetRange];
+  // The pass being drawn: the layers it meets, which camera's level-of-detail state it keeps, and its bias
+  pub layerMask u32 = 0xFFFFFFFFu32;
+  pub lodSlot usize = 0usize;
+  pub cameraBias f32 = 1.;
+
+  pub fn create(margin f32) Visibility {
+    mut s = new VisibilitySettings();
+    s.margin = margin;
+    new Visibility(s, List[SceneItem].empty(), List[u32].empty(), Bvh[u32].create(margin), List[LodChain].empty(),
+      List[LodSlot].empty(), 0u32, new VisibilityStats(), List[SetRange].empty());
+  }
+
+  // How many items the scene holds
+  pub fn count(self &) usize { items.len() - free.len(); }
+
+  // Whether there is a scene to draw
+  pub fn active(self &) bool { items.len() > free.len(); }
+
+  pub fn alive(self &, h SceneHandle) bool {
+    h.slot != SCENE_NONE and usize.from(h.slot) < items.len() and items[usize.from(h.slot)].alive
+      and items[usize.from(h.slot)].gen == h.gen;
+  }
+
+  // Add an item whose mesh has the bounds given (its own coordinates); the
+  // Renderer's 'addSceneItem' reads them from the mesh
+  pub fn addItem(self &mut, mesh MeshHandle, material MaterialHandle, model Mat4, tint Color, boundsCenter Vec3,
+      boundsHalf Vec3, boundsRadius f32) SceneHandle {
+    imm world = worldBox(&model, boundsCenter, boundsHalf);
+    imm sc = model * boundsCenter;
+    imm r = boundsRadius * maxScale(&model);
+    mut slot = 0u32;
+    mut gen = 1u32;
+    mut reuse = false;
+    if free.len() > 0usize {
+      slot = *free[free.len() - 1usize];
+      free.truncate(free.len() - 1usize);
+      gen = items[usize.from(slot)].gen + 1u32;
+      reuse = true;
+    }
+    imm proxy = tree.insert(world, slot);
+    imm item = new SceneItem(true, gen, mesh, material, model, tint, 1u32, true, false, world.center(),
+      world.halfExtents(), sc, r, boundsCenter, boundsHalf, boundsRadius, proxy, -1i32, 0., 0., 0.);
+    if reuse {
+      items.set(usize.from(slot), item);
+      mut k = 0usize;
+      while k < LOD_SLOTS {
+        lodSlots.set(usize.from(slot) * LOD_SLOTS + k, new LodSlot(0u32, 0u32, 1., 0u32));
+        k = k + 1usize;
+      }
+    } else {
+      slot = u32.from(items.len());
+      items.push(item);
+      mut k = 0usize;
+      while k < LOD_SLOTS {
+        lodSlots.push(new LodSlot(0u32, 0u32, 1., 0u32));
+        k = k + 1usize;
+      }
+    }
+    new SceneHandle(slot, gen);
+  }
+
+  // Take an item out; its handle reaches nothing from now on
+  pub fn remove(self &mut, h SceneHandle) bool {
+    if !self.alive(h) { return false; }
+    mut it = *items[usize.from(h.slot)];
+    tree.remove(it.proxy);
+    it.alive = false;
+    items.set(usize.from(h.slot), it);
+    free.push(h.slot);
+    true;
+  }
+
+  // Remove everything
+  pub fn clear(self &mut) {
+    mut i = 0usize;
+    while i < items.len() {
+      imm it = items[i];
+      if it.alive { self.remove(new SceneHandle(u32.from(i), it.gen)); }
+      i = i + 1usize;
+    }
+  }
+
+  // Place an item anew: its proxy follows (the tree changes only if the new
+  // box leaves the old one's margin)
+  pub fn move(self &mut, h SceneHandle, model Mat4) bool {
+    if !self.alive(h) { return false; }
+    mut it = *items[usize.from(h.slot)];
+    imm oldCenter = it.center;
+    it.model = model;
+    self.rebound(&mut it);
+    tree.move(it.proxy, Aabb3.fromCenter(it.center, it.half), it.center - oldCenter);
+    items.set(usize.from(h.slot), it);
+    true;
+  }
+
+  // Take the item's world bounds from its model and its local bounds
+  fn rebound(self &, it &mut SceneItem) {
+    imm world = worldBox(&it.model, it.localCenter, it.localHalf);
+    it.center = world.center();
+    it.half = world.halfExtents();
+    it.sphereCenter = it.model * it.localCenter;
+    it.radius = it.localRadius * maxScale(&it.model);
+  }
+
+  // The item's bounds taken again from a mesh (level 0 of its chain, or its
+  // mesh), after the mesh was replaced
+  pub fn setBounds(self &mut, h SceneHandle, boundsCenter Vec3, boundsHalf Vec3, boundsRadius f32) bool {
+    if !self.alive(h) { return false; }
+    mut it = *items[usize.from(h.slot)];
+    it.localCenter = boundsCenter;
+    it.localHalf = boundsHalf;
+    it.localRadius = boundsRadius;
+    self.rebound(&mut it);
+    tree.setBox(it.proxy, Aabb3.fromCenter(it.center, it.half));
+    items.set(usize.from(h.slot), it);
+    true;
+  }
+
+  pub fn setTint(self &mut, h SceneHandle, tint Color) bool {
+    if !self.alive(h) { return false; }
+    mut it = *items[usize.from(h.slot)];
+    it.tint = tint;
+    items.set(usize.from(h.slot), it);
+    true;
+  }
+
+  pub fn setMaterial(self &mut, h SceneHandle, material MaterialHandle) bool {
+    if !self.alive(h) { return false; }
+    mut it = *items[usize.from(h.slot)];
+    it.material = material;
+    items.set(usize.from(h.slot), it);
+    true;
+  }
+
+  pub fn setMesh(self &mut, h SceneHandle, mesh MeshHandle) bool {
+    if !self.alive(h) { return false; }
+    mut it = *items[usize.from(h.slot)];
+    it.mesh = mesh;
+    items.set(usize.from(h.slot), it);
+    true;
+  }
+
+  pub fn setLayers(self &mut, h SceneHandle, layers u32) bool {
+    if !self.alive(h) { return false; }
+    mut it = *items[usize.from(h.slot)];
+    it.layers = layers;
+    items.set(usize.from(h.slot), it);
+    true;
+  }
+
+  pub fn setCastsShadow(self &mut, h SceneHandle, casts bool) bool {
+    if !self.alive(h) { return false; }
+    mut it = *items[usize.from(h.slot)];
+    it.castsShadow = casts;
+    items.set(usize.from(h.slot), it);
+    true;
+  }
+
+  // Whether the depth pyramid may cull the item (hiz.cone)
+  pub fn setOccludable(self &mut, h SceneHandle, occludable bool) bool {
+    if !self.alive(h) { return false; }
+    mut it = *items[usize.from(h.slot)];
+    it.occludable = occludable;
+    items.set(usize.from(h.slot), it);
+    true;
+  }
+
+  // Visible from 'minDistance' to 'maxDistance' (the camera to the item's
+  // bounding sphere's centre; 0 for no limit), each edge fading over 'margin'
+  pub fn setRange(self &mut, h SceneHandle, minDistance f32, maxDistance f32, margin f32) bool {
+    if !self.alive(h) { return false; }
+    mut it = *items[usize.from(h.slot)];
+    it.rangeMin = minDistance;
+    it.rangeMax = maxDistance;
+    it.rangeMargin = margin;
+    items.set(usize.from(h.slot), it);
+    true;
+  }
+
+  // Give the item a level-of-detail chain (copied): it then draws the chain's
+  // levels, by projected size, and 'chain.levels[0]' is its mesh
+  pub fn setChain(self &mut, h SceneHandle, chain &LodChain) bool {
+    if !self.alive(h) or chain.levels.len() == 0usize { return false; }
+    mut it = *items[usize.from(h.slot)];
+    mut copy = LodChain.empty(chain.hysteresis);
+    mut k = 0usize;
+    while k < chain.levels.len() {
+      copy.add(*chain.levels[k], *chain.minSizes[k]);
+      k = k + 1usize;
+    }
+    if it.chain >= 0i32 {
+      chains.set(usize.from(u32.from(it.chain)), copy);
+    } else {
+      it.chain = i32.from(chains.len());
+      chains.push(copy);
+    }
+    it.mesh = *chain.levels[0usize];
+    items.set(usize.from(h.slot), it);
+    true;
+  }
+
+  // ---- Collection ----
+
+  // The things of the scene that 'camera' (drawing into a target 'aspect'
+  // wide for each unit high, 'viewHeight' pixels high) draws, appended to
+  // 'out' in slot order: after the layer mask, the frustum, the range and the
+  // level of detail. An item mid-cross-fade is two entries.
+  pub fn collect(self &mut, camera &Camera, aspect f32, viewHeight f32, out &mut List[DrawItem]) {
+    frame = frame + 1u32;
+    stats = new VisibilityStats();
+    imm n = items.len();
+    stats.items = u32.from(self.count());
+    if n == 0usize { return; }
+    mut mark = List[u8].withCapacity(n);
+    mut i = 0usize;
+    while i < n {
+      mark.push(if items[i].alive and !settings.frustumCulling { 1u8; } else { 0u8; });
+      i = i + 1usize;
+    }
+    if settings.frustumCulling {
+      imm vp = camera.projectionMatrix(aspect) * camera.viewMatrix();
+      imm fr = Frustum.fromMatrix(vp);
+      mut visit = fn(h u32, p Proxy) bool { mark.set(usize.from(h), 1u8); true; };
+      tree.frustum(&fr, &mut visit);
+    }
+    imm eye = camera.position();
+    imm perspective = camera.projection != Orthogonal;
+    imm tanHalf = tan(camera.fov * 0.5);
+    imm bias = cameraBias * settings.lodBias;
+    imm step = settings.timeStep / (if settings.fadeSeconds > 0.0001 { settings.fadeSeconds; } else { 0.0001; });
+    i = 0usize;
+    while i < n {
+      if *mark[i] != 0u8 {
+        stats.candidates = stats.candidates + 1u32;
+        imm it = *items[i];
+        if (it.layers & layerMask) == 0u32 {
+          stats.layerCulled = stats.layerCulled + 1u32;
+        } else {
+          self.emit(i, &it, eye, perspective, tanHalf, camera.viewHeight, viewHeight, bias, step, out);
+        }
+      }
+      i = i + 1usize;
+    }
+  }
+
+  // Put item 'i' to draw in the main view: its range's share, its level (or
+  // two, fading), appended to 'out'
+  fn emit(self &mut, i usize, it &SceneItem, eye Vec3, perspective bool, tanHalf f32, orthoHeight f32,
+      viewHeight f32, bias f32, step f32, out &mut List[DrawItem]) {
+    imm d = eye.distance(it.sphereCenter);
+    // The range: a share 0 to 1 of the item drawn
+    mut v = 1.;
+    if settings.ranges { v = rangeShare(it, d); }
+    if v <= 0. {
+      stats.rangeCulled = stats.rangeCulled + 1u32;
+      return;
+    }
+    // The level
+    mut level = 0u32;
+    mut prev = 0u32;
+    mut t = 1.;
+    if it.chain >= 0i32 and settings.lod {
+      imm chain = chains[usize.from(u32.from(it.chain))];
+      mut size = viewHeight;
+      if perspective {
+        if d > it.radius { size = it.radius / (d * tanHalf) * viewHeight; }
+      } else {
+        size = it.radius / orthoHeight * viewHeight;
+      }
+      size = size * bias;
+      imm si = i * LOD_SLOTS + lodSlot;
+      mut st = *lodSlots[si];
+      imm fresh = st.stamp + 1u32 < frame or st.stamp == 0u32;
+      imm chosen = u32.from(selectLod(chain, size, if fresh { 0usize; } else { usize.from(st.level); }));
+      if fresh or !settings.crossFade {
+        if fresh and chosen != st.level and st.stamp != 0u32 {
+          stats.lodSwitches = stats.lodSwitches + 1u32;
+        }
+        st.level = chosen;
+        st.prev = chosen;
+        st.t = 1.;
+      } else {
+        if chosen != st.level {
+          st.prev = st.level;
+          st.level = chosen;
+          st.t = 0.;
+          stats.lodSwitches = stats.lodSwitches + 1u32;
+        }
+        if st.t < 1. {
+          st.t = st.t + step;
+          if st.t >= 1. { st.t = 1.; st.prev = st.level; }
+        }
+      }
+      st.stamp = frame;
+      lodSlots.set(si, st);
+      level = st.level;
+      prev = st.prev;
+      t = st.t;
+    }
+    if prev != level and t < 1. {
+      // Two levels, each by a share of the pixels that together make the range's share (fade.slang)
+      out.push(new DrawItem(levelMesh(&chains, it, prev), it.material, it.model, it.tint, NO_BONES, it.layers,
+        it.castsShadow, 1. - (1. - t) * v, it.occludable));
+      out.push(new DrawItem(levelMesh(&chains, it, level), it.material, it.model, it.tint, NO_BONES, it.layers,
+        it.castsShadow, 0. - t * v, it.occludable));
+      stats.fading = stats.fading + 1u32;
+      stats.drawn = stats.drawn + 2u32;
+    } else {
+      out.push(new DrawItem(levelMesh(&chains, it, level), it.material, it.model, it.tint, NO_BONES, it.layers,
+        it.castsShadow, if v < 1. { 1. - v; } else { 0.; }, it.occludable));
+      stats.drawn = stats.drawn + 1u32;
+    }
+  }
+
+  // The things of the scene that cast into the volume 'volume' (a shadow
+  // cascade's or a local light face's), appended to 'out': ones that cast
+  // shadows, on the layers the pass meets, not past their range's end from
+  // the main camera at 'eye', at the level the shadow bias makes of the
+  // size 'camera' sees them at
+  pub fn collectCasters(self &mut, volume &Frustum, camera &Camera, viewHeight f32, out &mut List[DrawItem]) {
+    imm n = items.len();
+    if n == 0usize { return; }
+    stats.casterSets = stats.casterSets + 1u32;
+    mut mark = List[u8].withCapacity(n);
+    mut i = 0usize;
+    while i < n {
+      mark.push(if items[i].alive and !settings.frustumCulling { 1u8; } else { 0u8; });
+      i = i + 1usize;
+    }
+    if settings.frustumCulling {
+      mut visit = fn(h u32, p Proxy) bool { mark.set(usize.from(h), 1u8); true; };
+      tree.frustum(volume, &mut visit);
+    }
+    imm eye = camera.position();
+    imm perspective = camera.projection != Orthogonal;
+    imm tanHalf = tan(camera.fov * 0.5);
+    imm bias = settings.shadowLodBias;
+    i = 0usize;
+    while i < n {
+      if *mark[i] != 0u8 {
+        imm it = *items[i];
+        if it.castsShadow and (it.layers & layerMask) != 0u32 {
+          imm d = eye.distance(it.sphereCenter);
+          if !settings.ranges or rangeShare(&it, d) > 0. {
+            mut mesh = it.mesh;
+            if it.chain >= 0i32 {
+              imm chain = chains[usize.from(u32.from(it.chain))];
+              mut level = 0usize;
+              if settings.lod {
+                mut size = viewHeight;
+                if perspective {
+                  if d > it.radius { size = it.radius / (d * tanHalf) * viewHeight; }
+                } else {
+                  size = it.radius / camera.viewHeight * viewHeight;
+                }
+                // Start from the level the main view last drew it at
+                imm cur = usize.from(lodSlots[i * LOD_SLOTS].level);
+                level = selectLod(chain, size * bias, cur);
+              }
+              mesh = *chain.levels[level];
+            }
+            out.push(new DrawItem(mesh, it.material, it.model, it.tint, NO_BONES, it.layers, true, 0., false));
+            stats.casters = stats.casters + 1u32;
+          }
+        }
+      }
+      i = i + 1usize;
+    }
+  }
+}
+
+// The mesh an item draws at level 'l': its chain's, or its own
+fn levelMesh(chains &List[LodChain], it &SceneItem, l u32) MeshHandle {
+  if it.chain >= 0i32 { return *chains[usize.from(u32.from(it.chain))].levels[usize.from(l)]; }
+  it.mesh;
+}
+
+// The share of an item at distance 'd' that its range lets be seen, 0 to 1:
+// whole between the edges' margins, a linear ramp over each margin, none
+// outside
+pub fn rangeShare(it &SceneItem, d f32) f32 {
+  mut v = 1.;
+  if it.rangeMax > 0. {
+    if d >= it.rangeMax { return 0.; }
+    if it.rangeMargin > 0. and d > it.rangeMax - it.rangeMargin {
+      imm s = (it.rangeMax - d) / it.rangeMargin;
+      if s < v { v = s; }
+    }
+  }
+  if it.rangeMin > 0. {
+    if d < it.rangeMin { return 0.; }
+    if it.rangeMargin > 0. and d < it.rangeMin + it.rangeMargin {
+      imm s = (d - it.rangeMin) / it.rangeMargin;
+      if s < v { v = s; }
+    }
+  }
+  v;
+}
+
+// The level of 'chain' for an item 'size' pixels across that is now at level
+// 'current': LodChain.selectBySize's rule without its state. Finer while the
+// size is past the finer level's threshold by the chain's hysteresis, coarser
+// while it is short of this level's own by that much.
+pub fn selectLod(chain &LodChain, size f32, current usize) usize {
+  imm n = chain.levels.len();
+  if n == 0usize { return 0usize; }
+  mut c = current;
+  if c >= n { c = n - 1usize; }
+  while c > 0usize and size >= *chain.minSizes[c - 1usize] * (1. + chain.hysteresis) {
+    c = c - 1usize;
+  }
+  while c + 1usize < n and size < *chain.minSizes[c] * (1. - chain.hysteresis) {
+    c = c + 1usize;
+  }
+  c;
+}
+
+// A box about the mesh bounds (centre 'c', half size 'h') carried through 'm'
+fn worldBox(m &Mat4, c Vec3, h Vec3) Aabb3 {
+  Aabb3.fromCenter(c, h).transformed(*m);
+}
+
+// The most 'm' stretches a length: its longest column
+fn maxScale(m &Mat4) f32 {
+  imm sx = m.transformVector(new Vec3(1., 0., 0.)).length();
+  imm sy = m.transformVector(new Vec3(0., 1., 0.)).length();
+  imm sz = m.transformVector(new Vec3(0., 0., 1.)).length();
+  mut s = sx;
+  if sy > s { s = sy; }
+  if sz > s { s = sz; }
+  s;
+}
+
+// The frustum a shadow cascade's matrix (world to its window, depth 0 to 1)
+// holds, its near plane taken away: what lies between the window and the sun
+// still casts into it
+pub fn casterVolume(matrix &Mat4) Frustum {
+  mut f = Frustum.fromMatrix(*matrix);
+  imm near = f.planes[4];
+  f.planes[4] = new Plane(near.normal, near.d + 1000000.);
+  f;
+}

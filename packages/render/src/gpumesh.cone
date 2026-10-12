@@ -42,11 +42,15 @@ pub struct GpuMesh {
   pub joints Buffer;               // a skinned mesh's joints, four bytes a vertex; none otherwise
   pub weights Buffer;              // and their weights
   pub sway Buffer;                 // a mesh with colors: them, as flutter's per-leaf data; none otherwise
+  // Half the size of its bounding box along each axis, about 'center'
+  // (visibility.cone culls by the box, which is tighter than the sphere)
+  pub half Vec3;
 
   // No mesh: what a slot's spare version holds (not valid)
   pub fn none() GpuMesh {
     new GpuMesh(Buffer.none(), Buffer.none(), Buffer.none(), Buffer.none(), 0u32, 0u32, List[Group].empty(),
-      PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, new Vec3(0., 0., 0.), 0., Buffer.none(), Buffer.none(), Buffer.none());
+      PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, new Vec3(0., 0., 0.), 0., Buffer.none(), Buffer.none(), Buffer.none(),
+      new Vec3(0., 0., 0.));
   }
 
   pub fn isValid(self &) bool { positions.isValid() and indices.isValid() and indexCount > 0u32; }
@@ -104,6 +108,12 @@ fn boundingSphere(positions &Array[Vec3], center &mut Vec3, radius &mut f32) {
   *radius = r2.sqrt();
 }
 
+// Half the size of the box about 'positions' along each axis
+fn boundingHalf(positions &Array[Vec3]) Vec3 {
+  if positions.len == 0usize { return new Vec3(0., 0., 0.); }
+  Aabb3.fromPoints(positions).halfExtents();
+}
+
 // A mesh of triangles uploaded: normals made smooth if it has none, uvs of 0
 // if it has none
 fn uploadTriangles(device &mut Device, m &Mesh) GpuMesh {
@@ -146,6 +156,7 @@ fn uploadTriangles(device &mut Device, m &Mesh) GpuMesh {
     }
   }
   boundingSphere(m.positions.view(), &mut g.center, &mut g.radius);
+  g.half = boundingHalf(m.positions.view());
   g;
 }
 
@@ -162,6 +173,7 @@ fn uploadSkinned(device &mut Device, m &Mesh, skin &Skin) GpuMesh {
   g.joints = filledBuffer(device, bytesOf[u32](&skin.joints), u64.from(n) * 4u64, BUFFER_USAGE_VERTEX);
   g.weights = filledBuffer(device, bytesOf[u32](&skin.weights), u64.from(n) * 4u64, BUFFER_USAGE_VERTEX);
   g.radius = g.radius * SKINNED_BOUNDS_SCALE;
+  g.half = g.half * SKINNED_BOUNDS_SCALE;
   g;
 }
 
@@ -176,6 +188,7 @@ fn uploadLines(device &mut Device, positions &Array[Vec3], indices &Array[u32]) 
   g.indices = filledBuffer(device, &indices[0] as *u8, u64.from(g.indexCount) * 4u64, BUFFER_USAGE_INDEX);
   g.groups.push(new Group(0u32, g.indexCount, 0u32));
   boundingSphere(positions, &mut g.center, &mut g.radius);
+  g.half = boundingHalf(positions);
   g;
 }
 

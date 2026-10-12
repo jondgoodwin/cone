@@ -573,6 +573,17 @@ fn batchTouchesCascade(r &Renderer, list &DrawList, batch &DrawBatch, c usize) b
   false;
 }
 
+// The batches that shadow pass number 'index' draws (the cascades in order,
+// then the local lights' faces) as a range of the renderer's batches: the
+// pass's own if the scene gathered casters for it (visibility.cone), else the
+// main view's
+fn passBatches(r &Renderer, index usize) SetRange {
+  imm n = r.vis.sets.len();
+  if n > 1usize + index { return *r.vis.sets[1usize + index]; }
+  if n > 0usize { return *r.vis.sets[0usize]; }
+  new SetRange(0usize, r.batches.len());
+}
+
 // Record the shadow passes of 'list': one depth-only pass a cascade of
 // the last 'computeCascades', into the map, the batches the main pass
 // gathered drawn as it draws them (their instances are in the instance
@@ -593,8 +604,9 @@ fn recordShadowPasses(r &mut Renderer, device &mut Device, encoder &mut CommandE
     imm cascade = c;
     mut bound = CASTER_NONE;
     mut boundMaterial = Ref[MaterialSlot].none();
-    mut b = 0usize;
-    while b < r.batches.len() {
+    imm range = passBatches(r, usize.from(c));
+    mut b = range.first;
+    while b < range.end {
       imm batch = *r.batches[b];
       b = b + 1usize;
       if batch.layer != LAYER_OPAQUE or batch.noShadow { continue; }
