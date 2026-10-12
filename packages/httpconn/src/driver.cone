@@ -23,9 +23,14 @@
 // connection ends in 'closeNow', which answers what is left on it, sends
 // its one Closed, and frees it.
 
-// A token: the driver's mark (the top bit, and its number in the next
-// seven), the operation's kind, the record's generation and index
+// A token: the driver's mark (the top bit, and its number in the next ten:
+// no two live drivers have the same), the operation's kind (five bits: the
+// layer above's, 'upperToken', has the top one set), the record's
+// generation and index
 const tokTop = 0x8000000000000000u64;
+const numberShift = 53u64;           // the mark's number: bits 53 to 62
+const kindShift = 48u64;
+const upperKind = 16u64;             // the kind bit that is the layer above's
 const kRecv = 1u64;
 const kReady = 2u64;
 const kSend = 3u64;
@@ -160,9 +165,9 @@ pub struct Driver {
   st DriverStats;
 
   // A driver whose connections take cfg's bounds and buffers from pool
-  pub fn make(cfg Config, pool Pool) Driver {
-    imm tag = u64.from(driverSeq.add(1u32) & 127u32);
-    new Driver(cfg: cfg, pool: pool, tokBase: tokTop | (tag << 56u64),
+  pub fn make(cfg Config, pool Pool, file &Array[u8] = srcFile(), line u32 = srcLine()) Driver {
+    imm number = u64.from(takeNumber(file, line));
+    new Driver(cfg: cfg, pool: pool, tokBase: tokTop | (number << numberShift),
       connBlocks: List[*Conn].empty(), connCount: 0u32, freeConn: noEntry, liveConns: 0u32,
       reqBlocks: List[*Req].empty(), reqCount: 0u32, freeReq: noEntry,
       listeners: List[Lst].empty(), acceptsOut: 0u32, rearm: false,
@@ -188,23 +193,25 @@ pub struct Driver {
   pub fn config(self &) Config {cfg;}
 
   // Whether a token is one of this driver's operations
-  pub fn owns(self &, token u64) bool {(token >> 56u64) == (tokBase >> 56u64);}
+  pub fn owns(self &, token u64) bool {(token >> numberShift) == (tokBase >> numberShift);}
 
   fn tok(self &, kind u64, index u32, gen u32) u64 {
-    tokBase | (kind << 48u64) | (u64.from(gen & genMask) << 24u64) | u64.from(index & genMask);
+    tokBase | (kind << kindShift) | (u64.from(gen & genMask) << 24u64) | u64.from(index & genMask);
   }
 
   // A token in this driver's space for the layer above it, to submit its
   // own operations to the same loop with (httpclient's deadlines and
-  // groups): its kind byte has the top bit set, which no operation of the
-  // driver's has, so 'complete' leaves its completion (false) and 'owns' is
-  // true of it. 'n' is the layer's own, its low 48 bits kept
-  pub fn upperToken(self &, kind u8, n u64) u64 {
-    tokBase | ((u64.from(kind) | 128u64) << 48u64) | (n & 0xFFFFFFFFFFFFu64);
+  // groups): its kind has the top of its five bits set, which no operation
+  // of the driver's has, so 'complete' leaves its completion (false) and
+  // 'owns' is true of it. 'kind' is the layer's own, 0 to 15 (a larger one
+  // is a panic); 'n' is the layer's own, its low 48 bits kept
+  pub fn upperToken(self &, kind u8, n u64, file &Array[u8] = srcFile(), line u32 = srcLine()) u64 {
+    if kind >= 16u8 {panic("httpconn: an upper token's kind is 0 to 15", file, line);}
+    tokBase | ((u64.from(kind) | upperKind) << kindShift) | (n & 0xFFFFFFFFFFFFu64);
   }
 
   // Whether a token is one 'upperToken' made, and its kind and n
-  pub fn isUpperToken(self &, token u64) bool {self.owns(token) and ((token >> 48u64) & 128u64) != 0u64;}
+  pub fn isUpperToken(self &, token u64) bool {self.owns(token) and ((token >> kindShift) & upperKind) != 0u64;}
 
   // ---------------------------------------------------------------------------
   // The tables
@@ -1043,8 +1050,8 @@ pub struct Driver {
   pub fn complete(self &mut, lp &mut Loop, comp &mut Completion) bool {
     imm token = comp.token;
     if not self.owns(token) {return false;}
-    imm kind = (token >> 48u64) & 255u64;
-    if kind >= 128u64 {return false;}     // the layer above's (upperToken)
+    imm kind = (token >> kindShift) & 31u64;
+    if kind >= upperKind {return false;}  // the layer above's (upperToken)
     imm index = u32.from(token & u64.from(genMask));
     imm gen = u32.from((token >> 24u64) & u64.from(genMask));
     imm now = Instant.now();
@@ -1643,6 +1650,7 @@ pub struct Driver {
   // sockets are the loop's, which closes them when it dies; 'abortAll'
   // first closes them now
   fn final(self &uni) {
+    giveNumber(u32.from((tokBase >> numberShift) & 1023u64));
     mut b = 0usize;
     while b < connBlocks.len() {
       imm block = *connBlocks[b];
