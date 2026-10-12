@@ -1,0 +1,69 @@
+// A heavy body on light ones lands without tearing its joints open, at the default settings.
+//
+// A leg stood on its foot: a 40 kg trunk on a 7 kg thigh on a 3.3 kg shin on a 1 kg foot, joined by hinges and
+// dropped upright from 2 m (6.3 m/s) onto the ground. The foot stops at once and the whole column behind it has to
+// be stopped through the three joints; a joint whose softness is a spring on the mass of its own two bodies holds
+// a 1 kg foot to a shin with a spring made for 1 kg, and the column stretches the ankle by several centimetres. And
+// a body on a joint is not moved back by continuous collision (which moved the foot to its hit and left the shin
+// behind: 15 cm). The largest gap between a joint's two anchors in 4 s stays under 2 cm, and a free-standing pair
+// of bodies on a joint (equal masses) is as it was.
+
+mod landing;
+
+import testing use *;
+import collections use List;
+import geomath use *;
+import rigidcollide use *;
+import rigiddynamics use *;
+
+fn gapOf(trunkKg f32, drop f32, iterations i32) f32 {
+  mut w = World.make();
+  w.settings.jointIterations = iterations;
+  imm floorS = w.addShape(Shape.single(Prim.box(new Vec3(20., 1., 20.))));
+  w.createBody(BodyDef.staticAt(floorS, new Vec3(0., -1., 0.)));
+  imm trunkS = w.addShape(Shape.single(Prim.box(new Vec3(0.15, 0.25, 0.1))));
+  imm thighS = w.addShape(Shape.single(Prim.capsule(0.07, 0.15)));
+  imm shinS = w.addShape(Shape.single(Prim.capsule(0.05, 0.15)));
+  imm footS = w.addShape(Shape.single(Prim.box(new Vec3(0.05, 0.03, 0.12))));
+  mut ft = BodyDef.dynamicAt(footS, new Vec3(0., drop + 0.03, 0.));
+  ft.mass = 1.;
+  imm foot = w.createBody(ft);
+  mut sn = BodyDef.dynamicAt(shinS, new Vec3(0., drop + 0.06 + 0.2, 0.));
+  sn.mass = 3.3;
+  imm shin = w.createBody(sn);
+  mut th = BodyDef.dynamicAt(thighS, new Vec3(0., drop + 0.06 + 0.4 + 0.22, 0.));
+  th.mass = 7.;
+  imm thigh = w.createBody(th);
+  mut tr = BodyDef.dynamicAt(trunkS, new Vec3(0., drop + 0.06 + 0.4 + 0.44 + 0.25, 0.));
+  tr.mass = trunkKg;
+  imm trunk = w.createBody(tr);
+  mut joints = List[u32].empty();
+  imm ankle = w.addHinge(shin, foot, new Vec3(0., drop + 0.06, 0.), new Vec3(1., 0., 0.));
+  w.setHingeLimits(ankle, -0.5, 0.8);
+  joints.push(ankle);
+  imm knee = w.addHinge(thigh, shin, new Vec3(0., drop + 0.06 + 0.4 + 0.02, 0.), new Vec3(1., 0., 0.));
+  w.setHingeLimits(knee, -1.5, 0.1);
+  joints.push(knee);
+  imm hip = w.addHinge(trunk, thigh, new Vec3(0., drop + 0.06 + 0.4 + 0.44 + 0.02, 0.), new Vec3(1., 0., 0.));
+  w.setHingeLimits(hip, -1.5, 1.5);
+  joints.push(hip);
+  mut worst = 0.;
+  mut i = 0;
+  while i < 240 {
+    w.step(1. / 60.);
+    mut k = 0usize;
+    while k < joints.len() { worst = maxf(worst, w.jointError(*joints[k])); k = k + 1usize; }
+    i = i + 1;
+  }
+  worst;
+}
+
+fn main() i32 {
+  imm worst = gapOf(40., 2., 8);
+  expectBool(worst < 0.02, true, "a 40 kg trunk on a 1 kg foot dropped from 2 m: no joint is ever 2 cm open (default 8 sweeps)");
+  imm single = gapOf(40., 2., 1);
+  expectBool(single > 2. * worst, true, "and with one sweep a sub-step it is open by more than twice as much (the sweeps are what hold it)");
+  imm light = gapOf(4., 2., 8);
+  expectBool(light < 0.02, true, "a light trunk likewise");
+  done();
+}

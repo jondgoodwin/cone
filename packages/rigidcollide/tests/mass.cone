@@ -145,6 +145,30 @@ fn testCompound() {
   near(mp.inertia.cell(1usize, 1usize), 7. / 3., 0.0001, "compound Iyy by the parallel axis theorem");
   imm bb = s.bounds(Rigid.identity());
   near(bb.max.x, 1.5, 0.0001, "compound bounds");
+  // A turned leaf: boxes of half (1, 0.5, 0.5) (V = 2) at x = 3 and, turned a quarter about z so its long side is
+  // along y, at x = -3. Each about its own centre: the first Ixx 2/3 (0.25 + 0.25) = 1/3, Iyy = Izz = 2/3 (1 + 0.25) = 5/6;
+  // the second the same with x and y swapped. The parallel axis adds V d^2 = 18 to Iyy and Izz of each.
+  // Total: Ixx = 1/3 + 5/6 = 7/6, Iyy = 5/6 + 1/3 + 36, Izz = 2 (5/6) + 36
+  mut t = Shape.compound();
+  t.add(Prim.box(new Vec3(1., 0.5, 0.5)), Rigid.at(new Vec3(3., 0., 0.)));
+  t.add(Prim.box(new Vec3(1., 0.5, 0.5)), new Rigid(new Vec3(-3., 0., 0.), Quat.angleAxis(pi / 2., new Vec3(0., 0., 1.))));
+  imm tp = t.massProps();
+  near(tp.volume, 4., 0.0001, "turned-leaf compound volume");
+  near(tp.com.x, 0., 0.0001, "and com");
+  near(tp.inertia.cell(0usize, 0usize), 7. / 6., 0.001, "turned-leaf Ixx");
+  near(tp.inertia.cell(1usize, 1usize), 5. / 6. + 1. / 3. + 36., 0.001, "turned-leaf Iyy");
+  near(tp.inertia.cell(2usize, 2usize), 5. / 3. + 36., 0.001, "turned-leaf Izz");
+  near(tp.inertia.cell(0usize, 1usize), 0., 0.001, "turned-leaf Ixy");
+  // An off-centre pair: a heavy leaf (V = 8) at the origin and a light one (V = 1) at y = 4: com at y = 4/9
+  mut u = Shape.compound();
+  u.add(Prim.box(new Vec3(1., 1., 1.)), Rigid.identity());
+  u.add(Prim.box(new Vec3(0.5, 0.5, 0.5)), Rigid.at(new Vec3(0., 4., 0.)));
+  imm up = u.massProps();
+  near(up.com.y, 4. / 9., 0.0001, "off-centre compound com");
+  // Ixx = 8/6 * 2 ... : box 1 about x: 8/12 (4 + 4) = 16/3; box 2: 1/12 (0.25 + 0.25)... = 1/6 about its own centre;
+  // plus 8 (4/9)^2 and 1 (4 - 4/9)^2
+  near(up.inertia.cell(0usize, 0usize), 16. / 3. + 1. / 6. + 8. * (16. / 81.) + (32. / 9.) * (32. / 9.), 0.001, "off-centre Ixx by the parallel axis theorem");
+  near(up.inertia.cell(1usize, 1usize), 16. / 3. + 1. / 6., 0.001, "Iyy has no shift along y");
 }
 
 fn main() i32 {

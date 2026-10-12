@@ -80,12 +80,25 @@ pub struct Joint {
   pub driveDamping f32;       // its damping, N m s per radian
   pub driveMax f32;           // N m
   pub impDrive Vec3;
+  // elliptical swing limit (cone-twist): the swing, the deflection of B's twist axis from A's, is held inside the
+  // ellipse (u / a)^2 + (v / b)^2 <= 1, u and v the swing's components along 'ellU' and 'ellV' (directions in A's
+  // body frame, perpendicular to the twist axis), a the quarter-axis 'ellFlex' for u > 0 and 'ellExt' for u < 0, b
+  // 'ellAbd' for v > 0 and 'ellAdd' for v < 0. Jolt's SwingTwistConstraint has the same four half-axes.
+  pub ellOn bool;
+  pub ellU Vec3;
+  pub ellV Vec3;
+  pub ellFlex f32;
+  pub ellExt f32;
+  pub ellAbd f32;
+  pub ellAdd f32;
+  pub impEll f32;             // its accumulated impulse, about 'ellDir' (the axis it last acted about)
+  pub ellDir Vec3;
 }
 
 pub fn blankJoint(kind i32, a u32, b u32) Joint {
   new Joint(true, kind, a, b, false, zero3(), zero3(), Quat.identity(), Quat.identity(), false, 0., 0., false, 0., 0.,
     0., 0., 0., 0.7853982, -0.7853982, 0.7853982, zero3(), zero3(), 0., 0., 0., 0., 0., 0., 0.,
-    false, Quat.identity(), 0., 1., 0., zero3());
+    false, Quat.identity(), 0., 1., 0., zero3(), false, zero3(), zero3(), 0., 0., 0., 0., 0., zero3());
 }
 
 // The joint's geometry at this moment
@@ -233,7 +246,8 @@ pub fn warmStartJoint(w &mut World, ji usize) {
     imm xa = s.fa * new Vec3(1., 0., 0.);
     imm xb = s.fb * new Vec3(1., 0., 0.);
     imm sw = xa.cross(xb);
-    if sw.length() > 0.00001 { angApply(w, &s, sw.normalize() * -1., j.impSwing); }
+    if j.ellOn { angApply(w, &s, j.ellDir, j.impEll); }
+    else if sw.length() > 0.00001 { angApply(w, &s, sw.normalize() * -1., j.impSwing); }
     angApply(w, &s, xa, j.impTwistLo - j.impTwistHi);
   }
 }
@@ -445,6 +459,47 @@ fn solveDistance(w &mut World, ji usize, s &JState, useBias bool, soft Softness,
   }
 }
 
+// The elliptical swing limit: a one-sided angular row about the axis that turns B's twist axis towards the
+// inside of the ellipse. The swing (u, v), in radians along the joint's two plane directions, is scaled about the
+// origin to the ellipse, (u, v) / sqrt(g) with g = (u/a)^2 + (v/b)^2, and the rotation that moves the tip there
+// (axis = tip x move) is the row's direction, its angle the violation (or, inside, the room: the row is then
+// speculative, as every limit row is). The tip's move is the small-angle tangent; the scaled point is not the
+// ellipse's nearest point to the swing, but it is on the ellipse, and the rows converge to inside it.
+fn solveEllipse(w &mut World, ji usize, s &JState, xa Vec3, xb Vec3, useBias bool, soft Softness, invH f32) {
+  imm j = &mut w.joints[ji];
+  imm sw = xa.cross(xb);
+  imm swl = sw.length();
+  if swl < 0.00001 { j.impEll = 0.; return; }
+  imm c = xa.dot(xb);
+  imm th = atan2(swl, c);
+  imm sdir = (xb - xa * c) * (1. / swl);
+  imm rotA = w.bodies[s.ia].rot;
+  imm uAxis = rotA * j.ellU;
+  imm vAxis = rotA * j.ellV;
+  imm u = th * sdir.dot(uAxis);
+  imm v = th * sdir.dot(vAxis);
+  imm a = if u > 0. { j.ellFlex; } else { j.ellExt; };
+  imm b = if v > 0. { j.ellAbd; } else { j.ellAdd; };
+  imm g = (u / a) * (u / a) + (v / b) * (v / b);
+  if g < 0.000000001 { j.impEll = 0.; return; }
+  imm sc = 1. / g.sqrt();
+  imm move = uAxis * (u * (sc - 1.)) + vAxis * (v * (sc - 1.));
+  imm r = xb.cross(move);
+  imm rl = r.length();
+  if rl < 0.0000001 { return; }
+  // towards the inside, and C: the room left (positive) or the violation (negative)
+  imm outside = g > 1.;
+  imm axis = if outside { r * (1. / rl); } else { r * (-1. / rl); };
+  imm cval = if outside { -rl; } else { rl; };
+  imm km = invOrZero(angK(s, axis));
+  imm rw = limitRow(cval, useBias, soft, invH);
+  imm lambda = -km * rw.massScale * (angJv(w, s, axis) + rw.bias) - rw.impulseScale * j.impEll;
+  imm newImp = maxf(j.impEll + lambda, 0.);
+  angApply(w, s, axis, newImp - j.impEll);
+  j.impEll = newImp;
+  j.ellDir = axis;
+}
+
 fn solveConeTwist(w &mut World, ji usize, s &JState, useBias bool, soft Softness, invH f32) {
   imm j = &mut w.joints[ji];
   // swing: the angle between the two x axes may not pass the cone
@@ -452,7 +507,9 @@ fn solveConeTwist(w &mut World, ji usize, s &JState, useBias bool, soft Softness
   imm xb = s.fb * new Vec3(1., 0., 0.);
   imm sw = xa.cross(xb);
   imm swl = sw.length();
-  if swl > 0.00001 {
+  if j.ellOn {
+    solveEllipse(w, ji, s, xa, xb, useBias, soft, invH);
+  } else if swl > 0.00001 {
     imm swing = atan2(swl, xa.dot(xb));
     // d(swing)/dt = relative angular velocity . (xa x xb)/|..|, and C = cone - swing, so the row axis is its negative
     imm u = (sw * (1. / swl)) * -1.;
