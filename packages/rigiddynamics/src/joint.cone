@@ -1,0 +1,459 @@
+// Joints: constraints between two bodies, solved with the contacts.
+//
+// Kinds: point (ball and socket), fixed, hinge (with limits and a motor),
+// slider (prismatic, with limits and a motor), distance (a rod, a rope or a
+// spring, with a range) and cone-twist (the ragdoll shoulder: a point with a
+// swing cone and a twist range).
+//
+// Method: every joint is a few rows of the same sequential-impulse solver the
+// contacts use, run inside Soft Step (see contact.cone): the rows are soft
+// constraints (World.settings.jointHertz and jointDamping), warm-started by
+// last sub-step's accumulated impulses, solved in the main pass with their
+// bias, and again in the relax pass without. The locked degrees of freedom
+// are solved the way Jolt's and Box2D's joints are:
+//   - a point constraint is one 3x3 block, (mA^-1 + mB^-1) 1 - [rA]x IA^-1 [rA]x
+//     - [rB]x IB^-1 [rB]x inverted (Catto, "Modeling and Solving Constraints",
+//     GDC 2009);
+//   - locking the orientation is a 3x3 block IA^-1 + IB^-1 on the small-angle
+//     error 2 * vec(qA^-1 qB) (Jolt's FixedConstraint, Box2D's weld);
+//   - a hinge keeps its axes together with two angular rows on axisA x axisB
+//     (Jolt's HingeConstraint);
+//   - a slider keeps B on A's axis with two linear rows whose arm includes the
+//     offset between the anchors (Jolt's SliderConstraint);
+//   - limits are one-sided rows that are speculative inside the range (they
+//     allow only the motion that reaches the limit), motors are velocity rows
+//     with a clamped impulse;
+//   - the cone limit is one angular row on xA x xB, the twist limit one row
+//     about the twist axis, both from the swing-twist split of qA^-1 qB.
+// A joint's frame on each body is a rotation (fa, fb) and an anchor (la, lb) in
+// the body's own frame (centre of mass origin); at creation the two frames
+// coincide, which is angle 0 and offset 0 for the limits.
+
+pub const JointPoint = 0;
+pub const JointFixed = 1;
+pub const JointHinge = 2;
+pub const JointSlider = 3;
+pub const JointDistance = 4;
+pub const JointConeTwist = 5;
+
+pub struct Joint {
+  pub alive bool;
+  pub kind i32;
+  pub a u32;
+  pub b u32;
+  pub collide bool;           // may the two bodies collide with each other?
+  pub la Vec3;                // anchor on each body, in its centre-of-mass frame
+  pub lb Vec3;
+  pub fa Quat;                // joint frame on each body (x is the hinge, slide or twist axis)
+  pub fb Quat;
+  // limits: hinge angle, slider offset, or distance range
+  pub limitOn bool;
+  pub lower f32;
+  pub upper f32;
+  // motor
+  pub motorOn bool;
+  pub motorSpeed f32;         // rad/s or m/s
+  pub motorMax f32;           // N m or N
+  // distance
+  pub length f32;
+  pub hertz f32;              // 0: rigid
+  pub damping f32;
+  // cone-twist
+  pub coneAngle f32;
+  pub twistLo f32;
+  pub twistHi f32;
+  // accumulated impulses (per sub-step)
+  pub impPoint Vec3;          // linear: the point block, or a slider's two perpendicular rows
+  pub impAng Vec3;            // angular: the orientation block, or a hinge's two alignment rows
+  pub impLo f32;
+  pub impHi f32;
+  pub impMotor f32;
+  pub impDist f32;
+  pub impSwing f32;
+  pub impTwistLo f32;
+  pub impTwistHi f32;
+}
+
+pub fn blankJoint(kind i32, a u32, b u32) Joint {
+  new Joint(true, kind, a, b, false, zero3(), zero3(), Quat.identity(), Quat.identity(), false, 0., 0., false, 0., 0.,
+    0., 0., 0., 0.7853982, -0.7853982, 0.7853982, zero3(), zero3(), 0., 0., 0., 0., 0., 0., 0.);
+}
+
+// The joint's geometry at this moment
+pub struct JState {
+  pub ia usize;
+  pub ib usize;
+  pub mA f32;
+  pub mB f32;
+  pub iA Mat3;
+  pub iB Mat3;
+  pub rA Vec3;      // world arms from the centres of mass to the anchors
+  pub rB Vec3;
+  pub d Vec3;       // from A's anchor to B's
+  pub fa Quat;      // the joint frames in the world
+  pub fb Quat;
+}
+
+pub fn jointState(w &World, j &Joint) JState {
+  imm bA = w.bodies[usize.from(j.a)];
+  imm bB = w.bodies[usize.from(j.b)];
+  imm rA = bA.rot * j.la;
+  imm rB = bB.rot * j.lb;
+  new JState(usize.from(j.a), usize.from(j.b), bA.invMass, bB.invMass, bA.invInertia, bB.invInertia, rA, rB,
+    (bB.pos + rB) - (bA.pos + rA), (bA.rot * j.fa).normalize(), (bB.rot * j.fb).normalize());
+}
+
+// How a row is softened this pass
+pub struct RowBias {
+  pub bias f32;
+  pub massScale f32;
+  pub impulseScale f32;
+}
+
+// A one-sided row at a limit with 'c' of room (negative: past it): inside the
+// room the row only stops the motion that would use it up in a sub-step
+pub fn limitRow(c f32, useBias bool, soft Softness, invH f32) RowBias {
+  if c > 0. { return new RowBias(c * invH, 1., 0.); }
+  if useBias { return new RowBias(soft.biasRate * c, soft.massScale, soft.impulseScale); }
+  new RowBias(0., 1., 0.);
+}
+
+fn kPoint(s &JState) Mat3 {
+  imm sa = skew(s.rA);
+  imm sb = skew(s.rB);
+  imm e = mat3Scale(Mat3.identity(), s.mA + s.mB);
+  mat3Add(e, mat3Scale(mat3Add(sa * s.iA * sa, sb * s.iB * sb), -1.));
+}
+
+// A linear row's Jacobian times the velocities
+fn linJv(w &World, s &JState, u Vec3, armA Vec3, armB Vec3) f32 {
+  imm bA = w.bodies[s.ia];
+  imm bB = w.bodies[s.ib];
+  u.dot(bB.linVel - bA.linVel) + armB.cross(u).dot(bB.angVel) - armA.cross(u).dot(bA.angVel);
+}
+
+fn linK(s &JState, u Vec3, armA Vec3, armB Vec3) f32 {
+  imm ra = armA.cross(u);
+  imm rb = armB.cross(u);
+  s.mA + s.mB + ra.dot(s.iA * ra) + rb.dot(s.iB * rb);
+}
+
+// An impulse of 'lambda' along u at the arms: B gets it, A gets its opposite
+fn linApply(w &mut World, s &JState, u Vec3, armA Vec3, armB Vec3, lambda f32) {
+  w.bodies[s.ia].linVel = w.bodies[s.ia].linVel - u * (lambda * s.mA);
+  w.bodies[s.ia].angVel = w.bodies[s.ia].angVel - s.iA * armA.cross(u) * lambda;
+  w.bodies[s.ib].linVel = w.bodies[s.ib].linVel + u * (lambda * s.mB);
+  w.bodies[s.ib].angVel = w.bodies[s.ib].angVel + s.iB * armB.cross(u) * lambda;
+}
+
+fn linApplyVec(w &mut World, s &JState, p Vec3, armA Vec3, armB Vec3) {
+  w.bodies[s.ia].linVel = w.bodies[s.ia].linVel - p * s.mA;
+  w.bodies[s.ia].angVel = w.bodies[s.ia].angVel - s.iA * armA.cross(p);
+  w.bodies[s.ib].linVel = w.bodies[s.ib].linVel + p * s.mB;
+  w.bodies[s.ib].angVel = w.bodies[s.ib].angVel + s.iB * armB.cross(p);
+}
+
+fn angJv(w &World, s &JState, u Vec3) f32 {
+  u.dot(w.bodies[s.ib].angVel - w.bodies[s.ia].angVel);
+}
+
+fn angK(s &JState, u Vec3) f32 {
+  u.dot(s.iA * u) + u.dot(s.iB * u);
+}
+
+fn angApply(w &mut World, s &JState, u Vec3, lambda f32) {
+  w.bodies[s.ia].angVel = w.bodies[s.ia].angVel - s.iA * u * lambda;
+  w.bodies[s.ib].angVel = w.bodies[s.ib].angVel + s.iB * u * lambda;
+}
+
+fn angApplyVec(w &mut World, s &JState, l Vec3) {
+  w.bodies[s.ia].angVel = w.bodies[s.ia].angVel - s.iA * l;
+  w.bodies[s.ib].angVel = w.bodies[s.ib].angVel + s.iB * l;
+}
+
+fn invOrZero(k f32) f32 { if k > 0. { 1. / k; } else { 0.; }; }
+
+// The twist of the relative rotation qrel = fa^-1 fb about its x axis, radians
+fn twistOf(q Quat) f32 {
+  imm sg = if q.w < 0. { -1.; } else { 1.; };
+  wrapAngle(2. * atan2(q.x * sg, q.w * sg));
+}
+
+// The relative rotation of B's joint frame in A's
+fn relRot(s &JState) Quat { (s.fa.conjugate() * s.fb).normalize(); }
+
+// The hinge angle of a hinge joint, radians (0 where it was made)
+pub fn hingeAngle(w &World, j &Joint) f32 {
+  imm s = jointState(w, j);
+  twistOf(relRot(&s));
+}
+
+// The slide of a slider joint, metres (0 where it was made)
+pub fn sliderOffset(w &World, j &Joint) f32 {
+  imm s = jointState(w, j);
+  s.d.dot(s.fa * new Vec3(1., 0., 0.));
+}
+
+// ---------------------------------------------------------------------------
+// Warm start
+
+pub fn warmStartJoint(w &mut World, ji usize) {
+  imm j = w.joints[ji];
+  imm s = jointState(w, j);
+  imm ax = s.fa * new Vec3(1., 0., 0.);
+  if j.kind == JointPoint or j.kind == JointFixed or j.kind == JointHinge or j.kind == JointConeTwist {
+    linApplyVec(w, &s, j.impPoint, s.rA, s.rB);
+  }
+  if j.kind == JointSlider {
+    linApplyVec(w, &s, j.impPoint, s.rA + s.d, s.rB);
+    linApply(w, &s, ax, s.rA + s.d, s.rB, j.impLo - j.impHi + j.impMotor);
+  }
+  if j.kind == JointFixed or j.kind == JointSlider or j.kind == JointHinge {
+    angApplyVec(w, &s, j.impAng);
+  }
+  if j.kind == JointHinge {
+    angApply(w, &s, ax, j.impLo - j.impHi + j.impMotor);
+  }
+  if j.kind == JointDistance {
+    imm len = s.d.length();
+    imm n = if len > 0.000001 { s.d * (1. / len); } else { new Vec3(1., 0., 0.); };
+    linApply(w, &s, n, s.rA, s.rB, j.impDist + j.impLo - j.impHi);
+  }
+  if j.kind == JointConeTwist {
+    imm xa = s.fa * new Vec3(1., 0., 0.);
+    imm xb = s.fb * new Vec3(1., 0., 0.);
+    imm sw = xa.cross(xb);
+    if sw.length() > 0.00001 { angApply(w, &s, sw.normalize() * -1., j.impSwing); }
+    angApply(w, &s, xa, j.impTwistLo - j.impTwistHi);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Solve
+
+// The 3x3 point block: the anchors together
+fn solvePointBlock(w &mut World, ji usize, s &JState, useBias bool, soft Softness) {
+  imm j = &mut w.joints[ji];
+  imm bA = w.bodies[s.ia];
+  imm bB = w.bodies[s.ib];
+  imm jv = (bB.linVel + bB.angVel.cross(s.rB)) - (bA.linVel + bA.angVel.cross(s.rA));
+  imm kinv = kPoint(s).inverse();
+  imm bias = if useBias { s.d * soft.biasRate; } else { zero3(); };
+  imm ms = if useBias { soft.massScale; } else { 1.; };
+  imm isc = if useBias { soft.impulseScale; } else { 0.; };
+  imm lambda = (kinv * (jv + bias)) * (-ms) - j.impPoint * isc;
+  j.impPoint = j.impPoint + lambda;
+  linApplyVec(w, s, lambda, s.rA, s.rB);
+}
+
+// The 3x3 orientation block: B's joint frame turned to A's
+fn solveOrientationBlock(w &mut World, ji usize, s &JState, useBias bool, soft Softness) {
+  imm j = &mut w.joints[ji];
+  imm q0 = relRot(s);
+  imm sg = if q0.w < 0. { -1.; } else { 1.; };
+  imm err = (s.fa * new Vec3(q0.x, q0.y, q0.z)) * (2. * sg);
+  imm jv = w.bodies[s.ib].angVel - w.bodies[s.ia].angVel;
+  imm kinv = mat3Add(s.iA, s.iB).inverse();
+  imm bias = if useBias { err * soft.biasRate; } else { zero3(); };
+  imm ms = if useBias { soft.massScale; } else { 1.; };
+  imm isc = if useBias { soft.impulseScale; } else { 0.; };
+  imm lambda = (kinv * (jv + bias)) * (-ms) - j.impAng * isc;
+  j.impAng = j.impAng + lambda;
+  angApplyVec(w, s, lambda);
+}
+
+// A hinge keeps its two axes together: two angular rows perpendicular to A's axis
+fn solveHingeAlign(w &mut World, ji usize, s &JState, useBias bool, soft Softness) {
+  imm j = &mut w.joints[ji];
+  imm axA = s.fa * new Vec3(1., 0., 0.);
+  imm axB = s.fb * new Vec3(1., 0., 0.);
+  imm c = axA.cross(axB);
+  imm u1 = perpendicular(axA);
+  imm u2 = axA.cross(u1);
+  imm ms = if useBias { soft.massScale; } else { 1.; };
+  imm isc = if useBias { soft.impulseScale; } else { 0.; };
+  mut i = 0;
+  while i < 2 {
+    imm u = if i == 0 { u1; } else { u2; };
+    imm err = c.dot(u);
+    imm bias = if useBias { soft.biasRate * err; } else { 0.; };
+    imm acc = j.impAng.dot(u);
+    imm lambda = -invOrZero(angK(s, u)) * ms * (angJv(w, s, u) + bias) - isc * acc;
+    j.impAng = j.impAng + u * lambda;
+    angApply(w, s, u, lambda);
+    i = i + 1;
+  }
+}
+
+// A slider keeps B on A's axis: two linear rows perpendicular to it
+fn solveSliderPerp(w &mut World, ji usize, s &JState, useBias bool, soft Softness) {
+  imm j = &mut w.joints[ji];
+  imm ax = s.fa * new Vec3(1., 0., 0.);
+  imm u1 = perpendicular(ax);
+  imm u2 = ax.cross(u1);
+  imm armA = s.rA + s.d;
+  imm ms = if useBias { soft.massScale; } else { 1.; };
+  imm isc = if useBias { soft.impulseScale; } else { 0.; };
+  mut i = 0;
+  while i < 2 {
+    imm u = if i == 0 { u1; } else { u2; };
+    imm err = s.d.dot(u);
+    imm bias = if useBias { soft.biasRate * err; } else { 0.; };
+    imm acc = j.impPoint.dot(u);
+    imm lambda = -invOrZero(linK(s, u, armA, s.rB)) * ms * (linJv(w, s, u, armA, s.rB) + bias) - isc * acc;
+    j.impPoint = j.impPoint + u * lambda;
+    linApply(w, s, u, armA, s.rB, lambda);
+    i = i + 1;
+  }
+}
+
+// Limits and motor along an angular axis (hinge, twist) or a linear one (slider)
+fn solveAngularLimits(w &mut World, ji usize, s &JState, axis Vec3, angle f32, useBias bool, soft Softness, invH f32, h f32) {
+  imm j = &mut w.joints[ji];
+  imm km = invOrZero(angK(s, axis));
+  if j.motorOn {
+    imm lambda = -km * (angJv(w, s, axis) - j.motorSpeed);
+    imm maxI = j.motorMax * h;
+    imm old = j.impMotor;
+    j.impMotor = clampf(old + lambda, -maxI, maxI);
+    angApply(w, s, axis, j.impMotor - old);
+  }
+  if j.limitOn {
+    // lower: C = angle - lower; B turning in +axis raises the angle
+    imm rl = limitRow(angle - j.lower, useBias, soft, invH);
+    imm ll = -km * rl.massScale * (angJv(w, s, axis) + rl.bias) - rl.impulseScale * j.impLo;
+    imm newLo = maxf(j.impLo + ll, 0.);
+    angApply(w, s, axis, newLo - j.impLo);
+    j.impLo = newLo;
+    // upper: C = upper - angle; the row pushes the other way
+    imm ru = limitRow(j.upper - angle, useBias, soft, invH);
+    imm lu = -km * ru.massScale * (-angJv(w, s, axis) + ru.bias) - ru.impulseScale * j.impHi;
+    imm newHi = maxf(j.impHi + lu, 0.);
+    angApply(w, s, axis, -(newHi - j.impHi));
+    j.impHi = newHi;
+  }
+}
+
+fn solveLinearLimits(w &mut World, ji usize, s &JState, axis Vec3, pos f32, armA Vec3, useBias bool, soft Softness, invH f32, h f32) {
+  imm j = &mut w.joints[ji];
+  imm km = invOrZero(linK(s, axis, armA, s.rB));
+  if j.motorOn {
+    imm lambda = -km * (linJv(w, s, axis, armA, s.rB) - j.motorSpeed);
+    imm maxI = j.motorMax * h;
+    imm old = j.impMotor;
+    j.impMotor = clampf(old + lambda, -maxI, maxI);
+    linApply(w, s, axis, armA, s.rB, j.impMotor - old);
+  }
+  if j.limitOn {
+    imm rl = limitRow(pos - j.lower, useBias, soft, invH);
+    imm ll = -km * rl.massScale * (linJv(w, s, axis, armA, s.rB) + rl.bias) - rl.impulseScale * j.impLo;
+    imm newLo = maxf(j.impLo + ll, 0.);
+    linApply(w, s, axis, armA, s.rB, newLo - j.impLo);
+    j.impLo = newLo;
+    imm ru = limitRow(j.upper - pos, useBias, soft, invH);
+    imm lu = -km * ru.massScale * (-linJv(w, s, axis, armA, s.rB) + ru.bias) - ru.impulseScale * j.impHi;
+    imm newHi = maxf(j.impHi + lu, 0.);
+    linApply(w, s, axis, armA, s.rB, -(newHi - j.impHi));
+    j.impHi = newHi;
+  }
+}
+
+fn solveDistance(w &mut World, ji usize, s &JState, useBias bool, soft Softness, invH f32, h f32) {
+  imm j = &mut w.joints[ji];
+  imm len = s.d.length();
+  imm n = if len > 0.000001 { s.d * (1. / len); } else { new Vec3(1., 0., 0.); };
+  imm km = invOrZero(linK(s, n, s.rA, s.rB));
+  // the rod or spring toward 'length'
+  if j.lower == j.upper or j.hertz > 0. {
+    if j.hertz > 0. {
+      // a spring: its own soft constraint, not the joint's
+      imm sp = makeSoft(j.hertz, j.damping, h);
+      imm c = len - j.length;
+      imm bias = sp.biasRate * c;
+      imm lambda = -km * sp.massScale * (linJv(w, s, n, s.rA, s.rB) + bias) - sp.impulseScale * j.impDist;
+      j.impDist = j.impDist + lambda;
+      linApply(w, s, n, s.rA, s.rB, lambda);
+    } else {
+      imm c = len - j.length;
+      imm bias = if useBias { soft.biasRate * c; } else { 0.; };
+      imm ms = if useBias { soft.massScale; } else { 1.; };
+      imm isc = if useBias { soft.impulseScale; } else { 0.; };
+      imm lambda = -km * ms * (linJv(w, s, n, s.rA, s.rB) + bias) - isc * j.impDist;
+      j.impDist = j.impDist + lambda;
+      linApply(w, s, n, s.rA, s.rB, lambda);
+    }
+  }
+  if j.limitOn and not (j.lower == j.upper and j.hertz == 0.) {
+    // not shorter than lower
+    imm rl = limitRow(len - j.lower, useBias, soft, invH);
+    imm ll = -km * rl.massScale * (linJv(w, s, n, s.rA, s.rB) + rl.bias) - rl.impulseScale * j.impLo;
+    imm newLo = maxf(j.impLo + ll, 0.);
+    linApply(w, s, n, s.rA, s.rB, newLo - j.impLo);
+    j.impLo = newLo;
+    // not longer than upper
+    imm ru = limitRow(j.upper - len, useBias, soft, invH);
+    imm lu = -km * ru.massScale * (-linJv(w, s, n, s.rA, s.rB) + ru.bias) - ru.impulseScale * j.impHi;
+    imm newHi = maxf(j.impHi + lu, 0.);
+    linApply(w, s, n, s.rA, s.rB, -(newHi - j.impHi));
+    j.impHi = newHi;
+  }
+}
+
+fn solveConeTwist(w &mut World, ji usize, s &JState, useBias bool, soft Softness, invH f32) {
+  imm j = &mut w.joints[ji];
+  // swing: the angle between the two x axes may not pass the cone
+  imm xa = s.fa * new Vec3(1., 0., 0.);
+  imm xb = s.fb * new Vec3(1., 0., 0.);
+  imm sw = xa.cross(xb);
+  imm swl = sw.length();
+  if swl > 0.00001 {
+    imm swing = atan2(swl, xa.dot(xb));
+    // d(swing)/dt = relative angular velocity . (xa x xb)/|..|, and C = cone - swing, so the row axis is its negative
+    imm u = (sw * (1. / swl)) * -1.;
+    imm km = invOrZero(angK(s, u));
+    imm rl = limitRow(j.coneAngle - swing, useBias, soft, invH);
+    imm lambda = -km * rl.massScale * (angJv(w, s, u) + rl.bias) - rl.impulseScale * j.impSwing;
+    imm newImp = maxf(j.impSwing + lambda, 0.);
+    angApply(w, s, u, newImp - j.impSwing);
+    j.impSwing = newImp;
+  }
+  // twist about A's x axis
+  imm tw = twistOf(relRot(s));
+  imm km2 = invOrZero(angK(s, xa));
+  imm rlo = limitRow(tw - j.twistLo, useBias, soft, invH);
+  imm llo = -km2 * rlo.massScale * (angJv(w, s, xa) + rlo.bias) - rlo.impulseScale * j.impTwistLo;
+  imm newLo = maxf(j.impTwistLo + llo, 0.);
+  angApply(w, s, xa, newLo - j.impTwistLo);
+  j.impTwistLo = newLo;
+  imm rhi = limitRow(j.twistHi - tw, useBias, soft, invH);
+  imm lhi = -km2 * rhi.massScale * (-angJv(w, s, xa) + rhi.bias) - rhi.impulseScale * j.impTwistHi;
+  imm newHi = maxf(j.impTwistHi + lhi, 0.);
+  angApply(w, s, xa, -(newHi - j.impTwistHi));
+  j.impTwistHi = newHi;
+}
+
+pub fn solveJoint(w &mut World, ji usize, useBias bool, invH f32, h f32, soft Softness) {
+  imm kind = w.joints[ji].kind;
+  imm s = jointState(w, w.joints[ji]);
+  if kind == JointPoint {
+    solvePointBlock(w, ji, &s, useBias, soft);
+  } else if kind == JointFixed {
+    solveOrientationBlock(w, ji, &s, useBias, soft);
+    solvePointBlock(w, ji, &s, useBias, soft);
+  } else if kind == JointHinge {
+    imm ax = s.fa * new Vec3(1., 0., 0.);
+    solveAngularLimits(w, ji, &s, ax, twistOf(relRot(&s)), useBias, soft, invH, h);
+    solveHingeAlign(w, ji, &s, useBias, soft);
+    solvePointBlock(w, ji, &s, useBias, soft);
+  } else if kind == JointSlider {
+    imm ax = s.fa * new Vec3(1., 0., 0.);
+    solveLinearLimits(w, ji, &s, ax, s.d.dot(ax), s.rA + s.d, useBias, soft, invH, h);
+    solveOrientationBlock(w, ji, &s, useBias, soft);
+    solveSliderPerp(w, ji, &s, useBias, soft);
+  } else if kind == JointDistance {
+    solveDistance(w, ji, &s, useBias, soft, invH, h);
+  } else if kind == JointConeTwist {
+    solveConeTwist(w, ji, &s, useBias, soft, invH);
+    solvePointBlock(w, ji, &s, useBias, soft);
+  }
+}
