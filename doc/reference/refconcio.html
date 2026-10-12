@@ -13,9 +13,11 @@
 
     <div class="text">
 
-	<p style="margin-left: 40px;"><i>Note: The packages that do I/O run on Windows only for now,
-		and a timer joined to a cancel group is not yet timed out by the group's deadline: it
-		answers at its own time.</i></p>
+	<p style="margin-left: 40px;"><i>Note: <span class="pre">iocore</span> (sockets, timers, files, cancel
+		groups and the blocking pool), <span class="pre">iobuf</span> and <span class="pre">aio</span> run on
+		Windows and on Linux; the other packages that do I/O run on Windows only for now. UDP, and
+		batching of any kind, are not here yet. A timer joined to a cancel group is not yet timed out by
+		the group's deadline: it answers at its own time.</i></p>
 
 	<h2 id="io-packages">The I/O packages</h2>
 	<p>What is built is in library packages, which <a href="refstdlib.html#asyncio">the standard
@@ -29,7 +31,10 @@
 		written over Windows' own <span class="pre">kernel32</span> or over
 		<span class="pre">posix_spawn</span> on Linux.</li>
 	<li><b>Asynchronous I/O, completion-based:</b> <span class="pre">iocore</span> is the
-		completion loop, over an I/O completion port. A program hands a loop a job (receive
+		completion loop, over an I/O completion port on Windows and over epoll on Linux (a
+		socket's operation is tried at once and waits in a queue of the socket's if it would
+		block; a file's runs on a thread of the blocking pool; an operation's answers are the
+		same on both). A program hands a loop a job (receive
 		into this buffer, send these bytes, accept a connection, read a file at an offset,
 		wake at a time) and later gets exactly one answer for it, carrying the buffer back.
 		A job can carry a deadline and belong to a cancel group, and a blocking pool runs
@@ -145,7 +150,11 @@ end of stream 5
 		exactly that: <span class="pre">await</span> adds nothing to it. An operation that can fail
 		answers as a synchronous call that can fail does, with a <span class="pre">Result</span>:
 		the success, or the operating system's failure, an <span class="pre">IoError</span> whose
-		<span class="pre">code</span> is the system's error number.</p>
+		<span class="pre">code</span> is Windows' error number for the failure, on every system (on
+		Linux the <span class="pre">errno</span> is turned into the Windows number that names the same
+		condition, <span class="pre">ERROR_CONNECTION_REFUSED</span> for <span class="pre">ECONNREFUSED</span>;
+		one with no such number is its <span class="pre">errno</span> above <span class="pre">0x10000000</span>),
+		and its <span class="pre">message()</span> is the system's words for it.</p>
 	<ul>
 	<li><span class="pre">aio.listen(addr)</span>, <span class="pre">aio.connect(addr)</span>,
 		<span class="pre">listener.accept()</span>: a <span class="pre">Socket</span>. Cone does

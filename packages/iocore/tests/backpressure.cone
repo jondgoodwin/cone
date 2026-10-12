@@ -1,0 +1,224 @@
+// A socket that cannot take, or give, everything at once: what an operation
+// that would block does, and in what order. (On Windows the kernel holds such
+// an operation; on Linux the loop does, in a queue of the socket's: both owe
+// the same answers.)
+//
+// 1. Two sends of 8 MiB each, queued behind one another, to a peer that has
+//    not begun to read: more than the sockets' buffers hold, so each waits for
+//    room. Then the peer reads it all, 64 KiB at a time: the bytes arrive in
+//    order and whole, and the first send is answered before the second, each
+//    with all its bytes sent.
+// 2. Sends that have no room left, cancelled (the first of them, which has
+//    sent some, and one behind it): Cancelled, buffers back; a third, still
+//    waiting, ends Cancelled when its socket is closed.
+// 3. The errors: a file that is not there, a port that is taken, and the words
+//    for each.
+
+mod backpressure;
+
+import testing use *;
+import collections use List;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use *;
+import diag;
+
+const eight = 8388608usize;
+
+fn waitFor(lp &mut Loop, out &mut List[Completion], n usize) {
+  imm limit = Instant.now() + Duration.fromSeconds(5i64);
+  while out.len() < n and Instant.now() < limit {
+    lp.poll(limit, out);
+  }
+}
+
+fn pair(lp &mut Loop) Handle, Handle {
+  imm listener = lp.mustListen(SocketAddr.localhost(0u16));
+  mut port = 0u16;
+  match lp.localAddr(listener) {
+    case imm a Ok {port = a.port();}
+    case imm e Error {}
+  }
+  lp.submit(Op.Accept(listener), Target.Here(9001u64));
+  lp.submit(Op.Connect(SocketAddr.localhost(port)), Target.Here(9002u64));
+  mut out = List[Completion].empty();
+  waitFor(lp, &mut out, 2usize);
+  mut a = Handle.none();
+  mut b = Handle.none();
+  mut k = 0usize;
+  while k < out.len() {
+    if out[k].token == 9001u64 {a = out[k].handle;} else {b = out[k].handle;}
+    k = k + 1usize;
+  }
+  lp.close(listener);
+  b, a;
+}
+
+// The byte at stream position pos: the first buffer's pattern, then the second's
+fn expected(pos usize, first usize) u8 {
+  if pos < first {u8.from(pos % 251usize) ^ 1u8;} else {u8.from((pos - first) % 251usize) ^ 2u8;}
+}
+
+fn pattern(b &mut IoBuf, seed u8) {
+  imm room = b.whole();
+  mut i = 0usize;
+  while i < room.len {
+    room[i] = u8.from(i % 251usize) ^ seed;
+    i = i + 1usize;
+  }
+  imm n = room.len;
+  b.setLen(n);
+}
+
+fn main() i32 {
+  {
+    imm pool = Pool.make();
+    mut lp = Loop.mustMake();
+    mut out = List[Completion].empty();
+    mut client = Handle.none();
+    mut server = Handle.none();
+    client, server = pair(&mut lp);
+    require(lp.isOpen(client) and lp.isOpen(server), "a connected pair");
+
+    // 1. Two big sends, then the reads
+    mut s1 = pool.mustTake(eight);
+    pattern(&mut s1, 1u8);
+    mut s2 = pool.mustTake(eight);
+    pattern(&mut s2, 2u8);
+    imm n1 = s1.len();
+    imm n2 = s2.len();
+    lp.submit(Op.Send(client, s1), Target.Here(1u64));
+    lp.submit(Op.Send(client, s2), Target.Here(2u64));
+    mut got = 0usize;
+    mut firstSend = 0u64;
+    mut sends = 0u32;
+    mut sent1 = 0usize;
+    mut sent2 = 0usize;
+    mut intact = true;
+    mut sendsDone = true;
+    imm limit = Instant.now() + Duration.fromSeconds(30i64);
+    lp.submit(Op.Recv(server, pool.mustTake(65536usize)), Target.Here(3u64));
+    while got < n1 + n2 and Instant.now() < limit {
+      lp.poll(limit, &mut out);
+      mut k = 0usize;
+      while k < out.len() {
+        imm c = &mut out[k];
+        if c.token == 3u64 {
+          imm v = c.buf.view();
+          mut j = 0usize;
+          while j < v.len {
+            if v[j] != expected(got + j, n1) {intact = false;}
+            j = j + 1usize;
+          }
+          got = got + c.count();
+          if c.count() == 0usize {got = n1 + n2 + 1usize;}
+          if got < n1 + n2 {
+            lp.submit(Op.Recv(server, pool.mustTake(65536usize)), Target.Here(3u64));
+          }
+        } else {
+          if sends == 0u32 {firstSend = c.token;}
+          sends = sends + 1u32;
+          if c.token == 1u64 {sent1 = c.count();} else {sent2 = c.count();}
+          if not c.isDone() {sendsDone = false;}
+        }
+        k = k + 1usize;
+      }
+      out.clear();
+    }
+    expectUInt(u64.from(got), u64.from(n1 + n2), "every byte arrived");
+    expect(intact, "...in order, and whole");
+    if sends < 2u32 {
+      waitFor(&mut lp, &mut out, usize.from(2u32 - sends));
+      mut k = 0usize;
+      while k < out.len() {
+        imm c = &mut out[k];
+        if sends == 0u32 {firstSend = c.token;}
+        sends = sends + 1u32;
+        if c.token == 1u64 {sent1 = c.count();} else {sent2 = c.count();}
+        if not c.isDone() {sendsDone = false;}
+        k = k + 1usize;
+      }
+      out.clear();
+    }
+    expect(sendsDone, "each send is Done");
+    expectUInt(u64.from(sends), 2u64, "both sends answered");
+    expectUInt(firstSend, 1u64, "the first send first");
+    expectUInt(u64.from(sent1), u64.from(n1), "the first sent all its bytes");
+    expectUInt(u64.from(sent2), u64.from(n2), "the second sent all its bytes");
+
+    // 2. Sends with no room, cancelled. Nobody reads the server's end now, so
+    // 1 MiB sends are made until one is not answered in 20 ms: the sockets'
+    // buffers are full (how many it takes differs by system)
+    mut blocked = OpId.none();
+    mut tries = 0u32;
+    while blocked.isNone() and tries < 200u32 {
+      mut b = pool.mustTake(1048576usize);
+      pattern(&mut b, 3u8);
+      imm id = lp.submit(Op.Send(client, b), Target.Here(21u64));
+      lp.poll(Instant.now() + Duration.fromMillis(20i64), &mut out);
+      if out.len() == 0usize {blocked = id;}
+      out.clear();
+      tries = tries + 1u32;
+    }
+    expect(not blocked.isNone(), "the buffers filled: a send waits");
+    mut b2 = pool.mustTake(1048576usize);
+    pattern(&mut b2, 4u8);
+    imm behind = lp.submit(Op.Send(client, b2), Target.Here(22u64));
+    mut b3 = pool.mustTake(1048576usize);
+    pattern(&mut b3, 5u8);
+    lp.submit(Op.Send(client, b3), Target.Here(23u64));
+    expect(lp.cancel(behind), "the send behind it: its cancel is taken");
+    expect(lp.cancel(blocked), "and the first's");
+    waitFor(&mut lp, &mut out, 2usize);
+    requireUInt(u64.from(out.len()), 2u64, "two answers");
+    mut cancelledSends = 0u32;
+    mut buffersBack = true;
+    mut k3 = 0usize;
+    while k3 < out.len() {
+      imm c = &mut out[k3];
+      if c.status == diag.outcomeCancelled {cancelledSends = cancelledSends + 1u32;}
+      if c.buf.capacity() != 1048576usize {buffersBack = false;}
+      k3 = k3 + 1usize;
+    }
+    expectUInt(u64.from(cancelledSends), 2u64, "both Cancelled");
+    expect(buffersBack, "with their buffers back");
+    out.clear();
+    // The third waits behind them on the socket; closing the client ends it
+    lp.close(client);
+    waitFor(&mut lp, &mut out, 1usize);
+    requireUInt(u64.from(out.len()), 1u64, "the third send answered when its socket closed");
+    expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeCancelled), "Cancelled");
+    out.clear();
+    lp.close(server);
+
+    // 3. The errors
+    match lp.openFile("no such file.tmp", Access.Read) {
+      case imm h Ok {expect(false, "a file that is not there does not open");}
+      case imm e Error {
+        expectUInt(u64.from(e.code), u64.from(errorFileNotFound), "...ERROR_FILE_NOT_FOUND");
+        expect(e.message().len() > 0usize, "and has words");
+        expect(isWindows() or e.message().equals("No such file or directory"), "(on Linux) the C library's words");
+      }
+    }
+    imm taken = lp.mustListen(SocketAddr.localhost(0u16));
+    mut takenPort = 0u16;
+    match lp.localAddr(taken) {
+      case imm a Ok {takenPort = a.port();}
+      case imm e Error {}
+    }
+    match lp.listen(SocketAddr.localhost(takenPort)) {
+      case imm h Ok {expect(false, "a port that is taken cannot be listened on twice");}
+      case imm e Error {
+        expectUInt(u64.from(e.code), 10048u64, "...WSAEADDRINUSE");
+        expect(e.message().len() > 0usize, "and has words");
+      }
+    }
+
+    imm c = lp.counters();
+    expectUInt(c.delivered, c.submitted, "every operation answered once");
+    expectUInt(c.inFlight, 0u64, "nothing in flight");
+    expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");
+  }
+  expectUInt(osBlocks(), 0u64, "and every block back to the OS");
+  done();
+}

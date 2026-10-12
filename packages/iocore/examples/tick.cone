@@ -8,8 +8,9 @@
 // 2. Timeouts through the wheel: 2,000 armed at once, 2 to 2,001 ms off:
 //    how late each fires (the wheel's own tick adds up to a millisecond).
 // 3. For comparison, what the loop does without its high-resolution timer:
-//    the completion port's own 1 ms timeout (GetQueuedCompletionStatusEx on
-//    an empty port), 200 times, at the system's default timer resolution.
+//    the OS's own 1 ms timeout (Windows: GetQueuedCompletionStatusEx on an
+//    empty port, at the system's default timer resolution; Linux: epoll_wait
+//    on an empty epoll instance), 200 times.
 // 4. The cost of a poll that waits for nothing, poll(Instant.now()).
 
 mod tick;
@@ -25,6 +26,9 @@ extern {
   fn @c(system) GetQueuedCompletionStatusEx(port usize, entries *u8, count u32,
       removed &mut u32, ms u32, alertable i32) i32;
   fn @c(system) CloseHandle(h usize) i32;
+  fn @c epoll_create1(flags i32) i32;
+  fn @c epoll_wait(epfd i32, events *u8, max i32, timeout i32) i32;
+  fn @c close(fd i32) i32;
 }
 
 fn main() i32 {
@@ -76,19 +80,31 @@ fn main() i32 {
   wl.printLine("   lateness");
 
   // 3. The port's own timeout
-  imm port = CreateIoCompletionPort(0xFFFFFFFFFFFFFFFFusize, 0usize, 0usize, 1u32);
   mut entries = new Array[u8, 256] <- fill 0u8;
   mut pl = Histogram.make();
   mut n = 0u32;
   mut w = 0u32;
-  while w < 200u32 {
-    imm s = Instant.now();
-    GetQueuedCompletionStatusEx(port, &mut entries as *u8, 4u32, &mut n, 1u32, 0i32);
-    pl.record((s.elapsed() - Duration.fromMillis(1i64)).nanos());
-    w = w + 1u32;
+  if isWindows() {
+    imm port = CreateIoCompletionPort(0xFFFFFFFFFFFFFFFFusize, 0usize, 0usize, 1u32);
+    while w < 200u32 {
+      imm s = Instant.now();
+      GetQueuedCompletionStatusEx(port, &mut entries as *u8, 4u32, &mut n, 1u32, 0i32);
+      pl.record((s.elapsed() - Duration.fromMillis(1i64)).nanos());
+      w = w + 1u32;
+    }
+    CloseHandle(port);
+  } else {
+    imm ep = epoll_create1(0i32);
+    while w < 200u32 {
+      imm s = Instant.now();
+      epoll_wait(ep, &mut entries as *u8, 4i32, 1i32);
+      pl.record((s.elapsed() - Duration.fromMillis(1i64)).nanos());
+      w = w + 1u32;
+    }
+    close(ep);
   }
-  CloseHandle(port);
-  printStr("3. the completion port's own 1 ms timeout, 200 times, without it\n");
+  printStr(if isWindows() {"3. the completion port's own 1 ms timeout, 200 times, without it\n";}
+    else {"3. epoll_wait's own 1 ms timeout, 200 times, without a timerfd\n";});
   pl.printLine("   lateness");
 
   // 4. A poll that waits for nothing
