@@ -623,12 +623,12 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
     // Handle call when we have a derefed pointer to a function
     if (objfn->tag == DerefTag) {
         INode *fnptr = ((StarNode*)objfn)->vtexp;
-        return LLVMBuildCall2(gen->builder, genlPointeeType(gen, ((IExpNode*)fnptr)->vtype), genlExpr(gen, fnptr), fnargs, fnargcnt, "");
+        return genlFnPtrCall(gen, genlPointee(((IExpNode*)fnptr)->vtype), genlExpr(gen, fnptr), fnargs, fnargcnt);
     }
     // Handle call when we have a ref or pointer to a function
     INode *fntype = iexpGetTypeDcl(objfn);
     if (fntype->tag == RefTag || fntype->tag == PtrTag) {
-        return LLVMBuildCall2(gen->builder, genlPointeeType(gen, fntype), genlExpr(gen, objfn), fnargs, fnargcnt, "");
+        return genlFnPtrCall(gen, genlPointee(fntype), genlExpr(gen, objfn), fnargs, fnargcnt);
     }
 
     // We know at this point that objfn refers to some "named" function

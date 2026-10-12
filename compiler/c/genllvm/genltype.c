@@ -686,6 +686,9 @@ LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
     {
         // Build typeref from function signature
         FnSigNode *fnsig = (FnSigNode*)typ;
+        // A C-named function's, and a reference to one's, as the C ABI passes its values
+        if (fnsig->ccall)
+            return genlCAbiFnType(gen, fnsig);
         LLVMTypeRef *param_types = (LLVMTypeRef *)memAllocBlk(fnsig->parms->used * sizeof(LLVMTypeRef));
         LLVMTypeRef *parm = param_types;
         INode **nodesp;

@@ -540,6 +540,11 @@ void refvirtTypeCheck(TypeCheckState *pstate, RefNode *node) {
     // signature, of the kind this reference's permission allows to be called
     // ('&<fn(i32) i32', 'So[fn(i32) i32]')
     INode *target = itypeGetTypeDcl(node->vtexp);
+    if (target->tag == FnSigTag && ((FnSigNode*)target)->ccall) {
+        errorMsgNode((INode*)node, ErrorFnRefConv,
+            "A callable (`&<fn`, `So[fn]`) holds a closure, a Cone function or a struct with a `()`, and calls it in Cone's convention; `@c` marks a plain function reference, `&fn @c (...)`, one that C can be handed or hands over.");
+        return;
+    }
     if (target->tag == FnSigTag) {
         node->vtexp = (INode*)fnSigCallTrait(pstate, (FnSigNode*)target,
             (permGetFlags(node->perm) & MayWrite) != 0, (INode*)node);
