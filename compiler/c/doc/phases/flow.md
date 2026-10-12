@@ -1451,6 +1451,27 @@ Only a method's receiver is followed so, not a free function's borrowed argument
 `collection_flow_reshape_through_call` pins the refusals and
 `collection_reshape_through_call_success` what stays accepted.
 
+**What a call must reach to reshape the viewed value** is asked of the viewed value's owner.
+A marked loan records, beside its container (the `String`, the `List`), the struct that holds
+the container as a field where the borrow was taken through that field (`loanShapeOwnerSet`,
+from `pwViewOwner`): `item.label.view()` is of `Item`'s `label`, and `ui.texts[id].view()`, the
+element a `List[String]`'s `[]` returned, is of that list (`pwHoldsElements`: the list's only
+`String`s are in the block its pointer field points at, and the call is handed no other borrow
+the element could come from). `reshapeCall` then walks each argument's type for the owner
+(`reshapeReachOwnerMode`) instead of for any value of the container's type: the owner reached by
+a path the callee may write by (by containment, a field, an element, a variant, a pointer, a
+reference, a virtual reference), or a reference or pointer that points at a container of that
+type, or at an array of them (`rcDirect`), which may point at this very one. A container held as
+a field by a struct that is not the owner is another value and is not reached. This is why
+`dl.text(ui.items[0usize].label.view())` is accepted for a `Dl` that holds a `String` and no
+`Item`, and `ed.grow(...)` for an `Ed` that holds the `List[Item]` is not. No owner is recorded
+(and the check asks for any value of the container's type, as before) for a receiver that is no
+field and no such element (`s.view()`), for a field of a trait or an enum (a type that
+implements it holds the same field), for an element a call returned from other borrows, and for
+a free function's borrowed argument. The receiver of a call that is the container itself, a
+`String` appended to, is asked as before, and so are stores (`reshapeStoreHits`) and globals.
+`collection_flow_reshape_owner` pins what stays refused, by every route to the owner.
+
 **An enum** is a marked loan's container too. A reference narrowed from an enum to one
 of its variants through a path others share, or from a `&mut` borrow of a local (an alias
 loan; a `&`, `&imm` or `&uni` one freezes the local, `castBorrowsUni`)

@@ -1,0 +1,38 @@
+// A face contact takes its face's normal. GJK/EPA's normal is right to about 1e-5 radians; the depths of a clipped
+// manifold are measured from the reference face's plane, and on a floor 100 m wide that plane is reached from a corner
+// 50 m away, so a normal 1e-5 radians off made every depth wrong by half a millimetre, a different error at every
+// pose. A body resting on the floor bobbed by it. With the face's own normal, the depth of a capsule, a cylinder, a
+// box and a hull lying on a 100 m floor is exact to a micron, whatever the pose.
+
+mod bigfloor;
+
+import testing use *;
+import collections use List;
+import geomath use *;
+import rigidcollide use *;
+
+fn floorShape() Shape { Shape.single(Prim.box(new Vec3(50., 1., 50.))); }
+
+// The deepest point's depth and the normal's tilt, for 'p' lying on the floor (top at y = 0) with its lowest point
+// 'sink' below it
+fn probe(label &Array[u8], p Prim, rot Quat, lowest f32, sink f32) {
+  imm fl = floorShape();
+  imm s = Shape.single(p);
+  mut out = List[Manifold].empty();
+  imm xb = new Rigid(new Vec3(0.013, lowest - sink, -0.007), rot);
+  collide(&fl, Rigid.at(new Vec3(0., -1., 0.)), &s, xb, 0.02, &mut out);
+  expectInt(i64.from(out.len()), 1, label);
+  imm mf = out[0usize];
+  expectFloat(f64.from(mf.deepest()), f64.from(sink), 0.000001, "the depth is exact");
+  expectFloat(f64.from(mf.normal.y), 1., 0.0000001, "and the normal is the floor's");
+}
+
+fn main() i32 {
+  imm turnZ = Quat.angleAxis(pi / 2., new Vec3(0., 0., 1.));
+  // a capsule on its side: lowest point is its radius below the axis
+  probe("capsule", Prim.capsule(0.05, 0.12), turnZ, 0.05, 0.0004);
+  probe("capsule, sinking the other way", Prim.capsule(0.05, 0.12), turnZ, 0.05, -0.0004);
+  probe("cylinder", Prim.cylinder(0.05, 0.12), turnZ, 0.05, 0.0004);
+  probe("box", Prim.box(new Vec3(0.04, 0.05, 0.08)), Quat.identity(), 0.05, 0.0004);
+  done();
+}

@@ -826,20 +826,33 @@ fn appendBoth(out &amp;mut String, x &amp;String) {
 }
 </pre>
 	<p>Taking the view through an element, with no name for the element, is the same as naming it first. The
-		view of <span class="pre">ui.items[0usize].label</span> may be handed to a call that grows a
-		<span class="pre">String</span> through another name only by the cures below:</p>
+		view of <span class="pre">ui.items[0usize].label</span> is of one <span class="pre">String</span>, the
+		field of an <span class="pre">Item</span>, and a call can change it through another name only if it is
+		handed what holds that <span class="pre">Item</span> (the <span class="pre">List[Item]</span> and whatever
+		holds the list), or a reference to a <span class="pre">String</span>, which may be that one. A
+		<span class="pre">String</span> that some other struct holds is another value. The same goes for the
+		view of an element of a <span class="pre">List[String]</span>: the call must be handed the list, or a
+		reference to a <span class="pre">String</span>.</p>
 <pre>
 struct Item { label String; }
 struct Dl {
   chars String;
   fn text(self &amp;mut, s &amp;str) { chars.append(s); }
 }
+struct Ed {
+  items List[Item];
+  fn grow(self &amp;mut, s &amp;str) { imm r = &amp;mut items[0usize]; r.label.append(s); }
+}
 struct Ui { items List[Item]; }
 
 fn draw(dl &amp;mut Dl, ui &amp;Ui) {
-  dl.text(ui.items[0usize].label.view());       // Error: the same as imm item = ui.items[0usize]; item.label.view()
-  imm c = String.from(ui.items[0usize].label.view());
-  dl.text(c.view());                            // Ok: copied out first
+  dl.text(ui.items[0usize].label.view());       // Ok: dl holds a String of its own, and no Item
+}
+
+fn twoParams(ed &amp;mut Ed, src &amp;mut Ed) {
+  ed.grow(src.items[0usize].label.view());      // Error: ed and src may be one value; the same as imm item = src.items[0usize]; item.label.view()
+  imm c = String.from(src.items[0usize].label.view());
+  ed.grow(c.view());                            // Ok: copied out first
 }
 </pre>
 

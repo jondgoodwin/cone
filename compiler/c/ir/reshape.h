@@ -20,7 +20,10 @@
  *   an element, a variant, a pointer, a reference, an owner) through a path the
  *   callee may write by, and the callee does not provably leave it alone: its body
  *   is not visible, or it (transitively) reshapes a value of that type that is not
- *   its own local. A reference that is read-only (`&`, `&imm`) cannot write what
+ *   its own local. Where the borrow was taken through a field of a struct, or an element
+ *   of a list that holds its elements, 'cont' is that one value: an argument reaches it
+ *   by reaching that struct (the owner), or by a reference to a 'cont'; a 'cont' that
+ *   another struct holds is another value. A reference that is read-only (`&`, `&imm`) cannot write what
  *   it reaches, and a value this function owns whole is nobody else's;
  * - or, handed nothing that reaches the type, it is a callee that reshapes one
  *   through a global.
@@ -111,8 +114,11 @@ typedef struct {
 // the receiver's place is reached by no shared path, so no other name for it
 // exists. 'mine' are the 'nmine' locals the borrow being asked of points into: a local
 // lent whole to the call is no excuse for them, as it is for any other. Fills 'verdict'
-// when it answers yes.
-int reshapeCall(FnCallNode *call, FnDclNode *meth, int recvunique, INode *cont, ReshapeVerdict *verdict,
+// when it answers yes. 'owner' is the struct holding 'cont' as a field when the borrow was
+// taken through that field (NULL otherwise): the borrow is then into that one value, and an
+// argument reaches it only by reaching the owner, or by a reference that points at a 'cont'
+// (which may be that very one); a 'cont' held as a field of any other struct is another value.
+int reshapeCall(FnCallNode *call, FnDclNode *meth, int recvunique, INode *cont, INode *owner, ReshapeVerdict *verdict,
     VarDclNode **mine, int nmine);
 
 #endif

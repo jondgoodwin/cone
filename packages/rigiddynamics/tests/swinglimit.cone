@@ -1,0 +1,68 @@
+// The elliptical swing limit of a cone-twist joint (World.setSwingEllipse): four quarter-axes, one for each way the
+// twist axis may deflect, and the range the ellipse through them.
+//
+// A box B hangs off a static anchor on a cone-twist joint (twist axis x) in zero gravity and is spun so that its
+// axis x swings out in a chosen direction, and left to hit the limit. With u along +y (flexion 0.8 rad, extension
+// 0.3) and v along +z (abduction 0.5, adduction 0.2), the axis rests at the quarter-axis in each of the four
+// directions: spin about +z swings x towards +y (u > 0), about -z towards -y (u < 0), about -y towards +z (v > 0),
+// about +y towards -z (v < 0). A spin in between stops on the ellipse, (u/a)^2 + (v/b)^2 = 1, the measure being read
+// off the bodies' orientation, not the solver. The round cone this replaces would stop all four at one angle.
+
+mod swinglimit;
+
+import testing use *;
+import collections use List;
+import geomath use *;
+import rigidcollide use *;
+import rigiddynamics use *;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+// Spin B about 'spin' for 3 s; return the swing (u, v) its axis ends at
+fn swingAfter(spin Vec3, round bool) Vec2 {
+  mut w = World.make();
+  w.gravity = new Vec3(0., 0., 0.);
+  imm anchorS = w.addShape(Shape.single(Prim.box(new Vec3(0.1, 0.1, 0.1))));
+  imm boxS = w.addShape(Shape.single(Prim.box(new Vec3(0.5, 0.15, 0.15))));
+  imm a = w.createBody(BodyDef.staticAt(anchorS, new Vec3(0., 0., 0.)));
+  mut bd = BodyDef.dynamicAt(boxS, new Vec3(0.5, 0., 0.));
+  bd.angVel = spin;
+  bd.angularDamping = 0.;
+  bd.linearDamping = 0.;
+  imm b = w.createBody(bd);
+  imm j = w.addConeTwist(a, b, new Vec3(0., 0., 0.), new Vec3(1., 0., 0.), 0.8);
+  w.setTwistLimits(j, -3., 3.);
+  if not round { w.setSwingEllipse(j, new Vec3(0., 1., 0.), new Vec3(0., 0., 1.), 0.8, 0.3, 0.5, 0.2); }
+  mut i = 0;
+  while i < 180 { w.step(1. / 60.); i = i + 1; }
+  imm xb = w.rotationOf(b) * new Vec3(1., 0., 0.);
+  imm th = acos(clampf(xb.x, -1., 1.));
+  imm l = (xb.y * xb.y + xb.z * xb.z).sqrt();
+  if l < 0.000001 { return new Vec2(0., 0.); }
+  new Vec2(th * xb.y / l, th * xb.z / l);
+}
+
+fn main() i32 {
+  imm up = swingAfter(new Vec3(0., 0., 1.5), false);
+  near(up.x, 0.8, 0.03, "spun towards +u it stops at the flexion quarter-axis, 0.8");
+  imm down = swingAfter(new Vec3(0., 0., -1.5), false);
+  near(down.x, -0.3, 0.03, "towards -u at the extension quarter-axis, 0.3");
+  imm out = swingAfter(new Vec3(0., -1.5, 0.), false);
+  near(out.y, 0.5, 0.03, "towards +v at the abduction quarter-axis, 0.5");
+  imm inward = swingAfter(new Vec3(0., 1.5, 0.), false);
+  near(inward.y, -0.2, 0.03, "towards -v at the adduction quarter-axis, 0.2");
+  // in between: u > 0, v > 0 (spin about +z and -y together), on the (0.8, 0.5) ellipse
+  imm mid = swingAfter(new Vec3(0., -1.1, 1.1), false);
+  imm g = (mid.x / 0.8) * (mid.x / 0.8) + (mid.y / 0.5) * (mid.y / 0.5);
+  near(g, 1., 0.08, "between them it stops on the ellipse (u/a)^2 + (v/b)^2 = 1");
+  expectBool(mid.x > 0.3 and mid.y > 0.2, true, "and well away from both axes");
+  imm mid2 = swingAfter(new Vec3(0., 1.1, -1.1), false);
+  imm g2 = (mid2.x / 0.3) * (mid2.x / 0.3) + (mid2.y / 0.2) * (mid2.y / 0.2);
+  near(g2, 1., 0.08, "and in the (extension, adduction) quarter");
+  // the round cone it replaces stops all four at one angle
+  imm r1 = swingAfter(new Vec3(0., 0., -1.5), true);
+  near(r1.x, -0.8, 0.03, "the round cone allows 0.8 where the ellipse allows 0.3 for extension");
+  done();
+}

@@ -338,7 +338,22 @@ pub fn clipFaces(faceA &Poly, faceB &Poly, n Vec3, margin f32) Manifold {
 // The same with the reference face chosen by the caller (the face whose plane
 // the contact normal belongs to: a box face for a face axis, the triangle for
 // the triangle's normal)
-pub fn clipFacesRef(faceA &Poly, faceB &Poly, n Vec3, margin f32, refIsA bool) Manifold {
+pub fn clipFacesRef(faceA &Poly, faceB &Poly, n0 Vec3, margin f32, refIsA bool) Manifold {
+  // The normal GJK/EPA (or a SAT axis) gives is correct to about 1e-5 radians, and the depths here are measured
+  // from the reference face's plane through one of its corners: a tilt of 1e-5 over a 20 m floor is 0.2 mm, a
+  // different error at every pose, and a body resting on it bobs by it. When the normal is within 2.5 degrees of
+  // the reference face's own, the face's normal is the contact normal (Jolt does the same for a face contact).
+  mut n = n0;
+  imm refFace = if refIsA and faceA.n >= 3usize { faceA; } else { faceB; };
+  if refFace.n >= 3usize {
+    imm fnorm = (refFace.p[1usize] - refFace.p[0usize]).cross(refFace.p[2usize] - refFace.p[0usize]);
+    imm fl = fnorm.length();
+    if fl > 0.0000001 {
+      imm s = fnorm.dot(n0) / fl;
+      if s > 0.999 { n = fnorm * (1. / fl); }
+      else if s < -0.999 { n = fnorm * (-1. / fl); }
+    }
+  }
   mut clipped = newPoly();
   mut r0 = new Vec3(0., 0., 0.);
   mut aRef = false;
