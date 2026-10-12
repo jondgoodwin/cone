@@ -424,10 +424,17 @@ import timewheel use Wheel, TimerId, Expiry;
 import diag;
 
 fn @initpure init() {
-  startOnce = Once.make();
   groupSeq = Atomic[u64].of(0u64);
-  laneOnce = Once.make();
+  // Winsock started, and the blocking pool's default lanes made, before any
+  // thread of the program can reach them
+  imm ws = startWinsock();
+  acceptExAddr = ws.acceptEx;
+  connectExAddr = ws.connectEx;
+  startError = ws.error;
   laneLock = Mutex.make();
+  laneTable = Atomic[*usize].of(libc.calloc(usize.from(maxLanes), 8usize) as *usize);
+  laneCount = Atomic[u32].of(0u32);
+  makeDefaultLanes();
 }
 
 // An instant that never comes, for 'poll(forever(), out)'
