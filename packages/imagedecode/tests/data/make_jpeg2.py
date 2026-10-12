@@ -1,3 +1,6 @@
+# MAKES: b440 b411 bmix b441 b4h3 (.jpg and .png). Run AFTER make_jpeg.py, same folder (it reuses that script's picture).
+# RUN (in this folder):  python make_jpeg2.py .
+# Synthetic pictures only. Pillow (and numpy) are needed ONLY to regenerate, never to run the tests.
 # A minimal baseline JPEG encoder for the sampling layouts Pillow cannot write
 # (4:4:0, 4:1:1, mixed ones) and for restart markers on them. Tables are taken
 # from a Pillow-saved file (the standard Annex K tables). The oracle for what

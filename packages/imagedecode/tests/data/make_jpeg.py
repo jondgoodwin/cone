@@ -1,3 +1,7 @@
+# MAKES: b444 b422 b420 gray p444 p422 p420 pgray opt420 q5 q100 odd420 odd422p rst420 rstp420 (.jpg and .png) and orient2..8 and cmyk.jpg.
+# RUN (in this folder):  python make_jpeg.py .      then:  python make_jpeg2.py .
+# Every picture is synthetic (drawn and noised by this script); no third-party images.
+# Pillow is needed ONLY to regenerate these files, never to build or run the tests.
 # Makes the JPEG test data: small synthetic pictures saved by Pillow (libjpeg-turbo)
 # in every mode the decoder supports, each with a reference decode (Pillow's, the
 # oracle) saved as a lossless PNG. Used only to make the files in tests/data.

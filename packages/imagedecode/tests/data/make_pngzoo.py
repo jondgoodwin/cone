@@ -1,3 +1,6 @@
+# MAKES: pngzoo.bin (30 PNGs with their expected pixels; random synthetic samples).
+# RUN (in this folder):  python make_pngzoo.py > pngzoo.bin
+# Python's standard library only (zlib); no Pillow, no third-party images. Needed ONLY to regenerate, never to run the tests.
 # An independent PNG writer in Python (zlib for the compression), for the decoder's
 # cross-check: every colour type and bit depth, interlaced or not, scanline filters
 # chosen at random per row, a tRNS where the type allows, with the pixels each file
