@@ -77,7 +77,7 @@ pub struct SceneHandle {
 // The code a fade of 'f' (-1 to 1) is written into an instance's per-instance
 // word as (fade.slang); NO_BONES for none
 pub fn fadeCode(f f32) u32 {
-  mut q = i32.from(f * 32767.);
+  mut q = i32.from(f * 32767. + (if f < 0. { -0.5; } else { 0.5; }));
   if q > 32767i32 { q = 32767i32; }
   if q < -32767i32 { q = -32767i32; }
   if q == 0i32 {
@@ -193,7 +193,8 @@ pub struct Visibility {
   pub tree Bvh[u32];
   pub chains List[LodChain];
   lodSlots List[LodSlot];
-  pub frame u32;
+  pub frame u32;                   // how many times the camera of 'lodSlot' has collected (levels' state is per camera)
+  slotFrames List[u32];
   pub stats VisibilityStats;
   // The batch ranges of the sets the last render gathered: the main view's, then each cascade's and each local
   // light face's (empty when there was no scene)
@@ -207,7 +208,7 @@ pub struct Visibility {
     mut s = new VisibilitySettings();
     s.margin = margin;
     new Visibility(s, List[SceneItem].empty(), List[u32].empty(), Bvh[u32].create(margin), List[LodChain].empty(),
-      List[LodSlot].empty(), 0u32, new VisibilityStats(), List[SetRange].empty());
+      List[LodSlot].empty(), 0u32, List[u32].empty(), new VisibilityStats(), List[SetRange].empty());
   }
 
   // How many items the scene holds
@@ -228,7 +229,7 @@ pub struct Visibility {
     imm world = worldBox(&model, boundsCenter, boundsHalf);
     imm sc = model * boundsCenter;
     imm r = boundsRadius * maxScale(&model);
-    mut slot = 0u32;
+    mut slot = u32.from(items.len());
     mut gen = 1u32;
     mut reuse = false;
     if free.len() > 0usize {
@@ -248,7 +249,6 @@ pub struct Visibility {
         k = k + 1usize;
       }
     } else {
-      slot = u32.from(items.len());
       items.push(item);
       mut k = 0usize;
       while k < LOD_SLOTS {
@@ -406,7 +406,10 @@ pub struct Visibility {
   // 'out' in slot order: after the layer mask, the frustum, the range and the
   // level of detail. An item mid-cross-fade is two entries.
   pub fn collect(self &mut, camera &Camera, aspect f32, viewHeight f32, out &mut List[DrawItem]) {
-    frame = frame + 1u32;
+    while slotFrames.len() < LOD_SLOTS { slotFrames.push(0u32); }
+    if lodSlot >= LOD_SLOTS { lodSlot = 0usize; }
+    slotFrames.set(lodSlot, *slotFrames[lodSlot] + 1u32);
+    frame = *slotFrames[lodSlot];
     stats = new VisibilityStats();
     imm n = items.len();
     stats.items = u32.from(self.count());
