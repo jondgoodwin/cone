@@ -1,0 +1,43 @@
+// The casts between references that stay allowed (ref_typecheck_cast_perm refuses
+// the others): a coercion written out with 'as', a pointer made a reference, and
+// the read-only slice of bytes made text.
+mod ref_cast_perm_legal;
+
+import stdio use *;
+import collections use *;
+
+struct P { pub x i64; }
+
+fn uniToMut(r &uni P) { imm m = r as &mut P; m.x = m.x + 1; }
+fn uniToImm(r &uni P) i64 { imm v = r as &imm P; v.x; }
+fn uniToRo(r &uni P) i64 { imm v = r as &P; v.x; }
+fn mutToRo(r &mut P) i64 { imm v = r as &P; v.x; }
+fn immToRo(r &imm P) i64 { imm v = r as &P; v.x; }
+fn sameMut(r &mut P) { imm m = r as &mut P; m.x = m.x * 10; }
+fn sliceUniToMut(s &uni Array[i64]) { imm m = s as &mut Array[i64]; m[0] = m[0] + 1; }
+fn sliceMutToRo(s &mut Array[i64]) i64 { imm v = s as &Array[i64]; v[0] + v[1]; }
+fn ptrToMut(p *P) { imm m = p as &mut P; m.x = m.x + 100; }
+fn ptrToUni(p *P) i64 { imm u = p as &uni P; u.x; }
+fn text(bytes &Array[u8]) { printStr(bytes as &str); printStr("\n"); }
+
+fn main() {
+  mut p = new P(1);
+  uniToMut(&uni p);                       // 2
+  printInt(uniToImm(&uni p)); printStr(" ");   // 2
+  printInt(uniToRo(&uni p)); printStr(" ");    // 2
+  printInt(mutToRo(&mut p)); printStr(" ");    // 2
+  imm q = new P(7);
+  printInt(immToRo(&imm q)); printStr("\n");   // 7
+  sameMut(&mut p);                        // 20
+  printInt(p.x); printStr("\n");
+
+  mut l = List[i64].empty();
+  l.push(5i64); l.push(7i64);
+  sliceUniToMut((&uni l).viewUni());      // 6
+  printInt(sliceMutToRo(l.viewMut())); printStr("\n");   // 6 + 7 = 13
+
+  ptrToMut(&mut p as *P);                 // 120
+  printInt(ptrToUni(&mut p as *P)); printStr("\n");
+
+  text("Padma");
+}

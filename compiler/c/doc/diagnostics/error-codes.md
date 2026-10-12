@@ -473,6 +473,14 @@ message naming the type argument ("A `&uni` cannot be the type argument of this 
 code it instantiates reaches it, as an element, through a `&mut` reference..."), and not inside the
 generic; `fnCallUniUses` remembers the uses already reported.
 
+An `as` from one reference to another whose permission is not the source's or a supertype of it
+(`&` as `&mut` or `&uni`, `&imm` as `&mut` or `&uni`, `&mut` as `&uni`) is `ErrorCastPerm` (type
+check, `castRefPermCheck` in `cast.c`): between references `as` is only a legal coercion, the
+question an implicit coercion asks of the permissions (`permMatches`), and the message names both
+permissions and says the cast needs `trust`, which is not built yet ([cast](../nodes/cast.md),
+"`castTypeCheck`"). `&` as `&imm`, the way bytes are made text, is let through; a raw pointer made a
+reference, and a reference made a pointer, are not asked.
+
 A trait named as a pattern ([cast](../nodes/cast.md), "Trait patterns") has three codes. On an enum, a
 trait that no variant complies with matches nothing: `ErrorPatTraitNone` (a method over the whole enum
 is no variant's). A trait pattern that binds needs a borrowed reference to build a virtual reference

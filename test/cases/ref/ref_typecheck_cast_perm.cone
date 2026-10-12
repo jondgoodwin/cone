@@ -1,0 +1,41 @@
+// 'as' between references may only be a legal coercion (reftrust.html, "Type
+// Reinterpretation"): the permission it gives is the source's or a supertype of
+// it. Anything else would be a way to write through a '&', to share what a
+// '&mut' holds as '&uni', or to freeze what is still being changed, and 'trust',
+// which would say so, is not built yet. Each cast below is refused alone; the
+// functions at the end are the casts that stay allowed (ref_cast_perm_legal runs
+// them).
+
+mod ref_typecheck_cast_perm;
+
+import collections use *;
+
+struct P { pub x i64; }
+
+// the harm: a '&' turned into a '&mut' writes through a read-only view
+fn roToMut(r &P) { imm m = r as &mut P; m.x = 99; }                 //~ ErrorCastPerm:28 "from ro to mut"
+fn roToUni(r &P) &uni P { r as &uni P; }                           //~ ErrorCastPerm:27 "from ro to uni"
+fn immToMut(r &imm P) &mut P { r as &mut P; }                      //~ ErrorCastPerm:32 "from imm to mut"
+// the harm: a shared '&imm' made the one reference to its value
+fn immToUni(r &imm P) &uni P { r as &uni P; }                      //~ ErrorCastPerm:32 "from imm to uni"
+fn mutToUni(r &mut P) &uni P { r as &uni P; }                      //~ ErrorCastPerm:32 "from mut to uni"
+// a slice, and a list lent as a '&mut' made '&uni' to meet the check a parallel loop makes
+fn sliceMutToUni(r &mut Array[i64]) &uni Array[i64] { r as &uni Array[i64]; }   //~ ErrorCastPerm:55 "from mut to uni"
+fn sliceRoToMut(r &Array[i64]) &mut Array[i64] { r as &mut Array[i64]; }        //~ ErrorCastPerm:50 "from ro to mut"
+fn listMutToUni(l &mut List[i64]) &uni List[i64] { l as &uni List[i64]; }       //~ ErrorCastPerm:52 "from mut to uni"
+fn viewMutToUni(l &mut List[i64]) &uni Array[i64] { l.viewMut() as &uni Array[i64]; }   //~ ErrorCastPerm:54 "from mut to uni"
+// a statement, as the harm is written
+fn immToUniLocal(r &imm P) { imm u = r as &uni P; u.x = 1; }       //~ ErrorCastPerm:38 "from imm to uni"
+
+// allowed: a coercion, written out
+fn uniToMut(r &uni P) &mut P { r as &mut P; }
+fn uniToImm(r &uni P) &imm P { r as &imm P; }
+fn uniToRo(r &uni P) &P { r as &P; }
+fn mutToRo(r &mut P) &P { r as &P; }
+fn immToRo(r &imm P) &P { r as &P; }
+fn sameMut(r &mut P) &mut P { r as &mut P; }
+fn sliceUniToMut(r &uni Array[i64]) &mut Array[i64] { r as &mut Array[i64]; }
+fn sliceMutToRo(r &mut Array[i64]) &Array[i64] { r as &Array[i64]; }
+// a pointer made a reference is how library code trusts memory it manages
+fn ptrToMut(p *P) &mut P { p as &mut P; }
+fn ptrToUni(p *P) &uni P { p as &uni P; }

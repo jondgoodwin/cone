@@ -186,6 +186,28 @@ to a struct, which is not checked here at all, because `castBitsize` knows
 nothing of field layout, padding or alignment. That check is deferred to
 generation, where the data layout exists.
 
+**Between two references, `as` may only be a legal coercion of the permission**
+(`castRefPermCheck`, before the size test; any kind of reference counts: a
+borrow, a slice, an owner, a virtual reference). The target's permission must be
+the source's or a supertype of it, which is the question an implicit coercion
+asks (`permMatches`): `uni` to `mut`, `imm`, `&`; `mut` and `imm` to `&`; the
+same to the same. Anything else, `&` to `&mut`, `&imm` to `&uni`, `&mut` to
+`&uni`, is `ErrorCastPerm`, whose message names both permissions and says it
+needs `trust`, which is not built yet. Reinterpretation is trusted
+([reftrust.html](../../../../doc/reference/reftrust.html), "Type
+Reinterpretation"), but a reference's permission is what flow, the loan walk and
+the checks of `parallel each` rest on, so a cast that changed it would be a way
+round every one (`&mut` as `&uni` slips past `ErrorParRoot`; `&` as `&mut`
+writes through a read-only view). **A raw pointer `as` a reference is not asked**
+(it is how a collection, an actor or the collector hands out memory it manages:
+`(ptr + i) as &mut T`), nor is a reference `as` a pointer, and a library that
+needs a `&uni` slice of memory it owns calls `mem.sliceFromPartsUni`, not a cast.
+**One pair is let through for now: `&` to `&imm`**, which is how a slice of
+bytes is made text (`bytes as &str`, documented in refarrayref.html); it
+promises that nothing changes the bytes while the text is used, which the cast
+does not check (`&mut` as `&imm` is refused), so it is for `trust` to guard too
+once that is built.
+
 **`usize` and `isize` are pointer-sized**, and a pointer's width is the
 target's, so no reinterpretation joins either of them to a fixed-width number
 (`i64`, `u32`, `f64`, ...) in either direction, even where the widths agree:
