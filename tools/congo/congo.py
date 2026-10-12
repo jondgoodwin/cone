@@ -1329,11 +1329,13 @@ class Linker:
             # its wakes), which a program importing sync compiles in. An import
             # library of the Windows SDK, beside the C runtime's, so no
             # package's [link] names it ([link] has no per-system form); a
-            # program that calls none of it takes nothing from it.
+            # program that calls none of it takes nothing from it. The same
+            # goes for shell32.lib, whose CommandLineToArgvW the process
+            # package's 'args' splits the program's command line with.
             return [self.tool, "/NOLOGO", *map(str, objs), str(self.conestd),
                     *(f"/LIBPATH:{p}" for p in paths), *(f"{lib}.lib" for lib in libraries),
                     f"/OUT:{exe}", "/SUBSYSTEM:CONSOLE", "msvcrt.lib",
-                    "legacy_stdio_definitions.lib", "synchronization.lib"]
+                    "legacy_stdio_definitions.lib", "synchronization.lib", "shell32.lib"]
         return [self.tool, *map(str, objs), str(self.conestd),
                 *(f"-L{p}" for p in paths), *(f"-l{lib}" for lib in libraries),
                 "-o", str(exe), "-lm", "-lpthread"]

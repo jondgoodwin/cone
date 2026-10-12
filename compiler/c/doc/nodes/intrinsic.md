@@ -199,8 +199,11 @@ an `else` would be, with nothing after it. So no call on the untaken side, and
 no reference to its symbol, reaches the object, in a debug build as in a
 release one: a call to an `extern` only another platform defines links. Name
 resolution, type check and flow analysis still see both sides, so every name on
-either side must resolve on every target; generic instances and functions
-reached only from the untaken side are still generated.
+either side must resolve on every target. Generic instances and functions
+reached only from the untaken side are generated and then dropped with the
+rest of what no live symbol reaches ([Generation](../phases/generation.md),
+"Only what live code reaches is emitted"), so a helper holding another
+platform's calls links as the calls themselves do.
 
 Each atomic instruction is aligned as `T` is (`LLVMABIAlignmentOfType`), and
 its ordering is LLVM's name for the `MemOrder` (`genlAtomicOrdering`: `Relaxed`

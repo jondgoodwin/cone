@@ -185,6 +185,54 @@ excludes = [
   "call i32 @otherDefinedNowhere(",
 ]
 
+# What only the untaken side of such an 'if' calls is not emitted either: a
+# function nothing live reaches is dropped, in a debug build as in a release
+# one. The macOS-only functions below call 'extern' functions defined nowhere,
+# and are reached only on the side macOS takes, through a chain of calls,
+# through an address taken there, or from nowhere; the program links only
+# because none of them is in the object
+[scenario.intrinsic_buildconst_reach]
+category = "run"
+description = "A function only the untaken side of an 'if' on a constant of the build reaches (a helper, a helper of a helper, one whose address is taken there, one nothing calls) is not emitted, so its calls to functions defined nowhere link, in a debug build as in a release one; the helper of the side taken is"
+tags = ["genllvm", "runtime"]
+
+[[scenario.intrinsic_buildconst_reach.run]]
+name = "release"
+options = []
+
+[[scenario.intrinsic_buildconst_reach.run]]
+name = "debug"
+options = ["--debug"]
+
+# Generation writes the functions that only dead code reaches (the pre-IR has
+# them); the object does not have them
+[[scenario.intrinsic_buildconst_reach.check]]
+name = "generation-wrote-the-helpers"
+target = "preir"
+contains = ["@takenHelper(", "@macHelper(", "@macDeep(", "@macCallback(", "@macUnused("]
+
+[[scenario.intrinsic_buildconst_reach.check]]
+name = "the-object-has-none-of-them"
+target = "llvmir"
+excludes = ["macHelper", "macDeep", "macCallback", "macUnused", "macDefinedNowhere", "macValueDefinedNowhere"]
+
+# The other half of the rule: what a library exports is live, whatever calls it.
+# A debug build, whose object keeps what the optimizer would inline
+[scenario.intrinsic_buildconst_reach_lib]
+category = "compile"
+description = "Compiled as a library in a debug build, a 'pub' function is emitted though nothing calls it, with the call it holds and the private function it calls; a private function only dead code reaches, or nothing, is not"
+tags = ["genllvm"]
+
+[[scenario.intrinsic_buildconst_reach_lib.run]]
+name = "library"
+options = ["--library", "--debug"]
+
+[[scenario.intrinsic_buildconst_reach_lib.check]]
+name = "what-the-library-exports-is-emitted"
+target = "llvmir"
+contains = ["@exportedCall(", "@macDefinedNowhere(", "@exportedUser(", "@liveHelper(", "@exportedChoice("]
+excludes = ["@deadHelper", "@unusedHelper"]
+
 # One source, a run per triple: '-D' tells each what OS to expect, so one pair
 # of checks holds for every run
 [scenario.intrinsic_buildconst_triple]

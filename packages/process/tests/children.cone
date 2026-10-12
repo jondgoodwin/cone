@@ -1,30 +1,39 @@
 // Programs run and waited for. The child is this test's own executable,
 // started again with '--child' and what to do, so the test needs nothing of
-// the machine's but Windows itself: no cmd.exe, no other program.
+// the machine's but the system itself: no cmd.exe, no other program (on POSIX
+// the shell, for 'runLine', and PATH).
 //
 // What it covers: standard output and standard error captured apart, byte
 // for byte; a megabyte written to each at once, in turns (the deadlock a
-// reader of one pipe at a time would meet); exit codes 0, 1, 255, a crash's
-// 3221225477 and a Cone panic's 3221226505; with 'crashReport: false', a
+// reader of one pipe at a time would meet); exit codes 0, 1, 255, and on
+// Windows a crash's 3221225477 and 4294967295, on POSIX 139 and 2; a Cone
+// panic's (3221226505 on Windows, 134, abort's signal and 128, on POSIX); with
+// 'crashReport: false', a
 // panic's code, output and line the same, with a time limit and without, a
-// breakpoint's crash ending with its own code, captured output and a time
+// breakpoint's crash ending with its own code (a debugger's STATUS_BREAKPOINT
+// on Windows, SIGTRAP's 133 on POSIX), captured output and a time
 // limit as without the option; a child that sleeps, stopped by
 // its time limit, and one whose own child sleeps, both stopped (the
 // grandchild's death checked by its process id); the working folder, a
 // UTF-8 one among them, given as a literal and as a Path variable (which the
-// run leaves as it was: it is used again); standard input read from NUL; a variable set
-// before the run inherited, beyond ASCII, as Windows holds it and as the
-// env package reads it; arguments round-tripped through the child's
-// parsers (every string of up to four of 'a', space, tab, '"' and '\', and
-// UTF-8 ones), Windows' CommandLineToArgvW and the C runtime's both; a raw
-// command line; a child that shares this test's output, whose line this
-// test's .out pins; and each failure to start: no such program, no such
-// folder, no arguments, a NUL, bytes that are not UTF-8, a '"' in the
-// program's name.
+// run leaves as it was: it is used again); standard input read from NUL
+// (/dev/null); a variable set before the run inherited, beyond ASCII, as the
+// system holds it (UTF-16 on Windows, the bytes on POSIX) and as the env
+// package reads it; arguments round-tripped through the child's parsers
+// (every string of up to four of 'a', space, tab, '"' and '\', and UTF-8
+// ones), Windows' CommandLineToArgvW and the C runtime's both, on POSIX
+// argv's own; a raw command line (the shell's on POSIX); a child that shares
+// this test's output, whose line this test's .out pins; and each failure to
+// start: no such program, no such folder, no arguments, a NUL, bytes that are
+// not UTF-8 (refused on Windows, passed on POSIX), a '"' in the program's
+// name (refused on Windows, a program that is not there on POSIX). Each check
+// is made on both systems, with the answer that system gives, so the count
+// is the same.
 //
-// It works in a folder of its own under TEMP, 'cone-process-test', which it
-// clears if an interrupted run left it, makes, and removes at the end, after
-// checking the folder's path is TEMP's with that name after it.
+// It works in a folder of its own under TEMP (TMPDIR or /tmp on POSIX),
+// 'cone-process-test', which it clears if an interrupted run left it, makes,
+// and removes at the end, after checking the folder's path is TEMP's with
+// that name after it.
 
 mod children;
 
@@ -38,6 +47,7 @@ import env;
 import process;
 import time use Duration, Instant;
 
+// Windows'
 extern {
   fn @c(system) ExitProcess(code u32);
   fn @c(system) Sleep(ms u32);
@@ -49,7 +59,42 @@ extern {
   fn @c(system) DebugBreak();
 }
 
+// POSIX's
+extern {
+  fn @c getpid() i32;
+  fn @c usleep(us u32) i32;
+  fn @c _exit(code i32);
+  fn @c kill(pid i32, signal i32) i32;
+  fn @c raise(signal i32) i32;
+}
+
 const synchronize = 0x100000u32;     // SYNCHRONIZE
+
+// The answer for this system: Windows' or POSIX's
+fn os(windows &str, posix &str) &str { if isWindows() {windows;} else {posix;}; }
+fn osCode(windows u64, posix u64) u64 { if isWindows() {windows;} else {posix;}; }
+
+// A line end as the C runtime's text mode writes it: '\r\n' on Windows
+fn eol() &str { os("\r\n", "\n"); }
+
+// The folder under which the test works: TEMP's on Windows, TMPDIR's or /tmp
+fn tempText() String {
+  mut variable cstr = "TMPDIR";
+  if isWindows() { variable = "TEMP"; }
+  imm temp = libc.getenv(variable);
+  require(temp != null or not isWindows(), "TEMP is set");
+  if temp != null {String.from(cstr.fromPtr(temp).view());} else {String.from("/tmp");};
+}
+
+// A system's own spelling of a program to sleep, in milliseconds
+fn pause(ms u32) {
+  if isWindows() {Sleep(ms);} else {usleep(ms * 1000u32);}
+}
+
+// This process's id
+fn processId() u32 {
+  if isWindows() {GetCurrentProcessId();} else {u32.from(getpid());};
+}
 
 // -------- the child --------
 
@@ -149,7 +194,7 @@ fn child(a &List[String], argc i32, argv **u8) i32 {
   }
   if mode.equals("exit") {
     libc.fflush(libc.stdout());
-    ExitProcess(u32.from(number(a[3usize])));
+    if isWindows() {ExitProcess(u32.from(number(a[3usize])));} else {_exit(i32.from(number(a[3usize])));};
   }
   if mode.equals("streams") { return childStreams(usize.from(number(a[3usize]))); }
   if mode.equals("panic") {
@@ -157,24 +202,25 @@ fn child(a &List[String], argc i32, argv **u8) i32 {
     panic("on purpose");
   }
   if mode.equals("break") {
-    // A breakpoint no debugger handles: a crash, STATUS_BREAKPOINT
+    // A breakpoint no debugger handles: a crash, STATUS_BREAKPOINT on
+    // Windows, SIGTRAP on POSIX
     out("before the breakpoint\n");
     libc.fflush(libc.stdout());
-    DebugBreak();
+    if isWindows() {DebugBreak();} else {raise(5i32);};
     return 0i32;
   }
   if mode.equals("sleep") {
-    Sleep(u32.from(number(a[3usize])));
+    pause(u32.from(number(a[3usize])));
     out("woke\n");
     return 0i32;
   }
   if mode.equals("grandchild") {
     // Says who it is, then sleeps
     mut id = String.empty();
-    id.appendUInt(u64.from(GetCurrentProcessId()));
+    id.appendUInt(u64.from(processId()));
     imm idPath = Path.from(a[3usize].view());
     fs.writeFile(&idPath, id.view());
-    Sleep(u32.from(number(a[4usize])));
+    pause(u32.from(number(a[4usize])));
     return 0i32;
   }
   if mode.equals("tree") {
@@ -211,27 +257,45 @@ fn child(a &List[String], argc i32, argv **u8) i32 {
     return 0i32;
   }
   if mode.equals("env") {
-    // Read as Windows holds it, UTF-16, each unit in decimal: what the
-    // child inherited, before any C runtime converts it
+    // Read as the system holds it, each unit in decimal: what the child
+    // inherited, before any C runtime converts it. Windows keeps UTF-16;
+    // POSIX keeps the bytes
     imm name = a[3usize].view();
-    mut wname = new Array[u16, 64] <- fill 0u16;
-    mut i = 0usize;
-    while i < name.len and i < 63usize {
-      wname[i] = u16.from(name[i]);
-      i = i + 1usize;
+    if isWindows() {
+      mut wname = new Array[u16, 64] <- fill 0u16;
+      mut i = 0usize;
+      while i < name.len and i < 63usize {
+        wname[i] = u16.from(name[i]);
+        i = i + 1usize;
+      }
+      mut buf = new Array[u16, 256] <- fill 0u16;
+      imm n = GetEnvironmentVariableW(&[]wname as *u16, &[]buf as *u16, 256u32);
+      if n == 0u32 {
+        out("<none>");
+        return 0i32;
+      }
+      mut s = String.empty();
+      i = 0usize;
+      while i < usize.from(n) {
+        if i > 0usize { s.appendByte(' '); }
+        s.appendUInt(u64.from(buf[i]));
+        i = i + 1usize;
+      }
+      out(s.view());
+      return 0i32;
     }
-    mut buf = new Array[u16, 256] <- fill 0u16;
-    imm n = GetEnvironmentVariableW(&[]wname as *u16, &[]buf as *u16, 256u32);
-    if n == 0u32 {
+    mut cname = String.from(name);
+    imm held = libc.getenv(cname.cstr());
+    if held == null {
       out("<none>");
       return 0i32;
     }
     mut s = String.empty();
-    i = 0usize;
-    while i < usize.from(n) {
-      if i > 0usize { s.appendByte(' '); }
-      s.appendUInt(u64.from(buf[i]));
-      i = i + 1usize;
+    mut j = 0usize;
+    while held[j] != 0u8 {
+      if j > 0usize { s.appendByte(' '); }
+      s.appendUInt(u64.from(held[j]));
+      j = j + 1usize;
     }
     out(s.view());
     return 0i32;
@@ -253,9 +317,8 @@ fn child(a &List[String], argc i32, argv **u8) i32 {
 // The test's folder: TEMP's absolute path and the name, after checking
 // that it is that and nothing shorter
 fn makeRoot(name &str) Path {
-  imm temp = libc.getenv("TEMP");
-  require(temp != null, "TEMP is set");
-  imm tempPath = Path.from(cstr.fromPtr(temp).view());
+  imm tempText = tempText();
+  imm tempPath = Path.from(tempText.view());
   mut root = Path.from("");
   match fs.absolute(&tempPath) {
     case imm t Ok { root = t.join(name); }
@@ -277,7 +340,7 @@ fn childCommand(exe &str, mode &str) List[String] {
 }
 
 fn emptyOutput() process.Output {
-  new process.Output(0u32, false, String.empty(), String.empty());
+  new process.Output(0u32, 0u32, false, String.empty(), String.empty());
 }
 
 // The Output of a run that must have started
@@ -313,9 +376,10 @@ fn failedWith(r Result[process.Output, process.ProcessError], exe &str, root &st
 fn captured(exe &str) {
   imm c = childCommand(exe, "hello");
   imm o = ran(process.run(c.view()), "hello");
-  // The C runtime's standard output is in text mode: '\n' goes out as '\r\n'
-  expectStr(o.stdout.view(), "to stdout\r\n", "stdout captured");
-  expectStr(o.stderr.view(), "to stderr\r\n", "stderr captured apart");
+  // The C runtime's standard output is in text mode on Windows: '\n' goes out
+  // as '\r\n'
+  expectStr(o.stdout.view(), os("to stdout\r\n", "to stdout\n"), "stdout captured");
+  expectStr(o.stderr.view(), os("to stderr\r\n", "to stderr\n"), "stderr captured apart");
   expectUInt(u64.from(o.exitCode), 0u64, "hello exits 0");
   expectBool(o.success(), true, "hello succeeds");
   expectBool(o.timedOut, false, "hello in time");
@@ -330,6 +394,9 @@ fn exitsWith(exe &str, code u64) {
   label.append(n.view());
   imm o = ran(process.run(c.view()), label.view());
   expectUInt(u64.from(o.exitCode), code, label.view());
+  // It exited: no signal ended it, whatever the code (139 is a status here,
+  // not the segmentation fault's signal)
+  expectUInt(u64.from(o.signal), 0u64, label.view());
   expectBool(o.success(), code == 0u64, label.view());
   expectStr(o.stdout.view(), "", label.view());
 }
@@ -338,17 +405,22 @@ fn exitCodes(exe &str) {
   exitsWith(exe, 0u64);
   exitsWith(exe, 1u64);
   exitsWith(exe, 255u64);
-  // An access violation's code, STATUS_ACCESS_VIOLATION
-  exitsWith(exe, 3221225477u64);
-  exitsWith(exe, 4294967295u64);
+  // An access violation's code, STATUS_ACCESS_VIOLATION (POSIX: a status of
+  // 139, which is also the code for the segmentation fault's signal)
+  exitsWith(exe, osCode(3221225477u64, 139u64));
+  exitsWith(exe, osCode(4294967295u64, 2u64));
 }
 
 fn panics(exe &str) {
   imm c = childCommand(exe, "panic");
   imm o = ran(process.run(c.view()), "panic");
-  // abort, which a Cone panic ends in: the fast-fail code, 0xC0000409
-  expectUInt(u64.from(o.exitCode), 3221226505u64, "a panic's exit code");
-  expectStr(o.stdout.view(), "before the panic\r\n", "what it wrote before the panic");
+  // abort, which a Cone panic ends in: the fast-fail code, 0xC0000409; on
+  // POSIX SIGABRT, 128 and 6
+  expectUInt(u64.from(o.exitCode), osCode(3221226505u64, 134u64), "a panic's exit code");
+  // On POSIX abort is the signal 6, and the exit code 134 says it as a shell
+  // does; on Windows there are no signals
+  expectUInt(u64.from(o.signal), osCode(0u64, 6u64), "a panic's signal");
+  expectStr(o.stdout.view(), os("before the panic\r\n", "before the panic\n"), "what it wrote before the panic");
   expectBool(o.stderr.startsWith("panic at "), true, "the panic's line on stderr");
   expectBool(o.stderr.contains("on purpose"), true, "the panic's message on stderr");
   expectBool(o.success(), false, "a panic is no success");
@@ -359,35 +431,40 @@ fn panics(exe &str) {
 fn crashesUnreported(exe &str) {
   imm c = childCommand(exe, "panic");
   imm o = ran(process.run(c.view(), new process.Options(crashReport: false)), "unreported panic");
-  expectUInt(u64.from(o.exitCode), 3221226505u64, "an unreported panic's exit code");
-  expectStr(o.stdout.view(), "before the panic\r\n", "what it wrote before an unreported panic");
+  expectUInt(u64.from(o.exitCode), osCode(3221226505u64, 134u64), "an unreported panic's exit code");
+  expectStr(o.stdout.view(), os("before the panic\r\n", "before the panic\n"), "what it wrote before an unreported panic");
   expectBool(o.stderr.startsWith("panic at "), true, "an unreported panic's line on stderr");
   expectBool(o.stderr.contains("on purpose"), true, "an unreported panic's message on stderr");
 
   // In a job, as a time limit puts it
   imm t = ran(process.run(c.view(), new process.Options(timeout: Duration.fromSeconds(30), crashReport: false)),
     "unreported panic in time");
-  expectUInt(u64.from(t.exitCode), 3221226505u64, "an unreported panic's exit code, with a time limit");
+  expectUInt(u64.from(t.exitCode), osCode(3221226505u64, 134u64), "an unreported panic's exit code, with a time limit");
   expectBool(t.timedOut, false, "an unreported panic in time");
-  expectStr(t.stdout.view(), "before the panic\r\n", "what it wrote before, with a time limit");
+  expectStr(t.stdout.view(), os("before the panic\r\n", "before the panic\n"), "what it wrote before, with a time limit");
 
   // A breakpoint is a crash after the loader's own, which a debugger is given
+  // (POSIX: SIGTRAP, 128 and 5)
   imm b = childCommand(exe, "break");
   imm k = ran(process.run(b.view(), new process.Options(crashReport: false)), "unreported breakpoint");
-  expectUInt(u64.from(k.exitCode), 2147483651u64, "an unreported breakpoint's exit code, STATUS_BREAKPOINT");
-  expectStr(k.stdout.view(), "before the breakpoint\r\n", "what it wrote before the breakpoint");
+  expectUInt(u64.from(k.exitCode), osCode(2147483651u64, 133u64), "an unreported breakpoint's exit code, STATUS_BREAKPOINT or SIGTRAP");
+  expectStr(k.stdout.view(), os("before the breakpoint\r\n", "before the breakpoint\n"), "what it wrote before the breakpoint");
 
   // The heap it would have had with no debugger: _NO_DEBUG_HEAP=1, '1' in
-  // UTF-16 (the rest of its environment is this test's: 'environment')
+  // UTF-16 (the rest of its environment is this test's: 'environment').
+  // POSIX has no such variable added: the child's environment is this
+  // program's, here a variable set for the purpose
+  if not isWindows() { env.set("CONE_PROCESS_TEST_PLAIN", "1"); }
   mut v = childCommand(exe, "env");
-  v.push(String.from("_NO_DEBUG_HEAP"));
+  v.push(String.from(os("_NO_DEBUG_HEAP", "CONE_PROCESS_TEST_PLAIN")));
   imm heap = ran(process.run(v.view(), new process.Options(crashReport: false)), "unreported env");
   expectStr(heap.stdout.view(), "49", "_NO_DEBUG_HEAP=1, crashes unreported");
+  if not isWindows() { env.unset("CONE_PROCESS_TEST_PLAIN"); }
 
   imm h = childCommand(exe, "hello");
   imm o2 = ran(process.run(h.view(), new process.Options(crashReport: false)), "unreported hello");
-  expectStr(o2.stdout.view(), "to stdout\r\n", "stdout captured, crashes unreported");
-  expectStr(o2.stderr.view(), "to stderr\r\n", "stderr captured, crashes unreported");
+  expectStr(o2.stdout.view(), os("to stdout\r\n", "to stdout\n"), "stdout captured, crashes unreported");
+  expectStr(o2.stderr.view(), os("to stderr\r\n", "to stderr\n"), "stderr captured, crashes unreported");
   expectBool(o2.success(), true, "hello succeeds, crashes unreported");
 
   imm size = 1048576usize;
@@ -437,6 +514,8 @@ fn timesOut(exe &str) {
   imm took = began.elapsed();
   expectBool(o.timedOut, true, "a sleeping child stopped by its time limit");
   expectUInt(u64.from(o.exitCode), 1u64, "a stopped child's exit code");
+  // On POSIX it was killed by SIGKILL, 9 (the exit code says 1 on both)
+  expectUInt(u64.from(o.signal), osCode(0u64, 9u64), "a stopped child's signal");
   expectStr(o.stdout.view(), "", "a stopped child never woke");
   expectBool(took >= Duration.fromMillis(300) and took < Duration.fromSeconds(5), true, "stopped after 300 ms, not 10 s");
   expectBool(o.success(), false, "a stopped child is no success");
@@ -446,7 +525,7 @@ fn timesOut(exe &str) {
   d.push(String.from("50"));
   imm p = ran(process.run(d.view(), new process.Options(timeout: Duration.fromSeconds(20))), "short sleep");
   expectBool(p.timedOut, false, "a short sleep in time");
-  expectStr(p.stdout.view(), "woke\r\n", "a short sleep woke");
+  expectStr(p.stdout.view(), os("woke\r\n", "woke\n"), "a short sleep woke");
 }
 
 // A child that starts a grandchild and waits for it: the time limit stops
@@ -468,11 +547,24 @@ fn treeStopped(exe &str, root &Path) {
     case is Error {}
   }
   require(id != 0u64, "the grandchild said who it was");
-  imm h = OpenProcess(synchronize, 0i32, u32.from(id));
-  mut gone = h == 0usize;
-  if not gone {
-    gone = WaitForSingleObject(h, 3000u32) == 0u32;
-    CloseHandle(h);
+  mut gone = false;
+  if isWindows() {
+    imm h = OpenProcess(synchronize, 0i32, u32.from(id));
+    gone = h == 0usize;
+    if not gone {
+      gone = WaitForSingleObject(h, 3000u32) == 0u32;
+      CloseHandle(h);
+    }
+  } else {
+    // Signal 0 only asks whether the process is there: gone within three
+    // seconds (init reaps it when its parent, killed too, has left it)
+    mut waited = 0u32;
+    gone = kill(i32.from(id), 0i32) != 0i32;
+    while not gone and waited < 3000u32 {
+      pause(50u32);
+      waited = waited + 50u32;
+      gone = kill(i32.from(id), 0i32) != 0i32;
+    }
   }
   expectBool(gone, true, "the grandchild stopped with it");
 }
@@ -484,9 +576,11 @@ fn workingFolder(exe &str, root &Path) {
   expectStr(o.stdout.view(), root.view(), "started in the folder given");
 
   // A string literal where the folder is wanted is made a Path: 'C:\Windows'
-  // exists on every Windows, and the child reads its folder back normalized
-  imm w = ran(process.run(c.view(), new process.Options(), "C:\\Windows"), "cwd from a literal");
-  expectStr(w.stdout.view(), "C:/Windows", "started in a folder given as a literal");
+  // exists on every Windows ('/usr' on every Linux), and the child reads its
+  // folder back normalized
+  imm systemFolder = Path.from(os("C:\\Windows", "/usr"));
+  imm w = ran(process.run(c.view(), new process.Options(), &systemFolder), "cwd from a literal");
+  expectStr(w.stdout.view(), os("C:/Windows", "/usr"), "started in a folder given as a literal");
   // And '.' is this program's own folder
   imm dot = ran(process.run(c.view(), new process.Options(), "."), "cwd from '.'");
   match fs.currentDir() {
@@ -494,9 +588,10 @@ fn workingFolder(exe &str, root &Path) {
     case is Error { expect(false, "this program's folder"); }
   }
 
-  // The same folder written with '\'
+  // The same folder written with '\' (on POSIX, where '\' is a name's byte,
+  // with a '/' after it)
   mut back = String.from(root.view());
-  back.replaceByte('/', '\\');
+  if isWindows() { back.replaceByte('/', '\\'); } else { back.appendByte('/'); }
   imm backPath = Path.from(back.view());
   imm b = ran(process.run(c.view(), new process.Options(), &backPath), "cwd with backslashes");
   expectStr(b.stdout.view(), root.view(), "a folder written with '\\'");
@@ -509,13 +604,28 @@ fn workingFolder(exe &str, root &Path) {
 
   // A relative program is found from this program's folder, not the
   // child's ('congo test' runs a test in the folder its executable is in),
-  // and a name with no extension gains '.exe'
-  mut rel = childCommand(".\\children.exe", "cwd");
+  // and on Windows a name with no extension gains '.exe' (on POSIX a name
+  // with no '/' is looked for in PATH, which is made to hold this program's
+  // folder for the purpose)
+  mut rel = childCommand(os(".\\children.exe", "./children"), "cwd");
   imm r = ran(process.run(rel.view(), new process.Options(), root), "relative program");
   expectStr(r.stdout.view(), root.view(), "a relative program, read from this program's folder");
+  mut oldPath = String.empty();
+  if not isWindows() {
+    imm exeFolder = Path.from(exe).parent();
+    match env.get("PATH") {
+      case imm held Some { oldPath = held.copy(); }
+      case is None {}
+    }
+    mut searched = String.from(exeFolder.view());
+    searched.appendByte(':');
+    searched.append(oldPath.view());
+    env.set("PATH", searched.view());
+  }
   mut bare = childCommand("children", "cwd");
   imm n = ran(process.run(bare.view(), new process.Options(), root), "program with no extension");
   expectStr(n.stdout.view(), root.view(), "a program named with no '.exe'");
+  if not isWindows() { env.set("PATH", oldPath.view()); }
 
   // 'runLine' takes the folder the same way
   mut line = String.from("\"");
@@ -523,8 +633,8 @@ fn workingFolder(exe &str, root &Path) {
   line.append("\" --child cwd");
   imm rl = ran(process.runLine(line.view(), new process.Options(), root), "runLine in a folder");
   expectStr(rl.stdout.view(), root.view(), "runLine started in the Path given");
-  imm rlw = ran(process.runLine(line.view(), new process.Options(), "C:\\Windows"), "runLine in a literal folder");
-  expectStr(rlw.stdout.view(), "C:/Windows", "runLine started in a literal folder");
+  imm rlw = ran(process.runLine(line.view(), new process.Options(), &systemFolder), "runLine in a literal folder");
+  expectStr(rlw.stdout.view(), os("C:/Windows", "/usr"), "runLine started in a literal folder");
 
   // None of the Paths was consumed by the runs that took it
   expect(utf.view().endsWith("/dossier é 日本"), "the Path variable is unchanged");
@@ -554,12 +664,12 @@ fn environment(exe &str) {
   mut c = childCommand(exe, "env");
   c.push(String.from("CONE_PROCESS_TEST"));
   imm o = ran(process.run(c.view()), "env");
-  // 'inherited, é 日本' in UTF-16
-  expectStr(o.stdout.view(), "105 110 104 101 114 105 116 101 100 44 32 233 32 26085 26412",
-    "a variable set before the run, UTF-8 into UTF-16");
+  // 'inherited, é 日本' in UTF-16 (on Windows), in its UTF-8 bytes (on POSIX)
+  imm held = os("105 110 104 101 114 105 116 101 100 44 32 233 32 26085 26412",
+    "105 110 104 101 114 105 116 101 100 44 32 195 169 32 230 151 165 230 156 172");
+  expectStr(o.stdout.view(), held, "a variable set before the run, UTF-8 into UTF-16");
   imm d = ran(process.run(c.view(), new process.Options(crashReport: false)), "env, crashes unreported");
-  expectStr(d.stdout.view(), "105 110 104 101 114 105 116 101 100 44 32 233 32 26085 26412",
-    "a variable set before the run, crashes unreported");
+  expectStr(d.stdout.view(), held, "a variable set before the run, crashes unreported");
   mut g = childCommand(exe, "envget");
   g.push(String.from("CONE_PROCESS_TEST"));
   imm r = ran(process.run(g.view()), "envget");
@@ -693,7 +803,8 @@ fn failures(exe &str, root &Path) {
   none.push(String.from("cone-process-test-no-such-program"));
   imm r = process.run(none.view());
   failedWith(r, "", "", 2u32,
-    "run cone-process-test-no-such-program: The system cannot find the file specified", "no such program");
+    os("run cone-process-test-no-such-program: The system cannot find the file specified",
+       "run cone-process-test-no-such-program: No such file or directory"), "no such program");
   match process.run(none.view()) {
     case imm e Error { expectBool(e.notFound(), true, "notFound"); }
     case is Ok { expect(false, "notFound"); }
@@ -701,8 +812,10 @@ fn failures(exe &str, root &Path) {
 
   imm missing = root.join("missing");
   imm c = childCommand(exe, "hello");
-  failedWith(process.run(c.view(), new process.Options(), &missing), exe, root.view(), 267u32,
-    "run <exe> in <root>/missing: The directory name is invalid", "no such folder");
+  failedWith(process.run(c.view(), new process.Options(), &missing), exe, root.view(),
+    u32.from(osCode(267u64, 2u64)),
+    os("run <exe> in <root>/missing: The directory name is invalid",
+       "run <exe> in <root>/missing: No such file or directory"), "no such folder");
   // The error holds the folder as a Path, and the variable it was made from is as it was
   match process.run(c.view(), new process.Options(), &missing) {
     case imm e Error {
@@ -712,35 +825,58 @@ fn failures(exe &str, root &Path) {
     case is Ok { expect(false, "no such folder fails"); }
   }
   // A literal folder that is not there, too
-  match process.run(c.view(), new process.Options(), "C:\\cone-process-test-no-such-folder") {
-    case imm e Error {
-      expectStr(e.dir.view(), "C:\\cone-process-test-no-such-folder", "a literal folder held by the error");
-      expectUInt(u64.from(e.code), 267u64, "a literal folder not there");
+  if isWindows() {
+    match process.run(c.view(), new process.Options(), "C:\\cone-process-test-no-such-folder") {
+      case imm e Error {
+        expectStr(e.dir.view(), "C:\\cone-process-test-no-such-folder", "a literal folder held by the error");
+        expectUInt(u64.from(e.code), 267u64, "a literal folder not there");
+      }
+      case is Ok { expect(false, "a literal folder not there fails"); }
     }
-    case is Ok { expect(false, "a literal folder not there fails"); }
+  } else {
+    match process.run(c.view(), new process.Options(), "/cone-process-test-no-such-folder") {
+      case imm e Error {
+        expectStr(e.dir.view(), "/cone-process-test-no-such-folder", "a literal folder held by the error");
+        expectUInt(u64.from(e.code), 2u64, "a literal folder not there");
+      }
+      case is Ok { expect(false, "a literal folder not there fails"); }
+    }
   }
 
   mut empty = List[String].empty();
-  failedWith(process.run(empty.view()), "", "", 87u32, "run: The parameter is incorrect", "no arguments");
+  failedWith(process.run(empty.view()), "", "", u32.from(osCode(87u64, 22u64)),
+    os("run: The parameter is incorrect", "run: Invalid argument"), "no arguments");
 
   mut nul = childCommand(exe, "args");
   nul.push(String.from("a\x00b"));
-  failedWith(process.run(nul.view()), exe, "", 87u32, "run <exe>: The parameter is incorrect", "a NUL");
+  failedWith(process.run(nul.view()), exe, "", u32.from(osCode(87u64, 22u64)),
+    os("run <exe>: The parameter is incorrect", "run <exe>: Invalid argument"), "a NUL");
 
+  // Windows' UTF-16 command line cannot hold what is not UTF-8; POSIX hands
+  // the child its bytes as they are
   mut bad = childCommand(exe, "args");
   bad.push(String.from("\xFF"));
-  failedWith(process.run(bad.view()), exe, "", 1113u32,
-    "run <exe>: No mapping for the Unicode character exists in the target multi-byte code page", "not UTF-8");
+  if isWindows() {
+    failedWith(process.run(bad.view()), exe, "", 1113u32,
+      "run <exe>: No mapping for the Unicode character exists in the target multi-byte code page", "not UTF-8");
+  } else {
+    imm passed = ran(process.run(bad.view()), "not UTF-8");
+    expectStr(passed.stdout.view(), "ff,", "not UTF-8");
+    expectUInt(u64.from(passed.exitCode), 0u64, "not UTF-8 exit code");
+  }
 
+  // A '"' in the program's name: Windows cannot write it on its command line;
+  // POSIX has no such rule, and the program is just not there
   mut quoted = List[String].empty();
   quoted.push(String.from("a\"b"));
-  failedWith(process.run(quoted.view()), "", "", 123u32,
-    "run a\"b: The filename, directory name, or volume label syntax is incorrect", "a quote in the program");
+  failedWith(process.run(quoted.view()), "", "", u32.from(osCode(123u64, 2u64)),
+    os("run a\"b: The filename, directory name, or volume label syntax is incorrect",
+       "run a\"b: No such file or directory"), "a quote in the program");
 }
 
 fn me(exe &Path) {
   expectBool(exe.isAbsolute(), true, "currentExe is absolute");
-  expectStr(exe.name(), "children.exe", "currentExe names this test");
+  expectStr(exe.name(), os("children.exe", "children"), "currentExe names this test");
   expect(not exe.view().contains("\\"), "currentExe is normalized");
   imm a = process.args();
   expectBool(a.len() == 1usize, true, "this test is run with no arguments");
