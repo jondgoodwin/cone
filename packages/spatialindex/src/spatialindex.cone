@@ -1,0 +1,86 @@
+// The spatialindex package: where things are, asked three ways. An index
+// holds items, each a box and a handle of the caller's choosing (any Copy
+// type: a number, a pool.Ref, a part id), never the caller's objects; and
+// answers which boxes a ray, a box, a ball or a camera's frustum meets,
+// which are nearest a point, and which pairs overlap.
+//
+//   mod demo;
+//   import geomath use *;
+//   import spatialindex use *;
+//
+//   fn main() {
+//     mut tree = Bvh[u64].create(0.1);              // fat boxes: 0.1 of margin
+//     imm a = tree.insert(Aabb3.fromCenter(new Vec3(0., 0., 0.), new Vec3(1., 1., 1.)), 7u64);
+//     mut hit = fn(h u64, p Proxy) bool { ...; true; };   // true goes on, false stops
+//     tree.overlapSphere(new Sphere(new Vec3(2., 0., 0.), 1.5), &mut hit);
+//     tree.move(a, newBox, displacement);           // tree changes only if it must
+//     tree.remove(a);                               // a's Proxy is now dead
+//   }
+//
+// THE THREE INDEXES (each its own file) have one interface, so that code can
+// be written once for one and moved to another:
+//
+//   Bvh[T]          bvh.cone, bvhtree.cone. A dynamic AABB tree (the one in
+//                   Box2D, Bullet and Jolt): items keep a fat box, so small
+//                   moves change nothing; insertion by surface-area cost with
+//                   rotations; refit; bulk build by binned SAH. The general
+//                   choice, and the only one that does not care how big or
+//                   how clumped the items are.
+//   LooseOctree[T]  octree.cone. Ulrich's loose octree over a fixed cube:
+//                   one cell per item, chosen by its size and centre, so
+//                   insert, remove and move are O(depth) and need no search.
+//                   Good for items of very different sizes in a known world.
+//   HashGrid[T]     grid.cone. A uniform hash grid of cubes of one size: the
+//                   fastest for very many small, similar things spread evenly
+//                   (cheapest build, ray walk and pair finding); poor for
+//                   clumps and for things much bigger than a cube.
+//
+// WHAT AN INDEX DOES (the same names on all three). Boxes are closed:
+// touching counts as overlapping.
+//
+//   insert(box, handle) Proxy          a Proxy is slot plus generation: it
+//   remove(proxy) bool                 reaches nothing once its item is gone
+//   move(proxy, box, displacement)     whether the structure changed
+//   contains(proxy), handle(proxy), box(proxy), len()
+//
+//   overlapAabb(box, visit)            visit(handle, proxy) -> bool
+//   overlapSphere(sphere, visit)       (true goes on, false stops)
+//   frustum(&frustum, visit)           not wholly outside (geomath's test)
+//   rayCast(ray, maxT, visit)          visit(handle, proxy, t) -> f32: see below
+//   rayNearest(ray, maxT) Option[Hit]  the first box entered
+//   rayAll(ray, maxT, visit)           visit(handle, proxy, t) -> bool
+//   nearest(point, k, &mut out)        k nearest by box distance, nearest first
+//
+//   allPairs(&mut out)                 every overlapping pair
+//   updatePairs(&mut events)           pairs begun and ended since last call
+//
+// A visitor is a closure held in a mut variable and passed as '&mut visitor'.
+//
+// RAYS. t is a multiple of the ray's direction (no need to normalise); a ray
+// starting inside a box enters at 0. A box is the index's only geometry: for
+// exact shapes, rayCast's visitor tests the real shape and answers the true
+// distance. It answers the reach from then on: the t of the hit just found
+// (look only for nearer ones), or FAR to go on through everything, or a
+// negative number to stop. rayNearest is rayCast answering t at every hit.
+//
+// PAIRS. The pair set is kept per item as a diff: after items are inserted
+// or move, updatePairs asks only about those, and appends to 'events' the
+// pairs that began and ended (a removed item ends its pairs). The first call
+// reports every pair as new. On the BVH pairs are of the fat boxes (so a jitter
+// inside the margin is no event: Box2D's broad phase); on the octree and grid
+// of the boxes themselves; 'pairBox' says which. A Pair holds both handles
+// and both proxies, in slot order.
+//
+// NOTHING IN A QUERY MAY CHANGE THE INDEX: a visitor that inserts, removes or
+// moves is a program error.
+//
+// Written wholly in Cone, over geomath and collections. Files: common.cone
+// (proxies, results, ray-box test, plane-masked frustum culling, heap),
+// items.cone (item slots, pair bookkeeping), bvhtree.cone (the tree without
+// handles), then the three indexes. All one module; only this root imports.
+
+mod spatialindex;
+
+import libc;
+import geomath use *;
+import collections use *;

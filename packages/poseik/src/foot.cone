@@ -1,0 +1,174 @@
+// Foot placement: lift and plant each foot of a humanoid on uneven ground,
+// move the pelvis to suit, and tilt the soles to the ground.
+//
+// The pose comes from an animation made for flat ground (walkgait's, or a
+// clip): its feet are at height 0 in model space when planted and above it
+// when they swing. Foot placement corrects that for the ground the being
+// really stands on, which the caller describes by a height query
+// 'ground(x, z)' in world coordinates. The method is the usual one for game
+// characters (Ubisoft's and Unity's "foot IK", after the pelvis-offset idea
+// in Kovar, Schreiner and Gleicher's "Footskate cleanup", 2002), in this order:
+//
+// 1. SAMPLE. For each foot the sole's world position under the ankle, and
+//    the ground there. The ground's normal comes from central differences of
+//    the query a 'sampleStep' either side, held to a 'maxTilt' from
+//    vertical; the sole is the plane with that normal through the sole point,
+//    and it is raised by however far the ground at the heel or the toe is
+//    above that plane, so a foot over a lip rests on it instead of sinking
+//    (on a plane or a slope the raise is zero).
+// 2. OFFSET. A foot's offset is the ground's height there less the height the
+//    animation assumed (the world transform's y). A foot well off the
+//    ground (a kick, a high swing) is corrected less, fading out over
+//    'liftFade' metres of height, so the animation's motion is kept.
+// 3. PELVIS. The pelvis moves by the LOWEST of the two feet's offsets (up if
+//    both are higher, down if either is lower), limited to 'maxRise' and
+//    'maxDrop'. The lowest, not the mean, because the leg reaching down is
+//    the one that runs out of length first; the other leg simply bends more.
+//    The move is smoothed (exponential, 'pelvisRate' per second) so a step
+//    is not a jump; the feet are not smoothed: they stay exactly planted.
+// 4. FEET. Each ankle is put where its sole's new place needs it: the sole
+//    at the animated height plus the foot's offset, never below the ground,
+//    the foot turned by the smallest rotation that takes the world's up to
+//    the ground normal (a lifted foot is turned less). The leg is solved by
+//    two-bone IK with the knee towards where the animation had it.
+// 'weight' (0 to 1) scales the whole correction, for a walk to fade it in
+// or out (airborne: 0).
+
+pub struct FootResult {
+  pub pelvisShift f32;      // metres, up positive, as applied this call
+  pub groundL f32;          // the ground's height (world y) under each foot
+  pub groundR f32;
+  pub soleL f32;            // each sole's height (world y) after the correction
+  pub soleR f32;
+  pub normalL Vec3;         // the ground normal used for each foot, world space
+  pub normalR Vec3;
+  pub reachedL bool;        // the leg could reach its ankle's place
+  pub reachedR bool;
+}
+
+struct FootSample {
+  sole Vec3;        // the sole socket, world
+  ground f32;       // highest ground under heel, sole, toe
+  normal Vec3;      // world
+  delta f32;        // ground less the animation's flat level
+  lift f32;         // the sole's height above the animation's flat level
+  fade f32;         // 1 planted, towards 0 high in the air
+}
+
+pub struct FootPlacer {
+  pub height f32;
+  pub footLength f32;
+  pub sampleStep f32;
+  pub maxTilt f32;
+  pub maxDrop f32;
+  pub maxRise f32;
+  pub liftFade f32;
+  pub pelvisRate f32;
+  pub minInterior f32;      // the knee's smallest interior angle
+  pub maxInterior f32;      // and largest (pi: it may straighten)
+  pub pelvisOffset f32;     // the smoothed pelvis move
+  pub started bool;
+
+  // A placer for a being 'height' metres tall: foot 0.152 H long (Drillis
+  // and Contini), tilt up to 35 degrees, the pelvis up to 0.15 H up and
+  // 0.30 H down, a pelvis that settles in about a fifth of a second
+  pub fn make(height f32) FootPlacer {
+    new FootPlacer(height, 0.152 * height, 0.08, radians(35.), 0.30 * height, 0.15 * height, 0.5, 15., radians(10.), pi, 0., false);
+  }
+
+  // Forget the smoothed pelvis (a teleport): the next call snaps
+  pub fn reset(self &mut) { started = false; }
+
+  fn sample(self &, skel &Skeleton, models &List[Transform3], world &Transform3, ground &<fn(x f32, z f32) f32,
+      footBone usize, soleSocket usize) FootSample {
+    imm sole = world.transformPoint(skel.socketModel(models, soleSocket).translation);
+    mut fwd = world.rotation * ((*models[footBone]).rotation * new Vec3(0., 0., -1.));
+    fwd = new Vec3(fwd.x, 0., fwd.z);
+    if fwd.length() < 0.001 { fwd = world.rotation * new Vec3(0., 0., -1.); }
+    fwd = fwd.normalize();
+    imm heel = sole - fwd * (0.26 * footLength);
+    imm toe = sole + fwd * (0.74 * footLength);
+    imm gc = ground(sole.x, sole.z);
+    imm s = sampleStep;
+    imm dgdx = (ground(sole.x + s, sole.z) - ground(sole.x - s, sole.z)) / (2. * s);
+    imm dgdz = (ground(sole.x, sole.z + s) - ground(sole.x, sole.z - s)) / (2. * s);
+    mut n = new Vec3(-dgdx, 1., -dgdz).normalize();
+    if acos(clampf(n.y, -1., 1.)) > maxTilt {
+      imm horiz = new Vec3(n.x, 0., n.z);
+      n = (horiz.normalize() * sin(maxTilt) + new Vec3(0., cos(maxTilt), 0.)).normalize();
+    }
+    // The sole is the plane through the sole point with that normal; it
+    // is raised by however far the ground at the heel or the toe is above it
+    imm planeHeel = -(n.x * (heel.x - sole.x) + n.z * (heel.z - sole.z)) / n.y;
+    imm planeToe = -(n.x * (toe.x - sole.x) + n.z * (toe.z - sole.z)) / n.y;
+    mut g = gc;
+    imm over = fmaxf(ground(heel.x, heel.z) - gc - planeHeel, ground(toe.x, toe.z) - gc - planeToe);
+    if over > 0. { g = gc + over; }
+    imm flat = world.translation.y;
+    imm lift = sole.y - flat;
+    new FootSample(sole, g, n, g - flat, lift, 1. - smoothstep(0., liftFade, lift));
+  }
+
+  // Plant the feet of the humanoid 'pose' (bonepose's bone and socket
+  // numbers), model placed in the world at 'world' (a position and a turn
+  // about y). 'models' is recomputed. Returns what was done. 'dt' is the
+  // step in seconds for the pelvis' smoothing (0 or less: no smoothing).
+  pub fn place(self &mut, skel &Skeleton, pose &mut Pose, models &mut List[Transform3], world &Transform3,
+      ground &<fn(x f32, z f32) f32, weight f32, dt f32) FootResult {
+    skel.modelTransforms(pose, models);
+    imm sl = self.sample(skel, models, world, ground, FOOT_L, SOCKET_SOLE_L);
+    imm sr = self.sample(skel, models, world, ground, FOOT_R, SOCKET_SOLE_R);
+    // The pelvis: the lowest of the two offsets, as faded and weighted
+    mut raw = sl.delta * sl.fade * weight;
+    imm rr = sr.delta * sr.fade * weight;
+    if rr < raw { raw = rr; }
+    raw = clampf(raw, -maxDrop, maxRise);
+    if !started or dt <= 0. {
+      pelvisOffset = raw;
+      started = true;
+    } else {
+      pelvisOffset = pelvisOffset + (raw - pelvisOffset) * (1. - libc.expf(-pelvisRate * dt));
+    }
+    imm pl = (*pose.locals[PELVIS]).translation;
+    pose.setTranslation(PELVIS, new Vec3(pl.x, pl.y + pelvisOffset, pl.z));
+    skel.modelTransforms(pose, models);
+
+    imm inv = world.inverse();
+    imm up = new Vec3(0., 1., 0.);
+    mut out = new FootResult(pelvisOffset, sl.ground, sr.ground, 0., 0., sl.normal, sr.normal, true, true);
+    mut side = 0usize;
+    while side < 2usize {
+      imm left = side == 0usize;
+      imm s = if left { sl; } else { sr; };
+      imm thigh = if left { THIGH_L; } else { THIGH_R; };
+      imm shin = if left { SHIN_L; } else { SHIN_R; };
+      imm foot = if left { FOOT_L; } else { FOOT_R; };
+      imm socket = if left { SOCKET_SOLE_L; } else { SOCKET_SOLE_R; };
+      // Where the sole goes, and how the foot is turned
+      imm fitted = fmaxf(s.sole.y + s.delta * s.fade, s.ground);
+      imm soleY = s.sole.y + (fitted - s.sole.y) * weight;
+      imm soleModel = inv.transformPoint(new Vec3(s.sole.x, soleY, s.sole.z));
+      imm normalModel = inv.rotation * s.normal;
+      imm tiltWeight = weight * (1. - smoothstep(0.02, 0.12, s.lift));
+      imm tilt = Quat.identity().slerp(Quat.fromVectors(up, normalModel), tiltWeight);
+      imm footRot = tilt * (*models[foot]).rotation;
+      imm soleOffset = skel.sockets[socket];
+      imm ankle = soleModel - footRot * (*soleOffset).offset.translation;
+      // The knee stays where the animation had it, with the leg's forward as a fallback
+      imm hip = (*models[thigh]).translation;
+      imm knee = (*models[shin]).translation;
+      mut pole = knee - (hip + (*models[foot]).translation) * 0.5;
+      if pole.length() < 0.001 { pole = new Vec3(0., 0., -1.); }
+      imm sol = aimLimbRange(skel, pose, models, thigh, ankle, pole, minInterior, maxInterior);
+      skel.setModelRotation(pose, models, foot, footRot);
+      skel.recompose(pose, models, foot);
+      imm placed = world.transformPoint(skel.socketModel(models, socket).translation);
+      if left { out.soleL = placed.y; out.reachedL = sol.reached; } else { out.soleR = placed.y; out.reachedR = sol.reached; }
+      side = side + 1usize;
+    }
+    out;
+  }
+}
+
+pub fn fmaxf(a f32, b f32) f32 { if a > b { return a; } b; }
+pub fn fminf(a f32, b f32) f32 { if a < b { return a; } b; }

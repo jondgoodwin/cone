@@ -1,0 +1,169 @@
+// The broad phase: which pairs of boxes overlap.
+//
+// 'BroadPhase' is the interface a world uses, so the structure behind it can
+// be swapped (a dynamic AABB tree from the spatial-index package, say). A body
+// is a proxy: the caller's id (a body number), a box, a layer and a mask, and
+// whether it never moves. Two proxies make a pair when their boxes overlap,
+// each is on a layer the other's mask accepts, and they are not both static
+// (Jolt's cascade, cheapest test first, reduced to layer, mask and motion).
+//
+// Results are deterministic: pairs come out sorted by (low id, high id), and
+// the id lists of a query in ascending order.
+
+// A pair of body ids, 'a' the lower
+pub struct BodyPair {
+  pub a u32;
+  pub b u32;
+}
+
+pub trait BroadPhase {
+  // Add a body (its id must not be in use)
+  pub fn add(self &mut, id u32, box Aabb3, layer u32, mask u32, isStatic bool);
+  // The body moved or changed size: its new box
+  pub fn update(self &mut, id u32, box Aabb3);
+  pub fn remove(self &mut, id u32);
+  // Every overlapping pair, sorted
+  pub fn pairs(self &mut, out &mut List[BodyPair]);
+  // Ids of bodies whose boxes overlap 'box' and that accept 'layer' (any layer with mask bit set)
+  pub fn queryBox(self &mut, box Aabb3, mask u32, out &mut List[u32]);
+  // Ids of bodies whose boxes a ray (origin, dir, up to maxT) crosses
+  pub fn queryRay(self &mut, origin Vec3, dir Vec3, maxT f32, mask u32, out &mut List[u32]);
+}
+
+struct Proxy {
+  alive bool;
+  box Aabb3;
+  layer u32;
+  mask u32;
+  isStatic bool;
+}
+
+struct SortKey {
+  key f32;
+  id u32;
+}
+
+fn byKey(a &SortKey, b &SortKey) i32 {
+  if a.key < b.key { -1i32; } else if a.key > b.key { 1i32; } else if a.id < b.id { -1i32; } else if a.id > b.id { 1i32; } else { 0i32; };
+}
+
+fn byPair(a &BodyPair, b &BodyPair) i32 {
+  if a.a < b.a { -1i32; } else if a.a > b.a { 1i32; } else if a.b < b.b { -1i32; } else if a.b > b.b { 1i32; } else { 0i32; };
+}
+
+// Sweep and prune (Baraff 1992; Bullet's btAxisSweep3, ODE's quickspace):
+// sort the boxes along the axis they spread over most, and compare each box
+// with the following ones only while their intervals on that axis overlap.
+// Ids index a list of proxies, so they should be small and dense, as body
+// numbers are.
+pub struct SweepAndPrune is BroadPhase {
+  proxies List[Proxy];
+  count usize;
+
+  pub fn empty() SweepAndPrune { new SweepAndPrune(List[Proxy].empty(), 0usize); }
+  pub fn len(self &) usize { count; }
+
+  pub fn add(self &mut, id u32, box Aabb3, layer u32, mask u32, isStatic bool) {
+    imm i = usize.from(id);
+    while proxies.len() <= i {
+      proxies.push(new Proxy(false, Aabb3.empty(), 0u32, 0u32, false));
+    }
+    if not proxies[i].alive { count = count + 1usize; }
+    proxies.set(i, new Proxy(true, box, layer, mask, isStatic));
+  }
+
+  pub fn update(self &mut, id u32, box Aabb3) {
+    imm i = usize.from(id);
+    if i < proxies.len() and proxies[i].alive {
+      mut p = *proxies[i];
+      p.box = box;
+      proxies.set(i, p);
+    }
+  }
+
+  pub fn remove(self &mut, id u32) {
+    imm i = usize.from(id);
+    if i < proxies.len() and proxies[i].alive {
+      mut p = *proxies[i];
+      p.alive = false;
+      proxies.set(i, p);
+      count = count - 1usize;
+    }
+  }
+
+  fn axisOf(self &) usize {
+    // the axis along which the box centres vary most
+    mut sum = new Vec3(0., 0., 0.);
+    mut sq = new Vec3(0., 0., 0.);
+    mut n = 0.;
+    mut i = 0usize;
+    while i < proxies.len() {
+      if proxies[i].alive {
+        imm c = proxies[i].box.center();
+        sum = sum + c;
+        sq = sq + c * c;
+        n = n + 1.;
+      }
+      i = i + 1usize;
+    }
+    if n < 2. { return 0usize; }
+    imm mean = sum * (1. / n);
+    imm vr = sq * (1. / n) - mean * mean;
+    mut ax = 0usize;
+    if vr.y > vecGet(vr, ax) { ax = 1usize; }
+    if vr.z > vecGet(vr, ax) { ax = 2usize; }
+    ax;
+  }
+
+  pub fn pairs(self &mut, out &mut List[BodyPair]) {
+    out.clear();
+    imm ax = axisOf();
+    mut keys = List[SortKey].empty();
+    mut i = 0usize;
+    while i < proxies.len() {
+      if proxies[i].alive { keys.push(new SortKey(vecGet(proxies[i].box.min, ax), u32.from(i))); }
+      i = i + 1usize;
+    }
+    keys.sortBy(&byKey);
+    i = 0usize;
+    while i < keys.len() {
+      imm pa = proxies[usize.from(keys[i].id)];
+      imm maxA = vecGet(pa.box.max, ax);
+      mut j = i + 1usize;
+      while j < keys.len() and keys[j].key <= maxA {
+        imm idB = keys[j].id;
+        imm pb = proxies[usize.from(idB)];
+        if (not (pa.isStatic and pb.isStatic)) and (pa.layer & pb.mask) != 0u32 and (pb.layer & pa.mask) != 0u32
+            and pa.box.overlaps(pb.box) {
+          imm idA = keys[i].id;
+          if idA < idB { out.push(new BodyPair(idA, idB)); } else { out.push(new BodyPair(idB, idA)); }
+        }
+        j = j + 1usize;
+      }
+      i = i + 1usize;
+    }
+    out.sortBy(&byPair);
+  }
+
+  pub fn queryBox(self &mut, box Aabb3, mask u32, out &mut List[u32]) {
+    out.clear();
+    mut i = 0usize;
+    while i < proxies.len() {
+      if proxies[i].alive and (proxies[i].layer & mask) != 0u32 and proxies[i].box.overlaps(box) { out.push(u32.from(i)); }
+      i = i + 1usize;
+    }
+  }
+
+  pub fn queryRay(self &mut, origin Vec3, dir Vec3, maxT f32, mask u32, out &mut List[u32]) {
+    out.clear();
+    imm inv = new Vec3(if absf(dir.x) > 1.0e-20 { 1. / dir.x; } else { 1.0e20; }, if absf(dir.y) > 1.0e-20 { 1. / dir.y; } else { 1.0e20; },
+                       if absf(dir.z) > 1.0e-20 { 1. / dir.z; } else { 1.0e20; });
+    mut i = 0usize;
+    while i < proxies.len() {
+      if proxies[i].alive and (proxies[i].layer & mask) != 0u32 {
+        if rayBoxEnter(origin, inv, proxies[i].box.min, proxies[i].box.max, maxT) < bigNumber { out.push(u32.from(i)); }
+      }
+      i = i + 1usize;
+    }
+  }
+}

@@ -1,0 +1,198 @@
+// Trigger volumes and rules.
+//
+// Two sphere volumes of radius 2: A at the origin, B at (3, 0, 0); they overlap
+// for x in [1, 2]. A walker is moved to x = 0.5, 1.5, 3, 6 and the world
+// stepped 1 s each time (so the clock reads 1, 2, 3, 4). Per volume, in the
+// order they were added, exits then enters then stays, so the events are
+//   x = 0.5   A enter
+//   x = 1.5   A stay (inside since 1, now 2: 1 s), B enter
+//   x = 3     A exit, B stay (since 2, now 3: 1 s)
+//   x = 6     B exit
+// A box volume half (1, 1, 2) turned 90 degrees about +y holds (1.5, 0, 0)
+// (local (0, 0, 1.5) -> within half z 2) and not (0, 0, 1.5) (local (-1.5, 0, 0)
+// -> beyond half x 1).
+//
+// Rules: R1 "on enter of A by a character, if door.armed: hits += 1 and
+// signal 'alarm'". The walker goes in and out of A three times, the door
+// armed for the first two: two firings, each event fired it once; with the rule
+// disabled at run time nothing; enabled again, the third entry fires it once
+// more only if armed. A 'once' rule fires a single time. A rule added at run
+// time ("triggers change around") answers the next event; a removed one never
+// again. A chain of rules that sets a property which changes a property is
+// stopped at 2048 events with EV_OVERFLOW.
+
+mod triggers;
+
+import collections use *;
+import testing use *;
+import geomath use *;
+import worldinteract use *;
+
+fn count(evs &List[Event], kind u32) i64 {
+  mut n = 0i64;
+  mut i = 0usize;
+  while i < evs.len() {
+    if (*evs[i]).kind == kind { n = n + 1i64; }
+    i = i + 1usize;
+  }
+  n;
+}
+
+fn main() i32 {
+  mut w = World.make();
+  imm a = w.create(CLASS_TRIGGER);
+  w.addSphereTrigger(a, 2., CLASS_CHARACTER);
+  imm b = w.create(CLASS_TRIGGER);
+  w.setPosition(b, new Vec3(3., 0., 0.));
+  w.addSphereTrigger(b, 2., CLASS_CHARACTER);
+  imm walker = w.create(CLASS_CHARACTER);
+  w.setTracked(walker, true);
+  imm crate = w.create(CLASS_PROP);             // not a character: ignored by the masks
+  w.setTracked(crate, true);
+
+  mut seq = List[Event].empty();
+  mut xs = List[f32].empty();
+  xs.push(0.5);
+  xs.push(1.5);
+  xs.push(3.);
+  xs.push(6.);
+  mut k = 0usize;
+  while k < xs.len() {
+    w.setPosition(walker, new Vec3(*xs[k], 0., 0.));
+    w.step(1.);
+    mut ev = w.takeEvents();
+    mut j = 0usize;
+    while j < ev.len() {
+      imm e = *ev[j];
+      if e.kind == EV_ENTER or e.kind == EV_STAY or e.kind == EV_EXIT { seq.push(e); }
+      j = j + 1usize;
+    }
+    k = k + 1usize;
+  }
+  expectInt(i64.from(seq.len()), 6i64, "six trigger events in all");
+  expectInt(i64.from((*seq[0]).kind), i64.from(EV_ENTER), "1: enter");
+  expectInt(i64.from((*seq[0]).subject), i64.from(a), "1: of A");
+  expectInt(i64.from((*seq[0]).other), i64.from(walker), "1: by the walker");
+  expectInt(i64.from((*seq[1]).kind), i64.from(EV_STAY), "2: A stays");
+  expectInt(i64.from((*seq[1]).subject), i64.from(a), "2: of A");
+  expectFloat(f64.from((*seq[1]).value.num), 1., 0.0001, "2: for 1 s");
+  expectInt(i64.from((*seq[2]).kind), i64.from(EV_ENTER), "3: B enters");
+  expectInt(i64.from((*seq[2]).subject), i64.from(b), "3: of B");
+  expectInt(i64.from((*seq[3]).kind), i64.from(EV_EXIT), "4: exit");
+  expectInt(i64.from((*seq[3]).subject), i64.from(a), "4: of A");
+  expectInt(i64.from((*seq[4]).kind), i64.from(EV_STAY), "5: B stays");
+  expectInt(i64.from((*seq[4]).subject), i64.from(b), "5: of B");
+  expectInt(i64.from((*seq[5]).kind), i64.from(EV_EXIT), "6: exit");
+  expectInt(i64.from((*seq[5]).subject), i64.from(b), "6: of B");
+
+  // the box, turned
+  mut w2 = World.make();
+  imm box = w2.create(CLASS_TRIGGER);
+  w2.setTransform(box, new Transform3(new Vec3(0., 0., 0.), Quat.angleAxis(pi / 2., new Vec3(0., 1., 0.)), new Vec3(1., 1., 1.)));
+  w2.addBoxTrigger(box, new Vec3(1., 1., 2.), 0u32);
+  imm p = w2.create(CLASS_CHARACTER);
+  imm q = w2.create(CLASS_CHARACTER);
+  w2.setTracked(p, true);
+  w2.setTracked(q, true);
+  w2.setPosition(p, new Vec3(1.5, 0., 0.));
+  w2.setPosition(q, new Vec3(0., 0., 1.5));
+  w2.step(0.1);
+  mut ev2 = w2.takeEvents();
+  expectInt(count(&ev2, EV_ENTER), 1i64, "one of the two is inside the turned box");
+  expectInt(i64.from((*ev2[0]).other), i64.from(p), "the one on the x axis");
+
+  // ---- rules ----
+  mut r = World.make();
+  imm va = r.create(CLASS_TRIGGER);
+  r.addSphereTrigger(va, 2., CLASS_CHARACTER);
+  imm man = r.create(CLASS_CHARACTER);
+  r.setTracked(man, true);
+  r.setPosition(man, new Vec3(50., 0., 0.));
+  imm gate = r.create(CLASS_DOOR);
+  r.addDoor(gate, Door.sliding(gate, new Vec3(0., 3., 0.), 1.));
+  r.setDoorLocked(gate, false);
+  imm armed = r.sym("armed");
+  imm hits = r.sym("hits");
+  imm alarm = r.sym("alarm");
+  r.setProp(gate, armed, Value.boolean(true));
+  imm r1 = r.addRule(EV_ENTER, va, 0u32, 0u32, CLASS_CHARACTER, false);
+  r.ruleIf(r1, COND_PROP_BOOL, gate, armed, OP_EQ, 1.);
+  r.ruleDo(r1, ACT_ADD_PROP, gate, hits, Value.none(), 1., 0.);
+  r.ruleDo(r1, ACT_SIGNAL, gate, alarm, Value.none(), 0., 0.);
+  r.takeEvents();
+
+  mut s = 0;
+  while s < 3 {
+    r.setPosition(man, new Vec3(0., 0., 0.));
+    r.step(0.5);
+    r.setPosition(man, new Vec3(50., 0., 0.));
+    r.step(0.5);
+    if s == 1 { r.setProp(gate, armed, Value.boolean(false)); }
+    s = s + 1;
+  }
+  mut ev3 = r.takeEvents();
+  expectInt(i64.from(r.timesFired(r1)), 2i64, "armed for the first two entries: two firings");
+  expectFloat(f64.from(r.getNum(gate, hits)), 2., 0.0001, "hits counted 2");
+  expectInt(count(&ev3, EV_SIGNAL), 2i64, "and two signals, one per event");
+
+  // disabled at run time, then enabled
+  r.setProp(gate, armed, Value.boolean(true));
+  r.setRuleEnabled(r1, false);
+  r.setPosition(man, new Vec3(0., 0., 0.));
+  r.step(0.5);
+  r.setPosition(man, new Vec3(50., 0., 0.));
+  r.step(0.5);
+  expectInt(i64.from(r.timesFired(r1)), 2i64, "disabled: no firing");
+  r.setRuleEnabled(r1, true);
+  r.setPosition(man, new Vec3(0., 0., 0.));
+  r.step(0.5);
+  expectInt(i64.from(r.timesFired(r1)), 3i64, "enabled again: fires once");
+  r.setPosition(man, new Vec3(50., 0., 0.));
+  r.step(0.5);
+
+  // a rule added at run time answers the next event only; a 'once' rule fires once
+  imm r2 = r.addRule(EV_ENTER, va, 0u32, 0u32, 0u32, true);
+  r.ruleDo(r2, ACT_OPEN_DOOR, gate, 0u32, Value.none(), 0., 0.);
+  expect(not r.doorWantsOpen(gate), "the gate is shut before the new rule");
+  r.setPosition(man, new Vec3(0., 0., 0.));
+  r.step(0.5);
+  expect(r.doorWantsOpen(gate), "the rule added at run time opened it");
+  expectInt(i64.from(r.timesFired(r2)), 1i64, "once");
+  r.setPosition(man, new Vec3(50., 0., 0.));
+  r.step(0.5);
+  r.setDoor(gate, false, 0u32);
+  r.setPosition(man, new Vec3(0., 0., 0.));
+  r.step(0.5);
+  expectInt(i64.from(r.timesFired(r2)), 1i64, "a once rule does not fire again");
+  expect(not r.doorWantsOpen(gate), "and the gate stays shut");
+  r.removeRule(r1);
+  r.setPosition(man, new Vec3(50., 0., 0.));
+  r.step(0.5);
+  r.setPosition(man, new Vec3(0., 0., 0.));
+  r.step(0.5);
+  // r1 also answered the two entries made while r2 was tested (armed again): 3 + 2
+  expectInt(i64.from(r.timesFired(r1)), 5i64, "a removed rule never fires again");
+
+  // a rule on a property change, with a condition on a number
+  imm tank = r.create(CLASS_PROP);
+  imm level = r.sym("level");
+  imm full = r.sym("full");
+  imm r3 = r.addRule(EV_PROP_CHANGED, tank, 0u32, level, 0u32, false);
+  r.ruleIf(r3, COND_PROP_NUM, ENT_SUBJECT, level, OP_GE, 10.);
+  r.ruleDo(r3, ACT_SET_PROP, ENT_SUBJECT, full, Value.boolean(true), 0., 0.);
+  r.setProp(tank, level, Value.number(4.));
+  expect(not r.getBool(tank, full), "level 4: not full");
+  r.setProp(tank, level, Value.number(10.));
+  expect(r.getBool(tank, full), "level 10: full");
+
+  // a rule loop is cut off
+  imm cnt = r.sym("cnt");
+  imm r4 = r.addRule(EV_PROP_CHANGED, 0u32, 0u32, cnt, 0u32, false);
+  r.ruleDo(r4, ACT_ADD_PROP, ENT_SUBJECT, cnt, Value.none(), 1., 0.);
+  r.takeEvents();
+  r.setProp(tank, cnt, Value.number(1.));
+  mut ev4 = r.takeEvents();
+  expectInt(count(&ev4, EV_OVERFLOW), 1i64, "a loop of rules is stopped");
+  expectInt(i64.from(ev4.len()), 2049i64, "after 2048 events and the overflow notice");
+  done();
+}
