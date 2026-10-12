@@ -245,7 +245,7 @@ void typeLitStructCheck(TypeCheckState *pstate, FnCallNode *arrlit, StructNode *
         // match: a field takes a value on the same terms a variable initializer
         // does, including a union variant standing in for the union.
         if (!iexpCoerce(litval, field->vtype)) {
-            errorMsgNode((INode*)*litval, ErrorBadArray, "Literal value's type does not match expected field's type");
+            iexpMismatchMsg((INode*)*litval, field->vtype, ErrorBadArray, "Literal value's type does not match expected field's type");
         }
         if (named)
             named->vtype = ((IExpNode*)named->val)->vtype;
@@ -402,7 +402,7 @@ static void typeLitInitArgs(TypeCheckState *pstate, FnCallNode *node, FnSigNode 
         // (A string literal wanted as a read-only borrow of a type declaring
         // 'fromLiteral' is lent as a temporary of it: iexpCoerceIn.)
         if (!iexpCoerceIn(pstate, argsp, ((IExpNode *)*parmp)->vtype))
-            errorMsgNode(*argsp, ErrorInvType, "Expression's type does not match declared parameter");
+            iexpMismatchMsg(*argsp, ((IExpNode *)*parmp)->vtype, ErrorInvType, "Expression's type does not match declared parameter");
         ++parmp;
     }
     for (uint32_t i = node->args->used + 1; i < sig->parms->used; ++i) {

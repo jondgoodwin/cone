@@ -554,6 +554,12 @@ given where a trait is wanted that has not exactly one required method (a method
 with a body is a default, and comes with the literal) and no field is
 `ErrorClosureTrait`.
 
+A reference to a C-named function (`&fn @c (...)`) and one to a Cone function
+(`&fn(...)`) are two types that never convert. One given where the other is wanted
+(an initializer, an assignment, an argument, a returned value, a struct's field),
+a C-named function's reference given where a callable `&<fn` is wanted, and `@c`
+written on a callable are all `ErrorFnRefConv`; the message says which side is which.
+
 The built-in marker `Shareable` has two: an unmet `T is Shareable`, or a value made a
 virtual reference marked `+ Shareable` that is not, is `ErrorNotShareable` (the
 marker `+ Sendable`, unmet, is `ErrorNotSendable`, the thread check's); and a

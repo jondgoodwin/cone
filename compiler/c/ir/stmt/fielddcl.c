@@ -205,7 +205,7 @@ void fieldDclTypeCheck(TypeCheckState *pstate, FieldDclNode *name) {
             errorMsgNode(name->value, ErrorNotLit, "Field default must be a constant value.");
         // Verify that declared type and initial value type matches
         else if (!iexpTypeCheckCoerce(pstate, name->vtype, &name->value))
-            errorMsgNode(name->value, ErrorInvType, "Initialization value's type does not match variable's declared type");
+            iexpMismatchMsg(name->value, name->vtype, ErrorInvType, "Initialization value's type does not match variable's declared type");
         // The constant is judged after type check, as a const's value is: it is
         // type check that makes a construction, 'new E(1, 2)', or an array's
         // fill the literal it is, and type check that an expression of
