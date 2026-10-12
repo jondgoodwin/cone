@@ -519,6 +519,12 @@ int genlIsCAbiFn(FnDclNode *fndcl);
 // The LLVM function type of a declared function: its Cone signature, lowered
 // to the C ABI for one that crosses to C
 LLVMTypeRef genlFnDclType(GenState *gen, FnDclNode *fndcl);
+// The LLVM function type of a signature that crosses to C: a C-named function's,
+// and the pointee of a reference marked '&fn @c'
+LLVMTypeRef genlCAbiFnType(GenState *gen, FnSigNode *fnsig);
+// Call through a function pointer or reference, in the convention its pointee
+// signature is marked for
+LLVMValueRef genlFnPtrCall(GenState *gen, INode *pointee, LLVMValueRef fn, LLVMValueRef *args, uint32_t argcnt);
 // Mark a just-declared function's hidden result slot ('sret'), if it has one
 void genlCAbiDeclare(GenState *gen, FnDclNode *fndcl, LLVMValueRef fn);
 // Call a declared function with Cone argument values, returning its Cone value

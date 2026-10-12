@@ -1,0 +1,83 @@
+// Doors. A door's opening is a closed-form function of the time since it was
+// last toggled, so a renderer or a test can ask for the pose at any time
+// (scrubbing, skipping a frame, resuming) and nothing is integrated:
+//
+//   p = clamp((t - toggledAt) / duration, 0, 1)
+//   openness(t) = from + (target - from) * smoothstep(p)
+//
+// 'from' is the openness at the moment of the toggle, so a door reversed half
+// way swings back from where it is. smoothstep(p) = p*p*(3 - 2p) is the
+// standard ease (Hermite) and starts and ends at rest. A hinged door turns by
+// openness * maxAngle about 'axis' through 'pivot'; a sliding door moves by
+// openness * slide. Both are in the door's own closed frame; the caller
+// composes the result with the door's closed placement.
+
+pub const DOOR_HINGED = 0u32;
+pub const DOOR_SLIDING = 1u32;
+
+pub struct Door {
+  pub entity u32;
+  pub style u32;            // DOOR_HINGED or DOOR_SLIDING
+  pub pivot Vec3;           // hinged: a point on the hinge line, door's frame
+  pub axis Vec3;            // hinged: the hinge direction (unit)
+  pub maxAngle f32;         // hinged: radians at fully open
+  pub slide Vec3;           // sliding: the move at fully open
+  pub duration f32;         // seconds to swing fully
+  pub target f32;           // 1 when it is opening or open, 0 when closing or closed
+  pub from f32;             // openness when last toggled
+  pub toggledAt f32;        // the world's time of that toggle
+  pub settled bool;         // the swing finished and was reported
+  pub locked bool;
+  pub keyKind u32;          // the item kind that unlocks it, 0 for none (a script only)
+  pub consumeKey bool;      // the key is used up
+  pub openOnUnlock bool;    // unlocking with a key also opens it
+  pub autoClose f32;        // seconds open before it closes by itself, 0 for never
+  pub passAt f32;           // openness from which a body can pass
+  pub passable bool;        // what was last reported
+  pub alive bool;
+
+  // A door hinged on the line through 'pivot' along 'axis', swinging 'maxAngle' radians in 'duration' seconds
+  pub fn hinged(entity u32, pivot Vec3, axis Vec3, maxAngle f32, duration f32) Door {
+    new Door(entity, DOOR_HINGED, pivot, axis.normalize(), maxAngle, new Vec3(0., 0., 0.), duration,
+      0., 0., -1000., true, false, 0u32, false, true, 0., 0.7, false, true);
+  }
+
+  // A door that slides by 'slide' in 'duration' seconds
+  pub fn sliding(entity u32, slide Vec3, duration f32) Door {
+    new Door(entity, DOOR_SLIDING, new Vec3(0., 0., 0.), new Vec3(0., 1., 0.), 0., slide, duration,
+      0., 0., -1000., true, false, 0u32, false, true, 0., 0.7, false, true);
+  }
+
+  // How open it is at time t, 0 closed to 1 open
+  pub fn openness(self, t f32) f32 {
+    imm d = if duration > 0.0001 { duration; } else { 0.0001; };
+    imm p = clamp01((t - toggledAt) / d);
+    from + (target - from) * smoothstep(p);
+  }
+
+  // Where the door is in its own closed frame at time t
+  pub fn pose(self, t f32) Transform3 {
+    imm o = openness(t);
+    if style == DOOR_HINGED {
+      imm q = Quat.angleAxis(o * maxAngle, axis);
+      new Transform3(pivot - q * pivot, q, new Vec3(1., 1., 1.));
+    } else {
+      new Transform3(slide * o, Quat.identity(), new Vec3(1., 1., 1.));
+    }
+  }
+
+  // Whether a body can pass at time t
+  pub fn passableAt(self, t f32) bool { openness(t) >= passAt; }
+
+  // The time the current swing ends
+  pub fn endsAt(self) f32 { toggledAt + duration; }
+}
+
+pub fn clamp01(v f32) f32 {
+  if v < 0. { return 0.; }
+  if v > 1. { return 1.; }
+  v;
+}
+
+// The Hermite ease, 0 to 1, at rest at both ends
+pub fn smoothstep(p f32) f32 { p * p * (3. - 2. * p); }

@@ -56,6 +56,18 @@
 // - Post, from HDR light to the display (post.slang, post.cone): the
 //   half-float frame the renderer draws into, Jimenez's bloom chain, and
 //   tone mapping by AgX (or ACES's fit, Reinhard, none).
+// - Sun shadows (shadow.cone, shadowing.slang): 'setShadows' with a
+//   ShadowSettings ('high', 'medium', 'low', 'off': 1 to 4 cascades, the
+//   map's size, the filter) switches on cascaded shadow maps for the
+//   directional light. Each cascade is the sun's orthographic view of a
+//   slice of the camera's frustum (the practical split scheme, fitted to a
+//   bounding sphere, snapped to texels so edges do not shimmer), drawn
+//   depth only into one layer of a depth texture array before the scene;
+//   the lit and physically based materials read it with percentage-closer
+//   filtering over a rotated Poisson disk, receiver-plane depth bias and a
+//   normal offset, blending cascades at their seams. Cut-out, skinned and
+//   flutter meshes cast what they show; see-through and custom-pipeline
+//   draws cast nothing, nor does an item marked 'dontCastShadow'.
 // - DrawList: what is drawn this frame, each a mesh, a material and a model
 //   matrix (and a tint), drawn in one render pass.
 // - Skinning (skin.cone, skinning.slang): a mesh bound to a skeleton's bones
@@ -64,7 +76,7 @@
 //   matrix a bone, which the GPU blends (linear blend skinning) in the
 //   skinned variants of the lit and physically based pipelines.
 // - Views (views.cone): the scene drawn from another camera into a texture
-//   of its own ('View', rendered before the frame's main 'render', with a
+//   of its own ('RenderView', rendered before the frame's main 'render', with a
 //   layer mask over the draw list's items and a nesting limit), whose
 //   picture any material samples ('ViewMaterials': a screen, a planar mirror,
 //   reflective water with a Fresnel blend and a normal map's ripple); the
@@ -108,7 +120,12 @@
 // (skinning.slang), the bones (a storage buffer of every skinned copy's
 // skinning matrices, 48 bytes a bone, each copy's run side by side) and the
 // bone bases (a storage buffer of a u32 an instance: where its copy's bones
-// start, or NO_BONES), both written once a render too. Group 1 is the material's: its parameters in a
+// start, or NO_BONES), both written once a render too; then the sun's
+// shadows (shadowparams.slang, shadowing.slang): their parameters in a
+// uniform buffer (binding 4), the cascades' depth texture array (5) and the
+// comparison sampler that reads it (6), a one-texel stand-in while shadows
+// are off. The shadow passes bind a group of their own (bindings 0 to 4,
+// without the map they draw into). Group 1 is the material's: its parameters in a
 // uniform buffer of its own, its texture and the renderer's sampler; for
 // the physically based material, its metallic-roughness, normal and
 // occlusion maps after them (its own layout, 'pbrMaterialLayout'); for a
@@ -155,12 +172,15 @@
 //   lighting.cone  Sky, PbrMaterial, Environment; pbr.slang's and ibl.slang's SPIR-V
 //   post.cone      Post: the HDR frame, bloom, tone mapping; post.slang's SPIR-V
 //   camera.cone    Camera, Light
-//   views.cone     View, ViewMaterials, Probe; viewmat.slang's and probe.slang's SPIR-V
+//   views.cone     RenderView, ViewMaterials, ReflectionProbe; viewmat.slang's and probe.slang's SPIR-V
 //   image.cone     Image
+//   shadow.cone    ShadowSettings, the cascades' maths, the shadow map and its casters' pipelines and passes;
+//                  shadowcast.slang's, shadowcutlit.slang's and shadowcutpbr.slang's SPIR-V
 //
 // and its shaders, Slang: lit, lines, pbr, ibl and post, and the modules
-// brdf, sky, renderframe and skinning they import (pbr imports the noise
-// package's too).
+// brdf, sky, renderframe, skinning, flutter, shadowparams, shadowing and
+// shadowcasting they import (pbr imports the noise package's too); the
+// shadow casters shadowcast, shadowcutlit and shadowcutpbr draw depth only.
 //
 // Coordinates are geomath's and gpu's: right-handed, y up, the camera looking
 // down its -z, clip space's y up and depth from 0 to 1. Faces wind
@@ -301,6 +321,8 @@ pub struct Renderer {
   // The physically based pipeline for a mesh with a SWAY stream (gpumesh.cone)
   // drawn with a flutter material: a fourth vertex buffer, the colors
   pub pbrSwayPipeline RenderPipeline;
+  // The sun's shadows (shadow.cone): off until 'setShadows'
+  pub shadow ShadowState;
   // The reflection probes ('addProbe', views.cone): a physically based copy
   // inside a probe's box is lit by that probe's cubes instead of the sky's
   pub probes List[ProbeSlot];
@@ -324,11 +346,17 @@ pub struct Renderer {
     mut linesShader = device.createShaderModule(&LINES_SPIRV);
     // The frame's group: its uniforms, the instances, the bones and the
     // instances' bone bases (read-only storage)
+    // and the sun's shadows: their parameters, the cascades' map (a depth
+    // texture array) and the comparison sampler that reads it
     imm frameEntries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_VERTEX | SHADER_STAGE_FRAGMENT),
       new BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_VERTEX | SHADER_STAGE_FRAGMENT,
         bufferType: BUFFER_BINDING_TYPE_READ_ONLY_STORAGE),
       new BindGroupLayoutEntry(binding: 2u32, visibility: SHADER_STAGE_VERTEX, bufferType: BUFFER_BINDING_TYPE_READ_ONLY_STORAGE),
-      new BindGroupLayoutEntry(binding: 3u32, visibility: SHADER_STAGE_VERTEX, bufferType: BUFFER_BINDING_TYPE_READ_ONLY_STORAGE)];
+      new BindGroupLayoutEntry(binding: 3u32, visibility: SHADER_STAGE_VERTEX, bufferType: BUFFER_BINDING_TYPE_READ_ONLY_STORAGE),
+      new BindGroupLayoutEntry(binding: 4u32, visibility: SHADER_STAGE_VERTEX | SHADER_STAGE_FRAGMENT),
+      new BindGroupLayoutEntry(binding: 5u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE,
+        viewDimension: TEXTURE_VIEW_DIMENSION_2D_ARRAY, sampleType: TEXTURE_SAMPLE_TYPE_DEPTH),
+      new BindGroupLayoutEntry(binding: 6u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_SAMPLER)];
     mut frameLayout = device.createBindGroupLayout(&frameEntries);
     imm materialEntries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_FRAGMENT),
       new BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE),
@@ -458,8 +486,13 @@ pub struct Renderer {
       BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST);
     mut bones = device.createBuffer(u64.from(FIRST_BONES) * BONE_BYTES, BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST);
     mut boneBases = device.createBuffer(u64.from(FIRST_INSTANCES) * 4u64, BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST);
+    mut shadow = ShadowState.create(device, &materialLayout, &pbrMaterialLayout, &frameUniforms, &instances, &bones,
+      &boneBases);
+    imm shadowView = shadow.arrayView();
     imm frameGroupEntries = [BindGroupEntry.buffer(0u32, &frameUniforms), BindGroupEntry.buffer(1u32, &instances),
-      BindGroupEntry.buffer(2u32, &bones), BindGroupEntry.buffer(3u32, &boneBases)];
+      BindGroupEntry.buffer(2u32, &bones), BindGroupEntry.buffer(3u32, &boneBases),
+      BindGroupEntry.buffer(4u32, &shadow.params), BindGroupEntry.texture(5u32, &shadowView),
+      BindGroupEntry.sampler(6u32, &shadow.sampler)];
     mut frameGroup = device.createBindGroup(&frameLayout, &frameGroupEntries);
     // Trilinear, and anisotropic to 16 where the device does it (fewer
     // where it does less; none where it does none)
@@ -475,8 +508,8 @@ pub struct Renderer {
       instances, FIRST_INSTANCES, List[f32].empty(), List[DrawKey].empty(), List[DrawBatch].empty(), 0u32,
       Pool[PipelineSlot].empty(), litSkinnedPipeline, pbrSkinnedPipeline, bones, FIRST_BONES, boneBases,
       List[u32].empty(), 0u32, litBlendPipeline, pbrBlendPipeline, litSkinnedBlendPipeline, pbrSkinnedBlendPipeline, 0u32,
-      pbrSwayPipeline, List[ProbeSlot].empty());
-    mut w =new Image(1, 1, 3, List[u8].empty());
+      pbrSwayPipeline, shadow, List[ProbeSlot].empty());
+    mut w = new Image(1, 1, 3, List[u8].empty());
     w.pixels.push(255u8);
     w.pixels.push(255u8);
     w.pixels.push(255u8);
@@ -490,14 +523,44 @@ pub struct Renderer {
       and frameUniforms.isValid() and pbrPipeline.isValid() and skyPipeline.isValid() and environment.isValid()
       and instances.isValid() and litSkinnedPipeline.isValid() and pbrSkinnedPipeline.isValid() and bones.isValid()
       and boneBases.isValid() and litBlendPipeline.isValid() and pbrBlendPipeline.isValid()
-      and litSkinnedBlendPipeline.isValid() and pbrSkinnedBlendPipeline.isValid() and pbrSwayPipeline.isValid();
+      and litSkinnedBlendPipeline.isValid() and pbrSkinnedBlendPipeline.isValid() and pbrSwayPipeline.isValid()
+      and shadow.isValid();
   }
 
   // The frame's group made again, after a buffer in it was replaced
   fn remakeFrameGroup(self &mut, device &mut Device) {
+    imm shadowView = shadow.arrayView();
     imm entries = [BindGroupEntry.buffer(0u32, &frameUniforms), BindGroupEntry.buffer(1u32, &instances),
-      BindGroupEntry.buffer(2u32, &bones), BindGroupEntry.buffer(3u32, &boneBases)];
+      BindGroupEntry.buffer(2u32, &bones), BindGroupEntry.buffer(3u32, &boneBases),
+      BindGroupEntry.buffer(4u32, &shadow.params), BindGroupEntry.texture(5u32, &shadowView),
+      BindGroupEntry.sampler(6u32, &shadow.sampler)];
     frameGroup = device.createBindGroup(&frameLayout, &entries);
+    shadow.remakeCasterGroup(device, &frameUniforms, &instances, &bones, &boneBases);
+  }
+
+  // Cast the sun's shadows as 's' says (shadow.cone): off, or 1 to 4
+  // cascades of the sun's shadow map of the size given, and a filter. The
+  // map is made again when its size or its cascades change (the GPU is
+  // waited for: set the tier at start-up or in a menu, not every frame); a
+  // renderer starts with shadows off. Every lit and physically based
+  // material receives them, and every opaque or cut-out mesh draw casts
+  // them (a draw item marked 'dontCastShadow' does not).
+  pub fn setShadows(self &mut, device &mut Device, s &ShadowSettings) {
+    imm wanted = clampShadowSettings(s);
+    imm layers = if wanted.enabled { wanted.cascades; } else { 0u32; };
+    imm size = if wanted.enabled { wanted.mapSize; } else { 1u32; };
+    imm wantedLayers = if layers == 0u32 { 1u32; } else { layers; };
+    if shadow.map.width != size or shadow.map.depthOrArrayLayers != wantedLayers {
+      device.waitIdle();
+      shadow.remakeMap(device, size, layers);
+      self.remakeFrameGroup(device);
+    }
+    if wanted.slopeBias != shadow.settings.slopeBias {
+      device.waitIdle();
+      shadow.casters = ShadowCasters.create(device, &shadow.casterLayout, &materialLayout, &pbrMaterialLayout,
+        wanted.slopeBias);
+    }
+    shadow.settings = wanted;
   }
 
   // Draw 'sky' behind the scene from the next render on, and light the
@@ -529,6 +592,12 @@ pub struct Renderer {
   // Whether 'h' names a skinned mesh
   pub fn isSkinned(self &, h MeshHandle) bool {
     meshes.alive(h.slot) and meshes[h.slot].current().isSkinned();
+  }
+
+  // Shadows off again (the map is freed, the one-texel stand-in kept)
+  pub fn disableShadows(self &mut, device &mut Device) {
+    imm off = ShadowSettings.off();
+    self.setShadows(device, &off);
   }
 
   // The bounding sphere of the mesh 'h' as drawn, in its own coordinates
@@ -1080,6 +1149,19 @@ pub struct Renderer {
     self.writeInstances(device, list);
     self.writeBones(device, list);
 
+    // The sun's shadows: the cascades fitted to this camera, their
+    // parameters written for every material to read, and, if they are on, a
+    // depth pass for each cascade before the scene is drawn
+    imm shadowsOn = shadow.settings.enabled;
+    if shadowsOn { shadow.cascades = computeCascades(camera, aspect, light.direction, &shadow.settings); }
+    {
+      imm place = camera.placement();
+      imm forward = new Vec3(-place.m[8], -place.m[9], -place.m[10]).normalize();
+      imm shadowFloats = shadowParamsFloats(&shadow.cascades, &shadow.settings, forward, shadowsOn);
+      device.queue.writeBuffer(&shadow.params, 0u64, &shadowFloats as *u8, SHADOW_PARAMS_BYTES);
+    }
+    if shadowsOn { recordShadowPasses(self, device, encoder, list); }
+
     // The background is light too: exposed like the rest
     imm bg = camera.background;
     imm clear = new Color(bg.red * exposure, bg.green * exposure, bg.blue * exposure, bg.alpha);
@@ -1302,20 +1384,21 @@ pub struct Renderer {
     mut i = 0usize;
     while i < n {
       imm item = list.items[i];
+      imm cast = if item.castsShadow { 1u32; } else { 0u32; };
       if meshes.alive(item.mesh.slot) {
         imm m = meshes[item.mesh.slot].current();
         if m.isValid() {
           if m.topology == PRIMITIVE_TOPOLOGY_LINE_LIST {
             imm d = item.model.translation().distanceSquared(eye);
-            keys.push(new DrawKey(LAYER_LINES, u32.from(i), item.mesh.slot.slot(), u32.from(i), d, 0u32));
+            keys.push(new DrawKey(LAYER_LINES, u32.from(i), item.mesh.slot.slot(), u32.from(i), 0u32, d, 0u32));
           } elif materials.alive(item.material.slot) {
             imm probe = self.probeFor(item.model.translation());
             if materials[item.material.slot].blend {
               imm d = (item.model * m.center).distanceSquared(eye);
-              keys.push(new DrawKey(LAYER_BLEND, item.material.slot.slot(), item.mesh.slot.slot(), u32.from(i), d, probe));
+              keys.push(new DrawKey(LAYER_BLEND, item.material.slot.slot(), item.mesh.slot.slot(), u32.from(i), 0u32, d, probe));
             } else {
               imm d = item.model.translation().distanceSquared(eye);
-              keys.push(new DrawKey(LAYER_OPAQUE, item.material.slot.slot(), item.mesh.slot.slot(), u32.from(i), d, probe));
+              keys.push(new DrawKey(LAYER_OPAQUE, item.material.slot.slot(), item.mesh.slot.slot(), u32.from(i), cast, d, probe));
             }
           }
         }
@@ -1329,12 +1412,13 @@ pub struct Renderer {
       imm first = *keys[k];
       mut end = k + 1usize;
       while end < keys.len() and keys[end].layer == first.layer and keys[end].material == first.material
-          and keys[end].mesh == first.mesh and keys[end].probe == first.probe {
+          and keys[end].mesh == first.mesh and keys[end].cast == first.cast and keys[end].probe == first.probe {
         end = end + 1usize;
       }
       // The keys of a run are sorted nearest first (or, see-through,
       // farthest first)
-      batches.push(new DrawBatch(u32.from(k), u32.from(end - k), 0u32, first.distance, first.layer, u32.from(k), first.probe));
+      batches.push(new DrawBatch(u32.from(k), u32.from(end - k), 0u32, first.distance, first.layer, u32.from(k),
+        first.layer == LAYER_OPAQUE and first.cast == 0u32, first.probe));
       k = end;
     }
     batches.sortBy(&byDistance);
@@ -1412,6 +1496,7 @@ pub struct DrawKey {
   material u32;                // its material's slot (a line: its own index, so it batches with nothing)
   mesh u32;                    // its mesh's slot
   item u32;                    // its index in the draw list
+  cast u32;                    // 1 if it casts the sun's shadow, 0 if not: a batch holds one or the other
   // Its distance from the eye, squared: its model's origin's, or, if it is
   // see-through, its bounding sphere's centre's
   distance f32;
@@ -1427,6 +1512,7 @@ pub struct DrawBatch {
   distance f32;                // its nearest copy's distance from the eye, squared (see-through: its farthest's)
   layer u32;
   order u32;                   // its first key's place among the sorted keys
+  noShadow bool;               // its copies cast no shadow
   probe u32;                   // its copies' reflection probe (DrawKey)
 }
 
@@ -1440,6 +1526,7 @@ fn byBatch(a &DrawKey, b &DrawKey) i32 {
   }
   if a.material != b.material { return if a.material < b.material { -1i32; } else { 1i32; }; }
   if a.mesh != b.mesh { return if a.mesh < b.mesh { -1i32; } else { 1i32; }; }
+  if a.cast != b.cast { return if a.cast < b.cast { -1i32; } else { 1i32; }; }
   if a.probe != b.probe { return if a.probe < b.probe { -1i32; } else { 1i32; }; }
   if a.distance < b.distance { return -1i32; }
   if a.distance > b.distance { return 1i32; }
@@ -1476,6 +1563,9 @@ pub struct DrawItem {
   pub tint Color;
   pub bones u32 = NO_BONES;
   pub layers u32 = 1u32;       // the layers it is on: a view draws the items its layer mask meets (views.cone)
+  // Whether it casts the sun's shadow (shadow.cone), if it is the kind that
+  // does: an opaque or cut-out lit or physically based mesh
+  pub castsShadow bool = true;
 }
 
 // What a render pass draws: its items, and the skinned ones' bones, each
@@ -1529,6 +1619,15 @@ pub struct DrawList {
       items.set(i, it);
       i = i + 1usize;
     }
+  }
+
+  // The last item added casts no shadow (a ground that only receives them,
+  // a skybox, a mesh far from the sun's use)
+  pub fn dontCastShadow(self &mut) {
+    if items.len() == 0usize { return; }
+    mut last = *items[items.len() - 1usize];
+    last.castsShadow = false;
+    items.set(items.len() - 1usize, last);
   }
 
   // Draw 'mesh' with 'material', placed by 'model'

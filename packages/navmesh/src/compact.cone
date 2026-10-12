@@ -1,0 +1,438 @@
+// ======== The compact heightfield: open space, its edges, its regions ========
+//
+// Recast's second stage (RecastArea.cpp, RecastRegion.cpp). The solid
+// heightfield becomes "open" spans: each walkable floor with the clearance
+// above it, and for each of its four sides the layer of the neighbouring
+// column that can be stepped to (the gap between the two floors and their
+// ceilings is as tall as the agent and the step no higher than its climb).
+// Then the walkable area is eroded by the agent's radius, obstacles that
+// mark an area (water, mud, a doorway) paint it, and the open spans are
+// partitioned into regions.
+//
+// Regions are made by monotone partitioning (Recast's rcBuildRegionsMonotone):
+// one sweep over the rows, each run of spans in a row taking the region of
+// the row before when they meet in a single run, else a new one. It is fast
+// and its regions never overlap or have holes, at the price of long thin
+// regions (watershed partitioning, the other choice, gives rounder rooms
+// but is slower and needs the distance field). Small unconnected islands
+// are dropped.
+
+pub const NotConnected i32 = 63i32;
+pub const BorderReg i32 = 32768i32;      // 0x8000: set on the id of a region in a tile's border
+
+pub struct CompactHF {
+  pub w i32;
+  pub h i32;
+  pub bmin Vec3;
+  pub cs f32;
+  pub ch f32;
+  pub walkableHeight i32;
+  pub walkableClimb i32;
+  pub borderSize i32;
+  pub cellIndex List[i32];   // the first span of each column
+  pub cellCount List[i32];
+  pub y List[i32];           // floor height
+  pub clear List[i32];       // clearance above it
+  pub reg List[i32];
+  pub con List[u32];         // six bits a side: the layer of the neighbour, 63 none
+  pub area List[u8];
+
+  pub fn spanCount(self &) usize { y.len(); }
+
+  pub fn getCon(self &, i usize, dir i32) i32 inline {
+    i32.from((*con[i] >> u32.from(dir * 6i32)) & 63u32);
+  }
+
+  pub fn setCon(self &mut, i usize, dir i32, layer i32) {
+    imm shift = u32.from(dir * 6i32);
+    imm cleared = *con[i] & ~(63u32 << shift);
+    con.set(i, cleared | (u32.from(layer) << shift));
+  }
+
+  // The span a side of span 'i' (in column x, z) leads to; -1 when none
+  pub fn neighbour(self &, i usize, x i32, z i32, dir i32) i32 {
+    imm c = self.getCon(i, dir);
+    if c == NotConnected { return -1i32; }
+    imm nx = x + dirX(dir);
+    imm nz = z + dirZ(dir);
+    *cellIndex[usize.from(nz) * usize.from(w) + usize.from(nx)] + c;
+  }
+}
+
+// The open spans of a heightfield, joined
+pub fn buildCompact(hf &Heightfield, walkableHeight i32, walkableClimb i32, borderSize i32) CompactHF {
+  imm w = hf.w;
+  imm h = hf.h;
+  mut c = new CompactHF(w, h, hf.bmin, hf.cs, hf.ch, walkableHeight, walkableClimb, borderSize,
+    List[i32].withCapacity(hf.cols.len()), List[i32].withCapacity(hf.cols.len()),
+    List[i32].empty(), List[i32].empty(), List[i32].empty(), List[u32].empty(), List[u8].empty());
+  mut col = 0usize;
+  while col < hf.cols.len() {
+    c.cellIndex.push(i32.from(c.y.len()));
+    mut n = 0i32;
+    mut s = *hf.cols[col];
+    while s >= 0i32 {
+      imm sp = *hf.spans[usize.from(s)];
+      if sp.area != AreaNull {
+        imm top = if sp.next >= 0i32 { (*hf.spans[usize.from(sp.next)]).smin; } else { MaxHeight; };
+        c.y.push(iclamp(sp.smax, 0i32, MaxHeight));
+        c.clear.push(iclamp(top - sp.smax, 0i32, 255i32));
+        c.reg.push(0i32);
+        c.con.push(262143u32 | (63u32 << 18u32));   // all four sides 63
+        c.area.push(sp.area);
+        n = n + 1i32;
+      }
+      s = sp.next;
+    }
+    c.cellCount.push(n);
+    col = col + 1usize;
+  }
+  // Connect each span to the span of each side it can step to
+  mut z = 0i32;
+  while z < h {
+    mut x = 0i32;
+    while x < w {
+      imm ci = *c.cellIndex[usize.from(z) * usize.from(w) + usize.from(x)];
+      imm cn = *c.cellCount[usize.from(z) * usize.from(w) + usize.from(x)];
+      mut i = ci;
+      while i < ci + cn {
+        imm yi = *c.y[usize.from(i)];
+        imm hi = *c.clear[usize.from(i)];
+        mut dir = 0i32;
+        while dir < 4i32 {
+          imm nx = x + dirX(dir);
+          imm nz = z + dirZ(dir);
+          if nx >= 0i32 and nz >= 0i32 and nx < w and nz < h {
+            imm nci = *c.cellIndex[usize.from(nz) * usize.from(w) + usize.from(nx)];
+            imm ncn = *c.cellCount[usize.from(nz) * usize.from(w) + usize.from(nx)];
+            mut k = 0i32;
+            while k < ncn {
+              imm yn = *c.y[usize.from(nci + k)];
+              imm hn = *c.clear[usize.from(nci + k)];
+              imm bot = imax(yi, yn);
+              imm top = imin(yi + hi, yn + hn);
+              if top - bot >= walkableHeight and iabs(yn - yi) <= walkableClimb {
+                if k < 62i32 { c.setCon(usize.from(i), dir, k); }
+                break;
+              }
+              k = k + 1i32;
+            }
+          }
+          dir = dir + 1i32;
+        }
+        i = i + 1i32;
+      }
+      x = x + 1i32;
+    }
+    z = z + 1i32;
+  }
+  c;
+}
+
+// Spans nearer than 'radius' cells to an edge of the walkable area (a wall,
+// an unwalkable neighbour, the edge of the heightfield) lose their area:
+// a two-pass chamfer distance (Recast's rcErodeWalkableArea), in units of
+// half a cell
+pub fn erodeWalkableArea(c &mut CompactHF, radius i32) {
+  imm w = c.w;
+  imm h = c.h;
+  imm n = c.y.len();
+  mut dist = List[i32].withCapacity(n);
+  mut i = 0usize;
+  while i < n { dist.push(255i32); i = i + 1usize; }
+  // Spans at the boundary are at distance 0
+  mut z = 0i32;
+  while z < h {
+    mut x = 0i32;
+    while x < w {
+      imm ci = *c.cellIndex[usize.from(z) * usize.from(w) + usize.from(x)];
+      imm cn = *c.cellCount[usize.from(z) * usize.from(w) + usize.from(x)];
+      mut k = ci;
+      while k < ci + cn {
+        imm ks = usize.from(k);
+        if *c.area[ks] == AreaNull {
+          dist.set(ks, 0i32);
+        } else {
+          mut nc = 0i32;
+          mut dir = 0i32;
+          while dir < 4i32 {
+            imm nb = c.neighbour(ks, x, z, dir);
+            if nb >= 0i32 and *c.area[usize.from(nb)] != AreaNull { nc = nc + 1i32; }
+            dir = dir + 1i32;
+          }
+          if nc != 4i32 { dist.set(ks, 0i32); }
+        }
+        k = k + 1i32;
+      }
+      x = x + 1i32;
+    }
+    z = z + 1i32;
+  }
+  // Pass 1, forward
+  z = 0i32;
+  while z < h {
+    mut x = 0i32;
+    while x < w {
+      imm ci = *c.cellIndex[usize.from(z) * usize.from(w) + usize.from(x)];
+      imm cn = *c.cellCount[usize.from(z) * usize.from(w) + usize.from(x)];
+      mut k = ci;
+      while k < ci + cn {
+        imm ks = usize.from(k);
+        // (-1, 0), then (-1, -1)
+        imm a0 = c.neighbour(ks, x, z, 0i32);
+        if a0 >= 0i32 {
+          dist.set(ks, imin(*dist[ks], imin(*dist[usize.from(a0)] + 2i32, 255i32)));
+          imm a1 = c.neighbour(usize.from(a0), x - 1i32, z, 3i32);
+          if a1 >= 0i32 { dist.set(ks, imin(*dist[ks], imin(*dist[usize.from(a1)] + 3i32, 255i32))); }
+        }
+        // (0, -1), then (1, -1)
+        imm b0 = c.neighbour(ks, x, z, 3i32);
+        if b0 >= 0i32 {
+          dist.set(ks, imin(*dist[ks], imin(*dist[usize.from(b0)] + 2i32, 255i32)));
+          imm b1 = c.neighbour(usize.from(b0), x, z - 1i32, 2i32);
+          if b1 >= 0i32 { dist.set(ks, imin(*dist[ks], imin(*dist[usize.from(b1)] + 3i32, 255i32))); }
+        }
+        k = k + 1i32;
+      }
+      x = x + 1i32;
+    }
+    z = z + 1i32;
+  }
+  // Pass 2, backward
+  z = h - 1i32;
+  while z >= 0i32 {
+    mut x = w - 1i32;
+    while x >= 0i32 {
+      imm ci = *c.cellIndex[usize.from(z) * usize.from(w) + usize.from(x)];
+      imm cn = *c.cellCount[usize.from(z) * usize.from(w) + usize.from(x)];
+      mut k = ci;
+      while k < ci + cn {
+        imm ks = usize.from(k);
+        // (1, 0), then (1, 1)
+        imm a0 = c.neighbour(ks, x, z, 2i32);
+        if a0 >= 0i32 {
+          dist.set(ks, imin(*dist[ks], imin(*dist[usize.from(a0)] + 2i32, 255i32)));
+          imm a1 = c.neighbour(usize.from(a0), x + 1i32, z, 1i32);
+          if a1 >= 0i32 { dist.set(ks, imin(*dist[ks], imin(*dist[usize.from(a1)] + 3i32, 255i32))); }
+        }
+        // (0, 1), then (-1, 1)
+        imm b0 = c.neighbour(ks, x, z, 1i32);
+        if b0 >= 0i32 {
+          dist.set(ks, imin(*dist[ks], imin(*dist[usize.from(b0)] + 2i32, 255i32)));
+          imm b1 = c.neighbour(usize.from(b0), x, z + 1i32, 0i32);
+          if b1 >= 0i32 { dist.set(ks, imin(*dist[ks], imin(*dist[usize.from(b1)] + 3i32, 255i32))); }
+        }
+        k = k + 1i32;
+      }
+      x = x - 1i32;
+    }
+    z = z - 1i32;
+  }
+  imm thr = radius * 2i32;
+  i = 0usize;
+  while i < n {
+    if *dist[i] < thr { c.area.set(i, AreaNull); }
+    i = i + 1usize;
+  }
+}
+
+// An obstacle that marks an area: the spans under its footprint (by the
+// centre of their cell) and between its bottom and top take its area
+pub fn markObstacleArea(c &mut CompactHF, o &Obstacle) {
+  imm e = o.extent();
+  imm ics = 1. / c.cs;
+  imm x0 = imax(i32.from(floorf((e.x - c.bmin.x) * ics)), 0i32);
+  imm x1 = imin(i32.from(floorf((e.z - c.bmin.x) * ics)), c.w - 1i32);
+  imm z0 = imax(i32.from(floorf((e.y - c.bmin.z) * ics)), 0i32);
+  imm z1 = imin(i32.from(floorf((e.w - c.bmin.z) * ics)), c.h - 1i32);
+  mut z = z0;
+  while z <= z1 {
+    mut x = x0;
+    while x <= x1 {
+      imm px = c.bmin.x + (f32.from(x) + 0.5) * c.cs;
+      imm pz = c.bmin.z + (f32.from(z) + 0.5) * c.cs;
+      if o.containsPoint(px, pz) {
+        imm ci = *c.cellIndex[usize.from(z) * usize.from(c.w) + usize.from(x)];
+        imm cn = *c.cellCount[usize.from(z) * usize.from(c.w) + usize.from(x)];
+        mut k = ci;
+        while k < ci + cn {
+          imm wy = c.bmin.y + f32.from(*c.y[usize.from(k)]) * c.ch;
+          if *c.area[usize.from(k)] != AreaNull and wy >= o.ymin - c.ch and wy <= o.ymax {
+            c.area.set(usize.from(k), o.area);
+          }
+          k = k + 1i32;
+        }
+      }
+      x = x + 1i32;
+    }
+    z = z + 1i32;
+  }
+}
+
+// ---- regions ----
+
+struct Sweep {
+  id i32;
+  ns i32;
+  nei i32;
+}
+
+fn paintRect(c &mut CompactHF, minx i32, maxx i32, minz i32, maxz i32, id i32) {
+  mut z = minz;
+  while z < maxz {
+    mut x = minx;
+    while x < maxx {
+      imm ci = *c.cellIndex[usize.from(z) * usize.from(c.w) + usize.from(x)];
+      imm cn = *c.cellCount[usize.from(z) * usize.from(c.w) + usize.from(x)];
+      mut k = ci;
+      while k < ci + cn {
+        if *c.area[usize.from(k)] != AreaNull { c.reg.set(usize.from(k), id); }
+        k = k + 1i32;
+      }
+      x = x + 1i32;
+    }
+    z = z + 1i32;
+  }
+}
+
+// Monotone partitioning of the open spans into regions (ids from 1; a span
+// in the border of a tile has BorderReg set on its id); the number of ids used
+pub fn buildRegionsMonotone(c &mut CompactHF, minRegionArea i32) i32 {
+  imm w = c.w;
+  imm h = c.h;
+  imm bs = c.borderSize;
+  mut id = 1i32;
+  if bs > 0i32 {
+    imm bw = imin(w, bs);
+    imm bh = imin(h, bs);
+    paintRect(c, 0i32, bw, 0i32, h, id | BorderReg); id = id + 1i32;
+    paintRect(c, w - bw, w, 0i32, h, id | BorderReg); id = id + 1i32;
+    paintRect(c, 0i32, w, 0i32, bh, id | BorderReg); id = id + 1i32;
+    paintRect(c, 0i32, w, h - bh, h, id | BorderReg); id = id + 1i32;
+  }
+  mut prev = List[i32].empty();
+  mut sweeps = List[Sweep].empty();
+  mut z = bs;
+  while z < h - bs {
+    // size 'prev' for the ids made so far
+    prev.clear();
+    mut q = 0i32;
+    while q < id + 1i32 { prev.push(0i32); q = q + 1i32; }
+    sweeps.clear();
+    sweeps.push(new Sweep(0i32, 0i32, 0i32));
+    mut rid = 1i32;
+    mut x = bs;
+    while x < w - bs {
+      imm ci = *c.cellIndex[usize.from(z) * usize.from(w) + usize.from(x)];
+      imm cn = *c.cellCount[usize.from(z) * usize.from(w) + usize.from(x)];
+      mut k = ci;
+      while k < ci + cn {
+        imm ks = usize.from(k);
+        if *c.area[ks] == AreaNull { k = k + 1i32; continue; }
+        // the run is continued from the span to the -x side
+        mut previd = 0i32;
+        imm nx = c.neighbour(ks, x, z, 0i32);
+        if nx >= 0i32 {
+          imm r = *c.reg[usize.from(nx)];
+          if (r & BorderReg) == 0i32 and *c.area[ks] == *c.area[usize.from(nx)] { previd = r; }
+        }
+        if previd == 0i32 {
+          previd = rid;
+          rid = rid + 1i32;
+          sweeps.push(new Sweep(0i32, 0i32, 0i32));
+        }
+        // the span to the -z side, in the row before
+        imm nz = c.neighbour(ks, x, z, 3i32);
+        if nz >= 0i32 {
+          imm nr = *c.reg[usize.from(nz)];
+          if nr != 0i32 and (nr & BorderReg) == 0i32 and *c.area[ks] == *c.area[usize.from(nz)] {
+            imm sw = *sweeps[usize.from(previd)];
+            if sw.nei == 0i32 or sw.nei == nr {
+              sweeps.set(usize.from(previd), new Sweep(0i32, sw.ns + 1i32, nr));
+              prev.set(usize.from(nr), *prev[usize.from(nr)] + 1i32);
+            } else {
+              sweeps.set(usize.from(previd), new Sweep(0i32, sw.ns, 65535i32));
+            }
+          }
+        }
+        c.reg.set(ks, previd);
+        k = k + 1i32;
+      }
+      x = x + 1i32;
+    }
+    // A run keeps the region above it if it is that region's only run in
+    // the row; else it gets an id of its own
+    mut s = 1i32;
+    while s < rid {
+      imm sw = *sweeps[usize.from(s)];
+      if sw.nei != 65535i32 and sw.nei != 0i32 and *prev[usize.from(sw.nei)] == sw.ns {
+        sweeps.set(usize.from(s), new Sweep(sw.nei, sw.ns, sw.nei));
+      } else {
+        sweeps.set(usize.from(s), new Sweep(id, sw.ns, sw.nei));
+        id = id + 1i32;
+      }
+      s = s + 1i32;
+    }
+    x = bs;
+    while x < w - bs {
+      imm ci = *c.cellIndex[usize.from(z) * usize.from(w) + usize.from(x)];
+      imm cn = *c.cellCount[usize.from(z) * usize.from(w) + usize.from(x)];
+      mut k = ci;
+      while k < ci + cn {
+        imm ks = usize.from(k);
+        imm r = *c.reg[ks];
+        if r > 0i32 and r < rid { c.reg.set(ks, (*sweeps[usize.from(r)]).id); }
+        k = k + 1i32;
+      }
+      x = x + 1i32;
+    }
+    z = z + 1i32;
+  }
+  filterIslands(c, id, minRegionArea);
+  id;
+}
+
+// A region of fewer than 'minArea' spans that touches no other region
+// (not even a tile's border) is an island too small to stand on: dropped
+fn filterIslands(c &mut CompactHF, nregs i32, minArea i32) {
+  mut count = List[i32].withCapacity(usize.from(nregs));
+  mut touches = List[bool].withCapacity(usize.from(nregs));
+  mut q = 0i32;
+  while q < nregs { count.push(0i32); touches.push(false); q = q + 1i32; }
+  mut z = 0i32;
+  while z < c.h {
+    mut x = 0i32;
+    while x < c.w {
+      imm ci = *c.cellIndex[usize.from(z) * usize.from(c.w) + usize.from(x)];
+      imm cn = *c.cellCount[usize.from(z) * usize.from(c.w) + usize.from(x)];
+      mut k = ci;
+      while k < ci + cn {
+        imm ks = usize.from(k);
+        imm r = *c.reg[ks];
+        if r > 0i32 and (r & BorderReg) == 0i32 {
+          count.set(usize.from(r), *count[usize.from(r)] + 1i32);
+          mut dir = 0i32;
+          while dir < 4i32 {
+            imm nb = c.neighbour(ks, x, z, dir);
+            if nb >= 0i32 {
+              imm nr = *c.reg[usize.from(nb)];
+              if nr != r and nr != 0i32 { touches.set(usize.from(r), true); }
+            }
+            dir = dir + 1i32;
+          }
+        }
+        k = k + 1i32;
+      }
+      x = x + 1i32;
+    }
+    z = z + 1i32;
+  }
+  mut i = 0usize;
+  while i < c.reg.len() {
+    imm r = *c.reg[i];
+    if r > 0i32 and (r & BorderReg) == 0i32 and *count[usize.from(r)] < minArea and !*touches[usize.from(r)] {
+      c.reg.set(i, 0i32);
+    }
+    i = i + 1usize;
+  }
+}

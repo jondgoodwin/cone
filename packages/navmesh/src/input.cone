@@ -1,0 +1,327 @@
+// ======== What a navigation mesh is built from ========
+//
+// Walkable geometry as triangles (a mesh, a heightfield made into triangles,
+// loose triangles), each with an area; obstacles, which are the same kind of
+// thing the browser's Solids are (a vertical circle or a box with a yaw,
+// from a bottom height to a top one); and the agent that will walk it.
+//
+// Triangles wind counterclockwise seen from above (+y), so that the normal
+// (b - a) x (c - a) points up on a floor. A triangle whose normal is steeper
+// than the agent's 'maxSlope' is not walkable, but is still solid: it blocks.
+// An area of 0 (AreaNull) is solid and never walkable (a wall, a ceiling).
+
+// Areas, 0 to 15. The number is also the bit of a polygon's flags, 1 << area,
+// which a query filter includes or excludes. 1 to 4 are named for the
+// examples; the rest are the caller's
+pub const AreaNull u8 = 0u8;
+pub const AreaGround u8 = 1u8;
+pub const AreaWater u8 = 2u8;
+pub const AreaMud u8 = 3u8;
+pub const AreaDoor u8 = 4u8;
+
+pub const ObstacleCircle u8 = 0u8;
+pub const ObstacleBox u8 = 1u8;
+
+// The agent and the build's resolution. Lengths in metres
+pub struct NavParams {
+  pub cellSize f32;         // width of a voxel in x and z
+  pub cellHeight f32;       // height of a voxel in y
+  pub agentRadius f32;
+  pub agentHeight f32;
+  pub agentMaxClimb f32;    // the highest step the agent can climb
+  pub agentMaxSlope f32;    // radians from horizontal; a steeper triangle is not walkable
+  pub tileSize i32;         // tile width in cells (of the interior, without its border)
+  pub maxSimplifyError f32; // contour simplification, in cells
+  pub maxEdgeLen f32;       // longest contour edge on a wall, in cells (0: no limit)
+  pub minRegionArea i32;    // an island of fewer spans than this is dropped
+
+  pub fn standard() NavParams {
+    new NavParams(0.3, 0.2, 0.4, 1.8, 0.5, 0.7853982, 64i32, 1.3, 12., 8i32);
+  }
+
+  pub fn walkableHeight(self &) i32 { i32.from(ceilf(agentHeight / cellHeight)); }
+  pub fn walkableClimb(self &) i32 { i32.from(floorf(agentMaxClimb / cellHeight)); }
+  pub fn walkableRadius(self &) i32 { i32.from(ceilf(agentRadius / cellSize)); }
+  // The cells added round a tile so that what is near its edge is
+  // eroded and connected as it would be in one piece
+  pub fn borderSize(self &) i32 { self.walkableRadius() + 3i32; }
+}
+
+pub struct Obstacle {
+  pub id u32;
+  pub kind u8;
+  pub cx f32;       // centre in x and z
+  pub cz f32;
+  pub hx f32;       // box half extent along its own x; a circle's radius
+  pub hz f32;       // box half extent along its own z
+  pub yaw f32;      // a box turned this much about y (counterclockwise from above)
+  pub ymin f32;
+  pub ymax f32;
+  pub area u8;      // AreaNull: solid, blocks; any other: the ground inside takes that area
+  pub enabled bool;
+
+  // The x and z extent: min x, min z, max x, max z
+  pub fn extent(self &) Vec4 {
+    if kind == ObstacleCircle {
+      return new Vec4(cx - hx, cz - hx, cx + hx, cz + hx);
+    }
+    imm c = absf(cos(yaw));
+    imm s = absf(sin(yaw));
+    imm ex = c * hx + s * hz;
+    imm ez = s * hx + c * hz;
+    new Vec4(cx - ex, cz - ez, cx + ex, cz + ez);
+  }
+
+  // Whether the point (x, z) is inside the footprint
+  pub fn containsPoint(self &, x f32, z f32) bool {
+    if kind == ObstacleCircle {
+      imm dx = x - cx;
+      imm dz = z - cz;
+      return dx * dx + dz * dz <= hx * hx;
+    }
+    imm c = cos(yaw);
+    imm s = sin(yaw);
+    imm dx = x - cx;
+    imm dz = z - cz;
+    // into the box's frame: a yaw turns x towards -z (counterclockwise from above)
+    imm lx = c * dx - s * dz;
+    imm lz = s * dx + c * dz;
+    absf(lx) <= hx and absf(lz) <= hz;
+  }
+
+  // Whether the axis-aligned square of side 's' centred at (x, z) touches the footprint
+  pub fn touchesSquare(self &, x f32, z f32, s f32) bool {
+    imm half = s * 0.5;
+    if kind == ObstacleCircle {
+      imm qx = fclamp(cx, x - half, x + half);
+      imm qz = fclamp(cz, z - half, z + half);
+      imm dx = qx - cx;
+      imm dz = qz - cz;
+      return dx * dx + dz * dz <= hx * hx;
+    }
+    imm c = cos(yaw);
+    imm sn = sin(yaw);
+    imm dx = x - cx;
+    imm dz = z - cz;
+    // the box's axes in world: u = (c, -sn)... the local frame above
+    // is lx = c dx - sn dz, lz = sn dx + c dz, so the box's axes are
+    // u = (c, -sn) and v = (sn, c)
+    // separating axis test: the world x and z axes, then u and v
+    imm ex = absf(c) * hx + absf(sn) * hz;
+    imm ez = absf(sn) * hx + absf(c) * hz;
+    if absf(dx) > ex + half or absf(dz) > ez + half { return false; }
+    imm lx = c * dx - sn * dz;
+    imm lz = sn * dx + c * dz;
+    imm rx = (absf(c) + absf(sn)) * half;
+    if absf(lx) > hx + rx { return false; }
+    if absf(lz) > hz + rx { return false; }
+    true;
+  }
+}
+
+pub struct OffMeshLink {
+  pub id u32;
+  pub a Vec3;
+  pub b Vec3;
+  pub radius f32;      // how near the mesh each end must be
+  pub bidirectional bool;
+  pub area u8;
+  pub enabled bool;
+}
+
+// A box of x and z that something changed: tiles overlapping it are stale
+pub struct DirtyBox {
+  pub x0 f32;
+  pub z0 f32;
+  pub x1 f32;
+  pub z1 f32;
+}
+
+pub struct NavInput {
+  pub verts List[Vec3];
+  pub tris List[u32];       // three vertex numbers a triangle
+  pub triArea List[u8];
+  pub obstacles List[Obstacle];
+  pub dirty List[DirtyBox];
+  pub nextId u32;
+
+  pub fn empty() NavInput {
+    new NavInput(List[Vec3].empty(), List[u32].empty(), List[u8].empty(), List[Obstacle].empty(), List[DirtyBox].empty(), 1u32);
+  }
+
+  pub fn triangleCount(self &) usize { tris.len() / 3usize; }
+
+  // One triangle, counterclockwise seen from above
+  pub fn addTriangle(self &mut, a Vec3, b Vec3, c Vec3, area u8) {
+    imm n = u32.from(verts.len());
+    verts.push(a); verts.push(b); verts.push(c);
+    tris.push(n); tris.push(n + 1u32); tris.push(n + 2u32);
+    triArea.push(area);
+    self.touch(a.min(b).min(c), a.max(b).max(c));
+  }
+
+  // An indexed mesh, every triangle of the given area
+  pub fn addMesh(self &mut, vs &Array[Vec3], indices &Array[u32], area u8) {
+    imm base = u32.from(verts.len());
+    mut i = 0usize;
+    while i < vs.len { verts.push(vs[i]); i = i + 1usize; }
+    mut lo = new Vec3(3.4e38, 3.4e38, 3.4e38);
+    mut hi = new Vec3(-3.4e38, -3.4e38, -3.4e38);
+    i = 0usize;
+    while i < indices.len {
+      tris.push(base + indices[i]);
+      if i % 3usize == 0usize { triArea.push(area); }
+      imm v = vs[usize.from(indices[i])];
+      lo = lo.min(v);
+      hi = hi.max(v);
+      i = i + 1usize;
+    }
+    self.touch(lo, hi);
+  }
+
+  // A grid of heights, 'nx' by 'nz' sample points 'step' apart from (ox, oz),
+  // heights in x-major rows (sample (i, j) at j * nx + i), made into two
+  // triangles a cell
+  pub fn addHeightfield(self &mut, ox f32, oz f32, step f32, nx i32, nz i32, heights &Array[f32], area u8) {
+    imm base = u32.from(verts.len());
+    mut lo = new Vec3(3.4e38, 3.4e38, 3.4e38);
+    mut hi = new Vec3(-3.4e38, -3.4e38, -3.4e38);
+    mut j = 0i32;
+    while j < nz {
+      mut i = 0i32;
+      while i < nx {
+        imm v = new Vec3(ox + f32.from(i) * step, heights[usize.from(j) * usize.from(nx) + usize.from(i)], oz + f32.from(j) * step);
+        verts.push(v);
+        lo = lo.min(v);
+        hi = hi.max(v);
+        i = i + 1i32;
+      }
+      j = j + 1i32;
+    }
+    j = 0i32;
+    while j + 1i32 < nz {
+      mut i = 0i32;
+      while i + 1i32 < nx {
+        imm a = base + u32.from(j * nx + i);
+        imm b = base + u32.from((j + 1i32) * nx + i);
+        imm c = base + u32.from(j * nx + i + 1i32);
+        imm d = base + u32.from((j + 1i32) * nx + i + 1i32);
+        // (i, j), (i, j+1), (i+1, j) is counterclockwise from above
+        tris.push(a); tris.push(b); tris.push(c);
+        triArea.push(area);
+        tris.push(c); tris.push(b); tris.push(d);
+        triArea.push(area);
+        i = i + 1i32;
+      }
+      j = j + 1i32;
+    }
+    self.touch(lo, hi);
+  }
+
+  // A box of 'sx' by 'sz' and from 'y0' to 'y1', as walls round and a floor
+  // and a roof: solid geometry (area 0) that blocks. 'area' of its top face
+  // is the ground's (a platform) when > 0
+  pub fn addSolidBox(self &mut, cx f32, cz f32, hx f32, hz f32, y0 f32, y1 f32, topArea u8) {
+    imm p000 = new Vec3(cx - hx, y0, cz - hz);
+    imm p100 = new Vec3(cx + hx, y0, cz - hz);
+    imm p001 = new Vec3(cx - hx, y0, cz + hz);
+    imm p101 = new Vec3(cx + hx, y0, cz + hz);
+    imm p010 = new Vec3(cx - hx, y1, cz - hz);
+    imm p110 = new Vec3(cx + hx, y1, cz - hz);
+    imm p011 = new Vec3(cx - hx, y1, cz + hz);
+    imm p111 = new Vec3(cx + hx, y1, cz + hz);
+    // top, facing up
+    self.addTriangle(p010, p011, p110, topArea);
+    self.addTriangle(p110, p011, p111, topArea);
+    // sides, facing out (they are steep, so never walkable)
+    self.addTriangle(p000, p100, p010, AreaNull);
+    self.addTriangle(p100, p110, p010, AreaNull);
+    self.addTriangle(p101, p001, p111, AreaNull);
+    self.addTriangle(p001, p011, p111, AreaNull);
+    self.addTriangle(p001, p000, p011, AreaNull);
+    self.addTriangle(p000, p010, p011, AreaNull);
+    self.addTriangle(p100, p101, p110, AreaNull);
+    self.addTriangle(p101, p111, p110, AreaNull);
+  }
+
+  fn touch(self &mut, lo Vec3, hi Vec3) {
+    dirty.push(new DirtyBox(lo.x, lo.z, hi.x, hi.z));
+  }
+
+  // ---- obstacles ----
+
+  pub fn addCircleObstacle(self &mut, cx f32, cz f32, radius f32, ymin f32, ymax f32, area u8) u32 {
+    imm id = nextId;
+    nextId = nextId + 1u32;
+    obstacles.push(new Obstacle(id, ObstacleCircle, cx, cz, radius, radius, 0., ymin, ymax, area, true));
+    self.touchObstacle(obstacles.len() - 1usize);
+    id;
+  }
+
+  // A box turned 'yaw' about y (counterclockwise seen from above), half extents
+  // 'hx' along its own x and 'hz' along its own z
+  pub fn addBoxObstacle(self &mut, cx f32, cz f32, hx f32, hz f32, yaw f32, ymin f32, ymax f32, area u8) u32 {
+    imm id = nextId;
+    nextId = nextId + 1u32;
+    obstacles.push(new Obstacle(id, ObstacleBox, cx, cz, hx, hz, yaw, ymin, ymax, area, true));
+    self.touchObstacle(obstacles.len() - 1usize);
+    id;
+  }
+
+  fn touchObstacle(self &mut, k usize) {
+    imm e = (*obstacles[k]).extent();
+    dirty.push(new DirtyBox(e.x, e.y, e.z, e.w));
+  }
+
+  fn findObstacle(self &, id u32) i32 {
+    mut k = 0usize;
+    while k < obstacles.len() {
+      if (*obstacles[k]).id == id { return i32.from(k); }
+      k = k + 1usize;
+    }
+    -1i32;
+  }
+
+  // An obstacle switched on or off (a door closing, opening). The tiles it
+  // touches become stale; 'NavMesh.rebuildDirty' rebuilds them
+  pub fn setObstacleEnabled(self &mut, id u32, enabled bool) {
+    imm k = self.findObstacle(id);
+    if k < 0i32 { return; }
+    imm o = *obstacles[usize.from(k)];
+    if o.enabled == enabled { return; }
+    obstacles.set(usize.from(k), new Obstacle(o.id, o.kind, o.cx, o.cz, o.hx, o.hz, o.yaw, o.ymin, o.ymax, o.area, enabled));
+    self.touchObstacle(usize.from(k));
+  }
+
+  // An obstacle moved to a new place and yaw (a sliding or swinging door
+  // that is solid where it now is)
+  pub fn moveObstacle(self &mut, id u32, cx f32, cz f32, yaw f32) {
+    imm k = self.findObstacle(id);
+    if k < 0i32 { return; }
+    self.touchObstacle(usize.from(k));
+    imm o = *obstacles[usize.from(k)];
+    obstacles.set(usize.from(k), new Obstacle(o.id, o.kind, cx, cz, o.hx, o.hz, yaw, o.ymin, o.ymax, o.area, o.enabled));
+    self.touchObstacle(usize.from(k));
+  }
+
+  // The box round everything the input holds, with obstacles
+  pub fn bounds(self &) Aabb3 {
+    mut lo = new Vec3(3.4e38, 3.4e38, 3.4e38);
+    mut hi = new Vec3(-3.4e38, -3.4e38, -3.4e38);
+    mut i = 0usize;
+    while i < verts.len() {
+      lo = lo.min(*verts[i]);
+      hi = hi.max(*verts[i]);
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < obstacles.len() {
+      imm o = *obstacles[i];
+      imm e = o.extent();
+      lo = lo.min(new Vec3(e.x, o.ymin, e.y));
+      hi = hi.max(new Vec3(e.z, o.ymax, e.w));
+      i = i + 1usize;
+    }
+    new Aabb3(lo, hi);
+  }
+}

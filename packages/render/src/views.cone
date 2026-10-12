@@ -52,7 +52,7 @@
 // probe's box is lit by the probe's cubes in place of the sky's, and its
 // reflection vector is box-projected (pbr.slang, 'probeDirection') so the
 // reflection of a room's walls sits where the walls are. The probe's cubes
-// belong to the 'Probe' value the program keeps; the renderer holds only the
+// belong to the 'ReflectionProbe' value the program keeps; the renderer holds only the
 // group the shaders read. Probes need a renderer drawing into RGBA16_FLOAT.
 
 // The mask of every layer
@@ -62,7 +62,7 @@ pub const LAYERS_ALL = 0xffffffffu32;
 pub const DEFAULT_MAX_NEST = 1u32;
 
 // What a view holds
-pub struct View {
+pub struct RenderView {
   pub color TextureHandle;     // its picture: the renderer's colour format, 'width' by 'height'
   pub depth Texture;
   pub width u32;
@@ -79,14 +79,14 @@ pub struct View {
   // A view of 'width' by 'height' texels: the picture a texture of 'renderer''s
   // colour format (sampled by materials, copied from with COPY_SRC), and a
   // depth texture of its depth format
-  pub fn create(renderer &mut Renderer, device &mut Device, width u32, height u32) View {
+  pub fn create(renderer &mut Renderer, device &mut Device, width u32, height u32) RenderView {
     imm usage = TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING | TEXTURE_USAGE_COPY_SRC;
     imm desc = new TextureDescriptor(width, height, renderer.colorFormat, usage);
     mut texture = device.createTexture(&desc);
     imm handle = new TextureHandle(renderer.textures.add(new TextureSlot(texture)));
     imm depthDesc = new TextureDescriptor(width, height, renderer.depthFormat, TEXTURE_USAGE_RENDER_ATTACHMENT);
     mut depth = device.createTexture(&depthDesc);
-    new View(handle, depth, width, height, QuerySet.none(), Buffer.none(), Buffer.none());
+    new RenderView(handle, depth, width, height, QuerySet.none(), Buffer.none(), Buffer.none());
   }
 
   pub fn isValid(self &) bool { depth.isValid() and !color.isNone(); }
@@ -142,7 +142,7 @@ pub fn onLayers(list &DrawList, mask u32) DrawList {
   while i < list.items.len() {
     imm it = list.items[i];
     if (it.layers & mask) != 0u32 {
-      out.items.push(new DrawItem(it.mesh, it.material, it.model, it.tint, it.bones, it.layers));
+      out.items.push(new DrawItem(it.mesh, it.material, it.model, it.tint, it.bones, it.layers, it.castsShadow));
     }
     i = i + 1usize;
   }
@@ -627,7 +627,7 @@ imm PROBE_SPIRV Array[u32, 378] = [
 // A reflection probe: what the program keeps for 'addProbe' (the renderer
 // holds a slot for it, 'slot'). It must outlive the frames that draw with
 // it; 'remove' stops the renderer using it.
-pub struct Probe {
+pub struct ReflectionProbe {
   pub slot usize;              // its place in renderer.probes
   pub position Vec3;
   pub boxMin Vec3;
@@ -737,7 +737,7 @@ pub struct Probe {
 // renderer drawing into RGBA16_FLOAT; the result is not valid otherwise.
 // Call it between frames (it ends the frame it is in).
 pub fn addProbe(renderer &mut Renderer, device &mut Device, position Vec3, boxMin Vec3, boxMax Vec3,
-    background Color, light &Light, list &DrawList) Probe {
+    background Color, light &Light, list &DrawList) ReflectionProbe {
   imm usage = TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING;
   imm captureDesc = new TextureDescriptor(PROBE_SIZE, PROBE_SIZE, TEXTURE_FORMAT_RGBA16_FLOAT, usage, ENVIRONMENT_LEVELS, 6u32);
   mut capture = device.createTexture(&captureDesc);
@@ -804,7 +804,7 @@ pub fn addProbe(renderer &mut Renderer, device &mut Device, position Vec3, boxMi
   imm size = boxMax - boxMin;
   imm slot = renderer.probes.len();
   renderer.probes.push(new ProbeSlot(false, boxMin, boxMax, size.x * size.y * size.z, group));
-  mut probe = new Probe(slot: slot, position: position, boxMin: boxMin, boxMax: boxMax, background: background,
+  mut probe = new ReflectionProbe(slot: slot, position: position, boxMin: boxMin, boxMax: boxMax, background: background,
     capture: capture, specular: specular, irradiance: irradiance, uniforms: uniforms, pictureColor: pictureColor,
     pictureDepth: pictureDepth, copyShader: copyShader, copyLayout: copyLayout, copyPipelineLayout: copyPipelineLayout,
     copyPipeline: copyPipeline, copyGroup: copyGroup, wholeGroup: wholeGroup, levelGroups: levelGroups);
