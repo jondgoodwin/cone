@@ -1684,8 +1684,8 @@ generic instance is emitted by the program that makes it, so core still defines
 nothing.
 
 **`cstr` is declared the same way, and has a field.** `cstr` is C's `const char *`
-(a one-field struct holding a `*u8`, which crosses to C as one pointer: `genlCAbiPass` makes a struct of 8 bytes one
-integer on Win64), and the C-named modules, which get no prelude and
+(a one-field struct holding a `*u8`, which crosses to C as one pointer: `genlCAbiPassOne` makes a struct of 8 bytes one
+integer on Win64, and on SysV x86-64 one INTEGER eightbyte, a `ptr`), and the C-named modules, which get no prelude and
 cannot import core (core imports libc), declare their strings with it. So the compiler
 makes the struct whole in `stdlibInit` (`cstrTypeDcl`, name resolved, type checked on
 first use, with the field `p`) and binds the name for every module as it does

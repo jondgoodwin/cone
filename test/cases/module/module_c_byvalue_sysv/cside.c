@@ -17,6 +17,7 @@ typedef struct { Vec2 v; int32_t k; float w; } Nest;  /* 16 bytes: SSE, INTEGER 
 typedef struct { int16_t s[5]; } Short5;         /* 10 bytes: INTEGER, INTEGER */
 typedef struct { int64_t a, b, c; } Big3;        /* 24 bytes: memory */
 typedef struct { double x[5]; } Big5;            /* 40 bytes: memory */
+typedef struct { float x, y, z, w; } Vec4;       /* 16 bytes: SSE, SSE */
 typedef struct { int64_t lo, hi; } Big;          /* 16 bytes: INTEGER, INTEGER */
 
 /* Arguments */
@@ -27,6 +28,7 @@ int64_t fltint_code(FltInt v) { return (int64_t)(v.f * 4) * 1000 + v.n; }
 int64_t nest_code(Nest v) { return (int64_t)(v.v.x + v.v.y * 10) * 100000 + v.k * 100 + (int64_t)v.w; }
 int64_t short5_code(Short5 v) { return v.s[0] + v.s[1] * 10 + v.s[2] * 100 + v.s[3] * 1000 + v.s[4] * 10000; }
 int64_t big3_code(Big3 v) { return v.a * 10000 + v.b * 100 + v.c; }
+int64_t vec4_code(Vec4 v) { return (int64_t)(v.x * 1000 + v.y * 100 + v.z * 10 + v.w); }
 int64_t big5_code(Big5 v) { return (int64_t)(v.x[0] + v.x[1] * 10 + v.x[2] * 100 + v.x[3] * 1000 + v.x[4] * 10000); }
 
 /* Several structs among scalars: each digit of the result is one argument's */
@@ -92,6 +94,7 @@ int64_t cone_intdbl(IntDbl v);
 DblInt cone_dblint(DblInt v, int32_t k);
 Nest cone_nest(Nest v);
 Big3 cone_big3(Big3 v, int32_t k);
+Vec4 cone_vec4(Vec4 v, float k);
 int64_t cone_among(Big3 g, IntDbl i, Vec3 v, DblDbl dd, int32_t k);
 int64_t cone_six_then_ext(int32_t a, int32_t b, int32_t c, int32_t d, int32_t e, int32_t f, Ext2 s);
 int64_t cone_five_then_big(int32_t a, int32_t b, int32_t c, int32_t d, int32_t e, Big g);
@@ -112,6 +115,11 @@ int64_t c_via_cone_big3(void) {
     Big3 v = { 1, 2, 3 };
     Big3 r = cone_big3(v, 10);
     return r.a * 10000 + r.b * 100 + r.c;
+}
+int64_t c_via_cone_vec4(void) {
+    Vec4 v = { 1, 2, 3, 4 };
+    Vec4 r = cone_vec4(v, 2);
+    return (int64_t)(r.x * 1000 + r.y * 100 + r.z * 10 + r.w);
 }
 int64_t c_via_cone_among(void) {
     Big3 g = { 1, 2, 3 };

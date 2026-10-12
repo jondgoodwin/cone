@@ -413,13 +413,37 @@ For **Win64**, as clang lowers the same C declaration for
 `x86_64-pc-windows-msvc`: a struct of 1, 2, 4 or 8 bytes is one integer of its
 size, whatever its fields; any other size is a `ptr` to a copy the caller makes
 in its own frame; and a return of any other size is `void`, through a hidden
-first parameter marked `sret(%T)`, the caller's result slot. **SysV x86-64 and
-wasm32 are not built**: their structs still cross whole, which matches their C
-ABI only for a struct of one scalar.
+first parameter marked `sret(%T)`, the caller's result slot. For **SysV
+x86-64**, as clang lowers it for `x86_64-unknown-linux-gnu`: a struct of up to
+16 bytes has each eightbyte classed INTEGER (any integer or pointer in it) or
+SSE (floats only) from its flattened scalars (`genlCAbiWalk`; a packed
+misalignment or anything else is memory), and crosses as one scalar per
+eightbyte (`genlCAbiEightbyte`: a lone scalar as itself, two floats as
+`<2 x float>`, otherwise an integer of the bytes it uses, an `i24` for three
+chars), so an eightbyte is one argument and two are two arguments, or a
+returned `{ lo, hi }`. A larger struct, or one that finds fewer integer (six)
+or SSE (eight) argument registers than it needs, is copied to the stack: a
+`byval(%T) align 8` pointer, unless no integer register is left and it is
+8 bytes or less, when it is the integer of its size. A larger return is
+`sret(%T) align N` and takes the first integer register. The plan for a whole
+signature (`genlCAbiPlan`) is made where it is needed, from the types alone, in
+`genlFnDclType`, the declaration's marks, a call, a prologue and a return,
+which therefore agree. **wasm32 is not built**: its structs still cross whole,
+which matches its C ABI only for a struct of one scalar.
+
+A **reference** to a C-named function (`&f`) is a Cone value, and a call
+through it passes Cone's convention. So where the function's C signature
+differs from its Cone one (a struct that does not cross whole, or a value
+widened by its register's mark), `&f` is the address of a thunk
+(`genlCAbiFnRef`): a private function `<symbol>.coneref` with the Cone
+signature that calls `f` with the C convention, made at the first `&f` of the
+object and shared by every other. An `&f` that is itself an argument of a call
+to a C-named function (`gen->cabiargs`) is `f`, the callback C will call as C.
+A reference to any other function is the function.
 
 An **integer narrower than C's `int`** keeps its LLVM type, but carries the
 widening C's convention gives it in its register (`genlCAbiExtend`), on the
-declaration or definition and at each direct call (`genlCAbiMarkExtends`), as
+declaration or definition and at each direct call (`genlCAbiMark`), as
 an argument and as a result. A `bool` is C's `bool`, `zeroext` on Win64, SysV
 and wasm32 alike; without it a bool whose register's upper bits were never
 cleared reaches C, which trusts the whole byte, as that register's low byte. An 8- or
@@ -2330,9 +2354,11 @@ variables.
 | | `genlGpuBarrier`, `genlGpuGlobalSpace` | the two barriers as LLVM's SPIR-V intrinsics; a `@workgroup` global's address space |
 | | `genlCpuBarrier` | a barrier on a native target: the thread's barrier hook called when it is set (section 7, "Barriers on the CPU") |
 | | `genlGpuSyncPatch` | the emitted module put right: a relaxed atomic's semantics None, a compare-and-swap's result rid of the insertions the backend writes after it |
-| `genllvm/genlcabi.c` | `genlCAbiTarget`, `genlIsCAbiFn`, `genlCAbiPass` | which C ABI the target follows, which functions cross by it, and how one struct crosses |
-| | `genlCAbiExtend`, `genlCAbiMarkExtends` | the `zeroext` or `signext` a narrow integer crosses with, marked on a declaration or a call |
-| | `genlFnDclType`, `genlCAbiDeclare`, `genlFnDclCall`, `genlFnDclParm`, `genlFnDclReturn` | a declared function's LLVM type, its `sret` and widening marks (and the `"cone-cabi"` mark `genlAggCopies` leaves alone), a direct call to it, its prologue's parameters and its returns — lowered for a C-named one |
+| `genllvm/genlcabi.c` | `genlCAbiTarget`, `genlIsCAbiFn`, `genlCAbiPlan`, `genlCAbiPassOne` | which C ABI the target follows, which functions cross by it, and how each value of a signature crosses (direct, coerced to one or two scalars, through a pointer, `byval`) |
+| | `genlCAbiWalk`, `genlCAbiClassify`, `genlCAbiEightbyte` | SysV x86-64's classification of a struct of up to 16 bytes: its scalars, the class of each eightbyte, the scalar each crosses as |
+| | `genlCAbiExtend`, `genlCAbiMark` | the `zeroext` or `signext` a narrow integer crosses with, and the `sret` and `byval` marks, put on a declaration or a call |
+| | `genlFnDclType`, `genlCAbiDeclare`, `genlFnDclCall`, `genlFnDclParm`, `genlFnDclReturn` | a declared function's LLVM type, its marks (and the `"cone-cabi"` mark `genlAggCopies` leaves alone), a direct call to it, its prologue's parameters and its returns — lowered for a C-named one |
+| | `genlCAbiFnRef` | the thunk `&f` of a C-named function is, when its C signature differs from its Cone one |
 | `genllvm/genlaggcopy.c` | `genlAggCopies`, `genlAggFn`, `genlAggRetClass` | once the module is generated, every struct, array or tuple of more than `GenlAggCopyMin` bytes moved into memory, function by function, and every smaller aggregate result returned as a vector, as integers or through a slot (section 6, "Large aggregates") |
 | | `genlAggRetype`, `genlAggSig`, `genlAggCall` | a function taking or returning one remade with pointer parameters and a result slot first; each call to that type passing homes |
 | | `genlAggInst`, `genlAggHomeOf`, `genlAggReadInPlace` | each instruction making or taking one, rewritten to copy between homes; a value's home, made where it is; a load read where it lies when nothing between could change it |

@@ -1,0 +1,94 @@
+// The shape a C-named function's struct values take for SysV x86-64, whatever
+// the host: the LLVM signatures clang gives the same C declarations for
+// x86_64-unknown-linux-gnu. Each eightbyte of a struct of up to 16 bytes is
+// classed integer or float and crosses in a register as one scalar (an
+// integer of the bytes it uses, a double, a float, or two floats packed); a
+// larger struct is copied to the stack ('byval') and a larger result comes
+// back through a hidden pointer ('sret'); and a struct that no longer fits the
+// registers left goes to the stack. A reference to such a function is the
+// address of a thunk that takes Cone's convention, except where it is handed
+// straight to a C-named function.
+mod module_c_byvalue_sysv_shape;
+
+struct Ext2 { pub a i32; pub b i32; }                    // 8 bytes: one integer
+struct Rgb { pub r u8; pub g u8; pub b u8; }             // 3 bytes: i24
+struct Vec2 { pub x f32; pub y f32; }                    // 8 bytes: <2 x float>
+struct Vec3 { pub x f32; pub y f32; pub z f32; }         // 12 bytes: <2 x float>, float
+struct IntDbl { pub a i32; pub d f64; }                  // 16 bytes: i32, double
+struct DblInt { pub d f64; pub n i64; }                  // 16 bytes: double, i64
+struct DblDbl { pub a f64; pub b f64; }                  // 16 bytes: double, double
+struct Big3 { pub a i64; pub b i64; pub c i64; }         // 24 bytes: memory
+struct Big { pub lo i64; pub hi i64; }                   // 16 bytes: two integers
+
+extern {
+  fn @c ext_sum(e Ext2) i32;
+  fn @c rgb_code(c Rgb) i32;
+  fn @c vec2_len(v Vec2) f32;
+  fn @c vec3_len(v Vec3) f32;
+  fn @c intdbl_code(v IntDbl) i64;
+  fn @c dblint_code(v DblInt) i64;
+  fn @c dbldbl_code(v DblDbl) i64;
+  fn @c big3_code(v Big3) i64;
+  fn @c intdbl_make(n i32) IntDbl;
+  fn @c dblint_make(n i32) DblInt;
+  fn @c dbldbl_make(n i32) DblDbl;
+  fn @c vec3_make(f f32) Vec3;
+  fn @c big3_make(n i32) Big3;
+  // Registers run out: after six integers an 8-byte struct goes on the stack
+  // as an integer, after five a 16-byte one is copied there, after eight
+  // doubles a Vec2 is too, and a result slot takes the first integer register
+  fn @c six_then_ext(a i32, b i32, c i32, d i32, e i32, f i32, s Ext2) i64;
+  fn @c five_then_big(a i32, b i32, c i32, d i32, e i32, g Big) i64;
+  fn @c eight_then_vec2(d1 f64, d2 f64, d3 f64, d4 f64, d5 f64, d6 f64, d7 f64, d8 f64, v Vec2) i64;
+  fn @c sret_then_ext(a i32, b i32, c i32, d i32, e i32, s Ext2) Big3;
+  fn @c text(s &Array[u8], e Ext2);
+  fn @c c_apply(a i32, f &fn(e Ext2) i32) i32;
+}
+
+pub fn @c cone_vec3(v Vec3, k f32) Vec3 {
+  new Vec3(v.x * k, v.y * k, v.z * k);
+}
+pub fn @c cone_ext(e Ext2) i32 {
+  e.a * 1000 + e.b;
+}
+pub fn @c cone_dblint(v DblInt) DblInt {
+  new DblInt(v.d, v.n + 1);
+}
+
+// Not C-named: Cone's own convention, untouched
+fn plain(e Ext2) Ext2 {
+  new Ext2(e.a + 1, e.b);
+}
+
+fn main() {
+  imm e = new Ext2(3, 4);
+  imm a = ext_sum(e) + rgb_code(new Rgb(1, 2, 3));
+  imm f = vec2_len(new Vec2(1., 2.)) + vec3_len(new Vec3(1., 2., 3.));
+  imm g = intdbl_code(new IntDbl(1, 2.)) + dblint_code(new DblInt(3., 4)) + dbldbl_code(new DblDbl(5., 6.))
+    + big3_code(new Big3(7, 8, 9));
+  imm w = intdbl_make(a);
+  imm x = dblint_make(a);
+  imm y = dbldbl_make(a);
+  imm z = vec3_make(f);
+  imm b = big3_make(a);
+  imm r = six_then_ext(1, 2, 3, 4, 5, 6, e) + five_then_big(1, 2, 3, 4, 5, new Big(6, 7))
+    + eight_then_vec2(1., 2., 3., 4., 5., 6., 7., 8., new Vec2(9., 1.));
+  imm s = sret_then_ext(1, 2, 3, 4, 5, e);
+  text("hi", plain(e));
+  imm c = cone_vec3(z, 2.);
+  imm d = cone_dblint(x);
+  imm h = cone_ext(e);
+
+  // A call through a reference is made in Cone's convention: the reference
+  // to a C-named function whose C signature differs is a thunk, one for the
+  // function however often it is written, and a reference to a function
+  // whose C and Cone signatures agree, or to a plain one, is the function
+  imm r1 = &cone_ext;
+  imm r2 = &cone_ext;
+  imm r3 = &big3_make;
+  imm r4 = &cone_dblint;
+  imm r5 = &plain;
+  imm n = r1(e) + r2(e) + i32.from(r3(1).b) + i32.from(r4(x).n) + r5(e).a;
+  // Handed straight to C, the function itself: a callback C calls as C
+  imm k = c_apply(5, &cone_ext);
+}
