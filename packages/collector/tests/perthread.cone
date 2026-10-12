@@ -1,0 +1,60 @@
+// Each thread has a collector of its own: the lists, counts and settings of 'Gc'
+// are thread-local globals, so the objects one thread made are not another's,
+// and one thread's collections do not count in another's. (A 'Gc' reference is
+// still for the thread that made it; this checks the state, not sharing.)
+//
+// Worked out by hand. main makes two leaves and holds them: 2 live objects. A
+// thread started then begins from the initial state (nothing live), makes 3
+// leaves it holds (3 live) and 5 more in a callee that returns without them,
+// collects twice (the 5 are freed, the 3 are kept: 3 live), and answers
+// before * 100 + after, which is 3. Back in main, still 2 live and the
+// number of collections it has run is what it was before the thread ran. With
+// one collector shared by the process the thread would answer 205 (2 live at
+// its start, 5 after), and main's count of collections would have grown.
+
+mod perthread;
+
+import testing use *;
+import thread;
+import collector;
+
+struct LeafValue { pub n i64; }
+alias Leaf = Gc[mut, LeafValue];
+
+// Five leaves made and dropped here, so the caller's frame holds none of them
+fn churn() {
+  imm a = new Leaf(10);
+  imm b = new Leaf(11);
+  imm c = new Leaf(12);
+  imm d = new Leaf(13);
+  imm e = new Leaf(14);
+}
+
+fn other(unused i64) u64 {
+  imm before = u64.from(Gc.liveObjects());
+  imm x = new Leaf(1);
+  imm y = new Leaf(2);
+  imm z = new Leaf(3);
+  churn();
+  Gc.collect();
+  Gc.collect();
+  imm after = u64.from(Gc.liveObjects());
+  before * 100u64 + after + u64.from(x.n + y.n + z.n) - 6u64;
+}   // x, y and z are live to here
+
+fn run() {
+  imm a = new Leaf(1);
+  imm b = new Leaf(2);
+  expectUInt(u64.from(Gc.liveObjects()), 2u64, "main holds two leaves");
+  imm collections = Gc.collections();
+  mut t = thread.start(0i64, &other);
+  expectUInt(t.join(), 3u64, "the thread began with none of main's, and freed its own five");
+  expectUInt(u64.from(Gc.liveObjects()), 2u64, "main still has its two");
+  expectUInt(u64.from(Gc.collections()), u64.from(collections), "and the thread's collections are not main's");
+  expectInt(a.n + b.n, 3, "and they are intact");
+}
+
+fn main() i32 {
+  run();
+  done();
+}
