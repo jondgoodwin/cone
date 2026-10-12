@@ -1,0 +1,333 @@
+// steps: a ragdoll is pushed off the top of a flight of steps, tumbles down them and comes to rest; then it gets up.
+// The simulation runs on the CPU and the result is drawn offscreen on a real GPU with render's lit materials, as
+// multiple exposures (the ragdoll at successive moments in one picture, from the first colour to the last):
+//
+//   congo run packages/ragdollrig/examples/steps.cone
+//   RAGDOLLRIG_SHOT=steps congo run packages/ragdollrig/examples/steps.cone     (writes steps-fall.bmp,
+//                                                                                 steps-getup-up.bmp, steps-getup-down.bmp)
+//
+// It checks from the simulation that the ragdoll ends below the top of the steps, at rest, face up or down and not
+// inside the stairs, that a landing was measured, and that its get-up ends standing; and from the pixels that the frames
+// show the figure and not only the background. It needs a GPU with Vulkan 1.3 and SDL3.dll; with the Vulkan SDK,
+// validation is on and must say nothing. GPU_POWER_PREFERENCE=low-power picks an integrated GPU.
+
+mod steps;
+
+import stdio use *;
+import libc;
+import collections use *;
+import geomath use *;
+import rigidcollide use *;
+import rigiddynamics use *;
+import bonepose use * but absf, clampf;
+import ragdollrig use *;
+import mesh use Mesh;
+import gpu use *;
+import render use *;
+import path use Path;
+
+const W = 1280u32;
+const H = 540u32;
+
+// A capsule along y: the mesh for a radius and half the length between the hemispheres' centres
+fn capsuleMesh(r f32, hh f32) Mesh {
+  mut m = Mesh.empty();
+  imm segs = 16;
+  imm rings = 8;
+  mut ring = 0;
+  while ring <= 2 * rings + 1 {
+    // top hemisphere rings 0..rings, bottom hemisphere rings rings+1 .. 2 rings+1
+    mut y = 0.;
+    mut rr = 0.;
+    mut ny = 0.;
+    mut nr = 0.;
+    if ring <= rings {
+      imm th = f32.from(ring) / f32.from(rings) * 1.5707964;
+      y = hh + r * cos(th); rr = r * sin(th); ny = cos(th); nr = sin(th);
+    } else {
+      imm ph = f32.from(ring - rings - 1) / f32.from(rings) * 1.5707964;
+      y = -hh - r * sin(ph); rr = r * cos(ph); ny = -sin(ph); nr = cos(ph);
+    }
+    mut s = 0;
+    while s <= segs {
+      imm a = f32.from(s) / f32.from(segs) * 6.2831855;
+      m.positions.push(new Vec3(rr * cos(a), y, rr * sin(a)));
+      m.normals.push(new Vec3(nr * cos(a), ny, nr * sin(a)));
+      s = s + 1;
+    }
+    ring = ring + 1;
+  }
+  ring = 0;
+  while ring <= 2 * rings {
+    mut s = 0;
+    while s < segs {
+      imm i0 = u32.from(ring * (segs + 1) + s);
+      imm i1 = i0 + 1u32;
+      imm i2 = i0 + u32.from(segs + 1);
+      imm i3 = i2 + 1u32;
+      m.indices.push(i0); m.indices.push(i1); m.indices.push(i2);
+      m.indices.push(i1); m.indices.push(i3); m.indices.push(i2);
+      s = s + 1;
+    }
+    ring = ring + 1;
+  }
+  m;
+}
+
+fn placed(pos Vec3, rot Quat, size Vec3) Mat4 { Mat4.fromTrs(pos, rot, size); }
+
+// The ragdoll's shapes drawn at the body transforms 'ps' and 'qs' (by link), one colour
+fn drawFigure(list &mut DrawList, rig &Ragdoll, spec &RigSpec, meshes &List[MeshHandle], ps &List[Vec3], qs &List[Quat], mat MaterialHandle,
+    cube MeshHandle) {
+  mut k = 0usize;
+  while k < rig.links.len() {
+    imm bs = spec.bones[rig.links[k].bone];
+    if bs.shape == SHAPE_BOX {
+      list.add(cube, mat, placed(*ps[k], *qs[k], bs.half * 2.));
+    } else {
+      list.add(*meshes[k], mat, placed(*ps[k], *qs[k], new Vec3(1., 1., 1.)));
+    }
+    k = k + 1usize;
+  }
+}
+
+fn shoot(device &mut Device, renderer &mut Renderer, list &DrawList, camera &Camera, sun &Light, color &Texture, depth &Texture,
+    readback &mut Buffer, prefix &str, suffix &str, ok &mut bool) {
+  mut encoder = device.createCommandEncoder();
+  renderer.render(device, &mut encoder, color, depth, camera, sun, list);
+  encoder.copyTextureToBuffer(color, readback);
+  device.queue.submit(encoder.finish());
+  device.endFrame();
+  device.waitIdle();
+  imm p = readback.mappedRange();
+  // some pixels differ from the background's corner
+  imm bgR = i32.from(*(p));
+  imm bgG = i32.from(*(p + 1usize));
+  imm bgB = i32.from(*(p + 2usize));
+  mut differ = 0;
+  mut i = 0usize;
+  while i < usize.from(W) * usize.from(H) {
+    imm at = i * 4usize;
+    if absi(i32.from(*(p + at)) - bgR) + absi(i32.from(*(p + at + 1usize)) - bgG) + absi(i32.from(*(p + at + 2usize)) - bgB) > 60 { differ = differ + 1; }
+    i = i + 97usize;
+  }
+  print <- "frame "; printStr(suffix); print <- ": "; print <- differ; print <- " sampled pixels differ from the background\n";
+  if differ < 150 { print <- "FAIL: the frame shows no figure\n"; *ok = false; }
+  if prefix.len() > 0usize {
+    imm img = Image.fromTexels(p, i32.from(W), i32.from(H), false);
+    mut name = String.from(prefix);
+    name.appendBytes("-");
+    name.appendBytes(suffix);
+    name.appendBytes(".bmp");
+    if img.save(&Path.from(name.view())) { print <- "wrote "; printStr(name.view()); print <- "\n"; } else { print <- "FAIL: could not write the screenshot\n"; *ok = false; }
+  }
+}
+
+fn absi(v i32) i32 { if v < 0 { return -v; } v; }
+
+// A get-up sampled at moments: the bodies' transforms at each, and how the last pose stands
+struct Strip {
+  ps List[List[Vec3]];
+  qs List[List[Quat]];
+  endY f32;       // the pelvis' height in the last pose
+  endUp f32;      // the trunk's up axis' y in the last pose
+}
+
+fn makeStrip(rig &Ragdoll, skel &Skeleton, clips &GetUpClips, gu &mut GetUp) Strip {
+  imm times = [0., 0.3, 0.9, 1.5, 2.0, 2.5, 3.0, 3.4];
+  mut ps = List[List[Vec3]].empty();
+  mut qs = List[List[Quat]].empty();
+  mut last = skel.restPose();
+  mut g = 0usize;
+  while g < 8usize {
+    gu.t = times[g];
+    imm pose = gu.pose(clips);
+    mut p = List[Vec3].empty();
+    mut q = List[Quat].empty();
+    rig.bodyTargets(skel, &pose, gu.placement, &mut p, &mut q);
+    ps.push(p);
+    qs.push(q);
+    last = pose;
+    g = g + 1usize;
+  }
+  mut models = List[Transform3].empty();
+  skel.modelTransforms(&last, &mut models);
+  new Strip(ps, qs, (*models[PELVIS]).translation.y, (gu.placement.rot * ((*models[PELVIS]).rotation * new Vec3(0., 1., 0.))).y);
+}
+
+// The strip drawn as exposures slid along x so that they stand in a row from x0 in steps of dx, relative to 'fromX'
+fn drawStrip(list &mut DrawList, strip &Strip, from Vec3, z0 f32, dz f32, rig &Ragdoll, spec &RigSpec, meshes &List[MeshHandle],
+    ramp &List[MaterialHandle], cube MeshHandle) {
+  mut g = 0usize;
+  while g < strip.ps.len() {
+    mut ps = List[Vec3].empty();
+    imm shift = new Vec3(-from.x, 0., z0 + dz * f32.from(g) - from.z);
+    mut q = 0usize;
+    while q < strip.ps[g].len() { ps.push(*strip.ps[g][q] + shift); q = q + 1usize; }
+    drawFigure(list, rig, spec, meshes, &ps, strip.qs[g], *ramp[g], cube);
+    g = g + 1usize;
+  }
+}
+
+fn main() i32 {
+  mut ok = true;
+  // ---- The world: a flight of eight steps down towards +x, then the floor
+  imm skel = humanoid(1.75);
+  imm spec = humanoidSpec(&skel, 1.75, 70.);
+  mut world = World.make();
+  tuneWorld(&mut world);
+  imm floorShape = world.addShape(Shape.single(Prim.box(new Vec3(12., 0.5, 4.))));
+  world.createBody(BodyDef.staticAt(floorShape, new Vec3(2., -0.5, 0.)));
+  imm landing = world.addShape(Shape.single(Prim.box(new Vec3(1.6, 0.8, 4.))));
+  world.createBody(BodyDef.staticAt(landing, new Vec3(-1.6, 0.8, 0.)));
+  mut step = 0;
+  while step < 8 {
+    imm top = 1.6 - 0.2 * f32.from(step + 1);
+    imm sh = world.addShape(Shape.single(Prim.box(new Vec3(0.2, top * 0.5, 4.))));
+    world.createBody(BodyDef.staticAt(sh, new Vec3(0.2 + 0.4 * f32.from(step), top * 0.5, 0.)));
+    step = step + 1;
+  }
+  // the being stands at the top edge facing +x and is shoved
+  imm rest = skel.restPose();
+  imm facing = Quat.angleAxis(-1.5707964, new Vec3(0., 1., 0.));
+  imm start = new Rigid(new Vec3(-0.35, 1.6, 0.), facing);
+  mut rig = Ragdoll.make(&mut world, &skel, &spec, start, 1u32);
+  rig.blend = 0.;
+  rig.poseToBodiesMoving(&mut world, &skel, &rest, new Rigid(start.pos - new Vec3(0.04, 0., 0.), facing), &rest, start, 1. / 60., new Vec3(0., 0., 0.));
+
+  // ---- Simulate, keeping the body transforms at chosen moments
+  mut shotP = List[List[Vec3]].empty();
+  mut shotQ = List[List[Quat]].empty();
+  imm shotSteps = [0, 12, 24, 36, 48, 60, 90, 300];
+  mut si = 0usize;
+  mut i = 0;
+  mut settledAt = -1;
+  while i < 60 * 20 {
+    if i == 6 { world.setLinearVelocity(rig.bodyOfBone(CHEST), new Vec3(2.6, 0.4, 0.)); world.setLinearVelocity(rig.carrierBody(HEAD), new Vec3(3.0, 0.4, 0.)); }
+    if si < 8usize and i == shotSteps[si] {
+      mut ps = List[Vec3].empty();
+      mut qs = List[Quat].empty();
+      mut k = 0usize;
+      while k < rig.links.len() {
+        imm xf = world.transformOf(rig.links[k].body);
+        ps.push(xf.pos);
+        qs.push(xf.rot);
+        k = k + 1usize;
+      }
+      shotP.push(ps);
+      shotQ.push(qs);
+      si = si + 1usize;
+    }
+    stepRagdoll(&mut rig, &mut world, 1. / 60.);
+    if settledAt < 0 and rig.settled { settledAt = i; }
+    i = i + 1;
+  }
+  imm pelvis = world.positionOf(rig.bodyOfBone(PELVIS));
+  print <- "settled at step "; print <- settledAt; print <- ", pelvis at ("; print <- pelvis.x; print <- ", "; print <- pelvis.y; print <- ", "; print <- pelvis.z; print <- "), hardest landing "; print <- rig.peak; print <- " m/s\n";
+  if settledAt < 0 { print <- "FAIL: it did not settle\n"; ok = false; }
+  if pelvis.x < 1.5 or pelvis.y > 0.8 { print <- "FAIL: it did not come to rest at the bottom\n"; ok = false; }
+  imm lie = lying(&rig, &world);
+  print <- "it lies "; print <- (if lie == LIE_FACE_UP { "face up"; } else if lie == LIE_FACE_DOWN { "face down"; } else if lie == LIE_SIDE { "on its side"; } else { "upright"; }); print <- "\n";
+  if rig.peak < 1.5 { print <- "FAIL: no landing measured\n"; ok = false; }
+
+  // ---- The get-up
+  imm clips = getUpClips(&skel, &spec);
+  mut gu = beginGetUp(&rig, &world, &skel, &rest, 0., 0.3);
+  imm strip1 = makeStrip(&rig, &skel, &clips, &mut gu);
+  // a get-up from lying on the back, the clip alone (the ragdoll came to rest face down)
+  mut gu2 = new GetUp(LIE_FACE_UP, 0, rest.copy(), Rigid.identity(), 0., 0.);
+  imm strip2 = makeStrip(&rig, &skel, &clips, &mut gu2);
+  // standing at the end: the pelvis at its standing height above the floor, the torso upright
+  print <- "get-up ends with the pelvis at "; print <- strip1.endY; print <- " m and the trunk "; print <- strip1.endUp; print <- " upright\n";
+  if absf(strip1.endY - 0.53 * 1.75) > 0.03 or strip1.endUp < 0.99 or absf(strip2.endY - 0.53 * 1.75) > 0.03 or strip2.endUp < 0.99 {
+    print <- "FAIL: the get-up does not end standing\n"; ok = false;
+  }
+
+  // ---- The GPU
+  mut instance = Instance.create("ragdollrig steps");
+  if !instance.isValid() { print <- "FAIL: no Vulkan instance\n"; return 1i32; }
+  mut none = Surface.none();
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  if (env as usize) != 0usize {
+    if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  mut adapter = instance.requestAdapter(&none, preference);
+  mut device = adapter.requestDevice();
+  if !device.isValid() { print <- "FAIL: no device\n"; return 1i32; }
+  imm target = new TextureDescriptor(W, H, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  mut color = device.createTexture(&target);
+  imm depthDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  mut depth = device.createTexture(&depthDesc);
+  mut readback = device.createBuffer(u64.from(W) * u64.from(H) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  if !renderer.isValid() { print <- "FAIL: no renderer\n"; return 1i32; }
+
+  imm cube = renderer.addMesh(&mut device, &Mesh.cube(0.5));
+  mut meshes = List[MeshHandle].empty();
+  mut kk = 0usize;
+  while kk < rig.links.len() {
+    imm bs = spec.bones[rig.links[kk].bone];
+    if bs.shape == SHAPE_CAPSULE {
+      // the capsule is along the body's local y already
+      meshes.push(renderer.addMesh(&mut device, &capsuleMesh(bs.radius, bs.halfLen)));
+    } else if bs.shape == SHAPE_SPHERE {
+      meshes.push(renderer.addMesh(&mut device, &Mesh.sphere(bs.radius, 20)));
+    } else {
+      meshes.push(cube);
+    }
+    kk = kk + 1usize;
+  }
+  imm stoneColor = renderer.addMaterial(&mut device, &Material.plain(new Color(0.55, 0.52, 0.48, 1.)));
+  imm floorColor = renderer.addMaterial(&mut device, &Material.plain(new Color(0.30, 0.42, 0.30, 1.)));
+  mut ramp = List[MaterialHandle].empty();
+  mut ci = 0;
+  while ci < 8 {
+    imm t = f32.from(ci) / 7.;
+    ramp.push(renderer.addMaterial(&mut device, &Material.plain(new Color(0.85 - 0.65 * t, 0.30 + 0.4 * t, 0.20 + 0.7 * t, 1.))));
+    ci = ci + 1;
+  }
+  imm sun = Light.directional(new Vec3(0.35, -0.7, -0.6).normalize(), Color.gray(1.8), Color.gray(0.45));
+
+  // frame 1: the fall
+  mut list = DrawList.empty();
+  list.add(cube, floorColor, placed(new Vec3(2., -0.5, 0.), Quat.identity(), new Vec3(24., 1., 8.)));
+  list.add(cube, stoneColor, placed(new Vec3(-1.6, 0.8, 0.), Quat.identity(), new Vec3(3.2, 1.6, 8.)));
+  step = 0;
+  while step < 8 {
+    imm top = 1.6 - 0.2 * f32.from(step + 1);
+    list.add(cube, stoneColor, placed(new Vec3(0.2 + 0.4 * f32.from(step), top * 0.5, 0.), Quat.identity(), new Vec3(0.4, top, 8.)));
+    step = step + 1;
+  }
+  mut s2 = 0usize;
+  while s2 < shotP.len() {
+    drawFigure(&mut list, &rig, &spec, &meshes, shotP[s2], shotQ[s2], *ramp[s2], cube);
+    s2 = s2 + 1usize;
+  }
+  mut camera = Camera.make();
+  camera.lookAt(new Vec3(1.6, 1.3, 8.5), new Vec3(1.6, 0.8, 0.), new Vec3(0., 1., 0.));
+  camera.background = new Color(0.55, 0.70, 0.90, 1.);
+  imm prefixEnv = libc.getenv("RAGDOLLRIG_SHOT");
+  mut prefix = String.empty();
+  if (prefixEnv as usize) != 0usize {
+    mut j = 0usize;
+    while *(prefixEnv + j) != 0u8 { prefix.appendByte(*(prefixEnv + j)); j = j + 1usize; }
+  }
+  shoot(&mut device, &mut renderer, &list, &camera, &sun, &color, &depth, &mut readback, prefix.view(), "fall", &mut ok);
+
+  // frame 2: the get-up, as a filmstrip along x
+  mut list2 = DrawList.empty();
+  list2.add(cube, floorColor, placed(new Vec3(0., -0.5, 0.), Quat.identity(), new Vec3(24., 1., 8.)));
+  drawStrip(&mut list2, &strip1, gu.placement.pos, -3.6, 1.0, &rig, &spec, &meshes, &ramp, cube);
+  camera.lookAt(new Vec3(8.5, 1.0, 0.), new Vec3(0., 0.8, 0.), new Vec3(0., 1., 0.));
+  shoot(&mut device, &mut renderer, &list2, &camera, &sun, &color, &depth, &mut readback, prefix.view(), if gu.clip == 0 { "getup-ragdoll-up"; } else { "getup-ragdoll-down"; }, &mut ok);
+  mut list3 = DrawList.empty();
+  list3.add(cube, floorColor, placed(new Vec3(0., -0.5, 0.), Quat.identity(), new Vec3(24., 1., 8.)));
+  drawStrip(&mut list3, &strip2, new Vec3(0., 0., 0.), -3.6, 1.0, &rig, &spec, &meshes, &ramp, cube);
+  shoot(&mut device, &mut renderer, &list3, &camera, &sun, &color, &depth, &mut readback, prefix.view(), "getup-clip-up", &mut ok);
+
+  if failures() != 0u32 { print <- "FAIL: a Vulkan call failed\n"; ok = false; }
+  if validationMessages() != 0u32 { print <- "FAIL: validation messages\n"; ok = false; }
+  if ok { print <- "ok\n"; return 0i32; }
+  1i32;
+}

@@ -337,7 +337,7 @@ by value, an array and a function go on to the table's own rows.
 | Receiver type | Goes to |
 | --- | --- |
 | `FnSigTag` | `fnCallFnSigTypeCheck` — a plain call |
-| struct, number | fill in `()`/`[]`/`&[]` as `methfld` if absent, then `fnCallLowerMethod`; an index in set position on a type declaring `&[]` (`fnCallSetIndex`) takes `&[]` |
+| struct, number | fill in `()`/`[]`/`&[]` as `methfld` if absent, then `fnCallLowerMethod`; an index in set position on a type declaring `&[]` (`fnCallSetPlace`) takes `&[]` |
 | `TTupleTag` | `fnCallLowerIntField` — element by literal index, its type read from the resolved tuple, since the receiver's `vtype` may be an alias naming it |
 | `ArrayTag` | `fnCallArrIndex` under `FlagIndex`; a comparison with a slice to `fnCallArrayAsSlice`; else a method of core's `Array[T]` (`fnCallLowerSliceMethod`, below), `len` excepted |
 | `ArrayRefTag` | index; `==`, `!=` or an ordering to `fnCallLowerSliceCompare`; else `fnCallLowerPtrMethod` against `arrayRefType`, else a method of core's `Array[T]` |
@@ -717,18 +717,28 @@ Three adjustments, two of them asymmetric on purpose:
   operands, which `fnCallLowerRefCompare` does before `fnCallLowerMethod` is
   reached.
 
-**An index in set position.** `x[i] = v`, `x[i].f = v` and an operator
-changing `x[i]` or a field of it in place write to the element, so where
-`x`'s type declares `&[]` the index is lowered as `&mut x[i]` is: the
-assignment, or the `FlagLvalOp` call, marks the index at the root of the
-place (`fnCallSetIndexRoot`, through field reads only) in `fnCallSetIndex`,
-`fnCallTypeCheck` sets `FlagBorrow` on that node and names `&[]`, and an
-assignment to the index itself stores through the reference it returns
-(`derefInject`). A method called on `x[i]` that no candidate takes with the
-read-only element is retried with the element `&[]` lends, the index lowered
-again from its checked receiver and arguments, where the receiver may be
-borrowed mutably (`fnCallIndexAsMut`). Rust chooses `IndexMut` the same way;
-a dynamic arena's `ar[key] = v` is the case it was built for.
+**An index in set position.** `x[i] = v`, `x[i].f = v`, an operator
+changing `x[i]` or a field of it in place, and a `&mut` borrow of a place
+through `x[i]` write to the element, so where `x`'s type declares `&[]` the
+index is lowered as `&mut x[i]` is. The place may be any chain of field reads
+and indexes, `a[g].b[i].n`, of any depth, and every index in it is in set
+position: the assignment, the `FlagLvalOp` call and a borrow that may write
+(`borrowTypeCheck`) mark them all (`fnCallSetPlace`) while the place is
+checked, `fnCallTypeCheck` sets `FlagBorrow` on each marked node and names
+`&[]`, and an assignment to the index itself stores through the reference it
+returns (`derefInject`); every other link takes the reference as any field
+access or index does. A method called on a place the call's receiver must
+write, `x[i].m()` or `a[g].b.push(v)`, is known to write only once the method
+is selected, with the place already checked as a read. It is then lowered
+again where it was a read-only element: a candidate taking `self &mut` makes
+`fnCallBorrowReceiver`, and a receiver that is itself an index
+`fnCallIndexAsMut`, lower every index of the receiver's chain again from its
+checked receiver and arguments, the innermost first, as `&mut x[i]` would
+(`fnCallPlaceAsMut`, `fnCallMutIndex`). A link is left as it was where its
+type declares no `&[]`, or the place below it may not be borrowed mutably (a
+`&` reference, an `imm` variable), so a place that may not be written is
+refused as before. Rust chooses `IndexMut` the same way; a dynamic arena's
+`ar[key] = v` is the case it was built for.
 
 When nothing is selected, `fnCallNoCandidate` reports it. Two cases have a
 message of their own. An indexed borrow `&x[i]` reaches `` `&[]` `` with the

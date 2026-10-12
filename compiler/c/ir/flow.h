@@ -188,6 +188,8 @@ void flowLoadThroughRef(FlowState *fstate, INode **refp);
 // that nameuseFlow refuses every other use, which would let it escape.
 // The variable an expression names when it is an init's 'self', or NULL
 VarDclNode *flowNewSelf(INode *node);
+// Is a variable an init's 'self &new'?
+int flowNewSelfVar(VarDclNode *var);
 extern int flowThroughSelf;
 // Walk a use through 'self' (its node at 'selfp'), refused before it is filled
 void flowNewSelfThrough(FlowState *fstate, INode **selfp);

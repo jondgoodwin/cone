@@ -54,12 +54,16 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **node, INode *expectTyp
 // type arguments, 'None[i32]' (FlagValueTermCall).
 void fnCallVariantTermNameRes(NameResState *pstate, INode **nodep);
 
-// The index an assignment stores into, 'x[i] = v', while its lval is checked:
-// on a type declaring '&[]', it is lowered as '&mut x[i]' would be
-extern FnCallNode *fnCallSetIndex;
+// The indexes of a place written to, marked while the place is checked: on a type
+// declaring '&[]', each is lowered as '&mut x[i]' would be. 'fnCallSetPlace'
+// marks every index of the chain of field reads and indexes that leads from
+// 'place' to its root ('a[g].b[i].n' of 'a[g].b[i].n = 5' has two) and answers
+// what 'fnCallSetPlaceEnd' takes to unmark them, in the order marked.
+uint32_t fnCallSetPlace(INode *place);
+void fnCallSetPlaceEnd(uint32_t mark);
 
-// The index at the root of a place written to, 'x[i]' of 'x[i] = v' or of
-// 'x[i].f.g += 1', reached through field reads only; or NULL
+// The index a place written to is, 'x[i]' of 'x[i] = v' (the place itself, not a
+// link of its chain); or NULL
 FnCallNode *fnCallSetIndexRoot(INode *lval);
 
 // Does this type-checked expression call a function declared to return 'Never'?

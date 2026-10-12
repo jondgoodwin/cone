@@ -357,11 +357,14 @@ reads a conversion as a new value, a temporary, so it could not count or move wh
 payload held; that is why only plain data is copied this way.
 
 A guard's binding (`FlagMatchGuardBind`, the second declaration of the variable the guard
-`and`s with the pattern) reads the place before the arm is chosen, so it takes nothing
-from it: `castGuardBorrow` rewrites it, before it is checked, to a conversion of a
-read-only borrow of the place to a reference to the variant, wherever the variant is not
-plain data; plain data is copied, as an arm copies it. A guard on a held value (a call, or a
-borrow) reads the hidden variable that holds it, as before.
+`and`s with the pattern) reads the matched value before the arm is chosen, so it takes
+nothing from it: `castGuardBorrow` rewrites it, before it is checked, to a conversion of a
+read-only borrow of the value to a reference to the variant, wherever the variant is not
+plain data; plain data is copied, as an arm copies it. The value is a place, or the
+hidden variable that holds a call's answer (or a later column's): both alike, so that a
+guard that fails leaves a held payload whole for the next case and for the arm that
+binds it (`enum_match_guard_held`). A pattern that names a reference to the variant is
+not rewritten: its guard binds the reference, which takes nothing.
 
 ### `castIsTypeCheck`
 

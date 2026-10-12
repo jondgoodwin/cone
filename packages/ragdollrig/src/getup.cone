@@ -1,0 +1,301 @@
+// Getting up. Which way a ragdoll lies, the get-up animation for it, and the blend from the ragdoll's last pose
+// into the animation's first (pose matching).
+//
+// LYING. From the pelvis alone (the bone every other bone hangs from, and the stiffest body of the ragdoll): its up
+// axis (towards the spine) says whether the trunk is standing or lying (within 45 degrees of vertical: upright),
+// and its front axis (the way the being faces, -z in its own frame) says which side is down: front up (more than 30
+// degrees above the horizontal) is FACE UP, front down FACE DOWN, between is on its SIDE. A side-lyer takes the clip
+// of whichever way its front leans (the match blend does the turning over).
+//
+// THE CLIPS are KEYFRAMED from joint angles, written in this file (getUpClips), not recorded: a 'Stance' states a trunk
+// pitch, flexions of the spine, shoulders, elbows, hips and knees and the feet's flatness, and 'stancePose' turns it into a
+// bonepose Pose; the root's height is not stated but SOLVED, each key lowered until the lowest point of the body's shapes is
+// on the floor. So a key says what the joints do and cannot sink into or float above the ground. Three clips:
+//   face up   lying, knees up, curl and reach, sit, crouch over the feet, rise, stand (3.4 s)
+//   face down lying, push up to a plank, knees in, crouch over the feet, rise, stand (3.3 s)
+//   upright   (sitting, kneeling, a ragdoll that lands on its feet) crouch, rise, stand (1.2 s)
+// A being's own recorded get-up replaces these: a Clip is a Clip.
+//
+// POSE MATCHING. The clip is placed so that its lying pose and the ragdoll's agree: its model space at the ragdoll's
+// pelvis (on the floor beneath it) turned about y until the clip's head direction is the ragdoll's. Then the pose
+// shown is the ragdoll's own pose at the moment of the start, blended into the clip's pose at the same time by a
+// smoothstep over 'matchTime' (0.3 s is good): the limbs ease from wherever they came to rest into the lying pose the
+// clip starts from, and the clip goes on from there. This is the usual transition-by-blend that Unreal's and Unity's
+// ragdoll recovery do, with no search for a closest frame (the clip's lying poses are alike anyway).
+
+pub const LIE_UPRIGHT = 0;
+pub const LIE_FACE_UP = 1;
+pub const LIE_FACE_DOWN = 2;
+pub const LIE_SIDE = 3;
+
+// How a body whose pelvis has this orientation (in the world) lies
+pub fn lyingFrom(pelvis Quat) i32 {
+  imm up = pelvis * new Vec3(0., 1., 0.);
+  imm front = pelvis * new Vec3(0., 0., -1.);
+  if up.y > 0.7 { return LIE_UPRIGHT; }
+  if front.y > 0.5 { return LIE_FACE_UP; }
+  if front.y < -0.5 { return LIE_FACE_DOWN; }
+  LIE_SIDE;
+}
+
+// How the ragdoll lies
+pub fn lying(rig &Ragdoll, w &World) i32 {
+  lyingFrom(w.rotationOf(rig.bodyOfBone(PELVIS)) * rig.links[0].shapeRot.conjugate());
+}
+
+// ------------------------------------------------------------------ stances
+
+// A pose stated by joint angles in radians, flexions positive in the anatomical sense (a knee flexes, a hip flexes
+// forward, a spine bends forward)
+pub struct Stance {
+  pub pitch f32;        // the pelvis turned about x: + tips the trunk's top towards +z (backwards); lying on the back is pi/2
+  pub x f32;            // the root's place on the floor (the model's origin)
+  pub z f32;
+  pub spine f32;
+  pub chest f32;
+  pub neck f32;
+  pub head f32;
+  pub shoulderL f32;    // flexion: the arm raised forward
+  pub shoulderR f32;
+  pub abductL f32;      // outward from the 15 degrees of the rest pose
+  pub abductR f32;
+  pub elbowL f32;
+  pub elbowR f32;
+  pub hipL f32;
+  pub hipR f32;
+  pub hipAbdL f32;
+  pub hipAbdR f32;
+  pub kneeL f32;
+  pub kneeR f32;
+  pub ankleL f32;       // dorsiflexion, unless 'flat'
+  pub ankleR f32;
+  pub flat bool;        // feet flat on the floor whatever the legs do
+
+  pub fn rest() Stance {
+    new Stance(0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., true);
+  }
+  pub fn arms(self &mut, flex f32, abduct f32, elbow f32) {
+    shoulderL = flex; shoulderR = flex; abductL = abduct; abductR = abduct; elbowL = elbow; elbowR = elbow;
+  }
+  pub fn legs(self &mut, hip f32, knee f32) {
+    hipL = hip; hipR = hip; kneeL = knee; kneeR = knee;
+  }
+  pub fn trunk(self &mut, spine f32, chest f32, neck f32, head f32) {
+    self.spine = spine; self.chest = chest; self.neck = neck; self.head = head;
+  }
+}
+
+fn rx(a f32) Quat { Quat.angleAxis(a, new Vec3(1., 0., 0.)); }
+fn rz(a f32) Quat { Quat.angleAxis(a, new Vec3(0., 0., 1.)); }
+
+// The pose of the humanoid 'skel' for a stance (the root at height 0.53 H until grounded)
+pub fn stancePose(skel &Skeleton, st &Stance) Pose {
+  mut p = skel.restPose();
+  imm rootT = skel.restOf(PELVIS).translation;
+  p.locals.set(PELVIS, new Transform3(new Vec3(st.x, rootT.y, st.z), rx(st.pitch), new Vec3(1., 1., 1.)));
+  p.setRotation(SPINE, rx(-st.spine));
+  p.setRotation(CHEST, rx(-st.chest));
+  p.setRotation(NECK, rx(-st.neck));
+  p.setRotation(HEAD, rx(-st.head));
+  p.setRotation(UPPER_ARM_L, rx(st.shoulderL) * rz(-(ARM_REST_ABDUCTION + st.abductL)));
+  p.setRotation(UPPER_ARM_R, rx(st.shoulderR) * rz(ARM_REST_ABDUCTION + st.abductR));
+  p.setRotation(FOREARM_L, rx(st.elbowL));
+  p.setRotation(FOREARM_R, rx(st.elbowR));
+  p.setRotation(THIGH_L, rx(st.hipL) * rz(-st.hipAbdL));
+  p.setRotation(THIGH_R, rx(st.hipR) * rz(st.hipAbdR));
+  p.setRotation(SHIN_L, rx(-st.kneeL));
+  p.setRotation(SHIN_R, rx(-st.kneeR));
+  p.setRotation(FOOT_L, rx(st.ankleL));
+  p.setRotation(FOOT_R, rx(st.ankleR));
+  if st.flat {
+    mut models = List[Transform3].empty();
+    skel.modelTransforms(&p, &mut models);
+    p.setRotation(FOOT_L, (*models[SHIN_L]).rotation.conjugate());
+    p.setRotation(FOOT_R, (*models[SHIN_R]).rotation.conjugate());
+  }
+  p;
+}
+
+// The lowest world y of the body's shapes in 'pose' (model space, the root as it is)
+pub fn lowestOfPose(skel &Skeleton, spec &RigSpec, pose &Pose) f32 {
+  mut models = List[Transform3].empty();
+  skel.modelTransforms(pose, &mut models);
+  mut lowest = 1000000.;
+  mut i = 0usize;
+  while i < skel.boneCount() {
+    imm bs = spec.bones[i];
+    if bs.hasBody {
+      imm bm = *models[i];
+      mut shapeRot = Quat.identity();
+      if bs.shape == SHAPE_CAPSULE { shapeRot = Quat.fromVectors(new Vec3(0., 1., 0.), bs.axis.normalize()); }
+      lowest = minf(lowest, shapeLowest(bs, bm.translation + bm.rotation * bs.center, bm.rotation * shapeRot));
+    }
+    i = i + 1usize;
+  }
+  lowest;
+}
+
+// 'pose' with its root moved vertically until the lowest point of the shapes is on the floor (y = 0)
+pub fn groundPose(skel &Skeleton, spec &RigSpec, pose &Pose) Pose {
+  mut out = pose.copy();
+  imm lowest = lowestOfPose(skel, spec, pose);
+  imm t = (*pose.locals[PELVIS]).translation;
+  out.setTranslation(PELVIS, new Vec3(t.x, t.y - lowest, t.z));
+  out;
+}
+
+// ------------------------------------------------------------------ the clips
+
+pub struct GetUpClips {
+  pub faceUp Clip;
+  pub faceDown Clip;
+  pub upright Clip;
+}
+
+fn standStance() Stance { Stance.rest(); }
+
+fn crouchStance() Stance {
+  mut s = Stance.rest();
+  s.pitch = -0.55;
+  s.legs(2.0, 1.95);
+  s.arms(0.9, 0.1, 0.4);
+  s.trunk(0.3, 0.3, 0.1, 0.5);
+  s;
+}
+
+fn riseStance() Stance {
+  mut s = Stance.rest();
+  s.pitch = -0.30;
+  s.legs(1.1, 1.2);
+  s.arms(0.4, 0.15, 0.2);
+  s.trunk(0.15, 0.15, 0.05, 0.25);
+  s;
+}
+
+fn key(clip &mut Clip, skel &Skeleton, spec &RigSpec, t f32, st &Stance) {
+  imm p = groundPose(skel, spec, &stancePose(skel, st));
+  clip.addKey(t, &p);
+}
+
+// The three get-up clips for 'skel' (the humanoid) and its recipe
+pub fn getUpClips(skel &Skeleton, spec &RigSpec) GetUpClips {
+  // ---- face up
+  mut up = Clip.make(3.4, false);
+  mut s = Stance.rest();
+  s.pitch = 1.5708; s.flat = false; s.arms(0., 0.2, 0.); s.legs(0.05, 0.05);
+  key(&mut up, skel, spec, 0., &s);
+  key(&mut up, skel, spec, 0.3, &s);
+  s = Stance.rest();
+  s.pitch = 1.40; s.flat = false; s.legs(1.2, 1.5); s.arms(1.4, 0.1, 0.3); s.trunk(0.5, 0.5, 0.3, 0.4);
+  key(&mut up, skel, spec, 1.0, &s);
+  s = Stance.rest();
+  s.pitch = 0.40; s.legs(1.5, 1.6); s.arms(1.2, 0.1, 0.4); s.trunk(0.2, 0.2, 0.1, 0.2);
+  key(&mut up, skel, spec, 1.6, &s);
+  s = crouchStance();
+  key(&mut up, skel, spec, 2.3, &s);
+  s = riseStance();
+  key(&mut up, skel, spec, 2.9, &s);
+  s = standStance();
+  key(&mut up, skel, spec, 3.4, &s);
+
+  // ---- face down
+  mut dn = Clip.make(3.3, false);
+  s = Stance.rest();
+  s.pitch = -1.5708; s.flat = false; s.arms(0., 0.2, 0.); s.legs(0.0, 0.05);
+  key(&mut dn, skel, spec, 0., &s);
+  key(&mut dn, skel, spec, 0.3, &s);
+  s = Stance.rest();
+  s.pitch = -1.30; s.flat = false; s.arms(1.5, 0.2, 0.0); s.ankleL = -0.8; s.ankleR = -0.8; s.trunk(-0.1, -0.1, -0.2, -0.4);
+  key(&mut dn, skel, spec, 1.0, &s);
+  s = Stance.rest();
+  s.pitch = -0.95; s.flat = false; s.legs(1.7, 2.2); s.arms(1.5, 0.2, 0.0); s.ankleL = -0.6; s.ankleR = -0.6; s.trunk(0.1, 0.1, 0., -0.2);
+  key(&mut dn, skel, spec, 1.6, &s);
+  s = crouchStance();
+  key(&mut dn, skel, spec, 2.2, &s);
+  s = riseStance();
+  key(&mut dn, skel, spec, 2.8, &s);
+  s = standStance();
+  key(&mut dn, skel, spec, 3.3, &s);
+
+  // ---- upright
+  mut ur = Clip.make(1.2, false);
+  s = crouchStance();
+  s.pitch = -0.35; s.legs(1.5, 1.7);
+  key(&mut ur, skel, spec, 0., &s);
+  s = riseStance();
+  key(&mut ur, skel, spec, 0.55, &s);
+  s = standStance();
+  key(&mut ur, skel, spec, 1.2, &s);
+  new GetUpClips(bake(&up, skel, spec), bake(&dn, skel, spec), bake(&ur, skel, spec));
+}
+
+// The clip sampled at 30 a second with every frame lowered to the floor: between two keys the limbs turn and the
+// root's height is only interpolated, so a keyed clip sinks into the floor between keys; a baked one is grounded in
+// every frame
+fn bake(clip &Clip, skel &Skeleton, spec &RigSpec) Clip {
+  mut out = Clip.make(clip.duration, false);
+  mut t = 0.;
+  while t < clip.duration - 0.001 {
+    imm p = groundPose(skel, spec, &clip.sample(t));
+    out.addKey(t, &p);
+    t = t + 1. / 30.;
+  }
+  imm last = groundPose(skel, spec, &clip.sample(clip.duration));
+  out.addKey(clip.duration, &last);
+  out;
+}
+
+// ------------------------------------------------------------------ the get-up in progress
+
+pub struct GetUp {
+  pub kind i32;            // LIE_*
+  pub clip i32;            // 0 face up, 1 face down, 2 upright
+  pub start Pose;          // the ragdoll's pose at the start, in the model space of 'placement'
+  pub placement Rigid;     // where the clip's model space is in the world
+  pub t f32;
+  pub matchTime f32;
+
+  pub fn duration(self &, clips &GetUpClips) f32 {
+    if clip == 0 { return clips.faceUp.duration; }
+    if clip == 1 { return clips.faceDown.duration; }
+    clips.upright.duration;
+  }
+  pub fn done(self &, clips &GetUpClips) bool { t >= self.duration(clips); }
+  pub fn advance(self &mut, dt f32) { t = t + dt; }
+
+  // The pose now, in the model space of 'placement'
+  pub fn pose(self &, clips &GetUpClips) Pose {
+    imm c = if clip == 0 { clips.faceUp.sample(t); } else if clip == 1 { clips.faceDown.sample(t); } else { clips.upright.sample(t); };
+    if t >= matchTime { return c; }
+    blendPoses(&start, &c, smoothstep(0., matchTime, t));
+  }
+}
+
+fn horizontal(v Vec3) Vec3 { new Vec3(v.x, 0., v.z); }
+
+// Begin a get-up from a settled ragdoll: the clip for how it lies, placed under the pelvis on the floor at
+// 'groundY' and turned to the ragdoll's head. 'base' is a pose giving the bones' local translations (the rest pose).
+pub fn beginGetUp(rig &Ragdoll, w &World, skel &Skeleton, base &Pose, groundY f32, matchTime f32) GetUp {
+  imm pelvisId = rig.bodyOfBone(PELVIS);
+  imm pelvisRot = w.rotationOf(pelvisId) * rig.links[0].shapeRot.conjugate();
+  imm kind = lyingFrom(pelvisRot);
+  imm front = pelvisRot * new Vec3(0., 0., -1.);
+  // which clip, and the direction its head points in its model space
+  mut clip = 2;
+  mut headDir = new Vec3(0., 0., -1.);
+  if kind == LIE_FACE_UP or (kind == LIE_SIDE and front.y >= 0.) { clip = 0; headDir = new Vec3(0., 0., 1.); }
+  else if kind == LIE_FACE_DOWN or kind == LIE_SIDE { clip = 1; headDir = new Vec3(0., 0., -1.); }
+  // the ragdoll's own direction: pelvis to head on the floor, or, upright, the way it faces
+  // the pelvis bone's own place (its body's centre is above it, along its up)
+  imm pelvisPos = w.positionOf(pelvisId) - w.rotationOf(pelvisId) * rig.links[0].center;
+  mut h = horizontal(w.positionOf(rig.carrierBody(HEAD)) - pelvisPos);
+  if clip == 2 or h.length() < 0.05 { h = horizontal(front); }
+  if h.length() < 0.001 { h = headDir; }
+  h = h.normalize();
+  imm sinY = headDir.z * h.x - headDir.x * h.z;
+  imm cosY = headDir.dot(h);
+  imm yaw = atan2(sinY, cosY);
+  imm placement = new Rigid(new Vec3(pelvisPos.x, groundY, pelvisPos.z), Quat.angleAxis(yaw, new Vec3(0., 1., 0.)));
+  imm start = rig.bodiesToPose(w, skel, base, placement);
+  new GetUp(kind, clip, start, placement, 0., matchTime);
+}

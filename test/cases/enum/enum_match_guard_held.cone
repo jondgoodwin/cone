@@ -1,0 +1,146 @@
+// A guard on a binding of a payload that moves, where the matched value is a call's
+// answer, a value the match holds in a hidden variable of its own. The guard reads
+// the binding before the arm is chosen, so it takes nothing from the held value: a
+// guard that fails leaves the payload whole for the cases after it, and only an arm
+// that binds takes it, and finalizes it as the arm ends. (A guard on a held value once
+// moved the payload out for itself, so the arm's own binding found it gone: 1048.)
+//
+// The finalizer prints its number, so the output is the whole assertion: what is
+// finalized, and when. The expected lines are worked out by hand in the comments.
+
+mod enum_match_guard_held;
+
+import stdio use *;
+
+struct Fin {
+  pub id i32;
+  fn final(self &uni) {
+    printStr("fin");
+    printInt(i64.from(id));
+    printStr(" ");
+  }
+}
+
+struct Small is Copy {
+  pub id i32;
+}
+
+fn maybe(n i32) Option[Fin] {
+  if n > 0i32 { return Some[Fin](new Fin(n)); }
+  None;
+}
+
+fn maybeSmall(n i32) Option[Small] {
+  if n > 0i32 { return Some[Small](new Small(n)); }
+  None;
+}
+
+fn result(n i32) Result[Fin, i32] {
+  if n > 0i32 { return Ok[Fin, i32](new Fin(n)); }
+  Error[Fin, i32](n);
+}
+
+fn num(n i32) {
+  printInt(i64.from(n));
+  printStr(" ");
+}
+fn end() {
+  printStr("|\n");
+}
+
+// The guard is true: the arm takes the Fin, which dies as the arm ends
+//   maybe(7), limit 3: "big fin7 end |"
+// The guard is false and the next arm takes it
+//   maybe(7), limit 9: "small fin7 end |"
+// None: "none end |"
+fn heldMoves(n i32, limit i32) {
+  match maybe(n) {
+    case imm f Some if f.id > limit { printStr("big "); }
+    case imm f Some { printStr("small "); }
+    case is None { printStr("none "); }
+  }
+  printStr("end ");
+}
+
+// The guard fails and the case after it is an 'else' that takes nothing: the Fin
+// dies with the match, before what follows it
+//   maybe(7): "else fin7 end |"
+fn heldElse() {
+  match maybe(7i32) {
+    case imm f Some if f.id > 100i32 { printStr("huge "); }
+    else { printStr("else "); }
+  }
+  printStr("end ");
+}
+
+// Two guarded cases in a row, the second one passing
+//   maybe(7): "second fin7 end |"
+fn heldTwoGuards() {
+  match maybe(7i32) {
+    case imm f Some if f.id > 100i32 { printStr("first "); }
+    case imm f Some if f.id > 5i32 { printStr("second "); }
+    else { printStr("else "); }
+  }
+  printStr("end ");
+}
+
+// A 'mut' binding changes the Fin it took, and the changed one is finalized
+//   maybe(7), limit 3: "big fin70 end |"
+fn heldMut(limit i32) {
+  match maybe(7i32) {
+    case mut f Some if f.id > limit { f.id = 70i32; printStr("big "); }
+    case mut f Some { printStr("small "); }
+    else {}
+  }
+  printStr("end ");
+}
+
+// A binding that is passed on out of the arm, past a guard that tested it
+//   result(4): "took 4 fin4 |"   result(-2): "bad -2 |"
+fn take(f Fin) {
+  printStr("took ");
+  num(f.id);
+}
+fn heldPassedOn(n i32) {
+  match result(n) {
+    case imm ok Ok if ok.id > 0i32 { take(ok); }
+    case imm bad Error { printStr("bad "); num(bad); }
+    case imm ok Ok { printStr("zero "); }
+  }
+}
+
+// The same match on a named local, a place, and on a payload that is a copy
+//   local maybe(7), limit 3: "big fin7 end |"   limit 9: "small fin7 end |"
+//   copy maybeSmall(8): "big 8 |"   maybeSmall(2): "small 2 |"
+fn localMoves(limit i32) {
+  imm m = maybe(7i32);
+  match m {
+    case imm f Some if f.id > limit { printStr("big "); }
+    case imm f Some { printStr("small "); }
+    case is None { printStr("none "); }
+  }
+  printStr("end ");
+}
+fn heldCopy(n i32) {
+  match maybeSmall(n) {
+    case imm s Some if s.id > 5i32 { printStr("big "); num(s.id); }
+    case imm s Some { printStr("small "); num(s.id); }
+    case is None { printStr("none "); }
+  }
+}
+
+fn main() i32 {
+  heldMoves(7i32, 3i32); end();
+  heldMoves(7i32, 9i32); end();
+  heldMoves(0i32, 1i32); end();
+  heldElse(); end();
+  heldTwoGuards(); end();
+  heldMut(3i32); end();
+  heldPassedOn(4i32); end();
+  heldPassedOn(-2i32); end();
+  localMoves(3i32); end();
+  localMoves(9i32); end();
+  heldCopy(8i32); end();
+  heldCopy(2i32); end();
+  0i32;
+}

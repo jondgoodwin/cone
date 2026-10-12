@@ -1,0 +1,269 @@
+// The recipe for a ragdoll: for each bone of a skeleton, whether it gets a body, the body's shape and
+// mass, and the joint to the parent body. A recipe is plain data (RigSpec) so that a program can edit
+// one, or write one for a creature; humanoidSpec writes the one for bonepose's 19-bone mannequin from
+// the tables below.
+//
+// THE TABLES (humanoidSpec) and where each number is from. The sources are named from the biomechanics
+// literature and the numbers are the usual rounded values, not looked up in the books while this was written,
+// so a reader who needs a number for a purpose other than a game should check it there:
+//
+//   Mass.   Winter, "Biomechanics and Motor Control of Human Movement" (4th ed., 2009), Table 4.1, which
+//           prints Dempster's (1955) segment masses as fractions of total body mass: hand 0.006, forearm
+//           0.016, upper arm 0.028, foot 0.0145, leg (shank) 0.0465, thigh 0.100, head and neck 0.081, and
+//           the trunk 0.497 as thorax 0.216, lumbar 0.139 and pelvis 0.142. Two bodies of a side sum
+//           to 0.211 of the total each, so the whole is 1.000. Two judgement calls: the 0.081 of head and
+//           neck is split 0.069 head and 0.012 neck (the split is this package's), and the clavicles have
+//           no body of their own (their mass is in the thorax and the arms).
+//   Limits. Joint ranges of motion of a normal adult: the American Academy of Orthopaedic Surgeons, "Joint
+//           Motion: Method of Measuring and Recording" (1965), and Kapandji, "The Physiology of the Joints",
+//           the figures every ragdoll table starts from: hip flexion 120, extension 20, abduction 45,
+//           adduction 30, internal rotation 40, external 45; knee flexion 140; ankle dorsiflexion 20 (35
+//           loaded) and plantar flexion 50; shoulder flexion 180, extension 50, abduction 180, rotation 70
+//           to 90 each way; elbow flexion 145; wrist flexion 80 and extension 70; lumbar and thoracic
+//           spine together flexion 80, extension 30, lateral bending 35 each way, rotation 45; neck
+//           flexion 45, extension 60, lateral bending 40, rotation 80 (the head and neck bodies share them).
+//           Where one joint stands for two the range is split between them (the spine's two joints, the
+//           neck's two); that split is this package's.
+//   Sizes.  Lengths come from the skeleton (bonepose's humanoid is Drillis and Contini's proportions); the
+//           thicknesses are typical adult girths as fractions of height, rounded, this package's own.
+//   Torque. The most a joint can drive (N m for a 70 kg adult 1.75 m tall; scaled by mass and height):
+//           round numbers of the order of the isometric strength tables in Winter, chapter 6: hip 220, knee
+//           180, ankle 120, lumbar 250, thoracic 200, neck 60, head 40, shoulder 90, elbow 70, wrist 20.
+//
+// ALL LIMITS ARE MEASURED FROM THE SKELETON'S REST POSE (the pose the joints are made in: the arms 15
+// degrees out, the legs straight). A hinge angle of 0 is a straight knee or elbow; a negative knee angle is
+// flexion (a shin swings back, +z) and a positive elbow angle is flexion (a forearm swings forward, -z).
+
+pub const SHAPE_CAPSULE = 0;
+pub const SHAPE_SPHERE = 1;
+pub const SHAPE_BOX = 2;
+
+pub const JOINT_NONE = 0;        // no joint: a root, or a bone with no body of its own
+pub const JOINT_CONETWIST = 1;   // shoulders, hips, spine, neck: swing within a range, twist within a range
+pub const JOINT_HINGE = 2;       // elbows, knees, ankles, wrists
+pub const JOINT_BALL = 3;        // a point joint with no limits
+
+// What one bone becomes
+pub struct BoneSpec {
+  pub hasBody bool;       // false: the bone rides with the nearest ancestor that has a body (a clavicle)
+  pub shape i32;
+  pub radius f32;         // capsule, sphere
+  pub halfLen f32;        // capsule: half the length between the hemispheres' centres
+  pub half Vec3;          // box: half extents, in the bone's frame
+  pub center Vec3;        // the shape's centre in the bone's frame (rest)
+  pub axis Vec3;          // a capsule's long axis in the bone's frame
+  pub mass f32;           // kilograms
+  pub joint i32;          // to the parent body
+  pub jointAxis Vec3;     // hinge axis, or twist axis, in this bone's frame at rest
+  pub lo f32;             // hinge range, or twist range, radians
+  pub hi f32;
+  pub cone f32;           // the solver's cone (cone-twist): at least every swing range below
+  pub flex f32;           // cone-twist swing ranges measured from rest: the twist axis' tip may move this
+  pub ext f32;            // far forward (flexion), back (extension), outward (abduction) and inward
+  pub abd f32;            // (adduction); the range is an ellipse of these four quarter-axes
+  pub add f32;
+  pub maxTorque f32;      // N m
+  pub side f32;           // +1 the being's right (+x), -1 left, 0 the middle: which way is 'outward'
+}
+
+pub struct RigSpec {
+  pub bones List[BoneSpec];
+  pub totalMass f32;
+  pub height f32;
+  pub selfCollide bool;       // bodies that are not joined to each other collide with each other
+  pub friction f32;
+  pub linearDamping f32;
+  pub angularDamping f32;
+
+  pub fn boneCount(self &) usize { bones.len(); }
+
+  // Total of the bodies' masses
+  pub fn massSum(self &) f32 {
+    mut m = 0.;
+    mut i = 0usize;
+    while i < bones.len() { if bones[i].hasBody { m = m + bones[i].mass; } i = i + 1usize; }
+    m;
+  }
+}
+
+fn noBody() BoneSpec {
+  new BoneSpec(false, SHAPE_CAPSULE, 0.05, 0., zero3(), zero3(), new Vec3(0., 1., 0.), 0., JOINT_NONE, new Vec3(1., 0., 0.), 0., 0., 0.,
+    0., 0., 0., 0., 0., 0.);
+}
+
+// A capsule along 'dir' from the bone's origin, 'length' long and 'radius' thick (the hemispheres included)
+fn capsuleBone(dir Vec3, length f32, radius f32, mass f32) BoneSpec {
+  mut b = noBody();
+  b.hasBody = true;
+  b.shape = SHAPE_CAPSULE;
+  b.radius = radius;
+  b.halfLen = maxf(0., length * 0.5 - radius);
+  b.axis = dir;
+  b.center = dir * (length * 0.5);
+  b.mass = mass;
+  b;
+}
+
+fn boxBone(center Vec3, half Vec3, mass f32) BoneSpec {
+  mut b = noBody();
+  b.hasBody = true;
+  b.shape = SHAPE_BOX;
+  b.half = half;
+  b.center = center;
+  b.mass = mass;
+  b;
+}
+
+fn sphereBone(center Vec3, radius f32, mass f32) BoneSpec {
+  mut b = noBody();
+  b.hasBody = true;
+  b.shape = SHAPE_SPHERE;
+  b.radius = radius;
+  b.center = center;
+  b.mass = mass;
+  b;
+}
+
+fn coneTwist(b &mut BoneSpec, axis Vec3, twist f32, flex f32, ext f32, abd f32, add f32, torque f32, side f32) {
+  b.joint = JOINT_CONETWIST;
+  b.jointAxis = axis;
+  b.lo = -twist;
+  b.hi = twist;
+  b.flex = flex;
+  b.ext = ext;
+  b.abd = abd;
+  b.add = add;
+  b.cone = maxf(maxf(flex, ext), maxf(abd, add));
+  b.maxTorque = torque;
+  b.side = side;
+}
+
+fn hingeJoint(b &mut BoneSpec, lo f32, hi f32, torque f32, side f32) {
+  b.joint = JOINT_HINGE;
+  b.jointAxis = new Vec3(1., 0., 0.);
+  b.lo = lo;
+  b.hi = hi;
+  b.maxTorque = torque;
+  b.side = side;
+}
+
+// The ragdoll of bonepose's humanoid for a being 'height' metres tall weighing 'totalMass' kilograms
+// (the tables in this file's header)
+pub fn humanoidSpec(skel &Skeleton, height f32, totalMass f32) RigSpec {
+  imm h = height;
+  imm m = totalMass;
+  imm down = new Vec3(0., -1., 0.);
+  imm up = new Vec3(0., 1., 0.);
+  // strength scales with body size
+  imm k = (totalMass / 70.) * (height / 1.75);
+  mut bones = List[BoneSpec].empty();
+  mut i = 0usize;
+  while i < HUMANOID_BONES { bones.push(noBody()); i = i + 1usize; }
+  // length of the segment that bone 'c' ends: its translation from its parent
+  imm lenUpperArm = skel.restOf(FOREARM_L).translation.length();
+  imm lenForearm = skel.restOf(HAND_L).translation.length();
+  imm lenThigh = skel.restOf(SHIN_L).translation.length();
+  imm lenShin = skel.restOf(FOOT_L).translation.length();
+  imm lenNeck = skel.restOf(HEAD).translation.length();
+
+  // ---- the trunk
+  mut pelvis = boxBone(new Vec3(0., 0.030 * h, 0.), new Vec3(0.112 * h, 0.055 * h, 0.068 * h), 0.142 * m);
+  bones.set(PELVIS, pelvis);
+  mut spine = boxBone(new Vec3(0., 0.065 * h, 0.), new Vec3(0.100 * h, 0.065 * h, 0.062 * h), 0.139 * m);
+  coneTwist(&mut spine, up, 0.20, 0.55, 0.35, 0.35, 0.35, 250. * k, 0.);
+  bones.set(SPINE, spine);
+  mut chest = boxBone(new Vec3(0., 0.055 * h, 0.), new Vec3(0.118 * h, 0.075 * h, 0.068 * h), 0.216 * m);
+  coneTwist(&mut chest, up, 0.40, 0.35, 0.20, 0.30, 0.30, 200. * k, 0.);
+  bones.set(CHEST, chest);
+  // the neck and the head are ONE body, the head's sphere, on the neck's joint at the neck's base with the whole
+  // cervical range (flexion 45 degrees, extension 60, lateral 40, rotation 80): a separate neck of 0.84 kg between a
+  // 15 kg chest and a 4.8 kg head, on stiff joints, was the first thing in every stand to shake itself into its limits
+  mut neck = sphereBone(new Vec3(0., lenNeck + 0.065 * h, 0.), 0.065 * h, 0.081 * m);
+  coneTwist(&mut neck, up, 1.40, 0.80, 1.05, 0.70, 0.70, 100. * k, 0.);
+  bones.set(NECK, neck);
+  bones.set(HEAD, noBody());
+
+  // ---- the arms (the clavicles stay without bodies)
+  mut s = 0usize;
+  while s < 2usize {
+    imm left = s == 0usize;
+    imm side = if left { -1.; } else { 1.; };
+    imm ua = if left { UPPER_ARM_L; } else { UPPER_ARM_R; };
+    imm fa = if left { FOREARM_L; } else { FOREARM_R; };
+    imm hd = if left { HAND_L; } else { HAND_R; };
+    mut a = capsuleBone(down, lenUpperArm, 0.030 * h, 0.028 * m);
+    coneTwist(&mut a, down, 1.30, 2.60, 0.90, 2.40, 0.50, 90. * k, side);
+    bones.set(ua, a);
+    // the hand rides the forearm: a body of 0.42 kg whose spin inertia is a hundredth of its forearm's, on a joint that
+    // carries the arm's whole momentum when it lands, was the one joint that ran far past its limit in every fall
+    // (the solver's iterations cannot keep that mass ratio); so the forearm's capsule runs on over the hand and its
+    // mass includes the hand's (a compound body, a forearm with a hand box, jittered at rest and flung itself
+    // about; see the report)
+    mut f = capsuleBone(down, lenForearm + 0.108 * h, 0.024 * h, 0.022 * m);
+    hingeJoint(&mut f, -0.05, 2.50, 70. * k, side);
+    bones.set(fa, f);
+    bones.set(hd, noBody());
+    s = s + 1usize;
+  }
+
+  // ---- the legs
+  s = 0usize;
+  while s < 2usize {
+    imm left = s == 0usize;
+    imm side = if left { -1.; } else { 1.; };
+    imm th = if left { THIGH_L; } else { THIGH_R; };
+    imm sh = if left { SHIN_L; } else { SHIN_R; };
+    imm ft = if left { FOOT_L; } else { FOOT_R; };
+    mut t = capsuleBone(down, lenThigh, 0.046 * h, 0.100 * m);
+    coneTwist(&mut t, down, 0.75, 2.10, 0.35, 0.80, 0.50, 220. * k, side);
+    bones.set(th, t);
+    mut shin = capsuleBone(down, lenShin, 0.034 * h, 0.0465 * m);
+    hingeJoint(&mut shin, -2.45, 0.03, 180. * k, side);
+    bones.set(sh, shin);
+    // the foot points forward (-z) from the ankle; the sole is 0.039 H below it
+    mut foot = boxBone(new Vec3(0., -0.0165 * h, -0.031 * h), new Vec3(0.029 * h, 0.0225 * h, 0.076 * h), 0.0145 * m);
+    hingeJoint(&mut foot, -0.90, 0.60, 120. * k, side);
+    bones.set(ft, foot);
+    s = s + 1usize;
+  }
+  new RigSpec(bones, totalMass, height, true, 0.8, 0.05, 0.3);
+}
+
+// A recipe for any skeleton: a capsule along each bone to its first child (a bone with no child gets a
+// sphere), 'thickness' times the bone's length thick, a cone-twist joint with the same swing and twist at every
+// joint, and masses in proportion to the capsules' volumes summing to 'totalMass'. A creature's author edits the
+// result (a hinge for a knee, a box for a body) rather than writing the whole.
+pub fn genericSpec(skel &Skeleton, totalMass f32, thickness f32, swing f32, twist f32) RigSpec {
+  mut bones = List[BoneSpec].empty();
+  mut volume = 0.;
+  mut sizes = List[f32].empty();
+  mut i = 0usize;
+  while i < skel.boneCount() {
+    imm c = skel.childOf(i);
+    mut len = 0.1;
+    if c >= 0i32 {
+      len = maxf(skel.restOf(usize.from(c)).translation.length(), 0.01);
+    } else if skel.parentOf(i) >= 0i32 {
+      len = maxf(skel.restOf(i).translation.length() * 0.6, 0.02);
+    }
+    imm r = minf(thickness * len, len * 0.5);
+    sizes.push(len);
+    volume = volume + r * r * len;
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < skel.boneCount() {
+    imm c = skel.childOf(i);
+    imm len = *sizes[i];
+    imm r = minf(thickness * len, len * 0.5);
+    mut dir = new Vec3(0., 1., 0.);
+    if c >= 0i32 { dir = skel.restOf(usize.from(c)).translation.normalize(); }
+    else if skel.parentOf(i) >= 0i32 { dir = skel.restOf(i).translation.normalize(); }
+    imm mass = totalMass * (r * r * len) / volume;
+    mut b = if c >= 0i32 { capsuleBone(dir, len, r, mass); } else { sphereBone(dir * (len * 0.5), r, mass); };
+    if skel.parentOf(i) >= 0i32 { coneTwist(&mut b, dir, twist, swing, swing, swing, swing, 100. * mass / 70., 0.); }
+    bones.push(b);
+    i = i + 1usize;
+  }
+  new RigSpec(bones, totalMass, 0., true, 0.8, 0.05, 0.3);
+}
