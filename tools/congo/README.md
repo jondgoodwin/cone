@@ -351,7 +351,8 @@ The futex calls `WaitOnAddress` and its wakes, which the Windows SDK's
 `Synchronization.lib` defines and the C runtime's default link line lacks; since
 `[link]` has no per-system form, Congo's Windows link line adds
 `synchronization.lib` itself, beside `msvcrt.lib`. A program that calls none of it
-takes nothing from it.
+takes nothing from it. The same goes for `shell32.lib`, whose `CommandLineToArgvW`
+the `process` package's `args` calls on Windows.
 
 ## Runtime libraries
 
@@ -651,7 +652,11 @@ packages/geomath/
    needs ends with 0xC0000135 and Congo says so, rather than the loader's
    modal dialog stopping it on the desktop.
 3. **Compares** what the test printed with `tests/<name>.out`, line ends and
-   trailing blank lines aside, and its exit status with 0, or with the number
+   trailing blank lines aside (or with `tests/<name>.<host>.out`, the host
+   `windows`, `linux` or `macos`, where the test has a file for the system it
+   runs on: for a test that cannot print the same on every system, though it is
+   better written to print the same by asking `isWindows()` for what
+   differs), and its exit status with 0, or with the number
    in `tests/<name>.exit` where there is one. A test that writes to stderr on
    purpose -- a panic's line, whose exit status is abort's, 3221226505 on
    Windows (read as death by SIGABRT, -6, elsewhere) -- pins that too, in `tests/<name>.err`, written by hand; without

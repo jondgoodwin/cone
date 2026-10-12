@@ -1127,11 +1127,11 @@ class Scenarios(unittest.TestCase):
         self.assertEqual([u.pkg.name for u in congo.build_order(core, registry)],
                          ["libc", "core"])
 
-    @unittest.skipUnless(IS_WINDOWS, "libc and posix bind the Windows C runtime")
     def test_the_os_layer_sample(self):
         # samples/oslayer, copied here and run: libc and posix from the
         # repository's packages, posix importing libc. Each step prints 'ok' when
-        # what it checked held; the program exits with the count that did not
+        # what it checked held; the program exits with the count that did not.
+        # The same program and the same output on Windows and on Linux
         sample = self.root / "oslayer"
         shutil.copytree(congo.REPO / "samples" / "oslayer", sample,
                         ignore=shutil.ignore_patterns("build"))
@@ -1151,10 +1151,10 @@ class Scenarios(unittest.TestCase):
             directories
               ok    mkdir made sub
               ok    chdir went into sub
-              ok    getcwd there is getcwd here with \\sub after it
+              ok    getcwd there is getcwd here with a separator and sub after it
               ok    chdir came back out
-              ok    realpath of sub/../notes.txt is here with \\notes.txt after it
-              ok    listing found two entries: notes.txt (23 bytes) and sub (a directory)
+              ok    realpath of sub/../notes.txt is here with a separator and notes.txt after it
+              ok    listing found two entries: notes.txt (a file) and sub (a directory)
             processes and the environment
               ok    setenv set OSLAYER_GREETING
               ok    getenv reads it back
@@ -1588,6 +1588,21 @@ class Testing(unittest.TestCase):
         self.assertIn("test wrong ... FAILED", run.stdout)
         self.assertEqual((pkg / "tests" / "wrong.out").read_text(), "5\n")
         self.congo("test", "doubles", cwd=pkg)
+
+    def test_a_host_expectation_file_comes_first(self):
+        # tests/<name>.<host>.out, for the system the test runs on, is what the
+        # output is compared with; another host's file is not looked at, and
+        # without one for this host tests/<name>.out is
+        pkg = self.counter(self.root)
+        host = congo.HOST_OS
+        other = "linux" if host != "linux" else "windows"
+        # wrong.out says 5 and the test prints 4: this host's own file says 4
+        write(pkg / "tests" / f"wrong.{host}.out", "4\n")
+        write(pkg / "tests" / f"doubles.{other}.out", "not 42\n")
+        run = self.congo("test", cwd=pkg, ok=False)
+        self.assertIn("test wrong ... ok", run.stdout)
+        self.assertIn("test doubles ... ok", run.stdout)
+        self.assertIn("counter: 3 tests: 3 passed, 0 failed", run.stdout)
 
     def halver(self, root: Path) -> Path:
         """A library whose one function checks its argument in a debug build
