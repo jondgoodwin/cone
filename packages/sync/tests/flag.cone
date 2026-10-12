@@ -57,11 +57,11 @@ fn operations() {
 // Whose turn it is: false is the first thread's, true the second's
 imm turn Atomic[bool];
 // Changed only by the thread whose turn it is
-mut count u64;
+imm count Atomic[u64];
 
 fn @initpure init() {
   turn = Atomic[bool].of(false);
-  count = 0u64;
+  count = Atomic[u64].of(0u64);
 }
 
 const rounds = 20000u64;
@@ -73,7 +73,7 @@ fn player(mine bool) u64 {
     while turn.load() != mine {
       thread.yieldNow();
     }
-    count = count + 1u64;
+    count.storeOrdered(count.loadOrdered(MemOrder.Relaxed) + 1u64, MemOrder.Relaxed);
     turn.store(!mine);
     i = i + 1u64;
   }
@@ -87,7 +87,7 @@ fn main() i32 {
   imm b = thread.start(true, &player);
   imm taken = a.join() + b.join();
   expectUInt(taken, 40000u64, "the turns the two threads took");
-  expectUInt(count, 40000u64, "the count only the flag guards");
+  expectUInt(count.loadOrdered(MemOrder.Relaxed), 40000u64, "the count only the flag guards");
   expectBool(turn.load(), false, "the flag back with the first thread");
   done();
 }

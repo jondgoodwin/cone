@@ -22,16 +22,30 @@ imm m Mutex;
 imm notEmpty Condvar;
 imm notFull Condvar;
 
-// The buffer, guarded by m: a ring of slots, where the oldest is, and how many
-mut ring = new Array[u64, 4] <- fill 0u64;
-mut head u64 = 0u64;
-mut count u64 = 0u64;
+// The buffer, guarded by m: a ring of slots, where the oldest is, and how many.
+// They are atomics, read and written relaxed with no ordering of their own: what
+// orders them is m
+imm ring Array[Atomic[u64], 4];
+imm head Atomic[u64];
+imm count Atomic[u64];
 
 // For notifyAll: a flag guarded by m, and how many are waiting on it
-mut flag bool = false;
+imm flag Atomic[bool];
 imm waiting Atomic[u32];
 
+fn rd(a &Atomic[u64]) u64 {
+  a.loadOrdered(MemOrder.Relaxed);
+}
+
+fn wr(a &Atomic[u64], v u64) {
+  a.storeOrdered(v, MemOrder.Relaxed);
+}
+
 fn @initpure init() {
+  ring = [Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64)];
+  head = Atomic[u64].of(0u64);
+  count = Atomic[u64].of(0u64);
+  flag = Atomic[bool].of(false);
   m = Mutex.make();
   notEmpty = Condvar.make();
   notFull = Condvar.make();
@@ -40,23 +54,23 @@ fn @initpure init() {
 
 fn put(v u64) {
   m.lock();
-  while count == slots {
+  while rd(&count) == slots {
     notFull.condWait(&m);
   }
-  ring[(head + count) % slots] = v;
-  count = count + 1u64;
+  wr(&ring[(rd(&head) + rd(&count)) % slots], v);
+  wr(&count, rd(&count) + 1u64);
   notEmpty.notifyOne();
   m.unlock();
 }
 
 fn take() u64 {
   m.lock();
-  while count == 0u64 {
+  while rd(&count) == 0u64 {
     notEmpty.condWait(&m);
   }
-  imm v = ring[head];
-  head = (head + 1u64) % slots;
-  count = count - 1u64;
+  imm v = rd(&ring[rd(&head)]);
+  wr(&head, (rd(&head) + 1u64) % slots);
+  wr(&count, rd(&count) - 1u64);
   notFull.notifyOne();
   m.unlock();
   v;
@@ -85,8 +99,8 @@ fn consume(k u64) u64 {
 
 // One handoff: whether every item arrived once
 fn handoff() bool {
-  head = 0u64;
-  count = 0u64;
+  wr(&head, 0u64);
+  wr(&count, 0u64);
   imm c1 = thread.start(0u64, &consume);
   imm c2 = thread.start(1u64, &consume);
   imm p1 = thread.start(1u64, &produce);
@@ -96,14 +110,14 @@ fn handoff() bool {
   // Producer k's items sum to k * 1000000 * n + n(n+1)/2
   imm n = perProducer;
   imm want = 3000000u64 * n + n * (n + 1u64);
-  made == 2u64 * n and sum == want and count == 0u64;
+  made == 2u64 * n and sum == want and rd(&count) == 0u64;
 }
 
 // Wait under m until the flag is set
 fn awaitFlag(n u32) u32 {
   m.lock();
   waiting.add(1u32);
-  while !flag {
+  while !flag.loadOrdered(MemOrder.Relaxed) {
     notEmpty.condWait(&m);
   }
   m.unlock();
@@ -140,7 +154,7 @@ fn main() i32 {
   imm w3 = thread.start(0u32, &awaitFlag);
   while waiting.load() < 3u32 { thread.sleep(Duration.fromMillis(1)); }
   m.lock();
-  flag = true;
+  flag.storeOrdered(true, MemOrder.Relaxed);
   notEmpty.notifyAll();
   m.unlock();
   expectUInt(u64.from(w1.join() + w2.join() + w3.join()), 3u64, "notifyAll woke all three waiters");
