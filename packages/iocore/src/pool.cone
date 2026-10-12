@@ -89,10 +89,10 @@ pub struct Lane {
   pub id u32;
 
   // General work: up to 4 threads, 1,024 queued
-  pub fn general() Lane {lanesReady(); new Lane(0u32);}
+  pub fn general() Lane {new Lane(0u32);}
   // Names looked up: up to 2 threads, 256 queued, so a slow resolver holds
   // up only other look-ups
-  pub fn dns() Lane {lanesReady(); new Lane(1u32);}
+  pub fn dns() Lane {new Lane(1u32);}
 
   // Its counters, as they are now
   pub fn stats(self) LaneStats {
@@ -165,18 +165,19 @@ struct LaneState {
 
 const maxLanes = 64u32;
 
-imm laneOnce Once;
+// The lanes' registry. Any loop's thread and the lanes' own workers reach it:
+// the table is made, and the default lanes in it, in the module's 'init'
+// (iocore.cone); a lane added later is put in under laneLock, and entries are
+// read without the lock, so the count is an atomic and the table's address one,
+// both held by 'imm' globals
 imm laneLock Mutex;
-mut laneTable *usize = null;
-mut laneCount u32 = 0u32;
+imm laneTable Atomic[*usize];
+imm laneCount Atomic[u32];
 
-// The two lanes every process has, made once
-fn lanesReady() {
-  laneOnce.callOnce(&makeDefaultLanes);
-}
-
-fn makeDefaultLanes() {
-  laneTable = libc.calloc(usize.from(maxLanes), 8usize) as *usize;
+// The two lanes every process has (three on Linux), made by 'init' before any
+// thread can reach them. A lane keeps no thread until it has work, so this
+// starts none
+fn @initpure makeDefaultLanes() {
   addLaneLocked(new LaneConfig(name: "iocore general", maxThreads: 4u32, queueBound: 1024u32));
   addLaneLocked(new LaneConfig(name: "iocore dns", maxThreads: 2u32, queueBound: 256u32));
   // Linux: the files' own, for ReadAt and WriteAt (linux.cone); its queue is
@@ -192,9 +193,8 @@ const filesLane = 2u32;
 // A new lane of the blocking pool. At most 64 lanes, the two every process
 // has among them; one more is a panic
 pub fn addLane(cfg LaneConfig, file &Array[u8] = srcFile(), line u32 = srcLine()) Lane {
-  lanesReady();
   laneLock.lock();
-  if laneCount >= maxLanes {
+  if laneCount.load() >= maxLanes {
     laneLock.unlock();
     panic("iocore: more than 64 lanes in the blocking pool", file, line);
   }
@@ -203,7 +203,7 @@ pub fn addLane(cfg LaneConfig, file &Array[u8] = srcFile(), line u32 = srcLine()
   l;
 }
 
-fn addLaneLocked(cfg LaneConfig) Lane {
+fn @initpure addLaneLocked(cfg LaneConfig) Lane {
   imm p = libc.malloc(mem.sizeof[LaneState]()) as *LaneState;
   if p as usize == 0usize {panic("iocore: out of memory for a lane");}
   mut name = new Array[u8, 32] <- fill 0u8;
@@ -221,9 +221,9 @@ fn addLaneLocked(cfg LaneConfig) Lane {
     idleFor: Duration.fromMillis(i64.from(cfg.idleMillis)),
     started: 0u64, ran: 0u64, cancelled: 0u64, refused: 0u64, waitNs: 0u64, maxWaitNs: 0u64,
     name: name, nameLen: k));
-  imm id = laneCount;
-  *(laneTable + usize.from(id)) = p as usize;
-  laneCount = laneCount + 1u32;
+  imm id = laneCount.load();
+  *(laneTable.load() + usize.from(id)) = p as usize;
+  laneCount.store(id + 1u32);
   // The threads it keeps even when idle
   imm s = p as &mut LaneState;
   mut started = 0u32;
@@ -238,9 +238,8 @@ fn addLaneLocked(cfg LaneConfig) Lane {
 
 // Lane id's state, or null when there is no such lane
 fn laneAt(id u32) *LaneState {
-  lanesReady();
   if id >= maxLanes {return null;}
-  *(laneTable + usize.from(id)) as *LaneState;
+  *(laneTable.load() + usize.from(id)) as *LaneState;
 }
 
 // What a lane's thread is handed: its lane. It declares Sendable, a promise
