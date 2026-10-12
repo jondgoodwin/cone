@@ -13,10 +13,11 @@
 //    server stalling: Failed at the Http stage, kind 'timed out', with
 //    noResponse (no byte of a response came) and not unsent.
 // 6. connectTimeout, connecting to a port nothing listens on: the
-//    connection fails at the Connect stage, timed out (Windows retries a
-//    refused loopback connect rather than refusing it at once: within 200
-//    ms it has not said refused), and the request waiting on it is Failed,
-//    unsent.
+//    connection fails at the Connect stage, and the request waiting on it is
+//    Failed, unsent. On Windows it is timed out (Windows retries a refused
+//    loopback connect rather than refusing it at once: within 200 ms it has
+//    not said refused); on Linux it is closed, refused at once, in well
+//    under connectTimeout.
 // 7. A deadline that does not pass: the request is Done, and its watch is
 //    let go (nothing fires later).
 
@@ -345,7 +346,12 @@ fn main() i32 {
     expectUInt(u64.from(req7), 1u64, "6: its request: one final answer");
     expect(req7Unsent, "6: ...unsent");
     expect(req7Stage == Stage.Connect, "6: ...at the Connect stage");
-    expect(closed.failure.error.kind == ErrorKind.TimedOut, "6: ...timed out: Windows had not refused it within 200 ms");
+    if isWindows() {
+      expect(closed.failure.error.kind == ErrorKind.TimedOut, "6: ...timed out: Windows had not refused it within 200 ms");
+    } else {
+      expect(closed.failure.error.kind == ErrorKind.Closed and took < 200i64,
+        "6: ...refused at once, before connectTimeout: Linux says so on loopback");
+    }
   }
 
   // 7. A deadline that does not pass

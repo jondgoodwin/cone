@@ -1074,8 +1074,10 @@ program compiles, links and runs on both, and so do threads, `sync` and actors
 `path`, `env`, `process` and `posix` (the C library's POSIX functions, and
 `posix_spawn` for `process`), `iobuf` (`mmap`) and `iocore` (epoll, with an
 eventfd and a timerfd; `linux.cone` beside `windows.cone`, which keeps the
-completion port); what is built on the rest of the OS (HTTP and TLS) is Windows
-only for now, and the suite's tests of it fail to link on Linux.
+completion port), and so do HTTP and TLS (`http1`, `httpconn`, `httpclient` and
+`tls`, over `iocore` and OpenSSL; `tls` asks crypt32 on Windows whether a
+server is who it says it is, and on Linux judges the chain with OpenSSL's own
+check against the system's roots).
 
 #### Building on Linux
 
@@ -1108,9 +1110,9 @@ with `conec` built at `build/x64-release/conec`), and `sync`, `thread`,
 a section for each system, `[link.windows]`, `[link.linux]` and
 `[link.macos]`, added to its plain `[link]`, and `tls` links `ssl` and
 `crypto` from `[link.linux]`, so Ubuntu's `libssl-dev` must be installed.)
-The packages built on
-Windows alone (HTTP's `httpconn` examples and `httpclient`, `tls`, `sdl` and
-what draws) do not build or run there. A test whose output differs by system has a
+`http`, `http1`, `httpconn`, `httpclient` and `tls` pass their tests there, and
+their examples build. The packages built on
+Windows alone (`sdl` and what draws) do not build or run there. A test whose output differs by system has a
 file of its own for the host, `name.linux.out` beside `name.out` (Congo reads
 `name.<host>.out` before `name.out`); a test is written to print the same
 everywhere where it can, asking `isWindows()` for the values that differ.
