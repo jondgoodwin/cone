@@ -9,7 +9,9 @@
 // refused connection; then TLS: a connection to a server whose certificate
 // the test's root vouches for, a GET over it, and a connection to one it does
 // not (the connection is made, the first request fails at the handshake,
-// Stage.Tls); and a Conn dropped under a request in flight, which ends it
+// Stage.Tls, or, if the connection broke first, Read or Closed); the same two
+// servers through a Client, whose fetch for the untrusted one fails at
+// Stage.Tls; and a Conn dropped under a request in flight, which ends it
 // Cancelled.
 
 mod conn;
@@ -349,6 +351,23 @@ fn note(what &str, yes bool) {
   if yes {printStr(": yes\n");} else {printStr(": NO\n");}
 }
 
+// Whether a request failed because the connection's TLS was refused. A
+// connection is made when its TCP connection is, so its first request is
+// asked for while the handshake runs; the refusal ends that request at the
+// TLS stage, unless the connection broke first (the peer's reset read, or the
+// connection already closed when the request came), which on a busy machine
+// happens now and then
+fn refusedTls(r Result[Response, FetchError]) bool {
+  match &r {
+    case imm e &Error {
+      imm s = e.failure.stage;
+      e.kind() == aiohttp.FetchErrorKind.Failed and (s == httpclient.Stage.Tls or s == httpclient.Stage.Read or
+        s == httpclient.Stage.Closed);
+    }
+    else {false;}
+  }
+}
+
 fn waitedAtLeast(t0 Instant, ms i64) bool {
   t0.elapsed() >= Duration.fromMillis(ms);
 }
@@ -445,7 +464,7 @@ actor Prober {
     cfg2.verify = tls.Verifier.roots(readText("ca.pem").view());
     cfg2.offline = true;
     imm s2 = connOf("untrusted connect", await aiohttp.connectSecure("127.0.0.1", untrustedPort, cfg2));
-    say("untrusted get", await s2.request(get("/hello"), String.empty()));
+    note("untrusted get failed at the handshake", refusedTls(await s2.request(get("/hello"), String.empty())));
 
     // The same two servers through a Client, whose config carries the root
     mut hcfg = httpclient.Config.make();
