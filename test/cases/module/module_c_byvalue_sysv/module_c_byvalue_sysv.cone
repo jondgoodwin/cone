@@ -1,0 +1,193 @@
+// Structs passed and returned by value across the C boundary in the classes
+// System V x86-64 tells apart, checked against C compiled by the platform's
+// own C compiler (cside.c, which the scenario links): an integer and a float
+// sharing a struct (each eightbyte of its own class), floats only, a struct
+// nested in another, one over 16 bytes (copied to the stack, returned through
+// a result slot), several among scalars, and running out of argument
+// registers. Each is exercised both ways: Cone calling C, and C calling Cone's
+// own C-named functions, directly and through a callback, written in the call
+// or bound to a variable first. The same program runs on Windows, where the
+// platform's own rules apply.
+mod module_c_byvalue_sysv;
+import stdio use *;
+
+struct Ext2 { pub a i32; pub b i32; }                    // 8 bytes
+struct Vec2 { pub x f32; pub y f32; }                    // 8 bytes, floats
+struct Vec3 { pub x f32; pub y f32; pub z f32; }         // 12 bytes
+struct IntDbl { pub a i32; pub d f64; }                  // 16 bytes: integer, float
+struct DblInt { pub d f64; pub n i64; }                  // 16 bytes: float, integer
+struct DblDbl { pub a f64; pub b f64; }                  // 16 bytes: float, float
+struct FltInt { pub f f32; pub n i32; }                  // 8 bytes: a float and an integer in one eightbyte
+struct Nest { pub v Vec2; pub k i32; pub w f32; }        // 16 bytes
+struct Short5 { pub s Array[i16, 5]; }                   // 10 bytes
+struct Big3 { pub a i64; pub b i64; pub c i64; }         // 24 bytes
+struct Big5 { pub x Array[f64, 5]; }                     // 40 bytes
+struct Vec4 { pub x f32; pub y f32; pub z f32; pub w f32; }  // 16 bytes: floats, two eightbytes
+struct Big { pub lo i64; pub hi i64; }                   // 16 bytes
+
+extern {
+  fn @c intdbl_code(v IntDbl) i64;
+  fn @c dblint_code(v DblInt) i64;
+  fn @c dbldbl_code(v DblDbl) i64;
+  fn @c fltint_code(v FltInt) i64;
+  fn @c nest_code(v Nest) i64;
+  fn @c short5_code(v Short5) i64;
+  fn @c big3_code(v Big3) i64;
+  fn @c big5_code(v Big5) i64;
+  fn @c vec4_code(v Vec4) i64;
+  fn @c among(g Big3, i IntDbl, v Vec3, dd DblDbl, k i32) i64;
+
+  fn @c six_then_ext(a i32, b i32, c i32, d i32, e i32, f i32, s Ext2) i64;
+  fn @c five_then_big(a i32, b i32, c i32, d i32, e i32, g Big) i64;
+  fn @c eight_then_vec2(d1 f64, d2 f64, d3 f64, d4 f64, d5 f64, d6 f64, d7 f64, d8 f64, v Vec2) i64;
+  fn @c seven_ints_dbldbl(a i32, b i32, c i32, d i32, e i32, p DblDbl, f i32, g i32) i64;
+
+  fn @c intdbl_make(n i32) IntDbl;
+  fn @c dblint_make(n i32) DblInt;
+  fn @c dbldbl_make(n i32) DblDbl;
+  fn @c fltint_make(n i32) FltInt;
+  fn @c nest_make(n i32) Nest;
+  fn @c short5_make(n i32) Short5;
+  fn @c big3_make(n i32) Big3;
+  fn @c big5_make(n i32) Big5;
+  fn @c sret_then_ext(a i32, b i32, c i32, d i32, e i32, s Ext2) Big3;
+
+  fn @c c_via_cone_intdbl() i64;
+  fn @c c_via_cone_dblint() i64;
+  fn @c c_via_cone_nest() i64;
+  fn @c c_via_cone_big3() i64;
+  fn @c c_via_cone_vec4() i64;
+  fn @c c_via_cone_among() i64;
+  fn @c c_via_cone_six() i64;
+  fn @c c_via_cone_five() i64;
+  fn @c c_via_cone_sret_then() i64;
+  fn @c c_apply_intdbl(a i32, f &fn(v IntDbl) i64) i64;
+  fn @c c_apply_big3(f &fn(v Big3, k i32) Big3) i64;
+  fn @c c_apply_vec4(unused i32, f &fn(v Vec4) i32) i32;
+  fn @c c_apply_ext(junk1 i64, junk2 i64, f &fn(e Ext2) i32) i32;
+}
+
+// Cone's own C-named functions, which C calls
+pub fn @c cone_intdbl(v IntDbl) i64 {
+  i64.from(v.a) * 1000 + i64.from(v.d * 4.);
+}
+pub fn @c cone_dblint(v DblInt, k i32) DblInt {
+  new DblInt(v.d * f64.from(k), v.n + 1);
+}
+pub fn @c cone_nest(v Nest) Nest {
+  new Nest(new Vec2(v.v.y, v.v.x), v.k + 1, v.w + 1.);
+}
+pub fn @c cone_big3(v Big3, k i32) Big3 {
+  new Big3(v.c * i64.from(k), v.b, v.a);
+}
+pub fn @c cone_vec4(v Vec4, k f32) Vec4 {
+  new Vec4(v.x * k, v.y * k, v.z * k, v.w * k);
+}
+pub fn @c cone_vec4_code(v Vec4) i32 {
+  i32.from(v.x) * 1000 + i32.from(v.y) * 100 + i32.from(v.z) * 10 + i32.from(v.w);
+}
+pub fn @c cone_ext_code(e Ext2) i32 {
+  e.a * 1000 + e.b;
+}
+pub fn @c cone_among(g Big3, i IntDbl, v Vec3, dd DblDbl, k i32) i64 {
+  imm hi = (g.a * 10 + g.b) * 10 + g.c;
+  imm mid = ((hi * 10 + i64.from(i.a)) * 10 + i64.from(i.d)) * 10 + i64.from(v.x);
+  imm low = ((mid * 10 + i64.from(v.y)) * 10 + i64.from(v.z)) * 10 + i64.from(dd.a);
+  (low * 10 + i64.from(dd.b)) * 10 + i64.from(k);
+}
+pub fn @c cone_six_then_ext(a i32, b i32, c i32, d i32, e i32, f i32, s Ext2) i64 {
+  imm n = i64.from(((((a * 10 + b) * 10 + c) * 10 + d) * 10 + e) * 10 + f);
+  n * 1000 + i64.from(s.a * 10 + s.b);
+}
+pub fn @c cone_five_then_big(a i32, b i32, c i32, d i32, e i32, g Big) i64 {
+  imm n = i64.from((((a * 10 + b) * 10 + c) * 10 + d) * 10 + e);
+  n * 1000 + g.lo * 10 + g.hi;
+}
+pub fn @c cone_sret_then_ext(a i32, b i32, c i32, d i32, e i32, s Ext2) Big3 {
+  new Big3(i64.from(a + b + c + d + e), i64.from(s.a), i64.from(s.b));
+}
+
+fn show(label &str, n i64) {
+  printStr(label); printStr(" "); printInt(n); printStr("\n");
+}
+fn showF(label &str, a f64, b f64) {
+  printStr(label); printStr(" "); printFloat(a); printStr(" "); printFloat(b); printStr("\n");
+}
+fn showI(label &str, a i64, b i64, c i64) {
+  printStr(label); printStr(" "); printInt(a); printStr(" "); printInt(b);
+  printStr(" "); printInt(c); printStr("\n");
+}
+
+fn main() {
+  // Cone calls C, passing structs
+  show("intdbl_code", intdbl_code(new IntDbl(3, 1.5)));
+  show("dblint_code", dblint_code(new DblInt(2.5, 7)));
+  show("dbldbl_code", dbldbl_code(new DblDbl(1.5, 2.25)));
+  show("fltint_code", fltint_code(new FltInt(2.25, 4)));
+  show("nest_code", nest_code(new Nest(new Vec2(1., 2.), 3, 4.)));
+  show("short5_code", short5_code(new Short5([1i16, 2i16, 3i16, 4i16, 5i16])));
+  show("big3_code", big3_code(new Big3(1, 2, 3)));
+  show("big5_code", big5_code(new Big5([1., 2., 3., 4., 5.])));
+  show("vec4_code", vec4_code(new Vec4(1., 2., 3., 4.)));
+  show("among", among(new Big3(1, 2, 3), new IntDbl(4, 5.5), new Vec3(6., 7., 8.), new DblDbl(9., 1.), 2));
+
+  // Running out of argument registers
+  show("six_then_ext", six_then_ext(1, 2, 3, 4, 5, 6, new Ext2(7, 8)));
+  show("five_then_big", five_then_big(1, 2, 3, 4, 5, new Big(6, 7)));
+  show("eight_then_vec2", eight_then_vec2(1., 2., 3., 4., 5., 6., 7., 8., new Vec2(9., 3.)));
+  show("seven_ints_dbldbl", seven_ints_dbldbl(1, 2, 3, 4, 5, new DblDbl(6., 7.), 8, 9));
+
+  // Cone calls C, which returns structs
+  imm a = intdbl_make(5);
+  showF("intdbl_make", f64.from(a.a), a.d);
+  imm b = dblint_make(5);
+  showF("dblint_make", b.d, f64.from(b.n));
+  imm c = dbldbl_make(5);
+  showF("dbldbl_make", c.a, c.b);
+  imm d = fltint_make(5);
+  showF("fltint_make", f64.from(d.f), f64.from(d.n));
+  imm e = nest_make(1);
+  showF("nest_make.v", f64.from(e.v.x), f64.from(e.v.y));
+  showF("nest_make.kw", f64.from(e.k), f64.from(e.w));
+  imm s = short5_make(1);
+  showI("short5_make", i64.from(s.s[0]), i64.from(s.s[2]), i64.from(s.s[4]));
+  imm g = big3_make(10);
+  showI("big3_make", g.a, g.b, g.c);
+  imm h = big5_make(1);
+  showF("big5_make", h.x[0], h.x[4]);
+  imm r = sret_then_ext(1, 2, 3, 4, 5, new Ext2(6, 7));
+  showI("sret_then_ext", r.a, r.b, r.c);
+
+  // C calls Cone's C-named functions
+  show("c_via_cone_intdbl", c_via_cone_intdbl());
+  show("c_via_cone_dblint", c_via_cone_dblint());
+  show("c_via_cone_nest", c_via_cone_nest());
+  show("c_via_cone_big3", c_via_cone_big3());
+  show("c_via_cone_vec4", c_via_cone_vec4());
+  show("c_via_cone_among", c_via_cone_among());
+  show("c_via_cone_six", c_via_cone_six());
+  show("c_via_cone_five", c_via_cone_five());
+  show("c_via_cone_sret_then", c_via_cone_sret_then());
+  show("c_apply_intdbl", c_apply_intdbl(3, &cone_intdbl));
+  show("c_apply_big3", c_apply_big3(&cone_big3));
+  show("c_apply_vec4", c_apply_vec4(0, &cone_vec4_code));
+  show("c_apply_ext", c_apply_ext(111, 222, &cone_ext_code));
+
+  // Cone calls its own C-named functions
+  show("cone_intdbl", cone_intdbl(new IntDbl(3, 1.5)));
+  show("cone_among", cone_among(new Big3(1, 2, 3), new IntDbl(4, 5.5), new Vec3(6., 7., 8.), new DblDbl(9., 1.), 2));
+
+  // A callback bound to a variable and then handed to C is the function
+  // itself, as one written in the call is: C builds the struct and calls it
+  // as C. (Cone calling a C-named function through such a reference is not
+  // pinned: it passes Cone's own convention, the open '&fn' convention
+  // question in WI\extern-and-c-modules.md.)
+  imm cb4 = &cone_vec4_code;
+  show("c_apply_vec4 bound", c_apply_vec4(0, cb4));
+  imm cb2 = &cone_ext_code;
+  show("c_apply_ext bound", c_apply_ext(111, 222, cb2));
+  imm cbi = &cone_intdbl;
+  show("c_apply_intdbl bound", c_apply_intdbl(3, cbi));
+  imm cbb = &cone_big3;
+  show("c_apply_big3 bound", c_apply_big3(cbb));
+}
