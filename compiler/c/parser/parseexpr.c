@@ -846,11 +846,16 @@ INode *parseAmper(ParseState *parse) {
         // parseFn, which would take that block as an anonymous function's own.
         if (parse->inrettype) {
             lexNextToken();
+            // '&fn @c (...)': the type of a reference to a C-named function
+            int ccall = lexIsToken(CAttrToken);
+            if (ccall)
+                lexNextToken();
             if (lexIsToken(IdentToken)) {
                 errorMsgLex(WarnName, "Unnecessary function name is ignored");
                 lexNextToken();
             }
             anode->vtexp = parseFnSig(parse, 1);
+            ((FnSigNode*)anode->vtexp)->ccall = (uint8_t)ccall;
             parseFnSigSettle(parse, (FnSigNode*)anode->vtexp, 1);
             parseRefBounds(parse, anode);
             return (INode *)anode;
