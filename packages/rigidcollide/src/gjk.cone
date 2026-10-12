@@ -39,7 +39,7 @@ pub struct GjkResult {
   pub simplex Simplex;
 }
 
-struct Closest {
+struct SimplexPoint {
   v Vec3;
   inside bool;
   lam Array[f32, 4];
@@ -92,7 +92,7 @@ fn segWeights(a Vec3, b Vec3) Array[f32, 2] {
 
 // The point of the simplex nearest the origin, with the simplex cut down to
 // the vertices that support it (weight zero vertices dropped)
-fn reduceSimplex(s &mut Simplex) Closest {
+fn reduceSimplex(s &mut Simplex) SimplexPoint {
   mut lam = [0., 0., 0., 0.];
   mut inside = false;
   if s.n == 1usize {
@@ -118,7 +118,9 @@ fn reduceSimplex(s &mut Simplex) Closest {
       imm nrm = (s.w[j] - wi).cross(s.w[k] - wi);
       imm so = nrm.dot(-wi);
       imm sl = nrm.dot(s.w[l] - wi);
-      if so * sl <= 0. and not (so == 0. and sl != 0.) {
+      // A nearly flat tetrahedron cannot hold the origin: every face is a candidate
+      imm flat = absf(sl) <= 1.0e-5 * nrm.length() * (s.w[l] - wi).length();
+      if flat or (so * sl <= 0. and not (so == 0. and sl != 0.)) {
         imm t = triWeights(wi, s.w[j], s.w[k]);
         imm p = wi * t[0usize] + s.w[j] * t[1usize] + s.w[k] * t[2usize];
         imm d = p.lengthSquared();
@@ -152,7 +154,7 @@ fn reduceSimplex(s &mut Simplex) Closest {
   i = 0usize;
   while i < out.n { v = v + out.w[i] * lam[i]; i = i + 1usize; }
   *s = out;
-  new Closest(v, inside, lam);
+  new SimplexPoint(v, inside, lam);
 }
 
 // GJK on the cores of a and b. Stops early ('far') when the cores are
@@ -304,6 +306,8 @@ pub fn epa(a &Prim, xa Rigid, b &Prim, xb Rigid, start Simplex) EpaResult {
     f = f + 1usize;
   }
   mut best = 0usize;
+  mut lastDist = 0.;
+  mut chosen = *faces[0usize];
   mut iter = 0u32;
   while iter < 96u32 {
     iter = iter + 1u32;
@@ -317,10 +321,16 @@ pub fn epa(a &Prim, xa Rigid, b &Prim, xb Rigid, start Simplex) EpaResult {
     }
     if bd == bigNumber { return none; }
     imm bf = *faces[best];
+    // The nearest face can only move away from the origin; if it moves back, rounding has
+    // broken a sliver face (a curved core such as a cylinder's rim creeps in ever
+    // smaller steps): stop with the last good face
+    if bd < lastDist - 2.0e-4 { break; }
+    lastDist = bd;
+    chosen = bf;
     imm pa = supportWorld(a, xa, bf.n);
     imm pb = supportWorld(b, xb, -bf.n);
     imm nw = pa - pb;
-    if nw.dot(bf.n) - bf.dist < 1.0e-4 * (1. + bf.dist) { break; }
+    if nw.dot(bf.n) - bf.dist < 2.0e-4 * (1. + bf.dist) { break; }
     // Remove the faces the new vertex sees; the edges between seen and unseen get new faces
     mut visible = List[usize].empty();
     i = 0usize;
@@ -369,7 +379,7 @@ pub fn epa(a &Prim, xa Rigid, b &Prim, xb Rigid, start Simplex) EpaResult {
       k = k + 1usize;
     }
   }
-  imm bf = *faces[best];
+  imm bf = chosen;
   // The origin's projection on the face, as weights of its three corners
   imm p = bf.n * bf.dist;
   imm a0 = *w[bf.i];
