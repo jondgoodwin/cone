@@ -1,0 +1,524 @@
+// ======== LooseOctree: a loose octree over items ========
+//
+// Ulrich's loose octree ("Loose Octrees", Game Programming Gems 1, 2000).
+// A cell of half-size h holds the items whose CENTRE falls in it, and its
+// loose bounds are the cell grown to half-size k*h (k = 2 by default). An
+// item whose half-extent is at most (k-1)*h therefore fits wholly inside its
+// cell's loose bounds wherever its centre lies in the cell, so each item
+// lives in exactly one cell, the deepest one it fits, chosen from its size
+// and centre alone: insertion, removal and moving are O(depth), with no
+// splitting across cell borders and no tree rebuild.
+//
+// The tree covers a cube given at creation. The root cell takes anything
+// that fits nowhere deeper, including items outside the cube, so every item
+// is found whatever its place. Children are made when an item needs them and
+// given back when their subtree empties. Items sit in a cell on a linked
+// list threaded through the item records.
+
+struct OctNode {
+  first u32;    // head of the cell's item list
+  child u32;    // the first of its eight children, in octant order; NONE if none
+  parent u32;
+  count u32;    // items in this cell and below
+}
+
+pub struct LooseOctree[T Copy] {
+  items Items[T];
+  nodes List[OctNode];
+  freeBlock u32;   // a freed block of eight nodes, linked through their first's 'child'
+  center Vec3;
+  half f32;
+  maxDepth i32;
+  k f32;
+  pairs PairBook;
+  moved List[u32];
+  pendingRemoved List[Pair[T]];
+
+  // A tree over the cube of half-size 'half' about 'center', whose cells
+  // divide at most 'maxDepth' times, with looseness 'k' (1 < k <= 2; 2 is
+  // usual)
+  pub fn create(center Vec3, half f32, maxDepth i32, k f32) LooseOctree[T] {
+    mut nodes = List[OctNode].empty();
+    nodes.push(new OctNode(NONE, NONE, NONE, 0u32));
+    new LooseOctree[T](Items[T].create(), nodes, NONE, center, half, maxDepth, k, PairBook.create(),
+      List[u32].empty(), List[Pair[T]].empty());
+  }
+
+  pub fn len(self &) usize {items.count;}
+  pub fn contains(self &, p Proxy) bool {items.alive(p);}
+  pub fn handle(self &, p Proxy) T {items.list[usize.from(p.slot)].handle;}
+  pub fn box(self &, p Proxy) Aabb3 {items.list[usize.from(p.slot)].box;}
+  pub fn pairBox(self &, p Proxy) Aabb3 {box(p);}
+
+  // The number of cells in use (the root included)
+  pub fn cellCount(self &) usize {
+    mut n = 1usize;
+    mut i = 1usize;
+    while i < nodes.len() {
+      if nodes[i].parent != NONE and nodes[i].count > 0u32 {n = n + 1usize;}
+      i = i + 1usize;
+    }
+    n;
+  }
+
+  fn loose(self &, c Vec3, h f32) Aabb3 inline {
+    imm r = k * h;
+    new Aabb3(new Vec3(c.x - r, c.y - r, c.z - r), new Vec3(c.x + r, c.y + r, c.z + r));
+  }
+
+  fn childCenter(c Vec3, h f32, octant u32) Vec3 inline {
+    imm q = h * 0.5;
+    new Vec3(if (octant & 1u32) != 0u32 {c.x + q;} else {c.x - q;},
+      if (octant & 2u32) != 0u32 {c.y + q;} else {c.y - q;},
+      if (octant & 4u32) != 0u32 {c.z + q;} else {c.z - q;});
+  }
+
+  fn octantOf(c Vec3, p Vec3) u32 inline {
+    (if p.x >= c.x {1u32;} else {0u32;}) | (if p.y >= c.y {2u32;} else {0u32;})
+      | (if p.z >= c.z {4u32;} else {0u32;});
+  }
+
+  fn makeChildren(self &mut, n u32) {
+    imm ni = usize.from(n);
+    if nodes[ni].child != NONE {return;}
+    mut first = NONE;
+    if freeBlock != NONE {
+      first = freeBlock;
+      freeBlock = nodes[usize.from(first)].child;
+      mut j = 0u32;
+      while j < 8u32 {
+        imm x = usize.from(first + j);
+        nodes[x].first = NONE;
+        nodes[x].child = NONE;
+        nodes[x].parent = n;
+        nodes[x].count = 0u32;
+        j = j + 1u32;
+      }
+    }
+    else {
+      first = u32.from(nodes.len());
+      mut j = 0u32;
+      while j < 8u32 {
+        nodes.push(new OctNode(NONE, NONE, n, 0u32));
+        j = j + 1u32;
+      }
+    }
+    nodes[ni].child = first;
+  }
+
+  // The cell at 'level' on the way to the point: its node, centre, half-size
+  fn descend(self &mut, level i32, p Vec3, outC &mut Vec3, outH &mut f32) u32 {
+    mut node = 0u32;
+    mut c = center;
+    mut h = half;
+    mut l = 0i32;
+    while l < level {
+      makeChildren(node);
+      imm o = octantOf(c, p);
+      c = childCenter(c, h, o);
+      h = h * 0.5;
+      node = nodes[usize.from(node)].child + o;
+      l = l + 1i32;
+    }
+    *outC = c;
+    *outH = h;
+    node;
+  }
+
+  // The cell an item with this box belongs in
+  fn cellFor(self &mut, b Aabb3) u32 {
+    imm bc = b.center();
+    imm he = b.halfExtents();
+    imm e = maxf(he.x, maxf(he.y, he.z));
+    mut level = 0i32;
+    mut h = half;
+    while level < maxDepth and (k - 1.) * (h * 0.5) >= e {
+      h = h * 0.5;
+      level = level + 1i32;
+    }
+    // the deepest level at or above that one whose loose bounds hold the box
+    // (always, in floating point, at the root)
+    while level > 0i32 {
+      mut c = center;
+      mut ch = half;
+      mut l = 0i32;
+      while l < level {
+        c = childCenter(c, ch, octantOf(c, bc));
+        ch = ch * 0.5;
+        l = l + 1i32;
+      }
+      if containsBox(loose(c, ch), b) {break;}
+      level = level - 1i32;
+    }
+    mut c0 = center;
+    mut h0 = half;
+    descend(level, bc, &mut c0, &mut h0);
+  }
+
+  fn link(self &mut, slot u32, node u32) {
+    imm si = usize.from(slot);
+    imm ni = usize.from(node);
+    imm head = nodes[ni].first;
+    items.list[si].x = node;
+    items.list[si].y = head;
+    items.list[si].z = NONE;
+    if head != NONE {items.list[usize.from(head)].z = slot;}
+    nodes[ni].first = slot;
+    mut n = node;
+    while n != NONE {
+      nodes[usize.from(n)].count = nodes[usize.from(n)].count + 1u32;
+      n = nodes[usize.from(n)].parent;
+    }
+  }
+
+  fn unlink(self &mut, slot u32) {
+    imm si = usize.from(slot);
+    imm node = items.list[si].x;
+    imm next = items.list[si].y;
+    imm prev = items.list[si].z;
+    if prev != NONE {items.list[usize.from(prev)].y = next;}
+    else {nodes[usize.from(node)].first = next;}
+    if next != NONE {items.list[usize.from(next)].z = prev;}
+    mut n = node;
+    while n != NONE {
+      imm ni = usize.from(n);
+      nodes[ni].count = nodes[ni].count - 1u32;
+      if nodes[ni].count == 0u32 and nodes[ni].child != NONE {
+        // its eight children are all empty: give the block back
+        imm blk = nodes[ni].child;
+        nodes[usize.from(blk)].child = freeBlock;
+        freeBlock = blk;
+        nodes[ni].child = NONE;
+      }
+      n = nodes[ni].parent;
+    }
+  }
+
+  fn flagMoved(self &mut, slot u32) {
+    if !items.list[usize.from(slot)].moved {
+      items.list[usize.from(slot)].moved = true;
+      moved.push(slot);
+    }
+  }
+
+  pub fn insert(self &mut, box Aabb3, handle T) Proxy {
+    imm p = items.add(box, handle);
+    link(p.slot, cellFor(box));
+    flagMoved(p.slot);
+    p;
+  }
+
+  pub fn remove(self &mut, p Proxy) bool {
+    if !items.alive(p) {return false;}
+    imm si = usize.from(p.slot);
+    unlink(p.slot);
+    mut ended = List[u32].empty();
+    pairs.forget(p.slot, &mut ended);
+    imm h = items.list[si].handle;
+    mut i = 0usize;
+    while i < ended.len() {
+      imm o = *ended[i];
+      pendingRemoved.push(pairOf(p.slot, h, o, items.list[usize.from(o)].handle));
+      i = i + 1usize;
+    }
+    items.list[si].moved = false;
+    items.release(p.slot);
+    true;
+  }
+
+  fn pairOf(self &, sa u32, ha T, sb u32, hb T) Pair[T] {
+    if sa < sb {
+      new Pair[T](ha, hb, items.proxyOf(sa), items.proxyOf(sb));
+    }
+    else {
+      new Pair[T](hb, ha, items.proxyOf(sb), items.proxyOf(sa));
+    }
+  }
+
+  // The item has a new box. It stays in its cell if that is still the one it
+  // belongs in. 'displacement' is accepted for the same call as the BVH's
+  // and not used. Answers whether the item changed cell.
+  pub fn move(self &mut, p Proxy, box Aabb3, displacement Vec3) bool {
+    if !items.alive(p) {return false;}
+    imm si = usize.from(p.slot);
+    items.list[si].box = box;
+    imm was = items.list[si].x;
+    flagMoved(p.slot);
+    // out first, so that emptied cells are given back before the new cell
+    // is looked up (which may make some)
+    unlink(p.slot);
+    imm target = cellFor(box);
+    link(p.slot, target);
+    target != was;
+  }
+
+  // ---------------- queries ----------------
+
+  pub fn overlapAabb[F fn(h T, p Proxy) bool](self &, box Aabb3, visit &mut F) {
+    walkAabb(0u32, center, half, box, visit);
+  }
+
+  fn walkAabb[F fn(h T, p Proxy) bool](self &, node u32, c Vec3, h f32, box Aabb3, visit &mut F) bool {
+    imm ni = usize.from(node);
+    if nodes[ni].count == 0u32 {return true;}
+    if node != 0u32 and !loose(c, h).overlaps(box) {return true;}
+    mut s = nodes[ni].first;
+    while s != NONE {
+      imm it = items.list[usize.from(s)];
+      if it.box.overlaps(box) {
+        if !visit(it.handle, new Proxy(s, it.gen)) {return false;}
+      }
+      s = it.y;
+    }
+    imm ch = nodes[ni].child;
+    if ch != NONE {
+      mut o = 0u32;
+      while o < 8u32 {
+        if !walkAabb(ch + o, childCenter(c, h, o), h * 0.5, box, visit) {return false;}
+        o = o + 1u32;
+      }
+    }
+    true;
+  }
+
+  pub fn overlapSphere[F fn(h T, p Proxy) bool](self &, s Sphere, visit &mut F) {
+    walkSphere(0u32, center, half, s, visit);
+  }
+
+  fn walkSphere[F fn(h T, p Proxy) bool](self &, node u32, c Vec3, h f32, sp Sphere, visit &mut F) bool {
+    imm ni = usize.from(node);
+    if nodes[ni].count == 0u32 {return true;}
+    if node != 0u32 and !sp.overlapsAabb(loose(c, h)) {return true;}
+    mut s = nodes[ni].first;
+    while s != NONE {
+      imm it = items.list[usize.from(s)];
+      if sp.overlapsAabb(it.box) {
+        if !visit(it.handle, new Proxy(s, it.gen)) {return false;}
+      }
+      s = it.y;
+    }
+    imm ch = nodes[ni].child;
+    if ch != NONE {
+      mut o = 0u32;
+      while o < 8u32 {
+        if !walkSphere(ch + o, childCenter(c, h, o), h * 0.5, sp, visit) {return false;}
+        o = o + 1u32;
+      }
+    }
+    true;
+  }
+
+  pub fn frustum[F fn(h T, p Proxy) bool](self &, f &Frustum, visit &mut F) {
+    walkFrustum(0u32, center, half, ALL_PLANES, f, visit);
+  }
+
+  // 'mask' names the planes the parent cell straddled; the root's own bounds
+  // are not tested (it holds whatever fits nowhere deeper, wherever it is),
+  // so its items are tested against all six
+  fn walkFrustum[F fn(h T, p Proxy) bool](self &, node u32, c Vec3, h f32, mask u32, f &Frustum, visit &mut F) bool {
+    imm ni = usize.from(node);
+    if nodes[ni].count == 0u32 {return true;}
+    mut m = mask;
+    if node != 0u32 and mask != 0u32 {
+      m = cullMask(f, &loose(c, h), mask);
+      if m == NONE {return true;}
+    }
+    mut s = nodes[ni].first;
+    while s != NONE {
+      imm it = items.list[usize.from(s)];
+      if m == 0u32 or cullMask(f, &it.box, m) != NONE {
+        if !visit(it.handle, new Proxy(s, it.gen)) {return false;}
+      }
+      s = it.y;
+    }
+    imm ch = nodes[ni].child;
+    if ch != NONE {
+      mut o = 0u32;
+      while o < 8u32 {
+        if !walkFrustum(ch + o, childCenter(c, h, o), h * 0.5, m, f, visit) {return false;}
+        o = o + 1u32;
+      }
+    }
+    true;
+  }
+
+
+  // As Bvh.rayCast: 'visit' answers the reach from then on, or a negative
+  // number to stop. Cells are visited nearest first by the entry into their
+  // loose bounds.
+  pub fn rayCast[F fn(h T, p Proxy, t f32) f32](self &, ray Ray3, maxT f32, visit &mut F) {
+    imm r = RayQ.from(ray);
+    mut limit = maxT;
+    walkRay(0u32, center, half, r, limit, visit);
+  }
+
+  fn walkRay[F fn(h T, p Proxy, t f32) f32](self &, node u32, c Vec3, h f32, r RayQ, limit0 f32, visit &mut F) f32 {
+    mut limit = limit0;
+    imm ni = usize.from(node);
+    if nodes[ni].count == 0u32 {return limit;}
+    if node != 0u32 and rayBox(&r, &loose(c, h), limit) < 0. {return limit;}
+    mut s = nodes[ni].first;
+    while s != NONE {
+      imm it = items.list[usize.from(s)];
+      imm t = rayBox(&r, &it.box, limit);
+      if t >= 0. {
+        imm res = visit(it.handle, new Proxy(s, it.gen), t);
+        if res < 0. {return -1.;}
+        if res < limit {limit = res;}
+      }
+      s = it.y;
+    }
+    imm ch = nodes[ni].child;
+    if ch != NONE {
+      // entry distances of the children's loose bounds, nearest first
+      mut ts = new Array[f32, 8] <- fill -1.;
+      mut order = new Array[u32, 8] <- fill 0u32;
+      mut n = 0usize;
+      mut o = 0u32;
+      while o < 8u32 {
+        if nodes[usize.from(ch + o)].count > 0u32 {
+          imm t = rayBox(&r, &loose(childCenter(c, h, o), h * 0.5), limit);
+          if t >= 0. {
+            // insertion sort by t
+            mut j = n;
+            while j > 0usize and ts[j - 1usize] > t {
+              ts[j] = ts[j - 1usize];
+              order[j] = order[j - 1usize];
+              j = j - 1usize;
+            }
+            ts[j] = t;
+            order[j] = o;
+            n = n + 1usize;
+          }
+        }
+        o = o + 1u32;
+      }
+      mut j = 0usize;
+      while j < n {
+        if ts[j] <= limit {
+          imm oc = order[j];
+          limit = walkRay(ch + oc, childCenter(c, h, oc), h * 0.5, r, limit, visit);
+          if limit < 0. {return -1.;}
+        }
+        j = j + 1usize;
+      }
+    }
+    limit;
+  }
+
+  pub fn rayNearest(self &, ray Ray3, maxT f32) Option[Hit[T]] {
+    mut best Option[Hit[T]] = None;
+    mut grab = fn(h T, p Proxy, t f32) f32 {
+      best = Some(new Hit[T](h, p, t));
+      t;
+    };
+    rayCast(ray, maxT, &mut grab);
+    best;
+  }
+
+  pub fn rayAll[F fn(h T, p Proxy, t f32) bool](self &, ray Ray3, maxT f32, visit &mut F) {
+    mut wrap = fn(h T, p Proxy, t f32) f32 {
+      if visit(h, p, t) {FAR;} else {-1.;};
+    };
+    rayCast(ray, maxT, &mut wrap);
+  }
+
+  pub fn nearest(self &, point Vec3, k usize, out &mut List[Neighbor[T]]) {
+    out.clear();
+    if items.count == 0usize or k == 0usize {return;}
+    mut heap = MinHeap.create();
+    heap.push(new HeapEntry(0., 0u32, false, center, half));
+    while heap.len() > 0usize and out.len() < k {
+      imm e = heap.pop();
+      if e.isItem {
+        imm it = items.list[usize.from(e.id)];
+        out.push(new Neighbor[T](it.handle, new Proxy(e.id, it.gen), e.key));
+      }
+      else {
+        imm ni = usize.from(e.id);
+        mut s = nodes[ni].first;
+        while s != NONE {
+          imm it = items.list[usize.from(s)];
+          heap.push(new HeapEntry(distSqPointBox(point, it.box), s, true, e.c, 0.));
+          s = it.y;
+        }
+        imm ch = nodes[ni].child;
+        if ch != NONE {
+          mut o = 0u32;
+          while o < 8u32 {
+            if nodes[usize.from(ch + o)].count > 0u32 {
+              imm cc = childCenter(e.c, e.h, o);
+              heap.push(new HeapEntry(distSqPointBox(point, loose(cc, e.h * 0.5)), ch + o, false, cc, e.h * 0.5));
+            }
+            o = o + 1u32;
+          }
+        }
+      }
+    }
+  }
+
+  // ---------------- pairs ----------------
+
+  fn queryBox(self &, box Aabb3, found &mut List[u32]) {
+    mut collect = fn(h T, p Proxy) bool { found.push(p.slot); true; };
+    overlapAabb(box, &mut collect);
+  }
+
+  pub fn allPairs(self &, out &mut List[Pair[T]]) {
+    mut found = List[u32].empty();
+    mut i = 0usize;
+    while i < items.list.len() {
+      if items.isLive(i) {
+        found.clear();
+        queryBox(items.list[i].box, &mut found);
+        mut j = 0usize;
+        while j < found.len() {
+          imm o = *found[j];
+          if usize.from(o) > i {
+            out.push(pairOf(u32.from(i), items.list[i].handle, o, items.list[usize.from(o)].handle));
+          }
+          j = j + 1usize;
+        }
+      }
+      i = i + 1usize;
+    }
+  }
+
+  pub fn updatePairs(self &mut, events &mut PairEvents[T]) {
+    mut i = 0usize;
+    while i < pendingRemoved.len() {
+      events.removed.push(*pendingRemoved[i]);
+      i = i + 1usize;
+    }
+    pendingRemoved.clear();
+    mut found = List[u32].empty();
+    mut added = List[u32].empty();
+    mut ended = List[u32].empty();
+    i = 0usize;
+    while i < moved.len() {
+      imm m = *moved[i];
+      imm mi = usize.from(m);
+      i = i + 1usize;
+      if !items.isLive(mi) or !items.list[mi].moved {continue;}
+      items.list[mi].moved = false;
+      found.clear();
+      added.clear();
+      ended.clear();
+      queryBox(items.list[mi].box, &mut found);
+      pairs.sync(m, &found, &mut added, &mut ended);
+      mut j = 0usize;
+      while j < added.len() {
+        imm o = *added[j];
+        events.added.push(pairOf(m, items.list[mi].handle, o, items.list[usize.from(o)].handle));
+        j = j + 1usize;
+      }
+      j = 0usize;
+      while j < ended.len() {
+        imm o = *ended[j];
+        events.removed.push(pairOf(m, items.list[mi].handle, o, items.list[usize.from(o)].handle));
+        j = j + 1usize;
+      }
+    }
+    moved.clear();
+  }
+}

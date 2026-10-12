@@ -1,0 +1,167 @@
+// A hierarchical finite-state machine: states that contain states. After
+// Harel's statecharts (1987), cut down to what a character needs:
+//
+//   - A state has an optional parent. A composite state (one that others name
+//     as parent) has an 'initial' child that is entered with it, down to a
+//     leaf; the machine is always in one leaf, and so in every ancestor of it.
+//   - A transition goes from a state to a state when its condition holds. On
+//     each tick the machine looks at the transitions of the current leaf in
+//     the order they were added, then those of its parent, and so on up; the
+//     first whose condition is true is taken. So a transition on a parent
+//     applies to every child ("while on duty, if you see the player, chase")
+//     and a child's own transition overrides it.
+//   - A transition is external: the states from the current leaf up to (not
+//     including) a common ancestor of both ends are exited, innermost first,
+//     and the target's chain entered, outermost first, down to a leaf by the
+//     initial children. A transition to the state it came from exits and
+//     enters it again.
+//   - Only one transition is taken a tick.
+//
+// What a state does is the program's. The machine does not call the program;
+// it records what happened and the program reads it: after 'tick', the
+// 'exited' states (innermost first) and 'entered' ones (outermost first) of
+// the transition just taken, and 'active' is the leaf to run this tick. A
+// condition is a closure, 'fn(id u32, bb &Blackboard) bool', given the number
+// the transition was made with. Fixed storage after set-up: no allocation in
+// a tick, and no closure kept.
+
+pub const NO_STATE = 4294967295u32;
+const MAX_DEPTH = 16usize;
+
+struct MachineState {
+  parent u32;
+  initial u32;
+}
+
+struct Transition {
+  from u32;
+  to u32;
+  condition u32;
+}
+
+pub struct StateMachine {
+  states List[MachineState];
+  transitions List[Transition];
+  pub active u32;          // the current leaf, NO_STATE before 'start'
+  pub exited Array[u32, 16];
+  pub exitedCount usize;
+  pub entered Array[u32, 16];
+  pub enteredCount usize;
+  pub taken bool;          // whether the last tick took a transition
+
+  pub fn make() StateMachine {
+    new StateMachine(List[MachineState].empty(), List[Transition].empty(), NO_STATE,
+      new Array[u32, 16] <- fill 0u32, 0usize, new Array[u32, 16] <- fill 0u32, 0usize, false);
+  }
+
+  // A state under 'parent' (NO_STATE for the top level): its number
+  pub fn addState(self &mut, parent u32) u32 {
+    states.push(new MachineState(parent, NO_STATE));
+    u32.from(states.len() - 1usize);
+  }
+
+  // The child a composite state starts in
+  pub fn setInitial(self &mut, state u32, child u32) {
+    imm s = *states[usize.from(state)];
+    states.set(usize.from(state), new MachineState(s.parent, child));
+  }
+
+  pub fn addTransition(self &mut, from u32, to u32, condition u32) {
+    transitions.push(new Transition(from, to, condition));
+  }
+
+  pub fn parentOf(self &, state u32) u32 { (*states[usize.from(state)]).parent; }
+
+  // Whether the machine is in 'state': it is the active leaf or an ancestor of it
+  pub fn isIn(self &, state u32) bool {
+    mut s = active;
+    mut found = false;
+    while s != NO_STATE and not found {
+      if s == state { found = true; }
+      s = self.parentOf(s);
+    }
+    found;
+  }
+
+  // The chain from a state down to a leaf by initial children is entered
+  fn descend(self &mut, from u32) {
+    mut s = from;
+    while s != NO_STATE {
+      if enteredCount < MAX_DEPTH { entered[enteredCount] = s; enteredCount = enteredCount + 1usize; }
+      active = s;
+      s = (*states[usize.from(s)]).initial;
+    }
+  }
+
+  // Enter 'state' (and down to a leaf) as the first thing the machine does
+  pub fn start(self &mut, state u32) {
+    exitedCount = 0usize;
+    enteredCount = 0usize;
+    // The ancestors first
+    mut chain = new Array[u32, 16] <- fill 0u32;
+    mut n = 0usize;
+    mut s = self.parentOf(state);
+    while s != NO_STATE and n < MAX_DEPTH { chain[n] = s; n = n + 1usize; s = self.parentOf(s); }
+    while n > 0usize {
+      n = n - 1usize;
+      entered[enteredCount] = chain[n];
+      enteredCount = enteredCount + 1usize;
+    }
+    self.descend(state);
+    taken = true;
+  }
+
+  // Whether 'anc' is a proper ancestor of 'state'
+  fn isAncestor(self &, anc u32, state u32) bool {
+    mut s = self.parentOf(state);
+    mut found = false;
+    while s != NO_STATE and not found {
+      if s == anc { found = true; }
+      s = self.parentOf(s);
+    }
+    found;
+  }
+
+  pub fn tick(self &mut, bb &Blackboard, cond &<fn(id u32, bb &Blackboard) bool) bool {
+    exitedCount = 0usize;
+    enteredCount = 0usize;
+    taken = false;
+    if active == NO_STATE { return false; }
+    // The first true transition, innermost state first
+    mut level = active;
+    mut target = NO_STATE;
+    while level != NO_STATE and target == NO_STATE {
+      mut t = 0usize;
+      while t < transitions.len() and target == NO_STATE {
+        imm tr = *transitions[t];
+        if tr.from == level and cond(tr.condition, bb) { target = tr.to; }
+        t = t + 1usize;
+      }
+      level = self.parentOf(level);
+    }
+    if target == NO_STATE { return false; }
+    // Exit up to a proper ancestor of the target
+    mut s = active;
+    while s != NO_STATE and not self.isAncestor(s, target) {
+      if exitedCount < MAX_DEPTH { exited[exitedCount] = s; exitedCount = exitedCount + 1usize; }
+      s = self.parentOf(s);
+    }
+    // Enter from below that ancestor down to the target, then its initials
+    mut chain = new Array[u32, 16] <- fill 0u32;
+    mut n = 0usize;
+    mut e = target;
+    while e != NO_STATE and e != s and n < MAX_DEPTH {
+      chain[n] = e;
+      n = n + 1usize;
+      e = self.parentOf(e);
+    }
+    while n > 1usize {
+      n = n - 1usize;
+      entered[enteredCount] = chain[n];
+      enteredCount = enteredCount + 1usize;
+    }
+    self.descend(target);
+    taken = true;
+    true;
+  }
+}

@@ -1,0 +1,63 @@
+// Scalar helpers and the rigid transform.
+
+pub imm bigNumber f32 = 3.0e38;
+
+pub fn minf(a f32, b f32) f32 inline { if a < b { a; } else { b; }; }
+pub fn maxf(a f32, b f32) f32 inline { if a > b { a; } else { b; }; }
+pub fn absf(a f32) f32 inline { if a < 0. { -a; } else { a; }; }
+pub fn clampf(v f32, lo f32, hi f32) f32 inline { if v < lo { lo; } else if v > hi { hi; } else { v; }; }
+pub fn sqrtf(a f32) f32 inline { if a > 0. { a.sqrt(); } else { 0.; }; }
+
+// Some unit vector perpendicular to the unit vector n (Frisvad / Duff et al.)
+pub fn perpendicular(n Vec3) Vec3 {
+  if absf(n.x) > absf(n.y) {
+    imm inv = 1. / (n.x * n.x + n.z * n.z).sqrt();
+    new Vec3(-n.z * inv, 0., n.x * inv);
+  } else {
+    imm inv = 1. / (n.y * n.y + n.z * n.z).sqrt();
+    new Vec3(0., n.z * inv, -n.y * inv);
+  };
+}
+
+pub fn vecGet(v Vec3, i usize) f32 inline {
+  if i == 0usize { v.x; } else if i == 1usize { v.y; } else { v.z; };
+}
+
+pub fn vecSet(v Vec3, i usize, s f32) Vec3 {
+  if i == 0usize { new Vec3(s, v.y, v.z); } else if i == 1usize { new Vec3(v.x, s, v.z); } else { new Vec3(v.x, v.y, s); };
+}
+
+// A rigid transform: rotate, then translate
+pub struct Rigid {
+  pub pos Vec3;
+  pub rot Quat;
+
+  pub fn identity() Rigid inline { new Rigid(new Vec3(0., 0., 0.), Quat.identity()); }
+  pub fn at(p Vec3) Rigid inline { new Rigid(p, Quat.identity()); }
+  pub fn apply(self, p Vec3) Vec3 inline { rot * p + pos; }
+  pub fn rotate(self, v Vec3) Vec3 inline { rot * v; }
+  pub fn unrotate(self, v Vec3) Vec3 inline { rot.conjugate() * v; }
+  pub fn unapply(self, p Vec3) Vec3 inline { rot.conjugate() * (p - pos); }
+  pub fn inverse(self) Rigid { imm c = rot.conjugate(); new Rigid(c * (-pos), c); }
+  // 'a * b': b first, then a
+  pub fn compose overload `*`(self, o Rigid) Rigid { new Rigid(rot * o.pos + pos, (rot * o.rot).normalize()); }
+}
+
+// The 3x3 matrix of columns (c0 c1 c2) as geomath's Mat3
+pub fn mat3FromCols(c0 Vec3, c1 Vec3, c2 Vec3) Mat3 {
+  new Mat3([c0.x, c0.y, c0.z, c1.x, c1.y, c1.z, c2.x, c2.y, c2.z]);
+}
+
+pub fn mat3Diag(a f32, b f32, c f32) Mat3 { new Mat3([a, 0., 0., 0., b, 0., 0., 0., c]); }
+
+pub fn mat3Add(a Mat3, b Mat3) Mat3 {
+  new Mat3([a.m[0usize] + b.m[0usize], a.m[1usize] + b.m[1usize], a.m[2usize] + b.m[2usize],
+            a.m[3usize] + b.m[3usize], a.m[4usize] + b.m[4usize], a.m[5usize] + b.m[5usize],
+            a.m[6usize] + b.m[6usize], a.m[7usize] + b.m[7usize], a.m[8usize] + b.m[8usize]]);
+}
+
+pub fn mat3Scale(a Mat3, s f32) Mat3 {
+  new Mat3([a.m[0usize] * s, a.m[1usize] * s, a.m[2usize] * s,
+            a.m[3usize] * s, a.m[4usize] * s, a.m[5usize] * s,
+            a.m[6usize] * s, a.m[7usize] * s, a.m[8usize] * s]);
+}

@@ -1,0 +1,374 @@
+// Prim (one shape), Shape (a prim or a compound of them), bounds, support
+// functions and mass properties.
+
+pub const KSphere = 0;
+pub const KBox = 1;
+pub const KCapsule = 2;      // along local y: the segment (0, -half.y, 0) to (0, half.y, 0), swept by 'radius'
+pub const KCylinder = 3;     // along local y, 'radius' round, half.y half the height
+pub const KHull = 4;
+pub const KMesh = 5;
+pub const KHeightfield = 6;
+pub const KTriangle = 7;     // three points a, b, c: what a mesh or heightfield offers a convex shape
+
+// A face of a convex hull: the plane normal . x = d, and its vertices, in
+// counterclockwise order seen from outside, are faceIdx[start .. start + count]
+pub struct HullFace {
+  pub normal Vec3;
+  pub d f32;
+  pub start u32;
+  pub count u32;
+}
+
+// A node of a triangle BVH: its box, and either two children (count 0: the
+// left child is the next node, the right is 'first') or 'count' triangles
+// starting at 'first' in the mesh's reordered triangle list
+pub struct BvhNode {
+  pub lo Vec3;
+  pub hi Vec3;
+  pub first u32;
+  pub count u32;
+}
+
+// A triangle's corners
+pub struct Tri {
+  pub a Vec3;
+  pub b Vec3;
+  pub c Vec3;
+}
+
+// Volume, centre of mass and inertia (about the centre, unit density)
+pub struct MassProps {
+  pub volume f32;
+  pub com Vec3;
+  pub inertia Mat3;
+}
+
+// One shape, in its own local space. A closed set told apart by 'kind' (a
+// flat tagged struct, so a pair table can dispatch on two kinds); a shape is
+// built once and then only read, so many bodies may share one.
+pub struct Prim {
+  pub kind i32;
+  pub radius f32;
+  pub half Vec3;
+  pub verts List[Vec3];       // hull and mesh vertices
+  pub faceIdx List[u32];      // hull
+  pub faces List[HullFace];   // hull
+  pub tris List[u32];         // mesh: three vertex numbers a triangle, in BVH order
+  pub triId List[u32];        // mesh: the triangle's number in the order the mesh was given
+  pub bvh List[BvhNode];      // mesh
+  pub edgeActive List[u8];    // mesh, per triangle in BVH order: bit e set if edge e (corner e to e+1) is active
+  pub heights List[f32];      // heightfield: rows of 'cols' samples
+  pub cols u32;
+  pub rows u32;
+  pub spacing Vec2;           // heightfield: metres between samples along x and along z
+  pub origin Vec3;            // heightfield: the place of sample (0, 0)
+  pub a Vec3;                 // triangle
+  pub b Vec3;
+  pub c Vec3;
+
+  pub fn blank(kind i32) Prim {
+    new Prim(kind, 0., new Vec3(0., 0., 0.), List[Vec3].empty(), List[u32].empty(), List[HullFace].empty(),
+      List[u32].empty(), List[u32].empty(), List[BvhNode].empty(), List[u8].empty(), List[f32].empty(), 0u32, 0u32,
+      new Vec2(1., 1.), new Vec3(0., 0., 0.), new Vec3(0., 0., 0.), new Vec3(0., 0., 0.), new Vec3(0., 0., 0.));
+  }
+
+  pub fn sphere(radius f32) Prim { mut p = Prim.blank(KSphere); p.radius = radius; p; }
+  pub fn box(half Vec3) Prim { mut p = Prim.blank(KBox); p.half = half; p; }
+  // A capsule whose segment is 2 * halfHeight long: 2 * (halfHeight + radius) tall in all
+  pub fn capsule(radius f32, halfHeight f32) Prim {
+    mut p = Prim.blank(KCapsule); p.radius = radius; p.half = new Vec3(radius, halfHeight, radius); p;
+  }
+  pub fn cylinder(radius f32, halfHeight f32) Prim {
+    mut p = Prim.blank(KCylinder); p.radius = radius; p.half = new Vec3(radius, halfHeight, radius); p;
+  }
+  pub fn triangle(a Vec3, b Vec3, c Vec3) Prim {
+    mut p = Prim.blank(KTriangle); p.a = a; p.b = b; p.c = c; p;
+  }
+
+  // A heightfield of cols x rows samples (row-major, row = z), spaced
+  // 'dx' and 'dz' apart, sample (0, 0) at 'origin' (whose y is added to every height)
+  pub fn heightfield(heights List[f32], cols u32, rows u32, dx f32, dz f32, origin Vec3) Prim {
+    mut p = Prim.blank(KHeightfield);
+    p.heights = heights; p.cols = cols; p.rows = rows; p.spacing = new Vec2(dx, dz); p.origin = origin; p;
+  }
+
+  pub fn isConvex(self &) bool {
+    kind == KSphere or kind == KBox or kind == KCapsule or kind == KCylinder or kind == KHull or kind == KTriangle;
+  }
+
+  // The part of the shape that is rounded: GJK works on the core (a point for a
+  // sphere, a segment for a capsule) and adds this back (Jolt's convex radius)
+  pub fn coreRadius(self &) f32 {
+    if kind == KSphere or kind == KCapsule { radius; } else { 0.; };
+  }
+
+  // The farthest point of the shape's core along dir (local space)
+  pub fn supportCore(self &, dir Vec3) Vec3 {
+    if kind == KSphere { return new Vec3(0., 0., 0.); }
+    if kind == KBox {
+      return new Vec3(if dir.x < 0. { -half.x; } else { half.x; }, if dir.y < 0. { -half.y; } else { half.y; },
+                      if dir.z < 0. { -half.z; } else { half.z; });
+    }
+    if kind == KCapsule { return new Vec3(0., if dir.y < 0. { -half.y; } else { half.y; }, 0.); }
+    if kind == KCylinder {
+      imm l = (dir.x * dir.x + dir.z * dir.z).sqrt();
+      mut x = 0.;
+      mut z = 0.;
+      if l > 0.000001 { x = dir.x / l * radius; z = dir.z / l * radius; }
+      return new Vec3(x, if dir.y < 0. { -half.y; } else { half.y; }, z);
+    }
+    if kind == KTriangle {
+      mut best = a;
+      mut bd = a.dot(dir);
+      if b.dot(dir) > bd { best = b; bd = b.dot(dir); }
+      if c.dot(dir) > bd { best = c; }
+      return best;
+    }
+    // hull
+    mut bi = 0usize;
+    mut bd = -bigNumber;
+    mut i = 0usize;
+    while i < verts.len() {
+      imm d = (*verts[i]).dot(dir);
+      if d > bd { bd = d; bi = i; }
+      i = i + 1usize;
+    }
+    *verts[bi];
+  }
+
+  // The farthest point of the whole shape along dir (local space)
+  pub fn support(self &, dir Vec3) Vec3 {
+    imm c0 = supportCore(dir);
+    if coreRadius() > 0. {
+      imm l = dir.length();
+      if l > 0.0000001 { return c0 + dir * (coreRadius() / l); }
+    }
+    c0;
+  }
+
+  // The box round the shape in its own space
+  pub fn localBounds(self &) Aabb3 {
+    if kind == KSphere { return Aabb3.fromCenter(new Vec3(0., 0., 0.), new Vec3(radius, radius, radius)); }
+    if kind == KBox { return new Aabb3(-half, half); }
+    if kind == KCapsule { return Aabb3.fromCenter(new Vec3(0., 0., 0.), new Vec3(radius, half.y + radius, radius)); }
+    if kind == KCylinder { return Aabb3.fromCenter(new Vec3(0., 0., 0.), half); }
+    if kind == KTriangle { return Aabb3.empty().enclose(a).enclose(b).enclose(c); }
+    if kind == KMesh {
+      if bvh.len() == 0usize { return Aabb3.empty(); }
+      return new Aabb3((*bvh[0usize]).lo, (*bvh[0usize]).hi);
+    }
+    if kind == KHeightfield {
+      mut lo = bigNumber;
+      mut hi = -bigNumber;
+      mut i = 0usize;
+      while i < heights.len() { lo = minf(lo, *heights[i]); hi = maxf(hi, *heights[i]); i = i + 1usize; }
+      return new Aabb3(new Vec3(origin.x, origin.y + lo, origin.z),
+        new Vec3(origin.x + f32.from(cols - 1u32) * spacing.x, origin.y + hi, origin.z + f32.from(rows - 1u32) * spacing.y));
+    }
+    Aabb3.fromPoints(verts.view());
+  }
+
+  // The box round the shape placed by 'x'
+  pub fn bounds(self &, x Rigid) Aabb3 {
+    if isConvex() {
+      imm px = x.apply(support(x.unrotate(new Vec3(1., 0., 0.))));
+      imm nx = x.apply(support(x.unrotate(new Vec3(-1., 0., 0.))));
+      imm py = x.apply(support(x.unrotate(new Vec3(0., 1., 0.))));
+      imm ny = x.apply(support(x.unrotate(new Vec3(0., -1., 0.))));
+      imm pz = x.apply(support(x.unrotate(new Vec3(0., 0., 1.))));
+      imm nz = x.apply(support(x.unrotate(new Vec3(0., 0., -1.))));
+      return new Aabb3(new Vec3(nx.x, ny.y, nz.z), new Vec3(px.x, py.y, pz.z));
+    }
+    boundsOf(localBounds(), x);
+  }
+
+  // The surface of a hull (faces fanned) or mesh as triangles, outward wound
+  pub fn surfaceTriangles(self &) List[Tri] {
+    mut out = List[Tri].empty();
+    if kind == KMesh {
+      mut t = 0usize;
+      while t + 2usize < tris.len() {
+        out.push(new Tri(*verts[usize.from(*tris[t])], *verts[usize.from(*tris[t + 1usize])], *verts[usize.from(*tris[t + 2usize])]));
+        t = t + 3usize;
+      }
+      return out;
+    }
+    mut f = 0usize;
+    while f < faces.len() {
+      imm face = *faces[f];
+      imm s = usize.from(face.start);
+      imm v0 = *verts[usize.from(*faceIdx[s])];
+      mut k = 1usize;
+      while k + 1usize < usize.from(face.count) {
+        out.push(new Tri(v0, *verts[usize.from(*faceIdx[s + k])], *verts[usize.from(*faceIdx[s + k + 1usize])]));
+        k = k + 1usize;
+      }
+      f = f + 1usize;
+    }
+    out;
+  }
+
+  // The volume, centre of mass and inertia tensor about the centre of mass, at density 1
+  pub fn massProps(self &) MassProps {
+    if kind == KSphere {
+      imm v = 4. / 3. * pi * radius * radius * radius;
+      imm i = 0.4 * v * radius * radius;
+      return new MassProps(v, new Vec3(0., 0., 0.), mat3Diag(i, i, i));
+    }
+    if kind == KBox {
+      imm v = 8. * half.x * half.y * half.z;
+      return new MassProps(v, new Vec3(0., 0., 0.), mat3Diag(v / 3. * (half.y * half.y + half.z * half.z),
+        v / 3. * (half.x * half.x + half.z * half.z), v / 3. * (half.x * half.x + half.y * half.y)));
+    }
+    if kind == KCylinder {
+      imm v = 2. * pi * radius * radius * half.y;
+      imm iy = 0.5 * v * radius * radius;
+      imm ix = v * (radius * radius / 4. + half.y * half.y / 3.);
+      return new MassProps(v, new Vec3(0., 0., 0.), mat3Diag(ix, iy, ix));
+    }
+    if kind == KCapsule {
+      imm r = radius;
+      imm h = 2. * half.y;
+      imm vc = pi * r * r * h;
+      imm vs = 4. / 3. * pi * r * r * r;
+      imm ms = vs * 0.5;
+      imm iy = 0.5 * vc * r * r + 0.4 * vs * r * r;
+      imm icx = vc * (r * r / 4. + h * h / 12.);
+      imm ihemi = 0.4 * ms * r * r - ms * 9. * r * r / 64.;
+      imm off = h / 2. + 3. * r / 8.;
+      imm ix = icx + 2. * (ihemi + ms * off * off);
+      return new MassProps(vc + vs, new Vec3(0., 0., 0.), mat3Diag(ix, iy, ix));
+    }
+    if kind == KTriangle or kind == KHeightfield {
+      return new MassProps(0., new Vec3(0., 0., 0.), mat3Diag(0., 0., 0.));
+    }
+    // Hull: its faces fanned into triangles. Mesh: its triangles
+    polyhedronProps(self.surfaceTriangles());
+  }
+}
+
+// A local box placed by a transform: the box round it
+pub fn boundsOf(b Aabb3, x Rigid) Aabb3 {
+  imm c = b.center();
+  imm e = b.halfExtents();
+  imm m = Mat3.fromQuat(x.rot);
+  imm wc = x.apply(c);
+  imm we = new Vec3(absf(m.cell(0usize, 0usize)) * e.x + absf(m.cell(0usize, 1usize)) * e.y + absf(m.cell(0usize, 2usize)) * e.z,
+                    absf(m.cell(1usize, 0usize)) * e.x + absf(m.cell(1usize, 1usize)) * e.y + absf(m.cell(1usize, 2usize)) * e.z,
+                    absf(m.cell(2usize, 0usize)) * e.x + absf(m.cell(2usize, 1usize)) * e.y + absf(m.cell(2usize, 2usize)) * e.z);
+  Aabb3.fromCenter(wc, we);
+}
+
+// Eberly, "Polyhedral Mass Properties (Revisited)": a closed surface cut
+// into tetrahedra from the origin, whose second moments are summed
+// (V/20 * (sum vi vi^T + S S^T)), then moved to the centre of mass
+pub fn polyhedronProps(tris List[Tri]) MassProps {
+  mut vol = 0.;
+  mut cx = 0.;
+  mut cy = 0.;
+  mut cz = 0.;
+  mut sxx = 0.;
+  mut syy = 0.;
+  mut szz = 0.;
+  mut sxy = 0.;
+  mut sxz = 0.;
+  mut syz = 0.;
+  mut t = 0usize;
+  while t < tris.len() {
+    imm tri = *tris[t];
+    imm a = tri.a;
+    imm b = tri.b;
+    imm c = tri.c;
+    imm v = a.dot(b.cross(c)) / 6.;
+    vol = vol + v;
+    cx = cx + v * (a.x + b.x + c.x) * 0.25;
+    cy = cy + v * (a.y + b.y + c.y) * 0.25;
+    cz = cz + v * (a.z + b.z + c.z) * 0.25;
+    imm s = a + b + c;
+    imm k = v / 20.;
+    sxx = sxx + k * (a.x * a.x + b.x * b.x + c.x * c.x + s.x * s.x);
+    syy = syy + k * (a.y * a.y + b.y * b.y + c.y * c.y + s.y * s.y);
+    szz = szz + k * (a.z * a.z + b.z * b.z + c.z * c.z + s.z * s.z);
+    sxy = sxy + k * (a.x * a.y + b.x * b.y + c.x * c.y + s.x * s.y);
+    sxz = sxz + k * (a.x * a.z + b.x * b.z + c.x * c.z + s.x * s.z);
+    syz = syz + k * (a.y * a.z + b.y * b.z + c.y * c.z + s.y * s.z);
+    t = t + 1usize;
+  }
+  if vol <= 0.0000001 { return new MassProps(0., new Vec3(0., 0., 0.), mat3Diag(0., 0., 0.)); }
+  imm com = new Vec3(cx / vol, cy / vol, cz / vol);
+  // inertia about the origin: I = tr(C) 1 - C; then to the centre of mass
+  imm tr = sxx + syy + szz;
+  imm ixx = tr - sxx - vol * (com.y * com.y + com.z * com.z);
+  imm iyy = tr - syy - vol * (com.x * com.x + com.z * com.z);
+  imm izz = tr - szz - vol * (com.x * com.x + com.y * com.y);
+  imm ixy = -sxy + vol * com.x * com.y;
+  imm ixz = -sxz + vol * com.x * com.z;
+  imm iyz = -syz + vol * com.y * com.z;
+  new MassProps(vol, com, new Mat3([ixx, ixy, ixz, ixy, iyy, iyz, ixz, iyz, izz]));
+}
+
+// A part of a compound: a prim and where it sits in the compound's space
+pub struct Part {
+  pub xf Rigid;
+  pub prim Prim;
+}
+
+// What a body holds: one prim, or a compound of prims each with a local
+// transform. (A compound cannot hold a compound: Cone cannot yet build a type
+// that contains a list of itself, so a nested compound is added flattened,
+// each part's transform composed.)
+pub struct Shape {
+  pub prim Prim;
+  pub parts List[Part];
+
+  pub fn single(p Prim) Shape { new Shape(p, List[Part].empty()); }
+  pub fn compound() Shape { new Shape(Prim.blank(KSphere), List[Part].empty()); }
+  pub fn isCompound(self &) bool { parts.len() > 0usize; }
+  pub fn add(self &mut, p Prim, xf Rigid) { parts.push(new Part(xf, p)); }
+  pub fn partCount(self &) usize { if parts.len() > 0usize { parts.len(); } else { 1usize; }; }
+
+  pub fn bounds(self &, x Rigid) Aabb3 {
+    if parts.len() == 0usize { return prim.bounds(x); }
+    mut b = Aabb3.empty();
+    mut i = 0usize;
+    while i < parts.len() {
+      imm pt = parts[i];
+      b = b.union(pt.prim.bounds(x * pt.xf));
+      i = i + 1usize;
+    }
+    b;
+  }
+
+  // Mass properties of the whole (parts' volumes added, the inertia moved to
+  // the common centre of mass by the parallel-axis theorem)
+  pub fn massProps(self &) MassProps {
+    if parts.len() == 0usize { return prim.massProps(); }
+    mut vol = 0.;
+    mut sum = new Vec3(0., 0., 0.);
+    mut i = 0usize;
+    while i < parts.len() {
+      imm pt = parts[i];
+      imm mp = pt.prim.massProps();
+      vol = vol + mp.volume;
+      sum = sum + pt.xf.apply(mp.com) * mp.volume;
+      i = i + 1usize;
+    }
+    if vol <= 0. { return new MassProps(0., new Vec3(0., 0., 0.), mat3Diag(0., 0., 0.)); }
+    imm com = sum * (1. / vol);
+    mut inertia = mat3Diag(0., 0., 0.);
+    i = 0usize;
+    while i < parts.len() {
+      imm pt = parts[i];
+      imm mp = pt.prim.massProps();
+      imm r = Mat3.fromQuat(pt.xf.rot);
+      imm ib = r * mp.inertia * r.transpose();
+      imm d = pt.xf.apply(mp.com) - com;
+      imm d2 = d.dot(d);
+      imm shift = new Mat3([d2 - d.x * d.x, -d.x * d.y, -d.x * d.z, -d.x * d.y, d2 - d.y * d.y, -d.y * d.z,
+                            -d.x * d.z, -d.y * d.z, d2 - d.z * d.z]);
+      inertia = mat3Add(inertia, mat3Add(ib, mat3Scale(shift, mp.volume)));
+      i = i + 1usize;
+    }
+    new MassProps(vol, com, inertia);
+  }
+}
