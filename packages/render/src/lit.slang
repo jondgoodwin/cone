@@ -26,16 +26,22 @@
 // The sun's light (the Lambert term and the highlight, not the ambient
 // light) is multiplied by how much of the sun reaches the point: the
 // cascaded shadow map (shadowing.slang), 1 when shadows are off.
+//
+// The scene's point and spot lights (locallights.slang) add to that: for
+// each light of the fragment's cluster that reaches it and shares a layer
+// with the material, the same Lambert and Blinn-Phong terms, the light's
+// irradiance falling off with the square of the distance to its range.
 
 import renderframe;
 import skinning;
 import shadowing;
+import locallights;
 
 struct MaterialParams {
     float4 baseColor;              // 0: rgba, linear
     float4 specular;               // 16: rgb the specular color, w the shininess
     float4 emissive;               // 32: rgb radiance (nits in physical units)
-    float4 alpha;                  // 48: the alpha mode (0 opaque, 1 cut out, 2 see-through), the cut-off
+    float4 alpha;                  // 48: the alpha mode (0 opaque, 1 cut out, 2 see-through), the cut-off, the light layers (locallights.slang)
 };
 
 static const uint ALPHA_MASK = 1;
@@ -119,6 +125,17 @@ float4 fragmentMain(VertexOutput input) : SV_Target {
     if (mode == ALPHA_BLEND) {
         // Premultiplied: of the diffuse light only the share alpha covers
         color = lit * base.a + added + glow;
+    }
+    // The point and spot lights of the fragment's cluster (locallights.slang),
+    // none to loop over unless the scene has some; their diffuse light, like
+    // the sun's, only the share alpha covers
+    if (lightParams.grid.w > 0.5) {
+        float3 localDiffuse;
+        float3 localSpecular;
+        litLocalLights(input.world, n, v, material.specular.w, input.position.xy,
+            uint(material.alpha.z + 0.5), localDiffuse, localSpecular);
+        float share = (mode == ALPHA_BLEND) ? base.a : 1.0;
+        color += base.rgb * localDiffuse * (share / RENDER_PI) + material.specular.rgb * localSpecular * (1.0 / RENDER_PI);
     }
     return float4(color * frame.exposure.x, base.a);
 }

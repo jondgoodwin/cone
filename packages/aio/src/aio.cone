@@ -52,14 +52,19 @@
 //                                                                Result[IoBuf, IoError]
 //   s.write(buf)            all of buf, an IoBuf moved in         Result[usize, IoError]
 //   s.localAddr()           the address s is bound to            Result[SocketAddr, IoError]
+//   aio.openFile(path, access)  a file, opened with iocore's Access   Result[File, IoError]
+//   f.readAt(at, buf)       what is in the file from byte offset at, appended to buf
+//                                                                Result[IoBuf, IoError]
+//   f.writeAt(at, buf)      all of buf, at byte offset at         Result[usize, IoError]
 //   aio.connectIn(addr, lim)  s.acceptIn(lim)  s.readIn(buf, lim)  s.writeIn(buf, lim)
-//                           the same four, limited by lim, a IoLimits    (CANCEL AND DEADLINES)
+//   f.readAtIn(at, buf, lim)  f.writeAtIn(at, buf, lim)
+//                           the same six, limited by lim, a IoLimits    (CANCEL AND DEADLINES)
 //   IoLimits.none()  IoLimits.until(deadline)  IoLimits.within(group)  new IoLimits(group, deadline)
 //   aio.isCancelled(e)  aio.isTimedOut(e)      what an IoError says of how an operation ended
-//   Socket.none()           a Socket naming nothing: to swap one out of a Result
-//   s.isNone()  s.handle()
+//   Socket.none()  File.none()   a Socket or File naming nothing: to swap one out of a Result
+//   s.isNone()  s.handle()  f.isNone()  f.handle()
 //
-// Each of the first six makes an OPERATION, an actors.Awaitable[R], which
+// Each of the first nine makes an OPERATION, an actors.Awaitable[R], which
 // does nothing until an 'await' in a behaviour starts it; the 'await''s value
 // is its R. Made and never awaited, it is dropped, and nothing is done.
 //
@@ -138,9 +143,30 @@
 // finalizer waits for quiet again (a finalizer that ran may have sent a
 // message) and stops the workers.
 //
-// On Windows and Linux, as iocore is; TCP only, one operation at a time per
-// socket direction, as iocore's sockets are. Not here: files, the blocking
-// pool, UDP, and a socket's half-close.
+// A FILE is the same for a file the I/O thread's Loop holds: plain data that
+// moves, and dropping it closes the file, behind the operations queued before
+// the close, every one then in flight on it cancelled. 'openFile' opens by
+// iocore's 'openFile' on the I/O thread (Access.Read an existing file;
+// Access.Create a new one, or an existing one emptied, to read and write;
+// Access.Update an existing one or a new one, its bytes kept, to read and
+// write) and answers the File, or the system's failure (ERROR_FILE_NOT_FOUND
+// for a name that is not there, on both systems). The path is copied, so the
+// caller's Path is its own. 'readAt' and 'writeAt' are iocore's ReadAt and
+// WriteAt: at the byte offset given, with no cursor shared between operations,
+// so many may be in flight on one file at once. A read appends what is there
+// to its buffer, up to the buffer's room; reading from the end of the file or
+// past it is Done with the buffer as it went, as a socket's end of stream is,
+// and a buffer with no room fails (122), as a socket's does. A write's success
+// is the count written, all of the buffer. The buffer goes home as a
+// socket's does. 'openFile' has no 'In' form: opening is one call to the
+// system that iocore does not hold in flight, so there is nothing to cancel
+// once it has started; the two operations on a file have theirs.
+//
+// On Windows and Linux, as iocore is; TCP sockets and files (a socket does one
+// operation at a time per direction, as iocore's do; a file many at once, at
+// any offsets). Not here: 'fileio', the file service with classes and a
+// queue-depth governor (a package of its own, to come), the blocking pool's
+// other work (file metadata, name lookup), UDP, and a socket's half-close.
 
 mod aio;
 
@@ -150,7 +176,8 @@ import sync use Mutex;
 import collections use List;
 import iobuf use IoBuf;
 import time use Instant;
-import iocore use Loop, Waker, Op, Target, Sink, Completion, Handle, SocketAddr, IoError, CancelGroup, forever;
+import iocore use Loop, Waker, Op, Target, Sink, Completion, Handle, SocketAddr, IoError, CancelGroup, Access, forever;
+import path use Path;
 import actors;
 import diag;
 
@@ -510,6 +537,22 @@ struct ListenJob {
   }
 }
 
+// A file opened on the I/O thread's Loop, which holds it
+struct OpenFileJob {
+  pub path Path;
+  pub access Access;
+  pub reply actors.Reply;
+
+  fn run(self &mut, lp &mut Loop) {
+    mut rp = new actors.Reply();
+    rp <=> reply;
+    match lp.openFile(&path, access) {
+      case imm ok Ok {actors.answerNow[Result[File, IoError]](rp, Ok[File, IoError](new File(ok)));}
+      case imm e Error {actors.answerNow[Result[File, IoError]](rp, Error[File, IoError](e));}
+    }
+  }
+}
+
 // A socket's address, read on the I/O thread
 struct LocalAddrJob {
   pub h Handle;
@@ -594,6 +637,60 @@ pub struct Socket is Move {
       enqueue(newJob[CloseJob](new CloseJob(h)));
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Files
+// ---------------------------------------------------------------------------
+
+// A file the I/O thread holds (the package's header, A FILE): it moves, and
+// dropping it closes the file
+pub struct File is Move {
+  h Handle;
+
+  // A File naming nothing, which closes nothing: to swap one out of a
+  // Result, or into a field before one is there
+  pub fn none() File {new File(Handle.none());}
+
+  pub fn isNone(self &) bool {h.isNone();}
+
+  // The iocore handle it names, on the I/O thread's Loop
+  pub fn handle(self &) Handle {h;}
+
+  // What is in the file from byte offset 'at', appended to buf, which is moved
+  // in and comes back in the answer; from the end of the file or past it, buf
+  // comes back as it was. A buf with no room fails (ERROR_INSUFFICIENT_BUFFER,
+  // 122)
+  pub fn readAt(self &, at u64, buf IoBuf) actors.Awaitable[Result[IoBuf, IoError]] {
+    self.readAtIn(at, buf, IoLimits.none());
+  }
+
+  // A read ended if lim says so; then the buffer goes home to its pool
+  pub fn readAtIn(self &, at u64, buf IoBuf, lim IoLimits) actors.Awaitable[Result[IoBuf, IoError]] {
+    opAwaitable[Result[IoBuf, IoError]](Op.ReadAt(h, at, buf), &readAnswer, lim);
+  }
+
+  // All of buf, which is moved in and goes home once written, at byte offset
+  // 'at': the count
+  pub fn writeAt(self &, at u64, buf IoBuf) actors.Awaitable[Result[usize, IoError]] {
+    self.writeAtIn(at, buf, IoLimits.none());
+  }
+
+  // A write ended if lim says so, part of buf perhaps written
+  pub fn writeAtIn(self &, at u64, buf IoBuf, lim IoLimits) actors.Awaitable[Result[usize, IoError]] {
+    opAwaitable[Result[usize, IoError]](Op.WriteAt(h, at, buf), &writeAnswer, lim);
+  }
+
+  fn final(self &uni) {
+    if not h.isNone() {
+      enqueue(newJob[CloseJob](new CloseJob(h)));
+    }
+  }
+}
+
+// The file at path, opened as access says (the package's header, A FILE)
+pub fn openFile(path &Path, access Access) actors.Awaitable[Result[File, IoError]] {
+  awaitable[OpenFileJob, Result[File, IoError]](new OpenFileJob(path.copy(), access, new actors.Reply()));
 }
 
 // A TCP socket listening at addr, for accept; port 0 has the system choose
