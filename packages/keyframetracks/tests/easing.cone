@@ -1,0 +1,202 @@
+// Easing curves checked against independent values.
+//
+// - The 30 Penner curves (quad ... bounce, in, out and in-out) at s = 0.1,
+//   0.25, 0.5, 0.75 and 0.9, against a table computed from Robert Penner's
+//   original equations in their (t, b, c, d) form with b = 0, c = 1, d = 1
+//   (a separate Python program written from the 2002 book's code, whose
+//   algebra differs from the package's: for instance quad in-out there is
+//   -c/2 (t (t - 2) - 1), here 1 - (2 - 2s)^2 / 2). Every one also starts at
+//   0 and ends at 1, and an 'out' curve is the mirror of its 'in':
+//   out(s) = 1 - in(1 - s).
+// - Smoothstep and smootherstep at the quarter points by hand:
+//   3s^2 - 2s^3 at 0.25 is 0.15625; the quintic 6s^5 - 15s^4 + 10s^3 at
+//   0.25 is 0.103515625.
+// - CSS cubic-bezier easing against a bisection solver (80 halvings) run in
+//   Python on the same Bezier, for the CSS 'ease', 'ease-in', 'ease-in-out'
+//   and 'ease-out' handles (the value of 'ease' at 0.5 is the well-known
+//   0.8024) and two overshooting curves; plus the inversion accuracy: for
+//   200 progress values and several handle sets, x(u(s)) put back through
+//   the Bezier's x polynomial agrees with s to 1e-6.
+// - The spring ease against a fourth-order Runge-Kutta integration of
+//   x'' + 2 zeta omega x' + omega^2 x = 0 with step 0.0005, for under-,
+//   critically and over-damped springs, and the springOmega rule.
+
+mod easing;
+
+import libc;
+import testing use *;
+import collections use *;
+import geomath use *;
+import keyframetracks use *;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+fn row(id u32, a f32, b f32, c f32, d f32, e f32) {
+  imm tol = 0.00004;
+  near(ease(id, 0.1, 0., 0.), a, tol, "Penner curve at 0.1");
+  near(ease(id, 0.25, 0., 0.), b, tol, "Penner curve at 0.25");
+  near(ease(id, 0.5, 0., 0.), c, tol, "Penner curve at 0.5");
+  near(ease(id, 0.75, 0., 0.), d, tol, "Penner curve at 0.75");
+  near(ease(id, 0.9, 0., 0.), e, tol, "Penner curve at 0.9");
+  near(ease(id, 0., 0., 0.), 0., 0.000001, "starts at 0");
+  near(ease(id, 1., 0., 0.), 1., 0.000001, "ends at 1");
+}
+
+fn bezX(u f32, x1 f32, x2 f32) f32 {
+  imm v = 1. - u;
+  3. * v * v * u * x1 + 3. * v * u * u * x2 + u * u * u;
+}
+
+fn invert(x1 f32, x2 f32) bool {
+  mut worst f32 = 0.;
+  mut i = 1;
+  while i < 200 {
+    imm s = f32.from(i) / 200.;
+    imm u = bezierSolve(x1, x2, s);
+    imm err = libc.fabsf(bezX(u, x1, x2) - s);
+    if err > worst { worst = err; }
+    i = i + 1;
+  }
+  worst < 0.000001;
+}
+
+// RK4 on (x, v) for x'' = -2 zeta omega v - omega^2 x, from displacement d0, velocity v0
+fn rk4(zeta f32, omega f32, d0 f32, v0 f32, t f32) f32 {
+  mut x = d0;
+  mut v = v0;
+  imm h f32 = 0.0005;
+  mut time f32 = 0.;
+  while time < t - 0.00001 {
+    imm a1 = -2. * zeta * omega * v - omega * omega * x;
+    imm k1x = v; imm k1v = a1;
+    imm x2 = x + 0.5 * h * k1x; imm v2 = v + 0.5 * h * k1v;
+    imm k2x = v2; imm k2v = -2. * zeta * omega * v2 - omega * omega * x2;
+    imm x3 = x + 0.5 * h * k2x; imm v3 = v + 0.5 * h * k2v;
+    imm k3x = v3; imm k3v = -2. * zeta * omega * v3 - omega * omega * x3;
+    imm x4 = x + h * k3x; imm v4 = v + h * k3v;
+    imm k4x = v4; imm k4v = -2. * zeta * omega * v4 - omega * omega * x4;
+    x = x + h / 6. * (k1x + 2. * k2x + 2. * k3x + k4x);
+    v = v + h / 6. * (k1v + 2. * k2v + 2. * k3v + k4v);
+    time = time + h;
+  }
+  x;
+}
+
+fn main() i32 {
+  row(EASE_IN_QUAD, 0.0100000, 0.0625000, 0.2500000, 0.5625000, 0.8100000);
+  row(EASE_OUT_QUAD, 0.1900000, 0.4375000, 0.7500000, 0.9375000, 0.9900000);
+  row(EASE_IN_OUT_QUAD, 0.0200000, 0.1250000, 0.5000000, 0.8750000, 0.9800000);
+  row(EASE_IN_CUBIC, 0.0010000, 0.0156250, 0.1250000, 0.4218750, 0.7290000);
+  row(EASE_OUT_CUBIC, 0.2710000, 0.5781250, 0.8750000, 0.9843750, 0.9990000);
+  row(EASE_IN_OUT_CUBIC, 0.0040000, 0.0625000, 0.5000000, 0.9375000, 0.9960000);
+  row(EASE_IN_QUART, 0.0001000, 0.0039062, 0.0625000, 0.3164062, 0.6561000);
+  row(EASE_OUT_QUART, 0.3439000, 0.6835938, 0.9375000, 0.9960938, 0.9999000);
+  row(EASE_IN_OUT_QUART, 0.0008000, 0.0312500, 0.5000000, 0.9687500, 0.9992000);
+  row(EASE_IN_QUINT, 0.0000100, 0.0009766, 0.0312500, 0.2373047, 0.5904900);
+  row(EASE_OUT_QUINT, 0.4095100, 0.7626953, 0.9687500, 0.9990234, 0.9999900);
+  row(EASE_IN_OUT_QUINT, 0.0001600, 0.0156250, 0.5000000, 0.9843750, 0.9998400);
+  row(EASE_IN_SINE, 0.0123117, 0.0761205, 0.2928932, 0.6173166, 0.8435655);
+  row(EASE_OUT_SINE, 0.1564345, 0.3826834, 0.7071068, 0.9238795, 0.9876883);
+  row(EASE_IN_OUT_SINE, 0.0244717, 0.1464466, 0.5000000, 0.8535534, 0.9755283);
+  row(EASE_IN_EXPO, 0.0019531, 0.0055243, 0.0312500, 0.1767767, 0.5000000);
+  row(EASE_OUT_EXPO, 0.5000000, 0.8232233, 0.9687500, 0.9944757, 0.9980469);
+  row(EASE_IN_OUT_EXPO, 0.0019531, 0.0156250, 0.5000000, 0.9843750, 0.9980469);
+  row(EASE_IN_CIRC, 0.0050126, 0.0317542, 0.1339746, 0.3385622, 0.5641101);
+  row(EASE_OUT_CIRC, 0.4358899, 0.6614378, 0.8660254, 0.9682458, 0.9949874);
+  row(EASE_IN_OUT_CIRC, 0.0101021, 0.0669873, 0.5000000, 0.9330127, 0.9898979);
+  row(EASE_IN_BACK, -0.0143142, -0.0641366, -0.0876975, 0.1825903, 0.5911720);
+  row(EASE_OUT_BACK, 0.4088280, 0.8174097, 1.0876975, 1.0641366, 1.0143142);
+  row(EASE_IN_OUT_BACK, -0.0375186, -0.0996818, 0.5000000, 1.0996818, 1.0375186);
+  row(EASE_IN_ELASTIC, 0.0019531, -0.0055243, -0.0156250, 0.0883883, -0.2500000);
+  row(EASE_OUT_ELASTIC, 1.2500000, 0.9116117, 1.0156250, 1.0055243, 0.9980469);
+  row(EASE_IN_OUT_ELASTIC, 0.0003392, 0.0119694, 0.5000000, 0.9880306, 0.9996608);
+  row(EASE_IN_BOUNCE, 0.0118750, 0.0273438, 0.2343750, 0.5273438, 0.9243750);
+  row(EASE_OUT_BOUNCE, 0.0756250, 0.4726562, 0.7656250, 0.9726562, 0.9881250);
+  row(EASE_IN_OUT_BOUNCE, 0.0300000, 0.1171875, 0.5000000, 0.8828125, 0.9700000);
+
+  // an 'out' curve mirrors its 'in': out(s) = 1 - in(1 - s), for every family
+  mut fam = FAM_QUAD;
+  while fam <= FAM_BOUNCE {
+    imm inId = easeId(fam, MODE_IN);
+    imm outId = easeId(fam, MODE_OUT);
+    imm s = 0.3;
+    near(ease(outId, s, 0., 0.), 1. - ease(inId, 1. - s, 0., 0.), 0.00001, "out mirrors in");
+    near(ease(outId, 0.8, 0., 0.), 1. - ease(inId, 0.2, 0., 0.), 0.00001, "out mirrors in at 0.8");
+    fam = fam + 1u32;
+  }
+  expectInt(i64.from(easeId(FAM_ELASTIC, MODE_IN_OUT)), 29i64, "ids: elastic in-out is 29");
+  expectInt(i64.from(EASE_IN_OUT_BOUNCE), 32i64, "ids: bounce in-out is 32");
+
+  // linear, smoothstep, smootherstep
+  near(ease(EASE_LINEAR, 0.37, 0., 0.), 0.37, 0.000001, "linear");
+  near(ease(EASE_SMOOTHSTEP, 0.25, 0., 0.), 0.15625, 0.000001, "smoothstep at 0.25");
+  near(ease(EASE_SMOOTHSTEP, 0.5, 0., 0.), 0.5, 0.000001, "smoothstep at 0.5");
+  near(ease(EASE_SMOOTHERSTEP, 0.25, 0., 0.), 0.103515625, 0.000001, "smootherstep at 0.25");
+  near(ease(EASE_SMOOTHERSTEP, 0.5, 0., 0.), 0.5, 0.000001, "smootherstep at 0.5");
+  // outside 0..1 the progress is clamped
+  near(ease(EASE_IN_CUBIC, 1.5, 0., 0.), 1., 0.000001, "clamped above");
+  near(ease(EASE_IN_CUBIC, -0.5, 0., 0.), 0., 0.000001, "clamped below");
+  // a back ease takes its overshoot from p0: 0 means 1.70158; a bigger one overshoots more
+  near(ease(EASE_OUT_BACK, 0.5, 0., 0.), ease(EASE_OUT_BACK, 0.5, 1.70158, 0.), 0.000001, "back default overshoot");
+  expect(ease(EASE_OUT_BACK, 0.5, 3., 0.) > ease(EASE_OUT_BACK, 0.5, 1.70158, 0.), "a bigger overshoot goes further");
+
+  // CSS cubic-bezier easing against a bisection solver
+  near(bezierEase(0.25, 0.1, 0.25, 1., 0.1), 0.0947963, 0.00002, "ease at 0.1");
+  near(bezierEase(0.25, 0.1, 0.25, 1., 0.25), 0.4085106, 0.00002, "ease at 0.25");
+  near(bezierEase(0.25, 0.1, 0.25, 1., 0.5), 0.8024034, 0.00002, "ease at 0.5 (the well-known 0.8024)");
+  near(bezierEase(0.25, 0.1, 0.25, 1., 0.75), 0.960459, 0.00002, "ease at 0.75");
+  near(bezierEase(0.25, 0.1, 0.25, 1., 0.9), 0.9943165, 0.00002, "ease at 0.9");
+  near(bezierEase(0.42, 0., 1., 1., 0.25), 0.0934647, 0.00002, "ease-in at 0.25");
+  near(bezierEase(0.42, 0., 1., 1., 0.5), 0.3153568, 0.00002, "ease-in at 0.5");
+  near(bezierEase(0.42, 0., 1., 1., 0.9), 0.8394278, 0.00002, "ease-in at 0.9");
+  near(bezierEase(0.42, 0., 0.58, 1., 0.1), 0.0197225, 0.00002, "ease-in-out at 0.1");
+  near(bezierEase(0.42, 0., 0.58, 1., 0.5), 0.5, 0.00001, "ease-in-out is symmetric: 0.5 at 0.5");
+  near(bezierEase(0.42, 0., 0.58, 1., 0.75), 0.8708381, 0.00002, "ease-in-out at 0.75");
+  near(bezierEase(0., 0., 0.58, 1., 0.25), 0.3781381, 0.00002, "ease-out at 0.25");
+  near(bezierEase(0., 0., 0.58, 1., 0.9), 0.9829734, 0.00002, "ease-out at 0.9");
+  near(bezierEase(0.34, 1.56, 0.64, 1., 0.5), 1.0874007, 0.00002, "overshooting curve at 0.5");
+  near(bezierEase(0.34, 1.56, 0.64, 1., 0.1), 0.403933, 0.00002, "overshooting curve at 0.1");
+  near(bezierEase(0.68, -0.55, 0.27, 1.55, 0.25), -0.0829351, 0.00002, "anticipation curve dips below 0");
+  near(bezierEase(0.68, -0.55, 0.27, 1.55, 0.75), 1.0888244, 0.00002, "anticipation curve passes 1");
+  near(bezierEase(0., 0., 1., 1., 0.3), 0.3, 0.000002, "cubic-bezier(0,0,1,1) is linear");
+  near(bezierEase(0.33, 0.33, 0.67, 0.67, 0.8), 0.8, 0.00001, "handles on the diagonal are linear");
+  near(bezierEase(0.25, 0.1, 0.25, 1., 0.), 0., 0.000001, "starts at 0");
+  near(bezierEase(0.25, 0.1, 0.25, 1., 1.), 1., 0.000001, "ends at 1");
+  expect(invert(0.25, 0.25), "inversion accuracy for the CSS ease");
+  expect(invert(0.42, 1.), "inversion accuracy for ease-in");
+  expect(invert(0.9, 0.1), "inversion accuracy for a steep S (x1 > x2)");
+  expect(invert(0., 1.), "inversion accuracy at the extremes of the handles");
+  expect(invert(1., 0.), "inversion accuracy for the flattest S");
+  expect(invert(0.05, 0.95), "inversion accuracy for nearly linear handles");
+  // handles outside 0..1 in x are clamped so x(u) stays monotonic
+  near(bezierSolve(-0.5, 2., 0.3), bezierSolve(0., 1., 0.3), 0.0000001, "x handles are clamped into 0..1");
+
+  // the spring ease against a Runge-Kutta integration
+  imm springs = new Array[f32, 3] <- 0.3, 1., 2.;
+  mut i = 0usize;
+  while i < 3usize {
+    imm zeta = springs[i];
+    imm omega f32 = 14.;
+    imm s1 = 0.1; imm s2 = 0.35; imm s3 = 0.6; imm s4 = 0.95;
+    // from rest at 0 towards 1: x = 1 + displacement, displacement starts at -1
+    near(ease(EASE_SPRING, s1, zeta, omega), 1. + rk4(zeta, omega, -1., 0., s1), 0.0005, "spring vs RK4 at 0.1");
+    near(ease(EASE_SPRING, s2, zeta, omega), 1. + rk4(zeta, omega, -1., 0., s2), 0.0005, "spring vs RK4 at 0.35");
+    near(ease(EASE_SPRING, s3, zeta, omega), 1. + rk4(zeta, omega, -1., 0., s3), 0.0005, "spring vs RK4 at 0.6");
+    near(ease(EASE_SPRING, s4, zeta, omega), 1. + rk4(zeta, omega, -1., 0., s4), 0.0005, "spring vs RK4 at 0.95");
+    near(ease(EASE_SPRING, 1., zeta, omega), 1., 0.0000001, "the spring ease lands exactly on 1");
+    near(ease(EASE_SPRING, 0., zeta, omega), 0., 0.0000001, "and starts at 0");
+    i = i + 1usize;
+  }
+  // with an initial velocity, and a different start and target
+  near(springValue(0.4, 10., 2., 3., 5., 0.3), 5. + rk4(0.4, 10., -3., 3., 0.3), 0.001, "spring with initial velocity vs RK4");
+  near(springValue(1., 10., 2., -3., 5., 0.3), 5. + rk4(1., 10., -3., -3., 0.3), 0.001, "critical spring with initial velocity vs RK4");
+  near(springValue(3., 10., 2., 3., 5., 0.3), 5. + rk4(3., 10., -3., 3., 0.3), 0.001, "overdamped spring with initial velocity vs RK4");
+  expect(ease(EASE_SPRING, 0.2, 0.3, 14.) > 1., "an underdamped spring overshoots 1");
+  expect(ease(EASE_SPRING, 0.2, 2., 14.) < 1., "an overdamped one does not");
+  // the omega that leaves a residue: exp(-zeta omega) = eps
+  imm om = springOmega(0.5, 0.01);
+  near(libc.expf(-0.5 * om), 0.01, 0.0000001, "springOmega leaves the stated envelope");
+  done();
+}

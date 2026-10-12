@@ -120,9 +120,39 @@ pub extern {
   fn SetWindowRelativeMouseMode(window *Window, enabled bool) bool;
   fn GetWindowRelativeMouseMode(window *Window) bool;
   fn GetMouseState(x &mut f32, y &mut f32) u32;
+
+  // Audio, by streams. OpenAudioDeviceStream opens a playback device
+  // ('devid' AUDIO_DEVICE_DEFAULT_PLAYBACK for the system's default) already
+  // bound to a new stream that takes 'spec' as its input format; a null
+  // 'callback' (it is a C function pointer, bound as *u8 and always null
+  // here) and a null 'userdata' make it a push stream, which a program feeds
+  // with PutAudioStreamData (a count of bytes of 'spec' frames; SDL copies
+  // them). The device starts paused: ResumeAudioStreamDevice starts it.
+  // GetAudioStreamQueued is the bytes put and not yet taken by the device,
+  // what a feeder keeps topped up. Quit and QuitSubSystem(INIT_AUDIO) end
+  // what DestroyAudioStream has not. SDL_AUDIODRIVER=dummy in the
+  // environment selects a driver that plays nothing (for tests).
+  fn OpenAudioDeviceStream(devid u32, spec &AudioSpec, callback *u8, userdata *u8) *AudioStream;
+  fn ResumeAudioStreamDevice(stream *AudioStream) bool;
+  fn PauseAudioStreamDevice(stream *AudioStream) bool;
+  fn PutAudioStreamData(stream *AudioStream, buf *u8, len i32) bool;
+  fn GetAudioStreamQueued(stream *AudioStream) i32;
+  fn SetAudioStreamGain(stream *AudioStream, gain f32) bool;
+  fn ClearAudioStream(stream *AudioStream) bool;
+  fn DestroyAudioStream(stream *AudioStream);
+  // The name of the audio driver in use, or null before one is
+  fn GetCurrentAudioDriver() *u8;
 }
 
 pub struct @opaque Window {}      // Opaque
+pub struct @opaque AudioStream {} // Opaque
+
+// SDL_AudioSpec: the format of audio frames
+pub struct AudioSpec {
+  pub format u32;      // AUDIO_...
+  pub channels i32;    // 1 mono, 2 stereo
+  pub freq i32;        // frames a second
+}
 
 // SDL_Rect
 pub struct Rect {
@@ -243,7 +273,14 @@ pub struct TextInputEvent {
 }
 
 // Init's subsystems (VIDEO starts EVENTS too)
+pub const INIT_AUDIO = 0x10u32;
 pub const INIT_VIDEO = 0x20u32;
+
+// OpenAudioDeviceStream's device ids, and an AudioSpec's format: 32-bit
+// floats, little endian (SDL_AUDIO_F32LE), and 16-bit signed integers
+pub const AUDIO_DEVICE_DEFAULT_PLAYBACK = 0xFFFFFFFFu32;
+pub const AUDIO_F32 = 0x8120u32;
+pub const AUDIO_S16 = 0x8010u32;
 pub const INIT_EVENTS = 0x4000u32;
 
 // CreateWindow's flags, and SetWindowPosition's centre

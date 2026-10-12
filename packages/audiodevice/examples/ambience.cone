@@ -1,0 +1,51 @@
+// Ambience: opens the default audio device and plays, for ten seconds, a
+// brook on the left, a campfire ahead, wind everywhere and a bird that
+// flies past from left to right, to show the whole path: Control on this
+// thread, the feeder thread rendering audiomixer's Engine into an SDL3
+// stream. It plays ALOUD; run it yourself, never from a test:
+//
+//   congo run examples/ambience.cone
+//
+// With SDL_AUDIODRIVER=dummy in the environment it plays to nothing, which
+// is how it was run in the build.
+
+mod ambience;
+
+import stdio use *;
+import geomath use *;
+import thread;
+import time use Duration;
+import audiomixer use *;
+import audiodevice use *;
+
+fn main() i32 {
+  match Device.start(48000u32, 32u32, 40u32) {
+    case mut s Ok {
+      s.control.setBusGain(BUS_MASTER, 0.6, 0.);
+      imm far = Attenuation.inverse(1., 60., 1.);
+      s.control.playSynthAt(SYNTH_WATER, 1u32, BUS_AMBIENCE, 0.8, 0.7, 0., 0i32, new Vec3(-6., 0., -2.), new Vec3(0., 0., 0.), &far);
+      s.control.playSynthAt(SYNTH_FIRE, 2u32, BUS_AMBIENCE, 0.8, 0.5, 0.15, 0i32, new Vec3(0., 0., -4.), new Vec3(0., 0., 0.), &far);
+      s.control.playSynth(SYNTH_WIND, 3u32, BUS_AMBIENCE, 0.6, 0.35, 0., 0i32);
+      mut t = 0;
+      while t < 100 {
+        // every 100 ms: a bird chirps at a point moving left to right
+        if t % 15 == 0 {
+          imm x = f32.from(t) * 0.2 - 10.;
+          imm bird = s.control.playSynthAt(SYNTH_BIRD, u32.from(t) + 100u32, BUS_EFFECTS, 0.5, 4200., 0., 1i32, new Vec3(x, 3., -5.), new Vec3(20., 0., 0.), &far);
+          s.control.setOcclusion(bird, 0.);
+        }
+        thread.sleep(Duration.fromMillis(100));
+        t = t + 1;
+      }
+      imm status = s.device.stop(&mut s.control);
+      printStr("done, feeder status ");
+      printInt(i64.from(status));
+      printStr("\n");
+    }
+    case is Error {
+      printStr("no audio device\n");
+      return 1i32;
+    }
+  }
+  0i32;
+}

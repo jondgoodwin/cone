@@ -992,9 +992,21 @@ static void fnCallNoCandidate(INode *callnode, enum OverloadMatch status, Name *
         errorMsgNode(callnode, ErrorAmbigCandidate,
             "More than one %s declared by `%s` accepts these arguments. Call a concrete name or convert the arguments.",
             kind, &namesym->namestr);
-    else
+    else {
+        // An argument already reported as bad is no candidate's to take, and
+        // the report that made it bad is the one
+        FnCallNode *call = (FnCallNode*)callnode;
+        INode **argp;
+        uint32_t argcnt;
+        if (call->args) {
+            for (nodesFor(call->args, argcnt, argp)) {
+                if (inodeIsError(*argp))
+                    return;
+            }
+        }
         errorMsgNode(callnode, ErrorNoCandidate,
             "No %s declared by `%s` accepts the call's arguments.", kind, &namesym->namestr);
+    }
 }
 
 // '&x[i]' hands the type's '&[]' a read-only borrow of 'x' as its receiver,
@@ -1761,11 +1773,13 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
         INode *objtype = iexpGetTypeDcl(obj);
         if (objtype->tag == RefTag && permIsLock(((RefNode*)objtype)->perm)) {
             permLockRefused(obj, ((RefNode*)objtype)->perm, "call a method on the value");
-            callnode->vtype = errorType;
         }
         else if (!fnCallRefIndexWantsMut(callnode, foundnode, methsym, status)
             && !fnCallBoolOperandWantsNumber(callnode, foundnode, status))
             fnCallNoCandidate((INode*)callnode, status, methsym, "method");
+        // Every path here has reported: the call is a bad value from now on, so
+        // what takes it as an argument or an initializer says nothing more of it
+        callnode->vtype = errorType;
         return -1;
     }
 
@@ -2423,6 +2437,7 @@ int fnCallLowerOverloadFn(TypeCheckState *pstate, FnCallNode **nodep) {
     FnDclNode *selected = iNsTypeFindMethod((INode*)overloadnode, NULL, node->args, &status);
     if (selected == NULL) {
         fnCallNoCandidate((INode*)node, status, overloadnode->namesym, "function");
+        node->vtype = errorType;
         return 1;
     }
 
