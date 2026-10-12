@@ -1,0 +1,516 @@
+// ======== Layout: measure, then arrange ========
+//
+// MEASURE (measureNode) answers "how big do you want to be, given these box
+// constraints?" for the border box (padding in, margin out), and caches the
+// answer with the constraints it was for. ARRANGE (arrangeNode) is told the
+// final size and places the children inside it, each in the parent's pixels
+// (relative to the parent's border box). The two passes are those of Flutter's
+// RenderBox and WPF's Measure/Arrange; the flex distribution follows the CSS
+// Flexbox Level 1 specification, 9.7 "Resolving Flexible Lengths".
+//
+// A node of fixed size on both axes is a relayout boundary: its measure never
+// looks at its content, and a change inside it does not dirty its ancestors'
+// measures. Arrange is skipped for a node whose size is unchanged and which is
+// not dirty; its dirty descendants are still visited.
+
+// ---- entry point ----
+
+// Lays out the whole Ui: the root layer, then the overlay. 'm' measures text:
+// fn(text &str, font u32, size f32) Vec2
+pub fn layout[F fn(text &str, font u32, size f32) Vec2](ui &mut Ui, m &mut F) {
+  ui.stats = new Stats;
+  layoutRoot(ui, ui.root, m);
+  layoutRoot(ui, ui.overlay, m);
+  updateGlobals(ui, ui.root, 0., 0.);
+  updateGlobals(ui, ui.overlay, 0., 0.);
+  refreshFields(ui, m);
+  placeTooltip(ui, m);
+}
+
+fn layoutRoot[F fn(text &str, font u32, size f32) Vec2](ui &mut Ui, id usize, m &mut F) {
+  imm w = ui.nodes[id].prefW;
+  imm h = ui.nodes[id].prefH;
+  measureNode(ui, id, w, w, h, h, m);
+  ui.nodes[id].x = 0.;
+  ui.nodes[id].y = 0.;
+  arrangeNode(ui, id, w, h, m);
+}
+
+fn updateGlobals(ui &mut Ui, id usize, ox f32, oy f32) {
+  ui.nodes[id].gx = ox + ui.nodes[id].x;
+  ui.nodes[id].gy = oy + ui.nodes[id].y;
+  mut c = ui.nodes[id].first;
+  while c != NIL {
+    if ui.nodes[c].visible {updateGlobals(ui, c, ui.nodes[id].gx, ui.nodes[id].gy);}
+    c = ui.nodes[c].next;
+  }
+}
+
+// ---- text ----
+
+fn textSize[F fn(text &str, font u32, size f32) Vec2](ui &mut Ui, id usize, m &mut F) Vec2 {
+  imm font = u32.from(ui.styleNum0(id, P_FONT, 0.));
+  imm size = ui.styleNum0(id, P_FONT_SIZE, 14.);
+  if ui.nodes[id].tValid and ui.nodes[id].tFont == font and ui.nodes[id].tSize == size {
+    return new Vec2(ui.nodes[id].tW, ui.nodes[id].tH);
+  }
+  imm v = m(ui.texts[id].view(), font, size);
+  ui.stats.textMeasures = ui.stats.textMeasures + 1u32;
+  ui.nodes[id].tValid = true;
+  ui.nodes[id].tFont = font;
+  ui.nodes[id].tSize = size;
+  ui.nodes[id].tW = v.x;
+  ui.nodes[id].tH = v.y;
+  v;
+}
+
+// ---- measure ----
+
+pub fn measureNode[F fn(text &str, font u32, size f32) Vec2](ui &mut Ui, id usize, cminW f32, cmaxW f32, cminH f32, cmaxH f32, m &mut F) Vec2 {
+  if !ui.nodes[id].visible {return new Vec2(0., 0.);}
+  if ui.nodes[id].cValid and (ui.nodes[id].dirty & D_MEASURE) == 0u32 and cacheFits(ui, id, cminW, cmaxW, cminH, cmaxH) {
+    ui.stats.measureHits = ui.stats.measureHits + 1u32;
+    if ui.nodes[id].cConstrained {ui.clampSeen = true;}
+    return new Vec2(ui.nodes[id].cW, ui.nodes[id].cH);
+  }
+  ui.stats.measured = ui.stats.measured + 1u32;
+  imm outerClamp = ui.clampSeen;
+  ui.clampSeen = false;
+  imm loW = clampf(ui.nodes[id].minW, cminW, cmaxW);
+  imm hiW = clampf(ui.nodes[id].maxW, loW, cmaxW);
+  imm loH = clampf(ui.nodes[id].minH, cminH, cmaxH);
+  imm hiH = clampf(ui.nodes[id].maxH, loH, cmaxH);
+  imm px = ui.padOf(id, 0u32) + ui.padOf(id, 2u32);
+  imm py = ui.padOf(id, 1u32) + ui.padOf(id, 3u32);
+  imm fixedW = ui.nodes[id].prefW >= 0.;
+  imm fixedH = ui.nodes[id].prefH >= 0.;
+  mut w = 0.;
+  mut h = 0.;
+  mut wantW = 0.;
+  mut wantH = 0.;
+  if fixedW and fixedH {
+    wantW = ui.nodes[id].prefW;
+    wantH = ui.nodes[id].prefH;
+  }
+  else {
+    mut availW = hiW - px;
+    mut availH = hiH - py;
+    if fixedW {availW = clampf(ui.nodes[id].prefW, loW, hiW) - px;}
+    if fixedH {availH = clampf(ui.nodes[id].prefH, loH, hiH) - py;}
+    imm c = contentSize(ui, id, maxf(0., availW), maxf(0., availH), m);
+    wantW = if fixedW {ui.nodes[id].prefW;} else {c.x + px;};
+    wantH = if fixedH {ui.nodes[id].prefH;} else {c.y + py;};
+  }
+  w = clampf(wantW, loW, hiW);
+  h = clampf(wantH, loH, hiH);
+  // the answer depends on the bounds when a bound changed it, or a child was changed by one
+  imm constrained = ui.clampSeen or wantW > hiW or wantH > hiH or wantW < loW or wantH < loH;
+  ui.nodes[id].cConstrained = constrained;
+  ui.clampSeen = outerClamp or constrained;
+  ui.nodes[id].cMinW = cminW;
+  ui.nodes[id].cMaxW = cmaxW;
+  ui.nodes[id].cMinH = cminH;
+  ui.nodes[id].cMaxH = cmaxH;
+  ui.nodes[id].cW = w;
+  ui.nodes[id].cH = h;
+  ui.nodes[id].cValid = true;
+  ui.nodes[id].dirty = ui.nodes[id].dirty & (D_MEASURE ^ 4294967295u32);
+  new Vec2(w, h);
+}
+
+// Whether the cached answer stands for these constraints. It does for the very same
+// constraints, and for others that admit it when no bound shaped it: a node's size is its
+// content's own unless a bound cut or raised it, or cut a child (the 'constrained' flag
+// measureNode records), and a size that no bound shaped is the same under any bounds that allow it
+fn cacheFits(ui &Ui, id usize, cminW f32, cmaxW f32, cminH f32, cmaxH f32) bool {
+  imm n = ui.nodes[id];
+  if n.cMinW == cminW and n.cMaxW == cmaxW and n.cMinH == cminH and n.cMaxH == cmaxH {return true;}
+  !n.cConstrained and n.cW >= cminW and n.cW <= cmaxW and n.cH >= cminH and n.cH <= cmaxH;
+}
+
+// A child's size with its margins, measured loose inside 'availW' x 'availH'
+fn measureOuter[F fn(text &str, font u32, size f32) Vec2](ui &mut Ui, id usize, availW f32, availH f32, m &mut F) Vec2 {
+  imm mw = ui.nodes[id].marL + ui.nodes[id].marR;
+  imm mh = ui.nodes[id].marT + ui.nodes[id].marB;
+  imm v = measureNode(ui, id, 0., maxf(0., availW - mw), 0., maxf(0., availH - mh), m);
+  new Vec2(v.x + mw, v.y + mh);
+}
+
+// The size a node's content wants inside 'availW' x 'availH' (padding already taken off)
+fn contentSize[F fn(text &str, font u32, size f32) Vec2](ui &mut Ui, id usize, availW f32, availH f32, m &mut F) Vec2 {
+  imm mode = ui.nodes[id].layout;
+  if ui.nodes[id].first == NIL {
+    return intrinsicSize(ui, id, m);
+  }
+  if mode == LK_ROW or mode == LK_COLUMN {return flexContent(ui, id, availW, availH, m);}
+  if mode == LK_GRID {return gridContent(ui, id, availW, availH, m);}
+  if mode == LK_DOCK {return dockContent(ui, id, availW, availH, m);}
+  if mode == LK_SPLIT {return splitContent(ui, id, availW, availH, m);}
+  if mode == LK_SCROLL {return scrollContent(ui, id, availW, availH, m);}
+  // STACK, ANCHOR and ABS: the farthest extent of any child
+  mut cw = 0.;
+  mut ch = 0.;
+  mut c = ui.nodes[id].first;
+  while c != NIL {
+    if ui.nodes[c].visible {
+      imm o = measureOuter(ui, c, availW, availH, m);
+      mut ex = o.x;
+      mut ey = o.y;
+      if mode == LK_ABS or ui.nodes[c].outOfFlow {
+        ex = ui.nodes[c].absX + o.x;
+        ey = ui.nodes[c].absY + o.y;
+      }
+      elif mode == LK_ANCHOR {
+        ex = o.x + maxf(0., ui.nodes[c].offL);
+        ey = o.y + maxf(0., ui.nodes[c].offT);
+      }
+      cw = maxf(cw, ex);
+      ch = maxf(ch, ey);
+    }
+    c = ui.nodes[c].next;
+  }
+  new Vec2(cw, ch);
+}
+
+// What a node with no children wants: its text, plus a toggle's box
+fn intrinsicSize[F fn(text &str, font u32, size f32) Vec2](ui &mut Ui, id usize, m &mut F) Vec2 {
+  if ui.texts[id].len() == 0usize {
+    if ui.nodes[id].kind == K_TOGGLE {
+      imm s = ui.styleNum0(id, P_SIZE, 20.);
+      return new Vec2(s, s);
+    }
+    return new Vec2(0., 0.);
+  }
+  imm t = textSize(ui, id, m);
+  if ui.nodes[id].kind == K_TOGGLE {
+    imm s = ui.styleNum0(id, P_SIZE, 20.);
+    return new Vec2(s + ui.gapOf(id) + t.x, maxf(s, t.y));
+  }
+  t;
+}
+
+// ---- arrange ----
+
+pub fn arrangeNode[F fn(text &str, font u32, size f32) Vec2](ui &mut Ui, id usize, w f32, h f32, m &mut F) {
+  if !ui.nodes[id].visible {return;}
+  imm needs = (ui.nodes[id].dirty & (D_ARRANGE | D_MEASURE)) != 0u32 or !ui.nodes[id].aValid or ui.nodes[id].aW != w or ui.nodes[id].aH != h;
+  ui.nodes[id].w = w;
+  ui.nodes[id].h = h;
+  if !needs {
+    ui.stats.arrangeSkips = ui.stats.arrangeSkips + 1u32;
+    if (ui.nodes[id].dirty & D_SUB) != 0u32 {
+      mut c = ui.nodes[id].first;
+      while c != NIL {
+        if ui.nodes[c].dirty != 0u32 and ui.nodes[c].visible {arrangeNode(ui, c, ui.nodes[c].w, ui.nodes[c].h, m);}
+        c = ui.nodes[c].next;
+      }
+      ui.nodes[id].dirty = ui.nodes[id].dirty & (D_SUB ^ 4294967295u32);
+    }
+    return;
+  }
+  ui.stats.arranged = ui.stats.arranged + 1u32;
+  imm mode = ui.nodes[id].layout;
+  if mode == LK_ROW or mode == LK_COLUMN {flexArrange(ui, id, w, h, m);}
+  elif mode == LK_GRID {gridArrange(ui, id, w, h, m);}
+  elif mode == LK_ANCHOR {anchorArrange(ui, id, w, h, m);}
+  elif mode == LK_ABS {absArrange(ui, id, w, h, m);}
+  elif mode == LK_DOCK {dockArrange(ui, id, w, h, m);}
+  elif mode == LK_SPLIT {splitArrange(ui, id, w, h, m);}
+  elif mode == LK_SCROLL {scrollArrange(ui, id, w, h, m);}
+  else {stackArrange(ui, id, w, h, m);}
+  placeOutOfFlow(ui, id, w, h, m);
+  ui.nodes[id].aValid = true;
+  ui.nodes[id].aW = w;
+  ui.nodes[id].aH = h;
+  ui.nodes[id].dirty = 0u32;
+}
+
+// Puts a child at (x, y) of its parent with a final size, and arranges it
+fn place[F fn(text &str, font u32, size f32) Vec2](ui &mut Ui, c usize, x f32, y f32, w f32, h f32, m &mut F) {
+  ui.nodes[c].x = x;
+  ui.nodes[c].y = y;
+  arrangeNode(ui, c, w, h, m);
+}
+
+fn isFlow(ui &Ui, c usize) bool {ui.nodes[c].visible and !ui.nodes[c].outOfFlow;}
+
+// Children taken out of the flow sit at (absX, absY) from the container's corner
+fn placeOutOfFlow[F fn(text &str, font u32, size f32) Vec2](ui &mut Ui, id usize, w f32, h f32, m &mut F) {
+  mut c = ui.nodes[id].first;
+  while c != NIL {
+    if ui.nodes[c].visible and ui.nodes[c].outOfFlow {
+      imm v = measureNode(ui, c, 0., UNBOUNDED, 0., UNBOUNDED, m);
+      place(ui, c, ui.nodes[c].absX, ui.nodes[c].absY, v.x, v.y, m);
+    }
+    c = ui.nodes[c].next;
+  }
+}
+
+// LK_ABS: every child sits at its own (absX, absY) at its natural size, free to overflow
+fn absArrange[F fn(text &str, font u32, size f32) Vec2](ui &mut Ui, id usize, w f32, h f32, m &mut F) {
+  mut c = ui.nodes[id].first;
+  while c != NIL {
+    if isFlow(ui, c) {
+      imm v = measureNode(ui, c, 0., UNBOUNDED, 0., UNBOUNDED, m);
+      place(ui, c, ui.nodes[c].absX, ui.nodes[c].absY, v.x, v.y, m);
+    }
+    c = ui.nodes[c].next;
+  }
+}
+
+// The content box of a node of size w x h, inside its padding: (left, top) and (width, height) as an Aabb2's min and max
+fn inner(ui &Ui, id usize, w f32, h f32) Aabb2 {
+  imm l = ui.padOf(id, 0u32);
+  imm t = ui.padOf(id, 1u32);
+  imm iw = maxf(0., w - l - ui.padOf(id, 2u32));
+  imm ih = maxf(0., h - t - ui.padOf(id, 3u32));
+  new Aabb2(new Vec2(l, t), new Vec2(iw, ih));
+}
+
+// Offset of a box of size 'size' in a space of 'space', aligned
+fn alignedOffset(ui &Ui, align u32, space f32, size f32) f32 {
+  if align == ALIGN_CENTER {(space - size) * 0.5;}
+  elif align == ALIGN_END {space - size;}
+  else {0.;};
+}
+
+// ---- stack ----
+
+fn stackArrange[F fn(text &str, font u32, size f32) Vec2](ui &mut Ui, id usize, w f32, h f32, m &mut F) {
+  imm box = inner(ui, id, w, h);
+  imm l = box.min.x;
+  imm t = box.min.y;
+  imm iw = box.max.x;
+  imm ih = box.max.y;
+  mut c = ui.nodes[id].first;
+  while c != NIL {
+    if isFlow(ui, c) {
+      imm ax = if ui.nodes[c].alignSelf != ALIGN_AUTO {ui.nodes[c].alignSelf;} else {ui.nodes[id].alignItems;};
+      imm ay = if ui.nodes[c].alignSelfY != ALIGN_AUTO {ui.nodes[c].alignSelfY;} else {ui.nodes[id].alignItemsY;};
+      imm mw = ui.nodes[c].marL + ui.nodes[c].marR;
+      imm mh = ui.nodes[c].marT + ui.nodes[c].marB;
+      imm nat = measureNode(ui, c, 0., maxf(0., iw - mw), 0., maxf(0., ih - mh), m);
+      mut cw = nat.x;
+      mut ch = nat.y;
+      if ax == ALIGN_STRETCH and ui.nodes[c].prefW < 0. {cw = clampf(iw - mw, ui.nodes[c].minW, ui.nodes[c].maxW);}
+      if ay == ALIGN_STRETCH and ui.nodes[c].prefH < 0. {ch = clampf(ih - mh, ui.nodes[c].minH, ui.nodes[c].maxH);}
+      imm x = l + ui.nodes[c].marL + alignedOffset(ui, ax, iw - mw, cw);
+      imm y = t + ui.nodes[c].marT + alignedOffset(ui, ay, ih - mh, ch);
+      place(ui, c, x, y, cw, ch, m);
+    }
+    c = ui.nodes[c].next;
+  }
+}
+
+// ---- flex: row and column ----
+
+fn flexContent[F fn(text &str, font u32, size f32) Vec2](ui &mut Ui, id usize, availW f32, availH f32, m &mut F) Vec2 {
+  imm horiz = ui.nodes[id].layout == LK_ROW;
+  imm gap = ui.gapOf(id);
+  mut main = 0.;
+  mut cross = 0.;
+  mut count = 0usize;
+  mut c = ui.nodes[id].first;
+  while c != NIL {
+    if isFlow(ui, c) {
+      imm o = measureOuter(ui, c, availW, availH, m);
+      mut om = if horiz {o.x;} else {o.y;};
+      imm oc = if horiz {o.y;} else {o.x;};
+      if ui.nodes[c].basis >= 0. {
+        imm mm = if horiz {ui.nodes[c].marL + ui.nodes[c].marR;} else {ui.nodes[c].marT + ui.nodes[c].marB;};
+        om = ui.nodes[c].basis + mm;
+      }
+      main = main + om;
+      cross = maxf(cross, oc);
+      count = count + 1usize;
+    }
+    c = ui.nodes[c].next;
+  }
+  if count > 1usize {main = main + gap * f32.from(count - 1usize);}
+  if horiz {new Vec2(main, cross);} else {new Vec2(cross, main);};
+}
+
+fn flexArrange[F fn(text &str, font u32, size f32) Vec2](ui &mut Ui, id usize, w f32, h f32, m &mut F) {
+  imm horiz = ui.nodes[id].layout == LK_ROW;
+  imm gap = ui.gapOf(id);
+  imm box = inner(ui, id, w, h);
+  imm l = box.min.x;
+  imm t = box.min.y;
+  imm iw = box.max.x;
+  imm ih = box.max.y;
+  imm innerMain = if horiz {iw;} else {ih;};
+  imm innerCross = if horiz {ih;} else {iw;};
+
+  mut kids = List[usize].empty();
+  mut base = List[f32].empty();      // flex base size (border box, main axis)
+  mut hyp = List[f32].empty();       // base clamped by min and max
+  mut mar = List[f32].empty();       // margins on the main axis
+  mut lo = List[f32].empty();
+  mut hi = List[f32].empty();
+  mut c = ui.nodes[id].first;
+  while c != NIL {
+    if isFlow(ui, c) {
+      imm o = measureOuter(ui, c, iw, ih, m);
+      imm mm = if horiz {ui.nodes[c].marL + ui.nodes[c].marR;} else {ui.nodes[c].marT + ui.nodes[c].marB;};
+      imm nat = (if horiz {o.x;} else {o.y;}) - mm;
+      imm b = if ui.nodes[c].basis >= 0. {ui.nodes[c].basis;} else {nat;};
+      imm mn = if horiz {ui.nodes[c].minW;} else {ui.nodes[c].minH;};
+      imm mx = if horiz {ui.nodes[c].maxW;} else {ui.nodes[c].maxH;};
+      kids.push(c);
+      base.push(b);
+      hyp.push(clampf(b, mn, mx));
+      mar.push(mm);
+      lo.push(mn);
+      hi.push(mx);
+    }
+    c = ui.nodes[c].next;
+  }
+  imm n = kids.len();
+  if n == 0usize {return;}
+  mut target = List[f32].empty();
+  mut frozen = List[bool].empty();
+  mut sumHyp = 0.;
+  mut i = 0usize;
+  while i < n {
+    sumHyp = sumHyp + *hyp[i] + *mar[i];
+    target.push(*hyp[i]);
+    frozen.push(false);
+    i = i + 1usize;
+  }
+  imm gaps = gap * f32.from(n - 1usize);
+  imm initialFree = innerMain - gaps - sumHyp;
+  imm growing = initialFree >= 0.;
+  // 9.7 steps 3 and 4: freeze the inflexible, then loop
+  i = 0usize;
+  while i < n {
+    imm k = *kids[i];
+    imm factor = if growing {ui.nodes[k].grow;} else {ui.nodes[k].shrink;};
+    if factor == 0. or (growing and *base[i] > *hyp[i]) or (!growing and *base[i] < *hyp[i]) {
+      frozen.set(i, true);
+    }
+    i = i + 1usize;
+  }
+  mut guard = 0usize;
+  while guard <= n {
+    guard = guard + 1usize;
+    mut unfrozen = 0usize;
+    mut frozenSum = 0.;
+    mut unfrozenBase = 0.;
+    mut sumGrow = 0.;
+    mut sumScaled = 0.;
+    i = 0usize;
+    while i < n {
+      imm k = *kids[i];
+      if *frozen[i] {frozenSum = frozenSum + *target[i] + *mar[i];}
+      else {
+        unfrozen = unfrozen + 1usize;
+        unfrozenBase = unfrozenBase + *base[i] + *mar[i];
+        sumGrow = sumGrow + ui.nodes[k].grow;
+        sumScaled = sumScaled + ui.nodes[k].shrink * *base[i];
+      }
+      i = i + 1usize;
+    }
+    if unfrozen == 0usize {break;}
+    mut free = innerMain - gaps - frozenSum - unfrozenBase;
+    if growing and sumGrow < 1. {
+      imm limited = initialFree * sumGrow;
+      if limited < free {free = limited;}
+    }
+    i = 0usize;
+    while i < n {
+      if !*frozen[i] {
+        imm k = *kids[i];
+        mut tgt = *base[i];
+        if growing {
+          if sumGrow > 0. {tgt = *base[i] + free * ui.nodes[k].grow / sumGrow;}
+        }
+        else {
+          if sumScaled > 0. {tgt = *base[i] + free * (ui.nodes[k].shrink * *base[i]) / sumScaled;}
+        }
+        target.set(i, tgt);
+      }
+      i = i + 1usize;
+    }
+    // clamp and total the violations
+    mut total = 0.;
+    mut clampedList = List[f32].empty();
+    i = 0usize;
+    while i < n {
+      imm tg = *target[i];
+      if !*frozen[i] {
+        imm cl = clampf(tg, *lo[i], *hi[i]);
+        total = total + (cl - tg);
+        clampedList.push(cl);
+      }
+      else {clampedList.push(tg);}
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < n {
+      if !*frozen[i] {
+        imm tg = *target[i];
+        imm cl = *clampedList[i];
+        if total == 0. or (total > 0. and cl > tg) or (total < 0. and cl < tg) {
+          frozen.set(i, true);
+          target.set(i, cl);
+        }
+        else {target.set(i, tg);}
+      }
+      i = i + 1usize;
+    }
+    if total == 0. {break;}
+  }
+  // main-axis positions
+  mut used = gaps;
+  i = 0usize;
+  while i < n {
+    used = used + *target[i] + *mar[i];
+    i = i + 1usize;
+  }
+  imm left = innerMain - used;
+  mut startOff = 0.;
+  mut extra = 0.;
+  if left > 0. {
+    imm jf = ui.nodes[id].justify;
+    if jf == JUSTIFY_CENTER {startOff = left * 0.5;}
+    elif jf == JUSTIFY_END {startOff = left;}
+    elif jf == JUSTIFY_BETWEEN {if n > 1usize {extra = left / f32.from(n - 1usize);}}
+    elif jf == JUSTIFY_AROUND {
+      extra = left / f32.from(n);
+      startOff = extra * 0.5;
+    }
+    elif jf == JUSTIFY_EVENLY {
+      extra = left / f32.from(n + 1usize);
+      startOff = extra;
+    }
+  }
+  mut pos = (if horiz {l;} else {t;}) + startOff;
+  i = 0usize;
+  while i < n {
+    imm k = *kids[i];
+    imm tm = *target[i];
+    imm marStart = if horiz {ui.nodes[k].marL;} else {ui.nodes[k].marT;};
+    imm crossMar = if horiz {ui.nodes[k].marT + ui.nodes[k].marB;} else {ui.nodes[k].marL + ui.nodes[k].marR;};
+    imm crossStart = if horiz {ui.nodes[k].marT;} else {ui.nodes[k].marL;};
+    imm align = if ui.nodes[k].alignSelf != ALIGN_AUTO {ui.nodes[k].alignSelf;} else {ui.nodes[id].alignItems;};
+    imm prefCross = if horiz {ui.nodes[k].prefH;} else {ui.nodes[k].prefW;};
+    imm minCross = if horiz {ui.nodes[k].minH;} else {ui.nodes[k].minW;};
+    imm maxCross = if horiz {ui.nodes[k].maxH;} else {ui.nodes[k].maxW;};
+    mut crossSize = 0.;
+    if align == ALIGN_STRETCH and prefCross < 0. {
+      crossSize = clampf(maxf(0., innerCross - crossMar), minCross, maxCross);
+    }
+    else {
+      imm v = if horiz {measureNode(ui, k, tm, tm, 0., maxf(0., innerCross - crossMar), m);}
+              else {measureNode(ui, k, 0., maxf(0., innerCross - crossMar), tm, tm, m);};
+      crossSize = if horiz {v.y;} else {v.x;};
+    }
+    imm crossOff = alignedOffset(ui, align, innerCross - crossMar, crossSize);
+    imm mainPos = pos + marStart;
+    imm crossPos = (if horiz {t;} else {l;}) + crossStart + crossOff;
+    if horiz {place(ui, k, mainPos, crossPos, tm, crossSize, m);}
+    else {place(ui, k, crossPos, mainPos, crossSize, tm, m);}
+    pos = pos + tm + *mar[i] + gap + extra;
+    i = i + 1usize;
+  }
+}

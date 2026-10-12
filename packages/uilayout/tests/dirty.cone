@@ -1,0 +1,115 @@
+// Relayout touches only dirty nodes. The tree: root > C (a column, items aligned to the
+// start, size from content) > three rows R1 R2 R3 > three labels each (9 labels; the
+// text closure is 8 pixels a character).
+//
+// Counted by hand, from the rules in layout.cone:
+//
+//  1. first layout: every node is measured and arranged once:
+//     root, overlay, C, 3 rows, 9 labels = 15 measured, and the 9 labels' texts measured.
+//  2. layout again with nothing changed: nothing measured, nothing arranged, no text measured.
+//  3. lengthen the second label of R2: the label, R2 and C are measured (C is auto sized,
+//     so its size may change); the root has a fixed size, so it is not. One text measured.
+//     Arranged: root (it must place C), C, R2 and the changed label = 4; skipped: R1, R3,
+//     R2's other two labels = 4.
+//  4. the same change in a C of fixed size: C is a boundary, so only the label and R2 are
+//     measured; arranged: C, R2, the label = 3.
+//  5. the viewport changes size: only the root is measured and arranged; C's cached size
+//     still fits so it is not measured again and, its size the same, it is skipped.
+//  6. hide R3: C is measured again and arranged (its children differ) and R3 is not visited.
+//  7. a margin on R1 moves R2 and R3 but no label is measured; the two rows measured
+//     are R1 (its outer size is asked again, its own size cached) -- see counts below.
+
+mod dirty;
+
+import testing use *;
+import geomath use *;
+import collections use *;
+import uilayout use *;
+
+fn count(a u32, want i64, label &Array[u8]) {
+  expectInt(i64.from(a), want, label);
+}
+
+fn main() i32 {
+  mut m = fn(t &str, font u32, size f32) Vec2 { new Vec2(f32.from(t.len()) * 8., 16.); };
+  mut ui = Ui.make(800., 600.);
+  imm c = ui.create(ui.root, K_PLAIN);
+  ui.setFlex(c, LK_COLUMN, 0.);
+  ui.setJustify(c, JUSTIFY_START, ALIGN_START);
+  mut rows = List[usize].empty();
+  mut labels = List[usize].empty();
+  mut r = 0;
+  while r < 3 {
+    imm row = ui.create(c, K_PLAIN);
+    ui.setFlex(row, LK_ROW, 0.);
+    ui.setJustify(row, JUSTIFY_START, ALIGN_START);
+    rows.push(row);
+    mut k = 0;
+    while k < 3 {
+      imm l = ui.create(row, K_LABEL);
+      ui.setText(l, "aa");
+      labels.push(l);
+      k = k + 1;
+    }
+    r = r + 1;
+  }
+
+  layout(&mut ui, &mut m);
+  count(ui.stats.measured, 15i64, "1: every node measured once");
+  count(ui.stats.arranged, 15i64, "1: every node arranged once");
+  count(ui.stats.textMeasures, 9i64, "1: nine texts measured");
+  expectFloat(f64.from(ui.nodes[c].w), 48., 0.01, "C is as wide as a row: 3 x 16");
+  expectFloat(f64.from(ui.nodes[c].h), 48., 0.01, "C is as tall as 3 rows");
+
+  layout(&mut ui, &mut m);
+  count(ui.stats.measured, 0i64, "2: a second layout measures nothing");
+  count(ui.stats.arranged, 0i64, "2: and arranges nothing");
+  count(ui.stats.textMeasures, 0i64, "2: and measures no text");
+
+  imm leaf = *labels[4usize];                  // second label of the second row
+  ui.setText(leaf, "aaaa");
+  layout(&mut ui, &mut m);
+  count(ui.stats.measured, 3i64, "3: label, row, C measured");
+  count(ui.stats.textMeasures, 1i64, "3: one text measured");
+  count(ui.stats.arranged, 4i64, "3: root, C, the row, the label arranged");
+  count(ui.stats.arrangeSkips, 5i64, "3: the overlay, R1, R3 and two labels skipped");
+  expectFloat(f64.from(ui.nodes[c].w), 64., 0.01, "3: C grew to the longer row: 16 + 32 + 16");
+  expectFloat(f64.from(ui.nodes[*labels[5usize]].x), 48., 0.01, "3: the label after it moved to 16 + 32");
+  expectFloat(f64.from(ui.nodes[*labels[5usize]].gx), 48., 0.01, "3: and its global x follows");
+  expectFloat(f64.from(ui.nodes[*rows[0usize]].w), 48., 0.01, "3: R1 kept its own size");
+
+  // the same inside a box of fixed size
+  ui.setSize(c, 300., 200.);
+  layout(&mut ui, &mut m);
+  ui.setText(leaf, "aaaaaa");
+  layout(&mut ui, &mut m);
+  count(ui.stats.measured, 2i64, "4: fixed-size C: only the label and its row measured");
+  count(ui.stats.arranged, 3i64, "4: C, the row, the label arranged");
+  count(ui.stats.arrangeSkips, 6i64, "4: root, overlay, R1, R3 and two labels skipped");
+
+  // the viewport changes
+  ui.setViewport(1000., 700.);
+  layout(&mut ui, &mut m);
+  count(ui.stats.measured, 2i64, "5: root and overlay measured (their sizes changed)");
+  count(ui.stats.arranged, 2i64, "5: root and overlay arranged");
+  count(ui.stats.textMeasures, 0i64, "5: no text measured");
+
+  // hide a row
+  ui.setVisible(*rows[2usize], false);
+  layout(&mut ui, &mut m);
+  count(ui.stats.textMeasures, 0i64, "6: hiding measures no text");
+  expectFloat(f64.from(ui.nodes[c].w), 300., 0.01, "6: C keeps its fixed size");
+
+  // a theme change measures everything again
+  ui.invalidateAll();
+  layout(&mut ui, &mut m);
+  count(ui.stats.textMeasures, 6i64, "7: after invalidateAll every visible text is measured again (R3 is hidden)");
+
+  // a new style that changes the font size re-measures only that label
+  ui.setStyle(leaf, "button");
+  layout(&mut ui, &mut m);
+  count(ui.stats.textMeasures, 1i64, "8: a restyled label re-measures its text");
+  expectFloat(f64.from(ui.nodes[leaf].w), 48. + 16., 0.01, "8: and gains the button's padding: 6 chars + 2 x 8");
+
+  done();
+}
