@@ -330,6 +330,40 @@ int reshapeGlobalsReach(INode *cont) {
     return m->reaches;
 }
 
+// The same, of the globals that can be written ('mut' ones): an 'imm' global cannot change under a borrow
+static RgMemo rgMutMemo[RgMemoCap];
+static uint32_t rgMutMemoUsed = 0;
+static uint32_t rgMutMemoNext = 0;
+
+int reshapeMutGlobalsReach(INode *cont) {
+    RgMemo *m = NULL;
+    for (uint32_t i = 0; i < rgMutMemoUsed; ++i) {
+        if (rgMutMemo[i].cont == cont)
+            m = &rgMutMemo[i];
+    }
+    if (m == NULL) {
+        m = &rgMutMemo[rgMutMemoNext];
+        rgMutMemoNext = (rgMutMemoNext + 1) % RgMemoCap;
+        if (rgMutMemoUsed < RgMemoCap)
+            ++rgMutMemoUsed;
+        m->cont = cont;
+        m->looked = 0;
+        m->reaches = 0;
+    }
+    for (; m->looked < rgUsed && !m->reaches; ++m->looked) {
+        VarDclNode *var = rgGlobals[m->looked];
+        if (var->perm && !(permGetFlags(var->perm) & MayWrite))
+            continue;
+        INode *type = var->vtype;
+        // A type not worked out yet could be anything: taken as reaching, but not kept
+        if (type == NULL || type == unknownType)
+            return 1;
+        if (reshapeReach(type, cont, 0))
+            m->reaches = 1;
+    }
+    return m->reaches;
+}
+
 uint32_t reshapeGlobalCount(void) {
     return rgUsed;
 }
@@ -450,22 +484,30 @@ static INode *reshapeParmType(FnDclNode *callee, uint32_t k, INode *arg) {
     return iexpGetTypeDcl(arg);
 }
 
-int reshapeCall(FnCallNode *call, FnDclNode *meth, int recvunique, INode *cont, INode *owner, ReshapeVerdict *verdict,
-        VarDclNode **mine, int nmine) {
+// The function a call names, when it names one
+static FnDclNode *reshapeCallee(FnCallNode *call) {
     INode *fnn = call->objfn;
-    FnDclNode *callee = isNameUseNode(fnn) && ((NameUseNode *)fnn)->dclnode && ((NameUseNode *)fnn)->dclnode->tag == FnDclTag
+    return isNameUseNode(fnn) && ((NameUseNode *)fnn)->dclnode && ((NameUseNode *)fnn)->dclnode->tag == FnDclTag
         ? (FnDclNode *)((NameUseNode *)fnn)->dclnode : NULL;
+}
+
+// A call no borrow is asked of: an intrinsic acts on the memory it is handed and reshapes no
+// collection, an init builds a value that has no other name yet, and a call through a virtual
+// reference marked '+ ShapeKeeping' is one the caller's borrows survive: the value behind it was
+// held to reshape nothing it reaches through a shared mutable path where it became the reference
+// (shapeKeepsVia)
+static int reshapeExempt(FnCallNode *call, FnDclNode *callee) {
+    return (callee && ((callee->dclinfo.facts & DclIntrinsic) || (callee->value && callee->value->tag == IntrinsicTag)
+            || fnDclIsInit(callee)))
+        || shapeKeepingCall(call);
+}
+
+static int reshapeCallBody(FnCallNode *call, FnDclNode *meth, int recvunique, INode *cont, INode *owner,
+        ReshapeVerdict *verdict, VarDclNode **mine, int nmine) {
+    FnDclNode *callee = reshapeCallee(call);
     verdict->why = ReshapeNot;
     verdict->callee = callee;
-    // An intrinsic acts on the memory it is handed and reshapes no collection;
-    // an init builds a value that has no other name yet
-    if (callee && ((callee->dclinfo.facts & DclIntrinsic) || (callee->value && callee->value->tag == IntrinsicTag)
-            || fnDclIsInit(callee)))
-        return 0;
-    // A call through a virtual reference marked '+ ShapeKeeping' is one the caller's
-    // borrows survive: the value behind it was held to reshape nothing it reaches
-    // through a shared mutable path where it became the reference (shapeKeepsVia)
-    if (shapeKeepingCall(call))
+    if (reshapeExempt(call, callee))
         return 0;
     uint32_t nargs = call->args ? call->args->used : 0;
     int visible = !(call->flags & FlagVDisp) && siVisible(callee);
@@ -561,6 +603,30 @@ int reshapeCall(FnCallNode *call, FnDclNode *meth, int recvunique, INode *cont, 
     if (visible && reshapeGlobalsReach(cont) && shapeTypeReshapes(callee, cont, 0)) {
         verdict->why = ReshapeGlobal;
         return 1;
+    }
+    return 0;
+}
+
+int reshapeCall(FnCallNode *call, FnDclNode *meth, int recvunique, INode *cont, INode *owner, int globalview,
+        ReshapeVerdict *verdict, VarDclNode **mine, int nmine) {
+    if (reshapeCallBody(call, meth, recvunique, cont, owner, verdict, mine, nmine))
+        return 1;
+    // The borrow points into a 'mut' global, or into something reached from one: a call that may
+    // reshape the container's type through a global does, by the inference that judges every call
+    // (shapeTypeWritesGlobal). A callee whose body cannot be read (extern, virtual, a function value,
+    // another package's) may do anything. No summary is made of which global a function writes.
+    if (globalview && !reshapeExempt(call, verdict->callee)) {
+        FnDclNode *callee = verdict->callee;
+        // Code that could be anything: a virtual call, a function value, a Cone function whose body
+        // is not here, an 'extern' C function handed something that can reach anything callable (a
+        // '&fn', a virtual reference, a closure an owner holds) that it may call back. Any other
+        // 'extern' is asked as any call is, of what it is handed (the ordinary check above)
+        int opaque = (call->flags & FlagVDisp) || callee == NULL || shapeExternHandsCallable(call, callee)
+            || (!(callee->flags & FlagExtern) && !siVisible(callee));
+        if (opaque || (!(callee->flags & FlagExtern) && shapeTypeWritesGlobal(callee, cont))) {
+            verdict->why = globalview == 2 ? ReshapeGlobalMaybe : ReshapeGlobalView;
+            return 1;
+        }
     }
     return 0;
 }

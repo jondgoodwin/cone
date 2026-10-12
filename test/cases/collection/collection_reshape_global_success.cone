@@ -1,0 +1,143 @@
+// What a 'mut' global's views are let through (collection_flow_reshape_global holds the refusals). A
+// borrow into a 'mut' global is refused across a call that may reshape the container's type, judged by the
+// shape inference, a callee the compiler cannot read counting as one that does. So it is let through where
+//   - the call reshapes nothing and runs no code the compiler cannot follow: a length, a copy made by a
+//     method of the global itself, a function that writes a number or prints, an 'extern' function
+//     handed the view to read (a call through a function value, or an extern handed a '&fn', is
+//     refused: collection_flow_reshape_global_opaque);
+//   - the global is 'imm', which no call can change;
+//   - the global is read into a local first, a copy of its String or a number;
+//   - the view is used by no call at all (a comparison), or the call is a virtual one marked
+//     '+ ShapeKeeping', a promise held where the value becomes the reference;
+//   - the view is of a local, which no global can reach, or reached through a reference, of a type no
+//     'mut' global reaches.
+// Every value is worked out by hand and written at its line.
+
+mod collection_reshape_global_success;
+
+import stdio use *;
+import collections use *;
+
+struct Item { pub label String; }
+struct Ed { pub items List[Item]; }
+
+imm fixed Ed;
+mut gl Ed;
+mut title String;
+mut nums List[u64];
+mut count i64;
+
+fn @initpure init() {
+  title = String.from("heading");
+  mut e = new Ed(List[Item].empty());
+  e.items.push(new Item(String.from("abc")));
+  fixed = e;
+  gl = new Ed(List[Item].empty());
+  gl.items.push(new Item(String.from("hello")));
+  nums = List[u64].empty();
+  nums.push(30u64);
+  nums.push(4u64);
+  count = 5i64;
+}
+
+fn note(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn bump() { count = count + 1i64; }
+
+fn width(s &str) usize { s.len; }
+
+// An 'imm' global cannot change: a view of it stays good across any call
+fn immView() {
+  imm v = fixed.items[0usize].label.view();
+  bump();
+  note("imm-view", i64.from(v.len));              // "abc": 3
+}
+
+// A 'mut' global read into a local first: a copy of the String, and a number
+fn copied() {
+  imm text = title.copy();
+  imm n = count;
+  bump();
+  note("copy-len", i64.from(text.view().len));    // "heading": 7
+  note("number", n);                              // read before the bump: 6
+}
+
+// A view that no call touches: a comparison
+fn noCall() {
+  imm v = gl.items[0usize].label.view();
+  imm n = i64.from(v.len);
+  if v == "hello" { note("no-call", n); }         // 5
+}
+
+// A virtual call marked '+ ShapeKeeping'
+fn keeping(f &<mut fn(s &str) + ShapeKeeping) {
+  f(gl.items[0usize].label.view());
+}
+
+fn useKeeping() {
+  mut seen = 0i64;
+  mut add = fn(s &str) { seen = seen + i64.from(s.len); };
+  keeping(&mut add);
+  note("keeping", seen);                          // 5
+}
+
+// A view of a local, with a 'mut' global in the program
+fn localView() {
+  imm mine = String.from("xyz");
+  imm v = mine.view();
+  bump();
+  note("local-view", i64.from(v.len));            // 3
+}
+
+// A view of a 'mut' global held across calls that reshape nothing: one that writes a number, one that
+// reads the view, and the print of an 'extern' function
+fn viewAcross() {
+  imm v = gl.items[0usize].label.view();
+  bump();
+  note("view-across", i64.from(v.len));           // "hello": 5
+  note("view-arg", i64.from(width(gl.items[0usize].label.view())));   // 5
+}
+
+// An element and the length of a 'mut' global list
+fn listElem() {
+  imm e = nums[0usize];
+  bump();
+  note("list-elem", i64.from(*e));                // the first: 30
+  note("list-len", i64.from(nums.len()));         // 2
+}
+
+// A view handed to a print (an 'extern' handed a '&str', which reaches no '&fn')
+fn viaPrint() {
+  printStr(title.view());                         // heading
+  printStr("\n");
+}
+
+// A view reached through a reference, of a type no 'mut' global reaches ('Ed' holds Items, Strings and
+// Lists of Items; 'nums' is a List[u64]): the reference cannot be a global
+fn otherType(xs &mut List[i64]) {
+  imm e = xs[0usize];
+  bump();
+  note("other-type", *e);                         // the first element: 40
+}
+
+fn main() i32 {
+  immView();
+  copied();
+  noCall();
+  useKeeping();
+  localView();
+  viewAcross();
+  listElem();
+  viaPrint();
+  mut small = List[i64].empty();
+  small.push(40i64);
+  small.push(2i64);
+  otherType(&mut small);
+  note("count", count);                           // 5, bumped by immView, copied, localView, viewAcross, listElem and otherType: 11
+  0;
+}

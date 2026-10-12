@@ -458,6 +458,38 @@ category = "run"
 description = "A view held across a virtual call that cannot reach the container: a read-only '&<Trait' receiver and '&<fn', a list lent '&imm' to a visitor that takes a '&<mut fn', a '&<mut fn' marked '+ ShapeKeeping', and a '&<mut fn' handed a view of a String the function made"
 tags = ["flow", "genllvm", "runtime"]
 
+# A function may write a global by its name, whatever it is handed, and the loan walk does not follow
+# which one: a borrow into a 'mut' global is refused across a call that may reshape the container's type
+# by the shape inference, a callee it cannot read counting as one that does
+# (collection_reshape_global_success holds what is accepted beside each refusal).
+[scenario.collection_flow_reshape_global]
+category = "reject"
+description = "A view of a String, or of an element of a List, held in a 'mut' global across a call that may reshape it: handed to a function that writes the global by its name, held in a name across such a call, a closure in an 'imm' owner, a '&<fn', and a view passed on by a helper that calls a closure"
+tags = ["flow"]
+diagnostics = 5
+
+# A function handed a reference cannot tell it is a 'mut' global, so where one reaches the type
+# the view reached through the reference is asked of the same calls
+[scenario.collection_flow_reshape_global_param]
+category = "reject"
+description = "A view of a String, or of an element of a List, reached through a '&mut' parameter, held across a call that may reshape it in a program with a 'mut' global that reaches the type: handed on beside a closure in an 'imm' owner, beside a '&<fn', through a '&<fn' whose body is not visible, and held in a name across such a call"
+tags = ["flow"]
+diagnostics = 4
+
+# A call through a function value, or an extern handed anything that reaches something callable, runs
+# code the compiler cannot follow: refused whether or not the code writes the global (a quiet callback,
+# and a String made from a view, are refused alike; the cure is a copy made by a method of the global)
+[scenario.collection_flow_reshape_global_opaque]
+category = "reject"
+description = "A view of a 'mut' global held across a call through a function value (a parameter, a struct's field, a 'mut' global, a local), across an extern handed a callback that writes the global, a quiet callback, a struct holding a '&fn', a '&<mut fn' or a So[fn], and across String.from, which allocates through a '&fn'"
+tags = ["flow"]
+diagnostics = 10
+
+[scenario.collection_reshape_global_success]
+category = "run"
+description = "A view of a 'mut' global across calls that cannot reshape it: its length, a copy, a call that writes nothing, a print, a view of an 'imm' global, a '&<mut fn' marked '+ ShapeKeeping', a view of a local beside a 'mut' global, and a view through a reference of a type no 'mut' global reaches"
+tags = ["flow", "genllvm", "runtime"]
+
 # A generic closure that captured the owner by '&mut' holds it as '& &mut Ed': a read-only reference
 # to a '&mut' still reaches a writable path, which reshape.c follows
 [scenario.collection_flow_reshape_closure_capture]

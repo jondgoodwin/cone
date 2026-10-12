@@ -139,11 +139,17 @@ enum SiMode {
     SiModeStorage,
     SiModeField,
     SiModeType,
-    SiModeOut
+    SiModeOut,
+    // SiModeType and SiModeOut, for a borrow into a 'mut' global (shapeTypeWritesGlobal): a call
+    // that could run any code (through a virtual reference or a function pointer) is taken to write
+    // any global, whatever it is handed
+    SiModeTypeG,
+    SiModeOutG
 };
 
 typedef struct {
-    int mode;               // SiMode
+    int mode;               // SiMode, SiModeTypeG and SiModeOutG as SiModeType and SiModeOut
+    int opaque;             // asked in one of those: a call into unknown code is taken to write a global
     INode *cont;            // type modes: the collection's type
     VarDclNode *parm;       // the parameter whose pointee is asked about
     int isref;              // it is a reference: a write through it reaches the caller's value
@@ -610,6 +616,16 @@ static void siCallType(FnCallNode *call, SiCtx *c) {
         return;
     }
     int visible = !(call->flags & FlagVDisp) && siVisible(callee);
+    // Into a borrow of a 'mut' global: a virtual call, or a call of a function value (a '&fn' held in
+    // a field, a parameter, a global or a local), runs code that is not known, which may write any
+    // global without being handed it; so does an 'extern' function handed anything that can reach
+    // something callable (a '&fn', a virtual reference, a closure an owner holds), which C may call
+    // back (a named function the compiler cannot read is otherwise asked as before: of what it is
+    // handed)
+    if (c->opaque && ((call->flags & FlagVDisp) || callee == NULL || shapeExternHandsCallable(call, callee))) {
+        c->hit = 1;
+        return;
+    }
     int anyreach = 0;
     for (uint32_t k = 0; k < nargs && !c->hit; ++k) {
         INode *arg = nodesGet(call->args, k);
@@ -648,7 +664,8 @@ static void siCallType(FnCallNode *call, SiCtx *c) {
         // Handed what reaches the type: the callee through any parameter or global.
         // Handed nothing that does: only through a global, and only if some global
         // holds one
-        int answer = siAsk(callee, 0, anyreach ? SiModeType : SiModeOut, c->cont);
+        int answer = siAsk(callee, 0, c->opaque ? (anyreach ? SiModeTypeG : SiModeOutG)
+            : anyreach ? SiModeType : SiModeOut, c->cont);
         if (answer == SiYes)
             c->hit = 1;
         else if (answer == SiPending)
@@ -822,7 +839,8 @@ static int siAsk(FnDclNode *fn, uint32_t k, int mode, INode *cont) {
     if (!siBodyReady(fn))
         return SiPending;
     FnSigNode *sig = (FnSigNode *)fn->vtype;
-    int ofparm = mode < SiModeType;
+    int base = mode == SiModeTypeG ? SiModeType : mode == SiModeOutG ? SiModeOut : mode;
+    int ofparm = base < SiModeType;
     if (ofparm && k >= sig->parms->used)
         return SiYes;
     if (!ofparm)
@@ -845,7 +863,8 @@ static int siAsk(FnDclNode *fn, uint32_t k, int mode, INode *cont) {
 
     SiCtx ctx;
     memset(&ctx, 0, sizeof(ctx));
-    ctx.mode = mode;
+    ctx.mode = base;
+    ctx.opaque = mode >= SiModeTypeG;
     ctx.cont = cont;
     if (ofparm) {
         ctx.parm = (VarDclNode *)nodesGet(sig->parms, k);
@@ -900,6 +919,139 @@ int shapeParamReshapes(FnDclNode *fn, uint32_t k) {
 
 int shapeTypeReshapes(FnDclNode *fn, INode *cont, int viaParams) {
     int answer = siAsk(fn, 0, viaParams ? SiModeType : SiModeOut, cont);
+    if (answer == SiPending)
+        ++shapeUnsettled;
+    return answer != SiNo;
+}
+
+// Can a value of this type reach anything callable: a '&fn' (a reference to a function), a virtual
+// reference ('&<Trait', '&<fn', '&<mut ...'), or a closure or trait object an owner holds ('So[fn]',
+// 'Rc[Trait]')? By containment, a field, an element, or through a pointer or a reference: the same
+// idea as reshapeReach, with code to call as the thing wanted. A type graph too large to follow is
+// taken as reaching one. Only a positive answer is kept, for a struct, for a negative one found
+// beneath a struct still being walked is not settled
+#define SiFnSeenCap 512
+static INode *siFnSeen[SiFnSeenCap];
+static int siFnSeenN;
+static INode **siFnYes = NULL;
+static uint32_t siFnYesCap = 0;
+static uint32_t siFnYesUsed = 0;
+
+static int siFnYesHas(INode *st) {
+    if (siFnYesCap == 0)
+        return 0;
+    uint32_t at = (uint32_t)(((uintptr_t)st >> 4) * 2654435761u) & (siFnYesCap - 1);
+    while (siFnYes[at]) {
+        if (siFnYes[at] == st)
+            return 1;
+        at = (at + 1) & (siFnYesCap - 1);
+    }
+    return 0;
+}
+
+static void siFnYesPut(INode *st) {
+    if ((siFnYesUsed + 1) * 2 > siFnYesCap) {
+        INode **old = siFnYes;
+        uint32_t oldcap = siFnYesCap;
+        siFnYesCap = oldcap ? oldcap * 2 : 256;
+        siFnYes = (INode **)memAllocBlk(siFnYesCap * sizeof(INode *));
+        memset(siFnYes, 0, siFnYesCap * sizeof(INode *));
+        siFnYesUsed = 0;
+        for (uint32_t i = 0; i < oldcap; ++i) {
+            if (old[i])
+                siFnYesPut(old[i]);
+        }
+    }
+    uint32_t at = (uint32_t)(((uintptr_t)st >> 4) * 2654435761u) & (siFnYesCap - 1);
+    while (siFnYes[at])
+        at = (at + 1) & (siFnYesCap - 1);
+    siFnYes[at] = st;
+    ++siFnYesUsed;
+}
+
+static int siReachesFnRef(INode *type) {
+    if (type == NULL)
+        return 0;
+    switch (type->tag) {
+    case NameUseTag:
+        return isTypeNode(type) ? siReachesFnRef(itypeGetTypeDcl(type)) : 0;
+    case AliasDclTag:
+        return siReachesFnRef(((AliasDclNode *)type)->target);
+    case FnSigTag:
+    case VirtRefTag:
+        return 1;
+    case RefTag:
+    case ArrayRefTag:
+        return siReachesFnRef(((RefNode *)type)->vtexp);
+    case PtrTag:
+        return siReachesFnRef(((StarNode *)type)->vtexp);
+    case ArrayTag:
+        return siReachesFnRef(arrayElemType(type));
+    case TTupleTag:
+    {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp)) {
+            if (siReachesFnRef(*nodesp))
+                return 1;
+        }
+        return 0;
+    }
+    case StructTag:
+    {
+        if (siFnYesHas(type))
+            return 1;
+        for (int i = 0; i < siFnSeenN; ++i) {
+            if (siFnSeen[i] == type)
+                return 0;
+        }
+        if (siFnSeenN >= SiFnSeenCap)
+            return 1;
+        siFnSeen[siFnSeenN++] = type;
+        INode **nodesp;
+        uint32_t cnt;
+        int found = 0;
+        for (nodelistFor(&((StructNode *)type)->fields, cnt, nodesp)) {
+            if (siReachesFnRef(((IExpNode *)*nodesp)->vtype)) {
+                found = 1;
+                break;
+            }
+        }
+        if (!found && ((StructNode *)type)->derived) {
+            for (nodesFor(((StructNode *)type)->derived, cnt, nodesp)) {
+                if (siReachesFnRef(*nodesp)) {
+                    found = 1;
+                    break;
+                }
+            }
+        }
+        if (found)
+            siFnYesPut(type);
+        return found;
+    }
+    default:
+        return 0;
+    }
+}
+
+// Is this an 'extern' function handed anything that can reach something callable (a callback C can
+// call back into Cone with, directly or held in a struct it is handed a pointer to)?
+int shapeExternHandsCallable(FnCallNode *call, FnDclNode *callee) {
+    if (callee == NULL || !(callee->flags & FlagExtern) || call->args == NULL)
+        return 0;
+    for (uint32_t k = 0; k < call->args->used; ++k) {
+        siFnSeenN = 0;
+        if (siReachesFnRef(iexpGetTypeDcl(nodesGet(call->args, k))))
+            return 1;
+    }
+    return 0;
+}
+
+// The same, asked of a call made while a borrow into a 'mut' global is held (reshape.h,
+// 'globalview'): only through a global, with a call into unknown code (a virtual call, a function
+// value) taken to write any
+int shapeTypeWritesGlobal(FnDclNode *fn, INode *cont) {
+    int answer = siAsk(fn, 0, SiModeOutG, cont);
     if (answer == SiPending)
         ++shapeUnsettled;
     return answer != SiNo;

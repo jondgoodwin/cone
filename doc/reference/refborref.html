@@ -14,9 +14,7 @@
     <div class="text">
 
 	<p style="margin-left: 40px;"><i>Note: The check for changing the shape of a collection does not tell two
-			lists of one type apart, and does not follow a global changed by a function whose body the
-			compiler cannot read when that function is handed nothing that reaches the collection.
-			A value of another package cannot be put behind a <span class="pre">+ ShapeKeeping</span> reference,
+			lists of one type apart. A value of another package cannot be put behind a <span class="pre">+ ShapeKeeping</span> reference,
 			for its include file carries no bodies to read.</i></p>
 	
 	<p>References work differently than other types.
@@ -687,7 +685,11 @@ fn cellGrow(a &amp;mut Cell, b &amp;mut Cell) i64 {
 	<li>it is handed a value that can reach a collection of that type (as a field, an element, a variant,
 		a pointer, a reference or an owner) by a path it may write, and its body, or what it calls,
 		reshapes one; or</li>
-	<li>it is handed nothing that reaches one and reshapes one through a global.</li>
+	<li>it is handed nothing that reaches one and reshapes one through a global; or</li>
+	<li>the borrow points into a <span class="pre">mut</span> global, or into anything reached from one, or
+		is reached through a reference some <span class="pre">mut</span> global of that type could be, and the
+		call, <a href="#globalview">whatever it is handed</a>, reshapes one through a global or is code the
+		compiler cannot read.</li>
 	</ol>
 	<p>Moving elements about within the storage (<span class="pre">swap</span>, <span class="pre">sortBy</span>)
 		destroys none and moves none out, and the bytes a String element owns stay where they are, so a view of
@@ -1011,6 +1013,85 @@ fn count(w &amp;mut World, log &amp;mut List[i64]) i64 {
 		a function reference held in a variable has none the compiler can read, and is refused. A type does not declare
 		<span class="pre">ShapeKeeping</span>.</p>
 
+	<h3 id="globalview">A borrow into a <span class="pre">mut</span> global</h3>
+	<p>A function may write a global by its name, whatever it is handed, and the check does not keep a summary
+		of which globals a function writes. So a borrow into a <span class="pre">mut</span> global (the view of a
+		String it holds, an element of a List it holds), or into anything reached from one, is asked of every
+		call made while it is still to be used, or while it is being handed to a call, whether or not the call
+		is handed the global. The call is refused (error 1339) when it, or something it calls, reshapes a
+		collection of that type through a global, as above, or when it is code the compiler cannot read, as
+		listed there: a call through a virtual reference, a closure or any function value (a
+		<span class="pre">&amp;fn</span> held in a parameter, a field, a global or a local, including one a callee
+		makes); an <span class="pre">extern</span> C function handed anything whose type can reach something
+		callable (a <span class="pre">&amp;fn</span>, a virtual reference, a closure or trait object an owner holds,
+		directly or in a struct or behind a pointer it is handed), which C may call back; or a Cone function whose
+		body is not here. The allocator is one such: a collection calls its
+		region through a <span class="pre">&amp;fn</span>, so <span class="pre">String.from(title.view())</span>
+		is refused while <span class="pre">title.copy()</span> is not. A call that reshapes nothing is let through,
+		and so is an <span class="pre">extern</span> C function handed nothing callable, such as a
+		print handed the view, as are the intrinsics, an init, and a call
+		through a virtual reference marked <a href="#shapekeeping"><span class="pre">+ ShapeKeeping</span></a>.
+		A global that is <span class="pre">imm</span> cannot change, so a borrow into it is not asked.</p>
+<pre>
+struct Item { label String; }
+struct Ed {
+  items List[Item];
+  fn growFirst(self &amp;mut, s &amp;str) { items[0usize].label.append(s); }
+}
+
+mut gl Ed;
+mut title String;
+fn grow(s &amp;str) { gl.growFirst(s); }
+fn show(s &amp;str) usize { s.len; }
+
+fn direct() {
+  grow(gl.items[0usize].label.view());  // Error: grow writes gl, and moves the String the view points into
+}
+
+fn readOnlyCallee() usize {
+  imm v = gl.items[0usize].label.view();
+  imm n = show("x");                    // Ok: show reshapes nothing
+  n + v.len;
+}
+
+fn viaClosure(h &Holder) {
+  h.f(gl.items[0usize].label.view());   // Error: h.f is code the compiler cannot read, and may write gl
+}
+
+fn viaCopy() {
+  imm c = String.from(title.view());    // Error: String.from calls the heap's region through a &fn
+  c.len;
+}
+</pre>
+	<p>A global named from C is not followed: a global of a <span class="pre">mod @c</span> module is an external
+		symbol, and an <span class="pre">extern</span> function handed nothing could write it.</p>
+	<p>The cure for a call that may reshape is to read what is needed out of the global before it: a number, or
+		a copy of the String made by a method of the global itself (<span class="pre">title.copy()</span>), and to
+		hold that.</p>
+<pre>
+mut count i64;
+
+fn copied() {
+  imm text = title.copy();              // Ok: a copy of the String, not a borrow of it
+  imm n = count;                        // Ok: a number
+  grow("!");
+  show(text.view());
+}
+</pre>
+	<p>A function handed a reference cannot tell that it is the global: the <span class="pre">&amp;mut Ed</span>
+		parameter of a function that is called with <span class="pre">&amp;mut gl</span>. So where a
+		<span class="pre">mut</span> global reaches the type of the collection (a global holding a
+		<span class="pre">List[Item]</span> reaches <span class="pre">List[Item]</span>, <span class="pre">Item</span>
+		and <span class="pre">String</span>), a borrow into it reached through a reference is asked of the same calls.
+		A program with no <span class="pre">mut</span> global of that type is not affected.</p>
+<pre>
+fn useHolder(h &amp;Holder, s &amp;str) { h.f(s); }   // h.f is a closure that may write gl
+
+fn viaParam(h &amp;Holder, g &amp;mut Ed) {
+  useHolder(h, g.items[0usize].label.view());  // Error: g may be gl, and the closure may write it
+}
+</pre>
+
 	<h3 id="notfollowed">What the check does not follow</h3>
 	<p>The check does not tell two values of one type apart. A function handed a
 		<span class="pre">List[Pt]</span> that reshapes one is taken to reshape the one an element was borrowed
@@ -1024,9 +1105,10 @@ fn ownedFresh(l &amp;mut List[Pt], p Pt) i64 {
   e.x;
 }
 </pre>
-	<p>Nor is a global followed that a function whose body is not visible changes, while that function is
-		handed nothing that reaches the collection. Such a call is taken to reshape nothing, whereas the
-		same change made by a function the compiler can read is refused.</p>
+	<p>Nor does it tell which global a function writes: a borrow of a collection a <span class="pre">mut</span>
+		global could be is refused across a call that reshapes a collection of that type through any global, or
+		that runs code it cannot read (<a href="#globalview">above</a>), even when the global it writes is
+		another. A virtual call or a closure called anywhere in the callee counts, even one handed nothing.</p>
 	
 	<h2 id="ops">Reference Operations</h2>
 	<p>The de-referencing and comparison operators may be directly applied to references.</p>
