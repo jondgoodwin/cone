@@ -611,6 +611,23 @@ fn lxCancel(lp &mut Loop, i u32, outcome u32) {
   lp.decide(i, outcome, 0usize, 0u32);
 }
 
+// A socket operation is asked to end, by a cancel or a deadline. What the
+// kernel would have done by now is done: the operation, first in its queue,
+// gets one more try, and if the socket can give it what it wants it ends
+// Done (or Failed), as an operation finished before the cancel does on
+// Windows. If not, the cancel has caught it: it leaves its queue, so that
+// nothing that arrives afterwards can complete it, and is answered at the
+// next wait (lxSettleCancels), so that asking again says it is still to answer
+fn lxAskCancel(lp &mut Loop, i u32) {
+  if isWindows() {return;}
+  imm r = lp.recAt(i) as &mut Rec;
+  if r.side != sideNone and r.waitPrev == noEntry {
+    if lxTry(lp, i, Instant.now()) == triedDone {return;}
+  }
+  waitUnlink(lp, i);
+  lp.cancels.push(lp.tokenOf(i));
+}
+
 // The cancels asked since the last wait are answered, after the events that
 // came with the wait (an operation they finished is Done, not Cancelled).
 // Each names its record by index and generation, so one answered meanwhile,
