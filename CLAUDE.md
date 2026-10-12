@@ -342,7 +342,13 @@ Visual Studio projects stay at the root.
   that rolls heel, flat and toe, landing places asked of the ground by a
   function, two-bone IK on the legs, the pelvis as high as the legs allow,
   arms against legs, an idle layer (breathing, weight shift) and a
-  hard-landing crouch (`Walker.update`, `Walker.impact`);
+  hard-landing crouch (`Walker.update`, `Walker.impact`); `poseik` is inverse
+  kinematics and blending over `bonepose`: a two-bone limb with an interior
+  angle range (`solveLimb`, `aimLimbRange`), FABRIK and CCD over chains with
+  cone and hinge limits, `FootPlacer` (feet planted on a ground-height query,
+  the pelvis moved, soles tilted to the normal), `lookAt`, `reachHand`, pose
+  blends (linear, masked, weighted, additive), `Clip`, `BlendSpace1D` and an
+  `Animator` state machine with timed cross-fades;
   `testing` is the checks a package's tests call (`expectInt`, `require…`,
   `done`), ordinary library code the compiler knows nothing of;
   `genwalk` and `genuser` are the samples of generators across packages: `pub`
@@ -437,7 +443,8 @@ Visual Studio projects stay at the root.
   `iocore` is the runtime's completion loop, over `iobuf`, `timewheel`,
   `time`, `sync` and `diag`: a `Loop` per driving thread, handed an `Op`
   (TCP `Connect`, `Accept`, `Recv`, the zero-byte `RecvReady`, `Send`,
-  `SendBytes`; file `ReadAt` and `WriteAt`), each taking an owned `IoBuf` or
+  `SendBytes`; file `ReadAt` and `WriteAt`; UDP `RecvFrom` and `SendTo` on a
+  `bindUdp` socket, one datagram each, the sender in the answer's `peer`), each taking an owned `IoBuf` or
   shared `Bytes`, never a borrow (`test/cases/concurrency/
   concurrency_iocore_submit.cone`), and a `Target` (`Here`, or `Post` to
   another loop's `Waker`), and giving exactly one `Completion` (`Done`,

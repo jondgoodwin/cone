@@ -1,0 +1,318 @@
+// shadows: the sun's cascaded shadow maps (shadow.cone) on a scene of a
+// ground, two rows of pillars running away from the camera, a field of
+// spheres and a stand of trees whose leaves are cut-out cards. No window: it
+// draws into a 1920 x 1080 half-float frame, tone-maps it into an sRGB
+// texture and times the GPU's pass (the shadow passes and the scene's) with
+// timestamps, many frames over, for each shadow setting in turn.
+//
+//   congo run packages/render/examples/shadows.cone
+//   congo run packages/render/examples/shadows.cone -- --shot shadows
+//
+// It prints, per setting, the GPU time in milliseconds of 'render' and the
+// share the shadow passes add over shadows off, and the shadow passes'
+// draws and triangles. '--shot PREFIX' also writes the frame under each of
+// four settings to PREFIX-off.bmp, PREFIX-low.bmp (two cascades of 1024),
+// PREFIX-medium.bmp and PREFIX-high.bmp (four of 2048).
+//
+// GPU_POWER_PREFERENCE=low-power runs it on the integrated GPU where there
+// are two. With the Vulkan SDK, validation is on, and must say nothing.
+
+mod shadowsdemo;
+
+import stdio use *;
+import libc;
+import sdl;
+import geomath use *;
+import collections use *;
+import mesh use Mesh;
+import gpu use *;
+import render use *;
+import path as filepath;
+
+const W = 1920u32;
+const H = 1080u32;
+const FRAMES = 70u32;
+
+fn cstrEquals(a *u8, b &str) bool {
+  mut i = 0usize;
+  while i < b.len() {
+    if *(a + i) != b[i] { return false; }
+    i = i + 1usize;
+  }
+  *(a + b.len()) == 0u8;
+}
+
+// A small hash to scatter things: a number from 0 to 1 from 'n'
+fn scatter(n u32) f32 {
+  mut x = n * 747796405u32 + 2891336453u32;
+  x = ((x >> ((x >> 28u32) + 4u32)) ^ x) * 277803737u32;
+  x = (x >> 22u32) ^ x;
+  f32.from(x & 0xFFFFu32) / 65535.;
+}
+
+// A 64 x 64 RGBA leaf: a green disc, clear outside it
+fn leafImage() Image {
+  mut img = new Image(64, 64, 4, List[u8].empty());
+  mut y = 0;
+  while y < 64 {
+    mut x = 0;
+    while x < 64 {
+      imm dx = (f32.from(x) - 31.5) / 32.;
+      imm dy = (f32.from(y) - 31.5) / 32.;
+      imm inside = dx * dx + dy * dy < 0.9;
+      imm shade = 0.75 + 0.25 * scatter(u32.from(x * 64 + y));
+      img.pixels.push(u8.from(40. * shade));
+      img.pixels.push(u8.from(150. * shade));
+      img.pixels.push(u8.from(30. * shade));
+      img.pixels.push(if inside { 255u8; } else { 0u8; });
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  img;
+}
+
+struct World {
+  list DrawList;
+}
+
+fn buildWorld(renderer &mut Renderer, device &mut Device) World {
+  mut list = DrawList.empty();
+  mut planeMesh = Mesh.plane(1, 1.);
+  imm plane = renderer.addMesh(device, &planeMesh);
+  imm cubeMesh = Mesh.cube(1.);
+  imm cube = renderer.addMesh(device, &cubeMesh);
+  imm sphereMesh = Mesh.sphere(1., 20);
+  imm sphere = renderer.addMesh(device, &sphereMesh);
+  imm groundM = renderer.addPbrMaterial(device, &PbrMaterial.standard(new Color(0.18, 0.2, 0.12, 1.), 0., 0.9));
+  imm stoneM = renderer.addPbrMaterial(device, &PbrMaterial.standard(new Color(0.55, 0.52, 0.48, 1.), 0., 0.7));
+  imm brassM = renderer.addPbrMaterial(device, &PbrMaterial.standard(new Color(0.8, 0.55, 0.2, 1.), 1., 0.35));
+  imm trunkM = renderer.addMaterial(device, &Material.plain(new Color(0.25, 0.15, 0.08, 1.)));
+  imm leafImg = leafImage();
+  imm leafTex = renderer.addCutoutTexture(device, &leafImg, 0.5);
+  mut leafLit = Material.plain(new Color(1., 1., 1., 1.));
+  leafLit.texture = leafTex;
+  leafLit.alphaMode = ALPHA_MASK;
+  leafLit.alphaCutoff = 0.5;
+  imm leafM = renderer.addMaterial(device, &leafLit);
+  mut leafPbr = PbrMaterial.standard(new Color(1., 1., 1., 1.), 0., 0.8).cutOut(0.5);
+  leafPbr.texture = leafTex;
+  imm leafPbrM = renderer.addPbrMaterial(device, &leafPbr);
+
+  list.add(plane, groundM, Mat4.fromTrs(new Vec3(0., 0., -120.), Quat.identity(), new Vec3(200., 1., 200.)));
+  // Two rows of pillars, 2 across and 7 high, every 8 along
+  mut i = 0u32;
+  while i < 24u32 {
+    imm z = 0. - 8. * f32.from(i) - 4.;
+    list.add(cube, stoneM, Mat4.fromTrs(new Vec3(-7., 3.5, z), Quat.identity(), new Vec3(1., 3.5, 1.)));
+    list.add(cube, stoneM, Mat4.fromTrs(new Vec3(7., 3.5, z), Quat.identity(), new Vec3(1., 3.5, 1.)));
+    i = i + 1u32;
+  }
+  // Spheres of brass and stone, scattered
+  i = 0u32;
+  while i < 300u32 {
+    imm x = (scatter(i * 3u32) - 0.5) * 90.;
+    imm z = 0. - scatter(i * 3u32 + 1u32) * 180.;
+    imm r = 0.4 + scatter(i * 3u32 + 2u32) * 0.9;
+    list.add(sphere, if i % 3u32 == 0u32 { brassM; } else { stoneM; }, Mat4.fromTrs(new Vec3(x, r, z), Quat.identity(), new Vec3(r, r, r)));
+    i = i + 1u32;
+  }
+  // Trees: a trunk and four crossed leaf cards, half lit and half physically based
+  i = 0u32;
+  while i < 36u32 {
+    imm x = (scatter(i * 7u32 + 900u32) - 0.5) * 70.;
+    imm z = 0. - 6. - scatter(i * 7u32 + 901u32) * 150.;
+    imm h = 3. + scatter(i * 7u32 + 902u32) * 2.;
+    list.add(cube, trunkM, Mat4.fromTrs(new Vec3(x, h * 0.5, z), Quat.identity(), new Vec3(0.15, h * 0.5, 0.15)));
+    imm material = if i % 2u32 == 0u32 { leafM; } else { leafPbrM; };
+    mut c = 0u32;
+    while c < 4u32 {
+      imm turn = Quat.angleAxis(f32.from(c) * 0.785, new Vec3(0., 1., 0.));
+      list.add(plane, material, Mat4.fromTrs(new Vec3(x, h + 0.6, z), turn * Quat.angleAxis(1.2, new Vec3(1., 0., 0.)), new Vec3(1.6, 1., 1.6)));
+      list.add(plane, material, Mat4.fromTrs(new Vec3(x, h + 0.6, z), turn * Quat.angleAxis(-1.2, new Vec3(1., 0., 0.)), new Vec3(1.6, 1., 1.6)));
+      c = c + 1u32;
+    }
+    i = i + 1u32;
+  }
+  new World(list);
+}
+
+// Draw 'frames' frames with the shadows as 'settings' says; the mean GPU
+// time of 'render' in milliseconds
+fn timeSetting(device &mut Device, renderer &mut Renderer, post &mut Post, out &Texture, depth &Texture, queries &QuerySet,
+    resolved &Buffer, readback &Buffer, camera &Camera, light &Light, world &World, settings &ShadowSettings) f64 {
+  renderer.setShadows(device, settings);
+  mut gpuTime = 0d;
+  mut counted = 0u32;
+  mut f = 0u32;
+  while f < FRAMES {
+    mut encoder = device.createCommandEncoder();
+    encoder.writeTimestamp(queries, 0u32);
+    renderer.render(device, &mut encoder, &post.hdr, depth, camera, light, &world.list);
+    encoder.writeTimestamp(queries, 1u32);
+    post.apply(&mut encoder, out);
+    encoder.resolveQuerySet(queries, 0u32, 2u32, resolved, 0u64);
+    encoder.copyBufferToBuffer(resolved, 0u64, readback, 0u64, 16u64);
+    device.queue.submit(encoder.finish());
+    device.endFrame();
+    device.waitIdle();
+    if f >= 10u32 {
+      imm ticks = readback.mappedRange() as *u64;
+      gpuTime = gpuTime + f64.from(*(ticks + 1usize) - *ticks) * f64.from(device.timestampPeriod) * 1.0e-6d;
+      counted = counted + 1u32;
+    }
+    f = f + 1u32;
+  }
+  gpuTime / f64.from(counted);
+}
+
+// Write the frame as the settings 'settings' draw it to 'name'
+fn shoot(device &mut Device, renderer &mut Renderer, post &mut Post, out &Texture, depth &Texture, camera &Camera,
+    light &Light, world &World, settings &ShadowSettings, name &String) {
+  renderer.setShadows(device, settings);
+  mut shot = device.createBuffer(u64.from(W) * u64.from(H) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  mut encoder = device.createCommandEncoder();
+  renderer.render(device, &mut encoder, &post.hdr, depth, camera, light, &world.list);
+  post.apply(&mut encoder, out);
+  encoder.copyTextureToBuffer(out, &shot);
+  device.queue.submit(encoder.finish());
+  device.endFrame();
+  device.waitIdle();
+  imm image = Image.fromTexels(shot.mappedRange(), i32.from(W), i32.from(H), false);
+  imm written = image.save(&filepath.Path.from(name.view()));
+  print <- "Screenshot: "; printStr(name.view());
+  if written { print <- "\n"; } else { print <- " could NOT be written\n"; }
+}
+
+fn report(name &str, ms f64, base f64, renderer &Renderer) {
+  printStr(name); print <- ": GPU "; print <- ms; print <- " ms";
+  if base > 0d {
+    print <- " (shadows add "; print <- ms - base; print <- " ms); shadow passes: ";
+    print <- u64.from(renderer.shadow.passes); print <- " passes, "; print <- u64.from(renderer.shadow.drawCalls);
+    print <- " draws, "; print <- renderer.shadow.triangles; print <- " triangles";
+  }
+  print <- "\n";
+}
+
+fn main(argc i32, argv **u8) i32 {
+  mut prefix = String.empty();
+  mut a = 1;
+  while a < argc {
+    imm arg = *(argv + usize.from(a));
+    if cstrEquals(arg, "--shot") and a + 1 < argc {
+      imm s = *(argv + usize.from(a + 1));
+      mut i = 0usize;
+      while *(s + i) != 0u8 {
+        prefix.appendByte(*(s + i));
+        i = i + 1usize;
+      }
+      a = a + 1;
+    } else {
+      print <- "Unknown argument; use --shot PREFIX\n";
+      return 2;
+    }
+    a = a + 1;
+  }
+  mut instance = Instance.create("render shadows");
+  mut none = Surface.none();
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  if (env as usize) != 0usize {
+    if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  mut adapter = instance.requestAdapter(&none, preference);
+  if !adapter.isValid() {
+    print <- "No GPU\n";
+    return 1i32;
+  }
+  print <- "Adapter: "; printStr(adapter.name.view()); print <- "\n";
+  print <- "Validation layer: "; print <- u64.from(if instance.validation { 1u32; } else { 0u32; });
+  print <- "; synchronization validation: "; print <- u64.from(if instance.syncValidation { 1u32; } else { 0u32; }); print <- "\n";
+  mut device = adapter.requestDevice();
+  imm outDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_RGBA8_UNORM_SRGB,
+    TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  mut out = device.createTexture(&outDesc);
+  imm depthDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  mut depth = device.createTexture(&depthDesc);
+  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  mut post = Post.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, W, H);
+  mut queries = device.createQuerySet(QUERY_TYPE_TIMESTAMP, 2u32);
+  mut resolved = device.createBuffer(256u64, BUFFER_USAGE_QUERY_RESOLVE | BUFFER_USAGE_COPY_SRC);
+  mut readback = device.createBuffer(16u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  if !renderer.isValid() or !post.isValid() or !queries.isValid() {
+    print <- "The renderer, the post or the timestamps could not be made\n";
+    return 1i32;
+  }
+  imm sky = Sky.dusk(radians(28.), radians(235.));
+  renderer.setSky(&mut device, &sky);
+  imm light = sky.sunLight(new Color(3.2, 2.9, 2.4, 1.), new Color(0.05, 0.06, 0.08, 1.));
+  mut camera = Camera.make();
+  camera.fov = radians(60.);
+  camera.near = 0.3;
+  camera.far = 400.;
+  camera.lookAt(new Vec3(-3., 2.2, 10.), new Vec3(2., 2.5, -40.), new Vec3(0., 1., 0.));
+  camera.background = new Color(0.4, 0.5, 0.7, 1.);
+  imm world = buildWorld(&mut renderer, &mut device);
+  print <- "Scene: "; print <- u64.from(world.list.len()); print <- " draw items\n";
+
+  imm off = ShadowSettings.off();
+  imm base = timeSetting(&mut device, &mut renderer, &mut post, &out, &depth, &queries, &resolved, &readback, &camera, &light, &world, &off);
+  report("shadows off", base, 0d, &renderer);
+  mut variants = List[ShadowSettings].empty();
+  mut names = List[String].empty();
+  mut one = ShadowSettings.high();
+  one.cascades = 1u32;
+  variants.push(one);
+  names.push(String.from("1 cascade of 2048, 16 taps"));
+  mut two = ShadowSettings.high();
+  two.cascades = 2u32;
+  variants.push(two);
+  names.push(String.from("2 cascades of 2048, 16 taps"));
+  variants.push(ShadowSettings.high());
+  names.push(String.from("4 cascades of 2048, 16 taps (high)"));
+  mut one1k = ShadowSettings.low();
+  one1k.cascades = 1u32;
+  one1k.distance = 120.;
+  variants.push(one1k);
+  names.push(String.from("1 cascade of 1024, 4 taps"));
+  mut two1k = ShadowSettings.low();
+  two1k.distance = 120.;
+  variants.push(two1k);
+  names.push(String.from("2 cascades of 1024, 4 taps"));
+  variants.push(ShadowSettings.low());
+  names.push(String.from("2 cascades of 1024, 4 taps, 60 m (low)"));
+  mut four1k = ShadowSettings.low();
+  four1k.cascades = 4u32;
+  four1k.distance = 120.;
+  variants.push(four1k);
+  names.push(String.from("4 cascades of 1024, 4 taps"));
+  variants.push(ShadowSettings.medium());
+  names.push(String.from("3 cascades of 1536, 8 taps (medium)"));
+  mut v = 0usize;
+  while v < variants.len() {
+    imm ms = timeSetting(&mut device, &mut renderer, &mut post, &out, &depth, &queries, &resolved, &readback, &camera, &light, &world, variants[v]);
+    report(names[v].view(), ms, base, &renderer);
+    v = v + 1usize;
+  }
+
+  if prefix.len() > 0usize {
+    mut name = prefix.copy();
+    name <- "-off.bmp";
+    shoot(&mut device, &mut renderer, &mut post, &out, &depth, &camera, &light, &world, &off, &name);
+    imm lowS = ShadowSettings.low();
+    name = prefix.copy();
+    name <- "-low.bmp";
+    shoot(&mut device, &mut renderer, &mut post, &out, &depth, &camera, &light, &world, &lowS, &name);
+    imm mediumS = ShadowSettings.medium();
+    name = prefix.copy();
+    name <- "-medium.bmp";
+    shoot(&mut device, &mut renderer, &mut post, &out, &depth, &camera, &light, &world, &mediumS, &name);
+    imm highS = ShadowSettings.high();
+    name = prefix.copy();
+    name <- "-high.bmp";
+    shoot(&mut device, &mut renderer, &mut post, &out, &depth, &camera, &light, &world, &highS, &name);
+  }
+  print <- "Vulkan failures: "; print <- u64.from(failures());
+  print <- "; validation messages: "; print <- u64.from(validationMessages()); print <- "\n";
+  0i32;
+}

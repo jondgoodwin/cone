@@ -1,0 +1,352 @@
+// Triangle meshes with a BVH of their own, and the triangles of a heightfield.
+//
+// The BVH is built top-down with the binned surface area heuristic (Wald,
+// "On fast construction of SAH-based bounding volume hierarchies", 2007; the
+// cost model of MacDonald and Booth 1990), leaves of at most 4 triangles, and
+// laid out depth-first so a node's left child follows it. Traversal is a
+// stack walk over boxes. 'refit' recomputes the boxes bottom-up after the
+// vertices move (a deforming mesh), keeping the tree.
+
+pub const BvhLeafSize = 4usize;
+const BvhBins = 12usize;
+
+fn triBounds(verts &List[Vec3], idx &List[u32], t usize) Aabb3 {
+  Aabb3.empty().enclose(*verts[usize.from(*idx[3usize * t])]).enclose(*verts[usize.from(*idx[3usize * t + 1usize])])
+    .enclose(*verts[usize.from(*idx[3usize * t + 2usize])]);
+}
+
+fn area(b Aabb3) f32 {
+  if b.isEmpty() { return 0.; }
+  imm d = b.max - b.min;
+  2. * (d.x * d.y + d.y * d.z + d.z * d.x);
+}
+
+// An edge is flat, so inactive, if the triangle across it faces within about
+// 5 degrees of this one (Jolt's active edges): a shape touching it is touching
+// the neighbour too, and the contact there is a ghost unless it points along the face
+pub fn edgeIsActive(t Tri, nb Tri) bool {
+  imm n1 = (t.b - t.a).cross(t.c - t.a).normalize();
+  imm n2 = (nb.b - nb.a).cross(nb.c - nb.a).normalize();
+  n1.dot(n2) < 0.996;
+}
+
+// Edge flags per triangle (three bits), by pairing each edge with the one
+// that runs the other way in another triangle. An edge with no partner is active.
+fn computeEdgeFlags(verts &List[Vec3], idx &List[u32]) List[u8] {
+  imm nt = idx.len() / 3usize;
+  mut owner = Dict[u64, u32].empty();
+  mut flags = List[u8].empty();
+  mut t = 0usize;
+  while t < nt { flags.push(7u8); t = t + 1usize; }
+  t = 0usize;
+  while t < nt {
+    mut e = 0usize;
+    while e < 3usize {
+      imm va = *idx[3usize * t + e];
+      imm vb = *idx[3usize * t + (e + 1usize) % 3usize];
+      // the key of the directed edge reversed: its partner is stored under the forward key
+      imm fwd = (u64.from(va) << 32u64) | u64.from(vb);
+      imm rev = (u64.from(vb) << 32u64) | u64.from(va);
+      if owner.containsKey(&rev) {
+        imm other = usize.from(*owner[&rev]);
+        imm ot = other / 4usize;
+        imm oe = other % 4usize;
+        imm t1 = new Tri(*verts[usize.from(*idx[3usize * t])], *verts[usize.from(*idx[3usize * t + 1usize])], *verts[usize.from(*idx[3usize * t + 2usize])]);
+        imm t2 = new Tri(*verts[usize.from(*idx[3usize * ot])], *verts[usize.from(*idx[3usize * ot + 1usize])], *verts[usize.from(*idx[3usize * ot + 2usize])]);
+        if not edgeIsActive(t1, t2) {
+          flags.set(t, *flags[t] & (7u8 ^ u8.from(1usize << e)));
+          flags.set(ot, *flags[ot] & (7u8 ^ u8.from(1usize << oe)));
+        }
+      } else {
+        owner.insert(fwd, u32.from(t * 4usize + e));
+      }
+      e = e + 1usize;
+    }
+    t = t + 1usize;
+  }
+  flags;
+}
+
+struct Job {
+  lo usize;
+  hi usize;
+  parent i32;
+  isRight bool;
+}
+
+// A mesh from vertices and triangle indices (three a triangle, counterclockwise
+// seen from outside)
+pub fn meshPrim(verts List[Vec3], indices List[u32]) Prim {
+  mut p = Prim.blank(KMesh);
+  imm nt = indices.len() / 3usize;
+  mut boxes = List[Aabb3].empty();
+  mut cents = List[Vec3].empty();
+  mut t = 0usize;
+  while t < nt {
+    imm b = triBounds(&verts, &indices, t);
+    boxes.push(b);
+    cents.push(b.center());
+    t = t + 1usize;
+  }
+  mut order = List[u32].empty();
+  t = 0usize;
+  while t < nt { order.push(u32.from(t)); t = t + 1usize; }
+  mut stack = List[Job].empty();
+  if nt > 0usize { stack.push(new Job(0usize, nt, -1i32, false)); }
+  while stack.len() > 0usize {
+    imm job = *stack[stack.len() - 1usize];
+    stack.pop();
+    imm me = p.bvh.len();
+    if job.parent >= 0i32 and job.isRight {
+      mut pn = *p.bvh[usize.from(job.parent)];
+      pn.first = u32.from(me);
+      p.bvh.set(usize.from(job.parent), pn);
+    }
+    mut bb = Aabb3.empty();
+    mut cb = Aabb3.empty();
+    mut k = job.lo;
+    while k < job.hi {
+      bb = bb.union(*boxes[usize.from(*order[k])]);
+      cb = cb.enclose(*cents[usize.from(*order[k])]);
+      k = k + 1usize;
+    }
+    imm count = job.hi - job.lo;
+    mut split = job.lo;
+    mut isLeaf = count <= BvhLeafSize;
+    if not isLeaf {
+      // Binned SAH along the widest axis of the centroids
+      imm ext = cb.max - cb.min;
+      mut axis = 0usize;
+      if ext.y > vecGet(ext, axis) { axis = 1usize; }
+      if ext.z > vecGet(ext, axis) { axis = 2usize; }
+      imm lo = vecGet(cb.min, axis);
+      imm span = vecGet(ext, axis);
+      if span < 1.0e-9 {
+        isLeaf = count <= 16usize;
+        split = job.lo + count / 2usize;
+      } else {
+        mut binBox = List[Aabb3].empty();
+        mut binCount = List[usize].empty();
+        mut b = 0usize;
+        while b < BvhBins { binBox.push(Aabb3.empty()); binCount.push(0usize); b = b + 1usize; }
+        k = job.lo;
+        while k < job.hi {
+          imm ti = usize.from(*order[k]);
+          mut bi = usize.from(u32.from(((vecGet(*cents[ti], axis) - lo) / span) * f32.from(BvhBins)));
+          if bi >= BvhBins { bi = BvhBins - 1usize; }
+          binBox.set(bi, (*binBox[bi]).union(*boxes[ti]));
+          binCount.set(bi, *binCount[bi] + 1usize);
+          k = k + 1usize;
+        }
+        // cost of splitting after bin s
+        mut bestCost = bigNumber;
+        mut bestBin = 0usize;
+        mut s = 0usize;
+        while s + 1usize < BvhBins {
+          mut lb = Aabb3.empty();
+          mut rb = Aabb3.empty();
+          mut ln = 0usize;
+          mut rn = 0usize;
+          b = 0usize;
+          while b < BvhBins {
+            if b <= s { lb = lb.union(*binBox[b]); ln = ln + *binCount[b]; }
+            else { rb = rb.union(*binBox[b]); rn = rn + *binCount[b]; }
+            b = b + 1usize;
+          }
+          if ln > 0usize and rn > 0usize {
+            imm cost = area(lb) * f32.from(ln) + area(rb) * f32.from(rn);
+            if cost < bestCost { bestCost = cost; bestBin = s; }
+          }
+          s = s + 1usize;
+        }
+        // partition in place by bin
+        mut i = job.lo;
+        mut j = job.hi;
+        while i < j {
+          imm ti = usize.from(*order[i]);
+          mut bi = usize.from(u32.from(((vecGet(*cents[ti], axis) - lo) / span) * f32.from(BvhBins)));
+          if bi >= BvhBins { bi = BvhBins - 1usize; }
+          if bi <= bestBin { i = i + 1usize; } else { j = j - 1usize; order.swap(i, j); }
+        }
+        split = i;
+        if bestCost == bigNumber or split == job.lo or split == job.hi { split = job.lo + count / 2usize; }
+        // a leaf beats a split when the split is not worth its two boxes
+        if count <= 8usize and bestCost < bigNumber and bestCost >= area(bb) * f32.from(count) { isLeaf = true; }
+      }
+    }
+    if isLeaf {
+      p.bvh.push(new BvhNode(bb.min, bb.max, u32.from(job.lo), u32.from(count)));
+    } else {
+      p.bvh.push(new BvhNode(bb.min, bb.max, 0u32, 0u32));
+      stack.push(new Job(split, job.hi, i32.from(me), true));
+      stack.push(new Job(job.lo, split, i32.from(me), false));
+    }
+  }
+  // reordered triangle list
+  imm flags = computeEdgeFlags(&verts, &indices);
+  mut k = 0usize;
+  while k < order.len() {
+    imm ti = usize.from(*order[k]);
+    p.tris.push(*indices[3usize * ti]);
+    p.tris.push(*indices[3usize * ti + 1usize]);
+    p.tris.push(*indices[3usize * ti + 2usize]);
+    p.triId.push(*order[k]);
+    p.edgeActive.push(*flags[ti]);
+    k = k + 1usize;
+  }
+  p.verts = verts;
+  p;
+}
+
+// Triangle number k (in BVH order) of a mesh
+pub fn meshTriangle(p &Prim, k usize) Tri {
+  new Tri(*p.verts[usize.from(*p.tris[3usize * k])], *p.verts[usize.from(*p.tris[3usize * k + 1usize])],
+    *p.verts[usize.from(*p.tris[3usize * k + 2usize])]);
+}
+
+fn boxesOverlap(lo Vec3, hi Vec3, b Aabb3) bool {
+  lo.x <= b.max.x and hi.x >= b.min.x and lo.y <= b.max.y and hi.y >= b.min.y and lo.z <= b.max.z and hi.z >= b.min.z;
+}
+
+// The mesh triangles (their original numbers and corners, in the mesh's own
+// space) whose boxes meet 'lb'
+pub fn meshTrianglesIn(p &Prim, lb Aabb3, ids &mut List[u32], tris &mut List[Tri], flags &mut List[u8]) {
+  if p.bvh.len() == 0usize { return; }
+  mut stack = List[usize].empty();
+  stack.push(0usize);
+  while stack.len() > 0usize {
+    imm ni = *stack[stack.len() - 1usize];
+    stack.pop();
+    imm nd = *p.bvh[ni];
+    if boxesOverlap(nd.lo, nd.hi, lb) {
+      if nd.count == 0u32 {
+        stack.push(usize.from(nd.first));
+        stack.push(ni + 1usize);
+      } else {
+        mut k = usize.from(nd.first);
+        while k < usize.from(nd.first + nd.count) {
+          imm t = meshTriangle(p, k);
+          imm tb = Aabb3.empty().enclose(t.a).enclose(t.b).enclose(t.c);
+          if boxesOverlap(tb.min, tb.max, lb) { ids.push(*p.triId[k]); tris.push(t); flags.push(*p.edgeActive[k]); }
+          k = k + 1usize;
+        }
+      }
+    }
+  }
+}
+
+// Recompute every node's box after the vertices moved
+pub fn refitMesh(p &mut Prim) {
+  mut i = p.bvh.len();
+  while i > 0usize {
+    i = i - 1usize;
+    mut nd = *p.bvh[i];
+    mut b = Aabb3.empty();
+    if nd.count == 0u32 {
+      imm l = *p.bvh[i + 1usize];
+      imm r = *p.bvh[usize.from(nd.first)];
+      b = new Aabb3(l.lo, l.hi).union(new Aabb3(r.lo, r.hi));
+    } else {
+      mut k = usize.from(nd.first);
+      while k < usize.from(nd.first + nd.count) {
+        imm t = meshTriangle(p, k);
+        b = b.enclose(t.a).enclose(t.b).enclose(t.c);
+        k = k + 1usize;
+      }
+    }
+    nd.lo = b.min;
+    nd.hi = b.max;
+    p.bvh.set(i, nd);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Heightfield
+
+pub fn heightSample(p &Prim, i usize, j usize) f32 {
+  *p.heights[j * usize.from(p.cols) + i] + p.origin.y;
+}
+
+// The two triangles of cell (i, j), numbered 2 * (j * (cols - 1) + i) and +1
+pub fn heightCellTriangle(p &Prim, i usize, j usize, second bool) Tri {
+  imm x0 = p.origin.x + f32.from(i) * p.spacing.x;
+  imm x1 = x0 + p.spacing.x;
+  imm z0 = p.origin.z + f32.from(j) * p.spacing.y;
+  imm z1 = z0 + p.spacing.y;
+  imm v00 = new Vec3(x0, heightSample(p, i, j), z0);
+  imm v10 = new Vec3(x1, heightSample(p, i + 1usize, j), z0);
+  imm v01 = new Vec3(x0, heightSample(p, i, j + 1usize), z1);
+  imm v11 = new Vec3(x1, heightSample(p, i + 1usize, j + 1usize), z1);
+  if second { new Tri(v10, v01, v11); } else { new Tri(v00, v01, v10); };
+}
+
+// Active edges of a cell triangle, found against the triangle across each edge
+fn heightEdgeFlags(p &Prim, i usize, j usize, second bool) u8 {
+  imm cw = usize.from(p.cols - 1u32);
+  imm ch = usize.from(p.rows - 1u32);
+  imm t = heightCellTriangle(p, i, j, second);
+  mut f = 7u8;
+  if not second {
+    // e0 v00-v01: the cell to the west's second triangle; e1: the diagonal; e2 v10-v00: the cell to the north's second
+    if i > 0usize and not edgeIsActive(t, heightCellTriangle(p, i - 1usize, j, true)) { f = f & 6u8; }
+    if not edgeIsActive(t, heightCellTriangle(p, i, j, true)) { f = f & 5u8; }
+    if j > 0usize and not edgeIsActive(t, heightCellTriangle(p, i, j - 1usize, true)) { f = f & 3u8; }
+  } else {
+    // e0 v10-v01: the diagonal; e1 v01-v11: the cell to the south's first; e2 v11-v10: the cell to the east's first
+    if not edgeIsActive(t, heightCellTriangle(p, i, j, false)) { f = f & 6u8; }
+    if j + 1usize < ch and not edgeIsActive(t, heightCellTriangle(p, i, j + 1usize, false)) { f = f & 5u8; }
+    if i + 1usize < cw and not edgeIsActive(t, heightCellTriangle(p, i + 1usize, j, false)) { f = f & 3u8; }
+  }
+  f;
+}
+
+pub fn heightTrianglesIn(p &Prim, lb Aabb3, ids &mut List[u32], tris &mut List[Tri], flags &mut List[u8]) {
+  if p.cols < 2u32 or p.rows < 2u32 { return; }
+  imm fx0 = (lb.min.x - p.origin.x) / p.spacing.x;
+  imm fx1 = (lb.max.x - p.origin.x) / p.spacing.x;
+  imm fz0 = (lb.min.z - p.origin.z) / p.spacing.y;
+  imm fz1 = (lb.max.z - p.origin.z) / p.spacing.y;
+  imm cx = f32.from(p.cols - 1u32);
+  imm cz = f32.from(p.rows - 1u32);
+  if fx1 < 0. or fz1 < 0. or fx0 > cx or fz0 > cz { return; }
+  imm i0 = usize.from(u32.from(maxf(0., libc.floorf(fx0))));
+  imm i1 = usize.from(u32.from(minf(cx - 1., libc.floorf(fx1))));
+  imm j0 = usize.from(u32.from(maxf(0., libc.floorf(fz0))));
+  imm j1 = usize.from(u32.from(minf(cz - 1., libc.floorf(fz1))));
+  mut j = j0;
+  while j <= j1 {
+    mut i = i0;
+    while i <= i1 {
+      imm cell = j * usize.from(p.cols - 1u32) + i;
+      mut s = 0usize;
+      while s < 2usize {
+        imm t = heightCellTriangle(p, i, j, s == 1usize);
+        imm tb = Aabb3.empty().enclose(t.a).enclose(t.b).enclose(t.c);
+        if boxesOverlap(tb.min, tb.max, lb) { ids.push(u32.from(2usize * cell + s)); tris.push(t); flags.push(heightEdgeFlags(p, i, j, s == 1usize)); }
+        s = s + 1usize;
+      }
+      i = i + 1usize;
+    }
+    j = j + 1usize;
+  }
+}
+
+// The mesh or heightfield triangles meeting a box (in the shape's own space)
+pub fn concaveTriangles(p &Prim, lb Aabb3, ids &mut List[u32], tris &mut List[Tri], flags &mut List[u8]) {
+  if p.kind == KMesh { meshTrianglesIn(p, lb, ids, tris, flags); } else { heightTrianglesIn(p, lb, ids, tris, flags); }
+}
+
+// A triangle of a mesh (by its original number) or heightfield (by cell number), in the shape's space
+pub fn concaveTriangle(p &Prim, id u32) Tri {
+  if p.kind == KHeightfield {
+    imm cell = usize.from(id / 2u32);
+    imm cw = usize.from(p.cols - 1u32);
+    return heightCellTriangle(p, cell % cw, cell / cw, id % 2u32 == 1u32);
+  }
+  mut k = 0usize;
+  while k < p.triId.len() {
+    if *p.triId[k] == id { return meshTriangle(p, k); }
+    k = k + 1usize;
+  }
+  new Tri(new Vec3(0., 0., 0.), new Vec3(0., 0., 0.), new Vec3(0., 0., 0.));
+}

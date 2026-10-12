@@ -1,0 +1,136 @@
+// What a character perceives: sight, hearing, and memory of what it
+// perceived. The usual stimulus model (Millington, AI for Games ch. 10.5:
+// sense management; Halo 2's sight and sound, Isla 2005), as pure functions
+// of positions: the game decides who is asked about whom, and every question
+// is O(1) and allocation-free.
+//
+// The world is reached only through a ray cast the caller passes in:
+// 'blocked(from, to)' answers true when something solid lies between the two
+// points (a physics world's ray query, a test's wall).
+
+// -------- sight --------
+//
+// A cone from the eye: within 'range' metres, within 'halfAngle' radians of
+// where the eye faces, and no wall between eye and target. Closer than
+// 'closeRange' a target is noticed from any direction (the character feels a
+// person at its shoulder), the wall test still applying.
+pub struct SightCone {
+  pub range f32;
+  pub halfAngle f32;
+  pub closeRange f32;
+
+  pub fn make(range f32, halfAngle f32, closeRange f32) SightCone {
+    new SightCone(range, halfAngle, closeRange);
+  }
+
+  // Whether the cone covers 'target', ignoring walls; 'forward' need not be a unit vector
+  pub fn inCone(self, eye Vec3, forward Vec3, target Vec3) bool {
+    imm d = target - eye;
+    imm dist = d.length();
+    if dist > range { return false; }
+    if dist <= closeRange { return true; }
+    imm fl = forward.length();
+    if dist < 0.000001 or fl < 0.000001 { return true; }
+    d.dot(forward) / (dist * fl) >= cos(halfAngle);
+  }
+
+  pub fn sees(self, eye Vec3, forward Vec3, target Vec3, blocked &<fn(a Vec3, b Vec3) bool) bool {
+    self.inCone(eye, forward, target) and not blocked(eye, target);
+  }
+}
+
+// -------- hearing --------
+//
+// A sound is an event at a place with a loudness, the radius out to which it
+// can be heard at normal hearing. A listener's 'sensitivity' scales that
+// (0.5: only sounds half as far; 2: twice). Sound is not stopped by walls here;
+// a game that wants it so makes the loudness the walls' attenuation.
+pub struct SoundEvent {
+  pub pos Vec3;
+  pub loudness f32;     // metres
+  pub kind u32;         // the game's own meaning: footstep, shot, voice
+  pub id u32;
+
+  pub fn make(pos Vec3, loudness f32, kind u32, id u32) SoundEvent {
+    new SoundEvent(pos, loudness, kind, id);
+  }
+}
+
+pub struct Hearing {
+  pub sensitivity f32;
+
+  pub fn make(sensitivity f32) Hearing { new Hearing(sensitivity); }
+
+  // How well 'ev' is heard at 'listener': 0 when out of range, rising to 1
+  // at the source (linear in distance)
+  pub fn strength(self, listener Vec3, ev &SoundEvent) f32 {
+    imm reach = ev.loudness * sensitivity;
+    if reach <= 0. { return 0.; }
+    imm s = 1. - listener.distance(ev.pos) / reach;
+    if s > 0. { s; } else { 0.; };
+  }
+
+  pub fn hears(self, listener Vec3, ev &SoundEvent) bool { self.strength(listener, ev) > 0.; }
+
+  // Of the events this tick, the index of the one heard best, or -1
+  pub fn loudest(self, listener Vec3, events &Array[SoundEvent]) i32 {
+    mut best = -1;
+    mut bestS = 0.;
+    mut i = 0usize;
+    while i < events.len() {
+      imm s = self.strength(listener, &events[i]);
+      if s > bestS { bestS = s; best = i32.from(i); }
+      i = i + 1usize;
+    }
+    best;
+  }
+}
+
+// -------- memory --------
+//
+// Where a character last saw something, and how sure it still is. Confidence
+// halves every 'halfLife' seconds since the sighting; below 'forgetBelow'
+// the character forgets and 'known' goes false. A sighting resets it. The
+// target's velocity at the sighting lets 'guess' extrapolate where it has
+// got to (for at most 'maxExtrapolate' seconds, a hunter's guess does not go
+// on for ever).
+pub struct Memory {
+  pub known bool;
+  pub pos Vec3;
+  pub vel Vec3;
+  pub age f32;            // seconds since it was seen
+  pub halfLife f32;
+  pub forgetBelow f32;
+  pub maxExtrapolate f32;
+
+  pub fn make(halfLife f32) Memory {
+    new Memory(false, new Vec3(0., 0., 0.), new Vec3(0., 0., 0.), 0., halfLife, 0.1, 3.);
+  }
+
+  pub fn see(self &mut, p Vec3, v Vec3) {
+    known = true;
+    pos = p;
+    vel = v;
+    age = 0.;
+  }
+
+  pub fn tick(self &mut, dt f32) {
+    if known {
+      age = age + dt;
+      if self.confidence() < forgetBelow { known = false; }
+    }
+  }
+
+  // 1 at the sighting, 0.5 one half-life on, 0 once forgotten
+  pub fn confidence(self &) f32 {
+    if not known { return 0.; }
+    libc.powf(0.5, age / halfLife);
+  }
+
+  pub fn guess(self &) Vec3 {
+    imm t = if age < maxExtrapolate { age; } else { maxExtrapolate; };
+    pos + vel * t;
+  }
+
+  pub fn forget(self &mut) { known = false; }
+}

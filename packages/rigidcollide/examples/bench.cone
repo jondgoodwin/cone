@@ -1,0 +1,61 @@
+// Bench: what the narrow phase costs per pair on the real clock. Each line is
+// the same pair of shapes, 20,000 slightly different placements, and the mean
+// time to answer. Build it optimised to measure:
+//
+//   congo run --release packages/rigidcollide/examples/bench.cone
+
+mod bench;
+
+import stdio use *;
+import collections use List;
+import time use Duration, Instant;
+import geomath use *;
+import rigidcollide use *;
+
+fn report(what &str, took Duration, n u64, contacts u64) {
+  printStr(what);
+  printFloat(f64.from(took.nanos()) / f64.from(n));
+  printStr(" ns per pair, ");
+  printFloat(f64.from(contacts));
+  printStr(" of them touching\n");
+}
+
+fn run(what &str, a &Shape, b &Shape, dy f32) {
+  mut touching = 0u64;
+  imm t0 = Instant.now();
+  mut i = 0u32;
+  while i < 20000u32 {
+    imm s = f32.from(i % 100u32) * 0.001;
+    imm xa = new Rigid(new Vec3(0., 0., 0.), Quat.angleAxis(s, new Vec3(0., 1., 0.)));
+    imm xb = new Rigid(new Vec3(0.1 + s, dy, 0.2), Quat.angleAxis(0.3 + s, new Vec3(1., 1., 0.).normalize()));
+    mut out = List[Manifold].empty();
+    collide(a, xa, b, xb, 0.02, &mut out);
+    if out.len() > 0usize { touching = touching + 1u64; }
+    i = i + 1u32;
+  }
+  report(what, t0.elapsed(), 20000u64, touching);
+}
+
+fn main() i32 {
+  imm sph = Shape.single(Prim.sphere(0.5));
+  imm box = Shape.single(Prim.box(new Vec3(0.5, 0.5, 0.5)));
+  imm cap = Shape.single(Prim.capsule(0.3, 0.5));
+  imm cyl = Shape.single(Prim.cylinder(0.4, 0.5));
+  mut pts = List[Vec3].empty();
+  mut k = 0u32;
+  while k < 20u32 {
+    imm a = f32.from(k) * 2.399963;
+    imm y = 1. - 2. * (f32.from(k) + 0.5) / 20.;
+    imm r = (1. - y * y).sqrt();
+    pts.push(new Vec3(0.5 * r * cos(a), 0.5 * y, 0.5 * r * sin(a)));
+    k = k + 1u32;
+  }
+  imm hull = Shape.single(convexHull(pts.view()));
+  run("sphere-sphere    ", &sph, &sph, 0.9);
+  run("capsule-capsule  ", &cap, &cap, 0.5);
+  run("box-box (SAT)    ", &box, &box, 0.9);
+  run("box-sphere (GJK) ", &box, &sph, 0.9);
+  run("box-cylinder     ", &box, &cyl, 0.95);
+  run("hull(20)-hull(20)", &hull, &hull, 0.8);
+  0i32;
+}

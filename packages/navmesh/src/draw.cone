@@ -1,0 +1,255 @@
+// ======== Looking at a mesh: a top-down picture ========
+//
+// A Canvas is a small RGB raster of a rectangle of the world seen from above
+// (x to the right, z down the picture), with the few drawing operations
+// needed to see a navigation mesh and a path on it: filled polygons,
+// lines, discs. 'toBmp' gives the bytes of a 24-bit BMP. 'meshLines' gives
+// the same mesh as line segments in 3-D, for a renderer's line drawing.
+
+pub struct Canvas {
+  pub w i32;
+  pub h i32;
+  pub x0 f32;
+  pub z0 f32;
+  pub scale f32;     // pixels a metre
+  pub pix List[u8];  // r, g, b a pixel
+
+  pub fn make(x0 f32, z0 f32, x1 f32, z1 f32, scale f32) Canvas {
+    imm w = i32.from(ceilf((x1 - x0) * scale));
+    imm h = i32.from(ceilf((z1 - z0) * scale));
+    mut c = new Canvas(w, h, x0, z0, scale, List[u8].withCapacity(usize.from(w * h * 3i32)));
+    mut i = 0usize;
+    while i < usize.from(w * h * 3i32) { c.pix.push(255u8); i = i + 1usize; }
+    c;
+  }
+
+  pub fn setPixel(self &mut, x i32, y i32, r u8, g u8, b u8) {
+    if x < 0i32 or y < 0i32 or x >= w or y >= h { return; }
+    imm i = usize.from((y * w + x) * 3i32);
+    pix.set(i, r); pix.set(i + 1usize, g); pix.set(i + 2usize, b);
+  }
+
+  pub fn px(self &, wx f32) f32 { (wx - x0) * scale; }
+  pub fn py(self &, wz f32) f32 { (wz - z0) * scale; }
+
+  // A line between two world points (x and z), one pixel wide
+  pub fn line(self &mut, ax f32, az f32, bx f32, bz f32, r u8, g u8, b u8) {
+    imm sx = self.px(ax);
+    imm sy = self.py(az);
+    imm ex = self.px(bx);
+    imm ey = self.py(bz);
+    imm dx = ex - sx;
+    imm dy = ey - sy;
+    imm n = i32.from(fmax(absf(dx), absf(dy))) + 1i32;
+    mut k = 0i32;
+    while k <= n {
+      imm t = f32.from(k) / f32.from(n);
+      self.setPixel(i32.from(floorf(sx + dx * t)), i32.from(floorf(sy + dy * t)), r, g, b);
+      k = k + 1i32;
+    }
+  }
+
+  // A disc of 'radius' pixels
+  pub fn disc(self &mut, wx f32, wz f32, radius f32, r u8, g u8, b u8) {
+    imm cx = self.px(wx);
+    imm cy = self.py(wz);
+    imm ir = i32.from(ceilf(radius));
+    mut dy = -ir;
+    while dy <= ir {
+      mut dx = -ir;
+      while dx <= ir {
+        if f32.from(dx * dx + dy * dy) <= radius * radius {
+          self.setPixel(i32.from(floorf(cx)) + dx, i32.from(floorf(cy)) + dy, r, g, b);
+        }
+        dx = dx + 1i32;
+      }
+      dy = dy + 1i32;
+    }
+  }
+
+  // A circle's outline of world radius 'wr'
+  pub fn ring(self &mut, wx f32, wz f32, wr f32, r u8, g u8, b u8) {
+    mut k = 0i32;
+    while k < 96i32 {
+      imm a0 = f32.from(k) * 0.06544985;
+      imm a1 = f32.from(k + 1i32) * 0.06544985;
+      self.line(wx + wr * cos(a0), wz + wr * sin(a0), wx + wr * cos(a1), wz + wr * sin(a1), r, g, b);
+      k = k + 1i32;
+    }
+  }
+
+  pub fn toBmp(self &) List[u8] {
+    imm rowSize = (w * 3i32 + 3i32) / 4i32 * 4i32;
+    imm pixelBytes = rowSize * h;
+    mut out = List[u8].withCapacity(usize.from(54i32 + pixelBytes));
+    out.push('B'); out.push('M');
+    put32(&mut out, u32.from(54i32 + pixelBytes));
+    put32(&mut out, 0u32);
+    put32(&mut out, 54u32);
+    put32(&mut out, 40u32);
+    put32(&mut out, u32.from(w));
+    put32(&mut out, u32.from(h));
+    out.push(1u8); out.push(0u8); out.push(24u8); out.push(0u8);
+    put32(&mut out, 0u32);
+    put32(&mut out, u32.from(pixelBytes));
+    put32(&mut out, 2835u32);
+    put32(&mut out, 2835u32);
+    put32(&mut out, 0u32);
+    put32(&mut out, 0u32);
+    mut y = h - 1i32;
+    while y >= 0i32 {
+      mut x = 0i32;
+      while x < w {
+        imm p = usize.from((y * w + x) * 3i32);
+        out.push(*pix[p + 2usize]);
+        out.push(*pix[p + 1usize]);
+        out.push(*pix[p]);
+        x = x + 1i32;
+      }
+      mut pad = w * 3i32;
+      while pad < rowSize { out.push(0u8); pad = pad + 1i32; }
+      y = y - 1i32;
+    }
+    out;
+  }
+}
+
+fn put32(out &mut List[u8], v u32) {
+  out.push(u8.from(v & 255u32));
+  out.push(u8.from((v >> 8u32) & 255u32));
+  out.push(u8.from((v >> 16u32) & 255u32));
+  out.push(u8.from((v >> 24u32) & 255u32));
+}
+
+// Colours of the areas: ground, water, mud, door, others
+fn areaColor(area u8, shade f32) Vec3 {
+  mut c = new Vec3(0.62, 0.80, 0.55);
+  if area == AreaWater { c = new Vec3(0.45, 0.65, 0.92); }
+  if area == AreaMud { c = new Vec3(0.66, 0.52, 0.36); }
+  if area == AreaDoor { c = new Vec3(0.95, 0.72, 0.35); }
+  if area > AreaDoor { c = new Vec3(0.85, 0.6, 0.85); }
+  c * shade;
+}
+
+fn byteOf(v f32) u8 { u8.from(iclamp(i32.from(v * 255.), 0i32, 255i32)); }
+
+// Every polygon of the mesh filled by its area (a little darker each
+// alternate polygon so that they can be told apart), then outlined; the tile
+// boundaries drawn in grey
+pub fn drawNavMesh(cv &mut Canvas, nav &NavMesh) {
+  mut t = 0usize;
+  while t < nav.tiles.len() {
+    imm tile = nav.tiles[t];
+    mut p = 0usize;
+    while p < tile.polyCount() {
+      imm lo = *tile.pbmin[p];
+      imm hi = *tile.pbmax[p];
+      imm col = areaColor(*tile.parea[p], if p % 2usize == 0usize { 1.0; } else { 0.92; });
+      imm x0 = imax(0i32, i32.from(floorf(cv.px(lo.x))));
+      imm x1 = imin(cv.w - 1i32, i32.from(ceilf(cv.px(hi.x))));
+      imm y0 = imax(0i32, i32.from(floorf(cv.py(lo.z))));
+      imm y1 = imin(cv.h - 1i32, i32.from(ceilf(cv.py(hi.z))));
+      mut y = y0;
+      while y <= y1 {
+        mut x = x0;
+        while x <= x1 {
+          imm wx = cv.x0 + (f32.from(x) + 0.5) / cv.scale;
+          imm wz = cv.z0 + (f32.from(y) + 0.5) / cv.scale;
+          if polyPointInside(tile, p, new Vec3(wx, 0., wz)) {
+            cv.setPixel(x, y, byteOf(col.x), byteOf(col.y), byteOf(col.z));
+          }
+          x = x + 1i32;
+        }
+        y = y + 1i32;
+      }
+      p = p + 1usize;
+    }
+    t = t + 1usize;
+  }
+  t = 0usize;
+  while t < nav.tiles.len() {
+    imm tile = nav.tiles[t];
+    mut p = 0usize;
+    while p < tile.polyCount() {
+      imm nv = usize.from(*tile.pcount[p]);
+      mut e = 0usize;
+      while e < nv {
+        imm a = tile.vertOf(p, e);
+        imm b = tile.vertOf(p, (e + 1usize) % nv);
+        imm nei = *tile.pnei[p * 6usize + e];
+        if nei < 0i32 {
+          cv.line(a.x, a.z, b.x, b.z, 40u8, 40u8, 40u8);       // a wall
+        } else {
+          cv.line(a.x, a.z, b.x, b.z, 120u8, 150u8, 110u8);    // an open edge
+        }
+        e = e + 1usize;
+      }
+      p = p + 1usize;
+    }
+    t = t + 1usize;
+  }
+  // tile boundaries
+  imm tw = nav.tileWorld();
+  mut i = 0i32;
+  while i <= nav.tilesW {
+    imm x = nav.origin.x + f32.from(i) * tw;
+    cv.line(x, nav.origin.z, x, nav.origin.z + f32.from(nav.tilesH) * tw, 190u8, 190u8, 190u8);
+    i = i + 1i32;
+  }
+  i = 0i32;
+  while i <= nav.tilesH {
+    imm z = nav.origin.z + f32.from(i) * tw;
+    cv.line(nav.origin.x, z, nav.origin.x + f32.from(nav.tilesW) * tw, z, 190u8, 190u8, 190u8);
+    i = i + 1i32;
+  }
+}
+
+// A path's corners joined by lines, in red, with a dot at each
+pub fn drawPath(cv &mut Canvas, pts &List[StraightPoint], r u8, g u8, b u8) {
+  mut i = 0usize;
+  while i < pts.len() {
+    imm p = (*pts[i]).pos;
+    if i > 0usize {
+      imm q = (*pts[i - 1usize]).pos;
+      cv.line(q.x, q.z, p.x, p.z, r, g, b);
+      cv.line(q.x + 0.02, q.z, p.x + 0.02, p.z, r, g, b);
+    }
+    cv.disc(p.x, p.z, 3.5, r, g, b);
+    i = i + 1usize;
+  }
+}
+
+// The mesh's polygon edges as pairs of 3-D points (two Vec3 a segment) to hand
+// to a renderer's line drawing, a little above the surface
+pub fn meshLines(nav &NavMesh, lift f32) List[Vec3] {
+  mut out = List[Vec3].empty();
+  mut t = 0usize;
+  while t < nav.tiles.len() {
+    imm tile = nav.tiles[t];
+    mut p = 0usize;
+    while p < tile.polyCount() {
+      imm nv = usize.from(*tile.pcount[p]);
+      mut e = 0usize;
+      while e < nv {
+        out.push(tile.vertOf(p, e) + new Vec3(0., lift, 0.));
+        out.push(tile.vertOf(p, (e + 1usize) % nv) + new Vec3(0., lift, 0.));
+        e = e + 1usize;
+      }
+      p = p + 1usize;
+    }
+    t = t + 1usize;
+  }
+  out;
+}
+
+// A path's corners as pairs of 3-D points, for line drawing
+pub fn pathLines(pts &List[StraightPoint], lift f32) List[Vec3] {
+  mut out = List[Vec3].empty();
+  mut i = 1usize;
+  while i < pts.len() {
+    out.push((*pts[i - 1usize]).pos + new Vec3(0., lift, 0.));
+    out.push((*pts[i]).pos + new Vec3(0., lift, 0.));
+    i = i + 1usize;
+  }
+  out;
+}

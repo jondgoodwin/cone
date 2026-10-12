@@ -1,0 +1,331 @@
+// Five characters made of the layers below: each is a struct holding a Body2
+// and what it needs, with a 'step' that the game calls every frame. They are
+// examples of putting the parts together (and are used as such by the
+// 50-agent example), not a finished game AI. None of them touches the world:
+// paths come from a closure, 'fn(from Vec2, to Vec2, out &mut List[Vec2])
+// bool' that fills 'out' (cleared first) with a corridor of points from 'from'
+// to 'to' and answers whether there is one; sight comes from a ray cast
+// closure; positions of the player are passed in.
+//
+//   Patroller   walks a loop of waypoints along paths, pausing at each
+//   Grazer      an animal: wanders for a while, stops and grazes, repeats,
+//               staying near home (a behaviour tree decides; steering moves)
+//   Follower    keeps a set distance from the player, neither crowding nor lagging
+//   Fleer       runs from the player when he comes near, and comes back to
+//               its home when he has gone (with hysteresis)
+//   Guard       holds a post; goes to investigate a sound; looks around; goes
+//               back; chases what it sees (a state machine)
+
+// -------- patrol --------
+
+pub struct Patroller {
+  pub body Body2;
+  pub waypoints List[Vec2];
+  pub next usize;            // the waypoint it is heading for
+  pub dwell f32;             // seconds it pauses at each
+  pub dwellLeft f32;
+  path List[Vec2];
+  follower PathFollower;
+  havePath bool;
+
+  pub fn make(body Body2, dwell f32) Patroller {
+    new Patroller(body, List[Vec2].empty(), 0usize, dwell, 0., List[Vec2].empty(), PathFollower.make(), false);
+  }
+
+  pub fn step(self &mut, dt f32, findPath &<fn(from Vec2, to Vec2, out &mut List[Vec2]) bool) {
+    if waypoints.len() == 0usize { return; }
+    if dwellLeft > 0. {
+      dwellLeft = dwellLeft - dt;
+      body.integrate(arrive(body.pos, body.vel, body.pos, body.maxAccel, body.maxSpeed, 0.1, 1., 0.25), dt);
+      return;
+    }
+    if not havePath {
+      path.clear();
+      follower.restart();
+      if findPath(body.pos, *waypoints[next], &mut path) { havePath = true; }
+      else { next = (next + 1usize) % waypoints.len(); return; }
+    }
+    imm a = follower.accel(body.pos, body.vel, path.view(), body.maxAccel, body.maxSpeed, 0.5, 1.5, 0.5, 3.);
+    body.integrate(a, dt);
+    if follower.done {
+      havePath = false;
+      next = (next + 1usize) % waypoints.len();
+      dwellLeft = dwell;
+    }
+  }
+}
+
+// -------- wander and graze (an animal) --------
+//
+// A behaviour tree 'repeat(sequence(walk, graze))' ticked at 5 Hz. The two
+// leaves keep a countdown on the blackboard and answer RUNNING until it is
+// out; the mode they set is what the frame's steering reads. Walking wanders,
+// pulled gently back to 'home' beyond 'leash' metres; grazing stands still.
+pub const GRAZE_WALK = 0;
+pub const GRAZE_EAT = 1;
+const SLOT_TIMER = 0usize;
+const SLOT_MODE = 1usize;
+const SLOT_COUNT = 0usize;
+const LEAF_WALK = 0u32;
+const LEAF_GRAZE = 1u32;
+
+pub struct Grazer {
+  pub body Body2;
+  pub home Vec2;
+  pub leash f32;
+  pub tree BehaviorTree;
+  pub bb Blackboard;
+  ticker FixedTicker;
+  wander Wander;
+  seed u32;
+
+  pub fn make(body Body2, home Vec2, leash f32, seed u32) Grazer {
+    mut tree = BehaviorTree.make();
+    imm walk = tree.leaf(LEAF_WALK);
+    imm graze = tree.leaf(LEAF_GRAZE);
+    imm both = new Array[u32, 2] <- walk, graze;
+    imm seq = tree.sequence(&both);
+    tree.repeat(seq, 0u32);
+    new Grazer(body, home, leash, tree, Blackboard.make(), FixedTicker.make(5.), Wander.make(seed), seed);
+  }
+
+  // The mode the tree has put it in: GRAZE_WALK or GRAZE_EAT
+  pub fn mode(self &) i32 { bb.getI(SLOT_MODE); }
+
+  pub fn step(self &mut, dt f32) {
+    imm n = ticker.advance(dt);
+    mut k = 0u32;
+    while k < n {
+      // A countdown, started when the leaf is first reached, from a hash of the seed and the count
+      imm tickDt = ticker.period;
+      imm s = seed;
+      tree.tick(tickDt, &mut bb, (id, board) => {
+        imm running = board.getF(SLOT_TIMER) > 0.;
+        if not running and board.getI(SLOT_MODE) == (if id == LEAF_WALK { 1; } else { 0; }) {
+          // Starting this leaf: pick a duration
+          board.setI(SLOT_COUNT, board.getI(SLOT_COUNT) + 1);
+          imm u = unitHash(s, u32.from(board.getI(SLOT_COUNT)), id);
+          board.setI(SLOT_MODE, if id == LEAF_WALK { 0; } else { 1; });
+          board.setF(SLOT_TIMER, if id == LEAF_WALK { 3. + 5. * u; } else { 2. + 4. * u; });
+        }
+        board.setF(SLOT_TIMER, board.getF(SLOT_TIMER) - tickDt);
+        if board.getF(SLOT_TIMER) > 0. { RUNNING; } else { board.setF(SLOT_TIMER, 0.); SUCCESS; };
+      });
+      k = k + 1u32;
+    }
+    if bb.getI(SLOT_MODE) == GRAZE_WALK {
+      imm toHome = home - body.pos;
+      if toHome.length() > leash {
+        body.integrate(seek(body.pos, home, body.maxAccel), dt);
+      } else {
+        body.integrate(wander.accel(body.pos, body.heading(), body.maxAccel * 0.5, 2., 1., 1.5, dt), dt);
+      }
+    } else {
+      body.integrate(arrive(body.pos, body.vel, body.pos, body.maxAccel, body.maxSpeed, 0.1, 1., 0.3), dt);
+    }
+  }
+}
+
+// -------- follow at a distance --------
+//
+// Stands 'distance' metres from the player on the line from the player to
+// itself, arriving there; within 20 per cent of that distance it just stays.
+pub struct Follower {
+  pub body Body2;
+  pub distance f32;
+
+  pub fn make(body Body2, distance f32) Follower { new Follower(body, distance); }
+
+  pub fn step(self &mut, dt f32, playerPos Vec2) {
+    imm away = body.pos - playerPos;
+    imm dist = away.length();
+    imm spot = playerPos + away.normalize() * distance;
+    if dist > distance * 0.8 and dist < distance * 1.2 {
+      body.integrate(arrive(body.pos, body.vel, body.pos, body.maxAccel, body.maxSpeed, 0.1, 1., 0.3), dt);
+    } else {
+      body.integrate(arrive(body.pos, body.vel, spot, body.maxAccel, body.maxSpeed, 0.2, 3., 0.3), dt);
+    }
+  }
+}
+
+// -------- flee when the player is near --------
+//
+// Evades the player (aiming where he will be) once he is within 'alarm'
+// metres, and keeps on until he is beyond 'calm' (greater than alarm: a
+// character that stops the instant it is out of range would be jittering at
+// the edge); then walks back to 'home' and stops there.
+pub struct Fleer {
+  pub body Body2;
+  pub home Vec2;
+  pub alarm f32;
+  pub calm f32;
+  pub afraid bool;
+
+  pub fn make(body Body2, home Vec2, alarm f32, calm f32) Fleer { new Fleer(body, home, alarm, calm, false); }
+
+  pub fn step(self &mut, dt f32, playerPos Vec2, playerVel Vec2) {
+    imm dist = body.pos.distance(playerPos);
+    if dist < alarm { afraid = true; }
+    elif dist > calm { afraid = false; }
+    if afraid {
+      body.integrate(evade(body.pos, body.vel, body.maxAccel, playerPos, playerVel, 1.), dt);
+    } else {
+      body.integrate(arrive(body.pos, body.vel, home, body.maxAccel, body.maxSpeed * 0.5, 0.3, 3., 0.3), dt);
+    }
+  }
+}
+
+// -------- guard --------
+//
+// States (a hierarchy): ON_DUTY holds POST, INVESTIGATE, LOOK and RETURN;
+// CHASE stands apart. The transitions, each named by the blackboard flag its
+// condition reads:
+//
+//   POST, LOOK, RETURN -> INVESTIGATE   HEARD: a sound it can hear and no player in sight
+//   INVESTIGATE -> LOOK                 ARRIVED: the path to the sound is walked
+//   LOOK -> RETURN                      LOOK_DONE: it has looked round for 'lookTime' s
+//   RETURN -> POST                      AT_POST
+//   ON_DUTY -> CHASE                    SEES: the player is in its sight cone, unblocked
+//   CHASE -> INVESTIGATE                LOST: not seen for 'loseAfter' s; it goes to where
+//                                       it last saw him
+//
+// (CHASE's transition is on the parent ON_DUTY, so it applies in every duty
+// state; HEARD is withheld while the player is in sight so that seeing wins.)
+// The machine is ticked at 10 Hz. 'history' lists each leaf state entered in
+// order: a log a test or a debugging overlay reads.
+pub const GUARD_ON_DUTY = 0u32;
+pub const GUARD_POST = 1u32;
+pub const GUARD_INVESTIGATE = 2u32;
+pub const GUARD_LOOK = 3u32;
+pub const GUARD_RETURN = 4u32;
+pub const GUARD_CHASE = 5u32;
+
+const FLAG_HEARD = 0usize;
+const FLAG_ARRIVED = 1usize;
+const FLAG_LOOK_DONE = 2usize;
+const FLAG_AT_POST = 3usize;
+const FLAG_SEES = 4usize;
+const FLAG_LOST = 5usize;
+const VEC_TARGET = 0usize;     // where it is going to investigate
+
+pub struct Guard {
+  pub body Body2;
+  pub post Vec2;
+  pub facing Vec2;            // where its eyes point
+  pub sight SightCone;
+  pub hearing Hearing;
+  pub memory Memory;
+  pub machine StateMachine;
+  pub bb Blackboard;
+  pub history List[u32];
+  pub lookTime f32;
+  pub loseAfter f32;
+  pub unseen f32;             // seconds since it last saw the player
+  ticker FixedTicker;
+  path List[Vec2];
+  follower PathFollower;
+
+  pub fn make(body Body2, sight SightCone, hearing Hearing) Guard {
+    mut m = StateMachine.make();
+    imm onDuty = m.addState(NO_STATE);
+    imm post = m.addState(onDuty);
+    imm investigate = m.addState(onDuty);
+    imm look = m.addState(onDuty);
+    imm ret = m.addState(onDuty);
+    imm chase = m.addState(NO_STATE);
+    m.setInitial(onDuty, post);
+    m.addTransition(post, investigate, u32.from(FLAG_HEARD));
+    m.addTransition(look, investigate, u32.from(FLAG_HEARD));
+    m.addTransition(ret, investigate, u32.from(FLAG_HEARD));
+    m.addTransition(investigate, look, u32.from(FLAG_ARRIVED));
+    m.addTransition(look, ret, u32.from(FLAG_LOOK_DONE));
+    m.addTransition(ret, post, u32.from(FLAG_AT_POST));
+    m.addTransition(onDuty, chase, u32.from(FLAG_SEES));
+    m.addTransition(chase, investigate, u32.from(FLAG_LOST));
+    m.start(onDuty);
+    mut g = new Guard(body, body.pos, new Vec2(1., 0.), sight, hearing, Memory.make(4.), m, Blackboard.make(), List[u32].empty(),
+      2., 3., 0., FixedTicker.make(10.), List[Vec2].empty(), PathFollower.make());
+    g.history.push(GUARD_POST);
+    g;
+  }
+
+  pub fn state(self &) u32 { machine.active; }
+
+  fn clearFlags(self &mut) {
+    mut i = 0usize;
+    while i < 8usize { bb.setI(i, 0); i = i + 1usize; }
+  }
+
+  fn startPath(self &mut, to Vec2, findPath &<fn(from Vec2, to Vec2, out &mut List[Vec2]) bool) {
+    path.clear();
+    follower.restart();
+    if not findPath(body.pos, to, &mut path) { path.push(to); }
+  }
+
+  // One frame. 'player' is where the player is; 'sounds' the sounds made this
+  // frame; 'blocked' the ray cast; 'findPath' the path query
+  pub fn step(self &mut, dt f32, player Vec3, playerVel Vec2, sounds &Array[SoundEvent],
+              blocked &<fn(a Vec3, b Vec3) bool, findPath &<fn(from Vec2, to Vec2, out &mut List[Vec2]) bool) {
+    // ---- sensing ----
+    imm eye = lift(body.pos, 1.6);
+    imm sees = sight.sees(eye, lift(facing, 0.), player + new Vec3(0., 0.6, 0.), blocked);
+    if sees {
+      memory.see(player, lift(playerVel, 0.));
+      unseen = 0.;
+      bb.setI(FLAG_SEES, 1);
+    } else {
+      unseen = unseen + dt;
+      bb.setI(FLAG_SEES, 0);
+      memory.tick(dt);
+    }
+    imm heard = hearing.loudest(lift(body.pos, 0.), sounds);
+    if heard >= 0 and not sees {
+      bb.setI(FLAG_HEARD, 1);
+      bb.setV(VEC_TARGET, sounds[usize.from(heard)].pos);
+      // A new sound while already walking to one: go to the new one
+      if machine.active == GUARD_INVESTIGATE { self.startPath(ground(bb.getV(VEC_TARGET)), findPath); }
+    }
+    if machine.active == GUARD_CHASE and unseen > loseAfter {
+      bb.setI(FLAG_LOST, 1);
+      bb.setV(VEC_TARGET, memory.pos);
+    }
+    // ---- deciding ----
+    imm n = ticker.advance(dt);
+    mut k = 0u32;
+    while k < n {
+      if machine.tick(&bb, (id, board) => board.getI(usize.from(id)) != 0) {
+        self.clearFlags();
+        // Keep a sighting and a sound that arrived this very tick
+        if sees { bb.setI(FLAG_SEES, 1); }
+        mut e = 0usize;
+        while e < machine.enteredCount {
+          imm s = machine.entered[e];
+          if s != GUARD_ON_DUTY { history.push(s); }
+          if s == GUARD_INVESTIGATE { self.startPath(ground(bb.getV(VEC_TARGET)), findPath); }
+          if s == GUARD_RETURN { self.startPath(post, findPath); }
+          if s == GUARD_LOOK { bb.setF(0usize, lookTime); }
+          e = e + 1usize;
+        }
+      }
+      k = k + 1u32;
+    }
+    // ---- acting ----
+    imm st = machine.active;
+    if st == GUARD_INVESTIGATE or st == GUARD_RETURN {
+      imm a = follower.accel(body.pos, body.vel, path.view(), body.maxAccel, body.maxSpeed, 0.5, 1.5, 0.5, 3.);
+      body.integrate(a, dt);
+      if follower.done { bb.setI(if st == GUARD_INVESTIGATE { FLAG_ARRIVED; } else { FLAG_AT_POST; }, 1); }
+    } elif st == GUARD_LOOK {
+      body.integrate(arrive(body.pos, body.vel, body.pos, body.maxAccel, body.maxSpeed, 0.1, 1., 0.25), dt);
+      facing = facing.rotate(1.5 * dt);
+      bb.setF(0usize, bb.getF(0usize) - dt);
+      if bb.getF(0usize) <= 0. { bb.setI(FLAG_LOOK_DONE, 1); }
+    } elif st == GUARD_CHASE {
+      imm target = ground(memory.guess());
+      body.integrate(pursue(body.pos, body.vel, body.maxAccel, target, playerVel, 1.), dt);
+    } else {
+      body.integrate(arrive(body.pos, body.vel, post, body.maxAccel, body.maxSpeed, 0.1, 1., 0.25), dt);
+    }
+    if body.vel.length() > 0.3 and st != GUARD_LOOK { facing = body.heading(); }
+  }
+}

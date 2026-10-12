@@ -1,0 +1,157 @@
+// Mass properties against closed forms, and quickhull against hand-worked hulls.
+//
+// Box 1 x 2 x 3 (half 0.5, 1, 1.5): V = 6, Ixx = V/12 (2^2 + 3^2) = 6.5,
+// Iyy = V/12 (1 + 9) = 5, Izz = V/12 (1 + 4) = 2.5.
+// Sphere r = 2: V = 4/3 pi 8 = 33.5103, I = 2/5 V r^2 = 53.6165.
+// Cylinder r = 1, half height 2: V = 2 pi 1 2 = 4 pi... (pi r^2 * 4 = 12.5664),
+// Iyy = V r^2 / 2 = 6.2832, Ixx = V (r^2/4 + h^2/3) = 12.5664 (0.25 + 1.3333) = 19.8968.
+// A tetrahedron (0,0,0) (1,0,0) (0,1,0) (0,0,1): V = 1/6, centre (1/4, 1/4, 1/4).
+// The capsule is checked against a brute-force sum over a fine grid.
+
+mod mass;
+
+import testing use *;
+import collections use List;
+import geomath use *;
+import rigidcollide use *;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+fn cornersOfBox(h Vec3) List[Vec3] {
+  mut pts = List[Vec3].empty();
+  mut i = 0u32;
+  while i < 8u32 {
+    pts.push(new Vec3(if (i & 1u32) == 0u32 { -h.x; } else { h.x; }, if (i & 2u32) == 0u32 { -h.y; } else { h.y; },
+                      if (i & 4u32) == 0u32 { -h.z; } else { h.z; }));
+    i = i + 1u32;
+  }
+  pts;
+}
+
+fn testClosedForms() {
+  imm b = Prim.box(new Vec3(0.5, 1., 1.5)).massProps();
+  near(b.volume, 6., 0.0001, "box volume");
+  near(b.inertia.cell(0usize, 0usize), 6.5, 0.0001, "box Ixx");
+  near(b.inertia.cell(1usize, 1usize), 5., 0.0001, "box Iyy");
+  near(b.inertia.cell(2usize, 2usize), 2.5, 0.0001, "box Izz");
+  imm s = Prim.sphere(2.).massProps();
+  near(s.volume, 33.5103, 0.001, "sphere volume");
+  near(s.inertia.cell(1usize, 1usize), 53.6165, 0.01, "sphere inertia");
+  imm c = Prim.cylinder(1., 2.).massProps();
+  near(c.volume, 12.5664, 0.001, "cylinder volume");
+  near(c.inertia.cell(1usize, 1usize), 6.2832, 0.001, "cylinder Iyy");
+  near(c.inertia.cell(0usize, 0usize), 19.8968, 0.002, "cylinder Ixx");
+}
+
+fn testHullBox() {
+  imm pts = cornersOfBox(new Vec3(0.5, 1., 1.5));
+  imm hull = convexHull(pts.view());
+  expectInt(i64.from(hull.faces.len()), 6, "a box's hull has six faces");
+  expectInt(i64.from(hull.verts.len()), 8, "and eight vertices");
+  imm mp = hull.massProps();
+  near(mp.volume, 6., 0.0001, "hull-box volume");
+  near(mp.inertia.cell(0usize, 0usize), 6.5, 0.001, "hull-box Ixx");
+  near(mp.inertia.cell(1usize, 1usize), 5., 0.001, "hull-box Iyy");
+  near(mp.inertia.cell(2usize, 2usize), 2.5, 0.001, "hull-box Izz");
+  near(mp.inertia.cell(0usize, 1usize), 0., 0.001, "hull-box Ixy");
+  // Extra points inside and on faces change nothing
+  mut more = cornersOfBox(new Vec3(0.5, 1., 1.5));
+  more.push(new Vec3(0., 0., 0.));
+  more.push(new Vec3(0.1, 0.2, 0.3));
+  more.push(new Vec3(0., 0., 1.5));
+  more.push(new Vec3(0.5, 0.2, 0.));
+  imm hull2 = convexHull(more.view());
+  expectInt(i64.from(hull2.faces.len()), 6, "interior and face points leave six faces");
+  near(hull2.massProps().volume, 6., 0.0001, "same volume");
+  // Offset box: the centre of mass is where the box is
+  mut off = List[Vec3].empty();
+  mut i = 0usize;
+  while i < pts.len() { off.push(*pts[i] + new Vec3(10., -5., 2.)); i = i + 1usize; }
+  imm mo = convexHull(off.view()).massProps();
+  near(mo.com.x, 10., 0.001, "offset com x");
+  near(mo.com.y, -5., 0.001, "offset com y");
+  near(mo.com.z, 2., 0.001, "offset com z");
+  near(mo.inertia.cell(0usize, 0usize), 6.5, 0.01, "offset Ixx about the centre");
+}
+
+fn testTetra() {
+  imm pts = [new Vec3(0., 0., 0.), new Vec3(1., 0., 0.), new Vec3(0., 1., 0.), new Vec3(0., 0., 1.)];
+  imm h = convexHull(&pts);
+  expectInt(i64.from(h.faces.len()), 4, "tetrahedron has four faces");
+  imm mp = h.massProps();
+  near(mp.volume, 1. / 6., 0.00001, "tetra volume");
+  near(mp.com.x, 0.25, 0.00001, "tetra com");
+  // Ixx about the centre: integral of y^2 + z^2 over the tetra = 2 * (1/60) = 1/30, less V (cy^2 + cz^2)
+  near(mp.inertia.cell(0usize, 0usize), 1. / 30. - (1. / 6.) * (0.0625 + 0.0625), 0.00001, "tetra Ixx");
+  // Flat input has no hull
+  imm flat = [new Vec3(0., 0., 0.), new Vec3(1., 0., 0.), new Vec3(0., 1., 0.), new Vec3(1., 1., 0.)];
+  expectInt(i64.from(convexHull(&flat).faces.len()), 0, "flat points make no hull");
+}
+
+// Capsule: inside test, summed over a grid
+fn insideCapsule(p Vec3, r f32, h f32) bool {
+  imm cy = clampf(p.y, -h, h);
+  imm d = new Vec3(p.x, p.y - cy, p.z);
+  d.lengthSquared() <= r * r;
+}
+
+fn testCapsule() {
+  imm r = 0.5;
+  imm h = 1.;
+  imm mp = Prim.capsule(r, h).massProps();
+  imm n = 100usize;
+  imm lo = new Vec3(-r, -h - r, -r);
+  imm size = new Vec3(2. * r, 2. * (h + r), 2. * r);
+  imm cell = new Vec3(size.x / f32.from(n), size.y / f32.from(n), size.z / f32.from(n));
+  mut vol = 0.;
+  mut ixx = 0.;
+  mut iyy = 0.;
+  mut i = 0usize;
+  while i < n {
+    mut j = 0usize;
+    while j < n {
+      mut k = 0usize;
+      while k < n {
+        imm p = new Vec3(lo.x + (f32.from(i) + 0.5) * cell.x, lo.y + (f32.from(j) + 0.5) * cell.y, lo.z + (f32.from(k) + 0.5) * cell.z);
+        if insideCapsule(p, r, h) {
+          imm dv = cell.x * cell.y * cell.z;
+          vol = vol + dv;
+          ixx = ixx + dv * (p.y * p.y + p.z * p.z);
+          iyy = iyy + dv * (p.x * p.x + p.z * p.z);
+        }
+        k = k + 1usize;
+      }
+      j = j + 1usize;
+    }
+    i = i + 1usize;
+  }
+  near(mp.volume, vol, vol * 0.005, "capsule volume vs grid sum");
+  near(mp.inertia.cell(0usize, 0usize), ixx, ixx * 0.01, "capsule Ixx vs grid sum");
+  near(mp.inertia.cell(1usize, 1usize), iyy, iyy * 0.01, "capsule Iyy vs grid sum");
+}
+
+fn testCompound() {
+  // Two unit cubes 2 apart along x: V = 2, com at the middle,
+  // Ixx = 2 * (1/6) = 1/3, Iyy = 2 (1/6 + 1 * 1^2) = 7/3
+  mut s = Shape.compound();
+  s.add(Prim.box(new Vec3(0.5, 0.5, 0.5)), Rigid.at(new Vec3(-1., 0., 0.)));
+  s.add(Prim.box(new Vec3(0.5, 0.5, 0.5)), Rigid.at(new Vec3(1., 0., 0.)));
+  imm mp = s.massProps();
+  near(mp.volume, 2., 0.0001, "compound volume");
+  near(mp.com.x, 0., 0.0001, "compound com");
+  near(mp.inertia.cell(0usize, 0usize), 1. / 3., 0.0001, "compound Ixx");
+  near(mp.inertia.cell(1usize, 1usize), 7. / 3., 0.0001, "compound Iyy by the parallel axis theorem");
+  imm bb = s.bounds(Rigid.identity());
+  near(bb.max.x, 1.5, 0.0001, "compound bounds");
+}
+
+fn main() i32 {
+  testClosedForms();
+  testHullBox();
+  testTetra();
+  testCapsule();
+  testCompound();
+  done();
+}
