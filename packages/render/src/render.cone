@@ -76,6 +76,18 @@
 //   normal offset, blending cascades at their seams. Cut-out, skinned and
 //   flutter meshes cast what they show; see-through and custom-pipeline
 //   draws cast nothing, nor does an item marked 'dontCastShadow'.
+// - The scene (visibility.cone, hiz.cone, fade.slang, hiz.slang): things that
+//   stay, added with 'addSceneItem' (a SceneHandle each, a proxy in a
+//   spatialindex.Bvh, refitted by 'moveSceneItem') and culled for every camera
+//   that draws -- the main view, each shadow cascade, each local light's shadow
+//   face, each RenderView, each reflection probe face -- with batches gathered
+//   from what that camera sees alone. Levels of detail by projected size (the
+//   item's LodChain, hysteresis, a bias a camera and a shadow pass can set) that
+//   change by a dithered cross-fade; visibility ranges whose edges fade; and
+//   occlusion by a hierarchical depth pyramid in two passes, the survivors
+//   compacted on the GPU and drawn by indirect draws. 'renderer.vis.settings'
+//   switches each off, and with all off the scene draws what a DrawList of its
+//   items would. A DrawList still draws whole beside it.
 // - Point and spot lights (lights.cone, locallights.slang): real light
 //   sources, in 'renderer.lights', named by handles and cheap to add, move,
 //   aim, recolour and re-intensify every frame (a flicker). Intensity in
@@ -220,6 +232,9 @@
 //                  ssao.cone, dof.cone, fog.cone, decal.cone: each pass and its settings, with its shader's SPIR-V
 //                  (taa.slang, taavelocity*.slang, fxaa.slang, autoexposure.slang, ssao.slang, dof.slang,
 //                  fog.slang, decal.slang; the modules fxcommon and velocitycommon)
+//   visibility.cone  Visibility (the scene, its hierarchy and levels), SceneHandle, VisibilitySettings, the fade code
+//   hiz.cone       HiZ: the depth pyramid, its buffers and passes; hiz.slang's SPIR-V (fade.slang is the module
+//                  lit.slang and pbr.slang import for the dither)
 //   lights.cone    LightSet, LightHandle: point and spot lights, the froxel grid, the assignment and the
 //                  GPU buffers (locallights.slang is the shaders' side of it)
 //
@@ -390,6 +405,9 @@ pub struct Renderer {
   // lit in display units; 'exposureFromEv100' for one in physical units
   // (the light in lux, ambient, sky and emissive in nits).
   pub exposure f32 = 1.;
+  // A set of more keys than this is grouped by hash, not sorted (gatherSet): the
+  // same batches, their copies in list order instead of nearest first
+  pub bucketMin usize = 2048usize;
 
   // A renderer drawing into targets of 'colorFormat', with a depth texture
   // of 'depthFormat' (TEXTURE_FORMAT_DEPTH32_FLOAT). For physically based
@@ -1702,6 +1720,79 @@ pub struct Renderer {
       }
       i = i + 1usize;
     }
+    // A big set (thousands of scene items in a handful of batches) is grouped
+    // by (material, mesh, ...) with a hash, a counting sort, in a pass; the
+    // comparison sort below would cost n log n compares of 40-byte keys. Only
+    // opaque keys group this way: they keep their order in the list within
+    // a batch (not nearest first, which only helps early depth rejection),
+    // each batch's distance the nearest of its keys'. Everything else, and a
+    // small set, sorts as ever.
+    mut placed = List[DrawKey].empty();
+    mut groupCount = List[u32].empty();
+    mut groupNear = List[f32].empty();
+    mut groupRep = List[DrawKey].empty();
+    mut groupOffset = List[u32].empty();
+    if setKeys.len() > bucketMin {
+      mut rest = List[DrawKey].empty();
+      mut big = List[DrawKey].withCapacity(setKeys.len());
+      mut s = 0usize;
+      while s < setKeys.len() {
+        imm key = *setKeys[s];
+        if key.layer == LAYER_OPAQUE and key.material < 1048576u32 and key.mesh < 1048576u32 and key.probe < 4096u32 {
+          big.push(key);
+        } else {
+          rest.push(key);
+        }
+        s = s + 1usize;
+      }
+      setKeys = rest;
+      mut ids = Dict[u64, u32].empty();
+      mut groupOf = List[u32].withCapacity(big.len());
+      s = 0usize;
+      while s < big.len() {
+        imm key = *big[s];
+        imm packed = (u64.from(key.material) << 44u64) | (u64.from(key.mesh) << 24u64) | (u64.from(key.probe) << 12u64)
+          | (u64.from(key.cast & 1u32) << 1u64) | u64.from(key.occ & 1u32);
+        mut id = 0u32;
+        if ids.containsKey(&packed) {
+          id = *ids[&packed];
+          groupCount.set(usize.from(id), *groupCount[usize.from(id)] + 1u32);
+          if key.distance < *groupNear[usize.from(id)] { groupNear.set(usize.from(id), key.distance); }
+        } else {
+          id = u32.from(groupCount.len());
+          ids.insert(packed, id);
+          groupCount.push(1u32);
+          groupNear.push(key.distance);
+          groupRep.push(key);
+        }
+        groupOf.push(id);
+        s = s + 1usize;
+      }
+      mut running = 0u32;
+      s = 0usize;
+      while s < groupCount.len() {
+        groupOffset.push(running);
+        running = running + *groupCount[s];
+        s = s + 1usize;
+      }
+      if big.len() > 0usize {
+        placed = List[DrawKey].withCapacity(big.len());
+        placed.resize(big.len(), *big[0usize]);
+        mut cursor = List[u32].withCapacity(groupOffset.len());
+        s = 0usize;
+        while s < groupOffset.len() {
+          cursor.push(*groupOffset[s]);
+          s = s + 1usize;
+        }
+        s = 0usize;
+        while s < big.len() {
+          imm g = usize.from(*groupOf[s]);
+          placed.set(usize.from(*cursor[g]), *big[s]);
+          cursor.set(g, *cursor[g] + 1u32);
+          s = s + 1usize;
+        }
+      }
+    }
     setKeys.sortBy(&byBatch);
     // Runs of one material and mesh
     imm keyBase = keys.len();
@@ -1721,10 +1812,24 @@ pub struct Renderer {
         u32.from(keyBase + k), first.layer == LAYER_OPAQUE and first.cast == 0u32, first.probe, first.occ));
       k = end;
     }
+    // The grouped keys' batches, their keys after the sorted ones
+    k = 0usize;
+    while k < groupCount.len() {
+      imm rep = *groupRep[k];
+      imm at = u32.from(keyBase + setKeys.len()) + *groupOffset[k];
+      setBatches.push(new DrawBatch(at, *groupCount[k], 0u32, *groupNear[k], LAYER_OPAQUE, at, rep.cast == 0u32,
+        rep.probe, rep.occ));
+      k = k + 1usize;
+    }
     setBatches.sortBy(&byDistance);
     k = 0usize;
     while k < setKeys.len() {
       keys.push(*setKeys[k]);
+      k = k + 1usize;
+    }
+    k = 0usize;
+    while k < placed.len() {
+      keys.push(*placed[k]);
       k = k + 1usize;
     }
     k = 0usize;

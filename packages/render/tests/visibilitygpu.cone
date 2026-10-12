@@ -733,6 +733,43 @@ fn occlusionChecks(renderer &mut Renderer, device &mut Device, color &Texture, r
   renderer.clearScene();
 }
 
+// ---- 11. Grouping by hash equals sorting ----
+
+fn groupingChecks(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer) {
+  imm cube = renderer.addMesh(device, &Mesh.cube(1.));
+  imm ball = renderer.addMesh(device, &Mesh.sphere(1., 8));
+  mut materials = List[MaterialHandle].empty();
+  mut k = 0;
+  while k < 3 {
+    imm m = Material.plain(new Color(0.9 - 0.3 * f32.from(k), 0.3 + 0.25 * f32.from(k), 0.4, 1.));
+    materials.push(renderer.addMaterial(device, &m));
+    k = k + 1;
+  }
+  // 3,000 separate small things on a grid, 3 materials and 2 meshes
+  mut list = DrawList.empty();
+  mut i = 0;
+  while i < 3000 {
+    imm p = new Vec3(f32.from(i % 60) * 0.5 - 14.75, f32.from(i / 60) * 0.5 - 12.25, 0.);
+    list.add(if i % 7 == 0 { ball; } else { cube; }, *materials[usize.from(u32.from(i % 3))],
+      Mat4.fromTrs(p, Quat.identity(), new Vec3(0.18, 0.18, 0.18)));
+    i = i + 1;
+  }
+  mut camera = Camera.make();
+  camera.fov = radians(50.);
+  camera.lookAt(new Vec3(0., 0., 30.), new Vec3(0., 0., 0.), new Vec3(0., 1., 0.));
+  camera.background = new Color(0.05, 0.05, 0.1, 1.);
+  imm light = sun(radians(50.), radians(30.), 3., 0.2);
+  renderer.bucketMin = 1000000usize;
+  imm sorted = pictureOf(renderer, device, color, depth, readback, &camera, &light, &list);
+  imm sortedDraws = renderer.drawCalls;
+  renderer.bucketMin = 2048usize;
+  imm grouped = pictureOf(renderer, device, color, depth, readback, &camera, &light, &list);
+  mut worst = 0.;
+  expectUInt(u64.from(differing(&sorted, &grouped, &mut worst)), 0u64, "3,000 items grouped by hash draw the picture sorting draws");
+  expectUInt(u64.from(renderer.drawCalls), u64.from(sortedDraws), "in the same draws");
+  expect(renderer.instancesDrawn == 3000u32 and sortedDraws == 6u32, "six batches of 3,000 instances");
+}
+
 fn main() i32 {
   mut instance = Instance.create("render visibility");
   require(instance.isValid(), "a Vulkan 1.3 instance");
@@ -763,6 +800,7 @@ fn main() i32 {
 
   occlusionChecks(&mut renderer, &mut device, &color, &readback, false);
   occlusionChecks(&mut renderer, &mut device, &color, &readback, true);
+  groupingChecks(&mut renderer, &mut device, &color, &depth, &readback);
   levelChecks(&mut renderer, &mut device, &color, &depth, &readback);
   rangeChecks(&mut renderer, &mut device, &color, &depth, &readback);
   layerChecks(&mut renderer, &mut device, &color, &depth, &readback);
