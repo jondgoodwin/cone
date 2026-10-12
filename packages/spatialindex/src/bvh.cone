@@ -1,0 +1,482 @@
+// ======== Bvh: a dynamic AABB tree over items ========
+//
+// Items go in with a box and a handle and come out by Proxy. The tree keeps
+// each leaf's box fat (the item's box grown by 'margin', and stretched
+// along its motion by 'move'), so an item that moves a little needs no
+// change to the tree: Box2D's and Bullet's scheme. Queries test the item's
+// own tight box at the leaf, so a fat box never shows in an answer; only
+// pair finding speaks in fat boxes (see 'updatePairs').
+//
+// Three ways to keep the tree:
+//  - 'insert', 'remove' and 'move': dynamic, balanced by rotations;
+//  - 'refit': after boxes changed (setBox, moveRefit), recompute the
+//    internal boxes bottom-up without touching the shape; quick, but the
+//    tree's quality ('sahCost') drifts as items wander;
+//  - 'rebuild': throw the shape away and rebuild by binned SAH, the best
+//    tree there is, O(n log n). 'insertBulk' loads a lot of items that way.
+
+pub struct Bvh[T Copy] {
+  items Items[T];
+  tree BvhTree;
+  margin f32;
+  pairs PairBook;
+  moved List[u32];
+  pendingRemoved List[Pair[T]];
+
+  // An empty tree whose leaf boxes are fat by 'margin' on every side
+  // (0 makes them exact)
+  pub fn create(margin f32) Bvh[T] {
+    new Bvh[T](Items[T].create(), BvhTree.create(), margin, PairBook.create(),
+      List[u32].empty(), List[Pair[T]].empty());
+  }
+
+  pub fn len(self &) usize {items.count;}
+  pub fn contains(self &, p Proxy) bool {items.alive(p);}
+  pub fn handle(self &, p Proxy) T {items.list[usize.from(p.slot)].handle;}
+  pub fn box(self &, p Proxy) Aabb3 {items.list[usize.from(p.slot)].box;}
+
+  // The box the tree holds for the item: its box grown by the margin
+  pub fn fatBox(self &, p Proxy) Aabb3 {
+    tree.nodes[usize.from(items.list[usize.from(p.slot)].x)].box;
+  }
+
+  // The box pairs are judged by (the fat box); the same name on every index
+  pub fn pairBox(self &, p Proxy) Aabb3 {fatBox(p);}
+
+  // The height of the tree (0 for a single leaf, -1 for none)
+  pub fn height(self &) i32 {
+    if tree.root == NONE {-1i32;} else {tree.nodes[usize.from(tree.root)].height;};
+  }
+
+  // The surface area heuristic cost of the tree's shape; lower is better
+  pub fn sahCost(self &) f32 {tree.sahCost();}
+
+  fn flagMoved(self &mut, slot u32) {
+    if !items.list[usize.from(slot)].moved {
+      items.list[usize.from(slot)].moved = true;
+      moved.push(slot);
+    }
+  }
+
+  pub fn insert(self &mut, box Aabb3, handle T) Proxy {
+    imm p = items.add(box, handle);
+    imm leaf = tree.newLeaf(p.slot, box.expand(margin));
+    items.list[usize.from(p.slot)].x = leaf;
+    tree.insertLeaf(leaf);
+    flagMoved(p.slot);
+    p;
+  }
+
+  // Removes the item; false if the proxy was already gone
+  pub fn remove(self &mut, p Proxy) bool {
+    if !items.alive(p) {return false;}
+    imm si = usize.from(p.slot);
+    imm leaf = items.list[si].x;
+    tree.removeLeaf(leaf);
+    tree.release(leaf);
+    // pairs it was in end now; report them at the next update
+    mut ended = List[u32].empty();
+    pairs.forget(p.slot, &mut ended);
+    imm h = items.list[si].handle;
+    mut i = 0usize;
+    while i < ended.len() {
+      imm o = *ended[i];
+      imm oi = usize.from(o);
+      pendingRemoved.push(pairOf(p.slot, h, o, items.list[oi].handle));
+      i = i + 1usize;
+    }
+    items.list[si].moved = false;
+    items.release(p.slot);
+    true;
+  }
+
+  fn pairOf(self &, sa u32, ha T, sb u32, hb T) Pair[T] {
+    if sa < sb {
+      new Pair[T](ha, hb, items.proxyOf(sa), items.proxyOf(sb));
+    }
+    else {
+      new Pair[T](hb, ha, items.proxyOf(sb), items.proxyOf(sa));
+    }
+  }
+
+  // The item has a new box. If the tree's fat box still holds it (and is not
+  // wastefully large) nothing in the tree changes; otherwise the leaf is
+  // taken out and put back with a fresh fat box, stretched along
+  // 'displacement' (how far the item moved; Box2D's multiplier of 4).
+  // Answers whether the tree changed.
+  pub fn move(self &mut, p Proxy, box Aabb3, displacement Vec3) bool {
+    if !items.alive(p) {return false;}
+    imm si = usize.from(p.slot);
+    items.list[si].box = box;
+    imm leaf = items.list[si].x;
+    imm fat = tree.nodes[usize.from(leaf)].box;
+    if containsBox(fat, box) {
+      // not too huge: not more than 4 margins larger than needed
+      if containsBox(box.expand(4. * margin), fat) {return false;}
+    }
+    mut nb = box.expand(margin);
+    imm d = displacement * 4.;
+    nb = new Aabb3(new Vec3(if d.x < 0. {nb.min.x + d.x;} else {nb.min.x;},
+        if d.y < 0. {nb.min.y + d.y;} else {nb.min.y;},
+        if d.z < 0. {nb.min.z + d.z;} else {nb.min.z;}),
+      new Vec3(if d.x > 0. {nb.max.x + d.x;} else {nb.max.x;},
+        if d.y > 0. {nb.max.y + d.y;} else {nb.max.y;},
+        if d.z > 0. {nb.max.z + d.z;} else {nb.max.z;}));
+    tree.removeLeaf(leaf);
+    tree.nodes[usize.from(leaf)].box = nb;
+    tree.insertLeaf(leaf);
+    flagMoved(p.slot);
+    true;
+  }
+
+  // The item has a new box; the leaf and its ancestors are refit in place,
+  // with no change to the tree's shape (cheap, and the tree's quality may
+  // fall; see 'sahCost' and 'rebuild'). The leaf's box is exactly the fat
+  // box of the new box, so pairs change at once.
+  pub fn moveRefit(self &mut, p Proxy, box Aabb3) bool {
+    if !items.alive(p) {return false;}
+    imm si = usize.from(p.slot);
+    items.list[si].box = box;
+    imm leaf = items.list[si].x;
+    tree.nodes[usize.from(leaf)].box = box.expand(margin);
+    tree.refitUp(tree.nodes[usize.from(leaf)].parent);
+    flagMoved(p.slot);
+    true;
+  }
+
+  // Sets an item's box without touching the tree; call 'refit' (or
+  // 'rebuild') after setting any number of them
+  pub fn setBox(self &mut, p Proxy, box Aabb3) bool {
+    if !items.alive(p) {return false;}
+    imm si = usize.from(p.slot);
+    items.list[si].box = box;
+    tree.nodes[usize.from(items.list[si].x)].box = box.expand(margin);
+    flagMoved(p.slot);
+    true;
+  }
+
+  // Recomputes every internal box from the leaves (after 'setBox')
+  pub fn refit(self &mut) {tree.refitAll();}
+
+  // Rebuilds the whole tree by binned SAH from the items' present boxes
+  pub fn rebuild(self &mut) {
+    mut work = List[BuildItem].withCapacity(items.count + 1usize);
+    tree.clear();
+    mut i = 0usize;
+    while i < items.list.len() {
+      if items.isLive(i) {
+        imm fat = items.list[i].box.expand(margin);
+        imm leaf = tree.newLeaf(u32.from(i), fat);
+        items.list[i].x = leaf;
+        work.push(new BuildItem(leaf, fat.center(), fat));
+      }
+      i = i + 1usize;
+    }
+    tree.buildFrom(&mut work);
+  }
+
+  // Puts many items in at once and builds the tree by binned SAH (an empty
+  // tree is built afresh; a tree with items is rebuilt with them). The
+  // proxies are appended to 'out' in the order of the boxes.
+  pub fn insertBulk(self &mut, boxes &Array[Aabb3], handles &Array[T], out &mut List[Proxy]) {
+    mut i = 0usize;
+    while i < boxes.len {
+      imm p = items.add(boxes[i], handles[i]);
+      items.list[usize.from(p.slot)].moved = true;
+      moved.push(p.slot);
+      out.push(p);
+      i = i + 1usize;
+    }
+    rebuild();
+  }
+
+  // ---------------- queries ----------------
+  //
+  // A visitor returns true to go on and false to stop. Nothing about the
+  // tree may change during a query.
+
+  // Every item whose box touches 'box'
+  pub fn overlapAabb[F fn(h T, p Proxy) bool](self &, box Aabb3, visit &mut F) {
+    if tree.root == NONE {return;}
+    mut stack = new Array[u32, 192] <- fill 0u32;
+    mut sp = 1usize;
+    stack[0usize] = tree.root;
+    while sp > 0usize {
+      sp = sp - 1usize;
+      imm n = usize.from(stack[sp]);
+      if !tree.nodes[n].box.overlaps(box) {continue;}
+      if tree.nodes[n].b == NONE {
+        imm slot = tree.nodes[n].a;
+        imm it = items.list[usize.from(slot)];
+        if it.box.overlaps(box) {
+          if !visit(it.handle, new Proxy(slot, it.gen)) {return;}
+        }
+      }
+      else {
+        stack[sp] = tree.nodes[n].a;
+        stack[sp + 1usize] = tree.nodes[n].b;
+        sp = sp + 2usize;
+      }
+    }
+  }
+
+  // Every item whose box touches the ball
+  pub fn overlapSphere[F fn(h T, p Proxy) bool](self &, s Sphere, visit &mut F) {
+    if tree.root == NONE {return;}
+    mut stack = new Array[u32, 192] <- fill 0u32;
+    mut sp = 1usize;
+    stack[0usize] = tree.root;
+    while sp > 0usize {
+      sp = sp - 1usize;
+      imm n = usize.from(stack[sp]);
+      if !s.overlapsAabb(tree.nodes[n].box) {continue;}
+      if tree.nodes[n].b == NONE {
+        imm slot = tree.nodes[n].a;
+        imm it = items.list[usize.from(slot)];
+        if s.overlapsAabb(it.box) {
+          if !visit(it.handle, new Proxy(slot, it.gen)) {return;}
+        }
+      }
+      else {
+        stack[sp] = tree.nodes[n].a;
+        stack[sp + 1usize] = tree.nodes[n].b;
+        sp = sp + 2usize;
+      }
+    }
+  }
+
+  // Every item whose box is not wholly outside the frustum (geomath's
+  // 'testAabb' is conservative near the frustum's corners). A subtree whose
+  // box is wholly inside is reported without further tests.
+  pub fn frustum[F fn(h T, p Proxy) bool](self &, f &Frustum, visit &mut F) {
+    if tree.root == NONE {return;}
+    mut stack = new Array[u32, 192] <- fill 0u32;
+    mut masks = new Array[u32, 192] <- fill 0u32;
+    mut sp = 1usize;
+    stack[0usize] = tree.root;
+    masks[0usize] = ALL_PLANES;
+    while sp > 0usize {
+      sp = sp - 1usize;
+      imm n = usize.from(stack[sp]);
+      imm m = if masks[sp] == 0u32 {0u32;} else {cullMask(f, &tree.nodes[n].box, masks[sp]);};
+      if m == NONE {continue;}
+      if tree.nodes[n].b == NONE {
+        imm slot = tree.nodes[n].a;
+        imm it = items.list[usize.from(slot)];
+        if m == 0u32 or cullMask(f, &it.box, m) != NONE {
+          if !visit(it.handle, new Proxy(slot, it.gen)) {return;}
+        }
+      }
+      else {
+        stack[sp] = tree.nodes[n].a;
+        stack[sp + 1usize] = tree.nodes[n].b;
+        masks[sp] = m;
+        masks[sp + 1usize] = m;
+        sp = sp + 2usize;
+      }
+    }
+  }
+
+  // Walks the items whose boxes the ray meets, nearer subtrees first. For
+  // each, 'visit' gets the handle, the proxy and the distance t at which the
+  // ray enters the item's box, and answers a distance: the reach the ray has
+  // from then on. Answer t (the hit just reported) to look only for nearer
+  // hits; answer anything beyond the reach in force (say FAR) to go on
+  // through every hit; answer a negative number to stop. The reach starts at
+  // 'maxT'.
+  pub fn rayCast[F fn(h T, p Proxy, t f32) f32](self &, ray Ray3, maxT f32, visit &mut F) {
+    if tree.root == NONE {return;}
+    imm r = RayQ.from(ray);
+    mut limit = maxT;
+    mut stack = new Array[u32, 192] <- fill 0u32;
+    mut sp = 1usize;
+    stack[0usize] = tree.root;
+    if rayBox(&r, &tree.nodes[usize.from(tree.root)].box, limit) < 0. {return;}
+    while sp > 0usize {
+      sp = sp - 1usize;
+      imm n = usize.from(stack[sp]);
+      if tree.nodes[n].b == NONE {
+        imm slot = tree.nodes[n].a;
+        imm it = items.list[usize.from(slot)];
+        imm t = rayBox(&r, &it.box, limit);
+        if t >= 0. {
+          imm res = visit(it.handle, new Proxy(slot, it.gen), t);
+          if res < 0. {return;}
+          if res < limit {limit = res;}
+        }
+      }
+      else {
+        imm c1 = tree.nodes[n].a;
+        imm c2 = tree.nodes[n].b;
+        imm t1 = rayBox(&r, &tree.nodes[usize.from(c1)].box, limit);
+        imm t2 = rayBox(&r, &tree.nodes[usize.from(c2)].box, limit);
+        // the nearer on top of the stack
+        if t1 >= 0. and t2 >= 0. {
+          if t1 <= t2 {
+            stack[sp] = c2;
+            stack[sp + 1usize] = c1;
+          }
+          else {
+            stack[sp] = c1;
+            stack[sp + 1usize] = c2;
+          }
+          sp = sp + 2usize;
+        }
+        else if t1 >= 0. {
+          stack[sp] = c1;
+          sp = sp + 1usize;
+        }
+        else if t2 >= 0. {
+          stack[sp] = c2;
+          sp = sp + 1usize;
+        }
+      }
+    }
+  }
+
+  // The first item the ray meets within 'maxT' (by the entry into its box)
+  pub fn rayNearest(self &, ray Ray3, maxT f32) Option[Hit[T]] {
+    mut best Option[Hit[T]] = None;
+    mut grab = fn(h T, p Proxy, t f32) f32 {
+      best = Some(new Hit[T](h, p, t));
+      t;
+    };
+    rayCast(ray, maxT, &mut grab);
+    best;
+  }
+
+  // Every item the ray meets within 'maxT', in no particular order, each
+  // given to 'visit' with its entry distance; false from it stops
+  pub fn rayAll[F fn(h T, p Proxy, t f32) bool](self &, ray Ray3, maxT f32, visit &mut F) {
+    mut wrap = fn(h T, p Proxy, t f32) f32 {
+      if visit(h, p, t) {FAR;} else {-1.;};
+    };
+    rayCast(ray, maxT, &mut wrap);
+  }
+
+  // The 'k' items nearest the point by the distance to their boxes (0 for a
+  // box holding the point), nearest first, replacing what 'out' held
+  pub fn nearest(self &, point Vec3, k usize, out &mut List[Neighbor[T]]) {
+    out.clear();
+    if tree.root == NONE or k == 0usize {return;}
+    mut heap = MinHeap.create();
+    heap.push(new HeapEntry(distSqPointBox(point, tree.nodes[usize.from(tree.root)].box), tree.root, false,
+      new Vec3(0., 0., 0.), 0.));
+    while heap.len() > 0usize and out.len() < k {
+      imm e = heap.pop();
+      if e.isItem {
+        imm it = items.list[usize.from(e.id)];
+        out.push(new Neighbor[T](it.handle, new Proxy(e.id, it.gen), e.key));
+      }
+      else {
+        imm n = usize.from(e.id);
+        if tree.nodes[n].b == NONE {
+          imm slot = tree.nodes[n].a;
+          heap.push(new HeapEntry(distSqPointBox(point, items.list[usize.from(slot)].box), slot, true,
+            new Vec3(0., 0., 0.), 0.));
+        }
+        else {
+          imm c1 = tree.nodes[n].a;
+          imm c2 = tree.nodes[n].b;
+          heap.push(new HeapEntry(distSqPointBox(point, tree.nodes[usize.from(c1)].box), c1, false,
+            new Vec3(0., 0., 0.), 0.));
+          heap.push(new HeapEntry(distSqPointBox(point, tree.nodes[usize.from(c2)].box), c2, false,
+            new Vec3(0., 0., 0.), 0.));
+        }
+      }
+    }
+  }
+
+  // ---------------- pairs ----------------
+  //
+  // Pairs are of FAT boxes: two items are a pair while their leaf boxes
+  // touch. With margin 0 that is their own boxes. The pair set changes only
+  // when a leaf box changes, which is when an item has been inserted, has
+  // left its fat box ('move'), or been set ('moveRefit', 'setBox'), so a
+  // jittering item causes no pair churn (the point of the margin).
+
+  // Slots whose leaf boxes touch 'box'
+  fn queryFat(self &, box Aabb3, found &mut List[u32]) {
+    if tree.root == NONE {return;}
+    mut stack = new Array[u32, 192] <- fill 0u32;
+    mut sp = 1usize;
+    stack[0usize] = tree.root;
+    while sp > 0usize {
+      sp = sp - 1usize;
+      imm n = usize.from(stack[sp]);
+      if !tree.nodes[n].box.overlaps(box) {continue;}
+      if tree.nodes[n].b == NONE {
+        found.push(tree.nodes[n].a);
+      }
+      else {
+        stack[sp] = tree.nodes[n].a;
+        stack[sp + 1usize] = tree.nodes[n].b;
+        sp = sp + 2usize;
+      }
+    }
+  }
+
+  // Every pair of items whose leaf boxes touch, once each, appended to 'out'
+  pub fn allPairs(self &, out &mut List[Pair[T]]) {
+    mut found = List[u32].empty();
+    mut i = 0usize;
+    while i < items.list.len() {
+      if items.isLive(i) {
+        found.clear();
+        queryFat(tree.nodes[usize.from(items.list[i].x)].box, &mut found);
+        mut j = 0usize;
+        while j < found.len() {
+          imm o = *found[j];
+          if usize.from(o) > i {
+            out.push(pairOf(u32.from(i), items.list[i].handle, o, items.list[usize.from(o)].handle));
+          }
+          j = j + 1usize;
+        }
+      }
+      i = i + 1usize;
+    }
+  }
+
+  // Brings the tracked pair set up to date with the items that were
+  // inserted or changed their leaf boxes since the last call, and appends
+  // to 'events' the pairs that began and the pairs that ended (including
+  // those of removed items). The first call after inserting reports every
+  // pair as new.
+  pub fn updatePairs(self &mut, events &mut PairEvents[T]) {
+    mut i = 0usize;
+    while i < pendingRemoved.len() {
+      events.removed.push(*pendingRemoved[i]);
+      i = i + 1usize;
+    }
+    pendingRemoved.clear();
+    mut found = List[u32].empty();
+    mut added = List[u32].empty();
+    mut ended = List[u32].empty();
+    i = 0usize;
+    while i < moved.len() {
+      imm m = *moved[i];
+      imm mi = usize.from(m);
+      i = i + 1usize;
+      if !items.isLive(mi) or !items.list[mi].moved {continue;}
+      items.list[mi].moved = false;
+      found.clear();
+      added.clear();
+      ended.clear();
+      queryFat(tree.nodes[usize.from(items.list[mi].x)].box, &mut found);
+      pairs.sync(m, &found, &mut added, &mut ended);
+      mut j = 0usize;
+      while j < added.len() {
+        imm o = *added[j];
+        events.added.push(pairOf(m, items.list[mi].handle, o, items.list[usize.from(o)].handle));
+        j = j + 1usize;
+      }
+      j = 0usize;
+      while j < ended.len() {
+        imm o = *ended[j];
+        events.removed.push(pairOf(m, items.list[mi].handle, o, items.list[usize.from(o)].handle));
+        j = j + 1usize;
+      }
+    }
+    moved.clear();
+  }
+}

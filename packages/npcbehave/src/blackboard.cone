@@ -1,0 +1,52 @@
+// The blackboard: the numbers the deciders read and the leaves write. A
+// behaviour tree, a utility selector and a state machine all read one, and
+// the game writes what a character knows into it (how far the player is, how
+// hungry it is, whether a sound was heard). Fixed slots, so reading and
+// writing allocate nothing; a slot is named by a number the program picks
+// (its own constants, 'const DIST_TO_PLAYER = 0usize').
+//
+// 32 numbers, 32 integers (flags, counts, ids) and 8 positions.
+
+pub const BB_FLOATS = 32usize;
+pub const BB_INTS = 32usize;
+pub const BB_VECS = 8usize;
+
+pub struct Blackboard {
+  floats Array[f32, 32];
+  ints Array[i32, 32];
+  vecs Array[Vec3, 8];
+
+  pub fn make() Blackboard {
+    new Blackboard(new Array[f32, 32] <- fill 0., new Array[i32, 32] <- fill 0, new Array[Vec3, 8] <- fill new Vec3(0., 0., 0.));
+  }
+
+  pub fn getF(self &, slot usize) f32 { floats[slot]; }
+  pub fn setF(self &mut, slot usize, v f32) { floats[slot] = v; }
+  pub fn getI(self &, slot usize) i32 { ints[slot]; }
+  pub fn setI(self &mut, slot usize, v i32) { ints[slot] = v; }
+  pub fn getV(self &, slot usize) Vec3 { vecs[slot]; }
+  pub fn setV(self &mut, slot usize, v Vec3) { vecs[slot] = v; }
+}
+
+// Turns real time into whole fixed ticks. A decider is ticked at a fixed rate
+// (10 or 20 Hz is usual, far below the frame rate): 'advance(dt)' adds the
+// frame's time and answers how many ticks are due, at most 'maxCatchUp' (a
+// long stall does not become a burst of ticks), the rest of the time dropped.
+pub struct FixedTicker {
+  pub period f32;
+  pub maxCatchUp u32;
+  acc f32;
+
+  pub fn make(hz f32) FixedTicker { new FixedTicker(1. / hz, 4u32, 0.); }
+
+  pub fn advance(self &mut, dt f32) u32 {
+    acc = acc + dt;
+    mut n = 0u32;
+    while acc >= period and n < maxCatchUp {
+      acc = acc - period;
+      n = n + 1u32;
+    }
+    if acc >= period { acc = 0.; }
+    n;
+  }
+}

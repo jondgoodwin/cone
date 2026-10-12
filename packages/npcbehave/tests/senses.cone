@@ -1,0 +1,84 @@
+// Sight, hearing and memory against hand-worked geometry.
+
+mod senses;
+import testing use *;
+import collections use List;
+import geomath use *;
+import npcbehave use *;
+
+fn noWall(a Vec3, b Vec3) bool { false; }
+
+// A wall across x = 5
+fn wallAt5(a Vec3, b Vec3) bool { a.x < 5. and b.x > 5.; }
+
+fn sight() {
+  // Range 20, a 90 degree cone (half angle 45), anything within 2 m noticed
+  imm cone = SightCone.make(20., radians(45.), 2.);
+  imm eye = new Vec3(0., 1.6, 0.);
+  imm fwd = new Vec3(1., 0., 0.);
+  expect(cone.sees(eye, fwd, new Vec3(10., 1.6, 0.), &noWall), "dead ahead, in range");
+  // 8 across at 10 ahead: atan(0.8) = 38.7 degrees, inside 45
+  expect(cone.sees(eye, fwd, new Vec3(10., 1.6, 8.), &noWall), "38.7 degrees off: inside the cone");
+  // 12 across at 10 ahead: 50.2 degrees, outside
+  expect(not cone.sees(eye, fwd, new Vec3(10., 1.6, 12.), &noWall), "50.2 degrees off: outside");
+  expect(not cone.sees(eye, fwd, new Vec3(-5., 1.6, 0.), &noWall), "behind");
+  expect(cone.sees(eye, fwd, new Vec3(-1.5, 1.6, 0.), &noWall), "behind but within the close range");
+  expect(not cone.sees(eye, fwd, new Vec3(25., 1.6, 0.), &noWall), "ahead but past the range");
+  expect(cone.sees(eye, fwd, new Vec3(20., 1.6, 0.), &noWall), "exactly at the range");
+  // A wall across x = 5
+  expect(not cone.sees(eye, fwd, new Vec3(10., 1.6, 0.), &wallAt5), "dead ahead but behind a wall");
+  expect(cone.sees(eye, fwd, new Vec3(4., 1.6, 0.), &wallAt5), "in front of the wall");
+  // Up and down count: 10 ahead and 10 up is 45 degrees up: on the edge, 11 up is outside
+  expect(not cone.sees(eye, fwd, new Vec3(10., 12.6, 0.), &noWall), "above the cone's edge");
+  expect(cone.sees(eye, fwd, new Vec3(10., 8.6, 0.), &noWall), "inside it vertically");
+}
+
+fn hearing() {
+  imm h = Hearing.make(1.);
+  imm ev = SoundEvent.make(new Vec3(0., 0., 0.), 10., 1u32, 7u32);
+  expectFloat(h.strength(new Vec3(4., 0., 0.), &ev), 0.6, 0.00001d, "4 m of 10: strength 0.6");
+  expectFloat(h.strength(new Vec3(12., 0., 0.), &ev), 0., 0.00001d, "12 m of 10: inaudible");
+  expectFloat(h.strength(new Vec3(0., 0., 0.), &ev), 1., 0.00001d, "at the source: 1");
+  expect(h.hears(new Vec3(9.9, 0., 0.), &ev) and not h.hears(new Vec3(10., 0., 0.), &ev), "audible up to the radius");
+  imm keen = Hearing.make(2.);
+  expectFloat(keen.strength(new Vec3(12., 0., 0.), &ev), 0.4, 0.00001d, "doubled sensitivity: reach 20, so 1 - 12/20");
+  imm deaf = Hearing.make(0.5);
+  expect(not deaf.hears(new Vec3(6., 0., 0.), &ev), "halved sensitivity: reach 5");
+
+  mut evs = List[SoundEvent].empty();
+  evs.push(SoundEvent.make(new Vec3(8., 0., 0.), 10., 1u32, 1u32));
+  evs.push(SoundEvent.make(new Vec3(-3., 0., 0.), 10., 1u32, 2u32));
+  evs.push(SoundEvent.make(new Vec3(50., 0., 0.), 100., 1u32, 3u32));
+  // From the origin: 0.2, 0.7, 0.5
+  expectInt(i64.from(h.loudest(new Vec3(0., 0., 0.), evs.view())), 1i64, "the loudest of three");
+  mut none = List[SoundEvent].empty();
+  none.push(SoundEvent.make(new Vec3(80., 0., 0.), 10., 1u32, 1u32));
+  expectInt(i64.from(h.loudest(new Vec3(0., 0., 0.), none.view())), -1i64, "nothing audible: -1");
+}
+
+fn memory() {
+  mut m = Memory.make(4.);
+  expect(not m.known, "knows nothing at first");
+  m.see(new Vec3(5., 0., 0.), new Vec3(1., 0., 0.));
+  expectFloat(m.confidence(), 1., 0.00001d, "certain at the sighting");
+  mut t = 0.;
+  while t < 4. { m.tick(0.25); t = t + 0.25; }
+  expectFloat(m.confidence(), 0.5, 0.0001d, "half after one half-life");
+  expectFloat(m.guess().x, 8., 0.0001d, "guess: 3 s of travel at most (4 s elapsed)");
+  while t < 8. { m.tick(0.25); t = t + 0.25; }
+  expectFloat(m.confidence(), 0.25, 0.0001d, "a quarter after two");
+  // Forgotten below 0.1: 4 * log2(10) = 13.29 s
+  while t < 13. { m.tick(0.25); t = t + 0.25; }
+  expect(m.known, "still known at 13 s");
+  while t < 14. { m.tick(0.25); t = t + 0.25; }
+  expect(not m.known, "forgotten by 14 s");
+  m.see(new Vec3(1., 0., 1.), new Vec3(0., 0., 0.));
+  expect(m.known and m.age == 0., "seen again");
+}
+
+fn main() i32 {
+  sight();
+  hearing();
+  memory();
+  done();
+}

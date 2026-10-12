@@ -52,6 +52,7 @@
 //   lp.poll(until, out)                 wait for answers, append them to out (POLL)
 //   lp.waker()                          a Waker another thread wakes poll with
 //   lp.listen(addr) lp.mustListen(addr) a listening TCP socket     (HANDLES)
+//   lp.bindUdp(addr) lp.mustBindUdp(addr) a UDP socket bound to addr (DATAGRAMS)
 //   lp.openFile(path, access)           a file for ReadAt and WriteAt
 //   lp.close(h)  lp.localAddr(h)  lp.peerAddr(h)  lp.isOpen(h)
 //   lp.shutdown(h)  lp.reset(h)         a socket half-closed; closed with a reset
@@ -61,6 +62,7 @@
 //   Op.Connect[addr]  Op.Accept[listener]                   (OPERATIONS)
 //   Op.Recv[sock, buf]  Op.RecvReady[sock]  Op.Send[sock, buf]  Op.SendBytes[sock, bytes]
 //   Op.ReadAt[file, at, buf]  Op.WriteAt[file, at, buf]
+//   Op.RecvFrom[sock, buf]  Op.SendTo[sock, addr, buf]      one datagram each  (DATAGRAMS)
 //   Op.Call[lane, work, arg, buf]       work run on the blocking pool (THE BLOCKING POOL)
 //   resolveOp(host, port, buf)  statOp(path, lane, buf)  readFileOp(path, at, lane, buf)
 //   addressesIn(&buf)  fileStatIn(&buf)  Lane.general()  Lane.dns()  addLane(cfg)  l.stats()
@@ -73,7 +75,7 @@
 //   Request: r.cancel() r.detach() r.id()
 //   Completer: c.done(n) c.fail(code) c.cancelled() c.end(outcome) c.buf()
 //     c.isCancelRequested() c.isLive() c.id()
-//   Completion: c.id c.token c.kind c.status c.n c.code c.buf c.handle, the stamps,
+//   Completion: c.id c.token c.kind c.status c.n c.code c.buf c.handle c.peer, the stamps,
 //     c.outcome() c.isDone() c.count() c.record()            (ANSWERS)
 //   Outcome.Done(n)  Outcome.Failed(code)  Outcome.Cancelled  Outcome.TimedOut
 //   SocketAddr.v4(a, b, c, d, port)  .localhost(port)  .v6(bytes, port)  .v6Localhost(port)
@@ -115,6 +117,36 @@
 // - ReadAt[file, at, buf], WriteAt[file, at, buf]: at the byte offset 'at',
 //   with no cursor shared between operations; reading past the end is
 //   Done(0).
+//
+// DATAGRAMS. 'lp.bindUdp(addr)' is a UDP socket bound to addr (port 0 has the
+// OS choose one; 'localAddr' tells it), a Handle of its own kind: the stream
+// operations fail on it with ERROR_INVALID_HANDLE, as the datagram ones do on a
+// TCP socket. It is not connected; each datagram names its other end.
+// - RecvFrom[sock, buf]: ONE datagram, into buf's room (a buffer with no room
+//   is refused, as Recv's is); Done(n), the n bytes added to its length, and
+//   the sender in the answer's 'c.peer', a SocketAddr. A datagram of no bytes
+//   is Done(0): unlike a stream's, it is not an end. A datagram longer than
+//   the room is cut: Failed with WSAEMSGSIZE (10040), the same number on both
+//   systems, the room filled with its first bytes (the length says so), the
+//   sender named, the rest of that datagram lost; the next one is whole. An
+//   operation that took no datagram names no sender (an address of size 0, its
+//   port 0).
+// - SendTo[sock, addr, buf]: all of buf as ONE datagram to addr; Done(n), n its
+//   bytes; 'c.peer' is addr. A datagram too large for the network is Failed
+//   with WSAEMSGSIZE too. UDP promises nothing about delivery: Done says the
+//   system took the datagram.
+// - Deadlines, cancel groups, Requests and handle close work as for TCP, the
+//   answer carrying the buffer back; a receive no datagram has met is the
+//   operation that waits (Linux: in the socket's queue; Windows: in the
+//   kernel). One receive at a time per socket is the supported use: the order
+//   in which several outstanding receives are filled is not promised. The
+//   datagrams that arrive while none is outstanding wait in the socket's
+//   buffer, which the OS bounds (further ones are lost, as UDP's are).
+// - Windows' habit of failing a socket's next receive when an earlier datagram
+//   it sent met a closed port (the ICMP port-unreachable, SIO_UDP_CONNRESET) is
+//   turned off, so the sender's receive just goes on waiting, as Linux's does.
+// 'c.peer' is also Connect's address in a Connect's answer; for every other
+// operation it is of size 0. Batching (recvmmsg, sendmmsg) is not here yet.
 //
 // TARGETS. Where an operation's one answer goes. Target.Here[token]: to this
 // loop's own 'poll'. Target.Post[token, waker]: to ANOTHER loop, the one the
@@ -354,8 +386,8 @@
 //   thread and its deadline, all within microseconds: every one answered
 //   exactly once, in 4 to 6 s and 2.6 s.
 //
-// Not here yet: several receives outstanding per socket, UDP and its
-// batching, skipping the port on synchronous success, unbuffered file I/O,
+// Not here yet: several receives outstanding per socket, UDP's batching
+// (recvmmsg and sendmmsg, WSARecvMsg), skipping the port on synchronous success, unbuffered file I/O,
 // a wait on a Windows handle through the port (an event, a fence exported
 // as one), interrupting a running pool job (CancelSynchronousIo), priority
 // within a lane, IoRing and socket notifications (Windows 11 accelerators,
@@ -365,9 +397,11 @@
 // (windows.cone), kernel32's completion port, overlapped files, waitable timer
 // and file attributes, ntdll's wait completion packet, and Winsock, AcceptEx
 // and ConnectEx reached through WSAIoctl and called through function
-// pointers, and GetAddrInfoW. On Linux (linux.cone), epoll with an eventfd
+// pointers, GetAddrInfoW, and WSARecvFrom and WSASendTo for datagrams. On Linux
+// (linux.cone), epoll with an eventfd
 // (how other threads wake the loop) and a timerfd, non-blocking sockets and
-// accept4, getaddrinfo and stat on the pool's threads, and a lane of the pool
+// accept4, recvfrom (with MSG_TRUNC, to tell a cut datagram) and sendto,
+// getaddrinfo and stat on the pool's threads, and a lane of the pool
 // for ReadAt and WriteAt (pread and pwrite). All from Cone with no C between;
 // the pool's threads and locks are the thread and sync packages'. Where the
 // two differ in what a program can see: a Linux loop holds no operation's
@@ -562,6 +596,8 @@ pub enum Op {
   pub struct ReadAt {pub file Handle; pub at u64; pub buf IoBuf;}
   pub struct WriteAt {pub file Handle; pub at u64; pub buf IoBuf;}
   pub struct Call {pub lane Lane; pub work WorkFn; pub arg u64; pub buf IoBuf;}
+  pub struct RecvFrom {pub sock Handle; pub buf IoBuf;}
+  pub struct SendTo {pub sock Handle; pub addr SocketAddr; pub buf IoBuf;}
 }
 
 // Where an operation's answer goes, and the token it carries back (see the
@@ -621,6 +657,7 @@ pub struct Completion {
   pub code u32;           // Failed's error number
   pub buf IoBuf;          // the loan back, or IoBuf.empty()
   pub handle Handle;      // the socket Connect or Accept made, or Handle.none()
+  pub peer SocketAddr;    // RecvFrom's sender, SendTo's destination, Connect's address; else size 0
   pub submitted Instant;
   pub dequeued Instant;
   pub delivered Instant;
@@ -646,7 +683,8 @@ pub struct Completion {
 // A Completion holding nothing, to swap one out of where it is held
 fn blankCompletion() Completion {
   new Completion(0u64, OpId.none(), 0u64, 0u32, 0u32, 0usize, 0u32, IoBuf.empty(),
-    Handle.none(), new Instant(), new Instant(), new Instant());
+    Handle.none(), new SocketAddr(new Array[u8, 28] <- fill 0u8, 0i32),
+    new Instant(), new Instant(), new Instant());
 }
 
 // ---------------------------------------------------------------------------

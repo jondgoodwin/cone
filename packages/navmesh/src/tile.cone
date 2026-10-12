@@ -1,0 +1,335 @@
+// ======== Tiles and the navigation mesh ========
+//
+// Detour's data model (dtNavMesh, in a simpler form): the world is cut
+// into square tiles of 'tileSize' cells, each built alone from the input
+// (with a border of 'borderSize' cells round it, so that what is near its
+// edge is eroded and connected as it would be in one piece), so that one tile
+// can be rebuilt when something in it changes. A tile holds convex polygons
+// (at most six vertices), with, for each edge, the polygon beyond it in the
+// tile or the number of a side where it leaves the tile (a portal). A
+// polygon is named by a 'PolyRef' (u64): salt, tile and polygon number;
+// rebuilding a tile gives it a new salt, so a reference into the old
+// tile is seen to be stale ('NavMesh.isValid').
+//
+// Links join polygons: the polygons beyond each edge in the tile, and across
+// a portal the polygons of the neighbouring tile whose portal edges overlap
+// it (heights within twice the climb). A tile's links are recomputed from
+// scratch whenever it or a neighbour is built. Off-mesh connections (a door,
+// a ladder, a jump) are kept beside the tiles, each joining the polygons nearest
+// its two ends; they can be switched on and off while the program runs.
+//
+// Winding: the vertices of a polygon go the way Recast's contours do: seen
+// from above (+y towards the viewer, x to the right, so z runs down the
+// page), counterclockwise; the outward normal of an edge from a to b is
+// (-(b.z - a.z), (b.x - a.x)) in x and z.
+
+pub const NoRef u64 = 0u64;
+
+pub struct Link {
+  pub to u64;          // the polygon beyond
+  pub edge i32;        // the edge of this polygon it is through
+  pub side i32;        // -1 inside the tile; else the side of the tile it crosses
+  pub tmin f32;        // across a portal: the part of the edge (0 to 1 from its first vertex) that overlaps
+  pub tmax f32;
+}
+
+pub struct Tile {
+  pub tx i32;
+  pub tz i32;
+  pub salt u32;
+  pub built bool;
+  pub verts List[Vec3];
+  pub pverts List[i32];      // MaxVerts a polygon, -1 after the last
+  pub pnei List[i32];        // MaxVerts a polygon: neighbour polygon, -1, or PortalFlag | side
+  pub pcount List[i32];
+  pub parea List[u8];
+  pub pbmin List[Vec3];
+  pub pbmax List[Vec3];
+  pub linkStart List[i32];   // polyCount + 1 offsets into 'links'
+  pub links List[Link];
+
+  pub fn empty(tx i32, tz i32) Tile {
+    new Tile(tx, tz, 0u32, false, List[Vec3].empty(), List[i32].empty(), List[i32].empty(), List[i32].empty(),
+      List[u8].empty(), List[Vec3].empty(), List[Vec3].empty(), List[i32].empty(), List[Link].empty());
+  }
+
+  pub fn polyCount(self &) usize { pcount.len(); }
+  pub fn vertOf(self &, p usize, k usize) Vec3 { *verts[usize.from(*pverts[p * 6usize + k])]; }
+}
+
+pub struct OffMeshConn {
+  pub id u32;
+  pub a Vec3;
+  pub b Vec3;
+  pub radius f32;
+  pub bidirectional bool;
+  pub area u8;
+  pub enabled bool;
+  pub refA u64;        // the polygons nearest its ends, NoRef when there is none
+  pub refB u64;
+  pub posA Vec3;       // the points on the mesh its ends meet
+  pub posB Vec3;
+}
+
+pub struct NavMesh {
+  pub params NavParams;
+  pub origin Vec3;       // the corner of tile (0, 0): lowest x, y and z of the input
+  pub yRange f32;
+  pub tilesW i32;
+  pub tilesH i32;
+  pub tiles List[Tile];
+  pub off List[OffMeshConn];
+  pub nextOffId u32;
+
+  pub fn tileWorld(self &) f32 { f32.from(params.tileSize) * params.cellSize; }
+
+  pub fn tileIndex(self &, tx i32, tz i32) i32 {
+    if tx < 0i32 or tz < 0i32 or tx >= tilesW or tz >= tilesH { return -1i32; }
+    tz * tilesW + tx;
+  }
+
+  // The reference of polygon p of tile index t
+  pub fn makeRef(self &, t i32, p usize) u64 {
+    imm tile = tiles[usize.from(t)];
+    (u64.from(tile.salt) << 32u64) | (u64.from(t) << 16u64) | u64.from(p);
+  }
+
+  pub fn refTile(self &, r u64) i32 { i32.from((r >> 16u64) & 65535u64); }
+  pub fn refPoly(self &, r u64) usize { usize.from(r & 65535u64); }
+
+  // Whether 'r' names a polygon that still exists
+  pub fn isValid(self &, r u64) bool {
+    if r == NoRef { return false; }
+    imm t = self.refTile(r);
+    if t < 0i32 or usize.from(t) >= tiles.len() { return false; }
+    imm tile = tiles[usize.from(t)];
+    if !tile.built or u64.from(tile.salt) != (r >> 32u64) { return false; }
+    self.refPoly(r) < tile.polyCount();
+  }
+
+  pub fn polyArea(self &, r u64) u8 {
+    (*tiles[usize.from(self.refTile(r))].parea[self.refPoly(r)]);
+  }
+
+  pub fn polyVertCount(self &, r u64) usize {
+    usize.from(*tiles[usize.from(self.refTile(r))].pcount[self.refPoly(r)]);
+  }
+
+  pub fn polyVert(self &, r u64, k usize) Vec3 {
+    tiles[usize.from(self.refTile(r))].vertOf(self.refPoly(r), k);
+  }
+
+  pub fn polyCount(self &) usize {
+    mut n = 0usize;
+    mut i = 0usize;
+    while i < tiles.len() { n = n + tiles[i].polyCount(); i = i + 1usize; }
+    n;
+  }
+
+  pub fn tileCoordOf(self &, x f32, z f32) Vec2 {
+    imm tw = self.tileWorld();
+    new Vec2(floorf((x - origin.x) / tw), floorf((z - origin.z) / tw));
+  }
+}
+
+// ---- building ----
+
+fn triNormalY(a Vec3, b Vec3, c Vec3) f32 {
+  imm e0 = b - a;
+  imm e1 = c - a;
+  imm n = e0.cross(e1);
+  imm l = n.length();
+  if l <= 0. { return 0.; }
+  n.y / l;
+}
+
+// Build, from 'input', the tile (tx, tz) into a Tile (not yet linked)
+pub fn buildTile(nav &NavMesh, input &NavInput, tx i32, tz i32) Tile {
+  imm p = nav.params;
+  imm bs = p.borderSize();
+  imm size = p.tileSize + 2i32 * bs;
+  imm cs = p.cellSize;
+  imm ch = p.cellHeight;
+  imm bmin = new Vec3(nav.origin.x + f32.from(tx * p.tileSize - bs) * cs, nav.origin.y, nav.origin.z + f32.from(tz * p.tileSize - bs) * cs);
+  imm wx1 = bmin.x + f32.from(size) * cs;
+  imm wz1 = bmin.z + f32.from(size) * cs;
+  mut hf = Heightfield.make(size, size, bmin, nav.yRange, cs, ch);
+  imm climb = p.walkableClimb();
+  imm walkThr = cos(p.agentMaxSlope);
+  mut sc = RasterScratch.make();
+  mut t = 0usize;
+  imm ntri = input.tris.len() / 3usize;
+  while t < ntri {
+    imm a = *input.verts[usize.from(*input.tris[t * 3usize])];
+    imm b = *input.verts[usize.from(*input.tris[t * 3usize + 1usize])];
+    imm c = *input.verts[usize.from(*input.tris[t * 3usize + 2usize])];
+    imm lo = a.min(b).min(c);
+    imm hi = a.max(b).max(c);
+    if hi.x >= bmin.x and lo.x <= wx1 and hi.z >= bmin.z and lo.z <= wz1 {
+      mut area = *input.triArea[t];
+      if area != AreaNull and triNormalY(a, b, c) <= walkThr { area = AreaNull; }
+      rasterizeTriangle(&mut hf, a, b, c, area, climb, &mut sc);
+    }
+    t = t + 1usize;
+  }
+  mut o = 0usize;
+  while o < input.obstacles.len() {
+    imm ob = input.obstacles[o];
+    if ob.enabled and ob.area == AreaNull {
+      imm e = ob.extent();
+      if e.z >= bmin.x and e.x <= wx1 and e.w >= bmin.z and e.y <= wz1 {
+        rasterizeObstacle(&mut hf, ob, climb);
+      }
+    }
+    o = o + 1usize;
+  }
+  filterLowHangingObstacles(&mut hf, climb);
+  filterLedgeSpans(&mut hf, p.walkableHeight(), climb);
+  filterLowHeightSpans(&mut hf, p.walkableHeight());
+  mut chf = buildCompact(&hf, p.walkableHeight(), climb, bs);
+  erodeWalkableArea(&mut chf, p.walkableRadius());
+  o = 0usize;
+  while o < input.obstacles.len() {
+    imm ob = input.obstacles[o];
+    if ob.enabled and ob.area != AreaNull {
+      imm e = ob.extent();
+      if e.z >= bmin.x and e.x <= wx1 and e.w >= bmin.z and e.y <= wz1 { markObstacleArea(&mut chf, ob); }
+    }
+    o = o + 1usize;
+  }
+  buildRegionsMonotone(&mut chf, p.minRegionArea);
+  imm contours = buildContours(&chf, p.maxSimplifyError, i32.from(p.maxEdgeLen));
+  imm pm = buildPolyMesh(&contours, p.tileSize, p.tileSize);
+  tileFromMesh(nav, &pm, tx, tz);
+}
+
+fn tileFromMesh(nav &NavMesh, pm &PolyMesh, tx i32, tz i32) Tile {
+  imm p = nav.params;
+  mut tile = Tile.empty(tx, tz);
+  imm ox = nav.origin.x + f32.from(tx * p.tileSize) * p.cellSize;
+  imm oz = nav.origin.z + f32.from(tz * p.tileSize) * p.cellSize;
+  mut i = 0usize;
+  while i < pm.vertCount() {
+    tile.verts.push(new Vec3(ox + f32.from(*pm.verts[i * 3usize]) * p.cellSize,
+      nav.origin.y + f32.from(*pm.verts[i * 3usize + 1usize]) * p.cellHeight,
+      oz + f32.from(*pm.verts[i * 3usize + 2usize]) * p.cellSize));
+    i = i + 1usize;
+  }
+  imm nvp = usize.from(MaxVerts);
+  mut q = 0usize;
+  while q < pm.polyCount() {
+    mut n = 0i32;
+    mut lo = new Vec3(3.4e38, 3.4e38, 3.4e38);
+    mut hi = new Vec3(-3.4e38, -3.4e38, -3.4e38);
+    mut k = 0usize;
+    while k < nvp {
+      imm v = *pm.polys[q * nvp * 2usize + k];
+      tile.pverts.push(v);
+      tile.pnei.push(*pm.polys[q * nvp * 2usize + nvp + k]);
+      if v >= 0i32 {
+        n = n + 1i32;
+        lo = lo.min(*tile.verts[usize.from(v)]);
+        hi = hi.max(*tile.verts[usize.from(v)]);
+      }
+      k = k + 1usize;
+    }
+    tile.pcount.push(n);
+    tile.parea.push(*pm.areas[q]);
+    tile.pbmin.push(lo);
+    tile.pbmax.push(hi);
+    q = q + 1usize;
+  }
+  tile.built = true;
+  tile;
+}
+
+// The tile's links, recomputed from the tile and its built neighbours
+pub fn connectTile(nav &mut NavMesh, t i32) {
+  imm ti = usize.from(t);
+  imm np = nav.tiles[ti].polyCount();
+  mut starts = List[i32].withCapacity(np + 1usize);
+  mut links = List[Link].empty();
+  imm tx = nav.tiles[ti].tx;
+  imm tz = nav.tiles[ti].tz;
+  imm climb2 = nav.params.agentMaxClimb * 2.;
+  mut p = 0usize;
+  while p < np {
+    starts.push(i32.from(links.len()));
+    imm nv = usize.from(*nav.tiles[ti].pcount[p]);
+    mut e = 0usize;
+    while e < nv {
+      imm nei = *nav.tiles[ti].pnei[p * 6usize + e];
+      if nei >= 0i32 and nei < PortalFlag {
+        links.push(new Link(nav.makeRef(t, usize.from(nei)), i32.from(e), -1i32, 0., 1.));
+      } elif nei >= PortalFlag {
+        imm side = nei & 7i32;
+        imm nt = nav.tileIndex(tx + dirX(side), tz + dirZ(side));
+        if nt >= 0i32 and nav.tiles[usize.from(nt)].built {
+          imm va = nav.tiles[ti].vertOf(p, e);
+          imm vb = nav.tiles[ti].vertOf(p, (e + 1usize) % nv);
+          imm opp = (side + 2i32) & 3i32;
+          imm other = usize.from(nt);
+          imm nq = nav.tiles[other].polyCount();
+          mut q = 0usize;
+          while q < nq {
+            imm qn = usize.from(*nav.tiles[other].pcount[q]);
+            mut f = 0usize;
+            while f < qn {
+              if *nav.tiles[other].pnei[q * 6usize + f] == (PortalFlag | opp) {
+                imm wa = nav.tiles[other].vertOf(q, f);
+                imm wb = nav.tiles[other].vertOf(q, (f + 1usize) % qn);
+                // the overlap, along z for a side facing x, along x for z
+                imm alongZ = side == 0i32 or side == 2i32;
+                imm a0 = if alongZ { va.z; } else { va.x; };
+                imm a1 = if alongZ { vb.z; } else { vb.x; };
+                imm b0 = if alongZ { wa.z; } else { wa.x; };
+                imm b1 = if alongZ { wb.z; } else { wb.x; };
+                imm amin = fmin(a0, a1);
+                imm amax = fmax(a0, a1);
+                imm bmn = fmin(b0, b1);
+                imm bmx = fmax(b0, b1);
+                imm lo = fmax(amin, bmn);
+                imm hi = fmin(amax, bmx);
+                if hi - lo > 0.01 {
+                  // heights of both edges at the ends of the overlap
+                  imm ya0 = edgeHeightAt(va, vb, alongZ, lo);
+                  imm ya1 = edgeHeightAt(va, vb, alongZ, hi);
+                  imm yb0 = edgeHeightAt(wa, wb, alongZ, lo);
+                  imm yb1 = edgeHeightAt(wa, wb, alongZ, hi);
+                  imm d0 = ya0 - yb0;
+                  imm d1 = ya1 - yb1;
+                  if !(d0 * d0 > climb2 * climb2 and d1 * d1 > climb2 * climb2) {
+                    // as fractions along our edge from its first vertex
+                    mut t0 = 0.;
+                    mut t1 = 1.;
+                    if a1 != a0 {
+                      t0 = (lo - a0) / (a1 - a0);
+                      t1 = (hi - a0) / (a1 - a0);
+                    }
+                    links.push(new Link(nav.makeRef(nt, q), i32.from(e), side, fmin(t0, t1), fmax(t0, t1)));
+                  }
+                }
+              }
+              f = f + 1usize;
+            }
+            q = q + 1usize;
+          }
+        }
+      }
+      e = e + 1usize;
+    }
+    p = p + 1usize;
+  }
+  starts.push(i32.from(links.len()));
+  nav.tiles[ti].linkStart = starts;
+  nav.tiles[ti].links = links;
+}
+
+fn edgeHeightAt(a Vec3, b Vec3, alongZ bool, at f32) f32 {
+  imm a0 = if alongZ { a.z; } else { a.x; };
+  imm a1 = if alongZ { b.z; } else { b.x; };
+  if a1 == a0 { return (a.y + b.y) * 0.5; }
+  imm t = fclamp((at - a0) / (a1 - a0), 0., 1.);
+  a.y + (b.y - a.y) * t;
+}
+

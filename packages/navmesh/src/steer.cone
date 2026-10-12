@@ -1,0 +1,360 @@
+// ======== Following a path: the corridor, the look-ahead, arrival ========
+//
+// A Corridor is Detour's dtPathCorridor: the polygons from where an agent
+// stands to where it is going, the agent's position and its target. Moving the
+// position slides it along the mesh (so it never leaves it) and rewrites the
+// start of the corridor to the polygons passed; moving the target does the same
+// at the other end; 'optimizeVisibility' replaces the first part of the
+// corridor by a shortcut when a straight line to a corner ahead is clear;
+// 'isValid' says whether the first polygons are still there (after a tile
+// is rebuilt, or a filter changed) so the owner can ask for a new path.
+//
+// 'lookAhead' is the steering target of Recast's sample crowd tool: the first
+// corner of the straight path farther than a minimum distance, or an off-mesh
+// connection. 'arrive' is Reynolds's arrival (1999): head for the target at
+// full speed, slowing linearly inside a radius, stopping inside another.
+// Crowd avoidance between agents is not here; 'localWalls' gives the walls near an
+// agent (Detour's local boundary) to avoid with.
+
+pub struct Corridor {
+  pub pos Vec3;
+  pub target Vec3;
+  pub path List[u64];
+
+  pub fn empty() Corridor { new Corridor(new Vec3(0., 0., 0.), new Vec3(0., 0., 0.), List[u64].empty()); }
+
+  // A corridor of one polygon, the position and target at 'pos'
+  pub fn reset(self &mut, ref u64, p Vec3) {
+    path.clear();
+    path.push(ref);
+    pos = p;
+    target = p;
+  }
+
+  // The corridor set to a path of polygons to 'tgt'
+  pub fn setPath(self &mut, tgt Vec3, polys &List[u64]) {
+    path.clear();
+    mut i = 0usize;
+    while i < polys.len() { path.push(*polys[i]); i = i + 1usize; }
+    target = tgt;
+  }
+
+  pub fn firstPoly(self &) u64 { if path.len() == 0usize { return NoRef; } *path[0usize]; }
+  pub fn lastPoly(self &) u64 { if path.len() == 0usize { return NoRef; } *path[path.len() - 1usize]; }
+
+  // The corners ahead, at most 'maxCorners', the way the agent has to bend:
+  // the funnel path of the corridor from the position to the target with the
+  // points on top of the position dropped (and nothing after an off-mesh connection)
+  pub fn corners(self &, nav &NavMesh, maxCorners usize) List[StraightPoint] {
+    mut out = List[StraightPoint].empty();
+    if path.len() == 0usize { return out; }
+    imm all = findStraightPath(nav, pos, target, &path, maxCorners + 4usize);
+    mut i = 0usize;
+    // drop the points at the start that are on top of the position
+    while i < all.len() {
+      imm p = *all[i];
+      if (p.flags & StraightOffMesh) != 0u8 or dist2D(p.pos, pos) > 0.01 { break; }
+      i = i + 1usize;
+    }
+    while i < all.len() and out.len() < maxCorners {
+      imm p = *all[i];
+      out.push(p);
+      i = i + 1usize;
+      if (p.flags & StraightOffMesh) != 0u8 { break; }
+    }
+    out;
+  }
+
+  // The position moved towards 'npos' along the mesh: the position it reaches
+  // is kept, and the corridor's start rewritten to the polygons passed
+  pub fn movePosition(self &mut, nav &NavMesh, npos Vec3, filter &QueryFilter) bool {
+    if path.len() == 0usize { return false; }
+    imm mv = moveAlongSurface(nav, *path[0usize], pos, npos, filter, 16usize);
+    if mv.visited.len() == 0usize { return false; }
+    mergeStartMoved(&mut path, &mv.visited);
+    pos = mv.pos;
+    true;
+  }
+
+  // The target moved along the mesh: the end of the corridor rewritten the same way
+  pub fn moveTarget(self &mut, nav &NavMesh, npos Vec3, filter &QueryFilter) bool {
+    if path.len() == 0usize { return false; }
+    imm mv = moveAlongSurface(nav, *path[path.len() - 1usize], target, npos, filter, 16usize);
+    if mv.visited.len() == 0usize { return false; }
+    mergeEndMoved(&mut path, &mv.visited);
+    target = mv.pos;
+    true;
+  }
+
+  // Try a shortcut: a straight line from the position towards 'next' (a
+  // corner ahead), no longer than 'range', and if it stays on the mesh the
+  // polygons it passes replace the start of the corridor
+  pub fn optimizeVisibility(self &mut, nav &NavMesh, next Vec3, range f32, filter &QueryFilter) {
+    if path.len() == 0usize { return; }
+    mut d = dist2D(pos, next);
+    if d < 0.01 { return; }
+    d = fmin(d + 0.01, range);
+    imm goal = pos + (next - pos) * (range / d);
+    imm hit = raycast(nav, *path[0usize], pos, goal, filter);
+    if hit.polys.len() > 1usize and (!hit.hit or hit.t > 0.99) {
+      mergeStartShortcut(&mut path, &hit.polys);
+    }
+  }
+
+  // Whether the first 'maxLookAhead' polygons still exist, pass the filter
+  // and join each other
+  pub fn isValid(self &, nav &NavMesh, maxLookAhead usize, filter &QueryFilter) bool {
+    imm n = if path.len() < maxLookAhead { path.len(); } else { maxLookAhead; };
+    mut i = 0usize;
+    while i < n {
+      imm r = *path[i];
+      if !nav.isValid(r) or !filter.passable(nav.polyArea(r)) { return false; }
+      if i + 1usize < n and !getPortal(nav, r, *path[i + 1usize]).ok { return false; }
+      i = i + 1usize;
+    }
+    true;
+  }
+
+  // The start of the corridor put back on the mesh at 'safeRef', 'safePos':
+  // for an agent whose polygon vanished (a rebuilt tile)
+  pub fn fixStart(self &mut, safeRef u64, safePos Vec3) {
+    pos = safePos;
+    if path.len() == 0usize { path.push(safeRef); return; }
+    if path.len() == 1usize { path.set(0usize, safeRef); return; }
+    // keep what follows the first two, in front of the safe polygon
+    path.set(0usize, safeRef);
+  }
+}
+
+// The old path with its start replaced by the polygons 'visited' went through
+// (start to end of the move): the corridor now starts at the move's end,
+// going back through them to the furthest one the old path has too
+fn mergeStartMoved(path &mut List[u64], visited &List[u64]) {
+  mut furthestPath = -1i32;
+  mut furthestVisited = -1i32;
+  mut i = i32.from(path.len()) - 1i32;
+  while i >= 0i32 and furthestPath < 0i32 {
+    mut j = i32.from(visited.len()) - 1i32;
+    while j >= 0i32 {
+      if *path[usize.from(i)] == *visited[usize.from(j)] {
+        furthestPath = i;
+        furthestVisited = j;
+        break;
+      }
+      j = j - 1i32;
+    }
+    i = i - 1i32;
+  }
+  if furthestPath < 0i32 or furthestVisited < 0i32 { return; }
+  imm req = visited.len() - usize.from(furthestVisited);
+  mut tail = List[u64].empty();
+  mut k = usize.from(furthestPath) + 1usize;
+  while k < path.len() { tail.push(*path[k]); k = k + 1usize; }
+  path.clear();
+  k = 0usize;
+  while k < req { path.push(*visited[visited.len() - 1usize - k]); k = k + 1usize; }
+  k = 0usize;
+  while k < tail.len() { path.push(*tail[k]); k = k + 1usize; }
+}
+
+// The same at the other end: 'visited' is the target's move (start to end);
+// the corridor ends at its last polygon, joining the old path where they meet
+fn mergeEndMoved(path &mut List[u64], visited &List[u64]) {
+  mut furthestPath = -1i32;
+  mut furthestVisited = -1i32;
+  mut i = 0i32;
+  while i < i32.from(path.len()) and furthestPath < 0i32 {
+    mut j = 0i32;
+    while j < i32.from(visited.len()) {
+      if *path[usize.from(i)] == *visited[usize.from(j)] {
+        furthestPath = i;
+        furthestVisited = j;
+        break;
+      }
+      j = j + 1i32;
+    }
+    i = i + 1i32;
+  }
+  if furthestPath < 0i32 or furthestVisited < 0i32 { return; }
+  mut head = List[u64].empty();
+  mut k = 0usize;
+  while k < usize.from(furthestPath) { head.push(*path[k]); k = k + 1usize; }
+  path.clear();
+  k = 0usize;
+  while k < head.len() { path.push(*head[k]); k = k + 1usize; }
+  k = usize.from(furthestVisited);
+  while k < visited.len() { path.push(*visited[k]); k = k + 1usize; }
+}
+
+// A shortcut: 'visited' (the polygons a straight ray passed) replaces the
+// start of the path up to the furthest polygon they share
+fn mergeStartShortcut(path &mut List[u64], visited &List[u64]) {
+  mut furthestPath = -1i32;
+  mut furthestVisited = -1i32;
+  mut i = i32.from(path.len()) - 1i32;
+  while i >= 0i32 and furthestPath < 0i32 {
+    mut j = i32.from(visited.len()) - 1i32;
+    while j >= 0i32 {
+      if *path[usize.from(i)] == *visited[usize.from(j)] {
+        furthestPath = i;
+        furthestVisited = j;
+        break;
+      }
+      j = j - 1i32;
+    }
+    i = i - 1i32;
+  }
+  if furthestPath < 0i32 or furthestVisited < 0i32 { return; }
+  imm req = usize.from(furthestVisited);
+  if req <= 1usize { return; }
+  mut tail = List[u64].empty();
+  mut k = usize.from(furthestPath);
+  while k < path.len() { tail.push(*path[k]); k = k + 1usize; }
+  path.clear();
+  k = 0usize;
+  while k < req { path.push(*visited[k]); k = k + 1usize; }
+  k = 0usize;
+  while k < tail.len() { path.push(*tail[k]); k = k + 1usize; }
+}
+
+// ---- steering ----
+
+pub struct SteerTarget {
+  pub found bool;
+  pub point Vec3;
+  pub offMesh bool;     // the point is the start of an off-mesh connection
+  pub last bool;        // it is the end of the path
+}
+
+// The point to head for: the first corner ahead farther than 'minDist' from
+// the position (so the agent does not stall on a corner it is already at), or the
+// start of an off-mesh connection, or the end
+pub fn lookAhead(nav &NavMesh, c &Corridor, minDist f32) SteerTarget {
+  imm cs = c.corners(nav, 3usize);
+  mut i = 0usize;
+  while i < cs.len() {
+    imm p = *cs[i];
+    imm isOff = (p.flags & StraightOffMesh) != 0u8;
+    imm isEnd = (p.flags & StraightEnd) != 0u8;
+    if isOff or isEnd or dist2D(p.pos, c.pos) > minDist {
+      return new SteerTarget(true, p.pos, isOff, isEnd);
+    }
+    i = i + 1usize;
+  }
+  new SteerTarget(false, c.pos, false, false);
+}
+
+// The velocity that arrives at 'target' (Reynolds, "Steering Behaviors for
+// Autonomous Characters", 1999): towards it at 'maxSpeed' beyond 'slowRadius',
+// slower in proportion within it, none within 'stopRadius'. In x and z
+pub fn arrive(pos Vec3, target Vec3, maxSpeed f32, slowRadius f32, stopRadius f32) Vec3 {
+  imm dx = target.x - pos.x;
+  imm dz = target.z - pos.z;
+  imm d = (dx * dx + dz * dz).sqrt();
+  if d <= stopRadius or d < 0.00001 { return new Vec3(0., 0., 0.); }
+  mut speed = maxSpeed;
+  if d < slowRadius { speed = maxSpeed * d / slowRadius; }
+  new Vec3(dx / d * speed, 0., dz / d * speed);
+}
+
+// The velocity that seeks 'target' at 'maxSpeed'
+pub fn seek(pos Vec3, target Vec3, maxSpeed f32) Vec3 {
+  arrive(pos, target, maxSpeed, 0., 0.);
+}
+
+// An agent walking a path: a corridor and a speed. 'step' moves it for 'dt'
+// seconds: look ahead, arrive at the look-ahead point (the path's end
+// arrived at gently), slide along the mesh, shortcut when the line ahead is clear.
+// It is for one character; between characters, 'localWalls' and the
+// positions of the others are what an avoidance layer works from
+pub struct Follower {
+  pub corridor Corridor;
+  pub maxSpeed f32;
+  pub slowRadius f32;
+  pub stopRadius f32;
+  pub arrived bool;
+  pub velocity Vec3;
+
+  pub fn make(maxSpeed f32) Follower {
+    new Follower(Corridor.empty(), maxSpeed, 1.2, 0.05, false, new Vec3(0., 0., 0.));
+  }
+
+  // Start along a route from 'start' (the polygon 'startRef') to 'goal'
+  // by the path of polygons 'polys'
+  pub fn begin(self &mut, startRef u64, start Vec3, goal Vec3, polys &List[u64]) {
+    corridor.reset(startRef, start);
+    corridor.setPath(goal, polys);
+    arrived = false;
+  }
+
+  pub fn step(self &mut, nav &NavMesh, filter &QueryFilter, dt f32) {
+    if arrived or corridor.path.len() == 0usize { return; }
+    imm st = lookAhead(nav, &corridor, 0.3);
+    if !st.found { arrived = true; velocity = new Vec3(0., 0., 0.); return; }
+    // the end of the path is arrived at; a corner on the way is passed at speed
+    mut v = new Vec3(0., 0., 0.);
+    if st.last { v = arrive(corridor.pos, st.point, maxSpeed, slowRadius, stopRadius); }
+    else { v = seek(corridor.pos, st.point, maxSpeed); }
+    velocity = v;
+    if v.lengthSquared() < 0.0000001 { arrived = true; return; }
+    // never step past the point it heads for
+    imm want = corridor.pos + v * dt;
+    imm to = dist2D(corridor.pos, st.point);
+    imm stepLen = dist2D(corridor.pos, want);
+    mut np = want;
+    if stepLen > to { np = new Vec3(st.point.x, corridor.pos.y, st.point.z); }
+    corridor.movePosition(nav, np, filter);
+    corridor.optimizeVisibility(nav, st.point, 30., filter);
+    if st.last and dist2D(corridor.pos, st.point) <= stopRadius + 0.001 { arrived = true; }
+  }
+}
+
+// ---- the walls near a point (Detour's local boundary) ----
+
+pub struct WallSeg {
+  pub a Vec3;
+  pub b Vec3;
+}
+
+// The wall segments of the polygons within 'radius' of 'pos': polygon edges
+// that no passable polygon lies beyond, clipped to nothing: whole edges,
+// those within the radius of the position
+pub fn localWalls(nav &NavMesh, startRef u64, pos Vec3, radius f32, filter &QueryFilter) List[WallSeg] {
+  mut out = List[WallSeg].empty();
+  if !nav.isValid(startRef) { return out; }
+  mut refs = List[u64].empty();
+  refs.push(startRef);
+  mut head = 0usize;
+  imm r2 = radius * radius;
+  while head < refs.len() {
+    imm cur = *refs[head];
+    head = head + 1usize;
+    imm tile = nav.tiles[usize.from(nav.refTile(cur))];
+    imm p = nav.refPoly(cur);
+    imm nv = usize.from(*tile.pcount[p]);
+    mut e = 0usize;
+    while e < nv {
+      imm va = tile.vertOf(p, e);
+      imm vb = tile.vertOf(p, (e + 1usize) % nv);
+      imm sd = distPtSegXZ(pos, va, vb);
+      if sd.d2 <= r2 {
+        mut open = false;
+        mut k = *tile.linkStart[p];
+        while k < *tile.linkStart[p + 1usize] {
+          imm l = tile.links[usize.from(k)];
+          k = k + 1i32;
+          if usize.from(l.edge) == e and nav.isValid(l.to) and filter.passable(nav.polyArea(l.to)) {
+            open = true;
+            mut seen = false;
+            mut q = 0usize;
+            while q < refs.len() { if *refs[q] == l.to { seen = true; } q = q + 1usize; }
+            if !seen and refs.len() < 64usize { refs.push(l.to); }
+          }
+        }
+        if !open { out.push(new WallSeg(va, vb)); }
+      }
+      e = e + 1usize;
+    }
+  }
+  out;
+}
