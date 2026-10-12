@@ -185,10 +185,60 @@ await ...', and match on it.
 </pre>
 	<p>An operation is made by the call (<span class="pre">conn.read(buf)</span>) and started by
 		the <span class="pre">await</span>; one made and never awaited does nothing, and is
-		dropped. An operation that did not finish &mdash; cancelled, because its socket was closed
-		while it was in flight &mdash; has no answer to give, and the <span class="pre">await</span>
-		panics, naming the line that made the operation. Nothing lets a behaviour put a time limit
-		on an awaited operation, or cancel one.</p>
+		dropped. An operation that did not finish &mdash; cancelled, or past its deadline &mdash;
+		answers like one that failed: see <a href="#await-io-limits">Cancelling an operation, and
+		limiting it</a>.</p>
+
+	<h3 id="await-io-limits">Cancelling an operation, and limiting it</h3>
+	<p>Every operation is answered exactly once, with one of four outcomes: done (the
+		<span class="pre">Ok</span> answer), failed (an <span class="pre">Error</span> whose
+		<span class="pre">code</span> is the system's), cancelled, or timed out. The last two are
+		<span class="pre">Error</span>s too, which <span class="pre">aio.isCancelled(e)</span> and
+		<span class="pre">aio.isTimedOut(e)</span> recognise: a cancelled operation's
+		<span class="pre">code</span> is 995 (<span class="pre">ERROR_OPERATION_ABORTED</span>), and a
+		timed-out one's is 258 (<span class="pre">WAIT_TIMEOUT</span>), which no failure of a system
+		call is answered with. The buffer an operation was given goes home to its pool.</p>
+	<p>An operation is limited by the <span class="pre">In</span> form of its call, which takes a
+		<span class="pre">Limits</span>: <span class="pre">conn.readIn(buf, lim)</span>,
+		<span class="pre">conn.writeIn(buf, lim)</span>, <span class="pre">listener.acceptIn(lim)</span>
+		and <span class="pre">aio.connectIn(addr, lim)</span>. A <span class="pre">Limits</span> holds
+		a <a href="#cancel-groups">cancel group</a> and an absolute deadline, an
+		<span class="pre">Instant</span>: <span class="pre">Limits.within(group)</span>,
+		<span class="pre">Limits.until(deadline)</span>, or both with
+		<span class="pre">new Limits(Some[CancelGroup](group), deadline)</span>. The operation ends
+		when the group is cancelled, or at the deadline, the tighter of it and the group's (a group made
+		with <span class="pre">CancelGroup.until(d)</span>, or a <span class="pre">childUntil(d)</span> of
+		one, carries a deadline of its own, and a child's is never later than its parent's). A group is
+		a value: it goes in a message to another actor, or to a thread, and its one
+		<span class="pre">cancel()</span> ends every operation in it, in whichever actors they are.</p>
+<pre>
+actor Reader {
+  pool Pool;
+
+  pub async do fetch(self, conn Socket, group CancelGroup) u64 {
+    imm until = Instant.now() + Duration.fromSeconds(5i64);
+    imm got = await conn.readIn(pool.mustTake(4096usize), new Limits(Some[CancelGroup](group), until));
+    match got {
+      case imm b Ok {u64.from(b.len());}
+      case imm e Error {
+        if aio.isCancelled(e) {say("cancelled", 0u64);}
+        elif aio.isTimedOut(e) {say("too slow", 0u64);}
+        else {say("failed", u64.from(e.code));}
+        0u64;
+      }
+    }
+  }
+}
+</pre>
+	<p>Whoever holds <span class="pre">group</span>, in this actor (a message to itself, which runs
+		while <span class="pre">fetch</span> is paused), another, or a plain thread, may call
+		<span class="pre">group.cancel()</span>, and the read ends. A cancel and the operation's
+		completion that race are settled by <span class="pre">iocore</span>: the answer is whichever came
+		first, never both. Cancelled is a state: an operation started in a group already cancelled, or
+		with a deadline already past, is answered at once. Closing a socket, by dropping it, cancels the
+		operations in flight on it.</p>
+	<p>A cancel does not undo what a write already sent, or a read already took: an operation that ended
+		cancelled or timed out may have done part of its work, and its answer does not say how much.</p>
 
 	<h3>Sockets</h3>
 	<p>A <span class="pre">Socket</span> moves: it may be sent in a message to another actor.
@@ -214,7 +264,6 @@ await ...', and match on it.
 
 	<h3 id="await-io-unbuilt">Not built yet</h3>
 	<ul>
-	<li>A time limit on an awaited operation, and cancelling one.</li>
 	<li>Files, the blocking pool's work, UDP, and a socket's half-close, awaited.</li>
 	<li>More than one I/O thread.</li>
 	</ul>

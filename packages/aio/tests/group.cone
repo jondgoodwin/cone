@@ -1,0 +1,126 @@
+// One cancel ends every operation in the group, wherever they are. Four
+// Waiters, four actors, each with a connection of its own whose peer says
+// nothing, await a read in the same group; main, a plain thread and no actor,
+// cancels the group once they are all waiting. Each read ends Cancelled. A
+// fifth Waiter that starts its read after the cancel is answered Cancelled
+// too, for a group cancelled is a state. A sixth reads under a deadline of its
+// own and no group: the cancel does not reach it, and it ends TimedOut.
+
+mod group;
+
+import testing use *;
+import thread;
+import time use Duration;
+import sync use Channel, Sender, Receiver;
+import iobuf use Pool;
+import iocore use SocketAddr, IoError, CancelGroup;
+import actors;
+import aio use Socket, Limits;
+
+const members = 4u64;
+
+fn socketOf(r Result[Socket, IoError]) Socket {
+  mut res = r;
+  mut s = Socket.none();
+  match &mut res {
+    case mut ok &mut Ok {s <=> *ok;}
+    else {}
+  }
+  s;
+}
+
+fn take(rx &mut Receiver[u64]) u64 {
+  match rx.recv() {
+    case imm v Some {v;}
+    else {999u64;}
+  }
+}
+
+// How an answer ended: 1 done, 2 cancelled, 3 timed out, 4 failed
+fn ended[T](r Result[T, IoError]) u64 {
+  match r {
+    case imm e Error {
+      if aio.isCancelled(e) {2u64;}
+      elif aio.isTimedOut(e) {3u64;}
+      else {4u64;}
+    }
+    else {1u64;}
+  }
+}
+
+actor Waiter {
+  pool Pool;
+
+  // A connection whose peer is silent, then a read in g (or under a
+  // deadline of 600 ms, if g is not to be used); 'ready' says it is about to
+  // read, 'result' how the read ended
+  pub async do hold(self, g CancelGroup, useGroup bool, ready Sender[u64], result Sender[u64]) {
+    imm l = await aio.listen(SocketAddr.localhost(0u16));
+    imm ls = socketOf(l);
+    imm a = await ls.localAddr();
+    mut port = 0u16;
+    match a {
+      case imm addr Ok {port = addr.port();}
+      else {}
+    }
+    imm c = await aio.connect(SocketAddr.localhost(port));
+    imm cli = socketOf(c);
+    imm ac = await ls.accept();
+    imm srv = socketOf(ac);
+    ready.send(1u64);
+    if useGroup {
+      imm r = await srv.readIn(pool.mustTake(4096usize), Limits.within(g));
+      result.send(ended[iobuf.IoBuf](r));
+    } else {
+      imm r = await srv.readIn(pool.mustTake(4096usize),
+        Limits.until(time.Instant.now() + Duration.fromMillis(600i64)));
+      result.send(ended[iobuf.IoBuf](r));
+    }
+  }
+}
+
+fn main() i32 {
+  initAll();
+  mut rtx Sender[u64];
+  mut rrx Receiver[u64];
+  rtx, rrx = Channel[u64].make();
+  mut dtx Sender[u64];
+  mut drx Receiver[u64];
+  dtx, drx = Channel[u64].make();
+  imm g = CancelGroup.make();
+  {
+    mut i = 0u64;
+    while i < members {
+      imm w = new Waiter(Pool.make());
+      w.hold(g, true, rtx.clone(), dtx.clone());
+      i = i + 1u64;
+    }
+    imm outsider = new Waiter(Pool.make());
+    outsider.hold(g, false, rtx.clone(), dtx.clone());
+    i = 0u64;
+    while i < members + 1u64 {
+      take(&mut rrx);
+      i = i + 1u64;
+    }
+    thread.sleep(Duration.fromMillis(50i64));
+    expect(g.cancel(), "the first cancel found the group live");
+    imm late = new Waiter(Pool.make());
+    late.hold(g, true, rtx.clone(), dtx.clone());
+  }
+  mut cancelled = 0u64;
+  mut timedOut = 0u64;
+  mut other = 0u64;
+  mut i = 0u64;
+  while i < members + 2u64 {
+    imm how = take(&mut drx);
+    if how == 2u64 {cancelled = cancelled + 1u64;}
+    elif how == 3u64 {timedOut = timedOut + 1u64;}
+    else {other = other + 1u64;}
+    i = i + 1u64;
+  }
+  finalAll();
+  expectUInt(cancelled, members + 1u64, "the four reads in the group, and one started after, were cancelled");
+  expectUInt(timedOut, 1u64, "the read outside the group timed out at its own deadline");
+  expectUInt(other, 0u64, "nothing else");
+  done();
+}

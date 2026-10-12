@@ -1,0 +1,188 @@
+// A cancel racing a completion, through 'aio': however they fall, an awaited
+// read is answered exactly once, with the data or with Cancelled, and what
+// the peer sent is neither lost nor read twice.
+//
+// Racer and a connection to itself, one end its own and the other given to
+// Writer, run 2,000 rounds. Each round Racer makes a group and a read within
+// it, which it has not started, and sends two messages: to Writer, 'push',
+// which spins a little (a different time each round) and writes one byte; and
+// to itself, 'stop', which cancels the group. Racer then awaits the read, and
+// while it is paused on it the two messages run on other workers, so the
+// byte's arrival and the cancel race (the order the messages are sent in
+// alternates, and the spin shifts one against the other). The read ends Done
+// (it took the byte, perhaps more than one if earlier rounds' were left) or
+// Cancelled (the byte stays in the socket for a later read).
+//
+// What is checked: every round's read was answered (the loop ran to its end,
+// each await once), each answer was Done or Cancelled and none failed, and
+// the bytes taken by every Done read, and a last few reads that take the
+// rest, are exactly the 2,000 Writer sent, and Writer's every write was
+// answered once. Both outcomes happen on a quiet machine; the test does not
+// require it, since which wins is the point of a race. The suite runs it
+// once; run it repeatedly to hunt for a lost or doubled answer (a doubled
+// reply would be a panic, a lost one a hang).
+
+mod race;
+
+import testing use *;
+import thread;
+import time use Instant, Duration;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import collections use List;
+import iobuf use IoBuf, Pool;
+import iocore use SocketAddr, IoError, CancelGroup;
+import actors;
+import aio use Socket, Limits;
+
+const rounds = 2000u64;
+
+struct Got {
+  pub done Atomic[u64];        // rounds whose read ended Done
+  pub cancelled Atomic[u64];   // ...Cancelled
+  pub other Atomic[u64];       // ...anything else
+  pub bytes Atomic[u64];       // bytes the reads took
+  pub wrote Atomic[u64];       // writes answered
+  pub badWrite Atomic[u64];    // ...not with 1 byte
+  pub spin Atomic[u64];        // what Writer's spinning adds to, so it is not optimised away
+}
+
+imm got Got;
+
+fn @initpure init() {
+  got = new Got(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+fn socketOf(r Result[Socket, IoError]) Socket {
+  mut res = r;
+  mut s = Socket.none();
+  match &mut res {
+    case mut ok &mut Ok {s <=> *ok;}
+    else {}
+  }
+  s;
+}
+
+// Wait a while, in a way the compiler leaves alone
+fn spinFor(n u64) {
+  mut k = 0u64;
+  while k < n {
+    got.spin.add(1u64);
+    k = k + 1u64;
+  }
+}
+
+actor Writer {
+  pool Pool;
+  conns List[Socket];
+
+  pub async do attach(self, s Socket) {
+    conns.push(s);
+  }
+
+  pub async do push(self, spin u64) {
+    spinFor(spin);
+    mut b = pool.mustTake(16usize);
+    imm one = [7u8];
+    b.append(&one);
+    imm w = await conns[0usize].write(b);
+    match w {
+      case imm n Ok {
+        if n != 1usize {got.badWrite.add(1u64);}
+      }
+      else {got.badWrite.add(1u64);}
+    }
+    got.wrote.add(1u64);
+  }
+}
+
+actor Racer {
+  pool Pool;
+
+  pub async do stop(self, g CancelGroup, spin u64) {
+    spinFor(spin);
+    g.cancel();
+  }
+
+  pub async do run(self, writer Writer, finished OneshotSender[u64]) {
+    imm l = await aio.listen(SocketAddr.localhost(0u16));
+    imm ls = socketOf(l);
+    imm a = await ls.localAddr();
+    mut port = 0u16;
+    match a {
+      case imm addr Ok {port = addr.port();}
+      else {}
+    }
+    imm c = await aio.connect(SocketAddr.localhost(port));
+    imm cli = socketOf(c);
+    imm ac = await ls.accept();
+    imm srv = socketOf(ac);
+    writer.attach(cli);
+
+    mut i = 0u64;
+    while i < rounds {
+      imm g = CancelGroup.make();
+      imm rd = srv.readIn(pool.mustTake(64usize), Limits.within(g));
+      imm spin = ((i * 104729u64) % 211u64) * 100u64;
+      if i % 2u64 == 0u64 {
+        selfactor.stop(g, spin);
+        writer.push(0u64);
+      } else {
+        writer.push(0u64);
+        selfactor.stop(g, spin);
+      }
+      imm r = await rd;
+      match r {
+        case imm b Ok {
+          got.done.add(1u64);
+          got.bytes.add(u64.from(b.len()));
+        }
+        case imm e Error {
+          if aio.isCancelled(e) {got.cancelled.add(1u64);} else {got.other.add(1u64);}
+        }
+      }
+      i = i + 1u64;
+    }
+
+    // Whatever the cancelled rounds left in the socket
+    mut more = true;
+    while more and got.bytes.load() < rounds {
+      imm r = await srv.readIn(pool.mustTake(64usize), Limits.until(Instant.now() + Duration.fromSeconds(5i64)));
+      match r {
+        case imm b Ok {got.bytes.add(u64.from(b.len()));}
+        else {more = false;}
+      }
+    }
+    mut d = finished;
+    d.send(1u64);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  mut tx OneshotSender[u64];
+  mut rx OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  {
+    imm writer = new Writer(Pool.make(), List[Socket].empty());
+    imm racer = new Racer(Pool.make());
+    racer.run(writer, tx);
+  }
+  match rx.recv() {
+    case is None[u64] {expect(false, "the racer said it was done");}
+    else {}
+  }
+  // The last writes' answers: the bytes are all read, so these are moments away
+  mut waited = 0i64;
+  while got.wrote.load() < rounds and waited < 5000i64 {
+    thread.sleep(Duration.fromMillis(1i64));
+    waited = waited + 1i64;
+  }
+  finalAll();
+  expectUInt(got.done.load() + got.cancelled.load(), rounds, "every round's read was answered, Done or Cancelled");
+  expectUInt(got.other.load(), 0u64, "none failed");
+  expectUInt(got.bytes.load(), rounds, "the bytes read are exactly the bytes sent");
+  expectUInt(got.wrote.load(), rounds, "every write was answered once");
+  expectUInt(got.badWrite.load(), 0u64, "each write took its one byte");
+  done();
+}
