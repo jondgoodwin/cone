@@ -272,9 +272,15 @@ fn beginPass(cmd vulkan.CommandBuffer, color &RenderPassColorAttachment, hasDept
   mut depthLoad = vulkan.ATTACHMENT_LOAD_OP_LOAD;
   mut depthStore = vulkan.ATTACHMENT_STORE_OP_STORE;
   mut depthClear = new vulkan.ClearValue(new Array[u32, 4] <- fill 0u32);
+  mut depthSampled = false;
   if hasDepth {
     imm depthClears = depth.depthLoadOp == LOAD_OP_CLEAR;
+    // A depth texture also sampled (TEXTURE_USAGE_TEXTURE_BINDING) rests in
+    // the read-only layout: it moves to the attachment layout for the pass
+    // (the earlier samplers done first) and back at 'end'
+    depthSampled = depth.view.backend.kind == KIND_DEPTH_SAMPLED;
     mut depthOld = vulkan.IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+    if depthSampled { depthOld = vulkan.IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL; }
     mut depthAccess = vulkan.ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
     if depthClears {
       depthOld = vulkan.IMAGE_LAYOUT_UNDEFINED;
@@ -284,8 +290,10 @@ fn beginPass(cmd vulkan.CommandBuffer, color &RenderPassColorAttachment, hasDept
     }
     if depth.depthStoreOp == STORE_OP_DISCARD { depthStore = vulkan.ATTACHMENT_STORE_OP_DONT_CARE; }
     imm tests = vulkan.PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | vulkan.PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+    imm depthSrcStage = if depthSampled { vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT; } else { tests; };
+    imm depthSrcAccess = if depthSampled { vulkan.ACCESS_2_NONE; } else { vulkan.ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT; };
     transition(cmd, depth.view.backend.image, vulkan.IMAGE_ASPECT_DEPTH_BIT, depthOld,
-      vulkan.IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, tests, vulkan.ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+      vulkan.IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, depthSrcStage, depthSrcAccess,
       tests, depthAccess | vulkan.ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT);
     *(&mut depthClear as *f32) = depth.depthClearValue;
   }
@@ -303,7 +311,15 @@ fn beginPass(cmd vulkan.CommandBuffer, color &RenderPassColorAttachment, hasDept
   setViewportFlipped(cmd, 0., 0., f32.from(view.width), f32.from(view.height), 0., 1.);
   imm scissor = new vulkan.Rect2D(new vulkan.Offset2D(0i32, 0i32), new vulkan.Extent2D(view.width, view.height));
   vulkan.cmdSetScissor(cmd, 0u32, 1u32, &scissor as *vulkan.Rect2D);
-  new RenderPass(new PassBackend(cmd, view.backend.image, kind, true, new vulkan.PipelineLayout(0u64), viewRange(&view.backend)));
+  mut backend = new PassBackend(cmd, view.backend.image, kind, true, new vulkan.PipelineLayout(0u64), viewRange(&view.backend));
+  if hasDepth and depthSampled {
+    backend.depthImage = depth.view.backend.image;
+    backend.depthSampled = true;
+    backend.depthRange = new vulkan.ImageSubresourceRange(aspectMask: vulkan.IMAGE_ASPECT_DEPTH_BIT,
+      baseMipLevel: depth.view.backend.baseMip, levelCount: 1u32, baseArrayLayer: depth.view.backend.baseLayer,
+      layerCount: 1u32);
+  }
+  new RenderPass(backend);
 }
 
 // Begin rendering into the depth view alone (no color attachment): the layer
@@ -391,6 +407,11 @@ struct PassBackend {
   open bool;
   layout vulkan.PipelineLayout;    // the bound pipeline's
   range vulkan.ImageSubresourceRange;  // the color attachment's level and layer
+  // A depth attachment that is also sampled (beginRenderPassWithDepth): moved
+  // back to the read-only layout at 'end'
+  depthImage vulkan.Image = new vulkan.Image(0u64);
+  depthSampled bool = false;
+  depthRange vulkan.ImageSubresourceRange = new vulkan.ImageSubresourceRange();
 }
 
 // Drawing into attachments, begun by 'beginRenderPass' and ended by 'end'
@@ -509,6 +530,13 @@ pub struct RenderPass {
       transitionRange(backend.cmd, backend.image, backend.range, vulkan.IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         vulkan.IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
         vulkan.PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, vulkan.ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+        vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT, vulkan.ACCESS_2_SHADER_READ_BIT);
+    }
+    if backend.depthSampled {
+      transitionRange(backend.cmd, backend.depthImage, backend.depthRange, vulkan.IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+        vulkan.IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+        vulkan.PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | vulkan.PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+        vulkan.ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
         vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT, vulkan.ACCESS_2_SHADER_READ_BIT);
     }
     if backend.kind == KIND_DEPTH_SAMPLED {
