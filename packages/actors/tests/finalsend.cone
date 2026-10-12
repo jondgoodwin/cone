@@ -1,0 +1,53 @@
+// An actor's 'final' that sends a message, run once the runtime has stopped,
+// is a program error, not a crash: nothing would ever run the message, and the
+// send's own check panics before anything is queued. Main holds the handles
+// past finalAll(), which stopped the workers, so the Leaver's final, run when
+// main returns and lets the last handle go, sends to the Sink on a stopped
+// runtime. (Were it not caught there, schedule() would find no runtime; it
+// panics too, for a send that passed the check just before another thread's
+// stop finished, which no deterministic test can reach.) Its .exit is a
+// panic's, as nosend's. Its stderr, unchecked here, says: panic at
+// actors.cone:<line>: actors: a message sent after the runtime stopped. What
+// the program printed before is kept: a panic flushes stdout first.
+
+mod finalsend;
+
+import stdio use *;
+import actors;
+
+actor Sink {
+  n u64 = 0u64;
+
+  pub async do hear(self, x u64) {
+    n = n + x;
+  }
+}
+
+actor Leaver {
+  peer Option[Sink];
+
+  fn init(self &new) {
+    *self = new Self(None[Sink]);
+  }
+
+  pub async do meet(self, p Sink) {
+    peer = Some[Sink](p);
+  }
+
+  fn final(self &uni) {
+    match peer {
+      case imm p Some {p.hear(1u64);}
+      case is None[Sink] {}
+    }
+  }
+}
+
+fn main() {
+  initAll();
+  actors.configure(new actors.Options(workers: 2u32));
+  imm s = new Sink();
+  imm l = new Leaver();
+  l.meet(s);
+  finalAll();
+  printStr("stopped; main returns, dropping the handles\n");
+}
