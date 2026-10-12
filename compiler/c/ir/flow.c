@@ -533,9 +533,9 @@ static void flowTempHollow(TempNode *temp, Nodes **moved, INode *top) {
 //
 // 'top' is the outermost node of the chain of elements, dereferences and
 // recasts being walked -- the expression that names the value moving. A chain
-// that reaches a local owning reference through it (a dereference, or an
-// element of the array it points at) moves the referent, or an element of it, out and leaves the
-// variable owning the allocation: 'parts' notes the move as hollowing the
+// that reaches a local owning reference through a dereference moves the
+// referent out and leaves the variable owning the allocation (an element of the
+// array it points at is refused: ErrorMoveElem): 'parts' notes the move as hollowing the
 // variable rather than as moving it.
 static void flowMoveSource(INode *node, Nodes **moved, INode *top, MoveParts *parts) {
     // For a variable, its value is what moves. A variable a match binds is the
@@ -594,6 +594,23 @@ static void flowMoveSource(INode *node, Nodes **moved, INode *top, MoveParts *pa
         INode *objfn = ((FnCallNode*)node)->objfn;
         if (flowRefuseMoveThrough(node, objfn))
             return;
+        // An element of the array a local or temporary sole owner points at,
+        // 'a[0]' or '(*a)[0]': moving it out would leave that array with a hole
+        // in it as well, and hollowing the owner would free the elements that
+        // stayed without finalizing them. Only the whole array moves out.
+        {
+            INode *soleref = objfn->tag == DerefTag ? ((StarNode *)objfn)->vtexp : objfn;
+            if (soleref != objfn && flowRefuseMoveThrough(node, soleref))
+                return;
+            INode *reftype = iexpGetTypeDcl(soleref);
+            if (reftype->tag == RefTag
+                && (flowOwningLocal(soleref) || soleref->tag == TempTag)
+                && itypeGetTypeDcl(((RefNode *)reftype)->vtexp)->tag == ArrayTag) {
+                errorMsgNode(top, ErrorMoveElem,
+                    "May not move a value out of an element of an array, which would be left with a hole in it. Swap a value in with '<=>', or move the whole array.");
+                return;
+            }
+        }
         VarDclNode *owner = flowOwningLocal(objfn);
         if (owner) {
             flowMoveHollow(owner, objfn, moved, top, parts);
