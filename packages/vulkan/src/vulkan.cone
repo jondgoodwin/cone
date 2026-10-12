@@ -38,23 +38,33 @@
 // 'null'.
 //
 // Nothing is linked. Every function is found at run time, as the volk loader
-// does it, in three steps, each after what it needs exists:
+// does it, in three steps, each after what it needs exists, and each step's
+// functions belong to the object they were found for, at Vulkan's own levels:
 //
-//   vulkan.load(gipa)              vkGetInstanceProcAddr (SDL hands it out)
-//                                  and the functions needing no instance
-//   vulkan.loadInstance(instance)  the instance's functions, vkGetDeviceProcAddr
-//                                  among them
-//   vulkan.loadDevice(device)      the device's functions, found through
-//                                  vkGetDeviceProcAddr, so they call the
-//                                  driver directly, not through the loader's
-//                                  dispatch
+//   the module's 'init'            opens the OS's Vulkan loader (vulkan-1.dll,
+//                                  libvulkan.so.1) and finds vkGetInstanceProcAddr
+//                                  and the functions needing no instance,
+//                                  once, before main: the global-level
+//                                  functions, called as 'vulkan.createInstance'
+//                                  and the like. With no Vulkan driver it
+//                                  does not fail: 'vulkan.available()' is
+//                                  false
+//   InstanceFns.load(instance)     the instance's functions, vkGetDeviceProcAddr
+//                                  among them, a table for that instance:
+//                                  'fns.destroyInstance(instance, null)'
+//   DeviceFns.load(&fns, device)   the device's functions, found through the
+//                                  instance's vkGetDeviceProcAddr, so they
+//                                  call the driver directly, not through the
+//                                  loader's dispatch, a table for that
+//                                  device: 'dfns.cmdDraw(commandBuffer, ...)'
 //
-// Each answers whether it found every function it looks for, and 'missing'
-// names how many were not; a function of an extension that was not enabled
-// (debug utils) is optional, and not counted. Calling a function before it is
-// loaded calls address 0 and crashes. The addresses are kept once for the
-// program, not per instance or device: one device at a time, which is volk's
-// default.
+// Each table's 'missing' names how many of the functions it looks for were
+// not found; a function of an extension that was not enabled (debug utils) is
+// optional, and not counted. Several instances and devices are legal, each
+// with its own table. Calling a global-level function while 'available' is
+// false, or a table's function that was missing, calls address 0 and crashes.
+// 'GlobalFns.find' and 'InstanceFns.loadWith' take any vkGetInstanceProcAddr,
+// which is how the package's loader test stands one in.
 //
 // The addresses are called as Cone function references, which use C's calling
 // convention. VKAPI_CALL is empty on 64-bit Windows, so the two agree; a
@@ -77,9 +87,10 @@
 //                         buffers and memory
 //   pipelinestructs.cone  structs: shaders, pipelines, descriptors
 //   fntypes.cone          the functions, as function-reference types
-//   load.cone             the addresses, and 'load', 'loadInstance' and
-//                         'loadDevice', which find them
-//   functions.cone        the functions
+//   load.cone             the OS's loader, the module's 'init', and the
+//                         global-level functions (GlobalFns)
+//   instancefns.cone      the instance-level functions (InstanceFns)
+//   devicefns.cone        the device-level functions (DeviceFns)
 //
 // The layout test's tests/layout.py reads them all, and lists them.
 
