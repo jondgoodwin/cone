@@ -110,6 +110,22 @@ These are the reproduction plan's rules (§3) as this package keeps them.
 5. **Integer remainder on non-negative operands only.** The periodic forms
    wrap lattice coordinates with an unsigned remainder.
 
+### For any compute shader that shapes the world
+
+These rules apply to every compute shader in the repository whose result shapes
+the world (geometry, collision, anything a decision reads or another machine must
+reproduce), not only to this package's:
+
+- Rules 1 to 5 above, and `// slangc: -fp-mode precise` in the shader.
+- **A fixed reduction order.** A sum or a minimum over invocations is reduced in
+  an order fixed by the indices (a tree whose shape does not depend on timing, or
+  one invocation looping in a fixed order), never by float atomics or by
+  whichever invocation finishes first. An integer atomic (a count, an or) is
+  order-free and allowed.
+- **A parity test.** Such a result has a test against the Cone package on a real
+  GPU, every element compared (`noise`'s `parity` and `bake`, `sdf`'s `parity`).
+- Visual-only work (particles, fog, lighting, post-processing) is exempt.
+
 ### What the toolchain does, measured
 
 **CPU.** conec generates code for a `generic` x86-64 CPU (no FMA

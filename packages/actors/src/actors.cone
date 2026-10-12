@@ -312,8 +312,10 @@
 // THE RUNTIME starts and stops by itself. Its workers start with the first
 // actor, on whichever thread starts it (sync's Once makes two first starts
 // at once start them once); a program that starts no actor starts no thread.
-// They start lazily, not in the module's initializer, which is '@initpure'
-// and may do nothing but set the module's own globals. 'actors.configure(
+// They start lazily, not in the module's initializer, because a program
+// chooses their number with 'actors.configure' in its 'main', which runs after
+// every initializer, and a program with no actor must start no thread (the
+// initializer only sets the module's own globals). 'actors.configure(
 // new actors.Options(workers: n, batch: b))', called before the first actor
 // starts, sets n workers (0, the default, is one per logical processor,
 // thread.parallelism()) and a batch limit b (actors.defaultBatch, 100, by
@@ -710,7 +712,7 @@ fn sendTo[M Sendable](h *Header, msg M) {
 
 // The message pushed on the mailbox now
 fn sendNow[M Sendable](h *Header, msg M) {
-  if running == 0usize {
+  if running.load() == 0usize {
     die("actors: a message sent after the runtime stopped");
   }
   imm n = libc.malloc(mem.sizeof[Node[M]]()) as *Node[M];
@@ -932,7 +934,7 @@ fn post(r &mut Reply) {
 // Push a reply's node n, its value written, to the actor h that awaits it,
 // whose count the envelope held
 fn pushReply(h *Header, n *Link) {
-  if running == 0usize {
+  if running.load() == 0usize {
     die("actors: a reply sent after the runtime stopped");
   }
   if mailPush(h, n) {
@@ -1293,8 +1295,11 @@ struct Sched {
   pub liveScheduled u64;       // loops begun with parallelRangeThen not yet finished (atomic)
 }
 
-// The running runtime, or 0: before the first actor, and once stopped
-mut running = 0usize;
+// The running runtime, or 0: before the first actor, and once stopped. Every
+// send and reply reads it on whichever thread it runs, while the first actor
+// writes it (startWorkers) and the stop does (stopWorkers): an atomic held by an
+// 'imm' global, set to 0 in the module's 'init' (below)
+imm running Atomic[usize];
 
 // The worker this thread is, or 0
 mut @threadlocal me usize = 0usize;
@@ -1319,7 +1324,7 @@ fn tally(p *u64, n u64) {
 // activation begun, and queue it: on this worker's own queue when a worker
 // sends, else on the inject queue
 fn schedule(h *Header) {
-  imm s = running as *Sched;
+  imm s = running.load() as *Sched;
   imm w = me as *Worker;
   if w as usize != 0usize and (*w).sched as usize == s as usize {
     imm startedp = &(*w).started as *u64;
@@ -1731,28 +1736,57 @@ pub struct Stats {
   pub taskSteals u64;          // loop pieces taken by stealing: from another worker's deque, or from the shared deque (loops begun off the workers) when a worker with no actors to run, or a thread waiting on a loop, takes the oldest piece there (the caller's own loop's, if it began it off the workers); the shared deque's pieces a worker takes ahead of its actors are not counted
 }
 
-// What configure set, read when the workers start
-mut chosenWorkers = 0u32;
-mut chosenBatch = 100u32;
+// What configure set, read when the workers start: atomics, since 'configure'
+// may be called on any thread, held by 'imm' globals and set in 'init' (below)
+imm chosenWorkers Atomic[u32];
+imm chosenBatch Atomic[u32];
 
 // Starts the workers once, however many threads start a first actor at once
 imm startOnce sync.Once;
 
+// A run's totals, each field an atomic so that 'stats' on any thread reads them
+// while the stop writes them
+struct StatsCell {
+  workers Atomic[u32];
+  messages Atomic[u64];
+  activations Atomic[u64];
+  steals Atomic[u64];
+  taskSteals Atomic[u64];
+
+  fn set(self &, st Stats) {
+    workers.store(st.workers);
+    messages.store(st.messages);
+    activations.store(st.activations);
+    steals.store(st.steals);
+    taskSteals.store(st.taskSteals);
+  }
+
+  fn get(self &) Stats {
+    new Stats(workers.load(), messages.load(), activations.load(), steals.load(), taskSteals.load());
+  }
+}
+
 // The run's totals, once the workers have stopped; all 0 before
-mut stoppedStats Stats;
+imm stoppedStats StatsCell;
 
 fn @initpure init() {
   startOnce = sync.Once.make();
   envOnce = sync.Once.make();
   floorBytes = Atomic[usize].of(defaultFloor);
   stressOn = Atomic[bool].of(false);
-  stoppedStats = new Stats(0u32, 0u64, 0u64, 0u64, 0u64);
+  running = Atomic[usize].of(0usize);
+  chosenWorkers = Atomic[u32].of(0u32);
+  chosenBatch = Atomic[u32].of(defaultBatch);
+  stoppedStats = new StatsCell(Atomic[u32].of(0u32), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+  futuresLive = Atomic[usize].of(0usize);
+  futuresMade = Atomic[u64].of(0u64);
 }
 
 // The program is ending: wait until all is quiet, then stop the workers, if
 // any actor started them
 fn final() {
-  if running != 0usize {
+  if running.load() != 0usize {
     stopWorkers();
   }
 }
@@ -1762,22 +1796,23 @@ pub fn configure(opts Options) {
   if startOnce.isCompleted() {
     die("actors: configure called after the workers started");
   }
-  chosenWorkers = opts.workers;
-  chosenBatch = opts.batch;
+  chosenWorkers.store(opts.workers);
+  chosenBatch.store(opts.batch);
 }
 
 // The workers are running, having been started now if they were not: a
 // panic if they have stopped
 fn ensureRunning() {
   startOnce.callOnce(&startWorkers);
-  if running == 0usize {
+  if running.load() == 0usize {
     die("actors: an actor started after the runtime stopped");
   }
 }
 
 // Start the workers as configure said, once
 fn startWorkers() {
-  imm n = if chosenWorkers == 0u32 {thread.parallelism();} else {chosenWorkers;};
+  imm chosenN = chosenWorkers.load();
+  imm n = if chosenN == 0u32 {thread.parallelism();} else {chosenN;};
   imm s = libc.calloc(1usize, mem.sizeof[Sched]()) as *Sched;
   imm ws = libc.calloc(usize.from(n), mem.sizeof[Worker]()) as *Worker;
   imm ts = libc.malloc(usize.from(n) * mem.sizeof[thread.Thread[u32]]()) as *thread.Thread[u32];
@@ -1785,10 +1820,11 @@ fn startWorkers() {
     die("actors: out of memory for the runtime");
   }
   (*s).nworkers = n;
-  (*s).batch = if chosenBatch == 0u32 {1u32;} else {chosenBatch;};
+  imm chosenB = chosenBatch.load();
+  (*s).batch = if chosenB == 0u32 {1u32;} else {chosenB;};
   (*s).workers = ws;
   (*s).threads = ts;
-  running = s as usize;
+  running.store(s as usize);
   mut i = 0u32;
   while i < n {
     imm w = workerAt(s, i);
@@ -1820,13 +1856,13 @@ fn quiesce(s *Sched) {
 // still awaited. Nothing if no actor started the workers; a panic on one of
 // them, which would wait for itself
 pub fn waitQuiet() {
-  if running == 0usize {
+  if running.load() == 0usize {
     return;
   }
   if me != 0usize {
     die("actors: waitQuiet called on one of the runtime's own workers, which would wait for itself");
   }
-  quiesce(running as *Sched);
+  quiesce(running.load() as *Sched);
 }
 
 // Wait until quiescent, then stop and join the workers, keeping their totals
@@ -1834,7 +1870,7 @@ fn stopWorkers() {
   if me != 0usize {
     die("actors: the runtime stopped from one of its own workers, which would wait for itself");
   }
-  imm s = running as *Sched;
+  imm s = running.load() as *Sched;
   quiesce(s);
   mem.atomicStore[u32](&(*s).stopping as *u32, 1u32, MemOrder.SeqCst);
   mem.atomicAdd[u32](&(*s).epoch as *u32, 1u32, MemOrder.SeqCst);
@@ -1845,8 +1881,8 @@ fn stopWorkers() {
     t.join();
     i = i + 1u32;
   }
-  stoppedStats = totals(s);
-  running = 0usize;
+  stoppedStats.set(totals(s));
+  running.store(0usize);
   libc.free((*s).threads as *u8);
   libc.free((*s).workers as *u8);
   libc.free(s as *u8);
@@ -1870,9 +1906,9 @@ fn totals(s *Sched) Stats {
 // What the workers have done so far, read without stopping them: all 0
 // before the first actor, the run's totals once they have stopped
 pub fn stats() Stats {
-  imm s = running as *Sched;
+  imm s = running.load() as *Sched;
   if s as usize == 0usize {
-    return stoppedStats;
+    return stoppedStats.get();
   }
   totals(s);
 }
