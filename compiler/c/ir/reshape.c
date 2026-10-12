@@ -139,7 +139,8 @@ static void rcWalk(INode *type, int ind) {
     {
         RefNode *ref = (RefNode *)type;
         // The owner itself is what is wanted (reshapeOwnerCont): reached as a struct is
-        if (type->tag == RefTag && rcWant && rcWant->tag == RefTag && itypeIsSame(type, rcWant)) {
+        if ((type->tag == RefTag || type->tag == VirtRefTag) && rcWant && type->tag == rcWant->tag
+                && itypeIsSame(type, rcWant)) {
             if (!(ind & 2))
                 rcBits |= (ind & 1) ? (ReachBorrowed | ((ind & 4) ? 0 : ReachOwned)) : ReachContained;
             return;
@@ -398,7 +399,7 @@ static VarDclNode *reshapeLocalRoot(INode *e, INode *cont) {
     INode *t = iexpGetTypeDcl(e);
     // A local holding an owning reference is the owner's own place, when the container asked of
     // is an owner: no other name reaches it but a borrow of it (the loan's own, 'mine' below)
-    if (reshapeIsOwner(cont) && t->tag == RefTag && ((RefNode *)t)->region
+    if (reshapeIsOwner(cont) && (t->tag == RefTag || t->tag == VirtRefTag) && ((RefNode *)t)->region
             && itypeGetTypeDcl(((RefNode *)t)->region) != borrowRef)
         return var;
     return t->tag != RefTag && t->tag != ArrayRefTag && t->tag != VirtRefTag && t->tag != PtrTag ? var : NULL;
@@ -474,7 +475,7 @@ static int reshapeElementOf(INode *e, INode *cont) {
 // ---- An owner as the container ----------------------------------------------------
 
 int reshapeIsOwner(INode *cont) {
-    return cont && cont->tag == RefTag;
+    return cont && (cont->tag == RefTag || cont->tag == VirtRefTag);
 }
 
 // A borrow into what an owning reference ('So', 'Rc', 'Arc', a program's region) points at
@@ -505,9 +506,9 @@ int reshapeStoreHits(INode *lval, INode *cont) {
     INode *stored = iexpGetTypeDcl(lval);
     if (stored != NULL && reshapeIsOwner(cont)) {
         // The owner replaced whole, or a value holding it by value or through owners alone
-        return (stored->tag == RefTag && itypeIsSame(stored, cont))
+        return ((stored->tag == RefTag || stored->tag == VirtRefTag) && itypeIsSame(stored, cont))
             || ((stored->tag == StructTag || stored->tag == ArrayTag || stored->tag == TTupleTag
-                || (stored->tag == RefTag && ((RefNode *)stored)->region
+                || ((stored->tag == RefTag || stored->tag == VirtRefTag) && ((RefNode *)stored)->region
                     && itypeGetTypeDcl(((RefNode *)stored)->region) != borrowRef))
                 && (reshapeReach(stored, cont, 0) & (ReachContained | ReachOwned)) != 0);
     }
