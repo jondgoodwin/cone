@@ -57,7 +57,7 @@ void assignSingleCheck(TypeCheckState *pstate, INode *lval, INode **rval) {
         return;
     }
     if (iexpTypeCheckCoerce(pstate, ((IExpNode*)lval)->vtype, rval) == 0) {
-        errorMsgNode(*rval, ErrorInvType, "Expression's type does not match lval's type");
+        iexpMismatchMsg(*rval, ((IExpNode*)lval)->vtype, ErrorInvType, "Expression's type does not match lval's type");
         return;
     }
 }

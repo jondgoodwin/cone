@@ -444,6 +444,15 @@ int iexpCheckedCoerce(INode *totype, INode **from) {
     return iexpCheckedCoerceIn(NULL, totype, from);
 }
 
+// Report that expression 'node' was refused where 'totype' is wanted
+void iexpMismatchMsg(INode *node, INode *totype, int code, const char *msg) {
+    char *why = isExpNode(node) ? fnSigConvRefusal(((IExpNode*)node)->vtype, totype) : NULL;
+    if (why)
+        errorMsgNode(node, ErrorFnRefConv, "%s", why);
+    else
+        errorMsgNode(node, code, "%s", msg);
+}
+
 // Used by 'if' and 'loop'/break to infer the type in common across all branches,
 // one branch at a time. Errors on bad type match and returns Match condition.
 // - expectType is the final type expected by receiver
@@ -496,7 +505,7 @@ int iexpMultiInfer(INode *expectType, INode **maybeType, INode **from) {
     // When we have an expected type, ensure this branch matches
     TypeCompare match = iexpMatches(from, expectType, Coercion);
     if (match == NoMatch) {
-        errorMsgNode(*from, ErrorInvType, "Expression type does not match expected type.");
+        iexpMismatchMsg(*from, expectType, ErrorInvType, "Expression type does not match expected type.");
         return NoMatch;
     }
     // Still figure out the type in common among branches
@@ -525,7 +534,7 @@ int iexpMultiCoerceInfer(TypeCheckState *pstate, INode *expectType, INode **infe
 // iexpMultiCoerceInfer for an expression already type checked
 int iexpMultiCheckedCoerceInfer(INode *expectType, INode **inferredType, INode **fromexp, int oldMatch) {
     if (!iexpCheckedCoerce(expectType, fromexp)) {
-        errorMsgNode(*fromexp, ErrorInvType, "Expression does not match expected type.");
+        iexpMismatchMsg(*fromexp, expectType, ErrorInvType, "Expression does not match expected type.");
         return NoMatch;
     }
     else if (!isExpNode(*fromexp)) {
