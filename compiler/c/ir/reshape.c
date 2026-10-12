@@ -611,11 +611,21 @@ int reshapeCall(FnCallNode *call, FnDclNode *meth, int recvunique, INode *cont, 
         ReshapeVerdict *verdict, VarDclNode **mine, int nmine) {
     if (reshapeCallBody(call, meth, recvunique, cont, owner, verdict, mine, nmine))
         return 1;
-    // The borrow points into a 'mut' global, or into something reached from one: any other call may
-    // write it, whatever it is handed, and which globals a function writes is not followed
+    // The borrow points into a 'mut' global, or into something reached from one: a call that may
+    // reshape the container's type through a global does, by the inference that judges every call
+    // (shapeTypeWritesGlobal). A callee whose body cannot be read (extern, virtual, a function value,
+    // another package's) may do anything. No summary is made of which global a function writes.
     if (globalview && !reshapeExempt(call, verdict->callee)) {
-        verdict->why = globalview == 2 ? ReshapeGlobalMaybe : ReshapeGlobalView;
-        return 1;
+        FnDclNode *callee = verdict->callee;
+        // Code that could be anything: a virtual call, a function value, a Cone function whose body
+        // is not here. An 'extern' C function is asked as any call is, of what it is handed
+        // (the ordinary check above), for it names no Cone global
+        int opaque = (call->flags & FlagVDisp) || callee == NULL
+            || (!(callee->flags & FlagExtern) && !siVisible(callee));
+        if (opaque || (!(callee->flags & FlagExtern) && shapeTypeWritesGlobal(callee, cont))) {
+            verdict->why = globalview == 2 ? ReshapeGlobalMaybe : ReshapeGlobalView;
+            return 1;
+        }
     }
     return 0;
 }

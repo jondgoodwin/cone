@@ -2042,16 +2042,12 @@ static char *loanShapeReason(ShapeNote *note, char *cont, int sum, char *buf, si
             snprintf(buf, size, "'%s' may change the %s it is called on, and its body is not visible here, so it is assumed to change its shape", name, cont);
         break;
     case ReshapeGlobalView:
-        if (sum)
-            snprintf(buf, size, "the borrow points into a 'mut' global, which '%s', like any call, may store over, and the compiler does not follow which globals a function writes", name);
-        else
-            snprintf(buf, size, "the borrow points into a 'mut' global, which '%s', like any call, may change the shape of, and the compiler does not follow which globals a function writes", name);
+        snprintf(buf, size, "the borrow points into a 'mut' global, and '%s' may %s it by its name: its body is not visible here, or it, or something it calls, does so through a global or runs code the compiler cannot see (a virtual call, a function value)",
+            name, sum ? "store over" : "change the shape of");
         break;
     case ReshapeGlobalMaybe:
-        if (sum)
-            snprintf(buf, size, "a 'mut' global reaches a %s and this borrow was lent by a caller, so it may point into that global, which '%s', like any call, may store over, and the compiler does not follow which globals a function writes", cont, name);
-        else
-            snprintf(buf, size, "a 'mut' global reaches a %s and this borrow was lent by a caller, so it may point into that global, which '%s', like any call, may change the shape of, and the compiler does not follow which globals a function writes", cont, name);
+        snprintf(buf, size, "a 'mut' global reaches a %s and this borrow was lent by a caller, so it may point into that global, and '%s' may %s it by its name: its body is not visible here, or it, or something it calls, does so through a global or runs code the compiler cannot see (a virtual call, a function value)",
+            cont, name, sum ? "store over" : "change the shape of");
         break;
     case ReshapeUnseen:
         if (sum)

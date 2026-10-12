@@ -133,5 +133,9 @@ int siBodyReady(FnDclNode *fn);
 // Code the compiler cannot read, or whose body is not checked yet, answers yes.
 int shapeParamReshapes(FnDclNode *fn, uint32_t k);
 int shapeTypeReshapes(FnDclNode *fn, INode *cont, int viaparams);
+// The same through a global alone, for a call made while a borrow into a 'mut' global is held:
+// a virtual call or a call of a function value in the body (or in what it calls) is taken to
+// write any global, whatever it is handed
+int shapeTypeWritesGlobal(FnDclNode *fn, INode *cont);
 
 #endif

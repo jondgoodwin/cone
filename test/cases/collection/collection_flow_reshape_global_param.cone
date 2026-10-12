@@ -1,9 +1,10 @@
-// A view held across any call, reached through a reference a caller lent, where a 'mut' global of the
-// type is in the program. A function that takes 'g &mut Ed' cannot tell that it was called with '&mut gl',
-// and a callee, even a read-only closure behind a '&<fn' or in an 'imm' owner, may write 'gl' by its name.
-// So a borrow of a type some 'mut' global reaches, reached through a reference, is asked of every call, as a
-// borrow into the global by its name is (collection_flow_reshape_global). A type no 'mut' global reaches is
-// not asked (collection_reshape_global_success).
+// A view held across a call that may reshape it, reached through a reference a caller lent, where a 'mut'
+// global of the type is in the program. A function that takes 'g &mut Ed' cannot tell that it was called
+// with '&mut gl', and a callee, even a read-only closure behind a '&<fn' or in an 'imm' owner, may write
+// 'gl' by its name. So a borrow of a type some 'mut' global reaches, reached through a reference, is
+// asked of the same calls as a borrow into the global by its name is (collection_flow_reshape_global): a
+// callee the compiler cannot read, or that reshapes the type through a global, is refused. A type no
+// 'mut' global reaches is not asked, nor a call that reshapes nothing (collection_reshape_global_success).
 //
 // Each function is a program that read freed memory when it was accepted: the closure writes 'gl' with
 // 'growFirst', which appends to the big String the view points into and moves its block.
@@ -45,16 +46,9 @@ fn viaInvisible(f &<fn(s &str), g &mut Ed, call &<fn(f &<fn(s &str), s &str)) {
   call(f, g.items[0usize].label.view());                      //~ ErrorShapeReshape "a 'mut' global reaches"
 }
 
-// A callee that writes nothing is asked too: the compiler does not look
-fn show(s &str) usize { s.len; }
-
-fn viaShow(g &mut Ed) usize {
-  show(g.items[0usize].label.view());                         //~ ErrorShapeReshape "a 'mut' global reaches"
-}
-
-// The view held in a name across a call
-fn held(g &mut Ed) usize {
+// The view held in a name across a call that runs a closure
+fn held(h &Holder, g &mut Ed) usize {
   imm v = g.items[0usize].label.view();
-  imm n = show("x");                                          //~ ErrorShapeReshape "a 'mut' global reaches"
-  n + v.len;
+  useHolder(h, "x");                                          //~ ErrorShapeReshape "a 'mut' global reaches"
+  v.len;
 }

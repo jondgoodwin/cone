@@ -33,9 +33,14 @@
  *   through a global;
  * - or the borrow points into a 'mut' global, or into anything reached from one (the
  *   loan's 'globalview'), or is reached through a reference a caller lent where a 'mut'
- *   global reaches 'cont' (reshapeMutGlobalsReach; 'globalview' 2): any call whatever, for a function may write a global by its name and
- *   which globals a function writes is not followed. The intrinsics, an init and a call through
- *   a virtual reference marked '+ ShapeKeeping' are exempt; an 'imm' global is no such borrow.
+ *   global reaches 'cont' (reshapeMutGlobalsReach; 'globalview' 2): a call whatever it is handed
+ *   that is code the compiler cannot read (a virtual call, a function value, a Cone function
+ *   without a body here), or that reshapes a value of 'cont' through a global by the same
+ *   inference (shapeTypeWritesGlobal, where a virtual call in a body counts as writing any
+ *   global), for a function may write a global by its name and no summary is kept of which. The
+ *   intrinsics, an init and a call through a virtual reference marked '+ ShapeKeeping' are
+ *   exempt, an 'extern' C function is asked of what it is handed; an 'imm' global is no such
+ *   borrow.
  *
  * 'clear', 'pop' and 'truncate' each write the length; 'set' of a String finalizes
  * the String it replaces, and 'set' of a number runs nothing. Moving elements about
@@ -112,7 +117,7 @@ enum ReshapeWhy {
     ReshapeBody,        // a callee handed a writable value that can reach it, whose body reshapes one
     ReshapeGlobal,      // a callee that reshapes one through a global, handed nothing that reaches it
     ReshapeStore,       // a store through another name (not a call): reshapeStoreHits
-    ReshapeGlobalView,  // any call, while the borrow points into a 'mut' global: which globals a function writes is not followed
+    ReshapeGlobalView,  // a callee that may write a 'mut' global the borrow points into: code the compiler cannot read, or one that reshapes the type through a global
     ReshapeGlobalMaybe  // the same, the borrow reached through a reference a caller lent that may be a 'mut' global (one reaches the type)
 };
 

@@ -139,11 +139,17 @@ enum SiMode {
     SiModeStorage,
     SiModeField,
     SiModeType,
-    SiModeOut
+    SiModeOut,
+    // SiModeType and SiModeOut, for a borrow into a 'mut' global (shapeTypeWritesGlobal): a call
+    // that could run any code (through a virtual reference or a function pointer) is taken to write
+    // any global, whatever it is handed
+    SiModeTypeG,
+    SiModeOutG
 };
 
 typedef struct {
-    int mode;               // SiMode
+    int mode;               // SiMode, SiModeTypeG and SiModeOutG as SiModeType and SiModeOut
+    int opaque;             // asked in one of those: a call into unknown code is taken to write a global
     INode *cont;            // type modes: the collection's type
     VarDclNode *parm;       // the parameter whose pointee is asked about
     int isref;              // it is a reference: a write through it reaches the caller's value
@@ -610,6 +616,13 @@ static void siCallType(FnCallNode *call, SiCtx *c) {
         return;
     }
     int visible = !(call->flags & FlagVDisp) && siVisible(callee);
+    // Into a borrow of a 'mut' global: a virtual call, or a call of a function value, runs code that
+    // is not known, which may write any global without being handed it (a named function the
+    // compiler cannot read is asked as before: of what it is handed)
+    if (c->opaque && (call->flags & FlagVDisp)) {
+        c->hit = 1;
+        return;
+    }
     int anyreach = 0;
     for (uint32_t k = 0; k < nargs && !c->hit; ++k) {
         INode *arg = nodesGet(call->args, k);
@@ -648,7 +661,8 @@ static void siCallType(FnCallNode *call, SiCtx *c) {
         // Handed what reaches the type: the callee through any parameter or global.
         // Handed nothing that does: only through a global, and only if some global
         // holds one
-        int answer = siAsk(callee, 0, anyreach ? SiModeType : SiModeOut, c->cont);
+        int answer = siAsk(callee, 0, c->opaque ? (anyreach ? SiModeTypeG : SiModeOutG)
+            : anyreach ? SiModeType : SiModeOut, c->cont);
         if (answer == SiYes)
             c->hit = 1;
         else if (answer == SiPending)
@@ -822,7 +836,8 @@ static int siAsk(FnDclNode *fn, uint32_t k, int mode, INode *cont) {
     if (!siBodyReady(fn))
         return SiPending;
     FnSigNode *sig = (FnSigNode *)fn->vtype;
-    int ofparm = mode < SiModeType;
+    int base = mode == SiModeTypeG ? SiModeType : mode == SiModeOutG ? SiModeOut : mode;
+    int ofparm = base < SiModeType;
     if (ofparm && k >= sig->parms->used)
         return SiYes;
     if (!ofparm)
@@ -845,7 +860,8 @@ static int siAsk(FnDclNode *fn, uint32_t k, int mode, INode *cont) {
 
     SiCtx ctx;
     memset(&ctx, 0, sizeof(ctx));
-    ctx.mode = mode;
+    ctx.mode = base;
+    ctx.opaque = mode >= SiModeTypeG;
     ctx.cont = cont;
     if (ofparm) {
         ctx.parm = (VarDclNode *)nodesGet(sig->parms, k);
@@ -900,6 +916,16 @@ int shapeParamReshapes(FnDclNode *fn, uint32_t k) {
 
 int shapeTypeReshapes(FnDclNode *fn, INode *cont, int viaParams) {
     int answer = siAsk(fn, 0, viaParams ? SiModeType : SiModeOut, cont);
+    if (answer == SiPending)
+        ++shapeUnsettled;
+    return answer != SiNo;
+}
+
+// The same, asked of a call made while a borrow into a 'mut' global is held (reshape.h,
+// 'globalview'): only through a global, with a call into unknown code (a virtual call, a function
+// value) taken to write any
+int shapeTypeWritesGlobal(FnDclNode *fn, INode *cont) {
+    int answer = siAsk(fn, 0, SiModeOutG, cont);
     if (answer == SiPending)
         ++shapeUnsettled;
     return answer != SiNo;

@@ -1,10 +1,12 @@
 // What a 'mut' global's views are let through (collection_flow_reshape_global holds the refusals). A
-// borrow into a 'mut' global is asked of every call, so it is let through where
+// borrow into a 'mut' global is refused across a call that may reshape the container's type, judged by the
+// shape inference, a callee the compiler cannot read counting as one that does. So it is let through where
+//   - the call reshapes nothing: a length, a copy, a function that writes a number or prints, an
+//     'extern' function handed the view to read;
 //   - the global is 'imm', which no call can change;
-//   - the global is read into a local first, a copy of its String or a number, and the local is
-//     what is held across the calls;
-//   - the view is used by no call at all (its length, a comparison), or the call is a virtual one
-//     marked '+ ShapeKeeping', a promise held where the value becomes the reference;
+//   - the global is read into a local first, a copy of its String or a number;
+//   - the view is used by no call at all (a comparison), or the call is a virtual one marked
+//     '+ ShapeKeeping', a promise held where the value becomes the reference;
 //   - the view is of a local, which no global can reach, or reached through a reference, of a type no
 //     'mut' global reaches.
 // Every value is worked out by hand and written at its line.
@@ -20,6 +22,7 @@ struct Ed { pub items List[Item]; }
 imm fixed Ed;
 mut gl Ed;
 mut title String;
+mut nums List[u64];
 mut count i64;
 
 fn @initpure init() {
@@ -29,6 +32,9 @@ fn @initpure init() {
   fixed = e;
   gl = new Ed(List[Item].empty());
   gl.items.push(new Item(String.from("hello")));
+  nums = List[u64].empty();
+  nums.push(30u64);
+  nums.push(4u64);
   count = 5i64;
 }
 
@@ -40,6 +46,8 @@ fn note(label &str, n i64) {
 }
 
 fn bump() { count = count + 1i64; }
+
+fn width(s &str) usize { s.len; }
 
 // An 'imm' global cannot change: a view of it stays good across any call
 fn immView() {
@@ -57,7 +65,7 @@ fn copied() {
   note("number", n);                              // read before the bump: 6
 }
 
-// A view that no call touches: its length, and a comparison
+// A view that no call touches: a comparison
 fn noCall() {
   imm v = gl.items[0usize].label.view();
   imm n = i64.from(v.len);
@@ -84,8 +92,33 @@ fn localView() {
   note("local-view", i64.from(v.len));            // 3
 }
 
+// A view of a 'mut' global held across calls that reshape nothing: one that writes a number, one that
+// reads the view, and the print of an 'extern' function
+fn viewAcross() {
+  imm v = gl.items[0usize].label.view();
+  bump();
+  note("view-across", i64.from(v.len));           // "hello": 5
+  note("view-arg", i64.from(width(gl.items[0usize].label.view())));   // 5
+}
+
+// An element and the length of a 'mut' global list
+fn listElem() {
+  imm e = nums[0usize];
+  bump();
+  note("list-elem", i64.from(*e));                // the first: 30
+  note("list-len", i64.from(nums.len()));         // 2
+}
+
+// A view handed to a function that copies it, and to a print
+fn viaCopy() {
+  imm c = String.from(title.view());
+  note("from-view", i64.from(c.view().len));      // "heading": 7
+  printStr(title.view());                         // heading
+  printStr("\n");
+}
+
 // A view reached through a reference, of a type no 'mut' global reaches ('Ed' holds Items, Strings and
-// Lists of Items): the reference cannot be a global
+// Lists of Items; 'nums' is a List[u64]): the reference cannot be a global
 fn otherType(xs &mut List[i64]) {
   imm e = xs[0usize];
   bump();
@@ -98,10 +131,13 @@ fn main() i32 {
   noCall();
   useKeeping();
   localView();
-  mut nums = List[i64].empty();
-  nums.push(40i64);
-  nums.push(2i64);
-  otherType(&mut nums);
-  note("count", count);                           // 5, bumped by immView, copied, localView and otherType: 9
+  viewAcross();
+  listElem();
+  viaCopy();
+  mut small = List[i64].empty();
+  small.push(40i64);
+  small.push(2i64);
+  otherType(&mut small);
+  note("count", count);                           // 5, bumped by immView, copied, localView, viewAcross, listElem and otherType: 11
   0;
 }
