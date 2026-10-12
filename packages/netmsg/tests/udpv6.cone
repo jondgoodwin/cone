@@ -1,0 +1,41 @@
+// A server and a client over IPv6 loopback ([::1]): the handshake runs and
+// both ends hear Joined. (The client binds the wildcard address of the
+// server's family.)
+
+mod udpv6;
+
+import testing use *;
+import collections use *;
+import sync use *;
+import time use Duration;
+import iocore use SocketAddr;
+import actors;
+import netmsg use *;
+
+fn main() i32 {
+  mut txS Sender[NetEvent];
+  mut rxS Receiver[NetEvent];
+  txS, rxS = Channel[NetEvent].make();
+  mut txC Sender[NetEvent];
+  mut rxC Receiver[NetEvent];
+  txC, rxC = Channel[NetEvent].make();
+  {
+    imm cfg = NetConfig.defaults();
+    imm server = mustListen(SocketAddr.v6Localhost(0u16), cfg, channelHandler(txS));
+    imm client = mustConnect(SocketAddr.v6Localhost(server.port), cfg, channelHandler(txC));
+    mut gotS = false;
+    mut gotC = false;
+    match rxS.recvTimeout(Duration.fromSeconds(3i64)) {
+      case imm e Some { gotS = true; }
+      case is None[NetEvent] {}
+    }
+    match rxC.recvTimeout(Duration.fromSeconds(3i64)) {
+      case imm e Some { gotC = true; }
+      case is None[NetEvent] {}
+    }
+    expect(gotS and gotC, "joined over IPv6 loopback");
+    client.endpoint.shutdown();
+    server.endpoint.shutdown();
+  }
+  done();
+}

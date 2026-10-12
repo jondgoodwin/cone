@@ -1,0 +1,1047 @@
+// render's morph targets (morph.cone, morph.slang), on a real GPU with no
+// window: a tube of 16 sides and 21 rings (336 vertices; radius 0.08, 1 long
+// up +y from the origin, normals pointing out), with the skin of the
+// skinning test (two bones, bone 1 at (0, 0.5, 0), the upper half on it),
+// and 64 targets over it:
+//   target 0   "swell": every vertex out along its normal by 0.05 (dense)
+//   target 1   "stretch": rings 12 to 20 (y from 0.6 up) up by 0.3, their
+//              normals tilted by (0, 0.4, 0) (sparse)
+//   targets 2 to 63   a pseudo-random sparse scatter of small moves, a seventh
+//              of the vertices each (positions, normals and tangents)
+//
+// On the CPU:
+//  1. The set: a dense target keeps only the vertices it moves; a sparse
+//     target given by indices gives the same entries; entries ascend by
+//     vertex; 'find' finds an entry or answers -1; each target's largest move.
+//  2. The reference sum, by hand: swell at 0.5 takes vertex 0 from (0.08, 0, 0)
+//     to (0.105, 0, 0); a normal is made unit length after the sum; a vertex
+//     no weight reaches is left as modelled; weights past the list are zero.
+//  3. The MorphMixer's channels and correctives, from rules worked out by hand.
+//
+// On the GPU (validation and synchronization validation on, and must say
+// nothing; GPU_POWER_PREFERENCE=low-power runs it on the integrated GPU):
+//  4. A vertex displaced exactly by weight x delta, read back: swell at 0.5
+//     puts vertex 0 at (0.105, 0, 0) and vertex 4 at (0, 0, 0.105), and
+//     every vertex of the 64-target set with eight active (some negative,
+//     some above 1) lies within 1e-6 of the CPU's sum, normals too.
+//  5. Zero weights give output byte for byte the unmorphed mesh's, at the
+//     start and after weights were set and set back; unchanged weights record
+//     no work; a changed one does.
+//  6. Morphing first, then skinning: the pre-pass's output carried by the
+//     bones on the GPU (skinning.slang's own functions, morphskin.slang) is
+//     where the CPU puts it (morph, then Skin.skinPoint), and differs by
+//     centimetres from skinning, then morphing.
+//  7. Drawn, in the lit and physically based materials, the stretched and bent
+//     tube: its arm reaches where morph-then-skin puts it, and not where
+//     skin-then-morph would. A copy with all weights zero draws the very
+//     pixels the base mesh does.
+//  8. A morphed mesh's shadow moves with it: a cube whose target moves it
+//     4 along z casts its shadow there and no longer where it was modelled.
+//  9. Bounds, the previous frame's positions for a velocity pass, removing a
+//     copy (the base still draws).
+
+mod morph;
+
+import testing use *;
+import stdio use *;
+import libc;
+import geomath use *;
+import collections use *;
+import mesh use Mesh;
+import gpu use *;
+import render use *;
+
+const SIDES = 16usize;
+const RINGS = 21usize;
+const RADIUS f32 = 0.08;
+const TARGETS = 64usize;
+
+// ---- The tube, its skin and its targets ----
+
+fn tube(skin &mut Skin) Mesh {
+  mut m = Mesh.empty();
+  mut r = 0usize;
+  while r < RINGS {
+    imm y = f32.from(r) * 0.05;
+    imm u0 = (y - 0.4) / 0.2;
+    imm u = if u0 < 0. { 0.; } elif u0 > 1. { 1.; } else { u0; };
+    imm w1 = u * u * (3. - 2. * u);
+    mut k = 0usize;
+    while k < SIDES {
+      imm a = 2. * pi * f32.from(k) / f32.from(SIDES);
+      m.positions.push(new Vec3(RADIUS * cos(a), y, RADIUS * sin(a)));
+      m.normals.push(new Vec3(cos(a), 0., sin(a)));
+      skin.push(0u32, 1u32, 0u32, 0u32, 1. - w1, w1, 0., 0.);
+      k = k + 1usize;
+    }
+    r = r + 1usize;
+  }
+  r = 0usize;
+  while r + 1usize < RINGS {
+    mut k = 0usize;
+    while k < SIDES {
+      imm k1 = (k + 1usize) % SIDES;
+      imm v0 = u32.from(r * SIDES + k);
+      imm v1 = u32.from(r * SIDES + k1);
+      imm v2 = u32.from((r + 1usize) * SIDES + k1);
+      imm v3 = u32.from((r + 1usize) * SIDES + k);
+      m.indices.push(v0);
+      m.indices.push(v2);
+      m.indices.push(v1);
+      m.indices.push(v0);
+      m.indices.push(v3);
+      m.indices.push(v2);
+      k = k + 1usize;
+    }
+    r = r + 1usize;
+  }
+  m;
+}
+
+// A small pseudo-random number generator (a linear congruence that stays in
+// 32 bits): the next of 'state', 0 to 1
+fn nextRandom(state &mut u32) f32 {
+  *state = (*state * 1103u32 + 12345u32) % 65521u32;
+  f32.from(*state) / 65521.;
+}
+
+fn makeTargets(m &Mesh) MorphTargets {
+  imm n = m.positions.len();
+  mut targets = MorphTargets.empty(n);
+  imm zero = new Vec3(0., 0., 0.);
+  // 0: swell, dense, positions only
+  mut swell = List[Vec3].empty();
+  mut v = 0usize;
+  while v < n {
+    swell.push(*m.normals[v] * 0.05);
+    v = v + 1usize;
+  }
+  imm noList = List[Vec3].empty();
+  targets.addDense(&swell, &noList, &noList);
+  // 1: stretch, sparse by indices
+  mut idx = List[u32].empty();
+  mut dp = List[Vec3].empty();
+  mut dn = List[Vec3].empty();
+  v = 12usize * SIDES;
+  while v < n {
+    idx.push(u32.from(v));
+    dp.push(new Vec3(0., 0.3, 0.));
+    dn.push(new Vec3(0., 0.4, 0.));
+    v = v + 1usize;
+  }
+  targets.addSparse(&idx, &dp, &dn, &noList);
+  // 2 to 63: a scatter
+  mut state = 7u32;
+  mut t = 2usize;
+  while t < TARGETS {
+    mut p = List[Vec3].empty();
+    mut nm = List[Vec3].empty();
+    mut tg = List[Vec3].empty();
+    v = 0usize;
+    while v < n {
+      if (v + t) % 7usize == 0usize {
+        p.push(new Vec3(nextRandom(&mut state) - 0.5, nextRandom(&mut state) - 0.5, nextRandom(&mut state) - 0.5) * 0.04);
+        nm.push(new Vec3(nextRandom(&mut state) - 0.5, nextRandom(&mut state) - 0.5, nextRandom(&mut state) - 0.5) * 0.4);
+        tg.push(new Vec3(nextRandom(&mut state) - 0.5, 0., 0.));
+      } else {
+        p.push(zero);
+        nm.push(zero);
+        tg.push(zero);
+      }
+      v = v + 1usize;
+    }
+    targets.addDense(&p, &nm, &tg);
+    t = t + 1usize;
+  }
+  targets;
+}
+
+fn zeros() List[f32] {
+  mut w = List[f32].empty();
+  mut t = 0usize;
+  while t < TARGETS {
+    w.push(0.);
+    t = t + 1usize;
+  }
+  w;
+}
+
+fn absf(x f32) f32 { if x < 0. { 0. - x; } else { x; }; }
+
+// ---- CPU checks ----
+
+fn cpuChecks(m &Mesh) {
+  imm targets = makeTargets(m);
+  imm n = m.positions.len();
+  expectUInt(u64.from(targets.count()), 64u64, "64 targets");
+  expectUInt(u64.from(targets.targetEntries(0usize)), u64.from(n), "swell, dense, moves every vertex");
+  expectUInt(u64.from(targets.targetEntries(1usize)), u64.from(n - 12usize * SIDES), "stretch moves the nine top rings");
+  // A dense list with zeros in it keeps only the vertices that move
+  mut p = List[Vec3].empty();
+  mut v = 0usize;
+  while v < n {
+    p.push(if v == 5usize or v == 100usize { new Vec3(0., 1., 0.); } else { new Vec3(0., 0., 0.); });
+    v = v + 1usize;
+  }
+  mut small = MorphTargets.empty(n);
+  imm noList = List[Vec3].empty();
+  imm t0 = small.addDense(&p, &noList, &noList);
+  expectUInt(u64.from(t0), 0u64, "the first target is number 0");
+  expectUInt(u64.from(small.entryCount()), 2u64, "two vertices moved: two entries");
+  expectUInt(u64.from(*small.vertex[0]), 5u64, "ascending: vertex 5 first");
+  expectUInt(u64.from(*small.vertex[1]), 100u64, "then vertex 100");
+  expectFloat(f64.from(*small.maxMove[0]), 1d, 1e-7d, "the largest move of the target");
+  expectUInt(u64.from(small.find(0usize, 100usize) as u64), 1u64, "'find' finds vertex 100 at entry 1");
+  expect(small.find(0usize, 6usize) < 0i64, "and no entry for vertex 6");
+  // The same by indices, given out of order with one repeated, and one past the mesh
+  mut idx = List[u32].empty();
+  idx.push(100u32);
+  idx.push(5u32);
+  idx.push(100u32);
+  idx.push(99999u32);
+  mut dp = List[Vec3].empty();
+  dp.push(new Vec3(0., 3., 0.));
+  dp.push(new Vec3(0., 1., 0.));
+  dp.push(new Vec3(0., 1., 0.));
+  dp.push(new Vec3(9., 9., 9.));
+  imm t1 = small.addSparse(&idx, &dp, &noList, &noList);
+  expectUInt(u64.from(t1), 1u64, "the second target is number 1");
+  expectUInt(u64.from(small.targetEntries(1usize)), 2u64, "sparse by indices: the same two entries");
+  expectFloat(f64.from(small.dPos[usize.from(small.find(1usize, 100usize))].y), 1d, 1e-7d, "an index given twice keeps the last");
+
+  // 2. The sum
+  mut w = zeros();
+  w.set(0usize, 0.5);
+  imm base0 = *m.positions[0];
+  imm got0 = targets.position(0usize, base0, &w);
+  expectFloat(f64.from(got0.x), 0.105d, 1e-6d, "swell at 0.5: vertex 0 at x = 0.105");
+  expectFloat(f64.from(got0.y), 0d, 1e-7d, "y unchanged");
+  // a vertex stretch does not reach
+  imm got1 = targets.position(0usize, base0, &zeros());
+  expectFloat(f64.from(got1.x), 0.08d, 1e-7d, "weights zero: as modelled");
+  mut ws = zeros();
+  ws.set(1usize, 2.);
+  imm top = 20usize * SIDES;
+  imm gotTop = targets.position(top, *m.positions[top], &ws);
+  expectFloat(f64.from(gotTop.y), f64.from(m.positions[top].y) + 0.6d, 1e-6d, "stretch at weight 2: 0.6 up (weights are not limited to 0 to 1)");
+  imm gotLow = targets.position(0usize, base0, &ws);
+  expectFloat(f64.from(gotLow.y), 0d, 1e-7d, "a vertex stretch does not reach stays");
+  // a normal: (1, 0, 0) + 0.5 x stretch's (0, 0.4, 0), unit length
+  mut wn = zeros();
+  wn.set(1usize, 0.5);
+  imm nn = targets.normal(top, *m.normals[top], &wn);
+  imm want = new Vec3(m.normals[top].x, 0.2, m.normals[top].z).normalize();
+  expectFloat(f64.from(nn.distance(want)), 0d, 1e-6d, "a morphed normal is made unit length");
+  imm nl = targets.normal(0usize, *m.normals[0], &wn);
+  expectFloat(f64.from(nl.distance(*m.normals[0])), 0d, 1e-9d, "a normal no weight reaches is exactly as modelled");
+  mut short = List[f32].empty();
+  short.push(0.5);
+  expectFloat(f64.from(targets.position(0usize, base0, &short).x), 0.105d, 1e-6d, "a list shorter than the targets: the rest are zero");
+
+  // 3. The mixer
+  mut mixer = MorphMixer.make(8usize);
+  imm jaw = mixer.addChannel();
+  imm smile = mixer.addChannel();
+  imm blink = mixer.addChannel();
+  mixer.drive(jaw, 0usize, 1.);
+  mixer.drive(smile, 1usize, 1.);
+  mixer.drive(smile, 2usize, 0.5);       // a smile also tugs the cheek target at half
+  mixer.drive(blink, 3usize, 1.);
+  mixer.drive(jaw, 3usize, -0.25);       // and an open jaw eases the blink target back a quarter
+  mixer.corrective(jaw, smile, 4usize);  // target 4 fixes the smile with the jaw wide open
+  mixer.set(jaw, 0.8);
+  mixer.set(smile, 0.5);
+  mixer.set(blink, 1.);
+  mut out = List[f32].empty();
+  mixer.resolve(&mut out);
+  expectUInt(u64.from(out.len()), 8u64, "the mixer fills a weight for each target");
+  expectFloat(f64.from(*out[0]), 0.8d, 1e-6d, "jaw drives target 0");
+  expectFloat(f64.from(*out[1]), 0.5d, 1e-6d, "smile drives target 1");
+  expectFloat(f64.from(*out[2]), 0.25d, 1e-6d, "and half of target 2");
+  expectFloat(f64.from(*out[3]), 0.8d, 1e-6d, "blink 1 less a quarter of the jaw: 1 - 0.2 (additive, from two channels)");
+  expectFloat(f64.from(*out[4]), 0.4d, 1e-6d, "the corrective is jaw x smile: 0.8 x 0.5");
+  expectFloat(f64.from(*out[5]), 0d, 1e-9d, "others stay zero");
+  mixer.set(jaw, 0.);
+  mixer.resolve(&mut out);
+  expectFloat(f64.from(*out[4]), 0d, 1e-9d, "the corrective is off when the jaw is shut");
+  mixer.set(blink, 5.);
+  mixer.resolve(&mut out);
+  expectFloat(f64.from(*out[3]), 5d, 1e-6d, "no clamp by default: a weight may exceed 1");
+  mixer.clampTo(0., 1.);
+  mixer.resolve(&mut out);
+  expectFloat(f64.from(*out[3]), 1d, 1e-6d, "clamped when asked");
+}
+
+// ---- The GPU ----
+
+// Copy the first 'count' floats of 'buffer' back
+fn readFloats(device &mut Device, buffer &Buffer, count usize) List[f32] {
+  mut back = device.createBuffer(u64.from(count) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  mut encoder = device.createCommandEncoder();
+  encoder.copyBufferToBuffer(buffer, 0u64, &back, 0u64, u64.from(count) * 4u64);
+  device.queue.submit(encoder.finish());
+  device.endFrame();
+  device.waitIdle();
+  imm p = back.mappedRange() as *f32;
+  mut out = List[f32].withCapacity(count);
+  mut i = 0usize;
+  while i < count {
+    out.push(*(p + i));
+    i = i + 1usize;
+  }
+  out;
+}
+
+// A morphed copy made, its copying of the base's streams submitted and done
+fn makeCopy(device &mut Device, morpher &mut Morpher, renderer &mut Renderer, base MeshHandle, set MorphSetHandle,
+    keepPrevious bool) MorphHandle {
+  mut encoder = device.createCommandEncoder();
+  imm copy = morpher.addCopy(device, &mut encoder, renderer, base, set, keepPrevious);
+  device.queue.submit(encoder.finish());
+  device.endFrame();
+  device.waitIdle();
+  copy;
+}
+
+// A frame's pre-pass: the copies' work recorded and run
+fn runUpdate(device &mut Device, morpher &mut Morpher, renderer &Renderer) u32 {
+  mut encoder = device.createCommandEncoder();
+  imm n = morpher.update(device, &mut encoder, renderer);
+  device.queue.submit(encoder.finish());
+  device.endFrame();
+  device.waitIdle();
+  n;
+}
+
+// The positions buffer of the mesh 'h' the renderer holds
+fn positionsOf(renderer &Renderer, h MeshHandle) &Buffer { &renderer.meshes[h.slot].current().positions; }
+fn normalsOf(renderer &Renderer, h MeshHandle) &Buffer { &renderer.meshes[h.slot].current().normals; }
+
+// The largest difference between two lists of floats
+fn worstDifference(a &List[f32], b &List[f32]) f32 {
+  mut worst f32 = 0.;
+  mut i = 0usize;
+  while i < a.len() and i < b.len() {
+    imm d = absf(*a[i] - *b[i]);
+    if d > worst { worst = d; }
+    i = i + 1usize;
+  }
+  worst;
+}
+
+// Whether two lists hold the same bits
+fn sameBits(a &List[f32], b &List[f32]) bool {
+  if a.len() != b.len() { return false; }
+  mut i = 0usize;
+  while i < a.len() {
+    if (*a[i] as u32) != (*b[i] as u32) { return false; }
+    i = i + 1usize;
+  }
+  true;
+}
+
+fn flat3(points &List[Vec3]) List[f32] {
+  mut out = List[f32].empty();
+  mut i = 0usize;
+  while i < points.len() {
+    out.push(points[i].x);
+    out.push(points[i].y);
+    out.push(points[i].z);
+    i = i + 1usize;
+  }
+  out;
+}
+
+// The two bones' skinning matrices with bone 1 turned 'angle' about +z at the joint
+fn bent(angle f32) Array[Mat4, 2] {
+  imm bind1 = Mat4.fromTranslation(new Vec3(0., 0.5, 0.));
+  imm posed1 = Mat4.fromTrs(new Vec3(0., 0.5, 0.), Quat.angleAxis(angle, new Vec3(0., 0., 1.)), new Vec3(1., 1., 1.));
+  [Mat4.identity(), skinningMatrix(posed1, bind1)];
+}
+
+// Channel 'c' of pixel ('x', 'y') of a 64 x 64 rgba8 image at 'p'
+fn px(p *u8, x usize, y usize, c usize) i64 { i64.from(*(p + (y * 64usize + x) * 4usize + c)); }
+
+fn covered(p *u8, viewProjection Mat4, w Vec3) bool {
+  imm ndc = viewProjection.projectPoint(w);
+  imm fx = (ndc.x + 1.) * 0.5 * 64.;
+  imm fy = (1. - ndc.y) * 0.5 * 64.;
+  if fx < 0. or fy < 0. or fx >= 64. or fy >= 64. { return false; }
+  imm x = usize.from(fx);
+  imm y = usize.from(fy);
+  px(p, x, y, 0usize) > px(p, x, y, 2usize);
+}
+
+fn drawFrame(renderer &mut Renderer, device &mut Device, morpher &mut Morpher, color &Texture, depth &Texture,
+    readback &Buffer, camera &Camera, light &Light, list &DrawList) {
+  mut encoder = device.createCommandEncoder();
+  morpher.update(device, &mut encoder, renderer);
+  renderer.render(device, &mut encoder, color, depth, camera, light, list);
+  encoder.copyTextureToBuffer(color, readback);
+  device.queue.submit(encoder.finish());
+  device.endFrame();
+  device.waitIdle();
+}
+
+fn bytesOfList[T](list &List[T]) *u8 {
+  imm v = list.view();
+  &v[0] as *u8;
+}
+
+// 6. The compute twin carrying the pre-pass's output by the bones
+fn skinTwin(device &mut Device, morphed &Buffer, skin &Skin, pose &Array[Mat4, 2], count usize) List[f32] {
+  imm n = u32.from(count);
+  imm storage = BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST;
+  mut joints = device.createBuffer(u64.from(n) * 4u64, storage);
+  mut weights = device.createBuffer(u64.from(n) * 4u64, storage);
+  mut bones = device.createBuffer(2u64 * BONE_BYTES, storage);
+  mut out = device.createBuffer(u64.from(n) * 12u64, BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_SRC);
+  device.queue.writeBuffer(&joints, 0u64, bytesOfList[u32](&skin.joints), u64.from(n) * 4u64);
+  device.queue.writeBuffer(&weights, 0u64, bytesOfList[u32](&skin.weights), u64.from(n) * 4u64);
+  mut rows = List[f32].empty();
+  mut b = 0usize;
+  while b < 2usize {
+    imm r = boneRows(pose[b]);
+    mut e = 0usize;
+    while e < BONE_FLOATS {
+      rows.push(r[e]);
+      e = e + 1usize;
+    }
+    b = b + 1usize;
+  }
+  device.queue.writeBuffer(&bones, 0u64, bytesOfList[f32](&rows), 2u64 * BONE_BYTES);
+  imm entries = [
+    new BindGroupLayoutEntry(binding: 4u32, visibility: SHADER_STAGE_COMPUTE, bufferType: BUFFER_BINDING_TYPE_READ_ONLY_STORAGE),
+    new BindGroupLayoutEntry(binding: 5u32, visibility: SHADER_STAGE_COMPUTE, bufferType: BUFFER_BINDING_TYPE_READ_ONLY_STORAGE),
+    new BindGroupLayoutEntry(binding: 6u32, visibility: SHADER_STAGE_COMPUTE, bufferType: BUFFER_BINDING_TYPE_READ_ONLY_STORAGE),
+    new BindGroupLayoutEntry(binding: 7u32, visibility: SHADER_STAGE_COMPUTE, bufferType: BUFFER_BINDING_TYPE_READ_ONLY_STORAGE),
+    new BindGroupLayoutEntry(binding: 8u32, visibility: SHADER_STAGE_COMPUTE, bufferType: BUFFER_BINDING_TYPE_STORAGE)];
+  mut groupLayout = device.createBindGroupLayout(&entries);
+  imm groupLayouts = [&groupLayout];
+  mut layout = device.createPipelineLayout(&groupLayouts, 4u32);
+  mut shader = device.createShaderModule(&MORPHSKIN_SPIRV);
+  imm desc = new ComputePipelineDescriptor(layout: &layout, module: &shader, entryPoint: "skinMorphed");
+  mut pipeline = device.createComputePipeline(&desc);
+  require(pipeline.isValid(), "the compute twin's pipeline");
+  imm groupEntries = [BindGroupEntry.buffer(4u32, morphed), BindGroupEntry.buffer(5u32, &joints),
+    BindGroupEntry.buffer(6u32, &weights), BindGroupEntry.buffer(7u32, &bones), BindGroupEntry.buffer(8u32, &out)];
+  mut group = device.createBindGroup(&groupLayout, &groupEntries);
+  mut encoder = device.createCommandEncoder();
+  {
+    mut pass = encoder.beginComputePass();
+    pass.setPipeline(&pipeline);
+    pass.setBindGroup(0u32, &group);
+    imm immediates Array[u32, 1] = [n];
+    pass.setImmediates(0u32, &immediates as *u8, 4u32);
+    pass.dispatchWorkgroups((n + 63u32) / 64u32);
+    pass.end();
+  }
+  device.queue.submit(encoder.finish());
+  device.endFrame();
+  device.waitIdle();
+  readFloats(device, &out, count * 3usize);
+}
+
+// 8. The shadow of a morphed cube
+struct Shadowing {
+  ground MeshHandle;
+  lit MaterialHandle;
+  pbr MaterialHandle;
+}
+
+const SIDE = 256u32;
+const SIDEZ = 256usize;
+const HEIGHT = 12.;
+const HALF_VIEW = 4.3676;
+
+fn sunFrom(elevation f32, azimuth f32, intensity f32, ambient f32) Light {
+  imm c = cos(elevation);
+  imm toSun = new Vec3(c * cos(azimuth), sin(elevation), c * sin(azimuth));
+  Light.directional(new Vec3(0., 0., 0.) - toSun, Color.gray(intensity), Color.gray(ambient));
+}
+
+fn topDown() Camera {
+  mut camera = Camera.make();
+  camera.fov = radians(40.);
+  camera.near = 0.1;
+  camera.far = 100.;
+  camera.lookAt(new Vec3(0., HEIGHT, 0.), new Vec3(0., 0., 0.), new Vec3(0., 0., -1.));
+  camera.background = new Color(0., 0., 0., 1.);
+  camera;
+}
+
+fn px256(p *u8, x usize, y usize) f32 { f32.from(*(p + (y * SIDEZ + x) * 4usize)); }
+fn columnOf(x f32) usize { usize.from(128. + x / HALF_VIEW * 128.); }
+fn rowOf(z f32) usize { usize.from(128. + z / HALF_VIEW * 128.); }
+
+fn shadowTest(device &mut Device, renderer &mut Renderer, morpher &mut Morpher, material MaterialHandle, label &Array[u8]) {
+  imm targetDesc = new TextureDescriptor(SIDE, SIDE, TEXTURE_FORMAT_RGBA8_UNORM,
+    TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  mut color = device.createTexture(&targetDesc);
+  imm depthDesc = new TextureDescriptor(SIDE, SIDE, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  mut depth = device.createTexture(&depthDesc);
+  mut readback = device.createBuffer(262144u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  mut plane = Mesh.plane(1, 1.);
+  imm ground = renderer.addMesh(device, &plane);
+  mut cube = Mesh.cube(1.);
+  imm cubeHandle = renderer.addMesh(device, &cube);
+  // One target: every vertex 4 along +z
+  imm n = cube.positions.len();
+  mut shift = List[Vec3].empty();
+  mut v = 0usize;
+  while v < n {
+    shift.push(new Vec3(0., 0., 4.));
+    v = v + 1usize;
+  }
+  mut targets = MorphTargets.empty(n);
+  imm noList = List[Vec3].empty();
+  targets.addDense(&shift, &noList, &noList);
+  imm set = morpher.addSet(device, &targets, &cube);
+  require(!set.isNone(), "a set for the cube");
+  imm copy = makeCopy(device, morpher, renderer, cubeHandle, set, false);
+  require(!copy.isNone(), "a morphed copy of the cube");
+  mut settings = ShadowSettings.high();
+  settings.cascades = 1u32;
+  settings.mapSize = 1024u32;
+  settings.distance = 30.;
+  renderer.setShadows(device, &settings);
+  imm camera = topDown();
+  // The sun along (-1, -1, 0)/sqrt 2: the cube's shadow beyond its foot, x from -3 to -1
+  imm sun = sunFrom(radians(45.), 0., 2.5132741, 0.1);
+  imm p = readback.mappedRange();
+  mut list = DrawList.empty();
+  list.add(ground, material, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(40., 1., 40.)));
+  list.add(morpher.mesh(copy), material, Mat4.fromTranslation(new Vec3(0., 1., 0.)));
+  // Weight 0: the shadow where the cube is modelled (z in -1 to 1), none 4 along
+  drawFrame(renderer, device, morpher, &color, &depth, &readback, &camera, &sun, &list);
+  imm litA = px256(p, columnOf(-3.9), rowOf(-1.5));
+  imm shadowAtHome = px256(p, columnOf(-2.), rowOf(0.));
+  imm shadowAway = px256(p, columnOf(-2.), rowOf(4.));
+  expect(shadowAtHome < litA * 0.5, label);
+  expect(shadowAway > litA * 0.9, label);
+  // Weight 1: the cube, and its shadow, 4 along
+  mut w = List[f32].empty();
+  w.push(1.);
+  morpher.setWeights(renderer, copy, &w);
+  drawFrame(renderer, device, morpher, &color, &depth, &readback, &camera, &sun, &list);
+  imm shadowHomeAfter = px256(p, columnOf(-2.), rowOf(0.));
+  imm shadowAwayAfter = px256(p, columnOf(-2.), rowOf(4.));
+  expect(shadowAwayAfter < litA * 0.5, label);
+  expect(shadowHomeAfter > litA * 0.9, label);
+  eprint <- "measured "; eprintStr(label as &str); eprint <- ": lit "; eprint <- litA; eprint <- ", shadow at home "; eprint <- shadowAtHome;
+  eprint <- " then "; eprint <- shadowHomeAfter; eprint <- "; shadow 4 along "; eprint <- shadowAway; eprint <- " then "; eprint <- shadowAwayAfter; eprint <- "\n";
+  morpher.removeCopy(device, renderer, copy);
+  morpher.removeSet(device, set);
+  renderer.removeMesh(device, cubeHandle);
+  renderer.removeMesh(device, ground);
+  renderer.disableShadows(device);
+}
+
+// The same under a spot or a point light at (2.2, 4, 0) with shadows, no sun and
+// no ambient light: the box's shadow runs from its foot out to x = -4.2, across
+// z in -2 to 2 (the lights' shadow test works it out), and at x = -3 it covers
+// |z| up to 1.625. A point light does not shine in parallel, so a box moved
+// 1.5 along z casts its shadow, at x = -3, over z from about 0.8 to 5 (its
+// far side's top face, at 2 up, lands at twice its z; its side at x = -1, at
+// 1.54 up, at 1.625 times): worked out by hand. So the ground at (-3, -1.2) is in
+// shadow before the move and lit after, and (-3, 3) the other way about (the
+// camera, 14 up, sees 5.0956 each way)
+fn localShadowTest(device &mut Device, renderer &mut Renderer, morpher &mut Morpher, point bool, label &Array[u8]) {
+  imm half = 5.0956;
+  imm targetDesc = new TextureDescriptor(SIDE, SIDE, TEXTURE_FORMAT_RGBA8_UNORM,
+    TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  mut color = device.createTexture(&targetDesc);
+  imm depthDesc = new TextureDescriptor(SIDE, SIDE, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  mut depth = device.createTexture(&depthDesc);
+  mut readback = device.createBuffer(262144u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  mut plane = Mesh.plane(1, 1.);
+  imm ground = renderer.addMesh(device, &plane);
+  mut cube = Mesh.cube(1.);
+  imm cubeHandle = renderer.addMesh(device, &cube);
+  imm n = cube.positions.len();
+  mut shift = List[Vec3].empty();
+  mut v = 0usize;
+  while v < n {
+    shift.push(new Vec3(0., 0., 1.5));
+    v = v + 1usize;
+  }
+  mut targets = MorphTargets.empty(n);
+  imm noList = List[Vec3].empty();
+  targets.addDense(&shift, &noList, &noList);
+  imm set = morpher.addSet(device, &targets, &cube);
+  imm copy = makeCopy(device, morpher, renderer, cubeHandle, set, false);
+  require(!copy.isNone(), "a morphed copy of the cube");
+  renderer.environmentStrength = 0.;
+  renderer.lights.clear();
+  imm at = new Vec3(2.2, 4., 0.);
+  imm h = if point {
+    renderer.lights.addPoint(at, Color.gray(1.), 120., 20.);
+  } else {
+    renderer.lights.addSpot(at, new Vec3(-4.2, -4., 0.), Color.gray(1.), 120., 20., radians(40.), radians(50.));
+  };
+  renderer.lights.setCastsShadow(h, true);
+  imm settings = LightShadowSettings.medium();
+  renderer.setLightShadows(device, &settings);
+  mut camera = Camera.make();
+  camera.fov = radians(40.);
+  camera.near = 0.1;
+  camera.far = 100.;
+  camera.lookAt(new Vec3(0., 14., 0.), new Vec3(0., 0., 0.), new Vec3(0., 0., -1.));
+  camera.background = new Color(0., 0., 0., 1.);
+  imm none = Light.directional(new Vec3(0., -1., 0.), Color.gray(0.), Color.gray(0.));
+  imm p = readback.mappedRange();
+  mut list = DrawList.empty();
+  imm litM = renderer.addMaterial(device, &Material.plain(new Color(0.8, 0.8, 0.8, 1.)));
+  list.add(ground, litM, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(40., 1., 40.)));
+  list.add(morpher.mesh(copy), litM, Mat4.fromTranslation(new Vec3(0., 1., 0.)));
+  drawFrame(renderer, device, morpher, &color, &depth, &readback, &camera, &none, &list);
+  imm col = usize.from(128. + -3.0 / half * 128.);
+  imm homeBefore = px256(p, col, rowOf2(-1.2, half));
+  imm awayBefore = px256(p, col, rowOf2(3., half));
+  expect(homeBefore < 8., label);
+  expect(awayBefore > 25., label);
+  mut w = List[f32].empty();
+  w.push(1.);
+  morpher.setWeights(renderer, copy, &w);
+  drawFrame(renderer, device, morpher, &color, &depth, &readback, &camera, &none, &list);
+  imm homeAfter = px256(p, col, rowOf2(-1.2, half));
+  imm awayAfter = px256(p, col, rowOf2(3., half));
+  expect(awayAfter < 8., label);
+  expect(homeAfter > 25., label);
+  eprint <- "measured "; eprintStr(label as &str); eprint <- ": at (-3, -1.2) "; eprint <- homeBefore; eprint <- " then "; eprint <- homeAfter;
+  eprint <- "; at (-3, 3) "; eprint <- awayBefore; eprint <- " then "; eprint <- awayAfter; eprint <- "\n";
+  renderer.lights.clear();
+  renderer.setLightShadows(device, &LightShadowSettings.off());
+  morpher.removeCopy(device, renderer, copy);
+  morpher.removeSet(device, set);
+  renderer.removeMesh(device, cubeHandle);
+  renderer.removeMesh(device, ground);
+  renderer.environmentStrength = 1.;
+}
+
+fn rowOf2(z f32, half f32) usize { usize.from(128. + z / half * 128.); }
+
+fn main() i32 {
+  mut skin = Skin.empty();
+  imm m = tube(&mut skin);
+  imm n = m.positions.len();
+  cpuChecks(&m);
+
+  mut instance = Instance.create("render morph");
+  require(instance.isValid(), "a Vulkan 1.3 instance");
+  mut none = Surface.none();
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  if (env as usize) != 0usize {
+    if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  mut adapter = instance.requestAdapter(&none, preference);
+  require(adapter.isValid(), "an adapter");
+  mut device = adapter.requestDevice();
+  require(device.isValid(), "a device");
+  eprint <- "measured adapter: "; eprintStr(adapter.name.view()); eprint <- "\n";
+  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  require(renderer.isValid(), "a renderer");
+  mut morpher = Morpher.create(&mut device);
+  require(morpher.isValid(), "a morpher");
+
+  imm targets = makeTargets(&m);
+  imm set = morpher.addSet(&mut device, &targets, &m);
+  require(!set.isNone(), "the targets uploaded");
+  imm base = renderer.addSkinnedMesh(&mut device, &m, &skin);
+  imm copy = makeCopy(&mut device, &mut morpher, &mut renderer, base, set, true);
+  require(!copy.isNone(), "a morphed copy");
+  imm cm = morpher.mesh(copy);
+  expect(renderer.hasMesh(cm), "the copy is a mesh of the renderer's");
+  expect(renderer.isSkinned(cm), "of a skinned mesh, skinned too");
+  expectUInt(u64.from(morpher.targetCount(copy)), 64u64, "with weights for 64 targets");
+
+  // ---- 5. Zero weights ----
+  imm baseP = readFloats(&mut device, positionsOf(&renderer, base), n * 3usize);
+  imm baseN = readFloats(&mut device, normalsOf(&renderer, base), n * 3usize);
+  expect(sameBits(&baseP, &readFloats(&mut device, positionsOf(&renderer, cm), n * 3usize)),
+    "a new copy's positions are the base's, byte for byte");
+  expect(sameBits(&baseN, &readFloats(&mut device, normalsOf(&renderer, cm), n * 3usize)), "and its normals");
+  expectUInt(u64.from(runUpdate(&mut device, &mut morpher, &renderer)), 0u64, "nothing to record for a copy no weight was set on");
+
+  // ---- 4. Exactly weight x delta ----
+  mut w = zeros();
+  w.set(0usize, 0.5);
+  morpher.setWeights(&mut renderer, copy, &w);
+  expectUInt(u64.from(morpher.activeCount(copy)), 1u64, "one active target");
+  expectUInt(u64.from(runUpdate(&mut device, &mut morpher, &renderer)), 1u64, "a changed weight: one copy recomputed");
+  imm swelled = readFloats(&mut device, positionsOf(&renderer, cm), n * 3usize);
+  expectFloat(f64.from(*swelled[0]), 0.105d, 1e-6d, "vertex 0 displaced by 0.5 x 0.05: x = 0.105");
+  expectFloat(f64.from(*swelled[1]), 0d, 1e-7d, "y");
+  expectFloat(f64.from(*swelled[2]), 0d, 1e-7d, "z");
+  expectFloat(f64.from(*swelled[4usize * 3usize + 2usize]), 0.105d, 1e-6d, "vertex 4 (a quarter round): z = 0.105");
+  expectUInt(u64.from(runUpdate(&mut device, &mut morpher, &renderer)), 0u64, "the same weights again: nothing recorded");
+  morpher.setWeights(&mut renderer, copy, &w);
+  expectUInt(u64.from(runUpdate(&mut device, &mut morpher, &renderer)), 0u64, "set to the same values: nothing recorded");
+
+  // Eight active of 64, some negative and some above 1
+  mut w8 = zeros();
+  w8.set(0usize, 0.5);
+  w8.set(1usize, -0.3);
+  w8.set(5usize, 1.7);
+  w8.set(9usize, 0.25);
+  w8.set(17usize, 0.9);
+  w8.set(33usize, -1.2);
+  w8.set(48usize, 0.6);
+  w8.set(63usize, 0.4);
+  morpher.setWeights(&mut renderer, copy, &w8);
+  expectUInt(u64.from(morpher.activeCount(copy)), 8u64, "eight active targets");
+  runUpdate(&mut device, &mut morpher, &renderer);
+  imm gotP = readFloats(&mut device, positionsOf(&renderer, cm), n * 3usize);
+  imm gotN = readFloats(&mut device, normalsOf(&renderer, cm), n * 3usize);
+  mut wantPoints = List[Vec3].empty();
+  mut wantNormals = List[Vec3].empty();
+  mut v = 0usize;
+  while v < n {
+    wantPoints.push(targets.position(v, *m.positions[v], &w8));
+    wantNormals.push(targets.normal(v, *m.normals[v], &w8));
+    v = v + 1usize;
+  }
+  imm wantP = flat3(&wantPoints);
+  imm wantN = flat3(&wantNormals);
+  expectFloat(f64.from(worstDifference(&gotP, &wantP)), 0d, 1e-6d, "every position of 64 targets, 8 active: the CPU's sum within 1e-6");
+  expectFloat(f64.from(worstDifference(&gotN, &wantN)), 0d, 1e-6d, "every normal likewise");
+  expect(worstDifference(&gotP, &baseP) > 0.05, "and the shape did move (by more than 5 cm somewhere)");
+  mut touchedUnit = true;
+  v = 0usize;
+  while v < n {
+    imm len = new Vec3(*gotN[v * 3usize], *gotN[v * 3usize + 1usize], *gotN[v * 3usize + 2usize]).length();
+    if absf(len - 1.) > 1e-5 { touchedUnit = false; }
+    v = v + 1usize;
+  }
+  expect(touchedUnit, "the normals are unit length");
+
+  // The previous frame's positions, for a velocity pass: after this update, last frame's were the swelled ones
+  imm previous = readFloats(&mut device, morpher.previousPositions(copy), n * 3usize);
+  expect(sameBits(&previous, &swelled), "the previous positions are the frame before's (the swelled shape)");
+  runUpdate(&mut device, &mut morpher, &renderer);
+  imm previous2 = readFloats(&mut device, morpher.previousPositions(copy), n * 3usize);
+  expect(sameBits(&previous2, &gotP), "and once nothing changes they catch up: no motion");
+
+  // Back to zero: byte for byte the base
+  morpher.setWeights(&mut renderer, copy, &zeros());
+  expectUInt(u64.from(morpher.activeCount(copy)), 0u64, "no active targets");
+  runUpdate(&mut device, &mut morpher, &renderer);
+  expect(sameBits(&baseP, &readFloats(&mut device, positionsOf(&renderer, cm), n * 3usize)),
+    "all weights set back to zero: positions byte for byte the unmorphed mesh's");
+  expect(sameBits(&baseN, &readFloats(&mut device, normalsOf(&renderer, cm), n * 3usize)), "and normals");
+
+  // ---- 9. Bounds ----
+  mut c0 = new Vec3(0., 0., 0.);
+  mut r0 f32 = 0.;
+  renderer.meshBounds(cm, &mut c0, &mut r0);
+  mut cb = new Vec3(0., 0., 0.);
+  mut rb f32 = 0.;
+  renderer.meshBounds(base, &mut cb, &mut rb);
+  expectFloat(f64.from(r0), f64.from(rb), 1e-7d, "weights zero: the copy's sphere is the base's");
+  mut ws = zeros();
+  ws.set(1usize, -2.);
+  ws.set(0usize, 1.);
+  morpher.setWeights(&mut renderer, copy, &ws);
+  renderer.meshBounds(cm, &mut c0, &mut r0);
+  expectFloat(f64.from(r0), f64.from(rb) + 2d * 0.3d + 0.05d, 1e-5d, "the sphere grows by the sum of |weight| x the target's largest move");
+  morpher.setWeights(&mut renderer, copy, &zeros());
+  runUpdate(&mut device, &mut morpher, &renderer);
+
+  // ---- 6. Morph first, then skin ----
+  mut wm = zeros();
+  wm.set(1usize, 1.);
+  morpher.setWeights(&mut renderer, copy, &wm);
+  runUpdate(&mut device, &mut morpher, &renderer);
+  imm bend = bent(radians(90.));
+  imm twin = skinTwin(&mut device, positionsOf(&renderer, cm), &skin, &bend, n);
+  mut worstOrder f32 = 0.;
+  mut worstWrong f32 = 0.;
+  v = 0usize;
+  while v < n {
+    imm morphedCpu = targets.position(v, *m.positions[v], &wm);
+    imm wantSkinned = skin.skinPoint(v, &bend, morphedCpu);
+    imm gotSkinned = new Vec3(*twin[v * 3usize], *twin[v * 3usize + 1usize], *twin[v * 3usize + 2usize]);
+    imm d = gotSkinned.distance(wantSkinned);
+    if d > worstOrder { worstOrder = d; }
+    // the other order: skinned as modelled, then displaced by the target's delta
+    imm wrong = skin.skinPoint(v, &bend, *m.positions[v]) + (morphedCpu - *m.positions[v]);
+    imm dw = wrong.distance(wantSkinned);
+    if dw > worstWrong { worstWrong = dw; }
+    v = v + 1usize;
+  }
+  expectFloat(f64.from(worstOrder), 0d, 1e-5d, "morph on the GPU, then the bones on the GPU: where the CPU's morph then skin puts every vertex");
+  expect(worstWrong > 0.3, "and skin-then-morph would put the top 0.3 or more elsewhere");
+
+  // ---- 7. Drawn ----
+  imm target = new TextureDescriptor(64u32, 64u32, TEXTURE_FORMAT_RGBA8_UNORM,
+    TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  mut color = device.createTexture(&target);
+  imm depthDesc = new TextureDescriptor(64u32, 64u32, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  mut depth = device.createTexture(&depthDesc);
+  mut readback = device.createBuffer(16384u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  imm p = readback.mappedRange();
+  mut camera = Camera.make();
+  camera.projection = Orthogonal;
+  camera.viewHeight = 1.;
+  camera.lookAt(new Vec3(0., 0.5, 3.), new Vec3(0., 0.5, 0.), new Vec3(0., 1., 0.));
+  camera.background = new Color(0.2, 0.4, 0.6, 1.);
+  imm viewProjection = camera.projectionMatrix(1.) * camera.viewMatrix();
+  imm headOn = Light.directional(new Vec3(0., 0., -1.), Color.gray(1.8849556), Color.gray(0.2));
+  imm redMaterial = Material.plain(new Color(1., 0., 0., 1.));
+  imm red = renderer.addMaterial(&mut device, &redMaterial);
+  imm shiny = PbrMaterial.standard(new Color(1., 0., 0., 1.), 0., 0.5);
+  imm pbr = renderer.addPbrMaterial(&mut device, &shiny);
+  renderer.environmentStrength = 0.;
+  mut list = DrawList.empty();
+  mut pass = 0u32;
+  while pass < 2u32 {
+    imm material = if pass == 0u32 { red; } else { pbr; };
+    list.clear();
+    list.addSkinned(cm, material, Mat4.identity(), &bend);
+    drawFrame(&mut renderer, &mut device, &mut morpher, &color, &depth, &readback, &camera, &headOn, &list);
+    expectUInt(u64.from(renderer.drawCalls), 1u64, "the morphed, skinned copy: one draw");
+    // The ring centres, morphed then skinned, are on the tube
+    mut misses = 0u32;
+    mut r = 1usize;
+    while r + 1usize < RINGS {
+      imm centre = new Vec3(0., f32.from(r) * 0.05, 0.);
+      imm morphed = targets.position(r * SIDES, centre, &wm);
+      if !covered(p, viewProjection, skin.skinPoint(r * SIDES, &bend, morphed)) { misses = misses + 1u32; }
+      r = r + 1usize;
+    }
+    expectUInt(u64.from(misses), 0u64, "every ring's centre, morphed and then skinned on the CPU, is drawn on the tube");
+    // Ring 19 (y = 0.95) stretched to y = 1.25 reaches x = -0.75 along the arm; skin-then-morph would put it at (-0.45, 0.8)
+    expect(covered(p, viewProjection, new Vec3(-0.75, 0.5, 0.)), "the arm reaches 0.75 along -x: morph, then skin");
+    expect(!covered(p, viewProjection, new Vec3(-0.45, 0.8, 0.)), "and not up at (-0.45, 0.8), where skin-then-morph would have it");
+    pass = pass + 1u32;
+  }
+  // All weights zero: the pixels of the base mesh
+  list.clear();
+  list.addSkinned(base, red, Mat4.identity(), &bend);
+  drawFrame(&mut renderer, &mut device, &mut morpher, &color, &depth, &readback, &camera, &headOn, &list);
+  mut baseShot = List[u8].empty();
+  mut i = 0usize;
+  while i < 16384usize {
+    baseShot.push(*(p + i));
+    i = i + 1usize;
+  }
+  morpher.setWeights(&mut renderer, copy, &zeros());
+  list.clear();
+  list.addSkinned(cm, red, Mat4.identity(), &bend);
+  drawFrame(&mut renderer, &mut device, &mut morpher, &color, &depth, &readback, &camera, &headOn, &list);
+  mut same = true;
+  i = 0usize;
+  while i < 16384usize {
+    if *(p + i) != *baseShot[i] { same = false; }
+    i = i + 1usize;
+  }
+  expect(same, "a copy with every weight zero draws the very pixels the base mesh does");
+
+  // ---- 8. Shadows ----
+  shadowTest(&mut device, &mut renderer, &mut morpher, renderer.addMaterial(&mut device, &Material.plain(new Color(0.5, 0.5, 0.5, 1.))),
+    "a morphed cube's shadow moves with it (lit)");
+  imm greyPbr = PbrMaterial.standard(new Color(0.5, 0.5, 0.5, 1.), 0., 1.);
+  shadowTest(&mut device, &mut renderer, &mut morpher, renderer.addPbrMaterial(&mut device, &greyPbr),
+    "a morphed cube's shadow moves with it (physically based)");
+
+  localShadowTest(&mut device, &mut renderer, &mut morpher, false, "a morphed cube's shadow moves with it (spot light)");
+  localShadowTest(&mut device, &mut renderer, &mut morpher, true, "a morphed cube's shadow moves with it (point light)");
+
+  // ---- Removing a copy ----
+  expect(morpher.removeCopy(&mut device, &mut renderer, copy), "the copy removed");
+  expect(!renderer.hasMesh(cm), "its mesh leaves the renderer");
+  expect(renderer.hasMesh(base), "the base stays");
+  expect(!morpher.removeCopy(&mut device, &mut renderer, copy), "removing it again does nothing");
+  list.clear();
+  list.addSkinned(base, red, Mat4.identity(), &bend);
+  drawFrame(&mut renderer, &mut device, &mut morpher, &color, &depth, &readback, &camera, &headOn, &list);
+  expectUInt(u64.from(renderer.drawCalls), 1u64, "and the base still draws");
+  expect(covered(p, viewProjection, new Vec3(-0.35, 0.5, 0.)), "its arm bent as before");
+
+  expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
+  expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
+  done();
+}
+
+// spirv-begin morphskin.spv MORPHSKIN_SPIRV
+// Written by tools/shaders/shaders.py from morphskin.slang (sha256 ed1f2408b973c23aeb4ad916c87b36870e7e53b86efd9b266cb72c7baf6133b9): do not edit.
+imm MORPHSKIN_SPIRV Array[u32, 1052] = [
+  0x07230203u32, 0x00010500u32, 0x00280000u32, 0x00000193u32, 0x00000000u32, 0x00020011u32,
+  0x00000001u32, 0x000b000au32, 0x5f565053u32, 0x5f52484bu32, 0x726f7473u32, 0x5f656761u32,
+  0x66667562u32, 0x735f7265u32, 0x61726f74u32, 0x635f6567u32, 0x7373616cu32, 0x00000000u32,
+  0x0003000eu32, 0x00000000u32, 0x00000001u32, 0x000d000fu32, 0x00000005u32, 0x00000002u32,
+  0x6e696b73u32, 0x70726f4du32, 0x00646568u32, 0x0000001au32, 0x00000029u32, 0x0000003fu32,
+  0x0000004du32, 0x000000adu32, 0x000000d0u32, 0x00000016u32, 0x00060010u32, 0x00000002u32,
+  0x00000011u32, 0x00000040u32, 0x00000001u32, 0x00000001u32, 0x00030003u32, 0x0000000bu32,
+  0x00000001u32, 0x00030005u32, 0x00000017u32, 0x00000069u32, 0x00070005u32, 0x00000018u32,
+  0x656d6d49u32, 0x74616964u32, 0x735f7365u32, 0x33346474u32, 0x00000030u32, 0x00050006u32,
+  0x00000018u32, 0x00000000u32, 0x6e756f63u32, 0x00000074u32, 0x00050005u32, 0x0000001au32,
+  0x656d6d69u32, 0x74616964u32, 0x00007365u32, 0x00070005u32, 0x00000026u32, 0x75727453u32,
+  0x72757463u32, 0x75426465u32, 0x72656666u32, 0x00000000u32, 0x00060006u32, 0x00000026u32,
+  0x00000000u32, 0x656d5f5fu32, 0x7265626du32, 0x00000030u32, 0x00040005u32, 0x00000029u32,
+  0x6e696f6au32, 0x00007374u32, 0x00040005u32, 0x0000003fu32, 0x67696577u32, 0x00737468u32,
+  0x00030005u32, 0x00000045u32, 0x00000077u32, 0x00070005u32, 0x00000047u32, 0x656e6f42u32,
+  0x726f6658u32, 0x74735f6du32, 0x30333464u32, 0x00000000u32, 0x00050006u32, 0x00000047u32,
+  0x00000000u32, 0x30776f72u32, 0x00000000u32, 0x00050006u32, 0x00000047u32, 0x00000001u32,
+  0x31776f72u32, 0x00000000u32, 0x00050006u32, 0x00000047u32, 0x00000002u32, 0x32776f72u32,
+  0x00000000u32, 0x00070005u32, 0x0000004au32, 0x75727453u32, 0x72757463u32, 0x75426465u32,
+  0x72656666u32, 0x00000000u32, 0x00060006u32, 0x0000004au32, 0x00000000u32, 0x656d5f5fu32,
+  0x7265626du32, 0x00000030u32, 0x00040005u32, 0x0000004du32, 0x65736f70u32, 0x00000000u32,
+  0x00070005u32, 0x000000aau32, 0x75727453u32, 0x72757463u32, 0x75426465u32, 0x72656666u32,
+  0x00000000u32, 0x00060006u32, 0x000000aau32, 0x00000000u32, 0x656d5f5fu32, 0x7265626du32,
+  0x00000030u32, 0x00040005u32, 0x000000adu32, 0x70726f6du32, 0x00646568u32, 0x00070005u32,
+  0x000000ceu32, 0x74535752u32, 0x74637572u32, 0x64657275u32, 0x66667542u32, 0x00007265u32,
+  0x00060006u32, 0x000000ceu32, 0x00000000u32, 0x656d5f5fu32, 0x7265626du32, 0x00000030u32,
+  0x00040005u32, 0x000000d0u32, 0x6e696b73u32, 0x0064656eu32, 0x00050005u32, 0x00000002u32,
+  0x6e696b73u32, 0x70726f4du32, 0x00646568u32, 0x00040047u32, 0x00000016u32, 0x0000000bu32,
+  0x0000001cu32, 0x00030047u32, 0x00000018u32, 0x00000002u32, 0x00050048u32, 0x00000018u32,
+  0x00000000u32, 0x00000023u32, 0x00000000u32, 0x00040047u32, 0x00000024u32, 0x00000006u32,
+  0x00000004u32, 0x00040047u32, 0x00000027u32, 0x00000006u32, 0x00000004u32, 0x00030047u32,
+  0x00000026u32, 0x00000002u32, 0x00050048u32, 0x00000026u32, 0x00000000u32, 0x00000023u32,
+  0x00000000u32, 0x00040047u32, 0x00000029u32, 0x00000021u32, 0x00000005u32, 0x00040047u32,
+  0x00000029u32, 0x00000022u32, 0x00000000u32, 0x00030047u32, 0x00000029u32, 0x00000018u32,
+  0x00040047u32, 0x0000003fu32, 0x00000021u32, 0x00000006u32, 0x00040047u32, 0x0000003fu32,
+  0x00000022u32, 0x00000000u32, 0x00030047u32, 0x0000003fu32, 0x00000018u32, 0x00050048u32,
+  0x00000047u32, 0x00000000u32, 0x00000023u32, 0x00000000u32, 0x00050048u32, 0x00000047u32,
+  0x00000001u32, 0x00000023u32, 0x00000010u32, 0x00050048u32, 0x00000047u32, 0x00000002u32,
+  0x00000023u32, 0x00000020u32, 0x00040047u32, 0x00000048u32, 0x00000006u32, 0x00000030u32,
+  0x00040047u32, 0x0000004bu32, 0x00000006u32, 0x00000030u32, 0x00030047u32, 0x0000004au32,
+  0x00000002u32, 0x00050048u32, 0x0000004au32, 0x00000000u32, 0x00000023u32, 0x00000000u32,
+  0x00040047u32, 0x0000004du32, 0x00000021u32, 0x00000007u32, 0x00040047u32, 0x0000004du32,
+  0x00000022u32, 0x00000000u32, 0x00030047u32, 0x0000004du32, 0x00000018u32, 0x00040047u32,
+  0x000000a8u32, 0x00000006u32, 0x00000004u32, 0x00040047u32, 0x000000abu32, 0x00000006u32,
+  0x00000004u32, 0x00030047u32, 0x000000aau32, 0x00000002u32, 0x00050048u32, 0x000000aau32,
+  0x00000000u32, 0x00000023u32, 0x00000000u32, 0x00040047u32, 0x000000adu32, 0x00000021u32,
+  0x00000004u32, 0x00040047u32, 0x000000adu32, 0x00000022u32, 0x00000000u32, 0x00030047u32,
+  0x000000adu32, 0x00000018u32, 0x00030047u32, 0x000000ceu32, 0x00000002u32, 0x00050048u32,
+  0x000000ceu32, 0x00000000u32, 0x00000023u32, 0x00000000u32, 0x00040047u32, 0x000000d0u32,
+  0x00000021u32, 0x00000008u32, 0x00040047u32, 0x000000d0u32, 0x00000022u32, 0x00000000u32,
+  0x00020013u32, 0x00000001u32, 0x00030021u32, 0x00000003u32, 0x00000001u32, 0x00030016u32,
+  0x00000006u32, 0x00000020u32, 0x00040017u32, 0x00000007u32, 0x00000006u32, 0x00000004u32,
+  0x00040015u32, 0x00000012u32, 0x00000020u32, 0x00000000u32, 0x00040017u32, 0x00000013u32,
+  0x00000012u32, 0x00000003u32, 0x00040020u32, 0x00000015u32, 0x00000001u32, 0x00000013u32,
+  0x0003001eu32, 0x00000018u32, 0x00000012u32, 0x00040020u32, 0x00000019u32, 0x00000009u32,
+  0x00000018u32, 0x00040015u32, 0x0000001bu32, 0x00000020u32, 0x00000001u32, 0x0004002bu32,
+  0x0000001bu32, 0x0000001cu32, 0x00000000u32, 0x00040020u32, 0x0000001du32, 0x00000009u32,
+  0x00000012u32, 0x00020014u32, 0x00000020u32, 0x00040020u32, 0x00000024u32, 0x0000000cu32,
+  0x00000012u32, 0x0003001du32, 0x00000027u32, 0x00000012u32, 0x0003001eu32, 0x00000026u32,
+  0x00000027u32, 0x00040020u32, 0x00000028u32, 0x0000000cu32, 0x00000026u32, 0x00040017u32,
+  0x0000002bu32, 0x00000012u32, 0x00000004u32, 0x0004002bu32, 0x00000012u32, 0x00000032u32,
+  0x000000ffu32, 0x0004002bu32, 0x0000001bu32, 0x00000034u32, 0x00000008u32, 0x0004002bu32,
+  0x0000001bu32, 0x00000037u32, 0x00000010u32, 0x0004002bu32, 0x0000001bu32, 0x0000003au32,
+  0x00000018u32, 0x0005001eu32, 0x00000047u32, 0x00000007u32, 0x00000007u32, 0x00000007u32,
+  0x00040020u32, 0x00000048u32, 0x0000000cu32, 0x00000047u32, 0x0003001du32, 0x0000004bu32,
+  0x00000047u32, 0x0003001eu32, 0x0000004au32, 0x0000004bu32, 0x00040020u32, 0x0000004cu32,
+  0x0000000cu32, 0x0000004au32, 0x0004002bu32, 0x00000012u32, 0x000000a7u32, 0x00000003u32,
+  0x00040020u32, 0x000000a8u32, 0x0000000cu32, 0x00000006u32, 0x0003001du32, 0x000000abu32,
+  0x00000006u32, 0x0003001eu32, 0x000000aau32, 0x000000abu32, 0x00040020u32, 0x000000acu32,
+  0x0000000cu32, 0x000000aau32, 0x0004002bu32, 0x00000012u32, 0x000000b0u32, 0x00000001u32,
+  0x0004002bu32, 0x00000012u32, 0x000000b4u32, 0x00000002u32, 0x00040017u32, 0x000000b7u32,
+  0x00000006u32, 0x00000003u32, 0x0004002bu32, 0x00000006u32, 0x000000c1u32, 0x3f800000u32,
+  0x0003001eu32, 0x000000ceu32, 0x000000abu32, 0x00040020u32, 0x000000cfu32, 0x0000000cu32,
+  0x000000ceu32, 0x0004003bu32, 0x00000015u32, 0x00000016u32, 0x00000001u32, 0x0004003bu32,
+  0x00000019u32, 0x0000001au32, 0x00000009u32, 0x0004003bu32, 0x00000028u32, 0x00000029u32,
+  0x0000000cu32, 0x0004003bu32, 0x00000028u32, 0x0000003fu32, 0x0000000cu32, 0x0004003bu32,
+  0x0000004cu32, 0x0000004du32, 0x0000000cu32, 0x0004003bu32, 0x000000acu32, 0x000000adu32,
+  0x0000000cu32, 0x0004003bu32, 0x000000cfu32, 0x000000d0u32, 0x0000000cu32, 0x0004002bu32,
+  0x00000012u32, 0x000000dcu32, 0x00000000u32, 0x0004002bu32, 0x00000006u32, 0x0000016cu32,
+  0x3b808081u32, 0x0007002cu32, 0x00000007u32, 0x0000016du32, 0x0000016cu32, 0x0000016cu32,
+  0x0000016cu32, 0x0000016cu32, 0x00040020u32, 0x0000017au32, 0x0000000cu32, 0x00000007u32,
+  0x00050036u32, 0x00000001u32, 0x00000002u32, 0x00000000u32, 0x00000003u32, 0x000200f8u32,
+  0x00000004u32, 0x000300f7u32, 0x000000dau32, 0x00000000u32, 0x000300fbu32, 0x000000dcu32,
+  0x000000dbu32, 0x000200f8u32, 0x000000dbu32, 0x0004003du32, 0x00000013u32, 0x00000014u32,
+  0x00000016u32, 0x00050051u32, 0x00000012u32, 0x00000017u32, 0x00000014u32, 0x00000000u32,
+  0x00050041u32, 0x0000001du32, 0x0000001eu32, 0x0000001au32, 0x0000001cu32, 0x0004003du32,
+  0x00000012u32, 0x0000001fu32, 0x0000001eu32, 0x000500aeu32, 0x00000020u32, 0x00000021u32,
+  0x00000017u32, 0x0000001fu32, 0x000300f7u32, 0x00000011u32, 0x00000000u32, 0x000400fau32,
+  0x00000021u32, 0x00000010u32, 0x00000011u32, 0x000200f8u32, 0x00000010u32, 0x000200f9u32,
+  0x000000dau32, 0x000200f8u32, 0x00000011u32, 0x00060041u32, 0x00000024u32, 0x00000025u32,
+  0x00000029u32, 0x0000001cu32, 0x00000017u32, 0x0004003du32, 0x00000012u32, 0x0000002au32,
+  0x00000025u32, 0x000500c7u32, 0x00000012u32, 0x000000e4u32, 0x0000002au32, 0x00000032u32,
+  0x000500c2u32, 0x00000012u32, 0x000000e5u32, 0x0000002au32, 0x00000034u32, 0x000500c7u32,
+  0x00000012u32, 0x000000e6u32, 0x000000e5u32, 0x00000032u32, 0x000500c2u32, 0x00000012u32,
+  0x000000e7u32, 0x0000002au32, 0x00000037u32, 0x000500c7u32, 0x00000012u32, 0x000000e8u32,
+  0x000000e7u32, 0x00000032u32, 0x000500c2u32, 0x00000012u32, 0x000000e9u32, 0x0000002au32,
+  0x0000003au32, 0x000500c7u32, 0x00000012u32, 0x000000eau32, 0x000000e9u32, 0x00000032u32,
+  0x00070050u32, 0x0000002bu32, 0x000000ebu32, 0x000000e4u32, 0x000000e6u32, 0x000000e8u32,
+  0x000000eau32, 0x00060041u32, 0x00000024u32, 0x0000003eu32, 0x0000003fu32, 0x0000001cu32,
+  0x00000017u32, 0x0004003du32, 0x00000012u32, 0x00000040u32, 0x0000003eu32, 0x000500c7u32,
+  0x00000012u32, 0x000000eeu32, 0x00000040u32, 0x00000032u32, 0x000500c2u32, 0x00000012u32,
+  0x000000efu32, 0x00000040u32, 0x00000034u32, 0x000500c7u32, 0x00000012u32, 0x000000f0u32,
+  0x000000efu32, 0x00000032u32, 0x000500c2u32, 0x00000012u32, 0x000000f1u32, 0x00000040u32,
+  0x00000037u32, 0x000500c7u32, 0x00000012u32, 0x000000f2u32, 0x000000f1u32, 0x00000032u32,
+  0x000500c2u32, 0x00000012u32, 0x000000f3u32, 0x00000040u32, 0x0000003au32, 0x000500c7u32,
+  0x00000012u32, 0x000000f4u32, 0x000000f3u32, 0x00000032u32, 0x00070050u32, 0x0000002bu32,
+  0x000000f5u32, 0x000000eeu32, 0x000000f0u32, 0x000000f2u32, 0x000000f4u32, 0x00040070u32,
+  0x00000007u32, 0x00000042u32, 0x000000f5u32, 0x00050085u32, 0x00000007u32, 0x00000045u32,
+  0x00000042u32, 0x0000016du32, 0x00050051u32, 0x00000012u32, 0x00000046u32, 0x000000ebu32,
+  0x00000000u32, 0x00060041u32, 0x00000048u32, 0x00000049u32, 0x0000004du32, 0x0000001cu32,
+  0x00000046u32, 0x00050041u32, 0x0000017au32, 0x0000017bu32, 0x00000049u32, 0x000000dcu32,
+  0x0004003du32, 0x00000007u32, 0x0000017cu32, 0x0000017bu32, 0x00050041u32, 0x0000017au32,
+  0x0000017du32, 0x00000049u32, 0x000000b0u32, 0x0004003du32, 0x00000007u32, 0x0000017eu32,
+  0x0000017du32, 0x00050041u32, 0x0000017au32, 0x0000017fu32, 0x00000049u32, 0x000000b4u32,
+  0x0004003du32, 0x00000007u32, 0x00000180u32, 0x0000017fu32, 0x00050051u32, 0x00000012u32,
+  0x00000051u32, 0x000000ebu32, 0x00000001u32, 0x00060041u32, 0x00000048u32, 0x00000052u32,
+  0x0000004du32, 0x0000001cu32, 0x00000051u32, 0x00050041u32, 0x0000017au32, 0x00000181u32,
+  0x00000052u32, 0x000000dcu32, 0x0004003du32, 0x00000007u32, 0x00000182u32, 0x00000181u32,
+  0x00050041u32, 0x0000017au32, 0x00000183u32, 0x00000052u32, 0x000000b0u32, 0x0004003du32,
+  0x00000007u32, 0x00000184u32, 0x00000183u32, 0x00050041u32, 0x0000017au32, 0x00000185u32,
+  0x00000052u32, 0x000000b4u32, 0x0004003du32, 0x00000007u32, 0x00000186u32, 0x00000185u32,
+  0x00050051u32, 0x00000012u32, 0x00000056u32, 0x000000ebu32, 0x00000002u32, 0x00060041u32,
+  0x00000048u32, 0x00000057u32, 0x0000004du32, 0x0000001cu32, 0x00000056u32, 0x00050041u32,
+  0x0000017au32, 0x00000187u32, 0x00000057u32, 0x000000dcu32, 0x0004003du32, 0x00000007u32,
+  0x00000188u32, 0x00000187u32, 0x00050041u32, 0x0000017au32, 0x00000189u32, 0x00000057u32,
+  0x000000b0u32, 0x0004003du32, 0x00000007u32, 0x0000018au32, 0x00000189u32, 0x00050041u32,
+  0x0000017au32, 0x0000018bu32, 0x00000057u32, 0x000000b4u32, 0x0004003du32, 0x00000007u32,
+  0x0000018cu32, 0x0000018bu32, 0x00050051u32, 0x00000012u32, 0x0000005bu32, 0x000000ebu32,
+  0x00000003u32, 0x00060041u32, 0x00000048u32, 0x0000005cu32, 0x0000004du32, 0x0000001cu32,
+  0x0000005bu32, 0x00050041u32, 0x0000017au32, 0x0000018du32, 0x0000005cu32, 0x000000dcu32,
+  0x0004003du32, 0x00000007u32, 0x0000018eu32, 0x0000018du32, 0x00050041u32, 0x0000017au32,
+  0x0000018fu32, 0x0000005cu32, 0x000000b0u32, 0x0004003du32, 0x00000007u32, 0x00000190u32,
+  0x0000018fu32, 0x00050041u32, 0x0000017au32, 0x00000191u32, 0x0000005cu32, 0x000000b4u32,
+  0x0004003du32, 0x00000007u32, 0x00000192u32, 0x00000191u32, 0x00050051u32, 0x00000006u32,
+  0x000000fcu32, 0x00000045u32, 0x00000000u32, 0x0005008eu32, 0x00000007u32, 0x000000fdu32,
+  0x0000017cu32, 0x000000fcu32, 0x00050051u32, 0x00000006u32, 0x00000100u32, 0x00000045u32,
+  0x00000001u32, 0x0005008eu32, 0x00000007u32, 0x00000101u32, 0x00000182u32, 0x00000100u32,
+  0x00050081u32, 0x00000007u32, 0x00000102u32, 0x000000fdu32, 0x00000101u32, 0x00050051u32,
+  0x00000006u32, 0x00000105u32, 0x00000045u32, 0x00000002u32, 0x0005008eu32, 0x00000007u32,
+  0x00000106u32, 0x00000188u32, 0x00000105u32, 0x00050081u32, 0x00000007u32, 0x00000107u32,
+  0x00000102u32, 0x00000106u32, 0x00050051u32, 0x00000006u32, 0x0000010au32, 0x00000045u32,
+  0x00000003u32, 0x0005008eu32, 0x00000007u32, 0x0000010bu32, 0x0000018eu32, 0x0000010au32,
+  0x00050081u32, 0x00000007u32, 0x0000010cu32, 0x00000107u32, 0x0000010bu32, 0x0005008eu32,
+  0x00000007u32, 0x00000110u32, 0x0000017eu32, 0x000000fcu32, 0x0005008eu32, 0x00000007u32,
+  0x00000113u32, 0x00000184u32, 0x00000100u32, 0x00050081u32, 0x00000007u32, 0x00000114u32,
+  0x00000110u32, 0x00000113u32, 0x0005008eu32, 0x00000007u32, 0x00000117u32, 0x0000018au32,
+  0x00000105u32, 0x00050081u32, 0x00000007u32, 0x00000118u32, 0x00000114u32, 0x00000117u32,
+  0x0005008eu32, 0x00000007u32, 0x0000011bu32, 0x00000190u32, 0x0000010au32, 0x00050081u32,
+  0x00000007u32, 0x0000011cu32, 0x00000118u32, 0x0000011bu32, 0x0005008eu32, 0x00000007u32,
+  0x00000120u32, 0x00000180u32, 0x000000fcu32, 0x0005008eu32, 0x00000007u32, 0x00000123u32,
+  0x00000186u32, 0x00000100u32, 0x00050081u32, 0x00000007u32, 0x00000124u32, 0x00000120u32,
+  0x00000123u32, 0x0005008eu32, 0x00000007u32, 0x00000127u32, 0x0000018cu32, 0x00000105u32,
+  0x00050081u32, 0x00000007u32, 0x00000128u32, 0x00000124u32, 0x00000127u32, 0x0005008eu32,
+  0x00000007u32, 0x0000012bu32, 0x00000192u32, 0x0000010au32, 0x00050081u32, 0x00000007u32,
+  0x0000012cu32, 0x00000128u32, 0x0000012bu32, 0x00050084u32, 0x00000012u32, 0x000000a6u32,
+  0x000000a7u32, 0x00000017u32, 0x00060041u32, 0x000000a8u32, 0x000000a9u32, 0x000000adu32,
+  0x0000001cu32, 0x000000a6u32, 0x0004003du32, 0x00000006u32, 0x000000aeu32, 0x000000a9u32,
+  0x00050080u32, 0x00000012u32, 0x000000afu32, 0x000000a6u32, 0x000000b0u32, 0x00060041u32,
+  0x000000a8u32, 0x000000b1u32, 0x000000adu32, 0x0000001cu32, 0x000000afu32, 0x0004003du32,
+  0x00000006u32, 0x000000b2u32, 0x000000b1u32, 0x00050080u32, 0x00000012u32, 0x000000b3u32,
+  0x000000a6u32, 0x000000b4u32, 0x00060041u32, 0x000000a8u32, 0x000000b5u32, 0x000000adu32,
+  0x0000001cu32, 0x000000b3u32, 0x0004003du32, 0x00000006u32, 0x000000b6u32, 0x000000b5u32,
+  0x00060050u32, 0x000000b7u32, 0x000000b8u32, 0x000000aeu32, 0x000000b2u32, 0x000000b6u32,
+  0x00050050u32, 0x00000007u32, 0x00000131u32, 0x000000b8u32, 0x000000c1u32, 0x00050094u32,
+  0x00000006u32, 0x00000134u32, 0x0000010cu32, 0x00000131u32, 0x00050094u32, 0x00000006u32,
+  0x00000137u32, 0x0000011cu32, 0x00000131u32, 0x00050094u32, 0x00000006u32, 0x0000013au32,
+  0x0000012cu32, 0x00000131u32, 0x00060050u32, 0x000000b7u32, 0x0000013bu32, 0x00000134u32,
+  0x00000137u32, 0x0000013au32, 0x00060041u32, 0x000000a8u32, 0x000000cdu32, 0x000000d0u32,
+  0x0000001cu32, 0x000000a6u32, 0x00050051u32, 0x00000006u32, 0x000000d1u32, 0x0000013bu32,
+  0x00000000u32, 0x0003003eu32, 0x000000cdu32, 0x000000d1u32, 0x00060041u32, 0x000000a8u32,
+  0x000000d3u32, 0x000000d0u32, 0x0000001cu32, 0x000000afu32, 0x00050051u32, 0x00000006u32,
+  0x000000d4u32, 0x0000013bu32, 0x00000001u32, 0x0003003eu32, 0x000000d3u32, 0x000000d4u32,
+  0x00060041u32, 0x000000a8u32, 0x000000d6u32, 0x000000d0u32, 0x0000001cu32, 0x000000b3u32,
+  0x00050051u32, 0x00000006u32, 0x000000d7u32, 0x0000013bu32, 0x00000002u32, 0x0003003eu32,
+  0x000000d6u32, 0x000000d7u32, 0x000200f9u32, 0x000000dau32, 0x000200f8u32, 0x000000dau32,
+  0x000100fdu32, 0x00010038u32
+];
+// spirv-end
