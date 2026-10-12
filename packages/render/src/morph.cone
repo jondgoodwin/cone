@@ -1,0 +1,1056 @@
+// Morph targets (blend shapes): a mesh that changes shape by a weighted sum
+// of stored displacements, drawn by the ordinary pipelines, shadows
+// included.
+//
+// glTF 2.0's MORPH TARGETS. A target is a displacement of the mesh's vertices
+// (of its positions, and optionally of its normals and tangents); a morphed
+// vertex is its base value plus the sum, over the targets, of the target's
+// weight times the target's displacement; a morphed normal is made unit
+// length again. The weights are ordinary numbers, not limited to 0 to 1, and
+// the order is MORPH FIRST, THEN SKIN: the morphed vertex is what the bones
+// carry. Unreal's morph targets, Unity's blend shapes, Godot's blend shapes
+// and ARKit's face shapes are this model.
+//
+// METHOD: A COMPUTE PRE-PASS WRITING A COPY'S OWN VERTEX BUFFERS. Three
+// ways to apply the sum are in use, and this is the second:
+//   - in the vertex stage (Filament, Godot 3): every pipeline variant (lit,
+//     physically based, blended, skinned, the eight shadow casters, the
+//     velocity pass) grows morph code and a binding for the targets; the
+//     vertex stage does the work again for every pass that draws the copy
+//     (the main pass, each shadow cascade, each local light's faces);
+//   - in a compute pre-pass writing the deformed vertices to buffers
+//     (Unreal, Unity on desktop, Godot 4): the sum is done once a frame, a
+//     draw reads positions and normals as for any mesh, and nothing else in
+//     the renderer knows about morphing;
+//   - transform feedback, which Vulkan does not have.
+// The compute pre-pass costs memory (each morphed COPY has its own positions
+// and normals, 24 bytes a vertex, and its own draw call: copies of one
+// morphed mesh do not batch, since they differ in shape) and a dispatch for
+// a copy whose weights changed; it saves the changes to every pipeline,
+// makes skinning follow morphing for free (the skinned vertex stage reads
+// the morphed buffers), makes every shadow caster cast the morphed shape,
+// and a draw of a morphed copy costs what a draw of any mesh costs, however
+// many targets the mesh has. A copy whose weights did not change since the
+// last frame costs no compute at all.
+//
+// THE PARTS.
+//   MorphTargets   the displacements, on the CPU: N targets over a mesh's M
+//                  vertices, each target sparse (only the vertices it moves)
+//                  or dense, positions, normals and tangents. It is
+//                  gltfimport's morph target data in this package's own type
+//                  (render does not import gltfimport); 'addDense' takes
+//                  the three lists a glTF primitive's target holds. It also
+//                  holds the CPU reference sum ('position', 'normal',
+//                  'tangent') the GPU's is checked against.
+//   Morpher        what runs the pre-pass: 'addSet' uploads a MorphTargets
+//                  for a base mesh; 'addCopy' makes a morphed copy of a mesh
+//                  the renderer holds, a MeshHandle of its own; 'setWeights'
+//                  gives the copy its weights, the non-zero ones kept as a
+//                  list sorted by target; 'update' records the compute pass
+//                  for the copies whose weights changed. Call 'update' on the
+//                  frame's encoder before 'Renderer.render'.
+//   MorphMixer     the face-rig layer above the weights, CPU only: named
+//                  channels (visemes, blinks) driving targets, with
+//                  corrective targets that fire on a product of channels.
+//
+// A morphed copy's MeshHandle is used wherever a mesh's is: 'DrawList.add' or
+// 'addSkinned' (if the base mesh is skinned, the copy has its joints and
+// weights and takes its bones), the lit and physically based materials,
+// blended or not, the sun's cascades and the local lights' shadows. Its
+// bounding sphere is the base's grown by the sum, over the targets, of the
+// weight's magnitude times the target's largest displacement, kept current by
+// 'setWeights'. Remove a copy with 'removeCopy' here, not with
+// 'removeMesh' (its compute work and bind group name its buffers).
+//
+// A COPY OWNS ALL ITS BUFFERS. A GPU buffer has one owner in this renderer
+// (a GpuMesh holds its buffers, and a mesh's release destroys them), so a copy
+// cannot borrow the base's index, uv, joint and weight buffers: 'addCopy'
+// copies them on the GPU, once. That is the memory cost of this design for
+// many copies of one mesh (a crowd of 100 faces of 10,000 vertices: about 60
+// MB of vertex data in all); a base mesh may be replaced or removed once a
+// copy exists. Sharing the unchanging streams between copies would be a change
+// to GpuMesh (a reference-counted buffer), and is the first thing to do if a
+// scene wants hundreds of morphing copies of one mesh.
+//
+// MEMORY AND LIMITS. A set holds per entry (a vertex a target moves) 4 bytes of
+// target number and 24 of displacement, per vertex 4 of row pointer and 24 of
+// the base mesh's positions and normals; a copy holds a mesh's buffers and 8
+// bytes a target. 64 targets of 10,000 vertices, dense, is 18 MB; sparse, less.
+// Any number of targets above 0 works (the active list holds as many as the
+// set has targets); the largest set is the 128 MB a storage buffer binds
+// (about 5 million entries). The tangent displacements glTF carries are kept
+// in MorphTargets and used by its CPU reference but not uploaded: render has
+// no tangent stream, finding tangents from screen-space derivatives.
+//
+// THE VELOCITY BUFFER. A temporal anti-aliasing pass wants each pixel's motion,
+// including a morph's. 'addCopy' with 'keepPrevious' keeps the copy's
+// positions of the frame before ('previousPositions'): a vertex buffer of the
+// same layout as the copy's own, refreshed by 'update', so that a velocity
+// pass can bind it as a second position stream and draw the difference of the
+// two clip positions. It costs 12 more bytes a vertex and a buffer copy on a
+// frame whose weights changed.
+//
+// A FACE RIG ON THIS. See MorphMixer: visemes and blinks are targets of the
+// mesh, each modelled as a displacement from the neutral face; a viewer
+// drives CHANNELS (jaw open, a viseme, blink left), each channel setting a
+// weight of one or more targets (ARKit's 52 blend shapes are channels with
+// one target each); targets are ADDITIVE, so a blink and a viseme sum; where
+// two shapes together look wrong (a smile with the jaw wide open) a
+// CORRECTIVE target, modelled as the difference between the true combined
+// shape and the sum of the two, takes the product of the two channels as its
+// weight, so it is on only as much as both are. Weights are computed on the
+// CPU in the frame, from a keyframetracks clip's PROP_WEIGHTS track (or lip
+// sync, or gaze), and handed to 'setWeights'.
+
+// ---- The displacements ----
+
+// How many bytes of the set's entry (six floats) and of an active pair (a
+// target's number and weight)
+const MORPH_ENTRY_BYTES = 24u64;
+const MORPH_PAIR_BYTES = 8u64;
+
+// The most vertices a workgroup of the compute shader covers
+const MORPH_GROUP_SIZE = 64u32;
+
+// A mesh's morph targets on the CPU: N targets, each the vertices it moves
+// and by how much. Entries are kept in the order of the targets, vertices
+// ascending within a target.
+pub struct MorphTargets {
+  pub vertexCount usize;            // the mesh's vertices: every target is over these
+  pub targetStart List[u32];        // N + 1 entries: target t's entries are targetStart[t] to targetStart[t + 1] - 1
+  pub vertex List[u32];             // each entry's vertex
+  pub dPos List[Vec3];              // and its displacement of the position,
+  pub dNor List[Vec3];              // of the normal
+  pub dTan List[Vec3];              // and of the tangent's xyz
+  pub maxMove List[f32];            // each target's largest position displacement
+
+  // No targets, over a mesh of 'vertexCount' vertices
+  pub fn empty(vertexCount usize) MorphTargets {
+    mut starts = List[u32].empty();
+    starts.push(0u32);
+    new MorphTargets(vertexCount, starts, List[u32].empty(), List[Vec3].empty(), List[Vec3].empty(),
+      List[Vec3].empty(), List[f32].empty());
+  }
+
+  // How many targets
+  pub fn count(self &) usize { targetStart.len() - 1usize; }
+
+  // How many entries in all
+  pub fn entryCount(self &) usize { vertex.len(); }
+
+  // How many vertices target 't' moves
+  pub fn targetEntries(self &, t usize) usize { usize.from(*targetStart[t + 1usize] - *targetStart[t]); }
+
+  // Add a target from lists with one displacement a vertex (the lists of
+  // gltfimport's MorphTarget): 'positions', 'normals' and 'tangents', any of
+  // which may be empty (no displacement of that). A vertex all three leave
+  // exactly where they were is not stored. A list of any other length than
+  // the mesh's vertices is taken as empty. Answers the target's number.
+  pub fn addDense(self &mut, positions &List[Vec3], normals &List[Vec3], tangents &List[Vec3]) usize {
+    imm n = vertexCount;
+    imm hasP = positions.len() == n;
+    imm hasN = normals.len() == n;
+    imm hasT = tangents.len() == n;
+    imm zero = new Vec3(0., 0., 0.);
+    mut biggest f32 = 0.;
+    mut v = 0usize;
+    while v < n {
+      imm p = if hasP { *positions[v]; } else { zero; };
+      imm nm = if hasN { *normals[v]; } else { zero; };
+      imm tg = if hasT { *tangents[v]; } else { zero; };
+      if p.x != 0. or p.y != 0. or p.z != 0. or nm.x != 0. or nm.y != 0. or nm.z != 0.
+          or tg.x != 0. or tg.y != 0. or tg.z != 0. {
+        vertex.push(u32.from(v));
+        dPos.push(p);
+        dNor.push(nm);
+        dTan.push(tg);
+        imm len = p.length();
+        if len > biggest { biggest = len; }
+      }
+      v = v + 1usize;
+    }
+    maxMove.push(biggest);
+    targetStart.push(u32.from(vertex.len()));
+    targetStart.len() - 2usize;
+  }
+
+  // Add a target from glTF's sparse form: the displacements of the vertices
+  // in 'indices' only, 'positions', 'normals' and 'tangents' one for each
+  // index (or empty). An index past the mesh is ignored; one given twice
+  // keeps the last. Answers the target's number.
+  pub fn addSparse(self &mut, indices &List[u32], positions &List[Vec3], normals &List[Vec3],
+      tangents &List[Vec3]) usize {
+    imm zero = new Vec3(0., 0., 0.);
+    mut dp = List[Vec3].empty();
+    mut dn = List[Vec3].empty();
+    mut dt = List[Vec3].empty();
+    mut v = 0usize;
+    while v < vertexCount {
+      dp.push(zero);
+      dn.push(zero);
+      dt.push(zero);
+      v = v + 1usize;
+    }
+    mut i = 0usize;
+    while i < indices.len() {
+      imm at = usize.from(*indices[i]);
+      if at < vertexCount {
+        if positions.len() == indices.len() { dp.set(at, *positions[i]); }
+        if normals.len() == indices.len() { dn.set(at, *normals[i]); }
+        if tangents.len() == indices.len() { dt.set(at, *tangents[i]); }
+      }
+      i = i + 1usize;
+    }
+    self.addDense(&dp, &dn, &dt);
+  }
+
+  // The position of vertex 'v', modelled at 'base', morphed by 'weights' (one
+  // a target; a target past the end of the list has weight 0): the CPU's twin
+  // of morph.slang, summing in the same order (the targets ascending, a
+  // target of weight 0 left out)
+  pub fn position(self &, v usize, base Vec3, weights &List[f32]) Vec3 {
+    mut p = base;
+    mut t = 0usize;
+    while t < self.count() and t < weights.len() {
+      imm w = *weights[t];
+      if w != 0. {
+        imm e = self.find(t, v);
+        if e >= 0i64 { p = p + *dPos[usize.from(e)] * w; }
+      }
+      t = t + 1usize;
+    }
+    p;
+  }
+
+  // The normal of vertex 'v', modelled at 'base': morphed, then made unit
+  // length (left as it was if no weight reaches the vertex)
+  pub fn normal(self &, v usize, base Vec3, weights &List[f32]) Vec3 {
+    mut n = base;
+    mut touched = false;
+    mut t = 0usize;
+    while t < self.count() and t < weights.len() {
+      imm w = *weights[t];
+      if w != 0. {
+        imm e = self.find(t, v);
+        if e >= 0i64 {
+          n = n + *dNor[usize.from(e)] * w;
+          touched = true;
+        }
+      }
+      t = t + 1usize;
+    }
+    if touched and n.length() > 1.0e-12 { n = n.normalize(); }
+    n;
+  }
+
+  // The tangent's xyz of vertex 'v', modelled at 'base', morphed (glTF: the
+  // handedness is not morphed, and the result is not made unit length)
+  pub fn tangent(self &, v usize, base Vec3, weights &List[f32]) Vec3 {
+    mut g = base;
+    mut t = 0usize;
+    while t < self.count() and t < weights.len() {
+      imm w = *weights[t];
+      if w != 0. {
+        imm e = self.find(t, v);
+        if e >= 0i64 { g = g + *dTan[usize.from(e)] * w; }
+      }
+      t = t + 1usize;
+    }
+    g;
+  }
+
+  // The entry of target 't' for vertex 'v', or -1: a binary search of the
+  // target's entries, which ascend by vertex
+  pub fn find(self &, t usize, v usize) i64 {
+    mut lo = usize.from(*targetStart[t]);
+    mut hi = usize.from(*targetStart[t + 1usize]);
+    imm want = u32.from(v);
+    while lo < hi {
+      imm mid = (lo + hi) / 2usize;
+      if *vertex[mid] < want { lo = mid + 1usize; } else { hi = mid; }
+    }
+    if lo < usize.from(*targetStart[t + 1usize]) and *vertex[lo] == want { return i64.from(lo); }
+    -1i64;
+  }
+}
+
+// ---- The GPU's side ----
+
+// A set of targets uploaded for a base mesh (the compressed per-vertex rows
+// morph.slang reads)
+pub struct MorphSetSlot {
+  rowStart Buffer;
+  entryTarget Buffer;
+  entryDelta Buffer;
+  basePosition Buffer;
+  baseNormal Buffer;
+  vertexCount u32;
+  targetCount u32;
+  maxMove List[f32];         // each target's largest position displacement
+}
+
+// A morphed copy: its mesh in the renderer and what it is built from
+pub struct MorphCopySlot {
+  set Ref[MorphSetSlot];
+  mesh MeshHandle;
+  previous Buffer;           // last frame's positions, if asked for; else none
+  active Buffer;             // the active list: (target, weight) pairs, 8 bytes each
+  group BindGroup;
+  weights List[f32];         // one a target, as last set
+  pairs List[f32];           // the active list on the CPU: target (as the bits of a u32) and weight
+  activeCount u32;
+  baseRadius f32;
+  dirty bool;                // the weights changed since the last update
+  previousStale bool;        // 'previous' is not yet the frame the positions now are
+}
+
+// A set of targets the Morpher holds
+pub struct MorphSetHandle {
+  pub slot Ref[MorphSetSlot];
+
+  pub fn none() MorphSetHandle { new MorphSetHandle(Ref[MorphSetSlot].none()); }
+  pub fn isNone(self) bool { slot.isNone(); }
+}
+
+// A morphed copy the Morpher holds
+pub struct MorphHandle {
+  pub slot Ref[MorphCopySlot];
+
+  pub fn none() MorphHandle { new MorphHandle(Ref[MorphCopySlot].none()); }
+  pub fn isNone(self) bool { slot.isNone(); }
+}
+
+// What runs the morph pre-pass. Make one with 'create' and check 'isValid'.
+pub struct Morpher {
+  shader ShaderModule;
+  groupLayout BindGroupLayout;
+  layout PipelineLayout;
+  pipeline ComputePipeline;
+  sets Pool[MorphSetSlot];
+  copies Pool[MorphCopySlot];
+  order List[MorphHandle];         // the live copies, in the order they were made
+  pub dispatches u32 = 0u32;       // how many copies the last 'update' recomputed
+
+  pub fn create(device &mut Device) Morpher {
+    imm readOnly = BUFFER_BINDING_TYPE_READ_ONLY_STORAGE;
+    imm entries = [
+      new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_COMPUTE, bufferType: readOnly),
+      new BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_COMPUTE, bufferType: readOnly),
+      new BindGroupLayoutEntry(binding: 2u32, visibility: SHADER_STAGE_COMPUTE, bufferType: readOnly),
+      new BindGroupLayoutEntry(binding: 3u32, visibility: SHADER_STAGE_COMPUTE, bufferType: readOnly),
+      new BindGroupLayoutEntry(binding: 4u32, visibility: SHADER_STAGE_COMPUTE, bufferType: readOnly),
+      new BindGroupLayoutEntry(binding: 5u32, visibility: SHADER_STAGE_COMPUTE, bufferType: readOnly),
+      new BindGroupLayoutEntry(binding: 6u32, visibility: SHADER_STAGE_COMPUTE, bufferType: BUFFER_BINDING_TYPE_STORAGE),
+      new BindGroupLayoutEntry(binding: 7u32, visibility: SHADER_STAGE_COMPUTE, bufferType: BUFFER_BINDING_TYPE_STORAGE)];
+    mut groupLayout = device.createBindGroupLayout(&entries);
+    imm groupLayouts = [&groupLayout];
+    mut layout = device.createPipelineLayout(&groupLayouts, 12u32);
+    mut shader = device.createShaderModule(&MORPH_SPIRV);
+    imm desc = new ComputePipelineDescriptor(layout: &layout, module: &shader, entryPoint: "morphMain");
+    mut pipeline = device.createComputePipeline(&desc);
+    new Morpher(shader, groupLayout, layout, pipeline, Pool[MorphSetSlot].empty(), Pool[MorphCopySlot].empty(), List[MorphHandle].empty(), 0u32);
+  }
+
+  pub fn isValid(self &) bool { pipeline.isValid(); }
+
+  // Upload 'targets' for copies of 'base', the mesh they are targets of (the
+  // vertices the renderer's own copy of it has, in its order). Normals the
+  // mesh lacks are made smooth, as the renderer makes them. None if the
+  // vertex counts differ or the mesh has no vertices.
+  pub fn addSet(self &mut, device &mut Device, targets &MorphTargets, base &Mesh) MorphSetHandle {
+    imm n = base.positions.len();
+    if n == 0usize or n != targets.vertexCount { return MorphSetHandle.none(); }
+    mut withNormals = Mesh.empty();
+    withNormals.append(base);
+    if withNormals.normals.len() != n { withNormals.computeSmoothNormals(); }
+    imm storage = BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST | BUFFER_USAGE_COPY_SRC;
+    imm entries = targets.entryCount();
+    // The rows: for each vertex, the entries of every target that moves it,
+    // by target. Counted, then filled in target order, which leaves each row
+    // ascending by target.
+    mut counts = List[u32].empty();
+    mut v = 0usize;
+    while v <= n {
+      counts.push(0u32);
+      v = v + 1usize;
+    }
+    mut e = 0usize;
+    while e < entries {
+      imm at = usize.from(*targets.vertex[e]);
+      counts.set(at + 1usize, *counts[at + 1usize] + 1u32);
+      e = e + 1usize;
+    }
+    mut rows = List[u32].empty();
+    mut run = 0u32;
+    v = 0usize;
+    while v <= n {
+      run = run + *counts[v];
+      rows.push(run);
+      v = v + 1usize;
+    }
+    mut fill = List[u32].empty();
+    v = 0usize;
+    while v < n {
+      fill.push(*rows[v]);
+      v = v + 1usize;
+    }
+    mut targetOf = List[u32].empty();
+    mut deltas = List[f32].empty();
+    e = 0usize;
+    while e < entries {
+      targetOf.push(0u32);
+      v = 0usize;
+      while v < 6usize {
+        deltas.push(0.);
+        v = v + 1usize;
+      }
+      e = e + 1usize;
+    }
+    mut t = 0usize;
+    while t < targets.count() {
+      mut k = usize.from(*targets.targetStart[t]);
+      imm end = usize.from(*targets.targetStart[t + 1usize]);
+      while k < end {
+        imm at = usize.from(*targets.vertex[k]);
+        imm slot = usize.from(*fill[at]);
+        fill.set(at, *fill[at] + 1u32);
+        targetOf.set(slot, u32.from(t));
+        imm p = *targets.dPos[k];
+        imm nm = *targets.dNor[k];
+        deltas.set(slot * 6usize, p.x);
+        deltas.set(slot * 6usize + 1usize, p.y);
+        deltas.set(slot * 6usize + 2usize, p.z);
+        deltas.set(slot * 6usize + 3usize, nm.x);
+        deltas.set(slot * 6usize + 4usize, nm.y);
+        deltas.set(slot * 6usize + 5usize, nm.z);
+        k = k + 1usize;
+      }
+      t = t + 1usize;
+    }
+    mut slot = new MorphSetSlot(
+      uploadWords(device, bytesOf[u32](&rows), u64.from(n + 1usize) * 4u64, storage),
+      uploadWords(device, if entries > 0usize { bytesOf[u32](&targetOf); } else { 0usize as *u8; }, u64.from(entries) * 4u64, storage),
+      uploadWords(device, if entries > 0usize { bytesOf[f32](&deltas); } else { 0usize as *u8; }, u64.from(entries) * MORPH_ENTRY_BYTES, storage),
+      uploadWords(device, bytesOf[Vec3](&withNormals.positions), u64.from(n) * 12u64, storage),
+      uploadWords(device, bytesOf[Vec3](&withNormals.normals), u64.from(n) * 12u64, storage),
+      u32.from(n), u32.from(targets.count()), List[f32].empty());
+    t = 0usize;
+    while t < targets.count() {
+      slot.maxMove.push(*targets.maxMove[t]);
+      t = t + 1usize;
+    }
+    new MorphSetHandle(sets.add(slot));
+  }
+
+  // Take the set 'h' away (its buffers are released when the GPU is done
+  // with them). Copies made from it must be removed first.
+  pub fn removeSet(self &mut, device &mut Device, h MorphSetHandle) bool {
+    if !sets.alive(h.slot) { return false; }
+    {
+      mut s = &mut sets[h.slot];
+      device.queue.releaseBuffer(&mut s.rowStart);
+      device.queue.releaseBuffer(&mut s.entryTarget);
+      device.queue.releaseBuffer(&mut s.entryDelta);
+      device.queue.releaseBuffer(&mut s.basePosition);
+      device.queue.releaseBuffer(&mut s.baseNormal);
+    }
+    sets.remove(h.slot);
+  }
+
+  // A morphed copy of the mesh 'base' (which the renderer holds, uploaded
+  // from the Mesh 'set' was made for), all weights 0: a mesh of the renderer's
+  // of its own, drawn as any is, as modelled until 'setWeights' says
+  // otherwise. The copying of the base's streams is recorded into
+  // 'encoder', which must be submitted before the copy is drawn (a frame's
+  // own, ahead of 'update', does: many copies made in one frame share it).
+  // 'keepPrevious' keeps last frame's positions ('previousPositions'). None
+  // if either handle names nothing, the base has other than the set's vertex
+  // count, or it is lines.
+  pub fn addCopy(self &mut, device &mut Device, encoder &mut CommandEncoder, renderer &mut Renderer,
+      base MeshHandle, set MorphSetHandle, keepPrevious bool) MorphHandle {
+    if !renderer.meshes.alive(base.slot) or !sets.alive(set.slot) { return MorphHandle.none(); }
+    imm count = sets[set.slot].vertexCount;
+    imm vertexUsage = BUFFER_USAGE_VERTEX | BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST | BUFFER_USAGE_COPY_SRC;
+    mut g = GpuMesh.none();
+    {
+      imm b = renderer.meshes[base.slot].current();
+      if b.vertexCount != count or b.topology != PRIMITIVE_TOPOLOGY_TRIANGLE_LIST or !b.isValid() {
+        return MorphHandle.none();
+      }
+      // The streams the weights do not change are copied, on the GPU: a
+      // buffer has one owner, so a mesh cannot borrow another's
+      g.uvs = cloneBuffer(device, encoder, &b.uvs);
+      g.indices = cloneBuffer(device, encoder, &b.indices);
+      g.joints = cloneBuffer(device, encoder, &b.joints);
+      g.weights = cloneBuffer(device, encoder, &b.weights);
+      g.sway = cloneBuffer(device, encoder, &b.sway);
+      g.vertexCount = b.vertexCount;
+      g.indexCount = b.indexCount;
+      g.topology = b.topology;
+      g.center = b.center;
+      g.radius = b.radius;
+      mut i = 0usize;
+      while i < b.groups.len() {
+        g.groups.push(*b.groups[i]);
+        i = i + 1usize;
+      }
+    }
+    imm bytes = u64.from(count) * 12u64;
+    g.positions = device.createBuffer(bytes, vertexUsage);
+    g.normals = device.createBuffer(bytes, vertexUsage);
+    // As modelled, until the first weights come: the set's copy of the base
+    encoder.copyBufferToBuffer(&sets[set.slot].basePosition, 0u64, &g.positions, 0u64, bytes);
+    encoder.copyBufferToBuffer(&sets[set.slot].baseNormal, 0u64, &g.normals, 0u64, bytes);
+    mut previous = Buffer.none();
+    if keepPrevious {
+      previous = device.createBuffer(bytes, vertexUsage);
+      encoder.copyBufferToBuffer(&sets[set.slot].basePosition, 0u64, &previous, 0u64, bytes);
+    }
+    imm targetCount = sets[set.slot].targetCount;
+    mut active = device.createBuffer(max64(u64.from(targetCount) * MORPH_PAIR_BYTES, 16u64),
+      BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST);
+    imm groupEntries = [
+      BindGroupEntry.buffer(0u32, &sets[set.slot].rowStart),
+      BindGroupEntry.buffer(1u32, &sets[set.slot].entryTarget),
+      BindGroupEntry.buffer(2u32, &sets[set.slot].entryDelta),
+      BindGroupEntry.buffer(3u32, &sets[set.slot].basePosition),
+      BindGroupEntry.buffer(4u32, &sets[set.slot].baseNormal),
+      BindGroupEntry.buffer(5u32, &active),
+      BindGroupEntry.buffer(6u32, &g.positions),
+      BindGroupEntry.buffer(7u32, &g.normals)];
+    mut group = device.createBindGroup(&self.groupLayout, &groupEntries);
+    mut weights = List[f32].empty();
+    mut t = 0u32;
+    while t < targetCount {
+      weights.push(0.);
+      t = t + 1u32;
+    }
+    imm copy = new MorphCopySlot(set.slot, MeshHandle.none(), previous, active, group, weights,
+      List[f32].empty(), 0u32, g.radius, false, false);
+    imm mesh = new MeshHandle(renderer.meshes.add(new MeshSlot(g, GpuMesh.none(), 0u32, false, 0u64, 0u32)));
+    mut h = new MorphHandle(copies.add(copy));
+    copies[h.slot].mesh = mesh;
+    self.order.push(h);
+    h;
+  }
+
+  // Take the copy 'h' away: its mesh leaves the renderer and its buffers are
+  // released, the base's shared ones left alone
+  pub fn removeCopy(self &mut, device &mut Device, renderer &mut Renderer, h MorphHandle) bool {
+    if !copies.alive(h.slot) { return false; }
+    {
+      mut c = &mut copies[h.slot];
+      if renderer.meshes.alive(c.mesh.slot) { renderer.removeMesh(device, c.mesh); }
+      device.queue.releaseBuffer(&mut c.previous);
+      device.queue.releaseBuffer(&mut c.active);
+    }
+    mut kept = List[MorphHandle].empty();
+    mut i = 0usize;
+    while i < self.order.len() {
+      if !(self.order[i].slot == h.slot) { kept.push(*self.order[i]); }
+      i = i + 1usize;
+    }
+    self.order = kept;
+    copies.remove(h.slot);
+  }
+
+  // The mesh the copy 'h' is drawn as (none if 'h' names no copy)
+  pub fn mesh(self &, h MorphHandle) MeshHandle {
+    if !copies.alive(h.slot) { return MeshHandle.none(); }
+    copies[h.slot].mesh;
+  }
+
+  // The copy's positions of the frame before, for a velocity pass: valid
+  // after the copy was made with 'keepPrevious' (the buffer is not valid
+  // otherwise), and current as of the last 'update'
+  pub fn previousPositions(self &, h MorphHandle) &Buffer {
+    &copies[h.slot].previous;
+  }
+
+  // How many targets the copy has weights for
+  pub fn targetCount(self &, h MorphHandle) usize {
+    if !copies.alive(h.slot) { return 0usize; }
+    copies[h.slot].weights.len();
+  }
+
+  // The copy's weights as last set
+  pub fn weights(self &, h MorphHandle, out &mut List[f32]) {
+    out.clear();
+    if !copies.alive(h.slot) { return; }
+    imm c = copies[h.slot];
+    mut i = 0usize;
+    while i < c.weights.len() {
+      out.push(*c.weights[i]);
+      i = i + 1usize;
+    }
+  }
+
+  // How many targets are not zero now (the active list's length)
+  pub fn activeCount(self &, h MorphHandle) u32 {
+    if !copies.alive(h.slot) { return 0u32; }
+    copies[h.slot].activeCount;
+  }
+
+  // Give the copy 'h' its weights, one a target (a missing weight is 0, an
+  // extra one is ignored). The ones that are not zero make the active list,
+  // sorted by target; if no weight differs from the last call's, nothing is
+  // marked to be done. The copy's bounding sphere is made to hold the shape
+  // the weights give.
+  pub fn setWeights(self &mut, renderer &mut Renderer, h MorphHandle, weights &List[f32]) {
+    if !copies.alive(h.slot) { return; }
+    mut c = &mut copies[h.slot];
+    imm set = sets[c.set];
+    mut changed = false;
+    mut t = 0usize;
+    while t < c.weights.len() {
+      imm w = if t < weights.len() { *weights[t]; } else { 0.; };
+      if w != *c.weights[t] {
+        c.weights.set(t, w);
+        changed = true;
+      }
+      t = t + 1usize;
+    }
+    if !changed { return; }
+    c.pairs.clear();
+    c.activeCount = 0u32;
+    mut grow f32 = 0.;
+    t = 0usize;
+    while t < c.weights.len() {
+      imm w = *c.weights[t];
+      if w != 0. {
+        c.pairs.push(u32.from(t) as f32);
+        c.pairs.push(w);
+        c.activeCount = c.activeCount + 1u32;
+        grow = grow + (if w < 0. { -w; } else { w; }) * *set.maxMove[t];
+      }
+      t = t + 1usize;
+    }
+    c.dirty = true;
+    if renderer.meshes.alive(c.mesh.slot) { renderer.meshes[c.mesh.slot].a.radius = c.baseRadius + grow; }
+  }
+
+  // Record the pre-pass for every copy whose weights changed since the last
+  // call into 'encoder', before the render that draws them. A copy kept
+  // 'keepPrevious' first has its positions copied to 'previous'. Answers how
+  // many copies were recomputed (also 'dispatches').
+  pub fn update(self &mut, device &mut Device, encoder &mut CommandEncoder, renderer &Renderer) u32 {
+    mut count = 0u32;
+    // The frame before's positions, copied outside the compute pass
+    mut i = 0usize;
+    while i < self.order.len() {
+      mut c = &mut copies[self.order[i].slot];
+      if c.previous.isValid() {
+        imm bytes = u64.from(sets[c.set].vertexCount) * 12u64;
+        imm positions = &renderer.meshes[c.mesh.slot].current().positions;
+        if c.dirty {
+          encoder.copyBufferToBuffer(positions, 0u64, &c.previous, 0u64, bytes);
+          c.previousStale = true;
+        } elif c.previousStale {
+          encoder.copyBufferToBuffer(positions, 0u64, &c.previous, 0u64, bytes);
+          c.previousStale = false;
+        }
+      }
+      if c.dirty { count = count + 1u32; }
+      i = i + 1usize;
+    }
+    if count > 0u32 {
+      mut pass = encoder.beginComputePass();
+      pass.setPipeline(&self.pipeline);
+      i = 0usize;
+      while i < self.order.len() {
+        mut c = &mut copies[self.order[i].slot];
+        if c.dirty {
+          if c.activeCount > 0u32 {
+            device.queue.writeBuffer(&c.active, 0u64, bytesOf[f32](&c.pairs), u64.from(c.activeCount) * MORPH_PAIR_BYTES);
+          }
+          pass.setBindGroup(0u32, &c.group);
+          imm immediates Array[u32, 3] = [sets[c.set].vertexCount, c.activeCount, sets[c.set].targetCount];
+          pass.setImmediates(0u32, &immediates as *u8, 12u32);
+          pass.dispatchWorkgroups((sets[c.set].vertexCount + MORPH_GROUP_SIZE - 1u32) / MORPH_GROUP_SIZE);
+          c.dirty = false;
+        }
+        i = i + 1usize;
+      }
+      pass.end();
+    }
+    self.dispatches = count;
+    count;
+  }
+}
+
+// A buffer holding what 'source' holds, copied by the GPU through 'encoder'
+// (none, if 'source' is none)
+fn cloneBuffer(device &mut Device, encoder &mut CommandEncoder, source &Buffer) Buffer {
+  if !source.isValid() { return Buffer.none(); }
+  mut b = device.createBuffer(source.size, source.usage | BUFFER_USAGE_COPY_DST | BUFFER_USAGE_COPY_SRC);
+  encoder.copyBufferToBuffer(source, 0u64, &b, 0u64, source.size);
+  b;
+}
+
+// Bytes to the GPU: a buffer of at least 16 bytes holding 'size' bytes from 'data'
+fn uploadWords(device &mut Device, data *u8, size u64, usage u32) Buffer {
+  mut b = device.createBuffer(max64(size, 16u64), usage);
+  if size > 0u64 and (data as usize) != 0usize { device.queue.writeBuffer(&b, 0u64, data, size); }
+  b;
+}
+
+fn max64(a u64, b u64) u64 { if a > b { a; } else { b; }; }
+
+// ---- A face rig's weights ----
+
+// The layer between a face's controls and the targets' weights, on the CPU.
+// A CHANNEL is a control a program or an animation sets, 0 to 1 as a rule
+// (jaw open, a viseme, blink left, a smile); it DRIVES one or more targets,
+// each at a scale (a smile channel drives the smile target at 1 and the
+// cheek target at 0.5; a negative scale lets one channel ease another's
+// target back). Contributions ADD, so a viseme and a blink sum without
+// either knowing of the other. A CORRECTIVE target is for the pose two
+// channels make together that the sum of their targets gets wrong (a wide
+// smile with the jaw open pulls the lip through the teeth): it is modelled
+// as the difference between the true combined shape and the sum of the two,
+// and its weight is the PRODUCT of the two channels' values, so it is
+// fully on only when both are, and not at all when either is off. This is
+// the combination-shape rule of Maya and Blender's shape keys, and of
+// ARKit's face rigs.
+//
+// 'resolve' makes the weights for a mesh's targets, to hand to
+// 'Morpher.setWeights'. Nothing is clamped unless 'clampTo' says (glTF
+// allows weights outside 0 to 1, for exaggeration).
+pub struct MorphMixer {
+  pub targetCount usize;
+  values List[f32];              // each channel's value
+  driveChannel List[u32];        // the drives: a channel, a target, a scale
+  driveTarget List[u32];
+  driveScale List[f32];
+  corrA List[u32];               // the correctives: two channels and a target
+  corrB List[u32];
+  corrTarget List[u32];
+  clamped bool;
+  lo f32;
+  hi f32;
+
+  pub fn make(targetCount usize) MorphMixer {
+    new MorphMixer(targetCount, List[f32].empty(), List[u32].empty(), List[u32].empty(), List[f32].empty(),
+      List[u32].empty(), List[u32].empty(), List[u32].empty(), false, 0., 1.);
+  }
+
+  // A new channel, at 0; its number
+  pub fn addChannel(self &mut) usize {
+    values.push(0.);
+    values.len() - 1usize;
+  }
+
+  // Channel 'channel' adds its value times 'scale' to target 'target'
+  pub fn drive(self &mut, channel usize, target usize, scale f32) {
+    driveChannel.push(u32.from(channel));
+    driveTarget.push(u32.from(target));
+    driveScale.push(scale);
+  }
+
+  // Target 'target' is the corrective of channels 'a' and 'b': its weight is
+  // their values' product
+  pub fn corrective(self &mut, a usize, b usize, target usize) {
+    corrA.push(u32.from(a));
+    corrB.push(u32.from(b));
+    corrTarget.push(u32.from(target));
+  }
+
+  // Channel 'channel' takes 'value'
+  pub fn set(self &mut, channel usize, value f32) {
+    if channel < values.len() { values.set(channel, value); }
+  }
+
+  // The weights end up between 'low' and 'high'
+  pub fn clampTo(self &mut, low f32, high f32) {
+    clamped = true;
+    lo = low;
+    hi = high;
+  }
+
+  // The weight of every target from the channels now, into 'out'
+  pub fn resolve(self &, out &mut List[f32]) {
+    out.clear();
+    mut t = 0usize;
+    while t < targetCount {
+      out.push(0.);
+      t = t + 1usize;
+    }
+    mut i = 0usize;
+    while i < driveChannel.len() {
+      imm target = usize.from(*driveTarget[i]);
+      imm channel = usize.from(*driveChannel[i]);
+      if target < targetCount and channel < values.len() {
+        out.set(target, *out[target] + *values[channel] * *driveScale[i]);
+      }
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < corrTarget.len() {
+      imm target = usize.from(*corrTarget[i]);
+      imm a = usize.from(*corrA[i]);
+      imm b = usize.from(*corrB[i]);
+      if target < targetCount and a < values.len() and b < values.len() {
+        out.set(target, *out[target] + *values[a] * *values[b]);
+      }
+      i = i + 1usize;
+    }
+    if clamped {
+      t = 0usize;
+      while t < targetCount {
+        imm w = *out[t];
+        out.set(t, if w < lo { lo; } elif w > hi { hi; } else { w; });
+        t = t + 1usize;
+      }
+    }
+  }
+}
+
+// spirv-begin morph.spv MORPH_SPIRV
+// Written by tools/shaders/shaders.py from morph.slang (sha256 7d2e4397d8e1381f50c0d3385dbb3522d268362aad657a419381fb79982a49dc): do not edit.
+imm MORPH_SPIRV Array[u32, 1462] = [
+  0x07230203u32, 0x00010500u32, 0x00280000u32, 0x0000010cu32, 0x00000000u32, 0x00020011u32,
+  0x00000001u32, 0x000b000au32, 0x5f565053u32, 0x5f52484bu32, 0x726f7473u32, 0x5f656761u32,
+  0x66667562u32, 0x735f7265u32, 0x61726f74u32, 0x635f6567u32, 0x7373616cu32, 0x00000000u32,
+  0x0006000bu32, 0x000000e3u32, 0x4c534c47u32, 0x6474732eu32, 0x3035342eu32, 0x00000000u32,
+  0x0003000eu32, 0x00000000u32, 0x00000001u32, 0x0010000fu32, 0x00000005u32, 0x00000002u32,
+  0x70726f6du32, 0x69614d68u32, 0x0000006eu32, 0x0000003eu32, 0x0000004eu32, 0x0000005au32,
+  0x00000066u32, 0x0000007cu32, 0x00000096u32, 0x000000b3u32, 0x000000f0u32, 0x000000fdu32,
+  0x0000003au32, 0x00060010u32, 0x00000002u32, 0x00000011u32, 0x00000040u32, 0x00000001u32,
+  0x00000001u32, 0x00030003u32, 0x0000000bu32, 0x00000001u32, 0x00040005u32, 0x00000007u32,
+  0x63756f74u32, 0x00646568u32, 0x00040005u32, 0x00000007u32, 0x63756f74u32, 0x00646568u32,
+  0x00040005u32, 0x00000007u32, 0x63756f74u32, 0x00646568u32, 0x00040005u32, 0x00000007u32,
+  0x63756f74u32, 0x00646568u32, 0x00030005u32, 0x0000000bu32, 0x00000070u32, 0x00030005u32,
+  0x0000000bu32, 0x00000070u32, 0x00030005u32, 0x0000000bu32, 0x00000070u32, 0x00030005u32,
+  0x0000000bu32, 0x00000070u32, 0x00030005u32, 0x0000000cu32, 0x0000006eu32, 0x00030005u32,
+  0x0000000cu32, 0x0000006eu32, 0x00030005u32, 0x0000000cu32, 0x0000006eu32, 0x00030005u32,
+  0x0000000cu32, 0x0000006eu32, 0x00030005u32, 0x0000000cu32, 0x0000006eu32, 0x00030005u32,
+  0x0000000cu32, 0x0000006eu32, 0x00030005u32, 0x0000000fu32, 0x0000006bu32, 0x00030005u32,
+  0x0000000fu32, 0x0000006bu32, 0x00030005u32, 0x00000010u32, 0x00006f6cu32, 0x00030005u32,
+  0x00000010u32, 0x00006f6cu32, 0x00030005u32, 0x00000010u32, 0x00006f6cu32, 0x00030005u32,
+  0x00000010u32, 0x00006f6cu32, 0x00030005u32, 0x00000011u32, 0x00006968u32, 0x00030005u32,
+  0x00000011u32, 0x00006968u32, 0x00030005u32, 0x00000011u32, 0x00006968u32, 0x00030005u32,
+  0x0000003bu32, 0x00000076u32, 0x00070005u32, 0x0000003cu32, 0x656d6d49u32, 0x74616964u32,
+  0x735f7365u32, 0x33346474u32, 0x00000030u32, 0x00060006u32, 0x0000003cu32, 0x00000000u32,
+  0x74726576u32, 0x6f437865u32, 0x00746e75u32, 0x00060006u32, 0x0000003cu32, 0x00000001u32,
+  0x69746361u32, 0x6f436576u32, 0x00746e75u32, 0x00060006u32, 0x0000003cu32, 0x00000002u32,
+  0x67726174u32, 0x6f437465u32, 0x00746e75u32, 0x00050005u32, 0x0000003eu32, 0x656d6d69u32,
+  0x74616964u32, 0x00007365u32, 0x00070005u32, 0x0000004bu32, 0x75727453u32, 0x72757463u32,
+  0x75426465u32, 0x72656666u32, 0x00000000u32, 0x00060006u32, 0x0000004bu32, 0x00000000u32,
+  0x656d5f5fu32, 0x7265626du32, 0x00000030u32, 0x00060005u32, 0x0000004eu32, 0x65736162u32,
+  0x69736f50u32, 0x6e6f6974u32, 0x00000000u32, 0x00050005u32, 0x0000005au32, 0x65736162u32,
+  0x6d726f4eu32, 0x00006c61u32, 0x00070005u32, 0x00000063u32, 0x75727453u32, 0x72757463u32,
+  0x75426465u32, 0x72656666u32, 0x00000000u32, 0x00060006u32, 0x00000063u32, 0x00000000u32,
+  0x656d5f5fu32, 0x7265626du32, 0x00000030u32, 0x00050005u32, 0x00000066u32, 0x53776f72u32,
+  0x74726174u32, 0x00000000u32, 0x00050005u32, 0x0000007cu32, 0x69746361u32, 0x694c6576u32,
+  0x00007473u32, 0x00030005u32, 0x00000088u32, 0x00006f6cu32, 0x00030005u32, 0x00000094u32,
+  0x0064696du32, 0x00050005u32, 0x00000096u32, 0x72746e65u32, 0x72615479u32, 0x00746567u32,
+  0x00030005u32, 0x000000b0u32, 0x00000065u32, 0x00050005u32, 0x000000b3u32, 0x72746e65u32,
+  0x6c654479u32, 0x00006174u32, 0x00030005u32, 0x000000beu32, 0x00000070u32, 0x00030005u32,
+  0x000000cdu32, 0x0000006eu32, 0x00070005u32, 0x000000eeu32, 0x74535752u32, 0x74637572u32,
+  0x64657275u32, 0x66667542u32, 0x00007265u32, 0x00060006u32, 0x000000eeu32, 0x00000000u32,
+  0x656d5f5fu32, 0x7265626du32, 0x00000030u32, 0x00050005u32, 0x000000f0u32, 0x5074756fu32,
+  0x7469736fu32, 0x006e6f69u32, 0x00050005u32, 0x000000fdu32, 0x4e74756fu32, 0x616d726fu32,
+  0x0000006cu32, 0x00050005u32, 0x00000002u32, 0x70726f6du32, 0x69614d68u32, 0x0000006eu32,
+  0x00040047u32, 0x0000003au32, 0x0000000bu32, 0x0000001cu32, 0x00030047u32, 0x0000003cu32,
+  0x00000002u32, 0x00050048u32, 0x0000003cu32, 0x00000000u32, 0x00000023u32, 0x00000000u32,
+  0x00050048u32, 0x0000003cu32, 0x00000001u32, 0x00000023u32, 0x00000004u32, 0x00050048u32,
+  0x0000003cu32, 0x00000002u32, 0x00000023u32, 0x00000008u32, 0x00040047u32, 0x00000049u32,
+  0x00000006u32, 0x00000004u32, 0x00040047u32, 0x0000004cu32, 0x00000006u32, 0x00000004u32,
+  0x00030047u32, 0x0000004bu32, 0x00000002u32, 0x00050048u32, 0x0000004bu32, 0x00000000u32,
+  0x00000023u32, 0x00000000u32, 0x00040047u32, 0x0000004eu32, 0x00000021u32, 0x00000003u32,
+  0x00040047u32, 0x0000004eu32, 0x00000022u32, 0x00000000u32, 0x00030047u32, 0x0000004eu32,
+  0x00000018u32, 0x00040047u32, 0x0000005au32, 0x00000021u32, 0x00000004u32, 0x00040047u32,
+  0x0000005au32, 0x00000022u32, 0x00000000u32, 0x00030047u32, 0x0000005au32, 0x00000018u32,
+  0x00040047u32, 0x00000061u32, 0x00000006u32, 0x00000004u32, 0x00040047u32, 0x00000064u32,
+  0x00000006u32, 0x00000004u32, 0x00030047u32, 0x00000063u32, 0x00000002u32, 0x00050048u32,
+  0x00000063u32, 0x00000000u32, 0x00000023u32, 0x00000000u32, 0x00040047u32, 0x00000066u32,
+  0x00000021u32, 0x00000000u32, 0x00040047u32, 0x00000066u32, 0x00000022u32, 0x00000000u32,
+  0x00030047u32, 0x00000066u32, 0x00000018u32, 0x00040047u32, 0x0000007cu32, 0x00000021u32,
+  0x00000005u32, 0x00040047u32, 0x0000007cu32, 0x00000022u32, 0x00000000u32, 0x00030047u32,
+  0x0000007cu32, 0x00000018u32, 0x00040047u32, 0x00000096u32, 0x00000021u32, 0x00000001u32,
+  0x00040047u32, 0x00000096u32, 0x00000022u32, 0x00000000u32, 0x00030047u32, 0x00000096u32,
+  0x00000018u32, 0x00040047u32, 0x000000b3u32, 0x00000021u32, 0x00000002u32, 0x00040047u32,
+  0x000000b3u32, 0x00000022u32, 0x00000000u32, 0x00030047u32, 0x000000b3u32, 0x00000018u32,
+  0x00030047u32, 0x000000eeu32, 0x00000002u32, 0x00050048u32, 0x000000eeu32, 0x00000000u32,
+  0x00000023u32, 0x00000000u32, 0x00040047u32, 0x000000f0u32, 0x00000021u32, 0x00000006u32,
+  0x00040047u32, 0x000000f0u32, 0x00000022u32, 0x00000000u32, 0x00040047u32, 0x000000fdu32,
+  0x00000021u32, 0x00000007u32, 0x00040047u32, 0x000000fdu32, 0x00000022u32, 0x00000000u32,
+  0x00020013u32, 0x00000001u32, 0x00030021u32, 0x00000003u32, 0x00000001u32, 0x00020014u32,
+  0x00000005u32, 0x00040020u32, 0x00000006u32, 0x00000007u32, 0x00000005u32, 0x00030016u32,
+  0x00000008u32, 0x00000020u32, 0x00040017u32, 0x00000009u32, 0x00000008u32, 0x00000003u32,
+  0x00040020u32, 0x0000000au32, 0x00000007u32, 0x00000009u32, 0x00040015u32, 0x0000000du32,
+  0x00000020u32, 0x00000000u32, 0x00040020u32, 0x0000000eu32, 0x00000007u32, 0x0000000du32,
+  0x00040017u32, 0x00000037u32, 0x0000000du32, 0x00000003u32, 0x00040020u32, 0x00000039u32,
+  0x00000001u32, 0x00000037u32, 0x0005001eu32, 0x0000003cu32, 0x0000000du32, 0x0000000du32,
+  0x0000000du32, 0x00040020u32, 0x0000003du32, 0x00000009u32, 0x0000003cu32, 0x00040015u32,
+  0x0000003fu32, 0x00000020u32, 0x00000001u32, 0x0004002bu32, 0x0000003fu32, 0x00000040u32,
+  0x00000000u32, 0x00040020u32, 0x00000041u32, 0x00000009u32, 0x0000000du32, 0x0004002bu32,
+  0x0000000du32, 0x00000048u32, 0x00000003u32, 0x00040020u32, 0x00000049u32, 0x0000000cu32,
+  0x00000008u32, 0x0003001du32, 0x0000004cu32, 0x00000008u32, 0x0003001eu32, 0x0000004bu32,
+  0x0000004cu32, 0x00040020u32, 0x0000004du32, 0x0000000cu32, 0x0000004bu32, 0x0004002bu32,
+  0x0000000du32, 0x00000051u32, 0x00000001u32, 0x0004002bu32, 0x0000000du32, 0x00000055u32,
+  0x00000002u32, 0x00040020u32, 0x00000061u32, 0x0000000cu32, 0x0000000du32, 0x0003001du32,
+  0x00000064u32, 0x0000000du32, 0x0003001eu32, 0x00000063u32, 0x00000064u32, 0x00040020u32,
+  0x00000065u32, 0x0000000cu32, 0x00000063u32, 0x0003002au32, 0x00000005u32, 0x0000006du32,
+  0x0004002bu32, 0x0000000du32, 0x0000006fu32, 0x00000000u32, 0x0004002bu32, 0x0000003fu32,
+  0x00000073u32, 0x00000001u32, 0x0004002bu32, 0x0000003fu32, 0x00000083u32, 0x00000002u32,
+  0x0004002bu32, 0x0000000du32, 0x000000b1u32, 0x00000006u32, 0x0004002bu32, 0x0000000du32,
+  0x000000c3u32, 0x00000004u32, 0x0004002bu32, 0x0000000du32, 0x000000c7u32, 0x00000005u32,
+  0x00030029u32, 0x00000005u32, 0x000000ceu32, 0x0004002bu32, 0x00000008u32, 0x000000e5u32,
+  0x2b8cbcccu32, 0x0003001eu32, 0x000000eeu32, 0x0000004cu32, 0x00040020u32, 0x000000efu32,
+  0x0000000cu32, 0x000000eeu32, 0x0004003bu32, 0x00000039u32, 0x0000003au32, 0x00000001u32,
+  0x0004003bu32, 0x0000003du32, 0x0000003eu32, 0x00000009u32, 0x0004003bu32, 0x0000004du32,
+  0x0000004eu32, 0x0000000cu32, 0x0004003bu32, 0x0000004du32, 0x0000005au32, 0x0000000cu32,
+  0x0004003bu32, 0x00000065u32, 0x00000066u32, 0x0000000cu32, 0x0004003bu32, 0x0000004du32,
+  0x0000007cu32, 0x0000000cu32, 0x0004003bu32, 0x00000065u32, 0x00000096u32, 0x0000000cu32,
+  0x0004003bu32, 0x0000004du32, 0x000000b3u32, 0x0000000cu32, 0x0004003bu32, 0x000000efu32,
+  0x000000f0u32, 0x0000000cu32, 0x0004003bu32, 0x000000efu32, 0x000000fdu32, 0x0000000cu32,
+  0x00050036u32, 0x00000001u32, 0x00000002u32, 0x00000000u32, 0x00000003u32, 0x000200f8u32,
+  0x00000004u32, 0x0004003bu32, 0x00000006u32, 0x00000007u32, 0x00000007u32, 0x0004003bu32,
+  0x0000000au32, 0x0000000bu32, 0x00000007u32, 0x0004003bu32, 0x0000000au32, 0x0000000cu32,
+  0x00000007u32, 0x0004003bu32, 0x0000000eu32, 0x0000000fu32, 0x00000007u32, 0x0004003bu32,
+  0x0000000eu32, 0x00000010u32, 0x00000007u32, 0x0004003bu32, 0x0000000eu32, 0x00000011u32,
+  0x00000007u32, 0x0004003bu32, 0x00000006u32, 0x00000012u32, 0x00000007u32, 0x000300f7u32,
+  0x0000010au32, 0x00000000u32, 0x000300fbu32, 0x0000006fu32, 0x0000010bu32, 0x000200f8u32,
+  0x0000010bu32, 0x0004003du32, 0x00000037u32, 0x00000038u32, 0x0000003au32, 0x00050051u32,
+  0x0000000du32, 0x0000003bu32, 0x00000038u32, 0x00000000u32, 0x00050041u32, 0x00000041u32,
+  0x00000042u32, 0x0000003eu32, 0x00000040u32, 0x0004003du32, 0x0000000du32, 0x00000043u32,
+  0x00000042u32, 0x000500aeu32, 0x00000005u32, 0x00000044u32, 0x0000003bu32, 0x00000043u32,
+  0x000300f7u32, 0x00000014u32, 0x00000000u32, 0x000400fau32, 0x00000044u32, 0x00000013u32,
+  0x00000014u32, 0x000200f8u32, 0x00000013u32, 0x000200f9u32, 0x0000010au32, 0x000200f8u32,
+  0x00000014u32, 0x00050084u32, 0x0000000du32, 0x00000047u32, 0x00000048u32, 0x0000003bu32,
+  0x00060041u32, 0x00000049u32, 0x0000004au32, 0x0000004eu32, 0x00000040u32, 0x00000047u32,
+  0x0004003du32, 0x00000008u32, 0x0000004fu32, 0x0000004au32, 0x00050080u32, 0x0000000du32,
+  0x00000050u32, 0x00000047u32, 0x00000051u32, 0x00060041u32, 0x00000049u32, 0x00000052u32,
+  0x0000004eu32, 0x00000040u32, 0x00000050u32, 0x0004003du32, 0x00000008u32, 0x00000053u32,
+  0x00000052u32, 0x00050080u32, 0x0000000du32, 0x00000054u32, 0x00000047u32, 0x00000055u32,
+  0x00060041u32, 0x00000049u32, 0x00000056u32, 0x0000004eu32, 0x00000040u32, 0x00000054u32,
+  0x0004003du32, 0x00000008u32, 0x00000057u32, 0x00000056u32, 0x00060050u32, 0x00000009u32,
+  0x00000058u32, 0x0000004fu32, 0x00000053u32, 0x00000057u32, 0x00060041u32, 0x00000049u32,
+  0x00000059u32, 0x0000005au32, 0x00000040u32, 0x00000047u32, 0x0004003du32, 0x00000008u32,
+  0x0000005bu32, 0x00000059u32, 0x00060041u32, 0x00000049u32, 0x0000005cu32, 0x0000005au32,
+  0x00000040u32, 0x00000050u32, 0x0004003du32, 0x00000008u32, 0x0000005du32, 0x0000005cu32,
+  0x00060041u32, 0x00000049u32, 0x0000005eu32, 0x0000005au32, 0x00000040u32, 0x00000054u32,
+  0x0004003du32, 0x00000008u32, 0x0000005fu32, 0x0000005eu32, 0x00060050u32, 0x00000009u32,
+  0x00000060u32, 0x0000005bu32, 0x0000005du32, 0x0000005fu32, 0x00060041u32, 0x00000061u32,
+  0x00000062u32, 0x00000066u32, 0x00000040u32, 0x0000003bu32, 0x0004003du32, 0x0000000du32,
+  0x00000067u32, 0x00000062u32, 0x00050080u32, 0x0000000du32, 0x00000068u32, 0x0000003bu32,
+  0x00000051u32, 0x00060041u32, 0x00000061u32, 0x00000069u32, 0x00000066u32, 0x00000040u32,
+  0x00000068u32, 0x0004003du32, 0x0000000du32, 0x0000006au32, 0x00000069u32, 0x000500acu32,
+  0x00000005u32, 0x0000006bu32, 0x0000006au32, 0x00000067u32, 0x000300f7u32, 0x00000032u32,
+  0x00000000u32, 0x000400fau32, 0x0000006bu32, 0x00000015u32, 0x00000031u32, 0x000200f8u32,
+  0x00000031u32, 0x0003003eu32, 0x00000007u32, 0x0000006du32, 0x0003003eu32, 0x0000000cu32,
+  0x00000060u32, 0x0003003eu32, 0x0000000bu32, 0x00000058u32, 0x000200f9u32, 0x00000032u32,
+  0x000200f8u32, 0x00000015u32, 0x0003003eu32, 0x00000007u32, 0x0000006du32, 0x0003003eu32,
+  0x0000000fu32, 0x0000006fu32, 0x0003003eu32, 0x0000000bu32, 0x00000058u32, 0x0003003eu32,
+  0x0000000cu32, 0x00000060u32, 0x000200f9u32, 0x00000016u32, 0x000200f8u32, 0x00000016u32,
+  0x000400f6u32, 0x00000030u32, 0x0000002eu32, 0x00000000u32, 0x000200f9u32, 0x00000017u32,
+  0x000200f8u32, 0x00000017u32, 0x000200f9u32, 0x00000018u32, 0x000200f8u32, 0x00000018u32,
+  0x000200f9u32, 0x00000019u32, 0x000200f8u32, 0x00000019u32, 0x00050041u32, 0x00000041u32,
+  0x00000074u32, 0x0000003eu32, 0x00000073u32, 0x0004003du32, 0x0000000du32, 0x00000075u32,
+  0x00000074u32, 0x0004003du32, 0x0000000du32, 0x00000076u32, 0x0000000fu32, 0x000500b0u32,
+  0x00000005u32, 0x00000077u32, 0x00000076u32, 0x00000075u32, 0x000300f7u32, 0x0000001au32,
+  0x00000000u32, 0x000400fau32, 0x00000077u32, 0x0000001au32, 0x0000002fu32, 0x000200f8u32,
+  0x0000002fu32, 0x000200f9u32, 0x00000030u32, 0x000200f8u32, 0x0000001au32, 0x0004003du32,
+  0x0000000du32, 0x00000079u32, 0x0000000fu32, 0x00050084u32, 0x0000000du32, 0x0000007au32,
+  0x00000055u32, 0x00000079u32, 0x00060041u32, 0x00000049u32, 0x0000007bu32, 0x0000007cu32,
+  0x00000040u32, 0x0000007au32, 0x0004003du32, 0x00000008u32, 0x0000007du32, 0x0000007bu32,
+  0x0004007cu32, 0x0000000du32, 0x0000007eu32, 0x0000007du32, 0x00050080u32, 0x0000000du32,
+  0x0000007fu32, 0x0000007au32, 0x00000051u32, 0x00060041u32, 0x00000049u32, 0x00000080u32,
+  0x0000007cu32, 0x00000040u32, 0x0000007fu32, 0x0004003du32, 0x00000008u32, 0x00000081u32,
+  0x00000080u32, 0x00050082u32, 0x0000000du32, 0x00000082u32, 0x0000006au32, 0x00000067u32,
+  0x00050041u32, 0x00000041u32, 0x00000084u32, 0x0000003eu32, 0x00000083u32, 0x0004003du32,
+  0x0000000du32, 0x00000085u32, 0x00000084u32, 0x000500aau32, 0x00000005u32, 0x00000086u32,
+  0x00000082u32, 0x00000085u32, 0x000300f7u32, 0x00000026u32, 0x00000000u32, 0x000400fau32,
+  0x00000086u32, 0x0000001bu32, 0x0000001cu32, 0x000200f8u32, 0x0000001cu32, 0x0003003eu32,
+  0x00000010u32, 0x00000067u32, 0x0003003eu32, 0x00000011u32, 0x0000006au32, 0x000200f9u32,
+  0x0000001du32, 0x000200f8u32, 0x0000001du32, 0x000400f6u32, 0x00000025u32, 0x00000023u32,
+  0x00000000u32, 0x000200f9u32, 0x0000001eu32, 0x000200f8u32, 0x0000001eu32, 0x0004003du32,
+  0x0000000du32, 0x0000008du32, 0x00000010u32, 0x0004003du32, 0x0000000du32, 0x0000008eu32,
+  0x00000011u32, 0x000500b0u32, 0x00000005u32, 0x0000008fu32, 0x0000008du32, 0x0000008eu32,
+  0x000300f7u32, 0x0000001fu32, 0x00000000u32, 0x000400fau32, 0x0000008fu32, 0x0000001fu32,
+  0x00000024u32, 0x000200f8u32, 0x00000024u32, 0x000200f9u32, 0x00000025u32, 0x000200f8u32,
+  0x0000001fu32, 0x0004003du32, 0x0000000du32, 0x00000091u32, 0x00000010u32, 0x0004003du32,
+  0x0000000du32, 0x00000092u32, 0x00000011u32, 0x00050080u32, 0x0000000du32, 0x00000093u32,
+  0x00000091u32, 0x00000092u32, 0x000500c2u32, 0x0000000du32, 0x00000094u32, 0x00000093u32,
+  0x00000073u32, 0x00060041u32, 0x00000061u32, 0x00000095u32, 0x00000096u32, 0x00000040u32,
+  0x00000094u32, 0x0004003du32, 0x0000000du32, 0x00000097u32, 0x00000095u32, 0x000500b0u32,
+  0x00000005u32, 0x00000098u32, 0x00000097u32, 0x0000007eu32, 0x000300f7u32, 0x00000022u32,
+  0x00000000u32, 0x000400fau32, 0x00000098u32, 0x00000020u32, 0x00000021u32, 0x000200f8u32,
+  0x00000021u32, 0x0003003eu32, 0x00000011u32, 0x00000094u32, 0x000200f9u32, 0x00000022u32,
+  0x000200f8u32, 0x00000020u32, 0x00050080u32, 0x0000000du32, 0x0000009au32, 0x00000094u32,
+  0x00000051u32, 0x0003003eu32, 0x00000010u32, 0x0000009au32, 0x000200f9u32, 0x00000022u32,
+  0x000200f8u32, 0x00000022u32, 0x000200f9u32, 0x00000023u32, 0x000200f8u32, 0x00000023u32,
+  0x000200f9u32, 0x0000001du32, 0x000200f8u32, 0x00000025u32, 0x000200f9u32, 0x00000026u32,
+  0x000200f8u32, 0x0000001bu32, 0x00050080u32, 0x0000000du32, 0x00000088u32, 0x00000067u32,
+  0x0000007eu32, 0x0003003eu32, 0x00000010u32, 0x00000088u32, 0x000200f9u32, 0x00000026u32,
+  0x000200f8u32, 0x00000026u32, 0x0004003du32, 0x0000000du32, 0x000000a2u32, 0x00000010u32,
+  0x000500b0u32, 0x00000005u32, 0x000000a3u32, 0x000000a2u32, 0x0000006au32, 0x000300f7u32,
+  0x00000029u32, 0x00000000u32, 0x000400fau32, 0x000000a3u32, 0x00000027u32, 0x00000028u32,
+  0x000200f8u32, 0x00000028u32, 0x0003003eu32, 0x00000012u32, 0x0000006du32, 0x000200f9u32,
+  0x00000029u32, 0x000200f8u32, 0x00000027u32, 0x0004003du32, 0x0000000du32, 0x000000a5u32,
+  0x00000010u32, 0x00060041u32, 0x00000061u32, 0x000000a6u32, 0x00000096u32, 0x00000040u32,
+  0x000000a5u32, 0x0004003du32, 0x0000000du32, 0x000000a7u32, 0x000000a6u32, 0x000500aau32,
+  0x00000005u32, 0x000000a8u32, 0x000000a7u32, 0x0000007eu32, 0x0003003eu32, 0x00000012u32,
+  0x000000a8u32, 0x000200f9u32, 0x00000029u32, 0x000200f8u32, 0x00000029u32, 0x0004003du32,
+  0x00000005u32, 0x000000adu32, 0x00000012u32, 0x000300f7u32, 0x0000002bu32, 0x00000000u32,
+  0x000400fau32, 0x000000adu32, 0x0000002au32, 0x0000002bu32, 0x000200f8u32, 0x0000002au32,
+  0x0004003du32, 0x0000000du32, 0x000000afu32, 0x00000010u32, 0x00050084u32, 0x0000000du32,
+  0x000000b0u32, 0x000000b1u32, 0x000000afu32, 0x00060041u32, 0x00000049u32, 0x000000b2u32,
+  0x000000b3u32, 0x00000040u32, 0x000000b0u32, 0x0004003du32, 0x00000008u32, 0x000000b4u32,
+  0x000000b2u32, 0x00050080u32, 0x0000000du32, 0x000000b5u32, 0x000000b0u32, 0x00000051u32,
+  0x00060041u32, 0x00000049u32, 0x000000b6u32, 0x000000b3u32, 0x00000040u32, 0x000000b5u32,
+  0x0004003du32, 0x00000008u32, 0x000000b7u32, 0x000000b6u32, 0x00050080u32, 0x0000000du32,
+  0x000000b8u32, 0x000000b0u32, 0x00000055u32, 0x00060041u32, 0x00000049u32, 0x000000b9u32,
+  0x000000b3u32, 0x00000040u32, 0x000000b8u32, 0x0004003du32, 0x00000008u32, 0x000000bau32,
+  0x000000b9u32, 0x00060050u32, 0x00000009u32, 0x000000bbu32, 0x000000b4u32, 0x000000b7u32,
+  0x000000bau32, 0x0005008eu32, 0x00000009u32, 0x000000bcu32, 0x000000bbu32, 0x00000081u32,
+  0x0004003du32, 0x00000009u32, 0x000000bdu32, 0x0000000bu32, 0x00050081u32, 0x00000009u32,
+  0x000000beu32, 0x000000bdu32, 0x000000bcu32, 0x00050080u32, 0x0000000du32, 0x000000bfu32,
+  0x000000b0u32, 0x00000048u32, 0x00060041u32, 0x00000049u32, 0x000000c0u32, 0x000000b3u32,
+  0x00000040u32, 0x000000bfu32, 0x0004003du32, 0x00000008u32, 0x000000c1u32, 0x000000c0u32,
+  0x00050080u32, 0x0000000du32, 0x000000c2u32, 0x000000b0u32, 0x000000c3u32, 0x00060041u32,
+  0x00000049u32, 0x000000c4u32, 0x000000b3u32, 0x00000040u32, 0x000000c2u32, 0x0004003du32,
+  0x00000008u32, 0x000000c5u32, 0x000000c4u32, 0x00050080u32, 0x0000000du32, 0x000000c6u32,
+  0x000000b0u32, 0x000000c7u32, 0x00060041u32, 0x00000049u32, 0x000000c8u32, 0x000000b3u32,
+  0x00000040u32, 0x000000c6u32, 0x0004003du32, 0x00000008u32, 0x000000c9u32, 0x000000c8u32,
+  0x00060050u32, 0x00000009u32, 0x000000cau32, 0x000000c1u32, 0x000000c5u32, 0x000000c9u32,
+  0x0005008eu32, 0x00000009u32, 0x000000cbu32, 0x000000cau32, 0x00000081u32, 0x0004003du32,
+  0x00000009u32, 0x000000ccu32, 0x0000000cu32, 0x00050081u32, 0x00000009u32, 0x000000cdu32,
+  0x000000ccu32, 0x000000cbu32, 0x0003003eu32, 0x00000007u32, 0x000000ceu32, 0x0003003eu32,
+  0x0000000bu32, 0x000000beu32, 0x0003003eu32, 0x0000000cu32, 0x000000cdu32, 0x000200f9u32,
+  0x0000002bu32, 0x000200f8u32, 0x0000002bu32, 0x000200f9u32, 0x0000002cu32, 0x000200f8u32,
+  0x0000002cu32, 0x000200f9u32, 0x0000002du32, 0x000200f8u32, 0x0000002du32, 0x0004003du32,
+  0x0000000du32, 0x000000d5u32, 0x0000000fu32, 0x00050080u32, 0x0000000du32, 0x000000d6u32,
+  0x000000d5u32, 0x00000051u32, 0x0003003eu32, 0x0000000fu32, 0x000000d6u32, 0x000200f9u32,
+  0x0000002eu32, 0x000200f8u32, 0x0000002eu32, 0x000200f9u32, 0x00000016u32, 0x000200f8u32,
+  0x00000030u32, 0x000200f9u32, 0x00000032u32, 0x000200f8u32, 0x00000032u32, 0x0004003du32,
+  0x00000005u32, 0x000000dfu32, 0x00000007u32, 0x000300f7u32, 0x00000036u32, 0x00000000u32,
+  0x000400fau32, 0x000000dfu32, 0x00000033u32, 0x00000036u32, 0x000200f8u32, 0x00000033u32,
+  0x0004003du32, 0x00000009u32, 0x000000e1u32, 0x0000000cu32, 0x0006000cu32, 0x00000008u32,
+  0x000000e2u32, 0x000000e3u32, 0x00000042u32, 0x000000e1u32, 0x000500bau32, 0x00000005u32,
+  0x000000e4u32, 0x000000e2u32, 0x000000e5u32, 0x000300f7u32, 0x00000035u32, 0x00000000u32,
+  0x000400fau32, 0x000000e4u32, 0x00000034u32, 0x00000035u32, 0x000200f8u32, 0x00000034u32,
+  0x0004003du32, 0x00000009u32, 0x000000e7u32, 0x0000000cu32, 0x00060050u32, 0x00000009u32,
+  0x000000e8u32, 0x000000e2u32, 0x000000e2u32, 0x000000e2u32, 0x00050088u32, 0x00000009u32,
+  0x000000e9u32, 0x000000e7u32, 0x000000e8u32, 0x0003003eu32, 0x0000000cu32, 0x000000e9u32,
+  0x000200f9u32, 0x00000035u32, 0x000200f8u32, 0x00000035u32, 0x000200f9u32, 0x00000036u32,
+  0x000200f8u32, 0x00000036u32, 0x00060041u32, 0x00000049u32, 0x000000edu32, 0x000000f0u32,
+  0x00000040u32, 0x00000047u32, 0x0004003du32, 0x00000009u32, 0x000000f1u32, 0x0000000bu32,
+  0x00050051u32, 0x00000008u32, 0x000000f2u32, 0x000000f1u32, 0x00000000u32, 0x0003003eu32,
+  0x000000edu32, 0x000000f2u32, 0x00060041u32, 0x00000049u32, 0x000000f4u32, 0x000000f0u32,
+  0x00000040u32, 0x00000050u32, 0x00050051u32, 0x00000008u32, 0x000000f6u32, 0x000000f1u32,
+  0x00000001u32, 0x0003003eu32, 0x000000f4u32, 0x000000f6u32, 0x00060041u32, 0x00000049u32,
+  0x000000f8u32, 0x000000f0u32, 0x00000040u32, 0x00000054u32, 0x00050051u32, 0x00000008u32,
+  0x000000fau32, 0x000000f1u32, 0x00000002u32, 0x0003003eu32, 0x000000f8u32, 0x000000fau32,
+  0x00060041u32, 0x00000049u32, 0x000000fcu32, 0x000000fdu32, 0x00000040u32, 0x00000047u32,
+  0x0004003du32, 0x00000009u32, 0x000000feu32, 0x0000000cu32, 0x00050051u32, 0x00000008u32,
+  0x000000ffu32, 0x000000feu32, 0x00000000u32, 0x0003003eu32, 0x000000fcu32, 0x000000ffu32,
+  0x00060041u32, 0x00000049u32, 0x00000101u32, 0x000000fdu32, 0x00000040u32, 0x00000050u32,
+  0x00050051u32, 0x00000008u32, 0x00000103u32, 0x000000feu32, 0x00000001u32, 0x0003003eu32,
+  0x00000101u32, 0x00000103u32, 0x00060041u32, 0x00000049u32, 0x00000105u32, 0x000000fdu32,
+  0x00000040u32, 0x00000054u32, 0x00050051u32, 0x00000008u32, 0x00000107u32, 0x000000feu32,
+  0x00000002u32, 0x0003003eu32, 0x00000105u32, 0x00000107u32, 0x000200f9u32, 0x0000010au32,
+  0x000200f8u32, 0x0000010au32, 0x000100fdu32, 0x00010038u32
+];
+// spirv-end
