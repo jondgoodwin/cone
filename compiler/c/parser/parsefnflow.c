@@ -210,9 +210,46 @@ INode *parseReturn(ParseState *parse) {
     return parseJumpEnd(parse, stmtnode, trailing);
 }
 
+// ---- A pattern a function runs: 'using' [match: topic 8a] ----
+//
+// 'case imm rest using prefix("GET ")' binds what the function gives back, 'case using isOdd()'
+// tests with it. The function is an ordinary one whose first argument is the matched value, so
+// the call is written without it and the parser puts it in. A binding is de-sugared as
+// 'imm rest Some = prefix(matchee, "GET ")' is (parseBoundMatch), the call held once in a
+// variable; a test is the call itself, a condition like any other.
+
+// After 'using': the call of the pattern, 'prefix("GET ")', 're.find()'. NULL when it is no call.
+FnCallNode *parseUsingCall(ParseState *parse) {
+    lexNextToken();
+    INode *call = parseSuffixTerm(parse);
+    if (call == NULL || call->tag != FnCallTag || ((FnCallNode*)call)->args == NULL
+        || (call->flags & (FlagIndex | FlagOperator))) {
+        errorMsgLex(ErrorUsingForm,
+            "'using' is followed by the call of a function, with its parentheses: 'using prefix(\"GET \")', 'using re.find()'. The matched value is passed to it first, so it is left out of the arguments.");
+        return NULL;
+    }
+    return (FnCallNode*)call;
+}
+
+// Put the matched value in as the call's first argument (a method's, after its receiver)
+void parseUsingMatchee(FnCallNode *call, INode *matchee) {
+    nodesInsert(&call->args, matchee, 0);
+}
+
+// The variant a binding takes: the Some of the Option the function gives back
+INode *parseUsingSome(FnCallNode *call) {
+    NameUseNode *some = newNameUseFromLex(someName, (INode*)call);
+    return (INode*)some;
+}
+
+// Set while the cases of a match are read, when one of them is a 'using' pattern
+static int parseUsingSeen = 0;
+
 // Parses a variable bound to a pattern match on a value
-// (it looks like, and is returned as, a variable declaration)
-VarDclNode *parseBindVarDcl(ParseState *parse) {
+// (it looks like, and is returned as, a variable declaration). Where 'usingp' is given,
+// the pattern may be a function's, 'imm rest using prefix("GET ")': the call is left in
+// *usingp (NULL when it was no call) and the variable takes the Some of its Option.
+VarDclNode *parseBindVarDcl(ParseState *parse, FnCallNode **usingp) {
     INode *perm = parsePerm();
     INode *permdcl = perm==unknownType? unknownType : itypeGetTypeDcl(perm);
     if (permdcl != (INode*)mutPerm && permdcl != (INode*)immPerm)
@@ -225,6 +262,12 @@ VarDclNode *parseBindVarDcl(ParseState *parse) {
     }
     VarDclNode *varnode = newVarDclNode(lex->val.ident, VarDclTag, perm);
     lexNextToken();
+
+    if (usingp && lexIsToken(UsingToken)) {
+        *usingp = parseUsingCall(parse);
+        varnode->vtype = *usingp ? parseUsingSome(*usingp) : unknownType;
+        return varnode;
+    }
 
     // Get type
     INode *vtype;
@@ -311,11 +354,29 @@ static VarDclNode *parseMatchSubject(MatchSubject *subject, INode *value) {
     return holder;
 }
 
+// The variable that holds what a pattern's function gave back is named '-using' and a number,
+// which is how type check knows to ask it for an Option to bind (varDclTypeCheck)
+static void parseUsingHold(MatchSubject *subject, VarDclNode *holder) {
+    static uint32_t holds = 0;
+    char name[24];
+    snprintf(name, sizeof(name), "-using%u", ++holds);
+    holder->namesym = subject->held->namesym = nametblFind(name, strlen(name));
+}
+
 // De-sugar a variable bound pattern match. In a match 'subject' is the matched value
 // and 'wrapper' is NULL. In a bound 'if' the matched value follows the variable's
 // type, after '=', so it is read here and made the subject; the block that 'wrapper'
 // is declares the hidden variable that holds it when it is not a place.
-static void parseBoundMatch(ParseState *parse, IfNode *ifnode, MatchSubject *subject, BlockNode *wrapper) {
+//
+// A pattern a function runs, 'imm rest using prefix("GET ")' (parseUsingCall), is bound
+// as 'imm rest Some = prefix(matchee, "GET ")' is, the call being the value matched. In
+// a bound 'if' that is all it takes. In a match the call must run once, when its case is
+// reached and not before, so the case is nested the way an 'elif' that binds is: the
+// match's chain goes on in an 'else' block that holds the call's result in a variable
+// and tests it,
+//   { match-arms... else { { imm -held = prefix(matchee, "GET "); if -held is Some { imm rest = [Some]-held; ... } elif ... } } }
+// and *nextp is the 'if' the cases after it are added to.
+static void parseBoundMatch(ParseState *parse, IfNode *ifnode, MatchSubject *subject, BlockNode *wrapper, IfNode **nextp) {
     // We will desugar a variable declaration into using a pattern match and re-cast.
     // Parse the variable-bind into a vardcl, then move its desired type into both
     // the 'is' and 'cast' nodes. The pattern's bare root name is looked up in the
@@ -324,19 +385,48 @@ static void parseBoundMatch(ParseState *parse, IfNode *ifnode, MatchSubject *sub
     // third copy of a node a clone would leave unbound.
     CastNode *isnode = newIsNode(NULL, unknownType);
     CastNode *castnode = newConvCastNode(NULL, unknownType);
-    VarDclNode *varnode = parseBindVarDcl(parse);
+    FnCallNode *usingcall = NULL;
+    VarDclNode *varnode = parseBindVarDcl(parse, &usingcall);
     castPatternMark(varnode->vtype);
 
     // If value expression is needed, obtain it also
     MatchSubject iform;
-    if (wrapper != NULL) {
+    int usingarm = 0;           // a case of a match, whose value is the pattern's call
+    if (usingcall != NULL && wrapper == NULL) {
+        usingarm = 1;
+        parseUsingSeen = 1;
+        parseUsingMatchee(usingcall, parseMatchUse(subject));
+        BlockNode *nested = newBlockNode();
+        IfNode *inner = newIfNode();
+        inodeLexCopy((INode*)inner, (INode*)usingcall);
+        inner->flags |= FlagIfMatchTail;
+        nodesAdd(&nested->stmts, (INode*)inner);
+        nodesAdd(&ifnode->condblk, elseCond);
+        nodesAdd(&ifnode->condblk, (INode*)nested);
+        if (nextp)
+            *nextp = inner;
+        ifnode = inner;
+        wrapper = nested;
+        subject = &iform;
+        VarDclNode *holder = parseMatchSubject(subject, (INode*)usingcall);
+        parseUsingHold(subject, holder);
+        nodesInsert(&wrapper->stmts, (INode*)holder, 0);
+    }
+    else if (wrapper != NULL) {
         if (lexIsToken(AssgnToken))
             lexNextToken();
         else {
             errorMsgLex(ErrorInvType, "Expected '=' followed by value to match against");
         }
         subject = &iform;
-        VarDclNode *holder = parseMatchSubject(subject, parseSimpleExpr(parse));
+        INode *value = parseSimpleExpr(parse);
+        if (usingcall != NULL) {
+            parseUsingMatchee(usingcall, value);
+            value = (INode*)usingcall;
+        }
+        VarDclNode *holder = parseMatchSubject(subject, value);
+        if (holder != NULL && usingcall != NULL)
+            parseUsingHold(subject, holder);
         if (holder != NULL)
             nodesInsert(&wrapper->stmts, (INode*)holder, 0);
     }
@@ -362,7 +452,7 @@ static void parseBoundMatch(ParseState *parse, IfNode *ifnode, MatchSubject *sub
     varnode->vtype = unknownType;
     varnode->value = (INode *)castnode;
 
-    if (wrapper != NULL)
+    if (wrapper != NULL && !usingarm)
         nodesAdd(&ifnode->condblk, (INode*)isnode);
     // A match's case may end in an 'if' guard, which may name the variable. The
     // variable is declared in the arm, which the guard is not in, so the guard is
@@ -430,7 +520,7 @@ static void parseLetElse(ParseState *parse, BlockNode *blk, VarDclNode *varnode)
     MatchSubject subject;
     VarDclNode *holder = parseMatchSubject(&subject, varnode->value);
     if (holder != NULL) {
-        snprintf(hiddenname, sizeof(hiddenname), "-held%u", ++letelses);
+        snprintf(hiddenname, sizeof(hiddenname), parse->usingdcl ? "-using%u" : "-held%u", ++letelses);
         holder->namesym = subject.held->namesym = nametblFind(hiddenname, strlen(hiddenname));
         nodesAdd(&blk->stmts, (INode*)holder);
     }
@@ -483,7 +573,7 @@ INode *parseIf(ParseState *parse) {
         BlockNode *blknode = newBlockNode();
         nodesAdd(&blknode->stmts, (INode*)ifnode);
         retnode = (INode*)blknode; // return block instead of 'if'!
-        parseBoundMatch(parse, ifnode, NULL, blknode);
+        parseBoundMatch(parse, ifnode, NULL, blknode, NULL);
     }
     else {
         INode *cond = parseSimpleExpr(parse);
@@ -521,7 +611,7 @@ INode *parseIf(ParseState *parse) {
             nodesAdd(&ifnode->condblk, (INode*)blknode);
             ifnode = newIfNode();
             nodesAdd(&blknode->stmts, (INode*)ifnode);
-            parseBoundMatch(parse, ifnode, NULL, blknode);
+            parseBoundMatch(parse, ifnode, NULL, blknode, NULL);
         }
         else {
             nodesAdd(&ifnode->condblk, parseSimpleExpr(parse));
@@ -574,6 +664,15 @@ static INode *parseMatchWild() {
 // - '_' takes any value, and is a pattern of 'match a, b' alone (parseMatchWild)
 #define PatBareMsg "A condition is not a pattern: a value alone is compared with the matched value. Write the comparison with the matched value left out, as '>3', or put the condition in an 'if' guard."
 static INode *parseMatchPattern(ParseState *parse, MatchSubject *subject) {
+    // 'using f(args)' tests with a function's pattern: the call, the matched value first
+    if (lexIsToken(UsingToken)) {
+        parseUsingSeen = 1;
+        FnCallNode *call = parseUsingCall(parse);
+        if (call == NULL)
+            return parseMatchWild();
+        parseUsingMatchee(call, parseMatchUse(subject));
+        return (INode *)call;
+    }
     // '_' is the pattern of a column that takes any value
     if (lexIsToken(IdentToken) && lex->val.ident == anonName) {
         INode *any = parseMatchWild();
@@ -624,7 +723,8 @@ static INode *parseMatchPattern(ParseState *parse, MatchSubject *subject) {
 static INode *parseMatchColumn(ParseState *parse, MatchSubject *subject) {
     INode *cond;
     if (subject->column && lexIsToken(PermToken)) {
-        VarDclNode *var = parseBindVarDcl(parse);
+        FnCallNode *usingcall = NULL;
+        VarDclNode *var = parseBindVarDcl(parse, &usingcall);
         errorMsgNode((INode*)var, ErrorMatchColumn,
             "A pattern in a column of 'match a, b' does not bind a variable: write the variant alone, and bind inside the case with 'imm x Some = a'");
         CastNode *isnode = newIsNode(parseMatchUse(subject), var->vtype);
@@ -682,7 +782,11 @@ INode *parseMatch(ParseState *parse) {
         }
     }
 
-    // Parse all cases
+    // Parse all cases. A case that binds with a function's pattern goes on in the 'else'
+    // of the chain, and 'cur' is the 'if' the next case is added to
+    IfNode *cur = ifnode;
+    int svusing = parseUsingSeen, haselse = 0;
+    parseUsingSeen = 0;
     parseBlockStart();
     while (!parseBlockEnd()) {
         // Handle pattern that begins with 'case'
@@ -690,7 +794,7 @@ INode *parseMatch(ParseState *parse) {
             lexNextToken(); // consume the 'case' token
             // Handle bound variable pattern
             if (ncols == 1 && lexIsToken(PermToken)) {
-                parseBoundMatch(parse, ifnode, &subjects[0], NULL);
+                parseBoundMatch(parse, cur, &subjects[0], NULL, &cur);
                 continue;
             }
 
@@ -735,17 +839,26 @@ INode *parseMatch(ParseState *parse) {
                 guarded->rexp = parseSimpleExpr(parse);
                 cond = (INode *)guarded;
             }
-            nodesAdd(&ifnode->condblk, cond);
-            nodesAdd(&ifnode->condblk, parseExprBlock(parse, 0));
+            nodesAdd(&cur->condblk, cond);
+            nodesAdd(&cur->condblk, parseExprBlock(parse, 0));
         } else if (lexIsToken(ElseToken)) {
             lexNextToken();
-            nodesAdd(&ifnode->condblk, elseCond); // else distinguished by a elseCond condition
-            nodesAdd(&ifnode->condblk, parseExprBlock(parse, 0));
+            haselse = 1;
+            nodesAdd(&cur->condblk, elseCond); // else distinguished by a elseCond condition
+            nodesAdd(&cur->condblk, parseExprBlock(parse, 0));
         } else {
+            parseUsingSeen = svusing;
             errorMsgLex(ErrorBadTerm, "Parser Error: should be either case or else");
             return (INode *)blknode;
         }
     }
+    // What a function's pattern matches, only running it says: the match ends in 'else'
+    if (parseUsingSeen && !haselse)
+        errorMsgNode((INode*)ifnode, ErrorMatchUsing,
+            "A match with a 'using' pattern needs an 'else': which values a function's pattern matches is known only by running it. End the match with 'else {}', which may say that no other value can happen.");
+    if (parseUsingSeen)
+        ifnode->flags |= FlagIfMatchUsing;
+    parseUsingSeen = svusing;
     for (int i = 0; i < ncols; ++i)
         if (expdclnodes[i])
             nodesAdd(&blknode->stmts, (INode*)expdclnodes[i]);
@@ -1545,12 +1658,16 @@ INode *parseExprBlock(ParseState *parse, int isloop) {
         // A local variable declaration, if it begins with a permission
         case PermToken:
         {
-            VarDclNode *var = parseVarDcl(parse, immPerm, ParseMaySig|ParseMayImpl);
+            VarDclNode *var = parseVarDcl(parse, immPerm, ParseMaySig|ParseMayImpl|ParseMayUsing);
             // 'imm n Ok = r else {...};' binds a variant or leaves
             if (lexIsToken(ElseToken))
                 parseLetElse(parse, blk, var);
-            else
+            else {
+                if (parse->usingdcl)
+                    errorMsgNode((INode*)var, ErrorUsingForm,
+                        "A pattern a function runs may not match, so a binding by 'using' ends in an 'else' that leaves: 'imm rest using prefix(\"GET \") = line else { return; };'. To test and bind in a block, write 'if imm rest using prefix(\"GET \") = line {...}'.");
                 nodesAdd(&blk->stmts, (INode*)var);
+            }
             parseEndOfStatement();
             break;
         }
