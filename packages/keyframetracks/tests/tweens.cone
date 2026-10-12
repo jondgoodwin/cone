@@ -1,0 +1,204 @@
+// Tweens: durations and staging of chained, parallel and lagged steps, all
+// reduced to clips that can be sampled at any time. A is target 1, B target 2,
+// C target 3; X and Y are property keys.
+//
+// SEQUENCE. 0 -> 10 over 1 s, then 10 -> 20 over 2 s: total 3 s; at 0.5 s, 5; at
+//   1 s, 10; at 2 s, 15; at 3 s, 20.
+// ALONGSIDE. A.X 0 -> 10 over 2 s; B.X 0 -> 100 over 1 s alongside (starts at
+//   0); A.Y 0 -> 1 over 1 s next (starts when everything has ended, at 2 s):
+//   total 3 s. At 0.5 s: A.X 2.5, B.X 50, A.Y 0. At 2.5 s: A.X 10, B.X 100, A.Y
+//   0.5.
+// GAP, AFTER, AT. 0 -> 1 over 1 s, a 2 s gap, then 1 -> 0 over 1 s: the second
+//   starts at 3 s, total 4 s; at 2 s the value is held at 1; at 3.5 s, 0.5.
+//   'after(0.5)' delays a step by 0.5 s from where it would start (1.5 s), 'at(5)'
+//   starts a step at 5 s (total 6, the value holds its 'from' before).
+// EASING. in-quad 0 -> 8 over 2 s: at 1 s, 0.25 * 8 = 2. A step after
+//   'linear()' is linear again. bezier(0.25, 0.1, 0.25, 1) 0 -> 1 over 1 s: 0.8024 at
+//   the half. Spring: lands exactly on the target at the end.
+// OVERLAP. 0 -> 10 over 4 s, then at 2 s a step 5 -> 0 over 2 s on the same
+//   property: the first is cut at 2 s (5), the second takes over: at 1 s 2.5, at 3 s
+//   2.5, at 4 s 0. A step that jumps (set) is a value held then changed: at its
+//   time the later value shows.
+// MARKERS. callback(77, 1.5) after a 1 s step puts a marker at 1 s.
+// COLOUR. red -> blue over 1 s in OKLab agrees with mixColor.
+// CLIP ALGEBRA. Three one-second clips on A.X, B.X and C.X (0 -> 1 each):
+//   a sequence is 3 s with B starting at 1 s; a group is 1 s with all at
+//   once; lagged by 0.25 s is 1.5 s long, and at t = 0.75 the three are at
+//   0.75, 0.5 and 0.25; at 0.25 s: 0.25, 0, 0. A group of clips of 1, 2 and
+//   0.5 s is 2 s. Tween.lagged does the same inside a chain. 'then' puts a
+//   clip after everything so far and 'join' alongside the last step.
+// Tracks of a property that two steps both animate are one track (the
+// clip has as many bindings as properties).
+
+mod tweens;
+
+import libc;
+import testing use *;
+import collections use *;
+import geomath use *;
+import keyframetracks use *;
+
+const A = 1u32;
+const B = 2u32;
+const C = 3u32;
+const X = 1030u32;
+const Y = 1031u32;
+const FLAG = 1032u32;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+fn at(c &Clip, target u32, prop u32, t f32) f32 { c.sample(t).getF32(target, prop, -99.); }
+
+fn unit(name &str, target u32, dur f32) Clip {
+  Tween.make(name).toF32(target, X, 0., 1., dur).build();
+}
+
+fn main() i32 {
+  // sequence
+  imm seq = Tween.make("seq").toF32(A, X, 0., 10., 1.).toF32(A, X, 10., 20., 2.).build();
+  near(seq.length, 3., 0.00001, "sequence: total duration 3 s");
+  expectInt(i64.from(seq.bindings.len()), 1i64, "one binding for one property");
+  near(at(&seq, A, X, 0.), 0., 0.00001, "sequence at 0");
+  near(at(&seq, A, X, 0.5), 5., 0.00001, "sequence at 0.5");
+  near(at(&seq, A, X, 1.), 10., 0.00001, "sequence at 1");
+  near(at(&seq, A, X, 2.), 15., 0.00001, "sequence at 2");
+  near(at(&seq, A, X, 3.), 20., 0.00001, "sequence at 3");
+  near(at(&seq, A, X, 9.), 20., 0.00001, "sequence held after");
+  expectInt(i64.from(seq.mode), i64.from(LOOP_ONCE), "a built tween plays once");
+
+  // alongside
+  imm par = Tween.make("par").toF32(A, X, 0., 10., 2.).alongside().toF32(B, X, 0., 100., 1.).toF32(A, Y, 0., 1., 1.).build();
+  near(par.length, 3., 0.00001, "alongside: total 3 s");
+  expectInt(i64.from(par.bindings.len()), 3i64, "three properties");
+  near(at(&par, A, X, 0.5), 2.5, 0.00001, "A.X at 0.5");
+  near(at(&par, B, X, 0.5), 50., 0.00001, "B.X at 0.5 (started with A.X)");
+  near(at(&par, A, Y, 0.5), 0., 0.00001, "A.Y not yet started");
+  near(at(&par, A, Y, 1.9), 0., 0.00001, "A.Y still not at 1.9");
+  near(at(&par, A, X, 2.5), 10., 0.00001, "A.X done");
+  near(at(&par, B, X, 2.5), 100., 0.00001, "B.X done");
+  near(at(&par, A, Y, 2.5), 0.5, 0.00001, "A.Y half way at 2.5");
+
+  // gap, after, at
+  imm gap = Tween.make("gap").toF32(A, X, 0., 1., 1.).gap(2.).toF32(A, X, 1., 0., 1.).build();
+  near(gap.length, 4., 0.00001, "gap: total 4 s");
+  near(at(&gap, A, X, 2.), 1., 0.00001, "held across the gap");
+  near(at(&gap, A, X, 3.5), 0.5, 0.00001, "second step half way");
+  imm aft = Tween.make("after").toF32(A, X, 0., 1., 1.).after(0.5).toF32(B, X, 0., 1., 1.).build();
+  near(aft.length, 2.5, 0.00001, "after: the second starts at 1.5, total 2.5");
+  near(at(&aft, B, X, 1.4), 0., 0.00001, "B has not started");
+  near(at(&aft, B, X, 2.), 0.5, 0.00001, "B half way at 2");
+  imm abs = Tween.make("at").at(5.).toF32(A, X, 0., 1., 1.).build();
+  near(abs.length, 6., 0.00001, "at(5): total 6");
+  near(at(&abs, A, X, 4.9), 0., 0.00001, "holds its from value before");
+  near(at(&abs, A, X, 5.5), 0.5, 0.00001, "and runs from 5");
+  imm alongAfter = Tween.make("aa").toF32(A, X, 0., 1., 2.).alongside().after(0.5).toF32(B, X, 0., 1., 1.).build();
+  near(at(&alongAfter, B, X, 1.), 0.5, 0.00001, "alongside with a delay starts at 0.5");
+
+  // easing
+  imm ez = Tween.make("ez").ease(EASE_IN_QUAD).toF32(A, X, 0., 8., 2.).linear().toF32(A, Y, 0., 8., 2.).build();
+  near(at(&ez, A, X, 1.), 2., 0.00001, "in-quad: 2 at the half");
+  near(at(&ez, A, Y, 3.), 4., 0.00001, "linear() after it: linear");
+  imm bz = Tween.make("bz").bezier(0.25, 0.1, 0.25, 1.).toF32(A, X, 0., 1., 1.).build();
+  near(at(&bz, A, X, 0.5), 0.8024034, 0.00003, "CSS ease");
+  imm sp = Tween.make("sp").spring(0.3, 14.).toF32(A, X, 0., 10., 1.).build();
+  expect(at(&sp, A, X, 0.2) > 10., "the spring overshoots");
+  near(at(&sp, A, X, 1.), 10., 0.00001, "and lands exactly");
+  imm eo = Tween.make("eo").ease(EASE_OUT_BOUNCE).toF32(A, X, 0., 1., 1.).toF32(A, Y, 0., 1., 1.).build();
+  near(at(&eo, A, X, 0.5), 0.765625, 0.00001, "the ease setting stays for the steps that follow");
+
+  // overlap and jumps
+  imm ov = Tween.make("ov").toF32(A, X, 0., 10., 4.).at(2.).toF32(A, X, 5., 0., 2.).build();
+  near(ov.length, 4., 0.00001, "overlap: total 4");
+  near(at(&ov, A, X, 1.), 2.5, 0.00001, "overlap: the first step runs until it is cut");
+  near(at(&ov, A, X, 1.99), 4.975, 0.001, "just before the cut");
+  near(at(&ov, A, X, 2.), 5., 0.00001, "at the cut");
+  near(at(&ov, A, X, 3.), 2.5, 0.00001, "the second takes over");
+  near(at(&ov, A, X, 4.), 0., 0.00001, "and ends at 0");
+  imm js = Tween.make("js").gap(1.).setBool(A, FLAG, false, true).build();
+  expect(!js.sample(0.5).getBool(A, FLAG, true), "a set holds 'from' before");
+  expect(js.sample(1.).getBool(A, FLAG, false), "and shows 'to' at its time");
+  expect(!js.sample(0.).getBool(A, FLAG, true), "still false at time 0");
+  imm jt = Tween.make("jt").toF32(A, X, 0., 1., 1.).setBool(A, FLAG, false, true).setF32(A, Y, 3., 7.).build();
+  expect(!jt.sample(0.99).getBool(A, FLAG, true), "a jump: still false just before 1 s");
+  expect(jt.sample(1.).getBool(A, FLAG, false), "true at 1 s");
+  near(at(&jt, A, Y, 0.5), 3., 0.00001, "a jumping number: from before");
+  near(at(&jt, A, Y, 1.), 7., 0.00001, "and to after");
+  imm ji = Tween.make("ji").toF32(A, X, 0., 1., 1.).setInt(A, FLAG, 2, 9).build();
+  expectInt(i64.from(ji.sample(0.5).getInt(A, FLAG, 0)), 2i64, "an integer jump: before");
+  expectInt(i64.from(ji.sample(1.5).getInt(A, FLAG, 0)), 9i64, "after");
+  // back to back with a different 'from': the jump is kept
+  imm bb = Tween.make("bb").toF32(A, X, 0., 1., 1.).toF32(A, X, 5., 6., 1.).build();
+  near(at(&bb, A, X, 0.999), 0.999, 0.001, "arriving at 1");
+  near(at(&bb, A, X, 1.), 5., 0.00001, "and at 1 the next step's start shows");
+  near(at(&bb, A, X, 1.5), 5.5, 0.00001, "which then runs");
+
+  // markers
+  imm mk = Tween.make("mk").toF32(A, X, 0., 1., 1.).callback(77u32, 1.5).toF32(A, Y, 0., 1., 1.).build();
+  expectInt(i64.from(mk.markers.len()), 1i64, "one marker");
+  near((*mk.markers[0usize]).time, 1., 0.00001, "at 1 s");
+  expectInt(i64.from((*mk.markers[0usize]).id), 77i64, "id 77");
+  near((*mk.markers[0usize]).arg, 1.5, 0.00001, "arg 1.5");
+
+  // colour
+  imm red = new Color(1., 0., 0.);
+  imm blue = new Color(0., 0., 1.);
+  imm col = Tween.make("col").toColor(A, X, red, blue, SPACE_OKLAB, 1.).build();
+  imm mid = col.sample(0.5).getColor(A, X, red);
+  imm want = mixColor(red, blue, 0.5, SPACE_OKLAB);
+  near(mid.red, want.red, 0.0005, "OKLab fade: r");
+  near(mid.blue, want.blue, 0.0005, "OKLab fade: b");
+  imm lin = Tween.make("lin").toColor(A, X, red, blue, SPACE_LINEAR, 1.).build();
+  near(lin.sample(0.5).getColor(A, X, red).red, 0.5, 0.00001, "linear fade: 0.5");
+
+  // clip algebra
+  mut parts = List[Clip].empty();
+  parts.push(unit("a", A, 1.));
+  parts.push(unit("b", B, 1.));
+  parts.push(unit("c", C, 1.));
+  imm sq = clipSequence("sq", &parts);
+  near(sq.length, 3., 0.00001, "clipSequence: 3 s");
+  near(at(&sq, B, X, 0.5), 0., 0.00001, "B has not started");
+  near(at(&sq, B, X, 1.5), 0.5, 0.00001, "B at 1.5");
+  near(at(&sq, C, X, 2.5), 0.5, 0.00001, "C at 2.5");
+  near(at(&sq, A, X, 2.5), 1., 0.00001, "A done");
+  imm gr = clipGroup("gr", &parts);
+  near(gr.length, 1., 0.00001, "clipGroup: 1 s");
+  near(at(&gr, A, X, 0.5), 0.5, 0.00001, "A");
+  near(at(&gr, C, X, 0.5), 0.5, 0.00001, "C at the same time");
+  imm lg = clipLagged("lg", &parts, 0.25);
+  near(lg.length, 1.5, 0.00001, "clipLagged: 1.5 s");
+  near(at(&lg, A, X, 0.75), 0.75, 0.00001, "lag: A at 0.75");
+  near(at(&lg, B, X, 0.75), 0.5, 0.00001, "lag: B at 0.75");
+  near(at(&lg, C, X, 0.75), 0.25, 0.00001, "lag: C at 0.75");
+  near(at(&lg, A, X, 0.25), 0.25, 0.00001, "lag: A at 0.25");
+  near(at(&lg, B, X, 0.25), 0., 0.00001, "lag: B at 0.25");
+  mut uneven = List[Clip].empty();
+  uneven.push(unit("a", A, 1.));
+  uneven.push(unit("b", B, 2.));
+  uneven.push(unit("c", C, 0.5));
+  near(clipGroup("g2", &uneven).length, 2., 0.00001, "a group is as long as its longest");
+  near(clipSequence("s2", &uneven).length, 3.5, 0.00001, "a sequence is the sum");
+  imm ch = Tween.make("chain").toF32(A, Y, 0., 1., 0.5).lagged(&parts, 0.25).then(parts[0usize]).build();
+  near(ch.length, 0.5 + 1.5 + 1., 0.00001, "lagged inside a chain: starts at 0.5, ends at 2.0, then a clip: 3.0");
+  near(at(&ch, B, X, 0.75), 0., 0.00001, "chained lag: B starts at 0.75");
+  near(at(&ch, B, X, 1.25), 0.5, 0.00001, "chained lag: B at 1.25");
+  near(at(&ch, A, X, 2.5), 0.5, 0.00001, "then the clip, A.X again after the lagged group: second pass");
+  imm jn = Tween.make("join").toF32(A, Y, 0., 1., 2.).join(parts[1usize]).build();
+  near(at(&jn, B, X, 0.5), 0.5, 0.00001, "join starts with the last step");
+  near(jn.length, 2., 0.00001, "and the length is the longer");
+
+  // sampling a built tween twice gives the same, in any order (purity)
+  mut ok = true;
+  mut i = 0;
+  while i < 50 {
+    imm t = f32.from((i * 17) % 50) * 0.07;
+    imm a1 = at(&par, A, X, t);
+    imm a2 = at(&par, A, X, t);
+    if a1 != a2 { ok = false; }
+    i = i + 1;
+  }
+  expect(ok, "sampling is repeatable in any order");
+  done();
+}
