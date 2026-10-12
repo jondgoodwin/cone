@@ -58,20 +58,20 @@
 // (test/cases/region/region_flow_pool_escape.cone); held in a variable of
 // the function and used before the pool ends, any of them is fine.
 //
-// THE HOLES. That freezing reaches only so far, so today:
-// - A pool reached through a shared path -- a '&mut Pool' parameter, a field
-//   of 'self', a 'Rc[mut, T]' owner -- is not frozen by a borrow from it: a
-//   change through another reference to the same pool compiles while the
-//   borrow is used, and the borrow then reads a finalized value or freed
-//   memory. Jon's rule refuses such a borrow; 'uni' reborrowing is built, but
-//   the rule (part (b) of the shape-changing rule) is not enforced yet.
-// - A Ref is not paired with the pool it came from (the design's invariant
-//   lifetimes, key and lock, are not built). Used with another pool of the
-//   same type it is checked there like any Ref: it reaches nothing, or,
-//   where that pool's slot is at the same generation, that pool's value --
-//   the wrong one, but a live value of the right type, never stray memory.
-// tests/gaps.cone writes these out. Keep each borrow brief, and let no borrow
-// into a pool live across a change to it.
+// A pool reached through a shared path -- a '&mut Pool' parameter, a field of
+// 'self', a 'Rc[mut, T]' owner -- is not frozen against reads, but a change of
+// its shape ('remove', 'add') while a borrow from it is still to be used is
+// refused (error 1339, the shape-changing rule): through the same name,
+// through another reference that may be the same pool (a second '&mut Pool'
+// parameter), or by a call whose body, or a callee or global it reaches,
+// changes a pool. test/cases/region/region_flow_pool_twomut.cone pins it.
+//
+// THE HOLE. A Ref is not paired with the pool it came from (the design's
+// invariant lifetimes, key and lock, are not built). Used with another pool of
+// the same type it is checked there like any Ref: it reaches nothing, or,
+// where that pool's slot is at the same generation, that pool's value -- the
+// wrong one, but a live value of the right type, never stray memory.
+// tests/gaps.cone writes it out.
 //
 // How it is laid out. The pool value is small: a pointer to its block, a few
 // counts, and the region the block comes from and goes back to (core's
