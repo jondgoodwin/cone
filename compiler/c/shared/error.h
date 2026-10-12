@@ -644,6 +644,8 @@ enum ErrorCode {
     ErrorMatchNotExhaustive = 1417, // A match whose cases do not cover every value of an enum or a bool, or are not shown to cover the values of any other type, and that has no 'else': the message names what is missing
     ErrorMatchUnreachable = 1418,   // A case or an 'else' of a match that can never run: every value it matches an earlier case matches already (a variant or a combination of columns named twice, a case after the cases cover everything)
     ErrorMatchColumn = 1419,        // A misuse of the columns of 'match a, b': '_' in a match of one value, a row with more or fewer patterns than the match has values, or a pattern that binds a variable in a column
+    ErrorMatchUsing = 1423,         // A match with a 'using' pattern that does not end in 'else': what a function's pattern matches only running says, so the writer says the rest
+    ErrorUsingForm = 1424,          // A 'using' pattern written other than 'case imm x using f(args)', 'case using f(args)' or 'imm x using f(args) = value' (not a call, a binding in a column, a binding outside 'if' and let-else with no 'else'), or whose function gives neither an Option to bind nor a bool to test
 
     // A type that gets its memory from a region (ir/types/struct.c, ir/exp/typelit.c)
     ErrorRegionMark = 1420, // A type declaring CarriesRegion that declares no init, or an init whose last parameter is not 'region *MemRegion'

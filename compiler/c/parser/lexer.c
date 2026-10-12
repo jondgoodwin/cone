@@ -183,6 +183,7 @@ void keywordInit() {
     keyAdd("true", trueToken);
     keyAdd("false", falseToken);
     keyAdd("undef", UndefToken);
+    keyAdd("using", UsingToken);
 
     // Words the language claims but has not implemented yet. Holding them now
     // costs one rename in a program written today; letting a program bind one
@@ -197,7 +198,6 @@ void keywordInit() {
     keyAdd("context", ReservedToken);
     keyAdd("local", ReservedToken);
     keyAdd("selfmethod", ReservedToken);
-    keyAdd("using", ReservedToken);
     keyAdd("wait", ReservedToken);
 
     // The second group spells the syntax of features the reference describes but
