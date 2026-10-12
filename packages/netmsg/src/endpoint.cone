@@ -316,9 +316,18 @@ fn outboxOf(o &Option[PumpOutbox]) PumpOutbox {
   panic("netmsg: no outbox");
 }
 
-// The wildcard address of the family of 'like', port 0: what a client binds to
-fn anyAddress(like &SocketAddr) SocketAddr {
-  if like.isV6() {
+// What a client binds its UDP socket to, port 0, for a server at 'server': the
+// loopback address of the server's family when the server is on loopback (a
+// socket bound to the wildcard can ask the firewall for permission even when it
+// only talks to this machine), otherwise the wildcard address of that family
+pub fn clientBindAddress(server &SocketAddr) SocketAddr {
+  if server.isLoopback() {
+    if server.isV6() {
+      return SocketAddr.v6Localhost(0u16);
+    }
+    return SocketAddr.localhost(0u16);
+  }
+  if server.isV6() {
     mut zeros = List[u8].empty();
     putZeros(&mut zeros, 16usize);
     SocketAddr.v6(zeros.view(), 0u16);
@@ -354,7 +363,7 @@ pub fn connect(server SocketAddr, cfg NetConfig, h EventHandler) Result[BoundEnd
   mut outbox Option[PumpOutbox] = None;
   mut done Receiver[u32];
   mut epTx Sender[Endpoint];
-  code, port, outbox, done, epTx = startPump(anyAddress(&server));
+  code, port, outbox, done, epTx = startPump(clientBindAddress(&server));
   if code != 0u32 {
     return Error[BoundEndpoint, IoError](new IoError(code));
   }
@@ -387,7 +396,7 @@ pub fn mustConnect(server SocketAddr, cfg NetConfig, h EventHandler) BoundEndpoi
   mut outbox Option[PumpOutbox] = None;
   mut done Receiver[u32];
   mut epTx Sender[Endpoint];
-  code, port, outbox, done, epTx = startPump(anyAddress(&server));
+  code, port, outbox, done, epTx = startPump(clientBindAddress(&server));
   if code != 0u32 {
     panic("netmsg: cannot bind the client's UDP socket");
   }
