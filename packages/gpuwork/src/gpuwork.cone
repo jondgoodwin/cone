@@ -290,27 +290,32 @@ import process;
 // Failures
 // ---------------------------------------------------------------------------
 
-mut refusalCount = 0u32;
+// The two counters are atomics (any thread may fail a request), made in the module's init
+imm refusalCount Atomic[u32];
+imm kernelFailureCount Atomic[u32];
+
+fn @initpure init() {
+  refusalCount = Atomic[u32].of(0u32);
+  kernelFailureCount = Atomic[u32].of(0u32);
+}
 
 // How many requests gpuwork has refused (each also printed to stderr);
 // gpu's 'failures()' counts the layer beneath
-pub fn refusals() u32 { refusalCount; }
-
-mut kernelFailureCount = 0u32;
+pub fn refusals() u32 { refusalCount.load(); }
 
 // How many Cone kernels' dispatches have failed on the GPU (each also
 // printed to stderr, and in its job's Completion as a KernelFailure)
-pub fn kernelFailures() u32 { kernelFailureCount; }
+pub fn kernelFailures() u32 { kernelFailureCount.load(); }
 
 // Report a refusal, and count it
 fn fail(msg &str) {
-  refusalCount = refusalCount + 1u32;
+  refusalCount.add(1u32);
   say(msg);
 }
 
 // Report a kernel's failure on the GPU, and count it
 fn failKernel(msg &str) {
-  kernelFailureCount = kernelFailureCount + 1u32;
+  kernelFailureCount.add(1u32);
   say(msg);
 }
 
