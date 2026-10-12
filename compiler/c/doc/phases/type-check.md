@@ -307,7 +307,13 @@ any type's members (`structDeferCheck`):
 Two kinds of check do not wait. **A condition on a generic** — a `where` on it,
 on its enum or on a member — decides whether the instance exists, so where one
 is written, `genericMemoize` lays the arguments out first (`structTypeSettle`),
-target mode suspended (`genericConditioned`). A `Sendable` clause standing
+target mode suspended (`genericConditioned`). An argument that is in flight
+cannot be laid out first, and a type that holds an instance of a generic by value
+is that argument when the instance is made from its own layout, as in `struct
+Node { kids List[Node]; }`, so a **member's** clause is not decided then: the
+member is kept, and `genericLateWhere` decides it as a check that reads layouts,
+once none is in flight (nodes/generic.md). An `is` entry's condition is part of
+the layout and is decided at once. A `Sendable` clause standing
 alone is the exception: whether a type may cross threads is answered
 provisionally of one not yet laid out, noted, and judged again once every type
 is (`genericSendableNote`), so it lays nothing out. That is what lets an

@@ -1,0 +1,246 @@
+// What ends an awaited file operation, and how its 'await' says so: the 'In'
+// forms of 'readAt' and 'writeAt', limited by a IoLimits, answer as a socket's
+// do (limits.cone): exactly once, Done, Failed, Cancelled or TimedOut.
+//
+// Prober makes a file holding one block of 4,096 bytes, then: reads and writes
+// within a group cancelled before they start (answered Cancelled at once, and
+// the write never happens: the block reads back as it was); reads and writes
+// with a deadline already past (TimedOut at once, and a write that did not
+// start leaves the block); a read within a group with a deadline ahead, and a
+// read finished before its group's cancel (both Done); a read in a group
+// whose cancel arrives in a message while the behaviour is paused; and the
+// file dropped (closed, by a message to the actor itself) while a read of it
+// is in flight. A cancel racing a completion is settled by iocore on a file as
+// on a socket: the answer is the Done if the operation had finished, else
+// Cancelled. 2,000 rounds of a read and a write each race a cancel against the
+// operation (as race.cone does for a socket), and what is checked is that each
+// round was answered once, as Done or Cancelled and nothing else, that every
+// Done read held the block and every Done write wrote all it was given. Both
+// outcomes happen on a quiet machine; the test does not require it, since which
+// wins is the point of a race. A last read shows the file undamaged.
+
+mod filelimits;
+
+import stdio use *;
+import fs;
+import path use Path;
+import time use Instant, Duration;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import iobuf use IoBuf, Pool;
+import iocore use IoError, CancelGroup, Access;
+import actors;
+import aio use File, IoLimits;
+
+const rounds = 2000u64;
+
+fn fileOf(r Result[File, IoError]) File {
+  mut res = r;
+  mut f = File.none();
+  match &mut res {
+    case mut ok &mut Ok {f <=> *ok;}
+    else {}
+  }
+  f;
+}
+
+fn note(what &str, yes bool) {
+  printStr(what);
+  if yes {printStr(": yes\n");} else {printStr(": NO\n");}
+}
+
+// How an operation ended: 0 done, 1 cancelled, 2 timed out, 3 failed
+fn endOf[T](r &Result[T, IoError]) u32 {
+  match r {
+    case imm e Error {
+      if e.isCancelled() {1u32;}
+      elif e.isTimedOut() {2u32;}
+      else {3u32;}
+    }
+    else {0u32;}
+  }
+}
+
+fn say(what &str, how u32) {
+  printStr(what);
+  if how == 0u32 {printStr(": done\n");}
+  elif how == 1u32 {printStr(": cancelled\n");}
+  elif how == 2u32 {printStr(": timed out\n");}
+  else {printStr(": failed\n");}
+}
+
+// A block of n bytes, byte i being i mod 251 xor seed
+fn block(pool &Pool, n usize, seed u8) IoBuf {
+  mut b = pool.mustTake(n);
+  imm room = b.whole();
+  mut i = 0usize;
+  while i < n {
+    room[i] = u8.from(i % 251usize) ^ seed;
+    i = i + 1usize;
+  }
+  b.setLen(n);
+  b;
+}
+
+fn isBlock(b &IoBuf, n usize, seed u8) bool {
+  imm v = b.view();
+  if v.len != n {return false;}
+  mut i = 0usize;
+  while i < n {
+    if v[i] != u8.from(i % 251usize) ^ seed {return false;}
+    i = i + 1usize;
+  }
+  true;
+}
+
+// The buffer a read's answer holds, or an empty one
+fn bufOf(r Result[IoBuf, IoError]) IoBuf {
+  mut res = r;
+  mut b = IoBuf.empty();
+  match &mut res {
+    case mut ok &mut Ok {b <=> *ok;}
+    else {}
+  }
+  b;
+}
+
+struct Tally {
+  pub done Atomic[u64];        // rounds whose operation ended Done
+  pub cancelled Atomic[u64];   // ...Cancelled
+  pub other Atomic[u64];       // ...anything else
+  pub wrong Atomic[u64];       // Done, but with the wrong bytes or count
+}
+
+imm tally Tally;
+
+fn @initpure init() {
+  tally = new Tally(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+actor Prober {
+  pool Pool;
+
+  // Runs while a behaviour is paused at an await: ends the group's operations
+  pub async do stop(self, g CancelGroup) {
+    g.cancel();
+  }
+
+  // Drops the file, which closes it
+  pub async do release(self, f File) {
+  }
+
+  pub async do run(self, done OneshotSender[u64]) {
+    imm name = Path.from("aiolimits.tmp");
+    imm f = fileOf(await aio.openFile(&name, Access.Create));
+    imm w = await f.writeAt(0u64, block(&pool, 4096usize, 7u8));
+    say("setup write", endOf[usize](&w));
+
+    // A group cancelled before the operation starts: answered at once
+    imm g1 = CancelGroup.make();
+    g1.cancel();
+    imm a1 = await f.readAtIn(0u64, pool.mustTake(4096usize), IoLimits.within(g1));
+    say("read, cancelled before it starts", endOf[IoBuf](&a1));
+    imm a2 = await f.writeAtIn(0u64, block(&pool, 4096usize, 9u8), IoLimits.within(g1));
+    say("write, cancelled before it starts", endOf[usize](&a2));
+    imm s1 = bufOf(await f.readAt(0u64, pool.mustTake(4096usize)));
+    note("  and the write did not happen", isBlock(&s1, 4096usize, 7u8));
+
+    // A deadline already past: answered at once
+    imm a3 = await f.readAtIn(0u64, pool.mustTake(4096usize), IoLimits.until(Instant.now()));
+    say("read, deadline past", endOf[IoBuf](&a3));
+    imm a4 = await f.writeAtIn(0u64, block(&pool, 4096usize, 9u8), IoLimits.until(Instant.now()));
+    say("write, deadline past", endOf[usize](&a4));
+    imm s2 = bufOf(await f.readAt(0u64, pool.mustTake(4096usize)));
+    note("  and the write did not happen", isBlock(&s2, 4096usize, 7u8));
+
+    // A deadline ahead, and a group with a deadline ahead: the operation finishes first
+    imm a5 = bufOf(await f.readAtIn(0u64, pool.mustTake(4096usize), IoLimits.until(Instant.now() + Duration.fromSeconds(30i64))));
+    note("read, deadline ahead: done with the block", isBlock(&a5, 4096usize, 7u8));
+    imm g6 = CancelGroup.until(Instant.now() + Duration.fromSeconds(30i64));
+    imm a6 = bufOf(await f.readAtIn(0u64, pool.mustTake(4096usize), IoLimits.within(g6)));
+    note("read, group with a deadline ahead: done with the block", isBlock(&a6, 4096usize, 7u8));
+
+    // Finished before the cancel: done, and the cancel after it does nothing
+    imm g7 = CancelGroup.make();
+    imm a7 = bufOf(await f.readAtIn(0u64, pool.mustTake(4096usize), IoLimits.within(g7)));
+    note("read finished before the cancel: done with the block", isBlock(&a7, 4096usize, 7u8));
+    note("  cancel() found the group live", g7.cancel());
+    note("  and its second cancel found it cancelled already", not g7.cancel());
+    imm a8 = await f.writeAtIn(0u64, block(&pool, 4096usize, 7u8), IoLimits.within(g7));
+    say("write in the group now cancelled", endOf[usize](&a8));
+
+    // A group cancelled by a message, while the read is paused: Done or Cancelled
+    imm g9 = CancelGroup.make();
+    imm r9 = f.readAtIn(0u64, pool.mustTake(4096usize), IoLimits.within(g9));
+    selfactor.stop(g9);
+    imm a9 = await r9;
+    imm e9 = endOf[IoBuf](&a9);
+    note("read, cancel by message: done or cancelled", e9 == 0u32 or e9 == 1u32);
+
+    // The file dropped while a read is in flight: Done or Cancelled
+    imm other = fileOf(await aio.openFile(&name, Access.Read));
+    imm r10 = other.readAt(0u64, pool.mustTake(4096usize));
+    selfactor.release(other);
+    imm a10 = await r10;
+    imm e10 = endOf[IoBuf](&a10);
+    note("read, file closed under it: done or cancelled", e10 == 0u32 or e10 == 1u32);
+
+    // Races: a cancel against a read, and against a write
+    mut round = 0u64;
+    while round < rounds {
+      imm g = CancelGroup.make();
+      imm r = f.readAtIn(0u64, pool.mustTake(4096usize), IoLimits.within(g));
+      selfactor.stop(g);
+      imm ra = await r;
+      imm how = endOf[IoBuf](&ra);
+      if how == 0u32 {
+        tally.done.add(1u64);
+        imm got = bufOf(ra);
+        if not isBlock(&got, 4096usize, 7u8) {tally.wrong.add(1u64);}
+      } elif how == 1u32 {
+        tally.cancelled.add(1u64);
+      } else {
+        tally.other.add(1u64);
+      }
+      imm gw = CancelGroup.make();
+      imm wr = f.writeAtIn(0u64, block(&pool, 4096usize, 7u8), IoLimits.within(gw));
+      selfactor.stop(gw);
+      imm wa = await wr;
+      imm wh = endOf[usize](&wa);
+      if wh == 0u32 {
+        tally.done.add(1u64);
+        match wa {
+          case imm n Ok {if n != 4096usize {tally.wrong.add(1u64);}}
+          else {}
+        }
+      } elif wh == 1u32 {
+        tally.cancelled.add(1u64);
+      } else {
+        tally.other.add(1u64);
+      }
+      round = round + 1u64;
+    }
+    imm last = bufOf(await f.readAt(0u64, pool.mustTake(4096usize)));
+    note("after the races the file holds the block", isBlock(&last, 4096usize, 7u8));
+
+    mut d = done;
+    d.send(1u64);
+  }
+}
+
+fn main() {
+  initAll();
+  mut tx OneshotSender[u64];
+  mut rx OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  {
+    imm p = new Prober(Pool.make());
+    p.run(tx);
+  }
+  rx.recv();
+  finalAll();
+  note("every round was answered once, Done or Cancelled", tally.done.load() + tally.cancelled.load() == 2u64 * rounds);
+  note("  none failed or timed out", tally.other.load() == 0u64);
+  note("  and every Done had the bytes", tally.wrong.load() == 0u64);
+  fs.removeFile(&Path.from("aiolimits.tmp"));
+  printStr("end\n");
+}
