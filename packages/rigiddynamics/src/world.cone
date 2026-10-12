@@ -373,6 +373,22 @@ pub struct World {
     joints[usize.from(j)].coneAngle = coneAngle;
     j;
   }
+  // Make a cone-twist joint's swing range an ellipse instead of the round cone (Jolt's SwingTwistConstraint has a
+  // normal and a plane half cone angle, here four quarter-axes): B's twist axis may deflect from A's by 'flex'
+  // radians towards 'uDir', 'ext' the other way, 'abd' towards 'vDir' and 'add' the other way, the range being the
+  // ellipse through the four in between. 'uDir' and 'vDir' are directions in A's body frame, perpendicular to the
+  // twist axis (and to each other). The cone angle given to addConeTwist is then not used.
+  pub fn setSwingEllipse(self &mut, j u32, uDir Vec3, vDir Vec3, flex f32, ext f32, abd f32, add f32) {
+    imm jj = &mut joints[usize.from(j)];
+    jj.ellOn = true;
+    jj.ellU = uDir.normalize();
+    jj.ellV = vDir.normalize();
+    jj.ellFlex = maxf(flex, 0.001);
+    jj.ellExt = maxf(ext, 0.001);
+    jj.ellAbd = maxf(abd, 0.001);
+    jj.ellAdd = maxf(add, 0.001);
+    jj.impEll = 0.;
+  }
   pub fn setTwistLimits(self &mut, j u32, lo f32, hi f32) {
     joints[usize.from(j)].twistLo = lo;
     joints[usize.from(j)].twistHi = hi;
@@ -838,6 +854,37 @@ pub struct World {
     }
   }
 
+  // One Gauss-Seidel sweep over the joints. A joint's softness is Catto's spring (a frequency and a damping
+  // ratio) taken on the mass of its two bodies, which makes a light body on a heavy one far too soft: the
+  // spring that holds a 1 kg foot to its shin has to hold up the whole body when it lands. So the row's mass
+  // is measured against the heavier body instead (as PhysX's joint inverse-mass scales do): with
+  // rho = reduced mass / heavier mass, the mass scale is a2 / (a2 + rho) and the impulse scale rho / (a2 + rho),
+  // where a2 = hw (2 zeta + hw) is the spring's own number; rho = 1 (a static anchor) is the plain form.
+  fn sweepJoints(self &mut, useBias bool, invH f32, h f32, jsoft Softness) {
+    mut a = 0usize;
+    while a < activeJoints.len() {
+      imm ji = usize.from(*activeJoints[a]);
+      imm mA = bodies[usize.from(joints[ji].a)].mass;
+      imm mB = bodies[usize.from(joints[ji].b)].mass;
+      imm reduced = if mA <= 0. { mB; } else if mB <= 0. { mA; } else { mA * mB / (mA + mB); };
+      imm rho = if jsoft.massScale >= 1. or jsoft.massScale <= 0. or reduced <= 0. { 1.; } else { reduced / maxf(mA, mB); };
+      imm a2 = jsoft.massScale / (1. - jsoft.massScale);
+      imm js = if rho >= 1. { jsoft; } else { new Softness(jsoft.biasRate, a2 / (a2 + rho), rho / (a2 + rho)); };
+      solveJoint(self, ji, useBias, invH, h, js);
+      a = a + 1usize;
+    }
+  }
+
+  // One sweep over the contacts of 'list' (indices into 'cache'), forwards or backwards
+  fn sweepContacts(self &mut, list &List[u32], useBias bool, rev bool, invH f32, soft Softness, softStatic Softness) {
+    mut a = 0usize;
+    while a < list.len() {
+      imm ai = if rev { list.len() - 1usize - a; } else { a; };
+      solveContact(self, usize.from(*list[ai]), useBias, rev, invH, soft, softStatic);
+      a = a + 1usize;
+    }
+  }
+
   pub fn solve(self &mut, dt f32) {
     imm substeps = if settings.substeps < 1 { 1; } else { settings.substeps; };
     imm h = dt / f32.from(substeps);
@@ -846,8 +893,29 @@ pub struct World {
     imm soft = makeSoft(hz, settings.contactDamping, h);
     imm softStatic = makeSoft(2. * hz, settings.contactDamping, h);
     imm jsoft = makeSoft(settings.jointHertz, settings.jointDamping, h);
+    imm sweeps = if settings.jointIterations < 1 { 1; } else { settings.jointIterations; };
     mut a = 0usize;
     while a < active.len() { prepareContact(self, usize.from(*active[a])); a = a + 1usize; }
+    // The contacts of bodies on joints: a joint passes a contact's push along the chain one link a sweep, so
+    // these and the joints are swept 'jointIterations' times a sub-step, the other contacts once
+    mut artic = List[u32].empty();
+    if sweeps > 1 and activeJoints.len() > 0usize {
+      mut jointed = List[bool].empty();
+      mut bi = 0usize;
+      while bi < bodies.len() { jointed.push(false); bi = bi + 1usize; }
+      a = 0usize;
+      while a < activeJoints.len() {
+        jointed.set(usize.from(joints[usize.from(*activeJoints[a])].a), true);
+        jointed.set(usize.from(joints[usize.from(*activeJoints[a])].b), true);
+        a = a + 1usize;
+      }
+      a = 0usize;
+      while a < active.len() {
+        imm c = cache[usize.from(*active[a])];
+        if *jointed[usize.from(c.a)] or *jointed[usize.from(c.b)] { artic.push(*active[a]); }
+        a = a + 1usize;
+      }
+    }
     imm warm = settings.warmStart;
     mut s = 0;
     while s < substeps {
@@ -861,27 +929,27 @@ pub struct World {
         a = 0usize;
         while a < active.len() { self.zeroImpulses(usize.from(*active[a])); a = a + 1usize; }
       }
-      a = 0usize;
-      while a < activeJoints.len() { solveJoint(self, usize.from(*activeJoints[a]), true, invH, h, jsoft); a = a + 1usize; }
       imm odd = (s % 2) == 1;
-      a = 0usize;
-      while a < active.len() {
-        imm ai = if odd { active.len() - 1usize - a; } else { a; };
-        solveContact(self, usize.from(*active[ai]), true, odd, invH, soft, softStatic);
-        a = a + 1usize;
+      self.sweepJoints(true, invH, h, jsoft);
+      self.sweepContacts(&active, true, odd, invH, soft, softStatic);
+      mut rep = 1;
+      while rep < sweeps {
+        self.sweepJoints(true, invH, h, jsoft);
+        self.sweepContacts(&artic, true, odd != ((rep % 2) == 1), invH, soft, softStatic);
+        rep = rep + 1;
       }
       self.integratePositions(h);
       mut r = 0;
       while r < settings.relaxIterations {
-        a = 0usize;
-        while a < activeJoints.len() { solveJoint(self, usize.from(*activeJoints[a]), false, invH, h, jsoft); a = a + 1usize; }
-        a = 0usize;
-        while a < active.len() {
-          imm ai = if odd { a; } else { active.len() - 1usize - a; };
-          solveContact(self, usize.from(*active[ai]), false, not odd, invH, soft, softStatic);
-          a = a + 1usize;
-        }
+        self.sweepJoints(false, invH, h, jsoft);
+        self.sweepContacts(&active, false, not odd, invH, soft, softStatic);
         r = r + 1;
+      }
+      rep = 1;
+      while rep < sweeps {
+        self.sweepJoints(false, invH, h, jsoft);
+        self.sweepContacts(&artic, false, odd == ((rep % 2) == 1), invH, soft, softStatic);
+        rep = rep + 1;
       }
       s = s + 1;
     }
@@ -925,13 +993,29 @@ pub struct World {
   fn continuous(self &mut, dt f32) {
     mut i = 0usize;
     mut cands = List[u32].empty();
+    // A body on a joint is not put back: the bodies it is joined to would not follow, and the joint would be
+    // torn open by the distance the body was moved (the first landing of a ragdoll's foot opened its ankle by up
+    // to 15 cm). Its speculative contacts, made a velocity's reach ahead (maxSpeculative), already stop it at a
+    // surface; only a move longer than that reach is swept.
+    mut jointed = List[bool].empty();
+    while i < bodies.len() { jointed.push(false); i = i + 1usize; }
+    mut ji = 0usize;
+    while ji < joints.len() {
+      if joints[ji].alive {
+        jointed.set(usize.from(joints[ji].a), true);
+        jointed.set(usize.from(joints[ji].b), true);
+      }
+      ji = ji + 1usize;
+    }
+    i = 0usize;
     while i < bodies.len() {
       imm b = bodies[i];
       if isAwakeDynamic(b) and not b.sensor {
         imm now = new Rigid(b.pos - b.rot * b.comLocal, b.rot);
         imm disp = now.pos - b.startPos;
         imm dist = disp.length();
-        if dist > settings.ccdThreshold * 2. * b.minExtent and dist > 0.0001 {
+        imm reach = if *jointed[i] { settings.maxSpeculative; } else { 0.; };
+        if dist > settings.ccdThreshold * 2. * b.minExtent and dist > 0.0001 and dist > reach {
           imm sh = shapes[usize.from(b.shape)];
           imm startXf = new Rigid(b.startPos, b.startRot);
           imm swept = sh.bounds(startXf).union(sh.bounds(now)).expand(0.01);
