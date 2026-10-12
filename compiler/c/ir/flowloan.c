@@ -40,7 +40,7 @@ typedef struct {
     INode *shapecont;   // a borrow into a shape-changing value through a shared path: its struct, else NULL
     INode *shapeowner;  // then, the struct that holds that value as one of its fields, where the borrow was taken
                         // through that field ('x.label.view()': x's struct), else NULL (loanShapeOwnerSet)
-    uint32_t source;   // a reference narrowed into an enum's variant, read from a hidden variable that holds one
+    uint32_t source;    // a reference narrowed into an enum's variant, read from a hidden variable that holds one
                         // borrow: that borrow's loan, which says where the enum is (loanShapeSource), else 0
     uint8_t uniq;       // a 'mut' borrow of a place reached as 'uni', held as an alias loan: others (the source by
                         // name, another such borrow) may reach it too
