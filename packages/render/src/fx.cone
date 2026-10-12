@@ -84,6 +84,9 @@ pub struct ImageFx {
   pub fxaa FxaaPass;
   pub exposure ExposurePass;
   pub ssao SsaoPass;
+  pub decalPass DecalPass;
+  // The decals of this frame (decal.cone): filled by the program, emptied by 'render'
+  pub decals DecalList;
   pub sources List[PostSource];    // Post's groups for the frames the passes make (SOURCE_HISTORY0 and on, less one)
   // What is moving this frame (taa.cone): the program fills it after adding
   // the items to the draw list; it is emptied by 'render'
@@ -113,8 +116,9 @@ pub struct ImageFx {
     mut exposure = ExposurePass.create(device);
     imm tinyDepthView = depth.createView();
     mut ssao = SsaoPass.create(device, &frameBuffer, &tinyDepthView);
+    mut decalPass = DecalPass.create(device, &renderer.frameLayout, &renderer.environmentLayout, &frameBuffer, &tinyDepthView);
     mut fx = new ImageFx(new FxSettings(), 0u32, 0u32, post.outputFormat, depth, frameBuffer, taa, fxaa, exposure, ssao,
-      List[PostSource].empty(), MotionList.empty(), 0u32, Mat4.identity(), false, 0u32, true, true, 0.);
+      decalPass, DecalList.empty(), List[PostSource].empty(), MotionList.empty(), 0u32, Mat4.identity(), false, 0u32, true, true, 0.);
     fx.remake(device, renderer, post);
     fx;
   }
@@ -159,6 +163,7 @@ pub struct ImageFx {
     taa.remake(device, taaOn, w, h, &hdrView, &depthView, &frameBuffer, settings.taa.sharpness);
     fxaa.remake(device, fxaaOn, w, h, post.outputFormat);
     ssao.remake(device, settings.ssao.enabled, w, h, &depthView, &frameBuffer);
+    decalPass.remake(device, &frameBuffer, &depthView);
     // Post's groups for what the passes make, and the exposure's
     sources = List[PostSource].empty();
     exposure.groups = List[BindGroup].empty();
@@ -271,8 +276,15 @@ pub struct ImageFx {
     device.queue.writeBuffer(&frameBuffer, 0u64, &data as *u8, FX_FRAME_BYTES);
 
     // The scene, its depth kept for the passes that read it
-    if taaOn or s.ssao.enabled { renderer.keepDepth = true; }
+    imm decalsOn = decals.len() > 0usize;
+    if taaOn or s.ssao.enabled or decalsOn { renderer.keepDepth = true; }
     renderer.render(device, encoder, &post.hdr, &depth, &jittered, light, list);
+
+    // Decals, lit by the sun and the environment, before the occlusion
+    if decalsOn {
+      renderer.environment.bake(encoder);
+      decalPass.record(encoder, renderer, &post.hdr, &decals, eye);
+    }
 
     // Ambient occlusion darkens the frame where the depth says it is creased
     if s.ssao.enabled { ssao.record(encoder, &post.hdr, &s.ssao, frameNumber, taaOn); }
@@ -312,6 +324,14 @@ pub struct ImageFx {
     cut = false;
     frameNumber = frameNumber + 1u32;
     motion.clear();
+    decals.clear();
+  }
+
+  // A decal material of these textures (the renderer's handles; a normal or
+  // roughness map may be 'TextureHandle.none()'): its number, for 'Decal.at'
+  pub fn addDecalMaterial(self &mut, device &mut Device, renderer &Renderer, albedo TextureHandle, normal TextureHandle,
+      roughness TextureHandle) u32 {
+    decalPass.addMaterial(device, renderer, albedo, normal, roughness);
   }
 }
 

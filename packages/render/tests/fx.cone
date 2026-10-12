@@ -485,6 +485,85 @@ fn ambientOcclusion(device &mut Device) {
   expect(rms(&cornerOff, &cornerOn) > 0.001, "the corner picture changed");
 }
 
+// ---- 7. Decals ----
+
+fn decalTest(device &mut Device) {
+  mut rig = makeRig(device);
+  imm p = rig.readback.mappedRange();
+  rig.post.toneMapper = TONE_MAP_NONE;
+  rig.post.bloom = 0.;
+  mut planeMesh = Mesh.plane(1, 1.);
+  imm plane = rig.renderer.addMesh(device, &planeMesh);
+  imm gray = rig.renderer.addMaterial(device, &Material.plain(new Color(0.5, 0.5, 0.5, 1.)));
+  imm light = Light.directional(new Vec3(0., -1., 0.), new Color(0., 0., 0., 1.), new Color(1., 1., 1., 1.));
+  // The camera 12 above the ground looking straight down, up being -z
+  mut camera = Camera.make();
+  camera.fov = radians(40.);
+  camera.near = 0.1;
+  camera.far = 100.;
+  camera.lookAt(new Vec3(0., 12., 0.), new Vec3(0., 0., 0.), new Vec3(0., 0., -1.));
+  camera.background = new Color(0., 0., 0., 1.);
+  mut list = DrawList.empty();
+  list.add(plane, gray, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(40., 1., 40.)));
+  // A red 4 x 4 image, solid
+  mut img = new Image(4, 4, 4, List[u8].empty());
+  mut i = 0;
+  while i < 16 {
+    img.pixels.push(255u8);
+    img.pixels.push(0u8);
+    img.pixels.push(0u8);
+    img.pixels.push(255u8);
+    i = i + 1;
+  }
+  imm tex = rig.renderer.addTexture(device, &img);
+  imm material = rig.fx.addDecalMaterial(device, &rig.renderer, tex, TextureHandle.none(), TextureHandle.none());
+
+  drawScene(device, &mut rig, &camera, &light, &list);
+  imm baseline = grab(p);
+  // A box 2 x 1 x 2 about (1, 0, 0): the floor lies in it from x = 0 to 2 and z = -1 to 1
+  mut d = Decal.at(material, Mat4.fromTrs(new Vec3(1., 0., 0.), Quat.identity(), new Vec3(2., 1., 2.)));
+  rig.fx.decals.add(d);
+  drawScene(device, &mut rig, &camera, &light, &list);
+  imm withDecal = grab(p);
+  imm at = (64usize * SIDEZ + 79usize) * 3usize;
+  expect(*withDecal[at] > 0.8 and *withDecal[at + 1usize] < 0.1, "a decal paints the floor in its box red");
+  imm outside = (64usize * SIDEZ + 40usize) * 3usize;
+  expect(absf(*withDecal[outside] - *baseline[outside]) < 0.002 and absf(*withDecal[outside + 1usize] - *baseline[outside + 1usize]) < 0.002,
+    "and leaves the floor outside its box as it was");
+  // Where the box's edges land: x = 0 and 2 on the middle row, z = -1 and 1 on the middle column, within a pixel
+  mut left = -1.;
+  mut right = -1.;
+  mut x = 1usize;
+  while x < SIDEZ {
+    imm a = *withDecal[(64usize * SIDEZ + x - 1usize) * 3usize + 1usize];
+    imm b = *withDecal[(64usize * SIDEZ + x) * 3usize + 1usize];
+    // The green channel falls from the floor's level to the red decal's nothing
+    // and rises again: the crossings of half the floor's, between pixels
+    imm mid = 0.5 * *baseline[(64usize * SIDEZ + x) * 3usize + 1usize];
+    if a > mid and b <= mid and left < 0. { left = f32.from(x) - (a - mid) / (a - b) + 0.5; }
+    if a <= mid and b > mid and left >= 0. and right < 0. { right = f32.from(x) - (mid - a) / (b - a) + 0.5; }
+    x = x + 1usize;
+  }
+  eprint <- "measured: the decal's edges on the middle row at columns "; eprint <- left; eprint <- " and "; eprint <- right; eprint <- "\n";
+  expect(absf(left - 64.) < 1.5, "the left edge lands at the projected pixel (x = 0)");
+  expect(absf(right - 93.3) < 1.5, "and the right (x = 2)");
+  shot(p, "decal-red");
+  // A fade of a half: halfway between the floor and the red
+  rig.fx.decals.clear();
+  d.fade = 0.5;
+  rig.fx.decals.add(d);
+  drawScene(device, &mut rig, &camera, &light, &list);
+  imm faded = grab(p);
+  expect(absf(*faded[at] - 0.75) < 0.04 and absf(*faded[at + 1usize] - 0.25) < 0.04, "a fade of 0.5 shows half of it");
+  // A decal whose up is sideways does not take a floor facing up
+  rig.fx.decals.clear();
+  mut sideways = Decal.at(material, Mat4.fromTrs(new Vec3(1., 0., 0.), Quat.angleAxis(-1.5707964, new Vec3(0., 0., 1.)), new Vec3(1., 2., 2.)));
+  rig.fx.decals.add(sideways);
+  drawScene(device, &mut rig, &camera, &light, &list);
+  imm rejected = grab(p);
+  expect(rms(&rejected, &baseline) < 0.001, "a surface turned away from the decal's up does not take it");
+}
+
 // ---- 5. Grading, vignette and grain ----
 
 // A uniform frame of 'color' drawn with Post's finish as it is
@@ -665,6 +744,7 @@ fn main() i32 {
   exposure(&mut device);
   ambientOcclusion(&mut device);
   finish(&mut device);
+  decalTest(&mut device);
   expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
   expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
   done();
