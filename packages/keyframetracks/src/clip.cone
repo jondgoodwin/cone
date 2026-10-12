@@ -1,0 +1,323 @@
+// Clips: a named group of tracks, each addressed by a target id and a property
+// key (so a clip holds no references and can drive any world that has those
+// ids), with a length, a loop mode and markers.
+//
+// - PURE. 'sample(t)' is a function of t alone: it wraps t by the loop mode,
+//   evaluates every track and returns a Sample. Seeking to any time gives
+//   what playing up to it gives, and a clip can be run backwards, because
+//   nothing is remembered between calls.
+// - LOOP MODES. ONCE clamps t into 0..length (so at t = length the end value
+//   shows). LOOP wraps with period length (at t = length it is back at 0,
+//   the first value: a loop whose last key equals its first, as glTF and
+//   Godot loops are authored, shows no seam). PINGPONG goes there and back
+//   with period 2 * length (at t = length it is at the turn, the last value;
+//   at 2 * length it is back at 0). Negative t wraps like positive for the
+//   looping modes.
+// - MARKERS. A marker is a time, an id and a number. 'crossings(a, b)'
+//   answers which markers were passed between two unwrapped times; the rule
+//   is the same for every mode and both directions:
+//     * a marker's occurrences are the unwrapped times at which the clip's
+//       own time equals the marker's time: just m for ONCE; m + k * length
+//       for LOOP (a marker at the length is the marker at 0); and for
+//       PINGPONG m + 2k * length going out and 2k * length - m coming back
+//       (a marker at 0 or at the length is one occurrence per turn);
+//     * moving from a to b fires every occurrence u with min < u <= max,
+//       where min and max are the smaller and larger of a and b. So an
+//       occurrence at the start of a forward move does not fire again, one
+//       at its end does, and a backward move fires the same occurrences in
+//       reverse order, an occurrence at its start included: each occurrence
+//       fires once per crossing, whichever way you scrub across it;
+//     * each result says whether the clip's own time was running backward at
+//       that crossing (a ping-pong's return leg, or a backward scrub).
+
+pub const LOOP_ONCE = 0u32;
+pub const LOOP_LOOP = 1u32;
+pub const LOOP_PINGPONG = 2u32;
+
+// A time in a clip that raises an event when crossed
+pub struct Marker {
+  pub time f32;
+  pub id u32;
+  pub arg f32;
+}
+
+// A marker that was crossed: the marker's id and argument, the clip time it
+// is at, the unwrapped time of the crossing, whether the clip's own time was
+// running backward then, and which clip (the index the caller gave)
+pub struct Fired {
+  pub id u32;
+  pub arg f32;
+  pub clipTime f32;
+  pub at f64;
+  pub backward bool;
+  pub clip u32;
+}
+
+pub struct Binding {
+  pub target u32;
+  pub prop u32;
+  pub track Track;
+}
+
+fn floor64(x f64) f64 { libc.floor(x); }
+
+// The clip time for an unwrapped time t (see the header for the modes)
+pub fn loopTime64(t f64, length f32, mode u32) f32 {
+  if length <= 0. { return 0.; }
+  imm d = f64.from(length);
+  if mode == LOOP_ONCE {
+    if t <= 0. { return 0.; }
+    if t >= d { return length; }
+    return f32.from(t);
+  }
+  if mode == LOOP_LOOP {
+    imm r = t - d * floor64(t / d);
+    if r >= d { return 0.; }
+    return f32.from(r);
+  }
+  imm p = d * 2.0f64;
+  mut r = t - p * floor64(t / p);
+  if r >= p { r = 0.; }
+  if r > d { r = p - r; }
+  f32.from(r);
+}
+
+pub fn loopTime(t f32, length f32, mode u32) f32 { loopTime64(f64.from(t), length, mode); }
+
+pub struct Clip {
+  pub name String;
+  pub length f32;
+  pub mode u32;
+  pub bindings List[Binding];
+  pub markers List[Marker];
+
+  pub fn make(name &str, mode u32) Clip {
+    new Clip(String.from(name), 0., mode, List[Binding].empty(), List[Marker].empty());
+  }
+
+  pub fn copy(self &) Clip {
+    mut c = Clip.make(name.view(), mode);
+    c.length = length;
+    mut i = 0usize;
+    while i < bindings.len() {
+      c.bindings.push(new Binding((*bindings[i]).target, (*bindings[i]).prop, bindings[i].track.copy()));
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < markers.len() { c.markers.push(*markers[i]); i = i + 1usize; }
+    c;
+  }
+
+  // The binding of a property, or -1
+  pub fn find(self &, target u32, prop u32) i64 {
+    mut i = 0usize;
+    while i < bindings.len() {
+      if (*bindings[i]).target == target and (*bindings[i]).prop == prop { return i64.from(i); }
+      i = i + 1usize;
+    }
+    -1i64;
+  }
+
+  // Add a track for a property (replacing one already there); the clip's
+  // length grows to hold its last key
+  pub fn addTrack(self &mut, target u32, prop u32, track Track) {
+    imm end = track.endTime();
+    imm i = self.find(target, prop);
+    if i >= 0i64 {
+      bindings.set(usize.from(i), new Binding(target, prop, track));
+    } else {
+      bindings.push(new Binding(target, prop, track));
+    }
+    if end > length { length = end; }
+  }
+
+  // The length set to the last key of any track (or marker)
+  pub fn fitLength(self &mut) {
+    mut end f32 = 0.;
+    mut i = 0usize;
+    while i < bindings.len() {
+      imm e = bindings[i].track.endTime();
+      if e > end { end = e; }
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < markers.len() {
+      if (*markers[i]).time > end { end = (*markers[i]).time; }
+      i = i + 1usize;
+    }
+    length = end;
+  }
+
+  // A marker at 'time' (kept in time order; equal times keep their order)
+  pub fn addMarker(self &mut, time f32, id u32, arg f32) {
+    markers.push(new Marker(time, id, arg));
+    mut k = markers.len() - 1usize;
+    while k > 0usize and (*markers[k - 1usize]).time > time {
+      markers.swap(k, k - 1usize);
+      k = k - 1usize;
+    }
+    if time > length { length = time; }
+  }
+
+  // The clip time for an unwrapped time
+  pub fn localTime(self &, t f64) f32 { loopTime64(t, length, mode); }
+
+  // The properties at a clip time already inside 0..length (no wrapping)
+  pub fn sampleLocal(self &, lt f32, out &mut Sample) {
+    mut raw = List[f32].empty();
+    mut i = 0usize;
+    while i < bindings.len() {
+      bindings[i].track.evalLinear(lt, &mut raw);
+      out.put((*bindings[i]).target, (*bindings[i]).prop, bindings[i].track.kind, &raw);
+      i = i + 1usize;
+    }
+  }
+
+  // The properties at the unwrapped time t, into 'out' (which keeps other
+  // bindings it has: the properties this clip animates are set)
+  pub fn sampleInto(self &, t f64, out &mut Sample) { self.sampleLocal(self.localTime(t), out); }
+
+  // The properties at the unwrapped time t
+  pub fn sample(self &, t f32) Sample {
+    mut s = Sample.empty();
+    self.sampleInto(f64.from(t), &mut s);
+    s;
+  }
+
+  // Join 'src' onto a property's track (made if there is none) with src's
+  // time zero at 'offset' (appendTrack's rules); the length grows to hold it
+  pub fn mergeTrack(self &mut, target u32, prop u32, src &Track, offset f32) {
+    imm j = self.find(target, prop);
+    mut work = if j >= 0i64 { bindings[usize.from(j)].track.copy(); } else {
+      mut e = Track.make(src.kind);
+      e.comps = src.comps;
+      e.space = src.space;
+      e;
+    };
+    appendTrack(&mut work, src, offset);
+    if j >= 0i64 { bindings.set(usize.from(j), new Binding(target, prop, work)); }
+    else { bindings.push(new Binding(target, prop, work)); }
+    if offset + src.endTime() > length { length = offset + src.endTime(); }
+  }
+
+  // Copy 'src' into this clip, its time zero at 'offset' here. A property
+  // both animate holds this clip's value up to the first key of src's track
+  // and follows src's from there (keys of this track later than that are
+  // dropped). The length grows to hold it; markers are copied.
+  pub fn appendClip(self &mut, src &Clip, offset f32) {
+    mut i = 0usize;
+    while i < src.bindings.len() {
+      imm tr = src.bindings[i].track.copy();
+      self.mergeTrack((*src.bindings[i]).target, (*src.bindings[i]).prop, &tr, offset);
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < src.markers.len() {
+      self.addMarker((*src.markers[i]).time + offset, (*src.markers[i]).id, (*src.markers[i]).arg);
+      i = i + 1usize;
+    }
+    if offset + src.length > length { length = offset + src.length; }
+  }
+
+  // Append to 'out' the markers crossed moving from the unwrapped time a to b,
+  // in the order crossed (see the header). 'clipIndex' is stamped on each
+  pub fn crossings(self &, a f64, b f64, clipIndex u32, out &mut List[Fired]) {
+    if a == b or length <= 0. { return; }
+    imm back = b < a;
+    imm lo = if back { b; } else { a; };
+    imm hi = if back { a; } else { b; };
+    imm d = f64.from(length);
+    mut found = List[Fired].empty();
+    mut i = 0usize;
+    while i < markers.len() {
+      imm mk = *markers[i];
+      imm m = f64.from(mk.time);
+      if mode == LOOP_ONCE {
+        if m > lo and m <= hi { found.push(new Fired(mk.id, mk.arg, mk.time, m, back, clipIndex)); }
+      } else {
+        // the period, and the starting points of the series of occurrences
+        imm period = if mode == LOOP_LOOP { d; } else { d * 2.0f64; };
+        mut series = 0;
+        while series < 2 {
+          mut base = m;
+          mut rev = back;
+          mut go = true;
+          if series == 1 {
+            if mode == LOOP_LOOP or m <= 0. or m >= d { go = false; }
+            base = period - m;
+            rev = !back;
+          }
+          if go {
+            if base >= period { base = base - period * floor64(base / period); }
+            mut k = floor64((lo - base) / period) + 1.;
+            mut u = base + k * period;
+            while u <= hi {
+              found.push(new Fired(mk.id, mk.arg, mk.time, u, rev, clipIndex));
+              k = k + 1.;
+              u = base + k * period;
+            }
+          }
+          series = series + 1;
+        }
+      }
+      i = i + 1usize;
+    }
+    // in the order crossed: by unwrapped time, a backward move reversed
+    mut x = 1usize;
+    while x < found.len() {
+      mut y = x;
+      while y > 0usize and (*found[y - 1usize]).at > (*found[y]).at { found.swap(y, y - 1usize); y = y - 1usize; }
+      x = x + 1usize;
+    }
+    if back {
+      mut k = found.len();
+      while k > 0usize { k = k - 1usize; out.push(*found[k]); }
+    } else {
+      mut k = 0usize;
+      while k < found.len() { out.push(*found[k]); k = k + 1usize; }
+    }
+  }
+}
+
+// Join 'src' onto the end of 'dst' with src's time zero at 'offset' (see
+// Clip.appendClip): a gap holds dst's last value, an overlap cuts dst's motion
+// where it has got to (a key at the cut with the value it had; an eased
+// segment that is cut is left linear to the cut) and src takes over from
+// there, and src's first key lands after (not over) a dst key at the same
+// time, so a jump between two steps is kept.
+pub fn appendTrack(dst &mut Track, src &Track, offset f32) {
+  if src.len() == 0usize { return; }
+  imm start = offset + ld(&src.times, 0usize);
+  if dst.len() > 0usize {
+    if dst.endTime() > start {
+      // overlap: cut the earlier motion at 'start', where it has got to
+      mut here = List[f32].empty();
+      dst.evalRaw(start, &mut here);
+      dst.truncateAfter(start);
+      if dst.len() == 0usize or dst.endTime() < start {
+        imm cut = dst.appendBlank(start);
+        mut c = 0usize;
+        while c < dst.comps { dst.values.set(cut * dst.comps + c, ld(&here, c)); c = c + 1usize; }
+      }
+    } elif dst.endTime() < start {
+      // a gap: hold the earlier end value until the new motion starts
+      dst.interps.set(dst.len() - 1usize, INTERP_STEP);
+    }
+  }
+  mut i = 0usize;
+  while i < src.len() {
+    imm idx = dst.appendBlank(ld(&src.times, i) + offset);
+    dst.interps.set(idx, *src.interps[i]);
+    dst.eases.set(idx, *src.eases[i]);
+    mut c = 0usize;
+    while c < 4usize { dst.shapes.set(idx * 4usize + c, ld(&src.shapes, i * 4usize + c)); c = c + 1usize; }
+    c = 0usize;
+    while c < dst.comps {
+      dst.values.set(idx * dst.comps + c, ld(&src.values, i * src.comps + c));
+      dst.inTan.set(idx * dst.comps + c, ld(&src.inTan, i * src.comps + c));
+      dst.outTan.set(idx * dst.comps + c, ld(&src.outTan, i * src.comps + c));
+      c = c + 1usize;
+    }
+    i = i + 1usize;
+  }
+}
