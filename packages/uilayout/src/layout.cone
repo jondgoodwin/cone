@@ -23,6 +23,7 @@ pub fn layout[F fn(text &str, font u32, size f32) Vec2](ui &mut Ui, m &mut F) {
   layoutRoot(ui, ui.overlay, m);
   updateGlobals(ui, ui.root, 0., 0.);
   updateGlobals(ui, ui.overlay, 0., 0.);
+  refreshFields(ui, m);
   placeTooltip(ui, m);
 }
 
@@ -203,6 +204,7 @@ pub fn arrangeNode[F fn(text &str, font u32, size f32) Vec2](ui &mut Ui, id usiz
   if mode == LK_ROW or mode == LK_COLUMN {flexArrange(ui, id, w, h, m);}
   elif mode == LK_GRID {gridArrange(ui, id, w, h, m);}
   elif mode == LK_ANCHOR {anchorArrange(ui, id, w, h, m);}
+  elif mode == LK_ABS {absArrange(ui, id, w, h, m);}
   elif mode == LK_DOCK {dockArrange(ui, id, w, h, m);}
   elif mode == LK_SPLIT {splitArrange(ui, id, w, h, m);}
   elif mode == LK_SCROLL {scrollArrange(ui, id, w, h, m);}
@@ -228,7 +230,19 @@ fn placeOutOfFlow[F fn(text &str, font u32, size f32) Vec2](ui &mut Ui, id usize
   mut c = ui.nodes[id].first;
   while c != NIL {
     if ui.nodes[c].visible and ui.nodes[c].outOfFlow {
-      imm v = measureNode(ui, c, 0., w, 0., h, m);
+      imm v = measureNode(ui, c, 0., UNBOUNDED, 0., UNBOUNDED, m);
+      place(ui, c, ui.nodes[c].absX, ui.nodes[c].absY, v.x, v.y, m);
+    }
+    c = ui.nodes[c].next;
+  }
+}
+
+// LK_ABS: every child sits at its own (absX, absY) at its natural size, free to overflow
+fn absArrange[F fn(text &str, font u32, size f32) Vec2](ui &mut Ui, id usize, w f32, h f32, m &mut F) {
+  mut c = ui.nodes[id].first;
+  while c != NIL {
+    if isFlow(ui, c) {
+      imm v = measureNode(ui, c, 0., UNBOUNDED, 0., UNBOUNDED, m);
       place(ui, c, ui.nodes[c].absX, ui.nodes[c].absY, v.x, v.y, m);
     }
     c = ui.nodes[c].next;

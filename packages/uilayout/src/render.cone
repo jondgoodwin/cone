@@ -1,0 +1,361 @@
+// ======== Drawing: the tree to a draw list ========
+//
+// 'drawUi' walks the root layer and then the overlay layer, each node before its
+// children (so a child is above its parent) and in sibling order (the last child is on
+// top), and appends commands. Every colour, radius and width is resolved from the node's
+// style and its current state; nothing here changes the Ui. The draw list is plain data:
+// a renderer turns DC_RECT, DC_BORDER, DC_IMAGE, DC_TEXT, DC_LINE and DC_ARC into pixels.
+
+pub fn drawUi(ui &imm Ui, out &mut DrawList) {
+  out.clear();
+  drawNode(ui, ui.root, out);
+  drawNode(ui, ui.overlay, out);
+}
+
+fn textColor(ui &imm Ui, id usize) u32 {ui.styleColor(id, P_FG, 0xffffffffu32);}
+
+fn fontOf(ui &imm Ui, id usize) u32 {u32.from(ui.styleNum0(id, P_FONT, 0.));}
+fn sizeOf(ui &imm Ui, id usize) f32 {ui.styleNum0(id, P_FONT_SIZE, 14.);}
+
+// The background and outline of a node, from its style
+fn drawFrame(ui &imm Ui, id usize, out &mut DrawList) {
+  imm n = ui.nodes[id];
+  imm bg = ui.styleColor(id, P_BG, 0u32);
+  imm radius = ui.styleNum(id, P_RADIUS, 0.);
+  if colorA(bg) != 0u32 {
+    out.rect(n.gx, n.gy, n.w, n.h, bg, radius, id);
+    imm bw = ui.styleNum(id, P_BORDER_W, 0.);
+    imm bc = ui.styleColor(id, P_BORDER, 0u32);
+    if bw > 0. {out.border(n.gx, n.gy, n.w, n.h, bc, radius, bw, id);}
+  }
+}
+
+// The content box, inside the padding
+fn contentBox(ui &imm Ui, id usize) Aabb2 {
+  imm n = ui.nodes[id];
+  imm l = ui.padOf(id, 0u32);
+  imm t = ui.padOf(id, 1u32);
+  new Aabb2(new Vec2(n.gx + l, n.gy + t), new Vec2(n.gx + maxf(l, n.w - ui.padOf(id, 2u32)), n.gy + maxf(t, n.h - ui.padOf(id, 3u32))));
+}
+
+fn drawLabelText(ui &imm Ui, id usize, out &mut DrawList, align u32) {
+  if ui.texts[id].len() == 0usize {return;}
+  imm b = contentBox(ui, id);
+  out.text(b.min.x, b.min.y, b.max.x - b.min.x, b.max.y - b.min.y, ui.texts[id].view(), fontOf(ui, id), sizeOf(ui, id), textColor(ui, id), align, id);
+}
+
+fn numberText(n u32) String {
+  mut s = String.empty();
+  s.appendUInt(u64.from(n));
+  s;
+}
+
+fn drawItemIcon(ui &imm Ui, out &mut DrawList, x f32, y f32, w f32, h f32, kind u32, node usize) {
+  if kind == 0u32 {return;}
+  imm tp = ui.inv.types[usize.from(kind)];
+  if tp.icon != 0u32 {
+    out.image(x, y, w, h, tp.icon, 0., 0., 1., 1., 0xffffffffu32, 0., node);
+  }
+  else {
+    imm pad = minf(w, h) * 0.16;
+    out.rect(x + pad, y + pad, w - pad * 2., h - pad * 2., tp.color, 4., node);
+    if tp.name.len() > 0usize {
+      imm initial = String.from(tp.name.view().slice(0usize, 1usize));
+      out.text(x, y, w, h, initial.view(), 0u32, 15., 0x101010ffu32, TA_CENTER, node);
+    }
+  }
+}
+
+fn drawIconColor(ui &imm Ui, out &mut DrawList, x f32, y f32, w f32, h f32, icon u32, color u32, node usize) {
+  if icon != 0u32 {out.image(x, y, w, h, icon, 0., 0., 1., 1., 0xffffffffu32, 0., node);}
+  else {
+    imm pad = minf(w, h) * 0.16;
+    out.rect(x + pad, y + pad, w - pad * 2., h - pad * 2., color, 4., node);
+  }
+}
+
+fn drawNode(ui &imm Ui, id usize, out &mut DrawList) {
+  imm n = ui.nodes[id];
+  if !n.visible or n.w <= 0. and n.h <= 0. and n.kind != K_PLAIN {return;}
+  drawSelf(ui, id, out);
+  if n.clip {out.clipPush(n.gx, n.gy, n.w, n.h);}
+  mut c = n.first;
+  while c != NIL {
+    drawNode(ui, c, out);
+    c = ui.nodes[c].next;
+  }
+  if n.clip {out.clipPop();}
+  drawAfter(ui, id, out);
+}
+
+fn drawSelf(ui &imm Ui, id usize, out &mut DrawList) {
+  imm n = ui.nodes[id];
+  imm k = n.kind;
+  if k == K_LABEL {
+    drawLabelText(ui, id, out, TA_LEFT);
+    return;
+  }
+  if k == K_WINDOW {
+    imm sh = ui.styleColor(id, P_SHADOW, 0u32);
+    out.rect(n.gx + 5., n.gy + 6., n.w, n.h, sh, ui.styleNum(id, P_RADIUS, 0.), id);
+  }
+  if k == K_SLIDER or k == K_KNOB or k == K_MINIMAP or k == K_SLOT or k == K_HOTSLOT or k == K_GHOST or k == K_IMAGE {
+    // these draw their own frames
+  }
+  else {drawFrame(ui, id, out);}
+  if k == K_BUTTON or k == K_TAB {drawLabelText(ui, id, out, TA_CENTER);}
+  elif k == K_ROWITEM or k == K_TOOLTIP {drawLabelText(ui, id, out, TA_LEFT);}
+  elif k == K_CLOSE {drawCloseBox(ui, id, out);}
+  elif k == K_TOGGLE {drawToggle(ui, id, out);}
+  elif k == K_SLIDER {drawSlider(ui, id, out);}
+  elif k == K_KNOB {drawKnob(ui, id, out);}
+  elif k == K_TEXTFIELD {drawField(ui, id, out);}
+  elif k == K_SLOT {drawSlot(ui, id, out);}
+  elif k == K_HOTSLOT {drawHotSlot(ui, id, out);}
+  elif k == K_MINIMAP {drawMinimap(ui, id, out);}
+  elif k == K_GHOST {drawGhost(ui, id, out);}
+  elif k == K_IMAGE {out.image(n.gx, n.gy, n.w, n.h, n.tag, 0., 0., 1., 1., 0xffffffffu32, 0., id);}
+}
+
+// What is drawn over the children: scrollbars, the divider, the minimap's frame
+fn drawAfter(ui &imm Ui, id usize, out &mut DrawList) {
+  imm n = ui.nodes[id];
+  if n.layout == LK_SCROLL {
+    imm sbs = ui.theme.find("scrollbar");
+    drawScrollbar(ui, id, true, sbs, out);
+    drawScrollbar(ui, id, false, sbs, out);
+  }
+  if n.kind == K_SPLITVIEW {
+    imm dv = dividerRect(ui, id);
+    imm hot = ui.input.win.mode == 4u32 and ui.input.win.node == id;
+    imm c = if hot {ui.styleColor(id, P_ACCENT, 0xffffffffu32);} else {ui.theme.color(ui.theme.find("scrollbar"), P_BG, ST_HOVER, 0xaaaaaaffu32);};
+    out.rect(dv.min.x + 1., dv.min.y + 1., dv.max.x - dv.min.x - 2., dv.max.y - dv.min.y - 2., withAlpha(c, 120u32), 2., id);
+  }
+  if n.kind == K_MINIMAP {
+    imm bw = ui.styleNum(id, P_BORDER_W, 0.);
+    imm bc = ui.styleColor(id, P_BORDER, 0u32);
+    imm d = n.data;
+    if ui.minimaps[d].shape == MAP_CIRCLE {
+      out.arc(n.gx + n.w * 0.5, n.gy + n.h * 0.5, n.w * 0.5 - bw * 0.5, 0., 6.2831855, bc, bw, id);
+    }
+    else {out.border(n.gx, n.gy, n.w, n.h, bc, ui.styleNum(id, P_RADIUS, 0.), bw, id);}
+  }
+}
+
+fn drawScrollbar(ui &imm Ui, id usize, vertical bool, sbs usize, out &mut DrawList) {
+  imm th = scrollbarRects(ui, id, vertical);
+  if th.max.x <= th.min.x {return;}
+  imm n = ui.nodes[id];
+  imm sz = ui.theme.num(sbs, P_SIZE, 0u32, 8.);
+  mut state = 0u32;
+  if ui.input.px >= th.min.x and ui.input.px <= th.max.x and ui.input.py >= th.min.y and ui.input.py <= th.max.y {state = ST_HOVER;}
+  if ui.input.win.mode == 3u32 and ui.input.win.node == id and ui.input.win.vertical == vertical {state = ST_HOVER | ST_PRESSED;}
+  imm track = ui.theme.color(sbs, P_TRACK, 0u32, 0u32);
+  imm thumb = ui.theme.color(sbs, P_BG, state, 0xccccccffu32);
+  if vertical {out.rect(n.gx + n.w - sz - 2., n.gy + 2., sz, n.h - 4., track, sz * 0.5, id);}
+  else {out.rect(n.gx + 2., n.gy + n.h - sz - 2., n.w - 4., sz, track, sz * 0.5, id);}
+  out.rect(th.min.x, th.min.y, th.max.x - th.min.x, th.max.y - th.min.y, thumb, sz * 0.5, id);
+}
+
+fn drawCloseBox(ui &imm Ui, id usize, out &mut DrawList) {
+  imm n = ui.nodes[id];
+  imm c = textColor(ui, id);
+  imm m = minf(n.w, n.h) * 0.3;
+  out.line(n.gx + m, n.gy + m, n.gx + n.w - m, n.gy + n.h - m, c, 1.6, id);
+  out.line(n.gx + n.w - m, n.gy + m, n.gx + m, n.gy + n.h - m, c, 1.6, id);
+}
+
+fn drawToggle(ui &imm Ui, id usize, out &mut DrawList) {
+  imm n = ui.nodes[id];
+  imm b = contentBox(ui, id);
+  imm s = minf(ui.styleNum0(id, P_SIZE, 20.), b.max.y - b.min.y);
+  imm y = b.min.y + ((b.max.y - b.min.y) - s) * 0.5;
+  imm on = (n.state & ST_CHECKED) != 0u32;
+  out.rect(b.min.x, y, s, s, rgb(20u32, 22u32, 26u32), 3., id);
+  out.border(b.min.x, y, s, s, ui.styleColor(id, P_BORDER, 0xffffffffu32), 3., 1.5, id);
+  if on {
+    out.line(b.min.x + s * 0.22, y + s * 0.52, b.min.x + s * 0.43, y + s * 0.74, 0xffffffffu32, 2.2, id);
+    out.line(b.min.x + s * 0.43, y + s * 0.74, b.min.x + s * 0.80, y + s * 0.28, 0xffffffffu32, 2.2, id);
+  }
+  if ui.texts[id].len() > 0usize {
+    imm gap = ui.gapOf(id);
+    out.text(b.min.x + s + gap, b.min.y, b.max.x - b.min.x - s - gap, b.max.y - b.min.y, ui.texts[id].view(),
+      fontOf(ui, id), sizeOf(ui, id), textColor(ui, id), TA_LEFT, id);
+  }
+}
+
+fn drawSlider(ui &imm Ui, id usize, out &mut DrawList) {
+  imm n = ui.nodes[id];
+  imm d = n.data;
+  imm ts = thumbSize(ui, id);
+  imm frac = sliderFraction(ui, id);
+  imm track = ui.styleColor(id, P_TRACK, 0u32);
+  imm fill = ui.styleColor(id, P_ACCENT, 0xffffffffu32);
+  imm thumb = ui.styleColor(id, P_BG, 0xffffffffu32);
+  imm focused = (n.state & ST_FOCUSED) != 0u32;
+  if ui.sliders[d].vertical {
+    imm cx = n.gx + n.w * 0.5;
+    imm usable = n.h - ts;
+    imm ty = n.gy + ts * 0.5 + usable * (1. - frac);
+    out.rect(cx - 2., n.gy + ts * 0.5, 4., usable, track, 2., id);
+    out.rect(cx - 2., ty, 4., n.gy + ts * 0.5 + usable - ty, fill, 2., id);
+    out.rect(cx - ts * 0.5, ty - ts * 0.5, ts, ts, thumb, ts * 0.5, id);
+    if focused {out.border(cx - ts * 0.5, ty - ts * 0.5, ts, ts, ui.styleColor(id, P_BORDER, 0xffffffffu32), ts * 0.5, 2., id);}
+  }
+  else {
+    imm cy = n.gy + n.h * 0.5;
+    imm usable = n.w - ts;
+    imm tx = n.gx + ts * 0.5 + usable * frac;
+    out.rect(n.gx + ts * 0.5, cy - 2., usable, 4., track, 2., id);
+    out.rect(n.gx + ts * 0.5, cy - 2., tx - n.gx - ts * 0.5, 4., fill, 2., id);
+    out.rect(tx - ts * 0.5, cy - ts * 0.5, ts, ts, thumb, ts * 0.5, id);
+    if focused {out.border(tx - ts * 0.5, cy - ts * 0.5, ts, ts, ui.styleColor(id, P_BORDER, 0xffffffffu32), ts * 0.5, 2., id);}
+  }
+}
+
+fn drawKnob(ui &imm Ui, id usize, out &mut DrawList) {
+  imm n = ui.nodes[id];
+  imm cx = n.gx + n.w * 0.5;
+  imm cy = n.gy + n.h * 0.5;
+  imm r = minf(n.w, n.h) * 0.5 - 2.;
+  imm frac = knobFraction(ui, id);
+  imm a = KNOB_START + KNOB_SWEEP * frac;
+  imm body = ui.styleColor(id, P_BG, 0x808080ffu32);
+  out.arc(cx, cy, r * 0.72, 0., 6.2831855, body, 0., id);
+  out.arc(cx, cy, r - 2., KNOB_START, KNOB_START + KNOB_SWEEP, ui.styleColor(id, P_TRACK, 0u32), 4., id);
+  if frac > 0. {out.arc(cx, cy, r - 2., KNOB_START, a, ui.styleColor(id, P_ACCENT, 0xffffffffu32), 4., id);}
+  out.line(cx + cos(a) * r * 0.25, cy + sin(a) * r * 0.25, cx + cos(a) * r * 0.64, cy + sin(a) * r * 0.64, textColor(ui, id), 2.5, id);
+  if (n.state & ST_FOCUSED) != 0u32 {out.border(n.gx, n.gy, n.w, n.h, ui.styleColor(id, P_BORDER, 0xffffffffu32), r, 1.5, id);}
+}
+
+fn drawField(ui &imm Ui, id usize, out &mut DrawList) {
+  imm n = ui.nodes[id];
+  imm d = n.data;
+  imm b = contentBox(ui, id);
+  imm font = fontOf(ui, id);
+  imm size = sizeOf(ui, id);
+  imm sc = ui.fields[d].scroll;
+  imm focused = (n.state & ST_FOCUSED) != 0u32;
+  out.clipPush(b.min.x, n.gy + 1., b.max.x - b.min.x, n.h - 2.);
+  if ui.fields[d].caret != ui.fields[d].anchor and ui.fields[d].advValid {
+    imm lo = fieldLo(ui, d);
+    imm hi = fieldHi(ui, d);
+    imm x0 = fieldAdvance(ui, id, lo) - sc;
+    imm x1 = fieldAdvance(ui, id, hi) - sc;
+    out.rect(b.min.x + x0, b.min.y, x1 - x0, b.max.y - b.min.y, ui.styleColor(id, P_ACCENT, 0x3c64b4ffu32), 0., id);
+  }
+  if ui.texts[id].len() > 0usize {
+    out.text(b.min.x - sc, b.min.y, 100000., b.max.y - b.min.y, ui.texts[id].view(), font, size, textColor(ui, id), TA_LEFT, id);
+  }
+  elif !focused and ui.fields[d].placeholder.len() > 0usize {
+    out.text(b.min.x, b.min.y, b.max.x - b.min.x, b.max.y - b.min.y, ui.fields[d].placeholder.view(), font, size,
+      withAlpha(textColor(ui, id), 110u32), TA_LEFT, id);
+  }
+  if focused and ui.fields[d].advValid and (ui.fields[d].blink - floorf(ui.fields[d].blink)) < 0.6 {
+    imm cx = b.min.x + fieldAdvance(ui, id, ui.fields[d].caret) - sc;
+    out.rect(cx, b.min.y + 1., 1.5, b.max.y - b.min.y - 2., textColor(ui, id), 0., id);
+  }
+  out.clipPop();
+}
+
+fn drawSlot(ui &imm Ui, id usize, out &mut DrawList) {
+  imm n = ui.nodes[id];
+  drawFrame(ui, id, out);
+  imm d = n.data;
+  imm item = ui.inv.itemAt(ui.slots[d].container, ui.slots[d].index);
+  if item == 0u32 {return;}
+  imm kind = ui.inv.typeOf(item);
+  imm dim = (n.state & ST_DRAGGED) != 0u32;
+  if !dim {
+    drawItemIcon(ui, out, n.gx + 3., n.gy + 3., n.w - 6., n.h - 6., kind, id);
+    imm cnt = ui.inv.countAt(ui.slots[d].container, ui.slots[d].index);
+    if ui.inv.isBag(item) {
+      // a bag: a lighter frame inside, and the number of free slots
+      out.border(n.gx + 3., n.gy + 3., n.w - 6., n.h - 6., 0xffe08cffu32, 4., 1.5, id);
+      imm free = numberText(ui.inv.freeSlots(ui.inv.items[usize.from(item)].bag));
+      out.text(n.gx + 3., n.gy + n.h - 17., n.w - 7., 14., free.view(), 0u32, 11.5, 0xffe08cffu32, TA_RIGHT, id);
+    }
+    elif cnt > 1u32 {
+      imm t = numberText(cnt);
+      out.text(n.gx + 3., n.gy + n.h - 17., n.w - 7., 14., t.view(), 0u32, 12., 0xffffffffu32, TA_RIGHT, id);
+    }
+  }
+  else {
+    out.rect(n.gx + 3., n.gy + 3., n.w - 6., n.h - 6., 0xffffff28u32, 4., id);
+  }
+}
+
+fn drawHotSlot(ui &imm Ui, id usize, out &mut DrawList) {
+  imm n = ui.nodes[id];
+  drawFrame(ui, id, out);
+  imm d = n.data;
+  if ui.hotslots[d].kind != BK_NONE and (n.state & ST_DRAGGED) == 0u32 {
+    drawIconColor(ui, out, n.gx + 3., n.gy + 3., n.w - 6., n.h - 6., ui.hotslots[d].icon, ui.hotslots[d].color, id);
+    if ui.hotslots[d].count > 0u32 {
+      imm t = numberText(ui.hotslots[d].count);
+      out.text(n.gx + 3., n.gy + n.h - 17., n.w - 7., 14., t.view(), 0u32, 12., 0xffffffffu32, TA_RIGHT, id);
+    }
+    imm frac = hotbarCooldown(ui, id);
+    if frac > 0. {
+      // the cooldown sweeps down: the dark part is what is still to wait
+      out.rect(n.gx + 2., n.gy + 2., n.w - 4., (n.h - 4.) * frac, 0x000000b4u32, 3., id);
+      imm left = ui.hotslots[d].cdLeft;
+      mut t = String.empty();
+      if left >= 10. {t.appendUInt(u64.from(u32.from(ceilf(left))));}
+      else {
+        imm tenths = u32.from(ceilf(left * 10.));
+        t.appendUInt(u64.from(tenths / 10u32));
+        t.append(".");
+        t.appendUInt(u64.from(tenths % 10u32));
+      }
+      out.text(n.gx, n.gy, n.w, n.h, t.view(), 0u32, 14., 0xffffffffu32, TA_CENTER, id);
+    }
+  }
+  // the key
+  mut k = String.empty();
+  k.append("F");
+  k.appendUInt(u64.from(ui.hotslots[d].key - KEY_F1 + 1u32));
+  out.text(n.gx + 4., n.gy + 1., n.w - 6., 14., k.view(), 0u32, 11., 0xc8ccd2ffu32, TA_LEFT, id);
+}
+
+fn drawMinimap(ui &imm Ui, id usize, out &mut DrawList) {
+  imm n = ui.nodes[id];
+  imm d = n.data;
+  imm radius = if ui.minimaps[d].shape == MAP_CIRCLE {n.w * 0.5;} else {ui.styleNum(id, P_RADIUS, 0.);};
+  out.rect(n.gx, n.gy, n.w, n.h, ui.styleColor(id, P_BG, 0u32), radius, id);
+  imm v = minimapView(ui, id);
+  out.clipPush(n.gx, n.gy, n.w, n.h);
+  if ui.minimaps[d].tex != 0u32 {
+    out.image(n.gx, n.gy, n.w, n.h, ui.minimaps[d].tex, v.min.x, v.min.y, v.max.x, v.max.y, 0xffffffffu32, radius, id);
+  }
+  mut i = 0usize;
+  while i < ui.markers.len() {
+    if ui.markers[i].owner == id {
+      imm fx = (ui.markers[i].u - v.min.x) / (v.max.x - v.min.x);
+      imm fy = (ui.markers[i].v - v.min.y) / (v.max.y - v.min.y);
+      if fx >= 0. and fx <= 1. and fy >= 0. and fy <= 1. {
+        imm s = ui.markers[i].size;
+        out.arc(n.gx + fx * n.w, n.gy + fy * n.h, s * 0.5, 0., 6.2831855, ui.markers[i].color, 0., id);
+      }
+    }
+    i = i + 1usize;
+  }
+  out.clipPop();
+}
+
+fn drawGhost(ui &imm Ui, id usize, out &mut DrawList) {
+  imm n = ui.nodes[id];
+  drawFrame(ui, id, out);
+  imm p = ui.input.drag.payload;
+  if !ui.input.drag.active {return;}
+  if p.kind == PK_ITEM {
+    drawItemIcon(ui, out, n.gx + 3., n.gy + 3., n.w - 6., n.h - 6., ui.inv.typeOf(p.a), id);
+    if p.count > 1u32 {
+      imm t = numberText(p.count);
+      out.text(n.gx + 3., n.gy + n.h - 17., n.w - 7., 14., t.view(), 0u32, 12., 0xffffffffu32, TA_RIGHT, id);
+    }
+  }
+  elif p.kind == PK_ITEMTYPE or p.kind == PK_SPELL {
+    drawIconColor(ui, out, n.gx + 3., n.gy + 3., n.w - 6., n.h - 6., p.b, 0xa070ffffu32, id);
+  }
+}

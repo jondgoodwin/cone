@@ -1,0 +1,342 @@
+// ======== Widgets, part 3: inventory slot grid, hotbar, minimap frame ========
+
+// ================= inventory slots =================
+//
+// A grid of K_SLOT nodes showing one container of the Ui's InvModel (ui.inv). The slots
+// draw what the model holds (a stack's icon and count, a bag's mark) at each draw, so the
+// model can be changed from anywhere. They are drag sources and drop targets (dragdrop.cone);
+// a drop moves the item in the model by its rules and reports UE_INVENTORY.
+
+pub struct SlotData {
+  pub grid usize = 0usize;
+  pub container u32 = 0u32;
+  pub index u32 = 0u32;
+}
+
+pub struct InvGridData {
+  pub node usize = 0usize;
+  pub container u32 = 0u32;
+  pub cols u32 = 1u32;
+}
+
+pub fn inventoryGrid(ui &mut Ui, parent usize, container u32, cols u32) usize {
+  imm n = ui.inv.slotCount(container);
+  imm size = ui.theme.num(ui.theme.find("slot"), P_SIZE, 0u32, 44.);
+  imm gap = ui.theme.num(ui.theme.find("slot"), P_SPACING, 0u32, 3.);
+  imm grid = made(ui, parent, K_PLAIN, "base");
+  ui.setPad(grid, 0.);
+  ui.setGap(grid, gap, gap);
+  mut c = 0u32;
+  while c < cols {
+    ui.addTrack(grid, 0u32, TRACK_FIXED, size);
+    c = c + 1u32;
+  }
+  ui.nodes[grid].data = ui.invgrids.len();
+  ui.invgrids.push(new InvGridData(node: grid, container: container, cols: cols));
+  mut i = 0u32;
+  while i < n {
+    imm s = made(ui, grid, K_SLOT, "slot");
+    ui.nodes[s].pointer = PM_STOP;
+    ui.nodes[s].dragKind = PK_ITEM;
+    ui.nodes[s].dropMask = dropBit(PK_ITEM);
+    ui.setSize(s, size, size);
+    ui.setCell(s, i % cols, i / cols, 1u32, 1u32);
+    ui.nodes[s].data = ui.slots.len();
+    ui.slots.push(new SlotData(grid: grid, container: container, index: i));
+    i = i + 1u32;
+  }
+  grid;
+}
+
+// The slot node of a container's slot, or 0
+pub fn slotNode(ui &Ui, grid usize, index u32) usize {
+  ui.childAt(grid, usize.from(index));
+}
+
+fn slotEvent(ui &mut Ui, node usize, ev &Ev) bool {
+  imm d = ui.nodes[node].data;
+  imm item = ui.inv.itemAt(ui.slots[d].container, ui.slots[d].index);
+  if ev.kind == EK_CLICK {
+    ui.emit(UE_CLICK, node, NIL, ev.x, ev.y, i32.from(ev.button), item);
+    return true;
+  }
+  if ev.kind == EK_DBLCLICK and item != 0u32 {
+    ui.emit(UE_ACTIVATE, node, NIL, 0., 0., i32.from(item), ui.slots[d].container);
+    return true;
+  }
+  // the press is the slot's: it may become a drag
+  ev.kind == EK_DOWN;
+}
+
+// A window showing a bag's slots; the bag's contents are those of its container
+pub fn bagWindow(ui &mut Ui, item u32, x f32, y f32, cols u32) usize {
+  imm c = ui.inv.items[usize.from(item)].bag;
+  if c == 0u32 {return NIL;}
+  imm name = ui.inv.types[usize.from(ui.inv.items[usize.from(item)].kind)].name.copy();
+  imm n = ui.inv.slotCount(c);
+  imm size = ui.theme.num(ui.theme.find("slot"), P_SIZE, 0u32, 44.);
+  imm gap = ui.theme.num(ui.theme.find("slot"), P_SPACING, 0u32, 3.);
+  imm rows = (n + cols - 1u32) / cols;
+  imm w = f32.from(cols) * (size + gap) - gap + 8. + 12.;
+  imm h = f32.from(rows) * (size + gap) - gap + 8. + 12. + 28.;
+  imm win = window(ui, name.view(), x, y, w, h);
+  windowSetResizable(ui, win, false);
+  inventoryGrid(ui, windowContent(ui, win), c, cols);
+  win;
+}
+
+// ================= hotbar =================
+//
+// A row of slots, each bound to a key (F1, F2 ...). A slot holds a binding: a spell or an
+// item kind and its icon, and a cooldown. The key (or a click) reports UE_HOTBAR_USE
+// when the slot is ready and UE_HOTBAR_BUSY while it is cooling down. Dropping a spell, an
+// item or another hotbar slot's binding on a slot binds it; dragging one off the bar
+// takes it away.
+
+pub const BK_NONE = 0u32;
+pub const BK_SPELL = 1u32;
+pub const BK_ITEMTYPE = 2u32;
+
+pub struct HotSlotData {
+  pub bar usize = 0usize;
+  pub index u32 = 0u32;
+  pub key u32 = 0u32;
+  pub kind u32 = 0u32;
+  pub bind u32 = 0u32;
+  pub icon u32 = 0u32;
+  pub color u32 = 0x808080ffu32;
+  pub cdTotal f32 = 0.;            // the cooldown running, in seconds
+  pub cdLeft f32 = 0.;
+  pub cdDefault f32 = 0.;          // what a use starts
+  pub count u32 = 0u32;            // a number to show on the slot (charges, or how many are held)
+}
+
+pub fn hotbar(ui &mut Ui, parent usize, count u32) usize {
+  imm size = ui.theme.num(ui.theme.find("hotbar"), P_SIZE, 0u32, 44.);
+  imm bar = made(ui, parent, K_PLAIN, "base");
+  ui.setFlex(bar, LK_ROW, 4.);
+  ui.setPad(bar, 0.);
+  mut i = 0u32;
+  while i < count {
+    imm s = made(ui, bar, K_HOTSLOT, "hotbar");
+    ui.nodes[s].pointer = PM_STOP;
+    ui.nodes[s].dragKind = PK_ITEMTYPE;
+    ui.nodes[s].dropMask = dropBit(PK_ITEM) | dropBit(PK_SPELL) | dropBit(PK_ITEMTYPE);
+    ui.setSize(s, size, size);
+    ui.nodes[s].data = ui.hotslots.len();
+    ui.hotslots.push(new HotSlotData(bar: bar, index: i, key: KEY_F1 + i));
+    i = i + 1u32;
+  }
+  ui.input.hotbars.push(bar);
+  bar;
+}
+
+pub fn hotbarSlot(ui &Ui, bar usize, index u32) usize {ui.childAt(bar, usize.from(index));}
+
+pub fn hotbarBind(ui &mut Ui, slot usize, kind u32, bind u32, icon u32, color u32, cooldown f32) {
+  imm d = ui.nodes[slot].data;
+  ui.hotslots[d].kind = kind;
+  ui.hotslots[d].bind = bind;
+  ui.hotslots[d].icon = icon;
+  ui.hotslots[d].color = color;
+  ui.hotslots[d].cdDefault = cooldown;
+  ui.hotslots[d].cdLeft = 0.;
+  ui.hotslots[d].cdTotal = 0.;
+  ui.emit(UE_HOTBAR_BOUND, slot, NIL, 0., 0., i32.from(ui.hotslots[d].index), bind);
+}
+
+pub fn hotbarUnbind(ui &mut Ui, slot usize) {
+  imm d = ui.nodes[slot].data;
+  if ui.hotslots[d].kind == BK_NONE {return;}
+  ui.hotslots[d].kind = BK_NONE;
+  ui.hotslots[d].bind = 0u32;
+  ui.hotslots[d].icon = 0u32;
+  ui.hotslots[d].cdLeft = 0.;
+  ui.hotslots[d].cdTotal = 0.;
+  ui.emit(UE_HOTBAR_BOUND, slot, NIL, 0., 0., i32.from(ui.hotslots[d].index), 0u32);
+}
+
+pub fn hotbarSetCount(ui &mut Ui, slot usize, count u32) {ui.hotslots[ui.nodes[slot].data].count = count;}
+
+pub fn hotbarStartCooldown(ui &mut Ui, slot usize, seconds f32) {
+  imm d = ui.nodes[slot].data;
+  ui.hotslots[d].cdTotal = seconds;
+  ui.hotslots[d].cdLeft = seconds;
+}
+
+// The fraction of the cooldown still to run, 1 just started, 0 ready
+pub fn hotbarCooldown(ui &Ui, slot usize) f32 {
+  imm d = ui.nodes[slot].data;
+  if ui.hotslots[d].cdTotal <= 0. {0.;} else {clampf(ui.hotslots[d].cdLeft / ui.hotslots[d].cdTotal, 0., 1.);};
+}
+
+pub fn hotbarBinding(ui &Ui, slot usize) u32 {ui.hotslots[ui.nodes[slot].data].bind;}
+
+fn bindFromPayload(ui &mut Ui, target usize, p &Payload) {
+  imm d = ui.nodes[target].data;
+  if p.kind == PK_ITEM {
+    // an item bound is its kind: using the slot uses that kind of item
+    imm kind = ui.inv.typeOf(p.a);
+    imm tp = ui.inv.types[usize.from(kind)];
+    hotbarBind(ui, target, BK_ITEMTYPE, kind, tp.icon, tp.color, 0.);
+  }
+  elif p.kind == PK_SPELL {
+    hotbarBind(ui, target, BK_SPELL, p.a, p.b, 0xa070ffffu32, ui.hotslots[d].cdDefault);
+  }
+  elif p.kind == PK_ITEMTYPE {
+    // another hotbar slot's binding: the two swap
+    imm src = p.source;
+    if src != NIL and ui.alive(src) and ui.nodes[src].kind == K_HOTSLOT {
+      imm sd = ui.nodes[src].data;
+      imm tk = ui.hotslots[d].kind;
+      imm tb = ui.hotslots[d].bind;
+      imm ti = ui.hotslots[d].icon;
+      imm tc = ui.hotslots[d].color;
+      imm tcd = ui.hotslots[d].cdDefault;
+      hotbarBind(ui, target, ui.hotslots[sd].kind, ui.hotslots[sd].bind, ui.hotslots[sd].icon, ui.hotslots[sd].color, ui.hotslots[sd].cdDefault);
+      if tk == BK_NONE {hotbarUnbind(ui, src);}
+      else {hotbarBind(ui, src, tk, tb, ti, tc, tcd);}
+    }
+    else {hotbarBind(ui, target, BK_ITEMTYPE, p.a, p.b, 0x808080ffu32, 0.);}
+  }
+}
+
+fn activateHotSlot(ui &mut Ui, slot usize) bool {
+  imm d = ui.nodes[slot].data;
+  if ui.hotslots[d].kind == BK_NONE {return false;}
+  if ui.hotslots[d].cdLeft > 0. {
+    ui.emit(UE_HOTBAR_BUSY, slot, NIL, ui.hotslots[d].cdLeft, 0., i32.from(ui.hotslots[d].index), ui.hotslots[d].bind);
+    return true;
+  }
+  ui.emit(UE_HOTBAR_USE, slot, NIL, 0., 0., i32.from(ui.hotslots[d].index), ui.hotslots[d].bind);
+  if ui.hotslots[d].cdDefault > 0. {hotbarStartCooldown(ui, slot, ui.hotslots[d].cdDefault);}
+  true;
+}
+
+fn hotSlotEvent(ui &mut Ui, node usize, ev &Ev) bool {
+  if ev.kind == EK_CLICK and ev.button == BTN_LEFT {
+    activateHotSlot(ui, node);
+    return true;
+  }
+  ev.kind == EK_DOWN;
+}
+
+// A function key pressed: the slot it is bound to is used. False if no bar has the key
+fn hotbarKey(ui &mut Ui, code u32) bool {
+  mut b = 0usize;
+  while b < ui.input.hotbars.len() {
+    imm bar = *ui.input.hotbars[b];
+    if ui.alive(bar) and ui.nodes[bar].visible {
+      mut s = ui.nodes[bar].first;
+      while s != NIL {
+        if ui.nodes[s].kind == K_HOTSLOT and ui.hotslots[ui.nodes[s].data].key == code {
+          return activateHotSlot(ui, s);
+        }
+        s = ui.nodes[s].next;
+      }
+    }
+    b = b + 1usize;
+  }
+  false;
+}
+
+fn hotbarUpdate(ui &mut Ui, dt f32) {
+  mut i = 0usize;
+  while i < ui.hotslots.len() {
+    if ui.hotslots[i].cdLeft > 0. {
+      ui.hotslots[i].cdLeft = maxf(0., ui.hotslots[i].cdLeft - dt);
+    }
+    i = i + 1usize;
+  }
+}
+
+// ================= minimap frame =================
+//
+// A frame that shows part of an external texture (a handle the renderer owns, drawn by
+// the renderer as an image) with markers over it. It owns no pixels: the application
+// renders its map into a texture and gives the handle, and says which part of it is
+// seen (centre and zoom). A click reports where in the frame (0..1 across and down); the
+// wheel zooms.
+
+pub const MAP_RECT = 0u32;       // the frame's corners as the style rounds them
+pub const MAP_CIRCLE = 1u32;
+
+pub struct MinimapData {
+  pub tex u32 = 0u32;
+  pub cu f32 = 0.5;              // the centre of the view in texture coordinates
+  pub cv f32 = 0.5;
+  pub zoom f32 = 1.;
+  pub shape u32 = 0u32;
+}
+
+pub struct MapMarker {
+  pub owner usize = 0usize;
+  pub u f32 = 0.;                // texture coordinates
+  pub v f32 = 0.;
+  pub color u32 = 0xffffffffu32;
+  pub size f32 = 6.;
+}
+
+pub fn minimap(ui &mut Ui, parent usize, size f32, tex u32) usize {
+  imm id = made(ui, parent, K_MINIMAP, "minimap");
+  ui.nodes[id].pointer = PM_STOP;
+  ui.setSize(id, size, size);
+  ui.nodes[id].data = ui.minimaps.len();
+  ui.minimaps.push(new MinimapData(tex: tex));
+  id;
+}
+
+pub fn minimapSetTexture(ui &mut Ui, id usize, tex u32) {ui.minimaps[ui.nodes[id].data].tex = tex;}
+
+pub fn minimapSetView(ui &mut Ui, id usize, cu f32, cv f32, zoom f32) {
+  imm d = ui.nodes[id].data;
+  ui.minimaps[d].cu = cu;
+  ui.minimaps[d].cv = cv;
+  ui.minimaps[d].zoom = clampf(zoom, 0.25, 16.);
+}
+
+pub fn minimapSetShape(ui &mut Ui, id usize, shape u32) {ui.minimaps[ui.nodes[id].data].shape = shape;}
+
+pub fn minimapAddMarker(ui &mut Ui, id usize, u f32, v f32, color u32, size f32) usize {
+  ui.markers.push(new MapMarker(owner: id, u: u, v: v, color: color, size: size));
+  ui.markers.len() - 1usize;
+}
+
+pub fn minimapMoveMarker(ui &mut Ui, marker usize, u f32, v f32) {
+  ui.markers[marker].u = u;
+  ui.markers[marker].v = v;
+}
+
+pub fn minimapClearMarkers(ui &mut Ui, id usize) {
+  mut keep = List[MapMarker].empty();
+  mut i = 0usize;
+  while i < ui.markers.len() {
+    if ui.markers[i].owner != id {keep.push(*ui.markers[i]);}
+    i = i + 1usize;
+  }
+  ui.markers = keep;
+}
+
+// The part of the texture the frame shows: (u0, v0) to (u1, v1)
+pub fn minimapView(ui &Ui, id usize) Aabb2 {
+  imm d = ui.nodes[id].data;
+  imm half = 0.5 / ui.minimaps[d].zoom;
+  new Aabb2(new Vec2(ui.minimaps[d].cu - half, ui.minimaps[d].cv - half), new Vec2(ui.minimaps[d].cu + half, ui.minimaps[d].cv + half));
+}
+
+fn minimapEvent(ui &mut Ui, node usize, ev &Ev) bool {
+  imm d = ui.nodes[node].data;
+  if ev.kind == EK_CLICK and ev.button == BTN_LEFT {
+    imm fx = clampf((ev.x - ui.nodes[node].gx) / maxf(1., ui.nodes[node].w), 0., 1.);
+    imm fy = clampf((ev.y - ui.nodes[node].gy) / maxf(1., ui.nodes[node].h), 0., 1.);
+    ui.emit(UE_MAP_CLICK, node, NIL, fx, fy, 0i32, 0u32);
+    return true;
+  }
+  if ev.kind == EK_WHEEL {
+    imm z = clampf(ui.minimaps[d].zoom * (if ev.dy > 0. {1.25;} else {0.8;}), 0.25, 16.);
+    ui.minimaps[d].zoom = z;
+    ui.emit(UE_MAP_ZOOM, node, NIL, z, 0., 0i32, 0u32);
+    return true;
+  }
+  ev.kind == EK_DOWN;
+}
