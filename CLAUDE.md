@@ -805,7 +805,16 @@ Visual Studio projects stay at the root.
   view, rise, look), and `CameraControls`, both on the standard bindings
   (`CameraActions.bind`), toggled by C; each gives a `Pose` (origin and
   orientation, its view by `Mat4.lookAt`) that the program applies to
-  `render`'s `Camera`, so no controller owns a camera.
+  `render`'s `Camera`, so no controller owns a camera;
+  `uilayout` is the layout and interaction core under UI widgets, over `geomath` and `collections` only,
+  no window or GPU: a retained tree of nodes in flat tables named by id, box-constraint layout (two passes,
+  cached, only dirty nodes redone; flex, stack, grid, anchors, dock, split, scroll), hit testing and
+  events (capture, target and bubble by id, enter and leave, focus and Tab order), themes (named
+  styles with inheritance and state variants), drag and drop, an inventory model (stacks, bags in
+  bags), a starter widget set (label, button, toggle, slider, knob, text field, list, window, tabs,
+  tooltip, inventory grid, hotbar, minimap frame) and a draw list of rectangles, borders, images, lines,
+  arcs and text runs for a renderer, text measured through a caller's closure; `Panel3d` places a Ui in the
+  world as a transform (a ray in, a pixel out); its example `hud.cone` paints the draw list into BMPs.
   A package's example programs live in its own `examples/` folder, each run
   with `congo run packages/<name>/examples/<file>.cone`, and its tests in its
   own `tests/` folder, one program each beside the output it must print;
