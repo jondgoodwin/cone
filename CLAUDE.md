@@ -164,13 +164,8 @@ file and every package it imports, links, runs), or link by hand. Windows, from 
 link prog.obj build\x64-release\conestd.lib /OUT:prog.exe /SUBSYSTEM:CONSOLE msvcrt.lib legacy_stdio_definitions.lib
 ```
 
-A program spanning an `import` links only in two cases, because an imported module's bodies are
-declared and never generated: a package found on the package search path (such as `stdio`) is
-compiled into the importing object; or a package compiled on its own from a build description
-saying `output: library` exports what its importers need, so its object links beside theirs (a
-scenario's `link` key does it in the suite; Congo does it for every package it builds). Otherwise
-runtime checks live in what one compile defines: one source file, the files of one folder, or that
-folder and the submodules its subfolders draw, plus the packages it imports.
+A program that imports another module links only through `congo run`, or a package compiled from a
+build description saying `output: library` (a scenario's `link` key in the suite);
 `compiler/c/doc/nodes/module.md` explains why.
 
 ## Change discipline
@@ -202,17 +197,8 @@ folder and the submodules its subfolders draw, plus the packages it imports.
   note used to list", "now reports", or a hazard entry rewritten to say the hazard is gone. Git holds
   the history. `doc/design/_index.md`, "Conventions", is the full rule.
 - Package specifics go in that package's `README.md` or source header comments, not in this file.
-- **Determinism rules for compute.** Whatever a compute shader computes that shapes the world
-  (geometry, collision, anything a decision reads or another machine must reproduce) keeps
-  `packages/noise/README.md`, "Determinism": integer hashes, never a float hash or a GPU random
-  number; `// slangc: -fp-mode precise`; add, subtract, multiply and `floor` only, constants exact in
-  binary, no division or transcendental on the decision path; unsigned remainders of non-negative
-  values; a fixed reduction order (a tree whose shape does not depend on timing, or one invocation
-  looping in a fixed order), never float atomics or whichever invocation finishes first (integer
-  atomics, a count or an or, are order-free and allowed). Such a result has a parity test against the
-  Cone package on a real GPU, every element compared (`noise`'s `parity` and `bake`, `sdf`'s
-  `parity`). Visual-only work (particles, fog, lighting, post-processing) is exempt. A compute entry
-  point is `[numthreads(x, y, z)]` within WebGPU's limits (`tools/shaders/shaders.py` checks).
+- Determinism rules for compute shaders that shape the world: `packages/noise/README.md`,
+  "Determinism".
 - Keep `CMakeLists.txt`, `Cone.vcxproj` (and `.filters`), and `Conestd.vcxproj` synchronized when
   adding, removing, or renaming C source files or changing shared toolchain requirements.
 - LLVM values often use optimized representations (pointers, fat pointers, allocation headers).
