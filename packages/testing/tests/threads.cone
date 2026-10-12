@@ -1,0 +1,34 @@
+// The counts of checks are shared by every thread: four threads each run 5,000
+// checks that pass. The counts are atomics, so none is lost and the summary
+// says so exactly (a plain count would drop increments when the threads race).
+//
+// Worked out by hand: 4 threads * 5,000 checks = 20,000, and main's own check
+// of the threads' totals is one more, 20,001, none failed.
+
+mod threads;
+
+import testing use *;
+import thread;
+
+fn worker(n u64) u64 {
+  mut i = 0u64;
+  while i < n {
+    expectInt(1i64, 1i64, "passes");
+    i = i + 1u64;
+  }
+  n;
+}
+
+fn main() i32 {
+  mut a thread.Thread[u64];
+  mut b thread.Thread[u64];
+  mut c thread.Thread[u64];
+  mut d thread.Thread[u64];
+  a = thread.start(5000u64, &worker);
+  b = thread.start(5000u64, &worker);
+  c = thread.start(5000u64, &worker);
+  d = thread.start(5000u64, &worker);
+  imm total = a.join() + b.join() + c.join() + d.join();
+  expectUInt(total, 20000u64, "every thread ran all its checks");
+  done();
+}

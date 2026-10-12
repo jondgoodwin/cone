@@ -69,13 +69,18 @@
 
 mod rcweak;
 
-// How many blocks this region has allocated and not yet given back
-mut blocks = 0usize;
+// How many blocks this region has allocated and not yet given back. Any thread
+// may make an 'Rcw', so the count is an atomic held by an 'imm' global
+imm blocks Atomic[usize];
+
+fn @initpure init() {
+  blocks = Atomic[usize].of(0usize);
+}
 
 // How many blocks 'Rcw' allocations hold: each is freed only when its value
 // has died and its last weak reference has gone. For tests and for finding
 // leaks, not for correctness.
-pub fn liveBlocks() usize { blocks; }
+pub fn liveBlocks() usize { blocks.load(); }
 
 // The header before each 'Rcw' value. Its fields are public so that 'Weak'
 // can reach them; a program cannot, since nothing hands it a header.
@@ -85,7 +90,7 @@ pub struct Rcw is RegionRef {
 
   fn alloc(size usize) *u8 {
     imm p = RawBlocks.alloc(size, 16usize);
-    if p as usize != 0usize { blocks = blocks + 1usize; }
+    if p as usize != 0usize { blocks.add(1usize); }
     p;
   }
   fn init(self &new) inline { *self = new Rcw(1usize, 1usize); }
@@ -100,7 +105,7 @@ fn dropWeak(h *Rcw) {
   imm hr = h as &mut Rcw;
   hr.weak = hr.weak - 1usize;
   if hr.weak == 0usize {
-    blocks = blocks - 1usize;
+    blocks.sub(1usize);
     RawBlocks.release(h as *u8);
   }
 }

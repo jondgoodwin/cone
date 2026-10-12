@@ -209,8 +209,10 @@ import iocore use Op, Completion, Outcome, Lane, LaneConfig, IoError, addLane;
 
 fn @initpure init() {
   laneOnce = Once.make();
-  slotOnce = Once.make();
+  laneMade = Atomic[u32].of(0u32);
+  ticketSlotIndex = CRYPTO_get_ex_new_index(0i32, 0i32, null, null, null, null);
   storeOnce = Once.make();
+  storeMade = Atomic[usize].of(0usize);
   nHandshakes = Atomic[u64].of(0u64);
   nResumed = Atomic[u64].of(0u64);
   nFailures = Atomic[u64].of(0u64);
@@ -477,11 +479,16 @@ pub fn backendVersion() &str {cText(OpenSSL_version(0i32));}
 // The OS verifier's lane
 // ---------------------------------------------------------------------------
 
+// The lane is added on the first call, not in 'init': a lane takes the next
+// number in the pool's table, which a program that never verifies a
+// certificate should not be spending. The Once makes the lane, and the number
+// it gets is kept in an atomic so that every thread reads it without a lock
 imm laneOnce Once;
-mut laneMade Lane = new Lane(0u32);
+imm laneMade Atomic[u32];
 
 fn makeLane() {
-  laneMade = addLane(new LaneConfig(name: "tls verify", maxThreads: 4u32, queueBound: 256u32));
+  imm lane = addLane(new LaneConfig(name: "tls verify", maxThreads: 4u32, queueBound: 256u32));
+  laneMade.store(lane.id);
 }
 
 // The blocking pool's lane the OS's verifier runs on by default: its own,
@@ -489,23 +496,16 @@ fn makeLane() {
 // up a name's lookup or a file
 pub fn defaultVerifyLane() Lane {
   laneOnce.callOnce(&makeLane);
-  laneMade;
+  new Lane(laneMade.load());
 }
 
 // ---------------------------------------------------------------------------
 // The SSL object's ticket slot
 // ---------------------------------------------------------------------------
 
-imm slotOnce Once;
-mut slotMade i32 = -1i32;
-
-fn makeSlot() {
-  slotMade = CRYPTO_get_ex_new_index(0i32, 0i32, null, null, null, null);
-}
-
 // The SSL objects' ex_data index holding a client session's arrivals
-// (context.cone), OpenSSL's for the process; -1 if OpenSSL gave none
-fn ticketSlot() i32 {
-  slotOnce.callOnce(&makeSlot);
-  slotMade;
-}
+// (context.cone), OpenSSL's for the process, got in 'init'; -1 if OpenSSL gave
+// none
+imm ticketSlotIndex i32;
+
+fn ticketSlot() i32 {ticketSlotIndex;}

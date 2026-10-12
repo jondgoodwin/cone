@@ -298,12 +298,14 @@ const invalidUtf8Fails = 8u32;      // MB_ERR_INVALID_CHARS
 // caller frees, is made in each function below (a helper of Windows' calls
 // alone would be generated on Linux too); null when it is not UTF-8
 
-// The block 'getenv' answers in, grown as needed: its address and size
-mut envAnswer = 0usize;
-mut envAnswerSize = 0usize;
+// The block 'getenv' answers in, grown as needed: its address and size. Each
+// thread has a block of its own, so one thread's call never overwrites what
+// another is reading
+mut @threadlocal envAnswer = 0usize;
+mut @threadlocal envAnswerSize = 0usize;
 
-// getenv(name): the variable's value, in a block overwritten by the next
-// call, as POSIX allows; null when it is not set
+// getenv(name): the variable's value, in a block overwritten by the same
+// thread's next call, as POSIX allows; null when it is not set
 pub fn @c("cone_posix_getenv") getenv(name cstr) *u8 {
   if core.isWindows() {
     imm nameLen = MultiByteToWideChar(utf8Page, invalidUtf8Fails, name.ptr(), -1i32, null, 0i32);
