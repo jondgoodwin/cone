@@ -1,0 +1,112 @@
+mod region_flow_owner_kinds;
+
+import stdio use *;
+import collections use *;
+
+// region_flow_owner_replace holds the check on 'So[Item]' and 'Rc[mut, Item]': a borrow into what an owner
+// owns is refused beside a call or a store that could replace the owner through another name. It is no
+// different for the owners of other kinds, which this file pins:
+//   - an owner of an array ('So[Array[Item]]', what a list's 'freeze' gives), the borrow an element's;
+//   - an owner of a trait object ('So[Gadget]', 'Rc[mut, Gadget]'): the owner's type hides the struct behind
+//     it, and a method of the trait lends a borrow into that struct's own state.
+// Run, each of these read an Item (or a counter) the callee's replacement had freed, after its 'final' had run.
+// region_owner_kinds_success holds what is accepted beside each refusal.
+
+struct Item { pub v i64; fn final(self &uni) { printStr("final "); printInt(v); printStr("\n"); } }
+
+trait Gadget {
+  pub fn count(self &mut) &mut i64;
+}
+
+struct Real is Gadget {
+  pub n i64;
+  pub fn count(self &mut) &mut i64 { &mut n; }
+  fn final(self &uni) { printStr("final real "); printInt(n); printStr("\n"); }
+}
+
+struct Holder { pub g So[Gadget]; }
+
+fn mkArr(n i64) So[Array[Item]] {
+  mut l = List[Item].empty();
+  l.push(new Item(n));
+  l.push(new Item(n + 100));
+  l.freeze();
+}
+fn mkG(n i64) So[Gadget] { new So[Real](new Real(n)); }
+fn mkR(n i64) Rc[mut, Gadget] { new Rc[mut, Real](new Real(n)); }
+
+// The callees: each stores over the owner it is handed
+fn replaceArr(a &mut So[Array[Item]]) { *a = mkArr(9); }
+fn clobberArr(a &mut So[Array[Item]], e &mut Item) { *a = mkArr(9); printInt(e.v); }
+fn replaceG(o &mut So[Gadget]) { *o = mkG(9); }
+fn clobberG(o &mut So[Gadget], c &mut i64) { *o = mkG(9); printInt(*c); }
+fn replaceHolder(h &mut Holder) { h.g = mkG(9); }
+fn replaceR(o &mut Rc[mut, Gadget]) { *o = mkR(9); }
+
+// ---- An owner of an array
+
+// A local lent '&mut' beside a borrow of one element, in one call
+fn arrCall() { mut a = mkArr(1); clobberArr(&mut a, &mut a[0usize]); }   //~ ErrorShapeReshape
+
+// The element's borrow held in a name, the owner replaced by a call
+fn arrHeld() i64 {
+  mut a = mkArr(1);
+  imm e = &mut a[0usize];
+  replaceArr(&mut a);                                                   //~ ErrorShapeReshape
+  e.v;
+}
+
+// Two '&mut' parameters that may be one owner
+fn arrTwoCall(a &mut So[Array[Item]], b &mut So[Array[Item]]) i64 {
+  imm e = &mut a[0usize];
+  replaceArr(b);                                                        //~ ErrorShapeReshape
+  e.v;
+}
+
+fn arrTwoStore(a &mut So[Array[Item]], b &mut So[Array[Item]]) i64 {
+  imm e = &mut a[0usize];
+  *b = mkArr(9);                                                        //~ ErrorShapeStore
+  e.v;
+}
+
+// ---- An owner of a trait object
+
+// A local lent '&mut' beside the borrow its own method lent
+fn gadgetCall() { mut o = mkG(1); clobberG(&mut o, o.count()); }        //~ ErrorShapeReshape
+
+// The borrow held in a name, the owner replaced by a call
+fn gadgetHeld() i64 {
+  mut o = mkG(1);
+  imm c = o.count();
+  replaceG(&mut o);                                                     //~ ErrorShapeReshape
+  *c;
+}
+
+// Two '&mut' parameters that may be one owner
+fn gadgetTwoCall(a &mut So[Gadget], b &mut So[Gadget]) i64 {
+  imm c = a.count();
+  replaceG(b);                                                          //~ ErrorShapeReshape
+  *c;
+}
+
+fn gadgetTwoStore(a &mut So[Gadget], b &mut So[Gadget]) i64 {
+  imm c = a.count();
+  *b = mkG(9);                                                          //~ ErrorShapeStore
+  *c;
+}
+
+// The owner a field of a struct, replaced by a call through another holder
+fn gadgetField(a &mut Holder, b &mut Holder) i64 {
+  imm c = a.g.count();
+  replaceHolder(b);                                                     //~ ErrorShapeReshape
+  *c;
+}
+
+// A counted owner of a trait object
+fn gadgetRc(a &mut Rc[mut, Gadget], b &mut Rc[mut, Gadget]) i64 {
+  imm c = a.count();
+  replaceR(b);                                                          //~ ErrorShapeReshape
+  *c;
+}
+
+fn main() {}

@@ -933,7 +933,7 @@ static int pwThrough(INode **refp, Place *pl, PathSet **base) {
         return 1;
     }
     *pl = refpl;
-    pl->ownertype = reftype->tag == RefTag ? reftype : NULL;
+    pl->ownertype = reftype->tag == RefTag || reftype->tag == VirtRefTag ? reftype : NULL;
     if (pwMayAlias(reftype))
         pl->owned = 1;
     if (pwMayAliasWritten(reftype))
