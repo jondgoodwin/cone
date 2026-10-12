@@ -1,0 +1,63 @@
+// The audiomixer package (a working name): sound for a 3-D world, with no
+// device and no C: a real-time mixer, positional audio and procedural
+// synthesis. A program reaches it with 'import audiomixer', and gets:
+//
+// - Mixer: voices (gain, pitch, pan; fades) playing sounds or procedural
+//   synths into three buses and a master, voice stealing by priority,
+//   `render` into an interleaved stereo f32 buffer without allocating or
+//   locking; Cmd, the plain-data commands it is driven by.
+// - Control and Engine, with `commandQueue`: the game thread's handle (plays,
+//   stops, moves, answers a voice id at once) and the audio thread's engine
+//   (drains the lock-free ring at each block, then renders). The device that
+//   feeds the speakers is the package `audiodevice`.
+// - Spatial: Listener, the Attenuation models (inverse, linear, exponent and
+//   custom curve), panGains, head shadow, Doppler and the occlusion hook.
+// - Synth: wind, a brook, fire (campfire to balloon burner), footsteps on
+//   grass, wood and stone, and a bird's chirp, made of noise, oscillators and
+//   filters, not of recordings.
+// - The parts: Rng, PinkNoise, BrownNoise, Osc (PolyBLEP), Biquad, OnePole,
+//   Adsr and Ramp (dsp.cone); decodeWav and encodeWav, and Sound (wav.cone);
+//   rms, zeroCrossingFreq, fft, spectrum and friends (analysis.cone), which
+//   the tests and the recipes example judge sound by.
+//
+//   audiomixer.cone  this overview and the scalar helpers
+//   dsp.cone         random numbers, oscillators, biquad filters, envelopes
+//   wav.cone         WAV decoding and encoding
+//   analysis.cone    levels, frequency and spectra of a rendered buffer
+//   spatial.cone     listener, attenuation, pan, head shadow, Doppler, occlusion
+//   synth.cone       the procedural recipes
+//   mixer.cone       voices, buses, the block renderer, commands
+//   engine.cone      Control, Engine and the command queue
+//
+// Conventions: f32 samples in -1..1, interleaved stereo in the mixer's output,
+// seconds and metres, geomath's right-handed y-up space (the listener faces -z
+// at rest). The README holds the model, what was measured and the browser
+// notes.
+
+mod audiomixer;
+
+import libc;
+import collections use *;
+import geomath use *;
+import sync use Channel, SoloSender, Receiver;
+
+pub const TAU f32 = 6.28318530717958647692;
+
+// A number held between lo and hi
+pub fn clampf(v f32, lo f32, hi f32) f32 inline {
+  if v < lo { return lo; }
+  if v > hi { return hi; }
+  v;
+}
+
+// Decibels to a linear amplitude: 10^(db / 20)
+pub fn dbToGain(db f32) f32 { libc.powf(10., db / 20.); }
+
+// A linear amplitude to decibels (a zero amplitude is -200 dB)
+pub fn gainToDb(g f32) f32 {
+  if g <= 0.0000000001 { return -200.; }
+  20. * libc.logf(g) / libc.logf(10.);
+}
+
+// Semitones to a frequency ratio: 2^(semitones / 12)
+pub fn semitones(n f32) f32 { libc.powf(2., n / 12.); }

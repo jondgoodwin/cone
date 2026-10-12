@@ -178,8 +178,8 @@ pub struct Device {
       return result;
     }
     imm depth = desc.format == TEXTURE_FORMAT_DEPTH32_FLOAT;
-    if sampled and depth {
-      fail("createTexture: a depth texture is not sampled yet");
+    if sampled and depth and !attachment {
+      fail("createTexture: a depth texture that is sampled is also drawn into (shadow maps)");
       return result;
     }
     if storage and (attachment or !isStorageFormat(desc.format)) {
@@ -196,7 +196,10 @@ pub struct Device {
       kind = KIND_DEPTH;
       vkUsage = vulkan.IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
     }
-    if sampled {
+    if sampled and depth {
+      // Drawn into by depth-only passes and sampled: rests read-only
+      kind = KIND_DEPTH_SAMPLED;
+    } elif sampled {
       kind = KIND_SAMPLED;
       vkUsage = 0u32;
       if attachment {
@@ -409,7 +412,12 @@ pub struct Device {
     if desc.cullMode == CULL_MODE_BACK { cull = vulkan.CULL_MODE_BACK_BIT; }
     mut front = vulkan.FRONT_FACE_COUNTER_CLOCKWISE;
     if desc.frontFace == FRONT_FACE_CW { front = vulkan.FRONT_FACE_CLOCKWISE; }
-    imm raster = new vulkan.PipelineRasterizationStateCreateInfo(cullMode: cull, frontFace: front);
+    mut raster = new vulkan.PipelineRasterizationStateCreateInfo(cullMode: cull, frontFace: front);
+    if desc.depthBiasConstant != 0. or desc.depthBiasSlopeScale != 0. {
+      raster.depthBiasEnable = vulkan.TRUE;
+      raster.depthBiasConstantFactor = desc.depthBiasConstant;
+      raster.depthBiasSlopeFactor = desc.depthBiasSlopeScale;
+    }
     imm multisample = new vulkan.PipelineMultisampleStateCreateInfo(pSampleMask: null);
 
     // Depth
@@ -431,13 +439,15 @@ pub struct Device {
       blendAttachment.srcAlphaBlendFactor = blendFactor(desc.alphaSrcFactor);
       blendAttachment.dstAlphaBlendFactor = blendFactor(desc.alphaDstFactor);
     }
-    imm blend = new vulkan.PipelineColorBlendStateCreateInfo(attachmentCount: 1u32,
+    // (a depth-only pipeline, colorFormat UNDEFINED, has none)
+    imm colorCount = if desc.colorFormat == TEXTURE_FORMAT_UNDEFINED { 0u32; } else { 1u32; };
+    imm blend = new vulkan.PipelineColorBlendStateCreateInfo(attachmentCount: colorCount,
       pAttachments: &blendAttachment as *vulkan.PipelineColorBlendAttachmentState, blendConstants: new Array[f32, 4] <- fill 0f);
     imm dynamics Array[u32, 2] = [vulkan.DYNAMIC_STATE_VIEWPORT, vulkan.DYNAMIC_STATE_SCISSOR];
     imm dynamic = new vulkan.PipelineDynamicStateCreateInfo(dynamicStateCount: 2u32,
       pDynamicStates: &dynamics as *u32);
     imm colorFormats Array[u32, 1] = [vkFormat(desc.colorFormat)];
-    mut rendering = new vulkan.PipelineRenderingCreateInfo(colorAttachmentCount: 1u32,
+    mut rendering = new vulkan.PipelineRenderingCreateInfo(colorAttachmentCount: colorCount,
       pColorAttachmentFormats: &colorFormats as *u32);
     if hasDepth { rendering.depthAttachmentFormat = vkFormat(desc.depthFormat); }
 
@@ -514,6 +524,13 @@ pub struct Device {
       if want > 1. {
         ci.anisotropyEnable = vulkan.TRUE;
         ci.maxAnisotropy = want;
+      }
+      // A comparison sampler (WebGPU's 'compare'): the texel is compared
+      // with the reference and the result, filtered over the footprint,
+      // is the sample (hardware percentage-closer filtering of a shadow map)
+      if desc.compare != 0u32 {
+        ci.compareEnable = vulkan.TRUE;
+        ci.compareOp = desc.compare - 1u32;      // Vulkan's order, from 0
       }
       check(vulkan.createSampler(backend.device, &ci, nullp(), &mut sampler), "vkCreateSampler");
     }

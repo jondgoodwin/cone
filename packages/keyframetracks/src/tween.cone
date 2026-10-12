@@ -1,0 +1,259 @@
+// Tween: a fluent builder for one-off animations of properties, chained and
+// parallel, that reduces to a Clip, so it can be scrubbed and seeked like
+// any other. It is Godot's Tween, GSAP's timeline and Manim's Succession,
+// AnimationGroup and LaggedStart, without a hidden clock: building lays
+// keys on tracks, and nothing runs.
+//
+//   imm clip = Tween.make("open")
+//     .ease(EASE_OUT_CUBIC).toF32(DOOR, ANGLE, 0., 1.6, 1.2)      // swing open
+//     .alongside().toColor(LAMP, GLOW, dim, warm, 0.8)            // with the lamp
+//     .gap(2.).toF32(DOOR, ANGLE, 1.6, 0., 0.9)                  // then close
+//     .build();
+//
+// - A STEP animates one property from a value to a value over a duration. The
+//   'from' is explicit (a Tween holds no world to read the current value
+//   from). Before its first step starts a property holds its 'from' value; a
+//   later step on the same property starts from where the earlier one ended
+//   (the earlier value is held across a gap; a step that starts before the
+//   earlier one ends takes over from there).
+// - WHEN A STEP STARTS. Normally when everything so far has ended
+//   (a sequence). 'alongside()' makes the next step start when the previous
+//   one started; 'after(d)' delays it; 'at(t)' starts it at an absolute time;
+//   'gap(d)' lets time pass. All three apply to the next step only.
+// - EASING is a setting for the steps that follow: 'ease(id)' (a Penner
+//   curve, smoothstep ...), 'spring(zeta, omega)', 'bezier(x1, y1, x2, y2)'
+//   and 'linear()'.
+// - CLIPS compose too: 'then' and 'join' add a built Clip after everything or
+//   alongside the last step, 'lagged' adds a list of clips each started 'lag'
+//   seconds after the one before (Manim's LaggedStart). 'clipSequence',
+//   'clipGroup' and 'clipLagged' do the same to a list of clips.
+// - 'callback(id, arg)' puts a marker at the next step's start time, so the
+//   player raises an event there.
+
+pub struct Tween {
+  pub clip Clip;
+  pub end f32;
+  pub lastStart f32;
+  pub delay f32;
+  pub parallelNext bool;
+  pub hasAt bool;
+  pub atTime f32;
+  pub useBezier bool;
+  pub easeId u32;
+  pub p0 f32;
+  pub p1 f32;
+  pub bz0 f32;
+  pub bz1 f32;
+  pub bz2 f32;
+  pub bz3 f32;
+
+  pub fn make(name &str) Tween {
+    new Tween(Clip.make(name, LOOP_ONCE), 0., 0., 0., false, false, 0., false, EASE_LINEAR, 0., 0., 0., 0., 0., 0.);
+  }
+
+  // ---- easing for the steps that follow ----
+
+  pub fn ease(mut self, id u32) Tween { easeId = id; p0 = 0.; p1 = 0.; useBezier = false; self; }
+  pub fn easeParams(mut self, id u32, a f32, b f32) Tween { easeId = id; p0 = a; p1 = b; useBezier = false; self; }
+  pub fn spring(mut self, zeta f32, omega f32) Tween { easeId = EASE_SPRING; p0 = zeta; p1 = omega; useBezier = false; self; }
+  pub fn linear(mut self) Tween { easeId = EASE_LINEAR; p0 = 0.; p1 = 0.; useBezier = false; self; }
+  pub fn bezier(mut self, x1 f32, y1 f32, x2 f32, y2 f32) Tween {
+    useBezier = true; bz0 = x1; bz1 = y1; bz2 = x2; bz3 = y2; self;
+  }
+
+  // ---- when the next step starts ----
+
+  pub fn alongside(mut self) Tween { parallelNext = true; self; }
+  pub fn after(mut self, d f32) Tween { delay = delay + d; self; }
+  pub fn at(mut self, t f32) Tween { hasAt = true; atTime = t; self; }
+
+  // Let time pass: the next sequential step starts d seconds later
+  pub fn gap(mut self, d f32) Tween { end = end + d; self; }
+
+  // The start of the next step (and clear the one-step settings)
+  fn takeStart(self &mut) f32 {
+    mut s = end;
+    if hasAt { s = atTime; } elif parallelNext { s = lastStart; }
+    s = s + delay;
+    hasAt = false;
+    parallelNext = false;
+    delay = 0.;
+    lastStart = s;
+    s;
+  }
+
+  // A marker at the next step's start
+  pub fn callback(mut self, id u32, arg f32) Tween {
+    imm s = self.takeStart();
+    clip.addMarker(s, id, arg);
+    if s > end { end = s; }
+    self;
+  }
+
+  // ---- steps ----
+
+  fn step(mut self, target u32, prop u32, track Track, dur f32) Tween {
+    mut tr = track;
+    imm s = self.takeStart();
+    if tr.len() >= 1usize {
+      if useBezier { tr.setBezier(0usize, bz0, bz1, bz2, bz3); } else { tr.setEase(0usize, easeId, p0, p1); }
+    }
+    clip.mergeTrack(target, prop, &tr, s);
+    if s + dur > end { end = s + dur; }
+    self;
+  }
+
+  // A two-key track from the floats 'a' to 'b' over dur
+  fn pair(kind u32, space u32, n usize, a &List[f32], b &List[f32], dur f32) Track {
+    mut tr = if kind == TK_VECN { Track.makeVecN(n); } else { Track.make(kind); };
+    tr.space = space;
+    imm i0 = tr.appendBlank(0.);
+    imm i1 = tr.appendBlank(if dur > 0. { dur; } else { 0.; });
+    mut c = 0usize;
+    while c < tr.comps {
+      tr.values.set(i0 * tr.comps + c, ld(a, c));
+      tr.values.set(i1 * tr.comps + c, ld(b, c));
+      c = c + 1usize;
+    }
+    tr;
+  }
+
+  fn floats4(a f32, b f32, c f32, d f32) List[f32] {
+    mut l = List[f32].empty();
+    l.push(a); l.push(b); l.push(c); l.push(d);
+    l;
+  }
+
+  pub fn toF32(mut self, target u32, prop u32, from f32, to f32, dur f32) Tween {
+    imm t = Tween.pair(TK_F32, SPACE_OKLAB, 1usize, &Tween.floats4(from, 0., 0., 0.), &Tween.floats4(to, 0., 0., 0.), dur);
+    self.step(target, prop, t, dur);
+  }
+
+  pub fn toVec2(mut self, target u32, prop u32, from Vec2, to Vec2, dur f32) Tween {
+    imm t = Tween.pair(TK_VEC2, SPACE_OKLAB, 2usize, &Tween.floats4(from.x, from.y, 0., 0.), &Tween.floats4(to.x, to.y, 0., 0.), dur);
+    self.step(target, prop, t, dur);
+  }
+
+  pub fn toVec3(mut self, target u32, prop u32, from Vec3, to Vec3, dur f32) Tween {
+    imm t = Tween.pair(TK_VEC3, SPACE_OKLAB, 3usize, &Tween.floats4(from.x, from.y, from.z, 0.), &Tween.floats4(to.x, to.y, to.z, 0.), dur);
+    self.step(target, prop, t, dur);
+  }
+
+  pub fn toQuat(mut self, target u32, prop u32, from Quat, to Quat, dur f32) Tween {
+    imm t = Tween.pair(TK_QUAT, SPACE_OKLAB, 4usize, &Tween.floats4(from.x, from.y, from.z, from.w),
+      &Tween.floats4(to.x, to.y, to.z, to.w), dur);
+    self.step(target, prop, t, dur);
+  }
+
+  // A colour fade in 'space' (SPACE_OKLAB or SPACE_LINEAR)
+  pub fn toColor(mut self, target u32, prop u32, from Color, to Color, space u32, dur f32) Tween {
+    mut probe = Track.makeColor(space);
+    mut a = List[f32].empty();
+    mut b = List[f32].empty();
+    probe.storeColor(from, &mut a);
+    probe.storeColor(to, &mut b);
+    imm t = Tween.pair(TK_COLOR, space, 4usize, &a, &b, dur);
+    self.step(target, prop, t, dur);
+  }
+
+  // A value that jumps from 'from' to 'to' at the step's start (it holds
+  // 'from' before: a track has no "not yet set")
+  pub fn setF32(mut self, target u32, prop u32, from f32, to f32) Tween {
+    imm t = Tween.pair(TK_F32, SPACE_OKLAB, 1usize, &Tween.floats4(from, 0., 0., 0.), &Tween.floats4(to, 0., 0., 0.), 0.);
+    self.step(target, prop, t, 0.);
+  }
+
+  pub fn setBool(mut self, target u32, prop u32, from bool, to bool) Tween {
+    imm t = Tween.pair(TK_BOOL, SPACE_OKLAB, 1usize, &Tween.floats4(if from { 1.; } else { 0.; }, 0., 0., 0.),
+      &Tween.floats4(if to { 1.; } else { 0.; }, 0., 0., 0.), 0.);
+    self.step(target, prop, t, 0.);
+  }
+
+  pub fn setInt(mut self, target u32, prop u32, from i32, to i32) Tween {
+    imm t = Tween.pair(TK_DISCRETE, SPACE_OKLAB, 1usize, &Tween.floats4(f32.from(from), 0., 0., 0.),
+      &Tween.floats4(f32.from(to), 0., 0., 0.), 0.);
+    self.step(target, prop, t, 0.);
+  }
+
+  // ---- whole clips ----
+
+  // 'c' after everything so far
+  pub fn then(mut self, c &Clip) Tween {
+    imm s = self.takeStart();
+    clip.appendClip(c, s);
+    if s + c.length > end { end = s + c.length; }
+    self;
+  }
+
+  // 'c' starting when the last step started
+  pub fn join(mut self, c &Clip) Tween {
+    parallelNext = true;
+    self.then(c);
+  }
+
+  // Each of 'parts' starting 'lag' seconds after the one before, the first at the
+  // next step's start (Manim's LaggedStart)
+  pub fn lagged(mut self, parts &List[Clip], lag f32) Tween {
+    imm s = self.takeStart();
+    mut i = 0usize;
+    while i < parts.len() {
+      imm at = s + lag * f32.from(i);
+      clip.appendClip(parts[i], at);
+      if at + parts[i].length > end { end = at + parts[i].length; }
+      i = i + 1usize;
+    }
+    self;
+  }
+
+  // The clip: length is the end of the last step, loop mode ONCE (use
+  // 'withMode' on the Clip for another)
+  pub fn build(mut self) Clip {
+    if end > clip.length { clip.length = end; }
+    mut out = Clip.make("", LOOP_ONCE);
+    out <=> clip;
+    out;
+  }
+}
+
+// The clips one after another (Manim's Succession)
+pub fn clipSequence(name &str, parts &List[Clip]) Clip {
+  mut out = Clip.make(name, LOOP_ONCE);
+  mut t f32 = 0.;
+  mut i = 0usize;
+  while i < parts.len() {
+    out.appendClip(parts[i], t);
+    t = t + parts[i].length;
+    i = i + 1usize;
+  }
+  out.length = t;
+  out;
+}
+
+// The clips together (Manim's AnimationGroup)
+pub fn clipGroup(name &str, parts &List[Clip]) Clip {
+  mut out = Clip.make(name, LOOP_ONCE);
+  mut len f32 = 0.;
+  mut i = 0usize;
+  while i < parts.len() {
+    out.appendClip(parts[i], 0.);
+    if parts[i].length > len { len = parts[i].length; }
+    i = i + 1usize;
+  }
+  out.length = len;
+  out;
+}
+
+// The clips each started 'lag' seconds after the one before (Manim's LaggedStart)
+pub fn clipLagged(name &str, parts &List[Clip], lag f32) Clip {
+  mut out = Clip.make(name, LOOP_ONCE);
+  mut len f32 = 0.;
+  mut i = 0usize;
+  while i < parts.len() {
+    imm at = lag * f32.from(i);
+    out.appendClip(parts[i], at);
+    if at + parts[i].length > len { len = at + parts[i].length; }
+    i = i + 1usize;
+  }
+  out.length = len;
+  out;
+}
