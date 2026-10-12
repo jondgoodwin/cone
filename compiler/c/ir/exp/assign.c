@@ -191,14 +191,13 @@ static int assignFillsInitSelf(TypeCheckState *pstate, INode *lval) {
 
 // Type checking for assignment node
 void assignTypeCheck(TypeCheckState *pstate, AssignNode *node) {
-    // 'x[i] = v' and 'x[i].f = v': on a type declaring '&[]', the index is the
-    // element's mutable borrow (fnCallTypeCheck), stored through, as Rust's
-    // IndexMut is
+    // 'x[i] = v', 'x[i].f = v' and 'a[g].b[i].f = v': on a type declaring '&[]',
+    // each index of the place is the element's mutable borrow (fnCallTypeCheck),
+    // and the whole place is stored through, as Rust's IndexMut is
     FnCallNode *setindex = fnCallSetIndexRoot(node->lval);
-    FnCallNode *svsetindex = fnCallSetIndex;
-    fnCallSetIndex = setindex;
+    uint32_t setmark = fnCallSetPlace(node->lval);
     int typed = iexpTypeCheckAny(pstate, &node->lval);
-    fnCallSetIndex = svsetindex;
+    fnCallSetPlaceEnd(setmark);
     if (typed == 0)
         return;
     if (setindex && node->lval == (INode*)setindex && (setindex->flags & FlagBorrow))

@@ -1,0 +1,157 @@
+// Written-to places through a chain of field and index steps of any depth, and
+// through each kind of step that can be indexed: three levels of lists, a list
+// of lists, an array element in the chain, and a dictionary's value. The
+// chain's links are each the element's mutable borrow ('&[]') where the type
+// declares one, and an array's own element where it does not
+// (struct_index_place_chain has the two-level forms through a local, a
+// parameter and self).
+
+mod struct_index_place_chain_deep;
+
+import collections use *;
+import stdio use *;
+
+struct Leaf {
+  pub n i64;
+  pub adv List[i64];
+  pub fn reset(self &mut) { n = 0; adv.clear(); }
+}
+
+struct Mid {
+  pub items List[Leaf];
+}
+
+struct Top {
+  pub mids List[Mid];
+}
+
+struct Root {
+  pub tops List[Top];
+}
+
+struct Grid {
+  pub cells Array[Leaf, 2];
+  pub mids List[Mid];
+}
+
+fn leaf(n i64) Leaf { new Leaf(n, List[i64].empty()); }
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn sumOf(xs &List[i64]) i64 {
+  mut s = 0i64;
+  mut i = 0usize;
+  while i < xs.len() {
+    s = s + *xs[i];
+    i++;
+  }
+  s;
+}
+
+fn midOf(n i64) Mid {
+  mut m = new Mid(List[Leaf].empty());
+  m.items.push(leaf(n));
+  m;
+}
+
+// Three levels of lists, then a fourth link
+fn threeLevels() {
+  mut r = new Root(List[Top].empty());
+  mut t = new Top(List[Mid].empty());
+  t.mids.push(midOf(1));
+  r.tops.push(t);
+  r.tops[0usize].mids[0usize].items[0usize].n = 5;
+  r.tops[0usize].mids[0usize].items[0usize].n += 2;
+  r.tops[0usize].mids[0usize].items[0usize].adv.push(4);
+  imm a = &mut r.tops[0usize].mids[0usize].items[0usize].adv;
+  a.push(6);
+  r.tops[0usize].mids[0usize].items.push(leaf(20));
+  r.tops[0usize].mids[0usize].items[1usize] = leaf(30);
+  r.tops[0usize].mids[0usize].items[1usize].n -= 4;
+  show("three n0", r.tops[0usize].mids[0usize].items[0usize].n);
+  show("three adv0", sumOf(&r.tops[0usize].mids[0usize].items[0usize].adv));
+  show("three n1", r.tops[0usize].mids[0usize].items[1usize].n);
+  r.tops[0usize].mids[0usize].items[1usize].reset();
+  r.tops[0usize].mids.push(midOf(40));
+  show("three n1 reset", r.tops[0usize].mids[0usize].items[1usize].n);
+  show("three mids", i64.from(r.tops[0usize].mids.len()));
+  show("three n of second mid", r.tops[0usize].mids[1usize].items[0usize].n);
+  r.tops[0usize].mids.clear();
+  show("three mids cleared", i64.from(r.tops[0usize].mids.len()));
+}
+
+// A list of lists
+fn listOfLists() {
+  mut ll = List[List[i64]].empty();
+  mut row = List[i64].empty();
+  row.push(1);
+  row.push(2);
+  ll.push(row);
+  ll[0usize][1usize] = 7;
+  ll[0usize][1usize] += 1;
+  imm a = &mut ll[0usize][0usize];
+  *a = 3;
+  ll[0usize].push(5);
+  ll[0usize][1usize]++;
+  show("rows len", i64.from(ll[0usize].len()));
+  show("rows sum", sumOf(ll[0usize]));
+  show("rows second", *ll[0usize][1usize]);
+}
+
+// An array element, then a list's elements in it, and a list in the chain
+// before an array
+fn arrays() {
+  mut g = new Grid([leaf(1), leaf(2)], List[Mid].empty());
+  g.mids.push(midOf(9));
+  g.cells[1usize].adv.push(8);
+  g.cells[1usize].n = 3;
+  g.cells[0usize].n = 6;
+  g.cells[0usize].reset();
+  imm a = &mut g.cells[1usize].adv;
+  a.push(9);
+  g.mids[0usize].items[0usize].n = 4;
+  show("cell0 n", g.cells[0usize].n);
+  show("cell1 n", g.cells[1usize].n);
+  show("cell1 adv", sumOf(&g.cells[1usize].adv));
+  show("mid leaf n", g.mids[0usize].items[0usize].n);
+}
+
+// A dictionary's value, then lists in it
+fn dictionary() {
+  mut d = Dict[i64, Mid].empty();
+  d.insert(7, midOf(2));
+  imm k = 7i64;
+  d[&k].items[0usize].n = 11;
+  d[&k].items[0usize].adv.push(3);
+  d[&k].items[0usize].adv.push(4);
+  d[&k].items.push(leaf(50));
+  d[&k].items[1usize].n += 1;
+  show("dict n0", d[&k].items[0usize].n);
+  show("dict adv0", sumOf(&d[&k].items[0usize].adv));
+  show("dict n1", d[&k].items[1usize].n);
+  d[&k].items[0usize].reset();
+  show("dict n0 reset", d[&k].items[0usize].n);
+}
+
+// Two aliased names for two different elements stay apart: a second list is
+// pushed to while an element of the first is held
+fn neighbour(a &mut Mid, b &mut Mid) i64 {
+  imm e = a.items[0usize];
+  b.items[0usize].adv.push(1);
+  e.n;
+}
+
+fn main() {
+  threeLevels();
+  listOfLists();
+  arrays();
+  dictionary();
+  mut p = midOf(12);
+  mut q = midOf(13);
+  show("neighbour", neighbour(&mut p, &mut q));
+}

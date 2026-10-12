@@ -1,0 +1,211 @@
+// Bytes on the wire: how every number in a packet is written and read, the
+// comparison of sequence numbers that wrap, and the keyed hash that makes a
+// connection challenge. Plain functions over byte lists; no I/O, no clock.
+//
+// Numbers go in network byte order: the most significant byte first.
+
+// ---------------------------------------------------------------------------
+// Writing
+// ---------------------------------------------------------------------------
+
+pub fn putU8(out &mut List[u8], v u8) {
+  out.push(v);
+}
+
+pub fn putU16(out &mut List[u8], v u16) {
+  out.push(u8.from(v >> 8u16));
+  out.push(u8.from(v & 255u16));
+}
+
+pub fn putU32(out &mut List[u8], v u32) {
+  out.push(u8.from(v >> 24u32));
+  out.push(u8.from((v >> 16u32) & 255u32));
+  out.push(u8.from((v >> 8u32) & 255u32));
+  out.push(u8.from(v & 255u32));
+}
+
+pub fn putU64(out &mut List[u8], v u64) {
+  putU32(out, u32.from(v >> 32u64));
+  putU32(out, u32.from(v & 0xFFFFFFFFu64));
+}
+
+pub fn putBytes(out &mut List[u8], data &Array[u8]) {
+  mut i = 0usize;
+  while i < data.len {
+    out.push(data[i]);
+    i = i + 1usize;
+  }
+}
+
+// n zero bytes
+pub fn putZeros(out &mut List[u8], n usize) {
+  mut i = 0usize;
+  while i < n {
+    out.push(0u8);
+    i = i + 1usize;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Reading
+// ---------------------------------------------------------------------------
+
+// A place in a packet being read. Every read says whether it stayed inside
+// the packet: a read past the end gives 0 and leaves 'ok' false for good, so
+// a reader checks 'ok' once, after reading what it needs, and a short or
+// corrupt packet is refused whole.
+pub struct PacketReader {
+  pub pos usize;
+  pub ok bool;
+
+  pub fn start() PacketReader {new PacketReader(0usize, true);}
+
+  // bytes left to read
+  pub fn left(self &, data &Array[u8]) usize {
+    if pos >= data.len {0usize;} else {data.len - pos;}
+  }
+
+  pub fn rdU8(self &mut, data &Array[u8]) u8 {
+    if not ok or pos + 1usize > data.len {
+      ok = false;
+      return 0u8;
+    }
+    imm v = data[pos];
+    pos = pos + 1usize;
+    v;
+  }
+
+  pub fn rdU16(self &mut, data &Array[u8]) u16 {
+    if not ok or pos + 2usize > data.len {
+      ok = false;
+      return 0u16;
+    }
+    imm v = (u16.from(data[pos]) << 8u16) | u16.from(data[pos + 1usize]);
+    pos = pos + 2usize;
+    v;
+  }
+
+  pub fn rdU32(self &mut, data &Array[u8]) u32 {
+    if not ok or pos + 4usize > data.len {
+      ok = false;
+      return 0u32;
+    }
+    imm v = (u32.from(data[pos]) << 24u32) | (u32.from(data[pos + 1usize]) << 16u32)
+      | (u32.from(data[pos + 2usize]) << 8u32) | u32.from(data[pos + 3usize]);
+    pos = pos + 4usize;
+    v;
+  }
+
+  pub fn rdU64(self &mut, data &Array[u8]) u64 {
+    imm hi = u64.from(self.rdU32(data));
+    imm lo = u64.from(self.rdU32(data));
+    (hi << 32u64) | lo;
+  }
+
+  // The next n bytes, copied; an empty list, and not ok, past the end
+  pub fn rdBytes(self &mut, data &Array[u8], n usize) List[u8] {
+    mut out = List[u8].withCapacity(n);
+    if not ok or n > self.left(data) {
+      ok = false;
+      return out;
+    }
+    mut i = 0usize;
+    while i < n {
+      out.push(data[pos + i]);
+      i = i + 1usize;
+    }
+    pos = pos + n;
+    out;
+  }
+
+  pub fn skip(self &mut, data &Array[u8], n usize) {
+    if not ok or n > self.left(data) {
+      ok = false;
+      return;
+    }
+    pos = pos + n;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Sequence numbers
+// ---------------------------------------------------------------------------
+
+// Whether 16-bit sequence a is more recent than b, the numbers wrapping
+// round: a is ahead of b by less than half the range
+pub fn seqNewer(a u16, b u16) bool {
+  imm d = a - b;
+  d != 0u16 and d < 32768u16;
+}
+
+// How far a is ahead of b (0 when it is not ahead)
+pub fn seqAhead(a u16, b u16) u16 {
+  if seqNewer(a, b) {a - b;} else {0u16;}
+}
+
+// ---------------------------------------------------------------------------
+// SipHash-2-4
+// ---------------------------------------------------------------------------
+
+// Aumasson and Bernstein's SipHash-2-4, a keyed 64-bit hash: what a server
+// makes its challenge cookie with, so that it need hold nothing for a client
+// that has not answered yet. It is a keyed hash, not encryption.
+struct Sip {
+  v0 u64;
+  v1 u64;
+  v2 u64;
+  v3 u64;
+
+  fn round(self &mut) {
+    v0 = v0 + v1;
+    v1 = v1.rotateLeft(13u32);
+    v1 = v1 ^ v0;
+    v0 = v0.rotateLeft(32u32);
+    v2 = v2 + v3;
+    v3 = v3.rotateLeft(16u32);
+    v3 = v3 ^ v2;
+    v0 = v0 + v3;
+    v3 = v3.rotateLeft(21u32);
+    v3 = v3 ^ v0;
+    v2 = v2 + v1;
+    v1 = v1.rotateLeft(17u32);
+    v1 = v1 ^ v2;
+    v2 = v2.rotateLeft(32u32);
+  }
+
+  fn word(self &mut, m u64) {
+    v3 = v3 ^ m;
+    self.round();
+    self.round();
+    v0 = v0 ^ m;
+  }
+}
+
+pub fn sipHash24(k0 u64, k1 u64, data &Array[u8]) u64 {
+  mut s = new Sip(k0 ^ 0x736f6d6570736575u64, k1 ^ 0x646f72616e646f6du64,
+    k0 ^ 0x6c7967656e657261u64, k1 ^ 0x7465646279746573u64);
+  mut i = 0usize;
+  while i + 8usize <= data.len {
+    mut m = 0u64;
+    mut j = 0usize;
+    while j < 8usize {
+      m = m | (u64.from(data[i + j]) << u64.from(8usize * j));
+      j = j + 1usize;
+    }
+    s.word(m);
+    i = i + 8usize;
+  }
+  mut last = u64.from(data.len & 255usize) << 56u64;
+  mut j = 0usize;
+  while i + j < data.len {
+    last = last | (u64.from(data[i + j]) << u64.from(8usize * j));
+    j = j + 1usize;
+  }
+  s.word(last);
+  s.v2 = s.v2 ^ 255u64;
+  s.round();
+  s.round();
+  s.round();
+  s.round();
+  s.v0 ^ s.v1 ^ s.v2 ^ s.v3;
+}

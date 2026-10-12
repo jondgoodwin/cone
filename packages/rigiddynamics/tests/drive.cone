@@ -1,0 +1,115 @@
+// The angular drive (World.setJointDrive and setDriveTarget): a joint's relative rotation held to a target by a spring
+// of its own stiffness and damping, with its torque limited.
+//
+//   reach     a box on a hinge in zero gravity, driven to 0.7 rad (stiffness 2000 N m per radian, damping 1000: a
+//             critical damping of 2 sqrt(k I) = 1000 for the box's inertia of about 130 kg m^2), is at 0.7 within 0.02 rad
+//             after 4 s and at rest
+//   holds     the box (125 kg, 1 m out along +x from a hinge about z) driven to horizontal under gravity holds its load: the
+//             torque 125 * 9.81 * 1 = 1226 N m with a limit of 3000 and a stiffness of 40000 N m/rad gives a sag of
+//             1226 / 40000 = 0.031 rad (the measured sag is within 0.01 of that)
+//   yields    with a torque limit of 600 N m the same drive cannot hold it up: the box goes below the horizontal by more than
+//             0.5 rad within 3 s (it swings to about -1.0, round the angle -1.05 where 1226 cos(a) = 600), while at 3000 N m
+//             it stays within 0.05 rad
+//   cone-twist a cone-twist (the ragdoll's shoulder) is driven to a rotation of 0.6 rad about y and 0.3 about x (about
+//             the twist axis the joint was made with) and reaches it
+//   ball      a point joint driven holds a given orientation too
+//   off       clearJointDrive lets go: the box falls
+
+mod drive;
+
+import testing use *;
+import collections use List;
+import geomath use *;
+import rigidcollide use *;
+import rigiddynamics use *;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+struct Rig {
+  w World;
+  anchor u32;
+  body u32;
+}
+
+fn rig(gravity bool) Rig {
+  mut w = World.make();
+  w.settings.sleepEnabled = false;
+  if not gravity { w.gravity = new Vec3(0., 0., 0.); }
+  imm sa = w.addShape(Shape.single(Prim.box(new Vec3(0.2, 0.2, 0.2))));
+  imm sb = w.addShape(Shape.single(Prim.box(new Vec3(0.25, 0.25, 0.25))));
+  imm a = w.createBody(BodyDef.staticAt(sa, new Vec3(0., 5., 0.)));
+  mut bd = BodyDef.dynamicAt(sb, new Vec3(1., 5., 0.));
+  bd.linearDamping = 0.; bd.angularDamping = 0.;
+  imm b = w.createBody(bd);
+  new Rig(w, a, b);
+}
+
+fn run(w &mut World, steps i32) {
+  mut i = 0;
+  while i < steps { w.step(1. / 60.); i = i + 1; }
+}
+
+// the angle of the box about the hinge's z: the direction from the pivot, positive counterclockwise (up)
+fn angleOf(w &World, b u32) f32 {
+  imm d = w.positionOf(b) - new Vec3(0., 5., 0.);
+  atan2(d.y, d.x);
+}
+
+fn main() i32 {
+  // ---- reach
+  mut r = rig(false);
+  imm j = r.w.addHinge(r.anchor, r.body, new Vec3(0., 5., 0.), new Vec3(0., 0., 1.));
+  r.w.setJointDrive(j, 2000., 1000., 1000.);
+  r.w.setDriveTarget(j, Quat.angleAxis(0.7, new Vec3(0., 0., 1.)));
+  run(&mut r.w, 240);
+  near(r.w.hingeAngleOf(j), 0.7, 0.02, "a driven hinge in zero gravity reaches 0.7 rad");
+  near(r.w.angularVelocity(r.body).length(), 0., 0.02, "and is at rest");
+
+  // ---- holds
+  mut h = rig(true);
+  imm jh = h.w.addHinge(h.anchor, h.body, new Vec3(0., 5., 0.), new Vec3(0., 0., 1.));
+  h.w.setJointDrive(jh, 40000., 3000., 3000.);
+  run(&mut h.w, 180);
+  near(angleOf(&h.w, h.body), -0.031, 0.01, "held to horizontal under its 1226 N m load it sags the load over the stiffness, 0.031 rad");
+
+  // ---- yields
+  mut weak = rig(true);
+  imm jw = weak.w.addHinge(weak.anchor, weak.body, new Vec3(0., 5., 0.), new Vec3(0., 0., 1.));
+  weak.w.setJointDrive(jw, 40000., 500., 600.);
+  run(&mut weak.w, 120);
+  run(&mut weak.w, 60);
+  expectBool(angleOf(&weak.w, weak.body) < -0.5, true, "with a torque limit of 600 N m it cannot hold the load: it swings down (to -1.0 at 3 s, where 600 = 1226 cos(angle) is in balance at -1.05)");
+  expectBool(angleOf(&h.w, h.body) > -0.05, true, "and the 3000 N m one is still within 0.05 rad");
+
+  // ---- cone-twist
+  mut c = rig(false);
+  imm jc = c.w.addConeTwist(c.anchor, c.body, new Vec3(0., 5., 0.), new Vec3(1., 0., 0.), 1.2);
+  c.w.setTwistLimits(jc, -1., 1.);
+  c.w.setJointDrive(jc, 2000., 1000., 2000.);
+  imm target = Quat.angleAxis(0.6, new Vec3(0., 1., 0.)) * Quat.angleAxis(0.3, new Vec3(1., 0., 0.));
+  c.w.setDriveTarget(jc, target);
+  run(&mut c.w, 180);
+  imm now = c.w.rotationOf(c.body);
+  imm diff = now * target.conjugate();
+  near(2. * atan2(sqrtf(diff.x * diff.x + diff.y * diff.y + diff.z * diff.z), absf(diff.w)), 0., 0.03, "a driven cone-twist reaches a swing of 0.6 and a twist of 0.3 (within 0.03 rad of it)");
+
+  // ---- ball
+  mut p = rig(false);
+  imm jp = p.w.addPointJoint(p.anchor, p.body, new Vec3(0., 5., 0.));
+  p.w.setJointDrive(jp, 2000., 1000., 2000.);
+  p.w.setDriveTarget(jp, Quat.angleAxis(-0.5, new Vec3(0., 0., 1.)));
+  run(&mut p.w, 180);
+  near(angleOf(&p.w, p.body), -0.5, 0.03, "a driven point joint holds a given orientation: the box is at -0.5 rad");
+
+  // ---- off
+  mut o = rig(true);
+  imm jo = o.w.addHinge(o.anchor, o.body, new Vec3(0., 5., 0.), new Vec3(0., 0., 1.));
+  o.w.setJointDrive(jo, 40000., 3000., 3000.);
+  run(&mut o.w, 60);
+  o.w.clearJointDrive(jo);
+  run(&mut o.w, 60);
+  expectBool(angleOf(&o.w, o.body) < -0.5, true, "clearJointDrive lets go: the box falls");
+  done();
+}

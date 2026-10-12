@@ -1,0 +1,110 @@
+// Swing ranges that are not round. The solver's cone-twist joint (rigiddynamics) limits a joint's swing to a
+// circle, one half-angle in every direction, and a hip bends 120 degrees forward and 20 back, so a circle
+// either lets the leg swing back far past its limit or stops it bending forward. The joints are
+// therefore made with the circle that holds the whole range (the largest of the four quarter-axes), and
+// this pass pulls the swing back inside the range's ellipse.
+//
+// THE RANGE. The swing of a joint is where the child's twist axis points against the parent's: a tip
+// deflection of angle theta from its rest direction, towards a direction in the plane across it. Take that
+// deflection as a vector u along the joint's flexion direction (towards the being's front) and v along its
+// abduction direction (away from the being's middle), both in radians. The range is the ellipse with a
+// quarter-axis for each of the four half-lines: u > 0 flexion, u < 0 extension, v > 0 abduction, v < 0
+// adduction (the same four numbers the table in spec.cone gives). A swing is inside when (u/a)^2 + (v/b)^2 <= 1.
+// This is the shape of Jolt's SwingTwistConstraint (a plane and a normal half cone angle) with a quarter-axis
+// for each side, which the Jolt sample ragdoll uses for hips and shoulders.
+//
+// THE CORRECTION. A swing outside the ellipse is scaled back to it about the origin (u, v) / sqrt(g), and
+// the rotation that takes the tip there (r = t x dt, t the tip, dt its move) is the error. Relative angular
+// velocity of child against parent along that rotation is brought up to a bias speed of beta |r| / dt
+// whenever it is less (one-sided, so a joint moving back inside is left alone), as an impulse through the
+// pair's effective inertia, in the manner of the drive. It is a velocity pass before the step, not a row of the
+// solver's iterations, so a contact can push a joint a little past its range within a step and the next step
+// pulls it back: the check in the tests allows for a few degrees.
+
+// Where link k's swing is: its (u, v) deflection in radians and the unit tip direction in the world; false for a
+// link that has no cone-twist joint
+pub fn swingOf(rig &Ragdoll, w &World, k usize, uv &mut Vec2, tip &mut Vec3, axis &mut Vec3) bool {
+  imm l = rig.links[k];
+  if l.kind != JOINT_CONETWIST or l.parent < 0i32 { return false; }
+  imm pl = rig.links[usize.from(l.parent)];
+  imm rp = w.rotationOf(pl.body);
+  imm d = (rp * l.axisP).normalize();
+  imm t = (w.rotationOf(l.body) * l.axisC).normalize();
+  imm c = clampf(t.dot(d), -1., 1.);
+  imm theta = acos(c);
+  *tip = t;
+  *axis = d;
+  if theta < 0.00001 { *uv = new Vec2(0., 0.); return true; }
+  imm s = (t - d * c).normalize();
+  *uv = new Vec2(theta * s.dot(rp * l.flexP), theta * s.dot(rp * l.abdP));
+  true;
+}
+
+// How far outside its range link k's swing is: the ellipse measure g (1 at the edge, over 1 outside)
+pub fn swingMeasure(rig &Ragdoll, w &World, k usize) f32 {
+  mut uv = new Vec2(0., 0.);
+  mut tip = zero3();
+  mut axis = zero3();
+  if not swingOf(rig, w, k, &mut uv, &mut tip, &mut axis) { return 0.; }
+  imm l = rig.links[k];
+  imm a = if uv.x > 0. { l.flex; } else { l.ext; };
+  imm b = if uv.y > 0. { l.abd; } else { l.add; };
+  (uv.x / a) * (uv.x / a) + (uv.y / b) * (uv.y / b);
+}
+
+// The worst swing measure over the ragdoll's cone-twist joints
+pub fn worstSwing(rig &Ragdoll, w &World) f32 {
+  mut m = 0.;
+  mut k = 0usize;
+  while k < rig.links.len() { m = maxf(m, swingMeasure(rig, w, k)); k = k + 1usize; }
+  m;
+}
+
+// Pull every swing back inside its range (the pass described above), for a step of 'dt'
+pub fn enforceSwingLimits(rig &mut Ragdoll, w &mut World, dt f32) {
+  mut k = 0usize;
+  while k < rig.links.len() {
+    mut uv = new Vec2(0., 0.);
+    mut tip = zero3();
+    mut axis = zero3();
+    if swingOf(rig, w, k, &mut uv, &mut tip, &mut axis) {
+      imm l = rig.links[k];
+      imm a = if uv.x > 0. { l.flex; } else { l.ext; };
+      imm b = if uv.y > 0. { l.abd; } else { l.add; };
+      imm g = (uv.x / a) * (uv.x / a) + (uv.y / b) * (uv.y / b);
+      if g > 1.0 {
+        imm pl = rig.links[usize.from(l.parent)];
+        imm rp = w.rotationOf(pl.body);
+        imm sc = 1. / g.sqrt();
+        // the move of the tip, in the world
+        imm dt3 = (rp * l.flexP) * (uv.x * (sc - 1.)) + (rp * l.abdP) * (uv.y * (sc - 1.));
+        imm r = tip.cross(dt3);
+        imm rl = r.length();
+        if rl > 0.00001 {
+          imm dir = r * (1. / rl);
+          imm ip = usize.from(pl.body);
+          imm ic = usize.from(l.body);
+          imm wr = w.bodies[ic].angVel - w.bodies[ip].angVel;
+          imm along = wr.dot(dir);
+          // a one-sided speed limit that also gives a slow recovery: a tenth of the error a step, never faster than
+          // 0.2 rad/s. A faster push into the range fights whatever holds the joint out of it (a limb pinned under the
+          // body, a contact on a stair's edge), the contact pushes back, and the two together keep the body creeping
+          // for ever: with a bias of 0.3 of the error a step a ragdoll that came to rest on a flight of steps was still
+          // moving 19 s later
+          imm bias = minf(0.1 * rl / dt, 0.2);
+          if along < bias {
+            imm iA = rotateInertia(w.bodies[ip].rot, w.bodies[ip].invInertiaLocal);
+            imm iB = rotateInertia(w.bodies[ic].rot, w.bodies[ic].invInertiaLocal);
+            imm kin = dir.dot(iA * dir) + dir.dot(iB * dir);
+            if kin > 0.0000001 {
+              imm lam = dir * ((bias - along) / kin);
+              w.bodies[ic].angVel = w.bodies[ic].angVel + iB * lam;
+              w.bodies[ip].angVel = w.bodies[ip].angVel - iA * lam;
+            }
+          }
+        }
+      }
+    }
+    k = k + 1usize;
+  }
+}

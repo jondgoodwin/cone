@@ -201,6 +201,7 @@ enum TokenTypes {
     trueToken,     // 'true'
     falseToken,    // 'false'
     UndefToken,    // 'undef'
+    UsingToken,    // 'using': a pattern run by a function, 'case imm rest using prefix("GET ")' (parsefnflow.c)
 
     // Words held for language features that are documented but not implemented.
     // The lexer never returns this token: it diagnoses the use and hands back an

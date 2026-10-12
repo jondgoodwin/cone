@@ -1,0 +1,166 @@
+// The powered ragdoll: the standing pose held against gravity, and the blend from limp to driven.
+//
+//   (all on tuneWorld's settings)
+//   stand     at blend 1 the standing rest pose (feet on the ground, the target the same pose) is held for 5 s: the
+//             pelvis within 3 cm of its height (measured 1 cm), within 6 cm sideways, every joint within 0.05 rad of
+//             the target (measured 0.01)
+//   limp      at blend 0 the same ragdoll falls: the pelvis is under 0.4 m high 3 s later
+//   between   standing needs little torque (the pose is balanced over the feet): blends of 0.1, 0.4 and 1 all hold it; at
+//             0.03 a blow of 10 N s puts it down that full strength shrugs off
+//   hit       a standing, driven ragdoll given an impulse of 15 N s at the chest (0.2 m/s of the whole body) at 1 s is
+//             still standing at 5 s and back within 0.01 rad of the pose (it staggers and recovers); a push of 30 N s,
+//             which no ankle torque answers (there is no balance control), topples it
+//   hold      rootHertz turns a whole ragdoll that is spinning at 1 rad/s in zero gravity back to its target
+//             orientation in 2 s (0.0001 rad off, against 1.9 without), as one rigid body
+//   target    a new target (the elbows bent, the arms forward) is reached within 0.05 rad in 2 s while it stays standing
+
+mod powered;
+
+import testing use *;
+import collections use List;
+import geomath use *;
+import rigidcollide use *;
+import rigiddynamics use *;
+import bonepose use * but absf, clampf;
+import ragdollrig use *;
+
+struct Stand {
+  w World;
+  rig Ragdoll;
+  rest Pose;
+  place Rigid;
+}
+
+fn standing(blend f32) Stand { standingAt(blend, 0.002); }
+
+fn standingAt(blend f32, height f32) Stand {
+  imm skel = humanoid(1.75);
+  imm spec = humanoidSpec(&skel, 1.75, 70.);
+  mut w = World.make();
+  tuneWorld(&mut w);
+  imm ground = w.addShape(Shape.single(Prim.box(new Vec3(20., 1., 20.))));
+  w.createBody(BodyDef.staticAt(ground, new Vec3(0., -1., 0.)));
+  imm place = Rigid.at(new Vec3(0., height, 0.));
+  mut rig = Ragdoll.make(&mut w, &skel, &spec, place, 1u32);
+  imm rest = skel.restPose();
+  rig.poseToBodies(&mut w, &skel, &rest, place);
+  setTarget(&mut rig, &skel, &rest, place);
+  rig.blend = blend;
+  new Stand(w, rig, rest, place);
+}
+
+fn run(s &mut Stand, steps i32) {
+  mut i = 0;
+  while i < steps { stepRagdoll(&mut s.rig, &mut s.w, 1. / 60.); i = i + 1; }
+}
+
+// The whole ragdoll turned about the pelvis at 1 rad/s about x, in zero gravity
+fn spinWhole(s &mut Stand) {
+  s.w.gravity = new Vec3(0., 0., 0.);
+  imm c = s.w.positionOf(s.rig.bodyOfBone(PELVIS));
+  imm om = new Vec3(1., 0., 0.);
+  mut k = 0usize;
+  while k < s.rig.links.len() {
+    imm id = s.rig.links[k].body;
+    s.w.setAngularVelocity(id, om);
+    s.w.setLinearVelocity(id, om.cross(s.w.positionOf(id) - c));
+    k = k + 1usize;
+  }
+}
+
+fn pelvisY(s &Stand) f32 { s.w.positionOf(s.rig.bodyOfBone(PELVIS)).y; }
+
+fn main() i32 {
+  imm skel = humanoid(1.75);
+  // ---- stand
+  mut a = standing(1.);
+  imm y0 = pelvisY(&a);
+  mut worstErr = 0.;
+  mut worstDrop = 0.;
+  mut worstSide = 0.;
+  mut i = 0;
+  while i < 300 {
+    run(&mut a, 1);
+    worstErr = maxf(worstErr, maxDriveError(&a.rig, &a.w));
+    worstDrop = maxf(worstDrop, y0 - pelvisY(&a));
+    imm p = a.w.positionOf(a.rig.bodyOfBone(PELVIS));
+    worstSide = maxf(worstSide, sqrtf(p.x * p.x + p.z * p.z));
+    i = i + 1;
+  }
+  expectBool(worstDrop < 0.03, true, "driven at full strength the pelvis stays within 3 cm of its height for 5 s");
+  expectBool(worstSide < 0.06, true, "and within 6 cm of where it stood");
+  expectBool(worstErr < 0.05, true, "and every joint within 0.05 rad of the pose");
+
+  // ---- limp
+  mut b = standing(0.);
+  run(&mut b, 180);
+  expectBool(pelvisY(&b) < 0.4, true, "at blend 0 it falls: the pelvis is under 0.4 m after 3 s");
+
+  // ---- between
+  mut c = standing(0.1);
+  run(&mut c, 180);
+  mut d = standing(0.4);
+  run(&mut d, 180);
+  mut e = standing(1.);
+  run(&mut e, 180);
+  expectBool(pelvisY(&c) > 0.94 and pelvisY(&d) > 0.94 and pelvisY(&e) > 0.94, true, "standing needs little torque: blends of 0.1, 0.4 and 1 all hold the pose for 3 s");
+  mut weak = standing(0.03);
+  run(&mut weak, 60);
+  weak.w.applyImpulse(weak.rig.bodyOfBone(CHEST), new Vec3(0., 0., 10.));
+  run(&mut weak, 240);
+  expectBool(pelvisY(&weak) < 0.3, true, "but at a blend of 0.03 the 10 N s blow that full strength shrugs off puts it down");
+
+  // ---- hit
+  mut h = standing(1.);
+  run(&mut h, 60);
+  imm chest = h.rig.bodyOfBone(CHEST);
+  h.w.applyImpulse(chest, new Vec3(0., 0., 15.));
+  mut lowest = 10.;
+  mut peakErr = 0.;
+  i = 0;
+  while i < 240 {
+    run(&mut h, 1);
+    lowest = minf(lowest, pelvisY(&h));
+    peakErr = maxf(peakErr, maxDriveError(&h.rig, &h.w));
+    i = i + 1;
+  }
+  expectBool(peakErr > 0.003, true, "the blow bends it: some joint goes 0.003 rad off the pose");
+  expectBool(lowest > 0.85, true, "and it stays standing, the pelvis never under 0.85 m");
+  expectBool(maxDriveError(&h.rig, &h.w) < 0.01, true, "and four seconds later it is back within 0.01 rad of the pose");
+
+  // ---- a new target
+  mut t = standing(1.);
+  run(&mut t, 30);
+  mut bent = skel.restPose();
+  imm rest0 = skel.restPose();
+  bent.setRotation(FOREARM_L, Quat.angleAxis(1.0, new Vec3(1., 0., 0.)));
+  bent.setRotation(FOREARM_R, Quat.angleAxis(1.0, new Vec3(1., 0., 0.)));
+  bent.setRotation(UPPER_ARM_L, Quat.angleAxis(0.6, new Vec3(1., 0., 0.)) * rest0.rotation(UPPER_ARM_L));
+  bent.setRotation(UPPER_ARM_R, Quat.angleAxis(0.6, new Vec3(1., 0., 0.)) * rest0.rotation(UPPER_ARM_R));
+  setTarget(&mut t.rig, &skel, &bent, t.place);
+  run(&mut t, 120);
+  expectBool(maxDriveError(&t.rig, &t.w) < 0.05, true, "a new target, the knees bent 0.6 rad, is reached within 0.05 rad in 2 s");
+  expectBool(t.w.hingeAngleOf(t.rig.links[usize.from(t.rig.linkOfBone(FOREARM_L))].joint) > 0.9, true, "the left elbow hinge reads about 1.0 (a flexed elbow is positive)");
+  expectBool(pelvisY(&t) > 0.95, true, "and it is still standing");
+
+  // ---- a firmer push: no balance control
+  mut r0 = standing(1.);
+  run(&mut r0, 60);
+  r0.w.applyImpulse(r0.rig.bodyOfBone(CHEST), new Vec3(0., 0., -30.));
+  run(&mut r0, 240);
+  expectBool(pelvisY(&r0) < 0.5, true, "a push of 30 N s is too much for a ragdoll that has no balance control: it falls over");
+
+  // ---- the pelvis hold (rootHertz): in zero gravity a spinning pelvis is brought back to the target's orientation
+  mut s1 = standingAt(1., 20.);
+  s1.rig.rootHertz = 4.;
+  spinWhole(&mut s1);
+  run(&mut s1, 120);
+  mut s2 = standingAt(1., 20.);
+  spinWhole(&mut s2);
+  run(&mut s2, 120);
+  imm held = rotVec(s1.rig.rootTarget * s1.w.rotationOf(s1.rig.bodyOfBone(PELVIS)).conjugate()).length();
+  imm free = rotVec(s2.rig.rootTarget * s2.w.rotationOf(s2.rig.bodyOfBone(PELVIS)).conjugate()).length();
+  expectBool(held < 0.15, true, "with the hold the pelvis is back within 0.15 rad of its target 2 s after a spin of 1 rad/s");
+  expectBool(free > 0.5, true, "without it the body is still turned (0.5 rad or more off the target) by then");
+  done();
+}

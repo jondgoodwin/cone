@@ -385,6 +385,27 @@ pub struct World {
     mut k = 0usize;
     while k < joints.len() { if joints[k].alive and not joints[k].collide { noCollideJoints = true; } k = k + 1usize; }
   }
+  // Drive a point, hinge or cone-twist joint's relative rotation to a target as a spring (stiffness N m per radian,
+  // damping N m s per radian) whose torque is at most maxTorque N m (see solveDrive). The target starts as the pose
+  // the joint was made in; set it with setDriveTarget.
+  pub fn setJointDrive(self &mut, j u32, stiffness f32, damping f32, maxTorque f32) {
+    joints[usize.from(j)].driveOn = true;
+    joints[usize.from(j)].driveHertz = stiffness;
+    joints[usize.from(j)].driveDamping = damping;
+    joints[usize.from(j)].driveMax = maxTorque;
+    self.wake(joints[usize.from(j)].a);
+    self.wake(joints[usize.from(j)].b);
+  }
+  pub fn clearJointDrive(self &mut, j u32) {
+    joints[usize.from(j)].driveOn = false;
+    joints[usize.from(j)].impDrive = zero3();
+  }
+  // The target as the rotation of B's body relative to A's body (A's rotation inverse times B's) that the drive
+  // should hold, converted into the joint's own frames
+  pub fn setDriveTarget(self &mut, j u32, bodyRelative Quat) {
+    imm jj = joints[usize.from(j)];
+    joints[usize.from(j)].driveTarget = (jj.fa.conjugate() * bodyRelative * jj.fb).normalize();
+  }
   pub fn removeJoint(self &mut, j u32) { joints[usize.from(j)].alive = false; }
   pub fn hingeAngleOf(self &, j u32) f32 { hingeAngle(self, joints[usize.from(j)]); }
   // How far apart the joint's two anchors are now (zero when it is satisfied), metres
@@ -530,19 +551,10 @@ pub struct World {
         mut bestPoint = zero3();
         mut bestNormal = zero3();
         mut m = 0usize;
-        // No real penetration is deeper than the dynamic body is wide. The narrow phase can return a
-        // depth wildly beyond that when EPA fails on a flat piece (a box on a large mesh triangle: seen
-        // at 2.7 m for a body 0.87 m across), and the solver would fling the body away at the maximum
-        // push speed; such points are dropped.
-        imm ra = if bA.motion == MotionDynamic { bA.radius; } else { bigNumber; };
-        imm rb = if bB.motion == MotionDynamic { bB.radius; } else { bigNumber; };
-        imm maxDepth = 2. * minf(ra, rb);
-        // A mesh or heightfield body: its triangles' own normals, below
-        imm shA = shapes[usize.from(bA.shape)];
-        imm shB = shapes[usize.from(bB.shape)];
-        imm meshA = shA.parts.len() == 0usize and (shA.prim.kind == KMesh or shA.prim.kind == KHeightfield);
-        imm meshB = shB.parts.len() == 0usize and (shB.prim.kind == KMesh or shB.prim.kind == KHeightfield);
-        imm prep = tidyManifolds(&out, shA, xfA, meshA, shB, xfB, meshB, maxDepth, sensor);
+        // The manifolds are used as the narrow phase gives them: a body on a mesh or heightfield
+        // gets one manifold per flat patch with the face's own normal (rigidcollide merges them),
+        // and a depth is never beyond what the two shapes' widths allow
+        imm prep = &out;
         while m < prep.len() {
           imm mf = prep[m];
           if mf.count > 0usize {

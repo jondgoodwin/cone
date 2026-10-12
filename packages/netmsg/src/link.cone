@@ -1,0 +1,175 @@
+// The lossy-link simulator: a one-way pipe that drops, delays, jitters,
+// duplicates and reorders the packets put into it, on a clock the caller
+// moves. It is sans-IO like the rest of the core: no socket, no thread, no
+// real time. Tests drive it with a synthetic clock; the in-process
+// connection pair puts one in its path.
+//
+//   LinkConfig  what the link does to a packet
+//   Rng         a small deterministic generator (SplitMix64): the same seed
+//               gives the same run
+//   LinkSim     send(now, packet) puts a packet in; deliver(now, out) takes
+//               out every packet due by now, in the order it arrives
+
+// A copy of some bytes
+pub fn copyBytes(data &Array[u8]) List[u8] {
+  mut out = List[u8].withCapacity(data.len);
+  putBytes(&mut out, data);
+  out;
+}
+
+// SplitMix64 (Steele, Lea and Flood): small, fast, and the same numbers for
+// the same seed on every system
+pub struct Rng {
+  state u64;
+
+  pub fn make(seed u64) Rng {new Rng(seed);}
+
+  pub fn next(self &mut) u64 {
+    state = state + 0x9E3779B97F4A7C15u64;
+    mut z = state;
+    z = (z ^ (z >> 30u64)) * 0xBF58476D1CE4E5B9u64;
+    z = (z ^ (z >> 27u64)) * 0x94D049BB133111EBu64;
+    z ^ (z >> 31u64);
+  }
+
+  // A number from 0 up to, not including, n (0 when n is 0)
+  pub fn below(self &mut, n u64) u64 {
+    if n == 0u64 {return 0u64;}
+    self.next() % n;
+  }
+
+  // true with a chance of 'permille' in a thousand
+  pub fn chance(self &mut, permille u32) bool {
+    self.below(1000u64) < u64.from(permille);
+  }
+}
+
+// What a link does to the packets put into it
+pub struct LinkConfig {
+  pub lossPermille u32;        // the chance in 1000 that a packet is dropped
+  pub latencyMs i64;           // every packet's delay
+  pub jitterMs i64;            // plus a random 0 to this many ms more
+  pub duplicatePermille u32;   // the chance in 1000 that a packet arrives twice
+  pub reorderPermille u32;     // the chance in 1000 that a packet is held back
+  pub reorderMs i64;           // ... by this many ms more, so later ones pass it
+
+  // A link that does nothing to a packet but pass it on at once
+  pub fn perfect() LinkConfig {new LinkConfig(0u32, 0i64, 0i64, 0u32, 0u32, 0i64);}
+
+  // A link that loses some packets, delays all of them, and jitters
+  pub fn lossy(lossPermille u32, latencyMs i64, jitterMs i64) LinkConfig {
+    new LinkConfig(lossPermille, latencyMs, jitterMs, 0u32, 0u32, 0i64);
+  }
+}
+
+// What a link has done so far
+pub struct LinkStats {
+  pub sent u64;
+  pub dropped u64;
+  pub duplicated u64;
+  pub delivered u64;
+}
+
+struct Flight {
+  due i64;
+  order u64;
+  data List[u8];
+}
+
+// A one-way link
+pub struct LinkSim {
+  cfg LinkConfig;
+  rng Rng;
+  queue List[Flight];
+  counter u64;
+  nSent u64;
+  nDropped u64;
+  nDuplicated u64;
+  nDelivered u64;
+
+  pub fn make(cfg LinkConfig, seed u64) LinkSim {
+    new LinkSim(cfg, Rng.make(seed), List[Flight].empty(), 0u64, 0u64, 0u64, 0u64, 0u64);
+  }
+
+  pub fn config(self &) LinkConfig {cfg;}
+
+  // Change what the link does from now on; packets in flight keep their times
+  pub fn setConfig(self &mut, c LinkConfig) {cfg = c;}
+
+  // Put a packet in. The link may drop it, delay it, and deliver it twice
+  pub fn send(self &mut, now Instant, data List[u8]) {
+    nSent = nSent + 1u64;
+    if rng.chance(cfg.lossPermille) {
+      nDropped = nDropped + 1u64;
+      return;
+    }
+    if rng.chance(cfg.duplicatePermille) {
+      nDuplicated = nDuplicated + 1u64;
+      self.enqueue(now, copyBytes(data.view()));
+    }
+    self.enqueue(now, data);
+  }
+
+  fn enqueue(self &mut, now Instant, data List[u8]) {
+    mut delay = cfg.latencyMs;
+    if cfg.jitterMs > 0i64 {
+      delay = delay + i64.from(rng.below(u64.from(cfg.jitterMs) + 1u64));
+    }
+    if rng.chance(cfg.reorderPermille) {
+      delay = delay + cfg.reorderMs;
+    }
+    counter = counter + 1u64;
+    queue.push(new Flight(now.nanos() + delay * 1000000i64, counter, data));
+  }
+
+  // Take out every packet due at or before 'now', the earliest first
+  pub fn deliver(self &mut, now Instant, out &mut List[List[u8]]) {
+    while true {
+      mut best = queue.len();
+      mut i = 0usize;
+      while i < queue.len() {
+        imm f = queue[i];
+        if f.due <= now.nanos() {
+          if best == queue.len() {
+            best = i;
+          } else {
+            imm b = queue[best];
+            if f.due < b.due or (f.due == b.due and f.order < b.order) {best = i;}
+          }
+        }
+        i = i + 1usize;
+      }
+      if best == queue.len() {return;}
+      queue.swap(best, queue.len() - 1usize);
+      match queue.pop() {
+        case imm f Some {
+          mut fl = f;
+          mut d = List[u8].empty();
+          d <=> fl.data;
+          out.push(d);
+          nDelivered = nDelivered + 1u64;
+        }
+        case is None[Flight] {}
+      }
+    }
+  }
+
+  // When the next packet comes due, if any is in flight
+  pub fn nextDue(self &) Option[Instant] {
+    if queue.len() == 0usize {return None[Instant];}
+    mut best = queue[0usize].due;
+    mut i = 1usize;
+    while i < queue.len() {
+      if queue[i].due < best {best = queue[i].due;}
+      i = i + 1usize;
+    }
+    Some[Instant](Instant.fromNanos(best));
+  }
+
+  // Packets still in flight
+  pub fn inFlight(self &) usize {queue.len();}
+
+  pub fn stats(self &) LinkStats {
+    new LinkStats(nSent, nDropped, nDuplicated, nDelivered);
+  }
+}

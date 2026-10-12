@@ -25,21 +25,30 @@
 // positive when the shapes overlap there and negative when they are apart
 // within the speculative margin the caller asked for.
 //
+// Against a mesh or heightfield the manifolds follow Jolt: a contact within
+// 8 degrees of its triangle's normal takes that normal, ghost contacts at flat
+// edges are dropped (active edges), and the manifolds one shape makes with a
+// flat patch (same parts, normals within 2 degrees) are merged into one of at
+// most four points. Compounds nest: a Shape's 'parts' keep the nesting and its
+// 'leaves' are the prims with composed transforms that the narrow phase walks.
+//
 // What it does not do (yet): rotation in a shape cast (translation only);
-// contact reduction across the many triangles of a mesh beyond Jolt's
-// active-edge rule (flat edges lose their ghost contacts, and a point that
-// two triangles both report is kept once); one-sided triangles; a plane
-// shape; a convex radius on hulls and boxes (Jolt rounds them; here a box is
-// sharp and GJK works on the exact core); scaled shapes; nested compounds
-// (flattened on add, since Cone cannot yet build a type holding a list of
-// itself); SIMD. Every scratch list is a heap List: the allocation shows up
-// in the per-pair times of examples/bench.cone, and a per-step arena is the
-// first optimisation.
+// one-sided triangles; a plane shape; a convex radius on hulls and boxes (Jolt
+// rounds them; here a box is sharp and GJK works on the exact core); scaled
+// shapes; SIMD. Clipping and manifold building use inline fixed buffers (no
+// allocation); GJK/EPA, the mesh walk and the caller's output list are still
+// heap Lists.
 //
 // Method choices (each is a published algorithm, cited where it is coded):
 //   GJK                      van den Bergen / Ericson, with Jolt's core+radius split
 //   EPA                      van den Bergen, "Proximity Queries and Penetration Depth"
 //   box-box                  SAT over 15 axes (Gottschalk; Ericson 4.4.1), then face clip
+//   box-triangle             SAT over 13 axes (Akenine-Moller 2001; Ericson 5.2.9), then clip
+//   GJK sub-simplices        64-bit barycentric weights (Ericson 5.1.5 in f64): in f32 they
+//                            lose the origin on triangles tens of metres across
+//   EPA guard                a depth beyond the cores' widths falls back to the least overlap
+//                            along candidate axes (separating axis idea)
+//   mesh contacts            Jolt: face-normal snap, active edges, merge per body pair
 //   manifold                 Sutherland-Hodgman clip of the incident face (Ericson; Jolt's
 //                            ManifoldBetweenTwoFaces), reduced to 4 points as Jolt does
 //   convex hull              quickhull (Barber, Dobkin, Huhdanpaa 1996)

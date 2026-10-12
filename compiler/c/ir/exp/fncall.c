@@ -10,6 +10,7 @@
 #include <assert.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 // The call fnCallTypeCheck is checking and the type its value is wanted as.
 // A generic method, or a generic picked out of an overload set, that the call
@@ -591,20 +592,52 @@ static int fnCallIsBorrowType(INode *type) {
     return iexpIsBorrowType(type);
 }
 
-FnCallNode *fnCallSetIndex = NULL;
+// The indexes in set position: those of the place being written to, while it is
+// checked. A chain of field reads and indexes, 'a[g].b[i].n', marks every index
+// in it, whatever its depth.
+static FnCallNode **fnCallSetIndexes = NULL;
+static uint32_t fnCallSetIndexUsed = 0;
+static uint32_t fnCallSetIndexCap = 0;
+
+static int fnCallIsSetIndex(FnCallNode *node) {
+    for (uint32_t i = fnCallSetIndexUsed; i-- > 0; ) {
+        if (fnCallSetIndexes[i] == node)
+            return 1;
+    }
+    return 0;
+}
+
+static int fnCallIsPlainIndex(INode *link) {
+    return link->tag == FnCallTag && (link->flags & FlagIndex) && ((FnCallNode*)link)->methfld == NULL
+        && !(link->flags & (FlagBorrow | FlagRange));
+}
+
+uint32_t fnCallSetPlace(INode *place) {
+    uint32_t mark = fnCallSetIndexUsed;
+    while (place->tag == FnCallTag) {
+        FnCallNode *call = (FnCallNode*)place;
+        if (fnCallIsPlainIndex(place)) {
+            if (fnCallSetIndexUsed == fnCallSetIndexCap) {
+                fnCallSetIndexCap = fnCallSetIndexCap ? fnCallSetIndexCap * 2 : 16;
+                fnCallSetIndexes = (FnCallNode**)realloc(fnCallSetIndexes, fnCallSetIndexCap * sizeof(FnCallNode*));
+            }
+            fnCallSetIndexes[fnCallSetIndexUsed++] = call;
+        }
+        // Only an index, 'x[i]', or a field read, 'x.f', leads on to the place's root
+        else if ((call->flags & FlagIndex) || call->methfld == NULL || !isNameUseNode(call->methfld)
+            || call->args != NULL || (call->flags & FlagOperator))
+            break;
+        place = call->objfn;
+    }
+    return mark;
+}
+
+void fnCallSetPlaceEnd(uint32_t mark) {
+    fnCallSetIndexUsed = mark;
+}
 
 FnCallNode *fnCallSetIndexRoot(INode *lval) {
-    while (lval->tag == FnCallTag) {
-        FnCallNode *call = (FnCallNode*)lval;
-        if ((call->flags & FlagIndex) && call->methfld == NULL)
-            return (call->flags & (FlagBorrow | FlagRange)) ? NULL : call;
-        // Only a field read, 'x.f', leads on to the place's root
-        if (call->methfld == NULL || !isNameUseNode(call->methfld) || call->args != NULL
-            || (call->flags & (FlagOperator | FlagIndex)))
-            return NULL;
-        lval = call->objfn;
-    }
-    return NULL;
+    return fnCallIsPlainIndex(lval) ? (FnCallNode*)lval : NULL;
 }
 
 // The narrowest lifetime among the borrowed-reference arguments whose borrows
@@ -1139,6 +1172,8 @@ void fnCallDemandCandidates(INode *binding) {
     }
 }
 
+static int fnCallPlaceAsMut(TypeCheckState *pstate, INode **placep);
+
 // A receiver held as a value -- 'v.push(x)' for a 'mut v List[i64]' -- reaches
 // a method that declared 'self &' or 'self &mut' by being borrowed, as though
 // '(&v).len()' or '(&mut v).push(x)' had been written: "Cone will automatically
@@ -1190,8 +1225,18 @@ static FnDclNode *fnCallBorrowReceiver(TypeCheckState *pstate, FnCallNode *calln
             }
             continue;
         }
-        if (iexpIsLval(obj))
+        if (iexpIsLval(obj)) {
+            // 'u.fields[i].adv.push(x)': a place checked for reading, reached
+            // through an index, is lent mutably to a method that writes it
+            if (perms[i] == mutPerm) {
+                INode *lvalperm = (INode*)immPerm;
+                uint16_t scope;
+                iexpGetLvalInfo(obj, &lvalperm, &scope);
+                if (!(permGetFlags(lvalperm) & MayWrite))
+                    fnCallPlaceAsMut(pstate, &callnode->objfn);
+            }
             borrowMutRef(&callnode->objfn, objtype, perm);
+        }
         else
             borrowTempRef(&callnode->objfn, objtype, perm, borrowTempScope(pstate));
         return selected;
@@ -1325,38 +1370,50 @@ static void fnCallLowerEnumEq(TypeCheckState *pstate, FnCallNode *callnode, Stru
     fnCallFinalizeArgs(pstate, callnode);
 }
 
-// The receiver of 'x[i].m()' is the element 'x[i]' lent by the type's '[]',
-// a read-only borrow. Where no 'm' takes that, and the type declares '&[]'
-// and 'x' may be borrowed mutably, the index is lowered again as '&mut x[i]'
-// is, from its receiver and arguments as they were checked, and becomes the
-// receiver: the element's mutable borrow, as an assignment's index is in set
-// position (assignTypeCheck). Answers whether it did.
-static int fnCallIndexAsMut(TypeCheckState *pstate, FnCallNode *callnode) {
-    FnCallNode *index = (FnCallNode*)callnode->objfn;
-    if (index->tag != FnCallTag || !(index->flags & FlagIndex) || (index->flags & (FlagBorrow | FlagRange))
+// An index lowered to a call of its type's '[]': the call, or NULL for any
+// other link of a place
+static FnCallNode *fnCallLoweredIndex(INode *link) {
+    if (link->tag != FnCallTag)
+        return NULL;
+    FnCallNode *index = (FnCallNode*)link;
+    if (!(index->flags & FlagIndex) || (index->flags & (FlagBorrow | FlagRange))
         || index->args == NULL || index->args->used == 0 || !isNameUseNode(index->objfn))
-        return 0;
-    INode *recv = nodesGet(index->args, 0);
-    if (recv->tag == BorrowTag)
-        recv = ((RefNode*)recv)->vtexp;
-    INode *recvtype = iexpGetTypeDcl(recv);
+        return NULL;
+    return index;
+}
+
+// The mutable borrow of the element a lowered index reads, lowered from the
+// index's receiver and arguments as they were checked, as '&mut x[i]' is; or
+// NULL, leaving the index as it was, where the type declares no '&[]' or the
+// receiver may not be borrowed mutably. The place the receiver is reached
+// through, 'a[g].b' of 'a[g].b[i]', is made mutable first, link by link.
+static INode *fnCallMutIndex(TypeCheckState *pstate, FnCallNode *index) {
+    INode **placep = &nodesGet(index->args, 0);
+    if ((*placep)->tag == BorrowTag)
+        placep = &((RefNode*)*placep)->vtexp;
+    INode *recvtype = iexpGetTypeDcl(*placep);
     INode *held = recvtype->tag == RefTag ? itypeGetTypeDcl(((RefNode*)recvtype)->vtexp) : recvtype;
     if (held->tag != StructTag)
-        return 0;
+        return NULL;
     INode *refindex = aliasDclResolve(iNsTypeFindFnField((INsTypeNode*)held, refIndexName));
     if (refindex == NULL || (refindex->tag != FnDclTag && refindex->tag != FnOverloadDclTag))
-        return 0;
+        return NULL;
+    fnCallPlaceAsMut(pstate, placep);
+    INode *recv = *placep;
     // Only where a mutable borrow of the receiver would be allowed
     if (recvtype->tag == RefTag) {
         if (!(permGetFlags(((RefNode*)recvtype)->perm) & MayWrite))
-            return 0;
+            return NULL;
     }
     else {
         INode *lvalperm = (INode*)immPerm;
         uint16_t scope;
-        if (!iexpIsLval(recv) || iexpGetLvalInfo(recv, &lvalperm, &scope) == NULL
-            || !(permGetFlags(lvalperm) & MayWrite))
-            return 0;
+        // (a place reached through an element's borrow has no variable at its root)
+        if (!iexpIsLval(recv))
+            return NULL;
+        iexpGetLvalInfo(recv, &lvalperm, &scope);
+        if (!(permGetFlags(lvalperm) & MayWrite))
+            return NULL;
     }
     FnCallNode *mutindex = newFnCallLower((INode*)index, recv, index->args->used);
     mutindex->flags |= FlagIndex | FlagBorrow;
@@ -1370,8 +1427,49 @@ static int fnCallIndexAsMut(TypeCheckState *pstate, FnCallNode *callnode) {
             nodesAdd(&mutindex->args, *argsp);
     }
     if (fnCallLowerMethod(pstate, mutindex) != 1)
+        return NULL;
+    return (INode*)mutindex;
+}
+
+// A type-checked place, 'a[g].b[i].n', that is to be written through, made
+// mutable where it was checked for reading: every index in its chain of field
+// accesses, dereferences and indexes that lends its element read-only, and whose
+// type declares '&[]', is lowered again to lend it mutably (fnCallMutIndex).
+// Nothing is changed that cannot be, so a place that is not mutable stays as
+// checked. Answers whether anything was.
+static int fnCallPlaceAsMut(TypeCheckState *pstate, INode **placep) {
+    INode *place = *placep;
+    switch (place->tag) {
+    case DerefTag:
+        return fnCallPlaceAsMut(pstate, &((StarNode*)place)->vtexp);
+    case FldAccessTag:
+    case ArrIndexTag:
+        return fnCallPlaceAsMut(pstate, &((FnCallNode*)place)->objfn);
+    case FnCallTag: {
+        FnCallNode *index = fnCallLoweredIndex(place);
+        INode *mutindex = index ? fnCallMutIndex(pstate, index) : NULL;
+        if (mutindex == NULL)
+            return 0;
+        *placep = mutindex;
+        return 1;
+    }
+    default:
         return 0;
-    callnode->objfn = (INode*)mutindex;
+    }
+}
+
+// The receiver of 'x[i].m()' is the element 'x[i]' lent by the type's '[]',
+// a read-only borrow. Where no 'm' takes that, and the type declares '&[]'
+// and 'x' may be borrowed mutably, the index is lowered again as '&mut x[i]'
+// is, from its receiver and arguments as they were checked, and becomes the
+// receiver: the element's mutable borrow, as an assignment's index is in set
+// position (assignTypeCheck). Answers whether it did.
+static int fnCallIndexAsMut(TypeCheckState *pstate, FnCallNode *callnode) {
+    FnCallNode *index = fnCallLoweredIndex(callnode->objfn);
+    INode *mutindex = index ? fnCallMutIndex(pstate, index) : NULL;
+    if (mutindex == NULL)
+        return 0;
+    callnode->objfn = mutindex;
     return 1;
 }
 
@@ -2229,7 +2327,7 @@ static int fnCallBodyAsSlice(TypeCheckState *pstate, FnCallNode *node) {
     INode *recv = node->objfn;
     // Read only, unless an element is assigned through the owner, or borrowed
     // writable as written
-    INode *perm = (INode*)(node == fnCallSetIndex ? mutPerm : roPerm);
+    INode *perm = (INode*)(fnCallIsSetIndex(node) ? mutPerm : roPerm);
     if ((node->flags & FlagBorrow) && recv->tag == BorrowTag && (recv->flags & FlagSuffix)) {
         perm = ((RefNode*)recv)->perm;
         INode *inner = ((RefNode*)recv)->vtexp;
@@ -3671,13 +3769,11 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
     }
 
     // 'x[i] += 1', 'x[i].f++': an operator changing its operand in place
-    // writes to it, so an index at the root of it is in set position, as an
-    // assignment's is (assignTypeCheck)
-    if ((node->flags & FlagLvalOp) && node->objfn) {
-        FnCallNode *setindex = fnCallSetIndexRoot(node->objfn);
-        if (setindex)
-            fnCallSetIndex = setindex;
-    }
+    // writes to it, so every index in its place is in set position, as an
+    // assignment's are (assignTypeCheck). The marks stay: the node is checked
+    // once, and none is another's.
+    if ((node->flags & FlagLvalOp) && node->objfn)
+        fnCallSetPlace(node->objfn);
 
     // 'h.pick[i32](6)': a generic method given its type arguments
     if (fnCallMethodTypeArgs(pstate, nodep))
@@ -4191,7 +4287,7 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
     // 'x[i] = v', the index in set position (assignTypeCheck): a type that
     // declares '&[]' sets through the element's mutable borrow, as '&mut x[i]'
     // would reach it, and the assignment stores through it
-    if (node == fnCallSetIndex && (node->flags & FlagIndex) && !(node->flags & (FlagBorrow | FlagRange))
+    if (fnCallIsSetIndex(node) && (node->flags & FlagIndex) && !(node->flags & (FlagBorrow | FlagRange))
         && node->methfld == NULL) {
         INode *held = objtype->tag == RefTag ? itypeGetTypeDcl(((RefNode *)objtype)->vtexp) : objtype;
         INode *refindex = held->tag == StructTag

@@ -1,0 +1,80 @@
+// What a place through an index and then a field or index still refuses. Each
+// index of a written-to place is the element's mutable borrow, so the borrow
+// must be allowed to be mutable all the way down (struct_index_place_chain): a
+// place reached through a reference that only reads, or held in a variable that
+// does not change, is no place to write. Nor does lending the chain mutably
+// loosen the shape rule: a borrow into a list, held while another name for it
+// reshapes it, is still refused whichever way the reshaping name is spelled.
+
+mod struct_index_place_chain_refused;
+
+import collections use *;
+
+struct Leaf {
+  pub n i64;
+  pub adv List[i64];
+  pub fn reset(self &mut) { n = 0; adv.clear(); }
+}
+
+struct Mid {
+  pub items List[Leaf];
+}
+
+struct UI {
+  pub fields List[Leaf];
+  pub groups List[Mid];
+}
+
+fn leaf() Leaf { new Leaf(0, List[i64].empty()); }
+
+// Through a '&' parameter: nothing in the chain may be written
+fn readOnlyPush(u &UI) {
+  u.fields[0usize].adv.push(1);          //~ ErrorBadPerm:19
+}
+
+fn readOnlyStore(u &UI) {
+  u.groups[0usize].items[0usize].n = 5;  //~ ErrorBadPerm:4
+}
+
+fn readOnlyOperator(u &UI) {
+  u.groups[0usize].items[0usize].n += 5; //~ ErrorBadPerm:4
+}
+
+fn readOnlyBorrow(u &UI) {
+  imm a = &mut u.fields[0usize].adv;     //~ ErrorBadPerm:17
+}
+
+fn readOnlyMethod(u &UI) {
+  u.groups[0usize].items[0usize].reset(); //~ ErrorNoCandidate:33
+}
+
+fn readOnlyReshape(u &UI) {
+  u.groups[0usize].items.push(leaf());   //~ ErrorBadPerm:19
+}
+
+// Through a variable that does not change
+fn immLocal() {
+  imm u = new UI(List[Leaf].empty(), List[Mid].empty());
+  u.fields[0usize].adv.push(1);          //~ ErrorBadPerm:19
+}
+
+// The shape rule still fires: a borrow into a list that another name reshapes
+// through a place with an index in it
+fn otherNameFields(a &mut Mid, b &mut UI) i64 {
+  imm e = a.items[0usize];
+  b.groups[0usize].items.push(leaf());   //~ ErrorShapeReshape:25
+  e.n;
+}
+
+fn otherNameNested(a &mut Leaf, b &mut UI) i64 {
+  imm e = a.adv[0usize];
+  b.fields[0usize].adv.push(1);          //~ ErrorShapeReshape:23
+  *e;
+}
+
+fn sameNameViaLocal(a &mut UI) i64 {
+  imm m = &mut a.groups[0usize];
+  imm e = m.items[0usize];
+  a.groups[0usize].items.push(leaf());   //~ ErrorShapeReshape:25
+  e.n;
+}

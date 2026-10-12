@@ -1,0 +1,371 @@
+// A connection, as the application sees it: an actor it sends messages to and
+// whose events arrive at its EventHandler. The same actor serves the three ways a
+// connection can be made, so an application is written once:
+//
+//   over UDP        a ConnectionCore drives the protocol; its packets go out through the
+//                   endpoint's socket and arrive from it
+//   in-process      two Connections handed each other's handle deliver the
+//                   messages directly: no socket, no packets, no latency. This
+//                   is single player: the server and the player in one process
+//   simulated       the same two actors, but with the protocol running between
+//                   them across a simulated lossy link, so that prediction and
+//                   interpolation can be tried with no socket
+
+const connUdp = 0u32;
+const connDirect = 1u32;
+const connSim = 2u32;
+
+pub actor Connection {
+  kind u32;
+  id u32;
+  handler EventHandler;
+  peer ConnectionCore;
+  open bool;
+  forced bool;                 // the reason it ended is not the peer's
+  forcedReason CloseReason;
+
+  // over UDP
+  addr SocketAddr;
+  outbox Option[PumpOutbox];
+  ep Option[Endpoint];
+  reported i64;                // the deadline the endpoint was last told of
+
+  // in-process and simulated
+  partner Option[Connection];
+  sim LinkSim;                 // simulated: the link to the partner
+
+  fn init(self &new, kind u32, id u32, handler EventHandler, cfg NetConfig, session u64, addr SocketAddr,
+      outbox Option[PumpOutbox], ep Option[Endpoint], link LinkConfig, seed u64) {
+    *self = new Self(kind: kind, id: id, handler: handler, peer: ConnectionCore.make(cfg, session, Instant.now()),
+      open: true, forced: false, forcedReason: CloseReason.Local,
+      addr: addr, outbox: outbox, ep: ep, reported: -1i64,
+      partner: None[Connection], sim: LinkSim.make(link, seed));
+    if kind == connUdp {
+      self.announce();
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // What the application sends
+  // ------------------------------------------------------------------
+
+  // A reliable message: it arrives once, in order. At most maxReliableBytes
+  // (1173 with the default packet size). A larger one is refused: nothing is
+  // sent and this connection's handler hears NetEvent.Refused (fragmentation
+  // is not built; the connection goes on). The same on every kind of
+  // connection. If so many messages are waiting that the window is full, the
+  // peer is not keeping up and the connection ends with CloseReason.Overflow.
+  pub async do sendReliable(self, data List[u8]) {
+    if not open {return;}
+    if data.len() > peer.maxReliable() {
+      self.refuse(true, 0u16, RefusalKind.TooLarge, data.len(), peer.maxReliable());
+      return;
+    }
+    if kind == connDirect {
+      match &partner {
+        case imm p &Some[Connection] { p.inMessage(data); }
+        else {}
+      }
+      return;
+    }
+    if not peer.sendReliable(data.view()) {
+      self.fail(CloseReason.Overflow);
+      return;
+    }
+    self.reschedule();
+  }
+
+  // The newest value of a latest-wins stream: sent in the next packet with
+  // room unless a newer value replaces it first, and never resent. At most
+  // maxLatestBytes (1171 by default); a larger value, or one for a 65th
+  // stream, is refused as a message is (NetEvent.Refused).
+  pub async do sendLatest(self, stream u16, data List[u8]) {
+    if not open {return;}
+    if data.len() > peer.maxLatest() {
+      self.refuse(false, stream, RefusalKind.TooLarge, data.len(), peer.maxLatest());
+      return;
+    }
+    if kind == connDirect {
+      match &partner {
+        case imm p &Some[Connection] { p.inUpdate(stream, data); }
+        else {}
+      }
+      return;
+    }
+    if not peer.sendLatest(stream, data.view()) {
+      self.refuse(false, stream, RefusalKind.TooManyStreams, data.len(), maxStreams);
+      return;
+    }
+    self.reschedule();
+  }
+
+  // How much a stream's waiting value counts when a packet cannot carry all of
+  // them: its priority grows by 'weight' each packet it waits, and the highest
+  // goes first (default 1)
+  pub async do setStreamWeight(self, stream u16, weight u32) {
+    if kind != connDirect {
+      peer.setStreamWeight(stream, weight);
+    }
+  }
+
+  // End the connection: the other end is told
+  pub async do close(self) {
+    self.closeNow();
+  }
+
+  // What the connection has measured: round trip time, loss, packets. All
+  // zeros for an in-process connection, which has no link
+  pub async do stats(self) ConnectionStats {
+    peer.stats();
+  }
+
+  // ------------------------------------------------------------------
+  // Messages between the module's own actors
+  // ------------------------------------------------------------------
+
+  // End it now and answer when the disconnect packets are handed to the socket
+  async do closeAndWait(self) u32 {
+    self.closeNow();
+    0u32;
+  }
+
+  // Join to the other end (in-process and simulated)
+  async do link(self, other Connection) {
+    partner = Some[Connection](other);
+    self.announce();
+  }
+
+  // A datagram for this connection arrived
+  async do packet(self, data List[u8]) {
+    if not open {return;}
+    mut evs = List[CoreEvent].empty();
+    peer.receive(data.view(), Instant.now(), &mut evs);
+    self.dispatch(evs);
+    self.run();
+  }
+
+  // Time to look at the connection (the endpoint's timer, or the simulation's)
+  async do tick(self) {
+    reported = -1i64;
+    self.run();
+  }
+
+  async do inMessage(self, data List[u8]) {
+    if open {
+      (&mut *handler).call(NetEvent.Message(id, data));
+    }
+  }
+
+  async do inUpdate(self, stream u16, data List[u8]) {
+    if open {
+      (&mut *handler).call(NetEvent.Update(id, stream, data));
+    }
+  }
+
+  async do inClosed(self) {
+    self.finish(CloseReason.Remote);
+  }
+
+  // ------------------------------------------------------------------
+  // Inside
+  // ------------------------------------------------------------------
+
+  // Tell the application a send was refused
+  fn refuse(self, reliable bool, stream u16, why RefusalKind, size usize, limit usize) {
+    (&mut *handler).call(NetEvent.Refused(id, reliable, stream, why, size, limit));
+  }
+
+  fn announce(self) {
+    (&mut *handler).call(NetEvent.Joined(id, selfactor));
+    self.reschedule();
+  }
+
+  fn closeNow(self) {
+    if not open {return;}
+    if kind == connDirect {
+      match &partner {
+        case imm p &Some[Connection] { p.inClosed(); }
+        else {}
+      }
+      self.finish(CloseReason.Local);
+      return;
+    }
+    peer.close();
+    self.run();
+  }
+
+  // The connection ends for a reason of this side's: tell the other end and
+  // the application
+  fn fail(self, reason CloseReason) {
+    forced = true;
+    forcedReason = reason;
+    peer.close();
+    self.run();
+  }
+
+  // Poll the protocol: send what it has, tell the application what happened
+  fn run(self) {
+    if not open {return;}
+    imm now = Instant.now();
+    mut pk = List[List[u8]].empty();
+    mut evs = List[CoreEvent].empty();
+    peer.poll(now, &mut pk, &mut evs);
+    each p in pk.drain() {
+      if kind == connSim {
+        sim.send(now, p);
+      } else {
+        match &outbox {
+          case imm o &Some[PumpOutbox] { o.send(addr, p); }
+          else {}
+        }
+      }
+    }
+    if kind == connSim {
+      mut arrived = List[List[u8]].empty();
+      sim.deliver(now, &mut arrived);
+      match &partner {
+        case imm q &Some[Connection] {
+          each d in arrived.drain() { q.packet(d); }
+        }
+        else {}
+      }
+    }
+    self.dispatch(evs);
+    self.reschedule();
+  }
+
+  // Give the application the events the protocol produced
+  fn dispatch(self, mut evs List[CoreEvent]) {
+    each e in evs.drain() {
+      match e {
+        case mut r Reliable {
+          mut d = List[u8].empty();
+          d <=> r.data;
+          if open {(&mut *handler).call(NetEvent.Message(id, d));}
+        }
+        case mut l Latest {
+          mut d = List[u8].empty();
+          d <=> l.data;
+          if open {(&mut *handler).call(NetEvent.Update(id, l.stream, d));}
+        }
+        case imm c Closed {
+          if forced {
+            self.finish(forcedReason);
+          } else {
+            self.finish(c.reason);
+          }
+        }
+      }
+    }
+  }
+
+  // Tell the endpoint when the connection next needs a tick
+  fn reschedule(self) {
+    if kind != connUdp or not open {return;}
+    imm at = peer.nextDeadline().nanos();
+    if at != reported {
+      reported = at;
+      match &ep {
+        case imm e &Some[Endpoint] { e.deadline(id, at); }
+        else {}
+      }
+    }
+  }
+
+  // It has ended: the application hears once, the endpoint lets it go
+  fn finish(self, reason CloseReason) {
+    if not open {return;}
+    open = false;
+    (&mut *handler).call(NetEvent.Left(id, reason));
+    match &ep {
+      case imm e &Some[Endpoint] { e.gone(id); }
+      else {}
+    }
+    ep = None[Endpoint];
+    outbox = None[PumpOutbox];
+    partner = None[Connection];
+  }
+}
+
+// The two ends of an in-process connection
+pub struct ConnectionPair {
+  pub a Connection;
+  pub b Connection;
+}
+
+// Two connections joined in this process, delivering messages directly: no
+// socket and no packets, so nothing is lost or late and the order is the
+// order sent. Each handler hears Joined (with the Connection to send through),
+// then the other end's messages. This is single player: the server actor and
+// the player talk through the same messages they would over UDP. 'idA' is the
+// id a's events carry (the server numbers its clients; a server's handler
+// shared by several pairs gives each a different id), 'idB' b's.
+pub fn pairInProcess(ha EventHandler, idA u32, hb EventHandler, idB u32) ConnectionPair {
+  imm cfg = NetConfig.defaults();
+  imm none = SocketAddr.localhost(0u16);
+  imm a = new Connection(connDirect, idA, ha, cfg, 0u64, none, None[PumpOutbox], None[Endpoint], LinkConfig.perfect(), 0u64);
+  imm b = new Connection(connDirect, idB, hb, cfg, 0u64, none, None[PumpOutbox], None[Endpoint], LinkConfig.perfect(), 0u64);
+  a.link(b);
+  b.link(a);
+  new ConnectionPair(a, b);
+}
+
+// The driver of a simulated pair: a thread that ticks both ends every
+// millisecond. stop() ends it
+pub struct SimulatedPair {
+  pub a Connection;
+  pub b Connection;
+  stopTx Sender[u32];
+  doneRx Receiver[u32];
+
+  // Stop the clock and wait for it. The connections stay: they can still be
+  // closed, and nothing more moves between them
+  pub fn stop(self &mut) {
+    stopTx.send(1u32);
+    doneRx.recv();
+  }
+}
+
+struct SimArgs is Sendable {
+  pub a Connection;
+  pub b Connection;
+  pub stop Receiver[u32];
+  pub done Sender[u32];
+}
+
+fn simMain(mut x SimArgs) u32 {
+  while true {
+    match x.stop.tryRecv() {
+      case imm s Some { break; }
+      case is None[u32] {}
+    }
+    thread.sleep(Duration.fromMillis(1i64));
+    x.a.tick();
+    x.b.tick();
+  }
+  x.done.send(1u32);
+  0u32;
+}
+
+// Two connections in this process with the real protocol running between
+// them across a simulated link: 'toB' is what a's packets suffer, 'toA' what
+// b's do. The packets are real; only the socket is missing. A thread ticks
+// both ends, so the link's delays are real time (millisecond resolution).
+// Call stop() when done.
+pub fn pairSimulated(cfg NetConfig, toB LinkConfig, toA LinkConfig, seed u64, ha EventHandler, idA u32, hb EventHandler, idB u32) SimulatedPair {
+  imm none = SocketAddr.localhost(0u16);
+  imm session = 0x5151515151515151u64;
+  imm a = new Connection(connSim, idA, ha, cfg, session, none, None[PumpOutbox], None[Endpoint], toB, seed);
+  imm b = new Connection(connSim, idB, hb, cfg, session, none, None[PumpOutbox], None[Endpoint], toA, seed ^ 0xA5A5A5A5A5A5A5A5u64);
+  a.link(b);
+  b.link(a);
+  mut stopTx Sender[u32];
+  mut stopRx Receiver[u32];
+  stopTx, stopRx = Channel[u32].make();
+  mut doneTx Sender[u32];
+  mut doneRx Receiver[u32];
+  doneTx, doneRx = Channel[u32].make();
+  imm th = thread.start(new SimArgs(a, b, stopRx, doneTx), &simMain);
+  th.detach();
+  new SimulatedPair(a, b, stopTx, doneRx);
+}
