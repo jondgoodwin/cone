@@ -1,19 +1,25 @@
 // ---- Failures ----
 
-mut failureCount = 0u32;
-mut messageCount = 0u32;
+// The two counters are atomics (any thread may fail a call or hear the validation layer), made in the module's init
+imm failureCount Atomic[u32];
+imm messageCount Atomic[u32];
+
+fn @initpure init() {
+  failureCount = Atomic[u32].of(0u32);
+  messageCount = Atomic[u32].of(0u32);
+}
 
 // How many Vulkan calls have failed
-pub fn failures() u32 { failureCount; }
+pub fn failures() u32 { failureCount.load(); }
 
 // How many warnings and errors the validation layer has reported (the
 // loader's own, about its configuration, are printed and not counted)
-pub fn validationMessages() u32 { messageCount; }
+pub fn validationMessages() u32 { messageCount.load(); }
 
 // Whether 'r' is success; if not, report it, naming 'what', and count it
 fn check(r i32, what &str) bool {
   if r == vulkan.SUCCESS { return true; }
-  failureCount = failureCount + 1u32;
+  failureCount.add(1u32);
   mut m = String.from("gpu: ");
   m <- what;
   m <- " failed: ";
@@ -24,7 +30,7 @@ fn check(r i32, what &str) bool {
 
 // Report a failure that is not a VkResult, and count it
 fn fail(msg &str) {
-  failureCount = failureCount + 1u32;
+  failureCount.add(1u32);
   mut m = String.from("gpu: ");
   m <- msg;
   logLine(m.view());
@@ -62,7 +68,7 @@ fn zeroed[T]() T {
 // The debug messenger's callback: the loader or the validation layer calls
 // it with a warning or an error, so it is a C-named function: '@c'
 fn @c onDebugMessage(severity u32, types u32, data *vulkan.DebugUtilsMessengerCallbackDataEXT, user *u8) u32 {
-  if (types & vulkan.DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT) == 0u32 { messageCount = messageCount + 1u32; }
+  if (types & vulkan.DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT) == 0u32 { messageCount.add(1u32); }
   mut m = String.from("gpu: Vulkan ");
   if severity >= vulkan.DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT {
     m <- "error: ";
