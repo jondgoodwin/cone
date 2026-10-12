@@ -1,0 +1,205 @@
+// Anchors, tethers and loaded ropes.
+//
+// 1. Particles attached to a moving frame land exactly where the frame puts them
+//    at the end of the step, translated and turned, and are released on detach.
+// 2. A lantern on a chain hung from a moving frame: the frame carries the
+//    chain's top 1 m sideways, the lantern swings behind and settles under it,
+//    a chain's length below.
+// 3. Long range attachments: a soft cloth hung by its top row stretches a lot
+//    without them and not past 2% of the distance to its pins with them.
+// 4. A rope bridge: a 6 m rope between posts 5.5 m apart with a 20 kg load at
+//    mid-span. For a weightless rope the two halves are straight, each 3 m
+//    long over a half span of 2.75 m, so the load sinks sqrt(9 - 2.75^2) = 1.199 m.
+
+mod anchors;
+
+import testing use *;
+import libc;
+import collections use *;
+import geomath use *;
+import xpbdsoftbody use *;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+fn attached() {
+  mut b = SoftBody.empty();
+  imm p0 = b.addParticle(new Vec3(1., 0., 0.), 1.);
+  imm p1 = b.addParticle(new Vec3(0., 2., 0.), 1.);
+  imm free = b.addParticle(new Vec3(5., 5., 5.), 1.);
+  b.attach(p0);
+  b.attach(p1);
+  b.gravity = new Vec3(0., 0., 0.);
+  b.airDensity = 0.;
+  // the frame turns a quarter turn about y and moves 3 m along x, in one step
+  imm turn = Quat.angleAxis(pi / 2., new Vec3(0., 1., 0.));
+  b.moveAnchors(new Transform3(new Vec3(3., 0., 0.), turn, new Vec3(1., 1., 1.)));
+  b.step(1. / 60., new Vec3(0., 0., 0.));
+  // a quarter turn about y takes (1,0,0) to (0,0,-1) and leaves (0,2,0) alone
+  near((*b.pos[0usize]).x, 3., 0.0001, "attached particle follows the frame: x");
+  near((*b.pos[0usize]).z, -1., 0.0001, "z, turned a quarter about y");
+  near((*b.pos[1usize]).y, 2., 0.0001, "the one on the axis stays on it");
+  near((*b.pos[1usize]).x, 3., 0.0001, "and moves with it");
+  near((*b.pos[usize.from(free)]).x, 5., 0.0001, "an unattached particle stays");
+  // detach: it keeps its place and is free again
+  b.detach(p0);
+  b.gravity = new Vec3(0., -10., 0.);
+  b.step(1. / 60., new Vec3(0., 0., 0.));
+  expectBool((*b.pos[0usize]).y < 0., true, "a detached particle falls");
+  expectBool(b.isPinned(p1), true, "the other is still attached");
+}
+
+fn lantern() {
+  // chain of 8 links of 0.1 m from (0, 3, 0) down, a 2 kg lantern on its end
+  mut pts = List[Vec3].empty();
+  mut i = 0;
+  while i <= 8 {
+    pts.push(new Vec3(0., 3. - 0.1 * f32.from(i), 0.));
+    i = i + 1;
+  }
+  mut c = chain(pts.view(), 0.2, 1e-7, 0.01);
+  c.mass.set(8usize, 2.);
+  c.invMass.set(8usize, 0.5);
+  c.substeps = 20u32;
+  c.damping = 1.5;
+  c.attach(0u32);
+  mut sway = 0.;
+  mut s = 0;
+  while s < 600 {
+    // the frame moves 1 m along x over steps 100..160, then stays
+    imm f = if s < 100 {0.;} elif s < 160 {f32.from(s - 100) / 60.;} else {1.;};
+    c.moveAnchors(new Transform3(new Vec3(f, 0., 0.), Quat.identity(), new Vec3(1., 1., 1.)));
+    c.step(1. / 60., new Vec3(0., 0., 0.));
+    imm lag = (*c.pos[0usize]).x - (*c.pos[8usize]).x;
+    if lag > sway { sway = lag; }
+    s = s + 1;
+  }
+  expectBool(sway > 0.1, true, "the lantern lags the frame while it moves (it swings)");
+  near((*c.pos[0usize]).x, 1., 0.0001, "the chain's top is at the frame");
+  near((*c.pos[8usize]).x, 1., 0.03, "the lantern ends up straight below it");
+  near((*c.pos[8usize]).y, 3. - 0.8, 0.01, "an inextensible chain's length below");
+  near(c.kineticEnergy(), 0., 0.01, "and has stopped");
+}
+
+fn tethers() {
+  mut f = Fabric.light();
+  f.stretch = 0.1;
+  f.shear = 0.1;
+  f.bend = 1000.;
+  mut soft = clothGrid(new Vec3(0., 0., 0.), new Vec3(1., 0., 0.), new Vec3(0., -1., 0.), 16u32, 16u32, &f);
+  mut j = 0u32;
+  while j <= 16u32 {
+    soft.pin(j);
+    j = j + 1u32;
+  }
+  soft.substeps = 4u32;
+  soft.damping = 2.;
+  mut tied = clothGrid(new Vec3(0., 0., 0.), new Vec3(1., 0., 0.), new Vec3(0., -1., 0.), 16u32, 16u32, &f);
+  j = 0u32;
+  while j <= 16u32 {
+    tied.pin(j);
+    j = j + 1u32;
+  }
+  tied.substeps = 4u32;
+  tied.damping = 2.;
+  addTethers(&mut tied, 1.02);
+  expectInt(i64.from(tied.tethers.len()), 17i64 * 16i64, "a tether for every particle that is not a pin");
+  mut s = 0;
+  while s < 300 {
+    soft.step(1. / 60., new Vec3(0., 0., 0.));
+    tied.step(1. / 60., new Vec3(0., 0., 0.));
+    s = s + 1;
+  }
+  // the bottom middle particle is 16 links, 1 m, below its pin
+  imm last = 16usize * 17usize + 8usize;
+  imm softReach = -(*soft.pos[last]).y;
+  imm tiedReach = -(*tied.pos[last]).y;
+  expectBool(softReach > 1.05, true, "without tethers a soft cloth hangs more than 5% longer than its rest");
+  expectBool(tiedReach < 1.02 + 0.001, true, "with them it hangs no more than 2% longer");
+  expectBool(tiedReach > 0.99, true, "and is not shortened");
+  // the nearest tether of the bottom particle is to its own column's pin, 1 m of edges away
+  imm t = *tied.tethers[usize.from(0u32)];
+  expectBool(t.maxLength > 0., true, "tether lengths are positive");
+}
+
+fn bridge() {
+  imm n = 20u32;
+  mut pts = List[Vec3].empty();
+  mut i = 0u32;
+  while i <= n {
+    // laid out as the rope is: 6 m long, sagged in a V so that the rest lengths are 0.3 each
+    imm t = f32.from(i) / f32.from(n);
+    pts.push(new Vec3(5.5 * t, -1.2 * (1. - fabsf(2. * t - 1.)), 0.));
+    i = i + 1u32;
+  }
+  mut r = chain(pts.view(), 0.05, 1e-7, 0.01);
+  // rest lengths from the V are not 0.3: set them, 6 m in 20 links
+  mut k = 0usize;
+  while k < r.dist.len() {
+    r.dist[k].rest = 0.3;
+    k = k + 1usize;
+  }
+  r.pin(0u32);
+  r.pin(n);
+  r.mass.set(10usize, 20.);
+  r.invMass.set(10usize, 0.05);
+  r.substeps = 30u32;
+  r.iterations = 2u32;
+  r.damping = 3.;
+  mut s = 0;
+  while s < 600 {
+    r.step(1. / 60., new Vec3(0., 0., 0.));
+    s = s + 1;
+  }
+  // the weightless rope has the load 1.199 m below the posts; the rope's own 1 kg lifts nothing
+  // and adds a little sag (a few percent)
+  imm sag = -(*r.pos[10usize]).y;
+  near(sag, 1.199, 0.06, "20 kg at mid-span sinks the bridge 1.199 m, within 5%");
+  near((*r.pos[10usize]).x, 2.75, 0.01, "at the middle of the span");
+  near(r.kineticEnergy(), 0., 0.01, "and rests");
+}
+
+fn fabsf(a f32) f32 {libc.fabsf(a);}
+
+// A rope's bending resistance: 20 links of 0.1 m held out horizontally by pinning its
+// first two particles. As a chain (no curvature constraints) it hangs straight down from
+// the second pin, its tip 1.9 m below; with stiff curvature constraints (1e-7 m/N) it
+// holds out, drooping about 0.3 m under its own weight (0.1 kg/m over 2 m), the rest of
+// the droop being the one Gauss-Seidel pass per substep's convergence.
+fn cantilever() {
+  mut pts = List[Vec3].empty();
+  mut i = 0;
+  while i <= 20 {
+    pts.push(new Vec3(0.1 * f32.from(i), 0., 0.));
+    i = i + 1;
+  }
+  mut limp = chain(pts.view(), 0.1, 1e-7, 0.01);
+  mut stiff = rope(pts.view(), 0.1, 1e-7, 1e-7, 0.01);
+  limp.pin(0u32);
+  limp.pin(1u32);
+  stiff.pin(0u32);
+  stiff.pin(1u32);
+  limp.substeps = 20u32;
+  limp.damping = 2.;
+  stiff.substeps = 20u32;
+  stiff.damping = 2.;
+  mut s = 0;
+  while s < 600 {
+    limp.step(1. / 60., new Vec3(0., 0., 0.));
+    stiff.step(1. / 60., new Vec3(0., 0., 0.));
+    s = s + 1;
+  }
+  near((*limp.pos[20usize]).y, -1.9, 0.02, "a chain pinned at two points hangs from the second: tip 1.9 m down");
+  expectBool((*stiff.pos[20usize]).y > -0.4, true, "a rope with bending resistance holds out, the tip drooping under 0.4 m (the chain's is 1.9)");
+  expectBool((*stiff.pos[20usize]).y < -0.001, true, "but not perfectly straight");
+}
+
+fn main() i32 {
+  attached();
+  lantern();
+  tethers();
+  bridge();
+  cantilever();
+  done();
+}
