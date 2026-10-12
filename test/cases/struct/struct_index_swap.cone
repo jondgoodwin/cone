@@ -1,0 +1,184 @@
+// '<=>' on a place reached through an index, one level or two. A swap stores
+// through both of its sides, so every index in each side's place goes through
+// the type's `&[]`, the element's mutable borrow, as an assignment's does
+// (struct_index_place_chain): 'u.fields[0].n <=> u.fields[1].n', 'l[0] <=> l[1]'
+// on a List, a list element against a local, and an element whose type has a
+// 'final' (each is finalized once, wherever the swap left it). The same
+// sequence runs on a local, on a `&mut` parameter and through `self`.
+// Two borrows of one List in one swap are two `mut` aliases of it, as
+// 'f(&mut l[0], &mut l[1])' is: the swap changes the elements, never the
+// list's shape.
+
+mod struct_index_swap;
+
+import collections use *;
+import stdio use *;
+
+struct Inner {
+  pub n i64;
+  pub name String;
+}
+
+struct Mid {
+  pub items List[Inner];
+}
+
+struct Tag {
+  pub id i64;
+  fn final(self &uni) { printStr(" fin"); printInt(id); }
+}
+
+fn mk(n i64, name &str) Inner { new Inner(n, String.from(name)); }
+
+fn show(label &str, x &Inner) {
+  printStr(label);
+  printStr(": n=");
+  printInt(x.n);
+  printStr(" name=");
+  printStr(x.name.view());
+  printStr("\n");
+}
+
+struct UI {
+  pub fields List[Inner];
+  pub groups List[Mid];
+  pub tags List[Tag];
+
+  pub fn make() UI {
+    mut u = new UI(List[Inner].empty(), List[Mid].empty(), List[Tag].empty());
+    u.fields.push(mk(1, "one"));
+    u.fields.push(mk(2, "two"));
+    mut m = new Mid(List[Inner].empty());
+    m.items.push(mk(10, "ten"));
+    m.items.push(mk(20, "twenty"));
+    u.groups.push(m);
+    u.tags.push(new Tag(1));
+    u.tags.push(new Tag(2));
+    u;
+  }
+
+  pub fn dump(self &, tag &str) {
+    printStr(tag);
+    printStr(":\n");
+    show("  field 0", fields[0usize]);
+    show("  field 1", fields[1usize]);
+    show("  item 0", groups[0usize].items[0usize]);
+    show("  item 1", groups[0usize].items[1usize]);
+    printStr("  tags ");
+    printInt(tags[0usize].id);
+    printStr(" ");
+    printInt(tags[1usize].id);
+    printStr("\n");
+  }
+
+  // The sequence, through 'self': bare field names and 'self.' both
+  pub fn bySelf(self &mut) {
+    fields[0usize].n <=> fields[1usize].n;
+    self.groups[0usize].items[0usize].n <=> self.groups[0usize].items[1usize].n;
+    fields[0usize].name <=> fields[1usize].name;
+    self.groups[0usize].items[0usize].name <=> groups[0usize].items[1usize].name;
+    tags[0usize] <=> self.tags[1usize];
+    self.dump("self");
+    fields[0usize] <=> self.fields[1usize];
+    self.dump("self whole");
+  }
+}
+
+// The sequence, through a '&mut' parameter
+fn byParam(u &mut UI) {
+  u.fields[0usize].n <=> u.fields[1usize].n;
+  u.groups[0usize].items[0usize].n <=> u.groups[0usize].items[1usize].n;
+  u.fields[0usize].name <=> u.fields[1usize].name;
+  u.groups[0usize].items[0usize].name <=> u.groups[0usize].items[1usize].name;
+  u.tags[0usize] <=> u.tags[1usize];
+  u.dump("param");
+  u.fields[0usize] <=> u.fields[1usize];
+  u.dump("param whole");
+}
+
+// The sequence, through a local
+fn byLocal() {
+  mut u = UI.make();
+  u.fields[0usize].n <=> u.fields[1usize].n;
+  u.groups[0usize].items[0usize].n <=> u.groups[0usize].items[1usize].n;
+  u.fields[0usize].name <=> u.fields[1usize].name;
+  u.groups[0usize].items[0usize].name <=> u.groups[0usize].items[1usize].name;
+  u.tags[0usize] <=> u.tags[1usize];
+  u.dump("local");
+  u.fields[0usize] <=> u.fields[1usize];
+  u.dump("local whole");
+  u.bySelf();
+  byParam(&mut u);
+  printStr("end of local\n");
+}
+
+// A list's own elements, and one against a local or a field on the other side
+fn ofList() {
+  mut l = List[i64].empty();
+  l.push(1);
+  l.push(2);
+  l.push(3);
+  l[0usize] <=> l[2usize];
+  printInt(*l[0usize]); printInt(*l[1usize]); printInt(*l[2usize]);
+  printStr("\n");
+  mut x = 9i64;
+  l[1usize] <=> x;
+  x <=> l[0usize];
+  printInt(*l[0usize]); printInt(*l[1usize]); printInt(*l[2usize]); printStr(" "); printInt(x);
+  printStr("\n");
+  l[1usize] <=> l[1usize];
+  printInt(*l[1usize]);
+  printStr("\n");
+
+  mut s = List[String].empty();
+  s.push(String.from("a"));
+  s.push(String.from("bb"));
+  s[0usize] <=> s[1usize];
+  printStr(s[0usize].view()); printStr(" "); printStr(s[1usize].view());
+  printStr("\n");
+  mut t = String.from("ccc");
+  s[1usize] <=> t;
+  printStr(s[0usize].view()); printStr(" "); printStr(s[1usize].view()); printStr(" "); printStr(t.view());
+  printStr("\n");
+
+  mut inner = List[List[i64]].empty();
+  inner.push(List[i64].empty());
+  inner.push(List[i64].empty());
+  inner[0usize].push(7);
+  inner[0usize].push(8);
+  inner[1usize].push(5);
+  inner[0usize] <=> inner[1usize];
+  printInt(i64.from(inner[0usize].len())); printInt(i64.from(inner[1usize].len()));
+  inner[0usize][0usize] <=> inner[1usize][1usize];
+  printStr(" "); printInt(*inner[0usize][0usize]); printInt(*inner[1usize][0usize]); printInt(*inner[1usize][1usize]);
+  printStr("\n");
+}
+
+// An array element, which is a place already: still accepted, unchanged
+fn ofArray() {
+  mut a = [1i64, 2i64, 3i64];
+  a[0usize] <=> a[2usize];
+  printInt(a[0usize]); printInt(a[1usize]); printInt(a[2usize]);
+  printStr("\n");
+}
+
+// A dictionary's values, against a local and against each other
+fn ofDict() {
+  mut d = Dict[i64, i64].empty();
+  d.insert(1, 10);
+  d.insert(2, 20);
+  imm k1 = 1i64;
+  imm k2 = 2i64;
+  mut x = 5i64;
+  d[&k1] <=> x;
+  d[&k1] <=> d[&k2];
+  printInt(*d[&k1]); printStr(" "); printInt(*d[&k2]); printStr(" "); printInt(x);
+  printStr("\n");
+}
+
+fn main() {
+  byLocal();
+  ofList();
+  ofArray();
+  ofDict();
+}

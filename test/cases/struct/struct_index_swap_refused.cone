@@ -1,0 +1,61 @@
+// What '<=>' on a place through an index still refuses (struct_index_swap). A swap
+// stores through both sides, so each index of a side is the element's mutable
+// borrow, and it must be allowed to be mutable all the way down: a place reached
+// through a reference that only reads, or held in a variable that does not
+// change, is no place to swap, on either side. The two sides still have to be
+// the same type, and each a place.
+
+mod struct_index_swap_refused;
+
+import collections use *;
+
+struct Leaf {
+  pub n i64;
+}
+
+struct UI {
+  pub fields List[Leaf];
+}
+
+// Through a '&' parameter, a list or a struct holding one, on the left or the right
+fn readOnlyList(l &List[i64]) {
+  mut x = 1i64;
+  l[0usize] <=> x;                       //~ ErrorNoCandidate:4
+}
+
+fn readOnlyListRight(l &List[i64]) {
+  mut x = 1i64;
+  x <=> l[0usize];                       //~ ErrorNoCandidate:10
+}
+
+fn readOnlyField(u &UI) {
+  mut x = 1i64;
+  u.fields[0usize].n <=> x;              //~ ErrorBadPerm:4
+}
+
+fn readOnlyFieldRight(u &UI) {
+  mut x = 1i64;
+  x <=> u.fields[1usize].n;              //~ ErrorBadPerm:10
+}
+
+// Through a variable that does not change
+fn immLocalStruct() {
+  imm u = new UI(List[Leaf].empty());
+  mut x = 1i64;
+  u.fields[0usize].n <=> x;              //~ ErrorBadPerm:4
+}
+
+fn immLocalList() {
+  imm l = List[i64].empty();
+  mut x = 1i64;
+  l[0usize] <=> x;                       //~ ErrorBadPerm:3
+}
+
+// The sides must be the same type, and each a place
+fn mismatch(l &mut List[i64], s &mut List[i32]) {
+  l[0usize] <=> s[0usize];               //~ ErrorInvType:4
+}
+
+fn notAPlace(l &mut List[i64]) {
+  l[0usize] <=> 5i64;                    //~ ErrorBadLval:17
+}

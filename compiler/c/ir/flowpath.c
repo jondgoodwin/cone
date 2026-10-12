@@ -2281,6 +2281,16 @@ static void pwStore(INode **lvalp, PathSet *holds, INode **rvalp) {
             dropStore(index, *lvalp, rvalp);
             pathSetState(index, DropWhole);
         }
+        // A match's binding by value names the matched value's own storage
+        // (flowMatchInPlace): the variable owning that value holds what is
+        // stored, and releases what it held, if anything, here
+        else if (pathDrops && flowMatchInPlace(var)) {
+            uint32_t owner = pathVar(flowDropOwner(var));
+            if (pathVars[owner].tracked) {
+                dropStore(owner, *lvalp, rvalp);
+                pathSetState(owner, DropWhole);
+            }
+        }
         return;
     }
     Place pl;

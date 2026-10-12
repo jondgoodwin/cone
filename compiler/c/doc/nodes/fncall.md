@@ -718,8 +718,9 @@ Three adjustments, two of them asymmetric on purpose:
   reached.
 
 **An index in set position.** `x[i] = v`, `x[i].f = v`, an operator
-changing `x[i]` or a field of it in place, and a `&mut` borrow of a place
-through `x[i]` write to the element, so where `x`'s type declares `&[]` the
+changing `x[i]` or a field of it in place, a `&mut` borrow of a place
+through `x[i]`, and either side of a swap (`x[i] <=> y[j]`, `swapTypeCheck`)
+write to the element, so where `x`'s type declares `&[]` the
 index is lowered as `&mut x[i]` is. The place may be any chain of field reads
 and indexes, `a[g].b[i].n`, of any depth, and every index in it is in set
 position: the assignment, the `FlagLvalOp` call and a borrow that may write

@@ -43,12 +43,31 @@ void swapNameRes(NameResState *pstate, SwapNode *node) {
     inodeNameRes(pstate, &node->rval);
 }
 
+// Type check one side of a swap as a place stored through. Answer 0 if it is not one.
+// 'x[i] <=> y[j]', 'u.f[i].n <=> u.f[j].n': a swap stores through both of its
+// sides, so every index in each place is in set position, as an assignment's
+// are (assignTypeCheck): on a type declaring '&[]', each is the element's
+// mutable borrow, and the borrow stands for the place, as on the left of '='
+static int swapTypeCheckSide(TypeCheckState *pstate, INode **sidep) {
+    FnCallNode *setindex = fnCallSetIndexRoot(*sidep);
+    uint32_t setmark = fnCallSetPlace(*sidep);
+    int errsbefore = errors;
+    int typed = iexpTypeCheckAny(pstate, sidep);
+    fnCallSetPlaceEnd(setmark);
+    // An index refused for its permission has said so: no second error about its type
+    if (typed == 0 || errors != errsbefore)
+        return 0;
+    if (setindex && *sidep == (INode*)setindex && (setindex->flags & FlagBorrow))
+        derefInject(sidep);
+    return iexpIsLvalError(*sidep);
+}
+
 // Type checking for swap node
 void swapTypeCheck(TypeCheckState *pstate, SwapNode *node) {
-    if (iexpTypeCheckAny(pstate, &node->lval) == 0 || iexpIsLvalError(node->lval) == 0)
+    if (swapTypeCheckSide(pstate, &node->lval) == 0)
         return;
 
-    if (iexpTypeCheckAny(pstate, &node->rval) == 0 || iexpIsLvalError(node->rval) == 0)
+    if (swapTypeCheckSide(pstate, &node->rval) == 0)
         return;
 
     if (!iexpSameType(node->lval, &node->rval)) {
