@@ -1,34 +1,44 @@
 // The posix package, imported by name as any program imports it, with libc
-// beneath it, each compiled on its own and linked with this test, called by the POSIX names it declares and linked against the Windows C
-// runtime, which spells most of them with an underscore. Each line is one fact
-// established, printed as a number or as the text a function gave back:
+// beneath it, each compiled on its own and linked with this test, called by
+// the POSIX names it declares: on Windows over the C runtime, which spells
+// most of them with an underscore, on Linux the C library's own. Each line is
+// one fact established, printed as a number or as the text a function gave
+// back; a fact that holds differently on the two systems is printed as
+// whether it holds the way this system's does, so the lines read the same:
 //
-// - Stat and FindData64 are laid out as the runtime's 'struct _stat64' and
-//   'struct __finddata64_t' are: 56 and 304 bytes, measured with cl.exe;
+// - the package's raw structures are laid out as the system's are: Windows'
+//   'struct _stat64' (56 bytes) and 'struct __finddata64_t' (304), measured
+//   with cl.exe, and Linux's 'struct stat' (144) and 'struct dirent' (280),
+//   measured with gcc;
 // - setenv sets a variable, keeps it where 'overwrite' is zero, and replaces it
 //   where it is not; a command the program starts sees it; unsetenv removes
 //   it, and removing it again is no error; a name and value beyond ASCII
-//   read back as the UTF-8 written, and a value that is not UTF-8 is EINVAL
-//   (getenv is posix's, read through Windows' wide environment, so libc's is
-//   left out of the fold);
+//   read back as the UTF-8 written, and a value that is not UTF-8 is EINVAL on
+//   Windows (whose environment is UTF-16) and taken as bytes on Linux
+//   (getenv is posix's, left in the fold when libc's is left out);
 // - mkdir makes a directory and refuses to make it again, chdir goes into it
 //   and back out, and getcwd and realpath both name it: the text they give is
 //   the one before plus the directory's name, checked without printing a path;
-// - stat reports a file's size and kind, a directory's kind, and fails for a
-//   name that is not there; its times are seconds since 1970;
+// - stat reports a file's size, kind and permission bits, a directory's
+//   kind, and fails for a name that is not there; its times are seconds
+//   since 1970;
 // - _findfirst64 and _findnext64, the Windows-only listing, find the three
-//   entries made in the directory, and the size and kind of each;
-// - opendir, readdir and closedir, POSIX's listing written over them, find
-//   the same three and '.' and '..', each with its d_type; opendir fails with
-//   ENOENT for a name not there and ENOTDIR for a file; lstat reports a file
-//   and a directory as stat does (a link's S_IFLNK is the fs package's test);
-//   failures leave the errno numbers the E... constants name;
-// - popen runs a command through the shell and hands back what it printed, in
-//   text mode, so cmd's line end reads as one '\n'; pclose gives its status;
-// - rmdir and libc's remove clear everything away again.
+//   entries made in the directory, and the size and kind of each (these
+//   lines are Windows' alone: bindings.linux.out leaves them out);
+// - opendir, readdir and closedir, POSIX's listing (on Windows written over
+//   them), find the same three and '.' and '..', each with its d_type;
+//   opendir fails with ENOENT for a name not there and ENOTDIR for a file;
+//   lstat reports a file and a directory as stat does (a link's S_IFLNK is
+//   the fs package's test); failures leave the errno numbers the E...
+//   constants name;
+// - popen runs a command through the shell and hands back what it printed,
+//   in text mode, so cmd's line end reads as one '\n'; pclose gives its status;
+// - unlink removes a file and refuses a directory; rmdir and libc's remove
+//   clear everything away again.
 //
-// It works in the folder TEMP names, making 'module_package_posix.dir' there,
-// and removes it; a directory left by an interrupted run is cleared first.
+// It works in the folder TEMP names (/tmp on Linux), making
+// 'module_package_posix.dir' there, and removes it; a directory left by an
+// interrupted run is cleared first.
 
 mod bindings;
 
@@ -63,7 +73,7 @@ fn sizeOf[T]() usize {
 }
 
 fn newStat() Stat {
-  new Stat(0u32, 0u16, 0u16, 0i16, 0i16, 0i16, 0u32, 0i64, 0i64, 0i64, 0i64);
+  new Stat(0u64, 0u64, 0u16, 0u32, 0u32, 0u32, 0u64, 0i64, 0i64, 0i64, 0i64);
 }
 
 fn newFindData() FindData64 {
@@ -86,9 +96,28 @@ fn capture(command cstr, buf *u8, size usize) i32 {
   pclose(pipe);
 }
 
+// A command's exit code from pclose's answer: Windows gives it as it is, a
+// POSIX system as 'wait' does, the code in the second byte
+fn exitCode(status i32) i32 {if isWindows() {status;} else {status >> 8i32;};}
+
+// The folder the test works in: TEMP's on Windows, TMPDIR's or /tmp
+fn tempDir() cstr {
+  mut dir cstr = "/tmp";
+  if isWindows() {
+    dir = cstr.fromPtr(getenv("TEMP"));
+  } else {
+    imm t = getenv("TMPDIR");
+    if t != null {dir = cstr.fromPtr(t);};
+  };
+  dir;
+}
+
 fn layouts() {
-  show("stat-size", i64.from(sizeOf[Stat]()));
+  imm rawStat = if isWindows() {sizeOf[WinStat64]() == 56usize;} else {sizeOf[LinuxStat]() == 144usize;};
+  show("native-stat-size-ok", yes(rawStat));
   show("finddata-size", i64.from(sizeOf[FindData64]()));
+  imm rawEntry = if isWindows() {sizeOf[dirent]() == 272usize;} else {sizeOf[LinuxDirent]() == 280usize;};
+  show("native-dirent-size-ok", yes(rawEntry));
 }
 
 fn environment() {
@@ -103,7 +132,10 @@ fn environment() {
   show("setenv-utf8", i64.from(setenv(wide, "日本 é", 1i32)));
   show("getenv-utf8-same", same(getenv(wide), "日本 é"));
   show("unsetenv-utf8", i64.from(unsetenv(wide)));
-  show("setenv-not-utf8-EINVAL", yes(setenv(wide, "\xFF", 1i32) == EINVAL));
+  // Windows refuses what is not UTF-8; POSIX takes the bytes
+  imm refused = setenv(wide, "\xFF", 1i32) == EINVAL;
+  show("setenv-not-utf8-refused-on-windows-only", yes(refused == isWindows()));
+  unsetenv(wide);
 }
 
 // After the processes have seen it
@@ -119,9 +151,10 @@ fn processes() {
   imm at *u8 = &[]buf as *u8;
   show("popen-status", i64.from(capture("echo hello", at, 64usize)));
   showText("captured", at);
-  capture("echo %CONE_POSIX_TEST%", at, 64usize);
+  capture(if isWindows() {"echo %CONE_POSIX_TEST%";} else {"echo $CONE_POSIX_TEST";}, at, 64usize);
   showText("child-sees-setenv", at);
-  show("pclose-exit-status", i64.from(capture("exit /b 4", at, 64usize)));
+  show("pclose-exit-status",
+    i64.from(exitCode(capture(if isWindows() {"exit /b 4";} else {"exit 4";}, at, 64usize))));
 }
 
 // Whatever an interrupted run left behind, cleared; each call may fail
@@ -137,7 +170,7 @@ fn clearAway(dir cstr) {
 
 fn filesAndDirectories() {
   imm dir cstr = "module_package_posix.dir";
-  show("chdir-temp", i64.from(chdir(cstr.fromPtr(getenv("TEMP")))));
+  show("chdir-temp", i64.from(chdir(tempDir())));
   clearAway(dir);
 
   show("mkdir", i64.from(mkdir(dir, 0x1EDu32)));
@@ -146,20 +179,27 @@ fn filesAndDirectories() {
   show("stat-dir", i64.from(stat(dir, &mut st)));
   show("stat-dir-is-dir", yes((st.st_mode & S_IFMT) == S_IFDIR));
 
-  // In and back out: getcwd inside is getcwd outside, a '\' and the name
-  mut outside = new Array[u8, 260] <- fill 0u8;
-  mut inside = new Array[u8, 260] <- fill 0u8;
+  // In and back out: getcwd inside is getcwd outside, a separator and the name
+  mut outside = new Array[u8, 4096] <- fill 0u8;
+  mut inside = new Array[u8, 4096] <- fill 0u8;
   imm out *u8 = &[]outside as *u8;
   imm in2 *u8 = &[]inside as *u8;
-  show("getcwd-null", yes(getcwd(out, 260usize) == null));
+  show("getcwd-null", yes(getcwd(out, 4096usize) == null));
   show("chdir-in", i64.from(chdir(dir)));
-  getcwd(in2, 260usize);
+  getcwd(in2, 4096usize);
   imm outlen = strlen(cstr.fromPtr(out));
+  imm separator = if isWindows() {92u8;} else {47u8;};   // '\' or '/'
   show("getcwd-inside-extends-outside",
-    yes(strlen(cstr.fromPtr(in2)) == outlen + 25usize and in2[outlen] == '\\' and same(in2 + outlen + 1usize, dir) == 1i64));
+    yes(strlen(cstr.fromPtr(in2)) == outlen + 25usize and in2[outlen] == separator and same(in2 + outlen + 1usize, dir) == 1i64));
 
-  // realpath, into a buffer and malloc'd: the directory and the file's name
-  mut real = new Array[u8, 260] <- fill 0u8;
+  // Three entries: a file of five bytes, an empty one, and a directory
+  writeFile("a.txt", "12345");
+  writeFile("b.txt", "");
+  show("mkdir-sub", i64.from(mkdir("sub", 0x1EDu32)));
+
+  // realpath, into a buffer and malloc'd: the directory and the file's name.
+  // (POSIX's wants the path there, which Windows' does not.)
+  mut real = new Array[u8, 4096] <- fill 0u8;
   imm rp *u8 = &[]real as *u8;
   realpath("a.txt", rp);
   show("realpath-length", i64.from(strlen(cstr.fromPtr(rp)) - strlen(cstr.fromPtr(in2))));
@@ -167,51 +207,60 @@ fn filesAndDirectories() {
   show("realpath-malloced-same", same(grown, cstr.fromPtr(rp)));
   free(grown);
 
-  // Three entries: a file of five bytes, an empty one, and a directory
-  writeFile("a.txt", "12345");
-  writeFile("b.txt", "");
-  show("mkdir-sub", i64.from(mkdir("sub", 0x1EDu32)));
   st = newStat();
   show("stat-file", i64.from(stat("a.txt", &mut st)));
   show("stat-file-size", st.st_size);
   show("stat-file-is-regular", yes((st.st_mode & S_IFMT) == S_IFREG));
+  show("stat-file-owner-write", yes((st.st_mode & 0x80u16) != 0u16));
+  show("stat-file-one-link", i64.from(st.st_nlink));
+  show("stat-file-inode-on-posix-only", yes((st.st_ino != 0u64) != isWindows()));
   show("stat-file-mtime-after-2020", yes(st.st_mtime > 1577836800i64));
   show("stat-missing", i64.from(stat("missing.txt", &mut st)));
 
-  listing();
+  // The Windows-only listing, of the current directory (in the branch, so no
+  // function holding only Windows' calls is generated on Linux)
+  if isWindows() {
+    mut info = newFindData();
+    imm handle = _findfirst64("*", &mut info);
+    show("findfirst-failed", yes(handle == -1isize));
+    mut entries = 0i64;
+    mut aSize = -1i64;
+    mut bSize = -1i64;
+    mut subIsDir = 0i64;
+    mut going = handle != -1isize;
+    while going {
+      imm name *u8 = &[]info.name as *u8;
+      if same(name, "a.txt") == 1i64 {aSize = info.size;};
+      if same(name, "b.txt") == 1i64 {bSize = info.size;};
+      if same(name, "sub") == 1i64 {subIsDir = yes((info.attrib & _A_SUBDIR) != 0u32);};
+      if same(name, ".") == 0i64 and same(name, "..") == 0i64 {entries = entries + 1i64;};
+      going = _findnext64(handle, &mut info) == 0i32;
+    };
+    show("findclose", i64.from(_findclose(handle)));
+    show("listed-entries", entries);
+    show("listed-a-size", aSize);
+    show("listed-b-size", bSize);
+    show("listed-sub-is-dir", subIsDir);
+  };
   posixListing();
 
-  show("remove-a", i64.from(remove("a.txt")));
+  // A directory with something in it is refused with ENOTEMPTY; that number
+  // and ENAMETOOLONG are the two the systems number differently, each the
+  // number its own C library gives
+  show("chdir-up", i64.from(chdir("..")));
+  show("rmdir-full-ENOTEMPTY", yes(rmdir(dir) != 0i32 and *errno() == ENOTEMPTY));
+  show("chdir-back-in", i64.from(chdir(dir)));
+  imm tooLong = if isWindows() {38i32;} else {36i32;};
+  imm notEmpty = if isWindows() {41i32;} else {39i32;};
+  show("system-error-numbers", yes(ENAMETOOLONG == tooLong and ENOTEMPTY == notEmpty));
+
+  show("unlink-a", i64.from(unlink("a.txt")));
+  show("unlink-dir-refused", yes(unlink("sub") != 0i32));
   show("remove-b", i64.from(remove("b.txt")));
   show("rmdir-sub", i64.from(rmdir("sub")));
   show("chdir-out", i64.from(chdir("..")));
   show("rmdir", i64.from(rmdir(dir)));
   show("stat-after-rmdir", i64.from(stat(dir, &mut st)));
-}
-
-// The Windows-only listing, of the current directory
-fn listing() {
-  mut info = newFindData();
-  imm handle = _findfirst64("*", &mut info);
-  show("findfirst-failed", yes(handle == -1isize));
-  mut entries = 0i64;
-  mut aSize = -1i64;
-  mut bSize = -1i64;
-  mut subIsDir = 0i64;
-  mut going = handle != -1isize;
-  while going {
-    imm name *u8 = &[]info.name as *u8;
-    if same(name, "a.txt") == 1i64 {aSize = info.size;};
-    if same(name, "b.txt") == 1i64 {bSize = info.size;};
-    if same(name, "sub") == 1i64 {subIsDir = yes((info.attrib & _A_SUBDIR) != 0u32);};
-    if same(name, ".") == 0i64 and same(name, "..") == 0i64 {entries = entries + 1i64;};
-    going = _findnext64(handle, &mut info) == 0i32;
-  };
-  show("findclose", i64.from(_findclose(handle)));
-  show("listed-entries", entries);
-  show("listed-a-size", aSize);
-  show("listed-b-size", bSize);
-  show("listed-sub-is-dir", subIsDir);
 }
 
 // POSIX's listing, of the current directory: the three entries and '.' and

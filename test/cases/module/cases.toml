@@ -484,18 +484,45 @@ excludes = ["malloc.1", "libc.", "fabsf"]
 
 [scenario.module_package_posix]
 category = "compile"
-description = "The posix package's bindings over the Windows C runtime -- stat, popen, chdir, mkdir, setenv, realpath and the Windows-only directory listing -- each the runtime's underscore spelling, or an inline function calling it"
+description = "The posix package built for Windows binds the C runtime -- stat, popen, chdir, mkdir, setenv, realpath and the Windows-only directory listing -- each the runtime's underscore spelling, called by a function of posix's own symbol or an inline one, and calls nothing the C library of Linux has"
 tags = ["nameres", "genllvm"]
+
+[[scenario.module_package_posix.run]]
+name = "windows"
+options = ["--triple=x86_64-pc-windows-msvc"]
 
 # A POSIX name bound to the runtime's underscore spelling is that symbol; one
 # whose arguments differ is an inline function, which defines nothing and calls
-# the runtime's own. setenv is inline over a UTF-8 helper on the runtime's wide
-# environment (_wputenv_s), the helper being what the program defines
+# the runtime's own. stat and setenv are functions of posix's own symbols
+# (cone_posix_stat, cone_posix_setenv), which call _stat64 and the runtime's
+# wide environment (_wputenv_s). Every extern is declared on every platform
+# (so 'symbols' would show the C library's too); what is generated of the other
+# system's is no call, which the pre-optimization IR shows
 [[scenario.module_package_posix.check]]
 name = "posix-names-bind-the-runtimes-spellings"
-target = "symbols"
-contains = ["declare _stat64", "declare _popen", "declare _chdir", "declare _mkdir", "declare _wputenv_s", "define internal setenvUtf8", "declare _fullpath", "declare _findfirst64"]
-excludes = ["define internal mkdir", "define internal setenv comdat", "define internal realpath"]
+target = "preir"
+contains = ["call i32 @_stat64(", "call ptr @_popen(", "call i32 @_chdir(", "call i32 @_mkdir(", "call i32 @_wputenv_s(", "define i32 @cone_posix_setenv(", "define i32 @cone_posix_stat(", "call ptr @_fullpath(", "call i64 @_findfirst64("]
+excludes = ["define internal i32 @mkdir", "define internal i32 @setenv", "define internal ptr @realpath", "call i32 @stat(", "call i32 @setenv(", "call ptr @popen(", "call i32 @chdir(", "call i32 @mkdir(", "call ptr @realpath(", "call ptr @opendir("]
+
+[scenario.module_package_posix_linux]
+category = "compile"
+description = "The posix package built for Linux binds the C library's own functions -- stat, popen, chdir, mkdir, setenv, realpath, opendir -- under names that define no symbol of theirs, and calls nothing of the Windows runtime"
+tags = ["nameres", "genllvm"]
+
+[[scenario.module_package_posix_linux.run]]
+name = "linux"
+options = ["--triple=x86_64-unknown-linux-gnu"]
+
+# Where the Windows runtime spells a call with an underscore, the C library's
+# is the name itself, and the functions with a symbol of posix's own
+# (cone_posix_stat, cone_posix_opendir) call it; no call of the runtime's
+# underscore spellings is generated (its externs are declared, as on every
+# platform)
+[[scenario.module_package_posix_linux.check]]
+name = "posix-names-bind-the-c-librarys-own"
+target = "preir"
+contains = ["call i32 @stat(", "call ptr @popen(", "call i32 @chdir(", "call i32 @mkdir(", "call i32 @setenv(", "call ptr @realpath(", "call ptr @opendir(", "define i32 @cone_posix_stat(", "define ptr @cone_posix_opendir("]
+excludes = ["call i32 @_stat64(", "call ptr @_popen(", "call i32 @_chdir(", "call i32 @_mkdir(", "call i32 @_wputenv_s(", "call ptr @_wgetenv(", "call ptr @_fullpath(", "call i64 @_findfirst64(", "define internal i32 @stat", "define internal ptr @opendir"]
 
 # -------- a Cone package over them --------
 #

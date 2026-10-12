@@ -7,13 +7,17 @@
 // it is the 'fs' package (files and folders) and the 'env' package (the
 // environment).
 //
-// Windows first. Cone cannot yet choose declarations by target, so this
-// version binds the Windows C runtime (the UCRT), which is not a POSIX system:
-// it spells most POSIX functions with a leading underscore ('_mkdir',
-// '_popen'), sizes some of their arguments differently, and lacks others. So:
+// Two systems answer these names. On Linux (and any POSIX system, but only
+// Linux's layouts are written) each is the C library's own function. On
+// Windows, which is not a POSIX system, the runtime (the UCRT) spells most
+// POSIX functions with a leading underscore ('_mkdir', '_popen'), sizes some
+// of their arguments differently, and lacks others. core's 'isWindows()', a
+// constant of the compile (this module, being C-named, gets no prelude and
+// names it through the core it imports), chooses, so only the target's calls are generated; every
+// extern is declared on every platform. On Windows:
 //
 // - Where the runtime's function takes POSIX's arguments in POSIX's order,
-//   the POSIX name binds straight to the runtime's symbol with '@c("...")'.
+//   the POSIX name is a small 'inline' function over the runtime's symbol.
 // - Where the arguments differ (mkdir's mode, setenv's overwrite flag,
 //   realpath's order, getcwd's size), the POSIX name is a small 'inline'
 //   function with POSIX's signature that calls the runtime's, and says what
@@ -22,24 +26,49 @@
 //   written here in Cone over what the runtime does have: listing a
 //   directory ('opendir', 'readdir', 'closedir') over the runtime's own
 //   '_findfirst64' and its partners, and 'lstat' over '_findfirst64' and
-//   '_stat64'. This is the package's Windows-only piece: the functions keep
-//   POSIX's names and behaviour, and their bodies are Windows'. The
-//   runtime's own functions are bound too, under their own names, at the end
-//   of this file; a program calling those directly is a Windows program.
+//   '_stat64'. The functions keep POSIX's names and behaviour, and their
+//   bodies are Windows'. The runtime's own functions are bound too, under
+//   their own names, at the end of this file; a program calling those
+//   directly is a Windows program.
+//
+// What is the same on both: 'Stat' is one struct of this package's, filled in
+// from the system's own ('struct _stat64' on Windows, glibc's x86-64
+// 'struct stat' on Linux); the functions that fill it in, and the directory
+// listing, are Cone functions under symbols of their own ('cone_posix_...'),
+// since a symbol named 'stat' or 'opendir' would stand in for the C library's.
+// 'dirent' and 'DIR' are the package's too: a Linux 'DIR' holds the C
+// library's stream and the entry 'readdir' copied out of its own.
 //
 // This is a C-named module ('@c' on the 'mod' line): a function without its
 // own '@c("...")' binds to the C symbol of its own name.
 
 mod @c posix;
 
+import core;
 import libc;
 
-// sys/stat.h: a file's status, as the UCRT's '_stat64' fills it in. This is
-// 'struct _stat64', whose layout was measured against the runtime's own
-// header with cl.exe (x64): 56 bytes, fields at offsets 0, 4, 6, 8, 10, 12,
-// 16, 24, 32, 40 and 48. On Windows 'st_ino', 'st_uid' and 'st_gid' are
-// always zero. The times are seconds since 1970 (UTC).
+// sys/stat.h: a file's status. The same on every system: 'stat' and 'lstat'
+// fill it in from the system's own layout. On Windows 'st_ino', 'st_uid' and
+// 'st_gid' are always zero. The times are seconds since 1970 (UTC). 'st_mode'
+// holds the file's type (the S_IF... bits) and, on Linux, its permission bits.
 pub struct Stat {
+  pub st_dev u64;
+  pub st_ino u64;
+  pub st_mode u16;
+  pub st_nlink u32;
+  pub st_uid u32;
+  pub st_gid u32;
+  pub st_rdev u64;
+  pub st_size i64;
+  pub st_atime i64;
+  pub st_mtime i64;
+  pub st_ctime i64;
+}
+
+// Windows' 'struct _stat64', as the UCRT's '_stat64' fills it in. Its layout
+// was measured against the runtime's own header with cl.exe (x64): 56 bytes,
+// fields at offsets 0, 4, 6, 8, 10, 12, 16, 24, 32, 40 and 48.
+pub struct WinStat64 {
   pub st_dev u32;
   pub st_ino u16;
   pub st_mode u16;
@@ -53,6 +82,29 @@ pub struct Stat {
   pub st_ctime i64;
 }
 
+// Linux's 'struct stat' on x86-64 (glibc and the kernel's, the same): 144
+// bytes, 'st_nlink' before 'st_mode', times as seconds and nanoseconds
+pub struct LinuxStat {
+  pub st_dev u64;
+  pub st_ino u64;
+  pub st_nlink u64;
+  pub st_mode u32;
+  pub st_uid u32;
+  pub st_gid u32;
+  pub pad0 i32;
+  pub st_rdev u64;
+  pub st_size i64;
+  pub st_blksize i64;
+  pub st_blocks i64;
+  pub st_atime i64;
+  pub st_atime_nsec i64;
+  pub st_mtime i64;
+  pub st_mtime_nsec i64;
+  pub st_ctime i64;
+  pub st_ctime_nsec i64;
+  pub reserved Array[i64, 3];
+}
+
 // The file-type bits of 'st_mode', and the mask over them
 pub const S_IFMT = 0xF000u16;
 pub const S_IFDIR = 0x4000u16;
@@ -61,10 +113,12 @@ pub const S_IFREG = 0x8000u16;
 // such bit; this is POSIX's usual value
 pub const S_IFLNK = 0xA000u16;
 
-// errno.h: the POSIX error numbers, beyond ISO C's three (libc's), with the
-// Windows runtime's values, which are not Linux's past ENOTTY. Each is
-// measured against the runtime's header with cl.exe; 'libc.strerror' gives
-// each one's text.
+// errno.h: the POSIX error numbers, beyond ISO C's three (libc's). The values
+// are Windows' runtime's, measured against its header with cl.exe, and they are
+// Linux's too but for two, which differ by C library (the UCRT's ENAMETOOLONG
+// is 38 and glibc's 36, its ENOTEMPTY 41 and glibc's 39): those are globals
+// that conestd's cnames.c defines from errno.h's own values, read as
+// constants are. 'libc.strerror' gives each one's text.
 pub const EPERM = 1i32;
 pub const ENOENT = 2i32;
 pub const EIO = 5i32;
@@ -80,43 +134,25 @@ pub const EINVAL = 22i32;
 pub const EMFILE = 24i32;
 pub const ENOSPC = 28i32;
 pub const EROFS = 30i32;
-pub const ENAMETOOLONG = 38i32;
-pub const ENOTEMPTY = 41i32;
+pub extern imm ENAMETOOLONG i32;
+pub extern imm ENOTEMPTY i32;
 
-// sys/stat.h, direct.h and unistd.h: files and directories. 'stat' follows
-// a symbolic link or a directory junction to what it leads to, as POSIX's
-// does; 'lstat', below, does not.
+// ---------------------------------------------------------------------------
+// The two systems' own functions, declared on every platform
+// ---------------------------------------------------------------------------
+
+// Windows: the runtime's spellings
 pub extern {
-  fn @c("_stat64") stat(path cstr, buf &mut Stat) i32;
-  fn @c("_chdir") chdir(path cstr) i32;
-  fn @c("_rmdir") rmdir(path cstr) i32;
+  fn _stat64(path cstr, buf &mut WinStat64) i32;
+  fn _chdir(path cstr) i32;
+  fn _rmdir(path cstr) i32;
+  fn _unlink(path cstr) i32;
+  fn _popen(command cstr, mode cstr) *libc.FILE;
+  fn _pclose(stream *libc.FILE) i32;
 }
-
-// mkdir(path, mode): Windows has no permission bits, so 'mode' is ignored
 extern fn _mkdir(path cstr) i32;
-pub fn mkdir(path cstr, mode u32) i32 inline {_mkdir(path);}
-
-// getcwd(buf, size): the runtime's '_getcwd' takes the size as an 'int'
 extern fn _getcwd(buf *u8, size i32) *u8;
-pub fn getcwd(buf *u8, size usize) *u8 inline {_getcwd(buf, i32.from(size));}
-
-// realpath(path, resolved): the runtime's '_fullpath(resolved, path, size)'
-// takes the buffer first, with its size. 'resolved' must hold PATH_MAX bytes,
-// or be null, when the result is malloc'd for the caller to free, as POSIX
-// says. Unlike POSIX's, it neither requires the path to exist nor resolves
-// symbolic links: it only makes the path absolute and removes '.' and '..'.
-pub const PATH_MAX = 260usize;
 extern fn _fullpath(resolved *u8, path cstr, size usize) *u8;
-pub fn realpath(path cstr, resolved *u8) *u8 inline {_fullpath(resolved, path, PATH_MAX);}
-
-// stdlib.h: the environment, read and changed in UTF-8. Windows keeps it in
-// UTF-16, and the runtime's narrow 'getenv' reads a copy it converts once,
-// at start-up, in the ANSI code page, so a variable the program inherited
-// beyond ASCII reads wrongly ('é 日本' as "\xE9 ??") whatever locale is set
-// later. These three go through the runtime's wide environment instead
-// ('_wgetenv', '_wputenv_s'), converting names and values between UTF-8 and
-// UTF-16. A name or value that is not UTF-8 is no variable's: 'getenv'
-// answers null and 'setenv' EINVAL.
 extern fn _wgetenv(name *u16) *u16;
 extern fn _wputenv_s(name *u16, value *u16) i32;
 extern {
@@ -124,79 +160,226 @@ extern {
   fn @c(system) WideCharToMultiByte(page u32, flags u32, from *u16, fromLen i32, to *u8, toLen i32,
       fallback *u8, usedFallback *i32) i32;
 }
+
+// Linux: the C library's own, under names of their own here (a Cone function
+// of this module named 'stat' would define the symbol 'stat')
+extern {
+  fn @c("stat") linuxStat(path cstr, buf &mut LinuxStat) i32;
+  fn @c("lstat") linuxLstat(path cstr, buf &mut LinuxStat) i32;
+  fn @c("chdir") linuxChdir(path cstr) i32;
+  fn @c("rmdir") linuxRmdir(path cstr) i32;
+  fn @c("unlink") linuxUnlink(path cstr) i32;
+  fn @c("mkdir") linuxMkdir(path cstr, mode u32) i32;
+  fn @c("getcwd") linuxGetcwd(buf *u8, size usize) *u8;
+  fn @c("realpath") linuxRealpath(path cstr, resolved *u8) *u8;
+  fn @c("getenv") linuxGetenv(name cstr) *u8;
+  fn @c("setenv") linuxSetenv(name cstr, value cstr, overwrite i32) i32;
+  fn @c("unsetenv") linuxUnsetenv(name cstr) i32;
+  fn @c("popen") linuxPopen(command cstr, mode cstr) *libc.FILE;
+  fn @c("pclose") linuxPclose(stream *libc.FILE) i32;
+  fn @c("opendir") linuxOpendir(name cstr) *u8;
+  fn @c("readdir") linuxReaddir(dir *u8) *LinuxDirent;
+  fn @c("closedir") linuxClosedir(dir *u8) i32;
+}
+
+// glibc's 'struct dirent' on x86-64: the inode, the offset to the next, this
+// entry's length, its kind and its name
+pub struct LinuxDirent {
+  pub d_ino u64;
+  pub d_off i64;
+  pub d_reclen u16;
+  pub d_type u8;
+  pub d_name Array[u8, 256];
+}
+
+// A status with every field zero, to be filled in
+fn emptyStat() Stat {
+  new Stat(0u64, 0u64, 0u16, 0u32, 0u32, 0u32, 0u64, 0i64, 0i64, 0i64, 0i64);
+}
+
+fn emptyWinStat() WinStat64 {
+  new WinStat64(0u32, 0u16, 0u16, 0i16, 0i16, 0i16, 0u32, 0i64, 0i64, 0i64, 0i64);
+}
+
+fn emptyLinuxStat() LinuxStat {
+  new LinuxStat(0u64, 0u64, 0u64, 0u32, 0u32, 0u32, 0i32, 0u64, 0i64, 0i64, 0i64, 0i64, 0i64, 0i64, 0i64,
+    0i64, 0i64, new Array[i64, 3] <- fill 0i64);
+}
+
+fn statOfWin(raw &WinStat64) Stat {
+  new Stat(u64.from(raw.st_dev), u64.from(raw.st_ino), raw.st_mode, u32.from(raw.st_nlink),
+    u32.from(raw.st_uid), u32.from(raw.st_gid), u64.from(raw.st_rdev), raw.st_size,
+    raw.st_atime, raw.st_mtime, raw.st_ctime);
+}
+
+fn statOfLinux(raw &LinuxStat) Stat {
+  new Stat(raw.st_dev, raw.st_ino, u16.from(raw.st_mode), u32.from(raw.st_nlink), raw.st_uid, raw.st_gid,
+    raw.st_rdev, raw.st_size, raw.st_atime, raw.st_mtime, raw.st_ctime);
+}
+
+// ---------------------------------------------------------------------------
+// Files and directories
+// ---------------------------------------------------------------------------
+
+// sys/stat.h: a file's status. 'stat' follows a symbolic link or a directory
+// junction to what it leads to, as POSIX's does; 'lstat', below, does not.
+pub fn @c("cone_posix_stat") stat(path cstr, buf &mut Stat) i32 {
+  if core.isWindows() {
+    mut raw = emptyWinStat();
+    imm r = _stat64(path, &mut raw);
+    if r == 0i32 {*buf = statOfWin(&raw);}
+    r;
+  }
+  else {
+    mut raw = emptyLinuxStat();
+    imm r = linuxStat(path, &mut raw);
+    if r == 0i32 {*buf = statOfLinux(&raw);}
+    r;
+  }
+}
+
+// chdir(path), rmdir(path): the runtime's '_chdir' and '_rmdir'
+pub fn chdir(path cstr) i32 inline {
+  if core.isWindows() {_chdir(path);} else {linuxChdir(path);}
+}
+pub fn rmdir(path cstr) i32 inline {
+  if core.isWindows() {_rmdir(path);} else {linuxRmdir(path);}
+}
+
+// unlink(path): removes a file, or a symbolic link itself, and refuses a
+// directory (EISDIR on Linux, EACCES on Windows), which libc's 'remove'
+// does not on Linux: there it removes an empty directory
+pub fn unlink(path cstr) i32 inline {
+  if core.isWindows() {_unlink(path);} else {linuxUnlink(path);}
+}
+
+// mkdir(path, mode): Windows has no permission bits, so 'mode' is ignored
+pub fn mkdir(path cstr, mode u32) i32 inline {
+  if core.isWindows() {_mkdir(path);} else {linuxMkdir(path, mode);}
+}
+
+// getcwd(buf, size): the runtime's '_getcwd' takes the size as an 'int'. With
+// a null 'buf' and a size of 0 both answer a block from malloc for the caller
+// to free
+pub fn getcwd(buf *u8, size usize) *u8 inline {
+  if core.isWindows() {_getcwd(buf, i32.from(size));} else {linuxGetcwd(buf, size);}
+}
+
+// realpath(path, resolved): the runtime's '_fullpath(resolved, path, size)'
+// takes the buffer first, with its size. 'resolved' must hold PATH_MAX bytes,
+// or be null, when the result is malloc'd for the caller to free, as POSIX
+// says. Unlike POSIX's, Windows' neither requires the path to exist nor
+// resolves symbolic links: it only makes the path absolute and removes '.' and
+// '..'. (PATH_MAX is Linux's 4096; Windows' own limit, 260, is what it is
+// told, since its answer is no longer.)
+pub const PATH_MAX = 4096usize;
+const winPathMax = 260usize;
+pub fn realpath(path cstr, resolved *u8) *u8 inline {
+  if core.isWindows() {_fullpath(resolved, path, winPathMax);} else {linuxRealpath(path, resolved);}
+}
+
+// ---------------------------------------------------------------------------
+// The environment
+// ---------------------------------------------------------------------------
+
+// Windows keeps the environment in UTF-16, and the runtime's narrow 'getenv'
+// reads a copy it converts once, at start-up, in the ANSI code page, so a
+// variable the program inherited beyond ASCII reads wrongly ('é 日本' as
+// "\xE9 ??") whatever locale is set later. The three functions below go
+// through the runtime's wide environment instead ('_wgetenv', '_wputenv_s'),
+// converting names and values between UTF-8 and UTF-16. A name or value that
+// is not UTF-8 is no variable's: 'getenv' answers null and 'setenv' EINVAL.
+// On Linux they are the C library's, which takes bytes as they are.
+
 const utf8Page = 65001u32;          // CP_UTF8
 const invalidUtf8Fails = 8u32;      // MB_ERR_INVALID_CHARS
 
 // A C string's UTF-8 as UTF-16 ending in a 0, in a block from malloc the
-// caller frees; null when it is not UTF-8
-fn utf16FromUtf8(s cstr) *u16 {
-  imm n = MultiByteToWideChar(utf8Page, invalidUtf8Fails, s.ptr(), -1i32, null, 0i32);
-  if n == 0i32 {return null;};
-  imm p = libc.malloc(usize.from(n) * 2usize) as *u16;
-  MultiByteToWideChar(utf8Page, invalidUtf8Fails, s.ptr(), -1i32, p, n);
-  p;
-}
+// caller frees, is made in each function below (a helper of Windows' calls
+// alone would be generated on Linux too); null when it is not UTF-8
 
 // The block 'getenv' answers in, grown as needed: its address and size
 mut envAnswer = 0usize;
 mut envAnswerSize = 0usize;
 
-fn getenvUtf8(name cstr) *u8 {
-  imm wname = utf16FromUtf8(name);
-  if wname == null {return null;};
-  imm wvalue = _wgetenv(wname);
-  libc.free(wname as *u8);
-  if wvalue == null {return null;};
-  // A lone surrogate, which is no character, becomes U+FFFD
-  imm size = WideCharToMultiByte(utf8Page, 0u32, wvalue, -1i32, null, 0i32, null, null);
-  if size <= 0i32 {return null;};
-  if usize.from(size) > envAnswerSize {
-    envAnswer = libc.realloc(envAnswer as *u8, usize.from(size)) as usize;
-    envAnswerSize = usize.from(size);
-  };
-  WideCharToMultiByte(utf8Page, 0u32, wvalue, -1i32, envAnswer as *u8, size, null, null);
-  envAnswer as *u8;
-}
-
-fn setenvUtf8(name cstr, value cstr, overwrite i32) i32 {
-  imm wname = utf16FromUtf8(name);
-  if wname == null {return EINVAL;};
-  imm wvalue = utf16FromUtf8(value);
-  if wvalue == null {
-    libc.free(wname as *u8);
-    return EINVAL;
-  };
-  mut result = 0i32;
-  if overwrite != 0i32 or _wgetenv(wname) == null {
-    result = _wputenv_s(wname, wvalue);
-  };
-  libc.free(wname as *u8);
-  libc.free(wvalue as *u8);
-  result;
-}
-
 // getenv(name): the variable's value, in a block overwritten by the next
 // call, as POSIX allows; null when it is not set
-pub fn getenv(name cstr) *u8 inline {getenvUtf8(name);}
+pub fn @c("cone_posix_getenv") getenv(name cstr) *u8 {
+  if core.isWindows() {
+    imm nameLen = MultiByteToWideChar(utf8Page, invalidUtf8Fails, name.ptr(), -1i32, null, 0i32);
+    if nameLen == 0i32 {return null;};
+    imm wname = libc.malloc(usize.from(nameLen) * 2usize) as *u16;
+    MultiByteToWideChar(utf8Page, invalidUtf8Fails, name.ptr(), -1i32, wname, nameLen);
+    imm wvalue = _wgetenv(wname);
+    libc.free(wname as *u8);
+    if wvalue == null {return null;};
+    // A lone surrogate, which is no character, becomes U+FFFD
+    imm size = WideCharToMultiByte(utf8Page, 0u32, wvalue, -1i32, null, 0i32, null, null);
+    if size <= 0i32 {return null;};
+    if usize.from(size) > envAnswerSize {
+      envAnswer = libc.realloc(envAnswer as *u8, usize.from(size)) as usize;
+      envAnswerSize = usize.from(size);
+    };
+    WideCharToMultiByte(utf8Page, 0u32, wvalue, -1i32, envAnswer as *u8, size, null, null);
+    envAnswer as *u8;
+  }
+  else {
+    linuxGetenv(name);
+  }
+}
 
 // setenv(name, value, overwrite): the runtime's '_wputenv_s' always
 // overwrites, so where 'overwrite' is zero and the variable is set, nothing
-// is done, as POSIX says. It returns 0, or an error number where POSIX
-// returns -1.
-pub fn setenv(name cstr, value cstr, overwrite i32) i32 inline {setenvUtf8(name, value, overwrite);}
+// is done, as POSIX says. On Windows it returns 0, or an error number where
+// POSIX returns -1.
+pub fn @c("cone_posix_setenv") setenv(name cstr, value cstr, overwrite i32) i32 {
+  if core.isWindows() {
+    imm nameLen = MultiByteToWideChar(utf8Page, invalidUtf8Fails, name.ptr(), -1i32, null, 0i32);
+    if nameLen == 0i32 {return EINVAL;};
+    imm wname = libc.malloc(usize.from(nameLen) * 2usize) as *u16;
+    MultiByteToWideChar(utf8Page, invalidUtf8Fails, name.ptr(), -1i32, wname, nameLen);
+    imm valueLen = MultiByteToWideChar(utf8Page, invalidUtf8Fails, value.ptr(), -1i32, null, 0i32);
+    if valueLen == 0i32 {
+      libc.free(wname as *u8);
+      return EINVAL;
+    };
+    imm wvalue = libc.malloc(usize.from(valueLen) * 2usize) as *u16;
+    MultiByteToWideChar(utf8Page, invalidUtf8Fails, value.ptr(), -1i32, wvalue, valueLen);
+    mut result = 0i32;
+    if overwrite != 0i32 or _wgetenv(wname) == null {
+      result = _wputenv_s(wname, wvalue);
+    };
+    libc.free(wname as *u8);
+    libc.free(wvalue as *u8);
+    result;
+  }
+  else {
+    linuxSetenv(name, value, overwrite);
+  }
+}
 
 // unsetenv(name): removes a variable, which is not an error when it is not
 // set. The runtime's '_wputenv_s' removes one given an empty value, which is
 // also why, on Windows, 'setenv' with an empty value removes the variable
 // rather than setting it empty.
-pub fn unsetenv(name cstr) i32 inline {setenvUtf8(name, "", 1i32);}
+pub fn @c("cone_posix_unsetenv") unsetenv(name cstr) i32 {
+  if core.isWindows() {
+    setenv(name, "", 1i32);
+  }
+  else {
+    linuxUnsetenv(name);
+  }
+}
 
-// stdio.h: running a command through the shell (cmd.exe on Windows) with a
-// pipe to what it prints ('r') or to what it reads ('w'). 'pclose' waits for
-// it and returns its exit status.
-pub extern {
-  fn @c("_popen") popen(command cstr, mode cstr) *libc.FILE;
-  fn @c("_pclose") pclose(stream *libc.FILE) i32;
+// stdio.h: running a command through the shell (cmd.exe on Windows, sh
+// elsewhere) with a pipe to what it prints ('r') or to what it reads ('w').
+// 'pclose' waits for it and returns its exit status (on Linux, the status
+// 'wait' gives: the exit code shifted left eight bits).
+pub fn popen(command cstr, mode cstr) *libc.FILE inline {
+  if core.isWindows() {_popen(command, mode);} else {linuxPopen(command, mode);}
+}
+pub fn pclose(stream *libc.FILE) i32 inline {
+  if core.isWindows() {_pclose(stream);} else {linuxPclose(stream);}
 }
 
 // ---------------------------------------------------------------------------
@@ -234,16 +417,10 @@ pub extern {
 pub const _A_REPARSE = 0x400u32;
 
 // ---------------------------------------------------------------------------
-// POSIX written over the Windows runtime: 'lstat', and listing a directory
-// with 'opendir', 'readdir' and 'closedir'. Each keeps POSIX's name,
-// signature and behaviour; its body is Windows', over the functions above.
-// This is the part of the package a POSIX system would bind instead.
+// 'lstat', and listing a directory with 'opendir', 'readdir' and 'closedir':
+// the C library's on Linux, and on Windows POSIX written over the runtime.
+// Each keeps POSIX's name, signature and behaviour.
 // ---------------------------------------------------------------------------
-
-// A status with every field zero, to be filled in
-fn emptyStat() Stat {
-  new Stat(0u32, 0u16, 0u16, 0i16, 0i16, 0i16, 0u32, 0i64, 0i64, 0i64, 0i64);
-}
 
 fn emptyFindData() FindData64 {
   new FindData64(0u32, 0i64, 0i64, 0i64, 0i64, new Array[u8, 260] <- fill 0u8);
@@ -266,27 +443,35 @@ fn hasWildcard(cpath cstr) bool {
 // Windows every reparse point counts as a link (a symbolic link, a
 // junction, and the special entries '_A_REPARSE' names), its size zero and
 // its times its own; anything else is '_stat64''s answer.
-pub fn lstat(path cstr, buf &mut Stat) i32 {
-  if not hasWildcard(path) {
-    mut info = emptyFindData();
-    imm handle = _findfirst64(path, &mut info);
-    if handle != -1isize {
-      _findclose(handle);
-      if (info.attrib & _A_REPARSE) != 0u32 {
-        *buf = new Stat(0u32, 0u16, S_IFLNK, 1i16, 0i16, 0i16, 0u32, 0i64,
-          info.time_access, info.time_write, info.time_create);
-        return 0i32;
+pub fn @c("cone_posix_lstat") lstat(path cstr, buf &mut Stat) i32 {
+  if core.isWindows() {
+    if not hasWildcard(path) {
+      mut info = emptyFindData();
+      imm handle = _findfirst64(path, &mut info);
+      if handle != -1isize {
+        _findclose(handle);
+        if (info.attrib & _A_REPARSE) != 0u32 {
+          *buf = new Stat(0u64, 0u64, S_IFLNK, 1u32, 0u32, 0u32, 0u64, 0i64,
+            info.time_access, info.time_write, info.time_create);
+          return 0i32;
+        };
       };
     };
-  };
-  stat(path, buf);
+    stat(path, buf);
+  }
+  else {
+    mut raw = emptyLinuxStat();
+    imm r = linuxLstat(path, &mut raw);
+    if r == 0i32 {*buf = statOfLinux(&raw);}
+    r;
+  }
 }
 
 // dirent.h: one entry of a directory, as 'readdir' answers it. POSIX asks
 // only for 'd_ino' and 'd_name'; 'd_type' is the common extension that says
 // what kind of entry it is, so a listing need not 'stat' each one. On
 // Windows 'd_ino' is always zero, and 'd_name' holds at most 259 bytes and
-// its NUL, the runtime's limit.
+// its NUL, the runtime's limit; on Linux a name is at most 255 bytes.
 pub struct dirent {
   pub d_ino u64;
   pub d_type u8;
@@ -306,7 +491,8 @@ pub const DT_LNK = 10u8;
 // can reach them. On Windows it is a '_findfirst64' handle (-1 for a
 // directory with nothing in it), the entry the runtime filled in last and
 // whether 'readdir' has yet to answer it, and the 'dirent' that 'readdir'
-// answers, reused by each call.
+// answers, reused by each call. On Linux 'handle' is the C library's stream,
+// and 'readdir' copies each entry the C library gives into 'entry'.
 pub struct DIR {
   pub handle isize;
   pub pending bool;
@@ -314,69 +500,104 @@ pub struct DIR {
   pub entry dirent;
 }
 
+fn emptyDirent() dirent {
+  new dirent(0u64, DT_UNKNOWN, new Array[u8, 260] <- fill 0u8);
+}
+
 // opendir(name): opens a directory for 'readdir', or answers null with
 // errno set: ENOENT where nothing has that name, ENOTDIR where a file does.
 // On Windows it lists the pattern 'name/*'.
-pub fn opendir(cname cstr) *DIR {
-  mut st = emptyStat();
-  if stat(cname, &mut st) != 0i32 {return null;};
-  if (st.st_mode & S_IFMT) != S_IFDIR {
-    *libc.errno() = ENOTDIR;
-    return null;
-  };
-  // The pattern: the name, a '/' unless it ends in a separator already (or
-  // is a drive, 'C:'), and '*'
-  imm name = cname.ptr();
-  imm len = libc.strlen(cname);
-  imm pattern = libc.malloc(len + 3usize);
-  libc.memcpy(pattern, name, len);
-  mut at = len;
-  imm last = if len > 0usize {name[len - 1usize];} else {0u8;};
-  if len > 0usize and last != '/' and last != '\\' and last != ':' {
-    pattern[at] = '/';
-    at = at + 1usize;
-  };
-  pattern[at] = '*';
-  pattern[at + 1usize] = 0u8;
+pub fn @c("cone_posix_opendir") opendir(cname cstr) *DIR {
+  if core.isWindows() {
+    mut st = emptyStat();
+    if stat(cname, &mut st) != 0i32 {return null;};
+    if (st.st_mode & S_IFMT) != S_IFDIR {
+      *libc.errno() = ENOTDIR;
+      return null;
+    };
+    // The pattern: the name, a '/' unless it ends in a separator already (or
+    // is a drive, 'C:'), and '*'
+    imm name = cname.ptr();
+    imm len = libc.strlen(cname);
+    imm pattern = libc.malloc(len + 3usize);
+    libc.memcpy(pattern, name, len);
+    mut at = len;
+    imm last = if len > 0usize {name[len - 1usize];} else {0u8;};
+    if len > 0usize and last != '/' and last != '\\' and last != ':' {
+      pattern[at] = '/';
+      at = at + 1usize;
+    };
+    pattern[at] = '*';
+    pattern[at + 1usize] = 0u8;
 
-  imm zero *DIR = null;
-  imm dir = libc.malloc((zero + 1) as usize) as *DIR;
-  imm d = dir as &mut DIR;
-  *d = new DIR(-1isize, false, emptyFindData(), new dirent(0u64, DT_UNKNOWN, new Array[u8, 260] <- fill 0u8));
-  imm saved = *libc.errno();
-  d.handle = _findfirst64(cstr.fromPtr(pattern), &mut d.data);
-  libc.free(pattern);
-  // A directory with nothing in it, not even '.' (a drive's root), lists nothing
-  if d.handle == -1isize {*libc.errno() = saved;} else {d.pending = true;};
-  dir;
+    imm zero *DIR = null;
+    imm dir = libc.malloc((zero + 1) as usize) as *DIR;
+    imm d = dir as &mut DIR;
+    *d = new DIR(-1isize, false, emptyFindData(), emptyDirent());
+    imm saved = *libc.errno();
+    d.handle = _findfirst64(cstr.fromPtr(pattern), &mut d.data);
+    libc.free(pattern);
+    // A directory with nothing in it, not even '.' (a drive's root), lists nothing
+    if d.handle == -1isize {*libc.errno() = saved;} else {d.pending = true;};
+    dir;
+  }
+  else {
+    imm stream = linuxOpendir(cname);
+    if stream == null {return null;};
+    imm zero *DIR = null;
+    imm dir = libc.malloc((zero + 1) as usize) as *DIR;
+    imm d = dir as &mut DIR;
+    *d = new DIR(stream as isize, false, emptyFindData(), emptyDirent());
+    dir;
+  }
 }
 
 // readdir(dir): the next entry, '.' and '..' among them in no promised
 // order, or null after the last, errno left as it was. The entry is the
 // directory's own, overwritten by the next call and freed by 'closedir'.
-pub fn readdir(dir *DIR) *dirent {
+pub fn @c("cone_posix_readdir") readdir(dir *DIR) *dirent {
   imm d = dir as &mut DIR;
-  if d.handle == -1isize {return null;};
-  if not d.pending {
-    imm saved = *libc.errno();
-    if _findnext64(d.handle, &mut d.data) != 0i32 {
-      if *libc.errno() == ENOENT {*libc.errno() = saved;};
-      return null;
+  if core.isWindows() {
+    if d.handle == -1isize {return null;};
+    if not d.pending {
+      imm saved = *libc.errno();
+      if _findnext64(d.handle, &mut d.data) != 0i32 {
+        if *libc.errno() == ENOENT {*libc.errno() = saved;};
+        return null;
+      };
     };
-  };
-  d.pending = false;
-  imm attrib = d.data.attrib;
-  d.entry.d_type = if (attrib & _A_REPARSE) != 0u32 {DT_LNK;}
-    else if (attrib & _A_SUBDIR) != 0u32 {DT_DIR;}
-    else {DT_REG;};
-  d.entry.d_name = d.data.name;
-  &d.entry as *dirent;
+    d.pending = false;
+    imm attrib = d.data.attrib;
+    d.entry.d_type = if (attrib & _A_REPARSE) != 0u32 {DT_LNK;}
+      else if (attrib & _A_SUBDIR) != 0u32 {DT_DIR;}
+      else {DT_REG;};
+    d.entry.d_name = d.data.name;
+    &d.entry as *dirent;
+  }
+  else {
+    imm got = linuxReaddir(d.handle as *u8);
+    if got == null {return null;};
+    imm raw = got as &LinuxDirent;
+    d.entry.d_ino = raw.d_ino;
+    d.entry.d_type = raw.d_type;
+    // Name and its NUL, 256 bytes at most, into 260
+    imm from *u8 = &[]raw.d_name as *u8;
+    imm to *u8 = &[]d.entry.d_name as *u8;
+    libc.memcpy(to, from, libc.strlen(cstr.fromPtr(from)) + 1usize);
+    &d.entry as *dirent;
+  }
 }
 
 // closedir(dir): ends the listing and frees what 'opendir' allocated
-pub fn closedir(dir *DIR) i32 {
+pub fn @c("cone_posix_closedir") closedir(dir *DIR) i32 {
   imm d = dir as &mut DIR;
-  if d.handle != -1isize {_findclose(d.handle);};
+  mut result = 0i32;
+  if core.isWindows() {
+    if d.handle != -1isize {_findclose(d.handle);};
+  }
+  else {
+    result = linuxClosedir(d.handle as *u8);
+  }
   libc.free(dir as *u8);
-  0i32;
+  result;
 }

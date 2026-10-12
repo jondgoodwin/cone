@@ -38,6 +38,10 @@
 //   process.args()                this program's arguments, in UTF-8
 //   process.currentExe()          this program's executable, a Path
 //
+// Two systems run programs by two designs, and the package gives the same
+// interface over both; where they differ it is said below ('isWindows()', a
+// constant of the compile, chooses, so only the target's calls are generated).
+//
 // **Paths.** A folder is a 'path' package 'Path': the working folder is the
 // last parameter of 'run' and 'runLine', a '&Path' that defaults to "", the
 // current folder ('process.run(args, new Options(), "build")': a string literal
@@ -46,41 +50,49 @@
 // must be a constant and a Path cannot be one (a parameter's default literal is
 // made at the call). The ProcessError holds the 'Path' it was given. The program and its arguments
 // are text, not paths: 'args' is a list of Strings, 'run' takes its program as
-// 'args[0]', which may be a bare name Windows finds (see "Finding the
+// 'args[0]', which may be a bare name the system finds (see "Finding the
 // program"), and 'runLine' takes the line as a '&str'.
 //
 // **Running.** 'run' starts the program, waits until it ends, and answers
-// an Output. By default the child reads its standard input from NUL (it
-// finds nothing there, never this program's keyboard), and what it writes
-// to its standard output and its standard error is captured, the two kept
-// apart, byte for byte: a C program's text mode writes '\n' as '\r\n', and
-// that is what comes back. Both are read at once, so a child that writes a
-// great deal to both never stalls on a full pipe. With 'inherit: true' the
-// child shares this program's standard input, output and error instead, and
-// nothing is captured: what 'congo run' wants. Flush what this program has
-// printed first ('stdio.printFlush()'), or the child's lines come before it.
+// an Output. By default the child reads its standard input from NUL (/dev/null
+// on POSIX; it finds nothing there, never this program's keyboard), and what
+// it writes to its standard output and its standard error is captured, the
+// two kept apart, byte for byte: on Windows a C program's text mode writes
+// '\n' as '\r\n', and that is what comes back. Both are read at once, so a
+// child that writes a great deal to both never stalls on a full pipe. With
+// 'inherit: true' the child shares this program's standard input, output and
+// error instead, and nothing is captured: what 'congo run' wants. Flush what
+// this program has printed first ('stdio.printFlush()'), or the child's lines
+// come before it.
 //
 // A child shares this program's console, where it has one, so Ctrl+C
 // reaches both. From a program with no console, a console child is started
-// with CREATE_NO_WINDOW, so that no window opens for it.
+// with CREATE_NO_WINDOW, so that no window opens for it. (On POSIX a child
+// has this program's terminal, and its process group unless it has a time
+// limit.)
 //
 // **The exit code is a value, not an error.** 'exitCode' is all 32 bits of
-// it, a u32: 0, 1, 255, or an NTSTATUS such as 3221225477 (0xC0000005, an
-// access violation) or 3221226505 (0xC0000409), what a Cone panic ends with
-// on Windows. 'success()' is exit code 0 within the time. Go's 'Run' makes
+// it, a u32: 0, 1, 255, or on Windows an NTSTATUS such as 3221225477
+// (0xC0000005, an access violation) or 3221226505 (0xC0000409), what a Cone
+// panic ends with there. On POSIX a program that exits answers its status, 0
+// to 255, and one a signal ended answers 128 plus the signal, as a shell
+// reports it (134 for abort, which a Cone panic ends in; 139 for a
+// segmentation fault). 'success()' is exit code 0 within the time. Go's 'Run' makes
 // a nonzero exit an error; here, as in Python's 'run' and Rust's 'output',
 // it is the answer, which the caller reads. An Error is only a program that
 // could not be started: none of that name, a folder that is not there, an
-// argument Windows cannot be given.
+// argument the system cannot be given.
 //
 // **The time limit.** With 'timeout', a Duration of the time package, above
 // zero, the child is stopped when that long has passed since it started
 // (measured on the time package's steady clock, and waited for in whole
 // milliseconds, rounded up), and so is every
-// program it has started and not yet seen end: it runs in a Windows job
-// object of its own, and the whole job is ended. The Output then says
+// program it has started and not yet seen end: on Windows it runs in a job
+// object of its own, and the whole job is ended; on POSIX it runs in a
+// process group of its own, and every process of the group is killed
+// (SIGKILL), those that left the group with it. The Output then says
 // 'timedOut', its exit code is 1, and what it wrote until then is kept. With
-// no limit nothing is put in a job, and a program it starts that is still
+// no limit nothing is put in a job or a group, and a program it starts that is still
 // running when it ends is left running, which a linker's helper may need to
 // be. A child that ends, though, while a program it started still holds its
 // output open has not finished writing: 'run' waits for that too, as Python's
@@ -103,7 +115,11 @@
 // that is not set already). Neither a job object's
 // DIE_ON_UNHANDLED_EXCEPTION nor an error mode keeps a fail-fast from Windows
 // Error Reporting; a debugger is what does. No other debugger can attach to
-// such a child.
+// such a child. On POSIX a crash is a signal, which ends the child as the
+// answer says; what the system does besides is a core dump, which a crash
+// reporter (Ubuntu's apport) may take on, so with 'crashReport: false' the
+// child is started with core dumps off (the limit on their size is set to
+// zero around the start, and put back).
 //
 // **The environment.** The child inherits this program's environment as it
 // is when 'run' is called: set a variable with the env package first. There
@@ -123,44 +139,57 @@
 // cmd.exe, which reads its line by cmd's rules, not these: an argument from
 // outside the program is not safe on a batch file's line.
 //
+// On POSIX a program is given its arguments as a list, so 'run' does no
+// quoting: every string, a space, a quote, a line break or none at all, reaches
+// the child as it is (bytes; one holding a NUL byte, which ends a C string, is
+// refused), 'commandLine' is Windows' text and nothing 'run' reads there.
+//
 // 'runLine' hands Windows a line as it is written, for a program with rules
-// of its own: 'cmd /c' and what follows it, as Congo runs 'vcvars64.bat'.
+// of its own: 'cmd /c' and what follows it, as Congo runs 'vcvars64.bat'. On
+// POSIX the line is the shell's: 'runLine' runs '/bin/sh -c' with it.
 //
 // **Finding the program.** As Windows' CreateProcessW finds it: a name with
 // no folder is looked for in the folder this program's executable is in,
 // then the current folder, then Windows' system folders, then each folder
 // on PATH, with '.exe' added when it has no extension. A relative path is
-// read from this program's current folder, never from 'dir'.
+// read from this program's current folder, never from 'dir'. On POSIX, as
+// 'execvp' does: a name with a '/' in it is a path, read from this program's
+// current folder (never from 'dir' either), and a name without one is looked
+// for in each folder on PATH.
 //
 // **Failure.** An Error holds a ProcessError: what was being done ('op'),
-// the program, the folder it was to start in, and Windows' error number
-// ('code', GetLastError's). Its 'message()' is one line for a person, in
-// Windows' own words (in English where the system has them): 'run nosuch:
-// The system cannot find the file specified', 'run conec in build/x: The
-// directory name is invalid'. 'notFound()' asks whether there was no such
-// program.
+// the program, the folder it was to start in, and the system's error number
+// ('code': on Windows GetLastError's, on POSIX errno's). Its 'message()' is
+// one line for a person, in the system's own words (on Windows in English
+// where it has them): 'run nosuch: The system cannot find the file
+// specified', 'run conec in build/x: The directory name is invalid'; on POSIX
+// 'run nosuch: No such file or directory'. 'notFound()' asks whether there was
+// no such program (on POSIX also true of a folder that is not there, as the
+// system gives ENOENT for both).
 //
 // **This program.** 'args()' is this program's own arguments, its name
 // first, in UTF-8 whatever the system's code page, as Windows' parser splits
 // them: 'main''s argv says the same for ASCII, and loses whatever the code
-// page cannot hold. 'currentExe()' is the path of this program's executable, a
-// 'Path', normalized, every separator '/'.
+// page cannot hold (on POSIX they are argv's bytes, read from /proc/self/cmdline).
+// 'currentExe()' is the path of this program's executable, a 'Path',
+// normalized, every separator '/' (on POSIX read from /proc/self/exe).
 //
-// **What is Windows-only.** The package's interface (a list of arguments, a
+// **What differs by system.** The package's interface (a list of arguments, a
 // folder, a time limit; an exit code and two captured outputs) is not
 // Windows': it is what Go, Rust, Python, Zig and Odin each give. Its
-// insides are Windows only, said here as plainly as can be: written over
+// insides differ, said here as plainly as can be. On Windows it is written over
 // kernel32 (CreateProcessW, named pipes read with overlapped I/O, a job
-// object, the debugging functions) and shell32's CommandLineToArgvW, with nothing of ISO C or POSIX
-// beneath it, since neither can start a program with its outputs apart, in a
-// folder, under a time limit. What changes on POSIX is the inside: fork and
-// exec (or posix_spawn) with pipes and poll, a process group stopped by a
-// signal, an argument list that needs no quoting, an exit code of 0 to 255
-// and a signal beside it. A POSIX implementation comes when Linux does.
+// object, the debugging functions) and shell32's CommandLineToArgvW, with
+// nothing of ISO C or POSIX beneath it, since neither can start a program with its outputs apart, in a
+// folder, under a time limit. On POSIX it is posix_spawn with pipes read by
+// poll (a process group stopped by a signal, a working folder set by
+// posix_spawn's own file action, an argument list that needs no quoting, an
+// exit code of 0 to 255 and a signal beside it), with nothing of Windows'.
 
 mod process;
 
 import libc;
+import posix;
 import collections use String, List;
 import path use Path;
 import time;
@@ -320,6 +349,59 @@ const errorBrokenPipe = 109u32;                  // ERROR_BROKEN_PIPE
 const errorIoPending = 997u32;                   // ERROR_IO_PENDING
 
 // ---------------------------------------------------------------------------
+// POSIX: the C library's posix_spawn and its file actions, pipes, poll, wait
+// and kill. Declared on every platform, called only on POSIX.
+// ---------------------------------------------------------------------------
+
+// struct pollfd: a file descriptor, the events asked for and those that came
+struct PollFd {
+  pub fd i32;
+  pub events i16;
+  pub revents i16;
+}
+
+// struct rlimit: a soft and a hard limit
+struct RLimit {
+  pub soft u64;
+  pub hard u64;
+}
+
+extern {
+  fn @c("posix_spawnp") spawnProgram(pid *i32, file cstr, actions *u8, attr *u8, argv **u8, envp **u8) i32;
+  fn @c("posix_spawn_file_actions_init") actionsInit(actions *u8) i32;
+  fn @c("posix_spawn_file_actions_destroy") actionsDestroy(actions *u8) i32;
+  fn @c("posix_spawn_file_actions_adddup2") actionsDup2(actions *u8, fd i32, to i32) i32;
+  fn @c("posix_spawn_file_actions_addopen") actionsOpen(actions *u8, fd i32, path cstr, flags i32, mode u32) i32;
+  fn @c("posix_spawn_file_actions_addchdir_np") actionsChdir(actions *u8, path cstr) i32;
+  fn @c("posix_spawnattr_init") attrInit(attr *u8) i32;
+  fn @c("posix_spawnattr_destroy") attrDestroy(attr *u8) i32;
+  fn @c("posix_spawnattr_setflags") attrFlags(attr *u8, flags i16) i32;
+  fn @c("posix_spawnattr_setpgroup") attrGroup(attr *u8, group i32) i32;
+  fn @c("pipe2") makePipe2(fds *i32, flags i32) i32;
+  fn @c("poll") pollFds(fds *PollFd, count u64, ms i32) i32;
+  fn @c("read") readFd(fd i32, buf *u8, count usize) isize;
+  fn @c("close") closeFd(fd i32) i32;
+  fn @c("waitpid") waitPid(pid i32, status *i32, options i32) i32;
+  fn @c("kill") killPid(pid i32, signal i32) i32;
+  fn @c("getrlimit") getLimit(resource i32, limit *RLimit) i32;
+  fn @c("setrlimit") setLimit(resource i32, limit *RLimit) i32;
+  fn @c("readlink") readLink(path cstr, buf *u8, size usize) isize;
+  fn @c cone_environ() **u8;
+}
+
+const errnoInterrupted = 4i32;             // EINTR
+const errnoNoEntry = 2u32;                 // ENOENT
+const errnoInvalid = 22u32;                // EINVAL
+const errnoNotDirectory = 20u32;           // ENOTDIR
+const closeOnExec = 0x80000i32;            // O_CLOEXEC
+const openReadOnly = 0i32;                 // O_RDONLY
+const pollIn = 1i16;                       // POLLIN
+const spawnSetGroup = 2i16;                // POSIX_SPAWN_SETPGROUP
+const waitNoHang = 1i32;                   // WNOHANG
+const signalKill = 9i32;                   // SIGKILL
+const limitCore = 4i32;                    // RLIMIT_CORE
+
+// ---------------------------------------------------------------------------
 // Failure
 // ---------------------------------------------------------------------------
 
@@ -331,7 +413,8 @@ pub struct ProcessError {
   pub program String;
   // The working folder it was to start in, or "" for this program's own
   pub dir Path;
-  // Windows' error number (GetLastError): errorFileNotFound, errorDirectory, ...
+  // The system's error number: on Windows GetLastError's (errorFileNotFound,
+  // errorDirectory, ...), on POSIX errno's (ENOENT, ...)
   pub code u32;
 
   // One line for a person: 'run nosuch: The system cannot find the file
@@ -353,17 +436,29 @@ pub struct ProcessError {
   }
 
   // Whether it failed because there is no such program (or no folder on its
-  // path), ERROR_FILE_NOT_FOUND or ERROR_PATH_NOT_FOUND
-  pub fn notFound(self &) bool { code == errorFileNotFound or code == errorPathNotFound; }
+  // path), ERROR_FILE_NOT_FOUND or ERROR_PATH_NOT_FOUND; on POSIX ENOENT
+  pub fn notFound(self &) bool {
+    if isWindows() {code == errorFileNotFound or code == errorPathNotFound;} else {code == errnoNoEntry;}
+  }
 }
+
+// The error number for an argument the system cannot be given (a NUL byte, no
+// program at all): ERROR_INVALID_PARAMETER, or POSIX's EINVAL
+fn invalidParameter() u32 { if isWindows() {errorInvalidParameter;} else {errnoInvalid;}; }
 
 fn failure(op &str, program &str, dir &Path, code u32) ProcessError {
   new ProcessError(String.from(op), String.from(program), dir.copy(), code);
 }
 
+// The system's text for an error number: Windows' own (in English where it
+// has it), or on POSIX the C library's strerror
+fn systemText(code u32) String {
+  if isWindows() {windowsText(code);} else {String.from(libc.strerror(i32.from(code)).view());}
+}
+
 // Windows' text for an error number, in English where the system has it,
 // with no line end or full stop; 'Windows error N' where it has none
-fn systemText(code u32) String {
+fn windowsText(code u32) String {
   mut buf = new Array[u16, 512] <- fill 0u16;
   imm bp *u16 = &[]buf as *u16;
   mut n = FormatMessageW(formatFromSystem, null, code, english, bp, 512u32, null);
@@ -561,30 +656,46 @@ pub struct Output {
 // when 'dir' is left out or empty.
 pub fn run(args &Array[String], opts Options = new Options(), dir &Path = "") Result[Output, ProcessError] {
   if args.len == 0usize {
-    return Error[Output, ProcessError](failure("run", "", dir, errorInvalidParameter));
+    return Error[Output, ProcessError](failure("run", "", dir, invalidParameter()));
   }
   imm program = args[0usize].view();
   mut i = 0usize;
   while i < args.len {
     if hasByte(args[i].view(), 0u8) {
-      return Error[Output, ProcessError](failure("run", program, dir, errorInvalidParameter));
+      return Error[Output, ProcessError](failure("run", program, dir, invalidParameter()));
     }
     i = i + 1usize;
   }
-  if hasByte(program, '"') {
+  // The program's name may not hold a '"' on Windows, which cannot write it
+  if isWindows() and hasByte(program, '"') {
     return Error[Output, ProcessError](failure("run", program, dir, errorInvalidName));
   }
-  imm line = commandLine(args);
-  start("run", program, line.view(), dir, opts);
+  if isWindows() {
+    imm line = commandLine(args);
+    start("run", program, line.view(), dir, opts);
+  }
+  else {
+    startPosix("run", program, args, dir, opts);
+  }
 }
 
 // Run a command line as it is, for a program that reads its own line by
-// rules of its own, as 'cmd /c' does; otherwise as 'run'
+// rules of its own, as 'cmd /c' does (on POSIX, the shell's: '/bin/sh -c');
+// otherwise as 'run'
 pub fn runLine(line &str, opts Options = new Options(), dir &Path = "") Result[Output, ProcessError] {
   if hasByte(line, 0u8) {
-    return Error[Output, ProcessError](failure("runLine", line, dir, errorInvalidParameter));
+    return Error[Output, ProcessError](failure("runLine", line, dir, invalidParameter()));
   }
-  start("runLine", line, line, dir, opts);
+  if isWindows() {
+    start("runLine", line, line, dir, opts);
+  }
+  else {
+    mut shell = List[String].empty();
+    shell.push(String.from("/bin/sh"));
+    shell.push(String.from("-c"));
+    shell.push(String.from(line));
+    startPosix("runLine", line, shell.view(), dir, opts);
+  }
 }
 
 // One of the child's streams, read without blocking: our end of its pipe,
@@ -1028,13 +1139,325 @@ fn start(op &str, program &str, line &str, dir &Path, opts Options) Result[Outpu
 }
 
 // ---------------------------------------------------------------------------
+// POSIX: running a program, with posix_spawn
+// ---------------------------------------------------------------------------
+
+// One of the child's streams: our end of its pipe (-1 once closed) and what
+// has come through it
+struct Reader {
+  pub fd i32;
+  pub data String;
+}
+
+fn closeFdIf(fd i32) {
+  if fd >= 0i32 { closeFd(fd); }
+}
+
+// Milliseconds left until deadline, rounded up, for a poll; -1, no limit,
+// when there is none
+fn remainingMs(timed bool, deadline time.Instant) i32 {
+  if not timed { return -1i32; }
+  imm left = (deadline - time.Instant.now()).nanos();
+  if left <= 0i64 { return 0i32; }
+  imm ms = (left + 999999i64) / 1000000i64;
+  if ms > 2000000000i64 {2000000000i32;} else {i32.from(ms);};
+}
+
+// A program's exit code from the status waitpid gave: the status it exited
+// with, 0 to 255, or 128 and the signal that ended it
+fn exitStatus(status i32) u32 {
+  imm signal = status & 0x7Fi32;
+  if signal == 0i32 { return u32.from((status >> 8i32) & 0xFFi32); }
+  u32.from(128i32 + signal);
+}
+
+// A copy of the bytes with a NUL after them, in a block from malloc
+fn copyCString(s &Array[u8]) *u8 {
+  imm p = libc.malloc(s.len + 1usize);
+  if s.len > 0usize { libc.memcpy(p, s as *u8, s.len); }
+  p[s.len] = 0u8;
+  p;
+}
+
+// Stop the child and, where it was started in a group of its own, every
+// program in it
+fn stopGroup(pid i32, grouped bool) {
+  if grouped {
+    if killPid(0i32 - pid, signalKill) == 0i32 { return; }
+  }
+  killPid(pid, signalKill);
+}
+
+// Take what is waiting in a stream's pipe; an end, or a failure other than an
+// interrupted call, closes it
+fn readReady(r &mut Reader, buf *u8) {
+  imm n = readFd(r.fd, buf, 65536usize);
+  if n > 0isize {
+    r.data.appendBytes(mem.sliceFromParts(buf, usize.from(n)));
+  }
+  elif n == 0isize or *libc.errno() != errnoInterrupted {
+    closeFd(r.fd);
+    r.fd = -1i32;
+  }
+}
+
+// Start args (the program first) with posix_spawn, read what it writes,
+// wait for it
+fn startPosix(op &str, program &str, args &Array[String], dir &Path, opts Options) Result[Output, ProcessError] {
+  // The working folder must be a folder there is
+  mut cdir = String.empty();
+  if not dir.isEmpty() {
+    if hasByte(dir.view(), 0u8) {
+      return Error[Output, ProcessError](failure(op, program, dir, errnoInvalid));
+    }
+    cdir = String.from(dir.view());
+    mut st = new posix.Stat(0u64, 0u64, 0u16, 0u32, 0u32, 0u32, 0u64, 0i64, 0i64, 0i64, 0i64);
+    if posix.stat(cdir.cstr(), &mut st) != 0i32 {
+      return Error[Output, ProcessError](failure(op, program, dir, u32.from(*libc.errno())));
+    }
+    if (st.st_mode & posix.S_IFMT) != posix.S_IFDIR {
+      return Error[Output, ProcessError](failure(op, program, dir, errnoNotDirectory));
+    }
+  }
+
+  // A program named by a relative path is read from this program's folder,
+  // not from the child's
+  // ('program' is what an error names; the program to run is the first
+  // argument, which for a command line is the shell)
+  imm name = args[0usize].view();
+  mut file = String.from(name);
+  imm named &Array[u8] = name;
+  if not dir.isEmpty() and hasByte(named, '/') and named[0usize] != '/' {
+    imm here = posix.getcwd(null, 0usize);
+    if here != null {
+      file = String.fromCStr(here);
+      libc.free(here);
+      file.appendByte('/');
+      file.append(name);
+    }
+  }
+
+  imm count = args.len;
+  imm argv = libc.malloc((count + 1usize) * 8usize) as **u8;
+  mut k = 0usize;
+  while k < count {
+    *(argv + k) = copyCString(args[k].view());
+    k = k + 1usize;
+  }
+  *(argv + count) = null;
+
+  // The child's standard input from /dev/null and its output and error to
+  // pipes of ours; close-on-exec, so no other program started meanwhile
+  // holds them
+  mut so = new Reader(-1i32, String.empty());
+  mut se = new Reader(-1i32, String.empty());
+  mut outFds = new Array[i32, 2] <- fill 0i32;
+  mut errFds = new Array[i32, 2] <- fill 0i32;
+  imm outp *i32 = &[]outFds as *i32;
+  imm errp *i32 = &[]errFds as *i32;
+  mut actions = new Array[u64, 32] <- fill 0u64;
+  mut attr = new Array[u64, 64] <- fill 0u64;
+  // (opaque to us, and aligned for the pointers they hold: a block of words)
+  imm aw *u64 = &[]actions as *u64;
+  imm tw *u64 = &[]attr as *u64;
+  imm ap *u8 = aw as *u8;
+  imm tp *u8 = tw as *u8;
+  imm timed = opts.timeout > time.Duration.zero();
+  mut rc = actionsInit(ap);
+  if rc == 0i32 { rc = attrInit(tp); }
+  if rc == 0i32 and not opts.inherit {
+    if makePipe2(outp, closeOnExec) != 0i32 {
+      rc = *libc.errno();
+    }
+    elif makePipe2(errp, closeOnExec) != 0i32 {
+      rc = *libc.errno();
+      closeFd(outFds[0usize]);
+      closeFd(outFds[1usize]);
+    }
+    else {
+      so.fd = outFds[0usize];
+      se.fd = errFds[0usize];
+      rc = actionsOpen(ap, 0i32, "/dev/null", openReadOnly, 0u32);
+      if rc == 0i32 { rc = actionsDup2(ap, outFds[1usize], 1i32); }
+      if rc == 0i32 { rc = actionsDup2(ap, errFds[1usize], 2i32); }
+    }
+  }
+  if rc == 0i32 and cdir.len() > 0usize { rc = actionsChdir(ap, cdir.cstr()); }
+  if rc == 0i32 and timed {
+    rc = attrFlags(tp, spawnSetGroup);
+    if rc == 0i32 { rc = attrGroup(tp, 0i32); }
+  }
+
+  // A crash that is not to be reported leaves no core dump for the system to
+  // take: the limit is zero for the child, whose it becomes, and put back
+  mut saved = new RLimit(0u64, 0u64);
+  mut limited = false;
+  if rc == 0i32 and not opts.crashReport {
+    if getLimit(limitCore, &mut saved as *RLimit) == 0i32 {
+      mut none = new RLimit(0u64, saved.hard);
+      setLimit(limitCore, &mut none as *RLimit);
+      limited = true;
+    }
+  }
+  mut pid = 0i32;
+  if rc == 0i32 {
+    rc = spawnProgram(&mut pid as *i32, file.cstr(), ap, tp, argv, cone_environ());
+  }
+  if limited { setLimit(limitCore, &mut saved as *RLimit); }
+
+  actionsDestroy(ap);
+  attrDestroy(tp);
+  k = 0usize;
+  while k < count {
+    libc.free(*(argv + k));
+    k = k + 1usize;
+  }
+  libc.free(argv as *u8);
+  // The child's ends are the child's now: with ours closed, a pipe ends when
+  // the child, and whatever it started, has closed it
+  if not opts.inherit and so.fd >= 0i32 {
+    closeFd(outFds[1usize]);
+    closeFd(errFds[1usize]);
+  }
+  if rc != 0i32 {
+    closeFdIf(so.fd);
+    closeFdIf(se.fd);
+    return Error[Output, ProcessError](failure(op, program, dir, u32.from(rc)));
+  }
+
+  // A child with a time limit is its group's leader, so a stop reaches what
+  // it started
+  imm deadline = if timed {time.Instant.now() + opts.timeout;} else {time.Instant.fromNanos(0i64);};
+
+  // Both outputs at once, so that a child blocked writing one is never
+  // waiting on a reader blocked on the other
+  mut timedOut = false;
+  imm buf = libc.malloc(65536usize);
+  mut polls = new Array[PollFd, 2] <- fill new PollFd(-1i32, pollIn, 0i16);
+  imm pp *PollFd = &[]polls as *PollFd;
+  mut reading = so.fd >= 0i32 or se.fd >= 0i32;
+  while reading {
+    polls[0usize].fd = so.fd;
+    polls[0usize].revents = 0i16;
+    polls[1usize].fd = se.fd;
+    polls[1usize].revents = 0i16;
+    imm ready = pollFds(pp, 2u64, remainingMs(timed, deadline));
+    if ready == 0i32 {
+      timedOut = true;
+      stopGroup(pid, timed);
+      reading = false;
+    }
+    elif ready < 0i32 {
+      // An interrupted call is tried again, any other failure ends the reading
+      if *libc.errno() != errnoInterrupted { reading = false; }
+    }
+    else {
+      if so.fd >= 0i32 and polls[0usize].revents != 0i16 { readReady(&mut so, buf); }
+      if se.fd >= 0i32 and polls[1usize].revents != 0i16 { readReady(&mut se, buf); }
+      reading = so.fd >= 0i32 or se.fd >= 0i32;
+    }
+  }
+  libc.free(buf);
+  closeFdIf(so.fd);
+  closeFdIf(se.fd);
+
+  // Wait for the child, until its time runs out
+  mut status = 0i32;
+  mut reaped = false;
+  if timed and not timedOut {
+    while not reaped and not timedOut {
+      imm w = waitPid(pid, &mut status as *i32, waitNoHang);
+      if w == pid {
+        reaped = true;
+      }
+      elif w < 0i32 and *libc.errno() != errnoInterrupted {
+        reaped = true;
+      }
+      elif remainingMs(timed, deadline) == 0i32 {
+        timedOut = true;
+        stopGroup(pid, timed);
+      }
+      else {
+        // A millisecond's wait, by a poll with nothing to poll
+        pollFds(null, 0u64, 1i32);
+      }
+    }
+  }
+  while not reaped {
+    imm w = waitPid(pid, &mut status as *i32, 0i32);
+    if w == pid or *libc.errno() != errnoInterrupted { reaped = true; }
+  }
+  mut out = String.empty();
+  mut err = String.empty();
+  out <=> so.data;
+  err <=> se.data;
+  imm exitCode = if timedOut {stoppedCode;} else {exitStatus(status);};
+  Ok[Output, ProcessError](new Output(exitCode, timedOut, out, err));
+}
+
+// ---------------------------------------------------------------------------
 // This program
 // ---------------------------------------------------------------------------
+
+// This program's arguments on POSIX, its own name first: argv's bytes, which
+// the kernel keeps as the NUL-ended strings of /proc/self/cmdline
+fn argsPosix() List[String] {
+  mut out = List[String].empty();
+  imm f = libc.fopen("/proc/self/cmdline", "rb");
+  if f == null { return out; }
+  mut whole = String.empty();
+  mut buf = new Array[u8, 4096] <- fill 0u8;
+  imm bp *u8 = &[]buf as *u8;
+  mut going = true;
+  while going {
+    imm n = libc.fread(bp, 1usize, 4096usize, f);
+    if n > 0usize { whole.appendBytes(mem.sliceFromParts(bp, n)); }
+    going = n == 4096usize;
+  }
+  libc.fclose(f);
+  mut begin = 0usize;
+  mut i = 0usize;
+  while i < whole.len() {
+    if whole[i] == 0u8 {
+      out.push(whole.sub(begin, i));
+      begin = i + 1usize;
+    }
+    i = i + 1usize;
+  }
+  out;
+}
+
+// The path of this program's executable on POSIX, where /proc/self/exe links
+fn currentExePosix() Result[Path, ProcessError] {
+  mut size = 256usize;
+  while size <= 0x10000usize {
+    imm buf = libc.malloc(size);
+    imm n = readLink("/proc/self/exe", buf, size);
+    if n < 0isize {
+      imm code = u32.from(*libc.errno());
+      libc.free(buf);
+      return Error[Path, ProcessError](failure("currentExe", "", "", code));
+    }
+    if usize.from(n) < size {
+      imm got = String.fromBytes(mem.sliceFromParts(buf, usize.from(n)));
+      libc.free(buf);
+      imm exe = Path.from(got.view());
+      return Ok[Path, ProcessError](exe.normalize());
+    }
+    libc.free(buf);
+    size = size * 2usize;
+  }
+  Error[Path, ProcessError](failure("currentExe", "", "", errnoInvalid));
+}
 
 // This program's arguments, its own name first, as Windows' parser
 // (CommandLineToArgvW) splits its command line, each in UTF-8, whatever the
 // system's code page: what 'main''s argv holds when every one is ASCII
 pub fn args() List[String] {
+  if isWindows() {argsWindows();} else {argsPosix();}
+}
+
+fn argsWindows() List[String] {
   mut out = List[String].empty();
   mut n = 0i32;
   imm argv = CommandLineToArgvW(GetCommandLineW(), &mut n);
@@ -1051,6 +1474,10 @@ pub fn args() List[String] {
 
 // The path of this program's executable, normalized ('C:/work/build/app.exe')
 pub fn currentExe() Result[Path, ProcessError] {
+  if isWindows() {currentExeWindows();} else {currentExePosix();}
+}
+
+fn currentExeWindows() Result[Path, ProcessError] {
   mut size = 260u32;
   while size <= 0x10000u32 {
     imm buf = libc.malloc(usize.from(size) * 2usize) as *u16;

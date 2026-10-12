@@ -36,6 +36,19 @@ int64_t cone_time(int64_t *t) {
     return now;
 }
 
+// The POSIX error numbers that differ by C library (the UCRT's ENAMETOOLONG is
+// 38 and glibc's 36, its ENOTEMPTY 41 and glibc's 39), which the posix package
+// declares as globals of their own names. Each is a macro, so the header's value
+// is taken first and the macro removed before its name is used for the global
+enum {
+    cone_value_ENAMETOOLONG = ENAMETOOLONG,
+    cone_value_ENOTEMPTY = ENOTEMPTY
+};
+#undef ENAMETOOLONG
+#undef ENOTEMPTY
+const int ENAMETOOLONG = cone_value_ENAMETOOLONG;
+const int ENOTEMPTY = cone_value_ENOTEMPTY;
+
 // libc's 'Timespec': 'tv_sec' at 0 and a 32-bit 'tv_nsec' at 8, 16 bytes
 struct ConeTimespec {
     int64_t tv_sec;

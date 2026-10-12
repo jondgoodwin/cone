@@ -116,6 +116,20 @@ fn withSuffix(file &Path, suffix &str) Path {
   folder.join(name.view());
 }
 
+// The file a test's stdout is compared with on this host: tests/a.out unless
+// the test has a file of its own for this host, tests/a.linux.out (windows,
+// linux or macos), which is for a test that cannot print the same on every
+// system
+fn expectationFile(program &Path, suffix &str) Path {
+  mut host = String.from(".macos");
+  if isWindows() { host = String.from(".windows"); }
+  elif isLinux() { host = String.from(".linux"); }
+  host <- suffix;
+  imm own = withSuffix(program, host.view());
+  if fs.isFile(&own) { return own; }
+  withSuffix(program, suffix);
+}
+
 // A file's whole text, or Congo stops, as congo.py stops at a file it cannot
 // read
 fn readAll(file &Path) String {
@@ -314,7 +328,7 @@ fn runTest(s &mut Session, file &Path, bless bool) Verdict {
   // how a person learns why (no dialog says so)
   imm notStarted = dllNote(code, &exe);
   if notStarted.len() > 0usize { return new Verdict(false, notStarted); }
-  imm expectedPath = withSuffix(file, ".out");
+  imm expectedPath = expectationFile(file, ".out");
   if not fs.isFile(&expectedPath) {
     imm expectedShown = shown(&expectedPath);
     if not bless {

@@ -69,6 +69,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 IS_WINDOWS = os.name == "nt"
+# The host's name in a platform's own expectation file: ``name.linux.out`` is
+# what a test must print on Linux where it cannot print the same everywhere
+HOST_OS = "windows" if IS_WINDOWS else ("macos" if sys.platform == "darwin" else "linux")
 CONGO_DIR = Path(__file__).resolve().parent
 # Congo lives at tools/congo/ in the Cone repository, beside packages/ and the
 # compiler's build tree
@@ -1325,11 +1328,13 @@ class Linker:
             # its wakes), which a program importing sync compiles in. An import
             # library of the Windows SDK, beside the C runtime's, so no
             # package's [link] names it ([link] has no per-system form); a
-            # program that calls none of it takes nothing from it.
+            # program that calls none of it takes nothing from it. The same
+            # goes for shell32.lib, whose CommandLineToArgvW the process
+            # package's 'args' splits the program's command line with.
             return [self.tool, "/NOLOGO", *map(str, objs), str(self.conestd),
                     *(f"/LIBPATH:{p}" for p in paths), *(f"{lib}.lib" for lib in libraries),
                     f"/OUT:{exe}", "/SUBSYSTEM:CONSOLE", "msvcrt.lib",
-                    "legacy_stdio_definitions.lib", "synchronization.lib"]
+                    "legacy_stdio_definitions.lib", "synchronization.lib", "shell32.lib"]
         return [self.tool, *map(str, objs), str(self.conestd),
                 *(f"-L{p}" for p in paths), *(f"-l{lib}" for lib in libraries),
                 "-o", str(exe), "-lm", "-lpthread"]
@@ -2009,6 +2014,15 @@ def normalized_lines(text: str) -> list[str]:
     return lines
 
 
+def expectation_file(program: Path, suffix: str) -> Path:
+    """The file a test's stdout (``.out``) is compared with on this host:
+    ``name.out`` unless the test has a file of its own for this host,
+    ``name.<host>.out`` (``windows``, ``linux`` or ``macos``), which is for a
+    test that cannot print the same on every system."""
+    own = program.with_suffix(f".{HOST_OS}{suffix}")
+    return own if own.is_file() else program.with_suffix(suffix)
+
+
 def expected_exit(program: Path) -> int:
     """tests/<name>.exit holds the exit status the program must end with, where
     it is not 0: one integer, as the compiler suite's 'program_exit' is. A file
@@ -2212,7 +2226,7 @@ def run_test(session: Session, file: Path, bless: bool) -> tuple[bool, str]:
         return False, not_started.lstrip("\n")
     stdout = ran.stdout.decode("utf-8", errors="replace")
     stderr = ran.stderr.decode("utf-8", errors="replace")
-    expected_path = file.with_suffix(".out")
+    expected_path = expectation_file(file, ".out")
     if not expected_path.is_file():
         if not bless:
             return False, (f"no expected output, {shown(expected_path)}: write it by"
