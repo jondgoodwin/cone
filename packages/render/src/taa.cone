@@ -325,12 +325,16 @@ pub struct TaaPass {
   // wanted, and write them from this frame's batches (the order the main
   // pass wrote its instances in: the renderer's batches and keys). Every
   // instance has a previous matrix, its own where nothing says it moved.
-  // Returns whether any batch holds a moving copy.
+  // Returns whether any batch holds a moving copy. With a scene (visibility.cone) the batches' keys name the
+  // items the renderer gathered (the draw list's, then the scene's), so those are read, not the list; the
+  // scene's items do not move as far as motion goes (the camera's motion is the depth's), and a batch the
+  // depth pyramid culls (occlusion) has its copies placed by the GPU, so it has no previous matrices here.
   pub fn writePrevious(self &mut, device &mut Device, frameBuffer &Buffer, r &Renderer, list &DrawList,
       motion &MotionList) bool {
+    imm items &List[DrawItem] = if r.frameItemsLive { &r.frameItems; } else { &list.items; };
     itemEntry.clear();
     mut i = 0usize;
-    while i < list.items.len() {
+    while i < items.len() {
       itemEntry.push(0u32);
       i = i + 1usize;
     }
@@ -350,10 +354,11 @@ pub struct TaaPass {
     mut b = 0usize;
     while b < r.batches.len() {
       imm batch = *r.batches[b];
+      if batch.occ != 0u32 { b = b + 1usize; continue; }
       mut j = 0u32;
       while j < batch.count {
         imm itemIndex = usize.from(r.keys[usize.from(batch.first + j)].item);
-        imm item = list.items[itemIndex];
+        imm item = items[itemIndex];
         imm slot = *itemEntry[itemIndex];
         if slot != 0u32 {
           imm entry = motion.entries[usize.from(slot - 1u32)];
@@ -428,18 +433,19 @@ pub struct TaaPass {
     while b < r.batches.len() {
       imm batch = *r.batches[b];
       b = b + 1usize;
-      if batch.layer != LAYER_OPAQUE { continue; }
+      if batch.layer != LAYER_OPAQUE or batch.occ != 0u32 { continue; }
       // Only a batch with a moving copy among its copies
       mut moving = false;
       mut j = 0u32;
       while j < batch.count {
         imm itemIndex = usize.from(r.keys[usize.from(batch.first + j)].item);
-        if *itemEntry[itemIndex] != 0u32 { moving = true; }
+        if itemIndex < itemEntry.len() and *itemEntry[itemIndex] != 0u32 { moving = true; }
         j = j + 1u32;
       }
       if !moving { continue; }
       imm first = *r.keys[usize.from(batch.first)];
-      imm item = list.items[usize.from(first.item)];
+      imm items &List[DrawItem] = if r.frameItemsLive { &r.frameItems; } else { &list.items; };
+      imm item = items[usize.from(first.item)];
       imm m = r.meshes[item.mesh.slot].current();
       imm kind = velocityKindOf(r, item, m);
       if kind == VELOCITY_NONE { continue; }

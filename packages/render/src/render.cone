@@ -395,6 +395,13 @@ pub struct Renderer {
   pub vis Visibility;
   // The depth pyramid that culls it (hiz.cone): none until occlusion is first on
   pub hiz List[HiZ];
+  // The items the last render drew from, when it had a scene: the draw list's, then the scene's survivors
+  // (a batch's keys name items by their place here). The passes after render that go by the batches
+  // (temporal AA's motion, in fx.cone and taa.cone) read items from it, not from the draw list, whose
+  // length the scene's items go past. 'frameItemsLive' is false when the last render had no scene (the
+  // batches' keys then name the draw list's own items).
+  pub frameItems List[DrawItem];
+  pub frameItemsLive bool = false;
   // Store the depth buffer at the end of 'render' (it is discarded
   // otherwise), so that a later pass into the same target -- glowing
   // particles drawn additively, say -- is depth tested against the scene
@@ -592,7 +599,8 @@ pub struct Renderer {
       instances, FIRST_INSTANCES, List[f32].empty(), List[DrawKey].empty(), List[DrawBatch].empty(), 0u32,
       Pool[PipelineSlot].empty(), litSkinnedPipeline, pbrSkinnedPipeline, bones, FIRST_BONES, boneBases,
       List[u32].empty(), 0u32, litBlendPipeline, pbrBlendPipeline, litSkinnedBlendPipeline, pbrSkinnedBlendPipeline, 0u32,
-      pbrSwayPipeline, shadow, lights, List[ProbeSlot].empty(), Visibility.create(0.25), List[HiZ].empty());
+      pbrSwayPipeline, shadow, lights, List[ProbeSlot].empty(), Visibility.create(0.25), List[HiZ].empty(),
+      List[DrawItem].empty());
     mut w = new Image(1, 1, 3, List[u8].empty());
     w.pixels.push(255u8);
     w.pixels.push(255u8);
@@ -1281,6 +1289,7 @@ pub struct Renderer {
     drawCalls = 0u32;
     triangles = 0u64;
     instancesDrawn = 0u32;
+    frameItemsLive = false;
     if target.width == 0u32 or target.height == 0u32 { return; }
 
     // The frame's uniforms: the camera and the light
@@ -1618,6 +1627,9 @@ pub struct Renderer {
       hz.finishFrame(&viewProjection);
       if vis.settings.occlusionStats { hz.copyStats(device, encoder); }
     }
+    // The items, kept for the passes that go by the batches' keys
+    frameItemsLive = sceneOn;
+    if sceneOn { frameItems <=> sceneList.items; }
   }
 
   // Draw the sky into 'pass': one triangle at the far plane, where nothing
