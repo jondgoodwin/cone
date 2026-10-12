@@ -34,6 +34,7 @@
 
 import renderframe;
 import skinning;
+import fade;
 import shadowing;
 import locallights;
 
@@ -63,6 +64,7 @@ struct VertexOutput {
     float3 normal : NORMAL;
     float2 uv : TEXCOORD;
     nointerpolation float4 tint : COLOR;
+    nointerpolation float fade : TEXCOORD7;   // fade.slang: a copy fading in or out (0: whole)
 };
 
 [shader("vertex")]
@@ -75,6 +77,7 @@ VertexOutput vertexMain(VertexInput input, uint id : SV_VulkanInstanceID) {
     output.normal = worldNormal(inst.model, input.normal);
     output.uv = input.uv;
     output.tint = inst.tint;
+    output.fade = instanceFade(id);
     return output;
 }
 
@@ -92,11 +95,13 @@ VertexOutput vertexSkinned(SkinnedVertexInput input, uint id : SV_VulkanInstance
     output.normal = worldNormal(inst.model, skinVector(skin, input.normal));
     output.uv = input.uv;
     output.tint = inst.tint;
+    output.fade = 0.0;
     return output;
 }
 
 [shader("fragment")]
 float4 fragmentMain(VertexOutput input) : SV_Target {
+    fadeClip(input.fade, input.position.xy);
     float3 n = normalize(input.normal);
     float3 l = frame.lightDirection.xyz;
     float3 v = normalize(frame.cameraPosition.xyz - input.world);
