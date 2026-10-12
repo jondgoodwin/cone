@@ -68,6 +68,28 @@
 //   normal offset, blending cascades at their seams. Cut-out, skinned and
 //   flutter meshes cast what they show; see-through and custom-pipeline
 //   draws cast nothing, nor does an item marked 'dontCastShadow'.
+// - Point and spot lights (lights.cone, locallights.slang): real light
+//   sources, in 'renderer.lights', named by handles and cheap to add, move,
+//   aim, recolour and re-intensify every frame (a flicker). Intensity in
+//   candela (so a scene in physical units lights with them and exposes with
+//   'exposureFromEv100'), a falloff of the inverse square windowed to zero at
+//   the light's range (Karis, UE4 2013), a spot's cone a smooth ramp between
+//   inner and outer angles, a source's radius (a bulb) giving the highlight
+//   its size (Karis's representative point). CLUSTERED FORWARD SHADING
+//   (Olsson, Billeter and Assarsson 2012; Doom 2016; Godot 4): the view is a
+//   grid of 16 x 9 x 24 froxels (depth exponential), the CPU assigns each
+//   light to the froxels it reaches (at most 1,024 lights, 64 to a
+//   cluster), and the lit and physically based materials loop over the
+//   lights of their own fragment's cluster, over nothing in a scene without
+//   any. A light and a material each have a mask of layers (bits 0 to 23),
+//   and a light reaches only the materials it shares one with: a bulb on
+//   layer 1 lights a lantern's own frame and not the path. A scene with no
+//   light that reaches the view is drawn bit for bit as it was before.
+//   Shadows (lightshadow.cone, 'setLightShadows'): a light marked to cast
+//   gets one perspective view (a spot light's) or six (a point light's, a
+//   cube's faces) of a depth texture array, the best ranked while layers
+//   last, drawn by the sun's casters, filtered as the sun's is, biased in
+//   texels at the receiver.
 // - DrawList: what is drawn this frame, each a mesh, a material and a model
 //   matrix (and a tint), drawn in one render pass.
 // - Skinning (skin.cone, skinning.slang): a mesh bound to a skeleton's bones
@@ -124,8 +146,11 @@
 // shadows (shadowparams.slang, shadowing.slang): their parameters in a
 // uniform buffer (binding 4), the cascades' depth texture array (5) and the
 // comparison sampler that reads it (6), a one-texel stand-in while shadows
-// are off. The shadow passes bind a group of their own (bindings 0 to 4,
-// without the map they draw into). Group 1 is the material's: its parameters in a
+// are off; then the point and spot lights (locallights.slang): the clusters'
+// parameters in a uniform buffer (binding 7), the lights in a storage buffer
+// (8, four float4s a light) and the clusters' lists in another (9: an offset
+// and a count a cluster, then the lists). The shadow passes bind a group of
+// their own (bindings 0 to 4, without the map they draw into). Group 1 is the material's: its parameters in a
 // uniform buffer of its own, its texture and the renderer's sampler; for
 // the physically based material, its metallic-roughness, normal and
 // occlusion maps after them (its own layout, 'pbrMaterialLayout'); for a
@@ -176,10 +201,12 @@
 //   image.cone     Image
 //   shadow.cone    ShadowSettings, the cascades' maths, the shadow map and its casters' pipelines and passes;
 //                  shadowcast.slang's, shadowcutlit.slang's and shadowcutpbr.slang's SPIR-V
+//   lights.cone    LightSet, LightHandle: point and spot lights, the froxel grid, the assignment and the
+//                  GPU buffers (locallights.slang is the shaders' side of it)
 //
 // and its shaders, Slang: lit, lines, pbr, ibl and post, and the modules
-// brdf, sky, renderframe, skinning, flutter, shadowparams, shadowing and
-// shadowcasting they import (pbr imports the noise package's too); the
+// brdf, sky, renderframe, skinning, flutter, shadowparams, shadowing,
+// locallights and shadowcasting they import (pbr imports the noise package's too); the
 // shadow casters shadowcast, shadowcutlit and shadowcutpbr draw depth only.
 //
 // Coordinates are geomath's and gpu's: right-handed, y up, the camera looking
@@ -323,6 +350,8 @@ pub struct Renderer {
   pub pbrSwayPipeline RenderPipeline;
   // The sun's shadows (shadow.cone): off until 'setShadows'
   pub shadow ShadowState;
+  // The point and spot lights (lights.cone): none until some are added
+  pub lights LightSet;
   // The reflection probes ('addProbe', views.cone): a physically based copy
   // inside a probe's box is lit by that probe's cubes instead of the sky's
   pub probes List[ProbeSlot];
@@ -356,7 +385,15 @@ pub struct Renderer {
       new BindGroupLayoutEntry(binding: 4u32, visibility: SHADER_STAGE_VERTEX | SHADER_STAGE_FRAGMENT),
       new BindGroupLayoutEntry(binding: 5u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE,
         viewDimension: TEXTURE_VIEW_DIMENSION_2D_ARRAY, sampleType: TEXTURE_SAMPLE_TYPE_DEPTH),
-      new BindGroupLayoutEntry(binding: 6u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_SAMPLER)];
+      new BindGroupLayoutEntry(binding: 6u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_SAMPLER),
+      // and the point and spot lights (locallights.slang): the clusters'
+      // parameters, the lights, and the clusters' lists
+      new BindGroupLayoutEntry(binding: 7u32, visibility: SHADER_STAGE_FRAGMENT),
+      new BindGroupLayoutEntry(binding: 8u32, visibility: SHADER_STAGE_FRAGMENT, bufferType: BUFFER_BINDING_TYPE_READ_ONLY_STORAGE),
+      new BindGroupLayoutEntry(binding: 9u32, visibility: SHADER_STAGE_FRAGMENT, bufferType: BUFFER_BINDING_TYPE_READ_ONLY_STORAGE),
+      // and those lights' shadow views, a depth texture array (read through binding 6's comparison sampler)
+      new BindGroupLayoutEntry(binding: 10u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE,
+        viewDimension: TEXTURE_VIEW_DIMENSION_2D_ARRAY, sampleType: TEXTURE_SAMPLE_TYPE_DEPTH)];
     mut frameLayout = device.createBindGroupLayout(&frameEntries);
     imm materialEntries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_FRAGMENT),
       new BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE),
@@ -489,10 +526,14 @@ pub struct Renderer {
     mut shadow = ShadowState.create(device, &materialLayout, &pbrMaterialLayout, &frameUniforms, &instances, &bones,
       &boneBases);
     imm shadowView = shadow.arrayView();
+    mut lights = LightSet.create(device);
+    imm lightShadowView = lights.shadows.arrayView();
     imm frameGroupEntries = [BindGroupEntry.buffer(0u32, &frameUniforms), BindGroupEntry.buffer(1u32, &instances),
       BindGroupEntry.buffer(2u32, &bones), BindGroupEntry.buffer(3u32, &boneBases),
       BindGroupEntry.buffer(4u32, &shadow.params), BindGroupEntry.texture(5u32, &shadowView),
-      BindGroupEntry.sampler(6u32, &shadow.sampler)];
+      BindGroupEntry.sampler(6u32, &shadow.sampler), BindGroupEntry.buffer(7u32, &lights.paramsBuffer),
+      BindGroupEntry.buffer(8u32, &lights.rowBuffer), BindGroupEntry.buffer(9u32, &lights.clusterBuffer),
+      BindGroupEntry.texture(10u32, &lightShadowView)];
     mut frameGroup = device.createBindGroup(&frameLayout, &frameGroupEntries);
     // Trilinear, and anisotropic to 16 where the device does it (fewer
     // where it does less; none where it does none)
@@ -508,7 +549,7 @@ pub struct Renderer {
       instances, FIRST_INSTANCES, List[f32].empty(), List[DrawKey].empty(), List[DrawBatch].empty(), 0u32,
       Pool[PipelineSlot].empty(), litSkinnedPipeline, pbrSkinnedPipeline, bones, FIRST_BONES, boneBases,
       List[u32].empty(), 0u32, litBlendPipeline, pbrBlendPipeline, litSkinnedBlendPipeline, pbrSkinnedBlendPipeline, 0u32,
-      pbrSwayPipeline, shadow, List[ProbeSlot].empty());
+      pbrSwayPipeline, shadow, lights, List[ProbeSlot].empty());
     mut w = new Image(1, 1, 3, List[u8].empty());
     w.pixels.push(255u8);
     w.pixels.push(255u8);
@@ -524,16 +565,19 @@ pub struct Renderer {
       and instances.isValid() and litSkinnedPipeline.isValid() and pbrSkinnedPipeline.isValid() and bones.isValid()
       and boneBases.isValid() and litBlendPipeline.isValid() and pbrBlendPipeline.isValid()
       and litSkinnedBlendPipeline.isValid() and pbrSkinnedBlendPipeline.isValid() and pbrSwayPipeline.isValid()
-      and shadow.isValid();
+      and shadow.isValid() and lights.isValid();
   }
 
   // The frame's group made again, after a buffer in it was replaced
   fn remakeFrameGroup(self &mut, device &mut Device) {
     imm shadowView = shadow.arrayView();
+    imm lightShadowView = lights.shadows.arrayView();
     imm entries = [BindGroupEntry.buffer(0u32, &frameUniforms), BindGroupEntry.buffer(1u32, &instances),
       BindGroupEntry.buffer(2u32, &bones), BindGroupEntry.buffer(3u32, &boneBases),
       BindGroupEntry.buffer(4u32, &shadow.params), BindGroupEntry.texture(5u32, &shadowView),
-      BindGroupEntry.sampler(6u32, &shadow.sampler)];
+      BindGroupEntry.sampler(6u32, &shadow.sampler), BindGroupEntry.buffer(7u32, &lights.paramsBuffer),
+      BindGroupEntry.buffer(8u32, &lights.rowBuffer), BindGroupEntry.buffer(9u32, &lights.clusterBuffer),
+      BindGroupEntry.texture(10u32, &lightShadowView)];
     frameGroup = device.createBindGroup(&frameLayout, &entries);
     shadow.remakeCasterGroup(device, &frameUniforms, &instances, &bones, &boneBases);
   }
@@ -561,6 +605,33 @@ pub struct Renderer {
         wanted.slopeBias);
     }
     shadow.settings = wanted;
+  }
+
+  // Cast the point and spot lights' shadows as 's' says (lightshadow.cone): off,
+  // or a map of 'maxViews' layers of 'tileSize' square, a spot light's view one
+  // layer and a point light's six. Only a light marked 'lights.setCastsShadow'
+  // casts, and the best ranked of those while layers last. The map is made
+  // again when its size or layers change (the GPU is waited for: set the
+  // tier at start-up or in a menu, not every frame).
+  pub fn setLightShadows(self &mut, device &mut Device, s &LightShadowSettings) {
+    imm wanted = clampLightShadowSettings(s);
+    imm layers = if wanted.enabled { wanted.maxViews; } else { 0u32; };
+    imm size = if wanted.enabled { wanted.tileSize; } else { 1u32; };
+    imm wantedLayers = if layers == 0u32 { 1u32; } else { layers; };
+    if lights.shadows.map.width != size or lights.shadows.map.depthOrArrayLayers != wantedLayers {
+      device.waitIdle();
+      lights.shadows.remakeMap(device, size, layers);
+      self.remakeFrameGroup(device);
+    }
+    lights.shadows.settings = wanted;
+    lights.rowsDirty = true;
+  }
+
+  // The point and spot lights' shadows off again (the map is freed, the
+  // one-texel stand-in kept)
+  pub fn disableLightShadows(self &mut, device &mut Device) {
+    imm off = LightShadowSettings.off();
+    self.setLightShadows(device, &off);
   }
 
   // Draw 'sky' behind the scene from the next render on, and light the
@@ -931,6 +1002,7 @@ pub struct Renderer {
     slot.params.emissive = material.emissive;
     slot.params.alphaMode = material.alphaMode;
     slot.params.alphaCutoff = material.alphaCutoff;
+    slot.params.lightLayers = material.lightLayers;
     slot.blend = material.alphaMode == ALPHA_BLEND;
     true;
   }
@@ -1144,6 +1216,11 @@ pub struct Renderer {
     frame[52] = exposure;
     device.queue.writeBuffer(&frameUniforms, 0u64, &frame as *u8, FRAME_BYTES);
 
+    // The point and spot lights: assigned to this camera's clusters, and
+    // written (lights.cone); the frame group is made again if the lists'
+    // buffer had to grow
+    if lights.prepare(device, camera, aspect, target.width, target.height) { self.remakeFrameGroup(device); }
+
     // The batches, front to back, and their instances and bones written
     self.gatherBatches(list, eye);
     self.writeInstances(device, list);
@@ -1158,9 +1235,11 @@ pub struct Renderer {
       imm place = camera.placement();
       imm forward = new Vec3(-place.m[8], -place.m[9], -place.m[10]).normalize();
       imm shadowFloats = shadowParamsFloats(&shadow.cascades, &shadow.settings, forward, shadowsOn);
-      device.queue.writeBuffer(&shadow.params, 0u64, &shadowFloats as *u8, SHADOW_PARAMS_BYTES);
+      device.queue.writeBuffer(&shadow.params, 0u64, &shadowFloats as *u8, SHADOW_SUN_BYTES);
     }
     if shadowsOn { recordShadowPasses(self, device, encoder, list); }
+    // And those of the point and spot lights that were given views
+    recordLocalShadowPasses(self, device, encoder, list);
 
     // The background is light too: exposed like the rest
     imm bg = camera.background;
@@ -1549,7 +1628,7 @@ fn materialParams(material &Material) Array[f32, 16] {
   [material.baseColor.red, material.baseColor.green, material.baseColor.blue, material.baseColor.alpha,
     material.specular.red, material.specular.green, material.specular.blue, material.shininess,
     material.emissive.red, material.emissive.green, material.emissive.blue, 0.,
-    f32.from(material.alphaMode), material.alphaCutoff, 0., 0.];
+    f32.from(material.alphaMode), material.alphaCutoff, f32.from(material.lightLayers & 16777215u32), 0.];
 }
 
 // What a draw list holds: a mesh, the material it is drawn with (not used
