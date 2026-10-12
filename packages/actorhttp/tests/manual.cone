@@ -1,0 +1,105 @@
+// The example of the reference manual's section on HTTP an actor awaits
+// (doc/reference/refconcio.html, "HTTP an actor awaits"), compiled and run, so
+// the page cannot drift from what the package does. The page shows the block
+// between the "manual:" lines verbatim; what it leaves out is the server (a
+// Shop, an actor of aio's sockets that answers the one request it reads) and
+// main, which starts the two and waits for the Weather to say it is done
+// before finalAll() ends the program.
+
+mod manual;
+
+import stdio use *;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import collections use String;
+import iobuf use IoBuf, Pool;
+import time use Instant, Duration;
+import iocore use SocketAddr, IoError;
+import actors;
+import aio use Socket, IoLimits;
+import actorhttp use Client, FetchError;
+
+fn say(s &str, n u64) {printStr(s); printStr(" "); printUInt(n); printStr("\n");}
+
+// manual: begin
+actor Weather {
+  client Client;
+
+  pub async do show(self, url String, done OneshotSender[u64]) {
+    // The whole response, awaited: this actor handles its other messages
+    // meanwhile. It is given ten seconds, and the answer says how it ended
+    imm r = await client.getIn(url.view(), IoLimits.until(Instant.now() + Duration.fromSeconds(10i64)));
+    match r {
+      case imm ok Ok {
+        say("status", u64.from(ok.status));
+        printStr(ok.body.view());
+        printStr("\n");
+      }
+      case imm e Error {
+        if e.isTimedOut() {printStr("too slow\n");}
+        elif e.isCancelled() {printStr("cancelled\n");}
+        else {printStr(e.message().view()); printStr("\n");}
+      }
+    }
+    mut d = done;
+    d.send(1u64);
+  }
+}
+// manual: end
+
+fn socketOf(r Result[Socket, IoError]) Socket {
+  mut res = r;
+  mut s = Socket.none();
+  match &mut res {
+    case mut ok &mut Ok {s <=> *ok;}
+    else {}
+  }
+  s;
+}
+
+// A server of aio's sockets: it reads one request and answers it
+actor Shop {
+  pool Pool;
+
+  pub async do serve(self, port OneshotSender[u16]) {
+    imm listener = socketOf(await aio.listen(SocketAddr.localhost(0u16)));
+    mut p = 0u16;
+    match await listener.localAddr() {
+      case imm a Ok {p = a.port();}
+      else {}
+    }
+    mut tx = port;
+    tx.send(p);
+    imm conn = socketOf(await listener.accept());
+    imm request = await conn.read(pool.mustTake(4096usize));
+    mut response = pool.mustTake(256usize);
+    response.append("HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\nsunny, 21 C");
+    imm sent = await conn.write(response);
+  }
+}
+
+fn main() {
+  initAll();
+  mut ptx OneshotSender[u16];
+  mut prx OneshotReceiver[u16];
+  ptx, prx = Oneshot[u16].make();
+  imm shop = new Shop(Pool.make());
+  shop.serve(ptx);
+  mut port = 0u16;
+  match prx.recv() {
+    case imm p Some {port = p;}
+    case is None[u16] {}
+  }
+  mut dtx OneshotSender[u64];
+  mut drx OneshotReceiver[u64];
+  dtx, drx = Oneshot[u64].make();
+  {
+    mut url = String.from("http://127.0.0.1:");
+    url.appendUInt(u64.from(port));
+    url.append("/today");
+    imm w = new Weather(Client.standard());
+    w.show(url, dtx);
+  }
+  drx.recv();
+  finalAll();
+  printStr("end\n");
+}
