@@ -38,8 +38,11 @@ int foldAdmitsOwn(INode *member);
 
 // Make the items of a star clause: an alias for every name of 'ns' that 'admit'
 // takes and 'but' does not leave out. Reports a 'but' naming what the source
-// does not have, which is the one thing a star clause can get wrong by itself.
-void foldStarItems(Namespace *ns, Name *srcname, FoldClause *fold, int admit);
+// does not have or does not show or does not admit, which is what a star clause
+// can get wrong by itself. 'base' is the base a sibling fold shares with the
+// folding type (NULL for any other fold): the private members a sibling has
+// from it are its base's to keep private, and the message says so.
+void foldStarItems(Namespace *ns, Name *srcname, FoldClause *fold, int admit, StructNode *base);
 
 // Expand a global's fold clause into its module's namespace, hooking each entry
 // when name resolution asks
