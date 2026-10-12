@@ -380,7 +380,7 @@ A module's global may carry the same `use` clause a field does, and it folds mem
 What a clause may fold from and what it may admit:
 
 - The source is a **struct**. A global whose type is anything else, and one whose type is a trait or an enum, is `ErrorUseGlobal` at the clause — an abstraction has no members of its own for a value to reach.
-- **Visibility is transitive**: only what the global's type shows folds, so a private member named in a list is `ErrorNotPublic` and a wildcard passes it over — which makes one named after `but` `ErrorNotPublic` as well, since there is nothing to leave out.
+- **Visibility is transitive**: only what the global's type shows folds, so a private member named in a list is `ErrorNotPublic` and a wildcard passes it over — which makes one named after `but` `ErrorNotPublic` as well, since there is nothing to leave out. The same holds for any name a star passes over (a static, `final`, `clone`; for a sibling fold, what comes from the shared base): after `but` it is `ErrorBadFold`.
 - A **static** does not fold, for the reason above; nor do `final` and `clone`, which belong to the type's own values' lifecycle.
 - A name the type has not got, listed or named after `but`, is `ErrorNoMbr`.
 

@@ -1,6 +1,7 @@
-// Nothing moves out of an indexed element of an array held by value. A
-// move-typed value held by an element of a local array, a parameter or a
-// temporary may not be moved out of it: the array would be left with a hole in
+// Nothing moves out of an indexed element of an array, held by value or by a
+// sole owner. A move-typed value held by an element of a local array, a
+// parameter or a temporary, or of the array a sole owner points at, may not be
+// moved out of it: the array would be left with a hole in
 // it, which it could neither be used with nor finalized with, and the elements
 // that stayed would never be finalized. Swap a value in with '<=>', or move the
 // whole array, which takes every element with it.
@@ -19,6 +20,7 @@ struct Handle is Move {
 
 fn take(h Handle) {}
 fn make() Array[Handle, 2] { [new Handle(1), new Handle(2)]; }
+fn makeSole() So[Array[Handle, 2]] { new So[Array[Handle, 2]]([new Handle(1), new Handle(2)]); }
 
 fn intoLocal() i32 {
   mut arr Array[Handle, 2] = [new Handle(1), new Handle(2)];
@@ -50,6 +52,40 @@ fn nested() {
   take(grid[1][0]);          //~ ErrorMoveElem:15 "element of an array"
 }
 
+// The array a sole owner points at is no different: moving one element out
+// would leave the array with a hole, and the owner's death would free the
+// elements that stayed without finalizing them. Whether the owner is a local or
+// a temporary, and however the element is reached -- by index, by a variable
+// index, through the dereference, or as an element of a nested array.
+fn soleOwner() {
+  imm a = new So[Array[Handle, 2]]([new Handle(1), new Handle(2)]);
+  take(a[0]);                //~ ErrorMoveElem:9 "element of an array"
+  imm first = a[1];          //~ ErrorMoveElem:16 "element of an array"
+}
+
+fn soleOwnerDeref() {
+  imm a = new So[Array[Handle, 2]]([new Handle(1), new Handle(2)]);
+  take((*a)[0]);             //~ ErrorMoveElem:12 "element of an array"
+}
+
+fn soleOwnerIndex(i usize) {
+  imm a = new So[Array[Handle, 2]]([new Handle(1), new Handle(2)]);
+  take(a[i]);                //~ ErrorMoveElem:9 "element of an array"
+}
+
+fn soleOwnerParam(a So[Array[Handle, 2]]) Handle {
+  a[1];                      //~ ErrorMoveElem:4 "element of an array"
+}
+
+fn soleOwnerTemporary() {
+  take(makeSole()[1]);       //~ ErrorMoveElem:18 "element of an array"
+}
+
+fn soleOwnerNested() {
+  imm grid = new So[Array[Array[Handle, 2], 2]]([[new Handle(1), new Handle(2)], [new Handle(3), new Handle(4)]]);
+  take(grid[1][0]);          //~ ErrorMoveElem:15 "element of an array"
+}
+
 // What is not a move out of an element
 fn allowed() i32 {
   mut nums = [1, 2, 3];
@@ -59,6 +95,8 @@ fn allowed() i32 {
   arr[0] <=> out;
   imm id = arr[1].id;
   imm both = arr;
+  imm sole = new So[Array[Handle, 2]]([new Handle(1), new Handle(2)]);
+  imm whole = *sole;
   n + id + out.id;
 }
 
