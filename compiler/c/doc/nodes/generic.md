@@ -836,7 +836,9 @@ has — `Cell[i32]` is an `Adder`, `Cell[bool]` is not, to a constraint and to a
 virtual reference alike. Settled before the reservation and the clone, because a
 structural clause may analyze the argument's own methods. **Except while an
 argument is still being laid out** (`structLayoutUnsettled`: a struct whose
-check has not ended, an enum with a variant not yet laid out), when whether its
+check has not ended, an enum with a variant not yet laid out, or a tuple, an
+array or an instance of a generic holding one in its elements or arguments),
+when whether its
 values move is not yet known: `struct Node { kids List[Node]; }` makes
 `List[Node]` inside Node's own layout, and `T is Copy` would be answered for a
 Node that has not yet found it moves. Then `genericAbsentMembers` does not

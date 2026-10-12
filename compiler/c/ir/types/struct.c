@@ -4111,10 +4111,40 @@ int structLayoutInFlight(void) {
 // Is this type's layout still to finish, so that whether its values move is not
 // yet settled? A struct is settled when its check ends (the infection from its
 // fields is taken there), an enum when its variants' have.
+static int structLayoutUnsettledIn(INode *type, uint32_t depth);
+
+static int structLayoutUnsettledArgs(Nodes *args, uint32_t depth) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(args, cnt, nodesp)) {
+        if ((*nodesp)->tag != ULitTag && isTypeNode(*nodesp) && structLayoutUnsettledIn(*nodesp, depth))
+            return 1;
+    }
+    return 0;
+}
+
 int structLayoutUnsettled(INode *type) {
+    return structLayoutUnsettledIn(type, 0);
+}
+
+// Also unsettled is a type that holds one by value, as a tuple, an array or an
+// instance of a generic does through its elements and arguments: whether it
+// moves is whether they do ('List[(i32, Node)]' inside Node's layout)
+static int structLayoutUnsettledIn(INode *type, uint32_t depth) {
     INode *dcl = itypeGetTypeDcl(type);
+    if (depth > 8)
+        return 0;
+    if (dcl->tag == TTupleTag)
+        return structLayoutUnsettledArgs(((TupleNode*)dcl)->elems, depth + 1);
+    if (dcl->tag == ArrayTag) {
+        INode *elem = arrayElemType(dcl);
+        return elem && structLayoutUnsettledIn(elem, depth + 1);
+    }
     if (dcl->tag != StructTag || ((StructNode*)dcl)->genericinfo)
         return 0;
+    Nodes *targs = itypeInstanceTypeArgs(dcl);
+    if (targs && structLayoutUnsettledArgs(targs, depth + 1))
+        return 1;
     if (!(dcl->flags & TypeChecked))
         return 1;
     StructNode *node = (StructNode*)dcl;
