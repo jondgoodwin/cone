@@ -89,6 +89,7 @@ struct LocalLight {
     float spotScale;               // the cone's ramp: saturate(cos * scale + offset)
     float spotOffset;
     float shadowView;              // its first shadow view, or -1: none
+    float shadowFade;              // the share of its shadow that shows, 0 to 1 (lightshadow.cone's 'fade')
 };
 
 // A light's row: float4 (position, 1 / range^2), (intensity, radius), (axis,
@@ -109,11 +110,13 @@ LocalLight loadLocalLight(uint i) {
     l.spotScale = 0.0;
     l.spotOffset = 0.0;
     l.shadowView = -1.0;
+    l.shadowFade = 1.0;
     if (l.spot || lightParams.slices.w > 0.5) {
         float4 d = lightData[i * 4 + 3];
         l.spotScale = d.x;
         l.spotOffset = d.y;
         l.shadowView = d.z;
+        l.shadowFade = d.w;
     }
     return l;
 }
@@ -175,7 +178,11 @@ float localShadow(LocalLight l, float3 world, float3 ng, float2 pixel) {
         float2 offset = float2(d.x * cs - d.y * sn, d.x * sn + d.y * cs) * radius;
         sum += localShadowMap.SampleCmpLevelZero(shadowSampler, float3(uv + offset, float(layer)), depth);
     }
-    return sum / float(max(taps, 1));
+    float visible = sum / float(max(taps, 1));
+    if (l.shadowFade < 1.0) {
+        visible = lerp(1.0, visible, saturate(l.shadowFade));
+    }
+    return visible;
 }
 
 // The cone's share for the cosine 'cosAngle' of the angle from the axis

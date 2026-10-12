@@ -302,6 +302,58 @@ fn budget(renderer &mut Renderer, device &mut Device, color &Texture, depth &Tex
   imm light = dark();
   drawFrame(renderer, device, color, depth, readback, &camera, &light, &list);
   expectUInt(u64.from(renderer.lights.shadows.passes), 19u64, "19 passes");
+  // The fade: with 12 layers C and A are shadowed, the best left without views is B (the camera is 14 up:
+  // A 64 / 122 = 0.525, B 64 / 222 = 0.288); a shadow shows in full at 1 + fade times that, and not at all
+  // level with it: with a fade of 2, C in full and A by (0.525 / 0.288 - 1) / 2 = 0.41
+  mut faded = LightShadowSettings.medium();
+  faded.maxViews = 12u32;
+  faded.fade = 2.;
+  renderer.setLightShadows(device, &faded);
+  renderer.lights.prepare(device, &camera, 1., 256u32, 256u32);
+  expect(renderer.lights.isShadowed(c) and renderer.lights.isShadowed(a) and !renderer.lights.isShadowed(b), "with a fade: the same two lights");
+  expectNear(renderer.lights.shadowShare(c), 1., 0.001, "the best light's shadow shows in full");
+  expectNear(renderer.lights.shadowShare(a), 0.41, 0.01, "the next one's shows by its rank against the best left out");
+  renderer.setLightShadows(device, &low);
+  renderer.lights.prepare(device, &camera, 1., 256u32, 256u32);
+  expectNear(renderer.lights.shadowShare(a), 1., 0.001, "and with no fade, in full");
+  renderer.lights.clear();
+}
+
+// 6. The fade on the picture: a box's shadow under a light that has a rival close behind it in rank shows by the
+// share the fade gives, not in full
+fn fadeShows(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer, scene &Scene) {
+  imm p = readback.mappedRange();
+  renderer.environmentStrength = 0.;
+  renderer.lights.clear();
+  imm h = renderer.lights.addPoint(new Vec3(2.2, 4., 0.), Color.gray(1.), 100., 20.);
+  // the rival: next in rank (400 / 137 against 400 / 106 here), unshadowed for want of layers, giving no light
+  imm g = renderer.lights.addPoint(new Vec3(-6., 4., 0.), Color.gray(1.), 0.0001, 20.);
+  renderer.lights.setCastsShadow(h, true);
+  renderer.lights.setCastsShadow(g, true);
+  mut settings = LightShadowSettings.medium();
+  settings.maxViews = 6u32;
+  imm camera = topDown();
+  imm light = dark();
+  imm list = boxList(scene, scene.lit, true);
+  // The picture with no shadows, with them in full, and with them faded
+  imm off = LightShadowSettings.off();
+  renderer.setLightShadows(device, &off);
+  drawFrame(renderer, device, color, depth, readback, &camera, &light, &list);
+  imm lit = px(p, usize.from(u32.from(columnOf(-3.0))), 128usize);
+  renderer.setLightShadows(device, &settings);
+  drawFrame(renderer, device, color, depth, readback, &camera, &light, &list);
+  imm shaded = px(p, usize.from(u32.from(columnOf(-3.0))), 128usize);
+  expect(renderer.lights.isShadowed(h) and !renderer.lights.isShadowed(g), "the rival has no views");
+  settings.fade = 2.;
+  renderer.setLightShadows(device, &settings);
+  drawFrame(renderer, device, color, depth, readback, &camera, &light, &list);
+  imm share = renderer.lights.shadowShare(h);
+  imm shaded2 = px(p, usize.from(u32.from(columnOf(-3.0))), 128usize);
+  eprint <- "measured the fade: share "; eprint <- share; eprint <- ", the pixel in the box's shadow "; eprint <- lit;
+  eprint <- " unshadowed, "; eprint <- shaded; eprint <- " in full, "; eprint <- shaded2; eprint <- " faded\n";
+  expect(share > 0.05 and share < 0.5, "the light's shadow is partly faded");
+  expect(lit - shaded > 60., "the shadow is there in full without a fade");
+  expectNear((lit - shaded2) / (lit - shaded), share, 0.1, "and the faded shadow is that share of it");
   renderer.lights.clear();
 }
 
@@ -341,6 +393,7 @@ fn main() i32 {
   noAcne(&mut renderer, &mut device, &color, &depth, &readback, &scene, scene.pbr, new Vec3(3., 1.2, 0.5), true, "no acne, a point light at a grazing angle, physically based");
   castsNothing(&mut renderer, &mut device, &color, &depth, &readback, &scene);
   budget(&mut renderer, &mut device, &color, &depth, &readback, &scene);
+  fadeShows(&mut renderer, &mut device, &color, &depth, &readback, &scene);
 
   expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
   expectUInt(u64.from(validationMessages()), 0u64, "no validation message");

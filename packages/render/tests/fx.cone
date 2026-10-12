@@ -151,6 +151,17 @@ fn drawScene(device &mut Device, rig &mut Rig, camera &Camera, light &Light, lis
   device.waitIdle();
 }
 
+// The same scene drawn in the two halves a program may draw between
+fn drawSplit(device &mut Device, rig &mut Rig, camera &Camera, light &Light, list &DrawList) {
+  mut encoder = device.createCommandEncoder();
+  rig.fx.renderScene(device, &mut encoder, &mut rig.renderer, &mut rig.post, camera, light, list);
+  rig.fx.renderFinish(device, &mut encoder, &mut rig.renderer, &mut rig.post, list, &rig.color);
+  encoder.copyTextureToBuffer(&rig.color, &rig.readback);
+  device.queue.submit(encoder.finish());
+  device.endFrame();
+  device.waitIdle();
+}
+
 // The same scene drawn by the plain path: the renderer and Post, the camera
 // jittered by (jx, jy) pixels
 fn drawPlain(device &mut Device, rig &mut Rig, camera &Camera, light &Light, list &DrawList, jx f32, jy f32) {
@@ -241,6 +252,8 @@ fn identity(device &mut Device, name &String) {
   if golden != 0u64 { expectUInt(hash, golden, "everything off: the bytes the plain path drew before"); }
   drawPlain(device, &mut rig, &camera, &light, &list, 0., 0.);
   expectUInt(hashOf(p), hash, "everything off equals the plain path now");
+  drawSplit(device, &mut rig, &camera, &light, &list);
+  expectUInt(hashOf(p), hash, "the scene and the finish drawn apart are the same bytes");
 }
 
 // ---- 2 and 3. Anti-aliasing against a supersample ----
