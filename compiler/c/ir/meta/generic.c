@@ -2272,17 +2272,45 @@ static int genericRequirementsMet(TypeCheckState *pstate, FnCallNode *srcgencall
     return met;
 }
 
+// Is one of these type arguments still being laid out, so that what it is --
+// whether its values move, above all -- is not yet settled?
+static int genericArgsUnsettled(Nodes *args) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(args, cnt, nodesp)) {
+        if ((*nodesp)->tag != ULitTag && isTypeNode(*nodesp) && structLayoutUnsettled(*nodesp))
+            return 1;
+    }
+    return 0;
+}
+
 // The members of generic type 'generic' that do not exist at 'args': each
 // whose 'where' clause, over the type's parameters, they do not meet; and each
 // entry of its 'is' list whose condition they do not make true, which the
 // instance lacks (cloneStructNode)
-static Nodes *genericAbsentMembersIn(StructNode *generic, Nodes *args) {
+//
+// A member's clause is read from its arguments' layouts. While an argument is
+// still being laid out -- 'struct Node { kids List[Node]; }' asks for List[Node]
+// inside Node's own layout -- what it comes to is not settled, and answering
+// then would answer by the order the declarations happen to be laid out in
+// ('Node' is Copy until its fields say it moves). So with 'late' given, such a
+// member is not decided here: it is listed in 'late', cloned, and decided once
+// no layout is in flight, before any member is checked (genericLateWhere). An
+// 'is' entry's condition is not deferred: it is part of the layout.
+static Nodes *genericAbsentMembersIn(StructNode *generic, Nodes *args, Nodes **late) {
     Nodes *absent = NULL;
     INode **nodesp;
     uint32_t cnt;
+    int unsettled = late != NULL && args != NULL && genericArgsUnsettled(args);
     for (nodelistFor(&generic->nodelist, cnt, nodesp)) {
         if ((*nodesp)->tag != FnDclTag || ((FnDclNode*)*nodesp)->where == NULL)
             continue;
+        if (unsettled) {
+            if (*late == NULL)
+                *late = newNodes(4);
+            nodesAdd(late, *nodesp);
+            continue;
+        }
         if (genericUnmetCondition(((FnDclNode*)*nodesp)->where, generic->genericinfo->parms, args) == NULL)
             continue;
         if (absent == NULL)
@@ -2303,12 +2331,13 @@ static Nodes *genericAbsentMembersIn(StructNode *generic, Nodes *args) {
 }
 
 // The same, decided under the use asking for the instance, as the requirements are
-static Nodes *genericAbsentMembers(TypeCheckState *pstate, FnCallNode *srcgencall, StructNode *generic, Nodes *args) {
+static Nodes *genericAbsentMembers(TypeCheckState *pstate, FnCallNode *srcgencall, StructNode *generic, Nodes *args,
+        Nodes **late) {
     INode *svsite = genericCondSite;
     TypeCheckState *svstate = genericCondState;
     genericCondSite = (INode*)srcgencall;
     genericCondState = pstate;
-    Nodes *absent = genericAbsentMembersIn(generic, args);
+    Nodes *absent = genericAbsentMembersIn(generic, args, late);
     genericCondSite = svsite;
     genericCondState = svstate;
     return absent;
@@ -2491,16 +2520,52 @@ static INode *genericReserve(INode *generic) {
     return (INode*)shell;
 }
 
+// An instance's members whose 'where' waited on its arguments' layouts: each
+// beside its copy in the instance, alternating
+typedef struct {
+    StructNode *generic;
+    FnCallNode *srcgencall;
+    Nodes *args;
+    Nodes *pairs;
+} GenericLateWhere;
+
+// Decide, once no layout is in flight, which of an instance's members its
+// arguments' 'where' clauses leave out, and take those out of it before any
+// member is checked. An argument no layout has reached is laid out first.
+static void genericLateWhere(TypeCheckState *pstate, INode *instance, void *extra) {
+    GenericLateWhere *late = (GenericLateWhere *)extra;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(late->args, cnt, nodesp)) {
+        if ((*nodesp)->tag != ULitTag && isTypeNode(*nodesp))
+            structTypeSettle(pstate, *nodesp);
+    }
+    INode *svsite = genericCondSite;
+    TypeCheckState *svstate = genericCondState;
+    genericCondSite = (INode*)late->srcgencall;
+    genericCondState = pstate;
+    for (uint32_t i = 0; i + 1 < late->pairs->used; i += 2) {
+        FnDclNode *original = (FnDclNode*)nodesGet(late->pairs, i);
+        if (genericUnmetCondition(original->where, late->generic->genericinfo->parms, late->args) != NULL)
+            structRetireMember((StructNode*)instance, nodesGet(late->pairs, i + 1));
+    }
+    genericCondSite = svsite;
+    genericCondState = svstate;
+}
+
 // Clone the generic's instance for parms and remember it, without type checking it.
 // 'shell' is the instance reserved for a generic type (genericReserve), else NULL.
 // 'absent' lists a generic type's members whose 'where' clause the arguments do
 // not meet (genericAbsentMembers), which its instance is cloned without.
+// 'late' lists those whose clause waits on an argument's layout: it is cloned
+// with them, and genericLateWhere decides them.
 static INode *genericClone(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nodetoclone,
-        GenericInfo *genericinfo, INode *shell, Nodes *absent) {
+        GenericInfo *genericinfo, INode *shell, Nodes *absent, Nodes *late) {
     CloneState cstate;
     clonePushState(&cstate, (INode*)srcgencall, NULL, pstate->scope, genericinfo->parms, srcgencall->args);
     cstate.structshell = shell;
     cstate.absent = absent;
+    cstate.late = late;
     INode *instance;
     // A generic function's instance is not generic itself, so its type
     // parameters are the ones substituted. A clone keeps a generic method
@@ -2516,6 +2581,14 @@ static INode *genericClone(TypeCheckState *pstate, FnCallNode *srcgencall, INode
     else
         instance = cloneNode(&cstate, nodetoclone);
     clonePopState();
+    if (cstate.latepairs) {
+        GenericLateWhere *wait = memAllocBlk(sizeof(GenericLateWhere));
+        wait->generic = (StructNode*)nodetoclone;
+        wait->srcgencall = srcgencall;
+        wait->args = srcgencall->args;
+        wait->pairs = cstate.latepairs;
+        structDeferCheck(pstate, genericLateWhere, instance, wait);
+    }
 
     // Remember instantiation for the future
     if (!genericinfo->memonodes)
@@ -2535,14 +2608,15 @@ INode *genericInstantiate(TypeCheckState *pstate, FnCallNode *srcgencall, INode 
 
     // Which members the instance lacks is settled before anything is cloned or
     // mapped: evaluating a clause may analyze the argument's own methods.
+    Nodes *late = NULL;
     Nodes *absent = nodetoclone->tag == StructTag
-        ? genericAbsentMembers(pstate, srcgencall, (StructNode*)nodetoclone, srcgencall->args) : NULL;
+        ? genericAbsentMembers(pstate, srcgencall, (StructNode*)nodetoclone, srcgencall->args, &late) : NULL;
 
     // A generic function's own name is not mapped: written bare in its body, it
     // is a call whose type arguments are inferred, as it is anywhere else
     uint32_t dclpos = cloneDclPush();
     INode *shell = nodetoclone->tag == StructTag ? genericReserve(nodetoclone) : NULL;
-    INode *instance = genericClone(pstate, srcgencall, nodetoclone, genericinfo, shell, absent);
+    INode *instance = genericClone(pstate, srcgencall, nodetoclone, genericinfo, shell, absent, late);
     cloneDclPop(dclpos);
 
     // Type check the instanced declaration. A generic method's instance is
@@ -2838,16 +2912,21 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nod
         int firstinstance = basememo == NULL || basememo->used == 0;
         // What each of them lacks at these arguments, settled before any is
         // cloned or mapped
-        Nodes *traitabsent = genericAbsentMembers(pstate, srcgencall, basetrait, srcgencall->args);
+        Nodes *traitlate = NULL;
+        Nodes *traitabsent = genericAbsentMembers(pstate, srcgencall, basetrait, srcgencall->args, &traitlate);
         Nodes *absents = newNodes(basetrait->derived->used);
-        for (nodesFor(basetrait->derived, cnt, nodesp))
-            nodesAdd(&absents, (INode*)genericAbsentMembers(pstate, srcgencall, (StructNode*)*nodesp, srcgencall->args));
+        Nodes *lates = newNodes(basetrait->derived->used);
+        for (nodesFor(basetrait->derived, cnt, nodesp)) {
+            Nodes *varlate = NULL;
+            nodesAdd(&absents, (INode*)genericAbsentMembers(pstate, srcgencall, (StructNode*)*nodesp, srcgencall->args, &varlate));
+            nodesAdd(&lates, (INode*)varlate);
+        }
         uint32_t dclpos = cloneDclPush();
         INode *traitshell = genericReserve((INode*)basetrait);
         Nodes *shells = newNodes(basetrait->derived->used);
         for (nodesFor(basetrait->derived, cnt, nodesp))
             nodesAdd(&shells, genericReserve(*nodesp));
-        INode *instrait = genericClone(pstate, srcgencall, (INode*)basetrait, basetrait->genericinfo, traitshell, traitabsent);
+        INode *instrait = genericClone(pstate, srcgencall, (INode*)basetrait, basetrait->genericinfo, traitshell, traitabsent, traitlate);
         if (basetrait == (StructNode*)nodetoclone)
             retinstance = instrait;
 
@@ -2859,9 +2938,10 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nod
         Nodes *variants = newNodes(basetrait->derived->used);
         INode **shellp = &nodesGet(shells, 0);
         INode **absentp = &nodesGet(absents, 0);
+        INode **latep = &nodesGet(lates, 0);
         for (nodesFor(basetrait->derived, cnt, nodesp))
             nodesAdd(&variants, genericClone(pstate, srcgencall, *nodesp, ((StructNode*)*nodesp)->genericinfo,
-                *shellp++, (Nodes*)*absentp++));
+                *shellp++, (Nodes*)*absentp++, (Nodes*)*latep++));
         cloneDclPop(dclpos);
         // The instance's 'derived' lists its own variants, and lists all of them
         // before the enum or any variant is type checked: a variant's method body
