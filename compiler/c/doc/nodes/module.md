@@ -1294,7 +1294,10 @@ has none (the parser records where the header and the list end, `DclSpan.hdrend`
 and `isend`). The methods that show it are cut out of the file, so an importer
 cannot read them; it takes a non-generic type from an include file as the file
 says (flow's "Which types change shape"). A generic type goes in whole, with its
-methods, and each importer reads its instances itself.
+methods, and each importer reads its instances itself. **A type whose methods the
+compiler found to reshape nothing a caller borrows carries that too**
+(`shapeKeepRecordable`): `ShapeKeeping` joins the same `is` list, for the importer's
+`+ ShapeKeeping` reference to take the type by (flow's `shapeKeepsVia`).
 
 **A global whose type was inferred gets its type written in** [Q6], the one
 thing printed from the IR: a number type, a struct — an instance of a generic

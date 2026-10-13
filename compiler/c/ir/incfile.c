@@ -1133,15 +1133,21 @@ static void incCut(IncGen *g, IncMod *m, DclSpan *span) {
 
 // A type of the package that the compiler found shape-changing from its methods
 // (shapeinfer.h) goes in with 'ShapeChanging' appended to its 'is' list, for the
-// importer to read: the methods that show it are not in the file. A type whose
+// importer to read: the methods that show it are not in the file. So does a type
+// whose methods the compiler found reshape nothing a caller holds a borrow into
+// ('ShapeKeeping', shapeKeepRecordable), for the same reason. A type whose
 // source says so already, and a generic one, whose methods travel, are as written
 static void incRecordShape(IncGen *g, DclSpan *span) {
-    if (!shapeRecordable((StructNode*)span->node))
+    int changing = shapeRecordable((StructNode*)span->node);
+    int keeping = shapeKeepRecordable((StructNode*)span->node);
+    if (!changing && !keeping)
         return;
     if (span->isend)
-        incEdit(g, span->lexer, span->isend, span->isend, ", ShapeChanging");
+        incEdit(g, span->lexer, span->isend, span->isend,
+            changing && keeping ? ", ShapeChanging, ShapeKeeping" : changing ? ", ShapeChanging" : ", ShapeKeeping");
     else if (span->hdrend)
-        incEdit(g, span->lexer, span->hdrend, span->hdrend, " is ShapeChanging");
+        incEdit(g, span->lexer, span->hdrend, span->hdrend,
+            changing && keeping ? " is ShapeChanging, ShapeKeeping" : changing ? " is ShapeChanging" : " is ShapeKeeping");
 }
 
 // The members of an included type: each whole, cut to 'extern' or left out
