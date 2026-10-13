@@ -14,12 +14,12 @@
 //   imm out = job.give(zeroed(&mut device, 4096usize));
 //   job.dispatch(&mut device, &kernel, &[params, out], 16u32);
 //   imm back = job.readback(&mut device, out);     // explicit: the CPU reads it
-//   imm ticket = works.submit(&mut device, job, Target.Here[7u64]);
+//   imm ticket = works.submit(&mut device, job, Target.Here(7u64));
 //   ...
 //   works.poll(&device, &mut done);                // once a frame: never waits
 //   // or: works.waitFor(&mut device, ticket, &mut done)   (tools and tests)
 //   // or, a frame loop asleep in iocore's poll, woken when the GPU is done:
-//   //   works.submit(&mut device, job, onLoop(&mut lp, iocore.Target.Here[9u64], 7u64));
+//   //   works.submit(&mut device, job, onLoop(&mut lp, iocore.Target.Here(9u64), 7u64));
 //   //   lp.poll(until, &mut io);                    // the answer: Done, c.n the ticket
 //   //   works.poll(&device, &mut done);             // its Completion, the buffers back
 //   imm words = done[0usize].words(back);          // the GPU's results
@@ -36,10 +36,10 @@
 //   Works.make()  works.submit(device, job, to)  works.poll(device, out)    (WORKS)
 //   works.flush(device)  works.waitFor(device, ticket, out)  works.waitAll(device, out)
 //   works.inFlight()
-//   Target.Loop[token, completer]  onLoop(lp, to, token)          (DELIVERY INTO AN IOCORE LOOP)
+//   Target.Loop(token, completer)  onLoop(lp, to, token)          (DELIVERY INTO AN IOCORE LOOP)
 //   onLoopIn(lp, to, group, deadline, token)  ERROR_JOB_REFUSED  ERROR_JOB_LOST
 //   ERROR_KERNEL_FAILED
-//   Target.Here[token]  Ticket  Completion: c.ticket c.token c.ok c.buffers c.frame
+//   Target.Here(token)  Ticket  Completion: c.ticket c.token c.ok c.buffers c.frame
 //     c.submitted c.completed c.failures, c.take(slot) c.words(slot) c.count()  (ANSWERS)
 //   KernelFailure: .kernel .dispatch .count .kind .fileId .file .line         (FAILURES ON THE GPU)
 //     .invocation .index, f.kindName() f.message()  kernelFailures()
@@ -103,7 +103,7 @@
 // ticket, its token, whether it ran and no Cone kernel in it failed ('ok'),
 // its buffers back, when it was submitted and when its completion was seen,
 // and its kernels' failures on the GPU. Where it goes is its Target,
-// as in iocore: 'Target.Here[token]' delivers it to this Works' own 'poll'
+// as in iocore: 'Target.Here(token)' delivers it to this Works' own 'poll'
 // (or 'waitFor', 'waitAll'). 'poll' never waits: a frame loop calls it once a
 // frame and takes what has finished. 'waitFor' blocks until one job is done,
 // for tools and tests. The token is plain data gpuwork hands back and never
@@ -111,7 +111,7 @@
 // changes nothing else. A Works belongs to the thread that submits through
 // it, as a CommandEncoder does.
 //
-// DELIVERY INTO AN IOCORE LOOP. 'Target.Loop[token, completer]' (or
+// DELIVERY INTO AN IOCORE LOOP. 'Target.Loop(token, completer)' (or
 // 'onLoop(lp, to, token)', which makes the completer with
 // 'lp.external(to, IoBuf.empty())'; 'onLoopIn' with a cancel group and a
 // deadline) ties the job to an iocore external operation. The job's

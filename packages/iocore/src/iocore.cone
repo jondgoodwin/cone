@@ -18,7 +18,7 @@
 //     mut lp = Loop.mustMake();
 //     imm pool = Pool.make();
 //     imm listener = lp.mustListen(SocketAddr.localhost(0u16));
-//     lp.submit(Op.Accept[listener], Target.Here[1u64]);
+//     lp.submit(Op.Accept(listener), Target.Here(1u64));
 //     mut out = List[Completion].empty();
 //     while true {
 //       lp.poll(forever(), &mut out);             // waits here, and only here
@@ -26,12 +26,12 @@
 //       while k < out.len() {
 //         imm c = &mut out[k];
 //         if c.token == 1u64 and c.isDone() {     // a connection: read from it
-//           lp.submit(Op.Recv[c.handle, pool.mustTake(4096usize)], Target.Here[2u64]);
+//           lp.submit(Op.Recv(c.handle, pool.mustTake(4096usize)), Target.Here(2u64));
 //         }
 //         elif c.token == 2u64 and c.count() > 0usize {
 //           mut b = IoBuf.empty();
 //           b <=> c.buf;                          // the buffer, back from the kernel
-//           lp.submit(Op.Send[c.handle, b], Target.Here[3u64]);   // echo it
+//           lp.submit(Op.Send(c.handle, b), Target.Here(3u64));   // echo it
 //         }
 //         k = k + 1usize;
 //       }
@@ -59,16 +59,16 @@
 //   lp.counters()  lp.subscribe(s)  lp.id()  lp.inFlight()      (DIAGNOSTICS)
 //   forever()                           an 'until' that never comes
 //
-//   Op.Connect[addr]  Op.Accept[listener]                   (OPERATIONS)
-//   Op.Recv[sock, buf]  Op.RecvReady[sock]  Op.Send[sock, buf]  Op.SendBytes[sock, bytes]
-//   Op.ReadAt[file, at, buf]  Op.WriteAt[file, at, buf]
-//   Op.RecvFrom[sock, buf]  Op.SendTo[sock, addr, buf]      one datagram each  (DATAGRAMS)
-//   Op.Call[lane, work, arg, buf]       work run on the blocking pool (THE BLOCKING POOL)
+//   Op.Connect(addr)  Op.Accept(listener)                   (OPERATIONS)
+//   Op.Recv(sock, buf)  Op.RecvReady(sock)  Op.Send(sock, buf)  Op.SendBytes(sock, bytes)
+//   Op.ReadAt(file, at, buf)  Op.WriteAt(file, at, buf)
+//   Op.RecvFrom(sock, buf)  Op.SendTo(sock, addr, buf)      one datagram each  (DATAGRAMS)
+//   Op.Call(lane, work, arg, buf)       work run on the blocking pool (THE BLOCKING POOL)
 //   resolveOp(host, port, buf)  statOp(path, lane, buf)  readFileOp(path, at, lane, buf)
 //   addressesIn(&buf)  fileStatIn(&buf)  Lane.general()  Lane.dns()  addLane(cfg)  l.stats()
-//   Target.Here[token]  Target.Post[token, waker]           (TARGETS)
-//   Target.Chan[token, tx]  Target.Once[token, oneshotTx]  Target.Status[token, board, slot]
-//   Target.Hook[token, sink]  Sink.make(deliver)       deliver: a So[fn(c Completion) + Sendable]
+//   Target.Here(token)  Target.Post(token, waker)           (TARGETS)
+//   Target.Chan(token, tx)  Target.Once(token, oneshotTx)  Target.Status(token, board, slot)
+//   Target.Hook(token, sink)  Sink.make(deliver)       deliver: a So[fn(c Completion) + Sendable]
 //   StatusArray.make(n): s.isReady(i) s.isFree(i) s.take(i, out) s.len()
 //   CancelGroup.make()  .until(deadline): g.child() g.childUntil(d) g.shield(d)
 //     g.cancel() g.isCancelled() g.deadline() g.id()
@@ -102,20 +102,20 @@
 // '&Array[u8]' or '&mut IoBuf' is neither (test/cases/concurrency/
 // concurrency_iocore_submit.cone pins the refusals).
 //
-// - Connect[addr]: a new TCP socket connected to addr; its Handle comes back
-//   in the answer ('c.handle'). Accept[listener]: the next connection on a
+// - Connect(addr): a new TCP socket connected to addr; its Handle comes back
+//   in the answer ('c.handle'). Accept(listener): the next connection on a
 //   listening socket, likewise. Every socket iocore makes has Nagle's
 //   algorithm off (TCP_NODELAY), as Go's do: a small send goes at once.
-// - Recv[sock, buf]: up to buf's room; Done(n), the n bytes added to its
+// - Recv(sock, buf): up to buf's room; Done(n), the n bytes added to its
 //   length; Done(0) is the end of the stream. A buffer with no room is
 //   refused (Failed, ERROR_INSUFFICIENT_BUFFER), since a zero-byte receive
 //   means something else:
-// - RecvReady[sock]: a zero-byte receive, holding no buffer at all: Done(0)
+// - RecvReady(sock): a zero-byte receive, holding no buffer at all: Done(0)
 //   once data has arrived (or the stream has ended), for an idle connection,
 //   so that thousands of them pin no memory. Then a Recv takes what came.
-// - Send[sock, buf], SendBytes[sock, bytes]: all of it; Done(n), n the bytes
+// - Send(sock, buf), SendBytes(sock, bytes): all of it; Done(n), n the bytes
 //   sent.
-// - ReadAt[file, at, buf], WriteAt[file, at, buf]: at the byte offset 'at',
+// - ReadAt(file, at, buf), WriteAt(file, at, buf): at the byte offset 'at',
 //   with no cursor shared between operations; reading past the end is
 //   Done(0).
 //
@@ -123,7 +123,7 @@
 // OS choose one; 'localAddr' tells it), a Handle of its own kind: the stream
 // operations fail on it with ERROR_INVALID_HANDLE, as the datagram ones do on a
 // TCP socket. It is not connected; each datagram names its other end.
-// - RecvFrom[sock, buf]: ONE datagram, into buf's room (a buffer with no room
+// - RecvFrom(sock, buf): ONE datagram, into buf's room (a buffer with no room
 //   is refused, as Recv's is); Done(n), the n bytes added to its length, and
 //   the sender in the answer's 'c.peer', a SocketAddr. A datagram of no bytes
 //   is Done(0): unlike a stream's, it is not an end. A datagram longer than
@@ -132,7 +132,7 @@
 //   sender named, the rest of that datagram lost; the next one is whole. An
 //   operation that took no datagram names no sender (an address of size 0, its
 //   port 0).
-// - SendTo[sock, addr, buf]: all of buf as ONE datagram to addr; Done(n), n its
+// - SendTo(sock, addr, buf): all of buf as ONE datagram to addr; Done(n), n its
 //   bytes; 'c.peer' is addr. A datagram too large for the network is Failed
 //   with WSAEMSGSIZE too. UDP promises nothing about delivery: Done says the
 //   system took the datagram.
@@ -149,31 +149,31 @@
 // 'c.peer' is also Connect's address in a Connect's answer; for every other
 // operation it is of size 0. Batching (recvmmsg, sendmmsg) is not here yet.
 //
-// TARGETS. Where an operation's one answer goes. Target.Here[token]: to this
-// loop's own 'poll'. Target.Post[token, waker]: to ANOTHER loop, the one the
+// TARGETS. Where an operation's one answer goes. Target.Here(token): to this
+// loop's own 'poll'. Target.Post(token, waker): to ANOTHER loop, the one the
 // waker wakes, posted into its port, so that a thread idle in its own poll
 // wakes the instant the answer exists -- how a frame loop learns of a read a
 // service thread finished. The token is plain data the loop hands back and
 // never reads (I11): the driver decides what it means. Three targets hand
 // the answer to another thread with no loop of its own:
 //
-// - Target.Chan[token, tx]: sent on a sync channel (a Sender[Completion]);
+// - Target.Chan(token, tx): sent on a sync channel (a Sender[Completion]);
 //   the receiving thread recv's it. The loop never waits on the channel: a
 //   bounded one that is full has the answer held by the loop and tried
 //   again every pass of poll (poll waits at most a millisecond while any is
 //   held), so it is never lost or sent twice; a channel whose receiver has
 //   gone drops the answer, its buffer going home (counted).
-// - Target.Once[token, tx]: sent on a sync one-shot (a OneshotSender) a
+// - Target.Once(token, tx): sent on a sync one-shot (a OneshotSender) a
 //   thread waits on: a synchronous call, the caller blocking on its
 //   OneshotReceiver while the loop's thread does the operation.
-// - Target.Status[token, board, slot]: left in slot 'slot' of a StatusArray,
+// - Target.Status(token, board, slot): left in slot 'slot' of a StatusArray,
 //   which a thread looks at when it chooses and never waits on (DirectStorage's
 //   status arrays): 'isReady(i)', then 'take(i, out)'. The slot is claimed
 //   at submit and free again once taken; a slot given a second operation
 //   while it holds one, or out of range, is a panic at the caller's line.
 //
 // The last hands the answer to another runtime, which the loop knows nothing
-// of (I11): Target.Hook[token, sink], where a Sink is a closure of that
+// of (I11): Target.Hook(token, sink), where a Sink is a closure of that
 // runtime's own, a So[fn(c Completion) + Sendable] holding what it needs. The
 // loop calls it with the answer on its own thread, once, where it would have
 // sent the answer; a Sink that dies without delivering (its loop gone before
@@ -268,7 +268,7 @@
 // name looked up (getaddrinfo), a file opened and read where no overlapped
 // form will do -- runs on the pool's threads and is answered into the loop
 // that asked, like the kernel's answers, under the same contract:
-// Op.Call[lane, work, arg, buf], 'work' a plain function '&fn(arg u64, buf
+// Op.Call(lane, work, arg, buf), 'work' a plain function '&fn(arg u64, buf
 // &mut IoBuf) Outcome' run on one of the lane's threads with the buffer
 // moved to it, its Outcome the answer (Done with a count, or Failed). One
 // pool, in lanes: each lane its own bounded queue and its own threads
