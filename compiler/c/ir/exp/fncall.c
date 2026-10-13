@@ -865,7 +865,8 @@ void fnCallFinalizeArgs(TypeCheckState *pstate, FnCallNode *node) {
                 if (why)
                     errorMsgNode(*argsp, whycode, "%s", why);
                 else
-                    errorMsgNode(*argsp, ErrorInvType, "Expression's type does not match declared parameter");
+                    errorMsgNode(*argsp, ErrorInvType, "Expression's type does not match declared parameter%s",
+                        iexpImmBorrowHint(*argsp, ((IExpNode*)*parmp)->vtype));
             }
         }
         parmp++;
