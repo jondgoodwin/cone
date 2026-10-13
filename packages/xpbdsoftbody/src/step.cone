@@ -1,0 +1,340 @@
+// ======== The step: substeps, batches, rigid bodies ========
+//
+// A step (Muller, Macklin, Chentanez, Jeschke and Kim 2020, "Detailed Rigid
+// Body Simulation with Extended Position Based Dynamics", the small-steps
+// scheme; Macklin, Muller and Chentanez 2016, "XPBD: Position-Based
+// Simulation of Compliant Constrained Dynamics"). Once, at the start:
+//
+//   0. wind forces on the triangles and rope segments from the velocities
+//      then (not each substep: the force changes slowly, and a substep is
+//      cheap enough for the wind to be the dearest part of it);
+//
+// and for each of n substeps of h = dt / n:
+//
+//   1. move the attached particles with the anchor frame, and the particles
+//      held to rigid bodies with the bodies;
+//   2. predict: v += h (g + f w), x += h v, remembering the old x;
+//   3. solve once (or 'iterations' times), in a fixed order: contacts, pressure,
+//      bending, curvature, long range tethers, stretch (stretch last, so the
+//      positions that go on satisfy the edges best); each with XPBD's
+//      compliant correction
+//        dlambda = (-C - a lambda) / (sum w |grad C|^2 + a),  a = compliance / h^2,
+//        dx_i = w_i dlambda grad_i C;
+//      the constraints of a kind in colour batches (batch.cone), so a batch may
+//      be shared between threads;
+//   4. optional strain limiting, contacts again, self collision: positions
+//      projected out, with Coulomb friction on the tangential displacement of
+//      the substep (Macklin et al. 2014, "Unified Particle Physics");
+//   5. v = (x - x_old) / h, then damping;
+//   6. what the rigid bodies felt, and what gave way.
+//
+// Lambdas are zero at the first iteration of each substep. Every loop runs in a
+// fixed order and no random numbers are used, so the same inputs give the same
+// bits whatever the number of threads (on one compiler build and one C runtime).
+//
+// What one Gauss-Seidel pass per substep leaves unconverged is a stretch in a
+// loaded cloth or rope that grows as the substeps get larger (a 32 x 32 cloth
+// hanging by its top edge, stretch compliance 4e-3, shows 6% at its worst edge
+// with 8 substeps, 1.5% with 20; the mean is a quarter of that): the remedies
+// are more substeps or iterations, strain limiting, and long range tethers.
+//
+// RIGID BODIES. A rigid body (a Coupled, refreshed by the program) meets the
+// soft body in two ways: a particle held to a point of it (a BodyAnchor), and a
+// particle pushed out of a shape that belongs to it (a Collider with a body).
+// Both are XPBD constraints in which the body is the second mass: a held
+// particle takes the body's inverse mass at its point for the substep (it is a
+// pinned particle that has become a heavy one, so the cloth's constraints pull
+// it and it pulls back), and a contact is the usual two-mass position
+// correction, depth / (w_particle + w_body). What a particle was moved by,
+// times its mass over h, is the impulse the body is given; the program applies
+// it and steps its rigid world by the substep (clothrope's Coupler does). A
+// body shared by k couplings offers each k times its inverse mass and so gets
+// the average of their pushes, not their sum (mass splitting: Tonge, Benevolenski
+// and Lammers 2012, "Mass splitting for jitter-free parallel rigid body
+// simulation"). The inverse mass a body offers a held particle is the mean over
+// directions of 1/m + (r x n) . I^-1 (r x n).
+
+fn bodyInvMassAround(c &Coupled, r Vec3) f32 {
+  if c.invMass == 0. { return 0.; }
+  imm rx = r.cross(new Vec3(1., 0., 0.));
+  imm ry = r.cross(new Vec3(0., 1., 0.));
+  imm rz = r.cross(new Vec3(0., 0., 1.));
+  c.invMass + (rx.dot(c.invInertia * rx) + ry.dot(c.invInertia * ry) + rz.dot(c.invInertia * rz)) * (1. / 3.);
+}
+
+// The raw pointers the loops use, for the lists as they are now
+fn viewOf(b &mut SoftBody) StepView {
+  imm pos = b.pos.viewMut() as *Vec3;
+  imm prev = b.prev.viewMut() as *Vec3;
+  imm vel = b.vel.viewMut() as *Vec3;
+  imm force = b.force.viewMut() as *Vec3;
+  imm inv = b.invMass.viewMut() as *f32;
+  imm tris = b.tris.viewMut() as *u32;
+  imm triForce = b.triForce.viewMut() as *Vec3;
+  imm adjStart = b.adjStart.viewMut() as *u32;
+  imm adj = b.adjList.viewMut() as *u32;
+  imm dist = b.dist.viewMut() as *DistanceC;
+  imm bend = b.bend.viewMut() as *BendC;
+  imm curves = b.curves.viewMut() as *CurveC;
+  new StepView(pos, prev, vel, force, inv, tris, triForce, adjStart, adj, dist, bend, curves,
+    b.stepH, b.stepH, true, 1., b.gravity, b.stepWind, false, b.airDensity, b.skinCoeff, b.dragCoeff, b.liftCoeff);
+}
+
+// Cross-flow drag on a rope's segments, added to the particles' forces
+fn ropeWind(b &mut SoftBody, wind Vec3) {
+  imm rho = b.airDensity;
+  mut k = 0usize;
+  while k + 1usize < b.ropeSegments.len() {
+    imm ia = usize.from(*b.ropeSegments[k]);
+    imm ib = usize.from(*b.ropeSegments[k + 1usize]);
+    k = k + 2usize;
+    imm pa = *b.pos[ia];
+    imm pb = *b.pos[ib];
+    imm axis = pb - pa;
+    imm len = axis.length();
+    if len < 1e-9 { continue; }
+    imm u = axis * (1. / len);
+    imm vseg = (*b.vel[ia] + *b.vel[ib]) * 0.5;
+    imm vr = wind - vseg;
+    imm vperp = vr - u * vr.dot(u);
+    imm sp = vperp.length();
+    if sp < 1e-4 { continue; }
+    imm f = vperp * (0.5 * rho * b.ropeDrag * 2. * b.ropeRadius * len * sp);
+    b.force.set(ia, *b.force[ia] + f * 0.5);
+    b.force.set(ib, *b.force[ib] + f * 0.5);
+  }
+}
+
+// Run the colour batches of one kind: each batch to completion before the next
+fn runBatches(workers &mut Workers, parallel bool, v &StepView, kind u32, starts &Array[u32]) {
+  mut c = 0usize;
+  while c + 1usize < starts.len {
+    imm lo = usize.from(starts[c]);
+    imm hi = usize.from(starts[c + 1usize]);
+    if hi > lo {
+      if parallel { workers.run(v, kind, lo, hi); } else { runRegion(v, kind, lo, hi); }
+    }
+    c = c + 1usize;
+  }
+}
+
+// ---- rigid bodies ----
+
+// Count, for each body, the particles held to it
+fn countAnchors(b &mut SoftBody) {
+  mut i = 0usize;
+  while i < b.bodies.len() {
+    b.bodies[i].anchored = 0u32;
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < b.bodyAnchors.len() {
+    imm bi = usize.from(b.bodyAnchors[i].body);
+    b.bodies[bi].anchored = b.bodies[bi].anchored + 1u32;
+    i = i + 1usize;
+  }
+}
+
+fn maxU32(a u32, c u32) u32 {if a > c {a;} else {c;};}
+
+// The held particles become the bodies' points, with the bodies' mass
+fn setBodyProxies(b &mut SoftBody, h f32) {
+  mut k = 0usize;
+  while k < b.bodyAnchors.len() {
+    imm a = *b.bodyAnchors[k];
+    k = k + 1usize;
+    imm c = *b.bodies[usize.from(a.body)];
+    imm p = c.pos + c.rot * a.offset;
+    imm r = p - c.pos;
+    imm vpt = c.velocityAt(p);
+    imm ip = usize.from(a.particle);
+    imm w = bodyInvMassAround(&c, r) * f32.from(maxU32(c.anchored, 1u32));
+    b.prev.set(ip, p);
+    b.pos.set(ip, p + vpt * h);
+    b.vel.set(ip, vpt);
+    b.invMass.set(ip, w);
+  }
+}
+
+// What the held particles were moved by is the impulse their bodies are given;
+// one pulled harder than its break force is let go
+fn finishBodyProxies(b &mut SoftBody, h f32) {
+  mut k = 0usize;
+  while k < b.bodyAnchors.len() {
+    imm a = *b.bodyAnchors[k];
+    imm c = *b.bodies[usize.from(a.body)];
+    imm p = c.pos + c.rot * a.offset;
+    imm r = p - c.pos;
+    imm vpt = c.velocityAt(p);
+    imm ip = usize.from(a.particle);
+    imm w = *b.invMass[ip];
+    mut released = false;
+    if w > 0. {
+      imm disp = *b.pos[ip] - (p + vpt * h);
+      imm j = disp * (1. / (w * h));
+      imm pull = j.length() / h;
+      if a.breakForce >= 0. and pull > a.breakForce {
+        released = true;
+        b.breaks.push(new BreakEvent(BREAK_ANCHOR, a.particle, a.body, pull));
+      } else {
+        b.bodies[usize.from(a.body)].impulse = b.bodies[usize.from(a.body)].impulse + j;
+        b.bodies[usize.from(a.body)].angImpulse = b.bodies[usize.from(a.body)].angImpulse + r.cross(j);
+      }
+    }
+    if released {
+      b.invMass.set(ip, 1. / *b.mass[ip]);
+      b.bodyAnchors.swap(k, b.bodyAnchors.len() - 1usize);
+      b.bodyAnchors.truncate(b.bodyAnchors.len() - 1usize);
+    } else {
+      b.invMass.set(ip, 0.);
+      k = k + 1usize;
+    }
+  }
+}
+
+// ---- breaking ----
+
+// Remove every stretch constraint pulled past its break force this substep
+fn checkBreaks(b &mut SoftBody, h f32) {
+  imm inv = 1. / (h * h);
+  mut k = 0usize;
+  while k < b.dist.len() {
+    imm c = *b.dist[k];
+    imm limit = c.breakForce;
+    if limit >= 0. and fabs(c.lambda) * inv > limit {
+      b.breaks.push(new BreakEvent(BREAK_DISTANCE, c.a, c.b, fabs(c.lambda) * inv));
+      b.dist.swap(k, b.dist.len() - 1usize);
+      b.dist.truncate(b.dist.len() - 1usize);
+      dropAcross(b, c.a, c.b);
+    } else {
+      k = k + 1usize;
+    }
+  }
+}
+
+// An edge is gone: bending across it, and the triangles on it, go too
+fn dropAcross(b &mut SoftBody, pa u32, pb u32) {
+  mut k = 0usize;
+  while k < b.bend.len() {
+    imm c = *b.bend[k];
+    imm has_a = c.a == pa or c.b == pa or c.c == pa or c.d == pa;
+    imm has_b = c.a == pb or c.b == pb or c.c == pb or c.d == pb;
+    if has_a and has_b {
+      b.bend.swap(k, b.bend.len() - 1usize);
+      b.bend.truncate(b.bend.len() - 1usize);
+    } else {
+      k = k + 1usize;
+    }
+  }
+  // triangles, in the order they were made (the output's indices are the same triangles)
+  mut t = 0usize;
+  while t + 2usize < b.tris.len() {
+    imm x = *b.tris[t];
+    imm y = *b.tris[t + 1usize];
+    imm z = *b.tris[t + 2usize];
+    imm on = (x == pa or y == pa or z == pa) and (x == pb or y == pb or z == pb);
+    if on {
+      removeTriangle(b, t);
+    } else {
+      t = t + 3usize;
+    }
+  }
+}
+
+fn removeTriangle(b &mut SoftBody, t usize) {
+  imm last = b.tris.len() - 3usize;
+  imm same = b.vertexTris.len() == b.tris.len();
+  mut e = 0usize;
+  while e < 3usize {
+    b.tris.set(t + e, *b.tris[last + e]);
+    if same { b.vertexTris.set(t + e, *b.vertexTris[last + e]); }
+    e = e + 1usize;
+  }
+  b.tris.truncate(last);
+  if same { b.vertexTris.truncate(last); }
+}
+
+// ---- the step ----
+
+pub fn beginStep(b &mut SoftBody, dt f32, wind Vec3, workers &mut Workers) {
+  imm n = b.pos.len();
+  b.stepSubs = if b.substeps < 1u32 {1u32;} else {b.substeps;};
+  b.stepH = dt / f32.from(b.stepSubs);
+  b.stepIndex = 0u32;
+  b.stepWind = wind;
+  if n == 0usize or dt <= 0. {
+    b.stepSubs = 0u32;
+    return;
+  }
+  ensureBatches(b);
+  mut v = viewOf(b);
+  v.windOn = b.airDensity > 0. and b.tris.len() > 0usize;
+  if v.windOn { workers.run(&v, R_WIND_TRI, 0usize, b.tris.len() / 3usize); }
+  workers.run(&v, R_WIND_GATHER, 0usize, n);
+  if b.airDensity > 0. and b.ropeRadius > 0. { ropeWind(b, wind); }
+}
+
+pub fn substep(b &mut SoftBody, workers &mut Workers, field &<fn(p Vec3) Vec4, hasField bool) {
+  if b.stepIndex >= b.stepSubs { return; }
+  imm n = b.pos.len();
+  ensureBatches(b);
+  imm h = b.stepH;
+  imm s = b.stepIndex;
+  moveAttached(b, f32.from(s + 1u32) / f32.from(b.stepSubs), h);
+  imm anyBody = b.bodies.len() > 0usize;
+  if anyBody { countAnchors(b); }
+  mut v = viewOf(b);
+  v.damp = 1. / (1. + b.damping * h);
+  imm parallel = workers.isParallel() and !b.batchesSerial;
+  workers.run(&v, R_PREDICT, 0usize, n);
+  if b.bodyAnchors.len() > 0usize { setBodyProxies(b, h); }
+  mut grad = List[Vec3].empty();
+  if b.pressure.active {
+    mut i = 0usize;
+    while i < n {
+      grad.push(zero3());
+      i = i + 1usize;
+    }
+  }
+  imm anyContact = hasField or b.colliders.len() > 0usize or b.heightfields.len() > 0usize;
+  imm every = if b.bendEvery < 1u32 {1u32;} else {b.bendEvery;};
+  imm bendNow = s % every == 0u32;
+  v.hBend = h * f32.from(every);
+  b.pressure.lambda = 0.;
+  if b.anyBreakable {
+    mut k = 0usize;
+    while k < b.dist.len() {
+      b.dist[k].lambda = 0.;
+      k = k + 1usize;
+    }
+  }
+  mut it = 0u32;
+  while it < b.iterations {
+    v.first = it == 0u32;
+    if anyContact { collideAll(b, field); }
+    projectPressure(b, h, &mut grad);
+    if bendNow and b.bend.len() > 0usize { runBatches(workers, parallel, &v, R_BEND, b.bendBatch.view()); }
+    if b.curves.len() > 0usize { runBatches(workers, parallel, &v, R_CURVE, b.curveBatch.view()); }
+    projectTethers(b);
+    runBatches(workers, parallel, &v, R_DIST, b.distBatch.view());
+    it = it + 1u32;
+  }
+  if b.strainLimit >= 0. { limitStrain(b); }
+  if anyContact { collideAll(b, field); }
+  if b.strainLimit >= 0. and anyContact { limitStrain(b); }
+  if b.selfCollide { selfCollide(b); }
+  workers.run(&v, R_VELOCITY, 0usize, n);
+  if b.bodyAnchors.len() > 0usize { finishBodyProxies(b, h); }
+  if b.anyBreakable { checkBreaks(b, h); }
+  b.stepIndex = s + 1u32;
+}
+
+pub fn endStep(b &mut SoftBody) {
+  b.frameFrom = b.frameTo;
+}
+
+fn runStep(b &mut SoftBody, dt f32, wind Vec3, field &<fn(p Vec3) Vec4, hasField bool, workers &mut Workers) {
+  beginStep(b, dt, wind, workers);
+  while b.stepIndex < b.stepSubs { substep(b, workers, field, hasField); }
+  endStep(b);
+}

@@ -1,0 +1,170 @@
+// ======== Worker threads for the step's loops ========
+//
+// A Workers is a small pool of operating system threads that share the batches'
+// loops with the thread that steps the body. The step publishes a region (a
+// kind of loop and its range), every thread runs its slice, and the stepping
+// thread waits until all have finished: a fork and a join per region, about a
+// microsecond when the workers are awake. A worker spins for a short while
+// after a region, which covers the regions of one step; then it parks, and the
+// next region unparks it (thread.park and unpark, a futex underneath).
+//
+// The shared state is an array of 64-bit words in a block that does not move,
+// touched only through atomics (core's mem.atomic*, sequentially consistent):
+// the generation of the last region published, how many workers have finished
+// it, a stop flag, the region itself, and a sleeping flag for each worker. The
+// StepView the loops read is a one-element list the stepping thread rewrites
+// before it publishes; a worker reads it only after seeing the new generation.
+//
+// A region smaller than 'MIN_PARALLEL' items is not worth the fork and runs on
+// the stepping thread alone. No result depends on the number of threads
+// (kernels.cone).
+//
+//   mut workers = Workers.make(4u32);       // this thread and three more
+//   body.stepPool(&mut workers, 1. / 60., wind);
+
+const W_GEN = 0usize;
+const W_DONE = 1usize;
+const W_STOP = 2usize;
+const W_KIND = 3usize;
+const W_LO = 4usize;
+const W_HI = 5usize;
+const W_SLEEP = 6usize;        // one word a worker from here
+const SPIN_LIMIT = 40000u32;   // looks at the generation before a worker parks
+const MIN_PARALLEL = 384usize;
+
+struct WorkerArg is Sendable {
+  pub ctl *u64;
+  pub view *StepView;
+  pub id u32;
+  pub count u32;
+}
+
+// The slice of [lo, hi) that thread t of n runs
+fn sliceOf(lo usize, hi usize, t u32, n u32) (usize, usize) {
+  imm total = hi - lo;
+  imm per = total / usize.from(n);
+  imm extra = total % usize.from(n);
+  imm ti = usize.from(t);
+  imm s = lo + ti * per + (if ti < extra {ti;} else {extra;});
+  imm e = s + per + (if ti < extra {1usize;} else {0usize;});
+  (s, e);
+}
+
+fn workerMain(a WorkerArg) i32 {
+  mut seen = 0u64;
+  while true {
+    mut spins = 0u32;
+    while mem.atomicLoad[u64](a.ctl + W_GEN, MemOrder.SeqCst) == seen {
+      spins = spins + 1u32;
+      if spins > SPIN_LIMIT {
+        mem.atomicStore[u64](a.ctl + W_SLEEP + usize.from(a.id), 1u64, MemOrder.SeqCst);
+        if mem.atomicLoad[u64](a.ctl + W_GEN, MemOrder.SeqCst) == seen { thread.park(); }
+        mem.atomicStore[u64](a.ctl + W_SLEEP + usize.from(a.id), 0u64, MemOrder.SeqCst);
+        spins = 0u32;
+      }
+    }
+    seen = mem.atomicLoad[u64](a.ctl + W_GEN, MemOrder.SeqCst);
+    if mem.atomicLoad[u64](a.ctl + W_STOP, MemOrder.SeqCst) != 0u64 { return 0i32; }
+    imm kind = u32.from(mem.atomicLoad[u64](a.ctl + W_KIND, MemOrder.SeqCst));
+    imm lo = usize.from(mem.atomicLoad[u64](a.ctl + W_LO, MemOrder.SeqCst));
+    imm hi = usize.from(mem.atomicLoad[u64](a.ctl + W_HI, MemOrder.SeqCst));
+    imm sl = sliceOf(lo, hi, a.id, a.count);
+    runRegion(&*a.view, kind, sl.0, sl.1);
+    mem.atomicAdd[u64](a.ctl + W_DONE, 1u64, MemOrder.SeqCst);
+  }
+  0i32;
+}
+
+pub struct Workers {
+  ctl List[u64];
+  view List[StepView];
+  refs List[thread.ThreadRef];
+  pub count u32;           // threads in all, the stepping thread included
+
+  // No workers: every region runs on the stepping thread
+  pub fn none() Workers {
+    new Workers(List[u64].empty(), List[StepView].empty(), List[thread.ThreadRef].empty(), 1u32);
+  }
+
+  // 'count' threads in all (this one and count - 1 more). 1 is none.
+  pub fn make(count u32) Workers {
+    mut w = Workers.none();
+    if count < 2u32 { return w; }
+    mut i = 0usize;
+    while i < W_SLEEP + usize.from(count) { w.ctl.push(0u64); i = i + 1usize; }
+    w.count = count;
+    // a StepView to point at: any, rewritten before use
+    w.view.push(blankView());
+    imm ctl = w.ctl.viewMut() as *u64;
+    imm vp = w.view.viewMut() as *StepView;
+    mut id = 1u32;
+    while id < count {
+      imm t = thread.start(new WorkerArg(ctl, vp, id, count), &workerMain);
+      w.refs.push(t.threadRef());
+      t.detach();
+      id = id + 1u32;
+    }
+    w;
+  }
+
+  pub fn isParallel(self &) bool {count > 1u32;}
+
+  // Run a loop over [lo, hi) of 'view': this thread's slice, and the others' by
+  // the workers; returns when all are done
+  pub fn run(self &mut, view &StepView, kind u32, lo usize, hi usize) {
+    if count < 2u32 or hi - lo < MIN_PARALLEL {
+      runRegion(view, kind, lo, hi);
+      return;
+    }
+    imm ctl = ctl.viewMut() as *u64;
+    self.view.set(0usize, *view);
+    mem.atomicStore[u64](ctl + W_KIND, u64.from(kind), MemOrder.SeqCst);
+    mem.atomicStore[u64](ctl + W_LO, u64.from(lo), MemOrder.SeqCst);
+    mem.atomicStore[u64](ctl + W_HI, u64.from(hi), MemOrder.SeqCst);
+    mem.atomicStore[u64](ctl + W_DONE, 0u64, MemOrder.SeqCst);
+    mem.atomicAdd[u64](ctl + W_GEN, 1u64, MemOrder.SeqCst);
+    mut i = 0usize;
+    while i + 1usize < usize.from(count) {
+      if mem.atomicLoad[u64](ctl + W_SLEEP + 1usize + i, MemOrder.SeqCst) != 0u64 { refs[i].unpark(); }
+      i = i + 1usize;
+    }
+    imm sl = sliceOf(lo, hi, 0u32, count);
+    runRegion(view, kind, sl.0, sl.1);
+    imm want = u64.from(count - 1u32);
+    while mem.atomicLoad[u64](ctl + W_DONE, MemOrder.SeqCst) < want { }
+  }
+
+  // Tell the workers to leave
+  pub fn stop(self &mut) {
+    if count < 2u32 { return; }
+    imm ctl = ctl.viewMut() as *u64;
+    mem.atomicStore[u64](ctl + W_STOP, 1u64, MemOrder.SeqCst);
+    mem.atomicAdd[u64](ctl + W_GEN, 1u64, MemOrder.SeqCst);
+    mut i = 0usize;
+    while i < refs.len() {
+      refs[i].unpark();
+      i = i + 1usize;
+    }
+    count = 1u32;
+  }
+
+  fn final(self &uni) {
+    if count >= 2u32 {
+      imm ctl = ctl.viewMut() as *u64;
+      mem.atomicStore[u64](ctl + W_STOP, 1u64, MemOrder.SeqCst);
+      mem.atomicAdd[u64](ctl + W_GEN, 1u64, MemOrder.SeqCst);
+      mut i = 0usize;
+      while i < refs.len() {
+        refs[i].unpark();
+        i = i + 1usize;
+      }
+    }
+  }
+}
+
+fn blankView() StepView {
+  imm nullp = 0usize;
+  new StepView(nullp as *Vec3, nullp as *Vec3, nullp as *Vec3, nullp as *Vec3, nullp as *f32, nullp as *u32,
+    nullp as *Vec3, nullp as *u32, nullp as *u32, nullp as *DistanceC, nullp as *BendC, nullp as *CurveC,
+    0., 0., false, 1., new Vec3(0., 0., 0.), new Vec3(0., 0., 0.), false, 0., 0., 0., 0.);
+}

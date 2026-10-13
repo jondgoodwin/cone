@@ -1,0 +1,38 @@
+mod profile;
+
+import stdio use *;
+import time use Instant;
+import collections use *;
+import geomath use *;
+import xpbdsoftbody use *;
+
+fn cloth(n u32) SoftBody {
+  mut c = clothGrid(new Vec3(-0.5, 1., -0.5), new Vec3(1., 0., 0.), new Vec3(0., 0., 1.), n, n, &Fabric.light());
+  mut i = 0u32;
+  while i <= n { c.pin(i); i = i + 1u32; }
+  c.substeps = 10u32;
+  c;
+}
+
+fn timeIt(label &str, c &mut SoftBody) {
+  mut s = 0;
+  while s < 30 { c.step(1. / 60., new Vec3(4., 0., 0.5)); s = s + 1; }
+  imm t0 = Instant.now();
+  s = 0;
+  while s < 100 { c.step(1. / 60., new Vec3(4., 0., 0.5)); s = s + 1; }
+  printStr(label); printStr(": "); printInt(t0.elapsed().nanos() / 100i64 / 1000i64); printStr(" us per step\n");
+}
+
+fn main() i32 {
+  mut a = cloth(32u32);
+  print <- "dist "; print <- i64.from(a.dist.len()); print <- " bend "; print <- i64.from(a.bend.len()); print <- " tris "; print <- i64.from(a.tris.len() / 3usize); print <- "\n";
+  timeIt("full", &mut a);
+  mut b = cloth(32u32); b.airDensity = 0.; timeIt("no wind", &mut b);
+  mut c = cloth(32u32); c.bend.clear(); timeIt("no bend", &mut c);
+  mut d = cloth(32u32); d.dist.clear(); timeIt("no dist", &mut d);
+  mut e = cloth(32u32); e.dist.clear(); e.bend.clear(); e.airDensity = 0.; timeIt("predict only", &mut e);
+  mut f = cloth(32u32); f.bend.clear(); f.airDensity = 0.; timeIt("dist only", &mut f);
+  mut g = cloth(32u32); g.dist.clear(); g.airDensity = 0.; timeIt("bend only", &mut g);
+  mut h = cloth(32u32); h.dist.clear(); h.bend.clear(); timeIt("wind only", &mut h);
+  0i32;
+}

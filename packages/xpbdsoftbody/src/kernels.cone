@@ -1,0 +1,292 @@
+// ======== The step's inner loops, over raw pointers ========
+//
+// The loops that run for every particle or every constraint of a batch live
+// here, written over a StepView: raw pointers into the body's lists, valid for
+// one substep (nothing is pushed to a list while it is used). A loop takes a
+// range [lo, hi) of its items, so the same code runs the whole range on one
+// thread or a slice of it on each of several (workers.cone). Nothing in a range
+// touches a particle another range of the same batch touches (the batches are
+// colours, batch.cone), and the wind gathers into the particle that owns the
+// sum, so every slicing gives the same bits.
+//
+// Items are not bounds-checked here: the caller (solve.cone) makes the ranges
+// from the lists' own lengths.
+
+pub const R_WIND_TRI = 0u32;      // aerodynamic force of each triangle in the range
+pub const R_WIND_GATHER = 1u32;   // sum the triangles' forces onto each particle in the range
+pub const R_PREDICT = 2u32;       // semi-implicit Euler for each particle
+pub const R_DIST = 3u32;          // stretch constraints
+pub const R_BEND = 4u32;          // dihedral bending constraints
+pub const R_CURVE = 5u32;         // rope curvature constraints
+pub const R_VELOCITY = 6u32;      // new velocities from the moved positions
+
+pub struct StepView is Sendable {
+  pub pos *Vec3;
+  pub prev *Vec3;
+  pub vel *Vec3;
+  pub force *Vec3;
+  pub invMass *f32;
+  pub tris *u32;
+  pub triForce *Vec3;
+  pub adjStart *u32;
+  pub adj *u32;
+  pub dist *DistanceC;
+  pub bend *BendC;
+  pub curves *CurveC;
+  pub h f32;               // the substep
+  pub hBend f32;           // the time the bend constraints take this substep (a multiple of h)
+  pub first bool;          // the first iteration of the substep: every multiplier is zero
+  pub damp f32;            // 1 / (1 + damping h)
+  pub gravity Vec3;
+  pub wind Vec3;
+  pub windOn bool;
+  pub rho f32;
+  pub skin f32;
+  pub drag f32;
+  pub lift f32;
+}
+
+// atan2 to about 1e-5 radians: the arctangent of the ratio of the smaller to the
+// larger magnitude by an odd degree-9 polynomial (the coefficients are the
+// minimax fit given in Abramowitz and Stegun 4.4.49's spirit, refit for degree 9),
+// then unfolded to the quadrant. The libm call it replaces was a quarter of a
+// bend's cost; a bend error of 1e-5 rad is far below what the constraint resolves.
+fn atan2Fast(y f32, x f32) f32 inline {
+  imm ax = fabs(x);
+  imm ay = fabs(y);
+  imm hi = if ax > ay {ax;} else {ay;};
+  imm lo = if ax > ay {ay;} else {ax;};
+  if hi < 1e-30 { return 0.; }
+  imm a = lo / hi;
+  imm s = a * a;
+  mut r = a * (0.9998660 + s * (-0.3302995 + s * (0.1801410 + s * (-0.0851330 + s * 0.0208351))));
+  if ay > ax { r = 1.5707964 - r; }
+  if x < 0. { r = 3.1415927 - r; }
+  if y < 0. { r = -r; }
+  r;
+}
+
+fn windTriRange(v &StepView, lo usize, hi usize) {
+  imm wind = v.wind;
+  imm rho = v.rho;
+  mut t = lo;
+  while t < hi {
+    imm i0 = usize.from(*(v.tris + 3usize * t));
+    imm i1 = usize.from(*(v.tris + 3usize * t + 1usize));
+    imm i2 = usize.from(*(v.tris + 3usize * t + 2usize));
+    imm p0 = *(v.pos + i0);
+    imm p1 = *(v.pos + i1);
+    imm p2 = *(v.pos + i2);
+    imm cr = (p1 - p0).cross(p2 - p0);
+    imm a2 = cr.length();
+    mut third = new Vec3(0., 0., 0.);
+    if a2 >= 1e-10 {
+      imm area = 0.5 * a2;
+      imm nrm = cr * (1. / a2);
+      imm vtri = (*(v.vel + i0) + *(v.vel + i1) + *(v.vel + i2)) * (1. / 3.);
+      imm vr = wind - vtri;
+      imm speed = vr.length();
+      if speed >= 1e-4 {
+        imm d = vr * (1. / speed);
+        imm nd = nrm.dot(d);
+        imm sa = fabs(nd);
+        imm q = 0.5 * rho * speed * speed * area;
+        imm nf = if nd < 0. {nrm;} else {-nrm;};
+        imm lp = nf * -1. + d * nf.dot(d);
+        imm f = d * (q * (v.skin + v.drag * sa)) + lp * (q * v.lift * 2. * sa);
+        third = f * (1. / 3.);
+      }
+    }
+    *(v.triForce + t) = third;
+    t = t + 1usize;
+  }
+}
+
+fn windGatherRange(v &StepView, lo usize, hi usize) {
+  mut i = lo;
+  while i < hi {
+    mut f = new Vec3(0., 0., 0.);
+    if v.windOn {
+      mut k = usize.from(*(v.adjStart + i));
+      imm kend = usize.from(*(v.adjStart + i + 1usize));
+      while k < kend {
+        f = f + *(v.triForce + usize.from(*(v.adj + k)));
+        k = k + 1usize;
+      }
+    }
+    *(v.force + i) = f;
+    i = i + 1usize;
+  }
+}
+
+fn predictRange(v &StepView, lo usize, hi usize) {
+  imm h = v.h;
+  mut i = lo;
+  while i < hi {
+    imm p = *(v.pos + i);
+    *(v.prev + i) = p;
+    imm w = *(v.invMass + i);
+    if w > 0. {
+      imm vel = *(v.vel + i) + (v.gravity + *(v.force + i) * w) * h;
+      *(v.vel + i) = vel;
+      *(v.pos + i) = p + vel * h;
+    }
+    i = i + 1usize;
+  }
+}
+
+fn velocityRange(v &StepView, lo usize, hi usize) {
+  imm k = (1. / v.h) * v.damp;
+  mut i = lo;
+  while i < hi {
+    if *(v.invMass + i) > 0. { *(v.vel + i) = (*(v.pos + i) - *(v.prev + i)) * k; }
+    i = i + 1usize;
+  }
+}
+
+// ---- stretch ----
+//
+// C = |pa - pb| - rest, gradients +-u, XPBD's correction with compliance alpha / h^2.
+// At the first iteration the multiplier is zero and the correction is
+// -C / (wa + wb + alpha / h^2); it is stored as the constraint's multiplier,
+// whose size over h^2 is the force (breaking reads it).
+fn distRange(v &StepView, lo usize, hi usize) {
+  imm inv2 = 1. / (v.h * v.h);
+  imm first = v.first;
+  mut k = lo;
+  while k < hi {
+    imm cp = v.dist + k;
+    imm c = *cp;
+    k = k + 1usize;
+    imm ia = usize.from(c.a);
+    imm ib = usize.from(c.b);
+    imm wa = *(v.invMass + ia);
+    imm wb = *(v.invMass + ib);
+    imm w = wa + wb;
+    if w > 0. {
+      imm pa = *(v.pos + ia);
+      imm pb = *(v.pos + ib);
+      imm d = pa - pb;
+      imm len = d.length();
+      if len > 1e-9 {
+        imm alpha = c.compliance * inv2;
+        imm lam = if first {0.;} else {c.lambda;};
+        imm dl = (-(len - c.rest) - alpha * lam) / (w + alpha);
+        (*cp).lambda = lam + dl;
+        imm s = dl / len;
+        *(v.pos + ia) = pa + d * (s * wa);
+        *(v.pos + ib) = pb - d * (s * wb);
+      }
+    }
+  }
+}
+
+// ---- bending ----
+//
+// The dihedral angle between triangles (a, b, c) and (b, a, d) held at its rest
+// value (Muller et al. 2007 "Position Based Dynamics", with the gradients of
+// Bridson, Marino and Fedkiw 2003 and the angle from atan2 of unnormalised
+// quantities, as the unfused form has always had). The divisions are shared.
+fn bendRange(v &StepView, lo usize, hi usize) {
+  imm hb = v.hBend;
+  imm inv2 = 1. / (hb * hb);
+  imm first = v.first;
+  imm pi2 = 6.2831855;
+  mut k = lo;
+  while k < hi {
+    imm cp = v.bend + k;
+    imm c = *cp;
+    k = k + 1usize;
+    imm ia = usize.from(c.a);
+    imm ib = usize.from(c.b);
+    imm ic = usize.from(c.c);
+    imm id = usize.from(c.d);
+    imm wa = *(v.invMass + ia);
+    imm wb = *(v.invMass + ib);
+    imm wc = *(v.invMass + ic);
+    imm wd = *(v.invMass + id);
+    if wa + wb + wc + wd > 0. {
+      imm pa = *(v.pos + ia);
+      imm pb = *(v.pos + ib);
+      imm pc = *(v.pos + ic);
+      imm pd = *(v.pos + id);
+      imm e = pb - pa;
+      imm e2 = e.lengthSquared();
+      imm nc = e.cross(pc - pa);
+      imm nd = (-e).cross(pd - pb);
+      imm lc2 = nc.lengthSquared();
+      imm ld2 = nd.lengthSquared();
+      if e2 > 1e-18 and lc2 > 1e-18 and ld2 > 1e-18 {
+        imm elen = e2.sqrt();
+        mut err = atan2Fast(nc.cross(nd).dot(e) / elen, nc.dot(nd)) - c.rest;
+        if err > 3.1415927 { err = err - pi2; }
+        if err < -3.1415927 { err = err + pi2; }
+        imm ie2 = 1. / e2;
+        imm gc = nc * (-elen / lc2);
+        imm gd = nd * (-elen / ld2);
+        imm tc = (pc - pa).dot(e) * ie2;
+        imm td = (pd - pa).dot(e) * ie2;
+        imm ga = gc * (tc - 1.) + gd * (td - 1.);
+        imm gb = gc * (-tc) + gd * (-td);
+        imm sum = wa * ga.lengthSquared() + wb * gb.lengthSquared() + wc * gc.lengthSquared() + wd * gd.lengthSquared();
+        if sum > 1e-12 {
+          imm alpha = c.compliance * inv2;
+          imm lam = if first {0.;} else {c.lambda;};
+          imm dl = (-err - alpha * lam) / (sum + alpha);
+          (*cp).lambda = lam + dl;
+          *(v.pos + ia) = pa + ga * (wa * dl);
+          *(v.pos + ib) = pb + gb * (wb * dl);
+          *(v.pos + ic) = pc + gc * (wc * dl);
+          *(v.pos + id) = pd + gd * (wd * dl);
+        }
+      }
+    }
+  }
+}
+
+// ---- rope curvature ----
+fn curveRange(v &StepView, lo usize, hi usize) {
+  imm inv2 = 1. / (v.h * v.h);
+  imm first = v.first;
+  mut k = lo;
+  while k < hi {
+    imm cp = v.curves + k;
+    imm c = *cp;
+    k = k + 1usize;
+    imm ia = usize.from(c.a);
+    imm ib = usize.from(c.b);
+    imm ic = usize.from(c.c);
+    imm wa = *(v.invMass + ia);
+    imm wb = *(v.invMass + ib);
+    imm wc = *(v.invMass + ic);
+    imm sum = wa + 4. * wb + wc;
+    if sum > 0. {
+      imm pa = *(v.pos + ia);
+      imm pb = *(v.pos + ib);
+      imm pc = *(v.pos + ic);
+      imm q = pa - pb * 2. + pc;
+      imm len = q.length();
+      if len > 1e-9 {
+        imm u = q * (1. / len);
+        imm alpha = c.compliance * inv2;
+        imm lam = if first {0.;} else {c.lambda;};
+        imm dl = (-(len - c.rest) - alpha * lam) / (sum + alpha);
+        (*cp).lambda = lam + dl;
+        *(v.pos + ia) = pa + u * (wa * dl);
+        *(v.pos + ib) = pb - u * (2. * wb * dl);
+        *(v.pos + ic) = pc + u * (wc * dl);
+      }
+    }
+  }
+}
+
+// Run one kind of loop over [lo, hi)
+pub fn runRegion(v &StepView, kind u32, lo usize, hi usize) {
+  if kind == R_DIST { distRange(v, lo, hi); }
+  elif kind == R_BEND { bendRange(v, lo, hi); }
+  elif kind == R_PREDICT { predictRange(v, lo, hi); }
+  elif kind == R_VELOCITY { velocityRange(v, lo, hi); }
+  elif kind == R_WIND_TRI { windTriRange(v, lo, hi); }
+  elif kind == R_WIND_GATHER { windGatherRange(v, lo, hi); }
+  elif kind == R_CURVE { curveRange(v, lo, hi); }
+}
