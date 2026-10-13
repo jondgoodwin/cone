@@ -580,6 +580,17 @@ A type argument is the use's own source, resolved where it is written: `cloneNod
 clones one substituted for a generic parameter with no `selftype`, so a `Self` in it
 (a default naming `Step[T, Self]`) stays the type the default was taken into and is not
 repointed at the instance being made (`Step`).
+An `inline` default of a trait with a body is a template too, as a generic one is:
+it is not type checked for the trait (`structCheckMembers`: `Self` is the trait there,
+which holds nothing by value, so a default taking `self` by value and naming `Self` in
+its result, `Iterator`'s `indexed`, would be refused), not compared when a type meets
+the trait structurally (`genericDemandMatch`), and its copy in a type that declares the
+trait is type checked when a call reaches it (`structIsInheritedInlineDefault`,
+`fnCallDemandCandidates`), not with the type. Made for every type it would make a cursor of
+every cursor's items (`IterIndexed[T, Self]`, whose own `indexed` is a cursor of it),
+without end, and would refuse a cursor whose items hold a brand (a `List` of
+`&'=a mut R`) for a method nobody called. A method the type declares itself under the
+name still replaces the default, as for a generic one.
 Not yet built: a trait's public generic method met by a generic method the type
 declares itself. `structCheckTraitReqs` compares the requirement with that
 method by `fnSigVrefEqual`, and `itypeIsSame` finds no two
