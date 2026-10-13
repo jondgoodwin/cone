@@ -1,0 +1,129 @@
+// Plain test bodies: rig specs made from a few numbers, for tests and demos.
+//
+// 'plainBody' is NOT a species. It is a generator of generic bodies: a spine
+// of bones along -z with a pair of legs at each of 'legPairs' places along it,
+// optionally a neck and head at the front, a tail at the back and a pair of
+// wings. Two legs make a biped, four a quadruped, six an insect-like body,
+// eight a spider-like one; the proportions are fixed fractions of the leg's
+// length, with no relation to any animal. A real creature is a RigSpec of its
+// own (by hand, by parse.cone, or generated).
+//
+// A leg is three segments, upper, lower and foot (four bones: hip, knee,
+// ankle, toe), 0.4 : 0.4 : 0.2 of the leg's full length: the upper slants 32
+// degrees forward of vertical, the lower 44 degrees back, the foot straight
+// down, the toe's tip on the ground (y = 0) with the creature standing at
+// rest. The bends leave the leg 1.2 times longer than the hip is high, which
+// is room for a stride.
+
+pub struct BodyParams {
+  pub legPairs u32;      // 1 for two legs, 2 for four, 3 for six, 4 for eight
+  pub legLength f32;     // hip joint to the ground, metres
+  pub bodyLength f32;    // rear legs to front legs, metres
+  pub bodyRadius f32;    // the trunk's thickness (radius), metres
+  pub neckBones u32;     // 0 for none (a neck and a head of two bones come with any number above 0)
+  pub tailBones u32;     // 0 for none
+  pub wingSpan f32;      // tip to tip, metres; 0 for no wings
+
+  // A four-legged body of unremarkable proportions with a neck and a tail
+  pub fn quadruped() BodyParams { new BodyParams(2u32, 0.8, 1.2, 0.17, 3u32, 4u32, 0.); }
+
+  // A two-legged body with a neck and a tail
+  pub fn biped() BodyParams { new BodyParams(1u32, 0.5, 0.5, 0.11, 3u32, 3u32, 0.); }
+
+  // A two-legged body with wings
+  pub fn winged() BodyParams { new BodyParams(1u32, 0.4, 0.5, 0.09, 3u32, 3u32, 1.0); }
+
+  // A body with 'pairs' pairs of legs and no neck, head or tail
+  pub fn manyLegged(pairs u32, legLength f32, bodyLength f32) BodyParams {
+    new BodyParams(pairs, legLength, bodyLength, legLength * 0.22, 0u32, 0u32, 0.);
+  }
+}
+
+fn at3(x f32, y f32, z f32) Vec3 { new Vec3(x, y, z); }
+
+pub fn plainBody(p &BodyParams) RigSpec {
+  mut spec = RigSpec.make("plain body");
+  imm sin20 = 0.52992;     // the upper segment's 32 degrees forward of vertical
+  imm cos20 = 0.84805;
+  imm sin30 = 0.69466;     // the lower segment's 44 degrees back
+  imm cos30 = 0.71934;
+  imm a = p.legLength / (0.4 * cos20 + 0.4 * cos30 + 0.2);
+  imm upper = 0.4 * a;
+  imm lower = 0.4 * a;
+  imm foot = 0.2 * a;
+  imm hipY = p.legLength + 0.04;
+  imm pairs = if p.legPairs < 1u32 { 1usize; } else { usize.from(p.legPairs); };
+  // The spine: two bones for each gap between pairs, at least two bones
+  imm gaps = pairs - 1usize;
+  mut spineBones = gaps * 2usize + 1usize;
+  if spineBones < 2usize { spineBones = 2usize; }
+  imm spacing = if gaps == 0usize { p.bodyLength; } else { p.bodyLength / f32.from(spineBones - 1usize); };
+  imm spine = spec.chain("spine", KIND_SPINE, "", 0i32);
+  mut i = 0usize;
+  while i < spineBones {
+    mut name = String.from("s");
+    name <- i64.from(i);
+    if i == 0usize { spec.bone(spine, name.view(), at3(0., hipY, 0.), p.bodyRadius); }
+    else { spec.bone(spine, name.view(), at3(0., 0., -spacing), p.bodyRadius * 1.05); }
+    i = i + 1usize;
+  }
+  // The legs, rear pair first
+  imm halfWidth = p.bodyRadius * 0.9;
+  mut pair = 0usize;
+  while pair < pairs {
+    imm along = if gaps == 0usize { 0i32; } else { i32.from(pair * 2usize); };
+    mut rn = String.from("leg");
+    rn <- i64.from(pair);
+    rn <- ".R";
+    imm leg = spec.chain(rn.view(), KIND_LEG, "spine", along);
+    imm legR = p.bodyRadius * 0.42;
+    spec.bone(leg, "hip", at3(halfWidth, -0.04, 0.), legR);
+    spec.bone(leg, "knee", at3(0., -upper * cos20, -upper * sin20), legR * 0.7);
+    spec.bone(leg, "ankle", at3(0., -lower * cos30, lower * sin30), legR * 0.45);
+    spec.bone(leg, "toe", at3(0., -foot, 0.), legR * 0.4);
+    mut ln = String.from("leg");
+    ln <- i64.from(pair);
+    ln <- ".L";
+    spec.mirror(rn.view(), ln.view(), "spine", along);
+    pair = pair + 1usize;
+  }
+  // The neck and head, at the front of the spine
+  if p.neckBones > 0u32 {
+    imm neck = spec.chain("neck", KIND_NECK, "spine", -1i32);
+    imm nb = usize.from(p.neckBones);
+    imm segLen = p.bodyRadius * 1.6;
+    mut k = 0usize;
+    while k < nb {
+      mut name = String.from("n");
+      name <- i64.from(k);
+      spec.bone(neck, name.view(), at3(0., segLen * 0.45, -segLen * 0.9), p.bodyRadius * 0.62 - f32.from(k) * p.bodyRadius * 0.08);
+      k = k + 1usize;
+    }
+    imm head = spec.chain("head", KIND_HEAD, "neck", -1i32);
+    spec.bone(head, "skull", at3(0., 0.05 * p.bodyRadius, -segLen * 0.5), p.bodyRadius * 0.5);
+    spec.bone(head, "snout", at3(0., -0.1 * p.bodyRadius, -p.bodyRadius * 1.2), p.bodyRadius * 0.3);
+  }
+  // The tail, from the rear of the spine, trailing back
+  if p.tailBones > 0u32 {
+    imm tail = spec.chain("tail", KIND_TAIL, "spine", 0i32);
+    imm tb = usize.from(p.tailBones);
+    mut k = 0usize;
+    while k < tb {
+      mut name = String.from("t");
+      name <- i64.from(k);
+      spec.bone(tail, name.view(), at3(0., -0.03 * p.bodyRadius, p.bodyRadius * 1.4), p.bodyRadius * 0.4 * (1. - f32.from(k) / f32.from(tb + 1usize)));
+      k = k + 1usize;
+    }
+  }
+  // The wings, from the spine's second-last bone (the chest)
+  if p.wingSpan > 0.001 {
+    imm half = p.wingSpan * 0.5;
+    imm wing = spec.chain("wing.R", KIND_WING, "spine", -1i32);
+    spec.bone(wing, "shoulder", at3(p.bodyRadius * 0.6, p.bodyRadius * 0.7, 0.), 0.035);
+    spec.bone(wing, "elbow", at3(half * 0.36, 0.0, 0.03), 0.028);
+    spec.bone(wing, "wrist", at3(half * 0.34, 0.0, -0.01), 0.022);
+    spec.bone(wing, "hand", at3(half * 0.30, 0.0, -0.02), 0.016);
+    spec.mirror("wing.R", "wing.L", "spine", -1i32);
+  }
+  spec;
+}

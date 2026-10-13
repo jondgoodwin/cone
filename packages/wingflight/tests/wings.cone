@@ -1,0 +1,125 @@
+// Wings on a rig: found, flapped, folded; feather and membrane surfaces.
+//
+// By hand: the downstroke is 0.55 of the beat, so the warped phase at 0.275 is 0.25 and at 0.55 is 0.5. The stroke is
+// +0.6 rad at the top (phase 0) and -0.7 at the bottom (phase 0.5) at full scale, so the upper arm (shoulder to elbow
+// along the span) rises at asin(dy/len) = 0.6 then -0.7. A folded wing's bones lie within 0.25 m of the body (spread: 0.55);
+// its feathers lie back along the body, direction (0.12 s, -0.05, 1) normalised. A feather mesh has 4 vertices a row and
+// (rows + 1) rows a chain. A membrane strip of 3 anchors a line, cut in 4: 3 x 5 x 2 = 30 vertices, (3 - 1) x 4 quads
+// x 4 triangles = 32 triangles.
+
+mod wings;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import bonepose use *;
+import creaturerig use *;
+import wingflight use *;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+fn main() i32 {
+  mut spec = plainBody(&BodyParams.winged());
+  plainFeathers(&mut spec);
+  mut b = buildRig(&spec);
+  imm rig = b.take();
+  imm wings = findWings(&rig);
+  expectUInt(u64.from(wings.count()), 2u64, "two wings found");
+  expectUInt(u64.from(wings.wings[0usize].fans.len()), 3u64, "each with three fans (primaries, secondaries, tertials)");
+  expectUInt(u64.from(wings.wings[0usize].fans[0usize].bones.len() + wings.wings[0usize].fans[1usize].bones.len() + wings.wings[0usize].fans[2usize].bones.len()), 22u64, "22 feathers a wing (5 + 9 + 8)");
+  expectInt(i64.from(wings.wings[0usize].side), 1i64, "the first is the right wing");
+  imm p = estimateWing(&rig, &wings, 1.0);
+  expectBool(p.span > 1.3 and p.span < 1.6, true, "the span is about 1.45 m");
+  near(p.aspectRatio(), p.span * p.span / p.area, 0.0001, "aspect ratio is span squared over area");
+  near(warpPhase(&p, 0.275), 0.25, 0.0001, "the warped phase: half way down the downstroke");
+  near(warpPhase(&p, 0.55), 0.5, 0.0001, "the bottom of the stroke is at 0.55 of the beat");
+  near(warpPhase(&p, 0.775), 0.75, 0.0001, "half way up the upstroke");
+
+  // The flap: the upper arm's elevation
+  mut m = WingMotion.still();
+  m.amp = 1.;
+  m.phase = 0.;
+  mut pose = rig.restPose();
+  poseWings(&rig, &wings, &p, &m, &mut pose);
+  mut models = List[Transform3].empty();
+  rig.skeleton.modelTransforms(&pose, &mut models);
+  imm sh = *wings.wings[0usize].bones[0usize];
+  imm el = *wings.wings[0usize].bones[1usize];
+  mut d = models[el].translation - models[sh].translation;
+  near(atan2(d.y, absf(d.x)), 0.6, 0.03, "the top of the stroke: the arm 0.6 rad above horizontal (the elbow's 3 cm of chord and the wing's 0.15 rad of pitch shift it by 0.025)");
+  m.phase = 0.55;
+  pose = rig.restPose();
+  poseWings(&rig, &wings, &p, &m, &mut pose);
+  rig.skeleton.modelTransforms(&pose, &mut models);
+  d = models[el].translation - models[sh].translation;
+  near(atan2(d.y, absf(d.x)), -0.7, 0.03, "the bottom: 0.7 rad below");
+  // The left wing does the same as the right
+  imm lsh = *wings.wings[1usize].bones[0usize];
+  imm lel = *wings.wings[1usize].bones[1usize];
+  imm dl = models[lel].translation - models[lsh].translation;
+  near(atan2(dl.y, absf(dl.x)), -0.7, 0.03, "the left wing is in step: also 0.7 rad below");
+  expectBool(dl.x < 0., true, "and points left");
+
+  // The fold
+  mut sp = WingMotion.still();
+  pose = rig.restPose();
+  poseWings(&rig, &wings, &p, &sp, &mut pose);
+  rig.skeleton.modelTransforms(&pose, &mut models);
+  near(absf(models[*wings.wings[0usize].bones[3usize]].translation.x), 0.55, 0.01, "spread: the hand is 0.55 m out");
+  sp.fold = 1.;
+  pose = rig.restPose();
+  poseWings(&rig, &wings, &p, &sp, &mut pose);
+  rig.skeleton.modelTransforms(&pose, &mut models);
+  expectBool(absf(models[*wings.wings[0usize].bones[3usize]].translation.x) < 0.25, true, "folded: the hand is within 0.25 m of the body");
+  imm f0 = *wings.wings[0usize].fans[1usize].bones[3usize];
+  imm f0tip = *wings.wings[0usize].fans[1usize].tips[3usize];
+  imm fd = (models[f0tip].translation - models[f0].translation).normalize();
+  imm want = new Vec3(0.12, -0.05, 1.).normalize();
+  near(fd.dot(want), 1., 0.02, "folded: a secondary feather lies back along the body (to 0.9 of the way: featherClose)");
+  // Un-folded again: the same as the spread pose
+  sp.fold = 0.;
+  pose = rig.restPose();
+  poseWings(&rig, &wings, &p, &sp, &mut pose);
+  rig.skeleton.modelTransforms(&pose, &mut models);
+  near(absf(models[*wings.wings[0usize].bones[3usize]].translation.x), 0.55, 0.01, "unfolded: the hand is out again");
+
+  // Surfaces
+  imm fm = featherMesh(&rig, 0.34, 4u32);
+  mut feathers = 0usize;
+  mut c = 0usize;
+  while c < rig.chains.len() { if rig.chains[c].kind == KIND_FEATHER { feathers = feathers + 1usize; } c = c + 1usize; }
+  expectUInt(u64.from(feathers), 44u64, "44 feather chains");
+  expectUInt(u64.from(fm.mesh.positions.len()), u64.from(feathers * 5usize * 4usize), "a feather mesh has 5 rows of 4 vertices a feather");
+  expectUInt(u64.from(fm.skin.vertexCount()), u64.from(fm.mesh.positions.len()), "weights for every vertex");
+  mut sum f32 = 0.;
+  mut v = 0usize;
+  while v < fm.skin.vertexCount() { sum = sum + fm.skin.weight(v, 0usize) + fm.skin.weight(v, 1usize); v = v + 1usize; }
+  near(sum, f32.from(fm.skin.vertexCount()), 0.01, "the weights sum to 1 a vertex");
+  // A triangle of the second row (the first row is the feather's point, of no width): the top face's normal points up
+  imm i0 = usize.from(*fm.mesh.indices[12usize]);
+  imm i1 = usize.from(*fm.mesh.indices[13usize]);
+  imm i2 = usize.from(*fm.mesh.indices[14usize]);
+  imm nrm = (*fm.mesh.positions[i1] - *fm.mesh.positions[i0]).cross(*fm.mesh.positions[i2] - *fm.mesh.positions[i0]);
+  expectBool(nrm.y > 0., true, "the top face of a feather faces up");
+
+  // A membrane
+  mut mspec = plainBody(&BodyParams.winged());
+  plainMembrane(&mut mspec);
+  mut mb = buildRig(&mspec);
+  imm mrig = mb.take();
+  imm strips = plainMembraneStrips(&mrig);
+  expectUInt(u64.from(strips.len()), 8u64, "four strips a wing");
+  mut one = List[MembraneStrip].empty();
+  mut a = List[Anchor].empty();
+  mut bb = List[Anchor].empty();
+  a.push(new Anchor(0usize, new Vec3(0., 0., 0.))); a.push(new Anchor(1usize, new Vec3(0., 0., 0.))); a.push(new Anchor(2usize, new Vec3(0., 0., 0.)));
+  bb.push(new Anchor(0usize, new Vec3(0., 0., 0.3))); bb.push(new Anchor(1usize, new Vec3(0., 0., 0.3))); bb.push(new Anchor(2usize, new Vec3(0., 0., 0.3)));
+  one.push(new MembraneStrip(a, bb, 4u32));
+  imm mm = membraneMesh(&mrig, &one);
+  expectUInt(u64.from(mm.mesh.positions.len()), 30u64, "a 3-anchor strip cut in 4: 30 vertices");
+  expectUInt(u64.from(mm.mesh.indices.len() / 3usize), 32u64, "and 32 triangles");
+  near(mm.mesh.positions[2usize].z - mm.mesh.positions[0usize].z, 0.075, 0.001, "the rung is cut in quarters of 0.3 m");
+  done();
+}

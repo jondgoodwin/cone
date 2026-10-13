@@ -1,0 +1,215 @@
+// Skinning weights: bone heat against the plain envelope, on a tube bent like
+// an upside-down U (two legs joined by an arch).
+//
+// The rig: a root joint "pelvis" at (0, 1, 0) with two legs hanging from it,
+// the right leg's hip at (0.05, 1, 0), knee at (0.05, 0.5, 0), ankle at
+// (0.05, 0.2, 0) and toe at (0.05, 0, 0), the left leg the mirror image. The
+// mesh is one connected tube of radius 0.045 down the right leg, across the
+// arch and down the left. The legs' axes are 0.10 apart, so their surfaces
+// are 0.01 apart across the gap: a vertex on the inside of one leg is nearer
+// to the other leg's axis (0.055) than the rig's thin bones' radii (0.01)
+// would make it look (0.045 - 0.01 = 0.035 from its own bone against
+// 0.055 - 0.01 = 0.045 from the other). The envelope method therefore gives
+// the wrong leg 1 / 0.045^4 against 1 / 0.035^4, i.e. 0.37 of the own leg's weight
+// (a 27% share); bone heat spreads along the surface, which reaches the other
+// leg only through the arch, and gives it nothing.
+//
+// Other things pinned: the weights sum to 1; the thigh gives way to the shin
+// at the knee, equal segments so half and half there; pose the right knee 90
+// degrees and the foot goes where rigid motion puts it (a positive turn about x
+// of a hanging bone swings it forward, -z): the toe, 0.5 m below the knee, to
+// 0.5 m in front of it at the knee's height.
+
+mod weights;
+
+import stdio use *;
+import testing use *;
+import collections use *;
+import geomath use *;
+import bonepose use *;
+import mesh use Mesh;
+import creaturerig use *;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+// The polyline of the U: down the right leg, across, down the left, in the plane z = 0
+fn path() List[Vec3] {
+  mut p = List[Vec3].empty();
+  p.push(new Vec3(0.05, 0., 0.));
+  p.push(new Vec3(0.05, 1., 0.));
+  p.push(new Vec3(-0.05, 1., 0.));
+  p.push(new Vec3(-0.05, 0., 0.));
+  p;
+}
+
+// A tube of 'radius' round the polyline, a ring every 'step' of its length
+fn tube(points &List[Vec3], radius f32, step f32) Mesh {
+  mut m = Mesh.empty();
+  // The sample points along the polyline
+  mut samples = List[Vec3].empty();
+  mut tangents = List[Vec3].empty();
+  mut s = 0usize;
+  while s + 1usize < points.len() {
+    imm a = *points[s];
+    imm b = *points[s + 1usize];
+    imm len = (b - a).length();
+    imm n = usize.from(len / step + 0.5);
+    imm dir = (b - a).normalize();
+    mut k = 0usize;
+    while k < n {
+      samples.push(a + dir * (len * f32.from(k) / f32.from(n)));
+      tangents.push(dir);
+      k = k + 1usize;
+    }
+    s = s + 1usize;
+  }
+  samples.push(*points[points.len() - 1usize]);
+  tangents.push((*points[points.len() - 1usize] - *points[points.len() - 2usize]).normalize());
+  imm sides = 8usize;
+  imm u = new Vec3(0., 0., 1.);
+  mut r = 0usize;
+  while r < samples.len() {
+    imm v = tangents[r].cross(u).normalize();
+    mut k = 0usize;
+    while k < sides {
+      imm ang = 2. * pi * f32.from(k) / f32.from(sides);
+      imm dirn = u * cos(ang) + v * sin(ang);
+      m.positions.push(*samples[r] + dirn * radius);
+      m.normals.push(dirn);
+      k = k + 1usize;
+    }
+    r = r + 1usize;
+  }
+  r = 0usize;
+  while r + 1usize < samples.len() {
+    mut k = 0usize;
+    while k < sides {
+      imm k1 = (k + 1usize) % sides;
+      imm a = u32.from(r * sides + k);
+      imm b = u32.from(r * sides + k1);
+      imm c = u32.from((r + 1usize) * sides + k);
+      imm d = u32.from((r + 1usize) * sides + k1);
+      m.indices.push(a); m.indices.push(b); m.indices.push(c);
+      m.indices.push(b); m.indices.push(d); m.indices.push(c);
+      k = k + 1usize;
+    }
+    r = r + 1usize;
+  }
+  m;
+}
+
+fn uSpec() RigSpec {
+  mut spec = RigSpec.make("u");
+  imm root = spec.chain("body", KIND_SPINE, "", 0i32);
+  spec.bone(root, "pelvis", new Vec3(0., 1., 0.), 0.045);
+  imm leg = spec.chain("leg.R", KIND_LEG, "body", 0i32);
+  spec.bone(leg, "hip", new Vec3(0.05, 0., 0.), 0.01);
+  spec.bone(leg, "knee", new Vec3(0., -0.5, 0.), 0.01);
+  spec.bone(leg, "ankle", new Vec3(0., -0.3, 0.), 0.01);
+  spec.bone(leg, "toe", new Vec3(0., -0.2, 0.), 0.01);
+  spec.mirror("leg.R", "leg.L", "body", 0i32);
+  spec;
+}
+
+// The vertex nearest a point
+fn vertexNear(m &Mesh, p Vec3) usize {
+  mut best = 0usize;
+  mut bestD = 1.0e9;
+  mut i = 0usize;
+  while i < m.positions.len() {
+    imm d = m.positions[i].distance(p);
+    if d < bestD { bestD = d; best = i; }
+    i = i + 1usize;
+  }
+  best;
+}
+
+fn main() i32 {
+  mut built = buildRig(&uSpec());
+  expectBool(built.ok, true, "the U rig builds");
+  imm rig = built.take();
+  // Bones: 0 pelvis, 1-4 right leg (hip knee ankle toe), 5-8 left leg
+  expectUInt(u64.from(rig.boneCount()), 9u64, "nine bones");
+  imm mesh = tube(&path(), 0.045, 0.03);
+  imm params = WeightParams.standard();
+  imm heat = heatWeights(&rig, &mesh, &params);
+  imm env = envelopeWeights(&rig, &mesh, &params);
+  expectUInt(u64.from(heat.vertexCount()), u64.from(mesh.positions.len()), "a weight entry for every vertex (heat)");
+  expectUInt(u64.from(env.vertexCount()), u64.from(mesh.positions.len()), "and (envelope)");
+
+  // Partition of unity
+  mut worst f32 = 0.;
+  mut v = 0usize;
+  while v < heat.vertexCount() {
+    mut sum f32 = 0.;
+    mut sumE f32 = 0.;
+    mut k = 0usize;
+    while k < 4usize { sum = sum + heat.weight(v, k); sumE = sumE + env.weight(v, k); k = k + 1usize; }
+    if absf(sum - 1.) > worst { worst = absf(sum - 1.); }
+    if absf(sumE - 1.) > worst { worst = absf(sumE - 1.); }
+    v = v + 1usize;
+  }
+  near(worst, 0., 0.00002, "every vertex's weights sum to 1, in both methods");
+
+  // The inside of the right thigh, half way down the thigh (y = 0.75), facing the left leg:
+  // the point is (0.005, 0.75, 0) on the tube's surface
+  imm inner = vertexNear(&mesh, new Vec3(0.005, 0.75, 0.));
+  near(mesh.positions[inner].x, 0.005, 0.002, "the probe vertex is on the inside of the right thigh");
+  imm rightHeat = heat.weightOf(inner, 1usize);
+  mut leftHeat f32 = 0.;
+  mut leftEnv f32 = 0.;
+  mut j = 5usize;
+  while j <= 8usize { leftHeat = leftHeat + heat.weightOf(inner, j); leftEnv = leftEnv + env.weightOf(inner, j); j = j + 1usize; }
+  near(rightHeat, 1., 0.03, "bone heat: the inside of the right thigh is the right thigh's");
+  expectBool(leftHeat < 0.02, true, "bone heat: and gives the left leg under 2%");
+  expectBool(leftEnv > 0.15, true, "the envelope leaks more than 15% to the left leg across the gap");
+  eprint <- "  inner vertex: heat left-leg share "; eprint <- leftHeat; eprint <- ", envelope "; eprint <- leftEnv; eprint <- "\n";
+
+  // The knee: the thigh (joint 1) gives way to the shin (joint 2) about y = 0.5
+  imm high = vertexNear(&mesh, new Vec3(0.095, 0.70, 0.));
+  imm low = vertexNear(&mesh, new Vec3(0.095, 0.30, 0.));
+  imm mid = vertexNear(&mesh, new Vec3(0.095, 0.50, 0.));
+  expectBool(heat.weightOf(high, 1usize) > 0.9, true, "0.2 m above the knee it is the thigh's");
+  expectBool(heat.weightOf(low, 2usize) > 0.9, true, "0.2 m below it is the shin's");
+  imm thighAtKnee = heat.weightOf(mid, 1usize);
+  imm shinAtKnee = heat.weightOf(mid, 2usize);
+  expectBool(thighAtKnee > 0.2 and thighAtKnee < 0.8, true, "at the knee (to within a ring, 0.03 m) the thigh holds 20 to 80 percent");
+  near(thighAtKnee + shinAtKnee, 1., 0.02, "and the thigh and shin hold all of it");
+  eprint <- "  knee ring: thigh "; eprint <- thighAtKnee; eprint <- ", shin "; eprint <- shinAtKnee; eprint <- ", solver steps "; eprint <- i64.from(heat.steps); eprint <- "\n";
+
+  // The rest pose changes nothing
+  mut pose = rig.restPose();
+  mut models = List[Transform3].empty();
+  rig.skeleton.modelTransforms(&pose, &mut models);
+  mut rest = List[Vec3].empty();
+  v = 0usize;
+  while v < mesh.positions.len() { rest.push(*mesh.positions[v]); v = v + 1usize; }
+  imm same = skinPositions(&rig, &heat, &rest, &models);
+  mut drift f32 = 0.;
+  v = 0usize;
+  while v < rest.len() {
+    imm d = same[v].distance(*rest[v]);
+    if d > drift { drift = d; }
+    v = v + 1usize;
+  }
+  near(drift, 0., 0.00001, "skinning in the rest pose leaves every vertex where it was");
+
+  // Bend the right knee 90 degrees
+  pose.setRotation(2usize, Quat.angleAxis(pi / 2., new Vec3(1., 0., 0.)));
+  rig.skeleton.modelTransforms(&pose, &mut models);
+  imm bent = skinPositions(&rig, &heat, &rest, &models);
+  imm toe = vertexNear(&mesh, new Vec3(0.05, 0., 0.045));
+  // The toe-end ring's vertex (0.05, 0, 0.045) is 0.5 below and 0.045 behind the knee (0.05, 0.5, 0):
+  // the turn takes (0, -0.5, 0.045) to (0, 0.045 * -1 ... ) worked: y' = y cos - z sin = -0.045, z' = y sin + z cos = -0.5
+  imm expect = new Vec3(0.05, 0.5 - 0.045, -0.5);
+  near(bent[toe].x, expect.x, 0.01, "the bent foot: x");
+  near(bent[toe].y, expect.y, 0.02, "the bent foot: y, level with the knee");
+  near(bent[toe].z, expect.z, 0.02, "the bent foot: z, 0.5 m in front of the knee");
+  imm leftToe = vertexNear(&mesh, new Vec3(-0.05, 0., 0.045));
+  near(bent[leftToe].distance(*rest[leftToe]), 0., 0.00001, "the left foot, whose knee did not bend, has not moved");
+  imm arch = vertexNear(&mesh, new Vec3(0., 1., 0.045));
+  near(bent[arch].distance(*rest[arch]), 0., 0.00001, "nor has the arch");
+  done();
+}

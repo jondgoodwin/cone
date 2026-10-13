@@ -1,0 +1,716 @@
+// creatures: two plain test bodies drawn headless on a real GPU, moved by leggedgait and wingflight.
+//
+//   congo run packages/wingflight/examples/creatures.cone -- --out DIR
+//   GPU_POWER_PREFERENCE=low-power congo run packages/wingflight/examples/creatures.cone -- --out DIR
+//
+// The first subject is a plain four-legged test animal (creaturerig's plainBody, 0.8 m legs, a neck, a head and a
+// tail, no resemblance to any species). Its skin is a surface made of its rig: a smooth union of tapered capsules
+// round the bones, meshed by surface nets (sdfmesh), then bound to the bones by bone-heat weights (creaturerig). It
+// goes over bumpy ground, a rise, a bend in its path: from standing it walks, trots, canters and gallops by
+// speed (leggedgait picks and eases the gait), then slows through them all and stops. Eight pictures are taken
+// across one stride of the walk, the trot, the canter and the gallop (the phase of the cycle reaches 0, 1/8, 2/8 ...),
+// and one in each change of gait.
+//
+// The second is a plain winged test body (two legs, two wings of feathers). It stands with its wings folded, runs,
+// unfolds, takes off, climbs, flaps, banks into a turn, glides down, flares and lands (wingflight's Flier and
+// autopilot), its legs from leggedgait on the ground and tucked in the air. Pictures at each mode and across one
+// beat of the cruise.
+//
+// Each picture is a BMP, OUT/NAME.bmp. It prints, for each subject: the mesh and weight work done at start-up
+// (vertices, solver steps, milliseconds), the CPU time of one step of the animation (milliseconds), and the GPU
+// time of a frame (shadows, post, skinned body), the mean of 120 frames. With the Vulkan SDK, validation is on and
+// must say nothing; the process exits 1 if it does, if a Vulkan call failed, or if a check below fails.
+//
+// Checks: no foot of the quadruped slides while it is down (posed sole within 5 mm of its anchor, the whole run); the
+// biped's feet on the ground likewise while it runs; the flier takes off, reaches 12 m, turns by more than 60 degrees
+// banking over 25 degrees, and lands, stopped, within 40 m of its goal.
+
+mod creatures;
+
+import stdio use *;
+import libc;
+import time use Instant;
+import geomath use *;
+import collections use *;
+import mesh use Mesh;
+import sdf use taperedCapsule, smoothUnion;
+import sdfmesh use surfaceNet;
+import gpu use *;
+import render use *;
+import path as filepath;
+import bonepose use *;
+import creaturerig use *;
+import leggedgait use *;
+import wingflight use *;
+
+const W = 800u32;
+const H = 450u32;
+
+fn cstrEquals(a *u8, b &str) bool {
+  mut i = 0usize;
+  while i < b.len() {
+    if *(a + i) != b[i] { return false; }
+    i = i + 1usize;
+  }
+  *(a + b.len()) == 0u8;
+}
+
+// ------------------------------------------------------------------------------ the skin: a surface round the bones
+
+// Tapered capsules joined by a smooth union: a distance field (sdf's Shape)
+struct BodyField {
+  a List[Vec3];
+  b List[Vec3];
+  ra List[f32];
+  rb List[f32];
+  k f32;
+
+  pub fn distance(self &, p Vec3) f32 {
+    mut d = 3.0e38;
+    mut i = 0usize;
+    while i < a.len() {
+      imm c = taperedCapsule(p, *a[i], *b[i], *ra[i], *rb[i]);
+      d = if i == 0usize { c; } else { smoothUnion(d, c, k); };
+      i = i + 1usize;
+    }
+    d;
+  }
+}
+
+// The body: a capsule on every segment of the rig's joints (a joint to its child) except the feathers' and fingers'
+fn bodyMesh(rig &Rig, cell f32, blend f32, skip &List[bool]) Mesh {
+  mut f = new BodyField(List[Vec3].empty(), List[Vec3].empty(), List[f32].empty(), List[f32].empty(), blend);
+  mut lo = new Vec3(1.0e9, 1.0e9, 1.0e9);
+  mut hi = new Vec3(-1.0e9, -1.0e9, -1.0e9);
+  mut big f32 = 0.;
+  mut i = 0usize;
+  while i < rig.boneCount() {
+    imm p = rig.skeleton.parentOf(i);
+    if p >= 0i32 and *skip[i] and *skip[usize.from(p)] {
+      imm pa = rig.restPosition(usize.from(p));
+      imm pb = rig.restPosition(i);
+      f.a.push(pa);
+      f.b.push(pb);
+      f.ra.push(*rig.radii[usize.from(p)]);
+      f.rb.push(*rig.radii[i]);
+      lo = lo.min(pa.min(pb));
+      hi = hi.max(pa.max(pb));
+      if *rig.radii[i] > big { big = *rig.radii[i]; }
+      if *rig.radii[usize.from(p)] > big { big = *rig.radii[usize.from(p)]; }
+    }
+    i = i + 1usize;
+  }
+  imm m = new Vec3(big + 0.05, big + 0.05, big + 0.05);
+  imm net = surfaceNet(&f, new Aabb3(lo - m, hi + m), cell, 1u32, false);
+  net.toMesh();
+}
+
+fn makeSkin(w &VertexWeights) Skin {
+  mut s = Skin.empty();
+  mut v = 0usize;
+  while v < w.vertexCount() {
+    s.push(u32.from(w.joint(v, 0usize)), u32.from(w.joint(v, 1usize)), u32.from(w.joint(v, 2usize)), u32.from(w.joint(v, 3usize)),
+      w.weight(v, 0usize), w.weight(v, 1usize), w.weight(v, 2usize), w.weight(v, 3usize));
+    v = v + 1usize;
+  }
+  s;
+}
+
+// The skinning matrices, one a bone: posed model transform times the inverse of the rest one
+fn boneMatrices(rig &Rig, models &List[Transform3]) List[Mat4] {
+  imm t = skinTransforms(rig, models);
+  mut out = List[Mat4].empty();
+  mut i = 0usize;
+  while i < t.len() {
+    out.push(t[i].toMat4());
+    i = i + 1usize;
+  }
+  out;
+}
+
+// ------------------------------------------------------------------------------ one subject
+
+struct Subject {
+  rig Rig;
+  body MeshHandle;
+  feathers MeshHandle;
+  hasFeathers bool;
+  bodyMat MaterialHandle;
+  featherMat MaterialHandle;
+  vertices usize;
+  triangles usize;
+  weightSteps u32;
+  meshMs f64;
+  weightMs f64;
+}
+
+fn msSince(t Instant) f64 { f64.from(t.elapsed().nanos()) / 1.0e6d; }
+
+fn buildSubject(device &mut Device, renderer &mut Renderer, spec RigSpec, feathered bool, bodyColor Color) Subject {
+  mut built = buildRig(&spec);
+  imm rig = built.take();
+  imm t0 = Instant.now();
+  mut kinds = List[u32].empty();
+  kinds.push(KIND_FEATHER);
+  imm mask = jointsExcludingKinds(&rig, &kinds);
+  imm mesh = bodyMesh(&rig, 0.03, 0.02, &mask);
+  imm meshMs = msSince(t0);
+  imm t1 = Instant.now();
+  imm params = WeightParams.standard();
+  imm weights = heatWeightsFor(&rig, &mesh, &params, &mask);
+  imm weightMs = msSince(t1);
+  imm skin = makeSkin(&weights);
+  imm body = renderer.addSkinnedMesh(device, &mesh, &skin);
+  mut bm = PbrMaterial.standard(bodyColor, 0., 0.7);
+  imm bodyMat = renderer.addPbrMaterial(device, &bm);
+  mut feathers = body;
+  mut featherMat = bodyMat;
+  if feathered {
+    imm fm = featherMesh(&rig, 0.34, 4u32);
+    imm fskin = makeSkin(&fm.skin);
+    feathers = renderer.addSkinnedMesh(device, &fm.mesh, &fskin);
+    mut fmat = PbrMaterial.standard(new Color(0.85, 0.80, 0.62, 1.), 0., 0.6);
+    featherMat = renderer.addPbrMaterial(device, &fmat);
+  }
+  new Subject(rig, body, feathers, feathered, bodyMat, featherMat, mesh.positions.len(), mesh.indices.len() / 3usize, weights.steps, meshMs, weightMs);
+}
+
+fn addSubject(list &mut DrawList, s &Subject, world &Transform3, models &List[Transform3]) {
+  imm bones = boneMatrices(&s.rig, models);
+  list.addSkinned(s.body, s.bodyMat, world.toMat4(), bones.view());
+  if s.hasFeathers { list.addSkinned(s.feathers, s.featherMat, world.toMat4(), bones.view()); }
+}
+
+// ------------------------------------------------------------------------------ the ground
+
+fn bumpy(x f32, z f32) f32 {
+  imm bumps = 0.045 * sin(1.7 * z + 0.4) * cos(1.1 * x) + 0.035 * sin(0.63 * z + 1.3 * x);
+  // A rise of half a metre between z = -70 and z = -58, a ridge across the way
+  imm rise = 0.5 * smoothstep(-58., -70., z);
+  bumps + rise;
+}
+
+fn flatGround(x f32, z f32) f32 { 0.02 * sin(0.4 * x) * sin(0.3 * z); }
+
+// A heightfield from the ground function: a grid of `step`, its uvs at one to the metre, so the checker shows the ground's motion
+fn terrain(ground &<fn(x f32, z f32) f32, x0 f32, x1 f32, z0 f32, z1 f32, step f32) Mesh {
+  mut m = Mesh.empty();
+  imm nx = usize.from((x1 - x0) / step);
+  imm nz = usize.from((z1 - z0) / step);
+  mut j = 0usize;
+  while j <= nz {
+    mut i = 0usize;
+    while i <= nx {
+      imm x = x0 + step * f32.from(i);
+      imm z = z0 + step * f32.from(j);
+      imm h = ground(x, z);
+      m.positions.push(new Vec3(x, h, z));
+      imm dx = (ground(x + 0.1, z) - ground(x - 0.1, z)) / 0.2;
+      imm dz = (ground(x, z + 0.1) - ground(x, z - 0.1)) / 0.2;
+      m.normals.push(new Vec3(-dx, 1., -dz).normalize());
+      m.uvs.push(new Vec2(x * 0.5, z * 0.5));
+      i = i + 1usize;
+    }
+    j = j + 1usize;
+  }
+  j = 0usize;
+  while j < nz {
+    mut i = 0usize;
+    while i < nx {
+      imm a = u32.from(j * (nx + 1usize) + i);
+      imm b = a + 1u32;
+      imm c = a + u32.from(nx + 1usize);
+      imm d = c + 1u32;
+      m.indices.push(a); m.indices.push(c); m.indices.push(b);
+      m.indices.push(b); m.indices.push(c); m.indices.push(d);
+      i = i + 1usize;
+    }
+    j = j + 1usize;
+  }
+  m;
+}
+
+// ------------------------------------------------------------------------------ the GPU
+
+struct Stage {
+  out Texture;
+  depth Texture;
+  renderer Renderer;
+  post Post;
+  queries QuerySet;
+  resolved Buffer;
+  tick Buffer;
+  shot Buffer;
+  light Light;
+  groundMesh MeshHandle;
+  groundMat MaterialHandle;
+}
+
+fn checkerImage() Image {
+  Image.checker(256, 256, 8, 8, new Color(0.30, 0.36, 0.20, 1.), new Color(0.24, 0.30, 0.17, 1.));
+}
+
+fn makeStage(device &mut Device, ground &<fn(x f32, z f32) f32) Stage {
+  imm outDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  mut out = device.createTexture(&outDesc);
+  imm depthDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  mut depth = device.createTexture(&depthDesc);
+  mut renderer = Renderer.create(device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  mut post = Post.create(device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, W, H);
+  mut queries = device.createQuerySet(QUERY_TYPE_TIMESTAMP, 2u32);
+  mut resolved = device.createBuffer(256u64, BUFFER_USAGE_QUERY_RESOLVE | BUFFER_USAGE_COPY_SRC);
+  mut tick = device.createBuffer(16u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  mut shot = device.createBuffer(u64.from(W) * u64.from(H) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  mut sky = Sky.dusk(radians(50.), radians(200.));
+  sky.zenith = new Color(0.14, 0.28, 0.62, 1.);
+  sky.horizon = new Color(0.55, 0.62, 0.74, 1.);
+  sky.sunColor = new Color(40., 36., 30., 1.);
+  sky.glow = new Color(0.35, 0.28, 0.16, 1.);
+  sky.ground = new Color(0.10, 0.12, 0.08, 1.);
+  renderer.setSky(device, &sky);
+  imm light = sky.sunLight(new Color(2.0, 1.85, 1.6, 1.), new Color(0.08, 0.1, 0.14, 1.));
+  imm settings = ShadowSettings.medium();
+  renderer.setShadows(device, &settings);
+  imm img = checkerImage();
+  imm tex = renderer.addTexture(device, &img);
+  mut gm = PbrMaterial.standard(new Color(1., 1., 1., 1.), 0., 0.9);
+  gm.texture = tex;
+  imm groundMat = renderer.addPbrMaterial(device, &gm);
+  imm gmesh = terrain(ground, -40., 40., -330., 40., 0.5);
+  imm groundMesh = renderer.addMesh(device, &gmesh);
+  new Stage(out, depth, renderer, post, queries, resolved, tick, shot, light, groundMesh, groundMat);
+}
+
+// One frame drawn; the GPU time of 'render' in ms, and the picture written if `name` is not empty
+fn drawFrame(device &mut Device, st &mut Stage, camera &Camera, list &DrawList, name &str) f64 {
+  mut encoder = device.createCommandEncoder();
+  encoder.writeTimestamp(&st.queries, 0u32);
+  st.renderer.render(device, &mut encoder, &st.post.hdr, &st.depth, camera, &st.light, list);
+  encoder.writeTimestamp(&st.queries, 1u32);
+  st.post.apply(&mut encoder, &st.out);
+  encoder.resolveQuerySet(&st.queries, 0u32, 2u32, &st.resolved, 0u64);
+  encoder.copyBufferToBuffer(&st.resolved, 0u64, &st.tick, 0u64, 16u64);
+  if name.len() > 0usize { encoder.copyTextureToBuffer(&st.out, &st.shot); }
+  device.queue.submit(encoder.finish());
+  device.endFrame();
+  device.waitIdle();
+  imm ticks = st.tick.mappedRange() as *u64;
+  imm ms = f64.from(*(ticks + 1usize) - *ticks) * f64.from(device.timestampPeriod) * 1.0e-6d;
+  if name.len() > 0usize {
+    imm image = Image.fromTexels(st.shot.mappedRange(), i32.from(W), i32.from(H), false);
+    if !image.save(&filepath.Path.from(name)) { print <- "COULD NOT WRITE "; printStr(name); print <- "\n"; }
+  }
+  ms;
+}
+
+fn fileName(dir &str, name &str) String {
+  mut s = String.from(dir);
+  s <- "/";
+  s <- name;
+  s <- ".bmp";
+  s;
+}
+
+// A camera `distance` from the creature's middle, `swing` radians round from its right side toward its front
+// (0: side on, 1.57: head on), `height` above it, looking a `lead` ahead of the middle
+fn chaseCamera(centre Vec3, yaw f32, distance f32, height f32, lead f32, swing f32) Camera {
+  mut c = Camera.make();
+  c.fov = radians(40.);
+  c.near = 0.3;
+  c.far = 500.;
+  imm right = new Vec3(cos(yaw), 0., -sin(yaw));
+  imm fwd = new Vec3(-sin(yaw), 0., -cos(yaw));
+  imm eye = centre + (right * cos(swing) + fwd * sin(swing)) * distance + new Vec3(0., height, 0.);
+  c.lookAt(eye, centre + fwd * lead, new Vec3(0., 1., 0.));
+  c.background = new Color(0.5, 0.65, 0.9, 1.);
+  c;
+}
+
+// ------------------------------------------------------------------------------ the quadruped
+
+fn quadSpeed(t f32) f32 {
+  // standing, walk, trot, canter, gallop, then slowing through them to a stop
+  if t < 1.0 { return 0.; }
+  if t < 3.0 { return 1.35 * smoothstep(1.0, 3.0, t); }
+  if t < 8.0 { return 1.35; }
+  if t < 10.0 { return 1.35 + (3.2 - 1.35) * smoothstep(8.0, 10.0, t); }
+  if t < 16.0 { return 3.2; }
+  if t < 18.0 { return 3.2 + (5.6 - 3.2) * smoothstep(16.0, 18.0, t); }
+  if t < 24.0 { return 5.6; }
+  if t < 27.0 { return 5.6 + (9.0 - 5.6) * smoothstep(24.0, 27.0, t); }
+  if t < 33.0 { return 9.0; }
+  if t < 45.0 { return 9.0 * (1. - smoothstep(33.0, 45.0, t)); }
+  0.;
+}
+
+fn runQuadruped(device &mut Device, st &mut Stage, subject &Subject, outDir &str) bool {
+  mut ok = true;
+  mut loco = Locomotion.make(&subject.rig);
+  imm dt = 1. / 60.;
+  imm frames = 47 * 60;
+  // The path: heading follows a gentle S
+  mut x f32 = 0.;
+  mut z f32 = 0.;
+  imm winStart = [5.0, 13.0, 21.0, 30.0];
+  imm winLabel = ["quad-walk", "quad-trot", "quad-canter", "quad-gallop"];
+  mut winArmed = [false, false, false, false];
+  mut winCycle0 = [0., 0., 0., 0.];
+  mut winTaken = [0u32, 0u32, 0u32, 0u32];
+  mut lastGait = String.from(loco.gaitName());
+  mut worstPlant f32 = 0.;
+  mut worstMiss f32 = 0.;
+  mut cpuNs i64 = 0i64;
+  mut updates = 0;
+  mut maxDown = 0usize;
+  mut minDownMoving = 9usize;
+  mut f = 0;
+  mut t f32 = 0.;
+  mut shots = 0;
+  while f < frames {
+    imm speed = quadSpeed(t);
+    imm yaw = 0.35 * sin(0.22 * t);
+    x = x - sin(yaw) * speed * dt;
+    z = z - cos(yaw) * speed * dt;
+    imm c0 = Instant.now();
+    loco.update(&subject.rig, dt, x, z, yaw, &bumpy);
+    cpuNs = cpuNs + c0.elapsed().nanos();
+    updates = updates + 1;
+    if loco.plantErrorMax > worstPlant { worstPlant = loco.plantErrorMax; }
+    if loco.missMax > worstMiss and !loco.moving { worstMiss = loco.missMax; }
+    if loco.moving and f > 60 and loco.feetDown() < minDownMoving { minDownMoving = loco.feetDown(); }
+    if loco.feetDown() > maxDown { maxDown = loco.feetDown(); }
+    // A picture when the gait changes
+    imm gname = String.from(loco.gaitName());
+    if gname.view() != lastGait.view() {
+      print <- "t "; print <- t; print <- " s: gait "; printStr(lastGait.view()); print <- " -> "; printStr(gname.view()); print <- " at "; print <- speed; print <- " m/s\n";
+      mut nm = String.from("quad-into-");
+      nm <- gname.view();
+      imm centre = new Vec3(x, loco.world.translation.y + 0.55, z - 0.6);
+      mut list = DrawList.empty();
+      list.add(st.groundMesh, st.groundMat, Mat4.identity());
+      addSubject(&mut list, subject, &loco.world, &loco.models);
+      imm cam = chaseCamera(centre, yaw, 3.8, 0.8, 0.8, 0.5);
+      drawFrame(device, st, &cam, &list, fileName(outDir, nm.view()).view());
+      shots = shots + 1;
+      lastGait = gname.copy();
+    }
+    // The windows: eight pictures across a stride
+    mut w = 0usize;
+    while w < 4usize {
+      if !winArmed[w] and t >= winStart[w] and loco.moving {
+        winArmed[w] = true;
+        winCycle0[w] = loco.cycle;
+      }
+      if winArmed[w] and winTaken[w] < 8u32 and loco.cycle >= winCycle0[w] + f32.from(winTaken[w]) / 8. {
+        mut nm = String.from(winLabel[w]);
+        nm <- "-";
+        nm <- i64.from(winTaken[w]);
+        imm centre = new Vec3(x, loco.world.translation.y + 0.55, z - 0.6);
+        mut list = DrawList.empty();
+        list.add(st.groundMesh, st.groundMat, Mat4.identity());
+        addSubject(&mut list, subject, &loco.world, &loco.models);
+        imm cam = chaseCamera(centre, yaw, 3.4, 0.5, 0.0, 0.);
+        drawFrame(device, st, &cam, &list, fileName(outDir, nm.view()).view());
+        shots = shots + 1;
+        winTaken[w] = winTaken[w] + 1u32;
+      }
+      w = w + 1usize;
+    }
+    t = t + dt;
+    f = f + 1;
+  }
+  print <- "quadruped: "; print <- i64.from(shots); print <- " pictures; worst planted-foot drift "; print <- worstPlant * 1000.; print <- " mm; feet down while moving "; print <- i64.from(minDownMoving);
+  print <- " to "; print <- i64.from(maxDown); print <- "; CPU "; print <- f64.from(cpuNs) / f64.from(updates) / 1.0e6d; print <- " ms a step (locomotion update)\n";
+  if worstPlant > 0.005 { print <- "FAIL: a foot slid while it was down\n"; ok = false; }
+
+  // The cost: 120 frames of a gallop pose
+  mut gl = Locomotion.make(&subject.rig);
+  gl.force(3i32);
+  mut gx f32 = 0.;
+  mut gz f32 = 0.;
+  mut k = 0;
+  while k < 240 {
+    gz = gz - 9.0 * dt;
+    gl.update(&subject.rig, dt, gx, gz, 0., &bumpy);
+    k = k + 1;
+  }
+  mut gpu f64 = 0d;
+  mut cpuDraw i64 = 0i64;
+  k = 0;
+  while k < 130 {
+    gz = gz - 9.0 * dt;
+    gl.update(&subject.rig, dt, gx, gz, 0., &bumpy);
+    imm c1 = Instant.now();
+    mut list = DrawList.empty();
+    list.add(st.groundMesh, st.groundMat, Mat4.identity());
+    addSubject(&mut list, subject, &gl.world, &gl.models);
+    cpuDraw = cpuDraw + c1.elapsed().nanos();
+    imm cam = chaseCamera(new Vec3(gx, 0.5, gz), 0., 3.4, 0.5, 0., 0.);
+    imm ms = drawFrame(device, st, &cam, &list, "");
+    if k >= 10 { gpu = gpu + ms; }
+    k = k + 1;
+  }
+  print <- "quadruped frame: GPU "; print <- gpu / 120d; print <- " ms (shadows, skinned body "; print <- u64.from(subject.triangles); print <- " triangles, post); building the draw list "; print <- f64.from(cpuDraw) / 130d / 1.0e6d; print <- " ms\n";
+  ok;
+}
+
+// ------------------------------------------------------------------------------ the flier
+
+fn runFlier(device &mut Device, st &mut Stage, subject &Subject, wings &Wings, outDir &str) bool {
+  mut ok = true;
+  imm rig = &subject.rig;
+  // The pivot: the middle of the spine
+  imm sp = rig.chains[0usize];
+  mut pivot = new Vec3(0., 0., 0.);
+  mut b = 0usize;
+  while b < sp.bones.len() { pivot = pivot + rig.restPosition(*sp.bones[b]); b = b + 1usize; }
+  pivot = pivot * (1. / f32.from(sp.bones.len()));
+  imm params = estimateWing(rig, wings, 1.0);
+  mut flier = Flier.make(params, new Vec3(0., 0., 0.), 0., pivot.y, pivot);
+  mut loco = Locomotion.make(rig);
+  imm tuck = TuckPose.legs();
+  print <- "flier: span "; print <- flier.params.span; print <- " m, area "; print <- flier.params.area; print <- " m2, aspect "; print <- flier.params.aspectRatio();
+  print <- ", stall speed "; print <- flier.stallSpeed(); print <- " m/s\n";
+  imm dt = 1. / 60.;
+  mut goal = Goal.make(new Vec3(0., 0., 0.), 11.5, false);
+  goal.target = new Vec3(0., 0., -400.);
+  mut t f32 = 0.;
+  mut lastMode = 99u32;
+  mut stage = 0;
+  mut turnStartYaw f32 = 0.;
+  mut maxBank f32 = 0.;
+  mut maxAlt f32 = 0.;
+  mut yawTotal f32 = 0.;
+  mut lastYaw f32 = 0.;
+  mut worstPlant f32 = 0.;
+  mut beatTaken = 0;
+  mut beatPhase0 f32 = 0.;
+  mut beatArmed = false;
+  mut bankShot = false;
+  mut landed = false;
+  mut touchdownAt = new Vec3(0., 0., 0.);
+  mut cpuNs i64 = 0i64;
+  mut steps = 0;
+  mut shots = 0;
+  mut f = 0;
+  while f < 60 * 120 and !landed {
+    // The script: stand, then fly north; at 25 s turn right; at 36 s come down; at 40 s, land at a point ahead
+    if t > 1.0 and stage == 0 { goal.fly = true; goal.target = new Vec3(0., 14., -400.); stage = 1; }
+    if stage == 1 and flier.pos.y > 12.0 and t > 14. and beatTaken >= 8 {
+      // A turn to the right: a goal off to the right
+      goal.target = new Vec3(flier.pos.x + 140., 14., flier.pos.z - 90.);
+      stage = 2;
+      turnStartYaw = flier.yaw;
+      print <- "t "; print <- t; print <- " s: turn right\n";
+    }
+    if stage == 2 and absf(wrapA(flier.yaw - turnStartYaw)) > 1.1 {
+      // Glide: a goal below
+      goal.target = new Vec3(flier.pos.x + 200., 7., flier.pos.z - 200.);
+      goal.target = new Vec3(flier.pos.x - sin(flier.yaw) * 200., 7., flier.pos.z - cos(flier.yaw) * 200.);
+      stage = 3;
+      print <- "t "; print <- t; print <- " s: glide\n";
+    }
+    if stage == 3 and (flier.pos.y < 8.5) {
+      goal.fly = false;
+      goal.target = new Vec3(flier.pos.x - sin(flier.yaw) * 110., 0., flier.pos.z - cos(flier.yaw) * 110.);
+      stage = 4;
+      print <- "t "; print <- t; print <- " s: land at "; print <- goal.target.x; print <- ", "; print <- goal.target.z; print <- "\n";
+    }
+    imm c0 = Instant.now();
+    flier.update(dt, &goal, &flatGround);
+    imm w0 = flier.world();
+    loco.update(rig, dt, w0.translation.x, w0.translation.z, flier.yaw, &flatGround);
+    imm posed = compose(&flier, rig, wings, &tuck, &loco.pose);
+    mut models = List[Transform3].empty();
+    rig.skeleton.modelTransforms(&posed, &mut models);
+    cpuNs = cpuNs + c0.elapsed().nanos();
+    steps = steps + 1;
+    if flier.onGround and loco.moving and loco.plantErrorMax > worstPlant and flier.tuck < 0.01 { worstPlant = loco.plantErrorMax; }
+    if absf(flier.bank) > maxBank { maxBank = absf(flier.bank); }
+    if flier.pos.y > maxAlt { maxAlt = flier.pos.y; }
+    yawTotal = yawTotal + wrapA(flier.yaw - lastYaw);
+    lastYaw = flier.yaw;
+    imm world = flier.world();
+    // Pictures: at each change of mode, across one beat of the cruise, at the bank's peak
+    mut shootName = String.empty();
+    if flier.mode != lastMode {
+      shootName = String.from("flier-");
+      shootName <- modeName(flier.mode);
+      print <- "t "; print <- t; print <- " s: mode "; printStr(modeName(flier.mode)); print <- ", speed "; print <- flier.speed(); print <- " m/s, height "; print <- flier.pos.y; print <- " m\n";
+      lastMode = flier.mode;
+    }
+    if stage == 1 and !beatArmed and flier.pos.y > 8. and flier.effort > 0.1 and flier.motion.amp > 0.9 { beatArmed = true; beatPhase0 = flier.motion.phase; }
+    if beatArmed and beatTaken < 8 {
+      imm want = frac(beatPhase0 + f32.from(beatTaken) / 8.);
+      imm have = flier.motion.phase;
+      // The phase has just passed `want` (within a frame's advance)
+      mut dphi = have - want;
+      dphi = dphi - libc.floorf(dphi);
+      if dphi < flier.freq * dt * 1.2 {
+        shootName = String.from("flier-beat-");
+        shootName <- i64.from(beatTaken);
+        beatTaken = beatTaken + 1;
+      }
+    }
+    if !bankShot and absf(flier.bank) > 0.55 {
+      bankShot = true;
+      shootName = String.from("flier-bank");
+    }
+    if shootName.len() > 0usize {
+      mut list = DrawList.empty();
+      list.add(st.groundMesh, st.groundMat, Mat4.identity());
+      addSubject(&mut list, subject, &world, &models);
+      imm cam = chaseCamera(flier.pos, flier.yaw, 2.6, 0.9, 0.2, 0.8);
+      drawFrame(device, st, &cam, &list, fileName(outDir, shootName.view()).view());
+      shots = shots + 1;
+    }
+    if flier.mode == MODE_GROUNDED and flier.speed() < 0.05 and stage == 4 { landed = true; touchdownAt = flier.pos; }
+    t = t + dt;
+    f = f + 1;
+  }
+  imm miss = new Vec2(touchdownAt.x - goal.target.x, touchdownAt.z - goal.target.z).length();
+  print <- "flier: "; print <- i64.from(shots); print <- " pictures; peak height "; print <- maxAlt; print <- " m; peak bank "; print <- degrees(maxBank); print <- " degrees; total turn ";
+  print <- degrees(absf(yawTotal)); print <- " degrees; landed "; print <- i64.from(landed); print <- " "; print <- miss; print <- " m from the goal after "; print <- t; print <- " s; running feet drift ";
+  print <- worstPlant * 1000.; print <- " mm; CPU "; print <- f64.from(cpuNs) / f64.from(steps) / 1.0e6d; print <- " ms a step (flight, legs, pose)\n";
+  if maxAlt < 12.0 { print <- "FAIL: it did not reach 12 m\n"; ok = false; }
+  if maxBank < 0.4363 { print <- "FAIL: it did not bank over 25 degrees\n"; ok = false; }
+  if degrees(absf(yawTotal)) < 60. { print <- "FAIL: it did not turn\n"; ok = false; }
+  if !landed or miss > 40. { print <- "FAIL: it did not land within 40 m of its goal\n"; ok = false; }
+  if worstPlant > 0.005 { print <- "FAIL: a foot slid on the run\n"; ok = false; }
+
+  // The cost: 120 frames of a mid-beat cruise
+  mut cf = Flier.make(flier.params.copy(), new Vec3(0., 12., 0.), 0., pivot.y, pivot);
+  cf.onGround = false;
+  cf.vel = new Vec3(0., 0., -10.);
+  cf.motion.fold = 0.;
+  cf.motion.amp = 1.;
+  cf.tuck = 1.;
+  mut cg = Goal.make(new Vec3(0., 12., -400.), 11., true);
+  cg.maxBank = 0.7;
+  mut gpu f64 = 0d;
+  mut k = 0;
+  while k < 130 {
+    cf.update(dt, &cg, &flatGround);
+    imm posed = compose(&cf, rig, wings, &tuck, &rig.restPose());
+    mut models = List[Transform3].empty();
+    rig.skeleton.modelTransforms(&posed, &mut models);
+    mut list = DrawList.empty();
+    list.add(st.groundMesh, st.groundMat, Mat4.identity());
+    imm world = cf.world();
+    addSubject(&mut list, subject, &world, &models);
+    imm cam = chaseCamera(cf.pos, 0., 3.6, 1.2, 0.2, 0.9);
+    imm ms = drawFrame(device, st, &cam, &list, "");
+    if k >= 10 { gpu = gpu + ms; }
+    k = k + 1;
+  }
+  print <- "flier frame: GPU "; print <- gpu / 120d; print <- " ms (shadows, skinned body "; print <- u64.from(subject.triangles); print <- " triangles and feathers, post)\n";
+  ok;
+}
+
+fn wrapA(a f32) f32 { a - 2. * pi * libc.floorf(a / (2. * pi) + 0.5); }
+
+// The wings alone, held still at a few poses and seen from the front and from above: folded, spread, the top and bottom
+// of the stroke, the middle of the upstroke (elbow and wrist flexed)
+fn wingStudy(device &mut Device, st &mut Stage, subject &Subject, wings &Wings, outDir &str) {
+  imm rig = &subject.rig;
+  imm params = estimateWing(rig, wings, 1.0);
+  imm names = ["wing-folded", "wing-spread", "wing-top", "wing-bottom", "wing-upstroke"];
+  imm folds = [1., 0., 0., 0., 0.];
+  imm amps = [0., 0., 1., 1., 1.];
+  imm phases = [0., 0., 0., 0.5, 0.80];
+  mut i = 0usize;
+  while i < 5usize {
+    mut m = WingMotion.still();
+    m.fold = folds[i];
+    m.amp = amps[i];
+    m.phase = phases[i];
+    mut pose = rig.restPose();
+    poseWings(rig, wings, &params, &m, &mut pose);
+    mut models = List[Transform3].empty();
+    rig.skeleton.modelTransforms(&pose, &mut models);
+    imm world = new Transform3(new Vec3(0., 1.2, 0.), Quat.identity(), new Vec3(1., 1., 1.));
+    mut list = DrawList.empty();
+    list.add(st.groundMesh, st.groundMat, Mat4.identity());
+    addSubject(&mut list, subject, &world, &models);
+    // From the front, a little above; and from above and ahead
+    imm front = chaseCamera(new Vec3(0., 1.5, 0.), 0., 3.2, 0.3, 0., 1.5);
+    drawFrame(device, st, &front, &list, fileName(outDir, names[i]).view());
+    mut nm = String.from(names[i]);
+    nm <- "-above";
+    imm above = chaseCamera(new Vec3(0., 1.5, 0.), 0., 1.2, 3.0, 0., 1.57);
+    drawFrame(device, st, &above, &list, fileName(outDir, nm.view()).view());
+    i = i + 1usize;
+  }
+  // The legs tucked, from the side
+  mut fl = Flier.make(params.copy(), new Vec3(0., 1.2, 0.), 0., 0.3, new Vec3(0., 0.4, -0.25));
+  fl.onGround = false;
+  fl.tuck = 1.;
+  fl.motion.fold = 0.;
+  imm tk = TuckPose.legs();
+  imm posed = compose(&fl, rig, wings, &tk, &rig.restPose());
+  mut models = List[Transform3].empty();
+  rig.skeleton.modelTransforms(&posed, &mut models);
+  imm world = new Transform3(new Vec3(0., 1.2, 0.), Quat.identity(), new Vec3(1., 1., 1.));
+  mut list = DrawList.empty();
+  list.add(st.groundMesh, st.groundMat, Mat4.identity());
+  addSubject(&mut list, subject, &world, &models);
+  imm side = chaseCamera(new Vec3(0., 1.4, -0.2), 0., 2.2, 0.2, 0., 0.);
+  drawFrame(device, st, &side, &list, fileName(outDir, "legs-tucked").view());
+}
+
+// ------------------------------------------------------------------------------ main
+
+fn main(argc i32, argv **u8) i32 {
+  mut outDir = String.from("creature-shots");
+  mut a = 1;
+  while a < argc {
+    imm arg = *(argv + usize.from(a));
+    if cstrEquals(arg, "--out") and a + 1 < argc {
+      imm s = *(argv + usize.from(a + 1));
+      outDir = String.empty();
+      mut i = 0usize;
+      while *(s + i) != 0u8 { outDir.appendByte(*(s + i)); i = i + 1usize; }
+      a = a + 1;
+    } else {
+      print <- "Unknown argument; use --out DIR\n";
+      return 2i32;
+    }
+    a = a + 1;
+  }
+  mut instance = Instance.create("creatures");
+  mut none = Surface.none();
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  if (env as usize) != 0usize {
+    if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  mut adapter = instance.requestAdapter(&none, preference);
+  if !adapter.isValid() { print <- "No GPU\n"; return 1i32; }
+  print <- "Adapter: "; printStr(adapter.name.view()); print <- "\n";
+  print <- "Validation layer: "; print <- u64.from(if instance.validation { 1u32; } else { 0u32; }); print <- "\n";
+  mut device = adapter.requestDevice();
+  if !device.isValid() { print <- "No device\n"; return 1i32; }
+  mut stage = makeStage(&mut device, &bumpy);
+  if !stage.renderer.isValid() or !stage.post.isValid() or !stage.queries.isValid() { print <- "The renderer could not be made\n"; return 1i32; }
+
+  mut ok = true;
+  // The quadruped
+  imm quad = buildSubject(&mut device, &mut stage.renderer, plainBody(&BodyParams.quadruped()), false, new Color(0.62, 0.30, 0.12, 1.));
+  print <- "quadruped: "; print <- u64.from(quad.rig.boneCount()); print <- " bones, "; print <- u64.from(quad.vertices); print <- " vertices, "; print <- u64.from(quad.triangles);
+  print <- " triangles; the surface "; print <- quad.meshMs; print <- " ms, bone-heat weights "; print <- quad.weightMs; print <- " ms ("; print <- u64.from(quad.weightSteps); print <- " solver steps at most)\n";
+  if !runQuadruped(&mut device, &mut stage, &quad, outDir.view()) { ok = false; }
+  // The flier
+  mut spec = plainBody(&BodyParams.winged());
+  plainFeathers(&mut spec);
+  imm bird = buildSubject(&mut device, &mut stage.renderer, spec, true, new Color(0.30, 0.17, 0.09, 1.));
+  print <- "winged body: "; print <- u64.from(bird.rig.boneCount()); print <- " bones, "; print <- u64.from(bird.vertices); print <- " body vertices, "; print <- u64.from(bird.triangles);
+  print <- " triangles; the surface "; print <- bird.meshMs; print <- " ms, bone-heat weights "; print <- bird.weightMs; print <- " ms\n";
+  imm wings = findWings(&bird.rig);
+  wingStudy(&mut device, &mut stage, &bird, &wings, outDir.view());
+  if !runFlier(&mut device, &mut stage, &bird, &wings, outDir.view()) { ok = false; }
+
+  if failures() != 0u32 { print <- "FAIL: a Vulkan call failed\n"; ok = false; }
+  if validationMessages() != 0u32 { print <- "FAIL: validation messages\n"; ok = false; }
+  if ok { print <- "ok\n"; return 0i32; }
+  1i32;
+}
