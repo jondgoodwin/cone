@@ -1,0 +1,123 @@
+// The piece-table buffer: hand-worked cases, then 3000 random edits compared with a plain String
+// that is edited the obvious way (String.insert / String.remove), with every line start checked
+// against a scan of the model.
+//
+//   "ab\ncd" has lines "ab" (0..2) and "cd" (3..5). Inserting "X\nY" at 1 gives "aX\nYb\ncd":
+//   three lines starting 0, 3, 6 ... (a: 0, Yb: 3, cd: 6). CRLF: "a\r\nb" has line 0 = "a" (end 1).
+
+mod buffertest;
+
+import testing use *;
+import collections use *;
+import textedit use *;
+
+// Line starts of a plain string, by scanning
+fn scanStarts(s &str) List[usize] {
+  mut out = List[usize].empty();
+  out.push(0usize);
+  mut i = 0usize;
+  while i < s.len() {
+    if s[i] == 10u8 {out.push(i + 1usize);}
+    i = i + 1usize;
+  }
+  out;
+}
+
+fn sameLines(b &Buffer, model &str) bool {
+  imm st = scanStarts(model);
+  if st.len() != b.lineCount() {return false;}
+  mut i = 0usize;
+  while i < st.len() {
+    if *st[i] != b.lineStart(i) {return false;}
+    i = i + 1usize;
+  }
+  true;
+}
+
+fn main() i32 {
+  mut b = Buffer.fromText("ab\ncd");
+  expectInt(i64.from(b.len()), 5i64, "length");
+  expectInt(i64.from(b.lineCount()), 2i64, "two lines");
+  expectInt(i64.from(b.lineStart(1usize)), 3i64, "line 1 starts at 3");
+  expectInt(i64.from(b.lineEnd(0usize)), 2i64, "line 0 ends at 2");
+  expectStr(b.lineText(1usize).view(), "cd", "line 1 text");
+  b.insert(1usize, "X\nY");
+  expectStr(b.all().view(), "aX\nYb\ncd", "insert with a newline");
+  expectInt(i64.from(b.lineCount()), 3i64, "three lines");
+  expectInt(i64.from(b.lineStart(1usize)), 3i64, "line 1 starts at 3 now");
+  expectInt(i64.from(b.lineStart(2usize)), 6i64, "line 2 starts at 6");
+  expectInt(i64.from(b.lineOf(4usize)), 1i64, "offset 4 is on line 1");
+  expectInt(i64.from(b.lineOf(8usize)), 2i64, "the end is on the last line");
+  b.remove(2usize, 4usize);
+  expectStr(b.all().view(), "aXb\ncd", "remove across a newline joins lines");
+  expectInt(i64.from(b.lineCount()), 2i64, "two lines again");
+  expectStr(b.text(1usize, 5usize).view(), "Xb\nc", "text of a range");
+  expectInt(i64.from(b.byteAt(3usize)), 10i64, "byteAt the newline");
+
+  // typing extends one piece
+  mut t = Buffer.empty();
+  mut k = 0usize;
+  while k < 100usize {
+    t.insert(t.len(), "x");
+    k = k + 1usize;
+  }
+  expectInt(i64.from(t.pieceCount()), 1i64, "100 typed letters are one piece");
+  t.insert(50usize, "-");
+  expectInt(i64.from(t.pieceCount()), 3i64, "an insert in the middle splits to three");
+  expectInt(i64.from(t.len()), 101i64, "length 101");
+  t.compact();
+  expectInt(i64.from(t.pieceCount()), 1i64, "compact joins");
+  expectInt(i64.from(t.byteAt(50usize)), 45i64, "the dash survives compact");
+
+  // CRLF
+  mut c = Buffer.fromText("a\r\nbb\r\nc");
+  expect(c.usesCrlf(), "crlf detected");
+  expectInt(i64.from(c.lineEnd(0usize)), 1i64, "line 0 ends before the CR");
+  expectStr(c.lineText(1usize).view(), "bb", "line 1 text has no CR");
+  expectInt(i64.from(c.lineEndWithBreak(0usize)), 3i64, "with the break");
+
+  // empty
+  mut e = Buffer.empty();
+  expectInt(i64.from(e.lineCount()), 1i64, "an empty buffer has one line");
+  expectInt(i64.from(e.lineLen(0usize)), 0i64, "of length 0");
+  e.insert(0usize, "\n");
+  expectInt(i64.from(e.lineCount()), 2i64, "a newline makes two");
+  e.remove(0usize, 1usize);
+  expectInt(i64.from(e.lineCount()), 1i64, "and removing it makes one");
+
+  // random edits against a String
+  mut model = String.from("The quick brown fox\njumps over\n\nthe lazy dog.\n");
+  mut buf = Buffer.fromText(model.view());
+  mut seed = 12345u64;
+  mut bad = 0u32;
+  mut step = 0u32;
+  while step < 3000u32 {
+    seed = seed * 6364136223846793005u64 + 1442695040888963407u64;
+    imm r = u32.from((seed >> 33u64) & 0x7fffffffu64);
+    imm n = model.len();
+    if r % 3u32 != 0u32 or n == 0usize {
+      imm at = usize.from((r >> 3u32) % u32.from(n + 1usize));
+      imm which = (r >> 11u32) % 5u32;
+      mut ins = String.empty();
+      if which == 0u32 {ins.append("a");}
+      elif which == 1u32 {ins.append("\n");}
+      elif which == 2u32 {ins.append("xy\nz");}
+      elif which == 3u32 {ins.append("hello world");}
+      else {ins.append("\n\n");}
+      model.insert(at, ins.view());
+      buf.insert(at, ins.view());
+    }
+    else {
+      imm lo = usize.from((r >> 3u32) % u32.from(n));
+      imm span = usize.from((r >> 13u32) % 12u32);
+      imm hi = if lo + span > n {n;} else {lo + span;};
+      model.remove(lo, hi);
+      buf.remove(lo, hi);
+    }
+    if buf.all().view() != model.view() or !sameLines(&buf, model.view()) {bad = bad + 1u32;}
+    step = step + 1u32;
+  }
+  expectInt(i64.from(bad), 0i64, "3000 random edits agree with the plain String, text and line starts");
+  expectInt(i64.from(buf.len()), i64.from(model.len()), "final length");
+  done();
+}
