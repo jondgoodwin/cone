@@ -1,0 +1,104 @@
+// A String appended to that is a field of one struct, while a view is held into a String that is a
+// field (or a list element) of ANOTHER struct, is another value than the view is into, whatever paths
+// reach the two structs: nothing it does can move or free what the view points at.
+// collection_flow_reshape_receiver_other_struct holds what stays refused beside each of these: the
+// receiver a field of the SAME struct (two references may be one value), a name or a list's element
+// (they say nothing of where the String is held), and a view reached through a reference.
+
+mod collection_reshape_receiver_other_struct_success;
+
+import stdio use *;
+import collections use *;
+
+struct Input { pub clipboard String; pub n i32; }
+struct Ui {
+  pub texts List[String];
+  pub input Input;
+  // Copies a list element to the clipboard
+  pub fn copy(self &mut, i usize) { input.clipboard.append(texts[i].view()); }
+}
+struct Item { pub label String; pub nums List[i64]; }
+struct Doc { pub items List[Item]; pub note Input; pub title String; pub seen List[i64]; }
+struct Pair[A, B] { pub x A; pub y B; }
+
+fn show(label &str, s &str) {
+  printStr(label);
+  printStr(" = ");
+  printStr(s);
+  printStr("\n");
+}
+
+// The filed case: the element a list's index returned, the clipboard a field of another struct
+fn copyOut(ui &mut Ui, i usize) {
+  ui.input.clipboard.append(ui.texts[i].view());
+}
+
+// A field of an element of a list, appended to a field of the document's other struct
+fn noteFromItem(d &mut Doc) {
+  d.note.clipboard.append(d.items[0usize].label.view());
+}
+
+// The two documents may be one value; the fields are not
+fn noteFromOther(a &mut Doc, b &mut Doc) {
+  a.note.clipboard.append(b.items[0usize].label.view());
+}
+
+fn titleFromItem(d &mut Doc) {
+  d.title.append(d.items[0usize].label.view());
+}
+
+// Two instances of one generic struct that are different types
+fn crossPair(p &mut Pair[String, i32], q &mut Pair[i32, String]) {
+  p.x.append(q.y.view());
+}
+
+// A borrow held in a name across an append to a list of another struct
+fn seenWhileHeld(d &mut Doc) i64 {
+  imm r = d.items[0usize].nums[0usize];
+  d.seen.push(5);
+  *r;
+}
+
+// Each pass copies the text before it is appended to
+fn loopCopy(ui &mut Ui) {
+  mut k = 0usize;
+  while k < ui.texts.len() {
+    ui.input.clipboard.append(ui.texts[k].view());
+    k = k + 1usize;
+  }
+}
+
+fn main() i32 {
+  mut ui = new Ui(List[String].empty(), new Input(String.empty(), 0));
+  ui.texts.push(String.from("alpha"));
+  ui.texts.push(String.from("beta"));
+  copyOut(&mut ui, 1usize);
+  copyOut(&mut ui, 0usize);
+  show("copyOut", ui.input.clipboard.view());
+  ui.copy(1usize);
+  show("copy", ui.input.clipboard.view());
+  loopCopy(&mut ui);
+  show("loopCopy", ui.input.clipboard.view());
+
+  mut d = new Doc(List[Item].empty(), new Input(String.empty(), 1), String.from("t:"), List[i64].empty());
+  mut nums = List[i64].empty();
+  nums.push(42);
+  d.items.push(new Item(String.from("a-long-enough-label-to-need-a-block-of-its-own"), nums));
+  noteFromItem(&mut d);
+  noteFromItem(&mut d);
+  show("noteFromItem", d.note.clipboard.view());
+  titleFromItem(&mut d);
+  show("titleFromItem", d.title.view());
+  mut e = new Doc(List[Item].empty(), new Input(String.from("e:"), 2), String.empty(), List[i64].empty());
+  noteFromOther(&mut e, &mut d);
+  show("noteFromOther", e.note.clipboard.view());
+  printStr("seenWhileHeld = ");
+  printInt(seenWhileHeld(&mut d));
+  printStr("\n");
+
+  mut p = new Pair[String, i32](String.from("p"), 1);
+  mut q = new Pair[i32, String](2, String.from("q"));
+  crossPair(&mut p, &mut q);
+  show("crossPair", p.x.view());
+  0;
+}
