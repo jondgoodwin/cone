@@ -747,8 +747,12 @@ class Scenarios(unittest.TestCase):
         included = (out / "shapes.cone").read_text()
         self.assertIn("pub struct Bag is ShapeChanging {", included)
         self.assertIn("pub struct Shelf is Sendable, ShapeChanging {", included)
-        self.assertIn("pub struct Gauge {", included)
-        self.assertNotIn("Gauge is", included)
+        # Not shape-changing, and its methods reshape nothing a caller borrows: recorded as
+        # keeping the shape. Bag and Shelf push to a list, so they are not
+        self.assertIn("pub struct Gauge is ShapeKeeping {", included)
+        self.assertNotIn("Gauge is ShapeChanging", included)
+        self.assertNotIn("ShapeKeeping, ShapeChanging", included)
+        self.assertNotIn("ShapeChanging, ShapeKeeping", included)
         self.assertNotIn("Pt is", included)
         for name, spelling in (("bag", "shapes.Bag"), ("shelf", "shapes.Shelf")):
             write(self.root / f"{name}.cone", f"""
