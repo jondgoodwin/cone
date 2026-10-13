@@ -66,6 +66,9 @@
 //   u.recvFromIn(buf, lim)  u.sendToIn(addr, buf, lim)
 //                           the same eight, limited by lim, a IoLimits    (CANCEL AND DEADLINES)
 //   IoLimits.none()  IoLimits.until(deadline)  IoLimits.within(group)  new IoLimits(group, deadline)
+//   aio.sleep(d)  aio.sleepUntil(at)   a pause of d (a Duration) / until at (an Instant)
+//                                                                Result[void, IoError]
+//   aio.sleepIn(d, lim)  aio.sleepUntilIn(at, lim)   the same two, limited by lim     (SLEEPING)
 //   aio.isCancelled(e)  aio.isTimedOut(e)  aio.isTruncated(e)
 //                           what an IoError says of how an operation ended
 //   Socket.none()  File.none()  UdpSocket.none()
@@ -73,7 +76,7 @@
 //   s.isNone()  s.handle()  f.isNone()  f.handle()  u.isNone()  u.handle()
 //   Datagram {buf, from}    what a recvFrom answers: the datagram's bytes and its sender
 //
-// Each of the operations makes an OPERATION, an actors.Awaitable[R], which
+// Each of the operations (and each sleep) makes an OPERATION, an actors.Awaitable[R], which
 // does nothing until an 'await' in a behaviour starts it; the 'await''s value
 // is its R. Made and never awaited, it is dropped, and nothing is done.
 //
@@ -194,6 +197,19 @@
 // system that iocore does not hold in flight, so there is nothing to cancel
 // once it has started; the two operations on a file have theirs.
 //
+// SLEEPING. 'sleep(d)' and 'sleepUntil(at)' are iocore's timers ('after',
+// 'afterIn') awaited: the behaviour pauses, and the I/O thread's Loop answers
+// when the time comes. 'd' counts from the moment the I/O thread starts the
+// timer, a moment after the 'await'; 'at' is absolute, and one already past is
+// answered at once. The success holds nothing (Result[void, IoError]). The 'In'
+// forms take an IoLimits as the other operations do, and honour the group's
+// deadline as iocore's 'afterIn' does: a sleep due after the deadline (lim's,
+// or its group's, the tighter) is answered TimedOut at the deadline, one due
+// at or before it is Done at its time; the group's cancel answers Cancelled,
+// at once if the group is cancelled already. lim's deadline is given to the
+// timer as a group of its own (a child of lim's group, or a new one), since
+// iocore's timer takes a group alone. Dropped unawaited, a sleep does nothing.
+//
 // On Windows and Linux, as iocore is; TCP sockets, UDP sockets and files (a
 // socket does one operation at a time per direction, as iocore's do; a file
 // many at once, at any offsets). Not here: 'fileio', the file service with
@@ -208,7 +224,7 @@ import thread;
 import sync use Mutex;
 import collections use List;
 import iobuf use IoBuf;
-import time use Instant;
+import time use Instant, Duration;
 import iocore use Loop, Waker, Op, Target, Sink, Completion, Handle, SocketAddr, IoError, CancelGroup, Access, forever;
 import path use Path;
 import actors;
@@ -576,8 +592,53 @@ fn datagramAnswer(c &mut Completion) Result[Datagram, IoError] {
   Error[Datagram, IoError](endError(c));
 }
 
+// A timer's: Done is the success, a Result with nothing in it
+fn sleepAnswer(c &mut Completion) Result[void, IoError] {
+  if c.status == diag.outcomeDone {
+    return Ok[void, IoError](nil);
+  }
+  Error[void, IoError](endError(c));
+}
+
 fn opAwaitable[R](op Op, answer &fn(c &mut Completion) R, limits IoLimits) actors.Awaitable[R] {
   awaitable[OpJob[R], R](new OpJob[R](op, limits, new actors.Reply(), answer));
+}
+
+// A timer, started on the I/O thread's Loop: it answers Done at 'at' (or, if
+// 'relative', 'after' from the moment the I/O thread starts it, a moment after
+// the 'await'), unless lim ends it first. lim's group is the timer's cancel
+// group, and lim's deadline narrows that group's (a group made for the purpose
+// when there is none): a timer due after the deadline answers TimedOut at the
+// deadline, as iocore's 'afterIn' does
+struct SleepJob {
+  pub at Instant;
+  pub after Duration;
+  pub relative bool;
+  pub limits IoLimits;
+  pub reply actors.Reply;
+
+  fn run(self &mut, lp &mut Loop) {
+    mut rp = new actors.Reply();
+    rp <=> reply;
+    imm due = if relative {Instant.now() + after;} else {at;};
+    imm to = Target.Hook(0u64, Sink.make(waiting[Result[void, IoError]](rp, &sleepAnswer)));
+    match limits.group {
+      case imm g Some {
+        if limits.deadline < forever() {
+          lp.afterIn(due, to, g.childUntil(limits.deadline));
+        } else {
+          lp.afterIn(due, to, g);
+        }
+      }
+      else {
+        if limits.deadline < due {
+          lp.afterIn(due, to, CancelGroup.until(limits.deadline));
+        } else {
+          lp.after(due, to);
+        }
+      }
+    }
+  }
 }
 
 // A listening socket, made on the I/O thread's Loop, which holds it
@@ -852,4 +913,24 @@ pub fn connect(addr SocketAddr) actors.Awaitable[Result[Socket, IoError]] {
 // A TCP socket connected to addr, ended if lim says so
 pub fn connectIn(addr SocketAddr, lim IoLimits) actors.Awaitable[Result[Socket, IoError]] {
   opAwaitable[Result[Socket, IoError]](Op.Connect(addr), &socketAnswer, lim);
+}
+
+// Pauses for d, counted from the 'await': Ok(nil) when it has passed
+pub fn sleep(d Duration) actors.Awaitable[Result[void, IoError]] {
+  sleepIn(d, IoLimits.none());
+}
+
+// A sleep ended if lim says so (the package's header, SLEEPING)
+pub fn sleepIn(d Duration, lim IoLimits) actors.Awaitable[Result[void, IoError]] {
+  awaitable[SleepJob, Result[void, IoError]](new SleepJob(Instant.now(), d, true, lim, new actors.Reply()));
+}
+
+// Pauses until the instant 'at' (one already past is Ok at once): Ok(nil)
+pub fn sleepUntil(at Instant) actors.Awaitable[Result[void, IoError]] {
+  sleepUntilIn(at, IoLimits.none());
+}
+
+// A sleepUntil ended if lim says so (the package's header, SLEEPING)
+pub fn sleepUntilIn(at Instant, lim IoLimits) actors.Awaitable[Result[void, IoError]] {
+  awaitable[SleepJob, Result[void, IoError]](new SleepJob(at, Duration.zero(), false, lim, new actors.Reply()));
 }
