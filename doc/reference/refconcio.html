@@ -54,7 +54,7 @@
 		write &mdash; or a file's &mdash; open, read at an offset, write at an offset &mdash; and
 		pauses there until the operation's answer comes, as it pauses for another
 		actor's reply (<a href="refawait.html#await">Awaiting a reply</a>; below,
-		<a href="#await-io">Awaiting I/O</a>). TCP sockets and files.</li>
+		<a href="#await-io">Awaiting I/O</a>). TCP sockets, UDP sockets and files.</li>
 	<li><b>HTTP an actor awaits:</b> <span class="pre">actorhttp</span>. An actor's behaviour may
 		<span class="pre">await</span> <span class="pre">client.get(url)</span>, for
 		<span class="pre">http://</span> or <span class="pre">https://</span>, and gets the whole response
@@ -207,7 +207,9 @@ await ...', and match on it.
 		<span class="pre">kind()</span>, an <span class="pre">IoErrorKind</span>:
 		<span class="pre">Os</span> for a failure of the system (its <span class="pre">code</span> and
 		<span class="pre">message()</span> are the system's), <span class="pre">Cancelled</span> or
-		<span class="pre">TimedOut</span> (its <span class="pre">code</span> is 0). The kind is what
+		<span class="pre">TimedOut</span> (its <span class="pre">code</span> is 0), or
+		<span class="pre">Truncated</span> (a datagram cut to the room that took it, below; its
+		<span class="pre">code</span> is the system's, 10040). The kind is what
 		<span class="pre">e.isCancelled()</span> and <span class="pre">e.isTimedOut()</span> read, and
 		<span class="pre">aio.isCancelled(e)</span> and <span class="pre">aio.isTimedOut(e)</span> are the same
 		questions; so no system error, whatever its number, is taken for either. The buffer an
@@ -215,9 +217,11 @@ await ...', and match on it.
 	<p>An operation is limited by the <span class="pre">In</span> form of its call, which takes a
 		<span class="pre">IoLimits</span>: <span class="pre">conn.readIn(buf, lim)</span>,
 		<span class="pre">conn.writeIn(buf, lim)</span>, <span class="pre">listener.acceptIn(lim)</span>,
-		<span class="pre">aio.connectIn(addr, lim)</span>, and a file's
+		<span class="pre">aio.connectIn(addr, lim)</span>, a file's
 		<span class="pre">f.readAtIn(offset, buf, lim)</span> and
-		<span class="pre">f.writeAtIn(offset, buf, lim)</span>. A <span class="pre">IoLimits</span> holds
+		<span class="pre">f.writeAtIn(offset, buf, lim)</span>, and a UDP socket's
+		<span class="pre">u.recvFromIn(buf, lim)</span> and
+		<span class="pre">u.sendToIn(addr, buf, lim)</span>. A <span class="pre">IoLimits</span> holds
 		a <a href="#cancel-groups">cancel group</a> and an absolute deadline, an
 		<span class="pre">Instant</span>: <span class="pre">IoLimits.within(group)</span>,
 		<span class="pre">IoLimits.until(deadline)</span>, or both with
@@ -262,6 +266,57 @@ actor Reader {
 		socket in a paused behaviour waits with the behaviour, as any value does
 		(<a href="refawait.html#await-cross">What crosses an await</a>), so it stays open
 		until the behaviour ends.</p>
+
+	<h3 id="await-io-udp">UDP sockets</h3>
+	<p><span class="pre">aio.bindUdp(addr)</span> binds a UDP socket on the I/O thread (port 0 has the system
+		choose one, which <span class="pre">u.localAddr()</span> tells) and answers a
+		<span class="pre">UdpSocket</span>, out of the <span class="pre">Result</span> by a swap as a
+		<span class="pre">Socket</span> is. A <span class="pre">UdpSocket</span> is a kind of its own beside
+		<span class="pre">Socket</span> and <span class="pre">File</span>: <span class="pre">read</span>,
+		<span class="pre">write</span> and <span class="pre">accept</span> are not on it, and
+		<span class="pre">recvFrom</span> and <span class="pre">sendTo</span> are not on the others, so a call
+		of the wrong kind does not compile. It is not connected: each datagram names where it goes.</p>
+	<ul>
+	<li><span class="pre">u.recvFrom(buf)</span>: one datagram, appended to the buffer, which is moved in. The
+		answer is a <span class="pre">Datagram</span>, whose <span class="pre">buf</span> is the buffer given
+		back, its length grown by the datagram's, and whose <span class="pre">from</span> is the sender's
+		<span class="pre">SocketAddr</span>. A datagram of no bytes is a datagram, not an end: the length does not
+		grow. A buffer with no room fails with 122, as a read's does.</li>
+	<li>A datagram longer than the buffer's room is cut: the answer is an <span class="pre">Error</span> whose
+		<span class="pre">IoError</span> is of the kind <span class="pre">Truncated</span>
+		(<span class="pre">aio.isTruncated(e)</span> or <span class="pre">e.isTruncated()</span>; its
+		<span class="pre">code</span> is 10040, <span class="pre">WSAEMSGSIZE</span>, on both systems). The
+		rest of the datagram is lost, the next one is whole, and the buffer goes home to its pool as a
+		failed read's does, the bytes that fitted with it.</li>
+	<li><span class="pre">u.sendTo(addr, buf)</span>: all of the buffer as one datagram to
+		<span class="pre">addr</span>, the count its length, the buffer going home. UDP promises no
+		delivery: the answer says the system took the datagram. One too large for the network fails
+		with 10040.</li>
+	</ul>
+	<p>Both take <span class="pre">In</span> forms, <span class="pre">u.recvFromIn(buf, lim)</span> and
+		<span class="pre">u.sendToIn(addr, buf, lim)</span>, and answer exactly once. A
+		<span class="pre">UdpSocket</span> moves and closes when dropped, as a <span class="pre">Socket</span>
+		does. One receive at a time per socket is the supported use; datagrams that arrive while none
+		is outstanding wait in the socket's buffer, which the operating system bounds.</p>
+<pre>
+actor Echo {
+  pool Pool;
+
+  pub async do once(self, u UdpSocket) {                   // u: bound earlier, by bindUdp
+    imm r = await u.recvFrom(pool.mustTake(1500usize));
+    match r {
+      case imm d Ok {
+        mut reply = pool.mustTake(64usize);
+        reply.append("got it");
+        imm sent = await u.sendTo(d.from, reply);          // back to the sender
+      }
+      case imm e Error {
+        if aio.isTruncated(e) {...the datagram was longer than 1500 bytes...}
+      }
+    }
+  }
+}
+</pre>
 
 	<h3 id="await-io-files">Files</h3>
 	<p><span class="pre">aio.openFile(path, access)</span> opens a file on the I/O thread, with
@@ -387,7 +442,7 @@ actor Weather {
 
 	<h3 id="await-io-unbuilt">Not built yet</h3>
 	<ul>
-	<li>The blocking pool's other work (file metadata, name lookup), UDP, and a socket's half-close, awaited;
+	<li>The blocking pool's other work (file metadata, name lookup), and a socket's half-close, awaited;
 		<span class="pre">fileio</span>, the file service.</li>
 	<li>More than one I/O thread.</li>
 	<li>A response's body handed to the actor as it arrives (it comes whole, up to a limit), a request's body
