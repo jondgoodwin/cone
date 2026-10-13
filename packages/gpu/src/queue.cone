@@ -21,25 +21,52 @@ struct FrameState {
   stagingUsed u64;
   retired Array[StagingBlock, 8];   // blocks outgrown this frame, freed when it comes round
   retiredCount u32;
-  released Array[ReleasedBuffer, 64];  // buffers released this frame, destroyed when it comes round
+  released *ReleasedObject;    // buffers, textures and bind groups released this frame, destroyed when it comes round
   releasedCount u32;
+  releasedCapacity u32;
 }
 
-// A buffer 'queue.releaseBuffer' took, destroyed once its frame is done
-struct ReleasedBuffer {
-  buffer vulkan.Buffer;
-  memory vulkan.DeviceMemory;
+const RELEASED_BUFFER = 0u32;
+const RELEASED_TEXTURE = 1u32;
+const RELEASED_GROUP = 2u32;
+
+// What 'queue.releaseBuffer', 'releaseTexture' and 'releaseBindGroup' took,
+// destroyed once its frame is done
+struct ReleasedObject {
+  kind u32;                    // RELEASED_...
+  buffer vulkan.Buffer;        // a buffer's, with its memory
+  memory vulkan.DeviceMemory;  // (and a texture's)
+  image vulkan.Image;          // a texture's, with its views
+  view vulkan.ImageView;
+  views *ViewCache;
+  pool vulkan.DescriptorPool;  // a bind group's, which frees its set
 }
 
-// Destroy the buffers frame 'i' released
-fn destroyReleased(queue &mut CommandQueue, i usize) {
-  mut r = 0usize;
-  while r < usize.from(queue.backend.frames[i].releasedCount) {
-    queue.fns.destroyBuffer(queue.backend.device, queue.backend.frames[i].released[r].buffer, nullp());
-    queue.fns.freeMemory(queue.backend.device, queue.backend.frames[i].released[r].memory, nullp());
-    r = r + 1usize;
+// Destroy everything one frame's state released, and free its list when asked (its room is
+// otherwise kept for the next time)
+fn destroyReleased(fns &DevFns, device vulkan.Device, frame &mut FrameState, freeList bool) {
+  mut d = 0usize;
+  while d < usize.from(frame.releasedCount) {
+    imm o = frame.released + d;
+    if o.kind == RELEASED_GROUP {
+      fns.destroyDescriptorPool(device, o.pool, nullp());
+    } elif o.kind == RELEASED_TEXTURE {
+      if o.view.h != 0u64 { fns.destroyImageView(device, o.view, nullp()); }
+      endViews(fns, device, o.views);
+      fns.destroyImage(device, o.image, nullp());
+      if o.memory.h != 0u64 { fns.freeMemory(device, o.memory, nullp()); }
+    } else {
+      fns.destroyBuffer(device, o.buffer, nullp());
+      fns.freeMemory(device, o.memory, nullp());
+    }
+    d = d + 1usize;
   }
-  queue.backend.frames[i].releasedCount = 0u32;
+  frame.releasedCount = 0u32;
+  if freeList and (frame.released as usize) != 0usize {
+    libc.free(frame.released as *u8);
+    frame.released = null;
+    frame.releasedCapacity = 0u32;
+  }
 }
 
 struct DeviceBackend {
@@ -263,26 +290,65 @@ pub struct CommandQueue {
     if buffer.backend.buffer.h == 0u64 and buffer.backend.memory.h == 0u64 { return; }
     // In a frame, so that its fence is signalled after all that used it
     beginQueueFrame(self);
-    imm i = usize.from(backend.frameIndex);
-    if backend.frames[i].releasedCount == MAX_RELEASED {
-      // Too many in one frame: the slow way
-      fns.deviceWaitIdle(backend.device);
-      if buffer.backend.buffer.h != 0u64 { fns.destroyBuffer(backend.device, buffer.backend.buffer, nullp()); }
-      if buffer.backend.memory.h != 0u64 { fns.freeMemory(backend.device, buffer.backend.memory, nullp()); }
-    } else {
-      backend.frames[i].released[usize.from(backend.frames[i].releasedCount)] =
-        new ReleasedBuffer(buffer.backend.buffer, buffer.backend.memory);
-      backend.frames[i].releasedCount = backend.frames[i].releasedCount + 1u32;
-    }
+    queueReleased(self, usize.from(backend.frameIndex), new ReleasedObject(RELEASED_BUFFER, buffer.backend.buffer,
+      buffer.backend.memory, new vulkan.Image(0u64), new vulkan.ImageView(0u64), null, new vulkan.DescriptorPool(0u64)));
     buffer.backend.buffer = new vulkan.Buffer(0u64);
     buffer.backend.memory = new vulkan.DeviceMemory(0u64);
     buffer.backend.mapped = nullp();
   }
 
-  // How many released buffers wait for their frame to come round
+  // Take 'texture' out of use, as 'releaseBuffer' does a buffer: it is not
+  // valid from now on, and its image, views and memory are destroyed once
+  // the GPU has finished every frame that may have used it, without waiting
+  // for the device to be idle, as dropping a texture does. A bind group
+  // that binds it ('createBindGroup') must be released ('releaseBindGroup')
+  // or dropped too, and not used again. A swapchain's texture is not the
+  // device's to release: nothing happens.
+  pub fn releaseTexture(self &mut, texture &mut Texture) {
+    if !texture.backend.owned or (texture.backend.image.h == 0u64 and texture.backend.memory.h == 0u64) { return; }
+    beginQueueFrame(self);
+    queueReleased(self, usize.from(backend.frameIndex), new ReleasedObject(RELEASED_TEXTURE, new vulkan.Buffer(0u64),
+      texture.backend.memory, texture.backend.image, texture.backend.view, texture.backend.views,
+      new vulkan.DescriptorPool(0u64)));
+    texture.backend.image = new vulkan.Image(0u64);
+    texture.backend.view = new vulkan.ImageView(0u64);
+    texture.backend.memory = new vulkan.DeviceMemory(0u64);
+    texture.backend.views = null;
+  }
+
+  // Take 'group' out of use the same way: its descriptor pool (and so its
+  // set) is destroyed once the GPU has finished every frame that may have
+  // drawn with it. It does not release the buffers and textures it binds.
+  pub fn releaseBindGroup(self &mut, group &mut BindGroup) {
+    if group.backend.pool.h == 0u64 { return; }
+    beginQueueFrame(self);
+    queueReleased(self, usize.from(backend.frameIndex), new ReleasedObject(RELEASED_GROUP, new vulkan.Buffer(0u64),
+      new vulkan.DeviceMemory(0u64), new vulkan.Image(0u64), new vulkan.ImageView(0u64), null, group.backend.pool));
+    group.backend.pool = new vulkan.DescriptorPool(0u64);
+    group.backend.set = new vulkan.DescriptorSet(0u64);
+  }
+
+  // How many released buffers, textures and bind groups wait for their frame to come round
   pub fn pendingReleases(self &) u32 {
     backend.frames[0].releasedCount + backend.frames[1].releasedCount;
   }
+}
+
+// Add 'o' to the objects frame state 'i' destroys when it comes round, growing the list by doubling
+fn queueReleased(queue &mut CommandQueue, i usize, o ReleasedObject) {
+  if queue.backend.frames[i].releasedCount == queue.backend.frames[i].releasedCapacity {
+    imm capacity = if queue.backend.frames[i].releasedCapacity == 0u32 { 64u32; } else { queue.backend.frames[i].releasedCapacity * 2u32; };
+    imm grown = libc.calloc(usize.from(capacity), mem.sizeof[ReleasedObject]()) as *ReleasedObject;
+    if (queue.backend.frames[i].released as usize) != 0usize {
+      libc.memcpy(grown as *u8, queue.backend.frames[i].released as *u8,
+        usize.from(queue.backend.frames[i].releasedCount) * mem.sizeof[ReleasedObject]());
+      libc.free(queue.backend.frames[i].released as *u8);
+    }
+    queue.backend.frames[i].released = grown;
+    queue.backend.frames[i].releasedCapacity = capacity;
+  }
+  *(queue.backend.frames[i].released + usize.from(queue.backend.frames[i].releasedCount)) = o;
+  queue.backend.frames[i].releasedCount = queue.backend.frames[i].releasedCount + 1u32;
 }
 
 // Begin a frame, if one is not begun: wait until the GPU has finished the
@@ -309,7 +375,7 @@ fn beginQueueFrame(queue &mut CommandQueue) {
     r = r + 1usize;
   }
   queue.backend.frames[i].retiredCount = 0u32;
-  destroyReleased(queue, i);
+  destroyReleased(&queue.fns, device, &mut queue.backend.frames[i], false);
   queue.backend.frames[i].stagingUsed = 0u64;
   queue.backend.inFrame = true;
 }
