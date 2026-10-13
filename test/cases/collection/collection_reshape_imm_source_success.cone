@@ -1,0 +1,85 @@
+// A source lent '&imm' is the documented cure for a view refused across a call that grows a String
+// (refborref.html, "The cures"). It cures the view of an element of a list the source holds as well:
+// '[]' returns a plain '&Item', but the element is in the list's own block, which the source
+// reaches through an 'imm' reference, so nothing writes it by another name. The refusals that
+// remain are collection_flow_reshape_imm_source.
+
+mod collection_reshape_imm_source_success;
+
+import stdio use *;
+import collections use *;
+
+struct Item { pub label String; pub n i32; }
+
+struct Ed {
+  pub items List[Item];
+
+  // Appends s to the first label: the label's block may move
+  pub fn grow(self &mut, s &str) {
+    imm r = &mut items[0usize];
+    r.label.append(s);
+  }
+}
+
+struct Cover {
+  pub ed Ed;
+  pub name String;
+}
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn show2(label &str, s &str) {
+  printStr(label);
+  printStr(" = ");
+  printStr(s);
+  printStr("\n");
+}
+
+// The view taken through the element, with no name for it
+fn inlineView(ed &mut Ed, src &imm Ed) {
+  ed.grow(src.items[0usize].label.view());
+}
+
+// The same through the name the element is given
+fn namedView(ed &mut Ed, src &imm Ed) {
+  imm item = src.items[0usize];
+  ed.grow(item.label.view());
+}
+
+// The source is the list itself
+fn listSource(ed &mut Ed, src &imm List[Item]) {
+  ed.grow(src[0usize].label.view());
+}
+
+// The list is a field of a field of the source
+fn deepSource(ed &mut Ed, src &imm Cover) {
+  ed.grow(src.ed.items[0usize].label.view());
+}
+
+fn makeEd(label &str, n i32) Ed {
+  mut e = new Ed(List[Item].empty());
+  e.items.push(new Item(String.from(label), n));
+  e;
+}
+
+fn main() i32 {
+  mut dst = new Ed(List[Item].empty());
+  dst.items.push(new Item(String.from("ab"), 1));
+  imm from = makeEd("xyz", 2);
+  inlineView(&mut dst, &imm from);
+  show2("inline", dst.items[0usize].label.view());
+  namedView(&mut dst, &imm from);
+  show2("named", dst.items[0usize].label.view());
+  listSource(&mut dst, &imm from.items);
+  show2("list", dst.items[0usize].label.view());
+  imm cover = new Cover(makeEd("q", 3), String.from("c"));
+  deepSource(&mut dst, &imm cover);
+  show2("deep", dst.items[0usize].label.view());
+  show("len", i64.from(dst.items[0usize].label.view().len));
+  0;
+}

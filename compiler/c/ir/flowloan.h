@@ -317,6 +317,15 @@ int loanShapeRootVars(uint32_t loan, VarDclNode **out);
 // of variant through its own name is for the shape check to report.
 int loanExcludesWriters(uint32_t entry);
 int loanShapeFrozen(uint32_t loan);
+// The place a set entry's loan borrows. And the loan of a method's receiver, whose method
+// returned an element out of the receiver's own block ('ls[i]' of a list), so that a borrow the
+// call carries is of that element and of nothing the receiver merely reaches
+// (flowpath.c, pwElemView, pwHoldsUnwritten)
+Place *loanPlaceOf(uint32_t entry);
+void loanElemViewSet(uint32_t loan);
+int loanElemView(uint32_t entry);
+// Does the entry stand for what a caller lent through a parameter, what its own reference points at?
+int loanIsCallerOwn(uint32_t entry);
 void loanShapeSource(uint32_t loan, PathSet *holds);
 int loanIsExclusive(uint32_t entry);
 void loanShapeMark(uint32_t loan, INode *container);

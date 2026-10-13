@@ -1,0 +1,42 @@
+// The '&imm' source cures the view of a list's element only when no 'mut' global can reach an
+// 'Item': a method whose body is not the list's own could return a borrow of one, which the source
+// does not make 'imm' (collection_reshape_imm_source_success holds the cure, without a global).
+// Here 'gl' holds Items, so the call stays refused; and a method of the source that returns a
+// borrow into 'gl' is refused as well.
+
+mod collection_flow_reshape_imm_source_global;
+
+import collections use *;
+
+struct Item { pub label String; pub n i32; }
+
+struct Ed {
+  pub items List[Item];
+
+  pub fn grow(self &mut, s &str) {
+    imm r = &mut items[0usize];
+    r.label.append(s);
+  }
+
+  // A borrow into the global, though the receiver is 'imm'
+  pub fn pickGlobal(self &) &Item {
+    gl.items[0usize];
+  }
+}
+
+mut gl Ed;
+
+fn @initpure init() {
+  gl = new Ed(List[Item].empty());
+  gl.items.push(new Item(String.from("hello"), 1));
+}
+
+fn listed(ed &mut Ed, src &imm Ed) {
+  ed.grow(src.items[0usize].label.view());    //~ ErrorShapeReshape:5 "'grow' is handed something that reaches a 'String'"
+}
+
+fn global(ed &mut Ed, src &imm Ed) {
+  ed.grow(src.pickGlobal().label.view());     //~ ErrorShapeReshape:5 "'grow' is handed something that reaches a 'String'"
+}
+
+fn main() {}

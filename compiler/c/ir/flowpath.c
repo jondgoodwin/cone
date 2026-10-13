@@ -853,6 +853,38 @@ static int pwMayAliasWritten(INode *reftype) {
         && itypeGetTypeDcl(((RefNode *)reftype)->perm) != (INode *)opaqPerm;
 }
 
+// Does a borrowed reference holding 'holds' point only where no other name writes? It does when
+// every borrow it may hold (only the near loans are where it points: flowloan.h) is of an
+// element a method returned out of its receiver's own block (pwElemView), the receiver reached
+// through a reference nothing writes by ('imm', 'mut1'; not 'ro', 'mut': Place.shwrite), or is
+// what a caller lent through a parameter of such a reference, the one the receiver was reached by
+// (a reborrow carries it): the element is then in an 'imm' path, though the '&' the method
+// returned says only that its holder may not write. Anything else keeps what the reference's
+// type says: a borrow of a local, a global, what a caller lent through a reference that may be
+// written by, a borrow the method may have made of something it merely reaches (a '&mut' field
+// of the receiver, a global), and a reference holding nothing the walk knows of.
+static int pwHoldsUnwritten(PathSet *holds) {
+    if (holds == NULL || holds == &pathSetAll)
+        return 0;
+    int elems = 0;
+    for (uint32_t i = 0; i < holds->cnt; ++i) {
+        uint32_t entry = holds->ids[i];
+        if (entry & LoanFar)
+            continue;
+        Place *lp = loanPlaceOf(entry);
+        if (loanElemView(entry) && lp->shared && !lp->shwrite) {
+            elems = 1;
+            continue;
+        }
+        if (!loanIsCallerOwn(entry))
+            return 0;
+        INode *parmtype = itypeGetTypeDcl(pathVars[lp->var].var->vtype);
+        if ((parmtype->tag != RefTag && parmtype->tag != ArrayRefTag) || pwMayAliasWritten(parmtype))
+            return 0;
+    }
+    return elems;
+}
+
 // The place reached through the reference 'ref' evaluates to. Through a
 // borrowed reference it is a root of its own, what the reference points at,
 // keyed by the variable the reference is read from; through an owning one, a
@@ -921,7 +953,8 @@ static int pwThrough(INode **refp, Place *pl, PathSet **base) {
         pl->nsteps = 0;
         pl->shared = pwMayAlias(reftype);
         pl->sharedlen = 0;
-        pl->shwrite = pwMayAliasWritten(reftype);
+        pl->shwrite = pwMayAliasWritten(reftype)
+            && !(refpl.nsteps == 0 && !refpl.deref && pwHoldsUnwritten(pathVars[refpl.var].holds));
         pl->owned = 0;
         pl->far = refpl.deref;
         pl->ownertype = NULL;
@@ -1952,6 +1985,31 @@ static INode *pwViewOwner(INode *recv, INode *cont) {
     return holder;
 }
 
+// Did this method return an element out of its receiver's own block: a borrow of a struct held in
+// the block of 'container' (a 'List[Item]''s '[]' returns an '&Item'), with the receiver reached
+// through a reference nothing writes by, so that the element is in that 'imm' path too? Then a
+// borrow the call carries is of that element and of nothing else the receiver reaches: not of what
+// a '&mut' field of the receiver points at, and (pwHoldsElements) the call is handed no other
+// borrow the element could come from. No 'mut' global may reach the element's type, for a method
+// whose body is another's could return a borrow of one, and that is not an 'imm' path.
+static int pwElemView(FnCallNode *call, INode *container, Place *recvpl) {
+    if (!recvpl->shared || recvpl->shwrite || call->args == NULL || call->args->used == 0
+            || (call->flags & (FlagVDisp | FlagLvalOp)))
+        return 0;
+    INode *rt = iexpGetTypeDcl((INode *)call);
+    if (rt->tag != RefTag)
+        return 0;
+    INode *elem = itypeGetTypeDcl(((RefNode *)rt)->vtexp);
+    if (elem == NULL || elem->tag != StructTag || (elem->flags & TraitType) || !pwHoldsElements(container, elem))
+        return 0;
+    for (uint32_t k = 1; k < call->args->used; ++k) {
+        INode *arg = nodesGet(call->args, k);
+        if (arg->tag != StringLitTag && !intrinsicIsSrcDefault(arg) && pwCarries(iexpGetTypeDcl(arg)))
+            return 0;
+    }
+    return !reshapeMutGlobalsReach(elem);
+}
+
 // The borrow a call returned out of a container that changes shape, carrying the loan
 // 'loan' of the place 'pl' (a method's receiver, or a reference a free function was
 // handed): the place is frozen against a change through the same name
@@ -2332,7 +2390,8 @@ static PathSet *pwCall(FnCallNode *call) {
             if (container && container->tag == StructTag && shapeChanging((StructNode *)container)) {
                 pwShapeLent(&recvpl, recvloan, container, 0);
                 loanShapeOwnerSet(recvloan, pwViewOwner(nodesGet(call->args, 0), container));
-            }
+                if (pwElemView(call, container, &recvpl))
+                    loanElemViewSet(recvloan);            }
         }
         result = pathSetUnion(result, fromrecv);
     }
