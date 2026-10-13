@@ -616,8 +616,73 @@ fn shots(device &mut Device, rig &mut Rig, rig2 &mut Rig, outPath &Path, sample 
   print <- "  lines tokenized in all: ", u64.from(ed2.linesTokenized), ", draw lists made: ", u64.from(ed2.rebuilds), "\n";
 }
 
+// The editor's clipboard and the system's, joined with SDL: what the host does around 'pump'. Run with
+// --clipboard, it checks a round trip with the real system clipboard, putting back what was there
+// (and doing nothing at all if the clipboard holds something that is not text)
+fn clipboardRoundTrip() {
+  if !sdl.Init(sdl.INIT_VIDEO) {
+    print <- "clipboard: SDL's video would not start\n";
+    return;
+  }
+  // (SDL's Windows clipboard wants a window to open it with: a hidden one, never shown, takes no input)
+  imm window = sdl.CreateWindow(cstr.fromLiteral("textedit clipboard"), 64, 64, sdl.WINDOW_HIDDEN);
+  imm hadText = sdl.HasClipboardText();
+  mut before = String.empty();
+  if hadText {
+    imm p = sdl.GetClipboardText();
+    before = String.from(cstr.fromPtr(p).view());
+    sdl.free(p);
+  }
+  // (a clipboard that holds a picture or files has no text: leave it alone)
+  mut ui = Ui.make(400., 200.);
+  mut ed = Editor.make(&mut ui, ui.root, "alpha beta gamma\n");
+  ui.setSize(ed.node, 400., 200.);
+  mut m = fn(t &str, face u32, size f32) Vec2 { new Vec2(f32.from(t.len()) * 8., 20.); };
+  layout(&mut ui, &mut m);
+  ed.refresh(&mut ui, &mut m, &coneTokenizer);
+  click(&mut ui, new Vec2(100., 10.), 0u32);
+  ed.pump(&mut ui, &mut m, &coneTokenizer);
+  ed.doc.selectWordAt(8usize);
+  press(&mut ui, KEY_C, MOD_CTRL);
+  ed.pump(&mut ui, &mut m, &coneTokenizer);
+  print <- "copied: \"", ed.clipboard.view(), "\" written ", i64.from(ed.clipboardWritten), "\n";
+  if ed.clipboardWritten {
+    // (another program may hold the Windows clipboard open for a moment: try again a few times)
+    mut ok = false;
+    mut tries = 0u32;
+    while !ok and tries < 10u32 {
+      ok = sdl.SetClipboardText(cstr.fromLiteral(ed.clipboard.view()));
+      if !ok {sdl.Delay(100u32);}
+      tries = tries + 1u32;
+    }
+    print <- "SDL_SetClipboardText: ", i64.from(ok), " after ", u64.from(tries), " tries ", sdl.GetError().view(), "\n";
+    ed.clipboardWritten = false;
+  }
+  // ... the host reads the system clipboard before a paste
+  press(&mut ui, KEY_END, 0u32);
+  press(&mut ui, KEY_V, MOD_CTRL);
+  if ed.needsClipboard(&ui) {
+    imm p = sdl.GetClipboardText();
+    ed.clipboard = String.from(cstr.fromPtr(p).view());
+    sdl.free(p);
+  }
+  ed.pump(&mut ui, &mut m, &coneTokenizer);
+  print <- "clipboard round trip through SDL: the first line is now \"", ed.doc.buffer().lineText(0usize).view(), "\" (expected \"alpha beta gammabeta\")\n";
+  if hadText {sdl.SetClipboardText(cstr.fromLiteral(before.view()));}
+  sdl.DestroyWindow(window);
+  sdl.Quit();
+}
+
 fn main() i32 {
   imm args = process.args();
+  mut i = 1usize;
+  while i < args.len() {
+    if (*args[i]).view() == "--clipboard" {
+      clipboardRoundTrip();
+      return 0;
+    }
+    i = i + 1usize;
+  }
   mut out = String.from("editor-shots");
   mut sample = String.from("C:/src/cone-wt-textedit/packages/textedit/src/doc.cone");
   if args.len() > 1usize {out = String.from((*args[1usize]).view());}
