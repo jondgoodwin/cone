@@ -1578,7 +1578,9 @@ a field by a struct that is not the owner is another value and is not reached. T
 `dl.text(ui.items[0usize].label.view())` is accepted for a `Dl` that holds a `String` and no
 `Item`, and `ed.grow(...)` for an `Ed` that holds the `List[Item]` is not. No owner is recorded
 (and the check asks for any value of the container's type, as before) for a receiver that is no
-field and no such element (`s.view()`), for a field of a trait or an enum (a type that
+field and no such element (`s.view()`), for a field that holds a reference or pointer
+(`r.s.view()` with `s &mut String`: the `String` is some other struct's, which the reference may
+point at, so the struct with the reference field is not its owner), for a field of a trait or an enum (a type that
 implements it holds the same field), for an element a call returned from other borrows, and for
 a free function's borrowed argument. The receiver of a call that is the container itself, a
 `String` appended to, is asked as before unless it is another value than the viewed one: it is
@@ -1589,7 +1591,9 @@ variant of an enum), the viewed value is a field held by value or an element of 
 `recvowner`): a value is the field of one struct only. Stores (`reshapeStoreHits`) and globals
 are asked as before. `collection_reshape_receiver_other_struct_success` and
 `collection_flow_reshape_receiver_other_struct` pin both sides.
-`collection_flow_reshape_owner` pins what stays refused, by every route to the owner.
+`collection_flow_reshape_owner` pins what stays refused, by every route to the owner, and
+`collection_flow_reshape_reffield_owner` and `collection_reshape_reffield_owner_success` pin the
+view through a reference field (refused) beside the view through a by-value field (accepted).
 
 **An enum** is a marked loan's container too. A reference narrowed from an enum to one
 of its variants through a path others share, or from a `&mut` borrow of a local (an alias
