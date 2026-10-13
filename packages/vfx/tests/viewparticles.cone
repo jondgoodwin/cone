@@ -1,0 +1,139 @@
+// Particles drawn into a RenderView's picture, on a real GPU with no window.
+// render's RenderView draws the scene into a 64 x 64 rgba8unorm picture of its own
+// (keeping its depth); 'RenderView.texture' gives the picture, and the ParticleRenderer
+// adds particles into it, in an encoder of its own, depth tested against the view's
+// depth. The picture is copied out and read back. Only a failure prints.
+//
+// The scene: mesh's cube reaching 0.5 each way, dark grey, at the origin, on black;
+// the camera at (0, 0, 4) looking at it. Two clouds of still white sprites:
+// - glow, at (1.4, 0, 0), beside the cube, over the black;
+// - hidden, at (0, 0, -1.5), behind the cube, within its outline.
+//
+// 1. The picture without particles: black where the glow will be, the cube grey.
+// 2. With them: the glow's pixel bright, and the cube's middle exactly as before (the
+//    hidden cloud is behind the cube and fails the depth test the view kept).
+// 3. The hidden cloud moved in front of the cube: the cube's middle brightens (so the
+//    check above can fail).
+// 4. No Vulkan call failed, and the validation layer said nothing.
+//
+// It needs a GPU driver with Vulkan 1.3 and SDL3.dll; with the Vulkan SDK, validation and
+// synchronization validation are on, and must say nothing.
+
+mod viewparticles;
+
+import testing use *;
+import libc;
+import geomath use *;
+import collections use *;
+import mesh use Mesh;
+import gpu use *;
+import render use *;
+import vfx use *;
+
+const SIZE = 64u32;
+
+fn pixelOf(viewProjection Mat4, p Vec3, x &mut usize, y &mut usize) {
+  imm clip = viewProjection * new Vec4(p.x, p.y, p.z, 1.);
+  *x = usize.from((clip.x / clip.w + 1.) * 0.5 * f32.from(SIZE));
+  *y = usize.from((1. - clip.y / clip.w) * 0.5 * f32.from(SIZE));
+}
+
+fn luma(p *u8, x usize, y usize) i64 {
+  imm at = p + (y * usize.from(SIZE) + x) * 4usize;
+  i64.from(*at) + i64.from(*(at + 1usize)) + i64.from(*(at + 2usize));
+}
+
+fn main() i32 {
+  mut instance = Instance.create("vfx view particles");
+  require(instance.isValid(), "a Vulkan 1.3 instance");
+  mut none = Surface.none();
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  if (env as usize) != 0usize {
+    if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  mut adapter = instance.requestAdapter(&none, preference);
+  require(adapter.isValid(), "an adapter");
+  mut device = adapter.requestDevice();
+  require(device.isValid(), "a device");
+
+  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  renderer.keepDepth = true;
+  mut particles = ParticleRenderer.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  require(renderer.isValid() and particles.isValid(), "the renderers");
+  mut view = RenderView.create(&mut renderer, &mut device, SIZE, SIZE);
+  require(view.isValid(), "a view");
+  mut readback = device.createBuffer(u64.from(SIZE * SIZE * 4u32), BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  imm p = readback.mappedRange();
+
+  imm cubeMesh = Mesh.cube(0.5);
+  imm cube = renderer.addMesh(&mut device, &cubeMesh);
+  imm grey = Material.plain(new Color(0.3, 0.3, 0.3, 1.));
+  imm greyM = renderer.addMaterial(&mut device, &grey);
+  mut list = DrawList.empty();
+  list.add(cube, greyM, Mat4.identity());
+  mut camera = Camera.make();
+  camera.lookAt(new Vec3(0., 0., 4.), new Vec3(0., 0., 0.), new Vec3(0., 1., 0.));
+  imm light = Light.directional(new Vec3(0., 0., -1.), Color.gray(1.5707963), new Color(0.2, 0.2, 0.2, 1.));
+
+  mut cloud = Emitter.make();
+  cloud.rate = 50.;
+  cloud.speed = 0.;
+  cloud.shape = SHAPE_SPHERE;
+  cloud.radius = 0.05;
+  cloud.sizeStart = 0.5;
+  cloud.sizeEnd = 0.5;
+  cloud.fadeOut = 0.;
+  cloud.colors = [new Color(1., 0.8, 0.6, 2.), new Color(1., 0.8, 0.6, 2.), new Color(1., 0.8, 0.6, 2.),
+    new Color(1., 0.8, 0.6, 2.)];
+  imm glow = particles.addEmitter(&mut device, STYLE_SPRITES);
+  imm hidden = particles.addEmitter(&mut device, STYLE_SPRITES);
+  imm glowAt = new Vec3(1.4, 0., 0.);
+  imm glowEvent = Event.at(1u32, 0d, Mat4.fromTranslation(glowAt));
+  imm hiddenEvent = Event.at(2u32, 0d, Mat4.fromTranslation(new Vec3(0., 0., -1.5)));
+  particles.update(&mut device, glow, &cloud, &glowEvent, 2d);
+  particles.update(&mut device, hidden, &cloud, &hiddenEvent, 2d);
+
+  imm viewProjection = camera.projectionMatrix(1.) * camera.viewMatrix();
+  mut gx = 0usize;
+  mut gy = 0usize;
+  pixelOf(viewProjection, glowAt, &mut gx, &mut gy);
+  mut cx = 0usize;
+  mut cy = 0usize;
+  pixelOf(viewProjection, new Vec3(0., 0., 0.5), &mut cx, &mut cy);
+
+  mut before Array[i64, 2] = [0i64, 0i64];
+  mut after Array[i64, 2] = [0i64, 0i64];
+  mut front Array[i64, 2] = [0i64, 0i64];
+  mut pass = 0;
+  while pass < 3 {
+    // 3. The hidden cloud moved in front of the cube: now it shows
+    if pass == 2 {
+      imm frontEvent = Event.at(2u32, 0d, Mat4.fromTranslation(new Vec3(0., 0., 1.5)));
+      particles.update(&mut device, hidden, &cloud, &frontEvent, 2d);
+    }
+    // The scene, in the view's own submission
+    require(view.render(&mut renderer, &mut device, &camera, &light, &list, 1u32), "the view drawn");
+    // The particles, into the picture 'texture' gives, in a submission after it
+    mut encoder = device.createCommandEncoder();
+    if pass >= 1 { particles.render(&mut device, &mut encoder, view.texture(&renderer), &view.depth, &camera); }
+    encoder.copyTextureToBuffer(view.texture(&renderer), &readback);
+    device.queue.submit(encoder.finish());
+    device.endFrame();
+    device.waitIdle();
+    mut got Array[i64, 2] = [luma(p, gx, gy), luma(p, cx, cy)];
+    if pass == 0 { before = got; } elif pass == 1 { after = got; } else { front = got; }
+    pass = pass + 1;
+  }
+  expect(before[0] < 10i64, "black where the glow will be");
+  expect(before[1] > 60i64, "the cube grey");
+  expect(after[0] > 300i64, "the glow bright, in the view's picture");
+  expectInt(after[1], before[1], "the cube's middle as before: the hidden cloud behind it fails the view's depth test");
+  expect(front[1] > before[1] + 60i64, "the cloud in front of the cube shows");
+  expectUInt(u64.from(particles.drawCalls), 2u64, "two draws");
+
+  view.release(&mut renderer, &mut device);
+  expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
+  expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
+  done();
+}
