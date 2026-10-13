@@ -256,14 +256,21 @@ pub struct MeshHandle {
 // past its threshold by the fraction 'hysteresis', and to a coarser one only
 // once it is short of its own threshold by that fraction, so an object
 // resting near a threshold does not flicker between two.
+//
+// A level may carry a MATERIAL of its own ('addWithMaterial', 'materials'): the
+// scene (visibility.cone) then draws the level with it instead of the item's.
+// A level that is not a lesser copy of the mesh but another kind of thing, an
+// octahedral impostor card (autolod), needs another shader. A level with no
+// material of its own holds MaterialHandle.none() and uses the item's.
 pub struct LodChain {
   pub levels List[MeshHandle];
   pub minSizes List[f32];
   pub hysteresis f32;
   pub current usize;
+  pub materials List[MaterialHandle];   // one a level, parallel to 'levels'; none: the item's
 
   pub fn empty(hysteresis f32) LodChain {
-    new LodChain(List[MeshHandle].empty(), List[f32].empty(), hysteresis, 0usize);
+    new LodChain(List[MeshHandle].empty(), List[f32].empty(), hysteresis, 0usize, List[MaterialHandle].empty());
   }
 
   // Add the next, coarser, level: drawn while the object is at least
@@ -272,6 +279,33 @@ pub struct LodChain {
   pub fn add(self &mut, mesh MeshHandle, minSize f32) {
     levels.push(mesh);
     minSizes.push(minSize);
+    materials.push(MaterialHandle.none());
+  }
+
+  // The same, the level drawn with 'material' instead of the item's (an
+  // impostor card's own, say)
+  pub fn addWithMaterial(self &mut, mesh MeshHandle, material MaterialHandle, minSize f32) {
+    levels.push(mesh);
+    minSizes.push(minSize);
+    materials.push(material);
+  }
+
+  // The material of level 'index': its own, or none (the item's)
+  pub fn materialOf(self &, index usize) MaterialHandle {
+    if index < materials.len() { return *materials[index]; }
+    MaterialHandle.none();
+  }
+
+  // The last level, from 'from' towards the finest, that has no material of
+  // its own: what a shadow pass draws when the level chosen has one (a card
+  // casts no shadow)
+  pub fn lastPlainLevel(self &, from usize) usize {
+    mut k = from;
+    if k >= levels.len() { k = levels.len() - 1usize; }
+    while k > 0usize and !self.materialOf(k).isNone() {
+      k = k - 1usize;
+    }
+    k;
   }
 
   pub fn len(self &) usize { levels.len(); }

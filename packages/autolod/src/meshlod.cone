@@ -1,0 +1,867 @@
+// ======== Mesh levels of detail: decimation by screen-space error ========
+//
+// 'buildLods' makes the coarser levels of a mesh. The method is the industry's
+// (Simplygon, Unreal's automatic LOD generation, Unity's LOD generator, Blender's
+// decimate): edge collapse by quadric error metrics (Garland and Heckbert, SIGGRAPH
+// 1997), here sculpt's 'decimateWith', run to an ERROR BUDGET rather than to a
+// triangle count, the budget set by how large the level will be seen.
+//
+// THE BUDGET. A level is used for projected sizes from its threshold up to the
+// threshold of the level before it (LodChain's meaning: 'minSizes'). Where it is
+// largest, at the finer neighbour's threshold S, one pixel is 2 R / S object-space
+// units (R the object's bounding radius, S its projected diameter in pixels), so
+// a level may move the surface by 'pixelError' pixels there, 'pixelError' x 2 R /
+// S units. Level k is therefore decimated from the original until the next
+// collapse would cost more than that, and its triangle count falls out of the
+// error, not the other way about: a flat part of a mesh loses most of its
+// triangles in the first level, a detailed part keeps its own. The error of a
+// collapse is quadric error metrics' own: the root of the mean squared distance of
+// the surface from the planes the vertex stands for, a root-mean-square, so the
+// largest distance on a smooth surface is about 1.6 times it; 'errorFactor' (0.6) takes
+// that off, so the measured largest distance ('LodLevel.measured') is near the pixel
+// budget. A thin part (a twig) can be moved further than its mean: it is a few
+// pixels wide and its move is its own width, not a hole in the silhouette.
+//
+// EVERY LEVEL IS MADE FROM THE ORIGINAL, not from the level before, so the error
+// does not add up down the chain.
+//
+// WHAT IS PRESERVED
+// - Silhouettes. An open edge (the rim of a leaf card, a sheet's border) carries a
+//   penalty plane in the quadric (sculpt's DecimateSharpWeight), so the rim holds
+//   its line; a closed surface's silhouette is its surface, held within the budget.
+// - UV seams and hard edges. Uvs, normals and colours are CORNER channels of the
+//   half-edge mesh, so an edge where any of them differs across it is a seam and a
+//   collapse never smears across it (decimate.cone: "a seam stays a seam"). A
+//   cube's hard edges are seams of the normal; a texture island's border is a seam
+//   of the uv. Where this stops a level saving anything (a house of boxes, every
+//   box edge a seam, a roof of separate tiles) the level is made again with the
+//   normals left out of the seams and RECOMPUTED after, by crease angle: a
+//   corner's normal is the area-weighted mean of the normals of the faces about its
+//   vertex that are within 'creaseDegrees' of its own face (Blender's auto smooth;
+//   the 3ds Max smoothing-angle rule), so sharp edges stay sharp and curved
+//   surfaces stay smooth. The uv seams are kept.
+// - Material groups: each triangle keeps its source's slot, and the result is
+//   sorted back into groups.
+// - What is not preserved: the triangles' order, vertex indices, and tangents
+//   (not carried; render computes none).
+//
+// WELDING. A mesh holds a vertex once for each different (uv, normal) it needs, but
+// decimation needs the surface in one piece. 'toPoly' welds vertices at the same
+// position (bit for bit) into one vertex of a half-edge mesh, the differing uvs and
+// normals kept on the corners. A triangle that would make the half-edge mesh
+// non-manifold (an edge shared the same way by two triangles: double-sided cards,
+// three faces on an edge) keeps vertices of its own instead, so it is simplified
+// as a loose piece, never dropped. A triangle with a repeated vertex or no area is
+// dropped (it draws nothing), and counted in 'LodSet.degenerate'.
+//
+// THINNING, for a part that is a scatter of small pieces (foliage, grass, rubble: set
+// 'thinPieces'). Edge collapse cannot simplify thousands of separate leaves; what
+// every foliage LOD does (SpeedTree's, Unreal's foliage reduction) is draw fewer,
+// larger leaves. The mesh is cut into its PIECES (connected triangles, by welded
+// vertex); a piece whose bounding radius is under 'pieceShare' of the object's is
+// SMALL; level k keeps a share 'thinKeep' ^ k of the small pieces, chosen by a hash of
+// the piece's number (so the pieces kept at level 2 are among those kept at level 1,
+// and nothing flickers between levels), each kept one scaled about its centre by
+// 1 / sqrt(share) so that the covered area, and the look of the crown, stays. The
+// large pieces (the trunk) are not thinned. The thinned mesh is then decimated as
+// any other. A part that is a regular pattern of small pieces (roof tiles) must not
+// be thinned: it is opt-in.
+
+// What the levels are made to
+pub struct LodSettings {
+  pub levels u32 = 3u32;            // mesh levels including level 0 (the impostor, if any, is one more)
+  pub firstSwitch f32 = 150.;       // level 0 is drawn at projected sizes of at least this many pixels
+  pub switchRatio f32 = 0.42;       // each threshold after is this share of the one before
+  pub pixelError f32 = 1.;          // the screen-space error a level may have where it is largest, in pixels
+  pub errorFactor f32 = 0.6;        // scales the quadric error budget (a root-mean-square: see above)
+  pub minShare f32 = 0.8;           // a level is kept only with at most this share of the one before's triangles
+  pub minTriangles u32 = 12u32;     // and never decimated below this many
+  pub hysteresis f32 = 0.15;        // the chain's
+  pub creaseDegrees f32 = 40.;      // the angle under which faces about a vertex share a normal, where normals are recomputed
+  pub recomputeNormals bool = true; // where seams stop a level saving anything, make it again with recomputed normals
+  pub thinKeep f32 = 0.5;           // a thinned part keeps this share of its small pieces at level 1, its square at level 2, ...
+  pub pieceShare f32 = 0.12;        // a piece is small when its bounding radius is under this share of the object's
+  pub measure bool = false;         // measure each level's true largest distance from level 0 (slow on big meshes)
+
+  // The projected size at which level k stops being drawn, as an object
+  pub fn switchSize(self &, k u32) f32 {
+    mut s = firstSwitch;
+    mut i = 0u32;
+    while i < k {
+      s = s * switchRatio;
+      i = i + 1u32;
+    }
+    s;
+  }
+}
+
+// One level of a mesh
+pub struct LodLevel {
+  pub mesh Mesh;
+  pub triangles u32;
+  pub minSize f32;           // the least projected size, in pixels, it is drawn at (LodChain's)
+  pub budget f32;            // the object-space error it was made to; 0 for level 0
+  pub error f32;             // the greatest quadric error of a collapse made; 0 for level 0
+  pub measured f32;          // the true largest distance from level 0, in object units; -1 if not measured
+  pub slot u32;              // the switch slot it was made for (level 0: 0)
+  pub recomputed bool;       // its normals were recomputed by crease angle (seams had stopped the edge collapse)
+  pub kept f32;              // the share of the small pieces it keeps (1: no thinning)
+}
+
+// The levels of one mesh
+pub struct LodSet {
+  pub levels List[LodLevel];
+  pub center Vec3;           // of the object's bounding sphere it was sized by
+  pub radius f32;
+  pub degenerate u32;        // source triangles dropped for having no area
+  pub refused u32;           // levels not kept for saving too little
+  pub pieces u32;            // the mesh's connected pieces (0 if not counted)
+  pub smallPieces u32;       // and the small ones
+}
+
+// ---- Welding ----
+
+const CH_UV = "uv";
+const CH_N = "n";
+const CH_C = "c";
+const CH_CA = "ca";
+const CH_SLOT = "slot";
+
+fn bitsOf(p Vec3) u32 {
+  noise.pcg(noise.pcg(noise.pcg(p.x as u32) ^ (p.y as u32)) ^ (p.z as u32));
+}
+
+fn samePoint(a Vec3, b Vec3) bool { a.x == b.x and a.y == b.y and a.z == b.z; }
+
+// A mesh's vertices at one point (bit for bit) made one
+struct Welded {
+  positions List[Vec3];            // the welded vertices
+  map List[u32];                   // per source vertex: its welded vertex
+}
+
+fn weldVertices(m &Mesh) Welded {
+  imm n = m.positions.len();
+  mut slots = 1usize;
+  while slots < 2usize * (n + 1usize) { slots = slots * 2usize; }
+  imm mask = u32.from(slots - 1usize);
+  mut head = List[u32].withCapacity(slots);
+  mut i = 0usize;
+  while i < slots {
+    head.push(NoIndex);
+    i = i + 1usize;
+  }
+  mut chain = List[u32].withCapacity(n);       // per welded vertex: the next in its slot
+  mut positions = List[Vec3].withCapacity(n);
+  mut map = List[u32].withCapacity(n);
+  i = 0usize;
+  while i < n {
+    imm p = *m.positions[i];
+    imm s = usize.from(bitsOf(p) & mask);
+    mut w = *head[s];
+    mut found = NoIndex;
+    while w != NoIndex and found == NoIndex {
+      if samePoint(*positions[usize.from(w)], p) { found = w; }
+      w = *chain[usize.from(w)];
+    }
+    if found == NoIndex {
+      found = u32.from(positions.len());
+      positions.push(p);
+      chain.push(*head[s]);
+      head.set(s, found);
+    }
+    map.push(found);
+    i = i + 1usize;
+  }
+  new Welded(positions, map);
+}
+
+// Triangle t's material slot, from the groups (0 if none)
+fn slotOfTriangle(m &Mesh, t usize) u32 {
+  imm first = u32.from(t * 3usize);
+  mut g = 0usize;
+  while g < m.groups.len() {
+    imm gr = *m.groups[g];
+    if first >= gr.start and first < gr.start + gr.count { return gr.material; }
+    g = g + 1usize;
+  }
+  0u32;
+}
+
+fn edgeKey(a u32, b u32) u64 { (u64.from(a) << 32u64) | u64.from(b); }
+
+// ---- Pieces ----
+
+// A mesh's connected pieces: triangles that share a welded vertex are one piece
+struct Pieces {
+  triPiece List[u32];             // per source triangle: its piece, numbered in order of first appearance
+  count usize;
+  center List[Vec3];              // per piece: the mean of its welded vertices
+  radius List[f32];               // per piece: the farthest of its vertices from that
+}
+
+fn rootOf(parent &mut List[u32], v u32) u32 {
+  mut r = v;
+  while *parent[usize.from(r)] != r { r = *parent[usize.from(r)]; }
+  mut x = v;
+  while *parent[usize.from(x)] != r {
+    imm next = *parent[usize.from(x)];
+    parent.set(usize.from(x), r);
+    x = next;
+  }
+  r;
+}
+
+fn unite(parent &mut List[u32], x u32, y u32) {
+  imm rx = rootOf(parent, x);
+  imm ry = rootOf(parent, y);
+  if rx != ry {
+    if rx < ry { parent.set(usize.from(ry), rx); } else { parent.set(usize.from(rx), ry); }
+  }
+}
+
+fn findPieces(m &Mesh, w &Welded) Pieces {
+  imm nw = w.positions.len();
+  mut parent = List[u32].withCapacity(nw);
+  mut i = 0usize;
+  while i < nw {
+    parent.push(u32.from(i));
+    i = i + 1usize;
+  }
+  imm tris = m.indices.len() / 3usize;
+  mut t = 0usize;
+  while t < tris {
+    imm a = *w.map[usize.from(*m.indices[t * 3usize])];
+    imm b = *w.map[usize.from(*m.indices[t * 3usize + 1usize])];
+    imm c = *w.map[usize.from(*m.indices[t * 3usize + 2usize])];
+    unite(&mut parent, a, b);
+    unite(&mut parent, a, c);
+    t = t + 1usize;
+  }
+  // piece numbers, in order of first appearance among the triangles
+  mut number = List[u32].withCapacity(nw);
+  i = 0usize;
+  while i < nw {
+    number.push(NoIndex);
+    i = i + 1usize;
+  }
+  mut triPiece = List[u32].withCapacity(tris);
+  mut count = 0usize;
+  t = 0usize;
+  while t < tris {
+    imm r = rootOf(&mut parent, *w.map[usize.from(*m.indices[t * 3usize])]);
+    if *number[usize.from(r)] == NoIndex {
+      number.set(usize.from(r), u32.from(count));
+      count = count + 1usize;
+    }
+    triPiece.push(*number[usize.from(r)]);
+    t = t + 1usize;
+  }
+  // each piece's centre (mean of its distinct welded vertices) and radius
+  mut sum = List[Vec3].withCapacity(count);
+  mut members = List[u32].withCapacity(count);
+  i = 0usize;
+  while i < count {
+    sum.push(new Vec3(0., 0., 0.));
+    members.push(0u32);
+    i = i + 1usize;
+  }
+  mut seen = List[u8].withCapacity(nw);
+  i = 0usize;
+  while i < nw {
+    seen.push(0u8);
+    i = i + 1usize;
+  }
+  t = 0usize;
+  while t < tris {
+    imm piece = usize.from(*triPiece[t]);
+    mut k = 0usize;
+    while k < 3usize {
+      imm v = usize.from(*w.map[usize.from(*m.indices[t * 3usize + k])]);
+      if *seen[v] == 0u8 {
+        seen.set(v, 1u8);
+        sum.set(piece, *sum[piece] + *w.positions[v]);
+        members.set(piece, *members[piece] + 1u32);
+      }
+      k = k + 1usize;
+    }
+    t = t + 1usize;
+  }
+  mut center = List[Vec3].withCapacity(count);
+  i = 0usize;
+  while i < count {
+    center.push(*sum[i] * (1. / f32.from(if *members[i] > 0u32 { *members[i]; } else { 1u32; })));
+    i = i + 1usize;
+  }
+  mut radius2 = List[f32].withCapacity(count);
+  i = 0usize;
+  while i < count {
+    radius2.push(0.);
+    i = i + 1usize;
+  }
+  t = 0usize;
+  while t < tris {
+    imm piece = usize.from(*triPiece[t]);
+    mut k = 0usize;
+    while k < 3usize {
+      imm d = (*m.positions[usize.from(*m.indices[t * 3usize + k])]).distanceSquared(*center[piece]);
+      if d > *radius2[piece] { radius2.set(piece, d); }
+      k = k + 1usize;
+    }
+    t = t + 1usize;
+  }
+  mut radius = List[f32].withCapacity(count);
+  i = 0usize;
+  while i < count {
+    radius.push((*radius2[i]).sqrt());
+    i = i + 1usize;
+  }
+  new Pieces(triPiece, count, center, radius);
+}
+
+// The mesh with its small pieces thinned: of the pieces whose radius is under 'small', those whose
+// hash falls under 'keep' are kept and scaled about their centres by 1 / sqrt(keep); the rest go
+fn thinned(m &Mesh, pieces &Pieces, small f32, keep f32) Mesh {
+  imm scale = 1. / keep.sqrt();
+  mut out = Mesh.empty();
+  imm n = m.positions.len();
+  mut newIndex = List[u32].withCapacity(n);
+  mut i = 0usize;
+  while i < n {
+    newIndex.push(NoIndex);
+    i = i + 1usize;
+  }
+  imm hasUv = m.uvs.len() == n;
+  imm hasNormals = m.normals.len() == n;
+  imm hasColor = m.colors.len() == n;
+  imm tris = m.indices.len() / 3usize;
+  // The triangles in order, and, if there are groups, grouped: one pass over each group's range (or all)
+  imm passes = if m.groups.len() > 0usize { m.groups.len(); } else { 1usize; };
+  mut g = 0usize;
+  while g < passes {
+    imm first = if m.groups.len() > 0usize { usize.from(m.groups[g].start) / 3usize; } else { 0usize; };
+    imm last = if m.groups.len() > 0usize { (usize.from(m.groups[g].start) + usize.from(m.groups[g].count)) / 3usize; } else { tris; };
+    imm start = u32.from(out.indices.len());
+    mut t = first;
+    while t < last and t < tris {
+      imm piece = usize.from(*pieces.triPiece[t]);
+      imm isSmall = *pieces.radius[piece] <= small;
+      imm rank = noise.toUnit(noise.pcg(u32.from(piece) ^ 0x68E31DA4u32));
+      if !isSmall or rank < keep {
+        mut k = 0usize;
+        while k < 3usize {
+          imm v = usize.from(*m.indices[t * 3usize + k]);
+          if *newIndex[v] == NoIndex {
+            newIndex.set(v, u32.from(out.positions.len()));
+            imm p = *m.positions[v];
+            if isSmall {
+              imm c = *pieces.center[piece];
+              out.positions.push(c + (p - c) * scale);
+            } else {
+              out.positions.push(p);
+            }
+            if hasNormals { out.normals.push(*m.normals[v]); }
+            if hasUv { out.uvs.push(*m.uvs[v]); }
+            if hasColor { out.colors.push(*m.colors[v]); }
+          }
+          out.indices.push(*newIndex[v]);
+          k = k + 1usize;
+        }
+      }
+      t = t + 1usize;
+    }
+    if m.groups.len() > 0usize {
+      imm count = u32.from(out.indices.len()) - start;
+      if count > 0u32 { out.addGroup(start, count, m.groups[g].material); }
+    }
+    g = g + 1usize;
+  }
+  // a vertex used by two pieces of different fate would be shared; the pieces share none (they are
+  // connected components), so each vertex is one piece's
+  out;
+}
+
+// ---- Mesh to half-edge mesh ----
+
+// A mesh as a half-edge mesh of triangles, with its uvs, normals and colours as
+// corner channels and its material slot as a face channel, and what is needed to
+// read them back
+struct PolyIn {
+  poly PolyMesh;
+  hasUv bool;
+  hasColor bool;
+  hasSlots bool;
+  hasNormals bool;               // the source normals are corner channel "n" (seams); else they are recomputed
+  degenerate u32;
+}
+
+// 'withNormals': the mesh's normals (or smooth ones made from its triangles, if it has none) become
+// a corner channel and so seams; without, no normals are carried
+fn toPoly(m &Mesh, withNormals bool) PolyIn {
+  imm n = m.positions.len();
+  imm tris = m.indices.len() / 3usize;
+  mut shaded = Mesh.empty();
+  imm needNormals = withNormals and m.normals.len() != n;
+  if needNormals {
+    shaded.append(m);
+    shaded.computeSmoothNormals();
+  }
+  imm normals = if needNormals { &shaded.normals; } else { &m.normals; };
+  imm hasUv = m.uvs.len() == n;
+  imm hasColor = m.colors.len() == n;
+  imm hasSlots = m.groups.len() > 0usize;
+  imm welded = weldVertices(m);
+  mut positions = List[Vec3].withCapacity(welded.positions.len() + 1usize);
+  mut wp = 0usize;
+  while wp < welded.positions.len() {
+    positions.push(*welded.positions[wp]);
+    wp = wp + 1usize;
+  }
+  imm weld = &welded.map;
+
+  // The triangles: those that make a sound half-edge mesh keep their welded
+  // vertices, the others (an edge already run the same way) get vertices of their own
+  mut directed = Set[u64].withCapacity(tris * 3usize + 1usize);
+  mut counts = List[u32].withCapacity(tris);
+  mut indices = List[u32].withCapacity(tris * 3usize);
+  mut kept = List[u32].withCapacity(tris);       // per face: its source triangle
+  mut degenerate = 0u32;
+  mut t = 0usize;
+  while t < tris {
+    imm ia = *m.indices[t * 3usize];
+    imm ib = *m.indices[t * 3usize + 1usize];
+    imm ic = *m.indices[t * 3usize + 2usize];
+    imm a = *weld[usize.from(ia)];
+    imm b = *weld[usize.from(ib)];
+    imm c = *weld[usize.from(ic)];
+    imm pa = *m.positions[usize.from(ia)];
+    imm pb = *m.positions[usize.from(ib)];
+    imm pc = *m.positions[usize.from(ic)];
+    if a == b or b == c or a == c or (pb - pa).cross(pc - pa).lengthSquared() <= 0. {
+      degenerate = degenerate + 1u32;
+    } else {
+      mut va = a;
+      mut vb = b;
+      mut vc = c;
+      imm fits = !directed.contains(&edgeKey(a, b)) and !directed.contains(&edgeKey(b, c))
+        and !directed.contains(&edgeKey(c, a));
+      if !fits {
+        va = u32.from(positions.len());
+        positions.push(pa);
+        vb = va + 1u32;
+        positions.push(pb);
+        vc = va + 2u32;
+        positions.push(pc);
+      }
+      directed.insert(edgeKey(va, vb));
+      directed.insert(edgeKey(vb, vc));
+      directed.insert(edgeKey(vc, va));
+      counts.push(3u32);
+      indices.push(va);
+      indices.push(vb);
+      indices.push(vc);
+      kept.push(u32.from(t));
+    }
+    t = t + 1usize;
+  }
+  mut problems = List[String].empty();
+  mut poly = PolyMesh.fromPolygons(positions.view(), counts.view(), indices.view(), &mut problems);
+
+  // The channels: set from the source triangles' corners
+  mut nCh = NoIndex;
+  if withNormals { nCh = poly.addVec3Channel(CornerDomain, CH_N, new Vec3(0., 0., 1.)); }
+  mut uvCh = NoIndex;
+  if hasUv { uvCh = poly.addVec2Channel(CornerDomain, CH_UV, new Vec2(0., 0.)); }
+  mut cCh = NoIndex;
+  mut caCh = NoIndex;
+  if hasColor {
+    cCh = poly.addVec3Channel(CornerDomain, CH_C, new Vec3(1., 1., 1.));
+    caCh = poly.addFloatChannel(CornerDomain, CH_CA, 1.);
+  }
+  mut slotCh = NoIndex;
+  if hasSlots { slotCh = poly.addFloatChannel(FaceDomain, CH_SLOT, 0.); }
+  mut f = 0usize;
+  while f < kept.len() and f < poly.faceCount() {
+    imm src = usize.from(*kept[f]);
+    imm hs = poly.faceHalfedges(u32.from(f));
+    mut c = 0usize;
+    while c < hs.len() and c < 3usize {
+      imm vi = usize.from(*m.indices[src * 3usize + c]);
+      if withNormals { poly.setVec3(nCh, *hs[c], *normals[vi]); }
+      if hasUv { poly.setVec2(uvCh, *hs[c], *m.uvs[vi]); }
+      if hasColor {
+        imm col = *m.colors[vi];
+        poly.setVec3(cCh, *hs[c], new Vec3(col.red, col.green, col.blue));
+        poly.setFloat(caCh, *hs[c], col.alpha);
+      }
+      c = c + 1usize;
+    }
+    if hasSlots { poly.setFloat(slotCh, u32.from(f), f32.from(slotOfTriangle(m, src))); }
+    f = f + 1usize;
+  }
+  new PolyIn(poly, hasUv, hasColor, hasSlots, withNormals, degenerate);
+}
+
+// ---- Half-edge mesh to mesh ----
+
+// The area-weighted normal of face f (a triangle) of 'p', and its area
+fn faceNormalArea(p &PolyMesh, f u32, area &mut f32) Vec3 {
+  imm pts = p.facePositions(f);
+  if pts.len() < 3usize {
+    *area = 0.;
+    return new Vec3(0., 1., 0.);
+  }
+  imm cr = (*pts[1usize] - *pts[0usize]).cross(*pts[2usize] - *pts[0usize]);
+  imm l = cr.length();
+  *area = l * 0.5;
+  if l > 0.0000001 { cr * (1. / l); } else { new Vec3(0., 1., 0.); };
+}
+
+// The triangles of 'p', each corner its own vertex only where its (uv, normal,
+// colour) differ from another corner's at the same welded vertex. With no normal
+// channel (the source normals were left out of the seams), a corner's normal is made
+// by crease angle: the area-weighted mean of the normals of the faces about its vertex
+// within 'creaseCos' (a cosine) of its own face's.
+fn fromPoly(p &PolyMesh, hasUv bool, hasColor bool, hasSlots bool, hasNormals bool, creaseCos f32) Mesh {
+  imm nCh = p.findVec3Channel(CornerDomain, CH_N);
+  imm uvCh = p.findVec2Channel(CornerDomain, CH_UV);
+  imm cCh = p.findVec3Channel(CornerDomain, CH_C);
+  imm caCh = p.findFloatChannel(CornerDomain, CH_CA);
+  imm slotCh = p.findFloatChannel(FaceDomain, CH_SLOT);
+  mut out = Mesh.empty();
+  imm nv = p.vertexCount();
+  imm nf = p.faceCount();
+  // For crease normals: each face's normal and area, and the faces of each welded vertex chained
+  mut fnormal = List[Vec3].empty();
+  mut farea = List[f32].empty();
+  mut faceHead = List[u32].empty();
+  mut faceNext = List[u32].empty();      // per (face, corner) entry: the next face of the same vertex
+  mut faceOf = List[u32].empty();        // per entry: its face
+  if !hasNormals {
+    mut v0 = 0usize;
+    while v0 < nv {
+      faceHead.push(NoIndex);
+      v0 = v0 + 1usize;
+    }
+    mut f0 = 0usize;
+    while f0 < nf {
+      mut area = 0.;
+      fnormal.push(faceNormalArea(p, u32.from(f0), &mut area));
+      farea.push(area);
+      imm vs = p.faceVertices(u32.from(f0));
+      mut c0 = 0usize;
+      while c0 < vs.len() {
+        imm entry = u32.from(faceOf.len());
+        faceOf.push(u32.from(f0));
+        faceNext.push(*faceHead[usize.from(*vs[c0])]);
+        faceHead.set(usize.from(*vs[c0]), entry);
+        c0 = c0 + 1usize;
+      }
+      f0 = f0 + 1usize;
+    }
+  }
+  mut first = List[u32].withCapacity(nv);        // per welded vertex: its first output vertex
+  mut next = List[u32].empty();                  // per output vertex: the next of the same welded vertex
+  mut v = 0usize;
+  while v < nv {
+    first.push(NoIndex);
+    v = v + 1usize;
+  }
+  mut tris = List[u32].empty();                  // the corners of every triangle, as output vertices
+  mut slots = List[u32].empty();                 // per triangle: its material slot
+  mut maxSlot = 0u32;
+  mut f = 0usize;
+  while f < nf {
+    imm hs = p.faceHalfedges(u32.from(f));
+    mut made = List[u32].empty();
+    mut c = 0usize;
+    while c < hs.len() {
+      imm h = *hs[c];
+      imm wv = usize.from(p.toVertex(h));
+      imm pos = *p.positions[wv];
+      imm uv = if hasUv { p.vec2(uvCh, h); } else { new Vec2(0., 0.); };
+      mut nrm = new Vec3(0., 1., 0.);
+      if hasNormals {
+        nrm = p.vec3(nCh, h);
+      } else {
+        // crease normal
+        mut sum = new Vec3(0., 0., 0.);
+        mut e = *faceHead[wv];
+        while e != NoIndex {
+          imm g = usize.from(*faceOf[usize.from(e)]);
+          if (*fnormal[g]).dot(*fnormal[f]) >= creaseCos { sum = sum + *fnormal[g] * *farea[g]; }
+          e = *faceNext[usize.from(e)];
+        }
+        nrm = sum;
+      }
+      imm nl = nrm.length();
+      nrm = if nl > 0.000001 { nrm * (1. / nl); } else { new Vec3(0., 1., 0.); };
+      imm col = if hasColor {
+        new Color(p.vec3(cCh, h).x, p.vec3(cCh, h).y, p.vec3(cCh, h).z, p.float(caCh, h));
+      } else { new Color(1., 1., 1., 1.); };
+      mut o = *first[wv];
+      mut found = NoIndex;
+      while o != NoIndex and found == NoIndex {
+        imm k = usize.from(o);
+        imm sameUv = !hasUv or (out.uvs[k].x == uv.x and out.uvs[k].y == uv.y);
+        imm sameN = out.normals[k].x == nrm.x and out.normals[k].y == nrm.y and out.normals[k].z == nrm.z;
+        imm sameC = !hasColor or (out.colors[k].red == col.red and out.colors[k].green == col.green
+          and out.colors[k].blue == col.blue and out.colors[k].alpha == col.alpha);
+        if sameUv and sameN and sameC { found = o; }
+        o = *next[k];
+      }
+      if found == NoIndex {
+        found = u32.from(out.positions.len());
+        out.positions.push(pos);
+        out.normals.push(nrm);
+        if hasUv { out.uvs.push(uv); }
+        if hasColor { out.colors.push(col); }
+        next.push(*first[wv]);
+        first.set(wv, found);
+      }
+      made.push(found);
+      c = c + 1usize;
+    }
+    // A face of more than three corners (a decimated mesh has none) is fanned
+    mut slot = 0u32;
+    if hasSlots { slot = u32.from(p.float(slotCh, u32.from(f)) + 0.5); }
+    if slot > maxSlot { maxSlot = slot; }
+    mut k = 1usize;
+    while k + 1usize < made.len() {
+      tris.push(*made[0usize]);
+      tris.push(*made[k]);
+      tris.push(*made[k + 1usize]);
+      slots.push(slot);
+      k = k + 1usize;
+    }
+    f = f + 1usize;
+  }
+  // Triangles in slot order, the slots as groups
+  if hasSlots {
+    mut s = 0u32;
+    while s <= maxSlot {
+      imm start = u32.from(out.indices.len());
+      mut t = 0usize;
+      while t < slots.len() {
+        if *slots[t] == s {
+          out.indices.push(*tris[t * 3usize]);
+          out.indices.push(*tris[t * 3usize + 1usize]);
+          out.indices.push(*tris[t * 3usize + 2usize]);
+        }
+        t = t + 1usize;
+      }
+      imm count = u32.from(out.indices.len()) - start;
+      if count > 0u32 { out.addGroup(start, count, s); }
+      s = s + 1u32;
+    }
+  } else {
+    mut t = 0usize;
+    while t < tris.len() {
+      out.indices.push(*tris[t]);
+      t = t + 1usize;
+    }
+  }
+  out;
+}
+
+// ---- The levels ----
+
+// The bounding sphere of a mesh: the middle of its box, the farthest vertex from it
+pub fn boundingSphereOf(m &Mesh, center &mut Vec3, radius &mut f32) {
+  if m.positions.len() == 0usize {
+    *center = new Vec3(0., 0., 0.);
+    *radius = 0.;
+    return;
+  }
+  imm box = m.bounds();
+  imm c = box.center();
+  mut r2 = 0.;
+  mut i = 0usize;
+  while i < m.positions.len() {
+    imm d = (*m.positions[i]).distanceSquared(c);
+    if d > r2 { r2 = d; }
+    i = i + 1usize;
+  }
+  *center = c;
+  *radius = r2.sqrt();
+}
+
+// One decimation of 'input' to 'budget': the mesh and the greatest collapse error
+struct Decimation {
+  mesh Mesh;
+  error f32;
+}
+
+fn decimateInput(input &PolyIn, floorFaces u32, budget f32, creaseCos f32) Decimation {
+  imm d = sculpt.decimateWith(&input.poly, floorFaces, budget, sculpt.DecimateSymmetryNone, "");
+  new Decimation(fromPoly(&d.mesh, input.hasUv, input.hasColor, input.hasSlots, input.hasNormals, creaseCos), d.error);
+}
+
+// The levels of 'source'. 'objectRadius' is the radius of the whole object it is
+// a part of (a part of a tree is sized by the tree: pass the same for each part),
+// and 'partRadius' this mesh's own, which the chain is measured by (the scene
+// sizes each item by its own bounding sphere): the thresholds are scaled by their
+// ratio. Pass 0 for either to use the mesh's own bounding sphere for both.
+// 'thinPieces': the mesh is a scatter of small pieces (see THINNING above).
+pub fn buildLods(source &Mesh, settings &LodSettings, objectRadius f32, partRadius f32, thinPieces bool) LodSet {
+  mut center = new Vec3(0., 0., 0.);
+  mut ownRadius = 0.;
+  boundingSphereOf(source, &mut center, &mut ownRadius);
+  imm rObject = if objectRadius > 0. { objectRadius; } else { ownRadius; };
+  imm rPart = if partRadius > 0. { partRadius; } else { ownRadius; };
+  imm scale = if rObject > 0. { rPart / rObject; } else { 1.; };
+  imm creaseCos = (settings.creaseDegrees * 0.017453292).cos();
+  mut set = new LodSet(List[LodLevel].empty(), center, ownRadius, 0u32, 0u32, 0u32, 0u32);
+
+  // Level 0 is the source as it is
+  mut level0 = Mesh.empty();
+  level0.append(source);
+  set.levels.push(new LodLevel(level0, u32.from(source.triangleCount()), 0., 0., 0., 0., 0u32, false, 1.));
+  imm input = toPoly(source, true);
+  set.degenerate = input.degenerate;
+
+  // Pieces, if this part is to be thinned: only when there are enough small ones to matter
+  mut pieces = new Pieces(List[u32].empty(), 0usize, List[Vec3].empty(), List[f32].empty());
+  mut doThin = false;
+  imm smallRadius = settings.pieceShare * rObject;
+  if thinPieces {
+    imm welded = weldVertices(source);
+    pieces = findPieces(source, &welded);
+    set.pieces = u32.from(pieces.count);
+    mut s = 0usize;
+    while s < pieces.count {
+      if *pieces.radius[s] <= smallRadius { set.smallPieces = set.smallPieces + 1u32; }
+      s = s + 1usize;
+    }
+    doThin = set.smallPieces >= 8u32;
+  }
+
+  mut k = 1u32;
+  while k < settings.levels {
+    // Its budget: where it is largest, just under the finer level's threshold
+    imm budget = settings.pixelError * settings.errorFactor * 2. * rObject / settings.switchSize(k - 1u32);
+    imm lastTriangles = set.levels[set.levels.len() - 1usize].triangles;
+    imm floorFaces = if settings.minTriangles > 1u32 { settings.minTriangles; } else { 1u32; };
+    // The source of this level: thinned if asked, else the source itself
+    mut keep = 1.;
+    mut thinnedMesh = Mesh.empty();
+    if doThin {
+      mut i = 0u32;
+      while i < k { keep = keep * settings.thinKeep; i = i + 1u32; }
+      thinnedMesh = thinned(source, &pieces, smallRadius, keep);
+    }
+    imm levelInput = if doThin { toPoly(&thinnedMesh, true); } else { toPoly(source, true); };
+    mut best = decimateInput(&levelInput, floorFaces, budget, creaseCos);
+    mut recomputed = false;
+    // Seams that stop it saving anything: again with the normals out of the seams, recomputed by crease angle
+    if settings.recomputeNormals and f32.from(best.mesh.triangleCount()) > f32.from(lastTriangles) * settings.minShare {
+      imm plain = if doThin { toPoly(&thinnedMesh, false); } else { toPoly(source, false); };
+      mut second = decimateInput(&plain, floorFaces, budget, creaseCos);
+      if second.mesh.triangleCount() < best.mesh.triangleCount() {
+        best = second;
+        recomputed = true;
+      }
+    }
+    imm bestError = best.error;
+    mut levelMesh = Mesh.empty();
+    levelMesh <=> best.mesh;
+    imm tris = u32.from(levelMesh.triangleCount());
+    if f32.from(tris) <= f32.from(lastTriangles) * settings.minShare and tris >= 1u32 {
+      mut measured = -1.;
+      if settings.measure {
+        // both ways: the level's surface from the original's, and the original's from the level's
+        imm toOriginal = meshDistance(&levelMesh, &set.levels[0usize].mesh, 600usize);
+        imm fromOriginal = meshDistance(&set.levels[0usize].mesh, &levelMesh, 600usize);
+        measured = if toOriginal > fromOriginal { toOriginal; } else { fromOriginal; };
+      }
+      set.levels.push(new LodLevel(levelMesh, tris, 0., budget, bestError, measured, k, recomputed, keep));
+    } else {
+      set.refused = set.refused + 1u32;
+    }
+    k = k + 1u32;
+  }
+  // The thresholds. A level made for slot s is valid only below the size where the
+  // slot before it ends, so the level before it (in the chain) is drawn on down to
+  // that size; the last is drawn down to where the last slot asked for ends.
+  mut i = 0usize;
+  while i < set.levels.len() {
+    mut s = settings.switchSize(settings.levels - 1u32);
+    if i + 1usize < set.levels.len() {
+      s = settings.switchSize(set.levels[i + 1usize].slot - 1u32);
+    }
+    set.levels[i].minSize = s * scale;
+    i = i + 1usize;
+  }
+  set;
+}
+
+// ---- Measuring ----
+
+// The closest point on the triangle (a, b, c) to p (Ericson, "Real-Time Collision
+// Detection", 5.1.5)
+pub fn closestOnTriangle(p Vec3, a Vec3, b Vec3, c Vec3) Vec3 {
+  imm ab = b - a;
+  imm ac = c - a;
+  imm ap = p - a;
+  imm d1 = ab.dot(ap);
+  imm d2 = ac.dot(ap);
+  if d1 <= 0. and d2 <= 0. { return a; }
+  imm bp = p - b;
+  imm d3 = ab.dot(bp);
+  imm d4 = ac.dot(bp);
+  if d3 >= 0. and d4 <= d3 { return b; }
+  imm vc = d1 * d4 - d3 * d2;
+  if vc <= 0. and d1 >= 0. and d3 <= 0. { return a + ab * (d1 / (d1 - d3)); }
+  imm cp = p - c;
+  imm d5 = ab.dot(cp);
+  imm d6 = ac.dot(cp);
+  if d6 >= 0. and d5 <= d6 { return c; }
+  imm vb = d5 * d2 - d1 * d6;
+  if vb <= 0. and d2 >= 0. and d6 <= 0. { return a + ac * (d2 / (d2 - d6)); }
+  imm va = d3 * d6 - d5 * d4;
+  if va <= 0. and (d4 - d3) >= 0. and (d5 - d6) >= 0. {
+    return b + (c - b) * ((d4 - d3) / ((d4 - d3) + (d5 - d6)));
+  }
+  imm denom = 1. / (va + vb + vc);
+  a + ab * (vb * denom) + ac * (vc * denom);
+}
+
+// How far the surface of 'from' lies from the surface of 'to' at most: the
+// greatest distance of a sample of 'from' (its vertices and the middles of its
+// triangles) from the nearest point of 'to''s triangles. At most 'maxSamples'
+// samples, evenly spread (0: all). The Hausdorff distance, sampled, one way;
+// for a level against level 0 the other way ('to' the finer) is the one that
+// shows the detail the level lost.
+pub fn meshDistance(from &Mesh, to &Mesh, maxSamples usize) f32 {
+  imm nv = from.positions.len();
+  imm nt = from.indices.len() / 3usize;
+  imm total = nv + nt;
+  mut stride = 1usize;
+  if maxSamples > 0usize and total > maxSamples { stride = (total + maxSamples - 1usize) / maxSamples; }
+  imm targets = to.indices.len() / 3usize;
+  if targets == 0usize { return 0.; }
+  mut worst = 0.;
+  mut s = 0usize;
+  while s < total {
+    mut p = new Vec3(0., 0., 0.);
+    if s < nv {
+      p = *from.positions[s];
+    } else {
+      imm t = s - nv;
+      p = (*from.positions[usize.from(*from.indices[t * 3usize])] + *from.positions[usize.from(*from.indices[t * 3usize + 1usize])]
+        + *from.positions[usize.from(*from.indices[t * 3usize + 2usize])]) * (1. / 3.);
+    }
+    mut best = 3.4028235e38;
+    mut t = 0usize;
+    while t < targets {
+      imm a = *to.positions[usize.from(*to.indices[t * 3usize])];
+      imm b = *to.positions[usize.from(*to.indices[t * 3usize + 1usize])];
+      imm c = *to.positions[usize.from(*to.indices[t * 3usize + 2usize])];
+      imm d = p.distanceSquared(closestOnTriangle(p, a, b, c));
+      if d < best { best = d; }
+      t = t + 1usize;
+    }
+    if best > worst { worst = best; }
+    s = s + stride;
+  }
+  worst.sqrt();
+}

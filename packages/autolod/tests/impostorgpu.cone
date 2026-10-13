@@ -1,0 +1,245 @@
+// The autolod package's impostor on a real GPU with no window, with validation on.
+// An asymmetric test subject (a textured sphere with a cube on one side and a post on
+// top; one material) is baked into an octahedral impostor, and the impostor card is
+// drawn from several directions beside the subject itself, the same camera and the
+// same light, into 160 x 160 sRGB targets that are read back and compared:
+//
+// - the covered pixels (anything that is not the background) must overlap: the
+//   intersection over the union of the two silhouettes at least MIN_IOU;
+// - the mean absolute difference of the colour over the pixels both cover, in 0..255, at most
+//   MAX_DIFF at a frame's own direction and MAX_DIFF_BLEND between frames.
+//
+// The directions: a frame's own (3, 4) of the 8-by-8 hemispherical grid; a direction
+// between frames; one near the horizon; one nearly straight above; the same with the
+// subject turned 40 degrees about y, scaled 1.7 and moved (the card works in the
+// object's space). It then checks the numbers of the bake itself: the atlas is 8 x
+// 128 square, the coverage of the frame looking at the subject from above is the
+// disc and cube seen from above, no coverage outside the padded sphere's square.
+// Pass the environment variable AUTOLOD_SHOTS=<folder> to save the pictures as .bmp.
+//
+// It needs a GPU driver with Vulkan 1.3 and SDL3.dll. Only a failure prints.
+
+mod impostorgpu;
+
+import testing use *;
+import stdio use *;
+import libc;
+import geomath use *;
+import collections use *;
+import mesh use Mesh;
+import gpu use *;
+import render use *;
+import autolod use *;
+import path as filepath;
+
+const SIZE = 160u32;
+const MIN_IOU = 0.93;
+const MAX_DIFF = 10.;
+const MAX_DIFF_BLEND = 22.;
+
+fn subject() Mesh {
+  mut m = Mesh.sphere(1., 28);
+  mut cube = Mesh.cube(0.9);
+  cube.transform(Mat4.fromTranslation(new Vec3(0.75, 0.1, 0.2)));
+  m.append(&cube);
+  mut post = Mesh.cube(0.2);
+  post.transform(Mat4.fromTrs(new Vec3(-0.1, 1.15, -0.2), Quat.identity(), new Vec3(1., 2.2, 1.)));
+  m.append(&post);
+  m.transform(Mat4.fromTranslation(new Vec3(0., 1.4, 0.)));
+  m;
+}
+
+struct Rig {
+  color Texture;
+  depth Texture;
+  readback Buffer;
+}
+
+fn shoot(device &mut Device, renderer &mut Renderer, rig &Rig, camera &Camera, light &Light, list &DrawList) Image {
+  mut encoder = device.createCommandEncoder();
+  renderer.render(device, &mut encoder, &rig.color, &rig.depth, camera, light, list);
+  encoder.copyTextureToBuffer(&rig.color, &rig.readback);
+  device.queue.submit(encoder.finish());
+  device.endFrame();
+  device.waitIdle();
+  Image.fromTexels(rig.readback.mappedRange(), i32.from(SIZE), i32.from(SIZE), false);
+}
+
+// Is the pixel not the background (0.2, 0.4, 0.6 linear: sRGB 124, 170, 203)?
+fn iabs(v i32) i32 { if v < 0 { -v; } else { v; }; }
+
+fn covered(img &Image, x i32, y i32) bool {
+  iabs(i32.from(img.at(x, y, 0)) - 124) + iabs(i32.from(img.at(x, y, 1)) - 170) + iabs(i32.from(img.at(x, y, 2)) - 203) > 6;
+}
+
+struct Compare {
+  iou f32;
+  diff f32;
+}
+
+fn compare(a &Image, b &Image) Compare {
+  mut both = 0i32;
+  mut either = 0i32;
+  mut sum = 0.;
+  mut y = 0;
+  while y < i32.from(SIZE) {
+    mut x = 0;
+    while x < i32.from(SIZE) {
+      imm ca = covered(a, x, y);
+      imm cb = covered(b, x, y);
+      if ca or cb { either = either + 1; }
+      if ca and cb {
+        both = both + 1;
+        mut c = 0;
+        while c < 3 {
+          sum = sum + f32.from(iabs(i32.from(a.at(x, y, c)) - i32.from(b.at(x, y, c))));
+          c = c + 1;
+        }
+      }
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  new Compare(if either > 0 { f32.from(both) / f32.from(either); } else { 0.; }, if both > 0 { sum / f32.from(both * 3); } else { 0.; });
+}
+
+fn save(name &str, img &Image) {
+  imm folder = libc.getenv("AUTOLOD_SHOTS");
+  if (folder as usize) == 0usize { return; }
+  mut path = String.empty();
+  mut k = 0usize;
+  while *(folder + k) != 0u8 {
+    path.appendByte(*(folder + k));
+    k = k + 1usize;
+  }
+  path <- "/";
+  path <- name;
+  path <- ".bmp";
+  img.save(&filepath.Path.from(path.view()));
+}
+
+fn main() i32 {
+  mut instance = Instance.create("autolod impostor");
+  require(instance.isValid(), "a Vulkan 1.3 instance");
+  mut none = Surface.none();
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  if (env as usize) != 0usize {
+    if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  mut adapter = instance.requestAdapter(&none, preference);
+  require(adapter.isValid(), "an adapter");
+  mut device = adapter.requestDevice();
+  require(device.isValid(), "a device");
+  imm target = new TextureDescriptor(SIZE, SIZE, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  imm depthDesc = new TextureDescriptor(SIZE, SIZE, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  imm rig = new Rig(device.createTexture(&target), device.createTexture(&depthDesc),
+    device.createBuffer(u64.from(SIZE) * u64.from(SIZE) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST));
+  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  require(renderer.isValid(), "a renderer");
+
+  // the subject, textured
+  imm image = Image.checker(64, 64, 8, 8, new Color(0.9, 0.5, 0.2, 1.), new Color(0.2, 0.5, 0.9, 1.));
+  imm tex = renderer.addTexture(&mut device, &image);
+  imm material = Material.textured(new Color(1., 1., 1., 1.), tex);
+  imm subjectMesh = subject();
+  imm mesh = renderer.addMesh(&mut device, &subjectMesh);
+  imm matHandle = renderer.addMaterial(&mut device, &material);
+
+  // the impostor
+  mut baker = ImpostorBaker.create(&mut device, 128u32);
+  require(baker.isValid(), "a baker");
+  mut parts = List[BakePart].empty();
+  parts.push(new BakePart(subject(), material, image));
+  mut box = subjectMesh.bounds();
+  imm center = box.center();
+  mut r2 = 0.;
+  mut i = 0usize;
+  while i < subjectMesh.positions.len() {
+    imm d = (*subjectMesh.positions[i]).distanceSquared(center);
+    if d > r2 { r2 = d; }
+    i = i + 1usize;
+  }
+  imm radius = r2.sqrt();
+  imm settings = new ImpostorSettings();
+  // The baker's materials hold the texture handle of the main renderer: the bake takes the image and makes its own
+  imm atlas = baker.bake(&mut device, &parts, center, radius, &settings);
+  expectUInt(u64.from(atlas.albedo.width), 1024u64, "the atlas is 8 x 128 across");
+  expectUInt(u64.from(atlas.albedo.height), 1024u64, "and as high");
+  expectFloat(f64.from(atlas.radius), f64.from(radius * 1.0625), 0.0001d, "the frames are framed at the padded radius");
+  // The frame looking down from above (the hemisphere's middle, cell (3.5, 3.5)) has no cell of its own in an even
+  // grid: check the cell nearest, (3, 3), has some covered texels and its corner texel none
+  mut covered3 = 0u32;
+  mut y = 0;
+  while y < 128 {
+    mut x = 0;
+    while x < 128 {
+      if atlas.albedo.at(3 * 128 + x, 3 * 128 + y, 3) > 0u8 { covered3 = covered3 + 1u32; }
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  expect(covered3 > 2000u32 and covered3 < 12000u32, "a cell has the subject's silhouette in it, not the whole square");
+  expectUInt(u64.from(atlas.albedo.at(3 * 128 + 1, 3 * 128 + 1, 3)), 0u64, "its corner texel is empty");
+
+  mut pipe = makeImpostorPipeline(&mut renderer, &mut device);
+  require(pipe.isValid(&renderer), "the impostor pipeline");
+  imm impostor = makeImpostor(&mut renderer, &mut device, &pipe, &atlas, &settings);
+  require(!impostor.material.isNone(), "the impostor material");
+
+  imm light = Light.directional(new Vec3(-0.5, -0.8, -0.35), new Color(2.6, 2.4, 2.0, 1.), new Color(0.35, 0.4, 0.5, 1.));
+  mut worst = 0.;
+  mut caseNumber = 0;
+  while caseNumber < 5 {
+    mut dir = new Vec3(0., 1., 0.);
+    mut model = Mat4.identity();
+    mut name = String.from("case");
+    mut limit = MAX_DIFF_BLEND;
+    if caseNumber == 0 { dir = frameDirection(3u32, 4u32, 8u32, true); limit = MAX_DIFF; name <- "0-frame"; }
+    if caseNumber == 1 { dir = new Vec3(0.4, 0.6, 0.7).normalize(); name <- "1-between"; }
+    if caseNumber == 2 { dir = new Vec3(0.9, 0.06, 0.4).normalize(); name <- "2-horizon"; }
+    if caseNumber == 3 { dir = new Vec3(0.05, 1., 0.1).normalize(); name <- "3-above"; }
+    if caseNumber == 4 {
+      dir = new Vec3(0.4, 0.6, 0.7).normalize();
+      model = Mat4.fromTrs(new Vec3(0.5, 0., -0.3), Quat.angleAxis(radians(40.), new Vec3(0., 1., 0.)), new Vec3(1.7, 1.7, 1.7));
+      name <- "4-turned";
+    }
+    imm world = model * center;
+    imm worldRadius = radius * (if caseNumber == 4 { 1.7; } else { 1.; });
+    // The camera: a direction in the OBJECT's space (case 4: carried to the world by the turn)
+    imm worldDir = if caseNumber == 4 { model.transformVector(dir).normalize(); } else { dir; };
+    mut camera = Camera.make();
+    camera.fov = radians(30.);
+    camera.near = 0.5;
+    camera.far = 200.;
+    camera.background = new Color(0.2, 0.4, 0.6, 1.);
+    camera.lookAt(world + worldDir * (worldRadius * 5.), world, new Vec3(0., 1., 0.));
+    mut refList = DrawList.empty();
+    refList.add(mesh, matHandle, model);
+    mut impList = DrawList.empty();
+    impList.add(impostor.card, impostor.material, model);
+    imm a = shoot(&mut device, &mut renderer, &rig, &camera, &light, &refList);
+    imm b = shoot(&mut device, &mut renderer, &rig, &camera, &light, &impList);
+    imm c = compare(&a, &b);
+    save(name.view(), &a);
+    mut named = name.copy();
+    named <- "-impostor";
+    save(named.view(), &b);
+    mut label = String.from("silhouette overlap, ");
+    label <- name.view();
+    expect(c.iou >= MIN_IOU, label.view());
+    mut label2 = String.from("colour difference, ");
+    label2 <- name.view();
+    expect(c.diff <= limit, label2.view());
+    if c.diff > worst { worst = c.diff; }
+    // (the numbers are for the person developing it)
+    if (libc.getenv("AUTOLOD_VERBOSE") as usize) != 0usize {
+      print <- name.view(); print <- ": overlap "; print <- c.iou; print <- ", difference "; print <- c.diff; print <- "\n";
+    }
+    caseNumber = caseNumber + 1;
+  }
+
+  expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
+  expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
+  done();
+}
