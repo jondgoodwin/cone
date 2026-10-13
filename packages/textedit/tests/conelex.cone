@@ -1,0 +1,71 @@
+// The Cone tokenizer, line by line, with the tokens and carried state worked out from the manual's
+// lexical page. Each token prints as letter[text]: k keyword, t type, n number, s string, c comment,
+// @ attribute, o operator, p punctuation, b bracket, f function, e escape, l lifetime, h character,
+// i identifier, ! error.
+
+mod conelextest;
+
+import testing use *;
+import collections use *;
+import textedit use *;
+
+fn letter(k u32) &str {
+  if k == TK_KEYWORD {"k";} elif k == TK_TYPE {"t";} elif k == TK_NUMBER {"n";} elif k == TK_STRING {"s";}
+  elif k == TK_COMMENT {"c";} elif k == TK_ATTRIBUTE {"@";} elif k == TK_OPERATOR {"o";} elif k == TK_PUNCT {"p";}
+  elif k == TK_BRACKET {"b";} elif k == TK_FUNCTION {"f";} elif k == TK_ESCAPE {"e";} elif k == TK_LIFETIME {"l";}
+  elif k == TK_CHAR {"h";} elif k == TK_IDENT {"i";} elif k == TK_ERROR {"!";} else {"?";};
+}
+
+// The tokens of a line as text; the end state goes into 'endState'
+fn dump(line &str, state u32, endState &mut u32) String {
+  mut toks = List[Token].empty();
+  *endState = coneTokenizer(line, state, &mut toks);
+  mut s = String.empty();
+  mut i = 0usize;
+  while i < toks.len() {
+    imm t = toks[i];
+    if i > 0usize {s.append(" ");}
+    s.append(letter(t.kind));
+    s.append("[");
+    s.append(line.slice(usize.from(t.start), usize.from(t.end)));
+    s.append("]");
+    i = i + 1usize;
+  }
+  s;
+}
+
+fn main() i32 {
+  mut st = 0u32;
+  expectStr(dump("fn add(a u32) u32 { a + 1u32; }", 0u32, &mut st).view(),
+    "k[fn] f[add] b[(] i[a] t[u32] b[)] t[u32] b[{] i[a] o[+] n[1u32] p[;] b[}]", "a function");
+  expectInt(i64.from(st), 0i64, "ends in no state");
+  expectStr(dump("imm s = \"a\\nb\"; // done", 0u32, &mut st).view(),
+    "k[imm] i[s] o[=] s[\"a] e[\\n] s[b\"] p[;] c[// done]", "a string with an escape, and a comment");
+  // nested block comments carry across lines
+  expectStr(dump("x /* a /* b */ still", 0u32, &mut st).view(), "i[x] c[/* a /* b */ still]", "an open block comment");
+  expectInt(i64.from(st), 257i64, "state: comment, depth 1");
+  expectStr(dump("*/ y", st, &mut st).view(), "c[*/] i[y]", "its closing line");
+  expectInt(i64.from(st), 0i64, "back to normal");
+  // multi-line strings
+  expectStr(dump("imm t = \"\"\"", 0u32, &mut st).view(), "k[imm] i[t] o[=] s[\"\"\"]", "a triple string opens");
+  expectInt(i64.from(st), 2i64, "state: in a triple string");
+  expectStr(dump("  hello \"quoted\"", st, &mut st).view(), "s[  hello \"quoted\"]", "its middle line, quotes and all");
+  expectInt(i64.from(st), 2i64, "still inside");
+  expectStr(dump("\"\"\";", st, &mut st).view(), "s[\"\"\"] p[;]", "and its end");
+  expectInt(i64.from(st), 0i64, "outside again");
+  expectStr(dump("r\"\"\"", 0u32, &mut st).view(), "s[r\"\"\"]", "a raw triple opens");
+  expectInt(i64.from(st), 3i64, "state: raw triple");
+  // numbers
+  expectStr(dump("0xFF_u8 3.14 1..4 3.e5 1e-5 25.0.sqrt()", 0u32, &mut st).view(),
+    "n[0xFF_u8] n[3.14] n[1] p[.] p[.] n[4] n[3] p[.] i[e5] n[1e-5] n[25.0] p[.] f[sqrt] b[(] b[)]", "numbers, ranges and methods on literals");
+  // characters and lifetimes
+  expectStr(dump("'a' '\\n' 'é' &'x T", 0u32, &mut st).view(), "h['a'] h['\\n'] h['é'] o[&] l['x] t[T]", "characters and a lifetime");
+  // attributes, raw strings, back-ticked names, types
+  expectStr(dump("@opaque r\"C:\\x\" r`a\"b` `*`", 0u32, &mut st).view(), "@[@opaque] s[r\"C:\\x\"] s[r`a\"b`] i[`*`]", "attribute, raw strings, back-ticked name");
+  expectStr(dump("List[usize] Vec2", 0u32, &mut st).view(), "t[List] b[[] t[usize] b[]] t[Vec2]", "types");
+  expectStr(dump("a <- b == c", 0u32, &mut st).view(), "i[a] o[<-] i[b] o[==] i[c]", "operators");
+  expectStr(dump("", 0u32, &mut st).view(), "", "an empty line");
+  expectStr(dump("\"unterminated", 0u32, &mut st).view(), "s[\"unterminated]", "an unterminated string runs to the end");
+  expectInt(i64.from(st), 0i64, "and does not carry");
+  done();
+}

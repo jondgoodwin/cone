@@ -1,0 +1,87 @@
+// ======== Syntax highlighting: the interface and its colours ========
+//
+// A HIGHLIGHTER is a function the editor calls a line at a time:
+//
+//   fn(line &str, state u32, out &mut List[Token]) u32
+//
+// 'line' is the text of one line (no line break), 'state' is what the previous line ended in (0 at the
+// top of the file), 'out' receives the line's tokens (byte ranges inside the line, in order, which
+// may leave gaps: a gap is plain text), and the answer is the state this line ends in. A state is a
+// small number the tokenizer makes up: "inside a block comment nested two deep", "inside a multi-line
+// string". This is the shape of TextMate and VS Code's tokenizers (and of Lezer's and Scintilla's
+// lexers): lines tokenized in order with a state carried across, so an edit retokenizes only from the
+// edited line down to the first line whose end state is the same as before.
+//
+// The editor passes the function as a generic argument (no object, no registry), so any module can
+// write one. 'plainTokenizer' here is the null case; 'coneTokenizer' (conelex.cone) is the first user.
+//
+// KINDS are a fixed list of what a colour scheme styles (the usual TextMate scope groups); a
+// tokenizer picks the nearest.
+
+pub const TK_PLAIN = 0u32;
+pub const TK_KEYWORD = 1u32;
+pub const TK_TYPE = 2u32;
+pub const TK_NUMBER = 3u32;
+pub const TK_STRING = 4u32;
+pub const TK_COMMENT = 5u32;
+pub const TK_ATTRIBUTE = 6u32;       // @name
+pub const TK_OPERATOR = 7u32;
+pub const TK_PUNCT = 8u32;           // , ; . :
+pub const TK_BRACKET = 9u32;         // ( ) [ ] { }
+pub const TK_FUNCTION = 10u32;       // a name followed by (
+pub const TK_ESCAPE = 11u32;         // an escape sequence inside a string
+pub const TK_LIFETIME = 12u32;
+pub const TK_CHAR = 13u32;           // a character literal
+pub const TK_IDENT = 14u32;
+pub const TK_ERROR = 15u32;
+pub const TK_KINDS = 16u32;
+
+pub struct Token {
+  pub start u32;                      // byte offsets inside the line
+  pub end u32;
+  pub kind u32;
+}
+
+// The null highlighter: no tokens, no state
+pub fn plainTokenizer(line &str, state u32, out &mut List[Token]) u32 {
+  0u32;
+}
+
+// A colour scheme: one 0xRRGGBBAA colour for each token kind
+pub struct SyntaxTheme {
+  pub colors List[u32];
+  pub background u32 = 0x1e1e1eff;
+  pub gutterBg u32 = 0x252526ff;
+  pub gutterText u32 = 0x858585ff;
+  pub gutterActive u32 = 0xc6c6c6ff;
+  pub lineHighlight u32 = 0x2a2d2eff;
+  pub selection u32 = 0x264f78ff;
+  pub caret u32 = 0xaeafadff;
+  pub bracketMatch u32 = 0x88888866u32;
+
+  // The dark scheme (colours after VS Code's "Dark+")
+  pub fn dark() SyntaxTheme {
+    mut c = List[u32].withCapacity(16usize);
+    c.push(0xd4d4d4ffu32);   // plain
+    c.push(0xc586c0ffu32);   // keyword
+    c.push(0x4ec9b0ffu32);   // type
+    c.push(0xb5cea8ffu32);   // number
+    c.push(0xce9178ffu32);   // string
+    c.push(0x6a9955ffu32);   // comment
+    c.push(0xdcdcaaffu32);   // attribute
+    c.push(0xd4d4d4ffu32);   // operator
+    c.push(0x9d9d9dffu32);   // punctuation
+    c.push(0xffd700ffu32);   // bracket
+    c.push(0xdcdcaaffu32);   // function
+    c.push(0xd7ba7dffu32);   // escape
+    c.push(0x9cdcfeffu32);   // lifetime
+    c.push(0xce9178ffu32);   // char
+    c.push(0x9cdcfeffu32);   // identifier
+    c.push(0xf44747ffu32);   // error
+    new SyntaxTheme(c);
+  }
+
+  pub fn colorOf(self &, kind u32) u32 {
+    if usize.from(kind) < colors.len() {*colors[usize.from(kind)];} else {*colors[0usize];};
+  }
+}
