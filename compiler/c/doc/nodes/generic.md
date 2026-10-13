@@ -540,13 +540,30 @@ false diagnostic. The cost is silent acceptance — see Hazards.
    as with none. The step sits after the arguments and the bounds and before the
    literals take their default, in a function and in a type literal alike, so
    `imm n i64 = add(2000000000, 2000000000)` adds `i64`s. A method gets it through
-   `genericMethodInstance`, and `typeLitNewCheck` for `new Box(5)`. Not built, and
-   so refused: a constructor given to a constructor (`Some(None)` has no
-   expectation for the inner call), a parameter that comes from a later
-   argument, and an untyped `None` as an operator's receiver. A slot still
+   `genericMethodInstance`, and `typeLitNewCheck` for `new Box(5)`. A slot still
    empty is reported by `genericMissingParms`, which names the parameters and the
    brackets to write, and the call becomes an error node, so no second diagnostic
    follows.
+
+   **An argument that is itself a construction of a generic variant** (`Some(None)`,
+   `Some(5)` wanted as an `Option[i64]`, `id2(None, 5)`) is not checked in argument
+   order. `fnCallTypeCheckNode` (`fnCallArgIsCtor`) leaves it for after the other
+   arguments of a generic function, method or variant, then asks
+   `genericFnArgExpect` / `genericStructArgExpect` what it is wanted as: the
+   parameter's (or field's) type as written, with the type parameters the checked
+   arguments, the bounds, the expected type of the call's own value and then the
+   literals' default say substituted into a clone of it
+   (`genericArgExpect`, built as `genericClosureSig` builds a closure's signature).
+   Nothing is reported by that scratch inference, and a parameter still unsaid
+   gives no expectation, so the argument is checked as it always was. The
+   argument is then coerced to that type, so its variant reads as the enum its
+   parameter takes (`T` of `Some(T)` is `Option[i64]`, not `None[i64]`) before the
+   call's own inference runs. Only constructions are reordered, never function
+   calls: the order the calls among arguments are checked in is what narrowing
+   sees (`narrowCallMade`). A construction that no value in it names a parameter
+   of (`genericVariantParmUnnamed`: `None` of `Option[T]`), as the receiver of `==`
+   or `!=`, is checked after the other operand and wanted as its type, so `None == x`
+   types the `None` as `x == None` does.
 
 **A generic method called on a receiver** — `h.pick(6)`, `h.pick[i32](6)` — is
 instantiated by `fnCallLowerMethod` rather than here, since the method is known

@@ -14,8 +14,7 @@
     <div class="text">
 
 	<p style="margin-left: 40px;"><i>Note: The check for changing the shape of a collection does not tell two
-			lists of one type apart. A value of another package cannot be put behind a <span class="pre">+ ShapeKeeping</span> reference,
-			for its include file carries no bodies to read.</i></p>
+			lists of one type apart.</i></p>
 	
 	<p>References work differently than other types.
 	The basic idea is simple: references carry an address that points to some value in memory.
@@ -1090,6 +1089,13 @@ fn count(w &amp;mut World, log &amp;mut List[i64]) i64 {
 		A function named with <span class="pre">&amp;</span>, <span class="pre">&amp;grow</span>, is held by its body;
 		a function reference held in a variable has none the compiler can read, and is refused. A type does not declare
 		<span class="pre">ShapeKeeping</span>.</p>
+	<p>A struct of another package can be put behind such a reference too. Its package's include file carries no method
+		bodies, so the package's own compile does the reading and the file says the result: a struct all of whose methods
+		(the public ones that take <span class="pre">self</span>) reshape nothing they reach through a shared mutable path is
+		written there with <span class="pre">ShapeKeeping</span> after its <span class="pre">is</span>. The importer takes the
+		struct as the file says. One method that does reshape, even one the trait never calls, leaves the marker off, and the
+		whole struct is refused. A function of another package named with <span class="pre">&amp;</span> has no body to read,
+		and is refused.</p>
 
 	<h3 id="globalview">A borrow into a <span class="pre">mut</span> global</h3>
 	<p>A function may write a global by its name, whatever it is handed, and the check does not keep a summary
@@ -1426,17 +1432,18 @@ imm same = ref == other;   // two references: the values are compared, not the p
 imm ref4 ?&amp;imm i32;		 // nullable reference to an integer
 </pre>
 	<p>In addition to pointing to a valid value, a nullable reference
-		may also have the value <span class="pre">Null</span>,
+		may also have the value <span class="pre">None</span>,
 		which means the reference does not point to any valid value.
 	  To ensure safety, access to a nullable reference's value is only possible if
-		the code first ensures the reference does not have the value of <span class="pre">Null</span>:
+		the code first ensures the reference is not <span class="pre">None</span>,
+		by binding the reference it holds (<a href="refoption.html">Option types</a>):
 	</p>
 <pre>
-// This condition is true only if maybePoint is not null ...
-if maybePoint {
-  imm point = *maybePoint; // ... allowing us to obtain its value
+// This binding is made only if maybePoint holds a reference ...
+if imm point Some = maybePoint {
+  imm p = *point;           // ... allowing us to obtain its value
 }
-imm point2 = *maybePoint;    // **ERROR** We don't know if maybePoint is null here
+imm point2 = *maybePoint;   // **ERROR** maybePoint is an Option here, not a reference
 </pre>
 	<p><b>Note:</b> A special optimization ensures that nullable references are the same size
 		as regular references.</p>
