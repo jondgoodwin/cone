@@ -1,0 +1,823 @@
+// ======== Editor: a multi-line code editor widget on uilayout ========
+//
+// An Editor owns a Doc and one HOSTED node of a uilayout Ui (uilayout\src\hosted.cone). The node takes
+// the pointer, keys and text; the editor turns them into Doc operations, and draws itself into a
+// DrawList that the node shows. A frame is:
+//
+//   input events pushed into the Ui   (pointerMove, pointerDown, keyDown, textInput, wheel ...)
+//   layout(&mut ui, &mut measure)     the node gets its size
+//   ed.pump(&mut ui)                  the events queued for the node are applied to the Doc
+//   ed.refresh(&mut ui, &mut measure, &tokenizer)   the draw list, only if anything changed
+//   drawUi(&ui, &mut list)            the renderer's list, with the editor at its place in the tree
+//
+// WHAT IS DRAWN, for the lines in view only: the background, the current line, selections (one
+// rectangle a line), the bracket pair beside the caret, the text as one DC_TEXT per token run in its
+// colour, carets, the gutter (line numbers, the caret's line brighter) and a scroll bar. So a 10,000 line
+// file costs what its ~50 visible lines cost, plus the Buffer's own work.
+//
+// SCROLLING is in pixels (scrollY, scrollX); the caret is kept in view after an edit or a move.
+//
+// FONTS. The editor asks a measure function ('fn(text, font, size) Vec2', uilayout's) for widths.
+// MONOSPACE (the default): one measurement of "M" gives the cell; a column is a multiplication, tabs
+// advance to the next tab stop. PROPORTIONAL ('style.mono = false'): every run of a line (a token, or the
+// gap between tokens) is measured, and a position inside a run is the width of its prefix; tabs advance
+// to a multiple of tabWidth spaces. Either way a line's x for every byte offset is kept in 'VLine.xs'
+// and serves drawing, caret placement and hit testing alike.
+//
+// SYNTAX. A highlighter (highlight.cone) is called a line at a time with the state the previous line
+// ended in. 'startStates' remembers the state at the start of each line up to 'validUpTo' lines; an edit
+// forgets the states from the edited line down, and they are made again when a line below is next drawn.
+//
+// CLIPBOARD. The editor keeps its own 'clipboard' text; it sets 'clipboardWritten' after a copy or cut,
+// and 'needsClipboard' says a paste is waiting: the host copies between this and the system clipboard
+// (SDL's) around 'pump'. It never calls the system itself, so the package has no window dependency.
+
+pub const KEY_Z = 90u32;
+pub const KEY_Y = 89u32;
+pub const KEY_D = 68u32;
+pub const KEY_K = 75u32;
+
+pub struct EditorStyle {
+  pub font u32 = 0u32;                 // the host's font id (drawn text carries it)
+  pub size f32 = 14.;
+  pub lineHeight f32 = 0.;             // 0: 1.45 times the size
+  pub mono bool = true;
+  pub gutter bool = true;
+  pub pad f32 = 8.;
+  pub scrollbar f32 = 10.;
+  pub theme SyntaxTheme;
+  pub autoIndent bool = true;
+  pub matchLimit usize = 20000usize;   // how far (in bytes) a bracket is looked for
+
+  pub fn make() EditorStyle {new EditorStyle(font: 0u32, theme: SyntaxTheme.dark());}
+}
+
+// A piece of a line drawn in one colour (tokens, the gaps between them, each tab)
+pub struct Run {
+  pub start u32;
+  pub end u32;
+  pub kind u32;
+}
+
+// A line prepared for drawing: its text, its runs and the x of every byte offset
+pub struct VLine {
+  pub line usize;
+  pub text String;
+  pub runs List[Run];
+  pub xs List[f32];                    // xs[b] = x of byte offset b from the line's start; xs.len() == text.len() + 1
+}
+
+pub struct Editor {
+  pub doc Doc;
+  pub node usize;
+  pub style EditorStyle;
+  pub scrollX f32 = 0.;
+  pub scrollY f32 = 0.;
+  pub clipboard String;
+  pub clipboardWritten bool = false;
+  pub focused bool = false;
+  pub caretOn bool = true;             // the host flips this to blink
+  pub revealPending bool = true;
+  pub rebuilds u32 = 0u32;             // draw lists made (a static frame makes none)
+  pub linesTokenized u32 = 0u32;
+  pub matchA usize = 18446744073709551615usize;
+  pub matchB usize = 18446744073709551615usize;
+  startStates List[u32];
+  validUpTo usize = 0usize;            // startStates[0 .. validUpTo] are right
+  vlines List[VLine];
+  charW f32 = 0.;
+  spaceW f32 = 0.;
+  dragging bool = false;
+  sbDrag bool = false;
+  dirty bool = true;
+  lastVersion u64 = 0u64;
+  lastSX f32 = -1.;
+  lastSY f32 = -1.;
+  lastW f32 = -1.;
+  lastH f32 = -1.;
+  lastFocus bool = false;
+  lastCaretOn bool = true;
+  lastCaretSig u64 = 0u64;
+  firstVisible usize = 0usize;
+
+  // An editor in a new hosted node under 'parent', holding 'text'
+  pub fn make(ui &mut Ui, parent usize, text &str) Editor {
+    imm node = hostedNode(ui, parent);
+    mut ed = new Editor(doc: Doc.fromText(text), node: node, style: EditorStyle.make(), clipboard: String.empty(),
+      startStates: List[u32].empty(), vlines: List[VLine].empty());
+    ed.startStates.push(0u32);
+    ed;
+  }
+
+  pub fn setText(self &mut, text &str) {
+    doc.setText(text);
+    forgetStates(0usize);
+    vlines.clear();
+    scrollX = 0.;
+    scrollY = 0.;
+    dirty = true;
+  }
+
+  // The document was changed from outside the widget's own keys: draw again, and keep the caret in view
+  pub fn dirtyAll(self &mut) {
+    forgetStates(doc.firstDirtyLine());
+    doc.clearDirty();
+    dirty = true;
+    revealPending = true;
+  }
+
+  fn forgetStates(self &mut, fromLine usize) {
+    if validUpTo > fromLine {validUpTo = fromLine;}
+  }
+
+  pub fn lineHeight(self &) f32 {if style.lineHeight > 0. {style.lineHeight;} else {style.size * 1.45;};}
+
+  // The width of the gutter: the line count's digits and padding on both sides
+  pub fn gutterWidth(self &) f32 {
+    if !style.gutter {return 0.;}
+    mut digits = 1u32;
+    mut n = doc.lineCount();
+    while n >= 10usize {
+      n = n / 10usize;
+      digits = digits + 1u32;
+    }
+    if digits < 3u32 {digits = 3u32;}
+    f32.from(digits) * digitW() + style.pad * 2.;
+  }
+
+  fn digitW(self &) f32 {if charW > 0. {charW;} else {style.size * 0.6;};}
+
+  fn textLeft(self &) f32 {gutterWidth() + style.pad;}
+
+  // ---- syntax state ----
+
+  // The state a line starts in, tokenizing the lines before it (once) when it is not known yet
+  fn stateAt[T fn(line &str, state u32, out &mut List[Token]) u32](self &mut, line usize, tok &T) u32 {
+    if validUpTo == 0usize {
+      startStates.clear();
+      startStates.push(0u32);
+      validUpTo = 1usize;
+    }
+    mut scratch = List[Token].empty();
+    while validUpTo <= line {
+      imm l = validUpTo - 1usize;
+      imm text = doc.buffer().lineText(l);
+      scratch.clear();
+      imm s = tok(text.view(), *startStates[l], &mut scratch);
+      linesTokenized = linesTokenized + 1u32;
+      if startStates.len() > validUpTo {startStates.set(validUpTo, s);} else {startStates.push(s);}
+      validUpTo = validUpTo + 1usize;
+    }
+    *startStates[line];
+  }
+
+  // ---- lines ----
+
+  // Makes a line ready: text, runs, and x of every byte offset
+  fn buildLine[M fn(text &str, font u32, size f32) Vec2, T fn(line &str, state u32, out &mut List[Token]) u32](self &mut, line usize, m &mut M, tok &T) VLine {
+    imm text = doc.buffer().lineText(line);
+    imm state = stateAt(line, tok);
+    mut tokens = List[Token].empty();
+    tok(text.view(), state, &mut tokens);
+    imm n = text.len();
+    // runs: tokens, gaps and tabs, in order, covering the line
+    mut runs = List[Run].empty();
+    mut b = 0usize;
+    mut ti = 0usize;
+    while b < n {
+      if text[b] == 9u8 {
+        runs.push(new Run(u32.from(b), u32.from(b + 1usize), TK_PLAIN));
+        b = b + 1usize;
+        continue;
+      }
+      while ti < tokens.len() and usize.from(tokens[ti].end) <= b {ti = ti + 1usize;}
+      mut e = n;
+      mut kind = TK_PLAIN;
+      if ti < tokens.len() and usize.from(tokens[ti].start) <= b {
+        e = usize.from(tokens[ti].end);
+        kind = tokens[ti].kind;
+      }
+      elif ti < tokens.len() {e = usize.from(tokens[ti].start);}
+      if e > n {e = n;}
+      mut k = b;
+      while k < e and text[k] != 9u8 {k = k + 1usize;}
+      e = k;
+      runs.push(new Run(u32.from(b), u32.from(e), kind));
+      b = e;
+    }
+    // x of every byte offset
+    mut xs = List[f32].withCapacity(n + 1usize);
+    mut i = 0usize;
+    while i <= n {
+      xs.push(0.);
+      i = i + 1usize;
+    }
+    imm tabPx = f32.from(doc.tabWidth) * (if style.mono {charW;} else {spaceW;});
+    if style.mono {
+      mut col = 0u32;
+      i = 0usize;
+      while i < n {
+        xs.set(i, f32.from(col) * charW);
+        imm c = text[i];
+        if c == 9u8 {col = col + doc.tabWidth - col % doc.tabWidth;}
+        elif c < 128u8 or c >= 192u8 {col = col + 1u32;}
+        i = i + 1usize;
+      }
+      xs.set(n, f32.from(col) * charW);
+      // (continuation bytes sit at the end of their character, which no caret uses)
+    }
+    else {
+      mut x = 0.;
+      mut r = 0usize;
+      while r < runs.len() {
+        imm run = runs[r];
+        imm s = usize.from(run.start);
+        imm e = usize.from(run.end);
+        if text[s] == 9u8 {
+          xs.set(s, x);
+          x = (floorf(x / tabPx + 0.001) + 1.) * tabPx;
+        }
+        else {
+          mut k = s;
+          mut lastX = x;
+          while k < e {
+            if text.view().isCharBoundary(k) {
+              lastX = if k == s {x;} else {x + m(text.view().slice(s, k), style.font, style.size).x;};
+            }
+            xs.set(k, lastX);
+            k = k + 1usize;
+          }
+          x = x + m(text.view().slice(s, e), style.font, style.size).x;
+        }
+        r = r + 1usize;
+      }
+      xs.set(n, x);
+    }
+    new VLine(line, text, runs, xs);
+  }
+
+  // The prepared line, from the last refresh if it is there
+  fn vlineIndex(self &, line usize) usize {
+    mut i = 0usize;
+    while i < vlines.len() {
+      if vlines[i].line == line {return i;}
+      i = i + 1usize;
+    }
+    NOT_FOUND;
+  }
+
+  // ---- geometry ----
+
+  fn viewHeight(self &, ui &Ui) f32 {ui.nodes[node].h;}
+  fn viewWidth(self &, ui &Ui) f32 {ui.nodes[node].w;}
+
+  fn maxScrollY(self &, ui &Ui) f32 {
+    imm total = f32.from(doc.lineCount()) * lineHeight();
+    maxf(0., total - viewHeight(ui) + lineHeight());
+  }
+
+  // The line under a y (in the Ui's pixels)
+  fn lineAtY(self &, ui &Ui, py f32) usize {
+    imm ly = py - ui.nodes[node].gy + scrollY;
+    imm l = floorf(ly / lineHeight());
+    if l < 0. {return 0usize;}
+    imm line = usize.from(l);
+    if line >= doc.lineCount() {doc.lineCount() - 1usize;} else {line;};
+  }
+
+  // The byte offset nearest to a point (in the Ui's pixels)
+  fn offsetAt[M fn(text &str, font u32, size f32) Vec2, T fn(line &str, state u32, out &mut List[Token]) u32](self &mut, ui &Ui, px f32, py f32, m &mut M, tok &T) usize {
+    imm line = lineAtY(ui, py);
+    mut vi = vlineIndex(line);
+    if vi == NOT_FOUND {
+      imm built = buildLine(line, m, tok);
+      vlines.push(built);
+      vi = vlines.len() - 1usize;
+    }
+    imm lx = px - ui.nodes[node].gx - textLeft() + scrollX;
+    imm v = vlines[vi];
+    mut best = 0usize;
+    mut bestD = 1000000000.;
+    mut b = 0usize;
+    while b <= v.text.len() {
+      if v.text.view().isCharBoundary(b) or b == v.text.len() {
+        imm d = absf(*v.xs[b] - lx);
+        if d < bestD {
+          bestD = d;
+          best = b;
+        }
+      }
+      b = b + 1usize;
+    }
+    doc.buffer().lineStart(line) + best;
+  }
+
+  // ---- events ----
+
+  // Whether a paste is waiting in the Ui's queue for this editor (the host fills 'clipboard' first)
+  pub fn needsClipboard(self &, ui &Ui) bool {
+    mut i = 0usize;
+    while i < ui.input.hostEvents.len() {
+      imm h = ui.input.hostEvents[i];
+      if h.node == node and h.ev.kind == EK_KEY_DOWN and h.ev.code == KEY_V and (h.ev.mods & MOD_CTRL) != 0u32 {return true;}
+      i = i + 1usize;
+    }
+    false;
+  }
+
+  // Applies the events queued for the node. Pointer positions are hit-tested against the lines as last drawn
+  pub fn pump[M fn(text &str, font u32, size f32) Vec2, T fn(line &str, state u32, out &mut List[Token]) u32](self &mut, ui &mut Ui, m &mut M, tok &T) {
+    imm evs = takeHostEvents(ui, node);
+    mut i = 0usize;
+    while i < evs.len() {
+      handle(ui, evs[i], m, tok);
+      i = i + 1usize;
+    }
+  }
+
+  fn handle[M fn(text &str, font u32, size f32) Vec2, T fn(line &str, state u32, out &mut List[Token]) u32](self &mut, ui &mut Ui, ev &Ev, m &mut M, tok &T) {
+    imm k = ev.kind;
+    if k == EK_FOCUS_IN {focused = true; caretOn = true; return;}
+    if k == EK_FOCUS_OUT {focused = false; dragging = false; return;}
+    if k == EK_WHEEL {
+      if (ev.mods & MOD_SHIFT) != 0u32 {scrollX = maxf(0., scrollX - ev.dy * 40.);}
+      else {
+        scrollY = clampf(scrollY - ev.dy * lineHeight() * 3., 0., maxScrollY(ui));
+        scrollX = maxf(0., scrollX - ev.dx * 40.);
+      }
+      return;
+    }
+    if k == EK_KEY_DOWN {
+      onKey(ui, ev.code, ev.mods);
+      return;
+    }
+    if k == EK_TEXT {
+      if (ev.mods & MOD_CTRL) == 0u32 and ev.code >= 32u32 and ev.code != 127u32 {
+        imm s = utf8Of(ev.code);
+        doc.insertText(s.view());
+        touched();
+      }
+      return;
+    }
+    imm lx = ev.x - ui.nodes[node].gx;
+    imm ly = ev.y - ui.nodes[node].gy;
+    if k == EK_DOWN and ev.button == BTN_LEFT {
+      if lx >= viewWidth(ui) - style.scrollbar and maxScrollY(ui) > 0. {
+        sbDrag = true;
+        scrollToBar(ui, ly);
+        return;
+      }
+      if style.gutter and lx < gutterWidth() {
+        imm line = lineAtY(ui, ev.y);
+        doc.selectLineAt(doc.buffer().lineStart(line));
+        touched();
+        return;
+      }
+      imm off = offsetAt(ui, ev.x, ev.y, m, tok);
+      if (ev.mods & MOD_ALT) != 0u32 {doc.addCaret(off);}
+      elif (ev.mods & MOD_SHIFT) != 0u32 {doc.extendTo(off);}
+      else {doc.setCaret(off);}
+      dragging = true;
+      touched();
+      return;
+    }
+    if k == EK_MOVE {
+      if sbDrag {scrollToBar(ui, ly);}
+      elif dragging {
+        doc.extendTo(offsetAt(ui, ev.x, ev.y, m, tok));
+        touched();
+      }
+      return;
+    }
+    if k == EK_UP {
+      dragging = false;
+      sbDrag = false;
+      return;
+    }
+    if k == EK_DBLCLICK {
+      doc.selectWordAt(offsetAt(ui, ev.x, ev.y, m, tok));
+      touched();
+      return;
+    }
+    if k == EK_CLICK and ev.count == 3u32 {
+      doc.selectLineAt(offsetAt(ui, ev.x, ev.y, m, tok));
+      touched();
+    }
+  }
+
+  // The scroll bar's thumb centred on y
+  fn scrollToBar(self &mut, ui &Ui, ly f32) {
+    imm h = viewHeight(ui);
+    scrollY = clampf((ly / h) * (maxScrollY(ui) + h) - h * 0.5, 0., maxScrollY(ui));
+  }
+
+  // The text or the carets changed through the editor: show the caret, keep it in view
+  fn touched(self &mut) {
+    revealPending = true;
+    caretOn = true;
+    forgetStates(doc.firstDirtyLine());
+    doc.clearDirty();
+    dirty = true;
+  }
+
+  fn onKey(self &mut, ui &mut Ui, code u32, mods u32) {
+    imm shift = (mods & MOD_SHIFT) != 0u32;
+    imm ctrl = (mods & MOD_CTRL) != 0u32;
+    imm alt = (mods & MOD_ALT) != 0u32;
+    mut handled = true;
+    if code == KEY_LEFT {doc.move(if ctrl {MOVE_WORD_LEFT;} else {MOVE_LEFT;}, shift);}
+    elif code == KEY_RIGHT {doc.move(if ctrl {MOVE_WORD_RIGHT;} else {MOVE_RIGHT;}, shift);}
+    elif code == KEY_UP {doc.move(MOVE_UP, shift);}
+    elif code == KEY_DOWN {doc.move(MOVE_DOWN, shift);}
+    elif code == KEY_HOME {doc.move(if ctrl {MOVE_DOC_START;} else {MOVE_LINE_START;}, shift);}
+    elif code == KEY_END {doc.move(if ctrl {MOVE_DOC_END;} else {MOVE_LINE_END;}, shift);}
+    elif code == KEY_PAGEUP {
+      doc.pageLines = pageLines(ui);
+      doc.move(MOVE_PAGE_UP, shift);
+      scrollY = clampf(scrollY - f32.from(doc.pageLines) * lineHeight(), 0., maxScrollY(ui));
+    }
+    elif code == KEY_PAGEDOWN {
+      doc.pageLines = pageLines(ui);
+      doc.move(MOVE_PAGE_DOWN, shift);
+      scrollY = clampf(scrollY + f32.from(doc.pageLines) * lineHeight(), 0., maxScrollY(ui));
+    }
+    elif code == KEY_BACKSPACE {doc.deleteBackward(ctrl);}
+    elif code == KEY_DELETE {doc.deleteForward(ctrl);}
+    elif code == KEY_ENTER {doc.newline(style.autoIndent);}
+    elif code == KEY_TAB {doc.tab(shift);}
+    elif code == KEY_ESCAPE {
+      imm c = doc.caret(doc.caretCount() - 1usize);
+      doc.setCaret(c.head);
+    }
+    elif ctrl and code == KEY_A {doc.selectAll();}
+    elif ctrl and code == KEY_C {copy();}
+    elif ctrl and code == KEY_X {
+      copy();
+      if doc.hasSelection() {doc.deleteBackward(false);}
+    }
+    elif ctrl and code == KEY_V {
+      if clipboard.len() > 0usize {
+        imm text = String.from(clipboard.view());
+        doc.paste(text.view());
+      }
+    }
+    elif ctrl and code == KEY_Z and !shift {doc.undo();}
+    elif ctrl and (code == KEY_Y or (code == KEY_Z and shift)) {doc.redo();}
+    elif ctrl and code == KEY_D {selectNextOccurrence();}
+    elif ctrl and shift and code == KEY_K {doc.deleteLines();}
+    else {handled = false;}
+    if handled and !alt {touched();} elif handled {touched();}
+  }
+
+  fn pageLines(self &, ui &Ui) u32 {
+    imm n = floorf(viewHeight(ui) / lineHeight()) - 1.;
+    if n < 1. {1u32;} else {u32.from(n);};
+  }
+
+  fn copy(self &mut) {
+    imm s = doc.selectedText();
+    if s.len() > 0usize {
+      clipboard = s;
+      clipboardWritten = true;
+    }
+  }
+
+  // Ctrl+D: select the word at the caret; again: add the next occurrence of the selection as a caret
+  fn selectNextOccurrence(self &mut) {
+    imm c = doc.caret(doc.caretCount() - 1usize);
+    if c.isEmpty() {
+      doc.selectWordAt(c.head);
+      return;
+    }
+    imm needle = doc.buffer().text(c.lo(), c.hi());
+    imm opts = FindOptions.make(needle.view());
+    mut m = findNext(doc.buffer(), &opts, c.hi());
+    if m == NOT_FOUND {m = findNext(doc.buffer(), &opts, 0usize);}
+    if m != NOT_FOUND {doc.addSelection(m, m + needle.len());}
+  }
+
+  // ---- bracket matching ----
+
+  // Whether the byte at 'off' counts as code (not inside a string, comment or character literal)
+  fn isCodeAt[T fn(line &str, state u32, out &mut List[Token]) u32](self &mut, off usize, tok &T) bool {
+    imm line = doc.buffer().lineOf(off);
+    imm text = doc.buffer().lineText(line);
+    imm state = stateAt(line, tok);
+    mut tokens = List[Token].empty();
+    tok(text.view(), state, &mut tokens);
+    imm rel = u32.from(off - doc.buffer().lineStart(line));
+    mut i = 0usize;
+    while i < tokens.len() {
+      imm t = tokens[i];
+      if rel >= t.start and rel < t.end {
+        return t.kind != TK_STRING and t.kind != TK_COMMENT and t.kind != TK_CHAR and t.kind != TK_ESCAPE;
+      }
+      i = i + 1usize;
+    }
+    // (a line that ends inside a block comment or string has its tokens; an untokenized byte is code)
+    true;
+  }
+
+  // The bracket matching the one at 'off', looking at most 'matchLimit' bytes away, skipping those in strings and comments
+  fn findMatch[T fn(line &str, state u32, out &mut List[Token]) u32](self &mut, off usize, tok &T) usize {
+    imm buf = doc.buffer();
+    if off >= buf.len() {return NOT_FOUND;}
+    imm b = buf.byteAt(off);
+    mut open = 0u8;
+    mut close = 0u8;
+    mut forward = true;
+    if b == 40u8 {open = 40u8; close = 41u8;}
+    elif b == 91u8 {open = 91u8; close = 93u8;}
+    elif b == 123u8 {open = 123u8; close = 125u8;}
+    elif b == 41u8 {open = 40u8; close = 41u8; forward = false;}
+    elif b == 93u8 {open = 91u8; close = 93u8; forward = false;}
+    elif b == 125u8 {open = 123u8; close = 125u8; forward = false;}
+    else {return NOT_FOUND;}
+    if !isCodeAt(off, tok) {return NOT_FOUND;}
+    mut depth = 0i32;
+    mut steps = 0usize;
+    mut i = off;
+    while steps < style.matchLimit {
+      imm c = doc.buffer().byteAt(i);
+      if (c == open or c == close) and isCodeAt(i, tok) {
+        if (c == open) == forward {depth = depth + 1i32;} else {depth = depth - 1i32;}
+        if depth == 0i32 {return i;}
+      }
+      if forward {
+        i = i + 1usize;
+        if i >= doc.len() {break;}
+      }
+      else {
+        if i == 0usize {break;}
+        i = i - 1usize;
+      }
+      steps = steps + 1usize;
+    }
+    NOT_FOUND;
+  }
+
+  // ---- refresh: the draw list ----
+
+  fn caretSig(self &) u64 {
+    mut h = 1469598103934665603u64;
+    mut i = 0usize;
+    while i < doc.caretCount() {
+      imm c = doc.caret(i);
+      h = (h ^ u64.from(c.anchor)) * 1099511628211u64;
+      h = (h ^ u64.from(c.head)) * 1099511628211u64;
+      i = i + 1usize;
+    }
+    h;
+  }
+
+  // Makes the draw list again if anything it shows has changed. True when it did
+  pub fn refresh[M fn(text &str, font u32, size f32) Vec2, T fn(line &str, state u32, out &mut List[Token]) u32](self &mut, ui &mut Ui, m &mut M, tok &T) bool {
+    if charW <= 0. {
+      charW = m("M", style.font, style.size).x;
+      spaceW = m(" ", style.font, style.size).x;
+      if spaceW <= 0. {spaceW = charW;}
+      dirty = true;
+    }
+    forgetStates(doc.firstDirtyLine());
+    doc.clearDirty();
+    imm w = viewWidth(ui);
+    imm h = viewHeight(ui);
+    if w <= 0. or h <= 0. {return false;}
+    // keep the caret in view
+    if revealPending {
+      revealPending = false;
+      reveal(ui, m, tok);
+    }
+    scrollY = clampf(scrollY, 0., maxScrollY(ui));
+    imm sig = caretSig();
+    if !dirty and lastVersion == doc.version() and lastSX == scrollX and lastSY == scrollY and lastW == w and lastH == h
+        and lastFocus == focused and lastCaretOn == caretOn and lastCaretSig == sig {return false;}
+    dirty = false;
+    lastVersion = doc.version();
+    lastSX = scrollX;
+    lastSY = scrollY;
+    lastW = w;
+    lastH = h;
+    lastFocus = focused;
+    lastCaretOn = caretOn;
+    lastCaretSig = sig;
+    rebuilds = rebuilds + 1u32;
+    doc.pageLines = pageLines(ui);
+
+    // the lines in view
+    imm lh = lineHeight();
+    imm first = usize.from(floorf(scrollY / lh));
+    imm count = usize.from(ceilf(h / lh)) + 1usize;
+    imm last = minUsize2(first + count, doc.lineCount());
+    firstVisible = first;
+    vlines.clear();
+    mut l = first;
+    while l < last {
+      imm v = buildLine(l, m, tok);
+      vlines.push(v);
+      l = l + 1usize;
+    }
+    // the bracket pair beside the primary caret
+    matchA = NOT_FOUND;
+    matchB = NOT_FOUND;
+    imm pc = doc.caret(doc.caretCount() - 1usize);
+    if pc.isEmpty() {
+      mut at = pc.head;
+      mut found = findMatch(at, tok);
+      if found == NOT_FOUND and at > 0usize {
+        at = at - 1usize;
+        found = findMatch(at, tok);
+      }
+      if found != NOT_FOUND {
+        matchA = at;
+        matchB = found;
+      }
+    }
+    draw(ui);
+    true;
+  }
+
+  // Scrolls so the primary caret is inside the view
+  fn reveal[M fn(text &str, font u32, size f32) Vec2, T fn(line &str, state u32, out &mut List[Token]) u32](self &mut, ui &Ui, m &mut M, tok &T) {
+    imm c = doc.caret(doc.caretCount() - 1usize);
+    imm line = doc.buffer().lineOf(c.head);
+    imm lh = lineHeight();
+    imm top = f32.from(line) * lh;
+    imm h = viewHeight(ui);
+    if top < scrollY {scrollY = top;}
+    elif top + lh > scrollY + h {scrollY = top + lh - h;}
+    scrollY = clampf(scrollY, 0., maxScrollY(ui));
+    // horizontally
+    imm v = buildLine(line, m, tok);
+    imm rel = c.head - doc.buffer().lineStart(line);
+    imm x = *v.xs[minUsize2(rel, v.text.len())];
+    imm vw = viewWidth(ui) - textLeft() - style.scrollbar;
+    if x < scrollX {scrollX = maxf(0., x - charW * 4.);}
+    elif x + charW > scrollX + vw {scrollX = x + charW * 2. - vw;}
+  }
+
+  fn rectXs(self &, v &VLine, lo usize, hi usize) Vec2 {
+    new Vec2(*v.xs[lo], *v.xs[hi]);
+  }
+
+  // The draw list: everything is in the Ui's pixels
+  fn draw(self &mut, ui &mut Ui) {
+    imm n = ui.nodes[node];
+    imm gx = n.gx;
+    imm gy = n.gy;
+    imm w = n.w;
+    imm h = n.h;
+    imm th = &style.theme;
+    imm lh = lineHeight();
+    imm gw = gutterWidth();
+    imm tx = gx + textLeft() - scrollX;                 // where x = 0 of a line is
+    mut out = DrawList.make();
+    out.clipPush(gx, gy, w, h);
+    out.rect(gx, gy, w, h, th.background, 0., node);
+    imm pc = doc.caret(doc.caretCount() - 1usize);
+    imm caretLine = doc.buffer().lineOf(pc.head);
+    mut vi = 0usize;
+    // the current line
+    vi = 0usize;
+    while vi < vlines.len() {
+      imm v = vlines[vi];
+      imm y = gy + f32.from(v.line) * lh - scrollY;
+      if v.line == caretLine and pc.isEmpty() and focused {out.rect(gx + gw, y, w - gw, lh, th.lineHighlight, 0., node);}
+      vi = vi + 1usize;
+    }
+    // selections
+    vi = 0usize;
+    while vi < vlines.len() {
+      imm v = vlines[vi];
+      imm y = gy + f32.from(v.line) * lh - scrollY;
+      imm ls = doc.buffer().lineStart(v.line);
+      imm le = doc.buffer().lineEnd(v.line);
+      mut c = 0usize;
+      while c < doc.caretCount() {
+        imm cr = doc.caret(c);
+        if !cr.isEmpty() and cr.hi() > ls and cr.lo() <= le {
+          imm lo = if cr.lo() > ls {cr.lo() - ls;} else {0usize;};
+          imm hiRel = if cr.hi() < le {cr.hi() - ls;} else {le - ls;};
+          mut x0 = *v.xs[lo];
+          mut x1 = *v.xs[hiRel];
+          if cr.hi() > le {x1 = x1 + (if charW > 0. {charW * 0.5;} else {4.;});}     // the line break is selected too
+          if x1 > x0 {out.rect(tx + x0, y, x1 - x0, lh, th.selection, 0., node);}
+        }
+        c = c + 1usize;
+      }
+      vi = vi + 1usize;
+    }
+    // the bracket pair
+    if matchA != NOT_FOUND {
+      drawCell(&mut out, matchA, tx, gy, th.bracketMatch);
+      drawCell(&mut out, matchB, tx, gy, th.bracketMatch);
+    }
+    // the text
+    vi = 0usize;
+    while vi < vlines.len() {
+      imm v = vlines[vi];
+      imm y = gy + f32.from(v.line) * lh - scrollY;
+      mut r = 0usize;
+      while r < v.runs.len() {
+        imm run = v.runs[r];
+        imm s = usize.from(run.start);
+        imm e = usize.from(run.end);
+        if v.text[s] != 9u8 {
+          imm piece = v.text.view().slice(s, e);
+          mut blank = true;
+          mut q = 0usize;
+          while q < piece.len() {
+            if piece[q] != 32u8 {blank = false;}
+            q = q + 1usize;
+          }
+          if !blank {out.text(tx + *v.xs[s], y, *v.xs[e] - *v.xs[s], lh, piece, style.font, style.size, th.colorOf(run.kind), TA_LEFT, node);}
+        }
+        r = r + 1usize;
+      }
+      vi = vi + 1usize;
+    }
+    // carets
+    if focused and caretOn {
+      vi = 0usize;
+      while vi < vlines.len() {
+        imm v = vlines[vi];
+        imm y = gy + f32.from(v.line) * lh - scrollY;
+        imm ls = doc.buffer().lineStart(v.line);
+        mut c = 0usize;
+        while c < doc.caretCount() {
+          imm cr = doc.caret(c);
+          if cr.head >= ls and cr.head <= doc.buffer().lineEnd(v.line) {
+            out.rect(tx + *v.xs[cr.head - ls], y, 2., lh, th.caret, 0., node);
+          }
+          c = c + 1usize;
+        }
+        vi = vi + 1usize;
+      }
+    }
+    // the gutter
+    if style.gutter {
+      out.clipPush(gx, gy, gw, h);
+      out.rect(gx, gy, gw, h, th.gutterBg, 0., node);
+      vi = 0usize;
+      while vi < vlines.len() {
+        imm v = vlines[vi];
+        imm y = gy + f32.from(v.line) * lh - scrollY;
+        mut num = String.empty();
+        num.appendUInt(u64.from(v.line + 1usize));
+        out.text(gx, y, gw - style.pad, lh, num.view(), style.font, style.size,
+          if v.line == caretLine {th.gutterActive;} else {th.gutterText;}, TA_RIGHT, node);
+        vi = vi + 1usize;
+      }
+      out.clipPop();
+    }
+    // the scroll bar
+    imm maxS = maxScrollY(ui);
+    if maxS > 0. {
+      imm sb = style.scrollbar;
+      imm total = maxS + h;
+      imm thumbH = maxf(24., h * h / total);
+      imm thumbY = (h - thumbH) * (scrollY / maxS);
+      out.rect(gx + w - sb, gy, sb, h, 0xffffff0cu32, 0., node);
+      out.rect(gx + w - sb + 2., gy + thumbY, sb - 4., thumbH, 0xffffff40u32, 3., node);
+    }
+    out.clipPop();
+    hostedSetDraw(ui, node, &out);
+  }
+
+  // A background cell behind the character at a document offset
+  fn drawCell(self &, out &mut DrawList, off usize, tx f32, gy f32, color u32) {
+    imm line = doc.buffer().lineOf(off);
+    imm vi = vlineIndex(line);
+    if vi == NOT_FOUND {return;}
+    imm v = vlines[vi];
+    imm rel = off - doc.buffer().lineStart(line);
+    if rel >= v.text.len() {return;}
+    imm nextRel = doc.nextChar(off) - doc.buffer().lineStart(line);
+    imm y = gy + f32.from(line) * lineHeight() - scrollY;
+    out.rect(tx + *v.xs[rel], y, *v.xs[minUsize2(nextRel, v.text.len())] - *v.xs[rel], lineHeight(), color, 0., node);
+  }
+}
+
+fn minUsize2(a usize, b usize) usize {if a < b {a;} else {b;};}
+
+// A code point as UTF-8
+fn utf8Of(cp u32) String {
+  mut s = String.empty();
+  if cp < 128u32 {s.appendByte(u8.from(cp));}
+  elif cp < 2048u32 {
+    s.appendByte(u8.from(192u32 | (cp >> 6u32)));
+    s.appendByte(u8.from(128u32 | (cp & 63u32)));
+  }
+  elif cp < 65536u32 {
+    s.appendByte(u8.from(224u32 | (cp >> 12u32)));
+    s.appendByte(u8.from(128u32 | ((cp >> 6u32) & 63u32)));
+    s.appendByte(u8.from(128u32 | (cp & 63u32)));
+  }
+  else {
+    s.appendByte(u8.from(240u32 | (cp >> 18u32)));
+    s.appendByte(u8.from(128u32 | ((cp >> 12u32) & 63u32)));
+    s.appendByte(u8.from(128u32 | ((cp >> 6u32) & 63u32)));
+    s.appendByte(u8.from(128u32 | (cp & 63u32)));
+  }
+  s;
+}
