@@ -125,6 +125,35 @@ fn betweenStore(s &mut Shape, t &mut Shape) i32 {
   return 0;
 }
 
+// ... through what the callee calls, or a struct holding the enum, a body that cannot be
+// seen, a swap, and a store of a struct holding the enum
+struct Holder { pub sh Shape; }
+fn viaRect(t &mut Shape) bool { toRect(t); }
+fn resetHolder(h &mut Holder) bool { h.sh = Shape.Rect(2); true; }
+extern fn mystery(t &mut Shape) bool;
+
+fn betweenDeeper(s &mut Shape, t &mut Shape) i32 {
+  if s is Circle and viaRect(t) and s.radius > 0 { return 1; }  //~ ErrorNarrowStale "the call at"
+  return 0;
+}
+fn betweenHolder(s &mut Shape, h &mut Holder) i32 {
+  if s is Circle and resetHolder(h) and s.radius > 0 { return 1; }   //~ ErrorNarrowStale "the call at"
+  return 0;
+}
+fn betweenUnseen(s &mut Shape, t &mut Shape) i32 {
+  if s is Circle and mystery(t) { return s.radius; }                 //~ ErrorNarrowStale "the call at"
+  return 0;
+}
+fn betweenSwap(s &mut Shape, t &mut Shape, other Shape) i32 {
+  mut u = other;
+  if s is Circle and { *t <=> u; true; } and s.radius > 0 { return 1; }   //~ ErrorNarrowStale "the store at"
+  return 0;
+}
+fn betweenHolderStore(s &mut Shape, h &mut Holder) i32 {
+  if s is Circle and { h.sh = Shape.Dot; true; } and s.radius > 0 { return 1; }   //~ ErrorNarrowStale "the store at"
+  return 0;
+}
+
 // A call before the test, or a number's operator or a field between, is none
 fn beforeTest(s &mut Shape, t &mut Shape) i32 {
   if toRect(t) and s is Circle and s.radius > 0 { return s.radius; }

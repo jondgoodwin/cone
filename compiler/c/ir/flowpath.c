@@ -1203,6 +1203,10 @@ static FnDclNode *pwMethod(FnCallNode *call) {
     return parms->used > 0 && ((VarDclNode *)nodesGet(parms, 0))->namesym == selfName ? (FnDclNode *)fn : NULL;
 }
 
+FnDclNode *flowCallMethod(FnCallNode *call) {
+    return pwMethod(call);
+}
+
 // Does a receiver's borrow with this access change it, so that it is
 // two-phase: reserved while the arguments are walked, activated at the call?
 static int pwTwoPhase(int access) {

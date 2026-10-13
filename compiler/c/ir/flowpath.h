@@ -161,6 +161,9 @@ void flowPathWalk(FnDclNode *fndcl, int loans, int drops, int seams);
 extern int flowWalkFinal;
 extern int flowShapeRetry;
 
+// The method a call calls, when its first argument is the method's receiver (else NULL)
+FnDclNode *flowCallMethod(FnCallNode *call);
+
 // Print the walk's tallies for -V 2
 void flowPathPrint();
 

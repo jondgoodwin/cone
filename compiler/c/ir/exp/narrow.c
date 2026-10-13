@@ -6,9 +6,22 @@
 */
 
 #include "../ir.h"
+#include "../flowpath.h"
+#include "../reshape.h"
+#include "../shapeinfer.h"
 
 #include <stdio.h>
 #include <stdlib.h>
+
+// The calls and stores made along a path, newest first, from the first test of the function on:
+// a path that joins two others keeps both, so what was made since a point is found by
+// walking back from the path's end to it
+typedef struct NarrowCall {
+    INode *call;                // a call, an assignment or a swap; NULL where two paths meet
+    struct NarrowCall *prev;
+    struct NarrowCall *prev2;   // where two paths meet: the other one
+    uint32_t seen;              // the walk that last came by
+} NarrowCall;
 
 // One variable's knowledge: which variants of its enum it may hold here
 typedef struct NarrowFact {
@@ -31,15 +44,14 @@ typedef struct NarrowFact {
     uint8_t anchorhead;
     uint8_t transient;      // made inside one condition ('s is Circle and s.radius > 3'): no local, a narrowed copy
     uint8_t shared;         // the name is a reference other references may share
-    // The calls made when it was tested (gEpoch). A reference others may share is held by a
+    // The calls made when it was tested (gCalls). A reference others may share is held by a
     // local the loan walk follows from where the local is declared, or has no local at all, so
-    // a call made between the test and there could change the variant unseen.
-    uint32_t epoch;
+    // a call made between the test and there that could reach the enum changes the variant unseen.
+    NarrowCall *calls;
 } NarrowFact;
 
 struct NarrowEnv {
-    uint32_t epoch;         // how many calls had been made on the path this is the end of
-    INode *lastcall;        // and the last of them
+    NarrowCall *calls;      // the calls made on the path this is the end of
     uint32_t used;
     NarrowFact facts[1];
 };
@@ -83,13 +95,15 @@ static uint32_t gOpenCap;
 static int gLocalAssume;        // facts being made are those of one condition
 
 // Calls (and stores through a name) made so far on the path being checked, which a name
-// narrowed through a reference others may share must not have a call of between its test and
-// its protection: the epoch is kept with each environment, as a path's own
-static uint32_t gEpoch;
-static INode *gLastCall;
+// narrowed through a reference others may share must not have a call that could reach the
+// enum between its test and its protection: kept with each environment, as a path's own.
+// Nothing is kept before the function's first test, which no narrowing can follow
+static NarrowCall *gCalls;
+static uint32_t gTestBase;      // the first of gTests that is the function being checked's
+static uint32_t gWalkStamp;
 
-// The epoch each test was checked at, by its node
-typedef struct { INode *test; uint32_t epoch; } NarrowTest;
+// The calls made on the path when each test was checked, by its node
+typedef struct { INode *test; NarrowCall *calls; } NarrowTest;
 static NarrowTest *gTests;
 static uint32_t gTestUsed;
 static uint32_t gTestCap;
@@ -150,15 +164,15 @@ static StructNode *narrowVariantOf(NarrowFact *fact) {
 }
 
 // A fact just made single: a narrowing made here and now
-static uint32_t narrowTestEpoch(INode *test) {
+static NarrowCall *narrowTestCalls(INode *test) {
     for (uint32_t i = gTestUsed; i > 0; --i)
         if (gTests[i - 1].test == test)
-            return gTests[i - 1].epoch;
-    return gEpoch;
+            return gTests[i - 1].calls;
+    return gCalls;
 }
 
 static void narrowFresh(NarrowFact *fact, INode *test) {
-    fact->epoch = narrowTestEpoch(test);
+    fact->calls = narrowTestCalls(test);
     fact->test = test;
     fact->depth = (uint16_t)gLoopDepth;
     fact->cause = NULL;
@@ -240,8 +254,7 @@ NarrowEnv *narrowSave(void) {
     if (gUsed == 0)
         return NULL;
     NarrowEnv *env = (NarrowEnv *)memAllocBlk(sizeof(NarrowEnv) + (gUsed - 1) * sizeof(NarrowFact));
-    env->epoch = gEpoch;
-    env->lastcall = gLastCall;
+    env->calls = gCalls;
     env->used = gUsed;
     memcpy(env->facts, gFacts, gUsed * sizeof(NarrowFact));
     return env;
@@ -257,8 +270,7 @@ void narrowRestore(NarrowEnv *env) {
     }
     memcpy(gFacts, env->facts, env->used * sizeof(NarrowFact));
     gUsed = env->used;
-    gEpoch = env->epoch;
-    gLastCall = env->lastcall;
+    gCalls = env->calls;
 }
 
 // What holds where two paths meet: a name may hold any variant either path says it may.
@@ -271,9 +283,16 @@ NarrowEnv *narrowJoin(NarrowEnv *a, NarrowEnv *b) {
     NarrowEnv *out = (NarrowEnv *)memAllocBlk(sizeof(NarrowEnv) + (na + nb) * sizeof(NarrowFact));
     out->used = 0;
     // Either path's calls were made
-    uint32_t ea = a ? a->epoch : 0, eb = b ? b->epoch : 0;
-    out->epoch = ea > eb ? ea : eb;
-    out->lastcall = ea > eb ? a->lastcall : b ? b->lastcall : NULL;
+    NarrowCall *ca = a ? a->calls : NULL, *cb = b ? b->calls : NULL;
+    if (ca == cb)
+        out->calls = ca;
+    else {
+        NarrowCall *both = (NarrowCall *)memAllocBlk(sizeof(NarrowCall));
+        memset(both, 0, sizeof(NarrowCall));
+        both->prev = ca;
+        both->prev2 = cb;
+        out->calls = both;
+    }
     for (uint32_t i = 0; i < na; ++i) {
         NarrowFact fact = a->facts[i];
         NarrowFact *other = NULL;
@@ -316,9 +335,9 @@ NarrowEnv *narrowJoin(NarrowEnv *a, NarrowEnv *b) {
 }
 
 void narrowFnBegin(NarrowFnSave *save) {
-    save->epoch = gEpoch;
-    save->lastcall = gLastCall;
+    save->calls = gCalls;
     save->tests = gTestUsed;
+    save->testbase = gTestBase;
     save->env = narrowSave();
     save->depth = gLoopDepth;
     save->frames = gFrame;
@@ -329,8 +348,8 @@ void narrowFnBegin(NarrowFnSave *save) {
     gFrame = NULL;
     gStmt = NULL;
     gLocalAssume = 0;
-    gEpoch = 0;
-    gLastCall = NULL;
+    gCalls = NULL;
+    gTestBase = gTestUsed;
 }
 
 void narrowFnEnd(NarrowFnSave *save) {
@@ -339,9 +358,9 @@ void narrowFnEnd(NarrowFnSave *save) {
     gFrame = (NarrowFrame *)save->frames;
     gLazyUsed = save->lazy;
     gStmt = (INode *)save->stmt;
-    gEpoch = save->epoch;
-    gLastCall = (INode *)save->lastcall;
+    gCalls = (NarrowCall *)save->calls;
     gTestUsed = save->tests;
+    gTestBase = save->testbase;
 }
 
 // ---- Calls between a test and where it is protected ----
@@ -353,7 +372,7 @@ void narrowNoteTest(INode *test) {
         gTests = (NarrowTest *)realloc(gTests, gTestCap * sizeof(NarrowTest));
     }
     gTests[gTestUsed].test = test;
-    gTests[gTestUsed].epoch = gEpoch;
+    gTests[gTestUsed].calls = gCalls;
     ++gTestUsed;
 }
 
@@ -361,14 +380,69 @@ void narrowNoteTest(INode *test) {
 // reached through a reference others may share, which nothing follows until the local that
 // holds the narrowed reference is declared
 void narrowCallMade(INode *call) {
-    ++gEpoch;
-    gLastCall = call;
+    if (gTestUsed <= gTestBase)
+        return;
+    NarrowCall *made = (NarrowCall *)memAllocBlk(sizeof(NarrowCall));
+    memset(made, 0, sizeof(NarrowCall));
+    made->call = call;
+    made->prev = gCalls;
+    gCalls = made;
 }
 
-// A narrowing of a shared reference that a call has come between the test and the local that
-// holds it: it is not held, and the name is no longer known to be the variant
-static int narrowCalledSince(NarrowFact *fact) {
-    return fact->epoch != gEpoch && gLastCall != NULL;
+// Could this call, or store, change which variant a value of the enum holds? A call is asked
+// what the loan walk asks of one made while a narrowed reference is held (reshape.h): handed
+// anything that reaches the enum by a path it may write and whose body stores over it or
+// cannot be seen, or any that may write a global the enum is reached through (the reference
+// may be a caller's lent view of one). A store is asked whether it replaces a value holding
+// the enum whole; writing a field within a variant is no change. A callee not checked yet
+// is taken as reaching it, as is anything that is none of these
+static int narrowCallReaches(INode *node, StructNode *enumdcl) {
+    INode *cont = (INode *)enumdcl;
+    switch (node->tag) {
+    case AssignTag:
+    {
+        INode *lval = ((AssignNode *)node)->lval;
+        return lval->tag == VTupleTag || reshapeStoreHits(lval, cont) || iexpGetTypeDcl(lval) == NULL;
+    }
+    case SwapTag:
+        return reshapeStoreHits(((SwapNode *)node)->lval, cont) || reshapeStoreHits(((SwapNode *)node)->rval, cont);
+    case FnCallTag:
+    {
+        uint32_t unsettled = shapeUnsettled;
+        ReshapeVerdict verdict;
+        int hit = reshapeCall((FnCallNode *)node, flowCallMethod((FnCallNode *)node), 0, cont, NULL, 2,
+            &verdict, NULL, 0, 0);
+        return hit || shapeUnsettled != unsettled;
+    }
+    default:
+        return 1;
+    }
+}
+
+// The first call or store made on the path from 'stop' to 'node' that could reach the enum
+static INode *narrowWalkCalls(NarrowCall *node, NarrowCall *stop, StructNode *enumdcl, uint32_t stamp) {
+    for (; node != NULL && node != stop && node->seen != stamp; node = node->prev) {
+        node->seen = stamp;
+        if (node->call != NULL) {
+            if (narrowCallReaches(node->call, enumdcl))
+                return node->call;
+        }
+        else if (node->prev2 != NULL) {
+            INode *found = narrowWalkCalls(node->prev2, stop, enumdcl, stamp);
+            if (found != NULL)
+                return found;
+        }
+    }
+    return NULL;
+}
+
+// A narrowing of a shared reference that a call or a store has come between the test and the
+// local that holds it, which could change the variant: it is not held, and the name is no
+// longer known to be the variant. The change is returned
+static INode *narrowReachedSince(NarrowFact *fact) {
+    if (fact->calls == gCalls)
+        return NULL;
+    return narrowWalkCalls(gCalls, fact->calls, fact->enumdcl, ++gWalkStamp);
 }
 
 // ---- What a condition says ----
@@ -610,8 +684,9 @@ void narrowAnchorArm(BlockNode *arm, uint16_t scope) {
         NarrowFact *fact = &gFacts[i];
         if (fact->shared && narrowIsSingle(fact->possible) && fact->holder == NULL && fact->anchor == NULL
             && !fact->transient) {
-            if (narrowCalledSince(fact)) {
-                narrowKillFact(fact, gLastCall);
+            INode *reached = narrowReachedSince(fact);
+            if (reached != NULL) {
+                narrowKillFact(fact, reached);
                 continue;
             }
             fact->anchor = (INode *)arm;
@@ -630,8 +705,9 @@ void narrowAnchorAfter(INode *ifnode, uint16_t scope, int direct) {
         NarrowFact *fact = &gFacts[i];
         if (fact->shared && narrowIsSingle(fact->possible) && fact->holder == NULL && fact->anchor == NULL
             && !fact->transient) {
-            if (narrowCalledSince(fact)) {
-                narrowKillFact(fact, gLastCall);
+            INode *reached = narrowReachedSince(fact);
+            if (reached != NULL) {
+                narrowKillFact(fact, reached);
                 continue;
             }
             fact->anchor = ifnode;
@@ -832,10 +908,11 @@ void narrowReceiver(TypeCheckState *pstate, FnCallNode *node) {
             node->objfn = (INode *)held;
         }
         else if (fact->transient) {
-            // Nothing follows the copy from the test to here: a call made between could
-            // have changed the variant
-            if (narrowCalledSince(fact)) {
-                narrowStaleError(node, var, member, variant, gLastCall);
+            // Nothing follows the copy from the test to here: a call made between that could
+            // reach the enum could have changed the variant
+            INode *reached = narrowReachedSince(fact);
+            if (reached != NULL) {
+                narrowStaleError(node, var, member, variant, reached);
                 return;
             }
             node->objfn = (INode *)castNarrowRef(node->objfn, narrowRefTo((RefNode *)usetype, variant));
