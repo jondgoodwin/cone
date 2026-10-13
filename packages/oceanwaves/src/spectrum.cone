@@ -1,0 +1,171 @@
+// ======== The wave spectrum: JONSWAP, spread in direction ========
+//
+// FREQUENCY SPECTRUM. JONSWAP (Hasselmann et al., "Measurements of wind-wave growth and swell decay
+// during the Joint North Sea Wave Project", 1973), the spectrum of a sea still growing under the wind
+// over a limited FETCH (the distance of open water the wind has blown over):
+//
+//     S(w) = alpha g^2 w^-5 exp(-5/4 (wp / w)^4) gamma^r,
+//     r = exp(-(w - wp)^2 / (2 sigma^2 wp^2)),  sigma = 0.07 (w <= wp), 0.09 (w > wp)
+//     alpha = 0.076 (U^2 / (F g))^0.22,   wp = 22 (g^2 / (U F))^(1/3)
+//
+// U is the wind at 10 m, F the fetch, gamma = 3.3 the peak enhancement. For a fetch long enough that
+// the sea is fully developed, alpha falls to the Pierson-Moskowitz constant 0.0081 and wp to 0.877 g / U
+// (Pierson and Moskowitz 1964); both are used as limits, so the spectrum is JONSWAP over short fetch and
+// Pierson-Moskowitz (with its peak enhancement still) beyond. A fully developed sea has a significant
+// wave height near 0.0246 U^2 (a 25 m/s gale: 15 m).
+//
+// DIRECTION. The Hasselmann et al. (1980) / Mitsuyasu spreading, in the form Horvath gives
+// ("Empirical Directional Wave Spectra for Computer Graphics", 2015):
+//
+//     D(w, theta) = Q(s) |cos((theta - theta_wind) / 2)|^(2s),
+//     s = 6.97 (w/wp)^4.06  for w < 1.05 wp,  9.77 (w/wp)^(-2.33 - 1.45 (U wp / g - 1.17))  above
+//
+// so the waves at the peak are spread over about +-30 degrees and the short waves wider. Q(s) is the
+// normalisation that makes the integral of D over the circle 1, which is the ratio of two gamma
+// functions, worked out by the Lanczos approximation.
+//
+// DISPERSION. w^2 = g k tanh(k d), the linear wave theory's relation at depth d (deep water, d large:
+// w^2 = g k), so long waves outrun short ones.
+
+pub const GRAVITY = 9.81f32;
+
+pub struct SeaState {
+  pub windSpeed f32;         // m/s at 10 m
+  pub windDirection f32;     // radians from +x toward +z: the way the waves travel
+  pub fetch f32;             // metres of open water the wind has blown over
+  pub depth f32;             // metres (1000: deep)
+  pub peakEnhancement f32;   // JONSWAP's gamma, 3.3
+  pub spread f32;            // multiplies the directional exponent: above 1 narrower, below broader
+
+  // A sea under a wind of 'windSpeed' m/s blowing toward 'windDirection', over 'fetch' metres
+  pub fn make(windSpeed f32, windDirection f32, fetch f32) SeaState {
+    new SeaState(windSpeed, windDirection, fetch, 1000., 3.3, 1.);
+  }
+
+  // The sea of a Beaufort force 0 to 12 (the wind speeds the scale's mid-points give, in m/s), over
+  // a long fetch: a calm is a mirror, force 4 a moderate breeze with white horses, force 8 a gale,
+  // force 10 a storm
+  pub fn beaufort(force i32, windDirection f32) SeaState {
+    imm speeds = [0.1, 0.9, 2.4, 4.4, 6.7, 9.4, 12.3, 15.5, 19., 23., 27., 31.5, 36.];
+    mut f = force;
+    if f < 0 { f = 0; }
+    if f > 12 { f = 12; }
+    SeaState.make(speeds[usize.from(f)], windDirection, 150000.);
+  }
+
+  // JONSWAP's alpha
+  pub fn alpha(self &) f32 {
+    imm u = fmax(windSpeed, 0.05);
+    imm a = 0.076 * libc.powf(u * u / (fetch * GRAVITY), 0.22);
+    fmax(a, 0.0081);
+  }
+
+  // The peak angular frequency, rad/s: the fetch-limited value, but no lower than the fully developed
+  // sea's 0.877 g / U
+  pub fn peakFrequency(self &) f32 {
+    imm u = fmax(windSpeed, 0.05);
+    imm limited = 22. * libc.powf(GRAVITY * GRAVITY / (u * fetch), 1. / 3.);
+    imm developed = 0.877 * GRAVITY / u;
+    fmax(limited, developed);
+  }
+
+  // The frequency spectrum S(w), m^2 s
+  pub fn density(self &, w f32) f32 {
+    if w <= 0.0001 { return 0.; }
+    imm wp = self.peakFrequency();
+    imm sigma = if w <= wp { 0.07; } else { 0.09; };
+    imm r = libc.expf(0. - (w - wp) * (w - wp) / (2. * sigma * sigma * wp * wp));
+    imm w5 = w * w * w * w * w;
+    self.alpha() * GRAVITY * GRAVITY / w5 * libc.expf(-1.25 * libc.powf(wp / w, 4.)) * libc.powf(peakEnhancement, r);
+  }
+
+  // The directional exponent s at frequency w
+  pub fn spreadExponent(self &, w f32) f32 {
+    imm wp = self.peakFrequency();
+    imm ratio = w / wp;
+    mut s f32 = 0.;
+    if ratio < 1.05 {
+      s = 6.97 * libc.powf(ratio, 4.06);
+    } else {
+      imm mu = -2.33 - 1.45 * (fmax(windSpeed, 0.05) * wp / GRAVITY - 1.17);
+      s = 9.77 * libc.powf(ratio, mu);
+    }
+    fmax(s * spread, 0.05);
+  }
+
+  // The directional factor D(w, theta): integrates to 1 over theta in [-pi, pi)
+  pub fn direction(self &, w f32, theta f32) f32 {
+    imm s = self.spreadExponent(w);
+    imm c = libc.fabsf(libc.cosf((theta - windDirection) * 0.5));
+    gammaRatio(s) * libc.powf(c, 2. * s);
+  }
+
+  // The significant wave height implied: 4 sqrt(m0), m0 the integral of S(w) over w
+  pub fn significantHeight(self &) f32 {
+    imm wp = self.peakFrequency();
+    imm lo = wp * 0.2;
+    imm hi = wp * 14.;
+    imm steps = 6000;
+    imm dw = (hi - lo) / f32.from(steps);
+    mut m0 f64 = 0d;
+    mut i = 0;
+    while i < steps {
+      imm w = lo + (f32.from(i) + 0.5) * dw;
+      m0 = m0 + f64.from(self.density(w) * dw);
+      i = i + 1;
+    }
+    f32.from(4d * libc.sqrt(m0));
+  }
+
+  // The peak wave period, s, and wavelength, m (deep water)
+  pub fn peakPeriod(self &) f32 { 6.28318530718 / self.peakFrequency(); }
+  pub fn peakWavelength(self &) f32 {
+    imm w = self.peakFrequency();
+    6.28318530718 * GRAVITY / (w * w);
+  }
+}
+
+fn fmax(a f32, b f32) f32 { if a > b { a; } else { b; }; }
+
+// ln Gamma(x) by Lanczos' approximation (g = 7, n = 9), for x > 0
+fn lnGamma(x f64) f64 {
+  imm c = [0.99999999999980993d, 676.5203681218851d, -1259.1392167224028d, 771.32342877765313d,
+    -176.61502916214059d, 12.507343278686905d, -0.13857109526572012d, 9.9843695780195716e-6d, 1.5056327351493116e-7d];
+  imm xx = x - 1d;
+  mut a = c[0usize];
+  imm t = xx + 7.5d;
+  mut i = 1usize;
+  while i < 9usize {
+    a = a + c[i] / (xx + f64.from(i));
+    i = i + 1usize;
+  }
+  0.5d * libc.log(6.283185307179586d) + (xx + 0.5d) * libc.log(t) - t + libc.log(a);
+}
+
+// Q(s) = Gamma(s + 1) / (2 sqrt(pi) Gamma(s + 1/2)): what makes cos^(2s)(theta / 2) integrate to 1
+fn gammaRatio(s f32) f32 {
+  imm sd = f64.from(s);
+  f32.from(libc.exp(lnGamma(sd + 1d) - lnGamma(sd + 0.5d)) / (2d * 1.7724538509055159d));
+}
+
+// The dispersion relation: w for the wavenumber k at depth d
+pub fn angularFrequency(k f32, depth f32) f32 {
+  imm kd = k * depth;
+  mut th f32 = 1.;
+  if kd < 20. {
+    imm e = libc.expf(2. * kd);
+    th = (e - 1.) / (e + 1.);
+  }
+  (GRAVITY * k * th).sqrt();
+}
+
+// dw/dk: the group velocity
+pub fn groupVelocity(k f32, depth f32) f32 {
+  imm kd = k * depth;
+  imm w = angularFrequency(k, depth);
+  if kd >= 20. { return GRAVITY / (2. * w); }
+  imm e = libc.expf(2. * kd);
+  imm th = (e - 1.) / (e + 1.);
+  imm sech2 = 1. - th * th;
+  GRAVITY * (th + kd * sech2) / (2. * w);
+}

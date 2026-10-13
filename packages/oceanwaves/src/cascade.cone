@@ -1,0 +1,305 @@
+// ======== One cascade: a tile of ocean from the spectrum, by FFT ========
+//
+// THE METHOD is Tessendorf's, "Simulating Ocean Water" (SIGGRAPH course notes, 2001). The surface of
+// a tile L metres square is a sum of waves, one for each wave vector k = 2 pi (m, n) / L:
+//
+//     h(x, t) = sum over k of H(k, t) exp(i k . x),
+//     H(k, t) = h0(k) exp(-i w t) + conj(h0(-k)) exp(+i w t),   w = sqrt(g k tanh(k d))
+//
+// (the second term makes the sum real; the first is the wave going along +k, the second the one going
+// along -k, so the wave vector's direction is the direction of travel). The
+// initial amplitudes h0 are a Gaussian random number of each wave, scaled by the spectrum so the
+// surface's variance is the spectrum's:
+//
+//     |h0(k)|^2 on average = 1/2 S(w) D(theta) (dw/dk) / k  (2 pi / L)^2
+//
+// (S(w) D(theta) is the energy per unit frequency and angle; dividing by k and multiplying by the
+// cell of wave-vector space turns it into the energy of this one wave; the half is because a wave and
+// its mirror, -k, are two terms of the sum). The sum is evaluated for all x at once by an inverse FFT.
+//
+// A cascade holds only the waves between kMin and kMax: a sea is several cascades of different tile
+// sizes, each carrying its own band, so a swell 300 m long and ripples 2 m long are both resolved
+// without a grid fine enough for the ripples over a tile big enough for the swell (the technique of
+// Crysis and Assassin's Creed IV's ocean, Jerry Tessendorf and Yuri Kryachko). The bands do not
+// overlap, so no wave is counted twice.
+//
+// CHOPPINESS. Waves of the sum above are sinusoids, with round crests. Real crests are sharper: a
+// water particle moves forward at the crest and back in the trough, so the points of the surface bunch
+// up toward each crest (for the wave A cos(kx - wt) the displacement is -A sin(kx - wt)). The horizontal
+// displacement D(x, t) = sum of +i (k / |k|) H exp(i k . x) (the sign is the opposite of Tessendorf's,
+// because of the time convention above); the point that was at x is drawn at x + lambda D (lambda, the
+// choppiness). The Jacobian of that mapping,
+//
+//     J = (1 + lambda dDx/dx)(1 + lambda dDz/dz) - (lambda dDx/dz)^2,
+//
+// is 1 on flat water, falls where the surface bunches up at crests, and is 0 or negative where it folds
+// over: the waves BREAK, and the foam is made there (Tessendorf, and Jensen and Golias, "Deep-Ocean
+// Simulation", GPU Gems ch. 1, 2004). Every derivative is another inverse FFT of the spectrum times
+// i k, so eight fields come from four complex FFTs, two real fields packed into one (the transform of
+// a + i b is the sum of the transforms, each of which is real because its spectrum is Hermitian).
+
+pub struct CascadeSpec {
+  pub length f32;       // tile size, metres
+  pub n usize;          // samples across, a power of two
+  pub kMin f32;         // the band of wavenumbers, rad/m, [kMin, kMax)
+  pub kMax f32;
+}
+
+pub struct Cascade {
+  pub spec CascadeSpec;
+  fft Fft;
+  h0re List[f32];
+  h0im List[f32];
+  omega List[f32];
+  pub height List[f32];      // after 'update': the surface height, m
+  pub dispX List[f32];       // the horizontal displacement D (before the choppiness lambda), m
+  pub dispZ List[f32];
+  pub slopeX List[f32];      // the surface slope dh/dx
+  pub slopeZ List[f32];
+  pub dxx List[f32];         // dDx/dx, dDz/dz and dDx/dz (before lambda): the displacement's derivatives
+  pub dzz List[f32];
+  pub dxz List[f32];
+  pub jacobian List[f32];    // J at lambda = the last update's choppiness
+  pub foam List[f32];        // 0 .. 1, persisting from update to update
+  sr List[f32];              // scratch
+  si List[f32];
+  row List[f32];
+  rowI List[f32];
+  varianceSum f64;           // the sum over k of the expected variance of each wave (for tests)
+
+  // The tile's waves for 'sea', each wave's random amplitude from 'seed'
+  pub fn make(spec CascadeSpec, sea &SeaState, seed u32) Cascade {
+    imm n = spec.n;
+    mut c = new Cascade(spec, Fft.make(n), zeros(n * n), zeros(n * n), zeros(n * n), zeros(n * n), zeros(n * n), zeros(n * n),
+      zeros(n * n), zeros(n * n), zeros(n * n), zeros(n * n), zeros(n * n), zeros(n * n), zeros(n * n), zeros(n * n), zeros(n * n),
+      zeros(n), zeros(n), 0d);
+    c.synthesise(sea, seed);
+    c;
+  }
+
+  // The initial amplitudes and frequencies again, for a new sea state (the same seed: the same random
+  // numbers, so the sea changes character without changing which wave is where)
+  pub fn synthesise(self &mut, sea &SeaState, seed u32) {
+    imm n = spec.n;
+    imm dk = 6.28318530718 / spec.length;
+    mut vsum = 0d;
+    mut iz = 0usize;
+    while iz < n {
+      imm mz = if iz < n / 2usize { f32.from(iz); } else { f32.from(iz) - f32.from(n); };
+      mut ix = 0usize;
+      while ix < n {
+        imm mx = if ix < n / 2usize { f32.from(ix); } else { f32.from(ix) - f32.from(n); };
+        imm kx = mx * dk;
+        imm kz = mz * dk;
+        imm k = (kx * kx + kz * kz).sqrt();
+        imm i = iz * n + ix;
+        h0re.set(i, 0.);
+        h0im.set(i, 0.);
+        omega.set(i, 0.);
+        if k > 0.0001 and k >= spec.kMin and k < spec.kMax {
+          imm w = angularFrequency(k, sea.depth);
+          imm theta = libc.atan2f(kz, kx);
+          imm variance = sea.density(w) * sea.direction(w, theta) * groupVelocity(k, sea.depth) / k * dk * dk;
+          vsum = vsum + f64.from(variance);
+          // two independent standard normals from the wave's hashed index (Box-Muller)
+          imm h = noise.pcg3d(new noise.UVec3(u32.from(ix) ^ (seed * 0x9E3779B1u32), u32.from(iz), seed));
+          imm u1 = (f32.from(h.x >> 8u32) + 0.5) * 0.000000059604644775390625;
+          imm u2 = f32.from(h.y >> 8u32) * 0.000000059604644775390625;
+          imm r = (-2. * libc.logf(u1)).sqrt();
+          imm amp = variance.sqrt() * 0.5;
+          h0re.set(i, r * libc.cosf(6.28318530718 * u2) * amp);
+          h0im.set(i, r * libc.sinf(6.28318530718 * u2) * amp);
+          omega.set(i, w);
+        }
+        ix = ix + 1usize;
+      }
+      iz = iz + 1usize;
+    }
+    varianceSum = vsum;
+  }
+
+  // The sum of the expected variances of every wave in the band: what the surface's mean square height
+  // is expected to be (m^2), the integral of the spectrum over the band
+  pub fn expectedVariance(self &) f64 { varianceSum; }
+
+  // Replace every wave with the one wave A cos(k . x - w t + phase), k = 2 pi (mx, mz) / L, w the
+  // dispersion relation's at depth 'depth' (for checking the FFT's conventions against the closed form)
+  pub fn setSingleWave(self &mut, mx i32, mz i32, amplitude f32, phase f32, depth f32) {
+    imm n = spec.n;
+    mut i = 0usize;
+    while i < n * n { h0re.set(i, 0.); h0im.set(i, 0.); omega.set(i, 0.); i = i + 1usize; }
+    imm ix = wrapIndex(mx, n);
+    imm iz = wrapIndex(mz, n);
+    imm dk = 6.28318530718 / spec.length;
+    imm k = (f32.from(mx * mx + mz * mz)).sqrt() * dk;
+    imm w = angularFrequency(k, depth);
+    h0re.set(iz * n + ix, 0.5 * amplitude * libc.cosf(phase));
+    h0im.set(iz * n + ix, 0.5 * amplitude * libc.sinf(phase));
+    omega.set(iz * n + ix, w);
+    omega.set(wrapIndex(-mz, n) * n + wrapIndex(-mx, n), w);
+    varianceSum = f64.from(amplitude * amplitude * 0.5);
+  }
+
+  // Fill the scratch lists with the spectrum of the 'pack'th pair of fields at time t
+  fn fillPack(self &mut, pack i32, t f64) {
+    imm n = spec.n;
+    {
+      imm rr = sr.viewMut();
+      imm ii = si.viewMut();
+      mut iz = 0usize;
+      while iz < n {
+        imm mz = if iz < n / 2usize { f32.from(iz); } else { f32.from(iz) - f32.from(n); };
+        mut ix = 0usize;
+        while ix < n {
+          imm mx = if ix < n / 2usize { f32.from(ix); } else { f32.from(ix) - f32.from(n); };
+          imm i = iz * n + ix;
+          imm j = ((n - iz) % n) * n + ((n - ix) % n);
+          imm w = *omega[i];
+          mut hr f32 = 0.;
+          mut hi f32 = 0.;
+          mut kxk f32 = 0.;
+          mut kzk f32 = 0.;
+          mut k f32 = 0.;
+          if w > 0. {
+            // wave (ix, iz) at time t: the phase wraps at a whole number of turns to keep f32 accurate
+            imm ph = f32.from(libc.fmod(f64.from(w) * t, 6.283185307179586d));
+            imm c = libc.cosf(ph);
+            imm s = libc.sinf(ph);
+            imm ar = *h0re[i];
+            imm ai = *h0im[i];
+            imm br = *h0re[j];
+            imm bi = *h0im[j];
+            // h0(k) exp(-i w t) + conj(h0(-k)) exp(+i w t): the wave of vector k travels toward +k
+            // (Tessendorf writes the opposite signs, which sends it the other way)
+            hr = ar * c + ai * s + br * c + bi * s;
+            hi = ai * c - ar * s + br * s - bi * c;
+            imm dk = 6.28318530718 / spec.length;
+            imm kx = mx * dk;
+            imm kz = mz * dk;
+            k = (kx * kx + kz * kz).sqrt();
+            kxk = kx;
+            kzk = kz;
+          }
+          // the two fields of this pack, as complex spectra (re, im) each
+          mut ar f32 = 0.;
+          mut ai f32 = 0.;
+          mut br f32 = 0.;
+          mut bi f32 = 0.;
+          if k > 0. {
+            imm ux = kxk / k;
+            imm uz = kzk / k;
+            if pack == 0 {
+              ar = hr; ai = hi;                              // height
+              br = -hi * ux; bi = hr * ux;                   // Dx = +i ux H
+            } elif pack == 1 {
+              ar = -hi * uz; ai = hr * uz;                   // Dz = +i uz H
+              br = -hi * kxk; bi = hr * kxk;                 // slope x = i kx H
+            } elif pack == 2 {
+              ar = -hi * kzk; ai = hr * kzk;                 // slope z = i kz H
+              br = -hr * kxk * ux; bi = -hi * kxk * ux;      // dDx/dx = -(kx^2 / k) H
+            } else {
+              ar = -hr * kzk * uz; ai = -hi * kzk * uz;      // dDz/dz = -(kz^2 / k) H
+              br = -hr * kxk * uz; bi = -hi * kxk * uz;      // dDx/dz = -(kx kz / k) H
+            }
+          }
+          // pack = (a) + i (b)
+          rr[i] = ar - bi;
+          ii[i] = ai + br;
+          ix = ix + 1usize;
+        }
+        iz = iz + 1usize;
+      }
+    }
+  }
+
+  // The surface at time t seconds. 'lambda' is the choppiness, 'foamThreshold' the Jacobian below which
+  // foam is made, 'foamGain' how fast, 'foamDecay' the seconds it takes to fade to 1/e, 'dt' the time
+  // since the last update (for the foam's fade)
+  pub fn update(self &mut, t f64, lambda f32, foamThreshold f32, foamGain f32, foamDecay f32, dt f32) {
+    self.updateFields(t, lambda);
+    self.updateFoam(foamThreshold, foamGain, foamDecay, dt);
+  }
+
+  // The surface's fields at time t (four inverse FFTs), and the Jacobian this cascade's own displacement
+  // has at 'lambda'; the foam is not touched
+  pub fn updateFields(self &mut, t f64, lambda f32) {
+    imm n = spec.n;
+    mut pack = 0;
+    while pack < 4 {
+      self.fillPack(pack, t);
+      fft.inverse2(&mut sr, &mut si, &mut row, &mut rowI);
+      imm r2 = sr.view();
+      imm i2 = si.view();
+      mut q = 0usize;
+      while q < n * n {
+        if pack == 0 { height.set(q, r2[q]); dispX.set(q, i2[q]); }
+        elif pack == 1 { dispZ.set(q, r2[q]); slopeX.set(q, i2[q]); }
+        elif pack == 2 { slopeZ.set(q, r2[q]); dxx.set(q, i2[q]); }
+        else { dzz.set(q, r2[q]); dxz.set(q, i2[q]); }
+        q = q + 1usize;
+      }
+      pack = pack + 1;
+    }
+    mut f = 0usize;
+    while f < n * n {
+      imm a = 1. + lambda * *dxx[f];
+      imm b = 1. + lambda * *dzz[f];
+      imm c = lambda * *dxz[f];
+      jacobian.set(f, a * b - c * c);
+      f = f + 1usize;
+    }
+  }
+
+  // Foam from this cascade's own Jacobian: made where it is under 'foamThreshold' (0 to 1 at 'foamGain' a
+  // unit below it), faded by exp(-dt / foamDecay) where it is not
+  pub fn updateFoam(self &mut, foamThreshold f32, foamGain f32, foamDecay f32, dt f32) {
+    mut f = 0usize;
+    while f < spec.n * spec.n {
+      imm gen = fclampf((foamThreshold - *jacobian[f]) * foamGain, 0., 1.);
+      imm faded = *foam[f] * libc.expf(0. - dt / foamDecay);
+      foam.set(f, if gen > faded { gen; } else { faded; });
+      f = f + 1usize;
+    }
+  }
+
+  // The values at tile coordinates (u, v) in samples (not wrapped), bilinear with wrap-around
+  fn sampleAt(self &, field &List[f32], u f32, v f32) f32 {
+    imm n = spec.n;
+    imm fu = libc.floorf(u);
+    imm fv = libc.floorf(v);
+    imm tu = u - fu;
+    imm tv = v - fv;
+    imm i0 = wrapIndex(i32.from(fu), n);
+    imm i1 = wrapIndex(i32.from(fu) + 1, n);
+    imm j0 = wrapIndex(i32.from(fv), n);
+    imm j1 = wrapIndex(i32.from(fv) + 1, n);
+    imm a = *field[j0 * n + i0];
+    imm b = *field[j0 * n + i1];
+    imm c = *field[j1 * n + i0];
+    imm d = *field[j1 * n + i1];
+    imm top = a + (b - a) * tu;
+    imm bottom = c + (d - c) * tu;
+    top + (bottom - top) * tv;
+  }
+
+  // 'field' at the rest position (x, z) metres (the tile repeats every L)
+  pub fn at(self &, field &List[f32], x f32, z f32) f32 {
+    imm s = f32.from(spec.n) / spec.length;
+    self.sampleAt(field, x * s, z * s);
+  }
+}
+
+fn zeros(n usize) List[f32] {
+  mut l = List[f32].withCapacity(n);
+  l.resize(n, 0.);
+  l;
+}
+
+fn fclampf(v f32, lo f32, hi f32) f32 { if v < lo { lo; } elif v > hi { hi; } else { v; }; }
+
+fn wrapIndex(i i32, n usize) usize {
+  imm m = i32.from(n);
+  mut r = i % m;
+  if r < 0 { r = r + m; }
+  usize.from(r);
+}

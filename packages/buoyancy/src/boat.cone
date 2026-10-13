@@ -1,0 +1,146 @@
+// ======== A boat from data: hull, engine, rudder ========
+//
+// A BoatSpec is everything about a boat as numbers: the hull's stations (hull.cone's loft), the mass,
+// where the propeller is and how hard it pushes, where the rudder is and how big. A Boat is a Floater
+// (a hull in a World) plus the engine and the rudder, driven each step by two controls: 'throttle'
+// from -1 (full astern) to 1 (full ahead) and 'rudder' from -1 to 1 (a fraction of the rudder's
+// largest angle; positive turns the bow toward +z in the boat's own frame, x forward, y up).
+//
+// ENGINE: a thrust along the boat's x axis at the propeller, throttle times the largest thrust, faded
+// to nothing as the propeller comes out of the water (full when it is a radius under the surface).
+//
+// RUDDER: a lifting surface (a foil) in the flow, the textbook model (Prandtl, Abbott and von Doenhoff):
+//   - the flow is the water's velocity relative to the rudder, plus the propeller's wash (the actuator
+//     disc's induced speed, sqrt(thrust / (1/2 rho pi r^2)), along the boat, scaled by 'propWash');
+//   - its angle of attack is the rudder's angle plus the drift angle atan2(v_side, v_forward) there;
+//   - lift coefficient 2 pi alpha / (1 + 2 / AR) (the finite-span lift slope), up to a stall at 16
+//     degrees, falling off past it; drag 0.02 + CL^2 / (pi AR 0.8);
+//   - force q A (CD flow + CL lift), q = 1/2 rho V^2, at the rudder's point, so it steers by torque
+//     as well as by force; faded out as the rudder comes out of the water.
+// The hull's own drag is hull.cone's (Kerner's), which is what limits the boat's speed.
+
+pub struct BoatSpec {
+  pub stations List[Station];
+  pub mass f32;
+  pub maxThrust f32;          // N, the engine's
+  pub thrustPoint Vec3;       // the propeller's place, local
+  pub propellerRadius f32;    // m
+  pub rudderPoint Vec3;       // the rudder's place, local
+  pub rudderArea f32;         // m^2
+  pub rudderAspect f32;       // span^2 / area
+  pub maxRudder f32;          // radians at full deflection
+  pub propWash f32;           // 0 .. 1: how much of the propeller's wash reaches the rudder
+
+  // A small launch 6 m long, 2.2 m across the deck at the widest, a V hull (the chine 0.4 m above the
+  // keel, 1.7 m across there) under a flat deck 0.9 m above the bottom line, a sharp stem and a transom
+  // stern; 600 kg (it draws about 0.3 m), a 2.2 kN outboard
+  pub fn dinghy() BoatSpec {
+    mut s = List[Station].empty();
+    // x, half width at the deck, half width at the chine, keel height above the bottom line
+    imm table = [[-3.0, 0.80, 0.60, 0.10], [-2.4, 0.95, 0.72, 0.06], [-1.0, 1.10, 0.85, 0.0], [0.5, 1.10, 0.85, 0.0],
+      [1.8, 0.80, 0.55, 0.05], [2.6, 0.40, 0.22, 0.12], [3.0, 0.05, 0.03, 0.30]];
+    mut i = 0usize;
+    while i < 7usize {
+      imm x = table[i][0usize];
+      imm wd = table[i][1usize];
+      imm wc = table[i][2usize];
+      imm k = table[i][3usize];
+      mut o = List[Vec2].empty();
+      // counter-clockwise in (z, y): the keel, up the starboard side to the deck, across, down the port side
+      o.push(new Vec2(0., k));
+      o.push(new Vec2(wc, k + 0.40));
+      o.push(new Vec2(wd, 0.90));
+      o.push(new Vec2(0., 0.90));
+      o.push(new Vec2(-wd, 0.90));
+      o.push(new Vec2(-wc, k + 0.40));
+      s.push(new Station(x, o));
+      i = i + 1usize;
+    }
+    new BoatSpec(s, 600., 2200., new Vec3(-3., 0.2, 0.), 0.15, new Vec3(-3.05, 0.12, 0.), 0.12, 2.2, 0.55, 0.6);
+  }
+}
+
+pub struct Boat {
+  pub spec BoatSpec;
+  pub floater Floater;
+  pub throttle f32;
+  pub rudder f32;
+  pub thrust f32;           // the thrust now, N
+  pub rudderForce Vec3;     // the rudder's force now, world
+  pub depthAtPropeller f32;
+
+  // The boat in 'world' at 'pos' (its keel's origin) facing 'rot'
+  pub fn create(world &mut World, spec BoatSpec, pos Vec3, rot Quat) Boat {
+    imm hull = Hull.loft(&spec.stations);
+    imm f = Floater.create(world, hull, pos, rot, spec.mass, 0.);
+    new Boat(spec, f, 0., 0., 0., zero3(), 0.);
+  }
+
+  pub fn id(self &) u32 { floater.body; }
+
+  // Add the water's forces, the engine's thrust and the rudder's force for this step
+  pub fn apply[F fn(x f32, z f32) f32](self &mut, world &mut World, water &F, props &WaterProps, dt f32) {
+    floater.apply(world, water, props, dt);
+    imm id = floater.body;
+    // the engine and the rudder act where the boat will be half a step on (floater.cone)
+    imm xf = predictedPose(world, id, dt);
+    imm rot = xf.rot;
+    imm tp = xf.pos + rot * spec.thrustPoint;
+    imm depth = water(tp.x, tp.z) - tp.y;
+    depthAtPropeller = depth;
+    imm wet = smooth01(depth / spec.propellerRadius);
+    thrust = throttle * spec.maxThrust * wet;
+    pushAt(world, id, rot * new Vec3(thrust, 0., 0.), tp, xf.com);
+    // the rudder
+    imm rp = xf.pos + rot * spec.rudderPoint;
+    imm rdepth = water(rp.x, rp.z) - rp.y;
+    imm rwet = smooth01(rdepth / 0.25);
+    imm vRel = world.pointVelocity(id, rp) - props.current;
+    imm lv = rot.conjugate() * vRel;
+    // the propeller's wash: the actuator disc's induced speed, astern of the boat
+    imm washSpeed = (fmaxf(thrust, 0.) / (0.5 * props.density * 3.14159265 * spec.propellerRadius * spec.propellerRadius)).sqrt() * spec.propWash;
+    // the water's velocity past the rudder, in the boat's frame (x forward)
+    imm w = new Vec3(0. - lv.x - washSpeed, 0., 0. - lv.z);
+    imm speed = (w.x * w.x + w.z * w.z).sqrt();
+    if speed > 0.05 and rwet > 0. {
+      imm f = new Vec3(w.x / speed, 0., w.z / speed);
+      imm lift = new Vec3(0. - f.z, 0., f.x);
+      // the angle of attack: the rudder's angle plus the drift angle (the flow's angle from straight astern)
+      imm delta = rudder * spec.maxRudder;
+      imm drift = libc.atan2f(lv.z, fmaxf(lv.x + washSpeed, 0.05));
+      imm alpha = delta + drift;
+      imm slope = 6.28318530718 / (1. + 2. / spec.rudderAspect);
+      imm stall = 0.28;
+      imm aa = libc.fabsf(alpha);
+      mut cl = slope * alpha;
+      if aa > stall {
+        imm sign = if alpha > 0. { 1.; } else { -1.; };
+        imm peak = slope * stall;
+        imm fall = smooth01((aa - stall) / 0.4);
+        cl = sign * peak * (1. - 0.6 * fall);
+      }
+      imm cd = 0.02 + cl * cl / (3.14159265 * spec.rudderAspect * 0.8);
+      imm q = 0.5 * props.density * (speed * speed + 0.0) * spec.rudderArea * rwet;
+      imm fl = f * (q * cd) + lift * (q * cl);
+      rudderForce = rot * fl;
+      pushAt(world, id, rudderForce, rp, xf.com);
+    } else {
+      rudderForce = zero3();
+    }
+  }
+
+  // Set the controls, each held to [-1, 1]
+  pub fn steer(self &mut, throttleNow f32, rudderNow f32) {
+    throttle = clamp1(throttleNow);
+    rudder = clamp1(rudderNow);
+  }
+}
+
+// A force at a world point, its torque about the centre of mass 'com' given
+fn pushAt(world &mut World, id u32, f Vec3, p Vec3, com Vec3) {
+  world.applyForce(id, f);
+  world.applyTorque(id, (p - com).cross(f));
+}
+
+fn clamp1(v f32) f32 { if v < -1. { -1.; } elif v > 1. { 1.; } else { v; }; }
+fn smooth01(t f32) f32 { imm c = if t < 0. { 0.; } elif t > 1. { 1.; } else { t; }; c * c * (3. - 2. * c); }
