@@ -93,6 +93,21 @@ pub struct Joint {
   pub ellAdd f32;
   pub impEll f32;             // its accumulated impulse, about 'ellDir' (the axis it last acted about)
   pub ellDir Vec3;
+  // breaking: the joint is removed when the force it carries passes 'breakForce' (N) or the torque it carries passes
+  // 'breakTorque' (N m); negative: never. See World.setJointBreak
+  pub breakForce f32 = -1.;
+  pub breakTorque f32 = -1.;
+}
+
+// What a joint carried in a sub-step of time h: (force N, torque N m), from the accumulated impulses of the sub-step.
+// The linear rows are the point block, a slider's perpendicular rows, a rod's pull and the limits' pushes; the
+// angular rows are the orientation block, a hinge's alignment rows, the swing and twist limits. A motor's or drive's
+// impulse is the joint's own effort and is left out.
+pub fn jointLoadOf(j &Joint, h f32) (f32, f32) {
+  imm f = j.impPoint.length() + absf(j.impDist) + absf(j.impLo) + absf(j.impHi);
+  imm t = j.impAng.length() + absf(j.impSwing) + absf(j.impTwistLo) + absf(j.impTwistHi) + absf(j.impEll);
+  if h <= 0. { return (0., 0.); }
+  (f / h, t / h);
 }
 
 pub fn blankJoint(kind i32, a u32, b u32) Joint {

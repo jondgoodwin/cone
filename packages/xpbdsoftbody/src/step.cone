@@ -76,8 +76,10 @@ fn viewOf(b &mut SoftBody) StepView {
   imm dist = b.dist.viewMut() as *DistanceC;
   imm bend = b.bend.viewMut() as *BendC;
   imm curves = b.curves.viewMut() as *CurveC;
+  imm grid = b.windGrid.viewMut() as *Vec3;
   new StepView(pos, prev, vel, force, inv, tris, triForce, adjStart, adj, dist, bend, curves,
-    b.stepH, b.stepH, true, 1., b.gravity, b.stepWind, false, b.airDensity, b.skinCoeff, b.dragCoeff, b.liftCoeff);
+    b.stepH, b.stepH, true, 1., b.gravity, b.stepWind, false, b.airDensity, b.skinCoeff, b.dragCoeff, b.liftCoeff,
+    grid, b.gridOrigin, 1. / b.gridCell, if b.windGrid.len() > 0usize {b.gridNx;} else {0u32;}, b.gridNy, b.gridNz);
 }
 
 // Cross-flow drag on a rope's segments, added to the particles' forces
@@ -95,7 +97,12 @@ fn ropeWind(b &mut SoftBody, wind Vec3) {
     if len < 1e-9 { continue; }
     imm u = axis * (1. / len);
     imm vseg = (*b.vel[ia] + *b.vel[ib]) * 0.5;
-    imm vr = wind - vseg;
+    imm here = if b.windGrid.len() > 0usize {
+      sampleWindGrid(b.windGrid.view() as *Vec3, b.gridOrigin, 1. / b.gridCell, b.gridNx, b.gridNy, b.gridNz, (pa + pb) * 0.5);
+    } else {
+      wind;
+    };
+    imm vr = here - vseg;
     imm vperp = vr - u * vr.dot(u);
     imm sp = vperp.length();
     if sp < 1e-4 { continue; }

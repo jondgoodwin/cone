@@ -234,6 +234,12 @@ pub struct SoftBody {
   pub bodies List[Coupled];
   pub bodyAnchors List[BodyAnchor];
   pub breaks List[BreakEvent]; // what gave way since the program last cleared this
+  // ---- wind that varies in space ----
+  // A lattice of wind velocities (gridNx by gridNy by gridNz, x fastest, 'gridCell'
+  // metres apart from 'gridOrigin') the program fills before each step (clothrope's
+  // WindField does); a triangle takes the wind at its centre, a rope segment at its
+  // middle, trilinear between the samples. Empty: the one wind velocity 'step' is given.
+  pub windGrid List[Vec3];
   // ---- scratch ----
   pub prev List[Vec3];
   pub force List[Vec3];
@@ -276,6 +282,11 @@ pub struct SoftBody {
   // Bending is soft and slow, so it may be solved on every bendEvery-th substep,
   // with that many substeps' time (multi-rate XPBD): 1 solves it on every one
   pub bendEvery u32 = 1u32;
+  pub gridOrigin Vec3 = new Vec3(0., 0., 0.);
+  pub gridCell f32 = 1.;
+  pub gridNx u32 = 0u32;
+  pub gridNy u32 = 0u32;
+  pub gridNz u32 = 0u32;
   // The step in progress (beginStep .. endStep)
   pub stepH f32 = 0.;
   pub stepSubs u32 = 0u32;
@@ -290,7 +301,7 @@ pub struct SoftBody {
       new PressureC(false, 0., 1., 0., 0.),
       List[Collider].empty(), List[Heightfield].empty(), List[Anchor].empty(),
       Transform3.identity(), Transform3.identity(),
-      List[Coupled].empty(), List[BodyAnchor].empty(), List[BreakEvent].empty(),
+      List[Coupled].empty(), List[BodyAnchor].empty(), List[BreakEvent].empty(), List[Vec3].empty(),
       List[Vec3].empty(), List[Vec3].empty(), List[u32].empty(), List[u32].empty(), List[u32].empty(), List[u32].empty(),
       List[u32].empty(), List[u32].empty(), List[u32].empty(), List[u32].empty(), List[u32].empty(),
       List[u32].empty(), List[Vec3].empty());
@@ -351,6 +362,36 @@ pub struct SoftBody {
 
   // Couple a rigid body: its index, for 'Collider.body' and 'attachBody'. The
   // program refreshes bodies[i] before each step and applies its impulses after
+  // Give the body a wind lattice of nx by ny by nz samples, 'cell' metres apart
+  // from 'origin', all calm; the program writes windGrid before each step
+  pub fn setWindGrid(self &mut, origin Vec3, cell f32, nx u32, ny u32, nz u32) {
+    gridOrigin = origin;
+    gridCell = cell;
+    gridNx = nx;
+    gridNy = ny;
+    gridNz = nz;
+    windGrid.clear();
+    mut k = 0usize;
+    while k < usize.from(nx) * usize.from(ny) * usize.from(nz) {
+      windGrid.push(new Vec3(0., 0., 0.));
+      k = k + 1usize;
+    }
+  }
+
+  // The axis-aligned box the particles fill: (lowest corner, highest corner)
+  pub fn bounds(self &) (Vec3, Vec3) {
+    mut lo = new Vec3(1e30, 1e30, 1e30);
+    mut hi = new Vec3(-1e30, -1e30, -1e30);
+    mut i = 0usize;
+    while i < pos.len() {
+      imm p = *pos[i];
+      lo = new Vec3(fmin(lo.x, p.x), fmin(lo.y, p.y), fmin(lo.z, p.z));
+      hi = new Vec3(fmax(hi.x, p.x), fmax(hi.y, p.y), fmax(hi.z, p.z));
+      i = i + 1usize;
+    }
+    (lo, hi);
+  }
+
   pub fn addBody(self &mut, c Coupled) u32 {
     bodies.push(c);
     u32.from(bodies.len() - 1usize);
