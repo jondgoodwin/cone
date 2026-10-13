@@ -1,0 +1,320 @@
+// The froxel fog of the main view at the edges of a 1440 x 810 picture, with the eye far from the origin,
+// on a real GPU with no window. fog.slang takes a pixel's planar distance two ways: from the projection's
+// depth row for a plain perspective (the main view, with exactly the arithmetic it always had: temporal
+// anti-aliasing turns a one-level rounding difference in the fog into outliers of tens of levels at
+// silhouettes and on foliage, which a shot comparison of pegasus3d's weather scenes measured against the
+// inverse view-projection's), and from the inverse view-projection for a camera with an oblique near plane
+// (a mirror's or portal's). The two must agree on the picture.
+//
+// 1. Beer-Lambert's law across the picture: a wall across the camera's way (a plane at a planar distance,
+//    its every pixel that distance in front of the camera) seen through absorbing fog (albedo 0) is its
+//    unfogged value times exp(-extinction x distance), at the first pixel of a row, the last, the middle
+//    and between, 500 m and 2000 m away, by the plain camera and by one whose near plane is replaced by
+//    itself through the oblique clip (the second path).
+// 2. A scene of blocks of every size and distance on a sea out to the horizon, lit by a sun through a
+//    scattering fog with a history, seen by the same two cameras: no pixel differs by more than 2 levels.
+// 3. No Vulkan call failed, and the validation layer said nothing.
+//
+// FOGEDGE_DUMP, if it names a folder, makes the test write each picture of the second part there as
+// 'name'.rgba, raw.
+
+mod fogedge;
+
+import testing use *;
+import stdio use *;
+import libc;
+import geomath use *;
+import collections use *;
+import mesh use Mesh;
+import gpu use *;
+import render use *;
+
+const W = 1440u32;
+const H = 810u32;
+const WZ = 1440usize;
+const HZ = 810usize;
+
+fn preference() u32 {
+  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  if (env as usize) != 0usize and libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { return POWER_PREFERENCE_LOW_POWER; }
+  POWER_PREFERENCE_HIGH_PERFORMANCE;
+}
+
+// A renderer, its post and image-quality objects, a target and a readback
+struct Rig {
+  renderer Renderer;
+  post Post;
+  fx ImageFx;
+  color Texture;
+  readback Buffer;
+}
+
+fn makeRig(device &mut Device) Rig {
+  imm targetDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_RGBA8_UNORM_SRGB,
+    TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  mut color = device.createTexture(&targetDesc);
+  mut readback = device.createBuffer(u64.from(W) * u64.from(H) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  mut renderer = Renderer.create(device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  mut post = Post.create(device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, W, H);
+  require(renderer.isValid() and post.isValid(), "a renderer and a post");
+  mut fx = ImageFx.create(device, &renderer, &mut post);
+  require(fx.isValid(), "an image-quality object");
+  new Rig(renderer, post, fx, color, readback);
+}
+
+fn drawScene(device &mut Device, rig &mut Rig, camera &Camera, light &Light, list &DrawList) {
+  mut encoder = device.createCommandEncoder();
+  rig.fx.render(device, &mut encoder, &mut rig.renderer, &mut rig.post, camera, light, list, &rig.color);
+  encoder.copyTextureToBuffer(&rig.color, &rig.readback);
+  device.queue.submit(encoder.finish());
+  device.endFrame();
+  device.waitIdle();
+}
+
+fn absf(x f32) f32 { if x < 0. { 0. - x; } else { x; }; }
+
+// sRGB's decoding of a byte, to linear light
+fn linearOf(byte u8) f32 {
+  imm v = f32.from(byte) / 255.;
+  if v <= 0.04045 { return v / 12.92; }
+  libc.powf((v + 0.055) / 1.055, 2.4);
+}
+
+// Channel 'c' of the pixel ('x', 'y') of the picture at 'p', in linear light
+fn px(p *u8, x usize, y usize, c usize) f32 { linearOf(*(p + (y * WZ + x) * 4usize + c)); }
+
+// The picture at 'p' as bytes
+fn grab(p *u8) List[u8] {
+  mut out = List[u8].withCapacity(WZ * HZ * 4usize);
+  mut i = 0usize;
+  while i < WZ * HZ * 4usize {
+    out.push(*(p + i));
+    i = i + 1usize;
+  }
+  out;
+}
+
+// The most any pixel of the pictures 'a' and 'b' differs, in a byte of its colour, among the pixels where
+// the unfogged pictures 'bareA' and 'bareB' are the same (where the two cameras drew the same surface:
+// their depth buffers round differently, and a distant block's base z-fights the sea differently, which
+// is not the fog's); 'used' is how many pixels that is, 'over' how many differ by more than one
+fn compare(a &List[u8], b &List[u8], bareA &List[u8], bareB &List[u8], used &mut usize, over &mut usize) u32 {
+  mut worst = 0u32;
+  *used = 0usize;
+  *over = 0usize;
+  mut i = 0usize;
+  while i < WZ * HZ {
+    mut same = true;
+    mut c = 0usize;
+    while c < 3usize {
+      if *bareA[i * 4usize + c] != *bareB[i * 4usize + c] { same = false; }
+      c = c + 1usize;
+    }
+    if same {
+      *used = *used + 1usize;
+      mut pixel = 0u32;
+      c = 0usize;
+      while c < 3usize {
+        imm x = u32.from(*a[i * 4usize + c]);
+        imm y = u32.from(*b[i * 4usize + c]);
+        imm d = if x > y { x - y; } else { y - x; };
+        if d > pixel { pixel = d; }
+        c = c + 1usize;
+      }
+      if pixel > worst { worst = pixel; }
+      if pixel > 1u32 { *over = *over + 1usize; }
+    }
+    i = i + 1usize;
+  }
+  worst;
+}
+
+// If FOGEDGE_DUMP names a folder, the picture 'bytes' is written there as 'name'.rgba
+fn dump(bytes *u8, name &str) {
+  imm folder = libc.getenv("FOGEDGE_DUMP");
+  if (folder as usize) == 0usize { return; }
+  mut path = String.empty();
+  mut i = 0usize;
+  while *(folder + i) != 0u8 {
+    path.appendByte(*(folder + i));
+    i = i + 1usize;
+  }
+  path <- "/";
+  path <- name;
+  path <- ".rgba";
+  imm f = libc.fopen(path.cstr(), "wb");
+  require((f as usize) != 0usize, "the dump file opened");
+  libc.fwrite(bytes, 1usize, WZ * HZ * 4usize, f);
+  libc.fclose(f);
+}
+
+// A small deterministic random in [0, 1)
+fn rand(state &mut u32) f32 {
+  *state = *state * 1664525u32 + 1013904223u32;
+  f32.from((*state >> 8u32) & 0xFFFFu32) / 65536.;
+}
+
+// A sea to the horizon and 90 blocks of every height and width, the nearest 150 away and the farthest
+// beyond 3 km, over the width of the view
+fn blocks(sea MeshHandle, cube MeshHandle, water MaterialHandle, stone MaterialHandle, pale MaterialHandle, eye Vec3) DrawList {
+  mut list = DrawList.empty();
+  list.add(sea, water, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(30000., 1., 30000.)));
+  mut seed = 12345u32;
+  mut i = 0u32;
+  while i < 90u32 {
+    imm distance = 150. + 3000. * rand(&mut seed) * rand(&mut seed);
+    imm across = (rand(&mut seed) - 0.5) * 2.4 * distance;
+    imm height = 4. + 120. * rand(&mut seed) * rand(&mut seed);
+    imm width = 3. + 20. * rand(&mut seed);
+    imm material = if (i & 1u32) == 0u32 { stone; } else { pale; };
+    list.add(cube, material, Mat4.fromTrs(new Vec3(eye.x + across, height * 0.5 + 0.5, eye.z - distance),
+      Quat.angleAxis(rand(&mut seed) * 3., new Vec3(0., 1., 0.)), new Vec3(width, height, width)));
+    i = i + 1u32;
+  }
+  list;
+}
+
+// A camera at 'eye' looking along -z, as the main view of a game that lives far from the origin
+fn viewFrom(eye Vec3) Camera {
+  mut camera = Camera.make();
+  camera.fov = 1.0471976;
+  camera.near = 0.1;
+  camera.far = 6000.;
+  camera.background = new Color(0.55, 0.65, 0.85, 1.);
+  camera.lookAt(eye, new Vec3(eye.x, eye.y, eye.z - 100.), new Vec3(0., 1., 0.));
+  camera;
+}
+
+// The same camera with its near plane replaced, through the oblique clip, by a plane 0.1 ahead of it
+// turned 20 and 11 degrees about the vertical and the horizontal: the same picture (it clips nothing
+// the picture shows), drawn through the projection with x and y terms in the depth row
+fn clippedNear(plain &Camera, eye Vec3) Camera {
+  mut camera = *plain;
+  camera.clipped = true;
+  // (the side the picture keeps is the plane's positive one: the camera is on its negative side)
+  imm facing = mirrorPlane(new Vec3(eye.x, eye.y, eye.z - plain.near), new Vec3(0.35, 0.2, 1.), eye);
+  camera.clip = new Vec4(0. - facing.x, 0. - facing.y, 0. - facing.z, 0. - facing.w);
+  camera;
+}
+
+fn main() i32 {
+  mut instance = Instance.create("fog edge");
+  require(instance.isValid(), "a Vulkan 1.3 instance");
+  mut none = Surface.none();
+  mut adapter = instance.requestAdapter(&none, preference());
+  require(adapter.isValid(), "an adapter");
+  mut device = adapter.requestDevice();
+  require(device.isValid(), "a device");
+
+  mut rig = makeRig(&mut device);
+  rig.post.toneMapper = TONE_MAP_NONE;
+  rig.post.bloom = 0.;
+  imm p = rig.readback.mappedRange();
+  mut planeMesh = Mesh.plane(1, 1.);
+  imm sea = rig.renderer.addMesh(&mut device, &planeMesh);
+  imm cubeMesh = Mesh.cube(1.);
+  imm cube = rig.renderer.addMesh(&mut device, &cubeMesh);
+  imm white = rig.renderer.addMaterial(&mut device, &Material.plain(new Color(0.8, 0.8, 0.8, 1.)));
+  imm water = rig.renderer.addMaterial(&mut device, &Material.plain(new Color(0.05, 0.12, 0.2, 1.)));
+  imm stone = rig.renderer.addMaterial(&mut device, &Material.plain(new Color(0.3, 0.28, 0.25, 1.)));
+  imm pale = rig.renderer.addMaterial(&mut device, &Material.plain(new Color(0.8, 0.75, 0.6, 1.)));
+  imm eye = new Vec3(300., 30., -400.);
+  imm plain = viewFrom(eye);
+  imm oblique = clippedNear(&plain, eye);
+
+  // ---- 1. Beer-Lambert across the picture ----
+  imm ambientOnly = Light.directional(new Vec3(0., -1., 0.), new Color(0., 0., 0., 1.), new Color(1., 1., 1., 1.));
+  imm extinction = 0.0005;
+  imm columns = [0usize, 1usize, 360usize, 720usize, 1079usize, 1438usize, 1439usize];
+  mut worstOff = 0.;
+  mut worstApart = 0.;
+  imm distances = [500., 2000.];
+  mut w = 0usize;
+  while w < 2usize {
+    imm distance = distances[w];
+    // A wall 8 km across, thin, square on to the camera
+    mut wall = DrawList.empty();
+    wall.add(cube, white, Mat4.fromTrs(new Vec3(eye.x, eye.y, eye.z - distance), Quat.identity(), new Vec3(4000., 4000., 0.05)));
+    mut c = 0usize;
+    while c < 2usize {
+      imm camera = if c == 0usize { plain; } else { oblique; };
+      mut off = FxSettings.off();
+      rig.fx.configure(&off);
+      drawScene(&mut device, &mut rig, &camera, &ambientOnly, &wall);
+      mut bare = new Array[f32, 7] <- fill 0f;
+      mut k = 0usize;
+      while k < 7usize { bare[k] = px(p, columns[k], 405usize, 1usize); k = k + 1usize; }
+      mut fogged = off;
+      fogged.fog = new FogSettings(enabled: true, density: extinction, albedo: new Color(0., 0., 0., 1.), temporal: 1.,
+        maxDistance: 2400.);
+      rig.fx.configure(&fogged);
+      rig.fx.cutHistory();
+      drawScene(&mut device, &mut rig, &camera, &ambientOnly, &wall);
+      imm want = libc.expf(0. - extinction * distance);
+      k = 0usize;
+      while k < 7usize {
+        imm got = px(p, columns[k], 405usize, 1usize) / bare[k];
+        imm e = absf(got / want - 1.);
+        if e > worstOff { worstOff = e; }
+        eprint <- "measured: wall "; eprint <- distance; eprint <- " away, "; eprint <- if c == 0usize { "plain"; } else { "oblique"; };
+        eprint <- " camera, pixel x "; eprint <- columns[k]; eprint <- ": transmittance "; eprint <- got; eprint <- " (the law says "; eprint <- want; eprint <- ")\n";
+        k = k + 1usize;
+      }
+      c = c + 1usize;
+    }
+    w = w + 1usize;
+  }
+  expect(worstOff < 0.08, "the fog dims a wall by Beer-Lambert's law across the whole picture, within 8%, by both paths");
+
+  // ---- 2. A scene, by both paths ----
+  imm list = blocks(sea, cube, water, stone, pale, eye);
+  imm sun = Light.directional(new Vec3(-0.4, -0.7, -0.3).normalize(), new Color(3., 3., 3., 1.), new Color(0.3, 0.35, 0.45, 1.));
+  mut shadows = ShadowSettings.high();
+  rig.renderer.setShadows(&mut device, &shadows);
+  mut only = FxSettings.off();
+  only.fog = FogSettings.high();
+  only.fog.density = 0.0016;
+  only.fog.anisotropy = 0.3;
+  only.fog.maxDistance = 2400.;
+  mut plainPicture = List[u8].empty();
+  mut obliquePicture = List[u8].empty();
+  mut plainBare = List[u8].empty();
+  mut obliqueBare = List[u8].empty();
+  mut c = 0usize;
+  while c < 2usize {
+    imm camera = if c == 0usize { plain; } else { oblique; };
+    mut bare = FxSettings.off();
+    rig.fx.configure(&bare);
+    drawScene(&mut device, &mut rig, &camera, &sun, &list);
+    if c == 0usize { plainBare = grab(p); } else { obliqueBare = grab(p); }
+    rig.fx.configure(&only);
+    rig.fx.cutHistory();
+    // Three frames, so that the second and third blend in the history
+    mut f = 0u32;
+    while f < 3u32 {
+      rig.renderer.time = 1. + f32.from(f) * 0.016666668;
+      drawScene(&mut device, &mut rig, &camera, &sun, &list);
+      f = f + 1u32;
+    }
+    if c == 0usize {
+      plainPicture = grab(p);
+      dump(p, "plain");
+    } else {
+      obliquePicture = grab(p);
+      dump(p, "oblique");
+    }
+    c = c + 1usize;
+  }
+  mut used = 0usize;
+  mut over = 0usize;
+  imm worst = compare(&plainPicture, &obliquePicture, &plainBare, &obliqueBare, &mut used, &mut over);
+  eprint <- "measured: scene: where the two cameras drew the same surface ("; eprint <- used;
+  eprint <- " of 1166400 pixels) the oblique camera's fogged picture differs from the plain camera's by up to "; eprint <- worst;
+  eprint <- " levels, "; eprint <- over; eprint <- " pixels by more than one\n";
+  expect(used > 1100000usize, "the two cameras drew the same surface almost everywhere");
+  expect(worst <= 2u32, "the two paths draw the same fog, within 2 levels");
+
+  expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
+  expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
+  done();
+}

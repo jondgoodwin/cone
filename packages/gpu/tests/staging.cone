@@ -1,0 +1,176 @@
+// A frame that uploads more than 300 MB, on a real GPU, with no window:
+// 8192 'queue.writeBuffer' calls of 40 KiB into one buffer in the GPU's own
+// memory in a single frame, and then one 'queue.writeBuffer' of the same 320
+// MiB in a single frame. Neither may fail (a frame once failed on the 9th
+// time its staging block was outgrown, which small writes reach after 16 MB).
+// The bytes that land are read back at the start, the middle and the end of
+// every 40 KiB, and the frames after the spike, small ones, work as before.
+// Only a failure prints, and nothing printed depends on which GPU is present.
+//
+// It needs a GPU driver with Vulkan 1.3 and SDL3.dll (which loads Vulkan),
+// and about 1.5 GB of memory the CPU can map; with the Vulkan SDK, validation
+// and synchronization validation are on, and must say nothing.
+
+mod staging;
+
+import libc;
+import testing use *;
+import gpu use *;
+
+const UNIT = 40960u64;            // bytes of one write
+const COUNT = 8192u64;            // writes: 320 MiB
+
+// The byte at 'i' of write number 'k', a pattern no two nearby bytes share
+fn pattern(i usize, k usize) u8 { u8.from((i * 31usize + k * 7usize + 3usize) % 251usize); }
+
+// Fill the 40 KiB at 'p' as write number 'k' of the pattern
+fn fillUnit(p *u8, k usize) {
+  mut i = 0usize;
+  while i < 40960usize {
+    *(p + i) = pattern(i, k);
+    i = i + 1usize;
+  }
+}
+
+// Copy 16 bytes from the start, middle and end of each of the buffer's first 'units' writes into 'readback',
+// 48 bytes a write, and wait for the GPU
+fn sample(device &mut Device, source &Buffer, readback &Buffer, units u64) {
+  mut encoder = device.createCommandEncoder();
+  mut k = 0u64;
+  while k < units {
+    encoder.copyBufferToBuffer(source, k * UNIT, readback, k * 48u64, 16u64);
+    encoder.copyBufferToBuffer(source, k * UNIT + UNIT / 2u64, readback, k * 48u64 + 16u64, 16u64);
+    encoder.copyBufferToBuffer(source, k * UNIT + UNIT - 16u64, readback, k * 48u64 + 32u64, 16u64);
+    k = k + 1u64;
+  }
+  device.queue.submit(encoder.finish());
+  device.endFrame();
+  device.waitIdle();
+}
+
+// How many of the sampled bytes of writes 0..'units' differ from the pattern of write (k + 'shift')
+fn wrongSamples(got *u8, units u64, shift usize) u32 {
+  mut wrong = 0u32;
+  mut k = 0usize;
+  while k < usize.from(units) {
+    mut b = 0usize;
+    while b < 16usize {
+      if *(got + k * 48usize + b) != pattern(b, k + shift) { wrong = wrong + 1u32; }
+      if *(got + k * 48usize + 16usize + b) != pattern(20480usize + b, k + shift) { wrong = wrong + 1u32; }
+      if *(got + k * 48usize + 32usize + b) != pattern(40944usize + b, k + shift) { wrong = wrong + 1u32; }
+      b = b + 1usize;
+    }
+    k = k + 1usize;
+  }
+  wrong;
+}
+
+fn main() i32 {
+  mut instance = Instance.create("staging");
+  require(instance.isValid(), "a Vulkan 1.3 instance");
+  mut none = Surface.none();
+  mut adapter = instance.requestAdapter(&none, POWER_PREFERENCE_HIGH_PERFORMANCE);
+  require(adapter.isValid(), "an adapter");
+  mut device = adapter.requestDevice();
+  require(device.isValid(), "a device");
+
+  mut target = device.createBuffer(COUNT * UNIT, BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_SRC | BUFFER_USAGE_COPY_DST);
+  mut readback = device.createBuffer(COUNT * 48u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  require(target.isValid() and readback.isValid(), "the buffers to write and read back");
+
+  // ---- 8192 writes of 40 KiB in one frame ----
+  mut source = libc.malloc(40960usize);
+  mut k = 0usize;
+  while k < usize.from(COUNT) {
+    fillUnit(source, k);
+    device.queue.writeBuffer(&target, u64.from(k) * UNIT, source, UNIT);
+    k = k + 1usize;
+  }
+  expectUInt(u64.from(failures()), 0u64, "8192 writes of 40 KiB in one frame did not fail");
+  sample(&mut device, &target, &readback, COUNT);
+  expectUInt(u64.from(wrongSamples(readback.mappedRange(), COUNT, 0usize)), 0u64,
+    "the sampled bytes of 320 MiB written in 40 KiB writes");
+
+  // ---- One write of 320 MiB, the pattern of write k + 1 in write k ----
+  mut big = libc.malloc(usize.from(COUNT * UNIT));
+  k = 0usize;
+  while k < usize.from(COUNT) {
+    fillUnit(big + k * 40960usize, k + 1usize);
+    k = k + 1usize;
+  }
+  device.queue.writeBuffer(&target, 0u64, big, COUNT * UNIT);
+  libc.free(big);
+  expectUInt(u64.from(failures()), 0u64, "one write of 320 MiB did not fail");
+  sample(&mut device, &target, &readback, COUNT);
+  expectUInt(u64.from(wrongSamples(readback.mappedRange(), COUNT, 1usize)), 0u64,
+    "the sampled bytes of 320 MiB written at once");
+
+  // ---- Small frames after the spike: 8 frames of 40 writes of 40 KiB, each read back ----
+  mut frame = 0usize;
+  while frame < 8usize {
+    k = 0usize;
+    while k < 40usize {
+      fillUnit(source, k + frame + 2usize);
+      device.queue.writeBuffer(&target, u64.from(k) * UNIT, source, UNIT);
+      k = k + 1usize;
+    }
+    mut encoder = device.createCommandEncoder();
+    k = 0usize;
+    while k < 40usize {
+      encoder.copyBufferToBuffer(&target, u64.from(k) * UNIT, &readback, u64.from(k) * 48u64, 16u64);
+      encoder.copyBufferToBuffer(&target, u64.from(k) * UNIT + 40944u64, &readback, u64.from(k) * 48u64 + 16u64, 16u64);
+      k = k + 1usize;
+    }
+    device.queue.submit(encoder.finish());
+    device.endFrame();
+    device.waitIdle();
+    imm got = readback.mappedRange();
+    mut wrong = 0u32;
+    k = 0usize;
+    while k < 40usize {
+      mut b = 0usize;
+      while b < 16usize {
+        if *(got + k * 48usize + b) != pattern(b, k + frame + 2usize) { wrong = wrong + 1u32; }
+        if *(got + k * 48usize + 16usize + b) != pattern(40944usize + b, k + frame + 2usize) { wrong = wrong + 1u32; }
+        b = b + 1usize;
+      }
+      k = k + 1usize;
+    }
+    expectUInt(u64.from(wrong), 0u64, "the bytes of a small frame after the spike");
+    frame = frame + 1usize;
+  }
+  libc.free(source);
+
+  // ---- A texture of 64 MiB written at once (more than a staging block grows to), read back ----
+  imm textureDesc = new TextureDescriptor(4096u32, 4096u32, TEXTURE_FORMAT_RGBA8_UNORM,
+    TEXTURE_USAGE_TEXTURE_BINDING | TEXTURE_USAGE_COPY_DST | TEXTURE_USAGE_COPY_SRC);
+  mut texture = device.createTexture(&textureDesc);
+  mut pixels = device.createBuffer(67108864u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  require(texture.isValid() and pixels.isValid(), "a 64 MiB texture and a buffer to read it back into");
+  mut image = libc.malloc(67108864usize);
+  mut p = 0usize;
+  while p < 67108864usize {
+    *(image + p) = pattern(p, 3usize);
+    p = p + 1usize;
+  }
+  device.queue.writeTexture(&texture, image, 16384u32);
+  libc.free(image);
+  mut copy = device.createCommandEncoder();
+  copy.copyTextureToBuffer(&texture, &pixels);
+  device.queue.submit(copy.finish());
+  device.endFrame();
+  device.waitIdle();
+  imm back = pixels.mappedRange();
+  mut off = 0u32;
+  p = 0usize;
+  while p < 67108864usize {
+    if *(back + p) != pattern(p, 3usize) { off = off + 1u32; }
+    p = p + 997usize;
+  }
+  if *(back + 67108863usize) != pattern(67108863usize, 3usize) { off = off + 1u32; }
+  expectUInt(u64.from(off), 0u64, "the sampled bytes of a 64 MiB texture written at once");
+
+  expectUInt(u64.from(failures()), 0u64, "nothing failed");
+  expectUInt(u64.from(validationMessages()), 0u64, "the validation layer said nothing");
+  done();
+}

@@ -657,6 +657,10 @@ static void modDefaultFoldCheck(ModuleNode *mod) {
         else if (inodeIsPrivate(found))
             errorMsgNode(*itemp, ErrorNotPublic, "%s is private to %s, so it cannot be a default fold.",
                 &name->namestr, &mod->namesym->namestr);
+        // Nor can it list the module's finalizer or a clone (importStarAdmits)
+        else if (name == finalName || name == cloneName)
+            errorMsgNode(*itemp, ErrorBadFold, "%s belongs to %s's own lifecycle, so it cannot be a default fold.",
+                &name->namestr, &mod->namesym->namestr);
     }
     if (fold->excludes == NULL)
         return;

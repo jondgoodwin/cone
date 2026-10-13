@@ -21,6 +21,7 @@
 
 const recsPerBlock = 64u32;
 const genMask = 0xFFFFFFu32;
+const watchGenMask = 0xFFFFu32;     // the generation a fetch's watch token keeps: 16 bits, for the driver's 8 take room from its 48
 
 fn nextGen(g u32) u32 {if g >= genMask {1u32;} else {g + 1u32;};}
 
@@ -437,7 +438,7 @@ pub struct Client {
       return id;
     }
     // Its deadline and group, watched by one timer on the loop
-    imm wt = drv.upperToken(kWatch, (u64.from(f.gen & genMask) << 24u64) | u64.from(fi));
+    imm wt = drv.upperToken(lp, kWatch, (u64.from(f.gen & watchGenMask) << 24u64) | u64.from(fi));
     match g {
       case imm gv Some {
         imm at = if dl < forever() {dl;} else {now + Duration.fromHours(87600i64);};
@@ -775,12 +776,12 @@ pub struct Client {
   pub fn complete(self &mut, lp &mut Loop, comp &mut Completion) bool {
     if drv.complete(lp, comp) {return true;}
     if not drv.isUpperToken(comp.token) {return false;}
-    imm n = comp.token & 0xFFFFFFFFFFFFu64;
+    imm n = comp.token & 0xFFFFFFFFFFu64;
     imm fi = u32.from(n & u64.from(genMask));
-    imm gen = u32.from((n >> 24u64) & u64.from(genMask));
+    imm gen = u32.from((n >> 24u64) & u64.from(watchGenMask));
     if fi >= fetchCount {return true;}
     imm f = self.fetchAt(fi) as &mut Fetch;
-    if (f.gen & genMask) != gen or f.state == fFree or f.watch != comp.id {return true;}
+    if (f.gen & watchGenMask) != gen or f.state == fFree or f.watch != comp.id {return true;}
     f.watch = OpId.none();
     self.cancelFetch(lp, fi, if comp.status == diag.outcomeDone {endTimedOut;} else {endCancelled;});
     true;

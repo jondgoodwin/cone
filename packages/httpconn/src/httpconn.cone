@@ -52,7 +52,7 @@
 //   d.release(req, n)                                                   (CREDIT)
 //   d.cancel(lp, req)                                                   (CANCEL)
 //   d.poll(lp, until, events)  d.complete(lp, c)  d.pump(lp, events)  d.wakeAt()  (DRIVING)
-//   d.owns(token)  d.upperToken(kind, n)  d.isUpperToken(token)
+//   d.owns(token)  d.upperToken(lp, kind, n)  d.isUpperToken(token)
 //   d.stats()  d.live()  d.held()  d.abortAll(lp)
 //   Sink.Here(token)  Sink.Chan(token, tx)                             (SINKS)
 //   Event: e.kind e.token e.conn e.req, and per kind e.peer e.clean e.failure  (EVENTS)
@@ -78,10 +78,16 @@
 // loop, each completion offered to one after another until one says true:
 // every live driver has a number of its own in its tokens (at most 1024
 // drivers alive at once; one more is a panic), so none says true of
-// another's. The layer above a driver
-// (httpclient) submits its own with 'upperToken(kind, n)', tokens in the
+// another's. A dead driver's number comes round again while the loop may
+// still answer what it had in flight, so a driver also takes a generation
+// from its loop (Loop.nextDriverGen, eight bits) at its first connect or
+// listen and carries it in its tokens: 'complete' says false of a token with
+// another driver's generation. The layer above a driver
+// (httpclient) submits its own with 'upperToken(lp, kind, n)', tokens in the
 // driver's space whose completions its 'complete' leaves (false), for that
-// layer to take. 'wakeAt()' is the latest
+// layer to take; its 'n' is 40 bits, the driver's generation (taken from
+// 'lp' there if it has none yet) the eight above, and 'isUpperToken' is
+// false of a token with another driver's generation. 'wakeAt()' is the latest
 // instant the program's own poll may wait to: forever, unless the driver has
 // work ready (now) or events held for a full channel (a millisecond on).
 //

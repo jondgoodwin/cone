@@ -16,7 +16,8 @@ compiler or package behaviour, because a sentence here goes stale unnoticed. Rea
   search folder. `packages/conestd/` is the runtime every native program links; it is built with
   the compiler and is not a Congo package.
 - `tools/`: `congo/` (build tool), `shaders/` (Slang to SPIR-V), `deps/` (pinned prebuilt C
-  libraries), `flowbench/` (flow-analysis cost).
+  libraries), `flowbench/` (flow-analysis cost), `release/` (builds the download archives, install
+  scripts and Downloads page from one commit; the docstring of `release.py` is the guide).
 - `test/`: the language test suite (`run.py`, `cases/<group>/`, `codes.toml`).
 - `doc/`: `reference/` (reference manual) and `design/` (design notes).
 - `samples/`: sample programs. `conesite/`: cone.jondgoodwin.com content. `workitems/`: a pointer

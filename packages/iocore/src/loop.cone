@@ -160,6 +160,7 @@ const heldRetryNs = 1000000i64;
 // thread
 pub struct Loop {
   loopId u64;
+  driverGen u32;          // the last generation 'nextDriverGen' handed out
   port Arc[imm, Port];
   portHandle usize;
   blocks List[*Rec];
@@ -236,7 +237,7 @@ pub struct Loop {
     imm shared = new Arc[imm, Port](new Port(if isWindows() {port;} else {wake;}, Atomic[bool].of(false),
       Atomic[u32].of(0u32), Mutex.make(), null, null));
     new Loop(
-      loopId: diag.nextLoopId(), port: shared, portHandle: port,
+      loopId: diag.nextLoopId(), driverGen: 0u32, port: shared, portHandle: port,
       blocks: List[*Rec].empty(), recCount: 0u32, freeRec: noEntry, kernelHeld: 0u32,
       grouped: 0u32, groupsDirty: false,
       decided: List[u32].empty(), cancels: List[u64].empty(),
@@ -250,6 +251,17 @@ pub struct Loop {
 
   // Its id, unique in the process, as its diagnostics records name it
   pub fn id(self &) u64 {loopId;}
+
+  // A generation, 1 to 255, in turn, for a layer above that gives its
+  // tokens a mark of its own on this loop (httpconn's drivers): two that
+  // ask in turn have different ones until 255 more have asked in between,
+  // so a late completion of a layer that is gone does not look like the
+  // answer a later one with the same mark is waiting for. Per loop; no
+  // global
+  pub fn nextDriverGen(self &mut) u64 {
+    driverGen = if driverGen >= 255u32 {1u32;} else {driverGen + 1u32;};
+    u64.from(driverGen);
+  }
 
   // Operations and timers submitted and not yet answered
   pub fn inFlight(self &) u64 {stats.inFlight;}
