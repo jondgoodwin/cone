@@ -30,7 +30,9 @@
 // quit or Escape stops the loop, F11 toggles fullscreen, and a resize is
 // noted. Keys a world reacts to are the caller's: 'pollEvent' hands each
 // event on after that handling, and 'keyDown' says which key an event
-// pressed.
+// pressed. A caller that wants Escape for itself (a menu, a panel) sets
+// 'escapeQuits' to false: the key is still handed on, and the caller decides
+// whether it ends the run (by clearing 'running').
 //
 // It needs SDL3 (the sdl package): SDL3.lib on LIB to link (Congo copies
 // SDL3.dll from beside it to beside the program), and a display.
@@ -46,6 +48,7 @@ pub struct Window {
   sdlWindow *sdl.Window;
   pub fullscreen bool;      // filling the screen (F11 toggles it)
   pub running bool;         // false once asked to quit
+  pub escapeQuits bool;     // whether Escape asks to quit (true; a caller that wants the key sets false)
   pub resized bool;         // set when the window's size changes; the caller clears it
   lastTicks u64;            // SDL's clock at the last frame, in nanoseconds
   pixelW i32;               // its size in pixels when 'resized' was last set
@@ -65,13 +68,13 @@ pub struct Window {
     mut w = 0;
     mut h = 0;
     sdl.GetWindowSizeInPixels(window, &mut w, &mut h);
-    new Window(window, false, true, false, sdl.GetTicksNS(), w, h);
+    new Window(window, false, true, true, false, sdl.GetTicksNS(), w, h);
   }
 
   // A window that did not open: 'isOpen' is false, and everything else does
   // nothing (a headless run's, the frame package's)
   pub fn unopened() Window {
-    new Window(null, false, false, false, 0u64, 0, 0);
+    new Window(null, false, false, true, false, 0u64, 0, 0);
   }
 
   // Whether the window opened
@@ -146,8 +149,8 @@ pub struct Window {
   }
 
   // Take the next waiting event into 'event', handling it as every window
-  // does: a quit, or Escape, clears 'running'; F11 toggles fullscreen; a
-  // resize sets 'resized'. Answers false when no event was waiting. The
+  // does: a quit, or Escape (unless 'escapeQuits' is false), clears
+  // 'running'; F11 toggles fullscreen; a resize sets 'resized'. Answers false when no event was waiting. The
   // caller sees every event, handled or not, each with SDL's timestamp in
   // nanoseconds; the keyboard's, the mouse's (motion, buttons, the wheel)
   // and the rest are the caller's to act on. A resize is a change in the
@@ -169,7 +172,7 @@ pub struct Window {
     } elif event.type == sdl.EVENT_KEY_DOWN {
       imm ke = event as &sdl.KeyboardEvent;
       if ke.key == sdl.K_ESCAPE {
-        running = false;
+        if escapeQuits { running = false; }
       } elif ke.key == sdl.K_F11 {
         self.setFullscreen(!fullscreen);
       }

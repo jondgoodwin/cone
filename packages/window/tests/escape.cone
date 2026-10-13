@@ -1,0 +1,82 @@
+// A window's Escape, through SDL3's own queue, with no window opened and no
+// display: by default Escape clears 'running' like a quit; with 'escapeQuits'
+// false it does not, yet the key is still handed on to the caller, and a
+// quit still stops the run. F11 and other keys never clear 'running'.
+// Only a failure prints.
+//
+// It needs SDL3.dll, and no display.
+
+mod escape;
+
+import testing use *;
+import sdl;
+import window use *;
+
+fn pushKey(key u32) {
+  mut e = sdl.Event.empty();
+  e.type = sdl.EVENT_KEY_DOWN;
+  imm k = &mut e as &mut sdl.KeyboardEvent;
+  k.key = key;
+  k.down = true;
+  k.repeat = false;
+  require(sdl.PushEvent(&mut e), "a key pushed");
+}
+
+fn pushQuit() {
+  mut e = sdl.Event.empty();
+  e.type = sdl.EVENT_QUIT;
+  require(sdl.PushEvent(&mut e), "a quit pushed");
+}
+
+// The next event a frame later than the last was taken. (SDL ends each round
+// of polling with a marker in its queue: an event pushed after the round's
+// last poll is not seen until the poll that meets the marker has answered
+// false. A frame's loop is that round; a test pushing between polls needs
+// the extra poll.)
+fn take(w &mut Window, e &mut sdl.Event, label &Array[u8]) {
+  if !w.pollEvent(e) {
+    require(w.pollEvent(e), label);
+  }
+}
+
+fn main() i32 {
+  require(sdl.Init(sdl.INIT_EVENTS), "SDL's events start");
+  sdl.FlushEvents(0u, 0xFFFFu);
+  mut e = sdl.Event.empty();
+
+  // The default: Escape stops the run, and is handed on all the same
+  mut w = Window.unopened();
+  w.running = true;
+  expectBool(w.escapeQuits, true, "Escape quits by default");
+  pushKey(sdl.K_a);
+  take(&mut w, &mut e, "a key");
+  expectBool(w.running, true, "another key does not stop the run");
+  pushKey(sdl.K_ESCAPE);
+  take(&mut w, &mut e, "Escape");
+  expectUInt(u64.from(keyDown(&e)), u64.from(sdl.K_ESCAPE), "Escape is handed on");
+  expectBool(w.running, false, "Escape stopped the run");
+
+  // The caller takes Escape: the run goes on, the key arrives
+  w.running = true;
+  w.escapeQuits = false;
+  pushKey(sdl.K_ESCAPE);
+  take(&mut w, &mut e, "Escape again");
+  expectUInt(u64.from(keyDown(&e)), u64.from(sdl.K_ESCAPE), "Escape is still handed on");
+  expectBool(w.running, true, "Escape no longer stops the run");
+  pushKey(sdl.K_F11);
+  take(&mut w, &mut e, "F11");
+  expectBool(w.running, true, "F11 does not stop the run");
+
+  // The caller decides: it clears 'running' itself on the key it was handed
+  pushKey(sdl.K_ESCAPE);
+  take(&mut w, &mut e, "Escape a third time");
+  if keyDown(&e) == sdl.K_ESCAPE { w.running = false; }
+  expectBool(w.running, false, "the caller stopped the run on Escape");
+
+  // A quit still stops the run, whatever Escape does
+  w.running = true;
+  pushQuit();
+  take(&mut w, &mut e, "a quit");
+  expectBool(w.running, false, "a quit stops the run");
+  done();
+}
