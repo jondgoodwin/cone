@@ -1,0 +1,914 @@
+// The code editor on a real GPU, headless: a real Cone source file shown with highlighting, a click and a
+// bracket pair, a selection, a scripted edit with auto-indent and undo and redo, three carets at once, the
+// same file in a proportional font, and a 10,000-line file with its frame costs.
+//
+//   congo run --release examples/editordemo.cone -- <out folder> [a .cone file to show]
+//   GPU_POWER_PREFERENCE=low-power congo run ...      the same on the integrated GPU
+//
+// Everything the "user" does is pushed through the Ui's own input functions (pointerMove, pointerDown,
+// keyDown, textInput, wheel): the SDL window never exists, so no real keystroke or mouse input is involved.
+//
+// THE RENDERER IS THIS PROGRAM'S, not the package's: uilayout makes a DrawList and leaves drawing to the
+// host. This one is the smallest that shows an editor: rectangles and borders as signed-distance quads
+// (editorlist.slang) under the text, which is msdftext's, laid out here and drawn in groups of one size and
+// colour. Text is clipped a glyph at a time, not a pixel, which is fine for an editor whose text starts at
+// its gutter's edge and ends at its right edge.
+
+mod editordemo;
+
+import libc;
+import fs;
+import path use Path;
+import stdio use *;
+import process;
+import sdl;
+import collections use *;
+import geomath use *;
+import gpu use *;
+import msdftext use *;
+import imagedecode use *;
+import uilayout use * but ALIGN_CENTER;
+import textedit use *;
+
+const W = 1280u32;
+const H = 720u32;
+const PRIM_FLOATS = 20usize;
+const PRIM_BYTES = 80u64;
+
+// ---- the renderer ----
+
+struct Rig {
+  font Font;
+  atlas Atlas;
+  shader ShaderModule;
+  groupLayout BindGroupLayout;
+  layout PipelineLayout;
+  pipeline RenderPipeline;
+  uniforms Buffer;
+  group BindGroup;
+  instances Buffer;
+  capacity u32;
+  text TextRenderer;
+  slots List[TextHandle];
+  target Texture;
+  readback Buffer;
+  prims u32 = 0u32;
+  glyphs u32 = 0u32;
+
+  fn make(device &mut Device, font Font) Rig {
+    mut atlas = Atlas.create(AtlasConfig.standard());
+    // the printable ASCII now, not in the middle of a frame (3 ms a glyph)
+    mut cp = 32u32;
+    while cp < 127u32 {
+      atlas.ensure(&font, font.glyphOf(cp));
+      cp = cp + 1u32;
+    }
+    mut shader = device.createShaderModule(&EDITORLIST_SPIRV);
+    imm entries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_VERTEX | SHADER_STAGE_FRAGMENT)];
+    mut groupLayout = device.createBindGroupLayout(&entries);
+    imm groupLayouts = [&groupLayout];
+    mut layout = device.createPipelineLayout(&groupLayouts, 0u32);
+    imm attributes = [new VertexAttribute(VERTEX_FORMAT_FLOAT32X4, 0u64, 0u32),
+      new VertexAttribute(VERTEX_FORMAT_FLOAT32X4, 16u64, 1u32),
+      new VertexAttribute(VERTEX_FORMAT_FLOAT32X4, 32u64, 2u32),
+      new VertexAttribute(VERTEX_FORMAT_FLOAT32X4, 48u64, 3u32),
+      new VertexAttribute(VERTEX_FORMAT_FLOAT32X4, 64u64, 4u32)];
+    imm buffers = [new VertexBufferLayout(arrayStride: PRIM_BYTES, stepMode: VERTEX_STEP_MODE_INSTANCE, attributes: &attributes)];
+    imm desc = new RenderPipelineDescriptor(layout: &layout, vertexModule: &shader, vertexEntryPoint: "vertexMain",
+      buffers: &buffers, fragmentModule: &shader, fragmentEntryPoint: "fragmentMain", colorFormat: TEXTURE_FORMAT_RGBA8_UNORM,
+      blendEnabled: true, colorSrcFactor: BLEND_FACTOR_ONE, colorDstFactor: BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+      alphaSrcFactor: BLEND_FACTOR_ONE, alphaDstFactor: BLEND_FACTOR_ONE_MINUS_SRC_ALPHA);
+    mut pipeline = device.createRenderPipeline(&desc);
+    mut uniforms = device.createBuffer(16u64, BUFFER_USAGE_UNIFORM | BUFFER_USAGE_COPY_DST);
+    imm bindings = [BindGroupEntry.buffer(0u32, &uniforms)];
+    mut group = device.createBindGroup(&groupLayout, &bindings);
+    mut instances = device.createBuffer(PRIM_BYTES * 256u64, BUFFER_USAGE_VERTEX | BUFFER_USAGE_COPY_DST);
+    mut text = TextRenderer.create(device, &atlas, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_FORMAT_DEPTH32_FLOAT);
+    imm targetDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+    mut target = device.createTexture(&targetDesc);
+    mut readback = device.createBuffer(u64.from(W * H * 4u32), BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+    new Rig(font: font, atlas: atlas, shader: shader, groupLayout: groupLayout, layout: layout, pipeline: pipeline, uniforms: uniforms,
+      group: group, instances: instances, capacity: 256u32, text: text, slots: List[TextHandle].empty(), target: target, readback: readback);
+  }
+
+  // The list drawn into the target. 'copyOut' also copies the picture to the readback buffer. Nanoseconds
+  // spent preparing (prep), recording and submitting (record) and waiting for the GPU (wait) go into 'times'
+  fn paint(self &mut, device &mut Device, list &DrawList, copyOut bool, times &mut List[i64]) {
+    imm t0 = sdl.GetTicksNS();
+    mut data = List[f32].withCapacity(list.cmds.len() * PRIM_FLOATS);
+    mut clips = List[f32].empty();
+    mut c0 = -1000000.;
+    mut c1 = -1000000.;
+    mut c2 = 1000000.;
+    mut c3 = 1000000.;
+    mut count = 0u32;
+    mut texts = List[usize].empty();                  // indices of DC_TEXT commands, with the clip each had
+    mut textClips = List[f32].empty();
+    mut i = 0usize;
+    while i < list.cmds.len() {
+      imm d = list.cmds[i];
+      imm k = d.kind;
+      if k == DC_CLIP_PUSH {
+        clips.push(c0);
+        clips.push(c1);
+        clips.push(c2);
+        clips.push(c3);
+        c0 = maxf(c0, d.x);
+        c1 = maxf(c1, d.y);
+        c2 = minf(c2, d.x + d.w);
+        c3 = minf(c3, d.y + d.h);
+      }
+      elif k == DC_CLIP_POP {
+        if clips.len() >= 4usize {
+          imm top = clips.len() - 4usize;
+          c0 = *clips[top];
+          c1 = *clips[top + 1usize];
+          c2 = *clips[top + 2usize];
+          c3 = *clips[top + 3usize];
+          clips.truncate(top);
+        }
+      }
+      elif k == DC_RECT or k == DC_BORDER {
+        data.push(d.x - 1.);
+        data.push(d.y - 1.);
+        data.push(d.x + d.w + 1.);
+        data.push(d.y + d.h + 1.);
+        data.push(d.x + d.w * 0.5);
+        data.push(d.y + d.h * 0.5);
+        data.push(d.w * 0.5);
+        data.push(d.h * 0.5);
+        pushColor(&mut data, d.color);
+        data.push(if k == DC_RECT {0.;} else {1.;});
+        data.push(d.radius);
+        data.push(d.thick);
+        data.push(0.);
+        data.push(c0);
+        data.push(c1);
+        data.push(c2);
+        data.push(c3);
+        count = count + 1u32;
+      }
+      elif k == DC_LINE {
+        data.push(minf(d.x, d.w) - d.thick - 1.);
+        data.push(minf(d.y, d.h) - d.thick - 1.);
+        data.push(maxf(d.x, d.w) + d.thick + 1.);
+        data.push(maxf(d.y, d.h) + d.thick + 1.);
+        data.push(d.x);
+        data.push(d.y);
+        data.push(d.w);
+        data.push(d.h);
+        pushColor(&mut data, d.color);
+        data.push(2.);
+        data.push(0.);
+        data.push(d.thick);
+        data.push(0.);
+        data.push(c0);
+        data.push(c1);
+        data.push(c2);
+        data.push(c3);
+        count = count + 1u32;
+      }
+      elif k == DC_TEXT {
+        texts.push(i);
+        textClips.push(c0);
+        textClips.push(c1);
+        textClips.push(c2);
+        textClips.push(c3);
+      }
+      i = i + 1usize;
+    }
+    prims = count;
+    // The texts: laid out, each glyph placed in pixels, grouped by size and colour into one draw each
+    mut gSize = List[f32].empty();
+    mut gColor = List[u32].empty();
+    mut gQuads = List[List[GlyphQuad]].empty();
+    mut t = 0usize;
+    while t < texts.len() {
+      imm d = list.cmds[*texts[t]];
+      imm s = list.textOf(*texts[t]);
+      imm lay = layoutText(&font, &mut atlas, s, &LayoutOptions.make(d.size));
+      mut px = d.x;
+      if d.align == TA_CENTER {px = px + (d.w - lay.width) * 0.5;}
+      elif d.align == TA_RIGHT {px = px + d.w - lay.width;}
+      px = libc.floorf(px + 0.5);
+      imm py = libc.floorf(d.y + (d.h - lay.height) * 0.5 + 0.5);
+      mut g = 0usize;
+      mut found = false;
+      while g < gSize.len() and !found {
+        if *gSize[g] == d.size and *gColor[g] == d.color {found = true;} else {g = g + 1usize;}
+      }
+      if !found {
+        gSize.push(d.size);
+        gColor.push(d.color);
+        gQuads.push(List[GlyphQuad].empty());
+      }
+      imm cl0 = *textClips[t * 4usize];
+      imm cl1 = *textClips[t * 4usize + 1usize];
+      imm cl2 = *textClips[t * 4usize + 2usize];
+      imm cl3 = *textClips[t * 4usize + 3usize];
+      mut q = 0usize;
+      while q < lay.quads.len() {
+        imm gq = lay.quads[q];
+        imm x0 = gq.x0 + px;
+        imm x1 = gq.x1 + px;
+        imm y0 = gq.y0 + py;
+        imm y1 = gq.y1 + py;
+        if x0 >= cl0 - 2. and x1 <= cl2 + 2. and y0 >= cl1 - 2. and y1 <= cl3 + 2. {
+          gQuads[g].push(new GlyphQuad(x0, y0, x1, y1, gq.u0, gq.v0, gq.u1, gq.v1));
+        }
+        q = q + 1usize;
+      }
+      t = t + 1usize;
+    }
+    text.syncAtlas(device, &atlas);
+    mut g = 0usize;
+    mut nGlyphs = 0usize;
+    while g < gSize.len() {
+      while slots.len() <= g {slots.push(text.addText(device, SPACE_OVERLAY));}
+      mut quads = List[GlyphQuad].withCapacity(gQuads[g].len());
+      mut qi = 0usize;
+      while qi < gQuads[g].len() {
+        quads.push(*gQuads[g][qi]);
+        qi = qi + 1usize;
+      }
+      imm lay = new TextLayout(List[PlacedGlyph].empty(), quads, List[LineInfo].empty(), 0., 0., 0., *gSize[g]);
+      nGlyphs = nGlyphs + gQuads[g].len();
+      imm rgba = *gColor[g];
+      imm style = TextStyle.plain(new Color(f32.from((rgba >> 24u32) & 255u32) / 255., f32.from((rgba >> 16u32) & 255u32) / 255.,
+        f32.from((rgba >> 8u32) & 255u32) / 255., f32.from(rgba & 255u32) / 255.));
+      text.set(device, *slots[g], &lay, &style, overlayTransform(f32.from(W), f32.from(H), 0., 0.));
+      g = g + 1usize;
+    }
+    while g < slots.len() {
+      text.clearText(*slots[g]);
+      g = g + 1usize;
+    }
+    glyphs = u32.from(nGlyphs);
+    // The shapes' data to the GPU
+    mut params = new Array[f32, 4] <- f32.from(W), f32.from(H), 0., 0.;
+    device.queue.writeBuffer(&uniforms, 0u64, &params as *u8, 16u64);
+    if count > capacity {
+      device.queue.releaseBuffer(&mut instances);
+      capacity = count * 2u32;
+      instances = device.createBuffer(u64.from(capacity) * PRIM_BYTES, BUFFER_USAGE_VERTEX | BUFFER_USAGE_COPY_DST);
+    }
+    if count > 0u32 {
+      imm raw *f32 = data.view() as *f32;
+      device.queue.writeBuffer(&instances, 0u64, raw as *u8, u64.from(count) * PRIM_BYTES);
+    }
+    imm t1 = sdl.GetTicksNS();
+    mut encoder = device.createCommandEncoder();
+    imm color = new RenderPassColorAttachment(view: target.createView(), loadOp: LOAD_OP_CLEAR, clearValue: new Color(0.06, 0.06, 0.07, 1.));
+    mut pass = encoder.beginRenderPass(&color);
+    if count > 0u32 {
+      pass.setPipeline(&pipeline);
+      pass.setBindGroup(0u32, &group);
+      pass.setVertexBuffer(0u32, &instances, 0u64);
+      pass.draw(6u32, count, 0u32, 0u32);
+    }
+    pass.end();
+    text.renderOverlay(&mut encoder, &target);
+    if copyOut {encoder.copyTextureToBuffer(&target, &readback);}
+    device.queue.submit(encoder.finish());
+    imm t2 = sdl.GetTicksNS();
+    device.endFrame();
+    device.waitIdle();
+    imm t3 = sdl.GetTicksNS();
+    times.push(i64.from(t1 - t0));
+    times.push(i64.from(t2 - t1));
+    times.push(i64.from(t3 - t2));
+  }
+
+  // The last picture as a PNG
+  fn savePng(self &, file &Path) {
+    imm px = readback.mappedRange();
+    mut samples = List[u16].withCapacity(usize.from(W * H * 4u32));
+    mut i = 0usize;
+    while i < usize.from(W * H * 4u32) {
+      samples.push(u16.from(*(px + i)));
+      i = i + 1usize;
+    }
+    imm opts = PngWrite.make(6u8, 8u8);
+    imm bytes = encodePngSamples(i32.from(W), i32.from(H), samples.view(), &opts);
+    fs.writeFile(file, bytes.view());
+  }
+}
+
+fn pushColor(data &mut List[f32], c u32) {
+  data.push(f32.from((c >> 24u32) & 255u32) / 255.);
+  data.push(f32.from((c >> 16u32) & 255u32) / 255.);
+  data.push(f32.from((c >> 8u32) & 255u32) / 255.);
+  data.push(f32.from(c & 255u32) / 255.);
+}
+
+// ---- the program's use of the editor ----
+
+// One frame of the Ui and the editor: layout, the queued events applied, the draw list made again if it changed
+fn frame(ui &mut Ui, ed &mut Editor, font &Font, atlas &mut Atlas) {
+  mut m = fn(t &str, face u32, size f32) Vec2 {
+    imm lay = layoutText(font, atlas, t, &LayoutOptions.make(size));
+    new Vec2(lay.width, lay.height);
+  };
+  layout(ui, &mut m);
+  ed.pump(ui, &mut m, &coneTokenizer);
+  ed.refresh(ui, &mut m, &coneTokenizer);
+}
+
+fn click(ui &mut Ui, p Vec2, mods u32) {
+  pointerMove(ui, p.x + 1., p.y);
+  ui.input.mods = mods;
+  pointerDown(ui, BTN_LEFT);
+  pointerUp(ui, BTN_LEFT);
+  ui.input.mods = 0u32;
+}
+
+// A key pressed and let go (the Ui keeps the modifiers of the last key event until told otherwise)
+fn press(ui &mut Ui, code u32, mods u32) {
+  keyDown(ui, code, mods);
+  keyUp(ui, code, 0u32);
+}
+
+fn typeString(ui &mut Ui, s &str) {
+  imm n = s.len();
+  mut i = 0usize;
+  while i < n {
+    if s[i] == 10u8 {
+      keyDown(ui, KEY_ENTER, 0u32);
+    }
+    else {
+      textInput(ui, u32.from(s[i]));
+    }
+    i = i + 1usize;
+  }
+}
+
+fn p50(v &List[i64]) i64 {
+  mut c = List[i64].empty();
+  mut i = 0usize;
+  while i < v.len() {
+    c.push(*v[i]);
+    i = i + 1usize;
+  }
+  c.sortBy(fn(a &i64, b &i64) i32 { if *a < *b {-1i32;} elif *a > *b {1i32;} else {0i32;}; });
+  if c.len() == 0usize {0i64;} else {*c[c.len() / 2usize];};
+}
+
+fn readText(file &Path) String {
+  match fs.readFile(file) {
+    case imm s Ok { String.from(s.view()); }
+    case is Error { String.empty(); }
+  }
+}
+
+fn describe(label &str, ed &Editor) {
+  print <- label, ": ", u64.from(ed.doc.lineCount()), " lines, ", u64.from(ed.doc.caretCount()), " caret(s), draw lists made ",
+    u64.from(ed.rebuilds), ", lines tokenized ", u64.from(ed.linesTokenized), "\n";
+}
+
+fn run(device &mut Device, outDir &str, sample &Path) {
+  imm outPath = Path.from(outDir);
+  fs.makeDirAll(&outPath);
+  // ---- fonts ----
+  mut monoRig = loadRig(device, "C:/Windows/Fonts/consola.ttf");
+  mut propRig = loadRig(device, "C:/Windows/Fonts/segoeui.ttf");
+  match &mut monoRig {
+    case mut rig Some {
+      match &mut propRig {
+        case mut rig2 Some { shots(device, rig, rig2, &outPath, sample); }
+        case is None { print <- "no Segoe UI font on this machine\n"; }
+      }
+    }
+    case is None { print <- "no Consolas font on this machine\n"; }
+  }
+}
+
+fn loadRig(device &mut Device, file &str) Option[Rig] {
+  mut rig Option[Rig] = None;
+  match fs.readFile(&Path.from(file)) {
+    case imm bytes Ok {
+      match Font.load(bytes.view()) {
+        case imm f Ok { rig = Some[Rig](Rig.make(device, f)); }
+        case is Error {}
+      }
+    }
+    case is Error {}
+  }
+  rig;
+}
+
+fn shots(device &mut Device, rig &mut Rig, rig2 &mut Rig, outPath &Path, sample &Path) {
+  mut times = List[i64].empty();
+  mut list = DrawList.make();
+  imm source = readText(sample);
+  mut ui = Ui.make(f32.from(W), f32.from(H));
+  mut ed = Editor.make(&mut ui, ui.root, source.view());
+  ed.style.size = 15.;
+  ed.style.font = 0u32;
+  imm status = label(&mut ui, ui.root, "");
+  ui.setOffsets(ed.node, 20., 20., 0., 0.);
+  ui.setSize(ed.node, f32.from(W) - 40., f32.from(H) - 70.);
+  ui.setOffsets(status, 24., f32.from(H) - 38., 0., 0.);
+  frame(&mut ui, &mut ed, &rig.font, &mut rig.atlas);
+  print <- "sample file: ", u64.from(source.len()), " bytes, ", u64.from(ed.doc.lineCount()), " lines\n";
+
+  // 1. the file, scrolled down to where the code is, with the editor not focused
+  pointerMove(&mut ui, 300., 300.);
+  wheel(&mut ui, 0., -22.);
+  frame(&mut ui, &mut ed, &rig.font, &mut rig.atlas);
+  ui.setText(status, "1: Cone source, highlighted, scrolled by the wheel");
+  frame(&mut ui, &mut ed, &rig.font, &mut rig.atlas);
+  drawUi(&ui, &mut list);
+  rig.paint(device, &list, true, &mut times);
+  rig.savePng(&outPath.join("01-highlighted.png"));
+  describe("shot 1", &ed);
+
+  // 2. a click inside the parentheses of a call: the caret and its bracket pair
+  imm opts = FindOptions.make("applyEdit(&mut core");
+  imm at = findNext(ed.doc.buffer(), &opts, 0usize);
+  print <- "target offset ", u64.from(at), "\n";
+  ed.doc.setCaret(at + 10usize);
+  ed.dirtyAll();
+  ed.showLine(&ui, ed.doc.buffer().lineOf(at), 0.35);
+  frame(&mut ui, &mut ed, &rig.font, &mut rig.atlas);
+  click(&mut ui, ed.pointOf(&ui, at + 10usize), 0u32);
+  frame(&mut ui, &mut ed, &rig.font, &mut rig.atlas);
+  ui.setText(status, "2: a click, the caret line, and the bracket pair");
+  frame(&mut ui, &mut ed, &rig.font, &mut rig.atlas);
+  drawUi(&ui, &mut list);
+  rig.paint(device, &list, true, &mut times);
+  rig.savePng(&outPath.join("02-click-brackets.png"));
+  print <- "bracket pair at ", u64.from(ed.matchA), " and ", u64.from(ed.matchB), "\n";
+
+  // 3. a drag across six lines
+  imm from = ed.pointOf(&ui, ed.doc.buffer().lineStart(ed.doc.buffer().lineOf(at) + 2usize) + 4usize);
+  imm to = ed.pointOf(&ui, ed.doc.buffer().lineStart(ed.doc.buffer().lineOf(at) + 7usize) + 22usize);
+  pointerMove(&mut ui, from.x, from.y);
+  pointerDown(&mut ui, BTN_LEFT);
+  frame(&mut ui, &mut ed, &rig.font, &mut rig.atlas);
+  pointerMove(&mut ui, to.x, to.y);
+  frame(&mut ui, &mut ed, &rig.font, &mut rig.atlas);
+  pointerUp(&mut ui, BTN_LEFT);
+  ui.setText(status, "3: a drag selects six lines");
+  frame(&mut ui, &mut ed, &rig.font, &mut rig.atlas);
+  drawUi(&ui, &mut list);
+  rig.paint(device, &list, true, &mut times);
+  rig.savePng(&outPath.join("03-selection.png"));
+  print <- "selected ", u64.from(ed.doc.selectedText().len()), " bytes\n";
+
+  // 4. an edit: to the end of the line, Enter, a new block typed with auto-indent, then a few undos
+  press(&mut ui,KEY_ESCAPE, 0u32);
+  click(&mut ui, ed.pointOf(&ui, at + 3usize), 0u32);
+  press(&mut ui,KEY_END, 0u32);
+  press(&mut ui,KEY_ENTER, 0u32);
+  typeString(&mut ui, "if core.version == 0u64 {\nimm fresh = true;\n");
+  typeString(&mut ui, "}");
+  frame(&mut ui, &mut ed, &rig.font, &mut rig.atlas);
+  ui.setText(status, "4: typed an if block: Enter indents, a brace opens a level");
+  frame(&mut ui, &mut ed, &rig.font, &mut rig.atlas);
+  drawUi(&ui, &mut list);
+  rig.paint(device, &list, true, &mut times);
+  rig.savePng(&outPath.join("04-edit.png"));
+  print <- "undo steps after the edit: ", u64.from(ed.doc.hist.undoCount()), "\n";
+  press(&mut ui,KEY_Z, MOD_CTRL);
+  press(&mut ui,KEY_Z, MOD_CTRL);
+  frame(&mut ui, &mut ed, &rig.font, &mut rig.atlas);
+  ui.setText(status, "5: two undos (a step is a run of typing; the closing brace and the last line are gone)");
+  frame(&mut ui, &mut ed, &rig.font, &mut rig.atlas);
+  drawUi(&ui, &mut list);
+  rig.paint(device, &list, true, &mut times);
+  rig.savePng(&outPath.join("05-undo.png"));
+  press(&mut ui,KEY_Y, MOD_CTRL);
+  frame(&mut ui, &mut ed, &rig.font, &mut rig.atlas);
+  ui.setText(status, "6: one redo");
+  frame(&mut ui, &mut ed, &rig.font, &mut rig.atlas);
+  drawUi(&ui, &mut list);
+  rig.paint(device, &list, true, &mut times);
+  rig.savePng(&outPath.join("06-redo.png"));
+
+  // 5. three carets (alt+click) and one keystroke
+  while ed.doc.undo() {}
+  imm l0 = ed.doc.buffer().lineOf(at);
+  ed.doc.setCaret(ed.doc.buffer().lineStart(l0 + 1usize));
+  ed.dirtyAll();
+  frame(&mut ui, &mut ed, &rig.font, &mut rig.atlas);
+  click(&mut ui, ed.pointOf(&ui, ed.doc.buffer().lineStart(l0 + 3usize)), MOD_ALT);
+  click(&mut ui, ed.pointOf(&ui, ed.doc.buffer().lineStart(l0 + 5usize)), MOD_ALT);
+  typeString(&mut ui, "// ");
+  frame(&mut ui, &mut ed, &rig.font, &mut rig.atlas);
+  ui.setText(status, "7: three carets, one typed comment marker");
+  frame(&mut ui, &mut ed, &rig.font, &mut rig.atlas);
+  drawUi(&ui, &mut list);
+  rig.paint(device, &list, true, &mut times);
+  rig.savePng(&outPath.join("07-multicaret.png"));
+  describe("shot 7", &ed);
+  press(&mut ui,KEY_Z, MOD_CTRL);
+  frame(&mut ui, &mut ed, &rig.font, &mut rig.atlas);
+  print <- "after undoing the three-caret keystroke: ", u64.from(ed.doc.caretCount()), " caret(s)\n";
+
+  // 6. the same file in a proportional font (Segoe UI): the editor measures every run
+  mut ed3 = Editor.make(&mut ui, ui.root, source.view());
+  ed3.style.size = 15.;
+  ed3.style.mono = false;
+  ui.setOffsets(ed3.node, 20., 20., 0., 0.);
+  ui.setSize(ed3.node, f32.from(W) - 40., f32.from(H) - 70.);
+  ui.setVisible(ed.node, false);
+  frame(&mut ui, &mut ed3, &rig2.font, &mut rig2.atlas);
+  imm at3 = findNext(ed3.doc.buffer(), &opts, 0usize);
+  ed3.showLine(&ui, ed3.doc.buffer().lineOf(at3), 0.3);
+  frame(&mut ui, &mut ed3, &rig2.font, &mut rig2.atlas);
+  imm w0 = ed3.pointOf(&ui, at3);
+  pointerMove(&mut ui, 400., 300.);
+  click(&mut ui, new Vec2(w0.x + 80., w0.y), 0u32);
+  press(&mut ui, KEY_RIGHT, MOD_CTRL | MOD_SHIFT);
+  press(&mut ui, KEY_RIGHT, MOD_CTRL | MOD_SHIFT);
+  ui.setText(status, "9: proportional font: runs measured, a double-click-style word selection with ctrl+shift+right");
+  frame(&mut ui, &mut ed3, &rig2.font, &mut rig2.atlas);
+  drawUi(&ui, &mut list);
+  rig2.paint(device, &list, true, &mut times);
+  rig2.savePng(&outPath.join("09-proportional.png"));
+  ui.setVisible(ed3.node, false);
+
+  // 7. a 10,000-line file: frame costs
+  mut big = String.empty();
+  while true {
+    big.append(source.view());
+    if big.view().len() > 10000usize * 38usize {break;}
+  }
+  mut ed2 = Editor.make(&mut ui, ui.root, big.view());
+  ed2.style.size = 15.;
+  ui.setOffsets(ed2.node, 20., 20., 0., 0.);
+  ui.setSize(ed2.node, f32.from(W) - 40., f32.from(H) - 70.);
+  ui.setVisible(ed.node, false);
+  frame(&mut ui, &mut ed2, &rig.font, &mut rig.atlas);
+  print <- "big file: ", u64.from(ed2.doc.lineCount()), " lines, ", u64.from(big.len()), " bytes\n";
+  // scroll to line ~4,500 with the wheel, then click in the text: the caret and focus are there
+  pointerMove(&mut ui, 400., 300.);
+  wheel(&mut ui, 0., -1500.);
+  frame(&mut ui, &mut ed2, &rig.font, &mut rig.atlas);
+  click(&mut ui, new Vec2(500., 300.), 0u32);
+  print <- "the big editor has the focus: ", i64.from(ui.input.focus == ed2.node), " (1 = yes)\n";
+  frame(&mut ui, &mut ed2, &rig.font, &mut rig.atlas);
+  ui.setText(status, "8: a 10,000-line file, scrolled to line ~4,500");
+  frame(&mut ui, &mut ed2, &rig.font, &mut rig.atlas);
+  drawUi(&ui, &mut list);
+  mut scratchTimes = List[i64].empty();
+  rig.paint(device, &list, true, &mut scratchTimes);
+  rig.savePng(&outPath.join("08-big-file.png"));
+  describe("shot 8", &ed2);
+
+  // frame costs: nanoseconds, 200 frames each
+  imm lenBefore = ed2.doc.len();
+  textInput(&mut ui, 120u32);
+  print <- "queued: ", i64.from(hasHostEvents(&ui, ed2.node)), " focused ", i64.from(ed2.focused), "\n";
+  frame(&mut ui, &mut ed2, &rig.font, &mut rig.atlas);
+  print <- "typing grew the text by ", u64.from(ed2.doc.len() - lenBefore), " bytes\n";
+  mut idleModel = List[i64].empty();
+  mut typeModel = List[i64].empty();
+  mut scrollModel = List[i64].empty();
+  mut idleGpu = List[i64].empty();
+  mut typeGpu = List[i64].empty();
+  mut scrollGpu = List[i64].empty();
+  mut typePrep = List[i64].empty();
+  mut typeRecord = List[i64].empty();
+  mut typeWait = List[i64].empty();
+  mut f = 0u32;
+  while f < 200u32 {
+    // idle: nothing changed
+    imm a0 = sdl.GetTicksNS();
+    frame(&mut ui, &mut ed2, &rig.font, &mut rig.atlas);
+    drawUi(&ui, &mut list);
+    imm a1 = sdl.GetTicksNS();
+    idleModel.push(i64.from(a1 - a0));
+    mut tt = List[i64].empty();
+    rig.paint(device, &list, false, &mut tt);
+    idleGpu.push(*tt[0usize] + *tt[1usize] + *tt[2usize]);
+    // a keystroke
+    imm b0 = sdl.GetTicksNS();
+    textInput(&mut ui, 120u32);
+    frame(&mut ui, &mut ed2, &rig.font, &mut rig.atlas);
+    drawUi(&ui, &mut list);
+    imm b1 = sdl.GetTicksNS();
+    typeModel.push(i64.from(b1 - b0));
+    mut tk = List[i64].empty();
+    rig.paint(device, &list, false, &mut tk);
+    typeGpu.push(*tk[0usize] + *tk[1usize] + *tk[2usize]);
+    typePrep.push(*tk[0usize]);
+    typeRecord.push(*tk[1usize]);
+    typeWait.push(*tk[2usize]);
+    // a wheel step
+    imm c0 = sdl.GetTicksNS();
+    wheel(&mut ui, 0., -1.);
+    frame(&mut ui, &mut ed2, &rig.font, &mut rig.atlas);
+    drawUi(&ui, &mut list);
+    imm c1 = sdl.GetTicksNS();
+    scrollModel.push(i64.from(c1 - c0));
+    mut ts = List[i64].empty();
+    rig.paint(device, &list, false, &mut ts);
+    scrollGpu.push(*ts[0usize] + *ts[1usize] + *ts[2usize]);
+    f = f + 1u32;
+  }
+  print <- "frame cost on the 10,000-line file, p50 of 200 frames, microseconds:\n";
+  print <- "  idle frame:     editor+uilayout ", p50(&idleModel) / 1000i64, "   renderer and GPU ", p50(&idleGpu) / 1000i64, "\n";
+  print <- "  one keystroke:  editor+uilayout ", p50(&typeModel) / 1000i64, "   renderer and GPU ", p50(&typeGpu) / 1000i64,
+    "  (prep ", p50(&typePrep) / 1000i64, ", record+submit ", p50(&typeRecord) / 1000i64, ", wait for GPU ", p50(&typeWait) / 1000i64, ")\n";
+  print <- "  one wheel step: editor+uilayout ", p50(&scrollModel) / 1000i64, "   renderer and GPU ", p50(&scrollGpu) / 1000i64, "\n";
+  print <- "  draw commands in the list: ", u64.from(list.cmds.len()), ", glyphs ", u64.from(rig.glyphs), ", rect primitives ", u64.from(rig.prims), "\n";
+  print <- "  lines tokenized in all: ", u64.from(ed2.linesTokenized), ", draw lists made: ", u64.from(ed2.rebuilds), "\n";
+}
+
+fn main() i32 {
+  imm args = process.args();
+  mut out = String.from("editor-shots");
+  mut sample = String.from("C:/src/cone-wt-textedit/packages/textedit/src/doc.cone");
+  if args.len() > 1usize {out = String.from((*args[1usize]).view());}
+  if args.len() > 2usize {sample = String.from((*args[2usize]).view());}
+  mut instance = Instance.create("textedit demo");
+  mut none = Surface.none();
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  if (env as usize) != 0usize {
+    if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 {preference = POWER_PREFERENCE_LOW_POWER;}
+  }
+  mut adapter = instance.requestAdapter(&none, preference);
+  mut device = adapter.requestDevice();
+  print <- "adapter ", adapter.name.view(), "\n";
+  run(&mut device, out.view(), &Path.from(sample.view()));
+  0;
+}
+
+// spirv-begin editorlist.spv EDITORLIST_SPIRV
+// Written by tools/shaders/shaders.py from editorlist.slang (sha256 69791aa713b7d053ae629dc5df94e5a3754738f6cf4d8f5579fdd3e73386df72): do not edit.
+imm EDITORLIST_SPIRV Array[u32, 1625] = [
+  0x07230203u32, 0x00010500u32, 0x00280000u32, 0x0000019bu32, 0x00000000u32, 0x00020011u32,
+  0x00000001u32, 0x0006000bu32, 0x00000069u32, 0x4c534c47u32, 0x6474732eu32, 0x3035342eu32,
+  0x00000000u32, 0x0003000eu32, 0x00000000u32, 0x00000001u32, 0x0013000fu32, 0x00000000u32,
+  0x00000002u32, 0x74726576u32, 0x614d7865u32, 0x00006e69u32, 0x00000076u32, 0x000000a1u32,
+  0x000000a5u32, 0x000000a8u32, 0x000000abu32, 0x000000aeu32, 0x000000b1u32, 0x00000063u32,
+  0x0000008du32, 0x00000092u32, 0x00000097u32, 0x0000009cu32, 0x0000000eu32, 0x000d000fu32,
+  0x00000004u32, 0x000000b4u32, 0x67617266u32, 0x746e656du32, 0x6e69614du32, 0x00000000u32,
+  0x0000014eu32, 0x000000cbu32, 0x000000fbu32, 0x00000145u32, 0x000000f1u32, 0x000000ceu32,
+  0x00030010u32, 0x000000b4u32, 0x00000007u32, 0x00030003u32, 0x0000000bu32, 0x00000001u32,
+  0x00050005u32, 0x00000063u32, 0x6d697270u32, 0x786f622eu32, 0x00000000u32, 0x00030005u32,
+  0x00000070u32, 0x00000070u32, 0x00060005u32, 0x00000074u32, 0x61726150u32, 0x735f736du32,
+  0x34316474u32, 0x00000030u32, 0x00050006u32, 0x00000074u32, 0x00000000u32, 0x77656976u32,
+  0x00000000u32, 0x00040005u32, 0x00000076u32, 0x61726170u32, 0x0000736du32, 0x00050005u32,
+  0x0000008du32, 0x6d697270u32, 0x6168732eu32, 0x00006570u32, 0x00050005u32, 0x00000092u32,
+  0x6d697270u32, 0x6c6f632eu32, 0x0000726fu32, 0x00050005u32, 0x00000097u32, 0x6d697270u32,
+  0x666e692eu32, 0x0000006fu32, 0x00050005u32, 0x0000009cu32, 0x6d697270u32, 0x696c632eu32,
+  0x00000070u32, 0x000b0005u32, 0x000000a5u32, 0x72746e65u32, 0x696f5079u32, 0x6150746eu32,
+  0x5f6d6172u32, 0x74726576u32, 0x614d7865u32, 0x702e6e69u32, 0x6c657869u32, 0x00000000u32,
+  0x000b0005u32, 0x000000a8u32, 0x72746e65u32, 0x696f5079u32, 0x6150746eu32, 0x5f6d6172u32,
+  0x74726576u32, 0x614d7865u32, 0x732e6e69u32, 0x65706168u32, 0x00000000u32, 0x000b0005u32,
+  0x000000abu32, 0x72746e65u32, 0x696f5079u32, 0x6150746eu32, 0x5f6d6172u32, 0x74726576u32,
+  0x614d7865u32, 0x632e6e69u32, 0x726f6c6fu32, 0x00000000u32, 0x000a0005u32, 0x000000aeu32,
+  0x72746e65u32, 0x696f5079u32, 0x6150746eu32, 0x5f6d6172u32, 0x74726576u32, 0x614d7865u32,
+  0x692e6e69u32, 0x006f666eu32, 0x000a0005u32, 0x000000b1u32, 0x72746e65u32, 0x696f5079u32,
+  0x6150746eu32, 0x5f6d6172u32, 0x74726576u32, 0x614d7865u32, 0x632e6e69u32, 0x0070696cu32,
+  0x00050005u32, 0x00000002u32, 0x74726576u32, 0x614d7865u32, 0x00006e69u32, 0x00040005u32,
+  0x000000b7u32, 0x65766f63u32, 0x00000072u32, 0x00040005u32, 0x000000b7u32, 0x65766f63u32,
+  0x00000072u32, 0x00040005u32, 0x000000b7u32, 0x65766f63u32, 0x00000072u32, 0x00040005u32,
+  0x000000cbu32, 0x69702e69u32, 0x006c6578u32, 0x00040005u32, 0x000000ceu32, 0x6c632e69u32,
+  0x00007069u32, 0x00040005u32, 0x000000f1u32, 0x6e692e69u32, 0x00006f66u32, 0x00040005u32,
+  0x000000f2u32, 0x646e696bu32, 0x00000000u32, 0x00040005u32, 0x000000f4u32, 0x69646172u32,
+  0x00007375u32, 0x00040005u32, 0x000000f6u32, 0x63696874u32, 0x0000006bu32, 0x00040005u32,
+  0x000000fbu32, 0x68732e69u32, 0x00657061u32, 0x00030005u32, 0x0000012fu32, 0x00000061u32,
+  0x00030005u32, 0x00000131u32, 0x00000065u32, 0x00030005u32, 0x00000132u32, 0x00006170u32,
+  0x00030005u32, 0x00000133u32, 0x00006162u32, 0x00030005u32, 0x0000013eu32, 0x00000064u32,
+  0x00040005u32, 0x00000145u32, 0x6f632e69u32, 0x00726f6cu32, 0x00030005u32, 0x00000148u32,
+  0x00000061u32, 0x000a0005u32, 0x0000014eu32, 0x72746e65u32, 0x696f5079u32, 0x6150746eu32,
+  0x5f6d6172u32, 0x67617266u32, 0x746e656du32, 0x6e69614du32, 0x00000000u32, 0x00060005u32,
+  0x000000b4u32, 0x67617266u32, 0x746e656du32, 0x6e69614du32, 0x00000000u32, 0x00040047u32,
+  0x0000000eu32, 0x0000000bu32, 0x0000002au32, 0x00040047u32, 0x00000063u32, 0x0000001eu32,
+  0x00000000u32, 0x00030047u32, 0x00000074u32, 0x00000002u32, 0x00050048u32, 0x00000074u32,
+  0x00000000u32, 0x00000023u32, 0x00000000u32, 0x00040047u32, 0x00000076u32, 0x00000021u32,
+  0x00000000u32, 0x00040047u32, 0x00000076u32, 0x00000022u32, 0x00000000u32, 0x00040047u32,
+  0x0000008du32, 0x0000001eu32, 0x00000001u32, 0x00040047u32, 0x00000092u32, 0x0000001eu32,
+  0x00000002u32, 0x00040047u32, 0x00000097u32, 0x0000001eu32, 0x00000003u32, 0x00040047u32,
+  0x0000009cu32, 0x0000001eu32, 0x00000004u32, 0x00040047u32, 0x000000a1u32, 0x0000000bu32,
+  0x00000000u32, 0x00040047u32, 0x000000a5u32, 0x0000001eu32, 0x00000000u32, 0x00040047u32,
+  0x000000a8u32, 0x0000001eu32, 0x00000001u32, 0x00030047u32, 0x000000a8u32, 0x0000000eu32,
+  0x00040047u32, 0x000000abu32, 0x0000001eu32, 0x00000002u32, 0x00030047u32, 0x000000abu32,
+  0x0000000eu32, 0x00040047u32, 0x000000aeu32, 0x0000001eu32, 0x00000003u32, 0x00030047u32,
+  0x000000aeu32, 0x0000000eu32, 0x00040047u32, 0x000000b1u32, 0x0000001eu32, 0x00000004u32,
+  0x00030047u32, 0x000000b1u32, 0x0000000eu32, 0x00040047u32, 0x000000cbu32, 0x0000001eu32,
+  0x00000000u32, 0x00040047u32, 0x000000ceu32, 0x0000001eu32, 0x00000004u32, 0x00030047u32,
+  0x000000ceu32, 0x0000000eu32, 0x00040047u32, 0x000000f1u32, 0x0000001eu32, 0x00000003u32,
+  0x00030047u32, 0x000000f1u32, 0x0000000eu32, 0x00040047u32, 0x000000fbu32, 0x0000001eu32,
+  0x00000001u32, 0x00030047u32, 0x000000fbu32, 0x0000000eu32, 0x00040047u32, 0x00000145u32,
+  0x0000001eu32, 0x00000002u32, 0x00030047u32, 0x00000145u32, 0x0000000eu32, 0x00040047u32,
+  0x0000014eu32, 0x0000001eu32, 0x00000000u32, 0x00020013u32, 0x00000001u32, 0x00030021u32,
+  0x00000003u32, 0x00000001u32, 0x00030016u32, 0x00000006u32, 0x00000020u32, 0x00040017u32,
+  0x00000007u32, 0x00000006u32, 0x00000004u32, 0x00040017u32, 0x00000008u32, 0x00000006u32,
+  0x00000002u32, 0x00040015u32, 0x0000000bu32, 0x00000020u32, 0x00000001u32, 0x00040020u32,
+  0x0000000du32, 0x00000001u32, 0x0000000bu32, 0x00040015u32, 0x0000000fu32, 0x00000020u32,
+  0x00000000u32, 0x00020014u32, 0x00000016u32, 0x00040020u32, 0x00000017u32, 0x00000007u32,
+  0x00000016u32, 0x00040020u32, 0x00000019u32, 0x00000007u32, 0x00000006u32, 0x0004002bu32,
+  0x0000000fu32, 0x0000002fu32, 0x00000001u32, 0x00030029u32, 0x00000016u32, 0x00000031u32,
+  0x0004002bu32, 0x0000000fu32, 0x00000035u32, 0x00000002u32, 0x0004002bu32, 0x0000000fu32,
+  0x0000003du32, 0x00000004u32, 0x0004002bu32, 0x00000006u32, 0x00000042u32, 0x3f800000u32,
+  0x0004002bu32, 0x00000006u32, 0x00000045u32, 0x00000000u32, 0x0004002bu32, 0x0000000fu32,
+  0x00000054u32, 0x00000005u32, 0x00040020u32, 0x00000062u32, 0x00000001u32, 0x00000007u32,
+  0x0004002bu32, 0x0000000bu32, 0x00000071u32, 0x00000000u32, 0x0003001eu32, 0x00000074u32,
+  0x00000007u32, 0x00040020u32, 0x00000075u32, 0x00000002u32, 0x00000074u32, 0x00040020u32,
+  0x00000077u32, 0x00000002u32, 0x00000007u32, 0x0004002bu32, 0x00000006u32, 0x0000007du32,
+  0x40000000u32, 0x00040020u32, 0x000000a0u32, 0x00000003u32, 0x00000007u32, 0x00040020u32,
+  0x000000a4u32, 0x00000003u32, 0x00000008u32, 0x00040020u32, 0x000000cau32, 0x00000001u32,
+  0x00000008u32, 0x0004002bu32, 0x00000006u32, 0x000000f8u32, 0x3f000000u32, 0x0005002cu32,
+  0x00000008u32, 0x00000111u32, 0x00000045u32, 0x00000045u32, 0x0004002bu32, 0x00000006u32,
+  0x0000011fu32, 0x3fc00000u32, 0x0004002bu32, 0x00000006u32, 0x00000137u32, 0x38d1b717u32,
+  0x00040017u32, 0x0000014au32, 0x00000006u32, 0x00000003u32, 0x0004003bu32, 0x0000000du32,
+  0x0000000eu32, 0x00000001u32, 0x0004003bu32, 0x00000062u32, 0x00000063u32, 0x00000001u32,
+  0x0004003bu32, 0x00000075u32, 0x00000076u32, 0x00000002u32, 0x0004003bu32, 0x00000062u32,
+  0x0000008du32, 0x00000001u32, 0x0004003bu32, 0x00000062u32, 0x00000092u32, 0x00000001u32,
+  0x0004003bu32, 0x00000062u32, 0x00000097u32, 0x00000001u32, 0x0004003bu32, 0x00000062u32,
+  0x0000009cu32, 0x00000001u32, 0x0004003bu32, 0x000000a0u32, 0x000000a1u32, 0x00000003u32,
+  0x0004003bu32, 0x000000a4u32, 0x000000a5u32, 0x00000003u32, 0x0004003bu32, 0x000000a0u32,
+  0x000000a8u32, 0x00000003u32, 0x0004003bu32, 0x000000a0u32, 0x000000abu32, 0x00000003u32,
+  0x0004003bu32, 0x000000a0u32, 0x000000aeu32, 0x00000003u32, 0x0004003bu32, 0x000000a0u32,
+  0x000000b1u32, 0x00000003u32, 0x0004003bu32, 0x000000cau32, 0x000000cbu32, 0x00000001u32,
+  0x0004003bu32, 0x00000062u32, 0x000000ceu32, 0x00000001u32, 0x0004003bu32, 0x00000062u32,
+  0x000000f1u32, 0x00000001u32, 0x0004003bu32, 0x00000062u32, 0x000000fbu32, 0x00000001u32,
+  0x0004003bu32, 0x00000062u32, 0x00000145u32, 0x00000001u32, 0x0004003bu32, 0x000000a0u32,
+  0x0000014eu32, 0x00000003u32, 0x00050036u32, 0x00000001u32, 0x00000002u32, 0x00000000u32,
+  0x00000003u32, 0x000200f8u32, 0x00000004u32, 0x0004003bu32, 0x00000017u32, 0x00000151u32,
+  0x00000007u32, 0x0004003bu32, 0x00000019u32, 0x00000152u32, 0x00000007u32, 0x0004003bu32,
+  0x00000019u32, 0x00000153u32, 0x00000007u32, 0x0004003du32, 0x0000000bu32, 0x0000000cu32,
+  0x0000000eu32, 0x0004007cu32, 0x0000000fu32, 0x00000010u32, 0x0000000cu32, 0x000500aau32,
+  0x00000016u32, 0x00000156u32, 0x00000010u32, 0x0000002fu32, 0x000300f7u32, 0x0000015au32,
+  0x00000000u32, 0x000400fau32, 0x00000156u32, 0x00000157u32, 0x00000158u32, 0x000200f8u32,
+  0x00000157u32, 0x0003003eu32, 0x00000151u32, 0x00000031u32, 0x000200f9u32, 0x0000015au32,
+  0x000200f8u32, 0x00000158u32, 0x000500aau32, 0x00000016u32, 0x00000159u32, 0x00000010u32,
+  0x00000035u32, 0x0003003eu32, 0x00000151u32, 0x00000159u32, 0x000200f9u32, 0x0000015au32,
+  0x000200f8u32, 0x0000015au32, 0x0004003du32, 0x00000016u32, 0x0000015bu32, 0x00000151u32,
+  0x000300f7u32, 0x0000015fu32, 0x00000000u32, 0x000400fau32, 0x0000015bu32, 0x0000015cu32,
+  0x0000015du32, 0x000200f8u32, 0x0000015cu32, 0x0003003eu32, 0x00000151u32, 0x00000031u32,
+  0x000200f9u32, 0x0000015fu32, 0x000200f8u32, 0x0000015du32, 0x000500aau32, 0x00000016u32,
+  0x0000015eu32, 0x00000010u32, 0x0000003du32, 0x0003003eu32, 0x00000151u32, 0x0000015eu32,
+  0x000200f9u32, 0x0000015fu32, 0x000200f8u32, 0x0000015fu32, 0x0004003du32, 0x00000016u32,
+  0x00000160u32, 0x00000151u32, 0x000300f7u32, 0x00000163u32, 0x00000000u32, 0x000400fau32,
+  0x00000160u32, 0x00000161u32, 0x00000162u32, 0x000200f8u32, 0x00000161u32, 0x0003003eu32,
+  0x00000152u32, 0x00000042u32, 0x000200f9u32, 0x00000163u32, 0x000200f8u32, 0x00000162u32,
+  0x0003003eu32, 0x00000152u32, 0x00000045u32, 0x000200f9u32, 0x00000163u32, 0x000200f8u32,
+  0x00000163u32, 0x000500aau32, 0x00000016u32, 0x00000164u32, 0x00000010u32, 0x00000035u32,
+  0x000300f7u32, 0x00000168u32, 0x00000000u32, 0x000400fau32, 0x00000164u32, 0x00000165u32,
+  0x00000166u32, 0x000200f8u32, 0x00000165u32, 0x0003003eu32, 0x00000151u32, 0x00000031u32,
+  0x000200f9u32, 0x00000168u32, 0x000200f8u32, 0x00000166u32, 0x000500aau32, 0x00000016u32,
+  0x00000167u32, 0x00000010u32, 0x0000003du32, 0x0003003eu32, 0x00000151u32, 0x00000167u32,
+  0x000200f9u32, 0x00000168u32, 0x000200f8u32, 0x00000168u32, 0x0004003du32, 0x00000016u32,
+  0x00000169u32, 0x00000151u32, 0x000300f7u32, 0x0000016du32, 0x00000000u32, 0x000400fau32,
+  0x00000169u32, 0x0000016au32, 0x0000016bu32, 0x000200f8u32, 0x0000016au32, 0x0003003eu32,
+  0x00000151u32, 0x00000031u32, 0x000200f9u32, 0x0000016du32, 0x000200f8u32, 0x0000016bu32,
+  0x000500aau32, 0x00000016u32, 0x0000016cu32, 0x00000010u32, 0x00000054u32, 0x0003003eu32,
+  0x00000151u32, 0x0000016cu32, 0x000200f9u32, 0x0000016du32, 0x000200f8u32, 0x0000016du32,
+  0x0004003du32, 0x00000016u32, 0x0000016eu32, 0x00000151u32, 0x000300f7u32, 0x00000171u32,
+  0x00000000u32, 0x000400fau32, 0x0000016eu32, 0x0000016fu32, 0x00000170u32, 0x000200f8u32,
+  0x0000016fu32, 0x0003003eu32, 0x00000153u32, 0x00000042u32, 0x000200f9u32, 0x00000171u32,
+  0x000200f8u32, 0x00000170u32, 0x0003003eu32, 0x00000153u32, 0x00000045u32, 0x000200f9u32,
+  0x00000171u32, 0x000200f8u32, 0x00000171u32, 0x0004003du32, 0x00000006u32, 0x00000172u32,
+  0x00000152u32, 0x0004003du32, 0x00000006u32, 0x00000173u32, 0x00000153u32, 0x00050050u32,
+  0x00000008u32, 0x00000174u32, 0x00000172u32, 0x00000173u32, 0x0004003du32, 0x00000007u32,
+  0x00000061u32, 0x00000063u32, 0x00050051u32, 0x00000006u32, 0x00000064u32, 0x00000061u32,
+  0x00000000u32, 0x0004003du32, 0x00000007u32, 0x00000065u32, 0x00000063u32, 0x00050051u32,
+  0x00000006u32, 0x00000066u32, 0x00000065u32, 0x00000002u32, 0x00050051u32, 0x00000006u32,
+  0x00000067u32, 0x00000174u32, 0x00000000u32, 0x0008000cu32, 0x00000006u32, 0x00000068u32,
+  0x00000069u32, 0x0000002eu32, 0x00000064u32, 0x00000066u32, 0x00000067u32, 0x0004003du32,
+  0x00000007u32, 0x0000006au32, 0x00000063u32, 0x00050051u32, 0x00000006u32, 0x0000006bu32,
+  0x0000006au32, 0x00000001u32, 0x0004003du32, 0x00000007u32, 0x0000006cu32, 0x00000063u32,
+  0x00050051u32, 0x00000006u32, 0x0000006du32, 0x0000006cu32, 0x00000003u32, 0x00050051u32,
+  0x00000006u32, 0x0000006eu32, 0x00000174u32, 0x00000001u32, 0x0008000cu32, 0x00000006u32,
+  0x0000006fu32, 0x00000069u32, 0x0000002eu32, 0x0000006bu32, 0x0000006du32, 0x0000006eu32,
+  0x00050050u32, 0x00000008u32, 0x00000070u32, 0x00000068u32, 0x0000006fu32, 0x00050041u32,
+  0x00000077u32, 0x00000078u32, 0x00000076u32, 0x00000071u32, 0x0004003du32, 0x00000007u32,
+  0x00000079u32, 0x00000078u32, 0x00050051u32, 0x00000006u32, 0x0000007au32, 0x00000079u32,
+  0x00000000u32, 0x00050088u32, 0x00000006u32, 0x0000007bu32, 0x00000068u32, 0x0000007au32,
+  0x00050085u32, 0x00000006u32, 0x0000007cu32, 0x0000007bu32, 0x0000007du32, 0x00050083u32,
+  0x00000006u32, 0x0000007eu32, 0x0000007cu32, 0x00000042u32, 0x0004003du32, 0x00000007u32,
+  0x0000007fu32, 0x00000078u32, 0x00050051u32, 0x00000006u32, 0x00000080u32, 0x0000007fu32,
+  0x00000001u32, 0x00050088u32, 0x00000006u32, 0x00000081u32, 0x0000006fu32, 0x00000080u32,
+  0x00050085u32, 0x00000006u32, 0x00000082u32, 0x00000081u32, 0x0000007du32, 0x00050083u32,
+  0x00000006u32, 0x00000083u32, 0x00000042u32, 0x00000082u32, 0x00070050u32, 0x00000007u32,
+  0x00000084u32, 0x0000007eu32, 0x00000083u32, 0x00000045u32, 0x00000042u32, 0x0004003du32,
+  0x00000007u32, 0x0000008cu32, 0x0000008du32, 0x0004003du32, 0x00000007u32, 0x00000091u32,
+  0x00000092u32, 0x0004003du32, 0x00000007u32, 0x00000096u32, 0x00000097u32, 0x0004003du32,
+  0x00000007u32, 0x0000009bu32, 0x0000009cu32, 0x0003003eu32, 0x000000a1u32, 0x00000084u32,
+  0x0003003eu32, 0x000000a5u32, 0x00000070u32, 0x0003003eu32, 0x000000a8u32, 0x0000008cu32,
+  0x0003003eu32, 0x000000abu32, 0x00000091u32, 0x0003003eu32, 0x000000aeu32, 0x00000096u32,
+  0x0003003eu32, 0x000000b1u32, 0x0000009bu32, 0x000100fdu32, 0x00010038u32, 0x00050036u32,
+  0x00000001u32, 0x000000b4u32, 0x00000000u32, 0x00000003u32, 0x000200f8u32, 0x000000b5u32,
+  0x0004003bu32, 0x00000017u32, 0x000000b6u32, 0x00000007u32, 0x0004003bu32, 0x00000019u32,
+  0x000000b7u32, 0x00000007u32, 0x0004003du32, 0x00000008u32, 0x000000c9u32, 0x000000cbu32,
+  0x00050051u32, 0x00000006u32, 0x000000ccu32, 0x000000c9u32, 0x00000000u32, 0x0004003du32,
+  0x00000007u32, 0x000000cdu32, 0x000000ceu32, 0x00050051u32, 0x00000006u32, 0x000000cfu32,
+  0x000000cdu32, 0x00000000u32, 0x000500b8u32, 0x00000016u32, 0x000000d0u32, 0x000000ccu32,
+  0x000000cfu32, 0x000300f7u32, 0x000000bau32, 0x00000000u32, 0x000400fau32, 0x000000d0u32,
+  0x000000b8u32, 0x000000b9u32, 0x000200f8u32, 0x000000b8u32, 0x0003003eu32, 0x000000b6u32,
+  0x00000031u32, 0x000200f9u32, 0x000000bau32, 0x000200f8u32, 0x000000b9u32, 0x00050051u32,
+  0x00000006u32, 0x000000d4u32, 0x000000c9u32, 0x00000001u32, 0x0004003du32, 0x00000007u32,
+  0x000000d5u32, 0x000000ceu32, 0x00050051u32, 0x00000006u32, 0x000000d6u32, 0x000000d5u32,
+  0x00000001u32, 0x000500b8u32, 0x00000016u32, 0x000000d7u32, 0x000000d4u32, 0x000000d6u32,
+  0x0003003eu32, 0x000000b6u32, 0x000000d7u32, 0x000200f9u32, 0x000000bau32, 0x000200f8u32,
+  0x000000bau32, 0x0004003du32, 0x00000016u32, 0x000000dau32, 0x000000b6u32, 0x000300f7u32,
+  0x000000bdu32, 0x00000000u32, 0x000400fau32, 0x000000dau32, 0x000000bbu32, 0x000000bcu32,
+  0x000200f8u32, 0x000000bbu32, 0x0003003eu32, 0x000000b6u32, 0x00000031u32, 0x000200f9u32,
+  0x000000bdu32, 0x000200f8u32, 0x000000bcu32, 0x0004003du32, 0x00000007u32, 0x000000deu32,
+  0x000000ceu32, 0x00050051u32, 0x00000006u32, 0x000000dfu32, 0x000000deu32, 0x00000002u32,
+  0x000500beu32, 0x00000016u32, 0x000000e0u32, 0x000000ccu32, 0x000000dfu32, 0x0003003eu32,
+  0x000000b6u32, 0x000000e0u32, 0x000200f9u32, 0x000000bdu32, 0x000200f8u32, 0x000000bdu32,
+  0x0004003du32, 0x00000016u32, 0x000000e3u32, 0x000000b6u32, 0x000300f7u32, 0x000000c0u32,
+  0x00000000u32, 0x000400fau32, 0x000000e3u32, 0x000000beu32, 0x000000bfu32, 0x000200f8u32,
+  0x000000beu32, 0x0003003eu32, 0x000000b6u32, 0x00000031u32, 0x000200f9u32, 0x000000c0u32,
+  0x000200f8u32, 0x000000bfu32, 0x00050051u32, 0x00000006u32, 0x000000e7u32, 0x000000c9u32,
+  0x00000001u32, 0x0004003du32, 0x00000007u32, 0x000000e8u32, 0x000000ceu32, 0x00050051u32,
+  0x00000006u32, 0x000000e9u32, 0x000000e8u32, 0x00000003u32, 0x000500beu32, 0x00000016u32,
+  0x000000eau32, 0x000000e7u32, 0x000000e9u32, 0x0003003eu32, 0x000000b6u32, 0x000000eau32,
+  0x000200f9u32, 0x000000c0u32, 0x000200f8u32, 0x000000c0u32, 0x0004003du32, 0x00000016u32,
+  0x000000edu32, 0x000000b6u32, 0x000300f7u32, 0x000000c2u32, 0x00000000u32, 0x000400fau32,
+  0x000000edu32, 0x000000c1u32, 0x000000c2u32, 0x000200f8u32, 0x000000c1u32, 0x000100fcu32,
+  0x000200f8u32, 0x000000c2u32, 0x0004003du32, 0x00000007u32, 0x000000f0u32, 0x000000f1u32,
+  0x00050051u32, 0x00000006u32, 0x000000f2u32, 0x000000f0u32, 0x00000000u32, 0x0004003du32,
+  0x00000007u32, 0x000000f3u32, 0x000000f1u32, 0x00050051u32, 0x00000006u32, 0x000000f4u32,
+  0x000000f3u32, 0x00000001u32, 0x0004003du32, 0x00000007u32, 0x000000f5u32, 0x000000f1u32,
+  0x00050051u32, 0x00000006u32, 0x000000f6u32, 0x000000f5u32, 0x00000002u32, 0x000500b8u32,
+  0x00000016u32, 0x000000f7u32, 0x000000f2u32, 0x000000f8u32, 0x000300f7u32, 0x000000c8u32,
+  0x00000000u32, 0x000400fau32, 0x000000f7u32, 0x000000c3u32, 0x000000c4u32, 0x000200f8u32,
+  0x000000c3u32, 0x0004003du32, 0x00000007u32, 0x000000fau32, 0x000000fbu32, 0x0007004fu32,
+  0x00000008u32, 0x000000fcu32, 0x000000fau32, 0x000000fau32, 0x00000000u32, 0x00000001u32,
+  0x0004003du32, 0x00000007u32, 0x000000fdu32, 0x000000fbu32, 0x0007004fu32, 0x00000008u32,
+  0x000000feu32, 0x000000fdu32, 0x000000fdu32, 0x00000002u32, 0x00000003u32, 0x00050051u32,
+  0x00000006u32, 0x00000177u32, 0x000000fdu32, 0x00000002u32, 0x00050051u32, 0x00000006u32,
+  0x00000178u32, 0x000000fdu32, 0x00000003u32, 0x0007000cu32, 0x00000006u32, 0x00000179u32,
+  0x00000069u32, 0x00000025u32, 0x00000177u32, 0x00000178u32, 0x0007000cu32, 0x00000006u32,
+  0x0000017au32, 0x00000069u32, 0x00000025u32, 0x000000f4u32, 0x00000179u32, 0x00050083u32,
+  0x00000008u32, 0x0000017bu32, 0x000000c9u32, 0x000000fcu32, 0x0006000cu32, 0x00000008u32,
+  0x0000017cu32, 0x00000069u32, 0x00000004u32, 0x0000017bu32, 0x00050050u32, 0x00000008u32,
+  0x0000017du32, 0x0000017au32, 0x0000017au32, 0x00050083u32, 0x00000008u32, 0x0000017eu32,
+  0x000000feu32, 0x0000017du32, 0x00050083u32, 0x00000008u32, 0x0000017fu32, 0x0000017cu32,
+  0x0000017eu32, 0x0007000cu32, 0x00000008u32, 0x00000180u32, 0x00000069u32, 0x00000028u32,
+  0x0000017fu32, 0x00000111u32, 0x0006000cu32, 0x00000006u32, 0x00000181u32, 0x00000069u32,
+  0x00000042u32, 0x00000180u32, 0x00050051u32, 0x00000006u32, 0x00000182u32, 0x0000017fu32,
+  0x00000000u32, 0x00050051u32, 0x00000006u32, 0x00000183u32, 0x0000017fu32, 0x00000001u32,
+  0x0007000cu32, 0x00000006u32, 0x00000184u32, 0x00000069u32, 0x00000028u32, 0x00000182u32,
+  0x00000183u32, 0x0007000cu32, 0x00000006u32, 0x00000185u32, 0x00000069u32, 0x00000025u32,
+  0x00000184u32, 0x00000045u32, 0x00050081u32, 0x00000006u32, 0x00000186u32, 0x00000181u32,
+  0x00000185u32, 0x00050083u32, 0x00000006u32, 0x00000187u32, 0x00000186u32, 0x0000017au32,
+  0x00050083u32, 0x00000006u32, 0x0000011au32, 0x000000f8u32, 0x00000187u32, 0x0008000cu32,
+  0x00000006u32, 0x0000011bu32, 0x00000069u32, 0x0000002bu32, 0x0000011au32, 0x00000045u32,
+  0x00000042u32, 0x0003003eu32, 0x000000b7u32, 0x0000011bu32, 0x000200f9u32, 0x000000c8u32,
+  0x000200f8u32, 0x000000c4u32, 0x000500b8u32, 0x00000016u32, 0x0000011eu32, 0x000000f2u32,
+  0x0000011fu32, 0x000300f7u32, 0x000000c7u32, 0x00000000u32, 0x000400fau32, 0x0000011eu32,
+  0x000000c5u32, 0x000000c6u32, 0x000200f8u32, 0x000000c5u32, 0x0004003du32, 0x00000007u32,
+  0x00000121u32, 0x000000fbu32, 0x0007004fu32, 0x00000008u32, 0x00000122u32, 0x00000121u32,
+  0x00000121u32, 0x00000000u32, 0x00000001u32, 0x0004003du32, 0x00000007u32, 0x00000123u32,
+  0x000000fbu32, 0x0007004fu32, 0x00000008u32, 0x00000124u32, 0x00000123u32, 0x00000123u32,
+  0x00000002u32, 0x00000003u32, 0x00050051u32, 0x00000006u32, 0x0000018au32, 0x00000123u32,
+  0x00000002u32, 0x00050051u32, 0x00000006u32, 0x0000018bu32, 0x00000123u32, 0x00000003u32,
+  0x0007000cu32, 0x00000006u32, 0x0000018cu32, 0x00000069u32, 0x00000025u32, 0x0000018au32,
+  0x0000018bu32, 0x0007000cu32, 0x00000006u32, 0x0000018du32, 0x00000069u32, 0x00000025u32,
+  0x000000f4u32, 0x0000018cu32, 0x00050083u32, 0x00000008u32, 0x0000018eu32, 0x000000c9u32,
+  0x00000122u32, 0x0006000cu32, 0x00000008u32, 0x0000018fu32, 0x00000069u32, 0x00000004u32,
+  0x0000018eu32, 0x00050050u32, 0x00000008u32, 0x00000190u32, 0x0000018du32, 0x0000018du32,
+  0x00050083u32, 0x00000008u32, 0x00000191u32, 0x00000124u32, 0x00000190u32, 0x00050083u32,
+  0x00000008u32, 0x00000192u32, 0x0000018fu32, 0x00000191u32, 0x0007000cu32, 0x00000008u32,
+  0x00000193u32, 0x00000069u32, 0x00000028u32, 0x00000192u32, 0x00000111u32, 0x0006000cu32,
+  0x00000006u32, 0x00000194u32, 0x00000069u32, 0x00000042u32, 0x00000193u32, 0x00050051u32,
+  0x00000006u32, 0x00000195u32, 0x00000192u32, 0x00000000u32, 0x00050051u32, 0x00000006u32,
+  0x00000196u32, 0x00000192u32, 0x00000001u32, 0x0007000cu32, 0x00000006u32, 0x00000197u32,
+  0x00000069u32, 0x00000028u32, 0x00000195u32, 0x00000196u32, 0x0007000cu32, 0x00000006u32,
+  0x00000198u32, 0x00000069u32, 0x00000025u32, 0x00000197u32, 0x00000045u32, 0x00050081u32,
+  0x00000006u32, 0x00000199u32, 0x00000194u32, 0x00000198u32, 0x00050083u32, 0x00000006u32,
+  0x0000019au32, 0x00000199u32, 0x0000018du32, 0x00050083u32, 0x00000006u32, 0x00000126u32,
+  0x000000f8u32, 0x0000019au32, 0x0008000cu32, 0x00000006u32, 0x00000127u32, 0x00000069u32,
+  0x0000002bu32, 0x00000126u32, 0x00000045u32, 0x00000042u32, 0x00050081u32, 0x00000006u32,
+  0x00000128u32, 0x000000f8u32, 0x0000019au32, 0x00050081u32, 0x00000006u32, 0x00000129u32,
+  0x00000128u32, 0x000000f6u32, 0x0008000cu32, 0x00000006u32, 0x0000012au32, 0x00000069u32,
+  0x0000002bu32, 0x00000129u32, 0x00000045u32, 0x00000042u32, 0x00050085u32, 0x00000006u32,
+  0x0000012bu32, 0x00000127u32, 0x0000012au32, 0x0003003eu32, 0x000000b7u32, 0x0000012bu32,
+  0x000200f9u32, 0x000000c7u32, 0x000200f8u32, 0x000000c6u32, 0x0004003du32, 0x00000007u32,
+  0x0000012eu32, 0x000000fbu32, 0x0007004fu32, 0x00000008u32, 0x0000012fu32, 0x0000012eu32,
+  0x0000012eu32, 0x00000000u32, 0x00000001u32, 0x0004003du32, 0x00000007u32, 0x00000130u32,
+  0x000000fbu32, 0x0007004fu32, 0x00000008u32, 0x00000131u32, 0x00000130u32, 0x00000130u32,
+  0x00000002u32, 0x00000003u32, 0x00050083u32, 0x00000008u32, 0x00000132u32, 0x000000c9u32,
+  0x0000012fu32, 0x00050083u32, 0x00000008u32, 0x00000133u32, 0x00000131u32, 0x0000012fu32,
+  0x00050094u32, 0x00000006u32, 0x00000134u32, 0x00000132u32, 0x00000133u32, 0x00050094u32,
+  0x00000006u32, 0x00000135u32, 0x00000133u32, 0x00000133u32, 0x0007000cu32, 0x00000006u32,
+  0x00000136u32, 0x00000069u32, 0x00000028u32, 0x00000135u32, 0x00000137u32, 0x00050088u32,
+  0x00000006u32, 0x00000138u32, 0x00000134u32, 0x00000136u32, 0x0008000cu32, 0x00000006u32,
+  0x00000139u32, 0x00000069u32, 0x0000002bu32, 0x00000138u32, 0x00000045u32, 0x00000042u32,
+  0x0005008eu32, 0x00000008u32, 0x0000013au32, 0x00000133u32, 0x00000139u32, 0x00050083u32,
+  0x00000008u32, 0x0000013bu32, 0x00000132u32, 0x0000013au32, 0x0006000cu32, 0x00000006u32,
+  0x0000013cu32, 0x00000069u32, 0x00000042u32, 0x0000013bu32, 0x00050085u32, 0x00000006u32,
+  0x0000013du32, 0x000000f6u32, 0x000000f8u32, 0x00050083u32, 0x00000006u32, 0x0000013eu32,
+  0x0000013cu32, 0x0000013du32, 0x00050083u32, 0x00000006u32, 0x0000013fu32, 0x000000f8u32,
+  0x0000013eu32, 0x0008000cu32, 0x00000006u32, 0x00000140u32, 0x00000069u32, 0x0000002bu32,
+  0x0000013fu32, 0x00000045u32, 0x00000042u32, 0x0003003eu32, 0x000000b7u32, 0x00000140u32,
+  0x000200f9u32, 0x000000c7u32, 0x000200f8u32, 0x000000c7u32, 0x000200f9u32, 0x000000c8u32,
+  0x000200f8u32, 0x000000c8u32, 0x0004003du32, 0x00000007u32, 0x00000144u32, 0x00000145u32,
+  0x00050051u32, 0x00000006u32, 0x00000146u32, 0x00000144u32, 0x00000003u32, 0x0004003du32,
+  0x00000006u32, 0x00000147u32, 0x000000b7u32, 0x00050085u32, 0x00000006u32, 0x00000148u32,
+  0x00000146u32, 0x00000147u32, 0x0004003du32, 0x00000007u32, 0x00000149u32, 0x00000145u32,
+  0x0008004fu32, 0x0000014au32, 0x0000014bu32, 0x00000149u32, 0x00000149u32, 0x00000000u32,
+  0x00000001u32, 0x00000002u32, 0x0005008eu32, 0x0000014au32, 0x0000014cu32, 0x0000014bu32,
+  0x00000148u32, 0x00050050u32, 0x00000007u32, 0x0000014du32, 0x0000014cu32, 0x00000148u32,
+  0x0003003eu32, 0x0000014eu32, 0x0000014du32, 0x000100fdu32, 0x00010038u32
+];
+// spirv-end

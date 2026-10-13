@@ -1,6 +1,6 @@
 // ======== Doc: a document with carets, selections and undo ========
 //
-// A Doc is a Buffer, a set of carets (each a selection: an anchor and a head, an empty one is a plain
+// A Doc is a TextBuffer, a set of carets (each a selection: an anchor and a head, an empty one is a plain
 // caret) and a History of Edits. Every change to the text goes through 'commit', which applies a set
 // of non-overlapping replacements and records them as ONE undo step: so a keystroke with five
 // carets, a replace-all or an indent of ten lines each undo in one go, and undo puts the carets back
@@ -49,7 +49,7 @@ pub struct Edit {
 
 // What undo and redo act on
 pub struct Core {
-  pub buf Buffer;
+  pub buf TextBuffer;
   pub carets List[Caret];
   pub version u64 = 0u64;              // changes with every edit, undo and redo
   pub firstDirty usize = 18446744073709551615usize;   // the lowest line edited since 'clearDirty' (NOT_FOUND: none)
@@ -153,13 +153,13 @@ pub struct Doc {
   }
 
   pub fn fromText(text &str) Doc {
-    mut d = new Doc(new Core(Buffer.fromText(text), List[Caret].empty()), History[Edit].make(), 4u32, String.from("  "));
+    mut d = new Doc(new Core(TextBuffer.fromText(text), List[Caret].empty()), History[Edit].make(), 4u32, String.from("  "));
     d.core.carets.push(caretAt(0usize));
     d.crlf = d.core.buf.usesCrlf();
     d;
   }
 
-  pub fn buffer(self &) &Buffer {&core.buf;}
+  pub fn buffer(self &) &TextBuffer {&core.buf;}
   pub fn version(self &) u64 {core.version;}
   pub fn len(self &) usize {core.buf.len();}
   pub fn lineCount(self &) usize {core.buf.lineCount();}
@@ -491,15 +491,33 @@ pub struct Doc {
     mut los = List[usize].withCapacity(n);
     mut his = List[usize].withCapacity(n);
     mut texts = List[String].withCapacity(n);
+    // a closing bracket typed on a line of only blanks takes one level of indent off first
+    imm closer = s.len() == 1usize and (s[0usize] == 125u8 or s[0usize] == 41u8 or s[0usize] == 93u8);
+    mut dedented = false;
     mut i = 0usize;
     while i < n {
-      los.push(core.carets[i].lo());
+      mut lo = core.carets[i].lo();
+      if closer and core.carets[i].isEmpty() {
+        imm line = core.buf.lineOf(lo);
+        imm ls = core.buf.lineStart(line);
+        if indentEnd(line) >= lo and lo > ls {
+          if lo - ls >= indentUnit.len() and core.buf.text(lo - indentUnit.len(), lo).view() == indentUnit.view() {
+            lo = lo - indentUnit.len();
+            dedented = true;
+          }
+          elif core.buf.byteAt(lo - 1usize) == 9u8 {
+            lo = lo - 1usize;
+            dedented = true;
+          }
+        }
+      }
+      los.push(lo);
       his.push(core.carets[i].hi());
       texts.push(String.from(s));
       i = i + 1usize;
     }
     imm after = caretsAfter(&los, &his, &texts);
-    imm tag = if n == 1usize and s.len() > 0usize {TAG_TYPING;} else {TAG_OTHER;};
+    imm tag = if n == 1usize and s.len() > 0usize and !dedented {TAG_TYPING;} else {TAG_OTHER;};
     commit(&los, &his, &texts, after, tag);
   }
 
@@ -753,7 +771,7 @@ pub struct Doc {
 
   // Replaces the whole text (after a load); undo history is cleared
   pub fn setText(self &mut, text &str) {
-    core.buf = Buffer.fromText(text);
+    core.buf = TextBuffer.fromText(text);
     core.carets.clear();
     core.carets.push(caretAt(0usize));
     core.version = core.version + 1u64;
