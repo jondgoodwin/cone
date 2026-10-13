@@ -14,6 +14,8 @@
  * - A type goes in with every field, and its members by the same two rules.
  * - The 'mod' line, the imports and the declarations with no symbol (alias,
  *   const, macro, module trait) go in as written.
+ * - An actor goes in as written, public or not, state and bodies too, so what
+ *   its state's fields and methods name goes in beside it (incSeedActors).
  * - Everything else stays out, with the comments directly above it.
  *
  * What the root reaches in one of its SUBMODULES goes in a private, pruned
@@ -802,6 +804,19 @@ static void incWalkStruct(IncGen *g, StructNode *strnode) {
     }
 }
 
+// The file holds each actor of a module whole, its state's fields and method
+// bodies too, whether the actor is public or not: so what those name goes in
+// beside it, a private type among them
+static void incSeedActors(IncGen *g, ModuleNode *mod) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(mod->nodes, cnt, nodesp)) {
+        ActorInfo *actor = (*nodesp)->tag == StructTag ? actorOfHandle(*nodesp) : NULL;
+        if (actor)
+            incWalkStruct(g, actor->state);
+    }
+}
+
 static void incNeed(IncGen *g, StructNode *strnode) {
     if (incWanted(g, (INode*)strnode))
         return;
@@ -1007,6 +1022,7 @@ static void incEmit(IncGen *g, IncMod *m) {
             }
         }
     }
+    incSeedActors(g, mod);
 }
 
 // The root's declarations of one statement: an extern block's items, or the
@@ -1062,6 +1078,7 @@ static void incSeedLifecycle(IncGen *g, DclSpan *span) {
 static void incSelect(IncGen *g) {
     IncMod *root = g->mods[0];
     root->emitted = 1;
+    incSeedActors(g, g->root);
     DclSpans *spans = g->root->spans;
     for (uint32_t i = 0; spans && i < spans->count; ++i) {
         DclSpan *span = spans->items[i];

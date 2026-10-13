@@ -1757,6 +1757,107 @@ class Testing(unittest.TestCase):
         self.assertIn("pub actor Pinger {", include)
         self.assertIn("actor Hidden {", include)
 
+    def test_a_public_actor_keeps_its_states_private_names_private(self):
+        # The include file holds a public actor whole, state and bodies, so the
+        # private names those name go in beside it, private still: a struct
+        # (with a private method) and an enum its state holds, a struct only
+        # its state's field names, and a function its behaviour calls. The importer generates the actor again and
+        # links against the library's object for the private ones. By hand:
+        # add(1) keeps Entry(101), weight 202; add(2) keeps Entry(102), weight
+        # 204; the final prints 202 + 204 = 406
+        pkg = self.root / "tally"
+        write(pkg / "congo.toml",
+              '[package]\nname = "tally"\nversion = "0.1.0"\noutput = "library"\n')
+        write(pkg / "src" / "tally.cone", """
+            mod tally;
+
+            import stdio use *;
+            import actors;
+            import collections use *;
+
+            enum Kind {
+              Small;
+              Large;
+            }
+
+            struct Entry {
+              n u64;
+              kind Kind;
+
+              fn weight(self &) u64 {
+                n * 2u64;
+              }
+            }
+
+            fn scale(n u64) u64 {
+              n + 100u64;
+            }
+
+            pub actor Tally {
+              entries List[Entry];
+              total u64;
+
+              pub fn init(self &new) {
+                *self = new Self(entries: List[Entry].empty(), total: 0u64);
+              }
+
+              pub async do add(self, n u64) {
+                entries.push(new Entry(scale(n), Kind.Large));
+                total = total + entries[entries.len() - 1usize].weight();
+              }
+
+              fn final(self &uni) {
+                printStr("tally "); printUInt(total); printStr("\\n");
+              }
+            }
+
+            struct Mark {
+              at u64;
+            }
+
+            // Mark is named only by the state's field: the implicit initializer
+            // is the module's own, so a function makes the actor
+            pub actor Stamp {
+              last Mark;
+
+              pub async do touch(self) {
+                last = new Mark(last.at + 1u64);
+              }
+            }
+
+            pub fn stamp() Stamp {
+              new Stamp(new Mark(0u64));
+            }
+            """)
+        write(pkg / "tests" / "useit.cone", """
+            mod useit;
+
+            import tally;
+            import actors;
+
+            fn main() {
+              initAll();
+              {
+                imm t = new tally.Tally();
+                t.add(1u64);
+                t.add(2u64);
+                imm s = tally.stamp();
+                s.touch();
+              }
+              finalAll();
+            }
+            """)
+        write(pkg / "tests" / "useit.out", "tally 406\n")
+        run = self.congo("test", cwd=pkg)
+        self.assertIn("test useit ... ok", run.stdout)
+        include = (pkg / "build" / "debug" / "tally.cone").read_text()
+        self.assertIn("pub actor Tally {", include)
+        self.assertIn("\nstruct Entry {", include)
+        self.assertIn("\nenum Kind {", include)
+        self.assertIn("\nstruct Mark {", include)
+        self.assertNotIn("pub struct Entry", include)
+        self.assertNotIn("pub struct Mark", include)
+
     def test_a_non_ascii_diff_to_a_pipe(self):
         # Congo's stdout here is a pipe, which Python would write in the
         # locale's code page (1252 on Windows) unless told otherwise: a diff
