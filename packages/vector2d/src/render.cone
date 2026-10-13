@@ -1,0 +1,177 @@
+// ======== VectorRenderer: a canvas on the GPU ========
+//
+// One vertex buffer holds the canvas's triangles (converted to clip space as
+// they are copied; 32 bytes a vertex) and one draw puts them on the target with
+// vector2d.slang. Text is msdftext's: one overlay text a string, drawn after
+// the vectors, so text is always above shapes (draw in layers, one canvas and one
+// render each, when something must cover text). Anti-aliasing is the
+// tessellator's edge coverage, so the target needs no multisampling.
+
+const VERTEX_BYTES = 32u64;
+
+pub struct VectorRenderer {
+  shader ShaderModule;
+  layout PipelineLayout;
+  pub pipeline RenderPipeline;
+  vbuf Buffer;
+  capacity u64;                    // bytes
+  pub text TextRenderer;
+  handles List[TextHandle];
+  format u32;
+  pub triangles u32;               // the last render's
+  pub texts u32;
+
+  // A renderer for targets of 'format', drawing text from 'atlas'. Check 'isValid'.
+  pub fn create(device &mut Device, atlas &Atlas, format u32) VectorRenderer {
+    mut shader = device.createShaderModule(&VECTOR2D_SPIRV);
+    mut layout = device.createEmptyPipelineLayout(0u32);
+    imm attributes = [new VertexAttribute(VERTEX_FORMAT_FLOAT32X2, 0u64, 0u32),
+      new VertexAttribute(VERTEX_FORMAT_FLOAT32X2, 8u64, 1u32),
+      new VertexAttribute(VERTEX_FORMAT_FLOAT32X4, 16u64, 2u32)];
+    imm buffers = [new VertexBufferLayout(arrayStride: VERTEX_BYTES, attributes: &attributes)];
+    imm desc = new RenderPipelineDescriptor(layout: &layout, vertexModule: &shader, vertexEntryPoint: "vertexMain",
+      buffers: &buffers, fragmentModule: &shader, fragmentEntryPoint: "fragmentMain", colorFormat: format,
+      blendEnabled: true, colorSrcFactor: BLEND_FACTOR_ONE, colorDstFactor: BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+      alphaSrcFactor: BLEND_FACTOR_ONE, alphaDstFactor: BLEND_FACTOR_ONE_MINUS_SRC_ALPHA);
+    mut pipeline = device.createRenderPipeline(&desc);
+    mut vbuf = device.createBuffer(VERTEX_BYTES * 3u64, BUFFER_USAGE_VERTEX | BUFFER_USAGE_COPY_DST);
+    mut text = TextRenderer.create(device, atlas, format, format, TEXTURE_FORMAT_DEPTH32_FLOAT);
+    new VectorRenderer(shader, layout, pipeline, vbuf, VERTEX_BYTES * 3u64, text, List[TextHandle].empty(), format, 0u32, 0u32);
+  }
+
+  pub fn isValid(self &) bool { pipeline.isValid() and text.isValid(); }
+
+  // Record a pass drawing 'canvas' into 'target' (kept as it is: clear it first,
+  // or pass 'clear' to start from that colour)
+  pub fn render(self &mut, device &mut Device, encoder &mut CommandEncoder, target &Texture, canvas &Canvas,
+      font &Font, atlas &mut Atlas, clear bool, clearColor Color) {
+    imm nverts = canvas.batch.vertexCount();
+    triangles = u32.from(nverts / 3usize);
+    // The texts first: layout may add glyphs to the atlas
+    texts = u32.from(canvas.texts.len());
+    mut i = 0usize;
+    while i < canvas.texts.len() {
+      if i >= handles.len() { handles.push(text.addText(device, SPACE_OVERLAY)); }
+      imm op = canvas.texts[i];
+      mut opts = LayoutOptions.make(op.size);
+      opts.maxWidth = op.maxWidth;
+      opts.align = op.align;
+      imm layout = layoutText(font, atlas, op.text.view(), &opts);
+      mut style = TextStyle.plain(op.color);
+      if op.outlineWidth > 0. { style.outlineColor = op.outlineColor; style.outlineWidth = op.outlineWidth; }
+      imm x0 = op.x - op.ax * layout.width;
+      imm y0 = op.y - op.ay * layout.height;
+      text.set(device, *handles[i], &layout, &style, overlayTransform(canvas.width, canvas.height, x0, y0));
+      i = i + 1usize;
+    }
+    while i < handles.len() { text.clearText(*handles[i]); i = i + 1usize; }
+    text.syncAtlas(device, atlas);
+
+    if nverts > 0usize {
+      imm need = u64.from(nverts) * VERTEX_BYTES;
+      if need > capacity {
+        device.queue.releaseBuffer(&mut vbuf);
+        capacity = need * 2u64;
+        vbuf = device.createBuffer(capacity, BUFFER_USAGE_VERTEX | BUFFER_USAGE_COPY_DST);
+      }
+      mut data = List[f32].withCapacity(canvas.batch.verts.len());
+      imm sx = 2. / canvas.width;
+      imm sy = 2. / canvas.height;
+      mut v = 0usize;
+      while v < nverts {
+        imm b = v * VERTEX_FLOATS;
+        data.push(*canvas.batch.verts[b] * sx - 1.);
+        data.push(1. - *canvas.batch.verts[b + 1usize] * sy);
+        mut k = 2usize;
+        while k < VERTEX_FLOATS { data.push(*canvas.batch.verts[b + k]); k = k + 1usize; }
+        v = v + 1usize;
+      }
+      imm raw *f32 = data.view() as *f32;
+      device.queue.writeBuffer(&vbuf, 0u64, raw as *u8, need);
+    }
+    imm op = if clear { LOAD_OP_CLEAR; } else { LOAD_OP_LOAD; };
+    imm color = new RenderPassColorAttachment(view: target.createView(), loadOp: op, clearValue: clearColor);
+    mut pass = encoder.beginRenderPass(&color);
+    if nverts > 0usize {
+      pass.setPipeline(&pipeline);
+      pass.setVertexBuffer(0u32, &vbuf, 0u64);
+      pass.draw(u32.from(nverts), 1u32, 0u32, 0u32);
+    }
+    pass.end();
+    text.renderOverlay(encoder, target);
+  }
+}
+
+// The size a string takes at 'size' pixels of em (wrapped at maxWidth if it is above 0)
+pub fn measureText(font &Font, atlas &mut Atlas, s &Array[u8], size f32, maxWidth f32) Vec2 {
+  mut opts = LayoutOptions.make(size);
+  opts.maxWidth = maxWidth;
+  imm layout = layoutText(font, atlas, s, &opts);
+  new Vec2(layout.width, layout.height);
+}
+
+// spirv-begin vector2d.spv VECTOR2D_SPIRV
+// Written by tools/shaders/shaders.py from vector2d.slang (sha256 9df1fa57c17c9d678347437c17c359ec89dd38f33d13815e9825813e505dd70c): do not edit.
+imm VECTOR2D_SPIRV Array[u32, 355] = [
+  0x07230203u32, 0x00010500u32, 0x00280000u32, 0x00000044u32, 0x00000000u32, 0x00020011u32,
+  0x00000001u32, 0x0006000bu32, 0x00000038u32, 0x4c534c47u32, 0x6474732eu32, 0x3035342eu32,
+  0x00000000u32, 0x0003000eu32, 0x00000000u32, 0x00000001u32, 0x000c000fu32, 0x00000000u32,
+  0x00000002u32, 0x74726576u32, 0x614d7865u32, 0x00006e69u32, 0x00000025u32, 0x00000029u32,
+  0x0000002cu32, 0x00000011u32, 0x0000001au32, 0x00000020u32, 0x000a000fu32, 0x00000004u32,
+  0x0000002fu32, 0x67617266u32, 0x746e656du32, 0x6e69614du32, 0x00000000u32, 0x00000043u32,
+  0x00000035u32, 0x00000032u32, 0x00030010u32, 0x0000002fu32, 0x00000007u32, 0x00030003u32,
+  0x0000000bu32, 0x00000001u32, 0x00060005u32, 0x00000011u32, 0x75706e69u32, 0x6f702e74u32,
+  0x69746973u32, 0x00006e6fu32, 0x00050005u32, 0x0000001au32, 0x75706e69u32, 0x6f632e74u32,
+  0x00726576u32, 0x00050005u32, 0x00000020u32, 0x75706e69u32, 0x6f632e74u32, 0x00726f6cu32,
+  0x000b0005u32, 0x00000029u32, 0x72746e65u32, 0x696f5079u32, 0x6150746eu32, 0x5f6d6172u32,
+  0x74726576u32, 0x614d7865u32, 0x632e6e69u32, 0x7265766fu32, 0x00000000u32, 0x000b0005u32,
+  0x0000002cu32, 0x72746e65u32, 0x696f5079u32, 0x6150746eu32, 0x5f6d6172u32, 0x74726576u32,
+  0x614d7865u32, 0x632e6e69u32, 0x726f6c6fu32, 0x00000000u32, 0x00050005u32, 0x00000002u32,
+  0x74726576u32, 0x614d7865u32, 0x00006e69u32, 0x00050005u32, 0x00000032u32, 0x75706e69u32,
+  0x6f632e74u32, 0x00726f6cu32, 0x00050005u32, 0x00000035u32, 0x75706e69u32, 0x6f632e74u32,
+  0x00726576u32, 0x00030005u32, 0x0000003du32, 0x00000061u32, 0x000a0005u32, 0x00000043u32,
+  0x72746e65u32, 0x696f5079u32, 0x6150746eu32, 0x5f6d6172u32, 0x67617266u32, 0x746e656du32,
+  0x6e69614du32, 0x00000000u32, 0x00060005u32, 0x0000002fu32, 0x67617266u32, 0x746e656du32,
+  0x6e69614du32, 0x00000000u32, 0x00040047u32, 0x00000011u32, 0x0000001eu32, 0x00000000u32,
+  0x00040047u32, 0x0000001au32, 0x0000001eu32, 0x00000001u32, 0x00040047u32, 0x00000020u32,
+  0x0000001eu32, 0x00000002u32, 0x00040047u32, 0x00000025u32, 0x0000000bu32, 0x00000000u32,
+  0x00040047u32, 0x00000029u32, 0x0000001eu32, 0x00000000u32, 0x00040047u32, 0x0000002cu32,
+  0x0000001eu32, 0x00000001u32, 0x00040047u32, 0x00000032u32, 0x0000001eu32, 0x00000001u32,
+  0x00040047u32, 0x00000035u32, 0x0000001eu32, 0x00000000u32, 0x00040047u32, 0x00000043u32,
+  0x0000001eu32, 0x00000000u32, 0x00020013u32, 0x00000001u32, 0x00030021u32, 0x00000003u32,
+  0x00000001u32, 0x00030016u32, 0x00000006u32, 0x00000020u32, 0x00040017u32, 0x00000007u32,
+  0x00000006u32, 0x00000004u32, 0x00040017u32, 0x00000008u32, 0x00000006u32, 0x00000002u32,
+  0x00040020u32, 0x00000010u32, 0x00000001u32, 0x00000008u32, 0x0004002bu32, 0x00000006u32,
+  0x00000013u32, 0x00000000u32, 0x0004002bu32, 0x00000006u32, 0x00000014u32, 0x3f800000u32,
+  0x00040020u32, 0x0000001fu32, 0x00000001u32, 0x00000007u32, 0x00040020u32, 0x00000024u32,
+  0x00000003u32, 0x00000007u32, 0x00040020u32, 0x00000028u32, 0x00000003u32, 0x00000008u32,
+  0x00040017u32, 0x0000003fu32, 0x00000006u32, 0x00000003u32, 0x0004003bu32, 0x00000010u32,
+  0x00000011u32, 0x00000001u32, 0x0004003bu32, 0x00000010u32, 0x0000001au32, 0x00000001u32,
+  0x0004003bu32, 0x0000001fu32, 0x00000020u32, 0x00000001u32, 0x0004003bu32, 0x00000024u32,
+  0x00000025u32, 0x00000003u32, 0x0004003bu32, 0x00000028u32, 0x00000029u32, 0x00000003u32,
+  0x0004003bu32, 0x00000024u32, 0x0000002cu32, 0x00000003u32, 0x0004003bu32, 0x0000001fu32,
+  0x00000032u32, 0x00000001u32, 0x0004003bu32, 0x00000010u32, 0x00000035u32, 0x00000001u32,
+  0x0004003bu32, 0x00000024u32, 0x00000043u32, 0x00000003u32, 0x00050036u32, 0x00000001u32,
+  0x00000002u32, 0x00000000u32, 0x00000003u32, 0x000200f8u32, 0x00000004u32, 0x0004003du32,
+  0x00000008u32, 0x0000000fu32, 0x00000011u32, 0x00060050u32, 0x00000007u32, 0x00000012u32,
+  0x0000000fu32, 0x00000013u32, 0x00000014u32, 0x0004003du32, 0x00000008u32, 0x00000019u32,
+  0x0000001au32, 0x0004003du32, 0x00000007u32, 0x0000001eu32, 0x00000020u32, 0x0003003eu32,
+  0x00000025u32, 0x00000012u32, 0x0003003eu32, 0x00000029u32, 0x00000019u32, 0x0003003eu32,
+  0x0000002cu32, 0x0000001eu32, 0x000100fdu32, 0x00010038u32, 0x00050036u32, 0x00000001u32,
+  0x0000002fu32, 0x00000000u32, 0x00000003u32, 0x000200f8u32, 0x00000030u32, 0x0004003du32,
+  0x00000007u32, 0x00000031u32, 0x00000032u32, 0x00050051u32, 0x00000006u32, 0x00000033u32,
+  0x00000031u32, 0x00000003u32, 0x0004003du32, 0x00000008u32, 0x00000034u32, 0x00000035u32,
+  0x00050051u32, 0x00000006u32, 0x00000036u32, 0x00000034u32, 0x00000000u32, 0x0008000cu32,
+  0x00000006u32, 0x00000037u32, 0x00000038u32, 0x0000002bu32, 0x00000036u32, 0x00000013u32,
+  0x00000014u32, 0x00050085u32, 0x00000006u32, 0x00000039u32, 0x00000033u32, 0x00000037u32,
+  0x0004003du32, 0x00000008u32, 0x0000003au32, 0x00000035u32, 0x00050051u32, 0x00000006u32,
+  0x0000003bu32, 0x0000003au32, 0x00000001u32, 0x0008000cu32, 0x00000006u32, 0x0000003cu32,
+  0x00000038u32, 0x0000002bu32, 0x0000003bu32, 0x00000013u32, 0x00000014u32, 0x00050085u32,
+  0x00000006u32, 0x0000003du32, 0x00000039u32, 0x0000003cu32, 0x0004003du32, 0x00000007u32,
+  0x0000003eu32, 0x00000032u32, 0x0008004fu32, 0x0000003fu32, 0x00000040u32, 0x0000003eu32,
+  0x0000003eu32, 0x00000000u32, 0x00000001u32, 0x00000002u32, 0x0005008eu32, 0x0000003fu32,
+  0x00000041u32, 0x00000040u32, 0x0000003du32, 0x00050050u32, 0x00000007u32, 0x00000042u32,
+  0x00000041u32, 0x0000003du32, 0x0003003eu32, 0x00000043u32, 0x00000042u32, 0x000100fdu32,
+  0x00010038u32
+];
+// spirv-end

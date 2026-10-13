@@ -1,0 +1,82 @@
+// ======== Flattening: a path to polylines in pixel space ========
+
+// 'path' under 'm', curves cut so that no chord is further than 'tolerance'
+// from its curve. Subpaths of a single point are dropped.
+pub fn flatten(path &VectorPath, m Mat2D, tolerance f32) List[Subpath] {
+  mut out = List[Subpath].empty();
+  mut cur = new Subpath(List[Vec2].empty(), false);
+  mut have = false;
+  mut pi = 0usize;
+  mut ci = 0usize;
+  mut last = new Vec2(0., 0.);
+  mut startPt = new Vec2(0., 0.);
+  while ci < path.cmds.len() {
+    imm cmd = *path.cmds[ci];
+    ci = ci + 1usize;
+    if cmd == CMD_MOVE {
+      if have and cur.pts.len() > 1usize { out.push(cur); }
+      cur = new Subpath(List[Vec2].empty(), false);
+      have = true;
+      last = m.apply(*path.pts[pi]);
+      startPt = last;
+      pi = pi + 1usize;
+      pushPoint(&mut cur, last);
+    } elif cmd == CMD_CLOSE {
+      if have {
+        cur.closed = true;
+        if cur.pts.len() > 1usize {
+          imm a = *cur.pts[0usize];
+          imm b = *cur.pts[cur.pts.len() - 1usize];
+          if absf(a.x - b.x) < 0.001 and absf(a.y - b.y) < 0.001 { cur.pts.pop(); }
+        }
+        if cur.pts.len() > 1usize { out.push(cur); }
+      }
+      cur = new Subpath(List[Vec2].empty(), false);
+      have = false;
+      last = startPt;
+    } else {
+      if !have {
+        cur = new Subpath(List[Vec2].empty(), false);
+        have = true;
+        pushPoint(&mut cur, last);
+      }
+      if cmd == CMD_LINE {
+        last = m.apply(*path.pts[pi]);
+        pi = pi + 1usize;
+        pushPoint(&mut cur, last);
+      } elif cmd == CMD_QUAD {
+        imm p1 = m.apply(*path.pts[pi]);
+        imm p2 = m.apply(*path.pts[pi + 1usize]);
+        pi = pi + 2usize;
+        imm dd = (last - p1 * 2. + p2).length();
+        imm n = ceilCount((dd / (4. * tolerance)).sqrt());
+        mut i = 1u32;
+        while i <= n {
+          imm t = f32.from(i) / f32.from(n);
+          imm u = 1. - t;
+          pushPoint(&mut cur, last * (u * u) + p1 * (2. * u * t) + p2 * (t * t));
+          i = i + 1u32;
+        }
+        last = p2;
+      } else {
+        imm p1 = m.apply(*path.pts[pi]);
+        imm p2 = m.apply(*path.pts[pi + 1usize]);
+        imm p3 = m.apply(*path.pts[pi + 2usize]);
+        pi = pi + 3usize;
+        imm d1 = (last - p1 * 2. + p2).length();
+        imm d2 = (p1 - p2 * 2. + p3).length();
+        imm n = ceilCount((0.75 * maxf(d1, d2) / tolerance).sqrt());
+        mut i = 1u32;
+        while i <= n {
+          imm t = f32.from(i) / f32.from(n);
+          imm u = 1. - t;
+          pushPoint(&mut cur, last * (u * u * u) + p1 * (3. * u * u * t) + p2 * (3. * u * t * t) + p3 * (t * t * t));
+          i = i + 1u32;
+        }
+        last = p3;
+      }
+    }
+  }
+  if have and cur.pts.len() > 1usize { out.push(cur); }
+  out;
+}
