@@ -283,57 +283,10 @@ pub struct ImageFx {
     }
 
     // The frame uniform for the passes: the unjittered camera, now and last frame
-    imm projection = base.projectionMatrix(aspect);
-    imm viewProjection = projection * base.viewMatrix();
-    imm inverse = viewProjection.inverse();
-    imm previous = if havePrevious and !cut { previousViewProjection; } else { viewProjection; };
-    imm place = base.placement();
-    imm forward = new Vec3(-place.m[8], -place.m[9], -place.m[10]).normalize();
+    imm viewProjection = writeFxFrame(device, &frameBuffer, &base, aspect, width, height, previousViewProjection,
+      havePrevious and !cut, jitterPixelsX, jitterPixelsY, previousJitterX, previousJitterY, light, renderer.exposure,
+      renderer.time, dt, frameNumber, cut);
     imm eye = base.position();
-    imm towards = new Vec3(0., 0., 0.) - light.direction;
-    mut data = new Array[f32, 84] <- fill 0f;
-    mut k = 0usize;
-    while k < 16usize {
-      data[k] = viewProjection.m[k];
-      data[16usize + k] = inverse.m[k];
-      data[32usize + k] = previous.m[k];
-      k = k + 1usize;
-    }
-    data[48] = eye.x;
-    data[49] = eye.y;
-    data[50] = eye.z;
-    data[52] = forward.x;
-    data[53] = forward.y;
-    data[54] = forward.z;
-    data[55] = base.near;
-    data[56] = f32.from(width);
-    data[57] = f32.from(height);
-    data[58] = 1. / f32.from(width);
-    data[59] = 1. / f32.from(height);
-    data[60] = jitterPixelsX;
-    data[61] = jitterPixelsY;
-    data[62] = previousJitterX;
-    data[63] = previousJitterY;
-    data[64] = projection.m[10];
-    data[65] = projection.m[14];
-    data[66] = projection.m[0];
-    data[67] = projection.m[5];
-    data[68] = towards.x;
-    data[69] = towards.y;
-    data[70] = towards.z;
-    data[71] = renderer.exposure;
-    data[72] = light.color.red;
-    data[73] = light.color.green;
-    data[74] = light.color.blue;
-    data[75] = renderer.time;
-    data[76] = light.ambient.red;
-    data[77] = light.ambient.green;
-    data[78] = light.ambient.blue;
-    data[79] = dt;
-    data[80] = f32.from(frameNumber);
-    data[81] = base.far;
-    data[82] = if cut { 1.; } else { 0.; };
-    device.queue.writeBuffer(&frameBuffer, 0u64, &data as *u8, FX_FRAME_BYTES);
 
     // The scene, its depth kept for the passes that read it
     imm decalsOn = decals.len() > 0usize;
@@ -445,6 +398,72 @@ fn fxPass(encoder &mut CommandEncoder, view TextureView, keep bool, pipeline &Re
   if size > 0u32 { pass.setImmediates(0u32, data, size); }
   pass.draw(3u32, 1u32, 0u32, 0u32);
   pass.end();
+}
+
+// Write fxcommon.slang's FxFrame for 'camera' (jitter-free: the caller jitters the one it draws with)
+// drawing a target 'width' by 'height' into 'buffer', and return the camera's view-projection.
+// 'previous' is last frame's view-projection, used if 'havePrevious'; the jitters are in pixels. The
+// camera's eye is its position, a reflected camera's reflection, and its forward the way it looks in
+// the world (reflected likewise), which is what the fog and the other passes shade from.
+fn writeFxFrame(device &mut Device, buffer &Buffer, camera &Camera, aspect f32, width u32, height u32, previous Mat4,
+    havePrevious bool, jitterX f32, jitterY f32, previousJitterX f32, previousJitterY f32, light &Light, exposure f32,
+    time f32, dt f32, frameNumber u32, cut bool) Mat4 {
+  imm projection = camera.projectionMatrix(aspect);
+  imm viewProjection = projection * camera.viewMatrix();
+  imm inverse = viewProjection.inverse();
+  imm before = if havePrevious { previous; } else { viewProjection; };
+  imm place = camera.placement();
+  mut forward = new Vec3(-place.m[8], -place.m[9], -place.m[10]).normalize();
+  if camera.reflected {
+    imm n = new Vec3(camera.mirror.x, camera.mirror.y, camera.mirror.z);
+    forward = forward - n * (2. * n.dot(forward));
+  }
+  imm eye = camera.position();
+  imm towards = new Vec3(0., 0., 0.) - light.direction;
+  mut data = new Array[f32, 84] <- fill 0f;
+  mut k = 0usize;
+  while k < 16usize {
+    data[k] = viewProjection.m[k];
+    data[16usize + k] = inverse.m[k];
+    data[32usize + k] = before.m[k];
+    k = k + 1usize;
+  }
+  data[48] = eye.x;
+  data[49] = eye.y;
+  data[50] = eye.z;
+  data[52] = forward.x;
+  data[53] = forward.y;
+  data[54] = forward.z;
+  data[55] = camera.near;
+  data[56] = f32.from(width);
+  data[57] = f32.from(height);
+  data[58] = 1. / f32.from(width);
+  data[59] = 1. / f32.from(height);
+  data[60] = jitterX;
+  data[61] = jitterY;
+  data[62] = previousJitterX;
+  data[63] = previousJitterY;
+  data[64] = projection.m[10];
+  data[65] = projection.m[14];
+  data[66] = projection.m[0];
+  data[67] = projection.m[5];
+  data[68] = towards.x;
+  data[69] = towards.y;
+  data[70] = towards.z;
+  data[71] = exposure;
+  data[72] = light.color.red;
+  data[73] = light.color.green;
+  data[74] = light.color.blue;
+  data[75] = time;
+  data[76] = light.ambient.red;
+  data[77] = light.ambient.green;
+  data[78] = light.ambient.blue;
+  data[79] = dt;
+  data[80] = f32.from(frameNumber);
+  data[81] = camera.far;
+  data[82] = if cut { 1.; } else { 0.; };
+  device.queue.writeBuffer(buffer, 0u64, &data as *u8, FX_FRAME_BYTES);
+  viewProjection;
 }
 
 // A texture cleared to zero now (in a submission of its own)
