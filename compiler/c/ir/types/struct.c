@@ -4034,8 +4034,11 @@ static void structCheckMembers(StructNode *node) {
             "%s may not declare Sized or DynSized: the compiler grants both, by whether a type's size is known at compile time or carried by a reference to it.",
             &node->namesym->namestr);
 
-    // 'ShapeKeeping' is found where a value becomes a virtual reference marked with it
-    if (structDeclaresTrait(node, shapeKeepingTrait))
+    // 'ShapeKeeping' is found where a value becomes a virtual reference marked with it.
+    // A package's include file, which has no bodies to find it in, says what the
+    // package's own compile found (shapeKeepRecordable)
+    if (structDeclaresTrait(node, shapeKeepingTrait)
+        && !(node->lexer != NULL && (node->lexer->flags & LexLineMarks)))
         errorMsgNode((INode*)node, ErrorShapeKeepingDeclared,
             "%s may not declare ShapeKeeping: the compiler finds it, from the methods a virtual reference marked '+ ShapeKeeping' dispatches to, where a value becomes one.",
             &node->namesym->namestr);
