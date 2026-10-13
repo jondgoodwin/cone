@@ -9,6 +9,8 @@
                                       build the package, run each program in
                                       its tests/ and build each in examples/
     congo clean [file.cone]           delete what a build wrote
+    congo publish [--registry URL]    point an index registry at this package's
+                                      current commit
 
 build, run and test also take -D NAME or -D NAME=123 (TEMPORARY, a provisional
 mechanism whose final design is open), passed to every conec compile.
@@ -922,6 +924,9 @@ class Index:
         if not COMMIT_RE.match(data["commit"]):
             raise CongoError(f"{where}: commit must be a full commit hash: 40 (or 64) lower-case"
                              f" hex digits, which no later push can change")
+        if data["git"].startswith("-") or "::" in data["git"]:
+            raise CongoError(f"{where}: git must be a repository's URL or a folder, not an option"
+                             f" or a transport helper")
         parts = [p for p in re.split(r"[/\\]", path) if p]
         if path.startswith(("/", "\\")) or ":" in path or ".." in parts or "." in parts:
             raise CongoError(f"{where}: path must be a folder inside the repository, written"

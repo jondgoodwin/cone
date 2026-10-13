@@ -3133,6 +3133,7 @@ class IndexRegistries(unittest.TestCase):
         cases = {
             "commit must be a full commit hash": ("alpha", src_url, "main", ""),
             "names the package 'other'": ("other", src_url, commit, ""),
+            "not an option or a transport helper": ("alpha", "ext::sh -c true", commit, ""),
             "path must be a folder inside the repository": ("alpha", src_url, commit, "../x"),
             "has no congo.toml in 'nowhere'": ("alpha", src_url, commit, "nowhere"),
             "is the commit in that repository?": ("alpha", src_url, "0" * 40, ""),
