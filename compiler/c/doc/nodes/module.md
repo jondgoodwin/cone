@@ -1779,7 +1779,10 @@ declaration's `DclPrivate` bit where the source declared the name, the alias's o
 `FlagPub` where the source folded it. A private name of the source is
 `ErrorNotPublic` where a selective clause names it and is passed over by a star
 clause, so it is `ErrorNotPublic` after `but` too: seen from outside a module a
-private name behaves as a missing one does, and there is nothing to leave out. A
+private name behaves as a missing one does, and there is nothing to leave out.
+The source's `final` and `clone` are passed over by a star clause as well
+(`importStarAdmits`), so after `but` they are `ErrorBadFold`, in `importNameRes`
+and, for a `mod` line's default, `modDefaultFoldCheck`. A
 name the source has not got, listed or after `but`, is `ErrorNoMbr`;
 the source module's own name is passed over by a star clause and is `ErrorBadFold`
 where a list names it, because the import bound it already. (A module's `extends`
