@@ -1204,8 +1204,10 @@ static void genericDemandMatch(StructNode *trait, StructNode *type) {
         if ((*nodesp)->tag != FnDclTag || !((*nodesp)->flags & FlagMethFld))
             continue;
         // A generic default is no requirement: nothing is compared of it, and its
-        // signature (a step naming 'Self') is made only where it is called
-        if (((FnDclNode*)*nodesp)->genericinfo && ((FnDclNode*)*nodesp)->value)
+        // signature (a step naming 'Self') is made only where it is called. Nor is
+        // an 'inline' one, which fills no slot of the trait either
+        if (((FnDclNode*)*nodesp)->value
+            && (((FnDclNode*)*nodesp)->genericinfo || (((FnDclNode*)*nodesp)->flags & FlagInline)))
             continue;
         if (!((*nodesp)->flags & (TypeChecked | TypeChecking))) {
             TypeCheckState tstate;
