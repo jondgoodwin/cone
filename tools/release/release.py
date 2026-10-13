@@ -489,7 +489,6 @@ def stage(args: argparse.Namespace) -> None:
     if missing:
         raise ReleaseError("missing: " + ", ".join(str(p) for p in missing))
     base = f"{SITE}/downloads/{short}"
-    browser = Path(args.browser) if args.browser else None
     values = {
         "HASH": full, "HASH8": short, "SITE": SITE, "BASE": base,
         "LINUX_FILE": lin.name, "LINUX_SHA256": sha256_of(lin), "LINUX_SIZE": human(lin.stat().st_size),
@@ -499,19 +498,12 @@ def stage(args: argparse.Namespace) -> None:
         # Linux-only release: the page says the Windows compiler is coming, install.ps1 is
         # not staged and a leftover Windows zip is ignored, so the sums list only what ships
         values["WINDOWS_COMPILER"] = (HERE / "windows-compiler-soon.html.in").read_text(encoding="utf-8")
-        values["HASH_FILE_WIN"] = browser.name if browser is not None else "FILE"
+        values["WIN_ROW"] = ""
     else:
         values.update(WIN_FILE=win.name, WIN_SHA256=sha256_of(win), WIN_SIZE=human(win.stat().st_size))
         sums.insert(0, f"{values['WIN_SHA256']}  {win.name}")
         values["WINDOWS_COMPILER"] = fill((HERE / "windows-compiler.html.in").read_text(encoding="utf-8"), values)
-        values["HASH_FILE_WIN"] = win.name
-    if browser is not None:
-        values.update(BROWSER_FILE=browser.name, BROWSER_SHA256=sha256_of(browser),
-                      BROWSER_SIZE=human(browser.stat().st_size))
-        sums.append(f"{values['BROWSER_SHA256']}  {browser.name}")
-        values["BROWSER_ENTRY"] = fill((HERE / "browser-entry.html.in").read_text(encoding="utf-8"), values)
-    else:
-        values["BROWSER_ENTRY"] = (HERE / "browser-placeholder.html.in").read_text(encoding="utf-8")
+        values["WIN_ROW"] = fill((HERE / "windows-file-row.html.in").read_text(encoding="utf-8"), values)
     (out / "SHA256SUMS").write_text("\n".join(sums) + "\n", encoding="utf-8", newline="\n")
     for name in ("install.sh",) if args.no_windows else ("install.ps1", "install.sh"):
         template = (HERE / f"{name}.in").read_text(encoding="utf-8")
@@ -588,7 +580,6 @@ def main() -> int:
     p = sub.add_parser("stage", help="checksums, install scripts and the Downloads page")
     common(p)
     p.add_argument("--full-hash", help="the 40-digit commit, on a machine with no clone")
-    p.add_argument("--browser", help="the browser archive, once 3D Web has built one")
     p.add_argument("--no-windows", action="store_true",
                    help="a Linux-only release: no Windows zip or install.ps1; the page says the Windows compiler is coming")
     p = sub.add_parser("fetch-python", help="download the pinned embeddable Python")
