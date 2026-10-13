@@ -28,13 +28,15 @@
 // layer above's, 'upperToken', has the top one set), the driver's
 // generation on its loop (eight bits: a later driver that took a dead
 // one's number has another, so it does not claim the dead one's late
-// completions), the record's generation (sixteen bits) and index (twenty-four)
+// completions), the record's generation (sixteen bits) and index (twenty-four).
+// An upper token has the driver's generation too, and the layer above's own
+// forty bits where the record's generation and index are
 const tokTop = 0x8000000000000000u64;
 const numberShift = 53u64;           // the mark's number: bits 53 to 62
 const kindShift = 48u64;
 const dgenShift = 40u64;             // the driver's generation: bits 40 to 47
 const dgenMask = 0xFFu64;
-const markMask = 0xFFE0000000000000u64;  // the mark and number: all an upper token keeps of the driver's
+const upperMask = 0xFFFFFFFFFFu64;   // the layer above's own part of an upper token: bits 0 to 39
 const upperKind = 16u64;             // the kind bit that is the layer above's
 const kRecv = 1u64;
 const kReady = 2u64;
@@ -218,16 +220,23 @@ pub struct Driver {
   // groups): its kind has the top of its five bits set, which no operation
   // of the driver's has, so 'complete' leaves its completion (false) and
   // 'owns' is true of it. 'kind' is the layer's own, 0 to 15 (a larger one
-  // is a panic); 'n' is the layer's own, its low 48 bits kept, which leaves
-  // no room for the driver's generation: an upper token carries the mark
-  // and number alone
-  pub fn upperToken(self &, kind u8, n u64, file &Array[u8] = srcFile(), line u32 = srcLine()) u64 {
+  // is a panic); 'n' is the layer's own, its low 40 bits kept: the driver's
+  // generation takes the eight above them. The generation is taken from
+  // 'lp', the loop the token goes to, if the driver has none yet (as a
+  // connect or a listen takes it)
+  pub fn upperToken(self &mut, lp &mut Loop, kind u8, n u64, file &Array[u8] = srcFile(), line u32 = srcLine()) u64 {
     if kind >= 16u8 {panic("httpconn: an upper token's kind is 0 to 15", file, line);}
-    (tokBase & markMask) | ((u64.from(kind) | upperKind) << kindShift) | (n & 0xFFFFFFFFFFFFu64);
+    self.stamp(lp);
+    tokBase | ((u64.from(kind) | upperKind) << kindShift) | (n & upperMask);
   }
 
-  // Whether a token is one 'upperToken' made, and its kind and n
-  pub fn isUpperToken(self &, token u64) bool {self.owns(token) and ((token >> kindShift) & upperKind) != 0u64;}
+  // Whether a token is one this driver's 'upperToken' made: its number and
+  // its generation are this driver's (a dead driver's with the same number
+  // had another)
+  pub fn isUpperToken(self &, token u64) bool {
+    self.owns(token) and ((token >> kindShift) & upperKind) != 0u64
+      and ((token >> dgenShift) & dgenMask) == ((tokBase >> dgenShift) & dgenMask);
+  }
 
   // ---------------------------------------------------------------------------
   // The tables
