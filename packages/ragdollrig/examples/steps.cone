@@ -225,7 +225,14 @@ fn main() i32 {
   imm pelvis = world.positionOf(rig.bodyOfBone(PELVIS));
   print <- "settled at step "; print <- settledAt; print <- ", pelvis at ("; print <- pelvis.x; print <- ", "; print <- pelvis.y; print <- ", "; print <- pelvis.z; print <- "), hardest landing "; print <- rig.peak; print <- " m/s\n";
   if settledAt < 0 { print <- "FAIL: it did not settle\n"; ok = false; }
-  if pelvis.x < 1.5 or pelvis.y > 0.8 { print <- "FAIL: it did not come to rest at the bottom\n"; ok = false; }
+  // At rest below the top of the steps, lying on whatever is under it and not inside the stairs: off the landing
+  // (x > 0), its pelvis above the tread under it and within a lying body's height of it. Before rigiddynamics'
+  // f164f74e (12 Oct) its joints tore and it slid to the floor; with its joints held it may stop partway down.
+  imm under = if pelvis.x < 0. { 1.6; } else if pelvis.x >= 3.2 { 0.; } else { 1.6 - 0.2 * (f32.from(i32.from(pelvis.x / 0.4)) + 1.); };
+  print <- "the surface under it is at y "; print <- under; print <- "\n";
+  if pelvis.x <= 0. or pelvis.y < under or pelvis.y > under + 0.4 {
+    print <- "FAIL: it did not come to rest lying on the steps below the top\n"; ok = false;
+  }
   imm lie = lying(&rig, &world);
   print <- "it lies "; print <- (if lie == LIE_FACE_UP { "face up"; } else if lie == LIE_FACE_DOWN { "face down"; } else if lie == LIE_SIDE { "on its side"; } else { "upright"; }); print <- "\n";
   if rig.peak < 1.5 { print <- "FAIL: no landing measured\n"; ok = false; }
