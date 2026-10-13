@@ -420,8 +420,10 @@ fn configPath() Path {
 //
 //     [registry]
 //     folders = ["D:/cone/mypackages", "~/cone/vendor"]
+//     indexes = ["https://github.com/jondgoodwin/cone-registry.git"]
 //
-// A relative folder is relative to the config file's own folder.
+// A relative folder is relative to the config file's own folder. The indexes
+// are registries of the other kind (index.cone), searched after every folder.
 fn registryFolders(repo &Path) List[Path] {
   mut folders = List[Path].empty();
   if not repo.isEmpty() {
@@ -474,6 +476,8 @@ struct Registry {
   pub folders List[Path];
   pub packages List[Package];
   pub byName Dict[String, usize];
+  pub indexes List[IndexRegistry];   // searched after the folders, by fetchPackage
+  pub missed List[String];           // names no index has, so not looked up again
 
   // The package of that name, or None
   pub fn find(self &, name &str) Option[usize] {
@@ -483,10 +487,26 @@ struct Registry {
 
   pub fn has(self &, name &str) bool { byName.contains(name); }
 
-  // The folders searched, for a message
+  pub fn missedName(self &, name &str) bool {
+    mut i = 0usize;
+    while i < missed.len() {
+      if missed[i].equals(name) { return true; }
+      i = i + 1usize;
+    }
+    false;
+  }
+
+  // The folders and indexes searched, for a message
   pub fn searched(self &) String {
-    if folders.len() == 0usize { return String.from("(no registry folders)"); }
-    nativeList(&folders, ", ");
+    if folders.len() == 0usize and indexes.len() == 0usize { return String.from("(no registry folders)"); }
+    mut out = nativeList(&folders, ", ");
+    mut i = 0usize;
+    while i < indexes.len() {
+      if not out.isEmpty() { out <- ", "; }
+      out <- indexes[i].url.view();
+      i = i + 1usize;
+    }
+    out;
   }
 
   // Add a package that is in no registry (a lone file), answering its index
@@ -496,8 +516,14 @@ struct Registry {
   }
 }
 
-fn readRegistry(folders List[Path]) Registry {
-  mut reg = new Registry(folders, List[Package].empty(), Dict[String, usize].empty());
+fn readRegistry(folders List[Path], indexes &List[String]) Registry {
+  mut reg = new Registry(folders, List[Package].empty(), Dict[String, usize].empty(),
+    List[IndexRegistry].empty(), List[String].empty());
+  mut x = 0usize;
+  while x < indexes.len() {
+    reg.indexes.push(newIndexRegistry(indexes[x].view()));
+    x = x + 1usize;
+  }
   mut f = 0usize;
   while f < reg.folders.len() {
     imm folder = reg.folders[f].copy();

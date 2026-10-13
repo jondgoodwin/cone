@@ -752,33 +752,230 @@ def registry_folders() -> list[Path]:
 
         [registry]
         folders = ["D:/cone/mypackages", "~/cone/vendor"]
+        indexes = ["https://github.com/jondgoodwin/cone-registry.git"]
 
-    A relative folder is relative to the config file's own folder."""
+    A relative folder is relative to the config file's own folder. The indexes
+    are registries of the other kind (see "Index registries" below), searched
+    after every folder."""
     folders = [REPO_PACKAGES] if REPO_PACKAGES.is_dir() else []
     config = config_path()
-    if config.is_file():
-        try:
-            data = tomllib.loads(config.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
-            raise CongoError(f"{config}: cannot read the machine config: {exc}") from None
-        listed = data.get("registry", {}).get("folders", [])
-        if not isinstance(listed, list) or not all(isinstance(f, str) for f in listed):
-            raise CongoError(f"{config}: [registry] folders must be a list of folder paths")
-        for entry in listed:
-            folder = Path(os.path.expandvars(os.path.expanduser(entry)))
-            if not folder.is_absolute():
-                folder = config.parent / folder
-            folders.append(folder.resolve())
+    listed = machine_config().get("registry", {}).get("folders", [])
+    if not isinstance(listed, list) or not all(isinstance(f, str) for f in listed):
+        raise CongoError(f"{config}: [registry] folders must be a list of folder paths")
+    for entry in listed:
+        folder = Path(os.path.expandvars(os.path.expanduser(entry)))
+        if not folder.is_absolute():
+            folder = config.parent / folder
+        folders.append(folder.resolve())
     return folders
+
+
+def machine_config() -> dict:
+    """The machine config, <Congo home>/config.toml, read; {} where there is none."""
+    config = config_path()
+    if not config.is_file():
+        return {}
+    try:
+        return tomllib.loads(config.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+        raise CongoError(f"{config}: cannot read the machine config: {exc}") from None
+
+
+def registry_indexes() -> list[str]:
+    """The index registries the machine config lists, in order: the git URLs (or
+    folders) of repositories holding one TOML file per package."""
+    listed = machine_config().get("registry", {}).get("indexes", [])
+    if not isinstance(listed, list) or not all(isinstance(f, str) and f for f in listed):
+        raise CongoError(f"{config_path()}: [registry] indexes must be a list of git URLs")
+    return listed
+
+
+# ---------------------------------------------------------------------------
+# Index registries: a package fetched by name [Jon 23 Sep, hole 9]
+# ---------------------------------------------------------------------------
+#
+# An index is a git repository holding one file per package, <name>.toml:
+#
+#     name = "core"
+#     git = "https://github.com/jondgoodwin/cone.git"
+#     commit = "0123456789abcdef0123456789abcdef01234567"
+#     path = "packages/core"
+#
+# name is the package's flat name, git the repository its source is in, commit
+# the one commit that is fetched (a push to that repository changes nothing a
+# build gets; 'congo publish' moves the commit), and path, optional, the folder
+# of the package in that repository (its root where it is left out), since the
+# Cone repository holds many packages. A name no registry folder holds is looked
+# up in the indexes, in the order listed; the repository is fetched at its
+# commit into <Congo home>/src/ and the package built from there. Congo needs
+# git on PATH for this and uses the credentials git has for the URL, which is how
+# an index can be a private repository.
+
+INDEX_KEYS = ("name", "git", "commit", "path")
+COMMIT_RE = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
+
+
+def git(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
+    """git, its output captured. It never asks for a password on a terminal: with
+    no credentials for a URL, git fails and Congo says so."""
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0", LC_ALL="C")
+    try:
+        return subprocess.run(["git", *args], cwd=cwd, env=env, capture_output=True,
+                              text=True, encoding="utf-8", errors="replace",
+                              stdin=subprocess.DEVNULL)
+    except FileNotFoundError:
+        raise CongoError("git was not found on PATH; Congo uses it to fetch packages from"
+                         " a registry") from None
+
+
+def git_ok(*args: str, cwd: Path | None = None, doing: str) -> str:
+    """git's output, or a CongoError saying what was being done and why git refused."""
+    run = git(*args, cwd=cwd)
+    if run.returncode != 0:
+        why = run.stderr.strip() or run.stdout.strip() or f"exit status {run.returncode}"
+        raise CongoError(f"{doing}: {why}")
+    return run.stdout.strip()
+
+
+def url_slug(url: str) -> str:
+    """A folder name for a repository: its last name, and the first ten hex digits of
+    the SHA-1 of its URL as written, which both Congos compute."""
+    last = re.split(r"[/\\:]", url.rstrip("/\\"))[-1]
+    last = re.sub(r"\.git\Z", "", last)
+    last = re.sub(r"[^A-Za-z0-9._-]+", "_", last) or "repo"
+    return f"{last}-{hashlib.sha1(url.encode('utf-8')).hexdigest()[:10]}"
+
+
+def toml_string(text: str) -> str:
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def index_entry_text(name: str, git_url: str, commit: str, path: str) -> str:
+    """The text of an index file, as 'congo publish' and tools/registry/make_index.py
+    both write it (LF line ends, on every system)."""
+    lines = [f"name = {toml_string(name)}", f"git = {toml_string(git_url)}",
+             f"commit = {toml_string(commit)}"]
+    if path:
+        lines.append(f"path = {toml_string(path)}")
+    return "\n".join(lines) + "\n"
+
+
+@dataclass
+class IndexEntry:
+    name: str
+    git: str
+    commit: str
+    path: str
+
+
+class Index:
+    """One index registry, cloned into <Congo home>/registry/ and brought up to date
+    once in a run, the first time a name is looked up in it. Offline, the clone
+    that is there is used, with a warning."""
+
+    def __init__(self, url: str):
+        self.url = url
+        self.dir = congo_home() / "registry" / url_slug(url)
+        self.refreshed = False
+
+    def refresh(self) -> None:
+        if self.refreshed:
+            return
+        self.refreshed = True
+        if (self.dir / ".git").exists():
+            run = git("fetch", "--quiet", "--depth", "1", "origin", cwd=self.dir)
+            if run.returncode != 0:
+                print(f"warning: cannot update the registry {self.url}, so the copy fetched"
+                      f" before is used: {run.stderr.strip()}", file=sys.stderr)
+            elif git("rev-parse", "--verify", "--quiet", "FETCH_HEAD", cwd=self.dir).returncode == 0:
+                git_ok("reset", "--quiet", "--hard", "FETCH_HEAD", cwd=self.dir,
+                       doing=f"cannot update the registry {self.url}")
+            return
+        say("Updating", f"registry {self.url}")
+        self.dir.parent.mkdir(parents=True, exist_ok=True)
+        git_ok("clone", "--quiet", "--depth", "1", self.url, str(self.dir),
+               doing=f"cannot fetch the registry {self.url}")
+
+    def entry(self, name: str) -> IndexEntry | None:
+        """The index's entry for a package, or None. An unusable file is an error."""
+        self.refresh()
+        file = self.dir / f"{name}.toml"
+        if not file.is_file():
+            return None
+        where = f"{self.url}: {name}.toml"
+        try:
+            data = tomllib.loads(file.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+            raise CongoError(f"{where}: cannot read the entry: {exc}") from None
+        for key in data:
+            if key not in INDEX_KEYS:
+                raise CongoError(f"{where}: '{key}' is not an index key; the keys are"
+                                 f" {', '.join(INDEX_KEYS)}")
+        for key in ("name", "git", "commit"):
+            if not isinstance(data.get(key), str) or not data[key]:
+                raise CongoError(f"{where}: needs {key}, a string")
+        path = data.get("path", "")
+        if not isinstance(path, str):
+            raise CongoError(f"{where}: path must be a string")
+        if data["name"] != name:
+            raise CongoError(f"{where}: names the package '{data['name']}'")
+        if not COMMIT_RE.match(data["commit"]):
+            raise CongoError(f"{where}: commit must be a full commit hash: 40 (or 64) lower-case"
+                             f" hex digits, which no later push can change")
+        parts = [p for p in re.split(r"[/\\]", path) if p]
+        if path.startswith(("/", "\\")) or ":" in path or ".." in parts or "." in parts:
+            raise CongoError(f"{where}: path must be a folder inside the repository, written"
+                             f" with '/' and no '..'")
+        return IndexEntry(name, data["git"], data["commit"], "/".join(parts))
+
+
+def remove_tree(folder: Path) -> None:
+    """Delete a folder, git's read-only files included (Windows will not otherwise)."""
+    def writable_then_remove(func, path, _exc):
+        os.chmod(path, 0o700)
+        func(path)
+    shutil.rmtree(folder, onerror=writable_then_remove)
+
+
+def checkout_source(entry: IndexEntry) -> Path:
+    """The repository of an entry at its commit, under <Congo home>/src/, fetched
+    there if it is not already; the folder of the package in it. Packages of one
+    repository at one commit share the checkout."""
+    clone = congo_home() / "src" / url_slug(entry.git) / entry.commit
+    package = clone / entry.path if entry.path else clone
+    if (clone / ".git").exists() and git("rev-parse", "HEAD", cwd=clone).stdout.strip() == entry.commit:
+        return package
+    doing = f"cannot fetch {entry.name} from {entry.git} at {entry.commit}"
+    say("Downloading", f"{entry.name} ({entry.git} at {entry.commit[:10]})")
+    partial = clone.with_name(entry.commit + ".partial")
+    for old in (partial, clone):
+        if old.exists():
+            remove_tree(old)
+    partial.mkdir(parents=True)
+    git_ok("init", "--quiet", cwd=partial, doing=doing)
+    git_ok("remote", "add", "origin", entry.git, cwd=partial, doing=doing)
+    # The commit alone where the server allows it (GitHub does), else everything
+    if git("fetch", "--quiet", "--depth", "1", "origin", entry.commit, cwd=partial).returncode != 0:
+        git_ok("fetch", "--quiet", "origin", cwd=partial, doing=doing)
+    git_ok("-c", "advice.detachedHead=false", "checkout", "--quiet", entry.commit,
+           cwd=partial, doing=f"{doing} (is the commit in that repository?)")
+    if git_ok("rev-parse", "HEAD", cwd=partial, doing=doing) != entry.commit:
+        raise CongoError(f"{doing}: the checkout is not that commit")
+    partial.rename(clone)
+    return package
 
 
 class Registry:
     """Package name -> its folder, answered from the registry folders in order.
     A package folder is a folder whose subfolders are packages, each found by its
-    congo.toml and named by it, not by the subfolder."""
+    congo.toml and named by it, not by the subfolder. The indexes, searched after
+    the folders, are used only by 'fetch', which 'restore' calls for a name no
+    folder holds."""
 
-    def __init__(self, folders: list[Path]):
+    def __init__(self, folders: list[Path], indexes: list[str] = ()):
         self.folders = folders
+        self.indexes = [Index(url) for url in indexes]
+        self.missed: set[str] = set()
         self.packages: dict[str, Package] = {}
         for folder in folders:
             if not folder.is_dir():
@@ -798,8 +995,68 @@ class Registry:
     def find(self, name: str) -> Package | None:
         return self.packages.get(name)
 
+    def fetch(self, name: str) -> Package | None:
+        """The package of that name from the first index that has it, fetched and
+        added to the registry; None where no index has it."""
+        if name in self.missed or not NAME_RE.match(name):
+            return None
+        for index in self.indexes:
+            entry = index.entry(name)
+            if entry is None:
+                continue
+            folder = checkout_source(entry)
+            manifest = folder / MANIFEST
+            where = f"{index.url}: {name}.toml"
+            if not manifest.is_file():
+                raise CongoError(f"{where}: {entry.git} at {entry.commit[:10]} has no"
+                                 f" {MANIFEST} in '{entry.path or '.'}'")
+            pkg = read_manifest(manifest)
+            if pkg.name != name:
+                raise CongoError(f"{where}: the package at {entry.git} '{entry.path or '.'}'"
+                                 f" is named '{pkg.name}', not '{name}'")
+            self.packages[name] = pkg
+            return pkg
+        self.missed.add(name)
+        return None
+
     def searched(self) -> str:
-        return ", ".join(str(f) for f in self.folders) or "(no registry folders)"
+        where = [str(f) for f in self.folders] + [i.url for i in self.indexes]
+        return ", ".join(where) or "(no registry folders)"
+
+
+def restore(top: Package, registry: Registry) -> None:
+    """The step before a build: every package the build imports that no registry
+    folder holds is fetched from the indexes, and so are the packages it imports in
+    turn. Nothing happens where no index is configured. The build then resolves
+    every import through the registry as it always did [Jon 23 Sep, hole 12:
+    restore and build stay separate steps]."""
+    if not registry.indexes:
+        return
+    if registry.find(PRELUDE) is None:
+        registry.fetch(PRELUDE)
+    seen: set[str] = set()
+
+    def visit(pkg: Package) -> None:
+        if pkg.name in seen:
+            return
+        seen.add(pkg.name)
+        for module, parent in scan_package(pkg).walk():
+            sisters = {m.name for m in parent.children} if parent else set()
+            for imp in module.imports:
+                if imp.name is None or imp.name in sisters or imp.name == PRELUDE:
+                    continue
+                found = registry.find(imp.name) or registry.fetch(imp.name)
+                if found is not None:
+                    visit(found)
+
+    visit(top)
+    core = registry.find(PRELUDE)
+    if core is not None:
+        visit(core)
+
+
+def open_registry() -> Registry:
+    return Registry(registry_folders(), registry_indexes())
 
 
 @dataclass
@@ -1857,7 +2114,8 @@ def build(pkg: Package, mode: str, session: Session | None = None) -> Path:
     """Build pkg and everything it imports; return the executable, or for a
     library its object."""
     if session is None:
-        session = Session(Registry(registry_folders()), build_folder(pkg, mode), mode)
+        session = Session(open_registry(), build_folder(pkg, mode), mode)
+    restore(pkg, session.registry)
     order = build_order(pkg, session.registry)
     objs = session.compile(order, pkg)
     if pkg.output == "library":
@@ -1977,6 +2235,52 @@ def cmd_clean(args: argparse.Namespace) -> int:
     if target.exists():
         shutil.rmtree(target)
         say("Removed", shown(target))
+    return 0
+
+
+def cmd_publish(args: argparse.Namespace) -> int:
+    """Point an index at this package's current commit: write <name>.toml (name,
+    git URL, commit, folder) into the index and push it. Publishing moves the pin;
+    it is for whoever can push to the index, which is the credentials git has."""
+    pkg = current_package()
+    name = pkg.name
+    indexes = [args.registry] if args.registry else registry_indexes()
+    if not indexes:
+        raise CongoError(f"no index registry to publish to: list one under [registry] as"
+                         f" indexes = [\"<git URL>\"] in {config_path()}, or give --registry <URL>")
+    top = Path(git_ok("rev-parse", "--show-toplevel", cwd=pkg.root,
+                      doing=f"{pkg.root} is not in a git repository, and a registry pins a"
+                            f" git commit"))
+    folder = pkg.root.resolve().relative_to(top.resolve()).as_posix()
+    folder = "" if folder == "." else folder
+    if git_ok("status", "--porcelain", "--", ".", cwd=pkg.root, doing="cannot read the package's git status"):
+        raise CongoError(f"{name} has changes that are not committed; commit and push them,"
+                         f" then publish")
+    commit = git_ok("rev-parse", "HEAD", cwd=pkg.root, doing="cannot read the package's commit")
+    if not git_ok("branch", "--remotes", "--contains", commit, cwd=pkg.root,
+                  doing="cannot tell whether the commit is pushed"):
+        raise CongoError(f"commit {commit[:10]} of {name} is on no remote branch: push it, so"
+                         f" that others can fetch it, then publish")
+    origin = git("remote", "get-url", "origin", cwd=pkg.root)
+    if origin.returncode != 0:
+        raise CongoError(f"the repository of {name} has no remote 'origin' to record as"
+                         f" where its source is")
+    index = Index(indexes[0])
+    index.refresh()
+    file = index.dir / f"{name}.toml"
+    text = index_entry_text(name, origin.stdout.strip(), commit, folder)
+    file.write_bytes(text.encode("utf-8"))
+    doing = f"cannot publish {name} to {index.url}"
+    git_ok("add", file.name, cwd=index.dir, doing=doing)
+    # git, not a byte compare, says whether the entry changed: a checkout may have
+    # written the file with its own line ends
+    if not git_ok("status", "--porcelain", "--", file.name, cwd=index.dir, doing=doing):
+        say("Unchanged", f"{name} is already at {commit[:10]} in {index.url}")
+        return 0
+    git_ok("commit", "--quiet", "-m", f"Publish {name} at {commit[:10]}", cwd=index.dir, doing=doing)
+    git_ok("push", "--quiet", "origin", "HEAD", cwd=index.dir,
+           doing=f"{doing} (if someone published meanwhile, publish again)")
+    say("Published", f"{name} at {commit[:10]} to {index.url}")
     return 0
 
 
@@ -2101,6 +2405,7 @@ def build_program(session: Session, file: Path, into: Path) -> Path:
     compiled into the package's build folder (once each, most already there),
     and the program itself into a folder of its own, then linked."""
     pkg = lone_package(file)
+    restore(pkg, session.registry)
     order = build_order(pkg, session.registry)
     objs = session.compile(order, pkg, top_out=into, announce=False)
     exe = into / f"{pkg.name}{EXE_EXT}"
@@ -2315,7 +2620,7 @@ def test_package(pkg: Package, mode: str, name_filter: str | None, bless: bool) 
     # The package under test is found first, under its own name, so a test
     # imports this copy -- whether or not it is in a registry, and whatever
     # else a registry holds of that name
-    registry = Registry(registry_folders())
+    registry = open_registry()
     registry.packages[pkg.name] = pkg
     session = Session(registry, build_folder(pkg, mode), mode)
     tests = programs(pkg.root / TESTS, name_filter)
@@ -2461,6 +2766,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     clean = sub.add_parser("clean", help="delete what a build wrote")
     clean.add_argument("file", nargs="?", help="a lone .cone file whose build to delete")
     clean.set_defaults(func=cmd_clean)
+    publish = sub.add_parser("publish", help="point an index registry at this package's"
+                                             " current commit")
+    publish.add_argument("--registry", metavar="URL",
+                         help="the index to publish to (default: the first [registry] indexes)")
+    publish.set_defaults(func=cmd_publish)
     # What follows '--' is the program's, and argparse never sees it
     program_args: list[str] = []
     if "--" in argv:
