@@ -295,7 +295,7 @@ LLVMValueRef genlAlloca(GenState *gen, LLVMTypeRef type, const char *name) {
 // hands what the slot holds to 'mark'. A function with no root has no frame
 // and generates exactly what it did before roots existed.
 
-void genlRootNote(GenState *gen, LLVMValueRef slot, INode *vtype) {
+static void genlRootNoteKind(GenState *gen, LLVMValueRef slot, INode *vtype, int kind) {
     if (!itypeHoldsTraced(vtype))
         return;
     GenRoots *roots = &gen->roots;
@@ -303,24 +303,64 @@ void genlRootNote(GenState *gen, LLVMValueRef slot, INode *vtype) {
         uint32_t newmax = roots->max ? roots->max * 2 : 8;
         LLVMValueRef *slots = (LLVMValueRef *)memAllocBlk(newmax * sizeof(LLVMValueRef));
         INode **types = (INode **)memAllocBlk(newmax * sizeof(INode *));
+        uint8_t *kinds = (uint8_t *)memAllocBlk(newmax * sizeof(uint8_t));
         if (roots->cnt) {
             memcpy(slots, roots->slots, roots->cnt * sizeof(LLVMValueRef));
             memcpy(types, roots->types, roots->cnt * sizeof(INode *));
+            memcpy(kinds, roots->kinds, roots->cnt * sizeof(uint8_t));
         }
         roots->slots = slots;
         roots->types = types;
+        roots->kinds = kinds;
         roots->max = newmax;
     }
     roots->slots[roots->cnt] = slot;
+    roots->kinds[roots->cnt] = (uint8_t)kind;
     roots->types[roots->cnt++] = vtype;
 }
 
+void genlRootNote(GenState *gen, LLVMValueRef slot, INode *vtype) {
+    genlRootNoteKind(gen, slot, vtype, RootOther);
+}
+
+void genlRootNoteLocal(GenState *gen, LLVMValueRef slot, INode *vtype) {
+    genlRootNoteKind(gen, slot, vtype, RootLocal);
+}
+
 // One slot per site: a site run again (in a loop) overwrites what it stored
-// last time, and what it stored stays rooted until then or the return
+// last time. What it stored stays rooted until the statement that made it ends
+// (genlRootsClear), or, where a jump leaves that statement, until the site runs
+// again or the function returns
 void genlRootBirth(GenState *gen, LLVMValueRef val, INode *vtype) {
     LLVMValueRef slot = genlAlloca(gen, genlType(gen, vtype), "birth");
-    genlRootNote(gen, slot, vtype);
+    genlRootNoteKind(gen, slot, vtype, RootBirth);
     LLVMBuildStore(gen->builder, val, slot);
+}
+
+uint32_t genlRootsMark(GenState *gen) {
+    return gen->roots.cnt;
+}
+
+// The roots of one kind noted since 'mark' hold values that have died: a
+// collection that finds them there keeps a value nothing else reaches, and never
+// finalizes it. A birth gets one clearing store, at the first statement end that
+// reaches it (an inner statement's end clears its own births, an outer one's skips
+// them); a local gets one at each exit of its block.
+void genlRootsClear(GenState *gen, uint32_t mark, int kind) {
+    GenRoots *roots = &gen->roots;
+    if (mark >= roots->cnt)
+        return;
+    if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(gen->builder)) != NULL)
+        return;
+    for (uint32_t i = mark; i < roots->cnt; ++i) {
+        if ((roots->kinds[i] & ~RootCleared) != kind || (roots->kinds[i] & RootCleared))
+            continue;
+        LLVMBuildStore(gen->builder, LLVMConstNull(genlType(gen, roots->types[i])), roots->slots[i]);
+        // A block has several exits, each clearing its locals; a statement has one
+        // end, which clears its births once
+        if (kind == RootBirth)
+            roots->kinds[i] |= RootCleared;
+    }
 }
 
 void genlRootsSave(GenState *gen, GenRoots *saved) {

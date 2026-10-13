@@ -65,6 +65,10 @@ void genlBreak(GenState *gen, BlockNode* block, INode* exp, Nodes* dealias) {
     // The temporaries made since the block began, then its scopes' locals
     genlTempsJump(gen, blockstate->tempmark);
     genlDealiasNodes(gen, dealias);
+    // The locals of the block left are dead, unless the value handed out is a
+    // traced reference, which may still be only in a register
+    if (exp->tag == NilLitTag || !itypeHoldsTraced(((IExpNode *)exp)->vtype))
+        genlRootsClear(gen, blockstate->rootmark, RootLocal);
     // Record the value only where the block converges on a value and so has
     // phi arrays to record it in, from the block the jump leaves, which the
     // releases may have moved on from
@@ -146,6 +150,7 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
         }
         blkstate->phiCnt = 0;
         blkstate->tempmark = gen->tempcnt;
+        blkstate->rootmark = genlRootsMark(gen);
         ++gen->blockstackcnt;
     }
 
@@ -161,6 +166,8 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
     // (FlagKeepTemps)
     int keeptemps = blk->flags & FlagKeepTemps;
     uint32_t blocktempmark = gen->tempcnt;
+    // The roots the block's locals add are dead at its end (genlRootsClear)
+    uint32_t localmark = genlRootsMark(gen);
     // A parallel each is not generated statement by statement: from the index
     // its pieces count with to its loop they are a function of their own, which
     // the actors' workers run (genlParallelRun); the loop is the last of them
@@ -189,11 +196,15 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
         // follows it to finalize them again.
         uint32_t tempmark = keeptemps ? blocktempmark : gen->tempcnt;
         int jumped = 0;
+        // A statement whose value is discarded: the births it made are dead at its end
+        uint32_t birthmark = genlRootsMark(gen);
+        int discards = 0;
         switch ((*nodesp)->tag) {
         case ContinueTag: {
             GenBlockState *target = genFindBlockState(gen, ((BreakRetNode*)*nodesp)->block);
             genlTempsJump(gen, target->tempmark);
             genlDealiasNodes(gen, ((BreakRetNode*)*nodesp)->dealias);
+            genlRootsClear(gen, target->rootmark, RootLocal);
             LLVMBuildBr(gen->builder, target->blockbeg);
             terminated = 1;
             break;
@@ -240,14 +251,24 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
         }
         default:
             lastval = genlExpr(gen, *nodesp);
+            discards = 1;
         }
         if (terminated || jumped)
             gen->tempcnt = tempmark;
         else if (!keeptemps || cnt == 1)
             genlTempsEnd(gen, tempmark);
+        if (discards && !keeptemps && !terminated && !jumped)
+            genlRootsClear(gen, birthmark, RootBirth);
         if (terminated)
             break;
     }
+
+    // The block ends here, its value computed and its locals released: a local
+    // holding a traced reference no longer keeps it alive. Not when the block's
+    // value is itself one, which may still be only in a register (the locals
+    // stay roots to the function's end, as births do where a jump leaves them)
+    if (!terminated && !keeptemps && (INode *)blk != gen->fnblock && !itypeHoldsTraced(blk->vtype))
+        genlRootsClear(gen, localmark, RootLocal);
 
     if (isLoop && !terminated)
         LLVMBuildBr(gen->builder, blockbeg);

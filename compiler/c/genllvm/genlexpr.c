@@ -2034,7 +2034,7 @@ LLVMValueRef genlLocalVar(GenState *gen, VarDclNode *var) {
     // found when its function began (genlGenBegin)
     if (!genlGenFrameVar(gen, var)) {
         var->llvmvar = genlAlloca(gen, genlType(gen, var->vtype), &var->namesym->namestr);
-        genlRootNote(gen, var->llvmvar, var->vtype);
+        genlRootNoteLocal(gen, var->llvmvar, var->vtype);
     }
     // A construction by a declared 'init' fills the variable in place
     if (var->value && genlNewInto(gen, var->value, var->llvmvar))

@@ -26,6 +26,7 @@ typedef struct {
     uint32_t phiCnt;
     LLVMValueRef slot;      // Where a small aggregate result is left instead of a phi (genlMergeSlot), else NULL
     uint32_t tempmark;     // How many temporaries were waiting as the block began: a jump to it finalizes the rest
+    uint32_t rootmark;     // How many roots were noted as the block began: a jump out of it clears its locals' (genlRootsClear)
 } GenBlockState;
 
 // A temporary made and not yet finalized (TempNode): the slot its value was
@@ -124,9 +125,18 @@ typedef struct GenParSeam {
 typedef struct GenRoots {
     LLVMValueRef *slots;
     INode **types;
+    uint8_t *kinds;         // Each slot's RootKind, with RootCleared once a clearing store was emitted for it
     uint32_t cnt;
     uint32_t max;
 } GenRoots;
+
+// What a root is, so that the ones whose value has died can be cleared (genlRootsClear)
+enum RootKind {
+    RootOther = 0,          // A parameter's, an allocation's fill slot, a generator's: held to the function's end
+    RootBirth = 1,          // A birth's slot, dead when the statement that made it ends
+    RootLocal = 2,          // A local declared in a block, dead when the block ends
+    RootCleared = 0x80      // Flag: a clearing store was emitted
+};
 
 // A source file other than the compile's main one that debug info names (genlDiFile)
 typedef struct GenDiFile {
@@ -503,6 +513,14 @@ void genlRootNote(GenState *gen, LLVMValueRef slot, INode *vtype);
 // A birth of a value holding a traced reference: stored into a root slot of
 // its own for the site, so no collection finds it only in a register
 void genlRootBirth(GenState *gen, LLVMValueRef val, INode *vtype);
+// A local declared in a block: a root like any other, but one the block's end clears
+void genlRootNoteLocal(GenState *gen, LLVMValueRef slot, INode *vtype);
+// Store null into the roots of one kind noted since 'mark' (a count from
+// 'genlRootsMark') whose values have died, so a collection no longer finds them:
+// a statement's births at its end, a block's locals at its end. Nothing is emitted
+// when the current basic block already ends in a jump.
+uint32_t genlRootsMark(GenState *gen);
+void genlRootsClear(GenState *gen, uint32_t mark, int kind);
 // Set aside the roots of the function being generated, around generating
 // another; and, once a function's body is generated, build its frame
 void genlRootsSave(GenState *gen, GenRoots *saved);
