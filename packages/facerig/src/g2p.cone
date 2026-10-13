@@ -1,0 +1,285 @@
+// Letters to phonemes, for English text.
+//
+// METHOD: A WORD LIST, THEN LETTER-TO-SOUND RULES. A talking face needs a
+// phoneme sequence; the industry way (CMUdict, Festival, espeak) is a
+// pronouncing dictionary for the words it has and a set of context rules for
+// the rest. This file has a small dictionary of common words in ARPAbet (the
+// phoneme alphabet CMUdict uses: 'HH AH L OW' is "hello") and a rule set
+// of the Elovitz et al. (1976, NRL Report 7948) kind cut down to what a lip
+// sync needs: the digraphs and trigraphs (tch, ch, sh, th, ph, ck, ng, ee,
+// oo, ou ...), the r-coloured vowels, the soft c and g, the silent final e
+// that lengthens the vowel before it (make, ride), and voiced s between
+// vowels. It is deliberately approximate: a mouth shape needs the right
+// class of sound (closed lips, round lips, open jaw), not the exact vowel, and
+// a visible error in a word is cured by giving the word's phonemes (see
+// 'utteranceFromPhonemes') or adding it to the dictionary.
+//
+// 'textToPhonemes' answers a string in the syntax 'utteranceFromPhonemes'
+// reads: phoneme names separated by spaces, '|' between words, ',' for a short
+// pause and '.' for a long one.
+
+fn lower(c u8) u8 {
+  if c >= 'A' and c <= 'Z' { return c + 32u8; }
+  c;
+}
+
+fn isLetter(c u8) bool { (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z'); }
+
+fn isVowelLetter(c u8) bool { c == 'a' or c == 'e' or c == 'i' or c == 'o' or c == 'u'; }
+
+// The byte of 'w' at 'i', or 0 beyond its ends
+fn at(w &String, i usize) u8 {
+  if i >= w.len() { return 0u8; }
+  w[i];
+}
+
+fn startsAt(w &String, i usize, pat &str) bool {
+  imm p = String.from(pat);
+  mut k = 0usize;
+  while k < p.len() {
+    if at(w, i + k) != p[k] { return false; }
+    k = k + 1usize;
+  }
+  true;
+}
+
+fn emit(out &mut String, ph &str) {
+  if out.len() > 0usize { out.append(" "); }
+  out.append(ph);
+}
+
+// A vowel at 'i' is long ("magic e") when a consonant and a final e follow it
+fn magicE(w &String, i usize) bool {
+  imm n = w.len();
+  i + 3usize == n and !isVowelLetter(at(w, i + 1usize)) and at(w, i + 2usize) == 'e' and at(w, i + 1usize) != 0u8;
+}
+
+// The dictionary: the phonemes of a lower-case word, or "" when it is not there
+fn lookupWord(w &String) String {
+  imm s = w.view();
+  if s == "hello" { return String.from("HH AH L OW"); }
+  if s == "hi" { return String.from("HH AY"); }
+  if s == "i" { return String.from("AY"); }
+  if s == "am" { return String.from("AE M"); }
+  if s == "is" { return String.from("IH Z"); }
+  if s == "are" { return String.from("AA R"); }
+  if s == "was" { return String.from("W AH Z"); }
+  if s == "you" { return String.from("Y UW"); }
+  if s == "your" { return String.from("Y AO R"); }
+  if s == "the" { return String.from("DH AH"); }
+  if s == "a" { return String.from("AH"); }
+  if s == "to" { return String.from("T UW"); }
+  if s == "of" { return String.from("AH V"); }
+  if s == "and" { return String.from("AE N D"); }
+  if s == "in" { return String.from("IH N"); }
+  if s == "it" { return String.from("IH T"); }
+  if s == "that" { return String.from("DH AE T"); }
+  if s == "this" { return String.from("DH IH S"); }
+  if s == "have" { return String.from("HH AE V"); }
+  if s == "has" { return String.from("HH AE Z"); }
+  if s == "for" { return String.from("F AO R"); }
+  if s == "with" { return String.from("W IH TH"); }
+  if s == "my" { return String.from("M AY"); }
+  if s == "me" { return String.from("M IY"); }
+  if s == "we" { return String.from("W IY"); }
+  if s == "see" { return String.from("S IY"); }
+  if s == "say" { return String.from("S EY"); }
+  if s == "said" { return String.from("S EH D"); }
+  if s == "what" { return String.from("W AH T"); }
+  if s == "where" { return String.from("W EH R"); }
+  if s == "when" { return String.from("W EH N"); }
+  if s == "how" { return String.from("HH AW"); }
+  if s == "why" { return String.from("W AY"); }
+  if s == "who" { return String.from("HH UW"); }
+  if s == "yes" { return String.from("Y EH S"); }
+  if s == "no" { return String.from("N OW"); }
+  if s == "one" { return String.from("W AH N"); }
+  if s == "two" { return String.from("T UW"); }
+  if s == "three" { return String.from("TH R IY"); }
+  if s == "four" { return String.from("F AO R"); }
+  if s == "five" { return String.from("F AY V"); }
+  if s == "good" { return String.from("G UH D"); }
+  if s == "morning" { return String.from("M AO R N IH NG"); }
+  if s == "evening" { return String.from("IY V N IH NG"); }
+  if s == "night" { return String.from("N AY T"); }
+  if s == "thank" { return String.from("TH AE NG K"); }
+  if s == "thanks" { return String.from("TH AE NG K S"); }
+  if s == "please" { return String.from("P L IY Z"); }
+  if s == "sorry" { return String.from("S AA R IY"); }
+  if s == "welcome" { return String.from("W EH L K AH M"); }
+  if s == "world" { return String.from("W ER L D"); }
+  if s == "happy" { return String.from("HH AE P IY"); }
+  if s == "sad" { return String.from("S AE D"); }
+  if s == "nice" { return String.from("N AY S"); }
+  if s == "meet" { return String.from("M IY T"); }
+  if s == "name" { return String.from("N EY M"); }
+  if s == "can" { return String.from("K AE N"); }
+  if s == "will" { return String.from("W IH L"); }
+  if s == "would" { return String.from("W UH D"); }
+  if s == "could" { return String.from("K UH D"); }
+  if s == "do" { return String.from("D UW"); }
+  if s == "not" { return String.from("N AA T"); }
+  if s == "but" { return String.from("B AH T"); }
+  if s == "so" { return String.from("S OW"); }
+  if s == "very" { return String.from("V EH R IY"); }
+  if s == "here" { return String.from("HH IH R"); }
+  if s == "there" { return String.from("DH EH R"); }
+  if s == "they" { return String.from("DH EY"); }
+  if s == "he" { return String.from("HH IY"); }
+  if s == "she" { return String.from("SH IY"); }
+  if s == "him" { return String.from("HH IH M"); }
+  if s == "her" { return String.from("HH ER"); }
+  if s == "his" { return String.from("HH IH Z"); }
+  if s == "hear" { return String.from("HH IH R"); }
+  if s == "look" { return String.from("L UH K"); }
+  if s == "listen" { return String.from("L IH S AH N"); }
+  if s == "like" { return String.from("L AY K"); }
+  if s == "love" { return String.from("L AH V"); }
+  if s == "time" { return String.from("T AY M"); }
+  if s == "day" { return String.from("D EY"); }
+  if s == "new" { return String.from("N UW"); }
+  if s == "old" { return String.from("OW L D"); }
+  if s == "come" { return String.from("K AH M"); }
+  if s == "go" { return String.from("G OW"); }
+  if s == "going" { return String.from("G OW IH NG"); }
+  if s == "today" { return String.from("T AH D EY"); }
+  if s == "bread" { return String.from("B R EH D"); }
+  if s == "dough" { return String.from("D OW"); }
+  if s == "knead" { return String.from("N IY D"); }
+  if s == "bake" { return String.from("B EY K"); }
+  if s == "hammer" { return String.from("HH AE M ER"); }
+  if s == "cup" { return String.from("K AH P"); }
+  if s == "tea" { return String.from("T IY"); }
+  if s == "hot" { return String.from("HH AA T"); }
+  if s == "cold" { return String.from("K OW L D"); }
+  if s == "fresh" { return String.from("F R EH SH"); }
+  if s == "again" { return String.from("AH G EH N"); }
+  if s == "little" { return String.from("L IH T AH L"); }
+  if s == "great" { return String.from("G R EY T"); }
+  if s == "well" { return String.from("W EH L"); }
+  if s == "now" { return String.from("N AW"); }
+  if s == "just" { return String.from("JH AH S T"); }
+  if s == "be" { return String.from("B IY"); }
+  if s == "make" { return String.from("M EY K"); }
+  if s == "some" { return String.from("S AH M"); }
+  if s == "more" { return String.from("M AO R"); }
+  if s == "much" { return String.from("M AH CH"); }
+  if s == "from" { return String.from("F R AH M"); }
+  if s == "or" { return String.from("AO R"); }
+  if s == "on" { return String.from("AA N"); }
+  if s == "at" { return String.from("AE T"); }
+  if s == "as" { return String.from("AE Z"); }
+  if s == "by" { return String.from("B AY"); }
+  if s == "if" { return String.from("IH F"); }
+  if s == "up" { return String.from("AH P"); }
+  if s == "out" { return String.from("AW T"); }
+  if s == "all" { return String.from("AO L"); }
+  if s == "about" { return String.from("AH B AW T"); }
+  String.empty();
+}
+
+// Letter-to-sound rules for a lower-case word of letters
+fn ruleWord(w &String) String {
+  imm n = w.len();
+  mut out = String.empty();
+  mut i = 0usize;
+  while i < n {
+    imm c = w[i];
+    imm nx = at(w, i + 1usize);
+    // Three letters
+    if startsAt(w, i, "tch") { emit(&mut out, "CH"); i = i + 3usize; continue; }
+    // Two letters
+    if c == 'c' and nx == 'h' { emit(&mut out, "CH"); i = i + 2usize; continue; }
+    if c == 's' and nx == 'h' { emit(&mut out, "SH"); i = i + 2usize; continue; }
+    if c == 't' and nx == 'h' { emit(&mut out, "TH"); i = i + 2usize; continue; }
+    if c == 'p' and nx == 'h' { emit(&mut out, "F"); i = i + 2usize; continue; }
+    if c == 'w' and nx == 'h' { emit(&mut out, "W"); i = i + 2usize; continue; }
+    if c == 'c' and nx == 'k' { emit(&mut out, "K"); i = i + 2usize; continue; }
+    if c == 'n' and nx == 'g' { emit(&mut out, "NG"); i = i + 2usize; continue; }
+    if c == 'q' and nx == 'u' { emit(&mut out, "K"); emit(&mut out, "W"); i = i + 2usize; continue; }
+    if c == 'k' and nx == 'n' and i == 0usize { emit(&mut out, "N"); i = i + 2usize; continue; }
+    if c == 'w' and nx == 'r' and i == 0usize { emit(&mut out, "R"); i = i + 2usize; continue; }
+    if c == 'g' and nx == 'h' { if i > 0usize { i = i + 2usize; continue; } }
+    if (c == 'e' and nx == 'e') or (c == 'e' and nx == 'a') or (c == 'i' and nx == 'e') { emit(&mut out, "IY"); i = i + 2usize; continue; }
+    if c == 'o' and nx == 'o' { emit(&mut out, "UW"); i = i + 2usize; continue; }
+    if c == 'o' and nx == 'u' { emit(&mut out, "AW"); i = i + 2usize; continue; }
+    if c == 'o' and nx == 'w' { emit(&mut out, "OW"); i = i + 2usize; continue; }
+    if c == 'o' and nx == 'a' { emit(&mut out, "OW"); i = i + 2usize; continue; }
+    if (c == 'a' and nx == 'i') or (c == 'a' and nx == 'y') or (c == 'e' and nx == 'i') or (c == 'e' and nx == 'y') {
+      emit(&mut out, "EY"); i = i + 2usize; continue;
+    }
+    if (c == 'o' and nx == 'i') or (c == 'o' and nx == 'y') { emit(&mut out, "OY"); i = i + 2usize; continue; }
+    if (c == 'a' and nx == 'u') or (c == 'a' and nx == 'w') { emit(&mut out, "AO"); i = i + 2usize; continue; }
+    if (c == 'e' and nx == 'w') or (c == 'u' and nx == 'e') { emit(&mut out, "UW"); i = i + 2usize; continue; }
+    // R-coloured vowels
+    if c == 'a' and nx == 'r' { emit(&mut out, "AA"); emit(&mut out, "R"); i = i + 2usize; continue; }
+    if (c == 'e' and nx == 'r') or (c == 'i' and nx == 'r') or (c == 'u' and nx == 'r') { emit(&mut out, "ER"); i = i + 2usize; continue; }
+    if c == 'o' and nx == 'r' { emit(&mut out, "AO"); emit(&mut out, "R"); i = i + 2usize; continue; }
+    // One letter
+    if c == 'a' { if magicE(w, i) { emit(&mut out, "EY"); } else { emit(&mut out, "AE"); } }
+    else if c == 'e' {
+      if i == n - 1usize and n > 2usize and !isVowelLetter(at(w, i - 1usize)) { } else { emit(&mut out, "EH"); }
+    }
+    else if c == 'i' { if magicE(w, i) { emit(&mut out, "AY"); } else { emit(&mut out, "IH"); } }
+    else if c == 'o' { if magicE(w, i) { emit(&mut out, "OW"); } else { emit(&mut out, "AA"); } }
+    else if c == 'u' { if magicE(w, i) { emit(&mut out, "UW"); } else { emit(&mut out, "AH"); } }
+    else if c == 'y' {
+      if i == 0usize { emit(&mut out, "Y"); } else if i == n - 1usize { emit(&mut out, "IY"); } else { emit(&mut out, "IH"); }
+    }
+    else if c == 'c' {
+      if nx == 'e' or nx == 'i' or nx == 'y' { emit(&mut out, "S"); } else { emit(&mut out, "K"); }
+    }
+    else if c == 'g' {
+      if nx == 'e' or nx == 'i' or nx == 'y' { emit(&mut out, "JH"); } else { emit(&mut out, "G"); }
+    }
+    else if c == 's' {
+      if i > 0usize and isVowelLetter(at(w, i - 1usize)) and isVowelLetter(nx) { emit(&mut out, "Z"); } else { emit(&mut out, "S"); }
+    }
+    else if c == 'x' { emit(&mut out, "K"); emit(&mut out, "S"); }
+    else if c == 'j' { emit(&mut out, "JH"); }
+    else if c == 'q' { emit(&mut out, "K"); }
+    else if c == 'b' { emit(&mut out, "B"); }
+    else if c == 'd' { emit(&mut out, "D"); }
+    else if c == 'f' { emit(&mut out, "F"); }
+    else if c == 'h' { emit(&mut out, "HH"); }
+    else if c == 'k' { emit(&mut out, "K"); }
+    else if c == 'l' { emit(&mut out, "L"); }
+    else if c == 'm' { emit(&mut out, "M"); }
+    else if c == 'n' { emit(&mut out, "N"); }
+    else if c == 'p' { emit(&mut out, "P"); }
+    else if c == 'r' { emit(&mut out, "R"); }
+    else if c == 't' { emit(&mut out, "T"); }
+    else if c == 'v' { emit(&mut out, "V"); }
+    else if c == 'w' { emit(&mut out, "W"); }
+    else if c == 'z' { emit(&mut out, "Z"); }
+    i = i + 1usize;
+  }
+  out;
+}
+
+// Text to phonemes in 'utteranceFromPhonemes' syntax
+pub fn textToPhonemes(text &str) String {
+  imm src = String.from(text);
+  mut out = String.empty();
+  mut word = String.empty();
+  mut i = 0usize;
+  while i <= src.len() {
+    imm c = if i < src.len() { src[i]; } else { 32u8; };
+    if isLetter(c) or c == '\'' {
+      if c != '\'' { word.appendByte(lower(c)); }
+    } else {
+      if word.len() > 0usize {
+        mut ph = lookupWord(&word);
+        if ph.len() == 0usize { ph = ruleWord(&word); }
+        if out.len() > 0usize { out.append(" | "); }
+        out.append(ph.view());
+        word = String.empty();
+      }
+      if c == ',' or c == ';' or c == ':' { out.append(" ,"); }
+      if c == '.' or c == '!' or c == '?' { out.append(" ."); }
+      if c == '-' { out.append(" ,"); }
+    }
+    i = i + 1usize;
+  }
+  out;
+}
