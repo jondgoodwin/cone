@@ -125,6 +125,8 @@ int borrowOwnerLendRefused(INode *owner, INode *perm) {
     return 1;
 }
 
+static int borrowLocalLendsUni(INode *lval, INode *lvalperm, uint16_t scope, INode *refperm);
+
 // Inject a typed, borrowed node on some node (expected to be an lval)
 void borrowMutRef(INode **nodep, INode* type, INode *perm) {
     INode *node = *nodep;
@@ -157,8 +159,13 @@ void borrowMutRef(INode **nodep, INode* type, INode *perm) {
         permLockRefused(node, lvalperm, "borrow implicitly");
         refused = 1;
     }
-    if (!refused && !permMatches(perm, lvalperm)) {
-        if (lvalvar && lvalvar->tag == VarDclTag && (lvalvar->flags & FlagEachVar))
+    // A local lends 'uni' as a written '&uni' does (borrowTypeCheck), which a
+    // method declaring 'self &uni' is handed (fnCallBorrowReceiver)
+    if (!refused && !permMatches(perm, lvalperm) && !borrowLocalLendsUni(node, lvalperm, scope, perm)) {
+        // A '&uni' that cannot be lent says what the written '&uni' says
+        if (itypeGetTypeDcl(perm) == (INode *)uniPerm)
+            errorMsgNode((INode *)node, ErrorBadPerm, "Borrowed reference cannot obtain this permission");
+        else if (lvalvar && lvalvar->tag == VarDclTag && (lvalvar->flags & FlagEachVar))
             errorMsgNode((INode *)node, ErrorBadPerm, "Cannot borrow a mutable reference to `%s`, which is not mutable: the variable of an 'each' is a new one every pass that nothing can change. To change the items in place, walk src.mutItems()",
                 &((VarDclNode *)lvalvar)->namesym->namestr);
         else if (lvalvar && lvalvar->tag == VarDclTag)

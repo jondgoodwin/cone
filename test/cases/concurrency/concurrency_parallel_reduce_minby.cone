@@ -1,0 +1,157 @@
+// The nearest of many, with a payload, as a parallel 'fold' (no named method for it):
+// the accumulator is a small plain struct (the distance, the position and what was
+// there), the identity is a "nothing yet" whose distance is above every real one,
+// 'step' keeps the new item only if it is STRICTLY nearer, and 'combine' keeps the
+// right-hand accumulator only if it is strictly nearer than the left. Ties then go to
+// the lowest position, as a serial loop with '<' does, whatever blocks the ties
+// fall in and whichever worker finishes first. The shape of a physics world's
+// nearest hit, a picking pass's nearest part, and a ray cast's nearest shape.
+//
+// Every result is checked against a serial loop over the same items, and printed so
+// the output pins it. What is pinned:
+//
+//   - ties at the minimum in different blocks (a list of 5000, ties at positions
+//     700, 2100 and 4999): the lowest position wins
+//   - a unique minimum; the minimum at the first and at the last position
+//   - no item nearer than the identity: the answer is the identity (a miss)
+//   - an empty source, one block (100 items) and several (5000)
+//   - f32 distances (as a ray's) and the position taken from 'indexed()'
+//   - a payload that is not the key: the tag kept with the nearest item
+//   - the same on 30 runs
+
+mod concurrency_parallel_reduce_minby;
+
+import stdio use *;
+import collections use *;
+import actors;
+
+fn report(name &str, ok bool) {
+  printStr(name);
+  printStr(if ok {": ok\n";} else {": FAILED\n";});
+}
+
+struct Target {
+  pub d f32;
+  pub tag u32;
+}
+
+// What the fold keeps: the distance, where it was (the position) and the tag there
+struct Nearest {
+  pub d f32;
+  pub at usize;
+  pub tag u32;
+}
+
+const none = 1.0e30;
+
+fn nothing() Nearest {
+  new Nearest(none, 0usize, 0u32);
+}
+
+// A list of n targets whose distance is 100 + ((k * 37) % 997), a spread with no
+// value below 100, then the given positions set to 3.5 (a tie among them)
+fn targets(n usize, lows &Array[usize]) List[Target] {
+  mut l = new List[Target]();
+  mut k = 0usize;
+  while k < n {
+    l.push(new Target(100.0 + f32.from((k * 37usize) % 997usize), u32.from(k) + 1000u32));
+    k = k + 1usize;
+  }
+  each p in lows {
+    l[*p].d = 3.5;
+  }
+  l;
+}
+
+// The serial answer: a loop with '<'
+fn serial(l &List[Target]) Nearest {
+  mut best = nothing();
+  mut k = 0usize;
+  while k < l.len() {
+    if l[k].d < best.d {
+      best = new Nearest(l[k].d, k, l[k].tag);
+    }
+    k = k + 1usize;
+  }
+  best;
+}
+
+fn parallelNearest(l &List[Target]) Nearest {
+  l.indexed().parallel().fold(nothing(),
+    (acc, p) => if p.1.d < acc.d { new Nearest(p.1.d, p.0, p.1.tag); } else { acc; },
+    (a, b) => if b.d < a.d { b; } else { a; });
+}
+
+fn same(a Nearest, b Nearest) bool {
+  a.d == b.d and a.at == b.at and a.tag == b.tag;
+}
+
+fn show(name &str, n Nearest) {
+  printStr(name);
+  printStr(" at ");
+  printUInt(u64.from(n.at));
+  printStr(" tag ");
+  printUInt(u64.from(n.tag));
+  printStr("\n");
+}
+
+fn cases() {
+  // Ties in three blocks (5000 items are cut into 40 blocks of 125): 700, 2100
+  // and 4999 are in different blocks, and the lowest position wins
+  imm tied = targets(5000usize, &[2100usize, 700usize, 4999usize]);
+  imm got = parallelNearest(&tied);
+  report("ties across blocks: the lowest position", same(got, serial(&tied)) and got.at == 700usize);
+  show("tied", got);
+
+  // A unique minimum, in the middle, then at the first and at the last position
+  imm one = targets(5000usize, &[3333usize]);
+  report("unique minimum", same(parallelNearest(&one), serial(&one)) and parallelNearest(&one).at == 3333usize);
+  show("unique", parallelNearest(&one));
+  imm firstOnly = targets(5000usize, &[0usize]);
+  report("minimum at the first", parallelNearest(&firstOnly).at == 0usize);
+  imm lastOnly = targets(5000usize, &[4999usize]);
+  report("minimum at the last", parallelNearest(&lastOnly).at == 4999usize);
+
+  // Nothing nearer than the identity: a miss is the identity itself
+  mut far = new List[Target]();
+  mut k = 0usize;
+  while k < 3000usize {
+    far.push(new Target(none, u32.from(k)));
+    k = k + 1usize;
+  }
+  imm miss = parallelNearest(&far);
+  report("a miss is the identity", same(miss, nothing()));
+
+  // Empty, and one block
+  imm empty = new List[Target]();
+  report("empty is the identity", same(parallelNearest(&empty), nothing()));
+  imm small = targets(100usize, &[41usize, 42usize]);
+  report("one block", same(parallelNearest(&small), serial(&small)) and parallelNearest(&small).at == 41usize);
+  show("one block", parallelNearest(&small));
+
+  // The same answer on 30 runs
+  mut stable = true;
+  mut run = 0usize;
+  while run < 30usize {
+    if not same(parallelNearest(&tied), got) {
+      stable = false;
+    }
+    run = run + 1usize;
+  }
+  report("30 runs agree", stable);
+
+  // Many ties, every item the same distance: the first
+  mut flat = new List[Target]();
+  k = 0usize;
+  while k < 4000usize {
+    flat.push(new Target(7.25, u32.from(k)));
+    k = k + 1usize;
+  }
+  report("all tied: the first", parallelNearest(&flat).at == 0usize and parallelNearest(&flat).tag == 0u32);
+}
+
+fn main() {
+  actors.configure(new actors.Options(workers: 4u32));
+  cases();
+  finalAll();
+}
