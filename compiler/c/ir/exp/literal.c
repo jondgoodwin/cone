@@ -768,13 +768,14 @@ static int litIsTagOnly(StructNode *variant) {
     return 1;
 }
 
-// A payload-less variant standing as its enum, 'Kind.Os' wanted as a 'Kind', is a
-// constant: the tag it carries. Type check makes it the recast of the variant's
-// literal, which holds the tag alone, to the enum. Only when every variant of the
-// enum is that, so the enum is its tag and no more -- the variant and the enum are
-// then one LLVM layout, and generation re-types the constant (genlRecast). A
-// variant with a payload, or any variant of an enum that has one in another, is
-// not (its enum's layout is wider than the variant, padded out).
+// A payload-less variant standing as its enum, 'Kind.Os' wanted as a 'Kind' or
+// 'None' as an 'Option[i32]', is a constant: the tag it carries and nothing else.
+// Type check makes it the recast of the variant's literal, which holds the tag
+// alone, to the enum. The enum may have other variants that hold values: this one
+// holds none, so the enum's value for it is the tag and padding, which generation
+// builds at the enum's layout (genlRecast). A variant that holds a value is not,
+// nor is any variant of an enum with a field in common (that field's value is no
+// part of the tag).
 static int litIsEnumVariant(CastNode *node) {
     if (node->flags & (FlagConvert | 0x00FF) || node->exp->tag != TypeLitTag
         || node->vtype == NULL || !isTypeNode(node->vtype))
@@ -783,12 +784,13 @@ static int litIsEnumVariant(CastNode *node) {
     if (enumdcl->tag != StructTag || !(enumdcl->flags & EnumType)
         || ((StructNode*)enumdcl)->derived == NULL || ((StructNode*)enumdcl)->derived->used == 0)
         return 0;
-    INode **variantp;
-    uint32_t cnt;
-    for (nodesFor(((StructNode*)enumdcl)->derived, cnt, variantp))
-        if ((*variantp)->tag != StructTag || !litIsTagOnly((StructNode*)*variantp))
-            return 0;
-    return typeLitIsLiteral((FnCallNode*)node->exp);
+    FnCallNode *lit = (FnCallNode*)node->exp;
+    if (lit->vtype == NULL || !isTypeNode(lit->vtype))
+        return 0;
+    INode *variant = itypeGetTypeDcl(lit->vtype);
+    if (variant->tag != StructTag || variant == enumdcl || !litIsTagOnly((StructNode*)variant))
+        return 0;
+    return typeLitIsLiteral(lit);
 }
 
 // A string literal wanted as a '&Array[u8]' is the literal reinterpreted (a recast of

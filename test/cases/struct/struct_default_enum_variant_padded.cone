@@ -1,0 +1,220 @@
+// A variant that holds no value is a constant even when another variant of its
+// enum does: it is the tag, in an enum wider than a tag, the rest of it zero. So
+// 'Shape.Dot' and 'None' of an 'Option' may be a field's default, a named constant's
+// value, a global's, a parameter's default and an element of an array or struct in
+// those, as an enum made only of tags allows (struct_default_enum_variant).
+//
+// Every value is printed, because a default that compiles is not one that came out
+// as the variant written: variants are told apart by a match, no two of the defaults
+// here are the same variant, and each is replaced by a variant that holds a value
+// to show the field is the whole enum's size.
+
+mod struct_default_enum_variant_padded;
+
+import stdio use *;
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+enum Shape {
+  struct Circle { pub r i64; }
+  struct Dot {}
+  Empty;
+  struct Rect { pub w i32; pub h i32; }
+}
+
+// A tag value written and a width named, and the tag placed by '_ tag'
+enum Wide u32 {
+  Plain = 0xFF0000;
+  Big(i64) = 5;
+  Other = 0x00FF00;
+}
+
+enum Placed {
+  _ tag;
+  struct Pair { pub a i64; pub b i64; }
+  Single;
+}
+
+// A generic enum's instance
+enum Maybe[T] {
+  Nothing;
+  Just(T);
+  Missing;
+}
+
+fn shapeNbr(s &Shape) i64 {
+  match s {
+    case imm c Circle {100i64 + c.r;}
+    case Dot {1;}
+    case Empty {2;}
+    case imm r Rect {1000 + r.w * 10 + r.h;}
+  }
+}
+
+fn wideNbr(w &Wide) i64 {
+  match w {
+    case Plain {10;}
+    case imm b Big {20i64 + *b;}
+    case Other {30;}
+  }
+}
+
+fn placedNbr(p &Placed) i64 {
+  match p {
+    case imm pr Pair {pr.a + pr.b;}
+    case Single {7;}
+  }
+}
+
+fn optNbr(o &Option[i32]) i64 {
+  match o {
+    case None {-1;}
+    case imm n Some {i64.from(*n);}
+  }
+}
+
+fn optWideNbr(o &Option[i64]) i64 {
+  match o {
+    case None {-1;}
+    case imm n Some {*n;}
+  }
+}
+
+fn maybeNbr(m &Maybe[i64]) i64 {
+  match m {
+    case Nothing {-10;}
+    case imm j Just {*j;}
+    case Missing {-20;}
+  }
+}
+
+struct Holder {
+  pub id u32;
+  pub shape Shape = Shape.Dot;
+  pub other Shape = Shape.Empty;
+  pub opt Option[i32] = None;
+  pub wide Wide = Wide.Other;
+  pub placed Placed = Placed.Single;
+  pub maybe Maybe[i64] = Maybe.Missing;
+}
+
+// A struct and an array default holding variants
+struct Report {
+  pub holder Holder = new Holder(9u32);
+  pub shapes Array[Shape, 2] = [Shape.Empty, Shape.Dot];
+  pub opts Array[Option[i64], 2] = [None, None];
+}
+
+const Fallback Shape = Shape.Empty;
+const NoCount Option[i32] = None;
+imm made Holder = new Holder(5u32);
+imm table Array[Shape, 3] = [Shape.Dot, Shape.Empty, Shape.Dot];
+imm absent Option[i64] = None;
+imm placedHere Placed = Placed.Single;
+
+// An Option of a reference has no tag: None is the null pointer (and, of a string or
+// slice reference, a null pointer with a length), so the constant is that
+imm noRef Option[&i32] = None;
+imm noText Option[&str] = None;
+struct Refs {
+  pub ref Option[&i32] = None;
+  pub text Option[&str] = None;
+}
+
+fn refNbr(o &Option[&i32]) i64 {
+  match o {
+    case None {-1;}
+    case imm r Some {i64.from(**r);}
+  }
+}
+
+fn textNbr(o &Option[&str]) i64 {
+  match o {
+    case None {-1;}
+    case imm t Some {i64.from(t.len());}
+  }
+}
+
+struct ByConstant {
+  pub shape Shape = Fallback;
+  pub count Option[i32] = NoCount;
+}
+
+fn shapeParam(s Shape = Shape.Dot) i64 {
+  shapeNbr(&s);
+}
+
+fn optParam(o Option[i32] = None) i64 {
+  optNbr(&o);
+}
+
+fn main() {
+  // The default taken, and replaced by position and by name
+  imm a = new Holder(1u32);
+  show("default-shape", shapeNbr(&a.shape));
+  show("default-second-shape", shapeNbr(&a.other));
+  show("default-option", optNbr(&a.opt));
+  show("default-wide", wideNbr(&a.wide));
+  show("default-placed", placedNbr(&a.placed));
+  show("default-generic", maybeNbr(&a.maybe));
+
+  imm b = new Holder(2u32, Shape.Circle(7i64), Shape.Rect(3, 4), Some(11), Wide.Big(5i64), Placed.Pair(4i64, 6i64), Maybe.Just(8i64));
+  show("replaced-by-position-circle", shapeNbr(&b.shape));
+  show("replaced-by-position-rect", shapeNbr(&b.other));
+  show("replaced-option", optNbr(&b.opt));
+  show("replaced-wide", wideNbr(&b.wide));
+  show("replaced-placed", placedNbr(&b.placed));
+  show("replaced-generic", maybeNbr(&b.maybe));
+
+  imm c = new Holder(id: 3u32, opt: Some(21));
+  show("by-name-keeps-the-shape-default", shapeNbr(&c.shape));
+  show("by-name-option", optNbr(&c.opt));
+
+  // Inside a default, and in an array default
+  imm r = new Report();
+  show("nested-default", shapeNbr(&r.holder.shape) * 10 + optNbr(&r.holder.opt));
+  show("array-default", shapeNbr(&r.shapes[0]) * 10 + shapeNbr(&r.shapes[1]));
+  show("array-of-options", optWideNbr(&r.opts[0]) + optWideNbr(&r.opts[1]));
+
+  // A global, a named constant, a global array, a parameter
+  show("global-struct", shapeNbr(&made.shape) * 10 + shapeNbr(&made.other));
+  show("global-array", shapeNbr(&table[0]) * 100 + shapeNbr(&table[1]) * 10 + shapeNbr(&table[2]));
+  show("global-option", optWideNbr(&absent));
+  show("global-placed", placedNbr(&placedHere));
+  imm refs = new Refs();
+  show("reference-option-default", refNbr(&refs.ref) * 10 + textNbr(&refs.text));
+  show("reference-option-global", refNbr(&noRef) * 10 + textNbr(&noText));
+  imm seven = 7;
+  imm held = new Refs(Some(&seven), Some("four"));
+  show("reference-option-replaced", refNbr(&held.ref) * 10 + textNbr(&held.text));
+  imm fb = Fallback;
+  show("named-constant", shapeNbr(&fb));
+  show("default-is-a-named-constant", shapeNbr(&new ByConstant().shape) * 10 + optNbr(&new ByConstant().count));
+  show("parameter-default", shapeParam());
+  show("parameter-given", shapeParam(Shape.Rect(1, 2)));
+  show("option-parameter-default", optParam());
+  show("option-parameter-given", optParam(Some(6)));
+
+  // The constant is a value like any other: a copy may be changed to a variant that holds one
+  imm again = new Report();
+  mut copy = again.shapes[1];
+  show("copy-before", shapeNbr(&copy));
+  copy = Shape.Circle(4i64);
+  show("copy-after", shapeNbr(&copy));
+
+  // In a function the variants are built there, whatever the array or struct holding them
+  imm onStack Array[Shape, 3] = [Shape.Dot, Shape.Empty, Shape.Dot];
+  show("local-array", shapeNbr(&onStack[0]) * 100 + shapeNbr(&onStack[1]) * 10 + shapeNbr(&onStack[2]));
+  imm filled = new Array[Option[i32], 3] <- fill None;
+  show("local-fill", optNbr(&filled[0]) + optNbr(&filled[2]));
+  mut mixed Array[Option[i32], 2] = [None, None];
+  mixed[1] = Some(9);
+  show("local-array-then-replaced", optNbr(&mixed[0]) * 100 + optNbr(&mixed[1]));
+  imm pair = new Holder(4u32, Shape.Dot, Shape.Dot);
+  show("local-construction", shapeNbr(&pair.shape) * 10 + shapeNbr(&pair.other));
+}
