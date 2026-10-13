@@ -3435,6 +3435,121 @@ FnSigNode *genericClosureSig(TypeCheckState *pstate, FnDclNode *generic, Nodes *
     return (FnSigNode*)itypeGetTypeDcl(copy);
 }
 
+// The type argument 'argi' of a call of a generic is wanted as, when the other
+// arguments and the type expected of the call's value say every type parameter
+// that parameter names. 'ptypes' are the generic's parameter (or field) types,
+// as written in its type parameters, one for each written argument (NULL where
+// none is certain). The others are read as the call's own inference will read
+// them, quietly, into a scratch call; an argument not yet checked, or this one,
+// says nothing. This is what lets 'Some(None)' and 'id2(None, 5)' give their
+// 'None' the type its place needs: the parameter's type with those parameters
+// replaced. NULL when some parameter is still unsaid, or the copy is refused.
+static INode *genericArgExpect(TypeCheckState *pstate, GenericInfo *info, Nodes *where, INode *result,
+        INode **ptypes, Nodes *args, uint32_t argi, INode *expectType) {
+    if (ptypes[argi] == NULL)
+        return NULL;
+    FnCallNode *known = newFnCallNode((INode*)newNameUseNode(anonName), info->parms->used);
+    uint32_t j;
+    for (j = 0; j < info->parms->used; ++j)
+        nodesAdd(&known->args, (INode*)NULL);
+    ++genericExpectMode;
+    for (j = 0; j < args->used; ++j) {
+        INode *arg = nodesGet(args, j);
+        INode *val = arg->tag == NamedValTag ? ((NamedValNode*)arg)->val : arg;
+        if (j == argi || ptypes[j] == NULL || val->tag == ClosureTag || !isExpNode(val) || inodeIsError(val))
+            continue;
+        INode *argtype = ((IExpNode*)val)->vtype;
+        if (argtype == NULL || argtype == unknownType || litIsUntypedNull(val) || genericArgIsAdaptable(val, ptypes[j]))
+            continue;
+        genericInferType(known, info->parms, ptypes[j], argtype);
+    }
+    genericInferFromBounds(info->parms, where, known);
+    genericInferFromExpected(info->parms, result, expectType, known);
+    for (j = 0; j < args->used; ++j) {
+        INode *arg = nodesGet(args, j);
+        INode *val = arg->tag == NamedValTag ? ((NamedValNode*)arg)->val : arg;
+        if (j == argi || ptypes[j] == NULL || !isExpNode(val) || !genericArgIsAdaptable(val, ptypes[j]))
+            continue;
+        if (genericCapturedType(known, info->parms, ptypes[j]) == NULL && ((IExpNode*)val)->vtype != unknownType)
+            genericInferType(known, info->parms, ptypes[j], ((IExpNode*)val)->vtype);
+    }
+    --genericExpectMode;
+    if (!genericTypeArgsKnown(ptypes[argi], info->parms, known->args))
+        return NULL;
+    CloneState cstate;
+    uint32_t dclpos = cloneDclPush();
+    clonePushState(&cstate, ptypes[argi], NULL, 0, info->parms, known->args);
+    INode *copy = cloneNode(&cstate, ptypes[argi]);
+    clonePopState();
+    cloneDclPop(dclpos);
+    inodeTypeCheckAny(pstate, &copy);
+    if (inodeIsError(copy) || !isTypeNode(copy))
+        return NULL;
+    return copy;
+}
+
+// What argument 'argi' of a call of generic function or method 'generic' is
+// wanted as, from the other arguments (checked) and 'expectType', the type
+// wanted of the call's value; 'firstparm' is 1 for a method called on a receiver.
+INode *genericFnArgExpect(TypeCheckState *pstate, FnDclNode *generic, Nodes *args, uint32_t argi,
+        uint32_t firstparm, INode *expectType) {
+    FnSigNode *gsig = (FnSigNode*)itypeGetTypeDcl(generic->vtype);
+    if (gsig == NULL || gsig->tag != FnSigTag || firstparm + args->used > gsig->parms->used)
+        return NULL;
+    INode *ptypes[16];
+    if (args->used > 16)
+        return NULL;
+    for (uint32_t j = 0; j < args->used; ++j)
+        ptypes[j] = ((VarDclNode*)nodesGet(gsig->parms, firstparm + j))->vtype;
+    return genericArgExpect(pstate, generic->genericinfo, generic->where, gsig->rettype, ptypes, args, argi, expectType);
+}
+
+// The same for argument 'argi' of a generic variant's (or struct's) literal,
+// 'Some(None)': the field it fills is the parameter, the enum it makes the result.
+INode *genericStructArgExpect(TypeCheckState *pstate, StructNode *generic, Nodes *args, uint32_t argi,
+        INode *expectType) {
+    GenericInfo *info = generic->genericinfo;
+    INode *result = info ? genericResultTemplate(generic, info) : NULL;
+    INode *ptypes[16];
+    if (info == NULL || result == NULL || args->used > 16)
+        return NULL;
+    for (uint32_t j = 0; j < args->used; ++j) {
+        FieldDclNode *field = fnCallTypeLitField(generic, args, j);
+        ptypes[j] = field ? field->vtype : NULL;
+    }
+    return genericArgExpect(pstate, info, info->where, result, ptypes, args, argi, expectType);
+}
+
+// Does a generic variant have a type parameter that none of its fields names:
+// 'None' of 'Option[T]'? Such a construction can only be typed from where its
+// value goes.
+int genericVariantParmUnnamed(StructNode *variant) {
+    GenericInfo *info = variant->genericinfo;
+    if (info == NULL || info->parms == NULL)
+        return 0;
+    Nodes *blank = newNodes(info->parms->used);
+    for (uint32_t k = 0; k < info->parms->used; ++k)
+        nodesAdd(&blank, (INode*)unknownType);
+    for (uint32_t k = 0; k < info->parms->used; ++k) {
+        if (((GenVarDclNode*)nodesGet(info->parms, k))->valtype)
+            continue;
+        nodesGet(blank, k) = NULL;
+        int named = 0;
+        INode **fldp;
+        uint32_t cnt;
+        for (nodelistFor(&variant->fields, cnt, fldp)) {
+            FieldDclNode *field = (FieldDclNode*)*fldp;
+            if (!(field->flags & (IsTagField | IsMixin)) && field->vtype
+                && !genericTypeArgsKnown(field->vtype, info->parms, blank))
+                named = 1;
+        }
+        nodesGet(blank, k) = unknownType;
+        if (!named)
+            return 1;
+    }
+    return 0;
+}
+
 // Can a call passing 'self' (NULL if none) and 'args', all of them checked, call
 // generic function or method 'generic', a candidate of an overload set? Only a
 // generic whose every type parameter is bound to a function signature joins a
