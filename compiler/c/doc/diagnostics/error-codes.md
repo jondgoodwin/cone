@@ -236,7 +236,9 @@ program's stitched init and final call — `fn @initpure init()` or
 `fn final()`: one taking parameters, returning a value, generic, `inline` or
 declaring an overload name, an `init` without `@initpure`, anything but a
 function under either name at module scope — and a module that needs the `drop`
-it is given while declaring a `drop` of its own; the remedy is on that
+it is given while declaring a `drop` of its own, and a C-named module's `init`
+that depends on a Cone-named module with an `init` of its own (the C runtime runs
+the C-named one first, `pgmCInitCheck`); the remedy is on that
 declaration, and the message names the cause. `ErrorGlobalUninit` is a global
 declared without a value that no `init` of its module assigns — its module
 declares none, or its `init` never does; the remedy is to assign it there, or to
