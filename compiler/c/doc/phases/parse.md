@@ -786,7 +786,10 @@ operation awaits an instance of (`actorAwaitable`), and its `Future`, which a
 kept call of a behaviour gives and an `await` may wait for (`actorFuture`). Each generated declaration is marked `DclActorGen`, which a
 library compile exports whatever its visibility: the include file keeps the
 actor whole, its bodies too, so an importer generates them again, the same.
-What crosses to the actor, and what a behaviour returns, is checked after type
+So the state's methods are expanded bodies (`fnDclNameRes` records what they
+name), and the include-file generator walks each actor's state, public or not
+(`incSeedActors`): a private type, function or method the state names goes into
+the file beside the actor, still private, and need not be made `pub`. What crosses to the actor, and what a behaviour returns, is checked after type
 check (`actorCheckAll`, `ir/types/actor.c`).
 
 **It generates a generator's declarations** (`parsegen.c`). `fn walk(t &Tree)
