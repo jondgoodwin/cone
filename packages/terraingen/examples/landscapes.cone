@@ -1,0 +1,416 @@
+// landscapes: three landscapes made from parameters alone (alpine, desert mesa, rolling hills), each
+// generated, eroded on the GPU, cut by rivers, classified into biomes, and drawn headless.
+//
+//   congo run --release packages/terraingen/examples/landscapes.cone -- --out PREFIX [--res 384]
+//   GPU_POWER_PREFERENCE=low-power congo run --release ... (the Intel)
+//
+// It prints, for each landscape: the time to generate the heights on the CPU and on the GPU, the time
+// to erode on each, how far the two erosions differ, the largest drainage area, the river and lake
+// cells, the biome shares; and the GPU time of drawing it. With --out it writes PREFIX-<name>-view.bmp
+// (the 3-D view: the terrain meshed with its baked colour map, the water meshed over it) and
+// PREFIX-<name>-map.bmp (a map from above: the biome colours with the sun's shading).
+//
+// The terrain mesh here is only what the demo needs to be seen: one mesh of the whole grid. A terrain
+// renderer (the terrainlod package) consumes 'Landscape.heightAt' and 'cutTile' instead.
+
+mod landscapes;
+
+import stdio use *;
+import libc;
+import time;
+import geomath use *;
+import collections use *;
+import mesh use Mesh;
+import gpu use *;
+import render use *;
+import path as filepath;
+import terraingen use *;
+
+fn cstrEquals(a *u8, b &str) bool {
+  mut i = 0usize;
+  while i < b.len() {
+    if *(a + i) != b[i] { return false; }
+    i = i + 1usize;
+  }
+  *(a + b.len()) == 0u8;
+}
+
+fn cstrToString(s *u8) String {
+  mut r = String.empty();
+  mut i = 0usize;
+  while *(s + i) != 0u8 { r.appendByte(*(s + i)); i = i + 1usize; }
+  r;
+}
+
+fn argNumber(s *u8) usize {
+  mut v = 0usize;
+  mut i = 0usize;
+  while *(s + i) != 0u8 { v = v * 10usize + usize.from(*(s + i) - 48u8); i = i + 1usize; }
+  v;
+}
+
+fn srgbByte(linear f32) u8 {
+  mut c = linear;
+  if c < 0. { c = 0.; }
+  if c > 1. { c = 1.; }
+  imm s = libc.powf(c, 1. / 2.2);
+  u8.from(i32.from(s * 255. + 0.5));
+}
+
+// The colour map as an Image (rows from the bottom: row iz of the grid)
+fn albedoImage(l &Landscape, biomes &List[Biome]) Image {
+  imm rgb = bakeAlbedo(&l.masks, biomes);
+  imm w = l.height.w;
+  imm h = l.height.h;
+  mut img = new Image(i32.from(w), i32.from(h), 3, List[u8].withCapacity(w * h * 3usize));
+  mut i = 0usize;
+  while i < w * h {
+    img.pixels.push(srgbByte(*rgb[i * 3usize]));
+    img.pixels.push(srgbByte(*rgb[i * 3usize + 1usize]));
+    img.pixels.push(srgbByte(*rgb[i * 3usize + 2usize]));
+    i = i + 1usize;
+  }
+  img;
+}
+
+// The whole grid as one mesh: positions, normals, uvs (u east, v south = row), CCW from above
+fn terrainMesh(hf &Heightfield) Mesh {
+  mut m = Mesh.empty();
+  mut iz = 0usize;
+  while iz < hf.h {
+    mut ix = 0usize;
+    while ix < hf.w {
+      imm x = hf.originX + f32.from(ix) * hf.cell;
+      imm z = hf.originZ + f32.from(iz) * hf.cell;
+      m.positions.push(new Vec3(x, hf.at(ix, iz), z));
+      m.normals.push(hf.normalAt(x, z));
+      m.uvs.push(new Vec2(f32.from(ix) / f32.from(hf.w - 1usize), f32.from(iz) / f32.from(hf.h - 1usize)));
+      ix = ix + 1usize;
+    }
+    iz = iz + 1usize;
+  }
+  iz = 0usize;
+  while iz + 1usize < hf.h {
+    mut ix = 0usize;
+    while ix + 1usize < hf.w {
+      imm a = u32.from(iz * hf.w + ix);
+      imm b = a + 1u32;
+      imm c = a + u32.from(hf.w);
+      imm d = c + 1u32;
+      m.indices.push(a); m.indices.push(c); m.indices.push(b);
+      m.indices.push(b); m.indices.push(c); m.indices.push(d);
+      ix = ix + 1usize;
+    }
+    iz = iz + 1usize;
+  }
+  m;
+}
+
+// Water: the quads of the grid with water at three or more corners, flat at the highest surface
+// of their corners, so a lake is one level and a river steps down its bed
+fn waterMesh(l &Landscape) Mesh {
+  imm hf = &l.height;
+  mut m = Mesh.empty();
+  imm w = hf.w;
+  mut iz = 0usize;
+  while iz + 1usize < hf.h {
+    mut ix = 0usize;
+    while ix + 1usize < w {
+      imm i0 = iz * w + ix;
+      imm ids = [i0, i0 + 1usize, i0 + w, i0 + w + 1usize];
+      mut wet = 0;
+      mut sum = 0.;
+      mut k = 0usize;
+      while k < 4usize {
+        if *l.water.waterDepth[ids[k]] > 0.02 {
+          wet = wet + 1;
+          sum = sum + *l.water.surface[ids[k]];
+        }
+        k = k + 1usize;
+      }
+      if wet >= 3 {
+        imm mean = sum / f32.from(wet);
+        imm base = u32.from(m.positions.len());
+        k = 0usize;
+        while k < 4usize {
+          imm px = hf.originX + f32.from(ix + (k % 2usize)) * hf.cell;
+          imm pz = hf.originZ + f32.from(iz + (k / 2usize)) * hf.cell;
+          // a wet corner at its own surface, a dry one at the mean of the wet
+          imm py = if *l.water.waterDepth[ids[k]] > 0.02 { *l.water.surface[ids[k]]; } else { mean; };
+          m.positions.push(new Vec3(px, py + 0.05, pz));
+          m.normals.push(new Vec3(0., 1., 0.));
+          m.uvs.push(new Vec2(0., 0.));
+          k = k + 1usize;
+        }
+        m.indices.push(base); m.indices.push(base + 2u32); m.indices.push(base + 1u32);
+        m.indices.push(base + 1u32); m.indices.push(base + 2u32); m.indices.push(base + 3u32);
+      }
+      ix = ix + 1usize;
+    }
+    iz = iz + 1usize;
+  }
+  m;
+}
+
+// A map from above: the colour map shaded by the sun's exposure, water drawn blue
+fn mapImage(l &Landscape, biomes &List[Biome]) Image {
+  imm rgb = bakeAlbedo(&l.masks, biomes);
+  imm w = l.height.w;
+  imm h = l.height.h;
+  mut img = new Image(i32.from(w), i32.from(h), 3, List[u8].withCapacity(w * h * 3usize));
+  mut row = h;
+  // rows from the bottom of the picture: north (small z) at the top of the picture
+  while row > 0usize {
+    row = row - 1usize;
+    mut ix = 0usize;
+    while ix < w {
+      imm i = (h - 1usize - row) * w + ix;
+      imm lit = 0.35 + 0.85 * *l.masks.exposure[i];
+      mut r = *rgb[i * 3usize] * lit;
+      mut g = *rgb[i * 3usize + 1usize] * lit;
+      mut b = *rgb[i * 3usize + 2usize] * lit;
+      if *l.water.waterDepth[i] > 0.02 { r = 0.03; g = 0.1; b = 0.2; }
+      img.pixels.push(srgbByte(r * 1.6));
+      img.pixels.push(srgbByte(g * 1.6));
+      img.pixels.push(srgbByte(b * 1.6));
+      ix = ix + 1usize;
+    }
+  }
+  img;
+}
+
+// How rough the surface is at the grid's own scale: the mean of |h(x-1) + h(x+1) + h(z-1) + h(z+1) - 4 h|
+fn roughness(hf &Heightfield) f32 {
+  mut s = 0.;
+  mut n = 0.;
+  mut iz = 1usize;
+  while iz + 1usize < hf.h {
+    mut ix = 1usize;
+    while ix + 1usize < hf.w {
+      s = s + libc.fabsf(hf.at(ix - 1usize, iz) + hf.at(ix + 1usize, iz) + hf.at(ix, iz - 1usize) + hf.at(ix, iz + 1usize) - 4. * hf.at(ix, iz));
+      n = n + 1.;
+      ix = ix + 1usize;
+    }
+    iz = iz + 1usize;
+  }
+  s / n;
+}
+
+fn countWater(l &Landscape) Array[usize, 2] {
+  mut lake = 0usize;
+  mut river = 0usize;
+  mut i = 0usize;
+  while i < l.height.data.len() {
+    if *l.hydrology.lakeDepth[i] > 0. { lake = lake + 1usize; }
+    elif *l.water.waterDepth[i] > 0.02 { river = river + 1usize; }
+    i = i + 1usize;
+  }
+  [lake, river];
+}
+
+fn main(argc i32, argv **u8) i32 {
+  mut prefix = String.empty();
+  mut res = 384usize;
+  mut only = 9usize;          // --only 0|1|2: just alpine, mesa or hills
+  mut a = 1;
+  while a < argc {
+    imm arg = *(argv + usize.from(a));
+    if cstrEquals(arg, "--out") and a + 1 < argc {
+      prefix = cstrToString(*(argv + usize.from(a + 1)));
+      a = a + 1;
+    } elif cstrEquals(arg, "--res") and a + 1 < argc {
+      res = argNumber(*(argv + usize.from(a + 1)));
+      a = a + 1;
+    } elif cstrEquals(arg, "--only") and a + 1 < argc {
+      only = argNumber(*(argv + usize.from(a + 1)));
+      a = a + 1;
+    }
+    a = a + 1;
+  }
+  mut instance = Instance.create("terraingen landscapes");
+  mut none = Surface.none();
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  if (env as usize) != 0usize {
+    if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  mut adapter = instance.requestAdapter(&none, preference);
+  if !adapter.isValid() { print <- "No GPU\n"; return 1i32; }
+  print <- "Adapter: "; printStr(adapter.name.view()); print <- "\n";
+  mut device = adapter.requestDevice();
+
+  imm W = 1280u32;
+  imm H = 720u32;
+  imm outDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  mut out = device.createTexture(&outDesc);
+  imm depthDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  mut depth = device.createTexture(&depthDesc);
+  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  mut post = Post.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, W, H);
+  mut queries = device.createQuerySet(QUERY_TYPE_TIMESTAMP, 2u32);
+  mut resolved = device.createBuffer(256u64, BUFFER_USAGE_QUERY_RESOLVE | BUFFER_USAGE_COPY_SRC);
+  mut timeBuf = device.createBuffer(16u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  if !renderer.isValid() or !post.isValid() or !queries.isValid() { print <- "renderer failed\n"; return 1i32; }
+
+  mut sky = Sky.dusk(radians(38.), radians(210.));
+  sky.sunColor = new Color(30., 27., 22., 1.);
+  sky.zenith = new Color(0.16, 0.32, 0.75, 1.);
+  sky.horizon = new Color(0.62, 0.74, 0.9, 1.);
+  sky.glow = new Color(0.5, 0.4, 0.3, 1.);
+  sky.ground = new Color(0.2, 0.2, 0.2, 1.);
+  sky.cloudCover = 0.35;
+  renderer.setSky(&mut device, &sky);
+  imm light = sky.sunLight(new Color(3.2, 3.0, 2.6, 1.), new Color(0.25, 0.3, 0.4, 1.));
+  post.exposure = 0.9;
+  post.bloom = 0.02;
+
+  mut names = List[String].empty();
+  names.push(String.from("alpine"));
+  names.push(String.from("mesa"));
+  names.push(String.from("hills"));
+  mut k = 0usize;
+  while k < 3usize {
+    if only != 9usize and only != k { k = k + 1usize; continue; }
+    imm cell =if k == 0usize { 4600. / f32.from(res); } elif k == 1usize { 4000. / f32.from(res); } else { 3000. / f32.from(res); };
+    imm spec = if k == 0usize { alpine(res, res, cell, 7u32); } elif k == 1usize { mesa(res, res, cell, 3u32); } else { hills(res, res, cell, 5u32); };
+    print <- "\n== "; printStr(names[k].view()); print <- " "; print <- u64.from(res); print <- " x "; print <- u64.from(res);
+    print <- " samples, cell "; print <- cell; print <- " m ==\n";
+
+    // heights: the CPU and the GPU
+    imm t0 = time.Instant.now();
+    imm cpuField = generate(&spec.shape, spec.w, spec.h, spec.cell, spec.originX, spec.originZ);
+    imm cpuGen = t0.elapsed().secondsF64();
+    imm t1 = time.Instant.now();
+    imm gpuField = generateGpu(&mut device, &spec);
+    imm gpuGen = t1.elapsed().secondsF64();
+    mut maxGen = 0.;
+    mut i = 0usize;
+    while i < cpuField.data.len() {
+      imm d = libc.fabsf(*cpuField.data[i] - *gpuField.data[i]);
+      if d > maxGen { maxGen = d; }
+      i = i + 1usize;
+    }
+    print <- "heights: CPU "; print <- cpuGen * 1000d; print <- " ms, GPU (kernel, with upload and readback) ";
+    print <- gpuGen * 1000d; print <- " ms; largest difference "; print <- maxGen; print <- " m\n";
+
+    // erosion: the CPU and the GPU on the same heights
+    mut a1 = cpuField.tile(0, 0, res, res);
+    imm r1 = erodeCpu(&mut a1, &spec.erosion, &spec.plan);
+    mut a2 = cpuField.tile(0, 0, res, res);
+    imm r2 = erodeGpu(&mut device, &mut a2, &spec.erosion, &spec.plan);
+    mut meanDiff = 0.;
+    mut maxDiff = 0.;
+    mut moved = 0.;
+    i = 0usize;
+    while i < a1.data.len() {
+      imm d = libc.fabsf(*a1.data[i] - *a2.data[i]);
+      meanDiff = meanDiff + d;
+      if d > maxDiff { maxDiff = d; }
+      moved = moved + libc.fabsf(*a1.data[i] - *cpuField.data[i]);
+      i = i + 1usize;
+    }
+    meanDiff = meanDiff / f32.from(a1.data.len());
+    print <- "roughness (mean |laplacian| x cell, m): before "; print <- roughness(&cpuField); print <- ", after CPU erosion ";
+    print <- roughness(&a1); print <- ", after GPU erosion "; print <- roughness(&a2); print <- "\n";
+    print <- "erosion ("; print <- u64.from(spec.plan.hydraulic); print <- " hydraulic + "; print <- u64.from(spec.plan.thermal);
+    print <- " thermal): CPU "; print <- r1.seconds * 1000d; print <- " ms, GPU "; print <- r2.seconds * 1000d;
+    print <- " ms (ok "; print <- i64.from(r2.ok); print <- "); mean height moved by erosion "; print <- moved / f32.from(a1.data.len());
+    print <- " m; CPU vs GPU mean difference "; print <- meanDiff; print <- " m, largest "; print <- maxDiff; print <- " m\n";
+
+    // the whole landscape through the GPU path
+    imm l = buildLandscapeOn(&mut device, &spec);
+    imm wc = countWater(&l);
+    print <- "landscape built in "; print <- l.seconds * 1000d; print <- " ms; heights "; print <- l.height.minHeight();
+    print <- " to "; print <- l.height.maxHeight(); print <- " m; largest drainage "; print <- l.hydrology.maxAccum() * cell * cell / 1.0e6;
+    print <- " km2; lake cells "; print <- u64.from(wc[0usize]); print <- ", river cells "; print <- u64.from(wc[1usize]); print <- "\n";
+    mut b = 0usize;
+    while b < l.masks.biomeCount {
+      mut share = 0.;
+      i = 0usize;
+      while i < l.height.data.len() {
+        if usize.from(*l.masks.biome[i]) == b { share = share + 1.; }
+        i = i + 1usize;
+      }
+      print <- "  biome "; printStr(l.masks.biomeNames[b].view()); print <- ": "; print <- 100. * share / f32.from(l.height.data.len()); print <- " %\n";
+      b = b + 1usize;
+    }
+
+    // drawing
+    imm albedo = albedoImage(&l, &spec.biomes);
+    imm tex = renderer.addTexture(&mut device, &albedo);
+    mut ground = Material.plain(new Color(1., 1., 1., 1.));
+    ground.texture = tex;
+    ground.specular = new Color(0., 0., 0., 1.);
+    imm groundM = renderer.addMaterial(&mut device, &ground);
+    mut waterMat = Material.plain(new Color(0.02, 0.09, 0.14, 1.));
+    waterMat.specular = new Color(0.8, 0.8, 0.8, 1.);
+    waterMat.shininess = 120.;
+    imm waterM = renderer.addMaterial(&mut device, &waterMat);
+    imm tm = terrainMesh(&l.height);
+    imm tHandle = renderer.addMesh(&mut device, &tm);
+    imm wm = waterMesh(&l);
+    mut list = DrawList.empty();
+    list.add(tHandle, groundM, Mat4.identity());
+    if wm.indices.len() > 0usize {
+      imm wHandle = renderer.addMesh(&mut device, &wm);
+      list.add(wHandle, waterM, Mat4.identity());
+    }
+    imm span = f32.from(res - 1usize) * cell;
+    imm hi = l.height.maxHeight();
+    imm lo = l.height.minHeight();
+    mut camera = Camera.make();
+    camera.fov = radians(50.);
+    camera.near = 5.;
+    camera.far = 30000.;
+    camera.background = new Color(0.4, 0.55, 0.8, 1.);
+    camera.lookAt(new Vec3(span * 0.5, hi + span * 0.16, span * 1.12), new Vec3(span * 0.5, lo + (hi - lo) * 0.3, span * 0.3), new Vec3(0., 1., 0.));
+
+    // GPU time of the draw: the mean of 30 frames after 5
+    mut gpuMs = 0d;
+    mut counted = 0u32;
+    mut f = 0u32;
+    while f < 35u32 {
+      mut encoder = device.createCommandEncoder();
+      encoder.writeTimestamp(&queries, 0u32);
+      renderer.render(&mut device, &mut encoder, &post.hdr, &depth, &camera, &light, &list);
+      encoder.writeTimestamp(&queries, 1u32);
+      post.apply(&mut encoder, &out);
+      encoder.resolveQuerySet(&queries, 0u32, 2u32, &resolved, 0u64);
+      encoder.copyBufferToBuffer(&resolved, 0u64, &timeBuf, 0u64, 16u64);
+      device.queue.submit(encoder.finish());
+      device.endFrame();
+      device.waitIdle();
+      if f >= 5u32 {
+        imm ticks = timeBuf.mappedRange() as *u64;
+        gpuMs = gpuMs + f64.from(*(ticks + 1usize) - *ticks) * f64.from(device.timestampPeriod) * 1.0e-6d;
+        counted = counted + 1u32;
+      }
+      f = f + 1u32;
+    }
+    print <- "draw: "; print <- u64.from(tm.triangleCount() + wm.triangleCount()); print <- " triangles, GPU "; print <- gpuMs / f64.from(counted); print <- " ms a frame\n";
+
+    if prefix.len() > 0usize {
+      mut shot = device.createBuffer(u64.from(W) * u64.from(H) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+      mut encoder = device.createCommandEncoder();
+      renderer.render(&mut device, &mut encoder, &post.hdr, &depth, &camera, &light, &list);
+      post.apply(&mut encoder, &out);
+      encoder.copyTextureToBuffer(&out, &shot);
+      device.queue.submit(encoder.finish());
+      device.endFrame();
+      device.waitIdle();
+      imm image = Image.fromTexels(shot.mappedRange(), i32.from(W), i32.from(H), false);
+      mut name = prefix.copy();
+      name <- "-"; name <- names[k].view(); name <- "-view.bmp";
+      image.save(&filepath.Path.from(name.view()));
+      mut mapName = prefix.copy();
+      mapName <- "-"; mapName <- names[k].view(); mapName <- "-map.bmp";
+      imm mp = mapImage(&l, &spec.biomes);
+      mp.save(&filepath.Path.from(mapName.view()));
+      print <- "wrote "; printStr(name.view()); print <- " and "; printStr(mapName.view()); print <- "\n";
+    }
+    k = k + 1usize;
+  }
+  print <- "\nVulkan failures: "; print <- u64.from(failures());
+  print <- "; validation messages: "; print <- u64.from(validationMessages()); print <- "\n";
+  0i32;
+}
