@@ -23,6 +23,7 @@ pub struct OceanSpec {
   pub foamThreshold f32;      // the Jacobian below which foam is made (1 is flat water)
   pub foamGain f32;           // foam made per unit of Jacobian below the threshold
   pub foamDecay f32;          // seconds for the foam to fade to 1/e
+  pub foamEvery u32;          // the foam is brought up to date on every this-many'th update (it changes slowly: 2 halves its cost)
   pub seed u32;
 
   // Three cascades for a sea: the first tile about three peak wavelengths long (at least 200 m), the
@@ -53,7 +54,7 @@ pub struct OceanSpec {
     cs.push(new CascadeSpec(l0, n, 0., e0));
     cs.push(new CascadeSpec(l1, n, e0, e1));
     cs.push(new CascadeSpec(l2, n, e1, e2));
-    new OceanSpec(sea, cs, 1.1, 0.72, 3., 5., seed);
+    new OceanSpec(sea, cs, 1.1, 0.72, 3., 5., 2u32, seed);
   }
 }
 
@@ -69,6 +70,7 @@ pub struct Ocean {
   pub cascades List[Cascade];
   pub time f64;
   pub updates u32;
+  pendingFoam f32;           // seconds of foam fade not yet applied
 
   // The ocean of 'spec', at time 0
   pub fn make(spec OceanSpec) Ocean {
@@ -78,7 +80,7 @@ pub struct Ocean {
       cs.push(Cascade.make(*spec.cascades[i], &spec.sea, spec.seed * 31u32 + u32.from(i)));
       i = i + 1usize;
     }
-    mut o = new Ocean(spec, cs, 0d, 0u32);
+    mut o = new Ocean(spec, cs, 0d, 0u32, 0.);
     o.update(0d);
     o;
   }
@@ -103,7 +105,11 @@ pub struct Ocean {
       cascades[i].updateFields(t, spec.choppiness);
       i = i + 1usize;
     }
-    self.updateFoam(dt);
+    pendingFoam = pendingFoam + dt;
+    if spec.foamEvery <= 1u32 or updates % spec.foamEvery == 0u32 {
+      self.updateFoam(pendingFoam);
+      pendingFoam = 0.;
+    }
     time = t;
     updates = updates + 1u32;
   }
@@ -124,14 +130,18 @@ pub struct Ocean {
       while ix < n {
         imm x = f32.from(ix) * len / f32.from(n);
         imm z = f32.from(iz) * len / f32.from(n);
-        mut a = 0.;
-        mut b = 0.;
-        mut c = 0.;
+        // this cascade's own samples are on the grid: read directly, the others bilinearly
+        imm own = iz * n + ix;
+        mut a = *cascades[fc].dxx[own];
+        mut b = *cascades[fc].dzz[own];
+        mut c = *cascades[fc].dxz[own];
         mut k = 0usize;
         while k < cascades.len() {
-          a = a + cascades[k].at(&cascades[k].dxx, x, z);
-          b = b + cascades[k].at(&cascades[k].dzz, x, z);
-          c = c + cascades[k].at(&cascades[k].dxz, x, z);
+          if k != fc {
+            a = a + cascades[k].at(&cascades[k].dxx, x, z);
+            b = b + cascades[k].at(&cascades[k].dzz, x, z);
+            c = c + cascades[k].at(&cascades[k].dxz, x, z);
+          }
           k = k + 1usize;
         }
         imm l = spec.choppiness;

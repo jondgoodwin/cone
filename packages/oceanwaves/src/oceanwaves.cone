@@ -1,4 +1,59 @@
-// oceanwaves: an FFT ocean.
+// The oceanwaves package (a working name; Jon names packages): an FFT ocean, calm to storm. A program
+// reaches it with 'import oceanwaves' and gets a sea it can step, query and draw:
+//
+//   imm sea = SeaState.beaufort(7, 0.);                    // force 7, the waves travelling toward +x
+//   mut ocean = Ocean.make(OceanSpec.forSea(sea, 21u32));  // three FFT cascades, a seed
+//   ocean.update(t);                                       // every frame: the surface at time t
+//   ocean.heightAt(x, z);  ocean.normalAt(x, z);  ocean.foamAt(x, z);
+//   ocean.setSea(SeaState.beaufort(9, 0.));                // the wind rises: the same waves, grown
+//   mut sr = OceanRenderer.create(&mut renderer, &mut device, &ocean, OceanLook.temperate(&sky));
+//   sr.upload(&mut renderer, &mut device, &ocean);  sr.addToList(&mut list, cameraX, cameraZ);
+//
+// WHAT IT DOES
+//
+//   SPECTRUM (spectrum.cone). JONSWAP (Hasselmann et al. 1973), the spectrum of a sea still growing under
+//   the wind over a limited fetch, falling back to Pierson-Moskowitz (1964) for a fully developed one;
+//   spread in direction by the Hasselmann/Mitsuyasu cos^2s form in Horvath's (2015) parameterisation; the
+//   dispersion relation w^2 = g k tanh(k d). 'SeaState.beaufort(n, direction)' gives forces 0 to 12;
+//   'significantHeight' integrates the spectrum (a fully developed 20 m/s sea comes out within 15
+//   percent of Pierson-Moskowitz's 0.0246 U^2).
+//
+//   SURFACE (cascade.cone, fft.cone). Tessendorf's method ("Simulating Ocean Water", 2001): a sum of waves
+//   with Gaussian random amplitudes scaled by the spectrum, evolved by the dispersion relation and summed
+//   by inverse FFT. Three CASCADES (tiles of different sizes, each carrying its own band of wavelengths)
+//   resolve a swell hundreds of metres long and ripples under a metre together, the technique of the
+//   ocean in Crysis and in Assassin's Creed IV. Four inverse FFTs a cascade give eight fields: height,
+//   horizontal displacement (the CHOPPINESS that sharpens crests), slopes, and the derivatives of the
+//   displacement, whose Jacobian says where the surface folds.
+//
+//   FOAM and SPRAY (ocean.cone). Foam is made where the Jacobian of the whole surface's displacement is
+//   low (Tessendorf; Jensen and Golias, GPU Gems ch. 1), persists and fades; 'sprayAt' lists the points
+//   where waves are breaking hardest, with the crest's direction, for an emitter to turn into particles:
+//   vfx's Event.at(id, time, Mat4.fromTranslation(spot.position)) with a spray Emitter.
+//
+//   HEIGHT QUERY (ocean.cone). 'heightAt(x, z)' inverts the displacement by fixed-point iteration and
+//   reads the height there: what a floating body floats on is exactly the surface that is drawn.
+//
+//   RENDERING (render.cone, ocean.slang). One custom pipeline of render: a fine mesh of 1.3 m cells round
+//   the camera displaced in the vertex shader from the cascades' textures, a coarse 48 m ring beyond it,
+//   shaded per fragment: Fresnel (Schlick, F0 0.02) between the reflected sky and sun and the body of the
+//   water, a subsurface tint through crests, foam, aerial perspective. The fields cross to the GPU as
+//   r32float textures once a frame ('upload').
+//
+// WHERE THE WORK RUNS. The FFTs, the foam and the height query run on the CPU, in Cone (5.4 ms a frame for
+// three 128 x 128 cascades, measured), because the physics that floats bodies needs the heights on the CPU
+// and the spectrum evolution is the cost; the shading runs on the GPU (0.2 ms on the RTX, 3 to 5 ms on the
+// Intel UHD 770 at 1280 x 720). A GPU FFT is the next step (see the Design note).
+//
+// FILES. Only this root imports.
+//   spectrum.cone   SeaState: JONSWAP, spreading, dispersion; angularFrequency, groupVelocity
+//   fft.cone        Fft: radix-2, 1-D and 2-D inverse
+//   cascade.cone    CascadeSpec, Cascade: the tile's waves and the eight fields
+//   ocean.cone      OceanSpec, Ocean: cascades summed, queries, foam, spray
+//   render.cone     OceanLook, OceanRenderer, the embedded shader (ocean.slang)
+//
+// CONVENTIONS: geomath's (right-handed, y up, metres, seconds, f32). A wave vector's direction is its
+// direction of travel; 'windDirection' is an angle from +x toward +z.
 
 mod oceanwaves;
 

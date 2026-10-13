@@ -1,4 +1,53 @@
-// buoyancy: bodies that float.
+// The buoyancy package (a working name; Jon names packages): bodies that float, and a boat from data. A
+// program reaches it with 'import buoyancy' (and 'import rigiddynamics' for the World it adds to):
+//
+//   mut world = World.make();
+//   mut boat = Boat.create(&mut world, BoatSpec.dinghy(), new Vec3(14., 0.1, 0.), facing);
+//   mut crate = Floater.create(&mut world, Hull.box(new Vec3(0.45, 0.225, 0.3)), pos, Quat.identity(), 0., 600.);
+//   // every step, BEFORE world.step(dt):
+//   boat.steer(throttle, rudder);
+//   boat.apply(&mut world, (x, z) => ocean.heightAt(x, z), &props, dt);
+//   crate.apply(&mut world, (x, z) => ocean.heightAt(x, z), &props, dt);
+//   world.step(dt);
+//
+// The water is a closure 'fn(x, z) f32', the surface's height: an ocean's height query, a lake's level, a
+// river. Nothing here knows which; no package depends on oceanwaves.
+//
+// WHAT IT DOES
+//
+//   HULL (hull.cone). A closed triangle mesh in the body's coordinates: a box, a lofting of cross-section
+//   outlines along x (a boat, a barrel, a buoy; every outline the same number of points, the ends capped),
+//   or any mesh. Volume and centroid by the divergence theorem.
+//
+//   FORCES (forces.cone). Kerner's triangle-pressure model ("Water interaction model for boats in video
+//   games", Gamasutra 2010): the hydrostatic pressure rho g d on every submerged triangle, normal to it,
+//   at the pressure's own centre; the triangles the surface cuts are clipped exactly against the depth
+//   (linear across a triangle). Summed over a closed hull this is Archimedes' principle, for a hull of any
+//   shape, in waves of any slope. Drag is Kerner's too: ITTC 1957 skin friction, pressure drag on the faces
+//   turned into the flow and suction on those turned away, each from the velocity of the water relative to
+//   that triangle, so a body's spin is damped by the water it moves through.
+//
+//   FLOATER (floater.cone). A hull joined to a rigiddynamics body: a convex-hull collision shape, mass from
+//   a mass or a density, the water's force and torque added each step. The force is evaluated at the
+//   middle of the step (explicit midpoint), because a restoring force as stiff as buoyancy, held constant
+//   through the World's sub-steps, adds energy (measured: a barge's 15 degree roll grew to 30 degrees in
+//   17 s; with the midpoint it decays).
+//
+//   BOAT (boat.cone). A BoatSpec is everything about a boat as numbers: stations for the hull, the mass,
+//   the engine's thrust and place, the rudder's place, area and aspect ratio. A Boat is a Floater with an
+//   engine (thrust faded as the propeller leaves the water) and a rudder (a foil: lift slope 2 pi / (1 +
+//   2 / AR), stall, induced drag, the propeller's wash), steered by throttle and rudder from -1 to 1.
+//
+// FILES. Only this root imports.
+//   hull.cone      Station, Hull
+//   forces.cone    WaterProps, HullForces, hullForces
+//   floater.cone   Pose, predictedPose, Floater, ROLL_DAMPING
+//   boat.cone      BoatSpec (dinghy), Boat
+//
+// WHAT IS NOT HERE: the water's own velocity (a wave's orbital motion; only a constant current), slamming
+// (the impact force of a flat hull falling on the surface), wave-making resistance and planing lift (the
+// pressure drag on a tilted hull makes something like the second), wake and splash, hulls that take in
+// water, joints between floating bodies (a raft of planks), buoyancy for soft bodies.
 
 mod buoyancy;
 

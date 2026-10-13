@@ -106,6 +106,16 @@ fn main(argc i32, argv **u8) i32 {
     mut reps = 0;
     while reps < 10 { ocean.update(30d + 0.05d * f64.from(reps + 1)); reps = reps + 1; }
     imm updateMs = tU.elapsed().secondsF64() * 100d;
+    // the height query, as a floating body asks it
+    imm tH = time.Instant.now();
+    mut hsum = 0.;
+    mut hq = 0;
+    while hq < 20000 {
+      hsum = hsum + ocean.heightAt(f32.from(hq % 200) * 3.1, f32.from(hq / 200) * 2.7);
+      hq = hq + 1;
+    }
+    imm heightUs = tH.elapsed().secondsF64() * 1.0e6d / 20000d;
+    imm sprayAll = ocean.sprayAt(0., 0., 150., 0.3, 12usize);
     print <- "\n== Beaufort "; print <- i64.from(force); print <- ": wind "; print <- sea.windSpeed; print <- " m/s ==\n";
     print <- "spectrum Hs "; print <- sea.significantHeight(); print <- " m, expected from the cascades "; print <- ocean.expectedSignificantHeight();
     print <- " m, the surface now 4 rms "; print <- 4. * ocean.rmsHeight(); print <- " m; peak period "; print <- sea.peakPeriod();
@@ -132,8 +142,25 @@ fn main(argc i32, argv **u8) i32 {
     print <- " percent; foam over 0.3 on "; print <- 100. * f32.from(foamed) / f32.from(total); print <- " percent\n";
     mut sr = OceanRenderer.create(&mut renderer, &mut device, &ocean, look);
     if !sr.isValid() { print <- "ocean renderer failed\n"; return 1i32; }
-    sr.upload(&mut renderer, &mut device, &ocean);
-    imm uploadMs = sr.uploadSeconds * 1000d;
+    // the upload: the first after a pause is slow on some drivers, so the median of 31
+    mut ups = List[f64].empty();
+    mut u = 0;
+    while u < 31 {
+      sr.upload(&mut renderer, &mut device, &ocean);
+      ups.push(sr.uploadSeconds * 1000d);
+      u = u + 1;
+    }
+    mut ui = 1usize;
+    while ui < ups.len() {
+      mut uj = ui;
+      while uj > 0usize and *ups[uj - 1usize] > *ups[uj] { ups.swap(uj - 1usize, uj); uj = uj - 1usize; }
+      ui = ui + 1usize;
+    }
+    imm uploadMs = *ups[ups.len() / 2usize];
+    print <- "heightAt: "; print <- heightUs; print <- " us a call (checksum "; print <- hsum; print <- "); spray: "; print <- u64.from(sprayAll.len());
+    print <- " spots within 150 m at foam over 0.3";
+    if sprayAll.len() > 0usize { print <- ", the freshest "; print <- sprayAll[0usize].strength; }
+    print <- "\n";
     print <- "CPU: ocean update "; print <- updateMs; print <- " ms, texture upload "; print <- uploadMs; print <- " ms\n";
 
     mut camera = Camera.make();
@@ -146,10 +173,9 @@ fn main(argc i32, argv **u8) i32 {
     mut list = DrawList.empty();
     sr.addToList(&mut list, eye.x, eye.z);
 
-    mut gpuMs = 0d;
-    mut counted = 0u32;
+    mut samples = List[f64].empty();
     mut f = 0u32;
-    while f < 35u32 {
+    while f < 130u32 {
       mut encoder = device.createCommandEncoder();
       encoder.writeTimestamp(&queries, 0u32);
       renderer.render(&mut device, &mut encoder, &post.hdr, &depth, &camera, &light, &list);
@@ -160,14 +186,20 @@ fn main(argc i32, argv **u8) i32 {
       device.queue.submit(encoder.finish());
       device.endFrame();
       device.waitIdle();
-      if f >= 5u32 {
+      if f >= 30u32 {
         imm ticks = timeBuf.mappedRange() as *u64;
-        gpuMs = gpuMs + f64.from(*(ticks + 1usize) - *ticks) * f64.from(device.timestampPeriod) * 1.0e-6d;
-        counted = counted + 1u32;
+        samples.push(f64.from(*(ticks + 1usize) - *ticks) * f64.from(device.timestampPeriod) * 1.0e-6d);
       }
       f = f + 1u32;
     }
-    print <- "GPU: draw "; print <- gpuMs / f64.from(counted); print <- " ms a frame\n";
+    mut si = 1usize;
+    while si < samples.len() {
+      mut sj = si;
+      while sj > 0usize and *samples[sj - 1usize] > *samples[sj] { samples.swap(sj - 1usize, sj); sj = sj - 1usize; }
+      si = si + 1usize;
+    }
+    print <- "GPU: draw p50 "; print <- *samples[samples.len() / 2usize]; print <- " ms (min "; print <- *samples[0usize]; print <- ", max ";
+    print <- *samples[samples.len() - 1usize]; print <- ") over 100 frames\n";
     if prefix.len() > 0usize {
       mut shot = device.createBuffer(u64.from(W) * u64.from(H) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
       mut encoder = device.createCommandEncoder();

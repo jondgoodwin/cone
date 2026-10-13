@@ -1,4 +1,68 @@
-// terraingen: landscapes from parameters.
+// The terraingen package (a working name; Jon names packages): landscapes from parameters. A program
+// reaches it with 'import terraingen' and describes a landscape as DATA, a TerrainSpec, then asks for it:
+//
+//   imm spec = alpine(512usize, 512usize, 10., 7u32);      // 512 x 512 samples, 10 m apart, seed 7
+//   imm land = buildLandscape(&spec);                      // on the CPU; buildLandscapeOn(&mut device, &spec) erodes on a GPU
+//   land.heightAt(x, z);   land.normalAt(x, z);   land.waterDepthAt(x, z);
+//   cutTile(&land.height, tx, tz, 33usize, 1usize);        // tiles with shared edges, for a terrain renderer
+//   groundSignals(&land.height, &land.masks, x0, z0, 256., 128u32);   // the land's share of groundcover's eight signals
+//
+// "Here is a picture of a mountain range; do something like it" becomes choosing the fields of a
+// TerrainSpec: 'alpine', 'mesa' and 'hills' are three such choices (landscape.cone), each about a
+// kilobyte of numbers.
+//
+// WHAT IT DOES, in the order the pipeline runs (Landscape, landscape.cone):
+//
+//   1. GENERATE (gpu/shape.cone, generate.cone). A ShapeParams is a recipe of at most four fractal
+//      layers (fBm with Quilez's derivative damping, Musgrave's ridged multifractal, billow), each
+//      optionally gated by another layer; a domain warp (Quilez); then shaping: a power curve, terraces,
+//      a plateau cap, a radial island falloff, a final detail octave. A pure function of (parameters, x,
+//      z) over 32-bit numbers, so it is also the kernel 'generate' and runs on the GPU through gpuwork,
+//      within 3 mm of the CPU's (the GPU's sin and exp differ by a few ulps).
+//
+//   2. ERODE (gpu/erosion.cone, erode.cone). HYDRAULIC erosion by the virtual pipe model (Mei, Decaudin
+//      and Hu 2007): water, suspended sediment and flux through four pipes a cell, five kernels an
+//      iteration; THERMAL erosion by talus (Musgrave, Kolb and Mace 1989) in the gathering form of Jako
+//      and Toth (2011). Each kernel reads what it does not write, so the order of invocations cannot
+//      matter, and 'erodeCpu' (the kernels' own functions in a loop) and 'erodeGpu' (one gpuwork Job for
+//      the whole plan, the data never returning in between) agree: the mean difference measured is
+//      1e-6 m.
+//
+//   3. DRAINAGE, RIVERS, LAKES (hydrology.cone). Priority-Flood with epsilon (Barnes et al. 2014) fills
+//      the depressions; D8 flow directions and flow accumulation give the drainage; depressions become
+//      lakes (a shallow one is a puddle the water runs through, a deep one a dry basin that drains to its
+//      own pit); channels where the drained area passes a threshold are carved to a depth and width that
+//      grow with its square root.
+//
+//   4. MASKS AND BIOMES (masks.cone). Rasters on the heightfield's grid: slope, moisture (humidity, the
+//      logarithm of the drained area, nearness to water), sun exposure (a horizon march), flow, river,
+//      lake, distance to water (a chamfer transform), curvature, and biome weights from a data table of
+//      windows on slope, height and moisture. 'bakeAlbedo' mixes the biomes' colours.
+//
+// HOW THE MASKS FEED groundcover. groundcover's GroundMaps hold eight signals: height, slope (degrees),
+// moisture, exposure, path distance, water distance, canopy, object distance. 'groundSignals' resamples a
+// MaskSet into exactly those rasters, same units, same texel convention (texel (i, j) at the window's origin
+// + (i + 0.5, j + 0.5) texels), ready to be copied into a GroundMaps with its 'set'; path, canopy and object
+// come back as "none near" for the world to fill. There is one set of signals, and terraingen supplies the
+// land's share of it. No package depends on the other.
+//
+// FILES. Only this root imports. gpu/ holds the GPU-safe half (modules 'shape' and 'erosion', compiled for
+// the CPU into the package and for the GPU into terraingen.spv); src/ the rest.
+//   heightfield.cone   Heightfield: a grid of heights, sample, normal, slope, tile
+//   generate.cone      the CPU's generate
+//   erode.cone         ErosionPlan; erodeCpu, erodeGpu
+//   hydrology.cone     analyze, carveRivers, RiverSpec, RiverMaps
+//   masks.cone         Biome, MaskSpec, MaskSet, computeMasks, groundSignals, bakeAlbedo
+//   landscape.cone     TerrainSpec, Landscape, buildLandscape(On), generateGpu, tiles, the presets
+//
+// CONVENTIONS: geomath's and rigidcollide's (right-handed, y up, metres, f32); x east, z south; a
+// sample (ix, iz) is at (originX + ix cell, originZ + iz cell), stored row by row.
+//
+// WHAT IS NOT HERE (yet): wind or glacial erosion, rivers carved by splines (roads, canals), tiled or
+// infinite worlds (a Heightfield is one grid; terrainlod's tiles and a height closure serve the rest),
+// a sea of its own (a sea level in the spec only lifts a flat water plane; oceanwaves is the sea), a
+// GPU hydrology or GPU masks (the drainage analysis, 31 ms and run twice, and the masks, 58 ms, are CPU
+// code: 120 ms of the 430 ms the 384 x 384 alpine landscape takes, the rest the GPU's erosion).
 
 mod terraingen;
 
