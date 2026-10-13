@@ -1581,7 +1581,14 @@ a field by a struct that is not the owner is another value and is not reached. T
 field and no such element (`s.view()`), for a field of a trait or an enum (a type that
 implements it holds the same field), for an element a call returned from other borrows, and for
 a free function's borrowed argument. The receiver of a call that is the container itself, a
-`String` appended to, is asked as before, and so are stores (`reshapeStoreHits`) and globals.
+`String` appended to, is asked as before unless it is another value than the viewed one: it is
+written as a field the struct holds by value (`pwReceiverFieldOwner`: `ui.input.clipboard`, through
+borrows and conversions; not a name, an element a call returned, a field holding a reference, a
+variant of an enum), the viewed value is a field held by value or an element of such a list
+(`loanShapeOwnerByValue`, from `pwViewOwner`), and the two structs differ (`reshapeCall`'s
+`recvowner`): a value is the field of one struct only. Stores (`reshapeStoreHits`) and globals
+are asked as before. `collection_reshape_receiver_other_struct_success` and
+`collection_flow_reshape_receiver_other_struct` pin both sides.
 `collection_flow_reshape_owner` pins what stays refused, by every route to the owner.
 
 **An enum** is a marked loan's container too. A reference narrowed from an enum to one
