@@ -159,7 +159,11 @@ typedef struct {
 // 'skiprecv' says the borrow the loan is of is the receiver's own, an owner lent as the 'self' of
 // the method called: the receiver is then the borrow and no other name for the owner, and only
 // the other arguments are asked.
-int reshapeCall(FnCallNode *call, FnDclNode *meth, int recvunique, INode *cont, INode *owner, int globalview,
-    ReshapeVerdict *verdict, VarDclNode **mine, int nmine, int skiprecv);
+// 'recvowner' is the struct the call's receiver is a field of, where the receiver is written as a field
+// access ('ui.input.clipboard.append(..)': Input), else NULL. A receiver that is a 'cont' held as a field
+// of a struct other than the borrow's 'owner' is another value than the one the borrow is into, and is
+// not asked: that needs both known.
+int reshapeCall(FnCallNode *call, FnDclNode *meth, int recvunique, INode *cont, INode *owner, INode *recvowner,
+    int globalview, ReshapeVerdict *verdict, VarDclNode **mine, int nmine, int skiprecv);
 
 #endif
