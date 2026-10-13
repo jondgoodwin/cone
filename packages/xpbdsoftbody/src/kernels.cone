@@ -19,6 +19,9 @@ pub const R_DIST = 3u32;          // stretch constraints
 pub const R_BEND = 4u32;          // dihedral bending constraints
 pub const R_CURVE = 5u32;         // rope curvature constraints
 pub const R_VELOCITY = 6u32;      // new velocities from the moved positions
+pub const R_BEND_CURV = 7u32;     // bending by the curvature vector
+pub const R_TETHER = 8u32;        // long range tethers
+pub const R_LIMIT = 9u32;         // strain limiting
 
 pub struct StepView is Sendable {
   pub pos *Vec3;
@@ -33,10 +36,13 @@ pub struct StepView is Sendable {
   pub dist *DistanceC;
   pub bend *BendC;
   pub curves *CurveC;
+  pub tethers *TetherC;
   pub h f32;               // the substep
   pub hBend f32;           // the time the bend constraints take this substep (a multiple of h)
   pub first bool;          // the first iteration of the substep: every multiplier is zero
   pub damp f32;            // 1 / (1 + damping h)
+  pub omega f32;           // over-relaxation of the stretch projections (1: none)
+  pub strainCap f32;       // 1 + the strain limit
   pub gravity Vec3;
   pub wind Vec3;
   pub windOn bool;
@@ -222,7 +228,7 @@ fn distRange(v &StepView, lo usize, hi usize) {
       if len > 1e-9 {
         imm alpha = c.compliance * inv2;
         imm lam = if first {0.;} else {c.lambda;};
-        imm dl = (-(len - c.rest) - alpha * lam) / (w + alpha);
+        imm dl = (-(len - c.rest) - alpha * lam) / (w + alpha) * v.omega;
         (*cp).lambda = lam + dl;
         imm s = dl / len;
         *(v.pos + ia) = pa + d * (s * wa);
@@ -268,13 +274,17 @@ fn bendRange(v &StepView, lo usize, hi usize) {
       imm lc2 = nc.lengthSquared();
       imm ld2 = nd.lengthSquared();
       if e2 > 1e-18 and lc2 > 1e-18 and ld2 > 1e-18 {
+        // three divisions where seven were: 1/e^2, one for both 1/|nc|^2 and 1/|nd|^2, and the angle's
+        imm ie2 = 1. / e2;
         imm elen = e2.sqrt();
-        mut err = atan2Fast(nc.cross(nd).dot(e) / elen, nc.dot(nd)) - c.rest;
+        imm both = 1. / (lc2 * ld2);
+        imm ilc = ld2 * both;
+        imm ild = lc2 * both;
+        mut err = atan2Fast(nc.cross(nd).dot(e) * (elen * ie2), nc.dot(nd)) - c.rest;
         if err > 3.1415927 { err = err - pi2; }
         if err < -3.1415927 { err = err + pi2; }
-        imm ie2 = 1. / e2;
-        imm gc = nc * (-elen / lc2);
-        imm gd = nd * (-elen / ld2);
+        imm gc = nc * (-elen * ilc);
+        imm gd = nd * (-elen * ild);
         imm tc = (pc - pa).dot(e) * ie2;
         imm td = (pd - pa).dot(e) * ie2;
         imm ga = gc * (tc - 1.) + gd * (td - 1.);
@@ -290,6 +300,107 @@ fn bendRange(v &StepView, lo usize, hi usize) {
           *(v.pos + ic) = pc + gc * (wc * dl);
           *(v.pos + id) = pd + gd * (wd * dl);
         }
+      }
+    }
+  }
+}
+
+// ---- strain limiting ----
+//
+// Provot 1995: a stretch edge longer than rest * (1 + limit) is brought back to that length, shared by
+// inverse mass. Taken a batch at a time like the stretch constraints.
+fn limitRange(v &StepView, lo usize, hi usize) {
+  imm cap = v.strainCap;
+  mut k = lo;
+  while k < hi {
+    imm c = *(v.dist + k);
+    k = k + 1usize;
+    imm ia = usize.from(c.a);
+    imm ib = usize.from(c.b);
+    imm wa = *(v.invMass + ia);
+    imm wb = *(v.invMass + ib);
+    if wa + wb > 0. {
+      imm pa = *(v.pos + ia);
+      imm pb = *(v.pos + ib);
+      imm d = pa - pb;
+      imm l2 = d.lengthSquared();
+      imm longest = c.rest * cap;
+      if l2 > longest * longest {
+        imm len = l2.sqrt();
+        imm s = (len - longest) / (len * (wa + wb));
+        *(v.pos + ia) = pa - d * (s * wa);
+        *(v.pos + ib) = pb + d * (s * wb);
+      }
+    }
+  }
+}
+
+// ---- long range tethers ----
+//
+// A particle farther from its anchor than its tether is brought back by the excess (an inequality:
+// slack costs nothing). The anchor is a pin and never moves, so no two tethers touch the same
+// particle's position and they may be taken in any order, or at once.
+fn tetherRange(v &StepView, lo usize, hi usize) {
+  mut k = lo;
+  while k < hi {
+    imm t = *(v.tethers + k);
+    k = k + 1usize;
+    imm ip = usize.from(t.particle);
+    if *(v.invMass + ip) > 0. {
+      imm pa = *(v.pos + usize.from(t.anchor));
+      imm pp = *(v.pos + ip);
+      imm d = pp - pa;
+      imm l2 = d.lengthSquared();
+      if l2 > t.maxLength * t.maxLength and l2 > 1e-18 {
+        imm len = l2.sqrt();
+        *(v.pos + ip) = pa + d * (t.maxLength / len);
+      }
+    }
+  }
+}
+
+// ---- bending by the curvature vector ----
+//
+// A hinge's curvature vector H = K0 a + K1 b + K2 c + K3 d (solve.cone says where K comes from) is zero
+// when the hinge is flat and has the length e h_c h_d theta when it is folded by a small angle theta.
+// C = |H| with gradients K_i H / |H|; the compliance is the hinge's times (e h_c h_d)^2, so a fold of theta
+// costs theta^2 / (2 compliance) as in the dihedral constraint. No angle, no cross product, no
+// per-constraint divisions but two: it costs about what a stretch constraint does.
+fn bendCurvRange(v &StepView, lo usize, hi usize) {
+  imm hb = v.hBend;
+  imm inv2 = 1. / (hb * hb);
+  imm first = v.first;
+  mut k = lo;
+  while k < hi {
+    imm cp = v.bend + k;
+    imm c = *cp;
+    k = k + 1usize;
+    imm ia = usize.from(c.a);
+    imm ib = usize.from(c.b);
+    imm ic = usize.from(c.c);
+    imm id = usize.from(c.d);
+    imm wa = *(v.invMass + ia);
+    imm wb = *(v.invMass + ib);
+    imm wc = *(v.invMass + ic);
+    imm wd = *(v.invMass + id);
+    imm sum = wa * c.k0 * c.k0 + wb * c.k1 * c.k1 + wc * c.k2 * c.k2 + wd * c.k3 * c.k3;
+    if sum > 0. {
+      imm pa = *(v.pos + ia);
+      imm pb = *(v.pos + ib);
+      imm pc = *(v.pos + ic);
+      imm pd = *(v.pos + id);
+      imm hv = pa * c.k0 + pb * c.k1 + pc * c.k2 + pd * c.k3;
+      imm len = hv.length();
+      if len > 1e-12 {
+        imm u = hv * (1. / len);
+        imm alpha = c.compliance * c.gain2 * inv2;
+        imm lam = if first {0.;} else {c.lambda;};
+        imm dl = (-len - alpha * lam) / (sum + alpha);
+        (*cp).lambda = lam + dl;
+        *(v.pos + ia) = pa + u * (wa * c.k0 * dl);
+        *(v.pos + ib) = pb + u * (wb * c.k1 * dl);
+        *(v.pos + ic) = pc + u * (wc * c.k2 * dl);
+        *(v.pos + id) = pd + u * (wd * c.k3 * dl);
       }
     }
   }
@@ -340,4 +451,7 @@ pub fn runRegion(v &StepView, kind u32, lo usize, hi usize) {
   elif kind == R_WIND_TRI { windTriRange(v, lo, hi); }
   elif kind == R_WIND_GATHER { windGatherRange(v, lo, hi); }
   elif kind == R_CURVE { curveRange(v, lo, hi); }
+  elif kind == R_BEND_CURV { bendCurvRange(v, lo, hi); }
+  elif kind == R_TETHER { tetherRange(v, lo, hi); }
+  elif kind == R_LIMIT { limitRange(v, lo, hi); }
 }

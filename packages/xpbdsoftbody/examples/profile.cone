@@ -1,3 +1,9 @@
+// Where the time of a step goes: a 32 x 32 cloth hung by its top row, 10 substeps, in a wind,
+// with parts of the step left out in turn. Each line is the fastest of 200 steps (the least
+// disturbed by other work on the machine) after 50 of warm-up, in microseconds.
+//
+//   congo run --release packages/xpbdsoftbody/examples/profile.cone
+
 mod profile;
 
 import stdio use *;
@@ -16,23 +22,33 @@ fn cloth(n u32) SoftBody {
 
 fn timeIt(label &str, c &mut SoftBody) {
   mut s = 0;
-  while s < 30 { c.step(1. / 60., new Vec3(4., 0., 0.5)); s = s + 1; }
-  imm t0 = Instant.now();
+  while s < 50 { c.step(1. / 60., new Vec3(4., 0., 0.5)); s = s + 1; }
+  mut best = 1000000000000i64;
   s = 0;
-  while s < 100 { c.step(1. / 60., new Vec3(4., 0., 0.5)); s = s + 1; }
-  printStr(label); printStr(": "); printInt(t0.elapsed().nanos() / 100i64 / 1000i64); printStr(" us per step\n");
+  while s < 200 {
+    imm t0 = Instant.now();
+    c.step(1. / 60., new Vec3(4., 0., 0.5));
+    imm ns = t0.elapsed().nanos();
+    if ns < best { best = ns; }
+    s = s + 1;
+  }
+  printStr(label); printStr(": "); printInt(best / 1000i64); printStr(" us\n");
 }
 
 fn main() i32 {
   mut a = cloth(32u32);
-  print <- "dist "; print <- i64.from(a.dist.len()); print <- " bend "; print <- i64.from(a.bend.len()); print <- " tris "; print <- i64.from(a.tris.len() / 3usize); print <- "\n";
-  timeIt("full", &mut a);
-  mut b = cloth(32u32); b.airDensity = 0.; timeIt("no wind", &mut b);
-  mut c = cloth(32u32); c.bend.clear(); timeIt("no bend", &mut c);
-  mut d = cloth(32u32); d.dist.clear(); timeIt("no dist", &mut d);
-  mut e = cloth(32u32); e.dist.clear(); e.bend.clear(); e.airDensity = 0.; timeIt("predict only", &mut e);
-  mut f = cloth(32u32); f.bend.clear(); f.airDensity = 0.; timeIt("dist only", &mut f);
-  mut g = cloth(32u32); g.dist.clear(); g.airDensity = 0.; timeIt("bend only", &mut g);
+  print <- "stretch "; print <- i64.from(a.dist.len()); print <- ", bending "; print <- i64.from(a.bend.len());
+  print <- ", triangles "; print <- i64.from(a.tris.len() / 3usize); print <- "\n";
+  timeIt("full step", &mut a);
+  mut b = cloth(32u32); b.airDensity = 0.; timeIt("without wind", &mut b);
+  mut c = cloth(32u32); c.bend.clear(); timeIt("without bending", &mut c);
+  mut d = cloth(32u32); d.dist.clear(); timeIt("without stretch", &mut d);
+  mut e = cloth(32u32); e.dist.clear(); e.bend.clear(); e.airDensity = 0.; timeIt("prediction and velocity only", &mut e);
+  // with gravity off and the cloth flat, every constraint is evaluated and none moves anything
+  mut f = cloth(32u32); f.bend.clear(); f.airDensity = 0.; f.gravity = new Vec3(0., 0., 0.); timeIt("stretch only, at rest", &mut f);
+  mut g = cloth(32u32); g.dist.clear(); g.airDensity = 0.; g.gravity = new Vec3(0., 0., 0.); timeIt("bending only, at rest", &mut g);
+  mut g2 = cloth(32u32); g2.dist.clear(); g2.airDensity = 0.; g2.gravity = new Vec3(0., 0., 0.); g2.useCurvatureBending();
+  timeIt("bending only, curvature model, at rest", &mut g2);
   mut h = cloth(32u32); h.dist.clear(); h.bend.clear(); timeIt("wind only", &mut h);
   0i32;
 }

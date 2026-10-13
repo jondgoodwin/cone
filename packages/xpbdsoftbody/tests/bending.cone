@@ -1,0 +1,176 @@
+// The curvature model of bending against the dihedral one.
+//
+//   weights     for a flat hinge the curvature vector H = K0 a + K1 b + K2 c + K3 d is
+//               zero, and for a hinge folded by 0.1 rad its length is e h_c h_d theta
+//               (e the edge, h_c and h_d the heights of the far corners above it)
+//               within 2%, for an equilateral hinge and for a lopsided one
+//   rest        a flat cloth with gravity off and the curvature model stays where it
+//               is: nothing moves more than a micrometre in 100 steps
+//   hinge       one hinge, its edge and one corner pinned and a mass m on the other
+//               corner, 0.1 m from the edge, lying flat: the weight turns it by the
+//               angle at which the hinge's torque, theta / compliance, balances the
+//               weight's, m g h: theta = compliance m g h = 2.45e-3 rad for the numbers
+//               here. Both models settle within 5% of it: the same compliance is the
+//               same stiffness
+//   unfold      a strip folded in half unfolds under either model until its fold is
+//               below 0.05 rad
+//
+// (A strip pinned along one edge and left to sag is not a measure of the stiffness: a
+// Gauss-Seidel pass carries a cantilever's load down its twenty hinges one at a
+// time, and it hangs limp at any compliance a step can resolve. A single hinge
+// converges, and tests the constraint.)
+
+mod bending;
+
+import testing use *;
+import libc;
+import collections use *;
+import geomath use *;
+import xpbdsoftbody use *;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+// Rotate p about the line through a with direction axis by angle
+fn turn(p Vec3, a Vec3, axis Vec3, angle f32) Vec3 {
+  a + Quat.angleAxis(angle, axis) * (p - a);
+}
+
+fn hingeCurvature(pa Vec3, pb Vec3, pc Vec3, pd Vec3, fold f32) (f32, f32) {
+  imm w = curvatureWeights(pa, pb, pc, pd);
+  // fold: turn c about the edge ab
+  imm axis = (pb - pa).normalize();
+  imm cc = turn(pc, pa, axis, fold);
+  imm hv = pa * w.k0 + pb * w.k1 + cc * w.k2 + pd * w.k3;
+  imm e = (pb - pa).length();
+  // heights of c and d over the edge
+  imm hc = (pc - pa).cross(axis).length();
+  imm hd = (pd - pa).cross(axis).length();
+  (hv.length(), e * hc * hd * fold);
+}
+
+fn testWeights() {
+  // equilateral: edge on x, c above, d below
+  imm s = 0.1;
+  imm ea = new Vec3(-s * 0.5, 0., 0.);
+  imm eb = new Vec3(s * 0.5, 0., 0.);
+  imm ec = new Vec3(0., s * 0.8660254, 0.);
+  imm ed = new Vec3(0., -s * 0.8660254, 0.);
+  imm flat = hingeCurvature(ea, eb, ec, ed, 0.);
+  expectBool(flat.0 < 1e-7, true, "a flat equilateral hinge has no curvature");
+  imm bent = hingeCurvature(ea, eb, ec, ed, 0.1);
+  near(bent.0 / bent.1, 1., 0.02, "folded 0.1 rad it has e h h theta of it");
+  // lopsided: the far corners off to the sides, at different heights
+  imm la = new Vec3(0., 0., 0.);
+  imm lb = new Vec3(0.12, 0., 0.);
+  imm lc = new Vec3(0.03, 0.05, 0.);
+  imm ld = new Vec3(0.09, -0.11, 0.);
+  imm lflat = hingeCurvature(la, lb, lc, ld, 0.);
+  expectBool(lflat.0 < 1e-7, true, "a flat lopsided hinge has none");
+  imm lbent = hingeCurvature(la, lb, lc, ld, -0.1);
+  near(lbent.0 / lbent.1 * -1., 1., 0.02, "and folded the other way 0.1 rad it has e h h theta");
+}
+
+fn testRest() {
+  mut c = clothGrid(new Vec3(0., 1., 0.), new Vec3(0.6, 0., 0.), new Vec3(0., 0., 0.6), 12u32, 12u32, &Fabric.light());
+  c.useCurvatureBending();
+  c.gravity = new Vec3(0., 0., 0.);
+  c.airDensity = 0.;
+  mut before = List[Vec3].empty();
+  mut i = 0usize;
+  while i < c.pos.len() { before.push(*c.pos[i]); i = i + 1usize; }
+  mut s = 0;
+  while s < 100 { c.step(1. / 60., new Vec3(0., 0., 0.)); s = s + 1; }
+  mut worst = 0.;
+  i = 0usize;
+  while i < c.pos.len() {
+    imm d = (*c.pos[i] - *before[i]).length();
+    if d > worst { worst = d; }
+    i = i + 1usize;
+  }
+  expectBool(worst < 0.000001, true, "a flat cloth in no gravity does not move under the curvature model");
+}
+
+// One hinge lying flat in the x-z plane: the edge from a to b along x, c 0.1 m out in +z with a mass on
+// it, d 0.1 m the other way. a, b and d are held. The angle it settles at, radians.
+fn hingeSag(model u32, compliance f32, mass f32) f32 {
+  mut b = SoftBody.empty();
+  imm pa = b.addParticle(new Vec3(-0.1, 0., 0.), 1.);
+  imm pb = b.addParticle(new Vec3(0.1, 0., 0.), 1.);
+  imm pc = b.addParticle(new Vec3(0., 0., 0.1), mass);
+  imm pd = b.addParticle(new Vec3(0., 0., -0.1), 1.);
+  b.pin(pa);
+  b.pin(pb);
+  b.pin(pd);
+  b.addDistance(pc, pa, 1e-7);
+  b.addDistance(pc, pb, 1e-7);
+  b.addBend(pa, pb, pc, pd, compliance);
+  if model == BEND_CURVATURE { b.useCurvatureBending(); }
+  b.airDensity = 0.;
+  b.substeps = 40u32;
+  b.iterations = 2u32;
+  b.damping = 8.;
+  mut s = 0;
+  while s < 300 { b.step(1. / 60., new Vec3(0., 0., 0.)); s = s + 1; }
+  libc.fabsf(dihedralAngle(*b.pos[0usize], *b.pos[1usize], *b.pos[2usize], *b.pos[3usize]));
+}
+
+fn testHinge() {
+  imm want = 0.05 * 0.05 * 9.81 * 0.1;
+  near(hingeSag(BEND_DIHEDRAL, 0.05, 0.05), want, want * 0.05, "the dihedral hinge sags by compliance m g h");
+  near(hingeSag(BEND_CURVATURE, 0.05, 0.05), want, want * 0.05, "and the curvature hinge by the same");
+  imm want2 = 0.4 * 0.05 * 9.81 * 0.1;
+  near(hingeSag(BEND_DIHEDRAL, 0.4, 0.05), want2, want2 * 0.05, "a softer one, eight times as much (dihedral)");
+  near(hingeSag(BEND_CURVATURE, 0.4, 0.05), want2, want2 * 0.05, "(curvature)");
+}
+
+fn foldAngle(c &SoftBody) f32 {
+  // the biggest dihedral over the hinges
+  mut worst = 0.;
+  mut k = 0usize;
+  while k < c.bend.len() {
+    imm b = *c.bend[k];
+    imm a = dihedralAngle(*c.pos[usize.from(b.a)], *c.pos[usize.from(b.b)], *c.pos[usize.from(b.c)], *c.pos[usize.from(b.d)]);
+    if libc.fabsf(a) > worst { worst = libc.fabsf(a); }
+    k = k + 1usize;
+  }
+  worst;
+}
+
+fn unfolded(model u32) f32 {
+  mut c = clothGrid(new Vec3(0., 1., 0.), new Vec3(0.6, 0., 0.), new Vec3(0., 0., 0.12), 24u32, 4u32, &Fabric.light());
+  if model == BEND_CURVATURE { c.useCurvatureBending(); }
+  // fold the far half up a quarter turn about the middle column
+  mut i = 0usize;
+  while i < c.pos.len() {
+    imm p = *c.pos[i];
+    if p.x > 0.3 {
+      imm q = turn(p, new Vec3(0.3, 1., 0.), new Vec3(0., 0., 1.), pi * 0.5);
+      c.pos.set(i, q);
+    }
+    i = i + 1usize;
+  }
+  c.gravity = new Vec3(0., 0., 0.);
+  c.airDensity = 0.;
+  c.substeps = 20u32;
+  c.damping = 4.;
+  mut j = 0u32;
+  while j <= 4u32 { c.pin(j * 25u32); j = j + 1u32; }
+  mut s = 0;
+  while s < 600 { c.step(1. / 60., new Vec3(0., 0., 0.)); s = s + 1; }
+  foldAngle(&c);
+}
+
+fn testUnfold() {
+  expectBool(unfolded(BEND_DIHEDRAL) < 0.05, true, "a folded strip unfolds under the dihedral model");
+  expectBool(unfolded(BEND_CURVATURE) < 0.05, true, "and under the curvature model");
+}
+
+fn main() i32 {
+  testWeights();
+  testRest();
+  testHinge();
+  testUnfold();
+  done();
+}

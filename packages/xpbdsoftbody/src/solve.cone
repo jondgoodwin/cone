@@ -1,11 +1,11 @@
-// ======== The constraint helpers: dihedral angles, volume, strain limits, tethers, pressure ========
+// ======== The constraint helpers: dihedral angles, curvature weights, volume, strain limits, pressure ========
 //
 // The step itself is in step.cone and its inner loops (stretch, bending,
-// curvature, the wind and the integration) in kernels.cone. What is here are
-// the pieces that stay on one thread: the angle and gradient functions the
-// bending constraint is built from and tested against, the closed-mesh volume
-// and the pressure constraint on it, Provot's strain limiting, and the long
-// range tethers.
+// curvature, tethers, the wind and the integration) in kernels.cone. What is
+// here are the pieces that stay on one thread: the angle and gradient functions
+// the bending constraint is built from and tested against, the weights of the
+// curvature model of bending, and the closed-mesh volume and the pressure
+// constraint on it.
 
 fn zero3() Vec3 inline {new Vec3(0., 0., 0.);}
 
@@ -60,6 +60,63 @@ pub fn dihedralGradient(pa Vec3, pb Vec3, pc Vec3, pd Vec3) BendGrad {
   new BendGrad(ga, gb, gc, gd);
 }
 
+// The curvature model's weights for a hinge (a, b the edge, c and d the far corners) at its
+// rest shape: K = (f(b,c,d), -f(a,c,d), f(a,b,d), -f(a,b,c)) with f(p,q,r) = n . ((q - p) x (r - p)),
+// twice the signed area against the plane's normal n. For four points in a plane K sums to zero
+// and sum K_i p_i = 0 (Mobius's relation among the signed areas of four coplanar points), so a flat
+// hinge has curvature vector H = sum K_i x_i = 0, and a folded one has H along the fold's
+// normal: |H| = e h_c h_d theta for a small fold theta, e the edge's length and h_c, h_d the
+// heights of c and d above it. This is the operator of Bergou et al. 2006, "A quadratic bending
+// model for inextensible surfaces", whose weights are cotangents: for a flat hinge the weights
+// are fixed up to a factor by the relation above, and the factor is set here by the fold's
+// cost: a constraint |H| = 0 of compliance alpha * (e h_c h_d)^2 stores the energy
+// theta^2 / (2 alpha) of a fold, the dihedral constraint's, so the same compliance serves both.
+// Returns (K0, K1, K2, K3, (e h_c h_d)^2).
+pub struct CurvatureWeights {
+  pub k0 f32;
+  pub k1 f32;
+  pub k2 f32;
+  pub k3 f32;
+  pub gain2 f32;
+}
+
+pub fn curvatureWeights(pa Vec3, pb Vec3, pc Vec3, pd Vec3) CurvatureWeights {
+  imm nrm = (pb - pa).cross(pc - pa);
+  imm nl = nrm.length();
+  if nl < 1e-12 { return new CurvatureWeights(0., 0., 0., 0., 0.); }
+  imm n = nrm * (1. / nl);
+  imm f123 = n.dot((pc - pb).cross(pd - pb));
+  imm f023 = n.dot((pc - pa).cross(pd - pa));
+  imm f013 = n.dot((pb - pa).cross(pd - pa));
+  imm f012 = n.dot((pb - pa).cross(pc - pa));
+  imm e = (pb - pa).length();
+  // heights of c and d over the edge: twice the area over its length
+  imm g = fabs(f012) * fabs(f013) / e;
+  new CurvatureWeights(f123, -f023, f013, -f012, g * g);
+}
+
+// Switch the body's bending to the curvature model: the weights of each hinge from the positions
+// now, so call it while the cloth is in its rest shape. The rest angles are not used, so a hinge
+// that is folded at rest is held flat: the number of those (a rest angle past 0.3 rad) is
+// returned, and the model is for cloth that is flat at rest.
+pub fn useCurvatureModel(b &mut SoftBody) usize {
+  mut folded = 0usize;
+  mut k = 0usize;
+  while k < b.bend.len() {
+    imm c = *b.bend[k];
+    imm w = curvatureWeights(*b.pos[usize.from(c.a)], *b.pos[usize.from(c.b)], *b.pos[usize.from(c.c)], *b.pos[usize.from(c.d)]);
+    b.bend[k].k0 = w.k0;
+    b.bend[k].k1 = w.k1;
+    b.bend[k].k2 = w.k2;
+    b.bend[k].k3 = w.k3;
+    b.bend[k].gain2 = w.gain2;
+    if fabs(c.rest) > 0.3 { folded = folded + 1usize; }
+    k = k + 1usize;
+  }
+  b.bendModel = BEND_CURVATURE;
+  folded;
+}
+
 // atan2 as the bending loop computes it (kernels.cone), for the tests
 pub fn fastAtan2(y f32, x f32) f32 {atan2Fast(y, x);}
 
@@ -84,67 +141,6 @@ pub fn meshVolume(pos &Array[Vec3], tris &Array[u32]) f32 {
     t = t + 3usize;
   }
   v / 6.;
-}
-
-// Strain limiting (Provot 1995, "Deformation constraints in a mass-spring model
-// to describe rigid cloth behavior"): each edge stretched past rest * (1 +
-// limit) is brought back to that length, shared by inverse mass. A few passes
-// of this cost a fraction of the solve and bound the stretch that a small
-// number of Gauss-Seidel iterations leaves in a loaded cloth or a rope.
-fn limitStrain(b &mut SoftBody) {
-  imm cap = 1. + b.strainLimit;
-  imm n = b.dist.len();
-  mut pass = 0u32;
-  while pass < b.limitPasses {
-    mut k = 0usize;
-    while k < n {
-      imm c = *b.dist[usize.from(*b.limitOrder[k])];
-      k = k + 1usize;
-      imm ia = usize.from(c.a);
-      imm ib = usize.from(c.b);
-      imm wa = *b.invMass[ia];
-      imm wb = *b.invMass[ib];
-      if wa + wb <= 0. { continue; }
-      imm pa = *b.pos[ia];
-      imm pb = *b.pos[ib];
-      imm d = pa - pb;
-      imm len = d.length();
-      imm longest = c.rest * cap;
-      if len > longest and len > 1e-9 {
-        imm s = (len - longest) / (len * (wa + wb));
-        b.pos.set(ia, pa - d * (s * wa));
-        b.pos.set(ib, pb + d * (s * wb));
-      }
-    }
-    pass = pass + 1u32;
-  }
-}
-
-// Long range attachments: a particle farther from its anchor than its tether is
-// brought back by the excess (an inequality: slack costs nothing)
-fn projectTethers(b &mut SoftBody) {
-  mut k = 0usize;
-  imm n = b.tethers.len();
-  while k < n {
-    imm t = *b.tethers[k];
-    imm ip = usize.from(t.particle);
-    imm ia = usize.from(t.anchor);
-    imm wp = *b.invMass[ip];
-    imm wa = *b.invMass[ia];
-    imm w = wp + wa;
-    if w > 0. {
-      imm pp = *b.pos[ip];
-      imm pa = *b.pos[ia];
-      imm d = pp - pa;
-      imm len = d.length();
-      if len > t.maxLength and len > 1e-9 {
-        imm s = (len - t.maxLength) / (len * w);
-        b.pos.set(ip, pp - d * (s * wp));
-        b.pos.set(ia, pa + d * (s * wa));
-      }
-    }
-    k = k + 1usize;
-  }
 }
 
 // The pressure constraint (Muller, Heidelberger, Hennix and Ratcliff 2007,

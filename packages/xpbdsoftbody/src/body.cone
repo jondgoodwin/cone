@@ -15,6 +15,10 @@ pub struct DistanceC {
   // Chentanez 2016, section 3.2: the multiplier over the squared step is the
   // constraint force)
   pub breakForce f32 = -1.;
+  // The force averaged over the last 'SoftBody.breakWindow' seconds, which is what is tested
+  // against the break force (the force of one substep rings: a stiff rope with a heavy load
+  // reads from a tenth to one and a half times the tension from one substep to the next)
+  pub load f32 = 0.;
 }
 
 // A bending constraint across an edge: particles a and b are the shared edge,
@@ -28,7 +32,19 @@ pub struct BendC {
   pub rest f32;
   pub compliance f32;
   pub lambda f32;
+  // The curvature model's weights (SoftBody.useCurvatureBending): the four
+  // numbers K that give zero curvature vector K0 a + K1 b + K2 c + K3 d to a
+  // flat hinge, and the square of the curvature vector's length per radian of
+  // fold, which turns the hinge compliance into the constraint's
+  pub k0 f32 = 0.;
+  pub k1 f32 = 0.;
+  pub k2 f32 = 0.;
+  pub k3 f32 = 0.;
+  pub gain2 f32 = 0.;
 }
+
+pub const BEND_DIHEDRAL = 0u32;
+pub const BEND_CURVATURE = 1u32;
 
 // A curvature constraint on three consecutive particles of a rope: the length of
 // q = p_a - 2 p_b + p_c (the discrete curvature vector, about the segment length
@@ -45,7 +61,8 @@ pub struct CurveC {
 
 // A long range attachment (Kim, Chentanez and Muller 2012): 'particle' may be
 // no farther than 'maxLength' from 'anchor', a pinned or attached particle. It
-// pulls, never pushes.
+// pulls, never pushes. The anchor is a pin and is never moved by it, which is
+// what lets every tether be taken at once.
 pub struct TetherC {
   pub particle u32;
   pub anchor u32;
@@ -251,7 +268,6 @@ pub struct SoftBody {
   pub distBatch List[u32];
   pub bendBatch List[u32];
   pub curveBatch List[u32];
-  pub limitOrder List[u32];    // stretch constraints by their lower particle: the strain limit's sweep
   pub adjStart List[u32];      // triangles around each particle (CSR), for the wind gather
   pub adjList List[u32];
   pub triForce List[Vec3];
@@ -282,6 +298,19 @@ pub struct SoftBody {
   // Bending is soft and slow, so it may be solved on every bendEvery-th substep,
   // with that many substeps' time (multi-rate XPBD): 1 solves it on every one
   pub bendEvery u32 = 1u32;
+  // How bending is solved: BEND_DIHEDRAL, the angle between the two triangles of a
+  // hinge held at its rest angle (any rest shape), or BEND_CURVATURE, the hinge's
+  // curvature vector held at zero (flat rest only; about a sixth of the cost): see
+  // useCurvatureBending
+  pub bendModel u32 = 0u32;
+  // The time over which a stretch constraint's force is averaged before it is compared with its break force
+  pub breakWindow f32 = 0.02;
+  // Successive over-relaxation of the stretch projections (Young 1954, "Iterative methods for
+  // solving partial difference equations of elliptic type"): each correction is taken
+  // 'relaxation' times as large. Above 1 (below 2) it carries a load along a chain of
+  // constraints in fewer passes, so a cloth hung from an edge stretches less for the same
+  // cost; 1 is plain Gauss-Seidel.
+  pub relaxation f32 = 1.;
   pub gridOrigin Vec3 = new Vec3(0., 0., 0.);
   pub gridCell f32 = 1.;
   pub gridNx u32 = 0u32;
@@ -304,7 +333,7 @@ pub struct SoftBody {
       List[Coupled].empty(), List[BodyAnchor].empty(), List[BreakEvent].empty(), List[Vec3].empty(),
       List[Vec3].empty(), List[Vec3].empty(), List[u32].empty(), List[u32].empty(), List[u32].empty(), List[u32].empty(),
       List[u32].empty(), List[u32].empty(), List[u32].empty(), List[u32].empty(), List[u32].empty(),
-      List[u32].empty(), List[Vec3].empty());
+      List[Vec3].empty());
   }
 
   pub fn particleCount(self &) usize {pos.len();}
@@ -362,6 +391,10 @@ pub struct SoftBody {
 
   // Couple a rigid body: its index, for 'Collider.body' and 'attachBody'. The
   // program refreshes bodies[i] before each step and applies its impulses after
+  // Solve bending by the curvature model (cheaper, for cloth that is flat at rest); the number
+  // of hinges that were folded at rest and are now held flat. Call it with the cloth as built.
+  pub fn useCurvatureBending(self &mut) usize {useCurvatureModel(self);}
+
   // Give the body a wind lattice of nx by ny by nz samples, 'cell' metres apart
   // from 'origin', all calm; the program writes windGrid before each step
   pub fn setWindGrid(self &mut, origin Vec3, cell f32, nx u32, ny u32, nz u32) {
@@ -477,7 +510,8 @@ pub struct SoftBody {
     i = 0usize;
     while i < other.bend.len() {
       imm c = *other.bend[i];
-      bend.push(new BendC(c.a + base, c.b + base, c.c + base, c.d + base, c.rest, c.compliance, 0.));
+      bend.push(new BendC(c.a + base, c.b + base, c.c + base, c.d + base, c.rest, c.compliance, 0.,
+        c.k0, c.k1, c.k2, c.k3, c.gain2));
       i = i + 1usize;
     }
     i = 0usize;

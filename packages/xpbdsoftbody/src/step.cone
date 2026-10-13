@@ -76,9 +76,10 @@ fn viewOf(b &mut SoftBody) StepView {
   imm dist = b.dist.viewMut() as *DistanceC;
   imm bend = b.bend.viewMut() as *BendC;
   imm curves = b.curves.viewMut() as *CurveC;
+  imm tethers = b.tethers.viewMut() as *TetherC;
   imm grid = b.windGrid.viewMut() as *Vec3;
-  new StepView(pos, prev, vel, force, inv, tris, triForce, adjStart, adj, dist, bend, curves,
-    b.stepH, b.stepH, true, 1., b.gravity, b.stepWind, false, b.airDensity, b.skinCoeff, b.dragCoeff, b.liftCoeff,
+  new StepView(pos, prev, vel, force, inv, tris, triForce, adjStart, adj, dist, bend, curves, tethers,
+    b.stepH, b.stepH, true, 1., b.relaxation, 1. + b.strainLimit, b.gravity, b.stepWind, false, b.airDensity, b.skinCoeff, b.dragCoeff, b.liftCoeff,
     grid, b.gridOrigin, 1. / b.gridCell, if b.windGrid.len() > 0usize {b.gridNx;} else {0u32;}, b.gridNy, b.gridNz);
 }
 
@@ -122,6 +123,20 @@ fn runBatches(workers &mut Workers, parallel bool, v &StepView, kind u32, starts
       if parallel { workers.run(v, kind, lo, hi); } else { runRegion(v, kind, lo, hi); }
     }
     c = c + 1usize;
+  }
+}
+
+// Strain limiting (Provot 1995, "Deformation constraints in a mass-spring model to describe rigid
+// cloth behavior"): each edge stretched past rest * (1 + limit) is brought back to that length,
+// shared by inverse mass; 'passes' sweeps of the colour batches. A few passes cost a fraction of
+// the solve and bound the stretch that a small number of Gauss-Seidel iterations leaves in a loaded
+// cloth or rope (a correction travels a batch's neighbours in a pass, so a long chain needs
+// passes in proportion to the load's reach).
+fn limitBatches(workers &mut Workers, parallel bool, v &StepView, passes u32, starts &Array[u32]) {
+  mut p = 0u32;
+  while p < passes {
+    runBatches(workers, parallel, v, R_LIMIT, starts);
+    p = p + 1u32;
   }
 }
 
@@ -204,12 +219,15 @@ fn finishBodyProxies(b &mut SoftBody, h f32) {
 // Remove every stretch constraint pulled past its break force this substep
 fn checkBreaks(b &mut SoftBody, h f32) {
   imm inv = 1. / (h * h);
+  imm blend = h / (b.breakWindow + h);
   mut k = 0usize;
   while k < b.dist.len() {
     imm c = *b.dist[k];
     imm limit = c.breakForce;
-    if limit >= 0. and fabs(c.lambda) * inv > limit {
-      b.breaks.push(new BreakEvent(BREAK_DISTANCE, c.a, c.b, fabs(c.lambda) * inv));
+    imm load = c.load + (fabs(c.lambda) * inv - c.load) * blend;
+    b.dist[k].load = load;
+    if limit >= 0. and load > limit {
+      b.breaks.push(new BreakEvent(BREAK_DISTANCE, c.a, c.b, load));
       b.dist.swap(k, b.dist.len() - 1usize);
       b.dist.truncate(b.dist.len() - 1usize);
       dropAcross(b, c.a, c.b);
@@ -320,15 +338,18 @@ pub fn substep(b &mut SoftBody, workers &mut Workers, field &<fn(p Vec3) Vec4, h
     v.first = it == 0u32;
     if anyContact { collideAll(b, field); }
     projectPressure(b, h, &mut grad);
-    if bendNow and b.bend.len() > 0usize { runBatches(workers, parallel, &v, R_BEND, b.bendBatch.view()); }
+    if bendNow and b.bend.len() > 0usize {
+      runBatches(workers, parallel, &v, if b.bendModel == BEND_CURVATURE {R_BEND_CURV;} else {R_BEND;}, b.bendBatch.view());
+    }
     if b.curves.len() > 0usize { runBatches(workers, parallel, &v, R_CURVE, b.curveBatch.view()); }
-    projectTethers(b);
+    if b.tethers.len() > 0usize { workers.run(&v, R_TETHER, 0usize, b.tethers.len()); }
     runBatches(workers, parallel, &v, R_DIST, b.distBatch.view());
     it = it + 1u32;
   }
-  if b.strainLimit >= 0. { limitStrain(b); }
+  imm limiting = b.strainLimit >= 0.;
+  if limiting { limitBatches(workers, parallel, &v, b.limitPasses, b.distBatch.view()); }
   if anyContact { collideAll(b, field); }
-  if b.strainLimit >= 0. and anyContact { limitStrain(b); }
+  if limiting and anyContact { limitBatches(workers, parallel, &v, b.limitPasses, b.distBatch.view()); }
   if b.selfCollide { selfCollide(b); }
   workers.run(&v, R_VELOCITY, 0usize, n);
   if b.bodyAnchors.len() > 0usize { finishBodyProxies(b, h); }
