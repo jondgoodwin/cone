@@ -1,0 +1,131 @@
+// A generic's type arguments are read off where its value goes, wherever the
+// value is built, not only in the outermost call (generic_infer_expected):
+//
+//   - a construction given to a construction takes the type its place has:
+//     'Some(None)' wanted as an 'Option[Option[i64]]' is a 'Some' of an
+//     'Option[i64]' that is none, and so deep as it goes ('Some(Some(None))');
+//   - a generic function's argument that cannot say its own type ('None') waits
+//     for the arguments that can, and takes the type its parameter then has:
+//     'id2(None, 5)' is 'id2[i32]', as the 5 says, and the value goes to an
+//     i64 when that says so: 'imm n i64 = id2(None, 5)';
+//   - 'None' as the receiver of '==' or '!=' is typed as the other side is.
+//
+// One mechanism for every generic, not a rule about 'None': a variant of the
+// program's own enum is read the same way.
+//
+// Each printed value was checked by hand against the source.
+
+mod generic_infer_nested;
+
+import stdio use *;
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+// The payload of an option, or -1 for none
+fn orMinus(o Option[i64]) i64 {
+  match o {
+    case imm n Some { n; }
+    else { -1; }
+  }
+}
+
+// How deep an option of options goes before it is none: 0 for none, 1 for a
+// some holding none, 2 for a some holding a some holding the number
+fn depth(o Option[Option[i64]]) i64 {
+  match o {
+    case imm inner Some {
+      match inner {
+        case imm n Some { n + 1000; }
+        else { 1; }
+      }
+    }
+    else { 0; }
+  }
+}
+
+fn id2[T](a Option[T], b T) T { b; }
+fn id3[T](b T, a Option[T]) T { b; }
+fn wrap[T](a T) Option[T] { Some(a); }
+fn pick[T](a Option[T], b Option[T]) Option[T] { b; }
+
+enum Tree[T] {
+  Leaf;
+  Node(T);
+}
+
+fn treeDepth(t Tree[Tree[i64]]) i64 {
+  match t {
+    case imm inner Node {
+      match inner {
+        case imm n Node { n + 100; }
+        else { 10; }
+      }
+    }
+    else { 1; }
+  }
+}
+
+fn nested() {
+  imm a Option[Option[i64]] = Some(None);
+  show("some none", depth(a));
+  imm b Option[Option[i64]] = Some(Some(5));
+  show("some some", depth(b));
+  imm c Option[Option[i64]] = None;
+  show("none", depth(c));
+  imm d Option[Option[Option[i64]]] = Some(Some(None));
+  show("deep", if d == None {0;} else {1;});
+  show("through", depth(Some(None)));
+  imm e Result[Option[i64], i32] = Ok(None);
+  match e {
+    case imm o Ok { show("result ok none", orMinus(o)); }
+    else { show("result error", 0); }
+  }
+  imm t Tree[Tree[i64]] = Tree.Node(Tree.Leaf);
+  show("own enum", treeDepth(t));
+}
+
+fn viaFunction() {
+  imm a Option[Option[i64]] = wrap(None);
+  show("wrap none", depth(a));
+  imm b Option[Option[i64]] = wrap(Some(7));
+  show("wrap some", depth(b));
+}
+
+fn lastValue() Option[Option[i64]] {
+  Some(None);
+}
+
+fn laterArguments() {
+  imm i = id2(None, 5);
+  show("later", i64.from(i));
+  imm j i64 = id2(None, 5);
+  show("later wide", j * 10000000000);
+  imm k = id3(6, None);
+  show("earlier", i64.from(k));
+  imm x Option[i64] = Some(2);
+  show("later typed", orMinus(id2(None, x)));
+  imm m Option[i64] = pick(None, Some(3));
+  show("both", orMinus(m));
+}
+
+fn comparisons() {
+  imm a Option[i64] = None;
+  imm b Option[i64] = Some(6);
+  show("none eq none", if None == a {1;} else {0;});
+  show("none eq some", if None == b {1;} else {0;});
+  show("none ne none", if None != a {1;} else {0;});
+  show("none ne some", if None != b {1;} else {0;});
+}
+
+fn main() {
+  nested();
+  viaFunction();
+  show("last", depth(lastValue()));
+  laterArguments();
+  comparisons();
+}
