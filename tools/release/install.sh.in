@@ -1,0 +1,90 @@
+#!/bin/sh
+# Cone for Linux x86-64: download, verify and install the compiler and Congo.
+#
+#     curl -fsSL https://cone.jondgoodwin.com/install.sh | sh
+#
+# This script belongs to one release (commit @HASH@): it downloads that
+# release's tarball and refuses it unless its SHA-256 is the one written below.
+# It installs for the current user only: the files go in $CONE_HOME and conec
+# and congo are linked into $CONE_BIN. It installs no package and needs no root.
+#
+# Settings, as environment variables:
+#     CONE_HOME     the install folder (default ~/.local/share/cone)
+#     CONE_BIN      where the two links go (default ~/.local/bin)
+#     CONE_ARCHIVE  a local tarball (or another URL) to install instead of downloading;
+#                   its SHA-256 must still match
+
+set -eu
+
+release='@HASH8@'
+url='@BASE@/@LINUX_FILE@'
+sha256='@LINUX_SHA256@'
+
+say() { printf 'cone: %s\n' "$*"; }
+die() { printf 'cone: error: %s\n' "$*" >&2; exit 1; }
+
+[ "$(uname -s)" = Linux ] || die "this is the Linux installer; $(uname -s) is not supported"
+[ "$(uname -m)" = x86_64 ] || die "Cone is built for x86-64 only; this machine is $(uname -m)"
+
+dest=${CONE_HOME:-$HOME/.local/share/cone}
+bindir=${CONE_BIN:-$HOME/.local/bin}
+source=${CONE_ARCHIVE:-$url}
+
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT INT TERM
+
+case $source in
+  http://*|https://*)
+    say "downloading $source"
+    if command -v curl >/dev/null 2>&1; then
+      curl -fsSL "$source" -o "$scratch/cone.tar.gz" || die "download failed"
+    elif command -v wget >/dev/null 2>&1; then
+      wget -q "$source" -O "$scratch/cone.tar.gz" || die "download failed"
+    else
+      die "neither curl nor wget is installed"
+    fi ;;
+  *)
+    say "using $source"
+    cp "$source" "$scratch/cone.tar.gz" ;;
+esac
+
+actual=$(sha256sum "$scratch/cone.tar.gz" | cut -d' ' -f1)
+[ "$actual" = "$sha256" ] || die "the download is not the release's file (SHA-256 $actual, expected $sha256). Nothing was installed."
+say "SHA-256 verified"
+
+mkdir "$scratch/unpacked"
+tar -xzf "$scratch/cone.tar.gz" -C "$scratch/unpacked"
+[ -x "$scratch/unpacked/cone/bin/conec" ] || die "the archive holds no cone/bin/conec"
+
+mkdir -p "$(dirname "$dest")" "$bindir"
+if [ -e "$dest" ]; then
+  say "replacing the install in $dest"
+  rm -rf "$dest.old"
+  mv "$dest" "$dest.old"
+fi
+mv "$scratch/unpacked/cone" "$dest"
+rm -rf "$dest.old"
+ln -sf "$dest/bin/conec" "$bindir/conec"
+ln -sf "$dest/bin/congo" "$bindir/congo"
+say "installed Cone $release in $dest (conec and congo linked into $bindir)"
+
+case ":$PATH:" in
+  *":$bindir:"*) ;;
+  *) say "add $bindir to your PATH to type conec and congo:  export PATH=\"$bindir:\$PATH\"" ;;
+esac
+
+# What Congo needs and this archive does not carry
+missing=
+command -v cc >/dev/null 2>&1 || command -v gcc >/dev/null 2>&1 || missing="$missing build-essential"
+if command -v python3 >/dev/null 2>&1; then
+  python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' \
+    || say "python3 is older than 3.11, which Congo needs; Ubuntu 24.04 or later has it"
+else
+  missing="$missing python3"
+fi
+if [ -n "$missing" ]; then
+  say "missing prerequisites; install them with:"
+  say "    sudo apt install$missing"
+fi
+say "programs using the tls package also need:  sudo apt install libssl-dev"
+say "try it:   congo new hello && cd hello && congo run"
