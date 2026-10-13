@@ -1,0 +1,125 @@
+// How cover thins with distance, which types a type's rules need, and the far
+// field the cover adds up to, each against a value worked out by hand. Only a
+// failure prints.
+//
+// - The keep: one ring over a range of 60 with its fade from 40 keeps all of
+//   it to 40, half at 50 (the middle of the smoothstep) and none from 60. With
+//   rings ending at 10 and 30 (a 15% half-width each side), ring 0 and ring 1 keep
+//   exactly 1 - k and k at the edge: they cross-fade with nothing lost or doubled
+//   (the two shares add to 1 at every distance across the edge).
+// - The need mask: the types whose scores a type's SHARE interactions need,
+//   transitively (a chain 2 -> 1 -> 0 needs all three; an unrelated type does not).
+// - The lattice: a ring's cell is the previous one times ringStep; the square of
+//   cells it needs reaches the ring's span plus the cluster's reach.
+// - The far field: ground colour G where nothing grows; where grass of farWeight 0.9
+//   scores 1, G + (T - G) x 0.9 with T = (0.4 base + 0.6 tip) x 0.85, linear, stored as
+//   sRGB bytes (within a byte); the path's colour on the path; the ground dimmed by
+//   1 - 0.55 canopy under trees; an alpha of 255.
+
+mod distance;
+
+import testing use *;
+import libc;
+import collections use *;
+import geomath use *;
+import groundcover use *;
+
+fn lin(b &u8) f64 { f64.from(srgbToLinear(f32.from(*b) / 255.)); }
+
+fn main() i32 {
+  // ---- The keep ----
+  mut one = CoverType.grass("one");
+  one.rings = 1u32;
+  one.range = 60.;
+  one.fadeStart = 40.;
+  expectFloat(f64.from(ringKeep(&one, 0u32, 20.)), 1d, 0.00001d, "keep: all of it inside the fade start");
+  expectFloat(f64.from(ringKeep(&one, 0u32, 50.)), 0.5d, 0.00001d, "keep: half halfway through the fade");
+  expectFloat(f64.from(ringKeep(&one, 0u32, 60.)), 0d, 0.00001d, "keep: none at the range");
+  expectFloat(f64.from(ringKeep(&one, 0u32, 75.)), 0d, 0.00001d, "keep: none beyond it");
+  expectFloat(f64.from(ringKeep(&one, 0u32, 45.)), 0.84375d, 0.00001d, "keep: smoothstep(0.25) away from the middle: 1 - 0.15625");
+  mut three = CoverType.grass("three");
+  three.rings = 3u32;
+  three.ringEnd = [10., 30., 80.];
+  three.range = 80.;
+  three.fadeStart = 60.;
+  mut d = 7f32;
+  mut worst = 0f64;
+  while d < 14. {
+    imm sum = f64.from(ringKeep(&three, 0u32, d) + ringKeep(&three, 1u32, d));
+    imm gap = libc.fabs(sum - 1d);
+    if gap > worst { worst = gap; }
+    d = d + 0.05;
+  }
+  expectFloat(worst, 0d, 0.00001d, "rings 0 and 1 add to 1 across their edge: nothing lost or doubled");
+  expectFloat(f64.from(ringKeep(&three, 0u32, 10.)), 0.5d, 0.00001d, "ring 0 keeps half at its edge");
+  expectFloat(f64.from(ringKeep(&three, 1u32, 10.)), 0.5d, 0.00001d, "and ring 1 the other half");
+  expectFloat(f64.from(ringKeep(&three, 1u32, 20.)), 1d, 0.00001d, "ring 1 keeps all in the middle of its band");
+
+  // ---- The lattice ----
+  expectFloat(f64.from(ringCell(&three, 0u32)), f64.from(three.cellSize()), 0.000001d, "ring 0's cell is the type's");
+  expectFloat(f64.from(ringCell(&three, 2u32)), f64.from(three.cellSize()) * 1.8d * 1.8d, 0.0001d, "ring 2's cell is ringStep squared times it");
+  mut near = 0f32;
+  mut far = 0f32;
+  ringSpan(&three, 1u32, &mut near, &mut far);
+  expectFloat(f64.from(near), 8.5d, 0.0001d, "ring 1 starts where ring 0's fade starts: 10 - 1.5");
+  expectFloat(f64.from(far), 34.5d, 0.0001d, "and ends where its own fade ends: 30 + 4.5");
+  imm sq = ringSquare(&three, 0u32, 100., 50.);
+  imm cell = three.cellSize();
+  expect(f64.from(f32.from(sq.across) * cell) >= 2d * f64.from(11.5f32 + cell * 1.5), "the square covers the ring's far edge each way");
+  expect(f32.from(sq.x0) * cell < 100. - 11.5, "and starts before it");
+
+  // ---- The need mask ----
+  mut chain = List[CoverType].empty();
+  chain.push(CoverType.grass("a"));
+  mut b1 = CoverType.grass("b");
+  b1.avoid(0u32, SHARE, 0., 0.5);
+  chain.push(b1);
+  mut c1 = CoverType.grass("c");
+  c1.avoid(1u32, SHARE, 0., 0.5);
+  chain.push(c1);
+  chain.push(CoverType.grass("d"));
+  expectUInt(u64.from(needMask(&chain, 0usize)), 1u64, "a needs only itself");
+  expectUInt(u64.from(needMask(&chain, 1usize)), 3u64, "b needs a");
+  expectUInt(u64.from(needMask(&chain, 2usize)), 7u64, "c needs b and, through it, a");
+  expectUInt(u64.from(needMask(&chain, 3usize)), 8u64, "d needs only itself");
+
+  // ---- The far field ----
+  mut maps = GroundMaps.create(0., 0., 64., 32u32);
+  mut types = List[CoverType].empty();
+  mut grass = CoverType.grass("grass");
+  grass.baseColor = new Color(0.04, 0.08, 0.02, 1.);
+  grass.tipColor = new Color(0.1, 0.3, 0.05, 1.);
+  grass.dryAmount = 0.;
+  grass.farWeight = 0.9;
+  grass.path = Window.rising(0., 0.5);
+  types.push(grass);
+  // the left half of the map is a path, a quarter of the right half is under trees
+  mut j = 0u32;
+  while j < 32u32 {
+    mut i = 0u32;
+    while i < 32u32 {
+      if i < 8u32 { maps.set(SIGNAL_PATH, i, j, 0.); }
+      if i >= 24u32 { maps.set(SIGNAL_CANOPY, i, j, 1.); }
+      i = i + 1u32;
+    }
+    j = j + 1u32;
+  }
+  bakeFarField(&types, &mut maps, new Color(0.2, 0.1, 0.05, 1.), new Color(0.4, 0.3, 0.2, 1.), 0.5);
+  expectUInt(u64.from(maps.farField.len()), 32u64 * 32u64 * 4u64, "RGBA8, 32 x 32");
+  // texel (16, 16): open grass
+  imm at = (16usize * 32usize + 16usize) * 4usize;
+  expectFloat(lin(maps.farField[at]), 0.2d + (0.0646d - 0.2d) * 0.9d, 0.004d, "open ground under grass: red");
+  expectFloat(lin(maps.farField[at + 1usize]), 0.1d + (0.1802d - 0.1d) * 0.9d, 0.004d, "green");
+  expectFloat(lin(maps.farField[at + 2usize]), 0.05d + (0.0323d - 0.05d) * 0.9d, 0.004d, "blue");
+  expectUInt(u64.from(*maps.farField[at + 3usize]), 255u64, "opaque");
+  // texel (3, 16): the path, no grass (its window is 0 there)
+  imm onPath = (16usize * 32usize + 3usize) * 4usize;
+  expectFloat(lin(maps.farField[onPath]), 0.4d, 0.004d, "the path's own colour: red");
+  expectFloat(lin(maps.farField[onPath + 1usize]), 0.3d, 0.004d, "green");
+  // texel (28, 16): under the canopy, grass still scores 1 (no canopy window), over ground dimmed to 0.45
+  imm shaded = (16usize * 32usize + 28usize) * 4usize;
+  expectFloat(lin(maps.farField[shaded]), 0.2d * 0.45d + (0.0646d - 0.2d * 0.45d) * 0.9d, 0.004d, "under trees: the ground dimmed to 0.45 before the grass");
+  imm lookup = maps.farColorAt(32.25, 32.25);
+  expectFloat(f64.from(lookup.x), 0.2d + (0.0646d - 0.2d) * 0.9d, 0.006d, "farColorAt reads it back linear");
+  done();
+}

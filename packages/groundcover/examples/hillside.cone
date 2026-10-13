@@ -1,0 +1,1139 @@
+// hillside: a meadow, a woodland edge, a stream bank and a footpath on a 240 m
+// hillside, covered by the groundcover package's rules and nothing else. No
+// window: shots are drawn into a 1600 x 900 target, read back and saved as BMP
+// files, and the frame's cost is timed with GPU timestamps.
+//
+//   congo run packages/groundcover/examples/hillside.cone -- --shots OUT_PREFIX
+//   congo run packages/groundcover/examples/hillside.cone -- --soak 600
+//
+// WHAT IS HERE. Every number of the world is in this file; the library holds
+// the rules and the renderer.
+// - The ground: heights from noise on a rising slope, a stream carved across the
+//   lower part (a valley mask with the water at its level), a footpath winding up
+//   the hill, a woodland edge in the upper left where tree crowns darken the
+//   ground, and boulders beside the water.
+// - Twelve cover types, in the order their interactions need: shrubs, pebbles
+//   and fallen branches (the objects other cover keeps clear of), meadow grass
+//   and tall tussocks, three kinds of wildflower in drifts, ferns, the mud of the
+//   stream bank, moss, and leaf litter. They are data: a type is a CoverType,
+//   and what makes ferns grow under the trees and not on the meadow is a window
+//   on the canopy signal, not code.
+// - The scene it stands in (the terrain textured by the far-field colour, the
+//   water, the trees and boulders) is plain render and the other 3-D packages'
+//   meshes, there to give the cover something to stand on and to occlude it.
+//
+// '--shots PREFIX' writes the shots (PREFIX-meadow.bmp and so on), and '--soak N'
+// times N frames of the eye-level view, with and without the cover, and of the
+// aerial view. GPU_POWER_PREFERENCE=low-power picks an integrated GPU where there
+// are two. It exits 0 only if no Vulkan call failed and the validation layer
+// (when the SDK is there) said nothing.
+
+mod hillside;
+
+import stdio use *;
+import libc;
+import sdl;
+import collections use *;
+import geomath use *;
+import mesh;
+import gpu use *;
+import render use *;
+import path use Path;
+import weberpenn use grow, redMaple, mapleFoliage, foliageMesh, branchMesh, TubeParams;
+import leafrosette use fernMesh, FernParams;
+import noiserock use rockMesh, RockParams;
+import noise use toUnit, pcg4d, UVec4;
+import groundcover use *;
+
+const W = 1600u32;
+const H = 900u32;
+const SIZE f32 = 240.;
+const RES = 480u32;
+
+// ---- Arguments ----
+
+fn cstrEquals(a *u8, b &Array[u8]) bool {
+  mut i = 0usize;
+  while i < b.len {
+    if *(a + i) != b[i] { return false; }
+    i = i + 1usize;
+  }
+  *(a + b.len) == 0u8;
+}
+
+fn parseCount(s *u8) i32 {
+  if (s as usize) == 0usize or *s == 0u8 { return -1; }
+  mut n = 0;
+  mut i = 0usize;
+  while *(s + i) != 0u8 {
+    imm c = *(s + i);
+    if c < '0' or c > '9' { return -1; }
+    n = n * 10 + i32.from(c - '0');
+    i = i + 1usize;
+  }
+  n;
+}
+
+// ---- The ground ----
+
+fn smooth(e0 f32, e1 f32, x f32) f32 { smoothstep(e0, e1, x); }
+
+// The hillside before the stream: rising to the north (+z), rolling
+fn terrain(x f32, z f32) f32 {
+  0.16 * z + 10. * (fbm2(x / 70., z / 70., 3u32) - 0.5) + 2.4 * (fbm2(x / 20., z / 20., 4u32) - 0.5)
+    + 0.6 * (fbm2(x / 6., z / 6., 5u32) - 0.5);
+}
+
+// The stream's centre line z at x
+fn streamZ(x f32) f32 { 70. + 14. * sin(x / 38.) + 0.06 * x; }
+
+fn streamLine() List[Vec2] {
+  mut p = List[Vec2].empty();
+  mut x = 0f32;
+  while x <= 240.01 {
+    p.push(new Vec2(x, streamZ(x)));
+    x = x + 8.;
+  }
+  p;
+}
+
+fn pathLine() List[Vec2] {
+  mut p = List[Vec2].empty();
+  p.push(new Vec2(5., 95.));
+  p.push(new Vec2(35., 100.));
+  p.push(new Vec2(65., 104.));
+  p.push(new Vec2(90., 128.));
+  p.push(new Vec2(100., 155.));
+  p.push(new Vec2(128., 172.));
+  p.push(new Vec2(150., 198.));
+  p.push(new Vec2(170., 238.));
+  p;
+}
+
+// A tree standing on the hill
+struct Tree {
+  x f32;
+  z f32;
+  scale f32;
+  yaw f32;
+  variant usize;
+}
+
+fn woodland(x f32, z f32) f32 {
+  imm edge = 100. + 22. * (fbm2(x / 50., z / 50., 11u32) - 0.5) * 2.;
+  (1. - smooth(78., 108., x + (edge - 100.))) * smooth(112., 140., z + 10. * (fbm2(x / 30., z / 30., 12u32) - 0.5));
+}
+
+struct World {
+  maps GroundMaps;
+  trees List[Tree];
+  boulders List[Vec3];
+}
+
+fn buildWorld() World {
+  mut maps = GroundMaps.create(0., 0., SIZE, RES);
+  // the stream and the path, as distances (the stream's from its middle line for now)
+  imm stream = streamLine();
+  maps.addPolylineDistance(SIGNAL_WATER, &stream, 0.);
+  imm footpath = pathLine();
+  maps.addPolylineDistance(SIGNAL_PATH, &footpath, 1.1);
+  mut j = 0u32;
+  while j < RES {
+    mut i = 0u32;
+    while i < RES {
+      imm x = maps.worldX(i);
+      imm z = maps.worldZ(j);
+      imm d = maps.at(SIGNAL_WATER, i, j);
+      imm base = terrain(x, z);
+      // a flat-bottomed valley at the water's level, 3.8 m from the middle, rising to the hill by 10 m
+      imm level = terrain(x, streamZ(x)) - 1.;
+      imm bed = level - 0.5 * (1. - smooth(0., 3.8, d));
+      imm valley = 1. - smooth(3.8, 10., d);
+      maps.set(SIGNAL_HEIGHT, i, j, base + (bed - base) * valley);
+      // the water signal is the distance from the water's edge
+      maps.set(SIGNAL_WATER, i, j, fmax(d - 3.8, 0.));
+      i = i + 1u32;
+    }
+    j = j + 1u32;
+  }
+  maps.deriveSlope();
+  // trees: a jittered grid thinned by the woodland mask, a few in the meadow
+  mut trees = List[Tree].empty();
+  mut gz = 0;
+  while gz < 24 {
+    mut gx = 0;
+    while gx < 24 {
+      imm h = pcg4dOf(gx, gz);
+      imm x = (f32.from(gx) + toUnit(h.x)) * 10.;
+      imm z = (f32.from(gz) + toUnit(h.y)) * 10.;
+      imm w = woodland(x, z);
+      imm keep = w * 0.92 + 0.012;
+      if toUnit(h.z) < keep and maps.sample(SIGNAL_WATER, x, z) > 6. and maps.sample(SIGNAL_PATH, x, z) > 3.5 {
+        trees.push(new Tree(x, z, 0.85 + 0.35 * toUnit(h.w), 6.283 * toUnit(h.x ^ h.y), usize.from(h.w % 3u32)));
+      }
+      gx = gx + 1;
+    }
+    gz = gz + 1;
+  }
+  mut t = 0usize;
+  while t < trees.len() {
+    imm tr = trees[t];
+    maps.addCrown(tr.x, tr.z, 7.5 * tr.scale, 1.);
+    maps.addObject(tr.x, tr.z, 0.45 * tr.scale);
+    t = t + 1usize;
+  }
+  // boulders beside the water
+  mut boulders = List[Vec3].empty();
+  boulders.push(new Vec3(52., 0., streamZ(52.) + 6.));
+  boulders.push(new Vec3(54.5, 0., streamZ(54.5) + 7.5));
+  boulders.push(new Vec3(118., 0., streamZ(118.) - 5.5));
+  boulders.push(new Vec3(165., 0., streamZ(165.) + 6.));
+  boulders.push(new Vec3(96., 0., 118.));
+  mut b = 0usize;
+  while b < boulders.len() {
+    imm p = boulders[b];
+    maps.addObject(p.x, p.z, 1.0);
+    b = b + 1usize;
+  }
+  maps.deriveMoisture(0.28, 14., 0.35);
+  j = 0u32;
+  while j < RES {
+    mut i = 0u32;
+    while i < RES {
+      imm m = maps.at(SIGNAL_MOISTURE, i, j) + 0.3 * (fbm2(maps.worldX(i) / 30., maps.worldZ(j) / 30., 21u32) - 0.5);
+      maps.set(SIGNAL_MOISTURE, i, j, fclamp(m, 0., 1.));
+      i = i + 1u32;
+    }
+    j = j + 1u32;
+  }
+  maps.deriveExposure(sunDirection(), 90.);
+  maps.shadeByCanopy(0.65);
+  new World(maps, trees, boulders);
+}
+
+fn pcg4dOf(a i32, b i32) UVec4 { pcg4d(new UVec4(a as u32, b as u32, 77u32, 5u32)); }
+
+// Towards the sun: 40 degrees up, from the south-west
+fn sunDirection() Vec3 { new Vec3(-0.5, 0.64, -0.58).normalize(); }
+
+// ---- The cover types ----
+
+fn rgb(r f32, g f32, b f32) Color { new Color(r, g, b, 1.); }
+
+// Twelve types: objects first (others keep clear of them), then what grows between
+fn coverTypes(fern i32, stone i32, branch i32, shrub i32, shrubFar i32) List[CoverType] {
+  mut types = List[CoverType].empty();
+
+  // 0: shrubs, scattered on the gentle ground where the woodland thins
+  mut shrubs = CoverType.meshKind("shrub");
+  shrubs.seed = 11u32;
+  shrubs.density = 0.006;
+  shrubs.cellFactor = 0.9;
+  shrubs.slope = Window.atMost(22., 6.);
+  shrubs.canopy = Window.atMost(0.7, 0.3);
+  shrubs.water = Window.atLeast(2.5, 1.);
+  shrubs.path = Window.atLeast(2., 1.);
+  shrubs.object = Window.atLeast(1.5, 1.);
+  shrubs.patchScale = 40.;
+  shrubs.patchThreshold = 0.45;
+  shrubs.patchFloor = 0.15;
+  shrubs.sizeMin = 0.7;
+  shrubs.sizeMax = 1.2;
+  shrubs.widthMin = 0.8;
+  shrubs.widthMax = 1.3;
+  shrubs.sink = 0.05;
+  shrubs.wind = 0.4;
+  shrubs.baseColor = rgb(0.045, 0.12, 0.03);
+  shrubs.tipColor = rgb(0.16, 0.32, 0.07);
+  shrubs.altColor = rgb(0.25, 0.3, 0.06);
+  shrubs.variation = 0.5;
+  shrubs.translucency = 0.5;
+  shrubs.meshes = [shrub, shrubFar, shrubFar];
+  shrubs.rings = 2u32;
+  shrubs.ringEnd = [20., 150., 150.];
+  shrubs.range = 150.;
+  shrubs.fadeStart = 130.;
+  shrubs.maxInstances = 2000u32;
+  types.push(shrubs);
+
+  // 1: pebbles and stones, along the water and the path
+  mut stones = CoverType.meshKind("stones");
+  stones.seed = 12u32;
+  stones.density = 0.18;
+  stones.cellFactor = 0.5;
+  stones.perCluster = 4u32;
+  stones.clusterRadius = 0.5;
+  stones.water = Window.atMost(10., 6.);
+  stones.slope = Window.atMost(35., 10.);
+  stones.sizeMin = 0.35;
+  stones.sizeMax = 0.9;
+  stones.widthMin = 0.35;
+  stones.widthMax = 1.0;
+  stones.lean = 0.;
+  stones.sink = 0.25;
+  stones.wind = 0.;
+  stones.baseColor = rgb(0.16, 0.15, 0.13);
+  stones.tipColor = rgb(0.24, 0.22, 0.19);
+  stones.altColor = rgb(0.1, 0.1, 0.1);
+  stones.variation = 0.6;
+  stones.albedoNoise = 0.45;
+  stones.meshes = [stone, stone, stone];
+  stones.range = 45.;
+  stones.fadeStart = 32.;
+  stones.maxInstances = 6000u32;
+  types.push(stones);
+
+  // 2: fallen branches under the trees
+  mut branches = CoverType.meshKind("branches");
+  branches.seed = 13u32;
+  branches.density = 0.02;
+  branches.canopy = Window.atLeast(0.35, 0.25);
+  branches.sizeMin = 0.7;
+  branches.sizeMax = 1.5;
+  branches.widthMin = 0.8;
+  branches.widthMax = 1.3;
+  branches.lean = 0.;
+  branches.sink = 0.1;
+  branches.wind = 0.;
+  branches.baseColor = rgb(0.06, 0.04, 0.025);
+  branches.tipColor = rgb(0.1, 0.07, 0.04);
+  branches.altColor = rgb(0.16, 0.13, 0.1);
+  branches.variation = 0.4;
+  branches.albedoNoise = 0.35;
+  branches.meshes = [branch, branch, branch];
+  branches.range = 45.;
+  branches.fadeStart = 32.;
+  branches.maxInstances = 3000u32;
+  types.push(branches);
+
+  // 3: the meadow
+  mut meadow = CoverType.grass("meadow");
+  meadow.seed = 21u32;
+  meadow.density = 70.;
+  meadow.cellFactor = 0.5;
+  meadow.slope = Window.atMost(38., 10.);
+  meadow.canopy = Window.atMost(0.35, 0.4);
+  meadow.exposure = Window.atLeast(0.15, 0.3);
+  meadow.path = Window.rising(0.05, 0.6);
+  meadow.water = Window.rising(0.05, 0.5);
+  meadow.object = Window.rising(0., 0.4);
+  meadow.patchScale = 16.;
+  meadow.patchThreshold = 0.42;
+  meadow.patchSoftness = 0.22;
+  meadow.patchFloor = 0.5;
+  meadow.sizeMin = 0.28;
+  meadow.sizeMax = 0.55;
+  meadow.sizeNoise = 0.35;
+  meadow.widthMin = 0.011;
+  meadow.widthMax = 0.018;
+  meadow.lean = 0.35;
+  meadow.bend = 0.6;
+  meadow.bladesPerTuft = 10u32;
+  meadow.baseColor = rgb(0.018, 0.06, 0.01);
+  meadow.tipColor = rgb(0.12, 0.30, 0.04);
+  meadow.altColor = rgb(0.26, 0.27, 0.05);
+  meadow.variation = 0.55;
+  meadow.dryColor = rgb(0.34, 0.28, 0.09);
+  meadow.dryAmount = 0.45;
+  meadow.translucency = 0.6;
+  meadow.wind = 1.;
+  meadow.rings = 3u32;
+  meadow.ringEnd = [9., 26., 85.];
+  meadow.ringStep = 1.9;
+  meadow.range = 85.;
+  meadow.fadeStart = 60.;
+  meadow.maxInstances = 90000u32;
+  meadow.farWeight = 0.95;
+  meadow.avoid(0u32, NEAR, 1.4, 0.8);
+  meadow.avoid(1u32, NEAR, 0.35, 0.9);
+  meadow.avoid(2u32, NEAR, 0.7, 0.7);
+  types.push(meadow);
+
+  // 4: tall tussocks by the water and in the damp
+  mut tussock = CoverType.grass("tussock");
+  tussock.seed = 22u32;
+  tussock.density = 3.;
+  tussock.cellFactor = 0.5;
+  tussock.moisture = Window.atLeast(0.55, 0.2);
+  tussock.slope = Window.atMost(30., 8.);
+  tussock.canopy = Window.atMost(0.4, 0.3);
+  tussock.water = Window.rising(0.1, 0.7);
+  tussock.path = Window.rising(0.3, 1.);
+  tussock.patchScale = 9.;
+  tussock.patchThreshold = 0.4;
+  tussock.patchFloor = 0.3;
+  tussock.sizeMin = 0.7;
+  tussock.sizeMax = 1.15;
+  tussock.sizeNoise = 0.25;
+  tussock.widthMin = 0.016;
+  tussock.widthMax = 0.024;
+  tussock.lean = 0.5;
+  tussock.bend = 0.9;
+  tussock.bladesPerTuft = 16u32;
+  tussock.baseColor = rgb(0.04, 0.1, 0.02);
+  tussock.tipColor = rgb(0.2, 0.36, 0.08);
+  tussock.altColor = rgb(0.4, 0.38, 0.1);
+  tussock.variation = 0.5;
+  tussock.rings = 2u32;
+  tussock.ringEnd = [18., 60., 60.];
+  tussock.range = 60.;
+  tussock.fadeStart = 42.;
+  tussock.maxInstances = 20000u32;
+  tussock.avoid(0u32, NEAR, 1.4, 0.8);
+  tussock.avoid(1u32, NEAR, 0.35, 0.9);
+  types.push(tussock);
+
+  // 5, 6, 7: wildflowers in drifts on the open, damp-ish meadow
+  mut daisies = CoverType.flowerKind("daisies");
+  daisies.seed = 31u32;
+  daisies.density = 0.5;
+  daisies.perCluster = 8u32;
+  daisies.clusterRadius = 1.1;
+  daisies.patchScale = 11.;
+  daisies.patchThreshold = 0.55;
+  daisies.patchSoftness = 0.1;
+  daisies.slope = Window.atMost(25., 8.);
+  daisies.canopy = Window.atMost(0.15, 0.2);
+  daisies.moisture = Window.atLeast(0.25, 0.2);
+  daisies.path = Window.rising(0.2, 0.8);
+  daisies.water = Window.rising(0.3, 1.);
+  daisies.sizeMin = 0.22;
+  daisies.sizeMax = 0.4;
+  daisies.widthMin = 0.026;
+  daisies.widthMax = 0.04;
+  daisies.flower = rgb(0.95, 0.95, 0.9);
+  daisies.flowerCenter = rgb(0.9, 0.62, 0.05);
+  daisies.altColor = rgb(0.95, 0.75, 0.8);
+  daisies.variation = 0.25;
+  daisies.petals = 12u32;
+  daisies.range = 42.;
+  daisies.fadeStart = 30.;
+  daisies.maxInstances = 14000u32;
+  types.push(daisies);
+
+  mut buttercups = CoverType.flowerKind("buttercups");
+  buttercups.seed = 32u32;
+  buttercups.density = 0.45;
+  buttercups.perCluster = 9u32;
+  buttercups.clusterRadius = 1.3;
+  buttercups.patchScale = 13.;
+  buttercups.patchThreshold = 0.58;
+  buttercups.patchSoftness = 0.1;
+  buttercups.slope = Window.atMost(25., 8.);
+  buttercups.canopy = Window.atMost(0.15, 0.2);
+  buttercups.moisture = Window.atLeast(0.45, 0.15);
+  buttercups.path = Window.rising(0.2, 0.8);
+  buttercups.water = Window.rising(0.3, 1.);
+  buttercups.sizeMin = 0.25;
+  buttercups.sizeMax = 0.45;
+  buttercups.widthMin = 0.022;
+  buttercups.widthMax = 0.032;
+  buttercups.flower = rgb(1., 0.72, 0.03);
+  buttercups.flowerCenter = rgb(0.85, 0.5, 0.02);
+  buttercups.altColor = rgb(1., 0.85, 0.2);
+  buttercups.variation = 0.3;
+  buttercups.petals = 5u32;
+  buttercups.range = 42.;
+  buttercups.fadeStart = 30.;
+  buttercups.maxInstances = 14000u32;
+  types.push(buttercups);
+
+  mut vetch = CoverType.flowerKind("vetch");
+  vetch.seed = 33u32;
+  vetch.density = 0.3;
+  vetch.perCluster = 6u32;
+  vetch.clusterRadius = 0.9;
+  vetch.patchScale = 8.;
+  vetch.patchThreshold = 0.6;
+  vetch.patchSoftness = 0.1;
+  vetch.slope = Window.atMost(30., 8.);
+  vetch.canopy = Window.atMost(0.3, 0.3);
+  vetch.path = Window.rising(0.2, 0.8);
+  vetch.water = Window.rising(0.3, 1.);
+  vetch.sizeMin = 0.3;
+  vetch.sizeMax = 0.55;
+  vetch.widthMin = 0.02;
+  vetch.widthMax = 0.03;
+  vetch.flower = rgb(0.38, 0.16, 0.62);
+  vetch.flowerCenter = rgb(0.9, 0.85, 0.5);
+  vetch.altColor = rgb(0.6, 0.3, 0.75);
+  vetch.variation = 0.5;
+  vetch.petals = 5u32;
+  vetch.range = 42.;
+  vetch.fadeStart = 30.;
+  vetch.maxInstances = 10000u32;
+  types.push(vetch);
+
+  // 8: ferns under the trees (and in shady damp corners)
+  mut ferns = CoverType.meshKind("ferns");
+  ferns.seed = 41u32;
+  ferns.density = 0.25;
+  ferns.perCluster = 3u32;
+  ferns.clusterRadius = 1.3;
+  ferns.cellFactor = 0.6;
+  ferns.canopy = Window.atLeast(0.3, 0.3);
+  ferns.moisture = Window.atLeast(0.3, 0.15);
+  ferns.slope = Window.atMost(35., 10.);
+  ferns.object = Window.atLeast(0.5, 0.4);
+  ferns.sizeMin = 0.7;
+  ferns.sizeMax = 1.5;
+  ferns.widthMin = 0.8;
+  ferns.widthMax = 1.4;
+  ferns.lean = 0.08;
+  ferns.wind = 0.5;
+  ferns.baseColor = rgb(0.035, 0.11, 0.03);
+  ferns.tipColor = rgb(0.13, 0.33, 0.07);
+  ferns.altColor = rgb(0.2, 0.36, 0.08);
+  ferns.variation = 0.5;
+  ferns.translucency = 0.6;
+  ferns.meshes = [fern, fern, fern];
+  ferns.range = 55.;
+  ferns.fadeStart = 40.;
+  ferns.maxInstances = 12000u32;
+  ferns.avoid(0u32, NEAR, 1., 0.7);
+  ferns.avoid(2u32, NEAR, 0.5, 0.6);
+  types.push(ferns);
+
+  // 9: mud along the water's edge
+  mut mud = CoverType.patchKind("mud");
+  mud.seed = 51u32;
+  mud.density = 0.8;
+  mud.water = Window.atMost(1.6, 1.2);
+  mud.sizeMin = 0.005;
+  mud.sizeMax = 0.01;
+  mud.widthMin = 0.5;
+  mud.widthMax = 1.3;
+  mud.baseColor = rgb(0.05, 0.035, 0.022);
+  mud.tipColor = rgb(0.09, 0.065, 0.04);
+  mud.range = 45.;
+  mud.fadeStart = 32.;
+  mud.farWeight = 0.7;
+  mud.maxInstances = 8000u32;
+  types.push(mud);
+
+  // 10: moss on the damp, shaded ground and round the trunks
+  mut moss = CoverType.patchKind("moss");
+  moss.seed = 52u32;
+  moss.density = 0.35;
+  moss.canopy = Window.atLeast(0.3, 0.3);
+  moss.moisture = Window.atLeast(0.3, 0.2);
+  moss.sizeMin = 0.015;
+  moss.sizeMax = 0.03;
+  moss.widthMin = 0.3;
+  moss.widthMax = 0.9;
+  moss.patchScale = 6.;
+  moss.patchThreshold = 0.45;
+  moss.patchFloor = 0.2;
+  moss.baseColor = rgb(0.015, 0.06, 0.01);
+  moss.tipColor = rgb(0.05, 0.15, 0.03);
+  moss.albedoNoise = 0.;
+  moss.range = 35.;
+  moss.fadeStart = 24.;
+  moss.farWeight = 0.5;
+  moss.maxInstances = 14000u32;
+  types.push(moss);
+
+  // 11: leaf litter under the canopy
+  mut litter = CoverType.litterKind("litter");
+  litter.seed = 61u32;
+  litter.density = 60.;
+  litter.canopy = Window.atLeast(0.25, 0.25);
+  litter.slope = Window.atMost(40., 10.);
+  litter.patchScale = 4.;
+  litter.patchThreshold = 0.35;
+  litter.patchFloor = 0.35;
+  litter.sizeMin = 0.07;
+  litter.sizeMax = 0.13;
+  litter.widthMin = 0.025;
+  litter.widthMax = 0.05;
+  litter.lean = 0.3;
+  litter.baseColor = rgb(0.13, 0.07, 0.025);
+  litter.tipColor = rgb(0.13, 0.07, 0.025);
+  litter.altColor = rgb(0.36, 0.18, 0.04);
+  litter.variation = 0.8;
+  litter.dryColor = rgb(0.3, 0.22, 0.08);
+  litter.translucency = 0.25;
+  litter.range = 22.;
+  litter.fadeStart = 14.;
+  litter.farWeight = 0.8;
+  litter.maxInstances = 90000u32;
+  types.push(litter);
+  types;
+}
+
+// ---- The scene's meshes ----
+
+// A tube along a gently curved line, tapering: a fallen branch lying along +x on the ground
+fn branchTube(length f32, radius f32, bend f32, twig bool) mesh.Mesh {
+  mut m = mesh.Mesh.empty();
+  imm sides = 6;
+  imm steps = 8;
+  mut s = 0;
+  while s <= steps {
+    imm t = f32.from(s) / f32.from(steps);
+    imm cx = t * length;
+    imm cy = radius * 0.9 + bend * sin(pi * t) * 0.25;
+    imm cz = bend * sin(pi * t) * 0.5 + (if twig { 0.3 * t * t; } else { 0.; });
+    imm r = radius * (1. - 0.75 * t);
+    mut k = 0;
+    while k < sides {
+      imm a = 2. * pi * f32.from(k) / f32.from(sides);
+      m.positions.push(new Vec3(cx, cy + r * cos(a), cz + r * sin(a)));
+      m.uvs.push(new Vec2(f32.from(k) / f32.from(sides), t));
+      k = k + 1;
+    }
+    s = s + 1;
+  }
+  mut i = 0;
+  while i < steps {
+    mut k = 0;
+    while k < sides {
+      imm a = u32.from(i * sides + k);
+      imm b = u32.from(i * sides + (k + 1) % sides);
+      imm c = u32.from((i + 1) * sides + k);
+      imm d = u32.from((i + 1) * sides + (k + 1) % sides);
+      m.indices.push(a); m.indices.push(b); m.indices.push(c);
+      m.indices.push(b); m.indices.push(d); m.indices.push(c);
+      k = k + 1;
+    }
+    i = i + 1;
+  }
+  m.computeSmoothNormals();
+  m;
+}
+
+fn branchMeshOf() mesh.Mesh {
+  mut m = branchTube(1.3, 0.035, 0.12, false);
+  mut twig = branchTube(0.45, 0.014, 0.05, true);
+  twig.transform(Mat4.fromTrs(new Vec3(0.55, 0.02, 0.01), Quat.angleAxis(0.7, new Vec3(0., 1., 0.)), new Vec3(1., 1., 1.)));
+  m.append(&twig);
+  m;
+}
+
+fn terrainMesh(maps &GroundMaps) mesh.Mesh {
+  imm n = 161;
+  imm step = SIZE / f32.from(n - 1);
+  mut m = mesh.Mesh.empty();
+  mut j = 0;
+  while j < n {
+    mut i = 0;
+    while i < n {
+      imm x = f32.from(i) * step;
+      imm z = f32.from(j) * step;
+      m.positions.push(new Vec3(x, maps.heightAt(x, z), z));
+      m.uvs.push(new Vec2(x / SIZE, z / SIZE));
+      i = i + 1;
+    }
+    j = j + 1;
+  }
+  j = 0;
+  while j < n - 1 {
+    mut i = 0;
+    while i < n - 1 {
+      imm a = u32.from(j * n + i);
+      imm b = a + 1u32;
+      imm c = a + u32.from(n);
+      imm d = c + 1u32;
+      m.indices.push(a); m.indices.push(c); m.indices.push(b);
+      m.indices.push(b); m.indices.push(c); m.indices.push(d);
+      i = i + 1;
+    }
+    j = j + 1;
+  }
+  m.computeSmoothNormals();
+  m;
+}
+
+// A ribbon of water along the stream at its level
+fn waterMesh() mesh.Mesh {
+  mut m = mesh.Mesh.empty();
+  imm line = streamLine();
+  mut s = 0usize;
+  while s < line.len() {
+    imm p = line[s];
+    imm q = if s + 1usize < line.len() { line[s + 1usize]; } else { line[s - 1usize]; };
+    mut d = if s + 1usize < line.len() { q - p; } else { p - q; };
+    d = d * (1. / d.length());
+    imm y = terrain(p.x, p.y) - 1. - 0.03;
+    m.positions.push(new Vec3(p.x - d.y * 3.8, y, p.y + d.x * 3.8));
+    m.positions.push(new Vec3(p.x + d.y * 3.8, y, p.y - d.x * 3.8));
+    m.uvs.push(new Vec2(0., f32.from(s)));
+    m.uvs.push(new Vec2(1., f32.from(s)));
+    s = s + 1usize;
+  }
+  mut k = 0usize;
+  while k + 1usize < line.len() {
+    imm a = u32.from(k * 2usize);
+    m.indices.push(a); m.indices.push(a + 2u32); m.indices.push(a + 1u32);
+    m.indices.push(a + 1u32); m.indices.push(a + 2u32); m.indices.push(a + 3u32);
+    k = k + 1usize;
+  }
+  m.computeSmoothNormals();
+  m;
+}
+
+fn farImage(maps &GroundMaps) Image {
+  mut img = new Image(i32.from(maps.res), i32.from(maps.res), 3, List[u8].withCapacity(usize.from(maps.res) * usize.from(maps.res) * 3usize));
+  mut p = 0usize;
+  while p < usize.from(maps.res) * usize.from(maps.res) {
+    img.pixels.push(*maps.farField[p * 4usize]);
+    img.pixels.push(*maps.farField[p * 4usize + 1usize]);
+    img.pixels.push(*maps.farField[p * 4usize + 2usize]);
+    p = p + 1usize;
+  }
+  img;
+}
+
+// ---- The frame ----
+
+struct Rig {
+  renderer Renderer;
+  post Post;
+  cover CoverRenderer;
+  out Texture;
+  depth Texture;
+  queries QuerySet;
+  resolved Buffer;
+  tsRead Buffer;
+  pixels Buffer;
+  list DrawList;
+  light Light;
+  phase u32;                       // 0: the cover as it is; 1: only its placement; 2: only its drawing (a diagnostic)
+  waitEach bool;                   // wait for the GPU after every frame (off while measuring throughput)
+  device Device;                   // last: it must outlive what it made
+}
+
+fn seconds(from u64, to u64) f64 {
+  f64.from(to - from) / f64.from(sdl.GetPerformanceFrequency());
+}
+
+fn eyeCamera(maps &GroundMaps, x f32, z f32, above f32, tx f32, tz f32, tAbove f32) Camera {
+  mut c = Camera.make();
+  c.fov = radians(62.);
+  c.near = 0.1;
+  c.far = 1200.;
+  c.lookAt(new Vec3(x, maps.heightAt(x, z) + above, z), new Vec3(tx, maps.heightAt(tx, tz) + tAbove, tz), new Vec3(0., 1., 0.));
+  c.background = new Color(0.4, 0.55, 0.8, 1.);
+  c;
+}
+
+fn airCamera(eye Vec3, target Vec3) Camera {
+  mut c = Camera.make();
+  c.fov = radians(62.);
+  c.near = 0.5;
+  c.far = 1500.;
+  c.lookAt(eye, target, new Vec3(0., 1., 0.));
+  c.background = new Color(0.4, 0.55, 0.8, 1.);
+  c;
+}
+
+// Draw one frame at time 'now' into rig.out; answers the GPU's milliseconds for the whole frame and for
+// the cover, if timed, and the CPU's for recording the cover
+fn drawFrame(rig &mut Rig, camera &Camera, now f32, withCover bool, farBlend f32, timed bool, gpuFrame &mut f64,
+    gpuCover &mut f64, cpuCover &mut f64) {
+  rig.renderer.time = now;
+  imm env = new CoverEnvironment(light: rig.light, exposure: rig.renderer.exposure, time: now, farBlend: farBlend);
+  mut encoder = rig.device.createCommandEncoder();
+  if timed { encoder.writeTimestamp(&rig.queries, 0u32); }
+  rig.renderer.render(&mut rig.device, &mut encoder, &rig.post.hdr, &rig.depth, camera, &rig.light, &rig.list);
+  if timed { encoder.writeTimestamp(&rig.queries, 2u32); }
+  imm t0 = sdl.GetPerformanceCounter();
+  if withCover {
+    if rig.phase == 0u32 {
+      rig.cover.render(&mut rig.device, &mut encoder, &rig.post.hdr, &rig.depth, camera, &env);
+    } else {
+      // a diagnostic: only the placement (1), or only the drawing of what the last frame placed (2)
+      rig.cover.writeFrame(&mut rig.device, camera, f32.from(W) / f32.from(H), &env);
+      if rig.phase == 1u32 { rig.cover.place(&mut encoder, camera.position().x, camera.position().z); }
+      else { rig.cover.draw(&mut encoder, &rig.post.hdr, &rig.depth); }
+    }
+  }
+  imm t1 = sdl.GetPerformanceCounter();
+  if timed { encoder.writeTimestamp(&rig.queries, 3u32); }
+  rig.post.apply(&mut encoder, &rig.out);
+  if timed {
+    encoder.writeTimestamp(&rig.queries, 1u32);
+    encoder.resolveQuerySet(&rig.queries, 0u32, 4u32, &rig.resolved, 0u64);
+    encoder.copyBufferToBuffer(&rig.resolved, 0u64, &rig.tsRead, 0u64, 32u64);
+  }
+  rig.device.queue.submit(encoder.finish());
+  rig.device.endFrame();
+  if rig.waitEach { rig.device.waitIdle(); }
+  if timed {
+    imm ticks = rig.tsRead.mappedRange() as *u64;
+    imm period = f64.from(rig.device.timestampPeriod) * 1.0e-6d;
+    *gpuFrame = f64.from(*(ticks + 1usize) - *ticks) * period;
+    *gpuCover = f64.from(*(ticks + 3usize) - *(ticks + 2usize)) * period;
+    *cpuCover = seconds(t0, t1) * 1000d;
+  }
+}
+
+fn shoot(rig &mut Rig, camera &Camera, now f32, withCover bool, farBlend f32, name &String) {
+  mut a = 0d;
+  mut b = 0d;
+  mut c = 0d;
+  drawFrame(rig, camera, now, withCover, farBlend, false, &mut a, &mut b, &mut c);
+  mut encoder = rig.device.createCommandEncoder();
+  encoder.copyTextureToBuffer(&rig.out, &rig.pixels);
+  rig.device.queue.submit(encoder.finish());
+  rig.device.endFrame();
+  rig.device.waitIdle();
+  imm shot = Image.fromTexels(rig.pixels.mappedRange(), i32.from(W), i32.from(H), false);
+  imm written = shot.save(&Path.from(name.view()));
+  print <- "Shot: "; printStr(name.view());
+  if written { print <- "\n"; } else { print <- " could NOT be written\n"; }
+}
+
+fn sorted(v &mut List[f64]) {
+  mut i = 1usize;
+  while i < v.len() {
+    imm x = *v[i];
+    mut j = i;
+    while j > 0usize and *v[j - 1usize] > x {
+      v.set(j, *v[j - 1usize]);
+      j = j - 1usize;
+    }
+    v.set(j, x);
+    i = i + 1usize;
+  }
+}
+
+fn median(v &mut List[f64]) f64 {
+  sorted(v);
+  *v[v.len() / 2usize];
+}
+
+// Time 'frames' frames of one view: p50 of the GPU's frame and cover time and the CPU's recording
+fn soak(rig &mut Rig, name &str, camera &Camera, withCover bool, frames u32) {
+  mut gf = List[f64].empty();
+  mut gc = List[f64].empty();
+  mut cc = List[f64].empty();
+  mut f = 0u32;
+  while f < frames + 30u32 {
+    mut a = 0d;
+    mut b = 0d;
+    mut c = 0d;
+    drawFrame(rig, camera, f32.from(f) / 60., withCover, 1., true, &mut a, &mut b, &mut c);
+    if f >= 30u32 {
+      gf.push(a);
+      gc.push(b);
+      cc.push(c);
+    }
+    f = f + 1u32;
+  }
+  printStr(name);
+  print <- ": GPU frame p50 "; print <- median(&mut gf); print <- " ms";
+  print <- ", GPU cover p50 "; print <- median(&mut gc); print <- " ms";
+  print <- ", CPU cover recording p50 "; print <- median(&mut cc); print <- " ms";
+  if withCover {
+    print <- "; cover draws "; print <- u64.from(rig.cover.drawCalls);
+  }
+  print <- "\n";
+}
+
+// The throughput of 'frames' frames of one view, back to back with no wait between (the GPU stays busy,
+// so its clocks stay up): the milliseconds a frame takes, wall clock. The difference of two views is a cost.
+fn throughput(rig &mut Rig, name &str, camera &Camera, withCover bool, frames u32) f64 {
+  rig.waitEach = false;
+  mut a = 0d;
+  mut b = 0d;
+  mut c = 0d;
+  mut f = 0u32;
+  while f < 40u32 {
+    drawFrame(rig, camera, f32.from(f) / 60., withCover, 1., false, &mut a, &mut b, &mut c);
+    f = f + 1u32;
+  }
+  rig.device.waitIdle();
+  imm t0 = sdl.GetPerformanceCounter();
+  f = 0u32;
+  while f < frames {
+    drawFrame(rig, camera, f32.from(f) / 60., withCover, 1., false, &mut a, &mut b, &mut c);
+    f = f + 1u32;
+  }
+  rig.device.waitIdle();
+  imm t1 = sdl.GetPerformanceCounter();
+  rig.waitEach = true;
+  imm ms = seconds(t0, t1) * 1000d / f64.from(frames);
+  printStr(name); print <- ": "; print <- ms; print <- " ms a frame, back to back\n";
+  ms;
+}
+
+fn named(prefix &String, suffix &str) String {
+  mut s = prefix.copy();
+  s <- suffix;
+  s;
+}
+
+fn main(argc i32, argv **u8) i32 {
+  mut prefix = String.empty();
+  mut soakFrames = 0;
+  mut phaseFrames = 0;
+  mut a = 1;
+  while a < argc {
+    imm arg = *(argv + usize.from(a));
+    if cstrEquals(arg, "--shots") and a + 1 < argc {
+      imm s = *(argv + usize.from(a + 1));
+      mut i = 0usize;
+      while *(s + i) != 0u8 {
+        prefix.appendByte(*(s + i));
+        i = i + 1usize;
+      }
+      a = a + 1;
+    } elif cstrEquals(arg, "--soak") and a + 1 < argc {
+      soakFrames = parseCount(*(argv + usize.from(a + 1)));
+      a = a + 1;
+    } elif cstrEquals(arg, "--phases") and a + 1 < argc {
+      phaseFrames = parseCount(*(argv + usize.from(a + 1)));
+      a = a + 1;
+    } else {
+      print <- "Unknown argument; use --shots PREFIX and --soak N\n";
+      return 2;
+    }
+    a = a + 1;
+  }
+  mut instance = Instance.create("groundcover hillside");
+  mut none = Surface.none();
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  if (env as usize) != 0usize {
+    if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  mut adapter = instance.requestAdapter(&none, preference);
+  if !adapter.isValid() {
+    print <- "No GPU\n";
+    return 1;
+  }
+  print <- "Adapter: "; printStr(adapter.name.view()); print <- "\n";
+  print <- "Validation layer: "; print <- u64.from(if instance.validation { 1u32; } else { 0u32; });
+  print <- "; synchronization validation: "; print <- u64.from(if instance.syncValidation { 1u32; } else { 0u32; }); print <- "\n";
+  mut device = adapter.requestDevice();
+  imm outDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  mut out = device.createTexture(&outDesc);
+  imm depthDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  mut depth = device.createTexture(&depthDesc);
+  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  renderer.keepDepth = true;
+  mut post = Post.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, W, H);
+  mut cover = CoverRenderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  mut queries = device.createQuerySet(QUERY_TYPE_TIMESTAMP, 4u32);
+  mut resolved = device.createBuffer(256u64, BUFFER_USAGE_QUERY_RESOLVE | BUFFER_USAGE_COPY_SRC);
+  mut tsRead = device.createBuffer(32u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  mut pixels = device.createBuffer(u64.from(W) * u64.from(H) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  if !renderer.isValid() or !post.isValid() or !cover.isValid() or !queries.isValid() {
+    print <- "The renderer, the post, the cover or the timestamps could not be made\n";
+    return 1;
+  }
+
+  // The sky and the sun: a clear day, in display units (exposure 1)
+  mut sky = Sky.dusk(radians(40.), radians(220.));
+  sky.sunDirection = sunDirection();
+  sky.sunColor = new Color(60., 55., 45., 1.);
+  sky.zenith = new Color(0.10, 0.24, 0.62, 1.);
+  sky.horizon = new Color(0.52, 0.66, 0.85, 1.);
+  sky.horizonSharpness = 2.5;
+  sky.glow = new Color(0.25, 0.22, 0.14, 1.);
+  sky.glowSharpness = 12.;
+  sky.ground = new Color(0.12, 0.14, 0.1, 1.);
+  renderer.setSky(&mut device, &sky);
+  imm light = Light.directional(new Vec3(0., 0., 0.) - sunDirection(), new Color(3.3, 3.1, 2.7, 1.), new Color(0.34, 0.42, 0.55, 1.));
+  renderer.setShadows(&mut device, &ShadowSettings.medium());
+
+  // The ground, the cover's types, the far field
+  imm t0 = sdl.GetPerformanceCounter();
+  mut world = buildWorld();
+  imm t1 = sdl.GetPerformanceCounter();
+  imm fernMeshData = fernMesh(&new FernParams(seed: 3u32, fronds: 8, length: 0.75, pairs: 11));
+  imm rock = rockMesh(&new RockParams(seed: 5u32, width: 0.45, height: 0.28, depth: 0.38, rings: 6, slices: 10, facets: 6));
+  imm branch = branchMeshOf();
+  // a shrub is a small maple's foliage alone, in two levels of detail: leaves of 0.2 m outlined with 5
+  // points within 20 m, leaves of 0.4 m of 4 beyond (the ring's mesh is the level of detail)
+  mut shrubParams = redMaple(77u32, 2.4);
+  shrubParams.leafSites = 1;
+  imm shrubTree = grow(&shrubParams);
+  mut shrubFoliage = mapleFoliage(77u32);
+  shrubFoliage.leafSize = 0.2;
+  shrubFoliage.detail = 5;
+  imm shrubMesh = foliageMesh(&shrubTree, &shrubFoliage);
+  mut shrubFar = mapleFoliage(78u32);
+  shrubFar.leafSize = 0.42;
+  shrubFar.detail = 4;
+  imm shrubFarMesh = foliageMesh(&shrubTree, &shrubFar);
+  print <- "Meshes (triangles): fern "; print <- u64.from(fernMeshData.triangleCount()); print <- ", stone "; print <- u64.from(rock.triangleCount());
+  print <- ", branch "; print <- u64.from(branch.triangleCount()); print <- ", shrub "; print <- u64.from(shrubMesh.triangleCount());
+  print <- ", far shrub "; print <- u64.from(shrubFarMesh.triangleCount()); print <- "\n";
+  imm fernIndex = cover.addMesh(&fernMeshData);
+  imm stoneIndex = cover.addMesh(&rock);
+  imm branchIndex = cover.addMesh(&branch);
+  imm shrubIndex = cover.addMesh(&shrubMesh);
+  imm shrubFarIndex = cover.addMesh(&shrubFarMesh);
+  imm types = coverTypes(fernIndex, stoneIndex, branchIndex, shrubIndex, shrubFarIndex);
+  imm faults = problems(&types);
+  if faults.len() > 0usize {
+    print <- "Cover types invalid: "; printStr(faults[0usize].view()); print <- "\n";
+    return 1;
+  }
+  bakeFarField(&types, &mut world.maps, new Color(0.17, 0.13, 0.08, 1.), new Color(0.30, 0.22, 0.13, 1.), 0.8);
+  imm t2 = sdl.GetPerformanceCounter();
+  if !cover.build(&mut device, &types, &world.maps) {
+    print <- "The cover could not be built\n";
+    return 1;
+  }
+  imm t3 = sdl.GetPerformanceCounter();
+  print <- "World: ground maps "; print <- seconds(t0, t1); print <- " s, far field baked "; print <- seconds(t1, t2);
+  print <- " s (CPU), cover built "; print <- seconds(t2, t3); print <- " s; "; print <- u64.from(world.trees.len());
+  print <- " trees, "; print <- u64.from(types.len()); print <- " cover types, "; print <- u64.from(cover.batchCount);
+  print <- " batches\n";
+
+  // The scene around it
+  mut list = DrawList.empty();
+  imm terrainMeshData = terrainMesh(&world.maps);
+  imm terrainH = renderer.addMesh(&mut device, &terrainMeshData);
+  imm farTex = renderer.addTexture(&mut device, &farImage(&world.maps));
+  imm groundMat = Material.textured(new Color(1., 1., 1., 1.), farTex);
+  imm groundM = renderer.addMaterial(&mut device, &groundMat);
+  list.add(terrainH, groundM, Mat4.identity());
+  imm waterData = waterMesh();
+  imm waterH = renderer.addMesh(&mut device, &waterData);
+  imm waterMat = Material.shiny(new Color(0.03, 0.09, 0.11, 1.), 0.9, 120.);
+  imm waterM = renderer.addMaterial(&mut device, &waterMat);
+  list.add(waterH, waterM, Mat4.identity());
+  imm bark = Material.plain(new Color(0.1, 0.07, 0.05, 1.));
+  imm barkM = renderer.addMaterial(&mut device, &bark);
+  imm leaves = Material.plain(new Color(0.07, 0.19, 0.04, 1.));
+  imm leafM = renderer.addMaterial(&mut device, &leaves);
+  mut v = 0u32;
+  mut trunkH = List[MeshHandle].empty();
+  mut crownH = List[MeshHandle].empty();
+  while v < 3u32 {
+    mut tree = grow(&redMaple(100u32 + v, 11. + f32.from(v) * 1.5));
+    imm trunkMesh = branchMesh(&tree, &new TubeParams());
+    imm crownMesh = foliageMesh(&tree, &mapleFoliage(200u32 + v));
+    trunkH.push(renderer.addMesh(&mut device, &trunkMesh));
+    crownH.push(renderer.addMesh(&mut device, &crownMesh));
+    v = v + 1u32;
+  }
+  mut ti = 0usize;
+  while ti < world.trees.len() {
+    imm tr = world.trees[ti];
+    imm place = Mat4.fromTrs(new Vec3(tr.x, world.maps.heightAt(tr.x, tr.z), tr.z), Quat.angleAxis(tr.yaw, new Vec3(0., 1., 0.)),
+      new Vec3(tr.scale, tr.scale, tr.scale));
+    list.add(*trunkH[tr.variant], barkM, place);
+    list.add(*crownH[tr.variant], leafM, place);
+    ti = ti + 1usize;
+  }
+  imm bigRock = rockMesh(&new RockParams(seed: 9u32, width: 1.3, height: 0.8, depth: 1.0, rings: 8, slices: 14, facets: 7));
+  imm rockH = renderer.addMesh(&mut device, &bigRock);
+  imm rockMat = Material.plain(new Color(0.15, 0.14, 0.12, 1.));
+  imm rockM = renderer.addMaterial(&mut device, &rockMat);
+  mut bi = 0usize;
+  while bi < world.boulders.len() {
+    imm p = world.boulders[bi];
+    list.add(rockH, rockM, Mat4.fromTrs(new Vec3(p.x, world.maps.heightAt(p.x, p.z) - 0.15, p.z),
+      Quat.angleAxis(f32.from(bi) * 1.7, new Vec3(0., 1., 0.)), new Vec3(1., 1., 1.)));
+    bi = bi + 1usize;
+  }
+  print <- "Scene: "; print <- u64.from(list.len()); print <- " draw items\n";
+
+  // The views
+  imm meadowEye = eyeCamera(&world.maps, 70., 104., 1.7, 104., 150., 1.4);
+  imm bank = eyeCamera(&world.maps, 28., 96., 1.5, 74., 82., 0.5);
+  imm wood = eyeCamera(&world.maps, 118., 128., 1.7, 70., 140., 1.2);
+  imm closeUp = eyeCamera(&world.maps, 69., 106., 0.45, 95., 122., 0.2);
+  // inside the woodland: the tree nearest the trees' middle, the camera a few metres from it
+  mut cx = 0f32;
+  mut cz = 0f32;
+  mut q = 0usize;
+  while q < world.trees.len() {
+    cx = cx + world.trees[q].x;
+    cz = cz + world.trees[q].z;
+    q = q + 1usize;
+  }
+  cx = cx / f32.from(world.trees.len());
+  cz = cz / f32.from(world.trees.len());
+  mut best = 0usize;
+  mut bestD = 1.0e9f32;
+  q = 0usize;
+  while q < world.trees.len() {
+    imm d = (world.trees[q].x - cx) * (world.trees[q].x - cx) + (world.trees[q].z - cz) * (world.trees[q].z - cz);
+    if d < bestD { bestD = d; best = q; }
+    q = q + 1usize;
+  }
+  imm centreTree = world.trees[best];
+  imm shade = eyeCamera(&world.maps, centreTree.x + 6., centreTree.z - 5., 1.6, centreTree.x - 8., centreTree.z + 6., 0.4);
+  imm floor = eyeCamera(&world.maps, centreTree.x + 3., centreTree.z - 2.5, 0.55, centreTree.x - 4., centreTree.z + 3., 0.1);
+  print <- "Woodland camera near the tree at ("; print <- centreTree.x; print <- ", "; print <- centreTree.z; print <- ")\n";
+  imm aerial = airCamera(new Vec3(150., 75., 15.), new Vec3(85., 14., 125.));
+  imm horizon = airCamera(new Vec3(110., 28., 40.), new Vec3(110., 8., 230.));
+  mut rig = new Rig(renderer, post, cover, out, depth, queries, resolved, tsRead, pixels, list, light, 0u32, true, device);
+
+  if prefix.len() > 0usize {
+    shoot(&mut rig, &meadowEye, 3., true, 1., &named(&prefix, "-meadow.bmp"));
+    shoot(&mut rig, &meadowEye, 3.75, true, 1., &named(&prefix, "-meadow-later.bmp"));
+    shoot(&mut rig, &meadowEye, 3., false, 1., &named(&prefix, "-meadow-bare.bmp"));
+    shoot(&mut rig, &bank, 3., true, 1., &named(&prefix, "-bank.bmp"));
+    shoot(&mut rig, &wood, 3., true, 1., &named(&prefix, "-wood.bmp"));
+    shoot(&mut rig, &shade, 3., true, 1., &named(&prefix, "-shade.bmp"));
+    shoot(&mut rig, &floor, 3., true, 1., &named(&prefix, "-floor.bmp"));
+    shoot(&mut rig, &closeUp, 3., true, 1., &named(&prefix, "-macro.bmp"));
+    shoot(&mut rig, &aerial, 3., true, 1., &named(&prefix, "-aerial.bmp"));
+    shoot(&mut rig, &horizon, 3., true, 1., &named(&prefix, "-horizon.bmp"));
+    shoot(&mut rig, &horizon, 3., true, 0., &named(&prefix, "-horizon-nofarfield.bmp"));
+    shoot(&mut rig, &horizon, 3., false, 1., &named(&prefix, "-horizon-bare.bmp"));
+  }
+  if soakFrames > 0 {
+    // back to back first (GPU clocks up): the cover's cost is the difference
+    imm nb = throughput(&mut rig, "eye-level meadow, no cover", &meadowEye, false, u32.from(soakFrames));
+    imm cb = throughput(&mut rig, "eye-level meadow, cover", &meadowEye, true, u32.from(soakFrames));
+    print <- "  the cover costs "; print <- cb - nb; print <- " ms\n";
+    imm wnb = throughput(&mut rig, "woodland edge, no cover", &wood, false, u32.from(soakFrames));
+    imm wcb = throughput(&mut rig, "woodland edge, cover", &wood, true, u32.from(soakFrames));
+    print <- "  the cover costs "; print <- wcb - wnb; print <- " ms\n";
+    imm anb = throughput(&mut rig, "aerial, no cover", &aerial, false, u32.from(soakFrames));
+    imm acb = throughput(&mut rig, "aerial, cover", &aerial, true, u32.from(soakFrames));
+    print <- "  the cover costs "; print <- acb - anb; print <- " ms\n";
+    rig.phase = 1u32;
+    imm pb = throughput(&mut rig, "eye-level meadow, placement only", &meadowEye, true, u32.from(soakFrames));
+    print <- "  placement costs "; print <- pb - nb; print <- " ms\n";
+    rig.phase = 0u32;
+    // then each frame waited for, with GPU timestamps (the clocks may be low)
+    soak(&mut rig, "eye-level meadow, no cover", &meadowEye, false, u32.from(soakFrames));
+    soak(&mut rig, "eye-level meadow, cover", &meadowEye, true, u32.from(soakFrames));
+    soak(&mut rig, "woodland edge, cover", &wood, true, u32.from(soakFrames));
+    soak(&mut rig, "aerial, no cover", &aerial, false, u32.from(soakFrames));
+    soak(&mut rig, "aerial, cover", &aerial, true, u32.from(soakFrames));
+  }
+  if phaseFrames > 0 {
+    // where the cover's time goes: the placement alone, then the drawing alone, then the drawing with
+    // the fragment stage reduced to a flat colour, then with every vertex off the screen
+    soak(&mut rig, "eye-level meadow, no cover", &meadowEye, false, u32.from(phaseFrames));
+    soak(&mut rig, "eye-level meadow, cover", &meadowEye, true, u32.from(phaseFrames));
+    rig.phase = 1u32;
+    soak(&mut rig, "eye-level meadow, placement only", &meadowEye, true, u32.from(phaseFrames));
+    rig.phase = 2u32;
+    soak(&mut rig, "eye-level meadow, drawing only", &meadowEye, true, u32.from(phaseFrames));
+    rig.cover.debugMode = 1u32;
+    soak(&mut rig, "eye-level meadow, drawing only, flat colour (no lighting)", &meadowEye, true, u32.from(phaseFrames));
+    rig.cover.debugMode = 2u32;
+    soak(&mut rig, "eye-level meadow, drawing only, vertex stage only", &meadowEye, true, u32.from(phaseFrames));
+    rig.cover.debugMode = 0u32;
+    rig.phase = 0u32;
+  }
+  if soakFrames > 0 {
+    // what each batch placed in the eye-level view, from the statistics
+    rig.cover.collectStats = true;
+    soak(&mut rig, "eye-level meadow, cover with statistics", &meadowEye, true, 4u32);
+    imm counts = rig.cover.batchCounts();
+    print <- "Instances placed in the eye-level view (raw, by batch):";
+    mut ci = 0usize;
+    while ci < counts.len() {
+      print <- " "; print <- u64.from(*counts[ci]);
+      ci = ci + 1usize;
+    }
+    print <- "\n";
+  }
+  print <- "Vulkan failures: "; print <- u64.from(failures());
+  print <- "; validation messages: "; print <- u64.from(validationMessages()); print <- "\n";
+  if failures() != 0u32 or validationMessages() != 0u32 { return 1; }
+  print <- "OK\n";
+  0;
+}
