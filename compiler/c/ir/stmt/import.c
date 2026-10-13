@@ -275,6 +275,16 @@ static void importFoldItem(ModuleNode *mod, ImportNode *import, AliasDclNode *al
                 &srcname->namestr, &src->namesym->namestr);
         return;
     }
+    // The module's finalizer and a clone are its own lifecycle's: a star passes
+    // over them (importStarAdmits), and a list naming them is refused alike. The
+    // item is made, unbound, so no later pass reports it again
+    if (srcname == finalName || srcname == cloneName) {
+        target->dclnode = found;
+        if (!import->isdefault)
+            errorMsgNode((INode*)alias, ErrorBadFold, "%s belongs to %s's own lifecycle, so it does not fold.",
+                &srcname->namestr, &src->namesym->namestr);
+        return;
+    }
     importAliasTarget(alias, found);
     // A fold is private to the module that made it unless the import says 'pub',
     // before the statement or in its clause. That is the transit rule, and it is

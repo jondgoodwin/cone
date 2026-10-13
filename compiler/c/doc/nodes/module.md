@@ -1785,7 +1785,8 @@ clause, so it is `ErrorNotPublic` after `but` too: seen from outside a module a
 private name behaves as a missing one does, and there is nothing to leave out.
 The source's `final` and `clone` are passed over by a star clause as well
 (`importStarAdmits`), so after `but` they are `ErrorBadFold`, in `importNameRes`
-and, for a `mod` line's default, `modDefaultFoldCheck`. A
+and, for a `mod` line's default, `modDefaultFoldCheck`; so is naming them in a
+list (`importFoldItem`, and `modDefaultFoldCheck`). A
 name the source has not got, listed or after `but`, is `ErrorNoMbr`;
 the source module's own name is passed over by a star clause and is `ErrorBadFold`
 where a list names it, because the import bound it already. (A module's `extends`
