@@ -1,0 +1,153 @@
+// A timer joined to a cancel group honours the group's deadline, as an
+// operation does: a timer due after the deadline answers TimedOut at the
+// deadline; one due before it answers Done at its own time.
+//
+// 1. A timer an hour off in a group with a 40 ms deadline answers TimedOut at
+//    40 ms (not before), long before its own time.
+// 2. A timer due at 30 ms in a group whose deadline is an hour off answers
+//    Done: the deadline is only the tighter bound.
+// 3. A child's tighter deadline wins over its parent's; a looser child gives
+//    way to its parent's.
+// 4. A deadline already past answers TimedOut at once and the timer never
+//    starts; a timer already due, in a group with a later deadline, answers
+//    Done.
+// 5. A timer with a deadline still answers Cancelled to lp.cancel(id), and to
+//    its group's cancel, and says so exactly once.
+// 6. A shield's own deadline bounds a timer under a cancelled parent.
+// 7. A group with no deadline leaves a timer to answer Done at its own time.
+
+mod grouptimers;
+
+import testing use *;
+import collections use List;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use *;
+import diag;
+
+fn waitFor(lp &mut Loop, out &mut List[Completion], n usize) {
+  imm limit = Instant.now() + Duration.fromSeconds(5i64);
+  while out.len() < n and Instant.now() < limit {
+    lp.poll(limit, out);
+  }
+}
+
+fn main() i32 {
+  {
+    mut lp = Loop.mustMake();
+    mut out = List[Completion].empty();
+    imm hour = Duration.fromSeconds(3600i64);
+
+    // 1. Due after the deadline: TimedOut at the deadline
+    {
+      imm t0 = Instant.now();
+      imm g = CancelGroup.until(t0 + Duration.fromMillis(40i64));
+      lp.afterIn(t0 + hour, Target.Here(1u64), g);
+      waitFor(&mut lp, &mut out, 1usize);
+      requireUInt(u64.from(out.len()), 1u64, "answered");
+      expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeTimedOut), "TimedOut at the group's deadline");
+      expect(out[0usize].dequeued >= t0 + Duration.fromMillis(40i64), "not before it");
+      expect(Instant.now() < t0 + Duration.fromSeconds(5i64), "long before its own time");
+      expectUInt(lp.inFlight(), 0u64, "nothing left in flight");
+      out.clear();
+    }
+
+    // 2. Due before the deadline: Done
+    {
+      imm t0 = Instant.now();
+      imm g = CancelGroup.until(t0 + hour);
+      lp.afterIn(t0 + Duration.fromMillis(30i64), Target.Here(2u64), g);
+      waitFor(&mut lp, &mut out, 1usize);
+      requireUInt(u64.from(out.len()), 1u64, "answered");
+      expect(out[0usize].isDone(), "Done at its own time");
+      expect(out[0usize].dequeued >= t0 + Duration.fromMillis(30i64), "not before it");
+      out.clear();
+    }
+
+    // 3. Inherited as the tighter
+    {
+      imm t0 = Instant.now();
+      imm loose = CancelGroup.until(t0 + hour);
+      imm tight = loose.childUntil(t0 + Duration.fromMillis(30i64));
+      imm looser = tight.childUntil(t0 + hour + hour);
+      lp.afterIn(t0 + hour, Target.Here(3u64), tight);
+      lp.afterIn(t0 + hour, Target.Here(4u64), looser);
+      waitFor(&mut lp, &mut out, 2usize);
+      requireUInt(u64.from(out.len()), 2u64, "both answered");
+      expect(out[0usize].status == diag.outcomeTimedOut and out[1usize].status == diag.outcomeTimedOut,
+        "the child's deadline, and a looser child's parent's");
+      expect(Instant.now() < t0 + Duration.fromSeconds(5i64), "long before the parent's");
+      out.clear();
+    }
+
+    // 4. A deadline already past
+    {
+      imm before = lp.counters().atSubmit;
+      imm past = CancelGroup.until(Instant.now());
+      lp.afterIn(Instant.now() + hour, Target.Here(5u64), past);
+      lp.poll(Instant.now(), &mut out);
+      requireUInt(u64.from(out.len()), 1u64, "answered at once");
+      expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeTimedOut), "TimedOut");
+      expectUInt(lp.counters().atSubmit - before, 1u64, "never started");
+      expectUInt(lp.inFlight(), 0u64, "nothing left in flight");
+      out.clear();
+
+      imm later = CancelGroup.until(Instant.now() + hour);
+      lp.afterIn(Instant.now() - Duration.fromMillis(5i64), Target.Here(6u64), later);
+      waitFor(&mut lp, &mut out, 1usize);
+      requireUInt(u64.from(out.len()), 1u64, "a timer already due is answered");
+      expect(out[0usize].isDone(), "Done, as the deadline is later");
+      out.clear();
+    }
+
+    // 5. Cancel still reaches a timer with a deadline
+    {
+      imm g = CancelGroup.until(Instant.now() + hour);
+      imm id = lp.afterIn(Instant.now() + hour + hour, Target.Here(7u64), g);
+      expect(lp.cancel(id), "the cancel is asked");
+      lp.poll(Instant.now(), &mut out);
+      requireUInt(u64.from(out.len()), 1u64, "answered once");
+      expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeCancelled), "Cancelled by lp.cancel");
+      expect(not lp.cancel(id), "and once only");
+      out.clear();
+
+      lp.afterIn(Instant.now() + hour + hour, Target.Here(8u64), g);
+      g.cancel();
+      waitFor(&mut lp, &mut out, 1usize);
+      requireUInt(u64.from(out.len()), 1u64, "answered once");
+      expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeCancelled), "Cancelled by the group");
+      out.clear();
+      lp.poll(Instant.now() + Duration.fromMillis(20i64), &mut out);
+      expectUInt(u64.from(out.len()), 0u64, "nothing more");
+    }
+
+    // 6. A shield
+    {
+      imm g = CancelGroup.make();
+      g.cancel();
+      imm s = g.shield(Instant.now() + Duration.fromMillis(20i64));
+      lp.afterIn(Instant.now() + hour, Target.Here(9u64), s);
+      waitFor(&mut lp, &mut out, 1usize);
+      requireUInt(u64.from(out.len()), 1u64, "answered");
+      expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeTimedOut), "the shield's own deadline holds");
+      out.clear();
+    }
+
+    // 7. No deadline
+    {
+      imm t0 = Instant.now();
+      imm g = CancelGroup.make();
+      lp.afterIn(t0 + Duration.fromMillis(20i64), Target.Here(10u64), g);
+      waitFor(&mut lp, &mut out, 1usize);
+      requireUInt(u64.from(out.len()), 1u64, "answered");
+      expect(out[0usize].isDone(), "Done at its own time");
+      out.clear();
+    }
+
+    imm cs = lp.counters();
+    expectUInt(cs.delivered, cs.submitted, "every timer answered once");
+    expectUInt(cs.inFlight, 0u64, "nothing in flight");
+  }
+  expectUInt(osBlocks(), 0u64, "and every block back to the OS");
+  done();
+}

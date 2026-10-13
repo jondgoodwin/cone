@@ -201,7 +201,10 @@ void fnDclNameRes(NameResState *nstate, FnDclNode *fndclnode) {
     // compile can give it a symbol an importer links against. A function nested
     // in such a body is part of it, so it inherits the expander.
     INode *svexpander = nstate->expander;
-    if (fnDclIsExpanded(fndclnode, nstate->typenode))
+    // An actor's state methods are carried whole in the include file and
+    // generated again by an importer, so they are expanded bodies too
+    if (fnDclIsExpanded(fndclnode, nstate->typenode)
+        || (nstate->typenode && actorIsState(nstate->typenode)))
         nstate->expander = (INode*)fndclnode;
     // A generator not (yet) known to be expanded: what its body names is recorded,
     // and marked afterwards if it turns out to be (exportGenReach)

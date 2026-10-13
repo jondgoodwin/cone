@@ -994,7 +994,8 @@ where it becomes the reference (`shapeKeepsVia`, [flow](../phases/flow.md)); a p
 function made one by `&name` is judged by its body at the coercion (`shapeKeepFnRef`,
 called from `iexpCoerceShape`). `ShapeKeeping` is a built-in trait (`shapeKeepingTrait`)
 for the name only: `structCheck` refuses a type declaring it (`ErrorShapeKeepingDeclared`)
-and nothing asks `T is ShapeKeeping`. The parser reads `+ ShapeKeeping` straight after
+unless it is read from a generated include file, which records it there
+(`shapeKeepRecordable`), and nothing asks `T is ShapeKeeping`. The parser reads `+ ShapeKeeping` straight after
 the parameters of a `&<fn(...)` that returns nothing (`parseFnSig`: a `+` and a marker's
 name there is not a return type).
 

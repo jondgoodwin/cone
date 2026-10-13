@@ -1184,7 +1184,8 @@ static int fnCallPlaceAsMut(TypeCheckState *pstate, INode **placep);
 // already a reference or a pointer: a pointer is not borrowed from.
 //
 // The weakest borrow a candidate accepts is taken: 'ro' first, so a 'self &'
-// method borrows for reading even from a mutable variable, then 'mut'. The
+// method borrows for reading even from a mutable variable, then 'mut', then
+// 'uni' (a 'self &uni' method, which a local lends as '&uni' does). The
 // borrow is made by borrowMutRef, so its permission and lifetime are the ones a
 // hand-written '&mut v' gets: a 'self &mut' method on an immutable variable is
 // ErrorBadPerm. A temporary is borrowed where it is, as '&' of it is, and
@@ -1207,12 +1208,17 @@ static FnDclNode *fnCallBorrowReceiver(TypeCheckState *pstate, FnCallNode *calln
         return NULL;
     // A type declaring Immutable has 'self &' as 'self &imm', which a 'ro'
     // borrow is not accepted as, so 'imm' is tried between the two
-    PermNode *perms[3];
+    // A method declaring 'self &uni' is reached last: a local is unique, so
+    // lending it 'uni' is the one borrow left, and the borrow keeps every other
+    // name from reaching it while the call runs (doc/reference/refperm.html,
+    // "From 'uni'")
+    PermNode *perms[4];
     int nperms = 0;
     perms[nperms++] = roPerm;
     if (itypeIsImmutable(objtype))
         perms[nperms++] = immPerm;
     perms[nperms++] = mutPerm;
+    perms[nperms++] = uniPerm;
     for (int i = 0; i < nperms; ++i) {
         INode *perm = newPermUseNode(perms[i]);
         INode *probe = newBorrowMutRef(obj, objtype, perm);
@@ -1228,7 +1234,7 @@ static FnDclNode *fnCallBorrowReceiver(TypeCheckState *pstate, FnCallNode *calln
         if (iexpIsLval(obj)) {
             // 'u.fields[i].adv.push(x)': a place checked for reading, reached
             // through an index, is lent mutably to a method that writes it
-            if (perms[i] == mutPerm) {
+            if (perms[i] == mutPerm || perms[i] == uniPerm) {
                 INode *lvalperm = (INode*)immPerm;
                 uint16_t scope;
                 iexpGetLvalInfo(obj, &lvalperm, &scope);
