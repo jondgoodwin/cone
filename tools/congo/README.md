@@ -206,7 +206,7 @@ order listed, for a name no folder holds:
 ```toml
 [registry]
 folders = ["D:/cone/mypackages"]
-indexes = ["https://github.com/jondgoodwin/cone-registry.git"]
+indexes = ["https://example.com/team/registry.git"]
 ```
 
 An index file holds four keys, and any other is an error:

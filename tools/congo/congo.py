@@ -754,7 +754,7 @@ def registry_folders() -> list[Path]:
 
         [registry]
         folders = ["D:/cone/mypackages", "~/cone/vendor"]
-        indexes = ["https://github.com/jondgoodwin/cone-registry.git"]
+        indexes = ["https://example.com/team/registry.git"]
 
     A relative folder is relative to the config file's own folder. The indexes
     are registries of the other kind (see "Index registries" below), searched

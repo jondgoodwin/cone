@@ -40,7 +40,8 @@ the script and is NOT the archive test: the archive's own layout, its embedded
 Python and its file set are not exercised.
 
 Windows only for now (the C library fixture is a DLL built with cl). The registry
-URL is --registry, default the private index https://github.com/jondgoodwin/cone-registry.git.
+URL of the index holding the Cone packages is --registry, or the environment variable
+CONE_REGISTRY (it is not written in this public repository).
 Python 3.11 or later, standard library only.
 """
 
@@ -59,7 +60,6 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
-REGISTRY = "https://github.com/jondgoodwin/cone-registry.git"
 IS_WINDOWS = os.name == "nt"
 
 results: list[tuple[str, str, str]] = []
@@ -198,9 +198,12 @@ def main() -> int:
     group = ap.add_mutually_exclusive_group(required=True)
     group.add_argument("--archive", type=Path, help="the downloaded compiler: a .zip, .tar.gz or unpacked folder")
     group.add_argument("--standin", action="store_true", help="rehearse with a folder assembled from this checkout")
-    ap.add_argument("--registry", default=REGISTRY, help=f"the index to fetch the Cone packages from (default {REGISTRY})")
+    ap.add_argument("--registry", default=os.environ.get("CONE_REGISTRY"),
+                    help="the index to fetch the Cone packages from (default: $CONE_REGISTRY)")
     ap.add_argument("--keep", action="store_true", help="keep the work folder")
     args = ap.parse_args()
+    if not args.registry:
+        ap.error("give the index's URL with --registry, or set CONE_REGISTRY")
     if not IS_WINDOWS:
         report("ALL", "SKIPPED", "Windows only so far: the C library fixture is a DLL built with cl")
         return 0
