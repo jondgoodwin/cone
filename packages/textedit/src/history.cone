@@ -1,0 +1,177 @@
+// ======== History: a general undo/redo command history ========
+//
+// Nothing here knows about text. History[C] keeps the commands of ANY editor, where C is the
+// editor's own command type (a struct that holds what is needed to undo and redo it: a text edit
+// holds the offset and the removed and inserted text; a scene edit holds a node id and its old and
+// new transform). The editor does the change itself, then RECORDS it; History only stores, groups
+// and replays. To undo or redo, the editor hands History its target and a function that applies one
+// command in one direction:
+//
+//   mut h = History[Edit].make();
+//   ... change the document ...  h.push(edit, TAG_TYPING);      // already applied
+//   h.undo(&mut doc, &applyEdit);   // fn applyEdit(doc &mut Doc, c &Edit, undoing bool)
+//   h.redo(&mut doc, &applyEdit);
+//
+// GROUPS. One user action may be several commands (replace-all, a multi-caret keystroke, dragging a
+// gizmo). 'open' ... 'close' make the commands pushed between them one group: undo and redo move a
+// whole group at a time. Groups nest (only the outermost pair counts). A push outside a group is
+// a group of one. Undo applies a group's commands last to first, redo first to last.
+//
+// MERGING. Typing a word should undo as one step, not as one per letter. 'pushMerging' offers the
+// new command to the previous group's last command (the editor's function decides, e.g. "adjacent
+// insert at the end of it") when that group has one command and the same tag, and nothing has
+// called 'breakMerge' since (the editor calls it on a caret move, a pause or a save; undo and
+// redo call it themselves).
+//
+// SAVE POINT. 'markSaved' remembers where the history stood; 'isDirty' says whether it stands
+// elsewhere now (undoing back to the saved point is clean again; a push after undoing past it
+// makes the saved point unreachable, so the document stays dirty).
+//
+// The model is the linear stack every editor uses (a new command after an undo throws the redo
+// branch away); an undo TREE (Emacs undo-tree, Vim) is not built.
+
+pub struct History[C] {
+  cmds List[C];                 // every recorded command, oldest first
+  ends List[usize];             // for each group, the index in cmds just after its last command
+  tags List[u32];               // for each group, the tag it was pushed with
+  top usize = 0usize;           // groups 0 .. top are applied; top .. are the redo stack
+  depth u32 = 0u32;             // open() nesting
+  groupTag u32 = 0u32;
+  mergeOk bool = false;         // the last group may take another command by merging
+  saved i64 = 0i64;             // the value of 'top' at the save point, or -1 when it is out of reach
+
+  pub fn make() History[C] {
+    new History[C](List[C].empty(), List[usize].empty(), List[u32].empty());
+  }
+
+  // The commands up to (not including) group g's first
+  fn startOf(self &, g usize) usize {
+    if g == 0usize {0usize;} else {*ends[g - 1usize];}
+  }
+
+  // A new command or group throws the redo stack away
+  fn dropRedo(self &mut) {
+    if top < ends.len() {
+      imm keep = startOf(top);
+      cmds.truncate(keep);
+      ends.truncate(top);
+      tags.truncate(top);
+      if saved > i64.from(top) {saved = -1i64;}
+    }
+  }
+
+  // ---- recording ----
+
+  // Begins a group; commands pushed until the matching 'close' undo and redo together
+  pub fn open(self &mut, tag u32) {
+    if depth == 0u32 {
+      dropRedo();
+      groupTag = tag;
+      mergeOk = false;
+    }
+    depth = depth + 1u32;
+  }
+
+  // Ends a group. An empty group leaves no step behind
+  pub fn close(self &mut) {
+    if depth == 0u32 {return;}
+    depth = depth - 1u32;
+    if depth == 0u32 {
+      imm from = startOf(top);
+      if cmds.len() > from {
+        ends.push(cmds.len());
+        tags.push(groupTag);
+        top = top + 1usize;
+      }
+    }
+  }
+
+  // Records a command that has ALREADY been applied. Outside a group it is a group of one
+  pub fn push(self &mut, cmd C, tag u32) {
+    if depth > 0u32 {
+      cmds.push(cmd);
+      return;
+    }
+    dropRedo();
+    cmds.push(cmd);
+    ends.push(cmds.len());
+    tags.push(tag);
+    top = top + 1usize;
+    mergeOk = true;
+  }
+
+  // Like 'push', but offers the command to the previous step first: merge(prev, next) changes prev to
+  // include next and answers true, or answers false and nothing changes
+  pub fn pushMerging[M fn(prev &mut C, next &C) bool](self &mut, cmd C, tag u32, merge &M) {
+    if depth == 0u32 and mergeOk and top > 0usize and top == ends.len() and *tags[top - 1usize] == tag
+        and startOf(top - 1usize) + 1usize == *ends[top - 1usize] {
+      imm last = cmds.len() - 1usize;
+      if merge(&mut cmds[last], &cmd) {return;}
+    }
+    push(cmd, tag);
+  }
+
+  // The next 'pushMerging' starts a new step
+  pub fn breakMerge(self &mut) {mergeOk = false;}
+
+  // ---- replay ----
+
+  pub fn canUndo(self &) bool {top > 0usize;}
+  pub fn canRedo(self &) bool {top < ends.len();}
+  pub fn undoCount(self &) usize {top;}
+  pub fn redoCount(self &) usize {ends.len() - top;}
+  pub fn commandCount(self &) usize {cmds.len();}
+
+  // Undoes the latest step: apply(target, command, true) for each command of it, last to first.
+  // False when there is nothing to undo
+  pub fn undo[T, F fn(target &mut T, c &C, undoing bool)](self &mut, target &mut T, apply &F) bool {
+    if depth > 0u32 or top == 0usize {return false;}
+    imm lo = startOf(top - 1usize);
+    mut i = *ends[top - 1usize];
+    while i > lo {
+      i = i - 1usize;
+      apply(target, cmds[i], true);
+    }
+    top = top - 1usize;
+    mergeOk = false;
+    true;
+  }
+
+  // Redoes the step undone last: apply(target, command, false) for each command, first to last
+  pub fn redo[T, F fn(target &mut T, c &C, undoing bool)](self &mut, target &mut T, apply &F) bool {
+    if depth > 0u32 or top >= ends.len() {return false;}
+    imm lo = startOf(top);
+    imm hi = *ends[top];
+    mut i = lo;
+    while i < hi {
+      apply(target, cmds[i], false);
+      i = i + 1usize;
+    }
+    top = top + 1usize;
+    mergeOk = false;
+    true;
+  }
+
+  // The tag of the step undo would undo (0 when there is none)
+  pub fn undoTag(self &) u32 {if top > 0usize {*tags[top - 1usize];} else {0u32;};}
+
+  // ---- the save point ----
+
+  pub fn markSaved(self &mut) {
+    saved = i64.from(top);
+    mergeOk = false;
+  }
+
+  pub fn isDirty(self &) bool {saved != i64.from(top);}
+
+  // Forgets all steps (a document was reloaded)
+  pub fn clear(self &mut) {
+    cmds.clear();
+    ends.clear();
+    tags.clear();
+    top = 0usize;
+    depth = 0u32;
+    mergeOk = false;
+    saved = 0i64;
+  }
+}
