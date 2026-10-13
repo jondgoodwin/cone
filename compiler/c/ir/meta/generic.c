@@ -2688,9 +2688,15 @@ static int genericWhereReadsLayout(Nodes *where) {
 
 // Does a condition decide anything about this generic's instances: a 'where'
 // on the generic, on its enum, or on a member of either or of a variant?
-static int genericMembersConditioned(StructNode *type) {
+//
+// 'typelevel' asks only for those that cannot wait: a member's clause can, when
+// an argument is unsettled (genericAbsentMembers, 'late'); an 'is' entry's and
+// the generic's own cannot.
+static int genericMembersConditioned(StructNode *type, int typelevel) {
     if (type->condis)
         return 1;
+    if (typelevel)
+        return 0;
     INode **nodesp;
     uint32_t cnt;
     for (nodelistFor(&type->nodelist, cnt, nodesp)) {
@@ -2700,29 +2706,83 @@ static int genericMembersConditioned(StructNode *type) {
     return 0;
 }
 
-static int genericConditioned(INode *generic, GenericInfo *genericinfo) {
+static int genericConditioned(INode *generic, GenericInfo *genericinfo, int typelevel) {
     if (generic->tag == FnDclTag)
         return genericWhereReadsLayout(((FnDclNode*)generic)->where);
     if (generic->tag != StructTag)
         return 0;
     StructNode *type = (StructNode*)generic;
-    if (genericWhereReadsLayout(genericinfo->where) || genericMembersConditioned(type))
+    if (genericWhereReadsLayout(genericinfo->where) || genericMembersConditioned(type, typelevel))
         return 1;
     StructNode *owner = (type->flags & HasTagField) ? structGetBaseTrait(type) : NULL;
     if (owner == NULL)
         return 0;
     if ((owner->genericinfo && genericWhereReadsLayout(owner->genericinfo->where))
-        || genericMembersConditioned(owner))
+        || genericMembersConditioned(owner, typelevel))
         return 1;
     if (owner->derived) {
         INode **nodesp;
         uint32_t cnt;
         for (nodesFor(owner->derived, cnt, nodesp)) {
-            if (genericMembersConditioned((StructNode*)*nodesp))
+            if (genericMembersConditioned((StructNode*)*nodesp, typelevel))
                 return 1;
         }
     }
     return 0;
+}
+
+// Does a 'where' list, a type parameter's bound among it, ask about argument 'i'?
+// A clause not of the form 'T is Trait' is taken to ask about every argument.
+static int genericWhereNamesArg(Nodes *where, Nodes *parms, Nodes *args, uint32_t i) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(where, cnt, nodesp)) {
+        if ((*nodesp)->tag != IsTag)
+            return 1;
+        if (genericNamedTrait(((CastNode*)*nodesp)->typ) == sendableTrait)
+            continue;
+        GenVarDclNode *parm;
+        genericClauseType((CastNode*)*nodesp, parms, args, &parm);
+        if (parm == NULL || parm == (GenVarDclNode*)nodesGet(parms, i))
+            return 1;
+    }
+    return 0;
+}
+
+// Does a condition the instance cannot wait for -- its own 'where', its
+// enum's, or an 'is' entry's -- read argument 'i' of the generic's instance?
+static int genericTypeReadsArg(INode *generic, GenericInfo *genericinfo, Nodes *args, uint32_t i) {
+    if (generic->tag != StructTag)
+        return 1;
+    StructNode *type = (StructNode*)generic;
+    StructNode *owner = (type->flags & HasTagField) ? structGetBaseTrait(type) : NULL;
+    if (genericMembersConditioned(type, 1) || (owner && genericMembersConditioned(owner, 1)))
+        return 1;
+    if (owner && owner->derived) {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(owner->derived, cnt, nodesp))
+            if (genericMembersConditioned((StructNode*)*nodesp, 1))
+                return 1;
+    }
+    if (genericWhereReadsLayout(genericinfo->where)
+        && genericWhereNamesArg(genericinfo->where, genericinfo->parms, args, i))
+        return 1;
+    if (owner && owner->genericinfo && genericWhereReadsLayout(owner->genericinfo->where)
+        && genericWhereNamesArg(owner->genericinfo->where, owner->genericinfo->parms, args, i))
+        return 1;
+    return 0;
+}
+
+// An instance of a generic made as a reference's target, whose layout waits
+// (structTargetWait): 'Option[Node]' named inside Node's own layout. Laying it
+// out first to decide a condition would lay Node out inside itself.
+static int genericArgWaiting(INode *arg) {
+    if (arg->tag == ULitTag || !isTypeNode(arg))
+        return 0;
+    INode *dcl = itypeGetTypeDcl(arg);
+    return dcl->tag == StructTag && !(dcl->flags & (TypeChecking | TypeChecked))
+        && itypeInstanceTypeArgs(dcl) != NULL;
 }
 
 // An instance of a generic enum made as a reference's target: laid out with
@@ -2870,11 +2930,25 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nod
     // layouts. Named as a reference's target, an argument's layout may be
     // waiting (structTargetWait), so where a condition decides anything about
     // the instance, the arguments are laid out first.
-    if (structTargetDeferring() && genericConditioned(nodetoclone, genericinfo)) {
+    //
+    // An argument that is an instance still waiting is left so when only a
+    // member's clause reads it: that member is decided once no layout is in
+    // flight (genericLateWhere), as it is for an argument in flight. A
+    // condition the instance cannot wait for lays it out wherever the instance
+    // is made, since an argument written as an instance waits whatever the
+    // instance is made as (fnCallTypeCheckNode).
+    int typecond = genericConditioned(nodetoclone, genericinfo, 1);
+    if ((structTargetDeferring() && genericConditioned(nodetoclone, genericinfo, 0)) || typecond) {
+        int deferring = structTargetDeferring();
         uint32_t target = structTargetSuspend();
-        for (nodesFor(written, cnt, nodesp))
-            if ((*nodesp)->tag != ULitTag)
+        uint32_t argi = 0;
+        for (nodesFor(written, cnt, nodesp)) {
+            uint32_t i = argi++;
+            if ((*nodesp)->tag == ULitTag)
+                continue;
+            if (genericArgWaiting(*nodesp) ? (typecond && genericTypeReadsArg(nodetoclone, genericinfo, written, i)) : deferring)
                 structTypeSettle(pstate, *nodesp);
+        }
         structTargetResume(target);
     }
 

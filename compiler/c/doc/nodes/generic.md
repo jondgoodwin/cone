@@ -891,7 +891,12 @@ declared one, so a type or a constraint asking before the instance is laid out
 is answered. An entry not met leaves the instance without it, and so, for Move,
 copying unless another rule makes it move: the entry can add Move, never remove
 it. `genericConditioned` counts a `condis` as reading the arguments' layouts, so
-an instance made as a reference's target settles its arguments first. An unmet
+an instance made as a reference's target settles its arguments first. When only
+a member's clause reads them (`genericConditioned` with `typelevel` set is false), an
+argument that is itself an instance still waiting to be laid out
+(`genericArgWaiting`: `Option[Node]` in `List[Option[Node]]`, made inside Node's
+own layout) is left unsettled, and the member is decided late as it is for an
+argument in flight: settling it would lay Node out inside itself. An unmet
 requirement whose argument is such an instance says why
 (`genericCondIsWhy`): the entry's condition is false there, or, asked for
 `Copy`, an `is Move if` condition is true.
