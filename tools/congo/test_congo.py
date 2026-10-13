@@ -2930,5 +2930,287 @@ class GpuFolder(unittest.TestCase):
                          ["blocks", "sample", "probe", "move", "shade", "recut", "layerEnd"])
 
 
+@unittest.skipUnless(shutil.which("git"), "Congo fetches packages with git")
+class IndexRegistries(unittest.TestCase):
+    """A package fetched by name from an index registry: a git repository of one
+    TOML file per package, each naming a repository, a commit and a folder. No
+    network: the index and the source repositories are bare repositories on this
+    disk, reached by file:// URLs."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        # Hermetic git: no user or system config (credential helpers, autocrlf), and an
+        # author for the commits Congo and the tests make
+        (self.root / "gitconfig").write_text("")
+        self.env = dict(os.environ, CONGO_HOME=str(self.root / "home"),
+                        GIT_CONFIG_GLOBAL=str(self.root / "gitconfig"), GIT_CONFIG_NOSYSTEM="1",
+                        GIT_AUTHOR_NAME="T", GIT_AUTHOR_EMAIL="t@example.com",
+                        GIT_COMMITTER_NAME="T", GIT_COMMITTER_EMAIL="t@example.com")
+        self.env.pop("CONEC", None)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    congo = Scenarios.congo
+    program_output = Scenarios.program_output
+
+    def git(self, *args: str, cwd: Path) -> str:
+        run = subprocess.run(["git", *args], cwd=cwd, env=self.env, capture_output=True, text=True)
+        self.assertEqual(run.returncode, 0, f"git {' '.join(args)}: {run.stderr}")
+        return run.stdout.strip()
+
+    def repo(self, name: str) -> tuple[Path, str]:
+        """A working repository and its bare origin: (the working folder, the
+        origin's file:// URL)."""
+        bare = self.root / "origins" / f"{name}.git"
+        bare.mkdir(parents=True)
+        self.git("init", "--quiet", "--bare", "-b", "main", cwd=bare)
+        work = self.root / "work" / name
+        work.mkdir(parents=True)
+        self.git("init", "--quiet", "-b", "main", cwd=work)
+        self.git("remote", "add", "origin", bare.as_uri(), cwd=work)
+        return work, bare.as_uri()
+
+    def commit(self, work: Path, message: str) -> str:
+        """Commit everything, push it, and answer the commit's hash."""
+        self.git("add", "-A", cwd=work)
+        self.git("commit", "--quiet", "-m", message, cwd=work)
+        self.git("push", "--quiet", "origin", "HEAD:main", cwd=work)
+        return self.git("rev-parse", "HEAD", cwd=work)
+
+    def library(self, folder: Path, name: str, body: str, imports: str = "") -> None:
+        write(folder / "congo.toml",
+              f'[package]\nname = "{name}"\nversion = "0.1.0"\noutput = "library"\n')
+        write(folder / "src" / f"{name}.cone", f"mod {name};\n\n{imports}\n{body}\n")
+
+    def answer(self, value: int) -> str:
+        return f"pub fn answer() i64 {{\n  {value}i64;\n}}\n"
+
+    def index(self, name: str = "index") -> tuple[Path, str]:
+        work, url = self.repo(name)
+        write(work / "README", "an index\n")
+        self.commit(work, "start")
+        return work, url
+
+    def entry(self, index: Path, name: str, url: str, commit: str, path: str = "") -> None:
+        write(index / f"{name}.toml", congo.index_entry_text(name, url, commit, path))
+
+    def config(self, folders: list[Path] = (), indexes: list[str] = ()) -> None:
+        listed = ", ".join(f'"{f.as_posix()}"' for f in folders)
+        urls = ", ".join(f'"{u}"' for u in indexes)
+        write(self.root / "home" / "config.toml",
+              f"[registry]\nfolders = [{listed}]\nindexes = [{urls}]\n")
+
+    def app(self, *names: str) -> Path:
+        imports = "".join(f"import {n};\n" for n in names)
+        prints = "".join(f'  stdio.print <- {n}.answer();\n  stdio.print <- "\\n";\n' for n in names)
+        write(self.root / "app.cone", f"mod app;\n\nimport stdio;\n{imports}\n"
+                                      f"fn main() i32 {{\n{prints}  0i32;\n}}\n")
+        return self.root / "app.cone"
+
+    def test_a_package_is_fetched_by_name_at_its_pinned_commit(self):
+        # Two packages in one repository, in folders, and a third at another's root
+        src, src_url = self.repo("src")
+        self.library(src / "pkgs" / "alpha", "alpha", self.answer(11))
+        self.library(src / "pkgs" / "beta", "beta", self.answer(22))
+        first = self.commit(src, "first")
+        solo, solo_url = self.repo("solo")
+        self.library(solo, "gamma", self.answer(33))
+        gamma = self.commit(solo, "gamma")
+        index, index_url = self.index()
+        self.entry(index, "alpha", src_url, first, "pkgs/alpha")
+        self.entry(index, "beta", src_url, first, "pkgs/beta")
+        self.entry(index, "gamma", solo_url, gamma)
+        self.commit(index, "entries")
+        self.config(indexes=[index_url])
+        self.app("alpha", "beta", "gamma")
+        run = self.congo("run", "app.cone", cwd=self.root)
+        self.assertEqual(self.program_output(run), "11\n22\n33\n")
+        compiled = [line.split()[1] for line in run.stdout.splitlines()
+                    if line.strip().startswith("Compiling")]
+        self.assertEqual(compiled, ["libc", "core", "stdio", "alpha", "beta", "gamma", "app"])
+        # The registry was cloned once, and alpha and beta share one checkout of src
+        self.assertEqual(run.stdout.count("Updating registry"), 1)
+        self.assertEqual(len(re.findall(r"Downloading ", run.stdout)), 2)
+        checkouts = sorted(p.parent.parent.name[:3]
+                           for p in (self.root / "home" / "src").glob("*/*/.git"))
+        self.assertEqual(checkouts, ["sol", "src"])
+        self.assertTrue((self.root / "home" / "src" / congo.url_slug(src_url) / first).is_dir())
+        # A second run looks at the index again, for its pins, and fetches nothing
+        run = self.congo("run", "app.cone", cwd=self.root)
+        self.assertEqual(self.program_output(run), "11\n22\n33\n")
+        self.assertNotIn("Downloading", run.stdout)
+        self.assertNotIn("Updating registry", run.stdout)
+
+    def test_a_push_to_the_source_changes_nothing_until_publish_moves_the_pin(self):
+        src, src_url = self.repo("src")
+        self.library(src, "alpha", self.answer(11))
+        first = self.commit(src, "first")
+        index, index_url = self.index()
+        self.entry(index, "alpha", src_url, first)
+        self.commit(index, "entry")
+        self.config(indexes=[index_url])
+        self.app("alpha")
+        self.assertEqual(self.program_output(self.congo("run", "app.cone", cwd=self.root)), "11\n")
+        # The author changes the package and pushes: consumers still build the pinned commit
+        write(src / "src" / "alpha.cone", "mod alpha;\n\n" + self.answer(99))
+        second = self.commit(src, "second")
+        run = self.congo("run", "app.cone", cwd=self.root)
+        self.assertEqual(self.program_output(run), "11\n")
+        self.assertNotIn("Downloading", run.stdout)
+        # 'congo publish', run in the package's own repository, moves the pin
+        run = self.congo("publish", cwd=src)
+        self.assertIn(f"alpha at {second[:10]}", run.stdout)
+        cache = self.root / "home" / "registry" / congo.url_slug(index_url)
+        self.assertEqual(self.git("show", "HEAD:alpha.toml", cwd=cache).splitlines()[2],
+                         f'commit = "{second}"')
+        run = self.congo("run", "app.cone", cwd=self.root)
+        self.assertEqual(self.program_output(run), "99\n")
+        self.assertIn("Downloading alpha", run.stdout)
+        # Publishing again moves nothing
+        self.assertIn("Unchanged", self.congo("publish", cwd=src).stdout)
+        # The index repository itself holds the new pin, whoever clones it
+        fresh = self.root / "fresh"
+        self.git("clone", "--quiet", index_url, str(fresh), cwd=self.root)
+        self.assertEqual(congo.tomllib.loads((fresh / "alpha.toml").read_text())["commit"], second)
+
+    def test_a_fetched_package_imports_another_by_name(self):
+        src, src_url = self.repo("src")
+        self.library(src / "a", "alpha", "pub fn answer() i64 {\n  beta.answer() + 1i64;\n}\n",
+                     imports="import beta;\n")
+        self.library(src / "b", "beta", self.answer(40))
+        commit = self.commit(src, "both")
+        index, index_url = self.index()
+        self.entry(index, "alpha", src_url, commit, "a")
+        self.entry(index, "beta", src_url, commit, "b")
+        self.commit(index, "entries")
+        self.config(indexes=[index_url])
+        self.app("alpha")
+        run = self.congo("run", "app.cone", cwd=self.root)
+        self.assertEqual(self.program_output(run), "41\n")
+
+    def test_a_folder_registry_is_searched_before_an_index_and_an_index_before_the_next(self):
+        src, src_url = self.repo("src")
+        self.library(src / "a", "alpha", self.answer(1))
+        self.library(src / "b", "beta", self.answer(2))
+        self.library(src / "c", "gamma", self.answer(3))
+        self.library(src / "other", "gamma", self.answer(30))
+        commit = self.commit(src, "all")
+        first, first_url = self.index("first")
+        second, second_url = self.index("second")
+        self.entry(first, "beta", src_url, commit, "b")
+        self.entry(first, "gamma", src_url, commit, "c")
+        self.entry(second, "alpha", src_url, commit, "a")
+        self.entry(second, "gamma", src_url, commit, "other")
+        self.commit(first, "entries")
+        self.commit(second, "entries")
+        local = self.root / "local"
+        self.library(local / "beta", "beta", self.answer(200))
+        self.config(folders=[local], indexes=[first_url, second_url])
+        self.app("alpha", "beta", "gamma")
+        run = self.congo("run", "app.cone", cwd=self.root)
+        # alpha only the second index has; beta the local folder wins; gamma the first index wins
+        self.assertEqual(self.program_output(run), "1\n200\n3\n")
+
+    def test_a_name_no_registry_has(self):
+        index, index_url = self.index()
+        self.config(indexes=[index_url])
+        self.app("nosuch")
+        run = self.congo("run", "app.cone", cwd=self.root, ok=False)
+        self.assertEqual(run.returncode, 1)
+        self.assertIn("import nosuch: no package named 'nosuch' in the registries searched:",
+                      run.stderr)
+        self.assertIn(index_url, run.stderr)
+
+    def test_an_unusable_entry_or_source_is_refused(self):
+        src, src_url = self.repo("src")
+        self.library(src, "alpha", self.answer(11))
+        commit = self.commit(src, "first")
+        index, index_url = self.index()
+        self.config(indexes=[index_url])
+        self.app("alpha")
+        cases = {
+            "commit must be a full commit hash": ("alpha", src_url, "main", ""),
+            "names the package 'other'": ("other", src_url, commit, ""),
+            "not an option or a transport helper": ("alpha", "ext::sh -c true", commit, ""),
+            "path must be a folder inside the repository": ("alpha", src_url, commit, "../x"),
+            "has no congo.toml in 'nowhere'": ("alpha", src_url, commit, "nowhere"),
+            "is the commit in that repository?": ("alpha", src_url, "0" * 40, ""),
+        }
+        for message, (name, url, pin, path) in cases.items():
+            write(index / "alpha.toml", congo.index_entry_text(name, url, pin, path))
+            self.commit(index, message)
+            run = self.congo("run", "app.cone", cwd=self.root, ok=False)
+            self.assertEqual(run.returncode, 1, message)
+            self.assertIn(message, run.stderr)
+        # A stray key is its own error
+        write(index / "alpha.toml", congo.index_entry_text("alpha", src_url, commit, "")
+              + 'version = "1"\n')
+        self.commit(index, "stray key")
+        run = self.congo("run", "app.cone", cwd=self.root, ok=False)
+        self.assertIn("'version' is not an index key", run.stderr)
+
+    def test_an_index_that_cannot_be_reached_falls_back_to_the_copy_fetched_before(self):
+        src, src_url = self.repo("src")
+        self.library(src, "alpha", self.answer(11))
+        commit = self.commit(src, "first")
+        index, index_url = self.index()
+        self.entry(index, "alpha", src_url, commit)
+        self.commit(index, "entry")
+        self.config(indexes=[index_url])
+        self.app("alpha")
+        self.congo("run", "app.cone", cwd=self.root)
+        # The index is gone: its copy from before is used, and so is the fetched source
+        congo.remove_tree(self.root / "origins" / "index.git")
+        congo.remove_tree(self.root / "origins" / "src.git")
+        run = self.congo("run", "app.cone", cwd=self.root)
+        self.assertEqual(self.program_output(run), "11\n")
+        self.assertIn("warning: cannot update the registry", run.stderr)
+
+    def test_publish_refuses_what_a_consumer_could_not_fetch(self):
+        src, src_url = self.repo("src")
+        self.library(src, "alpha", self.answer(11))
+        self.git("add", "-A", cwd=src)
+        self.git("commit", "--quiet", "-m", "local only", cwd=src)
+        index, index_url = self.index()
+        # No index configured
+        run = self.congo("publish", cwd=src, ok=False)
+        self.assertIn("no index registry to publish to", run.stderr)
+        self.config(indexes=[index_url])
+        # A commit that is not pushed
+        run = self.congo("publish", cwd=src, ok=False)
+        self.assertIn("is on no remote branch", run.stderr)
+        self.git("push", "--quiet", "origin", "HEAD:main", cwd=src)
+        # Changes not committed
+        write(src / "src" / "alpha.cone", "mod alpha;\n\n" + self.answer(12))
+        run = self.congo("publish", cwd=src, ok=False)
+        self.assertIn("has changes that are not committed", run.stderr)
+        # --registry names the index when the config lists none
+        self.git("checkout", "--quiet", "--", ".", cwd=src)
+        self.config()
+        run = self.congo("publish", "--registry", index_url, cwd=src)
+        self.assertIn("Published", run.stdout)
+        # Outside any git repository
+        loose = self.root / "loose"
+        self.library(loose, "delta", self.answer(1))
+        run = self.congo("publish", "--registry", index_url, cwd=loose, ok=False)
+        self.assertIn("is not in a git repository", run.stderr)
+
+    def test_publish_records_the_folder_of_a_package_inside_a_repository(self):
+        src, src_url = self.repo("src")
+        self.library(src / "pkgs" / "alpha", "alpha", self.answer(11))
+        commit = self.commit(src, "first")
+        index, index_url = self.index()
+        self.config(indexes=[index_url])
+        self.congo("publish", cwd=src / "pkgs" / "alpha")
+        fresh = self.root / "fresh"
+        self.git("clone", "--quiet", index_url, str(fresh), cwd=self.root)
+        self.assertEqual((fresh / "alpha.toml").read_text(),
+                         congo.index_entry_text("alpha", src_url, commit, "pkgs/alpha"))
+        self.app("alpha")
+        self.assertEqual(self.program_output(self.congo("run", "app.cone", cwd=self.root)), "11\n")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
