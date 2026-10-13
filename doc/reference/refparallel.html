@@ -369,7 +369,18 @@ fn stats(xs &amp;List[f64]) {
 			at its next look.</li>
 	</ul>
 	<p>The closures run on several workers at once, so each must be <b>Shareable</b>, as a parallel each's body must:
-		one that borrows a variable it changes, or holds an <span class="pre">Rc</span>, is refused.</p>
+		one that borrows a variable it changes, or holds an <span class="pre">Rc</span>, is refused. In a method
+		taking <span class="pre">self &amp;mut</span>, a closure that names a field borrows <span class="pre">self</span>
+		and is refused; borrow the field first (<span class="pre">imm bodies = &amp;bodies;</span>) and name that.</p>
+	<p>The nearest of many, with what was found there, is a <span class="pre">fold</span>: the accumulator is a plain
+		struct (the distance, the position, a payload), the identity has a distance above every real one, and both
+		<span class="pre">step</span> and <span class="pre">combine</span> keep the later candidate only if it is
+		<i>strictly</i> nearer, so ties go to the lowest position whatever the pieces:</p>
+<pre>
+imm best = hits.indexed().parallel().fold(new Nearest(1.0e30, 0usize),
+  (acc, p) =&gt; if p.1.d &lt; acc.d { new Nearest(p.1.d, p.0); } else { acc; },
+  (a, b) =&gt; if b.d &lt; a.d { b; } else { a; });
+</pre>
 	<p><b>The result is the same on every run, with any number of workers</b>, a float sum included: the items are
 		cut into runs by their count alone (at least 128 items to a run, and at most 256 runs; a view of 128 or
 		fewer is one run, folded at once on the caller's thread), each run is folded front to back, and the runs are

@@ -1,0 +1,104 @@
+// A method declaring 'self &uni' is called on a 'mut' local as any method is:
+// 'p.bump()' lends the local '&uni' for the call, as '(&uni p).bump()' written
+// out would. The retry takes the weakest borrow a candidate accepts, asking for
+// 'uni' last, so a method of the type taking 'self &' or 'self &mut' is reached
+// as it was. Lent so, the receiver is frozen as a written '&uni' freezes it:
+// ref_flow_uni_receiver refuses the aliasing, ref_typecheck_uni_receiver the
+// places that cannot lend. This file runs what is allowed: a struct, a field
+// and an array element of one, a temporary, a '&uni' parameter, a loop, a call
+// with a result, and a type with a method of each receiver.
+
+mod ref_uni_receiver;
+
+import stdio use *;
+import collections use *;
+
+struct P {
+  pub x i64;
+  fn bump(self &uni) { x = x + 1; }
+  fn add(self &uni, n i64) i64 { x = x + n; x; }
+}
+struct H { pub p P; pub arr Array[P, 2]; }
+
+struct Mixed {
+  pub n i64;
+  fn peek(self &) i64 { n; }
+  fn set(self &mut, v i64) { n = v; }
+  fn grow(self &uni) { n = n + 100; }
+}
+
+fn viaUniParam(q &uni P) { q.bump(); q.bump(); }
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn mk() P { new P(10); }
+
+// 1 -> 2 -> 3
+fn onLocal() i64 {
+  mut p = new P(1);
+  p.bump();
+  p.bump();
+  p.x;
+}
+
+// the call's result is the new value: 5 + 4 = 9
+fn withResult() i64 {
+  mut p = new P(5);
+  p.add(4);
+}
+
+// a field and an element of a local held by value: 5 -> 6, 8 -> 9, 7 stays
+fn places() i64 {
+  mut h = new H(new P(5), [new P(7), new P(8)]);
+  h.p.bump();
+  h.arr[1].bump();
+  h.p.x * 10000 + h.arr[0].x * 100 + h.arr[1].x;
+}
+
+// a temporary is lent for its statement: 10 -> 11 is lost, a second one 10 + 1
+fn temporary() i64 {
+  mk().bump();
+  mk().add(1);
+}
+
+// a '&uni' parameter is borrowed from, so it bumps twice; its owner is bumped
+// once more afterwards: 20 -> 22 -> 23
+fn throughParam() i64 {
+  mut a = new P(20);
+  viaUniParam(&uni a);
+  a.bump();
+  a.x;
+}
+
+// five bumps in a loop
+fn inLoop() i64 {
+  mut p = new P(0);
+  mut i = 0;
+  while i < 5 {
+    p.bump();
+    i = i + 1;
+  }
+  p.x;
+}
+
+// each method of a type reaches its own receiver: set 7, grow +100, peek reads
+fn mixed() i64 {
+  mut m = new Mixed(0);
+  m.set(7);
+  m.grow();
+  m.peek();
+}
+
+fn main() {
+  show("onLocal", onLocal());
+  show("withResult", withResult());
+  show("places", places());
+  show("temporary", temporary());
+  show("throughParam", throughParam());
+  show("inLoop", inLoop());
+  show("mixed", mixed());
+}
