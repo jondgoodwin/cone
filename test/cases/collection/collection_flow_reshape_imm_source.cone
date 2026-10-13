@@ -1,0 +1,60 @@
+// What stays refused beside collection_reshape_imm_source_success. An element a list's '[]'
+// returned is in an 'imm' path only if the source is lent '&imm': through a read-only or a mutable
+// source another name may write it. And only the list's own elements are: a method of a struct that
+// holds more than its elements (here a '&mut Item' beside the list) may hand back what it merely
+// reaches, which is not in the source's path.
+
+mod collection_flow_reshape_imm_source;
+
+import collections use *;
+
+struct Item { pub label String; pub n i32; }
+
+struct Ed {
+  pub items List[Item];
+
+  pub fn grow(self &mut, s &str) {
+    imm r = &mut items[0usize];
+    r.label.append(s);
+  }
+}
+
+// A read-only source: the caller may have lent the same value as 'ed'
+fn readOnly(ed &mut Ed, src &Ed) {
+  ed.grow(src.items[0usize].label.view());    //~ ErrorShapeReshape:5 "'grow' is handed something that reaches a 'String'"
+}
+
+fn readOnlyNamed(ed &mut Ed, src &Ed) {
+  imm item = src.items[0usize];
+  ed.grow(item.label.view());                 //~ ErrorShapeReshape:5 "'grow' is handed something that reaches a 'String'"
+}
+
+// A mutable source
+fn mutSource(ed &mut Ed, src &mut Ed) {
+  ed.grow(src.items[0usize].label.view());    //~ ErrorShapeReshape:5 "'grow' is handed something that reaches a 'String'"
+}
+
+// A cache whose 'get' may return the '&mut Item' it holds: that Item is not in the source's path
+struct Cache {
+  pub items List[Item];
+  pub fallback &mut Item;
+
+  pub fn get(self &, i usize) &Item {
+    if i > 100usize { fallback; } else { items[i]; }
+  }
+}
+
+struct Ed2 {
+  pub c Cache;
+
+  pub fn grow(self &mut, s &str) {
+    imm r = &mut c.items[0usize];
+    r.label.append(s);
+  }
+}
+
+fn viaMethod(ed &mut Ed2, src &imm Cache) {
+  ed.grow(src.get(0usize).label.view());      //~ ErrorShapeReshape:5 "'grow' is handed something that reaches a 'String'"
+}
+
+fn main() {}

@@ -51,6 +51,8 @@ typedef struct {
     uint8_t nroots;     // a shape loan whose collection is function-local storage: how many of 'roots' (else 0)
     uint8_t rootsext;   // a shape loan's collection may be storage the function does not own
     uint8_t globalview; // a shape loan's collection is a 'mut' global, or reached from one: any call may write it
+    uint8_t elemview;   // a receiver's loan whose method returned an element out of the receiver's own block
+                        // (loanElemViewSet): a borrow it carries is of that element, wherever else it is reached
     uint32_t roots[3];  // the local variables (walk indexes) whose storage it points into
 } Loan;
 
@@ -291,6 +293,7 @@ uint32_t loanMake(INode *site, Place *pl, INode *perm) {
     loan->nroots = 0;
     loan->rootsext = 0;
     loan->globalview = 0;
+    loan->elemview = 0;
     // Linked from its root variable, so an access finds it
     loan->next = pathVars[pl->var].loans;
     pathVars[pl->var].loans = id;
@@ -337,6 +340,7 @@ uint32_t loanCaller(uint32_t var, uint32_t part) {
     loan->nroots = 0;
     loan->rootsext = 0;
     loan->globalview = 0;
+    loan->elemview = 0;
     mapPut(parm, 0, loanCallerKey(part), id);
     return id;
 }
@@ -2256,6 +2260,22 @@ int loanExcludesWriters(uint32_t entry) {
     if (loan->kind == LoanShared)
         return !loanAliasHeld(loan->place.var);
     return loanIsExclusive(entry);
+}
+
+Place *loanPlaceOf(uint32_t entry) {
+    return &loans[entry & LoanIdMask].place;
+}
+
+void loanElemViewSet(uint32_t loan) {
+    loans[loan].elemview = 1;
+}
+
+int loanElemView(uint32_t entry) {
+    return loans[entry & LoanIdMask].elemview;
+}
+
+int loanIsCallerOwn(uint32_t entry) {
+    return loans[entry & LoanIdMask].kind == LoanCaller && loans[entry & LoanIdMask].part == LifePartOwn;
 }
 
 // Where a loan marked as a borrow into a shape-changing value points: its own place,
