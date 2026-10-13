@@ -3928,6 +3928,10 @@ static void structHashCheck(StructNode *node) {
         else if (fldtype->tag == StructTag && !(fldtype->flags & (TraitType | EnumType))
             && genericTypeIs(field->vtype, hashtrait))
             continue;
+        // An owner of text, So[str] or Rc[str], is Hash by the compiler's grant (its
+        // hash is str's, which feeds the bytes)
+        else if (fldtype->tag == RefTag && genericTypeIs(field->vtype, hashtrait))
+            continue;
         else {
             errorMsgNode((INode*)field, ErrorHashField,
                 "%s declares Hash and writes no `hash`, and its field %s is %s, which is not Hash. Declare it Hash, or write a `hash` of your own that feeds what identifies %s.",
