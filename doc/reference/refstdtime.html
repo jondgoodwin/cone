@@ -724,7 +724,8 @@ at 3600000 ms: 1 fired: 200
 		<span class="pre">TimedOut</span> with its buffer, never run. One already running cannot be stopped, and is
 		answered after the grace without its buffer.</li>
 	</ul>
-	<p>A timer has no separate deadline: its time is its deadline.</p>
+	<p>A timer has no separate deadline: its time is its deadline. Only its cancel group's deadline can end it
+		earlier, answering <span class="pre">TimedOut</span>.</p>
 
 	<h3 id="io-cancel">Cancelling</h3>
 	<p><span class="pre">lp.cancel(id)</span> asks an operation or a timer to end. It is a request, so the operation
@@ -742,8 +743,9 @@ at 3600000 ms: 1 fired: 200
 		is a group whose operations submitted with <span class="pre">submitIn</span> (or <span class="pre">externalIn</span>) answer
 		<span class="pre">TimedOut</span> by <span class="pre">d</span>; <span class="pre">g.childUntil(d)</span> is a child
 		with the tighter of <span class="pre">d</span> and its parent's deadline; and a timer joined with
-		<span class="pre">afterIn</span> belongs to the group for its <i>cancel</i> only, answering
-		<span class="pre">Done</span> at its own time whatever the group's deadline.</p>
+		<span class="pre">afterIn</span> is bound by the deadline too: due before it, the timer answers
+		<span class="pre">Done</span> at its own time; due after it, the timer answers <span class="pre">TimedOut</span>
+		at the deadline.</p>
 <pre>
 // (helpers: waitFor polls until n answers are in 'out'; how and say print an answer's
 // token, outcome and whether its buffer came back; pair makes two connected
@@ -784,7 +786,7 @@ fn main() {
   lp.afterIn(t1 + Duration.fromMillis(200), Target.Here(6u64), g);
   waitFor(&amp;mut lp, &amp;mut out, 2usize);
   sayAll(&amp;mut out);
-  printStr(if t1.elapsed() &gt;= Duration.fromMillis(200) {"the timer waited for its own 200 ms\n";} else {"the timer ended early\n";});
+  printStr(if t1.elapsed() &lt; Duration.fromMillis(200) {"the timer did not wait for its own 200 ms\n";} else {"the timer waited for its own 200 ms\n";});
 
   imm h = CancelGroup.make();
   lp.submitIn(Op.Recv(a, pool.mustTake(100usize)), Target.Here(7u64), h, forever());
@@ -805,9 +807,9 @@ token 1: Done, buffer none
 token 3: TimedOut, buffer back
 not before the deadline
 token 4: TimedOut, buffer back
+token 6: TimedOut, buffer none
 token 5: TimedOut, buffer back
-token 6: Done, buffer none
-the timer waited for its own 200 ms
+the timer did not wait for its own 200 ms
 token 8: Cancelled, buffer none
 token 7: Cancelled, buffer back
 0 in flight
@@ -815,8 +817,9 @@ token 7: Cancelled, buffer back
 	<p>Answers arrive in the order they were decided, not the order they were submitted: the cancelled timer (token 2)
 		was decided at once, and the 20 millisecond timer (token 1) only when its time came. The receive with a 50
 		millisecond deadline (token 3) answers <span class="pre">TimedOut</span> with its buffer; the one whose deadline had
-		already passed (token 4) was never started. In the group with a 40 millisecond deadline, the receive (token 5) times
-		out and the timer (token 6) still answers <span class="pre">Done</span> at its own 200 milliseconds. The cancelled
+		already passed (token 4) was never started. In the group with a 40 millisecond deadline, the timer (token 6), due
+		at 200 milliseconds, answers <span class="pre">TimedOut</span> at the deadline, at once and without a buffer; the
+		receive (token 5) answers a moment later, once the kernel has given its buffer back. The cancelled
 		group answers its timer and its receive <span class="pre">Cancelled</span> and leaves nothing in flight.</p>
 
 	<p style="text-align: right; margin-top: 2em;"><a href="refstdhttp.html"><img alt="_" src="next.png" /></a></p>
