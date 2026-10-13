@@ -26,8 +26,7 @@ pub actor Connection {
 
   // over UDP
   addr SocketAddr;
-  outbox Option[PumpOutbox];
-  ep Option[Endpoint];
+  ep Option[Endpoint];         // its packets go out through the endpoint's socket
   reported i64;                // the deadline the endpoint was last told of
 
   // in-process and simulated
@@ -35,10 +34,10 @@ pub actor Connection {
   sim LinkSim;                 // simulated: the link to the partner
 
   fn init(self &new, kind u32, id u32, handler EventHandler, cfg NetConfig, session u64, addr SocketAddr,
-      outbox Option[PumpOutbox], ep Option[Endpoint], link LinkConfig, seed u64) {
+      ep Option[Endpoint], link LinkConfig, seed u64) {
     *self = new Self(kind: kind, id: id, handler: handler, peer: ConnectionCore.make(cfg, session, Instant.now()),
       open: true, forced: false, forcedReason: CloseReason.Local,
-      addr: addr, outbox: outbox, ep: ep, reported: -1i64,
+      addr: addr, ep: ep, reported: -1i64,
       partner: None[Connection], sim: LinkSim.make(link, seed));
     if kind == connUdp {
       self.announce();
@@ -214,8 +213,8 @@ pub actor Connection {
       if kind == connSim {
         sim.send(now, p);
       } else {
-        match &outbox {
-          case imm o &Some[PumpOutbox] { o.send(addr, p); }
+        match &ep {
+          case imm e &Some[Endpoint] { e.send(addr, p); }
           else {}
         }
       }
@@ -282,7 +281,6 @@ pub actor Connection {
       else {}
     }
     ep = None[Endpoint];
-    outbox = None[PumpOutbox];
     partner = None[Connection];
   }
 }
@@ -303,8 +301,8 @@ pub struct ConnectionPair {
 pub fn pairInProcess(ha EventHandler, idA u32, hb EventHandler, idB u32) ConnectionPair {
   imm cfg = NetConfig.defaults();
   imm none = SocketAddr.localhost(0u16);
-  imm a = new Connection(connDirect, idA, ha, cfg, 0u64, none, None[PumpOutbox], None[Endpoint], LinkConfig.perfect(), 0u64);
-  imm b = new Connection(connDirect, idB, hb, cfg, 0u64, none, None[PumpOutbox], None[Endpoint], LinkConfig.perfect(), 0u64);
+  imm a = new Connection(connDirect, idA, ha, cfg, 0u64, none, None[Endpoint], LinkConfig.perfect(), 0u64);
+  imm b = new Connection(connDirect, idB, hb, cfg, 0u64, none, None[Endpoint], LinkConfig.perfect(), 0u64);
   a.link(b);
   b.link(a);
   new ConnectionPair(a, b);
@@ -355,8 +353,8 @@ fn simMain(mut x SimArgs) u32 {
 pub fn pairSimulated(cfg NetConfig, toB LinkConfig, toA LinkConfig, seed u64, ha EventHandler, idA u32, hb EventHandler, idB u32) SimulatedPair {
   imm none = SocketAddr.localhost(0u16);
   imm session = 0x5151515151515151u64;
-  imm a = new Connection(connSim, idA, ha, cfg, session, none, None[PumpOutbox], None[Endpoint], toB, seed);
-  imm b = new Connection(connSim, idB, hb, cfg, session, none, None[PumpOutbox], None[Endpoint], toA, seed ^ 0xA5A5A5A5A5A5A5A5u64);
+  imm a = new Connection(connSim, idA, ha, cfg, session, none, None[Endpoint], toB, seed);
+  imm b = new Connection(connSim, idB, hb, cfg, session, none, None[Endpoint], toA, seed ^ 0xA5A5A5A5A5A5A5A5u64);
   a.link(b);
   b.link(a);
   mut stopTx Sender[u32];
