@@ -219,7 +219,8 @@ void returnTypeCheck(TypeCheckState *tstate, BreakRetNode *retnode) {
             if (why)
                 errorMsgNode((INode*)retnode, ErrorFnRefConv, "%s", why);
             else
-                errorMsgNode((INode*)retnode, ErrorInvType, "Return expression type does not match return type on function");
+                errorMsgNode((INode*)retnode, ErrorInvType, "Return expression type does not match return type on function%s",
+                    iexpImmBorrowHint(retnode->exp, fnsig->rettype));
             errorMsgNode((INode*)fnsig->rettype, ErrorInvType, "This is the declared function's return type");
         }
     }
