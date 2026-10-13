@@ -94,6 +94,11 @@ int iexpMultiCheckedCoerceInfer(INode *expectType, INode **inferredType, INode *
 // the calling convention they are marked for, which ErrorFnRefConv says
 void iexpMismatchMsg(INode *node, INode *totype, int code, const char *msg);
 
+// The hint iexpMismatchMsg appends when a plain '&' borrow was given where an
+// '&imm' reference is wanted ("; ...write `&imm n`..."), or "" when that is not
+// the cause. For a refusal reported without iexpMismatchMsg.
+const char *iexpImmBorrowHint(INode *node, INode *totype);
+
 // Return true if an lval, and 0 if not.
 int iexpIsLval(INode *lval);
 
