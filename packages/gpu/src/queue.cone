@@ -207,6 +207,61 @@ pub struct CommandQueue {
     fns.cmdFillBuffer(cmd, buffer.backend.buffer, offset, size, 0u32);
   }
 
+  // Write the 'width' x 'height' texels at ('x', 'y') of 'texture' (a 2-D,
+  // single-layer color texture made with TEXTURE_USAGE_COPY_DST that shaders
+  // sample, its first level) from 'data': the rows from the top, each
+  // 'bytesPerRow' bytes apart (at least a row, a multiple of the texel's size
+  // and of 4). What the rest of the texture holds is kept. The bytes are
+  // copied now, and into the texture by the GPU ahead of whatever is
+  // submitted next, after the frames already submitted that sample it:
+  // WebGPU's 'queue.writeTexture' with an origin and a size. A texture
+  // never written must be written whole once ('writeTexture') first, for its
+  // layout to be one that holds contents.
+  pub fn writeTextureRegion(self &mut, texture &Texture, data *u8, bytesPerRow u32, x u32, y u32, width u32, height u32) {
+    if (texture.usage & TEXTURE_USAGE_COPY_DST) == 0u32 {
+      fail("writeTextureRegion: the texture was not made with TEXTURE_USAGE_COPY_DST");
+      return;
+    }
+    if texture.backend.kind != KIND_SAMPLED or texture.dimension != TEXTURE_DIMENSION_2D
+        or texture.depthOrArrayLayers != 1u32 or texture.format == TEXTURE_FORMAT_DEPTH32_FLOAT {
+      fail("writeTextureRegion: only a single-layer 2-D color texture shaders sample is written");
+      return;
+    }
+    if width == 0u32 or height == 0u32 { return; }
+    if x + width > texture.width or y + height > texture.height {
+      fail("writeTextureRegion: the region runs past the texture's edge");
+      return;
+    }
+    imm texel = bytesPerTexel(texture.format);
+    if bytesPerRow < width * texel or bytesPerRow % texel != 0u32 or (bytesPerRow & 3u32) != 0u32 {
+      fail("writeTextureRegion: bytesPerRow is less than a row, or not a multiple of a texel and of 4");
+      return;
+    }
+    imm size = u64.from(bytesPerRow) * u64.from(height);
+    if isNull(uploadCommands(self)) or !stagingRoom(self, size) { return; }
+    imm cmd = uploadCommands(self);
+    imm i = usize.from(backend.frameIndex);
+    imm at = backend.frames[i].stagingUsed;
+    libc.memcpy(backend.frames[i].staging.mapped + usize.from(at), data, usize.from(size));
+    backend.frames[i].stagingUsed = at + size;
+    // The rest of the texture is kept, so the transition starts from the
+    // layout it rests in; earlier samplings of it are done first
+    transition(&fns, cmd, texture.backend.image, vulkan.IMAGE_ASPECT_COLOR_BIT, restLayout(texture.backend.kind),
+      vulkan.IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+      vulkan.ACCESS_2_MEMORY_READ_BIT | vulkan.ACCESS_2_MEMORY_WRITE_BIT,
+      vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT, vulkan.ACCESS_2_TRANSFER_WRITE_BIT);
+    imm region = new vulkan.BufferImageCopy(bufferOffset: at, bufferRowLength: bytesPerRow / texel,
+      imageSubresource: new vulkan.ImageSubresourceLayers(),
+      imageOffset: new vulkan.Offset3D(i32.from(x), i32.from(y), 0i32),
+      imageExtent: new vulkan.Extent3D(width, height, 1u32));
+    fns.cmdCopyBufferToImage(cmd, backend.frames[i].staging.buffer, texture.backend.image,
+      vulkan.IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1u32, &region as *vulkan.BufferImageCopy);
+    transition(&fns, cmd, texture.backend.image, vulkan.IMAGE_ASPECT_COLOR_BIT, vulkan.IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+      restLayout(texture.backend.kind), vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+      vulkan.ACCESS_2_TRANSFER_WRITE_BIT, vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+      vulkan.ACCESS_2_MEMORY_READ_BIT | vulkan.ACCESS_2_MEMORY_WRITE_BIT);
+  }
+
   // Write all of 'texture' (one made with TEXTURE_USAGE_COPY_DST, a color
   // texture shaders sample or a storage texture; its first level) from
   // 'data': its rows from the top, each 'bytesPerRow' bytes apart (at least

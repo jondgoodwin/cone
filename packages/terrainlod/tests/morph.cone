@@ -1,0 +1,141 @@
+// The geomorph on the CPU (lodmath.cone's coarseHeight and vertexHeight),
+// against heights worked out by hand, and the property that makes a split
+// or a merge invisible: a node's vertices all morphed to the coarser level
+// lie exactly on the coarser level's own triangulated surface.
+//
+// By hand, on a node at lattice (ix, iz) = (0, 0), cell c, sampled from the
+// source as buildHeights does it (the point of vertex (i, j) is (i c, j c)):
+//  1. A plane h = 0.5 x - 0.25 z + 3 is linear, so every average of two or
+//     four of its samples along a line through them is the plane's own value
+//     there: the coarse height equals the fine height at every vertex.
+//  2. h = 0.01 x^2 (c = 2): the odd vertex on an x row, x = i c, has
+//     neighbours at x - c and x + c, whose mean is 0.01 (x^2 + c^2) = h + 0.04;
+//     a vertex odd in j only has the same x on both sides, so the mean is h.
+//  3. The saddle h = x z (c = 1): vertex (i, j) has h = i j. The coarse
+//     quad of a vertex odd in both is (i >> 1, j >> 1); when its parity sum
+//     is even the diagonal is (i - 1, j - 1) to (i + 1, j + 1), whose mean is
+//     ((i - 1)(j - 1) + (i + 1)(j + 1)) / 2 = i j + 1; when odd, from
+//     (i + 1, j - 1) to (i - 1, j + 1): ((i + 1)(j - 1) + (i - 1)(j + 1)) / 2
+//     = i j - 1. So (1, 1) rises by 1, (3, 1) falls by 1, (1, 3) falls by 1,
+//     and (3, 3) rises by 1.
+//  4. The blend: vertexHeight at k is fine + k (coarse - fine).
+//  5. The surface: for random heights, morph every vertex (k = 1), find the
+//     height of the fine triangulation at 3000 random points, and compare it
+//     with the coarse triangulation built only from the even samples (each
+//     coarse quad split by the same parity rule). They must be equal.
+
+mod morph;
+
+import testing use *;
+import stdio use *;
+import libc;
+import collections use *;
+import geomath use *;
+import terrainlod use *;
+
+fn near(got f32, want f64, within f64, label &Array[u8]) { expectFloat(f64.from(got), want, within, label); }
+
+fn plane(x f32, z f32) f32 { 0.5 * x - 0.25 * z + 3.; }
+fn parabola(x f32, z f32) f32 { 0.01 * x * x; }
+fn saddle(x f32, z f32) f32 { x * z; }
+
+// A hash of two integers into [0, 1): the random heights of case 5
+fn rnd(a i32, b i32) f32 {
+  mut h = u32.from(a * 374761393 + b * 668265263) ^ 2147483647u32;
+  h = (h ^ (h >> 13u32)) * 1274126177u32;
+  h = h ^ (h >> 16u32);
+  f32.from(h & 65535u32) / 65535.;
+}
+fn bumpy(x f32, z f32) f32 { 10. * rnd(i32.from(libc.floorf(x + 0.5)), i32.from(libc.floorf(z + 0.5))); }
+
+fn main() i32 {
+  mut cfg = TerrainConfig.make();
+  cfg.cell = 1.;
+  cfg.nodeCells = 16u32;
+  imm side = cfg.patchSide();
+
+  // 1. A plane
+  imm hp = buildHeights(&cfg, 0u32, 0i32, 0i32, 1., &plane);
+  expectInt(i64.from(hp.len()), i64.from(side * side), "patch: side x side numbers");
+  near(patchAt(&hp, side, 0i32, 0i32), 3d, 0.00001d, "plane: the corner sample (0, 0) is 3");
+  near(patchAt(&hp, side, 4i32, 2i32), 0.5d * 4d - 0.25d * 2d + 3d, 0.00001d, "plane: (4, 2)");
+  near(patchAt(&hp, side, -2i32, -2i32), 0.5d * -2d + 0.25d * 2d + 3d, 0.00001d, "plane: the border sample (-2, -2)");
+  near(patchAt(&hp, side, 18i32, 18i32), 0.5d * 18d - 0.25d * 18d + 3d, 0.0001d, "plane: the border sample (18, 18)");
+  mut bad = 0;
+  mut j = 0i32;
+  while j <= 16i32 {
+    mut i = 0i32;
+    while i <= 16i32 {
+      if libc.fabsf(coarseHeight(&hp, side, i, j) - patchAt(&hp, side, i, j)) > 0.0001 { bad = bad + 1; }
+      i = i + 1i32;
+    }
+    j = j + 1i32;
+  }
+  expectInt(i64.from(bad), 0i64, "plane: coarse equals fine at every vertex");
+
+  // 2. A parabola in x, cell 2
+  imm hq = buildHeights(&cfg, 0u32, 0i32, 0i32, 2., &parabola);
+  near(coarseHeight(&hq, side, 3i32, 4i32), 0.01d * 36d + 0.04d, 0.0001d, "parabola: odd i, even j: h + 0.04 (x = 6)");
+  near(patchAt(&hq, side, 3i32, 4i32), 0.36d, 0.0001d, "parabola: the fine value there");
+  near(coarseHeight(&hq, side, 4i32, 3i32), 0.01d * 64d, 0.0001d, "parabola: even i, odd j: unchanged (x = 8)");
+  near(coarseHeight(&hq, side, 4i32, 4i32), 0.64d, 0.0001d, "parabola: even, even: itself");
+
+  // 3. The saddle, cell 1
+  imm hs = buildHeights(&cfg, 0u32, 0i32, 0i32, 1., &saddle);
+  near(coarseHeight(&hs, side, 1i32, 1i32), 2d, 0.0001d, "saddle: (1, 1) is 1 + 1 = 2");
+  near(coarseHeight(&hs, side, 3i32, 1i32), 2d, 0.0001d, "saddle: (3, 1) is 3 - 1 = 2");
+  near(coarseHeight(&hs, side, 1i32, 3i32), 2d, 0.0001d, "saddle: (1, 3) is 3 - 1 = 2");
+  near(coarseHeight(&hs, side, 3i32, 3i32), 10d, 0.0001d, "saddle: (3, 3) is 9 + 1 = 10");
+  near(coarseHeight(&hs, side, 5i32, 3i32), 14d, 0.0001d, "saddle: (5, 3), bi = 2, bj = 1 odd: 15 - 1 = 14");
+  near(coarseHeight(&hs, side, 2i32, 1i32), 2d, 0.0001d, "saddle: (2, 1): the mean of (2, 0) and (2, 2) = (0 + 4) / 2");
+
+  // 4. The blend
+  near(vertexHeight(&hs, side, 1i32, 1i32, 0.), 1d, 0.0001d, "blend 0: fine");
+  near(vertexHeight(&hs, side, 1i32, 1i32, 0.25), 1.25d, 0.0001d, "blend 0.25: 1 + 0.25 (2 - 1)");
+  near(vertexHeight(&hs, side, 1i32, 1i32, 1.), 2d, 0.0001d, "blend 1: coarse");
+
+  // 5. The surface of random heights, morphed fully, against the coarse triangulation
+  imm hr = buildHeights(&cfg, 0u32, 0i32, 0i32, 1., &bumpy);
+  mut worst = 0.;
+  mut seed = 12345u32;
+  mut n = 0;
+  while n < 3000 {
+    seed = seed * 1664525u32 + 1013904223u32;
+    imm u = f32.from((seed >> 8u32) & 65535u32) / 65536. * 16.;
+    seed = seed * 1664525u32 + 1013904223u32;
+    imm v = f32.from((seed >> 8u32) & 65535u32) / 65536. * 16.;
+    // The fine triangulation of the morphed vertices (the terrain's own rule)
+    imm a = i32.from(libc.floorf(u));
+    imm b = i32.from(libc.floorf(v));
+    imm fu = u - f32.from(a);
+    imm fv = v - f32.from(b);
+    imm m00 = vertexHeight(&hr, side, a, b, 1.);
+    imm m10 = vertexHeight(&hr, side, a + 1i32, b, 1.);
+    imm m01 = vertexHeight(&hr, side, a, b + 1i32, 1.);
+    imm m11 = vertexHeight(&hr, side, a + 1i32, b + 1i32, 1.);
+    imm fine = if diagonalRises(a, b) {
+      if fv >= fu { m00 + (m11 - m01) * fu + (m01 - m00) * fv; } else { m00 + (m10 - m00) * fu + (m11 - m10) * fv; }
+    } else {
+      if fu + fv <= 1. { m00 + (m10 - m00) * fu + (m01 - m00) * fv; } else { m11 + (m01 - m11) * (1. - fu) + (m10 - m11) * (1. - fv); }
+    };
+    // The coarse triangulation from the even samples alone: cells of 2
+    imm ca = a >> 1i32;
+    imm cb = b >> 1i32;
+    imm cu = (u - 2. * f32.from(ca)) / 2.;
+    imm cv = (v - 2. * f32.from(cb)) / 2.;
+    imm c00 = patchAt(&hr, side, 2i32 * ca, 2i32 * cb);
+    imm c10 = patchAt(&hr, side, 2i32 * ca + 2i32, 2i32 * cb);
+    imm c01 = patchAt(&hr, side, 2i32 * ca, 2i32 * cb + 2i32);
+    imm c11 = patchAt(&hr, side, 2i32 * ca + 2i32, 2i32 * cb + 2i32);
+    imm coarse = if diagonalRises(ca, cb) {
+      if cv >= cu { c00 + (c11 - c01) * cu + (c01 - c00) * cv; } else { c00 + (c10 - c00) * cu + (c11 - c10) * cv; }
+    } else {
+      if cu + cv <= 1. { c00 + (c10 - c00) * cu + (c01 - c00) * cv; } else { c11 + (c01 - c11) * (1. - cu) + (c10 - c11) * (1. - cv); }
+    };
+    imm diff = libc.fabsf(fine - coarse);
+    if diff > worst { worst = diff; }
+    n = n + 1;
+  }
+  expectBool(worst < 0.00005, true, "random heights: the fully morphed fine surface is the coarse surface (largest difference under 5e-5 over 3000 points)");
+  done();
+}
