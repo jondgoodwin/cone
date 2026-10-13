@@ -118,7 +118,18 @@ void genericFnSigCat(char *buf, size_t size, FnSigNode *sig);
 FnSigNode *genericClosureSig(TypeCheckState *pstate, FnDclNode *generic, Nodes *args, uint32_t firstparm,
         uint32_t argi, INode **refperm);
 
-// Constraints: 'where T is Name and ... or ...', and the inline '[T Name + Name]'.
+// What an argument of a generic call is wanted as, read off the parameter it fills
+// with the type parameters the other (checked) arguments and the type expected of
+// the call's value say; NULL where some are still unsaid. See generic.c.
+INode *genericFnArgExpect(TypeCheckState *pstate, FnDclNode *generic, Nodes *args, uint32_t argi,
+        uint32_t firstparm, INode *expectType);
+INode *genericStructArgExpect(TypeCheckState *pstate, StructNode *generic, Nodes *args, uint32_t argi,
+        INode *expectType);
+
+// Does a generic variant have a type parameter none of its fields names ('None')?
+int genericVariantParmUnnamed(StructNode *variant);
+
+// Constraints:'where T is Name and ... or ...', and the inline '[T Name + Name]'.
 //
 // A 'where' list holds conditions, every one of which must hold: the operands
 // of the 'and's at the top of what was written, each in its own element. A
