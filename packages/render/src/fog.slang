@@ -36,17 +36,21 @@
 // Light is in the frame's units: the sun's irradiance in lux and the ambient
 // in nits if the scene is, times the exposure the frame was drawn with.
 //
-// ANY PERSPECTIVE PROJECTION. The volume's depth is the PLANAR distance in
-// front of the camera (what the clip space's w holds), and nothing here reads
-// the projection's depth row (fxcommon.slang's 'viewDepth' does, and is right
-// only for a plain perspective): a reflected camera's oblique near plane
-// (camera.cone) puts x and y terms in that row, and a distance recovered from
-// it is wrong across the picture. Instead, with 'h' the inverse
-// view-projection of a pixel's clip position (x, y, z, 1), the planar
-// distance of the point is 1 / h.w, and the point at planar distance d on a
-// pixel's ray is 'eye + rayOf(uv) * d'. The eye is the camera's own position,
-// a reflected camera's reflection (Camera.position): the point it is lit and
-// shaded from.
+// OBLIQUE PROJECTIONS. The volume's depth is the PLANAR distance in front of
+// the camera (what the clip space's w holds). For a plain perspective that is
+// fxcommon.slang's 'viewDepth' of the depth, from the projection's depth row
+// alone. A reflected camera's oblique near plane (camera.cone) puts x and y
+// terms in that row, and a distance recovered from it is wrong across the
+// picture. So a frame whose camera is clipped (misc.w, 'plainProjection'
+// false) takes the planar distance from the inverse view-projection instead:
+// with 'h' the inverse view-projection of a pixel's clip position
+// (x, y, z, 1), the planar distance of the point is 1 / h.w, and the point at
+// planar distance d on a pixel's ray is 'eye + rayOf(uv) * d'. The eye is the
+// camera's own position, a reflected camera's reflection (Camera.position):
+// the point it is lit and shaded from. A plain perspective keeps the first,
+// exactly the arithmetic the main view has always had: temporal anti-aliasing
+// turns a one-level rounding difference in the fog into outliers of tens of
+// levels at silhouettes and on foliage, so the main view's pixels must not move.
 //
 // The inject and integrate passes' group: the frame uniform (0), the sun's
 // shadow parameters (4), the cascade map (5, depth array) and its comparison
@@ -157,6 +161,12 @@ float phaseHG(float c, float g) {
     return (1.0 - g2) / (4.0 * FX_PI * pow(max(denom, 1e-4), 1.5));
 }
 
+// Whether the frame's camera has a plain perspective projection (its depth row
+// holds the depth alone), as against a clipped one (an oblique near plane)
+bool plainProjection(FxFrame f) {
+    return f.misc.w < 0.5;
+}
+
 // The vector from the eye along the ray through the pixel at 'uv', for one
 // metre of planar distance: the point at planar distance d is eye + rayOf(uv)
 // * d. A point of the ray whose inverse view-projection is h = (X, W) lies at
@@ -195,7 +205,13 @@ void injectMain(uint3 id : SV_DispatchThreadID) {
     float2 uv = (float2(id.xy) + jitter.xy) / float2(float(fog.gridX), float(fog.gridY));
     float k = float(id.z) + jitter.z;
     float d = boundary(k);
-    float3 world = fx.cameraPosition.xyz + rayOf(fx, uv) * d;
+    float3 world;
+    if (plainProjection(fx)) {
+        float zNdc = fx.projection.y / d - fx.projection.x;
+        world = worldPosition(fx, uv, zNdc);
+    } else {
+        world = fx.cameraPosition.xyz + rayOf(fx, uv) * d;
+    }
 
     // The medium here
     float density = fog.density + fog.heightDensity * exp(-fog.heightFalloff * max(world.y - fog.baseHeight, 0.0));
@@ -211,12 +227,23 @@ void injectMain(uint3 id : SV_DispatchThreadID) {
 
     // Blended with last frame's volume where the same point was
     if (fog.temporal < 1.0 && fx.misc.z < 0.5) {
-        // where it was in last frame's picture, and its planar distance then (the clip w)
-        float4 c = mul(fx.previousViewProjection, float4(world, 1.0));
-        float dBefore = c.w;
-        float2 before = float2(c.x / dBefore * 0.5 + 0.5, 0.5 - c.y / dBefore * 0.5);
+        // where it was in last frame's picture, and its planar distance then
+        float2 before;
+        float dBefore;
+        bool ahead = true;
+        if (plainProjection(fx)) {
+            float3 b = projectToUv(fx.previousViewProjection, world);
+            before = b.xy;
+            dBefore = viewDepth(fx, b.z);
+        } else {
+            // (the clip w)
+            float4 c = mul(fx.previousViewProjection, float4(world, 1.0));
+            dBefore = c.w;
+            before = float2(c.x / dBefore * 0.5 + 0.5, 0.5 - c.y / dBefore * 0.5);
+            ahead = dBefore > 0.0;
+        }
         float w = log(dBefore / fog.nearDistance) / log(fog.farDistance / fog.nearDistance);
-        if (dBefore > 0.0 && before.x >= 0.0 && before.x <= 1.0 && before.y >= 0.0 && before.y <= 1.0 && w >= 0.0 && w <= 1.0) {
+        if (ahead && before.x >= 0.0 && before.x <= 1.0 && before.y >= 0.0 && before.y <= 1.0 && w >= 0.0 && w <= 1.0) {
             float4 old = readVolume.SampleLevel(linearClamp, float3(before.xy, w), 0.0);
             now = lerp(old, now, fog.temporal);
         }
@@ -268,7 +295,10 @@ FullscreenOutput fullscreenMain(uint id : SV_VulkanVertexID) {
 float4 applyMain(FullscreenOutput input) : SV_Target {
     int2 p = int2(input.position.xy);
     float z = sceneDepth.Load(int3(p, 0));
-    float d = z >= 1.0 ? fog.farDistance : planarDepth(fx, input.uv, z);
+    float d = fog.farDistance;
+    if (z < 1.0) {
+        d = plainProjection(fx) ? viewDepth(fx, z) : planarDepth(fx, input.uv, z);
+    }
     float b = clamp(log(max(d, fog.nearDistance) / fog.nearDistance) / log(fog.farDistance / fog.nearDistance), 0.0, 1.0) * float(fog.slices);
     // Layer k holds the integral to the END of slice k (boundary k + 1): the
     // value at boundary b is read at the layer coordinate b - 0.5
