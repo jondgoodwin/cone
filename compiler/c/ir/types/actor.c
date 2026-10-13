@@ -218,6 +218,14 @@ ActorInfo *actorOfState(INode *type) {
     return NULL;
 }
 
+ActorInfo *actorOfHandle(INode *type) {
+    for (uint32_t i = 0; i < actorCnt; ++i) {
+        if ((INode *)actors[i]->handle == type)
+            return actors[i];
+    }
+    return NULL;
+}
+
 ActorInfo *actorOfSelfFn(FnDclNode *fn) {
     for (uint32_t i = 0; i < actorCnt; ++i) {
         if (fn != NULL && actors[i]->selffn == fn)

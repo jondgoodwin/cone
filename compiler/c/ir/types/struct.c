@@ -3928,6 +3928,10 @@ static void structHashCheck(StructNode *node) {
         else if (fldtype->tag == StructTag && !(fldtype->flags & (TraitType | EnumType))
             && genericTypeIs(field->vtype, hashtrait))
             continue;
+        // An owner of text, So[str] or Rc[str], is Hash by the compiler's grant (its
+        // hash is str's, which feeds the bytes)
+        else if (fldtype->tag == RefTag && genericTypeIs(field->vtype, hashtrait))
+            continue;
         else {
             errorMsgNode((INode*)field, ErrorHashField,
                 "%s declares Hash and writes no `hash`, and its field %s is %s, which is not Hash. Declare it Hash, or write a `hash` of your own that feeds what identifies %s.",
@@ -4034,8 +4038,11 @@ static void structCheckMembers(StructNode *node) {
             "%s may not declare Sized or DynSized: the compiler grants both, by whether a type's size is known at compile time or carried by a reference to it.",
             &node->namesym->namestr);
 
-    // 'ShapeKeeping' is found where a value becomes a virtual reference marked with it
-    if (structDeclaresTrait(node, shapeKeepingTrait))
+    // 'ShapeKeeping' is found where a value becomes a virtual reference marked with it.
+    // A package's include file, which has no bodies to find it in, says what the
+    // package's own compile found (shapeKeepRecordable)
+    if (structDeclaresTrait(node, shapeKeepingTrait)
+        && !(node->lexer != NULL && (node->lexer->flags & LexLineMarks)))
         errorMsgNode((INode*)node, ErrorShapeKeepingDeclared,
             "%s may not declare ShapeKeeping: the compiler finds it, from the methods a virtual reference marked '+ ShapeKeeping' dispatches to, where a value becomes one.",
             &node->namesym->namestr);

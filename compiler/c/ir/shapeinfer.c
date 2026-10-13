@@ -1695,7 +1695,10 @@ static void skSay(FnDclNode *meth, StructNode *impl, StructNode *cont, INode *hi
 // 'final': no body will be checked later, so one not ready is taken as reshaping
 static int skMethod(FnDclNode *meth, StructNode *impl, char *why, size_t size, int final) {
     if (!siVisible(meth)) {
-        if (why)
+        if (why && impl && siIsRecorded(impl))
+            snprintf(why, size, "%s is a type of a package whose include file has no bodies, and does not record it as `ShapeKeeping`: a method of it reshapes a collection it reaches through a shared mutable path, or is code the compiler could not read when that package was compiled, so `%s` is assumed to reshape what it reaches",
+                &impl->namesym->namestr, &meth->namesym->namestr);
+        else if (why)
             snprintf(why, size, "%s `%s` is %s whose body the compiler cannot read here (an include file left it out, an extern, a function reference held in a variable or a virtual call), so it is assumed to reshape what it reaches",
                 impl && closureOfStruct((INode *)impl) ? "this closure's" : impl ? (const char *)&impl->namesym->namestr : "the function",
                 &meth->namesym->namestr, impl ? "a method" : "a function");
@@ -1753,6 +1756,10 @@ static int skAsk(StructNode *impl, StructNode *trait, char *why, size_t size, in
         }
         return pending ? ShapeKeepsPending : ShapeKeepsYes;
     }
+    // A type of a package whose include file is read here: the file left the bodies
+    // out, and says what the package's own compile found of them (shapeKeepRecordable)
+    if (siIsRecorded(impl) && structDeclaresTrait(impl, shapeKeepingTrait))
+        return ShapeKeepsYes;
     FnDclNode *meths[24];
     int nmeths = skMethods(impl, trait, meths, 24);
     int pending = 0;
@@ -1764,6 +1771,35 @@ static int skAsk(StructNode *impl, StructNode *trait, char *why, size_t size, in
             pending = 1;
     }
     return pending ? ShapeKeepsPending : ShapeKeepsYes;
+}
+
+// Does the include file record this type of the package as keeping the shape of what
+// a caller borrows? Every method a trait could dispatch to (a public one with a
+// 'self', not generic or inline: skMethods's choice) is asked as a virtual call asks
+// it, wherever the trait is declared, and at least one must be there to record.
+// A type whose source declares it already is as written
+int shapeKeepRecordable(StructNode *st) {
+    if ((st->flags & (TraitType | EnumType)) || st->genericinfo != NULL || dclIsInstance((INode *)st)
+        || siIsRecorded(st) || structDeclaresTrait(st, shapeKeepingTrait))
+        return 0;
+    int found = 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&st->nodelist, cnt, nodesp)) {
+        if ((*nodesp)->tag != FnDclTag || !((*nodesp)->flags & FlagMethFld) || structIsWholeEnumMethod(*nodesp))
+            continue;
+        FnDclNode *meth = (FnDclNode *)*nodesp;
+        if (meth->genericinfo || meth->where || (meth->flags & FlagInline) || inodeIsPrivate((INode *)meth)
+            || meth->vtype == NULL || meth->vtype->tag != FnSigTag)
+            continue;
+        FnSigNode *sig = (FnSigNode *)meth->vtype;
+        if (sig->parms->used == 0 || ((VarDclNode *)nodesGet(sig->parms, 0))->namesym != selfName)
+            continue;
+        found = 1;
+        if (skMethod(meth, st, NULL, 0, 1) != ShapeKeepsYes)
+            return 0;
+    }
+    return found;
 }
 
 int shapeKeepsVia(StructNode *impl, StructNode *trait, char *why, size_t size) {

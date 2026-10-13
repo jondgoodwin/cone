@@ -582,6 +582,12 @@ void importNameRes(NameResState *pstate, ImportNode *node) {
                 else if (inodeIsPrivate(found) && !node->isextends)
                     errorMsgNode(*itemp, ErrorNotPublic, "%s is private to %s, so '*' never folds it; there is nothing to leave out.",
                         &name->namestr, &src->namesym->namestr);
+                // A public name the star passes over for a reason of its own is as
+                // absent: the module's finalizer, and a clone, which are its own
+                // lifecycle's (importStarAdmits)
+                else if (name == finalName || name == cloneName)
+                    errorMsgNode(*itemp, ErrorBadFold, "%s belongs to %s's own lifecycle, so '*' never folds it; there is nothing to leave out.",
+                        &name->namestr, &src->namesym->namestr);
             }
         }
         return;

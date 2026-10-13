@@ -1294,7 +1294,10 @@ has none (the parser records where the header and the list end, `DclSpan.hdrend`
 and `isend`). The methods that show it are cut out of the file, so an importer
 cannot read them; it takes a non-generic type from an include file as the file
 says (flow's "Which types change shape"). A generic type goes in whole, with its
-methods, and each importer reads its instances itself.
+methods, and each importer reads its instances itself. **A type whose methods the
+compiler found to reshape nothing a caller borrows carries that too**
+(`shapeKeepRecordable`): `ShapeKeeping` joins the same `is` list, for the importer's
+`+ ShapeKeeping` reference to take the type by (flow's `shapeKeepsVia`).
 
 **A global whose type was inferred gets its type written in** [Q6], the one
 thing printed from the IR: a number type, a struct — an instance of a generic
@@ -1779,7 +1782,10 @@ declaration's `DclPrivate` bit where the source declared the name, the alias's o
 `FlagPub` where the source folded it. A private name of the source is
 `ErrorNotPublic` where a selective clause names it and is passed over by a star
 clause, so it is `ErrorNotPublic` after `but` too: seen from outside a module a
-private name behaves as a missing one does, and there is nothing to leave out. A
+private name behaves as a missing one does, and there is nothing to leave out.
+The source's `final` and `clone` are passed over by a star clause as well
+(`importStarAdmits`), so after `but` they are `ErrorBadFold`, in `importNameRes`
+and, for a `mod` line's default, `modDefaultFoldCheck`. A
 name the source has not got, listed or after `but`, is `ErrorNoMbr`;
 the source module's own name is passed over by a star clause and is `ErrorBadFold`
 where a list names it, because the import bound it already. (A module's `extends`

@@ -54,7 +54,8 @@ fn newSession(repo &Path, reg Registry, out &Path, mode &str, defines &List[Stri
 fn buildPackage(repo &Path, pkg Package, mode &str, defines &List[String]) Path {
   imm folders = registryFolders(repo);
   imm out = buildFolder(&pkg, mode);
-  mut s = newSession(repo, readRegistry(folders), &out, mode, defines);
+  imm indexes = registryIndexes();
+  mut s = newSession(repo, readRegistry(folders, &indexes), &out, mode, defines);
   imm top = s.reg.add(pkg);
   match build(&mut s, top) {
     case mut ok Ok {
@@ -71,6 +72,10 @@ fn buildPackage(repo &Path, pkg Package, mode &str, defines &List[String]) Path 
 fn build(s &mut Session, top usize) Result[Path, String] {
   imm isLibrary = s.reg.packages[top].output.equals("library");
   imm name = s.reg.packages[top].name.copy();
+  match restore(&mut s.reg, top) {
+    case is Ok {}
+    case imm e Error { return Error[Path, String](e.copy()); }
+  }
   mut plan = emptyPlan();
   match buildOrder(&s.reg, top) {
     case mut ok Ok { plan <=> ok; }
@@ -118,6 +123,10 @@ fn buildProgram(s &mut Session, file &Path, dest &Path) Result[Path, String] {
   }
   imm exeName = cat(pkg.name.view(), ".exe");
   imm top = s.reg.add(pkg);
+  match restore(&mut s.reg, top) {
+    case is Ok {}
+    case imm e Error { return Error[Path, String](e.copy()); }
+  }
   mut plan = emptyPlan();
   match buildOrder(&s.reg, top) {
     case mut ok Ok { plan <=> ok; }

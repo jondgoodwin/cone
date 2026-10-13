@@ -405,7 +405,8 @@ void stdlibInit(int ptrsize) {
     // reaches through a shared mutable path, its parameters and its captures
     // alike (shapeKeepsVia, checked where the value becomes the reference).
     // Inferred, never declared (ErrorShapeKeepingDeclared), and written only
-    // after a '+' in a virtual reference's type.
+    // after a '+' in a virtual reference's type; a package's generated include
+    // file records it on its types (shapeKeepRecordable).
     shapeKeepingTrait = newBuiltinTrait(shapeKeepingTraitName);
     // 'Sized' and 'DynSized' [Jon 6 Oct]: what a type's size is. 'Sized': the
     // size is known at compile time, so a value may be held, and a reference

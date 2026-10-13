@@ -20,6 +20,7 @@ congo test --bless         write a new test's expected output from a run
 congo clean                delete the package's build/ folder
 congo clean hello.cone     delete a lone file's build
 congo run -D FAST -D N=2   a constant for isDefined and definedInt (provisional)
+congo publish              point an index registry at this package's current commit
 ```
 
 `-D NAME` and `-D NAME=123`, given to `build`, `run` or `test`, are passed to
@@ -192,8 +193,68 @@ folders = ["D:/cone/mypackages", "~/cone/vendor"]
 ```
 
 A relative folder is relative to the config file. The first package of a name
-found wins. There is no download and no version choice yet: the copy the
-registries find is the one used.
+found wins. There is no version choice yet: the copy the registries find is the
+one used.
+
+### Index registries: a package fetched by name
+
+A registry of the other kind is an **index**: a git repository of one TOML file
+per package, `<name>.toml`, which says where the package's source is. Indexes
+are listed in the machine config, and are searched after every folder, in the
+order listed, for a name no folder holds:
+
+```toml
+[registry]
+folders = ["D:/cone/mypackages"]
+indexes = ["https://example.com/team/registry.git"]
+```
+
+An index file holds four keys, and any other is an error:
+
+```toml
+name = "noise"
+git = "https://github.com/jondgoodwin/cone.git"
+commit = "0123456789abcdef0123456789abcdef01234567"
+path = "packages/noise"
+```
+
+`git` is the repository the source is in, `commit` the one full commit hash
+that is fetched (a push to that repository changes nothing a build gets), and
+`path`, which may be left out, the package's folder in that repository, since
+one repository can hold many packages (the Cone repository does). The file is
+named for the package, and the manifest at `path` must name the same package.
+
+Before a build, Congo's **restore** step walks the imports of the package, and
+of each package it imports, and for every name no folder holds asks the
+indexes. A package found is fetched by `git`: the repository at that commit,
+alone (`--depth 1`), into `<Congo home>/src/<repository>-<hash>/<commit>/`,
+shared by every package of that repository at that commit, and taken from there
+on later builds. The build then resolves every import as it always did, so a
+fetched package is built, linked and cached like any other; `core` is fetched
+too when no folder holds it. An index is cloned into `<Congo home>/registry/`
+the first time a name needs it and brought up to date once in each run that
+looks in it; with no network the clone already there is used, with a warning.
+Nothing is looked up when no index is configured.
+
+**Congo needs `git` on `PATH` for this, and uses whatever credentials git has
+for the URLs**, which is how an index and the repositories it names can be
+private. It never prompts for a password: with none, git fails and Congo says
+so. The fetched packages are plain checkouts: a package whose C library is not
+in the package itself (`tls` expects OpenSSL under the repository's `deps/`,
+which `tools/deps/fetch.py` fills) has to be set up as it says before it builds.
+
+```
+congo publish                 write <name>.toml for this package into the first index, and push it
+congo publish --registry URL  the same, into this index (its URL, or a folder)
+```
+
+`congo publish`, run in a package's folder, records where the package is: the
+remote `origin` of its repository, its folder in it, and the current commit.
+It refuses a package with uncommitted changes, and a commit on no remote
+branch, since nobody could fetch it. Publishing again moves the pin; it is for
+whoever can push to the index, which is whoever git lets. `tools/registry/make_index.py`
+writes the entries for the Cone repository's own packages at one commit, and
+`tools/registry/exit_bar.py` is the clean-machine test of all this.
 
 **Imports between packages must not loop.** Congo orders the packages so that
 each is built after everything it imports, and refuses a loop, naming it:
@@ -917,7 +978,7 @@ Congo is being ported to Cone, in stages, so that nothing needs Python. The
 port is a package here, beside `congo.py`: `tools/congo/congo.toml`, its root
 `src/congo.cone` (the only file that imports) and the files joining its module
 (`commands.cone`, `header.cone`, `paths.cone`, `registry.cone`, `modules.cone`,
-`order.cone`, `linker.cone`, `build.cone`, `gpu.cone`, `test.cone`, `sha1.cone`, `util.cone`). `congo.py`
+`index.cone`, `order.cone`, `linker.cone`, `build.cone`, `gpu.cone`, `test.cone`, `sha1.cone`, `util.cone`). `congo.py`
 builds it first:
 
 ```
@@ -1026,5 +1087,8 @@ Where it differs from `congo.py`:
   part's kernel over a mesher in `sdfmesh/gpu/`, say). Only a marked package
   can be imported into GPU code today, and a marked package has no `gpu/`.
 - A static library file (`.lib`/`.a`) for a library package; it builds an object.
-- An internet registry, downloads, a lockfile and version selection.
+- A lockfile and version selection; a registry with accounts or public
+  registration (an index is written by whoever can push to it); `congo update`.
+- An index on Linux with the Cone Congo, which is Windows only; `congo.py` fetches
+  on any system with git.
 - Incremental builds: Congo rebuilds everything, every time.
