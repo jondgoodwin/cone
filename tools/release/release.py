@@ -6,6 +6,7 @@ the install scripts, the checksums and the Downloads page.
     python tools/release/release.py windows [--hash REV] ...  conec for Windows, and cone-<hash8>-windows-x64.zip
     python tools/release/release.py linux   [--hash REV] ...  conec for Linux x86-64, and cone-<hash8>-linux-x86_64.tar.gz
     python tools/release/release.py stage   [--hash REV] ...  checksums, install.ps1, install.sh and download.html
+                                            (--no-windows: a Linux-only release, without install.ps1)
     python tools/release/release.py fetch-python              the pinned Windows embeddable Python (a download)
 
 Everything is built from `git archive REV`, never from a working tree, so the
@@ -256,7 +257,8 @@ Put the bin folder on your PATH (install.ps1 does), then:
 
 congo builds with conec, Cone's compiler, and links with Microsoft's linker, so
 Microsoft's C++ Build Tools (Visual Studio Build Tools, the "Desktop development
-with C++" workload) must be installed. Everything else is in this folder:
+with C++" workload) must be installed, and git must be on the PATH (Congo fetches
+packages by name with it). Everything else is in this folder:
 
     bin\\        conec.exe, conestd.lib (the runtime every program links), congo.cmd
     python\\     Python's embeddable distribution, which runs congo (nothing to install)
@@ -406,10 +408,10 @@ Put the bin folder on your PATH (install.sh links conec and congo into
 Prerequisites, which this archive does not carry (on Ubuntu 24.04, the tested
 system, or another distribution with glibc 2.38 or later):
 
-    sudo apt install build-essential python3
+    sudo apt install build-essential python3 git
     sudo apt install libssl-dev        # only for programs using the tls package
 
-python3 must be 3.11 or later. The packages that wrap Windows-only C libraries
+python3 must be 3.11 or later (git lets Congo fetch packages by name). The packages that wrap Windows-only C libraries
 (sdl, and what draws with it) do not build on Linux.
 
     bin/         conec (LLVM linked in statically), libconestd.a (the runtime
@@ -482,17 +484,27 @@ def stage(args: argparse.Namespace) -> None:
     out = Path(args.out).resolve() / short
     win = out / f"cone-{short}-windows-x64.zip"
     lin = out / f"cone-{short}-linux-x86_64.tar.gz"
-    missing = [p for p in (win, lin) if not p.is_file()]
+    needed = (lin,) if args.no_windows else (win, lin)
+    missing = [p for p in needed if not p.is_file()]
     if missing:
         raise ReleaseError("missing: " + ", ".join(str(p) for p in missing))
     base = f"{SITE}/downloads/{short}"
+    browser = Path(args.browser) if args.browser else None
     values = {
         "HASH": full, "HASH8": short, "SITE": SITE, "BASE": base,
-        "WIN_FILE": win.name, "WIN_SHA256": sha256_of(win), "WIN_SIZE": human(win.stat().st_size),
         "LINUX_FILE": lin.name, "LINUX_SHA256": sha256_of(lin), "LINUX_SIZE": human(lin.stat().st_size),
     }
-    sums = [f"{values['WIN_SHA256']}  {win.name}", f"{values['LINUX_SHA256']}  {lin.name}"]
-    browser = Path(args.browser) if args.browser else None
+    sums = [f"{values['LINUX_SHA256']}  {lin.name}"]
+    if args.no_windows:
+        # Linux-only release: the page says the Windows compiler is coming, install.ps1 is
+        # not staged and a leftover Windows zip is ignored, so the sums list only what ships
+        values["WINDOWS_COMPILER"] = (HERE / "windows-compiler-soon.html.in").read_text(encoding="utf-8")
+        values["HASH_FILE_WIN"] = browser.name if browser is not None else "FILE"
+    else:
+        values.update(WIN_FILE=win.name, WIN_SHA256=sha256_of(win), WIN_SIZE=human(win.stat().st_size))
+        sums.insert(0, f"{values['WIN_SHA256']}  {win.name}")
+        values["WINDOWS_COMPILER"] = fill((HERE / "windows-compiler.html.in").read_text(encoding="utf-8"), values)
+        values["HASH_FILE_WIN"] = win.name
     if browser is not None:
         values.update(BROWSER_FILE=browser.name, BROWSER_SHA256=sha256_of(browser),
                       BROWSER_SIZE=human(browser.stat().st_size))
@@ -501,14 +513,14 @@ def stage(args: argparse.Namespace) -> None:
     else:
         values["BROWSER_ENTRY"] = (HERE / "browser-placeholder.html.in").read_text(encoding="utf-8")
     (out / "SHA256SUMS").write_text("\n".join(sums) + "\n", encoding="utf-8", newline="\n")
-    for name in ("install.ps1", "install.sh"):
+    for name in ("install.sh",) if args.no_windows else ("install.ps1", "install.sh"):
         template = (HERE / f"{name}.in").read_text(encoding="utf-8")
         text = fill(template, values)
         newline = "\r\n" if name.endswith(".ps1") else "\n"
         (out / name).write_text(text, encoding="utf-8", newline=newline)
     page = (REPO / "conesite" / "public" / "download.html").read_text(encoding="utf-8")
     (out / "download.html").write_text(fill(page, values), encoding="utf-8", newline="\n")
-    say(f"staged {out}: SHA256SUMS install.ps1 install.sh download.html")
+    say(f"staged {out}: SHA256SUMS " + ("" if args.no_windows else "install.ps1 ") + "install.sh download.html")
     for line in sums:
         say(line)
 
@@ -577,6 +589,8 @@ def main() -> int:
     common(p)
     p.add_argument("--full-hash", help="the 40-digit commit, on a machine with no clone")
     p.add_argument("--browser", help="the browser archive, once 3D Web has built one")
+    p.add_argument("--no-windows", action="store_true",
+                   help="a Linux-only release: no Windows zip or install.ps1; the page says the Windows compiler is coming")
     p = sub.add_parser("fetch-python", help="download the pinned embeddable Python")
     p.add_argument("--dest", default=str(REPO / "build" / "release-inputs"))
 
