@@ -1,0 +1,320 @@
+// ======== Numbers: RFC 8259's grammar, kept as text, read on request ========
+//
+// A JSON number is kept as the text it was written in. Asking for an i64, a
+// u64 or an f64 reads that text then, exactly:
+// - an integer is the digits' value, and refused when it is out of range or
+//   not whole ('1e3' and '2.50e1' are whole; '0.5' and '1e-1' are not);
+// - an f64 is the nearest one, the even one on a tie, as the C library's
+//   'strtod' answers for every input (a test compares the two); a value past
+//   the f64 range is refused rather than made infinite.
+
+pub enum NumberError {
+  NotANumber;
+  NotInteger;
+  OutOfRange;
+
+  // One line saying what was wrong
+  pub fn message(self &NumberError) String {
+    match self {
+      case is NotANumber { String.from("the value is not a number"); }
+      case is NotInteger { String.from("the number is not a whole number"); }
+      case is OutOfRange { String.from("the number is outside the range of the type asked for"); }
+    }
+  }
+}
+
+fn isDigit(c u8) bool { c >= '0' and c <= '9'; }
+
+// What went wrong scanning a number, or 0
+const numOk = 0u8;
+const numNoDigits = 1u8;
+const numLeadingZero = 2u8;
+const numNoFraction = 3u8;
+const numNoExponent = 4u8;
+
+// Where the number starting at pos ends: the grammar
+//   '-'? ( '0' | [1-9] [0-9]* ) ( '.' [0-9]+ )? ( [eE] [+-]? [0-9]+ )?
+// 'problem' is numOk, or what is wrong, and at that place the scan stops
+struct NumberScan {
+  pub end usize;
+  pub problem u8;
+}
+
+fn scanNumber(t &Array[u8], pos usize) NumberScan {
+  mut i = pos;
+  if i < t.len and t[i] == '-' { i = i + 1usize; }
+  if i >= t.len or not isDigit(t[i]) { return new NumberScan(i, numNoDigits); }
+  if t[i] == '0' {
+    i = i + 1usize;
+    if i < t.len and isDigit(t[i]) { return new NumberScan(i, numLeadingZero); }
+  }
+  else {
+    while i < t.len and isDigit(t[i]) { i = i + 1usize; }
+  }
+  if i < t.len and t[i] == '.' {
+    i = i + 1usize;
+    if i >= t.len or not isDigit(t[i]) { return new NumberScan(i, numNoFraction); }
+    while i < t.len and isDigit(t[i]) { i = i + 1usize; }
+  }
+  if i < t.len and (t[i] == 'e' or t[i] == 'E') {
+    i = i + 1usize;
+    if i < t.len and (t[i] == '+' or t[i] == '-') { i = i + 1usize; }
+    if i >= t.len or not isDigit(t[i]) { return new NumberScan(i, numNoExponent); }
+    while i < t.len and isDigit(t[i]) { i = i + 1usize; }
+  }
+  new NumberScan(i, numOk);
+}
+
+// Whether text is, all of it, a JSON number
+pub fn isNumberText(text &Array[u8]) bool {
+  imm s = scanNumber(text, 0usize);
+  s.problem == numOk and s.end == text.len;
+}
+
+// -------- text to a Dec --------
+
+// The digits of a number the scan accepted, as a Dec; neg says if it has a
+// '-'. An exponent past what any f64 needs is held at that, which the Dec's
+// own range checks then call too large or too small.
+fn decOfNumber(t &Array[u8], d &mut Dec, neg &mut bool) {
+  mut i = 0usize;
+  *neg = false;
+  if t[0usize] == '-' { *neg = true; i = 1usize; }
+  d.digits.clear();
+  d.trunc = false;
+  // 'seen' counts every digit after the leading zeros, kept or not
+  mut seen = 0i32;
+  mut hasPoint = false;
+  mut pointAt = 0i32;
+  mut lead = 0i32;
+  while i < t.len and t[i] != 'e' and t[i] != 'E' {
+    imm c = t[i];
+    if c == '.' {
+      hasPoint = true;
+      pointAt = seen;
+    }
+    elif c == '0' and seen == 0i32 {
+      // A zero before the first digit; after the point it moves the point back
+      if hasPoint { lead = lead + 1i32; }
+    }
+    else {
+      seen = seen + 1i32;
+      if d.digits.len() < decMaxDigits { d.digits.push(c - '0'); }
+      elif c != '0' { d.trunc = true; }
+    }
+    i = i + 1usize;
+  }
+  // The point follows the integer digits, or is where the text put it, less
+  // the zeros right after it
+  if hasPoint { d.dp = pointAt - lead; } else { d.dp = seen; }
+  if i < t.len {
+    // The exponent
+    i = i + 1usize;
+    mut eneg = false;
+    if t[i] == '+' or t[i] == '-' {
+      eneg = t[i] == '-';
+      i = i + 1usize;
+    }
+    mut e = 0i32;
+    while i < t.len {
+      if e < 100000i32 { e = e * 10i32 + i32.from(t[i] - '0'); }
+      i = i + 1usize;
+    }
+    if eneg { d.dp = d.dp - e; } else { d.dp = d.dp + e; }
+  }
+  decTrim(d);
+}
+
+// -------- integers --------
+
+// The value of a Dec that holds a whole number, as a magnitude
+fn decMagnitude(d &Dec) Result[u64, NumberError] {
+  if d.digits.len() == 0usize { return Ok[u64, NumberError](0u64); }
+  if d.dp > 20i32 { return Error[u64, NumberError](NumberError.OutOfRange); }
+  imm nd = d.digits.len();
+  if d.dp <= 0i32 or nd > usize.from(d.dp) { return Error[u64, NumberError](NumberError.NotInteger); }
+  imm most = 18446744073709551615u64;
+  mut n = 0u64;
+  mut i = 0usize;
+  while i < nd {
+    imm dg = u64.from(*d.digits[i]);
+    // Whether n * 10 + dg would pass a u64, asked without overflowing
+    if n > (most - dg) / 10u64 { return Error[u64, NumberError](NumberError.OutOfRange); }
+    n = n * 10u64 + dg;
+    i = i + 1usize;
+  }
+  while i < usize.from(d.dp) {
+    if n > most / 10u64 { return Error[u64, NumberError](NumberError.OutOfRange); }
+    n = n * 10u64;
+    i = i + 1usize;
+  }
+  Ok[u64, NumberError](n);
+}
+
+// The number text as an i64: NotANumber for text that is not a JSON number,
+// NotInteger for one with a fraction that is not zero (or an exponent that
+// leaves one), OutOfRange past i64's range
+pub fn numberI64(text &Array[u8]) Result[i64, NumberError] {
+  imm s = scanNumber(text, 0usize);
+  if s.problem != numOk or s.end != text.len { return Error[i64, NumberError](NumberError.NotANumber); }
+  mut d = decNew();
+  mut neg = false;
+  decOfNumber(text, &mut d, &mut neg);
+  match decMagnitude(&d) {
+    case imm m Ok {
+      if not neg {
+        if m > 9223372036854775807u64 { return Error[i64, NumberError](NumberError.OutOfRange); }
+        return Ok[i64, NumberError](i64.from(m));
+      }
+      if m > 9223372036854775808u64 { return Error[i64, NumberError](NumberError.OutOfRange); }
+      if m == 0u64 { return Ok[i64, NumberError](0i64); }
+      Ok[i64, NumberError](-1i64 - i64.from(m - 1u64));
+    }
+    case imm e Error { Error[i64, NumberError](e); }
+  }
+}
+
+// The number text as a u64; a '-' is OutOfRange, even before a zero that
+// makes no difference ('-0' is 0)
+pub fn numberU64(text &Array[u8]) Result[u64, NumberError] {
+  imm s = scanNumber(text, 0usize);
+  if s.problem != numOk or s.end != text.len { return Error[u64, NumberError](NumberError.NotANumber); }
+  mut d = decNew();
+  mut neg = false;
+  decOfNumber(text, &mut d, &mut neg);
+  match decMagnitude(&d) {
+    case imm m Ok {
+      if neg and m != 0u64 { return Error[u64, NumberError](NumberError.OutOfRange); }
+      Ok[u64, NumberError](m);
+    }
+    case imm e Error { Error[u64, NumberError](e); }
+  }
+}
+
+// -------- floats --------
+
+// 10^k as an f64, k from 0 to 22, which is exact
+fn pow10(k i32) f64 {
+  mut x = 1d;
+  mut i = k;
+  while i > 0i32 {
+    x = x * 10d;
+    i = i - 1i32;
+  }
+  x;
+}
+
+// The nearest f64 to the number text, the even one on a tie, with the sign of
+// a '-0'. OutOfRange past the f64 range (about 1.8e308); a value too small
+// for the smallest denormal is a zero.
+pub fn numberF64(text &Array[u8]) Result[f64, NumberError] {
+  imm s = scanNumber(text, 0usize);
+  if s.problem != numOk or s.end != text.len { return Error[f64, NumberError](NumberError.NotANumber); }
+  mut d = decNew();
+  mut neg = false;
+  decOfNumber(text, &mut d, &mut neg);
+  mut v = 0d;
+  if d.digits.len() > 0usize {
+    imm nd = d.digits.len();
+    mut done = false;
+    // Up to 15 digits are exact in an f64, and so is 10^k up to 22: one
+    // multiply or divide, each correctly rounded, is the right answer
+    if not d.trunc and nd <= 15usize {
+      mut m = 0u64;
+      mut i = 0usize;
+      while i < nd {
+        m = m * 10u64 + u64.from(*d.digits[i]);
+        i = i + 1usize;
+      }
+      imm e = d.dp - i32.from(nd);
+      if e == 0i32 {
+        v = f64.from(m);
+        done = true;
+      }
+      elif e < 0i32 and e >= -22i32 {
+        v = f64.from(m) / pow10(-e);
+        done = true;
+      }
+      elif e > 0i32 and e <= 22i32 {
+        v = f64.from(m) * pow10(e);
+        done = true;
+      }
+      elif e > 22i32 and e - 22i32 <= 15i32 - i32.from(nd) {
+        // The digits scaled up to 15 are still exact
+        v = f64.from(m * u64.from(pow10(e - 22i32))) * pow10(22i32);
+        done = true;
+      }
+    }
+    if not done {
+      if not decToF64(&mut d, &mut v) { return Error[f64, NumberError](NumberError.OutOfRange); }
+    }
+  }
+  if neg { v = -v; }
+  Ok[f64, NumberError](v);
+}
+
+// Digits of d from lo up to hi (not past its end), then zeros if hi is past
+fn appendDigits(s &mut String, d &Dec, lo usize, hi usize) {
+  mut i = lo;
+  while i < hi {
+    if i < d.digits.len() { s.appendByte('0' + *d.digits[i]); } else { s.appendByte('0'); }
+    i = i + 1usize;
+  }
+}
+
+// The shortest text that reads back as x: as many digits as tell it from its
+// neighbours, never more than 17. A whole value up to 21 digits and a small
+// one down to a millionth are written out ('100', '0.000001'); any other has an
+// exponent ('1e+21', '5e-324'). None for NaN and infinity, which JSON cannot
+// write.
+pub fn formatF64(x f64) Option[String] {
+  imm bits = x as u64;
+  if ((bits >> 52u64) & 0x7FFu64) == 0x7FFu64 { return None; }
+  mut s = String.empty();
+  imm neg = (bits >> 63u64) != 0u64;
+  if neg { s.appendByte('-'); }
+  if (bits & 0x7FFFFFFFFFFFFFFFu64) == 0u64 {
+    s.appendByte('0');
+    return Some[String](s);
+  }
+  mut d = decNew();
+  decShortest(&mut d, if neg {-x;} else {x;});
+  imm nd = d.digits.len();
+  imm sci = d.dp - 1i32;
+  if sci >= -6i32 and sci < 21i32 {
+    if d.dp <= 0i32 {
+      s.append("0.");
+      mut z = d.dp;
+      while z < 0i32 {
+        s.appendByte('0');
+        z = z + 1i32;
+      }
+      appendDigits(&mut s, &d, 0usize, nd);
+    }
+    elif usize.from(d.dp) >= nd {
+      appendDigits(&mut s, &d, 0usize, usize.from(d.dp));
+    }
+    else {
+      appendDigits(&mut s, &d, 0usize, usize.from(d.dp));
+      s.appendByte('.');
+      appendDigits(&mut s, &d, usize.from(d.dp), nd);
+    }
+  }
+  else {
+    appendDigits(&mut s, &d, 0usize, 1usize);
+    if nd > 1usize {
+      s.appendByte('.');
+      appendDigits(&mut s, &d, 1usize, nd);
+    }
+    s.appendByte('e');
+    if sci < 0i32 {
+      s.appendByte('-');
+      s.appendUInt(u64.from(-sci));
+    }
+    else {
+      s.appendByte('+');
+      s.appendUInt(u64.from(sci));
+    }
+  }
+  Some[String](s);
+}

@@ -1,0 +1,252 @@
+// The streaming Reader: the events of a text in order, the text held for a
+// key, a string or a number, where each token starts, how deep the reading
+// is, skipping a value without reading into it, the end answered again, and
+// a document read as events alone (summing 100 000 numbers and picking
+// fields from an object) with no tree built.
+
+mod stream;
+
+import testing use *;
+import collections use *;
+import json;
+
+fn name(ev json.Event) &str {
+  match ev {
+    case is StartObject { "{"; }
+    case is EndObject { "}"; }
+    case is StartArray { "["; }
+    case is EndArray { "]"; }
+    case is Key { "K"; }
+    case is Text { "T"; }
+    case is Number { "N"; }
+    case is True { "t"; }
+    case is False { "f"; }
+    case is Null { "n"; }
+    case is Done { "D"; }
+  }
+}
+
+// The events of text, each with its text where it has one: K(a) T(x) N(1)
+fn trace(text &str) String {
+  mut r = json.reader(text);
+  mut out = String.empty();
+  while true {
+    match r.next() {
+      case imm ev Ok {
+        if out.len() > 0usize { out.append(" "); }
+        out.append(name(ev));
+        if ev == json.Event.Key or ev == json.Event.Text or ev == json.Event.Number {
+          out.append("(");
+          out.append(r.text());
+          out.append(")");
+        }
+        if ev == json.Event.Done { return out; }
+      }
+      case imm e Error {
+        out.append(" ERROR ");
+        out.append(e.reason.view());
+        return out;
+      }
+    }
+  }
+  out;
+}
+
+fn main() i32 {
+  // -------- the events --------
+  imm t1 = trace("{\"a\":[1,\"x\",true,false,null],\"b\":{}}");
+  expectStr(t1.view(), "{ K(a) [ N(1) T(x) t f n ] K(b) { } } D", "a document's events");
+  expectStr(trace("7").view(), "N(7) D", "a number alone");
+  expectStr(trace("\"s\"").view(), "T(s) D", "a string alone");
+  expectStr(trace("null").view(), "n D", "null alone");
+  expectStr(trace("[]").view(), "[ ] D", "an empty array");
+  expectStr(trace("{}").view(), "{ } D", "an empty object");
+  expectStr(trace("[[],{}]").view(), "[ [ ] { } ] D", "empty containers inside");
+  expectStr(trace("[1.50e+3,-0,12345678901234567890]").view(), "[ N(1.50e+3) N(-0) N(12345678901234567890) ] D", "numbers are as written");
+  expectStr(trace("{\"k\\n\":\"v\\u00e9\"}").view(), "{ K(k\n) T(v\xC3\xA9) } D", "escapes are decoded in keys and strings");
+  expectStr(trace("  [ 1 , 2 ]  ").view(), "[ N(1) N(2) ] D", "white space between tokens");
+  expectStr(trace("[1,\r\n2]").view(), "[ N(1) N(2) ] D", "line ends between tokens");
+  expectStr(trace("\xEF\xBB\xBF[1]").view(), "[ N(1) ] D", "a byte-order mark");
+  expectStr(trace("[1,]").view(), "[ N(1) ERROR a ',' may not come just before ']'", "an error ends the trace");
+  expectStr(trace("{\"a\":1} x").view(), "{ K(a) N(1) } ERROR unexpected text after the JSON value", "text after the value is an error, after the value's events");
+
+  // -------- the end is answered again --------
+  mut r = json.reader("[true]");
+  mut count = 0usize;
+  while count < 3usize {
+    match r.next() {
+      case is Ok { }
+      case is Error { expect(false, "events"); }
+    }
+    count = count + 1usize;
+  }
+  expectUInt(u64.from(r.depth()), 0u64, "depth is 0 at the end");
+  for_each_done(&mut r);
+
+  // -------- where tokens are, and how deep --------
+  imm text = "{\n  \"a\": [1, 22],\n  \"b\": \"x\"\n}";
+  mut rr = json.reader(text);
+  mut log = String.empty();
+  while true {
+    match rr.next() {
+      case imm ev Ok {
+        if ev == json.Event.Done { break; }
+        log.append(name(ev));
+        log.appendUInt(u64.from(rr.line()));
+        log.append(":");
+        log.appendUInt(u64.from(rr.column()));
+        log.append("@");
+        log.appendUInt(u64.from(rr.offset()));
+        log.append("^");
+        log.appendUInt(u64.from(rr.depth()));
+        log.append(" ");
+      }
+      case is Error { expect(false, "positions"); break; }
+    }
+  }
+  expectStr(log.view(), "{1:1@0^1 K2:3@4^1 [2:8@9^2 N2:9@10^2 N2:12@13^2 ]2:14@15^1 K3:3@20^1 T3:8@25^1 }4:1@29^0 ", "token positions and depth");
+
+  // -------- skipping --------
+  // Read the keys of an object, skipping each value whole
+  mut rs = json.reader("{\"a\":[1,[2,3],{\"x\":[]}],\"b\":\"s\",\"c\":{\"d\":{\"e\":1}},\"f\":7}");
+  mut keys = String.empty();
+  match rs.next() {
+    case is Ok { }
+    case is Error { expect(false, "skip: start"); }
+  }
+  while true {
+    match rs.next() {
+      case imm ev Ok {
+        if ev == json.Event.EndObject { break; }
+        if ev != json.Event.Key { expect(false, "skip: a key was expected"); break; }
+        keys.append(rs.text());
+        keys.append(" ");
+        match rs.skipValue() {
+          case is Some { expect(false, "skip: value"); break; }
+          case is None { }
+        }
+      }
+      case is Error { expect(false, "skip: events"); break; }
+    }
+  }
+  expectStr(keys.view(), "a b c f ", "keys read with every value skipped");
+  expectUInt(u64.from(rs.depth()), 0u64, "skipping leaves the depth right");
+  // Skipping the whole document, then Done
+  mut rd = json.reader("[1,[2],{\"a\":null}]");
+  match rd.skipValue() {
+    case is Some { expect(false, "skip all"); }
+    case is None { expect(true, "skip all"); }
+  }
+  match rd.next() {
+    case imm ev Ok { expectStr(name(ev), "D", "Done after skipping everything"); }
+    case is Error { expect(false, "skip all, then"); }
+  }
+  // Skipping into a failure answers it
+  mut rf = json.reader("[1,[2,,3]]");
+  match rf.next() {
+    case is Ok { }
+    case is Error { expect(false, "skip failure: start"); }
+  }
+  match rf.next() {
+    case is Ok { }
+    case is Error { expect(false, "skip failure: first"); }
+  }
+  match rf.skipValue() {
+    case imm e Some { expectStr(e.reason.view(), "expected a value: an object, an array, a string, a number, true, false or null", "skipping reaches the failure"); }
+    case is None { expect(false, "skip failure"); }
+  }
+
+  // -------- a document read as events alone --------
+  mut big = String.from("[");
+  mut i = 0usize;
+  while i < 100000usize {
+    if i > 0usize { big.appendByte(','); }
+    big.appendUInt(u64.from(i));
+    i = i + 1usize;
+  }
+  big.appendByte(']');
+  mut rb = json.reader(big.view());
+  mut sum = 0u64;
+  mut seen = 0usize;
+  while true {
+    match rb.next() {
+      case imm ev Ok {
+        if ev == json.Event.Number {
+          match json.numberU64(rb.text()) {
+            case imm n Ok { sum = sum + n; seen = seen + 1usize; }
+            case is Error { expect(false, "number"); }
+          }
+        }
+        elif ev == json.Event.Done { break; }
+      }
+      case is Error { expect(false, "big"); break; }
+    }
+  }
+  expectUInt(u64.from(seen), 100000u64, "100 000 numbers read");
+  expectUInt(sum, 4999950000u64, "and summed");
+
+  // Fields picked out of an object, the rest skipped: a mapping by hand
+  mut rp = json.reader("{\"id\":7,\"junk\":{\"a\":[1,2,3]},\"name\":\"widget\",\"tags\":[\"x\",\"y\"],\"price\":2.5}");
+  mut id = -1i64;
+  mut label = String.empty();
+  mut price = 0d;
+  mut tagCount = 0usize;
+  match rp.next() {
+    case is Ok { }
+    case is Error { expect(false, "pick: start"); }
+  }
+  while true {
+    match rp.next() {
+      case imm ev Ok {
+        if ev == json.Event.EndObject { break; }
+        imm key = String.from(rp.text());
+        if key.view() == "id" {
+          match rp.next() { case is Ok { } case is Error { expect(false, "pick id"); } }
+          match json.numberI64(rp.text()) { case imm n Ok { id = n; } case is Error { expect(false, "id"); } }
+        }
+        elif key.view() == "name" {
+          match rp.next() { case is Ok { } case is Error { expect(false, "pick name"); } }
+          label = String.from(rp.text());
+        }
+        elif key.view() == "price" {
+          match rp.next() { case is Ok { } case is Error { expect(false, "pick price"); } }
+          match json.numberF64(rp.text()) { case imm x Ok { price = x; } case is Error { expect(false, "price"); } }
+        }
+        elif key.view() == "tags" {
+          match rp.next() { case is Ok { } case is Error { expect(false, "pick tags"); } }
+          while true {
+            match rp.next() {
+              case imm e2 Ok {
+                if e2 == json.Event.EndArray { break; }
+                tagCount = tagCount + 1usize;
+              }
+              case is Error { expect(false, "tags"); break; }
+            }
+          }
+        }
+        else {
+          match rp.skipValue() { case is Some { expect(false, "pick skip"); } case is None { } }
+        }
+      }
+      case is Error { expect(false, "pick"); break; }
+    }
+  }
+  expectInt(id, 7i64, "picked id");
+  expectStr(label.view(), "widget", "picked name");
+  expectFloat(price, 2.5d, 0d, "picked price");
+  expectUInt(u64.from(tagCount), 2u64, "picked two tags");
+
+  done();
+}
+
+// The Reader at its end: Done, again and again
+fn for_each_done(r &mut json.Reader) {
+  mut k = 0usize;
+  while k < 3usize {
+    match r.next() {
+      case imm ev Ok { expectStr(name(ev), "D", "Done is answered again"); }
+      case is Error { expect(false, "Done is answered again"); }
+    }
+    k = k + 1usize;
+  }
+}
