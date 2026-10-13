@@ -1901,6 +1901,48 @@ static int pwHoldsElements(INode *holder, INode *cont) {
     return found && ((StructNode *)holder)->derived == NULL;
 }
 
+// The struct a field access names a field of ('item.label': Item); NULL for a trait or an enum, whose
+// fields other types hold too
+static INode *pwFieldParent(INode *fld) {
+    INode *parent = iexpGetTypeDcl(((FnCallNode *)fld)->objfn);
+    if (parent && (parent->tag == RefTag || parent->tag == ArrayRefTag))
+        parent = itypeGetTypeDcl(((RefNode *)parent)->vtexp);
+    if (parent == NULL || parent->tag != StructTag || (parent->flags & TraitType))
+        return NULL;
+    return parent;
+}
+
+// Is the value a field access names in the struct itself, rather than behind a reference or pointer the
+// field holds (which may point anywhere)?
+static int pwFieldHeldByValue(INode *fld) {
+    INode *t = iexpGetTypeDcl(fld);
+    return t != NULL && t->tag != RefTag && t->tag != ArrayRefTag && t->tag != VirtRefTag && t->tag != PtrTag;
+}
+
+// The struct whose field a call's receiver is ('ui.input.clipboard.append(..)': Input), when the receiver
+// is written as a field access, through borrows and conversions; NULL for any other receiver (a name, an
+// element a call returned), for a field that holds a reference or pointer (the value is not in the struct),
+// and for a variant of an enum, whose sibling variants share its storage. A value is the field of one
+// struct only, so a receiver that is a field of a struct other than the viewed value's owner is another
+// value than the one the view is into (reshapeCall, 'recvowner')
+static INode *pwReceiverFieldOwner(INode *recv) {
+    for (;;) {
+        if (recv->tag == CastTag && !(recv->flags & FlagConvert))
+            recv = ((CastNode *)recv)->exp;
+        else if (recv->tag == BorrowTag || recv->tag == ArrayBorrowTag)
+            recv = ((RefNode *)recv)->vtexp;
+        else
+            break;
+    }
+    if (recv->tag != FldAccessTag || !pwFieldHeldByValue(recv))
+        return NULL;
+    INode *parent = pwFieldParent(recv);
+    INode *base = parent ? ((StructNode *)parent)->basetrait : NULL;
+    if (base && reshapeIsSum(itypeGetTypeDcl(base)))
+        return NULL;
+    return parent;
+}
+
 // The struct a borrow of the container 'cont' is into, when the borrow was taken through a field
 // or an element of one: a call can reshape the container only by reaching that struct, or by a
 // reference that points at a container of that type (reshapeCall). 'recv' is the receiver
@@ -1912,7 +1954,8 @@ static int pwHoldsElements(INode *holder, INode *cont) {
 // NULL otherwise ('s.view()', a value a call returned from somewhere else), and where the struct
 // is a trait or an enum, whose fields other types hold too, so that the borrow's value may be
 // the field of a type that implements it (reshapeIsSum)
-static INode *pwViewOwner(INode *recv, INode *cont) {
+static INode *pwViewOwner(INode *recv, INode *cont, int *byvalue) {
+    *byvalue = 1;
     for (;;) {
         if (recv->tag == CastTag && !(recv->flags & FlagConvert))
             recv = ((CastNode *)recv)->exp;
@@ -1924,12 +1967,8 @@ static INode *pwViewOwner(INode *recv, INode *cont) {
             break;
     }
     if (recv->tag == FldAccessTag) {
-        INode *parent = iexpGetTypeDcl(((FnCallNode *)recv)->objfn);
-        if (parent && (parent->tag == RefTag || parent->tag == ArrayRefTag))
-            parent = itypeGetTypeDcl(((RefNode *)parent)->vtexp);
-        if (parent == NULL || parent->tag != StructTag || (parent->flags & TraitType))
-            return NULL;
-        return parent;
+        *byvalue = pwFieldHeldByValue(recv);
+        return pwFieldParent(recv);
     }
     if (recv->tag != FnCallTag)
         return NULL;
@@ -2042,6 +2081,10 @@ static void pwShapeCall(FnCallNode *call, FnDclNode *meth, Place *recvpl, PathSe
     int rus[4];
     int gvs[4];
     int sks[4];
+    INode *ros[4];
+    // The struct the receiver is a field of (a String held by value), the same for every loan asked
+    // of this call; a loan is asked of it only where its own value is held by value in its owner
+    INode *recvfield = meth && nargs > 0 ? pwReceiverFieldOwner(nodesGet(call->args, 0)) : NULL;
     ReshapeVerdict verdicts[4];
     uint8_t answers[4];
     uint32_t ncont = 0;
@@ -2071,8 +2114,9 @@ static void pwShapeCall(FnCallNode *call, FnDclNode *meth, Place *recvpl, PathSe
         uint32_t c = 0;
         // The answer is the same for the loans of one type, unless the loan's own locals
         // change what it is
-        while (c < ncont && (conts[c] != cont || owners[c] != owner || rus[c] != ru || gvs[c] != gv || sks[c] != sk
-                || local || nmine))
+        INode *ro = owner && loanShapeOwnerByValue(loan) ? recvfield : NULL;
+        while (c < ncont && (conts[c] != cont || owners[c] != owner || ros[c] != ro || rus[c] != ru || gvs[c] != gv
+                || sks[c] != sk || local || nmine))
             ++c;
         if (c == ncont) {
             if (ncont == 4) {
@@ -2082,11 +2126,12 @@ static void pwShapeCall(FnCallNode *call, FnDclNode *meth, Place *recvpl, PathSe
             }
             conts[c] = cont;
             owners[c] = owner;
+            ros[c] = ro;
             rus[c] = ru;
             gvs[c] = gv;
             sks[c] = sk;
             uint32_t unsettled = shapeUnsettled;
-            answers[c] = (uint8_t)reshapeCall(call, meth, ru, cont, owner, gv, &verdicts[c], mine, nmine, sk);
+            answers[c] = (uint8_t)reshapeCall(call, meth, ru, cont, owner, ro, gv, &verdicts[c], mine, nmine, sk);
             // A body this leans on is not checked yet: the verdict waits for the
             // walk made again at the end of type check
             if (shapeUnsettled != unsettled && !flowWalkFinal) {
@@ -2331,7 +2376,9 @@ static PathSet *pwCall(FnCallNode *call) {
             INode *container = recvtype->tag == RefTag ? itypeGetTypeDcl(((RefNode *)recvtype)->vtexp) : NULL;
             if (container && container->tag == StructTag && shapeChanging((StructNode *)container)) {
                 pwShapeLent(&recvpl, recvloan, container, 0);
-                loanShapeOwnerSet(recvloan, pwViewOwner(nodesGet(call->args, 0), container));
+                int byvalue;
+                INode *vowner = pwViewOwner(nodesGet(call->args, 0), container, &byvalue);
+                loanShapeOwnerSet(recvloan, vowner, byvalue);
             }
         }
         result = pathSetUnion(result, fromrecv);
