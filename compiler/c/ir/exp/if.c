@@ -224,12 +224,15 @@ void ifExhaustCheck(IfNode *ifnode, CastNode *condition) {
 // A match covers what simple, clear logic can show it covers, and the writer says the
 // rest with 'else' (possibly that it cannot happen). The values that can be counted are
 // an enum's variants and a bool's two; a match on several values, 'match a, b', counts
-// the combinations of its columns. Every other test (a comparison, a range, a number or
-// text equal to a value) matches some values and says which of them only by running.
+// the combinations of its columns. A number or character written out is counted only to
+// find one named twice: a column of them counts the values the cases name, and one more
+// for every other value, which only '_' or 'else' takes, so they never cover a match.
+// Every other test (a comparison, a range, text equal to a value) matches some values
+// and says which of them only by running.
 //
 // Each case is a row of cells, one for each value matched: '_' is a wild cell, a variant
-// (or 'or' of variants, or 'true' / 'false') the set of values it names, and anything
-// else an "other" cell. A row with an "other" cell is not counted toward covering, or
+// (or 'or' of variants, or 'true' / 'false', or a number or character written out) the
+// set of values it names, and anything else an "other" cell. A row with an "other" cell is not counted toward covering, or
 // toward making a later case unreachable. A guarded case is not counted toward covering.
 
 #define MatchCellWild  0    // takes any value
@@ -245,6 +248,10 @@ typedef struct {
     StructNode *enumdcl;    // the closed enum whose variants the column counts; NULL for a bool or no type yet
     int isbool;             // the column counts true and false
     uint32_t nvalues;       // how many values the column counts; 0 for a type it cannot count
+    int isint;              // the column counts the numbers the cases name, and one more for the rest
+    int intsigned;          // ... and they are signed
+    uint64_t *ints;         // ... in the order they are first named
+    uint32_t nints;
 } MatchCol;
 
 typedef struct {
@@ -262,6 +269,69 @@ static StructNode *matchClosedEnum(INode *dcl) {
         || strnode->derived == NULL)
         return NULL;
     return strnode;
+}
+
+// Is this the test of a number or character written out, 'matched == 5'? That is what
+// 'case 5' and 'case ==5' make. Gives the value, and whether the matched type is signed.
+static int matchIntTest(INode *cond, uint64_t *value, int *isSigned) {
+    if (cond->tag != FnCallTag)
+        return 0;
+    FnCallNode *call = (FnCallNode*)cond;
+    if (!(call->flags & FlagOperator) || call->methfld != NULL || call->objfn == NULL || !isNameUseNode(call->objfn)
+        || call->args == NULL || call->args->used != 2)
+        return 0;
+    INode *callee = ((NameUseNode*)call->objfn)->dclnode;
+    if (callee == NULL || callee->tag != FnDclTag || ((FnDclNode*)callee)->namesym != eqName)
+        return 0;
+    INode *matched = nodesGet(call->args, 0);
+    INode *lit = nodesGet(call->args, 1);
+    if (lit->tag != ULitTag || (lit->flags & (FlagMatchAny | FlagUnkType)) || !isExpNode(matched))
+        return 0;
+    INode *typedcl = iexpGetDerefTypeDcl(matched);
+    if (typedcl == NULL || typedcl == (INode*)boolType || iexpGetDerefTypeDcl(lit) != typedcl
+        || (typedcl->tag != IntNbrTag && typedcl->tag != UintNbrTag && typedcl != (INode*)charType))
+        return 0;
+    *value = ((ULitNode*)lit)->uintlit;
+    *isSigned = typedcl->tag == IntNbrTag;
+    return 1;
+}
+
+// Note the numbers a case names in a column (matchIntCell counts them)
+static void matchCollectInts(INode *cond, MatchCol *col) {
+    if (cond->tag == OrLogicTag) {
+        matchCollectInts(((LogicNode*)cond)->lexp, col);
+        matchCollectInts(((LogicNode*)cond)->rexp, col);
+        return;
+    }
+    uint64_t value;
+    int isSigned;
+    if (!matchIntTest(cond, &value, &isSigned))
+        return;
+    for (uint32_t k = 0; k < col->nints; ++k)
+        if (col->ints[k] == value)
+            return;
+    col->ints = realloc(col->ints, sizeof(uint64_t) * (col->nints + 1));
+    col->ints[col->nints++] = value;
+    col->isint = 1;
+    col->intsigned = isSigned;
+    col->nvalues = col->nints + 1;
+}
+
+// A set of one number of a column of numbers
+static MatchCell matchIntCell(MatchCol *col, uint64_t value) {
+    MatchCell cell;
+    cell.kind = MatchCellOther;
+    cell.has = NULL;
+    if (!col->isint)
+        return cell;
+    uint32_t k = 0;
+    while (col->ints[k] != value)
+        ++k;
+    cell.kind = MatchCellSet;
+    cell.has = memAllocBlk(col->nvalues);
+    memset(cell.has, 0, col->nvalues);
+    cell.has[k] = 1;
+    return cell;
 }
 
 // A set of one value of a column's type, which gives the column that type if it has none yet.
@@ -348,8 +418,14 @@ static MatchCell matchClassify(INode *cond, MatchCol *col, int *unsure) {
         INode *matched = nodesGet(call->args, 0);
         INode *value = nodesGet(call->args, 1);
         if (value->tag != ULitTag || (value->flags & FlagMatchAny) || ((ULitNode*)value)->uintlit > 1
-            || iexpGetDerefTypeDcl(value) != (INode*)boolType || iexpGetDerefTypeDcl(matched) != (INode*)boolType)
+            || iexpGetDerefTypeDcl(value) != (INode*)boolType || iexpGetDerefTypeDcl(matched) != (INode*)boolType) {
+            // A number or character written out
+            uint64_t number;
+            int isSigned;
+            if (matchIntTest(cond, &number, &isSigned))
+                return matchIntCell(col, number);
             break;
+        }
         return matchValueCell(col, NULL, 1, 2, (uint32_t)((ULitNode*)value)->uintlit);
     }
     default:
@@ -391,8 +467,11 @@ static int matchFilter(MatchRow **rows, int *idx, int n, int c, int k, int *out)
 // Do these counted rows cover every combination of the columns from c on? When they do
 // not, witness holds the values of a combination they leave out (-1: any).
 static int matchCovers(MatchRow **rows, int *idx, int n, int c, int ncols, MatchCol *cols, int *witness) {
-    if (n == 0)
+    if (n == 0) {
+        for (int j = c; j < ncols; ++j)
+            witness[j] = -1;
         return 0;
+    }
     while (c < ncols) {
         int allwild = 1;
         for (int i = 0; i < n && allwild; ++i)
@@ -442,8 +521,10 @@ static int matchUseless(MatchRow **rows, int *idx, int n, MatchRow *r, int c, in
 
 // The name of a column's k-th value, as a pattern writes it
 static void matchValueName(MatchCol *col, int k, char *buf, size_t size) {
-    if (k < 0)
+    if (k < 0 || (col->isint && (uint32_t)k >= col->nints))
         snprintf(buf, size, "_");
+    else if (col->isint)
+        snprintf(buf, size, col->intsigned ? "%lld" : "%llu", (long long)col->ints[k]);
     else if (col->isbool)
         snprintf(buf, size, k ? "true" : "false");
     else {
@@ -491,6 +572,17 @@ static int ifMatchCover(IfNode *ifnode, int clean) {
     }
     MatchCol cols[MatchMaxColumns];
     memset(cols, 0, sizeof(cols));
+    // The numbers the cases name, in each column of numbers
+    for (uint32_t a = 0; a < narms; ++a) {
+        INode *cond = nodesGet(ifnode->condblk, a * 2);
+        if (cond == elseCond)
+            continue;
+        if (cond->tag == AndLogicTag && (cond->flags & FlagMatchGuard))
+            cond = ((LogicNode*)cond)->lexp;
+        if (matchFlattenRow(cond, colconds, MatchMaxColumns) == ncols)
+            for (int c = 0; c < ncols; ++c)
+                matchCollectInts(colconds[c], &cols[c]);
+    }
     MatchRow **rows = malloc(sizeof(MatchRow*) * narms);
     int haselse = 0, unsure = 0;
     uint32_t nrows = 0;
@@ -561,7 +653,7 @@ static int ifMatchCover(IfNode *ifnode, int clean) {
         else {
             result = MatchCoverMissing;
             char msg[400] = "";
-            if (ncols == 1 && cols[0].nvalues > 0) {
+            if (ncols == 1 && cols[0].nvalues > 0 && !cols[0].isint) {
                 // The values no counted case takes
                 matchAppend(msg, sizeof(msg), "This match does not cover ");
                 int missing = 0;
@@ -605,6 +697,8 @@ static int ifMatchCover(IfNode *ifnode, int clean) {
         free(rows[i]);
     }
     free(rows);
+    for (int c = 0; c < ncols; ++c)
+        free(cols[c].ints);
     return result;
 }
 
