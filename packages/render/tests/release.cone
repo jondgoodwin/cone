@@ -1,0 +1,273 @@
+// The render package giving back what a world made: 'removeTexture',
+// 'removeMaterial' and RenderView's 'release', on a real GPU with no window,
+// into a 64 x 64 rgba8unorm texture (a channel v stored as v x 255, rounded,
+// no sRGB curve), read back and checked. The scene is offscreen.cone's: mesh's
+// cube reaching 0.5 each way at the origin, the camera at (0, 0, 3), the
+// light travelling (0, 0, -1) at 0.6 pi with ambient 0.2, so a white-based
+// material shows the colour c of its texel as 0.8 c on the face. Only a
+// failure prints.
+//
+// 1. What the renderer holds ('resourceUse'): after a cube, a 4 x 4 image
+//    (three levels: (16 + 4 + 1) x 4 = 84 bytes) as a texture, and two
+//    materials, the counts and bytes have grown by exactly that; the cube's
+//    four buffers are 288 + 288 + 192 + 144 = 912 bytes.
+// 2. Removed: the textured material, drawn first (the texture's bottom left
+//    quarter, red, at pixel (25, 38): (204, 0, 0)), is removed with the list
+//    still naming it. The handle reaches nothing, the draw is skipped (no
+//    draws), and its uniform buffer and bind group wait, released (two
+//    objects), as the texture does once removed (a third); a second removal
+//    of either answers false, and the white texture the renderer keeps is not
+//    removable. The counts are back to what they were before.
+// 3. Not under the GPU: a material and a texture removed after a frame that
+//    drew with them was submitted and not waited for are not destroyed
+//    until their frame's state comes round again two frames on; nothing
+//    failed and the validation layer (with the Vulkan SDK) said nothing.
+// 4. A world's worth: 150 textures with a material each, then all removed in
+//    one frame (more than a frame's 64 released buffers and more than a
+//    bind-group list starts with), leave the counts where they began and
+//    drain two frames on.
+// 5. A view: 'RenderView.release' gives back its picture (a texture in the
+//    renderer's pool) and its depth texture; a view's material is removed
+//    like any other.
+// 6. A scene item whose material is removed (the sun's shadows on) is not
+//    drawn, in the main pass or the shadow passes, and nothing fails.
+//
+// It needs a GPU driver with Vulkan 1.3 and SDL3.dll (which loads Vulkan);
+// no window, no display of its own, and no Vulkan SDK (with it, validation
+// and synchronization validation are on, and must say nothing).
+
+mod release;
+
+import testing use *;
+import libc;
+import geomath use *;
+import collections use *;
+import mesh use Mesh;
+import gpu use *;
+import render use *;
+
+// Channel 'c' of pixel ('x', 'y') of a 64 x 64 rgba8 image at 'p'
+fn px(p *u8, x usize, y usize, c usize) i64 { i64.from(*(p + (y * 64usize + x) * 4usize + c)); }
+
+// Check pixel ('x', 'y') is ('r', 'g', 'b') to within 'd'
+fn expectPixel(p *u8, x usize, y usize, r i64, g i64, b i64, d f64, label &Array[u8]) {
+  expectFloat(f64.from(px(p, x, y, 0usize)), f64.from(r), d, label);
+  expectFloat(f64.from(px(p, x, y, 1usize)), f64.from(g), d, label);
+  expectFloat(f64.from(px(p, x, y, 2usize)), f64.from(b), d, label);
+}
+
+// One frame: draw 'list' into 'color' and read it back into 'readback'
+fn drawFrame(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer,
+    camera &Camera, light &Light, list &DrawList) {
+  mut encoder = device.createCommandEncoder();
+  renderer.render(device, &mut encoder, color, depth, camera, light, list);
+  encoder.copyTextureToBuffer(color, readback);
+  device.queue.submit(encoder.finish());
+  device.endFrame();
+  device.waitIdle();
+}
+
+// One frame submitted and not waited for: the GPU may be drawing it still
+fn drawFrameNoWait(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture,
+    camera &Camera, light &Light, list &DrawList) {
+  mut encoder = device.createCommandEncoder();
+  renderer.render(device, &mut encoder, color, depth, camera, light, list);
+  device.queue.submit(encoder.finish());
+  device.endFrame();
+}
+
+// A 4 x 4 image, bottom row first, its quarters red (bottom left), green
+// (bottom right), blue (top left) and white (top right)
+fn quarters() Image {
+  mut img = new Image(4, 4, 3, List[u8].empty());
+  mut y = 0;
+  while y < 4 {
+    mut x = 0;
+    while x < 4 {
+      mut r = 0u8;
+      mut g = 0u8;
+      mut b = 0u8;
+      if y < 2 and x < 2 { r = 255u8; }
+      if y < 2 and x >= 2 { g = 255u8; }
+      if y >= 2 and x < 2 { b = 255u8; }
+      if y >= 2 and x >= 2 {
+        r = 255u8;
+        g = 255u8;
+        b = 255u8;
+      }
+      img.pixels.push(r);
+      img.pixels.push(g);
+      img.pixels.push(b);
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  img;
+}
+
+fn main() i32 {
+  mut instance = Instance.create("render release");
+  require(instance.isValid(), "a Vulkan 1.3 instance");
+  mut none = Surface.none();
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  if (env as usize) != 0usize {
+    if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  mut adapter = instance.requestAdapter(&none, preference);
+  require(adapter.isValid(), "an adapter");
+  mut device = adapter.requestDevice();
+  require(device.isValid(), "a device");
+
+  imm target = new TextureDescriptor(64u32, 64u32, TEXTURE_FORMAT_RGBA8_UNORM,
+    TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  mut color = device.createTexture(&target);
+  imm depthDesc = new TextureDescriptor(64u32, 64u32, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  mut depth = device.createTexture(&depthDesc);
+  mut readback = device.createBuffer(16384u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  imm p = readback.mappedRange();
+  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  require(renderer.isValid(), "a renderer");
+  mut camera = Camera.make();
+  camera.lookAt(new Vec3(0., 0., 3.), new Vec3(0., 0., 0.), new Vec3(0., 1., 0.));
+  camera.background = new Color(0.2, 0.4, 0.6, 1.);
+  imm headOn = Light.directional(new Vec3(0., 0., -1.), Color.gray(1.8849556), Color.gray(0.2));
+
+  // ---- 1. What the renderer holds ----
+  imm base = renderer.resourceUse();
+  imm cube = Mesh.cube(0.5);
+  imm h = renderer.addMesh(&mut device, &cube);
+  imm img = quarters();
+  imm tex = renderer.addTexture(&mut device, &img);
+  imm texturedMaterial = Material.textured(new Color(1., 1., 1., 1.), tex);
+  imm textured = renderer.addMaterial(&mut device, &texturedMaterial);
+  imm plainMaterial = Material.plain(new Color(0.5, 0.25, 1., 1.));
+  imm plain = renderer.addMaterial(&mut device, &plainMaterial);
+  imm held = renderer.resourceUse();
+  expectUInt(u64.from(held.meshes - base.meshes), 1u64, "a mesh more");
+  expectUInt(held.meshBytes - base.meshBytes, 912u64, "the cube's four buffers");
+  expectUInt(u64.from(held.textures - base.textures), 1u64, "a texture more");
+  expectUInt(held.textureBytes - base.textureBytes, 84u64, "its three levels");
+  expectUInt(u64.from(held.materials - base.materials), 2u64, "two materials more");
+  expectUInt(u64.from(held.pipelines - base.pipelines), 0u64, "no pipeline more");
+
+  // ---- 2. Removed ----
+  mut list = DrawList.empty();
+  list.add(h, textured, Mat4.identity());
+  drawFrame(&mut renderer, &mut device, &color, &depth, &readback, &camera, &headOn, &list);
+  expectPixel(p, 25usize, 38usize, 204, 0, 0, 1d, "the textured material draws the texture's red");
+  expectUInt(u64.from(renderer.drawCalls), 1u64, "one draw");
+  expectUInt(u64.from(device.queue.pendingReleases()), 0u64, "nothing released yet");
+  expect(renderer.removeMaterial(&mut device, textured), "the material removed");
+  expectBool(renderer.materials.alive(textured.slot), false, "its handle reaches nothing");
+  expectBool(renderer.removeMaterial(&mut device, textured), false, "removed twice: false");
+  expectUInt(u64.from(device.queue.pendingReleases()), 2u64, "its uniform buffer and its bind group released");
+  expect(renderer.removeTexture(&mut device, tex), "the texture removed");
+  expectBool(renderer.textures.alive(tex.slot), false, "its handle reaches nothing");
+  expectBool(renderer.removeTexture(&mut device, tex), false, "removed twice: false");
+  imm white = renderer.white;
+  expectBool(renderer.removeTexture(&mut device, white), false, "the white texture is kept");
+  expectBool(renderer.textures.alive(white.slot), true, "and still there");
+  expectUInt(u64.from(device.queue.pendingReleases()), 3u64, "the texture released too");
+  imm after = renderer.resourceUse();
+  expectUInt(u64.from(after.textures - base.textures), 0u64, "the textures are back to what they were");
+  expectUInt(after.textureBytes - base.textureBytes, 0u64, "and their bytes");
+  expectUInt(u64.from(after.materials - base.materials), 1u64, "one material is left");
+  drawFrame(&mut renderer, &mut device, &color, &depth, &readback, &camera, &headOn, &list);
+  expectUInt(u64.from(renderer.drawCalls), 0u64, "a draw naming the removed material is skipped");
+  expectPixel(p, 32usize, 32usize, 51, 102, 153, 0d, "and shows the background");
+  expectUInt(u64.from(device.queue.pendingReleases()), 3u64, "one frame on: not yet destroyed");
+  drawFrame(&mut renderer, &mut device, &color, &depth, &readback, &camera, &headOn, &list);
+  device.beginFrame();
+  expectUInt(u64.from(device.queue.pendingReleases()), 0u64, "their frame come round: destroyed");
+  device.endFrame();
+  list.clear();
+  list.add(h, plain, Mat4.identity());
+  drawFrame(&mut renderer, &mut device, &color, &depth, &readback, &camera, &headOn, &list);
+  expectPixel(p, 32usize, 32usize, 102, 51, 204, 1d, "the other material still draws");
+
+  // ---- 3. Not under the GPU ----
+  imm tex2 = renderer.addTexture(&mut device, &img);
+  imm texturedMaterial2 = Material.textured(new Color(1., 1., 1., 1.), tex2);
+  imm textured2 = renderer.addMaterial(&mut device, &texturedMaterial2);
+  list.clear();
+  list.add(h, textured2, Mat4.identity());
+  drawFrameNoWait(&mut renderer, &mut device, &color, &depth, &camera, &headOn, &list);
+  expect(renderer.removeMaterial(&mut device, textured2), "removed with its frame in flight");
+  expect(renderer.removeTexture(&mut device, tex2), "and its texture");
+  expectUInt(u64.from(device.queue.pendingReleases()), 3u64, "waiting for the frame");
+  drawFrameNoWait(&mut renderer, &mut device, &color, &depth, &camera, &headOn, &list);
+  expectUInt(u64.from(device.queue.pendingReleases()), 3u64, "a frame on, still in flight: not yet destroyed");
+  drawFrameNoWait(&mut renderer, &mut device, &color, &depth, &camera, &headOn, &list);
+  device.waitIdle();
+  device.beginFrame();
+  expectUInt(u64.from(device.queue.pendingReleases()), 0u64, "destroyed when the state came round");
+  device.endFrame();
+
+  // ---- 4. A world's worth ----
+  imm before = renderer.resourceUse();
+  mut handles = List[MaterialHandle].empty();
+  mut textureHandles = List[TextureHandle].empty();
+  mut n = 0;
+  while n < 150 {
+    imm t = renderer.addTexture(&mut device, &img);
+    textureHandles.push(t);
+    imm m = Material.textured(new Color(1., 1., 1., 1.), t);
+    handles.push(renderer.addMaterial(&mut device, &m));
+    n = n + 1;
+  }
+  imm grown = renderer.resourceUse();
+  expectUInt(u64.from(grown.textures - before.textures), 150u64, "150 textures more");
+  expectUInt(grown.textureBytes - before.textureBytes, 150u64 * 84u64, "their bytes");
+  expectUInt(u64.from(grown.materials - before.materials), 150u64, "150 materials more");
+  n = 0;
+  while n < 150 {
+    expect(renderer.removeMaterial(&mut device, *handles[usize.from(n)]), "a material removed");
+    expect(renderer.removeTexture(&mut device, *textureHandles[usize.from(n)]), "its texture removed");
+    n = n + 1;
+  }
+  imm gone = renderer.resourceUse();
+  expectUInt(u64.from(gone.textures - before.textures), 0u64, "the counts are back: textures");
+  expectUInt(u64.from(gone.materials - before.materials), 0u64, "materials");
+  expectUInt(u64.from(device.queue.pendingReleases()), 450u64, "150 buffers, 150 bind groups and 150 textures wait");
+  drawFrame(&mut renderer, &mut device, &color, &depth, &readback, &camera, &headOn, &list);
+  drawFrame(&mut renderer, &mut device, &color, &depth, &readback, &camera, &headOn, &list);
+  device.beginFrame();
+  expectUInt(u64.from(device.queue.pendingReleases()), 0u64, "all destroyed two frames on");
+  device.endFrame();
+
+  // ---- 5. A view ----
+  imm viewBefore = renderer.resourceUse();
+  mut view = RenderView.create(&mut renderer, &mut device, 32u32, 32u32);
+  expect(view.isValid(), "a view");
+  imm viewHeld = renderer.resourceUse();
+  expectUInt(u64.from(viewHeld.textures - viewBefore.textures), 1u64, "its picture is a texture of the renderer's");
+  view.release(&mut renderer, &mut device);
+  expectBool(view.isValid(), false, "released, it is not valid");
+  imm viewGone = renderer.resourceUse();
+  expectUInt(u64.from(viewGone.textures - viewBefore.textures), 0u64, "the picture is gone from the renderer's pool");
+  expectUInt(u64.from(device.queue.pendingReleases()), 2u64, "the picture and the depth texture released");
+  drawFrame(&mut renderer, &mut device, &color, &depth, &readback, &camera, &headOn, &list);
+  drawFrame(&mut renderer, &mut device, &color, &depth, &readback, &camera, &headOn, &list);
+  device.beginFrame();
+  expectUInt(u64.from(device.queue.pendingReleases()), 0u64, "and destroyed two frames on");
+  device.endFrame();
+
+  // ---- 6. A scene item, with shadows on ----
+  renderer.setShadows(&mut device, &ShadowSettings.low());
+  imm sceneMaterial = renderer.addMaterial(&mut device, &plainMaterial);
+  imm item = renderer.addSceneItem(h, sceneMaterial, Mat4.identity(), new Color(1., 1., 1., 1.));
+  list.clear();
+  drawFrame(&mut renderer, &mut device, &color, &depth, &readback, &camera, &headOn, &list);
+  expectUInt(u64.from(renderer.drawCalls), 1u64, "the scene item draws");
+  expect(renderer.removeMaterial(&mut device, sceneMaterial), "its material removed, the item kept");
+  drawFrame(&mut renderer, &mut device, &color, &depth, &readback, &camera, &headOn, &list);
+  expectUInt(u64.from(renderer.drawCalls), 0u64, "a scene item naming a removed material is not drawn");
+  expectPixel(p, 32usize, 32usize, 51, 102, 153, 0d, "and the shadow passes skip it too");
+  expect(renderer.removeSceneItem(item), "the item removed");
+  renderer.disableShadows(&mut device);
+
+  expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
+  expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
+  done();
+}
