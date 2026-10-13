@@ -1905,7 +1905,9 @@ static int pwHoldsElements(INode *holder, INode *cont) {
 // or an element of one: a call can reshape the container only by reaching that struct, or by a
 // reference that points at a container of that type (reshapeCall). 'recv' is the receiver
 // that is lent. It is
-// - a field of a struct ('item.label' of 'item.label.view()', 'self.items'): that struct;
+// - a field of a struct ('item.label' of 'item.label.view()', 'self.items'): that struct, where
+//   the field holds the container by value (a field that is a reference or pointer to it is only a
+//   borrow of a container some other struct holds: no owner);
 // - the element a method of a struct returned ('ui.texts[id]'), where that struct holds its
 //   elements in its own block (pwHoldsElements: a 'List[String]') and the call is handed no other
 //   borrow the element could come from: that struct.
@@ -1924,6 +1926,12 @@ static INode *pwViewOwner(INode *recv, INode *cont) {
             break;
     }
     if (recv->tag == FldAccessTag) {
+        // A field that is itself a reference or pointer ('r.s' of 'r.s.view()', 'r.s &mut String')
+        // only borrows the value it points at, which another struct holds: the struct holding the
+        // reference is not the owner of what is viewed
+        INode *ft = iexpGetTypeDcl(recv);
+        if (ft && (ft->tag == RefTag || ft->tag == ArrayRefTag || ft->tag == VirtRefTag || ft->tag == PtrTag))
+            return NULL;
         INode *parent = iexpGetTypeDcl(((FnCallNode *)recv)->objfn);
         if (parent && (parent->tag == RefTag || parent->tag == ArrayRefTag))
             parent = itypeGetTypeDcl(((RefNode *)parent)->vtexp);
