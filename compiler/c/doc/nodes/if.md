@@ -154,7 +154,8 @@ node (`FlagMatchBind`) — and the arm keeps its own `x` as before.
 **What counts toward exhaustiveness is decided on a type checked match, by
 `ifMatchCover`** (below): an `is` test of a variant of a closed enum, an `or` of them,
 `v == true` and `v == false` on a `bool`, and `_`. A guarded case does not count (the guard
-may fail). Any other value alone is an `==` call that counts for nothing.
+may fail). A number or character alone (`v == 5`) is counted only to find one named twice, never
+to cover the match; any other value alone is an `==` call that counts for nothing.
 
 ## Name resolution
 
@@ -235,10 +236,14 @@ noted. A cell (`matchClassify`) is one of:
   of the variants that comply (`castIsVariants`), so a trait case after the variants it names,
   or a variant after the trait, is unreachable as a variant named twice is; or `v == true` / `v == false` on a `bool`, the call type check made of
   `case true` and `case ==true` (its callee a use of the `==` it found, the matched value
-  its first argument); an `or` is the union of its alternatives'; a cell of another
-  type than the column's is "other";
-- **other** — a comparison, a range, `==` against anything but a bool literal, a number, a
-  string; anything this logic cannot count.
+  its first argument); or `v == 5` on an integer or `char` with a literal (`matchIntTest`).
+  A column of these counts the literals the cases name (`matchCollectInts`, a pass before the
+  cells are made) plus one more value for every other number, which only `_` or `else` takes;
+  so they find a number named twice but never cover a match, and the message for an uncovered
+  column of numbers is still the one that asks for `else`. An `or` is the union of its
+  alternatives'; a cell of another type than the column's is "other";
+- **other** — a comparison, a range, `==` against anything but a bool, integer or character
+  literal, a string; anything this logic cannot count.
 
 A row with an "other" cell, or with a guard, is not **counted**: it covers nothing and makes
 no later case unreachable. The rows up to the first `else` are all that is read.
