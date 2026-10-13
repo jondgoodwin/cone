@@ -405,14 +405,18 @@ while word.load() == 0u32 {
 import sync use *;
 
 imm lock Mutex;             // both set by the module's init:
-mut names List[u64];        //   Mutex.make(), List[u64].empty()
+imm total Atomic[u64];      //   Mutex.make(), Atomic[u64].of(0u64)
 
 fn add(n u64) {             // called from any number of threads
   lock.lock();
-  names.push(n);            // touched only while lock is held
+  total.store(total.load() + n);   // read and written as a pair, only while lock is held
   lock.unlock();
 }
 </pre>
+	<p>A global is shared by every thread, so its type must be <a href="refmodule.html#global">Shareable</a>:
+		an atomic word is, and the lock makes a read and a write of it one step. Data too big for an atomic,
+		such as a <span class="pre">List</span>, is kept behind a lock permission instead
+		(see below).</p>
 	<ul>
 	<li><b><span class="pre">Mutex</span></b>: one thread at a time.
 		<span class="pre">m.lock()</span> takes it, sleeping while another thread holds it (after

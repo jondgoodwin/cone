@@ -21,6 +21,7 @@ pub const SYNTH_WATER = 1u32;
 pub const SYNTH_FIRE = 2u32;
 pub const SYNTH_STEP = 3u32;
 pub const SYNTH_BIRD = 4u32;
+pub const SYNTH_VOICE = 5u32;
 
 pub const MATERIAL_GRASS = 0u32;
 pub const MATERIAL_WOOD = 1u32;
@@ -140,6 +141,21 @@ pub struct Synth {
     s;
   }
 
+  // A short startled "ah!" (an open /a/ vowel) at base pitch 'pitch' Hz (a man 110, a woman 200): a glottal pulse train whose pitch jumps up
+  // and falls back, through three formant resonators (source-filter synthesis, Fant 1960; the vowel's formants after Peterson and
+  // Barney 1952: F1 730, F2 1090, F3 2440 Hz), with a little breath noise. 0.35 s, ending by itself.
+  pub fn voice(rate f32, seed u32, pitch f32) Synth {
+    mut s = Synth.base(SYNTH_VOICE, rate, seed);
+    s.p0 = pitch;
+    s.s0 = 0.;                                               // the pulse train's phase
+    s.s3 = s.rng.range(0.95, 1.05);                          // this voice's drift
+    s.fa = Biquad.design(FILTER_BANDPASS, 730. * s.s3, 9., 0., rate);
+    s.fb = Biquad.design(FILTER_BANDPASS, 1090. * s.s3, 11., 0., rate);
+    s.fc = Biquad.design(FILTER_BANDPASS, 2440. * s.s3, 14., 0., rate);
+    s.fd = Biquad.design(FILTER_HIGHPASS, 2000., 0.7071, 0., rate);
+    s;
+  }
+
   // The next mono sample, 'rate' Hz
   pub fn next(self &mut) f32 {
     imm dt = 1. / rate;
@@ -148,6 +164,7 @@ pub struct Synth {
     elif kind == SYNTH_WATER { out = waterNext(self); }
     elif kind == SYNTH_FIRE { out = fireNext(self); }
     elif kind == SYNTH_STEP { out = stepNext(self); }
+    elif kind == SYNTH_VOICE { out = voiceNext(self); }
     else { out = birdNext(self); }
     t = t + dt;
     tick = tick + 1u32;
@@ -285,6 +302,25 @@ fn stepNext(s &mut Synth) f32 {
 // +-25% about the bird's pitch (up for odd syllables, down for even), with a
 // 28 Hz vibrato of 2% and a weak second harmonic; the amplitude is a smooth
 // sin^0.5 bump.
+// -------- a startled "ah!" --------
+const VOICE_SECONDS f32 = 0.35;
+fn voiceNext(s &mut Synth) f32 {
+  if s.t >= VOICE_SECONDS { s.done = true; return 0.; }
+  // The pitch jumps up a fifth and falls back over the sound; a little vibrato
+  imm u = s.t / VOICE_SECONDS;
+  imm f = s.p0 * s.s3 * (1. + 0.5 * (1. - u) * (1. - u)) * (1. + 0.015 * (TAU * 6. * s.t).sin());
+  s.s0 = s.s0 + f / s.rate;
+  if s.s0 >= 1. { s.s0 = s.s0 - 1.; }
+  // A glottal pulse: a sawtooth, richer in high harmonics early in the cycle
+  imm saw = 1. - 2. * s.s0;
+  imm src = saw * (0.6 + 0.4 * (1. - s.s0)) + 0.04 * s.rng.signed();
+  imm y = s.fa.process(src) * 1.0 + s.fb.process(src) * 0.7 + s.fc.process(src) * 0.35 + s.fd.process(s.rng.signed()) * 0.03;
+  // Attack 15 ms, then a decay
+  imm att = clampf(s.t / 0.015, 0., 1.);
+  imm env = att * (1. - u) * (1. - u * 0.3);
+  y * env * 1.6;
+}
+
 fn birdNext(s &mut Synth) f32 {
   imm syl = s.s1 + s.s2;
   imm n = s.t / syl;

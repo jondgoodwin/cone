@@ -1535,6 +1535,14 @@ root variables are listed beside the loan even where the owner is shared (`loanR
 (`left.insert(v)`: an owner lent as `self`, the loan `recvloan`) is the value the method works on, so
 only its other arguments are asked (`reshapeCall`'s `skiprecv`), and a replacement they make is
 reported at the call (`loanShapeNow`). The check does not tell two owners of one type apart.
+An owner of a trait object (`So[Gadget]`, `Rc[mut, Gadget]`: a `VirtRefTag` with an owning region) is an
+owner like any other (`reshapeIsOwner`), the borrow a method of the trait lends an owner's contents. `rcWalk`
+reads a virtual reference as it does for a collection: its implementers are unknown, so it reaches any container
+(`ReachVirtual`), an owner included. A call through a mutable virtual reference is then asked as a call whose body
+cannot be read, and replaces any owner of the type a borrow is held into, the object's own other methods
+(`o.bump()` while a borrow `o.count()` lent is held) and the owner lent as `&<mut` beside a `&<` of it included.
+`+ ShapeKeeping` on the owner (`So[Gadget + ShapeKeeping]`) and on the virtual reference it is lent as is the
+cure, as for a collection.
 
 **A reference a call returned** is held by a stand-in variable (`pwStandIn`) when a method
 that returns a borrow, on a container that changes shape, is called on a place reached

@@ -1,0 +1,93 @@
+// stats() is safe on any thread at any time, including while finalAll() stops
+// the workers and frees the runtime. A plain thread, not a worker, calls it in
+// a loop from before the stop until after it, with 128 workers (so that the
+// stop has a long list of workers to join and free while the reader reads),
+// while main sends 100 messages and calls finalAll(). stats() reads only the
+// counts that outlive the runtime, never the Sched or the Workers the stop
+// frees, so every read sees a whole answer: 128 workers (the reader starts
+// after the first actor has started them), and a message count that never goes
+// backwards and never passes the 100 sent; the last read, after the stop, is
+// the run's totals. (Before stats() was made so, a read that fell between
+// finalAll()'s freeing of the Sched and its end could read freed memory: with
+// a pause put inside stats() between its look at the runtime and its sum of
+// the workers, this program crashed every time.) The run is one stop per
+// process, so the race is run once here, and the reader makes thousands of
+// reads inside it.
+
+mod statsfinal;
+
+import testing use *;
+import thread;
+import actors;
+
+struct Probe {
+  pub stop Atomic[bool];
+  pub calls Atomic[u64];
+  pub badWorkers Atomic[u64];
+  pub badMessages Atomic[u64];
+  pub started Atomic[u64];
+}
+
+imm probe Probe;
+
+fn @initpure init() {
+  probe = new Probe(Atomic[bool].of(false), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+actor Echo {
+  heard u64 = 0u64;
+  pub async do hear(self, n u64) {
+    heard = heard + n;
+  }
+}
+
+struct Who is Sendable {
+  pub id u64;
+}
+
+fn reader(who Who) u64 {
+  mut last = 0u64;
+  mut n = 0u64;
+  probe.started.add(1u64);
+  while probe.stop.load() == false {
+    imm st = actors.stats();
+    n = n + 1u64;
+    if st.workers != 128u32 {
+      probe.badWorkers.add(1u64);
+    }
+    if st.messages < last or st.messages > 100u64 {
+      probe.badMessages.add(1u64);
+    }
+    last = st.messages;
+  }
+  probe.calls.add(n);
+  n;
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(new actors.Options(workers: 128u32, batch: 10u32));
+  {
+    imm e = new Echo();
+    mut i = 0u64;
+    while i < 100u64 {
+      e.hear(i);
+      i = i + 1u64;
+    }
+  }
+  imm t = thread.start(new Who(1u64), &reader);
+  while probe.started.load() == 0u64 {
+    thread.yieldNow();
+  }
+  finalAll();
+  probe.stop.store(true);
+  t.join();
+  expect(probe.calls.load() > 0u64, "the reader read stats() while the workers ran or stopped");
+  expectUInt(probe.badWorkers.load(), 0u64, "every read answered 128 workers");
+  expectUInt(probe.badMessages.load(), 0u64, "no read went backwards or passed the 100 sent");
+  imm st = actors.stats();
+  expectUInt(u64.from(st.workers), 128u64, "128 workers in the totals after the stop");
+  expectUInt(st.messages, 100u64, "every message in the totals after the stop");
+  done();
+}

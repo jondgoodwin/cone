@@ -263,5 +263,43 @@ fn main() i32 {
     expectBool(jump < 3. * steadyJump, true, "and no foot pops: its change of step in the first steps is within 3 times a steady walk's");
     dirI = dirI + 1;
   }
+  // A walker made late, or set down far away while walking (the caller sets 'started' false), is not drawn stretched: its feet
+  // begin where a standing walker's are, so the pelvis, which hangs from the ankles, stays within a hand of standing height and every
+  // bone within the walker's height of the model's origin. (Its feet used to start from the world's origin, so the first swing of the
+  // foot that began one dragged the pelvis down towards the origin, 4 m or more when the ground there was far above or below.)
+  {
+    imm sk = humanoid(1.75);
+    mut ps = sk.restPose();
+    mut ms = List[Transform3].empty();
+    mut wt = Walker.make(1.75, 1u32);
+    // It walks a while at the origin, then is set down 300 m away on ground 40 m higher, and walks on from there
+    mut sn = 0;
+    mut sz = 0.;
+    while sn < 200 {
+      sz = sz - 1.4 / 60.;
+      wt.update(&sk, &mut ps, &mut ms, new Vec3(0., 0., sz), 0., 1.4, 0., true, (x, z) => 0., 1. / 60.);
+      sn = sn + 1;
+    }
+    wt.started = false;
+    mut sLowest = 100.;
+    mut sFarthest = 0.;
+    sn = 0;
+    while sn < 240 {
+      sz = sz - 1.4 / 60.;
+      imm sat = new Vec3(300., 40., 300. + sz);
+      wt.update(&sk, &mut ps, &mut ms, sat, 0., 1.4, 0., true, (x, z) => 40., 1. / 60.);
+      imm spy = (*ms[PELVIS]).translation.y;
+      if spy < sLowest { sLowest = spy; }
+      mut sb = 0usize;
+      while sb < ms.len() {
+        imm sd = (*ms[sb]).translation.length();
+        if sd > sFarthest { sFarthest = sd; }
+        sb = sb + 1usize;
+      }
+      sn = sn + 1;
+    }
+    expectBool(wt.standingPelvis() - sLowest < 0.14, true, "set down far away, walking, the pelvis never drops more than 14 cm");
+    expectBool(sFarthest < 1.75, true, "and no bone is farther than the walker's height from its origin");
+  }
   done();
 }

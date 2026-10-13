@@ -10,6 +10,11 @@
 // Every place an owner lives is here: a local, a struct's field, a module's
 // global, and a counted owner and a shared copy of one. What an owner's death
 // does is trait_vref_final's subject, so no type below declares 'final'.
+//
+// A call through a virtual reference may replace an owner of the type, as it may reshape a
+// collection, so the owner a borrow is held into ('a' under 'w', the shared 's' under its copy)
+// is declared '+ ShapeKeeping': the promise that a call through it keeps the borrows of its
+// caller (refborref, "ShapeKeeping"; region_flow_owner_kinds holds the refusal without it).
 
 mod trait_vref_owner;
 
@@ -37,7 +42,7 @@ struct Holder {
   pub app So[App];
 }
 
-mut kept So[App];
+imm kept So[App];
 
 fn @initpure init() {
   kept = new So[Doubler](3);
@@ -57,7 +62,7 @@ fn main() i32 {
   initAll();
 
   // Method calls through a local owner, each lending it
-  mut a So[App] = new So[Spinner](0);
+  mut a So[App + ShapeKeeping] = new So[Spinner](0);
   a.frame();
   a.frame();
   a.frame();
@@ -79,7 +84,7 @@ fn main() i32 {
 
   // The owner read while a '&<mut' borrow of it is still to be used: it is one
   // more alias (7 read, then 8 after the frame)
-  imm w &<mut App = a;
+  imm w &<mut App + ShapeKeeping = a;
   imm seen = a.look();
   w.frame();
   show("read-under-mut", seen * 100 + a.look());
@@ -101,7 +106,7 @@ fn main() i32 {
   c.frame();
   c.frame();
   show("counted-owner", c.look());
-  imm s Rc[mut, App] = new Rc[mut, Doubler](5);
+  imm s Rc[mut, App + ShapeKeeping] = new Rc[mut, Doubler](5);
   imm s2 = s;
   s.frame();
   s2.frame();

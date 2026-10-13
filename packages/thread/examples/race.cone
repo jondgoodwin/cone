@@ -42,20 +42,26 @@ fn add(c Counters) {
   }
 }
 
-mut atomicTotal u64 = 0u64;
-mut plainTotal u64 = 0u64;
+imm atomicTotal Atomic[u64];
+imm plainTotal Atomic[u64];
+
+fn @initpure init() {
+  atomicTotal = Atomic[u64].of(0u64);
+  plainTotal = Atomic[u64].of(0u64);
+}
 
 fn main() {
-  imm c = new Counters(&mut atomicTotal as *u64, &mut plainTotal as *u64);
+  initAll();
+  imm c = new Counters(&atomicTotal as *u64, &plainTotal as *u64);
   {
     imm a = thread.start(c, &add);
     imm b = thread.start(c, &add);
   }   // both handles are dropped here, and a dropped handle joins
   printStr("atomic ");
-  printInt(i64.from(atomicTotal));
+  printInt(i64.from(atomicTotal.load()));
   printStr("\nplain  ");
-  printInt(i64.from(plainTotal));
+  printInt(i64.from(plainTotal.load()));
   printStr(" (lost ");
-  printInt(2000000i64 - i64.from(plainTotal));
+  printInt(2000000i64 - i64.from(plainTotal.load()));
   printStr(")\n");
 }
