@@ -99,6 +99,12 @@
 //   compacted on the GPU and drawn by indirect draws. 'renderer.vis.settings'
 //   switches each off, and with all off the scene draws what a DrawList of its
 //   items would. A DrawList still draws whole beside it.
+// - The extended material (scenecapture.cone, pbrx.slang, lobes.slang, capture.slang): a
+//   PbrMaterial that sets sheen, anisotropy, subsurface scattering, glass, screen-space
+//   reflections, wet darkening or caustic reception is drawn by extended pipelines whose
+//   fourth bind group is a capture of the frame drawn so far (colour pyramid, depth copy,
+//   tables). Made when the first such material is added; the opaque pass is cut for each
+//   capture. 'setReflections' tiers the ray march, 'setCaustics' places a caustic volume.
 // - Point and spot lights (lights.cone, locallights.slang): real light
 //   sources, in 'renderer.lights', named by handles and cheap to add, move,
 //   aim, recolour and re-intensify every frame (a flicker). Intensity in
@@ -330,6 +336,11 @@ const BOUND_PBR_BLEND = 8u32;
 const BOUND_LIT_SKINNED_BLEND = 9u32;
 const BOUND_PBR_SKINNED_BLEND = 10u32;
 const BOUND_PBR_SWAY = 11u32;
+const BOUND_PBRX = 12u32;
+const BOUND_PBRX_SKINNED = 13u32;
+const BOUND_PBRX_BLEND = 14u32;
+const BOUND_PBRX_SKINNED_BLEND = 15u32;
+const BOUND_PBRX_TANGENT = 16u32;
 
 // The draw list's layers, in the order they are drawn: opaque meshes, then
 // lines, then (after the sky) what is see-through
@@ -440,6 +451,11 @@ pub struct Renderer {
   // length the scene's items go past. 'frameItemsLive' is false when the last render had no scene (the
   // batches' keys then name the draw list's own items).
   pub frameItems List[DrawItem];
+  // The extended material's machinery (scenecapture.cone): one, once a material that needs it (sheen,
+  // anisotropy, subsurface, glass, reflections) was added; none before
+  pub ext List[SceneCapture];
+  // How hard screen-space reflections try ('setReflections')
+  pub reflections ReflectionSettings;
   pub frameItemsLive bool = false;
   // Store the depth buffer at the end of 'render' (it is discarded
   // otherwise), so that a later pass into the same target -- glowing
@@ -454,6 +470,10 @@ pub struct Renderer {
   // A set of more keys than this is grouped by hash, not sorted (gatherSet): the
   // same batches, their copies in list order instead of nearest first
   pub bucketMin usize = 2048usize;
+  // Whether the render in progress can capture its target (set by 'render' for the targets it can sample)
+  pub captureReady bool = false;
+  // The frames rendered so far, which the reflection march's noise turns with
+  pub frameNumber u32 = 0u32;
 
   // A renderer drawing into targets of 'colorFormat', with a depth texture
   // of 'depthFormat' (TEXTURE_FORMAT_DEPTH32_FLOAT). For physically based
@@ -639,7 +659,7 @@ pub struct Renderer {
       Pool[PipelineSlot].empty(), litSkinnedPipeline, pbrSkinnedPipeline, bones, FIRST_BONES, boneBases,
       List[u32].empty(), 0u32, litBlendPipeline, pbrBlendPipeline, litSkinnedBlendPipeline, pbrSkinnedBlendPipeline, 0u32,
       pbrSwayPipeline, shadow, lights, List[ProbeSlot].empty(), Visibility.create(0.25), List[HiZ].empty(),
-      List[DrawItem].empty());
+      List[DrawItem].empty(), List[SceneCapture].empty(), ReflectionSettings.medium());
     mut w = new Image(1, 1, 3, List[u8].empty());
     w.pixels.push(255u8);
     w.pixels.push(255u8);
@@ -1157,6 +1177,7 @@ pub struct Renderer {
   // A physically based material to draw with (pbr.slang), lit by the
   // directional light and the environment made from the sky
   pub fn addPbrMaterial(self &mut, device &mut Device, material &PbrMaterial) MaterialHandle {
+    if material.isExtended() { self.ensureExtended(device); }
     mut uniforms = device.createBuffer(PBR_BYTES, BUFFER_USAGE_UNIFORM | BUFFER_USAGE_COPY_DST);
     imm params = pbrParams(material, self.mapNormalScale(material, material), self.mapOcclusionStrength(material, material));
     device.queue.writeBuffer(&uniforms, 0u64, &params as *u8, PBR_BYTES);
@@ -1177,6 +1198,7 @@ pub struct Renderer {
   // which stay those it was added with), from the next submission on
   pub fn setPbrMaterial(self &mut, device &mut Device, h MaterialHandle, material &PbrMaterial) bool {
     if !materials.alive(h.slot) { return false; }
+    if material.isExtended() { self.ensureExtended(device); }
     imm bound = materials[h.slot].pbr;
     imm params = pbrParams(material, self.mapNormalScale(&bound, material), self.mapOcclusionStrength(&bound, material));
     mut slot = &mut materials[h.slot];
@@ -1189,6 +1211,42 @@ pub struct Renderer {
     slot.pbr.occlusionTexture = bound.occlusionTexture;
     slot.blend = material.alphaMode == ALPHA_BLEND;
     true;
+  }
+
+  // Make the extended material's pipelines, capture passes and tables, if they are not made (scenecapture.cone)
+  fn ensureExtended(self &mut, device &mut Device) {
+    if ext.len() > 0usize { return; }
+    ext.push(SceneCapture.create(device, colorFormat, depthFormat, &frameLayout, &pbrMaterialLayout, &environmentLayout,
+      &reflections));
+  }
+
+  // Screen-space reflections ray-marched as 's' says, from the next render on (a quality tier:
+  // 'ReflectionSettings.high()', 'medium()', 'low()'; scenecapture.cone)
+  pub fn setReflections(self &mut, s &ReflectionSettings) {
+    reflections = *s;
+    if ext.len() > 0usize {
+      mut e = &mut ext[0usize];
+      e.settings = *s;
+    }
+  }
+
+  // Caustics beneath a rippled surface, as 'v' says (scenecapture.cone): the sun's light focused on the
+  // materials that receive it ('PbrMaterial.causticReceiver') inside the volume. 'CausticVolume.none()'
+  // turns it off.
+  pub fn setCaustics(self &mut, device &mut Device, v &CausticVolume) {
+    self.ensureExtended(device);
+    mut e = &mut ext[0usize];
+    e.setCaustics(device, v);
+  }
+
+  // Draw every physically based material with the extended pipelines, whether or not it needs them (a
+  // test: the extended pipelines with all the lobes off must draw what the base ones do)
+  pub fn forceExtended(self &mut, device &mut Device, on bool) {
+    if on { self.ensureExtended(device); }
+    if ext.len() > 0usize {
+      mut e = &mut ext[0usize];
+      e.forceAll = on;
+    }
   }
 
   // The texture 'h', or the white one if it reaches nothing
@@ -1382,7 +1440,10 @@ pub struct Renderer {
     imm depthView = depth.createView();
     // The depth pyramid reads the depth buffer, if it can be sampled
     vis.depthSampled = (depth.usage & TEXTURE_USAGE_TEXTURE_BINDING) != 0u32;
+    // The extended material captures the frame so far, if both the target and the depth can be sampled
+    captureReady = vis.depthSampled and (target.usage & TEXTURE_USAGE_TEXTURE_BINDING) != 0u32 and ext.len() > 0usize;
     self.renderTo(device, encoder, targetView, depthView, camera, light, list);
+    captureReady = false;
     vis.depthSampled = false;
   }
 
@@ -1547,6 +1608,11 @@ pub struct Renderer {
     imm clear = new Color(bg.red * exposure, bg.green * exposure, bg.blue * exposure, bg.alpha);
     blendedDrawn = 0u32;
     imm mainEnd = vis.sets[0usize].end;
+    imm proj = camera.projectionMatrix(aspect);
+    if ext.len() > 0usize and self.drawsPbr(drawList) {
+      mut e = &mut ext[0usize];
+      e.bake(encoder);
+    }
     // With the depth pyramid, the view is drawn in two render passes with the
     // pyramid built between them (hiz.cone); otherwise in one
     imm occActive = occluding and hiz[0usize].candidateCount > 0u32;
@@ -1557,7 +1623,12 @@ pub struct Renderer {
     imm lastPhase = phase + 1u32 == phases;
     imm color = new RenderPassColorAttachment(view: target, clearValue: clear,
       loadOp: if phase == 0u32 { LOAD_OP_CLEAR; } else { LOAD_OP_LOAD; });
-    imm depthStore = if keepDepth or !lastPhase { STORE_OP_STORE; } else { STORE_OP_DISCARD; };
+    // The extended material's captures (scenecapture.cone) end this pass to copy what it drew and begin it
+    // again: 'splitMask' says which are wanted (1: before the opaque meshes that reflect the frame; 2: before
+    // the glass), and the depth is stored while another capture, or the caller, will read it
+    imm splitMask = self.splitMask(mainEnd);
+    imm keepsDepth = keepDepth or !lastPhase;
+    imm depthStore = if keepsDepth or splitMask != 0u32 { STORE_OP_STORE; } else { STORE_OP_DISCARD; };
     imm depthAttachment = new RenderPassDepthStencilAttachment(view: depth, depthStoreOp: depthStore,
       depthLoadOp: if phase == 0u32 { LOAD_OP_CLEAR; } else { LOAD_OP_LOAD; });
     mut pass = encoder.beginRenderPassWithDepth(&color, &depthAttachment);
@@ -1566,6 +1637,9 @@ pub struct Renderer {
     mut boundPipeline = Ref[PipelineSlot].none();
     mut boundProbe = 0u32;           // the probe whose group is group 2 (0: the sky's)
     mut skyDrawn = !drawSky;
+    mut sceneLive = false;           // the capture's group (group 3) holds a capture of this render
+    mut reflectDone = (splitMask & 1u32) == 0u32;
+    mut glassDone = (splitMask & 2u32) == 0u32;
     mut b = 0usize;
     while b < mainEnd {
       imm batch = *batches[b];
@@ -1576,6 +1650,20 @@ pub struct Renderer {
         if phase == 0u32 and batch.layer != LAYER_OPAQUE { continue; }
         if phase == 1u32 and batch.layer == LAYER_OPAQUE and batch.occ == 0u32 { continue; }
       }
+      // The opaque meshes that reflect the frame see what the others drew
+      if !reflectDone and batch.layer == LAYER_OPAQUE and batch.late != 0u32 {
+        pass.end();
+        self.captureFrame(device, encoder, &target, &depth, &proj);
+        reflectDone = true;
+        sceneLive = true;
+        imm colorLoad = new RenderPassColorAttachment(view: target, clearValue: clear, loadOp: LOAD_OP_LOAD);
+        imm depthLoad = new RenderPassDepthStencilAttachment(view: depth,
+          depthStoreOp: if keepsDepth or !glassDone { STORE_OP_STORE; } else { STORE_OP_DISCARD; }, depthLoadOp: LOAD_OP_LOAD);
+        pass = encoder.beginRenderPassWithDepth(&colorLoad, &depthLoad);
+        bound = BOUND_NONE;
+        boundMaterial = Ref[MaterialSlot].none();
+        boundPipeline = Ref[PipelineSlot].none();
+      }
       // The sky, where nothing opaque was drawn, before anything
       // see-through (which writes no depth for it to be tested against)
       if batch.layer == LAYER_BLEND and !skyDrawn {
@@ -1583,6 +1671,20 @@ pub struct Renderer {
         skyDrawn = true;
         bound = BOUND_NONE;
         boundMaterial = Ref[MaterialSlot].none();
+      }
+      // The glass sees all of that, the sky too, behind it
+      if !glassDone and batch.layer == LAYER_BLEND and batch.late == 0u32 {
+        pass.end();
+        self.captureFrame(device, encoder, &target, &depth, &proj);
+        glassDone = true;
+        sceneLive = true;
+        imm colorLoad = new RenderPassColorAttachment(view: target, clearValue: clear, loadOp: LOAD_OP_LOAD);
+        imm depthLoad = new RenderPassDepthStencilAttachment(view: depth,
+          depthStoreOp: if keepsDepth { STORE_OP_STORE; } else { STORE_OP_DISCARD; }, depthLoadOp: LOAD_OP_LOAD);
+        pass = encoder.beginRenderPassWithDepth(&colorLoad, &depthLoad);
+        bound = BOUND_NONE;
+        boundMaterial = Ref[MaterialSlot].none();
+        boundPipeline = Ref[PipelineSlot].none();
       }
       imm first = *keys[usize.from(batch.first)];
       imm item = drawList.items[usize.from(first.item)];
@@ -1593,6 +1695,7 @@ pub struct Renderer {
       imm blend = batch.layer == LAYER_BLEND;
       mut skinned = false;
       mut sway = false;
+      mut tangented = false;
       if lines {
         if bound != BOUND_LINES {
           pass.setPipeline(&linesPipeline);
@@ -1629,9 +1732,20 @@ pub struct Renderer {
           // A skinned mesh is drawn by the pipeline's skinned variant, a
           // see-through one by its blended variant
           skinned = m.isSkinned();
+          // A material that asks for a lobe the base shader lacks, or the frame, is drawn by the extended
+          // pipelines (scenecapture.cone), which have the capture as their fourth group
+          imm extended = ext.len() > 0usize and (mslot.pbr.isExtended() or ext[0usize].forceAll);
           // A flutter material on a mesh that carries its leaves' data
-          sway = !blend and !skinned and mslot.pbr.flutter > 0. and m.sway.isValid();
-          imm want = if blend {
+          sway = !blend and !skinned and !extended and mslot.pbr.flutter > 0. and m.sway.isValid();
+          // A mesh with tangents follows them in an anisotropic highlight
+          tangented = extended and !blend and !skinned and m.tangents.isValid();
+          imm want = if extended {
+            if blend {
+              if skinned { BOUND_PBRX_SKINNED_BLEND; } else { BOUND_PBRX_BLEND; };
+            } else {
+              if skinned { BOUND_PBRX_SKINNED; } elif tangented { BOUND_PBRX_TANGENT; } else { BOUND_PBRX; };
+            };
+          } elif blend {
             if skinned { BOUND_PBR_SKINNED_BLEND; } else { BOUND_PBR_BLEND; };
           } else {
             if skinned { BOUND_PBR_SKINNED; } elif sway { BOUND_PBR_SWAY; } else { BOUND_PBR; };
@@ -1641,9 +1755,17 @@ pub struct Renderer {
             elif want == BOUND_PBR_SWAY { pass.setPipeline(&pbrSwayPipeline); }
             elif want == BOUND_PBR_SKINNED { pass.setPipeline(&pbrSkinnedPipeline); }
             elif want == BOUND_PBR_BLEND { pass.setPipeline(&pbrBlendPipeline); }
-            else { pass.setPipeline(&pbrSkinnedBlendPipeline); }
+            elif want == BOUND_PBR_SKINNED_BLEND { pass.setPipeline(&pbrSkinnedBlendPipeline); }
+            elif want == BOUND_PBRX { pass.setPipeline(&ext[0usize].opaquePipeline); }
+            elif want == BOUND_PBRX_SKINNED { pass.setPipeline(&ext[0usize].skinnedPipeline); }
+            elif want == BOUND_PBRX_TANGENT { pass.setPipeline(&ext[0usize].tangentPipeline); }
+            elif want == BOUND_PBRX_BLEND { pass.setPipeline(&ext[0usize].blendPipeline); }
+            else { pass.setPipeline(&ext[0usize].skinnedBlendPipeline); }
             pass.setBindGroup(0u32, &frameGroup);
             pass.setBindGroup(2u32, &environment.group);
+            if extended {
+              pass.setBindGroup(3u32, if sceneLive { &ext[0usize].group; } else { &ext[0usize].standInGroup; });
+            }
             boundProbe = 0u32;
             bound = want;
             boundMaterial = Ref[MaterialSlot].none();
@@ -1687,6 +1809,7 @@ pub struct Renderer {
         pass.setVertexBuffer(2u32, &m.uvs, 0u64);
       }
       if sway { pass.setVertexBuffer(3u32, &m.sway, 0u64); }
+      if tangented { pass.setVertexBuffer(3u32, &m.tangents, 0u64); }
       if skinned {
         pass.setVertexBuffer(3u32, &m.joints, 0u64);
         pass.setVertexBuffer(4u32, &m.weights, 0u64);
@@ -1735,6 +1858,29 @@ pub struct Renderer {
     // The items, kept for the passes that go by the batches' keys
     frameItemsLive = sceneOn;
     if sceneOn { frameItems <=> sceneList.items; }
+    frameNumber = frameNumber + 1u32;
+  }
+
+  // Which captures the batches before 'end' want (scenecapture.cone): bit 0, an opaque batch that reflects
+  // the frame; bit 1, a glass batch. 0 when the render cannot capture its target.
+  fn splitMask(self &, end usize) u32 {
+    if !captureReady or ext.len() == 0usize { return 0u32; }
+    mut mask = 0u32;
+    mut i = 0usize;
+    while i < end {
+      imm bt = *batches[i];
+      if bt.layer == LAYER_OPAQUE and bt.late != 0u32 { mask = mask | 1u32; }
+      if bt.layer == LAYER_BLEND and bt.late == 0u32 { mask = mask | 2u32; }
+      i = i + 1usize;
+    }
+    mask;
+  }
+
+  // Capture the target and the depth as drawn so far, for the extended material to read
+  fn captureFrame(self &mut, device &mut Device, encoder &mut CommandEncoder, target &TextureView, depth &TextureView,
+      proj &Mat4) {
+    mut e = &mut ext[0usize];
+    e.capture(device, encoder, target, depth, target.width, target.height, proj.m[10], proj.m[14], frameNumber);
   }
 
   // Draw the sky into 'pass': one triangle at the far plane, where nothing
@@ -1822,15 +1968,23 @@ pub struct Renderer {
             setKeys.push(new DrawKey(LAYER_LINES, u32.from(i), item.mesh.slot.slot(), u32.from(i), 0u32, d, 0u32));
           } elif materials.alive(item.material.slot) {
             imm probe = self.probeFor(item.model.translation());
-            if materials[item.material.slot].blend {
+            imm mslot = materials[item.material.slot];
+            imm extended = mslot.kind == MATERIAL_PBR;
+            if mslot.blend {
               imm d = (item.model * m.center).distanceSquared(eye);
-              setKeys.push(new DrawKey(LAYER_BLEND, item.material.slot.slot(), item.mesh.slot.slot(), u32.from(i), 0u32, d, probe));
+              // Glass is drawn before the rest of the see-through meshes (scenecapture.cone): 'late' 0
+              imm late = if extended and mslot.pbr.glass > 0. { 0u32; } else { 1u32; };
+              setKeys.push(new DrawKey(LAYER_BLEND, item.material.slot.slot(), item.mesh.slot.slot(), u32.from(i), 0u32, d, probe,
+                0u32, late));
             } else {
               imm d = item.model.translation().distanceSquared(eye);
               // The depth pyramid may cull an unskinned lit or physically based copy the scene marked so
-              imm occ = if occlusion and item.occludable and !m.isSkinned() and materials[item.material.slot].kind != MATERIAL_CUSTOM
+              imm occ = if occlusion and item.occludable and !m.isSkinned() and mslot.kind != MATERIAL_CUSTOM
                 { 1u32; } else { 0u32; };
-              setKeys.push(new DrawKey(LAYER_OPAQUE, item.material.slot.slot(), item.mesh.slot.slot(), u32.from(i), cast, d, probe, occ));
+              // A mesh that reflects the frame is drawn after the others (scenecapture.cone): 'late' 1
+              imm late = if extended and mslot.pbr.reflections > 0. { 1u32; } else { 0u32; };
+              setKeys.push(new DrawKey(LAYER_OPAQUE, item.material.slot.slot(), item.mesh.slot.slot(), u32.from(i), cast, d, probe,
+                occ, late));
             }
           }
         }
@@ -1855,7 +2009,8 @@ pub struct Renderer {
       mut s = 0usize;
       while s < setKeys.len() {
         imm key = *setKeys[s];
-        if key.layer == LAYER_OPAQUE and key.material < 1048576u32 and key.mesh < 1048576u32 and key.probe < 4096u32 {
+        if key.layer == LAYER_OPAQUE and key.material < 1048576u32 and key.mesh < 1048576u32 and key.probe < 4096u32
+            and key.late == 0u32 {
           big.push(key);
         } else {
           rest.push(key);
@@ -1920,13 +2075,15 @@ pub struct Renderer {
       mut end = k + 1usize;
       while end < setKeys.len() and setKeys[end].layer == first.layer and setKeys[end].material == first.material
           and setKeys[end].mesh == first.mesh and setKeys[end].cast == first.cast and setKeys[end].probe == first.probe
-          and setKeys[end].occ == first.occ {
+          and setKeys[end].occ == first.occ and setKeys[end].late == first.late {
         end = end + 1usize;
       }
       // The keys of a run are sorted nearest first (or, see-through,
       // farthest first)
-      setBatches.push(new DrawBatch(u32.from(keyBase + k), u32.from(end - k), 0u32, first.distance, first.layer,
-        u32.from(keyBase + k), first.layer == LAYER_OPAQUE and first.cast == 0u32, first.probe, first.occ));
+      mut runBatch = new DrawBatch(u32.from(keyBase + k), u32.from(end - k), 0u32, first.distance, first.layer,
+        u32.from(keyBase + k), first.layer == LAYER_OPAQUE and first.cast == 0u32, first.probe, first.occ);
+      runBatch.late = first.late;
+      setBatches.push(runBatch);
       k = end;
     }
     // The grouped keys' batches, their keys after the sorted ones
@@ -2094,6 +2251,9 @@ pub struct DrawKey {
   distance f32;
   probe u32;                   // the reflection probe that lights it, 1 + its index; 0: the sky's
   occ u32 = 0u32;              // 1 if the depth pyramid may cull it (hiz.cone): a batch holds all or none
+  // 1 if it is drawn after the rest of its layer: an opaque mesh that reflects the frame, a see-through mesh that is
+  // not glass (glass, 0, is drawn first, so what blends over it blends over its refraction); scenecapture.cone
+  late u32 = 0u32;
 }
 
 // One instanced draw: 'count' keys from 'first', drawn as the instances
@@ -2109,10 +2269,12 @@ pub struct DrawBatch {
   probe u32;                   // its copies' reflection probe (DrawKey)
   occ u32 = 0u32;              // 1 + its place among the batches the depth pyramid culls (hiz.cone); 0: not culled
   dest2 u32 = 0u32;            // the second draw's first instance, for such a batch (firstInstance is the first draw's)
+  late u32 = 0u32;             // its keys' (DrawKey)
 }
 
 fn byBatch(a &DrawKey, b &DrawKey) i32 {
   if a.layer != b.layer { return if a.layer < b.layer { -1i32; } else { 1i32; }; }
+  if a.late != b.late { return if a.late < b.late { -1i32; } else { 1i32; }; }
   if a.layer == LAYER_BLEND {
     // Back to front, copy by copy; ties by the item's place in the list
     if a.distance > b.distance { return -1i32; }
@@ -2131,6 +2293,7 @@ fn byBatch(a &DrawKey, b &DrawKey) i32 {
 
 fn byDistance(a &DrawBatch, b &DrawBatch) i32 {
   if a.layer != b.layer { return if a.layer < b.layer { -1i32; } else { 1i32; }; }
+  if a.late != b.late { return if a.late < b.late { -1i32; } else { 1i32; }; }
   if a.layer == LAYER_BLEND {
     // Kept in the keys' order, back to front
     return if a.order < b.order { -1i32; } elif a.order > b.order { 1i32; } else { 0i32; };
