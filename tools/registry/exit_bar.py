@@ -153,8 +153,8 @@ def c_wrapper_registry(root: Path, work: Path) -> str:
     """A registry (a git repository) with one entry, tri, a package wrapping a C library
     whose import library and DLL are in the package. Built with the Build Tools' cl, the
     one tool every Windows build here needs. The URL of the registry."""
-    sys.path.insert(0, str(root / "tools" / "congo"))
-    import congo  # noqa: E402  (the archive's own copy: it knows where the Build Tools are)
+    sys.path.insert(0, str(REPO / "tools" / "congo"))
+    import congo  # noqa: E402  (this checkout's: it writes index files and knows where the Build Tools are)
     env = congo.Linker.vs_environment()
     src = work / "tri-src"
     write(src / "congo.toml", """
@@ -200,6 +200,9 @@ def main() -> int:
     group.add_argument("--standin", action="store_true", help="rehearse with a folder assembled from this checkout")
     ap.add_argument("--registry", default=os.environ.get("CONE_REGISTRY"),
                     help="the index to fetch the Cone packages from (default: $CONE_REGISTRY)")
+    ap.add_argument("--overlay-congo", action="store_true",
+                    help="REHEARSAL: put this checkout's congo.py over the archive's, for an archive"
+                         " built before the registry code was in master. The result is not the archive test")
     ap.add_argument("--keep", action="store_true", help="keep the work folder")
     args = ap.parse_args()
     if not args.registry:
@@ -213,6 +216,8 @@ def main() -> int:
     try:
         root = standin(work / "src") if args.standin else unpack(args.archive.resolve(), work / "src")
         is_standin = args.standin
+        if args.overlay_congo:
+            shutil.copy2(REPO / "tools" / "congo" / "congo.py", root / "tools" / "congo" / "congo.py")
         congo = congo_command(root, is_standin)
 
         # 1. HELLO: the archive as shipped
@@ -280,6 +285,8 @@ def main() -> int:
     print("exit_bar: " + "; ".join(f"{p} {o}" for p, o, _ in results))
     if args.standin:
         print("exit_bar: this was the stand-in rehearsal, not the archive test")
+    if args.overlay_congo:
+        print("exit_bar: congo.py was overlaid from the checkout: a rehearsal, not the archive test")
     return 0 if all(o in ("PASS", "SKIPPED") for _, o, _ in results) else 1
 
 
