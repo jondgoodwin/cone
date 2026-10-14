@@ -1,0 +1,393 @@
+// drive: a sedan (wheelvehicle's data-defined sedanSpec) driven over bumps and off a ramp, drawn headless on a
+// real GPU.
+//
+//   congo run --release packages/wheelvehicle/examples/drive.cone -- --out PREFIX
+//   GPU_POWER_PREFERENCE=low-power congo run --release ...   (the Intel)
+//
+// The course is static primitives (and one height function of x and z for the drawn mesh): a flat start, 60 m
+// of washboard (20 bumps 6 cm high every 3 m: cylinders lying across the road), two mounds 45 cm high (big
+// spheres, half buried), a ramp rising 2 m over 12 m that ends in a cliff (a tilted box), then flat landing
+// ground. (A heightfield made the same course, but the chassis box stopped dead on it: see the report.)
+// A scripted driver holds 80 km/h
+// to the ramp with throttle and brake, no steering (the course is straight). It simulates at 120 Hz,
+// printing every half second the time, place, speed, gear, rpm and the loads on the four wheels; and for the
+// jump the time in the air, the height reached, the distance flown, and the landing's peak suspension
+// compression; and the CPU time of a vehicle step. Seven snapshots are taken (the start, the washboard, a mound, the
+// take-off, the apex, the landing, and the run-out) and drawn from beside the car, to PREFIX-<name>.bmp, with the
+// GPU time of each (timestamp queries, the median of 100 frames).
+
+mod drive;
+
+import stdio use *;
+import libc;
+import time;
+import geomath use *;
+import collections use *;
+import mesh use Mesh;
+import gpu use *;
+import render use *;
+import path as filepath;
+import rigidcollide use *;
+import rigiddynamics use *;
+import wheelvehicle use *;
+
+fn cstrEquals(a *u8, b &str) bool {
+  mut i = 0usize;
+  while i < b.len() {
+    if *(a + i) != b[i] { return false; }
+    i = i + 1usize;
+  }
+  *(a + b.len()) == 0u8;
+}
+
+fn cstrToString(s *u8) String {
+  mut r = String.empty();
+  mut i = 0usize;
+  while *(s + i) != 0u8 { r.appendByte(*(s + i)); i = i + 1usize; }
+  r;
+}
+
+// The course's height at (x, z)
+// The course is made of primitives (rigidcollide's heightfield snagged the chassis box: see the report), and its
+// height is the same function for the drawn mesh: a cap of a circle or sphere of radius r that stands h above
+// the ground, at squared distance d2 from its centre's axis
+fn cap(r f32, h f32, d2 f32) f32 {
+  imm inside = r * r - d2;
+  if inside <= 0. { return 0.; }
+  imm v = inside.sqrt() - (r - h);
+  if v > 0. { v; } else { 0.; };
+}
+
+fn courseHeight(x f32, z f32) f32 {
+  mut h = 0.;
+  // washboard: 20 bumps 6 cm high every 3 m from x = 40: cylinders of radius 18.8 lying across the road
+  mut k = 0;
+  while k < 20 {
+    imm cx = 41.5 + 3. * f32.from(k);
+    imm b = cap(18.8, 0.06, (x - cx) * (x - cx));
+    if b > h { h = b; }
+    k = k + 1;
+  }
+  // two mounds, 45 cm high: spheres of radius 54.7 (14 m across)
+  imm m1 = cap(54.7, 0.45, (x - 122.) * (x - 122.) + z * z);
+  if m1 > h { h = m1; }
+  imm m2 = cap(54.7, 0.45, (x - 147.) * (x - 147.) + z * z);
+  if m2 > h { h = m2; }
+  // the ramp: rises 2 m over 12 m from x = 170, 8 m wide, then the cliff
+  if x >= 170. and x < 182. and z > -4. and z < 4. {
+    imm rr = (x - 170.) * (2. / 12.);
+    if rr > h { h = rr; }
+  }
+  h;
+}
+
+struct Snap {
+  name String;
+  pos Vec3;
+  rot Quat;
+  hubs List[Vec3];
+  spins List[f32];
+  steers List[f32];
+}
+
+fn snapOf(name &str, w &World, car &Vehicle) Snap {
+  mut hubs = List[Vec3].empty();
+  mut spins = List[f32].empty();
+  mut steers = List[f32].empty();
+  mut i = 0usize;
+  while i < car.wheels.len() {
+    hubs.push(car.wheels[i].hub);
+    spins.push(car.wheels[i].spin);
+    steers.push(car.wheels[i].steerAngle);
+    i = i + 1usize;
+  }
+  mut label = String.empty();
+  label <- name;
+  new Snap(label, w.centerOfMass(car.body), w.rotationOf(car.body), hubs, spins, steers);
+}
+
+fn main(argc i32, argv **u8) i32 {
+  mut prefix = String.empty();
+  mut a = 1;
+  while a < argc {
+    if cstrEquals(*(argv + usize.from(a)), "--out") and a + 1 < argc {
+      prefix = cstrToString(*(argv + usize.from(a + 1)));
+      a = a + 1;
+    }
+    a = a + 1;
+  }
+
+  // ---- the world ----
+  mut world = World.make();
+  imm groundShape = world.addShape(Shape.single(Prim.box(new Vec3(400., 1., 100.))));
+  world.createBody(BodyDef.staticAt(groundShape, new Vec3(120., -1., 0.)));
+  imm bumpShape = world.addShape(Shape.single(Prim.cylinder(18.8, 12.)));
+  mut kb = 0;
+  while kb < 20 {
+    mut bd = BodyDef.staticAt(bumpShape, new Vec3(41.5 + 3. * f32.from(kb), 0.06 - 18.8, 0.));
+    bd.rot = Quat.angleAxis(1.57079633, new Vec3(1., 0., 0.));
+    world.createBody(bd);
+    kb = kb + 1;
+  }
+  imm moundShape = world.addShape(Shape.single(Prim.sphere(54.7)));
+  world.createBody(BodyDef.staticAt(moundShape, new Vec3(122., 0.45 - 54.7, 0.)));
+  world.createBody(BodyDef.staticAt(moundShape, new Vec3(147., 0.45 - 54.7, 0.)));
+  imm rampShape = world.addShape(Shape.single(Prim.box(new Vec3(6.083, 0.2, 4.))));
+  mut rampDef = BodyDef.staticAt(rampShape, new Vec3(176.033, 0.8027, 0.));
+  rampDef.rot = Quat.angleAxis(0.16515, new Vec3(0., 0., 1.));
+  world.createBody(rampDef);
+  mut car = Vehicle.create(&mut world, sedanSpec(), new Vec3(0., 0.56, 0.), Quat.identity());
+
+  // ---- the drive ----
+  imm dt = 1. / 120.;
+  mut t = 0.;
+  mut n = 0;
+  mut cpuSeconds = 0d;
+  mut steps = 0;
+  mut snaps = List[Snap].empty();
+  mut gotWash = false;
+  mut gotMound = false;
+  mut gotTake = false;
+  mut gotApex = false;
+  mut gotLand = false;
+  mut gotStart = false;
+  mut gotEnd = false;
+  mut flying = false;
+  mut flightStart = 0.;
+  mut flightX0 = 0.;
+  mut apex = 0.;
+  mut flightEnd = 0.;
+  mut flightX1 = 0.;
+  mut landCompress = 0.;
+  mut measuringLand = false;
+  mut maxCompressWash = 0.;
+  mut prevVy = 0.;
+  mut targetKmh = 80.;
+  mut speedAtTake = 0.;
+  print <- "   t      x   km/h gear   rpm | wheel loads N (FL FR RL RR)\n";
+  while t < 16. and !gotEnd {
+    imm kmh = car.kmh();
+    // the driver: hold the target speed
+    imm err = targetKmh - kmh;
+    car.drive(vclampD(0.15 + err * 0.08, 0., 1.), vclampD(-err * 0.05, 0., 0.5), 0.);
+    imm c0 = time.Instant.now();
+    car.apply(&mut world, (x, z) => 1., dt);
+    world.step(dt);
+    cpuSeconds = cpuSeconds + (time.Instant.now() - c0).secondsF64();
+    steps = steps + 1;
+    t = t + dt;
+    n = n + 1;
+    car.speed = world.linearVelocity(car.body).dot(world.rotationOf(car.body) * new Vec3(1., 0., 0.));
+    imm p = world.centerOfMass(car.body);
+    imm v = world.linearVelocity(car.body);
+    mut contacts = 0;
+    mut maxComp = 0.;
+    mut wi = 0usize;
+    while wi < 4usize {
+      if car.wheels[wi].contact { contacts = contacts + 1; }
+      if car.wheels[wi].compression > maxComp { maxComp = car.wheels[wi].compression; }
+      wi = wi + 1usize;
+    }
+    if p.x > 40. and p.x < 100. and maxComp > maxCompressWash { maxCompressWash = maxComp; }
+    if n % 60 == 0 {
+      print <- t; print <- "  "; print <- p.x; print <- "  "; print <- car.kmh(); print <- "  "; print <- i64.from(car.gear); print <- "  "; print <- car.rpm; print <- " | ";
+      print <- car.wheels[0].load; print <- " "; print <- car.wheels[1].load; print <- " "; print <- car.wheels[2].load; print <- " "; print <- car.wheels[3].load; print <- "\n";
+    }
+    // snapshots
+    if !gotStart and p.x > 15. { gotStart = true; snaps.push(snapOf("start", &world, &car)); }
+    if !gotWash and p.x > 62. { gotWash = true; snaps.push(snapOf("washboard", &world, &car)); }
+    if !gotMound and p.x > 122. { gotMound = true; snaps.push(snapOf("mound", &world, &car)); }
+    if !flying and p.x > 172. and contacts == 0 {
+      flying = true; flightStart = t; flightX0 = p.x; apex = p.y; speedAtTake = car.kmh();
+      if !gotTake { gotTake = true; snaps.push(snapOf("takeoff", &world, &car)); }
+    }
+    if flying {
+      if p.y > apex { apex = p.y; }
+      if !gotApex and prevVy > 0. and v.y <= 0. { gotApex = true; snaps.push(snapOf("apex", &world, &car)); }
+      if contacts >= 2 and t > flightStart + 0.2 {
+        flying = false; flightEnd = t; flightX1 = p.x; measuringLand = true; landCompress = 0.;
+      }
+    }
+    if measuringLand {
+      if maxComp > landCompress { landCompress = maxComp; }
+      if t > flightEnd + 0.15 and !gotLand { gotLand = true; snaps.push(snapOf("landing", &world, &car)); }
+      if t > flightEnd + 1.5 { measuringLand = false; }
+    }
+    if gotLand and t > flightEnd + 2.5 and !gotEnd { gotEnd = true; snaps.push(snapOf("runout", &world, &car)); }
+    // slow down after the ramp: the driver brakes
+    if p.x > 183. { targetKmh = 30.; }
+    prevVy = v.y;
+  }
+  print <- "\nwashboard (x 40 to 100): the largest suspension compression "; print <- maxCompressWash; print <- " m of 0.35\n";
+  print <- "the jump: left the ramp at "; print <- speedAtTake; print <- " km/h, in the air "; print <- flightEnd - flightStart; print <- " s, "; print <- flightX1 - flightX0;
+  print <- " m, highest point "; print <- apex; print <- " m (the ramp's lip is 2.56 m up for the centre of mass), the landing's largest compression "; print <- landCompress; print <- " m of 0.35\n";
+  print <- "CPU: a vehicle step ("; print <- u64.from(car.wheels.len()); print <- " wheels, 4 rays, the Magic Formula) plus the World's step costs "; print <- cpuSeconds / f64.from(steps) * 1.0e6d; print <- " microseconds\n";
+
+  // ---- the GPU ----
+  mut instance = Instance.create("wheelvehicle drive");
+  mut none = Surface.none();
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  if (env as usize) != 0usize {
+    if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  mut adapter = instance.requestAdapter(&none, preference);
+  if !adapter.isValid() { print <- "No GPU\n"; return 1i32; }
+  print <- "Adapter: "; printStr(adapter.name.view()); print <- "\n";
+  mut device = adapter.requestDevice();
+  imm W = 1280u32;
+  imm H = 720u32;
+  imm outDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  mut out = device.createTexture(&outDesc);
+  imm depthDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  mut depth = device.createTexture(&depthDesc);
+  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  mut post = Post.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, W, H);
+  mut queries = device.createQuerySet(QUERY_TYPE_TIMESTAMP, 2u32);
+  mut resolved = device.createBuffer(256u64, BUFFER_USAGE_QUERY_RESOLVE | BUFFER_USAGE_COPY_SRC);
+  mut timeBuf = device.createBuffer(16u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  if !renderer.isValid() or !post.isValid() or !queries.isValid() { print <- "renderer failed\n"; return 1i32; }
+
+  mut sky = Sky.dusk(radians(40.), radians(200.));
+  sky.sunColor = new Color(30., 27., 22., 1.);
+  sky.zenith = new Color(0.14, 0.3, 0.72, 1.);
+  sky.horizon = new Color(0.6, 0.72, 0.88, 1.);
+  sky.glow = new Color(0.5, 0.4, 0.3, 1.);
+  sky.ground = new Color(0.2, 0.25, 0.3, 1.);
+  sky.cloudCover = 0.35;
+  renderer.setSky(&mut device, &sky);
+  imm light = sky.sunLight(new Color(3.2, 3.0, 2.6, 1.), new Color(0.25, 0.3, 0.4, 1.));
+  post.exposure = 0.9;
+  post.bloom = 0.03;
+
+  // the terrain mesh: the same function at 0.5 m
+  mut terrain = Mesh.empty();
+  imm gx = 561;
+  imm gz = 81;
+  mut zi = 0;
+  while zi < gz {
+    mut xi = 0;
+    while xi < gx {
+      terrain.positions.push(new Vec3(-20. + 0.5 * f32.from(xi), courseHeight(-20. + 0.5 * f32.from(xi), -20. + 0.5 * f32.from(zi)), -20. + 0.5 * f32.from(zi)));
+      xi = xi + 1;
+    }
+    zi = zi + 1;
+  }
+  zi = 0;
+  while zi + 1 < gz {
+    mut xi = 0;
+    while xi + 1 < gx {
+      imm i00 = u32.from(zi * gx + xi);
+      imm i10 = i00 + 1u32;
+      imm i01 = i00 + u32.from(gx);
+      imm i11 = i01 + 1u32;
+      terrain.indices.push(i00); terrain.indices.push(i01); terrain.indices.push(i11);
+      terrain.indices.push(i00); terrain.indices.push(i11); terrain.indices.push(i10);
+      xi = xi + 1;
+    }
+    zi = zi + 1;
+  }
+  terrain.computeSmoothNormals();
+  imm terrainMesh = renderer.addMesh(&mut device, &terrain);
+  imm cubeData = Mesh.cube(1.);
+  imm cubeMesh = renderer.addMesh(&mut device, &cubeData);
+  imm sphereData = Mesh.sphere(1., 24);
+  imm sphereMesh = renderer.addMesh(&mut device, &sphereData);
+  mut terrainMat = Material.plain(new Color(0.32, 0.4, 0.18, 1.));
+  imm terrainM = renderer.addMaterial(&mut device, &terrainMat);
+  mut bodyMat = Material.shiny(new Color(0.75, 0.08, 0.06, 1.), 0.6, 60.);
+  imm bodyM = renderer.addMaterial(&mut device, &bodyMat);
+  mut glassMat = Material.shiny(new Color(0.12, 0.16, 0.2, 1.), 0.8, 90.);
+  imm glassM = renderer.addMaterial(&mut device, &glassMat);
+  mut tyreMat = Material.plain(new Color(0.05, 0.05, 0.05, 1.));
+  imm tyreM = renderer.addMaterial(&mut device, &tyreMat);
+  mut hubMat = Material.plain(new Color(0.9, 0.9, 0.9, 1.));
+  imm hubM = renderer.addMaterial(&mut device, &hubMat);
+  mut postMat = Material.plain(new Color(0.9, 0.9, 0.9, 1.));
+  imm postM = renderer.addMaterial(&mut device, &postMat);
+
+  mut si = 0usize;
+  while si < snaps.len() {
+    imm s = snaps[si];
+    mut list = DrawList.empty();
+    list.add(terrainMesh, terrainM, Mat4.identity());
+    // the car: the chassis and cabin in the chassis's frame, the wheels at their hubs
+    list.add(cubeMesh, bodyM, Mat4.fromTrs(s.pos + s.rot * new Vec3(0., 0.05, 0.), s.rot, new Vec3(2.1, 0.28, 0.85)));
+    list.add(cubeMesh, glassM, Mat4.fromTrs(s.pos + s.rot * new Vec3(-0.2, 0.52, 0.), s.rot, new Vec3(0.95, 0.25, 0.75)));
+    mut wi = 0usize;
+    while wi < s.hubs.len() {
+      imm hub = *s.hubs[wi];
+      imm turn = s.rot * Quat.angleAxis(-*s.steers[wi], new Vec3(0., 1., 0.));
+      list.add(sphereMesh, tyreM, Mat4.fromTrs(hub, turn, new Vec3(0.33, 0.33, 0.2)));
+      imm spinQ = turn * Quat.angleAxis(-*s.spins[wi], new Vec3(0., 0., 1.));
+      imm side = if wi % 2usize == 0usize { -0.19; } else { 0.19; };
+      list.add(cubeMesh, hubM, Mat4.fromTrs(hub + turn * new Vec3(0., 0., side), spinQ, new Vec3(0.22, 0.04, 0.02)));
+      wi = wi + 1usize;
+    }
+    // course markers: white posts every 10 m on both sides
+    mut m = 0;
+    while m < 26 {
+      imm mx = 10. * f32.from(m);
+      list.add(cubeMesh, postM, Mat4.fromTrs(new Vec3(mx, courseHeight(mx, -6.) + 0.6, -6.), Quat.identity(), new Vec3(0.06, 0.6, 0.06)));
+      list.add(cubeMesh, postM, Mat4.fromTrs(new Vec3(mx, courseHeight(mx, 6.) + 0.6, 6.), Quat.identity(), new Vec3(0.06, 0.6, 0.06)));
+      m = m + 1;
+    }
+    mut camera = Camera.make();
+    camera.fov = radians(50.);
+    camera.near = 0.3;
+    camera.far = 2000.;
+    camera.background = new Color(0.4, 0.55, 0.8, 1.);
+    // a side view from the car's right, a little ahead and above; the start from behind
+    // (the jump's shots from a low camera at a fixed height, so the car's height above the road reads)
+    imm eye = if si == 0usize { s.pos + new Vec3(-9., 3., 6.); } elif si >= 3usize and si <= 5usize { new Vec3(s.pos.x - 3., 1.3 + courseHeight(s.pos.x, 0.), 15.); } else { s.pos + new Vec3(-2., 2.2, 13.); };
+    camera.lookAt(eye, s.pos + new Vec3(1.5, 0.2, 0.), new Vec3(0., 1., 0.));
+    mut samples = List[f64].empty();
+    mut f = 0u32;
+    while f < 130u32 {
+      mut encoder = device.createCommandEncoder();
+      encoder.writeTimestamp(&queries, 0u32);
+      renderer.render(&mut device, &mut encoder, &post.hdr, &depth, &camera, &light, &list);
+      encoder.writeTimestamp(&queries, 1u32);
+      post.apply(&mut encoder, &out);
+      encoder.resolveQuerySet(&queries, 0u32, 2u32, &resolved, 0u64);
+      encoder.copyBufferToBuffer(&resolved, 0u64, &timeBuf, 0u64, 16u64);
+      device.queue.submit(encoder.finish());
+      device.endFrame();
+      device.waitIdle();
+      if f >= 30u32 {
+        imm ticks = timeBuf.mappedRange() as *u64;
+        samples.push(f64.from(*(ticks + 1usize) - *ticks) * f64.from(device.timestampPeriod) * 1.0e-6d);
+      }
+      f = f + 1u32;
+    }
+    mut qi = 1usize;
+    while qi < samples.len() {
+      mut qj = qi;
+      while qj > 0usize and *samples[qj - 1usize] > *samples[qj] { samples.swap(qj - 1usize, qj); qj = qj - 1usize; }
+      qi = qi + 1usize;
+    }
+    print <- "shot "; printStr(s.name.view()); print <- ": GPU draw p50 "; print <- *samples[samples.len() / 2usize]; print <- " ms (min "; print <- *samples[0usize];
+    print <- ", max "; print <- *samples[samples.len() - 1usize]; print <- "), "; print <- u64.from(list.len()); print <- " draws\n";
+    if prefix.len() > 0usize {
+      mut shot = device.createBuffer(u64.from(W) * u64.from(H) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+      mut encoder = device.createCommandEncoder();
+      renderer.render(&mut device, &mut encoder, &post.hdr, &depth, &camera, &light, &list);
+      post.apply(&mut encoder, &out);
+      encoder.copyTextureToBuffer(&out, &shot);
+      device.queue.submit(encoder.finish());
+      device.endFrame();
+      device.waitIdle();
+      imm image = Image.fromTexels(shot.mappedRange(), i32.from(W), i32.from(H), false);
+      mut name = prefix.copy();
+      name <- "-"; name <- s.name.view(); name <- ".bmp";
+      image.save(&filepath.Path.from(name.view()));
+      print <- "wrote "; printStr(name.view()); print <- "\n";
+    }
+    si = si + 1usize;
+  }
+  print <- "\nVulkan failures: "; print <- u64.from(failures());
+  print <- "; validation messages: "; print <- u64.from(validationMessages()); print <- "\n";
+  0i32;
+}
+
+fn vclampD(v f32, lo f32, hi f32) f32 { if v < lo { lo; } elif v > hi { hi; } else { v; }; }
