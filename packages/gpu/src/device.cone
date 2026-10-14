@@ -11,6 +11,11 @@ pub struct Device {
   pub maxAnisotropy f32 = 0.;      // the most anisotropic filtering a sampler may ask for; 0: the GPU has none
   pub rayTracing bool = false;     // the device was made with ray queries and acceleration structures (raytracing.cone);
                                    // false on a GPU that lacks them, which then draws exactly as it always did
+  pub compute ComputeCapabilities = new ComputeCapabilities();   // compute features (features.cone): the flags are what the
+                                   // device was made with, the numbers the GPU's
+  pub maxStorageBufferBindingSize u64 = MAX_STORAGE_BUFFER_BINDING_SIZE;   // the most bytes a bound storage buffer ranges over
+                                   // (WebGPU's 128 MiB; the GPU's own with ComputeRequest.largeBuffers)
+  pub maxStorageBuffersPerStage u32 = MAX_STORAGE_BUFFERS_PER_SHADER_STAGE;   // the most storage buffers one shader stage sees (8; ditto)
 
   pub fn isValid(self &) bool { (backend.device as *u8 as usize) != 0usize; }
 
@@ -142,6 +147,14 @@ pub struct Device {
       if (usage & BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE) != 0u32 {
         vkUsage = vkUsage | vulkan.BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR;
       }
+    }
+    // More than the GPU allows one buffer or one allocation (which a buffer is): refused here, once, naming the
+    // limit, rather than left to Vulkan (compute.maxBufferSize, compute.maxMemoryAllocationSize)
+    if self.isValid() and ((compute.maxBufferSize != 0u64 and size > compute.maxBufferSize)
+        or (compute.maxMemoryAllocationSize != 0u64 and size > compute.maxMemoryAllocationSize)) {
+      fail("createBuffer: more bytes than the GPU allows one buffer or one memory allocation (compute.maxBufferSize, compute.maxMemoryAllocationSize)");
+      return new Buffer(new BufferBackend(backend.device, backend.fns, new vulkan.Buffer(0u64), new vulkan.DeviceMemory(0u64),
+        nullp(), true), size, usage);
     }
     imm mapping = usage & (BUFFER_USAGE_MAP_READ | BUFFER_USAGE_MAP_WRITE);
     mut b = new BufferBackend(backend.device, backend.fns, new vulkan.Buffer(0u64), new vulkan.DeviceMemory(0u64), nullp(), true);
@@ -275,7 +288,7 @@ pub struct Device {
   // limits (MAX_COMPUTE_WORKGROUP_SIZE_X and the rest). Check 'isValid'.
   pub fn createShaderModule(self &, spirv &Array[u32]) ShaderModule {
     mut module = new vulkan.ShaderModule(0u64);
-    if self.isValid() and spirv.len > 0usize and workgroupsWithinLimits(spirv) {
+    if self.isValid() and spirv.len > 0usize and workgroupsWithinLimits(spirv) and capabilitiesEnabled(spirv, &compute) {
       imm ci = new vulkan.ShaderModuleCreateInfo(codeSize: spirv.len * 4usize, pCode: &spirv[0] as *u32);
       check(backend.fns.createShaderModule(backend.device, &ci, nullp(), &mut module), "vkCreateShaderModule");
     }
@@ -357,8 +370,8 @@ pub struct Device {
     }
     mut s = 0usize;
     while s < 3usize {
-      if buffers[s] > MAX_STORAGE_BUFFERS_PER_SHADER_STAGE or textures[s] > MAX_STORAGE_TEXTURES_PER_SHADER_STAGE {
-        fail("createPipelineLayout: a stage sees more than 8 storage buffers or 4 storage textures (WebGPU's limits)");
+      if buffers[s] > maxStorageBuffersPerStage or textures[s] > MAX_STORAGE_TEXTURES_PER_SHADER_STAGE {
+        fail("createPipelineLayout: a stage sees more storage buffers than the device allows (8, or with ComputeRequest.largeBuffers the GPU's own) or more than 4 storage textures (WebGPU's limits)");
         return new PipelineLayout(new PipelineLayoutBackend(backend.device, backend.fns, new vulkan.PipelineLayout(0u64)), 0u32);
       }
       s = s + 1usize;
@@ -592,8 +605,8 @@ pub struct Device {
         imm b = entries[i].backend;
         mut size = b.size;
         if size == WHOLE_SIZE and b.bufferSize >= b.offset { size = b.bufferSize - b.offset; }
-        if b.offset % MIN_STORAGE_BUFFER_OFFSET_ALIGNMENT != 0u64 or size > MAX_STORAGE_BUFFER_BINDING_SIZE {
-          fail("createBindGroup: a storage buffer bound from an offset not a multiple of 256, or more than 128 MiB of it");
+        if b.offset % MIN_STORAGE_BUFFER_OFFSET_ALIGNMENT != 0u64 or size > maxStorageBufferBindingSize {
+          fail("createBindGroup: a storage buffer bound from an offset not a multiple of 256, or more bytes of it than the device binds (128 MiB, or with ComputeRequest.largeBuffers the GPU's maxStorageBufferRange)");
           return result;
         }
       }

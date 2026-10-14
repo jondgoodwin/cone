@@ -1,0 +1,209 @@
+// ======== Reading tensor elements as f32 ========
+//
+// The block layouts (all little-endian; "half" is an IEEE binary16):
+//
+//   F32   4 bytes: the float.                                   1 element
+//   F16   2 bytes: the half.                                    1 element
+//   BF16  2 bytes: the top 16 bits of an f32.                   1 element
+//   Q4_0  18 bytes: d (half), then qs[16]; 32 elements.
+//         x[j]    = d * ((qs[j] & 15) - 8)   for j in 0..16
+//         x[j+16] = d * ((qs[j] >> 4) - 8)
+//   Q8_0  34 bytes: d (half), then qs[32] (signed bytes); 32 elements.
+//         x[j] = d * qs[j]
+//   Q4_K  144 bytes: d (half), dmin (half), scales[12], qs[128]; 256 elements,
+//         eight sub-blocks of 32. A sub-block j has a 6-bit scale sc and a 6-bit
+//         min m, packed in scales[12] ("get_scale_min_k4"):
+//           j < 4:  sc = scales[j] & 63;  m = scales[j+4] & 63
+//           j >= 4: sc = (scales[j+4] & 15) | ((scales[j-4] >> 6) << 4)
+//                   m  = (scales[j+4] >> 4) | ((scales[j]   >> 6) << 4)
+//         qs holds the 4-bit values, 64 elements to each 32 bytes: the low
+//         nibbles of qs[32g .. 32g+32) are the 32 elements of sub-block 2g, the
+//         high nibbles those of sub-block 2g+1, for g in 0..4.
+//         x = d * sc * q - dmin * m
+//   Q6_K  210 bytes: ql[128], qh[64], scales[16] (signed), d (half); 256
+//         elements, sixteen sub-blocks of 16, each with a signed 8-bit scale.
+//         A 6-bit value is 4 low bits from ql and 2 high bits from qh. In
+//         each half h (0 or 1) of 128 elements, for l in 0..32, with ql, qh and
+//         the scales taken from that half's 64, 32 and 8 bytes:
+//           q1 = (ql[l]    & 15) | ((qh[l] >> 0 & 3) << 4)  -> element l
+//           q2 = (ql[l+32] & 15) | ((qh[l] >> 2 & 3) << 4)  -> element l+32
+//           q3 = (ql[l]    >> 4) | ((qh[l] >> 4 & 3) << 4)  -> element l+64
+//           q4 = (ql[l+32] >> 4) | ((qh[l] >> 6 & 3) << 4)  -> element l+96
+//         x = d * scales[(element)/16] * (q - 32)
+
+// The f32 of the half at byte p of src
+fn halfAt(src &Array[u8], p usize) f32 {
+  halfToF32(u16.from(src[p]) | (u16.from(src[p + 1usize]) << 8u16));
+}
+
+fn le32At(src &Array[u8], p usize) u32 {
+  u32.from(src[p]) | (u32.from(src[p + 1usize]) << 8u32)
+    | (u32.from(src[p + 2usize]) << 16u32) | (u32.from(src[p + 3usize]) << 24u32);
+}
+
+// The 6-bit scale (which is 0) and min (which is 1) of sub-block j of a Q4_K
+// block whose scales begin at byte p
+fn scaleMinK4(src &Array[u8], p usize, j usize, which u32) u32 {
+  if j < 4usize {
+    if which == 0u32 { return u32.from(src[p + j] & 63u8); }
+    return u32.from(src[p + j + 4usize] & 63u8);
+  }
+  if which == 0u32 {
+    return u32.from(src[p + j + 4usize] & 15u8) | (u32.from(src[p + j - 4usize] >> 6u8) << 4u32);
+  }
+  u32.from(src[p + j + 4usize] >> 4u8) | (u32.from(src[p + j] >> 6u8) << 4u32);
+}
+
+// One block at byte 'at' of src, written to dst from 'out'
+fn dequantBlock(kind &TensorType, src &Array[u8], at usize, dst &mut Array[f32], out usize) {
+  match kind {
+    case is F32 { dst[out] = le32At(src, at) as f32; }
+    case is F16 { dst[out] = halfAt(src, at); }
+    case is BF16 {
+      dst[out] = bfloatToF32(u16.from(src[at]) | (u16.from(src[at + 1usize]) << 8u16));
+    }
+    case is Q4_0 {
+      imm d = halfAt(src, at);
+      mut j = 0usize;
+      while j < 16usize {
+        imm b = src[at + 2usize + j];
+        dst[out + j] = f32.from(i32.from(b & 15u8) - 8i32) * d;
+        dst[out + j + 16usize] = f32.from(i32.from(b >> 4u8) - 8i32) * d;
+        j = j + 1usize;
+      }
+    }
+    case is Q8_0 {
+      imm d = halfAt(src, at);
+      mut j = 0usize;
+      while j < 32usize {
+        dst[out + j] = f32.from(i8.from(src[at + 2usize + j])) * d;
+        j = j + 1usize;
+      }
+    }
+    case is Q4_K {
+      imm d = halfAt(src, at);
+      imm dmin = halfAt(src, at + 2usize);
+      imm sp = at + 4usize;
+      imm qp = at + 16usize;
+      mut g = 0usize;
+      while g < 4usize {
+        imm d1 = d * f32.from(scaleMinK4(src, sp, 2usize * g, 0u32));
+        imm m1 = dmin * f32.from(scaleMinK4(src, sp, 2usize * g, 1u32));
+        imm d2 = d * f32.from(scaleMinK4(src, sp, 2usize * g + 1usize, 0u32));
+        imm m2 = dmin * f32.from(scaleMinK4(src, sp, 2usize * g + 1usize, 1u32));
+        mut l = 0usize;
+        while l < 32usize {
+          imm b = src[qp + 32usize * g + l];
+          dst[out + 64usize * g + l] = d1 * f32.from(b & 15u8) - m1;
+          dst[out + 64usize * g + 32usize + l] = d2 * f32.from(b >> 4u8) - m2;
+          l = l + 1usize;
+        }
+        g = g + 1usize;
+      }
+    }
+    case is Q6_K {
+      imm d = halfAt(src, at + 208usize);
+      mut h = 0usize;
+      while h < 2usize {
+        imm ql = at + 64usize * h;
+        imm qh = at + 128usize + 32usize * h;
+        imm sc = at + 192usize + 8usize * h;
+        imm y = out + 128usize * h;
+        mut l = 0usize;
+        while l < 32usize {
+          imm sub = l / 16usize;
+          imm hi = src[qh + l];
+          imm q1 = i32.from((src[ql + l] & 15u8) | ((hi & 3u8) << 4u8)) - 32i32;
+          imm q2 = i32.from((src[ql + l + 32usize] & 15u8) | (((hi >> 2u8) & 3u8) << 4u8)) - 32i32;
+          imm q3 = i32.from((src[ql + l] >> 4u8) | (((hi >> 4u8) & 3u8) << 4u8)) - 32i32;
+          imm q4 = i32.from((src[ql + l + 32usize] >> 4u8) | (((hi >> 6u8) & 3u8) << 4u8)) - 32i32;
+          dst[y + l] = d * f32.from(i8.from(src[sc + sub])) * f32.from(q1);
+          dst[y + l + 32usize] = d * f32.from(i8.from(src[sc + sub + 2usize])) * f32.from(q2);
+          dst[y + l + 64usize] = d * f32.from(i8.from(src[sc + sub + 4usize])) * f32.from(q3);
+          dst[y + l + 96usize] = d * f32.from(i8.from(src[sc + sub + 6usize])) * f32.from(q4);
+          l = l + 1usize;
+        }
+        h = h + 1usize;
+      }
+    }
+  }
+}
+
+// Reads 'count' elements of this type from the start of src and appends them,
+// as f32, to out. 'count' must be a whole number of blocks and src must hold
+// them. Answers the count.
+pub fn dequantize(kind &TensorType, src &Array[u8], count usize, out &mut List[f32]) Result[usize, GgufError] {
+  imm bs = kind.blockSize();
+  if count % bs != 0usize {
+    return Error[usize, GgufError](GgufError.make(ErrorKind.BadSize, 0u64, "the element count is not a whole number of blocks"));
+  }
+  imm blocks = count / bs;
+  if blocks > src.len / kind.blockBytes() {
+    return Error[usize, GgufError](GgufError.make(ErrorKind.BadSize, 0u64, "there are fewer bytes than the elements need"));
+  }
+  imm base = out.len();
+  out.resize(base + count, 0.0);
+  imm bb = kind.blockBytes();
+  imm dst = out.viewMut();
+  // The plain floats are one element to a block: read them in a loop of their own
+  match kind {
+    case is F32 {
+      mut i = 0usize;
+      while i < count {
+        dst[base + i] = le32At(src, 4usize * i) as f32;
+        i = i + 1usize;
+      }
+      return Ok[usize, GgufError](count);
+    }
+    case is F16 {
+      mut i = 0usize;
+      while i < count {
+        dst[base + i] = halfAt(src, 2usize * i);
+        i = i + 1usize;
+      }
+      return Ok[usize, GgufError](count);
+    }
+    case is BF16 {
+      mut i = 0usize;
+      while i < count {
+        dst[base + i] = bfloatToF32(u16.from(src[2usize * i]) | (u16.from(src[2usize * i + 1usize]) << 8u16));
+        i = i + 1usize;
+      }
+      return Ok[usize, GgufError](count);
+    }
+    else {}
+  }
+  mut b = 0usize;
+  while b < blocks {
+    dequantBlock(kind, src, b * bb, dst, base + b * bs);
+    b = b + 1usize;
+  }
+  Ok[usize, GgufError](count);
+}
+
+// All of tensor t, as f32, in the order of the file (the first dimension
+// varying fastest). 'file' is the bytes the model was read from.
+pub fn tensorToF32(model &Model, file &Array[u8], t &Tensor) Result[List[f32], GgufError] {
+  mut out = List[f32].withCapacity(usize.from(t.elements));
+  match dequantize(&t.kind, model.tensorBytes(file, t), usize.from(t.elements), &mut out) {
+    case is Ok { Ok[List[f32], GgufError](out); }
+    case mut e Error {
+      mut err = GgufError.make(ErrorKind.BadSize, 0u64, "");
+      err <=> e;
+      Error[List[f32], GgufError](err);
+    }
+  }
+}
+
+// Row r of tensor t (a row is 'rowLength' elements: the first dimension), as
+// f32, appended to out. The rows of a 2-d weight matrix are what a matrix
+// product dequantises one at a time.
+pub fn rowToF32(model &Model, file &Array[u8], t &Tensor, row u64, out &mut List[f32]) Result[usize, GgufError] {
+  if row >= t.rowCount() {
+    return Error[usize, GgufError](GgufError.make(ErrorKind.BadSize, 0u64, "the row is past the tensor's last"));
+  }
+  imm rb = usize.from(t.rowBytes());
+  imm start = usize.from(row) * rb;
+  imm all = model.tensorBytes(file, t);
+  dequantize(&t.kind, &all[start..<start + rb], usize.from(t.rowLength()), out);
+}
