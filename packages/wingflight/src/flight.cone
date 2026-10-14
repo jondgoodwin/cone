@@ -1,0 +1,505 @@
+// The Flier: a flapping flyer's body, driven by lift, drag and thrust from its wings, with an autopilot that takes it
+// off, climbs, cruises, glides, banks, flares and lands.
+//
+// THE MODEL. A point mass `mass` at the creature's centre, with velocity relative to the air (a wind may be set), pushed
+// by gravity, by the body's drag, and by the force on each wing. Each wing is ONE blade element at the effective radius
+// (60% of the semi-span): a quasi-steady section (aero.cone) moving with the body's velocity plus the flap's. The
+// flap's velocity (the stroke angle's rate times the radius) is along the wing's normal, so on the downstroke the
+// section sees the air coming from below and its force tilts forward: that tilt is the THRUST, and the weight is
+// held by the lift of the same sections, so lift, drag and thrust all come out of the flap with no separate engine.
+// The two wings' sideways parts cancel. The wing area falls as the wing folds and on the flexed upstroke. This is
+// DeLaurier's quasi-steady blade-element idea (Aeronautical Journal 1993) reduced to one element, with
+// the Viterna-extended coefficients: it has no added mass, no wake and no leading-edge vortex, so it understates the
+// lift of a slow, hard flap (a hover).
+//
+// THE ATTITUDE IS COMMANDED, NOT SIMULATED. The body is never turned by torques. Its heading follows the direction of
+// flight (no sideslip: the coordinated turn), its pitch is the flight path's angle plus the angle of attack the
+// pilot asks for (rate limited), its bank is what the pilot asks for (rate limited). A bank tilts the lift,
+// whose sideways part turns the flight path at a rate g tan(bank) / V, the standard turn: the turn is made by the
+// force, not set by hand. The pilot is the autopilot below, or the caller's own commands.
+//
+// THE AUTOPILOT. From a Goal (where, at what height, how fast, in the air or on the ground):
+// - bank to the heading wanted, 1.8 per radian of error up to the bank limit;
+// - angle of attack to hold a climb rate: the trim (the lift coefficient that carries the weight at this speed and
+//   bank, over the lift slope) plus 0.05 rad per m/s of climb-rate error;
+// - flap effort to hold the speed: 0.35 + 1.2 per fractional speed error + 0.25 per m/s of climb wanted, none when
+//   the wing can glide down on its own;
+// - a takeoff is a ground run with the legs adding runAccel and full effort; at 85% of the speed at which lift
+//   carries the weight the creature leaps (a vertical speed) and climbs;
+// - a landing is a glide down a 7 degree slope to the touchdown point at 1.25 x the stall speed, a flare at a
+//   height of 0.8 of a span (the nose up to the stall angle, the speed bled off), touchdown on the legs, and a run
+//   out with braking.
+//
+// WHAT IT DOES NOT DO: stall recovery, gusts, rotation dynamics, ground effect, wind shear, wing-body interference.
+// All these defaults (the gains, the 7 degrees, the leap) are choices of this package, not measurements.
+//
+// POSES. 'wingPose' gives the pose of the wings alone, 'compose' lays the flight on top of a ground pose (the legs'
+// walk from leggedgait, or the rest pose): the root takes the flight attitude, the wings the flap, the legs are
+// tucked as the creature rises and let down as it comes in.
+
+pub const MODE_GROUNDED = 0u32;
+pub const MODE_TAKEOFF = 1u32;
+pub const MODE_CLIMB = 2u32;
+pub const MODE_CRUISE = 3u32;
+pub const MODE_GLIDE = 4u32;
+pub const MODE_APPROACH = 5u32;
+pub const MODE_FLARE = 6u32;
+
+pub fn modeName(m u32) &str {
+  if m == MODE_GROUNDED { return "grounded"; }
+  if m == MODE_TAKEOFF { return "takeoff"; }
+  if m == MODE_CLIMB { return "climb"; }
+  if m == MODE_CRUISE { return "cruise"; }
+  if m == MODE_GLIDE { return "glide"; }
+  if m == MODE_APPROACH { return "approach"; }
+  if m == MODE_FLARE { return "flare"; }
+  "?";
+}
+
+pub struct Goal {
+  pub target Vec3;       // x, z: where to fly to or land; y: the altitude to fly at (world)
+  pub airspeed f32;      // wanted in cruise, m/s
+  pub fly bool;          // true: be in the air; false: be on the ground (landing at the target)
+  pub maxBank f32;       // radians
+
+  pub fn make(target Vec3, airspeed f32, fly bool) Goal { new Goal(target, airspeed, fly, 0.7); }
+}
+
+// The pilot's commands, which the autopilot makes from a Goal (or the caller makes)
+pub struct Commands {
+  pub effort f32;        // 0 to 1
+  pub alpha f32;         // the angle of attack to fly, radians
+  pub bank f32;          // radians, positive: the right wing down
+  pub brake f32;         // 0 to 1: legs down, tail spread, wings cupped: more drag, for the approach
+  pub climb f32;         // the climb rate the autopilot was asking for, m/s (a record, not a command)
+}
+
+struct Frame {
+  f Vec3;
+  r Vec3;
+  u Vec3;
+}
+
+fn bodyFrame(yaw f32, pitch f32, bank f32) Frame {
+  imm cp = cos(pitch);
+  imm f = new Vec3(-sin(yaw) * cp, sin(pitch), -cos(yaw) * cp);
+  imm r0 = new Vec3(cos(yaw), 0., -sin(yaw));
+  imm u0 = r0.cross(f).normalize();
+  new Frame(f, r0 * cos(bank) - u0 * sin(bank), u0 * cos(bank) + r0 * sin(bank));
+}
+
+fn wrapAngle(a f32) f32 { a - 2. * pi * libc.floorf(a / (2. * pi) + 0.5); }
+
+fn approach(cur f32, target f32, rate f32, dt f32) f32 {
+  imm d = target - cur;
+  imm step = rate * dt;
+  if d > step { return cur + step; }
+  if d < -step { return cur - step; }
+  target;
+}
+
+pub struct Flier {
+  pub params WingParams;
+  pub aero Aero;
+  pub pos Vec3;              // the centre's place in the world
+  pub vel Vec3;              // relative to the air
+  pub wind Vec3;
+  pub yaw f32;
+  pub pitch f32;
+  pub bank f32;
+  pub alpha f32;             // the angle of attack being flown
+  pub motion WingMotion;
+  pub effort f32;
+  pub freq f32;
+  pub mode u32;
+  pub onGround bool;
+  pub standHeight f32;       // the centre's height above the ground when it stands
+  pub tuck f32;              // 0 legs down, 1 legs tucked
+  pub runAccel f32;          // m/s^2 the legs add in the takeoff run
+  pub brake f32;             // m/s^2 of braking on the ground
+  pub leap f32;              // m/s of vertical speed at the end of the run
+  pub pivot Vec3;            // the rig's centre, model space
+  pub lastLift f32;          // newtons of vertical force from the wings, this step
+  pub lastThrust f32;        // and of forward force
+  pub meanThrust f32;        // forward force averaged over the last beat or so
+  pub meanLift f32;
+  pub cmd Commands;
+  pub flightTime f32;
+  pub leapDone bool;
+  pub airbrake f32;          // the drag of legs and tail as flown, 0 to 1
+  pub brakeDrag f32;         // the body's drag area grows by this factor at airbrake 1
+  pub trimAdj f32;           // the autopilot's integral of the climb-rate error, radians of angle of attack
+
+  // A flier for these wings, standing 'standHeight' above the ground at 'pos' facing 'yaw', wings folded
+  pub fn make(params WingParams, pos Vec3, yaw f32, standHeight f32, pivot Vec3) Flier {
+    imm ar = params.aspectRatio();
+    imm aero = Aero.make(ar, params.cd0, params.oswald, params.stallAngle);
+    mut m = WingMotion.still();
+    m.fold = 1.;
+    new Flier(params, aero, new Vec3(pos.x, pos.y + standHeight, pos.z), new Vec3(0., 0., 0.), new Vec3(0., 0., 0.), yaw, 0., 0., 0.2, m, 0., 0.,
+      MODE_GROUNDED, true, standHeight, 1., 4.0, 4.0, 2.2, pivot, 0., 0., 0., 0., new Commands(0., 0.2, 0., 0., 0.), 0., false, 0., 10., 0.);
+  }
+
+  pub fn weight(self &) f32 { params.mass * 9.81; }
+
+  // The speed at which the wings (spread, at the stall angle) carry the weight
+  pub fn stallSpeed(self &) f32 {
+    (2. * self.weight() / (RHO * params.area * aero.clStall())).sqrt();
+  }
+
+  pub fn speed(self &) f32 { vel.length(); }
+
+  pub fn heightAboveGround(self &, groundY f32) f32 { pos.y - groundY - standHeight; }
+
+  // The world transform that puts the model's pivot at the centre, facing the heading
+  pub fn world(self &) Transform3 {
+    imm q = Quat.angleAxis(yaw, new Vec3(0., 1., 0.));
+    new Transform3(pos - q * pivot, q, new Vec3(1., 1., 1.));
+  }
+
+  // The body's pitch and bank turn it about its pivot: the root bone's rotation
+  pub fn attitude(self &) Quat {
+    Quat.angleAxis(pitch, new Vec3(1., 0., 0.)) * Quat.angleAxis(0. - bank, new Vec3(0., 0., 1.));
+  }
+
+  // ------------------------------------------------------------------ forces
+
+  // The force of both wings and the body on the creature at this instant, newtons, in the world; also records
+  // the vertical and forward parts for the diagnostics
+  fn forces(self &mut) Vec3 {
+    imm fr = bodyFrame(yaw, pitch, bank);
+    imm vair = vel - wind;
+    mut total = new Vec3(0., -self.weight(), 0.);
+    imm p = &params;
+    imm semi = 0.5 * p.span;
+    imm radius = p.radiusFrac * semi * (1. - 0.5 * motion.fold);
+    imm w = warpPhase(p, motion.phase);
+    imm theta0 = p.glideDihedral * (1. - motion.amp) + motion.amp * strokeAt(p, w, motion.strokeScale) - motion.fold * p.foldDroop;
+    imm rate = motion.rate;
+    imm incidence = p.incidence + motion.amp * twistAt(p, w);
+    // The area working: less folded, less on the flexed upstroke
+    imm bump = upstrokeBump(w);
+    imm areaFactor = (1. - 0.85 * motion.fold) * (1. - motion.amp * (1. - p.upstrokeArea) * bump);
+    imm areaWing = 0.5 * p.area * areaFactor;
+    mut side = -1.;
+    mut fz f32 = 0.;
+    mut ff f32 = 0.;
+    while side < 1.5 {
+      imm rs = fr.r * side;
+      // The wing's normal at this dihedral, and what the section sees
+      imm n = fr.u * cos(theta0) - rs * sin(theta0);
+      imm vel2 = vair + n * (radius * rate);
+      imm vf = vel2.dot(fr.f);
+      imm vn = vel2.dot(n);
+      imm sf = sectionForce(&aero, areaWing, vf, vn, incidence);
+      imm force = fr.f * sf.forward + n * sf.normal;
+      total = total + force;
+      fz = fz + force.dot(fr.u);
+      ff = ff + force.dot(fr.f);
+      side = side + 2.;
+    }
+    // The body's drag
+    imm sp = vair.length();
+    total = total - vair * (0.5 * RHO * sp * params.bodyDragArea * (1. + brakeDrag * airbrake));
+    lastLift = fz;
+    lastThrust = ff;
+    total;
+  }
+
+  // ------------------------------------------------------------------ the autopilot
+
+  // The commands that take the creature toward `goal`
+  pub fn autopilot(self &, goal &Goal, groundY f32) Commands {
+    imm p = &params;
+    imm vs = self.stallSpeed();
+    imm sp = fmaxf4(vel.length(), 0.5);
+    imm height = pos.y - groundY - standHeight;
+    // Heading and bank
+    imm dx = goal.target.x - pos.x;
+    imm dz = goal.target.z - pos.z;
+    imm dist = (dx * dx + dz * dz).sqrt();
+    imm wanted = atan2(-dx, -dz);
+    imm err = wrapAngle(wanted - yaw);
+    mut bankCmd = clampf(-1.8 * err, -goal.maxBank, goal.maxBank);
+    // The speed and the climb rate wanted
+    mut vt = fmaxf4(goal.airspeed, 1.45 * vs);
+    // A climb needs speed to spare: the climb allowed grows from nothing at 1.25 stall speeds to all of it at 1.55
+    imm room = clampf((sp - 1.25 * vs) / (0.3 * vs), 0., 1.);
+    mut vzd = clampf(0.5 * (goal.target.y - pos.y), -2.5, 3.0);
+    if vzd > 0. { vzd = vzd * room; } else { vzd = fmaxf4(vzd, -2.5); }
+    if vzd < 0.3 and sp < 1.25 * vs { vzd = fminf4(vzd, -0.3); }
+    mut brakeCmd f32 = 0.;
+    mut flare = false;
+    if !goal.fly {
+      // The approach: down a 7 degree slope to the touchdown point (never climbing to meet it), slower as it nears,
+      // the drag of legs and tail used to hold the slope; then the flare, the sink rate falling away with the height
+      imm slope = 0.12;
+      imm path = groundY + standHeight + fmaxf4(dist - 6., 0.) * slope;
+      imm hd = fminf4(path, pos.y);
+      vt = fmaxf4(1.3 * vs, fminf4(goal.airspeed, 1.3 * vs + 0.04 * dist));
+      vzd = clampf(0.5 * (hd - pos.y), -slope * sp, 0.);
+      brakeCmd = clampf(0.4 + 0.12 * (pos.y - hd) + 0.15 * (vel.y - vzd), 0., 1.);
+      if height < 0.8 * p.span {
+        flare = true;
+        vzd = 0. - fmaxf4(height, 0.02) / 0.9;
+        brakeCmd = 1.;
+        bankCmd = bankCmd * 0.3;
+      }
+    }
+    // The angle of attack: the trim for lift = weight / cos(bank), plus the climb-rate error
+    imm q = 0.5 * RHO * sp * sp * p.area * (1. - 0.85 * motion.fold);
+    imm clReq = self.weight() / fmaxf4(q * cos(bankCmd), 0.01);
+    imm trim = clampf(clReq / aero.slope() - p.incidence, -0.1, aero.stall);
+    mut alphaCmd = clampf(trim + trimAdj + 0.05 * (vzd - vel.y), -0.1, 0.93 * aero.stall);
+    // The effort: what the climb and the drag ask of the thrust (a quarter of the weight at the right speed
+    // in level flight), and the speed error
+    mut eff = ((vzd / sp + 0.12) / 0.5) + 1.5 * (vt - sp) / vt;
+    if !goal.fly { eff = if flare { 0.; } else { fmaxf4(eff - 0.2, 0.); }; }
+    eff = clampf(eff, 0., 1.);
+    if mode == MODE_TAKEOFF or mode == MODE_GROUNDED {
+      eff = if goal.fly { 1.; } else { 0.; };
+      alphaCmd = 0.2;
+      bankCmd = 0.;
+      brakeCmd = 0.;
+    }
+    new Commands(eff, alphaCmd, bankCmd, brakeCmd, vzd);
+  }
+
+  // ------------------------------------------------------------------ the step
+
+  // Advance 'dt' seconds under the commands the autopilot makes for `goal` over `ground`
+  pub fn update(self &mut, dt f32, goal &Goal, ground &<fn(x f32, z f32) f32) {
+    // Modes
+    imm gy = ground(pos.x, pos.z);
+    imm height = pos.y - gy - standHeight;
+    if mode == MODE_GROUNDED and goal.fly { mode = MODE_TAKEOFF; leapDone = false; }
+    if !onGround and (mode == MODE_TAKEOFF or mode == MODE_GROUNDED) { mode = MODE_CLIMB; }
+    if !onGround and !goal.fly and mode != MODE_FLARE and mode != MODE_APPROACH { mode = MODE_APPROACH; }
+    if mode == MODE_APPROACH and height < 0.8 * params.span { mode = MODE_FLARE; }
+    if !onGround and goal.fly and (mode == MODE_APPROACH or mode == MODE_FLARE) { mode = MODE_CLIMB; }
+    imm c = self.autopilot(goal, gy);
+    cmd = c;
+    self.step(dt, c, goal, ground);
+    // The mode labels in the air
+    if !onGround and goal.fly and mode != MODE_TAKEOFF {
+      // (with a margin, so the label does not flicker as the climb rate wavers)
+      if effort < 0.05 { mode = MODE_GLIDE; }
+      elif mode == MODE_CLIMB { if vel.y < 0.25 { mode = MODE_CRUISE; } }
+      elif vel.y > 0.9 { mode = MODE_CLIMB; }
+      else { mode = MODE_CRUISE; }
+    }
+  }
+
+  // Advance 'dt' seconds under these commands
+  pub fn step(self &mut, dt f32, c Commands, goal &Goal, ground &<fn(x f32, z f32) f32) {
+    flightTime = flightTime + dt;
+    // The wings: effort sets the beat rate and the stroke; flapping fades in and out
+    effort = approach(effort, c.effort, 4., dt);
+    freq = params.freqMin + effort * (params.freqMax - params.freqMin);
+    motion.strokeScale = 0.55 + 0.45 * effort;
+    imm flapping = effort > 0.06;
+    motion.amp = approach(motion.amp, if flapping { 1.; } else { 0.; }, 6., dt);
+    if motion.amp > 0.02 or flapping { motion.phase = frac(motion.phase + freq * dt); }
+    motion.rate = strokeRate(&params, motion.phase, freq, motion.strokeScale, motion.amp);
+    // Fold: on the ground and idle, folded; otherwise spread
+    imm wantFold = if onGround and !goal.fly and speed() < 1.0 { 1.; } else { 0.; };
+    motion.fold = approach(motion.fold, wantFold, 2.5, dt);
+    // Legs: tucked once off the ground and not coming in
+    imm gy0 = ground(pos.x, pos.z);
+    imm h0 = pos.y - gy0 - standHeight;
+    imm wantTuck = if !onGround and h0 > 0.6 and mode != MODE_APPROACH and mode != MODE_FLARE { 1.; } elif !onGround and mode == MODE_APPROACH and h0 > 3. { 1.; } else { 0.; };
+    tuck = approach(tuck, wantTuck, 3., dt);
+    // The attitude, and the legs and tail as a brake; the autopilot's integral of the climb-rate error
+    alpha = approach(alpha, c.alpha, 1.5, dt);
+    bank = approach(bank, c.bank, 1.6, dt);
+    airbrake = approach(airbrake, c.brake, 3., dt);
+    if !onGround { trimAdj = clampf(trimAdj + 0.02 * (c.climb - vel.y) * dt, -0.1, 0.1); } else { trimAdj = 0.; }
+    // The motion, in sub-steps short against the beat
+    mut left = dt;
+    mut sumT = 0.;
+    mut sumL = 0.;
+    mut count = 0.;
+    while left > 0.00001 {
+      imm h = fminf4(left, 1. / 240.);
+      left = left - h;
+      imm gy = ground(pos.x, pos.z);
+      imm sp = vel.length();
+      // Heading follows the flight path; pitch is the path's angle plus the angle of attack
+      if !onGround {
+        if (vel.x * vel.x + vel.z * vel.z) > 0.25 {
+          imm vh = atan2(-vel.x, -vel.z);
+          yaw = yaw + wrapAngle(vh - yaw) * (1. - libc.expf(-10. * h));
+        }
+        imm gamma = asin(clampf(vel.y / fmaxf4(sp, 0.1), -1., 1.));
+        pitch = gamma + alpha;
+      } else {
+        // On the ground it faces the goal while it runs, level
+        if mode == MODE_TAKEOFF {
+          imm wanted = atan2(-(goal.target.x - pos.x), -(goal.target.z - pos.z));
+          yaw = yaw + wrapAngle(wanted - yaw) * (1. - libc.expf(-3. * h));
+        }
+        pitch = approach(pitch, if mode == MODE_TAKEOFF { 0.12; } else { 0.; }, 1.0, h);
+        bank = approach(bank, 0., 2., h);
+      }
+      imm f = self.forces();
+      sumT = sumT + lastThrust;
+      sumL = sumL + lastLift;
+      count = count + 1.;
+      mut a = f * (1. / params.mass);
+      if onGround {
+        // The ground carries the weight and holds the height; the legs run or brake. Only an upward net force
+        // (the wings carrying more than the weight) takes the creature off it.
+        if meanLift <= self.weight() or !goal.fly or (mode == MODE_TAKEOFF and !leapDone) {
+          a = new Vec3(a.x, 0., a.z);
+          imm hdir = new Vec3(-sin(yaw), 0., -cos(yaw));
+          if mode == MODE_TAKEOFF { a = a + hdir * runAccel; }
+          else {
+            imm vh = new Vec3(vel.x, 0., vel.z);
+            imm sh = vh.length();
+            if sh > 0.001 { a = a - vh * (brake / sh); }
+          }
+          vel = new Vec3(vel.x, 0., vel.z);
+        } else {
+          onGround = false;
+        }
+      }
+      vel = vel + a * h;
+      if onGround and mode != MODE_TAKEOFF and (vel.x * vel.x + vel.z * vel.z) < 0.0004 { vel = new Vec3(0., 0., 0.); }
+      pos = pos + vel * h;
+      // The ground
+      imm floorY = ground(pos.x, pos.z) + standHeight;
+      if !onGround and pos.y <= floorY and vel.y <= 0. {
+        pos = new Vec3(pos.x, floorY, pos.z);
+        vel = new Vec3(vel.x, 0., vel.z);
+        onGround = true;
+        if !goal.fly { mode = MODE_GROUNDED; } else { mode = MODE_TAKEOFF; leapDone = false; }
+      } else if onGround {
+        pos = new Vec3(pos.x, floorY, pos.z);
+      }
+      // The leap at the end of the run
+      if mode == MODE_TAKEOFF and onGround and !leapDone {
+        imm sp2 = vel.length();
+        if sp2 > 1.4 * self.stallSpeed() {
+          vel = new Vec3(vel.x, leap, vel.z);
+          leapDone = true;
+          onGround = false;
+          mode = MODE_CLIMB;
+        }
+      }
+    }
+    if count > 0. {
+      imm k = 1. - libc.expf(-dt * 3.);
+      meanThrust = meanThrust + (sumT / count - meanThrust) * k;
+      meanLift = meanLift + (sumL / count - meanLift) * k;
+    }
+  }
+
+  // ------------------------------------------------------------------ poses
+
+  // The rig in the flight pose: the root turned to the attitude, the wings flapped, the legs tucked
+  // (`tuckPose` is the legs' fully tucked rotations)
+  pub fn wingPose(self &, rig &Rig, wings &Wings, pose &mut Pose) {
+    poseWings(rig, wings, &params, &motion, pose);
+  }
+}
+
+// The forces the wings and body make, averaged over two beats, with the creature held in level flight at `speed` and
+// at body pitch = `alpha` (so the angle of attack is alpha) and the flap at `effort`: (the forward force, the lift) in
+// newtons. Used to tune a wing and to test the model; the forward force is the thrust less the drag.
+pub fn averageForces(params &WingParams, speed f32, alpha f32, effort f32) Vec2 {
+  mut fl = Flier.make(params.copy(), new Vec3(0., 0., 0.), 0., 0.3, new Vec3(0., 0., 0.));
+  fl.onGround = false;
+  fl.vel = new Vec3(0., 0., -speed);
+  fl.pitch = alpha;
+  fl.motion.fold = 0.;
+  fl.motion.amp = if effort > 0.06 { 1.; } else { 0.; };
+  fl.motion.strokeScale = 0.55 + 0.45 * effort;
+  fl.freq = params.freqMin + effort * (params.freqMax - params.freqMin);
+  mut t = 0.;
+  mut sf f32 = 0.;
+  mut sl f32 = 0.;
+  mut n = 0.;
+  imm dt = 1. / 600.;
+  imm beats = 2.;
+  imm total = beats / fl.freq;
+  while t < total {
+    fl.motion.phase = frac(fl.freq * t);
+    fl.motion.rate = strokeRate(params, fl.motion.phase, fl.freq, fl.motion.strokeScale, fl.motion.amp);
+    imm f = fl.forces();
+    sf = sf - f.z;
+    sl = sl + f.y + fl.weight();
+    n = n + 1.;
+    t = t + dt;
+  }
+  new Vec2(sf / n, sl / n);
+}
+
+fn fmaxf4(a f32, b f32) f32 { if a > b { return a; } b; }
+fn fminf4(a f32, b f32) f32 { if a < b { return a; } b; }
+
+// ---------------------------------------------------------------------------- tucking the legs
+
+// A leg folded up under the body, as a place for its ankle: where the ankle goes, relative to the hip, in the body's
+// frame and as multiples of the leg's reach (hip to ankle at full stretch); and how far the foot is folded back about the
+// lateral axis, radians. The knee is kept bending the way it bends at rest, so the leg folds into a Z.
+pub struct TuckPose {
+  pub ankle Vec3;
+  pub foot f32;
+
+  // The default: the ankle back and a little down from the hip, the foot folded flat against the shin
+  pub fn legs() TuckPose { new TuckPose(new Vec3(0., -0.20, 0.50), -1.1); }
+}
+
+// Lay the flight on a ground pose: `ground` is the pose the legs have on the ground (leggedgait's, or the rest pose); the
+// result has the flier's root attitude, the flap on the wings, and the legs tucked in proportion to `tuck`
+pub fn compose(flier &Flier, rig &Rig, wings &Wings, tucked &TuckPose, ground &Pose) Pose {
+  mut out = ground.copy();
+  imm skel = &rig.skeleton;
+  // The root: the attitude about the pivot, on the rest place
+  imm rest = skel.restPose();
+  imm root = rig.chains[0usize].first();
+  imm restRoot = rig.restPosition(root);
+  imm q = flier.attitude();
+  imm place = flier.pivot + q * (restRoot - flier.pivot);
+  if !flier.onGround or flier.tuck > 0.001 {
+    out.locals.set(root, new Transform3(place, q, new Vec3(1., 1., 1.)));
+  }
+  poseWings(rig, wings, &flier.params, &flier.motion, &mut out);
+  // The legs tucked: each ankle moves from where the ground pose has it toward its tucked place (the hip's place
+  // plus the offset, turned with the body), the leg bent by poseik's two-bone solver
+  if flier.tuck > 0.001 {
+    mut models = List[Transform3].empty();
+    skel.modelTransforms(&out, &mut models);
+    imm legChains = rig.chainsOfKind(KIND_LEG);
+    mut lc = 0usize;
+    while lc < legChains.len() {
+      imm ch = *legChains[lc];
+      if rig.chains[ch].bones.len() >= 3usize {
+        imm hip = *rig.chains[ch].bones[0usize];
+        imm knee = *rig.chains[ch].bones[1usize];
+        imm ankle = *rig.chains[ch].bones[2usize];
+        imm hp = rig.restPosition(hip);
+        imm kp = rig.restPosition(knee);
+        imm ap = rig.restPosition(ankle);
+        imm reach = (kp - hp).length() + (ap - kp).length();
+        imm side = if rig.chains[ch].side == 0i32 { 1.; } else { f32.from(rig.chains[ch].side); };
+        // The knee bends toward where it bent at rest
+        mut pole = kp - (hp + ap) * 0.5;
+        if pole.length() < 0.0005 { pole = new Vec3(0., 0., -1.); }
+        imm hipNow = (*models[hip]).translation;
+        imm tuckedAt = hipNow + q * new Vec3(tucked.ankle.x * side, tucked.ankle.y * reach, tucked.ankle.z * reach);
+        imm now = (*models[ankle]).translation;
+        imm want = now.lerp(tuckedAt, flier.tuck);
+        aimLimbRange(skel, &mut out, &mut models, hip, want, q * pole.normalize(), 0.15, pi - 0.02);
+        if rig.chains[ch].bones.len() > 3usize {
+          // The foot folded back against the shin
+          imm foot = Quat.angleAxis(tucked.foot * flier.tuck, new Vec3(1., 0., 0.));
+          skel.setModelRotation(&mut out, &models, ankle, q * foot);
+          skel.recompose(&out, &mut models, ankle);
+        }
+      }
+      lc = lc + 1usize;
+    }
+  }
+  out;
+}

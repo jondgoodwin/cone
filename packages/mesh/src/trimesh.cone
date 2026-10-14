@@ -128,6 +128,79 @@ pub struct Mesh {
     normals = out;
   }
 
+  // Tangents, per vertex: the direction of increasing u along the surface, the
+  // basis a normal map's tangent space and an anisotropic highlight's grain are
+  // measured in (Lengyel, "Computing Tangent Space Basis Vectors for an
+  // Arbitrary Mesh", Terathon 2001). Each triangle gives the direction its
+  // uvs run in its plane (the solution of its two edges as combinations of du
+  // and dv); a vertex sums its triangles', each weighted by the triangle's angle
+  // there, and the sum is made perpendicular to the vertex's normal (Gram-Schmidt)
+  // and unit. The fourth component is the handedness: -1 if the normal crossed
+  // with the tangent points against increasing v, else 1. Needs normals and uvs
+  // (none, if either is missing: 'tangents' is left empty). A vertex whose
+  // triangles give no direction (a pole, a degenerate uv) gets any direction
+  // perpendicular to its normal.
+  pub fn computeTangents(self &mut) {
+    imm n = positions.len();
+    tangents.clear();
+    if normals.len() != n or uvs.len() != n or n == 0usize { return; }
+    mut tan = List[Vec3].withCapacity(n);
+    mut bit = List[Vec3].withCapacity(n);
+    mut v = 0usize;
+    while v < n {
+      tan.push(new Vec3(0., 0., 0.));
+      bit.push(new Vec3(0., 0., 0.));
+      v = v + 1usize;
+    }
+    imm nt = indices.len() / 3usize;
+    mut t = 0usize;
+    while t < nt {
+      imm i0 = usize.from(*indices[3usize * t]);
+      imm i1 = usize.from(*indices[3usize * t + 1usize]);
+      imm i2 = usize.from(*indices[3usize * t + 2usize]);
+      imm e1 = *positions[i1] - *positions[i0];
+      imm e2 = *positions[i2] - *positions[i0];
+      imm uv0 = *uvs[i0];
+      imm uv1 = *uvs[i1];
+      imm uv2 = *uvs[i2];
+      imm du1 = uv1.x - uv0.x;
+      imm dv1 = uv1.y - uv0.y;
+      imm du2 = uv2.x - uv0.x;
+      imm dv2 = uv2.y - uv0.y;
+      imm det = du1 * dv2 - du2 * dv1;
+      if det > 1e-12 or det < -1e-12 {
+        imm r = 1. / det;
+        imm tu = (e1 * dv2 - e2 * dv1) * r;
+        imm tv = (e2 * du1 - e1 * du2) * r;
+        mut k = 0usize;
+        while k < 3usize {
+          imm c0 = usize.from(*indices[3usize * t + k]);
+          imm c1 = usize.from(*indices[3usize * t + (k + 1usize) % 3usize]);
+          imm c2 = usize.from(*indices[3usize * t + (k + 2usize) % 3usize]);
+          imm w = cornerAngle(*positions[c0], *positions[c1], *positions[c2]);
+          tan.set(c0, *tan[c0] + tu * w);
+          bit.set(c0, *bit[c0] + tv * w);
+          k = k + 1usize;
+        }
+      }
+      t = t + 1usize;
+    }
+    v = 0usize;
+    while v < n {
+      imm nv = *normals[v];
+      mut tv = *tan[v] - nv * nv.dot(*tan[v]);
+      if tv.length() <= 1e-9 {
+        // Any direction across the normal
+        imm other = if nv.y > 0.99 or nv.y < -0.99 { new Vec3(1., 0., 0.); } else { new Vec3(0., 1., 0.); };
+        tv = other - nv * nv.dot(other);
+      }
+      tv = unitOrZero(tv);
+      imm w = if nv.cross(tv).dot(*bit[v]) < 0. { -1.; } else { 1.; };
+      tangents.push(new Vec4(tv.x, tv.y, tv.z, w));
+      v = v + 1usize;
+    }
+  }
+
   // Add another mesh's vertices and triangles to this one's; its indices are
   // moved past this mesh's vertices. A list of vertex data only one of the two
   // has is filled for the other: normals (0, 0, 0), uvs (0, 0), colors white,

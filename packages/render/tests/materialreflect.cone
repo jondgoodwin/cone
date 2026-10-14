@@ -1,0 +1,245 @@
+// Screen-space reflections, with the reflection probes as their fallback, on a
+// real GPU with no window: a floor of polished metal (white, roughness 0.05, the
+// extended material with 'reflections' 1), an emissive green box standing on it,
+// drawn into a 96 x 96 half-float target and read back as linear radiance
+// (exposure 1). Only a failure prints.
+//
+// The scene: the camera at (0, 1, 2) looking down -z, 50 degrees across (tan of half
+// 0.4663); the floor the plane y = 0; the box, a cube of 0.15 either way, centred at
+// (0, 0.15, -1.2), giving off (0, 1, 0). The mirror image of the box's front face (at z =
+// -1.05) is, by the reflection of the eye in the floor, at the floor points where the line from
+// the eye to the mirrored point crosses y = 0: the face's middle (height 0.15) at z = -0.652,
+// its foot at z = -1.05, its top edge at z = -0.346, which, seen from the camera, are
+// rows 86.8, 81.7 and 91.8 of the picture, in column 48.
+//
+// 1. THE MARCH FINDS THE BOX. The floor's pixel (48, 87) shows the box's green, over 0.8 in
+//    the green channel and under 0.05 in the others (the metal reflects the white of its
+//    colour by its Fresnel term, near 1); the same floor with 'reflections' 0, with nothing
+//    behind it to reflect (no sky, no environment), is black there. The box itself, drawn
+//    before the capture, is intact in its pixel (48, 77) after the pass began again.
+// 2. WHERE IT FINDS NOTHING THE ENVIRONMENT ANSWERS. With a dusk sky lighting the scene, a floor
+//    pixel far off to the left, whose reflection goes into the sky, is the same with the march
+//    on and off, to 1.5%; the box's reflection stays green on top of the environment's light.
+// 3. THE PROBE IS THE FALLBACK. A probe captured in a room of magenta (the background of its
+//    capture, an empty scene) whose box holds the floor lights the floor where the march finds
+//    nothing: the same pixel, magenta (red and blue each above 0.25 and over 3 times the
+//    green) with the probe and not so without it; the pixel where the march found the box is
+//    still green.
+// 4. COST AND COUNT. A frame with a reflecting mesh makes one capture; with a plain mesh, none.
+// 5. ROUGH REFLECTIONS BLUR. The reflection's edge along row 87 is under 3 columns wide on the
+//    polished floor and at least 3 columns wider on one of roughness 0.5.
+//
+// It needs a GPU driver with Vulkan 1.3 and SDL3.dll; with the Vulkan SDK, validation and
+// synchronization validation are on, and must say nothing.
+
+mod materialreflect;
+
+import testing use *;
+import stdio use *;
+import libc;
+import geomath use *;
+import collections use *;
+import mesh use Mesh;
+import gpu use *;
+import render use *;
+
+const SIZE = 96u32;
+
+// The discrete GPU, or the integrated one if GPU_POWER_PREFERENCE is low-power
+fn powerPreference() u32 {
+  imm e = libc.getenv("GPU_POWER_PREFERENCE");
+  if (e as usize) != 0usize {
+    if libc.strcmp(cstr.fromPtr(e), "low-power") == 0i32 { return POWER_PREFERENCE_LOW_POWER; }
+  }
+  POWER_PREFERENCE_HIGH_PERFORMANCE;
+}
+
+fn halfToFloat(h u16) f32 {
+  imm bits = u32.from(h);
+  imm exponent = (bits >> 10u32) & 31u32;
+  imm sign = if (bits & 0x8000u32) != 0u32 { -1.; } else { 1.; };
+  if exponent == 0u32 { return 0.; }
+  imm f = (((bits & 0x3FFu32) << 13u32) | ((exponent + 112u32) << 23u32));
+  sign * (f as f32);
+}
+
+fn radiance(p *u8, x u32, y u32, c usize) f64 {
+  imm h = p as *u16;
+  f64.from(halfToFloat(*(h + (usize.from(y) * usize.from(SIZE) + usize.from(x)) * 4usize + c)));
+}
+
+fn drawHdr(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer,
+    camera &Camera, light &Light, list &DrawList) {
+  mut encoder = device.createCommandEncoder();
+  renderer.render(device, &mut encoder, color, depth, camera, light, list);
+  encoder.copyTextureToBuffer(color, readback);
+  device.queue.submit(encoder.finish());
+  device.endFrame();
+  device.waitIdle();
+}
+
+fn within(got f64, want f64, relative f64, absolute f64) bool {
+  imm d = if got < want { want - got; } else { got - want; };
+  d <= absolute + relative * (if want < 0d { -want; } else { want; });
+}
+
+// The width, in columns, of the green reflection's edge along row 87: the columns where the
+// green is between 0.1 and 0.9 of its peak in the row, going out from column 48 each way
+fn edgeWidth(p *u8) i64 {
+  mut peak = 0d;
+  mut x = 0u32;
+  while x < SIZE {
+    imm v = radiance(p, x, 87u32, 1usize);
+    if v > peak { peak = v; }
+    x = x + 1u32;
+  }
+  mut n = 0i64;
+  x = 0u32;
+  while x < SIZE {
+    imm v = radiance(p, x, 87u32, 1usize);
+    if v > 0.1d * peak and v < 0.9d * peak { n = n + 1i64; }
+    x = x + 1u32;
+  }
+  n;
+}
+
+fn main() i32 {
+  mut instance = Instance.create("materialreflect");
+  require(instance.isValid(), "a Vulkan 1.3 instance");
+  mut none = Surface.none();
+  mut adapter = instance.requestAdapter(&none, powerPreference());
+  require(adapter.isValid(), "an adapter");
+  mut device = adapter.requestDevice();
+  require(device.isValid(), "a device");
+
+  imm target = new TextureDescriptor(SIZE, SIZE, TEXTURE_FORMAT_RGBA16_FLOAT,
+    TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING | TEXTURE_USAGE_COPY_SRC);
+  mut color = device.createTexture(&target);
+  imm depthDesc = new TextureDescriptor(SIZE, SIZE, TEXTURE_FORMAT_DEPTH32_FLOAT,
+    TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING);
+  mut depth = device.createTexture(&depthDesc);
+  mut readback = device.createBuffer(u64.from(SIZE * SIZE * 8u32), BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  imm p = readback.mappedRange();
+  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  require(renderer.isValid(), "a renderer");
+  renderer.environmentStrength = 0.;
+  renderer.drawSky = false;
+  renderer.setReflections(&ReflectionSettings.high());
+  mut camera = Camera.make();
+  camera.fov = radians(50.);
+  camera.near = 0.1;
+  camera.far = 40.;
+  camera.lookAt(new Vec3(0., 1., 2.), new Vec3(0., 1., -1.), new Vec3(0., 1., 0.));
+  camera.background = new Color(0., 0., 0., 1.);
+  imm dark = Light.directional(new Vec3(0., -1., 0.), Color.gray(0.), Color.gray(0.));
+
+  imm plane = renderer.addMesh(&mut device, &Mesh.plane(1, 1.));
+  imm cube = renderer.addMesh(&mut device, &Mesh.cube(0.5));
+  imm greenM = renderer.addPbrMaterial(&mut device, &PbrMaterial.standard(new Color(0., 0., 0., 1.), 0., 1.)
+    .glowing(new Color(0., 1., 0., 1.), 1.));
+  mut mirror = PbrMaterial.standard(Color.gray(1.), 1., 0.05).reflective(1.);
+  imm mirrorM = renderer.addPbrMaterial(&mut device, &mirror);
+  imm dullM = renderer.addPbrMaterial(&mut device, &PbrMaterial.standard(Color.gray(1.), 1., 0.05));
+  imm roughM = renderer.addPbrMaterial(&mut device, &PbrMaterial.standard(Color.gray(1.), 1., 0.5).reflective(1.));
+  imm floorAt = Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(6., 1., 6.));
+  imm boxAt = Mat4.fromTrs(new Vec3(0., 0.15, -1.2), Quat.identity(), new Vec3(0.3, 0.3, 0.3));
+
+  // ---- 1. The march finds the box ----
+  mut list = DrawList.empty();
+  list.add(plane, mirrorM, floorAt);
+  list.add(cube, greenM, boxAt);
+  drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &dark, &list);
+  {
+    imm r = radiance(p, 48u32, 87u32, 0usize);
+    imm g = radiance(p, 48u32, 87u32, 1usize);
+    imm b = radiance(p, 48u32, 87u32, 2usize);
+    expect(g > 0.8d and r < 0.05d and b < 0.05d, "the floor shows the box's green in its mirror image");
+    if !(g > 0.8d and r < 0.05d and b < 0.05d) { eprint <- "  floor pixel (48, 87): "; eprint <- r; eprint <- ", "; eprint <- g; eprint <- ", "; eprint <- b; eprint <- "\n"; }
+    expectFloat(radiance(p, 48u32, 77u32, 1usize), 1d, 0.001d, "the box, drawn before the capture, is intact after the pass began again");
+    expectFloat(radiance(p, 48u32, 77u32, 0usize), 0d, 0.001d, "(and only green)");
+  }
+  expectUInt(u64.from(renderer.ext[0usize].captures), 1u64, "one capture for a frame with a reflecting mesh");
+  list.clear();
+  list.add(plane, dullM, floorAt);
+  list.add(cube, greenM, boxAt);
+  drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &dark, &list);
+  expect(radiance(p, 48u32, 87u32, 1usize) < 0.02d, "without the march the floor, with nothing to reflect, is black there");
+  expectUInt(u64.from(renderer.ext[0usize].captures), 1u64, "a frame with no reflecting mesh makes no capture");
+
+  // ---- 2. Where it finds nothing, the environment answers ----
+  let_sky(&mut renderer, &mut device);
+  list.clear();
+  list.add(plane, mirrorM, floorAt);
+  list.add(cube, greenM, boxAt);
+  drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &dark, &list);
+  imm skyOn = radiance(p, 8u32, 90u32, 1usize);
+  imm skyOnR = radiance(p, 8u32, 90u32, 0usize);
+  imm greenOnTop = radiance(p, 48u32, 87u32, 1usize);
+  list.clear();
+  list.add(plane, dullM, floorAt);
+  list.add(cube, greenM, boxAt);
+  drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &dark, &list);
+  imm skyOff = radiance(p, 8u32, 90u32, 1usize);
+  imm skyOffR = radiance(p, 8u32, 90u32, 0usize);
+  expect(skyOff > 0.01d, "the sky lights the floor off to the side");
+  expect(within(skyOn, skyOff, 0.015d, 0.0005d) and within(skyOnR, skyOffR, 0.015d, 0.0005d),
+    "and with the march on it is the same: it found nothing there and gave way to the environment");
+  if !(within(skyOn, skyOff, 0.015d, 0.0005d) and within(skyOnR, skyOffR, 0.015d, 0.0005d)) { eprint <- "  pixel (8, 90) march on "; eprint <- skyOnR; eprint <- ", "; eprint <- skyOn; eprint <- ", off "; eprint <- skyOffR; eprint <- ", "; eprint <- skyOff; eprint <- "\n"; }
+  expect(greenOnTop > radiance(p, 48u32, 87u32, 1usize) + 0.4d, "the box's reflection is green over the sky's light, which is not there without the march");
+
+  // ---- 3. The probe is the fallback ----
+  // A probe of a magenta room: an empty scene on a magenta background (no sky in its picture), its box
+  // holding the floor. It lives as long as the renderer draws with it.
+  imm empty = DrawList.empty();
+  imm roomLight = Light.directional(new Vec3(0., -1., 0.), Color.gray(0.), Color.gray(0.));
+  renderer.drawSky = false;
+  renderer.environmentStrength = 1.;
+  imm probe = addProbe(&mut renderer, &mut device, new Vec3(0., 1., 0.), new Vec3(-8., -0.5, -8.), new Vec3(8., 6., 8.),
+    new Color(1., 0., 1., 1.), &roomLight, &empty);
+  require(probe.isValid(), "the probe was captured");
+  {
+    list.clear();
+    list.add(plane, mirrorM, floorAt);
+    list.add(cube, greenM, boxAt);
+    drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &dark, &list);
+    imm pr = radiance(p, 8u32, 90u32, 0usize);
+    imm pg = radiance(p, 8u32, 90u32, 1usize);
+    imm pb = radiance(p, 8u32, 90u32, 2usize);
+    expect(pr > 0.25d and pb > 0.25d and pr > 3d * pg and pb > 3d * pg, "with the probe the floor reflects its magenta where the march found nothing");
+    if !(pr > 0.25d and pb > 0.25d and pr > 3d * pg and pb > 3d * pg) { eprint <- "  pixel (8, 90): "; eprint <- pr; eprint <- ", "; eprint <- pg; eprint <- ", "; eprint <- pb; eprint <- "\n"; }
+    expect(skyOn < pr, "and not the sky's blues");
+    imm hitG = radiance(p, 48u32, 87u32, 1usize);
+    imm hitR = radiance(p, 48u32, 87u32, 0usize);
+    expect(hitG > 0.7d and hitR < 0.15d, "while the pixel where the march hit the box is still green");
+    if !(hitG > 0.7d and hitR < 0.15d) { eprint <- "  pixel (48, 87): "; eprint <- hitR; eprint <- ", "; eprint <- hitG; eprint <- "\n"; }
+  }
+
+  // ---- 5. Rough reflections blur ----
+  {
+    renderer.environmentStrength = 0.;
+    renderer.drawSky = false;
+    list.clear();
+    list.add(plane, mirrorM, floorAt);
+    list.add(cube, greenM, boxAt);
+    drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &dark, &list);
+    imm sharp = edgeWidth(p);
+    list.clear();
+    list.add(plane, roughM, floorAt);
+    list.add(cube, greenM, boxAt);
+    drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &dark, &list);
+    imm soft = edgeWidth(p);
+    // (the reflected ray is a few dozen pixels long in this small picture, so the lobe's footprint is a few pixels)
+    expect(sharp < 3i64, "a polished floor's reflection has a sharp edge");
+    expect(soft >= sharp + 3i64, "a rough one's is blurred");
+    if !(sharp < 3i64 and soft >= sharp + 3i64) { eprint <- "  edge widths "; eprint <- sharp; eprint <- ", "; eprint <- soft; eprint <- "\n"; }
+  }
+  done();
+}
+
+// A dusk sky as the environment, at its own strength
+fn let_sky(renderer &mut Renderer, device &mut Device) {
+  imm sky = Sky.dusk(radians(25.), radians(30.));
+  renderer.setSky(device, &sky);
+  renderer.drawSky = true;
+  renderer.environmentStrength = 1.;
+}

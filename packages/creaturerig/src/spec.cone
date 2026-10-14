@@ -1,0 +1,136 @@
+// RigSpec: a creature's skeleton as plain data.
+//
+// A creature is a set of NAMED CHAINS of bones. A chain has a kind (spine,
+// neck, head, tail, leg, wing, arm, feather, other: the kinds are numbers, so
+// a program may add its own above KIND_OTHER), a parent (another chain, and a
+// bone of it) and a list of bones. A bone is a joint: a name, its rest offset
+// from the joint before it in its chain (the first bone of a chain: from the
+// parent bone's joint), and a radius, the thickness of the creature around
+// it, used to wrap a surface on the bones and to weight a mesh to them.
+//
+// Offsets are in the creature's own rest frame, which is bonepose's: right
+// handed, y up, the creature faces -z, its right is +x. Every bone's rest
+// rotation is the identity, so a rest offset IS the segment (the bone's
+// direction is where its child lies), and a pose is the angles away from
+// standing.
+//
+// Nothing here is a species. A horse, a spider, a bird and a snake differ
+// only in the chains and numbers they hand to the builder (or write in the
+// text form, parse.cone). Any number of legs, spines, necks, tails and wings
+// is a matter of how many chains are listed; the humanoid is one more spec.
+
+// The kinds of chain. The packages that animate a rig find their chains by
+// kind: leggedgait the legs, wingflight the wings, and so on.
+pub const KIND_SPINE = 0u32;
+pub const KIND_NECK = 1u32;
+pub const KIND_HEAD = 2u32;
+pub const KIND_TAIL = 3u32;
+pub const KIND_LEG = 4u32;
+pub const KIND_WING = 5u32;
+pub const KIND_ARM = 6u32;
+pub const KIND_FEATHER = 7u32;
+pub const KIND_OTHER = 8u32;
+
+// A creature's right is +x, its left -x (bonepose's convention)
+pub const SIDE_LEFT = -1i32;
+pub const SIDE_CENTRE = 0i32;
+pub const SIDE_RIGHT = 1i32;
+
+pub fn kindName(kind u32) &str {
+  if kind == KIND_SPINE { return "spine"; }
+  if kind == KIND_NECK { return "neck"; }
+  if kind == KIND_HEAD { return "head"; }
+  if kind == KIND_TAIL { return "tail"; }
+  if kind == KIND_LEG { return "leg"; }
+  if kind == KIND_WING { return "wing"; }
+  if kind == KIND_ARM { return "arm"; }
+  if kind == KIND_FEATHER { return "feather"; }
+  "other";
+}
+
+// The kind a name spells, or -1
+pub fn kindFromName(name &str) i32 {
+  if name == "spine" { return 0i32; }
+  if name == "neck" { return 1i32; }
+  if name == "head" { return 2i32; }
+  if name == "tail" { return 3i32; }
+  if name == "leg" { return 4i32; }
+  if name == "wing" { return 5i32; }
+  if name == "arm" { return 6i32; }
+  if name == "feather" { return 7i32; }
+  if name == "other" { return 8i32; }
+  -1i32;
+}
+
+// One bone: a joint
+pub struct BoneSpec {
+  pub name String;
+  pub offset Vec3;        // from the previous joint of its chain (the first: from the parent bone's joint)
+  pub radius f32;         // the creature's thickness around the joint, metres
+}
+
+// A named chain of bones hung from a bone of another chain
+pub struct ChainSpec {
+  pub name String;
+  pub kind u32;
+  pub parent String;      // the chain it hangs from; "" for the root chain
+  pub parentBone i32;     // which bone of the parent: 0 up, or negative from the end (-1 the last)
+  pub bones List[BoneSpec];
+}
+
+pub struct RigSpec {
+  pub name String;
+  pub chains List[ChainSpec];
+
+  pub fn make(name &str) RigSpec { new RigSpec(String.from(name), List[ChainSpec].empty()); }
+
+  // A new empty chain: its number. The root chain has parent "". A chain
+  // must come after the chain it hangs from.
+  pub fn chain(self &mut, name &str, kind u32, parent &str, parentBone i32) usize {
+    chains.push(new ChainSpec(String.from(name), kind, String.from(parent), parentBone, List[BoneSpec].empty()));
+    chains.len() - 1usize;
+  }
+
+  // A bone added to the end of chain number 'c'
+  pub fn bone(self &mut, c usize, name &str, offset Vec3, radius f32) {
+    imm b = new BoneSpec(String.from(name), offset, radius);
+    chains.viewMut()[c].bones.push(b);
+  }
+
+  // The number of the chain called 'name', or -1
+  pub fn find(self &, name &str) i32 {
+    mut i = 0usize;
+    while i < chains.len() {
+      if chains[i].name.view() == name { return i32.from(i); }
+      i = i + 1usize;
+    }
+    -1i32;
+  }
+
+  // A copy of chain 'from' reflected in the plane x = 0 (offsets' x negated),
+  // named 'name' and hung from 'parent' (bone 'parentBone', as for 'chain'):
+  // its number, or -1 if there is no chain 'from'. The left foreleg made
+  // from the right one, the wing made from its twin.
+  pub fn mirror(self &mut, from &str, name &str, parent &str, parentBone i32) i32 {
+    imm f = self.find(from);
+    if f < 0i32 { return -1i32; }
+    imm c = self.chain(name, chains[usize.from(f)].kind, parent, parentBone);
+    mut i = 0usize;
+    while i < chains[usize.from(f)].bones.len() {
+      imm b = chains[usize.from(f)].bones[i].offset;
+      imm r = chains[usize.from(f)].bones[i].radius;
+      imm n = chains[usize.from(f)].bones[i].name.copy();
+      self.bone(c, n.view(), new Vec3(-b.x, b.y, b.z), r);
+      i = i + 1usize;
+    }
+    i32.from(c);
+  }
+
+  // How many bones in all
+  pub fn boneCount(self &) usize {
+    mut n = 0usize;
+    mut i = 0usize;
+    while i < chains.len() { n = n + chains[i].bones.len(); i = i + 1usize; }
+    n;
+  }
+}

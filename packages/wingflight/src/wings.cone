@@ -1,0 +1,315 @@
+// Wings on a rig: found by kind, posed by the flap, the fold and the twist.
+//
+// A wing is a chain of kind KIND_WING of at least three bones along the span when spread: the SHOULDER (the bone the
+// whole wing turns about), the ELBOW, the WRIST and the HAND or tip (more bones along the span are posed like the
+// hand). Feather chains (kind KIND_FEATHER, two or more bones) hung from the wing's bones are its FANS: primaries
+// from the hand's segment, secondaries from the forearm's, tertials from the upper arm's. The rest pose is the wing
+// spread flat, a right wing pointing along +x and a left wing along -x. All the numbers that make a flap and a fold
+// are WingParams, plain data.
+//
+// THE FLAP CYCLE. One phase in cycles. It is made asymmetric with a warp: the downstroke takes the share `downstroke`
+// of the cycle (0.55: the stroke that does the work is a little the longer, as in the birds measured, Tobalske),
+// the upstroke the rest; the warped phase w runs 0 to 1/2 on the way down and 1/2 to 1 on the way up, so the stroke
+// angle is
+//     theta(w) = centre + A cos(2 pi w),   centre = (up - down) / 2,  A = (up + down) / 2
+// which is `up` above horizontal at w = 0 and `down` below at w = 1/2. Each joint further out follows the one before
+// by `lag` cycles (the wing tip lags the shoulder, which is what bends the wing through a stroke), the elbow and
+// wrist flex on the upstroke by a bump q(w) = max(0, -sin 2 pi w) (the wing is partly folded to cut its drag
+// coming up), and the wing is twisted about its span: nose down in the middle of the downstroke, nose up in the
+// middle of the upstroke, i(w) = mean - dev sin 2 pi w, more at the tip.
+//
+// FOLD AND GLIDE. A fold 0 to 1 takes the wing to a Z shape against the body (the shoulder swept back, the elbow
+// folded forward again, the wrist back) and droops it; the feathers of each fan close toward their wing bone. A
+// wing with no flapping (amp 0) is held at a dihedral (raised a few degrees).
+//
+// All angles are about the bones' local axes in the rest pose, whose rotations are the identity: x along the span,
+// y up, z back. The right wing is positive in the flap about z (tip up) and sweeps back about y by a negative angle;
+// the left wing is the mirror image, so each rotation about z or y is multiplied by the wing's side (+1 right, -1
+// left, from the rig).
+
+pub struct WingParams {
+  // The flap
+  pub strokeUp f32;         // radians above horizontal at the top, at full amplitude
+  pub strokeDown f32;       // and below at the bottom
+  pub downstroke f32;       // the share of the beat that is the downstroke
+  pub elbowFlex f32;        // extra flexion on the upstroke, radians
+  pub wristFlex f32;
+  pub lag f32;              // cycles of lag a joint further out
+  pub twistDown f32;        // the wing's pitch about the span in the middle of the downstroke (negative: leading edge down)
+  pub twistUp f32;          // and of the upstroke
+  pub tipTwist f32;         // the hand's extra twist, as a multiple of the twist
+  pub glideDihedral f32;    // the raise of a wing that is not flapping
+  pub incidence f32;        // the wing's setting angle on the body, radians
+  // The fold
+  pub foldShoulder f32;     // swept back this much (radians) when folded
+  pub foldElbow f32;        // the elbow's reverse fold
+  pub foldWrist f32;
+  pub foldDroop f32;        // the whole wing lowered this much
+  pub featherClose f32;     // the share of a feather's angle to its wing bone closed when folded
+  pub featherBend f32;      // feather tips bend up this much at the peak of the downstroke
+  // The air
+  pub area f32;             // both wings spread, m^2
+  pub span f32;             // tip to tip, m
+  pub mass f32;             // the creature's, kg
+  pub cd0 f32;
+  pub oswald f32;
+  pub stallAngle f32;
+  pub bodyDragArea f32;     // the body's drag area (CD x frontal area), m^2
+  pub freqMin f32;          // the flap rate at least effort, Hz
+  pub freqMax f32;          // and at full effort
+  pub upstrokeArea f32;     // the share of the wing's area working on the upstroke (it is flexed)
+  pub radiusFrac f32;       // the effective radius of the section, a fraction of the semi-span
+
+  // A wing of the given span and area on a creature of the given mass, with proportions that suit a bird of that
+  // size: the beat rate scales with mass^(-1/3) (Pennycuick 1996)
+  pub fn standard(span f32, area f32, mass f32) WingParams {
+    imm freqFull = 5.0 * libc.powf(1.0 / mass, 0.3333);
+    new WingParams(0.6, 0.7, 0.55, 0.9, 0.7, 0.07, -0.2, 0.4, 1.0, 0.12, 0.05,
+      1.3, 2.6, 2.4, 0.55, 0.9, 0.35,
+      area, span, mass, 0.02, 0.85, 0.26, 0.0035, 0.45 * freqFull, freqFull, 0.25, 0.38);
+  }
+
+  pub fn aspectRatio(self &) f32 { span * span / area; }
+
+  pub fn copy(self &) WingParams {
+    new WingParams(strokeUp, strokeDown, downstroke, elbowFlex, wristFlex, lag, twistDown, twistUp, tipTwist, glideDihedral,
+      incidence, foldShoulder, foldElbow, foldWrist, foldDroop, featherClose, featherBend, area, span, mass, cd0, oswald,
+      stallAngle, bodyDragArea, freqMin, freqMax, upstrokeArea, radiusFrac);
+  }
+}
+
+// A fan of feathers on a wing
+pub struct Fan {
+  pub bones List[usize];     // for each feather its root bone (its tip is the root's child in its chain)
+  pub tips List[usize];
+  pub angles List[f32];      // each feather's angle from the wing bone toward the trailing edge, radians (>= 0)
+}
+
+pub struct WingRig {
+  pub chain usize;
+  pub side i32;
+  pub bones List[usize];     // shoulder, elbow, wrist, hand ...
+  pub fans List[Fan];
+  pub fanOn List[usize];     // the index in `bones` that each fan hangs from
+}
+
+pub struct Wings {
+  pub wings List[WingRig];
+
+  pub fn count(self &) usize { wings.len(); }
+}
+
+// The wings of a rig, in the order their chains are listed, with the feather fans hung from them
+pub fn findWings(rig &Rig) Wings {
+  mut out = List[WingRig].empty();
+  imm chains = rig.chainsOfKind(KIND_WING);
+  mut w = 0usize;
+  while w < chains.len() {
+    imm c = *chains[w];
+    if rig.chains[c].bones.len() >= 3usize {
+      mut fans = List[Fan].empty();
+      mut fanOn = List[usize].empty();
+      mut bi = 0usize;
+      while bi < rig.chains[c].bones.len() {
+        imm bone = *rig.chains[c].bones[bi];
+        // The feather chains hung from this bone
+        mut fan = new Fan(List[usize].empty(), List[usize].empty(), List[f32].empty());
+        mut f = 0usize;
+        while f < rig.chains.len() {
+          if rig.chains[f].kind == KIND_FEATHER and rig.chains[f].parentBone == i32.from(bone) and rig.chains[f].bones.len() >= 2usize {
+            imm root = rig.chains[f].first();
+            imm tip = rig.chains[f].last();
+            imm d = rig.restPosition(tip) - rig.restPosition(root);
+            imm side = rig.chains[c].side;
+            imm s = if side == 0i32 { 1.; } else { f32.from(side); };
+            fan.bones.push(root);
+            fan.tips.push(tip);
+            fan.angles.push(atan2(d.z, s * d.x));
+          }
+          f = f + 1usize;
+        }
+        if fan.bones.len() > 0usize {
+          fans.push(fan);
+          fanOn.push(bi);
+        }
+        bi = bi + 1usize;
+      }
+      mut wbones = List[usize].empty();
+      mut wk = 0usize;
+      while wk < rig.chains[c].bones.len() { wbones.push(*rig.chains[c].bones[wk]); wk = wk + 1usize; }
+      out.push(new WingRig(c, rig.chains[c].side, wbones, fans, fanOn));
+    }
+    w = w + 1usize;
+  }
+  new Wings(out);
+}
+
+// WingParams for a creature of this mass whose wings are those of the rig: the span is tip to tip of the
+// outermost bone or feather in the rest pose, the chord how far the wing reaches fore and aft (the least z to the
+// greatest of its bones and feather tips, in the rest pose), the area span x chord x 0.85 (the share of that
+// rectangle a tapered planform fills)
+pub fn estimateWing(rig &Rig, wings &Wings, mass f32) WingParams {
+  mut xmax f32 = 0.05;
+  mut zmin f32 = 1.0e9;
+  mut zmax f32 = -1.0e9;
+  mut w = 0usize;
+  while w < wings.count() {
+    imm wr = wings.wings[w];
+    mut k = 0usize;
+    while k < wr.bones.len() {
+      imm p = rig.restPosition(*wr.bones[k]);
+      if absf(p.x) > xmax { xmax = absf(p.x); }
+      if p.z < zmin { zmin = p.z; }
+      if p.z > zmax { zmax = p.z; }
+      k = k + 1usize;
+    }
+    mut fi = 0usize;
+    while fi < wr.fans.len() {
+      mut f = 0usize;
+      while f < wr.fans[fi].tips.len() {
+        imm p = rig.restPosition(*wr.fans[fi].tips[f]);
+        if absf(p.x) > xmax { xmax = absf(p.x); }
+        if p.z < zmin { zmin = p.z; }
+        if p.z > zmax { zmax = p.z; }
+        f = f + 1usize;
+      }
+      fi = fi + 1usize;
+    }
+    w = w + 1usize;
+  }
+  imm span = 2. * xmax;
+  imm chord = fmaxf5(zmax - zmin, 0.05);
+  WingParams.standard(span, span * chord * 0.85, mass);
+}
+
+fn fmaxf5(a f32, b f32) f32 { if a > b { return a; } b; }
+
+// What the wings are doing, as the numbers the pose is made from
+pub struct WingMotion {
+  pub phase f32;       // cycles through the beat, 0 to 1
+  pub amp f32;         // 0 not flapping (held at the glide dihedral) to 1 full strokes
+  pub fold f32;        // 0 spread to 1 folded
+  pub strokeScale f32; // the stroke's size at this effort, 0 to 1 (the beat is smaller at low effort)
+  pub rate f32;        // the stroke angle's rate of change at this moment, radians per second (set by `wingMotionRate`)
+
+  pub fn still() WingMotion { new WingMotion(0., 0., 0., 1., 0.); }
+}
+
+// The warped phase: 0 to 1/2 over the downstroke, 1/2 to 1 over the upstroke
+pub fn warpPhase(p &WingParams, phase f32) f32 {
+  imm ph = frac(phase);
+  if ph < p.downstroke { return 0.5 * ph / p.downstroke; }
+  0.5 + 0.5 * (ph - p.downstroke) / (1. - p.downstroke);
+}
+
+// The flap angle at warped phase w (radians, positive up), for a stroke of the given scale
+pub fn strokeAt(p &WingParams, w f32, scale f32) f32 {
+  imm up = p.strokeUp * scale;
+  imm down = p.strokeDown * scale;
+  imm centre = 0.5 * (up - down);
+  imm a = 0.5 * (up + down);
+  centre + a * cos(2. * pi * w);
+}
+
+// The wing's pitch about the span at warped phase w: the twist of the stroke plus the setting angle
+pub fn twistAt(p &WingParams, w f32) f32 {
+  imm mean = 0.5 * (p.twistDown + p.twistUp);
+  imm dev = 0.5 * (p.twistUp - p.twistDown);
+  mean - dev * sin(2. * pi * w);
+}
+
+// The upstroke bump, 0 on the downstroke
+pub fn upstrokeBump(w f32) f32 {
+  imm v = w - libc.floorf(w);
+  imm s = 0. - sin(2. * pi * v);
+  if s > 0. { s; } else { 0.; };
+}
+
+// The stroke angle's rate, radians per second, at a phase and a beat rate (Hz): the derivative of the warped
+// stroke by the chain rule
+pub fn strokeRate(p &WingParams, phase f32, freq f32, scale f32, amp f32) f32 {
+  imm h = 0.002;
+  imm a = strokeAt(p, warpPhase(p, phase + h), scale);
+  imm b = strokeAt(p, warpPhase(p, phase - h), scale);
+  amp * (a - b) / (2. * h) * freq;
+}
+
+fn rotY(a f32) Quat { Quat.angleAxis(a, new Vec3(0., 1., 0.)); }
+fn rotZ(a f32) Quat { Quat.angleAxis(a, new Vec3(0., 0., 1.)); }
+fn rotX(a f32) Quat { Quat.angleAxis(a, new Vec3(1., 0., 0.)); }
+
+// Pose every wing of the rig (and its feathers) for this motion. Only the wing and feather bones are written.
+pub fn poseWings(rig &Rig, wings &Wings, p &WingParams, m &WingMotion, pose &mut Pose) {
+  mut wi = 0usize;
+  while wi < wings.count() {
+    imm wr = wings.wings[wi];
+    imm s = if wr.side == 0i32 { 1.; } else { f32.from(wr.side); };
+    imm n = wr.bones.len();
+    imm amp = m.amp;
+    imm fold = m.fold;
+    // The stroke at the shoulder and at each joint further out, each later by `lag`
+    mut absolute = List[f32].empty();
+    mut k = 0usize;
+    while k < n {
+      imm w = warpPhase(p, m.phase - p.lag * f32.from(k));
+      absolute.push(p.glideDihedral * (1. - amp) + amp * strokeAt(p, w, m.strokeScale));
+      k = k + 1usize;
+    }
+    imm w0 = warpPhase(p, m.phase);
+    imm twist = amp * twistAt(p, w0);
+    // The shoulder: sweep, then stroke and droop, then pitch about the span
+    imm sweep = -s * fold * p.foldShoulder;
+    imm shoulderRot = rotZ(s * (*absolute[0usize] - fold * p.foldDroop)) * rotY(sweep) * rotX(p.incidence + twist);
+    pose.setRotation(*wr.bones[0usize], shoulderRot);
+    // Each wing bone's rotation as it stands in the model (the shoulder's, then each times the one before)
+    mut absRot = List[Quat].empty();
+    absRot.push(shoulderRot);
+    // The elbow: its fold, its flex on the upstroke, and the lag of its stroke behind the shoulder's
+    k = 1usize;
+    while k < n {
+      imm bone = *wr.bones[k];
+      imm dz = s * (*absolute[k] - *absolute[k - 1usize]);
+      imm w = warpPhase(p, m.phase - p.lag * f32.from(k));
+      imm bump = upstrokeBump(w);
+      mut yaw f32 = 0.;
+      if k == 1usize { yaw = s * (fold * p.foldElbow + amp * p.elbowFlex * bump); }
+      elif k == 2usize { yaw = -s * (fold * p.foldWrist + amp * p.wristFlex * bump); }
+      // The wing's twist grows toward the tip
+      imm tw = if k + 1usize == n { amp * twistAt(p, w) * p.tipTwist * 0.5; } else { 0.; };
+      imm turn = rotZ(dz) * rotY(yaw) * rotX(tw);
+      pose.setRotation(bone, turn);
+      absRot.push((*absRot[k - 1usize]) * turn);
+      k = k + 1usize;
+    }
+    // The feather fans
+    mut fi = 0usize;
+    while fi < wr.fans.len() {
+      imm fan = wr.fans[fi];
+      imm parentAbs = *absRot[*wr.fanOn[fi]];
+      mut f = 0usize;
+      while f < fan.bones.len() {
+        // Closing as the wing folds: each feather turns from where it lies to lie back along the body, whatever way its
+        // bone has been folded (a folded wing's feathers point aft)
+        imm d0 = rig.restPosition(*fan.tips[f]) - rig.restPosition(*fan.bones[f]);
+        imm dFolded = new Vec3(s * 0.12, -0.05, 1.).normalize();
+        imm closed = parentAbs.conjugate() * Quat.fromVectors(d0.normalize(), dFolded);
+        pose.setRotation(*fan.bones[f], Quat.identity().slerp(closed, clampf(fold * p.featherClose, 0., 1.)).normalize());
+        // The tips bend up on the downstroke (the air pressing on the underside)
+        imm vel = if m.rate < 0. { 0. - m.rate; } else { 0.; };
+        imm bend = p.featherBend * amp * clampf(vel / 8., 0., 1.);
+        imm tipBone = *fan.tips[f];
+        imm dirRest = rig.skeleton.restOf(tipBone).translation;
+        if bend > 0.0001 and dirRest.length() > 0.0001 {
+          imm d = dirRest.normalize();
+          imm up = (d * cos(bend) + new Vec3(0., 1., 0.) * sin(bend)).normalize();
+          pose.setRotation(tipBone, Quat.fromVectors(d, up));
+        } else {
+          pose.setRotation(tipBone, Quat.identity());
+        }
+        f = f + 1usize;
+      }
+      fi = fi + 1usize;
+    }
+    wi = wi + 1usize;
+  }
+}

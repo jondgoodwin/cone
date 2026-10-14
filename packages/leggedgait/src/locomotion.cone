@@ -1,0 +1,566 @@
+// Locomotion: the legs of any rig walking, trotting or galloping over ground, from the path the body takes.
+//
+// WHAT IT TAKES AND GIVES. Each frame the caller says where the creature is (x, z and a heading) and the ground
+// (a height query); the Locomotion works out how fast it is going and turning, and gives back a bonepose Pose (and the
+// bones' model transforms, and the world transform of the model). It does not move the creature: the physics or the AI
+// does, the feet follow. That is the arrangement poseik's foot placer and walkgait have.
+//
+// THE METHOD, in the order it runs:
+//
+// 1. SPEED. The velocity is the displacement over the step, smoothed (80 ms), the turn rate likewise. A creature
+//    that is turning on the spot steps: a speed of half the turn rate times the farthest foot's radius is
+//    counted with the forward speed.
+// 2. GAIT. The speed as a Froude number v^2 / (g h), h the hip height (Alexander's dimensionless speed:
+//    gaits change at about the same Froude number in animals of every size), picks a gait from the set with a
+//    hysteresis; the pattern in force is not switched but EASED: every leg's phase offset (round the shortest arc), the
+//    duty factor, the step height and the amplitudes move towards the new gait's values over `transition` seconds, so
+//    a change of gait is a few strides of in-between patterns, as it is in animals, and no foot jumps.
+// 3. STRIDE. The relative stride length (stride / hip height) is 2.3 Fr^0.3 (Alexander and Jayes 1983, for
+//    quadrupeds and bipeds alike; from memory, not fetched), held to what the legs can span: the stance foot
+//    travels `duty x stride` while it is on the ground, which may not pass the leg's reach. The phase of the
+//    cycle advances by the DISTANCE travelled over the stride, so a fast creature takes longer steps and a feet
+//    never skate.
+// 4. PHASE AND FEET. Leg i's phase is cycle - its offset (it touches down when the cycle reaches its offset). It is in stance for the first `duty` of its cycle and in
+//    swing for the rest. A foot in stance is held where it landed (its ANCHOR); a foot in swing travels from where
+//    it lifted to where it will land, on a smoothstep along the ground with a sine arch above it, and is never put
+//    under the ground. Where it will land is Raibert's rule (Raibert, "Legged robots that balance", 1986) taken
+//    to the cycle: the foot's neutral place under the hip, carried to where the hip will be at touchdown, plus half the
+//    stance excursion in the direction that point is moving (the body's velocity plus the turn's), so
+//    the foot is under the hip in mid-stance. It is aimed again every frame of the swing, so a creature that
+//    slows or turns brings its feet with it.
+// 5. THE BODY follows the feet. A plane is fitted by least squares to the ground under the feet; the body's
+//    height is the plane's height under the body, its pitch the plane's slope along the body and its roll the
+//    slope across it, each times a gain and held to a limit, each smoothed by a critically damped spring (Game
+//    Programming Gems 4; the form of Unity's SmoothDamp). A biped has no pitch to fit, only roll.
+// 6. CHAIN MOTIONS. Spine, neck, head and tail turn about an axis by amplitude x sin(2 pi (harmonic x the
+//    reference leg's phase + phase - lag x the bone's place in the chain)), the amplitudes the gait's: the spine's
+//    flex in the gallop, the neck's nod in the walk, the tail's sway. The reference leg is the rearmost left one.
+// 7. LEGS. Each ankle goes where the leg's sole needs it (the sole's place less the foot's vector, turned as the foot
+//    is turned: flat to the ground normal, folded back in swing, rolled onto the toe at the end of stance for a foot
+//    that points forward); the hip, knee and ankle are bent by poseik's two-bone solver with the knee kept on its
+//    side of the leg as at rest. If a stance leg would have to stretch past its reach the body is lowered by the excess.
+//
+// What is NOT done: the feet's flexibility in stance (no heel strike), a foot's yaw following a turn (it stays square to
+// the body), rider or load, and the ground's slipperiness. A leg wants three bones and a foot of any number.
+
+pub struct LegState {
+  pub swinging bool;
+  pub u f32;               // 0 to 1 through the swing
+  pub u0 f32;              // how far through it already was when the swing began
+  pub anchor Vec3;         // the sole's place in stance, world
+  pub lift Vec3;           // where the swing began
+  pub land Vec3;           // where it will end
+  pub foot Vec3;           // the sole now, world
+  pub offset f32;          // the leg's phase offset as eased, cycles
+  pub phase f32;           // the leg's phase this frame, 0 to 1
+  pub pitch f32;           // the foot's pitch about the lateral axis this frame
+  pub reached bool;        // the leg could reach its ankle's place this frame
+  pub touchdown bool;      // the foot came down this frame
+  pub liftoff bool;        // and left the ground this frame
+  pub touchdowns u32;      // how many steps it has taken
+  pub plantError f32;      // in stance: how far the sole (from the posed bones) is from its anchor
+  pub timed bool;          // the swing runs on a timer, not on the phase (a quick step to catch up, or one finished at a stop)
+  pub tdur f32;            // and how long it takes, seconds
+  pub miss f32;            // how far the posed tip is from the place the foot was to be this frame (the leg ran out of reach)
+}
+
+pub struct Locomotion {
+  pub legs LegSet;
+  pub set GaitSet;
+  pub states List[LegState];
+  pub pose Pose;
+  pub models List[Transform3];
+  pub world Transform3;          // the model's place in the world: x, z, the body's ground height and the heading
+  pub gaitIndex usize;
+  pub forced i32;                // a gait chosen by the caller (-1: by speed)
+  pub cycle f32;                 // the stride cycle, in cycles (unwrapped)
+  pub speed f32;                 // m/s, smoothed
+  pub yawRate f32;               // rad/s, smoothed
+  pub moving bool;
+  pub started bool;
+  pub strideLength f32;          // metres, this frame's
+  pub froude f32;
+  // The eased gait
+  pub duty f32;
+  pub stepHeight f32;
+  pub strideScale f32;
+  pub bounce1 f32;
+  pub bounce2 f32;
+  pub amps List[f32];
+  // The body
+  pub bodyY f32;
+  pub bodyYVel f32;
+  pub pitch f32;
+  pub pitchVel f32;
+  pub roll f32;
+  pub rollVel f32;
+  pub drop f32;
+  pub refLeg usize;
+  // The last frame's input
+  pub prevX f32;
+  pub prevZ f32;
+  pub prevYaw f32;
+  pub velX f32;
+  pub velZ f32;
+  // Tuning
+  pub bodyOmega f32;             // rad/s of the springs that carry the body (about 10: settles in 0.4 s)
+  pub pitchGain f32;             // how much of the plane's slope the body takes
+  pub rollGain f32;
+  pub maxTilt f32;               // radians
+  pub swingFlex f32;             // how far a foot folds in swing, radians
+  pub pushOff f32;               // how far a forward-pointing foot rolls onto its toe at the end of stance
+  pub maxExcursion f32;          // a stance foot may travel this fraction of its leg's reach
+  pub minInterior f32;
+  pub maxInterior f32;
+  pub plantErrorMax f32;         // the largest plantError any stance foot had this frame
+  pub missMax f32;               // and the largest miss of any foot
+  pub reachedAll bool;
+
+  // A locomotion for the rig's legs, with the standard gaits for that many legs
+  pub fn make(rig &Rig) Locomotion {
+    imm legs = findLegs(rig);
+    imm set = standardGaits(&legs);
+    Locomotion.withGaits(rig, legs, set);
+  }
+
+  pub fn withGaits(rig &Rig, legs LegSet, set GaitSet) Locomotion {
+    mut states = List[LegState].empty();
+    imm z = new Vec3(0., 0., 0.);
+    mut i = 0usize;
+    while i < legs.count() {
+      states.push(new LegState(false, 0., 0., z, z, z, z, 0., 0., 0., true, false, false, 0u32, 0., false, 0., 0.));
+      i = i + 1usize;
+    }
+    // The reference leg: the rearmost one, on the left where there is a choice
+    mut ref = 0usize;
+    i = 0usize;
+    while i < legs.count() {
+      imm l = legs.legs[i];
+      imm r = legs.legs[ref];
+      if l.rank > r.rank or (l.rank == r.rank and l.side < r.side) { ref = i; }
+      i = i + 1usize;
+    }
+    mut amps = List[f32].empty();
+    i = 0usize;
+    while i < set.motions.len() { amps.push(0.); i = i + 1usize; }
+    new Locomotion(legs, set, states, rig.restPose(), List[Transform3].empty(), Transform3.identity(), 0usize, -1i32, 0., 0., 0., false, false,
+      1., 0., 0.68, 0.15, 1., 0., 0., amps, 0., 0., 0., 0., 0., 0., 0., ref, 0., 0., 0., 0., 0.,
+      10., 0.85, 0.85, 0.45, 0.8, 0.35, 0.7, 0.35, pi - 0.04, 0., 0., true);
+  }
+
+  // Use gait number 'g' whatever the speed (a negative number: by speed again)
+  pub fn force(self &mut, g i32) { forced = g; }
+
+  pub fn gaitName(self &) &str { set.gaits[gaitIndex].name.view(); }
+
+  pub fn legCount(self &) usize { legs.count(); }
+
+  // The creature's reference hip height: the legs' mean hip height above the ground at rest
+  pub fn hipHeight(self &) f32 { legs.hipHeight; }
+
+  // How many feet are on the ground now
+  pub fn feetDown(self &) usize {
+    mut n = 0usize;
+    mut i = 0usize;
+    while i < states.len() { if !states[i].swinging { n = n + 1usize; } i = i + 1usize; }
+    n;
+  }
+
+  // Advance by 'dt' seconds with the creature at ground position (x, z) facing 'yaw' (radians, 0 faces -z, positive
+  // turns left) over 'ground'. The result is in 'pose', 'models' and 'world'.
+  pub fn update(self &mut, rig &Rig, dt f32, x f32, z f32, yaw f32, ground &<fn(x f32, z f32) f32) {
+    imm n = legs.count();
+    if n == 0usize { return; }
+    imm g = set.gravity;
+    imm h = legs.hipHeight;
+    // ---- 1. speed
+    if !started {
+      prevX = x; prevZ = z; prevYaw = yaw;
+    }
+    mut dyaw = yaw - prevYaw;
+    dyaw = dyaw - 2. * pi * libc.floorf(dyaw / (2. * pi) + 0.5);
+    if dt > 0.00001 and started {
+      imm k = 1. - libc.expf(-dt / 0.08);
+      velX = velX + ((x - prevX) / dt - velX) * k;
+      velZ = velZ + ((z - prevZ) / dt - velZ) * k;
+      yawRate = yawRate + (dyaw / dt - yawRate) * k;
+    }
+    speed = (velX * velX + velZ * velZ).sqrt();
+    prevX = x; prevZ = z; prevYaw = yaw;
+    // The farthest foot's radius from the body centre, for turning on the spot
+    mut radius f32 = 0.;
+    mut i = 0usize;
+    while i < n {
+      imm d = new Vec2(legs.legs[i].tipRest.x - legs.centre.x, legs.legs[i].tipRest.z - legs.centre.z).length();
+      if d > radius { radius = d; }
+      i = i + 1usize;
+    }
+    imm veff = fmaxf3(speed, 0.5 * absf(yawRate) * radius);
+    if moving { if veff < set.stopSpeed { moving = false; } }
+    else { if veff > set.startSpeed { moving = true; } }
+    froude = veff * veff / (g * h);
+
+    // ---- 2. gait, eased
+    if forced >= 0i32 { gaitIndex = usize.from(forced); } else { gaitIndex = set.pick(gaitIndex, froude); }
+    imm tg = set.gaits[gaitIndex];
+    imm ease = if !started { 1.; } else { 1. - libc.expf(-dt / set.transition); };
+    i = 0usize;
+    while i < n {
+      imm d = *tg.offsets[i] - states[i].offset;
+      imm w = d - libc.floorf(d + 0.5);
+      mut so = *states[i];
+      so.offset = so.offset + w * ease;
+      states.set(i, so);
+      i = i + 1usize;
+    }
+    duty = duty + (tg.duty - duty) * ease;
+    stepHeight = stepHeight + (tg.stepHeight - stepHeight) * ease;
+    strideScale = strideScale + (tg.strideScale - strideScale) * ease;
+    bounce1 = bounce1 + (tg.bounce1 - bounce1) * ease;
+    bounce2 = bounce2 + (tg.bounce2 - bounce2) * ease;
+    i = 0usize;
+    while i < amps.len() {
+      amps.set(i, *amps[i] + (*tg.amps[i] - *amps[i]) * ease);
+      i = i + 1usize;
+    }
+
+    // ---- 3. stride and the cycle
+    mut minSlack = 1.0e9;
+    i = 0usize;
+    while i < n { if legs.legs[i].slack < minSlack { minSlack = legs.legs[i].slack; } i = i + 1usize; }
+    imm fr = fmaxf3(froude, 0.0001);
+    mut rel = 2.3 * libc.powf(fr, 0.3);
+    if rel < 1.0 { rel = 1.0; }
+    mut stride = strideScale * h * rel;
+    imm cap = maxExcursion * 2. * minSlack / fmaxf3(duty, 0.2);
+    if stride > cap { stride = cap; }
+    strideLength = stride;
+    if moving and started and dt > 0. { cycle = cycle + veff * dt / stride; }
+
+    // ---- the body's frame this frame, before the body has found its height (the feet need only x, z and the heading)
+    imm cs = cos(yaw);
+    imm sn = sin(yaw);
+    // ---- 4. phase and feet
+    imm period = stride / fmaxf3(veff, 0.0001);
+    i = 0usize;
+    while i < n {
+      imm lg = legs.legs[i];
+      imm lcl = new Vec2(lg.tipRest.x, lg.tipRest.z);
+      imm neutral = new Vec3(x + lcl.x * cs + lcl.y * sn, 0., z - lcl.x * sn + lcl.y * cs);
+      mut st = *states[i];
+      st.touchdown = false;
+      st.liftoff = false;
+      st.phase = frac(cycle - st.offset);
+      if !started {
+        // Standing: the foot at its neutral place
+        st.anchor = new Vec3(neutral.x, ground(neutral.x, neutral.z), neutral.z);
+        st.foot = st.anchor;
+        st.land = st.anchor;
+        st.lift = st.anchor;
+        st.swinging = false;
+      } else {
+        // Lifting: by the phase (it has reached swing), or because the foot is stretched too far from under the hip
+        // (a TIMED step, quick, to where the foot belongs now): the phase says stance, the foot is not where
+        // stance has it. That is how a creature setting off finds its feet, and how it recovers from a shove.
+        if !st.swinging and moving {
+          if st.phase >= duty {
+            st.swinging = true;
+            st.timed = false;
+            st.liftoff = true;
+            st.lift = st.foot;
+            st.u0 = clampf((st.phase - duty) / (1. - duty), 0., 0.8);
+            st.u = st.u0;
+          } else {
+            imm off = new Vec2(st.foot.x - neutral.x, st.foot.z - neutral.z).length();
+            if off > 0.97 * lg.slack {
+              st.swinging = true;
+              st.timed = true;
+              st.tdur = fmaxf3(0.5 * (1. - duty) * period, 0.12);
+              st.liftoff = true;
+              st.lift = st.foot;
+              st.u0 = 0.;
+              st.u = 0.;
+            }
+          }
+        }
+        // Moving on
+        if st.swinging {
+          if !moving and !st.timed {
+            // The creature has stopped mid-step: the step is finished on a timer
+            st.timed = true;
+            st.tdur = set.swingTime;
+          }
+          mut landed = false;
+          if st.timed {
+            st.u = st.u + dt / (if moving { st.tdur; } else { set.swingTime; });
+            if st.u >= 1. { landed = true; }
+          } else {
+            if st.phase < duty { landed = true; } else { st.u = clampf((st.phase - duty) / (1. - duty), 0., 1.); }
+          }
+          if landed {
+            st.u = 1.;
+            st.swinging = false;
+            st.timed = false;
+            st.touchdown = true;
+            st.touchdowns = st.touchdowns + 1u32;
+            st.anchor = st.land;
+          }
+        }
+      }
+      if st.swinging {
+        // Where the foot will land: the neutral place carried to where the hip will be at touchdown, plus the
+        // stance excursion that puts the foot (0.5 - s) of the stance ahead of it, s the share of stance gone
+        // by then (0 for a step that lands where stance begins)
+        imm tau = if !moving { 0.; } elif st.timed { (1. - st.u) * st.tdur; } else { (1. - st.u) * (1. - duty) * period; };
+        imm sLand = if st.timed { clampf((st.phase + tau / period) / duty, 0., 1.); } else { 0.; };
+        imm yawTd = yaw + yawRate * tau;
+        imm cT = cos(yawTd);
+        imm sT = sin(yawTd);
+        imm rx = lcl.x * cT + lcl.y * sT;
+        imm rz = -lcl.x * sT + lcl.y * cT;
+        mut lx = x + velX * tau + rx;
+        mut lz = z + velZ * tau + rz;
+        if moving {
+          // the neutral point's velocity: the body's plus the turn's
+          imm vx = velX + yawRate * rz;
+          imm vz = velZ - yawRate * rx;
+          mut hx = vx * duty * period * (0.5 - sLand);
+          mut hz = vz * duty * period * (0.5 - sLand);
+          imm hl = (hx * hx + hz * hz).sqrt();
+          imm hmax = maxExcursion * lg.slack;
+          if hl > hmax { hx = hx * hmax / hl; hz = hz * hmax / hl; }
+          lx = lx + hx;
+          lz = lz + hz;
+        }
+        st.land = new Vec3(lx, ground(lx, lz), lz);
+        // The foot's place along the swing
+        imm uu = clampf((st.u - st.u0) / (1. - st.u0), 0., 1.);
+        imm e = uu * uu * (3. - 2. * uu);
+        imm px = st.lift.x + (st.land.x - st.lift.x) * e;
+        imm pz = st.lift.z + (st.land.z - st.lift.z) * e;
+        imm base = st.lift.y + (st.land.y - st.lift.y) * e;
+        imm arch = stepHeight * lg.reach * sin(pi * uu);
+        imm gnd = ground(px, pz);
+        st.foot = new Vec3(px, fmaxf3(base + arch, gnd + 0.004), pz);
+        // Folded in swing, a forward-pointing foot toe up, a hanging one back
+        imm sign = if lg.footForward > 0.3 { 1.; } else { -1.; };
+        st.pitch = sign * swingFlex * sin(pi * uu);
+      } else {
+        st.foot = st.anchor;
+        // The end of stance: a forward-pointing foot rolls onto its toe
+        imm sp = if st.phase < duty { st.phase / duty; } else { 1.; };
+        st.pitch = if lg.footForward > 0.3 { -pushOff * smoothstep(0.7, 1.0, sp); } else { 0.; };
+      }
+      states.set(i, st);
+      i = i + 1usize;
+    }
+
+    // ---- 5. the body follows the feet
+    mut cxs f32 = 0.;
+    mut czs f32 = 0.;
+    mut gsum f32 = 0.;
+    i = 0usize;
+    // The feet in the body's own axes: across (right), and back
+    mut lxs = List[f32].empty();
+    mut lzs = List[f32].empty();
+    mut gs = List[f32].empty();
+    imm cen = new Vec2(x + legs.centre.x * cs + legs.centre.z * sn, z - legs.centre.x * sn + legs.centre.z * cs);
+    while i < n {
+      imm f = states[i].foot;
+      imm dx = f.x - cen.x;
+      imm dz = f.y * 0. + (f.z - cen.y);
+      lxs.push(dx * cs - dz * sn);
+      lzs.push(dx * sn + dz * cs);
+      imm gh = if states[i].swinging { ground(f.x, f.z); } else { states[i].anchor.y; };
+      gs.push(gh);
+      cxs = cxs + *lxs[i]; czs = czs + *lzs[i]; gsum = gsum + gh;
+      i = i + 1usize;
+    }
+    imm meanG = gsum / f32.from(n);
+    imm mx = cxs / f32.from(n);
+    imm mz = czs / f32.from(n);
+    mut sxx f32 = 0.; mut sxg f32 = 0.; mut szz f32 = 0.; mut szg f32 = 0.;
+    i = 0usize;
+    while i < n {
+      imm ex = *lxs[i] - mx;
+      imm ez = *lzs[i] - mz;
+      imm eg = *gs[i] - meanG;
+      sxx = sxx + ex * ex; sxg = sxg + ex * eg;
+      szz = szz + ez * ez; szg = szg + ez * eg;
+      i = i + 1usize;
+    }
+    imm slopeAcross = if sxx > 0.0001 { sxg / sxx; } else { 0.; };
+    imm slopeBack = if szz > 0.0001 { szg / szz; } else { 0.; };
+    imm pitchT = clampf(atan(-slopeBack) * pitchGain, -maxTilt, maxTilt);
+    imm rollT = clampf(atan(slopeAcross) * rollGain, -maxTilt, maxTilt);
+    if !started {
+      bodyY = meanG; pitch = pitchT; roll = rollT;
+    } else {
+      mut r1 = damp(bodyY, bodyYVel, meanG, bodyOmega, dt);
+      bodyY = r1.x; bodyYVel = r1.y;
+      r1 = damp(pitch, pitchVel, pitchT, bodyOmega, dt);
+      pitch = r1.x; pitchVel = r1.y;
+      r1 = damp(roll, rollVel, rollT, bodyOmega, dt);
+      roll = r1.x; rollVel = r1.y;
+    }
+    started = true;
+    world = new Transform3(new Vec3(x, bodyY, z), Quat.angleAxis(yaw, new Vec3(0., 1., 0.)), new Vec3(1., 1., 1.));
+
+    // ---- 6 and 7. the pose; the body is built again if a leg runs out of reach
+    self.buildPose(rig, ground, true);
+    // The legs' needs: if any stance leg is stretched past 0.97 of its reach, lower the body by the worst excess
+    imm excess = self.worstExcess(rig, ground);
+    if excess > 0. {
+      drop = drop + excess;
+      self.buildPose(rig, ground, true);
+    } else if drop > 0. {
+      // Let it rise again, slowly, as far as the legs now allow
+      drop = fmaxf3(drop - 0.5 * dt, 0.);
+      imm again = self.worstExcess(rig, ground);
+      if again > 0. { drop = drop + again; }
+      self.buildPose(rig, ground, true);
+    }
+    self.buildPose(rig, ground, false);
+  }
+
+  // The rig's pose with the body placed and moved; with 'bodyOnly', the legs are left at rest
+  fn buildPose(self &mut, rig &Rig, ground &<fn(x f32, z f32) f32, bodyOnly bool) {
+    imm skel = &rig.skeleton;
+    pose = skel.restPose();
+    imm root = rig.chains[0usize].first();
+    imm restRoot = rig.restPosition(root);
+    imm q = Quat.angleAxis(pitch, new Vec3(1., 0., 0.)) * Quat.angleAxis(roll, new Vec3(0., 0., 1.));
+    imm pivot = legs.centre;
+    // The bounce is the reference leg's phase, twice and once
+    imm pRef = frac(cycle - states[refLeg].offset);
+    imm meanReach = legs.hipHeight;
+    imm bobY = meanReach * (bounce1 * cos(2. * pi * (pRef + set.bounce1Phase)) + bounce2 * cos(2. * pi * (2. * pRef + set.bounce2Phase)));
+    imm pos = pivot + q * (restRoot - pivot) + new Vec3(0., bobY - drop, 0.);
+    pose.locals.set(root, new Transform3(pos, q, new Vec3(1., 1., 1.)));
+    // Chain motions
+    mut m = 0usize;
+    while m < set.motions.len() {
+      imm mo = set.motions[m];
+      imm amp = *amps[m];
+      if absf(amp) > 0.00001 and mo.kind != KIND_LEG {
+        imm axis = if mo.axis == AXIS_PITCH { new Vec3(1., 0., 0.); } elif mo.axis == AXIS_YAW { new Vec3(0., 1., 0.); } else { new Vec3(0., 0., 1.); };
+        mut c = 0usize;
+        while c < rig.chains.len() {
+          if rig.chains[c].kind == mo.kind {
+            imm skip = if rig.chains[c].parentChain < 0i32 { 1usize; } else { 0usize; };
+            imm count = rig.chains[c].bones.len() - skip;
+            if rig.chains[c].bones.len() > skip {
+              mut total f32 = 0.;
+              mut j = 0usize;
+              while j < count { total = total + 1. + mo.taper * f32.from(j); j = j + 1usize; }
+              j = 0usize;
+              while j < count {
+                imm w = (1. + mo.taper * f32.from(j)) / total;
+                imm ang = amp * w * sin(2. * pi * (mo.harmonic * pRef + mo.phase - mo.lag * f32.from(j)));
+                imm bone = *rig.chains[c].bones[j + skip];
+                pose.setRotation(bone, Quat.angleAxis(ang, axis) * pose.rotation(bone));
+                j = j + 1usize;
+              }
+            }
+          }
+          c = c + 1usize;
+        }
+      }
+      m = m + 1usize;
+    }
+    skel.modelTransforms(&pose, &mut models);
+    if bodyOnly { return; }
+    // The legs
+    imm inv = world.inverse();
+    imm up = new Vec3(0., 1., 0.);
+    imm rootRot = q;
+    plantErrorMax = 0.;
+    missMax = 0.;
+    reachedAll = true;
+    mut i = 0usize;
+    while i < legs.count() {
+      imm lg = legs.legs[i];
+      mut st = *states[i];
+      // The sole, in the model's frame; the ground's normal there
+      imm sole = inv.transformPoint(st.foot);
+      imm s = 0.08;
+      imm dgdx = (ground(st.foot.x + s, st.foot.z) - ground(st.foot.x - s, st.foot.z)) / (2. * s);
+      imm dgdz = (ground(st.foot.x, st.foot.z + s) - ground(st.foot.x, st.foot.z - s)) / (2. * s);
+      mut normal = new Vec3(-dgdx, 1., -dgdz).normalize();
+      if acos(clampf(normal.y, -1., 1.)) > 0.6 {
+        imm horiz = new Vec3(normal.x, 0., normal.z).normalize();
+        normal = (horiz * sin(0.6) + new Vec3(0., cos(0.6), 0.)).normalize();
+      }
+      imm normalM = inv.rotation * normal;
+      // A foot well above the ground is tilted less
+      imm clearance = st.foot.y - ground(st.foot.x, st.foot.z);
+      imm tiltW = 1. - smoothstep(0.02, 0.15, clearance);
+      imm tilt = Quat.identity().slerp(Quat.fromVectors(up, normalM), tiltW);
+      imm footRot = tilt * Quat.angleAxis(st.pitch, new Vec3(1., 0., 0.));
+      mut ankle = sole - footRot * lg.footVec;
+      // A foot in the air that the leg cannot reach is brought in along the line to the hip (a foot on the ground is
+      // not: it is held, and the body is lowered to it instead)
+      if st.swinging {
+        imm hipNow = (*models[lg.hip]).translation;
+        imm toAnkle = ankle - hipNow;
+        imm len = toAnkle.length();
+        if len > 0.985 * lg.reach { ankle = hipNow + toAnkle * (0.985 * lg.reach / len); }
+      }
+      imm pole = rootRot * lg.pole;
+      imm sol = aimLimbRange(skel, &mut pose, &mut models, lg.hip, ankle, pole, minInterior, maxInterior);
+      if lg.hasFoot() {
+        skel.setModelRotation(&mut pose, &models, lg.ankle, footRot);
+        skel.recompose(&pose, &mut models, lg.ankle);
+      }
+      st.reached = sol.reached;
+      if !sol.reached { reachedAll = false; }
+      imm fk = world.transformPoint((*models[lg.tip]).translation);
+      st.miss = fk.distance(st.foot);
+      if st.miss > missMax { missMax = st.miss; }
+      if !st.swinging {
+        st.plantError = fk.distance(st.anchor);
+        if st.plantError > plantErrorMax { plantErrorMax = st.plantError; }
+      } else {
+        st.plantError = 0.;
+      }
+      states.set(i, st);
+      i = i + 1usize;
+    }
+  }
+
+  // How far the worst stance leg is stretched past 0.97 of its reach (0 if none is): hip to ankle target
+  fn worstExcess(self &, rig &Rig, ground &<fn(x f32, z f32) f32) f32 {
+    imm inv = world.inverse();
+    mut worst f32 = 0.;
+    mut i = 0usize;
+    while i < legs.count() {
+      imm lg = legs.legs[i];
+      imm st = states[i];
+      if !st.swinging {
+        imm sole = inv.transformPoint(st.foot);
+        imm hip = (*models[lg.hip]).translation;
+        // The ankle is the sole less the foot's vector, the foot flat: the vector as at rest, close enough for a reach test
+        imm ankle = sole - lg.footVec;
+        imm d = ankle.distance(hip);
+        imm ex = d - 0.97 * lg.reach;
+        if ex > worst { worst = ex; }
+      }
+      i = i + 1usize;
+    }
+    worst;
+  }
+}
+
+fn fmaxf3(a f32, b f32) f32 { if a > b { return a; } b; }
+
+fn atan(x f32) f32 { atan2(x, 1.); }
+
+// A critically damped spring's step: the value and velocity after 'dt' seconds going to 'target' with natural
+// frequency 'omega' (Unity's SmoothDamp, from Game Programming Gems 4 chapter 1.10): returned as (value, velocity)
+fn damp(cur f32, vel f32, target f32, omega f32, dt f32) Vec2 {
+  imm x = omega * dt;
+  imm e = 1. / (1. + x + 0.48 * x * x + 0.235 * x * x * x);
+  imm change = cur - target;
+  imm temp = (vel + omega * change) * dt;
+  new Vec2(target + (change + temp) * e, (vel - omega * temp) * e);
+}
