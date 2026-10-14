@@ -1,0 +1,183 @@
+// The small-grid fire and smoke, simulated on a real GPU with no window and read back.
+//
+// A 24 x 48 x 24 box of 0.1 m cells with a fire at the middle of its floor, stepped 160 times at
+// 60 Hz, then the gas and velocity read back and checked on the CPU:
+// 1. The fire made gas: some density, a positive total, none of it negative, and every number finite.
+// 2. The plume rises: the mean height of the gas (weighted by density) is higher at step 160 than at step 60.
+// 3. The flame is under the smoke: the hot cells (over half the injected heat) sit lower, on average,
+//    than the cells with a lot of gas.
+// 4. The velocity is sane: nothing faster than 15 m/s, and the gas mostly rises (mean upward speed positive
+//    over the gas).
+// 5. The projection works: the divergence of the velocity (central differences over the interior, as the
+//    solver computes it) is small beside the velocity itself: the mean |div| times a cell, over the mean
+//    speed, under 0.6 (a Jacobi solve of 24 iterations is not exact).
+// 6. Mass is bounded, not conserved (fuel is injected, the gas thins and leaves by the open top): the total
+//    density at step 160 is under what the source could have injected in that time.
+// 7. The fire's parameters bake into the behaviour: with the buoyancy 0 the plume rises less.
+// 8. No Vulkan call failed and the validation layer said nothing.
+
+mod fluid;
+
+import testing use *;
+import stdio use *;
+import libc;
+import geomath use *;
+import collections use *;
+import gpu use *;
+import effectsfx use *;
+
+const NX = 24u32;
+const NY = 48u32;
+const NZ = 24u32;
+
+struct Fields {
+  total f32;
+  meanHeight f32;
+  hotHeight f32;
+  bad u32;                // non-finite numbers
+  negative u32;
+  maxSpeed f32;
+  meanUp f32;
+  divRatio f32;
+}
+
+fn isFinite(x f32) bool { x == x and x < 1.0e18 and x > -1.0e18; }
+
+fn measure(device &mut Device, fluid &mut FluidSmoke) Fields {
+  imm n = u64.from(NX) * u64.from(NY) * u64.from(NZ);
+  mut gasBack = device.createBuffer(n * 8u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  mut velBack = device.createBuffer(n * 16u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  mut encoder = device.createCommandEncoder();
+  // The current copy is the one the last step's advection wrote: 'parity' names it
+  if fluid.parity == 0u32 {
+    encoder.copyBufferToBuffer(&fluid.gas0, 0u64, &gasBack, 0u64, n * 8u64);
+    encoder.copyBufferToBuffer(&fluid.vel0, 0u64, &velBack, 0u64, n * 16u64);
+  } else {
+    encoder.copyBufferToBuffer(&fluid.gas1, 0u64, &gasBack, 0u64, n * 8u64);
+    encoder.copyBufferToBuffer(&fluid.vel1, 0u64, &velBack, 0u64, n * 16u64);
+  }
+  device.queue.submit(encoder.finish());
+  device.endFrame();
+  device.waitIdle();
+  imm gas = gasBack.mappedRange() as *f32;
+  imm vel = velBack.mappedRange() as *f32;
+  mut f = new Fields(0., 0., 0., 0u32, 0u32, 0., 0., 0.);
+  mut massHeight = 0.;
+  mut hotMass = 0.;
+  mut hotHeight = 0.;
+  mut upSum = 0.;
+  mut upCount = 0.;
+  mut speedSum = 0.;
+  mut speedCount = 0.;
+  mut divSum = 0.;
+  mut divCount = 0.;
+  mut z = 0u32;
+  while z < NZ {
+    mut y = 0u32;
+    while y < NY {
+      mut x = 0u32;
+      while x < NX {
+        imm i = usize.from((z * NY + y) * NX + x);
+        imm d = *(gas + i * 2usize);
+        imm t = *(gas + i * 2usize + 1usize);
+        imm vx = *(vel + i * 4usize);
+        imm vy = *(vel + i * 4usize + 1usize);
+        imm vz = *(vel + i * 4usize + 2usize);
+        if !isFinite(d) or !isFinite(t) or !isFinite(vx) or !isFinite(vy) or !isFinite(vz) { f.bad = f.bad + 1u32; }
+        else {
+          if d < -0.0001 { f.negative = f.negative + 1u32; }
+          imm h = (f32.from(y) + 0.5) * 0.1;
+          f.total = f.total + d;
+          massHeight = massHeight + d * h;
+          if t > 0.85 { hotMass = hotMass + 1.; hotHeight = hotHeight + h; }
+          imm speed = (vx * vx + vy * vy + vz * vz).sqrt();
+          if speed > f.maxSpeed { f.maxSpeed = speed; }
+          if d > 0.05 { upSum = upSum + vy; upCount = upCount + 1.; }
+          // The divergence in the interior, as the solver takes it
+          if x > 0u32 and x + 1u32 < NX and y > 0u32 and y + 1u32 < NY and z > 0u32 and z + 1u32 < NZ {
+            imm ixp = usize.from((z * NY + y) * NX + x + 1u32);
+            imm ixm = usize.from((z * NY + y) * NX + x - 1u32);
+            imm iyp = usize.from((z * NY + y + 1u32) * NX + x);
+            imm iym = usize.from((z * NY + y - 1u32) * NX + x);
+            imm izp = usize.from(((z + 1u32) * NY + y) * NX + x);
+            imm izm = usize.from(((z - 1u32) * NY + y) * NX + x);
+            imm div = (*(vel + ixp * 4usize) - *(vel + ixm * 4usize) + *(vel + iyp * 4usize + 1usize) - *(vel + iym * 4usize + 1usize)
+              + *(vel + izp * 4usize + 2usize) - *(vel + izm * 4usize + 2usize)) / 0.2;
+            divSum = divSum + libc.fabsf(div);
+            divCount = divCount + 1.;
+            speedSum = speedSum + speed;
+            speedCount = speedCount + 1.;
+          }
+        }
+        x = x + 1u32;
+      }
+      y = y + 1u32;
+    }
+    z = z + 1u32;
+  }
+  f.meanHeight = if f.total > 0. { massHeight / f.total; } else { 0.; };
+  f.hotHeight = if hotMass > 0. { hotHeight / hotMass; } else { 0.; };
+  f.meanUp = if upCount > 0. { upSum / upCount; } else { 0.; };
+  f.divRatio = if speedSum > 0. { (divSum / divCount) * 0.1 / (speedSum / speedCount); } else { 0.; };
+  f;
+}
+
+fn run(device &mut Device, buoyancy f32, early &mut Fields) Fields {
+  mut desc = FluidDesc.make(new Vec3(0., 0., 0.), new Vec3(1.2, 0.35, 1.2));
+  desc.nx = NX;
+  desc.ny = NY;
+  desc.nz = NZ;
+  desc.cell = 0.1;
+  desc.sourceRadius = 0.3;
+  desc.buoyancy = buoyancy;
+  mut fluid = FluidSmoke.create(device, TEXTURE_FORMAT_RGBA16_FLOAT, &desc);
+  require(fluid.isValid(), "a fluid");
+  mut s = 0u32;
+  while s < 160u32 {
+    mut encoder = device.createCommandEncoder();
+    fluid.step(device, &mut encoder, 0.016666668);
+    device.queue.submit(encoder.finish());
+    device.endFrame();
+    device.waitIdle();
+    s = s + 1u32;
+    if s == 60u32 { *early = measure(device, &mut fluid); }
+  }
+  measure(device, &mut fluid);
+}
+
+fn main() i32 {
+  mut instance = Instance.create("effectsfx fluid");
+  require(instance.isValid(), "a Vulkan 1.3 instance");
+  mut none = Surface.none();
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  if (env as usize) != 0usize {
+    if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  mut adapter = instance.requestAdapter(&none, preference);
+  require(adapter.isValid(), "an adapter");
+  mut device = adapter.requestDevice();
+  require(device.isValid(), "a device");
+
+  mut early = new Fields(0., 0., 0., 0u32, 0u32, 0., 0., 0.);
+  imm late = run(&mut device, 4.2, &mut early);
+  expect(late.total > 1., "the fire made gas");
+  expectUInt(u64.from(late.bad), 0u64, "every number finite");
+  expectUInt(u64.from(late.negative), 0u64, "no density below zero");
+  expect(late.meanHeight > early.meanHeight, "the plume rises: the gas's mean height is higher at 160 steps than at 60");
+  expect(late.hotHeight > 0. and late.hotHeight < late.meanHeight, "the flame is under the smoke");
+  expect(late.maxSpeed < 15., "no speed over 15 m/s");
+  expect(late.meanUp > 0.1, "the gas mostly rises");
+  expect(late.divRatio < 0.6, "the projection: the divergence is small beside the speed");
+  // At 15 fuel units a second at the centre, over the source's soft ball (about 45 cells' worth of weight at 3 cells'
+  // radius), flickering by up to a quarter, for 160 steps (2.67 s), the source cannot have put in more than 2,300
+  expect(late.total < 2300., "the total density is under what the source could have injected");
+
+  mut earlyBare = new Fields(0., 0., 0., 0u32, 0u32, 0., 0., 0.);
+  imm bare = run(&mut device, 0., &mut earlyBare);
+  expect(bare.meanHeight < late.meanHeight, "with no buoyancy the plume rises less");
+
+  expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
+  expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
+  done();
+}

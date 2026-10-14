@@ -1,0 +1,54 @@
+// ======== Deflating a whole input at once ========
+//
+// The one-shot helpers: the data in memory, the stream out. Each runs a
+// Deflater to the end of its input; and if the compressed form comes out
+// bigger than storing the data would be, they store it instead (the
+// streaming Deflater cannot, see compress.cone).
+
+// Compress to a raw DEFLATE stream at 'level' (0 stored, 1 fixed Huffman,
+// 2 dynamic Huffman; other values are 2)
+pub fn rawDeflate(data &Array[u8], level i32) List[u8] {
+  mut d = Deflater.make(Format.Raw, level);
+  d.feed(data);
+  d.finish();
+  mut out = List[u8].empty();
+  d.pull(&mut out, 18446744073709551615usize);
+  // Data that does not compress is stored, as zlib does
+  if level != 0 and out.len() > data.len + 5usize * (data.len / 65535usize + 1usize) {
+    return rawDeflate(data, 0);
+  }
+  out;
+}
+
+// Compress to a zlib stream (header, DEFLATE, Adler-32), 32 KiB window,
+// header 78 01 for stored, 78 9C otherwise
+pub fn zlibCompress(data &Array[u8], level i32) List[u8] {
+  mut out = List[u8].empty();
+  writeZlibHeader(&mut out, level);
+  imm body = rawDeflate(data, level);
+  mut i = 0usize;
+  out.reserve(body.len() + 4usize);
+  while i < body.len() { out.push(*body[i]); i += 1usize; }
+  writeZlibTrailer(&mut out, adler32(data));
+  out;
+}
+
+// Compress to one gzip member (header, DEFLATE, CRC-32, size) with a plain
+// header: no time, no name, system 255 (unknown)
+pub fn gzipCompress(data &Array[u8], level i32) List[u8] {
+  mut h = GzipHeader.plain();
+  h.xfl = xflOf(if level == 0 {0;} elif level == 1 {1;} else {2;});
+  gzipCompressWith(data, level, &h);
+}
+
+// Compress to one gzip member with the header 'h' (see GzipHeader)
+pub fn gzipCompressWith(data &Array[u8], level i32, h &GzipHeader) List[u8] {
+  mut out = List[u8].empty();
+  writeGzipHeader(&mut out, h);
+  imm body = rawDeflate(data, level);
+  mut i = 0usize;
+  out.reserve(body.len() + 8usize);
+  while i < body.len() { out.push(*body[i]); i += 1usize; }
+  writeGzipTrailer(&mut out, crc32(data), u64.from(data.len));
+  out;
+}
