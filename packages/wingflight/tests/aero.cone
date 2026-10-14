@@ -1,0 +1,64 @@
+// Lift and drag over every angle of attack, and the force on a section.
+//
+// By hand, for aspect ratio 8, CD0 0.02, e 0.85, stall at 0.26 rad: lift slope 2 pi / (1 + 2/8) = 5.02655 per radian;
+// CL(0.1) = 0.502655; CD(0.1) = 0.02 + 0.502655^2 / (pi x 0.85 x 8) = 0.02 + 0.252662 / 21.3628 = 0.031828. CDmax =
+// 1.11 + 0.018 x 8 = 1.254. A section of 0.3 m^2 at 10 m/s forward and incidence 0.1: q S = 0.5 x 1.225 x 100 x 0.3 =
+// 18.375 N, lift 9.2366 N (along the normal), drag 0.5848 N (backward: forward force -0.5848).
+
+mod aero;
+
+import testing use *;
+import geomath use *;
+import wingflight use *;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+fn main() i32 {
+  imm a = Aero.make(8., 0.02, 0.85, 0.26);
+  near(a.slope(), 5.02655, 0.0001, "the lift slope");
+  near(a.cdMax(), 1.254, 0.0001, "the flat plate's drag");
+  imm c = coefficients(&a, 0.1);
+  near(c.cl, 0.502655, 0.0001, "CL at 0.1 rad");
+  near(c.cd, 0.031828, 0.0001, "CD at 0.1 rad");
+  imm n = coefficients(&a, -0.1);
+  near(n.cl, -0.502655, 0.0001, "CL is odd");
+  near(n.cd, 0.031828, 0.0001, "CD is even");
+  // Continuous at the stall
+  imm below = coefficients(&a, 0.2599);
+  imm above = coefficients(&a, 0.2601);
+  near(below.cl, above.cl, 0.002, "CL is continuous across the stall");
+  near(below.cd, above.cd, 0.002, "CD is continuous across the stall");
+  near(a.clStall(), 5.02655 * 0.26, 0.0001, "CL at the stall");
+  // The flat plate at 90 degrees
+  imm p = coefficients(&a, pi * 0.5);
+  near(p.cl, 0., 0.001, "CL is 0 at 90 degrees");
+  near(p.cd, 1.254, 0.001, "CD is the plate's at 90 degrees");
+  // Past the stall the lift falls, the drag climbs
+  imm s45 = coefficients(&a, pi * 0.25);
+  expectBool(s45.cl > 0.5 and s45.cl < 1.4, true, "CL at 45 degrees is between 0.5 and 1.4 (the plate's, near 0.6)");
+  expectBool(s45.cd > 0.5, true, "CD at 45 degrees is above 0.5");
+  // Flow from behind: the supplement
+  imm back = coefficients(&a, pi - 0.7);
+  imm front = coefficients(&a, 0.7);
+  near(back.cl, -front.cl, 0.0001, "an angle past 90 degrees is its supplement, lift reversed");
+  near(back.cd, front.cd, 0.0001, "and the same drag");
+  // The force on a section
+  imm f = sectionForce(&a, 0.3, 10., 0., 0.1);
+  near(f.lift, 9.2366, 0.01, "lift 9.2366 N");
+  near(f.drag, 0.5848, 0.005, "drag 0.5848 N");
+  near(f.normal, 9.2366, 0.01, "all the lift is along the normal");
+  near(f.forward, -0.5848, 0.005, "and the drag is backward");
+  // The same section moving up at 5 m/s as well (a downstroke seen from the wing: it moves down): vn = -5, so the air
+  // comes from below; the angle of attack grows by atan(5/10) = 0.4636 rad, and the lift tilts forward
+  imm g = sectionForce(&a, 0.3, 10., -5., 0.0);
+  near(g.alpha, 0.4636, 0.001, "moving down at 5 m/s while 10 m/s forward: the angle of attack is 0.4636 rad");
+  expectBool(g.forward > 0.5, true, "a downstroke thrusts forward (a positive forward force)");
+  imm up = sectionForce(&a, 0.3, 10., 5., 0.0);
+  near(up.alpha, -0.4636, 0.001, "moving up: the angle is negative");
+  expectBool(up.normal < 0., true, "an upstroke at zero incidence pushes down");
+  imm still = sectionForce(&a, 0.3, 0., 0., 0.1);
+  near(still.lift, 0., 0.0001, "no motion, no force");
+  done();
+}
