@@ -1,0 +1,121 @@
+// The generated rails, ties and supports (src/railmesh.cone), and the levelling of the frame (src/track.cone).
+//
+// MESH (a straight 40 m track along +x at y = 6 m, ground 0)
+// 1. The rails have two tubes of rings every 0.4 m (101 rings of 8 points): 2 * 101 * 8 vertices, and
+//    2 * 100 * 8 * 2 triangles.
+// 2. Every rail vertex normal is unit and points away from the rail's axis: normal . (vertex - axis point) is the
+//    rail radius (0.06) to 2 percent.
+// 3. The ties are one box (12 triangles) every 0.9 m: 44 of them from 0.45 m on; each is a whole box.
+// 4. Supports are columns every 8 m (5 of them, 12 triangles each), standing on the ground (their lowest y is 0)
+//    and reaching up to just under the track (their highest is below the ties).
+// 5. A closed level ring: the rail mesh has the same count of rings and no stretched triangle (its longest
+//    edge is under 1 m).
+// 6. The rails' triangles wind outward: the geometric normal of every triangle (from its corners) agrees
+//    with the smooth normal at its first corner (dot over 0).
+// LEVELLING
+// 7. A vertical circle that drifts 3 m sideways and runs out into a straight: at the end the up vector is
+//    vertical (y over 0.9999), so "roll 0" means level however much the path has twisted the neutral frame,
+//    and at the loop's top, inverted (y under -0.99).
+// 8. At 20 m/s on that straight the rider feels no lateral g (under 0.001).
+
+mod railmeshtest;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import mesh use Mesh;
+import libc;
+import splinetrack use *;
+
+fn pt(x f32, y f32, z f32, roll f32) TrackPoint { new TrackPoint(new Vec3(x, y, z), roll); }
+fn z0() Vec3 { new Vec3(0., 0., 0.); }
+
+fn main() i32 {
+  mut sp = List[TrackPoint].empty();
+  sp.push(pt(0., 6., 0., 0.)); sp.push(pt(20., 6., 0., 0.)); sp.push(pt(40., 6., 0., 0.));
+  imm line = Track.build(sp, false, z0(), z0());
+  imm spec = RailSpec.coaster(0.);
+  imm meshes = railMesh(&line, &spec);
+  expectInt(i64.from(meshes.rails.vertexCount()), 2i64 * 101i64 * 8i64, "two tubes of 101 rings of 8 points");
+  expectInt(i64.from(meshes.rails.triangleCount()), 2i64 * 100i64 * 8i64 * 2i64, "and two triangles to each quad");
+  mut worst = 0.;
+  mut unit = 0.;
+  mut i = 0usize;
+  while i < meshes.rails.vertexCount() {
+    imm v = *meshes.rails.positions[i];
+    imm n = *meshes.rails.normals[i];
+    // the axis point: the same x, at the rail's z (+-0.5) and y = 6 - 0.02
+    imm axis = new Vec3(v.x, 5.98, if v.z > 0. { 0.5; } else { -0.5; });
+    imm d = n.dot(v - axis);
+    imm e = libc.fabsf(d - 0.06) / 0.06;
+    if e > worst { worst = e; }
+    imm u = libc.fabsf(n.length() - 1.);
+    if u > unit { unit = u; }
+    i = i + 1usize;
+  }
+  expectFloat(f64.from(worst), 0d, 0.02, "a rail's normals point away from its axis");
+  expectFloat(f64.from(unit), 0d, 0.001, "and are unit");
+  expectInt(i64.from(meshes.ties.triangleCount()), 44i64 * 12i64, "a tie every 0.9 m, a whole box each");
+  expectInt(i64.from(meshes.supports.triangleCount()), 5i64 * 12i64, "a support every 8 m");
+  imm sb = meshes.supports.bounds();
+  expectFloat(f64.from(sb.min.y), 0d, 0.001, "the columns stand on the ground");
+  expect(sb.max.y < 6. - 0.16 and sb.max.y > 5.3, "and reach up to just under the ties");
+  // the winding: geometric normal against the smooth normal at the first corner
+  mut wrongWind = 0;
+  mut t = 0usize;
+  while t < meshes.rails.triangleCount() {
+    imm gn = meshes.rails.triangleNormal(t);
+    imm i0 = usize.from(*meshes.rails.indices[3usize * t]);
+    if gn.dot(*meshes.rails.normals[i0]) < 0. { wrongWind = wrongWind + 1; }
+    t = t + 1usize;
+  }
+  expectInt(i64.from(wrongWind), 0i64, "every rail triangle winds outward");
+  // a closed level ring
+  mut rp = List[TrackPoint].empty();
+  mut k = 0;
+  while k < 24 {
+    imm a = 6.28318530718 * f32.from(k) / 24.;
+    rp.push(pt(15. * libc.cosf(a), 3., 15. * libc.sinf(a), 0.));
+    k = k + 1;
+  }
+  imm ringTrack = Track.build(rp, true, z0(), z0());
+  imm rm = railMesh(&ringTrack, &spec);
+  mut longest = 0.;
+  mut ti = 0usize;
+  while ti < rm.rails.triangleCount() {
+    imm a = *rm.rails.positions[usize.from(*rm.rails.indices[3usize * ti])];
+    imm b = *rm.rails.positions[usize.from(*rm.rails.indices[3usize * ti + 1usize])];
+    if (a - b).length() > longest { longest = (a - b).length(); }
+    ti = ti + 1usize;
+  }
+  expect(longest < 1.0, "no stretched triangle on a closed ring");
+
+  // levelling: a vertical circle drifting 3 m sideways, then a straight run
+  mut lp = List[TrackPoint].empty();
+  imm r = 10.;
+  mut j = 0;
+  while j <= 16 {
+    imm a = 6.28318530718 * f32.from(j) / 16.;
+    lp.push(pt(r * libc.sinf(a), r - r * libc.cosf(a), 3. * f32.from(j) / 16., 0.));
+    j = j + 1;
+  }
+  lp.push(pt(30., 0., 3., 0.)); lp.push(pt(60., 0., 3., 0.)); lp.push(pt(90., 0., 3., 0.));
+  imm lv = Track.build(lp, false, z0(), z0());
+  imm endUp = lv.at(lv.length - 5.).up;
+  expectFloat(f64.from(endUp.y), 1d, 0.0001, "roll 0 means level after a drifting loop");
+  mut top = lv.at(0.);
+  mut s = 0.;
+  mut best = -100.;
+  while s < 70. {
+    imm q = lv.at(s);
+    if q.pos.y > best { best = q.pos.y; top = q; }
+    s = s + 0.2;
+  }
+  expect(top.up.y < -0.99, "and the loop's top stays inverted (the rider inside)");
+  mut tr = Train.uniform(new CarSpec(650., 2.4, 1.6, 0.4, 0., 0., 0.), 1usize, lv.length - 40.);
+  tr.v = 20.;
+  mut none = List[Zone].empty();
+  tr.step(&lv, &none, 0.1);
+  expectFloat(f64.from(tr.gforce(&lv, 0usize).lateral), 0d, 0.001, "no lateral g on the level straight");
+  done();
+}

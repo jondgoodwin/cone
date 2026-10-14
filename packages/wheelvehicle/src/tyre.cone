@@ -1,0 +1,80 @@
+// ======== The tyre: slip to force ========
+//
+// THE MODEL: the Magic Formula (Pacejka and Bakker, "The Magic Formula tyre model", Vehicle System
+// Dynamics 21, 1992), in its simplified "pure slip, friction circle" form, as racing and driving games use it
+// (Beckman's "The Physics of Racing"; Milliken and Milliken, "Race Car Vehicle Dynamics"):
+//
+//   f(x) = sin(C atan(B x))          the normalised force at normalised slip x (E, the curvature factor,
+//                                    is 0, so the peak is where B puts it)
+//   B    = tan(pi / (2 C))           so that f peaks (at 1) exactly at x = 1
+//
+// The two slips are the slip RATIO kappa = (w r - vx) / max(|vx|, vmin), the difference between the tyre's
+// surface speed and the ground's along the wheel, and the slip ANGLE alpha, atan(vy / max(|vx|, vmin)), the
+// angle between where the wheel points and where it goes. They are normalised by the slips at which the tyre
+// peaks (kappaPeak, tanAlphaPeak), and COMBINED as a vector of length
+//
+//   nu = sqrt((kappa / kappaPeak)^2 + (tan alpha / tanAlphaPeak)^2)
+//
+// so that the force has the magnitude mu Fz f(nu) in the direction of the slip: the tyre's grip is one
+// budget (the friction circle), spent between braking and cornering: a wheel that is braking hard has
+// nothing left to corner with. Past the peak the force falls toward mu Fz sin(C pi / 2): with C = 1.4 that is
+// 0.81 of the peak, a sliding tyre's grip (the drop from peak to slide is what makes a locked wheel stop
+// less well than a rolling one).
+//
+// LOAD: grip falls as the load rises (a tyre's grip is not proportional to its load): mu = mu0 (1 - s (Fz/Fz0
+// - 1)), s the load sensitivity, so weight transfer from the inside to the outside wheels costs grip.
+//
+// LOW SPEED: the slip's denominator is at least 'vmin', so below that speed the tyre is a damper (force
+// proportional to the sliding speed) rather than a spring that holds. A car stopped on a slope creeps (a
+// few millimetres a second) instead of holding fast, and the force can never blow up as the speed goes to
+// zero.
+//
+// FORCE DIRECTIONS: slip ratio positive (the wheel faster than the ground) pushes the car forward; the
+// lateral force opposes the sideways slip.
+
+pub struct TyreSpec {
+  pub mu f32;                // peak friction coefficient at the nominal load
+  pub nominalLoad f32;       // N: the load mu is given at
+  pub loadSensitivity f32;   // mu falls by this fraction per 100 percent of extra load
+  pub kappaPeak f32;         // the slip ratio at which the force peaks
+  pub alphaPeak f32;         // tan of the slip angle at which it peaks
+  pub shape f32;             // C: the sine's argument: 1.4 falls to 0.81 of the peak when sliding
+  pub lowSpeed f32;          // m/s: the slip's denominator floor
+  pub rolling f32;           // rolling resistance coefficient (force / load)
+
+  // A road tyre: mu 1.1 at 3,000 N, peak at 12 percent slip ratio and 8.5 degrees of slip angle (tan 0.15),
+  // 25 percent less grip per doubling of the load... as a fraction per 100 percent extra load: 0.2
+  pub fn road() TyreSpec { new TyreSpec(1.1, 3000., 0.2, 0.12, 0.15, 1.4, 3., 0.012); }
+  // A soft off-road tyre on loose ground: less grip, a wider peak
+  pub fn offroad() TyreSpec { new TyreSpec(0.9, 3500., 0.15, 0.18, 0.2, 1.3, 3., 0.025); }
+}
+
+// The force the tyre makes in the wheel's frame: forward and lateral (to the right), newtons
+pub struct TyreForce {
+  pub fx f32;
+  pub fy f32;
+  pub mu f32;            // the grip used (after load sensitivity and the surface)
+}
+
+// The normalised Magic Formula
+pub fn magic(x f32, shape f32) f32 {
+  imm b = libc.tanf(3.14159265 / (2. * shape));
+  imm ax = libc.fabsf(x);
+  imm f = libc.sinf(shape * libc.atanf(b * ax));
+  if x < 0. { -f; } else { f; };
+}
+
+// The tyre's force at load 'fz' (N), slip ratio 'kappa', slip angle tangent 'tanAlpha', and a surface grip
+// factor 'grip' (1: dry tarmac, 0.3: wet, 0.1: ice)
+pub fn tyreForce(t &TyreSpec, fz f32, kappa f32, tanAlpha f32, grip f32) TyreForce {
+  if fz <= 0. { return new TyreForce(0., 0., 0.); }
+  mut mu = t.mu * (1. - t.loadSensitivity * (fz / t.nominalLoad - 1.));
+  if mu < 0.3 * t.mu { mu = 0.3 * t.mu; }
+  mu = mu * grip;
+  imm sx = kappa / t.kappaPeak;
+  imm sy = tanAlpha / t.alphaPeak;
+  imm nu = (sx * sx + sy * sy).sqrt();
+  if nu < 0.000001 { return new TyreForce(0., 0., mu); }
+  imm mag = mu * fz * magic(nu, t.shape);
+  new TyreForce(mag * sx / nu, -mag * sy / nu, mu);
+}
