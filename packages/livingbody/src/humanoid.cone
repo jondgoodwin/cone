@@ -1,0 +1,129 @@
+// LivingHumanoid: the breath, the idle motion, the attention and the soft regions of a 19-bone figure, composed over a base
+// pose by animlayers, with a face rig for the gaze and the same breath.
+//
+// A frame, in the order a program calls it:
+//
+//   life.tick(dt, work, calm)           advance the clocks: exertion and breath, the weight shift and gestures, the
+//                                       attention, the face rig; the layers' poses are written
+//   life.compose(...)                   the base pose (a walk, a stand, a clip) with the layers on it, the planted feet
+//                                       put back, the head and neck turned to where the face rig says, the soft regions
+//                                       stepped; the final pose and its bones' model-space transforms, and the morph weights
+//
+// THE ORDER inside compose is the order of dependence: layers (breath, idle, posture) change the pose; the feet are
+// pinned AFTER them, because a layer that moved the pelvis moved the feet; the look-at is after the pins, because the
+// head's turn depends on the trunk's lean; the soft regions are last, because they follow the bones as they finally are.
+//
+// THE GAZE. Attention picks a direction (in the body's frame) to look in. The face rig's Gaze takes it as a point and
+// splits the shift between the eyes and the head the way people do (the head takes a share of a large shift, after the
+// eyes, and the eyes keep the target by compensating for its turn); what the body needs from it is where the head points.
+// That is turned into a point a short way along it, and the look-at (poseik's lookAt on the humanoid) shares the turn
+// among the spine, chest, neck and head. The mannequin of the demos has no eyes, so the eyes' share is computed and not
+// drawn. One breath: the face's nostrils and jaw read the body's fill.
+
+pub struct LivingHumanoid {
+  pub breathing Breathing;
+  pub idle IdleMotion;
+  pub attention Attention;
+  pub layers LayerStack;
+  pub iBreath usize;
+  pub iIdle usize;
+  pub iPosture usize;
+  pub breathBones BreathBones;
+  pub face FaceRig;
+  pub frame FaceFrame;
+  pub lookCfg LookConfig;
+  pub regions SoftRegions;
+  pub state BreathState;
+  pub interests List[Vec3];       // directions (unit, body frame) worth a look; the caller fills them
+  pub calm f32;
+  pub lookWeight f32;
+  pub headOrigin Vec3;            // the head joint at rest, model space: the face rig's frame is centred on it
+  pub height f32;
+  pub lookAtPoint Vec3;           // the point the head was turned to, model space, last compose
+  pub dt f32;
+
+  pub fn make(skel &Skeleton, height f32, params ExertionParams, seed u32, regions SoftRegions) LivingHumanoid {
+    mut layers = LayerStack.make(skel);
+    imm iBreath = layers.addAdditive("breath", BoneMask.all(skel.boneCount(), 1.));
+    imm iIdle = layers.addAdditive("idle", BoneMask.all(skel.boneCount(), 1.));
+    // a posture is the body's, and not the legs': the pelvis and all above it (the feet are pinned, so a bent pelvis bends the knees)
+    mut postureMask = BoneMask.all(skel.boneCount(), 1.);
+    postureMask.setSubtree(skel, THIGH_L, 0.);
+    postureMask.setSubtree(skel, THIGH_R, 0.);
+    imm iPosture = layers.addAdditive("posture", postureMask);
+    layers.setWeight(iPosture, 0.);
+    // a face with eyes and no mesh: the rig needs a spec of landmarks, the unit table, and targets (none)
+    mut spec = FaceSpec.empty();
+    imm sk = skel.restPose();
+    mut models = List[Transform3].empty();
+    skel.modelTransforms(&sk, &mut models);
+    imm eyeSock = skel.sockets[SOCKET_EYE];
+    imm headJoint = (*models[HEAD]).translation;
+    imm eyeLocal = eyeSock.offset.translation;
+    spec.add("eyeCenterL", eyeLocal + new Vec3(-0.5 * spec.scale, 0., 0.012));
+    spec.add("eyeCenterR", eyeLocal + new Vec3(0.5 * spec.scale, 0., 0.012));
+    imm units = standardUnits();
+    mut ut = List[i32].empty();
+    ut.resize(units.len(), -1i32);
+    imm noTargets = new FaceTargets(0usize, ut, List[String].empty(), List[u32].empty(), List[u32].empty(), List[Vec3].empty(),
+      List[Vec3].empty(), List[f32].empty());
+    mut ts = noTargets;
+    ts.start.push(0u32);
+    imm face = FaceRig.make(&spec, &units, &ts, seed + 5u32);
+    imm frame = face.newFrame();
+    new LivingHumanoid(Breathing.make(params, height, seed), IdleMotion.humanoid(height, seed), Attention.make(AttentionParams.standard(), seed),
+      layers, iBreath, iIdle, iPosture, humanoidBreathBones(), face, frame, LookConfig.standard(), regions,
+      new BreathState(0., 0., 1., 0.22, 0., 0., true, 0., 0., 0., 0., 0.), List[Vec3].empty(), 1., 1., headJoint, height,
+      new Vec3(0., 0., 0.), 0.);
+  }
+
+  // Advance the clocks 'dt' seconds. 'work' is how hard the body is working (0 at rest, 1 flat out); 'calm' is 1 standing and
+  // 0 walking. The layers' poses are written.
+  pub fn tick(self &mut, skel &Skeleton, tickDt f32, work f32, calmIn f32) {
+    dt = tickDt;
+    calm = calmIn;
+    state = breathing.update(dt, work);
+    // a gesture's sigh
+    imm sg = idle.takeBreathRequest();
+    if sg > 0.9 { breathing.sigh(); }
+    mut bp = zeroPose(skel.boneCount());
+    applyBreathPose(&state, &breathBones, &mut bp);
+    layers.setPose(iBreath, bp);
+    mut ip = zeroPose(skel.boneCount());
+    idle.update(dt, calm, &mut ip);
+    layers.setPose(iIdle, ip);
+    layers.update(dt);
+    // looking: mostly ahead when walking
+    attention.params.aheadChance = 0.45 + 0.5 * (1. - calm);
+    attention.update(dt, &interests);
+    lookWeight = 0.55 + 0.45 * calm;
+    // the face breathes the body's breath; a winded body's mouth opens
+    face.setBreath(state.fill, state.depth);
+    face.setUnit(AU_LIPS_PART, SIDE_BOTH, 0.55 * state.winded);
+    face.setUnit(AU_JAW_DROP, SIDE_BOTH, 0.25 * state.winded);
+  }
+
+  // The posture layer's pose (a delta) and its weight, faded over 'seconds'
+  pub fn setPosture(self &mut, p Pose) { layers.setPose(iPosture, p); }
+
+  pub fn fadePosture(self &mut, goal f32, seconds f32) { layers.fadeTo(iPosture, goal, seconds); }
+
+  // The base pose with everything on it. 'models' comes back current for 'out'; 'world' is the model's place in the world
+  // (for the soft regions' lag); 'pins' hold the planted feet. The morph weights are in regions.weights.
+  pub fn compose(self &mut, skel &Skeleton, base &Pose, world &Transform3, pins &List[LimbPin], out &mut Pose,
+      models &mut List[Transform3]) {
+    *out = layers.compose(base);
+    skel.modelTransforms(out, models);
+    applyPins(skel, out, models, pins);
+    // the gaze: the attention's direction as a point, in the head's frame as the face rig takes it
+    imm bodyRot = (*models[PELVIS]).rotation;
+    imm eye = skel.socketModel(models, SOCKET_EYE).translation;
+    imm want = eye + bodyRot * attention.direction() * attention.distance;
+    face.lookAt(bodyRot.conjugate() * (want - (*models[HEAD]).translation));
+    face.update(dt, &mut frame);
+    imm headDir = frame.head * new Vec3(0., 0., -1.);
+    lookAtPoint = eye + bodyRot * headDir * 2.;
+    lookAt(skel, out, models, lookAtPoint, lookWeight, &lookCfg);
+    regions.update(dt, world, models, &state);
+  }
+}

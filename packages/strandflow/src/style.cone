@@ -1,0 +1,263 @@
+// Strand styles, roots, and the styled curve a strand is grown along.
+
+// A small seeded random source (O'Neill's PCG hash over a counter), so that a head of hair is the same head of hair
+pub struct Rand {
+  pub counter u32;
+
+  pub fn make(seed u32) Rand { new Rand(pcg(seed + 1013904223u32)); }
+
+  pub fn next(self &mut) u32 {
+    counter = counter + 2654435769u32;
+    pcg(counter);
+  }
+
+  // [0, 1)
+  pub fn unit(self &mut) f32 { f32.from(self.next() >> 8u32) * 0.000000059604644775390625; }
+
+  // [-1, 1)
+  pub fn signed(self &mut) f32 { self.unit() * 2. - 1.; }
+}
+
+fn pcg(v u32) u32 {
+  imm state = v * 747796405u32 + 2891336453u32;
+  imm word = ((state >> ((state >> 28u32) + 4u32)) ^ state) * 277803737u32;
+  (word >> 22u32) ^ word;
+}
+
+// What a strand is made of and how it behaves. One style serves all the strands of a group.
+pub struct StrandStyle {
+  pub length f32;          // metres
+  pub lengthVar f32;       // the share each strand's length varies by (0.15: plus or minus 15 per cent)
+  pub segments u32;        // links in a strand
+  pub fall Vec3;           // the direction it turns towards as it grows, in the group's frame: down for hair, up for kelp
+  pub rootHold f32;        // the share of its length it keeps the root's direction for before it turns (0 to 1)
+  pub bendRate f32;        // how fast it then turns towards 'fall', per metre (3: most of the way in a third of a metre)
+  pub waveAmp f32;         // sideways waviness, metres
+  pub waveCycles f32;      // waves along its length
+  pub linearMass f32;      // kg a metre (a lock of hair is many hairs; a tentacle is wet flesh)
+  pub dragRadius f32;      // half the width the flow sees, metres
+  pub thickness f32;       // the radius it keeps from colliders, metres
+  pub stretch f32;         // a link's compliance (m/N)
+  pub bend f32;            // the curvature constraint's compliance at the root (m/N): small is stiff
+  pub bendTip f32;         // and at the tip, as a multiple of it
+  pub goal f32;            // the style spring at the root, per second squared (its square-root is a frequency in rad/s)
+  pub goalTip f32;         // and at the tip
+  pub damping f32;         // velocity damping, per second
+  pub dragCd f32;          // drag coefficient of a cylinder across the flow (about 1)
+  pub density f32;         // the strand's material density, kg/m3, for buoyancy (0: it feels the whole of gravity)
+  pub cardWidth f32;       // the card's width at the root, metres
+  pub cardTipWidth f32;    // and at the tip
+  pub tubeRadius f32;      // a tube's radius at the root
+  pub tubeTipRadius f32;   // and at the tip
+  pub substeps u32;        // solver substeps a step
+  pub hold f32;            // the share of its weight the strand's own stiffness carries (0: it hangs as heavy as it is; 0.75: a lock of
+                           // hair that keeps its style against most of its weight). The styled shape is the strand's shape at rest, so a
+                           // spring weaker than gravity would sag it away from the style; this is the cuticle and the curl.
+
+  // Long hair on a head: 24 cm to a hand's length, falling, a lock a card 1.4 cm wide
+  pub fn hair() StrandStyle {
+    new StrandStyle(0.26, 0.18, 8u32, new Vec3(0., -1., 0.), 0.12, 5., 0.004, 1.6, 0.0012, 0.004, 0.0065, 1.0e-6, 1.0e-4, 5., 160., 40., 3.5,
+      1.0, 1300., 0.016, 0.006, 0.006, 0.0015, 6u32, 0.75);
+  }
+
+  // A mane: stiffer and longer, standing up from the crest before it falls to one side
+  pub fn mane() StrandStyle {
+    new StrandStyle(0.34, 0.2, 8u32, new Vec3(0., -1., 0.), 0.22, 3.5, 0.01, 1.2, 0.0022, 0.006, 0.0085, 1.0e-6, 8.0e-5, 4., 120., 30., 2.8,
+      1.0, 1300., 0.026, 0.009, 0.01, 0.002, 6u32, 0.7);
+  }
+
+  // A tail: it falls from the dock with no hold, long and heavy, swinging
+  pub fn tail() StrandStyle {
+    new StrandStyle(0.7, 0.15, 10u32, new Vec3(0., -1., 0.), 0.04, 3., 0.006, 1.4, 0.0035, 0.006, 0.009, 1.0e-6, 1.5e-4, 3., 50., 8., 2.2,
+      1.0, 1300., 0.034, 0.012, 0.012, 0.0025, 8u32, 0.3);
+  }
+
+  // A sea anemone's tentacle in the water: it stands up from the disc, slightly heavier than the water, soft
+  pub fn anemone() StrandStyle {
+    new StrandStyle(0.16, 0.2, 8u32, new Vec3(0., 1., 0.), 0.6, 0.3, 0.004, 1.5, 0.05, 0.006, 0.004, 1.0e-6, 6.0e-3, 2.5, 7., 0.5, 5.,
+      1.0, 1030., 0.016, 0.009, 0.009, 0.0016, 6u32, 0.);
+  }
+
+  // Kelp: long, a little lighter than the water, so it floats up and sways in the current
+  pub fn kelp() StrandStyle {
+    new StrandStyle(1.4, 0.25, 12u32, new Vec3(0., 1., 0.), 0.3, 0.5, 0.03, 1.3, 0.12, 0.02, 0.02, 1.0e-6, 2.0e-3, 3., 2., 1.2, 6.,
+      1.0, 960., 0.08, 0.04, 0.03, 0.02, 8u32, 0.);
+  }
+
+  // A tassel's cord: heavy, hanging, nearly limp
+  pub fn tassel() StrandStyle {
+    new StrandStyle(0.18, 0.1, 6u32, new Vec3(0., -1., 0.), 0.0, 6., 0.0, 1., 0.004, 0.003, 0.004, 1.0e-6, 3.0e-3, 3., 3., 1.5, 1.2,
+      1.0, 1100., 0.012, 0.005, 0.004, 0.0015, 6u32, 0.);
+  }
+
+  // The apparent gravity of a strand in a fluid of density 'fluid': g (1 - fluid / density), the buoyancy of Archimedes
+  pub fn apparentGravity(self &, g Vec3, fluid f32) Vec3 {
+    if density <= 0. { return g; }
+    g * (1. - fluid / density);
+  }
+}
+
+// Where a strand starts, in the frame of the group it belongs to
+pub struct StrandRoot {
+  pub group usize;
+  pub pos Vec3;
+  pub dir Vec3;           // the way it leaves, unit
+  pub normal Vec3;        // the way a card's face looks (out of the surface it grows from), unit
+  pub seed u32;           // makes this strand its own: its length, its waves, its width
+}
+
+// A unit vector perpendicular to 'a'
+pub fn perpendicularTo(a Vec3) Vec3 {
+  imm ref = if absf(a.x) > 0.8 { new Vec3(0., 0., 1.); } else { new Vec3(1., 0., 0.); };
+  (ref - a * ref.dot(a)).normalize();
+}
+
+fn absf(x f32) f32 { if x < 0. { -x; } else { x; }; }
+fn smooth01(x f32) f32 {
+  imm t = if x < 0. { 0.; } elif x > 1. { 1.; } else { x; };
+  t * t * (3. - 2. * t);
+}
+
+// The length this strand has
+pub fn strandLength(style &StrandStyle, seed u32) f32 {
+  mut r = Rand.make(seed);
+  style.length * (1. + style.lengthVar * r.signed());
+}
+
+// The styled curve of a strand: 'segments' + 2 points in the group's frame. The first is the GHOST, a link behind the
+// root along its direction reversed; the second the root; then one a link on, each turning from the direction the strand left
+// by towards 'fall' once the strand is past its hold, with a sideways wave that grows from nothing at the root.
+pub fn styledCurve(root &StrandRoot, style &StrandStyle) List[Vec3] {
+  mut r = Rand.make(root.seed);
+  imm len = style.length * (1. + style.lengthVar * r.signed());
+  imm n = usize.from(style.segments);
+  imm ds = len / f32.from(n);
+  imm phase = r.unit() * 2. * pi;
+  imm jitter = new Vec3(r.signed(), r.signed(), r.signed()) * 0.04;
+  mut d = (root.dir + jitter).normalize();
+  imm fall = style.fall.normalize();
+  mut side = d.cross(fall);
+  if side.length() < 0.001 { side = perpendicularTo(d); }
+  side = side.normalize();
+  mut pts = List[Vec3].empty();
+  pts.push(root.pos - d * ds);
+  mut p = root.pos;
+  pts.push(p);
+  mut base = root.pos;
+  mut k = 1usize;
+  while k <= n {
+    imm s = f32.from(k) * ds;
+    if s > style.rootHold * len {
+      imm w = 1. - libc.expf(-style.bendRate * ds);
+      d = (d * (1. - w) + fall * w).normalize();
+    }
+    base = base + d * ds;
+    imm t = s / len;
+    imm wave = side * (style.waveAmp * sin(2. * pi * style.waveCycles * t + phase) * smooth01(t / 0.3));
+    pts.push(base + wave);
+    k = k + 1usize;
+  }
+  pts;
+}
+
+// ---- root generators ----
+
+// Roots on a disc: a ring-free sunflower pattern (Vogel's golden angle, equal area for each) from 'inner' to 'outer' radius
+// round 'centre', in the plane perpendicular to 'up'. Each strand leaves 'tilt' radians from 'up' towards outward.
+pub fn rootsOnDisc(group usize, centre Vec3, up Vec3, inner f32, outer f32, count usize, tilt f32, seed u32) List[StrandRoot] {
+  mut out = List[StrandRoot].empty();
+  imm u = up.normalize();
+  imm e1 = perpendicularTo(u);
+  imm e2 = u.cross(e1);
+  mut rnd = Rand.make(seed);
+  mut i = 0usize;
+  while i < count {
+    imm f = (f32.from(i) + 0.5) / f32.from(count);
+    imm r = (inner * inner + (outer * outer - inner * inner) * f).sqrt();
+    imm a = f32.from(i) * 2.3999632 + rnd.signed() * 0.15;
+    imm outward = e1 * cos(a) + e2 * sin(a);
+    imm dir = (u * cos(tilt) + outward * sin(tilt)).normalize();
+    out.push(new StrandRoot(group, centre + outward * r, dir, outward, rnd.next()));
+    i = i + 1usize;
+  }
+  out;
+}
+
+// Roots along a path: a polyline of points with the unit direction strands leave in at each (and the direction a card faces),
+// 'count' of them evenly spaced by length with a jitter of 'jitter' of a spacing.
+pub fn rootsAlongPath(group usize, points &List[Vec3], dirs &List[Vec3], normals &List[Vec3], count usize, jitter f32, seed u32) List[StrandRoot] {
+  mut out = List[StrandRoot].empty();
+  mut cum = List[f32].empty();
+  cum.push(0.);
+  mut i = 1usize;
+  while i < points.len() {
+    cum.push(*cum[i - 1usize] + (*points[i] - *points[i - 1usize]).length());
+    i = i + 1usize;
+  }
+  imm total = *cum[cum.len() - 1usize];
+  mut rnd = Rand.make(seed);
+  mut k = 0usize;
+  while k < count {
+    imm f = (f32.from(k) + 0.5 + rnd.signed() * 0.5 * jitter) / f32.from(count);
+    imm s = f * total;
+    mut seg = 0usize;
+    while seg + 2usize < points.len() and *cum[seg + 1usize] < s { seg = seg + 1usize; }
+    imm span = *cum[seg + 1usize] - *cum[seg];
+    imm t = if span > 0.000001 { (s - *cum[seg]) / span; } else { 0.; };
+    imm p = (*points[seg]).lerp(*points[seg + 1usize], t);
+    imm dir = (*dirs[seg]).lerp(*dirs[seg + 1usize], t).normalize();
+    imm nrm = (*normals[seg]).lerp(*normals[seg + 1usize], t).normalize();
+    out.push(new StrandRoot(group, p, dir, nrm, rnd.next()));
+    k = k + 1usize;
+  }
+  out;
+}
+
+// Roots on a mesh's surface: 'count' points scattered over its triangles by area and accepted with the probability
+// 'density' gives at the point and its normal (a hairline, a parting, a bald patch; 0 to 1). Each leaves along the normal,
+// combed towards the tangent part of 'comb' by 'combAmount' (0: straight out). The mesh needs normals.
+pub fn rootsOnMesh(group usize, mesh &Mesh, count usize, density &<fn(p Vec3, n Vec3) f32, comb Vec3, combAmount f32,
+    seed u32) List[StrandRoot] {
+  mut out = List[StrandRoot].empty();
+  imm tris = mesh.indices.len() / 3usize;
+  if tris == 0usize { return out; }
+  mut cum = List[f32].empty();
+  mut acc = 0.;
+  mut t = 0usize;
+  while t < tris {
+    imm a = *mesh.positions[usize.from(*mesh.indices[3usize * t])];
+    imm b = *mesh.positions[usize.from(*mesh.indices[3usize * t + 1usize])];
+    imm c = *mesh.positions[usize.from(*mesh.indices[3usize * t + 2usize])];
+    acc = acc + 0.5 * (b - a).cross(c - a).length();
+    cum.push(acc);
+    t = t + 1usize;
+  }
+  mut rnd = Rand.make(seed);
+  mut tries = 0usize;
+  while out.len() < count and tries < count * 40usize {
+    tries = tries + 1usize;
+    imm target = rnd.unit() * acc;
+    mut lo = 0usize;
+    mut hi = tris - 1usize;
+    while lo < hi {
+      imm mid = (lo + hi) / 2usize;
+      if *cum[mid] < target { lo = mid + 1usize; } else { hi = mid; }
+    }
+    imm i0 = usize.from(*mesh.indices[3usize * lo]);
+    imm i1 = usize.from(*mesh.indices[3usize * lo + 1usize]);
+    imm i2 = usize.from(*mesh.indices[3usize * lo + 2usize]);
+    mut u = rnd.unit();
+    mut v = rnd.unit();
+    if u + v > 1. { u = 1. - u; v = 1. - v; }
+    imm w = 1. - u - v;
+    imm p = *mesh.positions[i0] * w + *mesh.positions[i1] * u + *mesh.positions[i2] * v;
+    imm nrm = (*mesh.normals[i0] * w + *mesh.normals[i1] * u + *mesh.normals[i2] * v).normalize();
+    imm keep = density(p, nrm);
+    if rnd.unit() < keep {
+      imm tangent = comb - nrm * comb.dot(nrm);
+      imm dir = (nrm + tangent * combAmount).normalize();
+      out.push(new StrandRoot(group, p, dir, nrm, rnd.next()));
+    }
+  }
+  out;
+}

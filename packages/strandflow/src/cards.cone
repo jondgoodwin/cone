@@ -1,0 +1,181 @@
+// Drawing strands: ribbons ("cards") and tubes, written into a Mesh.
+//
+// CARDS. The industry's way to draw a head of hair at a game's cost: each strand (a guide, a lock) is a ribbon that follows its
+// particles, textured with fibres and cut out by its alpha. The ribbon's face is kept turned out of the thing it grows from by
+// PARALLEL TRANSPORT of the root's normal along the strand (the normal is projected off each segment's tangent in turn: no
+// twist however the strand moves, which a frame built from a fixed up vector would give), and its side is the tangent crossed
+// with it. The normals across the width are bent outward by 35 degrees at the edges, so a flat card shades as the round
+// lock it stands for. Drawn from both sides (two sets of vertices, the second reversed, since render culls back faces).
+// The width tapers from the root to the tip, and each strand's a little different, from its seed.
+// TUBES. A tapered cylinder of 'sides' sides round the strand, the same transport for its frame: a tentacle.
+//
+// A card's texture is an atlas of 'columns' variants across, each strand taking one from its seed, v running along the strand
+// from 0 at the root to 'vScale' at the tip.
+
+fn norm(v Vec3) Vec3 { v.normalize(); }
+
+// The vertices and indices the cards of the whole simulation take
+pub fn cardCounts(sim &StrandSim) (usize, usize) {
+  mut vs = 0usize;
+  mut idx = 0usize;
+  mut g = 0usize;
+  while g < sim.groups.len() {
+    mut s = 0usize;
+    while s < sim.groups[g].strands.len() {
+      imm c = sim.groups[g].strands[s].count - 1usize;      // the ghost is not drawn
+      vs = vs + c * 4usize;
+      idx = idx + (c - 1usize) * 12usize;
+      s = s + 1usize;
+    }
+    g = g + 1usize;
+  }
+  (vs, idx);
+}
+
+// The tangent of strand particle j (j from 1) from its neighbours
+fn tangentAt(sim &StrandSim, g usize, first usize, count usize, j usize) Vec3 {
+  imm b = &sim.groups[g].body;
+  imm prev = *b.pos[first + (if j > 1usize { j - 1usize; } else { j; })];
+  imm next = *b.pos[first + (if j + 1usize < count { j + 1usize; } else { j; })];
+  imm d = next - prev;
+  if d.length() < 0.000001 { return new Vec3(0., -1., 0.); }
+  d.normalize();
+}
+
+// Write every strand as a card into 'out', which is cleared first. 'columns' texture variants across the atlas; 'vScale'
+// repeats of the texture along a strand.
+pub fn writeCards(sim &StrandSim, out &mut Mesh, columns u32, vScale f32) {
+  out.positions.clear();
+  out.normals.clear();
+  out.uvs.clear();
+  out.indices.clear();
+  imm bend = 0.61;       // 35 degrees
+  imm cb = cos(bend);
+  imm sb = sin(bend);
+  mut g = 0usize;
+  while g < sim.groups.len() {
+    imm style = sim.groups[g].style;
+    imm rot = sim.groups[g].frame.rotation;
+    imm b = &sim.groups[g].body;
+    mut s = 0usize;
+    while s < sim.groups[g].strands.len() {
+      imm st = sim.groups[g].strands[s];
+      imm n = st.count - 2usize;
+      imm col = st.seed % columns;
+      imm u0 = f32.from(col) / f32.from(columns);
+      imm u1 = f32.from(col + 1u32) / f32.from(columns);
+      mut nrm = rot * st.normal;
+      mut j = 1usize;
+      imm base = out.positions.len();
+      while j < st.count {
+        imm p = *b.pos[st.first + j];
+        imm t = tangentAt(sim, g, st.first, st.count, j);
+        // transport the card's facing: off the tangent, kept unit
+        mut nn = nrm - t * t.dot(nrm);
+        if nn.length() < 0.001 { nn = perpendicularTo(t); }
+        nn = nn.normalize();
+        nrm = nn;
+        imm side = t.cross(nn).normalize();
+        imm f = f32.from(j - 1usize) / f32.from(n);
+        imm w = (style.cardWidth + (style.cardTipWidth - style.cardWidth) * f) * st.widthScale * 0.5;
+        imm l = p - side * w;
+        imm r = p + side * w;
+        imm v = f * vScale;
+        out.positions.push(l); out.normals.push(norm(nn * cb - side * sb)); out.uvs.push(new Vec2(u0, v));
+        out.positions.push(r); out.normals.push(norm(nn * cb + side * sb)); out.uvs.push(new Vec2(u1, v));
+        out.positions.push(l); out.normals.push(norm(nn * (-cb) - side * sb)); out.uvs.push(new Vec2(u0, v));
+        out.positions.push(r); out.normals.push(norm(nn * (-cb) + side * sb)); out.uvs.push(new Vec2(u1, v));
+        j = j + 1usize;
+      }
+      mut k = 0usize;
+      while k + 1usize < st.count - 1usize {
+        imm a = u32.from(base + k * 4usize);
+        imm c = a + 4u32;
+        // front: (L, R, L next), (R, R next, L next)
+        out.indices.push(a); out.indices.push(a + 1u32); out.indices.push(c);
+        out.indices.push(a + 1u32); out.indices.push(c + 1u32); out.indices.push(c);
+        // back, reversed
+        out.indices.push(a + 2u32); out.indices.push(c + 2u32); out.indices.push(a + 3u32);
+        out.indices.push(a + 3u32); out.indices.push(c + 2u32); out.indices.push(c + 3u32);
+        k = k + 1usize;
+      }
+      s = s + 1usize;
+    }
+    g = g + 1usize;
+  }
+}
+
+// The vertices and indices the tubes take, with 'sides' sides
+pub fn tubeCounts(sim &StrandSim, sides usize) (usize, usize) {
+  mut vs = 0usize;
+  mut idx = 0usize;
+  mut g = 0usize;
+  while g < sim.groups.len() {
+    mut s = 0usize;
+    while s < sim.groups[g].strands.len() {
+      imm c = sim.groups[g].strands[s].count - 1usize;
+      vs = vs + c * (sides + 1usize);
+      idx = idx + (c - 1usize) * sides * 6usize;
+      s = s + 1usize;
+    }
+    g = g + 1usize;
+  }
+  (vs, idx);
+}
+
+// Write every strand as a tapered tube into 'out' (cleared first)
+pub fn writeTubes(sim &StrandSim, out &mut Mesh, sides usize) {
+  out.positions.clear();
+  out.normals.clear();
+  out.uvs.clear();
+  out.indices.clear();
+  mut g = 0usize;
+  while g < sim.groups.len() {
+    imm style = sim.groups[g].style;
+    imm rot = sim.groups[g].frame.rotation;
+    imm b = &sim.groups[g].body;
+    mut s = 0usize;
+    while s < sim.groups[g].strands.len() {
+      imm st = sim.groups[g].strands[s];
+      imm n = st.count - 2usize;
+      mut e1 = rot * st.normal;
+      imm base = out.positions.len();
+      mut j = 1usize;
+      while j < st.count {
+        imm p = *b.pos[st.first + j];
+        imm t = tangentAt(sim, g, st.first, st.count, j);
+        mut a1 = e1 - t * t.dot(e1);
+        if a1.length() < 0.001 { a1 = perpendicularTo(t); }
+        a1 = a1.normalize();
+        e1 = a1;
+        imm a2 = t.cross(a1);
+        imm f = f32.from(j - 1usize) / f32.from(n);
+        imm rad = (style.tubeRadius + (style.tubeTipRadius - style.tubeRadius) * f) * st.widthScale;
+        mut i = 0usize;
+        while i <= sides {
+          imm phi = 2. * pi * f32.from(i % sides) / f32.from(sides);
+          imm dir = a1 * cos(phi) + a2 * sin(phi);
+          out.positions.push(p + dir * rad);
+          out.normals.push(dir);
+          out.uvs.push(new Vec2(f32.from(i) / f32.from(sides), f));
+          i = i + 1usize;
+        }
+        j = j + 1usize;
+      }
+      mut k = 0usize;
+      while k + 1usize < st.count - 1usize {
+        mut i = 0usize;
+        while i < sides {
+          imm a = u32.from(base + k * (sides + 1usize) + i);
+          imm c = a + u32.from(sides + 1usize);
+          out.indices.push(a); out.indices.push(a + 1u32); out.indices.push(c);
+          out.indices.push(a + 1u32); out.indices.push(c + 1u32); out.indices.push(c);
+          i = i + 1usize;
+        }
+        k = k + 1usize;
+      }
+      s = s + 1usize;
+    }
+    g = g + 1usize;
+  }
+}

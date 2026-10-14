@@ -1,0 +1,231 @@
+// Layers on the 1.75 m humanoid, with numbers worked by hand.
+//
+// MASK. The subtree of the right clavicle is four bones: the clavicle, upper arm, forearm and hand.
+//
+// ADDITIVE. A 10 degree turn about x added to the chest at weight 0.5 is a 5 degree turn: the rest chest has the
+// identity rotation, so the result is angleAxis(5 degrees, x). With a mask of 0.5 and weight 1 it is the same; a mask
+// of 0 leaves the chest alone. Over a base whose chest is already turned 30 degrees about y, the 10 degrees about x
+// goes on the parent's side: angleAxis(10, x) * angleAxis(30, y). A move of 0.01 m added to a clavicle at weight 0.5
+// moves it 0.005 m.
+//
+// OVERRIDE. The right upper arm of the rest pose is out 15 degrees about z. A whole pose whose arm is out 60, laid
+// over at weight 0.5, gives 37.5 degrees.
+//
+// FADE. A weight fading to 0 over a second is e^-4.6 = 0.0101 of what it was after that second, and e^-2.3 = 0.1003
+// after half of it, whether it takes one step or sixty (the update is exponential, so it does not depend on the step).
+//
+// PINS. A layer that moves the pelvis 0.03 m to the side and 0.04 m down (the legs are straight at rest, so a pelvis
+// that moves sideways must also drop for the feet to stay) moves both ankles with it. Pinned to where they were, they
+// are back within a millimetre, and the pelvis stays where the layer put it.
+//
+// LOOK. A LookChain of the humanoid's spine, chest, neck and head, shares 0.1, 0.2, 0.3, 0.4, aimed at the same point
+// as poseik's lookAt, gives the same rotation in every one of the four bones.
+
+mod layers;
+
+import testing use *;
+import collections use List;
+import geomath use *;
+import bonepose use *;
+import poseik use *;
+import animlayers use *;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+fn sameRot(a Quat, b Quat, label &Array[u8]) bool {
+  near(absf(a.dot(b)), 1., 0.00001, label);
+}
+
+fn angleOf(q Quat) f32 { 2. * acos(clampf(absf(q.w), 0., 1.)); }
+
+fn testMask() {
+  imm s = humanoid(1.75);
+  imm m = BoneMask.subtree(&s, CLAVICLE_R);
+  mut n = 0usize;
+  mut i = 0usize;
+  while i < m.count() { if m.weight(i) > 0.5 { n = n + 1usize; } i = i + 1usize; }
+  expectInt(i64.from(n), 4i64, "the right arm's subtree is four bones");
+  expectBool(m.weight(UPPER_ARM_R) > 0.5 and m.weight(HAND_R) > 0.5 and m.weight(HAND_L) < 0.5, true, "and it is the right arm");
+  imm inv = m.inverted();
+  near(inv.weight(HAND_R), 0., 0.00001, "inverted: the right hand is out");
+  near(inv.weight(PELVIS), 1., 0.00001, "and the pelvis is in");
+  imm half = m.scaled(0.5);
+  near(half.weight(FOREARM_R), 0.5, 0.00001, "scaled");
+  imm u = BoneMask.subtree(&s, CLAVICLE_L).union(&m);
+  near(u.weight(HAND_L) + u.weight(HAND_R) + u.weight(PELVIS), 2., 0.00001, "the union of the two arms");
+}
+
+fn testAdditive() {
+  imm s = humanoid(1.75);
+  imm rest = s.restPose();
+  mut stack = LayerStack.make(&s);
+  imm li = stack.addAdditive("test", BoneMask.all(s.boneCount(), 1.));
+  mut d = zeroPose(s.boneCount());
+  deltaRotate(&mut d, CHEST, Quat.angleAxis(radians(10.), new Vec3(1., 0., 0.)));
+  deltaTranslate(&mut d, CLAVICLE_L, new Vec3(0., 0.01, 0.));
+  stack.setPose(li, d);
+  stack.setWeight(li, 0.5);
+  imm out = stack.compose(&rest);
+  near(angleOf(out.rotation(CHEST)), radians(5.), 0.0001, "10 degrees at weight 0.5 is 5");
+  sameRot(out.rotation(CHEST), Quat.angleAxis(radians(5.), new Vec3(1., 0., 0.)), "about x");
+  near((*out.locals[CLAVICLE_L]).translation.y - (*rest.locals[CLAVICLE_L]).translation.y, 0.005, 0.00001, "a 0.01 m move at 0.5 is 0.005");
+  near(angleOf(out.rotation(SPINE)), 0., 0.00001, "other bones are untouched");
+
+  // The mask scales it as the weight does
+  stack.setWeight(li, 1.);
+  mut mk = BoneMask.all(s.boneCount(), 1.);
+  mk.set(CHEST, 0.5);
+  stack.setMask(li, mk.copy());
+  imm out2 = stack.compose(&rest);
+  near(angleOf(out2.rotation(CHEST)), radians(5.), 0.0001, "mask 0.5 at weight 1 is the same");
+  mk.set(CHEST, 0.);
+  stack.setMask(li, mk.copy());
+  imm out3 = stack.compose(&rest);
+  near(angleOf(out3.rotation(CHEST)), 0., 0.00001, "mask 0 leaves the chest alone");
+
+  // On a turned base the delta goes on the parent's side
+  mut base = s.restPose();
+  base.setRotation(CHEST, Quat.angleAxis(radians(30.), new Vec3(0., 1., 0.)));
+  stack.setMask(li, BoneMask.all(s.boneCount(), 1.));
+  imm out4 = stack.compose(&base);
+  sameRot(out4.rotation(CHEST), Quat.angleAxis(radians(10.), new Vec3(1., 0., 0.)) * Quat.angleAxis(radians(30.), new Vec3(0., 1., 0.)), "pitch * yaw");
+
+  // Two additive layers add
+  imm l2 = stack.addAdditive("second", BoneMask.all(s.boneCount(), 1.));
+  mut d2 = zeroPose(s.boneCount());
+  deltaRotate(&mut d2, CHEST, Quat.angleAxis(radians(20.), new Vec3(1., 0., 0.)));
+  stack.setPose(l2, d2);
+  imm out5 = stack.compose(&rest);
+  near(angleOf(out5.rotation(CHEST)), radians(30.), 0.0001, "10 and 20 degrees about x are 30");
+}
+
+fn testOverride() {
+  imm s = humanoid(1.75);
+  imm rest = s.restPose();
+  mut stack = LayerStack.make(&s);
+  mut whole = s.restPose();
+  whole.setRotation(UPPER_ARM_R, Quat.angleAxis(radians(60.), new Vec3(0., 0., 1.)));
+  imm li = stack.addOverride("wave", BoneMask.all(s.boneCount(), 1.), &whole);
+  stack.setWeight(li, 0.5);
+  imm out = stack.compose(&rest);
+  near(angleOf(out.rotation(UPPER_ARM_R)), radians(37.5), 0.0001, "15 and 60 half way is 37.5");
+  // a mask that spares the right arm
+  mut mk = BoneMask.all(s.boneCount(), 1.);
+  mk.setSubtree(&s, CLAVICLE_R, 0.);
+  stack.setMask(li, mk);
+  imm out2 = stack.compose(&rest);
+  near(angleOf(out2.rotation(UPPER_ARM_R)), radians(15.), 0.0001, "masked out: still 15");
+}
+
+fn testFade() {
+  imm s = humanoid(1.75);
+  mut stack = LayerStack.make(&s);
+  imm li = stack.addAdditive("f", BoneMask.all(s.boneCount(), 1.));
+  stack.fadeTo(li, 0., 1.);
+  mut t = 0;
+  while t < 30 { stack.update(1. / 60.); t = t + 1; }
+  near(stack.layers[li].weight, 0.1003, 0.001, "half a second in 30 steps: e^-2.3");
+  while t < 60 { stack.update(1. / 60.); t = t + 1; }
+  near(stack.layers[li].weight, 0.0101, 0.001, "a second: e^-4.6");
+  stack.setWeight(li, 1.);
+  stack.fadeTo(li, 0., 1.);
+  stack.update(0.5);
+  near(stack.layers[li].weight, 0.1003, 0.001, "in one step of half a second the same");
+  stack.fadeTo(li, 1., 0.);
+  stack.update(1. / 60.);
+  near(stack.layers[li].weight, 1., 0.00001, "a fade of no time is at once");
+}
+
+fn testPins() {
+  imm s = humanoid(1.75);
+  mut pose = s.restPose();
+  mut models = List[Transform3].empty();
+  s.modelTransforms(&pose, &mut models);
+  imm ankleL = (*models[FOOT_L]).translation;
+  imm ankleR = (*models[FOOT_R]).translation;
+  imm rotL = (*models[FOOT_L]).rotation;
+  imm rotR = (*models[FOOT_R]).rotation;
+  mut stack = LayerStack.make(&s);
+  imm li = stack.addAdditive("sway", BoneMask.all(s.boneCount(), 1.));
+  mut d = zeroPose(s.boneCount());
+  deltaTranslate(&mut d, PELVIS, new Vec3(0.03, -0.04, 0.));
+  stack.setPose(li, d);
+  mut swayed = stack.compose(&pose);
+  s.modelTransforms(&swayed, &mut models);
+  near((*models[FOOT_L]).translation.x - ankleL.x, 0.03, 0.0001, "the layer carried the left ankle 3 cm");
+  mut pins = List[LimbPin].empty();
+  pins.push(new LimbPin(THIGH_L, ankleL, rotL, new Vec3(0., 0., -1.), 0.5236, 1.));
+  pins.push(new LimbPin(THIGH_R, ankleR, rotR, new Vec3(0., 0., -1.), 0.5236, 1.));
+  applyPins(&s, &mut swayed, &mut models, &pins);
+  near((*models[FOOT_L]).translation.x, ankleL.x, 0.001, "pinned: the left ankle is back in x");
+  near((*models[FOOT_R]).translation.x, ankleR.x, 0.001, "and the right");
+  near((*models[FOOT_L]).translation.y, ankleL.y, 0.001, "in y");
+  near((*models[FOOT_L]).translation.z, ankleL.z, 0.001, "and z");
+  near((*models[PELVIS]).translation.x, 0.03, 0.00001, "the pelvis stays where the layer put it");
+  sameRot((*models[FOOT_L]).rotation, rotL, "the foot has its rotation");
+  // a model placed in the world: the pin from a world place is the same pin
+  imm world = new Transform3(new Vec3(5., 0., 2.), Quat.angleAxis(radians(90.), new Vec3(0., 1., 0.)), new Vec3(1., 1., 1.));
+  imm wp = world.transformPoint(ankleL);
+  imm pin = LimbPin.fromWorld(THIGH_L, &world, wp, world.rotation * rotL, new Vec3(0., 0., -1.), 0.5236);
+  near(pin.target.x, ankleL.x, 0.0001, "a pin from the world, back in the model: x");
+  near(pin.target.z, ankleL.z, 0.0001, "and z");
+  // half weight: half way
+  mut half = stack.compose(&pose);
+  s.modelTransforms(&half, &mut models);
+  mut hp = new LimbPin(THIGH_L, ankleL, rotL, new Vec3(0., 0., -1.), 0.5236, 0.5);
+  applyPin(&s, &mut half, &mut models, &hp);
+  near((*models[FOOT_L]).translation.x - ankleL.x, 0.015, 0.002, "weight 0.5: half way back");
+}
+
+fn testLook() {
+  imm s = humanoid(1.75);
+  mut pose = s.restPose();
+  mut models = List[Transform3].empty();
+  s.modelTransforms(&pose, &mut models);
+  imm eye = s.socketModel(&models, SOCKET_EYE).translation;
+  imm target = eye + new Vec3(-1., 0.3, -1.);
+  mut p1 = s.restPose();
+  mut m1 = List[Transform3].empty();
+  s.modelTransforms(&p1, &mut m1);
+  lookAt(&s, &mut p1, &mut m1, target, 0.8, &LookConfig.standard());
+
+  mut bones = List[usize].empty();
+  bones.push(SPINE); bones.push(CHEST); bones.push(NECK); bones.push(HEAD);
+  mut shares = List[f32].empty();
+  shares.push(0.10); shares.push(0.20); shares.push(0.30); shares.push(0.40);
+  imm headRest = s.socketModel(&models, SOCKET_EYE);
+  imm eyeInHead = (*models[HEAD]).inverse().transformPoint(headRest.translation);
+  imm chain = LookChain.make(bones, shares, PELVIS, eyeInHead);
+  mut p2 = s.restPose();
+  mut m2 = List[Transform3].empty();
+  s.modelTransforms(&p2, &mut m2);
+  imm r = chain.aim(&s, &mut p2, &mut m2, target, 0.8);
+  expectBool(r.clamped, false, "inside the range");
+  sameRot(p2.rotation(SPINE), p1.rotation(SPINE), "spine as poseik's lookAt has it");
+  sameRot(p2.rotation(CHEST), p1.rotation(CHEST), "chest");
+  sameRot(p2.rotation(NECK), p1.rotation(NECK), "neck");
+  sameRot(p2.rotation(HEAD), p1.rotation(HEAD), "head");
+  // behind: clamped
+  mut p3 = s.restPose();
+  s.modelTransforms(&p3, &mut m2);
+  imm back = chain.aim(&s, &mut p3, &mut m2, new Vec3(-0.5, 1.6, 5.), 1.);
+  expectBool(back.clamped, true, "behind is clamped");
+  near(back.yaw, radians(80.), 0.0001, "to 80 degrees");
+  // a weight of 0 does nothing
+  mut p4 = s.restPose();
+  s.modelTransforms(&p4, &mut m2);
+  chain.aim(&s, &mut p4, &mut m2, target, 0.);
+  near(angleOf(p4.rotation(HEAD)), 0., 0.00001, "weight 0: no turn");
+}
+
+fn main() i32 {
+  testMask();
+  testAdditive();
+  testOverride();
+  testFade();
+  testPins();
+  testLook();
+  done();
+}
