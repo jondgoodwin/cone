@@ -108,6 +108,7 @@ pub struct ParticleSystem {
   longestLife f32 = 0.;            // the longest any registered class lives
   quietAfter f32 = -1.;            // after this clock time nothing can be alive until the next order
   pub idle bool = true;            // the last frame did no work: no particle could be alive
+  pub used u32 = 0u32;             // slots the ring has reached so far: only these are simulated and drawn
 
   // A pool of 'capacity' particles drawing into a frame of 'colorFormat'
   pub fn create(device &mut Device, colorFormat u32, capacity u32) ParticleSystem {
@@ -301,12 +302,14 @@ pub struct ParticleSystem {
     f[16] = placement.m[0] as u32; f[17] = placement.m[1] as u32; f[18] = placement.m[2] as u32; f[19] = softness as u32;
     f[20] = placement.m[4] as u32; f[21] = placement.m[5] as u32; f[22] = placement.m[6] as u32;
     device.queue.writeBuffer(&simFrame, 0u64, &f as *u8, SIM_FRAME_BYTES);
+    imm reach = head + total;
+    if reach >= capacity { used = capacity; } elif reach > used { used = reach; }
     head = (head + total) % capacity;
     frame = frame + 1u32;
     mut pass = encoder.beginComputePass();
     pass.setPipeline(&simPipeline);
     pass.setBindGroup(0u32, &computeGroup);
-    pass.dispatchWorkgroups((capacity + 63u32) / 64u32, 1u32, 1u32);
+    pass.dispatchWorkgroups((used + 63u32) / 64u32, 1u32, 1u32);
     pass.end();
   }
 
@@ -320,7 +323,7 @@ pub struct ParticleSystem {
     mut pass = encoder.beginRenderPass(&color);
     if style == PARTICLE_SMOKE { pass.setPipeline(&smokePipeline); } else { pass.setPipeline(&sparkPipeline); }
     pass.setBindGroup(0u32, &drawGroup);
-    pass.draw(6u32, capacity, 0u32, 0u32);
+    pass.draw(6u32, used, 0u32, 0u32);
     pass.end();
   }
 }
