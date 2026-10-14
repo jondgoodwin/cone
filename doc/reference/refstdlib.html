@@ -637,6 +637,90 @@ fn main() i32 {
 </pre>
 	<p>prints <span class="pre">eye F32 16</span>.</p>
 
+	<h3 id="bpetokenizepkg">Language-model tokens</h3>
+	<table border="1" cellpadding="4" cellspacing="0">
+	<tr><th>Package</th><th>What it is for</th></tr>
+	<tr><td><span class="pre">bpetokenize</span><br><span class="pre">import bpetokenize;</span></td>
+		<td>Byte-level byte-pair-encoding tokenization, the tokenizer of the GPT-2 and Llama 3 families: a text is cut
+		into words, each word is merged by rank into a vocabulary's tokens, and the tokens are numbered; decoding
+		numbers back to the bytes. The vocabulary and the merge list come in as plain arrays of strings, so it
+		depends on no file format. Written in Cone, with no C library, and any bytes (UTF-8 or not) encode and
+		decode as they are.</td></tr>
+	</table>
+
+	<h3 id="bpetokenize">bpetokenize</h3>
+	<p><span class="pre">Tokenizer.build(tokens, merges, special, preTokenizer)</span> answers a
+		<span class="pre">Result[Tokenizer, BuildError]</span>. <span class="pre">tokens</span> is the vocabulary in id
+		order, each token spelt as a byte-level vocabulary spells it (<span class="pre">toByteLevel(bytes)</span> makes
+		that spelling: GPT-2's table, in which a space is <span class="pre">Ġ</span>); <span class="pre">merges</span>
+		are the rules, best first, each the text <span class="pre">left right</span> (or
+		<span class="pre">MergePair</span> values with <span class="pre">buildPairs</span>); <span class="pre">special</span>
+		are the texts of the tokens matched whole in an input. The 256 single-byte tokens must be in the vocabulary, and
+		every merge must name tokens that are, or the build is refused with a <span class="pre">BuildError</span> that
+		says which.
+		<span class="pre">encode(bytes)</span> answers a <span class="pre">List[u32]</span> of ids,
+		<span class="pre">encodePlain</span> the same with no special token recognised, and
+		<span class="pre">encodeWith(bytes, parseSpecial, &amp;mut out)</span> appends to a list. <span class="pre">decode(ids)</span>
+		answers the bytes (an id outside the vocabulary is an error, with its place); <span class="pre">decodeInto</span>
+		can leave the special tokens out. The cut made before merging is a <span class="pre">PreTokenizer</span>:
+		<span class="pre">Gpt2</span>, <span class="pre">Llama3</span> (cl100k's expression, which GPT-4 and Llama 3, 3.1 and 3.2
+		use), <span class="pre">Qwen2</span> or <span class="pre">Whole</span> (no cut). It is hand-written, with no
+		regular-expression engine, and matches the published expressions on the scripts it lists (Latin, Greek,
+		Cyrillic, Armenian, Hebrew, Arabic, Devanagari, Thai, Georgian, Hangul, Hiragana, Katakana and the CJK
+		ideographs); another script is cut as symbols. Merging is rank-priority merging with a heap, O(n log n)
+		in the length of a word. Not covered: SentencePiece and Unigram tokenizers, byte-fallback vocabularies,
+		normalisers, other families' cuts (GPT-4o, DeepSeek, Falcon, StarCoder), and a trainer. The package's header
+		lists each method chosen and what was left out.</p>
+<pre>
+mod tokens;
+
+import stdio use *;
+import collections use *;
+import bpetokenize;
+
+fn main() i32 {
+  mut tokens = List[String].empty();       // the 256 byte tokens, then the merged ones
+  mut b = 0u32;
+  while b &lt; 256u32 {
+    mut one = List[u8].empty();
+    one.push(u8.from(b));
+    tokens.push(bpetokenize.toByteLevel(one.view()));
+    b = b + 1u32;
+  }
+  tokens.push("he");                       // 256
+  tokens.push("ll");                       // 257
+  tokens.push("hell");                     // 258
+  tokens.push("&lt;|end|&gt;");                  // 259, a special token
+  mut merges = List[String].empty();
+  merges.push("h e");
+  merges.push("l l");
+  merges.push("he ll");
+  mut special = List[String].empty();
+  special.push("&lt;|end|&gt;");
+  match bpetokenize.Tokenizer.build(tokens.view(), merges.view(), special.view(),
+                                    bpetokenize.PreTokenizer.Gpt2) {
+    case imm tok Ok {
+      imm ids = tok.encode("hello&lt;|end|&gt;");
+      mut i = 0usize;
+      while i &lt; ids.len() {
+        printInt(i64.from(ids.view()[i]));
+        printStr(" ");
+        i = i + 1usize;
+      }
+      match tok.decode(ids.view()) {
+        case imm bytes Ok { printStr(bytes.view() as &amp;str); }
+        case imm e Error { return 1i32; }
+      }
+      printStr("\n");
+    }
+    case imm e Error { return 1i32; }
+  }
+  0i32;
+}
+</pre>
+	<p>prints <span class="pre">258 111 259 hello&lt;|end|&gt;</span>: <span class="pre">hell</span> is one token, the
+		<span class="pre">o</span> is the byte 111, and the special token is matched whole.</p>
+
 	<h3 id="testpkg">Testing</h3>
 	<table border="1" cellpadding="4" cellspacing="0">
 	<tr><th>Package</th><th>What it is for</th></tr>
@@ -673,6 +757,8 @@ fn main() i32 {
 		<span class="pre">imagedecode</span> over it, have been run on both, and write the same bytes.</p>
 	<p><span class="pre">gguf</span> calls nothing of the system's; its tests pass on Windows and on Linux
 		(Ubuntu 24.04), and write and read the same bytes.</p>
+	<p><span class="pre">bpetokenize</span> calls nothing of the system's; its tests pass on Windows and on Linux
+		(Ubuntu 24.04), with the same token ids.</p>
 	<p>The others use nothing that belongs to Windows alone. Of these,
 		<span class="pre">sync</span>, <span class="pre">thread</span>, <span class="pre">actors</span> and
 		<span class="pre">time</span> are the ones that have been run on Linux so far, with <span class="pre">core</span>
