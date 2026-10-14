@@ -1,0 +1,757 @@
+// The bpetokenize package: byte-level byte-pair-encoding tokenization, the
+// tokenizer of the GPT-2 and Llama 3 families of language models. A text is cut
+// into words, each word's bytes are merged pair by pair into the vocabulary's
+// tokens, and the tokens are numbered; decoding numbers back to the bytes.
+// Written in Cone, with no C library and no call to the OS.
+//
+// The vocabulary and the merges come in as plain values (arrays of Strings), the
+// forms a GGUF file and a Hugging Face 'vocab.json' and 'merges.txt' hold them
+// in, so this package depends on no file format.
+//
+//   mod hello;
+//   import stdio use *;
+//   import collections use *;
+//   import bpetokenize;
+//
+//   fn main() i32 {
+//     // 256 byte tokens, then the tokens that merges make, then a special token
+//     mut tokens = List[String].empty();
+//     mut b = 0u32;
+//     while b < 256u32 {
+//       mut one = List[u8].empty(); one.push(u8.from(b));
+//       tokens.push(bpetokenize.toByteLevel(one.view()));
+//       b = b + 1u32;
+//     }
+//     tokens.push("he");                    // 256
+//     tokens.push("ll");                    // 257
+//     tokens.push("hell");                  // 258
+//     tokens.push("<|end|>");               // 259: special
+//     mut merges = List[String].empty();    // best merge first
+//     merges.push("h e"); merges.push("l l"); merges.push("he ll");
+//     mut special = List[String].empty();
+//     special.push("<|end|>");
+//     match bpetokenize.Tokenizer.build(tokens.view(), merges.view(), special.view(),
+//                                       bpetokenize.PreTokenizer.Gpt2) {
+//       case imm tok Ok {
+//         imm ids = tok.encode("hello<|end|>");     // 258 111 259: hell, o, <|end|>
+//         printInt(i64.from(ids.len()));
+//         match tok.decode(ids.view()) {            // the bytes back
+//           case imm bytes Ok { printStr(bytes.view() as &str); }
+//           case is Error { }
+//         }
+//       }
+//       case imm e Error { imm m = e.message(); printStr(m.view()); return 1i32; }
+//     }
+//     0i32;
+//   }
+//
+// The API. 'Tokenizer.build(tokens, merges, special, preTokenizer)' makes a
+// tokenizer, or says what is wrong with the inputs (a BuildError). Its 'tokens'
+// are the vocabulary in id order (token i has id i), each spelt as a byte-level
+// vocabulary spells it ('toByteLevel' makes the spelling of any bytes); its
+// 'merges' are the merge rules, best first, each as the text 'left right' (a
+// GPT-2 'merges.txt' line, a GGUF 'tokenizer.ggml.merges' entry), or as
+// 'MergePair' values with 'buildPairs'; its 'special' are the texts of the
+// tokens that are matched whole in an input and decoded as themselves. Then
+// 'encode(bytes)' answers a List[u32] of ids and 'decode(ids)' the bytes
+// (a Result: an id outside the vocabulary is an error). 'encodeWith' appends
+// to a List the caller owns and chooses whether special tokens are recognised;
+// 'encodePlain' never recognises them; 'decodeInto' appends, and can leave the
+// special tokens out. 'pieceEnds' shows where a pre-tokenizer cuts. The inputs
+// are '&Array[u8]', which a '&str' or a String's 'view()' is as well, and may
+// hold any bytes: a text that is not UTF-8 encodes and decodes to itself.
+//
+// METHOD CHOICES. These are defaults a later design may revisit. Each says
+// what was chosen and what was left out.
+//
+// - The merge algorithm is rank-priority merging within each word (what
+//   tiktoken and llama.cpp do): the word starts as its bytes, one symbol each;
+//   the adjacent pair with the lowest merge rank is merged into the symbol
+//   the rule names (the leftmost, when two pairs have the same rank), and that
+//   is repeated until no adjacent pair has a rule. The symbols are in a
+//   doubly linked list and the candidate pairs in a binary heap ordered by
+//   rank and then position, with stale entries skipped when they come up, so a
+//   word of n bytes costs O(n log n), not the O(n^2) of looking for the best
+//   pair afresh after every merge. Every lookup is one probe of a hash table
+//   keyed by the two ids. GPT-2's reference loop merges all the occurrences of
+//   the best pair in a word at once; the two give the same tokens whenever no
+//   rule's two parts are made by a LATER rule, which holds for every trained
+//   vocabulary (a rule can only use tokens made before it). A synthetic merge
+//   list that breaks that can differ; the tests include one.
+// - A rule names ids once: 'left right' is looked up in the vocabulary when the
+//   tokenizer is built, and so is 'leftright' (the token the merge makes), so
+//   encoding looks at ids only and never builds a string. A rule whose parts
+//   or result are not in the vocabulary is a BuildError, not skipped, so a
+//   wrong merge list is found at once. A rule that repeats an earlier pair is
+//   ignored (the earlier, better one stands). A vocabulary that lists a text
+//   twice keeps the first id for looking up and still decodes both ids.
+// - The byte to character table is GPT-2's ('bytes_to_unicode'), computed (see
+//   bytechars.cone), and the 256 single-byte tokens must all be in the
+//   vocabulary: a vocabulary without one is a BuildError (a vocabulary
+//   with a byte missing would have to refuse some texts, and this one never
+//   refuses). Left out: byte-fallback vocabularies, where a byte is a token
+//   spelt '<0x41>' (SentencePiece and Llama 1 and 2 are of that kind).
+// - Special tokens are given by their text (each must be in the vocabulary).
+//   In an input they are matched whole, byte for byte, the longest first when
+//   one begins another; a special token is never merged into or across, because
+//   the text between two of them is encoded alone and the special one is
+//   emitted as its id. They decode as their own text, not the byte-level
+//   spelling, and 'decodeInto' can drop them. Which tokens are special is the
+//   caller's list: a model's metadata kinds ("control", "user defined") are not
+//   read here (a later change wires this to GGUF), and a token that should
+//   match in an input but decode through the table is not expressible. Left
+//   out: added tokens that are normalised or stripped around ('lstrip' and
+//   'rstrip'), and a token matched only when it stands alone.
+// - The pre-tokenizer cut is written by hand (pretokenize.cone), in four modes:
+//   'Gpt2' (GPT-2's expression), 'Llama3' (cl100k's, which GPT-4 and
+//   Llama 3, 3.1 and 3.2 use), 'Qwen2' (Llama 3's with one digit to a piece)
+//   and 'Whole' (no cut). These reproduce the published regular expressions
+//   case by case (the tests check a corpus of ASCII and Latin-1 text against
+//   a regular-expression engine that is not this package), but only for the
+//   characters a table of letters and numbers lists: the Unicode classes
+//   \p{L} and \p{N} are tables of ranges for the common scripts, not the
+//   Unicode database (the package says which in pretokenize.cone), and
+//   cutting a script it does not list differs from the reference (a model
+//   still reads the tokens, but not as it was trained to). A byte that is
+//   not UTF-8 is a symbol of its own. NOT reproduced: any other family's cut
+//   (GPT-4o's 'o200k' expression, with its case-aware words; DeepSeek, Falcon,
+//   StarCoder, Command-R and the other models whose cut is a chain of several
+//   expressions or a different one), a regular-expression engine for a cut a
+//   file supplies, and a normaliser (NFC, lower-casing, accent stripping, the
+//   SentencePiece space mark): the text is encoded as given.
+// - Left out: SentencePiece and Unigram tokenizers (Llama 1 and 2, Mistral 7B,
+//   Gemma, T5), WordPiece (BERT), a trainer, adding tokens afterwards,
+//   padding and truncation, chat templates, and the BOS and EOS tokens of a
+//   model (the caller puts a token's id where it belongs: 'tokenId' finds it).
+// - Decoding is byte exact: each token's bytes are the bytes its spelling
+//   stands for, kept in one block when the tokenizer is built, so 'decode' is
+//   a copy. Tokens decode to bytes, not a String, because a token is often
+//   part of a character: the tokens of a generated reply end mid-character.
+//   'utf8Complete' says how many leading bytes of a stream are whole
+//   characters, for a program that prints text as it is generated.
+// - Speed was measured, not chased ('examples/bench.cone', release build,
+//   with four other builds running on the machine): on a synthetic vocabulary
+//   of 20,000 merges, a tokenizer builds in about 8 ms, 1 MB of text encodes at
+//   about 21 MB/s (a word's symbols, links and heap are reused from word to
+//   word; the cost is the hash probe for each pair and the heap), and ids
+//   decode at about 270 MB/s. A 200,000-byte word (the tests have one) is
+//   merged in step, which the quadratic form could not do. A real vocabulary
+//   of 128,000 tokens and 280,000 merges has not been built here (no
+//   download); its build is a hash insert for each, so tens of milliseconds
+//   is the expectation, not a measurement.
+// - A tokenizer is a VALUE with no global and no thread-local behind it: build
+//   it once and lend it ('&Tokenizer') to every thread that encodes; encoding
+//   changes nothing in it. The package's 'imm' tables (the letters, numbers
+//   and white space) are module constants. Written in Cone with no C call.
+// - The same ids on Windows and on Linux: the tests pin ids worked out on paper
+//   and pass on both (Ubuntu 24.04), and the benchmark's 1 MB text gives the
+//   same 606,870 ids on both.
+
+mod bpetokenize;
+
+import collections use String, List, Dict;
+
+// -------- failure --------
+
+// What was wrong with the inputs of a build
+pub enum BuildErrorKind {
+  // A vocabulary entry for one of the 256 bytes is missing ('index' is the byte)
+  MissingByteToken;
+  // A merge that is not 'left right' ('index' is its place in the list)
+  BadMerge;
+  // A merge whose left or right part is not in the vocabulary
+  UnknownMergePart;
+  // A merge whose result, left and right joined, is not in the vocabulary
+  MissingMergeResult;
+  // A special token whose text is not in the vocabulary ('index' is its place)
+  UnknownSpecial;
+  // A special token with no text, which would match everywhere
+  EmptySpecial;
+  // More tokens than ids of 32 bits can number
+  TooManyTokens;
+
+  pub fn copy(self &BuildErrorKind) BuildErrorKind {
+    match self {
+      case is MissingByteToken { BuildErrorKind.MissingByteToken; }
+      case is BadMerge { BuildErrorKind.BadMerge; }
+      case is UnknownMergePart { BuildErrorKind.UnknownMergePart; }
+      case is MissingMergeResult { BuildErrorKind.MissingMergeResult; }
+      case is UnknownSpecial { BuildErrorKind.UnknownSpecial; }
+      case is EmptySpecial { BuildErrorKind.EmptySpecial; }
+      case is TooManyTokens { BuildErrorKind.TooManyTokens; }
+    }
+  }
+}
+
+// Why a tokenizer could not be built
+pub struct BuildError {
+  pub kind BuildErrorKind;
+  // Which byte, merge or special token: see each kind
+  pub index usize;
+  pub reason String;
+
+  // One line for a person: 'bpetokenize: merge 3 ("he llo") names a token that is not in the vocabulary'
+  pub fn message(self &) String {
+    mut out = String.from("bpetokenize: ");
+    out.append(reason.view());
+    out;
+  }
+
+  pub fn copy(self &) BuildError {
+    new BuildError(kind.copy(), index, reason.copy());
+  }
+}
+
+// Why ids could not be decoded
+pub struct DecodeError {
+  // The place in the ids of the one at fault
+  pub position usize;
+  pub id u32;
+  // How many tokens the vocabulary has
+  pub vocabSize usize;
+
+  pub fn message(self &) String {
+    mut out = String.from("bpetokenize: token id ");
+    out.appendUInt(u64.from(id));
+    out.append(" at position ");
+    out.appendUInt(u64.from(position));
+    out.append(" is not in the vocabulary, which has ");
+    out.appendUInt(u64.from(vocabSize));
+    out.append(" tokens");
+    out;
+  }
+
+  pub fn copy(self &) DecodeError {
+    new DecodeError(position, id, vocabSize);
+  }
+}
+
+// One merge rule: the two tokens that join (as vocabulary text) and nothing else
+pub struct MergePair {
+  pub left String;
+  pub right String;
+}
+
+// -------- the tokenizer --------
+
+// What a merged-away symbol's id is, and "no neighbour"
+const deadSymbol = 0xFFFFFFFFu32;
+const noLink = 0xFFFFFFFFFFFFFFFFusize;
+
+// Working memory for encoding, kept from word to word within one call
+struct Work {
+  scan Scan;
+  ends List[usize];
+  sym List[u32];
+  prev List[usize];
+  next List[usize];
+  heap List[u64];
+
+  fn empty() Work {
+    new Work(Scan.empty(), List[usize].empty(), List[u32].empty(), List[usize].empty(), List[usize].empty(),
+      List[u64].empty());
+  }
+}
+
+// A vocabulary and its merges, ready to encode and decode
+pub struct Tokenizer {
+  // token text -> id (the first id, for a text listed twice)
+  vocab Dict[String, u32];
+  // The bytes each id decodes to, one after another in 'pool'; id i is
+  // pool[starts[i] ..< starts[i + 1]]
+  pool List[u8];
+  starts List[usize];
+  isSpecial List[bool];
+  // The special tokens, the longest text first, and which bytes one can begin with
+  specialIds List[u32];
+  specialFirst List[bool];
+  // (left id << 32 | right id) -> (rank << 32 | result id)
+  merges Dict[u64, u64];
+  // The id of each of the 256 single-byte tokens
+  byteIds List[u32];
+  pre PreTokenizer;
+
+  fn blank(pre PreTokenizer) Tokenizer {
+    new Tokenizer(Dict[String, u32].deterministic(), List[u8].empty(), List[usize].empty(), List[bool].empty(),
+      List[u32].empty(), List[bool].empty(), Dict[u64, u64].deterministic(), List[u32].empty(), pre);
+  }
+
+  // -------- building --------
+
+  // The vocabulary, special tokens and byte tokens
+  fn loadVocabulary(self &mut, tokens &Array[String], special &Array[String]) Option[BuildError] {
+    if tokens.len >= 0xFFFFFFFFusize {
+      return Some[BuildError](new BuildError(BuildErrorKind.TooManyTokens, tokens.len,
+        String.from("there are more tokens than ids of 32 bits can number")));
+    }
+    mut i = 0usize;
+    while i < tokens.len {
+      if not vocab.contains(tokens[i].view()) {
+        vocab.insert(tokens[i].copy(), u32.from(i));
+      }
+      isSpecial.push(false);
+      i = i + 1usize;
+    }
+    // the special tokens
+    i = 0usize;
+    while i < special.len {
+      if special[i].len() == 0usize {
+        return Some[BuildError](new BuildError(BuildErrorKind.EmptySpecial, i,
+          String.from("a special token has no text")));
+      }
+      match vocab.getCopy(special[i].view()) {
+        case imm id Some { isSpecial.set(usize.from(id), true); }
+        case is None {
+          mut why = String.from("the special token \"");
+          why.append(special[i].view());
+          why.append("\" is not in the vocabulary");
+          return Some[BuildError](new BuildError(BuildErrorKind.UnknownSpecial, i, why));
+        }
+      }
+      i = i + 1usize;
+    }
+    // each id's bytes, and the specials in order of length
+    starts.push(0usize);
+    i = 0usize;
+    while i < tokens.len {
+      imm text &Array[u8] = tokens[i].view();
+      if self.special(i) {
+        pushAll(&mut pool, text);
+      }
+      else {
+        imm raw = fromByteLevel(text);
+        pushAll(&mut pool, raw.view());
+      }
+      starts.push(pool.len());
+      i = i + 1usize;
+    }
+    specialFirst.resize(256usize, false);
+    i = 0usize;
+    while i < tokens.len {
+      if self.special(i) {
+        self.addSpecial(u32.from(i));
+      }
+      i = i + 1usize;
+    }
+    // the 256 single-byte tokens
+    mut b = 0u32;
+    while b < 256u32 {
+      mut one = List[u8].empty();
+      one.push(u8.from(b));
+      imm spelt = toByteLevel(one.view());
+      match vocab.getCopy(spelt.view()) {
+        case imm id Some { byteIds.push(id); }
+        case is None {
+          mut why = String.from("the vocabulary has no token for the byte ");
+          why.appendUInt(u64.from(b));
+          why.append(" (\"");
+          why.append(spelt.view());
+          why.append("\")");
+          return Some[BuildError](new BuildError(BuildErrorKind.MissingByteToken, usize.from(b), why));
+        }
+      }
+      b = b + 1u32;
+    }
+    None;
+  }
+
+  // Put special token id among the specials, the longest text first (and, among
+  // equals, the earlier id first)
+  fn addSpecial(self &mut, id u32) {
+    imm len = self.lengthOf(usize.from(id));
+    mut at = specialIds.len();
+    while at > 0usize {
+      imm other = specialIds.view()[at - 1usize];
+      if self.lengthOf(usize.from(other)) >= len { break; }
+      at = at - 1usize;
+    }
+    // insert at 'at': push then rotate down
+    specialIds.push(id);
+    mut k = specialIds.len() - 1usize;
+    while k > at {
+      specialIds.swap(k, k - 1usize);
+      k = k - 1usize;
+    }
+    imm firstByte = pool.view()[self.startOf(usize.from(id))];
+    specialFirst.set(usize.from(firstByte), true);
+  }
+
+  // Reading by value what the Lists hold
+  fn special(self &, id usize) bool { isSpecial.view()[id]; }
+  fn startOf(self &, id usize) usize { starts.view()[id]; }
+  fn lengthOf(self &, id usize) usize {
+    imm s = starts.view();
+    s[id + 1usize] - s[id];
+  }
+
+  // One merge rule, the index'th in the list
+  fn addMerge(self &mut, index usize, left &str, right &str) Option[BuildError] {
+    mut l = 0u32;
+    mut r = 0u32;
+    match vocab.getCopy(left) {
+      case imm id Some { l = id; }
+      case is None { return Some[BuildError](self.mergeFault(BuildErrorKind.UnknownMergePart, index, left, right,
+        "names a token that is not in the vocabulary")); }
+    }
+    match vocab.getCopy(right) {
+      case imm id Some { r = id; }
+      case is None { return Some[BuildError](self.mergeFault(BuildErrorKind.UnknownMergePart, index, left, right,
+        "names a token that is not in the vocabulary")); }
+    }
+    mut joined = String.from(left);
+    joined.append(right);
+    mut made = 0u32;
+    match vocab.getCopy(joined.view()) {
+      case imm id Some { made = id; }
+      case is None { return Some[BuildError](self.mergeFault(BuildErrorKind.MissingMergeResult, index, left, right,
+        "makes a token that is not in the vocabulary")); }
+    }
+    imm key = (u64.from(l) << 32u64) | u64.from(r);
+    if not merges.contains(&key) {
+      merges.insert(key, (u64.from(index) << 32u64) | u64.from(made));
+    }
+    None;
+  }
+
+  fn mergeFault(self &, kind BuildErrorKind, index usize, left &str, right &str, what &str) BuildError {
+    mut why = String.from("merge ");
+    why.appendUInt(u64.from(index));
+    why.append(" (\"");
+    why.append(left);
+    why.append(" ");
+    why.append(right);
+    why.append("\") ");
+    why.append(what);
+    new BuildError(kind, index, why);
+  }
+
+  // Make a tokenizer from the vocabulary (token i has id i), the merges as
+  // 'left right' text, best first, the special tokens' texts, and the cut
+  // made before merging
+  pub fn build(tokens &Array[String], merges &Array[String], special &Array[String], pre PreTokenizer)
+      Result[Tokenizer, BuildError] {
+    mut t = Tokenizer.blank(pre);
+    match t.loadVocabulary(tokens, special) {
+      case imm e Some { return Error[Tokenizer, BuildError](e.copy()); }
+      case is None { }
+    }
+    mut i = 0usize;
+    while i < merges.len {
+      imm text &Array[u8] = merges[i].view();
+      // split at the first space that is not the first byte
+      mut sp = 1usize;
+      while sp < text.len and text[sp] != ' ' { sp = sp + 1usize; }
+      if text.len < 3usize or sp >= text.len - 1usize {
+        mut why = String.from("merge ");
+        why.appendUInt(u64.from(i));
+        why.append(" (\"");
+        why.append(merges[i].view());
+        why.append("\") is not two tokens with a space between them");
+        return Error[Tokenizer, BuildError](new BuildError(BuildErrorKind.BadMerge, i, why));
+      }
+      imm line = merges[i].view();
+      match t.addMerge(i, line.slice(0usize, sp), line.sliceFrom(sp + 1usize)) {
+        case imm e Some { return Error[Tokenizer, BuildError](e.copy()); }
+        case is None { }
+      }
+      i = i + 1usize;
+    }
+    Ok[Tokenizer, BuildError](t);
+  }
+
+  // The same, with the merges as pairs of tokens
+  pub fn buildPairs(tokens &Array[String], merges &Array[MergePair], special &Array[String], pre PreTokenizer)
+      Result[Tokenizer, BuildError] {
+    mut t = Tokenizer.blank(pre);
+    match t.loadVocabulary(tokens, special) {
+      case imm e Some { return Error[Tokenizer, BuildError](e.copy()); }
+      case is None { }
+    }
+    mut i = 0usize;
+    while i < merges.len {
+      match t.addMerge(i, merges[i].left.view(), merges[i].right.view()) {
+        case imm e Some { return Error[Tokenizer, BuildError](e.copy()); }
+        case is None { }
+      }
+      i = i + 1usize;
+    }
+    Ok[Tokenizer, BuildError](t);
+  }
+
+  // -------- asking --------
+
+  // How many tokens (ids 0 up to, not including, this)
+  pub fn vocabSize(self &) usize { isSpecial.len(); }
+
+  // How many distinct merge rules the tokenizer applies
+  pub fn mergeCount(self &) usize { merges.len(); }
+
+  pub fn preTokenizer(self &) &PreTokenizer { &pre; }
+
+  // The id of the token with this vocabulary text (in the vocabulary's own
+  // spelling: 'toByteLevel' of its bytes), or None
+  pub fn tokenId(self &, text &str) Option[u32] { vocab.getCopy(text); }
+
+  // The bytes an id decodes to, or None for an id outside the vocabulary
+  pub fn tokenBytes(self &, id u32) Option[&Array[u8]] {
+    if usize.from(id) >= isSpecial.len() { return None; }
+    imm from = self.startOf(usize.from(id));
+    Some[&Array[u8]](&pool.view()[from..<from + self.lengthOf(usize.from(id))]);
+  }
+
+  // Whether the id is a special token (false outside the vocabulary)
+  pub fn isSpecialToken(self &, id u32) bool {
+    if usize.from(id) >= isSpecial.len() { return false; }
+    self.special(usize.from(id));
+  }
+
+  // The id of a single byte's token
+  pub fn byteToken(self &, b u8) u32 { byteIds.view()[usize.from(b)]; }
+
+  // -------- encoding --------
+
+  // The ids of a text, special tokens recognised
+  pub fn encode(self &, text &Array[u8]) List[u32] {
+    mut out = List[u32].empty();
+    self.encodeWith(text, true, &mut out);
+    out;
+  }
+
+  // The ids of a text, with a special token's text encoded like any other text
+  pub fn encodePlain(self &, text &Array[u8]) List[u32] {
+    mut out = List[u32].empty();
+    self.encodeWith(text, false, &mut out);
+    out;
+  }
+
+  // Append the ids of a text to out; 'parseSpecial' says whether a special
+  // token's text in the input is its token
+  pub fn encodeWith(self &, text &Array[u8], parseSpecial bool, out &mut List[u32]) {
+    mut work = Work.empty();
+    mut segment = 0usize;
+    mut pos = 0usize;
+    if parseSpecial and specialIds.len() > 0usize {
+      while pos < text.len {
+        if specialFirst.view()[usize.from(text[pos])] {
+          imm id = self.specialAt(text, pos);
+          if id != deadSymbol {
+            self.encodeSegment(&text[segment..<pos], &mut work, out);
+            out.push(id);
+            pos = pos + self.lengthOf(usize.from(id));
+            segment = pos;
+            continue;
+          }
+        }
+        pos = pos + 1usize;
+      }
+    }
+    self.encodeSegment(&text[segment..], &mut work, out);
+  }
+
+  // The id of the longest special token that text has at pos, or deadSymbol
+  // (which is no id) when there is none
+  fn specialAt(self &, text &Array[u8], pos usize) u32 {
+    imm ids = specialIds.view();
+    mut k = 0usize;
+    while k < ids.len {
+      imm id = usize.from(ids[k]);
+      imm from = self.startOf(id);
+      imm len = self.lengthOf(id);
+      if pos + len <= text.len and &text[pos..<pos + len] == &pool.view()[from..<from + len] { return ids[k]; }
+      k = k + 1usize;
+    }
+    deadSymbol;
+  }
+
+  // Text with no special token in it: cut into words, each merged alone
+  fn encodeSegment(self &, text &Array[u8], work &mut Work, out &mut List[u32]) {
+    work.ends.clear();
+    pieceEndsWith(&pre, text, &mut work.ends, &mut work.scan);
+    mut start = 0usize;
+    mut i = 0usize;
+    while i < work.ends.len() {
+      imm end = work.ends.view()[i];
+      self.mergeWord(&text[start..<end], work, out);
+      start = end;
+      i = i + 1usize;
+    }
+  }
+
+  // The pair at symbol i and the symbol after it, in the heap if a rule joins it
+  fn queuePair(self &, sym &Array[u32], next &Array[usize], heap &mut List[u64], i usize) {
+    imm j = next[i];
+    if j == noLink { return; }
+    imm key = (u64.from(sym[i]) << 32u64) | u64.from(sym[j]);
+    match merges.getCopy(&key) {
+      case imm found Some { heapPush(heap, ((found >> 32u64) << 32u64) | u64.from(i)); }
+      case is None { }
+    }
+  }
+
+  // One word's bytes merged into tokens, appended to out
+  fn mergeWord(self &, word &Array[u8], work &mut Work, out &mut List[u32]) {
+    imm n = word.len;
+    if n == 1usize {
+      out.push(byteIds.view()[usize.from(word[0usize])]);
+      return;
+    }
+    // the symbols' ids live in a local List for the word, so that pushing to out can't touch them
+    mut symbols = List[u32].empty();
+    symbols <=> work.sym;
+    symbols.clear();
+    work.prev.clear();
+    work.next.clear();
+    work.heap.clear();
+    mut i = 0usize;
+    while i < n {
+      symbols.push(byteIds.view()[usize.from(word[i])]);
+      work.prev.push(if i == 0usize { noLink; } else { i - 1usize; });
+      work.next.push(if i + 1usize < n { i + 1usize; } else { noLink; });
+      i = i + 1usize;
+    }
+    imm sym = symbols.viewMut();
+    imm prev = work.prev.viewMut();
+    imm next = work.next.viewMut();
+    i = 0usize;
+    while i + 1usize < n {
+      self.queuePair(sym, next, &mut work.heap, i);
+      i = i + 1usize;
+    }
+    while work.heap.len() > 0usize {
+      imm top = heapPop(&mut work.heap);
+      imm left = usize.from(top & 0xFFFFFFFFu64);
+      if sym[left] == deadSymbol { continue; }
+      imm right = next[left];
+      if right == noLink { continue; }
+      imm key = (u64.from(sym[left]) << 32u64) | u64.from(sym[right]);
+      match merges.getCopy(&key) {
+        case is None { continue; }
+        case imm found Some {
+          // a stale entry: this place's pair has changed since it was queued
+          if (found >> 32u64) != (top >> 32u64) { continue; }
+          sym[left] = u32.from(found & 0xFFFFFFFFu64);
+          sym[right] = deadSymbol;
+          imm after = next[right];
+          next[left] = after;
+          if after != noLink { prev[after] = left; }
+          imm before = prev[left];
+          if before != noLink { self.queuePair(sym, next, &mut work.heap, before); }
+          self.queuePair(sym, next, &mut work.heap, left);
+        }
+      }
+    }
+    mut at = 0usize;
+    while at != noLink {
+      out.push(sym[at]);
+      at = next[at];
+    }
+    symbols <=> work.sym;
+  }
+
+  // -------- decoding --------
+
+  // Append the bytes of the ids to out and answer how many bytes that is; with
+  // 'skipSpecial', the special tokens add nothing. An id outside the vocabulary
+  // is an error and leaves out as it was.
+  pub fn decodeInto(self &, ids &Array[u32], skipSpecial bool, out &mut List[u8]) Result[usize, DecodeError] {
+    imm size = isSpecial.len();
+    mut i = 0usize;
+    while i < ids.len {
+      if usize.from(ids[i]) >= size {
+        return Error[usize, DecodeError](new DecodeError(i, ids[i], size));
+      }
+      i = i + 1usize;
+    }
+    imm before = out.len();
+    i = 0usize;
+    while i < ids.len {
+      imm id = usize.from(ids[i]);
+      if not (skipSpecial and self.special(id)) {
+        mut k = self.startOf(id);
+        imm end = k + self.lengthOf(id);
+        while k < end { out.push(pool.view()[k]); k = k + 1usize; }
+      }
+      i = i + 1usize;
+    }
+    Ok[usize, DecodeError](out.len() - before);
+  }
+
+  // The bytes of the ids
+  pub fn decode(self &, ids &Array[u32]) Result[List[u8], DecodeError] {
+    mut out = List[u8].empty();
+    match self.decodeInto(ids, false, &mut out) {
+      case imm e Error { return Error[List[u8], DecodeError](e.copy()); }
+      case is Ok { }
+    }
+    Ok[List[u8], DecodeError](out);
+  }
+}
+
+// Every byte of b, appended
+fn pushAll(out &mut List[u8], b &Array[u8]) {
+  mut i = 0usize;
+  while i < b.len { out.push(b[i]); i = i + 1usize; }
+}
+
+// -------- a min-heap of u64 --------
+
+fn heapPush(h &mut List[u64], v u64) {
+  h.push(v);
+  imm a = h.viewMut();
+  mut i = a.len - 1usize;
+  while i > 0usize {
+    imm parent = (i - 1usize) / 2usize;
+    if a[parent] <= a[i] { break; }
+    imm t = a[parent];
+    a[parent] = a[i];
+    a[i] = t;
+    i = parent;
+  }
+}
+
+// Remove and answer the least; the heap is not empty
+fn heapPop(h &mut List[u64]) u64 {
+  imm a = h.viewMut();
+  imm top = a[0usize];
+  imm last = a[a.len - 1usize];
+  h.truncate(h.len() - 1usize);
+  if h.len() > 0usize {
+    imm b = h.viewMut();
+    b[0usize] = last;
+    mut i = 0usize;
+    while true {
+      mut least = i;
+      imm l = i * 2usize + 1usize;
+      imm r = l + 1usize;
+      if l < b.len and b[l] < b[least] { least = l; }
+      if r < b.len and b[r] < b[least] { least = r; }
+      if least == i { break; }
+      imm t = b[least];
+      b[least] = b[i];
+      b[i] = t;
+      i = least;
+    }
+  }
+  top;
+}
+
+// -------- UTF-8 across tokens --------
+
+// How many leading bytes of b are whole: all of them, unless b ends in the
+// start of a well-formed multi-byte character that has not all arrived (a
+// token boundary fell inside a character), in which case the length without
+// that start. A program that prints text as ids are generated prints this
+// many bytes of what it has decoded so far and keeps the rest for the next
+// token. Bytes that are not UTF-8 are counted whole.
+pub fn utf8Complete(b &Array[u8]) usize {
+  mut back = 1usize;
+  while back <= 3usize and back <= b.len and (b[b.len - back] & 0xC0u8) == 0x80u8 { back = back + 1usize; }
+  if back > 3usize or back > b.len { return b.len; }
+  // c is the byte that begins the last character, if it begins a multi-byte one
+  imm c = b[b.len - back];
+  mut want = 1usize;
+  if c >= 0xC2u8 and c <= 0xDFu8 { want = 2usize; }
+  elif c >= 0xE0u8 and c <= 0xEFu8 { want = 3usize; }
+  elif c >= 0xF0u8 and c <= 0xF4u8 { want = 4usize; }
+  if want > back { b.len - back; } else { b.len; }
+}

@@ -1,0 +1,185 @@
+// The gguf package: GGUF model files (the container llama.cpp's models come
+// in) read and written in Cone, over a byte slice, with no C library and no
+// call to the OS. 'parse' reads the header, the metadata and the tensor table;
+// 'dequantize' reads a tensor's elements as f32; a 'Writer' makes files, for
+// tests and for synthetic models. This is groundwork for running small open
+// language models locally: it holds a model's description and its tensors'
+// bytes, and runs nothing.
+//
+//   mod show;
+//   import stdio use *;
+//   import collections use *;
+//   import gguf;
+//
+//   fn main() i32 {
+//     mut bytes = List[u8].empty();         // the file's bytes: read into a buffer
+//     // ... fill bytes ...                 // (a mapped file's slice does as well)
+//     match gguf.parse(bytes.view()) {
+//       case imm model Ok {
+//         match model.text("general.architecture") {      // a &str borrowed from model
+//           case imm arch Some { printStr(arch); }
+//           case is None { printStr("no architecture"); }
+//         }
+//         match model.find("token_embd.weight") {          // a tensor-table entry
+//           case imm t Some {
+//             printInt(i64.from(t.elements));
+//             match gguf.tensorToF32(&model, bytes.view(), t) {   // List[f32]
+//               case imm values Ok { printInt(i64.from(values.len())); }
+//               case is Error {}
+//             }
+//           }
+//           case is None {}
+//         }
+//       }
+//       case imm e Error {
+//         imm m = e.message();                // 'gguf: at offset 24: ...'
+//         printStr(m.view());
+//         return 1i32;
+//       }
+//     }
+//     0i32;
+//   }
+//
+// What is here, by name:
+//
+//   parse(bytes)               Result[Model, GgufError]: header, metadata, tensor table
+//   Model                      'version', 'alignment', 'dataStart', 'meta' (a list of
+//                              'MetaEntry'), 'tensors' (a list of 'Tensor'); 'get(key)'
+//                              answers an 'Option[&Value]'; 'text', 'uint', 'int', 'float',
+//                              'flag' and 'list' answer a key's value as that kind (None
+//                              for a missing key or another kind); 'find(name)' and
+//                              'indexOf(name)' find a tensor; 'tensorBytes(file, t)' is a
+//                              view of a tensor's bytes in the file's own bytes
+//   Value                      one metadata value: 'U8' 'I8' 'U16' 'I16' 'U32' 'I32' 'F32'
+//                              'Bool' 'Str' 'U64' 'I64' 'F64', or 'Items', an array of values
+//                              of one 'ValueType' (arrays may hold arrays). 'asU64', 'asI64',
+//                              'asF64', 'asBool', 'asText', 'asList', 'same', 'copy'
+//   Value.Items                'len', 'get(i)', 'text(i)', 'int(i)', 'float(i)': the
+//                              tokenizer's tokens, scores and merges are these
+//   Tensor                     'name', 'kind' (a 'TensorType'), 'dims' (ggml's 'ne': the
+//                              first is a row's length), 'offset' (from 'Model.dataStart'),
+//                              'elements', 'bytes'; 'rowLength', 'rowCount', 'rowBytes'
+//   TensorType                 F32, F16, BF16, Q4_0, Q8_0, Q4_K, Q6_K: 'name', 'code',
+//                              'fromCode', 'blockSize', 'blockBytes', 'isQuantized'
+//   dequantize(kind, src, n, out)   n elements from the start of src, appended to a List[f32]
+//   tensorToF32, rowToF32      a whole tensor, or one row of it, as f32
+//   quantize(kind, values, out)     f32 to the bytes of that type (for making test models)
+//   Writer                     'put' and the 'putText' ... 'putBool' family, 'putTexts',
+//                              'setAlignment', 'addTensor' (stored bytes), 'addValues' (f32,
+//                              quantised), 'finish' (the file's bytes)
+//   halfToF32, f32ToHalf, bfloatToF32, f32ToBfloat   the 16-bit float conversions
+//   GgufError                  'kind' ('ErrorKind'), byte 'offset', 'reason'; 'message()'
+//
+// BLOCK LAYOUTS. A tensor's elements are stored in blocks of a type's
+// 'blockSize' elements and 'blockBytes' bytes, all little-endian, a row
+// (the first dimension) being a whole number of blocks. A "half" is an IEEE
+// binary16. dequant.cone describes each in full, with the formulas.
+//
+//   F32   4 bytes: the float
+//   F16   2 bytes: the half
+//   BF16  2 bytes: the top 16 bits of an f32
+//   Q4_0  32 elements, 18 bytes: d (half), qs[16] (two 4-bit values to a byte,
+//         the low nibbles being elements 0..15 and the high nibbles 16..31);
+//         x = d * (q - 8)
+//   Q8_0  32 elements, 34 bytes: d (half), qs[32] (signed bytes); x = d * q
+//   Q4_K  256 elements, 144 bytes: d (half), dmin (half), scales[12] (eight 6-bit
+//         scales and eight 6-bit mins, packed), qs[128] (4-bit values, the low
+//         nibbles of each 32 bytes being one sub-block of 32 elements and the high
+//         nibbles the next); x = d * scale * q - dmin * min
+//   Q6_K  256 elements, 210 bytes: ql[128] (low 4 bits), qh[64] (high 2 bits),
+//         scales[16] (signed bytes, one to each 16 elements), d (half);
+//         x = d * scale * (q - 32)
+//
+// METHOD CHOICES. These are defaults a later design may revisit. Each says
+// what was chosen and what was left out.
+//
+// - The reader works over a byte slice and holds none of it. 'parse' copies the
+//   metadata and the table into a 'Model' that owns them; a tensor's bytes stay
+//   in the caller's bytes and are reached with 'Model.tensorBytes(file, t)'
+//   (which must be given the same bytes), so a file read into a buffer and a
+//   memory-mapped file are read alike. A Model does not hold the slice itself
+//   (a struct holding a borrow carries its lifetime, and would tie the Model to
+//   one buffer and make an owned mapped file awkward to keep beside it). Left
+//   out: reading from a file or socket as it goes.
+// - Versions 2 and 3, little-endian, which share one layout (64-bit counts and
+//   lengths). Version 1 (32-bit counts) is refused as UnsupportedVersion, and a
+//   big-endian file (the version's bytes reversed) as BigEndian, so that it is
+//   not mistaken for a corrupt one. A file is written as version 3.
+// - Strict where the format is plain. A metadata key written twice, a tensor
+//   name twice, a value type or element type that does not exist, a string or
+//   array that runs past the end, arrays nested more than 8 deep, a tensor
+//   with no dimension, more than 4 (ggml's limit) or a zero one, an element
+//   count or byte count that overflows 64 bits, a first dimension that is not
+//   a whole number of blocks, a tensor offset that is not a multiple of the
+//   alignment or reaches past the end of the file are each an error, with the
+//   file offset of the fault. The counts in the header are checked against the
+//   bytes that are left before anything is reserved, so a hostile count costs
+//   nothing. Tests cut a good file at every length and set every byte to 0
+//   and to 0xFF: 'parse' returns each time.
+// - Lenient where it costs nothing: a Bool is any non-zero byte; bytes after the
+//   last tensor are not looked at; tensors that overlap, and padding that is
+//   not zero, are not looked for; a String is the bytes the file holds,
+//   not checked to be UTF-8 (a vocabulary may hold byte tokens), as 'collections'
+//   says a String's bytes are by convention.
+// - The alignment is 'general.alignment' (any unsigned integer type) if the file
+//   has it, else 32; it must be a power of two up to 2^31. The tensor data begins
+//   at the first multiple of the alignment after the tensor table
+//   ('Model.dataStart'), and each tensor's offset is from there. A file with no
+//   tensors needs no data section.
+// - The tensor types read are F32, F16, BF16, Q4_0, Q8_0, Q4_K and Q6_K, the
+//   five asked for and two cheap neighbours (BF16 is the half-width float some
+//   models ship in; Q4_0 is the simplest 4-bit type). A file with a tensor of any
+//   other type (Q4_1, Q5_0, Q5_1, Q2_K, Q3_K, Q5_K, Q8_K, the IQ types, I8 to I64,
+//   F64) is refused whole, as BadTensorType at that tensor's entry; reading its
+//   metadata alone is not offered. Left out: those types, split models (the
+//   'split.*' keys) and nothing that runs a model.
+// - Metadata is a list of entries in file order, looked up by a scan (a model has
+//   a few dozen keys). An array is a 'List' of 'Value's with its element type,
+//   so a 150000-token vocabulary is 150000 Values, a few megabytes and an
+//   allocation to each string; a packed array of strings or numbers is left out.
+//   The tokenizer's 'tokenizer.ggml.tokens', '.scores', '.token_type' and
+//   '.merges' are arrays like any other: 'Model.list(key)' then 'text(i)',
+//   'float(i)' and 'int(i)'.
+// - Elements are read as f32 by indexing bytes, never by casting a pointer, so
+//   unaligned and mapped data are no different, and every machine gets the
+//   same bits. The order of the float operations in each block is the order of
+//   ggml's reference dequantisation (d * q, then the min subtracted for Q4_K).
+//   Left out: reading straight into a GPU buffer, a dequantising matrix product,
+//   threads, and SIMD (each is a later package's). Speed is measured, not
+//   chased: examples/throughput.cone prints it (about 600 to 1000 million
+//   elements a second for each type and 500 for Q6_K in a release build on the
+//   author's x86-64 laptop, bounds checks on).
+// - Quantising is for making test models. Q8_0 and Q4_0 follow ggml's
+//   reference quantiser (round half away from zero for Q8_0; the value of largest
+//   magnitude takes -8 for Q4_0), and the tests pin their bytes against a Python
+//   transcription of it. Q4_K and Q6_K are the package's own simple quantisers:
+//   each sub-block's scale is taken from its range, not searched for the least
+//   error as ggml's is, so a block made here is valid and reads back within a step
+//   of its scale, not within ggml's smaller error. A model quantised by ggml is
+//   read by 'dequantize' the same whoever made it.
+// - The Writer writes what it is given and refuses what the reader would: a
+//   tensor whose bytes are not the number its type and dimensions need, a name
+//   twice, an array holding a value of a type other than its element type, an
+//   alignment that is no power of two. It pads to the alignment with zeros. It
+//   writes no key of its own except 'general.alignment' when 'setAlignment' is
+//   called.
+// - 'Value.same' compares floats by their bits (a NaN equals itself). Cone's
+//   '!=' on a NaN is false (measured), so a test for a NaN is 'not (x == x)'.
+// - Written in Cone with no C call, no global and no thread-local.
+//
+// UNCERTAIN, AND HOW IT IS CHECKED. The format is written from the author's
+// knowledge of ggml (the GGUF specification and ggml's quantisation source), with
+// no copy of either to hand and no real model file (none is downloaded). The
+// header, the metadata value types and the tensor type numbers (F32 0, F16 1,
+// Q4_0 2, Q8_0 8, Q4_K 12, Q6_K 14, BF16 30) are certain. The Q4_0 and Q8_0
+// layouts are simple and certain. The Q4_K and Q6_K layouts, which are
+// intricate (the packed scales and mins of Q4_K, the split of Q6_K's 6-bit values
+// across ql and qh), are written from memory of ggml's 'get_scale_min_k4' and
+// 'dequantize_row_q6_K', and tests/dequant.cone checks them against values worked
+// out by hand from that description, not against a file ggml wrote: the
+// one thing still to do is to read a real Q4_K_M model and compare a tensor with
+// llama.cpp's.
+
+mod gguf;
+
+import collections use String, List;
