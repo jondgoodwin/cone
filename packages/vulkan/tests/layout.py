@@ -21,10 +21,10 @@ srcdir = os.path.join(here, '..', 'src')
 # The package's files, in the order their structs are listed: every one of
 # them, so a file added to src/ must be added here too
 files = ['vulkan.cone', 'handles.cone', 'constants.cone', 'structs.cone',
-         'commandstructs.cone', 'pipelinestructs.cone', 'fntypes.cone']
+         'commandstructs.cone', 'pipelinestructs.cone', 'raystructs.cone', 'fntypes.cone']
 # The files of functions: no C struct is declared in them (the tables of
 # addresses, whose fields are usize), so layout has nothing to check there
-function_files = ['load.cone', 'instancefns.cone', 'devicefns.cone']
+function_files = ['load.cone', 'instancefns.cone', 'devicefns.cone', 'rayfns.cone']
 assert sorted(files + function_files) == sorted(f for f in os.listdir(srcdir) if f.endswith('.cone')), \
     'layout.py lists a different set of files than src/ holds'
 src = ''
@@ -50,11 +50,11 @@ import stdio use *;
 import libc;
 import vulkan;
 
-fn size(name &Array[u8], n usize, a usize) {
+fn size(name &str, n usize, a usize) {
   printStr(name); printStr(" size "); printUInt(u64.from(n)); printStr(" align "); printUInt(u64.from(a)); printStr("\\n");
 }
 
-fn o(name &Array[u8], base usize, p *u8) {
+fn o(name &str, base usize, p *u8) {
   printStr(name); printStr(" "); printUInt(u64.from((p as usize) - base)); printStr("\\n");
 }
 

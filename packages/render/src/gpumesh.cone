@@ -105,6 +105,12 @@ fn filledBuffer(device &mut Device, data *u8, size u64, usage u32) Buffer {
   b;
 }
 
+// The usage that lets a ray-tracing structure be built from a buffer (gpu's raytracing.cone), on a device that has
+// ray tracing; none on one that does not, so a card without it uploads exactly as before
+fn traceable(device &Device) u32 {
+  if device.rayTracing { BUFFER_USAGE_ACCELERATION_STRUCTURE_INPUT; } else { 0u32; };
+}
+
 // The smallest sphere about the middle of its bounds holding every position
 fn boundingSphere(positions &Array[Vec3], center &mut Vec3, radius &mut f32) {
   if positions.len == 0usize {
@@ -139,7 +145,7 @@ fn uploadTriangles(device &mut Device, m &Mesh) GpuMesh {
   if n == 0usize or m.indices.len() == 0usize { return g; }
   g.vertexCount = u32.from(n);
   g.indexCount = u32.from(m.indices.len());
-  g.positions = filledBuffer(device, bytesOf[Vec3](&m.positions), u64.from(n) * 12u64, BUFFER_USAGE_VERTEX);
+  g.positions = filledBuffer(device, bytesOf[Vec3](&m.positions), u64.from(n) * 12u64, BUFFER_USAGE_VERTEX | traceable(device));
   if m.normals.len() == n {
     g.normals = filledBuffer(device, bytesOf[Vec3](&m.normals), u64.from(n) * 12u64, BUFFER_USAGE_VERTEX);
   } else {
@@ -165,7 +171,7 @@ fn uploadTriangles(device &mut Device, m &Mesh) GpuMesh {
   if m.tangents.len() == n {
     g.tangents = filledBuffer(device, bytesOf[Vec4](&m.tangents), u64.from(n) * 16u64, BUFFER_USAGE_VERTEX);
   }
-  g.indices = filledBuffer(device, bytesOf[u32](&m.indices), u64.from(g.indexCount) * 4u64, BUFFER_USAGE_INDEX);
+  g.indices = filledBuffer(device, bytesOf[u32](&m.indices), u64.from(g.indexCount) * 4u64, BUFFER_USAGE_INDEX | traceable(device));
   if m.groups.len() == 0usize {
     g.groups.push(new Group(0u32, g.indexCount, 0u32));
   } else {

@@ -1,0 +1,339 @@
+// Ray tracing on a real GPU: an acceleration structure built, rays cast into it by a compute shader
+// with a ray query, and the hits read back. Only a failure prints.
+//
+// With ray tracing (an RTX or Arc GPU; GPU_RAY_TRACING unset):
+//   - 'device.rayTracing' and 'adapter.supportsRayTracing()' agree;
+//   - one bottom-level structure over a quad (two triangles, positions and indices in buffers made with
+//     BUFFER_USAGE_ACCELERATION_STRUCTURE_INPUT), a top level of two instances of it: a quad of half-size 1
+//     at z = 5 (custom index 7), a quad of half-size 0.5 at z = 3 (custom index 9);
+//   - eight rays (raytracing.slang) and what each hits: the near small quad before the far large one, the
+//     large one around the small, a miss, the small quad's second triangle, rays coming down from above,
+//     one parallel to the quads (a miss), and one starting between the quads;
+//   - the two sides of one quad are told apart (the front-face flag differs between a ray up and a ray down);
+//   - no failure and no validation message (synchronization validation included).
+// Without it (GPU_RAY_TRACING=off, or a GPU that lacks it, as the Intel UHD 770):
+//   - 'device.rayTracing' is false, and asking for a structure or an acceleration-structure buffer is refused
+//     (three failures, nothing made), so a card without ray tracing is exactly as before.
+//
+// GPU_POWER_PREFERENCE=low-power tests the integrated GPU where there are two. With GPU_RT_REPORT set it
+// prints the adapter and whether it has ray tracing.
+
+mod raytracing;
+
+import testing use *;
+import stdio use *;
+import libc;
+import geomath use *;
+import gpu use *;
+
+fn preference() u32 {
+  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  if (env as usize) != 0usize and libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { return POWER_PREFERENCE_LOW_POWER; }
+  POWER_PREFERENCE_HIGH_PERFORMANCE;
+}
+
+fn rayTracingOff() bool {
+  imm env = libc.getenv("GPU_RAY_TRACING");
+  (env as usize) != 0usize and libc.strcmp(cstr.fromPtr(env), "off") == 0i32;
+}
+
+fn word(p *u8, offset usize) u32 { *((p + offset) as *u32); }
+fn real(p *u8, offset usize) f32 { *((p + offset) as *f32); }
+
+// Ray 'ray' of the results (5 words: hit, t, custom index, primitive, front face): a hit or a miss, at
+// 't', of instance 'custom', triangle 'primitive' (99: not checked)
+fn expectRay(r *u8, ray usize, hit u32, t f32, custom u32, primitive u32, label &str) {
+  imm base = ray * 20usize;
+  expectUInt(u64.from(word(r, base)), u64.from(hit), label);
+  if hit == 1u32 {
+    imm d = real(r, base + 4usize) - t;
+    expect(d < 0.001 and d > -0.001, label);
+    expectUInt(u64.from(word(r, base + 8usize)), u64.from(custom), label);
+    if primitive != 99u32 { expectUInt(u64.from(word(r, base + 12usize)), u64.from(primitive), label); }
+  }
+}
+
+fn main() i32 {
+  mut instance = Instance.create("raytracing");
+  require(instance.isValid(), "a Vulkan 1.3 instance");
+  imm report = (libc.getenv("GPU_RT_REPORT") as usize) != 0usize;
+  mut none = Surface.none();
+  mut adapter = instance.requestAdapter(&none, preference());
+  require(adapter.isValid(), "an adapter");
+  imm supported = adapter.supportsRayTracing();
+  imm off = rayTracingOff();
+  mut device = adapter.requestDeviceWith(!off);
+  require(device.isValid(), "a device");
+  if report {
+    printStr("adapter: ");
+    printStr(adapter.name.view());
+    printStr(if supported { "\nray tracing supported"; } else { "\nno ray tracing"; });
+    printStr(if off { ", asked off\n"; } else { "\n"; });
+  }
+  expectBool(device.rayTracing, supported and !off, "the device has ray tracing when the GPU does and it was asked for");
+
+  if !device.rayTracing {
+    // Refused, with nothing made
+    mut top = device.createTopLevel(4u32);
+    expectBool(top.isValid(), false, "a top level refused without ray tracing");
+    mut buffer = device.createBuffer(256u64, BUFFER_USAGE_ACCELERATION_STRUCTURE_INPUT | BUFFER_USAGE_COPY_DST);
+    expectBool(buffer.isValid(), false, "an acceleration-structure buffer refused without ray tracing");
+    mut bottom = device.createBottomLevel(&buffer, 4u32, &buffer, 6u32);
+    expectBool(bottom.isValid(), false, "a bottom level refused without ray tracing");
+    expectUInt(u64.from(failures()), 3u64, "three refusals, and no Vulkan call failed");
+    expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
+    // The checks of the ray-tracing half are skipped here, and counted as passed, so that the output this
+    // test pins ('35 checks passed') is the same on every GPU
+    mut skipped = 0u32;
+    while skipped < 26u32 {
+      expect(true, "a ray-tracing check, skipped: this device has no ray tracing");
+      skipped = skipped + 1u32;
+    }
+    done();
+    return 0;
+  }
+
+  // ---- The geometry: a quad of two triangles in the xy plane, half-size 1 ----
+  imm positions Array[f32, 12] = [-1., -1., 0., 1., -1., 0., 1., 1., 0., -1., 1., 0.];
+  imm indices Array[u32, 6] = [0u32, 1u32, 2u32, 0u32, 2u32, 3u32];
+  mut positionBuffer = device.createBuffer(48u64, BUFFER_USAGE_ACCELERATION_STRUCTURE_INPUT | BUFFER_USAGE_COPY_DST);
+  mut indexBuffer = device.createBuffer(24u64, BUFFER_USAGE_ACCELERATION_STRUCTURE_INPUT | BUFFER_USAGE_COPY_DST);
+  require(positionBuffer.isValid() and indexBuffer.isValid(), "the input buffers");
+  device.queue.writeBuffer(&positionBuffer, 0u64, &positions as *u8, 48u64);
+  device.queue.writeBuffer(&indexBuffer, 0u64, &indices as *u8, 24u64);
+  mut bottom = device.createBottomLevel(&positionBuffer, 4u32, &indexBuffer, 6u32);
+  mut top = device.createTopLevel(4u32);
+  require(bottom.isValid() and top.isValid(), "the bottom and top levels");
+
+  // Instance 0: the large quad at z = 5, custom index 7; instance 1: the small one at z = 3, custom index 9
+  imm large = new AccelerationStructureInstance(transform: [1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 5.],
+    indexAndMask: 7u32 | (0xFFu32 << 24u32), flags: INSTANCE_FLAG_TRIANGLE_FACING_CULL_DISABLE << 24u32, structure: bottom.address);
+  imm small = new AccelerationStructureInstance(transform: [0.5, 0., 0., 0., 0., 0.5, 0., 0., 0., 0., 1., 3.],
+    indexAndMask: 9u32 | (0xFFu32 << 24u32), flags: INSTANCE_FLAG_TRIANGLE_FACING_CULL_DISABLE << 24u32, structure: bottom.address);
+  device.queue.writeBuffer(&top.instances, 0u64, &large as *u8, ACCELERATION_STRUCTURE_INSTANCE_BYTES);
+  device.queue.writeBuffer(&top.instances, 64u64, &small as *u8, ACCELERATION_STRUCTURE_INSTANCE_BYTES);
+
+  // ---- The shader, its layout and its bind group ----
+  mut results = device.createBuffer(160u64, BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_SRC);
+  mut readback = device.createBuffer(256u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  imm r = readback.mappedRange();
+  imm entries = [
+    new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_COMPUTE, kind: BINDING_KIND_ACCELERATION_STRUCTURE),
+    new BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_COMPUTE, bufferType: BUFFER_BINDING_TYPE_STORAGE)];
+  mut groupLayout = device.createBindGroupLayout(&entries);
+  imm groupLayouts = [&groupLayout];
+  mut layout = device.createPipelineLayout(&groupLayouts, 0u32);
+  mut shader = device.createShaderModule(&RAYTRACING_SPIRV);
+  require(groupLayout.isValid() and layout.isValid() and shader.isValid(), "the layout and the shader");
+  imm desc = new ComputePipelineDescriptor(layout: &layout, module: &shader, entryPoint: "castMain");
+  mut pipeline = device.createComputePipeline(&desc);
+  require(pipeline.isValid(), "the compute pipeline");
+  imm groupEntries = [BindGroupEntry.accelerationStructure(0u32, &top), BindGroupEntry.buffer(1u32, &results)];
+  mut group = device.createBindGroup(&groupLayout, &groupEntries);
+  require(group.isValid(), "the bind group");
+  require(failures() == 0u32, "everything made");
+
+  // ---- Build, cast, read back ----
+  mut encoder = device.createCommandEncoder();
+  encoder.buildAccelerationStructure(&bottom, 0u32);
+  encoder.buildAccelerationStructure(&top, 2u32);
+  {
+    mut pass = encoder.beginComputePass();
+    pass.setPipeline(&pipeline);
+    pass.setBindGroup(0u32, &group);
+    pass.dispatchWorkgroups(1u32);
+    pass.end();
+  }
+  encoder.copyBufferToBuffer(&results, 0u64, &readback, 0u64, 160u64);
+  device.queue.submit(encoder.finish());
+  device.queue.releaseBuffer(&mut bottom.scratch);
+  device.endFrame();
+  device.waitIdle();
+
+  expectRay(r, 0usize, 1u32, 3., 9u32, 0u32, "ray 0: the small quad's first triangle, before the large one");
+  expectRay(r, 1usize, 1u32, 5., 7u32, 99u32, "ray 1: the large quad, around the small one");
+  expectRay(r, 2usize, 0u32, 0., 0u32, 0u32, "ray 2: a miss");
+  expectRay(r, 3usize, 1u32, 3., 9u32, 1u32, "ray 3: the small quad's second triangle");
+  expectRay(r, 4usize, 1u32, 5., 7u32, 99u32, "ray 4: down from above, the large quad first");
+  expectRay(r, 5usize, 1u32, 5., 7u32, 99u32, "ray 5: down from above, beside the small one");
+  expectRay(r, 6usize, 0u32, 0., 0u32, 0u32, "ray 6: parallel to the quads, a miss");
+  expectRay(r, 7usize, 1u32, 1., 7u32, 99u32, "ray 7: from between the quads, the large one");
+  expect(word(r, 1usize * 20usize + 16usize) != word(r, 5usize * 20usize + 16usize), "the two sides of the large quad told apart");
+  expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
+  expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
+  done();
+}
+
+// spirv-begin raytracing.spv RAYTRACING_SPIRV
+// Written by tools/shaders/shaders.py from raytracing.slang (sha256 8d8ec36956f75032fadd1a5bd6f7e42d856e296aa671a46f387de7ede6ea9982): do not edit.
+imm RAYTRACING_SPIRV Array[u32, 1008] = [
+  0x07230203u32, 0x00010500u32, 0x00280000u32, 0x000000e0u32, 0x00000000u32, 0x00020011u32,
+  0x00001178u32, 0x00020011u32, 0x00000001u32, 0x0006000au32, 0x5f565053u32, 0x5f52484bu32,
+  0x5f796172u32, 0x72657571u32, 0x00000079u32, 0x000b000au32, 0x5f565053u32, 0x5f52484bu32,
+  0x726f7473u32, 0x5f656761u32, 0x66667562u32, 0x735f7265u32, 0x61726f74u32, 0x635f6567u32,
+  0x7373616cu32, 0x00000000u32, 0x0003000eu32, 0x00000000u32, 0x00000001u32, 0x0009000fu32,
+  0x00000005u32, 0x00000002u32, 0x74736163u32, 0x6e69614du32, 0x00000000u32, 0x000000a1u32,
+  0x000000cdu32, 0x0000003eu32, 0x00060010u32, 0x00000002u32, 0x00000011u32, 0x00000008u32,
+  0x00000001u32, 0x00000001u32, 0x00030003u32, 0x0000000bu32, 0x00000001u32, 0x00040005u32,
+  0x00000008u32, 0x6769726fu32, 0x00006e69u32, 0x00040005u32, 0x00000008u32, 0x6769726fu32,
+  0x00006e69u32, 0x00040005u32, 0x00000008u32, 0x6769726fu32, 0x00006e69u32, 0x00040005u32,
+  0x00000008u32, 0x6769726fu32, 0x00006e69u32, 0x00040005u32, 0x00000008u32, 0x6769726fu32,
+  0x00006e69u32, 0x00040005u32, 0x00000008u32, 0x6769726fu32, 0x00006e69u32, 0x00040005u32,
+  0x00000008u32, 0x6769726fu32, 0x00006e69u32, 0x00040005u32, 0x00000008u32, 0x6769726fu32,
+  0x00006e69u32, 0x00040005u32, 0x00000008u32, 0x6769726fu32, 0x00006e69u32, 0x00050005u32,
+  0x00000009u32, 0x65726964u32, 0x6f697463u32, 0x0000006eu32, 0x00050005u32, 0x00000009u32,
+  0x65726964u32, 0x6f697463u32, 0x0000006eu32, 0x00050005u32, 0x00000009u32, 0x65726964u32,
+  0x6f697463u32, 0x0000006eu32, 0x00050005u32, 0x00000009u32, 0x65726964u32, 0x6f697463u32,
+  0x0000006eu32, 0x00050005u32, 0x00000009u32, 0x65726964u32, 0x6f697463u32, 0x0000006eu32,
+  0x00030005u32, 0x0000000fu32, 0x00000071u32, 0x00030005u32, 0x0000000fu32, 0x00000071u32,
+  0x00030005u32, 0x00000012u32, 0x00746968u32, 0x00030005u32, 0x00000012u32, 0x00746968u32,
+  0x00040005u32, 0x00000013u32, 0x74737563u32, 0x00006d6fu32, 0x00040005u32, 0x00000013u32,
+  0x74737563u32, 0x00006d6fu32, 0x00050005u32, 0x00000014u32, 0x6d697270u32, 0x76697469u32,
+  0x00000065u32, 0x00050005u32, 0x00000014u32, 0x6d697270u32, 0x76697469u32, 0x00000065u32,
+  0x00040005u32, 0x00000015u32, 0x6e6f7266u32, 0x00000074u32, 0x00040005u32, 0x00000015u32,
+  0x6e6f7266u32, 0x00000074u32, 0x00030005u32, 0x00000017u32, 0x00000074u32, 0x00030005u32,
+  0x00000017u32, 0x00000074u32, 0x00030005u32, 0x0000003fu32, 0x00000069u32, 0x00040005u32,
+  0x000000a1u32, 0x6e656373u32, 0x00000065u32, 0x00070005u32, 0x000000cau32, 0x74535752u32,
+  0x74637572u32, 0x64657275u32, 0x66667542u32, 0x00007265u32, 0x00060006u32, 0x000000cau32,
+  0x00000000u32, 0x656d5f5fu32, 0x7265626du32, 0x00000030u32, 0x00040005u32, 0x000000cdu32,
+  0x75736572u32, 0x0073746cu32, 0x00050005u32, 0x00000002u32, 0x74736163u32, 0x6e69614du32,
+  0x00000000u32, 0x00040047u32, 0x0000003eu32, 0x0000000bu32, 0x0000001cu32, 0x00040047u32,
+  0x000000a1u32, 0x00000021u32, 0x00000000u32, 0x00040047u32, 0x000000a1u32, 0x00000022u32,
+  0x00000000u32, 0x00040047u32, 0x000000c8u32, 0x00000006u32, 0x00000004u32, 0x00040047u32,
+  0x000000cbu32, 0x00000006u32, 0x00000004u32, 0x00030047u32, 0x000000cau32, 0x00000002u32,
+  0x00050048u32, 0x000000cau32, 0x00000000u32, 0x00000023u32, 0x00000000u32, 0x00040047u32,
+  0x000000cdu32, 0x00000021u32, 0x00000001u32, 0x00040047u32, 0x000000cdu32, 0x00000022u32,
+  0x00000000u32, 0x00020013u32, 0x00000001u32, 0x00030021u32, 0x00000003u32, 0x00000001u32,
+  0x00030016u32, 0x00000005u32, 0x00000020u32, 0x00040017u32, 0x00000006u32, 0x00000005u32,
+  0x00000003u32, 0x00040020u32, 0x00000007u32, 0x00000007u32, 0x00000006u32, 0x00021178u32,
+  0x0000000du32, 0x00040020u32, 0x0000000eu32, 0x00000007u32, 0x0000000du32, 0x00040015u32,
+  0x00000010u32, 0x00000020u32, 0x00000000u32, 0x00040020u32, 0x00000011u32, 0x00000007u32,
+  0x00000010u32, 0x00040020u32, 0x00000016u32, 0x00000007u32, 0x00000005u32, 0x00040015u32,
+  0x00000018u32, 0x00000020u32, 0x00000001u32, 0x00040020u32, 0x00000019u32, 0x00000007u32,
+  0x00000018u32, 0x00040017u32, 0x0000003bu32, 0x00000010u32, 0x00000003u32, 0x00040020u32,
+  0x0000003du32, 0x00000001u32, 0x0000003bu32, 0x00020014u32, 0x00000040u32, 0x0004002bu32,
+  0x00000010u32, 0x00000042u32, 0x00000000u32, 0x0004002bu32, 0x00000005u32, 0x00000045u32,
+  0x3e99999au32, 0x0004002bu32, 0x00000005u32, 0x00000046u32, 0x3dcccccdu32, 0x0004002bu32,
+  0x00000005u32, 0x00000047u32, 0x00000000u32, 0x0006002cu32, 0x00000006u32, 0x00000044u32,
+  0x00000045u32, 0x00000046u32, 0x00000047u32, 0x0006002cu32, 0x00000006u32, 0x0000004au32,
+  0x00000047u32, 0x00000047u32, 0x00000047u32, 0x0004002bu32, 0x00000010u32, 0x0000004eu32,
+  0x00000001u32, 0x0004002bu32, 0x00000005u32, 0x00000051u32, 0x3f4ccccdu32, 0x0006002cu32,
+  0x00000006u32, 0x00000050u32, 0x00000051u32, 0x00000051u32, 0x00000047u32, 0x0004002bu32,
+  0x00000010u32, 0x00000055u32, 0x00000002u32, 0x0004002bu32, 0x00000005u32, 0x00000058u32,
+  0x40000000u32, 0x0006002cu32, 0x00000006u32, 0x00000057u32, 0x00000058u32, 0x00000058u32,
+  0x00000047u32, 0x0004002bu32, 0x00000010u32, 0x0000005cu32, 0x00000003u32, 0x0004002bu32,
+  0x00000005u32, 0x0000005fu32, 0xbe99999au32, 0x0006002cu32, 0x00000006u32, 0x0000005eu32,
+  0x0000005fu32, 0x00000046u32, 0x00000047u32, 0x0004002bu32, 0x00000010u32, 0x00000063u32,
+  0x00000004u32, 0x0004002bu32, 0x00000005u32, 0x00000066u32, 0x3e4ccccdu32, 0x0004002bu32,
+  0x00000005u32, 0x00000067u32, 0x41200000u32, 0x0006002cu32, 0x00000006u32, 0x00000065u32,
+  0x00000066u32, 0x00000066u32, 0x00000067u32, 0x0004002bu32, 0x00000005u32, 0x0000006au32,
+  0xbf800000u32, 0x0006002cu32, 0x00000006u32, 0x00000069u32, 0x00000047u32, 0x00000047u32,
+  0x0000006au32, 0x0004002bu32, 0x00000005u32, 0x0000006eu32, 0x3f800000u32, 0x0006002cu32,
+  0x00000006u32, 0x0000006du32, 0x00000047u32, 0x00000047u32, 0x0000006eu32, 0x0004002bu32,
+  0x00000010u32, 0x00000072u32, 0x00000005u32, 0x0006002cu32, 0x00000006u32, 0x00000074u32,
+  0x00000051u32, 0x00000051u32, 0x00000067u32, 0x0006002cu32, 0x00000006u32, 0x00000076u32,
+  0x00000047u32, 0x00000047u32, 0x0000006au32, 0x0004002bu32, 0x00000010u32, 0x0000007au32,
+  0x00000006u32, 0x0006002cu32, 0x00000006u32, 0x0000007cu32, 0x00000066u32, 0x00000066u32,
+  0x00000047u32, 0x0006002cu32, 0x00000006u32, 0x0000007eu32, 0x0000006eu32, 0x00000047u32,
+  0x00000047u32, 0x0004002bu32, 0x00000010u32, 0x00000082u32, 0x00000007u32, 0x0004002bu32,
+  0x00000005u32, 0x00000085u32, 0x40800000u32, 0x0006002cu32, 0x00000006u32, 0x00000084u32,
+  0x00000066u32, 0x00000066u32, 0x00000085u32, 0x0004002bu32, 0x00000018u32, 0x00000089u32,
+  0x00000000u32, 0x0004002bu32, 0x00000018u32, 0x00000091u32, 0x00000001u32, 0x0004002bu32,
+  0x00000005u32, 0x00000093u32, 0x3a83126fu32, 0x0004002bu32, 0x00000005u32, 0x00000097u32,
+  0x42c80000u32, 0x000214ddu32, 0x0000009eu32, 0x00040020u32, 0x000000a0u32, 0x00000000u32,
+  0x0000009eu32, 0x0004002bu32, 0x00000010u32, 0x000000a2u32, 0x000000ffu32, 0x00040020u32,
+  0x000000c8u32, 0x0000000cu32, 0x00000010u32, 0x0003001du32, 0x000000cbu32, 0x00000010u32,
+  0x0003001eu32, 0x000000cau32, 0x000000cbu32, 0x00040020u32, 0x000000ccu32, 0x0000000cu32,
+  0x000000cau32, 0x0004003bu32, 0x0000003du32, 0x0000003eu32, 0x00000001u32, 0x0004003bu32,
+  0x000000a0u32, 0x000000a1u32, 0x00000000u32, 0x0004003bu32, 0x000000ccu32, 0x000000cdu32,
+  0x0000000cu32, 0x00050036u32, 0x00000001u32, 0x00000002u32, 0x00000000u32, 0x00000003u32,
+  0x000200f8u32, 0x00000004u32, 0x0004003bu32, 0x00000007u32, 0x00000008u32, 0x00000007u32,
+  0x0004003bu32, 0x00000007u32, 0x00000009u32, 0x00000007u32, 0x0004003bu32, 0x0000000eu32,
+  0x0000000fu32, 0x00000007u32, 0x0004003bu32, 0x00000011u32, 0x00000012u32, 0x00000007u32,
+  0x0004003bu32, 0x00000011u32, 0x00000013u32, 0x00000007u32, 0x0004003bu32, 0x00000011u32,
+  0x00000014u32, 0x00000007u32, 0x0004003bu32, 0x00000011u32, 0x00000015u32, 0x00000007u32,
+  0x0004003bu32, 0x00000016u32, 0x00000017u32, 0x00000007u32, 0x0004003bu32, 0x00000019u32,
+  0x0000001au32, 0x00000007u32, 0x0004003du32, 0x0000003bu32, 0x0000003cu32, 0x0000003eu32,
+  0x00050051u32, 0x00000010u32, 0x0000003fu32, 0x0000003cu32, 0x00000000u32, 0x000500aau32,
+  0x00000040u32, 0x00000041u32, 0x0000003fu32, 0x00000042u32, 0x000300f7u32, 0x0000001du32,
+  0x00000000u32, 0x000400fau32, 0x00000041u32, 0x0000001bu32, 0x0000001cu32, 0x000200f8u32,
+  0x0000001bu32, 0x0003003eu32, 0x00000008u32, 0x00000044u32, 0x000200f9u32, 0x0000001du32,
+  0x000200f8u32, 0x0000001cu32, 0x0003003eu32, 0x00000008u32, 0x0000004au32, 0x000200f9u32,
+  0x0000001du32, 0x000200f8u32, 0x0000001du32, 0x000500aau32, 0x00000040u32, 0x0000004du32,
+  0x0000003fu32, 0x0000004eu32, 0x000300f7u32, 0x0000001fu32, 0x00000000u32, 0x000400fau32,
+  0x0000004du32, 0x0000001eu32, 0x0000001fu32, 0x000200f8u32, 0x0000001eu32, 0x0003003eu32,
+  0x00000008u32, 0x00000050u32, 0x000200f9u32, 0x0000001fu32, 0x000200f8u32, 0x0000001fu32,
+  0x000500aau32, 0x00000040u32, 0x00000054u32, 0x0000003fu32, 0x00000055u32, 0x000300f7u32,
+  0x00000021u32, 0x00000000u32, 0x000400fau32, 0x00000054u32, 0x00000020u32, 0x00000021u32,
+  0x000200f8u32, 0x00000020u32, 0x0003003eu32, 0x00000008u32, 0x00000057u32, 0x000200f9u32,
+  0x00000021u32, 0x000200f8u32, 0x00000021u32, 0x000500aau32, 0x00000040u32, 0x0000005bu32,
+  0x0000003fu32, 0x0000005cu32, 0x000300f7u32, 0x00000023u32, 0x00000000u32, 0x000400fau32,
+  0x0000005bu32, 0x00000022u32, 0x00000023u32, 0x000200f8u32, 0x00000022u32, 0x0003003eu32,
+  0x00000008u32, 0x0000005eu32, 0x000200f9u32, 0x00000023u32, 0x000200f8u32, 0x00000023u32,
+  0x000500aau32, 0x00000040u32, 0x00000062u32, 0x0000003fu32, 0x00000063u32, 0x000300f7u32,
+  0x00000026u32, 0x00000000u32, 0x000400fau32, 0x00000062u32, 0x00000024u32, 0x00000025u32,
+  0x000200f8u32, 0x00000024u32, 0x0003003eu32, 0x00000008u32, 0x00000065u32, 0x0003003eu32,
+  0x00000009u32, 0x00000069u32, 0x000200f9u32, 0x00000026u32, 0x000200f8u32, 0x00000025u32,
+  0x0003003eu32, 0x00000009u32, 0x0000006du32, 0x000200f9u32, 0x00000026u32, 0x000200f8u32,
+  0x00000026u32, 0x000500aau32, 0x00000040u32, 0x00000071u32, 0x0000003fu32, 0x00000072u32,
+  0x000300f7u32, 0x00000028u32, 0x00000000u32, 0x000400fau32, 0x00000071u32, 0x00000027u32,
+  0x00000028u32, 0x000200f8u32, 0x00000027u32, 0x0003003eu32, 0x00000008u32, 0x00000074u32,
+  0x0003003eu32, 0x00000009u32, 0x00000076u32, 0x000200f9u32, 0x00000028u32, 0x000200f8u32,
+  0x00000028u32, 0x000500aau32, 0x00000040u32, 0x00000079u32, 0x0000003fu32, 0x0000007au32,
+  0x000300f7u32, 0x0000002au32, 0x00000000u32, 0x000400fau32, 0x00000079u32, 0x00000029u32,
+  0x0000002au32, 0x000200f8u32, 0x00000029u32, 0x0003003eu32, 0x00000008u32, 0x0000007cu32,
+  0x0003003eu32, 0x00000009u32, 0x0000007eu32, 0x000200f9u32, 0x0000002au32, 0x000200f8u32,
+  0x0000002au32, 0x000500aau32, 0x00000040u32, 0x00000081u32, 0x0000003fu32, 0x00000082u32,
+  0x000300f7u32, 0x0000002cu32, 0x00000000u32, 0x000400fau32, 0x00000081u32, 0x0000002bu32,
+  0x0000002cu32, 0x000200f8u32, 0x0000002bu32, 0x0003003eu32, 0x00000008u32, 0x00000084u32,
+  0x0003003eu32, 0x00000009u32, 0x0000006du32, 0x000200f9u32, 0x0000002cu32, 0x000200f8u32,
+  0x0000002cu32, 0x0004003du32, 0x00000006u32, 0x0000008bu32, 0x00000008u32, 0x0004003du32,
+  0x00000006u32, 0x0000008fu32, 0x00000009u32, 0x0004003du32, 0x0000009eu32, 0x0000009fu32,
+  0x000000a1u32, 0x00091179u32, 0x0000000fu32, 0x0000009fu32, 0x00000042u32, 0x000000a2u32,
+  0x0000008bu32, 0x00000093u32, 0x0000008fu32, 0x00000097u32, 0x000200f9u32, 0x0000002du32,
+  0x000200f8u32, 0x0000002du32, 0x000400f6u32, 0x00000034u32, 0x00000032u32, 0x00000000u32,
+  0x000200f9u32, 0x0000002eu32, 0x000200f8u32, 0x0000002eu32, 0x0004117du32, 0x00000040u32,
+  0x000000a4u32, 0x0000000fu32, 0x000300f7u32, 0x0000002fu32, 0x00000000u32, 0x000400fau32,
+  0x000000a4u32, 0x0000002fu32, 0x00000033u32, 0x000200f8u32, 0x0000002fu32, 0x0005117fu32,
+  0x00000010u32, 0x000000a6u32, 0x0000000fu32, 0x00000042u32, 0x000500aau32, 0x00000040u32,
+  0x000000a7u32, 0x000000a6u32, 0x00000042u32, 0x000300f7u32, 0x00000031u32, 0x00000000u32,
+  0x000400fau32, 0x000000a7u32, 0x00000030u32, 0x00000031u32, 0x000200f8u32, 0x00000030u32,
+  0x0002117cu32, 0x0000000fu32, 0x000200f9u32, 0x00000031u32, 0x000200f8u32, 0x00000031u32,
+  0x000200f9u32, 0x00000032u32, 0x000200f8u32, 0x00000032u32, 0x000200f9u32, 0x0000002du32,
+  0x000200f8u32, 0x00000033u32, 0x000200f9u32, 0x00000034u32, 0x000200f8u32, 0x00000034u32,
+  0x0005117fu32, 0x00000010u32, 0x000000adu32, 0x0000000fu32, 0x0000004eu32, 0x000500aau32,
+  0x00000040u32, 0x000000aeu32, 0x000000adu32, 0x0000004eu32, 0x000300f7u32, 0x0000003au32,
+  0x00000000u32, 0x000400fau32, 0x000000aeu32, 0x00000035u32, 0x00000039u32, 0x000200f8u32,
+  0x00000035u32, 0x00051782u32, 0x00000005u32, 0x000000b0u32, 0x0000000fu32, 0x0000004eu32,
+  0x00051783u32, 0x00000010u32, 0x000000b1u32, 0x0000000fu32, 0x0000004eu32, 0x00051787u32,
+  0x00000010u32, 0x000000b2u32, 0x0000000fu32, 0x0000004eu32, 0x00051789u32, 0x00000040u32,
+  0x000000b3u32, 0x0000000fu32, 0x0000004eu32, 0x000300f7u32, 0x00000038u32, 0x00000000u32,
+  0x000400fau32, 0x000000b3u32, 0x00000036u32, 0x00000037u32, 0x000200f8u32, 0x00000036u32,
+  0x0003003eu32, 0x0000001au32, 0x00000091u32, 0x000200f9u32, 0x00000038u32, 0x000200f8u32,
+  0x00000037u32, 0x0003003eu32, 0x0000001au32, 0x00000089u32, 0x000200f9u32, 0x00000038u32,
+  0x000200f8u32, 0x00000038u32, 0x0004003du32, 0x00000018u32, 0x000000b9u32, 0x0000001au32,
+  0x0004007cu32, 0x00000010u32, 0x000000bau32, 0x000000b9u32, 0x0003003eu32, 0x00000012u32,
+  0x0000004eu32, 0x0003003eu32, 0x00000017u32, 0x000000b0u32, 0x0003003eu32, 0x00000013u32,
+  0x000000b1u32, 0x0003003eu32, 0x00000014u32, 0x000000b2u32, 0x0003003eu32, 0x00000015u32,
+  0x000000bau32, 0x000200f9u32, 0x0000003au32, 0x000200f8u32, 0x00000039u32, 0x0003003eu32,
+  0x00000012u32, 0x00000042u32, 0x0003003eu32, 0x00000017u32, 0x00000047u32, 0x0003003eu32,
+  0x00000013u32, 0x00000042u32, 0x0003003eu32, 0x00000014u32, 0x00000042u32, 0x0003003eu32,
+  0x00000015u32, 0x00000042u32, 0x000200f9u32, 0x0000003au32, 0x000200f8u32, 0x0000003au32,
+  0x00050084u32, 0x00000010u32, 0x000000c7u32, 0x0000003fu32, 0x00000072u32, 0x00060041u32,
+  0x000000c8u32, 0x000000c9u32, 0x000000cdu32, 0x00000089u32, 0x000000c7u32, 0x0004003du32,
+  0x00000010u32, 0x000000ceu32, 0x00000012u32, 0x0003003eu32, 0x000000c9u32, 0x000000ceu32,
+  0x00050080u32, 0x00000010u32, 0x000000d0u32, 0x000000c7u32, 0x0000004eu32, 0x00060041u32,
+  0x000000c8u32, 0x000000d1u32, 0x000000cdu32, 0x00000089u32, 0x000000d0u32, 0x0004003du32,
+  0x00000005u32, 0x000000d2u32, 0x00000017u32, 0x0004007cu32, 0x00000010u32, 0x000000d3u32,
+  0x000000d2u32, 0x0003003eu32, 0x000000d1u32, 0x000000d3u32, 0x00050080u32, 0x00000010u32,
+  0x000000d5u32, 0x000000c7u32, 0x00000055u32, 0x00060041u32, 0x000000c8u32, 0x000000d6u32,
+  0x000000cdu32, 0x00000089u32, 0x000000d5u32, 0x0004003du32, 0x00000010u32, 0x000000d7u32,
+  0x00000013u32, 0x0003003eu32, 0x000000d6u32, 0x000000d7u32, 0x00050080u32, 0x00000010u32,
+  0x000000d9u32, 0x000000c7u32, 0x0000005cu32, 0x00060041u32, 0x000000c8u32, 0x000000dau32,
+  0x000000cdu32, 0x00000089u32, 0x000000d9u32, 0x0004003du32, 0x00000010u32, 0x000000dbu32,
+  0x00000014u32, 0x0003003eu32, 0x000000dau32, 0x000000dbu32, 0x00050080u32, 0x00000010u32,
+  0x000000ddu32, 0x000000c7u32, 0x00000063u32, 0x00060041u32, 0x000000c8u32, 0x000000deu32,
+  0x000000cdu32, 0x00000089u32, 0x000000ddu32, 0x0004003du32, 0x00000010u32, 0x000000dfu32,
+  0x00000015u32, 0x0003003eu32, 0x000000deu32, 0x000000dfu32, 0x000100fdu32, 0x00010038u32
+];
+// spirv-end

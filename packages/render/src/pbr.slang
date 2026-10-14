@@ -667,6 +667,25 @@ float2 pixelUv(float2 position) {
     return position * scene.size.zw;
 }
 
+#ifdef PBR_RT
+// Ray-traced glass, soap film and reflections (rtglass.slang), for a card that has ray tracing
+#include "rtglass.slang"
+
+// The record of the material being drawn, as raytrace.cone writes one for an instance of it: the glass or film it
+// is, for the first face the camera sees
+RtRecord rtSelfRecord(float4 base, float roughness, bool thinFilm) {
+    RtRecord r;
+    r.a = float4(base.rgb, 0.0);
+    r.b = float4(roughness, max(material.glass.y, 1.0), thinFilm ? RT_FILM : RT_SOLID, material.glass.x);
+    r.c = material.attenuation;
+    r.d = material.film;
+    r.e = material.filmNoise;
+    r.f = float4(0.0, 0.0, 0.0, material.glass.w);
+    r.geometry = uint4(0u, 0u, 0u, 0u);
+    return r;
+}
+#endif
+
 [shader("fragment")]
 float4 fragmentExtended(VertexOutput input) : SV_Target {
     fadeClip(input.fade, input.position.xy);
@@ -789,7 +808,16 @@ float4 fragmentExtended(VertexOutput input) : SV_Target {
         float3 dd;
         // Under a rippled surface the sun is focused into caustics (scenecapture.slang)
         float caustic = causticLight(input.world, l, material.reflection.y);
+#ifdef PBR_RT
+        // The glass between the surface and the sun tints and dims its light (a shadow ray at the glass alone)
+        float3 sunTint = float3(1.0, 1.0, 1.0);
+        if (!isGlass && visible > 0.0 && dot(ng, l) > 0.0) {
+            sunTint = rtTransmittance(input.world + ng * RT_EPSILON, l, 2u);
+        }
+        direct = evalLight(s, l, l, 1.0, 1.0, frame.lightColor.rgb * (sunTint * (visible * caustic)), dd);
+#else
         direct = evalLight(s, l, l, 1.0, 1.0, frame.lightColor.rgb * (visible * caustic), dd);
+#endif
         directDiffuse = dd;
     }
 
@@ -845,6 +873,22 @@ float4 fragmentExtended(VertexOutput input) : SV_Target {
         coatRoughness * (SPECULAR_LEVELS - 1.0)).rgb * strength;
     float2 coatAb = brdfTable.SampleLevel(environmentSampler, float2(nov, coatRoughness), 0.0).xy;
     float screenShare = 0.0;
+#ifdef PBR_RT
+    // Reflections by ray (rtglass.slang): the objects off the screen, the glass, the sky, everything a ray meets,
+    // for a surface smooth enough to show them; the blurrier the surface, the more of the environment's
+    // prefiltered picture takes over
+    if (material.reflection.x > 0.0 && !isGlass) {
+        float lobeRoughness = coat > 0.0 ? min(roughness, coatRoughness) : roughness;
+        float share = saturate(material.reflection.x) * (1.0 - smoothstep(0.12, 0.5, lobeRoughness));
+        if (share > 0.0 && dot(rPlain, ng) > 0.0) {
+            float3 traced = rtReflection(input.world + ng * RT_EPSILON, rPlain);
+            prefilteredBase = lerp(prefilteredBase, traced, share);
+            if (coat > 0.0) {
+                prefilteredCoat = lerp(prefilteredCoat, traced, share);
+            }
+        }
+    }
+#else
     if (material.reflection.x > 0.0) {
         float lobeRoughness = coat > 0.0 ? min(roughness, coatRoughness) : roughness;
         ScreenHit hit = traceScreen(input.world, rPlain, lobeRoughness, input.position.xy);
@@ -856,6 +900,7 @@ float4 fragmentExtended(VertexOutput input) : SV_Target {
             }
         }
     }
+#endif
     float3 envSpecular = prefilteredBase * (s.f0 * ab.x + ab.y) * s.energy * s.specularScale;
     float3 envBase = (s.diffuseColor * irradiance * strength + envSpecular) * s.sheenScale * (1.0 - coatFv);
     float3 envCoat = prefilteredCoat * coatFv * (coatAb.x + coatAb.y);
@@ -879,6 +924,21 @@ float4 fragmentExtended(VertexOutput input) : SV_Target {
         color += through * (1.0 - metallic) * material.foliage.x * (sunThrough + skyThrough);
     }
     float outAlpha = base.a;
+#ifdef PBR_RT
+    // Glass smooth enough to be traced is traced: the light that reaches this point of its face from the eye's side
+    // is the sum of the reflections and the transmission through the whole volume, found by rays (rtglass.slang).
+    // The sun's highlight (direct) is added; the environment's reflection is not (the rays find it). Frosted
+    // glass takes the raster path below, which blurs the captured frame.
+    float roughGlass = roughness * saturate(max(material.glass.y, 1.0) * 2.0 - 2.0);
+    bool traced = isGlass && roughGlass < 0.08;
+    if (traced) {
+        bool thin = material.film.w > 0.5 && material.glass.z < 0.001;
+        RtRecord self = rtSelfRecord(base, roughness, thin);
+        float3 gl = rtGlass(self, input.world, input.local, normalize(input.normal), -v);
+        color = (direct + emitted + gl) * glassShare;
+        outAlpha = glassShare;
+    } else
+#endif
     if (isGlass) {
         // The light behind: refracted by the surface (glTF's KHR_materials_volume and
         // _transmission, as the Khronos sample viewer draws them): the refracted ray

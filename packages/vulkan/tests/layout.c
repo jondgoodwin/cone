@@ -26,6 +26,7 @@ typedef uint32_t VkFlags;
 typedef uint64_t VkFlags64;
 typedef uint32_t VkBool32;
 typedef uint64_t VkDeviceSize;
+typedef uint64_t VkDeviceAddress;
 typedef int VkStructureType;       /* enums are int-sized */
 typedef int VkFormat;
 typedef int VkImageLayout;
@@ -464,6 +465,79 @@ typedef struct VkWriteDescriptorSet {
   uint32_t descriptorCount; int descriptorType; const VkDescriptorImageInfo* pImageInfo;
   const VkDescriptorBufferInfo* pBufferInfo; const uint64_t* pTexelBufferView;
 } VkWriteDescriptorSet;
+
+/* Ray tracing. VkAccelerationStructureGeometryKHR holds a union of three structs; the Cone side has one struct
+   for each member the package uses, as large as the union, and here each is written out flat the same way. */
+typedef uint64_t VkAccelerationStructureKHR;
+typedef struct VkPhysicalDeviceBufferDeviceAddressFeatures {
+  VkStructureType sType; void* pNext; VkBool32 bufferDeviceAddress; VkBool32 bufferDeviceAddressCaptureReplay;
+  VkBool32 bufferDeviceAddressMultiDevice;
+} VkPhysicalDeviceBufferDeviceAddressFeatures;
+typedef struct VkPhysicalDeviceAccelerationStructureFeaturesKHR {
+  VkStructureType sType; void* pNext; VkBool32 accelerationStructure; VkBool32 accelerationStructureCaptureReplay;
+  VkBool32 accelerationStructureIndirectBuild; VkBool32 accelerationStructureHostCommands;
+  VkBool32 descriptorBindingAccelerationStructureUpdateAfterBind;
+} VkPhysicalDeviceAccelerationStructureFeaturesKHR;
+typedef struct VkPhysicalDeviceRayQueryFeaturesKHR { VkStructureType sType; void* pNext; VkBool32 rayQuery; } VkPhysicalDeviceRayQueryFeaturesKHR;
+typedef struct VkMemoryAllocateFlagsInfo { VkStructureType sType; const void* pNext; uint32_t flags; uint32_t deviceMask; } VkMemoryAllocateFlagsInfo;
+typedef struct VkBufferDeviceAddressInfo { VkStructureType sType; const void* pNext; VkBuffer buffer; } VkBufferDeviceAddressInfo;
+typedef struct VkAccelerationStructureCreateInfoKHR {
+  VkStructureType sType; const void* pNext; uint32_t createFlags; VkBuffer buffer; VkDeviceSize offset; VkDeviceSize size;
+  int type; VkDeviceAddress deviceAddress;
+} VkAccelerationStructureCreateInfoKHR;
+typedef struct VkAccelerationStructureDeviceAddressInfoKHR {
+  VkStructureType sType; const void* pNext; VkAccelerationStructureKHR accelerationStructure;
+} VkAccelerationStructureDeviceAddressInfoKHR;
+typedef struct VkAccelerationStructureGeometryKHR {
+  VkStructureType sType; const void* pNext; int geometryType;
+  union {
+    struct { VkStructureType sType; const void* pNext; int vertexFormat; VkDeviceAddress vertexData; VkDeviceSize vertexStride;
+      uint32_t maxVertex; int indexType; VkDeviceAddress indexData; VkDeviceAddress transformData; } triangles;
+    struct { VkStructureType sType; const void* pNext; VkBool32 arrayOfPointers; VkDeviceAddress data; } instances;
+  } geometry;
+  uint32_t flags;
+} VkAccelerationStructureGeometryKHR;
+/* The two members the Cone side uses, each flattened with the union's padding, and checked against the real struct */
+typedef struct VkAccelerationStructureGeometryTrianglesKHR {
+  VkStructureType sType; const void* pNext; int geometryType; uint32_t unionPad;
+  VkStructureType trianglesSType; const void* trianglesPNext; int vertexFormat; VkDeviceAddress vertexData;
+  VkDeviceSize vertexStride; uint32_t maxVertex; int indexType; VkDeviceAddress indexData; VkDeviceAddress transformData;
+  uint32_t flags;
+} VkAccelerationStructureGeometryTrianglesKHR;
+typedef struct VkAccelerationStructureGeometryInstancesKHR {
+  VkStructureType sType; const void* pNext; int geometryType; uint32_t unionPad;
+  VkStructureType instancesSType; const void* instancesPNext; VkBool32 arrayOfPointers; VkDeviceAddress data;
+  uint64_t unused0; uint64_t unused1; uint64_t unused2; uint64_t unused3;
+  uint32_t flags;
+} VkAccelerationStructureGeometryInstancesKHR;
+_Static_assert(sizeof(VkAccelerationStructureGeometryKHR) == sizeof(VkAccelerationStructureGeometryTrianglesKHR), "size");
+_Static_assert(sizeof(VkAccelerationStructureGeometryKHR) == sizeof(VkAccelerationStructureGeometryInstancesKHR), "size");
+_Static_assert(offsetof(VkAccelerationStructureGeometryKHR, geometry.triangles.vertexData)
+  == offsetof(VkAccelerationStructureGeometryTrianglesKHR, vertexData), "vertexData");
+_Static_assert(offsetof(VkAccelerationStructureGeometryKHR, geometry.triangles.transformData)
+  == offsetof(VkAccelerationStructureGeometryTrianglesKHR, transformData), "transformData");
+_Static_assert(offsetof(VkAccelerationStructureGeometryKHR, geometry.instances.data)
+  == offsetof(VkAccelerationStructureGeometryInstancesKHR, data), "instances data");
+_Static_assert(offsetof(VkAccelerationStructureGeometryKHR, flags)
+  == offsetof(VkAccelerationStructureGeometryTrianglesKHR, flags), "flags");
+typedef struct VkAccelerationStructureBuildGeometryInfoKHR {
+  VkStructureType sType; const void* pNext; int type; uint32_t flags; int mode;
+  VkAccelerationStructureKHR srcAccelerationStructure; VkAccelerationStructureKHR dstAccelerationStructure;
+  uint32_t geometryCount; const void* pGeometries; const void* ppGeometries; VkDeviceAddress scratchData;
+} VkAccelerationStructureBuildGeometryInfoKHR;
+typedef struct VkAccelerationStructureBuildRangeInfoKHR {
+  uint32_t primitiveCount; uint32_t primitiveOffset; uint32_t firstVertex; uint32_t transformOffset;
+} VkAccelerationStructureBuildRangeInfoKHR;
+typedef struct VkAccelerationStructureBuildSizesInfoKHR {
+  VkStructureType sType; const void* pNext; VkDeviceSize accelerationStructureSize; VkDeviceSize updateScratchSize;
+  VkDeviceSize buildScratchSize;
+} VkAccelerationStructureBuildSizesInfoKHR;
+typedef struct VkAccelerationStructureInstanceKHR {
+  float transform[12]; uint32_t instanceWord; uint32_t flagsWord; uint64_t accelerationStructureReference;
+} VkAccelerationStructureInstanceKHR;
+typedef struct VkWriteDescriptorSetAccelerationStructureKHR {
+  VkStructureType sType; const void* pNext; uint32_t accelerationStructureCount; const VkAccelerationStructureKHR* pAccelerationStructures;
+} VkWriteDescriptorSetAccelerationStructureKHR;
 
 #define S(t) printf("%s size %zu align %zu\n", #t, sizeof(Vk##t), _Alignof(Vk##t))
 #define O(t, f) printf("%s.%s %zu\n", #t, #f, offsetof(Vk##t, f))
