@@ -1,0 +1,215 @@
+// Junctions and switches (src/network.cone): a trunk that forks into a straight branch A and a curving branch B,
+// a ring that joins onto itself, and two feeders that merge, each check on what must hold.
+//
+// 1. The joins meet: the end of the trunk and the start of each branch are under 1 mm apart and their tangents
+//    under 0.02 rad apart.
+// 2. With the switch set to A, a three-car train frictionless at 10 m/s on the trunk ends on A (the lead's track
+//    number), the lead's place agrees with A's own (under 1 mm), and on B's side with the switch at B it ends on B
+//    (its z over 5 m).
+// 3. Through the join nothing jumps: the lead car's position changes by v dt (within 1 percent plus 1 mm) at every
+//    step, and the train's energy is conserved (frictionless: within 1e-4 of the total), on either branch.
+// 4. A car behind the lead follows it onto the branch: when the whole train is on B, the rear car's position is on
+//    B's own curve (under 1 mm).
+// 5. The switch is read once, a lookahead before the end: thrown to B at s = 40 m (before the lookahead's 72 m) it
+//    sends the train to B; thrown at s = 80 m, after the route has been laid, it does not.
+// 6. A ring that joins onto itself is circled six times (the odometer over six laps, the route never longer than three
+//    laps' length), speed constant to 1e-3 (frictionless, flat).
+// 7. Zones belong to a track: a chain on B only pulls a train there to 8 m/s (30 m onto B it has 8 m/s; gravity
+//    alone gives 7.2) and does nothing to a train on A (under 7.5 at the same distance).
+// 8. Merge: trains from either feeder end on the merged track.
+
+mod networktest;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import libc;
+import splinetrack use *;
+
+fn pt(x f32, y f32, z f32) TrackPoint { new TrackPoint(new Vec3(x, y, z), 0.); }
+fn frictionless() CarSpec { new CarSpec(650., 2.4, 1.6, 0.4, 0., 0., 0.); }
+
+struct Fork {
+  net TrackNetwork;
+  trunk usize;
+  a usize;
+  b usize;
+}
+
+fn fork() Fork {
+  imm tan = (new Vec3(50., -1., 0.)).normalize();
+  mut tp = List[TrackPoint].empty();
+  tp.push(pt(0., 12., 0.)); tp.push(pt(50., 11., 0.)); tp.push(pt(100., 10., 0.));
+  mut ap = List[TrackPoint].empty();
+  ap.push(pt(100., 10., 0.)); ap.push(pt(150., 9., 0.)); ap.push(pt(200., 8., 0.));
+  mut bp = List[TrackPoint].empty();
+  bp.push(pt(100., 10., 0.)); bp.push(pt(130., 9.4, 6.)); bp.push(pt(160., 8.8, 24.)); bp.push(pt(175., 8.2, 45.));
+  mut net = TrackNetwork.make();
+  imm trunk = net.addTrack(Track.build(tp, false, new Vec3(1., 0., 0.), tan));
+  imm a = net.addTrack(Track.build(ap, false, tan, tan));
+  imm b = net.addTrack(Track.build(bp, false, tan, new Vec3(0., 0., 1.)));
+  mut options = List[usize].empty();
+  options.push(a); options.push(b);
+  net.addJoin(trunk, options);
+  new Fork(net, trunk, a, b);
+}
+
+fn cars3() List[CarSpec] {
+  mut c = List[CarSpec].empty();
+  c.push(frictionless()); c.push(frictionless()); c.push(frictionless());
+  c;
+}
+
+fn main() i32 {
+  // 1. the joins
+  mut f = fork();
+  expectFloat(f64.from(f.net.joinGap(f.trunk, f.a)), 0d, 0.001, "the trunk meets branch A");
+  expectFloat(f64.from(f.net.joinGap(f.trunk, f.b)), 0d, 0.001, "and branch B");
+  expectFloat(f64.from(f.net.joinBend(f.trunk, f.a)), 0d, 0.02, "tangent to A");
+  expectFloat(f64.from(f.net.joinBend(f.trunk, f.b)), 0d, 0.02, "tangent to B");
+
+  // 2, 3, 4. the two branches
+  imm dt = 1. / 60.;
+  mut k = 0;
+  while k < 2 {
+    mut fk = fork();
+    fk.net.throwSwitch(fk.trunk, usize.from(k));
+    mut nt = NetTrain.make(&fk.net, fk.trunk, cars3(), 20.);
+    nt.train.v = 10.;
+    imm e0 = nt.train.energy(&nt.route);
+    mut worstJump = 0.;
+    mut worstE = 0.;
+    mut prev = nt.route.at(nt.train.s).pos;
+    mut t = 0.;
+    while t < 11. {
+      imm sBefore = nt.train.s;
+      nt.step(&fk.net, dt);
+      t = t + dt;
+      imm cur = nt.route.at(nt.train.s).pos;
+      imm d = (cur - prev).length();
+      imm ds = nt.train.s - sBefore;
+      // (a step that dropped a leg re-bases s; every other step moves the lead by the arc it ran)
+      if ds > 0. {
+        imm e = libc.fabsf(d - ds) / ds;
+        if e > worstJump { worstJump = e; }
+      }
+      prev = cur;
+      imm de = libc.fabsf(nt.train.energy(&nt.route) - e0) / (0.5 * 1950. * 100.);
+      if de > worstE { worstE = de; }
+    }
+    imm lead = nt.lead();
+    if k == 0 {
+      expectInt(i64.from(lead.0), i64.from(fk.a), "switch at A: the train ends on A");
+      expectFloat(f64.from((nt.route.at(nt.train.s).pos - fk.net.tracks[fk.a].at(lead.1).pos).length()), 0d, 0.001, "its place agrees with A's");
+    } else {
+      expectInt(i64.from(lead.0), i64.from(fk.b), "switch at B: the train ends on B");
+      expect(nt.route.at(nt.train.s).pos.z > 5., "B curves away to +z");
+      // the rear car on B's own curve
+      imm rearS = nt.train.s - *nt.train.offsets[2usize];
+      imm legB = nt.legs[nt.legs.len() - 1usize];
+      imm onB = fk.net.tracks[fk.b].at(rearS - legB.start).pos;
+      expectFloat(f64.from((nt.route.at(rearS).pos - onB).length()), 0d, 0.001, "the rear car is on B's own curve");
+    }
+    expectFloat(f64.from(worstJump), 0d, 0.012, "the lead moves v dt each step, through the join");
+    expectFloat(f64.from(worstE), 0d, 0.0001, "energy is conserved through the join");
+    k = k + 1;
+  }
+
+  // 5. the switch is read once
+  mut early = fork();
+  early.net.throwSwitch(early.trunk, 0usize);
+  mut te = NetTrain.make(&early.net, early.trunk, cars3(), 20.);
+  te.train.v = 10.;
+  mut thrown = false;
+  mut tt = 0.;
+  while tt < 16. {
+    te.step(&early.net, dt);
+    tt = tt + dt;
+    if !thrown and te.train.s > 40. { early.net.throwSwitch(early.trunk, 1usize); thrown = true; }
+  }
+  expectInt(i64.from(te.lead().0), i64.from(early.b), "thrown at s = 40 m: the train takes B");
+  mut late = fork();
+  late.net.throwSwitch(late.trunk, 0usize);
+  mut tl = NetTrain.make(&late.net, late.trunk, cars3(), 20.);
+  tl.train.v = 10.;
+  thrown = false;
+  tt = 0.;
+  while tt < 16. {
+    tl.step(&late.net, dt);
+    tt = tt + dt;
+    if !thrown and tl.train.s > 80. { late.net.throwSwitch(late.trunk, 1usize); thrown = true; }
+  }
+  expectInt(i64.from(tl.lead().0), i64.from(late.a), "thrown at s = 80 m, after the route is laid: the train keeps to A");
+
+  // 6. a ring
+  mut rp = List[TrackPoint].empty();
+  mut j = 0;
+  while j <= 24 {
+    imm a = 6.28318530718 * f32.from(j % 24) / 24.;
+    rp.push(pt(30. * libc.cosf(a), 0., 30. * libc.sinf(a)));
+    j = j + 1;
+  }
+  mut rnet = TrackNetwork.make();
+  imm ringIdx = rnet.addTrack(Track.build(rp, false, new Vec3(0., 0., 1.), new Vec3(0., 0., 1.)));
+  mut self1 = List[usize].empty();
+  self1.push(ringIdx);
+  rnet.addJoin(ringIdx, self1);
+  mut tr = NetTrain.make(&rnet, ringIdx, cars3(), 20.);
+  tr.train.v = 12.;
+  imm ringLen = rnet.tracks[ringIdx].length;
+  mut maxRoute = 0.;
+  tt = 0.;
+  while tt < 6. * ringLen / 12. {
+    tr.step(&rnet, dt);
+    tt = tt + dt;
+    if tr.route.length > maxRoute { maxRoute = tr.route.length; }
+  }
+  expect(tr.train.odometer > 5.98 * ringLen and !tr.train.ended, "six laps of the ring");
+  expect(maxRoute < 3. * ringLen, "the route stays short");
+  expectFloat(f64.from(tr.train.v), 12d, 0.001, "and the speed is constant");
+
+  // 7. zones belong to a track
+  mut zf = fork();
+  zf.net.addZone(zf.b, Zone.chain(5., 120., 8., 20000.));
+  zf.net.throwSwitch(zf.trunk, 1usize);
+  mut tz = NetTrain.make(&zf.net, zf.trunk, cars3(), 20.);
+  tz.train.v = 3.;
+  tt = 0.;
+  while tt < 40. { tz.step(&zf.net, dt); tt = tt + dt; if tz.lead().0 == zf.b and tz.lead().1 > 30. { tt = 100.; } }
+  expectInt(i64.from(tz.lead().0), i64.from(zf.b), "on B");
+  expect(tz.train.v > 7.99, "the chain on B has pulled the train to 8 m/s (30 m onto B: gravity alone gives 7.2)");
+  mut zf2 = fork();
+  zf2.net.addZone(zf2.b, Zone.chain(5., 120., 8., 20000.));
+  zf2.net.throwSwitch(zf2.trunk, 0usize);
+  mut tz2 = NetTrain.make(&zf2.net, zf2.trunk, cars3(), 20.);
+  tz2.train.v = 3.;
+  tt = 0.;
+  while tt < 40. { tz2.step(&zf2.net, dt); tt = tt + dt; if tz2.lead().0 == zf2.a and tz2.lead().1 > 30. { tt = 100.; } }
+  expectInt(i64.from(tz2.lead().0), i64.from(zf2.a), "on A");
+  expect(tz2.train.v < 7.5, "the chain on B did nothing to a train on A (gravity alone: 7.2)");
+
+  // 8. a merge
+  mut mp1 = List[TrackPoint].empty();
+  mp1.push(pt(0., 5., -20.)); mp1.push(pt(25., 5., -10.)); mp1.push(pt(50., 5., 0.));
+  mut mp2 = List[TrackPoint].empty();
+  mp2.push(pt(0., 5., 20.)); mp2.push(pt(25., 5., 10.)); mp2.push(pt(50., 5., 0.));
+  mut mm = List[TrackPoint].empty();
+  mm.push(pt(50., 5., 0.)); mm.push(pt(100., 5., 0.)); mm.push(pt(150., 5., 0.));
+  mut mnet = TrackNetwork.make();
+  imm f1 = mnet.addTrack(Track.build(mp1, false, new Vec3(1., 0., 0.), new Vec3(1., 0., 0.)));
+  imm f2 = mnet.addTrack(Track.build(mp2, false, new Vec3(1., 0., 0.), new Vec3(1., 0., 0.)));
+  imm merged = mnet.addTrack(Track.build(mm, false, new Vec3(1., 0., 0.), new Vec3(1., 0., 0.)));
+  mut o1 = List[usize].empty(); o1.push(merged);
+  mut o2 = List[usize].empty(); o2.push(merged);
+  mnet.addJoin(f1, o1);
+  mnet.addJoin(f2, o2);
+  mut m1 = NetTrain.make(&mnet, f1, cars3(), 20.);
+  m1.train.v = 10.;
+  mut m2 = NetTrain.make(&mnet, f2, cars3(), 20.);
+  m2.train.v = 10.;
+  tt = 0.;
+  while tt < 8. { m1.step(&mnet, dt); m2.step(&mnet, dt); tt = tt + dt; }
+  expectInt(i64.from(m1.lead().0), i64.from(merged), "feeder 1 ends on the merged track");
+  expectInt(i64.from(m2.lead().0), i64.from(merged), "feeder 2 ends on the merged track");
+  done();
+}

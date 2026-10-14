@@ -1,0 +1,82 @@
+// ======== Engine, gearbox, differential: as data ========
+//
+// ENGINE. A torque curve (rpm -> N m at full throttle, linear between the points), an idle, a limiter, the
+// flywheel's inertia and the engine-braking torque (what the engine drags with when the throttle is shut:
+// pumping and friction, growing with the speed). The torque at a throttle is a blend of the curve and the
+// drag: T = throttle * curve(rpm) - (1 - throttle) * drag * rpm / limiter. Past the limiter the torque is cut
+// to nothing over 300 rpm (a soft rev limiter).
+//
+// GEARBOX. Forward ratios, a reverse, a final drive, an efficiency, and an automatic's shift points: it goes up
+// above 'upRpm' (when the driver is on the throttle) and down below 'downRpm'; a shift takes 'shiftTime', during
+// which the engine delivers nothing. The clutch is a single number pair: above 'clutchRpm' (as seen from the
+// wheels) it is locked, the engine turning exactly the wheels' speed times the ratio; below it, it slips, the
+// engine turning at a speed the throttle chooses (a launch speed) and delivering at most 'clutchTorque'. (After
+// the textbook driveline of Genta, "Motor Vehicle Dynamics", but with the clutch reduced to those two states:
+// no clutch pedal, no stalling.)
+//
+// DIFFERENTIAL. Between the two wheels of an axle: OPEN (the torque splits equally; the wheel with less grip
+// spins), LOCKED (the wheels turn together), LIMITED-SLIP (a clutch pack: it carries between the wheels up to
+// 'preload' + 'bias' times the torque the axle is given, so it behaves open at low torque difference and locks
+// as the difference grows). The drive splits between axles by a share (a centre differential with a fixed
+// split: 0 front / 1 rear is rear-wheel drive).
+
+pub const DIFF_OPEN = 0;
+pub const DIFF_LIMITED = 1;
+pub const DIFF_LOCKED = 2;
+
+pub struct EngineSpec {
+  pub curve List[Vec2];      // (rpm, N m at full throttle), rising in rpm
+  pub idle f32;              // rpm
+  pub limiter f32;           // rpm
+  pub inertia f32;           // kg m^2, the flywheel and crank
+  pub drag f32;              // N m of engine braking at the limiter with the throttle shut
+
+  pub fn torqueAt(self &, rpm f32, throttle f32) f32 {
+    mut full = 0.;
+    if rpm <= curve[0usize].x { full = curve[0usize].y; }
+    elif rpm >= curve[curve.len() - 1usize].x { full = curve[curve.len() - 1usize].y; }
+    else {
+      mut i = 1usize;
+      while curve[i].x < rpm { i = i + 1usize; }
+      imm a = *curve[i - 1usize];
+      imm b = *curve[i];
+      full = a.y + (b.y - a.y) * (rpm - a.x) / (b.x - a.x);
+    }
+    mut t = throttle * full - (1. - throttle) * drag * rpm / limiter;
+    if rpm > limiter - 300. {
+      imm k = (limiter - rpm) / 300.;
+      t = if k <= 0. { 0.; } else { t * k; };
+    }
+    t;
+  }
+
+  // The torque the curve gives at the speed of peak torque, N m, and the rpm of it
+  pub fn peakTorque(self &) f32 {
+    mut best = 0.;
+    mut i = 0usize;
+    while i < curve.len() { if curve[i].y > best { best = curve[i].y; } i = i + 1usize; }
+    best;
+  }
+}
+
+pub struct GearboxSpec {
+  pub ratios List[f32];      // forward, first gear first
+  pub reverse f32;           // positive: the magnitude
+  pub finalDrive f32;
+  pub efficiency f32;
+  pub upRpm f32;
+  pub downRpm f32;
+  pub shiftTime f32;         // s
+  pub clutchRpm f32;         // the engine's speed below which the clutch slips
+  pub clutchTorque f32;      // N m it can carry while slipping
+}
+
+pub struct DiffSpec {
+  pub kind i32;
+  pub preload f32;           // N m the limited-slip clutch carries before any torque
+  pub bias f32;              // and the fraction of the axle's torque it carries on top
+
+  pub fn open() DiffSpec { new DiffSpec(DIFF_OPEN, 0., 0.); }
+  pub fn limited(preload f32, bias f32) DiffSpec { new DiffSpec(DIFF_LIMITED, preload, bias); }
+  pub fn locked() DiffSpec { new DiffSpec(DIFF_LOCKED, 0., 0.); }
+}

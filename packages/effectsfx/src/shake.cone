@@ -1,0 +1,80 @@
+// ======== The camera-shake hook ========
+//
+// Squirrel Eiserloh's trauma model ("Math for Game Programmers: Juicy Cameras", GDC 2016):
+// a number 'trauma' in [0, 1] that events add to and that decays steadily; the shake is
+// trauma squared (small hits barely show, large ones hammer), applied as an offset and three
+// small rotations each driven by smooth noise at a few tens of hertz. An explosion adds
+// trauma by its distance (a falloff to a radius), so the camera feels what is near.
+//
+// The effects do not move the camera: this is the hook. A program reads 'offsets' and applies
+// them to its own camera, or has 'applyTo' do it for a camera it places with 'lookAt'.
+
+pub struct ShakeOffset {
+  pub dx f32;                       // metres, along the camera's right
+  pub dy f32;                       // metres, along its up
+  pub yaw f32;                      // radians
+  pub pitch f32;
+  pub roll f32;
+}
+
+pub struct CameraShake {
+  pub trauma f32 = 0.;
+  pub decay f32 = 1.4;              // trauma lost a second
+  pub maxAngle f32 = 0.045;         // radians (2.6 degrees) at full shake
+  pub maxOffset f32 = 0.07;         // metres at full shake
+  pub frequency f32 = 24.;          // noise samples a second
+  pub seed u32 = 5u32;
+  pub time f32 = 0.;
+
+  pub fn make() CameraShake { new CameraShake(); }
+
+  // Add 'amount' of trauma (clamped to 1)
+  pub fn add(self &mut, amount f32) {
+    trauma = trauma + amount;
+    if trauma > 1. { trauma = 1.; }
+  }
+
+  // Add what an event of strength 'amount' at 'origin' gives a camera at 'eye': all of it
+  // at the origin, falling to none at 'radius' metres (a smooth squared falloff)
+  pub fn addAt(self &mut, eye Vec3, origin Vec3, amount f32, radius f32) {
+    imm d = eye.distance(origin);
+    if d >= radius { return; }
+    imm k = 1. - d / radius;
+    self.add(amount * k * k);
+  }
+
+  // Let 'dt' seconds go by
+  pub fn update(self &mut, dt f32) {
+    time = time + dt;
+    trauma = trauma - decay * dt;
+    if trauma < 0. { trauma = 0.; }
+  }
+
+  // The shake now
+  pub fn offsets(self &) ShakeOffset {
+    imm s = trauma * trauma;
+    imm t = time * frequency;
+    new ShakeOffset(maxOffset * s * value2(new Vec2(t, 11.), seed).value, maxOffset * s * value2(new Vec2(t, 23.), seed + 1u32).value,
+      maxAngle * s * value2(new Vec2(t, 37.), seed + 2u32).value, maxAngle * s * value2(new Vec2(t, 51.), seed + 3u32).value,
+      maxAngle * s * value2(new Vec2(t, 67.), seed + 4u32).value);
+  }
+
+  // Place 'camera' looking from 'eye' to 'target' ('up' above), shaken
+  pub fn applyTo(self &, camera &mut Camera, eye Vec3, target Vec3, up Vec3) {
+    imm o = self.offsets();
+    imm forward = (target - eye).normalize();
+    imm right = forward.cross(up).normalize();
+    imm trueUp = right.cross(forward).normalize();
+    imm turned = (Quat.angleAxis(o.yaw, trueUp) * Quat.angleAxis(o.pitch, right)) * forward;
+    imm rolled = Quat.angleAxis(o.roll, forward) * trueUp;
+    imm dist = (target - eye).length();
+    camera.lookAt(eye + right * o.dx + trueUp * o.dy, eye + right * o.dx + trueUp * o.dy + turned * dist, rolled);
+  }
+}
+
+// One event's shake, as a layer of an effect
+pub struct ShakeLayer {
+  pub trauma f32 = 0.6;
+  pub radius f32 = 30.;
+  pub delay f32 = 0.;
+}
